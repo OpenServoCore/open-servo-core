@@ -450,6 +450,92 @@ fn s11_break_after_covered_cancels_speculation() {
     assert_eq!(&data[..2], &[0x34, 0x12]);
 }
 
+#[test]
+fn s13_speculated_write_commits_at_frame_end() {
+    // A WRITE is front-loaded at covered-complete: staged, table untouched, no
+    // reply on the wire. Only the frame-end CRC verify commits it into the table
+    // and sequences the ack.
+    let h = Harness::new();
+    let mut bus = h.build(ID, RATE, 60);
+    let shared = Shared::new();
+    let mut session = Session::new();
+    let mut d = session.dispatcher(&shared);
+
+    let addr = CONTROL_BASE_ADDR.to_le_bytes();
+    let frame = instruction(ID, Opcode::Write, 0, &[addr[0], addr[1], 1]);
+    let anchor = 100usize;
+    let fp = frame.len();
+    h.ring.place(anchor, &frame);
+    h.deadline.set_now(1000);
+    h.ring.set_cursor(((anchor + 1) % RING_LEN) as u16);
+    bus.on_break();
+    let a = h.deadline.armed().expect("deadline A");
+    h.deadline.set_now(a);
+    h.ring.set_cursor(((anchor + 4) % RING_LEN) as u16);
+    bus.on_deadline(&mut d);
+
+    // Covered checkpoint: staged speculatively, live table still clean.
+    let c = h.deadline.armed().expect("covered deadline");
+    h.deadline.set_now(c);
+    h.ring.set_cursor(((anchor + fp) % RING_LEN) as u16);
+    bus.on_deadline(&mut d);
+    assert!(
+        !shared.table.with(|t| t.control.lifecycle.torque_enable),
+        "a speculated write is staged, not yet committed"
+    );
+    assert!(!h.wire.started());
+
+    // Frame-end CRC verify: commit into the table, then sequence the ack.
+    fire(&mut bus, &h, &mut d);
+    assert!(
+        shared.table.with(|t| t.control.lifecycle.torque_enable),
+        "the CRC-verified write is committed"
+    );
+    fire(&mut bus, &h, &mut d);
+    drain_tx(&mut bus, &h);
+
+    let reference = status(ID, ResultCode::Ok, &[]);
+    assert_eq!(h.wire.sent(), reference[1..]);
+    let (id, inst, data) = last_reply(&h.wire);
+    assert_eq!(id, ID);
+    assert_eq!(inst.result(), Some(ResultCode::Ok));
+    assert!(data.is_empty());
+    assert_eq!(bus.diag().crc_fail_count, 0);
+}
+
+#[test]
+fn s14_corrupt_write_leaves_table_and_reverts() {
+    // A WRITE whose covered span is intact but whose trailing CRC is corrupted:
+    // front-loaded (staged) at covered, then the frame-end CRC check fails →
+    // the staged write is reverted and the table is byte-identical.
+    let h = Harness::new();
+    let mut bus = h.build(ID, RATE, 60);
+    let shared = Shared::new();
+    let mut session = Session::new();
+    let mut d = session.dispatcher(&shared);
+
+    let addr = CONTROL_BASE_ADDR.to_le_bytes();
+    let mut frame = instruction(ID, Opcode::Write, 0, &[addr[0], addr[1], 1]);
+    let last = frame.len() - 1;
+    frame[last] ^= 0xFF; // corrupt CRC-hi; the covered span stays valid
+    deliver(&mut bus, &h, 100, &frame, 1000, &mut d);
+
+    assert!(!h.wire.started());
+    assert_eq!(bus.diag().crc_fail_count, 1);
+    assert!(
+        !shared.table.with(|t| t.control.lifecycle.torque_enable),
+        "a bad-CRC write must not mutate the table"
+    );
+
+    // The staged write was reverted — a following clean write applies.
+    let next = instruction(ID, Opcode::Write, 0, &[addr[0], addr[1], 1]);
+    deliver(&mut bus, &h, 100, &next, 5000, &mut d);
+    fire(&mut bus, &h, &mut d);
+    let (_, inst, _) = last_reply(&h.wire);
+    assert_eq!(inst.result(), Some(ResultCode::Ok));
+    assert!(shared.table.with(|t| t.control.lifecycle.torque_enable));
+}
+
 /// Rewrite a frame's ID field to broadcast (group ops address via their list).
 fn broadcast_id(mut frame: std::vec::Vec<u8>) -> std::vec::Vec<u8> {
     // Re-seal after changing the ID: [0x00][ID][LEN][INST]…

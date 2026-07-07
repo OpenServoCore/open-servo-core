@@ -301,6 +301,25 @@ pub trait RegisterFile: RegisterMap {
         }
         staged.clear();
     }
+
+    /// Apply only the entries pushed since `snap`, then truncate the buffer back
+    /// to it — the speculative-write commit, leaving any pre-`snap` HOLD entries
+    /// intact for a later real COMMIT.
+    fn commit_from(&self, staged: &mut StagedWrites, snap: &Snapshot) {
+        let base = self.base();
+        for (addr, data) in staged.iter_from(snap) {
+            let end = addr as usize + data.len();
+            if end > Self::SIZE {
+                continue;
+            }
+            // SAFETY: bounds guarded above; the caller upholds RegisterMap's
+            // single-writer contract.
+            unsafe {
+                core::ptr::copy_nonoverlapping(data.as_ptr(), base.add(addr as usize), data.len());
+            }
+        }
+        staged.revert_to(snap);
+    }
 }
 
 impl<M: RegisterMap> RegisterFile for M {}

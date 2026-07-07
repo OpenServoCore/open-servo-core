@@ -29,5 +29,5 @@ pub use services::bus::{Dispatcher, Session};
 pub use shared::Shared;
 pub use traits::{
     Capabilities, ControlIo, DecayMode, Dispatch, Motor, MotorCmd, Reply, Request, RequestCtx,
-    SendError, Sensors, Status,
+    SendError, Sensors, Speculated, Status,
 };

@@ -64,8 +64,36 @@ pub trait Reply {
     fn stage_reboot(&mut self, mode: BootMode);
 }
 
+/// Outcome of a speculative dispatch (covered-complete, CRC not yet verified).
+pub enum Speculated {
+    /// Read-only request — fully handled, nothing pending.
+    Done,
+    /// Effects staged; caller must later call `commit_speculation` (CRC pass)
+    /// or `revert_speculation`.
+    Pending,
+    /// Cannot run speculatively (capacity, COMMIT/MGMT, …) — caller falls
+    /// back to the full `dispatch` at frame end.
+    Refused,
+}
+
 /// Single-shot typed dispatch: the bus hands one fully-decoded request plus
 /// its ctx. `R` is generic per call so the hot path avoids `dyn Reply`.
 pub trait Dispatch {
     fn dispatch<R: Reply>(&mut self, req: Request<'_>, ctx: RequestCtx, reply: &mut R);
+
+    /// Front-load a request at covered-complete: read-only ops run in full;
+    /// mutating ops validate + stage but do not touch the live table until a
+    /// later [`Self::commit_speculation`]. See [`Speculated`].
+    fn dispatch_speculative<R: Reply>(
+        &mut self,
+        req: Request<'_>,
+        ctx: RequestCtx,
+        reply: &mut R,
+    ) -> Speculated;
+
+    /// CRC passed: apply the staged speculative write and fire its hooks.
+    fn commit_speculation<R: Reply>(&mut self, reply: &mut R);
+
+    /// CRC failed / frame died: discard the staged speculative write.
+    fn revert_speculation(&mut self);
 }

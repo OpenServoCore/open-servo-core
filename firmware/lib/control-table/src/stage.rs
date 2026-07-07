@@ -40,7 +40,7 @@ pub(crate) struct StagedEntry {
     data_off: u16,
 }
 
-/// Caller-held transaction handle. Hand to `rewind_to` to discard pushes
+/// Caller-held transaction handle. Hand to `revert_to` to discard pushes
 /// since capture, or to `iter_from` to walk them. Nesting is free — each
 /// caller holds its own.
 #[derive(Copy, Clone)]
@@ -88,7 +88,8 @@ impl StagedWrites {
         }
     }
 
-    pub fn rewind_to(&mut self, snap: Snapshot) {
+    /// Discard everything pushed since `snap`. Infallible: truncation only.
+    pub fn revert_to(&mut self, snap: &Snapshot) {
         self.data.truncate(snap.data as usize);
         self.entries.truncate(snap.entries as usize);
     }
@@ -123,6 +124,11 @@ impl StagedWrites {
                 Error::StagingFull
             })?;
         Ok(())
+    }
+
+    /// Walk every staged entry, oldest first.
+    pub fn iter_all(&self) -> impl Iterator<Item = (u16, &[u8])> + '_ {
+        self.iter_from(&Snapshot::ZERO)
     }
 
     pub fn iter_from(&self, snap: &Snapshot) -> impl Iterator<Item = (u16, &[u8])> + '_ {

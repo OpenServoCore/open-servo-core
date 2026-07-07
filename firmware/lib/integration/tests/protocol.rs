@@ -4,6 +4,7 @@
 //! snapshots.
 
 use osc_core::BaudRate;
+use osc_core::regions::CALIB_BASE_ADDR;
 use osc_core::regions::config::addr::comms::{BAUD_RATE_IDX, ID};
 use osc_core::regions::control::addr::lifecycle::TORQUE_ENABLE;
 use osc_integration::sim::{Sim, Source, WireFrame, assert_valid, instruction, status};
@@ -198,6 +199,40 @@ fn hold_then_commit_applies_atomically() {
     let frames = sim.run();
     let (inst, _) = status(sole_reply(&frames));
     assert_eq!(inst.result(), Some(ResultCode::Ok));
+}
+
+#[test]
+fn large_write_falls_back_and_applies() {
+    // A write whose payload exceeds the 128 B staging buffer cannot speculate
+    // (StagingFull → Refused); the full write_split path at frame end applies it
+    // directly. Target the calib pot-LUT span (writable, no field rules).
+    let mut sim = Sim::new(BaudRate::B1000000);
+    let s = sim.add_servo(ID5);
+
+    let mut data = vec![0u8; 130];
+    data[0..2].copy_from_slice(&0x1234u16.to_le_bytes()); // raw_min
+    data[2..4].copy_from_slice(&0x5678u16.to_le_bytes()); // raw_max
+    data[4] = 0xAB; // first LUT byte
+
+    let a = CALIB_BASE_ADDR.to_le_bytes();
+    let mut payload = vec![a[0], a[1]];
+    payload.extend_from_slice(&data);
+    sim.host_send(&instruction(ID5, Opcode::Write, 0, &payload));
+    let frames = sim.run();
+
+    let (inst, _) = status(sole_reply(&frames));
+    assert_eq!(inst.result(), Some(ResultCode::Ok));
+    assert_eq!(sim.servo_diag(s).crc_fail_count, 0);
+    let (raw_min, raw_max, lut0) = sim.servo_table(s, |t| {
+        (
+            t.calib.pot_lut.raw_min,
+            t.calib.pot_lut.raw_max,
+            t.calib.pot_lut.lut[0],
+        )
+    });
+    assert_eq!(raw_min, 0x1234);
+    assert_eq!(raw_max, 0x5678);
+    assert_eq!((lut0 as u32) & 0xFF, 0xAB, "the >128 B payload landed");
 }
 
 #[test]

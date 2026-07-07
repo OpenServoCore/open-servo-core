@@ -4,10 +4,10 @@
 //! generation and RX validation share, and muxes their deadlines onto the
 //! single tick-compare.
 
-use osc_core::traits::{Dispatch, Reply, SendError, Status};
+use osc_core::traits::{Dispatch, Reply, Request, RequestCtx, SendError, Speculated, Status};
 use osc_core::{BaudRate, BootMode};
 use osc_protocol::FrameBytes;
-use osc_protocol::wire::{Inst, Opcode, ResultCode};
+use osc_protocol::wire::{Inst, ResultCode};
 
 use super::chain::{Chain, ChainOut};
 use super::decode::{Decoded, decode};
@@ -56,6 +56,9 @@ struct Speculation {
     packet_end: u32,
     slot: u8,
     staged: bool,
+    // A mutating frame whose effects are staged in the dispatcher, awaiting a
+    // CRC-pass commit or a CRC-fail revert.
+    pending: bool,
 }
 
 /// What a framer output means to the frame pipeline once the deadline muxing
@@ -362,30 +365,25 @@ impl<P: Providers> ServoBus<P> {
     fn on_frame_end<D: Dispatch>(&mut self, span: FrameSpan, d: &mut D) {
         if let Some(spec) = self.speculated.take() {
             if spec.anchor == span.anchor && spec.footprint == span.footprint {
-                self.verify_speculation(spec);
+                self.verify_speculation(spec, d);
                 return;
             }
-            // Defensive: a stale speculation that isn't this frame — drop it.
+            // Defensive: a stale speculation that isn't this frame — drop it. Any
+            // dangling staged write is reclaimed by the dispatcher auto-revert on
+            // the next dispatch (process_frame below).
             self.drop_staged();
         }
         self.process_frame(span, d);
     }
 
-    /// Covered-complete: front-load the CRC feed + dispatch of a read-only frame
-    /// so deadline B only has to verify the wire CRC and trigger. Mutating ops
-    /// and status frames do nothing here — they take the full path at the end.
+    /// Covered-complete: front-load the CRC feed + dispatch so deadline B only
+    /// has to verify the wire CRC and trigger. The dispatcher decides what is
+    /// speculable: read-only ops run in full; mutating ops validate + stage but
+    /// don't touch the live table until commit. A refused op (COMMIT/MGMT, or a
+    /// staging overflow) leaves no speculation and takes the full path at B.
     fn speculate<D: Dispatch>(&mut self, span: FrameSpan, d: &mut D) {
         let anchor = span.anchor;
         let footprint = span.footprint;
-        // Ping/Read/Gread never touch the table (read-only by contract), so
-        // dispatching before the CRC is verified is side-effect free.
-        let inst = self.ring_inst(anchor);
-        if !matches!(
-            inst.opcode(),
-            Some(Opcode::Ping | Opcode::Read | Opcode::Gread)
-        ) {
-            return;
-        }
         // Speculate only from an idle reply pipeline: superseding a live
         // chain or staged reply belongs AFTER the CRC gate (a garbled frame
         // must touch nothing, §5.3 L1) — those rare overlaps fall back to
@@ -395,26 +393,49 @@ impl<P: Providers> ServoBus<P> {
         }
         // Start the RX CRC feed now; the result is polled at the frame end.
         self.crc_feed(anchor, footprint);
-        let (staged, slot) = self
-            .dispatch_frame(anchor, footprint, d)
-            .unwrap_or((false, 0));
-        self.speculated = Some(Speculation {
-            anchor,
-            footprint,
-            packet_end: span.packet_end,
-            slot,
-            staged,
-        });
+        let Some((staged, slot, outcome)) =
+            self.dispatch_decoded(anchor, footprint, |req, ctx, h| {
+                d.dispatch_speculative(req, ctx, h)
+            })
+        else {
+            return; // Status/Skip — not dispatched; the full path handles it at B
+        };
+        match outcome {
+            Speculated::Done | Speculated::Pending => {
+                self.speculated = Some(Speculation {
+                    anchor,
+                    footprint,
+                    packet_end: span.packet_end,
+                    slot,
+                    staged,
+                    pending: matches!(outcome, Speculated::Pending),
+                });
+            }
+            // Not speculable: a Refused dispatch stages nothing and sends
+            // nothing, so leave no speculation — the full path at B runs exactly
+            // as an un-speculated frame would.
+            Speculated::Refused => {}
+        }
     }
 
-    /// Verify a front-loaded frame's wire CRC and sequence its reply. A fail
-    /// (or spin miss) drops the staged reply and counts, exactly as the full
-    /// path does (§5.3 L1) — the table was never touched (read-only op).
-    fn verify_speculation(&mut self, spec: Speculation) {
+    /// Verify a front-loaded frame's wire CRC, commit its speculative effects,
+    /// and sequence its reply. A fail (or spin miss) reverts the staged write,
+    /// drops the staged reply, and counts (§5.3 L1) — the live table is left
+    /// byte-identical to before the frame.
+    fn verify_speculation<D: Dispatch>(&mut self, spec: Speculation, d: &mut D) {
         if !self.crc_verify(spec.anchor, spec.footprint) {
+            if spec.pending {
+                d.revert_speculation();
+            }
             self.drop_staged();
             self.crc_fails = self.crc_fails.wrapping_add(1);
             return;
+        }
+        if spec.pending {
+            // Apply the staged write into the table + fire its hooks (baud/id
+            // stage through this handle) before sequencing the ack.
+            let mut handle = self.reply_handle();
+            d.commit_speculation(&mut handle);
         }
         if spec.staged {
             let t_turn = self.t_turn();
@@ -486,14 +507,16 @@ impl<P: Providers> ServoBus<P> {
     }
 
     /// View the frame as up to two ring segments (one span unless it wraps the
-    /// seam), decode, and dispatch over disjoint borrows (driver-pattern §4.3).
-    /// Returns `(staged, slot)`, or `None` for a frame that isn't ours.
-    fn dispatch_frame<D: Dispatch>(
+    /// seam), decode, and run `f` over disjoint borrows (driver-pattern §4.3):
+    /// the decoded request borrows the ring while `f` stages a reply through the
+    /// [`ReplyHandle`]. Returns `(staged, slot, f-result)`, or `None` for a frame
+    /// that isn't ours.
+    fn dispatch_decoded<T>(
         &mut self,
         anchor: u16,
         footprint: u16,
-        d: &mut D,
-    ) -> Option<(bool, u8)> {
+        f: impl FnOnce(Request<'_>, RequestCtx, &mut ReplyHandle<'_, P::Tx>) -> T,
+    ) -> Option<(bool, u8, T)> {
         let anchor = anchor as usize;
         let footprint = footprint as usize;
         let ring = self.ring.bytes();
@@ -507,6 +530,8 @@ impl<P: Providers> ServoBus<P> {
             Decoded::Own(req, ctx, slot) => (req, ctx, slot),
             _ => return None,
         };
+        // Disjoint field borrows: `frame`/`req` hold `&self.ring`; the handle
+        // takes the reply-staging fields mutably.
         let mut handle = ReplyHandle {
             tx: &mut self.tx,
             id: self.id,
@@ -516,8 +541,35 @@ impl<P: Providers> ServoBus<P> {
             response_deadline_us: &mut self.response_deadline_us,
             staged: false,
         };
-        d.dispatch(req, ctx, &mut handle);
-        Some((handle.staged, slot))
+        let out = f(req, ctx, &mut handle);
+        Some((handle.staged, slot, out))
+    }
+
+    /// Decode + dispatch the full (non-speculative) path. Returns `(staged,
+    /// slot)`, or `None` for a frame that isn't ours.
+    fn dispatch_frame<D: Dispatch>(
+        &mut self,
+        anchor: u16,
+        footprint: u16,
+        d: &mut D,
+    ) -> Option<(bool, u8)> {
+        self.dispatch_decoded(anchor, footprint, |req, ctx, h| d.dispatch(req, ctx, h))
+            .map(|(staged, slot, ())| (staged, slot))
+    }
+
+    /// A reply surface over the deferred-config fields, with no request decode —
+    /// used at speculative commit, where hooks stage baud/id but no frame is
+    /// re-parsed (the ring isn't borrowed here).
+    fn reply_handle(&mut self) -> ReplyHandle<'_, P::Tx> {
+        ReplyHandle {
+            tx: &mut self.tx,
+            id: self.id,
+            pending_id: &mut self.pending_id,
+            pending_baud: &mut self.pending_baud,
+            pending_reboot: &mut self.pending_reboot,
+            response_deadline_us: &mut self.response_deadline_us,
+            staged: false,
+        }
     }
 
     /// Feed the covered span (1 or 2 wrap halves) into the CRC engine, no result

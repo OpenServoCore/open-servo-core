@@ -10,7 +10,7 @@ use osc_protocol::wire::{MgmtOp, ResultCode};
 use crate::regions::CONTROL_BASE_ADDR;
 use crate::regions::config::BaudRate;
 use crate::services::bus::Dispatcher;
-use crate::traits::{Dispatch, Reply, Request, RequestCtx, SendError, Status};
+use crate::traits::{Dispatch, Reply, Request, RequestCtx, SendError, Speculated, Status};
 use crate::{BootMode, RegionStorage, Shared, StagedWrites};
 
 /// One recorded `send_status` call.
@@ -82,7 +82,8 @@ impl Reply for FakeReply {
 
 fn go(shared: &Shared, staged: &mut StagedWrites, req: Request<'_>, may_reply: bool) -> FakeReply {
     let mut reply = FakeReply::new();
-    Dispatcher::new(shared, staged).dispatch(req, RequestCtx { may_reply }, &mut reply);
+    let mut spec = None;
+    Dispatcher::new(shared, staged, &mut spec).dispatch(req, RequestCtx { may_reply }, &mut reply);
     reply
 }
 
@@ -479,4 +480,250 @@ fn alert_bit_clear_when_no_fault() {
     let mut staged = StagedWrites::new();
     let reply = go(&shared, &mut staged, Request::Ping, true);
     assert!(!reply.last().alert);
+}
+
+// --- Speculative dispatch (covered-complete, CRC not yet verified) ---------
+
+use crate::regions::control::addr::lifecycle::GOAL_VELOCITY;
+
+fn write(addr: u16, data: &[u8], hold: bool) -> Request<'_> {
+    Request::Write {
+        addr,
+        data: FrameBytes::from(data),
+        hold,
+    }
+}
+
+/// A fresh dispatcher over the same session-owned `staged` + `spec` — mirrors
+/// the bus rebuilding one per wake.
+fn disp<'a>(
+    shared: &'a Shared,
+    staged: &'a mut StagedWrites,
+    spec: &'a mut Option<crate::services::bus::SpecWrite>,
+) -> Dispatcher<'a> {
+    Dispatcher::new(shared, staged, spec)
+}
+
+#[test]
+fn speculative_write_commits_and_acks() {
+    let shared = Shared::new();
+    let mut staged = StagedWrites::new();
+    let mut spec = None;
+    let mut reply = FakeReply::new();
+
+    let out = disp(&shared, &mut staged, &mut spec).dispatch_speculative(
+        write(CONTROL_BASE_ADDR, &[1], false),
+        RequestCtx { may_reply: true },
+        &mut reply,
+    );
+    assert!(matches!(out, Speculated::Pending));
+    assert_eq!(reply.last().result, ResultCode::Ok);
+    // Staged only — the live table is untouched until commit.
+    assert!(!shared.table.with(|t| t.control.lifecycle.torque_enable));
+
+    disp(&shared, &mut staged, &mut spec).commit_speculation(&mut reply);
+    assert!(shared.table.with(|t| t.control.lifecycle.torque_enable));
+    assert!(spec.is_none());
+    assert!(
+        staged.is_empty(),
+        "a plain write clears its staging on commit"
+    );
+}
+
+#[test]
+fn speculative_write_reject_nacks_nothing_staged() {
+    let shared = Shared::new();
+    let mut staged = StagedWrites::new();
+    let mut spec = None;
+    let mut reply = FakeReply::new();
+
+    // 2 is outside a bool field's allowed {0, 1}: validation reject.
+    let out = disp(&shared, &mut staged, &mut spec).dispatch_speculative(
+        write(CONTROL_BASE_ADDR, &[2], false),
+        RequestCtx { may_reply: true },
+        &mut reply,
+    );
+    assert!(matches!(out, Speculated::Done), "a reject needs no commit");
+    assert_eq!(reply.last().result, ResultCode::Validation);
+    assert!(staged.is_empty());
+    assert!(spec.is_none());
+}
+
+#[test]
+fn speculative_commit_op_is_refused_silently() {
+    let shared = Shared::new();
+    let mut staged = StagedWrites::new();
+    let mut spec = None;
+    let mut reply = FakeReply::new();
+
+    let out = disp(&shared, &mut staged, &mut spec).dispatch_speculative(
+        Request::Commit,
+        RequestCtx { may_reply: true },
+        &mut reply,
+    );
+    assert!(matches!(out, Speculated::Refused));
+    assert_eq!(reply.count(), 0, "Refused sends nothing");
+    assert!(spec.is_none());
+}
+
+#[test]
+fn speculative_write_staging_full_is_refused_nothing_staged() {
+    use control_table::STAGE_DATA_CAP;
+    let shared = Shared::new();
+    let mut staged = StagedWrites::new();
+    // Fill the staging data buffer to capacity (direct push bypasses validate).
+    staged
+        .push(CONTROL_BASE_ADDR, &[0u8; STAGE_DATA_CAP])
+        .unwrap();
+
+    let mut spec = None;
+    let mut reply = FakeReply::new();
+    let out = disp(&shared, &mut staged, &mut spec).dispatch_speculative(
+        write(CONTROL_BASE_ADDR, &[1], false),
+        RequestCtx { may_reply: true },
+        &mut reply,
+    );
+    assert!(matches!(out, Speculated::Refused));
+    assert_eq!(reply.count(), 0, "Refused sends nothing");
+    assert!(spec.is_none());
+    // Nothing staged on top: only the pre-existing filler entry remains.
+    assert_eq!(staged.iter_all().count(), 1);
+}
+
+#[test]
+fn dangling_speculative_write_auto_reverts_on_next_dispatch() {
+    let shared = Shared::new();
+    let mut staged = StagedWrites::new();
+    let mut spec = None;
+    let mut reply = FakeReply::new();
+
+    // Speculate a write but never commit/revert (frame died with no verdict).
+    disp(&shared, &mut staged, &mut spec).dispatch_speculative(
+        write(CONTROL_BASE_ADDR, &[1], false),
+        RequestCtx { may_reply: true },
+        &mut reply,
+    );
+    assert!(spec.is_some());
+    assert!(!staged.is_empty());
+
+    // A following plain dispatch drops the dangling spec before running.
+    let mut reply2 = FakeReply::new();
+    disp(&shared, &mut staged, &mut spec).dispatch(
+        Request::Ping,
+        RequestCtx { may_reply: true },
+        &mut reply2,
+    );
+    assert!(spec.is_none());
+    assert!(staged.is_empty());
+    assert!(!shared.table.with(|t| t.control.lifecycle.torque_enable));
+}
+
+#[test]
+fn real_commit_after_dangling_spec_applies_only_held_entries() {
+    let shared = Shared::new();
+    let mut staged = StagedWrites::new();
+    let mut spec = None;
+    let mut reply = FakeReply::new();
+
+    // A real HOLD write stages torque_enable=1 (persists across frames).
+    disp(&shared, &mut staged, &mut spec).dispatch(
+        write(CONTROL_BASE_ADDR, &[1], true),
+        RequestCtx { may_reply: true },
+        &mut reply,
+    );
+    // A speculative write on top stages goal_velocity, then dies (dangling).
+    let gv = 5i32.to_le_bytes();
+    disp(&shared, &mut staged, &mut spec).dispatch_speculative(
+        write(GOAL_VELOCITY, &gv, false),
+        RequestCtx { may_reply: true },
+        &mut reply,
+    );
+    assert!(spec.is_some());
+
+    // Real COMMIT auto-reverts the dangling spec, then applies only the held
+    // torque_enable — the phantom goal_velocity is gone.
+    disp(&shared, &mut staged, &mut spec).dispatch(
+        Request::Commit,
+        RequestCtx { may_reply: true },
+        &mut reply,
+    );
+    assert!(shared.table.with(|t| t.control.lifecycle.torque_enable));
+    assert_eq!(shared.table.with(|t| t.control.lifecycle.goal_velocity), 0);
+}
+
+#[test]
+fn speculative_hold_keeps_entries_until_commit() {
+    let shared = Shared::new();
+    let mut staged = StagedWrites::new();
+    let mut spec = None;
+    let mut reply = FakeReply::new();
+
+    let out = disp(&shared, &mut staged, &mut spec).dispatch_speculative(
+        write(CONTROL_BASE_ADDR, &[1], true),
+        RequestCtx { may_reply: true },
+        &mut reply,
+    );
+    assert!(matches!(out, Speculated::Pending));
+    assert_eq!(reply.last().result, ResultCode::Ok);
+
+    // CRC passed: a held write keeps its entry staged (it applies on COMMIT).
+    disp(&shared, &mut staged, &mut spec).commit_speculation(&mut reply);
+    assert!(spec.is_none());
+    assert!(
+        !staged.is_empty(),
+        "the held entry survives the spec commit"
+    );
+    assert!(!shared.table.with(|t| t.control.lifecycle.torque_enable));
+
+    // A real COMMIT lands it.
+    disp(&shared, &mut staged, &mut spec).dispatch(
+        Request::Commit,
+        RequestCtx { may_reply: true },
+        &mut reply,
+    );
+    assert!(shared.table.with(|t| t.control.lifecycle.torque_enable));
+}
+
+#[test]
+fn hooks_fire_on_speculative_commit() {
+    use crate::regions::config::addr::comms::ID;
+    let shared = Shared::new();
+    let mut staged = StagedWrites::new();
+    let mut spec = None;
+    let mut reply = FakeReply::new();
+
+    disp(&shared, &mut staged, &mut spec).dispatch_speculative(
+        write(ID, &[42], false),
+        RequestCtx { may_reply: true },
+        &mut reply,
+    );
+    // Hooks are deferred to commit — nothing staged through the reply yet.
+    assert_eq!(reply.staged_id, None);
+
+    disp(&shared, &mut staged, &mut spec).commit_speculation(&mut reply);
+    assert_eq!(reply.staged_id, Some(42));
+}
+
+#[test]
+fn hooks_fire_on_real_commit() {
+    // The gap fix: a real COMMIT of a held hooked field now fires its hook.
+    use crate::regions::config::addr::comms::ID;
+    let shared = Shared::new();
+    let mut staged = StagedWrites::new();
+    let mut spec = None;
+    let mut reply = FakeReply::new();
+
+    disp(&shared, &mut staged, &mut spec).dispatch(
+        write(ID, &[42], true),
+        RequestCtx { may_reply: true },
+        &mut reply,
+    );
+    assert_eq!(reply.staged_id, None, "HOLD stages, no hook yet");
+
+    disp(&shared, &mut staged, &mut spec).dispatch(
+        Request::Commit,
+        RequestCtx { may_reply: true },
+        &mut reply,
+    );
+    assert_eq!(reply.staged_id, Some(42), "COMMIT fires the deferred hook");
 }

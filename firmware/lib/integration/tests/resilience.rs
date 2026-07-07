@@ -4,9 +4,9 @@
 //! boundary. Plain assertions on the observed diagnostics counters.
 
 use osc_core::BaudRate;
-use osc_core::regions::control::addr::lifecycle::{GOAL_POSITION, GOAL_VELOCITY};
+use osc_core::regions::control::addr::lifecycle::{GOAL_POSITION, GOAL_VELOCITY, TORQUE_ENABLE};
 use osc_integration::sim::{Sim, Source, WireFrame, assert_valid, instruction, status};
-use osc_protocol::wire::{Opcode, ResultCode};
+use osc_protocol::wire::{Inst, Opcode, ResultCode};
 
 const ID5: u8 = 5;
 
@@ -211,6 +211,82 @@ fn break_after_covered_cancels_front_loaded_read() {
         }
     }
     assert!(answered, "a following read is answered after the break");
+}
+
+#[test]
+fn crc_fail_write_reverts_and_keeps_held_entry() {
+    // §5.3 L1 across frames: a bad-CRC speculative write must revert without
+    // disturbing entries HELD by an earlier frame. A HOLD stages torque_enable;
+    // a corrupt plain write of goal_velocity is speculated on top then reverted;
+    // COMMIT must land only the held torque_enable.
+    let mut sim = Sim::new(BaudRate::B1000000);
+    let s = sim.add_servo(ID5);
+    let te = TORQUE_ENABLE.to_le_bytes();
+    let gv = GOAL_VELOCITY.to_le_bytes();
+
+    sim.host_send(&instruction(
+        ID5,
+        Opcode::Write,
+        Inst::FLAG_HOLD,
+        &[te[0], te[1], 1],
+    ));
+    sim.run();
+    assert!(!sim.servo_table(s, |t| t.control.lifecycle.torque_enable));
+
+    // Corrupt a data byte (index 6, past the 2-byte addr) so the covered span
+    // fails CRC while still decoding as our goal_velocity write.
+    let mut bad = instruction(ID5, Opcode::Write, 0, &[gv[0], gv[1], 9, 9, 9, 9]);
+    bad[6] ^= 0xFF;
+    sim.host_send(&bad);
+    let frames = sim.run();
+    assert!(servo_frames(&frames).is_empty());
+    assert_eq!(sim.servo_diag(s).crc_fail_count, 1);
+    assert_eq!(sim.servo_table(s, |t| t.control.lifecycle.goal_velocity), 0);
+
+    // COMMIT applies only the held torque_enable; the reverted write is gone.
+    sim.host_send(&instruction(ID5, Opcode::Commit, 0, &[]));
+    let frames = sim.run();
+    let (inst, _) = status(sole_reply(&frames));
+    assert_eq!(inst.result(), Some(ResultCode::Ok));
+    assert!(sim.servo_table(s, |t| t.control.lifecycle.torque_enable));
+    assert_eq!(sim.servo_table(s, |t| t.control.lifecycle.goal_velocity), 0);
+}
+
+#[test]
+fn break_preempts_speculated_write_then_recovers() {
+    // A WRITE preempted by a fresh break before its CRC verdict must leave the
+    // table clean; the dangling staged write is reclaimed by the dispatcher
+    // auto-revert, so a following write applies.
+    let mut sim = Sim::new(BaudRate::B1000000);
+    let s = sim.add_servo(ID5);
+
+    sim.host_send_at(0, &write_gv(ID5, 0x0A0A0A0A));
+    sim.inject_garble_at(115, 0x00); // 0x00 FE = a break, dropped mid-frame
+    let frames = sim.run();
+    assert!(servo_frames(&frames).is_empty());
+    assert_eq!(
+        sim.servo_table(s, |t| t.control.lifecycle.goal_velocity),
+        0,
+        "a preempted write must not mutate the table"
+    );
+
+    // Heal (§3.2) and confirm a following write applies + acks.
+    let mut applied = false;
+    for k in 0..3u64 {
+        sim.host_send_at(300 + k * 300, &write_gv(ID5, 0x0C0C0C0C));
+        let frames = sim.run();
+        if let [r] = servo_frames(&frames)[..] {
+            assert_valid(r);
+            assert_eq!(status(r).0.result(), Some(ResultCode::Ok));
+            applied = true;
+            break;
+        }
+    }
+    assert!(applied, "a following write is answered after the break");
+    assert_eq!(
+        sim.servo_table(s, |t| t.control.lifecycle.goal_velocity),
+        0x0C0C0C0C
+    );
 }
 
 #[test]

@@ -1,10 +1,12 @@
-use control_table::RegisterFile;
+use control_table::{RegisterFile, Snapshot};
+use heapless::Vec;
 use osc_protocol::FrameBytes;
 use osc_protocol::wire::{MAX_PAYLOAD, MgmtOp, ResultCode};
 
 use crate::regions::hooks::ControlTableHooks;
-use crate::traits::{Dispatch, Reply, Request, RequestCtx, Status};
+use crate::traits::{Dispatch, Reply, Request, RequestCtx, Speculated, Status};
 use crate::{Error, RegionStorage, Shared, StagedWrites, ValidationKind};
+use control_table::STAGE_ENTRY_CAP;
 
 /// Map a control-table write/stage failure onto an osc-native result code
 /// (§5.3 layer 2). Read-only and torque-locked writes are `Access`; field-rule
@@ -17,17 +19,53 @@ fn error_to_result(e: Error) -> ResultCode {
     }
 }
 
-/// Stateless single-shot dispatcher. Holds only borrowed shared state and the
-/// HOLD-write staging buffer — no per-frame reassembly; each
-/// [`Dispatch::dispatch`] call carries its whole payload.
+/// A speculative write staged at covered-complete, awaiting a CRC verdict. The
+/// bus rebuilds the [`Dispatcher`] each wake, so this lives in the [`Session`]
+/// and outlives the dispatcher that staged it.
+///
+/// [`Session`]: super::session::Session
+pub(crate) struct SpecWrite {
+    /// Staging watermark before this write — commit/revert operate above it.
+    snap: Snapshot,
+    /// A held write keeps its entries for a later COMMIT; a plain write applies
+    /// them at commit time.
+    hold: bool,
+    /// The written span, for firing hooks at commit.
+    addr: u16,
+    len: u16,
+}
+
+/// Stateless single-shot dispatcher. Holds only borrowed shared state, the
+/// HOLD-write staging buffer, and the pending speculative-write slot — no
+/// per-frame reassembly; each [`Dispatch::dispatch`] call carries its whole
+/// payload.
 pub struct Dispatcher<'a> {
     shared: &'a Shared,
     staged: &'a mut StagedWrites,
+    spec: &'a mut Option<SpecWrite>,
 }
 
 impl<'a> Dispatcher<'a> {
-    pub fn new(shared: &'a Shared, staged: &'a mut StagedWrites) -> Self {
-        Self { shared, staged }
+    pub(crate) fn new(
+        shared: &'a Shared,
+        staged: &'a mut StagedWrites,
+        spec: &'a mut Option<SpecWrite>,
+    ) -> Self {
+        Self {
+            shared,
+            staged,
+            spec,
+        }
+    }
+
+    /// Discard a speculative write left dangling by a frame that died before its
+    /// CRC verdict (the bus has no dispatcher in the break ISR, so cleanup is
+    /// lazy). MUST run before any path that reads the staging buffer from the
+    /// zero watermark — otherwise a real COMMIT would apply the phantom bytes.
+    fn revert_dangling(&mut self) {
+        if let Some(spec) = self.spec.take() {
+            self.staged.revert_to(&spec.snap);
+        }
     }
 
     /// Device-level ALERT bit: set on every status while the alarm register is
@@ -41,6 +79,9 @@ impl<'a> Dispatcher<'a> {
 
 impl Dispatch for Dispatcher<'_> {
     fn dispatch<R: Reply>(&mut self, req: Request<'_>, ctx: RequestCtx, reply: &mut R) {
+        // Any speculative write still pending here died without a verdict — drop
+        // it so COMMIT and fresh writes see a clean buffer (see revert_dangling).
+        self.revert_dangling();
         let alert = self.alert();
         match req {
             Request::Ping => self.ping(alert, &ctx, reply),
@@ -49,6 +90,54 @@ impl Dispatch for Dispatcher<'_> {
             Request::Commit => self.commit(alert, &ctx, reply),
             Request::Mgmt { op, .. } => self.mgmt(alert, &ctx, op, reply),
             Request::Unsupported => self.instruction_error(alert, &ctx, reply),
+        }
+    }
+
+    fn dispatch_speculative<R: Reply>(
+        &mut self,
+        req: Request<'_>,
+        ctx: RequestCtx,
+        reply: &mut R,
+    ) -> Speculated {
+        // A prior speculated frame that never got its verdict is dropped here
+        // too (see revert_dangling) before this frame stages anything.
+        self.revert_dangling();
+        let alert = self.alert();
+        match req {
+            Request::Ping => {
+                self.ping(alert, &ctx, reply);
+                Speculated::Done
+            }
+            Request::Read { addr, count } => {
+                self.read(alert, &ctx, addr, count, reply);
+                Speculated::Done
+            }
+            Request::Write { addr, data, hold } => {
+                self.write_speculative(alert, &ctx, addr, data, hold, reply)
+            }
+            // COMMIT applies the whole buffer, MGMT reboots, Unsupported errors:
+            // none are side-effect-free before the CRC gate → full path at B.
+            Request::Commit | Request::Mgmt { .. } | Request::Unsupported => Speculated::Refused,
+        }
+    }
+
+    fn commit_speculation<R: Reply>(&mut self, reply: &mut R) {
+        let Some(spec) = self.spec.take() else {
+            return; // defensive: nothing speculated
+        };
+        if spec.hold {
+            return; // held entries stay staged until a real COMMIT
+        }
+        self.shared.table.commit_from(self.staged, &spec.snap);
+        let mut hooks = ControlTableHooks::new(reply);
+        self.shared
+            .table
+            .with(|t| t.dispatch_events(spec.addr, spec.len, &mut hooks));
+    }
+
+    fn revert_speculation(&mut self) {
+        if let Some(spec) = self.spec.take() {
+            self.staged.revert_to(&spec.snap);
         }
     }
 }
@@ -195,9 +284,60 @@ impl Dispatcher<'_> {
         }
     }
 
+    /// Speculative write: validate + stage above a watermark, ack per the reply
+    /// contract, but leave the live table untouched until `commit_speculation`.
+    /// A validation reject nacks with nothing staged (`Done`, no commit needed);
+    /// a staging-capacity refusal stages nothing and stays silent (`Refused`, so
+    /// the full path re-runs at frame end without a double ack).
+    fn write_speculative<R: Reply>(
+        &mut self,
+        alert: bool,
+        ctx: &RequestCtx,
+        addr: u16,
+        data: FrameBytes<'_>,
+        hold: bool,
+        reply: &mut R,
+    ) -> Speculated {
+        let (head, tail) = data.segments();
+        let snap = self.staged.snapshot();
+        match self.shared.table.stage_split(addr, head, tail, self.staged) {
+            Ok(()) => {
+                Self::ack(alert, ctx, Ok(()), reply);
+                *self.spec = Some(SpecWrite {
+                    snap,
+                    hold,
+                    addr,
+                    len: data.len() as u16,
+                });
+                Speculated::Pending
+            }
+            // Buffer full (staging cap or payload too big): nothing was staged;
+            // the full write_split path applies it at frame end.
+            Err(Error::StagingFull) => Speculated::Refused,
+            // Bounds / rule / lock reject: validate pushed nothing. Nack now; the
+            // error reply is sequenced iff the CRC passes.
+            Err(e) => {
+                Self::ack(alert, ctx, Err(e), reply);
+                Speculated::Done
+            }
+        }
+    }
+
     fn commit<R: Reply>(&mut self, alert: bool, ctx: &RequestCtx, reply: &mut R) {
+        // Capture each entry's span before commit_staged clears the buffer, so
+        // hooks fire on the applied values (apply-then-events, mirroring write).
+        let mut spans: Vec<(u16, u16), STAGE_ENTRY_CAP> = Vec::new();
+        for (addr, data) in self.staged.iter_all() {
+            let _ = spans.push((addr, data.len() as u16));
+        }
         self.shared.table.commit_staged(self.staged);
         Self::ack(alert, ctx, Ok(()), reply);
+        let mut hooks = ControlTableHooks::new(reply);
+        for (addr, len) in spans {
+            self.shared
+                .table
+                .with(|t| t.dispatch_events(addr, len, &mut hooks));
+        }
     }
 
     fn mgmt<R: Reply>(&mut self, alert: bool, ctx: &RequestCtx, op: MgmtOp, reply: &mut R) {

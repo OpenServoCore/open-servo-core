@@ -6,3 +6,6 @@ mod tests;
 
 pub use dispatch::Dispatcher;
 pub use session::Session;
+
+#[cfg(test)]
+pub(crate) use dispatch::SpecWrite;
