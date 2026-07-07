@@ -22,14 +22,15 @@ enum CmpOp {
 }
 
 impl CmpOp {
-    fn op_tokens(self) -> TokenStream2 {
+    /// The matching `control_table::rules::OP_*` const, as a path token.
+    fn const_tokens(self) -> TokenStream2 {
         match self {
-            CmpOp::Lt => quote!(<),
-            CmpOp::Le => quote!(<=),
-            CmpOp::Gt => quote!(>),
-            CmpOp::Ge => quote!(>=),
-            CmpOp::Eq => quote!(==),
-            CmpOp::Ne => quote!(!=),
+            CmpOp::Lt => quote!(::control_table::rules::OP_LT),
+            CmpOp::Le => quote!(::control_table::rules::OP_LE),
+            CmpOp::Gt => quote!(::control_table::rules::OP_GT),
+            CmpOp::Ge => quote!(::control_table::rules::OP_GE),
+            CmpOp::Eq => quote!(::control_table::rules::OP_EQ),
+            CmpOp::Ne => quote!(::control_table::rules::OP_NE),
         }
     }
 }
@@ -128,23 +129,24 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
 
             if let Some(allowed) = auto_enum_allowed(ty) {
                 body.push(quote! {
-                    let __e = view.read_fixed(f_lo as u16, 1)?;
-                    if !#allowed.contains(&__e[0]) {
-                        return ::core::result::Result::Err(
-                            ::control_table::Error::ValidationError(
-                                ::control_table::ValidationKind::Enum));
-                    }
+                    ::control_table::rules::check_allowed(view, f_lo as u16, #allowed)?;
                 });
             }
 
             if !attrs.compares.is_empty() {
                 let (width, signed) = cmp_width_signed(ty)?;
                 let abs = attrs.abs && signed;
-                let lhs = widened_load(&quote!(f_lo as u16), width, signed);
                 for (op, expr) in &attrs.compares {
-                    let op_tok = op.op_tokens();
-                    let rhs = build_rhs_load(expr, width, signed);
-                    body.push(emit_compare(&lhs, &rhs, &op_tok, abs, width));
+                    let op_const = op.const_tokens();
+                    let rhs = build_rhs(expr);
+                    body.push(quote! {
+                        ::control_table::rules::check_cmp(
+                            view,
+                            f_lo as u16,
+                            const { ::control_table::rules::spec(#width, #signed, #abs, #op_const) },
+                            #rhs,
+                        )?;
+                    });
                 }
             }
 
@@ -493,68 +495,15 @@ fn cmp_width_signed(ty: &Type) -> syn::Result<(u8, bool)> {
     ))
 }
 
-/// Emits an `i32`-valued expression loading `[addr, addr+width)` from the view
-/// and widening it exactly as the old interpreter's `read_widened` did (pinned
-/// per-width sign extension). `addr` is a `u16` expression.
-fn widened_load(addr: &TokenStream2, width: u8, signed: bool) -> TokenStream2 {
-    let conv = match (width, signed) {
-        (1, false) => quote!(__b[0] as i32),
-        (1, true) => quote!(__b[0] as i8 as i32),
-        (2, false) => quote!(u16::from_le_bytes([__b[0], __b[1]]) as i32),
-        (2, true) => quote!(i16::from_le_bytes([__b[0], __b[1]]) as i32),
-        _ => quote!(i32::from_le_bytes(__b)),
-    };
-    quote!({ let __b = view.read_fixed(#addr, #width as usize)?; #conv })
-}
-
-/// RHS of a compare as an `i32`-valued expression: a `&path` reference loads the
-/// referenced register widened the SAME way as the LHS (same width+signedness —
+/// RHS of a compare as a `rules::Rhs`: a `&path` reference names another
+/// register (loaded by the helper with the SAME width+signedness as the LHS —
 /// pinned); any other expression is the immediate `as i32`.
-fn build_rhs_load(expr: &Expr, width: u8, signed: bool) -> TokenStream2 {
+fn build_rhs(expr: &Expr) -> TokenStream2 {
     if let Expr::Reference(r) = expr {
         let inner = &r.expr;
-        widened_load(&quote!(#inner), width, signed)
+        quote!(::control_table::rules::Rhs::Reg(#inner))
     } else {
-        quote!(((#expr) as i32))
-    }
-}
-
-/// A single straight-line compare: bind LHS/RHS, apply saturating-abs to both
-/// (only when the field is signed and `abs` is set — mirrors the old eval), then
-/// `Err(Compare)` unless the comparison holds.
-fn emit_compare(
-    lhs: &TokenStream2,
-    rhs: &TokenStream2,
-    op: &TokenStream2,
-    abs: bool,
-    width: u8,
-) -> TokenStream2 {
-    let fail = quote! {
-        return ::core::result::Result::Err(
-            ::control_table::Error::ValidationError(
-                ::control_table::ValidationKind::Compare));
-    };
-    if abs {
-        let sat_max = match width {
-            1 => quote!(i8::MAX as i32),
-            2 => quote!(i16::MAX as i32),
-            _ => quote!(i32::MAX),
-        };
-        quote! {
-            {
-                let __a = #lhs.saturating_abs().min(#sat_max);
-                let __r = #rhs.saturating_abs().min(#sat_max);
-                if !(__a #op __r) { #fail }
-            }
-        }
-    } else {
-        quote! {
-            {
-                let __a = #lhs;
-                let __r = #rhs;
-                if !(__a #op __r) { #fail }
-            }
-        }
+        quote!(::control_table::rules::Rhs::Imm((#expr) as i32))
     }
 }
 

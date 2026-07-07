@@ -3,6 +3,7 @@
 
 pub mod map;
 mod region;
+pub mod rules;
 mod stage;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
