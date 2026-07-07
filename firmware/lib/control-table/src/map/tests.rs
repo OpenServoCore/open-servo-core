@@ -220,6 +220,30 @@ fn straddle_high_pending_low_live() {
 }
 
 #[test]
+fn read_fixed_picks_per_path() {
+    // Live 0..8 with the overlay covering 2..6: o1 at 2..4, o2 at 4..6. Spans
+    // chosen to hit each read_fixed path: fully live (both sides), fully
+    // inside o1, inside o2, and every straddle shape.
+    let live: [u8; 8] = [10, 11, 12, 13, 14, 15, 16, 17];
+    let o1 = [0xA0, 0xA1];
+    let o2 = [0xB0, 0xB1];
+    let v = View::new_split(live.as_ptr(), live.len(), 2, &o1, &o2);
+    assert_eq!(v.read_fixed(0, 2), Ok([10, 11, 0, 0]));
+    assert_eq!(v.read_fixed(6, 2), Ok([16, 17, 0, 0]));
+    assert_eq!(v.read_fixed(2, 2), Ok([0xA0, 0xA1, 0, 0]));
+    assert_eq!(v.read_fixed(4, 2), Ok([0xB0, 0xB1, 0, 0]));
+    assert_eq!(v.read_fixed(1, 4), Ok([11, 0xA0, 0xA1, 0xB0]));
+    assert_eq!(v.read_fixed(3, 2), Ok([0xA1, 0xB0, 0, 0]));
+    assert_eq!(v.read_fixed(5, 3), Ok([0xB1, 16, 17, 0]));
+    assert_eq!(v.read_fixed(0, 1), Ok([10, 0, 0, 0]));
+    assert_eq!(v.read_fixed(0, 0), Ok([0, 0, 0, 0]));
+    assert_eq!(v.read_fixed(6, 4), Err(Error::OutOfRange));
+    // Empty overlay degenerates to all-live.
+    let v = View::new_split(live.as_ptr(), live.len(), 3, &[], &[]);
+    assert_eq!(v.read_fixed(2, 4), Ok([12, 13, 14, 15]));
+}
+
+#[test]
 fn stage_validates_then_pushes() {
     let m = Basic::new([0; BASIC_SIZE]);
     let mut staged = StagedWrites::new();

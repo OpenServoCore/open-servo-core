@@ -88,9 +88,14 @@ impl<'a> View<'a> {
     /// Bounds-checked once up front; the per-byte picks then need no further
     /// checks. Bytes past `len` in the returned array are zero.
     ///
-    /// Outlined: every generated field-rule check calls this, and inlining
-    /// the split-overlay pick at each site cost ~6 KB of flash (write-path
-    /// only, so the call overhead is noise against the write budget).
+    /// Rule reads are almost always fully outside the overlay (a compare's
+    /// RHS register, a lock byte) or fully inside `o1` (the field being
+    /// written) — those take straight byte loads; the per-byte pick pays
+    /// only on seam splits and overlay-edge straddles (bench: the pick chain
+    /// ran ~6.8 µs per load on flash-resident code, the write path's
+    /// hottest function). Outlined: inlining at the (deduped) rule-body
+    /// sites measured zero gain for +146 B — the cost is the loads, not the
+    /// call.
     #[inline(never)]
     pub fn read_fixed(&self, addr: u16, len: usize) -> Result<[u8; 4], Error> {
         let lo = addr as usize;
@@ -104,6 +109,24 @@ impl<'a> View<'a> {
         let o_lo = self.overlay_addr as usize;
         let split = o_lo + self.o1.len();
         let o_hi = split + self.o2.len();
+        if hi <= o_lo || lo >= o_hi {
+            // SAFETY: `hi <= size` bytes of live storage; the caller upholds
+            // RegisterMap's single-writer contract, so this shared read does
+            // not race a commit.
+            return Ok(unsafe { load_le4(self.base.add(lo), len) });
+        }
+        if lo >= o_lo && hi <= split {
+            // SAFETY: `[lo, hi)` lies inside `[o_lo, split)`, so the offset
+            // span is in `o1`.
+            return Ok(unsafe { load_le4(self.o1.as_ptr().add(lo - o_lo), len) });
+        }
+        Ok(self.read_mixed(lo, len, o_lo, split, o_hi))
+    }
+
+    /// Overlay-edge straddles and seam splits: pick each byte from live
+    /// storage, `o1`, or `o2`. Bounds pre-checked by [`Self::read_fixed`].
+    #[cold]
+    fn read_mixed(&self, lo: usize, len: usize, o_lo: usize, split: usize, o_hi: usize) -> [u8; 4] {
         let mut out = [0u8; 4];
         for (i, slot) in out.iter_mut().take(len).enumerate() {
             let a = lo + i;
@@ -120,8 +143,31 @@ impl<'a> View<'a> {
                 unsafe { *self.base.add(a) }
             };
         }
-        Ok(out)
+        out
     }
+}
+
+/// Load `len` bytes (capped at 4) from `p` into a zero-padded `[u8; 4]` with
+/// unrolled byte loads — no per-byte range compares.
+///
+/// # Safety
+/// `p` must be valid for `len.min(4)` byte reads.
+unsafe fn load_le4(p: *const u8, len: usize) -> [u8; 4] {
+    let mut out = [0u8; 4];
+    // SAFETY: caller guarantees `len.min(4)` readable bytes at `p`.
+    unsafe {
+        match len {
+            4.. => out = p.cast::<[u8; 4]>().read_unaligned(),
+            2 => out[..2].copy_from_slice(&p.cast::<[u8; 2]>().read_unaligned()),
+            1 => out[0] = p.read(),
+            3 => {
+                out[..2].copy_from_slice(&p.cast::<[u8; 2]>().read_unaligned());
+                out[2] = p.add(2).read();
+            }
+            0 => {}
+        }
+    }
+    out
 }
 
 /// Validate `[addr, addr+o1.len()+o2.len())` against the flat map: bounds →
