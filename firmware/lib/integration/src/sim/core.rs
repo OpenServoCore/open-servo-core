@@ -73,6 +73,8 @@ pub enum Event {
     Compare { servo: usize, generation: u64 },
     /// A servo TX DMA arm completed — drive `on_tx_complete`.
     TxArmDone { servo: usize },
+    /// A servo's handler body ended (`super::cpu`): deliver one pended vector.
+    CpuFree { servo: usize },
 }
 
 struct Scheduled {
@@ -162,6 +164,13 @@ impl Core {
     /// guards. Returns `None` when the queue drains.
     pub fn pop(&mut self) -> Option<Event> {
         let Scheduled { time, event, .. } = self.heap.pop()?;
+        // DES invariant: the clock never rewinds. Every scheduler clamps to
+        // `now` (the CPU occupancy model reads busy-windows against it).
+        assert!(
+            time >= self.now,
+            "sim clock rewind: event at t={time} after now={}",
+            self.now
+        );
         self.now = time;
         self.processed += 1;
         assert!(

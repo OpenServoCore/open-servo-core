@@ -2,10 +2,14 @@
 //! event queue, the shared half-duplex wire, and a set of boxed `SimServo`s
 //! (real `ServoBus` + real `osc_core` dispatch over sim providers). The wire
 //! model is derived from the measured silicon facts (§12): break framing, one
-//! FE per break, DMA-ringed bytes, drive discipline. See the module docs of
-//! `core`, `providers`, and `servo` for the moving parts.
+//! FE per break, DMA-ringed bytes, drive discipline. Handler invocations
+//! route through a per-servo PFIC occupancy model (`cpu`): with nonzero
+//! [`HandlerCost`], events landing mid-body pend and coalesce as on silicon.
+//! See the module docs of `core`, `cpu`, `providers`, and `servo` for the
+//! moving parts.
 
 mod core;
+mod cpu;
 mod providers;
 mod servo;
 mod support;
@@ -21,8 +25,11 @@ use osc_core::{BaudRate, BootMode, ControlTable};
 use osc_drivers::bus::LinkDiag;
 
 use self::core::{Core, Event, TICKS_PER_US, Talker, break_ticks, byte_ticks};
+use self::cpu::{Cpu, Vector};
 use self::providers::Handles;
 use self::servo::SimServo;
+
+pub use self::cpu::HandlerCost;
 
 /// XOR mask applied to bytes ringed at a baud-mismatched receiver: arbitrary
 /// but nonzero, so mismatched data never survives as valid content.
@@ -57,6 +64,7 @@ pub struct Sim {
     #[allow(clippy::vec_box)]
     servos: Vec<Box<SimServo>>,
     handles: Vec<Handles>,
+    cpus: Vec<Cpu>,
     rate: BaudRate,
     /// The scheduling host queues each frame after its own prior traffic.
     host_free_at: u64,
@@ -68,6 +76,7 @@ impl Sim {
             core: Rc::new(RefCell::new(Core::new(rate))),
             servos: Vec::new(),
             handles: Vec::new(),
+            cpus: Vec::new(),
             rate,
             host_free_at: 0,
         }
@@ -90,7 +99,21 @@ impl Sim {
         );
         self.servos.push(servo);
         self.handles.push(handles);
+        self.cpus.push(Cpu::default());
         idx
+    }
+
+    /// Give servo `i`'s handler bodies sim-time cost (`cpu` module): events
+    /// landing while a body runs pend and coalesce as on silicon. Zero-cost
+    /// (the default) is the ideal-CPU model.
+    pub fn set_handler_cost(&mut self, i: usize, cost: HandlerCost) {
+        self.cpus[i].cost = cost;
+    }
+
+    /// `on_break` invocations delivered to servo `i` — wire FE events minus
+    /// this counts pends that coalesced.
+    pub fn delivered_breaks(&self, i: usize) -> u64 {
+        self.cpus[i].delivered_breaks()
     }
 
     /// Inspect a servo's live control table.
@@ -118,21 +141,31 @@ impl Sim {
         self.queue_host_frame(start, frame);
     }
 
+    /// Sim time is monotonic: an `at_us` the drained queue has already passed
+    /// starts as soon as prior activity quiesced instead of rewinding the
+    /// clock (the `cpu` occupancy model depends on pops never running
+    /// backwards; zero-cost handlers merely never noticed the rewind).
+    fn clamp_at(&self, at_us: u64) -> u64 {
+        (at_us * TICKS_PER_US).max(self.core.borrow().now())
+    }
+
     pub fn host_send_at(&mut self, at_us: u64, frame: &[u8]) {
-        self.queue_host_frame(at_us * TICKS_PER_US, frame);
+        let start = self.clamp_at(at_us);
+        self.queue_host_frame(start, frame);
     }
 
     /// One lone FE byte on the wire, no break framing (line noise, F4).
     pub fn inject_garble_at(&mut self, at_us: u64, b: u8) {
+        let at = self.clamp_at(at_us);
         self.core
             .borrow_mut()
-            .schedule(Event::WireGarble { byte: b }, at_us * TICKS_PER_US);
+            .schedule(Event::WireGarble { byte: b }, at);
     }
 
     /// Rescue pulse: line dominant for `us`, raising one FE at every servo
     /// while the line is still low (§9.1).
     pub fn hold_line_low_at(&mut self, at_us: u64, us: u64) {
-        let start = at_us * TICKS_PER_US;
+        let start = self.clamp_at(at_us);
         let dur = us * TICKS_PER_US;
         let mut c = self.core.borrow_mut();
         c.hold_low(start, start + dur);
@@ -217,11 +250,68 @@ impl Sim {
             Event::RescuePulse => self.deliver_rescue(),
             Event::HostFrameEnd => self.core.borrow_mut().finalize_frame(),
             Event::Compare { servo, generation } => {
+                // The generation gate is checked at the match instant only: a
+                // deadline re-aimed before its match never fires, but once
+                // matched the pend survives any re-aim (PFIC semantics) and
+                // the handler sorts out staleness itself.
                 if self.handles[servo].deadline.generation() == generation {
-                    self.servos[servo].on_deadline();
+                    self.deliver(servo, Vector::Compare);
                 }
             }
-            Event::TxArmDone { servo } => self.servos[servo].on_tx_complete(),
+            Event::TxArmDone { servo } => self.deliver(servo, Vector::TxDone),
+            Event::CpuFree { servo } => self.cpu_free(servo),
+        }
+    }
+
+    /// Run `v`'s handler on servo `j` now, or pend it if a body is running.
+    fn deliver(&mut self, j: usize, v: Vector) {
+        let now = self.core.borrow().now();
+        if self.cpus[j].busy(now) {
+            self.cpus[j].pend(v);
+            self.schedule_free(j);
+        } else {
+            self.run_vector(j, v);
+        }
+    }
+
+    fn run_vector(&mut self, j: usize, v: Vector) {
+        let now = self.core.borrow().now();
+        self.cpus[j].charge(now, v);
+        match v {
+            Vector::Compare => self.servos[j].on_deadline(),
+            Vector::Break => self.servos[j].on_break(),
+            Vector::TxDone => self.servos[j].on_tx_complete(),
+        }
+    }
+
+    fn schedule_free(&mut self, j: usize) {
+        if !self.cpus[j].free_scheduled {
+            self.cpus[j].free_scheduled = true;
+            let at = self.cpus[j].busy_until();
+            self.core
+                .borrow_mut()
+                .schedule(Event::CpuFree { servo: j }, at);
+        }
+    }
+
+    /// A handler body ended: deliver ONE pended vector (highest arbitration
+    /// first), then re-arm for the rest — each delivery is its own event so
+    /// every handler reads the clock at its true entry tick.
+    fn cpu_free(&mut self, j: usize) {
+        self.cpus[j].free_scheduled = false;
+        let now = self.core.borrow().now();
+        if self.cpus[j].busy(now) {
+            // A same-tick wire event beat this wake and re-occupied the CPU.
+            if self.cpus[j].any_pend() {
+                self.schedule_free(j);
+            }
+            return;
+        }
+        if let Some(v) = self.cpus[j].take_pend() {
+            self.run_vector(j, v);
+            if self.cpus[j].any_pend() {
+                self.schedule_free(j);
+            }
         }
     }
 
@@ -232,7 +322,7 @@ impl Sim {
                 continue; // no own-TX echo (F9)
             }
             self.handles[j].ring.push(0x00);
-            self.servos[j].on_break();
+            self.deliver(j, Vector::Break);
         }
     }
 
@@ -252,7 +342,7 @@ impl Sim {
                 // the ringed byte must not survive as valid data at either a
                 // faster or slower receiver.
                 self.handles[j].ring.push(byte ^ MISMATCH_GARBLE);
-                self.servos[j].on_break();
+                self.deliver(j, Vector::Break);
             }
         }
     }
@@ -260,7 +350,7 @@ impl Sim {
     fn deliver_garble(&mut self, byte: u8) {
         for j in 0..self.servos.len() {
             self.handles[j].ring.push(byte);
-            self.servos[j].on_break();
+            self.deliver(j, Vector::Break);
         }
     }
 
@@ -270,7 +360,7 @@ impl Sim {
         // frame — a rescue pulse is not data.
         for j in 0..self.servos.len() {
             self.handles[j].ring.push(0x00);
-            self.servos[j].on_break();
+            self.deliver(j, Vector::Break);
         }
     }
 }
