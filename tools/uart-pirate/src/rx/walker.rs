@@ -14,8 +14,8 @@ use portable_atomic::{AtomicU32, Ordering};
 use crate::rx::desync::{self, DesyncCause};
 use crate::rx::filter;
 use crate::rx::rings::{self, FALL_LEN};
-use crate::rx::stamp::{self, BYTE_HEAD, BYTE_TAIL, STAMP_LEN};
 use crate::rx::stamp::flags::COUNT_UNDER;
+use crate::rx::stamp::{self, BYTE_HEAD, BYTE_TAIL, STAMP_LEN};
 use crate::tick::read_tick32;
 
 /// 8N1 wire framing: 1 start + 8 data + 1 stop = 10 bit-times per byte.

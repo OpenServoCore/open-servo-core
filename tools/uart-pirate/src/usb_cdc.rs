@@ -7,9 +7,9 @@ use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
 use embassy_usb::driver::EndpointError;
 use heapless::Vec;
 
+use crate::proto::{self, Reply};
 use crate::rx::{self, ByteRecord, FALL_LEN};
 use crate::tx::TX_BUF_LEN;
-use crate::proto::{self, Reply};
 use crate::usbd::Driver;
 
 // `SEND bytes=<TX_BUF_LEN*2 hex> at=<u32>` ≤ TX_BUF_LEN*2 + 35; +slop.
