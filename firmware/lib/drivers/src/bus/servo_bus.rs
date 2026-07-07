@@ -90,6 +90,9 @@ pub struct ServoBus<P: Providers> {
     framer_at: Option<u32>,
     chain_at: Option<u32>,
     rescue_at: Option<u32>,
+    // Ring cursor at rescue arm: bytes ringed since mean in-flight traffic,
+    // not a held-low pulse (a break of any length is one FE, no data — F3).
+    rescue_cursor: u16,
 }
 
 /// Ticks per byte-time at `rate` on the transport clock.
@@ -138,6 +141,7 @@ impl<P: Providers> ServoBus<P> {
             framer_at: None,
             chain_at: None,
             rescue_at: None,
+            rescue_cursor: 0,
         }
     }
 
@@ -155,10 +159,14 @@ impl<P: Providers> ServoBus<P> {
         // is alive — suspend its reclaim window while the frame plays out.
         let out = self.chain.on_break_observed(now);
         self.route_chain(out);
-        // §9.1 rescue candidacy: confirm a held-low line ~100 µs on.
+        // §9.1 rescue candidacy: confirm a held-low line ~100 µs on. The
+        // line often still reads low at an ordinary break's FE entry (the
+        // break's last bit), so this arms on most frames — the confirm's
+        // cursor-progress gate is what keeps it from firing on traffic.
         if self.line.is_low() {
             let at = now.wrapping_add(RESCUE_CONFIRM_US * <P::Deadline as Deadline>::TICKS_PER_US);
             self.rescue_at = Some(at);
+            self.rescue_cursor = self.ring.cursor();
         }
         self.arm_deadline();
     }
@@ -322,6 +330,14 @@ impl<P: Providers> ServoBus<P> {
         // phantom confirm aborts the reply + drops the rate mid-frame). A
         // real rescue pulse re-arms via its own FE once the wire is back.
         if self.tx.streaming() {
+            return;
+        }
+        // Bytes ringed since the arm → an instruction is in flight and the
+        // low sample is its data bits, not a pulse (bench-observed at 1M: a
+        // 12-byte zero-payload WRITE keeps the line low at +100 µs and the
+        // confirm dropped the rate mid-instruction). A held-low line
+        // delivers no start edges, so a real pulse leaves the cursor put.
+        if self.ring.cursor() != self.rescue_cursor {
             return;
         }
         // Line risen → it was an ordinary break, not a rescue pulse.

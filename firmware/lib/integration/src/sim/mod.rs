@@ -171,7 +171,12 @@ impl Sim {
 
         let mut c = self.core.borrow_mut();
         c.claim(Talker::Host, start, end);
-        c.hold_low(start, break_end);
+        // Dominant through the FE delivery instant: on real silicon the break
+        // is still low at FE-ISR entry (F5's caveat — the flag leads the rise
+        // by a couple of bits), which is what arms the §9.1 rescue confirm on
+        // ordinary frames. One tick past `break_end` is also physically true:
+        // the first data byte's start bit is dominant.
+        c.hold_low(start, break_end + 1);
         c.schedule(
             Event::WireBreak {
                 talker: Talker::Host,
@@ -181,6 +186,12 @@ impl Sim {
         );
         for (k, &b) in frame[1..].iter().enumerate() {
             let t = break_end + (k as u64 + 1) * bt;
+            // A 0x00 data byte holds the line dominant for start + 8 data
+            // bits (9 of its 10 bit-times) — `LineSense` must see it, or the
+            // sim can't reproduce phantom-rescue confirms sampling mid-frame.
+            if b == 0 {
+                c.hold_low(t - bt, t - bt / 10);
+            }
             c.schedule(
                 Event::WireData {
                     talker: Talker::Host,

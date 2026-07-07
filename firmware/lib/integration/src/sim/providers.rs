@@ -300,6 +300,11 @@ impl TxWire for SimWire {
         let mut c = self.core.borrow_mut();
         for (k, &b) in span.iter().enumerate() {
             let t = start + (k as u64 + 1) * bt;
+            // Zero bytes hold the line dominant for 9 of 10 bit-times — see
+            // the host-side twin in `queue_host_frame`.
+            if b == 0 {
+                c.hold_low(t - bt, t - bt / 10);
+            }
             c.schedule(
                 Event::WireData {
                     talker: Talker::Servo(self.idx),

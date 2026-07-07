@@ -4,7 +4,7 @@
 //! boundary. Plain assertions on the observed diagnostics counters.
 
 use osc_core::BaudRate;
-use osc_core::regions::control::addr::lifecycle::GOAL_VELOCITY;
+use osc_core::regions::control::addr::lifecycle::{GOAL_POSITION, GOAL_VELOCITY};
 use osc_integration::sim::{Sim, Source, WireFrame, assert_valid, instruction, status};
 use osc_protocol::wire::{Opcode, ResultCode};
 
@@ -253,6 +253,33 @@ fn rescue_pulse_drops_to_500k() {
     }
     let inst = reply.expect("rescue ping answered within the §3.2 heal bound");
     assert_eq!(inst.result(), Some(ResultCode::Ok));
+}
+
+#[test]
+fn zero_payload_write_does_not_trip_rescue() {
+    // §9.1 confirm vs in-flight traffic: a long WRITE of zeros keeps the
+    // line dominant well past the 100 µs confirm at 1M (a zero byte is low
+    // for 9 of its 10 bit-times) — bench-caught: the confirm sampled
+    // mid-payload and dropped the rate mid-instruction. Ring-cursor progress
+    // since the arm must veto the confirm; only a byte-less hold is a pulse.
+    // 8 zero bytes (goal_position + goal_velocity) put a zero data byte
+    // squarely under the +100 µs sample.
+    let mut sim = Sim::new(BaudRate::B1000000);
+    let s = sim.add_servo(ID5);
+
+    let a = GOAL_POSITION.to_le_bytes();
+    let w = instruction(ID5, Opcode::Write, 0, &[a[0], a[1], 0, 0, 0, 0, 0, 0, 0, 0]);
+    sim.host_send_at(0, &w);
+    let frames = sim.run();
+    let (inst, _) = status(sole_reply(&frames));
+    assert_eq!(inst.result(), Some(ResultCode::Ok));
+
+    // Still at the operational rate: a following 1M ping is answered clean.
+    sim.host_send_at(1_000, &instruction(ID5, Opcode::Ping, 0, &[]));
+    let frames = sim.run();
+    let (inst, _) = status(sole_reply(&frames));
+    assert_eq!(inst.result(), Some(ResultCode::Ok));
+    assert_eq!(sim.servo_diag(s).framing_drop_count, 0);
 }
 
 #[test]
