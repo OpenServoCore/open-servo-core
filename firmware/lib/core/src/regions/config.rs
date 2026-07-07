@@ -5,8 +5,12 @@ use control_table::{Block, Enum, Section};
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default, Enum)]
 #[repr(u8)]
 pub enum BaudRate {
-    B500000 = 0,
+    // Default = the §9.1 rescue floor, the always-reachable rate — and the
+    // zero value, which keeps the table's const image all-zero so SHARED
+    // lands in .bss (no 1 KB flash init image). The operational default is
+    // the board's `ConfigDefaults.baud`, seeded at boot before the bus runs.
     #[default]
+    B500000 = 0,
     B1000000 = 1,
     B2000000 = 2,
     B3000000 = 3,
