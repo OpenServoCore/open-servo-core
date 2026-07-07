@@ -57,6 +57,16 @@ fn USART3() {
     if statr.tc() && USART3.ctlr1().read().tcie() {
         crate::tx::on_tx_complete();
     }
+    if statr.lbd() {
+        // LIN break detect (LBDIE). Clear with an explicit write — rc_w0
+        // semantics, so the all-ones background leaves TC/IDLE untouched
+        // (a modify() RMW could write back a stale 0 into a flag that set
+        // between the read and the write).
+        USART3.statr().write(|w| {
+            w.0 = u32::MAX;
+            w.set_lbd(false);
+        });
+    }
     if statr.idle() {
         // STATR read above + DATAR read clears IDLE.
         let _ = USART3.datar().read();

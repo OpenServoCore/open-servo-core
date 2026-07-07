@@ -155,12 +155,19 @@ pub fn on_tx_complete() {
     pb10_drive(false);
 }
 
-/// USART3: 8N1, full-duplex, DMAT, DMAR, IDLEIE. Init order matters —
-/// TE/RE with UE=0, then DMAT/DMAR, then UE in its own write, to avoid
-/// the TX-line glitch the STM32-family USARTs throw when TE+UE land in
-/// the same write.
+/// USART3: 8N1, full-duplex, DMAT, DMAR, IDLEIE, LIN break detection
+/// (LINEN + LBDL=0 + LBDIE: 10-bit breaks, matching the servo's and our
+/// own 0x00-frame break shape). Init order matters — TE/RE with UE=0,
+/// then DMAT/DMAR, then UE in its own write, to avoid the TX-line
+/// glitch the STM32-family USARTs throw when TE+UE land in the same
+/// write.
 fn init_usart3() {
-    USART3.ctlr2().modify(|w| w.set_stop(0b00));
+    USART3.ctlr2().modify(|w| {
+        w.set_stop(0b00);
+        w.set_linen(true);
+        w.set_lbdl(false);
+        w.set_lbdie(true);
+    });
     USART3.ctlr1().modify(|w| {
         w.set_m(false);
         w.set_pce(false);
@@ -345,24 +352,33 @@ pub fn send_breaks(count: u32, gap_us: u32) -> Result<(), SendError> {
     Ok(())
 }
 
-/// One SBK break, a ≥1-bit mark gap, then poll-fed `payload` bytes — the
-/// osc-native host send primitive, unified with the servo's break shape.
+/// One 10-bit-exact break immediately followed by poll-fed `payload`
+/// bytes — the osc-native host send primitive.
 ///
-/// The gap is load-bearing: an SBK break runs 10-11 low bits plus sync
-/// slop (wire-measured ~12-13 bits fall-to-fall), and a receiver is
-/// still resyncing inside the stretched low at bit 10 — data launched
-/// with zero gap gets swallowed into the resync frame (the historical
-/// "01 -> 74" byte-0 loss). `pulse_sbk` waits out the self-clear plus
-/// one bit-time of mark, giving every receiver a clean start edge.
+/// The break is NOT SBK: CH32 SBK stretches to ~12-14 bit-times with
+/// sync slop (bench-measured on both chips), and a receiver resyncing
+/// inside the stretched low swallows the first data byte (the
+/// historical "01 -> 74" byte-0 loss). Instead the break is one 9-bit
+/// frame of 0x00 (M=1, bit 8 = 0): start + 9 data lows = 10 low
+/// bit-times, then a clean stop — exactly the shape LIN break detection
+/// (LBDL=0) keys on, with a deterministic 1-frame resync point. The M
+/// flip back costs a sub-frame gap at TC that never reaches the
+/// receiver's IDLE threshold.
 pub fn send_break_then(payload: &[u8]) -> Result<(), SendError> {
     if payload.is_empty() || payload.len() > BRK_PAYLOAD_MAX {
         return Err(SendError::TooLong);
     }
     wait_tx_complete().map_err(|TxTimeout| SendError::Busy)?;
     pb10_drive(true);
-    pulse_sbk();
-    let r = feed_bytes(payload)
-        .and_then(|()| wait_tx_complete().map_err(|TxTimeout| SendError::Busy));
+    let r = (|| {
+        USART3.ctlr1().modify(|w| w.set_m(true));
+        let r = feed_bytes(&[0x00])
+            .and_then(|()| wait_tx_complete().map_err(|TxTimeout| SendError::Busy));
+        USART3.ctlr1().modify(|w| w.set_m(false));
+        r?;
+        feed_bytes(payload)?;
+        wait_tx_complete().map_err(|TxTimeout| SendError::Busy)
+    })();
     pb10_drive(false);
     r
 }
@@ -384,9 +400,8 @@ pub fn send_fe_inject(pre: &[u8], bad: &[u8], post: &[u8]) -> Result<(), SendErr
         feed_bytes(pre)?;
         wait_tx_complete().map_err(|TxTimeout| SendError::Busy)?;
         USART3.ctlr1().modify(|w| w.set_m(true));
-        let r = feed_bytes(bad).and_then(|()| {
-            wait_tx_complete().map_err(|TxTimeout| SendError::Busy)
-        });
+        let r =
+            feed_bytes(bad).and_then(|()| wait_tx_complete().map_err(|TxTimeout| SendError::Busy));
         USART3.ctlr1().modify(|w| w.set_m(false));
         r?;
         feed_bytes(post)?;
