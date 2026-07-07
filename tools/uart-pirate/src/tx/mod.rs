@@ -459,12 +459,22 @@ pub const FE_INJECT_MAX: usize = 32;
 /// TXE-poll byte feed; bounded per byte. `dr` writes are 9 bits wide —
 /// a `u8` payload always carries bit 8 = 0, which is exactly what the
 /// 9-bit FE-injection frames need.
+///
+/// The per-byte bound is wall-clock, but this poll runs in thread mode
+/// and the walker IRQs (`PRIO_WALKER`) preempt it. On a long burst the
+/// TX echo floods the IC ring past its half-mark, so a DMA1_CH6-HT
+/// `walk()` drains a large chunk in one shot — longer than the byte-time
+/// bound. That preemption must not be read as a stuck shifter: TXE goes
+/// empty in hardware while we're preempted, so re-check it once the bound
+/// expires and only report `Busy` when the register is genuinely still
+/// full. (Without this, a long BURST intermittently truncated mid-frame
+/// with a spurious `ERR busy`.)
 fn feed_bytes(payload: &[u8]) -> Result<(), SendError> {
     let bit_ticks = USART3.brr().read().0;
     for &b in payload {
         let t0 = read_tick32();
         while !USART3.statr().read().txe() {
-            if read_tick32().wrapping_sub(t0) > bit_ticks * 64 {
+            if read_tick32().wrapping_sub(t0) > bit_ticks * 64 && !USART3.statr().read().txe() {
                 return Err(SendError::Busy);
             }
         }
