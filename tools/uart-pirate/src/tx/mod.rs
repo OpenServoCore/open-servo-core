@@ -155,19 +155,14 @@ pub fn on_tx_complete() {
     pb10_drive(false);
 }
 
-/// USART3: 8N1, full-duplex, DMAT, DMAR, IDLEIE, LIN break detection
-/// (LINEN + LBDL=0 + LBDIE: 10-bit breaks, matching the servo's and our
-/// own 0x00-frame break shape). Init order matters — TE/RE with UE=0,
+/// USART3: 8N1, full-duplex, DMAT, DMAR, IDLEIE. Plain FE break
+/// handling — the LIN-mode leg (LINEN + LBDIE) is bench-toggled per
+/// experiment, not the default. Init order matters — TE/RE with UE=0,
 /// then DMAT/DMAR, then UE in its own write, to avoid the TX-line
 /// glitch the STM32-family USARTs throw when TE+UE land in the same
 /// write.
 fn init_usart3() {
-    USART3.ctlr2().modify(|w| {
-        w.set_stop(0b00);
-        w.set_linen(true);
-        w.set_lbdl(false);
-        w.set_lbdie(true);
-    });
+    USART3.ctlr2().modify(|w| w.set_stop(0b00));
     USART3.ctlr1().modify(|w| {
         w.set_m(false);
         w.set_pce(false);
