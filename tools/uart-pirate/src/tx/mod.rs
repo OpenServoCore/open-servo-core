@@ -378,6 +378,54 @@ pub fn send_break_then(payload: &[u8]) -> Result<(), SendError> {
     r
 }
 
+/// Cap on a `BURST` stream (length prefixes + frame bytes). Sized for a
+/// hot-loop cycle or a long write bombardment with slack; well under the
+/// USB command-line ceiling at 2 hex chars/byte.
+pub const BURST_STREAM_MAX: usize = 640;
+
+/// Zero-gap multi-frame bombardment: `stream` is length-prefixed frames —
+/// `[len_0][frame_0][len_1][frame_1]…` — each sent as one 10-bit-exact
+/// break (see [`send_break_then`]) followed back-to-back by its bytes.
+/// Host-paced BRKSENDs leave USB-scale gaps between frames; this is the
+/// only way to put `[break][frame][break][frame]…` on the wire with
+/// sub-byte spacing, which is what the servo's frame-end-work vs
+/// next-break timing needs for stress coverage.
+pub fn send_burst(stream: &[u8]) -> Result<(), SendError> {
+    // Validate the whole stream up front: a malformed prefix must not
+    // truncate the burst mid-wire.
+    let mut i = 0usize;
+    while i < stream.len() {
+        let n = stream[i] as usize;
+        if n == 0 || i + 1 + n > stream.len() {
+            return Err(SendError::TooLong);
+        }
+        i += 1 + n;
+    }
+    if stream.is_empty() {
+        return Err(SendError::TooLong);
+    }
+    wait_tx_complete().map_err(|TxTimeout| SendError::Busy)?;
+    pb10_drive(true);
+    let r = (|| {
+        let mut i = 0usize;
+        while i < stream.len() {
+            let n = stream[i] as usize;
+            i += 1;
+            USART3.ctlr1().modify(|w| w.set_m(true));
+            let r = feed_bytes(&[0x00])
+                .and_then(|()| wait_tx_complete().map_err(|TxTimeout| SendError::Busy));
+            USART3.ctlr1().modify(|w| w.set_m(false));
+            r?;
+            feed_bytes(&stream[i..i + n])?;
+            wait_tx_complete().map_err(|TxTimeout| SendError::Busy)?;
+            i += n;
+        }
+        Ok(())
+    })();
+    pb10_drive(false);
+    r
+}
+
 /// Mid-stream framing-error injection: `pre` bytes as normal 8N1, then
 /// `bad` bytes as 9-bit frames with bit 8 = 0 — an 8N1 receiver samples
 /// that 9th bit at its stop position and flags FE with the byte's real

@@ -306,6 +306,25 @@ impl Client {
         self.expect_ok(&format!("BRKSEND bytes={}", hex(data)))
     }
 
+    /// Zero-gap multi-frame burst (pirate `BURST`): each frame goes out as
+    /// one break + its bytes, back-to-back with sub-byte spacing. Only the
+    /// last frame may elicit a reply — the burst owns the wire until it
+    /// drains.
+    pub fn burst(&mut self, frames: &[Vec<u8>]) -> Result<()> {
+        let mut stream = Vec::new();
+        for f in frames {
+            if f.is_empty() || f.len() > u8::MAX as usize {
+                bail!("burst frame of {} bytes (1..=255 supported)", f.len());
+            }
+            stream.push(f.len() as u8);
+            stream.extend_from_slice(f);
+        }
+        if stream.len() > 640 {
+            bail!("burst stream {} bytes exceeds 640", stream.len());
+        }
+        self.expect_ok(&format!("BURST bytes={}", hex(&stream)))
+    }
+
     /// Stage `data` to send `after_idle_us` microseconds after the next
     /// wire IDLE. Wall-clock units; converts to ticks via cached
     /// `hz_per_us`.

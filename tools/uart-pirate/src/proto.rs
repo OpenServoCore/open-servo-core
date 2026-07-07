@@ -51,6 +51,11 @@
 //!       back-to-back by `bytes` (poll-fed, ≤ 272 B) — the osc-native
 //!       host send primitive, same break shape as a servo reply, and
 //!       the shape LIN break detection (LBDL=0) keys on.
+//!   `BURST bytes=<hex>`
+//!       Zero-gap multi-frame bombardment. `bytes` is length-prefixed
+//!       frames (`[len_0][frame_0][len_1][frame_1]…`, ≤ 640 B total);
+//!       each frame goes out as one 10-bit-exact break + its bytes,
+//!       back-to-back with sub-byte spacing throughout.
 //!   `LOWPULSE us=<n>`
 //!       Drive TX low as a GPIO for `n` µs (≤ 100 ms), then restore AF.
 //!       The osc-native "rescue break" shape — detectable at any baud.
@@ -182,6 +187,9 @@ pub fn handle_line(line: &[u8]) -> Reply {
     if let Some(rest) = line.strip_prefix("BRKSEND ") {
         return brksend(rest);
     }
+    if let Some(rest) = line.strip_prefix("BURST ") {
+        return burst(rest);
+    }
     if let Some(rest) = line.strip_prefix("LOWPULSE ") {
         return lowpulse(rest);
     }
@@ -298,6 +306,28 @@ fn brksend(rest: &str) -> Reply {
         return Reply::Err("missing");
     };
     match tx::send_break_then(&buf[..len]) {
+        Ok(()) => Reply::Ok,
+        Err(tx::SendError::TooLong) => Reply::Err("toolong"),
+        Err(tx::SendError::Busy) => Reply::Err("busy"),
+    }
+}
+
+fn burst(rest: &str) -> Reply {
+    let mut buf = [0u8; tx::BURST_STREAM_MAX];
+    let mut len: Option<usize> = None;
+    for tok in rest.split_ascii_whitespace() {
+        let Some((k, v)) = tok.split_once('=') else {
+            return Reply::Err("kv");
+        };
+        match k {
+            "bytes" => len = decode_hex(v, &mut buf),
+            _ => return Reply::Err("key"),
+        }
+    }
+    let Some(len) = len else {
+        return Reply::Err("missing");
+    };
+    match tx::send_burst(&buf[..len]) {
         Ok(()) => Reply::Ok,
         Err(tx::SendError::TooLong) => Reply::Err("toolong"),
         Err(tx::SendError::Busy) => Reply::Err("busy"),
