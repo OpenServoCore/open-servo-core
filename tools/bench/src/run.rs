@@ -68,17 +68,7 @@ fn attempt(
     check: &impl Fn(&Exchange) -> Result<()>,
 ) -> Result<u32> {
     drain(client)?;
-    // "ERR busy" is a pirate-side transport nuisance (poll-fed TX losing a
-    // TXE bound to walker/USB ISR bursts, ~2%): the send never launched, so
-    // one retry measures nothing falsely. TODO: bump the pirate's TXE poll
-    // bound next ISP flash and drop this.
-    if let Err(e) = client.brksend(wire) {
-        if !e.to_string().contains("busy") {
-            return Err(e);
-        }
-        sleep(Duration::from_millis(2));
-        client.brksend(wire)?;
-    }
+    client.brksend(wire)?;
     sleep(Duration::from_millis(settle_ms));
     let stamps = drain(client)?;
     let ex = parse_exchange(&stamps, wire, bit_ticks).map_err(|e| anyhow!("{e}"))?;
