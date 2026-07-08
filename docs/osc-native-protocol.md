@@ -4,7 +4,7 @@ Design for the break-framed servo bus protocol that replaces DXL 2.0 on the
 host↔servo wire when we control both ends. Every physical-layer behavior this
 design leans on was measured on real silicon (V006 servo + V203 HSE host,
 2026-07-05 bringup spikes `break_framing.rs` / `spi_crc.rs`); the measured
-facts are collected in §12 and cited inline as [F1]..[F14].
+facts are collected in §11 and cited inline as [F1]..[F14].
 
 DXL 2.0 support is frozen, not deleted: the tuned stack remains an alternate
 build for ecosystem interop. `osc-core` and the control table are already
@@ -197,10 +197,11 @@ a reload). Two states:
 
 - **HUNT** — on FE IRQ (break): record the anchor = current ring position
   (the `0x00` just ringed). Enter LOCKED.
-- **LOCKED** — deadline A at anchor + 4 byte-times: the full header
-  (ID, LEN, INST) is in the ring — read it, compute frame end, prime the
-  dispatcher from INST, set deadline B at end + margin. At B: confirm
-  NDTR reached the end, CRC-check, dispatch. Short/failed → HUNT.
+- **LOCKED** — deadline A at anchor + 3 byte-times + a half-byte-time of
+  wake slack: the full header (ID, LEN, INST) is in the ring — read it,
+  compute frame end, prime the dispatcher from INST, set deadline B at
+  end + margin. At B: confirm NDTR reached the end, CRC-check, dispatch.
+  Short/failed → HUNT.
 
 Deadlines come from SysTick compare; both are computed, not discovered —
 "frame end is predictable at header time." Dispatch and reply staging run
@@ -231,15 +232,30 @@ the break makes reply timing non-critical, which deletes the TIM-compare
 kickoff machinery, the RDT register, and its whole tuning surface (K clip,
 TX-start lead calibration).
 
-Large reads are **zero-copy**: the header comes from the
-small reply buffer, then the TX DMA is re-armed directly onto the control
-table region (UART bytes tolerate arbitrary inter-byte gaps, so the µs-
-scale re-arm between DMA arms is invisible framing-wise — nothing in this
-protocol times on idle). The CRC engine consumes the same spans: the
-4-byte buffer head (`0x00, ID, LEN, INST`) is 2 whole halfwords, so
-even-addressed table spans arrive halfword-paired with no re-packing;
-odd-addressed spans stage through the provider's copy channel (§5). Reads over 252 B
-split into multiple frames (§5.1), each still zero-copy.
+Payloads at or below a small threshold copy into the reply buffer
+directly — cheaper than arming a DMA channel for a couple of bytes. Larger
+payloads (the READ/GREAD case) are **copy-once**: staging the reply kicks
+off a fire-and-forget copy DMA that streams the table span into a
+dedicated 256 B engine-owned snapshot buffer; the CRC feed and the wire TX
+arm, armed separately when the reply triggers, both read from that
+snapshot instead of the table. Copy, CRC feed, and wire shift-out are
+three independent DMA/hardware engines running concurrently, not a
+blocking chain — nothing polls or waits on the copy. Correctness comes
+from relative speed and scheduling order instead: the copy is kicked off
+earliest (at stage time, ahead of the trigger) and is also the fastest of
+the three (plain M2M DMA outruns the CRC engine, which itself runs ~8×
+wire speed, F6), and its channels (CH6/CH7) sit above the CRC-feed and
+wire-TX channels on the bus-arbitration ladder — so the copy is guaranteed
+done before either downstream consumer reaches the bytes it needs, by
+construction, not by synchronization. None of this costs CPU: all three
+engines run in hardware, freeing the core to run the motor kernel tick
+underneath. The one copy still buys two things a direct-from-table stream
+couldn't: the table address's parity becomes irrelevant to the wire/CRC
+engines (the snapshot is always halfword-based regardless of where the
+source span sits), and every large reply carries a consistent
+point-in-time image even if a control-loop write lands mid-span. Reads
+over 252 B split into multiple frames (§5.1), each independently
+snapshotted and CRC'd.
 
 ## 5. Instruction set
 
@@ -286,8 +302,9 @@ Notes:
 `LEN` is the only size limit — one ceiling, no capability registers:
 
 - Payload caps at 252 B. Fleet-scale group ops fit in one frame: a
-  uniform GREAD lists 248 IDs (the whole ID space), a PER_TARGET GREAD
-  50 targets, a uniform 4 B-data GWRITE 49 targets.
+  uniform GREAD lists 248 IDs — one shy of the full 249-ID unicast space
+  (§3.1) — a PER_TARGET GREAD 50 targets, a uniform 4 B-data GWRITE 49
+  targets.
 - Every frame sits whole in the ring until its CRC passes (§4.1), so
   nothing is applied from an unverified frame — no partial-apply, no
   rollback, and no per-transfer staging caps (the `SLICE_MAX` /
@@ -300,9 +317,9 @@ Notes:
 
 DXL's byte-granular indirect registers are deliberately not carried over:
 a byte remap forces the reply through a per-byte pointer chase, defeating
-both zero-copy TX and the hardware CRC. The scattered-telemetry need they
-served (position + velocity + current + temperature live in different
-table sections) is met span-granularly instead:
+both the copy-once TX path and the hardware CRC. The scattered-telemetry
+need they served (position + velocity + current + temperature live in
+different table sections) is met span-granularly instead:
 
 - A **profile region** in the flat table: a few slots, each an ordered
   list of `(addr u16, count u16)` spans. Configured once with ordinary
@@ -311,9 +328,10 @@ table sections) is met span-granularly instead:
   hot-loop instruction stays minimal; the span list costs wire bytes once
   at setup and zero per cycle (the reason profiles beat inline
   scatter-gather lists for cyclic telemetry).
-- Execution is §4.2's existing multi-arm TX: one DMA arm per span straight
-  from table storage, CRC engine accumulating across arms [F6] — scattered
-  reads remain zero-copy.
+- Execution is §4.2's existing copy-once TX: spans stream through the
+  snapshot buffer, then the wire and CRC arms as usual, engine
+  accumulating across arms [F6] — a scattered read costs the same
+  one-copy-per-reply as a single-span read.
 - Constraint: **spans must be even-addressed and even-length** so the
   hardware CRC's halfword pairing survives concatenation (an odd span
   shifts the pairing of everything after it). Lone `u8` fields round up to
@@ -322,11 +340,13 @@ table sections) is met span-granularly instead:
   `COMMIT` is already atomic — inline scatter-writes would add cross-span
   validation complexity for no capability gain.
 
-Implementation note (zero-copy generally): TX DMA reads the live table
-byte-serially, so a field updated mid-span by a control ISR can emit a
-torn multi-byte value — same exposure as any unlocked read of the table.
-Field-aligned spans and the single-writer discipline bound tearing to one
-field; consumers that care re-read.
+Implementation note (tearing): the copy-once snapshot DMA (§4.2) reads the
+live table byte-serially, so a field updated mid-span by a control ISR can
+emit a torn multi-byte value in the snapshot — the wire and CRC then read
+that frozen copy, so tearing is bounded to the one copy rather than
+compounding per consumer, but it is not eliminated. Field-aligned spans
+and the single-writer discipline bound tearing to one field; consumers
+that care re-read.
 
 ### 5.3 Errors: three layers
 
@@ -341,8 +361,8 @@ code shares the byte (bits [6:2], 32 values). Errors split by layer:
    answering a question nobody can safely ask.
 2. **Instruction-level** (valid frame, rejected request): the 5-bit result
    code, empty payload — `OK`, `instruction` (unknown op/flags), `range`
-   (addr/count out of bounds, or a read at an odd address — §5),
-   `access` (read-only / torque-locked),
+   (addr/count out of bounds, or a PROFILE read naming an odd-addressed
+   span — §5.2), `access` (read-only / torque-locked),
    `validation` (value rejected by field rules), `busy`, `limit`
    (requested reply exceeds the frame ceiling, §5.1), `predecessor-silent`
    (§6),
@@ -395,12 +415,14 @@ DXL checkpoint format solved does not exist here.
 | break length (TX)       | hardware SBK (~14 bit-times measured [F5]) | spec floor is 10; no tuning                                                                |
 | inter-frame gap (host)  | none required                              | breaks self-delimit; back-to-back host frames are legal                                    |
 
-Projected ping round trip at 3 M (components all measured): instruction
-5 B + break ≈ 21.4 µs wire; dispatch overlaps arrival; tail (hardware
-CRC-check + pre-staged dispatch, ~3 µs) + T_turn (0.7 µs) + break
-(4.7 µs) + 8 B reply (model+fw, 26.7 µs) ≈ **38 µs** vs DXL's
-measured 62.8 µs — with the turnaround component alone dropping ~16 µs →
-~8 µs. To be measured, not promised.
+Ping turnaround at 3 M (instruction wire-end → status break fall) is
+**36.7 µs measured**, vs DXL's measured 62.8 µs — the instruction's own
+5 B + break (~21.4 µs wire) costs nothing extra on top of that, since
+dispatch overlaps its arrival (speculation, `osc-servo-transport.md` §4).
+The dominant turnaround components are the tail (hardware CRC-check +
+dispatch handoff), T_turn (2 byte-times ≈ 6.7 µs at 3 M), and the break
+itself (~4.7 µs, F5); see `osc-servo-transport.md` §3 for the full
+tick-by-tick trace and measured baseline table.
 
 The intended hot loop leans on writes being free of turnaround entirely:
 `GWRITE(HOLD|NOREPLY) × groups → COMMIT (broadcast, silent) → GREAD
@@ -511,7 +533,7 @@ not just the live table.
 | DMA1 CH4            | TX stream (enable-when-ready)                     |
 | DMA1 CH3 + SPI1     | CRC engine (no pins) [F6]                         |
 | DMA1 CH1 / CH2      | ADC / free                                        |
-| DMA1 CH6, CH7       | freed (kickoff machinery deleted) — motor/encoder |
+| DMA1 CH6, CH7       | copy-once snapshot buffer (§4.2), VERYHIGH        |
 | SysTick             | framer deadlines A/B, T_turn, reclaim             |
 | TIM1/TIM2           | motor control, freed from transport duty          |
 | EXTI                | unused — no transport consumer at all (§9.3)      |
@@ -520,23 +542,7 @@ Deleted relative to the DXL transport: edge IC (already gone), TIM-compare
 TX kickoff, RDT + tuning tools, byte-stuffing encode/unstuff, FF-FF-FD
 hunter, fold-CRC machinery, the 74LVC2G241 + TX_EN pin.
 
-## 11. Open items
-
-1. Ring size: 512 B proposed (must exceed the 258 B max frame with lap
-   margin); confirm against the RAM budget when the transport band is
-   planned.
-2. RESPONSE_DEADLINE default and T_turn value: set from bench measurement
-   of dispatch-under-arrival, not theory.
-3. Status error-code assignment and control-table register moves (RDT
-   register retires; RESPONSE_DEADLINE takes a slot).
-4. Host-side library (pirate already speaks breaks; needs osc-CRC + frame
-   layer).
-5. Pirate scheduled-send idle window: it drives push-pull from schedule to
-   wire-start by design — acceptable for a scheduling host, documented.
-6. DES/sim model + integration tests before firmware (the automation
-   ladder), then implementation bands.
-
-## 12. Measured foundation
+## 11. Measured foundation
 
 | #   | fact                                                                                       | source                |
 | --- | ------------------------------------------------------------------------------------------ | --------------------- |
