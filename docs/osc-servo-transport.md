@@ -1,8 +1,9 @@
 # osc servo transport — the deadline-pipelined receiver
 
-Status: DRAFT (2026-07-08). Describes the transport as restored by the
-pre-FIFO revert (base `f157023f` + cherry-picks), then specifies the three
-amendments that must land before the zero-gap defect is closed, with
+Status: AGREED DESIGN (2026-07-08, A3 decided = carve-out). Describes the
+transport as restored by the pre-FIFO revert and evolved by the CRC/framing
+side quest (CRC-16/ARC LSB-first, no pad/parity rules, snapshot reads), then
+specifies the three amendments that close the zero-gap defect, with
 first-principles arguments that the amended design keeps the measured speed.
 Companion pillars: `osc-native-protocol.md` (the wire), `driver-pattern.md`
 (the layering). Code is authoritative; when this doc and the code disagree,
@@ -43,9 +44,10 @@ Every hardware resource the transport touches, and its duty cycle:
 | SysTick CNT/CMP | the transport clock (48 MHz, 32-bit) + the ONE comparator | — |
 | SysTick vector  | PFIC HIGH. Deadline mux: framer A/B, covered, chain trigger, rescue confirm | arithmetic slots ~1–5 µs; **dispatch runs here in this base — see §6** |
 | DMA1 CH5        | USART1 RX → 512 B ring, circular, silent (no IRQ) | zero CPU |
-| DMA1 CH4        | TX arms → USART1 DR (headers, zero-copy table payload, CRC tail) | zero CPU; TC surfaces as USART TC |
+| DMA1 CH4        | TX arms → USART1 DR (header, snapshot payload, CRC tail) | zero CPU; TC surfaces as USART TC |
 | DMA1 CH3        | CRC feeds → SPI1 DR, 16-bit halfwords            | zero CPU, ~0.36 µs/B engine time |
-| SPI1            | CRC-16/BUYPASS coprocessor, accumulates across feeds (ring-wrap safe) | runs ~8× wire speed (F6) |
+| SPI1            | CRC-16/ARC coprocessor (16-bit LSB-first, bitrev16 at the register), accumulates across feeds | runs ~8× wire speed (F6) |
+| DMA1 CH6/CH7    | snapshot copies → the 256 B snapshot buffer (payloads + linearized RX spans); VERYHIGH, above CH3/CH4 | ~0.125 µs/B, zero CPU |
 | DMA1 CH1 vector | PFIC LOW: ADC sample set complete → motor kernel tick | ~10 µs body |
 | PC0 CNF         | drive discipline: open-drain listening / push-pull TX window | flipped at trigger/release |
 | main loop       | deferred reboot poll only                        | cold path |
@@ -104,8 +106,10 @@ is trigger-body, SBK commit, and ISR-entry overheads.
    checkpoint, chewing while the CRC bytes fly, polled at B. TX: fed per
    arm, patched into the trailing arm before DMA reaches it. The CPU never
    computes or waits a full CRC.
-5. **Zero-copy TX.** Reply payloads stream from the control table by
-   pointer; only headers and ≤2 B tails pass through a 16 B staging buffer.
+5. **Copy-once TX.** Reply payloads are DMA-snapshotted once (~0.125 µs/B,
+   fire-and-forget) and streamed from the snapshot by both the wire and the
+   CRC — snapshot-consistent reads for the price of one copy hidden under
+   T_turn (§4.2 of the wire spec).
 6. **One comparator, muxed.** Every deadline (framer A/B/covered, chain
    trigger, rescue) folds onto SysTick CMP with pend-on-past semantics; the
    drain loop consumes every slot due at the same wake.
@@ -139,22 +143,27 @@ term, which is why it was reverted.
 
 ## 6. Amendments
 
-### A1 — `last_break_ts`: one timestamp, no snapshots
+### A1 — `last_break_tick`: one timestamp, no snapshots
 
 The FE handler records exactly one thing: the tick of the most recent FE
-event (plus its existing rescue-candidacy arming). No cursor sample, no
-classification, no queue entry. Rationale: only the NEWEST in-flight frame
+event (plus its existing bounded wire work: staged-reply kill, chain
+suspend, rescue-candidacy arming). No cursor sample for framing — the
+FE→DMA settle spin deletes with it. Rationale: only the NEWEST in-flight
+frame
 ever needs a wall-clock anchor (its deadlines A/covered/B are estimates
 against its break time); every older frame is complete in the ring and
 needs no clock at all (A2). A garble FE overwriting the timestamp makes an
-estimate later = safer, never earlier.
+estimate later = safer, never earlier. Cursor reads survive only at
+provably-quiet bootstrap moments: boot (position 0 by construction) and
+rescue confirm (a held-low line delivers no start edges — the cursor is
+still).
 
 ### A2 — successor-available discrimination: the ring is the queue
 
 Frames are contiguous: `next anchor = anchor + footprint` (stream
-continuity). The `cursor-1` sample survives only as the cold bootstrap
-(boot / §3.2 rearm / rescue — moments when the wire is provably quiet and
-the ring position is defined). From then on:
+continuity). The cursor is read only at the cold bootstrap (boot / rescue —
+moments when the wire is provably quiet and the ring position is defined;
+there is no ring rearm anymore). From then on:
 
 - **Fast path (successor available).** If newer activity exists beyond the
   current frame's computed end — its end byte is ringed and more followed —
@@ -170,13 +179,12 @@ the ring position is defined). From then on:
   end and no fresh anchor position validates is mid-frame garble by
   position, not by a `cursor-1` byte value. The Step-0 failure class
   becomes unwritable.
-- Corruption recovery is protocol behavior (spec §addition, not code
-  heuristics): a receiver that loses stream position re-anchors only at a
-  break, validates candidates through header rules + CRC, counts every
-  sacrificed frame; loss is bounded and the host's timeout+retry contract
-  closes the loop. On this base a corrupted LEN self-heals at the next
-  break exactly as before (each break re-anchors), with the resync counter
-  making it visible.
+- Corruption recovery: a corrupted LEN mis-strides the ladder; the next
+  resolution finds no `0x00` at the expected anchor (or the frame fails
+  CRC) → drop + count, and the ladder re-verifies at every following
+  boundary — anchors are parity-free (§3.2 side quest) so recovery needs
+  no reload, only the next break's arrival. Loss is bounded to ≤ 2 frames
+  per corruption event; the host's timeout+retry contract closes the loop.
 
 ### A3 — where dispatch runs: the interleave decision
 
@@ -195,17 +203,22 @@ waits out any running dispatch body (the old soft-timing tail, up to
 ~70 µs on the wrong day).
 
 **(b) Cost carve-out: heavy phases hop to LOW, timing stays at HIGH.**
-HIGH keeps everything bounded: FE body, deadline arithmetic, CRC feed +
-verify, commit (a staged-write apply), trigger, TX arms — each ≤ ~5 µs.
-The covered checkpoint pends the consumer (SW=14) instead of dispatching
-inline; decode + dispatch + reply build run at LOW; deadline B at HIGH
-verifies the CRC and sequences whatever the consumer staged. Between
-backlog frames the consumer re-pends via vector 30, yielding to a pending
-kernel tick — the interleave policy implemented by arbitration, zero
-scheduler code. The handoff is one staged-reply slot plus a busy flag
-(backpressure — the framer holds position until the consumer frees the
-slot; the ring absorbs the backlog per A2). The CRC engine is still touched
-only at HIGH: no arbitration protocol.
+HIGH keeps everything bounded: FE body, deadline arithmetic, framer
+resolution (ladder walks + header parse), covered-checkpoint CRC feed,
+verify + tail fold at the end, commit (a staged-write apply), reply
+sequencing + trigger, TX arms, and snoop handling (CRC-free since the side
+quest — pure chain arithmetic) — each ≤ ~5 µs. The covered checkpoint
+hands the frame to the consumer instead of dispatching inline; decode +
+dispatch + reply build (including the snapshot kick) run at LOW; the end
+deadline at HIGH verifies the CRC and sequences whatever the consumer
+staged, elastically if the consumer is still working. Wake policy encodes
+the interleave: fresh live-edge work pends SW (14) — a live request beats
+the kernel; a backlog frame handed while the consumer was busy pends
+I2C1_EV (30) — a pending kernel tick gets its slot between queued
+requests. The handoff is one work slot each way under a register-scale
+critical section (backpressure — the framer holds position until the
+consumer frees the slot; the ring absorbs the backlog per A2). The CRC
+engine is still touched only at HIGH: no arbitration protocol.
 
 First-principles cost of (b) vs (a): one pend+entry per frame (~4 µs) paid
 inside the speculation window, where it is hidden if
@@ -221,7 +234,7 @@ inside the speculation window, where it is hidden if
 Misses degrade elastically (reply leaves when ready, a few µs past the
 grid), they do not fail. Expected turnaround: (b) ≈ (a) at 1M; (b) within
 ~0–8 µs of (a) at 3M — against (a)'s unbounded kernel preemption and
-trigger tail. **Recommendation: (b).** [DECIDE: Aaron]
+trigger tail. **DECIDED: (b)** (Aaron, 2026-07-08).
 
 ## 7. First-principles losslessness (the zero-gap argument)
 
