@@ -14,7 +14,7 @@
 use core::cell::SyncUnsafeCell;
 
 use osc_drivers::Level;
-use osc_drivers::bus::ServoBus;
+use osc_drivers::bus::{DispatchConsumer, Handoff, ServoBus};
 use osc_drivers::led::Led;
 use osc_drivers::traits::bus::Providers;
 
@@ -28,10 +28,11 @@ use crate::providers::monotonic::Monotonic;
 use crate::providers::ring::RxRing;
 use crate::providers::tx_wire::TxWire;
 use crate::providers::usart_baud::UsartBaud;
+use crate::providers::wake::{DispatchWake, SequenceWake};
 
 type StatLed = Led<DigitalOut, Monotonic>;
 
-/// Bundle of the six chip-side providers the `ServoBus` composite consumes
+/// Bundle of the chip-side providers the `ServoBus` composite consumes
 /// (driver-pattern §5.4). Each associated type maps to its zero-sized
 /// provider impl (one per `providers/<role>.rs`).
 pub struct V006Providers;
@@ -43,9 +44,16 @@ impl Providers for V006Providers {
     type Tx = TxWire;
     type Baud = UsartBaud;
     type Line = LineSense;
+    type Wake = DispatchWake;
 }
 
 type Bus = ServoBus<V006Providers>;
+type Consumer = DispatchConsumer<RxRing, SequenceWake>;
+
+/// The one-slot HIGH↔LOW dispatch handoff (A3(b)) — shared by the bus
+/// (producer, HIGH) and the consumer (LOW). Its interior state machine is
+/// single-hart SPSC-safe by construction.
+static HANDOFF: Handoff = Handoff::new();
 
 /// `Bus` holds raw span pointers (zero-copy TX arms, driver-pattern §4.2) and
 /// is therefore `!Sync`. All access is serialized: `&mut` only from the HIGH
@@ -60,12 +68,14 @@ struct Cells {
     dbg: SyncUnsafeCell<Option<DigitalOut>>,
     stat_led: SyncUnsafeCell<Option<StatLed>>,
     bus: BusCell,
+    consumer: SyncUnsafeCell<Option<Consumer>>,
 }
 
 static CELLS: Cells = Cells {
     dbg: SyncUnsafeCell::new(None),
     stat_led: SyncUnsafeCell::new(None),
     bus: BusCell(SyncUnsafeCell::new(None)),
+    consumer: SyncUnsafeCell::new(None),
 };
 
 pub struct Drivers;
@@ -103,10 +113,17 @@ impl Drivers {
             TxWire,
             UsartBaud,
             LineSense,
+            DispatchWake,
+            &HANDOFF,
             defaults.id,
             defaults.baud,
             defaults.response_deadline_us,
         ));
+
+        // SAFETY: see fn doc.
+        let consumer = unsafe { &mut *CELLS.consumer.get() };
+        debug_assert!(consumer.is_none(), "Drivers: consumer already installed");
+        *consumer = Some(DispatchConsumer::new(&HANDOFF, RxRing, SequenceWake));
     }
 
     /// SAFETY: bringup installs `dbg` before any ISR runs; runtime access is
@@ -145,6 +162,20 @@ impl Drivers {
         // SAFETY: see fn doc.
         let cell = unsafe { &mut *CELLS.bus.0.get() };
         debug_assert!(cell.is_some(), "Drivers::bus() before install");
+        // SAFETY: bringup ensures Some before any IRQ fires.
+        unsafe { cell.as_mut().unwrap_unchecked() }
+    }
+
+    /// SAFETY: bringup installs `consumer` before any IRQ runs; runtime
+    /// `&mut` access is from the two LOW dispatch vectors (Software=14,
+    /// I2C1_EV=30) only — same PFIC class, so they never preempt each other
+    /// (or the kernel). The HIGH side reaches the shared handoff cell
+    /// through `ServoBus`, never through this accessor.
+    #[inline(always)]
+    pub unsafe fn consumer() -> &'static mut Consumer {
+        // SAFETY: see fn doc.
+        let cell = unsafe { &mut *CELLS.consumer.get() };
+        debug_assert!(cell.is_some(), "Drivers::consumer() before install");
         // SAFETY: bringup ensures Some before any IRQ fires.
         unsafe { cell.as_mut().unwrap_unchecked() }
     }

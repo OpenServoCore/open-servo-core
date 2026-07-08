@@ -10,11 +10,13 @@ pub static SHARED: Shared = Shared::new();
 pub(crate) static KERNEL: SyncUnsafeCell<MaybeUninit<Kernel<Ch32ControlIo>>> =
     SyncUnsafeCell::new(MaybeUninit::uninit());
 
-/// The per-servo dispatch session (HOLD-write staging). The SysTick ISR
-/// borrows it to build a `Dispatcher` each time the framer hands up a
-/// decoded request. `&mut` access lives on SysTick (PFIC HIGH), which shares
-/// HIGH with USART1 so the two transport ISRs never preempt each other; the
-/// main loop never reaches in.
+/// The per-servo dispatch session (HOLD-write staging). Two borrowers,
+/// temporally exclusive (the `SpecDispatcher` invariant in `runtime::isr`):
+/// the HIGH transport ISRs materialize it per `Dispatch` call on the
+/// speculation paths — reachable only while the dispatch handoff slot is
+/// empty — and the LOW consumer vectors hold it across a claimed job,
+/// during which the backpressured framer can reach no speculation path.
+/// The main loop never reaches in.
 pub(crate) static SESSION: SyncUnsafeCell<MaybeUninit<Session>> =
     SyncUnsafeCell::new(MaybeUninit::uninit());
 
