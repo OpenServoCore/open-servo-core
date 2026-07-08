@@ -93,15 +93,15 @@ Both directions use one shape (symmetric framing keeps the framer identical
 for hosts, servos, and chain-snooping peers):
 
 ```
-BREAK | ID | LEN | INST | payload[0..p] | (PAD) | CRC_lo | CRC_hi
+BREAK | ID | LEN | INST | payload[0..p] | CRC_lo | CRC_hi
 ```
 
 - `ID` — 1 byte. `0x01..0xF9` unicast, `0xFE` broadcast, `0x00`/`0xFF`
   invalid (never valid on the wire: `0x00` is the break's ring byte, `0xFF`
   is idle-line noise), `0xFA..0xFD` reserved. In status frames, `ID` is the
   responder's ID.
-- `LEN` — u8: count of bytes following it (`INST` + payload + pad + CRC =
-  `3 + p + pad`). Frame end is knowable at byte 2:
+- `LEN` — u8: count of bytes following it (`INST` + payload + CRC =
+  `3 + p`, any value ≥ 3). Frame end is knowable at byte 2:
   `end = len_pos + 1 + LEN`. Max payload is 252 bytes — deliberately
   sized so the largest legal frame (258 ring bytes) fits whole in the RX
   ring, which deletes chunked consumption from the framer (§4.1) and all
@@ -111,24 +111,15 @@ BREAK | ID | LEN | INST | payload[0..p] | (PAD) | CRC_lo | CRC_hi
   any subsequent break re-anchors (FE fires in LOCKED too).
 - `INST` — bit 7: `0` = instruction, `1` = status (snoopers classify frames
   without state; there is no status opcode). Instructions: bits [6:4]
-  opcode, bits [3:0] flags (§5). Status: bits [6:2] result code, bit 1 =
-  PAD, bit 0 = ALERT (§5.3).
-- `PAD` — one `0x00` after the payload, present iff the PAD flag is set.
-  Rule: **pad iff the payload length is odd** — an invariant, not an
-  option. It keeps the frame's ring footprint (`6 + p + pad`) even, which
-  holds frame anchors at constant parity, and keeps the anchor-inclusive
-  hardware feed span (`4 + p + pad`) even for the halfword CRC engine
-  (§3.2). Corollary: the `LEN` value is always odd — an even `LEN` is
-  malformed, rejected at the header deadline. (The flag is still
-  load-bearing: `LEN` alone cannot distinguish an even payload from an
-  odd one plus pad.)
+  opcode, bits [3:0] flags (§5). Status: bits [6:2] result code, bit 1
+  reserved (0), bit 0 = ALERT (§5.3).
 - `CRC` — little-endian osc-CRC-16 (§3.2) over the frame bytes
-  `ID .. PAD`.
+  `ID .. payload`.
 
 ### 3.2 osc-CRC-16
 
-The covered bytes are **the frame bytes `ID, LEN, INST, payload, PAD?`**
-— `3 + p + pad` bytes, in natural wire order. Over that span:
+The covered bytes are **the frame bytes `ID, LEN, INST, payload`** —
+`3 + p` bytes, any parity, in natural wire order. Over that span:
 
 **CRC-16/ARC**: poly `0x8005` reflected (table form `0xA001`), init
 `0x0000`, reflected input and output, no output XOR. Check value:
@@ -148,46 +139,36 @@ algorithm); the chip bit-reverses the 16-bit result once per frame
 comparing an RX verdict. Verified on silicon: `spi_crc_lsb_copy.rs`
 (bringup), `TCRCR("12345678") = 0xB93C = bitrev16(ARC = 0x3C9D)`.
 
-A leading `0x00` byte is a mathematical no-op under this flavor
-(`init = 0`: zero state shifting zero bits stays zero), which the
-hardware path exploits freely: on receivers where the break rings a
-`0x00` into the buffer at the anchor (V006, V203, any UART that DMAs FE
-bytes), the engine feeds the ring **in place from the anchor** — the
-break byte leads the span, contributes nothing, and keeps the feed
-even-length and halfword-aligned. On TX the frame buffer keeps a literal
-`0x00` at offset 0 for the same alignment (CRC DMA reads from offset 0,
-UART TX DMA from offset 1: one buffer, two channel MARs, no copies).
-These are silicon conveniences, **not protocol**: the wire checksum is
-defined purely over `ID .. PAD`.
+The engine's halfword DMA appetite (even start address, whole halfwords
+[F12]) is satisfied **by construction, at any frame parity**, because a
+leading `0x00` is a mathematical no-op under this flavor (`init = 0`:
+zero state shifting zero bits stays zero):
 
-Servo usage: the hardware engine is the **only** CRC implementation on
-the servo — status generation (own buffers are even by construction) and
-inbound validation both. There is no software CRC fallback, because there
-is nothing for it to fall back on:
+- **Feed start** — the covered span begins at `ID = anchor + 1`, and one
+  of `anchor` / `anchor + 1` is always even. Even anchor: feed from the
+  anchor, the break's ring byte leads as a no-op. Odd anchor: feed from
+  `ID` directly. The break byte is a free alignment shim, included or
+  excluded as parity demands.
+- **Feed end** — a span with a trailing odd byte feeds its even bulk by
+  DMA; the last byte is folded into the read-back CRC state in software
+  (8 reflected shift steps, ~30 cycles — the only software CRC that
+  exists on the servo).
 
-**Even anchors are an invariant, not an optimization.** Every frame's
-ring footprint is even (§3.1); a mid-frame FE still rings its byte, so
-garble is parity-neutral [F4]; and own TX never rings (no echo [F9]).
-With an even ring base, every anchor therefore lands halfword-aligned and
-the engine covers every frame. An odd anchor is a *fault* — noise rang a
-stray byte, or a transmitter violated framing — and V006 DMA cannot feed
-an odd address anyway [F12], so the frame is dropped at layer 1 (§5.3):
-no reply, diagnostics counter.
+On TX the frame buffer keeps a literal `0x00` at offset 0 for the same
+alignment (CRC DMA reads from offset 0, UART TX DMA from offset 1: one
+buffer, two channel MARs, no copies); an odd payload feeds `p − 1` bytes
+by DMA and folds the last at CRC-patch time. These are silicon
+conveniences, **not protocol**: the wire checksum is defined purely over
+`ID .. payload`, and nothing at the wire level constrains length or
+position parity.
 
-Recovery is local and immediate — the host is never involved. The dropped
-frame's end is still computable (its header is byte-readable at any
-parity), and at that boundary the servo re-arms the RX ring: channel off,
-NDTR reloaded, channel on — sub-µs, and done at a frame boundary, so the
-next break's ring byte lands at index 0, even by construction. The reset
-races nothing: even against back-to-back host frames, the next frame's
-first ring byte is its break's `0x00`, which cannot land before the
-current frame ends. A stale request latched across the disable window
-(the #134 class) deposits one byte at index 0, which re-triggers
-detection on the next frame — the retry converges. Booting mid-traffic
-(a partial first frame in the ring) heals the same way: one dropped
-frame, then aligned. Corollary: a bare break is never needed and never
-free — its lone ring byte makes the next anchor odd at every listener,
-costing one frame bus-wide; hosts simply should not send them.
+Consequences worth naming, because each deletes a former rule: frame
+anchors may land at any ring parity (there is no even-anchor invariant);
+the RX ring is armed once at boot and **never reloaded** (the
+parity-recovery re-arm and its odd-anchor drop path are gone); a bare
+break on the bus is harmless (its lone ring byte shifts parity, which no
+longer matters); and a mid-frame FE still costs at most the one garbled
+frame [F4].
 
 Test vectors (covered bytes → CRC):
 
@@ -195,7 +176,7 @@ Test vectors (covered bytes → CRC):
 01 03 10                 → 0xFC50  (PING id 1)
 05 07 30 80 01 2C 01     → 0xB3B1  (WRITE id 5, addr 0x0180, data 2C 01)
 03 07 20 00 02 08 00     → 0x7015  (READ id 3, addr 0x0200, count 8)
-02 07 32 00 01 AA 00     → 0xD334  (WRITE id 2, addr 0x0100, data AA; p=3 → padded)
+02 06 30 00 01 AA        → 0x0D07  (WRITE id 2, addr 0x0100, data AA; p=3, LEN even-legal)
 ```
 
 ### 3.3 Resync
@@ -210,10 +191,9 @@ A mid-frame FE costs one frame (CRC rejects it), never the stream [F4].
 ### 4.1 RX framer
 
 One circular RX DMA channel, armed once at boot; NDTR is read as a
-cursor, never reloaded in normal operation (reloading drops or latches
-requests — the #134 class). The one sanctioned reload is the
-parity-recovery re-arm (§3.2), performed at a computed frame boundary.
-Two states:
+cursor, never reloaded (reloading drops or latches requests — the #134
+class; and since anchors may sit at any parity, §3.2, nothing ever needs
+a reload). Two states:
 
 - **HUNT** — on FE IRQ (break): record the anchor = current ring position
   (the `0x00` just ringed). Enter LOCKED.
@@ -236,10 +216,10 @@ reply anyway.
 
 ### 4.2 TX path
 
-Reply buffer: `[0x00][ID][LEN][INST|0x80][payload][PAD?][crc][crc]`
+Reply buffer: `[0x00][ID][LEN][INST|0x80][payload][crc][crc]`
 in a halfword-aligned static — the `0x00` at offset 0 is an alignment
-byte and CRC no-op (§3.2), and the PAD rule keeps the buffer even, so it
-is hardware-CRC-able by construction. Sequence: flip pin to
+byte and CRC no-op; an odd payload's last byte folds into the CRC in
+software at patch time (§3.2). Sequence: flip pin to
 push-pull → `SBK` → enable UART TX DMA from offset 1 → simultaneously
 enable SPI-CRC DMA from offset 0 → the CRC engine outruns the wire 8:1,
 so `TCRCR` is patched into the trailing CRC bytes long before the shifter
@@ -268,7 +248,7 @@ split into multiple frames (§5.1), each still zero-copy.
 | flag  | name           | meaning                                                                        |
 | ----- | -------------- | ------------------------------------------------------------------------------ |
 | bit 0 | HOLD / PROFILE | writes: staged, applied by COMMIT · reads: payload names a profile slot (§5.2) |
-| bit 1 | PAD            | payload carries one trailing pad byte                                          |
+| bit 1 | —              | reserved (0) — future extension                                                |
 | bit 2 | NOREPLY        | suppress the status frame                                                      |
 | bit 3 | PER_TARGET     | group op uses per-target addressing                                            |
 
@@ -300,7 +280,8 @@ Notes:
   its pairing [F12]. An odd `addr` is rejected with `range`. The table's
   `repr(C)` layout keeps every multi-byte field even-aligned anyway; a
   host that wants an odd-placed byte reads the enclosing even pair (odd
-  *count* stays legal — the PAD rule absorbs payload-length parity).
+  *count* stays legal — a trailing odd byte folds into the CRC in
+  software, §3.2).
   WRITE addressing is unconstrained: inbound payloads validate through
   the ring anchor, not the table address.
 
@@ -417,7 +398,7 @@ DXL checkpoint format solved does not exist here.
 Projected ping round trip at 3 M (components all measured): instruction
 5 B + break ≈ 21.4 µs wire; dispatch overlaps arrival; tail (hardware
 CRC-check + pre-staged dispatch, ~3 µs) + T_turn (0.7 µs) + break
-(4.7 µs) + 9 B reply (model+fw, padded, 30 µs) ≈ **41 µs** vs DXL's
+(4.7 µs) + 8 B reply (model+fw, 26.7 µs) ≈ **38 µs** vs DXL's
 measured 62.8 µs — with the turnaround component alone dropping ~16 µs →
 ~8 µs. To be measured, not promised.
 
@@ -432,7 +413,7 @@ ALERT bit on that servo's status (§5.3).
 
 - Crystal-clocked UART with break send (any USB-serial with SBK, or the
   pirate).
-- osc-CRC (textbook CRC-16/ARC, §3.2) and the PAD rule (§3.1).
+- osc-CRC (textbook CRC-16/ARC, §3.2).
 - Drive discipline if on a buffer-less bus (release when idle) [F8].
 - Schedule the bus: one outstanding instruction / chain at a time;
   timeout = RESPONSE_DEADLINE + frame time.
