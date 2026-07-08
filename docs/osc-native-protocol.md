@@ -275,14 +275,11 @@ Notes:
   field alignment in the payload view; values cap at 252, §5.1) and
   1 byte per GWRITE slice.
 - **READ/GREAD addressing is unconstrained** — any `addr`, any `count`.
-  On chips whose CRC DMA needs halfword alignment [F12], an odd-addressed
-  reply span stages through a DMA copy inside the CRC provider
-  (implementation detail, not protocol): the copy channel outranks the
-  feed channel, so the feed cannot overtake it, and the pair completes
-  ~6× faster than the wire consumes the reply. Zero CPU either way; the
-  common even-addressed span stays zero-copy. WRITE addressing was never
-  constrained: inbound payloads validate through the ring anchor, not
-  the table address.
+  Every reply payload streams from the snapshot buffer (§4.2), which is
+  halfword-aligned by construction, so the table address carries no
+  constraint at all [F12 satisfied structurally]. WRITE addressing was
+  never constrained: inbound payloads validate through the ring anchor,
+  not the table address.
 
 ### 5.1 Size limits
 
@@ -366,7 +363,11 @@ makes it cheap and robust:
   instruction end, §7).
 - Slot k>0 counts _status_ frames (INST bit 7) on the wire since the
   GREAD; when frame k−1 completes (its end is known at its LEN byte — no
-  timing inference), slot k starts after T_turn.
+  timing inference), slot k starts after T_turn. Snoopers do **not**
+  CRC-validate predecessor statuses — the chain consumes nothing from the
+  body, only the framing-level end, so validation would buy nothing and
+  cost a CRC pass per snooped frame. A corrupt status mis-times one slot
+  at worst, bounded by the reclaim window below.
 - **Reclaim deadline** (replaces DXL's silent-collapse fragility, spec'd
   here rather than inherited): if slot k's predecessor produces no break
   within RESPONSE_DEADLINE of its own trigger, slot k takes the slot and
