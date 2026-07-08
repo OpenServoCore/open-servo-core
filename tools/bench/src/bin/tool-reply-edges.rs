@@ -59,6 +59,28 @@ fn drain(client: &mut Client) -> Result<Vec<BStamp>> {
     }
 }
 
+/// The whole cycle's stamp stream (all frames + reply), byte values with
+/// per-byte deltas — shows whether every instruction byte reached the wire.
+fn dump_all_stamps(stamps: &[BStamp], bit_ticks: u32) {
+    println!("--- full stamp stream ({} bytes):", stamps.len());
+    let mut prev: Option<u32> = None;
+    let mut line = String::new();
+    for s in stamps {
+        let d = prev.map(|p| s.tick.wrapping_sub(p) as f64 / bit_ticks as f64);
+        match d {
+            Some(d) if d > 12.0 => {
+                println!("  {line}");
+                line = format!("(+{d:.1}b) {:02x}", s.byte);
+            }
+            _ => {
+                line.push_str(&format!(" {:02x}", s.byte));
+            }
+        }
+        prev = Some(s.tick);
+    }
+    println!("  {line}");
+}
+
 fn dump_failure(client: &mut Client, stamps: &[BStamp], bit_ticks: u32) -> Result<()> {
     let snap = client.ic_snapshot()?;
     println!("bit_ticks    {bit_ticks} (snap says {})", snap.bit_ticks);
@@ -127,16 +149,29 @@ fn main() -> Result<()> {
         sleep(Duration::from_millis(3));
         let stamps = drain(&mut client)?;
         match parse_exchange(&stamps, &last, bit_ticks) {
+            Ok(ex) if ex.status.payload != v.to_le_bytes() => {
+                println!(
+                    "=== STALE cycle {c}: read back {:02x?}, expected {:02x?}",
+                    ex.status.payload,
+                    v.to_le_bytes()
+                );
+                dump_all_stamps(&stamps, bit_ticks);
+                dump_failure(&mut client, &stamps, bit_ticks)?;
+                caught += 1;
+                if caught >= 1 {
+                    return Ok(());
+                }
+            }
             Ok(_) if c == 0 => {
                 println!("=== GOOD cycle {c} baseline:");
                 dump_failure(&mut client, &stamps, bit_ticks)?;
             }
             Ok(_) => {}
-            Err(e @ (ExchangeError::BadHeader | ExchangeError::BadCrc { .. })) => {
+            Err(e @ (ExchangeError::BadHeader | ExchangeError::BadCrc { .. } | ExchangeError::NoReply)) => {
                 println!("=== FAIL cycle {c}: {e}");
                 dump_failure(&mut client, &stamps, bit_ticks)?;
                 caught += 1;
-                if caught >= 3 {
+                if caught >= 1 {
                     return Ok(());
                 }
             }
