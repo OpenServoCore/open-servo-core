@@ -6,9 +6,11 @@
 pub mod chain;
 mod decode;
 pub mod framer;
+pub mod handoff;
 mod servo_bus;
 pub mod tx;
 
+pub use handoff::{DispatchConsumer, Handoff};
 pub use servo_bus::{LinkDiag, ServoBus};
 
 /// Minimum reply lead after the frame being answered, in byte-times (§7).
@@ -29,6 +31,20 @@ pub(crate) fn ring_wrap(i: usize, len: usize) -> usize {
 
 /// Largest legal frame footprint in ring bytes (§3.1).
 pub const FRAME_MAX: usize = osc_protocol::wire::footprint(u8::MAX);
+
+/// View a resolved frame as up to two ring segments (one span unless it
+/// wraps the seam). Shared by the HIGH decode path (speculation) and the
+/// LOW dispatch consumer.
+pub(crate) fn frame_view(ring: &[u8], anchor: u16, footprint: u16) -> osc_protocol::FrameBytes<'_> {
+    let anchor = anchor as usize;
+    let footprint = footprint as usize;
+    let len = ring.len();
+    if anchor + footprint <= len {
+        osc_protocol::FrameBytes::from(&ring[anchor..anchor + footprint])
+    } else {
+        osc_protocol::FrameBytes::new(&ring[anchor..], &ring[..footprint - (len - anchor)])
+    }
+}
 
 /// CRC spin backstop, iterations per covered byte: the hardware engine runs
 /// ~8x wire speed (F6), so this is orders of magnitude past any healthy

@@ -16,6 +16,9 @@ pub struct HandlerCost {
     pub on_break_us: u32,
     pub on_deadline_us: u32,
     pub on_tx_complete_us: u32,
+    /// The LOW consumer's decode + dispatch + record body (A3(b)). Delays
+    /// the adoption wake; it occupies the LOW class, not the HIGH one.
+    pub on_dispatch_us: u32,
 }
 
 /// The transport vectors, in same-priority arbitration order (lowest

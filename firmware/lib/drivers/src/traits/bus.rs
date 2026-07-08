@@ -72,6 +72,27 @@ pub trait LineSense {
     fn is_low(&self) -> bool;
 }
 
+/// Which consumer wake a published dispatch job pends — the locked interleave
+/// policy (osc-servo-transport §6 A3(b)): a live request beats the motor
+/// kernel; a backlog frame yields the slot to a pending kernel tick first.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum Lane {
+    Live,
+    Queued,
+}
+
+/// HIGH-side provider: wake the LOW dispatch consumer for a published job.
+/// The chip pends one of its two LOW vectors per [`Lane`].
+pub trait DispatchWake {
+    fn job_ready(&mut self, lane: Lane);
+}
+
+/// LOW-side provider: wake the HIGH transport for a completed dispatch —
+/// the recorded reply awaits staging + chain sequencing.
+pub trait SequenceWake {
+    fn reply_ready(&mut self);
+}
+
 /// Role bundle for the `ServoBus` composite (driver-pattern §5.4).
 pub trait Providers {
     type Ring: RxRing;
@@ -80,6 +101,7 @@ pub trait Providers {
     type Tx: TxWire;
     type Baud: UsartBaud;
     type Line: LineSense;
+    type Wake: DispatchWake;
 }
 
 /// Wrap-aware "`a` is at or after `b`" on the u32 tick domain.

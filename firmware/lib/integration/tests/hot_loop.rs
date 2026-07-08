@@ -223,8 +223,9 @@ fn hot_loop_with_latency(rate: BaudRate) {
             i,
             HandlerCost {
                 on_break_us: 2,
-                on_deadline_us: 70,
+                on_deadline_us: 5,
                 on_tx_complete_us: 2,
+                on_dispatch_us: 70,
             },
         );
     }
@@ -304,6 +305,7 @@ fn plain_burst_with_deadline_latency(rate: BaudRate) {
                 on_break_us: 2,
                 on_deadline_us: dl,
                 on_tx_complete_us: 2,
+                on_dispatch_us: dl,
             },
         );
 

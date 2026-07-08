@@ -6,12 +6,12 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use osc_core::{BaudRate, BootMode, ConfigDefaults, ControlTable, RegionStorage, Session, Shared};
-use osc_drivers::bus::{LinkDiag, ServoBus};
+use osc_drivers::bus::{DispatchConsumer, Handoff, LinkDiag, ServoBus};
 
 use super::core::Core;
 use super::providers::{
-    BaudState, DeadlineState, Handles, RingState, SimBaud, SimCrc, SimDeadline, SimLine,
-    SimProviders, SimRing, SimWire,
+    BaudState, DeadlineState, Handles, RingState, SimBaud, SimCrc, SimDeadline, SimDispatchWake,
+    SimLine, SimProviders, SimRing, SimSequenceWake, SimWire,
 };
 
 /// Default identity a fresh sim servo answers PING with (model + fw).
@@ -22,6 +22,7 @@ pub struct SimServo {
     shared: Shared,
     session: Session,
     bus: ServoBus<SimProviders>,
+    consumer: DispatchConsumer<SimRing, SimSequenceWake>,
 }
 
 impl SimServo {
@@ -53,6 +54,8 @@ impl SimServo {
             t.config.identity.firmware_version = DEFAULT_FIRMWARE;
         });
 
+        // Leaked per servo: the handoff cell is 'static on the chip.
+        let handoff: &'static Handoff = Box::leak(Box::new(Handoff::new()));
         let bus = ServoBus::new(
             SimRing::new(ring.clone()),
             SimDeadline::new(core.clone(), deadline.clone(), idx, skew_ppm),
@@ -60,15 +63,19 @@ impl SimServo {
             SimWire::new(core.clone(), baud.clone(), idx),
             SimBaud::new(baud.clone()),
             SimLine::new(core.clone()),
+            SimDispatchWake::new(core.clone(), idx),
+            handoff,
             id,
             rate,
             response_deadline_us,
         );
+        let consumer = DispatchConsumer::new(handoff, SimRing::new(ring.clone()), SimSequenceWake);
 
         let servo = Box::new(SimServo {
             shared,
             session: Session::new(),
             bus,
+            consumer,
         });
         let handles = Handles {
             ring,
@@ -92,6 +99,14 @@ impl SimServo {
 
     pub fn on_tx_complete(&mut self) {
         self.bus.on_tx_complete();
+    }
+
+    /// LOW consumer body: process the outstanding dispatch job, if any.
+    /// Returns whether a job was processed (the Sim then schedules the
+    /// adoption wake after the consumer's handler cost).
+    pub fn on_consumer(&mut self) -> bool {
+        let mut dispatcher = self.session.dispatcher(&self.shared);
+        self.consumer.process(&mut dispatcher)
     }
 
     pub fn take_reboot(&mut self) -> Option<BootMode> {

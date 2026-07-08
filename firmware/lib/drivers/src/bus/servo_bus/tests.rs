@@ -91,6 +91,9 @@ fn deliver<D: Dispatch>(
         h.ring.set_cursor(((anchor + fp) % RING_LEN) as u16);
         bus.on_deadline(d);
     }
+    // Non-speculated frames publish to the LOW consumer at the frame end;
+    // pump the consumer + adoption wake so the reply is sequenced (A3(b)).
+    h.pump(bus, d);
     end
 }
 

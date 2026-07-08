@@ -6,15 +6,17 @@
 
 use osc_core::traits::{Dispatch, Reply, Request, RequestCtx, SendError, Speculated, Status};
 use osc_core::{BaudRate, BootMode};
-use osc_protocol::FrameBytes;
-use osc_protocol::wire::{Inst, ResultCode};
+use osc_protocol::wire::{Id, Inst, ResultCode};
 
 use super::chain::{Chain, ChainOut};
 use super::decode::{Decoded, decode};
+use super::frame_view;
 use super::framer::{FrameSpan, Framer, FramerOut};
+use super::handoff::{DispatchJob, Handoff, ReplyRecord};
 use super::tx::{TxEngine, TxOut};
 use crate::traits::bus::{
-    CrcEngine, Deadline, LineSense, Providers, RxRing, TxWire, UsartBaud, tick_reached,
+    CrcEngine, Deadline, DispatchWake, Lane, LineSense, Providers, RxRing, TxWire, UsartBaud,
+    tick_reached,
 };
 
 /// µs-per-byte numerator: 10 bit-times/byte × 1e6 µs/s. `tpb = TICKS_PER_US ×
@@ -75,6 +77,14 @@ pub struct ServoBus<P: Providers> {
     deadline: P::Deadline,
     baud: P::Baud,
     line: P::Line,
+    wake: P::Wake,
+    // The one-slot LOW-dispatch handoff (A3(b)); shared with the
+    // DispatchConsumer that runs in the LOW vectors.
+    handoff: &'static Handoff,
+    // A rescue landed while a job/record was in flight: the pre-rescue
+    // dispatch's reply (and config records) are stale — adoption discards
+    // them, mirroring the abort+reset every other rescue path performs.
+    discard_record: bool,
     id: u8,
     rate: BaudRate,
     tpb: u32,
@@ -114,6 +124,8 @@ impl<P: Providers> ServoBus<P> {
         tx: P::Tx,
         mut baud: P::Baud,
         line: P::Line,
+        wake: P::Wake,
+        handoff: &'static Handoff,
         id: u8,
         rate: BaudRate,
         response_deadline_us: u16,
@@ -128,6 +140,9 @@ impl<P: Providers> ServoBus<P> {
             deadline,
             baud,
             line,
+            wake,
+            handoff,
+            discard_record: false,
             id,
             rate,
             tpb: tpb_for::<P>(rate),
@@ -196,6 +211,14 @@ impl<P: Providers> ServoBus<P> {
         for _ in 0..DEADLINE_DRAIN_MAX {
             let now = self.deadline.now();
             let mut progressed = false;
+            // A completed LOW dispatch awaits adoption (the consumer's
+            // reply-ready wake pends this vector). Adopting frees the slot,
+            // so resume the held framer in the same wake.
+            if let Some(rec) = self.handoff.take_reply() {
+                progressed = true;
+                self.adopt(rec);
+                self.drive_framer(d);
+            }
             if due(now, self.framer_at) {
                 progressed = true;
                 self.framer_at = None;
@@ -300,6 +323,15 @@ impl<P: Providers> ServoBus<P> {
     /// are never starved by a deep backlog.
     fn drive_framer<D: Dispatch>(&mut self, d: &mut D) {
         for _ in 0..FRAMES_PER_WAKE {
+            // Backpressure (A3(b)): while a job or its record is in flight,
+            // the framer holds position and the ring absorbs the backlog
+            // (A2). The consumer's reply-ready wake resumes the walk;
+            // framer_at is cleared so a stale estimate can't pend-on-past
+            // spin against the held resolver.
+            if !self.handoff.idle() {
+                self.framer_at = None;
+                return;
+            }
             let now = self.deadline.now();
             let out = self
                 .framer
@@ -371,6 +403,12 @@ impl<P: Providers> ServoBus<P> {
         self.speculated = None;
         self.framer_at = None;
         self.chain_at = None;
+        // A job (or its record) from a pre-rescue frame is stale; the slot
+        // can't be yanked from a mid-dispatch consumer, so adoption discards
+        // it instead.
+        if !self.handoff.idle() {
+            self.discard_record = true;
+        }
     }
 
     /// Frame end (deadline B). A front-loaded read-only frame only needs its
@@ -387,7 +425,7 @@ impl<P: Providers> ServoBus<P> {
             // the next dispatch (process_frame below).
             self.drop_staged();
         }
-        self.process_frame(span, d);
+        self.process_frame(span);
     }
 
     /// Covered-complete: front-load the CRC feed + dispatch so deadline B only
@@ -482,7 +520,7 @@ impl<P: Providers> ServoBus<P> {
         self.chain_at = None;
     }
 
-    fn process_frame<D: Dispatch>(&mut self, span: FrameSpan, d: &mut D) {
+    fn process_frame(&mut self, span: FrameSpan) {
         // FrameSpan is not Copy; work from its primitive fields.
         let anchor = span.anchor;
         let footprint = span.footprint;
@@ -518,19 +556,87 @@ impl<P: Providers> ServoBus<P> {
         if self.tx.staged() {
             self.tx.abort();
         }
-        // 4. Decode + dispatch; 5. sequence a staged reply (slot 0 = unicast).
-        let Some((staged, slot)) = self.dispatch_frame(anchor, footprint, d) else {
-            return; // Skip (not ours); Status is handled above
-        };
-        if staged {
-            let t_turn = self.t_turn();
-            let reclaim = self.reclaim();
-            let allowance = self.frame_allowance();
-            let out = self
-                .chain
-                .on_reply_staged(slot, packet_end, t_turn, reclaim, allowance);
-            self.route_chain(out);
+        // 4. Publish for LOW dispatch (A3(b)). Unicast to another servo never
+        // occupies the slot — the frame ID screens it here; group ops ride
+        // a broadcast frame ID and must decode at LOW to resolve their
+        // id-lists. Lane per the locked interleave policy: the live frontier
+        // beats the motor kernel, a backlog frame lets a pending kernel tick
+        // slot in first.
+        if !self.ring_id(anchor).addresses(Id::new(self.id)) {
+            return;
         }
+        let lane = if self.framer.caught_up(self.ring.cursor()) {
+            Lane::Live
+        } else {
+            Lane::Queued
+        };
+        self.handoff.publish(DispatchJob {
+            anchor,
+            footprint,
+            packet_end,
+            id: self.id,
+        });
+        self.wake.job_ready(lane);
+    }
+
+    /// Adopt a completed LOW dispatch: apply its deferred-config records,
+    /// stage the recorded reply into the TX engine, and sequence the chain
+    /// from the frame's packet end — elastically, when this wake runs past
+    /// the T_turn grid (§6 A3(b): misses degrade, they do not fail).
+    fn adopt(&mut self, rec: ReplyRecord) {
+        if core::mem::take(&mut self.discard_record) {
+            return;
+        }
+        if let Some(us) = rec.response_deadline_us {
+            self.response_deadline_us = us;
+        }
+        if let Some(id) = rec.id_change {
+            self.pending_id = Some(id);
+        }
+        if let Some(baud) = rec.baud_change {
+            self.pending_baud = Some(baud);
+        }
+        if let Some(mode) = rec.reboot {
+            self.pending_reboot = Some(mode);
+        }
+        if !rec.staged {
+            return;
+        }
+        // Positional truth, as in the FE-kill gate: a unicast reply adopted
+        // after newer bytes ringed would trigger into the host's next frame
+        // (the zero-gap collision the break kill can no longer catch — the
+        // next break may predate this adoption). A chain slot k>0 expects
+        // wire traffic (predecessor statuses) and sequences through it.
+        if rec.slot == 0 && !self.framer.caught_up(self.ring.cursor()) {
+            return;
+        }
+        // SAFETY: §4.2 zero-copy contract — every non-empty core reply
+        // payload references control-table storage, stable for the exchange
+        // (the same contract the engine's external arms rely on); staging
+        // snapshots it exactly as an inline dispatch would.
+        let data = if rec.payload_len == 0 {
+            &[][..]
+        } else {
+            unsafe { core::slice::from_raw_parts(rec.payload, rec.payload_len as usize) }
+        };
+        if self
+            .tx
+            .stage(&mut self.crc, self.id, rec.result, rec.alert, data)
+            .is_err()
+        {
+            // Busy (a prior reply still draining — the host broke its
+            // one-outstanding contract) or a sizing overflow: drop, the
+            // host's timeout+retry closes the loop (§5.3).
+            return;
+        }
+        let out = self.chain.on_reply_staged(
+            rec.slot,
+            rec.packet_end,
+            self.t_turn(),
+            self.reclaim(),
+            self.frame_allowance(),
+        );
+        self.route_chain(out);
     }
 
     /// View the frame as up to two ring segments (one span unless it wraps the
@@ -544,15 +650,7 @@ impl<P: Providers> ServoBus<P> {
         footprint: u16,
         f: impl FnOnce(Request<'_>, RequestCtx, &mut ReplyHandle<'_, P::Tx, P::Crc>) -> T,
     ) -> Option<(bool, u8, T)> {
-        let anchor = anchor as usize;
-        let footprint = footprint as usize;
-        let ring = self.ring.bytes();
-        let len = ring.len();
-        let frame = if anchor + footprint <= len {
-            FrameBytes::from(&ring[anchor..anchor + footprint])
-        } else {
-            FrameBytes::new(&ring[anchor..], &ring[..footprint - (len - anchor)])
-        };
+        let frame = frame_view(self.ring.bytes(), anchor, footprint);
         let (req, ctx, slot) = match decode(frame, self.id) {
             Decoded::Own(req, ctx, slot) => (req, ctx, slot),
             _ => return None,
@@ -571,18 +669,6 @@ impl<P: Providers> ServoBus<P> {
         };
         let out = f(req, ctx, &mut handle);
         Some((handle.staged, slot, out))
-    }
-
-    /// Decode + dispatch the full (non-speculative) path. Returns `(staged,
-    /// slot)`, or `None` for a frame that isn't ours.
-    fn dispatch_frame<D: Dispatch>(
-        &mut self,
-        anchor: u16,
-        footprint: u16,
-        d: &mut D,
-    ) -> Option<(bool, u8)> {
-        self.dispatch_decoded(anchor, footprint, |req, ctx, h| d.dispatch(req, ctx, h))
-            .map(|(staged, slot, ())| (staged, slot))
     }
 
     /// A reply surface over the deferred-config fields, with no request decode —
@@ -686,6 +772,13 @@ impl<P: Providers> ServoBus<P> {
         let ring = self.ring.bytes();
         let len = ring.len();
         Inst(ring[(anchor as usize + 3) % len])
+    }
+
+    /// The frame ID byte, 1 slot past the anchor.
+    fn ring_id(&self, anchor: u16) -> Id {
+        let ring = self.ring.bytes();
+        let len = ring.len();
+        Id::new(ring[(anchor as usize + 1) % len])
     }
 }
 

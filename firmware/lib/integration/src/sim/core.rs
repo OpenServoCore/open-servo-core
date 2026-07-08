@@ -75,6 +75,12 @@ pub enum Event {
     TxArmDone { servo: usize },
     /// A servo's handler body ended (`super::cpu`): deliver one pended vector.
     CpuFree { servo: usize },
+    /// A dispatch job was published for servo's LOW consumer (A3(b)). Runs
+    /// only when the HIGH class is idle — LOW never preempts HIGH.
+    ConsumerWake { servo: usize },
+    /// The consumer's completed record awaits adoption: the pended HIGH
+    /// re-entry (the chip pends its deadline vector).
+    SequenceWake { servo: usize },
 }
 
 struct Scheduled {
