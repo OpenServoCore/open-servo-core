@@ -79,7 +79,10 @@ impl SimServo {
     }
 
     pub fn on_break(&mut self) {
-        self.bus.on_break();
+        // A2: the break handler resolves complete frames from ring data in
+        // place, so it dispatches — build the dispatcher like on_deadline.
+        let mut dispatcher = self.session.dispatcher(&self.shared);
+        self.bus.on_break(&mut dispatcher);
     }
 
     pub fn on_deadline(&mut self) {

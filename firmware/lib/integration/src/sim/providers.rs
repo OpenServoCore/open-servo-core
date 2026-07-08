@@ -295,8 +295,12 @@ impl TxWire for SimWire {
     fn send(&mut self, span: &[u8]) {
         let baud = self.baud.current();
         let bt = byte_ticks(baud);
-        let start = self.tx_cursor.get();
         let mut c = self.core.borrow_mut();
+        // A late TC delivery (busy CPU) arms the next span after the previous
+        // one drained: on silicon that is an inter-byte gap on the wire
+        // (legal — nothing times on idle, §4.2). Clamp so the DES clock never
+        // rewinds.
+        let start = self.tx_cursor.get().max(c.now());
         for (k, &b) in span.iter().enumerate() {
             let t = start + (k as u64 + 1) * bt;
             // Zero bytes hold the line dominant for 9 of 10 bit-times — see

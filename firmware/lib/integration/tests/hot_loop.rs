@@ -199,3 +199,158 @@ fn noreply_write_bombardment_then_read() {
     assert_eq!(d.crc_fail_count, 0);
     assert_eq!(d.framing_drop_count, 0);
 }
+
+/// THE zero-gap repro (§5 of the transport pillar): the same hot loop under
+/// silicon-realistic handler latency. Dispatch runs inside the deadline body
+/// on this architecture, so a GWRITE-class body (~70 µs measured) makes
+/// following breaks pend and coalesce; a base that anchors on ISR-entry
+/// cursor snapshots then silently discards intact frames (staleness, not
+/// latency — Step-0 evidence). The amended design (A1 `last_break_tick` +
+/// A2 stream-continuity resolution) must keep this green at both bauds.
+fn hot_loop_with_latency(rate: BaudRate) {
+    use osc_integration::sim::HandlerCost;
+
+    let mut sim = Sim::new(rate);
+    // RESPONSE_DEADLINE must exceed worst-case dispatch+staging latency or a
+    // chain slot reclaims into a live-but-slow predecessor (band finding,
+    // pillar §7 acceptance): with 70 µs handler bodies the 60 µs default is
+    // dishonest — a real deployment tunes this register to its worst case.
+    for id in IDS {
+        sim.add_servo_with(id, 0, 250);
+    }
+    for i in 0..IDS.len() {
+        sim.set_handler_cost(
+            i,
+            HandlerCost {
+                on_break_us: 2,
+                on_deadline_us: 70,
+                on_tx_complete_us: 2,
+            },
+        );
+    }
+
+    for cycle in 0..10u32 {
+        let gv: Vec<i32> = IDS
+            .iter()
+            .map(|&id| (cycle as i32) * 100 + id as i32)
+            .collect();
+        let bytes: Vec<[u8; 4]> = gv.iter().map(|v| v.to_le_bytes()).collect();
+        let entries: Vec<(u8, &[u8])> = IDS
+            .iter()
+            .zip(bytes.iter())
+            .map(|(&id, d)| (id, &d[..]))
+            .collect();
+        sim.host_send(&instruction(
+            BCAST,
+            Opcode::Gwrite,
+            Inst::FLAG_HOLD,
+            &gwrite_uniform(GOAL_VELOCITY, 4, &entries),
+        ));
+        sim.host_send(&instruction(BCAST, Opcode::Commit, 0, &[]));
+        sim.host_send(&instruction(
+            BCAST,
+            Opcode::Gread,
+            0,
+            &gread_uniform(GOAL_VELOCITY, 4, &IDS),
+        ));
+        let frames = sim.run();
+        assert_zero_gap(&host_frames(&frames));
+
+        for (i, v) in gv.iter().enumerate() {
+            assert_eq!(
+                sim.servo_table(i, |t| t.control.lifecycle.goal_velocity),
+                *v,
+                "cycle {cycle}: servo {i} lost a GWRITE or COMMIT under latency"
+            );
+        }
+        let r = replies(&frames);
+        assert_eq!(
+            r.len(),
+            IDS.len(),
+            "cycle {cycle}: chain incomplete under latency"
+        );
+    }
+}
+
+#[test]
+fn hot_loop_survives_handler_latency_1m() {
+    hot_loop_with_latency(BaudRate::B1000000);
+}
+
+#[test]
+fn hot_loop_survives_handler_latency_3m() {
+    hot_loop_with_latency(BaudRate::B3000000);
+}
+
+/// Silicon-captured trap (event-trace 2026-07-08): when a frame's own break
+/// FE delivery lags past its covered checkpoint (pended behind a long
+/// deadline body), the resolver reaches Covered INSIDE that on_break wake and
+/// stages the reply — and the FE-kill in the same wake must not murder it.
+/// The reply belongs to the frontier frame still arriving, not to a frame the
+/// host abandoned; killing it leaves a stale speculation that later arms the
+/// chain over an empty engine (ghost trigger, silent no-reply).
+fn plain_burst_with_deadline_latency(rate: BaudRate) {
+    use osc_integration::sim::HandlerCost;
+
+    // Sweep the body cost so some delivery lands inside the covered window
+    // ([frame end - 2 byte-times, frame end)) regardless of rate — the trap
+    // is a ~2-byte-time bullseye, not a single magic latency.
+    for dl in (10u32..100).step_by(2) {
+        let mut sim = Sim::new(rate);
+        sim.add_servo_with(1, 0, 250);
+        sim.set_handler_cost(
+            0,
+            HandlerCost {
+                on_break_us: 2,
+                on_deadline_us: dl,
+                on_tx_complete_us: 2,
+            },
+        );
+
+        for cycle in 0..5u32 {
+            let v = cycle as i32 + 1;
+            let d = v.to_le_bytes();
+            let a = GOAL_VELOCITY.to_le_bytes();
+            let mut p = vec![a[0], a[1]];
+            p.extend_from_slice(&d);
+            sim.host_send(&instruction(1, Opcode::Write, Inst::FLAG_NOREPLY, &p));
+            sim.host_send(&instruction(1, Opcode::Write, Inst::FLAG_NOREPLY, &p));
+            sim.host_send(&instruction(1, Opcode::Read, 0, &[a[0], a[1], 4, 0]));
+            let frames = sim.run();
+            assert_zero_gap(&host_frames(&frames));
+            assert_eq!(
+                sim.servo_table(0, |t| t.control.lifecycle.goal_velocity),
+                v,
+                "dl={dl} cycle {cycle}: write lost under deadline latency"
+            );
+            let r = replies(&frames);
+            assert_eq!(
+                r.len(),
+                1,
+                "dl={dl} cycle {cycle}: READ reply lost (staged reply killed in its own wake?)"
+            );
+            assert_valid(r[0]);
+            let (inst, payload) = status(r[0]);
+            assert_eq!(inst.result(), Some(ResultCode::Ok), "dl={dl} cycle {cycle}");
+            assert_eq!(payload, d, "dl={dl} cycle {cycle}: stale read-back");
+        }
+        // A clean zero-gap wire gives the framer no excuse: every give-up
+        // here is a live frame sacrificed by starvation accounting.
+        let diag = sim.servo_diag(0);
+        assert_eq!(
+            diag.framing_drop_count, 0,
+            "dl={dl}: live frames sacrificed"
+        );
+        assert_eq!(diag.crc_fail_count, 0, "dl={dl}: trusted frame failed");
+    }
+}
+
+#[test]
+fn plain_burst_survives_deadline_latency_1m() {
+    plain_burst_with_deadline_latency(BaudRate::B1000000);
+}
+
+#[test]
+fn plain_burst_survives_deadline_latency_3m() {
+    plain_burst_with_deadline_latency(BaudRate::B3000000);
+}
