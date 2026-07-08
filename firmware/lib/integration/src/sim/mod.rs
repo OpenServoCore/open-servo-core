@@ -154,6 +154,54 @@ impl Sim {
         self.queue_host_frame(start, frame);
     }
 
+    /// Queue a host frame whose transmitter stalls mid-frame: bytes
+    /// `..split` stream normally, then the wire idles high for `stall_us`,
+    /// then the rest streams. Models the pirate's TXE-poll bubbles (bench
+    /// 2026-07-08: 58–94-bit pauses INSIDE frames on failing plain-burst
+    /// cycles) — a legal wire per §4.1 (nothing times on idle), and the
+    /// stress that parks the frontier at the starvation horizon.
+    pub fn host_send_stalled(&mut self, frame: &[u8], split: usize, stall_us: u64) {
+        let start = self.host_free_at.max(self.core.borrow().now());
+        let baud = self.rate;
+        let bt = byte_ticks(baud);
+        let break_end = start + break_ticks(baud);
+        let n = frame.len() as u64 - 1;
+        let split = split.clamp(1, frame.len() - 1) as u64;
+        let stall = stall_us * TICKS_PER_US;
+        let end = break_end + n * bt + stall;
+
+        let mut c = self.core.borrow_mut();
+        c.claim(Talker::Host, start, end);
+        c.hold_low(start, break_end + 1);
+        c.schedule(
+            Event::WireBreak {
+                talker: Talker::Host,
+                break_start: start,
+            },
+            break_end,
+        );
+        for (k, &b) in frame[1..].iter().enumerate() {
+            let mut t = break_end + (k as u64 + 1) * bt;
+            if (k as u64) >= split {
+                t += stall;
+            }
+            if b == 0 {
+                c.hold_low(t - bt, t - bt / 10);
+            }
+            c.schedule(
+                Event::WireData {
+                    talker: Talker::Host,
+                    byte: b,
+                    baud,
+                },
+                t,
+            );
+        }
+        c.schedule(Event::HostFrameEnd, end);
+        drop(c);
+        self.host_free_at = end;
+    }
+
     /// One lone FE byte on the wire, no break framing (line noise, F4).
     pub fn inject_garble_at(&mut self, at_us: u64, b: u8) {
         let at = self.clamp_at(at_us);

@@ -356,3 +356,245 @@ fn plain_burst_survives_deadline_latency_1m() {
 fn plain_burst_survives_deadline_latency_3m() {
     plain_burst_with_deadline_latency(BaudRate::B3000000);
 }
+
+/// The bench's plain burst (`tool-osc-burst --plain`: 8 NOREPLY WRITEs +
+/// READ, host waits out the reply between cycles) with IRREGULAR intra-burst
+/// gaps: the pirate's TXE-poll bubbles put 0–3-byte-time pauses between
+/// frames, so the framer flips between caught-up (speculation at HIGH) and
+/// backlog (consumer at LOW) mid-burst — every seam of the A3(b) handoff.
+/// Silicon showed ~0.3% no-reply/stale residuals at 1M in exactly this
+/// pattern; a drop here is that residual, deterministic.
+fn plain_burst_with_gap_jitter(rate: BaudRate) {
+    use osc_integration::sim::HandlerCost;
+
+    let a = GOAL_VELOCITY.to_le_bytes();
+    for dl in [5u32, 20, 45, 70] {
+        // Deterministic LCG per cost point; gaps vary per frame AND drift
+        // per cycle so cycle boundaries never resonate with the sweep.
+        let mut lcg: u64 = 0x243F6A8885A308D3 ^ (dl as u64);
+        let mut gap = move || {
+            lcg = lcg
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            // 0..=30 µs: from zero-gap up to ~3 byte-times at 1M.
+            (lcg >> 33) % 31
+        };
+
+        let mut sim = Sim::new(rate);
+        sim.add_servo_with(1, 0, 250);
+        sim.set_handler_cost(
+            0,
+            HandlerCost {
+                on_break_us: 2,
+                on_deadline_us: 5,
+                on_tx_complete_us: 2,
+                on_dispatch_us: dl,
+            },
+        );
+
+        for cycle in 0..60u32 {
+            let v = cycle as i32 + 1;
+            let d = v.to_le_bytes();
+            let mut at = sim.now_us() + 20;
+            for k in 0..8u32 {
+                let vk = v - (7 - k as i32);
+                let dk = vk.to_le_bytes();
+                let p = vec![a[0], a[1], dk[0], dk[1], dk[2], dk[3]];
+                sim.host_send_at(at, &instruction(1, Opcode::Write, Inst::FLAG_NOREPLY, &p));
+                // Next frame starts after this one plus the jittered bubble.
+                at += frame_us(rate, 10) + gap();
+            }
+            sim.host_send_at(at, &instruction(1, Opcode::Read, 0, &[a[0], a[1], 4, 0]));
+            let frames = sim.run();
+
+            assert_eq!(
+                sim.servo_table(0, |t| t.control.lifecycle.goal_velocity),
+                v,
+                "dl={dl} cycle {cycle}: write lost"
+            );
+            let r = replies(&frames);
+            assert_eq!(r.len(), 1, "dl={dl} cycle {cycle}: READ reply lost");
+            assert_valid(r[0]);
+            let (inst, payload) = status(r[0]);
+            assert_eq!(inst.result(), Some(ResultCode::Ok), "dl={dl} cycle {cycle}");
+            assert_eq!(payload, d, "dl={dl} cycle {cycle}: stale read-back");
+        }
+        let diag = sim.servo_diag(0);
+        assert_eq!(diag.framing_drop_count, 0, "dl={dl}: live frames dropped");
+        assert_eq!(diag.crc_fail_count, 0, "dl={dl}: trusted frame failed");
+    }
+}
+
+/// Wire time of one frame (break + `n` data bytes) in µs at `rate`, rounded
+/// up — the jitter scheduler only needs a "no overlap" floor, not accuracy.
+fn frame_us(rate: BaudRate, n: u64) -> u64 {
+    let bits = 14 + n * 10;
+    (bits * 1_000_000).div_ceil(rate.as_hz() as u64)
+}
+
+#[test]
+fn plain_burst_survives_gap_jitter_1m() {
+    plain_burst_with_gap_jitter(BaudRate::B1000000);
+}
+
+#[test]
+fn plain_burst_survives_gap_jitter_3m() {
+    plain_burst_with_gap_jitter(BaudRate::B3000000);
+}
+
+/// The failing silicon signature (bench 2026-07-08, `tool-reply-edges`
+/// STALE dump): the pirate's TXE feed stalls 50–100 bit-times INSIDE a
+/// frame — mid-write4 and mid-READ on the captured cycle — so the frontier
+/// burns its recheck budget and parks at the starvation horizon while the
+/// frame quietly completes (ring bytes raise no IRQ). The reply then rode
+/// a ~2×640 µs-late wake carrying a value one write behind. Sweep the
+/// stall length and position across every frame of the burst, capped
+/// below the dead-transmitter horizon (64 byte-times, §3.3): a stall past
+/// it IS a dead transmitter and the frame is sacrificed by design.
+fn plain_burst_with_midframe_stall(rate: BaudRate) {
+    use osc_integration::sim::HandlerCost;
+
+    let horizon_us = 64 * 10 * 1_000_000u64 / rate.as_hz() as u64;
+    let stalls: Vec<u64> = [30u64, 60, 94, 150, 400, 700]
+        .into_iter()
+        .filter(|s| *s < horizon_us * 3 / 4)
+        .collect();
+    let a = GOAL_VELOCITY.to_le_bytes();
+    for dl in [5u32, 20, 45, 70] {
+        for &stall_us in &stalls {
+            for stalled_frame in 0..9usize {
+                let mut sim = Sim::new(rate);
+                sim.add_servo_with(1, 0, 250);
+                sim.set_handler_cost(
+                    0,
+                    HandlerCost {
+                        on_break_us: 2,
+                        on_deadline_us: 5,
+                        on_tx_complete_us: 2,
+                        on_dispatch_us: dl,
+                    },
+                );
+
+                for cycle in 0..3u32 {
+                    let v = (cycle as i32 + 1) + 100 * stalled_frame as i32;
+                    let d = v.to_le_bytes();
+                    for k in 0..8u32 {
+                        let vk = v - (7 - k as i32);
+                        let dk = vk.to_le_bytes();
+                        let p = vec![a[0], a[1], dk[0], dk[1], dk[2], dk[3]];
+                        let f = instruction(1, Opcode::Write, Inst::FLAG_NOREPLY, &p);
+                        if k as usize == stalled_frame {
+                            // Split after the header + 2 payload bytes, the
+                            // captured shape.
+                            sim.host_send_stalled(&f, 6, stall_us);
+                        } else {
+                            sim.host_send(&f);
+                        }
+                    }
+                    let read = instruction(1, Opcode::Read, 0, &[a[0], a[1], 4, 0]);
+                    if stalled_frame == 8 {
+                        sim.host_send_stalled(&read, 6, stall_us);
+                    } else {
+                        sim.host_send(&read);
+                    }
+                    let frames = sim.run();
+
+                    let ctx =
+                        format!("dl={dl} stall={stall_us} frame={stalled_frame} cycle={cycle}");
+                    assert_eq!(
+                        sim.servo_table(0, |t| t.control.lifecycle.goal_velocity),
+                        v,
+                        "{ctx}: write lost"
+                    );
+                    let r = replies(&frames);
+                    assert_eq!(r.len(), 1, "{ctx}: reply count");
+                    assert_valid(r[0]);
+                    let (inst, payload) = status(r[0]);
+                    assert_eq!(inst.result(), Some(ResultCode::Ok), "{ctx}");
+                    assert_eq!(payload, d, "{ctx}: stale read-back");
+                }
+                let diag = sim.servo_diag(0);
+                assert_eq!(
+                    diag.crc_fail_count, 0,
+                    "dl={dl} stall={stall_us} frame={stalled_frame}: trusted frame failed"
+                );
+            }
+        }
+    }
+}
+
+/// §7 throughput invariant: the consumer outruns the wire, so a sustained
+/// zero-gap flood of minimal frames drains through the ring (the queue, A2)
+/// with zero loss — the 512 B ring laps several times over the burst. The
+/// cost sweep stays inside the contract (per-frame dispatch below per-frame
+/// wire time); sustained overrun is out of contract by design.
+fn zero_gap_flood(rate: BaudRate, dispatch_costs: &[u32]) {
+    use osc_integration::sim::HandlerCost;
+
+    const FRAMES: i32 = 100;
+    let a = GOAL_VELOCITY.to_le_bytes();
+    for &dl in dispatch_costs {
+        let mut sim = Sim::new(rate);
+        sim.add_servo_with(1, 0, 250);
+        sim.set_handler_cost(
+            0,
+            HandlerCost {
+                on_break_us: 2,
+                on_deadline_us: 5,
+                on_tx_complete_us: 2,
+                on_dispatch_us: dl,
+            },
+        );
+
+        for k in 1..=FRAMES {
+            let d = k.to_le_bytes();
+            let p = vec![a[0], a[1], d[0], d[1], d[2], d[3]];
+            sim.host_send(&instruction(1, Opcode::Write, Inst::FLAG_NOREPLY, &p));
+        }
+        let read = instruction(1, Opcode::Read, 0, &[a[0], a[1], 4, 0]);
+        sim.host_send(&read);
+        let frames = sim.run();
+
+        assert_zero_gap(&host_frames(&frames));
+        assert_eq!(
+            sim.servo_table(0, |t| t.control.lifecycle.goal_velocity),
+            FRAMES,
+            "dl={dl}: flood tail write lost"
+        );
+        let r = replies(&frames);
+        assert_eq!(r.len(), 1, "dl={dl}: reply count");
+        assert_valid(r[0]);
+        let (inst, payload) = status(r[0]);
+        assert_eq!(inst.result(), Some(ResultCode::Ok), "dl={dl}");
+        assert_eq!(
+            payload,
+            FRAMES.to_le_bytes(),
+            "dl={dl}: stale flood read-back"
+        );
+        let diag = sim.servo_diag(0);
+        assert_eq!(diag.crc_fail_count, 0, "dl={dl}: trusted frame failed");
+        assert_eq!(diag.framing_drop_count, 0, "dl={dl}: flood dropped frames");
+    }
+}
+
+#[test]
+fn zero_gap_flood_1m() {
+    zero_gap_flood(BaudRate::B1000000, &[5, 20, 45, 70]);
+}
+
+/// At 3M a minimal write is ~40 µs of wire; the sweep stays below it — a
+/// 70 µs consumer would be sustained overrun, out of contract.
+#[test]
+fn zero_gap_flood_3m() {
+    zero_gap_flood(BaudRate::B3000000, &[5, 20, 30]);
+}
+
+#[test]
+fn plain_burst_survives_midframe_stall_1m() {
+    plain_burst_with_midframe_stall(BaudRate::B1000000);
+}
+
+#[test]
+fn plain_burst_survives_midframe_stall_3m() {
+    plain_burst_with_midframe_stall(BaudRate::B3000000);
+}
