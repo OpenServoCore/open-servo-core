@@ -46,6 +46,28 @@ pub fn configure(ch: Channel, cfg: &Config, paddr: u32, maddr: u32, count: u16) 
     });
 }
 
+/// Memory-to-memory byte copy: `src` → `dst`, `count` bytes, started
+/// immediately (no peripheral request — MEM2MEM free-runs at bus speed).
+/// PAR is the source (DIR = from-peripheral), both sides increment.
+pub fn configure_m2m(ch: Channel, src: u32, dst: u32, count: u16, pl: Pl) {
+    let n = (ch as u8 - 1) as usize;
+    let c = DMA1.ch(n);
+    c.par().write_value(src);
+    c.mar().write_value(dst);
+    c.ndtr().write(|w| w.set_ndt(count));
+    // EN in the same CR write (spike-proven shape).
+    c.cr().write(|w| {
+        w.set_mem2mem(true);
+        w.set_dir(Dir::FROMPERIPHERAL);
+        w.set_pinc(true);
+        w.set_minc(true);
+        w.set_psize(Size::BITS8);
+        w.set_msize(Size::BITS8);
+        w.set_pl(pl);
+        w.set_en(true);
+    });
+}
+
 /// Channel must be disabled when called.
 pub fn set_count(ch: Channel, count: u16) {
     let n = (ch as u8 - 1) as usize;

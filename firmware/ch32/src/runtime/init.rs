@@ -191,7 +191,10 @@ fn configure_adc_dma_scan(sensors: &AdcPins) {
         size: dma::Size::BITS16,
         htie: false,
         tcie: true,
-        pl: dma::Pl::LOW,
+        // VERYHIGH + lowest channel number = top of the DMA ladder: the ADC
+        // drain interleaves through the CH6 staging copy (§5 odd reads)
+        // instead of starving behind it.
+        pl: dma::Pl::VERYHIGH,
     };
     let paddr = ADC.rdatar().as_ptr() as u32;
     let maddr = ADC_DMA_BUF.get() as u32;
@@ -221,7 +224,9 @@ fn bring_up_bus(brr: u32) {
         size: dma::Size::BITS8,
         htie: false,
         tcie: false,
-        pl: dma::Pl::HIGH,
+        // VERYHIGH, number 5 < 6: the RX ring wins ties against the CH6
+        // staging copy, so inbound bytes never overrun during a copy.
+        pl: dma::Pl::VERYHIGH,
     };
     dma::configure(
         dma::Channel::CH5,

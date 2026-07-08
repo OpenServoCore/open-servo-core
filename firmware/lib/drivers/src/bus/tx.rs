@@ -24,11 +24,6 @@ pub const REPLY_BUF: usize = 16;
 /// that would leave a zero-length DMA arm.
 const SMALL_COPY_MAX: usize = 2;
 
-/// Copy-path capacity: `FrameBuf::payload_mut` reserves CRC space.
-/// Only the defensive odd-pointer arm can exceed this — the dispatcher never
-/// produces odd-addressed slices (even-addr reads enforced at dispatch, §5).
-const COPY_PAYLOAD_MAX: usize = REPLY_BUF - 7;
-
 /// Outcome of an arm-completion event.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum TxOut {
@@ -129,13 +124,11 @@ impl<W: TxWire> TxEngine<W> {
         }
         let p = data.len() as u8;
         let inst = Inst::status(result, alert);
-        // Odd pointers can't feed the CRC DMA (F12); small payloads are
-        // cheaper to copy than to arm. An odd covered span feeds its even
-        // bulk and leaves the last byte for the software fold at patch (§3.2).
-        if data.len() <= SMALL_COPY_MAX || data.as_ptr() as usize & 1 == 1 {
-            if data.len() > COPY_PAYLOAD_MAX {
-                return Err(SendError::Overflow);
-            }
+        // Small payloads are cheaper to copy than to arm. An odd covered span
+        // feeds its even bulk and leaves the last byte for the software fold
+        // at patch (§3.2); odd POINTERS are the CRC provider's concern (it
+        // stages them through its copy channel, §5).
+        if data.len() <= SMALL_COPY_MAX {
             self.buf.start(Id::new(id), inst);
             self.buf.payload_mut()[..data.len()].copy_from_slice(data);
             self.buf.finish(p);
@@ -328,11 +321,7 @@ mod tests {
         }
         fn feed(&mut self, span: &[u8]) {
             assert_eq!(span.len() % 2, 0, "CRC feed must be even-length (F12)");
-            assert_eq!(
-                span.as_ptr() as usize % 2,
-                0,
-                "CRC feed must be even-addressed (F12)"
-            );
+            // Odd ADDRESSES are legal: the chip provider stages them (§5).
             self.0 = osc_crc_continue(self.0, span);
         }
         fn result(&mut self) -> Option<u16> {
@@ -470,10 +459,11 @@ mod tests {
     }
 
     #[test]
-    fn small_odd_pointer_takes_copy_path() {
+    fn odd_pointer_streams_zero_copy() {
         let (mut eng, log) = engine();
-        // Odd-addressed source: the CRC DMA can't pair it (F12) → copy path
-        // regardless of size.
+        // Odd-addressed source above SMALL_COPY_MAX: streamed zero-copy like
+        // any other span — the chip CRC provider stages odd pointers through
+        // its copy channel (§5); the engine is parity-blind.
         let backing = Aligned([0u8, 0xDE, 0xAD, 0xBE]);
         let data = &backing.0[1..4];
         eng.stage(1, ResultCode::Ok, true, data).unwrap();
@@ -481,8 +471,8 @@ mod tests {
         let log = log.borrow();
         let reference = reference(1, ResultCode::Ok, true, data);
         let s = sends(&log);
-        // Header + payload, then the CRC tail as its own final arm.
-        assert_eq!(s.iter().map(Vec::len).collect::<Vec<_>>(), vec![6, 2]);
+        // Header, streamed payload, CRC.
+        assert_eq!(s.iter().map(Vec::len).collect::<Vec<_>>(), vec![3, 3, 2]);
         assert_eq!(wire_bytes(&log), reference[1..]);
     }
 

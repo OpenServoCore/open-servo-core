@@ -237,8 +237,8 @@ table region (UART bytes tolerate arbitrary inter-byte gaps, so the µs-
 scale re-arm between DMA arms is invisible framing-wise — nothing in this
 protocol times on idle). The CRC engine consumes the same spans: the
 4-byte buffer head (`0x00, ID, LEN, INST`) is 2 whole halfwords, so
-even-addressed table spans arrive halfword-paired with no re-packing
-(§3.2, §5.2). Reads over 252 B
+even-addressed table spans arrive halfword-paired with no re-packing;
+odd-addressed spans stage through the provider's copy channel (§5). Reads over 252 B
 split into multiple frames (§5.1), each still zero-copy.
 
 ## 5. Instruction set
@@ -274,16 +274,15 @@ Notes:
   1024 B); `addr` is 2 bytes, `count` is 2 bytes for reads (kept u16 for
   field alignment in the payload view; values cap at 252, §5.1) and
   1 byte per GWRITE slice.
-- **READ/GREAD `addr` must be even** — the same rule §5.2 imposes on
-  profile spans, for the same reason: replies stream zero-copy from the
-  table through the halfword CRC engine, and an odd-addressed span breaks
-  its pairing [F12]. An odd `addr` is rejected with `range`. The table's
-  `repr(C)` layout keeps every multi-byte field even-aligned anyway; a
-  host that wants an odd-placed byte reads the enclosing even pair (odd
-  *count* stays legal — a trailing odd byte folds into the CRC in
-  software, §3.2).
-  WRITE addressing is unconstrained: inbound payloads validate through
-  the ring anchor, not the table address.
+- **READ/GREAD addressing is unconstrained** — any `addr`, any `count`.
+  On chips whose CRC DMA needs halfword alignment [F12], an odd-addressed
+  reply span stages through a DMA copy inside the CRC provider
+  (implementation detail, not protocol): the copy channel outranks the
+  feed channel, so the feed cannot overtake it, and the pair completes
+  ~6× faster than the wire consumes the reply. Zero CPU either way; the
+  common even-addressed span stays zero-copy. WRITE addressing was never
+  constrained: inbound payloads validate through the ring anchor, not
+  the table address.
 
 ### 5.1 Size limits
 

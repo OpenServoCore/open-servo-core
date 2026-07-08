@@ -25,8 +25,10 @@ pub trait Deadline {
 }
 
 /// Hardware CRC engine, DMA-fed — zero CPU per byte (§3.2, F6). Spans must
-/// be even-addressed and even-length (F12); feeds accumulate across calls
-/// until [`Self::reset`].
+/// be even-LENGTH (the §3.2 fold covers trailing odd bytes); any address is
+/// legal — providers whose DMA needs halfword alignment (F12) stage
+/// odd-addressed spans through an internal copy (§5). Feeds accumulate
+/// across calls until [`Self::reset`].
 pub trait CrcEngine {
     fn reset(&mut self);
     fn feed(&mut self, span: &[u8]);

@@ -565,24 +565,22 @@ impl<P: Providers> ServoBus<P> {
     }
 
     /// Feed the covered span's even bulk (1 or 2 wrap halves) into the CRC
-    /// engine, no result poll. The feed self-aligns (§3.2): it starts at
-    /// whichever of anchor / anchor+1 is even (the break's `0x00` is a CRC
-    /// no-op, included or excluded as parity demands), and a trailing odd
-    /// byte is left for the software fold at verify. Both halves stay
-    /// even-length and even-addressed (F12): the start and the ring length
-    /// are even, so any wrap split lands on a halfword boundary.
+    /// engine, no result poll. The feed starts at the anchor regardless of
+    /// parity — the break's `0x00` leads as a CRC no-op, and the engine
+    /// provider streams every span through its staging copy (§3.2), so
+    /// address parity is nobody's concern. A trailing odd byte is left for
+    /// the software fold at verify.
     fn crc_feed(&mut self, anchor: u16, footprint: u16) {
         let ring = self.ring.bytes();
         let len = ring.len();
         let anchor = anchor as usize;
-        let start = anchor + (anchor & 1);
         let end = anchor + footprint as usize - 2;
-        let bulk_end = end - ((end - start) & 1);
+        let bulk_end = end - ((end - anchor) & 1);
         self.crc.reset();
         if bulk_end <= len {
-            self.crc.feed(&ring[start..bulk_end]);
+            self.crc.feed(&ring[anchor..bulk_end]);
         } else {
-            self.crc.feed(&ring[start..len]);
+            self.crc.feed(&ring[anchor..len]);
             self.crc.feed(&ring[..bulk_end - len]);
         }
     }
@@ -592,9 +590,8 @@ impl<P: Providers> ServoBus<P> {
         let ring = self.ring.bytes();
         let len = ring.len();
         let anchor = anchor as usize;
-        let start = anchor + (anchor & 1);
         let end = anchor + footprint as usize - 2;
-        if (end - start) & 1 == 1 {
+        if (end - anchor) & 1 == 1 {
             Some(ring[(end - 1) % len])
         } else {
             None

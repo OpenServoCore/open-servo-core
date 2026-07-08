@@ -150,11 +150,6 @@ impl CrcEngine for FakeCrc {
 
     fn feed(&mut self, span: &[u8]) {
         assert_eq!(span.len() % 2, 0, "CRC feed must be even-length (F12)");
-        assert_eq!(
-            span.as_ptr() as usize % 2,
-            0,
-            "CRC feed must be even-addressed (F12)"
-        );
         self.0 = osc_crc_continue(self.0, span);
     }
 

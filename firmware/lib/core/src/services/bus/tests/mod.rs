@@ -152,9 +152,9 @@ fn read_count_zero_rejects_range() {
 }
 
 #[test]
-fn read_odd_addr_rejects_range() {
-    // §5: read addresses must be even (halfword CRC pairing on the zero-copy
-    // reply path); the enclosing even pair serves odd-placed bytes.
+fn read_odd_addr_serves_bytes() {
+    // §5: any read address is legal — odd-addressed spans stage through the
+    // chip CRC provider's copy path (§3.2); dispatch is parity-blind.
     let shared = Shared::new();
     let mut staged = StagedWrites::new();
     let reply = go(
@@ -163,8 +163,8 @@ fn read_odd_addr_rejects_range() {
         Request::Read { addr: 1, count: 2 },
         true,
     );
-    assert_eq!(reply.last().result, ResultCode::Range);
-    assert!(reply.last().data.is_empty());
+    assert_eq!(reply.last().result, ResultCode::Ok);
+    assert_eq!(reply.last().data.len(), 2);
 }
 
 #[test]

@@ -14,6 +14,8 @@
 //! Register recipe ported from the `spi_crc` bringup spike (case 9: CRCEN
 //! held across feeds accumulates).
 
+use core::cell::SyncUnsafeCell;
+
 use ch32_metapac::SPI1;
 use ch32_metapac::spi::vals::BaudRate as SpiBaud;
 use osc_drivers::traits::bus;
@@ -28,6 +30,16 @@ const OSC_CRC_POLY: u16 = 0x8005;
 /// speed, F6). An expiry leaves a partial accumulator → the frame fails CRC
 /// and drops, which is the sanctioned "spin miss = fail" outcome (§3.2).
 const FEED_DRAIN_SPIN: u32 = 4096;
+
+/// Staging for the feed stream (§3.2, §5): every span is m2m-copied here
+/// before the engine consumes it — one shape, no address discrimination.
+/// Sized for the largest feed: a max frame's covered span (256 B).
+const STAGING_LEN: usize = 256;
+
+#[repr(align(2))]
+struct Staging([u8; STAGING_LEN]);
+
+static STAGING: SyncUnsafeCell<Staging> = SyncUnsafeCell::new(Staging([0; STAGING_LEN]));
 
 /// Production binding to SPI1 + DMA1_CH3.
 pub struct Crc;
@@ -96,6 +108,7 @@ impl Crc {
 impl bus::CrcEngine for Crc {
     fn reset(&mut self) {
         dma::disable(dma::Channel::CH3);
+        dma::disable(dma::Channel::CH6);
         // Toggling CRCEN off→on clears the accumulator with the mode locked.
         SPI1.ctlr1().modify(|w| w.set_crcen(false));
         SPI1.ctlr1().modify(|w| w.set_crcen(true));
@@ -108,8 +121,29 @@ impl bus::CrcEngine for Crc {
             budget -= 1;
             core::hint::spin_loop();
         }
-        // Caller guarantees even addr/len (§3.2, F12): DMA reads halfwords.
-        Self::arm(span.as_ptr() as u32, (span.len() / 2) as u16);
+        // Stream processing, one shape (§3.2): CH6 m2m-copies the span into
+        // staging, CH3 feeds staging to the engine — no address
+        // discrimination, no branch. CH6 runs VERYHIGH, strictly above CH3,
+        // so the arbiter completes the copy before the feed's first grant;
+        // CH1 (ADC) and CH5 (RX ring), VERYHIGH with lower channel numbers,
+        // interleave through the copy and never starve. Zero CPU beyond
+        // these register writes.
+        debug_assert!(span.len() <= STAGING_LEN, "feed span exceeds staging");
+        // SAFETY: single writer — feeds are serialized by the bus driver
+        // (one CRC engine, one exchange at a time); the prior feed's chain
+        // has drained (spin above), so overwriting staging is safe.
+        let dst = unsafe { (*STAGING.get()).0.as_ptr() } as u32;
+        dma::disable(dma::Channel::CH6);
+        dma::configure_m2m(
+            dma::Channel::CH6,
+            span.as_ptr() as u32,
+            dst,
+            span.len() as u16,
+            dma::Pl::VERYHIGH,
+        );
+        // Even length guaranteed by the caller (§3.2 fold contract); DMA
+        // reads halfwords.
+        Self::arm(dst, (span.len() / 2) as u16);
     }
 
     fn result(&mut self) -> Option<u16> {
