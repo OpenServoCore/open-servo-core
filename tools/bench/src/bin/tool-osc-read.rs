@@ -54,6 +54,7 @@ fn main() -> Result<()> {
     let settle_ms = wire_bytes * 10_000 / args.baud as u64 + 4;
 
     let want = args.len as usize;
+    let verbose = args.verbose;
     let report = measure(
         &mut client,
         &wire,
@@ -66,6 +67,15 @@ fn main() -> Result<()> {
             }
             if ex.status.payload.len() != want {
                 bail!("payload {} bytes, wanted {want}", ex.status.payload.len());
+            }
+            if verbose {
+                let hex: Vec<String> = ex
+                    .status
+                    .payload
+                    .iter()
+                    .map(|b| format!("{b:02x}"))
+                    .collect();
+                println!("payload      [{}]", hex.join(" "));
             }
             Ok(())
         },
