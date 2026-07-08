@@ -465,16 +465,20 @@ impl<P: Providers> ServoBus<P> {
         let anchor = span.anchor;
         let footprint = span.footprint;
         let packet_end = span.packet_end;
-        // 1. Validate in place; a fail (or spin miss) drops silently (§5.3 L1).
-        if !self.crc_ok(anchor, footprint) {
-            self.crc_fails = self.crc_fails.wrapping_add(1);
-            return;
-        }
-        // 2. Status frames only advance the snoop chain (§6), timed from the
-        // parser's packet-end estimate.
+        // 1. Status frames only advance the snoop chain (§6), timed from the
+        // parser's packet-end estimate — framing-level truth, NO validation:
+        // the chain consumes nothing from the body, and skipping the CRC
+        // keeps the snapshot buffer untouched while our own staged reply
+        // streams from it. A corrupt status mis-times one slot at worst,
+        // bounded by the reclaim window (§6).
         if self.ring_inst(anchor).is_status() {
             let out = self.chain.on_status_end(packet_end);
             self.route_chain(out);
+            return;
+        }
+        // 2. Validate in place; a fail (or spin miss) drops silently (§5.3 L1).
+        if !self.crc_ok(anchor, footprint) {
+            self.crc_fails = self.crc_fails.wrapping_add(1);
             return;
         }
         // 3. A fresh instruction supersedes any stale, not-yet-streaming reply.
@@ -507,7 +511,7 @@ impl<P: Providers> ServoBus<P> {
         &mut self,
         anchor: u16,
         footprint: u16,
-        f: impl FnOnce(Request<'_>, RequestCtx, &mut ReplyHandle<'_, P::Tx>) -> T,
+        f: impl FnOnce(Request<'_>, RequestCtx, &mut ReplyHandle<'_, P::Tx, P::Crc>) -> T,
     ) -> Option<(bool, u8, T)> {
         let anchor = anchor as usize;
         let footprint = footprint as usize;
@@ -526,6 +530,7 @@ impl<P: Providers> ServoBus<P> {
         // takes the reply-staging fields mutably.
         let mut handle = ReplyHandle {
             tx: &mut self.tx,
+            crc: &mut self.crc,
             id: self.id,
             pending_id: &mut self.pending_id,
             pending_baud: &mut self.pending_baud,
@@ -552,9 +557,10 @@ impl<P: Providers> ServoBus<P> {
     /// A reply surface over the deferred-config fields, with no request decode —
     /// used at speculative commit, where hooks stage baud/id but no frame is
     /// re-parsed (the ring isn't borrowed here).
-    fn reply_handle(&mut self) -> ReplyHandle<'_, P::Tx> {
+    fn reply_handle(&mut self) -> ReplyHandle<'_, P::Tx, P::Crc> {
         ReplyHandle {
             tx: &mut self.tx,
+            crc: &mut self.crc,
             id: self.id,
             pending_id: &mut self.pending_id,
             pending_baud: &mut self.pending_baud,
@@ -564,25 +570,32 @@ impl<P: Providers> ServoBus<P> {
         }
     }
 
-    /// Feed the covered span's even bulk (1 or 2 wrap halves) into the CRC
-    /// engine, no result poll. The feed starts at the anchor regardless of
-    /// parity — the break's `0x00` leads as a CRC no-op, and the engine
-    /// provider streams every span through its staging copy (§3.2), so
-    /// address parity is nobody's concern. A trailing odd byte is left for
-    /// the software fold at verify.
+    /// Snapshot the covered span (linearizing a ring-wrap split) and feed its
+    /// even bulk into the CRC engine, no result poll. The feed starts at the
+    /// anchor regardless of parity — the break's `0x00` leads as a CRC no-op
+    /// and the snapshot buffer is even-based (§3.2). Linearization also makes
+    /// segment-length parity irrelevant: the halfword feed sees one
+    /// contiguous span. A trailing odd byte is left for the fold at verify.
     fn crc_feed(&mut self, anchor: u16, footprint: u16) {
         let ring = self.ring.bytes();
         let len = ring.len();
         let anchor = anchor as usize;
-        let end = anchor + footprint as usize - 2;
-        let bulk_end = end - ((end - anchor) & 1);
+        let covered = footprint as usize - 2;
+        let bulk = covered - (covered & 1);
         self.crc.reset();
-        if bulk_end <= len {
-            self.crc.feed(&ring[anchor..bulk_end]);
+        let base = if anchor + covered <= len {
+            self.crc.snapshot(0, &ring[anchor..anchor + covered])
         } else {
-            self.crc.feed(&ring[anchor..len]);
-            self.crc.feed(&ring[..bulk_end - len]);
-        }
+            let first = len - anchor;
+            let base = self.crc.snapshot(0, &ring[anchor..len]);
+            self.crc.snapshot(first as u16, &ring[..covered - first]);
+            base
+        };
+        // SAFETY: `base` targets the engine's snapshot buffer, stable and
+        // sized for a max covered span (trait contract); the copy cannot be
+        // overtaken by the feed (transfer ordering).
+        self.crc
+            .feed(unsafe { core::slice::from_raw_parts(base, bulk) });
     }
 
     /// The covered byte the even-bulk feed left behind, if the span was odd.
@@ -648,8 +661,9 @@ impl<P: Providers> ServoBus<P> {
 /// Reply surface over disjoint `ServoBus` fields (driver-pattern §4.3): the
 /// decoded request still borrows the ring while the dispatcher stages the
 /// reply into the TX engine and the deferred-config fields.
-struct ReplyHandle<'a, W: TxWire> {
+struct ReplyHandle<'a, W: TxWire, C: CrcEngine> {
     tx: &'a mut TxEngine<W>,
+    crc: &'a mut C,
     id: u8,
     pending_id: &'a mut Option<u8>,
     pending_baud: &'a mut Option<BaudRate>,
@@ -658,11 +672,11 @@ struct ReplyHandle<'a, W: TxWire> {
     staged: bool,
 }
 
-impl<W: TxWire> Reply for ReplyHandle<'_, W> {
+impl<W: TxWire, C: CrcEngine> Reply for ReplyHandle<'_, W, C> {
     fn send_status(&mut self, status: Status<'_>) -> Result<(), SendError> {
         let r = self
             .tx
-            .stage(self.id, status.result, status.alert, status.data);
+            .stage(self.crc, self.id, status.result, status.alert, status.data);
         if r.is_ok() {
             self.staged = true;
         }

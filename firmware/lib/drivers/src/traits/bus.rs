@@ -24,14 +24,24 @@ pub trait Deadline {
     fn cancel(&mut self);
 }
 
-/// Hardware CRC engine, DMA-fed — zero CPU per byte (§3.2, F6). Spans must
-/// be even-LENGTH (the §3.2 fold covers trailing odd bytes); any address is
-/// legal — providers whose DMA needs halfword alignment (F12) stage
-/// odd-addressed spans through an internal copy (§5). Feeds accumulate
-/// across calls until [`Self::reset`].
+/// Hardware CRC engine, DMA-fed — zero CPU per byte (§3.2, F6). Feed spans
+/// must be even-LENGTH (the §3.2 fold covers trailing odd bytes) and
+/// even-ADDRESSED (F12) — which every source satisfies by construction: the
+/// reply buffer head and the snapshot buffer are halfword-aligned, and
+/// arbitrary-parity spans reach the engine through [`Self::snapshot`]. Feeds
+/// accumulate across calls until [`Self::reset`].
 pub trait CrcEngine {
     fn reset(&mut self);
     fn feed(&mut self, span: &[u8]);
+    /// Stream `src` into the engine's stable snapshot buffer at byte offset
+    /// `off` and return the copy's address. Best-effort and asynchronous:
+    /// the copy may still be in flight on return — the engine's transfer
+    /// ordering guarantees no downstream consumer (CRC feed, wire arm)
+    /// overtakes it. Both the wire and the CRC consume the snapshot, so a
+    /// reply's CRC always covers exactly the transmitted bytes (§4.2);
+    /// offsets let a caller linearize a ring-wrapped span. Contents stay
+    /// valid until the next `snapshot` call over the same range.
+    fn snapshot(&mut self, off: u16, src: &[u8]) -> *const u8;
     /// The CRC over everything fed since reset, once the engine has drained
     /// the fed spans; `None` while still busy.
     fn result(&mut self) -> Option<u16>;

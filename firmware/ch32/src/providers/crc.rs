@@ -31,15 +31,17 @@ const OSC_CRC_POLY: u16 = 0x8005;
 /// and drops, which is the sanctioned "spin miss = fail" outcome (§3.2).
 const FEED_DRAIN_SPIN: u32 = 4096;
 
-/// Staging for the feed stream (§3.2, §5): every span is m2m-copied here
-/// before the engine consumes it — one shape, no address discrimination.
-/// Sized for the largest feed: a max frame's covered span (256 B).
-const STAGING_LEN: usize = 256;
+/// The snapshot buffer (§3.2, §4.2): arbitrary-parity spans are CH6-streamed
+/// here, and BOTH the CRC feed (CH3) and the wire arms (CH4) consume the
+/// copy — the reply CRC covers exactly the transmitted bytes, and reads
+/// carry a best-effort point-in-time image. Sized for the largest covered
+/// span (max frame, 256 B). Even base: the feed reads halfwords from it.
+const SNAPSHOT_LEN: usize = 256;
 
 #[repr(align(2))]
-struct Staging([u8; STAGING_LEN]);
+struct Snapshot([u8; SNAPSHOT_LEN]);
 
-static STAGING: SyncUnsafeCell<Staging> = SyncUnsafeCell::new(Staging([0; STAGING_LEN]));
+static SNAPSHOT: SyncUnsafeCell<Snapshot> = SyncUnsafeCell::new(Snapshot([0; SNAPSHOT_LEN]));
 
 /// Production binding to SPI1 + DMA1_CH3.
 pub struct Crc;
@@ -121,29 +123,43 @@ impl bus::CrcEngine for Crc {
             budget -= 1;
             core::hint::spin_loop();
         }
-        // Stream processing, one shape (§3.2): CH6 m2m-copies the span into
-        // staging, CH3 feeds staging to the engine — no address
-        // discrimination, no branch. CH6 runs VERYHIGH, strictly above CH3,
-        // so the arbiter completes the copy before the feed's first grant;
-        // CH1 (ADC) and CH5 (RX ring), VERYHIGH with lower channel numbers,
-        // interleave through the copy and never starve. Zero CPU beyond
-        // these register writes.
-        debug_assert!(span.len() <= STAGING_LEN, "feed span exceeds staging");
-        // SAFETY: single writer — feeds are serialized by the bus driver
-        // (one CRC engine, one exchange at a time); the prior feed's chain
-        // has drained (spin above), so overwriting staging is safe.
-        let dst = unsafe { (*STAGING.get()).0.as_ptr() } as u32;
-        dma::disable(dma::Channel::CH6);
+        // Sources are even-based by construction (frame buffer head or the
+        // snapshot buffer, trait contract); even length per the fold contract.
+        Self::arm(span.as_ptr() as u32, (span.len() / 2) as u16);
+    }
+
+    fn snapshot(&mut self, off: u16, src: &[u8]) -> *const u8 {
+        // Best-effort streaming copy, fire-and-forget: CH6 runs VERYHIGH,
+        // strictly above CH3 (feed) and CH4 (TX), so no consumer can overtake
+        // the copy — a late copy stalls the wire into legal inter-byte gaps
+        // at worst. CH1 (ADC) and CH5 (RX ring), VERYHIGH with lower channel
+        // numbers, interleave through it and never starve. No spin, no lock:
+        // a kernel tick landing mid-copy tears the image by a µs-window, but
+        // wire and CRC both read the copy, so the reply stays CRC-consistent
+        // (§4.2 best-effort snapshot).
+        debug_assert!(off as usize + src.len() <= SNAPSHOT_LEN);
+        // The offset picks the channel: a ring-wrap linearization issues two
+        // back-to-back copies (off 0, then the split point), and re-arming
+        // one channel would truncate the first copy mid-flight. Disjoint
+        // destinations, both VERYHIGH, CH6 drains before CH7 by number.
+        let ch = if off == 0 {
+            dma::Channel::CH6
+        } else {
+            dma::Channel::CH7
+        };
+        // SAFETY: single writer per exchange — snapshot calls are serialized
+        // by the bus driver, and consumers are ordered behind the copy
+        // channels by the DMA priority ladder.
+        let dst = unsafe { (*SNAPSHOT.get()).0.as_ptr().add(off as usize) };
+        dma::disable(ch);
         dma::configure_m2m(
-            dma::Channel::CH6,
-            span.as_ptr() as u32,
-            dst,
-            span.len() as u16,
+            ch,
+            src.as_ptr() as u32,
+            dst as u32,
+            src.len() as u16,
             dma::Pl::VERYHIGH,
         );
-        // Even length guaranteed by the caller (§3.2 fold contract); DMA
-        // reads halfwords.
-        Self::arm(dst, (span.len() / 2) as u16);
+        dst
     }
 
     fn result(&mut self) -> Option<u16> {

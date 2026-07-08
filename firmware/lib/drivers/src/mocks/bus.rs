@@ -129,11 +129,17 @@ impl Deadline for FakeDeadline {
 
 /// Software osc-CRC accumulator with an immediate result — asserts even feeds
 /// (F12) exactly like the `tx` engine tests.
-pub struct FakeCrc(u16);
+pub struct FakeCrc {
+    state: u16,
+    snap: Vec<u8>,
+}
 
 impl FakeCrc {
     pub fn new() -> Self {
-        FakeCrc(0)
+        FakeCrc {
+            state: 0,
+            snap: Vec::new(),
+        }
     }
 }
 
@@ -145,16 +151,28 @@ impl Default for FakeCrc {
 
 impl CrcEngine for FakeCrc {
     fn reset(&mut self) {
-        self.0 = 0;
+        self.state = 0;
     }
 
     fn feed(&mut self, span: &[u8]) {
         assert_eq!(span.len() % 2, 0, "CRC feed must be even-length (F12)");
-        self.0 = osc_crc_continue(self.0, span);
+        self.state = osc_crc_continue(self.state, span);
+    }
+
+    fn snapshot(&mut self, off: u16, src: &[u8]) -> *const u8 {
+        let off = off as usize;
+        if self.snap.len() < off + src.len() {
+            self.snap.resize(off + src.len(), 0);
+        }
+        self.snap[off..off + src.len()].copy_from_slice(src);
+        // SAFETY-adjacent note: tests never grow the Vec between a snapshot
+        // and its consumption, so the pointer stays stable like the chip's
+        // static buffer.
+        unsafe { self.snap.as_ptr().add(off) }
     }
 
     fn result(&mut self) -> Option<u16> {
-        Some(self.0)
+        Some(self.state)
     }
 }
 

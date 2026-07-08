@@ -64,8 +64,9 @@ pub struct TxEngine<W: TxWire> {
     state: State,
     result: ResultCode,
     /// The covered byte the even-bulk feeds leave un-fed when the span is odd
-    /// (§3.2): folded into the engine result at patch time.
-    tail: Option<u8>,
+    /// (§3.2): read and folded into the engine result at patch time (the
+    /// pointer targets engine-stable storage — buffer or snapshot).
+    tail: Option<*const u8>,
     alert: bool,
     crc_misses: u32,
 }
@@ -104,13 +105,12 @@ impl<W: TxWire> TxEngine<W> {
     }
 
     /// Build the frame layout for a status reply; touches no wire state
-    /// (enable-when-ready is [`trigger`](Self::trigger), §4.2).
-    ///
-    /// Contract: slices above [`SMALL_COPY_MAX`] are streamed in place and
-    /// must reference storage that outlives the transmission — the dispatcher
-    /// only produces such slices from the static control table.
-    pub fn stage(
+    /// (enable-when-ready is [`trigger`](Self::trigger), §4.2). Payloads
+    /// above [`SMALL_COPY_MAX`] are snapshotted through the CRC engine's
+    /// stable buffer — wire and CRC both stream the snapshot (§4.2).
+    pub fn stage<C: CrcEngine>(
         &mut self,
+        crc: &mut C,
         id: u8,
         result: ResultCode,
         alert: bool,
@@ -151,23 +151,24 @@ impl<W: TxWire> TxEngine<W> {
             };
             self.n_feeds = 1;
             self.tail = if cov & 1 == 1 {
-                Some(self.buf.bytes()[cov - 1])
+                Some(&raw const self.buf.bytes()[cov - 1])
             } else {
                 None
             };
             self.crc_off = cov as u16;
         } else {
-            // Zero-copy (§4.2): header in the buffer, payload streamed from
-            // its home. Every CRC feed is even-length and even-addressed by
-            // construction (F12): the 4-byte buffer head is 2 whole halfwords
-            // in the align(2) buffer, and an odd payload feeds `p - 1` bytes,
-            // leaving its last byte for the fold.
+            // Snapshot reads (§4.2): the payload is copied ONCE into the
+            // engine's stable snapshot buffer, and both the wire arms and the
+            // CRC feeds stream the snapshot — the CRC provably covers the
+            // transmitted bytes, and the reply carries an atomic
+            // point-in-time image (`stage` runs kernel-exclusive, and the
+            // snapshot completes before it returns).
             let b = self.buf.bytes_mut();
             b[0] = wire::ALIGN_BYTE;
             b[1] = id;
             b[2] = wire::len_for(p);
             b[3] = inst.0;
-            let ptr = data.as_ptr();
+            let ptr = crc.snapshot(0, data);
             self.arms[0] = Arm::Buf { off: 1, len: 3 };
             self.arms[1] = Arm::Ext { ptr, len: p as u16 };
             // The buffer's bytes 4..6 double as the CRC tail arm.
@@ -179,8 +180,11 @@ impl<W: TxWire> TxEngine<W> {
                 len: (p & !1) as u16,
             };
             self.n_feeds = 2;
+            // The fold byte is read at patch time, not here: the snapshot is
+            // best-effort asynchronous and may still be streaming — by the
+            // patch boundary the copy has long completed (§4.2).
             self.tail = if p & 1 == 1 {
-                Some(data[p as usize - 1])
+                Some(unsafe { ptr.add(p as usize - 1) })
             } else {
                 None
             };
@@ -268,9 +272,12 @@ impl<W: TxWire> TxEngine<W> {
         match value {
             Some(v) => {
                 // Fold the un-fed trailing covered byte, if the span was odd
-                // (§3.2) — the only software CRC on the servo.
+                // (§3.2) — the only software CRC on the servo. SAFETY: the
+                // pointer targets the frame buffer or the engine's snapshot,
+                // both stable for this exchange; any snapshot copy completed
+                // arms ago (transfer ordering).
                 let v = match self.tail {
-                    Some(b) => osc_crc_continue(v, &[b]),
+                    Some(b) => osc_crc_continue(v, &[unsafe { *b }]),
                     None => v,
                 };
                 let off = self.crc_off as usize;
@@ -313,19 +320,39 @@ mod tests {
     use std::vec;
     use std::vec::Vec;
 
-    struct FakeCrc(u16);
+    struct FakeCrc {
+        state: u16,
+        snap: Vec<u8>,
+    }
+
+    impl FakeCrc {
+        fn new() -> Self {
+            FakeCrc {
+                state: 0,
+                snap: Vec::new(),
+            }
+        }
+    }
 
     impl CrcEngine for FakeCrc {
         fn reset(&mut self) {
-            self.0 = 0;
+            self.state = 0;
         }
         fn feed(&mut self, span: &[u8]) {
             assert_eq!(span.len() % 2, 0, "CRC feed must be even-length (F12)");
             // Odd ADDRESSES are legal: the chip provider stages them (§5).
-            self.0 = osc_crc_continue(self.0, span);
+            self.state = osc_crc_continue(self.state, span);
+        }
+        fn snapshot(&mut self, off: u16, src: &[u8]) -> *const u8 {
+            let off = off as usize;
+            if self.snap.len() < off + src.len() {
+                self.snap.resize(off + src.len(), 0);
+            }
+            self.snap[off..off + src.len()].copy_from_slice(src);
+            unsafe { self.snap.as_ptr().add(off) }
         }
         fn result(&mut self) -> Option<u16> {
-            Some(self.0)
+            Some(self.state)
         }
     }
 
@@ -370,12 +397,17 @@ mod tests {
 
     /// Drive a staged frame to completion, returning the arm outcomes. The one
     /// CRC engine spans trigger and every arm boundary, as on the chip.
-    fn run(eng: &mut TxEngine<FakeWire>, over: Option<ResultCode>) -> Vec<TxOut> {
-        let mut crc = FakeCrc(0);
-        eng.trigger(&mut crc, over);
+    /// Drive a staged frame to completion with the SAME engine handle used at
+    /// stage (the snapshot lives in it, as on the chip).
+    fn run(
+        eng: &mut TxEngine<FakeWire>,
+        crc: &mut FakeCrc,
+        over: Option<ResultCode>,
+    ) -> Vec<TxOut> {
+        eng.trigger(crc, over);
         let mut outs = Vec::new();
         loop {
-            let out = eng.on_arm_complete(&mut crc);
+            let out = eng.on_arm_complete(crc);
             outs.push(out);
             if out == TxOut::Released {
                 return outs;
@@ -402,8 +434,9 @@ mod tests {
     #[test]
     fn empty_ack_matches_sealed_reference() {
         let (mut eng, log) = engine();
-        eng.stage(7, ResultCode::Ok, false, &[]).unwrap();
-        run(&mut eng, None);
+        let mut crc = FakeCrc::new();
+        eng.stage(&mut crc, 7, ResultCode::Ok, false, &[]).unwrap();
+        run(&mut eng, &mut crc, None);
         let log = log.borrow();
         let reference = reference(7, ResultCode::Ok, false, &[]);
         assert_eq!(log[0], Event::Start);
@@ -421,10 +454,11 @@ mod tests {
     #[test]
     fn small_copy_reply_matches_sealed_reference() {
         let (mut eng, log) = engine();
+        let mut crc = FakeCrc::new();
         // 2 bytes ≤ SMALL_COPY_MAX → the copy path, even payload.
         let data = [0xDE, 0xAD];
-        eng.stage(1, ResultCode::Ok, true, &data).unwrap();
-        run(&mut eng, None);
+        eng.stage(&mut crc, 1, ResultCode::Ok, true, &data).unwrap();
+        run(&mut eng, &mut crc, None);
         let log = log.borrow();
         let reference = reference(1, ResultCode::Ok, true, &data);
         let s = sends(&log);
@@ -440,12 +474,14 @@ mod tests {
     #[test]
     fn small_odd_zero_copy_streams_whole_payload() {
         let (mut eng, log) = engine();
+        let mut crc = FakeCrc::new();
         // 3 even-addressed bytes: above SMALL_COPY_MAX → zero-copy; the odd
         // last byte is folded into the CRC in software (§3.2), not moved into
         // a tail arm.
         let data = Aligned([0xDE, 0xAD, 0xBE, 0]);
-        eng.stage(1, ResultCode::Ok, true, &data.0[..3]).unwrap();
-        run(&mut eng, None);
+        eng.stage(&mut crc, 1, ResultCode::Ok, true, &data.0[..3])
+            .unwrap();
+        run(&mut eng, &mut crc, None);
         let log = log.borrow();
         let reference = reference(1, ResultCode::Ok, true, &data.0[..3]);
         let s = sends(&log);
@@ -461,13 +497,14 @@ mod tests {
     #[test]
     fn odd_pointer_streams_zero_copy() {
         let (mut eng, log) = engine();
+        let mut crc = FakeCrc::new();
         // Odd-addressed source above SMALL_COPY_MAX: streamed zero-copy like
         // any other span — the chip CRC provider stages odd pointers through
         // its copy channel (§5); the engine is parity-blind.
         let backing = Aligned([0u8, 0xDE, 0xAD, 0xBE]);
         let data = &backing.0[1..4];
-        eng.stage(1, ResultCode::Ok, true, data).unwrap();
-        run(&mut eng, None);
+        eng.stage(&mut crc, 1, ResultCode::Ok, true, data).unwrap();
+        run(&mut eng, &mut crc, None);
         let log = log.borrow();
         let reference = reference(1, ResultCode::Ok, true, data);
         let s = sends(&log);
@@ -479,9 +516,11 @@ mod tests {
     #[test]
     fn zero_copy_even_streams_three_arms() {
         let (mut eng, log) = engine();
+        let mut crc = FakeCrc::new();
         let data = Aligned(core::array::from_fn::<u8, 40, _>(|i| i as u8));
-        eng.stage(9, ResultCode::Ok, false, &data.0).unwrap();
-        run(&mut eng, None);
+        eng.stage(&mut crc, 9, ResultCode::Ok, false, &data.0)
+            .unwrap();
+        run(&mut eng, &mut crc, None);
         let log = log.borrow();
         let s = sends(&log);
         // Header, Ext payload, then the CRC as its own final 2-byte arm.
@@ -499,9 +538,11 @@ mod tests {
     #[test]
     fn zero_copy_odd_streams_whole_payload() {
         let (mut eng, log) = engine();
+        let mut crc = FakeCrc::new();
         let data = Aligned(core::array::from_fn::<u8, 41, _>(|i| !(i as u8)));
-        eng.stage(5, ResultCode::Ok, false, &data.0).unwrap();
-        run(&mut eng, None);
+        eng.stage(&mut crc, 5, ResultCode::Ok, false, &data.0)
+            .unwrap();
+        run(&mut eng, &mut crc, None);
         let log = log.borrow();
         let s = sends(&log);
         // Odd payload streams whole; its last byte reaches the CRC via the
@@ -516,9 +557,11 @@ mod tests {
     #[test]
     fn override_rewrites_inst_and_crc_still_validates() {
         let (mut eng, log) = engine();
+        let mut crc = FakeCrc::new();
         let data = Aligned(core::array::from_fn::<u8, 40, _>(|i| i as u8));
-        eng.stage(9, ResultCode::Ok, false, &data.0).unwrap();
-        run(&mut eng, Some(ResultCode::PredecessorSilent));
+        eng.stage(&mut crc, 9, ResultCode::Ok, false, &data.0)
+            .unwrap();
+        run(&mut eng, &mut crc, Some(ResultCode::PredecessorSilent));
         let log = log.borrow();
         let wire_out = wire_bytes(&log);
         let inst = Inst(wire_out[2]);
@@ -531,16 +574,17 @@ mod tests {
     #[test]
     fn double_stage_is_busy_and_overflow_rejected() {
         let (mut eng, _log) = engine();
-        eng.stage(1, ResultCode::Ok, false, &[]).unwrap();
+        let mut crc = FakeCrc::new();
+        eng.stage(&mut crc, 1, ResultCode::Ok, false, &[]).unwrap();
         assert!(eng.busy());
         assert_eq!(
-            eng.stage(2, ResultCode::Ok, false, &[]),
+            eng.stage(&mut crc, 2, ResultCode::Ok, false, &[]),
             Err(SendError::Busy)
         );
         let big = [0u8; 253];
         let (mut eng2, _log2) = engine();
         assert_eq!(
-            eng2.stage(1, ResultCode::Ok, false, &big),
+            eng2.stage(&mut crc, 1, ResultCode::Ok, false, &big),
             Err(SendError::Overflow)
         );
         assert!(!eng2.busy());
@@ -549,13 +593,14 @@ mod tests {
     #[test]
     fn abort_releases_and_unblocks_stage() {
         let (mut eng, log) = engine();
-        eng.stage(1, ResultCode::Ok, false, &[]).unwrap();
+        let mut crc = FakeCrc::new();
+        eng.stage(&mut crc, 1, ResultCode::Ok, false, &[]).unwrap();
         eng.abort();
         assert_eq!(*log.borrow(), vec![Event::Release]);
         assert!(!eng.busy());
-        eng.stage(2, ResultCode::Ok, false, &[]).unwrap();
+        eng.stage(&mut crc, 2, ResultCode::Ok, false, &[]).unwrap();
         // Aborting mid-stream also releases.
-        eng.trigger(&mut FakeCrc(0), None);
+        eng.trigger(&mut crc, None);
         eng.abort();
         assert_eq!(*log.borrow().last().unwrap(), Event::Release);
         assert!(!eng.busy());
@@ -564,9 +609,11 @@ mod tests {
     #[test]
     fn arm_sequencing_ends_in_released_exactly_once() {
         let (mut eng, _log) = engine();
+        let mut crc = FakeCrc::new();
         let data = Aligned(core::array::from_fn::<u8, 40, _>(|i| i as u8));
-        eng.stage(9, ResultCode::Ok, false, &data.0).unwrap();
-        let outs = run(&mut eng, None);
+        eng.stage(&mut crc, 9, ResultCode::Ok, false, &data.0)
+            .unwrap();
+        let outs = run(&mut eng, &mut crc, None);
         assert_eq!(outs, vec![TxOut::Armed, TxOut::Armed, TxOut::Released]);
         assert!(!eng.busy());
     }

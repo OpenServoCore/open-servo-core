@@ -215,7 +215,10 @@ impl Deadline for SimDeadline {
 /// half of F12 is not — heap-backed test buffers give no absolute-parity
 /// guarantee even where the driver's offsets are correct.
 #[derive(Default)]
-pub struct SimCrc(u16);
+pub struct SimCrc {
+    state: u16,
+    snap: Vec<u8>,
+}
 
 impl SimCrc {
     pub fn new() -> Self {
@@ -225,16 +228,28 @@ impl SimCrc {
 
 impl CrcEngine for SimCrc {
     fn reset(&mut self) {
-        self.0 = 0;
+        self.state = 0;
     }
 
     fn feed(&mut self, span: &[u8]) {
         assert_eq!(span.len() % 2, 0, "osc-CRC feed must be even-length (F12)");
-        self.0 = osc_crc_continue(self.0, span);
+        self.state = osc_crc_continue(self.state, span);
+    }
+
+    fn snapshot(&mut self, off: u16, src: &[u8]) -> *const u8 {
+        let off = off as usize;
+        if self.snap.len() < off + src.len() {
+            self.snap.resize(off + src.len(), 0);
+        }
+        self.snap[off..off + src.len()].copy_from_slice(src);
+        // SAFETY-adjacent note: tests never grow the Vec between a snapshot
+        // and its consumption, so the pointer stays stable like the chip's
+        // static buffer.
+        unsafe { self.snap.as_ptr().add(off) }
     }
 
     fn result(&mut self) -> Option<u16> {
-        Some(self.0)
+        Some(self.state)
     }
 }
 
