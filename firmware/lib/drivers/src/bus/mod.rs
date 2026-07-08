@@ -14,6 +14,19 @@ pub use servo_bus::{LinkDiag, ServoBus};
 /// Minimum reply lead after the frame being answered, in byte-times (§7).
 pub const T_TURN_BYTES: u32 = 2;
 
+/// Ring-index wrap. The RX ring length is a power of two by contract
+/// (512 on V006, §11), so this is a mask — rv32ec has no hardware divide
+/// and a `% len` on a runtime length is a ~100-cycle `__udivsi3` call the
+/// resolver would pay several times per frame.
+#[inline(always)]
+pub(crate) fn ring_wrap(i: usize, len: usize) -> usize {
+    debug_assert!(
+        len.is_power_of_two(),
+        "RX ring length must be a power of two"
+    );
+    i & (len - 1)
+}
+
 /// Largest legal frame footprint in ring bytes (§3.1).
 pub const FRAME_MAX: usize = osc_protocol::wire::footprint(u8::MAX);
 

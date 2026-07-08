@@ -55,24 +55,8 @@ pub fn on_adc_dma_tc() {
 /// shares PFIC HIGH with SysTick, so no concurrent `&mut` into the composite
 /// is possible. Statement ordering is load-bearing: the break handoff runs
 /// off the RX-error read, then the TC branch does release work first.
-/// Bench forensics (temporary): event counters + diag mirror, read via wlink.
-#[used]
-pub static DBG: [core::sync::atomic::AtomicU32; 6] =
-    [const { core::sync::atomic::AtomicU32::new(0) }; 6];
-
-fn dbg_bump(i: usize) {
-    // No atomic RMW on rv32ec; single-writer per slot, load+store suffices.
-    let o = core::sync::atomic::Ordering::Relaxed;
-    DBG[i].store(DBG[i].load(o).wrapping_add(1), o);
-}
-
 pub fn on_usart1() {
     crate::log::trace!("usart1 isr");
-    dbg_bump(0);
-    if DBG[4].load(core::sync::atomic::Ordering::Relaxed) == 0 {
-        let cur = 512 - crate::hal::dma::remaining(crate::hal::dma::Channel::CH5);
-        DBG[4].store(0x1_0000 | cur as u32, core::sync::atomic::Ordering::Relaxed);
-    }
     // (a) RX errors: a break (or mid-frame garble) → the framer anchors on
     // the just-ringed 0x00 (F2: the DMA write beats the ISR). The IRQ is
     // the break signal, NOT the flags: with RX-DMA, the hardware's SR→DR
@@ -84,11 +68,6 @@ pub fn on_usart1() {
     let errs = usart::rx_errors(USART1);
     let any_err = errs.fe || errs.ore || errs.pe || errs.ne;
     let tc = usart::is_tcie(USART1) && usart::is_tc(USART1);
-    // Bench forensics: STATR image + entry ordinal of the latest entry.
-    DBG[5].store(
-        (usart::raw_statr(USART1) << 8) | DBG[0].load(core::sync::atomic::Ordering::Relaxed),
-        core::sync::atomic::Ordering::Relaxed,
-    );
     if any_err || !tc {
         // The ERR interrupt can beat the DMA drain: at entry the break's
         // 0x00 may still sit in DR (RXNE set), so the ring cursor hasn't
@@ -101,8 +80,12 @@ pub fn on_usart1() {
             settle -= 1;
             core::hint::spin_loop();
         }
-        // SAFETY: see fn doc.
-        unsafe { Drivers::bus() }.on_break();
+        // SAFETY: see fn doc — SESSION is installed before this vector
+        // unmasks. A2: the break handler resolves complete frames from ring
+        // data in place, so it dispatches like the deadline body.
+        let session = unsafe { (*SESSION.get()).assume_init_mut() };
+        let mut dispatcher = session.dispatcher(&SHARED);
+        unsafe { Drivers::bus() }.on_break(&mut dispatcher);
         if any_err {
             // SR-then-DR is the only V006 error clear. DMA already drained
             // DR for the ring byte, so this read cannot steal a payload
@@ -135,17 +118,12 @@ pub fn on_usart1() {
 /// into the composite (or the session) is possible.
 pub fn on_deadline_irq() {
     crate::log::trace!("deadline isr");
-    dbg_bump(1);
     crate::hal::systick::clear_match();
     // SAFETY: see fn doc — SESSION is installed before this vector unmasks.
     let session = unsafe { (*SESSION.get()).assume_init_mut() };
     let mut dispatcher = session.dispatcher(&SHARED);
     // SAFETY: see fn doc.
-    let bus = unsafe { Drivers::bus() };
-    bus.on_deadline(&mut dispatcher);
-    let d = bus.diag();
-    DBG[2].store(d.crc_fail_count, core::sync::atomic::Ordering::Relaxed);
-    DBG[3].store(d.framing_drop_count, core::sync::atomic::Ordering::Relaxed);
+    unsafe { Drivers::bus() }.on_deadline(&mut dispatcher);
 }
 
 /// Wires osc-ch32 ISR bodies into the vector table via the stock

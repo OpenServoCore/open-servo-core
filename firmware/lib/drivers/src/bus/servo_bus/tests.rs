@@ -65,9 +65,12 @@ fn deliver<D: Dispatch>(
 ) -> u32 {
     h.ring.place(anchor, frame);
     let fp = frame.len();
+    // The ladder reaches `anchor` through prior traffic in production; the
+    // harness fabricates positions, so bootstrap it explicitly (A2).
+    bus.framer.resync(anchor as u16);
     h.deadline.set_now(now0);
     h.ring.set_cursor(((anchor + 1) % RING_LEN) as u16);
-    bus.on_break();
+    bus.on_break(d);
 
     let a = h.deadline.armed().expect("deadline A");
     h.deadline.set_now(a);
@@ -390,7 +393,7 @@ fn s10_rescue_break_switches_to_500k() {
     h.line.set_low(true);
     h.deadline.set_now(1000);
     h.ring.set_cursor(1); // FE byte at index 0 is the default 0x00
-    bus.on_break();
+    bus.on_break(&mut d);
 
     // Fire the ~100 µs recheck with the line still low.
     h.deadline.set_now(1000 + 100); // RESCUE_CONFIRM_US * TICKS_PER_US
@@ -415,30 +418,29 @@ fn s11_break_after_covered_cancels_speculation() {
     let anchor = 100usize;
     let fp = frame.len();
     h.ring.place(anchor, &frame);
+    bus.framer.resync(anchor as u16);
     h.deadline.set_now(1000);
     h.ring.set_cursor(((anchor + 1) % RING_LEN) as u16);
-    bus.on_break();
+    bus.on_break(&mut d);
     let a = h.deadline.armed().expect("deadline A");
     h.deadline.set_now(a);
     h.ring.set_cursor(((anchor + 4) % RING_LEN) as u16);
     bus.on_deadline(&mut d);
     let c = h.deadline.armed().expect("covered deadline");
     h.deadline.set_now(c);
-    h.ring.set_cursor(((anchor + fp) % RING_LEN) as u16);
+    h.ring.set_cursor(((anchor + fp - 2) % RING_LEN) as u16);
     bus.on_deadline(&mut d);
     assert!(!h.wire.started(), "reply is staged, not yet triggered");
 
-    // A fresh break lands before the end deadline: it preempts the frame and
-    // must cancel the staged reply (no phantom read reply may reach the wire).
+    // A fresh break lands before the end deadline. Data-first: the READ is
+    // complete in the ring, so it resolves and its reply stages — and the
+    // break then kills the staged-not-streaming reply (the host moved on):
+    // no phantom read reply reaches the wire.
     let m = 300usize; // ring[m] defaults to 0x00 → a real break
     h.deadline.set_now(c + 1);
     h.ring.set_cursor(((m + 1) % RING_LEN) as u16);
-    bus.on_break();
-    assert_eq!(
-        bus.diag().framing_drop_count,
-        1,
-        "preempted read is dropped"
-    );
+    bus.on_break(&mut d);
+    assert!(!h.wire.started(), "staged reply killed by the break");
 
     // Drain whatever the new break armed (a starving header): still silent.
     if h.deadline.armed().is_some() {
@@ -473,18 +475,20 @@ fn s13_speculated_write_commits_at_frame_end() {
     let anchor = 100usize;
     let fp = frame.len();
     h.ring.place(anchor, &frame);
+    bus.framer.resync(anchor as u16);
     h.deadline.set_now(1000);
     h.ring.set_cursor(((anchor + 1) % RING_LEN) as u16);
-    bus.on_break();
+    bus.on_break(&mut d);
     let a = h.deadline.armed().expect("deadline A");
     h.deadline.set_now(a);
     h.ring.set_cursor(((anchor + 4) % RING_LEN) as u16);
     bus.on_deadline(&mut d);
 
-    // Covered checkpoint: staged speculatively, live table still clean.
+    // Covered checkpoint (two byte-times short of the end): staged
+    // speculatively, live table still clean.
     let c = h.deadline.armed().expect("covered deadline");
     h.deadline.set_now(c);
-    h.ring.set_cursor(((anchor + fp) % RING_LEN) as u16);
+    h.ring.set_cursor(((anchor + fp - 2) % RING_LEN) as u16);
     bus.on_deadline(&mut d);
     assert!(
         !shared.table.with(|t| t.control.lifecycle.torque_enable),
@@ -493,6 +497,7 @@ fn s13_speculated_write_commits_at_frame_end() {
     assert!(!h.wire.started());
 
     // Frame-end CRC verify: commit into the table, then sequence the ack.
+    h.ring.set_cursor(((anchor + fp) % RING_LEN) as u16);
     fire(&mut bus, &h, &mut d);
     assert!(
         shared.table.with(|t| t.control.lifecycle.torque_enable),

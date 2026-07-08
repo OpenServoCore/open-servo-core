@@ -61,6 +61,13 @@ impl Chain {
         !matches!(self.state, State::Idle)
     }
 
+    /// Awaiting predecessor status frames (§6): a predecessor's break is
+    /// expected, so the composite suspends its reclaim window on that break
+    /// instead of killing the staged reply.
+    pub fn waiting(&self) -> bool {
+        matches!(self.state, State::Waiting { .. })
+    }
+
     /// Own reply started, or a new instruction superseded the chain.
     pub fn reset(&mut self) {
         self.state = State::Idle;

@@ -40,6 +40,11 @@ const END_SLACK_US: u32 = 5;
 /// contract re-enters the ISR rather than losing the slot.
 const DEADLINE_DRAIN_MAX: u32 = 8;
 
+/// Backlog frames resolved per wake before yielding via pend-on-past (A2):
+/// bounds one wake's dispatch work without ever dropping — the ring holds
+/// the rest.
+const FRAMES_PER_WAKE: u32 = 16;
+
 /// Transport health counters the chip publishes into the telemetry region
 /// (§5.3 layer 1: dropped frames are counted, never answered).
 pub struct LinkDiag {
@@ -59,15 +64,6 @@ struct Speculation {
     // A mutating frame whose effects are staged in the dispatcher, awaiting a
     // CRC-pass commit or a CRC-fail revert.
     pending: bool,
-}
-
-/// What a framer output means to the frame pipeline once the deadline muxing
-/// has been applied.
-enum FrameEvent {
-    /// Covered-complete: front-load CRC feed + dispatch (read-only frames).
-    Covered(FrameSpan),
-    /// Frame end: verify the wire CRC and sequence the reply.
-    End(FrameSpan),
 }
 
 pub struct ServoBus<P: Providers> {
@@ -148,16 +144,34 @@ impl<P: Providers> ServoBus<P> {
         }
     }
 
-    /// USART framing-error ISR: a break (or mid-frame garble) landed.
-    pub fn on_break(&mut self) {
+    /// USART framing-error ISR: a break (or mid-frame garble) landed. A1:
+    /// record the tick and resolve from ring DATA — the FE never carries
+    /// position, so a delayed or coalesced entry costs nothing (any frames
+    /// completed meanwhile resolve on the fast path right here).
+    pub fn on_break<D: Dispatch>(&mut self, d: &mut D) {
         let now = self.deadline.now();
-        let out = self
-            .framer
-            .on_break(self.ring.bytes(), self.ring.cursor(), now, self.tpb);
-        let _ = self.apply_framer_out(out); // on_break never yields a Frame
-        // Any FE while a frame is front-loaded (break preempt or mid-frame
-        // garble) compromises it: drop the speculated reply before it can fire.
-        self.cancel_speculation();
+        self.framer.on_fe(now);
+        self.drive_framer(d);
+        // Wire safety: a staged, not-yet-streaming reply must never fire
+        // into the host's NEXT frame. But an FE alone doesn't mean the host
+        // moved on — lagged deliveries routinely resolve the reply's own
+        // frame (or reach its covered checkpoint) inside this very wake
+        // (silicon event-trace 2026-07-08: COVERED→KILL 2 µs apart, then
+        // verify armed the chain over the emptied engine — ghost trigger,
+        // silent no-reply). Positional truth (A2) decides: kill only when
+        // ringed bytes FOLLOW the reply's own frame. A live speculation is
+        // mid-frame by definition (its CRC gate reclaims the reply if this
+        // break garbled the frame); a Waiting chain expects predecessor
+        // breaks and only suspends its reclaim window (§6).
+        if self.tx.staged()
+            && !self.chain.waiting()
+            && self.speculated.is_none()
+            && !self.framer.caught_up(self.ring.cursor())
+        {
+            self.tx.abort();
+            self.chain.reset();
+            self.chain_at = None;
+        }
         // §6: a break while we hold a staged chain slot means the predecessor
         // is alive — suspend its reclaim window while the frame plays out.
         let out = self.chain.on_break_observed(now);
@@ -185,14 +199,7 @@ impl<P: Providers> ServoBus<P> {
             if due(now, self.framer_at) {
                 progressed = true;
                 self.framer_at = None;
-                let out =
-                    self.framer
-                        .on_deadline(self.ring.bytes(), self.ring.cursor(), now, self.tpb);
-                match self.apply_framer_out(out) {
-                    Some(FrameEvent::Covered(span)) => self.speculate(span, d),
-                    Some(FrameEvent::End(span)) => self.on_frame_end(span, d),
-                    None => {}
-                }
+                self.drive_framer(d);
             }
             if due(now, self.chain_at) {
                 progressed = true;
@@ -286,25 +293,37 @@ impl<P: Providers> ServoBus<P> {
         }
     }
 
-    fn apply_framer_out(&mut self, out: FramerOut) -> Option<FrameEvent> {
-        match out {
-            FramerOut::None => {
-                self.framer_at = None;
-                None
-            }
-            FramerOut::Wait(t) => {
-                self.framer_at = Some(t);
-                None
-            }
-            FramerOut::Covered { span, end_due } => {
-                self.framer_at = Some(end_due);
-                Some(FrameEvent::Covered(span))
-            }
-            FramerOut::Frame(span) => {
-                self.framer_at = None;
-                Some(FrameEvent::End(span))
+    /// Drive the resolver as far as ring DATA allows (A2): complete backlog
+    /// frames process in-line with zero clock involvement; the frontier arms
+    /// a deadline and returns. Bounded per wake — past the bound the framer
+    /// slot re-arms at `now` (pend-on-past re-entry) so the other mux slots
+    /// are never starved by a deep backlog.
+    fn drive_framer<D: Dispatch>(&mut self, d: &mut D) {
+        for _ in 0..FRAMES_PER_WAKE {
+            let now = self.deadline.now();
+            let out = self
+                .framer
+                .resolve(self.ring.bytes(), self.ring.cursor(), now, self.tpb);
+            match out {
+                FramerOut::None => {
+                    self.framer_at = None;
+                    return;
+                }
+                FramerOut::Wait(t) => {
+                    self.framer_at = Some(t);
+                    return;
+                }
+                FramerOut::Covered { span, end_due } => {
+                    self.framer_at = Some(end_due);
+                    self.speculate(span, d);
+                    return;
+                }
+                FramerOut::Frame(span) => {
+                    self.on_frame_end(span, d);
+                }
             }
         }
+        self.framer_at = Some(self.deadline.now());
     }
 
     fn route_chain(&mut self, out: ChainOut) {
@@ -343,7 +362,10 @@ impl<P: Providers> ServoBus<P> {
         self.baud.apply(BaudRate::B500000);
         self.rate = BaudRate::B500000;
         self.tpb = tpb_for::<P>(self.rate);
-        self.framer.abort();
+        // Ladder bootstrap (A2): a rescue pulse delivers no start edges, so
+        // the cursor is provably still — the one sanctioned cursor read.
+        let cursor = self.ring.cursor();
+        self.framer.resync(cursor);
         self.chain.reset();
         self.tx.abort();
         self.speculated = None;
@@ -420,16 +442,24 @@ impl<P: Providers> ServoBus<P> {
                 d.revert_speculation();
             }
             self.drop_staged();
-            self.crc_fails = self.crc_fails.wrapping_add(1);
+            if !self.framer.probing() {
+                self.crc_fails = self.crc_fails.wrapping_add(1);
+            }
+            let len = self.ring.bytes().len();
+            self.framer.on_frame_rejected(spec.anchor, len);
             return;
         }
+        self.framer.on_frame_verified();
         if spec.pending {
             // Apply the staged write into the table + fire its hooks (baud/id
             // stage through this handle) before sequencing the ack.
             let mut handle = self.reply_handle();
             d.commit_speculation(&mut handle);
         }
-        if spec.staged {
+        // Sequence from the ENGINE's state, not the recorded flag: any path
+        // that reclaimed the staged reply between covered and here would
+        // otherwise arm the chain over an empty engine (ghost trigger).
+        if spec.staged && self.tx.staged() {
             let t_turn = self.t_turn();
             let reclaim = self.reclaim();
             let allowance = self.frame_allowance();
@@ -440,14 +470,6 @@ impl<P: Providers> ServoBus<P> {
                 self.chain
                     .on_reply_staged(spec.slot, spec.packet_end, t_turn, reclaim, allowance);
             self.route_chain(out);
-        }
-    }
-
-    /// A break / garble / rearm / rescue landed on a front-loaded frame: it can
-    /// no longer complete, so drop its staged reply before it could fire.
-    fn cancel_speculation(&mut self) {
-        if self.speculated.take().is_some() {
-            self.drop_staged();
         }
     }
 
@@ -476,11 +498,20 @@ impl<P: Providers> ServoBus<P> {
             self.route_chain(out);
             return;
         }
-        // 2. Validate in place; a fail (or spin miss) drops silently (§5.3 L1).
+        // 2. Validate in place; a fail (or spin miss) drops silently (§5.3
+        // L1). The stride trusted an unverified header — resume the hunt one
+        // byte in instead (§3.3). Probe candidates (hunt guesses) that fail
+        // are scan noise, not received frames: `crc_fail` keeps meaning "a
+        // trusted frame failed".
         if !self.crc_ok(anchor, footprint) {
-            self.crc_fails = self.crc_fails.wrapping_add(1);
+            if !self.framer.probing() {
+                self.crc_fails = self.crc_fails.wrapping_add(1);
+            }
+            let len = self.ring.bytes().len();
+            self.framer.on_frame_rejected(anchor, len);
             return;
         }
+        self.framer.on_frame_verified();
         // 3. A fresh instruction supersedes any stale, not-yet-streaming reply.
         self.chain.reset();
         self.chain_at = None;
