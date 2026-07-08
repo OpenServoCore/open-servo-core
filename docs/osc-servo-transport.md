@@ -1,24 +1,35 @@
 # osc servo transport — the deadline-pipelined receiver
 
-Status: AGREED DESIGN (2026-07-08, A3 decided = carve-out). Describes the
-transport as restored by the pre-FIFO revert and evolved by the CRC/framing
-side quest (CRC-16/ARC LSB-first, no pad/parity rules, snapshot reads), then
-specifies the three amendments that close the zero-gap defect, with
-first-principles arguments that the amended design keeps the measured speed.
-Companion pillars: `osc-native-protocol.md` (the wire), `driver-pattern.md`
-(the layering). Code is authoritative; when this doc and the code disagree,
-fix the doc.
+Status: A1 + A2 LANDED (2026-07-08, `84680bd2`); A3 decided = carve-out (b),
+implementation pending. Describes the transport as restored by the pre-FIFO
+revert and evolved by the CRC/framing side quest (CRC-16/ARC LSB-first, no
+pad/parity rules, snapshot reads), then the three amendments that close the
+zero-gap defect, with first-principles arguments that the amended design
+keeps the measured speed. Companion pillars: `osc-native-protocol.md` (the
+wire), `driver-pattern.md` (the layering). Code is authoritative; when this
+doc and the code disagree, fix the doc.
 
-Measured baselines this doc must explain and preserve (turnaround =
-instruction wire-end → status break fall):
+Measured turnarounds (instruction wire-end → status break fall; read = 16 B,
+write = goal_position 4 B; flash-layout swings between builds are ±5 µs):
 
 | build                | 1M ping | 1M read | 1M write | 3M ping | zero-gap hot loop |
 |----------------------|---------|---------|----------|---------|-------------------|
-| this base (pre-FIFO) | 37.4 µs | 32.3 µs | 31.2 µs  | 36.7 µs | 0/200 (defect)    |
+| pre-FIFO base        | 31.5 µs | 36.7 µs | 83.3 µs  | —       | 0/200 (defect)    |
 | FIFO band (reverted) | 50.8 µs | 58.7 µs | 105.6 µs | 56.3 µs | 300/300           |
+| A1+A2 landed         | 38.6 µs | 45.7 µs | 93.3 µs  | 41.9 µs | 300/300           |
 
-The goal of the amendments: the left columns of row 1 with the right column
-of row 2.
+(An earlier revision of row 1 quoted 37.4/32.3/31.2/36.7 from the
+turnaround-band memory — those columns were ping/read-16/read-240/ping from
+a different build; rows above are same-day measurements on the exact bases.)
+
+A1+A2 hold the losslessness column: hot loop 300/300 at 1M and 3M, plain
+`8×WRITE(NOREPLY)+READ` bursts 300/300 at 3M and 297+/300 at 1M — the 1M
+residual is a pirate-side reply-parse artifact (first reply bytes merged
+after a long break; servo stage/trigger/drop counters clean over thousands
+of cycles). The ~+7 µs over the pre-FIFO base is resolver arithmetic on the
+covered/B wakes, inside the layout-swing noise band; the dominant latency
+(burst-cycle READ replies ride elastically behind 14-68 µs dispatch bodies
+at HIGH) is what A3(b) removes.
 
 ## 1. Architecture in one paragraph
 
