@@ -25,7 +25,6 @@ struct RingBuf([u8; RING_LEN]);
 pub struct RingState {
     buf: UnsafeCell<RingBuf>,
     cursor: Cell<u16>,
-    rearms: Cell<u32>,
 }
 
 impl RingState {
@@ -33,7 +32,6 @@ impl RingState {
         Rc::new(Self {
             buf: UnsafeCell::new(RingBuf([0; RING_LEN])),
             cursor: Cell::new(0),
-            rearms: Cell::new(0),
         })
     }
 
@@ -46,13 +44,6 @@ impl RingState {
         // calls, never while a `bytes()` slice is live (see `RxRing::bytes`).
         unsafe { (*self.buf.get()).0[i] = b };
         self.cursor.set(((i + 1) % RING_LEN) as u16);
-    }
-
-    /// Parity-recovery rearm count — a harness inspection hook (the resilience
-    /// suite verifies §3.2 recovery; also visible as `framing_drop_count`).
-    #[allow(dead_code)]
-    pub fn rearms(&self) -> u32 {
-        self.rearms.get()
     }
 }
 
@@ -131,13 +122,6 @@ impl RxRing for SimRing {
 
     fn cursor(&self) -> u16 {
         self.0.cursor.get()
-    }
-
-    fn rearm(&mut self) {
-        // §3.2 parity recovery. The rearm count is the harness-observable form
-        // of the "and logs" side effect (no log dep pulled into the sim tree).
-        self.0.rearms.set(self.0.rearms.get() + 1);
-        self.0.cursor.set(0);
     }
 }
 

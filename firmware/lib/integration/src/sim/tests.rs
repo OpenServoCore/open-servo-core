@@ -30,13 +30,12 @@ fn ping_round_trip() {
         .find(|f| matches!(f.from, Source::Servo(_)))
         .expect("servo reply");
 
-    // A well-formed status from id 5 carrying model(2) + fw(1), padded (p=3 odd).
+    // A well-formed status from id 5 carrying model(2) + fw(1), p=3 (no pad).
     assert_eq!(reply.from, Source::Servo(SERVO_ID));
     assert_valid(reply);
     let (rinst, payload) = status(reply);
     assert!(rinst.is_status());
     assert_eq!(rinst.result(), Some(ResultCode::Ok));
-    assert!(rinst.pad(), "3-byte payload is odd → padded");
     let m = DEFAULT_MODEL.to_le_bytes();
     assert_eq!(payload, &[m[0], m[1], DEFAULT_FIRMWARE]);
 

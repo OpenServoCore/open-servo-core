@@ -7,10 +7,8 @@
 //! which is what lets hardware receivers feed the anchor-inclusive ring span
 //! in place (§3.2).
 
-#[cfg(feature = "software-crc")]
 const POLY_REFLECTED: u16 = 0xA001;
 
-#[cfg(feature = "software-crc")]
 #[inline]
 fn update(mut crc: u16, byte: u8) -> u16 {
     crc ^= byte as u16;
@@ -26,7 +24,6 @@ fn update(mut crc: u16, byte: u8) -> u16 {
 
 /// osc-CRC-16 over `covered` (the frame bytes `ID .. PAD`; an anchor-inclusive
 /// span with its leading `0x00` yields the same value).
-#[cfg(feature = "software-crc")]
 #[inline]
 pub fn osc_crc(covered: &[u8]) -> u16 {
     osc_crc_continue(0, covered)
@@ -35,7 +32,6 @@ pub fn osc_crc(covered: &[u8]) -> u16 {
 /// Accumulate `chunk` into a running CRC — byte-wise, so chunks may split
 /// anywhere (mirrors the hardware engine spanning DMA arms).
 /// `osc_crc(x) == osc_crc_continue(0, x)`.
-#[cfg(feature = "software-crc")]
 pub fn osc_crc_continue(mut crc: u16, chunk: &[u8]) -> u16 {
     for &b in chunk {
         crc = update(crc, b);
@@ -56,7 +52,7 @@ pub fn bitrev16(v: u16) -> u16 {
     (x as u16).swap_bytes()
 }
 
-#[cfg(all(test, feature = "software-crc"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 

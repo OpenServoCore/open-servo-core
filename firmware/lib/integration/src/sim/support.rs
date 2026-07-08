@@ -19,13 +19,14 @@ pub fn instruction(id: u8, op: Opcode, flags: u8, payload: &[u8]) -> Vec<u8> {
     b.seal().to_vec()
 }
 
-/// Assert a recorded frame is well-formed: LEN odd (PAD invariant, §3.1) and
-/// the trailing CRC matches osc-CRC over the covered span (§3.2).
+/// Assert a recorded frame is well-formed: LEN covers INST + CRC (§3.1) and
+/// the trailing CRC matches osc-CRC over the covered span (§3.2 — the leading
+/// break byte is a no-op).
 pub fn assert_valid(frame: &WireFrame) {
     let b = &frame.bytes;
     assert!(b.len() >= 6, "frame too short: {b:02X?}");
     let len = b[2];
-    assert_eq!(len & 1, 1, "LEN must be odd (PAD invariant): {b:02X?}");
+    assert!(len >= 3, "LEN must cover INST + CRC: {b:02X?}");
     let covered = wire::covered_len(len);
     assert!(b.len() >= covered + 2, "frame truncated: {b:02X?}");
     let want = osc_crc(&b[..covered]);
@@ -33,7 +34,7 @@ pub fn assert_valid(frame: &WireFrame) {
     assert_eq!(want, got, "CRC mismatch on {b:02X?}");
 }
 
-/// Decode a status frame into its `INST` byte and payload slice (pad dropped).
+/// Decode a status frame into its `INST` byte and payload slice.
 pub fn status(frame: &WireFrame) -> (Inst, &[u8]) {
     let b = &frame.bytes;
     let head: &[u8; 4] = b[..4].try_into().expect("frame has a 4-byte header");

@@ -7,6 +7,7 @@
 
 use crate::traits::bus::{CrcEngine, TxWire};
 use osc_core::traits::SendError;
+use osc_protocol::crc::osc_crc_continue;
 use osc_protocol::reply::FrameBuf;
 use osc_protocol::wire::{self, Id, Inst, ResultCode};
 
@@ -23,7 +24,7 @@ pub const REPLY_BUF: usize = 16;
 /// that would leave a zero-length DMA arm.
 const SMALL_COPY_MAX: usize = 2;
 
-/// Copy-path capacity: `FrameBuf::payload_mut` reserves pad + CRC space.
+/// Copy-path capacity: `FrameBuf::payload_mut` reserves CRC space.
 /// Only the defensive odd-pointer arm can exceed this — the dispatcher never
 /// produces odd-addressed slices (even-addr reads enforced at dispatch, §5).
 const COPY_PAYLOAD_MAX: usize = REPLY_BUF - 7;
@@ -67,7 +68,9 @@ pub struct TxEngine<W: TxWire> {
     crc_off: u16,
     state: State,
     result: ResultCode,
-    pad: bool,
+    /// The covered byte the even-bulk feeds leave un-fed when the span is odd
+    /// (§3.2): folded into the engine result at patch time.
+    tail: Option<u8>,
     alert: bool,
     crc_misses: u32,
 }
@@ -84,7 +87,7 @@ impl<W: TxWire> TxEngine<W> {
             crc_off: 0,
             state: State::Idle,
             result: ResultCode::Ok,
-            pad: false,
+            tail: None,
             alert: false,
             crc_misses: 0,
         }
@@ -125,10 +128,10 @@ impl<W: TxWire> TxEngine<W> {
             return Err(SendError::Overflow);
         }
         let p = data.len() as u8;
-        let pad = wire::needs_pad(p);
-        let inst = Inst::status(result, pad, alert);
+        let inst = Inst::status(result, alert);
         // Odd pointers can't feed the CRC DMA (F12); small payloads are
-        // cheaper to copy than to arm.
+        // cheaper to copy than to arm. An odd covered span feeds its even
+        // bulk and leaves the last byte for the software fold at patch (§3.2).
         if data.len() <= SMALL_COPY_MAX || data.as_ptr() as usize & 1 == 1 {
             if data.len() > COPY_PAYLOAD_MAX {
                 return Err(SendError::Overflow);
@@ -138,7 +141,8 @@ impl<W: TxWire> TxEngine<W> {
             self.buf.finish(p);
             let len = wire::len_for(p);
             let cov = wire::covered_len(len);
-            // Header + payload + pad, then the 2 CRC bytes as their own arm.
+            let bulk = cov & !1;
+            // Header + payload, then the 2 CRC bytes as their own arm.
             self.arms[0] = Arm::Buf {
                 off: 1,
                 len: (cov - 1) as u16,
@@ -150,59 +154,49 @@ impl<W: TxWire> TxEngine<W> {
             self.n_arms = 2;
             self.feeds[0] = Arm::Buf {
                 off: 0,
-                len: cov as u16,
+                len: bulk as u16,
             };
             self.n_feeds = 1;
+            self.tail = if cov & 1 == 1 {
+                Some(self.buf.bytes()[cov - 1])
+            } else {
+                None
+            };
             self.crc_off = cov as u16;
         } else {
-            // Zero-copy (§4.2): header + tail in the buffer, payload streamed
-            // from its home. Every CRC feed is even-length and even-addressed
-            // by construction (F12): the 4-byte covered prefix is 2 whole
-            // halfwords in the align(2) buffer, and an odd payload donates
-            // its last byte to the tail so it halfword-pairs with the PAD.
+            // Zero-copy (§4.2): header in the buffer, payload streamed from
+            // its home. Every CRC feed is even-length and even-addressed by
+            // construction (F12): the 4-byte buffer head is 2 whole halfwords
+            // in the align(2) buffer, and an odd payload feeds `p - 1` bytes,
+            // leaving its last byte for the fold.
             let b = self.buf.bytes_mut();
             b[0] = wire::ALIGN_BYTE;
             b[1] = id;
             b[2] = wire::len_for(p);
             b[3] = inst.0;
             let ptr = data.as_ptr();
-            if pad {
-                b[4] = data[data.len() - 1];
-                b[5] = 0;
-                self.arms[0] = Arm::Buf { off: 1, len: 3 };
-                self.arms[1] = Arm::Ext {
-                    ptr,
-                    len: (p - 1) as u16,
-                };
-                // Tail (moved last byte + pad), then the CRC as its own arm.
-                self.arms[2] = Arm::Buf { off: 4, len: 2 };
-                self.arms[3] = Arm::Buf { off: 6, len: 2 };
-                self.n_arms = 4;
-                self.feeds[0] = Arm::Buf { off: 0, len: 4 };
-                self.feeds[1] = Arm::Ext {
-                    ptr,
-                    len: (p - 1) as u16,
-                };
-                self.feeds[2] = Arm::Buf { off: 4, len: 2 };
-                self.n_feeds = 3;
-                self.crc_off = 6;
+            self.arms[0] = Arm::Buf { off: 1, len: 3 };
+            self.arms[1] = Arm::Ext { ptr, len: p as u16 };
+            // The buffer's bytes 4..6 double as the CRC tail arm.
+            self.arms[2] = Arm::Buf { off: 4, len: 2 };
+            self.n_arms = 3;
+            self.feeds[0] = Arm::Buf { off: 0, len: 4 };
+            self.feeds[1] = Arm::Ext {
+                ptr,
+                len: (p & !1) as u16,
+            };
+            self.n_feeds = 2;
+            self.tail = if p & 1 == 1 {
+                Some(data[p as usize - 1])
             } else {
-                self.arms[0] = Arm::Buf { off: 1, len: 3 };
-                self.arms[1] = Arm::Ext { ptr, len: p as u16 };
-                // The buffer's bytes 4..6 double as the CRC tail arm.
-                self.arms[2] = Arm::Buf { off: 4, len: 2 };
-                self.n_arms = 3;
-                self.feeds[0] = Arm::Buf { off: 0, len: 4 };
-                self.feeds[1] = Arm::Ext { ptr, len: p as u16 };
-                self.n_feeds = 2;
-                self.crc_off = 4;
-            }
+                None
+            };
+            self.crc_off = 4;
         }
         // Placeholder CRC: what ships if the patch window is missed.
         let off = self.crc_off as usize;
         self.buf.bytes_mut()[off..off + 2].copy_from_slice(&[0, 0]);
         self.result = result;
-        self.pad = pad;
         self.alert = alert;
         self.state = State::Staged;
         Ok(())
@@ -218,7 +212,7 @@ impl<W: TxWire> TxEngine<W> {
             debug_assert!(false, "trigger without a staged frame");
             return;
         }
-        self.buf.bytes_mut()[3] = Inst::status(over.unwrap_or(self.result), self.pad, self.alert).0;
+        self.buf.bytes_mut()[3] = Inst::status(over.unwrap_or(self.result), self.alert).0;
         crc.reset();
         self.wire.start_frame();
         self.wire.send(resolve(&self.buf, self.arms[0]));
@@ -280,6 +274,12 @@ impl<W: TxWire> TxEngine<W> {
         };
         match value {
             Some(v) => {
+                // Fold the un-fed trailing covered byte, if the span was odd
+                // (§3.2) — the only software CRC on the servo.
+                let v = match self.tail {
+                    Some(b) => osc_crc_continue(v, &[b]),
+                    None => v,
+                };
                 let off = self.crc_off as usize;
                 self.buf.bytes_mut()[off..off + 2].copy_from_slice(&v.to_le_bytes());
             }
@@ -373,7 +373,7 @@ mod tests {
     /// layouts, and the reference is a whole linearized frame.
     fn reference(id: u8, result: ResultCode, alert: bool, data: &[u8]) -> Vec<u8> {
         let mut b = FrameBuf::<64>::new();
-        b.start(Id::new(id), Inst::status(result, false, alert));
+        b.start(Id::new(id), Inst::status(result, alert));
         b.payload_mut()[..data.len()].copy_from_slice(data);
         b.finish(data.len() as u8);
         b.seal().to_vec()
@@ -425,14 +425,14 @@ mod tests {
         assert_eq!(*s.last().unwrap(), reference[reference.len() - 2..]);
         assert_eq!(wire_bytes(&log), reference[1..]);
         assert_eq!(*log.last().unwrap(), Event::Release);
-        // No pad on an empty payload: status bit set, PAD clear.
+        // Empty payload: status bit set, no flags.
         assert_eq!(wire_bytes(&log)[2], 0x80);
     }
 
     #[test]
     fn small_copy_reply_matches_sealed_reference() {
         let (mut eng, log) = engine();
-        // 2 bytes ≤ SMALL_COPY_MAX → the copy path, even payload (no pad).
+        // 2 bytes ≤ SMALL_COPY_MAX → the copy path, even payload.
         let data = [0xDE, 0xAD];
         eng.stage(1, ResultCode::Ok, true, &data).unwrap();
         run(&mut eng, None);
@@ -445,28 +445,27 @@ mod tests {
         assert_eq!(wire_bytes(&log), reference[1..]);
         let inst = Inst(wire_bytes(&log)[2]);
         assert!(inst.is_status());
-        assert!(!inst.pad());
         assert!(inst.alert());
     }
 
     #[test]
-    fn small_odd_zero_copy_moves_last_byte_into_tail() {
+    fn small_odd_zero_copy_streams_whole_payload() {
         let (mut eng, log) = engine();
-        // 3 even-addressed bytes: above SMALL_COPY_MAX → zero-copy, odd → the
-        // last byte pairs with the pad in the tail arm.
+        // 3 even-addressed bytes: above SMALL_COPY_MAX → zero-copy; the odd
+        // last byte is folded into the CRC in software (§3.2), not moved into
+        // a tail arm.
         let data = Aligned([0xDE, 0xAD, 0xBE, 0]);
         eng.stage(1, ResultCode::Ok, true, &data.0[..3]).unwrap();
         run(&mut eng, None);
         let log = log.borrow();
         let reference = reference(1, ResultCode::Ok, true, &data.0[..3]);
         let s = sends(&log);
-        // Header, streamed payload head, tail (moved byte + pad), CRC.
-        assert_eq!(s.iter().map(Vec::len).collect::<Vec<_>>(), vec![3, 2, 2, 2]);
+        // Header, whole streamed payload, CRC.
+        assert_eq!(s.iter().map(Vec::len).collect::<Vec<_>>(), vec![3, 3, 2]);
         assert_eq!(*s.last().unwrap(), reference[reference.len() - 2..]);
         assert_eq!(wire_bytes(&log), reference[1..]);
         let inst = Inst(wire_bytes(&log)[2]);
         assert!(inst.is_status());
-        assert!(inst.pad());
         assert!(inst.alert());
     }
 
@@ -482,8 +481,8 @@ mod tests {
         let log = log.borrow();
         let reference = reference(1, ResultCode::Ok, true, data);
         let s = sends(&log);
-        // Header + payload + pad, then the CRC tail as its own final arm.
-        assert_eq!(s.iter().map(Vec::len).collect::<Vec<_>>(), vec![7, 2]);
+        // Header + payload, then the CRC tail as its own final arm.
+        assert_eq!(s.iter().map(Vec::len).collect::<Vec<_>>(), vec![6, 2]);
         assert_eq!(wire_bytes(&log), reference[1..]);
     }
 
@@ -500,28 +499,26 @@ mod tests {
         let reference = reference(9, ResultCode::Ok, false, &data.0);
         assert_eq!(*s.last().unwrap(), reference[reference.len() - 2..]);
         assert_eq!(wire_bytes(&log), reference[1..]);
-        // CRC over prefix + covered span matches the reference flavor.
+        // CRC over the covered span matches the reference flavor (the leading
+        // alignment byte is a no-op, §3.2).
         let covered_len = wire::covered_len(wire::len_for(40));
         let crc = u16::from_le_bytes([s[2][0], s[2][1]]);
         assert_eq!(osc_crc(&reference[..covered_len]), crc);
     }
 
     #[test]
-    fn zero_copy_odd_moves_last_byte_into_tail() {
+    fn zero_copy_odd_streams_whole_payload() {
         let (mut eng, log) = engine();
         let data = Aligned(core::array::from_fn::<u8, 41, _>(|i| !(i as u8)));
         eng.stage(5, ResultCode::Ok, false, &data.0).unwrap();
         run(&mut eng, None);
         let log = log.borrow();
         let s = sends(&log);
-        // Odd payload: last byte + pad form the tail arm, CRC is its own arm.
-        assert_eq!(
-            s.iter().map(Vec::len).collect::<Vec<_>>(),
-            vec![3, 40, 2, 2]
-        );
+        // Odd payload streams whole; its last byte reaches the CRC via the
+        // software fold at patch time (§3.2), so the wire CRC still matches
+        // the byte-wise reference.
+        assert_eq!(s.iter().map(Vec::len).collect::<Vec<_>>(), vec![3, 41, 2]);
         let reference = reference(5, ResultCode::Ok, false, &data.0);
-        assert_eq!(s[2][0], data.0[40]);
-        assert_eq!(s[2][1], 0x00);
         assert_eq!(*s.last().unwrap(), reference[reference.len() - 2..]);
         assert_eq!(wire_bytes(&log), reference[1..]);
     }

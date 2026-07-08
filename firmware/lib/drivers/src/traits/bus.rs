@@ -13,9 +13,6 @@ pub trait RxRing {
     fn bytes(&self) -> &[u8];
     /// Index where the next received byte will land (`LEN - NDTR`).
     fn cursor(&self) -> u16;
-    /// The one sanctioned reload (§3.2 parity recovery): channel off, NDTR
-    /// reloaded to full, channel on — the next byte lands at index 0.
-    fn rearm(&mut self);
 }
 
 /// One-shot compare on the transport tick domain. `set` arms the compare;

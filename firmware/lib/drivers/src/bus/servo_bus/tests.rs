@@ -40,7 +40,7 @@ fn instruction(id: u8, op: Opcode, flags: u8, payload: &[u8]) -> std::vec::Vec<u
 
 fn status(id: u8, result: ResultCode, data: &[u8]) -> std::vec::Vec<u8> {
     let mut b = FrameBuf::<64>::new();
-    b.start(Id::new(id), Inst::status(result, false, false));
+    b.start(Id::new(id), Inst::status(result, false));
     b.payload_mut()[..data.len()].copy_from_slice(data);
     b.finish(data.len() as u8);
     b.seal().to_vec()
@@ -130,7 +130,7 @@ fn last_reply(wire: &FakeWire) -> (u8, Inst, std::vec::Vec<u8>) {
     let id = bytes[0];
     let len = bytes[1];
     let inst = Inst(bytes[2]);
-    let p = wire::payload_len(len, inst.pad()) as usize;
+    let p = wire::payload_len(len) as usize;
     (id, inst, bytes[3..3 + p].to_vec())
 }
 
@@ -155,7 +155,7 @@ fn s1_ping_round_trip() {
     assert!(h.wire.started());
     drain_tx(&mut bus, &h);
 
-    // Exact bytes: sealed status(model, fw), padded, valid CRC.
+    // Exact bytes: sealed status(model, fw), valid CRC.
     let reference = status(ID, ResultCode::Ok, &[0x34, 0x12, 0x56]);
     assert_eq!(h.wire.sent(), reference[1..]);
     let (id, inst, data) = last_reply(&h.wire);
@@ -315,7 +315,9 @@ fn s7_corrupt_crc_drops_with_no_reply() {
 }
 
 #[test]
-fn s8_odd_anchor_rearms_without_reply() {
+fn s8_odd_anchor_round_trips() {
+    // Anchor parity is irrelevant (§3.2 self-aligning feed): an odd-anchored
+    // frame validates and replies like any other.
     let h = Harness::new();
     let mut bus = h.build(ID, RATE, 60);
     let shared = shared_seeded();
@@ -324,10 +326,15 @@ fn s8_odd_anchor_rearms_without_reply() {
 
     let frame = instruction(ID, Opcode::Ping, 0, &[]);
     deliver(&mut bus, &h, 101, &frame, 1000, &mut d); // odd anchor
+    fire(&mut bus, &h, &mut d);
+    drain_tx(&mut bus, &h);
 
-    assert!(!h.wire.started());
-    assert_eq!(h.ring.rearms(), 1);
-    assert_eq!(bus.diag().framing_drop_count, 1);
+    let (id, inst, data) = last_reply(&h.wire);
+    assert_eq!(id, ID);
+    assert!(inst.is_status());
+    assert_eq!(inst.result(), Some(ResultCode::Ok));
+    assert_eq!(data, &[0x34, 0x12, 0x56]);
+    assert_eq!(bus.diag().framing_drop_count, 0);
 }
 
 #[test]

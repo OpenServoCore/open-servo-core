@@ -1,7 +1,8 @@
 //! Framing faults and recovery (`docs/osc-native-protocol.md` §3.2, §3.3,
-//! §9.1). These document the break-framed convergence story: a single stray
-//! ring byte flips anchor parity, and the framer heals at the next frame
-//! boundary. Plain assertions on the observed diagnostics counters.
+//! §9.1). These document the break-framed convergence story: a corrupted
+//! frame is lost to its CRC, and the next break re-anchors cleanly — anchor
+//! parity is irrelevant (§3.2 self-aligning feed). Plain assertions on the
+//! observed diagnostics counters.
 
 use osc_core::BaudRate;
 use osc_core::regions::control::addr::lifecycle::{GOAL_POSITION, GOAL_VELOCITY, TORQUE_ENABLE};
@@ -38,62 +39,46 @@ fn midframe_garble_costs_one_frame() {
     let s = sim.add_servo(ID5);
 
     // Frame A: one stray ring byte injected inside its wire window. The break
-    // anchored A at even parity and its header parsed, but the extra byte
-    // shifts every byte after it, so the CRC-covered span reads misaligned →
-    // CRC fail. No ack, not applied.
+    // anchored A and its header parsed, but the extra byte shifts every byte
+    // after it, so the CRC-covered span reads misaligned → CRC fail. No ack,
+    // not applied.
     sim.host_send_at(0, &write_gv(ID5, 0x0A0A0A0A));
     sim.inject_garble_at(50, 0xAA);
 
-    // Frame B: the stray byte advanced the ring by one, so the next break's
-    // ring byte lands at ODD parity → §3.2 layer-1 fault → framing_drop +
-    // boundary rearm (ring cursor reset to 0). No ack, not applied.
+    // Frame B: the stray byte advanced the ring by one, so B anchors at ODD
+    // parity — irrelevant (§3.2 self-aligning feed): B validates, applies,
+    // and acks. Convergence costs exactly the one garbled frame.
     sim.host_send_at(1000, &write_gv(ID5, 0x0B0B0B0B));
-
-    // Frame C: the rearm re-aligned the ring, so C anchors even → clean parse,
-    // ack, applied. Convergence in exactly two lost frames (§3.2).
-    sim.host_send_at(2000, &write_gv(ID5, 0x0C0C0C0C));
 
     let frames = sim.run();
 
-    let (inst, _) = status(sole_reply(&frames)); // the sole reply is C's ack
+    let (inst, _) = status(sole_reply(&frames)); // the sole reply is B's ack
     assert_eq!(inst.result(), Some(ResultCode::Ok));
     assert_eq!(
         sim.servo_table(s, |t| t.control.lifecycle.goal_velocity),
-        0x0C0C0C0C,
-        "only frame C applied"
+        0x0B0B0B0B,
+        "B applied despite the odd anchor"
     );
     let d = sim.servo_diag(s);
-    assert_eq!(
-        d.crc_fail_count, 1,
-        "A: even anchor, misaligned span → CRC fail"
-    );
-    assert_eq!(
-        d.framing_drop_count, 1,
-        "B: odd anchor from the parity flip → dropped + rearm"
-    );
+    assert_eq!(d.crc_fail_count, 1, "A: misaligned span → CRC fail");
+    assert_eq!(d.framing_drop_count, 0, "odd anchors are not faults");
 }
 
 #[test]
-fn lone_garble_self_heals_in_one_frame() {
+fn lone_garble_costs_nothing() {
     let mut sim = Sim::new(BaudRate::B1000000);
     let s = sim.add_servo(ID5);
 
-    // A lone garble byte on an idle bus advances the ring by one → odd parity.
+    // A lone garble byte on an idle bus advances the ring by one → the next
+    // frame anchors at odd parity — irrelevant (§3.2): answered normally.
     sim.inject_garble_at(10, 0xAA);
-
-    // Ping #1 anchors odd → dropped at its computed end + boundary rearm; silent.
     sim.host_send_at(100, &instruction(ID5, Opcode::Ping, 0, &[]));
-    let frames = sim.run();
-    assert!(servo_frames(&frames).is_empty());
-    let d = sim.servo_diag(s);
-    assert_eq!(d.framing_drop_count, 1);
-    assert_eq!(d.crc_fail_count, 0);
-
-    // Ping #2 anchors even again → answered. The bus self-healed in one frame.
-    sim.host_send_at(1000, &instruction(ID5, Opcode::Ping, 0, &[]));
     let frames = sim.run();
     let (inst, _) = status(sole_reply(&frames));
     assert_eq!(inst.result(), Some(ResultCode::Ok));
+    let d = sim.servo_diag(s);
+    assert_eq!(d.framing_drop_count, 0);
+    assert_eq!(d.crc_fail_count, 0);
 }
 
 #[test]

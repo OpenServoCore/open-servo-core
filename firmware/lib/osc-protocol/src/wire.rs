@@ -142,15 +142,17 @@ impl MgmtOp {
 }
 
 /// Packed `INST` byte. Bit 7 selects the layout: instruction (opcode [6:4] +
-/// flags [3:0]) or status (result [6:2] + PAD bit 1 + ALERT bit 0). Every bit
-/// pattern is representable; validity comes from the typed accessors.
+/// flags [3:0]) or status (result [6:2] + bit 1 reserved + ALERT bit 0).
+/// Every bit pattern is representable; validity comes from the typed
+/// accessors.
 #[repr(transparent)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Inst(pub u8);
 
 impl Inst {
     pub const FLAG_HOLD: u8 = 1 << 0;
-    pub const FLAG_PAD: u8 = 1 << 1;
+    // Bit 1 is reserved (0) in both layouts — freed by the pad deletion,
+    // kept for future extensions (§3.1, §5).
     pub const FLAG_NOREPLY: u8 = 1 << 2;
     pub const FLAG_PER_TARGET: u8 = 1 << 3;
 
@@ -163,11 +165,8 @@ impl Inst {
     }
 
     #[inline]
-    pub const fn status(result: ResultCode, pad: bool, alert: bool) -> Self {
+    pub const fn status(result: ResultCode, alert: bool) -> Self {
         let mut b = Self::STATUS_BIT | ((result as u8) << 2);
-        if pad {
-            b |= Self::FLAG_PAD;
-        }
         if alert {
             b |= Self::ALERT_BIT;
         }
@@ -177,12 +176,6 @@ impl Inst {
     #[inline]
     pub const fn is_status(self) -> bool {
         self.0 & Self::STATUS_BIT != 0
-    }
-
-    /// PAD occupies bit 1 in both layouts (§3.1).
-    #[inline]
-    pub const fn pad(self) -> bool {
-        self.0 & Self::FLAG_PAD != 0
     }
 
     /// Opcode of an instruction frame; `None` for status frames or opcode `0`.
@@ -233,23 +226,18 @@ pub const MAX_PAYLOAD: u8 = 252;
 /// of the wire checksum definition.
 pub const ALIGN_BYTE: u8 = 0x00;
 
-/// Pad iff the payload length is odd (§3.1) — an invariant, not an option.
-#[inline]
-pub const fn needs_pad(p: u8) -> bool {
-    p & 1 == 1
-}
-
-/// `LEN` for a `p`-byte payload: `INST + payload + pad + CRC` = `3 + p + pad`.
+/// `LEN` for a `p`-byte payload: `INST + payload + CRC` = `3 + p`.
 /// Caller keeps `p <= MAX_PAYLOAD`.
 #[inline]
 pub const fn len_for(p: u8) -> u8 {
-    3 + p + needs_pad(p) as u8
+    3 + p
 }
 
-/// Payload length recovered from `LEN` and the PAD flag: `len - 3 - pad`.
+/// Payload length recovered from `LEN`: `len - 3` (validate guarantees
+/// `LEN >= 3`).
 #[inline]
-pub const fn payload_len(len: u8, pad: bool) -> u8 {
-    len - 3 - pad as u8
+pub const fn payload_len(len: u8) -> u8 {
+    len - 3
 }
 
 /// Ring bytes for a frame including the break byte: `3 + len` (max 258).
@@ -258,7 +246,9 @@ pub const fn footprint(len: u8) -> usize {
     3 + len as usize
 }
 
-/// CRC-covered bytes including the prefix: `1 + len`.
+/// Anchor-inclusive feed-span length (`1 + len`): the wire checksum covers
+/// `ID .. payload` (§3.2), but a span counted from the anchor includes the
+/// break's `0x00` no-op byte — the form receivers and buffers use.
 #[inline]
 pub const fn covered_len(len: u8) -> usize {
     1 + len as usize
@@ -331,57 +321,39 @@ mod tests {
         assert!(i.hold());
         assert!(i.noreply());
         assert!(!i.per_target());
-        assert!(!i.pad());
         assert_eq!(i.result(), None);
     }
 
     #[test]
-    fn inst_write_padded_matches_vector() {
-        // Spec vector: WRITE id 2, INST byte 0x32 = opcode 0x3, PAD flag set.
-        let i = Inst(0x32);
-        assert_eq!(i.opcode(), Some(Opcode::Write));
-        assert!(i.pad());
-        assert!(!i.hold());
-    }
-
-    #[test]
     fn inst_status_roundtrip() {
-        let s = Inst::status(ResultCode::Range, true, true);
+        let s = Inst::status(ResultCode::Range, true);
         assert!(s.is_status());
         assert_eq!(s.result(), Some(ResultCode::Range));
-        assert!(s.pad());
         assert!(s.alert());
         assert_eq!(s.opcode(), None);
     }
 
     #[test]
     fn inst_status_no_flags() {
-        let s = Inst::status(ResultCode::Ok, false, false);
+        let s = Inst::status(ResultCode::Ok, false);
         assert_eq!(s.0, 0x80);
-        assert!(!s.pad());
         assert!(!s.alert());
         assert_eq!(s.result(), Some(ResultCode::Ok));
     }
 
     #[test]
     fn span_math() {
-        // Even payload: no pad.
-        assert!(!needs_pad(2));
         assert_eq!(len_for(2), 5);
-        assert_eq!(payload_len(5, false), 2);
-        // Odd payload: pad.
-        assert!(needs_pad(3));
-        assert_eq!(len_for(3), 7);
-        assert_eq!(payload_len(7, true), 3);
+        assert_eq!(payload_len(5), 2);
+        // Odd payload: no pad, LEN even-legal (§3.1).
+        assert_eq!(len_for(3), 6);
+        assert_eq!(payload_len(6), 3);
         // PING: empty payload.
         assert_eq!(len_for(0), 3);
         // Largest frame.
         assert_eq!(len_for(MAX_PAYLOAD), 255);
         assert_eq!(footprint(255), 258);
         assert_eq!(covered_len(255), 256);
-        // LEN is always odd.
-        assert_eq!(len_for(0) & 1, 1);
-        assert_eq!(len_for(1) & 1, 1);
     }
 
     #[test]

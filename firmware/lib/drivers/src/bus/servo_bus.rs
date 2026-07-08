@@ -296,14 +296,6 @@ impl<P: Providers> ServoBus<P> {
                 self.framer_at = Some(t);
                 None
             }
-            FramerOut::Rearm => {
-                self.ring.rearm();
-                self.framer_at = None;
-                // A doomed frame never speculates, but drop defensively so a
-                // reply can never outlive the frame that staged it.
-                self.cancel_speculation();
-                None
-            }
             FramerOut::Covered { span, end_due } => {
                 self.framer_at = Some(end_due);
                 Some(FrameEvent::Covered(span))
@@ -572,28 +564,47 @@ impl<P: Providers> ServoBus<P> {
         }
     }
 
-    /// Feed the covered span (1 or 2 wrap halves) into the CRC engine, no result
-    /// poll. Both halves stay even-length and even-addressed (F12): the ring
-    /// length and anchor are both even, so any wrap split lands on a halfword
-    /// boundary.
+    /// Feed the covered span's even bulk (1 or 2 wrap halves) into the CRC
+    /// engine, no result poll. The feed self-aligns (§3.2): it starts at
+    /// whichever of anchor / anchor+1 is even (the break's `0x00` is a CRC
+    /// no-op, included or excluded as parity demands), and a trailing odd
+    /// byte is left for the software fold at verify. Both halves stay
+    /// even-length and even-addressed (F12): the start and the ring length
+    /// are even, so any wrap split lands on a halfword boundary.
     fn crc_feed(&mut self, anchor: u16, footprint: u16) {
         let ring = self.ring.bytes();
         let len = ring.len();
         let anchor = anchor as usize;
-        let covered = footprint as usize - 2;
+        let start = anchor + (anchor & 1);
+        let end = anchor + footprint as usize - 2;
+        let bulk_end = end - ((end - start) & 1);
         self.crc.reset();
-        let end = anchor + covered;
-        if end <= len {
-            self.crc.feed(&ring[anchor..end]);
+        if bulk_end <= len {
+            self.crc.feed(&ring[start..bulk_end]);
         } else {
-            self.crc.feed(&ring[anchor..len]);
-            self.crc.feed(&ring[..end - len]);
+            self.crc.feed(&ring[start..len]);
+            self.crc.feed(&ring[..bulk_end - len]);
         }
     }
 
-    /// Poll the CRC result and compare against the little-endian wire CRC at the
-    /// covered-span end. A spin miss counts as a fail — indistinguishable from a
-    /// bad frame, and never wedges the wire (§3.2). Requires a prior
+    /// The covered byte the even-bulk feed left behind, if the span was odd.
+    fn crc_tail(&self, anchor: u16, footprint: u16) -> Option<u8> {
+        let ring = self.ring.bytes();
+        let len = ring.len();
+        let anchor = anchor as usize;
+        let start = anchor + (anchor & 1);
+        let end = anchor + footprint as usize - 2;
+        if (end - start) & 1 == 1 {
+            Some(ring[(end - 1) % len])
+        } else {
+            None
+        }
+    }
+
+    /// Poll the CRC result, fold the trailing odd byte if the feed left one
+    /// (§3.2), and compare against the little-endian wire CRC at the
+    /// covered-span end. A spin miss counts as a fail — indistinguishable from
+    /// a bad frame, and never wedges the wire. Requires a prior
     /// [`Self::crc_feed`] of the same span.
     fn crc_verify(&mut self, anchor: u16, footprint: u16) -> bool {
         let ring = self.ring.bytes();
@@ -601,9 +612,14 @@ impl<P: Providers> ServoBus<P> {
         let covered = footprint as usize - 2;
         let end = anchor as usize + covered;
         let wire = u16::from_le_bytes([ring[end % len], ring[(end + 1) % len]]);
+        let tail = self.crc_tail(anchor, footprint);
         let mut budget = super::SPIN_PER_BYTE * covered as u32;
         loop {
             if let Some(v) = self.crc.result() {
+                let v = match tail {
+                    Some(b) => osc_protocol::crc::osc_crc_continue(v, &[b]),
+                    None => v,
+                };
                 return v == wire;
             }
             if budget == 0 {

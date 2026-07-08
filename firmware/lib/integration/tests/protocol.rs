@@ -47,10 +47,6 @@ fn ping_reports_model_and_fw() {
     });
     let m = model.to_le_bytes();
     assert_eq!(payload, &[m[0], m[1], fw]);
-    assert!(
-        inst.pad(),
-        "model(2) + fw(1) = 3-byte payload is odd → padded"
-    );
 }
 
 #[test]

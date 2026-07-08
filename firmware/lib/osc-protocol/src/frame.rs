@@ -9,7 +9,7 @@ use crate::wire::{self, Id, Inst, MgmtOp};
 /// frame is dropped, no reply.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum FrameError {
-    EvenLen,
+    ShortLen,
     BadId,
     BadOpcode,
 }
@@ -47,11 +47,11 @@ impl Header {
         unsafe { &*(p as *const Header) }
     }
 
-    /// `LEN` must be odd (PAD invariant, §3.1), `ID` addressable, and — for
+    /// `LEN` must cover INST + CRC (≥ 3, §3.1), `ID` addressable, and — for
     /// instruction frames — the opcode nonzero (§5).
     pub fn validate(&self) -> Result<(), FrameError> {
-        if self.len & 1 == 0 {
-            return Err(FrameError::EvenLen);
+        if self.len < 3 {
+            return Err(FrameError::ShortLen);
         }
         if !self.id.is_valid() {
             return Err(FrameError::BadId);
@@ -75,7 +75,7 @@ impl Header {
 
     #[inline]
     pub fn payload_len(&self) -> u8 {
-        wire::payload_len(self.len, self.inst.pad())
+        wire::payload_len(self.len)
     }
 }
 
@@ -150,19 +150,23 @@ mod tests {
     }
 
     #[test]
-    fn header_payload_len_drops_pad() {
-        // Padded WRITE vector: LEN 7, PAD set → p = 3.
-        let h = Header::from_bytes(&[0x00, 0x02, 0x07, 0x32]);
-        assert!(h.inst.pad());
+    fn header_payload_len() {
+        // Odd-payload WRITE vector: LEN 6 → p = 3 (no pad, §3.1).
+        let h = Header::from_bytes(&[0x00, 0x02, 0x06, 0x30]);
         assert_eq!(h.payload_len(), 3);
-        assert_eq!(h.frame_end(), 10);
+        assert_eq!(h.frame_end(), 9);
     }
 
     #[test]
     fn validate_rejects() {
         assert_eq!(
+            Header::from_bytes(&[0x00, 0x01, 0x02, 0x10]).validate(),
+            Err(FrameError::ShortLen)
+        );
+        // Even LEN is legal (§3.1: any LEN >= 3).
+        assert_eq!(
             Header::from_bytes(&[0x00, 0x01, 0x04, 0x10]).validate(),
-            Err(FrameError::EvenLen)
+            Ok(())
         );
         assert_eq!(
             Header::from_bytes(&[0x00, 0x00, 0x03, 0x10]).validate(),
@@ -226,12 +230,7 @@ mod tests {
 
     #[test]
     fn status_frame_validates() {
-        let bytes = [
-            0x00,
-            0x07,
-            0x03,
-            Inst::status(ResultCode::Ok, false, false).0,
-        ];
+        let bytes = [0x00, 0x07, 0x03, Inst::status(ResultCode::Ok, false).0];
         let h = Header::from_bytes(&bytes);
         assert!(h.inst.is_status());
         assert_eq!(h.inst.opcode(), None);

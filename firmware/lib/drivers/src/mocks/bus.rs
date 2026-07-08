@@ -24,7 +24,6 @@ struct RingBuf([u8; RING_LEN]);
 struct RingState {
     buf: UnsafeCell<RingBuf>,
     cursor: Cell<u16>,
-    rearms: Cell<u32>,
 }
 
 /// Counted RX ring backed by a halfword-aligned buffer.
@@ -36,7 +35,6 @@ impl FakeRing {
         FakeRing(Rc::new(RingState {
             buf: UnsafeCell::new(RingBuf([0; RING_LEN])),
             cursor: Cell::new(0),
-            rearms: Cell::new(0),
         }))
     }
 
@@ -52,10 +50,6 @@ impl FakeRing {
 
     pub fn set_cursor(&self, c: u16) {
         self.0.cursor.set(c);
-    }
-
-    pub fn rearms(&self) -> u32 {
-        self.0.rearms.get()
     }
 }
 
@@ -75,11 +69,6 @@ impl RxRing for FakeRing {
 
     fn cursor(&self) -> u16 {
         self.0.cursor.get()
-    }
-
-    fn rearm(&mut self) {
-        self.0.rearms.set(self.0.rearms.get() + 1);
-        self.0.cursor.set(0);
     }
 }
 

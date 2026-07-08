@@ -6,7 +6,7 @@
 //! chunked consumption — HUNT for a break, then two computed deadlines verify
 //! the header and the frame end against the ring cursor.
 
-use osc_protocol::frame::{FrameError, Header};
+use osc_protocol::frame::Header;
 
 /// A verified frame's location in the ring: anchor index + ring-byte count,
 /// plus the parser-derived wire-end estimate (`packet_end`) the reply
@@ -33,19 +33,6 @@ pub enum FramerOut {
     Covered { span: FrameSpan, end_due: u32 },
     /// A full frame is verified in the ring (header pre-validated); back in HUNT.
     Frame(FrameSpan),
-    /// §3.2 parity recovery: caller must `ring.rearm()` now; framer is back in
-    /// HUNT expecting the next break's ring byte at index 0.
-    Rearm,
-}
-
-/// Why a locked frame is doomed to drop at its computed end. Both faults leave
-/// the ring at odd parity, so both need the boundary `Rearm` (§3.2).
-#[derive(Copy, Clone)]
-enum Doom {
-    /// Header anchor landed on an odd ring index (§3.2 layer-1 fault).
-    OddAnchor,
-    /// `LEN` even — malformed; its odd footprint would flip ring parity (§3.1).
-    EvenLen,
 }
 
 enum State {
@@ -67,7 +54,6 @@ enum State {
         /// re-arms to exactly this — end timing is independent of the checkpoint).
         end_due: u32,
         rechecks: u8,
-        doom: Option<Doom>,
         /// The covered-complete checkpoint has already fired for this frame.
         covered_seen: bool,
         due: u32,
@@ -195,7 +181,6 @@ impl Framer {
                 packet_end,
                 end_due,
                 rechecks,
-                doom,
                 covered_seen,
                 ..
             } => {
@@ -211,7 +196,6 @@ impl Framer {
                             packet_end,
                             end_due,
                             rechecks: 0,
-                            doom,
                             covered_seen: true,
                             due: end_due,
                         };
@@ -226,18 +210,11 @@ impl Framer {
                     }
                 } else if received >= footprint {
                     self.state = State::Hunt;
-                    return match doom {
-                        // §4.1: the one sanctioned reload, at the computed boundary.
-                        Some(_) => {
-                            self.drops = self.drops.wrapping_add(1);
-                            FramerOut::Rearm
-                        }
-                        Option::None => FramerOut::Frame(FrameSpan {
-                            anchor,
-                            footprint,
-                            packet_end,
-                        }),
-                    };
+                    return FramerOut::Frame(FrameSpan {
+                        anchor,
+                        footprint,
+                        packet_end,
+                    });
                 }
                 // Short of the current checkpoint (covered or end): bounded
                 // recheck one byte-time out before abandoning a stalled frame.
@@ -254,7 +231,6 @@ impl Framer {
                         packet_end,
                         end_due,
                         rechecks: rechecks + 1,
-                        doom,
                         covered_seen,
                         due,
                     };
@@ -318,26 +294,14 @@ impl Framer {
             *cell = ring[(anchor as usize + i) % len];
         }
         let h = Header::from_bytes(&hb);
-        let doom = match h.validate() {
-            // Even LEN flips ring parity at the frame end → rearm there (§3.2).
-            Err(FrameError::EvenLen) => Some(Doom::EvenLen),
-            // Well-formed length but unaddressable: drop now, let the bytes ring
-            // out silently, and let the next break re-anchor (FE fires in LOCKED
-            // too, §3.1).
-            Err(FrameError::BadId | FrameError::BadOpcode) => {
-                self.drops = self.drops.wrapping_add(1);
-                self.state = State::Hunt;
-                return FramerOut::None;
-            }
-            // §3.2: an odd anchor is a layer-1 fault; the end is still computable.
-            Ok(()) => {
-                if anchor & 1 == 1 {
-                    Some(Doom::OddAnchor)
-                } else {
-                    Option::None
-                }
-            }
-        };
+        // Unaddressable or malformed: drop now, let the bytes ring out
+        // silently, and let the next break re-anchor (FE fires in LOCKED too,
+        // §3.1). Anchor parity is irrelevant — the CRC feed self-aligns (§3.2).
+        if h.validate().is_err() {
+            self.drops = self.drops.wrapping_add(1);
+            self.state = State::Hunt;
+            return FramerOut::None;
+        }
         let footprint = h.frame_end() as u16;
         // Packet-end estimate from the anchor tick: the FE entry marks the
         // break byte's wire end (F2/F5), so `footprint - 1` byte-times
@@ -349,20 +313,18 @@ impl Framer {
             .wrapping_add(frame_ticks)
             .wrapping_add((footprint as u32).wrapping_mul(tpb) >> DRIFT_SHIFT);
         let end_due = packet_end.wrapping_add(self.end_slack);
-        // Non-doomed frames get a covered-complete checkpoint one CRC-tail ahead
-        // of the end (same margin, two byte-times earlier). Doomed frames are
-        // never dispatched, so they skip straight to their end.
-        // Short frames (a ping's covered span IS its header) may have the whole
-        // covered span ringed already at header lock — emit Covered from this
-        // same wake instead of arming an aim that is already in the past.
-        if doom.is_none() && received >= footprint - COVERED_TAIL_BYTES as u16 {
+        // The covered-complete checkpoint leads the end by the CRC tail (same
+        // margin, two byte-times earlier). Short frames (a ping's covered span
+        // IS its header) may have the whole covered span ringed already at
+        // header lock — emit Covered from this same wake instead of arming an
+        // aim that is already in the past.
+        if received >= footprint - COVERED_TAIL_BYTES as u16 {
             self.state = State::AwaitEnd {
                 anchor,
                 footprint,
                 packet_end,
                 end_due,
                 rechecks: 0,
-                doom,
                 covered_seen: true,
                 due: end_due,
             };
@@ -375,21 +337,14 @@ impl Framer {
                 end_due,
             };
         }
-        let (due, covered_seen) = match doom {
-            Option::None => (
-                end_due.wrapping_sub(COVERED_TAIL_BYTES.wrapping_mul(tpb)),
-                false,
-            ),
-            Some(_) => (end_due, true),
-        };
+        let due = end_due.wrapping_sub(COVERED_TAIL_BYTES.wrapping_mul(tpb));
         self.state = State::AwaitEnd {
             anchor,
             footprint,
             packet_end,
             end_due,
             rechecks: 0,
-            doom,
-            covered_seen,
+            covered_seen: false,
             due,
         };
         FramerOut::Wait(due)
@@ -458,6 +413,18 @@ mod tests {
             FramerOut::Covered { span, end_due } => (span, end_due),
             _ => panic!("expected Covered"),
         }
+    }
+
+    /// Header lock arms the covered aim; drive to the covered checkpoint.
+    fn wait_then_covered(
+        f: &mut Framer,
+        ring: &[u8],
+        k: usize,
+        footprint: u16,
+        tpb: u32,
+    ) -> (FrameSpan, u32) {
+        let cov_due = wait_tick(f.on_deadline(ring, (k + 4) as u16, 200, tpb));
+        covered(f.on_deadline(ring, (k + footprint as usize - 2) as u16, cov_due, tpb))
     }
 
     #[test]
@@ -555,21 +522,6 @@ mod tests {
     }
 
     #[test]
-    fn doomed_frame_never_surfaces_covered() {
-        let mut ring = [0xFFu8; 32];
-        let k = 7usize; // odd anchor → doomed
-        place(&mut ring, k, &PING);
-        let mut f = Framer::new(TEST_SLACK);
-
-        f.on_break(&ring, (k + 1) as u16, 100, TPB);
-        // Doomed frames arm straight at the end (no covered lead).
-        let end_due = wait_tick(f.on_deadline(&ring, (k + 4) as u16, 200, TPB));
-        let out = f.on_deadline(&ring, (k + 6) as u16, end_due, TPB);
-        assert!(matches!(out, FramerOut::Rearm));
-        assert_eq!(f.drops(), 1);
-    }
-
-    #[test]
     fn header_starvation_exhausts_rechecks() {
         let mut ring = [0xFFu8; 32];
         let k = 6usize;
@@ -589,33 +541,37 @@ mod tests {
     }
 
     #[test]
-    fn odd_anchor_rearms_at_end() {
+    fn odd_anchor_frames_normally() {
+        // Anchor parity is irrelevant (§3.2 self-aligning feed): an odd-anchored
+        // frame locks, covers, and completes like any other.
         let mut ring = [0xFFu8; 32];
-        let k = 7usize; // odd anchor, otherwise-valid PING
+        let k = 7usize;
         place(&mut ring, k, &PING);
         let mut f = Framer::new(TEST_SLACK);
 
         f.on_break(&ring, (k + 1) as u16, 100, TPB);
-        f.on_deadline(&ring, (k + 4) as u16, 200, TPB);
-        let out = f.on_deadline(&ring, (k + 6) as u16, 400, TPB);
-        assert!(matches!(out, FramerOut::Rearm));
-        assert_eq!(f.drops(), 1);
+        let (span, end_due) = covered(f.on_deadline(&ring, (k + 4) as u16, 200, TPB));
+        assert_eq!(span.anchor, k as u16);
+        let span = frame_span(f.on_deadline(&ring, (k + 6) as u16, end_due, TPB));
+        assert_eq!(span.footprint, 6);
+        assert_eq!(f.drops(), 0);
     }
 
     #[test]
-    fn even_len_rearms_at_end() {
+    fn even_len_frames_normally() {
+        // Even LEN is legal (§3.1): LEN 6 → 3-byte payload, footprint 9.
         let mut ring = [0xFFu8; 32];
         let k = 6usize;
-        // LEN 4 is even → malformed; footprint = 3 + 4 = 7.
-        let frame = [0x00, 0x01, 0x04, 0x10, 0, 0, 0];
+        let frame = [0x00, 0x01, 0x06, 0x10, 0xAA, 0xBB, 0xCC, 0, 0];
         place(&mut ring, k, &frame);
         let mut f = Framer::new(TEST_SLACK);
 
         f.on_break(&ring, (k + 1) as u16, 100, TPB);
-        f.on_deadline(&ring, (k + 4) as u16, 200, TPB);
-        let out = f.on_deadline(&ring, (k + 7) as u16, 400, TPB);
-        assert!(matches!(out, FramerOut::Rearm));
-        assert_eq!(f.drops(), 1);
+        let (span, end_due) = wait_then_covered(&mut f, &ring, k, 9, TPB);
+        assert_eq!(span.footprint, 9);
+        let span = frame_span(f.on_deadline(&ring, (k + 9) as u16, end_due, TPB));
+        assert_eq!(span.footprint, 9);
+        assert_eq!(f.drops(), 0);
     }
 
     #[test]

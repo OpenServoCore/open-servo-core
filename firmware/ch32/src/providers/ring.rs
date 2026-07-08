@@ -46,12 +46,4 @@ impl bus::RxRing for RxRing {
     fn cursor(&self) -> u16 {
         RING_LEN as u16 - dma::remaining(dma::Channel::CH5)
     }
-
-    fn rearm(&mut self) {
-        // The one sanctioned reload (§3.2 parity recovery): off, reload, on —
-        // the next received byte lands at index 0.
-        dma::disable(dma::Channel::CH5);
-        dma::set_count(dma::Channel::CH5, RING_LEN as u16);
-        dma::enable(dma::Channel::CH5);
-    }
 }

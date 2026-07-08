@@ -20,7 +20,7 @@ pub struct FrameBuf<const N: usize> {
 
 impl<const N: usize> FrameBuf<N> {
     /// Smallest layout is the empty-payload frame: prefix + header + CRC.
-    const MIN: usize = 7;
+    const MIN: usize = 6;
 
     #[inline]
     pub const fn new() -> Self {
@@ -29,8 +29,7 @@ impl<const N: usize> FrameBuf<N> {
     }
 
     /// Lay down the fixed prefix; `LEN` (byte 2) stays a placeholder until
-    /// [`finish`](Self::finish). `inst` is written as-is — the PAD bit is set
-    /// by `finish` from the payload length.
+    /// [`finish`](Self::finish). `inst` is written as-is.
     #[inline]
     pub fn start(&mut self, id: Id, inst: Inst) {
         self.bytes[0] = wire::ALIGN_BYTE;
@@ -39,25 +38,18 @@ impl<const N: usize> FrameBuf<N> {
         self.bytes[3] = inst.0;
     }
 
-    /// The payload region, leaving room for the pad byte and CRC.
+    /// The payload region, leaving room for the CRC.
     #[inline]
     pub fn payload_mut(&mut self) -> &mut [u8] {
-        &mut self.bytes[4..N - 3]
+        &mut self.bytes[4..N - 2]
     }
 
-    /// Seal the layout for a `p`-byte payload: apply the pad invariant (pad iff
-    /// `p` odd, §3.1) to both the trailing byte and the INST PAD flag, then
-    /// write `LEN`. CRC bytes are filled by [`set_crc`](Self::set_crc).
+    /// Seal the layout for a `p`-byte payload: write `LEN`. CRC bytes are
+    /// filled by [`set_crc`](Self::set_crc).
     #[inline]
     pub fn finish(&mut self, p: u8) {
         debug_assert!(p <= wire::MAX_PAYLOAD);
-        debug_assert!((p as usize) <= N - 7);
-        if wire::needs_pad(p) {
-            self.bytes[4 + p as usize] = 0;
-            self.bytes[3] |= Inst::FLAG_PAD;
-        } else {
-            self.bytes[3] &= !Inst::FLAG_PAD;
-        }
+        debug_assert!((p as usize) <= N - 6);
         self.bytes[2] = wire::len_for(p);
     }
 
@@ -156,7 +148,7 @@ mod tests {
     }
 
     #[test]
-    fn write_padded_vector_sets_pad_bit() {
+    fn write_odd_payload_vector() {
         let mut b = FrameBuf::<16>::new();
         b.start(Id::new(2), Inst::instruction(Opcode::Write, 0));
         let pl = b.payload_mut();
@@ -164,17 +156,17 @@ mod tests {
         pl[2] = 0xAA;
         b.finish(3);
         let frame = b.seal();
-        assert_eq!(frame[3], 0x32);
+        assert_eq!(frame[3], 0x30);
         assert_eq!(
             frame,
-            &[0x00, 0x02, 0x07, 0x32, 0x00, 0x01, 0xAA, 0x00, 0x34, 0xD3]
+            &[0x00, 0x02, 0x06, 0x30, 0x00, 0x01, 0xAA, 0x07, 0x0D]
         );
     }
 
     #[test]
     fn status_frame_round_trips() {
         let mut b = FrameBuf::<16>::new();
-        b.start(Id::new(7), Inst::status(ResultCode::Ok, false, false));
+        b.start(Id::new(7), Inst::status(ResultCode::Ok, false));
         b.finish(0);
         let frame = b.seal();
 
