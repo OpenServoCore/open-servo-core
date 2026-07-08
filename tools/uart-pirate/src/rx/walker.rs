@@ -2,9 +2,13 @@
 //! one byte at a time, with bytes' start ticks anchored to IC entries
 //! (cold-start path) or predicted as `prev_anchor + 10·bit_ticks` and
 //! snapped to the closest IC entry within `±SNAP_BITS·bit_ticks` (steady
-//! state). On miss, the walker free-runs on the prediction and flags
-//! `COUNT_UNDER` — anchor still updates, so the prediction chain survives
-//! a short edge dropout.
+//! state). On miss, the walker first tries a LATE re-anchor: a real start
+//! bit only ever arrives late (SBK breaks run 13–14 bit-times against the
+//! 10 the grid models; TX-arm gaps stretch a start by up to ~8 bits), so
+//! the earliest unconsumed edge within `LATE_START_BITS` of prediction is
+//! the true start. Only when no such edge exists does it free-run on the
+//! prediction and flag `COUNT_UNDER`, so the chain survives a genuine
+//! edge dropout.
 
 use core::cell::SyncUnsafeCell;
 use core::ptr;
@@ -29,6 +33,16 @@ const BITS_PER_BYTE_8N1: u32 = 10;
 /// = 0.01 bit-times). Widen to 2 or 3 if real upstream chips drive more
 /// inter-byte hardware idle than 1 bit-time between bytes in a chain.
 const SNAP_BITS: u32 = 1;
+
+/// Late-start look-ahead in bit-times: on a snap miss, an unconsumed edge
+/// at most this far past prediction is claimed as the byte's real (late)
+/// start instead of free-running. Sized to cover every legitimate late
+/// start — the byte after a servo SBK break sits +3–4.5 bits past the
+/// 10-bit grid (13–14-bit breaks, bench-measured both chip families), and
+/// the servo's per-DMA-arm TX gaps stretch a start by up to +8.1 bits —
+/// while staying below 10, so a punctual NEXT byte's start can never be
+/// claimed for a dropped current byte.
+const LATE_START_BITS: u32 = 9;
 
 pub(super) static WALKED_FALLING: SyncUnsafeCell<u32> = SyncUnsafeCell::new(0);
 
@@ -215,14 +229,42 @@ pub fn walk(idle: bool) {
                     walked = chosen_walked;
                 }
                 None => {
-                    // Miss. Free-run on the prediction so the chain
-                    // survives one or two dropouts. `walked` was already
-                    // advanced past everything below `snap_low`, so any
-                    // remaining entries (between snap_high and the next
-                    // byte's snap_low) stay in the ring for the next
-                    // iteration's skip pass.
-                    chosen_anchor = predicted;
-                    flags |= COUNT_UNDER;
+                    // Miss. A real start bit only ever arrives LATE (the
+                    // tiebreak rationale above), and every byte start IS a
+                    // falling edge — the stop bit guarantees mark before
+                    // it — so when an unconsumed edge sits within the
+                    // late-start window it is the true start: re-anchor on
+                    // it instead of free-running (the servo's 13-bit SBK
+                    // break used to push the whole reply onto a free-run
+                    // grid ~3 bits ahead of the wire). `probe` stopped at
+                    // the first edge past snap_high, so it is the earliest
+                    // candidate.
+                    let late_limit =
+                        predicted.wrapping_add(LATE_START_BITS.wrapping_mul(bit_ticks));
+                    if probe != falling_total {
+                        let tick = rings::falling_at(probe, falling_total, ceiling);
+                        if tick.wrapping_sub(late_limit) > u32::MAX / 2 {
+                            chosen_anchor = tick;
+                            walked = probe.wrapping_add(1);
+                        } else {
+                            // The next edge belongs to a later byte: this
+                            // byte's start truly dropped. Free-run on the
+                            // prediction so the chain survives; unconsumed
+                            // entries stay for the next iteration's skip
+                            // pass.
+                            chosen_anchor = predicted;
+                            flags |= COUNT_UNDER;
+                        }
+                    } else if ceiling.wrapping_sub(late_limit) <= u32::MAX / 2 {
+                        // Ring exhausted and the whole late-start window
+                        // has provably elapsed: dropout — free-run.
+                        chosen_anchor = predicted;
+                        flags |= COUNT_UNDER;
+                    } else {
+                        // A late start may still be in flight toward the
+                        // IC ring; leave the byte for the next trigger.
+                        break;
+                    }
                 }
             }
         }
