@@ -1,6 +1,6 @@
 //! CRC-engine provider (osc-native §3.2, F6) — SPI1 as a DMA-fed CRC
 //! coprocessor. DMA1_CH3 shifts the covered span through SPI1's CRC unit
-//! (CRC-16/BUYPASS over 16-bit big-endian halfwords = osc-CRC-16); the
+//! (16-bit LSB-first = natural-order CRC-16/ARC = osc-CRC-16, §3.2); the
 //! accumulator holds across arms so a ring-wrap split or a multi-span read
 //! sums into one CRC.
 //!
@@ -20,7 +20,8 @@ use osc_drivers::traits::bus;
 
 use crate::hal::{afio, dma, rcc};
 
-/// osc-CRC-16 polynomial (§3.2: CRC-16/BUYPASS).
+/// osc-CRC-16 polynomial (§3.2: CRC-16/ARC; the engine register takes the
+/// non-reflected form, LSBFIRST supplies the reflection).
 const OSC_CRC_POLY: u16 = 0x8005;
 
 /// Bounded drain spin between successive feeds (the engine runs ~8× wire
@@ -47,8 +48,13 @@ impl Crc {
             w.set_ssm(true);
             w.set_ssi(true);
             w.set_br(SpiBaud::DIV_2);
-            w.set_dff(true); // 16-bit frames → halfword-fed BUYPASS (§3.2)
-            w.set_lsbfirst(false);
+            // 16-bit LSB-first: each little-endian halfword shifts low byte
+            // first, low bit first — natural wire byte order, so the engine
+            // computes CRC-16/ARC with no pair packing (§3.2, spike
+            // spi_crc_lsb_copy). TCRCR holds the bit-reversed checksum;
+            // `result` un-reverses it.
+            w.set_dff(true);
+            w.set_lsbfirst(true);
         });
         SPI1.crcr().write(|w| w.set_crcpoly(OSC_CRC_POLY));
         SPI1.ctlr1().modify(|w| w.set_crcen(true));
@@ -109,7 +115,14 @@ impl bus::CrcEngine for Crc {
     fn result(&mut self) -> Option<u16> {
         if Self::drained() {
             dma::disable(dma::Channel::CH3);
-            Some(SPI1.tcrcr().read().txcrc())
+            // LSB-first shifter mirrors the reflected algorithm: TCRCR is the
+            // bit-reversed osc-CRC-16 (§3.2). Un-reverse once per frame:
+            // three parallel in-byte swap stages, then the byte swap.
+            let mut x = SPI1.tcrcr().read().txcrc() as u32;
+            x = ((x & 0x5555) << 1) | ((x >> 1) & 0x5555);
+            x = ((x & 0x3333) << 2) | ((x >> 2) & 0x3333);
+            x = ((x & 0x0f0f) << 4) | ((x >> 4) & 0x0f0f);
+            Some((x as u16).swap_bytes())
         } else {
             None
         }

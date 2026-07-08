@@ -33,7 +33,7 @@ impl<const N: usize> FrameBuf<N> {
     /// by `finish` from the payload length.
     #[inline]
     pub fn start(&mut self, id: Id, inst: Inst) {
-        self.bytes[0] = wire::CRC_PREFIX;
+        self.bytes[0] = wire::ALIGN_BYTE;
         self.bytes[1] = id.as_byte();
         self.bytes[2] = 0;
         self.bytes[3] = inst.0;
@@ -123,7 +123,7 @@ mod tests {
         let mut b = FrameBuf::<16>::new();
         b.start(Id::new(1), Inst::instruction(Opcode::Ping, 0));
         b.finish(0);
-        assert_eq!(b.seal(), &[0x00, 0x01, 0x03, 0x10, 0x0A, 0x74]);
+        assert_eq!(b.seal(), &[0x00, 0x01, 0x03, 0x10, 0x50, 0xFC]);
     }
 
     #[test]
@@ -137,7 +137,7 @@ mod tests {
         b.finish(4);
         assert_eq!(
             b.seal(),
-            &[0x00, 0x05, 0x07, 0x30, 0x80, 0x01, 0x2C, 0x01, 0xAE, 0xC9]
+            &[0x00, 0x05, 0x07, 0x30, 0x80, 0x01, 0x2C, 0x01, 0xB1, 0xB3]
         );
     }
 
@@ -151,7 +151,7 @@ mod tests {
         b.finish(4);
         assert_eq!(
             b.seal(),
-            &[0x00, 0x03, 0x07, 0x20, 0x00, 0x02, 0x08, 0x00, 0x70, 0x19]
+            &[0x00, 0x03, 0x07, 0x20, 0x00, 0x02, 0x08, 0x00, 0x15, 0x70]
         );
     }
 
@@ -167,7 +167,7 @@ mod tests {
         assert_eq!(frame[3], 0x32);
         assert_eq!(
             frame,
-            &[0x00, 0x02, 0x07, 0x32, 0x00, 0x01, 0xAA, 0x00, 0xA8, 0x46]
+            &[0x00, 0x02, 0x07, 0x32, 0x00, 0x01, 0xAA, 0x00, 0x34, 0xD3]
         );
     }
 

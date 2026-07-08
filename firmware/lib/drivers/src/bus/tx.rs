@@ -161,7 +161,7 @@ impl<W: TxWire> TxEngine<W> {
             // halfwords in the align(2) buffer, and an odd payload donates
             // its last byte to the tail so it halfword-pairs with the PAD.
             let b = self.buf.bytes_mut();
-            b[0] = wire::CRC_PREFIX;
+            b[0] = wire::ALIGN_BYTE;
             b[1] = id;
             b[2] = wire::len_for(p);
             b[3] = inst.0;
@@ -536,11 +536,9 @@ mod tests {
         let wire_out = wire_bytes(&log);
         let inst = Inst(wire_out[2]);
         assert_eq!(inst.result(), Some(ResultCode::PredecessorSilent));
-        let mut covered = vec![wire::CRC_PREFIX];
         let covered_len = wire::covered_len(wire::len_for(40));
-        covered.extend_from_slice(&wire_out[..covered_len - 1]);
         let crc = u16::from_le_bytes([wire_out[covered_len - 1], wire_out[covered_len]]);
-        assert_eq!(osc_crc(&covered), crc);
+        assert_eq!(osc_crc(&wire_out[..covered_len - 1]), crc);
     }
 
     #[test]

@@ -228,8 +228,10 @@ impl Inst {
 /// Max payload bytes; sized so the largest frame fits whole in the ring (§3.1).
 pub const MAX_PAYLOAD: u8 = 252;
 
-/// Fixed CRC-covered prefix byte (§3.2).
-pub const CRC_PREFIX: u8 = 0x00;
+/// TX-buffer alignment byte at offset 0 (§3.2): keeps the hardware CRC feed
+/// halfword-aligned and even; a CRC no-op (leading zero, init = 0). Not part
+/// of the wire checksum definition.
+pub const ALIGN_BYTE: u8 = 0x00;
 
 /// Pad iff the payload length is odd (§3.1) — an invariant, not an option.
 #[inline]
