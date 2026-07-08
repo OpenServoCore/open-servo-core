@@ -149,7 +149,7 @@ fn corrupt_crc_tail_cancels_front_loaded_read() {
     assert_eq!(d.crc_fail_count, 1, "the wire-CRC check failed");
     assert_eq!(d.framing_drop_count, 0);
 
-    // The next read is answered — speculation was cleanly cancelled.
+    // The next read is answered — the pending frame was cleanly dropped.
     sim.host_send_at(1000, &instruction(ID5, Opcode::Read, 0, &[0, 0, 4, 0]));
     let frames = sim.run();
     let (inst, _) = status(sole_reply(&frames));
@@ -202,9 +202,9 @@ fn break_after_covered_cancels_front_loaded_read() {
 
 #[test]
 fn crc_fail_write_reverts_and_keeps_held_entry() {
-    // §5.3 L1 across frames: a bad-CRC speculative write must revert without
+    // §5.3 L1 across frames: a bad-CRC pending write must revert without
     // disturbing entries HELD by an earlier frame. A HOLD stages torque_enable;
-    // a corrupt plain write of goal_velocity is speculated on top then reverted;
+    // a corrupt plain write of goal_velocity is staged on top then reverted;
     // COMMIT must land only the held torque_enable.
     let mut sim = Sim::new(BaudRate::B1000000);
     let s = sim.add_servo(ID5);
@@ -240,7 +240,7 @@ fn crc_fail_write_reverts_and_keeps_held_entry() {
 }
 
 #[test]
-fn break_preempts_speculated_write_then_recovers() {
+fn break_preempts_pending_write_then_recovers() {
     // A WRITE preempted by a fresh break before its CRC verdict must leave the
     // table clean; the dangling staged write is reclaimed by the dispatcher
     // auto-revert, so a following write applies.

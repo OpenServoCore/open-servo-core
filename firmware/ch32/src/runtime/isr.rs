@@ -1,5 +1,5 @@
 use ch32_metapac::{DMA1, USART1};
-use osc_core::traits::{Dispatch, Reply, Request, RequestCtx, Speculated};
+use osc_core::traits::{Dispatch, Dispatched, Reply, Request, RequestCtx};
 use osc_core::{ControlIo, ConversionVariables, RegionStorageRaw, Sensors};
 
 use crate::hal::{pfic, usart};
@@ -123,14 +123,15 @@ pub fn install_irqs() {
 ///
 /// SAFETY (the SESSION exclusivity invariant): the session's other user is
 /// the LOW dispatch consumer, live only while the handoff slot holds a
-/// claimed job. `ServoBus` reaches these methods only on speculation paths
-/// (covered checkpoint, CRC verify), and the handoff backpressure holds the
-/// framer — so no speculation can begin or resolve — whenever the slot is
-/// occupied. The two borrows are therefore temporally exclusive even though
-/// the vectors preempt.
-struct SpecDispatcher;
+/// claimed job. `ServoBus` reaches these methods only on the spine's HIGH
+/// paths (wire-class dispatch at the covered checkpoint / fast path, and the
+/// verdict commit/revert), and the handoff backpressure holds the framer —
+/// so no HIGH dispatch can begin or resolve — whenever the slot is occupied.
+/// The two borrows are therefore temporally exclusive even though the
+/// vectors preempt.
+struct HighDispatcher;
 
-impl SpecDispatcher {
+impl HighDispatcher {
     #[inline(always)]
     fn with<R>(&mut self, f: impl FnOnce(&mut osc_core::Dispatcher<'_>) -> R) -> R {
         // SAFETY: see type doc — the LOW consumer holds no live borrow on
@@ -140,26 +141,22 @@ impl SpecDispatcher {
     }
 }
 
-impl Dispatch for SpecDispatcher {
-    fn dispatch<R: Reply>(&mut self, req: Request<'_>, ctx: RequestCtx, reply: &mut R) {
-        self.with(|d| d.dispatch(req, ctx, reply))
-    }
-
-    fn dispatch_speculative<R: Reply>(
+impl Dispatch for HighDispatcher {
+    fn dispatch<R: Reply>(
         &mut self,
         req: Request<'_>,
         ctx: RequestCtx,
         reply: &mut R,
-    ) -> Speculated {
-        self.with(|d| d.dispatch_speculative(req, ctx, reply))
+    ) -> Dispatched {
+        self.with(|d| d.dispatch(req, ctx, reply))
     }
 
-    fn commit_speculation<R: Reply>(&mut self, reply: &mut R) {
-        self.with(|d| d.commit_speculation(reply))
+    fn commit<R: Reply>(&mut self, reply: &mut R) {
+        self.with(|d| d.commit(reply))
     }
 
-    fn revert_speculation(&mut self) {
-        self.with(|d| d.revert_speculation())
+    fn revert(&mut self) {
+        self.with(|d| d.revert())
     }
 }
 
@@ -232,9 +229,9 @@ pub fn on_usart1() {
             park_rx_flags();
         }
         // A2: the break handler resolves complete frames from ring data in
-        // place, so it carries the (lazy) speculation dispatcher like the
-        // deadline body.
-        let mut dispatcher = SpecDispatcher;
+        // place, so it carries the (lazy) HIGH dispatcher like the deadline
+        // body.
+        let mut dispatcher = HighDispatcher;
         // SAFETY: see fn doc.
         unsafe { Drivers::bus() }.on_break(&mut dispatcher);
     }
@@ -261,12 +258,12 @@ pub fn on_usart1() {
 ///
 /// SAFETY: SysTick shares PFIC HIGH with USART1, so no concurrent `&mut`
 /// into the composite is possible; SESSION access goes through the lazy
-/// [`SpecDispatcher`] under its exclusivity invariant.
+/// [`HighDispatcher`] under its exclusivity invariant.
 pub fn on_deadline_irq() {
     crate::log::trace!("deadline isr");
     crate::hal::systick::clear_match();
     maintain_rx_flags();
-    let mut dispatcher = SpecDispatcher;
+    let mut dispatcher = HighDispatcher;
     // SAFETY: see fn doc.
     unsafe { Drivers::bus() }.on_deadline(&mut dispatcher);
 }
@@ -277,8 +274,8 @@ pub fn on_deadline_irq() {
 /// or a pend racing adoption) finds no claimable job and no-ops.
 ///
 /// SAFETY: SESSION `&mut` at LOW is exclusive with the HIGH side by the
-/// [`SpecDispatcher`] invariant — while this body holds the claimed job,
-/// the handoff backpressure keeps every HIGH speculation path unreachable.
+/// [`HighDispatcher`] invariant — while this body holds the claimed job,
+/// the handoff backpressure keeps every HIGH dispatch path unreachable.
 /// The consumer cell itself is exclusive to these two vectors (same class,
 /// no mutual preemption; the kernel never touches it).
 pub fn on_dispatch_job() {

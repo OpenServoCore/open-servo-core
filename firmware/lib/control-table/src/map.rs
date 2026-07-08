@@ -349,8 +349,8 @@ pub trait RegisterFile: RegisterMap {
     }
 
     /// Apply only the entries pushed since `snap`, then truncate the buffer back
-    /// to it — the speculative-write commit, leaving any pre-`snap` HOLD entries
-    /// intact for a later real COMMIT.
+    /// to it — a pending write's verdict commit, leaving any pre-`snap` HOLD
+    /// entries intact for a later real COMMIT.
     fn commit_from(&self, staged: &mut StagedWrites, snap: &Snapshot) {
         let base = self.base();
         for (addr, data) in staged.iter_from(snap) {

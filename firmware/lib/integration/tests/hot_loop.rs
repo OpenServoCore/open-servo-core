@@ -288,7 +288,7 @@ fn hot_loop_survives_handler_latency_3m() {
 /// deadline body), the resolver reaches Covered INSIDE that on_break wake and
 /// stages the reply — and the FE-kill in the same wake must not murder it.
 /// The reply belongs to the frontier frame still arriving, not to a frame the
-/// host abandoned; killing it leaves a stale speculation that later arms the
+/// host abandoned; killing it leaves a stale pending frame that later arms the
 /// chain over an empty engine (ghost trigger, silent no-reply).
 fn plain_burst_with_deadline_latency(rate: BaudRate) {
     use osc_integration::sim::HandlerCost;
@@ -360,8 +360,9 @@ fn plain_burst_survives_deadline_latency_3m() {
 /// The bench's plain burst (`tool-osc-burst --plain`: 8 NOREPLY WRITEs +
 /// READ, host waits out the reply between cycles) with IRREGULAR intra-burst
 /// gaps: the pirate's TXE-poll bubbles put 0–3-byte-time pauses between
-/// frames, so the framer flips between caught-up (speculation at HIGH) and
-/// backlog (consumer at LOW) mid-burst — every seam of the A3(b) handoff.
+/// frames, so the writes (table class → LOW consumer) flip between the live
+/// lane (caught-up frontier) and the queued lane (backlog) mid-burst — every
+/// seam of the A3(b) handoff.
 /// Silicon showed ~0.3% no-reply/stale residuals at 1M in exactly this
 /// pattern; a drop here is that residual, deterministic.
 fn plain_burst_with_gap_jitter(rate: BaudRate) {

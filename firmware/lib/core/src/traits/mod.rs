@@ -9,7 +9,7 @@ mod control;
 mod services;
 
 pub use control::{Capabilities, ControlIo, DecayMode, Motor, MotorCmd, Sensors};
-pub use services::{Dispatch, Reply, Request, RequestCtx, SendError, Speculated, Status};
+pub use services::{Dispatch, Dispatched, Reply, Request, RequestCtx, SendError, Status};
 
 // Boundary types defined elsewhere that callers of the traits need in scope.
 pub use crate::regions::BootMode;

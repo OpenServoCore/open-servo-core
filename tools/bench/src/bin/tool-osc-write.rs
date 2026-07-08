@@ -1,6 +1,7 @@
-//! osc-native WRITE: measure TURNAROUND for the mutating path — unlike
-//! reads, writes take no covered-window speculation, so validation + table
-//! apply sit between frame end and the ack break.
+//! osc-native WRITE: measure TURNAROUND for the mutating path — the write is
+//! staged through the LOW consumer at the covered checkpoint (decode +
+//! validate overlap the frame's wire tail), and the verdict at the frame end
+//! commits + sequences the ack break.
 
 use std::time::Duration;
 

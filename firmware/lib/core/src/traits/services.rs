@@ -64,36 +64,38 @@ pub trait Reply {
     fn stage_reboot(&mut self, mode: BootMode);
 }
 
-/// Outcome of a speculative dispatch (covered-complete, CRC not yet verified).
-pub enum Speculated {
-    /// Read-only request — fully handled, nothing pending.
+/// Outcome of a [`Dispatch::dispatch`]: whether a table effect was staged.
+pub enum Dispatched {
+    /// No table effect — nothing awaits a verdict in the dispatcher (any
+    /// staged reply is the bus's wire effect to gate).
     Done,
-    /// Effects staged; caller must later call `commit_speculation` (CRC pass)
-    /// or `revert_speculation`.
+    /// A table effect is staged; the caller owes the verdict —
+    /// [`Dispatch::commit`] on CRC pass, [`Dispatch::revert`] on fail.
     Pending,
-    /// Cannot run speculatively (capacity, COMMIT/MGMT, …) — caller falls
-    /// back to the full `dispatch` at frame end.
-    Refused,
 }
 
 /// Single-shot typed dispatch: the bus hands one fully-decoded request plus
 /// its ctx. `R` is generic per call so the hot path avoids `dyn Reply`.
+///
+/// Dispatch-before-verdict is the spine: `dispatch` runs before the frame's
+/// CRC verdict and STAGES effects — the reply through `R` (the wire effect,
+/// sent or dropped by the bus) and writes into the staging buffer (the table
+/// effect, gated by [`Self::commit`]/[`Self::revert`]). COMMIT and MGMT
+/// cannot stage their effects; the bus routes them verdict-first (CRC checked
+/// before dispatch), and `dispatch` applies them directly on that contract.
 pub trait Dispatch {
-    fn dispatch<R: Reply>(&mut self, req: Request<'_>, ctx: RequestCtx, reply: &mut R);
-
-    /// Front-load a request at covered-complete: read-only ops run in full;
-    /// mutating ops validate + stage but do not touch the live table until a
-    /// later [`Self::commit_speculation`]. See [`Speculated`].
-    fn dispatch_speculative<R: Reply>(
+    fn dispatch<R: Reply>(
         &mut self,
         req: Request<'_>,
         ctx: RequestCtx,
         reply: &mut R,
-    ) -> Speculated;
+    ) -> Dispatched;
 
-    /// CRC passed: apply the staged speculative write and fire its hooks.
-    fn commit_speculation<R: Reply>(&mut self, reply: &mut R);
+    /// Verdict pass: promote the staged table effect — a plain write applies
+    /// into the live table and fires its hooks; a held write keeps its
+    /// entries for a later COMMIT.
+    fn commit<R: Reply>(&mut self, reply: &mut R);
 
-    /// CRC failed / frame died: discard the staged speculative write.
-    fn revert_speculation(&mut self);
+    /// Verdict fail (or frame died): discard the staged table effect.
+    fn revert(&mut self);
 }

@@ -1,11 +1,14 @@
 //! HIGH↔LOW dispatch handoff (osc-servo-transport §6, A3(b)): one work slot
-//! each way. The transport at HIGH publishes a CRC-verified instruction
-//! frame as a [`DispatchJob`]; the [`DispatchConsumer`] at LOW decodes and
-//! dispatches it, records the reply verbs into a [`ReplyRecord`], and wakes
-//! HIGH to adopt — stage the reply into the TX engine, sequence the chain,
-//! apply deferred config. No hardware handle crosses the boundary: the CRC
-//! engine, TX engine, and deadline compare stay HIGH-exclusive, and the
-//! consumer touches only ring bytes, the control table, and this cell.
+//! each way. The transport at HIGH publishes an instruction frame as a
+//! [`DispatchJob`] — write-class frames ahead of their CRC verdict (the
+//! dispatch spine; effects stage, the verdict at adoption gates them),
+//! verdict-first frames (COMMIT/MGMT and busy-pipeline fallbacks) after a
+//! passing check. The [`DispatchConsumer`] at LOW decodes and dispatches it,
+//! records the reply verbs into a [`ReplyRecord`], and wakes HIGH to adopt —
+//! resolve the verdict, stage the reply into the TX engine, sequence the
+//! chain, apply deferred config. No hardware handle crosses the boundary:
+//! the CRC engine, TX engine, and deadline compare stay HIGH-exclusive, and
+//! the consumer touches only ring bytes, the control table, and this cell.
 //!
 //! Backpressure is the slot itself: while it is occupied the framer holds
 //! position and the RX ring absorbs the backlog (A2 — the ring is the
@@ -14,7 +17,7 @@
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicU8, Ordering, compiler_fence};
 
-use osc_core::traits::{Dispatch, Reply, SendError, Status};
+use osc_core::traits::{Dispatch, Dispatched, Reply, SendError, Status};
 use osc_core::{BaudRate, BootMode};
 use osc_protocol::wire::ResultCode;
 
@@ -22,7 +25,7 @@ use super::decode::{Decoded, decode};
 use super::frame_view;
 use crate::traits::bus::{RxRing, SequenceWake};
 
-/// A CRC-verified instruction frame awaiting decode + dispatch at LOW.
+/// An instruction frame awaiting decode + dispatch at LOW.
 #[derive(Copy, Clone)]
 pub struct DispatchJob {
     pub anchor: u16,
@@ -48,6 +51,9 @@ const NO_JOB: DispatchJob = DispatchJob {
 #[derive(Copy, Clone)]
 pub struct ReplyRecord {
     pub staged: bool,
+    /// The dispatcher staged a table effect — the adopter owes the verdict
+    /// ([`Dispatch::commit`] / [`Dispatch::revert`]).
+    pub pending: bool,
     pub slot: u8,
     pub result: ResultCode,
     pub alert: bool,
@@ -64,6 +70,7 @@ impl ReplyRecord {
     const fn empty(packet_end: u32) -> Self {
         Self {
             staged: false,
+            pending: false,
             slot: 0,
             result: ResultCode::Ok,
             alert: false,
@@ -229,7 +236,7 @@ impl<R: RxRing, W: SequenceWake> DispatchConsumer<R, W> {
         if let Decoded::Own(req, ctx, slot) = decode(frame, job.id) {
             rec.slot = slot;
             let mut reply = RecordingReply { rec: &mut rec };
-            d.dispatch(req, ctx, &mut reply);
+            rec.pending = matches!(d.dispatch(req, ctx, &mut reply), Dispatched::Pending);
         }
         self.handoff.publish_reply(rec);
         self.wake.reply_ready();

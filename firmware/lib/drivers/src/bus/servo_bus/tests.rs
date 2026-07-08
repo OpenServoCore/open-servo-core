@@ -91,8 +91,9 @@ fn deliver<D: Dispatch>(
         h.ring.set_cursor(((anchor + fp) % RING_LEN) as u16);
         bus.on_deadline(d);
     }
-    // Non-speculated frames publish to the LOW consumer at the frame end;
-    // pump the consumer + adoption wake so the reply is sequenced (A3(b)).
+    // Table-class frames publish to the LOW consumer; pump the consumer +
+    // adoption wake so the verdict resolves and the reply is sequenced (A3(b)).
+    // (Wire-class frames dispatch inline and ignore the empty pump.)
     h.pump(bus, d);
     end
 }
@@ -408,7 +409,7 @@ fn s10_rescue_break_switches_to_500k() {
 }
 
 #[test]
-fn s11_break_after_covered_cancels_speculation() {
+fn s11_break_after_covered_kills_staged_reply() {
     let h = Harness::new();
     let mut bus = h.build(ID, RATE, 60);
     let shared = shared_seeded();
@@ -463,10 +464,11 @@ fn s11_break_after_covered_cancels_speculation() {
 }
 
 #[test]
-fn s13_speculated_write_commits_at_frame_end() {
-    // A WRITE is front-loaded at covered-complete: staged, table untouched, no
-    // reply on the wire. Only the frame-end CRC verify commits it into the table
-    // and sequences the ack.
+fn s13_frontier_write_publishes_at_covered_commits_at_verdict() {
+    // A WRITE publishes to the LOW consumer at covered-complete (the spine:
+    // hop + decode + dispatch overlap the frame's wire tail). The consumer
+    // stages; the table stays untouched and nothing reaches the wire until
+    // the verdict — frame end + adopted record — commits and sequences.
     let h = Harness::new();
     let mut bus = h.build(ID, RATE, 60);
     let shared = Shared::new();
@@ -487,19 +489,22 @@ fn s13_speculated_write_commits_at_frame_end() {
     h.ring.set_cursor(((anchor + 4) % RING_LEN) as u16);
     bus.on_deadline(&mut d);
 
-    // Covered checkpoint (two byte-times short of the end): staged
-    // speculatively, live table still clean.
+    // Covered checkpoint (two byte-times short of the end): the job is
+    // published — before the frame has even ended — and nothing is applied.
     let c = h.deadline.armed().expect("covered deadline");
     h.deadline.set_now(c);
     h.ring.set_cursor(((anchor + fp - 2) % RING_LEN) as u16);
     bus.on_deadline(&mut d);
+    assert!(!h.handoff.idle(), "write-class publishes at covered");
+    // The consumer dispatches (stages) while the CRC tail is still inbound.
+    h.pump(&mut bus, &mut d);
     assert!(
         !shared.table.with(|t| t.control.lifecycle.torque_enable),
-        "a speculated write is staged, not yet committed"
+        "a pending write is staged, not yet committed"
     );
     assert!(!h.wire.started());
 
-    // Frame-end CRC verify: commit into the table, then sequence the ack.
+    // Frame end delivers the verdict's other half: commit + sequence.
     h.ring.set_cursor(((anchor + fp) % RING_LEN) as u16);
     fire(&mut bus, &h, &mut d);
     assert!(
@@ -630,6 +635,88 @@ fn fe_before_its_byte_still_resolves_the_frame() {
     let (id, inst, _) = last_reply(&h.wire);
     assert_eq!(id, ID);
     assert_eq!(inst.result(), Some(ResultCode::Ok));
+}
+
+/// The zero-hop half of the class routing: a complete wire-class frame
+/// (READ) dispatches inline at HIGH — the LOW consumer is never woken, and
+/// the reply sequences straight from the resolve wake.
+#[test]
+fn complete_read_dispatches_inline_without_hop() {
+    let h = Harness::new();
+    let mut bus = h.build(ID, RATE, 60);
+    let shared = shared_seeded();
+    let mut session = Session::new();
+    let mut d = session.dispatcher(&shared);
+
+    let frame = instruction(ID, Opcode::Read, 0, &[0, 0, 4, 0]);
+    let anchor = 100usize;
+    h.ring.place(anchor, &frame);
+    bus.framer.resync(anchor as u16);
+    // The whole frame is already ringed when the (lagged) break delivers:
+    // the fast path resolves it in this one wake.
+    h.deadline.set_now(1000);
+    h.ring
+        .set_cursor(((anchor + frame.len()) % RING_LEN) as u16);
+    bus.on_break(&mut d);
+
+    assert!(h.wake.lanes().is_empty(), "wire class never hops to LOW");
+    assert!(h.handoff.idle());
+    fire(&mut bus, &h, &mut d);
+    drain_tx(&mut bus, &h);
+    let (id, inst, data) = last_reply(&h.wire);
+    assert_eq!(id, ID);
+    assert_eq!(inst.result(), Some(ResultCode::Ok));
+    assert_eq!(&data[..2], &[0x34, 0x12]);
+}
+
+/// Ordering across classes: a backlog WRITE(NOREPLY) resolves, hops, and
+/// commits before the READ behind it dispatches — the ring walk holds at the
+/// pending write (backpressure) and resumes at adoption, so effects land in
+/// wire order.
+#[test]
+fn backlog_write_then_read_processes_in_order() {
+    let h = Harness::new();
+    let mut bus = h.build(ID, RATE, 60);
+    let shared = shared_seeded();
+    let mut session = Session::new();
+    let mut d = session.dispatcher(&shared);
+
+    let addr = CONTROL_BASE_ADDR.to_le_bytes();
+    let write = instruction(
+        ID,
+        Opcode::Write,
+        Inst::FLAG_NOREPLY,
+        &[addr[0], addr[1], 1],
+    );
+    let read = instruction(ID, Opcode::Read, 0, &[0, 0, 4, 0]);
+    let anchor = 100usize;
+    h.ring.place(anchor, &write);
+    h.ring.place(anchor + write.len(), &read);
+    bus.framer.resync(anchor as u16);
+    h.deadline.set_now(1000);
+    h.ring
+        .set_cursor(((anchor + write.len() + read.len()) % RING_LEN) as u16);
+    bus.on_break(&mut d);
+
+    // The write published (backlog → the kernel's lane) and the walk holds:
+    // the read is NOT dispatched while the write's verdict is open.
+    assert_eq!(h.wake.lanes(), [crate::traits::bus::Lane::Queued]);
+    assert!(!h.wire.started());
+    assert!(
+        !shared.table.with(|t| t.control.lifecycle.torque_enable),
+        "table effect awaits the verdict"
+    );
+
+    // Adoption commits the write, resumes the walk, and the read dispatches
+    // inline in the same wake.
+    h.pump(&mut bus, &mut d);
+    assert!(shared.table.with(|t| t.control.lifecycle.torque_enable));
+    fire(&mut bus, &h, &mut d);
+    drain_tx(&mut bus, &h);
+    let (id, inst, data) = last_reply(&h.wire);
+    assert_eq!(id, ID);
+    assert_eq!(inst.result(), Some(ResultCode::Ok));
+    assert_eq!(&data[..2], &[0x34, 0x12]);
 }
 
 /// A phantom FE (noise, no byte ever lands) surrenders after the promise

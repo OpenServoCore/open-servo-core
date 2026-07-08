@@ -198,10 +198,10 @@ fn hold_then_commit_applies_atomically() {
 }
 
 #[test]
-fn large_write_falls_back_and_applies() {
-    // A write whose payload exceeds the 128 B staging buffer cannot speculate
-    // (StagingFull → Refused); the full write_split path at frame end applies it
-    // directly. Target the calib pot-LUT span (writable, no field rules).
+fn large_write_stages_and_applies() {
+    // LEN is the only size limit (§5.1): a >128 B write stages like any other
+    // (the buffer fits the largest legal write) and commits at its verdict.
+    // Target the calib pot-LUT span (writable, no field rules).
     let mut sim = Sim::new(BaudRate::B1000000);
     let s = sim.add_servo(ID5);
 

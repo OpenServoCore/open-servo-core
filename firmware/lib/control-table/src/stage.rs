@@ -1,10 +1,11 @@
 use crate::Error;
 
-/// Total staging buffer for pending RegWrite data, in bytes. Must be at
-/// least `MAX_CONTROL_RW` from the DXL services layer (asserted in
-/// `osc_core::services::dxl::limits`). Override with `OSC_STAGE_DATA_CAP`.
-/// Multiple RegWrites share this budget before Action commits.
-pub const STAGE_DATA_CAP: usize = env_usize(option_env!("OSC_STAGE_DATA_CAP"), 128);
+/// Total staging buffer for pending write data, in bytes. Every write stages
+/// here ahead of its CRC verdict (the dispatch spine), so the cap must fit
+/// the largest legal single write — 250 B of data under the 252 B payload
+/// ceiling (osc-native §5.1: LEN is the only size limit) — plus whatever
+/// HOLD writes are pending. Override with `OSC_STAGE_DATA_CAP`.
+pub const STAGE_DATA_CAP: usize = env_usize(option_env!("OSC_STAGE_DATA_CAP"), 256);
 
 /// Max number of pending RegWrite entries before Action commits. Override
 /// with `OSC_STAGE_ENTRY_CAP`.

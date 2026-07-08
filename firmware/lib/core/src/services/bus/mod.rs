@@ -8,4 +8,4 @@ pub use dispatch::Dispatcher;
 pub use session::Session;
 
 #[cfg(test)]
-pub(crate) use dispatch::SpecWrite;
+pub(crate) use dispatch::PendingWrite;

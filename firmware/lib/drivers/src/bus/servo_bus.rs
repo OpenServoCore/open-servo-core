@@ -4,9 +4,9 @@
 //! generation and RX validation share, and muxes their deadlines onto the
 //! single tick-compare.
 
-use osc_core::traits::{Dispatch, Reply, Request, RequestCtx, SendError, Speculated, Status};
+use osc_core::traits::{Dispatch, Dispatched, Reply, Request, RequestCtx, SendError, Status};
 use osc_core::{BaudRate, BootMode};
-use osc_protocol::wire::{Id, Inst, ResultCode};
+use osc_protocol::wire::{Id, Inst, Opcode, ResultCode};
 
 use super::chain::{Chain, ChainOut};
 use super::decode::{Decoded, decode};
@@ -54,18 +54,52 @@ pub struct LinkDiag {
     pub framing_drop_count: u32,
 }
 
-/// A frame whose CRC feed + dispatch were front-loaded at covered-complete; its
-/// wire CRC is verified and its reply sequenced at the frame end. Kept only
-/// between a [`FramerOut::Covered`] and its matching [`FramerOut::Frame`].
-struct Speculation {
+/// Instruction class, readable from the INST byte at the covered checkpoint:
+/// where dispatch runs, and when the CRC verdict is polled (§6 A3(b)).
+enum Class {
+    /// PING/READ/GREAD — side-effect-free, wire effect only: dispatch at
+    /// HIGH; the frame-end verdict gates SEND/DON'T-SEND of the staged reply.
+    Wire,
+    /// WRITE/GWRITE — table effect (± wire effect): staged through the LOW
+    /// consumer; the verdict at adoption gates COMMIT/REVERT of the staged
+    /// write plus SEND/DON'T-SEND of the recorded reply.
+    Table,
+    /// COMMIT/MGMT (and anything undecodable) — effects cannot stage: the
+    /// CRC verdict comes first, then dispatch (rare, short frames).
+    VerdictFirst,
+}
+
+/// A wire-class frame dispatched at HIGH ahead of its CRC verdict — the
+/// reply (if any) sits staged in the TX engine until the frame end verifies.
+struct WirePending {
     anchor: u16,
     footprint: u16,
     packet_end: u32,
     slot: u8,
+    /// Wire effect staged: a reply awaits the send/don't-send verdict.
     staged: bool,
-    // A mutating frame whose effects are staged in the dispatcher, awaiting a
-    // CRC-pass commit or a CRC-fail revert.
-    pending: bool,
+    /// Table effect staged in the dispatcher (defensive — wire-class ops
+    /// never stage one; the verdict debt is honored regardless).
+    table: bool,
+}
+
+/// A table-class frame published to the LOW consumer ahead of its verdict.
+/// The verdict fires once BOTH halves are in — the frame end and the
+/// consumer's record — in either order (re-derived state, immune to wake
+/// interleaving).
+struct TablePending {
+    anchor: u16,
+    footprint: u16,
+    ended: bool,
+    record: Option<ReplyRecord>,
+}
+
+/// A frame dispatched before its CRC verdict — the spine (§4): dispatch
+/// always runs under the CRC's own latency; the verdict gates EFFECTS,
+/// never work.
+enum Pending {
+    Wire(WirePending),
+    Table(TablePending),
 }
 
 pub struct ServoBus<P: Providers> {
@@ -93,8 +127,12 @@ pub struct ServoBus<P: Providers> {
     pending_baud: Option<BaudRate>,
     pending_reboot: Option<BootMode>,
     crc_fails: u32,
-    // A read-only frame front-loaded at covered-complete, awaiting CRC verify.
-    speculated: Option<Speculation>,
+    // The one frame dispatched ahead of its CRC verdict (§4: the spine).
+    // Backpressure bounds it to one: a wire-class pending frame IS the
+    // frontier, and a table-class pending frame holds the framer through the
+    // handoff slot — so the single staging slot and the single CRC
+    // accumulator are never contended.
+    pending: Option<Pending>,
     // Deadline mux (§4.1/§6/§9.1): the soonest live slot arms the compare.
     framer_at: Option<u32>,
     chain_at: Option<u32>,
@@ -151,7 +189,7 @@ impl<P: Providers> ServoBus<P> {
             pending_baud: None,
             pending_reboot: None,
             crc_fails: 0,
-            speculated: None,
+            pending: None,
             framer_at: None,
             chain_at: None,
             rescue_at: None,
@@ -174,13 +212,13 @@ impl<P: Providers> ServoBus<P> {
         // (silicon event-trace 2026-07-08: COVERED→KILL 2 µs apart, then
         // verify armed the chain over the emptied engine — ghost trigger,
         // silent no-reply). Positional truth (A2) decides: kill only when
-        // ringed bytes FOLLOW the reply's own frame. A live speculation is
-        // mid-frame by definition (its CRC gate reclaims the reply if this
+        // ringed bytes FOLLOW the reply's own frame. A pending frame is
+        // mid-verdict by definition (its CRC gate reclaims the reply if this
         // break garbled the frame); a Waiting chain expects predecessor
         // breaks and only suspends its reclaim window (§6).
         if self.tx.staged()
             && !self.chain.waiting()
-            && self.speculated.is_none()
+            && self.pending.is_none()
             && !self.framer.caught_up(self.ring.cursor())
         {
             self.tx.abort();
@@ -216,7 +254,7 @@ impl<P: Providers> ServoBus<P> {
             // so resume the held framer in the same wake.
             if let Some(rec) = self.handoff.take_reply() {
                 progressed = true;
-                self.adopt(rec);
+                self.on_record(rec, d);
                 self.drive_framer(d);
             }
             if due(now, self.framer_at) {
@@ -347,7 +385,7 @@ impl<P: Providers> ServoBus<P> {
                 }
                 FramerOut::Covered { span, end_due } => {
                     self.framer_at = Some(end_due);
-                    self.speculate(span, d);
+                    self.route_frame(span, false, d);
                     return;
                 }
                 FramerOut::Frame(span) => {
@@ -400,7 +438,9 @@ impl<P: Providers> ServoBus<P> {
         self.framer.resync(cursor);
         self.chain.reset();
         self.tx.abort();
-        self.speculated = None;
+        // A dropped pending frame's staged table effect is reclaimed by the
+        // dispatcher's auto-revert on the next dispatch.
+        self.pending = None;
         self.framer_at = None;
         self.chain_at = None;
         // A job (or its record) from a pre-rescue frame is stale; the slot
@@ -411,104 +451,264 @@ impl<P: Providers> ServoBus<P> {
         }
     }
 
-    /// Frame end (deadline B). A front-loaded read-only frame only needs its
-    /// wire CRC verified and its reply sequenced; every other frame takes the
-    /// full path here.
-    fn on_frame_end<D: Dispatch>(&mut self, span: FrameSpan, d: &mut D) {
-        if let Some(spec) = self.speculated.take() {
-            if spec.anchor == span.anchor && spec.footprint == span.footprint {
-                self.verify_speculation(spec, d);
-                return;
-            }
-            // Defensive: a stale speculation that isn't this frame — drop it. Any
-            // dangling staged write is reclaimed by the dispatcher auto-revert on
-            // the next dispatch (process_frame below).
-            self.drop_staged();
+    /// Instruction class from the ring INST byte — the routing decision, and
+    /// the same byte [`decode`] reads at dispatch, so the two can never
+    /// disagree (the soundness of verdict-first: a table-class publish can
+    /// never decode into a COMMIT).
+    fn classify(&self, anchor: u16) -> Class {
+        match self.ring_inst(anchor).opcode() {
+            Some(Opcode::Ping | Opcode::Read | Opcode::Gread) => Class::Wire,
+            Some(Opcode::Write | Opcode::Gwrite) => Class::Table,
+            _ => Class::VerdictFirst,
         }
-        self.process_frame(span);
     }
 
-    /// Covered-complete: front-load the CRC feed + dispatch so deadline B only
-    /// has to verify the wire CRC and trigger. The dispatcher decides what is
-    /// speculable: read-only ops run in full; mutating ops validate + stage but
-    /// don't touch the live table until commit. A refused op (COMMIT/MGMT, or a
-    /// staging overflow) leaves no speculation and takes the full path at B.
-    fn speculate<D: Dispatch>(&mut self, span: FrameSpan, d: &mut D) {
+    /// Frame end (deadline B): a pending frame gets its verdict half; anything
+    /// else is a complete frame entering the spine ([`Self::route_frame`]).
+    fn on_frame_end<D: Dispatch>(&mut self, span: FrameSpan, d: &mut D) {
+        match self.pending.take() {
+            Some(Pending::Wire(w)) if w.anchor == span.anchor && w.footprint == span.footprint => {
+                self.verify(w, d);
+            }
+            Some(Pending::Table(mut t))
+                if t.anchor == span.anchor && t.footprint == span.footprint =>
+            {
+                t.ended = true;
+                self.pending = Some(Pending::Table(t));
+                self.try_resolve_table(d);
+            }
+            Some(_) => {
+                // Defensive: a pending frame that isn't this one — drop it. Any
+                // dangling staged write is reclaimed by the dispatcher
+                // auto-revert on the next dispatch.
+                self.drop_staged();
+                self.route_frame(span, true, d);
+            }
+            None => self.route_frame(span, true, d),
+        }
+    }
+
+    /// The spine: dispatch a frame ahead of its CRC verdict, routed by class.
+    /// `complete` distinguishes a whole frame (backlog / fast path — every
+    /// byte incl. the CRC is ringed, so the verdict fires now) from a frontier
+    /// frame at its covered checkpoint (the two CRC bytes still inbound — the
+    /// verdict is deferred to the frame end). Wire class dispatches inline at
+    /// HIGH with the CRC feed chewing underneath; table class publishes to the
+    /// LOW consumer so hop + decode + dispatch overlap the frame's own wire
+    /// tail (decode needs only covered bytes); verdict-first (COMMIT/MGMT,
+    /// effects unstageable) and any frame overlapping a live reply pipeline
+    /// check the CRC first, then dispatch. A frontier frame that lands in the
+    /// verdict-first path just defers — its frame end arrives here `complete`.
+    fn route_frame<D: Dispatch>(&mut self, span: FrameSpan, complete: bool, d: &mut D) {
         let anchor = span.anchor;
         let footprint = span.footprint;
-        // Speculate only from an idle reply pipeline: superseding a live
-        // chain or staged reply belongs AFTER the CRC gate (a garbled frame
-        // must touch nothing, §5.3 L1) — those rare overlaps fall back to
-        // the full path at the frame end.
-        if self.chain.active() || self.tx.busy() {
+        let packet_end = span.packet_end;
+        // Status frames only advance the snoop chain (§6) — framing-level
+        // truth, NO validation: the chain consumes nothing from the body, and
+        // skipping the CRC keeps the snapshot buffer free while our own reply
+        // streams from it. A frontier status defers to its frame end.
+        if self.ring_inst(anchor).is_status() {
+            if complete {
+                let out = self.chain.on_status_end(packet_end);
+                self.route_chain(out);
+            }
             return;
         }
-        // Start the RX CRC feed now; the result is polled at the frame end.
-        self.crc_feed(anchor, footprint);
-        let Some((staged, slot, outcome)) =
-            self.dispatch_decoded(anchor, footprint, |req, ctx, h| {
-                d.dispatch_speculative(req, ctx, h)
-            })
-        else {
-            return; // Status/Skip — not dispatched; the full path handles it at B
-        };
-        match outcome {
-            Speculated::Done | Speculated::Pending => {
-                self.speculated = Some(Speculation {
-                    anchor,
-                    footprint,
-                    packet_end: span.packet_end,
-                    slot,
-                    staged,
-                    pending: matches!(outcome, Speculated::Pending),
-                });
+        // The spine runs only from an idle reply pipeline: superseding a live
+        // chain or staged reply belongs AFTER the CRC gate (a garbled frame
+        // must touch nothing, §5.3 L1), so those overlaps fall to verdict-first
+        // below. The guard also keeps the CRC engine free through a pending
+        // window — chain/tx activate only at a verdict, so no trigger reset
+        // can clobber a fed span.
+        if !self.chain.active() && !self.tx.busy() {
+            match self.classify(anchor) {
+                Class::Wire => {
+                    // Feed first so the engine chews the covered span under the
+                    // dispatch body; the verdict then finds it settled.
+                    self.crc_feed(anchor, footprint);
+                    let (staged, slot, table) =
+                        match self.dispatch_decoded(anchor, footprint, |req, ctx, h| {
+                            d.dispatch(req, ctx, h)
+                        }) {
+                            Some((staged, slot, out)) => {
+                                (staged, slot, matches!(out, Dispatched::Pending))
+                            }
+                            // Skip (a group op not listing us): a bare verdict
+                            // moves the ladder (complete); the frame end does it
+                            // for a frontier.
+                            None if complete => (false, 0, false),
+                            None => return,
+                        };
+                    let w = WirePending {
+                        anchor,
+                        footprint,
+                        packet_end,
+                        slot,
+                        staged,
+                        table,
+                    };
+                    if complete {
+                        self.verify(w, d);
+                    } else {
+                        self.pending = Some(Pending::Wire(w));
+                    }
+                    return;
+                }
+                // Unicast to another servo never occupies the slot; group ops
+                // ride broadcast and resolve their id-lists at LOW.
+                Class::Table if self.ring_id(anchor).addresses(Id::new(self.id)) => {
+                    self.crc_feed(anchor, footprint);
+                    self.publish_job(anchor, footprint, packet_end, self.job_lane(complete));
+                    self.pending = Some(Pending::Table(TablePending {
+                        anchor,
+                        footprint,
+                        ended: complete,
+                        record: None,
+                    }));
+                    return;
+                }
+                // VerdictFirst, or a table frame addressed elsewhere: fall
+                // through to the CRC-first path.
+                _ => {}
             }
-            // Not speculable: a Refused dispatch stages nothing and sends
-            // nothing, so leave no speculation — the full path at B runs exactly
-            // as an un-speculated frame would.
-            Speculated::Refused => {}
+        }
+        // Verdict-first (only meaningful complete — a frontier defers): the CRC
+        // is checked before any effect. COMMIT/MGMT (unstageable), foreign
+        // frames, and frames overlapping a live reply pipeline. A fail drops
+        // silently (§5.3 L1), the hunt resuming one byte in (§3.3).
+        if !complete {
+            return;
+        }
+        if !self.crc_ok(anchor, footprint) {
+            if !self.framer.probing() {
+                self.crc_fails = self.crc_fails.wrapping_add(1);
+            }
+            let len = self.ring.bytes().len();
+            self.framer.on_frame_rejected(anchor, len);
+            return;
+        }
+        self.framer.on_frame_verified();
+        // A fresh instruction supersedes any stale, not-yet-streaming reply —
+        // post-verdict, so a garbled frame touched nothing.
+        self.chain.reset();
+        self.chain_at = None;
+        if self.tx.staged() {
+            self.tx.abort();
+        }
+        // Publish for LOW dispatch (A3(b)); the record adopts directly — the
+        // CRC already passed, so a staged effect commits at adoption.
+        if !self.ring_id(anchor).addresses(Id::new(self.id)) {
+            return;
+        }
+        self.publish_job(anchor, footprint, packet_end, self.job_lane(true));
+    }
+
+    /// Lane per the locked interleave policy (§6 A3): a frontier is the live
+    /// edge (beats the kernel); a complete frame is live only if it is the
+    /// last one ringed, else a backlog frame that lets a kernel tick slot in.
+    fn job_lane(&self, complete: bool) -> Lane {
+        if !complete || self.framer.caught_up(self.ring.cursor()) {
+            Lane::Live
+        } else {
+            Lane::Queued
         }
     }
 
-    /// Verify a front-loaded frame's wire CRC, commit its speculative effects,
-    /// and sequence its reply. A fail (or spin miss) reverts the staged write,
-    /// drops the staged reply, and counts (§5.3 L1) — the live table is left
-    /// byte-identical to before the frame.
-    fn verify_speculation<D: Dispatch>(&mut self, spec: Speculation, d: &mut D) {
-        if !self.crc_verify(spec.anchor, spec.footprint) {
-            if spec.pending {
-                d.revert_speculation();
+    /// Hand a decoded frame to the LOW consumer and wake it.
+    fn publish_job(&mut self, anchor: u16, footprint: u16, packet_end: u32, lane: Lane) {
+        self.handoff.publish(DispatchJob {
+            anchor,
+            footprint,
+            packet_end,
+            id: self.id,
+        });
+        self.wake.job_ready(lane);
+    }
+
+    /// Verify a wire-class pending frame's CRC and resolve the verdict.
+    /// Pass → sequence the staged reply (SEND); fail (or spin miss) → drop
+    /// it (DON'T-SEND), count, and rewind the ladder (§5.3 L1). The
+    /// defensive `table` debt is honored either way.
+    fn verify<D: Dispatch>(&mut self, w: WirePending, d: &mut D) {
+        if !self.crc_verify(w.anchor, w.footprint) {
+            if w.table {
+                d.revert();
             }
             self.drop_staged();
             if !self.framer.probing() {
                 self.crc_fails = self.crc_fails.wrapping_add(1);
             }
             let len = self.ring.bytes().len();
-            self.framer.on_frame_rejected(spec.anchor, len);
+            self.framer.on_frame_rejected(w.anchor, len);
             return;
         }
         self.framer.on_frame_verified();
-        if spec.pending {
-            // Apply the staged write into the table + fire its hooks (baud/id
-            // stage through this handle) before sequencing the ack.
+        if w.table {
             let mut handle = self.reply_handle();
-            d.commit_speculation(&mut handle);
+            d.commit(&mut handle);
         }
         // Sequence from the ENGINE's state, not the recorded flag: any path
-        // that reclaimed the staged reply between covered and here would
+        // that reclaimed the staged reply between dispatch and here would
         // otherwise arm the chain over an empty engine (ghost trigger).
-        if spec.staged && self.tx.staged() {
+        if w.staged && self.tx.staged() {
             let t_turn = self.t_turn();
             let reclaim = self.reclaim();
             let allowance = self.frame_allowance();
             // T_turn is a wire gap measured from the packet end (§7), not
             // from this (later) verify wake — the estimate is the framer's,
             // conservative by the drift adder.
-            let out =
-                self.chain
-                    .on_reply_staged(spec.slot, spec.packet_end, t_turn, reclaim, allowance);
+            let out = self
+                .chain
+                .on_reply_staged(w.slot, w.packet_end, t_turn, reclaim, allowance);
             self.route_chain(out);
         }
+    }
+
+    /// The table-class verdict fires when BOTH halves are in — the frame end
+    /// and the consumer's record — in either order (re-derived on each
+    /// trigger; no wake interleaving can lose it).
+    fn try_resolve_table<D: Dispatch>(&mut self, d: &mut D) {
+        let ready =
+            matches!(&self.pending, Some(Pending::Table(t)) if t.ended && t.record.is_some());
+        if !ready {
+            return;
+        }
+        let Some(Pending::Table(t)) = self.pending.take() else {
+            return; // unreachable: matched above
+        };
+        let Some(rec) = t.record else {
+            return; // unreachable: matched above
+        };
+        self.verify_table(t.anchor, t.footprint, rec, d);
+    }
+
+    /// Resolve a table-class frame's verdict. The CRC was fed at publish and
+    /// chewed under the hop, so the poll finds it settled. Pass → commit the
+    /// staged table effect and adopt the record (stage + sequence the
+    /// reply); fail → revert + don't-send: the live table is byte-identical,
+    /// nothing reaches the wire, and the ladder rewinds exactly as an
+    /// un-dispatched reject would — the hunt just starts one hop later, on
+    /// corrupt frames only, inside the host's retry contract.
+    fn verify_table<D: Dispatch>(
+        &mut self,
+        anchor: u16,
+        footprint: u16,
+        rec: ReplyRecord,
+        d: &mut D,
+    ) {
+        if !self.crc_verify(anchor, footprint) {
+            if rec.pending {
+                d.revert();
+            }
+            if !self.framer.probing() {
+                self.crc_fails = self.crc_fails.wrapping_add(1);
+            }
+            let len = self.ring.bytes().len();
+            self.framer.on_frame_rejected(anchor, len);
+            return;
+        }
+        self.framer.on_frame_verified();
+        self.adopt(rec, d);
     }
 
     /// Drop a not-yet-streaming staged reply and any chain sequencing it began.
@@ -520,72 +720,46 @@ impl<P: Providers> ServoBus<P> {
         self.chain_at = None;
     }
 
-    fn process_frame(&mut self, span: FrameSpan) {
-        // FrameSpan is not Copy; work from its primitive fields.
-        let anchor = span.anchor;
-        let footprint = span.footprint;
-        let packet_end = span.packet_end;
-        // 1. Status frames only advance the snoop chain (§6), timed from the
-        // parser's packet-end estimate — framing-level truth, NO validation:
-        // the chain consumes nothing from the body, and skipping the CRC
-        // keeps the snapshot buffer untouched while our own staged reply
-        // streams from it. A corrupt status mis-times one slot at worst,
-        // bounded by the reclaim window (§6).
-        if self.ring_inst(anchor).is_status() {
-            let out = self.chain.on_status_end(packet_end);
-            self.route_chain(out);
+    /// A completed LOW dispatch surfaced its record. A table-class pending
+    /// frame gets its record half (the verdict resolves once the frame has
+    /// also ended); a verdict-first job adopts directly — its CRC passed
+    /// before publish.
+    fn on_record<D: Dispatch>(&mut self, rec: ReplyRecord, d: &mut D) {
+        if core::mem::take(&mut self.discard_record) {
+            // Rescue landed while the job was in flight: the record is
+            // stale, and `pending` was already cleared. A staged table
+            // effect from it is reclaimed by the dispatcher's auto-revert
+            // on the next dispatch.
             return;
         }
-        // 2. Validate in place; a fail (or spin miss) drops silently (§5.3
-        // L1). The stride trusted an unverified header — resume the hunt one
-        // byte in instead (§3.3). Probe candidates (hunt guesses) that fail
-        // are scan noise, not received frames: `crc_fail` keeps meaning "a
-        // trusted frame failed".
-        if !self.crc_ok(anchor, footprint) {
-            if !self.framer.probing() {
-                self.crc_fails = self.crc_fails.wrapping_add(1);
+        match self.pending.take() {
+            Some(Pending::Table(mut t)) => {
+                t.record = Some(rec);
+                self.pending = Some(Pending::Table(t));
+                self.try_resolve_table(d);
             }
-            let len = self.ring.bytes().len();
-            self.framer.on_frame_rejected(anchor, len);
-            return;
+            // A wire-class pending frame cannot coexist with an outstanding
+            // job (single slot, publish paths are framer-gated) — defensive:
+            // keep it and adopt the record as verdict-first.
+            other => {
+                self.pending = other;
+                self.adopt(rec, d);
+            }
         }
-        self.framer.on_frame_verified();
-        // 3. A fresh instruction supersedes any stale, not-yet-streaming reply.
-        self.chain.reset();
-        self.chain_at = None;
-        if self.tx.staged() {
-            self.tx.abort();
-        }
-        // 4. Publish for LOW dispatch (A3(b)). Unicast to another servo never
-        // occupies the slot — the frame ID screens it here; group ops ride
-        // a broadcast frame ID and must decode at LOW to resolve their
-        // id-lists. Lane per the locked interleave policy: the live frontier
-        // beats the motor kernel, a backlog frame lets a pending kernel tick
-        // slot in first.
-        if !self.ring_id(anchor).addresses(Id::new(self.id)) {
-            return;
-        }
-        let lane = if self.framer.caught_up(self.ring.cursor()) {
-            Lane::Live
-        } else {
-            Lane::Queued
-        };
-        self.handoff.publish(DispatchJob {
-            anchor,
-            footprint,
-            packet_end,
-            id: self.id,
-        });
-        self.wake.job_ready(lane);
     }
 
-    /// Adopt a completed LOW dispatch: apply its deferred-config records,
-    /// stage the recorded reply into the TX engine, and sequence the chain
-    /// from the frame's packet end — elastically, when this wake runs past
-    /// the T_turn grid (§6 A3(b): misses degrade, they do not fail).
-    fn adopt(&mut self, rec: ReplyRecord) {
-        if core::mem::take(&mut self.discard_record) {
-            return;
+    /// Adopt a completed LOW dispatch whose verdict has passed: honor the
+    /// record's table-effect debt (commit), apply its deferred-config
+    /// records, stage the recorded reply into the TX engine, and sequence
+    /// the chain from the frame's packet end — elastically, when this wake
+    /// runs past the T_turn grid (§6 A3(b): misses degrade, they do not
+    /// fail).
+    fn adopt<D: Dispatch>(&mut self, rec: ReplyRecord, d: &mut D) {
+        if rec.pending {
+            // Apply the staged write into the table + fire its hooks
+            // (baud/id stage through this handle) before sequencing the ack.
+            let mut handle = self.reply_handle();
+            d.commit(&mut handle);
         }
         if let Some(us) = rec.response_deadline_us {
             self.response_deadline_us = us;
@@ -672,7 +846,7 @@ impl<P: Providers> ServoBus<P> {
     }
 
     /// A reply surface over the deferred-config fields, with no request decode —
-    /// used at speculative commit, where hooks stage baud/id but no frame is
+    /// used at verdict commit, where hooks stage baud/id but no frame is
     /// re-parsed (the ring isn't borrowed here).
     fn reply_handle(&mut self) -> ReplyHandle<'_, P::Tx, P::Crc> {
         ReplyHandle {

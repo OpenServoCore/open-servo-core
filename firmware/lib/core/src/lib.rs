@@ -28,6 +28,6 @@ pub use sample::{ConversionVariables, RawSamples, Sample};
 pub use services::bus::{Dispatcher, Session};
 pub use shared::Shared;
 pub use traits::{
-    Capabilities, ControlIo, DecayMode, Dispatch, Motor, MotorCmd, Reply, Request, RequestCtx,
-    SendError, Sensors, Speculated, Status,
+    Capabilities, ControlIo, DecayMode, Dispatch, Dispatched, Motor, MotorCmd, Reply, Request,
+    RequestCtx, SendError, Sensors, Status,
 };
