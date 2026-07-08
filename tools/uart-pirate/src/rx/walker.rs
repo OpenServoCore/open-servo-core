@@ -84,6 +84,9 @@ pub(super) fn reset_anchors(falling_total: u32) {
 /// is signal-only here — the next byte's tick still comes from its own
 /// IC entry via the cold-start path.
 pub fn walk(idle: bool) {
+    // Before anything (including the desync gate): a TC-armed drive
+    // release must never wait out a walk — or a desynced walker.
+    crate::tx::poll_drive_release();
     if desync::is_desynced() {
         return;
     }
@@ -113,6 +116,12 @@ pub fn walk(idle: bool) {
     let mut has_anchor = unsafe { ptr::read_volatile(HAS_ANCHOR.get()) };
 
     while byte_head != rx_total {
+        // Release checkpoint: a long drain (half-ring after a burst) runs
+        // right when the burst's last stop bit clears the shifter, and the
+        // pended USART3 TC vector shares this priority — without the poll,
+        // the wire handback waits out the whole walk while PB10 clamps a
+        // starting servo reply.
+        crate::tx::poll_drive_release();
         // stamp_overflow: if the host hasn't drained, the next emit
         // would overwrite an unread stamp. Sticky-fatal; host must RESET.
         // Check is at the loop head so byte_head is NOT advanced for the

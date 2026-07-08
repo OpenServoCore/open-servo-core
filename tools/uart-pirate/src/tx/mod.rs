@@ -155,6 +155,33 @@ pub fn on_tx_complete() {
     pb10_drive(false);
 }
 
+/// Arm the TC-interrupt release for a poll-fed send whose last byte is
+/// already in flight: when the final stop bit clears the shifter, the
+/// USART3 ISR (or the walker's [`poll_drive_release`] checkpoint) hands
+/// the wire back. Unlike [`arm_drive_release`], TC is NOT cleared here —
+/// the tail bytes may already have drained under preemption, and that
+/// latched TC *is* the release event.
+fn arm_tc_release() {
+    USART3.ctlr1().modify(|w| w.set_tcie(true));
+}
+
+/// Release checkpoint for long walker drains. The USART3 TC vector shares
+/// `PRIO_WALKER` with the DMA walk triggers, so a pended TC release waits
+/// out any in-flight `walk()` — up to a half-ring drain (~100 µs), during
+/// which PB10 keeps driving idle-high push-pull against a servo reply
+/// (bench signature: the reply's break/header fought to mark until the
+/// release, read back as a "malformed break"). Called from the walk loop
+/// so a drain can never sit on the handback.
+///
+/// Only walker-class ISRs call this (mutually non-preempting), and every
+/// thread-mode CTLR1 writer either runs with TCIE unarmed or under a
+/// critical section, so the RMW in `on_tx_complete` cannot tear.
+pub fn poll_drive_release() {
+    if USART3.ctlr1().read().tcie() && USART3.statr().read().tc() {
+        on_tx_complete();
+    }
+}
+
 /// USART3: 8N1, full-duplex, DMAT, DMAR, IDLEIE. Plain FE break
 /// handling — the LIN-mode leg (LINEN + LBDIE) is bench-toggled per
 /// experiment, not the default. Init order matters — TE/RE with UE=0,
@@ -372,8 +399,16 @@ pub fn send_break_then(payload: &[u8]) -> Result<(), SendError> {
         USART3.ctlr1().modify(|w| w.set_m(false));
         r?;
         feed_bytes(payload)?;
+        // Last byte is in flight: the ISR/walker releases the drive at
+        // the final stop bit. Thread mode may be preempted for a whole
+        // walker drain right here — with the release still thread-side,
+        // PB10 kept clamping the bus idle-high into the servo's reply.
+        arm_tc_release();
         wait_tx_complete().map_err(|TxTimeout| SendError::Busy)
     })();
+    // Backstop (error paths, desync-frozen walker); benign after the
+    // ISR release — same CFGHR value, and no other pin's config changes
+    // concurrently.
     pb10_drive(false);
     r
 }
@@ -417,8 +452,13 @@ pub fn send_burst(stream: &[u8]) -> Result<(), SendError> {
             USART3.ctlr1().modify(|w| w.set_m(false));
             r?;
             feed_bytes(&stream[i..i + n])?;
-            wait_tx_complete().map_err(|TxTimeout| SendError::Busy)?;
             i += n;
+            if i == stream.len() {
+                // See send_break_then: the release must ride the last
+                // stop bit, not this preemptible thread-mode wait.
+                arm_tc_release();
+            }
+            wait_tx_complete().map_err(|TxTimeout| SendError::Busy)?;
         }
         Ok(())
     })();
@@ -448,6 +488,8 @@ pub fn send_fe_inject(pre: &[u8], bad: &[u8], post: &[u8]) -> Result<(), SendErr
         USART3.ctlr1().modify(|w| w.set_m(false));
         r?;
         feed_bytes(post)?;
+        // See send_break_then.
+        arm_tc_release();
         wait_tx_complete().map_err(|TxTimeout| SendError::Busy)
     })();
     pb10_drive(false);
