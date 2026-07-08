@@ -135,6 +135,16 @@ pub struct Framer {
     /// Tick of the newest FE (A1): the frontier frame's break-time estimate.
     /// A garble FE overwriting it makes estimates later = safer.
     frontier_tick: u32,
+    /// An FE landed whose byte the ladder has not consumed yet. Every FE
+    /// promises a ring byte, but a prompt entry can beat the byte's own DMA
+    /// drain (F2 edge) — the resolver then sees nothing and must not go
+    /// aimless, or a terminal frame sits unresolved until the next wire
+    /// event (silicon 2026-07-08: the no-reply wedge). While set, a
+    /// caught-up resolve waits one byte-time from the FE instead of
+    /// returning `None`; re-derived on every walk, so no wake interleaving
+    /// can destroy the aim. Surrendered once the promise window passes (a
+    /// phantom FE delivers nothing).
+    fe_pending: bool,
     frontier: Frontier,
     drops: u32,
     /// Fixed tick slack past the packet-end estimate for deadline B.
@@ -147,6 +157,7 @@ impl Framer {
             anchor: 0,
             hunting: false,
             frontier_tick: 0,
+            fe_pending: false,
             frontier: Frontier::idle(),
             drops: 0,
             end_slack,
@@ -164,6 +175,7 @@ impl Framer {
     /// break time.
     pub fn on_fe(&mut self, now: u32) {
         self.frontier_tick = now;
+        self.fe_pending = true;
     }
 
     /// Re-sync the ladder to a known ring position — bootstrap only (boot is
@@ -171,6 +183,7 @@ impl Framer {
     pub fn resync(&mut self, cursor: u16) {
         self.anchor = cursor;
         self.frontier = Frontier::idle();
+        self.fe_pending = false;
     }
 
     /// The composite rejected a resolved frame (CRC fail): the header that
@@ -217,8 +230,20 @@ impl Framer {
         let mut received = dist(cursor, self.anchor, len);
         if received == 0 {
             self.frontier = Frontier::idle();
+            // The FE promise (see `fe_pending`): its byte lands within a DMA
+            // drain of the FE, so one byte-time from the FE tick bounds it
+            // with margin. Past the window, a phantom FE delivered nothing —
+            // surrender to idle.
+            if self.fe_pending {
+                let aim = self.frontier_tick.wrapping_add(tpb);
+                if !tick_reached(now, aim) {
+                    return FramerOut::Wait(aim);
+                }
+                self.fe_pending = false;
+            }
             return FramerOut::None; // ladder caught up; wait for wire
         }
+        self.fe_pending = false; // the promised byte (at least) is in
         // The ladder's first byte must be a break with plausible geometry
         // (LEN covers INST + CRC). Anything else means the stream lost or
         // gained bytes (noise, or a sacrificed partial): HUNT — scan forward

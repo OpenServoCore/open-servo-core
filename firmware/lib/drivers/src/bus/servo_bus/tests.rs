@@ -581,3 +581,75 @@ fn commit_and_reboot_paths() {
     assert!(bus.take_reboot().is_some());
     assert!(bus.take_reboot().is_none());
 }
+
+/// F2 edge (silicon 2026-07-08, the no-reply wedge): a prompt FE entry can
+/// beat the break byte's own DMA drain, so the resolver sees a caught-up
+/// ladder. The FE promises its byte — the framer must hold a bounded wait,
+/// and the aim must survive unrelated wakes that walk the resolver before
+/// the byte lands (the adoption wake destroyed the one-shot recheck and the
+/// transport went aimless: masked flags, no deadlines, deaf until reset).
+#[test]
+fn fe_before_its_byte_still_resolves_the_frame() {
+    let h = Harness::new();
+    let mut bus = h.build(ID, RATE, 60);
+    let shared = shared_seeded();
+    let mut session = Session::new();
+    let mut d = session.dispatcher(&shared);
+
+    let anchor = 100usize;
+    let frame = instruction(ID, Opcode::Ping, 0, &[]);
+    let fp = frame.len();
+    h.ring.place(anchor, &frame);
+    bus.framer.resync(anchor as u16);
+
+    // FE delivered with NOTHING ringed yet — not even the break byte.
+    h.deadline.set_now(1000);
+    h.ring.set_cursor(anchor as u16);
+    bus.on_break(&mut d);
+    let promise = h.deadline.armed().expect("FE-promise wait armed");
+    assert!(tick_reached(1000 + TPB, promise), "bounded by a byte-time");
+
+    // An unrelated wake walks the resolver before the byte lands (the
+    // adoption-interleave regression): the promise must be re-derived.
+    h.deadline.set_now(1002);
+    bus.on_deadline(&mut d);
+    assert!(
+        h.deadline.armed().is_some(),
+        "promise aim survives an early walk"
+    );
+
+    // The frame lands in full during the promise window; the wake fast-paths
+    // it (A2), the consumer dispatches, and the reply fires on its grid.
+    let at = h.deadline.armed().unwrap();
+    h.deadline.set_now(at);
+    h.ring.set_cursor(((anchor + fp) % RING_LEN) as u16);
+    bus.on_deadline(&mut d);
+    h.pump(&mut bus, &mut d);
+    fire(&mut bus, &h, &mut d);
+    drain_tx(&mut bus, &h);
+    let (id, inst, _) = last_reply(&h.wire);
+    assert_eq!(id, ID);
+    assert_eq!(inst.result(), Some(ResultCode::Ok));
+}
+
+/// A phantom FE (noise, no byte ever lands) surrenders after the promise
+/// window instead of re-arming forever.
+#[test]
+fn phantom_fe_surrenders_after_one_byte_time() {
+    let h = Harness::new();
+    let mut bus = h.build(ID, RATE, 60);
+    let shared = shared_seeded();
+    let mut session = Session::new();
+    let mut d = session.dispatcher(&shared);
+
+    bus.framer.resync(100);
+    h.deadline.set_now(1000);
+    h.ring.set_cursor(100);
+    bus.on_break(&mut d);
+    let promise = h.deadline.armed().expect("FE-promise wait armed");
+
+    // The promise fires with still nothing ringed: the framer goes idle.
+    h.deadline.set_now(promise);
+    bus.on_deadline(&mut d);
+    assert_eq!(h.deadline.armed(), None, "no re-arm on a phantom FE");
+}
