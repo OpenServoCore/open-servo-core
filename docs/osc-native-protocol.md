@@ -115,47 +115,50 @@ BREAK | ID | LEN | INST | payload[0..p] | (PAD) | CRC_lo | CRC_hi
   PAD, bit 0 = ALERT (§5.3).
 - `PAD` — one `0x00` after the payload, present iff the PAD flag is set.
   Rule: **pad iff the payload length is odd** — an invariant, not an
-  option. It keeps the CRC-covered span (`4 + p + pad`) and the frame's
-  ring footprint (`6 + p + pad`) even, which is what lets halfword CRC
-  hardware validate every frame and holds frame anchors at constant
-  parity (§3.2). Corollary: the `LEN` value is always odd — an even
-  `LEN` is malformed, rejected at the header deadline. (The flag is
-  still load-bearing: `LEN` alone cannot distinguish an even payload
-  from an odd one plus pad.)
+  option. It keeps the frame's ring footprint (`6 + p + pad`) even, which
+  holds frame anchors at constant parity, and keeps the anchor-inclusive
+  hardware feed span (`4 + p + pad`) even for the halfword CRC engine
+  (§3.2). Corollary: the `LEN` value is always odd — an even `LEN` is
+  malformed, rejected at the header deadline. (The flag is still
+  load-bearing: `LEN` alone cannot distinguish an even payload from an
+  odd one plus pad.)
 - `CRC` — little-endian osc-CRC-16 (§3.2) over the frame bytes
-  `ID .. PAD` behind a fixed one-byte prefix.
+  `ID .. PAD`.
 
 ### 3.2 osc-CRC-16
 
-The covered bytes are **a fixed `0x00` prefix byte, then the frame bytes
-`ID, LEN, INST, payload, PAD?`** — `4 + p + pad` bytes, always even (PAD
-rule, §3.1). Over that span:
+The covered bytes are **the frame bytes `ID, LEN, INST, payload, PAD?`**
+— `3 + p + pad` bytes, in natural wire order. Over that span:
 
-**CRC-16 poly `0x8005`, init `0x0000`, no reflection, no output XOR,
-computed with each 2-byte pair swapped** — equivalently, CRC-16/BUYPASS
-fed as little-endian 16-bit halfwords, MSB-first. Hosts implement it as:
-prepend `0x00`, swap byte pairs, standard CRC-16/BUYPASS.
+**CRC-16/ARC**: poly `0x8005` reflected (table form `0xA001`), init
+`0x0000`, reflected input and output, no output XOR. Check value:
+`crc("123456789") = 0xBB3D`. This is the textbook CRC-16 — any catalog
+implementation works verbatim; no prefix, no byte swapping, no framing
+quirks.
 
-The prefix byte is protocol, not silicon: it exists so that on receivers
-where a break rings a `0x00` into the buffer (V006, V203, and any UART
-that DMAs FE bytes — a break is by definition an all-zero frame), the
-covered span is *physically present* as the frame's exact ring footprint
-starting at the anchor. Such receivers CRC the ring in place; everyone
-else prepends the constant. On TX the frame buffer is built with a
-literal `0x00` at offset 0 — the CRC engine DMA reads from offset 0 while
-the UART TX DMA reads from offset 1: one buffer, two channel MARs, no
-copies.
+Hardware rationale: the V006 SPI CRC unit in **16-bit LSB-first mode**
+(poly register `0x8005`) shifts each little-endian halfword low byte
+first, low bit first — the exact bit order the UART itself puts on the
+wire — so DMA feeds the byte buffer unmodified and the engine computes
+the reflected CRC natively, accumulating across split DMA arms (ring
+wrap), at ~0.36 µs/B wall and ~zero CPU [F6][F11]. The engine's register
+holds the **bit-reversed** checksum (its shifter mirrors the reflected
+algorithm); the chip bit-reverses the 16-bit result once per frame
+(~40 cycles via the multiply trick — no table) when patching TX bytes or
+comparing an RX verdict. Verified on silicon: `spi_crc_lsb_copy.rs`
+(bringup), `TCRCR("12345678") = 0xB93C = bitrev16(ARC = 0x3C9D)`.
 
-Rationale for the flavor: it is precisely what the V006 SPI CRC unit
-computes when DMA feeds 16-bit frames straight from the byte buffer —
-bit-exact, accumulating across split DMA arms (ring wrap), at ~0.36 µs/B
-wall and ~zero CPU, vs 635 ns/B of pure CPU for the production table loop
-(~25× CPU saving on a 64 B frame) [F6][F11]. Since we own the protocol, we
-adopt the flavor the silicon computes for free rather than pay a per-pair
-swap on every frame. The 4-byte covered prefix (`0x00, ID, LEN, INST`) is
-2 whole halfwords, so payload halfword pairing is position-independent —
-multi-arm TX (§4.2) feeds even-addressed table spans to the engine with
-no re-packing.
+A leading `0x00` byte is a mathematical no-op under this flavor
+(`init = 0`: zero state shifting zero bits stays zero), which the
+hardware path exploits freely: on receivers where the break rings a
+`0x00` into the buffer at the anchor (V006, V203, any UART that DMAs FE
+bytes), the engine feeds the ring **in place from the anchor** — the
+break byte leads the span, contributes nothing, and keeps the feed
+even-length and halfword-aligned. On TX the frame buffer keeps a literal
+`0x00` at offset 0 for the same alignment (CRC DMA reads from offset 0,
+UART TX DMA from offset 1: one buffer, two channel MARs, no copies).
+These are silicon conveniences, **not protocol**: the wire checksum is
+defined purely over `ID .. PAD`.
 
 Servo usage: the hardware engine is the **only** CRC implementation on
 the servo — status generation (own buffers are even by construction) and
@@ -189,10 +192,10 @@ costing one frame bus-wide; hosts simply should not send them.
 Test vectors (covered bytes → CRC):
 
 ```
-00 01 03 10                 → 0x740A  (PING id 1)
-00 05 07 30 80 01 2C 01     → 0xC9AE  (WRITE id 5, addr 0x0180, data 2C 01)
-00 03 07 20 00 02 08 00     → 0x1970  (READ id 3, addr 0x0200, count 8)
-00 02 07 32 00 01 AA 00     → 0x46A8  (WRITE id 2, addr 0x0100, data AA; p=3 → padded)
+01 03 10                 → 0xFC50  (PING id 1)
+05 07 30 80 01 2C 01     → 0xB3B1  (WRITE id 5, addr 0x0180, data 2C 01)
+03 07 20 00 02 08 00     → 0x7015  (READ id 3, addr 0x0200, count 8)
+02 07 32 00 01 AA 00     → 0xD334  (WRITE id 2, addr 0x0100, data AA; p=3 → padded)
 ```
 
 ### 3.3 Resync
@@ -234,9 +237,9 @@ reply anyway.
 ### 4.2 TX path
 
 Reply buffer: `[0x00][ID][LEN][INST|0x80][payload][PAD?][crc][crc]`
-in a halfword-aligned static — the `0x00` at offset 0 is the CRC prefix
-(§3.2), and the PAD rule keeps the buffer even, so it is hardware-CRC-able
-by construction. Sequence: flip pin to
+in a halfword-aligned static — the `0x00` at offset 0 is an alignment
+byte and CRC no-op (§3.2), and the PAD rule keeps the buffer even, so it
+is hardware-CRC-able by construction. Sequence: flip pin to
 push-pull → `SBK` → enable UART TX DMA from offset 1 → simultaneously
 enable SPI-CRC DMA from offset 0 → the CRC engine outruns the wire 8:1,
 so `TCRCR` is patched into the trailing CRC bytes long before the shifter
@@ -253,8 +256,9 @@ small reply buffer, then the TX DMA is re-armed directly onto the control
 table region (UART bytes tolerate arbitrary inter-byte gaps, so the µs-
 scale re-arm between DMA arms is invisible framing-wise — nothing in this
 protocol times on idle). The CRC engine consumes the same spans: the
-4-byte covered prefix is 2 whole halfwords, so even-addressed table spans
-arrive halfword-paired with no re-packing (§3.2, §5.2). Reads over 252 B
+4-byte buffer head (`0x00, ID, LEN, INST`) is 2 whole halfwords, so
+even-addressed table spans arrive halfword-paired with no re-packing
+(§3.2, §5.2). Reads over 252 B
 split into multiple frames (§5.1), each still zero-copy.
 
 ## 5. Instruction set
@@ -428,7 +432,7 @@ ALERT bit on that servo's status (§5.3).
 
 - Crystal-clocked UART with break send (any USB-serial with SBK, or the
   pirate).
-- osc-CRC (prefix + pair-swap + BUYPASS, §3.2) and the PAD rule (§3.1).
+- osc-CRC (textbook CRC-16/ARC, §3.2) and the PAD rule (§3.1).
 - Drive discipline if on a buffer-less bus (release when idle) [F8].
 - Schedule the bus: one outstanding instruction / chain at a time;
   timeout = RESPONSE_DEADLINE + frame time.
@@ -560,7 +564,7 @@ hunter, fold-CRC machinery, the 74LVC2G241 + TX_EN pin.
 | F3  | any-length break = one event (932 µs low → 1 FE)                                           | phase C               |
 | F4  | mid-frame FE: no halt, byte rings, IRQs coalesce                                           | FEINJ matrix          |
 | F5  | SBK break ≈ 14 bit-times, both chips, zero variance                                        | phases A/D            |
-| F6  | SPI CRC: bit-exact BUYPASS (16-bit BE), accumulates across DMA arms, 0.36 µs/B wall ~0 CPU | spi_crc               |
+| F6  | SPI CRC: 16-bit LSB-first = natural-order ARC (bitrev16 register), accumulates across DMA arms, 0.36 µs/B wall ~0 CPU | spi_crc, spi_crc_lsb_copy |
 | F7  | HDSEL direct wire works both directions, buffer deleted                                    | HDSEL runs            |
 | F8  | idle push-pull clamps other talkers; OD-idle/PP-talk is mandatory                          | drive-discipline runs |
 | F9  | V006 HDSEL has no own-TX echo                                                              | phase D (HDSEL)       |
