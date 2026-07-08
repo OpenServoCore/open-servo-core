@@ -172,11 +172,26 @@ pub fn rx_errors(r: Regs) -> RxErrors {
     }
 }
 
-/// SR-then-DR is the only way to clear ORE/PE/FE/NE on V006.
+/// SR-then-DR is the only way to clear ORE/PE/FE/NE on V006 (write-0 is
+/// bench-disproven: the flags are truly RO and a masked STATR write storms
+/// the error vector). The DR read RACES the RX-DMA drain — landing between
+/// a byte's completion and its drain steals the byte from the ring — so
+/// callers must hold this for provably quiet wire windows (own TX
+/// streaming, or cursor idle past a byte-time); mid-stream the flags are
+/// cleared by the next byte's own DMA drain instead (the DR half of the
+/// sequence, armed by any prior STATR read).
 #[inline]
 pub fn clear_rx_errors(r: Regs) {
     let _ = r.statr().read();
     let _ = r.datar().read();
+}
+
+/// Gate the RX-error interrupt line (CTLR3.EIE). Masking parks a still-set
+/// error flag without storming the vector; the PFIC re-pends on unmask if
+/// the flag survived.
+#[inline]
+pub fn set_eie(r: Regs, enable: bool) {
+    r.ctlr3().modify(|w| w.set_eie(enable));
 }
 
 #[inline]
