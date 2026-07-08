@@ -22,14 +22,20 @@ write = goal_position 4 B; flash-layout swings between builds are ±5 µs):
 turnaround-band memory — those columns were ping/read-16/read-240/ping from
 a different build; rows above are same-day measurements on the exact bases.)
 
-A1+A2 hold the losslessness column: hot loop 300/300 at 1M and 3M, plain
-`8×WRITE(NOREPLY)+READ` bursts 300/300 at 3M and 297+/300 at 1M — the 1M
-residual is a pirate-side reply-parse artifact (first reply bytes merged
-after a long break; servo stage/trigger/drop counters clean over thousands
-of cycles). The ~+7 µs over the pre-FIFO base is resolver arithmetic on the
-covered/B wakes, inside the layout-swing noise band; the dominant latency
-(burst-cycle READ replies ride elastically behind 14-68 µs dispatch bodies
-at HIGH) is what A3(b) removes.
+A1+A2 hold the losslessness column: hot loop AND plain
+`8×WRITE(NOREPLY)+READ` bursts 300/300 at every baud (500k/1M/2M/3M,
+2026-07-08). The earlier ~2 % plain-burst residual at ≤2M was the
+pirate, not the servo: its burst path released the bus drive (PB10
+push-pull → open-drain) from preemptible thread mode, so a walker drain
+landing at burst end kept the pirate driving idle-high into the servo's
+reply — IC-edge forensics (`tool-reply-edges`) showed the reply fought to
+mark for 2–57 bits until the late release, reading back as a "malformed
+break". Fixed pirate-side (TC-armed release + a release checkpoint in the
+walk loop, `1f57ac51`); the servo transport needed no change. The ~+7 µs
+over the pre-FIFO base is resolver arithmetic on the covered/B wakes,
+inside the layout-swing noise band; the dominant latency (burst-cycle READ
+replies ride elastically behind 14-68 µs dispatch bodies at HIGH) is what
+A3(b) removes.
 
 ## 1. Architecture in one paragraph
 
