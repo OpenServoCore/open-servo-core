@@ -6,11 +6,9 @@
 pub mod chain;
 mod decode;
 pub mod framer;
-pub mod handoff;
 mod servo_bus;
 pub mod tx;
 
-pub use handoff::{DispatchConsumer, Handoff};
 pub use servo_bus::{LinkDiag, ServoBus};
 
 /// Minimum reply lead after the frame being answered, in byte-times (§7).
@@ -33,8 +31,7 @@ pub(crate) fn ring_wrap(i: usize, len: usize) -> usize {
 pub const FRAME_MAX: usize = osc_protocol::wire::footprint(u8::MAX);
 
 /// View a resolved frame as up to two ring segments (one span unless it
-/// wraps the seam). Shared by the HIGH decode path (wire-class dispatch) and the
-/// LOW dispatch consumer.
+/// wraps the seam).
 pub(crate) fn frame_view(ring: &[u8], anchor: u16, footprint: u16) -> osc_protocol::FrameBytes<'_> {
     let anchor = anchor as usize;
     let footprint = footprint as usize;

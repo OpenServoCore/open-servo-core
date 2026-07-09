@@ -10,4 +10,3 @@ pub mod monotonic;
 pub mod ring;
 pub mod tx_wire;
 pub mod usart_baud;
-pub mod wake;

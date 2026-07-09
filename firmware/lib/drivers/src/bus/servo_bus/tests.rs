@@ -91,10 +91,6 @@ fn deliver<D: Dispatch>(
         h.ring.set_cursor(((anchor + fp) % RING_LEN) as u16);
         bus.on_deadline(d);
     }
-    // Table-class frames publish to the LOW consumer; pump the consumer +
-    // adoption wake so the verdict resolves and the reply is sequenced (A3(b)).
-    // (Wire-class frames dispatch inline and ignore the empty pump.)
-    h.pump(bus, d);
     end
 }
 
@@ -464,11 +460,11 @@ fn s11_break_after_covered_kills_staged_reply() {
 }
 
 #[test]
-fn s13_frontier_write_publishes_at_covered_commits_at_verdict() {
-    // A WRITE publishes to the LOW consumer at covered-complete (the spine:
-    // hop + decode + dispatch overlap the frame's wire tail). The consumer
-    // stages; the table stays untouched and nothing reaches the wire until
-    // the verdict — frame end + adopted record — commits and sequences.
+fn s13_frontier_write_stages_at_covered_commits_at_verdict() {
+    // A WRITE dispatches inline at covered-complete (the spine: the CRC feed
+    // chews the covered span under the dispatch body). The write stages; the
+    // table stays untouched and nothing reaches the wire until the verdict at
+    // frame end commits and sequences.
     let h = Harness::new();
     let mut bus = h.build(ID, RATE, 60);
     let shared = Shared::new();
@@ -495,9 +491,8 @@ fn s13_frontier_write_publishes_at_covered_commits_at_verdict() {
     h.deadline.set_now(c);
     h.ring.set_cursor(((anchor + fp - 2) % RING_LEN) as u16);
     bus.on_deadline(&mut d);
-    assert!(!h.handoff.idle(), "write-class publishes at covered");
-    // The consumer dispatches (stages) while the CRC tail is still inbound.
-    h.pump(&mut bus, &mut d);
+    // The write dispatched inline at covered — staged while the CRC tail is
+    // still inbound; the table stays untouched until the verdict.
     assert!(
         !shared.table.with(|t| t.control.lifecycle.torque_enable),
         "a pending write is staged, not yet committed"
@@ -591,8 +586,9 @@ fn commit_and_reboot_paths() {
 /// beat the break byte's own DMA drain, so the resolver sees a caught-up
 /// ladder. The FE promises its byte — the framer must hold a bounded wait,
 /// and the aim must survive unrelated wakes that walk the resolver before
-/// the byte lands (the adoption wake destroyed the one-shot recheck and the
-/// transport went aimless: masked flags, no deadlines, deaf until reset).
+/// the byte lands (an interleaved wake once destroyed the one-shot recheck
+/// and the transport went aimless: masked flags, no deadlines, deaf until
+/// reset).
 #[test]
 fn fe_before_its_byte_still_resolves_the_frame() {
     let h = Harness::new();
@@ -615,7 +611,7 @@ fn fe_before_its_byte_still_resolves_the_frame() {
     assert!(tick_reached(1000 + TPB, promise), "bounded by a byte-time");
 
     // An unrelated wake walks the resolver before the byte lands (the
-    // adoption-interleave regression): the promise must be re-derived.
+    // interleave regression): the promise must be re-derived.
     h.deadline.set_now(1002);
     bus.on_deadline(&mut d);
     assert!(
@@ -624,12 +620,11 @@ fn fe_before_its_byte_still_resolves_the_frame() {
     );
 
     // The frame lands in full during the promise window; the wake fast-paths
-    // it (A2), the consumer dispatches, and the reply fires on its grid.
+    // it (A2), dispatches inline, and the reply fires on its grid.
     let at = h.deadline.armed().unwrap();
     h.deadline.set_now(at);
     h.ring.set_cursor(((anchor + fp) % RING_LEN) as u16);
     bus.on_deadline(&mut d);
-    h.pump(&mut bus, &mut d);
     fire(&mut bus, &h, &mut d);
     drain_tx(&mut bus, &h);
     let (id, inst, _) = last_reply(&h.wire);
@@ -637,11 +632,10 @@ fn fe_before_its_byte_still_resolves_the_frame() {
     assert_eq!(inst.result(), Some(ResultCode::Ok));
 }
 
-/// The zero-hop half of the class routing: a complete wire-class frame
-/// (READ) dispatches inline at HIGH — the LOW consumer is never woken, and
-/// the reply sequences straight from the resolve wake.
+/// A complete frame (READ) dispatches inline at HIGH and its reply sequences
+/// straight from the resolve wake — no deferral to a later verdict.
 #[test]
-fn complete_read_dispatches_inline_without_hop() {
+fn complete_read_dispatches_inline() {
     let h = Harness::new();
     let mut bus = h.build(ID, RATE, 60);
     let shared = shared_seeded();
@@ -659,8 +653,6 @@ fn complete_read_dispatches_inline_without_hop() {
         .set_cursor(((anchor + frame.len()) % RING_LEN) as u16);
     bus.on_break(&mut d);
 
-    assert!(h.wake.lanes().is_empty(), "wire class never hops to LOW");
-    assert!(h.handoff.idle());
     fire(&mut bus, &h, &mut d);
     drain_tx(&mut bus, &h);
     let (id, inst, data) = last_reply(&h.wire);
@@ -669,10 +661,10 @@ fn complete_read_dispatches_inline_without_hop() {
     assert_eq!(&data[..2], &[0x34, 0x12]);
 }
 
-/// Ordering across classes: a backlog WRITE(NOREPLY) resolves, hops, and
-/// commits before the READ behind it dispatches — the ring walk holds at the
-/// pending write (backpressure) and resumes at adoption, so effects land in
-/// wire order.
+/// Ordering across a backlog: a WRITE(NOREPLY) resolves and commits before the
+/// READ behind it dispatches — drive_framer resolves each complete frame and
+/// runs its verdict fully before resolving the next, so effects land in wire
+/// order.
 #[test]
 fn backlog_write_then_read_processes_in_order() {
     let h = Harness::new();
@@ -698,19 +690,14 @@ fn backlog_write_then_read_processes_in_order() {
         .set_cursor(((anchor + write.len() + read.len()) % RING_LEN) as u16);
     bus.on_break(&mut d);
 
-    // The write published (backlog → the kernel's lane) and the walk holds:
-    // the read is NOT dispatched while the write's verdict is open.
-    assert_eq!(h.wake.lanes(), [crate::traits::bus::Lane::Queued]);
-    assert!(!h.wire.started());
+    // Both complete frames resolve in this one wake: the NOREPLY write commits
+    // inline, then the read dispatches behind it — effects in wire order. The
+    // read's reply is staged (not yet fired), its chain armed.
     assert!(
-        !shared.table.with(|t| t.control.lifecycle.torque_enable),
-        "table effect awaits the verdict"
+        shared.table.with(|t| t.control.lifecycle.torque_enable),
+        "the backlog write committed before the read dispatched"
     );
-
-    // Adoption commits the write, resumes the walk, and the read dispatches
-    // inline in the same wake.
-    h.pump(&mut bus, &mut d);
-    assert!(shared.table.with(|t| t.control.lifecycle.torque_enable));
+    assert!(!h.wire.started());
     fire(&mut bus, &h, &mut d);
     drain_tx(&mut bus, &h);
     let (id, inst, data) = last_reply(&h.wire);

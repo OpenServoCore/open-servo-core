@@ -8,8 +8,7 @@ use std::rc::Rc;
 
 use osc_core::BaudRate;
 use osc_drivers::traits::bus::{
-    CrcEngine, Deadline, DispatchWake, Lane, LineSense, Providers, RxRing, SequenceWake, TxWire,
-    UsartBaud, tick_reached,
+    CrcEngine, Deadline, LineSense, Providers, RxRing, TxWire, UsartBaud, tick_reached,
 };
 use osc_protocol::crc::osc_crc_continue;
 
@@ -363,38 +362,6 @@ impl LineSense for SimLine {
     }
 }
 
-/// HIGH-side consumer wake: schedules the LOW consumer's delivery. The lane
-/// only orders the consumer against the motor kernel — the sim has no kernel
-/// yet, so both lanes deliver identically (the interleave-policy split is
-/// pinned at the driver unit level).
-pub struct SimDispatchWake {
-    core: Rc<RefCell<Core>>,
-    idx: usize,
-}
-
-impl SimDispatchWake {
-    pub fn new(core: Rc<RefCell<Core>>, idx: usize) -> Self {
-        Self { core, idx }
-    }
-}
-
-impl DispatchWake for SimDispatchWake {
-    fn job_ready(&mut self, _lane: Lane) {
-        let mut c = self.core.borrow_mut();
-        let now = c.now();
-        c.schedule(Event::ConsumerWake { servo: self.idx }, now);
-    }
-}
-
-/// LOW-side completion wake. A no-op: the Sim schedules the adoption wake
-/// itself from the `ConsumerWake` delivery, where the consumer's handler
-/// cost is known (`HandlerCost::on_dispatch_us`).
-pub struct SimSequenceWake;
-
-impl SequenceWake for SimSequenceWake {
-    fn reply_ready(&mut self) {}
-}
-
 /// ZST binding each provider role for the `ServoBus` composite.
 pub struct SimProviders;
 
@@ -405,5 +372,4 @@ impl Providers for SimProviders {
     type Tx = SimWire;
     type Baud = SimBaud;
     type Line = SimLine;
-    type Wake = SimDispatchWake;
 }

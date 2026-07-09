@@ -5,20 +5,15 @@
 //! the driver.
 
 use core::cell::{Cell, UnsafeCell};
-use std::boxed::Box;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::vec::Vec;
 
 use osc_core::BaudRate;
-use osc_core::traits::Dispatch;
 use osc_protocol::crc::osc_crc_continue;
 
-use crate::bus::{DispatchConsumer, Handoff, ServoBus};
-use crate::traits::bus::{
-    CrcEngine, Deadline, DispatchWake, Lane, LineSense, Providers, RxRing, SequenceWake, TxWire,
-    UsartBaud,
-};
+use crate::bus::ServoBus;
+use crate::traits::bus::{CrcEngine, Deadline, LineSense, Providers, RxRing, TxWire, UsartBaud};
 
 /// Ring length — even and larger than `FRAME_MAX` (matches the V006 512 B ring).
 pub const RING_LEN: usize = 512;
@@ -272,37 +267,6 @@ impl LineSense for FakeLine {
     }
 }
 
-/// Records each consumer wake's lane — the interleave-policy observable.
-#[derive(Clone, Default)]
-pub struct FakeDispatchWake(Rc<RefCell<Vec<Lane>>>);
-
-impl FakeDispatchWake {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn lanes(&self) -> Vec<Lane> {
-        self.0.borrow().clone()
-    }
-}
-
-impl DispatchWake for FakeDispatchWake {
-    fn job_ready(&mut self, lane: Lane) {
-        self.0.borrow_mut().push(lane);
-    }
-}
-
-/// Consumer completion wake — the harness pumps adoption synchronously, so
-/// this only records that a wake was requested.
-#[derive(Clone, Default)]
-pub struct FakeSequenceWake(Rc<Cell<bool>>);
-
-impl SequenceWake for FakeSequenceWake {
-    fn reply_ready(&mut self) {
-        self.0.set(true);
-    }
-}
-
 /// ZST binding each role to its fake (driver-pattern §5.4).
 pub struct TestProviders;
 
@@ -313,7 +277,6 @@ impl Providers for TestProviders {
     type Tx = FakeWire;
     type Baud = FakeBaud;
     type Line = FakeLine;
-    type Wake = FakeDispatchWake;
 }
 
 /// Owns the shared fake state and builds a `ServoBus` over it.
@@ -323,8 +286,6 @@ pub struct Harness {
     pub wire: FakeWire,
     pub baud: FakeBaud,
     pub line: FakeLine,
-    pub wake: FakeDispatchWake,
-    pub handoff: &'static Handoff,
 }
 
 impl Harness {
@@ -335,10 +296,6 @@ impl Harness {
             wire: FakeWire::new(),
             baud: FakeBaud::new(),
             line: FakeLine::new(),
-            wake: FakeDispatchWake::new(),
-            // Leaked per harness: the cell is 'static on the chip; tests get
-            // one fresh slot each.
-            handoff: Box::leak(Box::new(Handoff::new())),
         }
     }
 
@@ -355,23 +312,10 @@ impl Harness {
             self.wire.clone(),
             self.baud.clone(),
             self.line.clone(),
-            self.wake.clone(),
-            self.handoff,
             id,
             rate,
             response_deadline_us,
         )
-    }
-
-    /// Run the LOW consumer over the outstanding job (if any), then deliver
-    /// the adoption wake — the synchronous equivalent of the chip's LOW
-    /// vector followed by the pended HIGH re-entry.
-    pub fn pump<D: Dispatch>(&self, bus: &mut ServoBus<TestProviders>, d: &mut D) {
-        let mut consumer =
-            DispatchConsumer::new(self.handoff, self.ring.clone(), FakeSequenceWake::default());
-        if consumer.process(d) {
-            bus.on_deadline(d);
-        }
     }
 }
 

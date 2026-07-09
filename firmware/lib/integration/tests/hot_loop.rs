@@ -223,9 +223,8 @@ fn hot_loop_with_latency(rate: BaudRate) {
             i,
             HandlerCost {
                 on_break_us: 2,
-                on_deadline_us: 5,
+                on_deadline_us: 70,
                 on_tx_complete_us: 2,
-                on_dispatch_us: 70,
             },
         );
     }
@@ -305,7 +304,6 @@ fn plain_burst_with_deadline_latency(rate: BaudRate) {
                 on_break_us: 2,
                 on_deadline_us: dl,
                 on_tx_complete_us: 2,
-                on_dispatch_us: dl,
             },
         );
 
@@ -360,9 +358,9 @@ fn plain_burst_survives_deadline_latency_3m() {
 /// The bench's plain burst (`tool-osc-burst --plain`: 8 NOREPLY WRITEs +
 /// READ, host waits out the reply between cycles) with IRREGULAR intra-burst
 /// gaps: the pirate's TXE-poll bubbles put 0–3-byte-time pauses between
-/// frames, so the writes (table class → LOW consumer) flip between the live
-/// lane (caught-up frontier) and the queued lane (backlog) mid-burst — every
-/// seam of the A3(b) handoff.
+/// frames, so each write resolves sometimes as a caught-up frontier
+/// (dispatched at its covered checkpoint) and sometimes as a backlog frame
+/// (dispatched complete) mid-burst — every seam of the inline dispatch path.
 /// Silicon showed ~0.3% no-reply/stale residuals at 1M in exactly this
 /// pattern; a drop here is that residual, deterministic.
 fn plain_burst_with_gap_jitter(rate: BaudRate) {
@@ -387,9 +385,8 @@ fn plain_burst_with_gap_jitter(rate: BaudRate) {
             0,
             HandlerCost {
                 on_break_us: 2,
-                on_deadline_us: 5,
+                on_deadline_us: dl,
                 on_tx_complete_us: 2,
-                on_dispatch_us: dl,
             },
         );
 
@@ -470,9 +467,8 @@ fn plain_burst_with_midframe_stall(rate: BaudRate) {
                     0,
                     HandlerCost {
                         on_break_us: 2,
-                        on_deadline_us: 5,
+                        on_deadline_us: dl,
                         on_tx_complete_us: 2,
-                        on_dispatch_us: dl,
                     },
                 );
 
@@ -541,9 +537,8 @@ fn zero_gap_flood(rate: BaudRate, dispatch_costs: &[u32]) {
             0,
             HandlerCost {
                 on_break_us: 2,
-                on_deadline_us: 5,
+                on_deadline_us: dl,
                 on_tx_complete_us: 2,
-                on_dispatch_us: dl,
             },
         );
 

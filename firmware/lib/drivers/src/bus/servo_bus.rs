@@ -6,17 +6,15 @@
 
 use osc_core::traits::{Dispatch, Dispatched, Reply, Request, RequestCtx, SendError, Status};
 use osc_core::{BaudRate, BootMode};
-use osc_protocol::wire::{Id, Inst, Opcode, ResultCode};
+use osc_protocol::wire::{Inst, Opcode, ResultCode};
 
 use super::chain::{Chain, ChainOut};
 use super::decode::{Decoded, decode};
 use super::frame_view;
 use super::framer::{FrameSpan, Framer, FramerOut};
-use super::handoff::{DispatchJob, Handoff, ReplyRecord};
 use super::tx::{TxEngine, TxOut};
 use crate::traits::bus::{
-    CrcEngine, Deadline, DispatchWake, Lane, LineSense, Providers, RxRing, TxWire, UsartBaud,
-    tick_reached,
+    CrcEngine, Deadline, LineSense, Providers, RxRing, TxWire, UsartBaud, tick_reached,
 };
 
 /// µs-per-byte numerator: 10 bit-times/byte × 1e6 µs/s. `tpb = TICKS_PER_US ×
@@ -54,52 +52,19 @@ pub struct LinkDiag {
     pub framing_drop_count: u32,
 }
 
-/// Instruction class, readable from the INST byte at the covered checkpoint:
-/// where dispatch runs, and when the CRC verdict is polled (§6 A3(b)).
-enum Class {
-    /// PING/READ/GREAD — side-effect-free, wire effect only: dispatch at
-    /// HIGH; the frame-end verdict gates SEND/DON'T-SEND of the staged reply.
-    Wire,
-    /// WRITE/GWRITE — table effect (± wire effect): staged through the LOW
-    /// consumer; the verdict at adoption gates COMMIT/REVERT of the staged
-    /// write plus SEND/DON'T-SEND of the recorded reply.
-    Table,
-    /// COMMIT/MGMT (and anything undecodable) — effects cannot stage: the
-    /// CRC verdict comes first, then dispatch (rare, short frames).
-    VerdictFirst,
-}
-
-/// A wire-class frame dispatched at HIGH ahead of its CRC verdict — the
-/// reply (if any) sits staged in the TX engine until the frame end verifies.
-struct WirePending {
+/// A frame dispatched ahead of its CRC verdict — the spine (§4): dispatch
+/// always runs under the CRC's own latency; the verdict gates EFFECTS, never
+/// work. The reply (if any) sits staged in the TX engine and the write (if
+/// any) in the staging buffer until the frame end verifies.
+struct Pending {
     anchor: u16,
     footprint: u16,
     packet_end: u32,
     slot: u8,
     /// Wire effect staged: a reply awaits the send/don't-send verdict.
     staged: bool,
-    /// Table effect staged in the dispatcher (defensive — wire-class ops
-    /// never stage one; the verdict debt is honored regardless).
+    /// Table effect staged in the dispatcher: a write awaits commit/revert.
     table: bool,
-}
-
-/// A table-class frame published to the LOW consumer ahead of its verdict.
-/// The verdict fires once BOTH halves are in — the frame end and the
-/// consumer's record — in either order (re-derived state, immune to wake
-/// interleaving).
-struct TablePending {
-    anchor: u16,
-    footprint: u16,
-    ended: bool,
-    record: Option<ReplyRecord>,
-}
-
-/// A frame dispatched before its CRC verdict — the spine (§4): dispatch
-/// always runs under the CRC's own latency; the verdict gates EFFECTS,
-/// never work.
-enum Pending {
-    Wire(WirePending),
-    Table(TablePending),
 }
 
 pub struct ServoBus<P: Providers> {
@@ -111,14 +76,6 @@ pub struct ServoBus<P: Providers> {
     deadline: P::Deadline,
     baud: P::Baud,
     line: P::Line,
-    wake: P::Wake,
-    // The one-slot LOW-dispatch handoff (A3(b)); shared with the
-    // DispatchConsumer that runs in the LOW vectors.
-    handoff: &'static Handoff,
-    // A rescue landed while a job/record was in flight: the pre-rescue
-    // dispatch's reply (and config records) are stale — adoption discards
-    // them, mirroring the abort+reset every other rescue path performs.
-    discard_record: bool,
     id: u8,
     rate: BaudRate,
     tpb: u32,
@@ -128,10 +85,8 @@ pub struct ServoBus<P: Providers> {
     pending_reboot: Option<BootMode>,
     crc_fails: u32,
     // The one frame dispatched ahead of its CRC verdict (§4: the spine).
-    // Backpressure bounds it to one: a wire-class pending frame IS the
-    // frontier, and a table-class pending frame holds the framer through the
-    // handoff slot — so the single staging slot and the single CRC
-    // accumulator are never contended.
+    // Backpressure bounds it to one: a pending frame IS the frontier, so the
+    // single staging slot and the single CRC accumulator are never contended.
     pending: Option<Pending>,
     // Deadline mux (§4.1/§6/§9.1): the soonest live slot arms the compare.
     framer_at: Option<u32>,
@@ -162,8 +117,6 @@ impl<P: Providers> ServoBus<P> {
         tx: P::Tx,
         mut baud: P::Baud,
         line: P::Line,
-        wake: P::Wake,
-        handoff: &'static Handoff,
         id: u8,
         rate: BaudRate,
         response_deadline_us: u16,
@@ -178,9 +131,6 @@ impl<P: Providers> ServoBus<P> {
             deadline,
             baud,
             line,
-            wake,
-            handoff,
-            discard_record: false,
             id,
             rate,
             tpb: tpb_for::<P>(rate),
@@ -249,14 +199,6 @@ impl<P: Providers> ServoBus<P> {
         for _ in 0..DEADLINE_DRAIN_MAX {
             let now = self.deadline.now();
             let mut progressed = false;
-            // A completed LOW dispatch awaits adoption (the consumer's
-            // reply-ready wake pends this vector). Adopting frees the slot,
-            // so resume the held framer in the same wake.
-            if let Some(rec) = self.handoff.take_reply() {
-                progressed = true;
-                self.on_record(rec, d);
-                self.drive_framer(d);
-            }
             if due(now, self.framer_at) {
                 progressed = true;
                 self.framer_at = None;
@@ -361,15 +303,6 @@ impl<P: Providers> ServoBus<P> {
     /// are never starved by a deep backlog.
     fn drive_framer<D: Dispatch>(&mut self, d: &mut D) {
         for _ in 0..FRAMES_PER_WAKE {
-            // Backpressure (A3(b)): while a job or its record is in flight,
-            // the framer holds position and the ring absorbs the backlog
-            // (A2). The consumer's reply-ready wake resumes the walk;
-            // framer_at is cleared so a stale estimate can't pend-on-past
-            // spin against the held resolver.
-            if !self.handoff.idle() {
-                self.framer_at = None;
-                return;
-            }
             let now = self.deadline.now();
             let out = self
                 .framer
@@ -443,39 +376,27 @@ impl<P: Providers> ServoBus<P> {
         self.pending = None;
         self.framer_at = None;
         self.chain_at = None;
-        // A job (or its record) from a pre-rescue frame is stale; the slot
-        // can't be yanked from a mid-dispatch consumer, so adoption discards
-        // it instead.
-        if !self.handoff.idle() {
-            self.discard_record = true;
-        }
     }
 
-    /// Instruction class from the ring INST byte — the routing decision, and
-    /// the same byte [`decode`] reads at dispatch, so the two can never
-    /// disagree (the soundness of verdict-first: a table-class publish can
-    /// never decode into a COMMIT).
-    fn classify(&self, anchor: u16) -> Class {
-        match self.ring_inst(anchor).opcode() {
-            Some(Opcode::Ping | Opcode::Read | Opcode::Gread) => Class::Wire,
-            Some(Opcode::Write | Opcode::Gwrite) => Class::Table,
-            _ => Class::VerdictFirst,
-        }
+    /// Verdict-first ops: COMMIT (applies the whole staging buffer), MGMT
+    /// (reboots/config), and anything undecodable — their effects can't stage,
+    /// so the CRC verdict must come first (the bus checks it, then dispatch
+    /// applies directly on that contract). Everything else dispatches ahead of
+    /// its verdict, effects gated by it. Read from the same INST byte
+    /// [`decode`] reads, so routing and dispatch can never disagree.
+    fn verdict_first(&self, anchor: u16) -> bool {
+        !matches!(
+            self.ring_inst(anchor).opcode(),
+            Some(Opcode::Ping | Opcode::Read | Opcode::Gread | Opcode::Write | Opcode::Gwrite)
+        )
     }
 
-    /// Frame end (deadline B): a pending frame gets its verdict half; anything
-    /// else is a complete frame entering the spine ([`Self::route_frame`]).
+    /// Frame end (deadline B): a pending frame gets its verdict; anything else
+    /// is a complete frame entering the spine ([`Self::route_frame`]).
     fn on_frame_end<D: Dispatch>(&mut self, span: FrameSpan, d: &mut D) {
         match self.pending.take() {
-            Some(Pending::Wire(w)) if w.anchor == span.anchor && w.footprint == span.footprint => {
-                self.verify(w, d);
-            }
-            Some(Pending::Table(mut t))
-                if t.anchor == span.anchor && t.footprint == span.footprint =>
-            {
-                t.ended = true;
-                self.pending = Some(Pending::Table(t));
-                self.try_resolve_table(d);
+            Some(p) if p.anchor == span.anchor && p.footprint == span.footprint => {
+                self.verify(p, d);
             }
             Some(_) => {
                 // Defensive: a pending frame that isn't this one — drop it. Any
@@ -488,17 +409,18 @@ impl<P: Providers> ServoBus<P> {
         }
     }
 
-    /// The spine: dispatch a frame ahead of its CRC verdict, routed by class.
-    /// `complete` distinguishes a whole frame (backlog / fast path — every
-    /// byte incl. the CRC is ringed, so the verdict fires now) from a frontier
-    /// frame at its covered checkpoint (the two CRC bytes still inbound — the
-    /// verdict is deferred to the frame end). Wire class dispatches inline at
-    /// HIGH with the CRC feed chewing underneath; table class publishes to the
-    /// LOW consumer so hop + decode + dispatch overlap the frame's own wire
-    /// tail (decode needs only covered bytes); verdict-first (COMMIT/MGMT,
-    /// effects unstageable) and any frame overlapping a live reply pipeline
-    /// check the CRC first, then dispatch. A frontier frame that lands in the
-    /// verdict-first path just defers — its frame end arrives here `complete`.
+    /// The spine: dispatch a frame ahead of its CRC verdict when its effects
+    /// can stage (§4). `complete` distinguishes a whole frame (backlog / fast
+    /// path — every byte incl. the CRC is ringed, so the verdict fires now)
+    /// from a frontier frame at its covered checkpoint (the two CRC bytes still
+    /// inbound — the verdict is deferred to the frame end). A stageable op
+    /// (ping/read/gread/write/gwrite) dispatches inline with the CRC feed
+    /// chewing underneath; the verdict gates its effects — SEND/DON'T-SEND of a
+    /// staged reply, COMMIT/REVERT of a staged write. Verdict-first ops
+    /// (COMMIT/MGMT, effects unstageable) and any frame overlapping a live
+    /// reply pipeline check the CRC first, then dispatch. A frontier frame that
+    /// lands in the verdict-first path just defers — its frame end arrives here
+    /// `complete`.
     fn route_frame<D: Dispatch>(&mut self, span: FrameSpan, complete: bool, d: &mut D) {
         let anchor = span.anchor;
         let footprint = span.footprint;
@@ -520,62 +442,39 @@ impl<P: Providers> ServoBus<P> {
         // below. The guard also keeps the CRC engine free through a pending
         // window — chain/tx activate only at a verdict, so no trigger reset
         // can clobber a fed span.
-        if !self.chain.active() && !self.tx.busy() {
-            match self.classify(anchor) {
-                Class::Wire => {
-                    // Feed first so the engine chews the covered span under the
-                    // dispatch body; the verdict then finds it settled.
-                    self.crc_feed(anchor, footprint);
-                    let (staged, slot, table) =
-                        match self.dispatch_decoded(anchor, footprint, |req, ctx, h| {
-                            d.dispatch(req, ctx, h)
-                        }) {
-                            Some((staged, slot, out)) => {
-                                (staged, slot, matches!(out, Dispatched::Pending))
-                            }
-                            // Skip (a group op not listing us): a bare verdict
-                            // moves the ladder (complete); the frame end does it
-                            // for a frontier.
-                            None if complete => (false, 0, false),
-                            None => return,
-                        };
-                    let w = WirePending {
-                        anchor,
-                        footprint,
-                        packet_end,
-                        slot,
-                        staged,
-                        table,
-                    };
-                    if complete {
-                        self.verify(w, d);
-                    } else {
-                        self.pending = Some(Pending::Wire(w));
-                    }
-                    return;
-                }
-                // Unicast to another servo never occupies the slot; group ops
-                // ride broadcast and resolve their id-lists at LOW.
-                Class::Table if self.ring_id(anchor).addresses(Id::new(self.id)) => {
-                    self.crc_feed(anchor, footprint);
-                    self.publish_job(anchor, footprint, packet_end, self.job_lane(complete));
-                    self.pending = Some(Pending::Table(TablePending {
-                        anchor,
-                        footprint,
-                        ended: complete,
-                        record: None,
-                    }));
-                    return;
-                }
-                // VerdictFirst, or a table frame addressed elsewhere: fall
-                // through to the CRC-first path.
-                _ => {}
+        if !self.chain.active() && !self.tx.busy() && !self.verdict_first(anchor) {
+            // Feed first so the engine chews the covered span under the
+            // dispatch body; the verdict then finds it settled.
+            self.crc_feed(anchor, footprint);
+            let (staged, slot, table) =
+                match self
+                    .dispatch_decoded(anchor, footprint, |req, ctx, h| d.dispatch(req, ctx, h))
+                {
+                    Some((staged, slot, out)) => (staged, slot, matches!(out, Dispatched::Pending)),
+                    // Skip (a group op not listing us): a bare verdict moves the
+                    // ladder (complete); the frame end does it for a frontier.
+                    None if complete => (false, 0, false),
+                    None => return,
+                };
+            let p = Pending {
+                anchor,
+                footprint,
+                packet_end,
+                slot,
+                staged,
+                table,
+            };
+            if complete {
+                self.verify(p, d);
+            } else {
+                self.pending = Some(p);
             }
+            return;
         }
         // Verdict-first (only meaningful complete — a frontier defers): the CRC
-        // is checked before any effect. COMMIT/MGMT (unstageable), foreign
-        // frames, and frames overlapping a live reply pipeline. A fail drops
-        // silently (§5.3 L1), the hunt resuming one byte in (§3.3).
+        // is checked before any effect. COMMIT/MGMT (unstageable), and frames
+        // overlapping a live reply pipeline. A fail drops silently (§5.3 L1),
+        // the hunt resuming one byte in (§3.3).
         if !complete {
             return;
         }
@@ -595,43 +494,30 @@ impl<P: Providers> ServoBus<P> {
         if self.tx.staged() {
             self.tx.abort();
         }
-        // Publish for LOW dispatch (A3(b)); the record adopts directly — the
-        // CRC already passed, so a staged effect commits at adoption.
-        if !self.ring_id(anchor).addresses(Id::new(self.id)) {
+        // Dispatch inline — the CRC already passed, so a staged table effect
+        // commits directly and any reply sequences from the packet end. A frame
+        // that decodes as another servo's touches nothing.
+        let Some((staged, slot, out)) =
+            self.dispatch_decoded(anchor, footprint, |req, ctx, h| d.dispatch(req, ctx, h))
+        else {
             return;
+        };
+        if matches!(out, Dispatched::Pending) {
+            let mut handle = self.reply_handle();
+            d.commit(&mut handle);
         }
-        self.publish_job(anchor, footprint, packet_end, self.job_lane(true));
-    }
-
-    /// Lane per the locked interleave policy (§6 A3): a frontier is the live
-    /// edge (beats the kernel); a complete frame is live only if it is the
-    /// last one ringed, else a backlog frame that lets a kernel tick slot in.
-    fn job_lane(&self, complete: bool) -> Lane {
-        if !complete || self.framer.caught_up(self.ring.cursor()) {
-            Lane::Live
-        } else {
-            Lane::Queued
+        if staged && self.tx.staged() {
+            self.sequence_reply(slot, packet_end);
         }
     }
 
-    /// Hand a decoded frame to the LOW consumer and wake it.
-    fn publish_job(&mut self, anchor: u16, footprint: u16, packet_end: u32, lane: Lane) {
-        self.handoff.publish(DispatchJob {
-            anchor,
-            footprint,
-            packet_end,
-            id: self.id,
-        });
-        self.wake.job_ready(lane);
-    }
-
-    /// Verify a wire-class pending frame's CRC and resolve the verdict.
-    /// Pass → sequence the staged reply (SEND); fail (or spin miss) → drop
-    /// it (DON'T-SEND), count, and rewind the ladder (§5.3 L1). The
-    /// defensive `table` debt is honored either way.
-    fn verify<D: Dispatch>(&mut self, w: WirePending, d: &mut D) {
-        if !self.crc_verify(w.anchor, w.footprint) {
-            if w.table {
+    /// Verify a pending frame's CRC and resolve the verdict. Pass → commit a
+    /// staged table effect (COMMIT) and sequence a staged reply (SEND); fail
+    /// (or spin miss) → revert the write (REVERT), drop the reply
+    /// (DON'T-SEND), count, and rewind the ladder (§5.3 L1).
+    fn verify<D: Dispatch>(&mut self, p: Pending, d: &mut D) {
+        if !self.crc_verify(p.anchor, p.footprint) {
+            if p.table {
                 d.revert();
             }
             self.drop_staged();
@@ -639,76 +525,34 @@ impl<P: Providers> ServoBus<P> {
                 self.crc_fails = self.crc_fails.wrapping_add(1);
             }
             let len = self.ring.bytes().len();
-            self.framer.on_frame_rejected(w.anchor, len);
+            self.framer.on_frame_rejected(p.anchor, len);
             return;
         }
         self.framer.on_frame_verified();
-        if w.table {
+        if p.table {
             let mut handle = self.reply_handle();
             d.commit(&mut handle);
         }
         // Sequence from the ENGINE's state, not the recorded flag: any path
         // that reclaimed the staged reply between dispatch and here would
         // otherwise arm the chain over an empty engine (ghost trigger).
-        if w.staged && self.tx.staged() {
-            let t_turn = self.t_turn();
-            let reclaim = self.reclaim();
-            let allowance = self.frame_allowance();
-            // T_turn is a wire gap measured from the packet end (§7), not
-            // from this (later) verify wake — the estimate is the framer's,
-            // conservative by the drift adder.
-            let out = self
-                .chain
-                .on_reply_staged(w.slot, w.packet_end, t_turn, reclaim, allowance);
-            self.route_chain(out);
+        if p.staged && self.tx.staged() {
+            self.sequence_reply(p.slot, p.packet_end);
         }
     }
 
-    /// The table-class verdict fires when BOTH halves are in — the frame end
-    /// and the consumer's record — in either order (re-derived on each
-    /// trigger; no wake interleaving can lose it).
-    fn try_resolve_table<D: Dispatch>(&mut self, d: &mut D) {
-        let ready =
-            matches!(&self.pending, Some(Pending::Table(t)) if t.ended && t.record.is_some());
-        if !ready {
-            return;
-        }
-        let Some(Pending::Table(t)) = self.pending.take() else {
-            return; // unreachable: matched above
-        };
-        let Some(rec) = t.record else {
-            return; // unreachable: matched above
-        };
-        self.verify_table(t.anchor, t.footprint, rec, d);
-    }
-
-    /// Resolve a table-class frame's verdict. The CRC was fed at publish and
-    /// chewed under the hop, so the poll finds it settled. Pass → commit the
-    /// staged table effect and adopt the record (stage + sequence the
-    /// reply); fail → revert + don't-send: the live table is byte-identical,
-    /// nothing reaches the wire, and the ladder rewinds exactly as an
-    /// un-dispatched reject would — the hunt just starts one hop later, on
-    /// corrupt frames only, inside the host's retry contract.
-    fn verify_table<D: Dispatch>(
-        &mut self,
-        anchor: u16,
-        footprint: u16,
-        rec: ReplyRecord,
-        d: &mut D,
-    ) {
-        if !self.crc_verify(anchor, footprint) {
-            if rec.pending {
-                d.revert();
-            }
-            if !self.framer.probing() {
-                self.crc_fails = self.crc_fails.wrapping_add(1);
-            }
-            let len = self.ring.bytes().len();
-            self.framer.on_frame_rejected(anchor, len);
-            return;
-        }
-        self.framer.on_frame_verified();
-        self.adopt(rec, d);
+    /// Sequence a staged reply onto the snoop chain. T_turn is a wire gap
+    /// measured from the packet end (§7), not from this (later) verify wake —
+    /// the estimate is the framer's, conservative by the drift adder.
+    fn sequence_reply(&mut self, slot: u8, packet_end: u32) {
+        let out = self.chain.on_reply_staged(
+            slot,
+            packet_end,
+            self.t_turn(),
+            self.reclaim(),
+            self.frame_allowance(),
+        );
+        self.route_chain(out);
     }
 
     /// Drop a not-yet-streaming staged reply and any chain sequencing it began.
@@ -718,99 +562,6 @@ impl<P: Providers> ServoBus<P> {
         }
         self.chain.reset();
         self.chain_at = None;
-    }
-
-    /// A completed LOW dispatch surfaced its record. A table-class pending
-    /// frame gets its record half (the verdict resolves once the frame has
-    /// also ended); a verdict-first job adopts directly — its CRC passed
-    /// before publish.
-    fn on_record<D: Dispatch>(&mut self, rec: ReplyRecord, d: &mut D) {
-        if core::mem::take(&mut self.discard_record) {
-            // Rescue landed while the job was in flight: the record is
-            // stale, and `pending` was already cleared. A staged table
-            // effect from it is reclaimed by the dispatcher's auto-revert
-            // on the next dispatch.
-            return;
-        }
-        match self.pending.take() {
-            Some(Pending::Table(mut t)) => {
-                t.record = Some(rec);
-                self.pending = Some(Pending::Table(t));
-                self.try_resolve_table(d);
-            }
-            // A wire-class pending frame cannot coexist with an outstanding
-            // job (single slot, publish paths are framer-gated) — defensive:
-            // keep it and adopt the record as verdict-first.
-            other => {
-                self.pending = other;
-                self.adopt(rec, d);
-            }
-        }
-    }
-
-    /// Adopt a completed LOW dispatch whose verdict has passed: honor the
-    /// record's table-effect debt (commit), apply its deferred-config
-    /// records, stage the recorded reply into the TX engine, and sequence
-    /// the chain from the frame's packet end — elastically, when this wake
-    /// runs past the T_turn grid (§6 A3(b): misses degrade, they do not
-    /// fail).
-    fn adopt<D: Dispatch>(&mut self, rec: ReplyRecord, d: &mut D) {
-        if rec.pending {
-            // Apply the staged write into the table + fire its hooks
-            // (baud/id stage through this handle) before sequencing the ack.
-            let mut handle = self.reply_handle();
-            d.commit(&mut handle);
-        }
-        if let Some(us) = rec.response_deadline_us {
-            self.response_deadline_us = us;
-        }
-        if let Some(id) = rec.id_change {
-            self.pending_id = Some(id);
-        }
-        if let Some(baud) = rec.baud_change {
-            self.pending_baud = Some(baud);
-        }
-        if let Some(mode) = rec.reboot {
-            self.pending_reboot = Some(mode);
-        }
-        if !rec.staged {
-            return;
-        }
-        // Positional truth, as in the FE-kill gate: a unicast reply adopted
-        // after newer bytes ringed would trigger into the host's next frame
-        // (the zero-gap collision the break kill can no longer catch — the
-        // next break may predate this adoption). A chain slot k>0 expects
-        // wire traffic (predecessor statuses) and sequences through it.
-        if rec.slot == 0 && !self.framer.caught_up(self.ring.cursor()) {
-            return;
-        }
-        // SAFETY: §4.2 zero-copy contract — every non-empty core reply
-        // payload references control-table storage, stable for the exchange
-        // (the same contract the engine's external arms rely on); staging
-        // snapshots it exactly as an inline dispatch would.
-        let data = if rec.payload_len == 0 {
-            &[][..]
-        } else {
-            unsafe { core::slice::from_raw_parts(rec.payload, rec.payload_len as usize) }
-        };
-        if self
-            .tx
-            .stage(&mut self.crc, self.id, rec.result, rec.alert, data)
-            .is_err()
-        {
-            // Busy (a prior reply still draining — the host broke its
-            // one-outstanding contract) or a sizing overflow: drop, the
-            // host's timeout+retry closes the loop (§5.3).
-            return;
-        }
-        let out = self.chain.on_reply_staged(
-            rec.slot,
-            rec.packet_end,
-            self.t_turn(),
-            self.reclaim(),
-            self.frame_allowance(),
-        );
-        self.route_chain(out);
     }
 
     /// View the frame as up to two ring segments (one span unless it wraps the
@@ -946,13 +697,6 @@ impl<P: Providers> ServoBus<P> {
         let ring = self.ring.bytes();
         let len = ring.len();
         Inst(ring[(anchor as usize + 3) % len])
-    }
-
-    /// The frame ID byte, 1 slot past the anchor.
-    fn ring_id(&self, anchor: u16) -> Id {
-        let ring = self.ring.bytes();
-        let len = ring.len();
-        Id::new(ring[(anchor as usize + 1) % len])
     }
 }
 

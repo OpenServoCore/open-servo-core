@@ -308,30 +308,6 @@ impl Sim {
             }
             Event::TxArmDone { servo } => self.deliver(servo, Vector::TxDone),
             Event::CpuFree { servo } => self.cpu_free(servo),
-            Event::ConsumerWake { servo } => self.consumer_wake(servo),
-            Event::SequenceWake { servo } => self.deliver(servo, Vector::Compare),
-        }
-    }
-
-    /// Deliver the LOW consumer. LOW never preempts HIGH: while a HIGH body
-    /// runs, the wake re-queues for the body's end (the chip's PFIC holds
-    /// the LOW pend exactly the same way). Effects land at entry (the cpu
-    /// module's documented approximation); the consumer's cost delays only
-    /// the adoption wake.
-    fn consumer_wake(&mut self, j: usize) {
-        let now = self.core.borrow().now();
-        if self.cpus[j].busy(now) {
-            let at = self.cpus[j].busy_until();
-            self.core
-                .borrow_mut()
-                .schedule(Event::ConsumerWake { servo: j }, at);
-            return;
-        }
-        if self.servos[j].on_consumer() {
-            let cost = self.cpus[j].cost.on_dispatch_us as u64 * TICKS_PER_US;
-            self.core
-                .borrow_mut()
-                .schedule(Event::SequenceWake { servo: j }, now + cost);
         }
     }
 

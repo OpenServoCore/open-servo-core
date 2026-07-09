@@ -11,12 +11,10 @@ pub(crate) static KERNEL: SyncUnsafeCell<MaybeUninit<Kernel<Ch32ControlIo>>> =
     SyncUnsafeCell::new(MaybeUninit::uninit());
 
 /// The per-servo dispatch session (write staging + the pending-verdict slot).
-/// Two borrowers, temporally exclusive (the `HighDispatcher` invariant in
-/// `runtime::isr`): the HIGH transport ISRs materialize it per `Dispatch`
-/// call on the spine's HIGH paths — reachable only while the dispatch handoff
-/// slot is empty — and the LOW consumer vectors hold it across a claimed job,
-/// during which the backpressured framer can reach no HIGH dispatch path.
-/// The main loop never reaches in.
+/// Borrowed only by the HIGH transport ISRs (USART1 + SysTick), which
+/// materialize it per `Dispatch` call and share PFIC HIGH — so dispatch,
+/// commit, and revert never overlap (the `HighDispatcher` invariant in
+/// `runtime::isr`). The main loop never reaches in.
 pub(crate) static SESSION: SyncUnsafeCell<MaybeUninit<Session>> =
     SyncUnsafeCell::new(MaybeUninit::uninit());
 
