@@ -182,7 +182,8 @@ mod tests {
 
     #[test]
     fn build_ping_matches_wire_vector() {
-        assert_eq!(build_ping(1), [0x01, 0x03, 0x10, 0x0A, 0x74]);
+        // CRC-16/ARC over `01 03 10` = 0xFC50 (osc-native-protocol.md §3.2).
+        assert_eq!(build_ping(1), [0x01, 0x03, 0x10, 0x50, 0xFC]);
     }
 
     /// Build a stamp stream at `spacing` ticks/byte starting at `start`, one
@@ -200,29 +201,28 @@ mod tests {
     }
 
     #[test]
-    fn parses_real_captured_ping_exchange() {
-        // Bench-verified capture: host ping `01 03 10 0A 74`, then ~12800 ticks
-        // after the last echo byte a reply `01 07 82 00 00 00 00 E5 61`.
+    fn parses_ping_exchange() {
+        // A ping reply carries model(2) + fw(1), status Ok (INST 0x80). Build the
+        // frame with a computed CRC-16/ARC (§3.2) so it stays valid across CRC
+        // changes; the 0x00 break stamp leads on the wire (init-0 no-op).
         const SPACING: u32 = 1440; // 1 Mbaud @ 144 ticks/bit
         const BIT_TICKS: u32 = 144;
         let sent = build_ping(1);
 
+        // ID, LEN, INST(Ok status), model=0x0042, fw=0x56, then CRC.
+        let mut reply = vec![0x01, 0x06, 0x80, 0x42, 0x00, 0x56];
+        reply.extend_from_slice(&osc_crc(&reply).to_le_bytes());
+
         let mut stamps = stamps_from(0, SPACING, &sent);
         let last_echo = stamps.last().unwrap().tick; // 7200
         let reply_break = last_echo + 12_800; // 20000
-        stamps.extend(stamps_from(
-            reply_break,
-            SPACING,
-            &[0x01, 0x07, 0x82, 0x00, 0x00, 0x00, 0x00, 0xE5, 0x61],
-        ));
+        stamps.extend(stamps_from(reply_break, SPACING, &reply));
 
         let ex = parse_exchange(&stamps, &sent, BIT_TICKS).expect("exchange parses");
         assert_eq!(ex.status.id, 1);
         assert_eq!(ex.status.result, Some(ResultCode::Ok));
         assert!(!ex.status.alert);
-        // INST 0x82 has PAD set (odd 3-byte payload), so the trailing 0x00 is
-        // the pad byte, not payload.
-        assert_eq!(ex.status.payload, [0x00, 0x00, 0x00]);
+        assert_eq!(ex.status.payload, [0x42, 0x00, 0x56], "model(2) + fw(1)");
         // 20000 - (7200 + 10*144) = 20000 - 8640
         assert_eq!(ex.turnaround_ticks, 11_360);
     }
