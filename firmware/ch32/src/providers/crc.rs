@@ -19,6 +19,7 @@ use core::cell::SyncUnsafeCell;
 use ch32_metapac::SPI1;
 use ch32_metapac::spi::vals::BaudRate as SpiBaud;
 use osc_drivers::traits::bus;
+use osc_protocol::wire::MAX_PAYLOAD;
 
 use crate::hal::{afio, dma, rcc};
 
@@ -31,12 +32,12 @@ const OSC_CRC_POLY: u16 = 0x8005;
 /// and drops, which is the sanctioned "spin miss = fail" outcome (§3.2).
 const FEED_DRAIN_SPIN: u32 = 4096;
 
-/// The snapshot buffer (§3.2, §4.2): arbitrary-parity spans are CH6-streamed
-/// here, and BOTH the CRC feed (CH3) and the wire arms (CH4) consume the
-/// copy — the reply CRC covers exactly the transmitted bytes, and reads
-/// carry a best-effort point-in-time image. Sized for the largest covered
-/// span (max frame, 256 B). Even base: the feed reads halfwords from it.
-const SNAPSHOT_LEN: usize = 256;
+/// The snapshot buffer (§4.2): a reply payload is CH6-copied here once, and
+/// both the CRC feed (CH3) and the wire arms (CH4) stream the copy — the reply
+/// CRC covers exactly the transmitted bytes. RX CRC feeds the ring directly
+/// (no staging), so this holds only a reply payload — one `MAX_PAYLOAD` span.
+/// Even base (`repr(align(2))`): the feed reads halfwords from it.
+const SNAPSHOT_LEN: usize = MAX_PAYLOAD as usize;
 
 #[repr(align(2))]
 struct Snapshot([u8; SNAPSHOT_LEN]);

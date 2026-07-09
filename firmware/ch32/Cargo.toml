@@ -11,6 +11,7 @@ license = "MIT OR Apache-2.0"
 ch32-metapac     = { git = "https://github.com/ch32-rs/ch32-metapac", default-features = false, features = ["pac"] }
 osc-core         = { path = "../lib/core" }
 osc-drivers      = { path = "../lib/drivers" }
+osc-protocol     = { path = "../lib/osc-protocol" }
 osc-units        = { path = "../lib/units" }
 portable-atomic  = { version = "1", default-features = false }
 riscv            = "0.12"

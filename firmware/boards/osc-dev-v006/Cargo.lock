@@ -318,6 +318,7 @@ dependencies = [
  "defmt",
  "osc-core",
  "osc-drivers",
+ "osc-protocol",
  "osc-units",
  "portable-atomic",
  "riscv 0.12.1",
