@@ -11,6 +11,11 @@ use osc_core::regions::calib::addr::pot_lut::LUT;
 use osc_core::regions::config::addr::identity::MODEL_NUMBER;
 use osc_integration::sim::{Sim, Source, WireFrame, assert_valid, instruction, status};
 use osc_protocol::wire::{Opcode, ResultCode};
+use rstest::rstest;
+use rstest_reuse::apply;
+
+mod support;
+use support::matrix;
 
 const TICKS_PER_US: u64 = 48;
 
@@ -43,38 +48,37 @@ fn replies(frames: &[WireFrame]) -> Vec<&WireFrame> {
         .collect()
 }
 
-#[test]
-fn reply_lead_respects_t_turn_at_1m_and_3m() {
-    for rate in [BaudRate::B1000000, BaudRate::B3000000] {
-        let mut sim = Sim::new(rate);
-        sim.add_servo(1);
-        let instr = instruction(1, Opcode::Ping, 0, &[]);
-        sim.host_send(&instr);
-        let frames = sim.run();
+#[apply(matrix)]
+fn reply_lead_respects_t_turn(baud_idx: u8) {
+    let rate = BaudRate::from_idx(baud_idx).expect("valid baud idx");
+    let mut sim = Sim::new(rate);
+    sim.add_servo(1);
+    let instr = instruction(1, Opcode::Ping, 0, &[]);
+    sim.host_send(&instr);
+    let frames = sim.run();
 
-        let host = host_frame(&frames);
-        let reps = replies(&frames);
-        assert_eq!(reps.len(), 1, "ping → one reply at {rate:?}: {frames:#?}");
-        assert_valid(reps[0]);
+    let host = host_frame(&frames);
+    let reps = replies(&frames);
+    assert_eq!(reps.len(), 1, "ping → one reply at {rate:?}: {frames:#?}");
+    assert_valid(reps[0]);
 
-        let bt = byte_ticks(rate);
-        let lead = reps[0].at - host.end;
+    let bt = byte_ticks(rate);
+    let lead = reps[0].at - host.end;
 
-        // Hard floor: T_turn = 2 byte-times (§7).
-        assert!(lead >= 2 * bt, "{rate:?}: lead {lead} < T_turn {}", 2 * bt);
+    // Hard floor: T_turn = 2 byte-times (§7).
+    assert!(lead >= 2 * bt, "{rate:?}: lead {lead} < T_turn {}", 2 * bt);
 
-        // Generous ceiling from the framer's deadline-B margin (framer.rs):
-        // T_turn (2 bt) + end-slack (2 bt) + header-lead rounding + drift term
-        // (footprint >> 6). footprint = full instruction frame incl. break.
-        let fp = instr.len() as u64;
-        let ceil = 6 * bt + ((fp * bt) >> 6);
-        assert!(lead <= ceil, "{rate:?}: lead {lead} > ceiling {ceil}");
-    }
+    // Generous ceiling from the framer's deadline-B margin (framer.rs):
+    // T_turn (2 bt) + end-slack (2 bt) + header-lead rounding + drift term
+    // (footprint >> 6). footprint = full instruction frame incl. break.
+    let fp = instr.len() as u64;
+    let ceil = 6 * bt + ((fp * bt) >> 6);
+    assert!(lead <= ceil, "{rate:?}: lead {lead} > ceiling {ceil}");
 }
 
-#[test]
-fn chain_gaps_scale_with_baud() {
-    let rate = BaudRate::B3000000;
+#[apply(matrix)]
+fn chain_gaps_scale_with_baud(baud_idx: u8) {
+    let rate = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let mut sim = Sim::new(rate);
     for id in [1u8, 2, 3] {
         sim.add_servo(id);
@@ -106,11 +110,11 @@ fn chain_gaps_scale_with_baud() {
     );
 }
 
-#[test]
-fn skewed_servo_still_answers() {
+#[apply(matrix)]
+fn skewed_servo_still_answers(baud_idx: u8) {
     // ±1 % is the worst untrimmed-HSI throw (§9.3). Cursor-verified wakes absorb
     // the drift; nothing drops.
-    let rate = BaudRate::B3000000;
+    let rate = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     for skew in [-10_000i32, 10_000] {
         let mut sim = Sim::new(rate);
         sim.add_servo_with(1, skew, 60);
@@ -128,11 +132,11 @@ fn skewed_servo_still_answers() {
     }
 }
 
-#[test]
-fn skewed_servo_survives_long_frame() {
+#[apply(matrix)]
+fn skewed_servo_survives_long_frame(baud_idx: u8) {
     // The framer's deadline-B margin scales with footprint (footprint >> 6), so
     // a long frame keeps enough slack for +1 % drift (§4.1 regression).
-    let rate = BaudRate::B3000000;
+    let rate = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let mut sim = Sim::new(rate);
     sim.add_servo_with(1, 10_000, 60);
 
@@ -157,9 +161,9 @@ fn skewed_servo_survives_long_frame() {
     assert_eq!(sim.servo_diag(0).framing_drop_count, 0);
 }
 
-#[test]
-fn skewed_chain_sequences_correctly() {
-    let rate = BaudRate::B3000000;
+#[apply(matrix)]
+fn skewed_chain_sequences_correctly(baud_idx: u8) {
+    let rate = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let mut sim = Sim::new(rate);
     let skews = [-10_000i32, 0, 10_000];
     for (id, skew) in (1u8..=3).zip(skews.iter()) {
