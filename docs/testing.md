@@ -59,14 +59,21 @@ the failure surface. It sweeps the full baud matrix (0.5M / 1M / 2M / 3M).
 
 Longer soak: `BENCH_BURST_CYCLES=25000 scripts/gears.sh`.
 
-### Budgets and the known floor
+### The strict burst gate and the known glitch
 
-Burst tests gate on a **total failure rate** per scenario, not `stale == 0`. The
-framer has a known low-baud frame-loss floor (task #32, OPEN) that leaves a rare
-stale even on the production loop at 0.5M/1M; asserting zero would flake. The
-budgets sit above the measured floor with margin — they catch a gross regression
-and tighten toward zero when #32 lands. The printed per-cycle breakdown
-(`stale` / `no-reply` / `other`) is the diagnostic; at 2M/3M stale is ~0.
+The burst tests assert **zero failures** — no stale read-backs, no missed or
+malformed replies — at every baud. They do **not** budget around the framer's
+intermittent low-baud glitch (a dropped/late frame that a second pass would
+recover; an unidentified bug, tracked separately). That is deliberate: a run
+that hits the glitch **fails**, so the bench stays an honest reproducer rather
+than a tolerance that hides the bug. When the glitch is fixed, these tests go
+green on their own.
+
+Practically: the burst tests are clean at 2M/3M and intermittently red at
+0.5M/1M (the aggressive plain flood reproduces it most readily). A red gear-3 run
+prints the exact baud and the `stale` / `no-reply` / `other` breakdown — feed
+that to the separate investigation. The measurement helpers do not retry, so a
+first-exchange failure is a real signal too.
 
 The `tool-osc-*` binaries in `tools/bench/src/bin` are the forensic instruments
 behind these tests — `tool-osc-burst` shares the exact cycle engine the hot-loop

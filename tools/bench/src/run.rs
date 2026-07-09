@@ -39,16 +39,9 @@ pub fn measure(
     let mut ok = Vec::new();
     let mut fail = 0u32;
     for i in 0..count {
-        // The first exchange after a reset is a known chip flake — retry once.
-        let retries = if i == 0 { 1 } else { 0 };
-        let mut result = Err(anyhow!("no attempt"));
-        for _ in 0..=retries {
-            result = attempt(client, wire, bit_ticks, settle_ms, &check);
-            if result.is_ok() {
-                break;
-            }
-        }
-        match result {
+        // No retry: a first-exchange (or any) failure is a real signal, not a
+        // flake to paper over.
+        match attempt(client, wire, bit_ticks, settle_ms, &check) {
             Ok(ticks) => {
                 let us = ticks as f64 / hz_per_us as f64;
                 ok.push(us);
