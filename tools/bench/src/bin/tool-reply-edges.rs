@@ -167,7 +167,11 @@ fn main() -> Result<()> {
                 dump_failure(&mut client, &stamps, bit_ticks)?;
             }
             Ok(_) => {}
-            Err(e @ (ExchangeError::BadHeader | ExchangeError::BadCrc { .. } | ExchangeError::NoReply)) => {
+            Err(
+                e @ (ExchangeError::BadHeader
+                | ExchangeError::BadCrc { .. }
+                | ExchangeError::NoReply),
+            ) => {
                 println!("=== FAIL cycle {c}: {e}");
                 dump_failure(&mut client, &stamps, bit_ticks)?;
                 caught += 1;
