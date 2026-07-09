@@ -1,9 +1,12 @@
 # osc servo transport — the deadline-pipelined receiver
 
-Status: A1 + A2 LANDED (2026-07-08, `84680bd2`); A3(b) LANDED (2026-07-08,
-`c83f6306`/`0c60bfda`) with the U2c silicon fixes (`db75cff7` FE-promise
-wait, `a19d9377` RX-flag park — see §6 A4); DISPATCH-BEFORE-VERDICT unified
-as the spine (2026-07-08) — dispatch always runs ahead of the CRC verdict,
+Status: A1 + A2 LANDED (2026-07-08, `84680bd2`); DISPATCH-BEFORE-VERDICT
+unified as the spine (2026-07-08); DMA priority ladder + direct-from-ring RX
+CRC LANDED (2026-07-08) — RX alone owns the top of the DMA ladder, which
+closes the FE-before-byte / byte-steal window at the hardware arbiter and
+retired the `db75cff7` FE-promise + `a19d9377` RX-flag-park bandaid, and RX
+CRC now feeds the ring directly (no M2M staging copy) — see §6 A4. Dispatch
+always runs ahead of the CRC verdict,
 routed by instruction class, and the verdict gates EFFECTS, not work (§4,
 §6 A3(b); "speculation" survives only in the decision-history of §6 A3 and
 §8). Describes the transport as restored
@@ -86,17 +89,17 @@ Every hardware resource the transport touches, and its duty cycle:
 | resource        | role                                             | budget/event |
 |-----------------|--------------------------------------------------|--------------|
 | USART1          | half-duplex wire; HDSEL, no self-echo (F9)       | —            |
-| USART1 vector   | PFIC HIGH. (a) FE/RX-error = break/garble event (never reads DR — §6 A4 flag park); (b) TC = TX arm drained | FE body ~1–2 µs + settle spin; TC body ~2–4 µs/arm |
+| USART1 vector   | PFIC HIGH. (a) FE/RX-error = break/garble event (plain SR-then-DR clear after on_break, §6 A4); (b) TC = TX arm drained | FE body ~1 µs; TC body ~2–4 µs/arm |
 | SysTick CNT/CMP | the transport clock (48 MHz, 32-bit) + the ONE comparator | — |
 | SysTick vector  | PFIC HIGH. Deadline mux: framer A/B, covered, chain trigger, rescue confirm, adoption (reply-ready pend) | arithmetic slots ~1–5 µs; wire-class dispatch runs here (§6 A3(b)) |
 | Software vector (14) | PFIC LOW: live-lane dispatch-consumer wake — table-class dispatch (§6 A3(b)) | decode + dispatch, ~10–70 µs |
 | I2C1_EV vector (30) | PFIC LOW: backlog-lane dispatch-consumer wake — a pending kernel tick (22) slots in first | same body as 14 |
-| DMA1 CH5        | USART1 RX → 512 B ring, circular, silent (no IRQ) | zero CPU |
-| DMA1 CH4        | TX arms → USART1 DR (header, snapshot payload, CRC tail) | zero CPU; TC surfaces as USART TC |
-| DMA1 CH3        | CRC feeds → SPI1 DR, 16-bit halfwords            | zero CPU, ~0.36 µs/B engine time |
+| DMA1 CH5        | USART1 RX → 512 B ring, circular, silent (no IRQ); **VERYHIGH, alone atop the ladder** (§6 A4) | zero CPU |
+| DMA1 CH4        | TX arms → USART1 DR (header, snapshot payload, CRC tail); HIGH | zero CPU; TC surfaces as USART TC |
+| DMA1 CH3        | CRC feeds → SPI1 DR, 16-bit halfwords (RX span straight from the ring); MEDIUM, below CH6 | zero CPU, ~0.36 µs/B engine time |
 | SPI1            | CRC-16/ARC coprocessor (16-bit LSB-first, bitrev16 at the register), accumulates across feeds | runs ~8× wire speed (F6) |
-| DMA1 CH6/CH7    | snapshot copies → the 256 B snapshot buffer (payloads + linearized RX spans); VERYHIGH, above CH3/CH4 | ~0.125 µs/B, zero CPU |
-| DMA1 CH1 vector | PFIC LOW: ADC sample set complete → motor kernel tick | ~10 µs body |
+| DMA1 CH6        | snapshot copy → the 256 B snapshot buffer (reply payloads only — RX CRC feeds the ring directly); HIGH, above CH3; CH7 now unused | ~0.125 µs/B, zero CPU |
+| DMA1 CH1        | ADC sample set → buffer; DMA HIGH (wins HIGH ties by channel number); TC vector = motor kernel tick at PFIC LOW | ~10 µs body |
 | PC0 CNF         | drive discipline: open-drain listening / push-pull TX window | flipped at trigger/release |
 | main loop       | deferred reboot poll only                        | cold path |
 
@@ -357,40 +360,37 @@ exclusive across preemption. Adoption guard (positional truth): a slot-0
 reply whose frame has newer ringed bytes behind it is dropped — the
 zero-gap collision the FE-kill can no longer catch.
 
-### A4 — RX-error flag discipline: the stream clears its own flags
+### A4 — RX owns the DMA top: the drain always beats the IRQ
 
-V006's FE/ORE/NE/PE are read-only, cleared exclusively by the
-SR-read-then-DR-read sequence (write-0 bench-disproven: the vector storms
-at ~8.6 µs/entry forever). The DR read races the RX-DMA drain: landing
-between a byte's completion and its ~10-cycle drain STEALS the byte from
-the ring — and the alignment is structural, not random (consumer
-publish/adoption bodies at HIGH delay FE delivery onto the same grid
-slot). Byte-level proof: burst write frames captured in the ring as
-perfect 11-of-12-byte prefixes; a lost LEN byte reads `00 01 34 84` →
-junk footprint 55 with INST bit 7 set → the whole span silently consumed
-as a snooped status — zero counters, stale reply after the giveup hunt.
+The two RX-error hazards are one window: the RX-DMA drain of an inbound
+byte racing the CPU. If the drain lags, the break's ERR IRQ enters with
+the ring cursor not yet advanced past the byte — the resolver sees a
+caught-up ladder and stays silent (no-reply) — or the SR-then-DR error
+clear's DR read pops the byte before DMA does (ring loss, a stale reply
+after the giveup hunt). The bringup spike `rx_dma_drain_latency` resolved
+the mechanism on silicon: in isolation the drain is effectively
+instantaneous versus the IRQ (0/114 RXNE-set-at-entry at 3M, 0/100 at 1M),
+so the window never opens; it opens ONLY under DMA1-arbiter contention (a
+competitor delaying the CH5 drain — 22% at a moderate burst, 94% at a
+heavy one). The arbiter preempts **per-beat** (proven: RX stays clean even
+against a 256-transfer competitor once it outranks it), so RX alone at the
+top bounds its drain wait to a single in-flight transfer — a couple of
+cycles, far under the IRQ entry latency — regardless of the competitor's
+burst length.
 
-Therefore **the error vector never reads DR**. Its entry STATR read arms
-the sequence; the stream's own next DMA drain is the DR half and clears
-the flag in hardware. EIE is masked meanwhile (a parked flag must not
-storm), and `maintain_rx_flags` — run at every HIGH wake — unmasks once
-the flags read clean, or CPU-clears only in a provably quiet window: our
-own reply streaming (TCIE set — the host is contractually silent and
-HDSEL has no self-echo), or the cursor idle past ~2 byte-times at the
-rescue floor. Break delivery is not framing truth (A2): an FE masked
-through the window surfaces as ring data and resolves on the fast path.
-
-The park's liveness rests on the FE-promise (`db75cff7`): every FE
-promises a ring byte, but a prompt entry can beat the byte's own DMA
-drain — the resolver then sees a caught-up ladder and must not go
-aimless (register-dump post-mortem: masked flags + cancelled comparator =
-permanently deaf servo; a one-shot recheck outside the framer was
-destroyed by an adoption wake's walk). The framer owns it as state
-(`fe_pending`): a caught-up resolve returns a bounded wait one byte-time
-from the FE tick, re-derived on every walk — immune to wake interleaving —
-and surrenders past the window (a phantom FE delivers nothing). Probe
-caveat: event-ring probes (~1 µs/event) mask this whole class by letting
-the byte ring before the walks — verify on stripped builds only.
+So the fix is the priority ladder, not a software mitigation. VERYHIGH:
+CH5 RX (alone at the top). HIGH: CH1 ADC, CH4 TX, CH6 snapshot (ADC wins
+the HIGH ties by channel number, keeping its interleave ahead of the
+copy). MEDIUM: CH3 CRC feed (below CH6 so a reply copy is written before
+the feed reads it). With RX on top the break byte is always ringed before
+`on_break` reads the cursor, so the framer needs no FE-promise; and the
+error vector's DR read gets stale data, never an in-flight byte, so it
+clears with the plain SR-then-DR sequence after `on_break` (FE/ORE/NE/PE
+stay read-only; write-0 is bench-disproven — the vector storms). Silicon:
+25k/25k zero-gap hot loops at 2M and 3M with zero no-reply/stale. A tiny
+low-baud residual (~7/25k at 1M, 1/25k at 0.5M) is a separate,
+baud-dependent break-artifact — NOT this window, which is baud-independent
+(clean at 2M/3M) — tracked as its own investigation.
 
 ## 7. First-principles losslessness (the zero-gap argument)
 
