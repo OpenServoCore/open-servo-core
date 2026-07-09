@@ -109,10 +109,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust (nightly + rust-src)
+      - name: Install Rust (nightly + rust-src + llvm-tools)
         uses: dtolnay/rust-toolchain@nightly
         with:
-          components: rust-src
+          components: rust-src, llvm-tools
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -120,3 +120,10 @@ jobs:
 
       - name: cargo check --workspace
         run: cargo check --workspace
+
+      - name: cargo build --release (app image)
+        run: cargo build --release -p osc-dev-v006-app
+
+      - name: no soft div/mod/mul gate
+        working-directory: ${{ github.workspace }}
+        run: bash .github/check-soft-arith.sh
