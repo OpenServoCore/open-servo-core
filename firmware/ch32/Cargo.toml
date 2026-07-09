@@ -13,6 +13,7 @@ osc-core         = { path = "../lib/core" }
 osc-drivers      = { path = "../lib/drivers" }
 osc-protocol     = { path = "../lib/osc-protocol" }
 osc-units        = { path = "../lib/units" }
+osc-log          = { path = "../lib/log" }
 portable-atomic  = { version = "1", default-features = false }
 riscv            = "0.12"
 critical-section = "1.2"
@@ -34,4 +35,4 @@ ch32-metapac = { git = "https://github.com/ch32-rs/ch32-metapac", default-featur
 default      = ["ch32v006x8x6"]
 ch32v006x8x6 = ["ch32-metapac/ch32v006x8x6"]
 rt           = ["ch32-metapac/rt"]
-defmt        = ["dep:defmt", "osc-core/defmt", "osc-drivers/defmt"]
+defmt        = ["dep:defmt", "osc-core/defmt", "osc-drivers/defmt", "osc-log/defmt"]

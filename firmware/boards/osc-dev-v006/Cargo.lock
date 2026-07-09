@@ -318,6 +318,7 @@ dependencies = [
  "defmt",
  "osc-core",
  "osc-drivers",
+ "osc-log",
  "osc-protocol",
  "osc-units",
  "portable-atomic",

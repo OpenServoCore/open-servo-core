@@ -1,24 +1,7 @@
-//! Logging facade — mirrors `osc_core::log`. Forwards to `defmt` or no-ops.
+//! Logging facade — forwards to `defmt` or no-op via the shared `osc-log`
+//! crate; re-exported here so call sites keep using `crate::log::*`. ch32 is
+//! embedded-only (no host `log` arm): without `defmt` it no-ops. ch32 *invokes*
+//! the macros, so it keeps its own `defmt` dep and forwards `osc-log/defmt`
+//! (see osc-log).
 
-#[cfg(feature = "defmt")]
-pub use defmt::{debug, error, info, trace, warn};
-
-#[cfg(not(feature = "defmt"))]
-pub use noop::*;
-
-#[cfg(not(feature = "defmt"))]
-mod noop {
-    #[doc(hidden)]
-    #[macro_export]
-    macro_rules! __osc_ch32_noop_log {
-        ($($arg:tt)*) => {{
-            let _ = ($($arg)*);
-        }};
-    }
-
-    pub use crate::__osc_ch32_noop_log as debug;
-    pub use crate::__osc_ch32_noop_log as error;
-    pub use crate::__osc_ch32_noop_log as info;
-    pub use crate::__osc_ch32_noop_log as trace;
-    pub use crate::__osc_ch32_noop_log as warn;
-}
+pub use osc_log::{debug, error, info, trace, warn};
