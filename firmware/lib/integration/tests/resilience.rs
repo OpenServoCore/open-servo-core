@@ -8,6 +8,11 @@ use osc_core::BaudRate;
 use osc_core::regions::control::addr::lifecycle::{GOAL_POSITION, GOAL_VELOCITY, TORQUE_ENABLE};
 use osc_integration::sim::{Sim, Source, WireFrame, assert_valid, instruction, status};
 use osc_protocol::wire::{Inst, Opcode, ResultCode};
+use rstest::rstest;
+use rstest_reuse::apply;
+
+mod support;
+use support::{matrix, sim};
 
 const ID5: u8 = 5;
 
@@ -64,9 +69,9 @@ fn midframe_garble_costs_one_frame() {
     assert_eq!(d.framing_drop_count, 0, "odd anchors are not faults");
 }
 
-#[test]
-fn lone_garble_costs_nothing() {
-    let mut sim = Sim::new(BaudRate::B1000000);
+#[apply(matrix)]
+fn lone_garble_costs_nothing(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
     let s = sim.add_servo(ID5);
 
     // A lone garble byte on an idle bus advances the ring by one → the next
@@ -81,9 +86,9 @@ fn lone_garble_costs_nothing() {
     assert_eq!(d.crc_fail_count, 0);
 }
 
-#[test]
-fn truncated_frame_starves_then_recovers() {
-    let mut sim = Sim::new(BaudRate::B1000000);
+#[apply(matrix)]
+fn truncated_frame_starves_then_recovers(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
     let s = sim.add_servo(ID5);
 
     // A sealed WRITE cut to 6 ring bytes (break + ID,LEN,INST,addr0,addr1): the
@@ -103,9 +108,9 @@ fn truncated_frame_starves_then_recovers() {
     assert_eq!(inst.result(), Some(ResultCode::Ok));
 }
 
-#[test]
-fn break_preempts_partial_frame() {
-    let mut sim = Sim::new(BaudRate::B1000000);
+#[apply(matrix)]
+fn break_preempts_partial_frame(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
     let s = sim.add_servo(ID5);
 
     // A truncated frame immediately followed by a complete ping (back-to-back):
@@ -126,9 +131,9 @@ fn break_preempts_partial_frame() {
     assert_eq!(d.framing_drop_count + d.crc_fail_count, 1);
 }
 
-#[test]
-fn corrupt_crc_tail_cancels_front_loaded_read() {
-    let mut sim = Sim::new(BaudRate::B1000000);
+#[apply(matrix)]
+fn corrupt_crc_tail_cancels_front_loaded_read(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
     let s = sim.add_servo(ID5);
 
     // A READ whose covered span is intact but whose trailing CRC is corrupted:
@@ -200,13 +205,13 @@ fn break_after_covered_cancels_front_loaded_read() {
     assert!(answered, "a following read is answered after the break");
 }
 
-#[test]
-fn crc_fail_write_reverts_and_keeps_held_entry() {
+#[apply(matrix)]
+fn crc_fail_write_reverts_and_keeps_held_entry(baud_idx: u8) {
     // §5.3 L1 across frames: a bad-CRC pending write must revert without
     // disturbing entries HELD by an earlier frame. A HOLD stages torque_enable;
     // a corrupt plain write of goal_velocity is staged on top then reverted;
     // COMMIT must land only the held torque_enable.
-    let mut sim = Sim::new(BaudRate::B1000000);
+    let mut sim = sim(baud_idx);
     let s = sim.add_servo(ID5);
     let te = TORQUE_ENABLE.to_le_bytes();
     let gv = GOAL_VELOCITY.to_le_bytes();
@@ -345,9 +350,9 @@ fn zero_payload_write_does_not_trip_rescue() {
     assert_eq!(sim.servo_diag(s).framing_drop_count, 0);
 }
 
-#[test]
-fn short_break_is_not_rescue() {
-    let mut sim = Sim::new(BaudRate::B1000000);
+#[apply(matrix)]
+fn short_break_is_not_rescue(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
     let s = sim.add_servo(ID5);
 
     // Ordinary frames, each led by a normal break (risen by ISR entry, §9.1) —
@@ -362,8 +367,9 @@ fn short_break_is_not_rescue() {
     let d = sim.servo_diag(s);
     assert_eq!(d.crc_fail_count, 0);
     assert_eq!(d.framing_drop_count, 0);
+    // No false rescue: the operational baud is unchanged.
     assert_eq!(
         sim.servo_table(s, |t| t.config.comms.baud_rate_idx),
-        BaudRate::B1000000
+        BaudRate::from_idx(baud_idx).expect("valid baud idx")
     );
 }
