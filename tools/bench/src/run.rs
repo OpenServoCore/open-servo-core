@@ -67,13 +67,36 @@ fn attempt(
     settle_ms: u64,
     check: &impl Fn(&Exchange) -> Result<()>,
 ) -> Result<u32> {
-    drain(client)?;
-    client.brksend(wire)?;
-    sleep(Duration::from_millis(settle_ms));
-    let stamps = drain(client)?;
+    let stamps = send_and_drain(client, wire, settle_ms)?;
     let ex = parse_exchange(&stamps, wire, bit_ticks).map_err(|e| anyhow!("{e}"))?;
     check(&ex)?;
     Ok(ex.turnaround_ticks)
+}
+
+/// Drain stale stamps, send `wire`, settle, and drain the exchange. The shared
+/// capture step for [`measure`] and [`xfer`].
+fn send_and_drain(client: &mut Client, wire: &[u8], settle_ms: u64) -> Result<Vec<BStamp>> {
+    drain(client)?;
+    client.brksend(wire)?;
+    sleep(Duration::from_millis(settle_ms));
+    drain(client)
+}
+
+/// One instruction→status exchange, decoded. The building block for the
+/// hardware test suite; [`measure`] is the repeated form.
+pub fn xfer(client: &mut Client, wire: &[u8], settle_ms: u64) -> Result<Exchange> {
+    let (stamps, bit_ticks) = capture(client, wire, settle_ms)?;
+    parse_exchange(&stamps, wire, bit_ticks).map_err(|e| anyhow!("{e}"))
+}
+
+/// Send `wire` and return the raw pirate stamps plus the `bit_ticks` needed to
+/// parse them. Tests asserting silence inspect the [`crate::osc::ExchangeError`]
+/// variant directly instead of going through [`xfer`].
+pub fn capture(client: &mut Client, wire: &[u8], settle_ms: u64) -> Result<(Vec<BStamp>, u32)> {
+    let hz_per_us = client.hz_per_us()?;
+    let bit_ticks = (hz_per_us as u64 * 1_000_000 / client.current_baud() as u64) as u32;
+    let stamps = send_and_drain(client, wire, settle_ms)?;
+    Ok((stamps, bit_ticks))
 }
 
 fn drain(client: &mut Client) -> Result<Vec<BStamp>> {
