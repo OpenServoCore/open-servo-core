@@ -335,6 +335,7 @@ dependencies = [
  "defmt",
  "embedded-storage",
  "heapless",
+ "osc-log",
  "osc-protocol",
  "osc-units",
  "portable-atomic",
@@ -366,10 +367,17 @@ dependencies = [
 name = "osc-drivers"
 version = "0.0.0"
 dependencies = [
- "defmt",
  "heapless",
  "osc-core",
+ "osc-log",
  "osc-protocol",
+]
+
+[[package]]
+name = "osc-log"
+version = "0.0.0"
+dependencies = [
+ "defmt",
 ]
 
 [[package]]
