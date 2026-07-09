@@ -12,10 +12,11 @@ use std::sync::{LazyLock, Mutex, MutexGuard};
 use std::time::Duration;
 
 use anyhow::Result;
-use bench::BOOT_BAUD;
-use bench::osc::{Exchange, ExchangeError, StatusFrame, parse_exchange};
+use bench::osc::{Exchange, ExchangeError, StatusFrame, build_write, parse_exchange};
 use bench::pirate::{Client, auto_detect_pirate};
 use bench::run::{BurstCycle, BurstReport, Report, burst_measure, capture, measure, xfer};
+use bench::{BOOT_BAUD, SUPPORTED_BAUDS};
+use osc_core::regions::config::addr::comms::BAUD_RATE_IDX;
 use osc_protocol::wire::ResultCode;
 
 /// Settle window per exchange (ms): covers the reply's wire time + servo latency
@@ -104,4 +105,54 @@ impl Bench {
     pub fn burst(&mut self, count: u32, build: impl Fn(i32) -> BurstCycle) -> BurstReport {
         burst_measure(&mut self.client, count, SETTLE_MS, false, build).expect("burst")
     }
+
+    /// Switch the servo (and pirate) to `baud`: WRITE `baud_rate_idx`, take the
+    /// ack at the OLD baud (the servo applies the change only once the ack has
+    /// drained, §4.2), then follow. A no-op if already there.
+    fn switch_baud(&mut self, baud: u32) {
+        if self.client.current_baud() == baud {
+            return;
+        }
+        let write = build_write(self.id, BAUD_RATE_IDX, &[baud_index(baud)]);
+        let ex = xfer(&mut self.client, &write, SETTLE_MS).expect("baud-write exchange");
+        assert_eq!(
+            ex.status.result,
+            Some(ResultCode::Ok),
+            "baud write to {baud} nacked: {:?}",
+            ex.status
+        );
+        self.client.set_baud(baud).expect("follow pirate baud");
+        self.client.reset().expect("reset pirate after baud follow");
+    }
+
+    /// [`burst`](Self::burst) at `baud`, restoring the boot baud afterwards so
+    /// the next test starts clean. The report is returned before any assertion,
+    /// so a failed budget never leaves the bus on the wrong baud.
+    pub fn burst_at(
+        &mut self,
+        baud: u32,
+        count: u32,
+        build: impl Fn(i32) -> BurstCycle,
+    ) -> BurstReport {
+        self.switch_baud(baud);
+        let report = self.burst(count, build);
+        self.switch_baud(BOOT_BAUD);
+        report
+    }
+
+    /// [`measure`](Self::measure) at `baud`, restoring the boot baud afterwards.
+    pub fn measure_at(&mut self, baud: u32, wire: &[u8], count: u32) -> Result<Report> {
+        self.switch_baud(baud);
+        let report = self.measure(wire, count);
+        self.switch_baud(BOOT_BAUD);
+        report
+    }
+}
+
+/// Index of `baud` in the supported set, for the `baud_rate_idx` register.
+fn baud_index(baud: u32) -> u8 {
+    SUPPORTED_BAUDS
+        .iter()
+        .position(|&b| b == baud)
+        .unwrap_or_else(|| panic!("unsupported baud {baud}")) as u8
 }
