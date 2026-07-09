@@ -97,9 +97,20 @@ pub struct ServoBus<P: Providers> {
     rescue_cursor: u16,
 }
 
-/// Ticks per byte-time at `rate` on the transport clock.
+/// Ticks per byte-time at `rate` on the transport clock. Each arm folds to a
+/// literal via `const {}` (TICKS_PER_US is an associated const) — the board
+/// build targets +zmmul (no hardware divide), so no runtime division is emitted
+/// (mirrors the chip `brr_for` idiom).
 fn tpb_for<P: Providers>(rate: BaudRate) -> u32 {
-    <P::Deadline as Deadline>::TICKS_PER_US * BYTE_TIME_NUMERATOR / rate.as_hz()
+    const fn compute(ticks_per_us: u32, baud_hz: u32) -> u32 {
+        ticks_per_us * BYTE_TIME_NUMERATOR / baud_hz
+    }
+    match rate {
+        BaudRate::B500000 => const { compute(<P::Deadline as Deadline>::TICKS_PER_US, 500_000) },
+        BaudRate::B1000000 => const { compute(<P::Deadline as Deadline>::TICKS_PER_US, 1_000_000) },
+        BaudRate::B2000000 => const { compute(<P::Deadline as Deadline>::TICKS_PER_US, 2_000_000) },
+        BaudRate::B3000000 => const { compute(<P::Deadline as Deadline>::TICKS_PER_US, 3_000_000) },
+    }
 }
 
 /// Wrap-aware "slot `at` is due at `now`".

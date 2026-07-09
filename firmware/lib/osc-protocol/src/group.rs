@@ -128,7 +128,16 @@ impl<'a> GwriteUniform<'a> {
         }
         let entries = payload.sub(3, payload.len().checked_sub(3)?)?;
         let stride = 1 + count as usize;
-        if entries.is_empty() || !entries.len().is_multiple_of(stride) {
+        // Reject a ragged tail without a divide (rv32ec +zmmul has no hardware
+        // remainder): walk in stride steps. Bounded — payloads cap at 252 B.
+        let mut rem = entries.len();
+        if rem == 0 {
+            return None;
+        }
+        while rem >= stride {
+            rem -= stride;
+        }
+        if rem != 0 {
             return None;
         }
         Some(Self {
