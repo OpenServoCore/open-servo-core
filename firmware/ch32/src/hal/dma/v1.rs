@@ -2,6 +2,24 @@ use ch32_metapac::DMA1;
 
 pub use ch32_metapac::dma::vals::{Dir, Pl, Size};
 
+/// DMA1 priority ladder (arbiter: higher `Pl` wins; equal `Pl` breaks by
+/// lowest channel number). The one hard invariant is that an inbound RX byte's
+/// drain must never be deferred past the FE-IRQ entry — a deferred drain lets
+/// the break IRQ read a cursor that hasn't counted the byte (no-reply) or a
+/// `DATAR` clear steal it (ring loss). A bringup spike (`rx_dma_drain_latency`)
+/// proved the arbiter preempts per-beat, so RX alone at the top bounds its
+/// drain wait to one in-flight transfer (« IRQ latency) regardless of any
+/// competitor's burst length:
+///
+///   VERYHIGH  CH5 RX ring          — inbound bytes, never deferred
+///   HIGH      CH1 ADC              — motor kernel; wins HIGH ties (lowest #)
+///             CH4 TX               — reply wire arms
+///             CH6 M2M → snapshot   — copies the reply payload for CRC + wire
+///   MEDIUM    CH3 SPI-CRC feed     — must run BEHIND CH6 so the copy it reads
+///                                    is written first (producer→consumer)
+///
+/// RX CRC feeds the SPI engine straight from the ring (no M2M staging), so CH6
+/// serves only the reply snapshot and CH7 is unused.
 #[derive(Copy, Clone)]
 #[repr(u8)]
 pub enum Channel {

@@ -94,7 +94,9 @@ impl Crc {
             size: dma::Size::BITS16,
             htie: false,
             tcie: false,
-            pl: dma::Pl::HIGH,
+            // MEDIUM: the feed sits at the ladder floor (see `hal::dma`), below
+            // CH6 so a reply snapshot is written before this reads it.
+            pl: dma::Pl::MEDIUM,
         };
         dma::configure(
             dma::Channel::CH3,
@@ -129,35 +131,26 @@ impl bus::CrcEngine for Crc {
     }
 
     fn snapshot(&mut self, off: u16, src: &[u8]) -> *const u8 {
-        // Best-effort streaming copy, fire-and-forget: CH6 runs VERYHIGH,
-        // strictly above CH3 (feed) and CH4 (TX), so no consumer can overtake
-        // the copy — a late copy stalls the wire into legal inter-byte gaps
-        // at worst. CH1 (ADC) and CH5 (RX ring), VERYHIGH with lower channel
-        // numbers, interleave through it and never starve. No spin, no lock:
-        // a kernel tick landing mid-copy tears the image by a µs-window, but
-        // wire and CRC both read the copy, so the reply stays CRC-consistent
-        // (§4.2 best-effort snapshot).
+        // Best-effort streaming copy of a reply payload, fire-and-forget: CH6
+        // runs HIGH, above CH3 (the CRC feed, MEDIUM), so the feed can't
+        // overtake the copy it reads (producer→consumer, see `hal::dma`). The
+        // wire (CH4) reads it too but only reaches the payload arm byte-times
+        // later, by which point this µs-scale copy is long done. No spin, no
+        // lock: a kernel tick tearing the image by a µs-window is fine — wire
+        // and CRC both read the copy, so the reply stays CRC-consistent (§4.2).
+        // RX CRC no longer snapshots (it feeds the ring directly), so there is
+        // one copy per exchange and CH7 is unused.
         debug_assert!(off as usize + src.len() <= SNAPSHOT_LEN);
-        // The offset picks the channel: a ring-wrap linearization issues two
-        // back-to-back copies (off 0, then the split point), and re-arming
-        // one channel would truncate the first copy mid-flight. Disjoint
-        // destinations, both VERYHIGH, CH6 drains before CH7 by number.
-        let ch = if off == 0 {
-            dma::Channel::CH6
-        } else {
-            dma::Channel::CH7
-        };
         // SAFETY: single writer per exchange — snapshot calls are serialized
-        // by the bus driver, and consumers are ordered behind the copy
-        // channels by the DMA priority ladder.
+        // by the bus driver, and consumers are ordered behind CH6 by the ladder.
         let dst = unsafe { (*SNAPSHOT.get()).0.as_ptr().add(off as usize) };
-        dma::disable(ch);
+        dma::disable(dma::Channel::CH6);
         dma::configure_m2m(
-            ch,
+            dma::Channel::CH6,
             src.as_ptr() as u32,
             dst as u32,
             src.len() as u16,
-            dma::Pl::VERYHIGH,
+            dma::Pl::HIGH,
         );
         dst
     }

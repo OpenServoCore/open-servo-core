@@ -612,32 +612,29 @@ impl<P: Providers> ServoBus<P> {
         }
     }
 
-    /// Snapshot the covered span (linearizing a ring-wrap split) and feed its
-    /// even bulk into the CRC engine, no result poll. The feed starts at the
-    /// anchor regardless of parity — the break's `0x00` leads as a CRC no-op
-    /// and the snapshot buffer is even-based (§3.2). Linearization also makes
-    /// segment-length parity irrelevant: the halfword feed sees one
-    /// contiguous span. A trailing odd byte is left for the fold at verify.
+    /// Feed the covered span into the CRC engine straight from the ring — no
+    /// M2M staging. Even-align the halfword feed by dropping the break's
+    /// leading `0x00` when the anchor is odd (an init-0 no-op, so the CRC is
+    /// unchanged); the ring base is halfword-aligned (`ring` is
+    /// `repr(align(2))`). A ring-wrap splits into two accumulating arms — the
+    /// engine sums across them. A trailing odd byte is left for the fold at
+    /// verify. Direct feed is safe against the live circular ring: the engine
+    /// runs ~8× wire speed, so it drains the covered span long before the write
+    /// cursor could lap the ring back onto it.
     fn crc_feed(&mut self, anchor: u16, footprint: u16) {
         let ring = self.ring.bytes();
         let len = ring.len();
         let anchor = anchor as usize;
-        let covered = footprint as usize - 2;
-        let bulk = covered - (covered & 1);
+        let start = anchor + (anchor & 1);
+        let end = anchor + footprint as usize - 2;
+        let bulk_end = end - ((end - start) & 1);
         self.crc.reset();
-        let base = if anchor + covered <= len {
-            self.crc.snapshot(0, &ring[anchor..anchor + covered])
+        if bulk_end <= len {
+            self.crc.feed(&ring[start..bulk_end]);
         } else {
-            let first = len - anchor;
-            let base = self.crc.snapshot(0, &ring[anchor..len]);
-            self.crc.snapshot(first as u16, &ring[..covered - first]);
-            base
-        };
-        // SAFETY: `base` targets the engine's snapshot buffer, stable and
-        // sized for a max covered span (trait contract); the copy cannot be
-        // overtaken by the feed (transfer ordering).
-        self.crc
-            .feed(unsafe { core::slice::from_raw_parts(base, bulk) });
+            self.crc.feed(&ring[start..len]);
+            self.crc.feed(&ring[..bulk_end - len]);
+        }
     }
 
     /// The covered byte the even-bulk feed left behind, if the span was odd.
@@ -645,8 +642,9 @@ impl<P: Providers> ServoBus<P> {
         let ring = self.ring.bytes();
         let len = ring.len();
         let anchor = anchor as usize;
+        let start = anchor + (anchor & 1);
         let end = anchor + footprint as usize - 2;
-        if (end - anchor) & 1 == 1 {
+        if (end - start) & 1 == 1 {
             Some(ring[(end - 1) % len])
         } else {
             None

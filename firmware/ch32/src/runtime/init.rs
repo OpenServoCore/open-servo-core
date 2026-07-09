@@ -191,10 +191,11 @@ fn configure_adc_dma_scan(sensors: &AdcPins) {
         size: dma::Size::BITS16,
         htie: false,
         tcie: true,
-        // VERYHIGH + lowest channel number = top of the DMA ladder: the ADC
-        // drain interleaves through the CH6 staging copy (§5 odd reads)
-        // instead of starving behind it.
-        pl: dma::Pl::VERYHIGH,
+        // HIGH, not VERYHIGH: RX (CH5) alone owns the top so an inbound byte's
+        // drain outranks everything (see the ladder in `hal::dma`). ADC is the
+        // lowest-numbered HIGH channel, so it still wins every HIGH tie and
+        // only ever yields to the sparse RX drain.
+        pl: dma::Pl::HIGH,
     };
     let paddr = ADC.rdatar().as_ptr() as u32;
     let maddr = ADC_DMA_BUF.get() as u32;
@@ -224,8 +225,9 @@ fn bring_up_bus(brr: u32) {
         size: dma::Size::BITS8,
         htie: false,
         tcie: false,
-        // VERYHIGH, number 5 < 6: the RX ring wins ties against the CH6
-        // staging copy, so inbound bytes never overrun during a copy.
+        // VERYHIGH, alone at the top of the ladder (see `hal::dma`): an inbound
+        // byte's drain preempts every other channel per-beat, so it always
+        // lands in the ring before the break IRQ reads the cursor.
         pl: dma::Pl::VERYHIGH,
     };
     dma::configure(
