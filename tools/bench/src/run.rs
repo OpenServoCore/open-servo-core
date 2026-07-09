@@ -6,8 +6,9 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
+use osc_protocol::wire::ResultCode;
 
-use crate::osc::{Exchange, parse_exchange};
+use crate::osc::{Exchange, ExchangeError, parse_exchange};
 use crate::pirate::{BStamp, Client};
 
 pub struct Report {
@@ -139,4 +140,170 @@ impl Stats {
         println!("             max {:.2} us", self.max);
         println!("             stddev {:.2} us", self.stddev);
     }
+}
+
+/// One zero-gap burst cycle: `frames` are sent back-to-back (or host-paced),
+/// then the reply to `last` is parsed. `expect` present ⇒ its payload must match
+/// (a stale read-back means a frame was silently missed by the framer); absent
+/// ⇒ reply-presence only (no value check).
+pub struct BurstCycle {
+    pub frames: Vec<Vec<u8>>,
+    pub last: Vec<u8>,
+    pub expect: Option<Vec<u8>>,
+}
+
+/// The fate of one burst cycle. Richer than the [`BurstReport`] tally so a
+/// forensic caller can log or dump per cycle; the tally folds it to counts.
+#[derive(Debug)]
+pub enum CycleOutcome {
+    /// Reply OK and (if checked) the read-back value matched.
+    Ok { turnaround_us: f64 },
+    /// Reply OK but the read-back value was stale — a missed write/commit.
+    Stale { got: Vec<u8>, expected: Vec<u8> },
+    /// Reply parsed but carried a non-OK result code.
+    ResultErr(Option<ResultCode>),
+    /// No reply break followed the instruction echo.
+    NoReply,
+    /// The reply was present but malformed (truncated / bad header / bad CRC).
+    Other(ExchangeError),
+    /// The burst never reached the wire.
+    SendErr(String),
+}
+
+/// Per-cycle view handed to a [`burst_measure_observed`] observer.
+pub struct CycleObservation<'a> {
+    pub index: u32,
+    pub value: i32,
+    pub stamps: &'a [BStamp],
+    pub bit_ticks: u32,
+    pub outcome: &'a CycleOutcome,
+}
+
+/// Tally over a burst run: `ok` holds the clean cycles' turnaround (µs); the
+/// three counters are the silicon-only failure modes a zero-gap burst exposes
+/// (the DES sim's zero-cost handlers cannot model them).
+pub struct BurstReport {
+    pub ok: Vec<f64>,
+    pub stale: u32,
+    pub no_reply: u32,
+    pub other: u32,
+}
+
+impl BurstReport {
+    pub fn failures(&self) -> u32 {
+        self.stale + self.no_reply + self.other
+    }
+
+    pub fn cycles(&self) -> u32 {
+        self.ok.len() as u32 + self.failures()
+    }
+}
+
+/// Bombard the bus with `count` zero-gap bursts and tally the silicon failure
+/// modes. `build(value)` produces each cycle's frames; see
+/// [`burst_measure_observed`] for the value schedule and observer.
+pub fn burst_measure(
+    client: &mut Client,
+    count: u32,
+    settle_ms: u64,
+    paced: bool,
+    build: impl Fn(i32) -> BurstCycle,
+) -> Result<BurstReport> {
+    burst_measure_observed(client, count, settle_ms, paced, build, |_| {})
+}
+
+/// [`burst_measure`] with a per-cycle `observe` callback for verbose/dump.
+///
+/// The value schedule is owned here so the stale-detection invariant holds:
+/// adjacent cycles carry distinct values (`(index % 1000) + 1`), and the warmup
+/// uses a sentinel `0` that no cycle emits — so a stale read-back is never
+/// masked by an equal-valued neighbour.
+pub fn burst_measure_observed(
+    client: &mut Client,
+    count: u32,
+    settle_ms: u64,
+    paced: bool,
+    build: impl Fn(i32) -> BurstCycle,
+    mut observe: impl FnMut(&CycleObservation),
+) -> Result<BurstReport> {
+    let hz_per_us = client.hz_per_us()?;
+    let bit_ticks = (hz_per_us as u64 * 1_000_000 / client.current_baud() as u64) as u32;
+
+    // Warmup: prime the chip and flush any stale stamps before measuring.
+    let warm = build(0);
+    let _ = send_cycle(client, &warm, paced);
+    sleep(Duration::from_millis(settle_ms));
+    drain(client)?;
+
+    let mut report = BurstReport {
+        ok: Vec::new(),
+        stale: 0,
+        no_reply: 0,
+        other: 0,
+    };
+    for index in 0..count {
+        let value = (index % 1000) as i32 + 1;
+        let cycle = build(value);
+        let (stamps, outcome) = run_cycle(client, &cycle, paced, settle_ms, bit_ticks, hz_per_us)?;
+        match &outcome {
+            CycleOutcome::Ok { turnaround_us } => report.ok.push(*turnaround_us),
+            CycleOutcome::Stale { .. } => report.stale += 1,
+            CycleOutcome::NoReply => report.no_reply += 1,
+            CycleOutcome::ResultErr(_) | CycleOutcome::Other(_) | CycleOutcome::SendErr(_) => {
+                report.other += 1
+            }
+        }
+        observe(&CycleObservation {
+            index,
+            value,
+            stamps: &stamps,
+            bit_ticks,
+            outcome: &outcome,
+        });
+    }
+    Ok(report)
+}
+
+fn send_cycle(client: &mut Client, cycle: &BurstCycle, paced: bool) -> Result<()> {
+    if paced {
+        cycle.frames.iter().try_for_each(|f| {
+            sleep(Duration::from_millis(1));
+            client.brksend(f)
+        })
+    } else {
+        client.burst(&cycle.frames)
+    }
+}
+
+fn run_cycle(
+    client: &mut Client,
+    cycle: &BurstCycle,
+    paced: bool,
+    settle_ms: u64,
+    bit_ticks: u32,
+    hz_per_us: u32,
+) -> Result<(Vec<BStamp>, CycleOutcome)> {
+    if let Err(e) = send_cycle(client, cycle, paced) {
+        sleep(Duration::from_millis(2));
+        return Ok((Vec::new(), CycleOutcome::SendErr(e.to_string())));
+    }
+    sleep(Duration::from_millis(settle_ms));
+    let stamps = drain(client)?;
+    let outcome = match parse_exchange(&stamps, &cycle.last, bit_ticks) {
+        Ok(ex) if ex.status.result != Some(ResultCode::Ok) => {
+            CycleOutcome::ResultErr(ex.status.result)
+        }
+        Ok(ex) => match &cycle.expect {
+            Some(exp) if &ex.status.payload != exp => CycleOutcome::Stale {
+                got: ex.status.payload,
+                expected: exp.clone(),
+            },
+            _ => CycleOutcome::Ok {
+                turnaround_us: ex.turnaround_ticks as f64 / hz_per_us as f64,
+            },
+        },
+        Err(ExchangeError::NoReply) => CycleOutcome::NoReply,
+        Err(e) => CycleOutcome::Other(e),
+    };
+    Ok((stamps, outcome))
 }

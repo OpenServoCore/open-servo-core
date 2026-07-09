@@ -10,16 +10,19 @@
 //! silently missed by the framer shows up here as a STALE read-back value
 //! (missed write/commit) or a missing reply (missed read) — plus whatever the
 //! servo's crc/drop counters say via wlink.
+//!
+//! The cycle loop, failure classification, and turnaround tally live in
+//! [`bench::run::burst_measure_observed`]; the asserting bench test
+//! (`tests/hardware/hot_loop.rs`) drives the same engine so the two can't drift.
 
-use std::thread::sleep;
 use std::time::Duration;
 
 use anyhow::{Result, bail};
-use bench::osc::{ExchangeError, build_instruction, parse_exchange};
+use bench::osc::build_instruction;
 use bench::pirate::{BStamp, Client, auto_detect_pirate};
-use bench::run::Stats;
+use bench::run::{BurstCycle, CycleObservation, CycleOutcome, Stats, burst_measure_observed};
 use clap::Parser;
-use osc_protocol::wire::{Inst, Opcode, ResultCode};
+use osc_protocol::wire::{Inst, Opcode};
 
 /// goal_position (see tool-osc-write): the rule-heavy hot-loop register —
 /// its soft-limit rules make commit the representative worst-case work.
@@ -126,6 +129,70 @@ fn plain_burst(id: u8, n: u32, v: i32) -> (Vec<Vec<u8>>, Vec<u8>) {
     (frames, read)
 }
 
+/// Build one cycle for `value`, dispatched by the mode flags.
+fn cycle_for(args: &Args, value: i32) -> BurstCycle {
+    let a = GOAL_POSITION_ADDR.to_le_bytes();
+    let checked = Some(value.to_le_bytes().to_vec());
+    if args.plain {
+        let (frames, last) = plain_burst(args.id, args.writes.max(1), value);
+        BurstCycle {
+            frames,
+            last,
+            expect: checked,
+        }
+    } else if args.gread_only {
+        let g = build_instruction(
+            BCAST,
+            Opcode::Gread,
+            0,
+            &gread_uniform(GOAL_POSITION_ADDR, 4, &[args.id]),
+        );
+        BurstCycle {
+            frames: vec![g.clone()],
+            last: g,
+            expect: None,
+        }
+    } else if args.no_commit {
+        let gwrite = build_instruction(
+            BCAST,
+            Opcode::Gwrite,
+            Inst::FLAG_HOLD,
+            &gwrite_uniform(GOAL_POSITION_ADDR, args.id, &value.to_le_bytes()),
+        );
+        let read = build_instruction(args.id, Opcode::Read, 0, &[a[0], a[1], 4, 0]);
+        BurstCycle {
+            frames: vec![gwrite, read.clone()],
+            last: read,
+            expect: None,
+        }
+    } else if args.commit_read {
+        let commit = build_instruction(BCAST, Opcode::Commit, 0, &[]);
+        let read = build_instruction(args.id, Opcode::Read, 0, &[a[0], a[1], 4, 0]);
+        BurstCycle {
+            frames: vec![commit, read.clone()],
+            last: read,
+            expect: None,
+        }
+    } else if args.no_gread {
+        let (mut frames, _) = hot_loop_burst(args.id, value);
+        let read = build_instruction(args.id, Opcode::Read, 0, &[a[0], a[1], 4, 0]);
+        frames.pop();
+        frames.push(read.clone());
+        BurstCycle {
+            frames,
+            last: read,
+            expect: checked,
+        }
+    } else {
+        let (frames, last) = hot_loop_burst(args.id, value);
+        BurstCycle {
+            frames,
+            last,
+            expect: checked,
+        }
+    }
+}
+
 fn dump_stamps(c: u32, stamps: &[BStamp], bit_ticks: u32) {
     println!("--- cycle {c} stamps ({}):", stamps.len());
     let mut prev: Option<u32> = None;
@@ -136,143 +203,29 @@ fn dump_stamps(c: u32, stamps: &[BStamp], bit_ticks: u32) {
             Some(_) => print!(" {:02x}", st.byte),
             None => print!("  {:02x}", st.byte),
         }
-        if d.is_none_or(|d| d <= 12.0) {
-            // stay on line
-        }
         prev = Some(st.tick);
     }
     println!();
 }
 
-fn drain(client: &mut Client) -> Result<Vec<BStamp>> {
-    let mut all = Vec::new();
-    loop {
-        let batch = client.bbatch(255)?;
-        if batch.is_empty() {
-            return Ok(all);
-        }
-        all.extend(batch);
-    }
-}
-
 fn main() -> Result<()> {
     let args = Args::parse();
-    let port = match args.port {
-        Some(p) => p,
+    let port = match &args.port {
+        Some(p) => p.clone(),
         None => auto_detect_pirate()?,
     };
     let mut client = Client::open(&port, Duration::from_millis(500))?;
     client.set_baud(args.baud)?;
     client.reset()?;
-    let hz_per_us = client.hz_per_us()?;
-    let bit_ticks = (hz_per_us as u64 * 1_000_000 / args.baud as u64) as u32;
 
-    // Warmup exchange (first-post-reset flake), value distinct from cycle 0.
-    let (frames, _) = hot_loop_burst(args.id, 0);
-    let _ = client.burst(&frames);
-    sleep(Duration::from_millis(5));
-    drain(&mut client)?;
-
-    let mut ok = Vec::new();
-    let (mut stale, mut no_reply, mut other) = (0u32, 0u32, 0u32);
-    for c in 0..args.count {
-        // Values stay small positive (inside goal_position soft limits) and
-        // never repeat between adjacent cycles, so a stale read-back is
-        // unambiguous.
-        let v = (c % 1000) as i32 + 1;
-        let a = GOAL_POSITION_ADDR.to_le_bytes();
-        let (frames, last, check) = if args.plain {
-            let (f, l) = plain_burst(args.id, args.writes.max(1), v);
-            (f, l, true)
-        } else if args.gread_only {
-            let g = build_instruction(
-                BCAST,
-                Opcode::Gread,
-                0,
-                &gread_uniform(GOAL_POSITION_ADDR, 4, &[args.id]),
-            );
-            (vec![g.clone()], g, false)
-        } else if args.no_commit {
-            let gwrite = build_instruction(
-                BCAST,
-                Opcode::Gwrite,
-                Inst::FLAG_HOLD,
-                &gwrite_uniform(GOAL_POSITION_ADDR, args.id, &v.to_le_bytes()),
-            );
-            let read = build_instruction(args.id, Opcode::Read, 0, &[a[0], a[1], 4, 0]);
-            (vec![gwrite, read.clone()], read, false)
-        } else if args.commit_read {
-            let commit = build_instruction(BCAST, Opcode::Commit, 0, &[]);
-            let read = build_instruction(args.id, Opcode::Read, 0, &[a[0], a[1], 4, 0]);
-            (vec![commit, read.clone()], read, false)
-        } else if args.no_gread {
-            let (mut f, _) = hot_loop_burst(args.id, v);
-            let read = build_instruction(args.id, Opcode::Read, 0, &[a[0], a[1], 4, 0]);
-            f.pop();
-            f.push(read.clone());
-            (f, read, true)
-        } else {
-            let (f, l) = hot_loop_burst(args.id, v);
-            (f, l, true)
-        };
-        let sent = if args.paced {
-            frames.iter().try_for_each(|f| {
-                sleep(Duration::from_millis(1));
-                client.brksend(f)
-            })
-        } else {
-            client.burst(&frames)
-        };
-        if let Err(e) = sent {
-            other += 1;
-            if args.verbose {
-                println!("cycle {c:>5}  send err: {e}");
-            }
-            sleep(Duration::from_millis(2));
-            continue;
-        }
-        sleep(Duration::from_millis(3));
-        let stamps = drain(&mut client)?;
-        match parse_exchange(&stamps, &last, bit_ticks) {
-            Ok(ex) => {
-                let expect = v.to_le_bytes();
-                if ex.status.result != Some(ResultCode::Ok) {
-                    other += 1;
-                    if args.verbose {
-                        println!("cycle {c:>5}  result {:?}", ex.status.result);
-                    }
-                } else if check && ex.status.payload != expect {
-                    stale += 1;
-                    if args.verbose {
-                        println!(
-                            "cycle {c:>5}  STALE read-back {:02x?} (expected {expect:02x?})",
-                            ex.status.payload
-                        );
-                    }
-                } else {
-                    ok.push(ex.turnaround_ticks as f64 / hz_per_us as f64);
-                }
-            }
-            Err(ExchangeError::NoReply) => {
-                no_reply += 1;
-                if args.verbose {
-                    println!("cycle {c:>5}  no reply");
-                }
-                if args.dump {
-                    dump_stamps(c, &stamps, bit_ticks);
-                }
-            }
-            Err(e) => {
-                other += 1;
-                if args.verbose {
-                    println!("cycle {c:>5}  {e}");
-                }
-                if args.dump {
-                    dump_stamps(c, &stamps, bit_ticks);
-                }
-            }
-        }
-    }
+    let report = burst_measure_observed(
+        &mut client,
+        args.count,
+        3,
+        args.paced,
+        |v| cycle_for(&args, v),
+        |obs: &CycleObservation| observe(&args, obs),
+    )?;
 
     let mode = if args.plain {
         format!("plain (WRITE noreply x {} + READ)", args.writes.max(1))
@@ -284,14 +237,58 @@ fn main() -> Result<()> {
     println!("id           {}", args.id);
     println!("mode         {mode}");
     println!(
-        "cycles       {} ok, {stale} stale, {no_reply} no-reply, {other} other",
-        ok.len()
+        "cycles       {} ok, {} stale, {} no-reply, {} other",
+        report.ok.len(),
+        report.stale,
+        report.no_reply,
+        report.other,
     );
-    if let Some(s) = Stats::from(&ok) {
+    if let Some(s) = Stats::from(&report.ok) {
         s.print();
     }
-    if (stale + no_reply + other) * 10 > args.count {
+    if report.failures() * 10 > args.count {
         bail!("failure rate over 10%");
     }
     Ok(())
+}
+
+/// Per-cycle forensic output, gated by `--verbose` / `--dump`.
+fn observe(args: &Args, obs: &CycleObservation) {
+    match obs.outcome {
+        CycleOutcome::Ok { .. } => {}
+        CycleOutcome::Stale { got, expected } => {
+            if args.verbose {
+                println!(
+                    "cycle {:>5}  STALE read-back {got:02x?} (expected {expected:02x?})",
+                    obs.index
+                );
+            }
+        }
+        CycleOutcome::ResultErr(r) => {
+            if args.verbose {
+                println!("cycle {:>5}  result {r:?}", obs.index);
+            }
+        }
+        CycleOutcome::NoReply => {
+            if args.verbose {
+                println!("cycle {:>5}  no reply", obs.index);
+            }
+            if args.dump {
+                dump_stamps(obs.index, obs.stamps, obs.bit_ticks);
+            }
+        }
+        CycleOutcome::Other(e) => {
+            if args.verbose {
+                println!("cycle {:>5}  {e}", obs.index);
+            }
+            if args.dump {
+                dump_stamps(obs.index, obs.stamps, obs.bit_ticks);
+            }
+        }
+        CycleOutcome::SendErr(e) => {
+            if args.verbose {
+                println!("cycle {:>5}  send err: {e}", obs.index);
+            }
+        }
+    }
 }
