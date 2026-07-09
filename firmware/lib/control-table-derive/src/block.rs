@@ -405,23 +405,16 @@ fn auto_enum_allowed(ty: &Type) -> Option<TokenStream2> {
     Some(quote!(<#path as ::control_table::HasAllowed>::ALLOWED))
 }
 
+/// The integer primitives the derive recognizes: zero-initialized in the
+/// generated `new()` ([`default_init_for_type`]) and, with f32/f64, the set that
+/// carries no auto-enum rule ([`is_primitive`]). One list so a new width can't be
+/// added to one consumer and forgotten in the other.
+const PRIMITIVE_INTS: &[&str] = &[
+    "u8", "u16", "u32", "u64", "u128", "i8", "i16", "i32", "i64", "i128", "usize", "isize",
+];
+
 fn is_primitive(name: &str) -> bool {
-    matches!(
-        name,
-        "u8" | "u16"
-            | "u32"
-            | "u64"
-            | "u128"
-            | "i8"
-            | "i16"
-            | "i32"
-            | "i64"
-            | "i128"
-            | "f32"
-            | "f64"
-            | "usize"
-            | "isize"
-    )
+    PRIMITIVE_INTS.contains(&name) || matches!(name, "f32" | "f64")
 }
 
 /// `(width, signed)` for a Cmp rule; errors on u32/arrays/other (no wider Cmp).
@@ -473,20 +466,7 @@ pub(crate) fn default_init_for_type(ty: &Type) -> TokenStream2 {
         if name == "bool" {
             return quote!(false);
         }
-        if matches!(
-            name.as_str(),
-            "u8" | "u16"
-                | "u32"
-                | "u64"
-                | "u128"
-                | "i8"
-                | "i16"
-                | "i32"
-                | "i64"
-                | "i128"
-                | "usize"
-                | "isize"
-        ) {
+        if PRIMITIVE_INTS.contains(&name.as_str()) {
             return quote!(0);
         }
         if matches!(name.as_str(), "f32" | "f64") {
