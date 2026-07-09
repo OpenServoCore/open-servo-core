@@ -5,9 +5,9 @@ use serial_test::serial;
 use crate::support::bench;
 
 /// THE metric: instruction wire-end → status break fall. At the 1M boot baud a
-/// ping turns around in ~38 µs (`docs/osc-servo-transport.md`); assert a
-/// generous ceiling so a real regression trips while the ±5 µs flash-layout
-/// swing does not. The measured distribution is printed for the record.
+/// ping turns around in ~35 µs measured (`docs/osc-servo-transport.md` quotes
+/// ~38); the 45 µs ceiling catches a real regression while leaving room for the
+/// ±5 µs flash-layout swing. The measured distribution is printed for the record.
 #[test]
 #[serial]
 fn ping_turnaround_within_budget() {
@@ -24,7 +24,7 @@ fn ping_turnaround_within_budget() {
     let s = Stats::from(&report.ok).expect("some turnaround samples");
     s.print();
     assert!(
-        s.mean < 60.0,
+        s.mean < 45.0,
         "mean turnaround {:.1} us over budget",
         s.mean
     );
