@@ -4,24 +4,23 @@
 //! payloads are hand-built per §5's tables and cross-checked against the
 //! `osc_protocol::group` parsers (the layout authority).
 
-use osc_core::BaudRate;
 use osc_core::regions::config::addr::identity::{FIRMWARE_VERSION, MODEL_NUMBER};
 use osc_core::regions::control::addr::lifecycle::GOAL_VELOCITY;
 use osc_core::regions::control::addr::streaming::{STREAM_DECIMATION, STREAM_FIELD_MASK};
-use osc_integration::sim::{Sim, Source, WireFrame, assert_valid, instruction, status};
+use osc_integration::sim::{Source, WireFrame, assert_valid, instruction, status};
 use osc_protocol::wire::{Inst, Opcode, ResultCode};
+use rstest::rstest;
+use rstest_reuse::apply;
 
-const RATE: BaudRate = BaudRate::B1000000;
-/// 1 byte-time at 1 M in sim ticks (TICKS_PER_US = 48, 10 bits/byte).
-const BYTE_TICKS: u64 = 480;
-const T_TURN: u64 = 2 * BYTE_TICKS;
+mod support;
+use support::{byte_ticks, matrix, sim};
 
 /// The default RESPONSE_DEADLINE (60 µs) works at every baud: §6 keys reclaim
 /// off the predecessor's *break* (its trigger → break lead), and an observed
-/// break suspends the window while the frame plays out. These 1 M chains are
-/// the regression for that — a short 1 M reply spends ~84 µs on the wire, so
+/// break suspends the window while the frame plays out. The baud sweep is the
+/// regression for that — at 1 M a short reply spends ~84 µs on the wire, so
 /// frame-end-keyed reclaim (the original defect) would falsely reclaim every
-/// present-but-slow predecessor here.
+/// present-but-slow predecessor.
 const CHAIN_DEADLINE_US: u16 = 60;
 
 /// Broadcast frame ID for group ops (§5: the id-list, not the frame ID, selects
@@ -94,9 +93,9 @@ fn decoded(f: &WireFrame) -> (ResultCode, Vec<u8>) {
 
 // --- reads (§6 status chains) -----------------------------------------------
 
-#[test]
-fn gread_uniform_chains_in_list_order() {
-    let mut sim = Sim::new(RATE);
+#[apply(matrix)]
+fn gread_uniform_chains_in_list_order(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
     for id in [1u8, 2, 3] {
         sim.add_servo_with(id, 0, CHAIN_DEADLINE_US);
     }
@@ -127,15 +126,16 @@ fn gread_uniform_chains_in_list_order() {
         assert_eq!(payload, m.to_le_bytes(), "each reply carries its own span");
     }
     // Every inter-reply gap respects T_turn (§6/§7).
+    let t_turn = 2 * byte_ticks(baud_idx);
     for w in reps.windows(2) {
         let gap = w[1].at - w[0].end;
-        assert!(gap >= T_TURN, "chain gap {gap} < T_turn {T_TURN}");
+        assert!(gap >= t_turn, "chain gap {gap} < T_turn {t_turn}");
     }
 }
 
-#[test]
-fn gread_list_order_beats_id_order() {
-    let mut sim = Sim::new(RATE);
+#[apply(matrix)]
+fn gread_list_order_beats_id_order(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
     for id in [1u8, 2, 3] {
         sim.add_servo_with(id, 0, CHAIN_DEADLINE_US);
     }
@@ -154,9 +154,9 @@ fn gread_list_order_beats_id_order() {
     );
 }
 
-#[test]
-fn gread_per_target_reads_distinct_spans() {
-    let mut sim = Sim::new(RATE);
+#[apply(matrix)]
+fn gread_per_target_reads_distinct_spans(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
     for id in [1u8, 2, 3] {
         sim.add_servo_with(id, 0, CHAIN_DEADLINE_US);
     }
@@ -189,9 +189,9 @@ fn gread_per_target_reads_distinct_spans() {
     assert_eq!(by_id(3).1, vec![0x44, 0x33, 0x56]);
 }
 
-#[test]
-fn missing_servo_reclaims_with_flag() {
-    let mut sim = Sim::new(RATE);
+#[apply(matrix)]
+fn missing_servo_reclaims_with_flag(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
     // Only 1 and 3 present; 2 is absent from the bus.
     let s1 = sim.add_servo_with(1, 0, CHAIN_DEADLINE_US);
     let s3 = sim.add_servo_with(3, 0, CHAIN_DEADLINE_US);
@@ -229,20 +229,21 @@ fn missing_servo_reclaims_with_flag() {
 
     // Reclaim window: servo 3 fires no earlier than servo 1's end + T_turn +
     // RESPONSE_DEADLINE, and reasonably close to it.
+    let bt = byte_ticks(baud_idx);
     let reclaim = CHAIN_DEADLINE_US as u64 * 48;
-    let floor = r1.end + T_TURN + reclaim;
+    let floor = r1.end + 2 * bt + reclaim;
     assert!(r3.at >= floor, "reclaim too early: {} < {}", r3.at, floor);
     assert!(
-        r3.at <= floor + 8 * BYTE_TICKS,
+        r3.at <= floor + 8 * bt,
         "reclaim not close to window: {} vs {}",
         r3.at,
         floor
     );
 }
 
-#[test]
-fn error_status_keeps_chain_alive() {
-    let mut sim = Sim::new(RATE);
+#[apply(matrix)]
+fn error_status_keeps_chain_alive(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
     for id in [1u8, 2, 3] {
         sim.add_servo_with(id, 0, CHAIN_DEADLINE_US);
     }
@@ -273,9 +274,9 @@ fn error_status_keeps_chain_alive() {
 
 // --- writes (§5) ------------------------------------------------------------
 
-#[test]
-fn gwrite_hold_commit_is_atomic_fleet_update() {
-    let mut sim = Sim::new(RATE);
+#[apply(matrix)]
+fn gwrite_hold_commit_is_atomic_fleet_update(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
     for id in [1u8, 2, 3] {
         sim.add_servo(id);
     }
@@ -319,9 +320,9 @@ fn gwrite_hold_commit_is_atomic_fleet_update() {
     }
 }
 
-#[test]
-fn gwrite_per_target_applies_distinct_fields() {
-    let mut sim = Sim::new(RATE);
+#[apply(matrix)]
+fn gwrite_per_target_applies_distinct_fields(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
     for id in [1u8, 2, 3] {
         sim.add_servo(id);
     }
@@ -357,14 +358,14 @@ fn gwrite_per_target_applies_distinct_fields() {
     );
 }
 
-#[test]
-fn back_to_back_instructions_all_land() {
+#[apply(matrix)]
+fn back_to_back_instructions_all_land(baud_idx: u8) {
     // §7: no inter-frame gap is required. Each unicast WRITE is acked before the
     // next is sent (a plain WRITE's ack shares the half-duplex wire, so the host
     // cannot physically overlap the next frame with the ack); `run` advances the
     // clock past each ack, so the follow-up frame lands right after with no
     // inserted idle gap.
-    let mut sim = Sim::new(RATE);
+    let mut sim = sim(baud_idx);
     sim.add_servo(1);
     let gv: i32 = 0x0AA0_1BB1;
     let mask: u32 = 0x00C0_FFEE;

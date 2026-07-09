@@ -9,6 +9,11 @@ use osc_core::regions::config::addr::comms::{BAUD_RATE_IDX, ID};
 use osc_core::regions::control::addr::lifecycle::TORQUE_ENABLE;
 use osc_integration::sim::{Sim, Source, WireFrame, assert_valid, instruction, status};
 use osc_protocol::wire::{Inst, MgmtOp, Opcode, ResultCode};
+use rstest::rstest;
+use rstest_reuse::apply;
+
+mod support;
+use support::{matrix, sim};
 
 const ID5: u8 = 5;
 
@@ -28,9 +33,9 @@ fn sole_reply(frames: &[WireFrame]) -> &WireFrame {
     replies[0]
 }
 
-#[test]
-fn ping_reports_model_and_fw() {
-    let mut sim = Sim::new(BaudRate::B1000000);
+#[apply(matrix)]
+fn ping_reports_model_and_fw(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
     let s = sim.add_servo(ID5);
 
     sim.host_send(&instruction(ID5, Opcode::Ping, 0, &[]));
@@ -49,9 +54,9 @@ fn ping_reports_model_and_fw() {
     assert_eq!(payload, &[m[0], m[1], fw]);
 }
 
-#[test]
-fn read_returns_table_bytes() {
-    let mut sim = Sim::new(BaudRate::B1000000);
+#[apply(matrix)]
+fn read_returns_table_bytes(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
     let s = sim.add_servo(ID5);
 
     // READ config identity span [0, 4): model(2) + fw(1) + reserved(1).
@@ -70,12 +75,12 @@ fn read_returns_table_bytes() {
     assert_eq!(payload, &[m[0], m[1], fw, 0]);
 }
 
-#[test]
-fn read_front_loaded_reply_matches_and_leaves_table() {
+#[apply(matrix)]
+fn read_front_loaded_reply_matches_and_leaves_table(baud_idx: u8) {
     // A READ is dispatched at covered-complete and CRC-verified at the frame end
     // (the front-loaded path): the reply is byte-identical and the read-only op
     // never touches the table.
-    let mut sim = Sim::new(BaudRate::B1000000);
+    let mut sim = sim(baud_idx);
     let s = sim.add_servo(ID5);
     let before = sim.servo_table(s, |t| t.config.identity.model_number);
 
@@ -94,9 +99,9 @@ fn read_front_loaded_reply_matches_and_leaves_table() {
     );
 }
 
-#[test]
-fn read_count_zero_is_range() {
-    let mut sim = Sim::new(BaudRate::B1000000);
+#[apply(matrix)]
+fn read_count_zero_is_range(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
     sim.add_servo(ID5);
 
     sim.host_send(&instruction(ID5, Opcode::Read, 0, &[0, 0, 0, 0]));
@@ -107,9 +112,9 @@ fn read_count_zero_is_range() {
     assert!(payload.is_empty());
 }
 
-#[test]
-fn read_over_ceiling_is_limit() {
-    let mut sim = Sim::new(BaudRate::B1000000);
+#[apply(matrix)]
+fn read_over_ceiling_is_limit(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
     sim.add_servo(ID5);
 
     // count 253 exceeds the 252 B frame ceiling (§5.1).
@@ -120,9 +125,9 @@ fn read_over_ceiling_is_limit() {
     assert_eq!(inst.result(), Some(ResultCode::Limit));
 }
 
-#[test]
-fn write_acks_and_applies() {
-    let mut sim = Sim::new(BaudRate::B1000000);
+#[apply(matrix)]
+fn write_acks_and_applies(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
     let s = sim.add_servo(ID5);
 
     let a = TORQUE_ENABLE.to_le_bytes();
@@ -135,9 +140,9 @@ fn write_acks_and_applies() {
     assert!(sim.servo_table(s, |t| t.control.lifecycle.torque_enable));
 }
 
-#[test]
-fn write_noreply_is_silent_but_applies() {
-    let mut sim = Sim::new(BaudRate::B1000000);
+#[apply(matrix)]
+fn write_noreply_is_silent_but_applies(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
     let s = sim.add_servo(ID5);
 
     let a = TORQUE_ENABLE.to_le_bytes();
@@ -153,9 +158,9 @@ fn write_noreply_is_silent_but_applies() {
     assert!(sim.servo_table(s, |t| t.control.lifecycle.torque_enable));
 }
 
-#[test]
-fn broadcast_write_is_silent_but_applies() {
-    let mut sim = Sim::new(BaudRate::B1000000);
+#[apply(matrix)]
+fn broadcast_write_is_silent_but_applies(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
     let s = sim.add_servo(ID5);
 
     let a = TORQUE_ENABLE.to_le_bytes();
@@ -166,9 +171,9 @@ fn broadcast_write_is_silent_but_applies() {
     assert!(sim.servo_table(s, |t| t.control.lifecycle.torque_enable));
 }
 
-#[test]
-fn hold_then_commit_applies_atomically() {
-    let mut sim = Sim::new(BaudRate::B1000000);
+#[apply(matrix)]
+fn hold_then_commit_applies_atomically(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
     let s = sim.add_servo(ID5);
     let a = TORQUE_ENABLE.to_le_bytes();
 
@@ -197,12 +202,12 @@ fn hold_then_commit_applies_atomically() {
     assert_eq!(inst.result(), Some(ResultCode::Ok));
 }
 
-#[test]
-fn large_write_stages_and_applies() {
+#[apply(matrix)]
+fn large_write_stages_and_applies(baud_idx: u8) {
     // LEN is the only size limit (§5.1): a >128 B write stages like any other
     // (the buffer fits the largest legal write) and commits at its verdict.
     // Target the calib pot-LUT span (writable, no field rules).
-    let mut sim = Sim::new(BaudRate::B1000000);
+    let mut sim = sim(baud_idx);
     let s = sim.add_servo(ID5);
 
     let mut data = vec![0u8; 130];
@@ -231,9 +236,9 @@ fn large_write_stages_and_applies() {
     assert_eq!((lut0 as u32) & 0xFF, 0xAB, "the >128 B payload landed");
 }
 
-#[test]
-fn mgmt_reboot_acks_then_surfaces() {
-    let mut sim = Sim::new(BaudRate::B1000000);
+#[apply(matrix)]
+fn mgmt_reboot_acks_then_surfaces(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
     let s = sim.add_servo(ID5);
 
     sim.host_send(&instruction(ID5, Opcode::Mgmt, 0, &[MgmtOp::Reboot as u8]));
@@ -245,9 +250,9 @@ fn mgmt_reboot_acks_then_surfaces() {
     assert!(sim.take_reboot(s).is_some());
 }
 
-#[test]
-fn mgmt_save_is_instruction_error() {
-    let mut sim = Sim::new(BaudRate::B1000000);
+#[apply(matrix)]
+fn mgmt_save_is_instruction_error(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
     sim.add_servo(ID5);
 
     // SAVE (§9.4) is not yet implemented → instruction-level rejection.
@@ -258,9 +263,9 @@ fn mgmt_save_is_instruction_error() {
     assert_eq!(inst.result(), Some(ResultCode::Instruction));
 }
 
-#[test]
-fn read_with_profile_flag_is_instruction_error() {
-    let mut sim = Sim::new(BaudRate::B1000000);
+#[apply(matrix)]
+fn read_with_profile_flag_is_instruction_error(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
     sim.add_servo(ID5);
 
     // READ + HOLD names a profile slot (§5.2), deferred → instruction error.
@@ -276,9 +281,9 @@ fn read_with_profile_flag_is_instruction_error() {
     assert_eq!(inst.result(), Some(ResultCode::Instruction));
 }
 
-#[test]
-fn corrupt_crc_gets_no_reply_and_counts() {
-    let mut sim = Sim::new(BaudRate::B1000000);
+#[apply(matrix)]
+fn corrupt_crc_gets_no_reply_and_counts(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
     let s = sim.add_servo(ID5);
 
     let a = TORQUE_ENABLE.to_le_bytes();
@@ -296,9 +301,9 @@ fn corrupt_crc_gets_no_reply_and_counts() {
     assert!(!sim.servo_table(s, |t| t.control.lifecycle.torque_enable));
 }
 
-#[test]
-fn wrong_id_is_ignored() {
-    let mut sim = Sim::new(BaudRate::B1000000);
+#[apply(matrix)]
+fn wrong_id_is_ignored(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
     let s = sim.add_servo(ID5);
 
     // Well-formed frame addressed to id 9; our servo is id 5.
@@ -311,9 +316,9 @@ fn wrong_id_is_ignored() {
     assert_eq!(d.framing_drop_count, 0);
 }
 
-#[test]
-fn alert_bit_mirrors_fault_flags() {
-    let mut sim = Sim::new(BaudRate::B1000000);
+#[apply(matrix)]
+fn alert_bit_mirrors_fault_flags(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
     let s = sim.add_servo(ID5);
 
     sim.servo_table_mut(s, |t| t.telemetry.fault.fault_flags = 1);
@@ -329,9 +334,9 @@ fn alert_bit_mirrors_fault_flags() {
     assert!(!inst.alert());
 }
 
-#[test]
-fn id_change_acks_old_then_answers_new() {
-    let mut sim = Sim::new(BaudRate::B1000000);
+#[apply(matrix)]
+fn id_change_acks_old_then_answers_new(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
     sim.add_servo(ID5);
 
     // WRITE the id field → 7; the ack leaves from the OLD id, then the id lands.
