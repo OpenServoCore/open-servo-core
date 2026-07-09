@@ -19,6 +19,7 @@
 
 mod support;
 
+mod chain;
 mod hot_loop;
 mod ping;
 mod read;

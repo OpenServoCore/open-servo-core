@@ -60,6 +60,11 @@ impl Bench {
         self.id
     }
 
+    /// Pirate timer rate (ticks per µs), for converting `turnaround_ticks`.
+    pub fn hz_per_us(&mut self) -> u32 {
+        self.client.hz_per_us().expect("hz_per_us")
+    }
+
     /// One instruction→status exchange, decoded.
     pub fn xfer(&mut self, wire: &[u8]) -> Result<Exchange> {
         xfer(&mut self.client, wire, SETTLE_MS)
