@@ -274,6 +274,24 @@ fn overlaps(a_lo: usize, a_len: usize, lo: usize, hi: usize) -> bool {
     a_lo < hi && a_lo + a_len > lo
 }
 
+/// Copy every staged entry pushed since `snap` into live storage (out-of-bounds
+/// entries skipped). The caller truncates the buffer afterward per its commit
+/// semantics (`clear` for a full COMMIT, `revert_to(snap)` for a verdict).
+fn apply_from<M: RegisterMap + ?Sized>(m: &M, staged: &StagedWrites, snap: &Snapshot) {
+    let base = m.base();
+    for (addr, data) in staged.iter_from(snap) {
+        let end = addr as usize + data.len();
+        if end > M::SIZE {
+            continue;
+        }
+        // SAFETY: bounds guarded above; the caller upholds RegisterMap's
+        // single-writer contract.
+        unsafe {
+            core::ptr::copy_nonoverlapping(data.as_ptr(), base.add(addr as usize), data.len());
+        }
+    }
+}
+
 /// Extension surface over a `RegisterMap`: memory-like `read`/`write` plus the
 /// staged (RegWrite) flow. Blanket-implemented for every map.
 pub trait RegisterFile: RegisterMap {
@@ -333,18 +351,7 @@ pub trait RegisterFile: RegisterMap {
     }
 
     fn commit_staged(&self, staged: &mut StagedWrites) {
-        let base = self.base();
-        for (addr, data) in staged.iter_from(&Snapshot::ZERO) {
-            let end = addr as usize + data.len();
-            if end > Self::SIZE {
-                continue;
-            }
-            // SAFETY: bounds guarded above; the caller upholds RegisterMap's
-            // single-writer contract.
-            unsafe {
-                core::ptr::copy_nonoverlapping(data.as_ptr(), base.add(addr as usize), data.len());
-            }
-        }
+        apply_from(self, staged, &Snapshot::ZERO);
         staged.clear();
     }
 
@@ -352,18 +359,7 @@ pub trait RegisterFile: RegisterMap {
     /// to it — a pending write's verdict commit, leaving any pre-`snap` HOLD
     /// entries intact for a later real COMMIT.
     fn commit_from(&self, staged: &mut StagedWrites, snap: &Snapshot) {
-        let base = self.base();
-        for (addr, data) in staged.iter_from(snap) {
-            let end = addr as usize + data.len();
-            if end > Self::SIZE {
-                continue;
-            }
-            // SAFETY: bounds guarded above; the caller upholds RegisterMap's
-            // single-writer contract.
-            unsafe {
-                core::ptr::copy_nonoverlapping(data.as_ptr(), base.add(addr as usize), data.len());
-            }
-        }
+        apply_from(self, staged, snap);
         staged.revert_to(snap);
     }
 }
