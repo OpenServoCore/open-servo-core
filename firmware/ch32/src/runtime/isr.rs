@@ -14,94 +14,7 @@ use crate::runtime::statics::{KERNEL, SESSION, SHARED};
 /// composite serializes — dispatch runs inline on these vectors. LOW holds
 /// only the motor kernel (DMA1_CH1 = 22), which HIGH preempts and which runs
 /// in the wire gaps between frames. DMA1_CH5 (RX ring) runs silent circular —
-/// no HT/TC IRQ — and CH4/CH3 raise none either. Bound on the FE→DMA settle
-/// spin: the RXNE→ring DMA write is ~10 AHB cycles; 64 spins is orders of
-/// magnitude past it while staying sub-µs.
-const FE_DMA_SETTLE_SPINS: u32 = 64;
-
-/// RX-error flag discipline. FE/ORE/NE/PE are RO, cleared only by the
-/// SR-read-then-DR-read sequence — and a CPU DR read mid-stream races the
-/// RX-DMA drain: landing between a byte's completion and its ~10-cycle
-/// drain steals the byte from the ring (bench 2026-07-08: burst writes
-/// lost single bytes to the FE clear, structurally correlated with
-/// HIGH-body FE lag; write-0 to STATR is disproven — the flags storm).
-/// So the error vector never reads DR. Its entry STATR read arms the
-/// sequence and the stream's own next drain completes it in hardware;
-/// EIE is masked meanwhile so the still-set flag doesn't storm, and
-/// [`maintain_rx_flags`] (every HIGH wake) unmasks once the flags read
-/// clean — or CPU-clears in a provably quiet window: our reply streaming
-/// (host contractually silent + HDSEL no self-echo), or the cursor idle
-/// past [`RX_FLAG_IDLE_CLEAR_TICKS`] (no completion for over a byte-time;
-/// the residual — a resuming host's first byte completing within the
-/// read's ~2 cycles — merges into the dead-transmitter giveup contract).
-/// Break delivery is not framing truth (A2): an FE masked through this
-/// window surfaces as ring data and resolves on the fast path.
-struct RxFlagPark {
-    masked: bool,
-    seen_cursor: u16,
-    idle_since: u32,
-}
-
-static RX_FLAG_PARK: core::cell::SyncUnsafeCell<RxFlagPark> =
-    core::cell::SyncUnsafeCell::new(RxFlagPark {
-        masked: false,
-        seen_cursor: 0,
-        idle_since: 0,
-    });
-
-/// Two byte-times at the 500k rescue floor, with margin: any byte in
-/// flight when the window opened has long completed (and drained) by the
-/// time it fires.
-const RX_FLAG_IDLE_CLEAR_TICKS: u32 = 2400;
-
-fn rx_cursor() -> u16 {
-    512 - crate::hal::dma::remaining(crate::hal::dma::Channel::CH5)
-}
-
-/// Park a still-set error flag: mask EIE (no storm) and let the stream's
-/// next DMA drain complete the clear armed by the caller's STATR read.
-/// HIGH-serialized with `maintain_rx_flags` (USART1 + SysTick share the
-/// class).
-fn park_rx_flags() {
-    // SAFETY: HIGH-exclusive state, see above.
-    let p = unsafe { &mut *RX_FLAG_PARK.get() };
-    usart::set_eie(USART1, false);
-    p.masked = true;
-    p.seen_cursor = rx_cursor();
-    p.idle_since = crate::hal::systick::ticks();
-}
-
-/// Unmask parked RX-error flags once the stream (or a quiet-window CPU
-/// clear) has cleared them. Runs at every HIGH transport wake.
-fn maintain_rx_flags() {
-    // SAFETY: HIGH-exclusive state, see above.
-    let p = unsafe { &mut *RX_FLAG_PARK.get() };
-    if !p.masked {
-        return;
-    }
-    // This STATR read doubles as the SR half for any flag set since the
-    // last one — the next drain then clears it without CPU help.
-    let errs = usart::rx_errors(USART1);
-    if !(errs.fe || errs.ore || errs.pe || errs.ne) {
-        usart::set_eie(USART1, true);
-        p.masked = false;
-        return;
-    }
-    let cursor = rx_cursor();
-    let now = crate::hal::systick::ticks();
-    if cursor != p.seen_cursor {
-        // Stream alive: its next drain completes the armed clear.
-        p.seen_cursor = cursor;
-        p.idle_since = now;
-        return;
-    }
-    if usart::is_tcie(USART1) || now.wrapping_sub(p.idle_since) >= RX_FLAG_IDLE_CLEAR_TICKS {
-        // Provably quiet wire — the DR read cannot meet an undrained byte.
-        usart::clear_rx_errors(USART1);
-        usart::set_eie(USART1, true);
-        p.masked = false;
-    }
-}
+/// no HT/TC IRQ — and CH4/CH3 raise none either.
 
 pub fn install_irqs() {
     pfic::set_priority(pfic::Interrupt::USART1, pfic::Priority::High);
@@ -182,49 +95,31 @@ pub fn on_adc_dma_tc() {
 /// off the RX-error read, then the TC branch does release work first.
 pub fn on_usart1() {
     crate::log::trace!("usart1 isr");
-    maintain_rx_flags();
     // (a) RX errors: a break (or mid-frame garble) → the framer anchors on
-    // the just-ringed 0x00 (F2: the DMA write beats the ISR). The IRQ is
-    // the break signal, NOT the flags: with RX-DMA, the hardware's SR→DR
-    // clear sequence can complete between the IRQ pend and this read (the
-    // DMA's DR drain is the DR half), leaving STATR clean — bench: gating
-    // on FE went deaf on every other exchange, entry seen with STATR=0xC0.
-    // This vector has exactly two sources (EIE errors, gated TC), so any
-    // non-TC entry is an RX error whether or not its flags survived.
+    // the just-ringed 0x00. The RX drain outranks every other DMA channel
+    // (see `hal::dma`) and the arbiter preempts per-beat, so the break byte is
+    // in the ring before this vector enters — no FE-before-its-byte window
+    // (bringup `rx_dma_drain_latency`: 0 RXNE-set-at-entry once RX owns the
+    // top). The IRQ is the break signal, NOT the flags: the hardware SR→DR
+    // clear can complete between the pend and this read (the DMA drain is the
+    // DR half), leaving STATR clean, so any non-TC entry is an RX error
+    // whether or not its flags survived.
     let errs = usart::rx_errors(USART1);
     let any_err = errs.fe || errs.ore || errs.pe || errs.ne;
     let tc = usart::is_tcie(USART1) && usart::is_tc(USART1);
     if any_err || !tc {
-        // CPU DR-read steal from a hardware drain-stall overrun.
-        // The ERR interrupt can beat the DMA drain: at entry the break's
-        // 0x00 may still sit in DR (RXNE set), so the ring cursor hasn't
-        // counted it yet — and the framer's anchor would land one byte
-        // early (bench-observed: every header read as [stale, 00, ID, LEN]
-        // → BadId). Wait, bounded, for the DMA to take the byte before the
-        // driver samples the cursor.
-        let mut settle = FE_DMA_SETTLE_SPINS;
-        while usart::is_rxne(USART1) && settle > 0 {
-            settle -= 1;
-            core::hint::spin_loop();
-        }
-        if any_err {
-            // NEVER clear here: the SR-then-DR sequence's DR read races the
-            // RX-DMA drain, and mid-stream it steals in-flight bytes from
-            // the ring (bench 2026-07-08: a burst write's LEN/CRC byte lost
-            // to the FE clear, structurally aligned by HIGH-body FE lag —
-            // zero counters, stale replies). Park the flag instead: the
-            // entry STATR read above armed the sequence, so the stream's
-            // own next drain completes the clear in hardware;
-            // `maintain_rx_flags` unmasks at the next wake, or CPU-clears
-            // only in a provably quiet window.
-            park_rx_flags();
-        }
         // A2: the break handler resolves complete frames from ring data in
         // place, so it carries the (lazy) HIGH dispatcher like the deadline
         // body.
         let mut dispatcher = HighDispatcher;
         // SAFETY: see fn doc.
         unsafe { Drivers::bus() }.on_break(&mut dispatcher);
+        if any_err {
+            // SR-then-DR is the only V006 error clear. The RX drain already
+            // took the ring byte (it outranks all DMA), so this DR read reads
+            // stale data and cannot steal an in-flight byte.
+            usart::clear_rx_errors(USART1);
+        }
     }
 
     // (b) TC: an armed TX arm drained (shifter empty). TCIE gates arbitration
@@ -252,7 +147,6 @@ pub fn on_usart1() {
 pub fn on_deadline_irq() {
     crate::log::trace!("deadline isr");
     crate::hal::systick::clear_match();
-    maintain_rx_flags();
     let mut dispatcher = HighDispatcher;
     // SAFETY: see fn doc.
     unsafe { Drivers::bus() }.on_deadline(&mut dispatcher);
