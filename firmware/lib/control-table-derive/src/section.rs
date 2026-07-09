@@ -14,7 +14,7 @@ struct SectionAttrs {
 pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let struct_ty = &input.ident;
 
-    check_repr(&input.attrs, struct_ty.span())?;
+    crate::common::check_repr(&input.attrs, struct_ty.span(), "Section")?;
 
     let Data::Struct(s) = &input.data else {
         return Err(syn::Error::new(
@@ -59,7 +59,7 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         new_inits.push(quote!(#name: #init));
         size_terms.push(quote!(::core::mem::size_of::<#ty>()));
 
-        if parse_field_skip(&field.attrs)? {
+        if crate::common::parse_field_skip(&field.attrs, "ct_section")? {
             continue;
         }
         block_ty_idents.push(block_type_ident(ty)?);
@@ -79,64 +79,34 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     // Blocks in declaration order (= address order): preserves the old
     // sorted-by-offset first-failure precedence. Only `addr` is rebased into
     // table-absolute form; register-RHS `val` addrs are already absolute.
+    let rebase_rule = |src: TokenStream2, base_expr: &TokenStream2| {
+        crate::common::fill_loop(
+            src,
+            quote!(let base = #base_expr;),
+            quote!(let mut r = src[i]; r.addr += base; out[__n] = r;),
+        )
+    };
     let cmp_copy: Vec<TokenStream2> = block_tys
         .iter()
         .zip(&base_exprs)
-        .map(|(ty, base_expr)| {
-            quote! {
-                {
-                    let src = <#ty>::CT_CMP_RULES;
-                    let base = #base_expr;
-                    let mut i = 0;
-                    while i < src.len() {
-                        let mut r = src[i];
-                        r.addr += base;
-                        out[__n] = r;
-                        __n += 1;
-                        i += 1;
-                    }
-                }
-            }
-        })
+        .map(|(ty, base_expr)| rebase_rule(quote!(<#ty>::CT_CMP_RULES), base_expr))
         .collect();
 
     let allowed_copy: Vec<TokenStream2> = block_tys
         .iter()
         .zip(&base_exprs)
-        .map(|(ty, base_expr)| {
-            quote! {
-                {
-                    let src = <#ty>::CT_ALLOWED_RULES;
-                    let base = #base_expr;
-                    let mut i = 0;
-                    while i < src.len() {
-                        let mut r = src[i];
-                        r.addr += base;
-                        out[__n] = r;
-                        __n += 1;
-                        i += 1;
-                    }
-                }
-            }
-        })
+        .map(|(ty, base_expr)| rebase_rule(quote!(<#ty>::CT_ALLOWED_RULES), base_expr))
         .collect();
 
     let writable_copy: Vec<TokenStream2> = block_tys
         .iter()
         .zip(&base_exprs)
         .map(|(ty, base_expr)| {
-            quote! {
-                {
-                    let src = <#ty>::CT_WRITABLE;
-                    let base = #base_expr;
-                    let mut i = 0;
-                    while i < src.len() {
-                        out[__n] = (src[i].0 + base, src[i].1);
-                        __n += 1;
-                        i += 1;
-                    }
-                }
-            }
+            crate::common::fill_loop(
+                quote!(<#ty>::CT_WRITABLE),
+                quote!(let base = #base_expr;),
+                quote!(out[__n] = (src[i].0 + base, src[i].1);),
+            )
         })
         .collect();
 
@@ -149,8 +119,10 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         .iter()
         .zip(&block_ty_idents)
         .map(|(name, block_ty_ident)| {
-            let meta_macro =
-                Ident::new(&flat_meta_macro_name(block_ty_ident), block_ty_ident.span());
+            let meta_macro = Ident::new(
+                &crate::common::flat_meta_macro_name(block_ty_ident),
+                block_ty_ident.span(),
+            );
             quote! {
                 #[allow(dead_code)]
                 pub mod #name {
@@ -174,10 +146,7 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         })
         .collect();
 
-    let where_clause = match &hooks_bound {
-        Some(path) => quote!(where H: #path),
-        None => quote!(),
-    };
+    let where_clause = crate::common::hooks_where_clause(&hooks_bound);
     let dispatch_args = if dispatch_calls.is_empty() {
         quote!(_abs_addr: u16, _len: u16, _hooks: &mut H)
     } else {
@@ -247,40 +216,6 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     })
 }
 
-fn check_repr(attrs: &[Attribute], struct_span: proc_macro2::Span) -> syn::Result<()> {
-    let mut has_c = false;
-    for a in attrs {
-        if !a.path().is_ident("repr") {
-            continue;
-        }
-        a.parse_nested_meta(|m| {
-            if m.path.is_ident("C") {
-                has_c = true;
-                Ok(())
-            } else if m.path.is_ident("packed") {
-                if m.input.peek(syn::token::Paren) {
-                    let _: proc_macro2::Group = m.input.parse()?;
-                }
-                Err(m.error("Section derive forbids #[repr(packed)] (unaligned reads + offset_of are unsound)"))
-            } else if m.path.is_ident("align") {
-                if m.input.peek(syn::token::Paren) {
-                    let _: proc_macro2::Group = m.input.parse()?;
-                }
-                Ok(())
-            } else {
-                Err(m.error("Section derive requires #[repr(C)] and forbids alternate reprs"))
-            }
-        })?;
-    }
-    if !has_c {
-        return Err(syn::Error::new(
-            struct_span,
-            "Section derive requires #[repr(C)]",
-        ));
-    }
-    Ok(())
-}
-
 fn parse_section_attrs(attrs: &[Attribute]) -> syn::Result<SectionAttrs> {
     let mut out = SectionAttrs::default();
     for attr in attrs {
@@ -314,27 +249,6 @@ fn parse_section_attrs(attrs: &[Attribute]) -> syn::Result<SectionAttrs> {
     Ok(out)
 }
 
-fn parse_field_skip(attrs: &[Attribute]) -> syn::Result<bool> {
-    let mut skip = false;
-    for attr in attrs {
-        if !attr.path().is_ident("ct_section") {
-            continue;
-        }
-        if matches!(attr.meta, syn::Meta::Path(_)) {
-            continue;
-        }
-        attr.parse_nested_meta(|m| {
-            if m.path.is_ident("skip") {
-                skip = true;
-                Ok(())
-            } else {
-                Err(m.error("unknown ct_section field key (expected `skip`)"))
-            }
-        })?;
-    }
-    Ok(skip)
-}
-
 fn block_type_ident(ty: &Type) -> syn::Result<&Ident> {
     let Type::Path(TypePath { qself: None, path }) = ty else {
         return Err(syn::Error::new(
@@ -347,13 +261,4 @@ fn block_type_ident(ty: &Type) -> syn::Result<&Ident> {
         .last()
         .ok_or_else(|| syn::Error::new(ty.span(), "Section field type has empty path"))?;
     Ok(&last.ident)
-}
-
-/// Recomputes `block.rs`'s `__flat_meta_<crate>_<Block>` macro name so the
-/// Section can invoke each block's addr-const macro. Both derives run in the
-/// consumer's compilation, so `CARGO_CRATE_NAME` matches.
-fn flat_meta_macro_name(struct_ty: &Ident) -> String {
-    let crate_name = std::env::var("CARGO_CRATE_NAME").unwrap_or_default();
-    let crate_part = crate_name.replace('-', "_");
-    format!("__flat_meta_{crate_part}_{struct_ty}")
 }

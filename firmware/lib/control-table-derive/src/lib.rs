@@ -2,6 +2,7 @@ use proc_macro::TokenStream;
 use syn::{DeriveInput, parse_macro_input};
 
 mod block;
+mod common;
 mod enums;
 mod section;
 mod table;

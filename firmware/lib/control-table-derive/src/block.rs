@@ -65,7 +65,7 @@ struct HookBinding<'a> {
 pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let struct_ty = &input.ident;
 
-    check_repr(&input.attrs, struct_ty.span())?;
+    crate::common::check_repr(&input.attrs, struct_ty.span(), "Block")?;
 
     let Data::Struct(s) = &input.data else {
         return Err(syn::Error::new(
@@ -160,7 +160,10 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let n_writable = writable.len();
     let n_cmp = cmp_rules.len();
     let n_allowed = allowed_rules.len();
-    let meta_macro = Ident::new(&flat_meta_macro_name(struct_ty), struct_ty.span());
+    let meta_macro = Ident::new(
+        &crate::common::flat_meta_macro_name(struct_ty),
+        struct_ty.span(),
+    );
     let hooks_emit = build_hooks_emit(struct_ty, &hook_bindings);
 
     Ok(quote! {
@@ -300,40 +303,6 @@ fn resolve_hook_path(hook: &Path, block_trait: Option<&Path>) -> syn::Result<(Pa
         })?;
         Ok((trait_path.clone(), method_ident))
     }
-}
-
-fn check_repr(attrs: &[Attribute], struct_span: proc_macro2::Span) -> syn::Result<()> {
-    let mut has_c = false;
-    for a in attrs {
-        if !a.path().is_ident("repr") {
-            continue;
-        }
-        a.parse_nested_meta(|m| {
-            if m.path.is_ident("C") {
-                has_c = true;
-                Ok(())
-            } else if m.path.is_ident("packed") {
-                if m.input.peek(syn::token::Paren) {
-                    let _: proc_macro2::Group = m.input.parse()?;
-                }
-                Err(m.error("Block derive forbids #[repr(packed)] (unaligned reads + offset_of are unsound)"))
-            } else if m.path.is_ident("align") {
-                if m.input.peek(syn::token::Paren) {
-                    let _: proc_macro2::Group = m.input.parse()?;
-                }
-                Ok(())
-            } else {
-                Err(m.error("Block derive requires #[repr(C)] and forbids alternate reprs"))
-            }
-        })?;
-    }
-    if !has_c {
-        return Err(syn::Error::new(
-            struct_span,
-            "Block derive requires #[repr(C)]",
-        ));
-    }
-    Ok(())
 }
 
 fn parse_block_attrs(attrs: &[Attribute]) -> syn::Result<Option<Path>> {
@@ -486,15 +455,6 @@ fn build_rule_val(expr: &Expr) -> (bool, TokenStream2) {
     } else {
         (false, quote!(((#expr) as i32) as u32))
     }
-}
-
-/// `__flat_meta_<crate>_<Block>` — the `<crate>` prefix prevents name collisions
-/// at the consumer's crate root when two crates each derive a block with the
-/// same name. The Section derive must compute the same name for its invocation.
-fn flat_meta_macro_name(struct_ty: &Ident) -> String {
-    let crate_name = std::env::var("CARGO_CRATE_NAME").unwrap_or_default();
-    let crate_part = crate_name.replace('-', "_");
-    format!("__flat_meta_{crate_part}_{struct_ty}")
 }
 
 /// Type-driven default for the auto-emitted `new()`. Primitives get their

@@ -12,7 +12,7 @@ struct TableAttrs {
 pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let table_ty = &input.ident;
 
-    check_repr(&input.attrs, table_ty.span())?;
+    crate::common::check_repr(&input.attrs, table_ty.span(), "Table")?;
 
     let Data::Struct(s) = &input.data else {
         return Err(syn::Error::new(
@@ -47,7 +47,7 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         new_inits.push(quote!(#name: #init));
         size_terms.push(quote!(::core::mem::size_of::<#ty>()));
 
-        if parse_field_skip(&field.attrs)? {
+        if crate::common::parse_field_skip(&field.attrs, "ct_table")? {
             continue;
         }
         sec_tys.push(ty);
@@ -110,34 +110,22 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let cmp_fill: Vec<TokenStream2> = sec_tys
         .iter()
         .map(|ty| {
-            quote! {
-                {
-                    let src = <#ty>::CT_CMP_RULES_ABS;
-                    let mut i = 0;
-                    while i < src.len() {
-                        out[__n] = src[i];
-                        __n += 1;
-                        i += 1;
-                    }
-                }
-            }
+            crate::common::fill_loop(
+                quote!(<#ty>::CT_CMP_RULES_ABS),
+                quote!(),
+                quote!(out[__n] = src[i];),
+            )
         })
         .collect();
 
     let allowed_fill: Vec<TokenStream2> = sec_tys
         .iter()
         .map(|ty| {
-            quote! {
-                {
-                    let src = <#ty>::CT_ALLOWED_RULES_ABS;
-                    let mut i = 0;
-                    while i < src.len() {
-                        out[__n] = src[i];
-                        __n += 1;
-                        i += 1;
-                    }
-                }
-            }
+            crate::common::fill_loop(
+                quote!(<#ty>::CT_ALLOWED_RULES_ABS),
+                quote!(),
+                quote!(out[__n] = src[i];),
+            )
         })
         .collect();
 
@@ -169,10 +157,7 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         .map(|ty| quote!((<#ty>::BASE, <#ty>::SECTION_SIZE)))
         .collect();
 
-    let where_clause = match &hooks_bound {
-        Some(path) => quote!(where H: #path),
-        None => quote!(),
-    };
+    let where_clause = crate::common::hooks_where_clause(&hooks_bound);
     let dispatch_args = if dispatch_calls.is_empty() {
         quote!(_abs_addr: u16, _len: u16, _hooks: &mut H)
     } else {
@@ -322,40 +307,6 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     })
 }
 
-fn check_repr(attrs: &[Attribute], struct_span: proc_macro2::Span) -> syn::Result<()> {
-    let mut has_c = false;
-    for a in attrs {
-        if !a.path().is_ident("repr") {
-            continue;
-        }
-        a.parse_nested_meta(|m| {
-            if m.path.is_ident("C") {
-                has_c = true;
-                Ok(())
-            } else if m.path.is_ident("packed") {
-                if m.input.peek(syn::token::Paren) {
-                    let _: proc_macro2::Group = m.input.parse()?;
-                }
-                Err(m.error("Table derive forbids #[repr(packed)] (unaligned reads + offset_of are unsound)"))
-            } else if m.path.is_ident("align") {
-                if m.input.peek(syn::token::Paren) {
-                    let _: proc_macro2::Group = m.input.parse()?;
-                }
-                Ok(())
-            } else {
-                Err(m.error("Table derive requires #[repr(C)] and forbids alternate reprs"))
-            }
-        })?;
-    }
-    if !has_c {
-        return Err(syn::Error::new(
-            struct_span,
-            "Table derive requires #[repr(C)]",
-        ));
-    }
-    Ok(())
-}
-
 fn parse_table_attrs(attrs: &[Attribute]) -> syn::Result<TableAttrs> {
     let mut out = TableAttrs::default();
     for attr in attrs {
@@ -378,25 +329,4 @@ fn parse_table_attrs(attrs: &[Attribute]) -> syn::Result<TableAttrs> {
         })?;
     }
     Ok(out)
-}
-
-fn parse_field_skip(attrs: &[Attribute]) -> syn::Result<bool> {
-    let mut skip = false;
-    for attr in attrs {
-        if !attr.path().is_ident("ct_table") {
-            continue;
-        }
-        if matches!(attr.meta, syn::Meta::Path(_)) {
-            continue;
-        }
-        attr.parse_nested_meta(|m| {
-            if m.path.is_ident("skip") {
-                skip = true;
-                Ok(())
-            } else {
-                Err(m.error("unknown ct_table field key (expected `skip`)"))
-            }
-        })?;
-    }
-    Ok(skip)
 }
