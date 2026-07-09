@@ -19,6 +19,7 @@
 
 mod support;
 
+mod hot_loop;
 mod ping;
 mod read;
 mod reg_write_action;

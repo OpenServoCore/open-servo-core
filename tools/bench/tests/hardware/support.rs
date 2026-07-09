@@ -15,7 +15,7 @@ use anyhow::Result;
 use bench::BOOT_BAUD;
 use bench::osc::{Exchange, ExchangeError, StatusFrame, parse_exchange};
 use bench::pirate::{Client, auto_detect_pirate};
-use bench::run::{Report, capture, measure, xfer};
+use bench::run::{BurstCycle, BurstReport, Report, burst_measure, capture, measure, xfer};
 use osc_protocol::wire::ResultCode;
 
 /// Settle window per exchange (ms): covers the reply's wire time + servo latency
@@ -97,5 +97,11 @@ impl Bench {
             }
             Ok(())
         })
+    }
+
+    /// Zero-gap burst run: `count` cycles of `build`, tallied by silicon failure
+    /// mode (delegates to `run::burst_measure`).
+    pub fn burst(&mut self, count: u32, build: impl Fn(i32) -> BurstCycle) -> BurstReport {
+        burst_measure(&mut self.client, count, SETTLE_MS, false, build).expect("burst")
     }
 }

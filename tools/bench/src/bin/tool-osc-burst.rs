@@ -11,16 +11,20 @@
 //! (missed write/commit) or a missing reply (missed read) — plus whatever the
 //! servo's crc/drop counters say via wlink.
 //!
-//! The cycle loop, failure classification, and turnaround tally live in
-//! [`bench::run::burst_measure_observed`]; the asserting bench test
-//! (`tests/hardware/hot_loop.rs`) drives the same engine so the two can't drift.
+//! The cycle scenarios, loop, classification, and turnaround tally live in
+//! [`bench::run`]; the asserting bench test (`tests/hardware/hot_loop.rs`) drives
+//! the same [`hot_loop_cycle`]/[`plain_flood_cycle`] builders so the two can't
+//! drift. The extra probe flags below stay tool-only forensics.
 
 use std::time::Duration;
 
 use anyhow::{Result, bail};
-use bench::osc::build_instruction;
+use bench::osc::{build_instruction, build_read, gread_uniform_payload, gwrite_uniform_payload};
 use bench::pirate::{BStamp, Client, auto_detect_pirate};
-use bench::run::{BurstCycle, CycleObservation, CycleOutcome, Stats, burst_measure_observed};
+use bench::run::{
+    BurstCycle, CycleObservation, CycleOutcome, Stats, burst_measure_observed, hot_loop_cycle,
+    plain_flood_cycle,
+};
 use clap::Parser;
 use osc_protocol::wire::{Inst, Opcode};
 
@@ -28,6 +32,8 @@ use osc_protocol::wire::{Inst, Opcode};
 /// its soft-limit rules make commit the representative worst-case work.
 const GOAL_POSITION_ADDR: u16 = 0x0184;
 const BCAST: u8 = 0xFE;
+/// goal_position width (i32), the GREAD/READ span these cycles read back.
+const GOAL_LEN: u16 = 4;
 
 #[derive(Parser, Debug)]
 #[command(about = "Bombard a servo with zero-gap frame bursts and verify read-back.")]
@@ -75,91 +81,34 @@ struct Args {
     commit_read: bool,
 }
 
-fn gwrite_uniform(addr: u16, id: u8, data: &[u8]) -> Vec<u8> {
-    let mut p = Vec::new();
-    p.extend_from_slice(&addr.to_le_bytes());
-    p.push(data.len() as u8);
-    p.push(id);
-    p.extend_from_slice(data);
-    p
-}
-
-fn gread_uniform(addr: u16, count: u16, ids: &[u8]) -> Vec<u8> {
-    let mut p = Vec::new();
-    p.extend_from_slice(&addr.to_le_bytes());
-    p.extend_from_slice(&count.to_le_bytes());
-    p.extend_from_slice(ids);
-    p
-}
-
-/// One hot-loop cycle: GWRITE(HOLD) + COMMIT + GREAD, zero gap.
-fn hot_loop_burst(id: u8, v: i32) -> (Vec<Vec<u8>>, Vec<u8>) {
-    let gwrite = build_instruction(
-        BCAST,
-        Opcode::Gwrite,
-        Inst::FLAG_HOLD,
-        &gwrite_uniform(GOAL_POSITION_ADDR, id, &v.to_le_bytes()),
-    );
-    let commit = build_instruction(BCAST, Opcode::Commit, 0, &[]);
-    let gread = build_instruction(
-        BCAST,
-        Opcode::Gread,
-        0,
-        &gread_uniform(GOAL_POSITION_ADDR, 4, &[id]),
-    );
-    (vec![gwrite, commit, gread.clone()], gread)
-}
-
-/// One plain cycle: WRITE(NOREPLY) × n with distinct values (last = `v`),
-/// then READ, zero gap.
-fn plain_burst(id: u8, n: u32, v: i32) -> (Vec<Vec<u8>>, Vec<u8>) {
-    let a = GOAL_POSITION_ADDR.to_le_bytes();
-    let mut frames = Vec::new();
-    for k in 0..n {
-        // Earlier writes count down toward `v` so every frame is distinct
-        // and the final table value is `v` exactly.
-        let val = v - (n - 1 - k) as i32;
-        let d = val.to_le_bytes();
-        let mut p = vec![a[0], a[1]];
-        p.extend_from_slice(&d);
-        frames.push(build_instruction(id, Opcode::Write, Inst::FLAG_NOREPLY, &p));
-    }
-    let read = build_instruction(id, Opcode::Read, 0, &[a[0], a[1], 4, 0]);
-    frames.push(read.clone());
-    (frames, read)
-}
-
-/// Build one cycle for `value`, dispatched by the mode flags.
+/// Build one cycle for `value`, dispatched by the mode flags. The default and
+/// `--plain` paths delegate to the shared scenario builders (also driven by the
+/// bench test); the rest are tool-only forensic isolations.
 fn cycle_for(args: &Args, value: i32) -> BurstCycle {
-    let a = GOAL_POSITION_ADDR.to_le_bytes();
-    let checked = Some(value.to_le_bytes().to_vec());
+    let addr = GOAL_POSITION_ADDR;
     if args.plain {
-        let (frames, last) = plain_burst(args.id, args.writes.max(1), value);
-        BurstCycle {
-            frames,
-            last,
-            expect: checked,
-        }
+        plain_flood_cycle(args.id, addr, args.writes, value)
     } else if args.gread_only {
-        let g = build_instruction(
+        let gread = build_instruction(
             BCAST,
             Opcode::Gread,
             0,
-            &gread_uniform(GOAL_POSITION_ADDR, 4, &[args.id]),
+            &gread_uniform_payload(addr, GOAL_LEN, &[args.id]),
         );
         BurstCycle {
-            frames: vec![g.clone()],
-            last: g,
+            frames: vec![gread.clone()],
+            last: gread,
             expect: None,
         }
     } else if args.no_commit {
+        let data = value.to_le_bytes();
         let gwrite = build_instruction(
             BCAST,
             Opcode::Gwrite,
             Inst::FLAG_HOLD,
-            &gwrite_uniform(GOAL_POSITION_ADDR, args.id, &value.to_le_bytes()),
+            &gwrite_uniform_payload(addr, &[(args.id, &data)]),
         );
-        let read = build_instruction(args.id, Opcode::Read, 0, &[a[0], a[1], 4, 0]);
+        let read = build_read(args.id, addr, GOAL_LEN);
         BurstCycle {
             frames: vec![gwrite, read.clone()],
             last: read,
@@ -167,29 +116,22 @@ fn cycle_for(args: &Args, value: i32) -> BurstCycle {
         }
     } else if args.commit_read {
         let commit = build_instruction(BCAST, Opcode::Commit, 0, &[]);
-        let read = build_instruction(args.id, Opcode::Read, 0, &[a[0], a[1], 4, 0]);
+        let read = build_read(args.id, addr, GOAL_LEN);
         BurstCycle {
             frames: vec![commit, read.clone()],
             last: read,
             expect: None,
         }
     } else if args.no_gread {
-        let (mut frames, _) = hot_loop_burst(args.id, value);
-        let read = build_instruction(args.id, Opcode::Read, 0, &[a[0], a[1], 4, 0]);
-        frames.pop();
-        frames.push(read.clone());
-        BurstCycle {
-            frames,
-            last: read,
-            expect: checked,
-        }
+        // The hot loop with its GREAD swapped for a plain READ (isolates GREAD).
+        let mut c = hot_loop_cycle(args.id, addr, value);
+        c.frames.pop();
+        let read = build_read(args.id, addr, GOAL_LEN);
+        c.frames.push(read.clone());
+        c.last = read;
+        c
     } else {
-        let (frames, last) = hot_loop_burst(args.id, value);
-        BurstCycle {
-            frames,
-            last,
-            expect: checked,
-        }
+        hot_loop_cycle(args.id, addr, value)
     }
 }
 

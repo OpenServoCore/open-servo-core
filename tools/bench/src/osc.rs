@@ -57,6 +57,31 @@ pub fn build_write(id: u8, addr: u16, data: &[u8]) -> Vec<u8> {
     build_instruction(id, Opcode::Write, 0, &payload)
 }
 
+/// Uniform GWRITE payload: `addr(2) count(1) [id(1) data(count)]×`, every target
+/// sharing `data.len()` (mirrors `osc_protocol::group::GwriteUniform`). `count`
+/// is taken from the first entry.
+pub fn gwrite_uniform_payload(addr: u16, entries: &[(u8, &[u8])]) -> Vec<u8> {
+    let count = entries.first().map_or(0, |(_, data)| data.len());
+    let mut p = Vec::with_capacity(3 + entries.len() * (1 + count));
+    p.extend_from_slice(&addr.to_le_bytes());
+    p.push(count as u8);
+    for (id, data) in entries {
+        p.push(*id);
+        p.extend_from_slice(data);
+    }
+    p
+}
+
+/// Uniform GREAD payload: `addr(2) count(2) id-list` — one span, many servos
+/// (mirrors `osc_protocol::group::GreadUniform`).
+pub fn gread_uniform_payload(addr: u16, count: u16, ids: &[u8]) -> Vec<u8> {
+    let mut p = Vec::with_capacity(4 + ids.len());
+    p.extend_from_slice(&addr.to_le_bytes());
+    p.extend_from_slice(&count.to_le_bytes());
+    p.extend_from_slice(ids);
+    p
+}
+
 /// A decoded status frame. `payload` excludes the PAD byte.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StatusFrame {
@@ -184,6 +209,20 @@ mod tests {
     fn build_ping_matches_wire_vector() {
         // CRC-16/ARC over `01 03 10` = 0xFC50 (osc-native-protocol.md §3.2).
         assert_eq!(build_ping(1), [0x01, 0x03, 0x10, 0x50, 0xFC]);
+    }
+
+    #[test]
+    fn gwrite_uniform_payload_layout() {
+        // addr 0x0184, one target id=1, data = 10i32 LE.
+        let p = gwrite_uniform_payload(0x0184, &[(1, &10i32.to_le_bytes())]);
+        assert_eq!(p, [0x84, 0x01, 4, 1, 10, 0, 0, 0]);
+    }
+
+    #[test]
+    fn gread_uniform_payload_layout() {
+        // addr 0x0184, span 4 bytes, ids [1, 2].
+        let p = gread_uniform_payload(0x0184, 4, &[1, 2]);
+        assert_eq!(p, [0x84, 0x01, 4, 0, 1, 2]);
     }
 
     /// Build a stamp stream at `spacing` ticks/byte starting at `start`, one

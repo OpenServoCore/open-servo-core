@@ -6,10 +6,16 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
-use osc_protocol::wire::ResultCode;
+use osc_protocol::wire::{Inst, Opcode, ResultCode};
 
-use crate::osc::{Exchange, ExchangeError, parse_exchange};
+use crate::osc::{
+    Exchange, ExchangeError, build_instruction, build_read, gread_uniform_payload,
+    gwrite_uniform_payload, parse_exchange,
+};
 use crate::pirate::{BStamp, Client};
+
+/// Broadcast id: group frames and COMMIT address every servo and draw no reply.
+const BROADCAST: u8 = 0xFE;
 
 pub struct Report {
     pub ok: Vec<f64>,
@@ -150,6 +156,63 @@ pub struct BurstCycle {
     pub frames: Vec<Vec<u8>>,
     pub last: Vec<u8>,
     pub expect: Option<Vec<u8>>,
+}
+
+/// The production hot loop for one servo (`osc-native-protocol.md` §5.2): a
+/// broadcast `GWRITE(HOLD)` staging `value` at `addr`, a broadcast `COMMIT`, and
+/// a `GREAD` reading it back — sent zero-gap. The GREAD reply must already carry
+/// `value` (commit-before-read), so a stale read-back means a silently-dropped
+/// GWRITE or COMMIT. Shared with `tool-osc-burst` so the tool and the asserting
+/// bench test drive the identical cycle.
+pub fn hot_loop_cycle(id: u8, addr: u16, value: i32) -> BurstCycle {
+    let data = value.to_le_bytes();
+    let gwrite = build_instruction(
+        BROADCAST,
+        Opcode::Gwrite,
+        Inst::FLAG_HOLD,
+        &gwrite_uniform_payload(addr, &[(id, &data)]),
+    );
+    let commit = build_instruction(BROADCAST, Opcode::Commit, 0, &[]);
+    let gread = build_instruction(
+        BROADCAST,
+        Opcode::Gread,
+        0,
+        &gread_uniform_payload(addr, data.len() as u16, &[id]),
+    );
+    BurstCycle {
+        frames: vec![gwrite, commit, gread.clone()],
+        last: gread,
+        expect: Some(data.to_vec()),
+    }
+}
+
+/// A plain NOREPLY-write flood then a READ: `writes` back-to-back
+/// `WRITE(NOREPLY)` to `addr` with distinct values (the last is `value`),
+/// followed by a READ that must read `value` back. Exercises the silent-write
+/// path with no per-write reply to pace the framer.
+pub fn plain_flood_cycle(id: u8, addr: u16, writes: u32, value: i32) -> BurstCycle {
+    let n = writes.max(1);
+    let mut frames = Vec::with_capacity(n as usize + 1);
+    for k in 0..n {
+        // Count up to `value` so every frame is distinct and the final table
+        // value is exactly `value`.
+        let v = value - (n - 1 - k) as i32;
+        let mut payload = addr.to_le_bytes().to_vec();
+        payload.extend_from_slice(&v.to_le_bytes());
+        frames.push(build_instruction(
+            id,
+            Opcode::Write,
+            Inst::FLAG_NOREPLY,
+            &payload,
+        ));
+    }
+    let read = build_read(id, addr, value.to_le_bytes().len() as u16);
+    frames.push(read.clone());
+    BurstCycle {
+        frames,
+        last: read,
+        expect: Some(value.to_le_bytes().to_vec()),
+    }
 }
 
 /// The fate of one burst cycle. Richer than the [`BurstReport`] tally so a
