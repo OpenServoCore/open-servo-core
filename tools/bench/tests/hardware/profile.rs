@@ -72,13 +72,9 @@ fn profile_turnaround_budget_us(baud: u32) -> f64 {
 }
 
 /// Turnaround for the scattered-telemetry profile read, swept across the baud
-/// matrix; the distribution at each baud is printed for the record.
-///
-/// 2M is EXCLUDED until task #7 lands: the pirate's IDLE-clear DATAR read
-/// eats the reply's final byte every 128 exchanges at 2M (capture artifact —
-/// BICSNAP-proven servo-clean: all edges on the wire, byte killed in the
-/// pirate's shifter). Restore the full sweep once the pirate mirrors the
-/// servo's DATAR discipline.
+/// matrix; the distribution at each baud is printed for the record. The 2M
+/// leg is the regression gate for the pirate's DATAR discipline (task #7:
+/// an IDLE-clear DATAR read ate the reply's final byte 1/128 exchanges).
 #[test]
 #[serial]
 fn profile_read_turnaround_within_budget() {
@@ -87,9 +83,6 @@ fn profile_read_turnaround_within_budget() {
 
     b.status_ok(&build_profile_config(id, 0, &SCATTER));
     for &baud in &SUPPORTED_BAUDS {
-        if baud == 2_000_000 {
-            continue; // task #7 — pirate idle-clear DATAR bug
-        }
         let report = b
             .measure_at(baud, &build_read_profile(id, 0), 50)
             .expect("measure");
