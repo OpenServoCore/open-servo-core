@@ -24,6 +24,15 @@ const BREAK: u8 = 0x00;
 /// Bit-times per byte on the wire: 1 start + 8 data + 1 stop.
 const BITS_PER_BYTE: u32 = 10;
 
+/// SAVE/FACTORY settle: the ack lands only after the erase + program stall
+/// (§9.4 — measured 5–10 ms; 50 ms is the host-timeout guidance).
+pub const SAVE_SETTLE_MS: u64 = 50;
+/// Post-reset boot time before the servo answers again, with margin.
+pub const REBOOT_SETTLE_MS: u64 = 100;
+/// Host rescue pulse (§9.1): the servo confirm threshold is ~300 µs of
+/// dominant low; 400 gives margin without meaningfully holding the bus.
+pub const RESCUE_PULSE_US: u32 = 400;
+
 /// Build the wire bytes (no CRC-prefix; the physical break carries it) for one
 /// host->servo instruction frame.
 pub fn build_instruction(id: u8, op: Opcode, flags: u8, payload: &[u8]) -> Vec<u8> {
@@ -59,6 +68,11 @@ pub const PROFILE_SPANS_PER_SLOT: usize = 8;
 /// `regions::profile::span_word`). `count = 0` = word disabled.
 pub const fn profile_span_word(addr: u16, count: u8) -> u16 {
     (addr << 6) | (count as u16 & 0x3F)
+}
+
+/// Split a packed span word back into `(addr, count)`.
+pub const fn profile_span_split(word: u16) -> (u16, u8) {
+    (word >> 6, (word & 0x3F) as u8)
 }
 
 /// Table byte address of `slot`'s first span word.
@@ -276,6 +290,13 @@ mod tests {
     fn build_ping_matches_wire_vector() {
         // CRC-16/ARC over `01 03 10` = 0xFC50 (osc-native-protocol.md §3.2).
         assert_eq!(build_ping(1), [0x01, 0x03, 0x10, 0x50, 0xFC]);
+    }
+
+    #[test]
+    fn profile_span_word_round_trips() {
+        let w = profile_span_word(0x208, 63);
+        assert_eq!(profile_span_split(w), (0x208, 63));
+        assert_eq!(profile_span_split(profile_span_word(1023, 1)), (1023, 1));
     }
 
     #[test]

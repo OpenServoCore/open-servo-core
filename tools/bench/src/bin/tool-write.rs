@@ -4,7 +4,7 @@
 //! commits + sequences the ack break.
 
 use anyhow::{Result, bail};
-use bench::cli::{Connect, Target, gate_fail_rate, print_conn};
+use bench::cli::{Connect, Target, gate_fail_rate, parse_hex, print_conn};
 use bench::osc::build_write;
 use bench::run::{Stats, measure};
 use clap::Parser;
@@ -36,17 +36,6 @@ struct Args {
     /// Print a line per write.
     #[arg(short, long)]
     verbose: bool,
-}
-
-fn parse_hex(s: &str) -> Result<Vec<u8>> {
-    let s: String = s.chars().filter(|c| !c.is_whitespace()).collect();
-    if !s.len().is_multiple_of(2) {
-        bail!("hex payload needs an even digit count");
-    }
-    (0..s.len())
-        .step_by(2)
-        .map(|i| Ok(u8::from_str_radix(&s[i..i + 2], 16)?))
-        .collect()
 }
 
 fn main() -> Result<()> {

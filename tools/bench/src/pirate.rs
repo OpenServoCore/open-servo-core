@@ -303,6 +303,12 @@ impl Client {
         self.expect_ok(&format!("BRKSEND bytes={}", hex(data)))
     }
 
+    /// Drive TX dominant-low for `us` microseconds as a raw GPIO, then
+    /// release — the osc-native rescue break (§9.1), detectable at any baud.
+    pub fn lowpulse(&mut self, us: u32) -> Result<()> {
+        self.expect_ok(&format!("LOWPULSE us={us}"))
+    }
+
     /// Zero-gap multi-frame burst (pirate `BURST`): each frame goes out as
     /// one break + its bytes, back-to-back with sub-byte spacing. Only the
     /// last frame may elicit a reply — the burst owns the wire until it

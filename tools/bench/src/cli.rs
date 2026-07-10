@@ -69,3 +69,36 @@ pub fn gate_fail_rate(failures: u32, count: u32) -> Result<()> {
     }
     Ok(())
 }
+
+/// Parse a hex byte string (whitespace tolerated) into bytes.
+pub fn parse_hex(s: &str) -> Result<Vec<u8>> {
+    let s: String = s.chars().filter(|c| !c.is_whitespace()).collect();
+    if !s.len().is_multiple_of(2) {
+        bail!("hex payload needs an even digit count");
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| Ok(u8::from_str_radix(&s[i..i + 2], 16)?))
+        .collect()
+}
+
+/// Parse a `u16`, accepting a `0x` hex prefix.
+pub fn parse_u16(s: &str) -> Result<u16> {
+    Ok(match s.strip_prefix("0x") {
+        Some(hex) => u16::from_str_radix(hex, 16)?,
+        None => s.parse()?,
+    })
+}
+
+/// Parse one profile span given as `addr:count` (§5.2 bounds).
+pub fn parse_span(s: &str) -> Result<(u16, u8)> {
+    let (a, c) = s
+        .split_once(':')
+        .ok_or_else(|| anyhow::anyhow!("span is `addr:count`"))?;
+    let addr = parse_u16(a)?;
+    let count: u8 = c.parse()?;
+    if addr > 1023 || count == 0 || count > 63 {
+        bail!("span {s}: addr caps at 1023, count at 1..=63");
+    }
+    Ok((addr, count))
+}

@@ -3,7 +3,7 @@
 //! compare against the same bytes as a plain contiguous READ.
 
 use anyhow::{Context, Result, bail};
-use bench::cli::{Connect, SETTLE_MS, Target, gate_fail_rate, print_conn};
+use bench::cli::{Connect, SETTLE_MS, Target, gate_fail_rate, parse_span, print_conn};
 use bench::osc::{build_profile_config, build_read, build_read_profile};
 use bench::run::{Stats, measure};
 use clap::Parser;
@@ -30,20 +30,6 @@ struct Args {
     /// Print a line per read.
     #[arg(short, long)]
     verbose: bool,
-}
-
-fn parse_span(s: &str) -> Result<(u16, u8)> {
-    let (a, c) = s.split_once(':').context("span is `addr:count`")?;
-    let addr = if let Some(hex) = a.strip_prefix("0x") {
-        u16::from_str_radix(hex, 16)?
-    } else {
-        a.parse()?
-    };
-    let count: u8 = c.parse()?;
-    if addr > 1023 || count == 0 || count > 63 {
-        bail!("span {s}: addr caps at 1023, count at 1..=63");
-    }
-    Ok((addr, count))
 }
 
 fn main() -> Result<()> {

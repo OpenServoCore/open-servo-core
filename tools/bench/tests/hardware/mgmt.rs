@@ -1,6 +1,6 @@
 use bench::osc::{
-    build_assign, build_enum, build_factory, build_ping, build_read, build_reboot, build_save,
-    build_write,
+    REBOOT_SETTLE_MS, SAVE_SETTLE_MS, build_assign, build_enum, build_factory, build_ping,
+    build_read, build_reboot, build_save, build_write,
 };
 use osc_core::regions::config::addr::comms::RESPONSE_DEADLINE_US;
 use osc_core::regions::telemetry::addr::fault::CONFIG_DIRTY;
@@ -8,12 +8,6 @@ use osc_protocol::wire::UID_LEN;
 use serial_test::serial;
 
 use crate::support::bench;
-
-/// SAVE/FACTORY settle: the ack lands only after the erase + program stall
-/// (§9.4 — measured 5–10 ms; 50 ms is the host-timeout guidance).
-const SAVE_SETTLE_MS: u64 = 50;
-/// Post-reset boot time before the servo answers again, with margin.
-const REBOOT_SETTLE_MS: u64 = 100;
 
 /// Broadcast ENUM at the tree root (prefix_len 0) — the one query a
 /// single-servo bench can always answer cleanly. The reply is the fixed
