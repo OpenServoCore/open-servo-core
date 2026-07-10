@@ -5,19 +5,19 @@ use serial_test::serial;
 
 use crate::support::bench;
 
-/// Per-baud ceiling for the mean ping turnaround (µs). Ring-cadence timing +
-/// the fixed-µs reply gap flattened the low side (measured ~34/36 µs at 1M/500k,
-/// 2026-07-09); 2M/3M remain pipeline-bound (~41/44 µs — the covered-overlap
-/// window shrinks below the dispatch body, the documented follow-up band).
-/// Each ceiling sits ~6 µs above the measured floor: tight enough to catch a
-/// regression from the current baseline, loose enough for the ±5 µs
-/// flash-layout swing.
+/// Per-baud ceiling for the mean ping turnaround (µs). Ring-cadence timing,
+/// the fixed-µs reply gap, and the in-place chain trigger put the floor at
+/// ~30/32 µs (1M/500k) and ~39/41 µs (2M/3M, pipeline-bound — the
+/// covered-overlap window shrinks below the dispatch body; RAM placement
+/// probed and rejected, see the transport pillar). Each ceiling sits ~6 µs
+/// above the measured floor: tight enough to catch a regression from the
+/// current baseline, loose enough for the ±5 µs flash-layout swing.
 fn turnaround_budget_us(baud: u32) -> f64 {
     match baud {
-        1_000_000 => 40.0,
-        2_000_000 => 47.0,
-        3_000_000 => 50.0,
-        500_000 => 42.0,
+        1_000_000 => 36.0,
+        2_000_000 => 45.0,
+        3_000_000 => 47.0,
+        500_000 => 38.0,
         _ => 55.0,
     }
 }
