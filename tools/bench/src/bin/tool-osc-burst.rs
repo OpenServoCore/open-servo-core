@@ -84,6 +84,11 @@ struct Args {
     /// possible for a wlink dump).
     #[arg(long, default_value_t = false)]
     stop_on_fail: bool,
+    /// Dump any OK cycle whose turnaround is below this many µs — catches
+    /// pirate walker free-run stamps (COUNT_UNDER), which alias the reply
+    /// break onto the echo's byte grid and read as impossibly-fast replies.
+    #[arg(long)]
+    dump_early: Option<f64>,
 }
 
 /// Build one cycle for `value`, dispatched by the mode flags. The default and
@@ -144,11 +149,18 @@ fn dump_stamps(c: u32, stamps: &[BStamp], bit_ticks: u32) {
     println!("--- cycle {c} stamps ({}):", stamps.len());
     let mut prev: Option<u32> = None;
     for st in stamps {
+        // `!` = walker free-run (COUNT_UNDER: tick is a prediction, not an
+        // IC edge); any other flag bit prints as `?`.
+        let mark = match st.flags {
+            0 => "",
+            1 => "!",
+            _ => "?",
+        };
         let d = prev.map(|p| st.tick.wrapping_sub(p) as f64 / bit_ticks as f64);
         match d {
-            Some(d) if d > 12.0 => println!("  {:02x} +{d:8.1}b", st.byte),
-            Some(_) => print!(" {:02x}", st.byte),
-            None => print!("  {:02x}", st.byte),
+            Some(d) if d > 12.0 => println!("  {:02x}{mark} +{d:8.1}b", st.byte),
+            Some(_) => print!(" {:02x}{mark}", st.byte),
+            None => print!("  {:02x}{mark}", st.byte),
         }
         prev = Some(st.tick);
     }
@@ -207,7 +219,17 @@ fn observe(args: &Args, obs: &CycleObservation) {
         std::process::exit(3);
     }
     match obs.outcome {
-        CycleOutcome::Ok { .. } => {}
+        CycleOutcome::Ok { turnaround_us } => {
+            if let Some(limit) = args.dump_early
+                && *turnaround_us < limit
+            {
+                println!(
+                    "cycle {:>5}  EARLY turnaround {turnaround_us:.2} us",
+                    obs.index
+                );
+                dump_stamps(obs.index, obs.stamps, obs.bit_ticks);
+            }
+        }
         CycleOutcome::Stale { got, expected } => {
             if args.verbose {
                 println!(
