@@ -37,6 +37,10 @@ write = goal_position 4 B; flash-layout swings between builds are ±5 µs):
 | spine unified        | 38.3 µs | 44.7 µs | 127.3 µs | 40.7 µs | 2400/2400         |
 | inline-unify + DATAR discipline | 35.3 µs | 39.9 µs | 86.8 µs | 45.6 µs | 8000/8000 (+24k floods ≤1M) |
 | ring-cadence + reply gap 12 µs | 34.3 µs | 38.6 µs | 87.7 µs | 44.3 µs | 8000/8000 (+24k floods ≤1M) |
+| in-place chain trigger | 30.4 µs | — | — | 41.3 µs | 8000/8000 (+24k floods ≤1M) |
+
+(In-place-trigger row: ping 38.8 µs at 2M, 32.2 µs at 0.5M; burst means
+dropped again — hot loop @1M 35.4 µs, plain flood @1M 31.3 µs.)
 
 (DATAR-discipline row: ping 42.2 µs at 2M, 47.2 µs at 0.5M — flat vs the
 pre-fix baseline; the burst columns include the formerly-failing ≤1M legs.
@@ -59,10 +63,16 @@ delivery-noise-free, so the low side collapsed — 0.5M/1M pings sit at
 ~35 µs together. 2M/3M remain pipeline-bound (~41/44 µs): the covered
 window shrinks below the dispatch body — at 3M a short frame is fully
 ringed before the first deadline wake even fires — so the pipeline
-serializes after the frame end. Known levers, deliberately unpulled:
-trigger-path body slimming (~9 µs at 2M/3M), arming deadline A before the
-on_break tail (the pend-late wake at 3M), and dispatch-body flash
-placement.
+serializes after the frame end. Follow-ups pulled and retired
+(2026-07-09): an already-due chain wait is now consumed in place instead of
+taking a scheduling round trip (sequencing→trigger 10.1 → 4.4 µs at 3M),
+and the deadline-A arming-order lever died with the FE clock (the on_break
+body overlaps the frame's own wire time; ~2 µs remained). The one lever
+deliberately left unpulled is dispatch-body RAM placement: bench-probed
+2026-07-09 — the ~1.8 kB dispatch monomorphization does NOT fit the V006's
+RAM budget (the stack dipped into statics and silently corrupted the
+table), and smaller placements bought only ~2 µs. Revisit only with a
+real RAM budget, by explicit decision.
 
 (An earlier revision of row 1 quoted 37.4/32.3/31.2/36.7 from the
 turnaround-band memory — those columns were ping/read-16/read-240/ping from
