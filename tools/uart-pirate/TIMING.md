@@ -185,19 +185,27 @@ and is left without IRQ. DMA HT runs at half-ring fill, TC at full-fill
 — the walker drains promptly without waiting for a separate cadence.
 Time-to-HT scales with edge density at the configured baud.
 
-USART3 IDLE asserts one character-time after the wire goes idle. It
-does two things — both signal-only, neither derives a tick from elapsed
-idle time:
+USART3 IDLE asserts one character-time after the wire goes idle. It is
+signal-only — it derives no tick from elapsed idle time and carries no
+walker state (the chain re-anchors from the stream itself; see the miss
+path below):
 
 1. **Drains tail bytes.** Runs `walk()` so the last byte of every
    reply burst gets stamped without waiting for the next DMA HT/TC.
-2. **Marks the chain boundary.** Once `walk()` finishes draining and
-   `byte_head == rx_total`, the walker flushes any trailing interior
-   edges of the last byte (`walked = falling_total`) and drops the PLL
-   anchor (`has_anchor = false`). The next byte the walker stamps cold-
-   starts on its own IC edge instead of free-running off a stale
-   `last_anchor + 10·bit_ticks` prediction that would sit one inter-
-   packet quiet window (RDT) before reality.
+   The walk runs whether or not the idle is genuine — it is DATAR-free
+   and keeps the stamp rings flowing during long bursts.
+2. **Clears the IDLE flag, but only under IC-proven quiet.** The clear
+   is an SR-read + DATAR-read pair, and a CPU DATAR read while a byte
+   is mid-reception kills the byte in the shifter (same WCH USART IP as
+   the V006, bench 2026-07-09). The handler spins — with a drive-release
+   checkpoint per iteration — until the newest falling edge is
+   ≥ 16 bit-times old (past the longest break; normal entries confirm
+   in ~4 bits) or a fresh edge proves a burst is starting. On the fresh-
+   edge bail the flag stays latched: the incoming bytes' RX-DMA DATAR
+   accesses complete the armed pair within a byte-time, and the true
+   idle after the burst fires a fresh event.
+3. **Schedules `after_idle` sends** via `tx::on_idle`, only on the
+   quiet-confirmed outcome.
 
 TIM2 CC1 (TI1S XOR routing per §3) and TIM3 CC1 (TRC) drive their DMA
 requests via CCxDE; neither CCxIE is enabled. Capture stays zero-CPU
@@ -285,15 +293,17 @@ The algorithm is **predict-and-snap with closest-edge tiebreak**, with
 For each byte `B` newly present in `rx_ring`:
 
 1. **Cold-start path (`has_anchor == false`).** No prediction available
-   yet, so anchor on the next unconsumed IC entry. Yield mid-byte if
+   yet, so anchor on the next unconsumed IC entry — after dropping
+   edges older than the 100 ms anchor-staleness horizon (trailing
+   interiors from before a long quiet gap). Yield mid-byte if
    `ceiling < first_edge + 10·bit_ticks` — more interior edges of
    this byte may still be in flight, and anchoring now would risk a
    silent slip if one arrives between iterations. Otherwise
    `chosen_anchor = first_edge`; advance `walked` past it. This path
-   runs at every cold-start trip — boot, RESET, set_baud, post-
-   `IcOverrun` recovery, **and post-USART-IDLE chain boundary (§3.2)**;
-   every subsequent byte inside a contiguous burst goes through the
-   steady-state path.
+   runs at boot, RESET, set_baud, post-`IcOverrun` recovery, and after
+   a staled-out anchor (> 100 ms — the bound exists so tick32-wrap
+   arithmetic can never alias, not as the resync mechanism); ordinary
+   inter-burst gaps re-anchor through the steady-state miss path.
 
 2. **Steady-state path (`has_anchor == true`).** Predict
    `predicted = last_anchor + 10·bit_ticks`. Yield mid-byte if
@@ -313,10 +323,24 @@ For each byte `B` newly present in `rx_ring`:
       candidate is far more likely the real start than the earlier one
       (which would be ringing-tail noise from byte `B−1`).
    c. **Hit**: `chosen_anchor = matched entry`; advance `walked` past it.
-   d. **Miss**: `chosen_anchor = predicted` (free-run). Flag
-      `COUNT_UNDER`. Do NOT advance `walked` past anything in the scan
-      window — those entries stay in the ring for the next byte's
-      skip-walk pass.
+   d. **Miss with an edge available**: claim the earliest unconsumed
+      edge at ANY distance — starts only ever arrive late (SBK breaks,
+      poll-fed TX stretches, inter-frame gaps) and IC captures are
+      chronological, so that edge IS the next true start. This is how
+      the chain re-anchors at every gap, with no idle dependency. (An
+      in-window-only claim used to free-run here; once the grid fell
+      >9 bits behind, EVERY byte missed and edges accumulated to
+      `ic_overrun` — lag-lock. A dropped-edge steal costs one frame of
+      skewed stamps; lag-lock killed the capture.)
+   e. **Miss with the ring exhausted** past the late-start window:
+      `chosen_anchor = predicted` (free-run). Flag `COUNT_UNDER`; the
+      next real edge re-anchors via (d).
+
+   After every non-free-run emit, the walker eagerly consumes the
+   byte's own interior edges (everything below `anchor + 9·bit_ticks` —
+   the next start can't arrive earlier than `+10·bits − snap`), so a
+   burst's final byte strands nothing for a later claim to adopt as a
+   stale anchor.
 
 3. **Emit.** `start_tick = chosen_anchor − cc_filter_delay`; write
    `(B, start_tick, flags)` into the three parallel rings; update
