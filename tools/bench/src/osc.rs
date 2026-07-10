@@ -99,6 +99,23 @@ pub fn build_assign(uid: &[u8; UID_LEN], new_id: u8) -> Vec<u8> {
     build_instruction(Id::BROADCAST.as_byte(), Opcode::Mgmt, 0, &payload)
 }
 
+/// MGMT SAVE (§9.4). The ack arrives only after the erase + program stall —
+/// exchange with a SAVE-specific window, not the standard settle.
+pub fn build_save(id: u8) -> Vec<u8> {
+    build_instruction(id, Opcode::Mgmt, 0, &[MgmtOp::Save as u8])
+}
+
+/// MGMT FACTORY (§9.5): wipes both saved slots, acks (same stall caveat as
+/// SAVE), then the servo reboots itself.
+pub fn build_factory(id: u8) -> Vec<u8> {
+    build_instruction(id, Opcode::Mgmt, 0, &[MgmtOp::Factory as u8])
+}
+
+/// MGMT REBOOT (§9.5): acks first, then resets once the ack has drained.
+pub fn build_reboot(id: u8) -> Vec<u8> {
+    build_instruction(id, Opcode::Mgmt, 0, &[MgmtOp::Reboot as u8])
+}
+
 /// WRITE: `addr(2)` little-endian then the data bytes (mirrors `WriteReq`).
 pub fn build_write(id: u8, addr: u16, data: &[u8]) -> Vec<u8> {
     let mut payload = Vec::with_capacity(2 + data.len());

@@ -72,7 +72,14 @@ impl Bench {
 
     /// Exchange and assert an OK status; returns the decoded status frame.
     pub fn status_ok(&mut self, wire: &[u8]) -> StatusFrame {
-        let ex = self.xfer(wire).expect("exchange");
+        self.status_ok_within(wire, SETTLE_MS)
+    }
+
+    /// As [`Self::status_ok`] with a caller-chosen settle window — SAVE and
+    /// FACTORY ack only after the flash stall completes (§9.4), well past the
+    /// standard window.
+    pub fn status_ok_within(&mut self, wire: &[u8], settle_ms: u64) -> StatusFrame {
+        let ex = xfer(&mut self.client, wire, settle_ms).expect("exchange");
         assert_eq!(
             ex.status.result,
             Some(ResultCode::Ok),

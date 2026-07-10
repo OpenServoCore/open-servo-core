@@ -544,8 +544,9 @@ so that is what gets gated:
 - `MGMT SAVE` is the only flash-touching operation: requires torque
   disabled (else `access`), programs the config page (power-safe A/B
   alternation on the reserved config pages), and acks **after**
-  completion — hosts use a SAVE-specific timeout, the servo is genuinely
-  stalled during program.
+  completion — the servo is genuinely stalled during program, so hosts
+  use a SAVE-specific timeout (erase + program run 5–10 ms; ~50 ms is
+  comfortable guidance). FACTORY shares the stall and the timeout.
 - No write is torque-gated — the section lock and its `write_locked_by`
   machinery are deleted outright. Field validation rules still apply to
   every write; anything genuinely unsafe to change mid-motion is the

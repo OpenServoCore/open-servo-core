@@ -1,8 +1,19 @@
-use bench::osc::{build_assign, build_enum, build_ping};
+use bench::osc::{
+    build_assign, build_enum, build_factory, build_ping, build_read, build_reboot, build_save,
+    build_write,
+};
+use osc_core::regions::config::addr::comms::RESPONSE_DEADLINE_US;
+use osc_core::regions::telemetry::addr::fault::CONFIG_DIRTY;
 use osc_protocol::wire::UID_LEN;
 use serial_test::serial;
 
 use crate::support::bench;
+
+/// SAVE/FACTORY settle: the ack lands only after the erase + program stall
+/// (§9.4 — measured 5–10 ms; 50 ms is the host-timeout guidance).
+const SAVE_SETTLE_MS: u64 = 50;
+/// Post-reset boot time before the servo answers again, with margin.
+const REBOOT_SETTLE_MS: u64 = 100;
 
 /// Broadcast ENUM at the tree root (prefix_len 0) — the one query a
 /// single-servo bench can always answer cleanly. The reply is the fixed
@@ -55,4 +66,52 @@ fn assign_moves_the_id_and_acks_from_it() {
     let back = b.status_ok(&build_assign(&uid, home));
     assert_eq!(back.id, home);
     b.status_ok(&build_ping(home));
+}
+
+/// The full §9.4/§9.5 silicon round trip: a config marker survives SAVE +
+/// REBOOT (real erase, page program, and boot overlay on real flash), then
+/// FACTORY wipes both slots and its self-reboot restores board defaults —
+/// which also leaves the bench unit's CONFIG pages virgin for every later
+/// run. Reads are collected first and asserted only after the factory
+/// restore, so a bad marker never strands a saved image on the bench.
+#[test]
+#[serial]
+fn save_persists_across_reboot_until_factory() {
+    const MARKER: u16 = 123; // response_deadline_us; board default is 60
+
+    let mut b = bench();
+    let id = b.id();
+
+    b.status_ok(&build_write(
+        id,
+        RESPONSE_DEADLINE_US,
+        &MARKER.to_le_bytes(),
+    ));
+    let dirty_before = b.status_ok(&build_read(id, CONFIG_DIRTY, 1)).payload[0];
+
+    b.status_ok_within(&build_save(id), SAVE_SETTLE_MS);
+    let dirty_after = b.status_ok(&build_read(id, CONFIG_DIRTY, 1)).payload[0];
+
+    // REBOOT acks first, then resets; the marker must come back from flash.
+    b.status_ok(&build_reboot(id));
+    std::thread::sleep(std::time::Duration::from_millis(REBOOT_SETTLE_MS));
+    let persisted = b
+        .status_ok(&build_read(id, RESPONSE_DEADLINE_US, 2))
+        .payload;
+
+    // FACTORY wipes both slots and reboots itself back to board defaults.
+    b.status_ok_within(&build_factory(id), SAVE_SETTLE_MS);
+    std::thread::sleep(std::time::Duration::from_millis(REBOOT_SETTLE_MS));
+    let restored = b
+        .status_ok(&build_read(id, RESPONSE_DEADLINE_US, 2))
+        .payload;
+
+    assert_eq!(dirty_before, 1, "config write marks modified-since-save");
+    assert_eq!(dirty_after, 0, "SAVE clears the dirty bit");
+    assert_eq!(
+        persisted,
+        MARKER.to_le_bytes(),
+        "marker survived the reboot"
+    );
+    assert_ne!(restored, MARKER.to_le_bytes(), "factory dropped the image");
 }
