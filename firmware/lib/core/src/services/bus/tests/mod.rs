@@ -22,6 +22,8 @@ struct Sent {
 
 struct FakeReply {
     sends: Vec<Sent, 8>,
+    /// Span count of the last `send_status_gather` (0 = none seen).
+    gather_spans: usize,
     staged_id: Option<u8>,
     staged_baud: Option<BaudRate>,
     response_deadline: Option<u16>,
@@ -32,6 +34,7 @@ impl FakeReply {
     fn new() -> Self {
         Self {
             sends: Vec::new(),
+            gather_spans: 0,
             staged_id: None,
             staged_baud: None,
             response_deadline: None,
@@ -57,6 +60,27 @@ impl Reply for FakeReply {
             .push(Sent {
                 result: status.result,
                 alert: status.alert,
+                data,
+            })
+            .map_err(|_| SendError::Overflow)?;
+        Ok(())
+    }
+
+    fn send_status_gather(
+        &mut self,
+        result: ResultCode,
+        alert: bool,
+        spans: &[&[u8]],
+    ) -> Result<(), SendError> {
+        let mut data = Vec::new();
+        for s in spans {
+            data.extend_from_slice(s).map_err(|_| SendError::Overflow)?;
+        }
+        self.gather_spans = spans.len();
+        self.sends
+            .push(Sent {
+                result,
+                alert,
                 data,
             })
             .map_err(|_| SendError::Overflow)?;
@@ -215,6 +239,106 @@ fn read_silent_when_may_reply_false() {
         &shared,
         &mut staged,
         Request::Read { addr: 0, count: 2 },
+        false,
+    );
+    assert_eq!(reply.count(), 0);
+}
+
+// --- Profile read (§5.2) ---------------------------------------------------
+
+use crate::regions::profile::span_word;
+
+/// Slot 0 → two spans: model_number (2 B at 0x000) and comms id (1 B).
+fn seed_profile_slot0(shared: &Shared) {
+    use crate::regions::config::addr::comms::ID;
+    shared.table.with_mut(|t| {
+        t.config.identity.model_number = 0xABCD;
+        t.config.comms.id = 7;
+        t.profile.slots.words[0] = span_word(0, 2);
+        t.profile.slots.words[1] = span_word(ID, 1);
+    });
+}
+
+#[test]
+fn profile_read_gathers_spans_in_order() {
+    let shared = Shared::new();
+    seed_profile_slot0(&shared);
+    let mut staged = StagedWrites::new();
+    let reply = go(&shared, &mut staged, Request::ReadProfile { slot: 0 }, true);
+    assert_eq!(reply.last().result, ResultCode::Ok);
+    assert_eq!(&reply.last().data[..], &[0xCD, 0xAB, 7]);
+    assert_eq!(reply.gather_spans, 2);
+}
+
+#[test]
+fn profile_read_skips_disabled_words() {
+    let shared = Shared::new();
+    shared.table.with_mut(|t| {
+        t.config.identity.model_number = 0xABCD;
+        // Hole at word 0 and word 2: disabled words are skipped, not
+        // terminators (§5.2).
+        t.profile.slots.words[1] = span_word(0, 1);
+        t.profile.slots.words[3] = span_word(1, 1);
+    });
+    let mut staged = StagedWrites::new();
+    let reply = go(&shared, &mut staged, Request::ReadProfile { slot: 0 }, true);
+    assert_eq!(reply.last().result, ResultCode::Ok);
+    assert_eq!(&reply.last().data[..], &[0xCD, 0xAB]);
+    assert_eq!(reply.gather_spans, 2);
+}
+
+#[test]
+fn profile_read_bad_slot_rejects_range() {
+    let shared = Shared::new();
+    let mut staged = StagedWrites::new();
+    let reply = go(&shared, &mut staged, Request::ReadProfile { slot: 4 }, true);
+    assert_eq!(reply.last().result, ResultCode::Range);
+    assert!(reply.last().data.is_empty());
+}
+
+#[test]
+fn profile_read_empty_slot_rejects_range() {
+    let shared = Shared::new();
+    let mut staged = StagedWrites::new();
+    let reply = go(&shared, &mut staged, Request::ReadProfile { slot: 1 }, true);
+    assert_eq!(reply.last().result, ResultCode::Range);
+}
+
+#[test]
+fn profile_read_oob_span_rejects_range() {
+    let shared = Shared::new();
+    // addr 1020 + count 8 overruns the 1024 B table.
+    shared
+        .table
+        .with_mut(|t| t.profile.slots.words[0] = span_word(1020, 8));
+    let mut staged = StagedWrites::new();
+    let reply = go(&shared, &mut staged, Request::ReadProfile { slot: 0 }, true);
+    assert_eq!(reply.last().result, ResultCode::Range);
+}
+
+#[test]
+fn profile_read_over_ceiling_rejects_limit() {
+    let shared = Shared::new();
+    // 5 × 63 B = 315 B > MAX_PAYLOAD.
+    shared.table.with_mut(|t| {
+        for w in 0..5 {
+            t.profile.slots.words[w] = span_word(0, 63);
+        }
+    });
+    let mut staged = StagedWrites::new();
+    let reply = go(&shared, &mut staged, Request::ReadProfile { slot: 0 }, true);
+    assert_eq!(reply.last().result, ResultCode::Limit);
+}
+
+#[test]
+fn profile_read_silent_when_may_reply_false() {
+    let shared = Shared::new();
+    seed_profile_slot0(&shared);
+    let mut staged = StagedWrites::new();
+    let reply = go(
+        &shared,
+        &mut staged,
+        Request::ReadProfile { slot: 0 },
         false,
     );
     assert_eq!(reply.count(), 0);

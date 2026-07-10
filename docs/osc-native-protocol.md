@@ -322,21 +322,30 @@ both the copy-once TX path and the hardware CRC. The scattered-telemetry
 need they served (position + velocity + current + temperature live in
 different table sections) is met span-granularly instead:
 
-- A **profile region** in the flat table: a few slots, each an ordered
-  list of `(addr u16, count u16)` spans. Configured once with ordinary
-  WRITEs — no new instruction, no hidden state.
-- READ/GREAD with the PROFILE flag name a slot instead of addr+count. The
+- A **profile region** in the flat table (`0x280..0x2C0`): 4 slots × 8
+  packed span words, configured once with ordinary WRITEs — no new
+  instruction, no hidden state. A span word is
+  `u16 = [addr:10][count:6]` — raw byte addressing over the whole 1024 B
+  table, spans of 1..63 bytes. `count = 0` **disables** the word, and
+  disabled words are skipped rather than terminating the slot, so a host
+  can toggle one span with a single 2-byte write; the all-zero boot image
+  is an empty slot.
+- READ/GREAD with the PROFILE flag name a slot instead of addr+count
+  (uniform GREAD: `slot, id-list`; PER_TARGET: `[id, slot]×`). The
   hot-loop instruction stays minimal; the span list costs wire bytes once
   at setup and zero per cycle (the reason profiles beat inline
   scatter-gather lists for cyclic telemetry).
-- Execution is §4.2's existing copy-once TX: spans stream through the
-  snapshot buffer, then the wire and CRC arms as usual, engine
-  accumulating across arms [F6] — a scattered read costs the same
-  one-copy-per-reply as a single-span read.
-- Constraint: **spans must be even-addressed and even-length** so the
-  hardware CRC's halfword pairing survives concatenation (an odd span
-  shifts the pairing of everything after it). Lone `u8` fields round up to
-  2 bytes. A slot's total span length caps at 252 B like any reply (§5.1).
+- Execution is §4.2's existing copy-once TX: each span is snapshotted at
+  its cumulative offset and the wire and CRC arms stream the one
+  contiguous copy, engine accumulating across arms [F6] — a scattered
+  read costs the same one-copy-per-reply as a single-span read. Spans
+  carry **no parity constraint** (addresses and lengths may be odd): the
+  snapshot buffer is halfword-based by construction and only the total's
+  parity engages the standard tail fold (§3.2) — same as §5's
+  unconstrained plain reads.
+- Errors are read-time (§5.3): a slot index past the region, an empty
+  slot, or a span leaving the table is `range`; a slot totalling past the
+  252 B reply ceiling (§5.1) is `limit`.
 - Scattered _writes_ need no counterpart: `WRITE+HOLD` per span plus one
   `COMMIT` is already atomic — inline scatter-writes would add cross-span
   validation complexity for no capability gain.
@@ -362,8 +371,9 @@ code shares the byte (bits [6:2], 32 values). Errors split by layer:
    answering a question nobody can safely ask.
 2. **Instruction-level** (valid frame, rejected request): the 5-bit result
    code, empty payload — `OK`, `instruction` (unknown op/flags), `range`
-   (addr/count out of bounds, or a PROFILE read naming an odd-addressed
-   span — §5.2), `access` (read-only, or SAVE with torque enabled),
+   (addr/count out of bounds, or a PROFILE read naming a bad, empty, or
+   table-overrunning slot — §5.2), `access` (read-only, or SAVE with
+   torque enabled),
    `validation` (value rejected by field rules), `busy`, `limit`
    (requested reply exceeds the frame ceiling, §5.1), `predecessor-silent`
    (§6),

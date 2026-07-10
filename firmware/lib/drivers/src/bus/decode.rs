@@ -11,8 +11,11 @@
 
 use osc_core::traits::{Request, RequestCtx};
 use osc_protocol::FrameBytes;
-use osc_protocol::frame::{Header, MgmtReq, ReadReq, WriteReq};
-use osc_protocol::group::{GreadPerTarget, GreadUniform, GwritePerTarget, GwriteUniform};
+use osc_protocol::frame::{Header, MgmtReq, ProfileReq, ReadReq, WriteReq};
+use osc_protocol::group::{
+    GreadPerTarget, GreadProfilePerTarget, GreadProfileUniform, GreadUniform, GwritePerTarget,
+    GwriteUniform,
+};
 use osc_protocol::wire::{Id, Inst, Opcode};
 
 /// What the frame is, from the composite's point of view.
@@ -67,8 +70,11 @@ fn plain<'a>(op: Opcode, inst: Inst, frame_id: Id, pay: FrameBytes<'a>, own: Id)
     let may_reply = !inst.noreply() && !broadcast;
     let req = match op {
         Opcode::Ping => Request::Ping,
-        // READ + HOLD names a profile slot (§5.2) — deferred, reject cleanly.
-        Opcode::Read if inst.hold() => Request::Unsupported,
+        // READ + PROFILE names a profile slot instead of addr+count (§5.2).
+        Opcode::Read if inst.profile() => match ProfileReq::parse(pay) {
+            Some(r) => Request::ReadProfile { slot: r.slot },
+            None => Request::Unsupported,
+        },
         Opcode::Read => match ReadReq::parse(pay) {
             Some(r) => Request::Read {
                 addr: r.addr,
@@ -100,27 +106,46 @@ fn plain<'a>(op: Opcode, inst: Inst, frame_id: Id, pay: FrameBytes<'a>, own: Id)
 
 /// GREAD: our span comes from the id-list; the chain slot is our list position.
 /// A GREAD slot always replies (that is the chain, §6). A list we can't parse
-/// leaves our addressing unknowable — skip rather than answer blind.
+/// leaves our addressing unknowable — skip rather than answer blind. With the
+/// PROFILE flag the payload names profile slots instead of spans (§5.2).
 fn gread<'a>(inst: Inst, pay: FrameBytes<'a>, own: Id) -> Decoded<'a> {
-    if inst.per_target() {
-        match GreadPerTarget::parse(pay).and_then(|g| g.find(own)) {
+    match (inst.profile(), inst.per_target()) {
+        (false, true) => match GreadPerTarget::parse(pay).and_then(|g| g.find(own)) {
             Some((slot, t)) => own_read(t.addr, t.count, slot),
             None => Decoded::Skip,
-        }
-    } else {
-        match GreadUniform::parse(pay) {
+        },
+        (false, false) => match GreadUniform::parse(pay) {
             Some(g) => match g.slot_of(own) {
                 Some(slot) => own_read(g.addr, g.count, slot),
                 None => Decoded::Skip,
             },
             None => Decoded::Skip,
-        }
+        },
+        (true, true) => match GreadProfilePerTarget::parse(pay).and_then(|g| g.find(own)) {
+            Some((slot, t)) => own_read_profile(t.slot, slot),
+            None => Decoded::Skip,
+        },
+        (true, false) => match GreadProfileUniform::parse(pay) {
+            Some(g) => match g.slot_of(own) {
+                Some(slot) => own_read_profile(g.slot, slot),
+                None => Decoded::Skip,
+            },
+            None => Decoded::Skip,
+        },
     }
 }
 
 fn own_read<'a>(addr: u16, count: u16, slot: u8) -> Decoded<'a> {
     Decoded::Own(
         Request::Read { addr, count },
+        RequestCtx { may_reply: true },
+        slot,
+    )
+}
+
+fn own_read_profile<'a>(profile: u8, slot: u8) -> Decoded<'a> {
+    Decoded::Own(
+        Request::ReadProfile { slot: profile },
         RequestCtx { may_reply: true },
         slot,
     )

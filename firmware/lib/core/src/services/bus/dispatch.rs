@@ -4,7 +4,7 @@ use osc_protocol::FrameBytes;
 use osc_protocol::wire::{MAX_PAYLOAD, MgmtOp, ResultCode};
 
 use crate::regions::hooks::ControlTableHooks;
-use crate::traits::{Dispatch, Dispatched, Reply, Request, RequestCtx, Status};
+use crate::traits::{Dispatch, Dispatched, GATHER_MAX, Reply, Request, RequestCtx, Status};
 use crate::{Error, RegionStorage, Shared, StagedWrites};
 use control_table::STAGE_ENTRY_CAP;
 
@@ -95,6 +95,10 @@ impl Dispatch for Dispatcher<'_> {
             }
             Request::Read { addr, count } => {
                 self.read(alert, &ctx, addr, count, reply);
+                Dispatched::Done
+            }
+            Request::ReadProfile { slot } => {
+                self.read_profile(alert, &ctx, slot, reply);
                 Dispatched::Done
             }
             Request::Write { addr, data, hold } => self.write(alert, &ctx, addr, data, hold, reply),
@@ -248,6 +252,54 @@ impl Dispatcher<'_> {
                 },
             ),
         }
+    }
+
+    /// PROFILE read (§5.2): resolve the slot's span words against the live
+    /// table and gather-send the concatenation. Errors are read-time (§5.3):
+    /// a bad slot index, an empty slot, or an out-of-bounds span is `range`;
+    /// a total past the frame ceiling is `limit`.
+    fn read_profile<R: Reply>(&mut self, alert: bool, ctx: &RequestCtx, slot: u8, reply: &mut R) {
+        if !ctx.may_reply {
+            return;
+        }
+        let nack = |reply: &mut R, result: ResultCode| {
+            Self::send(
+                reply,
+                Status {
+                    result,
+                    alert,
+                    data: &[],
+                },
+            )
+        };
+        let words = self
+            .shared
+            .table
+            .with(|t| t.profile.slot_words(slot).copied());
+        let Some(words) = words else {
+            return nack(reply, ResultCode::Range);
+        };
+        let mut spans: [&[u8]; GATHER_MAX] = [&[]; GATHER_MAX];
+        let mut n = 0;
+        let mut total: u16 = 0;
+        for w in words {
+            let Some((addr, count)) = crate::regions::profile::span_of(w) else {
+                continue; // disabled word: skipped, not a terminator (§5.2)
+            };
+            let Ok(data) = RegisterFile::read(&self.shared.table, addr, count) else {
+                return nack(reply, ResultCode::Range);
+            };
+            spans[n] = data;
+            n += 1;
+            total += count;
+        }
+        if n == 0 {
+            return nack(reply, ResultCode::Range);
+        }
+        if total > MAX_PAYLOAD as u16 {
+            return nack(reply, ResultCode::Limit);
+        }
+        let _ = reply.send_status_gather(ResultCode::Ok, alert, &spans[..n]);
     }
 
     /// Write, the spine way: validate + stage above a watermark, ack per the

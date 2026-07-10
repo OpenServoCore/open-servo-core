@@ -29,6 +29,11 @@ pub enum Request<'a> {
         addr: u16,
         count: u16,
     },
+    /// READ/GREAD with the PROFILE flag: reply with the named slot's spans
+    /// concatenated (§5.2).
+    ReadProfile {
+        slot: u8,
+    },
     Write {
         addr: u16,
         data: FrameBytes<'a>,
@@ -51,9 +56,22 @@ pub struct RequestCtx {
     pub may_reply: bool,
 }
 
+/// Max spans per gathered status — mirrors the profile region's slot width
+/// (`regions::profile::SPANS_PER_SLOT`).
+pub const GATHER_MAX: usize = 8;
+
 /// Dispatcher-facing reply surface.
 pub trait Reply {
     fn send_status(&mut self, status: Status<'_>) -> Result<(), SendError>;
+    /// Scattered status (§5.2): the payload is `spans` concatenated in order —
+    /// the bus copies them once into its snapshot and streams one frame.
+    /// `spans` holds at most [`GATHER_MAX`] entries.
+    fn send_status_gather(
+        &mut self,
+        result: ResultCode,
+        alert: bool,
+        spans: &[&[u8]],
+    ) -> Result<(), SendError>;
     /// Deferred ID change — applies after the in-flight TX completes.
     fn stage_id(&mut self, id: u8);
     /// Deferred baud change — applied at TX complete so the ack leaves at the old rate.

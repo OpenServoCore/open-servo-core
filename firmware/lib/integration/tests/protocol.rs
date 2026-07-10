@@ -4,9 +4,10 @@
 //! snapshots.
 
 use osc_core::BaudRate;
-use osc_core::regions::CALIB_BASE_ADDR;
 use osc_core::regions::config::addr::comms::{BAUD_RATE_IDX, ID};
 use osc_core::regions::control::addr::lifecycle::TORQUE_ENABLE;
+use osc_core::regions::profile::span_word;
+use osc_core::regions::{CALIB_BASE_ADDR, PROFILE_BASE_ADDR};
 use osc_integration::sim::{Sim, Source, WireFrame, assert_valid, instruction, status};
 use osc_protocol::wire::{Inst, MgmtOp, Opcode, ResultCode};
 use rstest::rstest;
@@ -264,19 +265,69 @@ fn mgmt_save_is_instruction_error(baud_idx: u8) {
 }
 
 #[apply(matrix)]
-fn read_with_profile_flag_is_instruction_error(baud_idx: u8) {
+fn profile_read_gathers_configured_spans(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
+    let s = sim.add_servo(ID5);
+
+    // Configure slot 0 over the wire (§5.2: ordinary WRITEs, no new
+    // instruction): model+fw (3 B at 0x000, odd length — no parity
+    // constraint) then the comms id byte.
+    let words = [span_word(0, 3), span_word(ID, 1)];
+    let mut payload = PROFILE_BASE_ADDR.to_le_bytes().to_vec();
+    for w in words {
+        payload.extend_from_slice(&w.to_le_bytes());
+    }
+    sim.host_send(&instruction(ID5, Opcode::Write, 0, &payload));
+    let frames = sim.run();
+    let (inst, _) = status(sole_reply(&frames));
+    assert_eq!(inst.result(), Some(ResultCode::Ok));
+
+    // READ + PROFILE names the slot; the reply is the spans' concatenation.
+    sim.host_send(&instruction(ID5, Opcode::Read, Inst::FLAG_PROFILE, &[0]));
+    let frames = sim.run();
+    let (inst, payload) = status(sole_reply(&frames));
+    assert_eq!(inst.result(), Some(ResultCode::Ok));
+    let (model, fw) = sim.servo_table(s, |t| {
+        (
+            t.config.identity.model_number,
+            t.config.identity.firmware_version,
+        )
+    });
+    let m = model.to_le_bytes();
+    assert_eq!(payload, &[m[0], m[1], fw, ID5]);
+}
+
+#[apply(matrix)]
+fn profile_read_unconfigured_slot_is_range(baud_idx: u8) {
     let mut sim = sim(baud_idx);
     sim.add_servo(ID5);
 
-    // READ + HOLD names a profile slot (§5.2), deferred → instruction error.
+    // Slot 1 was never configured (all words disabled) → `range` (§5.3).
+    sim.host_send(&instruction(ID5, Opcode::Read, Inst::FLAG_PROFILE, &[1]));
+    let frames = sim.run();
+    let (inst, _) = status(sole_reply(&frames));
+    assert_eq!(inst.result(), Some(ResultCode::Range));
+
+    // A slot index past the region is the same error.
+    sim.host_send(&instruction(ID5, Opcode::Read, Inst::FLAG_PROFILE, &[9]));
+    let frames = sim.run();
+    let (inst, _) = status(sole_reply(&frames));
+    assert_eq!(inst.result(), Some(ResultCode::Range));
+}
+
+#[apply(matrix)]
+fn profile_read_malformed_payload_is_instruction_error(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
+    sim.add_servo(ID5);
+
+    // PROFILE payload is exactly one slot byte; an addr+count shape rejects.
     sim.host_send(&instruction(
         ID5,
         Opcode::Read,
-        Inst::FLAG_HOLD,
+        Inst::FLAG_PROFILE,
         &[0, 0, 4, 0],
     ));
     let frames = sim.run();
-
     let (inst, _) = status(sole_reply(&frames));
     assert_eq!(inst.result(), Some(ResultCode::Instruction));
 }

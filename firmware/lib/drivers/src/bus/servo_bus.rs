@@ -775,6 +775,21 @@ impl<W: TxWire, C: CrcEngine> Reply for ReplyHandle<'_, W, C> {
         r
     }
 
+    fn send_status_gather(
+        &mut self,
+        result: ResultCode,
+        alert: bool,
+        spans: &[&[u8]],
+    ) -> Result<(), SendError> {
+        let r = self
+            .tx
+            .stage_gather(self.crc, self.id, result, alert, spans);
+        if r.is_ok() {
+            self.staged = true;
+        }
+        r
+    }
+
     fn stage_id(&mut self, id: u8) {
         *self.pending_id = Some(id);
     }

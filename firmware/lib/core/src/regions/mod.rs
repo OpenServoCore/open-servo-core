@@ -7,7 +7,8 @@
 //!   CALIB     0x080..0x180  (256 B) — persistence deferred (unused today)
 //!   CONTROL   0x180..0x200  (128 B) — RW volatile
 //!   TELEMETRY 0x200..0x280  (128 B) — RO from host
-//!   (reserved 0x280..0x400  384 B)
+//!   PROFILE   0x280..0x2C0  ( 64 B) — read-profile span words (§5.2)
+//!   (reserved 0x2C0..0x400  320 B)
 //!
 //! Owners go through `RegionStorage::with`/`with_mut` on the storage cell.
 //! Cross-domain readers that must avoid forming `&T` (aliasing-sensitive
@@ -17,6 +18,7 @@ pub mod calib;
 pub mod config;
 pub mod control;
 pub(crate) mod hooks;
+pub mod profile;
 pub mod telemetry;
 
 pub use calib::{BemfCalibBlock, CalibRegs, PotLutBlock};
@@ -25,6 +27,7 @@ pub use config::{
     ConfigPosLimits, ConfigRegs, ConfigStall, ConfigThermal, StallResponse,
 };
 pub use control::{BootMode, ControlLifecycle, ControlRegs, ControlStreaming, ControlSystem, Mode};
+pub use profile::{PROFILE_SLOTS, ProfileRegs, ProfileSlots, SPANS_PER_SLOT};
 pub use telemetry::{
     TelemetryBusLink, TelemetryConverted, TelemetryFault, TelemetryIntermediaries, TelemetryRaw,
     TelemetryRegs,
@@ -37,11 +40,13 @@ pub const CONFIG_REGION_SIZE: u16 = 128;
 pub const CALIB_REGION_SIZE: u16 = 256;
 pub const CONTROL_REGION_SIZE: u16 = 128;
 pub const TELEMETRY_REGION_SIZE: u16 = 128;
+pub const PROFILE_REGION_SIZE: u16 = 64;
 
 pub const CONFIG_BASE_ADDR: u16 = 0x000;
 pub const CALIB_BASE_ADDR: u16 = 0x080;
 pub const CONTROL_BASE_ADDR: u16 = 0x180;
 pub const TELEMETRY_BASE_ADDR: u16 = 0x200;
+pub const PROFILE_BASE_ADDR: u16 = 0x280;
 
 #[repr(C)]
 #[derive(Table)]
@@ -51,8 +56,9 @@ pub struct ControlTable {
     pub calib: CalibRegs,
     pub control: ControlRegs,
     pub telemetry: TelemetryRegs,
+    pub profile: ProfileRegs,
     #[ct_table(skip)]
-    _rsvd: [u8; 384],
+    _rsvd: [u8; 320],
 }
 
 impl ControlTableCell {

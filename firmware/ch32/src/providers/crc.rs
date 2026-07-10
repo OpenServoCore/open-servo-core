@@ -139,9 +139,17 @@ impl bus::CrcEngine for Crc {
         // later, by which point this µs-scale copy is long done. No spin, no
         // lock: a kernel tick tearing the image by a µs-window is fine — wire
         // and CRC both read the copy, so the reply stays CRC-consistent (§4.2).
-        // RX CRC no longer snapshots (it feeds the ring directly), so there is
-        // one copy per exchange and CH7 is unused.
+        // RX CRC no longer snapshots (it feeds the ring directly), so this
+        // holds one reply payload per exchange — a gathered reply (§5.2) lands
+        // as several spans at cumulative offsets; only the LAST copy stays
+        // fire-and-forget, so drain any prior span still in flight before
+        // re-pointing the channel (bounded; M2M outruns this spin by design).
         debug_assert!(off as usize + src.len() <= SNAPSHOT_LEN);
+        let mut budget = FEED_DRAIN_SPIN;
+        while dma::remaining(dma::Channel::CH6) != 0 && budget != 0 {
+            budget -= 1;
+            core::hint::spin_loop();
+        }
         // SAFETY: single writer per exchange — snapshot calls are serialized
         // by the bus driver, and consumers are ordered behind CH6 by the ladder.
         let dst = unsafe { (*SNAPSHOT.get()).0.as_ptr().add(off as usize) };

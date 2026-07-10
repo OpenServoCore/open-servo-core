@@ -11,10 +11,9 @@ use osc_protocol::crc::osc_crc_continue;
 use osc_protocol::reply::FrameBuf;
 use osc_protocol::wire::{self, Id, Inst, ResultCode};
 
-/// Staging buffer size. Payloads stream zero-copy from the table (§4.2), so
-/// the buffer holds only the header, tail pair, and CRC (offsets 0..8) plus
-/// the ≤ [`SMALL_COPY_MAX`] copy path — reads at odd addresses, the one case
-/// that would need a whole-frame copy, are rejected at dispatch (§5).
+/// Staging buffer size. Payloads stream from the engine's snapshot (§4.2), so
+/// the buffer holds only the header and CRC tail plus the ≤
+/// [`SMALL_COPY_MAX`] copy path.
 pub const REPLY_BUF: usize = 16;
 
 /// Payloads at or below this are copied into the staging buffer. Kept minimal:
@@ -105,9 +104,7 @@ impl<W: TxWire> TxEngine<W> {
     }
 
     /// Build the frame layout for a status reply; touches no wire state
-    /// (enable-when-ready is [`trigger`](Self::trigger), §4.2). Payloads
-    /// above [`SMALL_COPY_MAX`] are snapshotted through the CRC engine's
-    /// stable buffer — wire and CRC both stream the snapshot (§4.2).
+    /// (enable-when-ready is [`trigger`](Self::trigger), §4.2).
     pub fn stage<C: CrcEngine>(
         &mut self,
         crc: &mut C,
@@ -116,21 +113,44 @@ impl<W: TxWire> TxEngine<W> {
         alert: bool,
         data: &[u8],
     ) -> Result<(), SendError> {
+        self.stage_gather(crc, id, result, alert, &[data])
+    }
+
+    /// Gathered form of [`stage`](Self::stage): the payload is `spans`
+    /// concatenated in order (§5.2 profile reads; a plain reply is the
+    /// one-span case). Payload totals above [`SMALL_COPY_MAX`] are
+    /// snapshotted through the CRC engine's stable buffer at cumulative
+    /// offsets — wire and CRC both stream the one contiguous snapshot, so a
+    /// scattered read costs the same single copy as a plain read (§4.2).
+    pub fn stage_gather<C: CrcEngine>(
+        &mut self,
+        crc: &mut C,
+        id: u8,
+        result: ResultCode,
+        alert: bool,
+        spans: &[&[u8]],
+    ) -> Result<(), SendError> {
         if self.busy() {
             return Err(SendError::Busy);
         }
-        if data.len() > wire::MAX_PAYLOAD as usize {
+        let total: usize = spans.iter().map(|s| s.len()).sum();
+        if total > wire::MAX_PAYLOAD as usize {
             return Err(SendError::Overflow);
         }
-        let p = data.len() as u8;
+        let p = total as u8;
         let inst = Inst::status(result, alert);
         // Small payloads are cheaper to copy than to arm. An odd covered span
         // feeds its even bulk and leaves the last byte for the software fold
         // at patch (§3.2); odd POINTERS are the CRC provider's concern (it
         // stages them through its copy channel, §5).
-        if data.len() <= SMALL_COPY_MAX {
+        if total <= SMALL_COPY_MAX {
             self.buf.start(Id::new(id), inst);
-            self.buf.payload_mut()[..data.len()].copy_from_slice(data);
+            let pay = self.buf.payload_mut();
+            let mut at = 0;
+            for s in spans {
+                pay[at..at + s.len()].copy_from_slice(s);
+                at += s.len();
+            }
             self.buf.finish(p);
             let len = wire::len_for(p);
             let cov = wire::covered_len(len);
@@ -158,17 +178,29 @@ impl<W: TxWire> TxEngine<W> {
             self.crc_off = cov as u16;
         } else {
             // Snapshot reads (§4.2): the payload is copied ONCE into the
-            // engine's stable snapshot buffer, and both the wire arms and the
-            // CRC feeds stream the snapshot — the CRC provably covers the
-            // transmitted bytes, and the reply carries an atomic
-            // point-in-time image (`stage` runs kernel-exclusive, and the
-            // snapshot completes before it returns).
+            // engine's stable snapshot buffer — each span at its cumulative
+            // offset — and both the wire arms and the CRC feeds stream the
+            // snapshot: the CRC provably covers the transmitted bytes, and
+            // the reply carries an atomic point-in-time image (`stage` runs
+            // kernel-exclusive; the provider orders the copies ahead of both
+            // consumers).
             let b = self.buf.bytes_mut();
             b[0] = wire::ALIGN_BYTE;
             b[1] = id;
             b[2] = wire::len_for(p);
             b[3] = inst.0;
-            let ptr = crc.snapshot(0, data);
+            let mut ptr: *const u8 = core::ptr::null();
+            let mut off: u16 = 0;
+            for s in spans {
+                if s.is_empty() {
+                    continue;
+                }
+                let dst = crc.snapshot(off, s);
+                if off == 0 {
+                    ptr = dst;
+                }
+                off += s.len() as u16;
+            }
             self.arms[0] = Arm::Buf { off: 1, len: 3 };
             self.arms[1] = Arm::Ext { ptr, len: p as u16 };
             // The buffer's bytes 4..6 double as the CRC tail arm.
@@ -552,6 +584,62 @@ mod tests {
         let reference = reference(5, ResultCode::Ok, false, &data.0);
         assert_eq!(*s.last().unwrap(), reference[reference.len() - 2..]);
         assert_eq!(wire_bytes(&log), reference[1..]);
+    }
+
+    #[test]
+    fn gather_matches_sealed_reference_of_concat() {
+        let (mut eng, log) = engine();
+        let mut crc = FakeCrc::new();
+        // Three spans, odd interior lengths (no parity constraint, §5.2): the
+        // wire must carry exactly the concatenation.
+        let a = Aligned([0x10, 0x11, 0x12, 0]);
+        let b = Aligned([0x20, 0]);
+        let c = Aligned([0x30, 0x31, 0x32, 0x33]);
+        let spans: [&[u8]; 3] = [&a.0[..3], &b.0[..1], &c.0];
+        let concat: Vec<u8> = spans.concat();
+        eng.stage_gather(&mut crc, 3, ResultCode::Ok, false, &spans)
+            .unwrap();
+        run(&mut eng, &mut crc, None);
+        let log = log.borrow();
+        let reference = reference(3, ResultCode::Ok, false, &concat);
+        let s = sends(&log);
+        // Header, one contiguous snapshot arm, CRC — same shape as a plain
+        // zero-copy read (the gather is invisible to the wire).
+        assert_eq!(
+            s.iter().map(Vec::len).collect::<Vec<_>>(),
+            vec![3, concat.len(), 2]
+        );
+        assert_eq!(wire_bytes(&log), reference[1..]);
+        assert_eq!(*s.last().unwrap(), reference[reference.len() - 2..]);
+    }
+
+    #[test]
+    fn gather_tiny_total_takes_copy_path() {
+        let (mut eng, log) = engine();
+        let mut crc = FakeCrc::new();
+        // Two 1-byte spans: total 2 <= SMALL_COPY_MAX — buffer copy, no
+        // snapshot involved.
+        let spans: [&[u8]; 2] = [&[0xAA], &[0xBB]];
+        eng.stage_gather(&mut crc, 4, ResultCode::Ok, false, &spans)
+            .unwrap();
+        run(&mut eng, &mut crc, None);
+        let log = log.borrow();
+        let reference = reference(4, ResultCode::Ok, false, &[0xAA, 0xBB]);
+        assert_eq!(wire_bytes(&log), reference[1..]);
+        assert!(crc.snap.is_empty());
+    }
+
+    #[test]
+    fn gather_overflow_rejected() {
+        let (mut eng, _log) = engine();
+        let mut crc = FakeCrc::new();
+        let big = [0u8; 130];
+        let spans: [&[u8]; 2] = [&big, &big];
+        assert_eq!(
+            eng.stage_gather(&mut crc, 1, ResultCode::Ok, false, &spans),
+            Err(SendError::Overflow)
+        );
+        assert!(!eng.busy());
     }
 
     #[test]

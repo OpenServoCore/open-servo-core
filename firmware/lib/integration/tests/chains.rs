@@ -7,6 +7,7 @@
 use osc_core::regions::config::addr::identity::{FIRMWARE_VERSION, MODEL_NUMBER};
 use osc_core::regions::control::addr::lifecycle::GOAL_VELOCITY;
 use osc_core::regions::control::addr::streaming::{STREAM_DECIMATION, STREAM_FIELD_MASK};
+use osc_core::regions::profile::span_word;
 use osc_integration::sim::{Source, WireFrame, assert_valid, instruction, status};
 use osc_protocol::wire::{Inst, Opcode, ResultCode};
 use rstest::rstest;
@@ -152,6 +153,79 @@ fn gread_list_order_beats_id_order(baud_idx: u8) {
         vec![3, 1, 2],
         "replies follow list order, not id order"
     );
+}
+
+#[apply(matrix)]
+fn gread_profile_uniform_chains_gathered_replies(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
+    for id in [1u8, 2] {
+        sim.add_servo_with(id, 0, CHAIN_DEADLINE_US);
+    }
+    // Each servo's slot 0 gathers model(2) + fw(1); distinct values per servo.
+    let models = [0x1122u16, 0x3344];
+    for (i, m) in models.iter().enumerate() {
+        sim.servo_table_mut(i, |t| {
+            t.config.identity.model_number = *m;
+            t.config.identity.firmware_version = 0x50 + i as u8;
+            t.profile.slots.words[0] = span_word(MODEL_NUMBER, 2);
+            t.profile.slots.words[1] = span_word(FIRMWARE_VERSION, 1);
+        });
+    }
+
+    // GREAD + PROFILE uniform: slot byte, then the id-list (§5.2).
+    sim.host_send(&instruction(
+        BCAST,
+        Opcode::Gread,
+        Inst::FLAG_PROFILE,
+        &[0, 1, 2],
+    ));
+    let frames = sim.run();
+    let reps = replies(&frames);
+
+    assert_eq!(reps.len(), 2, "one status per listed servo: {frames:#?}");
+    assert_eq!(
+        reps.iter().map(|f| responder(f)).collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+    for (i, (f, m)) in reps.iter().zip(models.iter()).enumerate() {
+        let (result, payload) = decoded(f);
+        assert_eq!(result, ResultCode::Ok);
+        let mb = m.to_le_bytes();
+        assert_eq!(payload, &[mb[0], mb[1], 0x50 + i as u8]);
+    }
+}
+
+#[apply(matrix)]
+fn gread_profile_per_target_selects_distinct_slots(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
+    for id in [1u8, 2] {
+        sim.add_servo_with(id, 0, CHAIN_DEADLINE_US);
+    }
+    sim.servo_table_mut(0, |t| {
+        t.config.identity.model_number = 0x1122;
+        t.profile.slots.words[0] = span_word(MODEL_NUMBER, 2);
+    });
+    sim.servo_table_mut(1, |t| {
+        t.config.identity.firmware_version = 0x77;
+        // Servo 2 answers from slot 3 — per-target slot selection.
+        t.profile.slots.words[3 * 8] = span_word(FIRMWARE_VERSION, 1);
+    });
+
+    // [id, slot]× (§5.2).
+    sim.host_send(&instruction(
+        BCAST,
+        Opcode::Gread,
+        Inst::FLAG_PROFILE | Inst::FLAG_PER_TARGET,
+        &[1, 0, 2, 3],
+    ));
+    let frames = sim.run();
+    let reps = replies(&frames);
+
+    assert_eq!(reps.len(), 2, "one status per listed servo: {frames:#?}");
+    let (r1, p1) = decoded(reps[0]);
+    assert_eq!((r1, p1.as_slice()), (ResultCode::Ok, &[0x22, 0x11][..]));
+    let (r2, p2) = decoded(reps[1]);
+    assert_eq!((r2, p2.as_slice()), (ResultCode::Ok, &[0x77][..]));
 }
 
 #[apply(matrix)]
