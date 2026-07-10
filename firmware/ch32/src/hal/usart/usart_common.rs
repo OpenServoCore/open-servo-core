@@ -178,14 +178,16 @@ pub fn rx_errors(r: Regs) -> RxErrors {
 /// pre-release, F9): a DATAR read while a byte is mid-reception kills the
 /// byte in the shifter — no flags, no ring entry (bench 2026-07-09, the
 /// ≤1M flood residual). Everywhere else the flags self-clear via the CH5
-/// drain's DATAR access (every flag-setting event rings a byte, F2/F4),
-/// and the read is not even free where it IS safe: it consumes the armed
-/// SR-half, costing the next break its drain-self-clear (see
-/// `TxWire::release`) — clear only a flag that is actually latched.
+/// drain's DATAR access, paired with any prior STATR read (every
+/// flag-setting event rings a byte, F2/F4). The trailing STATR read here
+/// re-arms that pairing after the DATAR read consumed it — without it the
+/// NEXT break cannot drain-self-clear and its FE re-fires until the first
+/// data byte lands (bench: +12 µs of reply lag at 0.5M).
 #[inline]
 pub fn clear_rx_errors(r: Regs) {
     let _ = r.statr().read();
     let _ = r.datar().read();
+    let _ = r.statr().read();
 }
 
 #[inline]
