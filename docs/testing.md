@@ -45,9 +45,15 @@ the pirate's captured stamp stream — no wlink, no chip-counter reads; the wire
 the failure surface. It sweeps the full baud matrix (0.5M / 1M / 2M / 3M).
 
 - **turnaround** (`turnaround.rs`) — THE metric: instruction wire-end → status
-  break fall, per baud. 1 M is the tuned sweet spot (~35 µs); the ceiling is
-  baud-aware because turnaround rises at both higher and lower baud on this
-  silicon.
+  break fall, per baud, gated for ping AND read AND write. 1 M is the tuned
+  sweet spot (~35 µs ping); the ceiling is baud-aware because turnaround rises
+  at both higher and lower baud on this silicon, and the acked-WRITE gate sits
+  near the ~89 µs rules-dominated dispatch floor (the production hot loop pays
+  none of it — GWRITE is NOREPLY).
+- **rescue** (`rescue.rs`) — the §9.1 pulse reaches a servo at any baud, and
+  the full field-recovery flow (rescue → prefix-walk → ASSIGN → SAVE → reboot
+  → FACTORY). Both tests end with a rescue-based recovery tail so a transient
+  capture dropout never strands the bench unit.
 - **hot loop** (`hot_loop.rs`) — the production `[GWRITE(HOLD), COMMIT, GREAD]`
   zero-gap loop, the silicon twin of the DES `hot_loop` suite. The GREAD must
   read back the just-committed value every cycle; a stale read-back is a

@@ -12,11 +12,14 @@ use std::sync::{LazyLock, Mutex, MutexGuard};
 use std::time::Duration;
 
 use anyhow::Result;
-use bench::BOOT_BAUD;
 pub use bench::cli::SETTLE_MS;
-use bench::osc::{Exchange, ExchangeError, StatusFrame, build_write, parse_exchange};
+use bench::discover::{self, Found};
+use bench::osc::{
+    Exchange, ExchangeError, RESCUE_PULSE_US, StatusFrame, build_write, parse_exchange,
+};
 use bench::pirate::{Client, auto_detect_pirate};
 use bench::run::{BurstCycle, BurstReport, Report, burst_measure, capture, measure, xfer};
+use bench::{BOOT_BAUD, RESCUE_BAUD};
 use osc_core::regions::config::addr::comms::BAUD_RATE_IDX;
 use osc_protocol::wire::ResultCode;
 
@@ -65,6 +68,31 @@ impl Bench {
     /// One instruction→status exchange, decoded.
     pub fn xfer(&mut self, wire: &[u8]) -> Result<Exchange> {
         xfer(&mut self.client, wire, SETTLE_MS)
+    }
+
+    /// [`Self::xfer`] with a caller-chosen settle window (SAVE/FACTORY).
+    pub fn xfer_within(&mut self, wire: &[u8], settle_ms: u64) -> Result<Exchange> {
+        xfer(&mut self.client, wire, settle_ms)
+    }
+
+    /// Rescue-pulse the bus (§9.1) and follow it to the rescue baud.
+    pub fn rescue_pulse(&mut self) {
+        self.client.lowpulse(RESCUE_PULSE_US).expect("rescue pulse");
+        // Servo-side confirm completes ~100 µs after the pulse ends.
+        std::thread::sleep(Duration::from_millis(2));
+        self.follow_baud(RESCUE_BAUD);
+    }
+
+    /// Move the pirate to `baud` WITHOUT telling the servo — the harness
+    /// side of losing (or finding) a servo whose rate the host doesn't know.
+    pub fn follow_baud(&mut self, baud: u32) {
+        self.client.set_baud(baud).expect("set pirate baud");
+        self.client.reset().expect("reset pirate");
+    }
+
+    /// §9.2 prefix-tree walk at the current baud.
+    pub fn walk(&mut self) -> Vec<Found> {
+        discover::walk(&mut self.client).expect("prefix walk")
     }
 
     /// Exchange and assert an OK status; returns the decoded status frame.
@@ -118,7 +146,7 @@ impl Bench {
     /// Switch the servo (and pirate) to `baud`: WRITE `baud_rate_idx`, take the
     /// ack at the OLD baud (the servo applies the change only once the ack has
     /// drained, §4.2), then follow. A no-op if already there.
-    fn switch_baud(&mut self, baud: u32) {
+    pub fn switch_baud(&mut self, baud: u32) {
         if self.client.current_baud() == baud {
             return;
         }
