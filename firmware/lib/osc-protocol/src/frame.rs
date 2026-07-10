@@ -99,6 +99,25 @@ impl ReadReq {
     }
 }
 
+/// READ+PROFILE slot request: `slot(1)` names a profile slot instead of
+/// addr+count (§5.2).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct ProfileReq {
+    pub slot: u8,
+}
+
+impl ProfileReq {
+    #[inline]
+    pub fn parse(payload: FrameBytes) -> Option<ProfileReq> {
+        if payload.len() != 1 {
+            return None;
+        }
+        Some(ProfileReq {
+            slot: payload.u8_at(0)?,
+        })
+    }
+}
+
 /// WRITE request: `addr(2)` little-endian, then the data bytes (§5).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct WriteReq<'a> {
@@ -193,6 +212,13 @@ mod tests {
         );
         assert_eq!(ReadReq::parse(fb(&[0x00, 0x02, 0x08])), None);
         assert_eq!(ReadReq::parse(fb(&[0, 0, 0, 0, 0])), None);
+    }
+
+    #[test]
+    fn profile_req_parse() {
+        assert_eq!(ProfileReq::parse(fb(&[2])), Some(ProfileReq { slot: 2 }));
+        assert_eq!(ProfileReq::parse(fb(&[])), None);
+        assert_eq!(ProfileReq::parse(fb(&[2, 0])), None);
     }
 
     #[test]

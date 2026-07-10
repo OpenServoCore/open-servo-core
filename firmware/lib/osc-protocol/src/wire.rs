@@ -151,6 +151,8 @@ pub struct Inst(pub u8);
 
 impl Inst {
     pub const FLAG_HOLD: u8 = 1 << 0;
+    /// Bit 0 on READ/GREAD: the payload names a profile slot (§5.2).
+    pub const FLAG_PROFILE: u8 = Self::FLAG_HOLD;
     // Bit 1 is reserved (0) in both layouts — freed by the pad deletion,
     // kept for future extensions (§3.1, §5).
     pub const FLAG_NOREPLY: u8 = 1 << 2;
@@ -190,6 +192,13 @@ impl Inst {
     #[inline]
     pub const fn hold(self) -> bool {
         self.0 & Self::FLAG_HOLD != 0
+    }
+
+    /// Bit 0's read-side meaning (§5): on READ/GREAD the payload names a
+    /// profile slot instead of addr+count (§5.2). Same bit as HOLD.
+    #[inline]
+    pub const fn profile(self) -> bool {
+        self.hold()
     }
 
     #[inline]
@@ -322,6 +331,15 @@ mod tests {
         assert!(i.noreply());
         assert!(!i.per_target());
         assert_eq!(i.result(), None);
+    }
+
+    #[test]
+    fn inst_profile_is_bit0_read_side() {
+        let r = Inst::instruction(Opcode::Read, Inst::FLAG_PROFILE);
+        assert!(r.profile());
+        assert!(r.hold());
+        let plain = Inst::instruction(Opcode::Read, 0);
+        assert!(!plain.profile());
     }
 
     #[test]
