@@ -42,6 +42,14 @@ write = goal_position 4 B; flash-layout swings between builds are ±5 µs):
 (In-place-trigger row: ping 38.8 µs at 2M, 32.2 µs at 0.5M; burst means
 dropped again — hot loop @1M 35.4 µs, plain flood @1M 31.3 µs.)
 
+(Profile reads, 2026-07-10 build: a 3-span/8 B §5.2 profile read runs
+39.9/48.2/46.6/50.5 µs at 0.5M/1M/2M/3M vs 36.4/37.6/40.0/39.1 for the
+same 8 B as one contiguous READ — the span resolution and two extra
+snapshot copies cost ~4–11 µs, hidden under wire time only at 0.5M.
+50/50 clean at every baud; the 2M soak surfaced a PIRATE capture bug
+(idle-clear DATAR read eats the reply's final byte every 128 exchanges —
+task #7), servo exonerated by BICSNAP edge counts.)
+
 (DATAR-discipline row: ping 42.2 µs at 2M, 47.2 µs at 0.5M — flat vs the
 pre-fix baseline; the burst columns include the formerly-failing ≤1M legs.
 Ring-cadence row: ping 41.0 µs at 2M, **35.6 µs at 0.5M** (was 47.6) — the

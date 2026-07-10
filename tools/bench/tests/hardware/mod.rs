@@ -22,6 +22,7 @@ mod support;
 mod chain;
 mod hot_loop;
 mod ping;
+mod profile;
 mod read;
 mod reg_write_action;
 mod silence;

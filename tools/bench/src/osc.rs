@@ -49,6 +49,40 @@ pub fn build_read(id: u8, addr: u16, len: u16) -> Vec<u8> {
     build_instruction(id, Opcode::Read, 0, &payload)
 }
 
+/// PROFILE region base in the flat table (osc-core `regions::PROFILE_BASE_ADDR`;
+/// pinned here to keep the heavy core crate out of the bench build).
+pub const PROFILE_BASE_ADDR: u16 = 0x280;
+/// Span words per profile slot (osc-core `regions::profile::SPANS_PER_SLOT`).
+pub const PROFILE_SPANS_PER_SLOT: usize = 8;
+
+/// Packed profile span word `[addr:10][count:6]` (§5.2; mirrors osc-core
+/// `regions::profile::span_word`). `count = 0` = word disabled.
+pub const fn profile_span_word(addr: u16, count: u8) -> u16 {
+    (addr << 6) | (count as u16 & 0x3F)
+}
+
+/// Table byte address of `slot`'s first span word.
+pub const fn profile_slot_addr(slot: u8) -> u16 {
+    PROFILE_BASE_ADDR + slot as u16 * (PROFILE_SPANS_PER_SLOT as u16 * 2)
+}
+
+/// WRITE that configures one whole profile slot: the given spans, remaining
+/// words zeroed (disabled).
+pub fn build_profile_config(id: u8, slot: u8, spans: &[(u16, u8)]) -> Vec<u8> {
+    assert!(spans.len() <= PROFILE_SPANS_PER_SLOT, "spans per slot cap");
+    let mut data = Vec::with_capacity(PROFILE_SPANS_PER_SLOT * 2);
+    for &(addr, count) in spans {
+        data.extend_from_slice(&profile_span_word(addr, count).to_le_bytes());
+    }
+    data.resize(PROFILE_SPANS_PER_SLOT * 2, 0);
+    build_write(id, profile_slot_addr(slot), &data)
+}
+
+/// READ + PROFILE: the payload names a slot (§5.2).
+pub fn build_read_profile(id: u8, slot: u8) -> Vec<u8> {
+    build_instruction(id, Opcode::Read, Inst::FLAG_PROFILE, &[slot])
+}
+
 /// WRITE: `addr(2)` little-endian then the data bytes (mirrors `WriteReq`).
 pub fn build_write(id: u8, addr: u16, data: &[u8]) -> Vec<u8> {
     let mut payload = Vec::with_capacity(2 + data.len());
