@@ -69,6 +69,24 @@ impl bus::TxWire for TxWire {
     }
 
     fn release(&mut self) {
+        // Retire a still-latched RX error flag before handing the wire
+        // back: the shifter is empty and our push-pull drive still holds
+        // the line high, so no byte can be mid-reception — the one
+        // provably safe instant for the clear's DATAR read (a DATAR read
+        // during reception kills the in-flight byte, bench 2026-07-09). A
+        // flag whose byte drained before any STATR read never completed
+        // the SR-then-DR pair, and with no further RX drains coming it
+        // storms the vector once the wire idles (bench signature: the
+        // first ack-bearing exchange after a hot-loop leg dies). The
+        // clear is CONDITIONAL because it is not free: a DATAR read
+        // consumes the armed SR-half, so the next break's flag cannot
+        // drain-self-clear and its FE re-fires until the first data byte
+        // lands — +12 µs of reply lag at 0.5M (bench-measured). Flags
+        // that already self-cleared must be left alone.
+        let errs = usart::rx_errors(USART1);
+        if errs.fe || errs.ore || errs.pe || errs.ne {
+            usart::clear_rx_errors(USART1);
+        }
         // Hand the wire back: AF open-drain releases the driver and the
         // bus pull-up holds mark; HDSEL RX keeps hearing through the pin.
         gpio::configure(chip::BUS_USART_MAPPING.tx_pin(), PinMode::AF_OPEN_DRAIN);

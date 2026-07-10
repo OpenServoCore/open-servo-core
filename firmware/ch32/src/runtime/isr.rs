@@ -96,14 +96,20 @@ pub fn on_adc_dma_tc() {
 pub fn on_usart1() {
     crate::log::trace!("usart1 isr");
     // (a) RX errors: a break (or mid-frame garble) → the framer anchors on
-    // the just-ringed 0x00. The RX drain outranks every other DMA channel
-    // (see `hal::dma`) and the arbiter preempts per-beat, so the break byte is
-    // in the ring before this vector enters — no FE-before-its-byte window
-    // (bringup `rx_dma_drain_latency`: 0 RXNE-set-at-entry once RX owns the
-    // top). The IRQ is the break signal, NOT the flags: the hardware SR→DR
-    // clear can complete between the pend and this read (the DMA drain is the
-    // DR half), leaving STATR clean, so any non-TC entry is an RX error
-    // whether or not its flags survived.
+    // the just-ringed 0x00. This path never reads DATAR: a CPU DATAR read
+    // while a byte is mid-reception kills the byte in the shifter — no
+    // flags, no ring entry, every later anchor shifts (bench 2026-07-09,
+    // the ≤1M flood residual; the DMA ladder only protects the byte already
+    // in RDR). Flags normally self-clear instead: a STATR read (this entry)
+    // arms the SR half of the SR-then-DR sequence and the CH5 drain's own
+    // DATAR access is the DR half — every flag-setting event rings a byte
+    // (F2/F4). The one corner that leaves a flag latched (the byte drained
+    // before any STATR read, so the pair never formed — e.g. a lagged FE
+    // delivery on a burst's LAST frame, whose reply produces no further RX
+    // drains) is retired by `TxWire::release` while our drive still holds
+    // the line. Any non-TC entry is treated as an RX error whether or not
+    // its flags survived; on_break is idempotent (A2: position from ring
+    // data, the FE only records a tick).
     let errs = usart::rx_errors(USART1);
     let any_err = errs.fe || errs.ore || errs.pe || errs.ne;
     let tc = usart::is_tcie(USART1) && usart::is_tc(USART1);
@@ -114,12 +120,6 @@ pub fn on_usart1() {
         let mut dispatcher = HighDispatcher;
         // SAFETY: see fn doc.
         unsafe { Drivers::bus() }.on_break(&mut dispatcher);
-        if any_err {
-            // SR-then-DR is the only V006 error clear. The RX drain already
-            // took the ring byte (it outranks all DMA), so this DR read reads
-            // stale data and cannot steal an in-flight byte.
-            usart::clear_rx_errors(USART1);
-        }
     }
 
     // (b) TC: an armed TX arm drained (shifter empty). TCIE gates arbitration

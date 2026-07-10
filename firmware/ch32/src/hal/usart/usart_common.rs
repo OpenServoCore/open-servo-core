@@ -174,9 +174,14 @@ pub fn rx_errors(r: Regs) -> RxErrors {
 
 /// SR-then-DR is the only way to clear ORE/PE/FE/NE on V006 (write-0 is
 /// bench-disproven: the flags are truly RO and a masked STATR write storms
-/// the vector). The DR read cannot steal an in-flight byte: the RX drain
-/// outranks every DMA channel (see `hal::dma`) and the arbiter preempts
-/// per-beat, so the ring byte is already taken and this reads stale data.
+/// the vector). Call ONLY while our own drive holds the line (TX window /
+/// pre-release, F9): a DATAR read while a byte is mid-reception kills the
+/// byte in the shifter — no flags, no ring entry (bench 2026-07-09, the
+/// ≤1M flood residual). Everywhere else the flags self-clear via the CH5
+/// drain's DATAR access (every flag-setting event rings a byte, F2/F4),
+/// and the read is not even free where it IS safe: it consumes the armed
+/// SR-half, costing the next break its drain-self-clear (see
+/// `TxWire::release`) — clear only a flag that is actually latched.
 #[inline]
 pub fn clear_rx_errors(r: Regs) {
     let _ = r.statr().read();
