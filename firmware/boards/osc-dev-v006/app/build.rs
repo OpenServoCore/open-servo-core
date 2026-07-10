@@ -12,6 +12,9 @@ fn main() {
     println!("cargo:rerun-if-changed=memory.x");
     println!("cargo:rustc-link-arg=-Ttb-app.x");
     println!("cargo:rustc-link-arg=-Ttb-run-mode.x");
+    // Saved-config slot bases (osc-native §9.4); the fragment ships from
+    // osc-ch32's build.rs, which also adds its search path.
+    println!("cargo:rustc-link-arg=-Tosc-config.x");
 
     if std::env::var("CARGO_FEATURE_DEFMT").is_ok() {
         println!("cargo:rustc-link-arg=-Tdefmt.x");

@@ -45,20 +45,20 @@ pub fn erase(addr: u32) {
     lock();
 }
 
-/// Fast-page write (RM §18.4.5). `addr` 4-byte aligned, `data.len()`
-/// a multiple of 4, must not cross a page boundary.
-pub fn write(addr: u32, data: &[u8]) {
+/// Fast-page write (RM §18.4.5) from scattered segments streamed in order —
+/// one buffer-load pass, one program cycle; no staging copy. `addr` 4-byte
+/// aligned, each segment's len a multiple of 4, the total must not cross a
+/// page boundary. Buffer words past the total program as erased (BUFRST
+/// leaves them all-1s).
+pub fn write(addr: u32, segs: &[&[u8]]) {
     let page_base = addr & !(PAGE_SIZE as u32 - 1);
+    let total: usize = segs.iter().map(|s| s.len()).sum();
     debug_assert!(
         (addr as usize & (BUF_LOAD_SIZE - 1)) == 0,
         "write: addr not word-aligned"
     );
     debug_assert!(
-        data.len().is_multiple_of(BUF_LOAD_SIZE),
-        "write: len not word-aligned"
-    );
-    debug_assert!(
-        addr + data.len() as u32 <= page_base + PAGE_SIZE as u32,
+        addr + total as u32 <= page_base + PAGE_SIZE as u32,
         "write: crosses page boundary"
     );
 
@@ -71,17 +71,24 @@ pub fn write(addr: u32, data: &[u8]) {
     wait_busy();
 
     let mut buf_addr = addr;
-    let mut ptr = data.as_ptr() as *const u32;
-    for _ in 0..data.len() / BUF_LOAD_SIZE {
-        let word = unsafe { ptr.read() };
-        unsafe { core::ptr::write_volatile(buf_addr as *mut u32, word) };
-        FLASH.ctlr().write(|w| {
-            w.set_ftpg(true);
-            w.set_bufload(true);
-        });
-        wait_busy();
-        buf_addr += BUF_LOAD_SIZE as u32;
-        ptr = unsafe { ptr.add(1) };
+    for seg in segs {
+        debug_assert!(
+            seg.len().is_multiple_of(BUF_LOAD_SIZE),
+            "write: segment not word-aligned"
+        );
+        let mut ptr = seg.as_ptr() as *const u32;
+        for _ in 0..seg.len() / BUF_LOAD_SIZE {
+            // Sources may sit at any alignment (a stack header array).
+            let word = unsafe { ptr.read_unaligned() };
+            unsafe { core::ptr::write_volatile(buf_addr as *mut u32, word) };
+            FLASH.ctlr().write(|w| {
+                w.set_ftpg(true);
+                w.set_bufload(true);
+            });
+            wait_busy();
+            buf_addr += BUF_LOAD_SIZE as u32;
+            ptr = unsafe { ptr.add(1) };
+        }
     }
 
     FLASH.addr().write(|w| w.set_far(page_base));

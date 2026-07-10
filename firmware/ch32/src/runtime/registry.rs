@@ -13,12 +13,12 @@
 
 use core::cell::SyncUnsafeCell;
 
+use osc_core::RegionStorage;
 use osc_drivers::Level;
 use osc_drivers::bus::ServoBus;
 use osc_drivers::led::Led;
 use osc_drivers::traits::bus::Providers;
 
-use crate::ConfigDefaults;
 use crate::cfg::board_wiring::BoardWiring;
 use crate::providers::crc::Crc;
 use crate::providers::deadline::Deadline;
@@ -77,9 +77,10 @@ pub struct Drivers;
 impl Drivers {
     /// SAFETY: bringup-only, pre-IRQ; sole writer. Must be called exactly
     /// once, after `runtime::init::bring_up_bus` has configured USART1, the
-    /// CH5 ring, and the SPI-CRC engine (`ServoBus::new` applies `defaults
-    /// .baud` to the live BRR).
-    pub unsafe fn install(w: &BoardWiring, defaults: &ConfigDefaults) {
+    /// CH5 ring, and the SPI-CRC engine, and after the table's comms block is
+    /// final (defaults seeded + saved image overlaid) — `ServoBus::new`
+    /// applies the effective baud to the live BRR.
+    pub unsafe fn install(w: &BoardWiring) {
         // SAFETY: see fn doc.
         let dbg = unsafe { &mut *CELLS.dbg.get() };
         debug_assert!(dbg.is_none(), "Drivers: dbg already installed");
@@ -93,6 +94,16 @@ impl Drivers {
             Monotonic,
         ));
 
+        // The table is the comms authority here — a saved image's id/baud
+        // must be what the bus comes up as, not the board defaults.
+        let (id, baud, deadline_us) = crate::runtime::statics::SHARED.table.with(|t| {
+            (
+                t.config.comms.id,
+                t.config.comms.baud_rate_idx,
+                t.config.comms.response_deadline_us,
+            )
+        });
+
         // SAFETY: see fn doc.
         let bus = unsafe { &mut *CELLS.bus.0.get() };
         debug_assert!(bus.is_none(), "Drivers: bus already installed");
@@ -103,9 +114,9 @@ impl Drivers {
             TxWire,
             UsartBaud,
             LineSense,
-            defaults.id,
-            defaults.baud,
-            defaults.response_deadline_us,
+            id,
+            baud,
+            deadline_us,
         ));
     }
 

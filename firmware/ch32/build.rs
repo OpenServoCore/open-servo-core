@@ -18,6 +18,12 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     generate_pin_and_usart_mapping(&out)?;
 
+    // Ship the saved-config linker fragment (`INCLUDE osc-config.x` in a
+    // board's memory.x); the link-search path propagates to the board link.
+    fs::copy("osc-config.x", out.join("osc-config.x"))?;
+    println!("cargo:rustc-link-search={}", out.display());
+    println!("cargo:rerun-if-changed=osc-config.x");
+
     println!("cargo:rerun-if-changed=build.rs");
     Ok(())
 }

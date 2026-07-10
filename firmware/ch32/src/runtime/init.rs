@@ -8,6 +8,7 @@ use crate::hal::{
     gpio::{self, PinMode},
     opa, rcc, systick, timer, usart,
 };
+use crate::providers::config_store;
 use crate::providers::crc::Crc;
 use crate::providers::ring::RxRing;
 use crate::runtime::Drivers;
@@ -33,9 +34,11 @@ pub fn bringup(
     configure_pins(wiring);
     crate::log::debug!("gpio configured");
 
-    // Sole writer to CONFIG: pre-IRQ, pre-`Drivers::install`. Seeds the
-    // dispatcher's view of id/baud/deadline from the board defaults.
+    // Sole writer to CONFIG: pre-IRQ, pre-`Drivers::install`. Board defaults
+    // first, then the saved image overlays them (§9.4) — `Drivers::install`
+    // reads the effective comms block from the table.
     SHARED.table.seed_config_defaults(defaults);
+    config_store::ConfigStore::boot_load();
     SHARED.seed_uid(esig::uid());
 
     bring_up_analog_chain(&wiring.current_sense);
@@ -61,9 +64,9 @@ pub fn bringup(
     crate::log::debug!("bus usart + rx ring + crc engine armed");
 
     // Drivers::install runs after the bus peripherals are live: `ServoBus
-    // ::new` applies `defaults.baud` to the already-configured BRR.
+    // ::new` applies the table's effective baud to the already-configured BRR.
     // SAFETY: bringup-only, pre-IRQ; sole writer.
-    unsafe { Drivers::install(wiring, defaults) };
+    unsafe { Drivers::install(wiring) };
     crate::log::debug!("drivers installed");
 
     start_center_aligned_pwm(pre.pwm_psc, pre.pwm_arr);
