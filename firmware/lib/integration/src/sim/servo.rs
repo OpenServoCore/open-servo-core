@@ -13,6 +13,7 @@ use super::providers::{
     BaudState, DeadlineState, Handles, RingState, SimBaud, SimCrc, SimDeadline, SimLine,
     SimProviders, SimRing, SimWire,
 };
+use super::store::RamStore;
 
 /// Default identity a fresh sim servo answers PING with (model + fw).
 pub const DEFAULT_MODEL: u16 = 0x1234;
@@ -26,7 +27,9 @@ pub struct SimServo {
 
 impl SimServo {
     /// Build a servo at `idx`, seed its table, and wire the providers to the
-    /// shared core + returned handles.
+    /// shared core + returned handles. A `store` mirrors the chip bringup:
+    /// boot overlay after the default seed, and the bus comes up on the
+    /// table's effective comms block (a saved id/baud is what answers).
     pub fn build(
         core: &Rc<RefCell<Core>>,
         idx: usize,
@@ -34,10 +37,10 @@ impl SimServo {
         rate: BaudRate,
         skew_ppm: i32,
         response_deadline_us: u16,
+        store: Option<&'static RamStore>,
     ) -> (Box<SimServo>, Handles) {
         let ring = RingState::new();
         let deadline = DeadlineState::new();
-        let baud = BaudState::new(rate);
 
         let shared = Shared::new();
         shared.table.seed_config_defaults(&ConfigDefaults {
@@ -46,6 +49,10 @@ impl SimServo {
             response_deadline_us,
             ..Default::default()
         });
+        if let Some(store) = store {
+            store.boot_load(&shared.table);
+            shared.seed_store(store);
+        }
         // Default UID: the id repeated — distinct per servo, predictable for
         // ENUM tests; override via `seed_uid` where prefix structure matters.
         shared.seed_uid([id; 16]);
@@ -55,6 +62,17 @@ impl SimServo {
             t.config.identity.model_number = DEFAULT_MODEL;
             t.config.identity.firmware_version = DEFAULT_FIRMWARE;
         });
+
+        // The table is the comms authority (registry `Drivers::install` does
+        // the same read on the chip).
+        let (id, rate, response_deadline_us) = shared.table.with(|t| {
+            (
+                t.config.comms.id,
+                t.config.comms.baud_rate_idx,
+                t.config.comms.response_deadline_us,
+            )
+        });
+        let baud = BaudState::new(rate);
 
         let bus = ServoBus::new(
             SimRing::new(ring.clone()),

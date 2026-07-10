@@ -12,6 +12,7 @@ mod core;
 mod cpu;
 mod providers;
 mod servo;
+mod store;
 mod support;
 
 #[cfg(test)]
@@ -30,6 +31,7 @@ use self::providers::Handles;
 use self::servo::SimServo;
 
 pub use self::cpu::HandlerCost;
+pub use self::store::RamStore;
 
 /// XOR mask applied to bytes ringed at a baud-mismatched receiver: arbitrary
 /// but nonzero, so mismatched data never survives as valid content.
@@ -84,10 +86,28 @@ impl Sim {
 
     /// Add a servo with the default table seed at this id; returns its index.
     pub fn add_servo(&mut self, id: u8) -> usize {
-        self.add_servo_with(id, 0, DEFAULT_RESPONSE_DEADLINE_US)
+        self.add_servo_full(id, 0, DEFAULT_RESPONSE_DEADLINE_US, None)
     }
 
     pub fn add_servo_with(&mut self, id: u8, skew_ppm: i32, response_deadline_us: u16) -> usize {
+        self.add_servo_full(id, skew_ppm, response_deadline_us, None)
+    }
+
+    /// Add a servo with a persistence store: its boot overlay runs against
+    /// the store's slots (§9.4), so a saved image's comms block wins over
+    /// `id` — sharing one leaked store across `Sim` instances models a
+    /// reboot with flash intact.
+    pub fn add_servo_with_store(&mut self, id: u8, store: &'static RamStore) -> usize {
+        self.add_servo_full(id, 0, DEFAULT_RESPONSE_DEADLINE_US, Some(store))
+    }
+
+    fn add_servo_full(
+        &mut self,
+        id: u8,
+        skew_ppm: i32,
+        response_deadline_us: u16,
+        store: Option<&'static RamStore>,
+    ) -> usize {
         let idx = self.servos.len();
         let (servo, handles) = SimServo::build(
             &self.core,
@@ -96,6 +116,7 @@ impl Sim {
             self.rate,
             skew_ppm,
             response_deadline_us,
+            store,
         );
         self.servos.push(servo);
         self.handles.push(handles);
