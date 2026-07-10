@@ -59,21 +59,18 @@ the failure surface. It sweeps the full baud matrix (0.5M / 1M / 2M / 3M).
 
 Longer soak: `BENCH_BURST_CYCLES=25000 scripts/gears.sh`.
 
-### The strict burst gate and the known glitch
+### The strict burst gate
 
 The burst tests assert **zero failures** — no stale read-backs, no missed or
-malformed replies — at every baud. They do **not** budget around the framer's
-intermittent low-baud glitch (a dropped/late frame that a second pass would
-recover; an unidentified bug, tracked separately). That is deliberate: a run
-that hits the glitch **fails**, so the bench stays an honest reproducer rather
-than a tolerance that hides the bug. When the glitch is fixed, these tests go
-green on their own.
-
-Practically: the burst tests are clean at 2M/3M and intermittently red at
-0.5M/1M (the aggressive plain flood reproduces it most readily). A red gear-3 run
-prints the exact baud and the `stale` / `no-reply` / `other` breakdown — feed
-that to the separate investigation. The measurement helpers do not retry, so a
-first-exchange failure is a real signal too.
+malformed replies — at every baud, with no tolerance budget. That strictness
+is what root-caused the former "low-baud glitch" (fixed 2026-07-09: a phantom
+rescue confirm aliasing data bits, and a CPU DATAR read killing the RX byte
+mid-reception — see `osc-servo-transport.md` §6 A4 and
+`osc-native-protocol.md` §9.1); the tests went green on their own once the
+real bugs died, exactly as designed. Keep the gate strict: a red run prints
+the exact baud and the `stale` / `no-reply` / `other` breakdown, and the
+measurement helpers do not retry, so a first-exchange failure is a real
+signal too.
 
 The `tool-osc-*` binaries in `tools/bench/src/bin` are the forensic instruments
 behind these tests — `tool-osc-burst` shares the exact cycle engine the hot-loop

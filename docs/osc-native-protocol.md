@@ -244,10 +244,11 @@ blocking chain — nothing polls or waits on the copy. Correctness comes
 from relative speed and scheduling order instead: the copy is kicked off
 earliest (at stage time, ahead of the trigger) and is also the fastest of
 the three (plain M2M DMA outruns the CRC engine, which itself runs ~8×
-wire speed, F6), and its channels (CH6/CH7) sit above the CRC-feed and
-wire-TX channels on the bus-arbitration ladder — so the copy is guaranteed
-done before either downstream consumer reaches the bytes it needs, by
-construction, not by synchronization. None of this costs CPU: all three
+wire speed, F6), and its channel (CH6) sits above the CRC-feed channel on
+the bus-arbitration ladder (the RX ring alone owns the top — see
+`osc-servo-transport.md` §6 A4) — so the copy is guaranteed done before
+either downstream consumer reaches the bytes it needs, by construction,
+not by synchronization. None of this costs CPU: all three
 engines run in hardware, freeing the core to run the motor kernel tick
 underneath. The one copy still buys two things a direct-from-table stream
 couldn't: the table address's parity becomes irrelevant to the wire/CRC
@@ -451,8 +452,14 @@ baud. The signal itself is baud-agnostic (raw GPIO low suffices at the
 host), so it reaches a servo whose rate is unknown, and it unifies a
 mixed-rate bus onto one channel in a single pulse. Detection costs nothing
 extra: the FE ISR samples the pin level — a normal break has risen by ISR
-entry [F5], a rescue low has not; a SysTick recheck ~100 µs later confirms
-the span. No EXTI storm, no edge capture. Recovery flow: rescue break →
+entry [F5], a rescue low has not; a SysTick recheck ~100 µs later, and a
+second sample a byte-time after a passing first, confirm the span. The
+second sample makes the confirm aliasing-proof: a host TX stall can park
+the first sample inside a data byte's low bits with the ring cursor frozen
+(bench-observed at 1M — phantom rescue, the servo wedged at 0.5 M under a
+1 M host), but data cannot hold the line low a whole byte-time without
+completing a byte, and a completed byte rings and moves the cursor. No
+EXTI storm, no edge capture. Recovery flow: rescue break →
 talk at 0.5 M → fix the baud register → COMMIT/reboot. Limitation: it
 cannot interrupt a servo wedged mid-transmit (RX is muted during own TX
 [F9]) — it is config recovery, not a babble killer.
@@ -533,7 +540,7 @@ not just the live table.
 | DMA1 CH4            | TX stream (enable-when-ready)                     |
 | DMA1 CH3 + SPI1     | CRC engine (no pins) [F6]                         |
 | DMA1 CH1 / CH2      | ADC / free                                        |
-| DMA1 CH6, CH7       | copy-once snapshot buffer (§4.2), VERYHIGH        |
+| DMA1 CH6            | copy-once snapshot buffer (§4.2); CH7 free        |
 | SysTick             | framer deadlines A/B, T_turn, reclaim             |
 | TIM1/TIM2           | motor control, freed from transport duty          |
 | EXTI                | unused — no transport consumer at all (§9.3)      |

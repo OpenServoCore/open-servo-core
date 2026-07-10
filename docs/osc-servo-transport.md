@@ -5,14 +5,19 @@ unified as the spine (2026-07-08); DMA priority ladder + direct-from-ring RX
 CRC LANDED (2026-07-08) — RX alone owns the top of the DMA ladder, which
 closes the FE-before-byte / byte-steal window at the hardware arbiter and
 retired the `db75cff7` FE-promise + `a19d9377` RX-flag-park bandaid, and RX
-CRC now feeds the ring directly (no M2M staging copy) — see §6 A4. Dispatch
-always runs ahead of the CRC verdict,
-routed by instruction class, and the verdict gates EFFECTS, not work (§4,
-§6 A3(b); "speculation" survives only in the decision-history of §6 A3 and
-§8). Describes the transport as restored
-by the pre-FIFO revert and evolved by the CRC/framing side quest (CRC-16/ARC
-LSB-first, no pad/parity rules, snapshot reads), then the amendments that
-close the zero-gap defect and the spine unification. Companion pillars:
+CRC now feeds the ring directly (no M2M staging copy) — see §6 A4.
+EVERYTHING RUNS AT HIGH (inline-unify, 2026-07-08): the LOW dispatch
+consumer and its two wake lanes are DELETED — every instruction class
+except verdict-first dispatches inline on the HIGH vectors, and the motor
+kernel's tick coalescing under bursts is measured and accepted (§2).
+Dispatch always runs ahead of the CRC verdict, and the verdict gates
+EFFECTS, not work (§4; "speculation" and the class-routing carve-out
+survive only in the decision-history of §6 A3 and §8). Low-baud flood
+residual ROOT-CAUSED AND FIXED (2026-07-09): a CPU DATAR read mid-reception
+kills the in-flight RX byte (§6 A4 — the RX/error path never touches DATAR;
+a latched leftover flag is conditionally retired at reply release, under
+our own line drive), and the rescue confirm is two-phase against data-bit
+aliasing (`osc-native-protocol.md` §9.1). Companion pillars:
 `osc-native-protocol.md` (the wire), `driver-pattern.md` (the layering).
 Code is authoritative; when this doc and the code disagree, fix the doc.
 
@@ -26,29 +31,31 @@ write = goal_position 4 B; flash-layout swings between builds are ±5 µs):
 | A1+A2 landed         | 38.6 µs | 45.7 µs | 93.3 µs  | 41.9 µs | 300/300           |
 | A3(b) landed         | 35.4 µs | 41.6 µs | 84.5 µs  | 58.4 µs | 2400/2400         |
 | spine unified        | 38.3 µs | 44.7 µs | 127.3 µs | 40.7 µs | 2400/2400         |
+| inline-unify + DATAR discipline | 35.3 µs | 39.9 µs | 86.8 µs | 45.6 µs | 8000/8000 (+24k floods ≤1M) |
 
-Spine same-day 3M row: read-16 49.7 µs, write 138.7 µs. The class routing
-(§6 A3(b)) trades write latency for ping/read latency and kernel isolation:
+(2026-07-09 row: ping 42.2 µs at 2M, 47.2 µs at 0.5M — flat vs the pre-fix
+baseline at every baud; the burst columns now include the formerly-failing
+≤1M legs.)
 
-- **Ping/read recover fully at 3M.** They dispatch inline at HIGH with zero
-  hop (wire class), so the A3(b) 3M regression is gone: ping 58.4 → 40.7,
-  read-16 66.6 → 49.7. 1M ping/read are flat (within the layout swing).
-- **Ack-bearing writes regress** (1M 84.5 → 127.3, 3M 113.7 → 138.7): a
-  write now stages through the LOW consumer, so its ack rides the hop +
-  adoption round-trip instead of the covered-window overlap. For a short
-  write there is almost no wire tail to hide the hop behind, so the reply
-  lands ~25–43 µs late and the ack turnaround goes roughly baud-independent
-  (~127–139 µs). This is the accepted cost of moving the write-dispatch body
-  (~63.6 µs, cold flash) off HIGH — the kernel-isolation win. The intended
-  hot loop writes are NOREPLY (§7): they cost pure wire time and pay no ack
-  turnaround at all, so this regression is off the hot path by construction.
+Spine same-day 3M row: read-16 49.7 µs, write 138.7 µs. The class-routing
+carve-out was then SUPERSEDED (inline-unify, 2026-07-08): the LOW consumer
+and its hop were deleted outright, every class dispatches inline at HIGH,
+and the ack-bearing-write regression it caused reversed (1M write
+127.3 → 89); the kernel-isolation cost of losing the carve-out is the
+measured, accepted tick coalescing in §2.
 
-OPEN: 3M ping 40.7 µs is at the ~41 µs slim-ping budget (it swung to 42.9 on
-a pre-refactor layout — hop-path `.highcode` placement is the lever if a
-build lands over). Whether the ack-bearing-write cost is worth revisiting
-(e.g. a covered-lead widening, or inline-HIGH dispatch for short writes at
-the expense of kernel isolation) is an explicit follow-up decision, not part
-of this band.
+Turnaround is NOT baud-flat, and 1 M is the tuned sweet spot (stamp
+decomposition 2026-07-09): the reply's tail after the instruction's wire
+end is `max(serialized CPU pipeline, T_turn grid)`. At 0.5M the 2-byte-time
+grid (40 µs) is the floor; at 1M the covered checkpoint leads the frame end
+by 20 µs, hiding dispatch + CRC feed under the instruction's own tail
+(~31 µs of pipeline remains); at 2M/3M the covered window shrinks below the
+dispatch body — at 3M a short frame is fully ringed before the first
+deadline wake even fires — so the ~35–39 µs pipeline serializes after the
+frame end. Known levers, deliberately unpulled: trigger-from-verify when
+the grid is already past (~9 µs of mux hop at 2M/3M), arming deadline A
+before the on_break tail (the pend-late wake at 3M), dispatch-body flash
+placement, and a fixed-µs T_turn floor for 0.5M (a §7 wire-spec change).
 
 (An earlier revision of row 1 quoted 37.4/32.3/31.2/36.7 from the
 turnaround-band memory — those columns were ping/read-16/read-240/ping from
@@ -89,11 +96,9 @@ Every hardware resource the transport touches, and its duty cycle:
 | resource        | role                                             | budget/event |
 |-----------------|--------------------------------------------------|--------------|
 | USART1          | half-duplex wire; HDSEL, no self-echo (F9)       | —            |
-| USART1 vector   | PFIC HIGH. (a) FE/RX-error = break/garble event (plain SR-then-DR clear after on_break, §6 A4); (b) TC = TX arm drained | FE body ~1 µs; TC body ~2–4 µs/arm |
+| USART1 vector   | PFIC HIGH. (a) FE/RX-error = break/garble event (never reads DATAR — flags self-clear via the CH5 drain; a latched leftover is retired at reply release, §6 A4); (b) TC = TX arm drained | FE body ~1 µs; TC body ~2–4 µs/arm |
 | SysTick CNT/CMP | the transport clock (48 MHz, 32-bit) + the ONE comparator | — |
-| SysTick vector  | PFIC HIGH. Deadline mux: framer A/B, covered, chain trigger, rescue confirm, adoption (reply-ready pend) | arithmetic slots ~1–5 µs; wire-class dispatch runs here (§6 A3(b)) |
-| Software vector (14) | PFIC LOW: live-lane dispatch-consumer wake — table-class dispatch (§6 A3(b)) | decode + dispatch, ~10–70 µs |
-| I2C1_EV vector (30) | PFIC LOW: backlog-lane dispatch-consumer wake — a pending kernel tick (22) slots in first | same body as 14 |
+| SysTick vector  | PFIC HIGH. Deadline mux: framer A/B, covered, chain trigger, rescue confirm — and dispatch, inline (every class except verdict-first runs at the covered checkpoint or the fast path) | arithmetic slots ~1–5 µs; dispatch bodies ~10–70 µs |
 | DMA1 CH5        | USART1 RX → 512 B ring, circular, silent (no IRQ); **VERYHIGH, alone atop the ladder** (§6 A4) | zero CPU |
 | DMA1 CH4        | TX arms → USART1 DR (header, snapshot payload, CRC tail); HIGH | zero CPU; TC surfaces as USART TC |
 | DMA1 CH3        | CRC feeds → SPI1 DR, 16-bit halfwords (RX span straight from the ring); MEDIUM, below CH6 | zero CPU, ~0.36 µs/B engine time |
@@ -104,10 +109,25 @@ Every hardware resource the transport touches, and its duty cycle:
 | main loop       | deferred reboot poll only                        | cold path |
 
 PFIC preemption is two-level (IPRIOR bit 7). USART1 + SysTick share HIGH and
-therefore serialize against each other; LOW holds the kernel between the two
-consumer lanes (same-class arbitration is lowest-vector-first — the locked
-interleave policy, §6 A3). Free and reserved: TIM2 (reserved: future
-encoders), TIM1 (motor PWM), I2C1_ER (31).
+therefore serialize against each other; LOW holds only the motor kernel
+(DMA1_CH1 = 22), which HIGH preempts and which runs in the wire gaps
+between frames. Free and reserved: TIM2 (reserved: future encoders), TIM1
+(motor PWM), SW (14), I2C1_EV (30), I2C1_ER (31).
+
+**Kernel ticks under load — measured and accepted.** Everything-at-HIGH
+means transport work preempts the kernel, and a kernel tick that pends
+while a ≥50 µs HIGH chunk runs coalesces with the next one (the PFIC pend
+bit is one bit). Silicon (2026-07-09, `sample_tick` over the wire, idle
+baseline 20.11 kHz): tick loss ≈ 1.2–1.4× the transport-HIGH duty — 14%
+under a sustained 9-frame zero-gap flood (~11% duty), 23% under a
+21-frame flood (~17% duty). Latency stays bounded (the longest HIGH chunk
+is ~60–80 µs ≈ 1–2 ticks); ticks are never starved outright. Accepted
+because the duty profile that loses ticks is rare in practice: config
+sessions run torque-off (kernel idle by definition), and the production
+hot loop is a few small GWRITEs + COMMIT + GREAD per cycle — short
+bursts, wire-gapped, single-digit duty. A use case that sustains heavy
+bus duty under live control is the signal to revisit (hardware-counted
+ticks, or re-introducing an isolation lane).
 
 ## 3. One exchange, tick by tick (ping at 1M; byte-time = 10 µs)
 
@@ -138,7 +158,7 @@ t=…    per-arm TC ISRs stream the remaining arms; final TC releases the wire
        and applies any deferred id/baud config.
 ```
 
-Measured: 37.4 µs from instruction end to status break fall. The estimate
+Measured: 35.3 µs from instruction end to status break fall (2026-07-09 build). The estimate
 chain above accounts for ~21 µs of it (T_turn grid + slack); the remainder
 is trigger-body, SBK commit, and ISR-entry overheads.
 
@@ -173,14 +193,12 @@ is trigger-body, SBK commit, and ISR-entry overheads.
    checkpoint (or publish), chewing while the CRC bytes fly, polled at the
    verdict. TX: fed per arm, patched into the trailing arm before DMA
    reaches it. The CPU never computes or waits a full CRC.
-4. **Zero hops where latency is the product; a hop where isolation is.**
-   Wire-class frames (ping/read) dispatch inline at HIGH — every stage hands
-   off by falling through within one ISR invocation or the next event's
-   entry, no cross-priority round-trip. Table-class frames (write/gwrite)
-   take one HIGH→LOW→HIGH hop, deliberately: it moves the write-dispatch
-   body off HIGH so the motor kernel is never preempted mid-write, and the
-   hot loop's writes are NOREPLY so the hop never sits on a reply's critical
-   path (§6 A3(b)).
+4. **Zero hops, everywhere.** Every stageable class (ping/read/gread,
+   write/gwrite) dispatches inline at HIGH — each stage hands off by
+   falling through within one ISR invocation or the next event's entry,
+   no cross-priority round-trip (the LOW-consumer carve-out that briefly
+   traded write latency for kernel isolation is decision history, §6 A3).
+   The kernel-side cost is the measured, accepted tick coalescing in §2.
 5. **Copy-once TX.** Reply payloads are DMA-snapshotted once (~0.125 µs/B,
    fire-and-forget) and streamed from the snapshot by both the wire and the
    CRC — snapshot-consistent reads for the price of one copy hidden under
@@ -315,50 +333,33 @@ measured reality is in the header table — 1M better across the board, 3M
 short frames ride the hop (the elastic-miss estimate under-counted; see
 the header's OPEN note).
 
-### A3(b) as landed — class routing and the handoff contract
+### A3(b) → inline-unify — every class at HIGH
 
-The carve-out is not "heavy phases hop" — it is **routing by instruction
-class**, decided from the INST byte the moment the covered span (or the
-whole frame) is ringed. Same byte the decoder reads at dispatch, so the two
-can never disagree:
+A3(b) landed as **routing by instruction class** — wire class
+(PING/READ/GREAD) inline at HIGH, table class (WRITE/GWRITE) staged
+through a LOW consumer over a one-slot handoff, verdict-first
+(COMMIT/MGMT) CRC-checked before dispatch. The carve-out bought kernel
+isolation but cost ack-bearing writes a ~25–43 µs hop + adoption
+round-trip, and the handoff machinery (slot FSM, two wake lanes, adoption
+guard, ReplyRecord) was the single largest complexity center in the
+composite. **Inline-unify (2026-07-08) deleted it** (−827 LOC): the class
+split survives only as *stageability* —
 
-- **Wire class — PING/READ/GREAD.** Side-effect-free: the only effect is a
-  reply. Dispatch inline at HIGH, right at the covered checkpoint (frontier)
-  or in the resolve wake (backlog); the CRC feed chews underneath. The
-  verdict at the frame end gates SEND / DON'T-SEND of the staged reply.
-  Zero hop — this is what recovers 3M ping/read (header table).
-- **Table class — WRITE/GWRITE.** Effect is a table mutation, ± a reply.
-  Publish to the LOW consumer at the covered checkpoint (decode needs only
-  covered bytes, so hop + decode + dispatch overlap the wire tail), where
-  the write validates and STAGES above a watermark. The verdict fires when
-  both halves are in — the frame end AND the consumer's record, in either
-  order — and gates COMMIT / REVERT of the staged write plus SEND /
-  DON'T-SEND of the recorded reply, at HIGH. Moving the write-dispatch body
-  off HIGH is the kernel-isolation win; the ack-turnaround cost is in the
-  header's OPEN note.
+- **Stageable — PING/READ/GREAD/WRITE/GWRITE.** Dispatch inline at HIGH at
+  the covered checkpoint (frontier) or the resolve wake (backlog); the CRC
+  feed chews underneath. The verdict at the frame end gates the staged
+  effects: SEND/DON'T-SEND of a reply, COMMIT/REVERT of a table write.
 - **Verdict-first — COMMIT/MGMT.** Their effects cannot be staged (COMMIT
   applies the whole buffer; MGMT reboots), so the CRC is checked FIRST and
-  dispatch runs only on a pass. Rare, short frames — the ~2 µs blocking CRC
-  poll is affordable where staging isn't possible.
+  dispatch runs only on a pass. Rare, short frames — the ~2 µs blocking
+  CRC poll is affordable where staging isn't possible.
 
-The handoff: one work slot each way (`Handoff`: EMPTY→JOB→WORKING→REPLY,
-single-writer transitions, plain loads/stores + compiler fences — single
-hart, no A extension). The LOW consumer decodes, dispatches, and records the
-reply verbs into a `ReplyRecord` (raw payload span under the §4.2 zero-copy
-contract — every non-empty core reply payload is table-backed, plus a
-`pending` flag = "a table effect is staged, adopter owes the verdict");
-HIGH adopts: resolves the verdict, applies deferred config, stages the reply
-into the TX engine, sequences the chain from the frame's packet end.
-Backpressure is the slot: while occupied the framer holds position and the
-ring absorbs the backlog (A2) — which is also what bounds the pending frame
-to ONE (single staging slot + single CRC accumulator, never contended) and
-keeps the CRC engine quiet across the hop (nothing feeds or resets it
-between the publish-time feed and the adoption-time verify). SESSION
-exclusivity: HIGH touches the dispatcher only on the spine's HIGH paths,
-unreachable while a job is claimed — the two borrows are temporally
-exclusive across preemption. Adoption guard (positional truth): a slot-0
-reply whose frame has newer ringed bytes behind it is dropped — the
-zero-gap collision the FE-kill can no longer catch.
+The kernel-isolation question the carve-out answered is now settled by
+measurement instead of structure: dispatch bodies preempt the kernel and
+coalesce ticks in proportion to bus duty (§2), which the intended duty
+profiles make negligible. Backpressure survives unchanged: at most one
+pending-verdict frame (the pending frame IS the frontier), so the single
+staging slot and single CRC accumulator are never contended.
 
 ### A4 — RX owns the DMA top: the drain always beats the IRQ
 
@@ -383,14 +384,45 @@ CH5 RX (alone at the top). HIGH: CH1 ADC, CH4 TX, CH6 snapshot (ADC wins
 the HIGH ties by channel number, keeping its interleave ahead of the
 copy). MEDIUM: CH3 CRC feed (below CH6 so a reply copy is written before
 the feed reads it). With RX on top the break byte is always ringed before
-`on_break` reads the cursor, so the framer needs no FE-promise; and the
-error vector's DR read gets stale data, never an in-flight byte, so it
-clears with the plain SR-then-DR sequence after `on_break` (FE/ORE/NE/PE
-stay read-only; write-0 is bench-disproven — the vector storms). Silicon:
-25k/25k zero-gap hot loops at 2M and 3M with zero no-reply/stale. A tiny
-low-baud residual (~7/25k at 1M, 1/25k at 0.5M) is a separate,
-baud-dependent break-artifact — NOT this window, which is baud-independent
-(clean at 2M/3M) — tracked as its own investigation.
+`on_break` reads the cursor, so the framer needs no FE-promise. Silicon:
+25k/25k zero-gap hot loops at 2M and 3M with zero no-reply/stale.
+
+The ladder protects only the byte already in RDR. The RX/error path must
+additionally never read DATAR (2026-07-09, the former "low-baud
+residual"): a CPU DATAR read while a byte is mid-reception kills the byte
+in the SHIFTER — no flag, no ring entry, no NDTR count — and no drain
+priority can help, because the byte dies before a DMA request ever
+exists. The window scales with bit time: unhittable at 2M/3M, rare at
+≤1M, and one alignment (idle-entry FE handler body ≈ first-byte
+completion at 1M) made it systematic. The flag clear therefore splits by
+mechanism (FE/ORE/NE/PE stay read-only; write-0 is bench-disproven — the
+vector storms):
+
+- **Drain-side, the normal case:** a STATR read arms the SR half of the
+  SR-then-DR sequence and the CH5 drain's own DATAR access is the DR
+  half — every flag-setting event rings a byte (F2/F4), so flags
+  self-clear within a bit-time. An exit before the drain lands re-enters
+  once with STATR clean, which is why any non-TC entry is treated as an
+  RX error regardless of surviving flags.
+- **Release-point, the latched corner:** a flag whose byte drained before
+  any STATR read never formed the pair and stays latched — e.g. a lagged
+  FE delivery on a burst's LAST frame, whose reply produces no further RX
+  drains. Left alone it storms the vector once the wire idles (bench
+  signature: the first ack-bearing exchange after a hot-loop leg dies).
+  `TxWire::release` retires it with the SR-then-DR clear while our
+  push-pull drive still holds the line high — no byte can be
+  mid-reception, so the DATAR read is provably safe there. The clear is
+  CONDITIONAL on a flag actually being latched, because the read is not
+  free even where it is safe: it consumes the armed SR-half, costing the
+  NEXT break its drain-self-clear — the FE then re-fires until the first
+  data byte lands, dragging the frontier tick and the reply grid with it
+  (bench: +12 µs of ping turnaround at 0.5M when clearing
+  unconditionally).
+
+Silicon: 12k/12k plain floods at 1M and 0.5M (production shape) with the
+RX-path DATAR read removed (vs 44/12k with it present); hot-loop matrix
+green at all four bauds with the conditional release-point clear, ping
+turnarounds flat vs the pre-fix baseline at every baud.
 
 ## 7. First-principles losslessness (the zero-gap argument)
 
@@ -404,26 +436,23 @@ baud-dependent break-artifact — NOT this window, which is baud-independent
    flood test (`zero_gap_flood` in `hot_loop.rs`: 100 zero-gap minimal
    writes + READ, ring laps ~2×, dispatch-cost sweep inside the contract,
    zero loss at 1M and 3M), not by a runtime guard.
-3. Ordering: at most one pending-verdict frame at a time (backpressure: the
-   framer holds while the handoff slot is occupied, and a wire-class pending
-   frame IS the frontier), so the single staging slot + single CRC
+3. Ordering: at most one pending-verdict frame at a time (backpressure: a
+   pending frame IS the frontier), so the single staging slot + single CRC
    accumulator are never contended and the in-order ring walk preserves
    frame order. A backlog write commits before the frame behind it
-   dispatches (the walk resumes only at adoption) — DES-pinned by
+   dispatches — DES-pinned by
    `backlog_write_then_read_processes_in_order`.
-4. Acceptance gates, status 2026-07-08 (spine build): DES zero-gap suite
-   green (incl. gap-jitter and mid-frame-stall wire models — stalls capped
-   below the 64-byte-time dead-transmitter horizon, past it the sacrifice is
-   by design); `tool-osc-burst` plain+hot matrices 300/300 at ALL four bauds
-   (2400/2400), servo clean afterward; `tool-reply-edges` soak 10000/10000
-   at 3M, zero failures. Turnaround: 3M ping/read recovered (58.4→40.7,
-   66.6→49.7); 1M ping/read flat; ack-bearing writes regressed by design
-   (header table + OPEN note).
-5. RESPONSE_DEADLINE must cover the full carve-out path — hop + decode +
-   dispatch + adoption — not just the dispatch body: with ~70 µs handler
-   bodies the 60 µs default is dishonest and a chain slot reclaims into a
-   live-but-slow predecessor (DES-pinned in `hot_loop.rs`); deployments
-   tune the register to their measured worst case.
+4. Acceptance gates, status 2026-07-09 (DATAR-discipline build): gears 1+2
+   green; hardware suite green at all four bauds INCLUDING the burst
+   tests' zero-tolerance gates (the former "low-baud glitch" is fixed);
+   plain-flood soaks 12k/12k at 1M and 0.5M, hot-loop matrix clean;
+   `tool-reply-edges` soak 10000/10000 at 3M (2026-07-08 build).
+5. RESPONSE_DEADLINE must cover the full reply path — decode + dispatch +
+   verify, elastically late under a backlog — not just the happy-path
+   grid: with ~70 µs dispatch bodies the 60 µs default is dishonest and a
+   chain slot reclaims into a live-but-slow predecessor (DES-pinned in
+   `hot_loop.rs`); deployments tune the register to their measured worst
+   case.
 
 ## 8. Considered alternatives (recorded so they are not re-derived)
 
@@ -469,9 +498,10 @@ baud-dependent break-artifact — NOT this window, which is baud-independent
   and the **table effect** (staged writes — COMMIT on pass, REVERT on fail).
   Ping/read stage only wire; a NOREPLY write only table; a reply-bearing
   write both, under one verdict.
-- **instruction class** — the dispatch routing (§6 A3(b)): *wire*
-  (ping/read/gread, inline at HIGH), *table* (write/gwrite, staged via the
-  LOW consumer), *verdict-first* (commit/mgmt, CRC checked before dispatch).
+- **instruction class** — stageability (§6 A3): *stageable*
+  (ping/read/gread/write/gwrite — dispatch inline at HIGH, effects gated
+  by the verdict), *verdict-first* (commit/mgmt, CRC checked before
+  dispatch).
 - **deadline A / B** — header-readable check / frame-end check, both
   cursor-verified estimates from the break timestamp.
 - **T_turn** — the mandated 2-byte-time wire gap between a frame and its
