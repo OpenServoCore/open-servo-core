@@ -353,13 +353,27 @@ impl<P: Providers> ServoBus<P> {
         self.framer_at = Some(self.deadline.now());
     }
 
-    fn route_chain(&mut self, out: ChainOut) {
-        match out {
-            ChainOut::None => {}
-            ChainOut::Wait(t) => self.chain_at = Some(t),
-            ChainOut::Trigger { predecessor_silent } => {
-                let over = predecessor_silent.then_some(ResultCode::PredecessorSilent);
-                self.tx.trigger(&mut self.crc, over);
+    fn route_chain(&mut self, mut out: ChainOut) {
+        loop {
+            match out {
+                ChainOut::None => return,
+                ChainOut::Wait(t) => {
+                    // A wait tick already reached needs no scheduling round
+                    // trip: consume the slot in place (high-baud grids and
+                    // backlog replies are past-due by sequencing time, and
+                    // an expired reclaim window is a reclaim by definition).
+                    let now = self.deadline.now();
+                    if !tick_reached(now, t) {
+                        self.chain_at = Some(t);
+                        return;
+                    }
+                    out = self.chain.on_deadline(now);
+                }
+                ChainOut::Trigger { predecessor_silent } => {
+                    let over = predecessor_silent.then_some(ResultCode::PredecessorSilent);
+                    self.tx.trigger(&mut self.crc, over);
+                    return;
+                }
             }
         }
     }
@@ -549,6 +563,8 @@ impl<P: Providers> ServoBus<P> {
     /// staged table effect (COMMIT) and sequence a staged reply (SEND); fail
     /// (or spin miss) → revert the write (REVERT), drop the reply
     /// (DON'T-SEND), count, and rewind the ladder (§5.3 L1).
+    #[cfg_attr(target_os = "none", unsafe(link_section = ".highcode"))]
+    #[cfg_attr(target_os = "none", inline(never))]
     fn verify<D: Dispatch>(&mut self, p: Pending, d: &mut D) {
         if !self.crc_verify(p.anchor, p.footprint) {
             if p.table {
@@ -655,6 +671,8 @@ impl<P: Providers> ServoBus<P> {
     /// verify. Direct feed is safe against the live circular ring: the engine
     /// runs ~8× wire speed, so it drains the covered span long before the write
     /// cursor could lap the ring back onto it.
+    #[cfg_attr(target_os = "none", unsafe(link_section = ".highcode"))]
+    #[cfg_attr(target_os = "none", inline(never))]
     fn crc_feed(&mut self, anchor: u16, footprint: u16) {
         let ring = self.ring.bytes();
         let len = ring.len();
