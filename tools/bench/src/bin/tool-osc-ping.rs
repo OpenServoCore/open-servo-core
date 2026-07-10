@@ -28,6 +28,10 @@ struct Args {
     /// Print a line per ping.
     #[arg(short, long)]
     verbose: bool,
+    /// Corrupt the wire CRC: every ping must draw SILENCE (§5.3 layer 1 —
+    /// a bad frame is never answered) and bump the servo's crc_fail counter.
+    #[arg(long, default_value_t = false)]
+    corrupt: bool,
 }
 
 fn main() -> Result<()> {
@@ -40,7 +44,11 @@ fn main() -> Result<()> {
     client.set_baud(args.baud)?;
     client.reset()?;
 
-    let ping = build_ping(args.id);
+    let mut ping = build_ping(args.id);
+    if args.corrupt {
+        let last = ping.len() - 1;
+        ping[last] ^= 0xFF;
+    }
     let report = measure(&mut client, &ping, args.count, 5, args.verbose, |ex| {
         if ex.status.result != Some(ResultCode::Ok) {
             bail!("status result {:?}", ex.status.result);
