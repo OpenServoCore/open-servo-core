@@ -79,6 +79,11 @@ struct Args {
     /// COMMIT + plain READ, no GWRITE (reply presence only).
     #[arg(long, default_value_t = false)]
     commit_read: bool,
+    /// Exit immediately on the first failing cycle (freeze chip-side
+    /// forensics — e.g. a debug_stamp ring — as close to the failure as
+    /// possible for a wlink dump).
+    #[arg(long, default_value_t = false)]
+    stop_on_fail: bool,
 }
 
 /// Build one cycle for `value`, dispatched by the mode flags. The default and
@@ -196,6 +201,11 @@ fn main() -> Result<()> {
 
 /// Per-cycle forensic output, gated by `--verbose` / `--dump`.
 fn observe(args: &Args, obs: &CycleObservation) {
+    if args.stop_on_fail && !matches!(obs.outcome, CycleOutcome::Ok { .. }) {
+        println!("cycle {:>5}  {:?}", obs.index, obs.outcome);
+        dump_stamps(obs.index, obs.stamps, obs.bit_ticks);
+        std::process::exit(3);
+    }
     match obs.outcome {
         CycleOutcome::Ok { .. } => {}
         CycleOutcome::Stale { got, expected } => {
@@ -204,6 +214,9 @@ fn observe(args: &Args, obs: &CycleObservation) {
                     "cycle {:>5}  STALE read-back {got:02x?} (expected {expected:02x?})",
                     obs.index
                 );
+            }
+            if args.dump {
+                dump_stamps(obs.index, obs.stamps, obs.bit_ticks);
             }
         }
         CycleOutcome::ResultErr(r) => {
