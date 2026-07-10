@@ -58,7 +58,7 @@ fn gread_slot1_reclaims_silent_predecessor() {
 
     let s = Stats::from(&turnarounds).expect("samples");
     s.print();
-    // The reply fires at instruction-end + T_turn + reclaim; it must clear the
+    // The reply fires at instruction-end + reply gap + reclaim; it must clear the
     // reclaim window (the DUT genuinely waited for its predecessor), and stay in
     // a sane envelope above it.
     let reclaim = DEFAULT_RESPONSE_DEADLINE_US as f64;

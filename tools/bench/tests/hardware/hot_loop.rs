@@ -15,7 +15,7 @@
 //!
 //! Turnaround is reported for the record but NOT gated here — the burst reply
 //! latency folds in GWRITE+COMMIT work plus the ISR tail, a different metric
-//! from the ping T_turn budget the `turnaround` suite owns.
+//! from the ping reply gap budget the `turnaround` suite owns.
 //!
 //! `BENCH_BURST_CYCLES` overrides the per-baud cycle count (default 2000).
 
