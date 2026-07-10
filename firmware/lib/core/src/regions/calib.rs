@@ -17,14 +17,13 @@ pub struct BemfCalibBlock {
     pub calib_i_ma: u16,
 }
 
-/// Calibration section. Torque-gated writes fail with `Access` while
-/// `lifecycle.torque_enable` is set.
+/// Calibration section: always writable (normal field validation applies),
+/// volatile until persisted — persistence is SAVE's job, not a write gate.
 #[repr(C)]
 #[derive(Section)]
 #[ct_section(
     base = crate::regions::CALIB_BASE_ADDR,
     size = crate::regions::CALIB_REGION_SIZE,
-    write_locked_by = super::control::addr::lifecycle::TORQUE_ENABLE,
 )]
 pub struct CalibRegs {
     pub pot_lut: PotLutBlock,

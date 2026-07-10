@@ -21,7 +21,6 @@ pub enum Error {
 pub enum ValidationKind {
     Enum,
     Compare,
-    Locked,
 }
 
 /// `bool` is `u8` 0/1; any other byte yields UB on later access.

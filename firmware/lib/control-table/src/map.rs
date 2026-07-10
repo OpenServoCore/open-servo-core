@@ -1,6 +1,6 @@
+use crate::Error;
 use crate::rules;
 use crate::stage::{Snapshot, StagedWrites};
-use crate::{Error, ValidationKind};
 
 /// Compile-time description of a flat register map. Implemented by the Table
 /// derive; hand-implemented in tests.
@@ -32,9 +32,6 @@ pub struct SectionMeta {
     pub cmp_rules: (u16, u16),
     /// `[start, end)` range into `RegisterMap::ALLOWED_RULES` for this section.
     pub allowed_rules: (u16, u16),
-    /// Byte offset of a lock register: when it reads nonzero (through the
-    /// overlay), writes into this section fail with `ValidationError(Locked)`.
-    pub write_lock: Option<u16>,
 }
 
 /// Live base pointer + size plus one pending overlay, so a check sees the value
@@ -171,7 +168,7 @@ unsafe fn load_le4(p: *const u8, len: usize) -> [u8; 4] {
 }
 
 /// Validate `[addr, addr+o1.len()+o2.len())` against the flat map: bounds →
-/// writable mask → rules → lock, in that precedence. The view is live storage
+/// writable mask → rules, in that precedence. The view is live storage
 /// plus this op's `o1`/`o2` overlay only (previously staged entries are not
 /// visible). `o2` continues after `o1` at the ring seam; it is empty for a
 /// contiguous write.
@@ -214,11 +211,9 @@ fn validate<M: RegisterMap + ?Sized>(m: &M, addr: u16, o1: &[u8], o2: &[u8]) -> 
 
     let view = View::new_split(m.base() as *const u8, M::SIZE, addr, o1, o2);
 
-    // Checks across every overlapping section first, so a bad value in a locked
-    // section reports its own kind (e.g. Enum), not Locked. Within a section
-    // allowed rules now run before compare rules (previously interleaved in
-    // field order — only observable when one write spans multiple invalid
-    // fields of different kinds; not spec-pinned).
+    // Within a section allowed rules run before compare rules (previously
+    // interleaved in field order — only observable when one write spans
+    // multiple invalid fields of different kinds; not spec-pinned).
     for sec in M::SECTIONS {
         if !overlaps(sec.base as usize, sec.size as usize, lo, hi) {
             continue;
@@ -252,17 +247,6 @@ fn validate<M: RegisterMap + ?Sized>(m: &M, addr: u16, o1: &[u8], o2: &[u8]) -> 
                     };
                     rules::check_cmp(&view, r.addr, r.spec, rhs)?;
                 }
-            }
-        }
-    }
-    for sec in M::SECTIONS {
-        if !overlaps(sec.base as usize, sec.size as usize, lo, hi) {
-            continue;
-        }
-        if let Some(lock) = sec.write_lock {
-            let b = view.read_fixed(lock, 1)?;
-            if b[0] != 0 {
-                return Err(Error::ValidationError(ValidationKind::Locked));
             }
         }
     }

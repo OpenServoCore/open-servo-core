@@ -98,7 +98,6 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
                         let start = 0u16 #(+ <#allowed_pre>::CT_ALLOWED_RULES_ABS.len() as u16)*;
                         (start, start + <#ty>::CT_ALLOWED_RULES_ABS.len() as u16)
                     },
-                    write_lock: <#ty>::WRITE_LOCK,
                 }
             }
         })

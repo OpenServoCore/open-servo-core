@@ -96,7 +96,6 @@ fn go(shared: &Shared, staged: &mut StagedWrites, req: Request<'_>, may_reply: b
     reply
 }
 
-/// Torque-on locks the config section; used by the access-error case.
 fn enable_torque(shared: &Shared) {
     shared
         .table
@@ -260,8 +259,10 @@ fn write_validation_reject_maps_to_validation() {
     assert_eq!(reply.last().result, ResultCode::Validation);
 }
 
+/// osc separates write from persistence (§9.4): config writes are never
+/// torque-gated — only MGMT SAVE is.
 #[test]
-fn write_torque_locked_config_maps_to_access() {
+fn write_config_allowed_with_torque_on() {
     use crate::regions::config::addr::comms::ID;
     let shared = Shared::new();
     enable_torque(&shared);
@@ -276,7 +277,9 @@ fn write_torque_locked_config_maps_to_access() {
         },
         true,
     );
-    assert_eq!(reply.last().result, ResultCode::Access);
+    assert_eq!(reply.last().result, ResultCode::Ok);
+    assert_eq!(shared.table.with(|t| t.config.comms.id), 5);
+    assert_eq!(reply.staged_id, Some(5));
 }
 
 #[test]

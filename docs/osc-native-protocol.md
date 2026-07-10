@@ -363,7 +363,7 @@ code shares the byte (bits [6:2], 32 values). Errors split by layer:
 2. **Instruction-level** (valid frame, rejected request): the 5-bit result
    code, empty payload — `OK`, `instruction` (unknown op/flags), `range`
    (addr/count out of bounds, or a PROFILE read naming an odd-addressed
-   span — §5.2), `access` (read-only / torque-locked),
+   span — §5.2), `access` (read-only, or SAVE with torque enabled),
    `validation` (value rejected by field rules), `busy`, `limit`
    (requested reply exceeds the frame ceiling, §5.1), `predecessor-silent`
    (§6),
@@ -515,9 +515,10 @@ so that is what gets gated:
   alternation on the reserved config pages), and acks **after**
   completion — hosts use a SAVE-specific timeout, the servo is genuinely
   stalled during program.
-- Fields individually unsafe to change mid-motion (operating mode) keep
-  per-field guards via the table's existing `write_locked_by` rules — the
-  blanket section lock is gone.
+- No write is torque-gated — the section lock and its `write_locked_by`
+  machinery are deleted outright. Field validation rules still apply to
+  every write; anything genuinely unsafe to change mid-motion is the
+  control kernel's job to sequence, not the table's to forbid.
 - A config-dirty bit in telemetry reports modified-since-save.
 
 Side effects: flash wear drops from program-per-write to

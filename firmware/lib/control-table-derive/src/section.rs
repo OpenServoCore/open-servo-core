@@ -7,7 +7,6 @@ use syn::{Attribute, Data, DeriveInput, Expr, Fields, Ident, Path, Type, TypePat
 struct SectionAttrs {
     base: Option<Expr>,
     size: Option<Expr>,
-    write_locked_by: Option<Expr>,
     hooks: Option<Path>,
 }
 
@@ -110,11 +109,6 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         })
         .collect();
 
-    let write_lock = match &attrs.write_locked_by {
-        Some(expr) => quote!(::core::option::Option::Some(#expr)),
-        None => quote!(::core::option::Option::None),
-    };
-
     let addr_mods: Vec<TokenStream2> = block_idents
         .iter()
         .zip(&block_ty_idents)
@@ -180,7 +174,6 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 out
             };
 
-            pub const WRITE_LOCK: ::core::option::Option<u16> = #write_lock;
         }
 
         #[allow(clippy::new_without_default)]
@@ -229,20 +222,11 @@ fn parse_section_attrs(attrs: &[Attribute]) -> syn::Result<SectionAttrs> {
             } else if m.path.is_ident("size") {
                 out.size = Some(m.value()?.parse()?);
                 Ok(())
-            } else if m.path.is_ident("write_locked_by") {
-                out.write_locked_by = Some(m.value()?.parse()?);
-                Ok(())
             } else if m.path.is_ident("hooks") {
                 out.hooks = Some(m.value()?.parse()?);
                 Ok(())
-            } else if m.path.is_ident("validators") {
-                Err(m.error(
-                    "region validators are gone in Section; gate the whole section with `write_locked_by = ...`",
-                ))
             } else {
-                Err(m.error(
-                    "unknown ct_section key (expected base|size|write_locked_by|hooks)",
-                ))
+                Err(m.error("unknown ct_section key (expected base|size|hooks)"))
             }
         })?;
     }

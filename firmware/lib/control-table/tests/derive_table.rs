@@ -18,7 +18,7 @@ pub struct Ident {
     #[ct_field(access = ro)]
     pub model: u16,
     pub id: u8,
-    pub lock: u8,
+    pub spare: u8,
 }
 
 #[repr(C)]
@@ -72,7 +72,6 @@ mod control {
     #[ct_section(
         base = 0x000C,
         size = 4,
-        write_locked_by = super::config::addr::ident::LOCK,
         hooks = super::GoalHooks,
     )]
     pub struct Control {
@@ -104,8 +103,8 @@ fn addr_consts_are_base_plus_offset() {
         Config::BASE + offset_of!(Config, ident) as u16 + offset_of!(Ident, model) as u16
     );
     assert_eq!(
-        addr::config::ident::LOCK,
-        Config::BASE + offset_of!(Config, ident) as u16 + offset_of!(Ident, lock) as u16
+        addr::config::ident::SPARE,
+        Config::BASE + offset_of!(Config, ident) as u16 + offset_of!(Ident, spare) as u16
     );
     assert_eq!(
         addr::config::limits::MAX_RATIO,
@@ -137,7 +136,7 @@ fn writable_words_track_ro_rw_and_reserved() {
     assert!(!bit(addr::config::ident::MODEL + 1));
     // rw bytes set.
     assert!(bit(addr::config::ident::ID));
-    assert!(bit(addr::config::ident::LOCK));
+    assert!(bit(addr::config::ident::SPARE));
     assert!(bit(addr::config::limits::MAX_RATIO));
     assert!(bit(addr::control::goal::TARGET));
     // reserved / skip tails clear.
@@ -153,11 +152,9 @@ fn sections_metadata_exposed_through_register_map() {
 
     assert_eq!(secs[0].base, Config::BASE);
     assert_eq!(secs[0].size, Config::SECTION_SIZE);
-    assert!(secs[0].write_lock.is_none());
 
     assert_eq!(secs[1].base, Control::BASE);
     assert_eq!(secs[1].size, Control::SECTION_SIZE);
-    assert_eq!(secs[1].write_lock, Some(addr::config::ident::LOCK));
 
     assert_eq!(<TableCell as RegisterMap>::SIZE, 24);
 }
@@ -209,25 +206,6 @@ fn cross_section_compare_reads_config_ceiling() {
     );
     t.write(addr::control::goal::TARGET, &[40]).unwrap();
     assert_eq!(t.read(addr::control::goal::TARGET, 1).unwrap(), &[40]);
-}
-
-#[test]
-fn write_lock_blocks_locked_section_only() {
-    let t = fresh();
-    // Raise the ceiling so target=1 clears the compare rule; the lock (not the
-    // rule) must be what rejects it. Rules are evaluated before the lock check.
-    t.write(addr::config::limits::MAX_RATIO, &[100]).unwrap();
-    t.write(addr::config::ident::LOCK, &[1]).unwrap();
-    assert_eq!(
-        t.write(addr::control::goal::TARGET, &[1]).unwrap_err(),
-        Error::ValidationError(ValidationKind::Locked)
-    );
-    // config itself is not gated by the lock.
-    t.write(addr::config::ident::ID, &[7]).unwrap();
-
-    t.write(addr::config::ident::LOCK, &[0]).unwrap();
-    t.write(addr::control::goal::TARGET, &[1]).unwrap();
-    assert_eq!(t.read(addr::control::goal::TARGET, 1).unwrap(), &[1]);
 }
 
 struct Rec {

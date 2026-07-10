@@ -5,15 +5,15 @@ use osc_protocol::wire::{MAX_PAYLOAD, MgmtOp, ResultCode};
 
 use crate::regions::hooks::ControlTableHooks;
 use crate::traits::{Dispatch, Dispatched, Reply, Request, RequestCtx, Status};
-use crate::{Error, RegionStorage, Shared, StagedWrites, ValidationKind};
+use crate::{Error, RegionStorage, Shared, StagedWrites};
 use control_table::STAGE_ENTRY_CAP;
 
 /// Map a control-table write/stage failure onto an osc-native result code
-/// (§5.3 layer 2). Read-only and torque-locked writes are `Access`; field-rule
-/// rejections are `Validation`; the rest (bounds, staging-full) are `Range`.
+/// (§5.3 layer 2). Read-only writes are `Access`; field-rule rejections are
+/// `Validation`; the rest (bounds, staging-full) are `Range`.
 fn error_to_result(e: Error) -> ResultCode {
     match e {
-        Error::AccessError | Error::ValidationError(ValidationKind::Locked) => ResultCode::Access,
+        Error::AccessError => ResultCode::Access,
         Error::ValidationError(_) => ResultCode::Validation,
         _ => ResultCode::Range,
     }

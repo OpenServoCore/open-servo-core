@@ -69,7 +69,6 @@ pub struct ConfigIdentity {
     pub capability_flags: u32,
 }
 
-/// Writes gated on torque (section `write_locked_by`).
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 #[ct_block(hooks = crate::regions::hooks::ControlTableHookEvents)]
@@ -157,14 +156,14 @@ pub struct ConfigControlPosition {
     pub _rsvd_tail: u16,
 }
 
-/// Persistent config section. Torque-gated writes fail with `Access` while
-/// `lifecycle.torque_enable` is set.
+/// Config section: always writable (normal field validation applies), volatile
+/// until `MGMT SAVE` persists it — SAVE is the only torque-gated operation
+/// (osc-native §9.4 separates write from persistence).
 #[repr(C)]
 #[derive(Section)]
 #[ct_section(
     base = crate::regions::CONFIG_BASE_ADDR,
     size = crate::regions::CONFIG_REGION_SIZE,
-    write_locked_by = super::control::addr::lifecycle::TORQUE_ENABLE,
     hooks = crate::regions::hooks::ControlTableHookEvents,
 )]
 pub struct ConfigRegs {

@@ -42,7 +42,6 @@ static BASIC_SECTIONS: &[SectionMeta] = &[SectionMeta {
     size: BASIC_SIZE as u16,
     cmp_rules: (0, 4),
     allowed_rules: (0, 1),
-    write_lock: None,
 }];
 
 // Every byte writable except byte 3 (read-only, mid-range).
@@ -275,110 +274,7 @@ fn commit_staged_order_later_wins_no_revalidation() {
     assert!(staged.is_empty());
 }
 
-// --- Lock fixture: two sections, section B guarded by a byte in section A. ---
-
-const LOCK_SIZE: usize = 16;
-
-// Section A has no rules; section B carries one enum [0,1]@8.
-const LOCK_ALLOWED_RULES: &[crate::rules::AllowedRule] = &[crate::rules::AllowedRule {
-    addr: 8,
-    allowed: &[0, 1],
-}];
-
-static LOCK_SECTIONS: &[SectionMeta] = &[
-    SectionMeta {
-        base: 0,
-        size: 8,
-        cmp_rules: (0, 0),
-        allowed_rules: (0, 0),
-        write_lock: None,
-    },
-    SectionMeta {
-        base: 8,
-        size: 8,
-        cmp_rules: (0, 0),
-        allowed_rules: (0, 1),
-        write_lock: Some(0),
-    },
-];
-
-const LOCK_WRITABLE: &[u32] = &[0xFFFF_FFFF];
-
-struct Locked {
-    store: UnsafeCell<[u8; LOCK_SIZE]>,
-}
-
-// SAFETY: tests are single-threaded.
-unsafe impl Sync for Locked {}
-
-impl Locked {
-    fn new(init: [u8; LOCK_SIZE]) -> Self {
-        Self {
-            store: UnsafeCell::new(init),
-        }
-    }
-}
-
-impl RegisterMap for Locked {
-    const SIZE: usize = LOCK_SIZE;
-    const WRITABLE: &'static [u32] = LOCK_WRITABLE;
-    const SECTIONS: &'static [SectionMeta] = LOCK_SECTIONS;
-    const ALLOWED_RULES: &'static [crate::rules::AllowedRule] = LOCK_ALLOWED_RULES;
-    fn base(&self) -> *mut u8 {
-        self.store.get() as *mut u8
-    }
-}
-
-#[test]
-fn lock_permits_when_clear() {
-    let m = Locked::new([0; LOCK_SIZE]);
-    assert!(m.write(8, &[1]).is_ok());
-}
-
-#[test]
-fn lock_blocks_when_set() {
-    let mut init = [0u8; LOCK_SIZE];
-    init[0] = 1;
-    let m = Locked::new(init);
-    assert_eq!(
-        m.write(8, &[1]),
-        Err(Error::ValidationError(ValidationKind::Locked))
-    );
-}
-
-#[test]
-fn lock_byte_carried_unlocks_in_same_write() {
-    let mut init = [0u8; LOCK_SIZE];
-    init[0] = 1; // live: locked
-    let m = Locked::new(init);
-    // Spanning write [0..9): sets byte0 = 0 (unlock) and byte8 = 1. The lock is
-    // read through the overlay, so it sees 0 and permits.
-    assert!(m.write(0, &[0, 0, 0, 0, 0, 0, 0, 0, 1]).is_ok());
-}
-
-#[test]
-fn lock_byte_carried_locks_in_same_write() {
-    let m = Locked::new([0; LOCK_SIZE]); // live: unlocked
-    // Spanning write sets byte0 = 1 in the overlay -> section B write blocked.
-    assert_eq!(
-        m.write(0, &[1, 0, 0, 0, 0, 0, 0, 0, 1]),
-        Err(Error::ValidationError(ValidationKind::Locked))
-    );
-}
-
-#[test]
-fn rules_run_before_lock() {
-    let mut init = [0u8; LOCK_SIZE];
-    init[0] = 1; // locked
-    let m = Locked::new(init);
-    // Bad enum into the locked section: reports Enum, not Locked.
-    assert_eq!(
-        m.write(8, &[5]),
-        Err(Error::ValidationError(ValidationKind::Enum))
-    );
-}
-
-// --- Mask fixture: 3 words (96 B), no rules/lock, so only the writable-mask
+// --- Mask fixture: 3 words (96 B), no rules, so only the writable-mask
 // scan runs. Two read-only holes: byte 50 (mid word 1) and byte 64 (start of
 // word 2, a word boundary). Ranges are positioned so a hole falls just inside
 // vs just outside each edge shape. ---
@@ -393,7 +289,6 @@ static MASK_SECTIONS: &[SectionMeta] = &[SectionMeta {
     size: MASK_SIZE as u16,
     cmp_rules: (0, 0),
     allowed_rules: (0, 0),
-    write_lock: None,
 }];
 
 struct MaskFix {
@@ -470,19 +365,6 @@ fn write_split_mid_field_rejects_and_leaves_table_untouched() {
         Err(Error::ValidationError(ValidationKind::Compare))
     );
     assert_eq!(m.read(12, 4), Ok(&[0, 0, 0, 0][..]));
-}
-
-#[test]
-fn write_split_into_locked_section_rejects() {
-    let mut init = [0u8; LOCK_SIZE];
-    init[0] = 1; // section B locked via byte 0
-    let m = Locked::new(init);
-    // Enum field at offset 8 (section B), split mid the 2-byte write.
-    assert_eq!(
-        m.write_split(8, &[1], &[0]),
-        Err(Error::ValidationError(ValidationKind::Locked))
-    );
-    assert_eq!(m.read(8, 2), Ok(&[0, 0][..]));
 }
 
 #[test]
