@@ -617,13 +617,16 @@ fn commit_and_reboot_paths() {
     let mut session = Session::new();
     let mut d = session.dispatcher(&shared);
 
-    // MGMT REBOOT (unicast) acks then stages a reboot honored on poll.
+    // MGMT REBOOT (unicast) acks then stages a reboot honored on poll —
+    // withheld while the ack drains (a reset mid-frame truncates the ack on
+    // the wire; bench 2026-07-10), taken once the TX released.
     let frame = instruction(ID, Opcode::Mgmt, 0, &[MgmtOp::Reboot as u8]);
     deliver(&mut bus, &h, 100, &frame, 1000, &mut d);
     fire(&mut bus, &h, &mut d);
     let (_, inst, _) = last_reply(&h.wire);
     assert_eq!(inst.result(), Some(ResultCode::Ok));
-    bus.on_tx_complete();
+    assert!(bus.take_reboot().is_none(), "withheld while the ack drains");
+    drain_tx(&mut bus, &h);
     assert!(bus.take_reboot().is_some());
     assert!(bus.take_reboot().is_none());
 }

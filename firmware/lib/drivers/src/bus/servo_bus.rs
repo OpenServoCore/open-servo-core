@@ -263,8 +263,15 @@ impl<P: Providers> ServoBus<P> {
         }
     }
 
-    /// Main-loop poll for a deferred reboot honored after the ack drained.
+    /// Main-loop poll for a deferred reboot — withheld while a reply is
+    /// draining (a reset mid-ack truncates the frame on the wire; bench
+    /// 2026-07-10), honored on the first poll after the TX released. A
+    /// silent (NOREPLY/broadcast) reboot stages no ack and takes
+    /// immediately.
     pub fn take_reboot(&mut self) -> Option<BootMode> {
+        if self.tx.busy() {
+            return None;
+        }
         self.pending_reboot.take()
     }
 
