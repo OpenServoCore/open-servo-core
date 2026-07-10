@@ -135,6 +135,16 @@ impl Sim {
         self.servos[i].take_reboot()
     }
 
+    /// Replace servo `i`'s factory UID (the chip band seeds it from ESIG at
+    /// bringup; tests seed it before traffic for controlled ENUM prefixes).
+    pub fn seed_servo_uid(&self, i: usize, uid: [u8; 16]) {
+        self.servos[i].seed_uid(uid);
+    }
+
+    pub fn servo_uid(&self, i: usize) -> [u8; 16] {
+        self.servos[i].uid()
+    }
+
     /// Queue a host frame starting when the wire is free of host traffic.
     pub fn host_send(&mut self, frame: &[u8]) {
         let start = self.host_free_at.max(self.core.borrow().now());

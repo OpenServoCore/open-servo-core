@@ -9,7 +9,7 @@ use osc_core::regions::control::addr::lifecycle::TORQUE_ENABLE;
 use osc_core::regions::profile::span_word;
 use osc_core::regions::{CALIB_BASE_ADDR, PROFILE_BASE_ADDR};
 use osc_integration::sim::{Sim, Source, WireFrame, assert_valid, instruction, status};
-use osc_protocol::wire::{Inst, MgmtOp, Opcode, ResultCode};
+use osc_protocol::wire::{Id, Inst, MgmtOp, Opcode, ResultCode};
 use rstest::rstest;
 use rstest_reuse::apply;
 
@@ -262,6 +262,180 @@ fn mgmt_save_is_instruction_error(baud_idx: u8) {
 
     let (inst, _) = status(sole_reply(&frames));
     assert_eq!(inst.result(), Some(ResultCode::Instruction));
+}
+
+/// Broadcast MGMT ENUM args: `prefix_len` bits + the prefix bytes (§9.2).
+fn enum_args(prefix_len: u8, prefix: &[u8]) -> Vec<u8> {
+    let mut args = vec![MgmtOp::Enum as u8, prefix_len];
+    args.extend_from_slice(prefix);
+    args
+}
+
+/// Broadcast MGMT ASSIGN args: `uid(12)` + `new_id` (§9.2).
+fn assign_args(uid: [u8; 16], new_id: u8) -> Vec<u8> {
+    let mut args = vec![MgmtOp::Assign as u8];
+    args.extend_from_slice(&uid);
+    args.push(new_id);
+    args
+}
+
+const BROADCAST: u8 = Id::BROADCAST.as_byte();
+
+#[apply(matrix)]
+fn mgmt_enum_prefix_selects_the_matching_servo(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
+    sim.add_servo(ID5);
+    let b = sim.add_servo(6);
+    // Distinct on bit 0 (the LSB-first stream's first bit, §9.2).
+    sim.seed_servo_uid(0, [0x00; 16]);
+    sim.seed_servo_uid(b, [0x01, 0xBB, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+
+    sim.host_send(&instruction(
+        BROADCAST,
+        Opcode::Mgmt,
+        0,
+        &enum_args(1, &[0x01]),
+    ));
+    let frames = sim.run();
+
+    let reply = sole_reply(&frames);
+    assert_eq!(
+        reply.from,
+        Source::Servo(6),
+        "only the prefix match answers"
+    );
+    let (inst, payload) = status(reply);
+    assert_eq!(inst.result(), Some(ResultCode::Ok));
+    assert_eq!(payload, sim.servo_uid(b), "the reply is the full UID");
+}
+
+#[apply(matrix)]
+fn mgmt_enum_empty_prefix_is_the_tree_root(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
+    let s = sim.add_servo(ID5);
+
+    // prefix_len 0 matches every servo — with one on the bus, a clean reply.
+    sim.host_send(&instruction(BROADCAST, Opcode::Mgmt, 0, &enum_args(0, &[])));
+    let frames = sim.run();
+
+    let (inst, payload) = status(sole_reply(&frames));
+    assert_eq!(inst.result(), Some(ResultCode::Ok));
+    assert_eq!(payload, sim.servo_uid(s));
+}
+
+#[apply(matrix)]
+fn mgmt_enum_mismatch_draws_silence(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
+    sim.add_servo(ID5);
+    sim.seed_servo_uid(0, [0x00; 16]);
+
+    // An empty subtree answers with a timeout, never a nack (§9.2).
+    sim.host_send(&instruction(
+        BROADCAST,
+        Opcode::Mgmt,
+        0,
+        &enum_args(8, &[0xFF]),
+    ));
+    let frames = sim.run();
+
+    assert!(servo_frames(&frames).is_empty());
+}
+
+#[apply(matrix)]
+fn mgmt_enum_malformed_is_silent_on_broadcast_error_unicast(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
+    sim.add_servo(ID5);
+
+    // prefix_len over 96 bits: broadcast stays silent (a nack storm is the
+    // one reply a broadcast must never draw)…
+    sim.host_send(&instruction(
+        BROADCAST,
+        Opcode::Mgmt,
+        0,
+        &enum_args(129, &[]),
+    ));
+    let frames = sim.run();
+    assert!(servo_frames(&frames).is_empty());
+
+    // …while the same malformed query unicast gets the §5.3 layer-2 verdict.
+    sim.host_send(&instruction(ID5, Opcode::Mgmt, 0, &enum_args(129, &[])));
+    let frames = sim.run();
+    let (inst, _) = status(sole_reply(&frames));
+    assert_eq!(inst.result(), Some(ResultCode::Instruction));
+}
+
+#[apply(matrix)]
+fn mgmt_assign_takes_the_id_and_acks_from_it(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
+    let s = sim.add_servo(ID5);
+
+    sim.host_send(&instruction(
+        BROADCAST,
+        Opcode::Mgmt,
+        0,
+        &assign_args([ID5; 16], 42),
+    ));
+    let frames = sim.run();
+
+    let reply = sole_reply(&frames);
+    assert_eq!(reply.bytes[1], 42, "the ack already leaves from the new id");
+    let (inst, payload) = status(reply);
+    assert_eq!(inst.result(), Some(ResultCode::Ok));
+    assert!(payload.is_empty());
+    assert_eq!(
+        sim.servo_table(s, |t| t.config.comms.id),
+        42,
+        "mirrored into the config ID register for a later SAVE"
+    );
+
+    // The new id answers; the old id is nobody.
+    sim.host_send(&instruction(42, Opcode::Ping, 0, &[]));
+    let (inst, _) = status(sole_reply(&sim.run()));
+    assert_eq!(inst.result(), Some(ResultCode::Ok));
+    sim.host_send(&instruction(ID5, Opcode::Ping, 0, &[]));
+    assert!(servo_frames(&sim.run()).is_empty());
+}
+
+#[apply(matrix)]
+fn mgmt_assign_foreign_uid_is_silent_and_inert(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
+    let s = sim.add_servo(ID5);
+
+    sim.host_send(&instruction(
+        BROADCAST,
+        Opcode::Mgmt,
+        0,
+        &assign_args([0xEE; 16], 42),
+    ));
+    let frames = sim.run();
+
+    assert!(servo_frames(&frames).is_empty());
+    assert_eq!(sim.servo_table(s, |t| t.config.comms.id), ID5);
+    sim.host_send(&instruction(ID5, Opcode::Ping, 0, &[]));
+    let (inst, _) = status(sole_reply(&sim.run()));
+    assert_eq!(inst.result(), Some(ResultCode::Ok), "old id still answers");
+}
+
+#[apply(matrix)]
+fn mgmt_assign_invalid_id_nacks_validation(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
+    let s = sim.add_servo(ID5);
+
+    // The sole UID match may nack without colliding (§9.2); 250 is past the
+    // unicast ceiling (§3.1).
+    sim.host_send(&instruction(
+        BROADCAST,
+        Opcode::Mgmt,
+        0,
+        &assign_args([ID5; 16], 250),
+    ));
+    let frames = sim.run();
+
+    let reply = sole_reply(&frames);
+    assert_eq!(reply.bytes[1], ID5, "the nack leaves from the unchanged id");
+    let (inst, _) = status(reply);
+    assert_eq!(inst.result(), Some(ResultCode::Validation));
+    assert_eq!(sim.servo_table(s, |t| t.config.comms.id), ID5);
 }
 
 #[apply(matrix)]

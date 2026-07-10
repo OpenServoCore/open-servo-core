@@ -15,7 +15,6 @@ use crate::runtime::statics::{KERNEL, SESSION, SHARED};
 /// only the motor kernel (DMA1_CH1 = 22), which HIGH preempts and which runs
 /// in the wire gaps between frames. DMA1_CH5 (RX ring) runs silent circular —
 /// no HT/TC IRQ — and CH4/CH3 raise none either.
-
 pub fn install_irqs() {
     pfic::set_priority(pfic::Interrupt::USART1, pfic::Priority::High);
     pfic::set_systick_priority(pfic::Priority::High);

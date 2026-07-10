@@ -1,5 +1,5 @@
 use osc_protocol::FrameBytes;
-use osc_protocol::wire::{MgmtOp, ResultCode};
+use osc_protocol::wire::{MgmtOp, ResultCode, UID_LEN};
 
 use crate::{BaudRate, BootMode};
 
@@ -40,6 +40,18 @@ pub enum Request<'a> {
         hold: bool,
     },
     Commit,
+    /// MGMT ENUM (§9.2): reply with the full UID iff ours begins with the
+    /// prefix; silent otherwise.
+    Enumerate {
+        prefix_len: u8,
+        prefix: [u8; UID_LEN],
+    },
+    /// MGMT ASSIGN (§9.2): the servo whose UID matches takes `new_id`
+    /// immediately and acks from it.
+    Assign {
+        uid: [u8; UID_LEN],
+        new_id: u8,
+    },
     Mgmt {
         op: MgmtOp,
         args: FrameBytes<'a>,
@@ -74,6 +86,9 @@ pub trait Reply {
     ) -> Result<(), SendError>;
     /// Deferred ID change — applies after the in-flight TX completes.
     fn stage_id(&mut self, id: u8);
+    /// Immediate ID change — a status staged after this call already carries
+    /// the new id (the ASSIGN ack leaves from it, §9.2).
+    fn set_id(&mut self, id: u8);
     /// Deferred baud change — applied at TX complete so the ack leaves at the old rate.
     fn stage_baud(&mut self, baud: BaudRate);
     /// Immediate: the bus caches this for chain-reclaim timing (§6).

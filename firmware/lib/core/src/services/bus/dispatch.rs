@@ -1,7 +1,8 @@
 use control_table::{RegisterFile, Snapshot};
 use heapless::Vec;
 use osc_protocol::FrameBytes;
-use osc_protocol::wire::{MAX_PAYLOAD, MgmtOp, ResultCode};
+use osc_protocol::frame::uid_prefix_matches;
+use osc_protocol::wire::{Id, MAX_PAYLOAD, MgmtOp, ResultCode, UID_LEN};
 
 use crate::regions::hooks::ControlTableHooks;
 use crate::traits::{Dispatch, Dispatched, GATHER_MAX, Reply, Request, RequestCtx, Status};
@@ -106,6 +107,14 @@ impl Dispatch for Dispatcher<'_> {
             // frame before dispatching, so applying directly is sound.
             Request::Commit => {
                 self.apply_commit(alert, &ctx, reply);
+                Dispatched::Done
+            }
+            Request::Enumerate { prefix_len, prefix } => {
+                self.enumerate(alert, &ctx, prefix_len, &prefix, reply);
+                Dispatched::Done
+            }
+            Request::Assign { uid, new_id } => {
+                self.assign(alert, &ctx, &uid, new_id, reply);
                 Dispatched::Done
             }
             Request::Mgmt { op, .. } => {
@@ -366,6 +375,60 @@ impl Dispatcher<'_> {
                 .table
                 .with(|t| t.dispatch_events(addr, len, &mut hooks));
         }
+    }
+
+    /// §9.2 ENUM: reply with the full UID iff ours begins with the queried
+    /// prefix. A mismatch stays silent — on the broadcast wire, silence and
+    /// collision garbage are the host's two tree-descent signals, and a nack
+    /// would only manufacture collisions.
+    fn enumerate<R: Reply>(
+        &mut self,
+        alert: bool,
+        ctx: &RequestCtx,
+        prefix_len: u8,
+        prefix: &[u8; UID_LEN],
+        reply: &mut R,
+    ) {
+        if !ctx.may_reply {
+            return;
+        }
+        let uid = self.shared.uid();
+        if !uid_prefix_matches(uid, prefix_len, prefix) {
+            return;
+        }
+        Self::send(
+            reply,
+            Status {
+                result: ResultCode::Ok,
+                alert,
+                data: uid,
+            },
+        );
+    }
+
+    /// §9.2 ASSIGN: the servo whose UID matches takes the id — applied
+    /// immediately (`set_id`, not the deferred `stage_id`) so the ack leaves
+    /// from the new id, and mirrored into the config ID register so a later
+    /// SAVE persists it (volatile until then). Non-matching servos stay
+    /// silent; the sole matching servo can nack without colliding.
+    fn assign<R: Reply>(
+        &mut self,
+        alert: bool,
+        ctx: &RequestCtx,
+        uid: &[u8; UID_LEN],
+        new_id: u8,
+        reply: &mut R,
+    ) {
+        if uid != self.shared.uid() {
+            return;
+        }
+        if Id::try_unicast(new_id).is_none() {
+            let e = Error::ValidationError(control_table::ValidationKind::Compare);
+            return Self::ack(alert, ctx, Err(e), reply);
+        }
+        self.shared.table.with_mut(|t| t.config.comms.id = new_id);
+        reply.set_id(new_id);
+        Self::ack(alert, ctx, Ok(()), reply);
     }
 
     fn mgmt<R: Reply>(&mut self, alert: bool, ctx: &RequestCtx, op: MgmtOp, reply: &mut R) {

@@ -272,7 +272,7 @@ snapshotted and CRC'd.
 | op  | name    | payload                                                              | reply                                 |
 | --- | ------- | -------------------------------------------------------------------- | ------------------------------------- |
 | 0x0 | invalid | (INST 0x00 never valid, like ID 0x00)                                |                                       |
-| 0x1 | PING    | —                                                                    | status: model(2), fw(1) — no UID: it would triple the reply of the hottest liveness check; UID lives in the read-only table and MGMT ENUM (§9.2) |
+| 0x1 | PING    | —                                                                    | status: model(2), fw(1) — no UID: 16 more bytes on the hottest liveness check; the UID is an internal value and MGMT ENUM (§9.2) is its only reader |
 | 0x2 | READ    | addr(2), count(2)                                                    | status: data(count)                   |
 | 0x3 | WRITE   | addr(2), data(n)                                                     | status: empty (ack)                   |
 | 0x4 | COMMIT  | — (broadcast)                                                        | none                                  |
@@ -476,16 +476,37 @@ cannot interrupt a servo wedged mid-transmit (RX is muted during own TX
 
 ### 9.2 UID enumeration and ID assignment
 
-The V006 has a 64-bit ESIG UID. Push-pull UART has no dominant-bit
-arbitration, so simultaneous responses are garbage — and garbage _is_ the
-collision signal:
+The UID is a **fixed 16-byte field** — UUID-width, because the wire format
+is the long-lived ABI and no catalog MCU burns in more than 128 bits
+(64/96/128 all exist; 96 dominates the STM32-clone pool). A chip fills it
+LSB-first from its silicon ID and zero-pads the tail: the V006's
+factory-burned 96-bit ESIG (RM ch. 19) lands in the low 12 bytes, UNIID1's
+low byte first. Read once at bringup and held as an internal value — not a
+table register (it would spend 16 read-only table bytes on something only
+discovery reads; ENUM is its sole consumer). The pad costs the prefix tree
+nothing: descent depth is driven by where UIDs differ, and same-silicon
+chips differ in the low bits.
 
-- `MGMT ENUM [prefix_len, prefix…]` (broadcast): servos whose UID matches
-  the prefix reply with a full-UID status. Clean reply → unique match;
-  garbled/CRC-fail → descend the prefix tree one bit and retry.
-  O(bits · N) exchanges, boot-time only.
-- `MGMT ASSIGN [uid(8), new_id]` (broadcast): the matching servo takes the
-  ID and acks from it. Solves the duplicate-default-ID field pain.
+Push-pull UART has no dominant-bit arbitration, so simultaneous responses
+are garbage — and garbage _is_ the collision signal:
+
+- `MGMT ENUM [prefix_len, prefix…]` (broadcast): `prefix_len` counts bits,
+  0..=128; the prefix carries `ceil(prefix_len/8)` bytes. The stream is
+  LSB-first — bit k of the UID is `uid[k/8] >> (k%8) & 1`, the same order
+  the UART shifts bits onto the wire. A servo whose UID begins with the
+  prefix replies `OK` with its full 16-byte UID; everyone else stays
+  silent. Mismatches and malformed queries draw no reply on the broadcast
+  wire — a nack storm is the one reply a broadcast must never produce
+  (unicast keeps the §5.3 layer-2 `instruction` verdict). Host algorithm:
+  clean reply → unique match; garbled/CRC-fail → collision, descend the
+  prefix tree one bit and retry; timeout → empty subtree. O(bits · N)
+  exchanges, boot-time only.
+- `MGMT ASSIGN [uid(16), new_id]` (broadcast): the servo whose UID matches
+  takes `new_id` — validated 1..=249 (the sole matcher may nack
+  `validation` without colliding), applied immediately so the ack already
+  leaves from the new id, and mirrored into the config ID register so a
+  later SAVE persists it; volatile until then. Solves the
+  duplicate-default-ID field pain.
 
 ### 9.3 Clock calibration: deliberately absent
 

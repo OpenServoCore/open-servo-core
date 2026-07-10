@@ -11,12 +11,12 @@
 
 use osc_core::traits::{Request, RequestCtx};
 use osc_protocol::FrameBytes;
-use osc_protocol::frame::{Header, MgmtReq, ProfileReq, ReadReq, WriteReq};
+use osc_protocol::frame::{AssignReq, EnumReq, Header, MgmtReq, ProfileReq, ReadReq, WriteReq};
 use osc_protocol::group::{
     GreadPerTarget, GreadProfilePerTarget, GreadProfileUniform, GreadUniform, GwritePerTarget,
     GwriteUniform,
 };
-use osc_protocol::wire::{Id, Inst, Opcode};
+use osc_protocol::wire::{Id, Inst, MgmtOp, Opcode};
 
 /// What the frame is, from the composite's point of view.
 pub enum Decoded<'a> {
@@ -65,9 +65,6 @@ fn plain<'a>(op: Opcode, inst: Inst, frame_id: Id, pay: FrameBytes<'a>, own: Id)
     if !frame_id.addresses(own) {
         return Decoded::Skip;
     }
-    // §5: a broadcast reply would collide on the shared push-pull wire, so
-    // plain ops answer only unicast; NOREPLY suppresses either way.
-    let may_reply = !inst.noreply() && !broadcast;
     let req = match op {
         Opcode::Ping => Request::Ping,
         // READ + PROFILE names a profile slot instead of addr+count (§5.2).
@@ -92,15 +89,38 @@ fn plain<'a>(op: Opcode, inst: Inst, frame_id: Id, pay: FrameBytes<'a>, own: Id)
         },
         Opcode::Commit => Request::Commit,
         Opcode::Mgmt => match MgmtReq::parse(pay) {
-            Some(m) => Request::Mgmt {
-                op: m.op,
-                args: m.args,
+            Some(m) => match m.op {
+                MgmtOp::Enum => match EnumReq::parse(m.args) {
+                    Some(e) => Request::Enumerate {
+                        prefix_len: e.prefix_len,
+                        prefix: e.prefix,
+                    },
+                    None => Request::Unsupported,
+                },
+                MgmtOp::Assign => match AssignReq::parse(m.args) {
+                    Some(a) => Request::Assign {
+                        uid: a.uid,
+                        new_id: a.new_id,
+                    },
+                    None => Request::Unsupported,
+                },
+                _ => Request::Mgmt {
+                    op: m.op,
+                    args: m.args,
+                },
             },
             None => Request::Unsupported,
         },
         // Group opcodes are routed before this call.
         _ => Request::Unsupported,
     };
+    // §5: a broadcast reply would collide on the shared push-pull wire, so
+    // plain ops answer only unicast; NOREPLY suppresses either way. ENUM and
+    // ASSIGN are the §9.2 carve-out: broadcast-addressed by design, with the
+    // dispatcher's UID match electing the sole replier — a malformed pair
+    // decodes Unsupported and stays under broadcast suppression.
+    let may_reply = !inst.noreply()
+        && (!broadcast || matches!(req, Request::Enumerate { .. } | Request::Assign { .. }));
     Decoded::Own(req, RequestCtx { may_reply }, 0)
 }
 

@@ -25,6 +25,9 @@ struct FakeReply {
     /// Span count of the last `send_status_gather` (0 = none seen).
     gather_spans: usize,
     staged_id: Option<u8>,
+    /// `set_id` value, plus the send count at that instant — ASSIGN must
+    /// apply the id BEFORE its ack so the ack leaves from the new id (§9.2).
+    set_id: Option<(u8, usize)>,
     staged_baud: Option<BaudRate>,
     response_deadline: Option<u16>,
     reboot: Option<BootMode>,
@@ -36,6 +39,7 @@ impl FakeReply {
             sends: Vec::new(),
             gather_spans: 0,
             staged_id: None,
+            set_id: None,
             staged_baud: None,
             response_deadline: None,
             reboot: None,
@@ -89,6 +93,10 @@ impl Reply for FakeReply {
 
     fn stage_id(&mut self, id: u8) {
         self.staged_id = Some(id);
+    }
+
+    fn set_id(&mut self, id: u8) {
+        self.set_id = Some((id, self.sends.len()));
     }
 
     fn stage_baud(&mut self, baud: BaudRate) {
@@ -577,6 +585,144 @@ fn mgmt_non_reboot_ops_reply_instruction() {
         );
         assert_eq!(reply.last().result, ResultCode::Instruction);
     }
+}
+
+// --- Enumerate / Assign (§9.2) ----------------------------------------------
+
+const UID: [u8; 16] = [0xA5, 0x5A, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 0xF0];
+
+fn shared_with_uid() -> Shared {
+    let shared = Shared::new();
+    shared.seed_uid(UID);
+    shared
+}
+
+fn prefix_of(bits: u8) -> [u8; 16] {
+    // A prefix that matches UID for any length: UID itself, masked by parse
+    // semantics (the dispatcher only compares the first `bits` bits).
+    let mut p = UID;
+    if bits < 128 {
+        let full = (bits / 8) as usize;
+        for b in p.iter_mut().skip(full + 1) {
+            *b = 0;
+        }
+        p[full] &= (1u8 << (bits % 8)).wrapping_sub(1);
+    }
+    p
+}
+
+#[test]
+fn enumerate_matching_prefix_replies_full_uid() {
+    let shared = shared_with_uid();
+    let mut staged = StagedWrites::new();
+    for bits in [0u8, 1, 8, 127, 128] {
+        let reply = go(
+            &shared,
+            &mut staged,
+            Request::Enumerate {
+                prefix_len: bits,
+                prefix: prefix_of(bits),
+            },
+            true,
+        );
+        assert_eq!(reply.last().result, ResultCode::Ok, "prefix_len {bits}");
+        assert_eq!(reply.last().data, UID, "prefix_len {bits}");
+    }
+}
+
+#[test]
+fn enumerate_mismatch_is_silent() {
+    let shared = shared_with_uid();
+    let mut staged = StagedWrites::new();
+    let mut prefix = prefix_of(1);
+    prefix[0] ^= 1; // flip the queried bit
+    let reply = go(
+        &shared,
+        &mut staged,
+        Request::Enumerate {
+            prefix_len: 1,
+            prefix,
+        },
+        true,
+    );
+    assert_eq!(reply.count(), 0, "a mismatch draws no reply, not a nack");
+}
+
+#[test]
+fn assign_matching_uid_sets_id_before_ack() {
+    let shared = shared_with_uid();
+    let mut staged = StagedWrites::new();
+    let reply = go(
+        &shared,
+        &mut staged,
+        Request::Assign {
+            uid: UID,
+            new_id: 42,
+        },
+        true,
+    );
+    assert_eq!(reply.last().result, ResultCode::Ok);
+    // The id applies immediately and BEFORE the ack stages, so the ack
+    // already leaves from the new id (§9.2).
+    assert_eq!(reply.set_id, Some((42, 0)));
+    assert_eq!(reply.staged_id, None, "immediate, not deferred");
+    // Mirrored into the config table so a later SAVE persists it.
+    assert_eq!(shared.table.with(|t| t.config.comms.id), 42);
+}
+
+#[test]
+fn assign_foreign_uid_is_silent_and_inert() {
+    let shared = shared_with_uid();
+    let mut staged = StagedWrites::new();
+    let before = shared.table.with(|t| t.config.comms.id);
+    let mut uid = UID;
+    uid[15] ^= 0x80;
+    let reply = go(
+        &shared,
+        &mut staged,
+        Request::Assign { uid, new_id: 42 },
+        true,
+    );
+    assert_eq!(reply.count(), 0);
+    assert_eq!(reply.set_id, None);
+    assert_eq!(shared.table.with(|t| t.config.comms.id), before);
+}
+
+#[test]
+fn assign_invalid_id_nacks_validation() {
+    let shared = shared_with_uid();
+    let mut staged = StagedWrites::new();
+    for bad in [0u8, 250, 254, 255] {
+        let reply = go(
+            &shared,
+            &mut staged,
+            Request::Assign {
+                uid: UID,
+                new_id: bad,
+            },
+            true,
+        );
+        assert_eq!(reply.last().result, ResultCode::Validation, "id {bad}");
+        assert_eq!(reply.set_id, None, "id {bad}");
+    }
+}
+
+#[test]
+fn assign_noreply_still_applies() {
+    let shared = shared_with_uid();
+    let mut staged = StagedWrites::new();
+    let reply = go(
+        &shared,
+        &mut staged,
+        Request::Assign {
+            uid: UID,
+            new_id: 9,
+        },
+        false,
+    );
+    assert_eq!(reply.count(), 0);
+    assert_eq!(reply.set_id, Some((9, 0)));
+    assert_eq!(shared.table.with(|t| t.config.comms.id), 9);
 }
 
 // --- Unsupported ----------------------------------------------------------

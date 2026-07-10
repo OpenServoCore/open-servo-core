@@ -150,6 +150,71 @@ impl<'a> MgmtReq<'a> {
     }
 }
 
+/// MGMT ENUM args: `prefix_len(1)` in bits (0..=128), then the
+/// `ceil(prefix_len/8)`-byte prefix (§9.2). Unused prefix bytes are zero.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct EnumReq {
+    pub prefix_len: u8,
+    pub prefix: [u8; wire::UID_LEN],
+}
+
+impl EnumReq {
+    pub const MAX_PREFIX_BITS: u8 = (wire::UID_LEN * 8) as u8;
+
+    #[inline]
+    pub fn parse(args: FrameBytes) -> Option<EnumReq> {
+        let prefix_len = args.u8_at(0)?;
+        if prefix_len > Self::MAX_PREFIX_BITS {
+            return None;
+        }
+        let n = prefix_len.div_ceil(8) as usize;
+        if args.len() != 1 + n {
+            return None;
+        }
+        let mut prefix = [0u8; wire::UID_LEN];
+        args.sub(1, n)?.copy_into(&mut prefix[..n])?;
+        Some(EnumReq { prefix_len, prefix })
+    }
+}
+
+/// §9.2: does `uid` begin with the `prefix_len`-bit prefix? The prefix is an
+/// LSB-first bit stream — bit `k` is `uid[k/8] >> (k%8) & 1`, the order the
+/// UART itself shifts bits onto the wire.
+pub fn uid_prefix_matches(
+    uid: &[u8; wire::UID_LEN],
+    prefix_len: u8,
+    prefix: &[u8; wire::UID_LEN],
+) -> bool {
+    let full = (prefix_len / 8) as usize;
+    let rem = prefix_len % 8;
+    if uid[..full] != prefix[..full] {
+        return false;
+    }
+    rem == 0 || (uid[full] ^ prefix[full]) & ((1 << rem) - 1) == 0
+}
+
+/// MGMT ASSIGN args: `uid(16)`, `new_id(1)` (§9.2).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct AssignReq {
+    pub uid: [u8; wire::UID_LEN],
+    pub new_id: u8,
+}
+
+impl AssignReq {
+    #[inline]
+    pub fn parse(args: FrameBytes) -> Option<AssignReq> {
+        if args.len() != wire::UID_LEN + 1 {
+            return None;
+        }
+        let mut uid = [0u8; wire::UID_LEN];
+        args.sub(0, wire::UID_LEN)?.copy_into(&mut uid)?;
+        Some(AssignReq {
+            uid,
+            new_id: args.u8_at(wire::UID_LEN)?,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,6 +317,87 @@ mod tests {
         );
         assert_eq!(MgmtReq::parse(fb(&[])), None);
         assert_eq!(MgmtReq::parse(fb(&[0x00])), None);
+    }
+
+    #[test]
+    fn enum_req_parse() {
+        // Empty prefix: the tree root, matches every servo.
+        assert_eq!(
+            EnumReq::parse(fb(&[0])),
+            Some(EnumReq {
+                prefix_len: 0,
+                prefix: [0; 16]
+            })
+        );
+        // 10 bits → 2 prefix bytes, upper bytes zero-filled.
+        let e = EnumReq::parse(fb(&[10, 0xAB, 0x03])).unwrap();
+        assert_eq!(e.prefix_len, 10);
+        assert_eq!(e.prefix[..2], [0xAB, 0x03]);
+        assert_eq!(e.prefix[2..], [0; 14]);
+        // Full 128-bit prefix.
+        let mut full = [0u8; 17];
+        full[0] = 128;
+        for (i, b) in full[1..].iter_mut().enumerate() {
+            *b = i as u8 + 1;
+        }
+        let e = EnumReq::parse(fb(&full)).unwrap();
+        assert_eq!(e.prefix, full[1..]);
+        // Rejects: over-long prefix_len, byte count not matching prefix_len.
+        assert_eq!(EnumReq::parse(fb(&[129])), None);
+        assert_eq!(EnumReq::parse(fb(&[10, 0xAB])), None);
+        assert_eq!(EnumReq::parse(fb(&[8, 0xAB, 0xCD])), None);
+        assert_eq!(EnumReq::parse(fb(&[])), None);
+    }
+
+    #[test]
+    fn uid_prefix_match_boundaries() {
+        let mut uid = [0u8; 16];
+        uid[0] = 0b1010_0101;
+        uid[1] = 0xFF;
+        uid[15] = 0x80;
+        let m = |len: u8, prefix: &[u8]| {
+            let mut p = [0u8; 16];
+            p[..prefix.len()].copy_from_slice(prefix);
+            uid_prefix_matches(&uid, len, &p)
+        };
+        // Length 0 matches everything.
+        assert!(m(0, &[]));
+        // Bit 0 is the LSB of byte 0 (LSB-first stream).
+        assert!(m(1, &[0b1]));
+        assert!(!m(1, &[0b0]));
+        // Partial byte: only the low `rem` bits compare.
+        assert!(m(3, &[0b101]));
+        assert!(!m(3, &[0b111])); // bit 1 differs
+        assert!(m(3, &[0b1111_1101])); // high bits past the prefix are masked off
+        // Byte boundary: 8 bits = whole first byte.
+        assert!(m(8, &[0b1010_0101]));
+        assert!(!m(8, &[0b0010_0101]));
+        // 127 bits: everything but the UID's top bit.
+        let mut p = uid;
+        p[15] = 0x00; // differs only in bit 127
+        assert!(uid_prefix_matches(&uid, 127, &p));
+        assert!(!uid_prefix_matches(&uid, 128, &p));
+        // 128 bits: exact match.
+        assert!(uid_prefix_matches(&uid, 128, &uid));
+    }
+
+    #[test]
+    fn assign_req_parse() {
+        let mut args = [0u8; 17];
+        for (i, b) in args[..16].iter_mut().enumerate() {
+            *b = i as u8 + 1;
+        }
+        args[16] = 7;
+        let want: [u8; 16] = args[..16].try_into().unwrap();
+        assert_eq!(
+            AssignReq::parse(fb(&args)),
+            Some(AssignReq {
+                uid: want,
+                new_id: 7
+            })
+        );
+        assert_eq!(AssignReq::parse(fb(&args[..16])), None);
+        assert_eq!(AssignReq::parse(fb(&[])), None);
     }
 
     #[test]

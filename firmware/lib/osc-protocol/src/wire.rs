@@ -230,6 +230,11 @@ impl Inst {
 /// Max payload bytes; sized so the largest frame fits whole in the ring (§3.1).
 pub const MAX_PAYLOAD: u8 = 252;
 
+/// UID field width in bytes (§9.2): UUID-width, fixed. A chip fills it
+/// LSB-first from its silicon ID and zero-pads the tail (the V006's 96-bit
+/// ESIG leaves the top four bytes zero); no catalog MCU exceeds 128 bits.
+pub const UID_LEN: usize = 16;
+
 /// TX-buffer alignment byte at offset 0 (§3.2): keeps the hardware CRC feed
 /// halfword-aligned and even; a CRC no-op (leading zero, init = 0). Not part
 /// of the wire checksum definition.

@@ -4,7 +4,7 @@ use osc_drivers::Level;
 
 use crate::control::sensors::scan::{ADC_DMA_BUF, ADC_DMA_BUF_LEN, ADC_SCAN_LEN, ADC_SENSOR_COUNT};
 use crate::hal::{
-    adc, afio, delay_ms, dma,
+    adc, afio, delay_ms, dma, esig,
     gpio::{self, PinMode},
     opa, rcc, systick, timer, usart,
 };
@@ -36,6 +36,7 @@ pub fn bringup(
     // Sole writer to CONFIG: pre-IRQ, pre-`Drivers::install`. Seeds the
     // dispatcher's view of id/baud/deadline from the board defaults.
     SHARED.table.seed_config_defaults(defaults);
+    SHARED.seed_uid(esig::uid());
 
     bring_up_analog_chain(&wiring.current_sense);
     crate::log::debug!("opa settled");

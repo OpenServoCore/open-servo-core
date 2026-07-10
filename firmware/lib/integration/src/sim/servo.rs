@@ -46,6 +46,9 @@ impl SimServo {
             response_deadline_us,
             ..Default::default()
         });
+        // Default UID: the id repeated — distinct per servo, predictable for
+        // ENUM tests; override via `seed_uid` where prefix structure matters.
+        shared.seed_uid([id; 16]);
         // model/fw are read-only identity fields, seeded directly (not part of
         // ConfigDefaults) so PING has something to answer with.
         shared.table.with_mut(|t| {
@@ -96,6 +99,15 @@ impl SimServo {
 
     pub fn take_reboot(&mut self) -> Option<BootMode> {
         self.bus.take_reboot()
+    }
+
+    /// Replace the ESIG-stand-in UID (pre-traffic, like the chip's bringup).
+    pub fn seed_uid(&self, uid: [u8; 16]) {
+        self.shared.seed_uid(uid);
+    }
+
+    pub fn uid(&self) -> [u8; 16] {
+        *self.shared.uid()
     }
 
     pub fn diag(&self) -> LinkDiag {

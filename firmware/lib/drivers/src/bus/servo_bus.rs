@@ -635,7 +635,7 @@ impl<P: Providers> ServoBus<P> {
         let mut handle = ReplyHandle {
             tx: &mut self.tx,
             crc: &mut self.crc,
-            id: self.id,
+            id: &mut self.id,
             pending_id: &mut self.pending_id,
             pending_baud: &mut self.pending_baud,
             pending_reboot: &mut self.pending_reboot,
@@ -653,7 +653,7 @@ impl<P: Providers> ServoBus<P> {
         ReplyHandle {
             tx: &mut self.tx,
             crc: &mut self.crc,
-            id: self.id,
+            id: &mut self.id,
             pending_id: &mut self.pending_id,
             pending_baud: &mut self.pending_baud,
             pending_reboot: &mut self.pending_reboot,
@@ -756,7 +756,9 @@ impl<P: Providers> ServoBus<P> {
 struct ReplyHandle<'a, W: TxWire, C: CrcEngine> {
     tx: &'a mut TxEngine<W>,
     crc: &'a mut C,
-    id: u8,
+    /// Write-through to the bus id: `set_id` applies here so a status staged
+    /// after it already carries the new id (the ASSIGN ack, §9.2).
+    id: &'a mut u8,
     pending_id: &'a mut Option<u8>,
     pending_baud: &'a mut Option<BaudRate>,
     pending_reboot: &'a mut Option<BootMode>,
@@ -768,7 +770,7 @@ impl<W: TxWire, C: CrcEngine> Reply for ReplyHandle<'_, W, C> {
     fn send_status(&mut self, status: Status<'_>) -> Result<(), SendError> {
         let r = self
             .tx
-            .stage(self.crc, self.id, status.result, status.alert, status.data);
+            .stage(self.crc, *self.id, status.result, status.alert, status.data);
         if r.is_ok() {
             self.staged = true;
         }
@@ -783,7 +785,7 @@ impl<W: TxWire, C: CrcEngine> Reply for ReplyHandle<'_, W, C> {
     ) -> Result<(), SendError> {
         let r = self
             .tx
-            .stage_gather(self.crc, self.id, result, alert, spans);
+            .stage_gather(self.crc, *self.id, result, alert, spans);
         if r.is_ok() {
             self.staged = true;
         }
@@ -792,6 +794,10 @@ impl<W: TxWire, C: CrcEngine> Reply for ReplyHandle<'_, W, C> {
 
     fn stage_id(&mut self, id: u8) {
         *self.pending_id = Some(id);
+    }
+
+    fn set_id(&mut self, id: u8) {
+        *self.id = id;
     }
 
     fn stage_baud(&mut self, baud: BaudRate) {
