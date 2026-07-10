@@ -22,8 +22,21 @@ use crate::traits::bus::{
 const BYTE_TIME_NUMERATOR: u32 = 10_000_000;
 
 /// §9.1: an ordinary break has risen by FE-ISR entry [F5]; a still-low line
-/// this many µs later is a rescue pulse, not a frame delimiter.
+/// this many µs later is a rescue candidate, not a frame delimiter.
 const RESCUE_CONFIRM_US: u32 = 100;
+
+/// Second rescue sample, this many byte-times past a passing first one (a
+/// hair over one, shift-friendly). One low sample can alias a data byte's
+/// low bits while a host TX stall keeps the cursor frozen across the
+/// confirm (bench-observed at 1M: a ~95 µs burst bubble right after a
+/// break put the +100 µs sample inside the next byte's start bit —
+/// phantom rescue, servo wedged at 0.5M under a 1M host). Data cannot
+/// hold the line low a whole byte-time without completing a byte, and a
+/// completed byte rings and moves the cursor — so a second low sample a
+/// byte-time later with the cursor still frozen is a dominant low by
+/// UART framing itself, at any host baud.
+const RESCUE_RECONFIRM_NUM: u32 = 9;
+const RESCUE_RECONFIRM_SHIFT: u32 = 3;
 
 /// Slack on the reclaim-suspension frame allowance (§6): covers the snooper's
 /// deadline-B margin on the predecessor's frame end.
@@ -95,6 +108,9 @@ pub struct ServoBus<P: Providers> {
     // Ring cursor at rescue arm: bytes ringed since mean in-flight traffic,
     // not a held-low pulse (a break of any length is one FE, no data — F3).
     rescue_cursor: u16,
+    // A first confirm sample passed; the slot is re-armed one byte-time out
+    // for the aliasing-proof second sample (see RESCUE_RECONFIRM_NUM).
+    rescue_reconfirm: bool,
 }
 
 /// Ticks per byte-time at `rate` on the transport clock. Each arm folds to a
@@ -155,6 +171,7 @@ impl<P: Providers> ServoBus<P> {
             chain_at: None,
             rescue_at: None,
             rescue_cursor: 0,
+            rescue_reconfirm: false,
         }
     }
 
@@ -198,6 +215,7 @@ impl<P: Providers> ServoBus<P> {
             let at = now.wrapping_add(RESCUE_CONFIRM_US * <P::Deadline as Deadline>::TICKS_PER_US);
             self.rescue_at = Some(at);
             self.rescue_cursor = self.ring.cursor();
+            self.rescue_reconfirm = false;
         }
         self.arm_deadline();
     }
@@ -370,6 +388,16 @@ impl<P: Providers> ServoBus<P> {
         }
         // Line risen → it was an ordinary break, not a rescue pulse.
         if !self.line.is_low() {
+            return;
+        }
+        // One low sample can alias a data bit when a host TX stall froze the
+        // cursor across the confirm: take a second sample a byte-time later
+        // under the same frozen-cursor requirement — only a dominant low
+        // survives both (see RESCUE_RECONFIRM_NUM).
+        if !self.rescue_reconfirm {
+            self.rescue_reconfirm = true;
+            let lead = (self.tpb * RESCUE_RECONFIRM_NUM) >> RESCUE_RECONFIRM_SHIFT;
+            self.rescue_at = Some(self.deadline.now().wrapping_add(lead));
             return;
         }
         // §9.1: volatile rate switch — the config register is untouched.
