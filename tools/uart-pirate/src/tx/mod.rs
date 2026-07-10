@@ -138,14 +138,55 @@ fn pb10_drive(pp: bool) {
     set_pb10_cnf(if pp { 0b1011 } else { 0b1111 });
 }
 
+/// Start a send window's RX-flag discipline: mask the idle event and
+/// retire any latched IDLE flag. Call only with PB10 just driven
+/// push-pull idle-high — under our own drive no byte can be
+/// mid-reception, so this is the ONE place the flags' SR→DR clear pair
+/// (a CPU DATAR read) is provably safe; anywhere else it kills a
+/// mid-reception byte in the shifter (see `rx::isr`). The trailing
+/// STATR read re-arms the SR half so the next latched flag can
+/// drain-self-clear. The CS pairs the mask with the retire so a pended
+/// idle service can't interleave, and closes the CTLR1 RMW tear window
+/// against the vector (see [`poll_drive_release`]'s discipline note).
+/// Each send path re-enables the event once its last CTLR1 write is
+/// done.
+fn mask_and_retire_idle() {
+    critical_section::with(|_| {
+        USART3.ctlr1().modify(|w| w.set_idleie(false));
+        let _ = USART3.statr().read();
+        let _ = USART3.datar().read();
+        let _ = USART3.statr().read();
+    });
+}
+
+/// Retire-then-enable, for send paths whose window can latch a fresh
+/// IDLE mid-send (SBK gaps exceed a char time): enabling over a latched
+/// flag would level-pend the vector on the spot, so clear it first —
+/// still under our own drive, same safety proof as
+/// [`mask_and_retire_idle`].
+fn retire_and_enable_idle() {
+    critical_section::with(|_| {
+        let _ = USART3.statr().read();
+        let _ = USART3.datar().read();
+        let _ = USART3.statr().read();
+        USART3.ctlr1().modify(|w| w.set_idleie(true));
+    });
+}
+
 /// Arm the drive for a scheduled (DMA) send: push-pull now, and a TC
 /// interrupt to hand the wire back when the last stop bit clears the
 /// shifter. TC is cleared first so a stale complete flag can't release
-/// the drive before this send even starts.
+/// the drive before this send even starts. The idle event re-enables
+/// here too — the flag was just retired under our drive, and a DMA
+/// send performs no further thread-mode CTLR1 writes to tear against.
 fn arm_drive_release() {
     pb10_drive(true);
+    mask_and_retire_idle();
     clear_tc_only();
-    USART3.ctlr1().modify(|w| w.set_tcie(true));
+    USART3.ctlr1().modify(|w| {
+        w.set_tcie(true);
+        w.set_idleie(true);
+    });
 }
 
 /// Clear TC with a plain all-ones-except-TC write — NEVER a
@@ -174,9 +215,16 @@ pub fn on_tx_complete() {
 /// already have drained under preemption, and that latched TC *is* the
 /// release event. Only the FEINJ diagnostic still uses this (its `post`
 /// leg may be empty and nothing races its wire handback); reply-path
-/// senders use [`feed_last_and_arm_release`].
+/// senders use [`feed_last_and_arm_release`]. Un-CS'd RMW is safe:
+/// until this write neither vector CTLR1 writer is armed (TCIE and
+/// IDLEIE both sit masked since the send start). No DATAR retire here —
+/// the tail echo may still be shifting in — so a mid-send-latched flag
+/// costs one immediate self-masking service, never a storm.
 fn arm_tc_release() {
-    USART3.ctlr1().modify(|w| w.set_tcie(true));
+    USART3.ctlr1().modify(|w| {
+        w.set_tcie(true);
+        w.set_idleie(true);
+    });
 }
 
 /// Feed the FINAL byte of a poll-fed send and arm the TC release, with
@@ -201,7 +249,14 @@ fn feed_last_and_arm_release(b: u8) -> Result<(), SendError> {
     critical_section::with(|_| {
         USART3.datar().write(|w| w.set_dr(b as u16));
         clear_tc_only();
-        USART3.ctlr1().modify(|w| w.set_tcie(true));
+        // The idle event re-enables in the same write — no DATAR retire
+        // here (the previous byte's echo may still be shifting in), so
+        // a flag latched by a mid-send stretch costs one immediate
+        // self-masking service, never a storm.
+        USART3.ctlr1().modify(|w| {
+            w.set_tcie(true);
+            w.set_idleie(true);
+        });
     });
     Ok(())
 }
@@ -215,8 +270,11 @@ fn feed_last_and_arm_release(b: u8) -> Result<(), SendError> {
 /// so a drain can never sit on the handback.
 ///
 /// Only walker-class ISRs call this (mutually non-preempting), and every
-/// thread-mode CTLR1 writer either runs with TCIE unarmed or under a
-/// critical section, so the RMW in `on_tx_complete` cannot tear.
+/// thread-mode CTLR1 writer either runs with TCIE and IDLEIE both
+/// unarmed (the send starts mask IDLEIE before any M-bit flip) or under
+/// a critical section, so neither vector-side CTLR1 RMW — the release in
+/// `on_tx_complete` or the idle-event mask in the `USART3` vector — can
+/// tear against it.
 pub fn poll_drive_release() {
     if USART3.ctlr1().read().tcie() && USART3.statr().read().tc() {
         on_tx_complete();
@@ -404,6 +462,7 @@ pub fn send_breaks(count: u32, gap_us: u32) -> Result<(), SendError> {
     }
     wait_tx_complete().map_err(|TxTimeout| SendError::Busy)?;
     pb10_drive(true);
+    mask_and_retire_idle();
     for i in 0..count {
         if i != 0 {
             spin_us(gap_us);
@@ -411,6 +470,10 @@ pub fn send_breaks(count: u32, gap_us: u32) -> Result<(), SendError> {
         pulse_sbk();
     }
     spin_ticks(USART3.brr().read().0 * 2);
+    // Inter-break gaps exceed a char time, so an IDLE latched mid-send
+    // is the norm here — retire it before re-enabling, still under our
+    // drive.
+    retire_and_enable_idle();
     pb10_drive(false);
     Ok(())
 }
@@ -433,6 +496,7 @@ pub fn send_break_then(payload: &[u8]) -> Result<(), SendError> {
     }
     wait_tx_complete().map_err(|TxTimeout| SendError::Busy)?;
     pb10_drive(true);
+    mask_and_retire_idle();
     let r = (|| {
         USART3.ctlr1().modify(|w| w.set_m(true));
         let r = feed_bytes(&[0x00])
@@ -482,6 +546,7 @@ pub fn send_burst(stream: &[u8]) -> Result<(), SendError> {
     }
     wait_tx_complete().map_err(|TxTimeout| SendError::Busy)?;
     pb10_drive(true);
+    mask_and_retire_idle();
     let r = (|| {
         let mut i = 0usize;
         while i < stream.len() {
@@ -525,6 +590,7 @@ pub fn send_fe_inject(pre: &[u8], bad: &[u8], post: &[u8]) -> Result<(), SendErr
     }
     wait_tx_complete().map_err(|TxTimeout| SendError::Busy)?;
     pb10_drive(true);
+    mask_and_retire_idle();
     let r = (|| {
         feed_bytes(pre)?;
         wait_tx_complete().map_err(|TxTimeout| SendError::Busy)?;

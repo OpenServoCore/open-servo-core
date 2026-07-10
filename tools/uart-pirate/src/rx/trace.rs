@@ -19,6 +19,7 @@ pub const TRACE_PHASE_RX_HT: u8 = 1;
 pub const TRACE_PHASE_RX_TC: u8 = 2;
 pub const TRACE_PHASE_IC_HT: u8 = 3;
 pub const TRACE_PHASE_IC_TC: u8 = 4;
+pub const TRACE_PHASE_HOST: u8 = 5;
 
 #[derive(Copy, Clone)]
 #[repr(C)]

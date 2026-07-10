@@ -115,6 +115,9 @@ async fn handle_batch<'d>(
         flags: 0,
     }; BBATCH_MAX];
     let want = (req.count as usize).min(BBATCH_MAX);
+    // Host-pull: burst tails no longer ride an idle event (self-masking,
+    // see rx::isr) — the drain walks on demand instead.
+    rx::host_walk();
     let n = rx::drain_batch(&mut records[..want]);
 
     // Binary frame: sync header 0xA5 0x5A + count:u16 LE + n × (tick:u32 LE,

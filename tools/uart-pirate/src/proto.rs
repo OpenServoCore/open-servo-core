@@ -201,19 +201,25 @@ pub fn handle_line(line: &[u8]) -> Reply {
         "TICK?" => Reply::Tick(tick::read_tick32()),
         "LAST?" => Reply::Last(tx::last_send_tick()),
         "HZ" => Reply::HzPerUs(tick::wire_ticks_per_us()),
-        "BDRAIN" => match rx::drain_byte() {
-            Some(r) => Reply::BStamp {
-                tick: r.tick,
-                byte: r.byte,
-                flags: r.flags,
-            },
-            None => Reply::Empty,
-        },
+        "BDRAIN" => {
+            rx::host_walk();
+            match rx::drain_byte() {
+                Some(r) => Reply::BStamp {
+                    tick: r.tick,
+                    byte: r.byte,
+                    flags: r.flags,
+                },
+                None => Reply::Empty,
+            }
+        }
         _ => Reply::Err("unknown"),
     }
 }
 
 fn status() -> Reply {
+    // `avail` must reflect the wire, not the last walk — hosts pace on
+    // it (`walk()` gates itself on desync, so the bypass holds).
+    rx::host_walk();
     Reply::Status {
         baud: rx::current_baud(),
         avail: rx::stamps_available(),

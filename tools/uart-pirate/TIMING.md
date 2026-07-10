@@ -168,15 +168,17 @@ that hasn't arrived; the host reads up to `byte_head`.
 
 ### 3.2 Walker triggers
 
-The walker runs on three event sources. All three share one PFIC
-priority so `walk()` runs single-threaded across them — no concurrent
-walker hazard.
+The walker runs on three ISR event sources plus a host pull. The ISR
+sources share one PFIC priority, and the host pull runs under a
+critical section, so `walk()` runs single-threaded across all of them —
+no concurrent walker hazard.
 
-| ISR vector       | Event                              | Phase tag              |
+| Trigger          | Event                              | Phase tag              |
 |------------------|------------------------------------|------------------------|
 | `DMA1_CHANNEL6`  | IC ring half-transfer / complete   | `TRACE_PHASE_IC_HT/TC` |
 | `DMA1_CHANNEL3`  | RX ring half-transfer / complete   | `TRACE_PHASE_RX_HT/TC` |
 | `USART3`         | USART3 line-idle (IDLE flag)       | `TRACE_PHASE_IDLE`     |
+| host commands    | `BBATCH`/`BDRAIN`/`STATUS` drain-on-demand (`rx::host_walk`) | `TRACE_PHASE_HOST` |
 
 CH6 is the IC ring's trailing DMA writer (§3.1); its HT/TC therefore
 guarantees both halves of every entry up to the cursor are written. CH5
@@ -190,22 +192,30 @@ signal-only — it derives no tick from elapsed idle time and carries no
 walker state (the chain re-anchors from the stream itself; see the miss
 path below):
 
-1. **Drains tail bytes.** Runs `walk()` so the last byte of every
-   reply burst gets stamped without waiting for the next DMA HT/TC.
-   The walk runs whether or not the idle is genuine — it is DATAR-free
-   and keeps the stamp rings flowing during long bursts.
-2. **Clears the IDLE flag, but only under IC-proven quiet.** The clear
-   is an SR-read + DATAR-read pair, and a CPU DATAR read while a byte
-   is mid-reception kills the byte in the shifter (same WCH USART IP as
-   the V006, bench 2026-07-09). The handler spins — with a drive-release
-   checkpoint per iteration — until the newest falling edge is
-   ≥ 16 bit-times old (past the longest break; normal entries confirm
-   in ~4 bits) or a fresh edge proves a burst is starting. On the fresh-
-   edge bail the flag stays latched: the incoming bytes' RX-DMA DATAR
-   accesses complete the armed pair within a byte-time, and the true
-   idle after the burst fires a fresh event.
-3. **Schedules `after_idle` sends** via `tx::on_idle`, only on the
-   quiet-confirmed outcome.
+1. **Drains tail bytes, per burst.** Runs `walk()` so a burst tail gets
+   stamped without waiting for the next DMA HT/TC. This cadence is
+   load-bearing beyond latency: the walker's freshness horizons
+   (`ANCHOR_STALE_TICKS`, the tail wrap-race lift) assume walks run
+   close to capture — a first-walk deferred past them strands or
+   mis-lifts the burst (bench 2026-07-10: stamps chopped at the tail
+   and delivered one drain late). The stamp-reading host commands still
+   pull their own walk as a second delivery path.
+2. **Leaves the flag latched — the RX path never reads DATAR.** The
+   SR→DR clear pair is the hazard: a CPU DATAR read while a byte is
+   mid-reception kills the byte in the shifter (same WCH USART IP as
+   the V006), and no quiet proof can cover it — IC edge visibility lags
+   by the CC filter delay (≈3.6 bits at 2M), so a reply's next DMA arm
+   can already be starting inside the blind window (bench 2026-07-10:
+   the arm's first byte died 1/128 profile reads at 2M). Mid-stream the
+   flag drain-self-clears (the entry's STATR read arms the SR half, the
+   next byte's RX-DMA DATAR access completes the pair). A re-entry with
+   no new RX bytes can only be the latched flag level-pending the
+   vector — that one masks IDLEIE (storm-proof); each send start
+   retires a leftover flag under its own push-pull idle-high drive —
+   the one place a DATAR read is provably safe — and re-enables the
+   event once its last CTLR1 write is done.
+3. **Schedules `after_idle` sends** via `tx::on_idle` on every
+   progress-making entry whose TC shows our transmitter drained.
 
 TIM2 CC1 (TI1S XOR routing per §3) and TIM3 CC1 (TRC) drive their DMA
 requests via CCxDE; neither CCxIE is enabled. Capture stays zero-CPU
@@ -727,7 +737,8 @@ the firmware enforces.
 | `PRIO_WALKER` | `0x00` | `USART3`, `DMA1_CHANNEL6`, `DMA1_CHANNEL3`            | Single walker class; ISRs share it so `walk()` is single-threaded by construction. |
 | `PRIO_USB`    | `0x80` | `USB_LP_CAN1_RX0`                                     | Lower preempt class — USB stack delays cannot delay a wire-side stamp. |
 
-`USART3` carries only IDLE (signal-only per §3.2). `DMA1_CHANNEL6` is
+`USART3` carries IDLE (signal-only per §3.2) plus the per-send TC
+drive release. `DMA1_CHANNEL6` is
 the IC ring's trailing-writer HT/TC. `DMA1_CHANNEL3` is RX HT/TC. TIM2,
 TIM3, DMA1_CH1/CH2/CH4/CH5 have **no IRQ enabled** — their PFIC slots
 are intentionally unconfigured.

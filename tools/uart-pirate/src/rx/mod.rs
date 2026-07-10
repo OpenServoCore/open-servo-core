@@ -9,17 +9,22 @@
 //! - `isr`    — DMA1_CH3/CH6 + USART3 IDLE vectors.
 //!
 //! Walker triggers: event-driven, no cadence. Three IRQ vectors fan into
-//! `walker::walk()` at `PRIO_WALKER`:
+//! `walker::walk()` at `PRIO_WALKER`, plus a host-pulled walk:
 //!
-//! - `USART3` IDLE — end-of-burst drain. Fires 1 char time after the
-//!   wire goes idle (~10 µs at 1M, ~3.3 µs at 3M). Catches the tail
-//!   bytes of every reply.
+//! - `USART3` IDLE — per-burst drain (~1 char time after the wire goes
+//!   idle). Every detection is serviced (the walker's freshness
+//!   horizons assume per-burst walks); the flag stays latched (the RX
+//!   path never reads DATAR) and a zero-progress re-entry masks the
+//!   event until the next send retires + re-arms it (see `isr`).
 //! - `DMA1_CHANNEL6` HT/TC — mid-burst drain when the IC ring fills.
 //!   CH6 (TIM3 high half) is the trailing writer of the CH5/CH6 pair,
 //!   so its NDTR bounds the count of fully-written 32-bit entries.
 //! - `DMA1_CHANNEL3` HT/TC — mid-burst drain when `rx_ring` fills.
+//! - [`host_walk`] — the stamp-reading host commands drain on demand
+//!   (thread mode, critical-section-excluded), so reply tails never
+//!   wait on an idle event.
 //!
-//! All three sources share `PRIO_WALKER` so they cannot preempt one
+//! All ISR sources share `PRIO_WALKER` so they cannot preempt one
 //! another; `walk()` runs single-threaded across them.
 //!
 //! Classification is **predict-and-snap PLL**: the first byte's start
@@ -81,6 +86,17 @@ pub fn set_baud(bps: u32) -> Result<(), BaudError> {
     // any pending IC entries so the next byte anchors on a fresh edge.
     reset_walker();
     Ok(())
+}
+
+/// Host-pull walk: stamp delivery must never wait on a wire idle event
+/// (the IDLE vector masks its own event after each service — see
+/// `isr`), so the stamp-reading host commands (`BBATCH`, `BDRAIN`,
+/// `STATUS`) walk on demand instead. The critical section excludes the
+/// walker vectors, keeping `walk()` single-threaded from thread mode;
+/// the drain is short here (the host pulls right after an exchange),
+/// and the walk's own release checkpoints still run inside it.
+pub fn host_walk() {
+    critical_section::with(|_| trace::run_walker(trace::TRACE_PHASE_HOST));
 }
 
 /// Drop all in-flight walker state up to current DMA heads and clear
