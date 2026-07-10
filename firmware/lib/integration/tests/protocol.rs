@@ -252,16 +252,16 @@ fn mgmt_reboot_acks_then_surfaces(baud_idx: u8) {
 }
 
 #[apply(matrix)]
-fn mgmt_save_is_instruction_error(baud_idx: u8) {
+fn mgmt_save_without_store_is_hardware_error(baud_idx: u8) {
     let mut sim = sim(baud_idx);
     sim.add_servo(ID5);
 
-    // SAVE (§9.4) is not yet implemented → instruction-level rejection.
+    // SAVE (§9.4) on a servo with no persistence store seeded → `hardware`.
     sim.host_send(&instruction(ID5, Opcode::Mgmt, 0, &[MgmtOp::Save as u8]));
     let frames = sim.run();
 
     let (inst, _) = status(sole_reply(&frames));
-    assert_eq!(inst.result(), Some(ResultCode::Instruction));
+    assert_eq!(inst.result(), Some(ResultCode::Hardware));
 }
 
 /// Broadcast MGMT ENUM args: `prefix_len` bits + the prefix bytes (§9.2).

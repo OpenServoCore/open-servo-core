@@ -86,23 +86,4 @@ impl ControlTableCell {
             cfg.comms.response_deadline_us = defaults.response_deadline_us;
         });
     }
-
-    /// Called once pre-PFIC-IRQ — sole writer.
-    pub fn load_config_from_flash<F: embedded_storage::nor_flash::ReadNorFlash>(
-        &self,
-        _flash: &mut F,
-        _page_a_addr: u32,
-        _page_b_addr: u32,
-    ) {
-        todo!()
-    }
-
-    /// Called once pre-PFIC-IRQ — sole writer.
-    pub fn load_calib_from_flash<F: embedded_storage::nor_flash::ReadNorFlash>(
-        &self,
-        _flash: &mut F,
-        _calib_base_addr: u32,
-    ) {
-        todo!()
-    }
 }

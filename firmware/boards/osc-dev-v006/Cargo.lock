@@ -334,7 +334,6 @@ dependencies = [
  "control-table",
  "critical-section",
  "defmt",
- "embedded-storage",
  "heapless",
  "osc-log",
  "osc-protocol",

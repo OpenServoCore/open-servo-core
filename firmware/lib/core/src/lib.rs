@@ -4,7 +4,7 @@
 pub mod debug;
 pub mod kernel;
 pub mod log;
-pub mod page;
+pub mod persist;
 pub mod regions;
 pub mod sample;
 pub mod services;
@@ -15,7 +15,7 @@ pub use control_table::{
     Error, Region, RegionStorage, RegionStorageRaw, StagedWrites, ValidationKind,
 };
 pub use kernel::{Kernel, KernelState};
-pub use page::{PageHeader, PageMagic};
+pub use persist::{ConfigStore, StoreError};
 pub use regions::config::{BaudRate, ConfigDefaults};
 pub use regions::{
     BemfCalibBlock, BootMode, CalibRegs, ConfigCalibration, ConfigComms, ConfigControlPosition,

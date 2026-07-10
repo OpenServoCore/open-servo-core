@@ -4,7 +4,11 @@ use osc_protocol::FrameBytes;
 use osc_protocol::frame::uid_prefix_matches;
 use osc_protocol::wire::{Id, MAX_PAYLOAD, MgmtOp, ResultCode, UID_LEN};
 
+use crate::persist::{CONFIG_LEN, PROFILE_LEN, StoreError};
 use crate::regions::hooks::ControlTableHooks;
+use crate::regions::{
+    CONFIG_BASE_ADDR, CONFIG_REGION_SIZE, PROFILE_BASE_ADDR, PROFILE_REGION_SIZE,
+};
 use crate::traits::{Dispatch, Dispatched, GATHER_MAX, Reply, Request, RequestCtx, Status};
 use crate::{Error, RegionStorage, Shared, StagedWrites};
 use control_table::STAGE_ENTRY_CAP;
@@ -136,6 +140,7 @@ impl Dispatch for Dispatcher<'_> {
             return; // held entries stay staged until a real COMMIT
         }
         self.shared.table.commit_from(self.staged, &pending.snap);
+        self.mark_dirty_if_persistent(pending.addr, pending.len);
         let mut hooks = ControlTableHooks::new(reply);
         self.shared
             .table
@@ -158,13 +163,19 @@ impl Dispatcher<'_> {
 
     /// Empty-payload status gated on the reply contract (§5.3 layer 2).
     fn ack<R: Reply>(alert: bool, ctx: &RequestCtx, result: Result<(), Error>, reply: &mut R) {
-        if !ctx.may_reply {
-            return;
-        }
         let code = match result {
             Ok(()) => ResultCode::Ok,
             Err(e) => error_to_result(e),
         };
+        Self::ack_code(alert, ctx, code, reply);
+    }
+
+    /// As [`Self::ack`] with an explicit result code (the store's `hardware`
+    /// verdict has no `Error` mapping).
+    fn ack_code<R: Reply>(alert: bool, ctx: &RequestCtx, code: ResultCode, reply: &mut R) {
+        if !ctx.may_reply {
+            return;
+        }
         Self::send(
             reply,
             Status {
@@ -173,6 +184,21 @@ impl Dispatcher<'_> {
                 data: &[],
             },
         );
+    }
+
+    /// §9.4 modified-since-save: a committed span landing in CONFIG or
+    /// PROFILE sets the telemetry dirty bit (a successful SAVE clears it).
+    fn mark_dirty_if_persistent(&self, addr: u16, len: u16) {
+        const CONFIG_END: u16 = CONFIG_BASE_ADDR + CONFIG_REGION_SIZE;
+        const PROFILE_END: u16 = PROFILE_BASE_ADDR + PROFILE_REGION_SIZE;
+        let end = addr.saturating_add(len);
+        // CONFIG starts at 0, so "before its end" is its whole intersect test.
+        let hits = addr < CONFIG_END || (addr < PROFILE_END && end > PROFILE_BASE_ADDR);
+        if hits {
+            self.shared
+                .table
+                .with_mut(|t| t.telemetry.fault.config_dirty = 1);
+        }
     }
 
     fn instruction_error<R: Reply>(&mut self, alert: bool, ctx: &RequestCtx, reply: &mut R) {
@@ -371,6 +397,7 @@ impl Dispatcher<'_> {
         Self::ack(alert, ctx, Ok(()), reply);
         let mut hooks = ControlTableHooks::new(reply);
         for (addr, len) in spans {
+            self.mark_dirty_if_persistent(addr, len);
             self.shared
                 .table
                 .with(|t| t.dispatch_events(addr, len, &mut hooks));
@@ -426,19 +453,94 @@ impl Dispatcher<'_> {
             let e = Error::ValidationError(control_table::ValidationKind::Compare);
             return Self::ack(alert, ctx, Err(e), reply);
         }
-        self.shared.table.with_mut(|t| t.config.comms.id = new_id);
+        self.shared.table.with_mut(|t| {
+            t.config.comms.id = new_id;
+            t.telemetry.fault.config_dirty = 1;
+        });
         reply.set_id(new_id);
         Self::ack(alert, ctx, Ok(()), reply);
     }
 
     fn mgmt<R: Reply>(&mut self, alert: bool, ctx: &RequestCtx, op: MgmtOp, reply: &mut R) {
         match op {
+            MgmtOp::Save => self.save(alert, ctx, reply),
+            MgmtOp::Factory => self.factory(alert, ctx, reply),
             MgmtOp::Reboot => {
                 Self::ack(alert, ctx, Ok(()), reply);
                 let mode = self.shared.table.with(|t| t.control.system.boot_mode);
                 reply.stage_reboot(mode);
             }
-            _ => self.instruction_error(alert, ctx, reply),
+            // ENUM/ASSIGN decode to dedicated Request variants; one arriving
+            // Mgmt-wrapped is answered like any unknown op.
+            MgmtOp::Enum | MgmtOp::Assign => self.instruction_error(alert, ctx, reply),
+        }
+    }
+
+    /// §9.4 SAVE — the only flash-touching operation. Torque gates it (the
+    /// ms-scale program stall is the mid-motion hazard, not the data), and
+    /// the ack leaves AFTER the store returns: ack == durable, and a failed
+    /// program surfaces as `hardware` instead of a lie.
+    fn save<R: Reply>(&mut self, alert: bool, ctx: &RequestCtx, reply: &mut R) {
+        if self
+            .shared
+            .table
+            .with(|t| t.control.lifecycle.torque_enable)
+        {
+            return Self::ack(alert, ctx, Err(Error::AccessError), reply);
+        }
+        let saved = self.persist_table();
+        let code = match saved {
+            Ok(()) => {
+                self.shared
+                    .table
+                    .with_mut(|t| t.telemetry.fault.config_dirty = 0);
+                ResultCode::Ok
+            }
+            Err(StoreError) => ResultCode::Hardware,
+        };
+        Self::ack_code(alert, ctx, code, reply);
+    }
+
+    /// Stream the persisted regions into the store — the slices borrow the
+    /// table in place (no staging copy, §9.4); blocking for the erase +
+    /// program duration.
+    fn persist_table(&self) -> Result<(), StoreError> {
+        let store = self.shared.store().ok_or(StoreError)?;
+        // Bounded by the region consts — the reads cannot fail; the fallback
+        // keeps the no-panic contract.
+        let config: &[u8; CONFIG_LEN] =
+            RegisterFile::read(&self.shared.table, CONFIG_BASE_ADDR, CONFIG_REGION_SIZE)
+                .ok()
+                .and_then(|s| s.try_into().ok())
+                .ok_or(StoreError)?;
+        let profile: &[u8; PROFILE_LEN] =
+            RegisterFile::read(&self.shared.table, PROFILE_BASE_ADDR, PROFILE_REGION_SIZE)
+                .ok()
+                .and_then(|s| s.try_into().ok())
+                .ok_or(StoreError)?;
+        store.save(config, profile)
+    }
+
+    /// §9.5 FACTORY: wipe both saved slots, ack, then stage the reboot that
+    /// re-seeds board defaults — the erased store IS the factory state.
+    /// Same torque gate as SAVE (erase is the same stall class, and it ends
+    /// in a reboot); a failed wipe nacks `hardware` and does NOT reboot.
+    fn factory<R: Reply>(&mut self, alert: bool, ctx: &RequestCtx, reply: &mut R) {
+        if self
+            .shared
+            .table
+            .with(|t| t.control.lifecycle.torque_enable)
+        {
+            return Self::ack(alert, ctx, Err(Error::AccessError), reply);
+        }
+        let wiped = self.shared.store().ok_or(StoreError).and_then(|s| s.wipe());
+        match wiped {
+            Ok(()) => {
+                Self::ack(alert, ctx, Ok(()), reply);
+                let mode = self.shared.table.with(|t| t.control.system.boot_mode);
+                reply.stage_reboot(mode);
+            }
+            Err(StoreError) => Self::ack_code(alert, ctx, ResultCode::Hardware, reply),
         }
     }
 }

@@ -9,7 +9,6 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 heapless         = "0.9"
 bbqueue          = "0.7"
-embedded-storage = "0.3"
 portable-atomic  = { version = "1", default-features = false }
 critical-section = "1.2"
 bitflags         = "2"

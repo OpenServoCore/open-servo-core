@@ -3,6 +3,7 @@ use core::cell::SyncUnsafeCell;
 use osc_protocol::wire::UID_LEN;
 
 use crate::ControlTableCell;
+use crate::persist::ConfigStore;
 
 #[repr(C)]
 pub struct Shared {
@@ -11,6 +12,9 @@ pub struct Shared {
     /// (osc-native §9.2) — internal identity, not a table register; MGMT ENUM
     /// is its only wire reader.
     uid: SyncUnsafeCell<[u8; UID_LEN]>,
+    /// The §9.4 persistence store; MGMT SAVE/FACTORY are its only callers
+    /// (cold path — `dyn` costs nothing that matters here).
+    store: SyncUnsafeCell<Option<&'static dyn ConfigStore>>,
 }
 
 #[allow(clippy::new_without_default)]
@@ -19,6 +23,7 @@ impl Shared {
         Self {
             table: ControlTableCell::new(),
             uid: SyncUnsafeCell::new([0; UID_LEN]),
+            store: SyncUnsafeCell::new(None),
         }
     }
 
@@ -33,5 +38,18 @@ impl Shared {
     pub fn uid(&self) -> &[u8; UID_LEN] {
         // SAFETY: written only by `seed_uid` pre-IRQ; read-only afterward.
         unsafe { &*self.uid.get() }
+    }
+
+    /// Seed the persistence store. Bringup-only, pre-IRQ; sole writer (the
+    /// `seed_config_defaults` contract).
+    pub fn seed_store(&self, store: &'static dyn ConfigStore) {
+        // SAFETY: see fn doc — no reader exists before IRQs enable.
+        unsafe { *self.store.get() = Some(store) };
+    }
+
+    /// The §9.4 store; `None` until seeded (dispatch answers `hardware`).
+    pub fn store(&self) -> Option<&'static dyn ConfigStore> {
+        // SAFETY: written only by `seed_store` pre-IRQ; read-only afterward.
+        unsafe { *self.store.get() }
     }
 }

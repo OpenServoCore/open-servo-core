@@ -48,8 +48,10 @@ pub struct TelemetryFault {
     pub fault_flags: u8,
     #[ct_field(access = ro)]
     pub fault_code: u8,
-    #[ct_field(skip)]
-    pub _rsvd_align: u8,
+    /// Modified-since-save (§9.4): set when a committed write lands in
+    /// CONFIG or PROFILE, cleared by a successful SAVE; boot state is clean.
+    #[ct_field(access = ro)]
+    pub config_dirty: u8,
 }
 
 #[repr(C)]

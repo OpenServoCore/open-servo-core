@@ -570,10 +570,12 @@ fn mgmt_reboot_stages_without_ack_when_silent() {
 }
 
 #[test]
-fn mgmt_non_reboot_ops_reply_instruction() {
+fn mgmt_wrapped_enum_assign_reply_instruction() {
+    // ENUM/ASSIGN decode to dedicated Request variants; the Mgmt-wrapped
+    // form is a bus bug, answered like any unknown op.
     let shared = Shared::new();
     let mut staged = StagedWrites::new();
-    for op in [MgmtOp::Save, MgmtOp::Factory, MgmtOp::Enum, MgmtOp::Assign] {
+    for op in [MgmtOp::Enum, MgmtOp::Assign] {
         let reply = go(
             &shared,
             &mut staged,
@@ -585,6 +587,258 @@ fn mgmt_non_reboot_ops_reply_instruction() {
         );
         assert_eq!(reply.last().result, ResultCode::Instruction);
     }
+}
+
+// --- Save / Factory (§9.4/§9.5) ---------------------------------------------
+
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+
+use crate::persist::{CONFIG_LEN, ConfigStore, PROFILE_LEN, StoreError};
+
+/// Atomics-only recording store (these tests are no_std): counts calls,
+/// fingerprints the saved bytes by CRC, arms failure via `fail`.
+struct FakeStore {
+    saves: AtomicUsize,
+    wipes: AtomicUsize,
+    fail: AtomicBool,
+    saved_crc: AtomicU32,
+}
+
+impl FakeStore {
+    const fn new() -> Self {
+        Self {
+            saves: AtomicUsize::new(0),
+            wipes: AtomicUsize::new(0),
+            fail: AtomicBool::new(false),
+            saved_crc: AtomicU32::new(0),
+        }
+    }
+}
+
+impl ConfigStore for FakeStore {
+    fn save(
+        &self,
+        config: &[u8; CONFIG_LEN],
+        profile: &[u8; PROFILE_LEN],
+    ) -> Result<(), StoreError> {
+        if self.fail.load(Ordering::Relaxed) {
+            return Err(StoreError);
+        }
+        let crc = osc_protocol::crc::osc_crc_continue(osc_protocol::crc::osc_crc(config), profile);
+        self.saved_crc.store(crc as u32, Ordering::Relaxed);
+        self.saves.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn wipe(&self) -> Result<(), StoreError> {
+        if self.fail.load(Ordering::Relaxed) {
+            return Err(StoreError);
+        }
+        self.wipes.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
+fn mgmt_req(op: MgmtOp) -> Request<'static> {
+    Request::Mgmt {
+        op,
+        args: FrameBytes::from(&[][..]),
+    }
+}
+
+fn dirty(shared: &Shared) -> u8 {
+    shared.table.with(|t| t.telemetry.fault.config_dirty)
+}
+
+/// CRC fingerprint of the live persisted regions, mirroring FakeStore::save.
+fn table_crc(shared: &Shared) -> u32 {
+    use crate::regions::{
+        CONFIG_BASE_ADDR, CONFIG_REGION_SIZE, PROFILE_BASE_ADDR, PROFILE_REGION_SIZE,
+    };
+    use control_table::RegisterFile;
+    let config = RegisterFile::read(&shared.table, CONFIG_BASE_ADDR, CONFIG_REGION_SIZE).unwrap();
+    let profile =
+        RegisterFile::read(&shared.table, PROFILE_BASE_ADDR, PROFILE_REGION_SIZE).unwrap();
+    osc_protocol::crc::osc_crc_continue(osc_protocol::crc::osc_crc(config), profile) as u32
+}
+
+fn write_at(shared: &Shared, staged: &mut StagedWrites, addr: u16, data: &[u8]) {
+    let reply = go(
+        shared,
+        staged,
+        Request::Write {
+            addr,
+            data: FrameBytes::from(data),
+            hold: false,
+        },
+        true,
+    );
+    assert_eq!(reply.last().result, ResultCode::Ok);
+}
+
+#[test]
+fn save_streams_the_table_and_acks_after() {
+    use crate::regions::config::addr::comms::RESPONSE_DEADLINE_US;
+    static STORE: FakeStore = FakeStore::new();
+    let shared = Shared::new();
+    shared.seed_store(&STORE);
+    let mut staged = StagedWrites::new();
+    write_at(
+        &shared,
+        &mut staged,
+        RESPONSE_DEADLINE_US,
+        &200u16.to_le_bytes(),
+    );
+    assert_eq!(dirty(&shared), 1, "config write marks modified-since-save");
+
+    let reply = go(&shared, &mut staged, mgmt_req(MgmtOp::Save), true);
+    assert_eq!(reply.last().result, ResultCode::Ok);
+    assert!(reply.last().data.is_empty());
+    assert_eq!(STORE.saves.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        STORE.saved_crc.load(Ordering::Relaxed),
+        table_crc(&shared),
+        "the saved bytes are the live table's persisted regions"
+    );
+    assert_eq!(dirty(&shared), 0, "a successful SAVE clears the dirty bit");
+}
+
+#[test]
+fn save_with_torque_on_nacks_access() {
+    static STORE: FakeStore = FakeStore::new();
+    let shared = Shared::new();
+    shared.seed_store(&STORE);
+    enable_torque(&shared);
+    let mut staged = StagedWrites::new();
+    let reply = go(&shared, &mut staged, mgmt_req(MgmtOp::Save), true);
+    assert_eq!(reply.last().result, ResultCode::Access);
+    assert_eq!(STORE.saves.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn save_store_failure_nacks_hardware_and_stays_dirty() {
+    use crate::regions::config::addr::comms::RESPONSE_DEADLINE_US;
+    static STORE: FakeStore = FakeStore::new();
+    STORE.fail.store(true, Ordering::Relaxed);
+    let shared = Shared::new();
+    shared.seed_store(&STORE);
+    let mut staged = StagedWrites::new();
+    write_at(
+        &shared,
+        &mut staged,
+        RESPONSE_DEADLINE_US,
+        &200u16.to_le_bytes(),
+    );
+    let reply = go(&shared, &mut staged, mgmt_req(MgmtOp::Save), true);
+    assert_eq!(reply.last().result, ResultCode::Hardware);
+    assert_eq!(dirty(&shared), 1);
+}
+
+#[test]
+fn save_without_store_nacks_hardware() {
+    let shared = Shared::new();
+    let mut staged = StagedWrites::new();
+    let reply = go(&shared, &mut staged, mgmt_req(MgmtOp::Save), true);
+    assert_eq!(reply.last().result, ResultCode::Hardware);
+}
+
+#[test]
+fn noreply_save_still_saves() {
+    static STORE: FakeStore = FakeStore::new();
+    let shared = Shared::new();
+    shared.seed_store(&STORE);
+    let mut staged = StagedWrites::new();
+    let reply = go(&shared, &mut staged, mgmt_req(MgmtOp::Save), false);
+    assert_eq!(reply.count(), 0);
+    assert_eq!(STORE.saves.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn factory_wipes_acks_and_stages_reboot() {
+    static STORE: FakeStore = FakeStore::new();
+    let shared = Shared::new();
+    shared.seed_store(&STORE);
+    let mut staged = StagedWrites::new();
+    let reply = go(&shared, &mut staged, mgmt_req(MgmtOp::Factory), true);
+    assert_eq!(reply.last().result, ResultCode::Ok);
+    assert_eq!(STORE.wipes.load(Ordering::Relaxed), 1);
+    assert_eq!(reply.reboot, Some(BootMode::App));
+}
+
+#[test]
+fn factory_with_torque_on_nacks_access() {
+    static STORE: FakeStore = FakeStore::new();
+    let shared = Shared::new();
+    shared.seed_store(&STORE);
+    enable_torque(&shared);
+    let mut staged = StagedWrites::new();
+    let reply = go(&shared, &mut staged, mgmt_req(MgmtOp::Factory), true);
+    assert_eq!(reply.last().result, ResultCode::Access);
+    assert_eq!(STORE.wipes.load(Ordering::Relaxed), 0);
+    assert_eq!(reply.reboot, None);
+}
+
+#[test]
+fn factory_wipe_failure_nacks_hardware_without_reboot() {
+    static STORE: FakeStore = FakeStore::new();
+    STORE.fail.store(true, Ordering::Relaxed);
+    let shared = Shared::new();
+    shared.seed_store(&STORE);
+    let mut staged = StagedWrites::new();
+    let reply = go(&shared, &mut staged, mgmt_req(MgmtOp::Factory), true);
+    assert_eq!(reply.last().result, ResultCode::Hardware);
+    assert_eq!(reply.reboot, None);
+}
+
+#[test]
+fn dirty_bit_tracks_persistent_regions_only() {
+    use crate::regions::PROFILE_BASE_ADDR;
+    use crate::regions::config::addr::comms::RESPONSE_DEADLINE_US;
+    static STORE: FakeStore = FakeStore::new();
+    let shared = Shared::new();
+    shared.seed_store(&STORE);
+    let mut staged = StagedWrites::new();
+    assert_eq!(dirty(&shared), 0, "boot state is clean");
+
+    write_at(&shared, &mut staged, CONTROL_BASE_ADDR, &[1]);
+    assert_eq!(dirty(&shared), 0, "volatile CONTROL writes don't mark");
+    shared
+        .table
+        .with_mut(|t| t.control.lifecycle.torque_enable = false);
+
+    write_at(
+        &shared,
+        &mut staged,
+        RESPONSE_DEADLINE_US,
+        &200u16.to_le_bytes(),
+    );
+    assert_eq!(dirty(&shared), 1);
+    go(&shared, &mut staged, mgmt_req(MgmtOp::Save), true);
+    assert_eq!(dirty(&shared), 0);
+
+    write_at(&shared, &mut staged, PROFILE_BASE_ADDR, &[0x41, 0x00]);
+    assert_eq!(dirty(&shared), 1, "PROFILE writes mark too");
+}
+
+#[test]
+fn held_write_marks_dirty_at_commit_not_before() {
+    use crate::regions::config::addr::comms::RESPONSE_DEADLINE_US;
+    let shared = Shared::new();
+    let mut staged = StagedWrites::new();
+    let reply = go(
+        &shared,
+        &mut staged,
+        Request::Write {
+            addr: RESPONSE_DEADLINE_US,
+            data: FrameBytes::from(&200u16.to_le_bytes()[..]),
+            hold: true,
+        },
+        true,
+    );
+    assert_eq!(reply.last().result, ResultCode::Ok);
+    assert_eq!(dirty(&shared), 0, "held entries aren't applied yet");
+    go(&shared, &mut staged, Request::Commit, true);
+    assert_eq!(dirty(&shared), 1);
 }
 
 // --- Enumerate / Assign (§9.2) ----------------------------------------------
@@ -666,8 +920,10 @@ fn assign_matching_uid_sets_id_before_ack() {
     // already leaves from the new id (§9.2).
     assert_eq!(reply.set_id, Some((42, 0)));
     assert_eq!(reply.staged_id, None, "immediate, not deferred");
-    // Mirrored into the config table so a later SAVE persists it.
+    // Mirrored into the config table so a later SAVE persists it — which
+    // also marks modified-since-save (§9.4).
     assert_eq!(shared.table.with(|t| t.config.comms.id), 42);
+    assert_eq!(dirty(&shared), 1);
 }
 
 #[test]
