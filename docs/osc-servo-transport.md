@@ -409,15 +409,14 @@ vector storms):
   FE delivery on a burst's LAST frame, whose reply produces no further RX
   drains. Left alone it storms the vector once the wire idles (bench
   signature: the first ack-bearing exchange after a hot-loop leg dies).
-  `TxWire::release` retires it with the SR-then-DR clear while our
-  push-pull drive still holds the line high — no byte can be
-  mid-reception, so the DATAR read is provably safe there. The clear is
-  CONDITIONAL on a flag actually being latched, because the read is not
-  free even where it is safe: it consumes the armed SR-half, costing the
-  NEXT break its drain-self-clear — the FE then re-fires until the first
-  data byte lands, dragging the frontier tick and the reply grid with it
-  (bench: +12 µs of ping turnaround at 0.5M when clearing
-  unconditionally).
+  `TxWire::release` retires it with an SR-DR-SR clear while our push-pull
+  drive still holds the line high — no byte can be mid-reception, so the
+  DATAR read is provably safe there. The trailing STATR read is
+  load-bearing: a DATAR read consumes the armed SR-half, and without the
+  re-arm the NEXT break cannot drain-self-clear — its FE re-fires until
+  the first data byte lands, dragging the frontier tick and the reply
+  grid with it (bench: +12 µs of ping turnaround at 0.5M with a plain
+  SR-DR clear; flat with the trailing re-arm).
 
 Silicon: 12k/12k plain floods at 1M and 0.5M (production shape) with the
 RX-path DATAR read removed (vs 44/12k with it present); hot-loop matrix
