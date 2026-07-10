@@ -155,7 +155,7 @@ pub struct BurstCycle {
 /// broadcast `GWRITE(HOLD)` staging `value` at `addr`, a broadcast `COMMIT`, and
 /// a `GREAD` reading it back — sent zero-gap. The GREAD reply must already carry
 /// `value` (commit-before-read), so a stale read-back means a silently-dropped
-/// GWRITE or COMMIT. Shared with `tool-osc-burst` so the tool and the asserting
+/// GWRITE or COMMIT. Shared with `tool-burst` so the tool and the asserting
 /// bench test drive the identical cycle.
 pub fn hot_loop_cycle(id: u8, addr: u16, value: i32) -> BurstCycle {
     let data = value.to_le_bytes();

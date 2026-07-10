@@ -20,12 +20,12 @@
 mod support;
 
 mod chain;
+mod hold_commit;
 mod hot_loop;
 mod mgmt;
 mod ping;
 mod profile;
 mod read;
-mod reg_write_action;
 mod silence;
 mod turnaround;
 mod write;

@@ -54,7 +54,7 @@ the failure surface. It sweeps the full baud matrix (0.5M / 1M / 2M / 3M).
   silently-dropped frame.
 - **plain flood** (`hot_loop.rs`) — an aggressive `[WRITE(NOREPLY) × 8, READ]`
   flood that surfaces the low-baud framer floor.
-- **ping / read / write / reg_write_action / silence** — the single-servo
+- **ping / read / write / hold_commit / silence** — the single-servo
   instruction-set happy path.
 
 Longer soak: `BENCH_BURST_CYCLES=25000 scripts/gears.sh`.
@@ -72,7 +72,7 @@ the exact baud and the `stale` / `no-reply` / `other` breakdown, and the
 measurement helpers do not retry, so a first-exchange failure is a real
 signal too.
 
-The `tool-osc-*` binaries in `tools/bench/src/bin` are the forensic instruments
-behind these tests — `tool-osc-burst` shares the exact cycle engine the hot-loop
+The `tool-*` binaries in `tools/bench/src/bin` are the forensic instruments
+behind these tests — `tool-burst` shares the exact cycle engine the hot-loop
 test asserts on; `tool-reply-edges` dumps the IC edges when a reply artifact
 needs root-causing.

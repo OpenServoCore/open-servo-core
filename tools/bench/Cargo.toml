@@ -10,18 +10,6 @@ license     = "MIT OR Apache-2.0"
 [lib]
 path = "src/lib.rs"
 
-[[bin]]
-name = "tool-osc-ping"
-path = "src/bin/tool-osc-ping.rs"
-
-[[bin]]
-name = "tool-osc-read"
-path = "src/bin/tool-osc-read.rs"
-
-[[bin]]
-name = "tool-osc-baud"
-path = "src/bin/tool-osc-baud.rs"
-
 [dependencies]
 osc-protocol = { path = "../../firmware/lib/osc-protocol", features = ["software-crc"] }
 serialport   = "4"

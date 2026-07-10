@@ -28,7 +28,7 @@ use bench::run::{
 use clap::Parser;
 use osc_protocol::wire::{Inst, Opcode};
 
-/// goal_position (see tool-osc-write): the rule-heavy hot-loop register —
+/// goal_position (see tool-write): the rule-heavy hot-loop register —
 /// its soft-limit rules make commit the representative worst-case work.
 const GOAL_POSITION_ADDR: u16 = 0x0184;
 const BCAST: u8 = 0xFE;
