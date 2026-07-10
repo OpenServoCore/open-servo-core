@@ -380,11 +380,11 @@ GREAD replies arrive as a chain of ordinary status frames, one per listed
 servo, in list order. Sequencing is snoop-driven and break-framed, which
 makes it cheap and robust:
 
-- Slot 0 replies to the instruction like a unicast read (≥ T_turn after
+- Slot 0 replies to the instruction like a unicast read (≥ reply gap after
   instruction end, §7).
 - Slot k>0 counts _status_ frames (INST bit 7) on the wire since the
   GREAD; when frame k−1 completes (its end is known at its LEN byte — no
-  timing inference), slot k starts after T_turn. Snoopers do **not**
+  timing inference), slot k starts after reply gap. Snoopers do **not**
   CRC-validate predecessor statuses — the chain consumes nothing from the
   body, only the framing-level end, so validation would buy nothing and
   cost a CRC pass per snooped frame. A corrupt status mis-times one slot
@@ -411,18 +411,18 @@ DXL checkpoint format solved does not exist here.
 
 | parameter               | value                                      | rationale                                                                                  |
 | ----------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------ |
-| T_turn (min reply lead) | 2 byte-times after frame end               | previous driver's TC→release margin; measured release is a register poke, this is headroom |
+| reply gap (formerly T_turn) | 12 µs after frame end, at every baud       | host TC→release margin — a register poke, i.e. a time-domain quantity: fixed µs neither balloons at 0.5 M (2 byte-times was 40 µs of mandated silence) nor thins at 3 M |
 | RESPONSE_DEADLINE       | config register, default 60 µs (all bauds) | chain reclaim (trigger→break lead, §6) + host timeout; NOT a reply-time prescription — a servo replies when ready |
 | break length (TX)       | hardware SBK (~14 bit-times measured [F5]) | spec floor is 10; no tuning                                                                |
 | inter-frame gap (host)  | none required                              | breaks self-delimit; back-to-back host frames are legal                                    |
 
-Ping turnaround at 3 M (instruction wire-end → status break fall) is
-**36.7 µs measured**, vs DXL's measured 62.8 µs — the instruction's own
-5 B + break (~21.4 µs wire) costs nothing extra on top of that, since
-dispatch overlaps its arrival (speculation, `osc-servo-transport.md` §4).
-The dominant turnaround components are the tail (hardware CRC-check +
-dispatch handoff), T_turn (2 byte-times ≈ 6.7 µs at 3 M), and the break
-itself (~4.7 µs, F5); see `osc-servo-transport.md` §3 for the full
+Ping turnaround (instruction wire-end → status break fall) is **34.3 µs
+measured at 1 M and 44.3 µs at 3 M** (ring-cadence build, 2026-07-09), vs
+DXL's measured 62.8 µs — the instruction's own 5 B + break costs nothing
+extra on top of that, since dispatch overlaps its arrival (speculation,
+`osc-servo-transport.md` §4). The dominant turnaround components are the
+tail (hardware CRC-check + dispatch handoff), reply gap (12 µs), and the
+break itself (~4.7 µs, F5); see `osc-servo-transport.md` §3 for the full
 tick-by-tick trace and measured baseline table.
 
 The intended hot loop leans on writes being free of turnaround entirely:
@@ -541,7 +541,7 @@ not just the live table.
 | DMA1 CH3 + SPI1     | CRC engine (no pins) [F6]                         |
 | DMA1 CH1 / CH2      | ADC / free                                        |
 | DMA1 CH6            | copy-once snapshot buffer (§4.2); CH7 free        |
-| SysTick             | framer deadlines A/B, T_turn, reclaim             |
+| SysTick             | framer deadlines A/B, reply gap, reclaim             |
 | TIM1/TIM2           | motor control, freed from transport duty          |
 | EXTI                | unused — no transport consumer at all (§9.3)      |
 

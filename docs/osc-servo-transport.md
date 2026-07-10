@@ -17,7 +17,11 @@ residual ROOT-CAUSED AND FIXED (2026-07-09): a CPU DATAR read mid-reception
 kills the in-flight RX byte (§6 A4 — the RX/error path never touches DATAR;
 a latched leftover flag is conditionally retired at reply release, under
 our own line drive), and the rescue confirm is two-phase against data-bit
-aliasing (`osc-native-protocol.md` §9.1). Companion pillars:
+aliasing (`osc-native-protocol.md` §9.1). RING-CADENCE TIME (2026-07-09):
+the FE clock is DELETED — every aim and estimate projects `now + missing
+byte-times` from live ring state (§6 A1), reply gap is a fixed 12 µs at every
+baud (§7 spec change), and the turnaround U-shape's low side is gone
+(0.5M ping 47.6 → 35.6 µs). Companion pillars:
 `osc-native-protocol.md` (the wire), `driver-pattern.md` (the layering).
 Code is authoritative; when this doc and the code disagree, fix the doc.
 
@@ -32,10 +36,14 @@ write = goal_position 4 B; flash-layout swings between builds are ±5 µs):
 | A3(b) landed         | 35.4 µs | 41.6 µs | 84.5 µs  | 58.4 µs | 2400/2400         |
 | spine unified        | 38.3 µs | 44.7 µs | 127.3 µs | 40.7 µs | 2400/2400         |
 | inline-unify + DATAR discipline | 35.3 µs | 39.9 µs | 86.8 µs | 45.6 µs | 8000/8000 (+24k floods ≤1M) |
+| ring-cadence + reply gap 12 µs | 34.3 µs | 38.6 µs | 87.7 µs | 44.3 µs | 8000/8000 (+24k floods ≤1M) |
 
-(2026-07-09 row: ping 42.2 µs at 2M, 47.2 µs at 0.5M — flat vs the pre-fix
-baseline at every baud; the burst columns now include the formerly-failing
-≤1M legs.)
+(DATAR-discipline row: ping 42.2 µs at 2M, 47.2 µs at 0.5M — flat vs the
+pre-fix baseline; the burst columns include the formerly-failing ≤1M legs.
+Ring-cadence row: ping 41.0 µs at 2M, **35.6 µs at 0.5M** (was 47.6) — the
+grid's baud-dependence is gone; and burst replies stopped inheriting
+dispatch lag: hot-loop mean turnaround at 1M 78 → 38 µs, plain-flood 76 →
+35 µs, with the strict gates green throughout.)
 
 Spine same-day 3M row: read-16 49.7 µs, write 138.7 µs. The class-routing
 carve-out was then SUPERSEDED (inline-unify, 2026-07-08): the LOW consumer
@@ -44,18 +52,17 @@ and the ack-bearing-write regression it caused reversed (1M write
 127.3 → 89); the kernel-isolation cost of losing the carve-out is the
 measured, accepted tick coalescing in §2.
 
-Turnaround is NOT baud-flat, and 1 M is the tuned sweet spot (stamp
-decomposition 2026-07-09): the reply's tail after the instruction's wire
-end is `max(serialized CPU pipeline, T_turn grid)`. At 0.5M the 2-byte-time
-grid (40 µs) is the floor; at 1M the covered checkpoint leads the frame end
-by 20 µs, hiding dispatch + CRC feed under the instruction's own tail
-(~31 µs of pipeline remains); at 2M/3M the covered window shrinks below the
-dispatch body — at 3M a short frame is fully ringed before the first
-deadline wake even fires — so the ~35–39 µs pipeline serializes after the
-frame end. Known levers, deliberately unpulled: trigger-from-verify when
-the grid is already past (~9 µs of mux hop at 2M/3M), arming deadline A
-before the on_break tail (the pend-late wake at 3M), dispatch-body flash
-placement, and a fixed-µs T_turn floor for 0.5M (a §7 wire-spec change).
+Turnaround shape after the ring-cadence band: the reply's tail after the
+instruction's wire end is `max(serialized CPU pipeline, reply-gap grid)`. The
+grid is now flat (12 µs at every baud) and the estimate it hangs off is
+delivery-noise-free, so the low side collapsed — 0.5M/1M pings sit at
+~35 µs together. 2M/3M remain pipeline-bound (~41/44 µs): the covered
+window shrinks below the dispatch body — at 3M a short frame is fully
+ringed before the first deadline wake even fires — so the pipeline
+serializes after the frame end. Known levers, deliberately unpulled:
+trigger-path body slimming (~9 µs at 2M/3M), arming deadline A before the
+on_break tail (the pend-late wake at 3M), and dispatch-body flash
+placement.
 
 (An earlier revision of row 1 quoted 37.4/32.3/31.2/36.7 from the
 turnaround-band memory — those columns were ping/read-16/read-240/ping from
@@ -132,35 +139,41 @@ ticks, or re-introducing an isolation lane).
 ## 3. One exchange, tick by tick (ping at 1M; byte-time = 10 µs)
 
 ```
-t=0    break's wire end. DMA has already ringed the 0x00. FE ISR (~2 µs):
-       framer anchors at the ring position, schedules deadline A =
-       anchor_tick + 3 byte-times + ½ byte slack; arms rescue candidacy.
+t=0    break's wire end. DMA has already ringed the 0x00. FE ISR (~2 µs) —
+       a pure wake: the framer resolves from ring data, projects deadline A
+       = now + 3 byte-times at wire pace + ½ byte for the break tail [F5],
+       and arms rescue candidacy. No timestamp is recorded.
 t=10/20/30  ID, LEN, INST land in the ring by DMA. CPU idle.
 t=35   deadline A (SysTick): header parse + validate → footprint 6, frame
        end computable. A ping's CRC-covered span IS its header, so the
        covered checkpoint fires from this same wake:
+         · packet_end FROZEN by ring cadence: now + missing(2)·byte-times
+           (+ the 1.6% drift pad) — `now` and the cursor advance together,
+           so ISR lag cancels and the estimate is late by under a
+           byte-time, never early.
          · CRC feed of the covered span starts (CH3 arm, ~1 µs of CPU)
-         · DISPATCH (wire class, at HIGH): decode + dispatch run NOW, the
+         · DISPATCH (inline, at HIGH): decode + dispatch run NOW, the
            reply is built and staged into the TX engine — all before the
-           frame has ended. The verdict at deadline B will SEND or DON'T-SEND
-           it; the work is already done either way.
-       Deadline B armed at packet_end estimate + 5 µs slack.
+           frame has ended. The verdict at deadline B will SEND or
+           DON'T-SEND it; the work is already done either way.
+       Deadline B armed at the frozen packet_end, exactly.
 t=40/50  the two wire-CRC bytes land. SPI engine finishes the covered span
        long before (4 B ≈ 1.5 µs). CPU idle again.
-t≈56   deadline B (SysTick): the verdict — poll CRC result (ready) == wire
+t≈55   deadline B (SysTick): the verdict — poll CRC result (ready) == wire
        CRC → SEND: chain sequences the staged reply, trigger due at
-       packet_end + T_turn (2 byte-times). Body is a few µs — the work
-       already happened.
-t=71   trigger (SysTick): INST finalized, PC0 → push-pull, break sent, first
+       packet_end + reply gap (12 µs, fixed at every baud). Body is a few µs —
+       the work already happened.
+t≈67   trigger (SysTick): INST finalized, PC0 → push-pull, break sent, first
        DMA arm armed. Status break falls. TX CRC is computed by the same SPI
        engine IN PARALLEL with transmission and patched into the final arm.
 t=…    per-arm TC ISRs stream the remaining arms; final TC releases the wire
        and applies any deferred id/baud config.
 ```
 
-Measured: 35.3 µs from instruction end to status break fall (2026-07-09 build). The estimate
-chain above accounts for ~21 µs of it (T_turn grid + slack); the remainder
-is trigger-body, SBK commit, and ISR-entry overheads.
+Measured: 34.3 µs from instruction end to status break fall (ring-cadence
+build, 2026-07-09); ~16 µs of it is the estimate chain above (reply-gap grid +
+sub-byte estimate lateness), the remainder trigger-body, SBK commit, and
+ISR-entry overheads.
 
 ## 4. Why this is fast — first principles
 
@@ -182,7 +195,7 @@ is trigger-body, SBK commit, and ISR-entry overheads.
    frame end) runs decode + dispatch + reply build while the last two CRC
    bytes are still in flight. Deadline B — the only step on the reply's
    critical path — is reduced to "poll a finished CRC and arm the trigger".
-   The reply rides the T_turn grid, not the dispatch time.
+   The reply rides the reply-gap grid, not the dispatch time.
 2. **The verdict is almost always PASS.** Dispatch bets the frame passes
    CRC. On a clean bus that is ~100% of frames; the loser (a corrupted
    frame) pays a revert + don't-send, which is off the happy path by
@@ -202,7 +215,7 @@ is trigger-body, SBK commit, and ISR-entry overheads.
 5. **Copy-once TX.** Reply payloads are DMA-snapshotted once (~0.125 µs/B,
    fire-and-forget) and streamed from the snapshot by both the wire and the
    CRC — snapshot-consistent reads for the price of one copy hidden under
-   T_turn (§4.2 of the wire spec).
+   reply gap (§4.2 of the wire spec).
 6. **One comparator, muxed.** Every deadline (framer A/B/covered, chain
    trigger, rescue) folds onto SysTick CMP with pend-on-past semantics; the
    drain loop consumes every slot due at the same wake.
@@ -236,20 +249,35 @@ term, which is why it was reverted.
 
 ## 6. Amendments
 
-### A1 — `last_break_tick`: one timestamp, no snapshots
+### A1 — ring-cadence time: the FE carries nothing
 
-The FE handler records exactly one thing: the tick of the most recent FE
-event (plus its existing bounded wire work: staged-reply kill, chain
-suspend, rescue-candidacy arming). No cursor sample for framing — the
-FE→DMA settle spin deletes with it. Rationale: only the NEWEST in-flight
-frame
-ever needs a wall-clock anchor (its deadlines A/covered/B are estimates
-against its break time); every older frame is complete in the ring and
-needs no clock at all (A2). A garble FE overwriting the timestamp makes an
-estimate later = safer, never earlier. Cursor reads survive only at
-provably-quiet bootstrap moments: boot (position 0 by construction) and
-rescue confirm (a held-low line delivers no start edges — the cursor is
-still).
+A1 originally kept one timestamp — the newest FE delivery tick — as the
+frontier frame's clock anchor. DELETED (ring-cadence band, 2026-07-09):
+the FE now carries neither position (A2) nor time; it is a pure wake, and
+its handler does only the bounded wire work (staged-reply kill, chain
+suspend, rescue-candidacy arming). Every aim and estimate is instead
+projected from live ring state at each resolve:
+
+```
+aim / estimate = now + missing·tpb (+ span·tpb ≫ 6 drift pad)
+```
+
+`now` and the cursor advance together, so ISR delivery lag — the thing the
+timestamp inherited wholesale (a 60 µs-late FE made the reply 60 µs late) —
+cancels out of the projection. The error is bounded by one byte-time plus
+one wake latency and is always on the LATE side: a byte counted as missing
+can only finish sooner than assumed, so a reply grid measured from the
+estimate never fires into its own frame's tail (the reply gap safety
+property, sim-pinned). The reply-grid estimate is frozen at the covered
+checkpoint, where missing ≤ 2 makes it tightest. Aims are self-pacing for
+free: a stalled wire re-projects at each wake ≥ one byte-time out, which
+deleted the recheck/park budget machinery wholesale; the 64-byte-time
+progress-idle horizon remains the sole death authority. One epsilon
+survives, on header aims only: the break rings at its FE point ~4
+bit-times before the line rises [F5], so the first data byte sits that far
+outside the byte cadence. Cursor reads survive only at provably-quiet
+bootstrap moments: boot (position 0 by construction) and rescue confirm (a
+held-low line delivers no start edges — the cursor is still).
 
 ### A2 — successor-available discrimination: the ring is the queue
 
@@ -315,9 +343,9 @@ engine is still touched only at HIGH: no arbitration protocol.
 
 First-principles cost of (b) vs (a): one pend+entry per frame (~4 µs) paid
 inside the speculation window, where it is hidden if
-`hop + decode + dispatch ≤ covered→B window + T_turn`:
+`hop + decode + dispatch ≤ covered→B window + reply gap`:
 
-| frame     | window+T_turn 1M | hop+work (est.) | grid held? | window+T_turn 3M | grid held? |
+| frame     | window+reply gap 1M | hop+work (est.) | grid held? | window+reply gap 3M | grid held? |
 |-----------|------------------|-----------------|------------|-------------------|------------|
 | ping      | 45 µs            | ~8 µs           | yes        | 18 µs             | yes        |
 | read 4 B  | 45 µs            | ~13 µs          | yes        | 18 µs             | marginal   |
@@ -502,8 +530,10 @@ turnarounds flat vs the pre-fix baseline at every baud.
   by the verdict), *verdict-first* (commit/mgmt, CRC checked before
   dispatch).
 - **deadline A / B** — header-readable check / frame-end check, both
-  cursor-verified estimates from the break timestamp.
-- **T_turn** — the mandated 2-byte-time wire gap between a frame and its
-  reply; the reply grid.
+  ring-cadence projections (`now + missing byte-times`) re-derived at every
+  wake.
+- **reply gap** — the mandated wire gap between a frame and its reply (12 µs,
+  fixed at every baud — host TC→release is time-domain, §7); the reply
+  grid.
 - **fast path / scheduled path** — A2's split: complete-in-ring frames
   resolved from data with no clock / the newest frame timed by deadlines.
