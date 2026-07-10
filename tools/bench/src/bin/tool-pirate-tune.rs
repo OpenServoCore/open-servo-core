@@ -33,7 +33,8 @@
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
-use bench::pirate::{BStamp, Client, IcSnapshot, TxComp, auto_detect_pirate};
+use bench::cli::open_pirate;
+use bench::pirate::{BStamp, Client, IcSnapshot, TxComp};
 use clap::{Parser, ValueEnum};
 
 #[derive(Copy, Clone, Debug, ValueEnum, PartialEq, Eq)]
@@ -124,11 +125,7 @@ fn main() -> Result<()> {
         .clone()
         .unwrap_or_else(|| vec![57_600, 115_200, 1_000_000, 2_000_000, 3_000_000]);
 
-    let port = match args.port.clone() {
-        Some(p) => p,
-        None => auto_detect_pirate()?,
-    };
-    let mut bus = Client::open(&port, Duration::from_millis(500))?;
+    let mut bus = open_pirate(args.port.as_deref())?;
     println!("pirate: {}   (loopback-only)", bus.port_path());
 
     let run_all = args.stage == Stage::All;

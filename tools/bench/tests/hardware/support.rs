@@ -12,16 +12,13 @@ use std::sync::{LazyLock, Mutex, MutexGuard};
 use std::time::Duration;
 
 use anyhow::Result;
+use bench::BOOT_BAUD;
+pub use bench::cli::SETTLE_MS;
 use bench::osc::{Exchange, ExchangeError, StatusFrame, build_write, parse_exchange};
 use bench::pirate::{Client, auto_detect_pirate};
 use bench::run::{BurstCycle, BurstReport, Report, burst_measure, capture, measure, xfer};
-use bench::{BOOT_BAUD, SUPPORTED_BAUDS};
 use osc_core::regions::config::addr::comms::BAUD_RATE_IDX;
 use osc_protocol::wire::ResultCode;
-
-/// Settle window per exchange (ms): covers the reply's wire time + servo latency
-/// at every supported baud, with margin.
-pub const SETTLE_MS: u64 = 5;
 
 pub struct Bench {
     client: Client,
@@ -163,8 +160,5 @@ impl Bench {
 
 /// Index of `baud` in the supported set, for the `baud_rate_idx` register.
 fn baud_index(baud: u32) -> u8 {
-    SUPPORTED_BAUDS
-        .iter()
-        .position(|&b| b == baud)
-        .unwrap_or_else(|| panic!("unsupported baud {baud}")) as u8
+    bench::baud_index(baud).unwrap_or_else(|| panic!("unsupported baud {baud}"))
 }

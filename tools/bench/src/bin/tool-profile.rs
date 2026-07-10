@@ -2,11 +2,9 @@
 //! then measure TURNAROUND for the gathered scattered-telemetry reply and
 //! compare against the same bytes as a plain contiguous READ.
 
-use std::time::Duration;
-
 use anyhow::{Context, Result, bail};
+use bench::cli::{Connect, SETTLE_MS, Target, gate_fail_rate, print_conn};
 use bench::osc::{build_profile_config, build_read, build_read_profile};
-use bench::pirate::{Client, auto_detect_pirate};
 use bench::run::{Stats, measure};
 use clap::Parser;
 use osc_protocol::wire::ResultCode;
@@ -14,15 +12,10 @@ use osc_protocol::wire::ResultCode;
 #[derive(Parser, Debug)]
 #[command(about = "Configure a profile slot, then measure PROFILE-read TURNAROUND.")]
 struct Args {
-    /// Pirate USB-CDC device. Default: autodetect by VID/PID.
-    #[arg(short, long)]
-    port: Option<String>,
-    /// Wire baud.
-    #[arg(short, long, default_value_t = 1_000_000)]
-    baud: u32,
-    /// Servo id.
-    #[arg(short, long, default_value_t = 1)]
-    id: u8,
+    #[command(flatten)]
+    conn: Connect,
+    #[command(flatten)]
+    target: Target,
     /// Profile slot to configure and read.
     #[arg(short, long, default_value_t = 0)]
     slot: u8,
@@ -55,13 +48,8 @@ fn parse_span(s: &str) -> Result<(u16, u8)> {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let port = match args.port {
-        Some(p) => p,
-        None => auto_detect_pirate()?,
-    };
-    let mut client = Client::open(&port, Duration::from_millis(500))?;
-    client.set_baud(args.baud)?;
-    client.reset()?;
+    let mut client = args.conn.client()?;
+    let id = args.target.id;
 
     let spans: Vec<(u16, u8)> = args
         .spans
@@ -71,8 +59,8 @@ fn main() -> Result<()> {
     let total: usize = spans.iter().map(|&(_, c)| c as usize).sum();
 
     // Configure the slot (one ordinary WRITE, §5.2) and take the ack.
-    let config = build_profile_config(args.id, args.slot, &spans);
-    measure(&mut client, &config, 1, 5, false, |ex| {
+    let config = build_profile_config(id, args.slot, &spans);
+    measure(&mut client, &config, 1, SETTLE_MS, false, |ex| {
         if ex.status.result != Some(ResultCode::Ok) {
             bail!("profile config nacked: {:?}", ex.status.result);
         }
@@ -94,9 +82,9 @@ fn main() -> Result<()> {
 
     // Settle: request + reply wire time at 10 bits/byte, plus servo latency
     // and USB slack.
-    let settle_ms = (24 + total as u64) * 10_000 / args.baud as u64 + 4;
+    let settle_ms = (24 + total as u64) * 10_000 / args.conn.baud as u64 + 4;
 
-    let wire = build_read_profile(args.id, args.slot);
+    let wire = build_read_profile(id, args.slot);
     let profile = measure(
         &mut client,
         &wire,
@@ -108,7 +96,7 @@ fn main() -> Result<()> {
 
     // Reference: the same byte count as one contiguous plain READ (the spans'
     // first addr keeps the payload identical in size, not content).
-    let wire = build_read(args.id, spans[0].0, total as u16);
+    let wire = build_read(id, spans[0].0, total as u16);
     let plain = measure(
         &mut client,
         &wire,
@@ -118,9 +106,7 @@ fn main() -> Result<()> {
         check(total),
     )?;
 
-    println!("port         {}", client.port_path());
-    println!("baud         {}", args.baud);
-    println!("id           {}", args.id);
+    print_conn(&client, id);
     println!(
         "profile      slot {} = {} spans, {} bytes",
         args.slot,
@@ -142,9 +128,5 @@ fn main() -> Result<()> {
     if let Some(s) = Stats::from(&plain.ok) {
         s.print();
     }
-
-    if (profile.fail + plain.fail) * 10 > args.count {
-        std::process::exit(1);
-    }
-    Ok(())
+    gate_fail_rate(profile.fail + plain.fail, args.count)
 }

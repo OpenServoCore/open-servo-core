@@ -99,7 +99,8 @@ pub fn capture(client: &mut Client, wire: &[u8], settle_ms: u64) -> Result<(Vec<
     Ok((stamps, bit_ticks))
 }
 
-fn drain(client: &mut Client) -> Result<Vec<BStamp>> {
+/// Drain every pending stamp from the pirate's capture buffer.
+pub fn drain(client: &mut Client) -> Result<Vec<BStamp>> {
     let mut all = Vec::new();
     loop {
         let batch = client.bbatch(255)?;

@@ -10,8 +10,10 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use anyhow::Result;
+use bench::cli::{Connect, Target};
 use bench::osc::{ExchangeError, build_instruction, parse_exchange};
-use bench::pirate::{BStamp, Client, auto_detect_pirate};
+use bench::pirate::{BStamp, Client};
+use bench::run::drain;
 use clap::Parser;
 use osc_protocol::wire::{Inst, Opcode};
 
@@ -20,12 +22,10 @@ const GOAL_POSITION_ADDR: u16 = 0x0184;
 #[derive(Parser, Debug)]
 #[command(about = "Capture raw IC edges for a failing burst reply.")]
 struct Args {
-    #[arg(short, long)]
-    port: Option<String>,
-    #[arg(short, long, default_value_t = 1_000_000)]
-    baud: u32,
-    #[arg(short, long, default_value_t = 1)]
-    id: u8,
+    #[command(flatten)]
+    conn: Connect,
+    #[command(flatten)]
+    target: Target,
     #[arg(short, long, default_value_t = 2000)]
     count: u32,
     /// NOREPLY writes per burst.
@@ -46,17 +46,6 @@ fn plain_burst(id: u8, n: u32, v: i32) -> (Vec<Vec<u8>>, Vec<u8>) {
     let read = build_instruction(id, Opcode::Read, 0, &[a[0], a[1], 4, 0]);
     frames.push(read.clone());
     (frames, read)
-}
-
-fn drain(client: &mut Client) -> Result<Vec<BStamp>> {
-    let mut all = Vec::new();
-    loop {
-        let batch = client.bbatch(255)?;
-        if batch.is_empty() {
-            return Ok(all);
-        }
-        all.extend(batch);
-    }
 }
 
 /// The whole cycle's stamp stream (all frames + reply), byte values with
@@ -125,18 +114,12 @@ fn dump_failure(client: &mut Client, stamps: &[BStamp], bit_ticks: u32) -> Resul
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let port = match args.port {
-        Some(p) => p,
-        None => auto_detect_pirate()?,
-    };
-    let mut client = Client::open(&port, Duration::from_millis(500))?;
-    client.set_baud(args.baud)?;
-    client.reset()?;
+    let mut client = args.conn.client()?;
     let hz_per_us = client.hz_per_us()?;
-    let bit_ticks = (hz_per_us as u64 * 1_000_000 / args.baud as u64) as u32;
+    let bit_ticks = (hz_per_us as u64 * 1_000_000 / args.conn.baud as u64) as u32;
 
     // Warmup.
-    let (frames, _) = plain_burst(args.id, args.writes.max(1), 0);
+    let (frames, _) = plain_burst(args.target.id, args.writes.max(1), 0);
     let _ = client.burst(&frames);
     sleep(Duration::from_millis(5));
     drain(&mut client)?;
@@ -144,7 +127,7 @@ fn main() -> Result<()> {
     let mut caught = 0u32;
     for c in 0..args.count {
         let v = (c % 1000) as i32 + 1;
-        let (frames, last) = plain_burst(args.id, args.writes.max(1), v);
+        let (frames, last) = plain_burst(args.target.id, args.writes.max(1), v);
         client.burst(&frames)?;
         sleep(Duration::from_millis(3));
         let stamps = drain(&mut client)?;

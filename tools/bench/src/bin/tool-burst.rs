@@ -16,11 +16,10 @@
 //! the same [`hot_loop_cycle`]/[`plain_flood_cycle`] builders so the two can't
 //! drift. The extra probe flags below stay tool-only forensics.
 
-use std::time::Duration;
-
-use anyhow::{Result, bail};
+use anyhow::Result;
+use bench::cli::{Connect, Target, gate_fail_rate, print_conn};
 use bench::osc::{build_instruction, build_read, gread_uniform_payload, gwrite_uniform_payload};
-use bench::pirate::{BStamp, Client, auto_detect_pirate};
+use bench::pirate::BStamp;
 use bench::run::{
     BurstCycle, CycleObservation, CycleOutcome, Stats, burst_measure_observed, hot_loop_cycle,
     plain_flood_cycle,
@@ -38,15 +37,10 @@ const GOAL_LEN: u16 = 4;
 #[derive(Parser, Debug)]
 #[command(about = "Bombard a servo with zero-gap frame bursts and verify read-back.")]
 struct Args {
-    /// Pirate USB-CDC device. Default: autodetect by VID/PID.
-    #[arg(short, long)]
-    port: Option<String>,
-    /// Wire baud.
-    #[arg(short, long, default_value_t = 1_000_000)]
-    baud: u32,
-    /// Servo id.
-    #[arg(short, long, default_value_t = 1)]
-    id: u8,
+    #[command(flatten)]
+    conn: Connect,
+    #[command(flatten)]
+    target: Target,
     /// Cycles (one burst each).
     #[arg(short, long, default_value_t = 1000)]
     count: u32,
@@ -96,14 +90,15 @@ struct Args {
 /// bench test); the rest are tool-only forensic isolations.
 fn cycle_for(args: &Args, value: i32) -> BurstCycle {
     let addr = GOAL_POSITION_ADDR;
+    let id = args.target.id;
     if args.plain {
-        plain_flood_cycle(args.id, addr, args.writes, value)
+        plain_flood_cycle(id, addr, args.writes, value)
     } else if args.gread_only {
         let gread = build_instruction(
             BCAST,
             Opcode::Gread,
             0,
-            &gread_uniform_payload(addr, GOAL_LEN, &[args.id]),
+            &gread_uniform_payload(addr, GOAL_LEN, &[id]),
         );
         BurstCycle {
             frames: vec![gread.clone()],
@@ -116,9 +111,9 @@ fn cycle_for(args: &Args, value: i32) -> BurstCycle {
             BCAST,
             Opcode::Gwrite,
             Inst::FLAG_HOLD,
-            &gwrite_uniform_payload(addr, &[(args.id, &data)]),
+            &gwrite_uniform_payload(addr, &[(id, &data)]),
         );
-        let read = build_read(args.id, addr, GOAL_LEN);
+        let read = build_read(id, addr, GOAL_LEN);
         BurstCycle {
             frames: vec![gwrite, read.clone()],
             last: read,
@@ -126,7 +121,7 @@ fn cycle_for(args: &Args, value: i32) -> BurstCycle {
         }
     } else if args.commit_read {
         let commit = build_instruction(BCAST, Opcode::Commit, 0, &[]);
-        let read = build_read(args.id, addr, GOAL_LEN);
+        let read = build_read(id, addr, GOAL_LEN);
         BurstCycle {
             frames: vec![commit, read.clone()],
             last: read,
@@ -134,14 +129,14 @@ fn cycle_for(args: &Args, value: i32) -> BurstCycle {
         }
     } else if args.no_gread {
         // The hot loop with its GREAD swapped for a plain READ (isolates GREAD).
-        let mut c = hot_loop_cycle(args.id, addr, value);
+        let mut c = hot_loop_cycle(id, addr, value);
         c.frames.pop();
-        let read = build_read(args.id, addr, GOAL_LEN);
+        let read = build_read(id, addr, GOAL_LEN);
         c.frames.push(read.clone());
         c.last = read;
         c
     } else {
-        hot_loop_cycle(args.id, addr, value)
+        hot_loop_cycle(id, addr, value)
     }
 }
 
@@ -169,13 +164,7 @@ fn dump_stamps(c: u32, stamps: &[BStamp], bit_ticks: u32) {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let port = match &args.port {
-        Some(p) => p.clone(),
-        None => auto_detect_pirate()?,
-    };
-    let mut client = Client::open(&port, Duration::from_millis(500))?;
-    client.set_baud(args.baud)?;
-    client.reset()?;
+    let mut client = args.conn.client()?;
 
     let report = burst_measure_observed(
         &mut client,
@@ -191,9 +180,7 @@ fn main() -> Result<()> {
     } else {
         "hot loop (GWRITE hold + COMMIT + GREAD)".to_string()
     };
-    println!("port         {}", client.port_path());
-    println!("baud         {}", args.baud);
-    println!("id           {}", args.id);
+    print_conn(&client, args.target.id);
     println!("mode         {mode}");
     println!(
         "cycles       {} ok, {} stale, {} no-reply, {} other",
@@ -205,10 +192,7 @@ fn main() -> Result<()> {
     if let Some(s) = Stats::from(&report.ok) {
         s.print();
     }
-    if report.failures() * 10 > args.count {
-        bail!("failure rate over 10%");
-    }
-    Ok(())
+    gate_fail_rate(report.failures(), args.count)
 }
 
 /// Per-cycle forensic output, gated by `--verbose` / `--dump`.

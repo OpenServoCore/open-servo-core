@@ -2,11 +2,10 @@
 //! the OLD baud (the servo applies the change only after the ack drains,
 //! §4.2), then follow it and verify with a ping at the new rate.
 
-use std::time::Duration;
-
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
+use bench::baud_index;
+use bench::cli::{Connect, SETTLE_MS, Target};
 use bench::osc::{build_ping, build_write};
-use bench::pirate::{Client, auto_detect_pirate};
 use bench::run::measure;
 use clap::Parser;
 use osc_protocol::wire::ResultCode;
@@ -17,58 +16,41 @@ use osc_protocol::wire::ResultCode;
 const BAUD_RATE_IDX_ADDR: u16 = 0x000D;
 
 #[derive(Parser, Debug)]
-#[command(about = "Switch a servo's baud and follow it.")]
+#[command(about = "Switch a servo's baud and follow it (--baud = the current rate).")]
 struct Args {
-    /// Pirate USB-CDC device. Default: autodetect by VID/PID.
-    #[arg(short, long)]
-    port: Option<String>,
-    /// Baud the servo currently listens at.
-    #[arg(short, long, default_value_t = 1_000_000)]
-    from: u32,
+    #[command(flatten)]
+    conn: Connect,
+    #[command(flatten)]
+    target: Target,
     /// Target baud.
     #[arg(short, long, default_value_t = 3_000_000)]
     to: u32,
-    /// Servo id.
-    #[arg(short, long, default_value_t = 1)]
-    id: u8,
-}
-
-fn baud_index(bps: u32) -> Result<u8> {
-    Ok(match bps {
-        500_000 => 0,
-        1_000_000 => 1,
-        2_000_000 => 2,
-        3_000_000 => 3,
-        _ => bail!("unsupported baud {bps}"),
-    })
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let port = match args.port {
-        Some(p) => p,
-        None => auto_detect_pirate()?,
-    };
-    let mut client = Client::open(&port, Duration::from_millis(500))?;
-    client.set_baud(args.from)?;
-    client.reset()?;
+    let mut client = args.conn.client()?;
+    let idx = baud_index(args.to).ok_or_else(|| anyhow!("unsupported baud {}", args.to))?;
 
-    let write = build_write(args.id, BAUD_RATE_IDX_ADDR, &[baud_index(args.to)?]);
-    let report = measure(&mut client, &write, 1, 5, false, |ex| {
+    let write = build_write(args.target.id, BAUD_RATE_IDX_ADDR, &[idx]);
+    let report = measure(&mut client, &write, 1, SETTLE_MS, false, |ex| {
         if ex.status.result != Some(ResultCode::Ok) {
             bail!("write nacked: {:?}", ex.status.result);
         }
         Ok(())
     })?;
     if report.ok.is_empty() {
-        bail!("no ack for the baud write at {} baud", args.from);
+        bail!("no ack for the baud write at {} baud", args.conn.baud);
     }
-    println!("ack at {} baud ok; following to {}", args.from, args.to);
+    println!(
+        "ack at {} baud ok; following to {}",
+        args.conn.baud, args.to
+    );
 
     client.set_baud(args.to)?;
     client.reset()?;
-    let ping = build_ping(args.id);
-    let report = measure(&mut client, &ping, 3, 5, false, |ex| {
+    let ping = build_ping(args.target.id);
+    let report = measure(&mut client, &ping, 3, SETTLE_MS, false, |ex| {
         if ex.status.result != Some(ResultCode::Ok) {
             bail!("status {:?}", ex.status.result);
         }

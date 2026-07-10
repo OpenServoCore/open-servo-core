@@ -1,46 +1,38 @@
 //! Scratch forensics: soak profile reads, dump the raw stamp stream of any
-//! exchange that fails to parse. Delete after the 2M truncation is root-caused.
-
-use std::time::Duration;
+//! exchange that fails to parse. Delete after the 2M truncation is root-caused
+//! (task #7); run with `--baud 2000000` to chase it.
 
 use anyhow::{Result, bail};
+use bench::cli::{Connect, SETTLE_MS, Target};
 use bench::osc::{build_profile_config, build_read_profile, parse_exchange};
-use bench::pirate::{Client, auto_detect_pirate};
 use bench::run::capture;
 use clap::Parser;
 use osc_protocol::wire::ResultCode;
 
 #[derive(Parser, Debug)]
 struct Args {
-    #[arg(short, long)]
-    port: Option<String>,
-    #[arg(short, long, default_value_t = 2_000_000)]
-    baud: u32,
-    #[arg(short, long, default_value_t = 1)]
-    id: u8,
+    #[command(flatten)]
+    conn: Connect,
+    #[command(flatten)]
+    target: Target,
     #[arg(short, long, default_value_t = 500)]
     count: u32,
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let port = match args.port {
-        Some(p) => p,
-        None => auto_detect_pirate()?,
-    };
-    let mut client = Client::open(&port, Duration::from_millis(500))?;
-    client.set_baud(args.baud)?;
-    client.reset()?;
+    let mut client = args.conn.client()?;
+    let id = args.target.id;
 
-    let config = build_profile_config(args.id, 0, &[(0x200, 4), (0x208, 2), (0x20C, 2)]);
-    let (stamps, bit_ticks) = capture(&mut client, &config, 5)?;
+    let config = build_profile_config(id, 0, &[(0x200, 4), (0x208, 2), (0x20C, 2)]);
+    let (stamps, bit_ticks) = capture(&mut client, &config, SETTLE_MS)?;
     let ex = parse_exchange(&stamps, &config, bit_ticks);
     match ex {
         Ok(ex) if ex.status.result == Some(ResultCode::Ok) => {}
         other => bail!("config exchange: {other:?}"),
     }
 
-    let wire = build_read_profile(args.id, 0);
+    let wire = build_read_profile(id, 0);
     let mut fails = 0;
     let mut prev_snap = client.ic_snapshot()?;
     for i in 0..args.count {

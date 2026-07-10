@@ -7,20 +7,18 @@
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use bench::cli::{Connect, Target};
 use bench::osc::build_instruction;
-use bench::pirate::{Client, auto_detect_pirate};
 use clap::Parser;
 use osc_protocol::wire::{Inst, Opcode};
 
 #[derive(Parser, Debug)]
 #[command(about = "Flood a servo with continuous NOREPLY writes for N seconds.")]
 struct Args {
-    #[arg(short, long)]
-    port: Option<String>,
-    #[arg(short, long, default_value_t = 1_000_000)]
-    baud: u32,
-    #[arg(short, long, default_value_t = 1)]
-    id: u8,
+    #[command(flatten)]
+    conn: Connect,
+    #[command(flatten)]
+    target: Target,
     /// Control-table address to write.
     #[arg(short, long, default_value_t = 388)]
     addr: u16,
@@ -34,13 +32,7 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let port = match args.port {
-        Some(p) => p,
-        None => auto_detect_pirate()?,
-    };
-    let mut client = Client::open(&port, Duration::from_millis(500))?;
-    client.set_baud(args.baud)?;
-    client.reset()?;
+    let mut client = args.conn.client()?;
 
     // One WRITE(NOREPLY) frame: addr + ramp payload.
     // Zero payload: valid for any writable span (0 is within every rule's
@@ -48,7 +40,7 @@ fn main() -> Result<()> {
     let a = args.addr.to_le_bytes();
     let mut payload = vec![a[0], a[1]];
     payload.extend(std::iter::repeat_n(0u8, args.bytes));
-    let frame = build_instruction(args.id, Opcode::Write, Inst::FLAG_NOREPLY, &payload);
+    let frame = build_instruction(args.target.id, Opcode::Write, Inst::FLAG_NOREPLY, &payload);
 
     // Pack as many frames as fit the 640-byte burst stream (1 length byte each).
     let per = (640 / (frame.len() + 1)).max(1);

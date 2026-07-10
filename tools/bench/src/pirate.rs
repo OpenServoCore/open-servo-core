@@ -1,9 +1,6 @@
-//! Raw USB-CDC client for the uart-pirate device.
-//!
-//! Internal to the bench crate — bins import [`crate::Bus`] (the
-//! task-shaped facade) and never touch this module directly. All wire
-//! grammar (ASCII command lines, binary BBATCH frames, sticky DESYNCED
-//! state) is encapsulated here; the rest of the lib turns those calls
+//! Raw USB-CDC client for the uart-pirate device. All wire grammar (ASCII
+//! command lines, binary BBATCH frames, sticky DESYNCED state) is
+//! encapsulated here; [`crate::osc`] and [`crate::run`] turn these calls
 //! into protocol-level operations.
 
 use std::io::{self, Read, Write};
