@@ -144,8 +144,22 @@ fn pb10_drive(pp: bool) {
 /// the drive before this send even starts.
 fn arm_drive_release() {
     pb10_drive(true);
-    USART3.statr().modify(|w| w.set_tc(false));
+    clear_tc_only();
     USART3.ctlr1().modify(|w| w.set_tcie(true));
+}
+
+/// Clear TC with a plain all-ones-except-TC write — NEVER a
+/// read-modify-write. STATR's flags are rc_w0 (write 1 = no-op, write 0
+/// = clear) and the pirate's RX runs concurrently with its own TX echo:
+/// an RXNE that sets between an RMW's read and its write-back gets
+/// written 0 — the DMA request dies and the echo byte silently vanishes
+/// from the ring (bench 2026-07-09: the GREAD id byte, ~1/1000 sends at
+/// 0.5M, NoEcho). Write-1s touch nothing; only TC clears, race-free.
+fn clear_tc_only() {
+    USART3.statr().write(|w| {
+        w.0 = u32::MAX;
+        w.set_tc(false);
+    });
 }
 
 /// Called from the USART3 ISR on TC while TCIE is armed: release the
@@ -156,13 +170,40 @@ pub fn on_tx_complete() {
 }
 
 /// Arm the TC-interrupt release for a poll-fed send whose last byte is
-/// already in flight: when the final stop bit clears the shifter, the
-/// USART3 ISR (or the walker's [`poll_drive_release`] checkpoint) hands
-/// the wire back. Unlike [`arm_drive_release`], TC is NOT cleared here —
-/// the tail bytes may already have drained under preemption, and that
-/// latched TC *is* the release event.
+/// already in flight. TC is NOT cleared here — the tail bytes may
+/// already have drained under preemption, and that latched TC *is* the
+/// release event. Only the FEINJ diagnostic still uses this (its `post`
+/// leg may be empty and nothing races its wire handback); reply-path
+/// senders use [`feed_last_and_arm_release`].
 fn arm_tc_release() {
     USART3.ctlr1().modify(|w| w.set_tcie(true));
+}
+
+/// Feed the FINAL byte of a poll-fed send and arm the TC release, with
+/// the [DR write → TC clear → TCIE arm] triplet under a critical
+/// section. Armed thread-side AFTER the feed instead, a walker-class
+/// drain landing in the gap left the release unarmed while the last
+/// byte shifted out — pre-arm, the walk's [`poll_drive_release`]
+/// checkpoints are no-ops, so PB10 kept clamping the bus into the
+/// servo's reply (bench 2026-07-09: hot-loop replies' break/ID fought
+/// to mark, 3/2000 at 1M). The TC clear inside the CS retires any
+/// stale complete flag from an inter-byte gap so arming can't release
+/// mid-byte; the real TC re-latches when the final stop bit clears the
+/// shifter.
+fn feed_last_and_arm_release(b: u8) -> Result<(), SendError> {
+    let bit_ticks = USART3.brr().read().0;
+    let t0 = read_tick32();
+    while !USART3.statr().read().txe() {
+        if read_tick32().wrapping_sub(t0) > bit_ticks * 64 && !USART3.statr().read().txe() {
+            return Err(SendError::Busy);
+        }
+    }
+    critical_section::with(|_| {
+        USART3.datar().write(|w| w.set_dr(b as u16));
+        clear_tc_only();
+        USART3.ctlr1().modify(|w| w.set_tcie(true));
+    });
+    Ok(())
 }
 
 /// Release checkpoint for long walker drains. The USART3 TC vector shares
@@ -398,12 +439,12 @@ pub fn send_break_then(payload: &[u8]) -> Result<(), SendError> {
             .and_then(|()| wait_tx_complete().map_err(|TxTimeout| SendError::Busy));
         USART3.ctlr1().modify(|w| w.set_m(false));
         r?;
-        feed_bytes(payload)?;
-        // Last byte is in flight: the ISR/walker releases the drive at
-        // the final stop bit. Thread mode may be preempted for a whole
-        // walker drain right here — with the release still thread-side,
-        // PB10 kept clamping the bus idle-high into the servo's reply.
-        arm_tc_release();
+        // The ISR/walker releases the drive at the final stop bit; the
+        // final byte's feed and the arm are one atomic step so no drain
+        // can leave the release unarmed while the byte shifts out.
+        let (body, last) = payload.split_at(payload.len() - 1);
+        feed_bytes(body)?;
+        feed_last_and_arm_release(last[0])?;
         wait_tx_complete().map_err(|TxTimeout| SendError::Busy)
     })();
     // Backstop (error paths, desync-frozen walker); benign after the
@@ -451,12 +492,17 @@ pub fn send_burst(stream: &[u8]) -> Result<(), SendError> {
                 .and_then(|()| wait_tx_complete().map_err(|TxTimeout| SendError::Busy));
             USART3.ctlr1().modify(|w| w.set_m(false));
             r?;
-            feed_bytes(&stream[i..i + n])?;
+            let frame = &stream[i..i + n];
             i += n;
             if i == stream.len() {
                 // See send_break_then: the release must ride the last
-                // stop bit, not this preemptible thread-mode wait.
-                arm_tc_release();
+                // stop bit, and the arm must be atomic with the final
+                // byte's feed.
+                let (body, last) = frame.split_at(n - 1);
+                feed_bytes(body)?;
+                feed_last_and_arm_release(last[0])?;
+            } else {
+                feed_bytes(frame)?;
             }
             wait_tx_complete().map_err(|TxTimeout| SendError::Busy)?;
         }
