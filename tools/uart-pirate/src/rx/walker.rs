@@ -2,13 +2,15 @@
 //! one byte at a time, with bytes' start ticks anchored to IC entries
 //! (cold-start path) or predicted as `prev_anchor + 10·bit_ticks` and
 //! snapped to the closest IC entry within `±SNAP_BITS·bit_ticks` (steady
-//! state). On miss, the walker first tries a LATE re-anchor: a real start
-//! bit only ever arrives late (SBK breaks run 13–14 bit-times against the
-//! 10 the grid models; TX-arm gaps stretch a start by up to ~8 bits), so
-//! the earliest unconsumed edge within `LATE_START_BITS` of prediction is
-//! the true start. Only when no such edge exists does it free-run on the
-//! prediction and flag `COUNT_UNDER`, so the chain survives a genuine
-//! edge dropout.
+//! state). On a snap miss, the earliest unconsumed edge — at any
+//! distance — is claimed as the true start: starts only ever arrive late
+//! (SBK breaks run 13–14 bit-times against the 10 the grid models,
+//! poll-fed TX stretches starts across USB packet boundaries, inter-frame
+//! gaps are unbounded) and IC captures are chronological, so the chain
+//! re-anchors on real wire state at every gap with no idle-detection
+//! dependency. Only when no edge exists at all (a genuine dropout) does a
+//! byte free-run on the prediction (`COUNT_UNDER`), and the next real
+//! edge re-anchors the chain immediately.
 
 use core::cell::SyncUnsafeCell;
 use core::ptr;
@@ -34,15 +36,22 @@ const BITS_PER_BYTE_8N1: u32 = 10;
 /// inter-byte hardware idle than 1 bit-time between bytes in a chain.
 const SNAP_BITS: u32 = 1;
 
-/// Late-start look-ahead in bit-times: on a snap miss, an unconsumed edge
-/// at most this far past prediction is claimed as the byte's real (late)
-/// start instead of free-running. Sized to cover every legitimate late
-/// start — the byte after a servo SBK break sits +3–4.5 bits past the
-/// 10-bit grid (13–14-bit breaks, bench-measured both chip families), and
-/// the servo's per-DMA-arm TX gaps stretch a start by up to +8.1 bits —
-/// while staying below 10, so a punctual NEXT byte's start can never be
-/// claimed for a dropped current byte.
+/// Free-run wait horizon in bit-times: on a snap miss with the IC ring
+/// exhausted, the walker waits until this far past prediction has
+/// provably elapsed before free-running the byte — a legitimately late
+/// start (servo SBK breaks put the next byte +3–4.5 bits past the 10-bit
+/// grid; per-DMA-arm TX gaps stretch a start by up to +8.1 bits) may
+/// still be in flight toward the ring until then. When an unconsumed
+/// edge IS available, it is claimed at any distance (see the miss path).
 const LATE_START_BITS: u32 = 9;
+
+/// Anchor validity horizon (100 ms at 144 MHz). Past it the prediction
+/// grid is meaningless and — the real constraint — tick32 wraps at
+/// 29.8 s, so window arithmetic against a stale anchor would alias. A
+/// fresh burst re-anchors via its break regardless; this bound only
+/// exists so stale-anchor math can never wrap, and to age out trailing
+/// interior edges from before a long quiet gap.
+const ANCHOR_STALE_TICKS: u32 = 14_400_000;
 
 pub(super) static WALKED_FALLING: SyncUnsafeCell<u32> = SyncUnsafeCell::new(0);
 
@@ -87,17 +96,7 @@ pub(super) fn reset_anchors(falling_total: u32) {
 /// falling_total)` — newer entries that land between the NDTR refresh
 /// and the tick32 read aren't in this walker's snapshot, so they fall
 /// to the next trigger.
-///
-/// `idle == true` marks this invocation as USART-IDLE-triggered: the
-/// wire has been quiet one character time, so the next byte (when it
-/// arrives) is the start of a new burst — not contiguous with the last.
-/// After draining, the walker flushes trailing interior edges and drops
-/// `has_anchor` so the next byte cold-starts on its own IC edge instead
-/// of free-running off a stale `last_anchor + 10·bit_ticks` prediction
-/// that would sit one inter-packet gap (RDT) before the real edge. IDLE
-/// is signal-only here — the next byte's tick still comes from its own
-/// IC entry via the cold-start path.
-pub fn walk(idle: bool) {
+pub fn walk() {
     // Before anything (including the desync gate): a TC-armed drive
     // release must never wait out a walk — or a desynced walker.
     crate::tx::poll_drive_release();
@@ -128,6 +127,9 @@ pub fn walk(idle: bool) {
     let mut byte_head = BYTE_HEAD.load(Ordering::Relaxed);
     let mut anchor = unsafe { ptr::read_volatile(LAST_ANCHOR.get()) };
     let mut has_anchor = unsafe { ptr::read_volatile(HAS_ANCHOR.get()) };
+    if has_anchor && ceiling.wrapping_sub(anchor) > ANCHOR_STALE_TICKS {
+        has_anchor = false;
+    }
 
     while byte_head != rx_total {
         // Release checkpoint: a long drain (half-ring after a burst) runs
@@ -151,12 +153,22 @@ pub fn walk(idle: bool) {
         let mut flags = 0u8;
 
         if !has_anchor {
-            // Cold-start path: post-boot, post-RESET, post-set_baud. No
-            // prediction available, so anchor on the first unconsumed IC
-            // entry. Need `ceiling` to bound `byte_period` past
-            // first_edge so we don't anchor on what is actually some
+            // Cold-start path: post-boot, post-RESET, post-set_baud, or a
+            // staled-out anchor. No prediction available, so anchor on the
+            // first unconsumed IC entry — after dropping edges older than
+            // the staleness horizon (trailing interior edges of the last
+            // byte before a long quiet gap must not anchor the new
+            // burst's first byte). Need `ceiling` to bound `byte_period`
+            // past first_edge so we don't anchor on what is actually some
             // interior edge of the same byte whose start bit is still
             // unwalked.
+            while walked != falling_total {
+                let tick = rings::falling_at(walked, falling_total, ceiling);
+                if ceiling.wrapping_sub(tick) <= ANCHOR_STALE_TICKS {
+                    break;
+                }
+                walked = walked.wrapping_add(1);
+            }
             if walked == falling_total {
                 break;
             }
@@ -229,35 +241,32 @@ pub fn walk(idle: bool) {
                     walked = chosen_walked;
                 }
                 None => {
-                    // Miss. A real start bit only ever arrives LATE (the
-                    // tiebreak rationale above), and every byte start IS a
-                    // falling edge — the stop bit guarantees mark before
-                    // it — so when an unconsumed edge sits within the
-                    // late-start window it is the true start: re-anchor on
-                    // it instead of free-running (the servo's 13-bit SBK
-                    // break used to push the whole reply onto a free-run
-                    // grid ~3 bits ahead of the wire). `probe` stopped at
-                    // the first edge past snap_high, so it is the earliest
-                    // candidate.
-                    let late_limit =
-                        predicted.wrapping_add(LATE_START_BITS.wrapping_mul(bit_ticks));
+                    // Miss: the prediction grid is behind the wire (a
+                    // poll-fed TX stretch, a break's 13–14-bit low, an
+                    // inter-frame gap). A real start bit only ever arrives
+                    // LATE, IC captures are chronological, and every byte
+                    // start IS a falling edge — so the earliest unconsumed
+                    // edge, at ANY distance, is the next true start: claim
+                    // it and the chain re-anchors on real wire state at
+                    // every gap. (An in-window-only claim used to protect
+                    // a dropped edge from stealing the next byte's start,
+                    // but its miss path free-ran at +10 bits/byte while
+                    // the wire ran slower — once behind, EVERY byte missed
+                    // and edges accumulated to ic_overrun. A steal costs
+                    // one frame of skewed stamps; lag-lock killed the
+                    // capture.) `probe` stopped at the first edge past
+                    // snap_high, so it is the earliest candidate.
                     if probe != falling_total {
-                        let tick = rings::falling_at(probe, falling_total, ceiling);
-                        if tick.wrapping_sub(late_limit) > u32::MAX / 2 {
-                            chosen_anchor = tick;
-                            walked = probe.wrapping_add(1);
-                        } else {
-                            // The next edge belongs to a later byte: this
-                            // byte's start truly dropped. Free-run on the
-                            // prediction so the chain survives; unconsumed
-                            // entries stay for the next iteration's skip
-                            // pass.
-                            chosen_anchor = predicted;
-                            flags |= COUNT_UNDER;
-                        }
-                    } else if ceiling.wrapping_sub(late_limit) <= u32::MAX / 2 {
+                        chosen_anchor = rings::falling_at(probe, falling_total, ceiling);
+                        walked = probe.wrapping_add(1);
+                    } else if ceiling.wrapping_sub(
+                        predicted.wrapping_add(LATE_START_BITS.wrapping_mul(bit_ticks)),
+                    ) <= u32::MAX / 2
+                    {
                         // Ring exhausted and the whole late-start window
-                        // has provably elapsed: dropout — free-run.
+                        // has provably elapsed: dropout — free-run so the
+                        // byte stream keeps flowing; the next real edge
+                        // re-anchors the chain via the claim above.
                         chosen_anchor = predicted;
                         flags |= COUNT_UNDER;
                     } else {
@@ -271,23 +280,28 @@ pub fn walk(idle: bool) {
 
         let start_tick = chosen_anchor.wrapping_sub(cc_filter_delay);
         stamp::emit(byte_head, byte, start_tick, flags);
+        // Eagerly consume this byte's own interior edges: falls land on
+        // bit boundaries ≤ anchor + 8·bit, and the NEXT start can arrive
+        // no earlier than anchor + 10·bit − snap, so everything below
+        // `anchor + 9·bit` is provably interior to the byte just emitted.
+        // Left for the next window's skip pass instead, a burst's final
+        // byte strands its interiors — and the claim above would adopt
+        // one as the NEXT burst's first anchor, stamping it with a tick
+        // milliseconds in the past. Skipped after a free-run: a predicted
+        // anchor is not trustworthy enough to consume real edges around.
+        if flags & COUNT_UNDER == 0 {
+            let interior_end = chosen_anchor.wrapping_add(byte_period.wrapping_sub(snap));
+            while walked != falling_total {
+                let tick = rings::falling_at(walked, falling_total, ceiling);
+                if tick.wrapping_sub(interior_end) <= u32::MAX / 2 {
+                    break;
+                }
+                walked = walked.wrapping_add(1);
+            }
+        }
         byte_head = byte_head.wrapping_add(1);
         anchor = chosen_anchor;
         has_anchor = true;
-    }
-
-    // Chain-break on IDLE-after-drain: USART IDLE means the wire just
-    // went quiet. If the byte queue fully drained, any trailing IC
-    // entries are interior edges of the last byte that the snap window
-    // chose not to consume; they're stale once the next burst starts.
-    // Drop them, drop the prediction chain, and the next byte cold-starts
-    // on its own real IC edge. Without this, request/reply traffic (TX
-    // echo → RDT silence → reply) tries to anchor reply byte 0 at
-    // `last_echo_anchor + 10·bit_ticks` and free-runs every reply byte
-    // because the real edges sit hundreds of bit-times past the snap.
-    if idle && byte_head == rx_total {
-        walked = falling_total;
-        has_anchor = false;
     }
 
     BYTE_HEAD.store(byte_head, Ordering::Release);

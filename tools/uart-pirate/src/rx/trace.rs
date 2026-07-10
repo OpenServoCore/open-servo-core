@@ -112,7 +112,7 @@ pub(super) fn run_walker(phase: u8) {
     let (rx_total_now, _) = rings::peek_rx_total();
     let falling_pending_entry = falling_total_now.wrapping_sub(walked_pre);
 
-    walker::walk(phase == TRACE_PHASE_IDLE);
+    walker::walk();
 
     let walked_post = unsafe { ptr::read_volatile(WALKED_FALLING.get()) };
     let byte_head_post = BYTE_HEAD.load(Ordering::Relaxed);
