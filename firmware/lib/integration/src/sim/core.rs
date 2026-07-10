@@ -184,7 +184,7 @@ impl Core {
     // --- wire drive discipline (§2, F8) -----------------------------------
 
     /// Claim the wire for `talker` over `[start, end)`. A different talker
-    /// overlapping an existing claim is the T_turn regression — panic loudly.
+    /// overlapping an existing claim is the reply gap regression — panic loudly.
     pub fn claim(&mut self, talker: Talker, start: u64, end: u64) {
         if let Some((owner, owner_end)) = self.busy
             && owner != talker

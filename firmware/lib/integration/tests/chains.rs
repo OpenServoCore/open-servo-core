@@ -125,11 +125,11 @@ fn gread_uniform_chains_in_list_order(baud_idx: u8) {
         assert_eq!(result, ResultCode::Ok);
         assert_eq!(payload, m.to_le_bytes(), "each reply carries its own span");
     }
-    // Every inter-reply gap respects T_turn (§6/§7).
-    let t_turn = 2 * byte_ticks(baud_idx);
+    // Every inter-reply gap respects reply gap (§6/§7).
+    let reply_gap = support::reply_gap_ticks();
     for w in reps.windows(2) {
         let gap = w[1].at - w[0].end;
-        assert!(gap >= t_turn, "chain gap {gap} < T_turn {t_turn}");
+        assert!(gap >= reply_gap, "chain gap {gap} < reply gap {reply_gap}");
     }
 }
 
@@ -227,11 +227,11 @@ fn missing_servo_reclaims_with_flag(baud_idx: u8) {
     let (res1, _) = decoded(r1);
     assert_eq!(res1, ResultCode::Ok);
 
-    // Reclaim window: servo 3 fires no earlier than servo 1's end + T_turn +
+    // Reclaim window: servo 3 fires no earlier than servo 1's end + reply gap +
     // RESPONSE_DEADLINE, and reasonably close to it.
     let bt = byte_ticks(baud_idx);
     let reclaim = CHAIN_DEADLINE_US as u64 * 48;
-    let floor = r1.end + 2 * bt + reclaim;
+    let floor = r1.end + support::reply_gap_ticks() + reclaim;
     assert!(r3.at >= floor, "reclaim too early: {} < {}", r3.at, floor);
     assert!(
         r3.at <= floor + 8 * bt,

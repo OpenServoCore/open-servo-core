@@ -1,4 +1,4 @@
-//! Stream-continuity RX resolver (`docs/osc-servo-transport.md` §6 A1/A2,
+//! Stream-continuity RX resolver (`docs/osc-servo-transport.md` §6 A2,
 //! `docs/osc-native-protocol.md` §4.1).
 //!
 //! Pure state machine: the composite owns the ring, deadline, and CRC
@@ -11,6 +11,15 @@
 //! arriving (the frontier). A frame with bytes beyond its end is complete
 //! by construction and resolves with zero clock involvement, however late
 //! or coalesced the FE wakes were (A2: the ring is the queue).
+//!
+//! TIME is derived the way position is (A2 extended to the clock): every
+//! aim and estimate is `now + missing·tpb` — the bytes still owed, at wire
+//! pace. An FE carries neither position nor time; it is only a wake. ISR
+//! delivery lag cancels out of every projection (`now` and the cursor
+//! advance together), bounding the error to under one byte-time, always on
+//! the late side: a byte counted as missing can only finish sooner than
+//! assumed, so the reply grid measured from these estimates never fires
+//! into a frame's own tail.
 
 use osc_protocol::frame::Header;
 
@@ -18,10 +27,10 @@ use super::ring_wrap;
 use crate::traits::bus::tick_reached;
 
 /// A resolved frame's location in the ring: anchor index + ring-byte count,
-/// plus the wire-end estimate (`packet_end`) the reply trigger's T_turn is
-/// measured from (§7). Frontier frames estimate from their break tick + the
-/// drift adder (conservative, never early); backlog frames ended in the past
-/// and carry `now` (elastic best-effort timing, §7).
+/// plus the wire-end estimate (`packet_end`) the reply trigger's reply gap is
+/// measured from (§7). Frontier frames project it from ring cadence at the
+/// covered checkpoint (late by less than a byte-time, never early); backlog
+/// frames ended in the past and carry `now` (elastic best-effort timing).
 pub struct FrameSpan {
     pub anchor: u16,
     pub footprint: u16,
@@ -50,30 +59,26 @@ pub enum FramerOut {
 // §4.1: header = BREAK, ID, LEN, INST; the break byte is index 0 of the
 // frame, so the header is readable `HEADER_SPAN_BYTES` in.
 const HEADER_SPAN_BYTES: u16 = Header::SIZE as u16;
-const HEADER_LEAD_BYTES: u32 = HEADER_SPAN_BYTES as u32 - 1;
 
 // §3.2/A2: a real break rings an all-zero byte; the ladder expects it at the
 // derived anchor. Anything else there is desync (noise inserted/lost bytes).
 const BREAK_RING_BYTE: u8 = 0x00;
 
-// Half a byte-time of wake slack folded onto deadline A.
-const ISR_SLACK_DIV: u32 = 2;
+// Header-aim epsilon (half a byte-time): the break rings at its FE point,
+// ~4 bit-times before the line rises [F5], so the first data byte starts
+// that far outside the byte cadence — header aims bridge the tail or they
+// land one self-paced re-wake early. Data-anchored aims (covered, end)
+// need no epsilon: `now` is at-or-past the last completion, so a cadence
+// projection is never early, and the drift pad covers the rest.
+const BREAK_TAIL_EPS_DIV: u32 = 2;
 
-// Wire-proportional drift adder on the frontier packet-end estimate (~1.6%,
-// §9.3): an in-spec-slow transmitter can never make the estimate early.
+// Wire-proportional drift pad on every projection (~1.6%, §9.3): an
+// in-spec-slow transmitter can never make a projection early.
 const DRIFT_SHIFT: u32 = 6;
 
 // The wire CRC tail: the covered span completes this many byte-times before
-// the frame end, so the covered checkpoint leads deadline B by it.
+// the frame end, so the covered checkpoint leads the frame end by it.
 const COVERED_TAIL_BYTES: u32 = 2;
-
-// Plateau pacing (§4.1): bounded rechecks one byte-time apart past a
-// computed frontier aim. A recheck is counted only when the aim actually
-// FIRED with the data still short — scheduled first-aims and early wakes
-// (garble FEs) are free — and any ring progress refunds the budget. An
-// exhausted budget parks the frontier at the giveup horizon (wake pacing
-// only); the progress-idle detector below is the sole death authority.
-const STARVE_RECHECKS: u8 = 8;
 
 // Dead-transmitter detector: a frontier whose ring made no progress for this
 // many byte-times is a sacrificed partial (host died, or a junk header's
@@ -89,25 +94,20 @@ const STARVE_GIVEUP_BYTES: u32 = 64;
 // composite's drive loop re-enters via pend-on-past.
 const HUNT_BYTES_PER_WAKE: u16 = 64;
 
-/// The frontier frame's wait phase; each phase gets a fresh computed aim and
-/// a fresh starvation budget.
-#[derive(Copy, Clone, PartialEq, Eq)]
-enum Phase {
-    /// Header bytes still arriving (aim = deadline A).
-    Header,
-    /// Header locked; covered span still arriving (aim = covered checkpoint).
-    PreCovered,
-    /// Covered emitted; wire-CRC bytes still arriving (aim = deadline B).
-    Tail,
+/// Wire time for `bytes` more bytes at `tpb`, drift-padded — the one
+/// projection formula behind every aim and estimate.
+#[inline]
+fn wire_lead(bytes: u32, tpb: u32) -> u32 {
+    let t = bytes.wrapping_mul(tpb);
+    t.wrapping_add(t >> DRIFT_SHIFT)
 }
 
 /// Frontier bookkeeping — schedule hints only; the ring stays the truth.
 struct Frontier {
-    phase: Phase,
-    /// The current absolute aim; re-emitted verbatim on early wakes.
-    aim: u32,
-    /// Starvation rechecks consumed in this phase.
-    rechecks: u8,
+    /// Covered checkpoint emitted for the frame at the ladder anchor.
+    covered: bool,
+    /// Giveup baseline taken (first observation of this frontier).
+    observed: bool,
     /// Ring progress watermark + its tick: the dead-transmitter detector.
     seen: u16,
     progress_tick: u32,
@@ -116,12 +116,17 @@ struct Frontier {
 impl Frontier {
     const fn idle() -> Self {
         Self {
-            phase: Phase::Header,
-            aim: 0,
-            rechecks: u8::MAX, // sentinel: no aim computed yet
+            covered: false,
+            observed: false,
             seen: 0,
             progress_tick: 0,
         }
+    }
+}
+
+impl Default for Framer {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -132,38 +137,23 @@ pub struct Framer {
     /// once per episode, and probe candidates that fail CRC are not wire
     /// faults. Cleared when a candidate resolves as a whole valid frame.
     hunting: bool,
-    /// Tick of the newest FE (A1): the frontier frame's break-time estimate.
-    /// A garble FE overwriting it makes estimates later = safer.
-    frontier_tick: u32,
     frontier: Frontier,
     drops: u32,
-    /// Fixed tick slack past the packet-end estimate for deadline B.
-    end_slack: u32,
 }
 
 impl Framer {
-    pub const fn new(end_slack: u32) -> Self {
+    pub const fn new() -> Self {
         Self {
             anchor: 0,
             hunting: false,
-            frontier_tick: 0,
             frontier: Frontier::idle(),
             drops: 0,
-            end_slack,
         }
     }
 
     /// Frames dropped at transport layer 1 (§5.3), monotonic.
     pub fn drops(&self) -> u32 {
         self.drops
-    }
-
-    /// An FE event landed (break or garble — the resolver does not care
-    /// which; classification is positional, A2). Record the tick: if the
-    /// frontier frame is still headerless, this is (an upper bound on) its
-    /// break time.
-    pub fn on_fe(&mut self, now: u32) {
-        self.frontier_tick = now;
     }
 
     /// Re-sync the ladder to a known ring position — bootstrap only (boot is
@@ -248,11 +238,10 @@ impl Framer {
             }
         }
         if received < HEADER_SPAN_BYTES {
-            let aim = self
-                .frontier_tick
-                .wrapping_add(HEADER_LEAD_BYTES.wrapping_mul(tpb))
-                .wrapping_add(tpb / ISR_SLACK_DIV);
-            return self.wait(Phase::Header, aim, now, tpb, cursor, len);
+            let aim = now
+                .wrapping_add(wire_lead((HEADER_SPAN_BYTES - received) as u32, tpb))
+                .wrapping_add(tpb / BREAK_TAIL_EPS_DIV);
+            return self.wait(aim, now, tpb, cursor, len);
         }
         // Header readable: geometry pre-checked by the scan. The composite's
         // decoder owns addressing/opcode (a foreign frame still advances the
@@ -263,126 +252,69 @@ impl Framer {
         }
         let h = Header::from_bytes(&hb);
         let footprint = h.frame_end() as u16;
-        let packet_end = self.packet_end(footprint, received, now, tpb);
         if received >= footprint {
-            // Complete — the fast path: process now, timing per packet_end
-            // (frontier estimate when fresh, elastic when the frame ended in
-            // the past — backlog or stale tick).
+            // Complete — the fast path: process now; the frame ended in the
+            // past, so the estimate degenerates to elastic `now`.
             let anchor = self.anchor;
             self.anchor = ring_wrap(anchor as usize + footprint as usize, len) as u16;
             self.frontier = Frontier::idle();
             return FramerOut::Frame(FrameSpan {
                 anchor,
                 footprint,
-                packet_end,
+                packet_end: now,
             });
         }
-        // Frontier with a known end: covered checkpoint, then deadline B.
-        let end_due = packet_end.wrapping_add(self.end_slack);
-        if self.frontier.phase != Phase::Tail {
-            if received >= footprint - COVERED_TAIL_BYTES as u16 {
-                self.frontier.phase = Phase::Tail;
-                self.frontier.aim = end_due;
-                self.frontier.rechecks = 0;
-                return FramerOut::Covered {
-                    span: FrameSpan {
-                        anchor: self.anchor,
-                        footprint,
-                        packet_end,
-                    },
-                    end_due,
-                };
-            }
-            let covered_due = end_due.wrapping_sub(COVERED_TAIL_BYTES.wrapping_mul(tpb));
-            return self.wait(Phase::PreCovered, covered_due, now, tpb, cursor, len);
+        let missing = (footprint - received) as u32;
+        if !self.frontier.covered && missing <= COVERED_TAIL_BYTES {
+            // Covered checkpoint: freeze the wire-end estimate here — the
+            // tightest projection this frame gets (missing ≤ 2, so the
+            // ring-cadence error is under a byte-time) — and hand the
+            // composite the overlap window.
+            self.frontier.covered = true;
+            let packet_end = now.wrapping_add(wire_lead(missing, tpb));
+            let end_due = packet_end;
+            return FramerOut::Covered {
+                span: FrameSpan {
+                    anchor: self.anchor,
+                    footprint,
+                    packet_end,
+                },
+                end_due,
+            };
         }
-        self.wait(Phase::Tail, end_due, now, tpb, cursor, len)
-    }
-
-    /// Wire-end estimate for the frame at the ladder anchor. The break-tick
-    /// estimate (tick + remaining byte-times + drift) is trusted while `now`
-    /// is within the frame's own processing window (deadline B fires just
-    /// past the estimate by construction — pend-on-past handles that grid
-    /// cleanly). Far past it, the tick is stale (FE deliveries coalesce
-    /// behind higher vectors — A1 records the tick at DELIVERY, which can
-    /// lag the wire) or the frame ended long ago (backlog): re-estimate from
-    /// live progress — the missing bytes arrive at wire pace from `now` at
-    /// the earliest, conservative and degrading to elastic `now` for a
-    /// complete frame.
-    fn packet_end(&self, footprint: u16, received: u16, now: u32, tpb: u32) -> u32 {
-        let frame_ticks = (footprint as u32 - 1).wrapping_mul(tpb);
-        let est = self
-            .frontier_tick
-            .wrapping_add(frame_ticks)
-            .wrapping_add((footprint as u32).wrapping_mul(tpb) >> DRIFT_SHIFT);
-        // Trust window: end-slack plus a couple of byte-times of wake jitter.
-        let window = self
-            .end_slack
-            .wrapping_add(COVERED_TAIL_BYTES.wrapping_mul(tpb));
-        if tick_reached(now, est.wrapping_add(window)) {
-            let missing = footprint.saturating_sub(received) as u32;
-            now.wrapping_add(missing.wrapping_mul(tpb))
+        // Aim at the next milestone: the covered point, or (once emitted)
+        // the frame end. Data-anchored: pure cadence, no epsilon.
+        let to_target = if self.frontier.covered {
+            missing
         } else {
-            est
-        }
+            missing - COVERED_TAIL_BYTES
+        };
+        let aim = now.wrapping_add(wire_lead(to_target, tpb));
+        self.wait(aim, now, tpb, cursor, len)
     }
 
-    /// Phase-aware wait: a fresh phase installs the computed aim with a full
-    /// starvation budget; an early wake re-emits the standing aim untouched
-    /// (garble FEs must not consume budget); an aim that fired with data
-    /// still short converts into a one-byte-time recheck, bounded. A wire
-    /// that makes NO progress for [`STARVE_GIVEUP_BYTES`] declares the
-    /// partial dead regardless of the aim (a junk header's far-future
-    /// footprint must not park the ladder) — the hunt resumes one byte in.
-    fn wait(
-        &mut self,
-        phase: Phase,
-        fresh_aim: u32,
-        now: u32,
-        tpb: u32,
-        cursor: u16,
-        len: usize,
-    ) -> FramerOut {
+    /// Progress-track the frontier and wake at the sooner of the aim and the
+    /// giveup horizon. Aims are fresh projections from live ring state, so a
+    /// stalled wire self-paces at byte-time intervals with no recheck
+    /// bookkeeping; the horizon is the sole death authority — a wire that
+    /// makes NO progress for [`STARVE_GIVEUP_BYTES`] declares the partial
+    /// dead regardless of the aim (a junk header's far-future footprint must
+    /// not park the ladder).
+    fn wait(&mut self, aim: u32, now: u32, tpb: u32, cursor: u16, len: usize) -> FramerOut {
         let giveup_span = STARVE_GIVEUP_BYTES.wrapping_mul(tpb);
         let f = &mut self.frontier;
-        if f.rechecks == u8::MAX || cursor != f.seen {
+        if !f.observed || cursor != f.seen {
+            f.observed = true;
             f.seen = cursor;
             f.progress_tick = now;
-            // Progress refunds the starvation budget: rechecks bound a
-            // transmitter that stalls, not one that is merely slower than a
-            // lag-inflated wake storm (silicon 2026-07-08: coalesced-FE
-            // wakes burned 8 rechecks mid-frame on a live zero-gap burst
-            // and sacrificed the partial). A dead wire still trips the
-            // progress-idle horizon below.
-            if f.rechecks != u8::MAX {
-                f.rechecks = 0;
-            }
         } else if tick_reached(now, f.progress_tick.wrapping_add(giveup_span)) {
             return self.give_up(len, now);
         }
-        if f.phase != phase || f.rechecks == u8::MAX {
-            f.phase = phase;
-            f.aim = fresh_aim;
-            f.rechecks = 0;
-        } else if tick_reached(now, f.aim) {
-            if f.rechecks < STARVE_RECHECKS {
-                f.aim = now.wrapping_add(tpb);
-                f.rechecks += 1;
-            } else {
-                // Budget exhausted: park — hand the aim to the giveup
-                // horizon so a stalled wire wakes exactly once more (a
-                // reached aim left standing would pend-on-past forever).
-                f.aim = f.progress_tick.wrapping_add(giveup_span);
-            }
-        }
-        // Wake at the sooner of the phase aim and the giveup horizon, so a
-        // dead wire is detected without waiting out a junk footprint.
-        let giveup_at = self.frontier.progress_tick.wrapping_add(giveup_span);
-        let aim = self.frontier.aim;
-        let sooner = if aim.wrapping_sub(now) <= giveup_at.wrapping_sub(now) {
+        let horizon = self.frontier.progress_tick.wrapping_add(giveup_span);
+        let sooner = if aim.wrapping_sub(now) <= horizon.wrapping_sub(now) {
             aim
         } else {
-            giveup_at
+            horizon
         };
         FramerOut::Wait(sooner)
     }

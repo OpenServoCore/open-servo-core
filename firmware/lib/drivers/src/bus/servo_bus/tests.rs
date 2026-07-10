@@ -10,14 +10,12 @@ use osc_protocol::reply::FrameBuf;
 use osc_protocol::wire::{self, Id, Inst, MgmtOp, Opcode, ResultCode};
 
 use crate::mocks::bus::{FakeWire, Harness, RING_LEN, WireEvent};
-use crate::traits::bus::tick_reached;
 
 const ID: u8 = 7;
 const RATE: BaudRate = BaudRate::B1000000;
 const TPB: u32 = 10; // TICKS_PER_US(1) * 1e7 / 1e6
-const T_TURN: u32 = 2 * TPB;
-// END_SLACK_US(5) × TestProviders TICKS_PER_US(1).
-const END_SLACK: u32 = 5;
+// REPLY_GAP_US × TestProviders TICKS_PER_US(1).
+const REPLY_GAP: u32 = 12;
 
 fn shared_seeded() -> Shared {
     let shared = Shared::new();
@@ -48,13 +46,13 @@ fn status(id: u8, result: ResultCode, data: &[u8]) -> std::vec::Vec<u8> {
 
 // --- drivers --------------------------------------------------------------
 
-/// Deliver a whole frame: break, header deadline (which emits Covered for
-/// frames whose covered span is already ringed), then every remaining framer
-/// wake through the end deadline (which dispatches). Framer wakes all land at
-/// or before `end_due` = packet_end + slack; the chain's T_turn deadline lies
-/// beyond it, so the loop leaves reply sequencing to `fire`.
-/// Returns the framer's packet-end estimate — the tick reply T_turn is
-/// measured from: break tick + (footprint − 1) byte-times + the drift adder.
+/// Deliver a whole frame: break, then the header deadline with the covered
+/// span already ringed (Covered emits and dispatch runs from that wake),
+/// then the end deadline (the verdict). Timing is ring-cadence (A2 extended
+/// to the clock): every aim projects `now + missing byte-times` from live
+/// ring state, so the wakes land deterministically for any footprint.
+/// Returns the frozen packet-end estimate the reply's reply gap is measured
+/// from: the covered wake + the 2-byte CRC tail at wire pace.
 fn deliver<D: Dispatch>(
     bus: &mut crate::bus::ServoBus<crate::mocks::bus::TestProviders>,
     h: &Harness,
@@ -72,25 +70,22 @@ fn deliver<D: Dispatch>(
     h.ring.set_cursor(((anchor + 1) % RING_LEN) as u16);
     bus.on_break(d);
 
+    // Deadline A: the header locks, and with the covered span ringed the
+    // covered checkpoint fires from this same wake — the dispatch point.
     let a = h.deadline.armed().expect("deadline A");
     h.deadline.set_now(a);
-    h.ring.set_cursor(((anchor + 4) % RING_LEN) as u16);
+    h.ring.set_cursor(((anchor + fp - 2) % RING_LEN) as u16);
     bus.on_deadline(d);
 
-    // The framer's packet_end (see `lock_end`): anchor tick + remaining
-    // byte-times + footprint>>6 drift adder.
-    let end = now0
-        .wrapping_add((fp as u32 - 1) * TPB)
-        .wrapping_add((fp as u32 * TPB) >> 6);
-    let end_due = end.wrapping_add(END_SLACK);
-    while let Some(t) = h.deadline.armed() {
-        if !tick_reached(end_due, t) {
-            break; // beyond the frame window: chain/rescue, not the framer
-        }
-        h.deadline.set_now(t);
-        h.ring.set_cursor(((anchor + fp) % RING_LEN) as u16);
-        bus.on_deadline(d);
-    }
+    // The frozen ring-cadence estimate (missing = the 2 CRC bytes; the
+    // drift adder is zero at these spans on the test clock).
+    let end = a.wrapping_add(2 * TPB);
+
+    // Deadline B (end_due): the whole frame is in — verdict + sequencing.
+    let b = h.deadline.armed().expect("deadline B");
+    h.deadline.set_now(b);
+    h.ring.set_cursor(((anchor + fp) % RING_LEN) as u16);
+    bus.on_deadline(d);
     end
 }
 
@@ -150,9 +145,9 @@ fn s1_ping_round_trip() {
     let frame = instruction(ID, Opcode::Ping, 0, &[]);
     let end = deliver(&mut bus, &h, 100, &frame, 1000, &mut d);
 
-    // Reply is staged but not on the wire until the T_turn deadline.
+    // Reply is staged but not on the wire until the reply gap deadline.
     assert!(!h.wire.started());
-    assert_eq!(h.deadline.armed(), Some(end + T_TURN));
+    assert_eq!(h.deadline.armed(), Some(end + REPLY_GAP));
 
     fire(&mut bus, &h, &mut d);
     assert!(h.wire.started());
@@ -264,8 +259,8 @@ fn s5_gread_slot1_waits_for_predecessor() {
     let gread = instruction(ID, Opcode::Gread, 0, &[0, 0, 4, 0, 5, ID]);
     let gread = broadcast_id(gread);
     let end = deliver(&mut bus, &h, 100, &gread, 1000, &mut d);
-    // Armed at end + T_turn + reclaim; not yet triggerable.
-    assert_eq!(h.deadline.armed(), Some(end + T_TURN + 600));
+    // Armed at end + reply gap + reclaim; not yet triggerable.
+    assert_eq!(h.deadline.armed(), Some(end + REPLY_GAP + 600));
     assert!(!h.wire.started());
 
     // Predecessor (id 5) status frame → our slot pends.
@@ -273,7 +268,7 @@ fn s5_gread_slot1_waits_for_predecessor() {
     deliver(&mut bus, &h, 200, &pre, end + 2, &mut d);
     assert!(!h.wire.started());
 
-    // Now the T_turn deadline triggers our reply, not silent.
+    // Now the reply gap deadline triggers our reply, not silent.
     fire(&mut bus, &h, &mut d);
     drain_tx(&mut bus, &h);
     let (id, inst, _) = last_reply(&h.wire);

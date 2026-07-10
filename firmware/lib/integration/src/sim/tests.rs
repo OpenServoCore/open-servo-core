@@ -10,7 +10,6 @@ use super::{HandlerCost, Sim, core::TICKS_PER_US};
 use super::{Source, assert_valid, instruction, status};
 
 const SERVO_ID: u8 = 5;
-const BYTE_TIME_US: u64 = 10; // 1 byte-time at 1 M baud
 
 #[test]
 fn ping_round_trip() {
@@ -39,11 +38,11 @@ fn ping_round_trip() {
     let m = DEFAULT_MODEL.to_le_bytes();
     assert_eq!(payload, &[m[0], m[1], DEFAULT_FIRMWARE]);
 
-    // Reply lead: >= T_turn (2 byte-times) and < 200 µs after the instruction.
+    // Reply lead: >= reply gap (fixed µs, §7) and < 200 µs after the instruction.
     let lead = reply.at - inst.end;
     assert!(
-        lead >= 2 * BYTE_TIME_US * TICKS_PER_US,
-        "reply must lead by >= T_turn, got {lead} ticks"
+        lead >= osc_drivers::bus::REPLY_GAP_US as u64 * TICKS_PER_US,
+        "reply must lead by >= reply gap, got {lead} ticks"
     );
     assert!(
         lead < 200 * TICKS_PER_US,

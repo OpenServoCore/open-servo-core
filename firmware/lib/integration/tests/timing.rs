@@ -2,7 +2,7 @@
 //!
 //! The `Sim` dispatches with a ZERO CPU-time model: dispatch and CRC are
 //! instantaneous, so every tick here is pure wire/scheduling time. These are
-//! therefore SEQUENCING assertions — they pin T_turn behaviour, chain-gap
+//! therefore SEQUENCING assertions — they pin reply gap behaviour, chain-gap
 //! ordering, and drift tolerance against the ideal sim clock. Wall-clock
 //! turnaround (the ~41 µs projection of §7) is the bench's job, not this suite.
 
@@ -49,7 +49,7 @@ fn replies(frames: &[WireFrame]) -> Vec<&WireFrame> {
 }
 
 #[apply(matrix)]
-fn reply_lead_respects_t_turn(baud_idx: u8) {
+fn reply_lead_respects_reply_gap(baud_idx: u8) {
     let rate = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let mut sim = Sim::new(rate);
     sim.add_servo(1);
@@ -63,16 +63,20 @@ fn reply_lead_respects_t_turn(baud_idx: u8) {
     assert_valid(reps[0]);
 
     let bt = byte_ticks(rate);
+    let reply_gap = support::reply_gap_ticks();
     let lead = reps[0].at - host.end;
 
-    // Hard floor: T_turn = 2 byte-times (§7).
-    assert!(lead >= 2 * bt, "{rate:?}: lead {lead} < T_turn {}", 2 * bt);
+    // Hard floor: reply gap, fixed µs at every baud (§7).
+    assert!(
+        lead >= reply_gap,
+        "{rate:?}: lead {lead} < reply gap {reply_gap}"
+    );
 
-    // Generous ceiling from the framer's deadline-B margin (framer.rs):
-    // T_turn (2 bt) + end-slack (2 bt) + header-lead rounding + drift term
-    // (footprint >> 6). footprint = full instruction frame incl. break.
+    // Generous ceiling from the ring-cadence estimate (framer.rs): the
+    // frozen packet-end runs late by at most the wake epsilon (½ bt) plus
+    // the drift pad (span >> 6); two byte-times covers both with margin.
     let fp = instr.len() as u64;
-    let ceil = 6 * bt + ((fp * bt) >> 6);
+    let ceil = reply_gap + 2 * bt + ((fp * bt) >> 6);
     assert!(lead <= ceil, "{rate:?}: lead {lead} > ceiling {ceil}");
 }
 
@@ -94,13 +98,13 @@ fn chain_gaps_scale_with_baud(baud_idx: u8) {
     assert_eq!(reps.len(), 3, "{frames:#?}");
 
     let bt = byte_ticks(rate);
-    let t_turn = 2 * bt;
+    let reply_gap = support::reply_gap_ticks();
     for w in reps.windows(2) {
         let gap = w[1].at - w[0].end;
-        assert!(gap >= t_turn, "gap {gap} < T_turn {t_turn}");
-        // Snoop-driven: a slot fires T_turn after its predecessor's status end,
+        assert!(gap >= reply_gap, "gap {gap} < reply gap {reply_gap}");
+        // Snoop-driven: a slot fires reply gap after its predecessor's status end,
         // so the gap stays within a few byte-times (no reclaim in a full chain).
-        assert!(gap <= t_turn + 6 * bt, "gap {gap} unexpectedly wide");
+        assert!(gap <= reply_gap + 6 * bt, "gap {gap} unexpectedly wide");
     }
     // Whole chain completes in well under a millisecond of wire time.
     let span = reps.last().unwrap().end - host_frame(&frames).end;
@@ -185,7 +189,6 @@ fn skewed_chain_sequences_correctly(baud_idx: u8) {
         reps.iter().map(|f| f.bytes[1]).collect::<Vec<_>>(),
         vec![1, 2, 3]
     );
-    let bt = byte_ticks(rate);
     for f in &reps {
         assert_valid(f);
         let (inst, _) = status(f);
@@ -195,10 +198,11 @@ fn skewed_chain_sequences_correctly(baud_idx: u8) {
             "no predecessor-silent under drift"
         );
     }
-    // Gaps measured on the ideal sim clock still honour T_turn.
+    // Gaps measured on the ideal sim clock still honour reply gap.
+    let reply_gap = support::reply_gap_ticks();
     for w in reps.windows(2) {
         let gap = w[1].at - w[0].end;
-        assert!(gap >= 2 * bt, "gap {gap} < T_turn {}", 2 * bt);
+        assert!(gap >= reply_gap, "gap {gap} < reply gap {reply_gap}");
     }
     for i in 0..3 {
         assert_eq!(sim.servo_diag(i).crc_fail_count, 0);

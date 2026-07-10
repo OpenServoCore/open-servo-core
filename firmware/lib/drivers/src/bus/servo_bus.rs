@@ -42,11 +42,6 @@ const RESCUE_RECONFIRM_SHIFT: u32 = 3;
 /// deadline-B margin on the predecessor's frame end.
 const FRAME_ALLOWANCE_SLACK_BYTES: u32 = 8;
 
-/// Deadline-B slack past the packet-end estimate: fixed µs, not byte-times —
-/// it covers ISR-entry + settle latencies (silicon-time, baud-independent);
-/// the wire-proportional drift term lives in the estimate itself.
-const END_SLACK_US: u32 = 5;
-
 /// Bound on same-wake deadline draining. Generous: one frame consumes at most
 /// a handful of due slots per wake (header lock, covered, end, chain, rescue);
 /// anything past the bound falls out to `arm_deadline`, whose pend-on-past
@@ -150,7 +145,7 @@ impl<P: Providers> ServoBus<P> {
     ) -> Self {
         baud.apply(rate);
         Self {
-            framer: Framer::new(END_SLACK_US * <P::Deadline as Deadline>::TICKS_PER_US),
+            framer: Framer::new(),
             chain: Chain::new(),
             tx: TxEngine::new(tx),
             crc,
@@ -175,13 +170,13 @@ impl<P: Providers> ServoBus<P> {
         }
     }
 
-    /// USART framing-error ISR: a break (or mid-frame garble) landed. A1:
-    /// record the tick and resolve from ring DATA — the FE never carries
-    /// position, so a delayed or coalesced entry costs nothing (any frames
-    /// completed meanwhile resolve on the fast path right here).
+    /// USART framing-error ISR: a break (or mid-frame garble) landed — a
+    /// pure wake. The FE carries neither position nor time (A2): the
+    /// resolver derives both from ring data, so a delayed or coalesced
+    /// entry costs nothing (any frames completed meanwhile resolve on the
+    /// fast path right here).
     pub fn on_break<D: Dispatch>(&mut self, d: &mut D) {
         let now = self.deadline.now();
-        self.framer.on_fe(now);
         self.drive_framer(d);
         // Wire safety: a staged, not-yet-streaming reply must never fire
         // into the host's NEXT frame. But an FE alone doesn't mean the host
@@ -280,8 +275,8 @@ impl<P: Providers> ServoBus<P> {
         }
     }
 
-    fn t_turn(&self) -> u32 {
-        super::T_TURN_BYTES * self.tpb
+    fn reply_gap(&self) -> u32 {
+        super::REPLY_GAP_US * <P::Deadline as Deadline>::TICKS_PER_US
     }
 
     fn reclaim(&self) -> u32 {
@@ -580,14 +575,14 @@ impl<P: Providers> ServoBus<P> {
         }
     }
 
-    /// Sequence a staged reply onto the snoop chain. T_turn is a wire gap
+    /// Sequence a staged reply onto the snoop chain. reply gap is a wire gap
     /// measured from the packet end (§7), not from this (later) verify wake —
     /// the estimate is the framer's, conservative by the drift adder.
     fn sequence_reply(&mut self, slot: u8, packet_end: u32) {
         let out = self.chain.on_reply_staged(
             slot,
             packet_end,
-            self.t_turn(),
+            self.reply_gap(),
             self.reclaim(),
             self.frame_allowance(),
         );

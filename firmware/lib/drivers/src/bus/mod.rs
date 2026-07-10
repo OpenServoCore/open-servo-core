@@ -11,8 +11,11 @@ pub mod tx;
 
 pub use servo_bus::{LinkDiag, ServoBus};
 
-/// Minimum reply lead after the frame being answered, in byte-times (§7).
-pub const T_TURN_BYTES: u32 = 2;
+/// Minimum reply lead after the frame being answered, in µs (§7). Fixed
+/// time, not byte-times: the margin covers the host's TC→release register
+/// poke — a time-domain quantity — so it neither balloons at 0.5M (2
+/// byte-times was 40 µs of mandated silence) nor thins at 3M.
+pub const REPLY_GAP_US: u32 = 12;
 
 /// Ring-index wrap. The RX ring length is a power of two by contract
 /// (512 on V006, §11), so this is a mask — rv32ec has no hardware divide

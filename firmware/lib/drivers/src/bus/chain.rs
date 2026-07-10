@@ -1,7 +1,7 @@
 //! Reply sequencing for every reply (`docs/osc-native-protocol.md` §6, §7).
 //!
 //! Pure state machine: the composite owns the deadline provider and drives
-//! this with plain ticks. Every reply is deadline-triggered ≥ T_turn after the
+//! this with plain ticks. Every reply is deadline-triggered ≥ reply gap after the
 //! frame it answers; a GREAD chain slot `k > 0` additionally waits for `k`
 //! predecessor status frames, each with a reclaim window so a silent
 //! predecessor can't collapse the tail (§6). A unicast reply is just slot 0.
@@ -36,7 +36,7 @@ enum State {
 pub struct Chain {
     state: State,
     // Baud is fixed for a chain, so these are captured once at staging (§7).
-    t_turn: u32,
+    reply_gap: u32,
     reclaim: u32,
     allowance: u32,
 }
@@ -51,7 +51,7 @@ impl Chain {
     pub const fn new() -> Self {
         Self {
             state: State::Idle,
-            t_turn: 0,
+            reply_gap: 0,
             reclaim: 0,
             allowance: 0,
         }
@@ -82,26 +82,26 @@ impl Chain {
         &mut self,
         slot: u8,
         end: u32,
-        t_turn: u32,
+        reply_gap: u32,
         reclaim: u32,
         allowance: u32,
     ) -> ChainOut {
-        self.t_turn = t_turn;
+        self.reply_gap = reply_gap;
         self.reclaim = reclaim;
         self.allowance = allowance;
         if slot == 0 {
-            // §7: reply ≥ T_turn after the instruction end, like a unicast read.
+            // §7: reply ≥ reply gap after the instruction end, like a unicast read.
             self.state = State::Pending { silent: false };
-            ChainOut::Wait(end.wrapping_add(t_turn))
+            ChainOut::Wait(end.wrapping_add(reply_gap))
         } else {
             // §6: wait for `slot` predecessors; the reclaim guards slot 0's own
-            // trigger (its trigger is end + t_turn, so its window ends one
+            // trigger (its trigger is end + reply_gap, so its window ends one
             // reclaim later).
             self.state = State::Waiting {
                 remaining: slot,
                 silent: false,
             };
-            ChainOut::Wait(end.wrapping_add(t_turn).wrapping_add(reclaim))
+            ChainOut::Wait(end.wrapping_add(reply_gap).wrapping_add(reclaim))
         }
     }
 
@@ -125,10 +125,10 @@ impl Chain {
                 let remaining = remaining.saturating_sub(1);
                 if remaining == 0 {
                     self.state = State::Pending { silent };
-                    ChainOut::Wait(end.wrapping_add(self.t_turn))
+                    ChainOut::Wait(end.wrapping_add(self.reply_gap))
                 } else {
                     self.state = State::Waiting { remaining, silent };
-                    ChainOut::Wait(end.wrapping_add(self.t_turn).wrapping_add(self.reclaim))
+                    ChainOut::Wait(end.wrapping_add(self.reply_gap).wrapping_add(self.reclaim))
                 }
             }
             // Idle or already pending: a stale snoop, normal (§6).
@@ -172,7 +172,7 @@ mod tests {
     use super::*;
 
     const END: u32 = 1000;
-    const T_TURN: u32 = 60;
+    const REPLY_GAP: u32 = 60;
     const RECLAIM: u32 = 600;
     const ALLOWANCE: u32 = 5000;
 
@@ -191,14 +191,14 @@ mod tests {
     }
 
     #[test]
-    fn slot0_triggers_after_t_turn() {
+    fn slot0_triggers_after_reply_gap() {
         let mut c = Chain::new();
         assert_eq!(
-            wait_tick(c.on_reply_staged(0, END, T_TURN, RECLAIM, ALLOWANCE)),
-            END + T_TURN
+            wait_tick(c.on_reply_staged(0, END, REPLY_GAP, RECLAIM, ALLOWANCE)),
+            END + REPLY_GAP
         );
         assert!(c.active());
-        assert!(!trigger_silent(c.on_deadline(END + T_TURN)));
+        assert!(!trigger_silent(c.on_deadline(END + REPLY_GAP)));
         assert!(!c.active());
     }
 
@@ -207,25 +207,25 @@ mod tests {
         let mut c = Chain::new();
         // reclaim guards slot 0's trigger.
         assert_eq!(
-            wait_tick(c.on_reply_staged(2, END, T_TURN, RECLAIM, ALLOWANCE)),
-            END + T_TURN + RECLAIM
+            wait_tick(c.on_reply_staged(2, END, REPLY_GAP, RECLAIM, ALLOWANCE)),
+            END + REPLY_GAP + RECLAIM
         );
         // predecessor 0 replies.
-        assert_eq!(wait_tick(c.on_status_end(1200)), 1200 + T_TURN + RECLAIM);
-        // predecessor 1 replies → our slot pends, trigger T_turn after it.
-        assert_eq!(wait_tick(c.on_status_end(1400)), 1400 + T_TURN);
-        assert!(!trigger_silent(c.on_deadline(1400 + T_TURN)));
+        assert_eq!(wait_tick(c.on_status_end(1200)), 1200 + REPLY_GAP + RECLAIM);
+        // predecessor 1 replies → our slot pends, trigger reply gap after it.
+        assert_eq!(wait_tick(c.on_status_end(1400)), 1400 + REPLY_GAP);
+        assert!(!trigger_silent(c.on_deadline(1400 + REPLY_GAP)));
     }
 
     #[test]
     fn slot1_reclaim_triggers_silent() {
         let mut c = Chain::new();
         assert_eq!(
-            wait_tick(c.on_reply_staged(1, END, T_TURN, RECLAIM, ALLOWANCE)),
-            END + T_TURN + RECLAIM
+            wait_tick(c.on_reply_staged(1, END, REPLY_GAP, RECLAIM, ALLOWANCE)),
+            END + REPLY_GAP + RECLAIM
         );
         // No status arrives: the reclaim window expires and we take the slot.
-        assert!(trigger_silent(c.on_deadline(END + T_TURN + RECLAIM)));
+        assert!(trigger_silent(c.on_deadline(END + REPLY_GAP + RECLAIM)));
         assert!(!c.active());
     }
 
@@ -233,11 +233,11 @@ mod tests {
     fn slot3_one_status_then_two_reclaims() {
         let mut c = Chain::new();
         assert_eq!(
-            wait_tick(c.on_reply_staged(3, END, T_TURN, RECLAIM, ALLOWANCE)),
-            END + T_TURN + RECLAIM
+            wait_tick(c.on_reply_staged(3, END, REPLY_GAP, RECLAIM, ALLOWANCE)),
+            END + REPLY_GAP + RECLAIM
         );
         // predecessor 0 replies (real).
-        assert_eq!(wait_tick(c.on_status_end(1200)), 1200 + T_TURN + RECLAIM);
+        assert_eq!(wait_tick(c.on_status_end(1200)), 1200 + REPLY_GAP + RECLAIM);
         // predecessor 1 goes silent: reclaim cascades from now.
         assert_eq!(wait_tick(c.on_deadline(1860)), 1860 + RECLAIM);
         // predecessor 2 goes silent: last one → trigger, silent.
@@ -247,19 +247,19 @@ mod tests {
     #[test]
     fn break_suspends_reclaim_for_frame_allowance() {
         let mut c = Chain::new();
-        c.on_reply_staged(1, END, T_TURN, RECLAIM, ALLOWANCE);
+        c.on_reply_staged(1, END, REPLY_GAP, RECLAIM, ALLOWANCE);
         // Predecessor's break lands inside its reclaim window: alive — the
         // window suspends for the frame allowance instead of expiring.
         assert_eq!(wait_tick(c.on_break_observed(1100)), 1100 + ALLOWANCE);
         // Its frame completes: normal sequencing resumes.
-        assert_eq!(wait_tick(c.on_status_end(1500)), 1500 + T_TURN);
-        assert!(!trigger_silent(c.on_deadline(1500 + T_TURN)));
+        assert_eq!(wait_tick(c.on_status_end(1500)), 1500 + REPLY_GAP);
+        assert!(!trigger_silent(c.on_deadline(1500 + REPLY_GAP)));
     }
 
     #[test]
     fn wedged_after_break_reclaims_at_allowance() {
         let mut c = Chain::new();
-        c.on_reply_staged(1, END, T_TURN, RECLAIM, ALLOWANCE);
+        c.on_reply_staged(1, END, REPLY_GAP, RECLAIM, ALLOWANCE);
         c.on_break_observed(1100);
         // The frame never resolves (garbled/wedged): the suspended deadline
         // fires as the reclaim.
@@ -270,7 +270,7 @@ mod tests {
     fn break_while_idle_or_pending_is_none() {
         let mut c = Chain::new();
         assert!(matches!(c.on_break_observed(500), ChainOut::None));
-        c.on_reply_staged(0, END, T_TURN, RECLAIM, ALLOWANCE);
+        c.on_reply_staged(0, END, REPLY_GAP, RECLAIM, ALLOWANCE);
         // Pending our own trigger: a break is not a predecessor signal.
         assert!(matches!(c.on_break_observed(1010), ChainOut::None));
     }
@@ -285,7 +285,7 @@ mod tests {
     #[test]
     fn reset_mid_chain_goes_idle() {
         let mut c = Chain::new();
-        c.on_reply_staged(2, END, T_TURN, RECLAIM, ALLOWANCE);
+        c.on_reply_staged(2, END, REPLY_GAP, RECLAIM, ALLOWANCE);
         assert!(c.active());
         c.reset();
         assert!(!c.active());

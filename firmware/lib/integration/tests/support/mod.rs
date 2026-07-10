@@ -28,7 +28,7 @@ pub fn sim(baud_idx: u8) -> Sim {
 
 /// Sim ticks for one wire byte-time (10 bits) at the matrix baud. Mirrors the
 /// sim core's own byte timing (48 ticks/µs); exact integer division for every
-/// baud in the set. Tests that assert on T_turn / chain-gap bounds build them
+/// baud in the set. Tests that assert on wire-proportional bounds build them
 /// from this so the bound scales with baud instead of pinning to 1 M.
 #[allow(dead_code)]
 pub fn byte_ticks(baud_idx: u8) -> u64 {
@@ -36,4 +36,11 @@ pub fn byte_ticks(baud_idx: u8) -> u64 {
         .expect("valid baud idx")
         .as_hz() as u64;
     48 * 1_000_000 / hz * 10
+}
+
+/// reply gap in sim ticks — fixed time at every baud (§7), imported from the
+/// driver so the pin cannot drift from the spec constant.
+#[allow(dead_code)]
+pub fn reply_gap_ticks() -> u64 {
+    osc_drivers::bus::REPLY_GAP_US as u64 * 48
 }
