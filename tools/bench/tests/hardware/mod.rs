@@ -14,13 +14,14 @@
 //! `BENCH_BAUD` (default boot baud), `BENCH_ID` (default 1). No gating — with no
 //! bench attached the shared client panics on first use, by design.
 //!
-//! Out of scope this pass: FAST/group-chain timing (untuned), MGMT
-//! ENUM/ASSIGN/SAVE, and the rescue break. Single-servo happy path + turnaround.
+//! Out of scope this pass: FAST/group-chain timing (untuned), MGMT SAVE, and
+//! the rescue break. Single-servo happy path + turnaround + ENUM/ASSIGN.
 
 mod support;
 
 mod chain;
 mod hot_loop;
+mod mgmt;
 mod ping;
 mod profile;
 mod read;

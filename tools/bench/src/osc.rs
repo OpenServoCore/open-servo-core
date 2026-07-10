@@ -15,7 +15,7 @@
 use osc_protocol::crc::osc_crc;
 use osc_protocol::frame::Header;
 use osc_protocol::reply::FrameBuf;
-use osc_protocol::wire::{Id, Inst, Opcode, ResultCode};
+use osc_protocol::wire::{Id, Inst, MgmtOp, Opcode, ResultCode, UID_LEN};
 
 use crate::pirate::BStamp;
 
@@ -81,6 +81,22 @@ pub fn build_profile_config(id: u8, slot: u8, spans: &[(u16, u8)]) -> Vec<u8> {
 /// READ + PROFILE: the payload names a slot (§5.2).
 pub fn build_read_profile(id: u8, slot: u8) -> Vec<u8> {
     build_instruction(id, Opcode::Read, Inst::FLAG_PROFILE, &[slot])
+}
+
+/// Broadcast MGMT ENUM: `prefix_len` bits (0..=128) + `ceil(prefix_len/8)`
+/// prefix bytes, LSB-first bit stream (§9.2; mirrors `EnumReq`).
+pub fn build_enum(prefix_len: u8, prefix: &[u8]) -> Vec<u8> {
+    let mut payload = vec![MgmtOp::Enum as u8, prefix_len];
+    payload.extend_from_slice(prefix);
+    build_instruction(Id::BROADCAST.as_byte(), Opcode::Mgmt, 0, &payload)
+}
+
+/// Broadcast MGMT ASSIGN: `uid(16)` + `new_id` (§9.2; mirrors `AssignReq`).
+pub fn build_assign(uid: &[u8; UID_LEN], new_id: u8) -> Vec<u8> {
+    let mut payload = vec![MgmtOp::Assign as u8];
+    payload.extend_from_slice(uid);
+    payload.push(new_id);
+    build_instruction(Id::BROADCAST.as_byte(), Opcode::Mgmt, 0, &payload)
 }
 
 /// WRITE: `addr(2)` little-endian then the data bytes (mirrors `WriteReq`).
