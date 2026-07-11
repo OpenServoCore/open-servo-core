@@ -78,6 +78,30 @@ fn stalling_host_still_converges_and_never_poisons() {
     assert!(matches!(first, Some(2 | 3)), "first jump {first:?}");
 }
 
+/// 3M, where the pair floor is wake-jitter-sized in TIME (60 bytes, not
+/// 32 — `cadence_pair_floor_bytes`): fat frames still feed the window and
+/// converge. Fewer measured bytes per frame at the wider quantum means
+/// more frames per window than the 1M cases.
+///
+/// The estimate carries a small additive geometry offset (residual wake
+/// phase the dither doesn't cancel; sim-measured ≈ +1.0 k ppm at 3M,
+/// ≈ −0.6 k at 1M, skew-independent). It is common-mode — every servo at
+/// a given baud carries the same offset, so the pairwise deltas chain
+/// snooping depends on are untouched — but it parks this scenario's mean
+/// at the 2/3-step rounding boundary, hence the two-value accept.
+#[test_log::test]
+fn fat_frames_at_3m_still_converge() {
+    let mut sim = Sim::new(BaudRate::B3000000);
+    let s = sim.add_servo_with(ID, 5_200, DEFAULT_RESPONSE_DEADLINE_US);
+    let frame = instruction(OTHER_ID, Opcode::Write, 0, &[0u8; 200]);
+    for k in 0..220 {
+        sim.host_send_at(k * 1_000, &frame);
+    }
+    sim.run();
+    let first = sim.poll_clock_trim(s);
+    assert!(matches!(first, Some(2 | 3)), "first jump {first:?}");
+}
+
 /// No measured window, no decision — and short frames (a ping-only wire)
 /// never fill one: cadence samples gate on span, so trim activity follows
 /// exactly the traffic class (fat group frames) whose snoop margin needs it.

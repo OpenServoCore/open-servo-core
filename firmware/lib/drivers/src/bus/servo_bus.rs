@@ -11,7 +11,7 @@ use osc_protocol::wire::{Inst, Opcode, ResultCode};
 use super::chain::{Chain, ChainOut};
 use super::decode::{Decoded, decode};
 use super::frame_view;
-use super::framer::{CadenceSample, FrameSpan, Framer, FramerOut};
+use super::framer::{self, CadenceSample, FrameSpan, Framer, FramerOut};
 use super::trim::TrimLoop;
 use super::tx::{TxEngine, TxOut};
 use crate::traits::bus::{
@@ -106,6 +106,7 @@ pub struct ServoBus<P: Providers> {
     id: u8,
     rate: BaudRate,
     tpb: u32,
+    pair_floor: u32,
     response_deadline_us: u16,
     pending_id: Option<u8>,
     pending_baud: Option<BaudRate>,
@@ -153,6 +154,17 @@ fn tpb_for<P: Providers>(rate: BaudRate) -> u32 {
     }
 }
 
+/// Cadence pair floor at `rate` ([`framer::cadence_pair_floor_bytes`]),
+/// folded to a literal per arm like [`tpb_for`] — the formula divides.
+fn pair_floor_for(rate: BaudRate) -> u32 {
+    match rate {
+        BaudRate::B500000 => const { framer::cadence_pair_floor_bytes(500_000) },
+        BaudRate::B1000000 => const { framer::cadence_pair_floor_bytes(1_000_000) },
+        BaudRate::B2000000 => const { framer::cadence_pair_floor_bytes(2_000_000) },
+        BaudRate::B3000000 => const { framer::cadence_pair_floor_bytes(3_000_000) },
+    }
+}
+
 /// Wrap-aware "slot `at` is due at `now`".
 #[inline]
 fn due(now: u32, at: Option<u32>) -> bool {
@@ -185,6 +197,7 @@ impl<P: Providers> ServoBus<P> {
             id,
             rate,
             tpb: tpb_for::<P>(rate),
+            pair_floor: pair_floor_for(rate),
             response_deadline_us,
             pending_id: None,
             pending_baud: None,
@@ -362,6 +375,7 @@ impl<P: Providers> ServoBus<P> {
                 self.baud.apply(baud);
                 self.rate = baud;
                 self.tpb = tpb_for::<P>(self.rate);
+                self.pair_floor = pair_floor_for(self.rate);
             }
             // A pending reboot waits for the main loop's `take_reboot`.
         }
@@ -467,9 +481,13 @@ impl<P: Providers> ServoBus<P> {
     fn drive_framer<D: Dispatch>(&mut self, d: &mut D) {
         for _ in 0..FRAMES_PER_WAKE {
             let now = self.deadline.now();
-            let out = self
-                .framer
-                .resolve(self.ring.bytes(), self.ring.cursor(), now, self.tpb);
+            let out = self.framer.resolve(
+                self.ring.bytes(),
+                self.ring.cursor(),
+                now,
+                self.tpb,
+                self.pair_floor,
+            );
             match out {
                 FramerOut::None => {
                     self.framer_at = None;
@@ -552,6 +570,7 @@ impl<P: Providers> ServoBus<P> {
         self.baud.apply(BaudRate::B500000);
         self.rate = BaudRate::B500000;
         self.tpb = tpb_for::<P>(self.rate);
+        self.pair_floor = pair_floor_for(self.rate);
         // Ladder bootstrap (A2): a rescue pulse delivers no start edges, so
         // the cursor is provably still — the one sanctioned cursor read.
         let cursor = self.ring.cursor();

@@ -112,28 +112,38 @@ const STARVE_GIVEUP_BYTES: u32 = 64;
 // composite's drive loop re-enters via pend-on-past.
 const HUNT_BYTES_PER_WAKE: u16 = 64;
 
-// Interior-look bound, decoupled from the starve horizon: a frontier with a
-// far-off milestone is re-observed at this cadence, and consecutive looks
-// are the cadence pairs. Sized to fit between a stalling host's TX bubbles —
-// the pirate bench host splits a 208-byte frame into ~36-89-byte clean
-// segments (silicon 2026-07-11: 64-byte pairs straddled a bubble almost
-// every time, ~3% survival; 32-byte pairs fit the segments). Also the
-// pair-noise floor: the per-pair reject gate at 1/16 must clear a worst-case
-// legit reading (~1.5% clock offset + a byte-time of endpoint phase).
-const CADENCE_HOP_BYTES: u32 = 32;
+// Cadence pairs must span enough wire TIME that the 1/16 reject gate below
+// clears the runtime's wake-stamp jitter: progress stamps ride SysTick-CMP
+// wakes, whose entry latency (WFI exit, CS masking, ISR tail-chaining)
+// spreads over microseconds regardless of baud. A byte-sized quantum
+// shrinks the gate with the byte-time until jitter swamps it — silicon
+// 2026-07-11 at 3M: the 32-byte gate sat at 6.7 µs and rejected 98% of
+// honest pairs, and the rare survivors under load carried the systematic
+// latency-growth bias (+19 k ppm windows). 200 µs puts the gate at 12.5 µs.
+const CADENCE_PAIR_MIN_WIRE_US: u32 = 200;
 
-// Cadence pair floor: progress stamps are quantized by aim overshoot and
-// ISR entry latency (~a byte-time of endpoint noise), so a short pair is
-// mostly noise — and would trip the reject gate below on ordinary jitter.
-const CADENCE_PAIR_MIN_BYTES: u16 = 16;
+/// Cadence pair floor for `baud_hz`, in bytes: a pair below it has its
+/// reject gate inside the wake-jitter envelope
+/// ([`CADENCE_PAIR_MIN_WIRE_US`]) and carries no clock information. Never
+/// narrower than the byte-domain floor that keeps endpoint phase noise
+/// (the dither sweeps ±1 byte-time) inside the gate. Callers const-fold
+/// this per rate — the formula divides, and the chip build has no
+/// hardware divider. The interior-look hop leads this by 12.5%
+/// ([`Framer::wait`]): hop pairs land at hop ± a couple bytes (dither,
+/// skew), and a floor AT the hop selects survivors by byte count — which
+/// correlates with the dither difference the window mean depends on
+/// (unit-measured: floor == hop clipped the skew test −1.1 k ppm).
+pub const fn cadence_pair_floor_bytes(baud_hz: u32) -> u32 {
+    let time_floor = CADENCE_PAIR_MIN_WIRE_US * baud_hz / (BITS_PER_WIRE_BYTE * 1_000_000);
+    if time_floor < 32 { 32 } else { time_floor }
+}
+
+const BITS_PER_WIRE_BYTE: u32 = 10;
 
 // Per-pair reject gate, as a right-shift of the pair's nominal span (1/16 ≈
 // 6%): legal clock offset is bounded by the HSITRIM throw (±3.4%), so
 // anything past the gate is a host TX stall, merged-transmitter garble, or a
-// gross wake-latency outlier — not a clock reading. On a 32-byte hop the
-// gate sits at 2 byte-times, well under the ~100 µs walker bubbles the
-// bench host produces (silicon 2026-07-11: whole-frame spans starved to zero
-// samples under them; per-pair gating is what keeps the estimator fed).
+// gross wake-latency outlier — not a clock reading.
 const CADENCE_REJECT_SHIFT: u32 = 4;
 
 /// Wire time for `bytes` more bytes at `tpb`, drift-padded — the one
@@ -182,8 +192,9 @@ impl Frontier {
     /// Progress observation: advance the watermark (giveup baseline) and
     /// fold the pair it closes into the cadence sums, gated per pair — a
     /// host TX stall or a wake-latency outlier loses one pair, never the
-    /// frame ([`CADENCE_REJECT_SHIFT`]).
-    fn advance(&mut self, cursor: u16, now: u32, tpb: u32, len: usize) {
+    /// frame ([`CADENCE_REJECT_SHIFT`]). `floor` is the pair floor
+    /// ([`cadence_pair_floor_bytes`]).
+    fn advance(&mut self, cursor: u16, now: u32, tpb: u32, floor: u32, len: usize) {
         if !self.observed {
             self.observed = true;
             self.seen = cursor;
@@ -197,8 +208,7 @@ impl Frontier {
             let bytes = dist(cursor, self.seen, len);
             let span = (bytes as u32).wrapping_mul(tpb);
             let err = now.wrapping_sub(self.progress_tick).wrapping_sub(span) as i32;
-            if bytes >= CADENCE_PAIR_MIN_BYTES && err.unsigned_abs() <= span >> CADENCE_REJECT_SHIFT
-            {
+            if bytes as u32 >= floor && err.unsigned_abs() <= span >> CADENCE_REJECT_SHIFT {
                 self.cadence_err = self.cadence_err.wrapping_add(err);
                 self.cadence_span = self.cadence_span.wrapping_add(span);
             }
@@ -319,7 +329,14 @@ impl Framer {
     /// One resolution step against the CURRENT ring state (A2 data-first).
     /// The composite loops until `None`/`Wait`. `cursor` is the live DMA
     /// cursor read at call time — progress truth, not a stale event snapshot.
-    pub fn resolve(&mut self, ring: &[u8], cursor: u16, now: u32, tpb: u32) -> FramerOut {
+    pub fn resolve(
+        &mut self,
+        ring: &[u8],
+        cursor: u16,
+        now: u32,
+        tpb: u32,
+        floor: u32,
+    ) -> FramerOut {
         let len = ring.len();
         if len == 0 {
             return FramerOut::None; // defensive: no ring to resolve against
@@ -363,7 +380,7 @@ impl Framer {
                 .wrapping_add(wire_lead((HEADER_SPAN_BYTES - received) as u32, tpb))
                 .wrapping_add(tpb / BREAK_TAIL_EPS_DIV)
                 .wrapping_add(dither);
-            return self.wait(aim, now, tpb, cursor, len);
+            return self.wait(aim, now, tpb, floor, cursor, len);
         }
         // Header readable: geometry pre-checked by the scan. The composite's
         // decoder owns addressing/opcode (a foreign frame still advances the
@@ -400,7 +417,7 @@ impl Framer {
             // `wait`, so advance the progress watermark here too: it closes
             // a cadence pair, and `received < footprint` keeps it strictly
             // inside the frame's arrival window.
-            self.frontier.advance(cursor, now, tpb, len);
+            self.frontier.advance(cursor, now, tpb, floor, len);
             self.frontier.covered = true;
             let packet_end = now.wrapping_add(wire_lead(missing, tpb));
             let end_due = packet_end;
@@ -427,7 +444,7 @@ impl Framer {
         let aim = now
             .wrapping_add(wire_lead(to_target, tpb))
             .wrapping_add(dither);
-        self.wait(aim, now, tpb, cursor, len)
+        self.wait(aim, now, tpb, floor, cursor, len)
     }
 
     /// Progress-track the frontier and wake at the sooner of the aim and the
@@ -437,27 +454,38 @@ impl Framer {
     /// makes NO progress for [`STARVE_GIVEUP_BYTES`] declares the partial
     /// dead regardless of the aim (a junk header's far-future footprint must
     /// not park the ladder).
-    fn wait(&mut self, aim: u32, now: u32, tpb: u32, cursor: u16, len: usize) -> FramerOut {
+    fn wait(
+        &mut self,
+        aim: u32,
+        now: u32,
+        tpb: u32,
+        floor: u32,
+        cursor: u16,
+        len: usize,
+    ) -> FramerOut {
         let giveup_span = STARVE_GIVEUP_BYTES.wrapping_mul(tpb);
         let stalled = self.frontier.observed && cursor == self.frontier.seen;
-        self.frontier.advance(cursor, now, tpb, len);
+        self.frontier.advance(cursor, now, tpb, floor, len);
         if stalled && tick_reached(now, self.frontier.progress_tick.wrapping_add(giveup_span)) {
             return self.give_up(len, now);
         }
         // The hop is a re-look cadence from NOW (a stalled frontier's
-        // progress watermark is 32-64 byte-times stale before giveup — a
-        // progress-anchored hop would land in the past and pend-on-past
-        // spin, sim-caught 2026-07-11); the giveup horizon is untouched:
-        // death still requires STARVE_GIVEUP_BYTES of no progress, just
-        // checked at hop cadence.
-        let hop = now.wrapping_add(CADENCE_HOP_BYTES.wrapping_mul(tpb));
-        let sooner = if aim.wrapping_sub(now) <= hop.wrapping_sub(now) {
+        // progress watermark is hop-to-giveup byte-times stale before
+        // giveup — a progress-anchored hop would land in the past and
+        // pend-on-past spin, sim-caught 2026-07-11); the giveup horizon is
+        // untouched: death still requires STARVE_GIVEUP_BYTES of no
+        // progress, just checked at hop cadence. The hop leads the pair
+        // floor by 12.5% so hop pairs clear it (see
+        // [`cadence_pair_floor_bytes`]).
+        let hop = floor + (floor >> 3);
+        let hop_at = now.wrapping_add(hop.wrapping_mul(tpb));
+        let sooner = if aim.wrapping_sub(now) <= hop_at.wrapping_sub(now) {
             aim
         } else {
             // Interior hop: pure progress look with no timing contract,
             // dithered like every other look.
             let dither = self.dither_lead(tpb);
-            hop.wrapping_add(dither)
+            hop_at.wrapping_add(dither)
         };
         FramerOut::Wait(sooner)
     }
@@ -524,7 +552,8 @@ mod tests {
     /// true skew to well under half a nominal trim step.
     #[test]
     fn repetitive_fat_frames_measure_the_true_skew() {
-        let tpb: u32 = 480;
+        let tpb: u32 = 480; // 1M at 48 ticks/µs
+        let floor = cadence_pair_floor_bytes(1_000_000);
         let skew = 1.0052_f64; // +5200 ppm local clock
         let mut ring = vec![0u8; 512];
         let footprint = 206u16;
@@ -548,7 +577,7 @@ mod tests {
             for _ in 0..40 {
                 let c = cur(sim_t);
                 let now = local(sim_t);
-                match f.resolve(&ring, c, now, tpb) {
+                match f.resolve(&ring, c, now, tpb, floor) {
                     FramerOut::None => break,
                     FramerOut::Wait(t) | FramerOut::Covered { end_due: t, .. } => {
                         sim_t += t.wrapping_sub(now) as f64 / skew;
@@ -579,7 +608,7 @@ mod tests {
         ring[2] = 43; // inst + 40 payload + crc2
         ring[3] = 0x21;
         let mut f = Framer::new();
-        match f.resolve(&ring, 46, 1000, 480) {
+        match f.resolve(&ring, 46, 1000, 480, cadence_pair_floor_bytes(1_000_000)) {
             FramerOut::Frame(span) => assert!(span.cadence.is_none()),
             _ => panic!("whole ringed frame resolves on the fast path"),
         }
