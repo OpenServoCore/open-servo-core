@@ -162,6 +162,15 @@ fn start_dma_send() {
         .write_value(ch32_metapac::dma::regs::Cr(run));
 }
 
+/// Immediate CH2 kickoff for the break-framed send paths: the payload is
+/// preloaded and the wire is mid-window (break just drained), so no TIM4
+/// scheduling or comp alignment applies. No `LAST_SEND_TICK` stamp either —
+/// break-framed sends correlate via echo stamps, and a pipelined scheduled
+/// send's commanded tick must survive an interleaved `BRKSEND`.
+pub(super) fn kick_now() {
+    start_dma_send();
+}
+
 /// Program TIM4 OPM to kick DMA1_CH2 when `tick32` reaches `at`, or send
 /// immediately if the deadline is past / within scheduling overhead /
 /// beyond TIM4's 16-bit ARR range.

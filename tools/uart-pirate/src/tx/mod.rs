@@ -214,9 +214,9 @@ pub fn on_tx_complete() {
 /// already in flight. TC is NOT cleared here — the tail bytes may
 /// already have drained under preemption, and that latched TC *is* the
 /// release event. Only the FEINJ diagnostic still uses this (its `post`
-/// leg may be empty and nothing races its wire handback); reply-path
-/// senders use [`feed_last_and_arm_release`]. Un-CS'd RMW is safe:
-/// until this write neither vector CTLR1 writer is armed (TCIE and
+/// leg may be empty and nothing races its wire handback); the
+/// break-framed senders use [`kick_dma_and_arm_release`]. Un-CS'd RMW is
+/// safe: until this write neither vector CTLR1 writer is armed (TCIE and
 /// IDLEIE both sit masked since the send start). No DATAR retire here —
 /// the tail echo may still be shifting in — so a mid-send-latched flag
 /// costs one immediate self-masking service, never a storm.
@@ -227,38 +227,36 @@ fn arm_tc_release() {
     });
 }
 
-/// Feed the FINAL byte of a poll-fed send and arm the TC release, with
-/// the [DR write → TC clear → TCIE arm] triplet under a critical
-/// section. Armed thread-side AFTER the feed instead, a walker-class
-/// drain landing in the gap left the release unarmed while the last
-/// byte shifted out — pre-arm, the walk's [`poll_drive_release`]
-/// checkpoints are no-ops, so PB10 kept clamping the bus into the
-/// servo's reply (bench 2026-07-09: hot-loop replies' break/ID fought
-/// to mark, 3/2000 at 1M). The TC clear inside the CS retires any
-/// stale complete flag from an inter-byte gap so arming can't release
-/// mid-byte; the real TC re-latches when the final stop bit clears the
-/// shifter.
-fn feed_last_and_arm_release(b: u8) -> Result<(), SendError> {
-    let bit_ticks = USART3.brr().read().0;
-    let t0 = read_tick32();
-    while !USART3.statr().read().txe() {
-        if read_tick32().wrapping_sub(t0) > bit_ticks * 64 && !USART3.statr().read().txe() {
-            return Err(SendError::Busy);
-        }
-    }
+/// Kick the preloaded DMA payload and arm the TC release as one atomic
+/// step. The payload rides DMA1_CH2 — no CPU in the byte path, so a
+/// walker or USB preemption can no longer open an inter-byte gap (a
+/// receiver reads those as host byte cadence; bench 2026-07-11: the
+/// thread-fed TX polluted the servos' clock-trim windows +30k ppm under
+/// hot traffic, 15× the genuine offset and the wrong sign). The TC clear
+/// retires the break's completion flag so arming can't release the drive
+/// before the first payload byte; the real TC re-latches at the final
+/// stop bit and the ISR hands the wire back. No DATAR retire here — the
+/// break's echo may still be shifting in.
+fn kick_dma_and_arm_release() {
     critical_section::with(|_| {
-        USART3.datar().write(|w| w.set_dr(b as u16));
         clear_tc_only();
-        // The idle event re-enables in the same write — no DATAR retire
-        // here (the previous byte's echo may still be shifting in), so
-        // a flag latched by a mid-send stretch costs one immediate
-        // self-masking service, never a storm.
         USART3.ctlr1().modify(|w| {
             w.set_tcie(true);
             w.set_idleie(true);
         });
+        scheduler::kick_now();
     });
-    Ok(())
+}
+
+/// Kick the preloaded DMA payload with the release left unarmed — the
+/// burst interior, where the wire must stay driven across the frame
+/// seam. TC clear first so the thread-side wait sees THIS payload's
+/// completion, not the break's. Safe un-CS'd: TCIE and IDLEIE both sit
+/// masked for the whole burst interior, so no vector CTLR1 writer races
+/// (the [`arm_tc_release`] argument).
+fn kick_dma() {
+    clear_tc_only();
+    scheduler::kick_now();
 }
 
 /// Release checkpoint for long walker drains. The USART3 TC vector shares
@@ -498,19 +496,28 @@ pub fn send_break_then(payload: &[u8]) -> Result<(), SendError> {
     pb10_drive(true);
     mask_and_retire_idle();
     let r = (|| {
+        // CH2 is shared with the scheduled-send path: a pending TIM4
+        // kick landing mid-send would restart the channel over this
+        // payload. (The idle-send arm stays — separate buffer, and its
+        // IDLE can't assert inside a gapless payload.)
+        scheduler::cancel();
+        load_payload_main(payload)?;
         USART3.ctlr1().modify(|w| w.set_m(true));
         let r = feed_bytes(&[0x00])
             .and_then(|()| wait_tx_complete().map_err(|TxTimeout| SendError::Busy));
         USART3.ctlr1().modify(|w| w.set_m(false));
         r?;
-        // The ISR/walker releases the drive at the final stop bit; the
-        // final byte's feed and the arm are one atomic step so no drain
-        // can leave the release unarmed while the byte shifts out.
-        let (body, last) = payload.split_at(payload.len() - 1);
-        feed_bytes(body)?;
-        feed_last_and_arm_release(last[0])?;
+        // The payload rides DMA — no CPU in the byte path (see
+        // `kick_dma_and_arm_release`); the ISR/walker releases the
+        // drive at the final stop bit.
+        kick_dma_and_arm_release();
         wait_tx_complete().map_err(|TxTimeout| SendError::Busy)
     })();
+    // A failed leg abandons the send: stop the channel so it can't keep
+    // feeding bytes into a released wire.
+    if r.is_err() {
+        DMA1.ch(1).cr().modify(|w| w.set_en(false));
+    }
     // Backstop (error paths, desync-frozen walker); benign after the
     // ISR release — same CFGHR value, and no other pin's config changes
     // concurrently.
@@ -548,31 +555,38 @@ pub fn send_burst(stream: &[u8]) -> Result<(), SendError> {
     pb10_drive(true);
     mask_and_retire_idle();
     let r = (|| {
+        // See send_break_then: CH2 is shared with the scheduled-send path.
+        scheduler::cancel();
         let mut i = 0usize;
         while i < stream.len() {
             let n = stream[i] as usize;
             i += 1;
+            let frame = &stream[i..i + n];
+            i += n;
+            // Load before the break so the copy rides the inter-frame
+            // seam, not the break→byte-0 gap.
+            load_payload_main(frame)?;
             USART3.ctlr1().modify(|w| w.set_m(true));
             let r = feed_bytes(&[0x00])
                 .and_then(|()| wait_tx_complete().map_err(|TxTimeout| SendError::Busy));
             USART3.ctlr1().modify(|w| w.set_m(false));
             r?;
-            let frame = &stream[i..i + n];
-            i += n;
             if i == stream.len() {
                 // See send_break_then: the release must ride the last
-                // stop bit, and the arm must be atomic with the final
-                // byte's feed.
-                let (body, last) = frame.split_at(n - 1);
-                feed_bytes(body)?;
-                feed_last_and_arm_release(last[0])?;
+                // stop bit only — an interior release would hand the
+                // wire back mid-burst.
+                kick_dma_and_arm_release();
             } else {
-                feed_bytes(frame)?;
+                kick_dma();
             }
             wait_tx_complete().map_err(|TxTimeout| SendError::Busy)?;
         }
         Ok(())
     })();
+    // See send_break_then: a failed leg must stop the channel.
+    if r.is_err() {
+        DMA1.ch(1).cr().modify(|w| w.set_en(false));
+    }
     pb10_drive(false);
     r
 }
@@ -610,19 +624,21 @@ pub fn send_fe_inject(pre: &[u8], bad: &[u8], post: &[u8]) -> Result<(), SendErr
 
 pub const FE_INJECT_MAX: usize = 32;
 
-/// TXE-poll byte feed; bounded per byte. `dr` writes are 9 bits wide —
-/// a `u8` payload always carries bit 8 = 0, which is exactly what the
-/// 9-bit FE-injection frames need.
+/// TXE-poll byte feed for the CPU-fed legs only — break bytes and the
+/// FEINJ diagnostic; payloads ride DMA (`kick_dma_and_arm_release`),
+/// since every walker/USB preemption of this poll is an inter-byte gap
+/// on the wire. `dr` writes are 9 bits wide — a `u8` payload always
+/// carries bit 8 = 0, which is exactly what the 9-bit FE-injection
+/// frames need.
 ///
 /// The per-byte bound is wall-clock, but this poll runs in thread mode
-/// and the walker IRQs (`PRIO_WALKER`) preempt it. On a long burst the
-/// TX echo floods the IC ring past its half-mark, so a DMA1_CH6-HT
-/// `walk()` drains a large chunk in one shot — longer than the byte-time
-/// bound. That preemption must not be read as a stuck shifter: TXE goes
-/// empty in hardware while we're preempted, so re-check it once the bound
-/// expires and only report `Busy` when the register is genuinely still
-/// full. (Without this, a long BURST intermittently truncated mid-frame
-/// with a spurious `ERR busy`.)
+/// and the walker IRQs (`PRIO_WALKER`) preempt it — a half-ring drain
+/// outlasts the byte-time bound. That preemption must not be read as a
+/// stuck shifter: TXE goes empty in hardware while we're preempted, so
+/// re-check it once the bound expires and only report `Busy` when the
+/// register is genuinely still full. (Without this, a long BURST — then
+/// CPU-fed — intermittently truncated mid-frame with a spurious `ERR
+/// busy`.)
 fn feed_bytes(payload: &[u8]) -> Result<(), SendError> {
     let bit_ticks = USART3.brr().read().0;
     for &b in payload {
