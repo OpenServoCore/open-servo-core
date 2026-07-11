@@ -49,8 +49,9 @@ const LATE_START_BITS: u32 = 9;
 /// grid is meaningless and — the real constraint — tick32 wraps at
 /// 29.8 s, so window arithmetic against a stale anchor would alias. A
 /// fresh burst re-anchors via its break regardless; this bound only
-/// exists so stale-anchor math can never wrap, and to age out trailing
-/// interior edges from before a long quiet gap.
+/// exists so stale-anchor math can never wrap. It does NOT age out
+/// unconsumed edges: pending bytes' edges stay claimable at any age
+/// (the cold-start path).
 const ANCHOR_STALE_TICKS: u32 = 14_400_000;
 
 pub(super) static WALKED_FALLING: SyncUnsafeCell<u32> = SyncUnsafeCell::new(0);
@@ -155,23 +156,20 @@ pub fn walk() {
         if !has_anchor {
             // Cold-start path: post-boot, post-RESET, post-set_baud, or a
             // staled-out anchor. No prediction available, so anchor on the
-            // first unconsumed IC entry — after dropping edges older than
-            // the staleness horizon (trailing interior edges of the last
-            // byte before a long quiet gap must not anchor the new
-            // burst's first byte). Need `ceiling` to bound `byte_period`
-            // past first_edge so we don't anchor on what is actually some
-            // interior edge of the same byte whose start bit is still
-            // unwalked.
-            while walked != falling_total {
-                let tick = rings::falling_at(walked, falling_total, ceiling);
-                if ceiling.wrapping_sub(tick) <= ANCHOR_STALE_TICKS {
-                    break;
-                }
-                walked = walked.wrapping_add(1);
-            }
-            if walked == falling_total {
-                break;
-            }
+            // first unconsumed IC entry — at ANY age: this loop only runs
+            // with bytes pending, and bytes and their edges arrive
+            // together, so the oldest unconsumed edge IS the first pending
+            // byte's start however long ago the burst landed. (An age
+            // filter here used to drop those edges and strand the bytes —
+            // they then emitted anchored on the NEXT burst's edges:
+            // chopped drains, one-drain-late stamps. Only the tick32 wrap
+            // at 29.8 s truly bounds drain lateness.) The cost is one
+            // skewed burst when leftover interiors of a pre-gap free-run
+            // survive into a cold start — rare, and the claim re-anchors
+            // on the next real start. Need `ceiling` to bound
+            // `byte_period` past first_edge so we don't anchor on what is
+            // actually some interior edge of the same byte whose start
+            // bit is still unwalked.
             let first_edge = rings::falling_at(walked, falling_total, ceiling);
             if ceiling.wrapping_sub(first_edge) < byte_period {
                 break;
