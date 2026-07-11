@@ -112,9 +112,12 @@ impl Crc {
 
 impl bus::CrcEngine for Crc {
     fn reset(&mut self) {
-        dma::disable(dma::Channel::CH3);
-        dma::disable(dma::Channel::CH6);
         // Toggling CRCEN off→on clears the accumulator with the mode locked.
+        // DMA channels are deliberately untouched: disabling one mid-transfer
+        // freezes CNTR nonzero, so every later drain spin runs its full
+        // backstop budget (~2.1 ms, bench 2026-07-10) — and a killed CH6
+        // snapshot copy ships a stale reply tail (the wire arms read it,
+        // §4.2). Left alone, in-flight transfers drain to zero in µs.
         SPI1.ctlr1().modify(|w| w.set_crcen(false));
         SPI1.ctlr1().modify(|w| w.set_crcen(true));
     }
