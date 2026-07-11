@@ -14,6 +14,8 @@ tinyboot-ch32-rt = "0.4.1"
 panic-halt       = "1"
 
 [features]
-# Rev B wire: 74LVC2G241 buffer + TX_EN, full-duplex USART behind it.
-# Default (off) = direct single wire via HDSEL half-duplex.
+# Default = direct single wire (tinyboot's `half-duplex` feature). Rev B
+# buffered wire (74LVC2G241 + TX_EN, full duplex behind it): build with
+# --no-default-features --features wire-buffered.
+default = ["tinyboot-ch32/half-duplex"]
 wire-buffered = []
