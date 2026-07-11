@@ -1,8 +1,10 @@
 pub mod board_wiring;
 pub mod chip;
 
+#[cfg(feature = "wire-buffered")]
+pub use board_wiring::BusWiring;
 pub use board_wiring::{
-    AdcPins, BoardWiring, BusWiring, Calibration, CurrentSenseConfig, Divider, DrvEn, NtcCal,
+    AdcPins, BoardWiring, Calibration, CurrentSenseConfig, Divider, DrvEn, NtcCal,
 };
 pub use chip::{AnalogChannel, DigitalPin};
 

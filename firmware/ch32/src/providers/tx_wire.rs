@@ -25,9 +25,10 @@
 use ch32_metapac::USART1;
 use osc_drivers::traits::bus;
 
-use crate::cfg::BusWiring;
 use crate::hal::{dma, usart};
 
+#[cfg(feature = "wire-buffered")]
+use crate::cfg::BusWiring;
 #[cfg(not(feature = "wire-buffered"))]
 use crate::cfg::chip;
 #[cfg(not(feature = "wire-buffered"))]
@@ -48,11 +49,6 @@ pub struct TxWire {
 }
 
 impl TxWire {
-    #[cfg(not(feature = "wire-buffered"))]
-    pub fn new(_bus: &BusWiring) -> Self {
-        Self
-    }
-
     #[cfg(feature = "wire-buffered")]
     pub fn new(bus: &BusWiring) -> Self {
         Self { tx_en: bus.tx_en }

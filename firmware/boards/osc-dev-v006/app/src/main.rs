@@ -21,13 +21,10 @@ fn main() -> ! {
                 pin: DigitalPin::PD0,
                 active: Level::High,
             },
-            // Rev B DXL TTL subsystem: TX_EN = PC2. Direct wire (default) =
-            // buffer bypassed, PC2 parked; `--features wire-buffered` =
-            // buffer in play, PC2 gates direction.
-            #[cfg(not(feature = "wire-buffered"))]
-            bus: BusWiring {
-                tx_en_park: Some(Pin::PC2),
-            },
+            // Rev B DXL TTL subsystem: `--features wire-buffered` puts the
+            // 74LVC2G241 in play, TX_EN = PC2 gating direction. The default
+            // direct wire carries no bus wiring — on a buffer-populated
+            // board the TX_EN pull-down (R16) keeps the buffer released.
             #[cfg(feature = "wire-buffered")]
             bus: BusWiring { tx_en: Pin::PC2 },
             current_sense: CurrentSenseConfig {
