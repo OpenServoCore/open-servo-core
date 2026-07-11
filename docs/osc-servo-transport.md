@@ -531,29 +531,36 @@ oscillator against the host's instruction byte cadence, and the entire
 measurement rides state the resolver already keeps:
 
 - **Stamps.** The frontier's progress bookkeeping (`seen`/`progress_tick`,
-  giveup tracking) doubles as the sample: the first observation is frozen
-  as the near endpoint, the last progress observation is the far one.
-  Both are `(now, cursor)` pairs read together mid-arrival, so no
-  inter-frame gap can enter a span — `wait` runs only while
-  `received < footprint`. Long frames self-generate interior stamps: the
-  starve horizon bounds every wait to 64 byte-times, so the frontier is
-  re-observed at that cadence for free.
-- **Debiasing.** The endpoints are phase-asymmetric: the near stamp is
-  break-FE-anchored (sub-byte-exact), the far stamp is wake-quantized —
-  its sub-byte phase is deterministic per frame geometry, and repetitive
-  traffic (identical hot-loop frames) freezes it into a permanent offset
-  (sim: +3.1 k ppm on a +5.2 k signal). Interior hops carry a 3-bit Weyl
-  dither (pure progress looks, no timing contract), sweeping the far
-  phase uniformly; the emission subtracts its `tpb/2` mean. Residual
-  systematic error is well under half a trim step.
-- **Gates.** ≥ 32-byte spans only (endpoint noise floor; pings never
-  qualify), ≤ 1/16 of nominal (host TX bubbles, merged-transmitter
-  garble, gross wake-latency outliers), CRC-verified instruction frames
-  only, harvested at the verify sites — a garble-born phantom's samples
-  die with its CRC, and snooped status frames (foreign HSIs) never reach
-  the accumulator. The fault contract holds: faults still carry nothing;
-  a fault-woken entry contributes only its simultaneous data-side
-  `(now, cursor)` read.
+  giveup tracking) doubles as the sample: consecutive progress
+  observations form pairs, each a `(now, cursor)` read taken together
+  mid-arrival, so no inter-frame gap can enter a span — `wait` runs only
+  while `received < footprint`. Long frames self-generate interior
+  stamps: the starve horizon bounds every wait to 64 byte-times, so the
+  frontier is re-observed at that cadence for free.
+- **Per-pair gating.** Each pair is gated separately (≥ 16 bytes, error
+  ≤ 1/16 of its nominal span) and the survivors sum into the frame's
+  sample. This is load-bearing against a stalling host: a mid-frame TX
+  stall is legal wire (§4.1) and the pirate bench host does it routinely
+  (~100 µs walker bubbles) — whole-frame spans starved to ZERO samples
+  under them (silicon 2026-07-11); per-pair gating loses one pair per
+  stall and keeps the rest.
+- **Debiasing.** Wake stamps are phase-quantized: a stamp's sub-byte
+  phase is deterministic per frame geometry, and repetitive traffic
+  (identical hot-loop frames) freezes one phase into a permanent offset
+  (sim: +3.1 k ppm on a +5.2 k signal). Every pure look (header aims,
+  covered-targeting aims, horizon hops — never the end aim, which times
+  the verdict) carries a byte-phase dither from an 8-bit Weyl sequence,
+  so pair endpoints sweep [0, tpb) both draw-to-draw and frame-to-frame
+  (a 3-bit sweep aliased frozen at 8 draws/frame). The first pair is
+  skipped: its near stamp is break-FE-anchored (sub-byte-exact), and a
+  pair mixing exact and quantized endpoints carries a half-byte-time
+  offset. All included pairs are quantized-and-dithered at both ends —
+  zero-mean by construction, no correction constant.
+- **Harvest.** CRC-verified instruction frames only, at the verify
+  sites — a garble-born phantom's samples die with its CRC, and snooped
+  status frames (foreign HSIs) never reach the accumulator. The fault
+  contract holds: faults still carry nothing; a fault-woken entry
+  contributes only its simultaneous data-side `(now, cursor)` read.
 - **Loop.** Samples accumulate `(err_ticks, span_ticks)`; the main loop
   drains a window (`TRIM_WINDOW_WIRE_US` of measured span) through
   `TrimLoop`: `steps = round(err / step_effect)`, clamped ±4 — the first

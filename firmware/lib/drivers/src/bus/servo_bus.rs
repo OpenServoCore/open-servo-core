@@ -56,9 +56,11 @@ const FRAMES_PER_WAKE: u32 = 16;
 
 /// Measured instruction-byte span per clock-trim decision, µs of nominal
 /// wire time (§9.3). Sets the windowed average's noise floor against the
-/// per-sample endpoint jitter (a byte-time or two per frame) and the trim
-/// loop's reaction latency under sustained traffic — bench-tuned.
-const TRIM_WINDOW_WIRE_US: u32 = 16_384;
+/// per-pair endpoint jitter (~a byte-time per stamp): at this width the
+/// window mean sits comfortably inside the trim loop's half-step deadband,
+/// so a well-trimmed chip is not noise-stepped; acquisition still completes
+/// within the first second of fat-frame traffic — bench-tuned.
+const TRIM_WINDOW_WIRE_US: u32 = 65_536;
 
 /// Ring-poll cadence, in byte-times, while the wire-fault wake is muted
 /// (§6 A4 storm throttle). A zero-progress fault service means a flag is

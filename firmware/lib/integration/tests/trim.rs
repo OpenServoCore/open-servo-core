@@ -31,7 +31,7 @@ fn queue_fat_frames(sim: &mut Sim, n: u64) {
 fn fast_clock_draws_a_multi_step_slowdown_from_the_first_window() {
     let mut sim = Sim::new(BaudRate::B1000000);
     let s = sim.add_servo_with(ID, 5_200, DEFAULT_RESPONSE_DEADLINE_US);
-    queue_fat_frames(&mut sim, 12);
+    queue_fat_frames(&mut sim, 40);
     sim.run();
     assert_eq!(sim.poll_clock_trim(s), Some(2));
 }
@@ -40,7 +40,7 @@ fn fast_clock_draws_a_multi_step_slowdown_from_the_first_window() {
 fn slow_clock_draws_the_symmetric_speedup() {
     let mut sim = Sim::new(BaudRate::B1000000);
     let s = sim.add_servo_with(ID, -5_200, DEFAULT_RESPONSE_DEADLINE_US);
-    queue_fat_frames(&mut sim, 12);
+    queue_fat_frames(&mut sim, 40);
     sim.run();
     assert_eq!(sim.poll_clock_trim(s), Some(-2));
 }
@@ -51,9 +51,31 @@ fn slow_clock_draws_the_symmetric_speedup() {
 fn near_nominal_clock_holds_still() {
     let mut sim = Sim::new(BaudRate::B1000000);
     let s = sim.add_servo_with(ID, 900, DEFAULT_RESPONSE_DEADLINE_US);
-    queue_fat_frames(&mut sim, 12);
+    queue_fat_frames(&mut sim, 40);
     sim.run();
     assert_eq!(sim.poll_clock_trim(s), None);
+}
+
+/// A host that stalls mid-frame (legal wire per transport §4.1; the pirate
+/// bench host does it routinely — its walker preempts TX ~100 µs) must
+/// neither poison the measurement nor starve it: the stalled pair is gated
+/// out, the clean pairs still converge the window (silicon 2026-07-11:
+/// whole-frame spans starved to zero samples under exactly this host).
+#[test_log::test]
+fn stalling_host_still_converges_and_never_poisons() {
+    let mut sim = Sim::new(BaudRate::B1000000);
+    let s = sim.add_servo_with(ID, 5_200, DEFAULT_RESPONSE_DEADLINE_US);
+    let frame = instruction(OTHER_ID, Opcode::Write, 0, &[0u8; 200]);
+    for _ in 0..60 {
+        sim.host_send_stalled(&frame, 100, 100);
+    }
+    sim.run();
+    // Stall-adjacent pairs cost phase precision, not correctness: the first
+    // jump may land ±1 step of the ideal (self-correcting — the next window
+    // measures the true step effect), but a poisoned window would read the
+    // +10-byte-time stalls as a huge positive and pin the ±4 clamp.
+    let first = sim.poll_clock_trim(s);
+    assert!(matches!(first, Some(2 | 3)), "first jump {first:?}");
 }
 
 /// No measured window, no decision — and short frames (a ping-only wire)
