@@ -43,10 +43,10 @@ fn midframe_garble_costs_one_frame() {
     let mut sim = Sim::new(BaudRate::B1000000);
     let s = sim.add_servo(ID5);
 
-    // Frame A: one stray ring byte injected inside its wire window. The break
-    // anchored A and its header parsed, but the extra byte shifts every byte
-    // after it, so the CRC-covered span reads misaligned → CRC fail. No ack,
-    // not applied.
+    // Frame A: one stray ring byte injected inside its wire window. The
+    // garble's FE plus ring progress fences A (§6 A2 garble-by-position:
+    // the fault byte sits inside A's unfilled span, so A can never pass
+    // CRC) — A dies at the fence. No ack, not applied.
     sim.host_send_at(0, &write_gv(ID5, 0x0A0A0A0A));
     sim.inject_garble_at(50, 0xAA);
 
@@ -64,9 +64,10 @@ fn midframe_garble_costs_one_frame() {
         0x0B0B0B0B,
         "B applied despite the odd anchor"
     );
+    // A dies exactly once at layer 1 — by position (fence) or by CRC; the
+    // contract is the sum, as elsewhere in this suite.
     let d = sim.servo_diag(s);
-    assert_eq!(d.crc_fail_count, 1, "A: misaligned span → CRC fail");
-    assert_eq!(d.framing_drop_count, 0, "odd anchors are not faults");
+    assert_eq!(d.framing_drop_count + d.crc_fail_count, 1);
 }
 
 #[apply(matrix)]
@@ -279,6 +280,60 @@ fn break_preempts_pending_write_then_recovers() {
         sim.servo_table(s, |t| t.control.lifecycle.goal_velocity),
         0x0C0C0C0C
     );
+}
+
+#[test]
+fn foreign_baud_garbage_never_parks_the_ladder() {
+    // Task #9: a probe at a foreign baud rings FE-dense garble, and a
+    // phantom header inside it (garbage LEN) claims hundreds of bytes of
+    // interior. Instructions following at the servo's own baud used to be
+    // swallowed as that interior — each answered one instruction late (its
+    // bytes completed the phantom; the reply carried the PREVIOUS
+    // instruction's payload), indefinitely under a retrying host. The
+    // wire-fault fence (§6 A2 garble-by-position) kills the phantom at the
+    // next fault-with-progress: every own-baud instruction is answered off
+    // its own frame, inside the response deadline.
+    const TICKS_PER_US: u64 = 48;
+    let mut sim = Sim::new(BaudRate::B2000000);
+    sim.add_servo(ID5);
+
+    // Discovery-shaped foreign traffic: a 1M ping heard at 2M — every byte
+    // rings garbled, with an FE (§2 approximation). The own-baud ping rides
+    // the same run, inside the phantom's starve horizon: a drained queue
+    // between them would let the horizon chew the phantom out first, which
+    // the bench's live traffic never does.
+    sim.set_host_baud(BaudRate::B1000000);
+    sim.host_send(&instruction(ID5, Opcode::Ping, 0, &[]));
+    sim.set_host_baud(BaudRate::B2000000);
+    sim.host_send_at(100, &instruction(ID5, Opcode::Ping, 0, &[]));
+    let frames = sim.run();
+
+    let ping = frames
+        .iter()
+        .filter(|f| matches!(f.from, Source::Host))
+        .nth(1)
+        .expect("own-baud ping recorded");
+    let reply = frames
+        .iter()
+        .filter(|f| matches!(f.from, Source::Servo(_)))
+        .find(|f| f.at > ping.end)
+        .expect("ping never answered — swallowed as phantom interior");
+    assert_valid(reply);
+    assert_eq!(status(reply).0.result(), Some(ResultCode::Ok));
+    let lead = reply.at - ping.end;
+    assert!(
+        lead < 60 * TICKS_PER_US,
+        "ping answered {} µs after its end — parked ladder",
+        lead / TICKS_PER_US
+    );
+
+    // And the exchanges after it stay clean — no one-late residue.
+    for k in 0..2 {
+        sim.host_send(&instruction(ID5, Opcode::Ping, 0, &[]));
+        let frames = sim.run();
+        let (inst, _) = status(sole_reply(&frames));
+        assert_eq!(inst.result(), Some(ResultCode::Ok), "follow-up {k}");
+    }
 }
 
 #[test]

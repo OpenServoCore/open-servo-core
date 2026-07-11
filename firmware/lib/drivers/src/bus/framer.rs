@@ -138,6 +138,12 @@ pub struct Framer {
     /// faults. Cleared when a candidate resolves as a whole valid frame.
     hunting: bool,
     frontier: Frontier,
+    /// Cursor at the last wire-fault service ([`Self::on_wire_fault`]).
+    fault_seen: u16,
+    /// Wire-fault fence: at least one break/garble byte ringed at or past
+    /// this position. An incomplete candidate anchored before it claims that
+    /// byte as interior — dead by position (§6 A2), no CRC or starve needed.
+    fault_fence: u16,
     drops: u32,
 }
 
@@ -147,6 +153,8 @@ impl Framer {
             anchor: 0,
             hunting: false,
             frontier: Frontier::idle(),
+            fault_seen: 0,
+            fault_fence: 0,
             drops: 0,
         }
     }
@@ -161,6 +169,33 @@ impl Framer {
     pub fn resync(&mut self, cursor: u16) {
         self.anchor = cursor;
         self.frontier = Frontier::idle();
+        self.fault_seen = cursor;
+        self.fault_fence = cursor;
+    }
+
+    /// USART FE/RX-error service — still a pure wake (A2: position comes
+    /// from the ring), but it carries one positional fact: at least one of
+    /// the bytes ringed since the previous service is a break or garble
+    /// byte. An incomplete candidate anchored before ALL of them owns that
+    /// byte as unfilled interior, so it can never pass CRC — mid-frame
+    /// garble by position (§6 A2). [`Self::resolve`] sacrifices it at the
+    /// fence instead of letting live traffic feed its footprint one starve
+    /// horizon at a time (the wrong-baud-garbage one-instruction-late
+    /// cascade, bench 2026-07-10). A service with no fresh bytes carries no
+    /// evidence — a latched flag re-fires until the next data byte lands
+    /// (the 0.5M corner) — and must not move the fence.
+    pub fn on_wire_fault(&mut self, cursor: u16) {
+        if cursor != self.fault_seen {
+            self.fault_fence = self.fault_seen;
+            self.fault_seen = cursor;
+        }
+    }
+
+    /// The candidate at the ladder anchor predates every byte of the last
+    /// wire-fault window: one of the bytes it still claims as interior is a
+    /// break or garble byte ([`Self::on_wire_fault`]).
+    fn fenced(&self, cursor: u16, len: usize) -> bool {
+        dist(cursor, self.anchor, len) > dist(cursor, self.fault_fence, len)
     }
 
     /// The composite rejected a resolved frame (CRC fail): the header that
@@ -238,6 +273,9 @@ impl Framer {
             }
         }
         if received < HEADER_SPAN_BYTES {
+            if self.fenced(cursor, len) {
+                return self.give_up(len, now);
+            }
             let aim = now
                 .wrapping_add(wire_lead((HEADER_SPAN_BYTES - received) as u32, tpb))
                 .wrapping_add(tpb / BREAK_TAIL_EPS_DIV);
@@ -263,6 +301,9 @@ impl Framer {
                 footprint,
                 packet_end: now,
             });
+        }
+        if self.fenced(cursor, len) {
+            return self.give_up(len, now);
         }
         let missing = (footprint - received) as u32;
         if !self.frontier.covered && missing <= COVERED_TAIL_BYTES {
@@ -319,9 +360,11 @@ impl Framer {
         FramerOut::Wait(sooner)
     }
 
-    /// Transmitter died mid-frame (or a junk header trapped the ladder):
-    /// sacrifice one byte and resume the hunt — a real frame inside the
-    /// span is still found, CRC-gated (§3.3).
+    /// The candidate is dead — the starve horizon expired (transmitter died,
+    /// or a junk header trapped the ladder) or a wire fault ringed inside
+    /// its unfilled interior ([`Self::fenced`]): sacrifice one byte and
+    /// resume the hunt — a real frame inside the span is still found,
+    /// CRC-gated (§3.3).
     fn give_up(&mut self, len: usize, now: u32) -> FramerOut {
         // A partial that will never complete is sacrificed — count it, once
         // per recovery episode (junk candidates inside an episode also give

@@ -177,6 +177,10 @@ impl<P: Providers> ServoBus<P> {
     /// fast path right here).
     pub fn on_break<D: Dispatch>(&mut self, d: &mut D) {
         let now = self.deadline.now();
+        // Fence first, resolve second: the fault evidence applies to the
+        // candidate as it stood BEFORE this wake, and the resolve right
+        // after consumes it in the same wake.
+        self.framer.on_wire_fault(self.ring.cursor());
         self.drive_framer(d);
         // Wire safety: a staged, not-yet-streaming reply must never fire
         // into the host's NEXT frame. But an FE alone doesn't mean the host

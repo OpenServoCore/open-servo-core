@@ -324,7 +324,15 @@ there is no ring rearm anymore). From then on:
 - Classification falls out: an FE while the current frame is short of its
   end and no fresh anchor position validates is mid-frame garble by
   position, not by a `cursor-1` byte value. The Step-0 failure class
-  becomes unwritable.
+  becomes unwritable. Implemented as the **wire-fault fence** (2026-07-10):
+  each FE service with ring progress proves at least one break/garble byte
+  ringed since the previous service, so an incomplete candidate anchored
+  before all of those bytes owns one as unfilled interior and is sacrificed
+  at once — without it, a phantom header's garbage LEN let live traffic
+  feed its footprint and every instruction after wrong-baud garbage was
+  answered one instruction late (task #9). A service with no fresh bytes
+  (the 0.5M latched-flag re-fire) carries no evidence and leaves the fence
+  put; a starving no-FE partial still dies only at the giveup horizon.
 - Corruption recovery: a corrupted LEN mis-strides the ladder; the next
   resolution finds no `0x00` at the expected anchor (or the frame fails
   CRC) → drop + count, and the ladder re-verifies at every following
