@@ -569,28 +569,50 @@ are garbage — and garbage _is_ the collision signal:
   later SAVE persists it; volatile until then. Solves the
   duplicate-default-ID field pain.
 
-### 9.3 Clock calibration: deliberately absent
+### 9.3 Clock discipline: passive self-trim, no protocol machinery
 
-There is none, and its absence is load-bearing evidence for the design.
-Every consumer of clock discipline is gone or covered:
+The PROTOCOL carries no clock machinery — no CAL sub-op, no calibration
+pulse, no EXTI use at all (the data pin needs only the USART). Most
+consumers of clock discipline are gone or covered by design:
 
 - Reply timing is event-driven (break-led, when-ready) — nothing is
   scheduled against a clock, so there is no grid for drift to skew.
-- Comms integrity has ≥3× margin over the worst possible HSI state,
-  measured: the chip cannot be detuned far enough to break framing or
-  data at 3 M [F10], and the 1 M default triples that.
+- HOST↔SERVO comms integrity has ≥3× margin over the worst possible HSI
+  state, measured: the chip cannot be detuned far enough to break framing
+  or data at 3 M [F10], and the 1 M default triples that.
 - Cross-servo simultaneity is an *event* problem, not a clock problem:
   broadcast COMMIT applies a fleet's held writes in the same instant on
   the shared wire — strictly simpler and lower-jitter than disciplined
   clocks.
 - Residual ±1 % scale error (velocity estimates, timeouts, PWM rate) is
-  far below what any consumer cares about. If a future feature needs
-  better, the host can measure each servo's clock ratio passively from
-  its status-frame byte cadence (HSE-stamped) and correct host-side —
-  smarts belong in the fat node, not in servo machinery.
+  far below what any consumer cares about.
 
-Consequences: no CALARM sub-op, no calibration pulse, no drift estimator,
-and no EXTI use at all — the data pin needs only the USART.
+One consumer is NOT covered by the single-sided F10 margin, found on the
+first 5-servo fleet (bench 2026-07-11): **servo→servo snoop**. A chain
+slot fires off its predecessor's *status frame* (§6), so one HSI receives
+another HSI — the clock budget is PAIRWISE, and factory spread reaches
+7k+ ppm. At 3 M that garbles snooped status tails (crc/framing counters
+on every chained servo); manually trimming the fleet to a 1.4 k ppm worst
+pair zeroed them, causally.
+
+The answer keeps the smarts out of the wire: each servo passively
+**self-trims against the host's byte cadence**. Host instruction frames
+are crystal-referenced by assumption; the transport already reads
+`(now, cursor)` pairs while a frame arrives, so the framer measures each
+CRC-verified instruction frame's byte cadence against its own tick
+(instruction frames ONLY — a snooped status would calibrate one HSI
+against another; frames for other ids count, so a servo converges just
+hearing the host talk). Windowed samples drive an oscillator-trim loop
+(`steps = round(err/step_effect)`, step effect self-measured — chip trim
+steps are nonuniform, 1.4–3.2 k ppm/step measured) applied by the main
+loop. Volatile by design: every boot re-converges from ordinary traffic
+within the first window (~16 ms of accumulated instruction bytes); the
+applied total is readable at `telemetry.clock.trim_steps`. Short frames
+(pings) are never sampled — a wire without fat group frames is a wire
+without chains, which needs no trim.
+
+Consequences stand: no CALARM sub-op, no calibration pulse — and the
+drift estimator that exists is invisible on the wire.
 
 ### 9.4 Config persistence (SAVE)
 

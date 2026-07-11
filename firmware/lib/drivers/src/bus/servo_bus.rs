@@ -11,7 +11,8 @@ use osc_protocol::wire::{Inst, Opcode, ResultCode};
 use super::chain::{Chain, ChainOut};
 use super::decode::{Decoded, decode};
 use super::frame_view;
-use super::framer::{FrameSpan, Framer, FramerOut};
+use super::framer::{CadenceSample, FrameSpan, Framer, FramerOut};
+use super::trim::TrimLoop;
 use super::tx::{TxEngine, TxOut};
 use crate::traits::bus::{
     CrcEngine, Deadline, LineSense, Providers, RxRing, TxWire, UsartBaud, tick_reached,
@@ -52,6 +53,12 @@ const DEADLINE_DRAIN_MAX: u32 = 8;
 /// bounds one wake's dispatch work without ever dropping — the ring holds
 /// the rest.
 const FRAMES_PER_WAKE: u32 = 16;
+
+/// Measured instruction-byte span per clock-trim decision, µs of nominal
+/// wire time (§9.3). Sets the windowed average's noise floor against the
+/// per-sample endpoint jitter (a byte-time or two per frame) and the trim
+/// loop's reaction latency under sustained traffic — bench-tuned.
+const TRIM_WINDOW_WIRE_US: u32 = 16_384;
 
 /// Ring-poll cadence, in byte-times, while the wire-fault wake is muted
 /// (§6 A4 storm throttle). A zero-progress fault service means a flag is
@@ -120,6 +127,12 @@ pub struct ServoBus<P: Providers> {
     // zero-progress fault service that muted it. Cursor movement is the
     // all-clear — the drain that moved it also retired the latched flag.
     fault_mute: Option<u16>,
+    // Clock-trim measurement window (§9.3): CRC-verified instruction frames'
+    // cadence samples, accumulated ISR-side, drained by the main loop's
+    // `poll_clock_trim`.
+    cadence_err: i32,
+    cadence_span: u32,
+    trim: TrimLoop,
 }
 
 /// Ticks per byte-time at `rate` on the transport clock. Each arm folds to a
@@ -182,6 +195,9 @@ impl<P: Providers> ServoBus<P> {
             rescue_cursor: 0,
             rescue_reconfirm: false,
             fault_mute: None,
+            cadence_err: 0,
+            cadence_span: 0,
+            trim: TrimLoop::new(<P::Deadline as Deadline>::CLOCK_TRIM_STEP_PPM),
         }
     }
 
@@ -368,6 +384,34 @@ impl<P: Providers> ServoBus<P> {
         }
     }
 
+    /// Fold a CRC-verified frame's cadence sample into the trim window
+    /// (§9.3). Reaches here for instruction frames only — the host is the
+    /// crystal reference; a snooped status frame would calibrate against
+    /// another servo's HSI (status frames leave `route_frame` before any
+    /// verdict). Garble-born phantoms die by CRC and their samples with them.
+    fn harvest_cadence(&mut self, cadence: Option<CadenceSample>) {
+        if let Some(c) = cadence {
+            self.cadence_err = self.cadence_err.wrapping_add(c.err_ticks);
+            self.cadence_span = self.cadence_span.saturating_add(c.span_ticks);
+        }
+    }
+
+    /// Main-loop poll, ISRs masked by the caller (the `diag` idiom): once a
+    /// window's worth of host bytes has been measured, run the trim loop.
+    /// Returns the new trim total — signed chip steps from the factory
+    /// default, positive = slower — for the caller to apply to the
+    /// oscillator between frames.
+    pub fn poll_clock_trim(&mut self) -> Option<i8> {
+        let window = TRIM_WINDOW_WIRE_US * <P::Deadline as Deadline>::TICKS_PER_US;
+        if self.cadence_span < window {
+            return None;
+        }
+        let (err, span) = (self.cadence_err, self.cadence_span);
+        self.cadence_err = 0;
+        self.cadence_span = 0;
+        self.trim.on_window(err, span)
+    }
+
     fn reply_gap(&self) -> u32 {
         super::REPLY_GAP_US * <P::Deadline as Deadline>::TICKS_PER_US
     }
@@ -537,7 +581,7 @@ impl<P: Providers> ServoBus<P> {
     fn on_frame_end<D: Dispatch>(&mut self, span: FrameSpan, d: &mut D) {
         match self.pending.take() {
             Some(p) if p.anchor == span.anchor && p.footprint == span.footprint => {
-                self.verify(p, d);
+                self.verify(p, span.cadence, d);
             }
             Some(_) => {
                 // Defensive: a pending frame that isn't this one — drop it. Any
@@ -566,6 +610,7 @@ impl<P: Providers> ServoBus<P> {
         let anchor = span.anchor;
         let footprint = span.footprint;
         let packet_end = span.packet_end;
+        let cadence = span.cadence;
         // Status frames only advance the snoop chain (§6) — framing-level
         // truth, NO validation: the chain consumes nothing from the body, and
         // skipping the CRC keeps the snapshot buffer free while our own reply
@@ -606,7 +651,7 @@ impl<P: Providers> ServoBus<P> {
                 table,
             };
             if complete {
-                self.verify(p, d);
+                self.verify(p, cadence, d);
             } else {
                 self.pending = Some(p);
             }
@@ -628,6 +673,7 @@ impl<P: Providers> ServoBus<P> {
             return;
         }
         self.framer.on_frame_verified();
+        self.harvest_cadence(cadence);
         // A fresh instruction supersedes any stale, not-yet-streaming reply —
         // post-verdict, so a garbled frame touched nothing.
         self.chain.reset();
@@ -658,7 +704,7 @@ impl<P: Providers> ServoBus<P> {
     /// (DON'T-SEND), count, and rewind the ladder (§5.3 L1).
     #[cfg_attr(target_os = "none", unsafe(link_section = ".highcode"))]
     #[cfg_attr(target_os = "none", inline(never))]
-    fn verify<D: Dispatch>(&mut self, p: Pending, d: &mut D) {
+    fn verify<D: Dispatch>(&mut self, p: Pending, cadence: Option<CadenceSample>, d: &mut D) {
         if !self.crc_verify(p.anchor, p.footprint) {
             if p.table {
                 d.revert();
@@ -672,6 +718,7 @@ impl<P: Providers> ServoBus<P> {
             return;
         }
         self.framer.on_frame_verified();
+        self.harvest_cadence(cadence);
         if p.table {
             let mut handle = self.reply_handle();
             d.commit(&mut handle);

@@ -19,6 +19,10 @@ pub trait RxRing {
 /// the chip ISR it fires calls back into the driver's `on_deadline`.
 pub trait Deadline {
     const TICKS_PER_US: u32;
+    /// Nominal clock shift per oscillator trim step, ppm — the trim loop's
+    /// plant-gain seed (§9.3). The true per-chip value is nonuniform; the
+    /// loop measures and replaces it after its first correction.
+    const CLOCK_TRIM_STEP_PPM: u32;
     fn now(&self) -> u32;
     fn set(&mut self, at: u32);
     fn cancel(&mut self);

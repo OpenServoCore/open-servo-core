@@ -7,6 +7,7 @@ pub mod chain;
 mod decode;
 pub mod framer;
 mod servo_bus;
+mod trim;
 pub mod tx;
 
 pub use servo_bus::{LinkDiag, ServoBus};

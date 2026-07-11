@@ -185,6 +185,7 @@ fn unskew(delta: u64, skew_ppm: i32) -> u64 {
 
 impl Deadline for SimDeadline {
     const TICKS_PER_US: u32 = super::core::TICKS_PER_US as u32;
+    const CLOCK_TRIM_STEP_PPM: u32 = 2500;
 
     fn now(&self) -> u32 {
         skewed(self.core.borrow().now(), self.skew_ppm)

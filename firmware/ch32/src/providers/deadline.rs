@@ -21,6 +21,7 @@ pub struct Deadline;
 
 impl bus::Deadline for Deadline {
     const TICKS_PER_US: u32 = systick::TICKS_PER_US;
+    const CLOCK_TRIM_STEP_PPM: u32 = crate::hal::rcc::CLOCK_TRIM_PPM_PER_STEP;
 
     #[inline(always)]
     fn now(&self) -> u32 {

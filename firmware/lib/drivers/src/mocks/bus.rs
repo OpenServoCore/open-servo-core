@@ -112,6 +112,7 @@ impl Default for FakeDeadline {
 
 impl Deadline for FakeDeadline {
     const TICKS_PER_US: u32 = 1;
+    const CLOCK_TRIM_STEP_PPM: u32 = 2500;
 
     fn now(&self) -> u32 {
         self.0.now.get()

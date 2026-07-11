@@ -152,6 +152,11 @@ impl Sim {
         self.servos[i].diag()
     }
 
+    /// The chip main loop's trim poll (§9.3), between exchanges.
+    pub fn poll_clock_trim(&mut self, i: usize) -> Option<i8> {
+        self.servos[i].poll_clock_trim()
+    }
+
     pub fn take_reboot(&mut self, i: usize) -> Option<BootMode> {
         self.servos[i].take_reboot()
     }

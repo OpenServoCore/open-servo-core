@@ -37,8 +37,6 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
         crc_fail_count: 0,
         framing_drop_count: 0,
     };
-    // Last-applied clock trim; table default 0 = the chip's own HSITRIM.
-    let mut trim_applied: i8 = 0;
     loop {
         // Transport RX/TX/deadlines are ISR-driven (USART1 + SysTick, PFIC
         // HIGH). Main loop owns LED housekeeping, the link-diagnostics
@@ -76,21 +74,28 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
             published = diag;
         });
 
-        // Clock-trim knob (`control.system.hsi_trim_offset`, ~0.25%/step):
-        // applied here so the RCC write lands between frames, never inside
-        // a transport ISR. The jump is well inside the single-sided framing
-        // budget vs a crystal host, so trimming over the wire is safe.
-        // SAFETY: table storage is 'static; single-byte volatile read.
-        let trim = unsafe {
-            (&raw const (*crate::runtime::statics::SHARED.table.region_ptr())
-                .control
-                .system
-                .hsi_trim_offset)
-                .read_volatile()
-        };
-        if trim != trim_applied {
-            trim_applied = trim;
-            rcc::apply_clock_trim_delta(trim);
+        // Clock-trim loop (§9.3): the transport measures host-instruction
+        // byte cadence ISR-side; the correction lands here, outside any
+        // transport ISR. A correction is ≤ 4 steps (~1%) — well inside the
+        // framing budget vs a crystal host, so trimming over a live wire is
+        // safe (bench 2026-07-11: the manual-knob experiment trimmed the
+        // fleet mid-traffic with zero errors). The applied total mirrors
+        // into telemetry, read-only, for fleet diagnosis.
+        let trim = critical_section::with(|_| {
+            // SAFETY: bus installed in bringup; ISRs masked by the CS.
+            unsafe { crate::runtime::Drivers::bus() }.poll_clock_trim()
+        });
+        if let Some(total) = trim {
+            rcc::apply_clock_trim_delta(total);
+            // SAFETY: table storage is 'static; single-byte volatile store
+            // to a read-only field (regmap can't race it).
+            unsafe {
+                (&raw mut (*crate::runtime::statics::SHARED.table.region_ptr())
+                    .telemetry
+                    .clock
+                    .trim_steps)
+                    .write_volatile(total);
+            }
         }
 
         // Deferred reboot (§9.5), honored after the ack has drained. The

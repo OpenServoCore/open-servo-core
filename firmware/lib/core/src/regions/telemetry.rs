@@ -87,6 +87,18 @@ pub struct TelemetryBusLink {
     pub framing_drop_count: u32,
 }
 
+/// Clock discipline (§9.3), read-only: the trim loop's applied total, in
+/// signed chip trim steps from the factory default (positive = slowed).
+/// Volatile by design — every boot re-converges from live traffic.
+#[repr(C)]
+#[derive(Copy, Clone, Block)]
+pub struct TelemetryClock {
+    #[ct_field(access = ro)]
+    pub trim_steps: i8,
+    #[ct_field(skip)]
+    pub _rsvd_align: [u8; 3],
+}
+
 #[repr(C)]
 #[derive(Section)]
 #[ct_section(base = crate::regions::TELEMETRY_BASE_ADDR, size = crate::regions::TELEMETRY_REGION_SIZE)]
@@ -96,6 +108,7 @@ pub struct TelemetryRegs {
     pub fault: TelemetryFault,
     pub raw: TelemetryRaw,
     pub link: TelemetryBusLink,
+    pub clock: TelemetryClock,
     #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 60],
+    pub _rsvd_tail: [u8; 56],
 }

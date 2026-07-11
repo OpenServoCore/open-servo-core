@@ -522,6 +522,52 @@ RX-path DATAR read removed (vs 44/12k with it present); hot-loop matrix
 green at all four bauds with the conditional release-point clear, ping
 turnarounds flat vs the pre-fix baseline at every baud.
 
+### A5 — passive clock trim: the frontier stamps are the drift estimator
+
+Chain snoop is servo→servo (osc-native §9.3): the clock budget is
+pairwise-HSI, and factory spread (7k+ ppm measured across five chips)
+garbles snooped status tails at 3 M. Each servo therefore trims its own
+oscillator against the host's instruction byte cadence, and the entire
+measurement rides state the resolver already keeps:
+
+- **Stamps.** The frontier's progress bookkeeping (`seen`/`progress_tick`,
+  giveup tracking) doubles as the sample: the first observation is frozen
+  as the near endpoint, the last progress observation is the far one.
+  Both are `(now, cursor)` pairs read together mid-arrival, so no
+  inter-frame gap can enter a span — `wait` runs only while
+  `received < footprint`. Long frames self-generate interior stamps: the
+  starve horizon bounds every wait to 64 byte-times, so the frontier is
+  re-observed at that cadence for free.
+- **Debiasing.** The endpoints are phase-asymmetric: the near stamp is
+  break-FE-anchored (sub-byte-exact), the far stamp is wake-quantized —
+  its sub-byte phase is deterministic per frame geometry, and repetitive
+  traffic (identical hot-loop frames) freezes it into a permanent offset
+  (sim: +3.1 k ppm on a +5.2 k signal). Interior hops carry a 3-bit Weyl
+  dither (pure progress looks, no timing contract), sweeping the far
+  phase uniformly; the emission subtracts its `tpb/2` mean. Residual
+  systematic error is well under half a trim step.
+- **Gates.** ≥ 32-byte spans only (endpoint noise floor; pings never
+  qualify), ≤ 1/16 of nominal (host TX bubbles, merged-transmitter
+  garble, gross wake-latency outliers), CRC-verified instruction frames
+  only, harvested at the verify sites — a garble-born phantom's samples
+  die with its CRC, and snooped status frames (foreign HSIs) never reach
+  the accumulator. The fault contract holds: faults still carry nothing;
+  a fault-woken entry contributes only its simultaneous data-side
+  `(now, cursor)` read.
+- **Loop.** Samples accumulate `(err_ticks, span_ticks)`; the main loop
+  drains a window (`TRIM_WINDOW_WIRE_US` of measured span) through
+  `TrimLoop`: `steps = round(err / step_effect)`, clamped ±4 — the first
+  window takes the acquire jump, steady-state windows round to zero
+  (round-to-nearest IS the deadband). The step effect is self-measured
+  from each applied correction's observed shift (chip steps are
+  nonuniform: 1.4–3.2 k ppm/step across the fleet vs the 2.5 k nominal),
+  sanity-banded 0.8–4 k. The chip applies the total via HSITRIM between
+  frames and mirrors it read-only at `telemetry.clock.trim_steps`.
+
+DES: `tests/trim.rs` (skewed servos converge on frames addressed to other
+ids; near-nominal holds still; pings fill no window) and the framer's
+repetitive-frame bias pin.
+
 ## 7. First-principles losslessness (the zero-gap argument)
 
 1. Capture: every byte is DMA'd regardless of CPU state; breaks pend and

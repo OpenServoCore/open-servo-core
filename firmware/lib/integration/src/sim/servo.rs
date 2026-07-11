@@ -134,6 +134,12 @@ impl SimServo {
         self.bus.diag()
     }
 
+    /// The chip main loop's trim poll (§9.3) — tests model the loop by
+    /// calling it between exchanges.
+    pub fn poll_clock_trim(&mut self) -> Option<i8> {
+        self.bus.poll_clock_trim()
+    }
+
     pub fn with_table<R>(&self, f: impl FnOnce(&ControlTable) -> R) -> R {
         self.shared.table.with(f)
     }
