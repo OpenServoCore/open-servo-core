@@ -124,6 +124,16 @@ pub fn set_tc_irq(r: Regs, enable: bool) {
     });
 }
 
+// SAFETY: see hal/SAFETY.md. CTLR3 is written from MAIN (init) and the
+// HIGH transport ISRs (USART1 + SysTick share the priority, so their writes
+// serialize); CS keeps the RMW atomic against the TC-path DMAT toggle.
+#[inline]
+pub fn set_err_irq(r: Regs, enable: bool) {
+    critical_section::with(|_| {
+        r.ctlr3().modify(|w| w.set_eie(enable));
+    });
+}
+
 #[inline]
 pub fn clear_idle(r: Regs) {
     // SR-then-DR is the only way to clear IDLE.

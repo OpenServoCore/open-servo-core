@@ -106,7 +106,12 @@ pub fn on_usart1() {
     // before any STATR read, so the pair never formed — e.g. a lagged FE
     // delivery on a burst's LAST frame, whose reply produces no further RX
     // drains) is retired by `TxWire::release` while our drive still holds
-    // the line. Any non-TC entry is treated as an RX error whether or not
+    // the line. A latched flag with NO reply in flight to retire it (a
+    // garble tail) is a level-pend storm — this vector re-enters
+    // continuously until the next RX byte. The driver throttles it (§6 A4):
+    // a zero-progress fault service drops EIE via `LineSense::set_fault_wake`
+    // and the deadline slot polls the ring until progress restores the wake.
+    // Any non-TC entry is treated as an RX error whether or not
     // its flags survived; on_break is idempotent (A2: position from ring
     // data, the FE only records a tick).
     let errs = usart::rx_errors(USART1);

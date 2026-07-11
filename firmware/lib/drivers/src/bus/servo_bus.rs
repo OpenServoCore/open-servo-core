@@ -53,6 +53,16 @@ const DEADLINE_DRAIN_MAX: u32 = 8;
 /// the rest.
 const FRAMES_PER_WAKE: u32 = 16;
 
+/// Ring-poll cadence, in byte-times, while the wire-fault wake is muted
+/// (§6 A4 storm throttle). A zero-progress fault service means a flag is
+/// latched with no drain in sight to retire it; level-pend hardware would
+/// re-enter the fault vector continuously until the next RX byte — a silent
+/// CPU burn at transport priority for the whole inter-frame gap. Muting the
+/// wake and polling the ring instead bounds the burn to one deadline service
+/// per poll and the first post-garble frame's detection lateness to this
+/// many byte-times.
+const FAULT_MUTE_POLL_BYTE_TIMES: u32 = 8;
+
 /// Transport health counters the chip publishes into the telemetry region
 /// (§5.3 layer 1: dropped frames are counted, never answered).
 pub struct LinkDiag {
@@ -106,6 +116,10 @@ pub struct ServoBus<P: Providers> {
     // A first confirm sample passed; the slot is re-armed one byte-time out
     // for the aliasing-proof second sample (see RESCUE_RECONFIRM_NUM).
     rescue_reconfirm: bool,
+    // Wire-fault wake muted (§6 A4 storm throttle): the ring cursor as of the
+    // zero-progress fault service that muted it. Cursor movement is the
+    // all-clear — the drain that moved it also retired the latched flag.
+    fault_mute: Option<u16>,
 }
 
 /// Ticks per byte-time at `rate` on the transport clock. Each arm folds to a
@@ -167,6 +181,7 @@ impl<P: Providers> ServoBus<P> {
             rescue_at: None,
             rescue_cursor: 0,
             rescue_reconfirm: false,
+            fault_mute: None,
         }
     }
 
@@ -190,8 +205,21 @@ impl<P: Providers> ServoBus<P> {
         // 2026-07-10: the post-garble one-instruction-late residue). The
         // ring tells the truth one byte-time later; a spurious re-fire
         // costs one empty wake.
-        if !fresh && self.framer_at.is_none() {
-            self.framer_at = Some(now.wrapping_add(self.tpb));
+        //
+        // The same latched flag is also a level-pend storm (§6 A4): with no
+        // drain in sight to retire it, the fault vector re-enters
+        // continuously until the next RX byte. Zero progress since the last
+        // fault is the storm's exact signature — mute the wake and let the
+        // deadline slot poll the ring instead (`on_deadline` restores the
+        // wake on cursor movement).
+        if !fresh {
+            if self.framer_at.is_none() {
+                self.framer_at = Some(now.wrapping_add(self.tpb));
+            }
+            if self.fault_mute.is_none() {
+                self.fault_mute = Some(self.ring.cursor());
+                self.line.set_fault_wake(false);
+            }
         }
         // Wire safety: a staged, not-yet-streaming reply must never fire
         // into the host's NEXT frame. But an FE alone doesn't mean the host
@@ -235,6 +263,7 @@ impl<P: Providers> ServoBus<P> {
     /// routinely overruns `end_due`) is drained in this same invocation — a
     /// pend→exit→re-enter round trip costs ~10 µs of turnaround.
     pub fn on_deadline<D: Dispatch>(&mut self, d: &mut D) {
+        self.restore_fault_wake_on_progress();
         for _ in 0..DEADLINE_DRAIN_MAX {
             let now = self.deadline.now();
             let mut progressed = false;
@@ -258,7 +287,36 @@ impl<P: Providers> ServoBus<P> {
                 break;
             }
         }
+        // Muted with no live framer slot (§6 A4): nothing else would notice
+        // arriving bytes, so keep the ring polled. The line-low mirror keeps
+        // rescue pulses detectable too — gated on an empty rescue slot so
+        // sub-100 µs polls can't push the confirm out forever.
+        if self.fault_mute.is_some() && self.framer_at.is_none() {
+            let now = self.deadline.now();
+            self.framer_at = Some(now.wrapping_add(self.tpb * FAULT_MUTE_POLL_BYTE_TIMES));
+            if self.rescue_at.is_none() && self.line.is_low() {
+                let at =
+                    now.wrapping_add(RESCUE_CONFIRM_US * <P::Deadline as Deadline>::TICKS_PER_US);
+                self.rescue_at = Some(at);
+                self.rescue_cursor = self.ring.cursor();
+                self.rescue_reconfirm = false;
+            }
+        }
         self.arm_deadline();
+    }
+
+    /// While the fault wake is muted (§6 A4), ring progress is the all-clear:
+    /// the drain that ringed it also retired the latched flag (the SR half
+    /// was armed by the muting entry's STATR read), so restoring the wake
+    /// usually re-fires nothing. A fault latched DURING the mute delivers
+    /// one late wake instead — idempotent by A2 (position from ring data).
+    fn restore_fault_wake_on_progress(&mut self) {
+        if let Some(cursor) = self.fault_mute
+            && self.ring.cursor() != cursor
+        {
+            self.fault_mute = None;
+            self.line.set_fault_wake(true);
+        }
     }
 
     /// TX DMA arm-complete ISR: stream the next arm, or apply deferred config
@@ -266,6 +324,12 @@ impl<P: Providers> ServoBus<P> {
     /// old id/baud, the change lands after.
     pub fn on_tx_complete(&mut self) {
         if self.tx.on_arm_complete(&mut self.crc) == TxOut::Released {
+            // The release retired every latched flag while our drive held
+            // the line (SR-DR-SR, F9) — the one wake restore that needs no
+            // ring progress to be pend-safe (§6 A4).
+            if self.fault_mute.take().is_some() {
+                self.line.set_fault_wake(true);
+            }
             if let Some(id) = self.pending_id.take() {
                 self.id = id;
             }

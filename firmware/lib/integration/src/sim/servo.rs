@@ -10,8 +10,8 @@ use osc_drivers::bus::{LinkDiag, ServoBus};
 
 use super::core::Core;
 use super::providers::{
-    BaudState, DeadlineState, Handles, RingState, SimBaud, SimCrc, SimDeadline, SimLine,
-    SimProviders, SimRing, SimWire,
+    BaudState, DeadlineState, FaultWakeState, Handles, RingState, SimBaud, SimCrc, SimDeadline,
+    SimLine, SimProviders, SimRing, SimWire,
 };
 use super::store::RamStore;
 
@@ -73,6 +73,7 @@ impl SimServo {
             )
         });
         let baud = BaudState::new(rate);
+        let fault_wake = FaultWakeState::new();
 
         let bus = ServoBus::new(
             SimRing::new(ring.clone()),
@@ -80,7 +81,7 @@ impl SimServo {
             SimCrc::new(),
             SimWire::new(core.clone(), baud.clone(), idx),
             SimBaud::new(baud.clone()),
-            SimLine::new(core.clone()),
+            SimLine::new(core.clone(), fault_wake.clone(), idx),
             id,
             rate,
             response_deadline_us,
@@ -95,6 +96,7 @@ impl SimServo {
             ring,
             deadline,
             baud,
+            fault_wake,
         };
         (servo, handles)
     }

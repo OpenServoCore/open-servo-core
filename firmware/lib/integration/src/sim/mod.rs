@@ -339,6 +339,23 @@ impl Sim {
             }
             Event::TxArmDone { servo } => self.deliver(servo, Vector::TxDone),
             Event::CpuFree { servo } => self.cpu_free(servo),
+            Event::FaultPend { servo } => {
+                let fw = &self.handles[servo].fault_wake;
+                if fw.wake.get() && fw.latched.replace(false) {
+                    self.deliver(servo, Vector::Break);
+                }
+            }
+        }
+    }
+
+    /// Wire-fault wake gate (§6 A4, level-pend model): deliver the FE's
+    /// `on_break` only while servo `j`'s wake is on — otherwise it latches,
+    /// and `set_fault_wake(true)` schedules the late delivery.
+    fn deliver_fault(&mut self, j: usize) {
+        if self.handles[j].fault_wake.wake.get() {
+            self.deliver(j, Vector::Break);
+        } else {
+            self.handles[j].fault_wake.latched.set(true);
         }
     }
 
@@ -401,7 +418,7 @@ impl Sim {
                 continue; // no own-TX echo (F9)
             }
             self.handles[j].ring.push(0x00);
-            self.deliver(j, Vector::Break);
+            self.deliver_fault(j);
         }
     }
 
@@ -421,7 +438,7 @@ impl Sim {
                 // the ringed byte must not survive as valid data at either a
                 // faster or slower receiver.
                 self.handles[j].ring.push(byte ^ MISMATCH_GARBLE);
-                self.deliver(j, Vector::Break);
+                self.deliver_fault(j);
             }
         }
     }
@@ -429,7 +446,7 @@ impl Sim {
     fn deliver_garble(&mut self, byte: u8) {
         for j in 0..self.servos.len() {
             self.handles[j].ring.push(byte);
-            self.deliver(j, Vector::Break);
+            self.deliver_fault(j);
         }
     }
 
@@ -439,7 +456,7 @@ impl Sim {
         // frame — a rescue pulse is not data.
         for j in 0..self.servos.len() {
             self.handles[j].ring.push(0x00);
-            self.deliver(j, Vector::Break);
+            self.deliver_fault(j);
         }
     }
 }

@@ -94,11 +94,30 @@ impl BaudState {
     }
 }
 
+/// Wire-fault wake gate + latch (§6 A4, the level-pend model): while the
+/// wake is off, an FE event latches instead of delivering `on_break` (its
+/// ring byte still lands); restoring the wake with a fault latched schedules
+/// one late delivery ([`Event::FaultPend`]).
+pub struct FaultWakeState {
+    pub wake: Cell<bool>,
+    pub latched: Cell<bool>,
+}
+
+impl FaultWakeState {
+    pub fn new() -> Rc<Self> {
+        Rc::new(Self {
+            wake: Cell::new(true),
+            latched: Cell::new(false),
+        })
+    }
+}
+
 /// Handles the Sim keeps to reach into one servo's state during delivery.
 pub struct Handles {
     pub ring: Rc<RingState>,
     pub deadline: Rc<DeadlineState>,
     pub baud: Rc<BaudState>,
+    pub fault_wake: Rc<FaultWakeState>,
 }
 
 // --- providers --------------------------------------------------------------
@@ -347,11 +366,13 @@ impl UsartBaud for SimBaud {
 
 pub struct SimLine {
     core: Rc<RefCell<Core>>,
+    fault: Rc<FaultWakeState>,
+    idx: usize,
 }
 
 impl SimLine {
-    pub fn new(core: Rc<RefCell<Core>>) -> Self {
-        Self { core }
+    pub fn new(core: Rc<RefCell<Core>>, fault: Rc<FaultWakeState>, idx: usize) -> Self {
+        Self { core, fault, idx }
     }
 }
 
@@ -359,6 +380,18 @@ impl LineSense for SimLine {
     fn is_low(&self) -> bool {
         let c = self.core.borrow();
         c.is_low(c.now())
+    }
+
+    fn set_fault_wake(&mut self, on: bool) {
+        self.fault.wake.set(on);
+        // Level pend: a fault latched during the mute re-fires the moment the
+        // gate opens — as its own event, so the delivery lands after the
+        // handler body that restored the wake (the CPU model pends it).
+        if on && self.fault.latched.get() {
+            let mut c = self.core.borrow_mut();
+            let now = c.now();
+            c.schedule(Event::FaultPend { servo: self.idx }, now);
+        }
     }
 }
 

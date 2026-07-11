@@ -486,6 +486,23 @@ vector storms):
   the first data byte lands, dragging the frontier tick and the reply
   grid with it (bench: +12 µs of ping turnaround at 0.5M with a plain
   SR-DR clear; flat with the trailing re-arm).
+- **Storm throttle, the quiet-bus corner:** the same garble-tail latch has
+  no release point (nothing staged to send) and no next drain in sight —
+  with level-pend PFIC the vector re-enters continuously until the next RX
+  byte, a silent burn at transport priority that starves the motor kernel
+  for the whole inter-frame gap (correctness-neutral since the
+  evidence-in-flight recheck; pure CPU theft). Zero ring progress since the
+  last fault is the storm's exact signature, so a zero-progress fault
+  service mutes the fault wake (`LineSense::set_fault_wake`, chip: EIE —
+  flags keep latching and DMAR keeps ringing) and the deadline slot polls
+  the ring at `FAULT_MUTE_POLL_BYTE_TIMES` instead, with a line-low mirror
+  (gated on an empty rescue slot, so sub-100 µs polls never push a pending
+  confirm out) keeping rescue pulses detectable. Ring progress is the
+  all-clear — the drain that moved the cursor completed the storm entry's
+  armed SR-half and retired the flag — and restores the wake; a reply
+  release restores it too (its SR-DR-SR clear needs no ring progress to be
+  pend-safe). Bounds: one deadline service per poll while quiet, and the
+  first post-garble frame resolves at most the poll cadence late.
 
 Silicon: 12k/12k plain floods at 1M and 0.5M (production shape) with the
 RX-path DATAR read removed (vs 44/12k with it present); hot-loop matrix

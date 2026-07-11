@@ -71,6 +71,9 @@ pub enum Event {
     /// A servo's tick-compare fired; `generation` guards against a cancelled/re-armed
     /// deadline (stale generations are dropped on delivery).
     Compare { servo: usize, generation: u64 },
+    /// A latched wire fault re-fires after its wake gate reopened (§6 A4
+    /// level-pend model); delivered only if still latched with the wake on.
+    FaultPend { servo: usize },
     /// A servo TX DMA arm completed — drive `on_tx_complete`.
     TxArmDone { servo: usize },
     /// A servo's handler body ended (`super::cpu`): deliver one pended vector.

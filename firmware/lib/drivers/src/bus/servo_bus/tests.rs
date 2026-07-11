@@ -744,3 +744,112 @@ fn break_service_before_drain_rechecks_and_answers() {
     assert_eq!(id, ID);
     assert_eq!(inst.result(), Some(ResultCode::Ok));
 }
+
+/// §6 A4 storm throttle: a zero-progress fault service mutes the fault wake
+/// (the latched flag would otherwise re-enter the vector continuously), the
+/// deadline slot polls the ring at FAULT_MUTE_POLL_BYTE_TIMES while quiet,
+/// and ring progress restores the wake and resolves in the same wake.
+#[test]
+fn zero_progress_fault_mutes_wake_until_ring_progress() {
+    let h = Harness::new();
+    let mut bus = h.build(ID, RATE, 60);
+    let shared = shared_seeded();
+    let mut session = Session::new();
+    let mut d = session.dispatcher(&shared);
+    let poll = super::FAULT_MUTE_POLL_BYTE_TIMES * TPB;
+
+    let anchor = 100usize;
+    bus.framer.resync(anchor as u16);
+    h.deadline.set_now(1000);
+    h.ring.set_cursor(anchor as u16);
+    assert!(h.line.fault_wake());
+    bus.on_break(&mut d);
+    assert!(!h.line.fault_wake(), "zero-progress fault service mutes");
+    assert_eq!(h.deadline.armed(), Some(1000 + TPB));
+
+    // Recheck finds nothing: stay muted, fall back to the poll cadence.
+    h.deadline.set_now(1000 + TPB);
+    bus.on_deadline(&mut d);
+    assert!(!h.line.fault_wake());
+    assert_eq!(h.deadline.armed(), Some(1000 + TPB + poll));
+
+    // Quiet poll: still muted, next poll one cadence out.
+    h.deadline.set_now(1000 + TPB + poll);
+    bus.on_deadline(&mut d);
+    assert!(!h.line.fault_wake());
+    assert_eq!(h.deadline.armed(), Some(1000 + TPB + 2 * poll));
+
+    // A whole ping rings before the next poll (its break FE never woke us —
+    // the wake is muted): the poll's progress check restores the wake and
+    // the same wake resolves the frame from ring data.
+    let frame = instruction(ID, Opcode::Ping, 0, &[]);
+    h.ring.place(anchor, &frame);
+    h.ring
+        .set_cursor(((anchor + frame.len()) % RING_LEN) as u16);
+    h.deadline.set_now(1000 + TPB + 2 * poll);
+    bus.on_deadline(&mut d);
+    assert!(h.line.fault_wake(), "ring progress restores the wake");
+
+    fire(&mut bus, &h, &mut d);
+    drain_tx(&mut bus, &h);
+    let (id, inst, _) = last_reply(&h.wire);
+    assert_eq!(id, ID);
+    assert_eq!(inst.result(), Some(ResultCode::Ok));
+}
+
+/// §6 A4 × §9.1: a rescue pulse landing while the wake is muted delivers no
+/// FE wake, so the poll's line-low mirror must arm the confirm — and the
+/// sub-100 µs polls must not push a pending confirm out (the `rescue_at`
+/// gate). The confirm chain then applies the 0.5 M rescue rate under the
+/// mute, and the poll keeps running at the new byte-time.
+#[test]
+fn rescue_pulse_while_muted_confirms_via_poll() {
+    let h = Harness::new();
+    let mut bus = h.build(ID, RATE, 60);
+    let shared = shared_seeded();
+    let mut session = Session::new();
+    let mut d = session.dispatcher(&shared);
+    let poll = super::FAULT_MUTE_POLL_BYTE_TIMES * TPB;
+
+    let anchor = 100usize;
+    bus.framer.resync(anchor as u16);
+    h.deadline.set_now(1000);
+    h.ring.set_cursor(anchor as u16);
+    bus.on_break(&mut d);
+    h.deadline.set_now(1000 + TPB);
+    bus.on_deadline(&mut d);
+    assert!(!h.line.fault_wake());
+    let poll1 = 1000 + TPB + poll;
+
+    // Pulse start: the FE latches silently; the poll sees the low line and
+    // arms the +100 µs confirm.
+    h.line.set_low(true);
+    h.deadline.set_now(poll1);
+    bus.on_deadline(&mut d);
+    let confirm = poll1 + 100; // RESCUE_CONFIRM_US × test TICKS_PER_US(1)
+    assert_eq!(h.deadline.armed(), Some(poll1 + poll), "poll fires first");
+
+    // The next poll must NOT re-arm (and so push out) the pending confirm.
+    h.deadline.set_now(poll1 + poll);
+    bus.on_deadline(&mut d);
+    assert_eq!(h.deadline.armed(), Some(confirm));
+
+    // Confirm sample 1 (cursor frozen, line low) → reconfirm a byte-time on.
+    h.deadline.set_now(confirm);
+    bus.on_deadline(&mut d);
+    let reconfirm = h.deadline.armed().expect("reconfirm armed");
+    h.deadline.set_now(reconfirm);
+    bus.on_deadline(&mut d);
+    assert_eq!(h.baud.applied().last(), Some(&BaudRate::B500000));
+    assert!(!h.line.fault_wake(), "rescue applies under the mute");
+
+    // Pulse released; host bytes at the rescue rate ring. The poll — now on
+    // 0.5 M byte-times — sees progress and restores the wake.
+    h.line.set_low(false);
+    h.ring.place(anchor, &[0x00]);
+    h.ring.set_cursor((anchor as u16) + 1);
+    let next = h.deadline.armed().expect("poll re-armed post-rescue");
+    h.deadline.set_now(next);
+    bus.on_deadline(&mut d);
+    assert!(h.line.fault_wake());
+}
