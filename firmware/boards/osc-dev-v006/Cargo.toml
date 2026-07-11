@@ -2,13 +2,6 @@
 resolver = "2"
 members  = ["boot", "app"]
 
-# Task #11 (half-duplex shared-wire fixes, OpenServoCore/tinyboot#32) rides
-# the local checkout until a tinyboot release tags it — cargo can't patch a
-# git dep from the same git URL. Drop this patch and bump the dep tag when
-# the release lands.
-[patch."https://github.com/OpenServoCore/tinyboot.git"]
-tinyboot-ch32 = { path = "/Users/aaron/projects/OpenServoCore/tinyboot/ch32" }
-
 [workspace.package]
 edition = "2024"
 
