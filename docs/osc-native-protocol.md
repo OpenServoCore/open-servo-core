@@ -193,6 +193,55 @@ Any CRC failure, LEN overrun, or framing anomaly drops the frame and
 returns the framer to HUNT; the next break is a hardware resync point.
 There is no FF-FF-FD-style hunting cold path — the break _is_ the hunt.
 A mid-frame FE costs one frame (CRC rejects it), never the stream [F4].
+What a framing anomaly may and may not tell the implementation is
+normative — see §3.4.
+
+### 3.4 Fault contract (normative)
+
+Break framing deliberately unifies the frame delimiter with the
+hardware's error indicator: on the target silicon a wire fault
+(FE/ORE/NE) is a **latched, level-pended, positionless flag**. It
+coalesces (N events, one flag), it re-fires until a data-register access
+retires it (which is unsafe mid-stream), its service lags the wire by an
+unbounded amount at high interrupt occupancy, and reply-less traffic
+(`NOREPLY` writes, broadcasts) leaves it latched indefinitely because
+nothing transmits to retire it. The flag therefore carries **exactly one
+bit of meaning: "look at the ring again."**
+
+The contract, binding on every implementation of this protocol:
+
+- **Positions come from ring data only** (§4.1). A fault event MUST NOT
+  be assigned a position; no frame may be dropped, killed, or rejected
+  on fault evidence. Data is the only death authority: CRC verdicts,
+  geometry checks, and the starve horizon.
+- **Times come from data-cadence projections only** (`now + missing
+  byte-times`). A fault's arrival time MUST NOT enter any timing grid.
+- **Faults are not countable events.** N faults and 1 fault are
+  indistinguishable after coalescing; all fault handling MUST be
+  idempotent.
+- Fault-path code MAY do two things and nothing else: **schedule a
+  re-inspection of the ring** (a recheck/poll — the wake's evidence may
+  be one byte-time behind it), and **manage its own wake channel** (mask
+  a storming source once the ring proves the wire quiet, re-enable on
+  data progress). Neither derives meaning from the event.
+
+**The accepted limitation** (the price of the unification): garble that
+forms a plausible frame header parks the resolver until data kills it —
+footprint-fill CRC (≤ 258 bytes) or the starve horizon (64 byte-times of
+ring silence), whichever comes first, per plausible junk anchor. Recovery
+is always bounded and converges at the first CRC verdict; it is not
+instant. **Host pacing rule:** after traffic a servo may have received as
+garble (wrong-baud probing, bus glitches), allow one starve horizon of
+bus silence before expecting crisp turnarounds; under continuous
+zero-gap retries, replies can lag by up to the parked span until a gap
+appears.
+
+History, so this path is not re-walked: two shipped attempts to extract
+more than the one bit — a positional fault fence and a service-time wake
+mute — each passed every quiet-wire test and then killed live frames
+under multi-node burst load, the same way (service-time cursors lie
+under lag and latch re-fires). The failure analysis lives in
+`osc-servo-transport.md` §6.
 
 ## 4. Servo RX/TX paths
 
@@ -458,6 +507,10 @@ ALERT bit on that servo's status (§5.3).
 - Drive discipline if on a buffer-less bus (release when idle) [F8].
 - Schedule the bus: one outstanding instruction / chain at a time;
   timeout = RESPONSE_DEADLINE + frame time.
+- Fault pacing (§3.4): after traffic a servo may have received as garble
+  (wrong-baud probes, glitches), allow one starve horizon (64
+  byte-times) of bus silence before expecting crisp turnarounds — don't
+  hammer zero-gap retries into a parked resolver.
 
 ## 9. Management plane (MGMT sub-ops)
 

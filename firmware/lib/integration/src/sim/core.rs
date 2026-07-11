@@ -74,6 +74,10 @@ pub enum Event {
     /// A latched wire fault re-fires after its wake gate reopened (§6 A4
     /// level-pend model); delivered only if still latched with the wake on.
     FaultPend { servo: usize },
+    /// Test-injected latched-flag re-fire: the fault vector re-enters with
+    /// NO new wire byte (the level-pend hardware's hardest trick, and the
+    /// fault contract's reason to exist). Wake-gated like any fault.
+    FaultRefire { servo: usize },
     /// A servo TX DMA arm completed — drive `on_tx_complete`.
     TxArmDone { servo: usize },
     /// A servo's handler body ended (`super::cpu`): deliver one pended vector.

@@ -321,18 +321,23 @@ there is no ring rearm anymore). From then on:
 - **Scheduled path (newest frame only).** The frame still arriving keeps
   today's deadline pipeline unchanged: A → covered (dispatch, §6 A3(b)) → B
   (verdict), timed from `last_break_ts`.
-- Classification falls out: an FE while the current frame is short of its
-  end and no fresh anchor position validates is mid-frame garble by
-  position, not by a `cursor-1` byte value. The Step-0 failure class
-  becomes unwritable. Implemented as the **wire-fault fence** (2026-07-10):
-  each FE service with ring progress proves at least one break/garble byte
-  ringed since the previous service, so an incomplete candidate anchored
-  before all of those bytes owns one as unfilled interior and is sacrificed
-  at once — without it, a phantom header's garbage LEN let live traffic
-  feed its footprint and every instruction after wrong-baud garbage was
-  answered one instruction late (task #9). A service with no fresh bytes
-  (the 0.5M latched-flag re-fire) carries no evidence and leaves the fence
-  put; a starving no-FE partial still dies only at the giveup horizon.
+- Garble dies by DATA only (the fault contract, osc-native §3.4): a
+  phantom candidate born from garble is killed by its footprint-fill CRC
+  verdict or by the starve horizon — never by fault position. **The
+  wire-fault fence is deliberately dead** (shipped 2026-07-10, deleted
+  2026-07-11): it recorded service-time cursors as fault positions, and
+  those lie under exactly the conditions a fleet produces — latched-flag
+  re-fires after NOREPLY frames (nothing transmits, so nothing retires
+  the flag) and coalesced/lagged break service at high ISR occupancy.
+  Two such services during one live frame's flight planted the fence
+  inside the frame and killed it (bench 2026-07-11: hot
+  GWRITE+COMMIT+GREAD chains fell 95%→80%, silent chain slots, framing
+  drops on every servo; the DES pin is
+  `latched_refires_mid_frame_never_kill_the_trusted_stream`). The cost
+  of the deletion is bounded, documented recovery latency (§3.4 host
+  pacing rule) instead of fault-speed phantom kills — the #9 indefinite
+  one-late cascade stays dead because the phantom's CRC rejection flips
+  the hunt on and the hunt converges from ring data.
 - Corruption recovery: a corrupted LEN mis-strides the ladder; the next
   resolution finds no `0x00` at the expected anchor (or the frame fails
   CRC) → drop + count, and the ladder re-verifies at every following

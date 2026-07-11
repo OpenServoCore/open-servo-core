@@ -185,6 +185,20 @@ impl Sim {
         self.queue_host_frame(start, frame);
     }
 
+    /// Inject a latched-flag re-fire at servo `i`: the fault vector
+    /// re-enters with NO new wire byte. Level-pend hardware does this
+    /// whenever a flag's SR-DR retire pair hasn't formed (routinely, after
+    /// NOREPLY frames — nothing transmits, so nothing retires the flag);
+    /// the fault contract exists because these wakes carry no position and
+    /// no time, and any code deriving either from them kills live frames
+    /// (bench 2026-07-11).
+    pub fn inject_fault_refire_at(&mut self, at_us: u64, i: usize) {
+        let at = self.clamp_at(at_us);
+        self.core
+            .borrow_mut()
+            .schedule(Event::FaultRefire { servo: i }, at);
+    }
+
     /// Queue a host frame whose transmitter stalls mid-frame: bytes
     /// `..split` stream normally, then the wire idles high for `stall_us`,
     /// then the rest streams. Models the pirate's TXE-poll bubbles (bench
@@ -345,6 +359,7 @@ impl Sim {
                     self.deliver(servo, Vector::Break);
                 }
             }
+            Event::FaultRefire { servo } => self.deliver_fault(servo),
         }
     }
 

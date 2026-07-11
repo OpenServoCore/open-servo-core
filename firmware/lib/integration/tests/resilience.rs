@@ -12,7 +12,7 @@ use rstest::rstest;
 use rstest_reuse::apply;
 
 mod support;
-use support::{matrix, sim};
+use support::{byte_ticks, matrix, sim};
 
 const ID5: u8 = 5;
 
@@ -44,9 +44,9 @@ fn midframe_garble_costs_one_frame() {
     let s = sim.add_servo(ID5);
 
     // Frame A: one stray ring byte injected inside its wire window. The
-    // garble's FE plus ring progress fences A (§6 A2 garble-by-position:
-    // the fault byte sits inside A's unfilled span, so A can never pass
-    // CRC) — A dies at the fence. No ack, not applied.
+    // stray byte fills A's span one byte early, so A's CRC covers a
+    // shifted window and fails — A dies by DATA (the fault contract: the
+    // garble's FE is only a wake). No ack, not applied.
     sim.host_send_at(0, &write_gv(ID5, 0x0A0A0A0A));
     sim.inject_garble_at(50, 0xAA);
 
@@ -64,8 +64,8 @@ fn midframe_garble_costs_one_frame() {
         0x0B0B0B0B,
         "B applied despite the odd anchor"
     );
-    // A dies exactly once at layer 1 — by position (fence) or by CRC; the
-    // contract is the sum, as elsewhere in this suite.
+    // A dies exactly once at layer 1 — by CRC or by starve; the contract
+    // is the sum, as elsewhere in this suite.
     let d = sim.servo_diag(s);
     assert_eq!(d.framing_drop_count + d.crc_fail_count, 1);
 }
@@ -282,26 +282,76 @@ fn break_preempts_pending_write_then_recovers() {
     );
 }
 
+#[apply(matrix)]
+fn latched_refires_mid_frame_never_kill_the_trusted_stream(baud_idx: u8) {
+    // The fault contract's regression pin (bench 2026-07-11: hot
+    // GWRITE+COMMIT+GREAD chains fell 95%→80%): NOREPLY frames leave FE
+    // flags latched with no reply-release to retire them, so the fault
+    // vector re-enters mid-frame while trusted traffic streams. Those
+    // wakes carry no position and no time; two of them during one frame's
+    // flight must cost NOTHING. (The deleted wire-fault fence recorded
+    // service-time cursors and killed the live frame here.)
+    let mut sim = sim(baud_idx);
+    let s = sim.add_servo(ID5);
+
+    // A NOREPLY write (leaves the flag latched on real silicon), then a
+    // burst of acked writes with re-fires landing inside each wire window.
+    let a = GOAL_VELOCITY.to_le_bytes();
+    sim.host_send_at(
+        0,
+        &instruction(
+            ID5,
+            Opcode::Write,
+            Inst::FLAG_NOREPLY,
+            &[a[0], a[1], 1, 0, 0, 0],
+        ),
+    );
+    let bt_us = byte_ticks(baud_idx) / 48; // sim byte-time in µs
+    let mut acks = 0;
+    for k in 0..4u64 {
+        let at = 1000 + k * 5000;
+        sim.host_send_at(at, &write_gv(ID5, 0x0C0C0C0C + k as i32));
+        // Two re-fires inside the frame's wire window: one early (header
+        // region), one late (interior) — the old fence needed exactly two
+        // progressing services to plant mid-frame and kill.
+        sim.inject_fault_refire_at(at + 2 * bt_us, s);
+        sim.inject_fault_refire_at(at + 6 * bt_us, s);
+        let frames = sim.run();
+        acks += servo_frames(&frames).len();
+    }
+    assert_eq!(acks, 4, "every acked write answered despite re-fires");
+    assert_eq!(
+        sim.servo_table(s, |t| t.control.lifecycle.goal_velocity),
+        0x0C0C0C0C + 3,
+        "last write applied"
+    );
+    let d = sim.servo_diag(s);
+    assert_eq!(
+        d.framing_drop_count + d.crc_fail_count,
+        0,
+        "re-fires cost nothing on a trusted stream"
+    );
+}
+
 #[test]
-fn foreign_baud_garbage_never_parks_the_ladder() {
-    // Task #9: a probe at a foreign baud rings FE-dense garble, and a
-    // phantom header inside it (garbage LEN) claims hundreds of bytes of
-    // interior. Instructions following at the servo's own baud used to be
-    // swallowed as that interior — each answered one instruction late (its
-    // bytes completed the phantom; the reply carried the PREVIOUS
-    // instruction's payload), indefinitely under a retrying host. The
-    // wire-fault fence (§6 A2 garble-by-position) kills the phantom at the
-    // next fault-with-progress: every own-baud instruction is answered off
-    // its own frame, inside the response deadline.
+fn foreign_baud_garbage_recovers_within_the_data_bound() {
+    // Task #9 heritage, re-specified to the fault contract (osc-native
+    // §fault-handling): a probe at a foreign baud rings FE-dense garble,
+    // and a phantom header inside it (garbage LEN) claims interior.
+    // Instructions following at the servo's own baud feed that interior —
+    // and since an FE carries no position, NOTHING may kill the phantom by
+    // fault evidence (a fence built on service-time cursors killed live
+    // frames under burst load — bench 2026-07-11). The guarantee is
+    // data-bounded recovery instead: the phantom dies by footprint-fill
+    // CRC or by the starve horizon (64 byte-times of ring silence), the
+    // hunt then resolves the swallowed instruction from ring data, and —
+    // the #9 property that must stay dead — the lateness NEVER becomes a
+    // steady state: every subsequent exchange is answered off its own
+    // frame.
     const TICKS_PER_US: u64 = 48;
     let mut sim = Sim::new(BaudRate::B2000000);
     sim.add_servo(ID5);
 
-    // Discovery-shaped foreign traffic: a 1M ping heard at 2M — every byte
-    // rings garbled, with an FE (§2 approximation). The own-baud ping rides
-    // the same run, inside the phantom's starve horizon: a drained queue
-    // between them would let the horizon chew the phantom out first, which
-    // the bench's live traffic never does.
     sim.set_host_baud(BaudRate::B1000000);
     sim.host_send(&instruction(ID5, Opcode::Ping, 0, &[]));
     sim.set_host_baud(BaudRate::B2000000);
@@ -320,14 +370,20 @@ fn foreign_baud_garbage_never_parks_the_ladder() {
         .expect("ping never answered — swallowed as phantom interior");
     assert_valid(reply);
     assert_eq!(status(reply).0.result(), Some(ResultCode::Ok));
+    // Recovery bound: each 0x00-plausible junk anchor in the garble costs
+    // at most one starve horizon (64 byte-times = 320 µs at 2M) on a quiet
+    // wire. The garble yields a couple such anchors; 3 horizons + a frame
+    // of slack is the contract's practical ceiling here.
     let lead = reply.at - ping.end;
     assert!(
-        lead < 60 * TICKS_PER_US,
-        "ping answered {} µs after its end — parked ladder",
+        lead < 1000 * TICKS_PER_US,
+        "ping answered {} µs after its end — recovery unbounded",
         lead / TICKS_PER_US
     );
 
-    // And the exchanges after it stay clean — no one-late residue.
+    // The exchanges after it stay clean and prompt — no one-late residue
+    // (the indefinite cascade is the thing #9 fixed; CRC rejection of the
+    // phantom flips the hunt on, and the hunt converges).
     for k in 0..2 {
         sim.host_send(&instruction(ID5, Opcode::Ping, 0, &[]));
         let frames = sim.run();
