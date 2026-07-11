@@ -183,12 +183,16 @@ impl Framer {
     /// horizon at a time (the wrong-baud-garbage one-instruction-late
     /// cascade, bench 2026-07-10). A service with no fresh bytes carries no
     /// evidence — a latched flag re-fires until the next data byte lands
-    /// (the 0.5M corner) — and must not move the fence.
-    pub fn on_wire_fault(&mut self, cursor: u16) {
-        if cursor != self.fault_seen {
-            self.fault_fence = self.fault_seen;
-            self.fault_seen = cursor;
+    /// (the 0.5M corner) — and must not move the fence. Returns whether
+    /// fresh bytes backed this service: `false` means the wake's evidence
+    /// is still in flight (the composite arms a one-byte-time recheck).
+    pub fn on_wire_fault(&mut self, cursor: u16) -> bool {
+        if cursor == self.fault_seen {
+            return false;
         }
+        self.fault_fence = self.fault_seen;
+        self.fault_seen = cursor;
+        true
     }
 
     /// The candidate at the ladder anchor predates every byte of the last

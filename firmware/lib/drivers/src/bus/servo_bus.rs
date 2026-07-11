@@ -180,8 +180,19 @@ impl<P: Providers> ServoBus<P> {
         // Fence first, resolve second: the fault evidence applies to the
         // candidate as it stood BEFORE this wake, and the resolve right
         // after consumes it in the same wake.
-        self.framer.on_wire_fault(self.ring.cursor());
+        let fresh = self.framer.on_wire_fault(self.ring.cursor());
         self.drive_framer(d);
+        // A wire fault whose evidence isn't ringed yet leaves the resolver
+        // with nothing — and possibly no wake ever again: a flag latched by
+        // a garble tail is consumed by the NEXT break's own drain (the
+        // SR-then-DR pair), so that break never re-fires the vector, and its
+        // complete frame sits unresolved until unrelated traffic (bench
+        // 2026-07-10: the post-garble one-instruction-late residue). The
+        // ring tells the truth one byte-time later; a spurious re-fire
+        // costs one empty wake.
+        if !fresh && self.framer_at.is_none() {
+            self.framer_at = Some(now.wrapping_add(self.tpb));
+        }
         // Wire safety: a staged, not-yet-streaming reply must never fire
         // into the host's NEXT frame. But an FE alone doesn't mean the host
         // moved on — lagged deliveries routinely resolve the reply's own

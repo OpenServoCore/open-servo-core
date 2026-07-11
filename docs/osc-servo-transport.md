@@ -470,6 +470,14 @@ vector storms):
   FE delivery on a burst's LAST frame, whose reply produces no further RX
   drains. Left alone it storms the vector once the wire idles (bench
   signature: the first ack-bearing exchange after a hot-loop leg dies).
+  A garble tail with no reply leaves the same latch with no release to
+  retire it, and the storm's armed SR-half is then completed by the NEXT
+  frame's break-byte drain — consuming the flag at the very event that
+  should have re-fired the vector. That frame would sit complete but
+  unresolved (bench 2026-07-10: the post-garble one-instruction-late
+  residue); the composite closes it with the evidence-in-flight recheck —
+  a wire-fault service backed by no fresh ring bytes arms a one-byte-time
+  framer recheck, so the frame resolves by data even when its FE was eaten.
   `TxWire::release` retires it with an SR-DR-SR clear while our push-pull
   drive still holds the line high — no byte can be mid-reception, so the
   DATAR read is provably safe there. The trailing STATR read is

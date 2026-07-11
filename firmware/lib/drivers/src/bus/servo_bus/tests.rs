@@ -704,3 +704,43 @@ fn backlog_write_then_read_processes_in_order() {
     assert_eq!(inst.result(), Some(ResultCode::Ok));
     assert_eq!(&data[..2], &[0x34, 0x12]);
 }
+
+/// A wire-fault wake whose evidence hasn't ringed yet (the drain a beat
+/// behind ISR entry — or the FE consumed by a garble-latched flag's SR-DR
+/// pair, so this wake is the LAST one the frame gets) must leave a framer
+/// recheck armed: one byte-time later the ring tells the truth and the
+/// frame resolves by data. Without it the frame sat complete-but-unresolved
+/// until unrelated traffic (the post-garble one-instruction-late residue,
+/// bench 2026-07-10).
+#[test]
+fn break_service_before_drain_rechecks_and_answers() {
+    let h = Harness::new();
+    let mut bus = h.build(ID, RATE, 60);
+    let shared = shared_seeded();
+    let mut session = Session::new();
+    let mut d = session.dispatcher(&shared);
+
+    let anchor = 100usize;
+    bus.framer.resync(anchor as u16);
+    h.deadline.set_now(1000);
+    // FE serviced with the cursor still AT the anchor: nothing new ringed.
+    h.ring.set_cursor(anchor as u16);
+    bus.on_break(&mut d);
+    let recheck = h.deadline.armed().expect("recheck armed on empty evidence");
+    assert_eq!(recheck, 1000 + TPB);
+
+    // By the recheck the whole ping has ringed (no further FE ever fires).
+    let frame = instruction(ID, Opcode::Ping, 0, &[]);
+    h.ring.place(anchor, &frame);
+    h.ring
+        .set_cursor(((anchor + frame.len()) % RING_LEN) as u16);
+    h.deadline.set_now(recheck);
+    bus.on_deadline(&mut d);
+
+    // Resolved from ring data alone: the reply stages and fires.
+    fire(&mut bus, &h, &mut d);
+    drain_tx(&mut bus, &h);
+    let (id, inst, _) = last_reply(&h.wire);
+    assert_eq!(id, ID);
+    assert_eq!(inst.result(), Some(ResultCode::Ok));
+}
