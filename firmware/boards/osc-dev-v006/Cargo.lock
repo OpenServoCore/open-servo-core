@@ -691,7 +691,6 @@ dependencies = [
 [[package]]
 name = "tinyboot-ch32"
 version = "0.4.1"
-source = "git+https://github.com/OpenServoCore/tinyboot.git?tag=tinyboot-ch32-v0.4.1#6012fe516631411254646881f6be4a136a866f7a"
 dependencies = [
  "ch32-metapac",
  "critical-section",
@@ -710,7 +709,6 @@ checksum = "883604800ee4be7884b4a2bf9fc4c9731f4c09791852a7474c52a9ac4e8a6bb7"
 [[package]]
 name = "tinyboot-core"
 version = "0.4.0"
-source = "git+https://github.com/OpenServoCore/tinyboot.git?tag=tinyboot-ch32-v0.4.1#6012fe516631411254646881f6be4a136a866f7a"
 dependencies = [
  "critical-section",
  "embedded-io",
@@ -722,7 +720,6 @@ dependencies = [
 [[package]]
 name = "tinyboot-protocol"
 version = "0.4.0"
-source = "git+https://github.com/OpenServoCore/tinyboot.git?tag=tinyboot-ch32-v0.4.1#6012fe516631411254646881f6be4a136a866f7a"
 dependencies = [
  "bitflags 2.11.1",
  "embedded-io",

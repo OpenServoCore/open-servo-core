@@ -2,6 +2,11 @@
 resolver = "2"
 members  = ["boot", "app"]
 
+# Task #11 (half-duplex shared-wire fixes) rides the local branch until a
+# tinyboot release tags it; drop this patch when the tag bump lands.
+[patch."https://github.com/OpenServoCore/tinyboot.git"]
+tinyboot-ch32 = { path = "/Users/aaron/projects/OpenServoCore/tinyboot/ch32" }
+
 [workspace.package]
 edition = "2024"
 
