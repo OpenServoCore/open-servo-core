@@ -492,10 +492,18 @@ vector storms):
   byte, a silent burn at transport priority that starves the motor kernel
   for the whole inter-frame gap (correctness-neutral since the
   evidence-in-flight recheck; pure CPU theft). Zero ring progress since the
-  last fault is the storm's exact signature, so a zero-progress fault
-  service mutes the fault wake (`LineSense::set_fault_wake`, chip: EIE —
-  flags keep latching and DMAR keeps ringing) and the deadline slot polls
-  the ring at `FAULT_MUTE_POLL_BYTE_TIMES` instead, with a line-low mirror
+  last fault is only the storm's SUSPECT signature — the routine mid-burst
+  latch looks identical for one byte-time (a NOREPLY frame has no release
+  to retire its flag, and its lagged re-entry lands just before the next
+  frame's bytes), and muting at the fault service made a muted wake miss
+  live breaks (bench 2026-07-11: hot GWRITE+COMMIT+GREAD chains fell
+  95%→83%, silent slots + mid-stream fence drops). So the fault service
+  only records the suspect cursor; the verdict is the recheck's: a
+  deadline that finds the framer idle with the cursor still unmoved mutes
+  the fault wake (`LineSense::set_fault_wake`, chip: EIE — flags keep
+  latching and DMAR keeps ringing), bounding the storm to ~one byte-time
+  of re-entries, and the deadline slot polls the ring at
+  `FAULT_MUTE_POLL_BYTE_TIMES` instead, with a line-low mirror
   (gated on an empty rescue slot, so sub-100 µs polls never push a pending
   confirm out) keeping rescue pulses detectable. Ring progress is the
   all-clear — the drain that moved the cursor completed the storm entry's

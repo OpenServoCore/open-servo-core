@@ -209,16 +209,20 @@ impl<P: Providers> ServoBus<P> {
         // The same latched flag is also a level-pend storm (§6 A4): with no
         // drain in sight to retire it, the fault vector re-enters
         // continuously until the next RX byte. Zero progress since the last
-        // fault is the storm's exact signature — mute the wake and let the
-        // deadline slot poll the ring instead (`on_deadline` restores the
-        // wake on cursor movement).
+        // fault is the storm's SUSPECT signature — record it, but let the
+        // recheck deliver the verdict: only a deadline that still finds
+        // nothing mutes the wake (`on_deadline`). Muting here misfires on
+        // the routine mid-burst latch — a NOREPLY frame has no release to
+        // retire its flag, its lagged re-entry lands one byte-time before
+        // the next frame's bytes, and a muted wake then misses live breaks
+        // (bench 2026-07-11: hot GWRITE+COMMIT+GREAD chains fell 95%→83%,
+        // silent slots + mid-stream fence drops).
         if !fresh {
             if self.framer_at.is_none() {
                 self.framer_at = Some(now.wrapping_add(self.tpb));
             }
             if self.fault_mute.is_none() {
                 self.fault_mute = Some(self.ring.cursor());
-                self.line.set_fault_wake(false);
             }
         }
         // Wire safety: a staged, not-yet-streaming reply must never fire
@@ -287,11 +291,14 @@ impl<P: Providers> ServoBus<P> {
                 break;
             }
         }
-        // Muted with no live framer slot (§6 A4): nothing else would notice
-        // arriving bytes, so keep the ring polled. The line-low mirror keeps
-        // rescue pulses detectable too — gated on an empty rescue slot so
-        // sub-100 µs polls can't push the confirm out forever.
+        // A recorded fault with the framer gone idle and STILL no progress:
+        // the wire is provably quiet, the latch is a storm — mute now (§6
+        // A4; idempotent across polls) and keep the ring polled, since
+        // nothing else would notice arriving bytes. The line-low mirror
+        // keeps rescue pulses detectable too — gated on an empty rescue
+        // slot so sub-100 µs polls can't push the confirm out forever.
         if self.fault_mute.is_some() && self.framer_at.is_none() {
+            self.line.set_fault_wake(false);
             let now = self.deadline.now();
             self.framer_at = Some(now.wrapping_add(self.tpb * FAULT_MUTE_POLL_BYTE_TIMES));
             if self.rescue_at.is_none() && self.line.is_low() {

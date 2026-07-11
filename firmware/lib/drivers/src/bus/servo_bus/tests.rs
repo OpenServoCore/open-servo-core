@@ -764,13 +764,16 @@ fn zero_progress_fault_mutes_wake_until_ring_progress() {
     h.ring.set_cursor(anchor as u16);
     assert!(h.line.fault_wake());
     bus.on_break(&mut d);
-    assert!(!h.line.fault_wake(), "zero-progress fault service mutes");
+    // Recorded, not yet muted: the recheck delivers the verdict — muting at
+    // the fault service misfires on the routine mid-burst latch.
+    assert!(h.line.fault_wake(), "fault service records, recheck mutes");
     assert_eq!(h.deadline.armed(), Some(1000 + TPB));
 
-    // Recheck finds nothing: stay muted, fall back to the poll cadence.
+    // Recheck finds nothing: the wire is provably quiet — mute and fall
+    // back to the poll cadence.
     h.deadline.set_now(1000 + TPB);
     bus.on_deadline(&mut d);
-    assert!(!h.line.fault_wake());
+    assert!(!h.line.fault_wake(), "quiet recheck mutes");
     assert_eq!(h.deadline.armed(), Some(1000 + TPB + poll));
 
     // Quiet poll: still muted, next poll one cadence out.
@@ -789,6 +792,46 @@ fn zero_progress_fault_mutes_wake_until_ring_progress() {
     h.deadline.set_now(1000 + TPB + 2 * poll);
     bus.on_deadline(&mut d);
     assert!(h.line.fault_wake(), "ring progress restores the wake");
+
+    fire(&mut bus, &h, &mut d);
+    drain_tx(&mut bus, &h);
+    let (id, inst, _) = last_reply(&h.wire);
+    assert_eq!(id, ID);
+    assert_eq!(inst.result(), Some(ResultCode::Ok));
+}
+
+/// §6 A4 burst corner (bench 2026-07-11: hot chains fell 95%→83% when the
+/// fault service muted directly): a zero-progress fault service whose
+/// evidence arrives within the byte-time must NEVER drop the wake — the
+/// recheck sees the progress, resolves by data, and live breaks keep
+/// waking the driver.
+#[test]
+fn mid_burst_latched_fault_never_mutes() {
+    let h = Harness::new();
+    let mut bus = h.build(ID, RATE, 60);
+    let shared = shared_seeded();
+    let mut session = Session::new();
+    let mut d = session.dispatcher(&shared);
+
+    let anchor = 100usize;
+    bus.framer.resync(anchor as u16);
+    h.deadline.set_now(1000);
+    h.ring.set_cursor(anchor as u16);
+    // Lagged-FE re-entry: zero progress at service time.
+    bus.on_break(&mut d);
+    assert!(h.line.fault_wake());
+
+    // The next frame's bytes land before the recheck (zero-gap burst).
+    let frame = instruction(ID, Opcode::Ping, 0, &[]);
+    h.ring.place(anchor, &frame);
+    h.ring
+        .set_cursor(((anchor + frame.len()) % RING_LEN) as u16);
+    h.deadline.set_now(1000 + TPB);
+    bus.on_deadline(&mut d);
+    assert!(
+        h.line.fault_wake(),
+        "progress at the recheck keeps the wake"
+    );
 
     fire(&mut bus, &h, &mut d);
     drain_tx(&mut bus, &h);
