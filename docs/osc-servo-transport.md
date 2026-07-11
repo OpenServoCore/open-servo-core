@@ -133,6 +133,13 @@ Every hardware resource the transport touches, and its duty cycle:
 | PC0 CNF         | drive discipline: open-drain listening / push-pull TX window | flipped at trigger/release |
 | main loop       | deferred reboot poll only                        | cold path |
 
+Rev B buffered boards (board config `wire-buffered`) swap the wire rows:
+USART1 runs plain full duplex (no HDSEL, RX on PC1 through the 74LVC2G241's
+mute-gated receive buffer), and the PC0-CNF flip becomes the TX_EN (PC2)
+level — high claims the wire and mutes RX, low releases. Every discipline
+in this doc (release-point flag retire, the no-DATAR rule, F9 no-echo)
+holds identically; only the claim/release lines in `TxWire` differ.
+
 PFIC preemption is two-level (IPRIOR bit 7). USART1 + SysTick share HIGH and
 therefore serialize against each other; LOW holds only the motor kernel
 (DMA1_CH1 = 22), which HIGH preempts and which runs in the wire gaps

@@ -6,7 +6,44 @@
 use osc_drivers::Level;
 
 use crate::cfg::chip::{AnalogChannel, DigitalPin};
-use crate::hal::opa;
+use crate::hal::{Pin, opa};
+
+/// Bus wire wiring — schema shaped by the `wire-buffered` feature (the wire
+/// mode is a compile-time board choice; see `providers/tx_wire`).
+#[cfg(feature = "wire-buffered")]
+#[derive(Copy, Clone)]
+pub struct BusWiring {
+    /// 74LVC2G241 direction pin: high = the buffer drives TX onto the data
+    /// line and mutes the receive path (inverted enable, same signal);
+    /// low = wire released, the data line feeds RX.
+    pub tx_en: Pin,
+}
+
+/// Bus wire wiring — schema shaped by the `wire-buffered` feature (the wire
+/// mode is a compile-time board choice; see `providers/tx_wire`).
+#[cfg(not(feature = "wire-buffered"))]
+#[derive(Copy, Clone)]
+pub struct BusWiring {
+    /// TX_EN pin to park LOW on a buffer-populated board running the direct
+    /// wire (bypassed rev B — the park keeps the buffer off the jumpered
+    /// data line); `None` on boards with no buffer (rev C).
+    pub tx_en_park: Option<Pin>,
+}
+
+impl BusWiring {
+    /// The TX_EN pin this board drives, whatever its role (per-TX-window
+    /// direction control, or the direct wire's permanent park).
+    pub const fn tx_en_pin(&self) -> Option<Pin> {
+        #[cfg(feature = "wire-buffered")]
+        {
+            Some(self.tx_en)
+        }
+        #[cfg(not(feature = "wire-buffered"))]
+        {
+            self.tx_en_park
+        }
+    }
+}
 
 #[derive(Copy, Clone)]
 pub struct DrvEn {
@@ -70,6 +107,7 @@ pub struct BoardWiring {
     /// Scope/probe pad; toggled once per DMA-TC ISR.
     pub dbg: DigitalPin,
     pub drv_en: DrvEn,
+    pub bus: BusWiring,
     pub current_sense: CurrentSenseConfig,
     pub sensors: AdcPins,
 }
@@ -78,12 +116,22 @@ impl BoardWiring {
     /// Compile-time call site: `const _: () = WIRING.assert_valid();`
     pub const fn assert_valid(&self) {
         self.assert_scratch_distinct();
+        self.assert_bus_distinct();
         self.assert_sensors_distinct();
     }
 
     const fn assert_scratch_distinct(&self) {
         if (self.dbg as u8) == (self.drv_en.pin as u8) {
             panic!("BoardWiring: dbg and drv_en.pin must not share a DigitalPin");
+        }
+    }
+
+    const fn assert_bus_distinct(&self) {
+        if let Some(tx_en) = self.bus.tx_en_pin()
+            && ((tx_en as u8) == (self.dbg.pin() as u8)
+                || (tx_en as u8) == (self.drv_en.pin.pin() as u8))
+        {
+            panic!("BoardWiring: bus TX_EN must not share a pin with dbg or drv_en");
         }
     }
 

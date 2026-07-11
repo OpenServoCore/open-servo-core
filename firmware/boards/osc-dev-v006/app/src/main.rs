@@ -21,6 +21,15 @@ fn main() -> ! {
                 pin: DigitalPin::PD0,
                 active: Level::High,
             },
+            // Rev B DXL TTL subsystem: TX_EN = PC2. Direct wire (default) =
+            // buffer bypassed, PC2 parked; `--features wire-buffered` =
+            // buffer in play, PC2 gates direction.
+            #[cfg(not(feature = "wire-buffered"))]
+            bus: BusWiring {
+                tx_en_park: Some(Pin::PC2),
+            },
+            #[cfg(feature = "wire-buffered")]
+            bus: BusWiring { tx_en: Pin::PC2 },
             current_sense: CurrentSenseConfig {
                 gain: opa::Gain::X32,
                 bias: opa::Bias::MidRail,

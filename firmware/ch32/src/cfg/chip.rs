@@ -4,13 +4,19 @@
 
 use crate::hal::{Pin, Tim1Mapping, UsartMapping, adc, opa, timer};
 
-// === osc-native bus (USART1 + HDSEL on PC0, single-wire) ===
+// === osc-native bus (USART1 on PC0/PC1; direct HDSEL single-wire, or the
+// rev B 74LVC2G241 buffered wire under `wire-buffered` — see
+// providers/tx_wire; the TX_EN pin is board wiring, `BusWiring`) ===
 
 pub const BUS_USART_MAPPING: UsartMapping = UsartMapping::Usart1Remap3;
-/// Legacy 74LVC2G241 direction pin (PC2). The buffer is bypassed on this
-/// board — TX is wired straight to the data line — so this pin is parked LOW
-/// once at init to hold the buffer disabled forever, then never touched.
-pub const BUS_BUF_DISABLE_PIN: Pin = Pin::PC2;
+
+/// Pin whose input level tracks the bus wire (rescue-break sensing, §9.1):
+/// the single-wire pin itself on the direct wire; the buffer's receive
+/// output (the USART RX pin) on the buffered wire.
+#[cfg(not(feature = "wire-buffered"))]
+pub const BUS_LINE_PIN: Pin = BUS_USART_MAPPING.tx_pin();
+#[cfg(feature = "wire-buffered")]
+pub const BUS_LINE_PIN: Pin = BUS_USART_MAPPING.rx_pin();
 
 // === OPA current sense ===
 

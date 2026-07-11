@@ -111,7 +111,7 @@ impl Drivers {
             RxRing,
             Deadline,
             Crc,
-            TxWire,
+            TxWire::new(&w.bus),
             UsartBaud,
             LineSense,
             id,

@@ -31,6 +31,17 @@ fn init_48mhz_hsi_pll() {
 fn main() -> ! {
     init_48mhz_hsi_pll();
 
+    // Buffered-wire shape (74LVC2G241 + TX_EN) in BOTH app wire modes, on
+    // purpose: an unmodified rev B needs it, and a bypassed rev B running
+    // the app's direct wire still has the buffer populated — boot RX keeps
+    // arriving through it (TX_EN pull-down = receive), boot TX drives the
+    // data line through the bypass jumper, and TX_EN toggling just echoes
+    // the jumper's level. Do NOT switch to Duplex::Half on tinyboot
+    // v0.4.1: its init orders TE before HDSEL, which latches the HDSEL TX
+    // signal LOW (bench-measured on the app, osc-ch32 `usart::init_bus`),
+    // and its TX pin idles AF push-pull — together a hard-low bus jam for
+    // every boot window. A true rev C (buffer removed) needs those two
+    // tinyboot fixes before boot-over-UART can work at all.
     let transport = Usart::new(&UsartConfig {
         duplex: Duplex::Full,
         baud: BaudRate::B3000000,

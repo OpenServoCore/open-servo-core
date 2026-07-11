@@ -12,18 +12,19 @@ pub fn init(r: Regs, brr: u32) {
     r.ctlr1().modify(|w| w.set_ue(true));
 }
 
-/// osc-native single-wire bring-up, in the break-framing spike's exact
-/// order: HDSEL alone, TE/RE, BRR, UE — and only then DMAR + EIE in a
-/// second CTLR3 write. The sequencing is load-bearing for the released
-/// idle level: deviations (TE before HDSEL, or DMAR/EIE folded into the
-/// HDSEL write) leave the HDSEL TX signal latched LOW — through the AF_OD
-/// listening pin that clamps the whole bus (bench-measured: wire stuck
-/// low at idle, rose the moment PC0 left AF mode). No IDLE interrupt —
-/// the framer sources all timing from the ring cursor and SysTick, never
-/// from IDLE.
+/// osc-native bus bring-up, in the break-framing spike's exact order:
+/// wire mode (`hdsel` = true for the direct single-wire, false for plain
+/// full duplex behind the rev B buffer), TE/RE, BRR, UE — and only then
+/// DMAR + EIE in a second CTLR3 write. The sequencing is load-bearing for
+/// the released idle level on the direct wire: deviations (TE before
+/// HDSEL, or DMAR/EIE folded into the HDSEL write) leave the HDSEL TX
+/// signal latched LOW — through the AF_OD listening pin that clamps the
+/// whole bus (bench-measured: wire stuck low at idle, rose the moment PC0
+/// left AF mode). No IDLE interrupt — the framer sources all timing from
+/// the ring cursor and SysTick, never from IDLE.
 #[inline]
-pub fn init_bus(r: Regs, brr: u32) {
-    r.ctlr3().modify(|w| w.set_hdsel(true));
+pub fn init_bus(r: Regs, brr: u32, hdsel: bool) {
+    r.ctlr3().modify(|w| w.set_hdsel(hdsel));
     r.ctlr1().modify(|w| {
         w.set_te(true);
         w.set_re(true);

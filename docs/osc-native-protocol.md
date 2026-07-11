@@ -43,10 +43,18 @@ Single-wire half-duplex TTL bus, 3.3 V, host-scheduled (exactly one talker
 at any time by protocol construction).
 
 - **Servo pin**: the USART TX pin with `HDSEL` (single-wire mode). RX is
-  internally tied to the pin; the dedicated RX pin and the direction buffer
-  (74LVC2G241 + TX_EN GPIO) are deleted [F7]. Bus side: series R + pull-up
-  (+ optional TVS); the buffer's roles collapse into the drive discipline
-  below.
+  internally tied to the pin; the direct wire needs no dedicated RX pin and
+  no direction buffer [F7] — rev C deletes both. Bus side: series R +
+  pull-up (+ optional TVS); the buffer's roles collapse into the drive
+  discipline below.
+- **Buffered boards (rev B)**: supported via board config (`wire-buffered`).
+  The USART runs plain full duplex behind the 74LVC2G241: TX drives only
+  the buffer input (push-pull, never released), and TX_EN gates the wire —
+  high drives TX onto the data line and hardware-mutes the receive path
+  (inverted enable, same signal), low releases it to the board pull-up.
+  Same observables as HDSEL: no own-TX echo, RX held at mark through the
+  TX window. The drive discipline below applies to the wire side of the
+  buffer — TX_EN assert is the claim, TX_EN release the handback.
 - **Drive discipline (all nodes, host included)**: idle/listening = AF
   open-drain (wire released, pull-up holds mark); transmitting = AF
   push-pull for the duration of the frame, then release. One GPIO CNF write
@@ -568,7 +576,7 @@ not just the live table.
 
 | resource            | use                                               |
 | ------------------- | ------------------------------------------------- |
-| USART1 + HDSEL, PC0 | the bus (PC1, PC2 freed for rev-c)                |
+| USART1 + HDSEL, PC0 | the bus (rev B `wire-buffered` config: full duplex, PC1 RX + PC2 TX_EN; both pins freed on rev-c) |
 | DMA1 CH5            | RX ring (circular, armed once)                    |
 | DMA1 CH4            | TX stream (enable-when-ready)                     |
 | DMA1 CH3 + SPI1     | CRC engine (no pins) [F6]                         |
@@ -580,7 +588,8 @@ not just the live table.
 
 Deleted relative to the DXL transport: edge IC (already gone), TIM-compare
 TX kickoff, RDT + tuning tools, byte-stuffing encode/unstuff, FF-FF-FD
-hunter, fold-CRC machinery, the 74LVC2G241 + TX_EN pin.
+hunter, fold-CRC machinery, the 74LVC2G241 + TX_EN pin (direct wire; the
+rev B `wire-buffered` board config keeps them).
 
 ## 11. Measured foundation
 
