@@ -55,6 +55,12 @@ pub struct ControlStreaming {
 #[derive(Copy, Clone, Block)]
 pub struct ControlSystem {
     pub boot_mode: BootMode,
+    /// Signed HSITRIM steps on top of the chip default (~0.25%/step,
+    /// clamped chip-side). Volatile; applied by the main loop between
+    /// frames. First rung of the syntonization ladder: the host measures
+    /// each servo's byte cadence and trims the fleet's clocks together,
+    /// which is what protects servo→servo snoop margin at 3M.
+    pub hsi_trim_offset: i8,
 }
 
 #[repr(C)]
@@ -65,7 +71,7 @@ pub struct ControlRegs {
     pub streaming: ControlStreaming,
     pub system: ControlSystem,
     #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 99],
+    pub _rsvd_tail: [u8; 98],
 }
 
 #[cfg(test)]

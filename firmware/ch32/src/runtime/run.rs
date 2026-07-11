@@ -6,7 +6,7 @@ use osc_core::{BootMode, RegionStorageRaw};
 
 use crate::cfg::{BoardConfig, Precomputed};
 use crate::control::Ch32ControlIo;
-use crate::hal::{flash, pfic};
+use crate::hal::{flash, pfic, rcc};
 
 /// Const-asserts pin-uniqueness on the `BoardConfig` literal, then runs.
 #[macro_export]
@@ -37,6 +37,8 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
         crc_fail_count: 0,
         framing_drop_count: 0,
     };
+    // Last-applied clock trim; table default 0 = the chip's own HSITRIM.
+    let mut trim_applied: i8 = 0;
     loop {
         // Transport RX/TX/deadlines are ISR-driven (USART1 + SysTick, PFIC
         // HIGH). Main loop owns LED housekeeping, the link-diagnostics
@@ -73,6 +75,23 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
             }
             published = diag;
         });
+
+        // Clock-trim knob (`control.system.hsi_trim_offset`, ~0.25%/step):
+        // applied here so the RCC write lands between frames, never inside
+        // a transport ISR. The jump is well inside the single-sided framing
+        // budget vs a crystal host, so trimming over the wire is safe.
+        // SAFETY: table storage is 'static; single-byte volatile read.
+        let trim = unsafe {
+            (&raw const (*crate::runtime::statics::SHARED.table.region_ptr())
+                .control
+                .system
+                .hsi_trim_offset)
+                .read_volatile()
+        };
+        if trim != trim_applied {
+            trim_applied = trim;
+            rcc::apply_clock_trim_delta(trim);
+        }
 
         // Deferred reboot (§9.5), honored after the ack has drained. The
         // critical section is load-bearing: `bus()` is otherwise `&mut`-owned
