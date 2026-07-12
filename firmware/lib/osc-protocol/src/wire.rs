@@ -125,6 +125,7 @@ pub enum MgmtOp {
     Save = 0x03,
     Reboot = 0x04,
     Factory = 0x05,
+    Cal = 0x06,
 }
 
 impl MgmtOp {
@@ -136,6 +137,7 @@ impl MgmtOp {
             0x03 => Some(MgmtOp::Save),
             0x04 => Some(MgmtOp::Reboot),
             0x05 => Some(MgmtOp::Factory),
+            0x06 => Some(MgmtOp::Cal),
             _ => None,
         }
     }
@@ -324,7 +326,8 @@ mod tests {
         assert_eq!(MgmtOp::from_byte(0x00), None);
         assert_eq!(MgmtOp::from_byte(0x01), Some(MgmtOp::Enum));
         assert_eq!(MgmtOp::from_byte(0x05), Some(MgmtOp::Factory));
-        assert_eq!(MgmtOp::from_byte(0x06), None);
+        assert_eq!(MgmtOp::from_byte(0x06), Some(MgmtOp::Cal));
+        assert_eq!(MgmtOp::from_byte(0x07), None);
     }
 
     #[test]

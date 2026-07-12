@@ -215,6 +215,30 @@ impl AssignReq {
     }
 }
 
+/// MGMT CAL args: `gap_us(2 LE)`, `gaps(1)` (§9.3) — the host follows the
+/// frame with `gaps + 1` bare breaks spaced exactly `gap_us` apart, its
+/// crystal keeping the spacing. Zero in either field is no train.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct CalReq {
+    pub gap_us: u16,
+    pub gaps: u8,
+}
+
+impl CalReq {
+    #[inline]
+    pub fn parse(args: FrameBytes) -> Option<CalReq> {
+        if args.len() != 3 {
+            return None;
+        }
+        let gap_us = args.u16_le_at(0)?;
+        let gaps = args.u8_at(2)?;
+        if gap_us == 0 || gaps == 0 {
+            return None;
+        }
+        Some(CalReq { gap_us, gaps })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -317,6 +341,23 @@ mod tests {
         );
         assert_eq!(MgmtReq::parse(fb(&[])), None);
         assert_eq!(MgmtReq::parse(fb(&[0x00])), None);
+    }
+
+    #[test]
+    fn cal_req_parse() {
+        // 400 µs gaps, 8 of them: `[0x06, 0x90, 0x01, 0x08]` MGMT payload.
+        assert_eq!(
+            CalReq::parse(fb(&[0x90, 0x01, 0x08])),
+            Some(CalReq {
+                gap_us: 400,
+                gaps: 8
+            })
+        );
+        // Wrong arg count, zero gap, zero count: no train.
+        assert_eq!(CalReq::parse(fb(&[0x90, 0x01])), None);
+        assert_eq!(CalReq::parse(fb(&[0x90, 0x01, 0x08, 0x00])), None);
+        assert_eq!(CalReq::parse(fb(&[0x00, 0x00, 0x08])), None);
+        assert_eq!(CalReq::parse(fb(&[0x90, 0x01, 0x00])), None);
     }
 
     #[test]

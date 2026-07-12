@@ -342,7 +342,16 @@ impl Framer {
         if stalled && tick_reached(now, self.frontier.progress_tick.wrapping_add(giveup_span)) {
             return self.give_up(len, now);
         }
-        FramerOut::Wait(aim)
+        // A long wait is bounded by the horizon, so death is decidable the
+        // moment it falls due: a junk header's far-future footprint costs
+        // one horizon, not its whole claimed length (recovery bound, §3.4).
+        let horizon = self.frontier.progress_tick.wrapping_add(giveup_span);
+        let sooner = if aim.wrapping_sub(now) <= horizon.wrapping_sub(now) {
+            aim
+        } else {
+            horizon
+        };
+        FramerOut::Wait(sooner)
     }
 
     /// The candidate is dead — the starve horizon expired (transmitter died,

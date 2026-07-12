@@ -31,6 +31,7 @@ struct FakeReply {
     staged_baud: Option<BaudRate>,
     response_deadline: Option<u16>,
     reboot: Option<BootMode>,
+    clock_cal: Option<(u16, u8)>,
 }
 
 impl FakeReply {
@@ -43,6 +44,7 @@ impl FakeReply {
             staged_baud: None,
             response_deadline: None,
             reboot: None,
+            clock_cal: None,
         }
     }
 
@@ -109,6 +111,10 @@ impl Reply for FakeReply {
 
     fn stage_reboot(&mut self, mode: BootMode) {
         self.reboot = Some(mode);
+    }
+
+    fn begin_clock_cal(&mut self, gap_us: u16, gaps: u8) {
+        self.clock_cal = Some((gap_us, gaps));
     }
 }
 

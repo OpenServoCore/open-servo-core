@@ -11,7 +11,9 @@
 
 use osc_core::traits::{Request, RequestCtx};
 use osc_protocol::FrameBytes;
-use osc_protocol::frame::{AssignReq, EnumReq, Header, MgmtReq, ProfileReq, ReadReq, WriteReq};
+use osc_protocol::frame::{
+    AssignReq, CalReq, EnumReq, Header, MgmtReq, ProfileReq, ReadReq, WriteReq,
+};
 use osc_protocol::group::{
     GreadPerTarget, GreadProfilePerTarget, GreadProfileUniform, GreadUniform, GwritePerTarget,
     GwriteUniform,
@@ -103,6 +105,15 @@ fn plain<'a>(op: Opcode, inst: Inst, frame_id: Id, pay: FrameBytes<'a>, own: Id)
                         new_id: a.new_id,
                     },
                     None => Request::Unsupported,
+                },
+                // §9.3: broadcast-only — a unicast CAL's ack would put our
+                // own break on the wire right where the train starts.
+                MgmtOp::Cal => match CalReq::parse(m.args) {
+                    Some(c) if broadcast => Request::Calibrate {
+                        gap_us: c.gap_us,
+                        gaps: c.gaps,
+                    },
+                    _ => Request::Unsupported,
                 },
                 _ => Request::Mgmt {
                     op: m.op,

@@ -190,6 +190,27 @@ impl Sim {
         self.queue_host_frame(start, frame);
     }
 
+    /// A bare break at `at_us` — the MGMT CAL train's ruler mark (§9.3):
+    /// one FE at every listener, no data bytes. Successive calls with exact
+    /// `at_us` spacing model a host whose timer paces the train.
+    pub fn host_send_break_at(&mut self, at_us: u64) {
+        let start = self.clamp_at(at_us).max(self.host_free_at);
+        let break_end = start + break_ticks(self.rate);
+        let mut c = self.core.borrow_mut();
+        c.claim(Talker::Host, start, break_end);
+        c.hold_low(start, break_end + 1);
+        c.schedule(
+            Event::WireBreak {
+                talker: Talker::Host,
+                break_start: start,
+            },
+            break_end,
+        );
+        c.schedule(Event::HostFrameEnd, break_end);
+        drop(c);
+        self.host_free_at = break_end;
+    }
+
     /// Inject a latched-flag re-fire at servo `i`: the fault vector
     /// re-enters with NO new wire byte. Level-pend hardware does this
     /// whenever a flag's SR-DR retire pair hasn't formed (routinely, after

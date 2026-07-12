@@ -52,6 +52,13 @@ pub enum Request<'a> {
         uid: [u8; UID_LEN],
         new_id: u8,
     },
+    /// MGMT CAL (§9.3, broadcast-only): `gaps + 1` bare breaks spaced
+    /// `gap_us` apart follow this frame — the host-crystal ruler the bus
+    /// measures its clock against.
+    Calibrate {
+        gap_us: u16,
+        gaps: u8,
+    },
     Mgmt {
         op: MgmtOp,
         args: FrameBytes<'a>,
@@ -95,6 +102,9 @@ pub trait Reply {
     fn set_response_deadline(&mut self, us: u16);
     /// Deferred reboot, honored after any in-flight TX drains.
     fn stage_reboot(&mut self, mode: BootMode);
+    /// MGMT CAL accepted (§9.3): the bus measures the announced break train
+    /// against its own clock and trims the oscillator from it.
+    fn begin_clock_cal(&mut self, gap_us: u16, gaps: u8);
 }
 
 /// Outcome of a [`Dispatch::dispatch`]: whether a table effect was staged.

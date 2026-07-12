@@ -569,11 +569,9 @@ are garbage — and garbage _is_ the collision signal:
   later SAVE persists it; volatile until then. Solves the
   duplicate-default-ID field pain.
 
-### 9.3 Clock discipline: passive self-trim, no protocol machinery
+### 9.3 Clock discipline: the CAL break-pair ruler
 
-The PROTOCOL carries no clock machinery — no CAL sub-op, no calibration
-pulse, no EXTI use at all (the data pin needs only the USART). Most
-consumers of clock discipline are gone or covered by design:
+Most consumers of clock discipline are gone or covered by design:
 
 - Reply timing is event-driven (break-led, when-ready) — nothing is
   scheduled against a clock, so there is no grid for drift to skew.
@@ -582,8 +580,7 @@ consumers of clock discipline are gone or covered by design:
   or data at 3 M [F10], and the 1 M default triples that.
 - Cross-servo simultaneity is an *event* problem, not a clock problem:
   broadcast COMMIT applies a fleet's held writes in the same instant on
-  the shared wire — strictly simpler and lower-jitter than disciplined
-  clocks.
+  the shared wire.
 - Residual ±1 % scale error (velocity estimates, timeouts, PWM rate) is
   far below what any consumer cares about.
 
@@ -595,24 +592,44 @@ another HSI — the clock budget is PAIRWISE, and factory spread reaches
 on every chained servo); manually trimming the fleet to a 1.4 k ppm worst
 pair zeroed them, causally.
 
-The answer keeps the smarts out of the wire: each servo passively
-**self-trims against the host's byte cadence**. Host instruction frames
-are crystal-referenced by assumption; the transport already reads
-`(now, cursor)` pairs while a frame arrives, so the framer measures each
-CRC-verified instruction frame's byte cadence against its own tick
-(instruction frames ONLY — a snooped status would calibrate one HSI
-against another; frames for other ids count, so a servo converges just
-hearing the host talk). Windowed samples drive an oscillator-trim loop
-(`steps = round(err/step_effect)`, step effect self-measured — chip trim
-steps are nonuniform, 1.4–3.2 k ppm/step measured) applied by the main
-loop. Volatile by design: every boot re-converges from ordinary traffic
-within the first window (~16 ms of accumulated instruction bytes); the
-applied total is readable at `telemetry.clock.trim_steps`. Short frames
-(pings) are never sampled — a wire without fat group frames is a wire
-without chains, which needs no trim.
+A first answer — a passive estimator sampling the host's instruction byte
+cadence at resolver wakes — is DELETED (2026-07-11): its food was frames
+long past the anti-stall floor (unrealistic traffic), and its stamps were
+software-phased walker wakes, which cost a dither/floor/gate pipeline to
+debias and still starved on silicon. The replacement makes the reference
+explicit and hardware-anchored:
 
-Consequences stand: no CALARM sub-op, no calibration pulse — and the
-drift estimator that exists is invisible on the wire.
+**`MGMT CAL [gap_us(2 LE), gaps(1)]` (broadcast ONLY).** The host follows
+the frame with `gaps + 1` bare breaks spaced exactly `gap_us` apart, its
+crystal (any timer/DMA pacing) keeping the spacing. Each servo stamps its
+tick at every break-FE service entry: both ends of every gap ride the
+SAME ISR path, so entry latency cancels in the difference, and what
+remains is clock skew plus sub-µs jitter — ~±260 ppm from 8 × 400 µs
+gaps, a tenth of the smallest trim step. Contract and hygiene:
+
+- Broadcast-only: a unicast CAL decodes as an instruction error — its ack
+  would put the replier's own break on the wire where the train starts.
+  The whole fleet measures one train simultaneously.
+- The train follows the announce immediately; no frames inside the train.
+  Per-gap gate `|Δ − gap| ≤ gap/16` (wider than any legal clock state,
+  far under a missed/spurious break); a train with fewer than half its
+  announced gaps valid decides NOTHING. A silent train is abandoned by a
+  2-gap watchdog; a stray FE mid-train costs its gap, never the train.
+- The train's break bytes are ring noise the resolver's hunt scans off
+  silently (§3.3) — CAL is invisible to the link counters.
+- Breaks decode threshold-free across the entire HSITRIM throw [F10], so
+  CAL also *rescues* a servo railed by a bad trim — the ruler works below
+  the layer a bad trim breaks.
+
+Measurements drive the oscillator-trim loop (`steps =
+round(err/step_effect)`, clamped ±4/decision; step effect self-measured —
+chip trim steps are nonuniform, 1.4–3.2 k ppm/step measured), applied by
+the main loop between frames; the total is readable at
+`telemetry.clock.trim_steps`. Volatile by design: the host CALs at boot
+(~4 ms of bus) and at moments it knows its own behavior changed — not on
+a timer. Thermal drift between CALs is the differential chain-pair
+tracker's job (landing with it: break-to-break spans of adjacent host
+instructions, host queuing seam cancelled against a post-trim baseline).
 
 ### 9.4 Config persistence (SAVE)
 

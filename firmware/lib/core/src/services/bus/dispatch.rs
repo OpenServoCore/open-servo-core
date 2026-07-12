@@ -121,6 +121,12 @@ impl Dispatch for Dispatcher<'_> {
                 self.assign(alert, &ctx, &uid, new_id, reply);
                 Dispatched::Done
             }
+            // §9.3: broadcast-only (decode enforces), so no ack precedes the
+            // train — an ack's own break would count as a ruler mark.
+            Request::Calibrate { gap_us, gaps } => {
+                reply.begin_clock_cal(gap_us, gaps);
+                Dispatched::Done
+            }
             Request::Mgmt { op, .. } => {
                 self.mgmt(alert, &ctx, op, reply);
                 Dispatched::Done
@@ -470,9 +476,11 @@ impl Dispatcher<'_> {
                 let mode = self.shared.table.with(|t| t.control.system.boot_mode);
                 reply.stage_reboot(mode);
             }
-            // ENUM/ASSIGN decode to dedicated Request variants; one arriving
-            // Mgmt-wrapped is answered like any unknown op.
-            MgmtOp::Enum | MgmtOp::Assign => self.instruction_error(alert, ctx, reply),
+            // ENUM/ASSIGN/CAL decode to dedicated Request variants; one
+            // arriving Mgmt-wrapped is answered like any unknown op.
+            MgmtOp::Enum | MgmtOp::Assign | MgmtOp::Cal => {
+                self.instruction_error(alert, ctx, reply)
+            }
         }
     }
 

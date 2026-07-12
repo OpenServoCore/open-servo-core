@@ -54,10 +54,15 @@ const DEADLINE_DRAIN_MAX: u32 = 8;
 /// the rest.
 const FRAMES_PER_WAKE: u32 = 16;
 
-/// Measured span per clock-trim decision, µs of nominal wire time (§9.3) —
-/// the `poll_clock_trim` drain threshold. The CAL ruler (trim band 2)
-/// re-feeds the accumulators and re-tunes this.
-const TRIM_WINDOW_WIRE_US: u32 = 65_536;
+/// CAL per-gap accept gate (§9.3), right-shift of the announced gap (1/16 ≈
+/// 6%): wider than any legal clock offset (the HSITRIM throw is ±3.4%), far
+/// under a missed or spurious break (±one whole gap).
+const CAL_GATE_SHIFT: u32 = 4;
+
+/// CAL train watchdog, in announced gaps: a train silent this long is
+/// abandoned — no decision — and the framer resumes (a suspended resolver
+/// needs a deadline backstop like any busy-wait).
+const CAL_WATCHDOG_GAPS: u32 = 2;
 
 /// Ring-poll cadence, in byte-times, while the wire-fault wake is muted
 /// (§6 A4 storm throttle). A zero-progress fault service means a flag is
@@ -89,6 +94,27 @@ struct Pending {
     staged: bool,
     /// Table effect staged in the dispatcher: a write awaits commit/revert.
     table: bool,
+}
+
+/// A live MGMT CAL break train (§9.3): the host's crystal spaces the breaks,
+/// and break-FE entry stamps measure that ruler with the local clock. Both
+/// stamps of every gap are the SAME ISR flavor, so entry latency cancels in
+/// the difference; what survives is clock skew plus sub-µs jitter the
+/// per-gap gate and the gap sum average out.
+struct CalRun {
+    gap_ticks: u32,
+    gaps_left: u8,
+    /// Announced gap count — the ≥-half validity bar at train end.
+    total: u8,
+    valid: u8,
+    last_break: u32,
+    /// Ring cursor at the last counted break: a real break rings its 0x00
+    /// byte, a latched-flag re-fire does not — cursor progress is what
+    /// distinguishes a ruler mark from a storm re-entry (the fault
+    /// contract's freshness idiom, cal-local).
+    cursor: u16,
+    err: i32,
+    span: u32,
 }
 
 pub struct ServoBus<P: Providers> {
@@ -126,9 +152,13 @@ pub struct ServoBus<P: Providers> {
     // zero-progress fault service that muted it. Cursor movement is the
     // all-clear — the drain that moved it also retired the latched flag.
     fault_mute: Option<u16>,
-    // Clock-trim measurement accumulators (§9.3), drained by the main loop's
-    // `poll_clock_trim`. Inert since the passive estimator's deletion
-    // (2026-07-11); the CAL break-pair ruler re-feeds them (trim band 2).
+    // MGMT CAL (§9.3): a dispatched-but-not-started train (the announce),
+    // the live train, and a completed measurement awaiting the main loop.
+    pending_cal: Option<(u16, u8)>,
+    cal: Option<CalRun>,
+    cal_ready: bool,
+    // Clock-trim measurement accumulators (§9.3): completed CAL trains'
+    // (err, span) sums, drained by the main loop's `poll_clock_trim`.
     cadence_err: i32,
     cadence_span: u32,
     trim: TrimLoop,
@@ -186,6 +216,9 @@ impl<P: Providers> ServoBus<P> {
             pending_id: None,
             pending_baud: None,
             pending_reboot: None,
+            pending_cal: None,
+            cal: None,
+            cal_ready: false,
             crc_fails: 0,
             pending: None,
             framer_at: None,
@@ -207,6 +240,16 @@ impl<P: Providers> ServoBus<P> {
     /// fast path right here).
     pub fn on_break<D: Dispatch>(&mut self, d: &mut D) {
         let now = self.deadline.now();
+        // MGMT CAL train (§9.3): while a train is live, breaks are ruler
+        // marks, not frame traffic — stamp against the announced gap and
+        // return. The ring still collects the break bytes; the framer's
+        // hunt scans them off silently once the train ends (0x00 runs are
+        // implausible candidates, and any junk lock dies CRC-uncounted
+        // under the hunt's probing flag).
+        if self.cal.is_some() || self.pending_cal.is_some() {
+            self.on_cal_break(now);
+            return;
+        }
         // Freshness first, resolve second: the fault service computes one
         // bit (did bytes ring since the last service?) and nothing else —
         // the fault contract. The resolve consumes whatever the ring holds.
@@ -277,6 +320,71 @@ impl<P: Providers> ServoBus<P> {
         self.arm_deadline();
     }
 
+    /// One CAL ruler mark (§9.3). The stamp is the CALLER's `now`, read at
+    /// service entry before any other work — every gap's two ends then carry
+    /// the same entry path, and its latency cancels in the difference.
+    fn on_cal_break(&mut self, now: u32) {
+        let cursor = self.ring.cursor();
+        if let Some((gap_us, gaps)) = self.pending_cal.take() {
+            // Train start: the first break after the announce opens gap 1.
+            let gap_ticks = (gap_us as u32).wrapping_mul(<P::Deadline as Deadline>::TICKS_PER_US);
+            self.cal = Some(CalRun {
+                gap_ticks,
+                gaps_left: gaps,
+                total: gaps,
+                valid: 0,
+                last_break: now,
+                cursor,
+                err: 0,
+                span: 0,
+            });
+            self.arm_cal_watchdog(now, gap_ticks);
+            return;
+        }
+        let (finished, gap_ticks) = {
+            let Some(cal) = &mut self.cal else {
+                return; // SAFETY: caller guards; a bare entry changes nothing
+            };
+            if cursor == cal.cursor {
+                return; // latched-flag re-fire: no byte ringed, not a mark
+            }
+            cal.cursor = cursor;
+            let delta = now.wrapping_sub(cal.last_break);
+            cal.last_break = now;
+            let err = delta.wrapping_sub(cal.gap_ticks) as i32;
+            if err.unsigned_abs() <= cal.gap_ticks >> CAL_GATE_SHIFT {
+                cal.err = cal.err.wrapping_add(err);
+                cal.span = cal.span.wrapping_add(cal.gap_ticks);
+                cal.valid += 1;
+            }
+            cal.gaps_left = cal.gaps_left.saturating_sub(1);
+            (cal.gaps_left == 0, cal.gap_ticks)
+        };
+        if !finished {
+            self.arm_cal_watchdog(now, gap_ticks);
+            return;
+        }
+        if let Some(c) = self.cal.take() {
+            // ≥ half the announced gaps measured clean, or no decision — a
+            // mangled train yields nothing rather than something.
+            if c.valid as u32 * 2 >= c.total as u32 {
+                self.cadence_err = self.cadence_err.wrapping_add(c.err);
+                self.cadence_span = self.cadence_span.saturating_add(c.span);
+                self.cal_ready = true;
+            }
+        }
+        // Pend-on-past: hunt the train's break bytes off the ring now.
+        self.framer_at = Some(now);
+        self.arm_deadline();
+    }
+
+    /// The train's silence bound: `on_deadline` reads an expiring framer
+    /// slot during a live train as "the train died" and abandons it.
+    fn arm_cal_watchdog(&mut self, now: u32, gap_ticks: u32) {
+        self.framer_at = Some(now.wrapping_add(gap_ticks.wrapping_mul(CAL_WATCHDOG_GAPS)));
+        self.arm_deadline();
+    }
+
     /// Tick-compare ISR: one or more muxed deadlines are due. Every slot a
     /// handler body overruns (front-loaded dispatch inside the covered window
     /// routinely overruns `end_due`) is drained in this same invocation — a
@@ -289,6 +397,13 @@ impl<P: Providers> ServoBus<P> {
             if due(now, self.framer_at) {
                 progressed = true;
                 self.framer_at = None;
+                // CAL watchdog (§9.3): during a live train the framer slot
+                // is the train's silence bound and nothing else — expiry
+                // means the train died. Abandon it (no decision) and let
+                // the framer hunt whatever actually arrived. A dangling
+                // announce (train never started) dies here too.
+                self.cal = None;
+                self.pending_cal = None;
                 self.drive_framer(d);
             }
             if due(now, self.chain_at) {
@@ -383,16 +498,15 @@ impl<P: Providers> ServoBus<P> {
         }
     }
 
-    /// Main-loop poll, ISRs masked by the caller (the `diag` idiom): once a
-    /// window's worth of host bytes has been measured, run the trim loop.
-    /// Returns the new trim total — signed chip steps from the factory
-    /// default, positive = slower — for the caller to apply to the
-    /// oscillator between frames.
+    /// Main-loop poll, ISRs masked by the caller (the `diag` idiom): drain a
+    /// completed CAL train through the trim loop. Returns the new trim
+    /// total — signed chip steps from the factory default, positive =
+    /// slower — for the caller to apply to the oscillator between frames.
     pub fn poll_clock_trim(&mut self) -> Option<i8> {
-        let window = TRIM_WINDOW_WIRE_US * <P::Deadline as Deadline>::TICKS_PER_US;
-        if self.cadence_span < window {
+        if !self.cal_ready {
             return None;
         }
+        self.cal_ready = false;
         let (err, span) = (self.cadence_err, self.cadence_span);
         self.cadence_err = 0;
         self.cadence_span = 0;
@@ -763,6 +877,7 @@ impl<P: Providers> ServoBus<P> {
             pending_id: &mut self.pending_id,
             pending_baud: &mut self.pending_baud,
             pending_reboot: &mut self.pending_reboot,
+            pending_cal: &mut self.pending_cal,
             response_deadline_us: &mut self.response_deadline_us,
             staged: false,
         };
@@ -781,6 +896,7 @@ impl<P: Providers> ServoBus<P> {
             pending_id: &mut self.pending_id,
             pending_baud: &mut self.pending_baud,
             pending_reboot: &mut self.pending_reboot,
+            pending_cal: &mut self.pending_cal,
             response_deadline_us: &mut self.response_deadline_us,
             staged: false,
         }
@@ -886,6 +1002,7 @@ struct ReplyHandle<'a, W: TxWire, C: CrcEngine> {
     pending_id: &'a mut Option<u8>,
     pending_baud: &'a mut Option<BaudRate>,
     pending_reboot: &'a mut Option<BootMode>,
+    pending_cal: &'a mut Option<(u16, u8)>,
     response_deadline_us: &'a mut u16,
     staged: bool,
 }
@@ -934,6 +1051,10 @@ impl<W: TxWire, C: CrcEngine> Reply for ReplyHandle<'_, W, C> {
 
     fn stage_reboot(&mut self, mode: BootMode) {
         *self.pending_reboot = Some(mode);
+    }
+
+    fn begin_clock_cal(&mut self, gap_us: u16, gaps: u8) {
+        *self.pending_cal = Some((gap_us, gaps));
     }
 }
 
