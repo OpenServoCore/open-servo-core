@@ -79,8 +79,8 @@ struct Args {
     #[arg(long, default_value_t = false)]
     stop_on_fail: bool,
     /// Dump any OK cycle whose turnaround is below this many µs — catches
-    /// pirate walker free-run stamps (COUNT_UNDER), which alias the reply
-    /// break onto the echo's byte grid and read as impossibly-fast replies.
+    /// unanchored pirate stamps (COUNT_UNDER: no boundary capture since
+    /// reset), which read as impossibly-fast replies.
     #[arg(long)]
     dump_early: Option<f64>,
 }
@@ -144,11 +144,12 @@ fn dump_stamps(c: u32, stamps: &[BStamp], bit_ticks: u32) {
     println!("--- cycle {c} stamps ({}):", stamps.len());
     let mut prev: Option<u32> = None;
     for st in stamps {
-        // `!` = walker free-run (COUNT_UNDER: tick is a prediction, not an
-        // IC edge); any other flag bit prints as `?`.
+        // `^` = boundary capture (real tick), `!` = unanchored placeholder
+        // (COUNT_UNDER); interior strides print bare, unknown bits as `?`.
         let mark = match st.flags {
             0 => "",
             1 => "!",
+            2 => "^",
             _ => "?",
         };
         let d = prev.map(|p| st.tick.wrapping_sub(p) as f64 / bit_ticks as f64);
