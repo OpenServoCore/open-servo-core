@@ -7,7 +7,6 @@ pub mod config_store;
 pub mod crc;
 pub mod deadline;
 pub mod digital_out;
-pub mod line;
 pub mod monotonic;
 pub mod ring;
 pub mod tx_wire;

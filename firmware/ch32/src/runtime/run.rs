@@ -7,9 +7,11 @@ use osc_drivers::led::Pattern;
 use osc_drivers::traits::Monotonic as _;
 use portable_atomic::Ordering;
 
-use crate::cfg::{BoardConfig, Precomputed};
+use osc_drivers::bus::RESCUE_LOW_US;
+
+use crate::cfg::{BoardConfig, Precomputed, chip};
 use crate::control::Ch32ControlIo;
-use crate::hal::{flash, pfic, rcc};
+use crate::hal::{dma, flash, gpio, pfic, rcc};
 use crate::providers::monotonic::Monotonic;
 
 /// STAT LED talk-blink: full blink cycle while the bus is talking (the
@@ -49,6 +51,9 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
     };
     let talk_hold_ticks = TALK_HOLD_US * Monotonic::TICKS_PER_US;
     let mut last_talk = Monotonic.ticks().wrapping_sub(talk_hold_ticks);
+    let rescue_low_ticks = RESCUE_LOW_US * Monotonic::TICKS_PER_US;
+    let mut rescue_low_since: Option<u32> = None;
+    let mut rescue_ndtr: u16 = dma::remaining(dma::Channel::CH5);
     loop {
         // Transport RX/TX/deadlines are ISR-driven (USART1 + SysTick, PFIC
         // HIGH). Main loop owns LED housekeeping, the link-diagnostics
@@ -138,6 +143,37 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
         if let Some(mode) = reboot {
             flash::set_boot_mode(matches!(mode, BootMode::Bootloader));
             pfic::software_reset();
+        }
+
+        // §9.1 rescue sampler. The break detector latches only at a
+        // dominant span's END (silicon 2026-07-12), so no transport wake can
+        // observe a rescue pulse in progress — the slow loop measures it
+        // instead, which is where a 300 µs-scale signal belongs. One sample
+        // per wfi wake; the 20 kHz ADC tick is the idle metronome, so the
+        // worst-case cadence is ~50 µs against a ≥300 µs window. The window
+        // requires every sample low AND the RX ring frozen: any completed
+        // character moves NDTR (a real dominant low delivers no start
+        // edges), so UART traffic at any baud — including the pulse's own
+        // ringed 0x00, which re-anchors the window ~a byte-time in — can
+        // never impersonate a pulse. Declaration runs under a critical
+        // section (the bus is otherwise HIGH-ISR-owned) while the pulse
+        // still holds the line, so the driver resyncs at a provably-still
+        // cursor; the window restart afterwards makes a continuing low
+        // redeclare idempotently rather than repeat-fire.
+        let ndtr = dma::remaining(dma::Channel::CH5);
+        if !gpio::is_low(chip::BUS_LINE_PIN) || ndtr != rescue_ndtr {
+            rescue_low_since = None;
+            rescue_ndtr = ndtr;
+        } else if let Some(t0) = rescue_low_since {
+            if Monotonic.ticks().wrapping_sub(t0) >= rescue_low_ticks {
+                rescue_low_since = None;
+                critical_section::with(|_| {
+                    // SAFETY: bus installed in bringup; ISRs masked by the CS.
+                    unsafe { crate::runtime::Drivers::bus() }.on_rescue_break()
+                });
+            }
+        } else {
+            rescue_low_since = Some(Monotonic.ticks());
         }
 
         riscv::asm::wfi();

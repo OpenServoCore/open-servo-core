@@ -24,6 +24,7 @@ use std::rc::Rc;
 use osc_core::regions::config::DEFAULT_RESPONSE_DEADLINE_US;
 use osc_core::{BaudRate, BootMode, ControlTable};
 use osc_drivers::bus::LinkDiag;
+use osc_drivers::bus::RESCUE_LOW_US;
 
 use self::core::{Core, Event, TICKS_PER_US, Talker, break_ticks, byte_ticks};
 use self::cpu::{Cpu, Vector};
@@ -75,7 +76,7 @@ pub struct Sim {
 impl Sim {
     pub fn new(rate: BaudRate) -> Self {
         Self {
-            core: Rc::new(RefCell::new(Core::new(rate))),
+            core: Rc::new(RefCell::new(Core::new())),
             servos: Vec::new(),
             handles: Vec::new(),
             cpus: Vec::new(),
@@ -202,7 +203,6 @@ impl Sim {
         let break_end = start + break_ticks(baud);
         let mut c = self.core.borrow_mut();
         c.claim(Talker::Host, start, break_end);
-        c.hold_low(start, break_end + 1);
         c.schedule(
             Event::WireBreak {
                 talker: Talker::Host,
@@ -255,7 +255,6 @@ impl Sim {
 
         let mut c = self.core.borrow_mut();
         c.claim(Talker::Host, start, end);
-        c.hold_low(start, break_end + 1);
         c.schedule(
             Event::WireBreak {
                 talker: Talker::Host,
@@ -268,9 +267,6 @@ impl Sim {
             let mut t = break_end + (k as u64 + 1) * bt;
             if (k as u64) >= split {
                 t += stall;
-            }
-            if b == 0 {
-                c.hold_low(t - bt, t - bt / 10);
             }
             c.schedule(
                 Event::WireData {
@@ -306,22 +302,26 @@ impl Sim {
             .schedule(Event::StrayBreak { baud }, at);
     }
 
-    /// Rescue pulse: line dominant for `us`, raising one FE at every servo
-    /// while the line is still low (§9.1).
+    /// Rescue pulse: line dominant for `us` (§9.1). Two modeled effects:
+    /// each servo's main-loop sampler declares once ≥ RESCUE_LOW_US of
+    /// frozen-ring low has elapsed (measured from the pulse's ringed 0x00,
+    /// ~a byte-time in), and the pulse's END fires an ordinary break wake —
+    /// the detector latches only at the rising edge (silicon 2026-07-12).
+    /// A pulse too short to cross the threshold delivers only the end wake.
     pub fn hold_line_low_at(&mut self, at_us: u64, us: u64) {
         let start = self.clamp_at(at_us);
         let dur = us * TICKS_PER_US;
+        let baud = self.rate;
         let mut c = self.core.borrow_mut();
-        c.hold_low(start, start + dur);
-        // The detector fires at bit 10, ~one break-time in, while the
-        // pulse is still dominant.
-        let at = start + break_ticks(c.host_baud());
-        c.schedule(Event::RescuePulse, at);
+        let declare = start + byte_ticks(baud) + RESCUE_LOW_US as u64 * TICKS_PER_US;
+        if declare < start + dur {
+            c.schedule(Event::RescueDeclare, declare);
+        }
+        c.schedule(Event::StrayBreak { baud }, start + dur);
     }
 
     pub fn set_host_baud(&mut self, rate: BaudRate) {
         self.rate = rate;
-        self.core.borrow_mut().set_host_baud(rate);
     }
 
     /// Drain the event queue; return every frame observed since the last call.
@@ -349,12 +349,6 @@ impl Sim {
 
         let mut c = self.core.borrow_mut();
         c.claim(Talker::Host, start, end);
-        // Dominant through the FE delivery instant: on real silicon the break
-        // is still low at FE-ISR entry (F5's caveat — the flag leads the rise
-        // by a couple of bits), which is what arms the §9.1 rescue confirm on
-        // ordinary frames. One tick past `break_end` is also physically true:
-        // the first data byte's start bit is dominant.
-        c.hold_low(start, break_end + 1);
         c.schedule(
             Event::WireBreak {
                 talker: Talker::Host,
@@ -365,12 +359,6 @@ impl Sim {
         );
         for (k, &b) in frame[1..].iter().enumerate() {
             let t = break_end + (k as u64 + 1) * bt;
-            // A 0x00 data byte holds the line dominant for start + 8 data
-            // bits (9 of its 10 bit-times) — `LineSense` must see it, or the
-            // sim can't reproduce phantom-rescue confirms sampling mid-frame.
-            if b == 0 {
-                c.hold_low(t - bt, t - bt / 10);
-            }
             c.schedule(
                 Event::WireData {
                     talker: Talker::Host,
@@ -395,7 +383,7 @@ impl Sim {
             Event::WireData { talker, byte, baud } => self.deliver_data(talker, byte, baud),
             Event::WireGarble { byte } => self.deliver_garble(byte),
             Event::StrayBreak { baud } => self.deliver_stray_break(baud),
-            Event::RescuePulse => self.deliver_rescue(),
+            Event::RescueDeclare => self.deliver_rescue_declare(),
             Event::SkewChange { servo, ppm } => {
                 let now = self.core.borrow().now();
                 self.handles[servo].deadline.set_skew(now, ppm);
@@ -527,14 +515,15 @@ impl Sim {
         }
     }
 
-    fn deliver_rescue(&mut self) {
-        // Baud-agnostic dominant low: a ≥300 µs span qualifies at every
-        // rate, so every servo takes one break wake with the line still low
-        // and schedules its rescue recheck (§9.1). No recorded frame — a
-        // rescue pulse is not data.
+    fn deliver_rescue_declare(&mut self) {
+        // Every servo's sampler crosses the threshold together (the low is
+        // baud-agnostic); the declaration is thread-level — no vector, no
+        // CPU pend, mirroring the chip's main-loop + critical-section path.
+        // The pulse's own ringed 0x00 lands here (it rang a byte-time in;
+        // the model folds it into the declaration instant).
         for j in 0..self.servos.len() {
             self.handles[j].ring.push(0x00);
-            self.deliver(j, Vector::Break);
+            self.servos[j].on_rescue();
         }
     }
 }

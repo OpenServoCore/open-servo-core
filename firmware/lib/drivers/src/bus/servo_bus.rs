@@ -14,30 +14,11 @@ use super::framer::{FrameSpan, Framer, FramerOut};
 use super::trim::TrimLoop;
 use super::tx::{TxEngine, TxOut};
 use super::{frame_view, ring_wrap};
-use crate::traits::bus::{
-    CrcEngine, Deadline, LineSense, Providers, RxRing, TxWire, UsartBaud, tick_reached,
-};
+use crate::traits::bus::{CrcEngine, Deadline, Providers, RxRing, TxWire, UsartBaud, tick_reached};
 
 /// µs-per-byte numerator: 10 bit-times/byte × 1e6 µs/s. `tpb = TICKS_PER_US ×
 /// this / baud` stays within u32 for all four operational rates.
 const BYTE_TIME_NUMERATOR: u32 = 10_000_000;
-
-/// §9.1: an ordinary break has risen by FE-ISR entry [F5]; a still-low line
-/// this many µs later is a rescue candidate, not a frame delimiter.
-const RESCUE_CONFIRM_US: u32 = 100;
-
-/// Second rescue sample, this many byte-times past a passing first one (a
-/// hair over one, shift-friendly). One low sample can alias a data byte's
-/// low bits while a host TX stall keeps the cursor frozen across the
-/// confirm (bench-observed at 1M: a ~95 µs burst bubble right after a
-/// break put the +100 µs sample inside the next byte's start bit —
-/// phantom rescue, servo wedged at 0.5M under a 1M host). Data cannot
-/// hold the line low a whole byte-time without completing a byte, and a
-/// completed byte rings and moves the cursor — so a second low sample a
-/// byte-time later with the cursor still frozen is a dominant low by
-/// UART framing itself, at any host baud.
-const RESCUE_RECONFIRM_NUM: u32 = 9;
-const RESCUE_RECONFIRM_SHIFT: u32 = 3;
 
 /// Slack on the reclaim-suspension frame allowance (§6): covers the snooper's
 /// deadline-B margin on the predecessor's frame end.
@@ -144,7 +125,6 @@ pub struct ServoBus<P: Providers> {
     ring: P::Ring,
     deadline: P::Deadline,
     baud: P::Baud,
-    line: P::Line,
     id: u8,
     rate: BaudRate,
     tpb: u32,
@@ -160,16 +140,6 @@ pub struct ServoBus<P: Providers> {
     // Deadline mux (§4.1/§6/§9.1): the soonest live slot arms the compare.
     framer_at: Option<u32>,
     chain_at: Option<u32>,
-    rescue_at: Option<u32>,
-    // Ring cursor at rescue arm: bytes ringed since mean in-flight traffic,
-    // not a held-low pulse (a break of any length is one FE, no data — F3).
-    rescue_cursor: u16,
-    // A first confirm sample passed; the slot is re-armed one byte-time out
-    // for the aliasing-proof second sample (see RESCUE_RECONFIRM_NUM).
-    rescue_reconfirm: bool,
-    // Wire-fault wake muted (§6 A4 storm throttle): the ring cursor as of the
-    // zero-progress fault service that muted it. Cursor movement is the
-    // all-clear — the drain that moved it also retired the latched flag.
     // MGMT CAL (§9.3): a dispatched-but-not-started train (the announce),
     // the live train, and a completed measurement awaiting the main loop.
     pending_cal: Option<(u16, u8)>,
@@ -224,7 +194,6 @@ impl<P: Providers> ServoBus<P> {
         crc: P::Crc,
         tx: P::Tx,
         mut baud: P::Baud,
-        line: P::Line,
         id: u8,
         rate: BaudRate,
         response_deadline_us: u16,
@@ -238,7 +207,6 @@ impl<P: Providers> ServoBus<P> {
             ring,
             deadline,
             baud,
-            line,
             id,
             rate,
             tpb: tpb_for::<P>(rate),
@@ -262,9 +230,6 @@ impl<P: Providers> ServoBus<P> {
             pending: None,
             framer_at: None,
             chain_at: None,
-            rescue_at: None,
-            rescue_cursor: 0,
-            rescue_reconfirm: false,
             cadence_err: 0,
             cadence_span: 0,
             trim: TrimLoop::new(<P::Deadline as Deadline>::CLOCK_TRIM_STEP_PPM),
@@ -337,16 +302,6 @@ impl<P: Providers> ServoBus<P> {
         // is alive — suspend its reclaim window while the frame plays out.
         let out = self.chain.on_break_observed(now);
         self.route_chain(out);
-        // §9.1 rescue candidacy: confirm a held-low line ~100 µs on. The
-        // line often still reads low at an ordinary break's FE entry (the
-        // break's last bit), so this arms on most frames — the confirm's
-        // cursor-progress gate is what keeps it from firing on traffic.
-        if self.line.is_low() {
-            let at = now.wrapping_add(RESCUE_CONFIRM_US * <P::Deadline as Deadline>::TICKS_PER_US);
-            self.rescue_at = Some(at);
-            self.rescue_cursor = self.ring.cursor();
-            self.rescue_reconfirm = false;
-        }
         self.arm_deadline();
     }
 
@@ -549,11 +504,6 @@ impl<P: Providers> ServoBus<P> {
                 let out = self.chain.on_deadline(now);
                 self.route_chain(out);
             }
-            if due(now, self.rescue_at) {
-                progressed = true;
-                self.rescue_at = None;
-                self.try_rescue();
-            }
             if !progressed {
                 break;
             }
@@ -666,10 +616,7 @@ impl<P: Providers> ServoBus<P> {
             }
         };
         let mut best: Option<u32> = None;
-        for at in [self.framer_at, self.chain_at, self.rescue_at]
-            .into_iter()
-            .flatten()
-        {
+        for at in [self.framer_at, self.chain_at].into_iter().flatten() {
             best = Some(match best {
                 Some(b) if remaining(b) <= remaining(at) => b,
                 _ => at,
@@ -739,35 +686,20 @@ impl<P: Providers> ServoBus<P> {
         }
     }
 
-    fn try_rescue(&mut self) {
-        // Our own reply is on the wire — a low sample here reads our own
-        // data bits, not a host rescue pulse (bench-observed at 1M: the
-        // recheck armed by the request's break lands mid-reply and the
-        // phantom confirm aborts the reply + drops the rate mid-frame). A
-        // real rescue pulse re-arms via its own FE once the wire is back.
+    /// §9.1 rescue: the chip's line sampler measured a ≥[`RESCUE_LOW_US`]
+    /// dominant low with zero ring progress — a signal no transport wake can
+    /// observe (the break detector latches only at a span's END, silicon
+    /// 2026-07-12). Called from the main loop under a critical section; the
+    /// pulse is still holding the line when the sampler declares, so the
+    /// cursor is provably still.
+    ///
+    /// [`RESCUE_LOW_US`]: super::RESCUE_LOW_US
+    pub fn on_rescue_break(&mut self) {
+        // Own-TX guard: unreachable by physics on both wire configs (own
+        // data always carries stop-bit highs; the buffered wire's sense pin
+        // reads forced mark during TX), kept because an abort of a draining
+        // ack is the one real damage a spurious call could do.
         if self.tx.streaming() {
-            return;
-        }
-        // Bytes ringed since the arm → an instruction is in flight and the
-        // low sample is its data bits, not a pulse (bench-observed at 1M: a
-        // 12-byte zero-payload WRITE keeps the line low at +100 µs and the
-        // confirm dropped the rate mid-instruction). A held-low line
-        // delivers no start edges, so a real pulse leaves the cursor put.
-        if self.ring.cursor() != self.rescue_cursor {
-            return;
-        }
-        // Line risen → it was an ordinary break, not a rescue pulse.
-        if !self.line.is_low() {
-            return;
-        }
-        // One low sample can alias a data bit when a host TX stall froze the
-        // cursor across the confirm: take a second sample a byte-time later
-        // under the same frozen-cursor requirement — only a dominant low
-        // survives both (see RESCUE_RECONFIRM_NUM).
-        if !self.rescue_reconfirm {
-            self.rescue_reconfirm = true;
-            let lead = (self.tpb * RESCUE_RECONFIRM_NUM) >> RESCUE_RECONFIRM_SHIFT;
-            self.rescue_at = Some(self.deadline.now().wrapping_add(lead));
             return;
         }
         // §9.1: volatile rate switch — the config register is untouched.
@@ -786,6 +718,7 @@ impl<P: Providers> ServoBus<P> {
         self.pending = None;
         self.framer_at = None;
         self.chain_at = None;
+        self.arm_deadline();
     }
 
     /// Verdict-first ops: COMMIT (applies the whole staging buffer), MGMT

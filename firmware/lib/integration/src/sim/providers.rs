@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use osc_core::BaudRate;
 use osc_drivers::traits::bus::{
-    CrcEngine, Deadline, LineSense, Providers, RxRing, TxWire, UsartBaud, tick_reached,
+    CrcEngine, Deadline, Providers, RxRing, TxWire, UsartBaud, tick_reached,
 };
 use osc_protocol::crc::osc_crc_continue;
 
@@ -292,7 +292,6 @@ impl TxWire for SimWire {
         let start = c.now();
         let break_end = start + brk;
         c.claim(Talker::Servo(self.idx), start, break_end);
-        c.hold_low(start, break_end);
         c.schedule(
             Event::WireBreak {
                 talker: Talker::Servo(self.idx),
@@ -315,11 +314,6 @@ impl TxWire for SimWire {
         let start = self.tx_cursor.get().max(c.now());
         for (k, &b) in span.iter().enumerate() {
             let t = start + (k as u64 + 1) * bt;
-            // Zero bytes hold the line dominant for 9 of 10 bit-times — see
-            // the host-side twin in `queue_host_frame`.
-            if b == 0 {
-                c.hold_low(t - bt, t - bt / 10);
-            }
             c.schedule(
                 Event::WireData {
                     talker: Talker::Servo(self.idx),
@@ -357,23 +351,6 @@ impl UsartBaud for SimBaud {
     }
 }
 
-pub struct SimLine {
-    core: Rc<RefCell<Core>>,
-}
-
-impl SimLine {
-    pub fn new(core: Rc<RefCell<Core>>) -> Self {
-        Self { core }
-    }
-}
-
-impl LineSense for SimLine {
-    fn is_low(&self) -> bool {
-        let c = self.core.borrow();
-        c.is_low(c.now())
-    }
-}
-
 /// ZST binding each provider role for the `ServoBus` composite.
 pub struct SimProviders;
 
@@ -383,5 +360,4 @@ impl Providers for SimProviders {
     type Crc = SimCrc;
     type Tx = SimWire;
     type Baud = SimBaud;
-    type Line = SimLine;
 }

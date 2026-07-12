@@ -70,13 +70,6 @@ pub trait UsartBaud {
     fn apply(&mut self, baud: BaudRate);
 }
 
-/// Raw line-level sample of the bus pin, for rescue-break confirmation
-/// (§9.1: an ordinary break has risen by wake entry — the detector sets at
-/// bit 10 — a rescue low has not).
-pub trait LineSense {
-    fn is_low(&self) -> bool;
-}
-
 /// Role bundle for the `ServoBus` composite (driver-pattern §5.4).
 pub trait Providers {
     type Ring: RxRing;
@@ -84,7 +77,6 @@ pub trait Providers {
     type Crc: CrcEngine;
     type Tx: TxWire;
     type Baud: UsartBaud;
-    type Line: LineSense;
 }
 
 /// Wrap-aware "`a` is at or after `b`" on the u32 tick domain.

@@ -13,7 +13,7 @@ use osc_core::BaudRate;
 use osc_protocol::crc::osc_crc_continue;
 
 use crate::bus::ServoBus;
-use crate::traits::bus::{CrcEngine, Deadline, LineSense, Providers, RxRing, TxWire, UsartBaud};
+use crate::traits::bus::{CrcEngine, Deadline, Providers, RxRing, TxWire, UsartBaud};
 
 /// Ring length — even and larger than `FRAME_MAX` (matches the V006 512 B ring).
 pub const RING_LEN: usize = 512;
@@ -248,38 +248,6 @@ impl UsartBaud for FakeBaud {
     }
 }
 
-/// Settable bus-line level for rescue-break confirmation.
-#[derive(Clone)]
-pub struct FakeLine(Rc<FakeLineState>);
-
-struct FakeLineState {
-    low: Cell<bool>,
-}
-
-impl Default for FakeLine {
-    fn default() -> Self {
-        Self(Rc::new(FakeLineState {
-            low: Cell::new(false),
-        }))
-    }
-}
-
-impl FakeLine {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn set_low(&self, low: bool) {
-        self.0.low.set(low);
-    }
-}
-
-impl LineSense for FakeLine {
-    fn is_low(&self) -> bool {
-        self.0.low.get()
-    }
-}
-
 /// ZST binding each role to its fake (driver-pattern §5.4).
 pub struct TestProviders;
 
@@ -289,7 +257,6 @@ impl Providers for TestProviders {
     type Crc = FakeCrc;
     type Tx = FakeWire;
     type Baud = FakeBaud;
-    type Line = FakeLine;
 }
 
 /// Owns the shared fake state and builds a `ServoBus` over it.
@@ -298,7 +265,6 @@ pub struct Harness {
     pub deadline: FakeDeadline,
     pub wire: FakeWire,
     pub baud: FakeBaud,
-    pub line: FakeLine,
 }
 
 impl Harness {
@@ -308,7 +274,6 @@ impl Harness {
             deadline: FakeDeadline::new(),
             wire: FakeWire::new(),
             baud: FakeBaud::new(),
-            line: FakeLine::new(),
         }
     }
 
@@ -324,7 +289,6 @@ impl Harness {
             FakeCrc::new(),
             self.wire.clone(),
             self.baud.clone(),
-            self.line.clone(),
             id,
             rate,
             response_deadline_us,

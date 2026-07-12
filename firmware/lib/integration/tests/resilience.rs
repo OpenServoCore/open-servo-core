@@ -437,13 +437,13 @@ fn rescue_pulse_drops_to_500k() {
 
 #[test]
 fn zero_payload_write_does_not_trip_rescue() {
-    // §9.1 confirm vs in-flight traffic: a long WRITE of zeros keeps the
-    // line dominant well past the 100 µs confirm at 1M (a zero byte is low
-    // for 9 of its 10 bit-times) — bench-caught: the confirm sampled
-    // mid-payload and dropped the rate mid-instruction. Ring-cursor progress
-    // since the arm must veto the confirm; only a byte-less hold is a pulse.
-    // 8 zero bytes (goal_position + goal_velocity) put a zero data byte
-    // squarely under the +100 µs sample.
+    // §9.1 phantom-rescue regression net: a long WRITE of zeros keeps the
+    // line dominant for most of its wire time (a zero byte is low for 9 of
+    // its 10 bit-times) — bench-caught on the FE-era confirm, which sampled
+    // mid-payload and dropped the rate mid-instruction. The veto now lives
+    // in the chip's main-loop sampler (ring-frozen window: every completed
+    // char moves NDTR); at this model level the pin holds that ordinary
+    // traffic never produces a rescue declaration.
     let mut sim = Sim::new(BaudRate::B1000000);
     let s = sim.add_servo(ID5);
 

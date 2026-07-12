@@ -376,78 +376,25 @@ fn s12_write_wrapping_ring_boundary_mutates_and_acks() {
     assert!(shared.table.with(|t| t.control.lifecycle.torque_enable));
 }
 
+/// §9.1 rescue is a chip-side declaration now (the main-loop line sampler —
+/// the break detector latches only at a span's END, so no wake can see a
+/// pulse in progress; the sampler's NDTR-frozen window is the phantom-alias
+/// veto the old two-sample confirm provided). The driver's part is the
+/// event: switch to the rescue rate and resync at the provably-still cursor.
 #[test]
-fn s10_rescue_break_switches_to_500k() {
+fn s10_rescue_break_switches_to_500k_and_resyncs() {
     let h = Harness::new();
     let mut bus = h.build(ID, RATE, 60);
-    let shared = Shared::new();
-    let mut session = Session::new();
-    let mut d = session.dispatcher(&shared);
 
-    // FE with the line held low → rescue candidate.
-    h.line.set_low(true);
     h.deadline.set_now(1000);
-    h.ring.set_cursor(1); // FE byte at index 0 is the default 0x00
-    bus.on_break(&mut d);
-
-    // Fire the ~100 µs recheck with the line still low: a passing first
-    // sample re-arms one byte-time out instead of switching.
-    h.deadline.set_now(1000 + 100); // RESCUE_CONFIRM_US * TICKS_PER_US
-    bus.on_deadline(&mut d);
-    assert_eq!(
-        h.baud.applied().last(),
-        Some(&RATE),
-        "one sample never switches"
-    );
-
-    // The second sample, still low, still no ring progress → rescue. Pump the
-    // mux: framer starvation rechecks interleave with the reconfirm slot.
-    for _ in 0..4 {
-        if h.baud.applied().last() == Some(&BaudRate::B500000) {
-            break;
-        }
-        fire(&mut bus, &h, &mut d);
-    }
+    h.ring.set_cursor(1); // the pulse's ringed 0x00 at index 0
+    bus.on_rescue_break();
 
     let applied = h.baud.applied();
     assert_eq!(applied.first(), Some(&RATE)); // new() applied the configured rate
     assert_eq!(applied.last(), Some(&BaudRate::B500000));
-}
-
-/// The phantom-rescue alias (bench 2026-07-09 at 1M): a host TX stall
-/// freezes the cursor across the +100 µs confirm while the sample lands
-/// inside a data byte's low bits. The byte in flight completes before the
-/// second sample — its ring progress must veto the switch.
-#[test]
-fn s10b_rescue_reconfirm_vetoes_data_alias() {
-    let h = Harness::new();
-    let mut bus = h.build(ID, RATE, 60);
-    let shared = Shared::new();
-    let mut session = Session::new();
-    let mut d = session.dispatcher(&shared);
-
-    h.line.set_low(true);
-    h.deadline.set_now(1000);
-    h.ring.set_cursor(1);
-    bus.on_break(&mut d);
-
-    // First sample: line low (a data byte's start/zero bits), cursor frozen.
-    h.deadline.set_now(1000 + 100);
-    bus.on_deadline(&mut d);
-    assert_eq!(h.baud.applied().last(), Some(&RATE));
-
-    // The aliased byte completes before the second sample: cursor moves.
-    // Pump past the interleaved framer wakes so the reconfirm slot fires.
-    h.ring.set_cursor(2);
-    for _ in 0..4 {
-        fire(&mut bus, &h, &mut d);
-    }
-
-    assert_eq!(
-        h.baud.applied().last(),
-        Some(&RATE),
-        "data alias must not rescue"
-    );
+    // Every transport slot cleared: nothing armed until the host talks.
+    assert_eq!(h.deadline.armed(), None);
 }
 
 #[test]

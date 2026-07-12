@@ -10,8 +10,8 @@ use osc_drivers::bus::{LinkDiag, ServoBus};
 
 use super::core::Core;
 use super::providers::{
-    BaudState, DeadlineState, Handles, RingState, SimBaud, SimCrc, SimDeadline, SimLine,
-    SimProviders, SimRing, SimWire,
+    BaudState, DeadlineState, Handles, RingState, SimBaud, SimCrc, SimDeadline, SimProviders,
+    SimRing, SimWire,
 };
 use super::store::RamStore;
 
@@ -80,7 +80,6 @@ impl SimServo {
             SimCrc::new(),
             SimWire::new(core.clone(), baud.clone(), idx),
             SimBaud::new(baud.clone()),
-            SimLine::new(core.clone()),
             id,
             rate,
             response_deadline_us,
@@ -97,6 +96,12 @@ impl SimServo {
             baud,
         };
         (servo, handles)
+    }
+
+    /// §9.1: the chip main-loop sampler's declaration (thread-level, not a
+    /// vector — the sim delivers it directly at the modeled threshold tick).
+    pub fn on_rescue(&mut self) {
+        self.bus.on_rescue_break();
     }
 
     pub fn on_break(&mut self) {

@@ -24,7 +24,6 @@ use crate::cfg::board_wiring::BoardWiring;
 use crate::providers::crc::Crc;
 use crate::providers::deadline::Deadline;
 use crate::providers::digital_out::DigitalOut;
-use crate::providers::line::LineSense;
 use crate::providers::monotonic::Monotonic;
 use crate::providers::ring::RxRing;
 use crate::providers::tx_wire::TxWire;
@@ -48,7 +47,6 @@ impl Providers for V006Providers {
     type Crc = Crc;
     type Tx = TxWire;
     type Baud = UsartBaud;
-    type Line = LineSense;
 }
 
 type Bus = ServoBus<V006Providers>;
@@ -123,7 +121,6 @@ impl Drivers {
             Crc,
             tx_wire,
             UsartBaud,
-            LineSense,
             id,
             baud,
             deadline_us,

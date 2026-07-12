@@ -227,7 +227,9 @@ protocol binds them to two distinct roles (2026-07-12, [F15]):
   only a genuine ≥10-dominant-bit span sets it, the exact §3 law shape —
   it runs with the LIN engine off, it clears by a safe flag-selective
   write (no data-register access), and any-length span raises exactly
-  one event. It is the ONLY receive interrupt an implementation enables.
+  one event, **latched at the span's END** (the rising edge; for the
+  10-bit law break that IS bit 10) [F15]. It is the ONLY receive
+  interrupt an implementation enables.
 - **The per-character error flags (FE/ORE/NE) are not events at all.**
   They are latched, positionless, coalescing, and unsafe to retire
   mid-stream — so no interrupt is ever enabled on them. They latch
@@ -563,17 +565,22 @@ to the 0.5 M rescue rate — volatile only; ID retained, config registers
 untouched, nothing persisted. A reboot exits rescue back to the configured
 baud. The signal itself is baud-agnostic (raw GPIO low suffices at the
 host), so it reaches a servo whose rate is unknown, and it unifies a
-mixed-rate bus onto one channel in a single pulse. Detection costs nothing
-extra: the break-wake ISR samples the pin level — LBD sets at bit 10 of
-the span [F15], so a normal break has risen by ISR entry while a rescue
-low has not; a SysTick recheck ~100 µs later, and a
-second sample a byte-time after a passing first, confirm the span. The
-second sample makes the confirm aliasing-proof: a host TX stall can park
-the first sample inside a data byte's low bits with the ring cursor frozen
-(bench-observed at 1M — phantom rescue, the servo wedged at 0.5 M under a
-1 M host), but data cannot hold the line low a whole byte-time without
-completing a byte, and a completed byte rings and moves the cursor. No
-EXTI storm, no edge capture. Recovery flow: rescue break →
+mixed-rate bus onto one channel in a single pulse. Detection is the slow
+loop's job, not the transport's: the break detector latches only at a
+span's END [F15], so no receive wake can observe a pulse in progress —
+the servo's main loop samples the line pin and the RX ring's DMA counter
+once per idle wake (~50 µs cadence off the ADC tick metronome) and
+declares rescue after ≥300 µs of continuous low with the ring frozen. The
+frozen-ring requirement is what makes the window aliasing-proof at any
+host baud: data cannot hold the line low a whole byte-time without
+completing a character, and a completed character rings and moves the
+counter — the pulse's own ringed `0x00` (it chars ~a byte-time in)
+re-anchors the window and everything after it is provably byte-less. The
+declaration lands while the pulse still holds the line, so the transport
+resyncs at a provably-still ring position. No EXTI storm, no edge
+capture, no wake-path branches. Hosts should send pulses of ~1 ms (the
+300 µs floor plus generous sampler-jitter margin under load; repeats are
+free and idempotent). Recovery flow: rescue break →
 talk at 0.5 M → fix the baud register → COMMIT/reboot. Limitation: it
 cannot interrupt a servo wedged mid-transmit (RX is muted during own TX
 [F9]) — it is config recovery, not a babble killer.
@@ -767,4 +774,4 @@ rev B `wire-buffered` board config keeps them).
 | F12 | DMA rounds odd MAR down; no unaligned 16-bit reads                                         | spi_crc case 10       |
 | F13 | EXTI edge ISRs storm during traffic (own TX stretched 3×)                                  | trim sweep gotcha     |
 | F14 | data decodes clean at ±3.4 % in both TX and RX directions                                  | trim sweep            |
-| F15 | LBD runs sans LINEN, both chip families: length-qualified (≥10-bit spans only — 0 fires on framing-error injection and high-baud garble), safe flag-selective write-0 clear mid-traffic, one event per any-length span, sets at bit 10, entry stamps 4 ticks p-p on a 400 µs grid; latched FE/NE/ORE with no interrupt enabled are harmless through marination | lbd_wake spike (V006, 2026-07-12); pirate LIN RCA (V203) |
+| F15 | LBD runs sans LINEN, both chip families: length-qualified (≥10-bit spans only — 0 fires on framing-error injection and high-baud garble), safe flag-selective write-0 clear mid-traffic, one event per any-length span, **latched at the span's END** (== bit 10 for the 10-bit law break; a rescue pulse's wake arrives after the line rises), entry stamps 4 ticks p-p on a 400 µs grid; latched FE/NE/ORE with no interrupt enabled are harmless through marination | lbd_wake spike + counter probe (V006, 2026-07-12); pirate LIN RCA (V203) |

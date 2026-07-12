@@ -31,7 +31,10 @@ pub const SAVE_SETTLE_MS: u64 = 50;
 pub const REBOOT_SETTLE_MS: u64 = 100;
 /// Host rescue pulse (§9.1): the servo confirm threshold is ~300 µs of
 /// dominant low; 400 gives margin without meaningfully holding the bus.
-pub const RESCUE_PULSE_US: u32 = 400;
+// ~3× the servo's 300 µs sampler floor: the main-loop sampler's cadence
+// rides the 20 kHz idle tick and jitters under ISR load, and repeats are
+// idempotent — a fat pulse costs nothing on a recovery path.
+pub const RESCUE_PULSE_US: u32 = 1_000;
 
 /// Build the wire bytes (no CRC-prefix; the physical break carries it) for one
 /// host->servo instruction frame.

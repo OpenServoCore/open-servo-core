@@ -17,10 +17,10 @@ pub const TICKS_PER_US: u64 = 48;
 /// 10 bit-times per UART character (8N1) — the byte and break unit (§2).
 const BITS_PER_BYTE: u64 = 10;
 
-/// SBK break length; measured ~14 bit-times, zero variance [F5]. The FE ring
-/// byte and `on_break` are delivered at the break's *end*, which is when the
-/// line has risen for an ordinary break [F5] — so `LineSense::is_low` reads
-/// high there and only a still-dominant rescue pulse (§9.1) tests low.
+/// SBK break length; measured ~14 bit-times, zero variance [F5]. The ring
+/// byte and `on_break` are delivered at the break's *end* — where the
+/// detector latches (silicon 2026-07-12: LBD sets at the rising edge that
+/// ends the span; == bit 10 for the 10-bit law break).
 const BREAK_BITS: u64 = 14;
 
 /// Runaway guards: a wedged scenario must fail loudly, not spin forever.
@@ -78,9 +78,12 @@ pub enum Event {
     /// rings a 0x00 and wakes qualified receivers, invisible to the frame
     /// recorder (noise, not traffic).
     StrayBreak { baud: BaudRate },
-    /// A rescue pulse's detect point: a ≥300 µs dominant span qualifies at
-    /// every rate — one break wake at every servo, line still low (§9.1).
-    RescuePulse,
+    /// A rescue pulse crossed the sampler threshold (§9.1): every servo's
+    /// main-loop sampler has seen ≥ RESCUE_LOW_US of continuous low with the
+    /// ring frozen — deliver `on_rescue_break` (a thread-level event, not a
+    /// vector; the pulse still holds the line). The pulse's END additionally
+    /// fires an ordinary break wake ([`Event::StrayBreak`]).
+    RescueDeclare,
     /// The host's frame drained — finalize the recorded frame.
     HostFrameEnd,
     /// A servo's tick-compare fired; `generation` guards against a cancelled/re-armed
@@ -140,25 +143,20 @@ pub struct Core {
     seq: u64,
     now: u64,
     processed: u64,
-    host_baud: BaudRate,
     // Drive discipline: the current owner and how far its claim reaches.
     busy: Option<(Talker, u64)>,
-    // Dominant-low intervals for `LineSense` (breaks + rescue pulses).
-    dominant: Vec<(u64, u64)>,
     pending: Option<PendingFrame>,
     recorded: Vec<WireFrame>,
 }
 
 impl Core {
-    pub fn new(host_baud: BaudRate) -> Self {
+    pub fn new() -> Self {
         Self {
             heap: BinaryHeap::new(),
             seq: 0,
             now: 0,
             processed: 0,
-            host_baud,
             busy: None,
-            dominant: Vec::new(),
             pending: None,
             recorded: Vec::new(),
         }
@@ -166,14 +164,6 @@ impl Core {
 
     pub fn now(&self) -> u64 {
         self.now
-    }
-
-    pub fn host_baud(&self) -> BaudRate {
-        self.host_baud
-    }
-
-    pub fn set_host_baud(&mut self, baud: BaudRate) {
-        self.host_baud = baud;
     }
 
     /// Queue `event` at absolute tick `time`; FIFO among equal times.
@@ -223,15 +213,6 @@ impl Core {
             _ => end,
         };
         self.busy = Some((talker, reach));
-    }
-
-    /// Mark `[start, end)` dominant-low for `LineSense` (break or rescue pulse).
-    pub fn hold_low(&mut self, start: u64, end: u64) {
-        self.dominant.push((start, end));
-    }
-
-    pub fn is_low(&self, at: u64) -> bool {
-        self.dominant.iter().any(|&(s, e)| s <= at && at < e)
     }
 
     // --- wire recorder ----------------------------------------------------

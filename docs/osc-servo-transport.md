@@ -130,7 +130,7 @@ Every hardware resource the transport touches, and its duty cycle:
 | USART1          | half-duplex wire; HDSEL, no self-echo (F9)       | —            |
 | USART1 vector   | PFIC HIGH. (a) LBD = break wake (length-qualified ≥10-bit low; flag-selective write-0 clear at entry, never a DATAR read; FE/NE/ORE have no interrupt enable — they latch silently, §6 A4); (b) TC = TX arm drained | break body ~1 µs; TC body ~2–4 µs/arm |
 | SysTick CNT/CMP | the transport clock (48 MHz, 32-bit) + the ONE comparator | — |
-| SysTick vector  | PFIC HIGH. Deadline mux: framer A/B, covered, chain trigger, rescue confirm — and dispatch, inline (every class except verdict-first runs at the covered checkpoint or the fast path) | arithmetic slots ~1–5 µs; dispatch bodies ~10–70 µs |
+| SysTick vector  | PFIC HIGH. Deadline mux: framer A/B, covered, chain trigger — and dispatch, inline (every class except verdict-first runs at the covered checkpoint or the fast path) | arithmetic slots ~1–5 µs; dispatch bodies ~10–70 µs |
 | DMA1 CH5        | USART1 RX → 512 B ring, circular, silent (no IRQ); **VERYHIGH, alone atop the ladder** (§6 A4) | zero CPU |
 | DMA1 CH4        | TX arms → USART1 DR (header, snapshot payload, CRC tail); HIGH | zero CPU; TC surfaces as USART TC |
 | DMA1 CH3        | CRC feeds → SPI1 DR, 16-bit halfwords (RX span straight from the ring); MEDIUM, below CH6 | zero CPU, ~0.36 µs/B engine time |
@@ -138,7 +138,7 @@ Every hardware resource the transport touches, and its duty cycle:
 | DMA1 CH6        | snapshot copy → the 256 B snapshot buffer (reply payloads only — RX CRC feeds the ring directly); HIGH, above CH3; CH7 now unused | ~0.125 µs/B, zero CPU |
 | DMA1 CH1        | ADC sample set → buffer; DMA HIGH (wins HIGH ties by channel number); TC vector = motor kernel tick at PFIC LOW | ~10 µs body |
 | PC0 CNF         | drive discipline: open-drain listening / push-pull TX window | flipped at trigger/release |
-| main loop       | deferred reboot poll only                        | cold path |
+| main loop       | deferred reboot poll + §9.1 rescue line sampler (line pin + CH5 NDTR once per wfi wake — the detector latches only at a span's END, so the slow loop is the only observer of a pulse in progress) | cold path; sampler ~0.3 µs/wake |
 
 Rev B buffered boards (board config `wire-buffered`) swap the wire rows:
 USART1 runs plain full duplex (no HDSEL, RX on PC1 through the 74LVC2G241's
@@ -172,9 +172,9 @@ ticks, or re-introducing an isolation lane).
 
 ```
 t=0    break's wire end. DMA has already ringed the 0x00. LBD ISR (~2 µs) —
-       a pure wake: the framer resolves from ring data, projects deadline A
-       = now + 3 byte-times at wire pace + ½ byte for the break tail [F5],
-       and arms rescue candidacy. No timestamp is recorded.
+       a pure wake: the framer resolves from ring data and projects deadline
+       A = now + 3 byte-times at wire pace + ½ byte for the break tail
+       [F5]. No timestamp is recorded.
 t=10/20/30  ID, LEN, INST land in the ring by DMA. CPU idle.
 t=35   deadline A (SysTick): header parse + validate → footprint 6, frame
        end computable. A ping's CRC-covered span IS its header, so the
@@ -287,7 +287,7 @@ A1 originally kept one timestamp — the newest break-wake delivery tick —
 as the frontier frame's clock anchor. DELETED (ring-cadence band,
 2026-07-09): the wake now carries neither position (A2) nor time; it is
 a pure wake, and its handler does only the bounded wire work
-(staged-reply kill, chain suspend, rescue-candidacy arming). Every aim
+(staged-reply kill, chain suspend). Every aim
 and estimate is instead projected from live ring state at each resolve:
 
 ```
