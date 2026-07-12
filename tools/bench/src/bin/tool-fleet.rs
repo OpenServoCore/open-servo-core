@@ -156,10 +156,11 @@ fn run_cycle(
     sleep(Duration::from_millis(SETTLE_MS));
     let stamps = drain(client)?;
 
-    // Timing comes only from real IC edges: a free-run stamp (walker
-    // COUNT_UNDER, flags != 0) aliases ticks onto the predicted byte grid.
-    if stamps.iter().any(|s| s.flags != 0) {
-        return Err(anyhow!("aliased stamps (walker free-run)"));
+    // Timing needs anchored ticks: a COUNT_UNDER stamp has no boundary
+    // capture behind it. BOUNDARY-flagged stamps are the anchors themselves
+    // (every break stamp carries bit 1 since the boundary-capture pirate).
+    if stamps.iter().any(|s| s.flags & BStamp::COUNT_UNDER != 0) {
+        return Err(anyhow!("unanchored stamps (COUNT_UNDER)"));
     }
     let (echo_end, slots) = parse_chain(&stamps, &gread, args.ids.len(), bit_ticks)?;
     if slots.len() != args.ids.len() {

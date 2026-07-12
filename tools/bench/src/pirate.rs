@@ -31,6 +31,13 @@ pub struct BStamp {
     pub flags: u8,
 }
 
+impl BStamp {
+    /// Placeholder tick with no boundary anchor since reset.
+    pub const COUNT_UNDER: u8 = 1 << 0;
+    /// Real boundary capture (break service tick, lifted to the fall).
+    pub const BOUNDARY: u8 = 1 << 1;
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum DesyncCause {
     StampOverflow,
