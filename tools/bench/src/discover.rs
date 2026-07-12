@@ -28,7 +28,25 @@ pub enum EnumOutcome {
 pub fn enum_query(client: &mut Client, prefix_len: u8, prefix: &[u8]) -> Result<EnumOutcome> {
     let wire = build_enum(prefix_len, prefix);
     let (stamps, bit_ticks) = capture(client, &wire, SETTLE_MS)?;
+    if std::env::var_os("ENUM_TRACE").is_some() {
+        eprintln!("-- {} stamps, bit_ticks {bit_ticks}", stamps.len());
+        let mut prev = stamps.first().map(|s| s.tick).unwrap_or(0);
+        for (i, s) in stamps.iter().enumerate() {
+            let d = s.tick.wrapping_sub(prev);
+            prev = s.tick;
+            eprintln!(
+                "  [{i:3}] +{:>8.1}bt  {:02X} flags {:02X}",
+                d as f64 / bit_ticks as f64,
+                s.byte,
+                s.flags
+            );
+        }
+    }
     Ok(match parse_exchange(&stamps, &wire, bit_ticks) {
+        // Trailing energy after a clean frame is a peer matcher whose
+        // slot-delayed reply outlived the winner's (§9.2) — the frame parsed,
+        // but the wire says "more than one".
+        Ok(ex) if ex.stamps_end < stamps.len() => EnumOutcome::Collision,
         Ok(ex)
             if ex.status.result == Some(ResultCode::Ok) && ex.status.payload.len() == UID_LEN =>
         {
@@ -59,22 +77,41 @@ pub struct Found {
 /// prefixes, descending one bit on every collision. O(bits · N) exchanges.
 pub fn walk(client: &mut Client) -> Result<Vec<Found>> {
     let mut found = Vec::new();
-    let mut stack = vec![(0u8, Vec::new())];
-    while let Some((len, prefix)) = stack.pop() {
+    let mut stack = vec![(0u8, Vec::new(), false)];
+    while let Some((len, prefix, confirmed)) = stack.pop() {
         let out = enum_query(client, len, &prefix)?;
         if std::env::var_os("WALK_TRACE").is_some() {
             eprintln!("walk {len:>3} {prefix:02x?} -> {out:?}");
         }
         match out {
             EnumOutcome::Silent => {}
-            EnumOutcome::One { uid, id } => found.push(Found { uid, id }),
+            // A clean One can be a synchronized-twin superposition reading
+            // back as a single frame (§9.2, task #30) — confirm it by
+            // probing both children once: twins differing at this bit split
+            // deterministically; twins agreeing land together in one child
+            // where the §9.2 slot draw re-rolls (a fresh 1-in-SLOTS shot at
+            // unison instead of a permanent hide). A confirmed One — or one
+            // at the full-UID depth, where a lone matcher is structural —
+            // is accepted.
+            EnumOutcome::One { uid, id } if confirmed || len as usize >= UID_LEN * 8 => {
+                found.push(Found { uid, id })
+            }
+            EnumOutcome::One { uid, .. } => {
+                let bit = uid[(len / 8) as usize] >> (len % 8) & 1 == 1;
+                let (l, sib) = extend(len, &prefix, !bit);
+                let (_, own) = extend(len, &prefix, bit);
+                stack.push((l, sib, true));
+                stack.push((l, own, true));
+            }
             EnumOutcome::Collision if len as usize >= UID_LEN * 8 => {
                 bail!("collision at the full 128-bit prefix: duplicate UIDs or persistent garble");
             }
             EnumOutcome::Collision => {
                 // Bit-0 subtree explored first (pushed last).
-                stack.push(extend(len, &prefix, true));
-                stack.push(extend(len, &prefix, false));
+                let (l, one) = extend(len, &prefix, true);
+                stack.push((l, one, false));
+                let (l, zero) = extend(len, &prefix, false);
+                stack.push((l, zero, false));
             }
         }
     }

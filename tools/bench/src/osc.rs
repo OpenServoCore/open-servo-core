@@ -190,6 +190,11 @@ pub struct StatusFrame {
 pub struct Exchange {
     pub status: StatusFrame,
     pub turnaround_ticks: u32,
+    /// Stamp index one past the reply frame. Stamps beyond it are energy the
+    /// parse ignored — for broadcast ENUM that means a slot-delayed peer's
+    /// reply trailing the winner's clean frame (§9.2): a collision, not a
+    /// unique match.
+    pub stamps_end: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -279,6 +284,7 @@ pub fn parse_exchange(
     Ok(Exchange {
         status,
         turnaround_ticks,
+        stamps_end: reply_break_idx + footprint,
     })
 }
 
