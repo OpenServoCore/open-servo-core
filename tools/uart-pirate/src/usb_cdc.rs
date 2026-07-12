@@ -177,9 +177,19 @@ async fn send_reply<'d>(
             statr,
             ctlr1,
             ctlr2,
+            standalones,
         } => {
             let _ = out.extend_from_slice(b"BDIAG ");
-            for v in [services, records, head, tail, statr, ctlr1, ctlr2] {
+            for v in [
+                services,
+                records,
+                head,
+                tail,
+                statr,
+                ctlr1,
+                ctlr2,
+                standalones,
+            ] {
                 push_dec_u32(&mut out, v);
                 let _ = out.push(b' ');
             }

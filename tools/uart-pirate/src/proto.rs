@@ -27,8 +27,8 @@
 //!       probe.
 //!   `BDIAG`
 //!       Boundary-recorder health: `BDIAG <services> <records> <head>
-//!       <tail> <statr> <ctlr1> <ctlr2>` (registers raw decimal).
-//!       Bypasses the desync guard; counters run from boot.
+//!       <tail> <statr> <ctlr1> <ctlr2> <standalones>` (registers raw
+//!       decimal). Bypasses the desync guard; counters run from boot.
 //!   `RESET`
 //!       Clear the desync flag and drop undrained capture state. Keeps
 //!       baud. The routine recovery for a desync.
@@ -46,11 +46,20 @@
 //!       Send `n` (default 1) UART breaks via SBK, `gap_us` (default
 //!       1000) apart. Blocks until the last break has shifted out.
 //!       Break-framing spike command.
-//!   `BRKSEND bytes=<hex>`
+//!   `BRKSEND bytes=<hex> [gap=<ticks>]`
 //!       One 10-bit-exact break (a 9-bit 0x00 frame, not SBK) followed
 //!       back-to-back by `bytes` (poll-fed, ≤ 272 B) — the osc-native
 //!       host send primitive, same break shape as a servo reply, and
-//!       the shape LIN break detection (LBDL=0) keys on.
+//!       the shape LIN break detection (LBDL=0) keys on. `gap` inserts
+//!       extra mark (tick32 ticks, ≤ 100 µs) between the break's stop
+//!       bit and byte 0 — the blind-window sweep's knob.
+//!   `PULSE`
+//!       Fire the ~20 µs host marker on the PB0 dbg pin (`dbg.rs`) —
+//!       the bench probe's scope trigger for a detected-corrupt capture.
+//!   `LINEN <0|1>`
+//!       Runtime LIN-mode toggle (LINEN + LBDIE together). `0` starves
+//!       the boundary recorder (stamps degrade to COUNT_UNDER) but
+//!       bytes keep ringing — the LIN-engine-vs-plain-receiver A/B.
 //!   `BURST bytes=<hex>`
 //!       Zero-gap multi-frame bombardment. `bytes` is length-prefixed
 //!       frames (`[len_0][frame_0][len_1][frame_1]…`, ≤ 640 B total);
@@ -119,6 +128,7 @@ pub enum Reply {
         statr: u32,
         ctlr1: u32,
         ctlr2: u32,
+        standalones: u32,
     },
 }
 
@@ -169,7 +179,7 @@ pub fn handle_line(line: &[u8]) -> Reply {
         return comp(rest);
     }
     if line == "BDIAG" {
-        let (services, records, head, tail, statr, ctlr1, ctlr2) = rx::boundary_diag();
+        let (services, records, head, tail, statr, ctlr1, ctlr2, standalones) = rx::boundary_diag();
         return Reply::Diag {
             services,
             records,
@@ -178,6 +188,24 @@ pub fn handle_line(line: &[u8]) -> Reply {
             statr,
             ctlr1,
             ctlr2,
+            standalones,
+        };
+    }
+    if line == "PULSE" {
+        crate::dbg::mark_host();
+        return Reply::Ok;
+    }
+    if let Some(rest) = line.strip_prefix("LINEN ") {
+        return match rest.trim() {
+            "0" => {
+                rx::set_lin(false);
+                Reply::Ok
+            }
+            "1" => {
+                rx::set_lin(true);
+                Reply::Ok
+            }
+            _ => Reply::Err("linen"),
         };
     }
 
@@ -307,19 +335,24 @@ fn brk(rest: &str) -> Reply {
 fn brksend(rest: &str) -> Reply {
     let mut buf = [0u8; tx::BRK_PAYLOAD_MAX];
     let mut len: Option<usize> = None;
+    let mut gap: u32 = 0;
     for tok in rest.split_ascii_whitespace() {
         let Some((k, v)) = tok.split_once('=') else {
             return Reply::Err("kv");
         };
         match k {
             "bytes" => len = decode_hex(v, &mut buf),
+            "gap" => match v.parse() {
+                Ok(t) => gap = t,
+                Err(_) => return Reply::Err("gap"),
+            },
             _ => return Reply::Err("key"),
         }
     }
     let Some(len) = len else {
         return Reply::Err("missing");
     };
-    match tx::send_break_then(&buf[..len]) {
+    match tx::send_break_then(&buf[..len], gap) {
         Ok(()) => Reply::Ok,
         Err(tx::SendError::TooLong) => Reply::Err("toolong"),
         Err(tx::SendError::Busy) => Reply::Err("busy"),

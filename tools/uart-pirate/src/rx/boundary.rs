@@ -1,12 +1,16 @@
-//! Break-boundary recorder: one `(tick32, byte index)` entry per LIN
-//! break detect (LBD) service. LBD is line-level based — 10 consecutive
+//! Break-boundary recorder: one `(tick32, byte index)` entry per break
+//! detect (LBD) service. LBD is line-level based — 10 consecutive
 //! dominant bits (LBDL=0), the protocol-law break length — so it fires
 //! for the pirate's OWN echo breaks exactly as it does for foreign
-//! ones, always at bit 10 after the fall. FE/EIE was tried first and
-//! never latches for breaks on this V203 (2026-07-12: zero services
-//! across ping traffic with EIE set and verified bit mappings, while
-//! the same vector's TC branch ran); LBD also clears by a safe
-//! write-0, so none of the latched-flag storm machinery exists here.
+//! ones, always at bit 10 after the fall, and on this die it runs with
+//! the LIN engine OFF (LINEN=0; fe_probe 2026-07-12 — see
+//! `tx::init_usart3` for why LINEN must stay off). FE/EIE was tried
+//! first and recorded as "never latches"; that was WRONG — the flag
+//! latches 50/50 in isolation (fe_probe), but the app's own STATR
+//! reads chronically arm the SR half of the SR→DR clear and the RX
+//! DMA's DATAR access retires the flag within nanoseconds, so the
+//! level-pended IRQ is never taken. LBD clears by a safe write-0, so
+//! none of the latched-flag storm machinery exists here.
 //!
 //! Two record flavors, matching what LIN reception does with the break
 //! CHARACTER:
@@ -71,6 +75,9 @@ static LAST_TOTAL: SyncUnsafeCell<u32> = SyncUnsafeCell::new(0);
 /// Service-entry / boundary-recorded counters for the `BDIAG` probe.
 pub(super) static SERVICES: AtomicU32 = AtomicU32::new(0);
 pub(super) static RECORDS: AtomicU32 = AtomicU32::new(0);
+/// Standalone-flavor records (LIN consumed the break character) — the
+/// swallow-rate numerator for the blind-window forensics.
+pub(super) static STANDALONES: AtomicU32 = AtomicU32::new(0);
 
 /// Break-detect service body. `now` is the vector's entry tick.
 pub(super) fn on_break(now: u32) {
@@ -123,7 +130,10 @@ pub(super) fn on_break(now: u32) {
             // The character was consumed (LIN's delimiter handling of a
             // law-shaped break) or never zero: the break sits before the
             // next byte to ring.
-            None => (total, true),
+            None => {
+                STANDALONES.fetch_add(1, Ordering::Relaxed);
+                (total, true)
+            }
         };
 
         let head = HEAD.load(Ordering::Relaxed);
@@ -185,13 +195,14 @@ pub(super) fn next_at(pos: u32) -> Option<Bound> {
     }
 }
 
-/// `BDIAG` snapshot: (services, records, head, tail).
-pub(super) fn diag() -> (u32, u32, u32, u32) {
+/// `BDIAG` snapshot: (services, records, head, tail, standalones).
+pub(super) fn diag() -> (u32, u32, u32, u32, u32) {
     (
         SERVICES.load(Ordering::Relaxed),
         RECORDS.load(Ordering::Relaxed),
         HEAD.load(Ordering::Relaxed),
         TAIL.load(Ordering::Relaxed),
+        STANDALONES.load(Ordering::Relaxed),
     )
 }
 

@@ -268,13 +268,21 @@ fn kick_dma() {
 fn init_usart3() {
     USART3.ctlr2().modify(|w| {
         w.set_stop(0b00);
-        // LIN break detect is the boundary recorder's wake: line-level
-        // (10 dominant bits, LBDL=0), so it sees our own echo breaks —
-        // which frame as valid 9-bit characters under the break TX's
-        // M=1 and never raise FE — exactly as it sees servo SBK breaks.
-        // (EIE/FE is silicon-dead on this die: zero ERR services with
-        // EIE set, 2026-07-12.)
-        w.set_linen(true);
+        // LBD (10 dominant bits, LBDL=0) is the boundary recorder's
+        // wake, with the LIN ENGINE OFF: on this die the break
+        // detector runs independent of LINEN (fe_probe 2026-07-12,
+        // 50/50 per shape incl. a 9.9-bit fast-transmitter break),
+        // while LINEN=1 makes reception skew-fragile — a break ending
+        // before the detector's own bit-10 sample corrupts the next
+        // start-bit adoption (bench: +7k ppm TX skew = up to 39/40
+        // reply corruption with LINEN, 0/40 without). Normal-mode
+        // reception also rings every break character deterministically,
+        // so boundary records are always attached. FE is NOT the wake
+        // for a different reason than first recorded: the flag latches
+        // fine in isolation (fe_probe), but the app's own STATR reads +
+        // RX-DMA DATAR access retire it within nanoseconds — a level
+        // pend that evaporates before the hart takes it.
+        w.set_linen(false);
         w.set_lbdl(false);
         w.set_lbdie(true);
     });
@@ -442,6 +450,9 @@ pub const LOW_PULSE_MAX_US: u32 = 100_000;
 /// Fits any osc-native frame (`footprint(u8::MAX)` = 258 wire bytes) with
 /// slack.
 pub const BRK_PAYLOAD_MAX: usize = 272;
+/// Cap on `BRKSEND gap=` (100 µs) — bounded far under the TC-wait
+/// ceiling; the blind-window sweep uses a few bit-times of it.
+pub const BRK_GAP_MAX_TICKS: u32 = 14_400;
 
 /// Send `count` UART breaks via SBK, `gap_us` apart. Returns after the
 /// last break has shifted out.
@@ -471,6 +482,11 @@ pub fn send_breaks(count: u32, gap_us: u32) -> Result<(), SendError> {
 /// bytes — the osc-native host send primitive, and the PROTOCOL LAW
 /// shape (break = exactly one character time; decided 2026-07-12).
 ///
+/// `gap_ticks` inserts extra mark between the break character's stop
+/// bit (TC) and the payload kick — 0 is the production shape; nonzero
+/// is the blind-window sweep's knob (`BRKSEND gap=`), stepping the
+/// break→byte0 seam our own LIN receiver is exposed to.
+///
 /// The break is NOT SBK: CH32 SBK stretches to ~12-14 bit-times, off
 /// the law and outside the timing algebra (footprint models count the
 /// break as 10 bits). Instead the break is one 9-bit frame of 0x00
@@ -480,8 +496,8 @@ pub fn send_breaks(count: u32, gap_us: u32) -> Result<(), SendError> {
 /// the receiver's IDLE threshold. Our own LBD receiver consumes the
 /// break character (LIN treats it as a delimiter, not data); the drain
 /// re-emits it with the captured tick (`rx::stamp`).
-pub fn send_break_then(payload: &[u8]) -> Result<(), SendError> {
-    if payload.is_empty() || payload.len() > BRK_PAYLOAD_MAX {
+pub fn send_break_then(payload: &[u8], gap_ticks: u32) -> Result<(), SendError> {
+    if payload.is_empty() || payload.len() > BRK_PAYLOAD_MAX || gap_ticks > BRK_GAP_MAX_TICKS {
         return Err(SendError::TooLong);
     }
     wait_tx_complete().map_err(|TxTimeout| SendError::Busy)?;
@@ -499,6 +515,9 @@ pub fn send_break_then(payload: &[u8]) -> Result<(), SendError> {
             .and_then(|()| wait_tx_complete().map_err(|TxTimeout| SendError::Busy));
         USART3.ctlr1().modify(|w| w.set_m(false));
         r?;
+        if gap_ticks != 0 {
+            spin_ticks(gap_ticks);
+        }
         // The payload rides DMA — no CPU in the byte path (see
         // `kick_dma_and_arm_release`); the ISR releases the drive at
         // the final stop bit.

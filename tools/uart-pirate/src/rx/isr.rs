@@ -36,13 +36,15 @@ fn USART3() {
     if statr.tc() && USART3.ctlr1().read().tcie() {
         crate::tx::on_tx_complete();
     }
-    // LIN break detect: 10 dominant bits — every break on the wire, own
-    // echoes included (they frame as valid 9-bit characters under the
-    // break TX's M=1 and never raise FE; EIE/FE is silicon-dead here
-    // besides, see rx::boundary). Cleared before the body so a break
-    // landing during the service pends a fresh event.
+    // Break detect (LBD, LIN engine off — see tx::init_usart3): 10
+    // dominant bits — every break on the wire, own echoes included
+    // (they frame as valid 9-bit characters under the break TX's M=1;
+    // foreign breaks frame as FE'd 0x00s — both ring, so records are
+    // always attached in normal mode). Cleared before the body so a
+    // break landing during the service pends a fresh event.
     if statr.lbd() && USART3.ctlr2().read().lbdie() {
         clear_lbd_only();
+        crate::dbg::mark_break();
         boundary::on_break(now);
     }
     if statr.idle() && USART3.ctlr1().read().idleie() {

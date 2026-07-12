@@ -2,6 +2,7 @@
 #![no_main]
 #![feature(sync_unsafe_cell)]
 
+mod dbg;
 mod led;
 mod parse;
 mod pfic;
@@ -23,6 +24,7 @@ use embassy_executor::Spawner;
 //
 //   PB10  USART3_TX (AF OD)        ─► wire
 //   PB11  USART3_RX (input pullup) ◄─ wire  (jumpered to PB10)
+//   PB0   dbg marker (GP PP)       ─► scope ch2 (width-coded, `dbg.rs`)
 //   PA12  USB DP                       host
 //   PA11  USB DM                       host
 //
@@ -78,6 +80,7 @@ async fn main(spawner: Spawner) {
     led::init();
     led::on();
     tick::init();
+    dbg::init();
     tx::init();
     rx::init();
     pfic::set_priorities();

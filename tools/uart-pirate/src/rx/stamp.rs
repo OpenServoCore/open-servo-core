@@ -138,6 +138,7 @@ pub fn drain_batch(out: &mut [ByteRecord]) -> Result<usize, DesyncCause> {
             // a ring zero at the standalone's own position IS the
             // break's late character — fold it into the synthetic.
             Some(boundary::Bound::Standalone(t)) => {
+                crate::dbg::mark_standalone();
                 if consumed < avail && rings::rx_at(pos) == 0x00 {
                     consumed += 1;
                 }

@@ -78,10 +78,25 @@ pub fn current_baud() -> u32 {
     APB1_HZ.checked_div(stamp::bit_ticks()).unwrap_or(0)
 }
 
+/// Runtime LIN-mode toggle — the task #26 A/B discriminator. With LIN
+/// off the boundary recorder starves (no LBD services; stamps degrade
+/// to `COUNT_UNDER` placeholders) but the byte ring keeps ringing, so
+/// a probe can ask whether the skew-gated reply corruption lives in
+/// the LIN engine or in the plain receiver.
+pub fn set_lin(enable: bool) {
+    critical_section::with(|_| {
+        ch32_metapac::USART3.ctlr2().modify(|w| {
+            w.set_linen(enable);
+            w.set_lbdie(enable);
+        });
+    });
+}
+
 /// Boundary-recorder health + raw wire-register ground truth for the
-/// `BDIAG` probe: `(services, records, head, tail, statr, ctlr1, ctlr2)`.
-pub fn boundary_diag() -> (u32, u32, u32, u32, u32, u32, u32) {
-    let (services, records, head, tail) = boundary::diag();
+/// `BDIAG` probe:
+/// `(services, records, head, tail, statr, ctlr1, ctlr2, standalones)`.
+pub fn boundary_diag() -> (u32, u32, u32, u32, u32, u32, u32, u32) {
+    let (services, records, head, tail, standalones) = boundary::diag();
     let usart = ch32_metapac::USART3;
     (
         services,
@@ -91,5 +106,6 @@ pub fn boundary_diag() -> (u32, u32, u32, u32, u32, u32, u32) {
         usart.statr().read().0,
         usart.ctlr1().read().0,
         usart.ctlr2().read().0,
+        standalones,
     )
 }
