@@ -14,8 +14,11 @@ tinyboot-ch32-rt = "0.4.1"
 panic-halt       = "1"
 
 [features]
-# Default = direct single wire (tinyboot's `half-duplex` feature). Rev B
-# buffered wire (74LVC2G241 + TX_EN, full duplex behind it): build with
-# --no-default-features --features wire-buffered.
-default = ["tinyboot-ch32/half-duplex"]
+# Exactly one wire. Default = direct single wire (tinyboot's `half-duplex`
+# feature). Rev B buffered wire (74LVC2G241 + TX_EN, full duplex behind
+# it): build with --no-default-features --features wire-buffered — the
+# tinyboot feature is additive, so the default must be dropped, and
+# main.rs turns either misuse into a compile_error naming this rule.
+default = ["direct-wire"]
+direct-wire = ["tinyboot-ch32/half-duplex"]
 wire-buffered = []

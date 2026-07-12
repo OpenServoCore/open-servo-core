@@ -1,6 +1,13 @@
 #![no_std]
 #![no_main]
 
+#[cfg(all(feature = "direct-wire", feature = "wire-buffered"))]
+compile_error!("wire-buffered needs --no-default-features (direct-wire is the default)");
+#[cfg(not(any(feature = "direct-wire", feature = "wire-buffered")))]
+compile_error!(
+    "pick a wire: direct-wire (default) or --no-default-features --features wire-buffered"
+);
+
 use panic_halt as _;
 use tinyboot_ch32_rt as _;
 
@@ -34,7 +41,7 @@ fn main() -> ! {
     // Wire modes mirror the app's `wire-buffered` feature: rev B's
     // 74LVC2G241 buffer + TX_EN (full duplex behind it), or the direct
     // single wire — tinyboot's `half-duplex` feature, pulled in by this
-    // crate's default feature. Direct is only safe on the shared wire
+    // crate's `direct-wire` default. Direct is only safe on the shared wire
     // since OpenServoCore/tinyboot#32 (HDSEL-before-TE + open-drain park);
     // v0.4.1 latched the TX output LOW and idled push-pull — a hard-low
     // bus jam for every boot window.
