@@ -78,9 +78,27 @@ at any time by protocol construction).
 
 ## 3. Framing
 
-A frame is delimited by a **UART break** — ≥10 bit-times dominant, sent with
-`SBK`, unforgeable by data (every UART byte contains a high stop bit within
-10 bit-times). No sync header, no byte stuffing, no content restrictions.
+A frame is delimited by a **UART break**. **Protocol law (2026-07-12):
+a transmitted break is exactly 10 bit-times dominant — one character
+time.** The shape is one 9-bit `0x00` character (M=1, bit 8 = 0): start
++ 9 data lows = 10 low bit-times, then a clean stop bit. Unforgeable by
+data (every UART byte contains a high stop bit within 10 bit-times); no
+sync header, no byte stuffing, no content restrictions.
+
+Why a law and not a floor: break ≡ one character time keeps every
+timing model exact — the framer's footprint algebra and the §9.3
+chain-pair gates count the break as one byte slot, so an over-long
+break is a constant error tax on every span — and the law shape is
+precisely the LIN break definition (LBDL=0), so any LIN-capable
+receiver (bridge-class hosts) gets hardware break detection with a
+deterministic 10-bit anchor. Hardware `SBK` is off-law (~14 bit-times
+measured, F5).
+
+**Receivers stay length-tolerant**: any ≥10-bit dominant span is one
+break (rescue pulses, garble, and F3 all require this). Migration note:
+the host is law-compliant; the V006 reply path still sends `SBK`
+(legal to every receiver, off-law for TX) until its migration band
+lands.
 
 Measured break behavior that the framer relies on:
 
@@ -92,8 +110,9 @@ Measured break behavior that the framer relies on:
   and the stream continues; consecutive FE bytes coalesce into one IRQ, so
   the FE IRQ is an event marker, never a counter. Ring + NDTR are the only
   ground truth [F4].
-- This silicon sends ~14-bit breaks (4.7 µs at 3 M, zero variance, both
-  chip families) [F5]; the spec requires only ≥10 bit-times.
+- Hardware `SBK` sends ~14-bit breaks (4.7 µs at 3 M, zero variance,
+  both chip families) [F5] — which is why the law shape is a 9-bit
+  `0x00` character, not `SBK`; receivers accept both (≥10 = break).
 
 ### 3.1 Frame anatomy
 
@@ -480,7 +499,7 @@ DXL checkpoint format solved does not exist here.
 | ----------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------ |
 | reply gap (formerly T_turn) | 12 µs after frame end, at every baud       | host TC→release margin — a register poke, i.e. a time-domain quantity: fixed µs neither balloons at 0.5 M (2 byte-times was 40 µs of mandated silence) nor thins at 3 M |
 | RESPONSE_DEADLINE       | config register, default 60 µs (all bauds) | chain reclaim (trigger→break lead, §6) + host timeout; NOT a reply-time prescription — a servo replies when ready |
-| break length (TX)       | hardware SBK (~14 bit-times measured [F5]) | spec floor is 10; no tuning                                                                |
+| break length (TX)       | exactly 10 bit-times (§3 law; 9-bit 0x00 character) | break ≡ 1 character: exact span algebra + LIN-detectable; SBK (~14 bits, F5) is off-law |
 | inter-frame gap (host)  | none required                              | breaks self-delimit; back-to-back host frames are legal                                    |
 
 Ping turnaround (instruction wire-end → status break fall) is **34.3 µs
