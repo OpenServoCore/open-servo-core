@@ -3,12 +3,12 @@
 //! walker pipeline — with ticks synthesized here instead of captured
 //! per byte:
 //!
-//! - a byte with a boundary entry gets its real capture tick and the
+//! - a byte with a boundary entry gets its real capture tick, lifted
+//!   back to the modeled break fall ([`BOUNDARY_LIFT_BITS`]), and the
 //!   [`flags::BOUNDARY`] flag;
-//! - the byte after a boundary strides [`BREAK_TO_NEXT_BITS`] (the
-//!   boundary tick sits at the break's framed end, one stop bit before
-//!   the next start), every later byte strides a full byte-time — for
-//!   our own DMA-fed TX echo that stride is crystal-exact;
+//! - the byte after a boundary strides the break frame's own span
+//!   ([`BREAK_TO_NEXT_BITS`]), every later byte a full byte-time — for
+//!   our own DMA-fed TX echo those strides are crystal-exact;
 //! - bytes with no boundary seen since reset carry [`flags::COUNT_UNDER`]
 //!   (tick is a placeholder cadence, not a measurement).
 //!
@@ -32,10 +32,16 @@ use crate::tick::read_tick32;
 
 /// 8N1 wire framing: 1 start + 8 data + 1 stop = 10 bit-times per byte.
 const BITS_PER_BYTE_8N1: u32 = 10;
-/// Boundary tick → next byte's start: the FE service tick sits at the
-/// break's framed end (fall + ~10 bit-times), and a gapless sender's
-/// next start bit falls one stop bit later.
-const BREAK_TO_NEXT_BITS: u32 = 1;
+/// Captured boundary ticks are lifted back to the modeled break FALL:
+/// the receiver frames a break's `0x00` exactly 10 bit-times after the
+/// fall — for ANY break length (FE is the stop-bit verdict) — so the
+/// subtraction is shape-independent and break stamps keep the old
+/// IC-era "tick ≈ fall" convention every consumer was built on.
+const BOUNDARY_LIFT_BITS: u32 = 10;
+/// Break fall → next byte's start: a 10-bit-exact break plus its stop
+/// bit (our own frames; a longer SBK break makes foreign interiors read
+/// a few bits early, which nothing consumes quantitatively).
+const BREAK_TO_NEXT_BITS: u32 = 11;
 
 #[derive(Copy, Clone)]
 pub struct ByteRecord {
@@ -119,7 +125,7 @@ pub fn drain_batch(out: &mut [ByteRecord]) -> Result<usize, DesyncCause> {
             Some(t) => {
                 anchored = true;
                 prev_boundary = true;
-                (t, flags::BOUNDARY)
+                (t.wrapping_sub(BOUNDARY_LIFT_BITS * bit), flags::BOUNDARY)
             }
             None => {
                 let stride = if prev_boundary {
