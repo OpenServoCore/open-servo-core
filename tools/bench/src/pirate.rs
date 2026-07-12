@@ -17,12 +17,13 @@ pub const PIRATE_PID: u16 = 0xCAFE;
 // ---------------------------------------------------------------------------
 
 /// One drained stamp: byte + boundary-anchored tick. Break bytes carry
-/// real capture ticks from the pirate's RX-error service (flags bit 1,
-/// BOUNDARY); interior bytes stride at nominal bit time from the last
-/// boundary — crystal-exact for the pirate's own TX echo. Flags bit 0
-/// (COUNT_UNDER) marks a placeholder tick with no boundary anchor since
-/// reset. All load-bearing bench math differences boundary-flavor ticks,
-/// where the capture's service latency cancels.
+/// real capture ticks from the pirate's RX-error service, lifted to the
+/// modeled break fall so the IC-era "tick ≈ fall" convention holds
+/// (flags bit 1, BOUNDARY); interior bytes stride at nominal bit time
+/// from the last boundary — crystal-exact for the pirate's own TX echo.
+/// Flags bit 0 (COUNT_UNDER) marks a placeholder tick with no boundary
+/// anchor since reset. All load-bearing bench math differences
+/// boundary-flavor ticks, where the capture's service latency cancels.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct BStamp {
     pub tick: u32,
