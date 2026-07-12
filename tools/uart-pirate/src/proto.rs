@@ -16,22 +16,18 @@
 //!   `BDRAIN`
 //!       Pop one byte record. Reply: `BSTAMP <tick> <byte> <flags>` or
 //!       `EMPTY`. ASCII; debug only — use `BBATCH` for throughput.
+//!       Ticks are break-boundary-anchored (`rx::stamp`): breaks carry
+//!       real capture ticks, interior bytes nominal bit-time strides.
 //!   `BBATCH <count:u16>`
 //!       Drain up to `count` byte records as a binary frame. Handled
 //!       directly in `usb_cdc::serve` — see that file for wire format.
-//!   `BTRACE`
-//!       Pop one walker-ISR trace record. Reply: `BTRACE <phase>
-//!       <cnt_entry> <cnt_exit> <pending> <edges> <bytes> <falling_total>
-//!       <rx_total>` (decimal) or `EMPTY`.
-//!   `BTRACECLEAR`
-//!       Reset the trace ring tail. Use before a stress run.
 //!   `STATUS`
 //!       `STATUS <baud> <avail> <desynced> <cause> <last_tick>`. Always
 //!       responds — even mid-desync — so the host has a one-shot health
-//!       probe that can't be masked by walker state.
+//!       probe.
 //!   `RESET`
-//!       Clear `DESYNCED` + cause, drain stamp/IC rings, restart walker.
-//!       Keeps baud. The routine recovery for any desync cause.
+//!       Clear the desync flag and drop undrained capture state. Keeps
+//!       baud. The routine recovery for a desync.
 //!   `BAUD <bps>` → `OK` / `ERR baud`. Implicit RESET. Caller must
 //!       quiesce the bus.
 //!   `COMP?`      → `COMP pipe=<u32> bit_q4=<u32>`. Reads the TX-comp
@@ -99,7 +95,6 @@ pub enum Reply {
         byte: u8,
         flags: u8,
     },
-    BTrace(rx::WalkerTrace),
     Empty,
     Status {
         baud: u32,
@@ -131,7 +126,6 @@ pub fn parse_batch(rest: &[u8]) -> Result<BatchRequest, &'static str> {
 /// for the BBATCH error path.
 pub fn desync_err_for(cause: DesyncCause) -> &'static str {
     match cause {
-        DesyncCause::IcOverrun => "desync ic_overrun",
         DesyncCause::StampOverflow => "desync stamp_overflow",
     }
 }
@@ -144,14 +138,11 @@ pub fn handle_line(line: &[u8]) -> Reply {
 
     // STATUS, RESET, BAUD bypass the desync guard so the host always has
     // a recovery path (and a probe that surfaces the current state).
-    // BTRACE / BTRACECLEAR also bypass — they're read-only diagnostics
-    // against the walker trace ring and surfacing them post-desync lets
-    // the host inspect what the walker was doing at the moment of trip.
     if line == "STATUS" {
         return status();
     }
     if line == "RESET" {
-        rx::reset_walker();
+        rx::reset();
         return Reply::Ok;
     }
     if let Some(rest) = line.strip_prefix("BAUD ") {
@@ -163,16 +154,6 @@ pub fn handle_line(line: &[u8]) -> Reply {
     }
     if let Some(rest) = line.strip_prefix("COMP ") {
         return comp(rest);
-    }
-    if line == "BTRACE" {
-        return match rx::trace_drain() {
-            Some(r) => Reply::BTrace(r),
-            None => Reply::Empty,
-        };
-    }
-    if line == "BTRACECLEAR" {
-        rx::trace_clear();
-        return Reply::Ok;
     }
 
     if let Some(cause) = rx::desync_cause() {
@@ -208,25 +189,20 @@ pub fn handle_line(line: &[u8]) -> Reply {
         "TICK?" => Reply::Tick(tick::read_tick32()),
         "LAST?" => Reply::Last(tx::last_send_tick()),
         "HZ" => Reply::HzPerUs(tick::wire_ticks_per_us()),
-        "BDRAIN" => {
-            rx::host_walk();
-            match rx::drain_byte() {
-                Some(r) => Reply::BStamp {
-                    tick: r.tick,
-                    byte: r.byte,
-                    flags: r.flags,
-                },
-                None => Reply::Empty,
-            }
-        }
+        "BDRAIN" => match rx::drain_byte() {
+            Ok(Some(r)) => Reply::BStamp {
+                tick: r.tick,
+                byte: r.byte,
+                flags: r.flags,
+            },
+            Ok(None) => Reply::Empty,
+            Err(cause) => Reply::Err(desync_err_for(cause)),
+        },
         _ => Reply::Err("unknown"),
     }
 }
 
 fn status() -> Reply {
-    // `avail` must reflect the wire, not the last walk — hosts pace on
-    // it (`walk()` gates itself on desync, so the bypass holds).
-    rx::host_walk();
     Reply::Status {
         baud: rx::current_baud(),
         avail: rx::stamps_available(),

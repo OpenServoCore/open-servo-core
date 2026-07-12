@@ -99,13 +99,12 @@ fn init_dma() {
         w.set_circ(false);
         w.set_msize(Size::BITS8);
         w.set_psize(Size::BITS8);
-        // VERYHIGH is defensive: today only CH2 + CH4 are active so
-        // inter-channel arbitration doesn't kick in, but pins the send
-        // path at top priority against any future DMA channel we add.
-        // (Empirically does NOT tighten TX wire-edge jitter — the
-        // observed loopback variance is CPU-vs-DMA AHB arbitration,
-        // which channel-priority bits don't control.)
-        w.set_pl(Pl::VERYHIGH);
+        // HIGH, below the CH3 RX ring: RX sits ALONE at VERYHIGH so the
+        // drain beats the error IRQ per-beat (§6 A4). Channel priority
+        // was never the TX jitter lever anyway — the observed loopback
+        // variance is CPU-vs-DMA AHB arbitration, which these bits
+        // don't control.
+        w.set_pl(Pl::HIGH);
         w.set_tcie(false);
     });
 
@@ -118,7 +117,7 @@ fn init_dma() {
     run.set_circ(false);
     run.set_msize(Size::BITS8);
     run.set_psize(Size::BITS8);
-    run.set_pl(Pl::VERYHIGH); // mirror CH2 PL above so the stamp doesn't drop priority on kickoff
+    run.set_pl(Pl::HIGH); // mirror CH2 PL above so the stamp doesn't drop priority on kickoff
     run.set_tcie(false);
     run.set_en(true);
     // SAFETY: CH2_CFGR_RUN_WORD is only read by DMA1_CH4 (set up
@@ -136,7 +135,7 @@ fn init_dma() {
         w.set_circ(true);
         w.set_msize(Size::BITS32);
         w.set_psize(Size::BITS32);
-        w.set_pl(Pl::VERYHIGH); // mirror CH2 PL above; defensive against future inter-channel contention
+        w.set_pl(Pl::HIGH); // mirror CH2 PL above; RX alone owns VERYHIGH
         w.set_tcie(false);
         w.set_en(true);
     });

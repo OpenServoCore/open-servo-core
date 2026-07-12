@@ -147,9 +147,9 @@ fn pb10_drive(pp: bool) {
 /// STATR read re-arms the SR half so the next latched flag can
 /// drain-self-clear. The CS pairs the mask with the retire so a pended
 /// idle service can't interleave, and closes the CTLR1 RMW tear window
-/// against the vector (see [`poll_drive_release`]'s discipline note).
-/// Each send path re-enables the event once its last CTLR1 write is
-/// done.
+/// against the vector's own CTLR1 writers (the TC release, the idle
+/// mask). Each send path re-enables the event once its last CTLR1
+/// write is done.
 fn mask_and_retire_idle() {
     critical_section::with(|_| {
         USART3.ctlr1().modify(|w| w.set_idleie(false));
@@ -163,14 +163,26 @@ fn mask_and_retire_idle() {
 /// IDLE mid-send (SBK gaps exceed a char time): enabling over a latched
 /// flag would level-pend the vector on the spot, so clear it first —
 /// still under our own drive, same safety proof as
-/// [`mask_and_retire_idle`].
-fn retire_and_enable_idle() {
+/// [`mask_and_retire_idle`]. Re-arms the RX-error (boundary) event too:
+/// the callers are the bare-break senders that masked it.
+fn retire_and_enable_rx_events() {
     critical_section::with(|_| {
         let _ = USART3.statr().read();
         let _ = USART3.datar().read();
         let _ = USART3.statr().read();
         USART3.ctlr1().modify(|w| w.set_idleie(true));
+        USART3.ctlr3().modify(|w| w.set_eie(true));
     });
+}
+
+/// Bare-break senders (BREAK trains, the CAL train) mask the RX-error
+/// event for their span: every mark latches FE with no following byte
+/// to retire it (a storm seed), and the marks' echoes carry nothing the
+/// bench reads back. Frame senders keep it armed — their echo breaks
+/// ARE the boundary stamps. The CS pairs against the vector's own
+/// CTLR3 writer (the storm mask).
+fn mask_boundary_events() {
+    critical_section::with(|_| USART3.ctlr3().modify(|w| w.set_eie(false)));
 }
 
 /// Arm the drive for a scheduled (DMA) send: push-pull now, and a TC
@@ -187,6 +199,9 @@ fn arm_drive_release() {
         w.set_tcie(true);
         w.set_idleie(true);
     });
+    // Heal a storm-masked boundary event: the retire above cleared any
+    // latched flag under our drive, so re-arming here is pend-safe.
+    USART3.ctlr3().modify(|w| w.set_eie(true));
 }
 
 /// Clear TC with a plain all-ones-except-TC write — NEVER a
@@ -244,6 +259,11 @@ fn kick_dma_and_arm_release() {
             w.set_tcie(true);
             w.set_idleie(true);
         });
+        // Heal a storm-masked boundary event. Pend-safe without a
+        // retire: the only flag that can be latched here is the break
+        // echo's own FE, whose service records exactly the boundary the
+        // bench wants (the break is within the attribution window).
+        USART3.ctlr3().modify(|w| w.set_eie(true));
         scheduler::kick_now();
     });
 }
@@ -257,26 +277,6 @@ fn kick_dma_and_arm_release() {
 fn kick_dma() {
     clear_tc_only();
     scheduler::kick_now();
-}
-
-/// Release checkpoint for long walker drains. The USART3 TC vector shares
-/// `PRIO_WALKER` with the DMA walk triggers, so a pended TC release waits
-/// out any in-flight `walk()` — up to a half-ring drain (~100 µs), during
-/// which PB10 keeps driving idle-high push-pull against a servo reply
-/// (bench signature: the reply's break/header fought to mark until the
-/// release, read back as a "malformed break"). Called from the walk loop
-/// so a drain can never sit on the handback.
-///
-/// Only walker-class ISRs call this (mutually non-preempting), and every
-/// thread-mode CTLR1 writer either runs with TCIE and IDLEIE both
-/// unarmed (the send starts mask IDLEIE before any M-bit flip) or under
-/// a critical section, so neither vector-side CTLR1 RMW — the release in
-/// `on_tx_complete` or the idle-event mask in the `USART3` vector — can
-/// tear against it.
-pub fn poll_drive_release() {
-    if USART3.ctlr1().read().tcie() && USART3.statr().read().tc() {
-        on_tx_complete();
-    }
 }
 
 /// USART3: 8N1, full-duplex, DMAT, DMAR, IDLEIE. Plain FE break
@@ -297,6 +297,9 @@ fn init_usart3() {
     USART3.ctlr3().modify(|w| {
         w.set_dmat(true);
         w.set_dmar(true);
+        // FE/NE/ORE → the USART3 vector: the break-boundary recorder's
+        // wake (rx::boundary). Valid with DMAR per the F103-family IP.
+        w.set_eie(true);
     });
     let brr0 = APB1_HZ / DEFAULT_BAUD;
     USART3.brr().write(|w| w.0 = brr0);
@@ -461,6 +464,7 @@ pub fn send_breaks(count: u32, gap_us: u32) -> Result<(), SendError> {
     wait_tx_complete().map_err(|TxTimeout| SendError::Busy)?;
     pb10_drive(true);
     mask_and_retire_idle();
+    mask_boundary_events();
     for i in 0..count {
         if i != 0 {
             spin_us(gap_us);
@@ -471,7 +475,7 @@ pub fn send_breaks(count: u32, gap_us: u32) -> Result<(), SendError> {
     // Inter-break gaps exceed a char time, so an IDLE latched mid-send
     // is the norm here — retire it before re-enabling, still under our
     // drive.
-    retire_and_enable_idle();
+    retire_and_enable_rx_events();
     pb10_drive(false);
     Ok(())
 }
@@ -559,6 +563,7 @@ pub fn send_cal(announce: &[u8], gap_us: u32, breaks: u32) -> Result<(), SendErr
     wait_tx_complete().map_err(|TxTimeout| SendError::Busy)?;
     pb10_drive(true);
     mask_and_retire_idle();
+    mask_boundary_events();
     let r = (|| {
         // See send_break_then: CH2 is shared with the scheduled-send path.
         scheduler::cancel();
@@ -600,7 +605,7 @@ pub fn send_cal(announce: &[u8], gap_us: u32, breaks: u32) -> Result<(), SendErr
     // Train gaps exceed a char time, so a latched mid-train IDLE is the
     // norm — retire before re-enabling, still under our drive (see
     // send_breaks).
-    retire_and_enable_idle();
+    retire_and_enable_rx_events();
     pb10_drive(false);
     r
 }
@@ -610,6 +615,19 @@ pub fn send_cal(announce: &[u8], gap_us: u32, breaks: u32) -> Result<(), SendErr
 /// USB command-line ceiling at 2 hex chars/byte.
 pub const BURST_STREAM_MAX: usize = 640;
 
+/// A burst break is one 9-bit 0x00 frame: start + 9 data lows + stop.
+const BREAK_FRAME_BITS: u32 = 11;
+/// 8N1 payload byte on the wire.
+const BITS_PER_BYTE_8N1: u32 = 10;
+/// Grid pad between a frame's modeled end and the next break's feed, in
+/// bit-times. Sized to cover the in-section handover (M flips + payload
+/// kick + DMA pipeline, ~1 µs) so the next mark's TC wait never runs
+/// long, while keeping the receiver-visible seam (1 + PAD bit-times —
+/// the break's own extra bit plus this pad) inside the servo's
+/// chain-pair gate (wire/16, §9.3) for every frame down to a bare
+/// COMMIT at 3M.
+const BURST_SEAM_PAD_BITS: u32 = 3;
+
 /// Zero-gap multi-frame bombardment: `stream` is length-prefixed frames —
 /// `[len_0][frame_0][len_1][frame_1]…` — each sent as one 10-bit-exact
 /// break (see [`send_break_then`]) followed back-to-back by its bytes.
@@ -617,6 +635,14 @@ pub const BURST_STREAM_MAX: usize = 640;
 /// only way to put `[break][frame][break][frame]…` on the wire with
 /// sub-byte spacing, which is what the servo's frame-end-work vs
 /// next-break timing needs for stress coverage.
+///
+/// Frame starts ride an absolute tick32 grid (the [`send_cal`] mark
+/// pattern): break k feeds at `t0 + Σ(frame spans + pad)`, and the whole
+/// per-frame handover — previous TC, M flips, break feed, payload
+/// kick — runs inside the mark's critical section. The inter-frame seam
+/// is therefore constant by construction, which is what makes this
+/// burst valid FOOD for the servo's differential chain-pair tracker
+/// (§9.3): a CPU-shaped jittery seam disqualifies every pair.
 pub fn send_burst(stream: &[u8]) -> Result<(), SendError> {
     // Validate the whole stream up front: a malformed prefix must not
     // truncate the burst mid-wire.
@@ -637,31 +663,48 @@ pub fn send_burst(stream: &[u8]) -> Result<(), SendError> {
     let r = (|| {
         // See send_break_then: CH2 is shared with the scheduled-send path.
         scheduler::cancel();
+        let brr = USART3.brr().read().0;
+        // First mark: far enough out for the first payload load to ride
+        // the open window.
+        let mut due = read_tick32().wrapping_add(2 * CAL_LEAD_TICKS);
         let mut i = 0usize;
         while i < stream.len() {
             let n = stream[i] as usize;
             i += 1;
             let frame = &stream[i..i + n];
             i += n;
-            // Load before the break so the copy rides the inter-frame
-            // seam, not the break→byte-0 gap.
+            let last = i == stream.len();
+            // Load rides the previous frame's own wire time.
             load_payload_main(frame)?;
-            USART3.ctlr1().modify(|w| w.set_m(true));
-            let r = feed_bytes(&[0x00])
-                .and_then(|()| wait_tx_complete().map_err(|TxTimeout| SendError::Busy));
-            USART3.ctlr1().modify(|w| w.set_m(false));
-            r?;
-            if i == stream.len() {
-                // See send_break_then: the release must ride the last
-                // stop bit only — an interior release would hand the
-                // wire back mid-burst.
-                kick_dma_and_arm_release();
-            } else {
-                kick_dma();
-            }
-            wait_tx_complete().map_err(|TxTimeout| SendError::Busy)?;
+            while (due.wrapping_sub(read_tick32()) as i32) > CAL_LEAD_TICKS as i32 {}
+            critical_section::with(|_| -> Result<(), SendError> {
+                // The previous payload's TC is due PAD bits before the
+                // mark; the horizon is the plateau backstop, not a wait
+                // anyone expects to run.
+                wait_tc_within(brr * 64)?;
+                USART3.ctlr1().modify(|w| w.set_m(true));
+                let r = (|| {
+                    while (due.wrapping_sub(read_tick32()) as i32) > 0 {}
+                    feed_bytes(&[0x00])?;
+                    wait_tc_within(brr * 64)
+                })();
+                USART3.ctlr1().modify(|w| w.set_m(false));
+                r?;
+                if last {
+                    // The release must ride the last stop bit only — an
+                    // interior release would hand the wire back mid-burst.
+                    kick_dma_and_arm_release();
+                } else {
+                    kick_dma();
+                }
+                Ok(())
+            })?;
+            due = due.wrapping_add(
+                (BREAK_FRAME_BITS + BITS_PER_BYTE_8N1 * n as u32 + BURST_SEAM_PAD_BITS) * brr,
+            );
         }
-        Ok(())
+        // The final payload drains under the armed TC release.
+        wait_tx_complete().map_err(|TxTimeout| SendError::Busy)
     })();
     // See send_break_then: a failed leg must stop the channel.
     if r.is_err() {
@@ -669,6 +712,19 @@ pub fn send_burst(stream: &[u8]) -> Result<(), SendError> {
     }
     pb10_drive(false);
     r
+}
+
+/// Bounded TC spin for the burst grid's in-section waits. Plain wall
+/// bound — the grid guarantees TC long before it; the bound only exists
+/// so a genuinely stuck shifter surfaces as `Busy` (no-panic rule).
+fn wait_tc_within(ticks: u32) -> Result<(), SendError> {
+    let t0 = read_tick32();
+    while !USART3.statr().read().tc() {
+        if read_tick32().wrapping_sub(t0) > ticks {
+            return Err(SendError::Busy);
+        }
+    }
+    Ok(())
 }
 
 /// Mid-stream framing-error injection: `pre` bytes as normal 8N1, then

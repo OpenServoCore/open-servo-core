@@ -8,7 +8,7 @@ use embassy_usb::driver::EndpointError;
 use heapless::Vec;
 
 use crate::proto::{self, Reply};
-use crate::rx::{self, ByteRecord, FALL_LEN};
+use crate::rx::{self, ByteRecord};
 use crate::tx::TX_BUF_LEN;
 use crate::usbd::Driver;
 
@@ -82,8 +82,6 @@ async fn serve<'d>(class: &mut CdcAcmClass<'d, Driver<'d>>) -> Result<(), Endpoi
             if b == b'\n' {
                 if let Some(rest) = line.strip_prefix(b"BBATCH ") {
                     handle_batch(class, rest).await?;
-                } else if line.as_slice() == b"BICSNAP" {
-                    handle_ic_snapshot(class).await?;
                 } else {
                     let reply = proto::handle_line(&line);
                     send_reply(class, reply).await?;
@@ -101,9 +99,6 @@ async fn handle_batch<'d>(
     class: &mut CdcAcmClass<'d, Driver<'d>>,
     rest: &[u8],
 ) -> Result<(), EndpointError> {
-    if let Some(cause) = rx::desync_cause() {
-        return send_reply(class, Reply::Err(proto::desync_err_for(cause))).await;
-    }
     let req = match proto::parse_batch(rest) {
         Ok(r) => r,
         Err(e) => return send_reply(class, Reply::Err(e)).await,
@@ -115,10 +110,10 @@ async fn handle_batch<'d>(
         flags: 0,
     }; BBATCH_MAX];
     let want = (req.count as usize).min(BBATCH_MAX);
-    // Host-pull: burst tails no longer ride an idle event (self-masking,
-    // see rx::isr) — the drain walks on demand instead.
-    rx::host_walk();
-    let n = rx::drain_batch(&mut records[..want]);
+    let n = match rx::drain_batch(&mut records[..want]) {
+        Ok(n) => n,
+        Err(cause) => return send_reply(class, Reply::Err(proto::desync_err_for(cause))).await,
+    };
 
     // Binary frame: sync header 0xA5 0x5A + count:u16 LE + n × (tick:u32 LE,
     // byte:u8, flags:u8). No trailing newline; framing is length-prefixed.
@@ -139,53 +134,6 @@ async fn handle_batch<'d>(
         let _ = chunk.extend_from_slice(&r.tick.to_le_bytes());
         let _ = chunk.push(r.byte);
         let _ = chunk.push(r.flags);
-    }
-    if !chunk.is_empty() {
-        class.write_packet(&chunk).await?;
-    }
-    Ok(())
-}
-
-/// Diagnostic IC-ring snapshot. Bypasses the desync guard — meant for
-/// post-trip inspection. Wire layout:
-///
-///   [0xA5][0x5C]
-///   [ref_tick:u32 LE][falling_total:u32 LE][walked:u32 LE]
-///   [rx_total:u32 LE][byte_head:u32 LE][bit_ticks:u32 LE][cc_filter_delay:u32 LE]
-///   [entries:u16 LE]
-///   [ticks: u32 LE × entries]    // oldest-first, pre-lifted on chip
-///
-/// Header = 32 B fits one CDC bulk packet; the tick window streams as
-/// `entries × 4 B` over additional packets. Each tick is already lifted
-/// from the raw u16 capture into the correct `tick32` wrap by the
-/// walker, so the host can compare directly against stamp ticks without
-/// re-lifting.
-async fn handle_ic_snapshot<'d>(
-    class: &mut CdcAcmClass<'d, Driver<'d>>,
-) -> Result<(), EndpointError> {
-    let mut ticks = [0u32; FALL_LEN];
-    let (snap, n) = rx::ic_snapshot(&mut ticks);
-
-    let mut hdr: Vec<u8, 32> = Vec::new();
-    let _ = hdr.push(0xA5);
-    let _ = hdr.push(0x5C);
-    let _ = hdr.extend_from_slice(&snap.ref_tick.to_le_bytes());
-    let _ = hdr.extend_from_slice(&snap.falling_total.to_le_bytes());
-    let _ = hdr.extend_from_slice(&snap.walked.to_le_bytes());
-    let _ = hdr.extend_from_slice(&snap.rx_total.to_le_bytes());
-    let _ = hdr.extend_from_slice(&snap.byte_head.to_le_bytes());
-    let _ = hdr.extend_from_slice(&snap.bit_ticks.to_le_bytes());
-    let _ = hdr.extend_from_slice(&snap.cc_filter_delay.to_le_bytes());
-    let _ = hdr.extend_from_slice(&(n as u16).to_le_bytes());
-    class.write_packet(&hdr).await?;
-
-    let mut chunk: Vec<u8, { CDC_BULK_PACKET as usize }> = Vec::new();
-    for &v in &ticks[..n] {
-        if chunk.len() + 4 > chunk.capacity() {
-            class.write_packet(&chunk).await?;
-            chunk.clear();
-        }
-        let _ = chunk.extend_from_slice(&v.to_le_bytes());
     }
     if !chunk.is_empty() {
         class.write_packet(&chunk).await?;
@@ -214,7 +162,6 @@ async fn send_reply<'d>(
         Reply::Last(t) => write_u32(&mut out, b"LAST ", t),
         Reply::HzPerUs(n) => write_u32(&mut out, b"HZ ", n),
         Reply::BStamp { tick, byte, flags } => write_bstamp(&mut out, tick, byte, flags),
-        Reply::BTrace(r) => write_btrace(&mut out, r),
         Reply::Status {
             baud,
             avail,
@@ -266,26 +213,6 @@ fn write_bstamp(out: &mut Vec<u8, 64>, tick: u32, byte: u8, flags: u8) {
     push_dec_u32(out, byte as u32);
     let _ = out.push(b' ');
     push_dec_u32(out, flags as u32);
-    let _ = out.push(b'\n');
-}
-
-fn write_btrace(out: &mut Vec<u8, 64>, r: rx::WalkerTrace) {
-    let _ = out.extend_from_slice(b"BTRACE ");
-    push_dec_u32(out, r.phase as u32);
-    let _ = out.push(b' ');
-    push_dec_u32(out, r.tim2_cnt_entry as u32);
-    let _ = out.push(b' ');
-    push_dec_u32(out, r.tim2_cnt_exit as u32);
-    let _ = out.push(b' ');
-    push_dec_u32(out, r.falling_pending_entry as u32);
-    let _ = out.push(b' ');
-    push_dec_u32(out, r.edges_consumed as u32);
-    let _ = out.push(b' ');
-    push_dec_u32(out, r.bytes_emitted as u32);
-    let _ = out.push(b' ');
-    push_dec_u32(out, r.falling_total);
-    let _ = out.push(b' ');
-    push_dec_u32(out, r.rx_total);
     let _ = out.push(b'\n');
 }
 

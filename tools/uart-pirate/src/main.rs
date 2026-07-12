@@ -35,9 +35,9 @@ use embassy_executor::Spawner;
 // USART3 + TIM2/TIM3/TIM4 all on APB1 (wire UART + wire clock + send
 // scheduler). With SYSCLK_FREQ_144MHZ_HSE both APB1/2 run at 144 MHz
 // (prescaler DIV1), so BRR = 144_000_000 / 3_000_000 = 48 at 3 Mbaud.
-// tick32 (TIM2 low + TIM3 high) ticks at 144 MHz; TIM2_CH3 IC taps PB10
-// (via TIM2_RM=0b10 partial remap) for falling-edge stamping (PB10/PB11
-// share a wire so either pin shows the same edges); TIM4 OPM CC2 →
+// tick32 (TIM2 low + TIM3 high) ticks at 144 MHz. RX capture is
+// DMA-ringed bytes plus break-boundary ticks stamped at the USART3
+// FE service (rx::boundary) — no input capture; TIM4 OPM CC2 →
 // DMA1_CH4 → DMA1_CH2 stamps USART3 TX with no IRQ between deadline and
 // wire edge.
 //

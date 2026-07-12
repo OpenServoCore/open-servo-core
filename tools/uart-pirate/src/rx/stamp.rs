@@ -1,25 +1,41 @@
-//! Per-byte stamp ring. Walker-populated, host-drained via `drain_byte`
-//! (one record) or `drain_batch` (bulk for BBATCH transport). Sized to
-//! absorb realistic measurement bursts (host pulls between sends)
-//! without overflowing while leaving 5+ KB stack headroom on the V203's
-//! 20 KB SRAM. At 1024 records the three rings total 6 KB (`bytes_ring`
-//! 1 KB + `ts_ring` 4 KB + `flags_ring` 1 KB) — projected bss ~14.9 KB,
-//! ~5.5 KB stack room. Past 1024 records of undrained backlog the host
-//! has either gone away or has a bench-script bug; either way
-//! `stamp_overflow` trips and host must `RESET`.
+//! Drain-time stamp synthesis. `BBATCH`/`BDRAIN` walk the byte ring and
+//! emit one record per byte — the same host-facing shape as the old
+//! walker pipeline — with ticks synthesized here instead of captured
+//! per byte:
 //!
-//! `bytes_ring` mirrors the byte value at stamp time, decoupling drain
-//! from `rx_ring`'s DMA wrap. Without this mirror, a host that drains
-//! long after stamping reads through to `rx_ring[i & RX_MASK]` which DMA
-//! has since overwritten with a later byte → silent value corruption.
+//! - a byte with a boundary entry gets its real capture tick and the
+//!   [`flags::BOUNDARY`] flag;
+//! - the byte after a boundary strides [`BREAK_TO_NEXT_BITS`] (the
+//!   boundary tick sits at the break's framed end, one stop bit before
+//!   the next start), every later byte strides a full byte-time — for
+//!   our own DMA-fed TX echo that stride is crystal-exact;
+//! - bytes with no boundary seen since reset carry [`flags::COUNT_UNDER`]
+//!   (tick is a placeholder cadence, not a measurement).
+//!
+//! Ticks are therefore boundary-anchored: absolute per-byte accuracy is
+//! gone, but every load-bearing bench quantity (turnaround, chain gaps,
+//! seam spans) differences boundary-flavor ticks, where the anchor's
+//! service latency cancels.
+//!
+//! Single consumer by construction: the USB command context is the only
+//! caller of the drain functions and of `reset_to` (via `rx::reset`).
 
 use core::cell::SyncUnsafeCell;
+use core::ptr;
 
 use portable_atomic::{AtomicU32, Ordering};
 
-pub(super) const STAMP_LEN: usize = 1024;
-const STAMP_MASK: u32 = (STAMP_LEN - 1) as u32;
-const _: () = assert!(STAMP_LEN.is_power_of_two());
+use crate::rx::boundary;
+use crate::rx::desync::{self, DesyncCause};
+use crate::rx::rings::{self, RING_LEN};
+use crate::tick::read_tick32;
+
+/// 8N1 wire framing: 1 start + 8 data + 1 stop = 10 bit-times per byte.
+const BITS_PER_BYTE_8N1: u32 = 10;
+/// Boundary tick → next byte's start: the FE service tick sits at the
+/// break's framed end (fall + ~10 bit-times), and a gapless sender's
+/// next start bit falls one stop bit later.
+const BREAK_TO_NEXT_BITS: u32 = 1;
 
 #[derive(Copy, Clone)]
 pub struct ByteRecord {
@@ -29,87 +45,126 @@ pub struct ByteRecord {
 }
 
 pub mod flags {
-    /// Walker predicted this byte's start at `prev_anchor + 10·bit_ticks`
-    /// but found no IC entry in `±SNAP_BITS·bit_ticks` of the prediction;
-    /// emitted `tick = predicted − cc_filter_delay` instead. Cause: real
-    /// start edge eaten by CC filter, upstream chip drove an inter-byte
-    /// gap exceeding the snap window, or pirate snapped on the wrong edge
-    /// the byte before. Host treats this byte's `tick` as ±0.5·bit
-    /// accurate, not sub-tick.
+    /// No boundary anchor since reset — the tick is a placeholder
+    /// cadence, not a measurement.
     pub const COUNT_UNDER: u8 = 1 << 0;
+    /// The tick is a real capture from the RX-error service: this byte
+    /// is a wire boundary (a break, or garble).
+    pub const BOUNDARY: u8 = 1 << 1;
 }
 
-static BYTES_RING: SyncUnsafeCell<[u8; STAMP_LEN]> = SyncUnsafeCell::new([0; STAMP_LEN]);
-static TS_RING: SyncUnsafeCell<[u32; STAMP_LEN]> = SyncUnsafeCell::new([0; STAMP_LEN]);
-static FLAGS_RING: SyncUnsafeCell<[u8; STAMP_LEN]> = SyncUnsafeCell::new([0; STAMP_LEN]);
+/// Bit time in tick32 ticks (= BRR at HCLK-rate APB1). Set on baud
+/// changes, read by the stride synthesis.
+static BIT_TICKS: AtomicU32 = AtomicU32::new(0);
 
-/// Cumulative count of bytes the walker has stamped (= ts_head). Read by
-/// host-side drainers with Acquire to see the matching ring writes.
-pub(super) static BYTE_HEAD: AtomicU32 = AtomicU32::new(0);
-/// Cumulative count of bytes the host has consumed.
-pub(super) static BYTE_TAIL: AtomicU32 = AtomicU32::new(0);
+/// Cumulative bytes the host has consumed.
+static TAIL: AtomicU32 = AtomicU32::new(0);
 
-#[inline]
-pub(super) fn emit(byte_idx: u32, byte: u8, tick: u32, flags: u8) {
-    let i = (byte_idx & STAMP_MASK) as usize;
-    unsafe {
-        (*BYTES_RING.get())[i] = byte;
-        (*TS_RING.get())[i] = tick;
-        (*FLAGS_RING.get())[i] = flags;
-    }
+static LAST_TICK: SyncUnsafeCell<u32> = SyncUnsafeCell::new(0);
+static PREV_WAS_BOUNDARY: SyncUnsafeCell<bool> = SyncUnsafeCell::new(false);
+static ANCHORED: SyncUnsafeCell<bool> = SyncUnsafeCell::new(false);
+
+pub(super) fn set_bit_ticks(brr: u32) {
+    BIT_TICKS.store(brr, Ordering::Relaxed);
 }
 
-/// Stamps queued for drain (= `byte_head - byte_tail`). Host paces BBATCH
-/// calls against this.
+pub(super) fn bit_ticks() -> u32 {
+    BIT_TICKS.load(Ordering::Relaxed)
+}
+
+/// Records queued for drain. Hosts pace `BBATCH` calls against this.
 pub fn stamps_available() -> u32 {
-    let head = BYTE_HEAD.load(Ordering::Acquire);
-    let tail = BYTE_TAIL.load(Ordering::Relaxed);
-    head.wrapping_sub(tail)
+    let total = critical_section::with(|_| rings::refresh_rx_total());
+    total.wrapping_sub(TAIL.load(Ordering::Relaxed))
 }
 
-pub fn drain_byte() -> Option<ByteRecord> {
-    let tail = BYTE_TAIL.load(Ordering::Relaxed);
-    let head = BYTE_HEAD.load(Ordering::Acquire);
-    if tail == head {
-        return None;
-    }
-    let idx = (tail & STAMP_MASK) as usize;
-    let rec = unsafe {
-        ByteRecord {
-            tick: (*TS_RING.get())[idx],
-            byte: (*BYTES_RING.get())[idx],
-            flags: (*FLAGS_RING.get())[idx],
-        }
-    };
-    BYTE_TAIL.store(tail.wrapping_add(1), Ordering::Release);
-    Some(rec)
+pub fn drain_byte() -> Result<Option<ByteRecord>, DesyncCause> {
+    let mut one = [ByteRecord {
+        tick: 0,
+        byte: 0,
+        flags: 0,
+    }];
+    Ok(match drain_batch(&mut one)? {
+        0 => None,
+        _ => Some(one[0]),
+    })
 }
 
 /// Drain up to `out.len()` byte records into `out`. Returns the count
-/// actually written. Cheaper per-byte than `drain_byte` for the BBATCH
-/// host transport.
-pub fn drain_batch(out: &mut [ByteRecord]) -> usize {
-    let tail0 = BYTE_TAIL.load(Ordering::Relaxed);
-    let head = BYTE_HEAD.load(Ordering::Acquire);
-    let avail = head.wrapping_sub(tail0) as usize;
+/// written, or the sticky desync cause if the ring lapped undrained
+/// data (detected both before and after the copy — DMA keeps writing
+/// while we read).
+pub fn drain_batch(out: &mut [ByteRecord]) -> Result<usize, DesyncCause> {
+    if let Some(cause) = desync::desync_cause() {
+        return Err(cause);
+    }
+    let total = critical_section::with(|_| rings::refresh_rx_total());
+    let tail0 = TAIL.load(Ordering::Relaxed);
+    if total.wrapping_sub(tail0) > RING_LEN as u32 {
+        desync::set(DesyncCause::StampOverflow);
+        return Err(DesyncCause::StampOverflow);
+    }
+
+    let bit = bit_ticks();
+    let avail = total.wrapping_sub(tail0) as usize;
     let n = avail.min(out.len());
+    let mut last_tick = unsafe { ptr::read_volatile(LAST_TICK.get()) };
+    let mut prev_boundary = unsafe { ptr::read_volatile(PREV_WAS_BOUNDARY.get()) };
+    let mut anchored = unsafe { ptr::read_volatile(ANCHORED.get()) };
+
     for (i, slot) in out.iter_mut().take(n).enumerate() {
-        let idx = (tail0.wrapping_add(i as u32) & STAMP_MASK) as usize;
-        *slot = unsafe {
-            ByteRecord {
-                tick: (*TS_RING.get())[idx],
-                byte: (*BYTES_RING.get())[idx],
-                flags: (*FLAGS_RING.get())[idx],
+        let idx = tail0.wrapping_add(i as u32);
+        let byte = rings::rx_at(idx);
+        let (tick, f) = match boundary::take_for(idx) {
+            Some(t) => {
+                anchored = true;
+                prev_boundary = true;
+                (t, flags::BOUNDARY)
+            }
+            None => {
+                let stride = if prev_boundary {
+                    BREAK_TO_NEXT_BITS
+                } else {
+                    BITS_PER_BYTE_8N1
+                };
+                prev_boundary = false;
+                (
+                    last_tick.wrapping_add(stride * bit),
+                    if anchored { 0 } else { flags::COUNT_UNDER },
+                )
             }
         };
+        last_tick = tick;
+        *slot = ByteRecord {
+            tick,
+            byte,
+            flags: f,
+        };
     }
-    if n > 0 {
-        BYTE_TAIL.store(tail0.wrapping_add(n as u32), Ordering::Release);
+
+    // The copy read live DMA memory: if the writer lapped past the batch
+    // base while we walked, some of what we copied was overwritten.
+    let total_after = critical_section::with(|_| rings::refresh_rx_total());
+    if total_after.wrapping_sub(tail0) > RING_LEN as u32 {
+        desync::set(DesyncCause::StampOverflow);
+        return Err(DesyncCause::StampOverflow);
     }
-    n
+
+    unsafe {
+        ptr::write_volatile(LAST_TICK.get(), last_tick);
+        ptr::write_volatile(PREV_WAS_BOUNDARY.get(), prev_boundary);
+        ptr::write_volatile(ANCHORED.get(), anchored);
+    }
+    TAIL.store(tail0.wrapping_add(n as u32), Ordering::Release);
+    Ok(n)
 }
 
 pub(super) fn reset_to(rx_total: u32) {
-    BYTE_HEAD.store(rx_total, Ordering::Release);
-    BYTE_TAIL.store(rx_total, Ordering::Release);
+    TAIL.store(rx_total, Ordering::Release);
+    unsafe {
+        // Seed the pre-anchor placeholder cadence near now.
+        ptr::write_volatile(LAST_TICK.get(), read_tick32());
+        ptr::write_volatile(PREV_WAS_BOUNDARY.get(), false);
+        ptr::write_volatile(ANCHORED.get(), false);
+    }
 }
