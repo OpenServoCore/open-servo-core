@@ -64,20 +64,18 @@ const HSITRIM_DEFAULT: i16 = 16;
 /// HSITRIM[4:0] valid range upper bound.
 const HSITRIM_MAX: i16 = 31;
 
-/// Signed delta bounds for `apply_clock_trim_delta`. Anything outside this
-/// gets clamped by the chip register, so callers can use these as the math
-/// clamp before storing the result back into the control-table mirror.
-pub const CLOCK_TRIM_DELTA_MIN: i8 = -16;
-pub const CLOCK_TRIM_DELTA_MAX: i8 = 15;
-
 /// u64 inside the const eval: STEP_HZ × 1_000_000 overflows u32.
 pub const CLOCK_TRIM_PPM_PER_STEP: u32 =
     (HSI_TRIM_STEP_HZ as u64 * 1_000_000 / HSI_HZ as u64) as u32;
 
-/// Apply a signed clock-trim delta around the chip's HSITRIM default.
-/// ~0.25% HSI rate per step; out-of-range deltas are clamped.
+/// Apply the driver-level trim total (`TrimLoop` contract: signed steps
+/// from the factory default, positive = SLOW the oscillator). The register
+/// direction is this adapter's to know: V006 HSITRIM runs higher = faster
+/// — measured 2026-07-11 (register 6 ran ~2% slow; a same-sign mapping
+/// fed the trim loop positive and railed the fleet in −4 clamps) — so the
+/// mapping negates. ~0.25% HSI rate per step; clamped to the register.
 #[inline]
-pub fn apply_clock_trim_delta(delta: i8) {
-    let v = (HSITRIM_DEFAULT + delta as i16).clamp(0, HSITRIM_MAX) as u8;
+pub fn apply_clock_trim(slow_steps: i8) {
+    let v = (HSITRIM_DEFAULT - slow_steps as i16).clamp(0, HSITRIM_MAX) as u8;
     RCC.ctlr().modify(|w| w.set_hsitrim(v));
 }

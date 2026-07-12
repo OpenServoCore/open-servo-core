@@ -86,7 +86,7 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
             unsafe { crate::runtime::Drivers::bus() }.poll_clock_trim()
         });
         if let Some(total) = trim {
-            rcc::apply_clock_trim_delta(total);
+            rcc::apply_clock_trim(total);
             // SAFETY: table storage is 'static; single-byte volatile store
             // to a read-only field (regmap can't race it).
             unsafe {

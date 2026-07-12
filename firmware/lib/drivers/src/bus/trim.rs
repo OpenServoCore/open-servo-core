@@ -11,6 +11,14 @@
 //! fine-step ones. Every applied correction is a free plant measurement — the
 //! next window's error shift, divided by the steps taken — so the deadband
 //! scales itself to THIS chip within one correction.
+//!
+//! CONTRACT (chip-independent): the output is signed trim steps from the
+//! chip's factory default where **positive slows the oscillator**. The chip
+//! adapter owns the mapping to its trim register's direction and never leaks
+//! it upward — V006 HSITRIM runs higher = faster, so its adapter negates
+//! (`hal::rcc::apply_clock_trim`); a same-sign mapping turns this loop's
+//! negative feedback positive and rails the chip in `STEPS_MAX` clamps
+//! (silicon 2026-07-11: the trim-runaway probe).
 
 /// Self-measured step-effect acceptance band, ppm per step. A window
 /// polluted by traffic noise or a thermal shift between sparse windows can
