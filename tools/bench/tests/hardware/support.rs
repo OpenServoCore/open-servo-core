@@ -18,7 +18,7 @@ use bench::osc::{
     Exchange, ExchangeError, RESCUE_PULSE_US, StatusFrame, build_write, parse_exchange,
 };
 use bench::pirate::{Client, auto_detect_pirate};
-use bench::run::{BurstCycle, BurstReport, Report, burst_measure, capture, measure, xfer};
+use bench::run::{BurstCycle, BurstReport, Report, burst_measure, capture, drain, measure, xfer};
 use bench::{BOOT_BAUD, RESCUE_BAUD};
 use osc_core::regions::config::addr::comms::BAUD_RATE_IDX;
 use osc_protocol::wire::ResultCode;
@@ -103,6 +103,18 @@ impl Bench {
         self.client
             .cal_train(announce, gap_us, breaks)
             .expect("cal train");
+    }
+
+    /// Raw zero-gap burst (grid-paced on the pirate), no reply parsing —
+    /// tracker food, not an exchange.
+    pub fn burst_frames(&mut self, frames: &[Vec<u8>]) {
+        self.client.burst(frames).expect("burst frames");
+    }
+
+    /// Drain and discard pending stamps — keeps a long food loop inside
+    /// the pirate's ring contract without parsing anything.
+    pub fn drain_stamps(&mut self) {
+        drain(&mut self.client).expect("drain stamps");
     }
 
     /// Exchange and assert an OK status; returns the decoded status frame.
