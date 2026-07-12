@@ -660,14 +660,18 @@ pub fn send_burst(stream: &[u8]) -> Result<(), SendError> {
             let frame = &stream[i..i + n];
             i += n;
             let last = i == stream.len();
-            // Load rides the previous frame's own wire time.
-            load_payload_main(frame)?;
             while (due.wrapping_sub(read_tick32()) as i32) > CAL_LEAD_TICKS as i32 {}
             critical_section::with(|_| -> Result<(), SendError> {
                 // The previous payload's TC is due PAD bits before the
                 // mark; the horizon is the plateau backstop, not a wait
                 // anyone expects to run.
                 wait_tc_within(brr * 64)?;
+                // Load strictly AFTER the previous payload's TC — the
+                // reload disables CH2 mid-transfer otherwise, truncating
+                // the frame on the wire (2026-07-12: 2000/2000 stale hot
+                // loops, every interior frame CRC-dead). Sub-µs for hot
+                // frames, inside the lead either way.
+                load_payload_main(frame)?;
                 USART3.ctlr1().modify(|w| w.set_m(true));
                 let r = (|| {
                     while (due.wrapping_sub(read_tick32()) as i32) > 0 {}

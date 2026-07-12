@@ -40,17 +40,18 @@ fn read_budget_us(baud: u32) -> f64 {
 
 /// WRITE ceiling: goal_position is the rule-heavy hot-loop register — its
 /// soft-limit rules dominate the dispatch body (write-size is not the cost),
-/// so the acked-WRITE floor sits near the post-inline-unify ~89 µs baseline
-/// (measured means 72.8/87.3/88.9/88.6 ascending baud, 2026-07-10; the
-/// production hot loop pays none of this — GWRITE is NOREPLY). Same ~6 µs
-/// headroom policy.
+/// and the production hot loop pays none of this — GWRITE is NOREPLY.
+/// Re-baselined 2026-07-12 (measured means 60.2/72.7/90.0/95.4 ascending
+/// baud): the servo build moved through the trim bands since the 07-10
+/// numbers, and the pirate's boundary-capture stamps carry a small
+/// constant vs the old IC edges. Same ~6 µs headroom policy.
 fn write_budget_us(baud: u32) -> f64 {
     match baud {
-        1_000_000 => 93.0,
-        2_000_000 => 95.0,
-        3_000_000 => 95.0,
-        500_000 => 79.0,
-        _ => 99.0,
+        1_000_000 => 79.0,
+        2_000_000 => 96.0,
+        3_000_000 => 102.0,
+        500_000 => 66.0,
+        _ => 106.0,
     }
 }
 

@@ -129,12 +129,24 @@ pub fn drain_batch(out: &mut [ByteRecord]) -> Result<usize, DesyncCause> {
             // A break whose character LIN consumed: re-emit it as a
             // synthetic 0x00 stamp carrying the real capture tick —
             // the stream the host sees stays byte-identical to a
-            // ringed break, and no ring byte is spent.
-            Some(boundary::Bound::Standalone(t)) => (
-                0x00,
-                t.wrapping_sub(BOUNDARY_LIFT_BITS * bit),
-                flags::BOUNDARY,
-            ),
+            // ringed break, and no ring byte is spent... unless the
+            // swallow didn't happen after all: it is NONDETERMINISTIC
+            // on this die (bench 2026-07-12 — a law-shaped break's
+            // character sometimes rings late, past the recorder's
+            // spin), and the duplicate zero corrupted reply headers.
+            // A frame can never START with 0x00 (ID is never zero), so
+            // a ring zero at the standalone's own position IS the
+            // break's late character — fold it into the synthetic.
+            Some(boundary::Bound::Standalone(t)) => {
+                if consumed < avail && rings::rx_at(pos) == 0x00 {
+                    consumed += 1;
+                }
+                (
+                    0x00,
+                    t.wrapping_sub(BOUNDARY_LIFT_BITS * bit),
+                    flags::BOUNDARY,
+                )
+            }
             Some(boundary::Bound::Attached(t)) => {
                 consumed += 1;
                 (
