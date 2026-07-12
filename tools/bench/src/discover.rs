@@ -61,7 +61,11 @@ pub fn walk(client: &mut Client) -> Result<Vec<Found>> {
     let mut found = Vec::new();
     let mut stack = vec![(0u8, Vec::new())];
     while let Some((len, prefix)) = stack.pop() {
-        match enum_query(client, len, &prefix)? {
+        let out = enum_query(client, len, &prefix)?;
+        if std::env::var_os("WALK_TRACE").is_some() {
+            eprintln!("walk {len:>3} {prefix:02x?} -> {out:?}");
+        }
+        match out {
             EnumOutcome::Silent => {}
             EnumOutcome::One { uid, id } => found.push(Found { uid, id }),
             EnumOutcome::Collision if len as usize >= UID_LEN * 8 => {

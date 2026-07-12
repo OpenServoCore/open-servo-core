@@ -9,27 +9,26 @@ use serial_test::serial;
 
 use crate::support::bench;
 
-/// Broadcast ENUM at the tree root (prefix_len 0) — the one query a
-/// single-servo bench can always answer cleanly. The reply is the fixed
-/// 16-byte UID field (§9.2): the V006's 96-bit ESIG in the low 12 bytes
-/// (not the all-zero pattern a missed ESIG read would seed), zero pad above.
+/// ENUM prefix matching, fleet-safe: the DUT's UID comes from the prefix
+/// walk (collision descent — a root query collides on a fleet BY DESIGN,
+/// §9.2, so no test may assert a clean root reply). The UID is the fixed
+/// 16-byte field: the V006's 96-bit ESIG in the low 12 bytes (not the
+/// all-zero pattern a missed ESIG read would seed), zero pad above. An
+/// exact 128-bit prefix selects exactly the DUT; one flipped bit nobody.
 #[test]
 #[serial]
-fn enum_root_reports_the_esig_uid() {
+fn enum_prefix_selects_exactly_the_dut() {
     let mut b = bench();
 
-    let status = b.status_ok(&build_enum(0, &[]));
-    assert_eq!(status.id, b.id(), "the reply carries the responder's id");
-    assert_eq!(status.payload.len(), UID_LEN);
-    assert_ne!(status.payload[..12], [0u8; 12], "ESIG read seeded nothing");
-    assert_eq!(status.payload[12..], [0u8; 4], "pad above the 96-bit ESIG");
-    println!("ESIG UID: {:02x?}", status.payload);
+    let uid = b.dut_uid();
+    assert_eq!(uid.len(), UID_LEN);
+    assert_ne!(uid[..12], [0u8; 12], "ESIG read seeded nothing");
+    assert_eq!(uid[12..], [0u8; 4], "pad above the 96-bit ESIG");
+    println!("ESIG UID: {uid:02x?}");
 
-    // An exact-match prefix (all 128 bits) selects the same servo; one
-    // flipped bit selects nobody.
-    let uid: [u8; UID_LEN] = status.payload.clone().try_into().expect("16 bytes");
     let full = b.status_ok(&build_enum(128, &uid));
-    assert_eq!(full.payload, status.payload);
+    assert_eq!(full.id, b.id(), "the reply carries the responder's id");
+    assert_eq!(full.payload, uid);
     let mut miss = uid;
     miss[0] ^= 1;
     b.expect_no_reply(&build_enum(128, &miss));
@@ -37,6 +36,8 @@ fn enum_root_reports_the_esig_uid() {
 
 /// Broadcast ASSIGN moves the servo to a new id — the ack already leaves from
 /// it (§9.2) — then back. PINGs prove the swap on the wire both ways.
+/// Fleet-safe: ASSIGN is UID-addressed (one matcher on any bus), and the
+/// away id sits outside every bench and fleet id map.
 #[test]
 #[serial]
 fn assign_moves_the_id_and_acks_from_it() {
@@ -44,11 +45,7 @@ fn assign_moves_the_id_and_acks_from_it() {
     let home = b.id();
     let away = if home == 42 { 43 } else { 42 };
 
-    let uid: [u8; UID_LEN] = b
-        .status_ok(&build_enum(0, &[]))
-        .payload
-        .try_into()
-        .expect("16 bytes");
+    let uid = b.dut_uid();
 
     let ack = b.status_ok(&build_assign(&uid, away));
     assert_eq!(ack.id, away, "the ack leaves from the new id");
@@ -64,10 +61,13 @@ fn assign_moves_the_id_and_acks_from_it() {
 
 /// The full §9.4/§9.5 silicon round trip: a config marker survives SAVE +
 /// REBOOT (real erase, page program, and boot overlay on real flash), then
-/// FACTORY wipes both slots and its self-reboot restores board defaults —
-/// which also leaves the bench unit's CONFIG pages virgin for every later
-/// run. Reads are collected first and asserted only after the factory
-/// restore, so a bad marker never strands a saved image on the bench.
+/// FACTORY wipes both slots and its self-reboot restores board defaults.
+/// Fleet-safe tail: factory also resets the DUT's ID to the board default
+/// (which may collide with a live fleet id), so the first post-factory
+/// exchange is a UID-addressed ASSIGN back home, then a SAVE re-persists
+/// the identity — the bus leaves exactly as found. Reads are collected
+/// first and asserted only after the restore, so a bad marker never
+/// strands a saved image on the bench.
 #[test]
 #[serial]
 fn save_persists_across_reboot_until_factory() {
@@ -75,6 +75,7 @@ fn save_persists_across_reboot_until_factory() {
 
     let mut b = bench();
     let id = b.id();
+    let uid = b.dut_uid();
 
     b.status_ok(&build_write(
         id,
@@ -94,11 +95,15 @@ fn save_persists_across_reboot_until_factory() {
         .payload;
 
     // FACTORY wipes both slots and reboots itself back to board defaults.
+    // Re-home by UID BEFORE any id-addressed exchange: the board-default id
+    // the DUT booted with may belong to another servo on a fleet.
     b.status_ok_within(&build_factory(id), SAVE_SETTLE_MS);
     std::thread::sleep(std::time::Duration::from_millis(REBOOT_SETTLE_MS));
+    let rehomed = b.status_ok(&build_assign(&uid, id));
     let restored = b
         .status_ok(&build_read(id, RESPONSE_DEADLINE_US, 2))
         .payload;
+    b.status_ok_within(&build_save(id), SAVE_SETTLE_MS);
 
     assert_eq!(dirty_before, 1, "config write marks modified-since-save");
     assert_eq!(dirty_after, 0, "SAVE clears the dirty bit");
@@ -107,5 +112,6 @@ fn save_persists_across_reboot_until_factory() {
         MARKER.to_le_bytes(),
         "marker survived the reboot"
     );
+    assert_eq!(rehomed.id, id, "post-factory re-home acks from the id");
     assert_ne!(restored, MARKER.to_le_bytes(), "factory dropped the image");
 }

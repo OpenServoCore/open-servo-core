@@ -33,14 +33,16 @@ const BCAST: u8 = 0xFE;
 fn gread_slot1_reclaims_silent_predecessor() {
     let mut b = bench();
     let id = b.id();
-    let phantom = if id == 5 { 6 } else { 5 };
+    // Top of the unicast range (§3.1): never assigned on any bench or
+    // fleet, so the slot-0 predecessor is guaranteed silent.
+    const PHANTOM_ID: u8 = 249;
 
     // GREAD listing [phantom, DUT]: the DUT parses its own position as slot 1.
     let wire = build_instruction(
         BCAST,
         Opcode::Gread,
         0,
-        &gread_uniform_payload(MODEL_NUMBER, 2, &[phantom, id]),
+        &gread_uniform_payload(MODEL_NUMBER, 2, &[PHANTOM_ID, id]),
     );
 
     let hz = b.hz_per_us() as f64;

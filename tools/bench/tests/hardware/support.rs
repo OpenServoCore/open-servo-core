@@ -91,6 +91,18 @@ impl Bench {
     }
 
     /// §9.2 prefix-tree walk at the current baud.
+    /// The DUT's UID via the prefix walk — fleet-safe at any baud: the
+    /// walk descends collisions (discover's algorithm), so it finds the DUT
+    /// whether the bus holds one servo or a chain.
+    pub fn dut_uid(&mut self) -> [u8; 16] {
+        let id = self.id();
+        self.walk()
+            .into_iter()
+            .find(|f| f.id == id)
+            .unwrap_or_else(|| panic!("prefix walk did not find the DUT id {id}"))
+            .uid
+    }
+
     pub fn walk(&mut self) -> Vec<Found> {
         discover::walk(&mut self.client).expect("prefix walk")
     }
