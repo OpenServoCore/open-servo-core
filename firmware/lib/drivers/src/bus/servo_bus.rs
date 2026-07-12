@@ -11,7 +11,7 @@ use osc_protocol::wire::{Inst, Opcode, ResultCode};
 use super::chain::{Chain, ChainOut};
 use super::decode::{Decoded, decode};
 use super::frame_view;
-use super::framer::{self, CadenceSample, FrameSpan, Framer, FramerOut};
+use super::framer::{FrameSpan, Framer, FramerOut};
 use super::trim::TrimLoop;
 use super::tx::{TxEngine, TxOut};
 use crate::traits::bus::{
@@ -54,12 +54,9 @@ const DEADLINE_DRAIN_MAX: u32 = 8;
 /// the rest.
 const FRAMES_PER_WAKE: u32 = 16;
 
-/// Measured instruction-byte span per clock-trim decision, µs of nominal
-/// wire time (§9.3). Sets the windowed average's noise floor against the
-/// per-pair endpoint jitter (~a byte-time per stamp): at this width the
-/// window mean sits comfortably inside the trim loop's half-step deadband,
-/// so a well-trimmed chip is not noise-stepped; acquisition still completes
-/// within the first second of fat-frame traffic — bench-tuned.
+/// Measured span per clock-trim decision, µs of nominal wire time (§9.3) —
+/// the `poll_clock_trim` drain threshold. The CAL ruler (trim band 2)
+/// re-feeds the accumulators and re-tunes this.
 const TRIM_WINDOW_WIRE_US: u32 = 65_536;
 
 /// Ring-poll cadence, in byte-times, while the wire-fault wake is muted
@@ -106,7 +103,6 @@ pub struct ServoBus<P: Providers> {
     id: u8,
     rate: BaudRate,
     tpb: u32,
-    pair_floor: u32,
     response_deadline_us: u16,
     pending_id: Option<u8>,
     pending_baud: Option<BaudRate>,
@@ -130,9 +126,9 @@ pub struct ServoBus<P: Providers> {
     // zero-progress fault service that muted it. Cursor movement is the
     // all-clear — the drain that moved it also retired the latched flag.
     fault_mute: Option<u16>,
-    // Clock-trim measurement window (§9.3): CRC-verified instruction frames'
-    // cadence samples, accumulated ISR-side, drained by the main loop's
-    // `poll_clock_trim`.
+    // Clock-trim measurement accumulators (§9.3), drained by the main loop's
+    // `poll_clock_trim`. Inert since the passive estimator's deletion
+    // (2026-07-11); the CAL break-pair ruler re-feeds them (trim band 2).
     cadence_err: i32,
     cadence_span: u32,
     trim: TrimLoop,
@@ -151,17 +147,6 @@ fn tpb_for<P: Providers>(rate: BaudRate) -> u32 {
         BaudRate::B1000000 => const { compute(<P::Deadline as Deadline>::TICKS_PER_US, 1_000_000) },
         BaudRate::B2000000 => const { compute(<P::Deadline as Deadline>::TICKS_PER_US, 2_000_000) },
         BaudRate::B3000000 => const { compute(<P::Deadline as Deadline>::TICKS_PER_US, 3_000_000) },
-    }
-}
-
-/// Cadence pair floor at `rate` ([`framer::cadence_pair_floor_bytes`]),
-/// folded to a literal per arm like [`tpb_for`] — the formula divides.
-fn pair_floor_for(rate: BaudRate) -> u32 {
-    match rate {
-        BaudRate::B500000 => const { framer::cadence_pair_floor_bytes(500_000) },
-        BaudRate::B1000000 => const { framer::cadence_pair_floor_bytes(1_000_000) },
-        BaudRate::B2000000 => const { framer::cadence_pair_floor_bytes(2_000_000) },
-        BaudRate::B3000000 => const { framer::cadence_pair_floor_bytes(3_000_000) },
     }
 }
 
@@ -197,7 +182,6 @@ impl<P: Providers> ServoBus<P> {
             id,
             rate,
             tpb: tpb_for::<P>(rate),
-            pair_floor: pair_floor_for(rate),
             response_deadline_us,
             pending_id: None,
             pending_baud: None,
@@ -375,7 +359,6 @@ impl<P: Providers> ServoBus<P> {
                 self.baud.apply(baud);
                 self.rate = baud;
                 self.tpb = tpb_for::<P>(self.rate);
-                self.pair_floor = pair_floor_for(self.rate);
             }
             // A pending reboot waits for the main loop's `take_reboot`.
         }
@@ -397,18 +380,6 @@ impl<P: Providers> ServoBus<P> {
         LinkDiag {
             crc_fail_count: self.crc_fails,
             framing_drop_count: self.framer.drops(),
-        }
-    }
-
-    /// Fold a CRC-verified frame's cadence sample into the trim window
-    /// (§9.3). Reaches here for instruction frames only — the host is the
-    /// crystal reference; a snooped status frame would calibrate against
-    /// another servo's HSI (status frames leave `route_frame` before any
-    /// verdict). Garble-born phantoms die by CRC and their samples with them.
-    fn harvest_cadence(&mut self, cadence: Option<CadenceSample>) {
-        if let Some(c) = cadence {
-            self.cadence_err = self.cadence_err.wrapping_add(c.err_ticks);
-            self.cadence_span = self.cadence_span.saturating_add(c.span_ticks);
         }
     }
 
@@ -481,13 +452,9 @@ impl<P: Providers> ServoBus<P> {
     fn drive_framer<D: Dispatch>(&mut self, d: &mut D) {
         for _ in 0..FRAMES_PER_WAKE {
             let now = self.deadline.now();
-            let out = self.framer.resolve(
-                self.ring.bytes(),
-                self.ring.cursor(),
-                now,
-                self.tpb,
-                self.pair_floor,
-            );
+            let out = self
+                .framer
+                .resolve(self.ring.bytes(), self.ring.cursor(), now, self.tpb);
             match out {
                 FramerOut::None => {
                     self.framer_at = None;
@@ -570,7 +537,6 @@ impl<P: Providers> ServoBus<P> {
         self.baud.apply(BaudRate::B500000);
         self.rate = BaudRate::B500000;
         self.tpb = tpb_for::<P>(self.rate);
-        self.pair_floor = pair_floor_for(self.rate);
         // Ladder bootstrap (A2): a rescue pulse delivers no start edges, so
         // the cursor is provably still — the one sanctioned cursor read.
         let cursor = self.ring.cursor();
@@ -602,7 +568,7 @@ impl<P: Providers> ServoBus<P> {
     fn on_frame_end<D: Dispatch>(&mut self, span: FrameSpan, d: &mut D) {
         match self.pending.take() {
             Some(p) if p.anchor == span.anchor && p.footprint == span.footprint => {
-                self.verify(p, span.cadence, d);
+                self.verify(p, d);
             }
             Some(_) => {
                 // Defensive: a pending frame that isn't this one — drop it. Any
@@ -631,7 +597,6 @@ impl<P: Providers> ServoBus<P> {
         let anchor = span.anchor;
         let footprint = span.footprint;
         let packet_end = span.packet_end;
-        let cadence = span.cadence;
         // Status frames only advance the snoop chain (§6) — framing-level
         // truth, NO validation: the chain consumes nothing from the body, and
         // skipping the CRC keeps the snapshot buffer free while our own reply
@@ -672,7 +637,7 @@ impl<P: Providers> ServoBus<P> {
                 table,
             };
             if complete {
-                self.verify(p, cadence, d);
+                self.verify(p, d);
             } else {
                 self.pending = Some(p);
             }
@@ -694,7 +659,6 @@ impl<P: Providers> ServoBus<P> {
             return;
         }
         self.framer.on_frame_verified();
-        self.harvest_cadence(cadence);
         // A fresh instruction supersedes any stale, not-yet-streaming reply —
         // post-verdict, so a garbled frame touched nothing.
         self.chain.reset();
@@ -725,7 +689,7 @@ impl<P: Providers> ServoBus<P> {
     /// (DON'T-SEND), count, and rewind the ladder (§5.3 L1).
     #[cfg_attr(target_os = "none", unsafe(link_section = ".highcode"))]
     #[cfg_attr(target_os = "none", inline(never))]
-    fn verify<D: Dispatch>(&mut self, p: Pending, cadence: Option<CadenceSample>, d: &mut D) {
+    fn verify<D: Dispatch>(&mut self, p: Pending, d: &mut D) {
         if !self.crc_verify(p.anchor, p.footprint) {
             if p.table {
                 d.revert();
@@ -739,7 +703,6 @@ impl<P: Providers> ServoBus<P> {
             return;
         }
         self.framer.on_frame_verified();
-        self.harvest_cadence(cadence);
         if p.table {
             let mut handle = self.reply_handle();
             d.commit(&mut handle);

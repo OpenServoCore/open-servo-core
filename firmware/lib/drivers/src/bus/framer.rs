@@ -35,24 +35,6 @@ pub struct FrameSpan {
     pub anchor: u16,
     pub footprint: u16,
     pub packet_end: u32,
-    /// Byte-cadence sample from this frame's arrival, when one was
-    /// measurable (frontier frames only; the composite CRC-gates it).
-    pub cadence: Option<CadenceSample>,
-}
-
-/// The local clock measured against one frame's byte cadence (§9.3, transport
-/// §6 A5): the sum of the frame's gated progress-stamp pairs. Every pair lies
-/// strictly inside the frame's arrival window (`wait` runs only while
-/// `received < footprint`), so no inter-frame gap can enter a span, and each
-/// pair is gated separately — a mid-frame host TX stall (legal wire, §4.1;
-/// routine on the pirate bench host) poisons one pair, not the frame.
-/// `err_ticks = measured − n·tpb` over the surviving pairs: positive means
-/// the local clock ran fast against the transmitter's byte clock.
-pub struct CadenceSample {
-    pub err_ticks: i32,
-    /// The nominal span (`n·tpb`) the error is relative to — the sample's
-    /// weight when windows accumulate across frames and baud changes.
-    pub span_ticks: u32,
 }
 
 /// What the resolver wants from the composite after a step. The composite
@@ -112,40 +94,6 @@ const STARVE_GIVEUP_BYTES: u32 = 64;
 // composite's drive loop re-enters via pend-on-past.
 const HUNT_BYTES_PER_WAKE: u16 = 64;
 
-// Cadence pairs must span enough wire TIME that the 1/16 reject gate below
-// clears the runtime's wake-stamp jitter: progress stamps ride SysTick-CMP
-// wakes, whose entry latency (WFI exit, CS masking, ISR tail-chaining)
-// spreads over microseconds regardless of baud. A byte-sized quantum
-// shrinks the gate with the byte-time until jitter swamps it — silicon
-// 2026-07-11 at 3M: the 32-byte gate sat at 6.7 µs and rejected 98% of
-// honest pairs, and the rare survivors under load carried the systematic
-// latency-growth bias (+19 k ppm windows). 200 µs puts the gate at 12.5 µs.
-const CADENCE_PAIR_MIN_WIRE_US: u32 = 200;
-
-/// Cadence pair floor for `baud_hz`, in bytes: a pair below it has its
-/// reject gate inside the wake-jitter envelope
-/// ([`CADENCE_PAIR_MIN_WIRE_US`]) and carries no clock information. Never
-/// narrower than the byte-domain floor that keeps endpoint phase noise
-/// (the dither sweeps ±1 byte-time) inside the gate. Callers const-fold
-/// this per rate — the formula divides, and the chip build has no
-/// hardware divider. The interior-look hop leads this by 12.5%
-/// ([`Framer::wait`]): hop pairs land at hop ± a couple bytes (dither,
-/// skew), and a floor AT the hop selects survivors by byte count — which
-/// correlates with the dither difference the window mean depends on
-/// (unit-measured: floor == hop clipped the skew test −1.1 k ppm).
-pub const fn cadence_pair_floor_bytes(baud_hz: u32) -> u32 {
-    let time_floor = CADENCE_PAIR_MIN_WIRE_US * baud_hz / (BITS_PER_WIRE_BYTE * 1_000_000);
-    if time_floor < 32 { 32 } else { time_floor }
-}
-
-const BITS_PER_WIRE_BYTE: u32 = 10;
-
-// Per-pair reject gate, as a right-shift of the pair's nominal span (1/16 ≈
-// 6%): legal clock offset is bounded by the HSITRIM throw (±3.4%), so
-// anything past the gate is a host TX stall, merged-transmitter garble, or a
-// gross wake-latency outlier — not a clock reading.
-const CADENCE_REJECT_SHIFT: u32 = 4;
-
 /// Wire time for `bytes` more bytes at `tpb`, drift-padded — the one
 /// projection formula behind every aim and estimate.
 #[inline]
@@ -160,20 +108,9 @@ struct Frontier {
     covered: bool,
     /// Giveup baseline taken (first observation of this frontier).
     observed: bool,
-    /// Ring progress watermark + its tick: the dead-transmitter detector,
-    /// and the near end of the next cadence pair.
+    /// Ring progress watermark + its tick: the dead-transmitter detector.
     seen: u16,
     progress_tick: u32,
-    /// The watermark can start an included cadence pair. False until the
-    /// second stamp: the first is break-FE-anchored (sub-byte-exact) while
-    /// every later one is wake-quantized — a pair mixing the two carries a
-    /// half-byte-time phase offset (sim: +3.1k ppm frozen into repetitive
-    /// traffic), so the first pair is skipped and all included pairs have
-    /// dither-swept phases at BOTH ends, zero-mean by construction.
-    primed: bool,
-    /// Gated pair sums — the frame's cadence sample (§9.3, A5).
-    cadence_err: i32,
-    cadence_span: u32,
 }
 
 impl Frontier {
@@ -183,48 +120,18 @@ impl Frontier {
             observed: false,
             seen: 0,
             progress_tick: 0,
-            primed: false,
-            cadence_err: 0,
-            cadence_span: 0,
         }
     }
 
-    /// Progress observation: advance the watermark (giveup baseline) and
-    /// fold the pair it closes into the cadence sums, gated per pair — a
-    /// host TX stall or a wake-latency outlier loses one pair, never the
-    /// frame ([`CADENCE_REJECT_SHIFT`]). `floor` is the pair floor
-    /// ([`cadence_pair_floor_bytes`]).
-    fn advance(&mut self, cursor: u16, now: u32, tpb: u32, floor: u32, len: usize) {
+    /// Progress observation: advance the watermark (giveup baseline).
+    fn advance(&mut self, cursor: u16, now: u32) {
         if !self.observed {
             self.observed = true;
-            self.seen = cursor;
-            self.progress_tick = now;
+        } else if cursor == self.seen {
             return;
-        }
-        if cursor == self.seen {
-            return;
-        }
-        if self.primed {
-            let bytes = dist(cursor, self.seen, len);
-            let span = (bytes as u32).wrapping_mul(tpb);
-            let err = now.wrapping_sub(self.progress_tick).wrapping_sub(span) as i32;
-            if bytes as u32 >= floor && err.unsigned_abs() <= span >> CADENCE_REJECT_SHIFT {
-                self.cadence_err = self.cadence_err.wrapping_add(err);
-                self.cadence_span = self.cadence_span.wrapping_add(span);
-            }
-        } else {
-            self.primed = true;
         }
         self.seen = cursor;
         self.progress_tick = now;
-    }
-
-    /// The completed frontier's cadence sample — whatever pairs survived.
-    fn cadence(&self) -> Option<CadenceSample> {
-        (self.cadence_span > 0).then_some(CadenceSample {
-            err_ticks: self.cadence_err,
-            span_ticks: self.cadence_span,
-        })
     }
 }
 
@@ -245,9 +152,6 @@ pub struct Framer {
     /// Cursor at the last wire-fault service ([`Self::on_wire_fault`]).
     fault_seen: u16,
     drops: u32,
-    /// Weyl sequence (odd step, visits all 8 phases whatever the per-frame
-    /// hop count) behind the interior-hop dither — see [`Frontier::cadence`].
-    dither: u8,
 }
 
 impl Framer {
@@ -258,7 +162,6 @@ impl Framer {
             frontier: Frontier::idle(),
             fault_seen: 0,
             drops: 0,
-            dither: 0,
         }
     }
 
@@ -329,14 +232,7 @@ impl Framer {
     /// One resolution step against the CURRENT ring state (A2 data-first).
     /// The composite loops until `None`/`Wait`. `cursor` is the live DMA
     /// cursor read at call time — progress truth, not a stale event snapshot.
-    pub fn resolve(
-        &mut self,
-        ring: &[u8],
-        cursor: u16,
-        now: u32,
-        tpb: u32,
-        floor: u32,
-    ) -> FramerOut {
+    pub fn resolve(&mut self, ring: &[u8], cursor: u16, now: u32, tpb: u32) -> FramerOut {
         let len = ring.len();
         if len == 0 {
             return FramerOut::None; // defensive: no ring to resolve against
@@ -375,12 +271,10 @@ impl Framer {
             }
         }
         if received < HEADER_SPAN_BYTES {
-            let dither = self.dither_lead(tpb);
             let aim = now
                 .wrapping_add(wire_lead((HEADER_SPAN_BYTES - received) as u32, tpb))
-                .wrapping_add(tpb / BREAK_TAIL_EPS_DIV)
-                .wrapping_add(dither);
-            return self.wait(aim, now, tpb, floor, cursor, len);
+                .wrapping_add(tpb / BREAK_TAIL_EPS_DIV);
+            return self.wait(aim, now, tpb, cursor, len);
         }
         // Header readable: geometry pre-checked by the scan. The composite's
         // decoder owns addressing/opcode (a foreign frame still advances the
@@ -393,11 +287,7 @@ impl Framer {
         let footprint = h.frame_end() as u16;
         if received >= footprint {
             // Complete — the fast path: process now; the frame ended in the
-            // past, so the estimate degenerates to elastic `now`. A tracked
-            // frontier hands over its cadence sample here — its accumulated
-            // pairs, not the current stamp, so a gap behind the frame end
-            // can't leak in.
-            let cadence = self.frontier.cadence();
+            // past, so the estimate degenerates to elastic `now`.
             let anchor = self.anchor;
             self.anchor = ring_wrap(anchor as usize + footprint as usize, len) as u16;
             self.frontier = Frontier::idle();
@@ -405,7 +295,6 @@ impl Framer {
                 anchor,
                 footprint,
                 packet_end: now,
-                cadence,
             });
         }
         let missing = (footprint - received) as u32;
@@ -414,10 +303,8 @@ impl Framer {
             // tightest projection this frame gets (missing ≤ 2, so the
             // ring-cadence error is under a byte-time) — and hand the
             // composite the overlap window. This branch returns before
-            // `wait`, so advance the progress watermark here too: it closes
-            // a cadence pair, and `received < footprint` keeps it strictly
-            // inside the frame's arrival window.
-            self.frontier.advance(cursor, now, tpb, floor, len);
+            // `wait`, so advance the progress watermark here too.
+            self.frontier.advance(cursor, now);
             self.frontier.covered = true;
             let packet_end = now.wrapping_add(wire_lead(missing, tpb));
             let end_due = packet_end;
@@ -426,25 +313,19 @@ impl Framer {
                     anchor: self.anchor,
                     footprint,
                     packet_end,
-                    cadence: None,
                 },
                 end_due,
             };
         }
         // Aim at the next milestone: the covered point, or (once emitted)
-        // the frame end. Data-anchored: pure cadence, no epsilon. The
-        // covered-targeting aim is a pure look and carries the phase dither;
-        // the end aim stays exact — the verdict (and a staged reply behind
-        // it) rides `end_due`.
-        let (to_target, dither) = if self.frontier.covered {
-            (missing, 0)
+        // the frame end. Data-anchored: pure cadence, no epsilon.
+        let to_target = if self.frontier.covered {
+            missing
         } else {
-            (missing - COVERED_TAIL_BYTES, self.dither_lead(tpb))
+            missing - COVERED_TAIL_BYTES
         };
-        let aim = now
-            .wrapping_add(wire_lead(to_target, tpb))
-            .wrapping_add(dither);
-        self.wait(aim, now, tpb, floor, cursor, len)
+        let aim = now.wrapping_add(wire_lead(to_target, tpb));
+        self.wait(aim, now, tpb, cursor, len)
     }
 
     /// Progress-track the frontier and wake at the sooner of the aim and the
@@ -454,62 +335,14 @@ impl Framer {
     /// makes NO progress for [`STARVE_GIVEUP_BYTES`] declares the partial
     /// dead regardless of the aim (a junk header's far-future footprint must
     /// not park the ladder).
-    fn wait(
-        &mut self,
-        aim: u32,
-        now: u32,
-        tpb: u32,
-        floor: u32,
-        cursor: u16,
-        len: usize,
-    ) -> FramerOut {
+    fn wait(&mut self, aim: u32, now: u32, tpb: u32, cursor: u16, len: usize) -> FramerOut {
         let giveup_span = STARVE_GIVEUP_BYTES.wrapping_mul(tpb);
         let stalled = self.frontier.observed && cursor == self.frontier.seen;
-        self.frontier.advance(cursor, now, tpb, floor, len);
+        self.frontier.advance(cursor, now);
         if stalled && tick_reached(now, self.frontier.progress_tick.wrapping_add(giveup_span)) {
             return self.give_up(len, now);
         }
-        // The hop is a re-look cadence from NOW (a stalled frontier's
-        // progress watermark is hop-to-giveup byte-times stale before
-        // giveup — a progress-anchored hop would land in the past and
-        // pend-on-past spin, sim-caught 2026-07-11); the giveup horizon is
-        // untouched: death still requires STARVE_GIVEUP_BYTES of no
-        // progress, just checked at hop cadence. The hop leads the pair
-        // floor by 12.5% so hop pairs clear it (see
-        // [`cadence_pair_floor_bytes`]).
-        let hop = floor + (floor >> 3);
-        let hop_at = now.wrapping_add(hop.wrapping_mul(tpb));
-        let sooner = if aim.wrapping_sub(now) <= hop_at.wrapping_sub(now) {
-            aim
-        } else {
-            // Interior hop: pure progress look with no timing contract,
-            // dithered like every other look.
-            let dither = self.dither_lead(tpb);
-            hop_at.wrapping_add(dither)
-        };
-        FramerOut::Wait(sooner)
-    }
-
-    /// Phase sweep for pure-look wakes (header aims, covered-targeting aims,
-    /// cadence hops): a wake's sub-byte phase is deterministic per frame
-    /// geometry, and repetitive traffic would freeze one phase into a
-    /// permanent cadence bias (sim: +3.1k ppm on a +5.2k signal). The Weyl
-    /// step is odd and near the golden section of 256, so the phase sweeps
-    /// [0, tpb) both draw-to-draw AND frame-to-frame — a repetitive frame
-    /// consumes a fixed draw count D, and the frame-to-frame shift D·149
-    /// mod 256 is nonzero for any plausible D (a 3-bit sweep aliased to
-    /// frozen at D = 8: identical samples every frame, sim 2026-07-11).
-    ///
-    /// Never during a hunt: recovery latency is a contract (§3.4's starve
-    /// bound — a dithered look per junk candidate accumulated ~20 byte-times
-    /// on the foreign-baud garble pin), and hunt-phase samples are already
-    /// CRC-doomed.
-    fn dither_lead(&mut self, tpb: u32) -> u32 {
-        if self.hunting {
-            return 0;
-        }
-        self.dither = self.dither.wrapping_add(149);
-        (self.dither as u32).wrapping_mul(tpb) >> 8
+        FramerOut::Wait(aim)
     }
 
     /// The candidate is dead — the starve horizon expired (transmitter died,
@@ -538,79 +371,4 @@ impl Framer {
 #[inline]
 fn dist(cursor: u16, anchor: u16, len: usize) -> u16 {
     ring_wrap((cursor as usize + len) - anchor as usize, len) as u16
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::vec;
-
-    /// Repetitive fat frames — the hostile case for the estimator: identical
-    /// geometry freezes the far stamp's byte phase, and without the hop
-    /// dither + tpb/2 centering the frozen phase reads as a permanent offset
-    /// (+3.1k ppm on this exact scenario). The window mean must track the
-    /// true skew to well under half a nominal trim step.
-    #[test]
-    fn repetitive_fat_frames_measure_the_true_skew() {
-        let tpb: u32 = 480; // 1M at 48 ticks/µs
-        let floor = cadence_pair_floor_bytes(1_000_000);
-        let skew = 1.0052_f64; // +5200 ppm local clock
-        let mut ring = vec![0u8; 512];
-        let footprint = 206u16;
-        let mut f = Framer::new();
-        let mut err_sum = 0i64;
-        let mut span_sum = 0u64;
-        let mut samples = 0;
-        for frame in 0..16usize {
-            let base = (frame * footprint as usize) % 512;
-            ring[base] = 0;
-            ring[(base + 1) % 512] = 6;
-            ring[(base + 2) % 512] = 203;
-            ring[(base + 3) % 512] = 0x21;
-            let t0 = frame as f64 * 300_000.0; // sim tick of this break FE
-            let local = |sim_t: f64| (sim_t * skew) as u32;
-            let cur = |sim_t: f64| {
-                let k = (((sim_t - t0) / 480.0).floor() as u16).min(footprint - 1);
-                ((base as u16 + 1 + k) as usize % 512) as u16
-            };
-            let mut sim_t = t0;
-            for _ in 0..40 {
-                let c = cur(sim_t);
-                let now = local(sim_t);
-                match f.resolve(&ring, c, now, tpb, floor) {
-                    FramerOut::None => break,
-                    FramerOut::Wait(t) | FramerOut::Covered { end_due: t, .. } => {
-                        sim_t += t.wrapping_sub(now) as f64 / skew;
-                    }
-                    FramerOut::Frame(span) => {
-                        if let Some(sc) = span.cadence {
-                            err_sum += sc.err_ticks as i64;
-                            span_sum += sc.span_ticks as u64;
-                            samples += 1;
-                        }
-                        break;
-                    }
-                }
-            }
-        }
-        assert_eq!(samples, 16, "every frontier frame yields a sample");
-        let mean = err_sum as f64 / span_sum as f64 * 1e6;
-        assert!((mean - 5200.0).abs() < 800.0, "window mean {mean:.0} ppm");
-    }
-
-    /// A backlog frame (whole frame already ringed at first resolve) was
-    /// never a tracked frontier: no stamps, no sample — hot-chain backlog
-    /// walks contribute nothing, by design.
-    #[test]
-    fn backlog_frames_carry_no_sample() {
-        let mut ring = vec![0u8; 512];
-        ring[1] = 6;
-        ring[2] = 43; // inst + 40 payload + crc2
-        ring[3] = 0x21;
-        let mut f = Framer::new();
-        match f.resolve(&ring, 46, 1000, 480, cadence_pair_floor_bytes(1_000_000)) {
-            FramerOut::Frame(span) => assert!(span.cadence.is_none()),
-            _ => panic!("whole ringed frame resolves on the fast path"),
-        }
-    }
 }

@@ -522,58 +522,51 @@ RX-path DATAR read removed (vs 44/12k with it present); hot-loop matrix
 green at all four bauds with the conditional release-point clear, ping
 turnarounds flat vs the pre-fix baseline at every baud.
 
-### A5 — passive clock trim: the frontier stamps are the drift estimator
+### A5 — clock trim: the CAL break-pair ruler (frontier estimator DELETED)
 
 Chain snoop is servo→servo (osc-native §9.3): the clock budget is
 pairwise-HSI, and factory spread (7k+ ppm measured across five chips)
-garbles snooped status tails at 3 M. Each servo therefore trims its own
-oscillator against the host's instruction byte cadence, and the entire
-measurement rides state the resolver already keeps:
+garbles snooped status tails at 3 M. The first design measured the host's
+byte cadence with frontier progress-stamp pairs taken at mid-frame walker
+wakes. DELETED 2026-07-11 — it was built on two wrong assumptions:
 
-- **Stamps.** The frontier's progress bookkeeping (`seen`/`progress_tick`,
-  giveup tracking) doubles as the sample: consecutive progress
-  observations form pairs, each a `(now, cursor)` read taken together
-  mid-arrival, so no inter-frame gap can enter a span — `wait` runs only
-  while `received < footprint`. Long frames self-generate interior
-  stamps: the starve horizon bounds every wait to 64 byte-times, so the
-  frontier is re-observed at that cadence for free.
-- **Per-pair gating.** Each pair is gated separately (≥ 16 bytes, error
-  ≤ 1/16 of its nominal span) and the survivors sum into the frame's
-  sample. This is load-bearing against a stalling host: a mid-frame TX
-  stall is legal wire (§4.1) and the pirate bench host does it routinely
-  (~100 µs walker bubbles) — whole-frame spans starved to ZERO samples
-  under them (silicon 2026-07-11); per-pair gating loses one pair per
-  stall and keeps the rest.
-- **Debiasing.** Wake stamps are phase-quantized: a stamp's sub-byte
-  phase is deterministic per frame geometry, and repetitive traffic
-  (identical hot-loop frames) freezes one phase into a permanent offset
-  (sim: +3.1 k ppm on a +5.2 k signal). Every pure look (header aims,
-  covered-targeting aims, horizon hops — never the end aim, which times
-  the verdict) carries a byte-phase dither from an 8-bit Weyl sequence,
-  so pair endpoints sweep [0, tpb) both draw-to-draw and frame-to-frame
-  (a 3-bit sweep aliased frozen at 8 draws/frame). The first pair is
-  skipped: its near stamp is break-FE-anchored (sub-byte-exact), and a
-  pair mixing exact and quantized endpoints carries a half-byte-time
-  offset. All included pairs are quantized-and-dithered at both ends —
-  zero-mean by construction, no correction constant.
-- **Harvest.** CRC-verified instruction frames only, at the verify
-  sites — a garble-born phantom's samples die with its CRC, and snooped
-  status frames (foreign HSIs) never reach the accumulator. The fault
-  contract holds: faults still carry nothing; a fault-woken entry
-  contributes only its simultaneous data-side `(now, cursor)` read.
-- **Loop.** Samples accumulate `(err_ticks, span_ticks)`; the main loop
-  drains a window (`TRIM_WINDOW_WIRE_US` of measured span) through
-  `TrimLoop`: `steps = round(err / step_effect)`, clamped ±4 — the first
-  window takes the acquire jump, steady-state windows round to zero
-  (round-to-nearest IS the deadband). The step effect is self-measured
-  from each applied correction's observed shift (chip steps are
-  nonuniform: 1.4–3.2 k ppm/step across the fleet vs the 2.5 k nominal),
-  sanity-banded 0.8–4 k. The chip applies the total via HSITRIM between
-  frames and mirrors it read-only at `telemetry.clock.trim_steps`.
+- **Food.** Pairs needed frames long past the anti-stall floor (60 B at
+  3 M), i.e. 200-byte writes. Real hot-loop instructions are 40–70 B for
+  a 5-servo fleet; the estimator's qualifying traffic barely exists.
+- **Stamps.** A SysTick walk stamp is whole-byte-quantized with
+  software-chosen phase — the dither/floor/hop machinery existed to
+  launder that. On silicon the interior wakes never fired at design rate
+  anyway (~1.5 walks per 200-byte frame vs 5–6 designed, isolated gapped
+  frames, counters 2026-07-11 — an unexplained transport curiosity, but
+  harmless: the 512 B ring buffers whole frames and hot-loop fat frames
+  are NOREPLY, so late backlog resolution costs nothing).
 
-DES: `tests/trim.rs` (skewed servos converge on frames addressed to other
-ids; near-nominal holds still; pings fill no window) and the framer's
-repetitive-frame bias pin.
+The replacement measures at frame boundaries with hardware-anchored,
+same-ISR-flavor stamps and asks the host to cooperate where only the host
+has the truth (it owns the crystal — the syntonization tree's root):
+
+- **Absolute, rarely — MGMT CAL.** Broadcast instruction announcing N
+  breaks spaced exactly T µs; the servo stamps `deadline.now()` at each
+  break-FE entry, gates each gap at |Δ−T| ≤ T/16, and trims off the sum.
+  Entry latency cancels same-flavor; ~±260 ppm from 8 × 400 µs gaps.
+  Fired at boot and at host-known events, not on a timer. Break decode is
+  threshold-free across the full HSITRIM throw, so CAL also rescues a
+  railed servo.
+- **Differential, continuously — chain pairs.** Break-FE stamps of
+  adjacent host instructions (GWRITE→COMMIT seams):
+  `err = measured − footprint·tpb = seam + drift·span`. The host's
+  queuing seam is unknown but stationary; a baseline captured right after
+  each trim application subtracts it, so windows read pure drift. Any
+  constant — seam, FE latch offset, ISR flavor residue — dies in the
+  subtraction; only changes survive, and the sanity band catches
+  non-thermal jumps.
+
+Both feed the unchanged `TrimLoop`: `steps = round(err / step_effect)`,
+clamped ±4, round-to-nearest IS the deadband; step effect self-measured
+(chip steps nonuniform, 1.4–3.2 k ppm; sanity-banded 0.8–4 k); total
+applied via HSITRIM between frames, mirrored read-only at
+`telemetry.clock.trim_steps`. Landing: CAL = trim band 2, chain pairs =
+trim band 3 (this section is rewritten in full there).
 
 ## 7. First-principles losslessness (the zero-gap argument)
 
