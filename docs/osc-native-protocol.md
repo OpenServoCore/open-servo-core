@@ -95,10 +95,10 @@ deterministic 10-bit anchor. Hardware `SBK` is off-law (~14 bit-times
 measured, F5).
 
 **Receivers stay length-tolerant**: any ≥10-bit dominant span is one
-break (rescue pulses, garble, and F3 all require this). Migration note:
-the host is law-compliant; the V006 reply path still sends `SBK`
-(legal to every receiver, off-law for TX) until its migration band
-lands.
+break (rescue pulses, garble, and F3 all require this). Both ends are
+law-compliant since 2026-07-12: the host sends the law shape, and the
+V006 reply path replaced `SBK` with the bracketed-M `0x00` character
+(same blocking shifter contract, 3 bits shorter).
 
 Measured break behavior that the framer relies on:
 
@@ -297,7 +297,8 @@ Reply buffer: `[0x00][ID][LEN][INST|0x80][payload][crc][crc]`
 in a halfword-aligned static — the `0x00` at offset 0 is an alignment
 byte and CRC no-op; an odd payload's last byte folds into the CRC in
 software at patch time (§3.2). Sequence: flip pin to
-push-pull → `SBK` → enable UART TX DMA from offset 1 → simultaneously
+push-pull → law break (§3, a bracketed-M `0x00` character) → enable
+UART TX DMA from offset 1 → simultaneously
 enable SPI-CRC DMA from offset 0 → the CRC engine outruns the wire 8:1,
 so `TCRCR` is patched into the trailing CRC bytes long before the shifter
 needs them (fire-first, append-later, no deadline race) [F6]. On TC:
