@@ -3,9 +3,13 @@
 //! walker pipeline — with ticks synthesized here instead of captured
 //! per byte:
 //!
-//! - a byte with a boundary entry gets its real capture tick, lifted
-//!   back to the modeled break fall ([`BOUNDARY_LIFT_BITS`]), and the
-//!   [`flags::BOUNDARY`] flag;
+//! - a byte with an attached boundary gets its real capture tick,
+//!   lifted back to the modeled break fall ([`BOUNDARY_LIFT_BITS`]),
+//!   and the [`flags::BOUNDARY`] flag;
+//! - a standalone boundary (a law-shaped break whose character the LIN
+//!   receiver consumed — our own echoes) is RE-EMITTED as a synthetic
+//!   `0x00` stamp with its real tick, so the host-visible stream stays
+//!   byte-identical to a ringed break;
 //! - the byte after a boundary strides the break frame's own span
 //!   ([`BREAK_TO_NEXT_BITS`]), every later byte a full byte-time — for
 //!   our own DMA-fed TX echo those strides are crystal-exact;
@@ -112,40 +116,59 @@ pub fn drain_batch(out: &mut [ByteRecord]) -> Result<usize, DesyncCause> {
     }
 
     let bit = bit_ticks();
-    let avail = total.wrapping_sub(tail0) as usize;
-    let n = avail.min(out.len());
+    let avail = total.wrapping_sub(tail0);
     let mut last_tick = unsafe { ptr::read_volatile(LAST_TICK.get()) };
     let mut prev_boundary = unsafe { ptr::read_volatile(PREV_WAS_BOUNDARY.get()) };
     let mut anchored = unsafe { ptr::read_volatile(ANCHORED.get()) };
 
-    for (i, slot) in out.iter_mut().take(n).enumerate() {
-        let idx = tail0.wrapping_add(i as u32);
-        let byte = rings::rx_at(idx);
-        let (tick, f) = match boundary::take_for(idx) {
-            Some(t) => {
-                anchored = true;
-                prev_boundary = true;
-                (t.wrapping_sub(BOUNDARY_LIFT_BITS * bit), flags::BOUNDARY)
+    let mut consumed = 0u32;
+    let mut written = 0usize;
+    while written < out.len() {
+        let pos = tail0.wrapping_add(consumed);
+        let (byte, tick, f) = match boundary::next_at(pos) {
+            // A break whose character LIN consumed: re-emit it as a
+            // synthetic 0x00 stamp carrying the real capture tick —
+            // the stream the host sees stays byte-identical to a
+            // ringed break, and no ring byte is spent.
+            Some(boundary::Bound::Standalone(t)) => (
+                0x00,
+                t.wrapping_sub(BOUNDARY_LIFT_BITS * bit),
+                flags::BOUNDARY,
+            ),
+            Some(boundary::Bound::Attached(t)) => {
+                consumed += 1;
+                (
+                    rings::rx_at(pos),
+                    t.wrapping_sub(BOUNDARY_LIFT_BITS * bit),
+                    flags::BOUNDARY,
+                )
             }
             None => {
+                if consumed >= avail {
+                    break;
+                }
+                consumed += 1;
                 let stride = if prev_boundary {
                     BREAK_TO_NEXT_BITS
                 } else {
                     BITS_PER_BYTE_8N1
                 };
-                prev_boundary = false;
                 (
+                    rings::rx_at(pos),
                     last_tick.wrapping_add(stride * bit),
                     if anchored { 0 } else { flags::COUNT_UNDER },
                 )
             }
         };
+        anchored |= f & flags::BOUNDARY != 0;
+        prev_boundary = f & flags::BOUNDARY != 0;
         last_tick = tick;
-        *slot = ByteRecord {
+        out[written] = ByteRecord {
             tick,
             byte,
             flags: f,
         };
+        written += 1;
     }
 
     // The copy read live DMA memory: if the writer lapped past the batch
@@ -161,8 +184,8 @@ pub fn drain_batch(out: &mut [ByteRecord]) -> Result<usize, DesyncCause> {
         ptr::write_volatile(PREV_WAS_BOUNDARY.get(), prev_boundary);
         ptr::write_volatile(ANCHORED.get(), anchored);
     }
-    TAIL.store(tail0.wrapping_add(n as u32), Ordering::Release);
-    Ok(n)
+    TAIL.store(tail0.wrapping_add(consumed), Ordering::Release);
+    Ok(written)
 }
 
 pub(super) fn reset_to(rx_total: u32) {

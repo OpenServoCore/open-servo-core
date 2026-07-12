@@ -25,6 +25,10 @@
 //!       `STATUS <baud> <avail> <desynced> <cause> <last_tick>`. Always
 //!       responds — even mid-desync — so the host has a one-shot health
 //!       probe.
+//!   `BDIAG`
+//!       Boundary-recorder health: `BDIAG <services> <records> <head>
+//!       <tail> <statr> <ctlr1> <ctlr2>` (registers raw decimal).
+//!       Bypasses the desync guard; counters run from boot.
 //!   `RESET`
 //!       Clear the desync flag and drop undrained capture state. Keeps
 //!       baud. The routine recovery for a desync.
@@ -107,6 +111,15 @@ pub enum Reply {
         pipe: u32,
         bit_q4: u32,
     },
+    Diag {
+        services: u32,
+        records: u32,
+        head: u32,
+        tail: u32,
+        statr: u32,
+        ctlr1: u32,
+        ctlr2: u32,
+    },
 }
 
 pub struct BatchRequest {
@@ -154,6 +167,18 @@ pub fn handle_line(line: &[u8]) -> Reply {
     }
     if let Some(rest) = line.strip_prefix("COMP ") {
         return comp(rest);
+    }
+    if line == "BDIAG" {
+        let (services, records, head, tail, statr, ctlr1, ctlr2) = rx::boundary_diag();
+        return Reply::Diag {
+            services,
+            records,
+            head,
+            tail,
+            statr,
+            ctlr1,
+            ctlr2,
+        };
     }
 
     if let Some(cause) = rx::desync_cause() {

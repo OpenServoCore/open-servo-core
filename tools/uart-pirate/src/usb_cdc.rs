@@ -145,7 +145,7 @@ async fn send_reply<'d>(
     class: &mut CdcAcmClass<'d, Driver<'d>>,
     reply: Reply,
 ) -> Result<(), EndpointError> {
-    let mut out: Vec<u8, 64> = Vec::new();
+    let mut out: Vec<u8, 96> = Vec::new();
     match reply {
         Reply::Ok => {
             let _ = out.extend_from_slice(b"OK\n");
@@ -169,13 +169,35 @@ async fn send_reply<'d>(
             last_tick,
         } => write_status(&mut out, baud, avail, cause, last_tick),
         Reply::Comp { pipe, bit_q4 } => write_comp(&mut out, pipe, bit_q4),
+        Reply::Diag {
+            services,
+            records,
+            head,
+            tail,
+            statr,
+            ctlr1,
+            ctlr2,
+        } => {
+            let _ = out.extend_from_slice(b"BDIAG ");
+            for v in [services, records, head, tail, statr, ctlr1, ctlr2] {
+                push_dec_u32(&mut out, v);
+                let _ = out.push(b' ');
+            }
+            let _ = out.pop();
+            let _ = out.push(b'\n');
+        }
     }
     debug_assert!(out.len() <= out.capacity());
-    class.write_packet(&out).await
+    // A reply line can exceed one bulk packet (BDIAG); an oversized
+    // write_packet hangs the EP, so chunk at the packet size.
+    for chunk in out.chunks(CDC_BULK_PACKET as usize) {
+        class.write_packet(chunk).await?;
+    }
+    Ok(())
 }
 
 fn write_status(
-    out: &mut Vec<u8, 64>,
+    out: &mut Vec<u8, 96>,
     baud: u32,
     avail: u32,
     cause: Option<rx::DesyncCause>,
@@ -198,7 +220,7 @@ fn write_status(
     let _ = out.push(b'\n');
 }
 
-fn write_comp(out: &mut Vec<u8, 64>, pipe: u32, bit_q4: u32) {
+fn write_comp(out: &mut Vec<u8, 96>, pipe: u32, bit_q4: u32) {
     let _ = out.extend_from_slice(b"COMP pipe=");
     push_dec_u32(out, pipe);
     let _ = out.extend_from_slice(b" bit_q4=");
@@ -206,7 +228,7 @@ fn write_comp(out: &mut Vec<u8, 64>, pipe: u32, bit_q4: u32) {
     let _ = out.push(b'\n');
 }
 
-fn write_bstamp(out: &mut Vec<u8, 64>, tick: u32, byte: u8, flags: u8) {
+fn write_bstamp(out: &mut Vec<u8, 96>, tick: u32, byte: u8, flags: u8) {
     let _ = out.extend_from_slice(b"BSTAMP ");
     push_dec_u32(out, tick);
     let _ = out.push(b' ');

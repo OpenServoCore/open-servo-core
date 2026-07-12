@@ -163,26 +163,14 @@ fn mask_and_retire_idle() {
 /// IDLE mid-send (SBK gaps exceed a char time): enabling over a latched
 /// flag would level-pend the vector on the spot, so clear it first —
 /// still under our own drive, same safety proof as
-/// [`mask_and_retire_idle`]. Re-arms the RX-error (boundary) event too:
-/// the callers are the bare-break senders that masked it.
-fn retire_and_enable_rx_events() {
+/// [`mask_and_retire_idle`].
+fn retire_and_enable_idle() {
     critical_section::with(|_| {
         let _ = USART3.statr().read();
         let _ = USART3.datar().read();
         let _ = USART3.statr().read();
         USART3.ctlr1().modify(|w| w.set_idleie(true));
-        USART3.ctlr3().modify(|w| w.set_eie(true));
     });
-}
-
-/// Bare-break senders (BREAK trains, the CAL train) mask the RX-error
-/// event for their span: every mark latches FE with no following byte
-/// to retire it (a storm seed), and the marks' echoes carry nothing the
-/// bench reads back. Frame senders keep it armed — their echo breaks
-/// ARE the boundary stamps. The CS pairs against the vector's own
-/// CTLR3 writer (the storm mask).
-fn mask_boundary_events() {
-    critical_section::with(|_| USART3.ctlr3().modify(|w| w.set_eie(false)));
 }
 
 /// Arm the drive for a scheduled (DMA) send: push-pull now, and a TC
@@ -199,9 +187,6 @@ fn arm_drive_release() {
         w.set_tcie(true);
         w.set_idleie(true);
     });
-    // Heal a storm-masked boundary event: the retire above cleared any
-    // latched flag under our drive, so re-arming here is pend-safe.
-    USART3.ctlr3().modify(|w| w.set_eie(true));
 }
 
 /// Clear TC with a plain all-ones-except-TC write — NEVER a
@@ -259,11 +244,6 @@ fn kick_dma_and_arm_release() {
             w.set_tcie(true);
             w.set_idleie(true);
         });
-        // Heal a storm-masked boundary event. Pend-safe without a
-        // retire: the only flag that can be latched here is the break
-        // echo's own FE, whose service records exactly the boundary the
-        // bench wants (the break is within the attribution window).
-        USART3.ctlr3().modify(|w| w.set_eie(true));
         scheduler::kick_now();
     });
 }
@@ -286,7 +266,18 @@ fn kick_dma() {
 /// glitch the STM32-family USARTs throw when TE+UE land in the same
 /// write.
 fn init_usart3() {
-    USART3.ctlr2().modify(|w| w.set_stop(0b00));
+    USART3.ctlr2().modify(|w| {
+        w.set_stop(0b00);
+        // LIN break detect is the boundary recorder's wake: line-level
+        // (10 dominant bits, LBDL=0), so it sees our own echo breaks —
+        // which frame as valid 9-bit characters under the break TX's
+        // M=1 and never raise FE — exactly as it sees servo SBK breaks.
+        // (EIE/FE is silicon-dead on this die: zero ERR services with
+        // EIE set, 2026-07-12.)
+        w.set_linen(true);
+        w.set_lbdl(false);
+        w.set_lbdie(true);
+    });
     USART3.ctlr1().modify(|w| {
         w.set_m(false);
         w.set_pce(false);
@@ -297,9 +288,6 @@ fn init_usart3() {
     USART3.ctlr3().modify(|w| {
         w.set_dmat(true);
         w.set_dmar(true);
-        // FE/NE/ORE → the USART3 vector: the break-boundary recorder's
-        // wake (rx::boundary). Valid with DMAR per the F103-family IP.
-        w.set_eie(true);
     });
     let brr0 = APB1_HZ / DEFAULT_BAUD;
     USART3.brr().write(|w| w.0 = brr0);
@@ -464,7 +452,6 @@ pub fn send_breaks(count: u32, gap_us: u32) -> Result<(), SendError> {
     wait_tx_complete().map_err(|TxTimeout| SendError::Busy)?;
     pb10_drive(true);
     mask_and_retire_idle();
-    mask_boundary_events();
     for i in 0..count {
         if i != 0 {
             spin_us(gap_us);
@@ -475,23 +462,24 @@ pub fn send_breaks(count: u32, gap_us: u32) -> Result<(), SendError> {
     // Inter-break gaps exceed a char time, so an IDLE latched mid-send
     // is the norm here — retire it before re-enabling, still under our
     // drive.
-    retire_and_enable_rx_events();
+    retire_and_enable_idle();
     pb10_drive(false);
     Ok(())
 }
 
 /// One 10-bit-exact break immediately followed by poll-fed `payload`
-/// bytes — the osc-native host send primitive.
+/// bytes — the osc-native host send primitive, and the PROTOCOL LAW
+/// shape (break = exactly one character time; decided 2026-07-12).
 ///
-/// The break is NOT SBK: CH32 SBK stretches to ~12-14 bit-times with
-/// sync slop (bench-measured on both chips), and a receiver resyncing
-/// inside the stretched low swallows the first data byte (the
-/// historical "01 -> 74" byte-0 loss). Instead the break is one 9-bit
-/// frame of 0x00 (M=1, bit 8 = 0): start + 9 data lows = 10 low
-/// bit-times, then a clean stop — exactly the shape LIN break detection
-/// (LBDL=0) keys on, with a deterministic 1-frame resync point. The M
-/// flip back costs a sub-frame gap at TC that never reaches the
-/// receiver's IDLE threshold.
+/// The break is NOT SBK: CH32 SBK stretches to ~12-14 bit-times, off
+/// the law and outside the timing algebra (footprint models count the
+/// break as 10 bits). Instead the break is one 9-bit frame of 0x00
+/// (M=1, bit 8 = 0): start + 9 data lows = 10 low bit-times, then a
+/// clean stop — exactly the shape LIN break detection (LBDL=0) keys
+/// on. The M flip back costs a sub-frame gap at TC that never reaches
+/// the receiver's IDLE threshold. Our own LBD receiver consumes the
+/// break character (LIN treats it as a delimiter, not data); the drain
+/// re-emits it with the captured tick (`rx::stamp`).
 pub fn send_break_then(payload: &[u8]) -> Result<(), SendError> {
     if payload.is_empty() || payload.len() > BRK_PAYLOAD_MAX {
         return Err(SendError::TooLong);
@@ -512,8 +500,8 @@ pub fn send_break_then(payload: &[u8]) -> Result<(), SendError> {
         USART3.ctlr1().modify(|w| w.set_m(false));
         r?;
         // The payload rides DMA — no CPU in the byte path (see
-        // `kick_dma_and_arm_release`); the ISR/walker releases the
-        // drive at the final stop bit.
+        // `kick_dma_and_arm_release`); the ISR releases the drive at
+        // the final stop bit.
         kick_dma_and_arm_release();
         wait_tx_complete().map_err(|TxTimeout| SendError::Busy)
     })();
@@ -522,9 +510,8 @@ pub fn send_break_then(payload: &[u8]) -> Result<(), SendError> {
     if r.is_err() {
         DMA1.ch(1).cr().modify(|w| w.set_en(false));
     }
-    // Backstop (error paths, desync-frozen walker); benign after the
-    // ISR release — same CFGHR value, and no other pin's config changes
-    // concurrently.
+    // Backstop (error paths); benign after the ISR release — same CFGHR
+    // value, and no other pin's config changes concurrently.
     pb10_drive(false);
     r
 }
@@ -563,7 +550,6 @@ pub fn send_cal(announce: &[u8], gap_us: u32, breaks: u32) -> Result<(), SendErr
     wait_tx_complete().map_err(|TxTimeout| SendError::Busy)?;
     pb10_drive(true);
     mask_and_retire_idle();
-    mask_boundary_events();
     let r = (|| {
         // See send_break_then: CH2 is shared with the scheduled-send path.
         scheduler::cancel();
@@ -605,7 +591,7 @@ pub fn send_cal(announce: &[u8], gap_us: u32, breaks: u32) -> Result<(), SendErr
     // Train gaps exceed a char time, so a latched mid-train IDLE is the
     // norm — retire before re-enabling, still under our drive (see
     // send_breaks).
-    retire_and_enable_rx_events();
+    retire_and_enable_idle();
     pb10_drive(false);
     r
 }

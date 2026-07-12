@@ -67,7 +67,7 @@ pub fn reset() {
     critical_section::with(|_| {
         let rx_total = rings::refresh_rx_total();
         stamp::reset_to(rx_total);
-        boundary::clear();
+        boundary::clear(rx_total);
         desync::clear();
     });
 }
@@ -76,4 +76,20 @@ pub fn reset() {
 /// `set_baud` completes.
 pub fn current_baud() -> u32 {
     APB1_HZ.checked_div(stamp::bit_ticks()).unwrap_or(0)
+}
+
+/// Boundary-recorder health + raw wire-register ground truth for the
+/// `BDIAG` probe: `(services, records, head, tail, statr, ctlr1, ctlr2)`.
+pub fn boundary_diag() -> (u32, u32, u32, u32, u32, u32, u32) {
+    let (services, records, head, tail) = boundary::diag();
+    let usart = ch32_metapac::USART3;
+    (
+        services,
+        records,
+        head,
+        tail,
+        usart.statr().read().0,
+        usart.ctlr1().read().0,
+        usart.ctlr2().read().0,
+    )
 }
