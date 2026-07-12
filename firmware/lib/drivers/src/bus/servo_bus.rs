@@ -288,8 +288,13 @@ impl<P: Providers> ServoBus<P> {
         // ringed bytes FOLLOW the reply's own frame. A pending frame is
         // mid-verdict by definition (its CRC gate reclaims the reply if this
         // break garbled the frame); a Waiting chain expects predecessor
-        // breaks and only suspends its reclaim window (§6).
+        // breaks and only suspends its reclaim window (§6). Broadcast-ENUM
+        // replies are exempt (§9.2): colliding with a peer matcher IS their
+        // contract — a yielded laggard turns the walk's collision signal
+        // into one clean frame and prunes its subtree (task #30). A
+        // CRC-verified fresh instruction still supersedes them (route_frame).
         if self.tx.staged()
+            && !self.tx.collision_tolerant()
             && !self.chain.waiting()
             && self.pending.is_none()
             && !self.framer.caught_up(self.ring.cursor())
@@ -927,6 +932,9 @@ impl<P: Providers> ServoBus<P> {
             Decoded::Own(req, ctx, slot) => (req, ctx, slot),
             _ => return None,
         };
+        // §9.2: an ENUM reply's staged wire effect is collision-tolerant —
+        // its job is to collide with peer matchers (the on_break kill site).
+        let tolerant = matches!(req, Request::Enumerate { .. });
         // Disjoint field borrows: `frame`/`req` hold `&self.ring`; the handle
         // takes the reply-staging fields mutably.
         let mut handle = ReplyHandle {
@@ -941,7 +949,11 @@ impl<P: Providers> ServoBus<P> {
             staged: false,
         };
         let out = f(req, ctx, &mut handle);
-        Some((handle.staged, slot, out))
+        let staged = handle.staged;
+        if staged && tolerant {
+            self.tx.mark_collision_tolerant();
+        }
+        Some((staged, slot, out))
     }
 
     /// A reply surface over the deferred-config fields, with no request decode —

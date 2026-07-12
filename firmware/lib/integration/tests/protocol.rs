@@ -8,7 +8,9 @@ use osc_core::regions::config::addr::comms::{BAUD_RATE_IDX, ID};
 use osc_core::regions::control::addr::lifecycle::TORQUE_ENABLE;
 use osc_core::regions::profile::span_word;
 use osc_core::regions::{CALIB_BASE_ADDR, PROFILE_BASE_ADDR};
-use osc_integration::sim::{Sim, Source, WireFrame, assert_valid, instruction, status};
+use osc_integration::sim::{
+    HandlerCost, Sim, Source, WireFrame, assert_valid, instruction, status,
+};
 use osc_protocol::wire::{Id, Inst, MgmtOp, Opcode, ResultCode};
 use rstest::rstest;
 use rstest_reuse::apply;
@@ -321,6 +323,80 @@ fn mgmt_enum_empty_prefix_is_the_tree_root(baud_idx: u8) {
     let (inst, payload) = status(sole_reply(&frames));
     assert_eq!(inst.result(), Some(ResultCode::Ok));
     assert_eq!(payload, sim.servo_uid(s));
+}
+
+/// §9.2: a staged ENUM reply is collision-tolerant — a peer's break landing
+/// in its reply gap (exactly the transport's staged-reply-kill evidence)
+/// must not silence it. Pre-#30 the kill made the laggard of two matchers
+/// yield, the wire carried one clean frame, and the walk pruned the
+/// laggard's subtree.
+#[apply(matrix)]
+fn mgmt_enum_reply_survives_a_peer_break_in_the_reply_gap(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
+    let s = sim.add_servo(ID5);
+
+    sim.host_send(&instruction(BROADCAST, Opcode::Mgmt, 0, &enum_args(0, &[])));
+    // The instruction's wire end: a 14-bit break + 7 data bytes (8-byte ring
+    // image). A stray break dropped 6 µs later sits inside the stage→trigger
+    // window at every baud: the frozen packet-end estimate is late by under
+    // a byte-time, and the trigger rides 12 µs behind it.
+    let hz = BaudRate::from_idx(baud_idx).unwrap().as_hz() as u64;
+    let end_us = (14 + 7 * 10) * 1_000_000 / hz;
+    sim.inject_break_at(end_us + 6);
+    let frames = sim.run();
+
+    let (inst, payload) = status(sole_reply(&frames));
+    assert_eq!(inst.result(), Some(ResultCode::Ok));
+    assert_eq!(
+        payload,
+        sim.servo_uid(s),
+        "the reply survived the peer break"
+    );
+}
+
+/// Two matchers, one trigger lagging past the leader's break (the handler
+/// cost stands in for the silicon's dispatch-latency spread): the wire must
+/// carry the collision — never one clean frame with the laggard silent
+/// (§9.2 "garbage IS the collision signal"; the #30 yield hid id 1 from
+/// 65% of fleet walks at 1M).
+#[test_log::test]
+fn mgmt_enum_two_matchers_collide_never_one_clean_frame() {
+    let mut sim = sim(1); // 1M
+    let a = sim.add_servo(ID5);
+    let b = sim.add_servo(6);
+    let mut uid_a = [0u8; 16];
+    uid_a[0] = 0x03;
+    uid_a[1] = 0xAA;
+    let mut uid_b = [0u8; 16];
+    uid_b[0] = 0x03;
+    uid_b[1] = 0xBB;
+    sim.seed_servo_uid(a, uid_a);
+    sim.seed_servo_uid(b, uid_b);
+    // The laggard's deadline bodies cost 30 µs: its trigger pends past the
+    // leader's whole break and fires mid-frame.
+    sim.set_handler_cost(
+        b,
+        HandlerCost {
+            on_deadline_us: 30,
+            ..Default::default()
+        },
+    );
+
+    // Both UIDs begin 0x03 — an 8-bit prefix both match.
+    sim.host_send(&instruction(
+        BROADCAST,
+        Opcode::Mgmt,
+        0,
+        &enum_args(8, &[0x03]),
+    ));
+    let frames = sim.run();
+
+    let replies = servo_frames(&frames);
+    assert!(!replies.is_empty(), "the laggard must not yield silently");
+    assert!(
+        replies.iter().all(|f| f.collided),
+        "two matchers → colliding energy on the wire, never a clean lone frame: {replies:#?}"
+    );
 }
 
 #[apply(matrix)]

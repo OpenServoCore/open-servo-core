@@ -608,7 +608,11 @@ are garbage — and garbage _is_ the collision signal:
   prefix replies `OK` with its full 16-byte UID; everyone else stays
   silent. Mismatches and malformed queries draw no reply on the broadcast
   wire — a nack storm is the one reply a broadcast must never produce
-  (unicast keeps the §5.3 layer-2 `instruction` verdict). Host algorithm:
+  (unicast keeps the §5.3 layer-2 `instruction` verdict). Because colliding
+  IS a matcher's contract, a staged ENUM reply is exempt from any
+  transport wire-safety kill a peer matcher's leading reply-break would
+  trigger — a yielded laggard turns the collision into one clean frame
+  and hides its whole subtree from the walk. Host algorithm:
   clean reply → unique match; garbled/CRC-fail → collision, descend the
   prefix tree one bit and retry; timeout → empty subtree. O(bits · N)
   exchanges, boot-time only.

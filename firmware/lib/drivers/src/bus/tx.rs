@@ -45,8 +45,16 @@ const NO_ARM: Arm = Arm::Buf { off: 0, len: 0 };
 
 enum State {
     Idle,
-    Staged,
-    Streaming { next: u8 },
+    /// `tolerant`: the staged reply may collide with a peer's traffic —
+    /// broadcast-ENUM replies' §9.2 job is to collide, so the composite's
+    /// break-wake kill skips them (a yielded matcher reads back as one clean
+    /// frame and hides its subtree from the walk).
+    Staged {
+        tolerant: bool,
+    },
+    Streaming {
+        next: u8,
+    },
 }
 
 pub struct TxEngine<W: TxWire> {
@@ -95,7 +103,20 @@ impl<W: TxWire> TxEngine<W> {
     /// A frame is staged but not yet triggered — safe to abort (a fresh
     /// instruction supersedes it). Streaming frames must not be aborted.
     pub fn staged(&self) -> bool {
-        matches!(self.state, State::Staged)
+        matches!(self.state, State::Staged { .. })
+    }
+
+    /// The staged reply is exempt from the break-wake kill (§9.2 ENUM).
+    pub fn collision_tolerant(&self) -> bool {
+        matches!(self.state, State::Staged { tolerant: true })
+    }
+
+    /// Mark the staged reply collision-tolerant (§9.2: an ENUM reply's job
+    /// is to collide with peer matchers). No-op unless a frame is staged.
+    pub fn mark_collision_tolerant(&mut self) {
+        if let State::Staged { tolerant } = &mut self.state {
+            *tolerant = true;
+        }
     }
 
     /// Arms are on the wire — the servo owns the line until the final TC.
@@ -227,7 +248,7 @@ impl<W: TxWire> TxEngine<W> {
         self.buf.bytes_mut()[off..off + 2].copy_from_slice(&[0, 0]);
         self.result = result;
         self.alert = alert;
-        self.state = State::Staged;
+        self.state = State::Staged { tolerant: false };
         Ok(())
     }
 
@@ -237,7 +258,7 @@ impl<W: TxWire> TxEngine<W> {
     /// boundary before its own trailing arm ([`on_arm_complete`]) — the wire
     /// starts before the CRC is known so the engine chews in parallel (§4.2).
     pub fn trigger<C: CrcEngine>(&mut self, crc: &mut C, over: Option<ResultCode>) {
-        if !matches!(self.state, State::Staged) {
+        if !matches!(self.state, State::Staged { .. }) {
             debug_assert!(false, "trigger without a staged frame");
             return;
         }

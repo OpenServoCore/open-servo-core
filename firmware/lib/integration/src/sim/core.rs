@@ -136,6 +136,7 @@ struct PendingFrame {
     end: u64,
     talker: Talker,
     bytes: Vec<u8>,
+    collided: bool,
 }
 
 pub struct Core {
@@ -197,12 +198,22 @@ impl Core {
     // --- wire drive discipline (§2, F8) -----------------------------------
 
     /// Claim the wire for `talker` over `[start, end)`. A different talker
-    /// overlapping an existing claim is the reply gap regression — panic loudly.
+    /// overlapping an existing claim is the reply gap regression — panic
+    /// loudly — EXCEPT servo-vs-servo: simultaneous ENUM matchers collide by
+    /// §9.2 contract ("garbage IS the collision signal"), so that overlap is
+    /// recorded on the live frame instead. Host overlap stays the F8 panic.
     pub fn claim(&mut self, talker: Talker, start: u64, end: u64) {
         if let Some((owner, owner_end)) = self.busy
             && owner != talker
             && start < owner_end
         {
+            if matches!(owner, Talker::Servo(_)) && matches!(talker, Talker::Servo(_)) {
+                if let Some(p) = self.pending.as_mut() {
+                    p.collided = true;
+                }
+                self.busy = Some((owner, owner_end.max(end)));
+                return;
+            }
             panic!(
                 "drive discipline (F8): {talker:?} claims the wire at t={start} \
                  while {owner:?} holds it until t={owner_end}"
@@ -218,10 +229,18 @@ impl Core {
     // --- wire recorder ----------------------------------------------------
 
     /// Begin the frame a break opens; its ring image starts with the 0x00
-    /// break byte (§3.2 prefix). Overlap here means the wire model let two
-    /// frames coexist — a harness invariant break.
+    /// break byte (§3.2 prefix). A servo break landing inside another
+    /// servo's frame is the sanctioned §9.2 collision: fold it into the live
+    /// frame's record — the wire carries one span of colliding energy, not
+    /// two frames. Any host-involved overlap is a harness invariant break.
     pub fn begin_frame(&mut self, at: u64, talker: Talker) {
-        if let Some(p) = &self.pending {
+        if let Some(p) = self.pending.as_mut() {
+            if matches!(p.talker, Talker::Servo(_)) && matches!(talker, Talker::Servo(_)) {
+                p.collided = true;
+                p.bytes.push(0x00);
+                p.end = self.now;
+                return;
+            }
             panic!(
                 "wire recorder: frame began mid-frame — pending at={} end={} talker={:?} bytes={:02X?} new_at={} now={}",
                 p.at, p.end, p.talker, p.bytes, at, self.now
@@ -232,6 +251,7 @@ impl Core {
             end: self.now,
             talker,
             bytes: vec![0x00],
+            collided: false,
         });
     }
 
@@ -256,6 +276,7 @@ impl Core {
             end: p.end,
             from,
             bytes: p.bytes,
+            collided: p.collided,
         });
     }
 

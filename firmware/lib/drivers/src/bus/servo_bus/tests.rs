@@ -452,6 +452,55 @@ fn s11_break_after_covered_kills_staged_reply() {
     assert_eq!(&data[..2], &[0x34, 0x12]);
 }
 
+/// §9.2 exemption to s11's wire-safety kill: a broadcast-ENUM reply's job is
+/// to collide — a peer matcher's leading break (its 0x00 ringing right
+/// behind our frame, exactly the s11 kill evidence) must NOT kill the staged
+/// reply, or the wire carries one clean frame, the walk records a unique
+/// match, and the laggard's whole subtree goes invisible (task #30).
+#[test]
+fn enum_reply_survives_a_peer_matchers_break() {
+    let h = Harness::new();
+    let mut bus = h.build(ID, RATE, 60);
+    let shared = shared_seeded();
+    let mut session = Session::new();
+    let mut d = session.dispatcher(&shared);
+
+    // Broadcast ENUM, empty prefix: every servo matches (the tree root).
+    // Verdict-first, so the reply stages at the frame end with its trigger
+    // armed one reply gap out.
+    let frame = instruction(
+        Id::BROADCAST.as_byte(),
+        Opcode::Mgmt,
+        0,
+        &[MgmtOp::Enum as u8, 0],
+    );
+    let end = deliver(&mut bus, &h, 100, &frame, 1000, &mut d);
+    assert!(!h.wire.started(), "reply staged, trigger one reply gap out");
+
+    // The peer matcher's break lands inside the reply gap.
+    let m = 300usize; // ring[m] defaults to 0x00 → a real break
+    h.deadline.set_now(end + 2);
+    h.ring.set_cursor(((m + 1) % RING_LEN) as u16);
+    bus.on_break(&mut d);
+
+    // The staged reply survives and fires — colliding energy on a real
+    // wire, the signal the walk descends on.
+    let mut guard = 0;
+    while !h.wire.started() && h.deadline.armed().is_some() && guard < 8 {
+        fire(&mut bus, &h, &mut d);
+        guard += 1;
+    }
+    assert!(
+        h.wire.started(),
+        "the ENUM reply must not yield to the break"
+    );
+    drain_tx(&mut bus, &h);
+    let (id, inst, data) = last_reply(&h.wire);
+    assert_eq!(id, ID);
+    assert_eq!(inst.result(), Some(ResultCode::Ok));
+    assert_eq!(data.len(), 16, "the full UID ships");
+}
+
 #[test]
 fn s13_frontier_write_stages_at_covered_commits_at_verdict() {
     // A WRITE dispatches inline at covered-complete (the spine: the CRC feed

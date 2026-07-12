@@ -287,7 +287,8 @@ A1 originally kept one timestamp — the newest break-wake delivery tick —
 as the frontier frame's clock anchor. DELETED (ring-cadence band,
 2026-07-09): the wake now carries neither position (A2) nor time; it is
 a pure wake, and its handler does only the bounded wire work
-(staged-reply kill, chain suspend). Every aim
+(staged-reply kill — from which broadcast-ENUM replies are exempt, §9.2:
+colliding is their contract — and chain suspend). Every aim
 and estimate is instead projected from live ring state at each resolve:
 
 ```

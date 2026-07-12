@@ -57,6 +57,9 @@ pub struct WireFrame {
     pub from: Source,
     /// The ring image: 0x00 break byte, then ID..CRC.
     pub bytes: Vec<u8>,
+    /// Another servo transmitted into this frame (§9.2 ENUM collision):
+    /// `bytes` interleaves both talkers' spans — garbage, as on the wire.
+    pub collided: bool,
 }
 
 pub struct Sim {
