@@ -549,9 +549,10 @@ has the truth (it owns the crystal — the syntonization tree's root):
   breaks spaced exactly T µs; the servo stamps `deadline.now()` at each
   break-FE entry, gates each gap at |Δ−T| ≤ T/16, and trims off the sum.
   Entry latency cancels same-flavor; ~±260 ppm from 8 × 400 µs gaps.
-  Fired at boot and at host-known events, not on a timer. Break decode is
-  threshold-free across the full HSITRIM throw, so CAL also rescues a
-  railed servo.
+  Fired at boot (≥2 trains — the first identifies the chip's step
+  effect, §9.3 boot guidance) and at host-known events, not on a timer.
+  Break decode is threshold-free across the full HSITRIM throw, so CAL
+  also rescues a railed servo.
 - **Differential, continuously — chain pairs.** Break-FE stamps of
   adjacent host instructions (GWRITE→COMMIT seams):
   `err = measured − footprint·tpb = seam + drift·span`. The host's

@@ -639,9 +639,20 @@ Both feed the oscillator-trim loop (`steps = round(err/step_effect)`,
 clamped ±4/decision; step effect self-measured — chip trim steps are
 nonuniform, 1.4–3.2 k ppm/step measured), applied by the main loop
 between frames; the total is readable at `telemetry.clock.trim_steps`.
-Volatile by design: the host CALs at boot (~4 ms of bus) and at moments
-it knows its own behavior changed — not on a timer; the tracker holds the
-fleet through everything between.
+Volatile by design: the host CALs at boot (~4 ms of bus per train) and at
+moments it knows its own behavior changed — not on a timer; the tracker
+holds the fleet through everything between.
+
+**Boot guidance: send at least two trains.** Full convergence is a
+two-point identification, not a precision problem: the first train's
+correction divides by the seeded nominal step effect, and a chip's true
+ppm-per-step is only knowable from the apply→remeasure pair — so chips
+whose steps are weaker than nominal land one step short on the first
+train and finish on the second (fleet bringup 2026-07-11: three chips
+took −2 then a −1 refinement, then held). Longer trains cannot buy this
+back (train noise ~±260 ppm is already a tenth of the smallest step);
+more trains can. Converged = `trim_steps` read-back stable between
+trains; two suffice in practice, a third confirms.
 
 ### 9.4 Config persistence (SAVE)
 
