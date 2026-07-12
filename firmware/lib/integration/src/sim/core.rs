@@ -52,19 +52,34 @@ pub enum Talker {
 
 /// A scheduled wire/servo event. Ordered by `(time, seq)` for FIFO tie-breaks.
 pub enum Event {
-    /// Break FE point: ring one byte at every listener and fire `on_break`.
-    /// `break_start` is the recorded frame's `at`; delivery is at break end.
-    WireBreak { talker: Talker, break_start: u64 },
+    /// Break-detect point: ring one byte at every listener and wake the
+    /// receivers whose rate qualifies the span (§3.4: the detector is
+    /// length-qualified — ≥10 of the RECEIVER's bit-times — so a break
+    /// wakes only servos at or above `baud`). `break_start` is the
+    /// recorded frame's `at`; delivery is at break end.
+    WireBreak {
+        talker: Talker,
+        baud: BaudRate,
+        break_start: u64,
+    },
     /// One data byte at its stop-bit sample point. A listener whose baud
-    /// differs from `baud` receives it as garble (ring + `on_break`) instead.
+    /// differs from `baud` rings it garbled and is never woken (§3.4:
+    /// errors don't interrupt; sub-10-bit lows are invisible to the
+    /// detector).
     WireData {
         talker: Talker,
         byte: u8,
         baud: BaudRate,
     },
-    /// A lone framing-error byte, no frame around it (§ line noise, F4).
+    /// A lone noise byte, no frame around it (line noise, F4): rings, never
+    /// wakes.
     WireGarble { byte: u8 },
-    /// A rescue pulse's FE point: one FE at every servo, line still low (§9.1).
+    /// Test-injected foreign break dropped into another talker's window:
+    /// rings a 0x00 and wakes qualified receivers, invisible to the frame
+    /// recorder (noise, not traffic).
+    StrayBreak { baud: BaudRate },
+    /// A rescue pulse's detect point: a ≥300 µs dominant span qualifies at
+    /// every rate — one break wake at every servo, line still low (§9.1).
     RescuePulse,
     /// The host's frame drained — finalize the recorded frame.
     HostFrameEnd,
@@ -75,13 +90,10 @@ pub enum Event {
     /// becomes `ppm` here, continuously — re-anchored, the reading never
     /// steps (thermal drift as the tracker sees it).
     SkewChange { servo: usize, ppm: i32 },
-    /// A latched wire fault re-fires after its wake gate reopened (§6 A4
-    /// level-pend model); delivered only if still latched with the wake on.
-    FaultPend { servo: usize },
-    /// Test-injected latched-flag re-fire: the fault vector re-enters with
-    /// NO new wire byte (the level-pend hardware's hardest trick, and the
-    /// fault contract's reason to exist). Wake-gated like any fault.
-    FaultRefire { servo: usize },
+    /// Test-injected spurious wake: the break vector re-enters with NO new
+    /// wire byte (a coalesced or lagged break service — §3.4's reason to
+    /// demand idempotence).
+    WakeRefire { servo: usize },
     /// A servo TX DMA arm completed — drive `on_tx_complete`.
     TxArmDone { servo: usize },
     /// A servo's handler body ended (`super::cpu`): deliver one pended vector.

@@ -121,20 +121,10 @@ impl bus::TxWire for TxWire {
     }
 
     fn release(&mut self) {
-        // Retire any latched RX error flag before handing the wire back:
-        // the shifter is empty and the RX input still sits at forced mark
-        // (direct: our push-pull drive holds the line high; buffered: the
-        // receive path is muted and the RX pull-up holds the pin), so no
-        // byte can be mid-reception — the one provably safe instant for the
-        // clear's DATAR read (a DATAR read during reception kills the
-        // in-flight byte, bench 2026-07-09). A flag whose byte drained
-        // before any STATR read never completed the SR-then-DR pair, and
-        // with no further RX drains coming it storms the vector once the
-        // wire idles (bench signature: the first ack-bearing exchange after
-        // a hot-loop leg dies). The clear's trailing STATR read re-arms the
-        // drain-self-clear pairing, so running it unconditionally costs the
-        // next break nothing (see `clear_rx_errors`).
-        usart::clear_rx_errors(USART1);
+        // No flag hygiene on the way out (§6 A4): FE/NE/ORE have no
+        // interrupt enable, so whatever latched during our TX window is
+        // inert — the release-point SR-DR-SR retire died with the storm
+        // apparatus (2026-07-12).
         self.release_wire();
         usart::set_tc_irq(USART1, false);
         usart::set_dma_tx(USART1, false);

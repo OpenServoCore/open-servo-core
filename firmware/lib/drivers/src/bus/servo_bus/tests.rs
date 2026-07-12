@@ -745,53 +745,37 @@ fn break_service_before_drain_rechecks_and_answers() {
     assert_eq!(inst.result(), Some(ResultCode::Ok));
 }
 
-/// §6 A4 storm throttle: a zero-progress fault service mutes the fault wake
-/// (the latched flag would otherwise re-enter the vector continuously), the
-/// deadline slot polls the ring at FAULT_MUTE_POLL_BYTE_TIMES while quiet,
-/// and ring progress restores the wake and resolves in the same wake.
+/// §3.4 spurious wake (a coalesced or lagged break service — the FE-era
+/// level-pend re-fires produced the same shape): a wake with zero ring
+/// progress arms only the one-byte-time recheck, and evidence landing
+/// within that byte-time resolves by data — live traffic never pays for
+/// the spurious entry (bench 2026-07-11: an eager verdict here cost hot
+/// chains 95%→83%).
 #[test]
-fn zero_progress_fault_mutes_wake_until_ring_progress() {
+fn spurious_wake_arms_recheck_and_resolves_by_data() {
     let h = Harness::new();
     let mut bus = h.build(ID, RATE, 60);
     let shared = shared_seeded();
     let mut session = Session::new();
     let mut d = session.dispatcher(&shared);
-    let poll = super::FAULT_MUTE_POLL_BYTE_TIMES * TPB;
 
     let anchor = 100usize;
     bus.framer.resync(anchor as u16);
     h.deadline.set_now(1000);
     h.ring.set_cursor(anchor as u16);
-    assert!(h.line.fault_wake());
+    // Spurious entry: zero progress at service time — the only trace is
+    // the one-byte-time recheck.
     bus.on_break(&mut d);
-    // Recorded, not yet muted: the recheck delivers the verdict — muting at
-    // the fault service misfires on the routine mid-burst latch.
-    assert!(h.line.fault_wake(), "fault service records, recheck mutes");
     assert_eq!(h.deadline.armed(), Some(1000 + TPB));
 
-    // Recheck finds nothing: the wire is provably quiet — mute and fall
-    // back to the poll cadence.
-    h.deadline.set_now(1000 + TPB);
-    bus.on_deadline(&mut d);
-    assert!(!h.line.fault_wake(), "quiet recheck mutes");
-    assert_eq!(h.deadline.armed(), Some(1000 + TPB + poll));
-
-    // Quiet poll: still muted, next poll one cadence out.
-    h.deadline.set_now(1000 + TPB + poll);
-    bus.on_deadline(&mut d);
-    assert!(!h.line.fault_wake());
-    assert_eq!(h.deadline.armed(), Some(1000 + TPB + 2 * poll));
-
-    // A whole ping rings before the next poll (its break FE never woke us —
-    // the wake is muted): the poll's progress check restores the wake and
-    // the same wake resolves the frame from ring data.
+    // The next frame's bytes land before the recheck (zero-gap burst): the
+    // recheck resolves the frame from ring data.
     let frame = instruction(ID, Opcode::Ping, 0, &[]);
     h.ring.place(anchor, &frame);
     h.ring
         .set_cursor(((anchor + frame.len()) % RING_LEN) as u16);
-    h.deadline.set_now(1000 + TPB + 2 * poll);
+    h.deadline.set_now(1000 + TPB);
     bus.on_deadline(&mut d);
-    assert!(h.line.fault_wake(), "ring progress restores the wake");
 
     fire(&mut bus, &h, &mut d);
     drain_tx(&mut bus, &h);
@@ -800,13 +784,12 @@ fn zero_progress_fault_mutes_wake_until_ring_progress() {
     assert_eq!(inst.result(), Some(ResultCode::Ok));
 }
 
-/// §6 A4 burst corner (bench 2026-07-11: hot chains fell 95%→83% when the
-/// fault service muted directly): a zero-progress fault service whose
-/// evidence arrives within the byte-time must NEVER drop the wake — the
-/// recheck sees the progress, resolves by data, and live breaks keep
-/// waking the driver.
+/// The quiet twin: a spurious wake on a genuinely idle wire costs exactly
+/// one empty recheck — after it, no deadline is armed at all (the next
+/// break wakes the driver; there is no wake to mute and no poll to keep
+/// alive, §6 A4 deletion).
 #[test]
-fn mid_burst_latched_fault_never_mutes() {
+fn spurious_wake_on_quiet_wire_costs_one_recheck() {
     let h = Harness::new();
     let mut bus = h.build(ID, RATE, 60);
     let shared = shared_seeded();
@@ -817,82 +800,10 @@ fn mid_burst_latched_fault_never_mutes() {
     bus.framer.resync(anchor as u16);
     h.deadline.set_now(1000);
     h.ring.set_cursor(anchor as u16);
-    // Lagged-FE re-entry: zero progress at service time.
     bus.on_break(&mut d);
-    assert!(h.line.fault_wake());
+    assert_eq!(h.deadline.armed(), Some(1000 + TPB));
 
-    // The next frame's bytes land before the recheck (zero-gap burst).
-    let frame = instruction(ID, Opcode::Ping, 0, &[]);
-    h.ring.place(anchor, &frame);
-    h.ring
-        .set_cursor(((anchor + frame.len()) % RING_LEN) as u16);
     h.deadline.set_now(1000 + TPB);
     bus.on_deadline(&mut d);
-    assert!(
-        h.line.fault_wake(),
-        "progress at the recheck keeps the wake"
-    );
-
-    fire(&mut bus, &h, &mut d);
-    drain_tx(&mut bus, &h);
-    let (id, inst, _) = last_reply(&h.wire);
-    assert_eq!(id, ID);
-    assert_eq!(inst.result(), Some(ResultCode::Ok));
-}
-
-/// §6 A4 × §9.1: a rescue pulse landing while the wake is muted delivers no
-/// FE wake, so the poll's line-low mirror must arm the confirm — and the
-/// sub-100 µs polls must not push a pending confirm out (the `rescue_at`
-/// gate). The confirm chain then applies the 0.5 M rescue rate under the
-/// mute, and the poll keeps running at the new byte-time.
-#[test]
-fn rescue_pulse_while_muted_confirms_via_poll() {
-    let h = Harness::new();
-    let mut bus = h.build(ID, RATE, 60);
-    let shared = shared_seeded();
-    let mut session = Session::new();
-    let mut d = session.dispatcher(&shared);
-    let poll = super::FAULT_MUTE_POLL_BYTE_TIMES * TPB;
-
-    let anchor = 100usize;
-    bus.framer.resync(anchor as u16);
-    h.deadline.set_now(1000);
-    h.ring.set_cursor(anchor as u16);
-    bus.on_break(&mut d);
-    h.deadline.set_now(1000 + TPB);
-    bus.on_deadline(&mut d);
-    assert!(!h.line.fault_wake());
-    let poll1 = 1000 + TPB + poll;
-
-    // Pulse start: the FE latches silently; the poll sees the low line and
-    // arms the +100 µs confirm.
-    h.line.set_low(true);
-    h.deadline.set_now(poll1);
-    bus.on_deadline(&mut d);
-    let confirm = poll1 + 100; // RESCUE_CONFIRM_US × test TICKS_PER_US(1)
-    assert_eq!(h.deadline.armed(), Some(poll1 + poll), "poll fires first");
-
-    // The next poll must NOT re-arm (and so push out) the pending confirm.
-    h.deadline.set_now(poll1 + poll);
-    bus.on_deadline(&mut d);
-    assert_eq!(h.deadline.armed(), Some(confirm));
-
-    // Confirm sample 1 (cursor frozen, line low) → reconfirm a byte-time on.
-    h.deadline.set_now(confirm);
-    bus.on_deadline(&mut d);
-    let reconfirm = h.deadline.armed().expect("reconfirm armed");
-    h.deadline.set_now(reconfirm);
-    bus.on_deadline(&mut d);
-    assert_eq!(h.baud.applied().last(), Some(&BaudRate::B500000));
-    assert!(!h.line.fault_wake(), "rescue applies under the mute");
-
-    // Pulse released; host bytes at the rescue rate ring. The poll — now on
-    // 0.5 M byte-times — sees progress and restores the wake.
-    h.line.set_low(false);
-    h.ring.place(anchor, &[0x00]);
-    h.ring.set_cursor((anchor as u16) + 1);
-    let next = h.deadline.armed().expect("poll re-armed post-rescue");
-    h.deadline.set_now(next);
-    bus.on_deadline(&mut d);
-    assert!(h.line.fault_wake());
+    assert_eq!(h.deadline.armed(), None, "idle again: nothing to poll");
 }

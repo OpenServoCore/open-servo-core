@@ -248,21 +248,18 @@ impl UsartBaud for FakeBaud {
     }
 }
 
-/// Settable bus-line level for rescue-break confirmation, plus the recorded
-/// wire-fault wake gate (§6 A4).
+/// Settable bus-line level for rescue-break confirmation.
 #[derive(Clone)]
 pub struct FakeLine(Rc<FakeLineState>);
 
 struct FakeLineState {
     low: Cell<bool>,
-    fault_wake: Cell<bool>,
 }
 
 impl Default for FakeLine {
     fn default() -> Self {
         Self(Rc::new(FakeLineState {
             low: Cell::new(false),
-            fault_wake: Cell::new(true),
         }))
     }
 }
@@ -275,19 +272,11 @@ impl FakeLine {
     pub fn set_low(&self, low: bool) {
         self.0.low.set(low);
     }
-
-    pub fn fault_wake(&self) -> bool {
-        self.0.fault_wake.get()
-    }
 }
 
 impl LineSense for FakeLine {
     fn is_low(&self) -> bool {
         self.0.low.get()
-    }
-
-    fn set_fault_wake(&mut self, on: bool) {
-        self.0.fault_wake.set(on);
     }
 }
 

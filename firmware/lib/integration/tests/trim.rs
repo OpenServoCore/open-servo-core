@@ -356,9 +356,9 @@ fn tracker_survives_latched_refires_between_frames() {
         for _ in 0..bursts {
             for k in 0..BURST_FRAMES {
                 sim.host_send_at(t + k * BURST_PERIOD_US, &f);
-                // The latched flag's re-entry, one per seam, just before
-                // the next frame's bytes.
-                sim.inject_fault_refire_at(t + k * BURST_PERIOD_US + 112, s);
+                // A spurious wake per seam (the FE-era latched re-fire
+                // shape), just before the next frame's bytes.
+                sim.inject_wake_refire_at(t + k * BURST_PERIOD_US + 112, s);
             }
             t += BURST_FRAMES * BURST_PERIOD_US + BURST_SETTLE_US;
         }

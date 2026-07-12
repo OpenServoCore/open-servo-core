@@ -71,16 +71,10 @@ pub trait UsartBaud {
 }
 
 /// Raw line-level sample of the bus pin, for rescue-break confirmation
-/// (§9.1: an ordinary break has risen by FE-ISR entry, a rescue low has not),
-/// plus the wire-fault wake gate (§6 A4 storm throttle).
+/// (§9.1: an ordinary break has risen by wake entry — the detector sets at
+/// bit 10 — a rescue low has not).
 pub trait LineSense {
     fn is_low(&self) -> bool;
-    /// Gate the wire-fault wake (chip: the USART error-IRQ enable). While
-    /// off, faults still latch and their bytes still ring — they just don't
-    /// wake the driver; restoring the wake with a fault latched delivers one
-    /// late wake (level-pend semantics), which the resolver treats as the
-    /// wake it missed.
-    fn set_fault_wake(&mut self, on: bool);
 }
 
 /// Role bundle for the `ServoBus` composite (driver-pattern §5.4).

@@ -172,7 +172,7 @@ fn break_after_covered_cancels_front_loaded_read() {
     // A fresh break dropped into that window preempts the frame and must
     // cancel the staged reply — no phantom read reply.
     sim.host_send_at(0, &instruction(ID5, Opcode::Read, 0, &[0, 0, 4, 0]));
-    sim.inject_garble_at(95, 0x00); // 0x00 FE byte = a break
+    sim.inject_break_at(95); // a stray break dropped into the read's window
 
     let frames = sim.run();
     assert!(
@@ -254,7 +254,7 @@ fn break_preempts_pending_write_then_recovers() {
     let s = sim.add_servo(ID5);
 
     sim.host_send_at(0, &write_gv(ID5, 0x0A0A0A0A));
-    sim.inject_garble_at(115, 0x00); // 0x00 FE = a break, dropped mid-frame
+    sim.inject_break_at(115); // a stray break dropped mid-frame
     let frames = sim.run();
     assert!(servo_frames(&frames).is_empty());
     assert_eq!(
@@ -285,12 +285,13 @@ fn break_preempts_pending_write_then_recovers() {
 #[apply(matrix)]
 fn latched_refires_mid_frame_never_kill_the_trusted_stream(baud_idx: u8) {
     // The fault contract's regression pin (bench 2026-07-11: hot
-    // GWRITE+COMMIT+GREAD chains fell 95%→80%): NOREPLY frames leave FE
-    // flags latched with no reply-release to retire them, so the fault
-    // vector re-enters mid-frame while trusted traffic streams. Those
-    // wakes carry no position and no time; two of them during one frame's
-    // flight must cost NOTHING. (The deleted wire-fault fence recorded
-    // service-time cursors and killed the live frame here.)
+    // GWRITE+COMMIT+GREAD chains fell 95%→80%): spurious break wakes —
+    // coalesced or lagged services; on the FE-era wake, latched-flag
+    // re-fires after NOREPLY frames — land mid-frame while trusted
+    // traffic streams. Those wakes carry no position and no time; two of
+    // them during one frame's flight must cost NOTHING. (The deleted
+    // wire-fault fence recorded service-time cursors and killed the live
+    // frame here.)
     let mut sim = sim(baud_idx);
     let s = sim.add_servo(ID5);
 
@@ -314,8 +315,8 @@ fn latched_refires_mid_frame_never_kill_the_trusted_stream(baud_idx: u8) {
         // Two re-fires inside the frame's wire window: one early (header
         // region), one late (interior) — the old fence needed exactly two
         // progressing services to plant mid-frame and kill.
-        sim.inject_fault_refire_at(at + 2 * bt_us, s);
-        sim.inject_fault_refire_at(at + 6 * bt_us, s);
+        sim.inject_wake_refire_at(at + 2 * bt_us, s);
+        sim.inject_wake_refire_at(at + 6 * bt_us, s);
         let frames = sim.run();
         acks += servo_frames(&frames).len();
     }
@@ -483,4 +484,72 @@ fn short_break_is_not_rescue(baud_idx: u8) {
         sim.servo_table(s, |t| t.config.comms.baud_rate_idx),
         BaudRate::from_idx(baud_idx).expect("valid baud idx")
     );
+}
+
+/// Task #29's wedge, replayed: wrong-baud garble marination alone made a
+/// fleet servo permanently deaf under the FE-era storm throttle (the mute's
+/// restore chain died through a stolen poll link — transport §6 A4 history).
+/// Under the LBD wake there is no mute and nothing to wedge: faster-baud
+/// garble rings silently (zero wakes, §3.4), slower-baud garble wakes into
+/// junk that dies by data, and after one starve horizon of silence the servo
+/// answers at its configured rate.
+#[test]
+fn wrong_baud_marination_never_deafens() {
+    let mut sim = Sim::new(BaudRate::B1000000);
+    let _s = sim.add_servo(ID5);
+
+    // Phase 1: 3M traffic at the 1M servo — sub-10-bit lows, invisible.
+    sim.set_host_baud(BaudRate::B3000000);
+    for _ in 0..25 {
+        sim.host_send(&write_gv(ID5, 0x0A0A0A0A));
+    }
+    sim.run();
+
+    // Phase 2: 0.5M traffic — every foreign break a genuine ≥10-bit low:
+    // the servo wakes into garbled junk, anchors it, and data kills it.
+    sim.set_host_baud(BaudRate::B500000);
+    for _ in 0..25 {
+        sim.host_send(&write_gv(ID5, 0x0A0A0A0A));
+    }
+    sim.run();
+
+    // One starve horizon of bus silence (§3.4 host pacing), then a ping at
+    // the configured rate must answer.
+    sim.set_host_baud(BaudRate::B1000000);
+    let settle = sim.now_us() + 1_000;
+    sim.host_send_at(settle, &instruction(ID5, Opcode::Ping, 0, &[]));
+    let frames = sim.run();
+    let (inst, _) = status(sole_reply(&frames));
+    assert_eq!(inst.result(), Some(ResultCode::Ok));
+}
+
+/// The rescue half of task #29: the wedged fleet was deaf-to-rescue because
+/// both rescue paths sat behind the muted wake. With the wake unmutable, a
+/// rescue pulse into a freshly marinated bus must run the §9.1 confirm chain
+/// and the servo must answer at the 0.5M rescue rate.
+#[test]
+fn rescue_reaches_a_marinated_servo() {
+    let mut sim = Sim::new(BaudRate::B1000000);
+    let _s = sim.add_servo(ID5);
+
+    sim.set_host_baud(BaudRate::B3000000);
+    for _ in 0..25 {
+        sim.host_send(&write_gv(ID5, 0x0A0A0A0A));
+    }
+    sim.run();
+    sim.set_host_baud(BaudRate::B500000);
+    for _ in 0..25 {
+        sim.host_send(&write_gv(ID5, 0x0A0A0A0A));
+    }
+    sim.run();
+
+    let at = sim.now_us() + 1_000;
+    sim.hold_line_low_at(at, 400);
+    sim.run();
+
+    sim.set_host_baud(BaudRate::B500000);
+    sim.host_send_at(at + 2_000, &instruction(ID5, Opcode::Ping, 0, &[]));
+    let frames = sim.run();
+    let (inst, _) = status(sole_reply(&frames));
+    assert_eq!(inst.result(), Some(ResultCode::Ok));
 }

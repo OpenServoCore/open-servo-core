@@ -131,8 +131,8 @@ impl Sim {
         self.cpus[i].cost = cost;
     }
 
-    /// `on_break` invocations delivered to servo `i` — wire FE events minus
-    /// this counts pends that coalesced.
+    /// `on_break` invocations delivered to servo `i` — wire break events
+    /// minus this counts pends that coalesced.
     pub fn delivered_breaks(&self, i: usize) -> u64 {
         self.cpus[i].delivered_breaks()
     }
@@ -198,13 +198,15 @@ impl Sim {
     /// `at_us` spacing model a host whose timer paces the train.
     pub fn host_send_break_at(&mut self, at_us: u64) {
         let start = self.clamp_at(at_us).max(self.host_free_at);
-        let break_end = start + break_ticks(self.rate);
+        let baud = self.rate;
+        let break_end = start + break_ticks(baud);
         let mut c = self.core.borrow_mut();
         c.claim(Talker::Host, start, break_end);
         c.hold_low(start, break_end + 1);
         c.schedule(
             Event::WireBreak {
                 talker: Talker::Host,
+                baud,
                 break_start: start,
             },
             break_end,
@@ -223,18 +225,16 @@ impl Sim {
             .schedule(Event::SkewChange { servo: i, ppm }, at);
     }
 
-    /// Inject a latched-flag re-fire at servo `i`: the fault vector
-    /// re-enters with NO new wire byte. Level-pend hardware does this
-    /// whenever a flag's SR-DR retire pair hasn't formed (routinely, after
-    /// NOREPLY frames — nothing transmits, so nothing retires the flag);
-    /// the fault contract exists because these wakes carry no position and
-    /// no time, and any code deriving either from them kills live frames
-    /// (bench 2026-07-11).
-    pub fn inject_fault_refire_at(&mut self, at_us: u64, i: usize) {
+    /// Inject a spurious break wake at servo `i`: the break vector
+    /// re-enters with NO new wire byte — a coalesced or lagged service
+    /// (§3.4: breaks are not countable events; wakes carry no position and
+    /// no time, and any code deriving either from them kills live frames —
+    /// bench 2026-07-11, the fence; 2026-07-12, the tracker starvation).
+    pub fn inject_wake_refire_at(&mut self, at_us: u64, i: usize) {
         let at = self.clamp_at(at_us);
         self.core
             .borrow_mut()
-            .schedule(Event::FaultRefire { servo: i }, at);
+            .schedule(Event::WakeRefire { servo: i }, at);
     }
 
     /// Queue a host frame whose transmitter stalls mid-frame: bytes
@@ -259,6 +259,7 @@ impl Sim {
         c.schedule(
             Event::WireBreak {
                 talker: Talker::Host,
+                baud,
                 break_start: start,
             },
             break_end,
@@ -285,12 +286,24 @@ impl Sim {
         self.host_free_at = end;
     }
 
-    /// One lone FE byte on the wire, no break framing (line noise, F4).
+    /// One lone noise byte on the wire (line noise, F4): rings at every
+    /// servo, wakes nothing (§3.4 — errors never interrupt).
     pub fn inject_garble_at(&mut self, at_us: u64, b: u8) {
         let at = self.clamp_at(at_us);
         self.core
             .borrow_mut()
             .schedule(Event::WireGarble { byte: b }, at);
+    }
+
+    /// A foreign break dropped onto the wire at `at_us`, bypassing host
+    /// serialization (a break can land inside another talker's window —
+    /// collision, glitch): rings a 0x00 and wakes qualified receivers.
+    pub fn inject_break_at(&mut self, at_us: u64) {
+        let at = self.clamp_at(at_us);
+        let baud = self.rate;
+        self.core
+            .borrow_mut()
+            .schedule(Event::StrayBreak { baud }, at);
     }
 
     /// Rescue pulse: line dominant for `us`, raising one FE at every servo
@@ -300,9 +313,10 @@ impl Sim {
         let dur = us * TICKS_PER_US;
         let mut c = self.core.borrow_mut();
         c.hold_low(start, start + dur);
-        // FE fires ~one break-time in, while the pulse is still dominant.
-        let fe = start + break_ticks(c.host_baud());
-        c.schedule(Event::RescuePulse, fe);
+        // The detector fires at bit 10, ~one break-time in, while the
+        // pulse is still dominant.
+        let at = start + break_ticks(c.host_baud());
+        c.schedule(Event::RescuePulse, at);
     }
 
     pub fn set_host_baud(&mut self, rate: BaudRate) {
@@ -344,6 +358,7 @@ impl Sim {
         c.schedule(
             Event::WireBreak {
                 talker: Talker::Host,
+                baud,
                 break_start: start,
             },
             break_end,
@@ -374,10 +389,12 @@ impl Sim {
         match ev {
             Event::WireBreak {
                 talker,
+                baud,
                 break_start,
-            } => self.deliver_break(talker, break_start),
+            } => self.deliver_break(talker, baud, break_start),
             Event::WireData { talker, byte, baud } => self.deliver_data(talker, byte, baud),
             Event::WireGarble { byte } => self.deliver_garble(byte),
+            Event::StrayBreak { baud } => self.deliver_stray_break(baud),
             Event::RescuePulse => self.deliver_rescue(),
             Event::SkewChange { servo, ppm } => {
                 let now = self.core.borrow().now();
@@ -395,24 +412,7 @@ impl Sim {
             }
             Event::TxArmDone { servo } => self.deliver(servo, Vector::TxDone),
             Event::CpuFree { servo } => self.cpu_free(servo),
-            Event::FaultPend { servo } => {
-                let fw = &self.handles[servo].fault_wake;
-                if fw.wake.get() && fw.latched.replace(false) {
-                    self.deliver(servo, Vector::Break);
-                }
-            }
-            Event::FaultRefire { servo } => self.deliver_fault(servo),
-        }
-    }
-
-    /// Wire-fault wake gate (§6 A4, level-pend model): deliver the FE's
-    /// `on_break` only while servo `j`'s wake is on — otherwise it latches,
-    /// and `set_fault_wake(true)` schedules the late delivery.
-    fn deliver_fault(&mut self, j: usize) {
-        if self.handles[j].fault_wake.wake.get() {
-            self.deliver(j, Vector::Break);
-        } else {
-            self.handles[j].fault_wake.latched.set(true);
+            Event::WakeRefire { servo } => self.deliver(servo, Vector::Break),
         }
     }
 
@@ -468,14 +468,26 @@ impl Sim {
         }
     }
 
-    fn deliver_break(&mut self, talker: Talker, break_start: u64) {
+    fn deliver_break(&mut self, talker: Talker, baud: BaudRate, break_start: u64) {
         self.core.borrow_mut().begin_frame(break_start, talker);
         for j in 0..self.servos.len() {
             if talker == Talker::Servo(j) {
                 continue; // no own-TX echo (F9)
             }
+            self.deliver_break_to(j, baud);
+        }
+    }
+
+    /// Length-qualified break delivery (§3.4): the 10-bit span covers ≥10 of
+    /// the receiver's bit-times only at receivers at or above the talker's
+    /// rate — those decode the all-zeros character and wake. A slower
+    /// receiver hears a sub-character low: compressed junk, no wake.
+    fn deliver_break_to(&mut self, j: usize, baud: BaudRate) {
+        if self.handles[j].baud.current().as_hz() >= baud.as_hz() {
             self.handles[j].ring.push(0x00);
-            self.deliver_fault(j);
+            self.deliver(j, Vector::Break);
+        } else {
+            self.handles[j].ring.push(MISMATCH_GARBLE);
         }
     }
 
@@ -493,9 +505,12 @@ impl Sim {
                 // A baud mismatch garbles both value and framing (§2
                 // approximation): the sampled bits are wrong-rate noise, so
                 // the ringed byte must not survive as valid data at either a
-                // faster or slower receiver.
+                // faster or slower receiver. No wake (§3.4): a data byte's
+                // dominant runs stay under the detector's 10-bit bar in this
+                // model (silicon: rare slower-baud bytes do qualify — leg D
+                // of the lbd_wake spike — but the wake-into-junk exposure is
+                // already carried by the slower talker's breaks).
                 self.handles[j].ring.push(byte ^ MISMATCH_GARBLE);
-                self.deliver_fault(j);
             }
         }
     }
@@ -503,17 +518,23 @@ impl Sim {
     fn deliver_garble(&mut self, byte: u8) {
         for j in 0..self.servos.len() {
             self.handles[j].ring.push(byte);
-            self.deliver_fault(j);
+        }
+    }
+
+    fn deliver_stray_break(&mut self, baud: BaudRate) {
+        for j in 0..self.servos.len() {
+            self.deliver_break_to(j, baud);
         }
     }
 
     fn deliver_rescue(&mut self) {
-        // Baud-agnostic dominant low: every servo takes one FE with the line
-        // still low, so each schedules its rescue recheck (§9.1). No recorded
-        // frame — a rescue pulse is not data.
+        // Baud-agnostic dominant low: a ≥300 µs span qualifies at every
+        // rate, so every servo takes one break wake with the line still low
+        // and schedules its rescue recheck (§9.1). No recorded frame — a
+        // rescue pulse is not data.
         for j in 0..self.servos.len() {
             self.handles[j].ring.push(0x00);
-            self.deliver_fault(j);
+            self.deliver(j, Vector::Break);
         }
     }
 }

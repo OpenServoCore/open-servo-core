@@ -96,10 +96,11 @@ fn handler_cost_defers_delivery_without_loss() {
     assert_eq!(d.framing_drop_count, 0);
 }
 
-/// FE events landing while a body runs pend as ONE flag, not a queue: three
-/// wire FEs against a 500 µs body deliver exactly two `on_break` invocations
-/// (the live one, then one coalesced pend) — the silicon behavior behind the
-/// zero-gap frame loss.
+/// Break wakes landing while a body runs pend as ONE flag, not a queue:
+/// three wire breaks against a 500 µs body deliver exactly two `on_break`
+/// invocations (the live one, then one coalesced pend) — the silicon
+/// behavior behind the zero-gap frame loss, unchanged by the LBD wake
+/// (the flag is still one bit).
 #[test]
 fn pended_breaks_coalesce_like_pfic() {
     let mut sim = Sim::new(BaudRate::B1000000);
@@ -112,16 +113,14 @@ fn pended_breaks_coalesce_like_pfic() {
         },
     );
 
-    // Lone FE bytes (line noise, F4): nonzero, so HUNT ignores them and no
-    // frame machinery muddies the count.
-    sim.inject_garble_at(1_000, 0x5A);
-    sim.inject_garble_at(1_100, 0x5A);
-    sim.inject_garble_at(1_200, 0x5A);
+    sim.inject_break_at(1_000);
+    sim.inject_break_at(1_100);
+    sim.inject_break_at(1_200);
     sim.run();
 
     assert_eq!(
         sim.delivered_breaks(s),
         2,
-        "three wire FEs against a busy body must coalesce to two deliveries"
+        "three wire breaks against a busy body must coalesce to two deliveries"
     );
 }

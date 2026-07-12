@@ -86,38 +86,29 @@ pub fn on_adc_dma_tc() {
     }
 }
 
-/// USART1 vector — break detection (RX framing error) and TX arm completion.
+/// USART1 vector — break detection (LBD) and TX arm completion.
 ///
 /// SAFETY: the bus driver is installed before this vector unmasks, and USART1
 /// shares PFIC HIGH with SysTick, so no concurrent `&mut` into the composite
-/// is possible. Statement ordering is load-bearing: the break handler runs
-/// off the RX-error read, then the TC branch does release work first.
+/// is possible. Statement ordering is load-bearing: one STATR image is taken
+/// at entry, the break handler runs first, then the TC branch.
 pub fn on_usart1() {
     crate::log::trace!("usart1 isr");
-    // (a) RX errors: a break (or mid-frame garble) → the framer anchors on
-    // the just-ringed 0x00. This path never reads DATAR: a CPU DATAR read
-    // while a byte is mid-reception kills the byte in the shifter — no
-    // flags, no ring entry, every later anchor shifts (bench 2026-07-09,
-    // the ≤1M flood residual; the DMA ladder only protects the byte already
-    // in RDR). Flags normally self-clear instead: a STATR read (this entry)
-    // arms the SR half of the SR-then-DR sequence and the CH5 drain's own
-    // DATAR access is the DR half — every flag-setting event rings a byte
-    // (F2/F4). The one corner that leaves a flag latched (the byte drained
-    // before any STATR read, so the pair never formed — e.g. a lagged FE
-    // delivery on a burst's LAST frame, whose reply produces no further RX
-    // drains) is retired by `TxWire::release` while our drive still holds
-    // the line. A latched flag with NO reply in flight to retire it (a
-    // garble tail) is a level-pend storm — this vector re-enters
-    // continuously until the next RX byte. The driver throttles it (§6 A4):
-    // a zero-progress fault service drops EIE via `LineSense::set_fault_wake`
-    // and the deadline slot polls the ring until progress restores the wake.
-    // Any non-TC entry is treated as an RX error whether or not
-    // its flags survived; on_break is idempotent (A2: position from ring
-    // data, the FE only records a tick).
-    let errs = usart::rx_errors(USART1);
-    let any_err = errs.fe || errs.ore || errs.pe || errs.ne;
-    let tc = usart::is_tcie(USART1) && usart::is_tc(USART1);
-    if any_err || !tc {
+    // One STATR image; the two enabled sources (LBDIE, TCIE) branch off it.
+    // This path never reads DATAR: a CPU DATAR read while a byte is
+    // mid-reception kills the byte in the shifter — no flags, no ring
+    // entry, every later anchor shifts (bench 2026-07-09; the DMA ladder
+    // only protects the byte already in RDR).
+    let sr = usart::statr(USART1);
+
+    // (a) LBD: a genuine ≥10-bit dominant span — a break, and the ONLY RX
+    // wake (§3.4: garble never interrupts; FE/NE/ORE have no enable and
+    // latch silently). Cleared here by the flag-selective constant write,
+    // so the level pend is retired before the handler runs — a break
+    // landing mid-body re-pends the vector, nothing is lost, and no flag
+    // can storm. on_break is idempotent (A2: position from ring data).
+    if sr.lbd() {
+        usart::clear_lbd(USART1);
         // A2: the break handler resolves complete frames from ring data in
         // place, so it carries the (lazy) HIGH dispatcher like the deadline
         // body.
@@ -127,14 +118,14 @@ pub fn on_usart1() {
     }
 
     // (b) TC: an armed TX arm drained (shifter empty). TCIE gates arbitration
-    // — the shared vector fans in RX-errors + TC, and a foreign source could
-    // enter with a stale reset-value TC. Gate on TCIE so it can't walk into
+    // — the shared vector fans in LBD + TC, and a break entry could land
+    // with a stale reset-value TC. Gate on TCIE so it can't walk into
     // on_tx_complete before the first reply is armed.
     //
     // TC is NOT cleared here — `TxWire::send` clears it per-arm once the
     // next arm's first byte is in flight, and the final arm's release drops
     // TCIE, leaving TC=1 as the natural idle state (STATR reset 0xC0).
-    if tc {
+    if sr.tc() && usart::is_tcie(USART1) {
         // SAFETY: see fn doc.
         unsafe { Drivers::bus() }.on_tx_complete();
     }
