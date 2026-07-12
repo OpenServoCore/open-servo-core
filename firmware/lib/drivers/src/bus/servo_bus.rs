@@ -300,11 +300,25 @@ impl<P: Providers> ServoBus<P> {
             self.on_cal_break(now);
             return;
         }
-        self.on_drift_break(now);
         // Freshness first, resolve second: the fault service computes one
         // bit (did bytes ring since the last service?) and nothing else —
         // the fault contract. The resolve consumes whatever the ring holds.
-        let fresh = self.framer.on_wire_fault(self.ring.cursor());
+        let cursor = self.ring.cursor();
+        let fresh = self.framer.on_wire_fault(cursor);
+        // Drift stamp only when the newest ringed byte IS a break's 0x00 —
+        // classification from ring data, per the contract. A latched-flag
+        // re-fire (level-pend, §6 A4 — routine after every NOREPLY frame,
+        // whose flag nothing transmits to retire) lands at frame end
+        // looking FRESH (the frame's own bytes drained since the break's
+        // service), and stamping it clobbers the pair in flight — the
+        // tracker starved to zero on silicon (2026-07-12, −6.9k ppm host
+        // detune unread while every clean-break sim passed; DES pin:
+        // `tracker_survives_latched_refires_between_frames`). A CRC tail
+        // that happens to end 0x00 leaks one stamp and costs one pair —
+        // the byte-exactness and span gates absorb it.
+        if fresh && self.newest_is_break_byte(cursor) {
+            self.on_drift_break(now);
+        }
         self.drive_framer(d);
         // A wire fault whose evidence isn't ringed yet leaves the resolver
         // with nothing — and possibly no wake ever again: a flag latched by
@@ -435,6 +449,15 @@ impl<P: Providers> ServoBus<P> {
     fn arm_cal_watchdog(&mut self, now: u32, gap_ticks: u32) {
         self.framer_at = Some(now.wrapping_add(gap_ticks.wrapping_mul(CAL_WATCHDOG_GAPS)));
         self.arm_deadline();
+    }
+
+    /// The newest ringed byte — the wire-fault service's break/re-fire
+    /// discriminator (a break rings its 0x00 last; a frame-end re-fire
+    /// sees the CRC tail).
+    fn newest_is_break_byte(&self, cursor: u16) -> bool {
+        let ring = self.ring.bytes();
+        let len = ring.len();
+        len != 0 && ring[ring_wrap(cursor as usize + len - 1, len)] == 0x00
     }
 
     /// Drift chain-pair (§9.3): adjacent break-FE stamps bracketing one

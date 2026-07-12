@@ -263,3 +263,116 @@ fn cal_anchors_then_tracker_follows() {
     sim.run();
     assert_eq!(sim.poll_clock_trim(s), Some(3));
 }
+
+// ---- bench-shape regression (silicon 2026-07-12) -------------------------
+//
+// The hardware tracker probe feeds 24-frame WRITE|NOREPLY bursts with
+// ~4-bit seams and a −6.9k ppm host detune, and the silicon tracker reads
+// ZERO — while every DES tracker test above (500 µs-period FOREIGN traffic)
+// stays green. These twins replicate the bench shape exactly; the fork
+// between them and against silicon localizes the starvation.
+
+/// Bench burst geometry at 1M: 10-byte frame + break = 110 µs wire,
+/// 4-bit pirate seam, 24 frames per burst, settle gap between bursts.
+const BURST_FRAMES: u64 = 24;
+const BURST_PERIOD_US: u64 = 114;
+const BURST_SETTLE_US: u64 = 5_000;
+
+fn goal_write(id: u8) -> Vec<u8> {
+    use osc_core::regions::control::addr::lifecycle::GOAL_POSITION;
+    let mut payload = GOAL_POSITION.to_le_bytes().to_vec();
+    payload.extend_from_slice(&0i32.to_le_bytes());
+    instruction(id, Opcode::Write, Inst::FLAG_NOREPLY, &payload)
+}
+
+fn send_bursts(sim: &mut Sim, frame: &[u8], mut t: u64, bursts: u64) -> u64 {
+    for _ in 0..bursts {
+        for k in 0..BURST_FRAMES {
+            sim.host_send_at(t + k * BURST_PERIOD_US, frame);
+        }
+        t += BURST_FRAMES * BURST_PERIOD_US + BURST_SETTLE_US;
+    }
+    t
+}
+
+fn last_trim(sim: &mut Sim, s: usize) -> Option<i8> {
+    let mut last = None;
+    while let Some(v) = sim.poll_clock_trim(s) {
+        last = Some(v);
+    }
+    last
+}
+
+#[test_log::test]
+fn tracker_follows_bench_bursts_foreign() {
+    let mut sim = Sim::new(BaudRate::B1000000);
+    let s = sim.add_servo_with(ID, 0, DEFAULT_RESPONSE_DEADLINE_US);
+    let f = goal_write(OTHER_ID);
+    let t = send_bursts(&mut sim, &f, 0, 3);
+    sim.run();
+    assert_eq!(last_trim(&mut sim, s), None, "baseline absorbs the seam");
+    sim.set_servo_skew_at(t, s, 6_900);
+    send_bursts(&mut sim, &f, t + 100, 16);
+    sim.run();
+    let moved = last_trim(&mut sim, s);
+    assert!(
+        matches!(moved, Some(n) if n >= 2),
+        "foreign bursts feed the tracker: {moved:?}"
+    );
+}
+
+#[test_log::test]
+fn tracker_follows_bench_bursts_self_addressed() {
+    let mut sim = Sim::new(BaudRate::B1000000);
+    let s = sim.add_servo_with(ID, 0, DEFAULT_RESPONSE_DEADLINE_US);
+    let f = goal_write(ID);
+    let t = send_bursts(&mut sim, &f, 0, 3);
+    sim.run();
+    assert_eq!(last_trim(&mut sim, s), None, "baseline absorbs the seam");
+    sim.set_servo_skew_at(t, s, 6_900);
+    send_bursts(&mut sim, &f, t + 100, 16);
+    sim.run();
+    let moved = last_trim(&mut sim, s);
+    assert!(
+        matches!(moved, Some(n) if n >= 2),
+        "self-addressed bursts feed the tracker: {moved:?}"
+    );
+}
+
+/// The silicon reality behind the bench-shape starvation (2026-07-12):
+/// NOREPLY frames leave the wire-fault flag latched (nothing transmits to
+/// retire it), and its level-pend re-fire lands in the seam before the
+/// next frame's bytes (§6 A4). A re-fire is NOT a break — stamping the
+/// drift tracker from it clobbers the pair in flight and starves the
+/// tracker to zero, while clean-break sims stay green. The fix gates the
+/// drift stamp on ring freshness (fault contract: fault handling is
+/// idempotent), the same cursor idiom the CAL run already uses.
+#[test_log::test]
+fn tracker_survives_latched_refires_between_frames() {
+    let mut sim = Sim::new(BaudRate::B1000000);
+    let s = sim.add_servo_with(ID, 0, DEFAULT_RESPONSE_DEADLINE_US);
+    let f = goal_write(ID);
+    let send = |sim: &mut Sim, mut t: u64, bursts: u64| -> u64 {
+        for _ in 0..bursts {
+            for k in 0..BURST_FRAMES {
+                sim.host_send_at(t + k * BURST_PERIOD_US, &f);
+                // The latched flag's re-entry, one per seam, just before
+                // the next frame's bytes.
+                sim.inject_fault_refire_at(t + k * BURST_PERIOD_US + 112, s);
+            }
+            t += BURST_FRAMES * BURST_PERIOD_US + BURST_SETTLE_US;
+        }
+        t
+    };
+    let t = send(&mut sim, 0, 3);
+    sim.run();
+    assert_eq!(last_trim(&mut sim, s), None, "baseline absorbs the seam");
+    sim.set_servo_skew_at(t, s, 6_900);
+    send(&mut sim, t + 100, 16);
+    sim.run();
+    let moved = last_trim(&mut sim, s);
+    assert!(
+        matches!(moved, Some(n) if n >= 2),
+        "re-fires must not eat the tracker's pairs: {moved:?}"
+    );
+}
