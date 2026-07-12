@@ -29,5 +29,6 @@ mod profile;
 mod read;
 mod rescue;
 mod silence;
+mod trim;
 mod turnaround;
 mod write;

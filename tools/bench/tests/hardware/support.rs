@@ -95,6 +95,16 @@ impl Bench {
         discover::walk(&mut self.client).expect("prefix walk")
     }
 
+    /// §9.3 CAL train: broadcast `announce`, then `breaks` bare breaks
+    /// `gap_us` apart, crystal-paced by the pirate. The announce and the
+    /// wire gap are separate on purpose — a mismatch is the trim test's
+    /// clock-offset injector.
+    pub fn cal_train(&mut self, announce: &[u8], gap_us: u32, breaks: u32) {
+        self.client
+            .cal_train(announce, gap_us, breaks)
+            .expect("cal train");
+    }
+
     /// Exchange and assert an OK status; returns the decoded status frame.
     pub fn status_ok(&mut self, wire: &[u8]) -> StatusFrame {
         self.status_ok_within(wire, SETTLE_MS)
