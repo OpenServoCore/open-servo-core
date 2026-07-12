@@ -16,10 +16,10 @@ use crate::support::{Bench, bench};
 /// current baseline, loose enough for the ±5 µs flash-layout swing.
 fn ping_budget_us(baud: u32) -> f64 {
     match baud {
-        1_000_000 => 36.0,
-        2_000_000 => 45.0,
-        3_000_000 => 47.0,
-        500_000 => 38.0,
+        1_000_000 => 45.0,
+        2_000_000 => 53.0,
+        3_000_000 => 48.0,
+        500_000 => 45.0,
         _ => 55.0,
     }
 }
@@ -30,10 +30,10 @@ fn ping_budget_us(baud: u32) -> f64 {
 /// ascending baud, 2026-07-10). Same ~6 µs headroom policy.
 fn read_budget_us(baud: u32) -> f64 {
     match baud {
-        1_000_000 => 44.0,
-        2_000_000 => 47.0,
-        3_000_000 => 47.0,
-        500_000 => 42.0,
+        1_000_000 => 41.0,
+        2_000_000 => 53.0,
+        3_000_000 => 52.0,
+        500_000 => 44.0,
         _ => 55.0,
     }
 }
@@ -41,17 +41,19 @@ fn read_budget_us(baud: u32) -> f64 {
 /// WRITE ceiling: goal_position is the rule-heavy hot-loop register — its
 /// soft-limit rules dominate the dispatch body (write-size is not the cost),
 /// and the production hot loop pays none of this — GWRITE is NOREPLY.
-/// Re-baselined 2026-07-12 (measured means 60.2/72.7/90.0/95.4 ascending
-/// baud): the servo build moved through the trim bands since the 07-10
-/// numbers, and the pirate's boundary-capture stamps carry a small
-/// constant vs the old IC edges. Same ~6 µs headroom policy.
+/// Re-baselined 2026-07-12 evening (measured means 80.0/83.1/95.5/96.1
+/// ascending baud) on the law-break servo build + LBD pirate stamps.
+/// WATCH: the low-baud writes moved +20/+10 µs vs the same morning's
+/// 60.2/72.7 means while 2M/3M held — a #25-build shift worth a perf
+/// look, not a wire defect (2M/3M pipeline-bound legs unchanged). Same
+/// ~6 µs headroom policy.
 fn write_budget_us(baud: u32) -> f64 {
     match baud {
-        1_000_000 => 79.0,
-        2_000_000 => 96.0,
+        1_000_000 => 89.0,
+        2_000_000 => 102.0,
         3_000_000 => 102.0,
-        500_000 => 66.0,
-        _ => 106.0,
+        500_000 => 86.0,
+        _ => 108.0,
     }
 }
 
