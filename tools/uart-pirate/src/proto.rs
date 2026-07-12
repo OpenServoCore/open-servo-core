@@ -56,6 +56,10 @@
 //!       frames (`[len_0][frame_0][len_1][frame_1]…`, ≤ 640 B total);
 //!       each frame goes out as one 10-bit-exact break + its bytes,
 //!       back-to-back with sub-byte spacing throughout.
+//!   `CAL bytes=<hex> gap_us=<us> breaks=<n>`
+//!       Break-framed `bytes` (the announce), then `n` bare breaks whose
+//!       start edges sit on an exact `gap_us` grid, tick32-paced against
+//!       the crystal — the osc-native MGMT CAL train (§9.3).
 //!   `LOWPULSE us=<n>`
 //!       Drive TX low as a GPIO for `n` µs (≤ 100 ms), then restore AF.
 //!       The osc-native "rescue break" shape — detectable at any baud.
@@ -189,6 +193,9 @@ pub fn handle_line(line: &[u8]) -> Reply {
     }
     if let Some(rest) = line.strip_prefix("BURST ") {
         return burst(rest);
+    }
+    if let Some(rest) = line.strip_prefix("CAL ") {
+        return cal(rest);
     }
     if let Some(rest) = line.strip_prefix("LOWPULSE ") {
         return lowpulse(rest);
@@ -362,6 +369,38 @@ fn feinj(rest: &str) -> Reply {
     match tx::send_fe_inject(&pre[..n_pre], &bad[..n_bad], &post[..n_post]) {
         Ok(()) => Reply::Ok,
         Err(tx::SendError::TooLong) => Reply::Err("toolong"),
+        Err(tx::SendError::Busy) => Reply::Err("busy"),
+    }
+}
+
+fn cal(rest: &str) -> Reply {
+    let mut buf = [0u8; tx::BRK_PAYLOAD_MAX];
+    let mut len: Option<usize> = None;
+    let mut gap_us: Option<u32> = None;
+    let mut breaks: Option<u32> = None;
+    for tok in rest.split_ascii_whitespace() {
+        let Some((k, v)) = tok.split_once('=') else {
+            return Reply::Err("kv");
+        };
+        match k {
+            "bytes" => len = decode_hex(v, &mut buf),
+            "gap_us" => match v.parse() {
+                Ok(x) => gap_us = Some(x),
+                Err(_) => return Reply::Err("gap_us"),
+            },
+            "breaks" => match v.parse() {
+                Ok(x) => breaks = Some(x),
+                Err(_) => return Reply::Err("breaks"),
+            },
+            _ => return Reply::Err("key"),
+        }
+    }
+    let (Some(len), Some(gap_us), Some(breaks)) = (len, gap_us, breaks) else {
+        return Reply::Err("missing");
+    };
+    match tx::send_cal(&buf[..len], gap_us, breaks) {
+        Ok(()) => Reply::Ok,
+        Err(tx::SendError::TooLong) => Reply::Err("range"),
         Err(tx::SendError::Busy) => Reply::Err("busy"),
     }
 }

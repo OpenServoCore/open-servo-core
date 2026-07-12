@@ -525,6 +525,86 @@ pub fn send_break_then(payload: &[u8]) -> Result<(), SendError> {
     r
 }
 
+/// `CAL` train caps: the command blocks the CDC context for
+/// `breaks × gap_us`, so both stay well under the host's read timeout.
+pub const CAL_BREAKS_MAX: u32 = 64;
+pub const CAL_GAP_MAX_US: u32 = 2_000;
+/// Final-approach window per mark: the open spin hands over to a critical
+/// section this far out, so a walker/USB preemption can't land between the
+/// deadline check and the DATAR write. Bounds the masked span per mark.
+const CAL_LEAD_TICKS: u32 = 1_440; // 10 µs at 144 MHz
+
+/// Announce frame (break-framed, DMA-fed) followed by `breaks` bare breaks
+/// whose start edges sit on an exact `gap_us` grid, paced by tick32 — the
+/// osc-native MGMT CAL train (osc-native-protocol.md §9.3), spacing kept
+/// by the crystal. Marks aim at absolute ticks (`t0 + k·gap`), so
+/// per-mark overhead never accumulates and a late mark (preemption) never
+/// shifts its successors; the receiver gates each gap independently. The
+/// first mark leads by gap/2 — past the announce's dispatch, well inside
+/// the receiver's 2-gap watchdog. The wire stays claimed for the whole
+/// train: the gaps are bus silence, not a handback.
+pub fn send_cal(announce: &[u8], gap_us: u32, breaks: u32) -> Result<(), SendError> {
+    if announce.is_empty() || announce.len() > BRK_PAYLOAD_MAX {
+        return Err(SendError::TooLong);
+    }
+    let gap_ticks = gap_us.saturating_mul(crate::tick::wire_ticks_per_us());
+    // A mark is an 11-bit-time frame; 16 bit-times of gap floor keeps
+    // TXE/TC re-armed well before the next mark is due.
+    if !(2..=CAL_BREAKS_MAX).contains(&breaks)
+        || gap_us > CAL_GAP_MAX_US
+        || gap_ticks < USART3.brr().read().0 * 16
+    {
+        return Err(SendError::TooLong);
+    }
+    wait_tx_complete().map_err(|TxTimeout| SendError::Busy)?;
+    pb10_drive(true);
+    mask_and_retire_idle();
+    let r = (|| {
+        // See send_break_then: CH2 is shared with the scheduled-send path.
+        scheduler::cancel();
+        load_payload_main(announce)?;
+        USART3.ctlr1().modify(|w| w.set_m(true));
+        let r = feed_bytes(&[0x00])
+            .and_then(|()| wait_tx_complete().map_err(|TxTimeout| SendError::Busy));
+        USART3.ctlr1().modify(|w| w.set_m(false));
+        r?;
+        // Interior kick (see send_burst): the train follows, so the drive
+        // must hold across the announce's tail.
+        kick_dma();
+        wait_tx_complete().map_err(|TxTimeout| SendError::Busy)?;
+        // The train: every mark is the same 10-bit-exact break shape as
+        // the announce's own; M stays set across the whole train.
+        USART3.ctlr1().modify(|w| w.set_m(true));
+        let t0 = read_tick32().wrapping_add(gap_ticks / 2);
+        let mut r = Ok(());
+        for k in 0..breaks {
+            let due = t0.wrapping_add(k * gap_ticks);
+            while (due.wrapping_sub(read_tick32()) as i32) > CAL_LEAD_TICKS as i32 {}
+            let mark = critical_section::with(|_| {
+                while (due.wrapping_sub(read_tick32()) as i32) > 0 {}
+                feed_bytes(&[0x00])
+            });
+            if mark.is_err() {
+                r = mark;
+                break;
+            }
+        }
+        let tail = wait_tx_complete().map_err(|TxTimeout| SendError::Busy);
+        USART3.ctlr1().modify(|w| w.set_m(false));
+        r.and(tail)
+    })();
+    // See send_break_then: a failed leg must stop the channel.
+    if r.is_err() {
+        DMA1.ch(1).cr().modify(|w| w.set_en(false));
+    }
+    // Train gaps exceed a char time, so a latched mid-train IDLE is the
+    // norm — retire before re-enabling, still under our drive (see
+    // send_breaks).
+    retire_and_enable_idle();
+    pb10_drive(false);
+    r
+}
+
 /// Cap on a `BURST` stream (length prefixes + frame bytes). Sized for a
 /// hot-loop cycle or a long write bombardment with slack; well under the
 /// USB command-line ceiling at 2 hex chars/byte.
