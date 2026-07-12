@@ -197,7 +197,7 @@ t=…    per-arm TC ISRs stream the remaining arms; final TC releases the wire
 
 Measured: 34.3 µs from instruction end to status break fall (ring-cadence
 build, 2026-07-09); ~16 µs of it is the estimate chain above (reply-gap grid +
-sub-byte estimate lateness), the remainder trigger-body, SBK commit, and
+sub-byte estimate lateness), the remainder trigger-body, break commit, and
 ISR-entry overheads.
 
 ## 4. Why this is fast — first principles

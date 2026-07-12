@@ -79,9 +79,9 @@ impl bus::TxWire for TxWire {
     fn start_frame(&mut self) {
         crate::log::trace!("tx.start");
         self.claim_wire();
-        // send_break blocks until the break has committed through its stop
-        // bit (a non-blocking SBK queues behind DR data — bench-observed).
-        // The shifter is therefore EMPTY when send(arm0) runs: TCIE must
+        // send_break (the §3 law shape — a bracketed-M 0x00 character)
+        // blocks until the break has committed through its stop bit. The
+        // shifter is therefore EMPTY when send(arm0) runs: TCIE must
         // stay off until the arm's first byte is in flight, or the gap TC
         // latches, reads as arm-drained on ISR return, and release() tears
         // the reply down mid-byte-0 (bench signature: break, one garbled

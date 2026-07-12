@@ -37,26 +37,38 @@ pub fn init_bus(r: Regs, brr: u32, hdsel: bool) {
     });
 }
 
-/// Send a UART break (SBK, the spike's `pulse_sbk`) and wait, bounded, for
-/// the hardware to commit it — SBK self-clears during the break's stop
-/// bit. Without the wait, a DR byte loaded by DMA right after SBK shifts
-/// out FIRST and the break follows (bench-observed: DMA CNTR frozen at
-/// n-1, wire showed data-then-break). Blocking keeps the shifter-state
-/// contract `TxWire::send` relies on: when this returns, the wire has
-/// carried the whole break and DR is free for arm0's first byte.
+/// Send the protocol-law break (osc-native §3, 2026-07-12): one 9-bit
+/// `0x00` character under a bracketed M=1 — start + 9 data lows = 10 low
+/// bit-times, then a clean stop. Replaces SBK, whose ~14-bit shape is
+/// off-law and a byte-sync hazard at LIN-mode receivers (the pirate, and
+/// bridge-class hosts: their break detector re-arms start hunting at bit
+/// 10 while SBK still holds the line low — bench 2026-07-12, per-servo
+/// phase-dependent head-of-reply corruption).
+///
+/// Blocks until the character's stop bit commits (TC), the same
+/// shifter-state contract the SBK path kept: when this returns the wire
+/// has carried the whole break, DR is free for arm0's first byte, and
+/// the M flips have bracketed a COMPLETED character — no format change
+/// ever touches a shifting byte. Runs only inside the TX claim window,
+/// where RX is muted (HDSEL, F9) or held at mark (buffer), so the M
+/// flips are invisible to our own receiver. The wait bound is the
+/// no-panic plateau backstop, not a wait that ever runs in practice.
 #[inline(always)]
 pub fn send_break(r: Regs) {
-    r.ctlr1().modify(|w| w.set_sbk(true));
-    let mut bound = SBK_COMMIT_SPINS;
-    while r.ctlr1().read().sbk() && bound > 0 {
+    r.ctlr1().modify(|w| w.set_m(true));
+    clear_tc(r);
+    r.datar().write(|w| w.set_dr(0));
+    let mut bound = BREAK_COMMIT_SPINS;
+    while !r.statr().read().tc() && bound > 0 {
         bound -= 1;
         core::hint::spin_loop();
     }
+    r.ctlr1().modify(|w| w.set_m(false));
 }
 
-/// SBK self-clear poll bound: a break is ~14 bit-times (~28 µs at the 0.5M
-/// rescue floor ≈ 1350 HCLK cycles); 4096 covers it with slack.
-const SBK_COMMIT_SPINS: u32 = 4096;
+/// Break-commit poll bound: the law break is 11 bit-times (~22 µs at the
+/// 0.5M rescue floor ≈ 1050 HCLK cycles); 4096 covers it with slack.
+const BREAK_COMMIT_SPINS: u32 = 4096;
 
 /// Live BRR write — no UE bounce. Caller must ensure no TX/RX is in flight
 /// (retuning mid-byte garbages the wire); the driver applies baud changes

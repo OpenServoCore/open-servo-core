@@ -18,6 +18,7 @@ use osc_drivers::Level;
 use osc_drivers::bus::ServoBus;
 use osc_drivers::led::Led;
 use osc_drivers::traits::bus::Providers;
+use portable_atomic::AtomicBool;
 
 use crate::cfg::board_wiring::BoardWiring;
 use crate::providers::crc::Crc;
@@ -30,6 +31,11 @@ use crate::providers::tx_wire::TxWire;
 use crate::providers::usart_baud::UsartBaud;
 
 type StatLed = Led<DigitalOut, Monotonic>;
+
+/// Cross-cell wire-activity latch (driver-pattern §9.3 channel, not a
+/// driver cell): the USART1 vector's tail stores, the main-loop LED
+/// policy swaps. One relaxed store per wire IRQ.
+pub static BUS_ACTIVITY: AtomicBool = AtomicBool::new(false);
 
 /// Bundle of the chip-side providers the `ServoBus` composite consumes
 /// (driver-pattern §5.4). Each associated type maps to its zero-sized
