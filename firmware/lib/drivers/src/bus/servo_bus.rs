@@ -6,14 +6,14 @@
 
 use osc_core::traits::{Dispatch, Dispatched, Reply, Request, RequestCtx, SendError, Status};
 use osc_core::{BaudRate, BootMode};
-use osc_protocol::wire::{Inst, Opcode, ResultCode};
+use osc_protocol::wire::{Id, Inst, Opcode, ResultCode};
 
 use super::chain::{Chain, ChainOut};
 use super::decode::{Decoded, decode};
-use super::frame_view;
 use super::framer::{FrameSpan, Framer, FramerOut};
 use super::trim::TrimLoop;
 use super::tx::{TxEngine, TxOut};
+use super::{frame_view, ring_wrap};
 use crate::traits::bus::{
     CrcEngine, Deadline, LineSense, Providers, RxRing, TxWire, UsartBaud, tick_reached,
 };
@@ -54,15 +54,31 @@ const DEADLINE_DRAIN_MAX: u32 = 8;
 /// the rest.
 const FRAMES_PER_WAKE: u32 = 16;
 
-/// CAL per-gap accept gate (§9.3), right-shift of the announced gap (1/16 ≈
-/// 6%): wider than any legal clock offset (the HSITRIM throw is ±3.4%), far
-/// under a missed or spurious break (±one whole gap).
-const CAL_GATE_SHIFT: u32 = 4;
+/// Trim measurement accept gate (§9.3), right-shift of the nominal span
+/// (1/16 ≈ 6%): wider than any legal clock offset (the HSITRIM throw is
+/// ±3.4%), far under a missed/spurious break or a real inter-frame pause.
+/// Gates CAL gaps and drift chain-pairs alike.
+const TRIM_GATE_SHIFT: u32 = 4;
 
 /// CAL train watchdog, in announced gaps: a train silent this long is
 /// abandoned — no decision — and the framer resumes (a suspended resolver
 /// needs a deadline backstop like any busy-wait).
 const CAL_WATCHDOG_GAPS: u32 = 2;
+
+/// Seam-baseline capture length, in accepted chain-pairs (§9.3; a power of
+/// two — the mean divides by shift on the divider-less chip build). Right
+/// after a trim decision the clock is freshly measured, so the mean pair
+/// error over these IS the host's queuing seam.
+const DRIFT_BASELINE_PAIRS: u8 = 32;
+
+/// Chain-pairs per drift window — a decision every second or two at
+/// hot-loop rates, against thermal drift that moves over minutes.
+const DRIFT_WINDOW_PAIRS: u8 = 128;
+
+/// Drift-window verdicts past this are not thermal (HSI tempco cannot move
+/// thousands of ppm between adjacent windows): a host seam shift or a
+/// garbage window — discarded; the baseline stands, the next CAL re-anchors.
+const DRIFT_SANITY_PPM: u32 = 8_000;
 
 /// Ring-poll cadence, in byte-times, while the wire-fault wake is muted
 /// (§6 A4 storm throttle). A zero-progress fault service means a flag is
@@ -117,6 +133,19 @@ struct CalRun {
     span: u32,
 }
 
+/// What the wire delivered between two break-FE stamps (§9.3): the drift
+/// tracker pairs the stamps only around exactly ONE CRC-verified SILENT
+/// instruction — the one frame shape whose break-to-break span is
+/// host-clocked end to end. Anything solicited puts a responder's
+/// turnaround (its clock, not the host's) inside the span, and a reply gap
+/// can slip under the 1/16 gate at 1M.
+#[derive(Copy, Clone)]
+enum VerifiedSpan {
+    None,
+    One { footprint: u16, silent: bool },
+    Many,
+}
+
 pub struct ServoBus<P: Providers> {
     framer: Framer,
     chain: Chain,
@@ -157,8 +186,20 @@ pub struct ServoBus<P: Providers> {
     pending_cal: Option<(u16, u8)>,
     cal: Option<CalRun>,
     cal_ready: bool,
-    // Clock-trim measurement accumulators (§9.3): completed CAL trains'
-    // (err, span) sums, drained by the main loop's `poll_clock_trim`.
+    // Differential drift tracker (§9.3): the last break-FE stamp + ring
+    // cursor, the one silent instruction verified since it, the seam
+    // baseline, and the current drift window.
+    drift_prev: Option<(u32, u16)>,
+    drift_seen: VerifiedSpan,
+    drift_base: Option<i32>,
+    drift_base_err: i32,
+    drift_base_n: u8,
+    drift_win_err: i32,
+    drift_win_span: u32,
+    drift_win_n: u8,
+    drift_ready: bool,
+    // Completed-measurement handoff to the main loop's `poll_clock_trim`:
+    // one (err, span) at a time, owned by whichever ready flag is set.
     cadence_err: i32,
     cadence_span: u32,
     trim: TrimLoop,
@@ -219,6 +260,15 @@ impl<P: Providers> ServoBus<P> {
             pending_cal: None,
             cal: None,
             cal_ready: false,
+            drift_prev: None,
+            drift_seen: VerifiedSpan::None,
+            drift_base: None,
+            drift_base_err: 0,
+            drift_base_n: 0,
+            drift_win_err: 0,
+            drift_win_span: 0,
+            drift_win_n: 0,
+            drift_ready: false,
             crc_fails: 0,
             pending: None,
             framer_at: None,
@@ -250,6 +300,7 @@ impl<P: Providers> ServoBus<P> {
             self.on_cal_break(now);
             return;
         }
+        self.on_drift_break(now);
         // Freshness first, resolve second: the fault service computes one
         // bit (did bytes ring since the last service?) and nothing else —
         // the fault contract. The resolve consumes whatever the ring holds.
@@ -326,6 +377,7 @@ impl<P: Providers> ServoBus<P> {
     fn on_cal_break(&mut self, now: u32) {
         let cursor = self.ring.cursor();
         if let Some((gap_us, gaps)) = self.pending_cal.take() {
+            self.drift_restart();
             // Train start: the first break after the announce opens gap 1.
             let gap_ticks = (gap_us as u32).wrapping_mul(<P::Deadline as Deadline>::TICKS_PER_US);
             self.cal = Some(CalRun {
@@ -352,7 +404,7 @@ impl<P: Providers> ServoBus<P> {
             let delta = now.wrapping_sub(cal.last_break);
             cal.last_break = now;
             let err = delta.wrapping_sub(cal.gap_ticks) as i32;
-            if err.unsigned_abs() <= cal.gap_ticks >> CAL_GATE_SHIFT {
+            if err.unsigned_abs() <= cal.gap_ticks >> TRIM_GATE_SHIFT {
                 cal.err = cal.err.wrapping_add(err);
                 cal.span = cal.span.wrapping_add(cal.gap_ticks);
                 cal.valid += 1;
@@ -368,8 +420,8 @@ impl<P: Providers> ServoBus<P> {
             // ≥ half the announced gaps measured clean, or no decision — a
             // mangled train yields nothing rather than something.
             if c.valid as u32 * 2 >= c.total as u32 {
-                self.cadence_err = self.cadence_err.wrapping_add(c.err);
-                self.cadence_span = self.cadence_span.saturating_add(c.span);
+                self.cadence_err = c.err;
+                self.cadence_span = c.span;
                 self.cal_ready = true;
             }
         }
@@ -383,6 +435,104 @@ impl<P: Providers> ServoBus<P> {
     fn arm_cal_watchdog(&mut self, now: u32, gap_ticks: u32) {
         self.framer_at = Some(now.wrapping_add(gap_ticks.wrapping_mul(CAL_WATCHDOG_GAPS)));
         self.arm_deadline();
+    }
+
+    /// Drift chain-pair (§9.3): adjacent break-FE stamps bracketing one
+    /// silent verified instruction measure `seam + drift·span` — the host's
+    /// queuing seam is unknown but stationary, so the mean pair error right
+    /// after a trim decision IS the seam (baseline), and every later window
+    /// reads drift as its shift from it. Anything constant — seam, FE latch
+    /// offset, entry-path residue — dies in the subtraction; only changes
+    /// survive, and the sanity band catches the non-thermal ones.
+    fn on_drift_break(&mut self, now: u32) {
+        let cursor = self.ring.cursor();
+        let prev = self.drift_prev.replace((now, cursor));
+        let seen = core::mem::replace(&mut self.drift_seen, VerifiedSpan::None);
+        let (
+            Some((t1, c1)),
+            VerifiedSpan::One {
+                footprint,
+                silent: true,
+            },
+        ) = (prev, seen)
+        else {
+            return;
+        };
+        let len = self.ring.bytes().len();
+        // Byte-exactness: the pair's ring span must be exactly the verified
+        // frame — anything else intervened (a status, garble, an echo).
+        if len == 0 || ring_wrap(cursor as usize + len - c1 as usize, len) as u16 != footprint {
+            return;
+        }
+        let span = (footprint as u32).wrapping_mul(self.tpb);
+        let err = now.wrapping_sub(t1).wrapping_sub(span) as i32;
+        if err.unsigned_abs() > span >> TRIM_GATE_SHIFT {
+            return; // a real pause (inter-chain gap), not a seam
+        }
+        match self.drift_base {
+            None => {
+                self.drift_base_err = self.drift_base_err.wrapping_add(err);
+                self.drift_base_n += 1;
+                if self.drift_base_n >= DRIFT_BASELINE_PAIRS {
+                    self.drift_base = Some(self.drift_base_err / DRIFT_BASELINE_PAIRS as i32);
+                }
+            }
+            Some(base) => {
+                self.drift_win_err = self.drift_win_err.wrapping_add(err.wrapping_sub(base));
+                self.drift_win_span = self.drift_win_span.saturating_add(span);
+                self.drift_win_n += 1;
+                if self.drift_win_n >= DRIFT_WINDOW_PAIRS {
+                    if !self.cal_ready && !self.drift_ready {
+                        self.cadence_err = self.drift_win_err;
+                        self.cadence_span = self.drift_win_span;
+                        self.drift_ready = true;
+                    }
+                    self.drift_win_err = 0;
+                    self.drift_win_span = 0;
+                    self.drift_win_n = 0;
+                }
+            }
+        }
+    }
+
+    /// A verified frame between breaks — the drift tracker's qualification
+    /// record. Only exactly-one counts, and only silent shapes pair.
+    fn drift_note_verified(&mut self, anchor: u16, footprint: u16) {
+        self.drift_seen = match self.drift_seen {
+            VerifiedSpan::None => {
+                let inst = self.ring_inst(anchor);
+                let ring = self.ring.bytes();
+                let len = ring.len();
+                if len == 0 {
+                    return; // defensive: no ring, no record
+                }
+                let id = ring[ring_wrap(anchor as usize + 1, len)];
+                let silent = match inst.opcode() {
+                    Some(Opcode::Gwrite) => true,
+                    Some(Opcode::Write | Opcode::Commit) => {
+                        inst.noreply() || id == Id::BROADCAST.as_byte()
+                    }
+                    _ => false,
+                };
+                VerifiedSpan::One { footprint, silent }
+            }
+            _ => VerifiedSpan::Many,
+        };
+    }
+
+    /// Tracker restart: baseline, window, and pair continuity all drop —
+    /// after a trim decision (the baseline's residual-skew term is stale),
+    /// a CAL train (continuity broken), or a rate change.
+    fn drift_restart(&mut self) {
+        self.drift_prev = None;
+        self.drift_seen = VerifiedSpan::None;
+        self.drift_base = None;
+        self.drift_base_err = 0;
+        self.drift_base_n = 0;
+        self.drift_win_err = 0;
+        self.drift_win_span = 0;
+        self.drift_win_n = 0;
+        self.drift_ready = false;
     }
 
     /// Tick-compare ISR: one or more muxed deadlines are due. Every slot a
@@ -474,6 +624,7 @@ impl<P: Providers> ServoBus<P> {
                 self.baud.apply(baud);
                 self.rate = baud;
                 self.tpb = tpb_for::<P>(self.rate);
+                self.drift_restart();
             }
             // A pending reboot waits for the main loop's `take_reboot`.
         }
@@ -499,18 +650,41 @@ impl<P: Providers> ServoBus<P> {
     }
 
     /// Main-loop poll, ISRs masked by the caller (the `diag` idiom): drain a
-    /// completed CAL train through the trim loop. Returns the new trim
+    /// completed measurement — a CAL train (absolute) or a drift window
+    /// (baseline-relative) — through the trim loop. Returns the new trim
     /// total — signed chip steps from the factory default, positive =
     /// slower — for the caller to apply to the oscillator between frames.
     pub fn poll_clock_trim(&mut self) -> Option<i8> {
-        if !self.cal_ready {
+        if self.cal_ready {
+            self.cal_ready = false;
+            let (err, span) = (self.cadence_err, self.cadence_span);
+            self.cadence_err = 0;
+            self.cadence_span = 0;
+            // The clock is freshly measured either way the decision goes:
+            // the next pairs re-capture the seam baseline against it.
+            self.drift_restart();
+            return self.trim.on_window(err, span);
+        }
+        if !self.drift_ready {
             return None;
         }
-        self.cal_ready = false;
+        self.drift_ready = false;
         let (err, span) = (self.cadence_err, self.cadence_span);
         self.cadence_err = 0;
         self.cadence_span = 0;
-        self.trim.on_window(err, span)
+        if span == 0 {
+            return None; // defensive: an empty window decides nothing
+        }
+        let ppm = (err as i64 * 1_000_000 / span as i64) as i32;
+        if ppm.unsigned_abs() > DRIFT_SANITY_PPM {
+            return None; // not thermal — seam shift or garbage, discarded
+        }
+        let out = self.trim.on_window(err, span);
+        if out.is_some() {
+            // The clock moved: the baseline's residual-skew term is stale.
+            self.drift_restart();
+        }
+        out
     }
 
     fn reply_gap(&self) -> u32 {
@@ -651,6 +825,7 @@ impl<P: Providers> ServoBus<P> {
         self.baud.apply(BaudRate::B500000);
         self.rate = BaudRate::B500000;
         self.tpb = tpb_for::<P>(self.rate);
+        self.drift_restart();
         // Ladder bootstrap (A2): a rescue pulse delivers no start edges, so
         // the cursor is provably still — the one sanctioned cursor read.
         let cursor = self.ring.cursor();
@@ -773,6 +948,7 @@ impl<P: Providers> ServoBus<P> {
             return;
         }
         self.framer.on_frame_verified();
+        self.drift_note_verified(anchor, footprint);
         // A fresh instruction supersedes any stale, not-yet-streaming reply —
         // post-verdict, so a garbled frame touched nothing.
         self.chain.reset();
@@ -817,6 +993,7 @@ impl<P: Providers> ServoBus<P> {
             return;
         }
         self.framer.on_frame_verified();
+        self.drift_note_verified(p.anchor, p.footprint);
         if p.table {
             let mut handle = self.reply_handle();
             d.commit(&mut handle);

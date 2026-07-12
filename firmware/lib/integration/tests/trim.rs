@@ -7,7 +7,7 @@
 use osc_core::BaudRate;
 use osc_core::regions::config::DEFAULT_RESPONSE_DEADLINE_US;
 use osc_integration::sim::{Sim, Source, instruction, status};
-use osc_protocol::wire::{Opcode, ResultCode};
+use osc_protocol::wire::{Inst, Opcode, ResultCode};
 
 mod support;
 
@@ -170,4 +170,96 @@ fn unicast_cal_is_refused() {
     let (inst, _) = status(replies[0]);
     assert_eq!(inst.result(), Some(ResultCode::Instruction));
     assert_eq!(sim.poll_clock_trim(s), None);
+}
+
+// ---- differential drift tracker (§9.3) ----------------------------------
+
+const OTHER_ID: u8 = 6;
+/// Silent hot-loop stand-in: WRITE|NOREPLY, 42-byte payload → 48-byte
+/// footprint, 480 µs of wire at 1M; host seam = 20 µs.
+const PERIOD_US: u64 = 500;
+
+fn silent_write() -> Vec<u8> {
+    instruction(OTHER_ID, Opcode::Write, Inst::FLAG_NOREPLY, &[0u8; 42])
+}
+
+/// `n` silent frames from `t0`, PERIOD_US apart.
+fn send_silent(sim: &mut Sim, t0: u64, n: u64) -> u64 {
+    let f = silent_write();
+    for k in 0..n {
+        sim.host_send_at(t0 + k * PERIOD_US, &f);
+    }
+    t0 + n * PERIOD_US
+}
+
+/// The tracker follows drift injected mid-run: the baseline absorbs the
+/// host's queuing seam AND the boot-time skew, and a later rate change is
+/// read as its shift — one step of drift draws one step of correction,
+/// with no CAL in sight.
+#[test_log::test]
+fn tracker_follows_thermal_drift() {
+    let mut sim = Sim::new(BaudRate::B1000000);
+    let s = sim.add_servo_with(ID, 0, DEFAULT_RESPONSE_DEADLINE_US);
+    // Baseline (32 pairs) + one full window (128) at the boot rate.
+    let t = send_silent(&mut sim, 0, 180);
+    sim.run();
+    assert_eq!(sim.poll_clock_trim(s), None, "no drift, no decision");
+    // Thermal drift: +2600 ppm, continuously (the clock never steps).
+    sim.set_servo_skew_at(t, s, 2_600);
+    send_silent(&mut sim, t + PERIOD_US, 140);
+    sim.run();
+    assert_eq!(sim.poll_clock_trim(s), Some(1));
+}
+
+/// A constant seam and a constant skew are BOTH invisible: the tracker
+/// measures changes, not states — absolute correction is CAL's job.
+#[test_log::test]
+fn constant_seam_and_skew_cancel() {
+    let mut sim = Sim::new(BaudRate::B1000000);
+    let s = sim.add_servo_with(ID, 5_200, DEFAULT_RESPONSE_DEADLINE_US);
+    send_silent(&mut sim, 0, 320);
+    sim.run();
+    assert_eq!(sim.poll_clock_trim(s), None);
+    assert_eq!(sim.poll_clock_trim(s), None);
+}
+
+/// Solicited frames never pair — an ack's turnaround rides another clock,
+/// and at 1M a reply gap slips under the span gate. The silent-shape rule
+/// keeps them out entirely: acked traffic yields no pairs, no windows.
+#[test_log::test]
+fn solicited_frames_never_pair() {
+    let mut sim = Sim::new(BaudRate::B1000000);
+    let s = sim.add_servo_with(ID, 0, DEFAULT_RESPONSE_DEADLINE_US);
+    let f = instruction(OTHER_ID, Opcode::Write, 0, &[0u8; 42]); // acked shape
+    for k in 0..320 {
+        sim.host_send_at(k * PERIOD_US, &f);
+    }
+    sim.run();
+    assert_eq!(sim.poll_clock_trim(s), None);
+}
+
+/// The full composition: CAL anchors absolute, the tracker holds through
+/// quiet, then follows a later drift on top — each layer consuming exactly
+/// its own signal.
+#[test_log::test]
+fn cal_anchors_then_tracker_follows() {
+    let mut sim = Sim::new(BaudRate::B1000000);
+    let s = sim.add_servo_with(ID, 5_200, DEFAULT_RESPONSE_DEADLINE_US);
+    send_train(&mut sim, 0, GAPS as u64 + 1);
+    sim.run();
+    assert_eq!(
+        sim.poll_clock_trim(s),
+        Some(2),
+        "CAL takes the acquire jump"
+    );
+    // Quiet stretch (clear of the post-train hunt's trailing wakes):
+    // baseline recaptures post-CAL, windows read no drift.
+    let t = send_silent(&mut sim, train_end(0) + 5_000, 180);
+    sim.run();
+    assert_eq!(sim.poll_clock_trim(s), None, "no drift since the anchor");
+    // Motor heat: +2600 ppm on top of the boot skew.
+    sim.set_servo_skew_at(t, s, 5_200 + 2_600);
+    send_silent(&mut sim, t + PERIOD_US, 140);
+    sim.run();
+    assert_eq!(sim.poll_clock_trim(s), Some(3));
 }

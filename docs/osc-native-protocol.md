@@ -621,15 +621,27 @@ gaps, a tenth of the smallest trim step. Contract and hygiene:
   CAL also *rescues* a servo railed by a bad trim — the ruler works below
   the layer a bad trim breaks.
 
-Measurements drive the oscillator-trim loop (`steps =
-round(err/step_effect)`, clamped ±4/decision; step effect self-measured —
-chip trim steps are nonuniform, 1.4–3.2 k ppm/step measured), applied by
-the main loop between frames; the total is readable at
-`telemetry.clock.trim_steps`. Volatile by design: the host CALs at boot
-(~4 ms of bus) and at moments it knows its own behavior changed — not on
-a timer. Thermal drift between CALs is the differential chain-pair
-tracker's job (landing with it: break-to-break spans of adjacent host
-instructions, host queuing seam cancelled against a post-trim baseline).
+Thermal drift between CALs is the **differential chain-pair tracker**'s
+job, passive and wire-invisible: adjacent break-FE stamps bracketing
+exactly ONE CRC-verified *silent* instruction (GWRITE, or WRITE/COMMIT
+with NOREPLY or broadcast — shapes no reply can follow, since a
+responder's turnaround rides its clock, not the host's) measure
+`seam + drift·span`. The host's queuing seam is unknown but stationary:
+the mean pair error over the 32 pairs after any trim decision IS the seam
+(baseline), and 128-pair windows read drift as their shift from it —
+anything constant (seam, FE latch offset, entry-path residue) dies in the
+subtraction. Byte-exactness (ring span == the verified footprint) and the
+same 1/16 gate qualify pairs; window verdicts past ±8 k ppm are not
+thermal and are discarded (a seam shift comes from a host behavior change
+the host knows about — it re-anchors with a CAL).
+
+Both feed the oscillator-trim loop (`steps = round(err/step_effect)`,
+clamped ±4/decision; step effect self-measured — chip trim steps are
+nonuniform, 1.4–3.2 k ppm/step measured), applied by the main loop
+between frames; the total is readable at `telemetry.clock.trim_steps`.
+Volatile by design: the host CALs at boot (~4 ms of bus) and at moments
+it knows its own behavior changed — not on a timer; the tracker holds the
+fleet through everything between.
 
 ### 9.4 Config persistence (SAVE)
 

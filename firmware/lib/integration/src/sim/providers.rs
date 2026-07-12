@@ -52,6 +52,12 @@ pub struct DeadlineState {
     /// still matches — stale (superseded) compares are dropped.
     generation: Cell<u64>,
     armed: Cell<Option<u32>>,
+    /// Piecewise-linear skewed clock (§9.3): `local = anchor_local +
+    /// (sim − anchor_sim) · (1 + skew)`. Re-anchoring at a skew change keeps
+    /// the local clock continuous — real oscillators drift, they never step.
+    skew_ppm: Cell<i32>,
+    anchor_sim: Cell<u64>,
+    anchor_local: Cell<u64>,
 }
 
 impl DeadlineState {
@@ -59,11 +65,28 @@ impl DeadlineState {
         Rc::new(Self {
             generation: Cell::new(0),
             armed: Cell::new(None),
+            skew_ppm: Cell::new(0),
+            anchor_sim: Cell::new(0),
+            anchor_local: Cell::new(0),
         })
     }
 
     pub fn generation(&self) -> u64 {
         self.generation.get()
+    }
+
+    /// The servo's local clock at `sim_now`, unwrapped.
+    fn local_u64(&self, sim_now: u64) -> u64 {
+        let d = (sim_now - self.anchor_sim.get()) as i128;
+        let scaled = d * (1_000_000 + self.skew_ppm.get() as i128) / 1_000_000;
+        self.anchor_local.get() + scaled as u64
+    }
+
+    /// Injected drift: the rate changes at `sim_now`, the reading does not.
+    pub fn set_skew(&self, sim_now: u64, ppm: i32) {
+        self.anchor_local.set(self.local_u64(sim_now));
+        self.anchor_sim.set(sim_now);
+        self.skew_ppm.set(ppm);
     }
 }
 
@@ -148,7 +171,6 @@ pub struct SimDeadline {
     core: Rc<RefCell<Core>>,
     state: Rc<DeadlineState>,
     idx: usize,
-    skew_ppm: i32,
 }
 
 impl SimDeadline {
@@ -158,21 +180,9 @@ impl SimDeadline {
         idx: usize,
         skew_ppm: i32,
     ) -> Self {
-        Self {
-            core,
-            state,
-            idx,
-            skew_ppm,
-        }
+        state.skew_ppm.set(skew_ppm);
+        Self { core, state, idx }
     }
-}
-
-/// Sim time scaled by an untrimmed-HSI servo's clock error (§9.3), truncated to
-/// the u32 tick domain the wrap-aware driver expects. UART sampling is left
-/// ideal (data survives far past ±1 %, F10) — only deadline wakes drift.
-fn skewed(now: u64, skew_ppm: i32) -> u32 {
-    let scaled = now as i128 * (1_000_000 + skew_ppm as i128) / 1_000_000;
-    scaled as u32
 }
 
 /// Invert the skew to find how much *sim* time a `delta` of skewed ticks spans.
@@ -188,7 +198,7 @@ impl Deadline for SimDeadline {
     const CLOCK_TRIM_STEP_PPM: u32 = 2500;
 
     fn now(&self) -> u32 {
-        skewed(self.core.borrow().now(), self.skew_ppm)
+        self.state.local_u64(self.core.borrow().now()) as u32
     }
 
     fn set(&mut self, at: u32) {
@@ -197,7 +207,7 @@ impl Deadline for SimDeadline {
         self.state.armed.set(Some(at));
 
         let sim_now = self.core.borrow().now();
-        let now_sk = skewed(sim_now, self.skew_ppm);
+        let now_sk = self.state.local_u64(sim_now) as u32;
         // A past `at` fires immediately — the chip provider pends reached
         // deadlines rather than waiting out the u32 wrap (deadline-mux
         // contract; ISR bodies legitimately overrun pending deadlines).
@@ -207,11 +217,11 @@ impl Deadline for SimDeadline {
         } else {
             delta_sk as u64
         };
-        let mut fire = sim_now + unskew(delta_sk, self.skew_ppm);
+        let mut fire = sim_now + unskew(delta_sk, self.state.skew_ppm.get());
         // Rounding must never land the wake *before* `at` (the driver's `due`
         // check is a >= test) — nudge forward until the skewed clock reaches it.
         let mut guard = 0;
-        while !tick_reached(skewed(fire, self.skew_ppm), at) && guard < 64 {
+        while !tick_reached(self.state.local_u64(fire) as u32, at) && guard < 64 {
             fire += 1;
             guard += 1;
         }

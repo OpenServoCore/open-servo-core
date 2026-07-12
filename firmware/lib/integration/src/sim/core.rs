@@ -71,6 +71,10 @@ pub enum Event {
     /// A servo's tick-compare fired; `generation` guards against a cancelled/re-armed
     /// deadline (stale generations are dropped on delivery).
     Compare { servo: usize, generation: u64 },
+    /// Test-injected oscillator drift (§9.3): servo `servo`'s clock RATE
+    /// becomes `ppm` here, continuously — re-anchored, the reading never
+    /// steps (thermal drift as the tracker sees it).
+    SkewChange { servo: usize, ppm: i32 },
     /// A latched wire fault re-fires after its wake gate reopened (§6 A4
     /// level-pend model); delivered only if still latched with the wake on.
     FaultPend { servo: usize },
@@ -224,10 +228,12 @@ impl Core {
     /// break byte (§3.2 prefix). Overlap here means the wire model let two
     /// frames coexist — a harness invariant break.
     pub fn begin_frame(&mut self, at: u64, talker: Talker) {
-        assert!(
-            self.pending.is_none(),
-            "wire recorder: frame began mid-frame"
-        );
+        if let Some(p) = &self.pending {
+            panic!(
+                "wire recorder: frame began mid-frame — pending at={} end={} talker={:?} bytes={:02X?} new_at={} now={}",
+                p.at, p.end, p.talker, p.bytes, at, self.now
+            );
+        }
         self.pending = Some(PendingFrame {
             at,
             end: self.now,

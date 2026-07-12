@@ -185,8 +185,11 @@ impl Sim {
         (at_us * TICKS_PER_US).max(self.core.borrow().now())
     }
 
+    /// Serialized against the host's own prior traffic: one transmitter
+    /// cannot overlap itself, so a clamped `at_us` queues after
+    /// `host_free_at` instead of colliding on the wire.
     pub fn host_send_at(&mut self, at_us: u64, frame: &[u8]) {
-        let start = self.clamp_at(at_us);
+        let start = self.clamp_at(at_us).max(self.host_free_at);
         self.queue_host_frame(start, frame);
     }
 
@@ -209,6 +212,15 @@ impl Sim {
         c.schedule(Event::HostFrameEnd, break_end);
         drop(c);
         self.host_free_at = break_end;
+    }
+
+    /// Servo `i`'s oscillator rate becomes `ppm` at `at_us` — thermal drift
+    /// as the drift tracker sees it: the rate changes, the clock never steps.
+    pub fn set_servo_skew_at(&mut self, at_us: u64, i: usize, ppm: i32) {
+        let at = self.clamp_at(at_us);
+        self.core
+            .borrow_mut()
+            .schedule(Event::SkewChange { servo: i, ppm }, at);
     }
 
     /// Inject a latched-flag re-fire at servo `i`: the fault vector
@@ -367,6 +379,10 @@ impl Sim {
             Event::WireData { talker, byte, baud } => self.deliver_data(talker, byte, baud),
             Event::WireGarble { byte } => self.deliver_garble(byte),
             Event::RescuePulse => self.deliver_rescue(),
+            Event::SkewChange { servo, ppm } => {
+                let now = self.core.borrow().now();
+                self.handles[servo].deadline.set_skew(now, ppm);
+            }
             Event::HostFrameEnd => self.core.borrow_mut().finalize_frame(),
             Event::Compare { servo, generation } => {
                 // The generation gate is checked at the match instant only: a

@@ -565,8 +565,11 @@ Both feed the unchanged `TrimLoop`: `steps = round(err / step_effect)`,
 clamped ±4, round-to-nearest IS the deadband; step effect self-measured
 (chip steps nonuniform, 1.4–3.2 k ppm; sanity-banded 0.8–4 k); total
 applied via HSITRIM between frames, mirrored read-only at
-`telemetry.clock.trim_steps`. Landing: CAL = trim band 2, chain pairs =
-trim band 3 (this section is rewritten in full there).
+`telemetry.clock.trim_steps`. Wire format, qualification rules, and the
+tracker's baseline mechanics: osc-native §9.3 (normative). DES:
+`tests/trim.rs` — trains converge/reject/watchdog, the tracker follows
+mid-run drift injection, constant seam+skew cancel exactly, solicited
+shapes never pair.
 
 ## 7. First-principles losslessness (the zero-gap argument)
 
