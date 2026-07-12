@@ -484,9 +484,11 @@ fn enum_reply_survives_a_peer_matchers_break() {
     bus.on_break(&mut d);
 
     // The staged reply survives and fires — colliding energy on a real
-    // wire, the signal the walk descends on.
+    // wire, the signal the walk descends on. The trigger sits up to
+    // SLOTS-1 byte-times out (§9.2 slot draw), behind the peer break's
+    // starving-header rechecks — drain generously.
     let mut guard = 0;
-    while !h.wire.started() && h.deadline.armed().is_some() && guard < 8 {
+    while !h.wire.started() && h.deadline.armed().is_some() && guard < 64 {
         fire(&mut bus, &h, &mut d);
         guard += 1;
     }
@@ -499,6 +501,61 @@ fn enum_reply_survives_a_peer_matchers_break() {
     assert_eq!(id, ID);
     assert_eq!(inst.result(), Some(ResultCode::Ok));
     assert_eq!(data.len(), 16, "the full UID ships");
+}
+
+/// §9.2 slot delay: an ENUM reply's trigger rides reply gap + a slot draw —
+/// `(folded uid CRC ^ tick) & (SLOTS-1)` byte-times — so cycle-identical
+/// twin matchers can't answer in unison (a sub-bit-aligned superposition of
+/// near-equal frames reads back as ONE clean frame, task #30). The default
+/// all-zero UID folds to key 0, so the draw here is the tick's low bits.
+/// Plain replies keep the bare grid (s1 pins that side).
+#[test]
+fn enum_reply_draws_its_slot_delay() {
+    let h = Harness::new();
+    let mut bus = h.build(ID, RATE, 60);
+    let shared = shared_seeded();
+    let mut session = Session::new();
+    let mut d = session.dispatcher(&shared);
+
+    let frame = instruction(
+        Id::BROADCAST.as_byte(),
+        Opcode::Mgmt,
+        0,
+        &[MgmtOp::Enum as u8, 0],
+    );
+    let anchor = 100usize;
+    let fp = frame.len();
+    h.ring.place(anchor, &frame);
+    bus.framer.resync(anchor as u16);
+    h.deadline.set_now(1000);
+    h.ring.set_cursor(((anchor + 1) % RING_LEN) as u16);
+    bus.on_break(&mut d);
+
+    let a = h.deadline.armed().expect("deadline A");
+    h.deadline.set_now(a);
+    h.ring.set_cursor(((anchor + fp - 2) % RING_LEN) as u16);
+    bus.on_deadline(&mut d);
+    let end = a.wrapping_add(2 * TPB);
+
+    // Verdict-first: dispatch + sequencing run at deadline B, so the slot
+    // draw reads the clock at exactly `b`.
+    let b = h.deadline.armed().expect("deadline B");
+    h.deadline.set_now(b);
+    h.ring.set_cursor(((anchor + fp) % RING_LEN) as u16);
+    bus.on_deadline(&mut d);
+
+    let draw = (b as u8 & (wire::ENUM_REPLY_SLOTS - 1)) as u32;
+    assert_eq!(
+        h.deadline.armed(),
+        Some(end + REPLY_GAP + draw * TPB),
+        "trigger = reply gap + slot draw"
+    );
+
+    fire(&mut bus, &h, &mut d);
+    drain_tx(&mut bus, &h);
+    let (_, inst, data) = last_reply(&h.wire);
+    assert_eq!(inst.result(), Some(ResultCode::Ok));
+    assert_eq!(data.len(), 16);
 }
 
 #[test]

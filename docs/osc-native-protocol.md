@@ -608,14 +608,30 @@ are garbage — and garbage _is_ the collision signal:
   prefix replies `OK` with its full 16-byte UID; everyone else stays
   silent. Mismatches and malformed queries draw no reply on the broadcast
   wire — a nack storm is the one reply a broadcast must never produce
-  (unicast keeps the §5.3 layer-2 `instruction` verdict). Because colliding
-  IS a matcher's contract, a staged ENUM reply is exempt from any
-  transport wire-safety kill a peer matcher's leading reply-break would
-  trigger — a yielded laggard turns the collision into one clean frame
-  and hides its whole subtree from the walk. Host algorithm:
-  clean reply → unique match; garbled/CRC-fail → collision, descend the
-  prefix tree one bit and retry; timeout → empty subtree. O(bits · N)
-  exchanges, boot-time only.
+  (unicast keeps the §5.3 layer-2 `instruction` verdict). Matching servos
+  are same-die replicas running cycle-identical firmware, so an unguarded
+  collision is a lie waiting to happen: they answer in unison, and two
+  near-equal frames superimposed sub-bit-aligned read back as ONE clean
+  frame — the walk records a unique match and the loser's subtree goes
+  invisible (silicon 2026-07-12: 18/20 pair probes decoded as the
+  dominant servo verbatim; the residue showed literal wire-AND bytes).
+  Two rules keep the collision signal honest:
+  - **Kill exemption** — colliding IS a matcher's contract, so a staged
+    ENUM reply is exempt from any transport wire-safety kill a peer
+    matcher's leading reply-break would trigger.
+  - **Reply slot draw** — an ENUM reply delays its trigger by
+    `(fold(osc-CRC(uid)) XOR tick) mod ENUM_REPLY_SLOTS` byte-times
+    (16 slots). The UID term separates same-reel sequential serials; the
+    free-running tick term (boot-offset + drift entropy) makes every draw
+    fresh, so equal keys cannot hide a pair persistently — unison is a
+    per-probe 1-in-16 accident, never a property of the pair.
+
+  Host algorithm: clean reply with a quiet tail → unique match, CONFIRMED
+  by probing both one-bit children once (twins differing at that bit
+  split deterministically; twins agreeing re-roll their slot draws);
+  trailing energy behind a clean frame, garble, or CRC-fail → collision,
+  descend one bit and retry; timeout → empty subtree. O(bits · N)
+  exchanges plus two confirm probes per servo, boot-time only.
 - `MGMT ASSIGN [uid(16), new_id]` (broadcast): the servo whose UID matches
   takes `new_id` — validated 1..=249 (the sole matcher may nack
   `validation` without colliding), applied immediately so the ack already

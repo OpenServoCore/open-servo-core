@@ -45,12 +45,14 @@ const NO_ARM: Arm = Arm::Buf { off: 0, len: 0 };
 
 enum State {
     Idle,
-    /// `tolerant`: the staged reply may collide with a peer's traffic —
-    /// broadcast-ENUM replies' §9.2 job is to collide, so the composite's
-    /// break-wake kill skips them (a yielded matcher reads back as one clean
-    /// frame and hides its subtree from the walk).
+    /// `slot_key` is present on collision-tolerant replies: broadcast-ENUM
+    /// replies' §9.2 job is to collide, so the composite's break-wake kill
+    /// skips them, and the key (folded UID CRC) draws the reply's slot
+    /// delay — cycle-identical twin matchers otherwise answer in unison,
+    /// and a sub-bit-aligned superposition of near-equal frames reads back
+    /// as one clean frame, hiding the loser's subtree from the walk.
     Staged {
-        tolerant: bool,
+        slot_key: Option<u8>,
     },
     Streaming {
         next: u8,
@@ -108,14 +110,23 @@ impl<W: TxWire> TxEngine<W> {
 
     /// The staged reply is exempt from the break-wake kill (§9.2 ENUM).
     pub fn collision_tolerant(&self) -> bool {
-        matches!(self.state, State::Staged { tolerant: true })
+        self.slot_key().is_some()
     }
 
-    /// Mark the staged reply collision-tolerant (§9.2: an ENUM reply's job
-    /// is to collide with peer matchers). No-op unless a frame is staged.
-    pub fn mark_collision_tolerant(&mut self) {
-        if let State::Staged { tolerant } = &mut self.state {
-            *tolerant = true;
+    /// A collision-tolerant staged reply's slot-delay key (§9.2), else None.
+    pub fn slot_key(&self) -> Option<u8> {
+        match self.state {
+            State::Staged { slot_key } => slot_key,
+            _ => None,
+        }
+    }
+
+    /// Mark the staged reply collision-tolerant with its slot-delay key
+    /// (§9.2: an ENUM reply's job is to collide with peer matchers, offset
+    /// by its slot). No-op unless a frame is staged.
+    pub fn mark_collision_tolerant(&mut self, key: u8) {
+        if let State::Staged { slot_key } = &mut self.state {
+            *slot_key = Some(key);
         }
     }
 
@@ -248,7 +259,7 @@ impl<W: TxWire> TxEngine<W> {
         self.buf.bytes_mut()[off..off + 2].copy_from_slice(&[0, 0]);
         self.result = result;
         self.alert = alert;
-        self.state = State::Staged { tolerant: false };
+        self.state = State::Staged { slot_key: None };
         Ok(())
     }
 

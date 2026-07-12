@@ -6,7 +6,7 @@
 
 use osc_core::traits::{Dispatch, Dispatched, Reply, Request, RequestCtx, SendError, Status};
 use osc_core::{BaudRate, BootMode};
-use osc_protocol::wire::{Id, Inst, Opcode, ResultCode};
+use osc_protocol::wire::{ENUM_REPLY_SLOTS, Id, Inst, Opcode, ResultCode};
 
 use super::chain::{Chain, ChainOut};
 use super::decode::{Decoded, decode};
@@ -897,10 +897,23 @@ impl<P: Providers> ServoBus<P> {
     /// measured from the packet end (§7), not from this (later) verify wake —
     /// the estimate is the framer's, conservative by the drift adder.
     fn sequence_reply(&mut self, slot: u8, packet_end: u32) {
+        // §9.2 slot delay: a collision-tolerant reply offsets its trigger by
+        // (key ^ tick) & (SLOTS-1) byte-times. Twin matchers run
+        // cycle-identical firmware and otherwise answer in unison — and a
+        // sub-bit-aligned superposition of near-equal frames reads back as
+        // ONE clean frame instead of collision garble (task #30). The tick
+        // term re-draws every exchange, so equal keys never stick.
+        let gap = match self.tx.slot_key() {
+            Some(key) => {
+                let draw = (key ^ self.deadline.now() as u8) & (ENUM_REPLY_SLOTS - 1);
+                self.reply_gap().wrapping_add(draw as u32 * self.tpb)
+            }
+            None => self.reply_gap(),
+        };
         let out = self.chain.on_reply_staged(
             slot,
             packet_end,
-            self.reply_gap(),
+            gap,
             self.reclaim(),
             self.frame_allowance(),
         );
@@ -933,7 +946,8 @@ impl<P: Providers> ServoBus<P> {
             _ => return None,
         };
         // §9.2: an ENUM reply's staged wire effect is collision-tolerant —
-        // its job is to collide with peer matchers (the on_break kill site).
+        // its job is to collide with peer matchers (the on_break kill site
+        // skips it, and staging keys its slot delay off the UID payload).
         let tolerant = matches!(req, Request::Enumerate { .. });
         // Disjoint field borrows: `frame`/`req` hold `&self.ring`; the handle
         // takes the reply-staging fields mutably.
@@ -947,13 +961,10 @@ impl<P: Providers> ServoBus<P> {
             pending_cal: &mut self.pending_cal,
             response_deadline_us: &mut self.response_deadline_us,
             staged: false,
+            tolerant,
         };
         let out = f(req, ctx, &mut handle);
-        let staged = handle.staged;
-        if staged && tolerant {
-            self.tx.mark_collision_tolerant();
-        }
-        Some((staged, slot, out))
+        Some((handle.staged, slot, out))
     }
 
     /// A reply surface over the deferred-config fields, with no request decode —
@@ -970,6 +981,7 @@ impl<P: Providers> ServoBus<P> {
             pending_cal: &mut self.pending_cal,
             response_deadline_us: &mut self.response_deadline_us,
             staged: false,
+            tolerant: false,
         }
     }
 
@@ -1076,6 +1088,18 @@ struct ReplyHandle<'a, W: TxWire, C: CrcEngine> {
     pending_cal: &'a mut Option<(u16, u8)>,
     response_deadline_us: &'a mut u16,
     staged: bool,
+    /// §9.2: the request is a broadcast ENUM — a reply staged through this
+    /// handle is marked collision-tolerant, keyed off its own payload (the
+    /// responder's UID) for the slot draw.
+    tolerant: bool,
+}
+
+/// §9.2 slot key: the reply payload IS the responder's UID for ENUM — fold
+/// its osc-CRC to a byte. The CRC mixing keeps same-reel sequential serials
+/// apart; sequencing XORs in the live tick, so equal keys still re-roll.
+fn slot_key(payload: &[u8]) -> u8 {
+    let crc = osc_protocol::crc::osc_crc(payload);
+    (crc ^ (crc >> 8)) as u8
 }
 
 impl<W: TxWire, C: CrcEngine> Reply for ReplyHandle<'_, W, C> {
@@ -1085,6 +1109,9 @@ impl<W: TxWire, C: CrcEngine> Reply for ReplyHandle<'_, W, C> {
             .stage(self.crc, *self.id, status.result, status.alert, status.data);
         if r.is_ok() {
             self.staged = true;
+            if self.tolerant {
+                self.tx.mark_collision_tolerant(slot_key(status.data));
+            }
         }
         r
     }
@@ -1100,6 +1127,12 @@ impl<W: TxWire, C: CrcEngine> Reply for ReplyHandle<'_, W, C> {
             .stage_gather(self.crc, *self.id, result, alert, spans);
         if r.is_ok() {
             self.staged = true;
+            if self.tolerant {
+                let crc = spans
+                    .iter()
+                    .fold(0, |c, s| osc_protocol::crc::osc_crc_continue(c, s));
+                self.tx.mark_collision_tolerant((crc ^ (crc >> 8)) as u8);
+            }
         }
         r
     }

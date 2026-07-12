@@ -1,5 +1,7 @@
-//! Reference osc-CRC-16 (`docs/osc-native-protocol.md` §3.2). Host/test only;
-//! servos use the SPI CRC engine. Bitwise, no table — smallest code wins.
+//! Reference osc-CRC-16 (`docs/osc-native-protocol.md` §3.2). Servos use the
+//! SPI CRC engine for frame spans; this software flavor covers the odd-byte
+//! tail fold (§3.2) and the ENUM slot key (§9.2). Bitwise, no table —
+//! smallest code wins.
 //!
 //! Flavor: **CRC-16/ARC** — poly `0x8005` reflected (`0xA001`), init `0x0000`,
 //! reflected input and output, no output XOR. Check: `crc("123456789") =

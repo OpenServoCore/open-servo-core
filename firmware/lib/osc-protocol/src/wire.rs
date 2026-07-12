@@ -237,6 +237,14 @@ pub const MAX_PAYLOAD: u8 = 252;
 /// ESIG leaves the top four bytes zero); no catalog MCU exceeds 128 bits.
 pub const UID_LEN: usize = 16;
 
+/// §9.2 ENUM reply slots: a broadcast-ENUM reply delays its trigger by
+/// `0..ENUM_REPLY_SLOTS` byte-times, drawn from the responder's UID CRC
+/// XOR its free-running tick. Same-die matchers run cycle-identical
+/// firmware and otherwise answer in unison — and two near-equal frames
+/// superimposed sub-bit-aligned read back as ONE clean frame instead of
+/// the collision garble the walk descends on.
+pub const ENUM_REPLY_SLOTS: u8 = 16;
+
 /// TX-buffer alignment byte at offset 0 (§3.2): keeps the hardware CRC feed
 /// halfword-aligned and even; a CRC no-op (leading zero, init = 0). Not part
 /// of the wire checksum definition.
