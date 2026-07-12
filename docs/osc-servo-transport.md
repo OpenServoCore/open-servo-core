@@ -21,8 +21,15 @@ aliasing (`osc-native-protocol.md` §9.1). RING-CADENCE TIME (2026-07-09):
 the FE clock is DELETED — every aim and estimate projects `now + missing
 byte-times` from live ring state (§6 A1), reply gap is a fixed 12 µs at every
 baud (§7 spec change), and the turnaround U-shape's low side is gone
-(0.5M ping 47.6 → 35.6 µs). Companion pillars:
-`osc-native-protocol.md` (the wire), `driver-pattern.md` (the layering).
+(0.5M ping 47.6 → 35.6 µs). LBD BREAK WAKE (2026-07-12): the receive
+wake moved from the FE error flag to the length-qualified LIN break
+detector (LINEN off, write-0 clear at entry, EIE never enabled) — real
+errors no longer interrupt at all, and the §6 A4 storm throttle, its
+mute/poll/restore chain, and the release-point flag retire are DELETED
+(silicon: `lbd_wake` bringup spike 14/14; the mute's broken restore
+chain was the fleet's deaf-to-rescue wedge). Companion pillars:
+`osc-native-protocol.md` (the wire; §3.4 is the two-signal contract),
+`driver-pattern.md` (the layering).
 Code is authoritative; when this doc and the code disagree, fix the doc.
 
 Measured turnarounds (instruction wire-end → status break fall; read = 16 B,
@@ -110,9 +117,9 @@ CRC. Software is three pure state machines (`Framer`, `Chain`, `TxEngine`)
 composed by `ServoBus`, driven by exactly two interrupt vectors at one
 priority, whose only jobs are to compute two kinds of numbers — *where*
 frames sit in the ring, and *when* something is due — and to react to two
-kinds of events: "a break happened" (USART framing error) and "it is time
-now" (one tick comparator, multiplexed over every deadline the transport
-has).
+kinds of events: "a break happened" (the USART's length-qualified LIN
+break detector) and "it is time now" (one tick comparator, multiplexed
+over every deadline the transport has).
 
 ## 2. Hardware ledger
 
@@ -121,7 +128,7 @@ Every hardware resource the transport touches, and its duty cycle:
 | resource        | role                                             | budget/event |
 |-----------------|--------------------------------------------------|--------------|
 | USART1          | half-duplex wire; HDSEL, no self-echo (F9)       | —            |
-| USART1 vector   | PFIC HIGH. (a) FE/RX-error = break/garble event (never reads DATAR — flags self-clear via the CH5 drain; a latched leftover is retired at reply release, §6 A4); (b) TC = TX arm drained | FE body ~1 µs; TC body ~2–4 µs/arm |
+| USART1 vector   | PFIC HIGH. (a) LBD = break wake (length-qualified ≥10-bit low; flag-selective write-0 clear at entry, never a DATAR read; FE/NE/ORE have no interrupt enable — they latch silently, §6 A4); (b) TC = TX arm drained | break body ~1 µs; TC body ~2–4 µs/arm |
 | SysTick CNT/CMP | the transport clock (48 MHz, 32-bit) + the ONE comparator | — |
 | SysTick vector  | PFIC HIGH. Deadline mux: framer A/B, covered, chain trigger, rescue confirm — and dispatch, inline (every class except verdict-first runs at the covered checkpoint or the fast path) | arithmetic slots ~1–5 µs; dispatch bodies ~10–70 µs |
 | DMA1 CH5        | USART1 RX → 512 B ring, circular, silent (no IRQ); **VERYHIGH, alone atop the ladder** (§6 A4) | zero CPU |
@@ -164,7 +171,7 @@ ticks, or re-introducing an isolation lane).
 ## 3. One exchange, tick by tick (ping at 1M; byte-time = 10 µs)
 
 ```
-t=0    break's wire end. DMA has already ringed the 0x00. FE ISR (~2 µs) —
+t=0    break's wire end. DMA has already ringed the 0x00. LBD ISR (~2 µs) —
        a pure wake: the framer resolves from ring data, projects deadline A
        = now + 3 byte-times at wire pace + ½ byte for the break tail [F5],
        and arms rescue candidacy. No timestamp is recorded.
@@ -274,22 +281,22 @@ term, which is why it was reverted.
 
 ## 6. Amendments
 
-### A1 — ring-cadence time: the FE carries nothing
+### A1 — ring-cadence time: the break wake carries nothing
 
-A1 originally kept one timestamp — the newest FE delivery tick — as the
-frontier frame's clock anchor. DELETED (ring-cadence band, 2026-07-09):
-the FE now carries neither position (A2) nor time; it is a pure wake, and
-its handler does only the bounded wire work (staged-reply kill, chain
-suspend, rescue-candidacy arming). Every aim and estimate is instead
-projected from live ring state at each resolve:
+A1 originally kept one timestamp — the newest break-wake delivery tick —
+as the frontier frame's clock anchor. DELETED (ring-cadence band,
+2026-07-09): the wake now carries neither position (A2) nor time; it is
+a pure wake, and its handler does only the bounded wire work
+(staged-reply kill, chain suspend, rescue-candidacy arming). Every aim
+and estimate is instead projected from live ring state at each resolve:
 
 ```
 aim / estimate = now + missing·tpb (+ span·tpb ≫ 6 drift pad)
 ```
 
 `now` and the cursor advance together, so ISR delivery lag — the thing the
-timestamp inherited wholesale (a 60 µs-late FE made the reply 60 µs late) —
-cancels out of the projection. The error is bounded by one byte-time plus
+timestamp inherited wholesale (a 60 µs-late wake made the reply 60 µs
+late) — cancels out of the projection. The error is bounded by one byte-time plus
 one wake latency and is always on the LATE side: a byte counted as missing
 can only finish sooner than assumed, so a reply grid measured from the
 estimate never fires into its own frame's tail (the reply gap safety
@@ -298,7 +305,7 @@ checkpoint, where missing ≤ 2 makes it tightest. Aims are self-pacing for
 free: a stalled wire re-projects at each wake ≥ one byte-time out, which
 deleted the recheck/park budget machinery wholesale; the 64-byte-time
 progress-idle horizon remains the sole death authority. One epsilon
-survives, on header aims only: the break rings at its FE point ~4
+survives, on header aims only: the break rings at its wake point ~4
 bit-times before the line rises [F5], so the first data byte sits that far
 outside the byte cadence. Cursor reads survive only at provably-quiet
 bootstrap moments: boot (position 0 by construction) and rescue confirm (a
@@ -362,7 +369,7 @@ waits out any running dispatch body (the old soft-timing tail, up to
 ~70 µs on the wrong day).
 
 **(b) Cost carve-out: heavy phases hop to LOW, timing stays at HIGH.**
-HIGH keeps everything bounded: FE body, deadline arithmetic, framer
+HIGH keeps everything bounded: break-wake body, deadline arithmetic, framer
 resolution (ladder walks + header parse), covered-checkpoint CRC feed,
 verify + tail fold at the end, commit (a staged-write apply), reply
 sequencing + trigger, TX arms, and snoop handling (CRC-free since the side
@@ -453,74 +460,47 @@ the feed reads it). With RX on top the break byte is always ringed before
 `on_break` reads the cursor, so the framer needs no FE-promise. Silicon:
 25k/25k zero-gap hot loops at 2M and 3M with zero no-reply/stale.
 
-The ladder protects only the byte already in RDR. The RX/error path must
-additionally never read DATAR (2026-07-09, the former "low-baud
-residual"): a CPU DATAR read while a byte is mid-reception kills the byte
-in the SHIFTER — no flag, no ring entry, no NDTR count — and no drain
-priority can help, because the byte dies before a DMA request ever
-exists. The window scales with bit time: unhittable at 2M/3M, rare at
-≤1M, and one alignment (idle-entry FE handler body ≈ first-byte
-completion at 1M) made it systematic. The flag clear therefore splits by
-mechanism (FE/ORE/NE/PE stay read-only; write-0 is bench-disproven — the
-vector storms):
+The ladder protects only the byte already in RDR. A CPU DATAR read while
+a byte is mid-reception additionally kills the byte in the SHIFTER — no
+flag, no ring entry, no NDTR count — and no drain priority can help,
+because the byte dies before a DMA request ever exists (2026-07-09, the
+former "low-baud residual"; the window scales with bit time — unhittable
+at 2M/3M, systematic at 1M under one alignment). So nothing on the
+receive side ever touches DATAR: the break wake's LBD clear is a
+flag-selective STATR write (all bits 1, LBD's bit 0 — a constant write,
+never an RMW, which would race concurrently-setting rc_w0 bits and arm
+the SR half of the error-clear pair), and the error flags are never
+cleared at all.
 
-- **Drain-side, the normal case:** a STATR read arms the SR half of the
-  SR-then-DR sequence and the CH5 drain's own DATAR access is the DR
-  half — every flag-setting event rings a byte (F2/F4), so flags
-  self-clear within a bit-time. An exit before the drain lands re-enters
-  once with STATR clean, which is why any non-TC entry is treated as an
-  RX error regardless of surviving flags.
-- **Release-point, the latched corner:** a flag whose byte drained before
-  any STATR read never formed the pair and stays latched — e.g. a lagged
-  FE delivery on a burst's LAST frame, whose reply produces no further RX
-  drains. Left alone it storms the vector once the wire idles (bench
-  signature: the first ack-bearing exchange after a hot-loop leg dies).
-  A garble tail with no reply leaves the same latch with no release to
-  retire it, and the storm's armed SR-half is then completed by the NEXT
-  frame's break-byte drain — consuming the flag at the very event that
-  should have re-fired the vector. That frame would sit complete but
-  unresolved (bench 2026-07-10: the post-garble one-instruction-late
-  residue); the composite closes it with the evidence-in-flight recheck —
-  a wire-fault service backed by no fresh ring bytes arms a one-byte-time
-  framer recheck, so the frame resolves by data even when its FE was eaten.
-  `TxWire::release` retires it with an SR-DR-SR clear while our push-pull
-  drive still holds the line high — no byte can be mid-reception, so the
-  DATAR read is provably safe there. The trailing STATR read is
-  load-bearing: a DATAR read consumes the armed SR-half, and without the
-  re-arm the NEXT break cannot drain-self-clear — its FE re-fires until
-  the first data byte lands, dragging the frontier tick and the reply
-  grid with it (bench: +12 µs of ping turnaround at 0.5M with a plain
-  SR-DR clear; flat with the trailing re-arm).
-- **Storm throttle, the quiet-bus corner:** the same garble-tail latch has
-  no release point (nothing staged to send) and no next drain in sight —
-  with level-pend PFIC the vector re-enters continuously until the next RX
-  byte, a silent burn at transport priority that starves the motor kernel
-  for the whole inter-frame gap (correctness-neutral since the
-  evidence-in-flight recheck; pure CPU theft). Zero ring progress since the
-  last fault is only the storm's SUSPECT signature — the routine mid-burst
-  latch looks identical for one byte-time (a NOREPLY frame has no release
-  to retire its flag, and its lagged re-entry lands just before the next
-  frame's bytes), and muting at the fault service made a muted wake miss
-  live breaks (bench 2026-07-11: hot GWRITE+COMMIT+GREAD chains fell
-  95%→83%, silent slots + mid-stream fence drops). So the fault service
-  only records the suspect cursor; the verdict is the recheck's: a
-  deadline that finds the framer idle with the cursor still unmoved mutes
-  the fault wake (`LineSense::set_fault_wake`, chip: EIE — flags keep
-  latching and DMAR keeps ringing), bounding the storm to ~one byte-time
-  of re-entries, and the deadline slot polls the ring at
-  `FAULT_MUTE_POLL_BYTE_TIMES` instead, with a line-low mirror
-  (gated on an empty rescue slot, so sub-100 µs polls never push a pending
-  confirm out) keeping rescue pulses detectable. Ring progress is the
-  all-clear — the drain that moved the cursor completed the storm entry's
-  armed SR-half and retired the flag — and restores the wake; a reply
-  release restores it too (its SR-DR-SR clear needs no ring progress to be
-  pend-safe). Bounds: one deadline service per poll while quiet, and the
-  first post-garble frame resolves at most the poll cadence late.
+That last clause is the 2026-07-12 simplification. With the wake on LBD,
+FE/NE/ORE have no interrupt enable — EIE stays 0 from boot — so a
+latched error flag pends nothing, storms nothing, and needs no retire
+protocol. The entire flag-clear machinery this section used to specify
+(the drain-side SR-then-DR pairing discipline, the release-point
+SR-DR-SR retire under own drive with its load-bearing trailing STATR
+read, and the storm throttle: suspect cursor, `set_fault_wake` mute,
+`FAULT_MUTE_POLL` ring poll with the line-low rescue mirror, and two
+restore paths) is DELETED, not relocated. The flags still self-clear
+incidentally when ordinary traffic pairs a STATR read with the drain's
+DATAR access, but nothing observes or depends on it.
 
-Silicon: 12k/12k plain floods at 1M and 0.5M (production shape) with the
-RX-path DATAR read removed (vs 44/12k with it present); hot-loop matrix
-green at all four bauds with the conditional release-point clear, ping
-turnarounds flat vs the pre-fix baseline at every baud.
+What forced the deletion beyond leanness: the throttle's restore chain
+had a structural hole — restore ran only from the deadline ISR, whose
+arming the mute-poll itself maintained through a shared slot other
+consumers could steal — and one stolen link left a servo permanently
+deaf: EIE off, every deadline dead, both rescue paths behind the muted
+wake (fleet autopsy 2026-07-12, task #29 — wrong-baud garble marination
+alone wedged non-DUT servos; `wlink reset` revived). A wake that never
+needs muting is the fix; a better throttle would have been another
+bandaid.
+
+Silicon: 12k/12k plain floods at 1M and 0.5M with the RX-path DATAR read
+removed (vs 44/12k with it present); and for the LBD regime, the
+`lbd_wake` bringup spike — law breaks 2000/2000 intact with the write-0
+clear running mid-traffic, zero vector entries across framing-error
+injection and high-baud garble, post-marination reception perfect with
+FE latched throughout, entries == breaks for the whole run (14/14
+verdicts, 2026-07-12).
 
 ### A5 — clock trim: the CAL break-pair ruler (frontier estimator DELETED)
 
@@ -547,18 +527,18 @@ has the truth (it owns the crystal — the syntonization tree's root):
 
 - **Absolute, rarely — MGMT CAL.** Broadcast instruction announcing N
   breaks spaced exactly T µs; the servo stamps `deadline.now()` at each
-  break-FE entry, gates each gap at |Δ−T| ≤ T/16, and trims off the sum.
+  break-wake entry, gates each gap at |Δ−T| ≤ T/16, and trims off the sum.
   Entry latency cancels same-flavor; ~±260 ppm from 8 × 400 µs gaps.
   Fired at boot (≥2 trains — the first identifies the chip's step
   effect, §9.3 boot guidance) and at host-known events, not on a timer.
   Break decode is threshold-free across the full HSITRIM throw, so CAL
   also rescues a railed servo.
-- **Differential, continuously — chain pairs.** Break-FE stamps of
+- **Differential, continuously — chain pairs.** Break-wake stamps of
   adjacent host instructions (GWRITE→COMMIT seams):
   `err = measured − footprint·tpb = seam + drift·span`. The host's
   queuing seam is unknown but stationary; a baseline captured right after
   each trim application subtracts it, so windows read pure drift. Any
-  constant — seam, FE latch offset, ISR flavor residue — dies in the
+  constant — seam, detector latch offset, ISR flavor residue — dies in the
   subtraction; only changes survive, and the sanity band catches
   non-thermal jumps.
 
@@ -576,7 +556,7 @@ shapes never pair.
 
 1. Capture: every byte is DMA'd regardless of CPU state; breaks pend and
    may coalesce, but A2 derives frame positions from the stream, so a
-   coalesced or delayed FE costs nothing — the fast path recovers every
+   coalesced or delayed wake costs nothing — the fast path recovers every
    completed frame from data.
 2. Backlog: bounded by the ring (512 B ≈ 15 minimal hot-loop frames). The
    consumer outruns the wire (~2× worst case today, improving with decode
@@ -629,9 +609,12 @@ shapes never pair.
 ## 9. Glossary
 
 - **break** — line held low ≥ a byte-time; the out-of-band frame
-  delimiter. Rings as one 0x00 byte, raises FE.
-- **garble** — an FE that is not a break: a corrupted byte (slot occupied,
-  CRC will fail) or a phantom byte (noise-invented byte between frames).
+  delimiter. Rings as one 0x00 byte, sets LBD — the transport's only
+  receive wake (FE latches too, unserviced).
+- **garble** — line damage that is not a break: a corrupted byte (slot
+  occupied, CRC will fail) or a phantom byte (noise-invented byte between
+  frames). Raises no wake at all (sub-10-bit lows are invisible to the
+  detector, errors never interrupt); dies by data.
 - **anchor / footprint** — a frame's start index in the ring / its total
   ring length including the break byte (always even).
 - **covered span** — everything the CRC protects: the frame minus its two

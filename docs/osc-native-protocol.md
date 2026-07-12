@@ -90,9 +90,11 @@ timing model exact — the framer's footprint algebra and the §9.3
 chain-pair gates count the break as one byte slot, so an over-long
 break is a constant error tax on every span — and the law shape is
 precisely the LIN break definition (LBDL=0), so any LIN-capable
-receiver (bridge-class hosts) gets hardware break detection with a
-deterministic 10-bit anchor. Hardware `SBK` is off-law (~14 bit-times
-measured, F5).
+receiver gets hardware break detection with a deterministic 10-bit
+anchor. Every node on the bus uses it: the pirate, bridge-class hosts,
+and the servo itself (LBD-sans-LINEN break wake, §3.4 — the detector
+runs with the LIN engine off on the target silicon [F15]). Hardware
+`SBK` is off-law (~14 bit-times measured, F5).
 
 **Receivers stay length-tolerant**: any ≥10-bit dominant span is one
 break (rescue pulses, garble, and F3 all require this). Both ends are
@@ -102,14 +104,15 @@ V006 reply path replaced `SBK` with the bracketed-M `0x00` character
 
 Measured break behavior that the framer relies on:
 
-- FE raises exactly one ERR interrupt per break, 1:1 at 3 M from an HSE
-  host, and the break rings as exactly one `0x00` byte via DMA [F1][F2].
-- A break of _any_ length is exactly one event — the receiver re-arms only
-  on a fresh falling edge, so long breaks cannot spam [F3].
-- A mid-frame framing error does not halt reception: the garbled byte rings
-  and the stream continues; consecutive FE bytes coalesce into one IRQ, so
-  the FE IRQ is an event marker, never a counter. Ring + NDTR are the only
-  ground truth [F4].
+- The break detector (LBD, LINEN off) fires 1:1 per law break and the
+  break rings as exactly one `0x00` byte via DMA [F15][F1][F2].
+- A break of _any_ length is exactly one event — the detector re-arms only
+  on a fresh falling edge, so long breaks cannot spam [F3][F15].
+- A mid-frame framing error does not halt reception: the garbled byte
+  rings and the stream continues [F4] — and it raises nothing at all
+  (sub-10-bit lows are invisible to the detector, and no interrupt is
+  enabled on the error flags, §3.4 [F15]). Ring + NDTR are the only
+  ground truth.
 - Hardware `SBK` sends ~14-bit breaks (4.7 µs at 3 M, zero variance,
   both chip families) [F5] — which is why the law shape is a 9-bit
   `0x00` character, not `SBK`; receivers accept both (≥10 = break).
@@ -135,7 +138,7 @@ BREAK | ID | LEN | INST | payload[0..p] | CRC_lo | CRC_hi
   per-transfer capability limits (§5.1). Fleet-scale group ops fit
   comfortably (§5.1); bigger transfers split into frames. A corrupted
   `LEN` cannot wedge the framer: the frame fails CRC at deadline B, and
-  any subsequent break re-anchors (FE fires in LOCKED too).
+  any subsequent break re-anchors (the break wake fires in LOCKED too).
 - `INST` — bit 7: `0` = instruction, `1` = status (snoopers classify frames
   without state; there is no status opcode). Instructions: bits [6:4]
   opcode, bits [3:0] flags (§5). Status: bits [6:2] result code, bit 1
@@ -217,50 +220,69 @@ normative — see §3.4.
 
 ### 3.4 Fault contract (normative)
 
-Break framing deliberately unifies the frame delimiter with the
-hardware's error indicator: on the target silicon a wire fault
-(FE/ORE/NE) is a **latched, level-pended, positionless flag**. It
-coalesces (N events, one flag), it re-fires until a data-register access
-retires it (which is unsafe mid-stream), its service lags the wire by an
-unbounded amount at high interrupt occupancy, and reply-less traffic
-(`NOREPLY` writes, broadcasts) leaves it latched indefinitely because
-nothing transmits to retire it. The flag therefore carries **exactly one
-bit of meaning: "look at the ring again."**
+The target silicon exposes two distinct receive-side signals, and the
+protocol binds them to two distinct roles (2026-07-12, [F15]):
+
+- **The break detector (LBD) is the wake.** It is length-qualified —
+  only a genuine ≥10-dominant-bit span sets it, the exact §3 law shape —
+  it runs with the LIN engine off, it clears by a safe flag-selective
+  write (no data-register access), and any-length span raises exactly
+  one event. It is the ONLY receive interrupt an implementation enables.
+- **The per-character error flags (FE/ORE/NE) are not events at all.**
+  They are latched, positionless, coalescing, and unsafe to retire
+  mid-stream — so no interrupt is ever enabled on them. They latch
+  silently, self-clear incidentally under DMA drain traffic, and MAY be
+  polled from a cold path as line-noise telemetry; nothing else may read
+  them, and no decision may derive from them.
+
+A real error therefore never interrupts anything. Its consequences
+surface exactly where data-driven handling already looks: a corrupted
+byte fails its frame's CRC verdict (drop + count, no reply, host
+timeout+retry); a noise byte between frames rings into junk the next
+break's resolution scans off; a corrupted LEN mis-strides and dies at
+the next geometry check or CRC. Reception itself never halts on an
+error character [F4].
 
 The contract, binding on every implementation of this protocol:
 
-- **Positions come from ring data only** (§4.1). A fault event MUST NOT
+- **Positions come from ring data only** (§4.1). A break event MUST NOT
   be assigned a position; no frame may be dropped, killed, or rejected
-  on fault evidence. Data is the only death authority: CRC verdicts,
+  on wake evidence. Data is the only death authority: CRC verdicts,
   geometry checks, and the starve horizon.
 - **Times come from data-cadence projections only** (`now + missing
-  byte-times`). A fault's arrival time MUST NOT enter any timing grid.
-- **Faults are not countable events.** N faults and 1 fault are
-  indistinguishable after coalescing; all fault handling MUST be
-  idempotent.
-- Fault-path code MAY do two things and nothing else: **schedule a
-  re-inspection of the ring** (a recheck/poll — the wake's evidence may
-  be one byte-time behind it), and **manage its own wake channel** (mask
-  a storming source once the ring proves the wire quiet, re-enable on
-  data progress). Neither derives meaning from the event.
+  byte-times`). A wake's arrival time MUST NOT enter any timing grid.
+  (The one exception is the §9.3 trim machinery, whose entire subject is
+  the break-service stamp itself — gated, paired, and baseline-anchored
+  there.)
+- **Breaks are not countable events.** Service can lag the wire, and N
+  breaks can coalesce into one service; all break handling MUST be
+  idempotent, and freshness (did bytes ring since the last service?)
+  MUST be derived from the ring, never assumed.
 
-**The accepted limitation** (the price of the unification): garble that
-forms a plausible frame header parks the resolver until data kills it —
-footprint-fill CRC (≤ 258 bytes) or the starve horizon (64 byte-times of
-ring silence), whichever comes first, per plausible junk anchor. Recovery
-is always bounded and converges at the first CRC verdict; it is not
-instant. **Host pacing rule:** after traffic a servo may have received as
-garble (wrong-baud probing, bus glitches), allow one starve horizon of
-bus silence before expecting crisp turnarounds; under continuous
-zero-gap retries, replies can lag by up to the parked span until a gap
-appears.
+**The accepted limitation** (the price of break-framed delimiting):
+garble that forms a plausible frame header parks the resolver until data
+kills it — footprint-fill CRC (≤ 258 bytes) or the starve horizon (64
+byte-times of ring silence), whichever comes first, per plausible junk
+anchor. The length qualification shrinks that surface: only garble
+containing a genuine ≥10-bit dominant span (slower-baud traffic heard at
+a faster-configured servo) can wake the resolver into junk at all —
+noise and faster-baud garble ring silently and cost nothing until the
+next real break [F15]. **Host pacing rule:** after traffic a servo may
+have received as garble (wrong-baud probing, bus glitches), allow one
+starve horizon of bus silence before expecting crisp turnarounds; under
+continuous zero-gap retries, replies can lag by up to the parked span
+until a gap appears.
 
-History, so this path is not re-walked: two shipped attempts to extract
-more than the one bit — a positional fault fence and a service-time wake
-mute — each passed every quiet-wire test and then killed live frames
-under multi-node burst load, the same way (service-time cursors lie
-under lag and latch re-fires). The failure analysis lives in
-`osc-servo-transport.md` §6.
+History, so this path is not re-walked: when the wake lived on the error
+flags (FE, pre-2026-07-12), two shipped attempts to extract more than a
+wake from them — a positional fault fence and a service-time wake mute —
+each passed every quiet-wire test and then killed live frames under
+multi-node burst load the same way (service-time cursors lie under lag
+and latch re-fires), and the mute's restore chain wedged fleet servos
+deaf to rescue under garble marination. The failure analysis lives in
+`osc-servo-transport.md` §6; the resolution was moving the wake to LBD
+and deleting the storm apparatus outright — with no error interrupt
+there is nothing to throttle.
 
 ## 4. Servo RX/TX paths
 
@@ -271,8 +293,8 @@ cursor, never reloaded (reloading drops or latches requests — the #134
 class; and since anchors may sit at any parity, §3.2, nothing ever needs
 a reload). Two states:
 
-- **HUNT** — on FE IRQ (break): record the anchor = current ring position
-  (the `0x00` just ringed). Enter LOCKED.
+- **HUNT** — on the break wake (LBD): record the anchor = current ring
+  position (the `0x00` just ringed). Enter LOCKED.
 - **LOCKED** — deadline A at anchor + 3 byte-times + a half-byte-time of
   wake slack: the full header (ID, LEN, INST) is in the ring — read it,
   compute frame end, prime the dispatcher from INST, set deadline B at
@@ -542,8 +564,9 @@ untouched, nothing persisted. A reboot exits rescue back to the configured
 baud. The signal itself is baud-agnostic (raw GPIO low suffices at the
 host), so it reaches a servo whose rate is unknown, and it unifies a
 mixed-rate bus onto one channel in a single pulse. Detection costs nothing
-extra: the FE ISR samples the pin level — a normal break has risen by ISR
-entry [F5], a rescue low has not; a SysTick recheck ~100 µs later, and a
+extra: the break-wake ISR samples the pin level — LBD sets at bit 10 of
+the span [F15], so a normal break has risen by ISR entry while a rescue
+low has not; a SysTick recheck ~100 µs later, and a
 second sample a byte-time after a passing first, confirm the span. The
 second sample makes the confirm aliasing-proof: a host TX stall can park
 the first sample inside a data byte's low bits with the ring cursor frozen
@@ -622,7 +645,7 @@ explicit and hardware-anchored:
 **`MGMT CAL [gap_us(2 LE), gaps(1)]` (broadcast ONLY).** The host follows
 the frame with `gaps + 1` bare breaks spaced exactly `gap_us` apart, its
 crystal (any timer/DMA pacing) keeping the spacing. Each servo stamps its
-tick at every break-FE service entry: both ends of every gap ride the
+tick at every break-wake service entry: both ends of every gap ride the
 SAME ISR path, so entry latency cancels in the difference, and what
 remains is clock skew plus sub-µs jitter — ~±260 ppm from 8 × 400 µs
 gaps, a tenth of the smallest trim step. Contract and hygiene:
@@ -642,7 +665,7 @@ gaps, a tenth of the smallest trim step. Contract and hygiene:
   the layer a bad trim breaks.
 
 Thermal drift between CALs is the **differential chain-pair tracker**'s
-job, passive and wire-invisible: adjacent break-FE stamps bracketing
+job, passive and wire-invisible: adjacent break-wake stamps bracketing
 exactly ONE CRC-verified *silent* instruction (GWRITE, or WRITE/COMMIT
 with NOREPLY or broadcast — shapes no reply can follow, since a
 responder's turnaround rides its clock, not the host's) measure
@@ -744,3 +767,4 @@ rev B `wire-buffered` board config keeps them).
 | F12 | DMA rounds odd MAR down; no unaligned 16-bit reads                                         | spi_crc case 10       |
 | F13 | EXTI edge ISRs storm during traffic (own TX stretched 3×)                                  | trim sweep gotcha     |
 | F14 | data decodes clean at ±3.4 % in both TX and RX directions                                  | trim sweep            |
+| F15 | LBD runs sans LINEN, both chip families: length-qualified (≥10-bit spans only — 0 fires on framing-error injection and high-baud garble), safe flag-selective write-0 clear mid-traffic, one event per any-length span, sets at bit 10, entry stamps 4 ticks p-p on a 400 µs grid; latched FE/NE/ORE with no interrupt enabled are harmless through marination | lbd_wake spike (V006, 2026-07-12); pirate LIN RCA (V203) |
