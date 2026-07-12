@@ -309,6 +309,17 @@ impl Client {
         self.expect_ok(&format!("LOWPULSE us={us}"))
     }
 
+    /// Break-framed `announce` then `breaks` bare breaks on an exact
+    /// `gap_us` grid, paced by the pirate's crystal — the MGMT CAL train
+    /// (§9.3). One pirate command: USB gaps between announce and train
+    /// would blow the servo's 2-gap watchdog.
+    pub fn cal_train(&mut self, announce: &[u8], gap_us: u32, breaks: u32) -> Result<()> {
+        self.expect_ok(&format!(
+            "CAL bytes={} gap_us={gap_us} breaks={breaks}",
+            hex(announce)
+        ))
+    }
+
     /// Zero-gap multi-frame burst (pirate `BURST`): each frame goes out as
     /// one break + its bytes, back-to-back with sub-byte spacing. Only the
     /// last frame may elicit a reply — the burst owns the wire until it

@@ -10,8 +10,9 @@ use bench::cli::{SETTLE_MS, open_pirate, parse_hex, parse_span, parse_u16};
 use bench::discover::{EnumOutcome, enum_query, find_bus_baud, walk};
 use bench::osc::{
     PROFILE_SPANS_PER_SLOT, REBOOT_SETTLE_MS, RESCUE_PULSE_US, SAVE_SETTLE_MS, StatusFrame,
-    build_assign, build_factory, build_ping, build_profile_config, build_read, build_read_profile,
-    build_reboot, build_save, build_write, profile_slot_addr, profile_span_split,
+    build_assign, build_cal, build_factory, build_ping, build_profile_config, build_read,
+    build_read_profile, build_reboot, build_save, build_write, profile_slot_addr,
+    profile_span_split,
 };
 use bench::pirate::Client;
 use bench::run::xfer;
@@ -23,6 +24,11 @@ use osc_protocol::wire::{ResultCode, UID_LEN};
 /// `regions::config::addr::comms::BAUD_RATE_IDX`; value pinned here to keep
 /// the heavy core crate out of the bench build).
 const BAUD_RATE_IDX_ADDR: u16 = 0x000D;
+
+/// Control-table address of `telemetry.clock.trim_steps` (osc-core
+/// `regions::telemetry`; pinned like `BAUD_RATE_IDX_ADDR`). Signed chip trim
+/// steps the trim loop has applied, read-only, volatile (§9.3).
+const TRIM_STEPS_ADDR: u16 = 0x0244;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -89,6 +95,18 @@ enum Cmd {
     Profile {
         #[command(subcommand)]
         cmd: ProfileCmd,
+    },
+    /// Broadcast a CAL break train (§9.3) and read trim_steps back.
+    Cal {
+        /// Break spacing in µs, crystal-paced by the pirate.
+        #[arg(long, default_value_t = 400)]
+        gap_us: u16,
+        /// Measured gaps in the train (the pirate sends gaps + 1 breaks).
+        #[arg(long, default_value_t = 8)]
+        gaps: u8,
+        /// Servos to read trim_steps from; defaults to --id.
+        #[arg(long, value_delimiter = ',')]
+        ids: Vec<u8>,
     },
     /// One ping: model, firmware, turnaround.
     Ping,
@@ -278,6 +296,35 @@ fn rescue(cli: &Cli, set_baud: Option<u32>, do_save: bool) -> Result<()> {
     Ok(())
 }
 
+fn read_trim(client: &mut Client, id: u8) -> Result<i8> {
+    let status = xfer_ok(client, &build_read(id, TRIM_STEPS_ADDR, 1), SETTLE_MS)?;
+    match status.payload.as_slice() {
+        [steps] => Ok(*steps as i8),
+        p => bail!("trim_steps read returned {} bytes", p.len()),
+    }
+}
+
+/// Broadcast the CAL announce + break train, then read back each servo's
+/// applied trim total. A pre-read failure is reported as `?` rather than
+/// aborting — CAL is exactly what rescues a servo railed by a bad trim
+/// (§9.3), so it may only answer afterwards.
+fn cal(client: &mut Client, gap_us: u16, gaps: u8, ids: &[u8]) -> Result<()> {
+    let before: Vec<Option<i8>> = ids.iter().map(|&id| read_trim(client, id).ok()).collect();
+    client.cal_train(&build_cal(gap_us, gaps), gap_us as u32, gaps as u32 + 1)?;
+    println!("train sent: {gaps} gaps x {gap_us} us");
+    // The trim decision applies in the servo main loop between frames —
+    // one settle window covers it.
+    sleep(Duration::from_millis(SETTLE_MS));
+    for (&id, before) in ids.iter().zip(&before) {
+        let b = before.map_or("?".into(), |v| v.to_string());
+        match read_trim(client, id) {
+            Ok(a) => println!("id {id:<3} trim_steps {b} -> {a}"),
+            Err(e) => println!("id {id:<3} trim_steps {b} -> read failed: {e}"),
+        }
+    }
+    Ok(())
+}
+
 fn profile(client: &mut Client, id: u8, cmd: &ProfileCmd) -> Result<()> {
     match cmd {
         ProfileCmd::Get { slot } => {
@@ -368,6 +415,14 @@ fn main() -> Result<()> {
             sleep(Duration::from_millis(REBOOT_SETTLE_MS));
             println!("id {}: rebooted (back at its configured baud)", cli.id);
             Ok(())
+        }
+        Cmd::Cal { gap_us, gaps, ids } => {
+            let ids = if ids.is_empty() {
+                vec![cli.id]
+            } else {
+                ids.clone()
+            };
+            cal(&mut connect(&cli)?, *gap_us, *gaps, &ids)
         }
         Cmd::Profile { cmd } => profile(&mut connect(&cli)?, cli.id, cmd),
         Cmd::Ping => ping(&mut connect(&cli)?, cli.id),

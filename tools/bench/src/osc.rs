@@ -113,6 +113,16 @@ pub fn build_assign(uid: &[u8; UID_LEN], new_id: u8) -> Vec<u8> {
     build_instruction(Id::BROADCAST.as_byte(), Opcode::Mgmt, 0, &payload)
 }
 
+/// Broadcast MGMT CAL announce (§9.3; mirrors `CalReq`): commits the host to
+/// follow with `gaps + 1` bare breaks spaced exactly `gap_us` apart. Draws no
+/// reply — an ack's own break would enter the train.
+pub fn build_cal(gap_us: u16, gaps: u8) -> Vec<u8> {
+    let mut payload = vec![MgmtOp::Cal as u8];
+    payload.extend_from_slice(&gap_us.to_le_bytes());
+    payload.push(gaps);
+    build_instruction(Id::BROADCAST.as_byte(), Opcode::Mgmt, 0, &payload)
+}
+
 /// MGMT SAVE (§9.4). The ack arrives only after the erase + program stall —
 /// exchange with a SAVE-specific window, not the standard settle.
 pub fn build_save(id: u8) -> Vec<u8> {
