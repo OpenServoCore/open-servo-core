@@ -9,7 +9,7 @@
 
 > An open platform for turning cheap servos into smart actuators.
 
-OpenServoCore (OSC) is open hardware and firmware that drops a CH32V006 control board into a $2-3 cloned hobby servo (SG90 and friends) and turns it into a DXL-style smart actuator — position feedback, current sensing, bus-addressable, programmable.
+OpenServoCore (OSC) is open hardware and firmware that drops a CH32V006 control board into a $2-3 cloned hobby servo (SG90 and friends) and turns it into a Dynamixel-class smart actuator — position feedback, current sensing, bus-addressable, programmable. The bus speaks the **osc-native protocol**: our own break-framed wire protocol, inspired by Dynamixel Protocol 2.0 but redesigned to run whole on sub-$0.20 MCUs ([spec](docs/osc-native-protocol.md)).
 
 The thesis is the price point: at mass-production volume, an OSC swap board should add **no more than ~$1 to the BOM** of a cloned servo. Cheap enough that "upgrade every servo in a robot to smart" stops being a premium decision and starts being a default.
 
@@ -20,7 +20,7 @@ The thesis is the price point: at mass-production volume, an OSC swap board shou
 - **OSC Dev CH32** (`osc-dev-v006`) — Rev B validated. Firmware integration ongoing.
 - **OSC SG90 CH32** (`sg90-prod-ch32v006`) — designed, not spun. Waiting on firmware v2 to be testable against.
 - **Firmware v1** (`firmware-old/`) — legacy. First pass was vibe-coded and got poor Reddit feedback. Kept as historical reference; **not a target for new work**.
-- **Firmware v2** (rewrite) — in progress.
+- **Firmware v2** (rewrite) — in progress. The osc-native protocol and the servo bus transport are implemented and bench-proven on silicon (0.5-3 Mbaud, multi-servo chains); control loops are next.
 - **tinyboot** (OSC bootloader) — v0.4.0 shipped. Lives at [`OpenServoCore/tinyboot`](https://github.com/OpenServoCore/tinyboot).
 
 ## Repo map
@@ -36,7 +36,9 @@ open-servo-core/
 │   │   └── motor-mount/              # 3D-printable test fixtures
 │   ├── shared.kicad_sym / shared.pretty / shared.3dshapes  # Shared KiCad libraries
 │   └── templates/                    # KiCad project templates
-├── firmware/                         # Firmware v2 lives here once the rewrite starts
+├── docs/                             # Design docs — protocol spec, transport, driver pattern, history
+├── firmware/                         # Firmware v2 (Rust) — chip-agnostic libs, CH32 chip crate, board binaries
+├── tools/                            # Bench + bus-forensics tooling (host-side test suite, uart-pirate)
 └── firmware-old/                     # Legacy firmware (do not use)
 ```
 
@@ -62,9 +64,21 @@ Each board has its own README with full schematics, pinouts, jumper behaviour, a
 
 ## Firmware
 
-The Rust firmware is mid-rewrite. The legacy `firmware-old/` tree contains the original architecture (multi-crate workspace targeting STM32F301 and partly CH32V003) and is kept for reference, but the v2 rewrite starts from a cleaner architecture targeting CH32V006 first. Plan: DXL-compatible register table, persistence, control loops, safety features.
+The Rust firmware v2 lives in `firmware/`: chip-agnostic library crates (protocol, drivers, control table, discrete-event integration tests), a CH32 chip crate, and board binaries. It speaks the osc-native protocol — our own break-framed bus protocol, inspired by Dynamixel Protocol 2.0. DXL 2.0 itself was implemented and tuned first, then replaced: its wire format (header hunting, byte stuffing, reply-grid timing) costs more than a $0.15 MCU should pay, and controlling both ends of the wire let us delete those subsystems outright — the story is in [design history](docs/design-history.md). The register-table conventions (flat control table, staged writes, alert semantics) keep the DXL flavor.
 
-Build instructions will appear here as the rewrite matures.
+The bus transport is bench-proven on silicon: 0.5-3 Mbaud, ~30 us ping turnaround at 1 M, multi-servo status chains, hardware CRC both directions. Control loops, persistence, and safety features are in progress; build instructions will appear as the rewrite matures.
+
+The legacy `firmware-old/` tree contains the original architecture (multi-crate workspace targeting STM32F301 and partly CH32V003) and is kept for reference only.
+
+## Documentation
+
+Design docs live in [`docs/`](docs/):
+
+- **[osc-native protocol](docs/osc-native-protocol.md)** — the wire protocol spec: break framing, instruction set, management plane.
+- **[Servo transport](docs/osc-servo-transport.md)** — the servo-side transport design: DMA ring, deadline pipeline, hardware CRC.
+- **[Driver pattern](docs/driver-pattern.md)** — the firmware architecture: services / drivers / providers / HAL.
+- **[Design history](docs/design-history.md)** — what we tried and abandoned, and what it taught us.
+- **[Testing](docs/testing.md)** — the test strategy.
 
 ## Contributing
 
