@@ -1,14 +1,10 @@
 # OSC-Native Protocol
 
-Design for the break-framed servo bus protocol that replaces DXL 2.0 on the
-host↔servo wire when we control both ends. Every physical-layer behavior this
-design leans on was measured on real silicon (V006 servo + V203 HSE host,
-2026-07-05 bringup spikes `break_framing.rs` / `spi_crc.rs`); the measured
-facts are collected in §11 and cited inline as [F1]..[F14].
-
-DXL 2.0 support is frozen, not deleted: the tuned stack remains an alternate
-build for ecosystem interop. `osc-core` and the control table are already
-protocol-shaped, so both stacks share dispatch and the register file.
+The normative specification of the osc-native servo-bus protocol:
+break-framed, 5 overhead bytes per frame, hardware-CRC-friendly, designed
+to run whole on sub-$0.20 MCUs. Every physical-layer behavior the design
+leans on was measured on real silicon (V006 servo, V203 HSE host); the
+measured facts are collected in §11 and cited inline as [F1]..[F15].
 
 ## 1. Goals and non-goals
 
@@ -34,8 +30,8 @@ Goals, in priority order:
 4. **Recoverability in the field** — a servo must be reachable regardless of
    its configured baud or ID (rescue break, UID enumeration).
 
-Non-goals: DXL wire compatibility (frozen build covers it); multi-host
-arbitration (single host schedules the bus); encryption/auth.
+Non-goals: DXL wire compatibility; multi-host arbitration (a single host
+schedules the bus); encryption/auth.
 
 ## 2. Physical layer
 
@@ -44,7 +40,7 @@ at any time by protocol construction).
 
 - **Servo pin**: the USART TX pin with `HDSEL` (single-wire mode). RX is
   internally tied to the pin; the direct wire needs no dedicated RX pin and
-  no direction buffer [F7] — rev C deletes both. Bus side: series R +
+  no direction buffer [F7] — rev C omits both. Bus side: series R +
   pull-up (+ optional TVS); the buffer's roles collapse into the drive
   discipline below.
 - **Buffered boards (rev B)**: the default board config (`half-duplex`
@@ -79,12 +75,12 @@ at any time by protocol construction).
 
 ## 3. Framing
 
-A frame is delimited by a **UART break**. **Protocol law (2026-07-12):
-a transmitted break is exactly 10 bit-times dominant — one character
-time.** The shape is one 9-bit `0x00` character (M=1, bit 8 = 0): start
-+ 9 data lows = 10 low bit-times, then a clean stop bit. Unforgeable by
-data (every UART byte contains a high stop bit within 10 bit-times); no
-sync header, no byte stuffing, no content restrictions.
+A frame is delimited by a **UART break**. **Protocol law: a transmitted
+break is exactly 10 bit-times dominant — one character time.** The shape
+is one 9-bit `0x00` character (M=1, bit 8 = 0): start + 9 data lows =
+10 low bit-times, then a clean stop bit. Unforgeable by data (every UART
+byte contains a high stop bit within 10 bit-times); no sync header, no
+byte stuffing, no content restrictions.
 
 Why a law and not a floor: break ≡ one character time keeps every
 timing model exact — the framer's footprint algebra and the §9.3
@@ -98,9 +94,9 @@ runs with the LIN engine off on the target silicon [F15]). Hardware
 `SBK` is off-law (~14 bit-times measured, F5).
 
 **Receivers stay length-tolerant**: any ≥10-bit dominant span is one
-break (rescue pulses, garble, and F3 all require this). Both ends are
-law-compliant since 2026-07-12: the host sends the law shape, and the
-V006 reply path replaced `SBK` with the bracketed-M `0x00` character
+break (rescue pulses, garble, and F3 all require this). Both ends
+transmit the law shape: the host sends it directly, and the V006 reply
+path sends the bracketed-M `0x00` character rather than hardware `SBK`
 (same blocking shifter contract, 3 bits shorter).
 
 Measured break behavior that the framer relies on:
@@ -167,8 +163,8 @@ wrap), at ~0.36 µs/B wall and ~zero CPU [F6][F11]. The engine's register
 holds the **bit-reversed** checksum (its shifter mirrors the reflected
 algorithm); the chip bit-reverses the 16-bit result once per frame
 (~40 cycles via the multiply trick — no table) when patching TX bytes or
-comparing an RX verdict. Verified on silicon: `spi_crc_lsb_copy.rs`
-(bringup), `TCRCR("12345678") = 0xB93C = bitrev16(ARC = 0x3C9D)`.
+comparing an RX verdict. Verified on silicon [F6]:
+`TCRCR("12345678") = 0xB93C = bitrev16(ARC = 0x3C9D)`.
 
 The engine's halfword DMA appetite (even start address, whole halfwords
 [F12]) is satisfied **by construction, at any frame parity**, because a
@@ -193,13 +189,11 @@ conveniences, **not protocol**: the wire checksum is defined purely over
 `ID .. payload`, and nothing at the wire level constrains length or
 position parity.
 
-Consequences worth naming, because each deletes a former rule: frame
-anchors may land at any ring parity (there is no even-anchor invariant);
-the RX ring is armed once at boot and **never reloaded** (the
-parity-recovery re-arm and its odd-anchor drop path are gone); a bare
-break on the bus is harmless (its lone ring byte shifts parity, which no
-longer matters); and a mid-frame FE still costs at most the one garbled
-frame [F4].
+Consequences worth naming: frame anchors may land at any ring parity
+(there is no even-anchor invariant); the RX ring is armed once at boot
+and **never reloaded**; a bare break on the bus is harmless (its lone
+ring byte shifts parity, which does not matter); and a mid-frame FE
+costs at most the one garbled frame [F4].
 
 Test vectors (covered bytes → CRC):
 
@@ -222,7 +216,7 @@ normative — see §3.4.
 ### 3.4 Fault contract (normative)
 
 The target silicon exposes two distinct receive-side signals, and the
-protocol binds them to two distinct roles (2026-07-12, [F15]):
+protocol binds them to two distinct roles [F15]:
 
 - **The break detector (LBD) is the wake.** It is length-qualified —
   only a genuine ≥10-dominant-bit span sets it, the exact §3 law shape —
@@ -276,25 +270,14 @@ starve horizon of bus silence before expecting crisp turnarounds; under
 continuous zero-gap retries, replies can lag by up to the parked span
 until a gap appears.
 
-History, so this path is not re-walked: when the wake lived on the error
-flags (FE, pre-2026-07-12), two shipped attempts to extract more than a
-wake from them — a positional fault fence and a service-time wake mute —
-each passed every quiet-wire test and then killed live frames under
-multi-node burst load the same way (service-time cursors lie under lag
-and latch re-fires), and the mute's restore chain wedged fleet servos
-deaf to rescue under garble marination. The failure analysis lives in
-`osc-servo-transport.md` §6; the resolution was moving the wake to LBD
-and deleting the storm apparatus outright — with no error interrupt
-there is nothing to throttle.
-
 ## 4. Servo RX/TX paths
 
 ### 4.1 RX framer
 
 One circular RX DMA channel, armed once at boot; NDTR is read as a
-cursor, never reloaded (reloading drops or latches requests — the #134
-class; and since anchors may sit at any parity, §3.2, nothing ever needs
-a reload). Two states:
+cursor, never reloaded (reloading a circular DMA channel drops or
+latches in-flight requests; and since anchors may sit at any parity,
+§3.2, nothing ever needs a reload). Two states:
 
 - **HUNT** — on the break wake (LBD): record the anchor = current ring
   position (the `0x00` just ringed). Enter LOCKED.
@@ -331,8 +314,7 @@ release pin to open-drain.
 
 No hardware-timed kickoff: TX start is "enable the channel when ready" —
 the break makes reply timing non-critical, which deletes the TIM-compare
-kickoff machinery, the RDT register, and its whole tuning surface (K clip,
-TX-start lead calibration).
+kickoff machinery, the RDT register, and its whole tuning surface.
 
 Payloads at or below a small threshold copy into the reply buffer
 directly — cheaper than arming a DMA channel for a couple of bytes. Larger
@@ -348,17 +330,17 @@ earliest (at stage time, ahead of the trigger) and is also the fastest of
 the three (plain M2M DMA outruns the CRC engine, which itself runs ~8×
 wire speed, F6), and its channel (CH6) sits above the CRC-feed channel on
 the bus-arbitration ladder (the RX ring alone owns the top — see
-`osc-servo-transport.md` §6 A4) — so the copy is guaranteed done before
-either downstream consumer reaches the bytes it needs, by construction,
-not by synchronization. None of this costs CPU: all three
-engines run in hardware, freeing the core to run the motor kernel tick
-underneath. The one copy still buys two things a direct-from-table stream
-couldn't: the table address's parity becomes irrelevant to the wire/CRC
-engines (the snapshot is always halfword-based regardless of where the
-source span sits), and every large reply carries a consistent
-point-in-time image even if a control-loop write lands mid-span. Reads
-over 252 B split into multiple frames (§5.1), each independently
-snapshotted and CRC'd.
+`osc-servo-transport.md`, DMA priority ladder) — so the copy is
+guaranteed done before either downstream consumer reaches the bytes it
+needs, by construction, not by synchronization. None of this costs CPU:
+all three engines run in hardware, freeing the core to run the motor
+kernel tick underneath. The one copy still buys two things a
+direct-from-table stream couldn't: the table address's parity becomes
+irrelevant to the wire/CRC engines (the snapshot is always
+halfword-based regardless of where the source span sits), and every
+large reply carries a consistent point-in-time image even if a
+control-loop write lands mid-span. Reads over 252 B split into multiple
+frames (§5.1), each independently snapshotted and CRC'd.
 
 ## 5. Instruction set
 
@@ -389,16 +371,15 @@ Notes:
   is Action; GWRITE is SyncWrite; GWRITE+HOLD+COMMIT is the atomic fleet
   update. Addressing mode is one flag, and it stops there.
 - Status result codes: see §5.3.
-- The flat control table carries over unchanged (address == offset,
-  1024 B); `addr` is 2 bytes, `count` is 2 bytes for reads (kept u16 for
-  field alignment in the payload view; values cap at 252, §5.1) and
-  1 byte per GWRITE slice.
+- The control table is flat (address == offset, 1024 B); `addr` is
+  2 bytes, `count` is 2 bytes for reads (kept u16 for field alignment in
+  the payload view; values cap at 252, §5.1) and 1 byte per GWRITE slice.
 - **READ/GREAD addressing is unconstrained** — any `addr`, any `count`.
   Every reply payload streams from the snapshot buffer (§4.2), which is
   halfword-aligned by construction, so the table address carries no
-  constraint at all [F12 satisfied structurally]. WRITE addressing was
-  never constrained: inbound payloads validate through the ring anchor,
-  not the table address.
+  constraint at all [F12 satisfied structurally]. WRITE addressing is
+  likewise unconstrained: inbound payloads validate through the ring
+  anchor, not the table address.
 
 ### 5.1 Size limits
 
@@ -410,18 +391,17 @@ Notes:
   targets.
 - Every frame sits whole in the ring until its CRC passes (§4.1), so
   nothing is applied from an unverified frame — no partial-apply, no
-  rollback, and no per-transfer staging caps (the `SLICE_MAX` /
-  `WRITE_MAX` capability registers of earlier drafts are deleted).
+  rollback, and no per-transfer staging caps or capability registers.
 - Larger transfers split into multiple frames; a WRITE+HOLD sequence
   with one COMMIT keeps a multi-frame update atomic. Reads are status
   frames under the same ceiling: a whole-table dump is five READs.
 
 ### 5.2 Read profiles (indirect addressing, span-granular)
 
-DXL's byte-granular indirect registers are deliberately not carried over:
+DXL's byte-granular indirect registers are deliberately not replicated:
 a byte remap forces the reply through a per-byte pointer chase, defeating
 both the copy-once TX path and the hardware CRC. The scattered-telemetry
-need they served (position + velocity + current + temperature live in
+need they serve (position + velocity + current + temperature live in
 different table sections) is met span-granularly instead:
 
 - A **profile region** in the flat table (`0x280..0x2C0`): 4 slots × 8
@@ -483,8 +463,8 @@ code shares the byte (bits [6:2], 32 values). Errors split by layer:
 3. **Device-level** (alarms: overtemperature, overcurrent, encoder fault):
    orthogonal to any one instruction's result, so it takes no result-code
    space — status bit 0 (**ALERT**) is set on *every* status frame while
-   the alarm register is nonzero, prompting the host to read it. DXL's
-   alert-bit semantics, kept because they're right.
+   the alarm register is nonzero, prompting the host to read it. The same
+   alert-bit semantics as DXL, because they're right.
 
 ## 6. Coordinated reads (status chains)
 
@@ -501,17 +481,18 @@ makes it cheap and robust:
   body, only the framing-level end, so validation would buy nothing and
   cost a CRC pass per snooped frame. A corrupt status mis-times one slot
   at worst, bounded by the reclaim window below.
-- **Reclaim deadline** (replaces DXL's silent-collapse fragility, spec'd
-  here rather than inherited): if slot k's predecessor produces no break
-  within RESPONSE_DEADLINE of its own trigger, slot k takes the slot and
-  sets `predecessor-silent` in its status error field. The host sees both
-  the gap and the flag. The window covers the trigger→break lead only —
-  once the predecessor's break is observed it is alive, and the window
-  suspends for a bounded max-frame allowance while its frame plays out
-  (completion re-sequences the chain; a frame that garbles or wedges lets
-  the suspended deadline fire as the reclaim). Keying on the break rather
-  than the frame end is what keeps the default baud-independent: a
-  frame's wire time exceeds 60 µs below 3 M, its break lead never does.
+- **Reclaim deadline** (DXL chains collapse silently past a dead
+  responder; here the recovery is specified): if slot k's predecessor
+  produces no break within RESPONSE_DEADLINE of its own trigger, slot k
+  takes the slot and sets `predecessor-silent` in its status error field.
+  The host sees both the gap and the flag. The window covers the
+  trigger→break lead only — once the predecessor's break is observed it
+  is alive, and the window suspends for a bounded max-frame allowance
+  while its frame plays out (completion re-sequences the chain; a frame
+  that garbles or wedges lets the suspended deadline fire as the
+  reclaim). Keying on the break rather than the frame end is what keeps
+  the default baud-independent: a frame's wire time exceeds 60 µs below
+  3 M, its break lead never does.
 - Error statuses keep the chain alive; only silence triggers reclaim.
 
 There is no FAST/regular split and no per-block checkpoint CRC: each chain
@@ -523,19 +504,21 @@ DXL checkpoint format solved does not exist here.
 
 | parameter               | value                                      | rationale                                                                                  |
 | ----------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------ |
-| reply gap (formerly T_turn) | 12 µs after frame end, at every baud       | host TC→release margin — a register poke, i.e. a time-domain quantity: fixed µs neither balloons at 0.5 M (2 byte-times was 40 µs of mandated silence) nor thins at 3 M |
+| reply gap               | 12 µs after frame end, at every baud       | host TC→release margin — a register poke, i.e. a time-domain quantity: fixed µs neither balloons at 0.5 M (2 byte-times was 40 µs of mandated silence) nor thins at 3 M |
 | RESPONSE_DEADLINE       | config register, default 60 µs (all bauds) | chain reclaim (trigger→break lead, §6) + host timeout; NOT a reply-time prescription — a servo replies when ready |
 | break length (TX)       | exactly 10 bit-times (§3 law; 9-bit 0x00 character) | break ≡ 1 character: exact span algebra + LIN-detectable; SBK (~14 bits, F5) is off-law |
 | inter-frame gap (host)  | none required                              | breaks self-delimit; back-to-back host frames are legal                                    |
 
 Ping turnaround (instruction wire-end → status break fall) is **34.3 µs
-measured at 1 M and 44.3 µs at 3 M** (ring-cadence build, 2026-07-09), vs
-DXL's measured 62.8 µs — the instruction's own 5 B + break costs nothing
-extra on top of that, since dispatch overlaps its arrival (speculation,
-`osc-servo-transport.md` §4). The dominant turnaround components are the
-tail (hardware CRC-check + dispatch handoff), reply gap (12 µs), and the
-break itself (~4.7 µs, F5); see `osc-servo-transport.md` §3 for the full
-tick-by-tick trace and measured baseline table.
+at 1 M and 44.3 µs at 3 M**, measured on the current transport, vs
+62.8 µs measured for a DXL 2.0 stack on the same silicon — the
+instruction's own 5 B + break costs nothing extra on top of that, since
+dispatch overlaps its arrival (speculation; see
+`osc-servo-transport.md`, dispatch speculation). The dominant turnaround
+components are the tail (hardware CRC-check + dispatch handoff), reply
+gap (12 µs), and the break itself (~4.7 µs, F5); see
+`osc-servo-transport.md` (tick-by-tick exchange trace) for the full
+trace and measured baseline table.
 
 The intended hot loop leans on writes being free of turnaround entirely:
 `GWRITE(HOLD|NOREPLY) × groups → COMMIT (broadcast, silent) → GREAD
@@ -614,8 +597,8 @@ are garbage — and garbage _is_ the collision signal:
   collision is a lie waiting to happen: they answer in unison, and two
   near-equal frames superimposed sub-bit-aligned read back as ONE clean
   frame — the walk records a unique match and the loser's subtree goes
-  invisible (silicon 2026-07-12: 18/20 pair probes decoded as the
-  dominant servo verbatim; the residue showed literal wire-AND bytes).
+  invisible (measured: superimposed pair probes usually decode as the
+  dominant servo verbatim; the residue is literal wire-AND bytes).
   Two rules keep the collision signal honest:
   - **Kill exemption** — colliding IS a matcher's contract, so a staged
     ENUM reply is exempt from any transport wire-safety kill a peer
@@ -642,7 +625,7 @@ are garbage — and garbage _is_ the collision signal:
 
 ### 9.3 Clock discipline: the CAL break-pair ruler
 
-Most consumers of clock discipline are gone or covered by design:
+Most consumers of clock discipline are covered by design:
 
 - Reply timing is event-driven (break-led, when-ready) — nothing is
   scheduled against a clock, so there is no grid for drift to skew.
@@ -655,20 +638,16 @@ Most consumers of clock discipline are gone or covered by design:
 - Residual ±1 % scale error (velocity estimates, timeouts, PWM rate) is
   far below what any consumer cares about.
 
-One consumer is NOT covered by the single-sided F10 margin, found on the
-first 5-servo fleet (bench 2026-07-11): **servo→servo snoop**. A chain
-slot fires off its predecessor's *status frame* (§6), so one HSI receives
-another HSI — the clock budget is PAIRWISE, and factory spread reaches
-7k+ ppm. At 3 M that garbles snooped status tails (crc/framing counters
-on every chained servo); manually trimming the fleet to a 1.4 k ppm worst
-pair zeroed them, causally.
+One consumer is NOT covered by the single-sided F10 margin: **servo→servo
+snoop**. A chain slot fires off its predecessor's *status frame* (§6), so
+one HSI receives another HSI — the clock budget is PAIRWISE, and factory
+spread reaches 7k+ ppm. At 3 M that garbles snooped status tails
+(crc/framing counters on every chained servo); trimming a fleet to a
+1.4 k ppm worst pair zeroes them, causally.
 
-A first answer — a passive estimator sampling the host's instruction byte
-cadence at resolver wakes — is DELETED (2026-07-11): its food was frames
-long past the anti-stall floor (unrealistic traffic), and its stamps were
-software-phased walker wakes, which cost a dither/floor/gate pipeline to
-debias and still starved on silicon. The replacement makes the reference
-explicit and hardware-anchored:
+A passive estimator of host byte cadence has neither reliable food nor
+hardware-anchored stamps; the reference is therefore explicit and
+hardware-anchored:
 
 **`MGMT CAL [gap_us(2 LE), gaps(1)]` (broadcast ONLY).** The host follows
 the frame with `gaps + 1` bare breaks spaced exactly `gap_us` apart, its
@@ -719,11 +698,10 @@ two-point identification, not a precision problem: the first train's
 correction divides by the seeded nominal step effect, and a chip's true
 ppm-per-step is only knowable from the apply→remeasure pair — so chips
 whose steps are weaker than nominal land one step short on the first
-train and finish on the second (fleet bringup 2026-07-11: three chips
-took −2 then a −1 refinement, then held). Longer trains cannot buy this
-back (train noise ~±260 ppm is already a tenth of the smallest step);
-more trains can. Converged = `trim_steps` read-back stable between
-trains; two suffice in practice, a third confirms.
+train and finish on the second. Longer trains cannot buy this back
+(train noise ~±260 ppm is already a tenth of the smallest step); more
+trains can. Converged = `trim_steps` read-back stable between trains;
+two suffice in practice, a third confirms.
 
 ### 9.4 Config persistence (SAVE)
 
@@ -741,10 +719,10 @@ so that is what gets gated:
   completion — the servo is genuinely stalled during program, so hosts
   use a SAVE-specific timeout (erase + program run 5–10 ms; ~50 ms is
   comfortable guidance). FACTORY shares the stall and the timeout.
-- No write is torque-gated — the section lock and its `write_locked_by`
-  machinery are deleted outright. Field validation rules still apply to
-  every write; anything genuinely unsafe to change mid-motion is the
-  control kernel's job to sequence, not the table's to forbid.
+- No write is torque-gated — there is no section lock. Field validation
+  rules still apply to every write; anything genuinely unsafe to change
+  mid-motion is the control kernel's job to sequence, not the table's to
+  forbid.
 - A config-dirty bit in telemetry reports modified-since-save.
 
 Side effects: flash wear drops from program-per-write to
@@ -754,9 +732,9 @@ chose, with torque provably off.
 
 ### 9.5 Reboot / factory
 
-`MGMT REBOOT`, `MGMT FACTORY` — carried over from DXL semantics, payload
-details with the implementation. FACTORY implies the saved config page,
-not just the live table.
+`MGMT REBOOT`, `MGMT FACTORY` — conventional semantics (as in DXL);
+payload details live with the implementation. FACTORY resets the saved
+config page, not just the live table.
 
 ## 10. V006 resource map
 
@@ -772,27 +750,28 @@ not just the live table.
 | TIM1/TIM2           | motor control, freed from transport duty          |
 | EXTI                | unused — no transport consumer at all (§9.3)      |
 
-Deleted relative to the DXL transport: edge IC (already gone), TIM-compare
-TX kickoff, RDT + tuning tools, byte-stuffing encode/unstuff, FF-FF-FD
-hunter, fold-CRC machinery, the 74LVC2G241 + TX_EN pin (direct wire; the
-rev B default board config keeps them).
+Notably absent (vs a DXL-style transport): input-capture edge timing,
+TIM-compare TX kickoff, an RDT register and its tuning surface,
+byte-stuffing encode/unstuff, the FF-FF-FD hunter, software fold-CRC —
+and, on the direct wire, the 74LVC2G241 buffer + TX_EN pin (the rev B
+default board config keeps them).
 
 ## 11. Measured foundation
 
 | #   | fact                                                                                       | source                |
 | --- | ------------------------------------------------------------------------------------------ | --------------------- |
-| F1  | FE fires 1:1 per break at 3 M, HSE host, 50/50                                             | break_framing phase A |
-| F2  | break rings exactly one 0x00 via DMA; NDTR-exact framing                                   | phase A               |
-| F3  | any-length break = one event (932 µs low → 1 FE)                                           | phase C               |
-| F4  | mid-frame FE: no halt, byte rings, IRQs coalesce                                           | FEINJ matrix          |
-| F5  | SBK break ≈ 14 bit-times, both chips, zero variance                                        | phases A/D            |
-| F6  | SPI CRC: 16-bit LSB-first = natural-order ARC (bitrev16 register), accumulates across DMA arms, 0.36 µs/B wall ~0 CPU | spi_crc, spi_crc_lsb_copy |
-| F7  | HDSEL direct wire works both directions, buffer deleted                                    | HDSEL runs            |
-| F8  | idle push-pull clamps other talkers; OD-idle/PP-talk is mandatory                          | drive-discipline runs |
-| F9  | V006 HDSEL has no own-TX echo                                                              | phase D (HDSEL)       |
-| F10 | full HSITRIM throw −3.0..+3.4 %: framing AND data survive everywhere                       | trim sweep            |
-| F11 | production table CRC = 635 ns/B pure CPU                                                   | spi_crc case 11       |
-| F12 | DMA rounds odd MAR down; no unaligned 16-bit reads                                         | spi_crc case 10       |
-| F13 | EXTI edge ISRs storm during traffic (own TX stretched 3×)                                  | trim sweep gotcha     |
-| F14 | data decodes clean at ±3.4 % in both TX and RX directions                                  | trim sweep            |
-| F15 | LBD runs sans LINEN, both chip families: length-qualified (≥10-bit spans only — 0 fires on framing-error injection and high-baud garble), safe flag-selective write-0 clear mid-traffic, one event per any-length span, **latched at the span's END** (== bit 10 for the 10-bit law break; a rescue pulse's wake arrives after the line rises), entry stamps 4 ticks p-p on a 400 µs grid; latched FE/NE/ORE with no interrupt enabled are harmless through marination | lbd_wake spike + counter probe (V006, 2026-07-12); pirate LIN RCA (V203) |
+| F1  | FE fires 1:1 per break at 3 M, HSE host, 50/50                                             | bringup measurement, V006 |
+| F2  | break rings exactly one 0x00 via DMA; NDTR-exact framing                                   | bringup measurement, V006 |
+| F3  | any-length break = one event (932 µs low → 1 FE)                                           | bringup measurement, V006 |
+| F4  | mid-frame FE: no halt, byte rings, IRQs coalesce                                           | fault-injection matrix, V006 |
+| F5  | SBK break ≈ 14 bit-times, both chips, zero variance                                        | bringup measurement, V006 + V203 |
+| F6  | SPI CRC: 16-bit LSB-first = natural-order ARC (bitrev16 register), accumulates across DMA arms, 0.36 µs/B wall ~0 CPU | bringup measurement, V006 |
+| F7  | HDSEL direct wire works both directions, no buffer needed                                  | bringup measurement, V006 |
+| F8  | idle push-pull clamps other talkers; OD-idle/PP-talk is mandatory                          | bringup measurement, V006 |
+| F9  | V006 HDSEL has no own-TX echo                                                              | bringup measurement, V006 |
+| F10 | full HSITRIM throw −3.0..+3.4 %: framing AND data survive everywhere                       | HSITRIM sweep, V006   |
+| F11 | production table CRC = 635 ns/B pure CPU                                                   | bringup measurement, V006 |
+| F12 | DMA rounds odd MAR down; no unaligned 16-bit reads                                         | bringup measurement, V006 |
+| F13 | EXTI edge ISRs storm during traffic (own TX stretched 3×)                                  | HSITRIM sweep, V006   |
+| F14 | data decodes clean at ±3.4 % in both TX and RX directions                                  | HSITRIM sweep, V006   |
+| F15 | LBD runs sans LINEN, both chip families: length-qualified (≥10-bit spans only — 0 fires on framing-error injection and high-baud garble), safe flag-selective write-0 clear mid-traffic, one event per any-length span, **latched at the span's END** (== bit 10 for the 10-bit law break; a rescue pulse's wake arrives after the line rises), entry stamps 4 ticks p-p on a 400 µs grid; latched FE/NE/ORE with no interrupt enabled are harmless through marination | bringup measurement, V006 + V203 |
