@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members  = ["boot", "app"]
+
+[workspace.package]
+edition = "2024"
+
+[profile.dev]
+opt-level     = 3
+lto           = true
+codegen-units = 1
+debug         = 2
+debug-assertions = false
+
+# Bootloader is flash-size-bound and only runs once at startup; size beats speed.
+[profile.dev.package.osc-dev-v006-boot]
+opt-level = "z"
+
+[profile.release]
+opt-level     = 3
+lto           = true
+codegen-units = 1
+panic         = "abort"
+debug         = 2
+
+[profile.release.package.osc-dev-v006-boot]
+opt-level = "z"
