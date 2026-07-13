@@ -32,3 +32,7 @@ jobs:
         run: cargo build --workspace
       - name: cargo test
         run: cargo test --workspace
+      - name: cargo check --features mocks
+        run: cargo check -p osc-drivers --features mocks
+      - name: cargo check --features bench
+        run: cargo check -p osc-drivers --features bench
