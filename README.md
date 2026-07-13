@@ -66,6 +66,16 @@ The Rust firmware is mid-rewrite. The legacy `firmware-old/` tree contains the o
 
 Build instructions will appear here as the rewrite matures.
 
+## Documentation
+
+Design docs live in [`docs/`](docs/):
+
+- **[osc-native protocol](docs/osc-native-protocol.md)** — the wire protocol spec: break framing, instruction set, management plane.
+- **[Servo transport](docs/osc-servo-transport.md)** — the servo-side transport design: DMA ring, deadline pipeline, hardware CRC.
+- **[Driver pattern](docs/driver-pattern.md)** — the firmware architecture: services / drivers / providers / HAL.
+- **[Design history](docs/design-history.md)** — what we tried and abandoned, and what it taught us.
+- **[Testing](docs/testing.md)** — the test strategy.
+
 ## Contributing
 
 This is early — the most useful thing right now is **following along and asking questions**, not opening PRs.
