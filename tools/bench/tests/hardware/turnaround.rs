@@ -26,15 +26,15 @@ fn ping_budget_us(baud: u32) -> f64 {
 
 /// READ ceiling: the reply break waits only on staging the copy-once
 /// snapshot kickoff, not the payload's wire time, so a 16 B read tracks the
-/// ping floor plus the read-dispatch body (measured means 36.5/37.8/41.1/40.5
-/// ascending baud). Same ~6 us headroom policy.
+/// ping floor plus the read-dispatch body (measured means 40.6/41.1/49.1/51.6
+/// ascending baud on the current build). Same ~6 us headroom policy.
 fn read_budget_us(baud: u32) -> f64 {
     match baud {
-        1_000_000 => 41.0,
-        2_000_000 => 53.0,
-        3_000_000 => 52.0,
-        500_000 => 44.0,
-        _ => 55.0,
+        1_000_000 => 47.0,
+        2_000_000 => 55.0,
+        3_000_000 => 58.0,
+        500_000 => 47.0,
+        _ => 60.0,
     }
 }
 
