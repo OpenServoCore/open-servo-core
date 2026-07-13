@@ -38,11 +38,10 @@ const EP_COUNT: usize = 8;
 const USBRAM_SIZE: usize = 512;
 const USBRAM_ALIGN: usize = 2;
 
-const NEW_AW: AtomicWaker = AtomicWaker::new();
-static BUS_WAKER: AtomicWaker = NEW_AW;
+static BUS_WAKER: AtomicWaker = AtomicWaker::new();
 static EP0_SETUP: AtomicBool = AtomicBool::new(false);
-static EP_IN_WAKERS: [AtomicWaker; EP_COUNT] = [NEW_AW; EP_COUNT];
-static EP_OUT_WAKERS: [AtomicWaker; EP_COUNT] = [NEW_AW; EP_COUNT];
+static EP_IN_WAKERS: [AtomicWaker; EP_COUNT] = [const { AtomicWaker::new() }; EP_COUNT];
+static EP_OUT_WAKERS: [AtomicWaker; EP_COUNT] = [const { AtomicWaker::new() }; EP_COUNT];
 static IRQ_RESET: AtomicBool = AtomicBool::new(false);
 static IRQ_SUSPEND: AtomicBool = AtomicBool::new(false);
 static IRQ_RESUME: AtomicBool = AtomicBool::new(false);
@@ -128,13 +127,16 @@ fn invariant(mut r: regs::Epr) -> regs::Epr {
 }
 
 fn align_len_up(len: u16) -> u16 {
-    ((len as usize + USBRAM_ALIGN - 1) / USBRAM_ALIGN * USBRAM_ALIGN) as u16
+    ((len as usize).div_ceil(USBRAM_ALIGN) * USBRAM_ALIGN) as u16
 }
 
 fn calc_out_len(len: u16) -> (u16, u16) {
     match len {
-        2..=60 => (align_len_up(len), align_len_up(len) / 2 << 10),
-        61..=1024 => ((len + 31) / 32 * 32, (((len + 31) / 32 - 1) << 10) | 0x8000),
+        2..=60 => (align_len_up(len), (align_len_up(len) / 2) << 10),
+        61..=1024 => (
+            len.div_ceil(32) * 32,
+            ((len.div_ceil(32) - 1) << 10) | 0x8000,
+        ),
         _ => panic!("invalid OUT length {}", len),
     }
 }
@@ -168,7 +170,7 @@ struct EndpointBuffer {
 impl EndpointBuffer {
     fn read(&mut self, buf: &mut [u8]) {
         let n = buf.len().min(self.len as usize);
-        for i in 0..(n + USBRAM_ALIGN - 1) / USBRAM_ALIGN {
+        for i in 0..n.div_ceil(USBRAM_ALIGN) {
             let val = USBRAM.mem(self.addr as usize / USBRAM_ALIGN + i).read();
             let chunk = USBRAM_ALIGN.min(n - i * USBRAM_ALIGN);
             buf[i * USBRAM_ALIGN..][..chunk].copy_from_slice(&val.to_le_bytes()[..chunk]);
@@ -177,7 +179,7 @@ impl EndpointBuffer {
 
     fn write(&mut self, buf: &[u8]) {
         let n = buf.len().min(self.len as usize);
-        for i in 0..(n + USBRAM_ALIGN - 1) / USBRAM_ALIGN {
+        for i in 0..n.div_ceil(USBRAM_ALIGN) {
             let mut val = [0u8; USBRAM_ALIGN];
             let chunk = USBRAM_ALIGN.min(n - i * USBRAM_ALIGN);
             val[..chunk].copy_from_slice(&buf[i * USBRAM_ALIGN..][..chunk]);
@@ -246,7 +248,7 @@ impl<'d> Driver<'d> {
     }
 
     fn alloc_ep_mem(&mut self, len: u16) -> Result<u16, EndpointAllocError> {
-        if len as usize % USBRAM_ALIGN != 0 {
+        if !(len as usize).is_multiple_of(USBRAM_ALIGN) {
             return Err(EndpointAllocError);
         }
         let addr = self.ep_mem_free;

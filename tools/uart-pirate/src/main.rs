@@ -93,9 +93,9 @@ async fn main(spawner: Spawner) {
     // embassy-executor 0.10's #[task] returns Result<SpawnToken, _>;
     // dispatch each via if-let to honour the no-panic firmware rule.
     if let Ok(t) = led::blink() {
-        let _ = spawner.spawn(t);
+        spawner.spawn(t);
     }
     if let Ok(t) = usb_cdc::run() {
-        let _ = spawner.spawn(t);
+        spawner.spawn(t);
     }
 }
