@@ -439,7 +439,7 @@ fn cmp_width_signed(ty: &Type) -> syn::Result<(u8, bool)> {
 
 /// RHS of a compare as `(is_reg, val_bits)` for a `CmpRule`: a `&path`
 /// reference names another register (its addr const is already table-absolute,
-/// widened by the helper to the LHS width+signedness — pinned); any other
+/// widened by the helper to the LHS width+signedness -- pinned); any other
 /// expression is the immediate's `i32` bits.
 fn build_rule_val(expr: &Expr) -> (bool, TokenStream2) {
     if let Expr::Reference(r) = expr {

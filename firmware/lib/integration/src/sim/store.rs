@@ -69,7 +69,7 @@ impl RamStore {
         self.inner.lock().unwrap().wipes
     }
 
-    /// The slot's stored image, if any (a copy — tests parse it at leisure).
+    /// The slot's stored image, if any (a copy -- tests parse it at leisure).
     pub fn slot(&self, slot: Slot) -> Option<[u8; IMAGE_LEN]> {
         self.inner.lock().unwrap().slots[idx(slot)]
     }

@@ -1,6 +1,6 @@
 //! A simulated servo: the real `ServoBus` + real `osc_core` dispatch over the
 //! sim providers, boxed for a stable address (the TX zero-copy path holds raw
-//! pointers into the control table while streaming a read reply, §4.2).
+//! pointers into the control table while streaming a read reply, sec 4.2).
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -53,7 +53,7 @@ impl SimServo {
             store.boot_load(&shared.table);
             shared.seed_store(store);
         }
-        // Default UID: the id repeated — distinct per servo, predictable for
+        // Default UID: the id repeated -- distinct per servo, predictable for
         // ENUM tests; override via `seed_uid` where prefix structure matters.
         shared.seed_uid([id; 16]);
         // model/fw are read-only identity fields, seeded directly (not part of
@@ -98,15 +98,16 @@ impl SimServo {
         (servo, handles)
     }
 
-    /// §9.1: the chip main-loop sampler's declaration (thread-level, not a
-    /// vector — the sim delivers it directly at the modeled threshold tick).
+    /// sec 9.1: the chip main-loop sampler's declaration (thread-level, not a
+    /// vector -- the sim delivers it directly at the modeled threshold tick).
     pub fn on_rescue(&mut self) {
         self.bus.on_rescue_break();
     }
 
     pub fn on_break(&mut self) {
-        // A2: the break handler resolves complete frames from ring data in
-        // place, so it dispatches — build the dispatcher like on_deadline.
+        // Position from the stream: the break handler resolves complete frames
+        // from ring data in place, so it dispatches -- build the dispatcher
+        // like on_deadline.
         let mut dispatcher = self.session.dispatcher(&self.shared);
         self.bus.on_break(&mut dispatcher);
     }
@@ -137,7 +138,7 @@ impl SimServo {
         self.bus.diag()
     }
 
-    /// The chip main loop's trim poll (§9.3) — tests model the loop by
+    /// The chip main loop's trim poll (sec 9.3) -- tests model the loop by
     /// calling it between exchanges.
     pub fn poll_clock_trim(&mut self) -> Option<i8> {
         self.bus.poll_clock_trim()
@@ -147,7 +148,7 @@ impl SimServo {
         self.shared.table.with(f)
     }
 
-    /// Chip-side table mutation (e.g. a fault ISR raising `fault_flags`) —
+    /// Chip-side table mutation (e.g. a fault ISR raising `fault_flags`) --
     /// state the wire cannot set on a read-only field.
     pub fn with_table_mut<R>(&self, f: impl FnOnce(&mut ControlTable) -> R) -> R {
         self.shared.table.with_mut(f)

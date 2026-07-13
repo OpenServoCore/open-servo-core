@@ -2,8 +2,8 @@ use crate::Error;
 
 /// Total staging buffer for pending write data, in bytes. Every write stages
 /// here ahead of its CRC verdict (the dispatch spine), so the cap must fit
-/// the largest legal single write — 250 B of data under the 252 B payload
-/// ceiling (osc-native §5.1: LEN is the only size limit) — plus whatever
+/// the largest legal single write -- 250 B of data under the 252 B payload
+/// ceiling (osc-native sec 5.1: LEN is the only size limit) -- plus whatever
 /// HOLD writes are pending. Override with `OSC_STAGE_DATA_CAP`.
 pub const STAGE_DATA_CAP: usize = env_usize(option_env!("OSC_STAGE_DATA_CAP"), 256);
 
@@ -42,7 +42,7 @@ pub(crate) struct StagedEntry {
 }
 
 /// Caller-held transaction handle. Hand to `revert_to` to discard pushes
-/// since capture, or to `iter_from` to walk them. Nesting is free — each
+/// since capture, or to `iter_from` to walk them. Nesting is free -- each
 /// caller holds its own.
 #[derive(Copy, Clone)]
 pub struct Snapshot {

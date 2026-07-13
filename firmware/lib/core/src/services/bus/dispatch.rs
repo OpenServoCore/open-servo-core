@@ -14,7 +14,7 @@ use crate::{Error, RegionStorage, Shared, StagedWrites};
 use control_table::STAGE_ENTRY_CAP;
 
 /// Map a control-table write/stage failure onto an osc-native result code
-/// (§5.3 layer 2). Read-only writes are `Access`; field-rule rejections are
+/// (sec 5.3 layer 2). Read-only writes are `Access`; field-rule rejections are
 /// `Validation`; the rest (bounds, staging-full) are `Range`.
 fn error_to_result(e: Error) -> ResultCode {
     match e {
@@ -30,7 +30,7 @@ fn error_to_result(e: Error) -> ResultCode {
 ///
 /// [`Session`]: super::session::Session
 pub(crate) struct PendingWrite {
-    /// Staging watermark before this write — commit/revert operate above it.
+    /// Staging watermark before this write -- commit/revert operate above it.
     snap: Snapshot,
     /// A held write keeps its entries for a later COMMIT; a plain write applies
     /// them at commit time.
@@ -41,7 +41,7 @@ pub(crate) struct PendingWrite {
 }
 
 /// Stateless single-shot dispatcher. Holds only borrowed shared state, the
-/// HOLD-write staging buffer, and the pending-write slot — no per-frame
+/// HOLD-write staging buffer, and the pending-write slot -- no per-frame
 /// reassembly; each [`Dispatch::dispatch`] call carries its whole payload.
 pub struct Dispatcher<'a> {
     shared: &'a Shared,
@@ -65,7 +65,7 @@ impl<'a> Dispatcher<'a> {
     /// Discard a pending write left dangling by a frame that died before its
     /// CRC verdict (the bus has no dispatcher in the break ISR, so cleanup is
     /// lazy). MUST run before any path that reads the staging buffer from the
-    /// zero watermark — otherwise a real COMMIT would apply the phantom bytes.
+    /// zero watermark -- otherwise a real COMMIT would apply the phantom bytes.
     fn revert_dangling(&mut self) {
         if let Some(pending) = self.pending.take() {
             self.staged.revert_to(&pending.snap);
@@ -73,7 +73,7 @@ impl<'a> Dispatcher<'a> {
     }
 
     /// Device-level ALERT bit: set on every status while the alarm register is
-    /// nonzero (§5.3 layer 3).
+    /// nonzero (sec 5.3 layer 3).
     fn alert(&self) -> bool {
         self.shared
             .table
@@ -89,7 +89,7 @@ impl Dispatch for Dispatcher<'_> {
         reply: &mut R,
     ) -> Dispatched {
         // A prior frame that died without its verdict left a dangling pending
-        // write — drop it here (see revert_dangling) before this frame reads
+        // write -- drop it here (see revert_dangling) before this frame reads
         // or stages anything.
         self.revert_dangling();
         let alert = self.alert();
@@ -121,8 +121,8 @@ impl Dispatch for Dispatcher<'_> {
                 self.assign(alert, &ctx, &uid, new_id, reply);
                 Dispatched::Done
             }
-            // §9.3: broadcast-only (decode enforces), so no ack precedes the
-            // train — an ack's own break would count as a ruler mark.
+            // sec 9.3: broadcast-only (decode enforces), so no ack precedes the
+            // train -- an ack's own break would count as a ruler mark.
             Request::Calibrate { gap_us, gaps } => {
                 reply.begin_clock_cal(gap_us, gaps);
                 Dispatched::Done
@@ -162,12 +162,12 @@ impl Dispatch for Dispatcher<'_> {
 
 impl Dispatcher<'_> {
     fn send<R: Reply>(reply: &mut R, status: Status<'_>) {
-        // TX overflow is a sizing bug, not a runtime error — bench telemetry
+        // TX overflow is a sizing bug, not a runtime error -- bench telemetry
         // catches it at integration.
         let _ = reply.send_status(status);
     }
 
-    /// Empty-payload status gated on the reply contract (§5.3 layer 2).
+    /// Empty-payload status gated on the reply contract (sec 5.3 layer 2).
     fn ack<R: Reply>(alert: bool, ctx: &RequestCtx, result: Result<(), Error>, reply: &mut R) {
         let code = match result {
             Ok(()) => ResultCode::Ok,
@@ -192,7 +192,7 @@ impl Dispatcher<'_> {
         );
     }
 
-    /// §9.4 modified-since-save: a committed span landing in CONFIG or
+    /// sec 9.4 modified-since-save: a committed span landing in CONFIG or
     /// PROFILE sets the telemetry dirty bit (a successful SAVE clears it).
     fn mark_dirty_if_persistent(&self, addr: u16, len: u16) {
         const CONFIG_END: u16 = CONFIG_BASE_ADDR + CONFIG_REGION_SIZE;
@@ -295,8 +295,8 @@ impl Dispatcher<'_> {
         }
     }
 
-    /// PROFILE read (§5.2): resolve the slot's span words against the live
-    /// table and gather-send the concatenation. Errors are read-time (§5.3):
+    /// PROFILE read (sec 5.2): resolve the slot's span words against the live
+    /// table and gather-send the concatenation. Errors are read-time (sec 5.3):
     /// a bad slot index, an empty slot, or an out-of-bounds span is `range`;
     /// a total past the frame ceiling is `limit`.
     fn read_profile<R: Reply>(&mut self, alert: bool, ctx: &RequestCtx, slot: u8, reply: &mut R) {
@@ -325,7 +325,7 @@ impl Dispatcher<'_> {
         let mut total: u16 = 0;
         for w in words {
             let Some((addr, count)) = crate::regions::profile::span_of(w) else {
-                continue; // disabled word: skipped, not a terminator (§5.2)
+                continue; // disabled word: skipped, not a terminator (sec 5.2)
             };
             let Ok(data) = RegisterFile::read(&self.shared.table, addr, count) else {
                 return nack(reply, ResultCode::Range);
@@ -347,7 +347,7 @@ impl Dispatcher<'_> {
     /// reply contract, but leave the live table untouched until the verdict's
     /// [`Dispatch::commit`]. A validation reject nacks with nothing staged
     /// (`Done`, no commit owed); a staging-capacity overflow (held entries
-    /// filled the buffer — a COMMIT drains it) nacks `Busy`, nothing staged.
+    /// filled the buffer -- a COMMIT drains it) nacks `Busy`, nothing staged.
     fn write<R: Reply>(
         &mut self,
         alert: bool,
@@ -410,8 +410,8 @@ impl Dispatcher<'_> {
         }
     }
 
-    /// §9.2 ENUM: reply with the full UID iff ours begins with the queried
-    /// prefix. A mismatch stays silent — on the broadcast wire, silence and
+    /// sec 9.2 ENUM: reply with the full UID iff ours begins with the queried
+    /// prefix. A mismatch stays silent -- on the broadcast wire, silence and
     /// collision garbage are the host's two tree-descent signals, and a nack
     /// would only manufacture collisions.
     fn enumerate<R: Reply>(
@@ -439,7 +439,7 @@ impl Dispatcher<'_> {
         );
     }
 
-    /// §9.2 ASSIGN: the servo whose UID matches takes the id — applied
+    /// sec 9.2 ASSIGN: the servo whose UID matches takes the id -- applied
     /// immediately (`set_id`, not the deferred `stage_id`) so the ack leaves
     /// from the new id, and mirrored into the config ID register so a later
     /// SAVE persists it (volatile until then). Non-matching servos stay
@@ -484,7 +484,7 @@ impl Dispatcher<'_> {
         }
     }
 
-    /// §9.4 SAVE — the only flash-touching operation. Torque gates it (the
+    /// sec 9.4 SAVE -- the only flash-touching operation. Torque gates it (the
     /// ms-scale program stall is the mid-motion hazard, not the data), and
     /// the ack leaves AFTER the store returns: ack == durable, and a failed
     /// program surfaces as `hardware` instead of a lie.
@@ -509,12 +509,12 @@ impl Dispatcher<'_> {
         Self::ack_code(alert, ctx, code, reply);
     }
 
-    /// Stream the persisted regions into the store — the slices borrow the
-    /// table in place (no staging copy, §9.4); blocking for the erase +
+    /// Stream the persisted regions into the store -- the slices borrow the
+    /// table in place (no staging copy, sec 9.4); blocking for the erase +
     /// program duration.
     fn persist_table(&self) -> Result<(), StoreError> {
         let store = self.shared.store().ok_or(StoreError)?;
-        // Bounded by the region consts — the reads cannot fail; the fallback
+        // Bounded by the region consts -- the reads cannot fail; the fallback
         // keeps the no-panic contract.
         let config: &[u8; CONFIG_LEN] =
             RegisterFile::read(&self.shared.table, CONFIG_BASE_ADDR, CONFIG_REGION_SIZE)
@@ -529,8 +529,8 @@ impl Dispatcher<'_> {
         store.save(config, profile)
     }
 
-    /// §9.5 FACTORY: wipe both saved slots, ack, then stage the reboot that
-    /// re-seeds board defaults — the erased store IS the factory state.
+    /// sec 9.5 FACTORY: wipe both saved slots, ack, then stage the reboot that
+    /// re-seeds board defaults -- the erased store IS the factory state.
     /// Same torque gate as SAVE (erase is the same stall class, and it ends
     /// in a reboot); a failed wipe nacks `hardware` and does NOT reboot.
     fn factory<R: Reply>(&mut self, alert: bool, ctx: &RequestCtx, reply: &mut R) {

@@ -6,7 +6,7 @@
 //! translator forwards each new value to the bus's [`Reply`] deferred-apply
 //! queue.
 //!
-//! Kept `pub(crate)`: chip impls only see `Reply`; the field→reply wiring
+//! Kept `pub(crate)`: chip impls only see `Reply`; the field->reply wiring
 //! stays an internal concern of the table layer.
 
 use crate::regions::config::BaudRate;

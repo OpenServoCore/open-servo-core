@@ -1,5 +1,5 @@
-//! End-to-end smoke: prove the whole loop (host frame → wire → real framer →
-//! real dispatch → real TX engine → recorded reply) before the test-suite
+//! End-to-end smoke: prove the whole loop (host frame -> wire -> real framer ->
+//! real dispatch -> real TX engine -> recorded reply) before the test-suite
 //! chunks build on this facade.
 
 use osc_core::BaudRate;
@@ -38,7 +38,7 @@ fn ping_round_trip() {
     let m = DEFAULT_MODEL.to_le_bytes();
     assert_eq!(payload, &[m[0], m[1], DEFAULT_FIRMWARE]);
 
-    // Reply lead: >= reply gap (fixed µs, §7) and < 200 µs after the instruction.
+    // Reply lead: >= reply gap (fixed us, sec 7) and < 200 us after the instruction.
     let lead = reply.at - inst.end;
     assert!(
         lead >= osc_drivers::bus::REPLY_GAP_US as u64 * TICKS_PER_US,
@@ -46,13 +46,13 @@ fn ping_round_trip() {
     );
     assert!(
         lead < 200 * TICKS_PER_US,
-        "reply must land within 200 µs, got {lead} ticks"
+        "reply must land within 200 us, got {lead} ticks"
     );
 }
 
 /// A costly `on_break` body defers the framer deadlines past the whole frame:
 /// every byte is already ringed (DMA is CPU-independent) when the pended wake
-/// finally lands, so the exchange completes correctly — just late. Occupancy
+/// finally lands, so the exchange completes correctly -- just late. Occupancy
 /// stretches reply latency; it must never lose an isolated frame.
 #[test]
 fn handler_cost_defers_delivery_without_loss() {
@@ -83,7 +83,7 @@ fn handler_cost_defers_delivery_without_loss() {
     let (rinst, _) = status(reply);
     assert_eq!(rinst.result(), Some(ResultCode::Ok));
 
-    // The header deadline pended behind the 150 µs on_break body, so the
+    // The header deadline pended behind the 150 us on_break body, so the
     // reply cannot lead by less than the body's tail past the break.
     let lead = reply.at - inst.end;
     assert!(
@@ -97,8 +97,8 @@ fn handler_cost_defers_delivery_without_loss() {
 }
 
 /// Break wakes landing while a body runs pend as ONE flag, not a queue:
-/// three wire breaks against a 500 µs body deliver exactly two `on_break`
-/// invocations (the live one, then one coalesced pend) — the silicon
+/// three wire breaks against a 500 us body deliver exactly two `on_break`
+/// invocations (the live one, then one coalesced pend) -- the silicon
 /// behavior behind the zero-gap frame loss, unchanged by the LBD wake
 /// (the flag is still one bit).
 #[test]

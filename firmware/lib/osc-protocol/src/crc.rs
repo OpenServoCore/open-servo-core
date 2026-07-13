@@ -1,13 +1,13 @@
-//! Reference osc-CRC-16 (`docs/osc-native-protocol.md` §3.2). Servos use the
+//! Reference osc-CRC-16 (`docs/osc-native-protocol.md` sec 3.2). Servos use the
 //! SPI CRC engine for frame spans; this software flavor covers the odd-byte
-//! tail fold (§3.2) and the ENUM slot key (§9.2). Bitwise, no table —
+//! tail fold (sec 3.2) and the ENUM slot key (sec 9.2). Bitwise, no table --
 //! smallest code wins.
 //!
-//! Flavor: **CRC-16/ARC** — poly `0x8005` reflected (`0xA001`), init `0x0000`,
+//! Flavor: **CRC-16/ARC** -- poly `0x8005` reflected (`0xA001`), init `0x0000`,
 //! reflected input and output, no output XOR. Check: `crc("123456789") =
 //! 0xBB3D`. Byte-wise and prefix-free; a leading `0x00` is a no-op (init = 0),
 //! which is what lets hardware receivers feed the anchor-inclusive ring span
-//! in place (§3.2).
+//! in place (sec 3.2).
 
 const POLY_REFLECTED: u16 = 0xA001;
 
@@ -31,7 +31,7 @@ pub fn osc_crc(covered: &[u8]) -> u16 {
     osc_crc_continue(0, covered)
 }
 
-/// Accumulate `chunk` into a running CRC — byte-wise, so chunks may split
+/// Accumulate `chunk` into a running CRC -- byte-wise, so chunks may split
 /// anywhere (mirrors the hardware engine spanning DMA arms).
 /// `osc_crc(x) == osc_crc_continue(0, x)`.
 pub fn osc_crc_continue(mut crc: u16, chunk: &[u8]) -> u16 {
@@ -42,9 +42,9 @@ pub fn osc_crc_continue(mut crc: u16, chunk: &[u8]) -> u16 {
 }
 
 /// Reverse the bit order of a 16-bit value. The V006 SPI CRC unit's register
-/// holds the bit-reversed checksum in LSB-first mode (§3.2, spike
+/// holds the bit-reversed checksum in LSB-first mode (sec 3.2, spike
 /// `spi_crc_lsb_copy`): chip providers apply this once per frame. Three
-/// parallel in-byte swap stages, then the byte swap — no table, no multiply.
+/// parallel in-byte swap stages, then the byte swap -- no table, no multiply.
 #[inline]
 pub fn bitrev16(v: u16) -> u16 {
     let mut x = v as u32;

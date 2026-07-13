@@ -6,14 +6,14 @@ use super::ServoBus;
 use crate::traits::bus::{CrcEngine, Providers, RxRing};
 
 impl<P: Providers> ServoBus<P> {
-    /// Feed the covered span into the CRC engine straight from the ring — no
+    /// Feed the covered span into the CRC engine straight from the ring -- no
     /// M2M staging. Even-align the halfword feed by dropping the break's
     /// leading `0x00` when the anchor is odd (an init-0 no-op, so the CRC is
     /// unchanged); the ring base is halfword-aligned (`ring` is
-    /// `repr(align(2))`). A ring-wrap splits into two accumulating arms — the
+    /// `repr(align(2))`). A ring-wrap splits into two accumulating arms -- the
     /// engine sums across them. A trailing odd byte is left for the fold at
     /// verify. Direct feed is safe against the live circular ring: the engine
-    /// runs ~8× wire speed, so it drains the covered span long before the write
+    /// runs ~8x wire speed, so it drains the covered span long before the write
     /// cursor could lap the ring back onto it.
     #[cfg_attr(target_os = "none", unsafe(link_section = ".highcode"))]
     #[cfg_attr(target_os = "none", inline(never))]
@@ -48,8 +48,8 @@ impl<P: Providers> ServoBus<P> {
     }
 
     /// Poll the CRC result, fold the trailing odd byte if the feed left one
-    /// (§3.2), and compare against the little-endian wire CRC at the
-    /// covered-span end. A spin miss counts as a fail — indistinguishable from
+    /// (sec 3.2), and compare against the little-endian wire CRC at the
+    /// covered-span end. A spin miss counts as a fail -- indistinguishable from
     /// a bad frame, and never wedges the wire. Requires a prior
     /// [`Self::crc_feed`] of the same span.
     pub(super) fn crc_verify(&mut self, anchor: u16, footprint: u16) -> bool {

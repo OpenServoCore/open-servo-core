@@ -3,7 +3,7 @@
 //! Layout types over ring memory plus pure span math. The break anchors a
 //! frame and the header makes its end computable, so there is no streaming
 //! parser here: the chip owns timing (framer deadlines, DMA, CRC engine),
-//! this crate owns layout — `#[repr(C)]` views, offset arithmetic, and the
+//! this crate owns layout -- `#[repr(C)]` views, offset arithmetic, and the
 //! osc-CRC-16 definition.
 #![no_std]
 

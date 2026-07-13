@@ -1,4 +1,4 @@
-//! Config persistence (osc-native §9.4/§9.5): the saved-image codec, the
+//! Config persistence (osc-native sec 9.4/sec 9.5): the saved-image codec, the
 //! boot-time A/B pick + overlay, and the [`ConfigStore`] port the chip's
 //! flash provider (or the sim's RAM fake) implements.
 //!
@@ -6,13 +6,13 @@
 //!
 //!   [0]    magic
 //!   [1]    layout version
-//!   [2..4] seq u16 LE — A/B alternation picks the wrapping-newest
+//!   [2..4] seq u16 LE -- A/B alternation picks the wrapping-newest
 //!   [4..6] body len u16 LE (= config + profile)
 //!   [6..8] CRC-16/ARC u16 LE over bytes 0..6 ++ 8..IMAGE_LEN
 //!   [8..]  config region (128 B) ++ profile region (64 B), raw table bytes
 //!
 //! The CRC sits in the header (not the tail) so every segment is a whole
-//! number of words — the flash provider streams header/config/profile
+//! number of words -- the flash provider streams header/config/profile
 //! straight into the page buffer with no byte packing and no staging copy.
 
 use control_table::RegisterMap;
@@ -33,12 +33,12 @@ pub const IMAGE_MAGIC: u8 = b'C';
 /// (boot keeps board defaults) rather than migrated.
 pub const IMAGE_VERSION: u8 = 1;
 
-/// Store failure (erase/program/verify); dispatch answers `hardware` (§5.3).
+/// Store failure (erase/program/verify); dispatch answers `hardware` (sec 5.3).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct StoreError;
 
-/// §9.4 persistence port. Both methods are cold and blocking: on flash,
-/// `save` stalls the caller for the erase + program time (ms-scale) — the
+/// sec 9.4 persistence port. Both methods are cold and blocking: on flash,
+/// `save` stalls the caller for the erase + program time (ms-scale) -- the
 /// torque gate in dispatch is what makes that stall safe.
 pub trait ConfigStore: Sync {
     fn save(
@@ -46,7 +46,7 @@ pub trait ConfigStore: Sync {
         config: &[u8; CONFIG_LEN],
         profile: &[u8; PROFILE_LEN],
     ) -> Result<(), StoreError>;
-    /// FACTORY (§9.5): invalidate both slots — the erased store IS the
+    /// FACTORY (sec 9.5): invalidate both slots -- the erased store IS the
     /// factory state; the follow-up reboot re-seeds board defaults.
     fn wipe(&self) -> Result<(), StoreError>;
 }
@@ -94,7 +94,7 @@ pub fn header(
     h
 }
 
-/// Assemble a whole image in RAM — for hosts, fakes, and tests; the chip
+/// Assemble a whole image in RAM -- for hosts, fakes, and tests; the chip
 /// provider streams the three segments instead (no staging buffer).
 pub fn assemble(
     out: &mut [u8; IMAGE_LEN],
@@ -115,7 +115,7 @@ pub struct Image<'a> {
 }
 
 impl<'a> Image<'a> {
-    /// Validate a slot (extra bytes past `IMAGE_LEN` — the rest of the page —
+    /// Validate a slot (extra bytes past `IMAGE_LEN` -- the rest of the page --
     /// are ignored). Magic, version, len, and CRC gate integrity; the
     /// allowed-rules pass gates safety: overlay writes raw bytes into
     /// enum/bool-typed table fields, and an out-of-range discriminant there
@@ -165,7 +165,7 @@ impl<'a> Image<'a> {
 }
 
 impl ControlTableCell {
-    /// Overlay a validated image onto the live table — raw byte copy,
+    /// Overlay a validated image onto the live table -- raw byte copy,
     /// deliberately bypassing ro masks and field rules (`Image::parse`
     /// already gated the UB-critical bytes; everything else was rule-valid
     /// when saved). The identity block is skipped: model/fw must reflect the
@@ -281,7 +281,7 @@ mod tests {
     #[test]
     fn parse_rejects_disallowed_enum_byte() {
         // A CRC-valid image planting an out-of-range discriminant must not
-        // parse — overlay would construct an invalid enum (UB).
+        // parse -- overlay would construct an invalid enum (UB).
         let (mut config, profile) = body();
         config[addr::comms::BAUD_RATE_IDX as usize] = 4;
         let mut img = [0u8; IMAGE_LEN];

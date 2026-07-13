@@ -1,6 +1,6 @@
-//! The production hot loop (§5.2/§6): the host bombards the bus with
-//! back-to-back silent frames — `[GWRITE(HOLD) × N, COMMIT, GREAD]` repeated
-//! forever — and the servos must keep up with zero gap between frames: no
+//! The production hot loop (sec 5.2/sec 6): the host bombards the bus with
+//! back-to-back silent frames -- `[GWRITE(HOLD) x N, COMMIT, GREAD]` repeated
+//! forever -- and the servos must keep up with zero gap between frames: no
 //! drops, no CRC fails, staged state applied atomically at COMMIT, and the
 //! GREAD (sent back-to-back after COMMIT) already reading the new values.
 //!
@@ -20,7 +20,7 @@ use rstest_reuse::apply;
 mod support;
 use support::{matrix, sim};
 
-/// Break-keyed reclaim makes the 60 µs default sound at every baud (see chains.rs).
+/// Break-keyed reclaim makes the 60 us default sound at every baud (see chains.rs).
 const CHAIN_DEADLINE_US: u16 = 60;
 const BCAST: u8 = 0xFE;
 const IDS: [u8; 3] = [1, 2, 3];
@@ -67,7 +67,7 @@ fn replies(frames: &[WireFrame]) -> Vec<&WireFrame> {
         .collect()
 }
 
-/// Every queued host frame must start exactly where the previous one ended —
+/// Every queued host frame must start exactly where the previous one ended --
 /// the test is void if the scheduler ever re-introduces pacing gaps.
 fn assert_zero_gap(hosts: &[&WireFrame]) {
     for w in hosts.windows(2) {
@@ -92,7 +92,7 @@ fn hot_loop_cycles_survive_zero_gap(baud_idx: u8) {
             .collect();
         let deci = (cycle % 128) as u8 + 1;
 
-        // GWRITE(HOLD) × 2, COMMIT, GREAD — one burst, zero gap throughout.
+        // GWRITE(HOLD) x 2, COMMIT, GREAD -- one burst, zero gap throughout.
         let bytes: Vec<[u8; 4]> = gv.iter().map(|v| v.to_le_bytes()).collect();
         let entries: Vec<(u8, &[u8])> = IDS
             .iter()
@@ -204,13 +204,13 @@ fn noreply_write_bombardment_then_read(baud_idx: u8) {
     assert_eq!(d.framing_drop_count, 0);
 }
 
-/// THE zero-gap repro (§5 of the transport pillar): the same hot loop under
-/// silicon-realistic handler latency. Dispatch runs inside the deadline body
-/// on this architecture, so a GWRITE-class body (~70 µs measured) makes
-/// following breaks pend and coalesce; a base that anchors on ISR-entry
-/// cursor snapshots then silently discards intact frames (staleness, not
-/// latency — Step-0 evidence). The amended design (A1 `last_break_tick` +
-/// A2 stream-continuity resolution) must keep this green across the baud sweep.
+/// THE zero-gap repro (transport sec 5, position and time from the stream):
+/// the same hot loop under silicon-realistic handler latency. Dispatch runs
+/// inside the deadline body on this architecture, so a GWRITE-class body
+/// (~70 us measured) makes following breaks pend and coalesce; a base that
+/// anchors on ISR-entry cursor snapshots then silently discards intact frames
+/// (staleness, not latency). The stream-derived design (`last_break_tick` +
+/// stream-continuity resolution) must keep this green across the baud sweep.
 #[apply(matrix)]
 fn hot_loop_survives_handler_latency(baud_idx: u8) {
     use osc_integration::sim::HandlerCost;
@@ -218,8 +218,8 @@ fn hot_loop_survives_handler_latency(baud_idx: u8) {
     let mut sim = sim(baud_idx);
     // RESPONSE_DEADLINE must exceed worst-case dispatch+staging latency or a
     // chain slot reclaims into a live-but-slow predecessor (band finding,
-    // pillar §7 acceptance): with 70 µs handler bodies the 60 µs default is
-    // dishonest — a real deployment tunes this register to its worst case.
+    // transport sec 9 acceptance): with 70 us handler bodies the 60 us default
+    // is dishonest -- a real deployment tunes this register to its worst case.
     for id in IDS {
         sim.add_servo_with(id, 0, 250);
     }
@@ -277,10 +277,10 @@ fn hot_loop_survives_handler_latency(baud_idx: u8) {
     }
 }
 
-/// Silicon-captured trap (event-trace 2026-07-08): when a frame's own break
+/// Silicon-captured trap (event-trace): when a frame's own break
 /// FE delivery lags past its covered checkpoint (pended behind a long
 /// deadline body), the resolver reaches Covered INSIDE that on_break wake and
-/// stages the reply — and the FE-kill in the same wake must not murder it.
+/// stages the reply -- and the FE-kill in the same wake must not murder it.
 /// The reply belongs to the frontier frame still arriving, not to a frame the
 /// host abandoned; killing it leaves a stale pending frame that later arms the
 /// chain over an empty engine (ghost trigger, silent no-reply).
@@ -289,7 +289,7 @@ fn plain_burst_survives_deadline_latency(baud_idx: u8) {
     use osc_integration::sim::HandlerCost;
 
     // Sweep the body cost so some delivery lands inside the covered window
-    // ([frame end - 2 byte-times, frame end)) regardless of rate — the trap
+    // ([frame end - 2 byte-times, frame end)) regardless of rate -- the trap
     // is a ~2-byte-time bullseye, not a single magic latency.
     for dl in (10u32..100).step_by(2) {
         let mut sim = sim(baud_idx);
@@ -343,10 +343,10 @@ fn plain_burst_survives_deadline_latency(baud_idx: u8) {
 
 /// The bench's plain burst (`tool-burst --plain`: 8 NOREPLY WRITEs +
 /// READ, host waits out the reply between cycles) with IRREGULAR intra-burst
-/// gaps: the pirate's TXE-poll bubbles put 0–3-byte-time pauses between
+/// gaps: the pirate's TXE-poll bubbles put 0-3-byte-time pauses between
 /// frames, so each write resolves sometimes as a caught-up frontier
 /// (dispatched at its covered checkpoint) and sometimes as a backlog frame
-/// (dispatched complete) mid-burst — every seam of the inline dispatch path.
+/// (dispatched complete) mid-burst -- every seam of the inline dispatch path.
 /// Silicon showed ~0.3% no-reply/stale residuals at 1M in exactly this
 /// pattern; a drop here is that residual, deterministic.
 #[apply(matrix)]
@@ -363,7 +363,7 @@ fn plain_burst_survives_gap_jitter(baud_idx: u8) {
             lcg = lcg
                 .wrapping_mul(6364136223846793005)
                 .wrapping_add(1442695040888963407);
-            // 0..=30 µs: from zero-gap up to ~3 byte-times at 1M.
+            // 0..=30 us: from zero-gap up to ~3 byte-times at 1M.
             (lcg >> 33) % 31
         };
 
@@ -411,22 +411,22 @@ fn plain_burst_survives_gap_jitter(baud_idx: u8) {
     }
 }
 
-/// Wire time of one frame (break + `n` data bytes) in µs at `rate`, rounded
-/// up — the jitter scheduler only needs a "no overlap" floor, not accuracy.
+/// Wire time of one frame (break + `n` data bytes) in us at `rate`, rounded
+/// up -- the jitter scheduler only needs a "no overlap" floor, not accuracy.
 fn frame_us(rate: BaudRate, n: u64) -> u64 {
     let bits = 14 + n * 10;
     (bits * 1_000_000).div_ceil(rate.as_hz() as u64)
 }
 
-/// The failing silicon signature (bench 2026-07-08, `tool-reply-edges`
-/// STALE dump): the pirate's TXE feed stalls 50–100 bit-times INSIDE a
-/// frame — mid-write4 and mid-READ on the captured cycle — so the frontier
-/// burns its recheck budget and parks at the starvation horizon while the
-/// frame quietly completes (ring bytes raise no IRQ). The reply then rode
-/// a ~2×640 µs-late wake carrying a value one write behind. Sweep the
-/// stall length and position across every frame of the burst, capped
-/// below the dead-transmitter horizon (64 byte-times, §3.3): a stall past
-/// it IS a dead transmitter and the frame is sacrificed by design.
+/// The failing silicon signature (bench, `tool-reply-edges` STALE dump): the
+/// pirate's TXE feed stalls 50-100 bit-times INSIDE a frame -- mid-write4 and
+/// mid-READ on the captured cycle -- so the frontier burns its recheck budget
+/// and parks at the starvation horizon while the frame quietly completes (ring
+/// bytes raise no IRQ). The reply then rode a ~2x640 us-late wake carrying a
+/// value one write behind. Sweep the stall length and position across every
+/// frame of the burst, capped below the dead-transmitter horizon (64
+/// byte-times, sec 3.3): a stall past it IS a dead transmitter and the frame
+/// is sacrificed by design.
 #[apply(matrix)]
 fn plain_burst_survives_midframe_stall(baud_idx: u8) {
     use osc_integration::sim::HandlerCost;
@@ -500,13 +500,14 @@ fn plain_burst_survives_midframe_stall(baud_idx: u8) {
     }
 }
 
-/// §7 throughput invariant: the consumer outruns the wire, so a sustained
-/// zero-gap flood of minimal frames drains through the ring (the queue, A2)
-/// with zero loss — the 512 B ring laps several times over the burst. The
-/// dispatch-cost sweep is derived from the per-frame wire time at this baud:
-/// §7 holds only while per-frame dispatch stays below it, so a cost at or above
-/// the frame's wire time (e.g. a 70 µs consumer at 3 M's ~42 µs frame) is
-/// sustained overrun — out of contract by design, and excluded.
+/// transport sec 9 throughput invariant: the consumer outruns the wire, so a
+/// sustained zero-gap flood of minimal frames drains through the ring (the
+/// queue, position from the stream) with zero loss -- the 512 B ring laps
+/// several times over the burst. The dispatch-cost sweep is derived from the
+/// per-frame wire time at this baud: the invariant holds only while per-frame
+/// dispatch stays below it, so a cost at or above the frame's wire time (e.g.
+/// a 70 us consumer at 3 M's ~42 us frame) is sustained overrun -- out of
+/// contract by design, and excluded.
 #[apply(matrix)]
 fn zero_gap_flood(baud_idx: u8) {
     use osc_integration::sim::HandlerCost;

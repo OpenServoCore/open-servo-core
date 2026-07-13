@@ -1,10 +1,10 @@
-//! Reply sequencing for every reply (`docs/osc-native-protocol.md` §6, §7).
+//! Reply sequencing for every reply (`docs/osc-native-protocol.md` sec 6, sec 7).
 //!
 //! Pure state machine: the composite owns the deadline provider and drives
-//! this with plain ticks. Every reply is deadline-triggered ≥ reply gap after the
+//! this with plain ticks. Every reply is deadline-triggered >= reply gap after the
 //! frame it answers; a GREAD chain slot `k > 0` additionally waits for `k`
 //! predecessor status frames, each with a reclaim window so a silent
-//! predecessor can't collapse the tail (§6). A unicast reply is just slot 0.
+//! predecessor can't collapse the tail (sec 6). A unicast reply is just slot 0.
 
 /// What the chain wants from the composite after an event.
 pub enum ChainOut {
@@ -12,7 +12,7 @@ pub enum ChainOut {
     /// Arm the chain deadline at this absolute tick.
     Wait(u32),
     /// Start the staged reply now. `predecessor_silent` sets the status error
-    /// field (§6): true when any reclaim window expired during this chain.
+    /// field (sec 6): true when any reclaim window expired during this chain.
     Trigger {
         predecessor_silent: bool,
     },
@@ -35,7 +35,7 @@ enum State {
 
 pub struct Chain {
     state: State,
-    // Baud is fixed for a chain, so these are captured once at staging (§7).
+    // Baud is fixed for a chain, so these are captured once at staging (sec 7).
     reply_gap: u32,
     reclaim: u32,
     allowance: u32,
@@ -61,7 +61,7 @@ impl Chain {
         !matches!(self.state, State::Idle)
     }
 
-    /// Awaiting predecessor status frames (§6): a predecessor's break is
+    /// Awaiting predecessor status frames (sec 6): a predecessor's break is
     /// expected, so the composite suspends its reclaim window on that break
     /// instead of killing the staged reply.
     pub fn waiting(&self) -> bool {
@@ -75,7 +75,7 @@ impl Chain {
 
     /// Own reply staged for `slot` (0 = unicast or first chain slot) after the
     /// instruction frame ended at `end`. `reclaim` covers a predecessor's
-    /// trigger → break lead only (§6 keys reclaim off the break, so the
+    /// trigger -> break lead only (sec 6 keys reclaim off the break, so the
     /// default stays baud-independent); `allowance` bounds how long an
     /// observed break suspends reclaim while its frame plays out.
     pub fn on_reply_staged(
@@ -90,11 +90,11 @@ impl Chain {
         self.reclaim = reclaim;
         self.allowance = allowance;
         if slot == 0 {
-            // §7: reply ≥ reply gap after the instruction end, like a unicast read.
+            // sec 7: reply >= reply gap after the instruction end, like a unicast read.
             self.state = State::Pending { silent: false };
             ChainOut::Wait(end.wrapping_add(reply_gap))
         } else {
-            // §6: wait for `slot` predecessors; the reclaim guards slot 0's own
+            // sec 6: wait for `slot` predecessors; the reclaim guards slot 0's own
             // trigger (its trigger is end + reply_gap, so its window ends one
             // reclaim later).
             self.state = State::Waiting {
@@ -105,8 +105,8 @@ impl Chain {
         }
     }
 
-    /// A break landed on the wire while we hold a staged reply. §6: reclaim
-    /// fires only when a predecessor produces *no break* within its window —
+    /// A break landed on the wire while we hold a staged reply. sec 6: reclaim
+    /// fires only when a predecessor produces *no break* within its window --
     /// a break means it is alive, so the window suspends for the bounded
     /// frame allowance while its frame plays out. The frame's completion
     /// re-sequences via [`Self::on_status_end`]; a frame that garbles or
@@ -118,7 +118,7 @@ impl Chain {
         }
     }
 
-    /// A status frame (someone else's — own TX never rings, F9) ended at `end`.
+    /// A status frame (someone else's -- own TX never rings, F9) ended at `end`.
     pub fn on_status_end(&mut self, end: u32) -> ChainOut {
         match self.state {
             State::Waiting { remaining, silent } => {
@@ -131,7 +131,7 @@ impl Chain {
                     ChainOut::Wait(end.wrapping_add(self.reply_gap).wrapping_add(self.reclaim))
                 }
             }
-            // Idle or already pending: a stale snoop, normal (§6).
+            // Idle or already pending: a stale snoop, normal (sec 6).
             _ => ChainOut::None,
         }
     }
@@ -145,7 +145,7 @@ impl Chain {
                 }
             }
             State::Waiting { remaining, .. } => {
-                // Reclaim expiry: this predecessor was silent (§6).
+                // Reclaim expiry: this predecessor was silent (sec 6).
                 let remaining = remaining.saturating_sub(1);
                 if remaining == 0 {
                     self.state = State::Idle;
@@ -212,7 +212,7 @@ mod tests {
         );
         // predecessor 0 replies.
         assert_eq!(wait_tick(c.on_status_end(1200)), 1200 + REPLY_GAP + RECLAIM);
-        // predecessor 1 replies → our slot pends, trigger reply gap after it.
+        // predecessor 1 replies -> our slot pends, trigger reply gap after it.
         assert_eq!(wait_tick(c.on_status_end(1400)), 1400 + REPLY_GAP);
         assert!(!trigger_silent(c.on_deadline(1400 + REPLY_GAP)));
     }
@@ -240,7 +240,7 @@ mod tests {
         assert_eq!(wait_tick(c.on_status_end(1200)), 1200 + REPLY_GAP + RECLAIM);
         // predecessor 1 goes silent: reclaim cascades from now.
         assert_eq!(wait_tick(c.on_deadline(1860)), 1860 + RECLAIM);
-        // predecessor 2 goes silent: last one → trigger, silent.
+        // predecessor 2 goes silent: last one -> trigger, silent.
         assert!(trigger_silent(c.on_deadline(2460)));
     }
 
@@ -248,7 +248,7 @@ mod tests {
     fn break_suspends_reclaim_for_frame_allowance() {
         let mut c = Chain::new();
         c.on_reply_staged(1, END, REPLY_GAP, RECLAIM, ALLOWANCE);
-        // Predecessor's break lands inside its reclaim window: alive — the
+        // Predecessor's break lands inside its reclaim window: alive -- the
         // window suspends for the frame allowance instead of expiring.
         assert_eq!(wait_tick(c.on_break_observed(1100)), 1100 + ALLOWANCE);
         // Its frame completes: normal sequencing resumes.

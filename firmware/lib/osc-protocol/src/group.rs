@@ -1,11 +1,11 @@
-//! Group instruction payload views (`docs/osc-native-protocol.md` §5, §6).
+//! Group instruction payload views (`docs/osc-native-protocol.md` sec 5, sec 6).
 //!
 //! GREAD and GWRITE each come in a uniform and a PER_TARGET form. Frames
 //! arrive whole and CRC-verified, so `parse` performs all structural
-//! validation up front (payloads cap at 252 B, §5.1, so even the
+//! validation up front (payloads cap at 252 B, sec 5.1, so even the
 //! variable-stride walk is trivially cheap); the iterators then run over
 //! known-well-formed bytes and stay branch-light. A servo's reply slot is its
-//! 0-based position in the listed order (§6) — `slot_of` / `find` report it.
+//! 0-based position in the listed order (sec 6) -- `slot_of` / `find` report it.
 //!
 //! Duplicate IDs are legal on the wire; first match wins in `find`/`slot_of`.
 
@@ -35,7 +35,7 @@ pub struct GreadProfileTarget {
     pub slot: u8,
 }
 
-/// Uniform GREAD: `addr(2) count(2) id-list(1 each)` — one span, many servos,
+/// Uniform GREAD: `addr(2) count(2) id-list(1 each)` -- one span, many servos,
 /// replies chain in list order.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct GreadUniform<'a> {
@@ -67,7 +67,7 @@ impl<'a> GreadUniform<'a> {
     }
 }
 
-/// PER_TARGET GREAD: `[id(1) addr(2) count(2)]×` — fixed 5-byte entries.
+/// PER_TARGET GREAD: `[id(1) addr(2) count(2)]x` -- fixed 5-byte entries.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct GreadPerTarget<'a> {
     entries: FrameBytes<'a>,
@@ -117,8 +117,8 @@ impl Iterator for GreadPerTargetIter<'_> {
     }
 }
 
-/// Uniform GREAD+PROFILE: `slot(1) id-list(1 each)` — one profile slot, many
-/// servos, replies chain in list order (§5.2).
+/// Uniform GREAD+PROFILE: `slot(1) id-list(1 each)` -- one profile slot, many
+/// servos, replies chain in list order (sec 5.2).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct GreadProfileUniform<'a> {
     pub slot: u8,
@@ -147,7 +147,7 @@ impl<'a> GreadProfileUniform<'a> {
     }
 }
 
-/// PER_TARGET GREAD+PROFILE: `[id(1) slot(1)]×` — fixed 2-byte entries.
+/// PER_TARGET GREAD+PROFILE: `[id(1) slot(1)]x` -- fixed 2-byte entries.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct GreadProfilePerTarget<'a> {
     entries: FrameBytes<'a>,
@@ -195,7 +195,7 @@ impl Iterator for GreadProfilePerTargetIter<'_> {
     }
 }
 
-/// Uniform GWRITE: `addr(2) count(1) [id(1) data(count)]×` — fixed-stride
+/// Uniform GWRITE: `addr(2) count(1) [id(1) data(count)]x` -- fixed-stride
 /// entries after the 3-byte head.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct GwriteUniform<'a> {
@@ -214,7 +214,7 @@ impl<'a> GwriteUniform<'a> {
         let entries = payload.sub(3, payload.len().checked_sub(3)?)?;
         let stride = 1 + count as usize;
         // Reject a ragged tail without a divide (rv32ec +zmmul has no hardware
-        // remainder): walk in stride steps. Bounded — payloads cap at 252 B.
+        // remainder): walk in stride steps. Bounded -- payloads cap at 252 B.
         let mut rem = entries.len();
         if rem == 0 {
             return None;
@@ -264,7 +264,7 @@ impl<'a> Iterator for GwriteUniformIter<'a> {
     }
 }
 
-/// PER_TARGET GWRITE: `[id(1) addr(2) count(1) data(count)]×` — variable
+/// PER_TARGET GWRITE: `[id(1) addr(2) count(1) data(count)]x` -- variable
 /// stride, each entry's `count` sizes its own data.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct GwritePerTarget<'a> {
@@ -352,7 +352,7 @@ mod tests {
 
     #[test]
     fn gread_per_target_iteration_and_find() {
-        // id 10 addr 0x0200 count 4 · id 20 addr 0x0010 count 2.
+        // id 10 addr 0x0200 count 4 * id 20 addr 0x0010 count 2.
         let p = [10, 0x00, 0x02, 0x04, 0x00, 20, 0x10, 0x00, 0x02, 0x00];
         let g = GreadPerTarget::parse(fb(&p)).unwrap();
         let got: [GreadTarget; 2] = [g.iter().next().unwrap(), g.iter().nth(1).unwrap()];
@@ -405,7 +405,7 @@ mod tests {
 
     #[test]
     fn gread_profile_per_target_iteration_and_find() {
-        // id 10 slot 0 · id 20 slot 3.
+        // id 10 slot 0 * id 20 slot 3.
         let p = [10, 0, 20, 3];
         let g = GreadProfilePerTarget::parse(fb(&p)).unwrap();
         let got: [GreadProfileTarget; 2] = [g.iter().next().unwrap(), g.iter().nth(1).unwrap()];
@@ -436,7 +436,7 @@ mod tests {
 
     #[test]
     fn gwrite_uniform_slices_and_find() {
-        // addr 0x0180 count 4 · id 1 data [1,2,3,4] · id 2 data [5,6,7,8].
+        // addr 0x0180 count 4 * id 1 data [1,2,3,4] * id 2 data [5,6,7,8].
         let p = [0x80, 0x01, 4, 1, 1, 2, 3, 4, 2, 5, 6, 7, 8];
         let g = GwriteUniform::parse(fb(&p)).unwrap();
         assert_eq!(g.addr, 0x0180);
@@ -461,7 +461,7 @@ mod tests {
 
     #[test]
     fn gwrite_per_target_mixed_counts() {
-        // id 3 addr 0x0000 count 2 [AA BB] · id 4 addr 0x0100 count 4 [1 2 3 4].
+        // id 3 addr 0x0000 count 2 [AA BB] * id 4 addr 0x0100 count 4 [1 2 3 4].
         let p = [3, 0x00, 0x00, 2, 0xAA, 0xBB, 4, 0x00, 0x01, 4, 1, 2, 3, 4];
         let g = GwritePerTarget::parse(fb(&p)).unwrap();
         let targets: [GwriteTarget; 2] = [g.iter().next().unwrap(), g.iter().nth(1).unwrap()];

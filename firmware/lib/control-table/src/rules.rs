@@ -1,9 +1,9 @@
 //! Shared field-rule bodies. The Block derive emits one call per rule instead
-//! of expanding the load/widen/compare sequence at every field site — the
+//! of expanding the load/widen/compare sequence at every field site -- the
 //! per-site cost is a handful of argument moves, and exactly one compare body
 //! exists no matter how many rules or shapes the table grows (width, sign,
 //! abs, and op arrive packed in a const-folded [`spec`] word; the runtime
-//! dispatch is a couple of compares on the µs-budget write path). Widening and
+//! dispatch is a couple of compares on the us-budget write path). Widening and
 //! saturating-abs semantics are pinned here (carried over from the deleted
 //! rule interpreter) and unit-tested directly instead of per generated copy.
 

@@ -1,5 +1,5 @@
-//! Status-reply TX engine (`docs/osc-native-protocol.md` §4.2): stage a frame
-//! layout, then trigger — break + up to four DMA arms, the last always the
+//! Status-reply TX engine (`docs/osc-native-protocol.md` sec 4.2): stage a frame
+//! layout, then trigger -- break + up to four DMA arms, the last always the
 //! 2-byte CRC. The wire starts before the CRC is known; the hardware engine
 //! chews the covered span in parallel and the value is patched into that final
 //! arm at the boundary before it (the engine outruns the wire 8:1, F6, and DMA
@@ -11,15 +11,15 @@ use osc_protocol::crc::osc_crc_continue;
 use osc_protocol::reply::FrameBuf;
 use osc_protocol::wire::{self, Id, Inst, ResultCode};
 
-/// Staging buffer size. Payloads stream from the engine's snapshot (§4.2), so
-/// the buffer holds only the header and CRC tail plus the ≤
+/// Staging buffer size. Payloads stream from the engine's snapshot (sec 4.2), so
+/// the buffer holds only the header and CRC tail plus the <=
 /// [`SMALL_COPY_MAX`] copy path.
 pub const REPLY_BUF: usize = 16;
 
 /// Payloads at or below this are copied into the staging buffer. Kept minimal:
-/// the copy costs ~0.3 µs/byte of turnaround (bench-measured at 3M), so
+/// the copy costs ~0.3 us/byte of turnaround (bench-measured at 3M), so
 /// anything the DMA can stream in place should stream. The floor exists
-/// because an odd payload donates its last byte to the tail arm — at p = 1
+/// because an odd payload donates its last byte to the tail arm -- at p = 1
 /// that would leave a zero-length DMA arm.
 const SMALL_COPY_MAX: usize = 2;
 
@@ -30,7 +30,7 @@ pub enum TxOut {
     Released,
 }
 
-/// One DMA arm (or CRC feed) as a descriptor — resolved to a slice only at
+/// One DMA arm (or CRC feed) as a descriptor -- resolved to a slice only at
 /// send time, so the engine never holds self-referential borrows.
 #[derive(Copy, Clone)]
 enum Arm {
@@ -46,9 +46,9 @@ const NO_ARM: Arm = Arm::Buf { off: 0, len: 0 };
 enum State {
     Idle,
     /// `slot_key` is present on collision-tolerant replies: broadcast-ENUM
-    /// replies' §9.2 job is to collide, so the composite's break-wake kill
+    /// replies' sec 9.2 job is to collide, so the composite's break-wake kill
     /// skips them, and the key (folded UID CRC) draws the reply's slot
-    /// delay — cycle-identical twin matchers otherwise answer in unison,
+    /// delay -- cycle-identical twin matchers otherwise answer in unison,
     /// and a sub-bit-aligned superposition of near-equal frames reads back
     /// as one clean frame, hiding the loser's subtree from the walk.
     Staged {
@@ -73,8 +73,8 @@ pub struct TxEngine<W: TxWire> {
     state: State,
     result: ResultCode,
     /// The covered byte the even-bulk feeds leave un-fed when the span is odd
-    /// (§3.2): read and folded into the engine result at patch time (the
-    /// pointer targets engine-stable storage — buffer or snapshot).
+    /// (sec 3.2): read and folded into the engine result at patch time (the
+    /// pointer targets engine-stable storage -- buffer or snapshot).
     tail: Option<*const u8>,
     alert: bool,
     crc_misses: u32,
@@ -102,18 +102,18 @@ impl<W: TxWire> TxEngine<W> {
         !matches!(self.state, State::Idle)
     }
 
-    /// A frame is staged but not yet triggered — safe to abort (a fresh
+    /// A frame is staged but not yet triggered -- safe to abort (a fresh
     /// instruction supersedes it). Streaming frames must not be aborted.
     pub fn staged(&self) -> bool {
         matches!(self.state, State::Staged { .. })
     }
 
-    /// The staged reply is exempt from the break-wake kill (§9.2 ENUM).
+    /// The staged reply is exempt from the break-wake kill (sec 9.2 ENUM).
     pub fn collision_tolerant(&self) -> bool {
         self.slot_key().is_some()
     }
 
-    /// A collision-tolerant staged reply's slot-delay key (§9.2), else None.
+    /// A collision-tolerant staged reply's slot-delay key (sec 9.2), else None.
     pub fn slot_key(&self) -> Option<u8> {
         match self.state {
             State::Staged { slot_key } => slot_key,
@@ -122,7 +122,7 @@ impl<W: TxWire> TxEngine<W> {
     }
 
     /// Mark the staged reply collision-tolerant with its slot-delay key
-    /// (§9.2: an ENUM reply's job is to collide with peer matchers, offset
+    /// (sec 9.2: an ENUM reply's job is to collide with peer matchers, offset
     /// by its slot). No-op unless a frame is staged.
     pub fn mark_collision_tolerant(&mut self, key: u8) {
         if let State::Staged { slot_key } = &mut self.state {
@@ -130,13 +130,13 @@ impl<W: TxWire> TxEngine<W> {
         }
     }
 
-    /// Arms are on the wire — the servo owns the line until the final TC.
+    /// Arms are on the wire -- the servo owns the line until the final TC.
     pub fn streaming(&self) -> bool {
         matches!(self.state, State::Streaming { .. })
     }
 
     /// Build the frame layout for a status reply; touches no wire state
-    /// (enable-when-ready is [`trigger`](Self::trigger), §4.2).
+    /// (enable-when-ready is [`trigger`](Self::trigger), sec 4.2).
     pub fn stage<C: CrcEngine>(
         &mut self,
         crc: &mut C,
@@ -149,11 +149,11 @@ impl<W: TxWire> TxEngine<W> {
     }
 
     /// Gathered form of [`stage`](Self::stage): the payload is `spans`
-    /// concatenated in order (§5.2 profile reads; a plain reply is the
+    /// concatenated in order (sec 5.2 profile reads; a plain reply is the
     /// one-span case). Payload totals above [`SMALL_COPY_MAX`] are
     /// snapshotted through the CRC engine's stable buffer at cumulative
-    /// offsets — wire and CRC both stream the one contiguous snapshot, so a
-    /// scattered read costs the same single copy as a plain read (§4.2).
+    /// offsets -- wire and CRC both stream the one contiguous snapshot, so a
+    /// scattered read costs the same single copy as a plain read (sec 4.2).
     pub fn stage_gather<C: CrcEngine>(
         &mut self,
         crc: &mut C,
@@ -173,8 +173,8 @@ impl<W: TxWire> TxEngine<W> {
         let inst = Inst::status(result, alert);
         // Small payloads are cheaper to copy than to arm. An odd covered span
         // feeds its even bulk and leaves the last byte for the software fold
-        // at patch (§3.2); odd POINTERS are the CRC provider's concern (it
-        // stages them through its copy channel, §5).
+        // at patch (sec 3.2); odd POINTERS are the CRC provider's concern (it
+        // stages them through its copy channel, sec 5).
         if total <= SMALL_COPY_MAX {
             self.buf.start(Id::new(id), inst);
             let pay = self.buf.payload_mut();
@@ -209,9 +209,9 @@ impl<W: TxWire> TxEngine<W> {
             };
             self.crc_off = cov as u16;
         } else {
-            // Snapshot reads (§4.2): the payload is copied ONCE into the
-            // engine's stable snapshot buffer — each span at its cumulative
-            // offset — and both the wire arms and the CRC feeds stream the
+            // Snapshot reads (sec 4.2): the payload is copied ONCE into the
+            // engine's stable snapshot buffer -- each span at its cumulative
+            // offset -- and both the wire arms and the CRC feeds stream the
             // snapshot: the CRC provably covers the transmitted bytes, and
             // the reply carries an atomic point-in-time image (`stage` runs
             // kernel-exclusive; the provider orders the copies ahead of both
@@ -245,8 +245,8 @@ impl<W: TxWire> TxEngine<W> {
             };
             self.n_feeds = 2;
             // The fold byte is read at patch time, not here: the snapshot is
-            // best-effort asynchronous and may still be streaming — by the
-            // patch boundary the copy has long completed (§4.2).
+            // best-effort asynchronous and may still be streaming -- by the
+            // patch boundary the copy has long completed (sec 4.2).
             self.tail = if p & 1 == 1 {
                 Some(unsafe { ptr.add(p as usize - 1) })
             } else {
@@ -264,10 +264,10 @@ impl<W: TxWire> TxEngine<W> {
     }
 
     /// Finalize and start: optional result override (chain reclaim's
-    /// predecessor-silent, §6) rewrites INST, then break + first arm with the
+    /// predecessor-silent, sec 6) rewrites INST, then break + first arm with the
     /// first CRC feed armed behind it. The CRC value lands later, at the
-    /// boundary before its own trailing arm ([`on_arm_complete`]) — the wire
-    /// starts before the CRC is known so the engine chews in parallel (§4.2).
+    /// boundary before its own trailing arm ([`on_arm_complete`]) -- the wire
+    /// starts before the CRC is known so the engine chews in parallel (sec 4.2).
     pub fn trigger<C: CrcEngine>(&mut self, crc: &mut C, over: Option<ResultCode>) {
         if !matches!(self.state, State::Staged { .. }) {
             debug_assert!(false, "trigger without a staged frame");
@@ -316,7 +316,7 @@ impl<W: TxWire> TxEngine<W> {
 
     /// Poll the CRC and patch the trailing 2 bytes. Called at the boundary
     /// before the CRC arm: the DMA is physically reading the buffer as we
-    /// write here — by design. The CRC arm is last (>= header's worth of head
+    /// write here -- by design. The CRC arm is last (>= header's worth of head
     /// start) and the engine runs ~8x wire speed (F6), so the patch wins.
     fn patch_crc<C: CrcEngine>(&mut self, crc: &mut C) {
         // Every feed was armed at least one arm's wire-time ago, so `result()`
@@ -336,7 +336,7 @@ impl<W: TxWire> TxEngine<W> {
         match value {
             Some(v) => {
                 // Fold the un-fed trailing covered byte, if the span was odd
-                // (§3.2) — the only software CRC on the servo. SAFETY: the
+                // (sec 3.2) -- the only software CRC on the servo. SAFETY: the
                 // pointer targets the frame buffer or the engine's snapshot,
                 // both stable for this exchange; any snapshot copy completed
                 // arms ago (transfer ordering).

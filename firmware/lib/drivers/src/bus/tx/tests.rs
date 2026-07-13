@@ -28,7 +28,7 @@ impl CrcEngine for FakeCrc {
     }
     fn feed(&mut self, span: &[u8]) {
         assert_eq!(span.len() % 2, 0, "CRC feed must be even-length (F12)");
-        // Odd ADDRESSES are legal: the chip provider stages them (§5).
+        // Odd ADDRESSES are legal: the chip provider stages them (sec 5).
         self.state = osc_crc_continue(self.state, span);
     }
     fn snapshot(&mut self, off: u16, src: &[u8]) -> *const u8 {
@@ -73,7 +73,7 @@ fn engine() -> (TxEngine<FakeWire>, Rc<RefCell<Vec<Event>>>) {
 }
 
 /// Software-sealed frame for the same reply, including the 0x00 prefix.
-/// Built in its own full-size buffer — REPLY_BUF only fits streamed
+/// Built in its own full-size buffer -- REPLY_BUF only fits streamed
 /// layouts, and the reference is a whole linearized frame.
 fn reference(id: u8, result: ResultCode, alert: bool, data: &[u8]) -> Vec<u8> {
     let mut b = FrameBuf::<64>::new();
@@ -139,7 +139,7 @@ fn empty_ack_matches_sealed_reference() {
 fn small_copy_reply_matches_sealed_reference() {
     let (mut eng, log) = engine();
     let mut crc = FakeCrc::new();
-    // 2 bytes ≤ SMALL_COPY_MAX → the copy path, even payload.
+    // 2 bytes <= SMALL_COPY_MAX -> the copy path, even payload.
     let data = [0xDE, 0xAD];
     eng.stage(&mut crc, 1, ResultCode::Ok, true, &data).unwrap();
     run(&mut eng, &mut crc, None);
@@ -159,8 +159,8 @@ fn small_copy_reply_matches_sealed_reference() {
 fn small_odd_zero_copy_streams_whole_payload() {
     let (mut eng, log) = engine();
     let mut crc = FakeCrc::new();
-    // 3 even-addressed bytes: above SMALL_COPY_MAX → zero-copy; the odd
-    // last byte is folded into the CRC in software (§3.2), not moved into
+    // 3 even-addressed bytes: above SMALL_COPY_MAX -> zero-copy; the odd
+    // last byte is folded into the CRC in software (sec 3.2), not moved into
     // a tail arm.
     let data = Aligned([0xDE, 0xAD, 0xBE, 0]);
     eng.stage(&mut crc, 1, ResultCode::Ok, true, &data.0[..3])
@@ -183,8 +183,8 @@ fn odd_pointer_streams_zero_copy() {
     let (mut eng, log) = engine();
     let mut crc = FakeCrc::new();
     // Odd-addressed source above SMALL_COPY_MAX: streamed zero-copy like
-    // any other span — the chip CRC provider stages odd pointers through
-    // its copy channel (§5); the engine is parity-blind.
+    // any other span -- the chip CRC provider stages odd pointers through
+    // its copy channel (sec 5); the engine is parity-blind.
     let backing = Aligned([0u8, 0xDE, 0xAD, 0xBE]);
     let data = &backing.0[1..4];
     eng.stage(&mut crc, 1, ResultCode::Ok, true, data).unwrap();
@@ -213,7 +213,7 @@ fn zero_copy_even_streams_three_arms() {
     assert_eq!(*s.last().unwrap(), reference[reference.len() - 2..]);
     assert_eq!(wire_bytes(&log), reference[1..]);
     // CRC over the covered span matches the reference flavor (the leading
-    // alignment byte is a no-op, §3.2).
+    // alignment byte is a no-op, sec 3.2).
     let covered_len = wire::covered_len(wire::len_for(40));
     let crc = u16::from_le_bytes([s[2][0], s[2][1]]);
     assert_eq!(osc_crc(&reference[..covered_len]), crc);
@@ -230,7 +230,7 @@ fn zero_copy_odd_streams_whole_payload() {
     let log = log.borrow();
     let s = sends(&log);
     // Odd payload streams whole; its last byte reaches the CRC via the
-    // software fold at patch time (§3.2), so the wire CRC still matches
+    // software fold at patch time (sec 3.2), so the wire CRC still matches
     // the byte-wise reference.
     assert_eq!(s.iter().map(Vec::len).collect::<Vec<_>>(), vec![3, 41, 2]);
     let reference = reference(5, ResultCode::Ok, false, &data.0);
@@ -242,7 +242,7 @@ fn zero_copy_odd_streams_whole_payload() {
 fn gather_matches_sealed_reference_of_concat() {
     let (mut eng, log) = engine();
     let mut crc = FakeCrc::new();
-    // Three spans, odd interior lengths (no parity constraint, §5.2): the
+    // Three spans, odd interior lengths (no parity constraint, sec 5.2): the
     // wire must carry exactly the concatenation.
     let a = Aligned([0x10, 0x11, 0x12, 0]);
     let b = Aligned([0x20, 0]);
@@ -255,7 +255,7 @@ fn gather_matches_sealed_reference_of_concat() {
     let log = log.borrow();
     let reference = reference(3, ResultCode::Ok, false, &concat);
     let s = sends(&log);
-    // Header, one contiguous snapshot arm, CRC — same shape as a plain
+    // Header, one contiguous snapshot arm, CRC -- same shape as a plain
     // zero-copy read (the gather is invisible to the wire).
     assert_eq!(
         s.iter().map(Vec::len).collect::<Vec<_>>(),
@@ -269,7 +269,7 @@ fn gather_matches_sealed_reference_of_concat() {
 fn gather_tiny_total_takes_copy_path() {
     let (mut eng, log) = engine();
     let mut crc = FakeCrc::new();
-    // Two 1-byte spans: total 2 <= SMALL_COPY_MAX — buffer copy, no
+    // Two 1-byte spans: total 2 <= SMALL_COPY_MAX -- buffer copy, no
     // snapshot involved.
     let spans: [&[u8]; 2] = [&[0xAA], &[0xBB]];
     eng.stage_gather(&mut crc, 4, ResultCode::Ok, false, &spans)

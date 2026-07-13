@@ -1,11 +1,11 @@
 use control_table::{Block, Enum, Section};
 
-/// osc-native operational baud (§2). Recovery is the rescue break's job, not a
+/// osc-native operational baud (sec 2). Recovery is the rescue break's job, not a
 /// crawl-speed fallback, so only the four operational rates exist.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default, Enum)]
 #[repr(u8)]
 pub enum BaudRate {
-    // Default = the §9.1 rescue floor, the always-reachable rate — and the
+    // Default = the sec 9.1 rescue floor, the always-reachable rate -- and the
     // zero value, which keeps the table's const image all-zero so SHARED
     // lands in .bss (no 1 KB flash init image). The operational default is
     // the board's `ConfigDefaults.baud`, seeded at boot before the bus runs.
@@ -16,7 +16,7 @@ pub enum BaudRate {
     B3000000 = 3,
 }
 
-/// osc-native §7 default: chain reclaim + host timeout, not a reply-time floor.
+/// osc-native sec 7 default: chain reclaim + host timeout, not a reply-time floor.
 pub const DEFAULT_RESPONSE_DEADLINE_US: u16 = 60;
 
 impl BaudRate {
@@ -157,8 +157,8 @@ pub struct ConfigControlPosition {
 }
 
 /// Config section: always writable (normal field validation applies), volatile
-/// until `MGMT SAVE` persists it — SAVE is the only torque-gated operation
-/// (osc-native §9.4 separates write from persistence).
+/// until `MGMT SAVE` persists it -- SAVE is the only torque-gated operation
+/// (osc-native sec 9.4 separates write from persistence).
 #[repr(C)]
 #[derive(Section)]
 #[ct_section(

@@ -1,4 +1,4 @@
-//! The dispatch spine: resolver → frame routing → CRC verdict → reply sequencing.
+//! The dispatch spine: resolver -> frame routing -> CRC verdict -> reply sequencing.
 
 use osc_core::traits::{Dispatch, Dispatched, Request, RequestCtx};
 use osc_protocol::wire::{ENUM_REPLY_SLOTS, ResultCode};
@@ -12,9 +12,10 @@ use super::{Pending, ServoBus};
 use crate::traits::bus::{Deadline, Providers, RxRing, tick_reached};
 
 impl<P: Providers> ServoBus<P> {
-    /// Drive the resolver as far as ring DATA allows (A2): complete backlog
-    /// frames process in-line with zero clock involvement; the frontier arms
-    /// a deadline and returns. Bounded per wake — past the bound the framer
+    /// Drive the resolver as far as ring DATA allows (data-first from the
+    /// stream): complete backlog frames process in-line with zero clock
+    /// involvement; the frontier arms a deadline and returns. Bounded per
+    /// wake -- past the bound the framer
     /// slot re-arms at `now` (pend-on-past re-entry) so the other mux slots
     /// are never starved by a deep backlog.
     pub(super) fn drive_framer<D: Dispatch>(&mut self, d: &mut D) {
@@ -78,7 +79,7 @@ impl<P: Providers> ServoBus<P> {
                 self.verify(p, d);
             }
             Some(_) => {
-                // Defensive: a pending frame that isn't this one — drop it. Any
+                // Defensive: a pending frame that isn't this one -- drop it. Any
                 // dangling staged write is reclaimed by the dispatcher
                 // auto-revert on the next dispatch.
                 self.drop_staged();
@@ -89,22 +90,22 @@ impl<P: Providers> ServoBus<P> {
     }
 
     /// The spine: dispatch a frame ahead of its CRC verdict when its effects
-    /// can stage (§4). `complete` distinguishes a whole frame (backlog / fast
-    /// path — every byte incl. the CRC is ringed, so the verdict fires now)
+    /// can stage (sec 4). `complete` distinguishes a whole frame (backlog / fast
+    /// path -- every byte incl. the CRC is ringed, so the verdict fires now)
     /// from a frontier frame at its covered checkpoint (the two CRC bytes still
-    /// inbound — the verdict is deferred to the frame end). A stageable op
+    /// inbound -- the verdict is deferred to the frame end). A stageable op
     /// (ping/read/gread/write/gwrite) dispatches inline with the CRC feed
-    /// chewing underneath; the verdict gates its effects — SEND/DON'T-SEND of a
+    /// chewing underneath; the verdict gates its effects -- SEND/DON'T-SEND of a
     /// staged reply, COMMIT/REVERT of a staged write. Verdict-first ops
     /// (COMMIT/MGMT, effects unstageable) and any frame overlapping a live
     /// reply pipeline check the CRC first, then dispatch. A frontier frame that
-    /// lands in the verdict-first path just defers — its frame end arrives here
+    /// lands in the verdict-first path just defers -- its frame end arrives here
     /// `complete`.
     fn route_frame<D: Dispatch>(&mut self, span: FrameSpan, complete: bool, d: &mut D) {
         let anchor = span.anchor;
         let footprint = span.footprint;
         let packet_end = span.packet_end;
-        // Status frames only advance the snoop chain (§6) — framing-level
+        // Status frames only advance the snoop chain (sec 6) -- framing-level
         // truth, NO validation: the chain consumes nothing from the body, and
         // skipping the CRC keeps the snapshot buffer free while our own reply
         // streams from it. A frontier status defers to its frame end.
@@ -117,9 +118,9 @@ impl<P: Providers> ServoBus<P> {
         }
         // The spine runs only from an idle reply pipeline: superseding a live
         // chain or staged reply belongs AFTER the CRC gate (a garbled frame
-        // must touch nothing, §5.3 L1), so those overlaps fall to verdict-first
+        // must touch nothing, sec 5.3 L1), so those overlaps fall to verdict-first
         // below. The guard also keeps the CRC engine free through a pending
-        // window — chain/tx activate only at a verdict, so no trigger reset
+        // window -- chain/tx activate only at a verdict, so no trigger reset
         // can clobber a fed span.
         if !self.chain.active() && !self.tx.busy() && !self.verdict_first(anchor) {
             // Feed first so the engine chews the covered span under the
@@ -150,10 +151,10 @@ impl<P: Providers> ServoBus<P> {
             }
             return;
         }
-        // Verdict-first (only meaningful complete — a frontier defers): the CRC
+        // Verdict-first (only meaningful complete -- a frontier defers): the CRC
         // is checked before any effect. COMMIT/MGMT (unstageable), and frames
-        // overlapping a live reply pipeline. A fail drops silently (§5.3 L1),
-        // the hunt resuming one byte in (§3.3).
+        // overlapping a live reply pipeline. A fail drops silently (sec 5.3 L1),
+        // the hunt resuming one byte in (sec 3.3).
         if !complete {
             return;
         }
@@ -167,14 +168,14 @@ impl<P: Providers> ServoBus<P> {
         }
         self.framer.on_frame_verified();
         self.drift_note_verified(anchor, footprint);
-        // A fresh instruction supersedes any stale, not-yet-streaming reply —
+        // A fresh instruction supersedes any stale, not-yet-streaming reply --
         // post-verdict, so a garbled frame touched nothing.
         self.chain.reset();
         self.chain_at = None;
         if self.tx.staged() {
             self.tx.abort();
         }
-        // Dispatch inline — the CRC already passed, so a staged table effect
+        // Dispatch inline -- the CRC already passed, so a staged table effect
         // commits directly and any reply sequences from the packet end. A frame
         // that decodes as another servo's touches nothing.
         let Some((staged, slot, out)) =
@@ -191,10 +192,10 @@ impl<P: Providers> ServoBus<P> {
         }
     }
 
-    /// Verify a pending frame's CRC and resolve the verdict. Pass → commit a
+    /// Verify a pending frame's CRC and resolve the verdict. Pass -> commit a
     /// staged table effect (COMMIT) and sequence a staged reply (SEND); fail
-    /// (or spin miss) → revert the write (REVERT), drop the reply
-    /// (DON'T-SEND), count, and rewind the ladder (§5.3 L1).
+    /// (or spin miss) -> revert the write (REVERT), drop the reply
+    /// (DON'T-SEND), count, and rewind the ladder (sec 5.3 L1).
     #[cfg_attr(target_os = "none", unsafe(link_section = ".highcode"))]
     #[cfg_attr(target_os = "none", inline(never))]
     fn verify<D: Dispatch>(&mut self, p: Pending, d: &mut D) {
@@ -225,15 +226,15 @@ impl<P: Providers> ServoBus<P> {
     }
 
     /// Sequence a staged reply onto the snoop chain. reply gap is a wire gap
-    /// measured from the packet end (§7), not from this (later) verify wake —
+    /// measured from the packet end (sec 7), not from this (later) verify wake --
     /// the estimate is the framer's, conservative by the drift adder.
     fn sequence_reply(&mut self, slot: u8, packet_end: u32) {
-        // §9.2 slot delay: a collision-tolerant reply offsets its trigger by
+        // sec 9.2 slot delay: a collision-tolerant reply offsets its trigger by
         // (key ^ tick) & (SLOTS-1) byte-times. Twin matchers run
-        // cycle-identical firmware and otherwise answer in unison — and a
+        // cycle-identical firmware and otherwise answer in unison -- and a
         // sub-bit-aligned superposition of near-equal frames reads back as
-        // ONE clean frame instead of collision garble (task #30). The tick
-        // term re-draws every exchange, so equal keys never stick.
+        // ONE clean frame instead of collision garble. The tick term re-draws
+        // every exchange, so equal keys never stick.
         let gap = match self.tx.slot_key() {
             Some(key) => {
                 let draw = (key ^ self.deadline.now() as u8) & (ENUM_REPLY_SLOTS - 1);
@@ -261,7 +262,7 @@ impl<P: Providers> ServoBus<P> {
     }
 
     /// View the frame as up to two ring segments (one span unless it wraps the
-    /// seam), decode, and run `f` over disjoint borrows (driver-pattern §4.3):
+    /// seam), decode, and run `f` over disjoint borrows (driver-pattern sec 4.3):
     /// the decoded request borrows the ring while `f` stages a reply through the
     /// [`ReplyHandle`]. Returns `(staged, slot, f-result)`, or `None` for a frame
     /// that isn't ours.
@@ -276,7 +277,7 @@ impl<P: Providers> ServoBus<P> {
             Decoded::Own(req, ctx, slot) => (req, ctx, slot),
             _ => return None,
         };
-        // §9.2: an ENUM reply's staged wire effect is collision-tolerant —
+        // sec 9.2: an ENUM reply's staged wire effect is collision-tolerant --
         // its job is to collide with peer matchers (the on_break kill site
         // skips it, and staging keys its slot delay off the UID payload).
         let tolerant = matches!(req, Request::Enumerate { .. });

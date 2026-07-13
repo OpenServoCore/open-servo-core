@@ -1,8 +1,8 @@
 //! osc-native wire primitives: ID, packed `INST` byte, and frame span math
-//! (`docs/osc-native-protocol.md` §3, §5, §9). Layout only — no buffering.
+//! (`docs/osc-native-protocol.md` sec 3, sec 5, sec 9). Layout only -- no buffering.
 
 /// Frame ID byte. `0x01..=0xF9` unicast, `0xFE` broadcast; `0x00`/`0xFF` and
-/// `0xFA..=0xFD` never address a servo on the wire (§3.1).
+/// `0xFA..=0xFD` never address a servo on the wire (sec 3.1).
 #[repr(transparent)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Id(pub u8);
@@ -52,7 +52,7 @@ impl Id {
     }
 }
 
-/// Instruction opcode, `INST` bits [6:4] (§5). `0x0` is invalid.
+/// Instruction opcode, `INST` bits [6:4] (sec 5). `0x0` is invalid.
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Opcode {
@@ -82,7 +82,7 @@ impl Opcode {
     }
 }
 
-/// Status result code, `INST` bits [6:2] (§5.3). `9..=31` reserved/invalid.
+/// Status result code, `INST` bits [6:2] (sec 5.3). `9..=31` reserved/invalid.
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ResultCode {
@@ -116,7 +116,7 @@ impl ResultCode {
     }
 }
 
-/// MGMT sub-op, payload byte 0 (§9).
+/// MGMT sub-op, payload byte 0 (sec 9).
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum MgmtOp {
@@ -153,10 +153,10 @@ pub struct Inst(pub u8);
 
 impl Inst {
     pub const FLAG_HOLD: u8 = 1 << 0;
-    /// Bit 0 on READ/GREAD: the payload names a profile slot (§5.2).
+    /// Bit 0 on READ/GREAD: the payload names a profile slot (sec 5.2).
     pub const FLAG_PROFILE: u8 = Self::FLAG_HOLD;
-    // Bit 1 is reserved (0) in both layouts — freed by the pad deletion,
-    // kept for future extensions (§3.1, §5).
+    // Bit 1 is reserved (0) in both layouts -- freed by the pad deletion,
+    // kept for future extensions (sec 3.1, sec 5).
     pub const FLAG_NOREPLY: u8 = 1 << 2;
     pub const FLAG_PER_TARGET: u8 = 1 << 3;
 
@@ -196,8 +196,8 @@ impl Inst {
         self.0 & Self::FLAG_HOLD != 0
     }
 
-    /// Bit 0's read-side meaning (§5): on READ/GREAD the payload names a
-    /// profile slot instead of addr+count (§5.2). Same bit as HOLD.
+    /// Bit 0's read-side meaning (sec 5): on READ/GREAD the payload names a
+    /// profile slot instead of addr+count (sec 5.2). Same bit as HOLD.
     #[inline]
     pub const fn profile(self) -> bool {
         self.hold()
@@ -229,23 +229,23 @@ impl Inst {
     }
 }
 
-/// Max payload bytes; sized so the largest frame fits whole in the ring (§3.1).
+/// Max payload bytes; sized so the largest frame fits whole in the ring (sec 3.1).
 pub const MAX_PAYLOAD: u8 = 252;
 
-/// UID field width in bytes (§9.2): UUID-width, fixed. A chip fills it
+/// UID field width in bytes (sec 9.2): UUID-width, fixed. A chip fills it
 /// LSB-first from its silicon ID and zero-pads the tail (the V006's 96-bit
 /// ESIG leaves the top four bytes zero); no catalog MCU exceeds 128 bits.
 pub const UID_LEN: usize = 16;
 
-/// §9.2 ENUM reply slots: a broadcast-ENUM reply delays its trigger by
+/// sec 9.2 ENUM reply slots: a broadcast-ENUM reply delays its trigger by
 /// `0..ENUM_REPLY_SLOTS` byte-times, drawn from the responder's UID CRC
 /// XOR its free-running tick. Same-die matchers run cycle-identical
-/// firmware and otherwise answer in unison — and two near-equal frames
+/// firmware and otherwise answer in unison -- and two near-equal frames
 /// superimposed sub-bit-aligned read back as ONE clean frame instead of
 /// the collision garble the walk descends on.
 pub const ENUM_REPLY_SLOTS: u8 = 16;
 
-/// TX-buffer alignment byte at offset 0 (§3.2): keeps the hardware CRC feed
+/// TX-buffer alignment byte at offset 0 (sec 3.2): keeps the hardware CRC feed
 /// halfword-aligned and even; a CRC no-op (leading zero, init = 0). Not part
 /// of the wire checksum definition.
 pub const ALIGN_BYTE: u8 = 0x00;
@@ -271,8 +271,8 @@ pub const fn footprint(len: u8) -> usize {
 }
 
 /// Anchor-inclusive feed-span length (`1 + len`): the wire checksum covers
-/// `ID .. payload` (§3.2), but a span counted from the anchor includes the
-/// break's `0x00` no-op byte — the form receivers and buffers use.
+/// `ID .. payload` (sec 3.2), but a span counted from the anchor includes the
+/// break's `0x00` no-op byte -- the form receivers and buffers use.
 #[inline]
 pub const fn covered_len(len: u8) -> usize {
     1 + len as usize
@@ -379,7 +379,7 @@ mod tests {
     fn span_math() {
         assert_eq!(len_for(2), 5);
         assert_eq!(payload_len(5), 2);
-        // Odd payload: no pad, LEN even-legal (§3.1).
+        // Odd payload: no pad, LEN even-legal (sec 3.1).
         assert_eq!(len_for(3), 6);
         assert_eq!(payload_len(6), 3);
         // PING: empty payload.
@@ -392,7 +392,7 @@ mod tests {
 
     #[test]
     fn span_covered_matches_vectors() {
-        // "00 05 07 30 80 01 2C 01" — WRITE id 5, p=4 payload, LEN 7.
+        // "00 05 07 30 80 01 2C 01" -- WRITE id 5, p=4 payload, LEN 7.
         assert_eq!(len_for(4), 7);
         assert_eq!(covered_len(7), 8);
         assert_eq!(footprint(7), 10);

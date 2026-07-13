@@ -3,11 +3,11 @@
 //! and skip bytes read as zero). Writes to non-writable bytes fail with
 //! `AccessError`; addresses past the map end fail with `DataRange`.
 //!
-//!   CONFIG    0x000..0x080  (128 B) — persistent via MGMT SAVE
-//!   CALIB     0x080..0x180  (256 B) — persistence deferred (unused today)
-//!   CONTROL   0x180..0x200  (128 B) — RW volatile
-//!   TELEMETRY 0x200..0x280  (128 B) — RO from host
-//!   PROFILE   0x280..0x2C0  ( 64 B) — read-profile span words (§5.2)
+//!   CONFIG    0x000..0x080  (128 B) -- persistent via MGMT SAVE
+//!   CALIB     0x080..0x180  (256 B) -- persistence deferred (unused today)
+//!   CONTROL   0x180..0x200  (128 B) -- RW volatile
+//!   TELEMETRY 0x200..0x280  (128 B) -- RO from host
+//!   PROFILE   0x280..0x2C0  ( 64 B) -- read-profile span words (sec 5.2)
 //!   (reserved 0x2C0..0x400  320 B)
 //!
 //! Owners go through `RegionStorage::with`/`with_mut` on the storage cell.

@@ -1,9 +1,9 @@
 //! A frame's bytes as up to two contiguous segments (`docs/osc-native-protocol.md`
-//! §3.1). The RX ring hands frames to the parser in place; a frame that wraps
+//! sec 3.1). The RX ring hands frames to the parser in place; a frame that wraps
 //! the ring seam arrives as head + tail. `tail` is empty in the common case, so
 //! the contiguous accessors branch once and stay cheap.
 
-/// A frame's bytes as up to two contiguous segments — `tail` logically follows
+/// A frame's bytes as up to two contiguous segments -- `tail` logically follows
 /// `head`. Every accessor is non-panicking (bounds-checked, `Option` returns).
 #[derive(Copy, Clone)]
 pub struct FrameBytes<'a> {

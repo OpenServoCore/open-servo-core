@@ -1,13 +1,13 @@
-//! PROFILE region (osc-native §5.2): span-granular read profiles. A READ or
+//! PROFILE region (osc-native sec 5.2): span-granular read profiles. A READ or
 //! GREAD carrying the PROFILE flag names a slot; the reply streams the slot's
 //! spans back-to-back through the copy-once TX path, so scattered telemetry
 //! costs the wire one slot byte per cycle instead of a span list.
 //!
 //! Span word: `[addr:10][count:6]`, `count = 0` = word disabled. Disabled
-//! words are SKIPPED, not terminators — a host can toggle one span with a
+//! words are SKIPPED, not terminators -- a host can toggle one span with a
 //! single 2-byte write. The all-zero boot image is an empty slot. Any u16 is
 //! a valid word, so the region carries no field rules; span bounds and the
-//! reply ceiling are checked at read time (§5.3: `range` / `limit`).
+//! reply ceiling are checked at read time (sec 5.3: `range` / `limit`).
 
 use control_table::{Block, Section};
 
@@ -50,7 +50,7 @@ pub struct ProfileRegs {
 }
 
 impl ProfileRegs {
-    /// The span words of `slot`; `None` past the last slot (§5.3: `range`).
+    /// The span words of `slot`; `None` past the last slot (sec 5.3: `range`).
     #[inline]
     pub fn slot_words(&self, slot: u8) -> Option<&[u16; SPANS_PER_SLOT]> {
         if slot >= PROFILE_SLOTS {

@@ -1,5 +1,5 @@
 //! The six `osc_drivers::traits::bus` providers over per-servo shared state
-//! (`docs/osc-native-protocol.md` §4, §10). Each provider is a thin view onto
+//! (`docs/osc-native-protocol.md` sec 4, 10). Each provider is a thin view onto
 //! `Rc`-shared cells the [`super::Sim`] also holds a handle to, so wire
 //! deliveries and the driver see one ring, one clock, one baud.
 
@@ -14,7 +14,7 @@ use osc_protocol::crc::osc_crc_continue;
 
 use super::core::{Core, Event, Talker, break_ticks, byte_ticks};
 
-/// Ring length (§11): even and larger than the 258 B max frame, matching V006.
+/// Ring length (sec 11): even and larger than the 258 B max frame, matching V006.
 pub const RING_LEN: usize = 512;
 
 // --- shared per-servo state -------------------------------------------------
@@ -35,7 +35,7 @@ impl RingState {
         })
     }
 
-    /// Land one received byte at the cursor and advance it — the DMA write the
+    /// Land one received byte at the cursor and advance it -- the DMA write the
     /// wire model performs before any `on_break` (the pinned provider contract:
     /// the ring byte precedes the ISR).
     pub fn push(&self, b: u8) {
@@ -49,12 +49,12 @@ impl RingState {
 
 pub struct DeadlineState {
     /// Bumped on every set/cancel; a `Compare` event fires only if its `generation`
-    /// still matches — stale (superseded) compares are dropped.
+    /// still matches -- stale (superseded) compares are dropped.
     generation: Cell<u64>,
     armed: Cell<Option<u32>>,
-    /// Piecewise-linear skewed clock (§9.3): `local = anchor_local +
-    /// (sim − anchor_sim) · (1 + skew)`. Re-anchoring at a skew change keeps
-    /// the local clock continuous — real oscillators drift, they never step.
+    /// Piecewise-linear skewed clock (sec 9.3): `local = anchor_local +
+    /// (sim - anchor_sim) * (1 + skew)`. Re-anchoring at a skew change keeps
+    /// the local clock continuous -- real oscillators drift, they never step.
     skew_ppm: Cell<i32>,
     anchor_sim: Cell<u64>,
     anchor_local: Cell<u64>,
@@ -103,13 +103,13 @@ impl BaudState {
         })
     }
 
-    /// The servo's live operational baud — the wire matches reception against
+    /// The servo's live operational baud -- the wire matches reception against
     /// it and the TX side times bytes from it.
     pub fn current(&self) -> BaudRate {
         self.current.get()
     }
 
-    /// Applied-baud log — a harness inspection hook for the rescue suite (§9.1
+    /// Applied-baud log -- a harness inspection hook for the rescue suite (sec 9.1
     /// verifies the volatile switch to the 0.5 M rescue rate).
     #[allow(dead_code)]
     pub fn applied(&self) -> Vec<BaudRate> {
@@ -137,7 +137,7 @@ impl SimRing {
 impl RxRing for SimRing {
     fn bytes(&self) -> &[u8] {
         // SAFETY: test-only aliasing (mirrors mocks::bus::FakeRing); the buffer
-        // is never mutated while a returned slice is live — the Sim pushes only
+        // is never mutated while a returned slice is live -- the Sim pushes only
         // between driver calls.
         let arr: &[u8; RING_LEN] = unsafe { &(*self.0.buf.get()).0 };
         &arr[..]
@@ -189,7 +189,7 @@ impl Deadline for SimDeadline {
 
         let sim_now = self.core.borrow().now();
         let now_sk = self.state.local_u64(sim_now) as u32;
-        // A past `at` fires immediately — the chip provider pends reached
+        // A past `at` fires immediately -- the chip provider pends reached
         // deadlines rather than waiting out the u32 wrap (deadline-mux
         // contract; ISR bodies legitimately overrun pending deadlines).
         let delta_sk = at.wrapping_sub(now_sk);
@@ -200,7 +200,7 @@ impl Deadline for SimDeadline {
         };
         let mut fire = sim_now + unskew(delta_sk, self.state.skew_ppm.get());
         // Rounding must never land the wake *before* `at` (the driver's `due`
-        // check is a >= test) — nudge forward until the skewed clock reaches it.
+        // check is a >= test) -- nudge forward until the skewed clock reaches it.
         let mut guard = 0;
         while !tick_reached(self.state.local_u64(fire) as u32, at) && guard < 64 {
             fire += 1;
@@ -221,9 +221,9 @@ impl Deadline for SimDeadline {
     }
 }
 
-/// Software osc-CRC accumulator with an immediate result (§3.2, F6 modelled as
+/// Software osc-CRC accumulator with an immediate result (sec 3.2, F6 modelled as
 /// instantaneous). Even-length feeds are asserted (F12); the even-*address*
-/// half of F12 is not — heap-backed test buffers give no absolute-parity
+/// half of F12 is not -- heap-backed test buffers give no absolute-parity
 /// guarantee even where the driver's offsets are correct.
 #[derive(Default)]
 pub struct SimCrc {
@@ -268,8 +268,8 @@ pub struct SimWire {
     core: Rc<RefCell<Core>>,
     baud: Rc<BaudState>,
     idx: usize,
-    /// End tick of the last-scheduled byte — the next arm streams from here so
-    /// arms sit back-to-back on the wire (§4.2 tolerates the re-arm gap).
+    /// End tick of the last-scheduled byte -- the next arm streams from here so
+    /// arms sit back-to-back on the wire (sec 4.2 tolerates the re-arm gap).
     tx_cursor: Cell<u64>,
 }
 
@@ -309,7 +309,7 @@ impl TxWire for SimWire {
         let mut c = self.core.borrow_mut();
         // A late TC delivery (busy CPU) arms the next span after the previous
         // one drained: on silicon that is an inter-byte gap on the wire
-        // (legal — nothing times on idle, §4.2). Clamp so the DES clock never
+        // (legal -- nothing times on idle, sec 4.2). Clamp so the DES clock never
         // rewinds.
         let start = self.tx_cursor.get().max(c.now());
         for (k, &b) in span.iter().enumerate() {

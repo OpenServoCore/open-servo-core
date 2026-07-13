@@ -1,4 +1,4 @@
-//! Generic LED driver — drives a single output pin in one of a few
+//! Generic LED driver -- drives a single output pin in one of a few
 //! patterns. Mechanism only; no knowledge of *what* signals it represents.
 //!
 //! Callers set the pattern with [`Led::set_pattern`] when their model
@@ -88,7 +88,7 @@ mod tests {
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 
-    // MockMonotonic uses 1 tick = 1 µs, so test arithmetic stays in µs.
+    // MockMonotonic uses 1 tick = 1 us, so test arithmetic stays in us.
 
     #[derive(Clone, Default)]
     struct PinState {

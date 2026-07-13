@@ -1,24 +1,24 @@
-//! Clock-trim controller (`docs/osc-native-protocol.md` §9.3): folds windowed
-//! cadence error into chip trim steps. One rule covers both phases — `steps =
-//! round(err / step_effect)` — so the first window after boot takes a
-//! multi-step jump while steady-state windows round to zero: round-to-nearest
-//! IS the deadband, half a step wide, which is the physical optimum a stepped
-//! trim can hold.
+//! Clock-trim controller (`docs/osc-native-protocol.md` sec 9.3): folds
+//! windowed cadence error into chip trim steps. One rule covers both phases
+//! -- `steps = round(err / step_effect)` -- so the first window after boot
+//! takes a multi-step jump while steady-state windows round to zero:
+//! round-to-nearest IS the deadband, half a step wide, which is the physical
+//! optimum a stepped trim can hold.
 //!
 //! The step effect is SELF-MEASURED: chip trim steps are nonuniform per chip
-//! (bench 2026-07-11: 1.4–3.2k ppm/step against the 2.5k nominal), and a
-//! fixed deadband either limit-cycles on coarse-step chips or under-trims
-//! fine-step ones. Every applied correction is a free plant measurement — the
-//! next window's error shift, divided by the steps taken — so the deadband
-//! scales itself to THIS chip within one correction.
+//! (bench: 1.4-3.2k ppm/step against the 2.5k nominal), and a fixed deadband
+//! either limit-cycles on coarse-step chips or under-trims fine-step ones.
+//! Every applied correction is a free plant measurement -- the next window's
+//! error shift, divided by the steps taken -- so the deadband scales itself
+//! to THIS chip within one correction.
 //!
 //! CONTRACT (chip-independent): the output is signed trim steps from the
 //! chip's factory default where **positive slows the oscillator**. The chip
 //! adapter owns the mapping to its trim register's direction and never leaks
-//! it upward — V006 HSITRIM runs higher = faster, so its adapter negates
+//! it upward -- V006 HSITRIM runs higher = faster, so its adapter negates
 //! (`hal::rcc::apply_clock_trim`); a same-sign mapping turns this loop's
 //! negative feedback positive and rails the chip in `STEPS_MAX` clamps
-//! (silicon 2026-07-11: the trim-runaway probe).
+//! (the trim-runaway probe pins this).
 
 /// Self-measured step-effect acceptance band, ppm per step. A window
 /// polluted by traffic noise or a thermal shift between sparse windows can
@@ -42,7 +42,7 @@ pub struct TrimLoop {
     /// Plant gain: ppm of clock shift per trim step, seeded at the chip's
     /// nominal and replaced by measurement after the first correction.
     step_ppm: i32,
-    /// Previous window's error and the correction it drew — the pair the
+    /// Previous window's error and the correction it drew -- the pair the
     /// next window turns into a step-effect measurement.
     last_ppm: i32,
     last_steps: i32,
@@ -60,7 +60,7 @@ impl TrimLoop {
 
     /// One measurement window: `err_ticks` of local-clock excess over
     /// `span_ticks` of nominal wire-byte span (positive = local clock fast).
-    /// Returns the new trim total when it changed — the caller applies it to
+    /// Returns the new trim total when it changed -- the caller applies it to
     /// the oscillator (positive = slower).
     pub fn on_window(&mut self, err_ticks: i32, span_ticks: u32) -> Option<i8> {
         if span_ticks == 0 {

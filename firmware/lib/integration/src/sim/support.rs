@@ -1,5 +1,5 @@
 //! Test-support builders and checkers over the wire images the sim records
-//! (`docs/osc-native-protocol.md` §3). Tests read these to assert on decoded
+//! (`docs/osc-native-protocol.md` sec 3). Tests read these to assert on decoded
 //! shape, not raw bytes.
 
 use osc_protocol::crc::osc_crc;
@@ -19,8 +19,8 @@ pub fn instruction(id: u8, op: Opcode, flags: u8, payload: &[u8]) -> Vec<u8> {
     b.seal().to_vec()
 }
 
-/// Assert a recorded frame is well-formed: LEN covers INST + CRC (§3.1) and
-/// the trailing CRC matches osc-CRC over the covered span (§3.2 — the leading
+/// Assert a recorded frame is well-formed: LEN covers INST + CRC (sec 3.1) and
+/// the trailing CRC matches osc-CRC over the covered span (sec 3.2 -- the leading
 /// break byte is a no-op).
 pub fn assert_valid(frame: &WireFrame) {
     let b = &frame.bytes;

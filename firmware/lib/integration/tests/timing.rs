@@ -1,10 +1,10 @@
-//! Sequencing-time properties of the osc-native transport (§4.1, §6, §7, §9.3).
+//! Sequencing-time properties of the osc-native transport (sec 4.1, 6, 7, 9.3).
 //!
 //! The `Sim` dispatches with a ZERO CPU-time model: dispatch and CRC are
 //! instantaneous, so every tick here is pure wire/scheduling time. These are
-//! therefore SEQUENCING assertions — they pin reply gap behaviour, chain-gap
+//! therefore SEQUENCING assertions -- they pin reply gap behaviour, chain-gap
 //! ordering, and drift tolerance against the ideal sim clock. Wall-clock
-//! turnaround (the ~41 µs projection of §7) is the bench's job, not this suite.
+//! turnaround (the ~41 us projection of sec 7) is the bench's job, not this suite.
 
 use osc_core::BaudRate;
 use osc_core::regions::calib::addr::pot_lut::LUT;
@@ -59,21 +59,21 @@ fn reply_lead_respects_reply_gap(baud_idx: u8) {
 
     let host = host_frame(&frames);
     let reps = replies(&frames);
-    assert_eq!(reps.len(), 1, "ping → one reply at {rate:?}: {frames:#?}");
+    assert_eq!(reps.len(), 1, "ping -> one reply at {rate:?}: {frames:#?}");
     assert_valid(reps[0]);
 
     let bt = byte_ticks(rate);
     let reply_gap = support::reply_gap_ticks();
     let lead = reps[0].at - host.end;
 
-    // Hard floor: reply gap, fixed µs at every baud (§7).
+    // Hard floor: reply gap, fixed us at every baud (sec 7).
     assert!(
         lead >= reply_gap,
         "{rate:?}: lead {lead} < reply gap {reply_gap}"
     );
 
     // Generous ceiling from the ring-cadence estimate (framer.rs): the
-    // frozen packet-end runs late by at most the wake epsilon (½ bt) plus
+    // frozen packet-end runs late by at most the wake epsilon (1/2 bt) plus
     // the drift pad (span >> 6); two byte-times covers both with margin.
     let fp = instr.len() as u64;
     let ceil = reply_gap + 2 * bt + ((fp * bt) >> 6);
@@ -116,7 +116,7 @@ fn chain_gaps_scale_with_baud(baud_idx: u8) {
 
 #[apply(matrix)]
 fn skewed_servo_still_answers(baud_idx: u8) {
-    // ±1 % is the worst untrimmed-HSI throw (§9.3). Cursor-verified wakes absorb
+    // +/-1 % is the worst untrimmed-HSI throw (sec 9.3). Cursor-verified wakes absorb
     // the drift; nothing drops.
     let rate = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     for skew in [-10_000i32, 10_000] {
@@ -139,13 +139,13 @@ fn skewed_servo_still_answers(baud_idx: u8) {
 #[apply(matrix)]
 fn skewed_servo_survives_long_frame(baud_idx: u8) {
     // The framer's deadline-B margin scales with footprint (footprint >> 6), so
-    // a long frame keeps enough slack for +1 % drift (§4.1 regression).
+    // a long frame keeps enough slack for +1 % drift (sec 4.1 regression).
     let rate = BaudRate::from_idx(baud_idx).expect("valid baud idx");
     let mut sim = Sim::new(rate);
     sim.add_servo_with(1, 10_000, 60);
 
     // 50 i32 words = 200 B into the rule-free calibration LUT (torque off by
-    // default → the persistent section is writable).
+    // default -> the persistent section is writable).
     let words: Vec<i32> = (0..50).map(|i| 0x0100_0000 + i).collect();
     let addr = LUT.to_le_bytes();
     let mut payload = vec![addr[0], addr[1]];
@@ -184,7 +184,7 @@ fn skewed_chain_sequences_correctly(baud_idx: u8) {
     let reps = replies(&frames);
     assert_eq!(reps.len(), 3, "{frames:#?}");
 
-    // In list order, no reclaim flags despite the ±1 % clock spread.
+    // In list order, no reclaim flags despite the +/-1 % clock spread.
     assert_eq!(
         reps.iter().map(|f| f.bytes[1]).collect::<Vec<_>>(),
         vec![1, 2, 3]

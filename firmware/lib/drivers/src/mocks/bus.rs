@@ -1,6 +1,6 @@
 //! Hand-rolled fake providers for the `ServoBus` composite. Not mockall:
 //! `RxRing::bytes(&self) -> &[u8]` and the stateful cursor fight mockall's
-//! lifetime model, so these follow the state-companion spirit — cloneable
+//! lifetime model, so these follow the state-companion spirit -- cloneable
 //! `Rc` handles the test configures and inspects, one of which is moved into
 //! the driver.
 
@@ -15,7 +15,7 @@ use osc_protocol::crc::osc_crc_continue;
 use crate::bus::ServoBus;
 use crate::traits::bus::{CrcEngine, Deadline, Providers, RxRing, TxWire, UsartBaud};
 
-/// Ring length — even and larger than `FRAME_MAX` (matches the V006 512 B ring).
+/// Ring length -- even and larger than `FRAME_MAX` (matches the V006 512 B ring).
 pub const RING_LEN: usize = 512;
 
 #[repr(align(2))]
@@ -128,7 +128,7 @@ impl Deadline for FakeDeadline {
     }
 }
 
-/// Software osc-CRC accumulator with an immediate result — asserts even feeds
+/// Software osc-CRC accumulator with an immediate result -- asserts even feeds
 /// (F12) exactly like the `tx` engine tests.
 pub struct FakeCrc {
     state: u16,
@@ -202,7 +202,7 @@ impl FakeWire {
         self.0.borrow().contains(&WireEvent::Start)
     }
 
-    /// Concatenated `Send` bytes — the reply frame minus its `0x00` prefix.
+    /// Concatenated `Send` bytes -- the reply frame minus its `0x00` prefix.
     pub fn sent(&self) -> Vec<u8> {
         let mut out = Vec::new();
         for e in self.0.borrow().iter() {
@@ -248,7 +248,7 @@ impl UsartBaud for FakeBaud {
     }
 }
 
-/// ZST binding each role to its fake (driver-pattern §5.4).
+/// ZST binding each role to its fake (driver-pattern sec 5.4).
 pub struct TestProviders;
 
 impl Providers for TestProviders {

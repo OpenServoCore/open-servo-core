@@ -45,7 +45,7 @@ fn writable_covers_every_rw_field() {
 
 // Behavioral coverage of the generated `ct_check`: enum, an immediate compare, a
 // signed abs compare, a cross-field register compare, and mask-driven ro
-// rejection — the write-outcome facts the old structural `CT_RULES` assertions
+// rejection -- the write-outcome facts the old structural `CT_RULES` assertions
 // encoded. `target < &checks::CEILING` is an in-table register reference (same
 // shape the derive emits) so `read_fixed` stays in bounds.
 #[repr(C)]

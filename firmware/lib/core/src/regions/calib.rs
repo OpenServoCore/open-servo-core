@@ -18,7 +18,7 @@ pub struct BemfCalibBlock {
 }
 
 /// Calibration section: always writable (normal field validation applies),
-/// volatile until persisted — persistence is SAVE's job, not a write gate.
+/// volatile until persisted -- persistence is SAVE's job, not a write gate.
 #[repr(C)]
 #[derive(Section)]
 #[ct_section(

@@ -1,6 +1,6 @@
-//! MGMT CAL break-pair ruler (`docs/osc-native-protocol.md` §9.3): the host
+//! MGMT CAL break-pair ruler (`docs/osc-native-protocol.md` sec 9.3): the host
 //! announces a break train, its crystal spaces the breaks, and each servo
-//! measures the announced gap with its own clock — break-FE entry stamps at
+//! measures the announced gap with its own clock -- break-FE entry stamps at
 //! both ends of every gap, so entry latency cancels. Plain assertions on the
 //! trim decisions and on the transport's health after trains.
 
@@ -15,7 +15,7 @@ const ID: u8 = 5;
 const BROADCAST: u8 = 0xFE;
 const GAP_US: u64 = 400;
 const GAPS: u8 = 8;
-/// First ruler mark, µs after the announce frame's start — clear of the
+/// First ruler mark, us after the announce frame's start -- clear of the
 /// frame itself at every operational baud.
 const TRAIN_LEAD_US: u64 = 200;
 
@@ -36,7 +36,7 @@ fn train_end(t0: u64) -> u64 {
     t0 + TRAIN_LEAD_US + GAPS as u64 * GAP_US
 }
 
-/// The trio's real signature (+5.2k ppm, bench 2026-07-11): one train, one
+/// The trio's real signature (+5.2k ppm, bench-measured): one train, one
 /// decision, the nominal-seed acquire jump. Positive = slower.
 #[test_log::test]
 fn cal_train_draws_the_acquire_jump() {
@@ -56,7 +56,7 @@ fn slow_clock_draws_the_symmetric_speedup() {
     assert_eq!(sim.poll_clock_trim(s), Some(-2));
 }
 
-/// The ruler is µs-denominated, so the measurement is baud-independent —
+/// The ruler is us-denominated, so the measurement is baud-independent --
 /// the same train at 3M reads the same skew.
 #[test_log::test]
 fn cal_at_3m_reads_the_same_skew() {
@@ -80,7 +80,7 @@ fn near_nominal_clock_holds_still() {
 
 /// A stray FE mid-gap (line noise) splits one gap into two sub-gate halves:
 /// both rejected, two of the announced gaps spent, the survivors still carry
-/// the decision — a noisy train costs precision, never correctness.
+/// the decision -- a noisy train costs precision, never correctness.
 #[test_log::test]
 fn spurious_fe_mid_train_costs_gaps_not_the_train() {
     let mut sim = Sim::new(BaudRate::B1000000);
@@ -91,15 +91,15 @@ fn spurious_fe_mid_train_costs_gaps_not_the_train() {
     assert_eq!(sim.poll_clock_trim(s), Some(2));
 }
 
-/// Every gap outside the ±6% gate (a host that can't keep the announced
+/// Every gap outside the +/-6% gate (a host that can't keep the announced
 /// spacing): fewer than half the gaps validate, and the train decides
-/// NOTHING — a mangled ruler yields no reading rather than a wrong one.
+/// NOTHING -- a mangled ruler yields no reading rather than a wrong one.
 #[test_log::test]
 fn mangled_train_decides_nothing() {
     let mut sim = Sim::new(BaudRate::B1000000);
     let s = sim.add_servo_with(ID, 5_200, DEFAULT_RESPONSE_DEADLINE_US);
     sim.host_send_at(0, &cal_announce(GAP_US as u16, GAPS));
-    // Marks at alternating 150/650 µs — every gap far outside the gate.
+    // Marks at alternating 150/650 us -- every gap far outside the gate.
     let mut t = TRAIN_LEAD_US;
     for k in 0..(GAPS as u64 + 1) {
         sim.host_send_break_at(t);
@@ -111,7 +111,7 @@ fn mangled_train_decides_nothing() {
 
 /// The train's break bytes are scan noise the framer's hunt clears silently:
 /// the first instruction after a train answers clean, and neither counter
-/// moved — CAL is invisible to the link diagnostics.
+/// moved -- CAL is invisible to the link diagnostics.
 #[test_log::test]
 fn train_then_ping_answers_clean() {
     let mut sim = Sim::new(BaudRate::B1000000);
@@ -152,7 +152,7 @@ fn dead_train_frees_the_transport() {
     assert_eq!(sim.poll_clock_trim(s), None);
 }
 
-/// CAL is broadcast-only (§9.3): a unicast CAL's ack would put our own break
+/// CAL is broadcast-only (sec 9.3): a unicast CAL's ack would put our own break
 /// on the wire exactly where the train starts, so it decodes Unsupported and
 /// is answered as an instruction error.
 #[test_log::test]
@@ -172,11 +172,11 @@ fn unicast_cal_is_refused() {
     assert_eq!(sim.poll_clock_trim(s), None);
 }
 
-// ---- differential drift tracker (§9.3) ----------------------------------
+// ---- differential drift tracker (sec 9.3) ----------------------------------
 
 const OTHER_ID: u8 = 6;
-/// Silent hot-loop stand-in: WRITE|NOREPLY, 42-byte payload → 48-byte
-/// footprint, 480 µs of wire at 1M; host seam = 20 µs.
+/// Silent hot-loop stand-in: WRITE|NOREPLY, 42-byte payload -> 48-byte
+/// footprint, 480 us of wire at 1M; host seam = 20 us.
 const PERIOD_US: u64 = 500;
 
 fn silent_write() -> Vec<u8> {
@@ -194,7 +194,7 @@ fn send_silent(sim: &mut Sim, t0: u64, n: u64) -> u64 {
 
 /// The tracker follows drift injected mid-run: the baseline absorbs the
 /// host's queuing seam AND the boot-time skew, and a later rate change is
-/// read as its shift — one step of drift draws one step of correction,
+/// read as its shift -- one step of drift draws one step of correction,
 /// with no CAL in sight.
 #[test_log::test]
 fn tracker_follows_thermal_drift() {
@@ -212,7 +212,7 @@ fn tracker_follows_thermal_drift() {
 }
 
 /// A constant seam and a constant skew are BOTH invisible: the tracker
-/// measures changes, not states — absolute correction is CAL's job.
+/// measures changes, not states -- absolute correction is CAL's job.
 #[test_log::test]
 fn constant_seam_and_skew_cancel() {
     let mut sim = Sim::new(BaudRate::B1000000);
@@ -223,7 +223,7 @@ fn constant_seam_and_skew_cancel() {
     assert_eq!(sim.poll_clock_trim(s), None);
 }
 
-/// Solicited frames never pair — an ack's turnaround rides another clock,
+/// Solicited frames never pair -- an ack's turnaround rides another clock,
 /// and at 1M a reply gap slips under the span gate. The silent-shape rule
 /// keeps them out entirely: acked traffic yields no pairs, no windows.
 #[test_log::test]
@@ -239,7 +239,7 @@ fn solicited_frames_never_pair() {
 }
 
 /// The full composition: CAL anchors absolute, the tracker holds through
-/// quiet, then follows a later drift on top — each layer consuming exactly
+/// quiet, then follows a later drift on top -- each layer consuming exactly
 /// its own signal.
 #[test_log::test]
 fn cal_anchors_then_tracker_follows() {
@@ -264,15 +264,15 @@ fn cal_anchors_then_tracker_follows() {
     assert_eq!(sim.poll_clock_trim(s), Some(3));
 }
 
-// ---- bench-shape regression (silicon 2026-07-12) -------------------------
+// ---- bench-shape regression ----------------------------------------------
 //
 // The hardware tracker probe feeds 24-frame WRITE|NOREPLY bursts with
-// ~4-bit seams and a −6.9k ppm host detune, and the silicon tracker reads
-// ZERO — while every DES tracker test above (500 µs-period FOREIGN traffic)
+// ~4-bit seams and a -6.9k ppm host detune, and the silicon tracker reads
+// ZERO -- while every DES tracker test above (500 us-period FOREIGN traffic)
 // stays green. These twins replicate the bench shape exactly; the fork
 // between them and against silicon localizes the starvation.
 
-/// Bench burst geometry at 1M: 10-byte frame + break = 110 µs wire,
+/// Bench burst geometry at 1M: 10-byte frame + break = 110 us wire,
 /// 4-bit pirate seam, 24 frames per burst, settle gap between bursts.
 const BURST_FRAMES: u64 = 24;
 const BURST_PERIOD_US: u64 = 114;
@@ -339,11 +339,11 @@ fn tracker_follows_bench_bursts_self_addressed() {
     );
 }
 
-/// The silicon reality behind the bench-shape starvation (2026-07-12):
+/// The silicon reality behind the bench-shape starvation:
 /// NOREPLY frames leave the wire-fault flag latched (nothing transmits to
 /// retire it), and its level-pend re-fire lands in the seam before the
-/// next frame's bytes (§6 A4). A re-fire is NOT a break — stamping the
-/// drift tracker from it clobbers the pair in flight and starves the
+/// next frame's bytes (transport sec 7). A re-fire is NOT a break -- stamping
+/// the drift tracker from it clobbers the pair in flight and starves the
 /// tracker to zero, while clean-break sims stay green. The fix gates the
 /// drift stamp on ring freshness (fault contract: fault handling is
 /// idempotent), the same cursor idiom the CAL run already uses.

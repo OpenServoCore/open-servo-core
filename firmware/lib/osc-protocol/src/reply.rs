@@ -1,14 +1,14 @@
 //! osc-native TX frame buffer: one halfword-aligned scratch that both servo
 //! statuses and host instructions encode into (`docs/osc-native-protocol.md`
-//! §3.1, §3.2, §4.2). The literal `0x00` at offset 0 is the CRC prefix — the
+//! sec 3.1, sec 3.2, sec 4.2). The literal `0x00` at offset 0 is the CRC prefix -- the
 //! CRC-engine DMA reads from offset 0, the UART TX DMA from offset 1.
 
 use crate::wire::{self, Id, Inst};
 
 /// A frame under construction: `[0x00][ID][LEN][INST][payload][PAD?][crc][crc]`.
 ///
-/// Alignment matters twice over — the hardware CRC DMA reads halfwords from
-/// offset 0 (§3.2, needs 2), and payload copies land at offset 4, so word
+/// Alignment matters twice over -- the hardware CRC DMA reads halfwords from
+/// offset 0 (sec 3.2, needs 2), and payload copies land at offset 4, so word
 /// alignment lets `copy_from_slice` word-copy from word-aligned sources
 /// instead of byte-looping. `N` bounds the largest frame this buffer can
 /// hold; the finished `LEN` is read back from `bytes[2]`, so the struct stays
@@ -53,7 +53,7 @@ impl<const N: usize> FrameBuf<N> {
         self.bytes[2] = wire::len_for(p);
     }
 
-    /// CRC-covered span `[0, covered_len)` — valid after `finish`.
+    /// CRC-covered span `[0, covered_len)` -- valid after `finish`.
     #[inline]
     pub fn covered(&self) -> &[u8] {
         &self.bytes[..wire::covered_len(self.bytes[2])]
@@ -73,8 +73,8 @@ impl<const N: usize> FrameBuf<N> {
         &self.bytes[..wire::footprint(self.bytes[2])]
     }
 
-    /// Raw storage — escape hatch for the chip driver's zero-copy tail layout
-    /// (§4.2), where the buffer holds only header and CRC tail around an
+    /// Raw storage -- escape hatch for the chip driver's zero-copy tail layout
+    /// (sec 4.2), where the buffer holds only header and CRC tail around an
     /// externally streamed payload. Layout invariants become the caller's.
     #[inline]
     pub fn bytes(&self) -> &[u8; N] {

@@ -1,11 +1,11 @@
 //! osc-native RX views: a `#[repr(C)]` header over ring bytes plus zero-copy
-//! payload parsers (`docs/osc-native-protocol.md` §3.1, §5). Layout only — the
+//! payload parsers (`docs/osc-native-protocol.md` sec 3.1, sec 5). Layout only -- the
 //! chip owns the ring and its cursor; these borrow into it.
 
 use crate::bytes::FrameBytes;
 use crate::wire::{self, Id, Inst, MgmtOp};
 
-/// Why a header cannot be dispatched. Frame-level rejects (§5.3 layer 1): the
+/// Why a header cannot be dispatched. Frame-level rejects (sec 5.3 layer 1): the
 /// frame is dropped, no reply.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum FrameError {
@@ -15,8 +15,8 @@ pub enum FrameError {
 }
 
 /// The four fixed bytes at a frame anchor: the break's `0x00` ring byte, then
-/// `ID`, `LEN`, `INST` (§3.1). All fields are `u8`-transparent, so the struct
-/// is four bytes at alignment 1 and any bit pattern is a valid `Header` — that
+/// `ID`, `LEN`, `INST` (sec 3.1). All fields are `u8`-transparent, so the struct
+/// is four bytes at alignment 1 and any bit pattern is a valid `Header` -- that
 /// is what makes the pointer casts below sound.
 #[repr(C)]
 pub struct Header {
@@ -47,8 +47,8 @@ impl Header {
         unsafe { &*(p as *const Header) }
     }
 
-    /// `LEN` must cover INST + CRC (≥ 3, §3.1), `ID` addressable, and — for
-    /// instruction frames — the opcode nonzero (§5).
+    /// `LEN` must cover INST + CRC (>= 3, sec 3.1), `ID` addressable, and -- for
+    /// instruction frames -- the opcode nonzero (sec 5).
     pub fn validate(&self) -> Result<(), FrameError> {
         if self.len < 3 {
             return Err(FrameError::ShortLen);
@@ -62,7 +62,7 @@ impl Header {
         Ok(())
     }
 
-    /// Ring bytes from the anchor to the frame's end, exclusive (§3.1).
+    /// Ring bytes from the anchor to the frame's end, exclusive (sec 3.1).
     #[inline]
     pub fn frame_end(&self) -> usize {
         wire::footprint(self.len)
@@ -79,7 +79,7 @@ impl Header {
     }
 }
 
-/// READ / GREAD span request: `addr(2), count(2)` little-endian (§5).
+/// READ / GREAD span request: `addr(2), count(2)` little-endian (sec 5).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct ReadReq {
     pub addr: u16,
@@ -100,7 +100,7 @@ impl ReadReq {
 }
 
 /// READ+PROFILE slot request: `slot(1)` names a profile slot instead of
-/// addr+count (§5.2).
+/// addr+count (sec 5.2).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct ProfileReq {
     pub slot: u8,
@@ -118,7 +118,7 @@ impl ProfileReq {
     }
 }
 
-/// WRITE request: `addr(2)` little-endian, then the data bytes (§5).
+/// WRITE request: `addr(2)` little-endian, then the data bytes (sec 5).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct WriteReq<'a> {
     pub addr: u16,
@@ -134,7 +134,7 @@ impl<'a> WriteReq<'a> {
     }
 }
 
-/// MGMT request: sub-op byte, then its args (§9).
+/// MGMT request: sub-op byte, then its args (sec 9).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct MgmtReq<'a> {
     pub op: MgmtOp,
@@ -151,7 +151,7 @@ impl<'a> MgmtReq<'a> {
 }
 
 /// MGMT ENUM args: `prefix_len(1)` in bits (0..=128), then the
-/// `ceil(prefix_len/8)`-byte prefix (§9.2). Unused prefix bytes are zero.
+/// `ceil(prefix_len/8)`-byte prefix (sec 9.2). Unused prefix bytes are zero.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct EnumReq {
     pub prefix_len: u8,
@@ -177,8 +177,8 @@ impl EnumReq {
     }
 }
 
-/// §9.2: does `uid` begin with the `prefix_len`-bit prefix? The prefix is an
-/// LSB-first bit stream — bit `k` is `uid[k/8] >> (k%8) & 1`, the order the
+/// sec 9.2: does `uid` begin with the `prefix_len`-bit prefix? The prefix is an
+/// LSB-first bit stream -- bit `k` is `uid[k/8] >> (k%8) & 1`, the order the
 /// UART itself shifts bits onto the wire.
 pub fn uid_prefix_matches(
     uid: &[u8; wire::UID_LEN],
@@ -193,7 +193,7 @@ pub fn uid_prefix_matches(
     rem == 0 || (uid[full] ^ prefix[full]) & ((1 << rem) - 1) == 0
 }
 
-/// MGMT ASSIGN args: `uid(16)`, `new_id(1)` (§9.2).
+/// MGMT ASSIGN args: `uid(16)`, `new_id(1)` (sec 9.2).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct AssignReq {
     pub uid: [u8; wire::UID_LEN],
@@ -215,7 +215,7 @@ impl AssignReq {
     }
 }
 
-/// MGMT CAL args: `gap_us(2 LE)`, `gaps(1)` (§9.3) — the host follows the
+/// MGMT CAL args: `gap_us(2 LE)`, `gaps(1)` (sec 9.3) -- the host follows the
 /// frame with `gaps + 1` bare breaks spaced exactly `gap_us` apart, its
 /// crystal keeping the spacing. Zero in either field is no train.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -259,7 +259,7 @@ mod tests {
 
     #[test]
     fn header_payload_len() {
-        // Odd-payload WRITE vector: LEN 6 → p = 3 (no pad, §3.1).
+        // Odd-payload WRITE vector: LEN 6 -> p = 3 (no pad, sec 3.1).
         let h = Header::from_bytes(&[0x00, 0x02, 0x06, 0x30]);
         assert_eq!(h.payload_len(), 3);
         assert_eq!(h.frame_end(), 9);
@@ -271,7 +271,7 @@ mod tests {
             Header::from_bytes(&[0x00, 0x01, 0x02, 0x10]).validate(),
             Err(FrameError::ShortLen)
         );
-        // Even LEN is legal (§3.1: any LEN >= 3).
+        // Even LEN is legal (sec 3.1: any LEN >= 3).
         assert_eq!(
             Header::from_bytes(&[0x00, 0x01, 0x04, 0x10]).validate(),
             Ok(())
@@ -345,7 +345,7 @@ mod tests {
 
     #[test]
     fn cal_req_parse() {
-        // 400 µs gaps, 8 of them: `[0x06, 0x90, 0x01, 0x08]` MGMT payload.
+        // 400 us gaps, 8 of them: `[0x06, 0x90, 0x01, 0x08]` MGMT payload.
         assert_eq!(
             CalReq::parse(fb(&[0x90, 0x01, 0x08])),
             Some(CalReq {
@@ -370,7 +370,7 @@ mod tests {
                 prefix: [0; 16]
             })
         );
-        // 10 bits → 2 prefix bytes, upper bytes zero-filled.
+        // 10 bits -> 2 prefix bytes, upper bytes zero-filled.
         let e = EnumReq::parse(fb(&[10, 0xAB, 0x03])).unwrap();
         assert_eq!(e.prefix_len, 10);
         assert_eq!(e.prefix[..2], [0xAB, 0x03]);

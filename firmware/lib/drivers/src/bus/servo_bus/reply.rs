@@ -8,14 +8,14 @@ use super::super::tx::TxEngine;
 use super::ServoBus;
 use crate::traits::bus::{CrcEngine, Providers, TxWire};
 
-/// Reply surface over disjoint `ServoBus` fields (driver-pattern §4.3): the
+/// Reply surface over disjoint `ServoBus` fields (driver-pattern sec 4.3): the
 /// decoded request still borrows the ring while the dispatcher stages the
 /// reply into the TX engine and the deferred-config fields.
 pub(super) struct ReplyHandle<'a, W: TxWire, C: CrcEngine> {
     pub(super) tx: &'a mut TxEngine<W>,
     pub(super) crc: &'a mut C,
     /// Write-through to the bus id: `set_id` applies here so a status staged
-    /// after it already carries the new id (the ASSIGN ack, §9.2).
+    /// after it already carries the new id (the ASSIGN ack, sec 9.2).
     pub(super) id: &'a mut u8,
     pub(super) pending_id: &'a mut Option<u8>,
     pub(super) pending_baud: &'a mut Option<BaudRate>,
@@ -23,13 +23,13 @@ pub(super) struct ReplyHandle<'a, W: TxWire, C: CrcEngine> {
     pub(super) pending_cal: &'a mut Option<(u16, u8)>,
     pub(super) response_deadline_us: &'a mut u16,
     pub(super) staged: bool,
-    /// §9.2: the request is a broadcast ENUM — a reply staged through this
+    /// sec 9.2: the request is a broadcast ENUM -- a reply staged through this
     /// handle is marked collision-tolerant, keyed off its own payload (the
     /// responder's UID) for the slot draw.
     pub(super) tolerant: bool,
 }
 
-/// §9.2 slot key: the reply payload IS the responder's UID for ENUM — fold
+/// sec 9.2 slot key: the reply payload IS the responder's UID for ENUM -- fold
 /// its osc-CRC to a byte. The CRC mixing keeps same-reel sequential serials
 /// apart; sequencing XORs in the live tick, so equal keys still re-roll.
 fn slot_key(payload: &[u8]) -> u8 {
@@ -38,7 +38,7 @@ fn slot_key(payload: &[u8]) -> u8 {
 }
 
 impl<P: Providers> ServoBus<P> {
-    /// A reply surface over the deferred-config fields, with no request decode —
+    /// A reply surface over the deferred-config fields, with no request decode --
     /// used at verdict commit, where hooks stage baud/id but no frame is
     /// re-parsed (the ring isn't borrowed here).
     pub(super) fn reply_handle(&mut self) -> ReplyHandle<'_, P::Tx, P::Crc> {

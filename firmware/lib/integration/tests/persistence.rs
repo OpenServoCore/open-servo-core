@@ -1,6 +1,6 @@
-//! Persistence semantics (`docs/osc-native-protocol.md` §9.4/§9.5) over the
+//! Persistence semantics (`docs/osc-native-protocol.md` sec 9.4/9.5) over the
 //! wire: MGMT SAVE/FACTORY against the RAM store, the config-dirty telemetry
-//! bit, and the boot overlay a rebuilt servo takes — sharing one leaked
+//! bit, and the boot overlay a rebuilt servo takes -- sharing one leaked
 //! store across two `Sim`s models a reboot with flash intact.
 
 use osc_core::persist::{Image, Slot};
@@ -129,9 +129,9 @@ fn factory_wipes_the_store_and_stages_reboot(baud_idx: u8) {
     assert!(sim.take_reboot(s).is_some(), "factory stages the reboot");
 }
 
-/// The §9.2 + §9.4 field story: ASSIGN takes a new id immediately, SAVE
+/// The sec 9.2 + 9.4 field story: ASSIGN takes a new id immediately, SAVE
 /// persists it, and the servo still answers on it after a reboot (fresh
-/// `Sim`, same store) — while a factory-wiped store boots board defaults.
+/// `Sim`, same store) -- while a factory-wiped store boots board defaults.
 #[apply(matrix)]
 fn saved_id_survives_reboot_until_factory(baud_idx: u8) {
     let store = RamStore::leak();
@@ -157,7 +157,7 @@ fn saved_id_survives_reboot_until_factory(baud_idx: u8) {
         assert_eq!(status(sole_reply(&frames)).0.result(), Some(ResultCode::Ok));
     }
 
-    // Reboot: fresh sim, flash intact — the saved id answers, the board
+    // Reboot: fresh sim, flash intact -- the saved id answers, the board
     // default doesn't.
     {
         let mut sim = sim(baud_idx);

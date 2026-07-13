@@ -1,7 +1,7 @@
-//! Coordinated group reads/writes over the osc-native bus (§5, §6). Every case
+//! Coordinated group reads/writes over the osc-native bus (sec 5, 6). Every case
 //! drives the REAL `ServoBus` + `osc_core` dispatch through the discrete-event
 //! `Sim` and asserts on the decoded shape of the recorded wire frames. Group
-//! payloads are hand-built per §5's tables and cross-checked against the
+//! payloads are hand-built per sec 5's tables and cross-checked against the
 //! `osc_protocol::group` parsers (the layout authority).
 
 use osc_core::regions::config::addr::identity::{FIRMWARE_VERSION, MODEL_NUMBER};
@@ -16,19 +16,19 @@ use rstest_reuse::apply;
 mod support;
 use support::{byte_ticks, matrix, sim};
 
-/// The default RESPONSE_DEADLINE (60 µs) works at every baud: §6 keys reclaim
-/// off the predecessor's *break* (its trigger → break lead), and an observed
+/// The default RESPONSE_DEADLINE (60 us) works at every baud: sec 6 keys reclaim
+/// off the predecessor's *break* (its trigger -> break lead), and an observed
 /// break suspends the window while the frame plays out. The baud sweep is the
-/// regression for that — at 1 M a short reply spends ~84 µs on the wire, so
+/// regression for that -- at 1 M a short reply spends ~84 us on the wire, so
 /// frame-end-keyed reclaim (the original defect) would falsely reclaim every
 /// present-but-slow predecessor.
 const CHAIN_DEADLINE_US: u16 = 60;
 
-/// Broadcast frame ID for group ops (§5: the id-list, not the frame ID, selects
+/// Broadcast frame ID for group ops (sec 5: the id-list, not the frame ID, selects
 /// responders).
 const BCAST: u8 = 0xFE;
 
-// --- group payload builders (§5 tables, verified against osc_protocol::group) -
+// --- group payload builders (sec 5 tables, verified against osc_protocol::group) -
 
 fn gread_uniform(addr: u16, count: u16, ids: &[u8]) -> Vec<u8> {
     let mut p = Vec::new();
@@ -92,7 +92,7 @@ fn decoded(f: &WireFrame) -> (ResultCode, Vec<u8>) {
     (inst.result().expect("valid result code"), payload.to_vec())
 }
 
-// --- reads (§6 status chains) -----------------------------------------------
+// --- reads (sec 6 status chains) -----------------------------------------------
 
 #[apply(matrix)]
 fn gread_uniform_chains_in_list_order(baud_idx: u8) {
@@ -126,7 +126,7 @@ fn gread_uniform_chains_in_list_order(baud_idx: u8) {
         assert_eq!(result, ResultCode::Ok);
         assert_eq!(payload, m.to_le_bytes(), "each reply carries its own span");
     }
-    // Every inter-reply gap respects reply gap (§6/§7).
+    // Every inter-reply gap respects reply gap (sec 6/7).
     let reply_gap = support::reply_gap_ticks();
     for w in reps.windows(2) {
         let gap = w[1].at - w[0].end;
@@ -172,7 +172,7 @@ fn gread_profile_uniform_chains_gathered_replies(baud_idx: u8) {
         });
     }
 
-    // GREAD + PROFILE uniform: slot byte, then the id-list (§5.2).
+    // GREAD + PROFILE uniform: slot byte, then the id-list (sec 5.2).
     sim.host_send(&instruction(
         BCAST,
         Opcode::Gread,
@@ -207,11 +207,11 @@ fn gread_profile_per_target_selects_distinct_slots(baud_idx: u8) {
     });
     sim.servo_table_mut(1, |t| {
         t.config.identity.firmware_version = 0x77;
-        // Servo 2 answers from slot 3 — per-target slot selection.
+        // Servo 2 answers from slot 3 -- per-target slot selection.
         t.profile.slots.words[3 * 8] = span_word(FIRMWARE_VERSION, 1);
     });
 
-    // [id, slot]× (§5.2).
+    // [id, slot]x (sec 5.2).
     sim.host_send(&instruction(
         BCAST,
         Opcode::Gread,
@@ -323,7 +323,7 @@ fn error_status_keeps_chain_alive(baud_idx: u8) {
     }
     sim.servo_table_mut(2, |t| t.config.identity.model_number = 0x9999);
 
-    // Per-target: servo 2's span is out of bounds → Range error, empty payload.
+    // Per-target: servo 2's span is out of bounds -> Range error, empty payload.
     let payload = gread_per_target(&[(1, MODEL_NUMBER, 2), (2, 0xFFFE, 4), (3, MODEL_NUMBER, 2)]);
     sim.host_send(&instruction(
         BCAST,
@@ -338,15 +338,15 @@ fn error_status_keeps_chain_alive(baud_idx: u8) {
     let by_id = |id: u8| decoded(reps.iter().find(|f| responder(f) == id).unwrap());
     assert_eq!(by_id(1).0, ResultCode::Ok);
     let (res2, data2) = by_id(2);
-    assert_eq!(res2, ResultCode::Range, "out-of-range span → error status");
+    assert_eq!(res2, ResultCode::Range, "out-of-range span -> error status");
     assert!(data2.is_empty(), "error status has empty payload");
-    // Slot 2 follows normally — only silence reclaims (§6).
+    // Slot 2 follows normally -- only silence reclaims (sec 6).
     let (res3, data3) = by_id(3);
     assert_eq!(res3, ResultCode::Ok);
     assert_eq!(data3, 0x9999u16.to_le_bytes());
 }
 
-// --- writes (§5) ------------------------------------------------------------
+// --- writes (sec 5) ------------------------------------------------------------
 
 #[apply(matrix)]
 fn gwrite_hold_commit_is_atomic_fleet_update(baud_idx: u8) {
@@ -434,7 +434,7 @@ fn gwrite_per_target_applies_distinct_fields(baud_idx: u8) {
 
 #[apply(matrix)]
 fn back_to_back_instructions_all_land(baud_idx: u8) {
-    // §7: no inter-frame gap is required. Each unicast WRITE is acked before the
+    // sec 7: no inter-frame gap is required. Each unicast WRITE is acked before the
     // next is sent (a plain WRITE's ack shares the half-duplex wire, so the host
     // cannot physically overlap the next frame with the ack); `run` advances the
     // clock past each ack, so the follow-up frame lands right after with no

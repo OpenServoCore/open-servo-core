@@ -4,7 +4,7 @@ use core::cell::UnsafeCell;
 
 // --- Basic fixture: checks + a read-only byte, no lock. Hand-written to mirror
 // what the derive emits: enum [0,1]@0, i16 >= 0 @4, u16 < reg(8) @6, i8 |x| <= 5
-// @10, i32 <= 100_000 @12 — each overlap-guarded against the pending range. ---
+// @10, i32 <= 100_000 @12 -- each overlap-guarded against the pending range. ---
 
 const BASIC_SIZE: usize = 16;
 

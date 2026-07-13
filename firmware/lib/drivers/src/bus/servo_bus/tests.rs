@@ -14,7 +14,7 @@ use crate::mocks::bus::{FakeWire, Harness, RING_LEN, WireEvent};
 const ID: u8 = 7;
 const RATE: BaudRate = BaudRate::B1000000;
 const TPB: u32 = 10; // TICKS_PER_US(1) * 1e7 / 1e6
-// REPLY_GAP_US × TestProviders TICKS_PER_US(1).
+// REPLY_GAP_US x TestProviders TICKS_PER_US(1).
 const REPLY_GAP: u32 = 12;
 
 fn shared_seeded() -> Shared {
@@ -48,8 +48,8 @@ fn status(id: u8, result: ResultCode, data: &[u8]) -> std::vec::Vec<u8> {
 
 /// Deliver a whole frame: break, then the header deadline with the covered
 /// span already ringed (Covered emits and dispatch runs from that wake),
-/// then the end deadline (the verdict). Timing is ring-cadence (A2 extended
-/// to the clock): every aim projects `now + missing byte-times` from live
+/// then the end deadline (the verdict). Timing is ring-cadence (time derived
+/// from the stream): every aim projects `now + missing byte-times` from live
 /// ring state, so the wakes land deterministically for any footprint.
 /// Returns the frozen packet-end estimate the reply's reply gap is measured
 /// from: the covered wake + the 2-byte CRC tail at wire pace.
@@ -64,14 +64,14 @@ fn deliver<D: Dispatch>(
     h.ring.place(anchor, frame);
     let fp = frame.len();
     // The ladder reaches `anchor` through prior traffic in production; the
-    // harness fabricates positions, so bootstrap it explicitly (A2).
+    // harness fabricates positions, so bootstrap it explicitly.
     bus.framer.resync(anchor as u16);
     h.deadline.set_now(now0);
     h.ring.set_cursor(((anchor + 1) % RING_LEN) as u16);
     bus.on_break(d);
 
     // Deadline A: the header locks, and with the covered span ringed the
-    // covered checkpoint fires from this same wake — the dispatch point.
+    // covered checkpoint fires from this same wake -- the dispatch point.
     let a = h.deadline.armed().expect("deadline A");
     h.deadline.set_now(a);
     h.ring.set_cursor(((anchor + fp - 2) % RING_LEN) as u16);
@@ -81,7 +81,7 @@ fn deliver<D: Dispatch>(
     // drift adder is zero at these spans on the test clock).
     let end = a.wrapping_add(2 * TPB);
 
-    // Deadline B (end_due): the whole frame is in — verdict + sequencing.
+    // Deadline B (end_due): the whole frame is in -- verdict + sequencing.
     let b = h.deadline.armed().expect("deadline B");
     h.deadline.set_now(b);
     h.ring.set_cursor(((anchor + fp) % RING_LEN) as u16);
@@ -185,7 +185,7 @@ fn s2_read_returns_table_bytes() {
 
 #[test]
 fn s3_write_acks_then_noreply_is_silent() {
-    // WRITE torque_enable=1 → ack, table mutated.
+    // WRITE torque_enable=1 -> ack, table mutated.
     let h = Harness::new();
     let mut bus = h.build(ID, RATE, 60);
     let shared = Shared::new();
@@ -236,7 +236,7 @@ fn s4_write_id_acks_from_old_id_then_applies() {
     let (id, _, _) = last_reply(&h.wire);
     assert_eq!(id, ID);
 
-    // TX drains → deferred id apply. A ping to 42 now replies.
+    // TX drains -> deferred id apply. A ping to 42 now replies.
     drain_tx(&mut bus, &h);
     let ping = instruction(42, Opcode::Ping, 0, &[]);
     deliver(&mut bus, &h, 200, &ping, 5000, &mut d);
@@ -255,7 +255,7 @@ fn s5_gread_slot1_waits_for_predecessor() {
     let mut session = Session::new();
     let mut d = session.dispatcher(&shared);
 
-    // Uniform GREAD addr 0 count 4, ids [5, 7] → we are slot 1.
+    // Uniform GREAD addr 0 count 4, ids [5, 7] -> we are slot 1.
     let gread = instruction(ID, Opcode::Gread, 0, &[0, 0, 4, 0, 5, ID]);
     let gread = broadcast_id(gread);
     let end = deliver(&mut bus, &h, 100, &gread, 1000, &mut d);
@@ -263,7 +263,7 @@ fn s5_gread_slot1_waits_for_predecessor() {
     assert_eq!(h.deadline.armed(), Some(end + REPLY_GAP + 600));
     assert!(!h.wire.started());
 
-    // Predecessor (id 5) status frame → our slot pends.
+    // Predecessor (id 5) status frame -> our slot pends.
     let pre = status(5, ResultCode::Ok, &[0xAA, 0xBB]);
     deliver(&mut bus, &h, 200, &pre, end + 2, &mut d);
     assert!(!h.wire.started());
@@ -314,7 +314,7 @@ fn s7_corrupt_crc_drops_with_no_reply() {
 
 #[test]
 fn s8_odd_anchor_round_trips() {
-    // Anchor parity is irrelevant (§3.2 self-aligning feed): an odd-anchored
+    // Anchor parity is irrelevant (sec 3.2 self-aligning feed): an odd-anchored
     // frame validates and replies like any other.
     let h = Harness::new();
     let mut bus = h.build(ID, RATE, 60);
@@ -376,7 +376,7 @@ fn s12_write_wrapping_ring_boundary_mutates_and_acks() {
     assert!(shared.table.with(|t| t.control.lifecycle.torque_enable));
 }
 
-/// §9.1 rescue is a chip-side declaration now (the main-loop line sampler —
+/// sec 9.1 rescue is a chip-side declaration now (the main-loop line sampler --
 /// the break detector latches only at a span's END, so no wake can see a
 /// pulse in progress; the sampler's NDTR-frozen window is the phantom-alias
 /// veto the old two-sample confirm provided). The driver's part is the
@@ -426,10 +426,10 @@ fn s11_break_after_covered_kills_staged_reply() {
     assert!(!h.wire.started(), "reply is staged, not yet triggered");
 
     // A fresh break lands before the end deadline. Data-first: the READ is
-    // complete in the ring, so it resolves and its reply stages — and the
+    // complete in the ring, so it resolves and its reply stages -- and the
     // break then kills the staged-not-streaming reply (the host moved on):
     // no phantom read reply reaches the wire.
-    let m = 300usize; // ring[m] defaults to 0x00 → a real break
+    let m = 300usize; // ring[m] defaults to 0x00 -> a real break
     h.deadline.set_now(c + 1);
     h.ring.set_cursor(((m + 1) % RING_LEN) as u16);
     bus.on_break(&mut d);
@@ -452,11 +452,11 @@ fn s11_break_after_covered_kills_staged_reply() {
     assert_eq!(&data[..2], &[0x34, 0x12]);
 }
 
-/// §9.2 exemption to s11's wire-safety kill: a broadcast-ENUM reply's job is
-/// to collide — a peer matcher's leading break (its 0x00 ringing right
+/// sec 9.2 exemption to s11's wire-safety kill: a broadcast-ENUM reply's job is
+/// to collide -- a peer matcher's leading break (its 0x00 ringing right
 /// behind our frame, exactly the s11 kill evidence) must NOT kill the staged
 /// reply, or the wire carries one clean frame, the walk records a unique
-/// match, and the laggard's whole subtree goes invisible (task #30).
+/// match, and the laggard's whole subtree goes invisible.
 #[test]
 fn enum_reply_survives_a_peer_matchers_break() {
     let h = Harness::new();
@@ -478,15 +478,15 @@ fn enum_reply_survives_a_peer_matchers_break() {
     assert!(!h.wire.started(), "reply staged, trigger one reply gap out");
 
     // The peer matcher's break lands inside the reply gap.
-    let m = 300usize; // ring[m] defaults to 0x00 → a real break
+    let m = 300usize; // ring[m] defaults to 0x00 -> a real break
     h.deadline.set_now(end + 2);
     h.ring.set_cursor(((m + 1) % RING_LEN) as u16);
     bus.on_break(&mut d);
 
-    // The staged reply survives and fires — colliding energy on a real
+    // The staged reply survives and fires -- colliding energy on a real
     // wire, the signal the walk descends on. The trigger sits up to
-    // SLOTS-1 byte-times out (§9.2 slot draw), behind the peer break's
-    // starving-header rechecks — drain generously.
+    // SLOTS-1 byte-times out (sec 9.2 slot draw), behind the peer break's
+    // starving-header rechecks -- drain generously.
     let mut guard = 0;
     while !h.wire.started() && h.deadline.armed().is_some() && guard < 64 {
         fire(&mut bus, &h, &mut d);
@@ -503,10 +503,10 @@ fn enum_reply_survives_a_peer_matchers_break() {
     assert_eq!(data.len(), 16, "the full UID ships");
 }
 
-/// §9.2 slot delay: an ENUM reply's trigger rides reply gap + a slot draw —
-/// `(folded uid CRC ^ tick) & (SLOTS-1)` byte-times — so cycle-identical
+/// sec 9.2 slot delay: an ENUM reply's trigger rides reply gap + a slot draw --
+/// `(folded uid CRC ^ tick) & (SLOTS-1)` byte-times -- so cycle-identical
 /// twin matchers can't answer in unison (a sub-bit-aligned superposition of
-/// near-equal frames reads back as ONE clean frame, task #30). The default
+/// near-equal frames reads back as ONE clean frame). The default
 /// all-zero UID folds to key 0, so the draw here is the tick's low bits.
 /// Plain replies keep the bare grid (s1 pins that side).
 #[test]
@@ -585,12 +585,12 @@ fn s13_frontier_write_stages_at_covered_commits_at_verdict() {
     bus.on_deadline(&mut d);
 
     // Covered checkpoint (two byte-times short of the end): the job is
-    // published — before the frame has even ended — and nothing is applied.
+    // published -- before the frame has even ended -- and nothing is applied.
     let c = h.deadline.armed().expect("covered deadline");
     h.deadline.set_now(c);
     h.ring.set_cursor(((anchor + fp - 2) % RING_LEN) as u16);
     bus.on_deadline(&mut d);
-    // The write dispatched inline at covered — staged while the CRC tail is
+    // The write dispatched inline at covered -- staged while the CRC tail is
     // still inbound; the table stays untouched until the verdict.
     assert!(
         !shared.table.with(|t| t.control.lifecycle.torque_enable),
@@ -620,7 +620,7 @@ fn s13_frontier_write_stages_at_covered_commits_at_verdict() {
 #[test]
 fn s14_corrupt_write_leaves_table_and_reverts() {
     // A WRITE whose covered span is intact but whose trailing CRC is corrupted:
-    // front-loaded (staged) at covered, then the frame-end CRC check fails →
+    // front-loaded (staged) at covered, then the frame-end CRC check fails ->
     // the staged write is reverted and the table is byte-identical.
     let h = Harness::new();
     let mut bus = h.build(ID, RATE, 60);
@@ -641,7 +641,7 @@ fn s14_corrupt_write_leaves_table_and_reverts() {
         "a bad-CRC write must not mutate the table"
     );
 
-    // The staged write was reverted — a following clean write applies.
+    // The staged write was reverted -- a following clean write applies.
     let next = instruction(ID, Opcode::Write, 0, &[addr[0], addr[1], 1]);
     deliver(&mut bus, &h, 100, &next, 5000, &mut d);
     fire(&mut bus, &h, &mut d);
@@ -652,7 +652,7 @@ fn s14_corrupt_write_leaves_table_and_reverts() {
 
 /// Rewrite a frame's ID field to broadcast (group ops address via their list).
 fn broadcast_id(mut frame: std::vec::Vec<u8>) -> std::vec::Vec<u8> {
-    // Re-seal after changing the ID: [0x00][ID][LEN][INST]…
+    // Re-seal after changing the ID: [0x00][ID][LEN][INST]...
     frame[1] = Id::BROADCAST.as_byte();
     let covered = frame.len() - 2;
     let crc = osc_protocol::crc::osc_crc(&frame[..covered]);
@@ -670,9 +670,9 @@ fn commit_and_reboot_paths() {
     let mut session = Session::new();
     let mut d = session.dispatcher(&shared);
 
-    // MGMT REBOOT (unicast) acks then stages a reboot honored on poll —
+    // MGMT REBOOT (unicast) acks then stages a reboot honored on poll --
     // withheld while the ack drains (a reset mid-frame truncates the ack on
-    // the wire; bench 2026-07-10), taken once the TX released.
+    // the wire; bench-caught), taken once the TX released.
     let frame = instruction(ID, Opcode::Mgmt, 0, &[MgmtOp::Reboot as u8]);
     deliver(&mut bus, &h, 100, &frame, 1000, &mut d);
     fire(&mut bus, &h, &mut d);
@@ -685,7 +685,7 @@ fn commit_and_reboot_paths() {
 }
 
 /// A complete frame (READ) dispatches inline at HIGH and its reply sequences
-/// straight from the resolve wake — no deferral to a later verdict.
+/// straight from the resolve wake -- no deferral to a later verdict.
 #[test]
 fn complete_read_dispatches_inline() {
     let h = Harness::new();
@@ -714,7 +714,7 @@ fn complete_read_dispatches_inline() {
 }
 
 /// Ordering across a backlog: a WRITE(NOREPLY) resolves and commits before the
-/// READ behind it dispatches — drive_framer resolves each complete frame and
+/// READ behind it dispatches -- drive_framer resolves each complete frame and
 /// runs its verdict fully before resolving the next, so effects land in wire
 /// order.
 #[test]
@@ -743,7 +743,7 @@ fn backlog_write_then_read_processes_in_order() {
     bus.on_break(&mut d);
 
     // Both complete frames resolve in this one wake: the NOREPLY write commits
-    // inline, then the read dispatches behind it — effects in wire order. The
+    // inline, then the read dispatches behind it -- effects in wire order. The
     // read's reply is staged (not yet fired), its chain armed.
     assert!(
         shared.table.with(|t| t.control.lifecycle.torque_enable),
@@ -759,12 +759,12 @@ fn backlog_write_then_read_processes_in_order() {
 }
 
 /// A wire-fault wake whose evidence hasn't ringed yet (the drain a beat
-/// behind ISR entry — or the FE consumed by a garble-latched flag's SR-DR
+/// behind ISR entry -- or the FE consumed by a garble-latched flag's SR-DR
 /// pair, so this wake is the LAST one the frame gets) must leave a framer
 /// recheck armed: one byte-time later the ring tells the truth and the
 /// frame resolves by data. Without it the frame sat complete-but-unresolved
 /// until unrelated traffic (the post-garble one-instruction-late residue,
-/// bench 2026-07-10).
+/// bench-caught).
 #[test]
 fn break_service_before_drain_rechecks_and_answers() {
     let h = Harness::new();
@@ -798,12 +798,12 @@ fn break_service_before_drain_rechecks_and_answers() {
     assert_eq!(inst.result(), Some(ResultCode::Ok));
 }
 
-/// §3.4 spurious wake (a coalesced or lagged break service — the FE-era
+/// sec 3.4 spurious wake (a coalesced or lagged break service -- the FE-era
 /// level-pend re-fires produced the same shape): a wake with zero ring
 /// progress arms only the one-byte-time recheck, and evidence landing
-/// within that byte-time resolves by data — live traffic never pays for
-/// the spurious entry (bench 2026-07-11: an eager verdict here cost hot
-/// chains 95%→83%).
+/// within that byte-time resolves by data -- live traffic never pays for
+/// the spurious entry (bench: an eager verdict here cost hot chains
+/// 95% -> 83%).
 #[test]
 fn spurious_wake_arms_recheck_and_resolves_by_data() {
     let h = Harness::new();
@@ -816,7 +816,7 @@ fn spurious_wake_arms_recheck_and_resolves_by_data() {
     bus.framer.resync(anchor as u16);
     h.deadline.set_now(1000);
     h.ring.set_cursor(anchor as u16);
-    // Spurious entry: zero progress at service time — the only trace is
+    // Spurious entry: zero progress at service time -- the only trace is
     // the one-byte-time recheck.
     bus.on_break(&mut d);
     assert_eq!(h.deadline.armed(), Some(1000 + TPB));
@@ -838,9 +838,9 @@ fn spurious_wake_arms_recheck_and_resolves_by_data() {
 }
 
 /// The quiet twin: a spurious wake on a genuinely idle wire costs exactly
-/// one empty recheck — after it, no deadline is armed at all (the next
+/// one empty recheck -- after it, no deadline is armed at all (the next
 /// break wakes the driver; there is no wake to mute and no poll to keep
-/// alive, §6 A4 deletion).
+/// alive -- errors never interrupt, the wake is LBD-only, transport sec 7).
 #[test]
 fn spurious_wake_on_quiet_wire_costs_one_recheck() {
     let h = Harness::new();

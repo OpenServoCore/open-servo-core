@@ -1,5 +1,5 @@
-//! Linearized frame → decoded request mapping (`docs/osc-native-protocol.md`
-//! §5, §6). Input is a whole, CRC-clean frame (header pre-validated by the
+//! Linearized frame -> decoded request mapping (`docs/osc-native-protocol.md`
+//! sec 5, sec 6). Input is a whole, CRC-clean frame (header pre-validated by the
 //! framer): `[0x00][ID][LEN][INST][payload][PAD?][crc][crc]`. Output is the
 //! chip-agnostic [`Request`] plus its reply contract and chain slot, or a
 //! classification the composite acts on without dispatching.
@@ -22,7 +22,7 @@ use osc_protocol::wire::{Id, Inst, MgmtOp, Opcode};
 
 /// What the frame is, from the composite's point of view.
 pub enum Decoded<'a> {
-    /// Status frame (INST bit 7): a chain predecessor's reply — snoop it.
+    /// Status frame (INST bit 7): a chain predecessor's reply -- snoop it.
     Status,
     /// Not addressed to us (or a group op that doesn't list us): ignore.
     Skip,
@@ -69,7 +69,7 @@ fn plain<'a>(op: Opcode, inst: Inst, frame_id: Id, pay: FrameBytes<'a>, own: Id)
     }
     let req = match op {
         Opcode::Ping => Request::Ping,
-        // READ + PROFILE names a profile slot instead of addr+count (§5.2).
+        // READ + PROFILE names a profile slot instead of addr+count (sec 5.2).
         Opcode::Read if inst.profile() => match ProfileReq::parse(pay) {
             Some(r) => Request::ReadProfile { slot: r.slot },
             None => Request::Unsupported,
@@ -106,7 +106,7 @@ fn plain<'a>(op: Opcode, inst: Inst, frame_id: Id, pay: FrameBytes<'a>, own: Id)
                     },
                     None => Request::Unsupported,
                 },
-                // §9.3: broadcast-only — a unicast CAL's ack would put our
+                // sec 9.3: broadcast-only -- a unicast CAL's ack would put our
                 // own break on the wire right where the train starts.
                 MgmtOp::Cal => match CalReq::parse(m.args) {
                     Some(c) if broadcast => Request::Calibrate {
@@ -125,10 +125,10 @@ fn plain<'a>(op: Opcode, inst: Inst, frame_id: Id, pay: FrameBytes<'a>, own: Id)
         // Group opcodes are routed before this call.
         _ => Request::Unsupported,
     };
-    // §5: a broadcast reply would collide on the shared push-pull wire, so
+    // sec 5: a broadcast reply would collide on the shared push-pull wire, so
     // plain ops answer only unicast; NOREPLY suppresses either way. ENUM and
-    // ASSIGN are the §9.2 carve-out: broadcast-addressed by design, with the
-    // dispatcher's UID match electing the sole replier — a malformed pair
+    // ASSIGN are the sec 9.2 carve-out: broadcast-addressed by design, with the
+    // dispatcher's UID match electing the sole replier -- a malformed pair
     // decodes Unsupported and stays under broadcast suppression.
     let may_reply = !inst.noreply()
         && (!broadcast || matches!(req, Request::Enumerate { .. } | Request::Assign { .. }));
@@ -136,9 +136,9 @@ fn plain<'a>(op: Opcode, inst: Inst, frame_id: Id, pay: FrameBytes<'a>, own: Id)
 }
 
 /// GREAD: our span comes from the id-list; the chain slot is our list position.
-/// A GREAD slot always replies (that is the chain, §6). A list we can't parse
-/// leaves our addressing unknowable — skip rather than answer blind. With the
-/// PROFILE flag the payload names profile slots instead of spans (§5.2).
+/// A GREAD slot always replies (that is the chain, sec 6). A list we can't parse
+/// leaves our addressing unknowable -- skip rather than answer blind. With the
+/// PROFILE flag the payload names profile slots instead of spans (sec 5.2).
 fn gread<'a>(inst: Inst, pay: FrameBytes<'a>, own: Id) -> Decoded<'a> {
     match (inst.profile(), inst.per_target()) {
         (false, true) => match GreadPerTarget::parse(pay).and_then(|g| g.find(own)) {
@@ -182,7 +182,7 @@ fn own_read_profile<'a>(profile: u8, slot: u8) -> Decoded<'a> {
     )
 }
 
-/// GWRITE: our entry's span + data, applied silently (§5: no reply implied).
+/// GWRITE: our entry's span + data, applied silently (sec 5: no reply implied).
 fn gwrite<'a>(inst: Inst, pay: FrameBytes<'a>, own: Id) -> Decoded<'a> {
     let hold = inst.hold();
     if inst.per_target() {

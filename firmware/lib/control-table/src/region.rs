@@ -11,7 +11,7 @@ pub trait RegionStorage<R: Region> {
 /// # Safety
 /// Impls must return a valid, non-null, aligned pointer to `R` that remains
 /// valid for the lifetime of `&self`. Lock-based wrappers must not impl this
-/// trait — the pointer would outlive any lock scope.
+/// trait -- the pointer would outlive any lock scope.
 pub unsafe trait RegionStorageRaw<R: Region>: RegionStorage<R> {
     fn region_ptr(&self) -> *mut R;
 }

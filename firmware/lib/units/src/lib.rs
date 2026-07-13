@@ -16,7 +16,7 @@ pub struct Milliamps(pub i16);
 #[repr(transparent)]
 pub struct Millivolts(pub i16);
 
-/// 0.01 °C; e.g. 2500 = 25.0 °C.
+/// 0.01 degC; e.g. 2500 = 25.0 degC.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(transparent)]
 pub struct CentiCelsius(pub i16);

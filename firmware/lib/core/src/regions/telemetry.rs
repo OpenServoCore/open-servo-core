@@ -48,7 +48,7 @@ pub struct TelemetryFault {
     pub fault_flags: u8,
     #[ct_field(access = ro)]
     pub fault_code: u8,
-    /// Modified-since-save (§9.4): set when a committed write lands in
+    /// Modified-since-save (sec 9.4): set when a committed write lands in
     /// CONFIG or PROFILE, cleared by a successful SAVE; boot state is clean.
     #[ct_field(access = ro)]
     pub config_dirty: u8,
@@ -77,7 +77,7 @@ pub struct TelemetryRaw {
 
 /// Host can Write zero to any field to clear it (bench instrumentation).
 /// Chip-side `report_fault` increments via raw pointer, bypassing the regmap.
-/// Concurrent host clear + ISR increment may drop one update — acceptable for bench.
+/// Concurrent host clear + ISR increment may drop one update -- acceptable for bench.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct TelemetryBusLink {
@@ -87,9 +87,9 @@ pub struct TelemetryBusLink {
     pub framing_drop_count: u32,
 }
 
-/// Clock discipline (§9.3), read-only: the trim loop's applied total, in
+/// Clock discipline (sec 9.3), read-only: the trim loop's applied total, in
 /// signed chip trim steps from the factory default (positive = slowed).
-/// Volatile by design — every boot re-converges from live traffic.
+/// Volatile by design -- every boot re-converges from live traffic.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct TelemetryClock {

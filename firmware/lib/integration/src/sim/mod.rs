@@ -1,7 +1,7 @@
 //! Discrete-event simulator for the osc-native bus. A single `Sim` owns the
 //! event queue, the shared half-duplex wire, and a set of boxed `SimServo`s
 //! (real `ServoBus` + real `osc_core` dispatch over sim providers). The wire
-//! model is derived from the measured silicon facts (§12): break framing, one
+//! model is derived from the measured silicon facts (sec 12): break framing, one
 //! FE per break, DMA-ringed bytes, drive discipline. Handler invocations
 //! route through a per-servo PFIC occupancy model (`cpu`): with nonzero
 //! [`HandlerCost`], events landing mid-body pend and coalesce as on silicon.
@@ -57,8 +57,8 @@ pub struct WireFrame {
     pub from: Source,
     /// The ring image: 0x00 break byte, then ID..CRC.
     pub bytes: Vec<u8>,
-    /// Another servo transmitted into this frame (§9.2 ENUM collision):
-    /// `bytes` interleaves both talkers' spans — garbage, as on the wire.
+    /// Another servo transmitted into this frame (sec 9.2 ENUM collision):
+    /// `bytes` interleaves both talkers' spans -- garbage, as on the wire.
     pub collided: bool,
 }
 
@@ -66,7 +66,7 @@ pub struct Sim {
     core: Rc<RefCell<Core>>,
     // Box is load-bearing: a `SimServo`'s address must be stable while the TX
     // engine streams a read reply zero-copy (raw pointers into its control
-    // table, §4.2). `Vec<SimServo>` would move elements on realloc.
+    // table, sec 4.2). `Vec<SimServo>` would move elements on realloc.
     #[allow(clippy::vec_box)]
     servos: Vec<Box<SimServo>>,
     handles: Vec<Handles>,
@@ -98,8 +98,8 @@ impl Sim {
     }
 
     /// Add a servo with a persistence store: its boot overlay runs against
-    /// the store's slots (§9.4), so a saved image's comms block wins over
-    /// `id` — sharing one leaked store across `Sim` instances models a
+    /// the store's slots (sec 9.4), so a saved image's comms block wins over
+    /// `id` -- sharing one leaked store across `Sim` instances models a
     /// reboot with flash intact.
     pub fn add_servo_with_store(&mut self, id: u8, store: &'static RamStore) -> usize {
         self.add_servo_full(id, 0, DEFAULT_RESPONSE_DEADLINE_US, Some(store))
@@ -135,7 +135,7 @@ impl Sim {
         self.cpus[i].cost = cost;
     }
 
-    /// `on_break` invocations delivered to servo `i` — wire break events
+    /// `on_break` invocations delivered to servo `i` -- wire break events
     /// minus this counts pends that coalesced.
     pub fn delivered_breaks(&self, i: usize) -> u64 {
         self.cpus[i].delivered_breaks()
@@ -146,7 +146,7 @@ impl Sim {
         self.servos[i].with_table(f)
     }
 
-    /// Chip-side mutation of a servo's table (fault flags, telemetry) — the
+    /// Chip-side mutation of a servo's table (fault flags, telemetry) -- the
     /// sim's stand-in for the control/fault ISRs the chip band will own.
     pub fn servo_table_mut<R>(&self, i: usize, f: impl FnOnce(&mut ControlTable) -> R) -> R {
         self.servos[i].with_table_mut(f)
@@ -156,7 +156,7 @@ impl Sim {
         self.servos[i].diag()
     }
 
-    /// The chip main loop's trim poll (§9.3), between exchanges.
+    /// The chip main loop's trim poll (sec 9.3), between exchanges.
     pub fn poll_clock_trim(&mut self, i: usize) -> Option<i8> {
         self.servos[i].poll_clock_trim()
     }
@@ -197,7 +197,7 @@ impl Sim {
         self.queue_host_frame(start, frame);
     }
 
-    /// A bare break at `at_us` — the MGMT CAL train's ruler mark (§9.3):
+    /// A bare break at `at_us` -- the MGMT CAL train's ruler mark (sec 9.3):
     /// one FE at every listener, no data bytes. Successive calls with exact
     /// `at_us` spacing model a host whose timer paces the train.
     pub fn host_send_break_at(&mut self, at_us: u64) {
@@ -219,7 +219,7 @@ impl Sim {
         self.host_free_at = break_end;
     }
 
-    /// Servo `i`'s oscillator rate becomes `ppm` at `at_us` — thermal drift
+    /// Servo `i`'s oscillator rate becomes `ppm` at `at_us` -- thermal drift
     /// as the drift tracker sees it: the rate changes, the clock never steps.
     pub fn set_servo_skew_at(&mut self, at_us: u64, i: usize, ppm: i32) {
         let at = self.clamp_at(at_us);
@@ -229,10 +229,10 @@ impl Sim {
     }
 
     /// Inject a spurious break wake at servo `i`: the break vector
-    /// re-enters with NO new wire byte — a coalesced or lagged service
-    /// (§3.4: breaks are not countable events; wakes carry no position and
-    /// no time, and any code deriving either from them kills live frames —
-    /// bench 2026-07-11, the fence; 2026-07-12, the tracker starvation).
+    /// re-enters with NO new wire byte -- a coalesced or lagged service
+    /// (sec 3.4: breaks are not countable events; wakes carry no position and
+    /// no time, and any code deriving either from them kills live frames --
+    /// bench-caught twice: the fence, then the tracker starvation).
     pub fn inject_wake_refire_at(&mut self, at_us: u64, i: usize) {
         let at = self.clamp_at(at_us);
         self.core
@@ -242,9 +242,9 @@ impl Sim {
 
     /// Queue a host frame whose transmitter stalls mid-frame: bytes
     /// `..split` stream normally, then the wire idles high for `stall_us`,
-    /// then the rest streams. Models the pirate's TXE-poll bubbles (bench
-    /// 2026-07-08: 58–94-bit pauses INSIDE frames on failing plain-burst
-    /// cycles) — a legal wire per §4.1 (nothing times on idle), and the
+    /// then the rest streams. Models the pirate's TXE-poll bubbles (bench:
+    /// 58-94-bit pauses INSIDE frames on failing plain-burst cycles) -- a
+    /// legal wire per sec 4.1 (nothing times on idle), and the
     /// stress that parks the frontier at the starvation horizon.
     pub fn host_send_stalled(&mut self, frame: &[u8], split: usize, stall_us: u64) {
         let start = self.host_free_at.max(self.core.borrow().now());
@@ -286,7 +286,7 @@ impl Sim {
     }
 
     /// One lone noise byte on the wire (line noise, F4): rings at every
-    /// servo, wakes nothing (§3.4 — errors never interrupt).
+    /// servo, wakes nothing (sec 3.4 -- errors never interrupt).
     pub fn inject_garble_at(&mut self, at_us: u64, b: u8) {
         let at = self.clamp_at(at_us);
         self.core
@@ -295,7 +295,7 @@ impl Sim {
     }
 
     /// A foreign break dropped onto the wire at `at_us`, bypassing host
-    /// serialization (a break can land inside another talker's window —
+    /// serialization (a break can land inside another talker's window --
     /// collision, glitch): rings a 0x00 and wakes qualified receivers.
     pub fn inject_break_at(&mut self, at_us: u64) {
         let at = self.clamp_at(at_us);
@@ -305,11 +305,11 @@ impl Sim {
             .schedule(Event::StrayBreak { baud }, at);
     }
 
-    /// Rescue pulse: line dominant for `us` (§9.1). Two modeled effects:
-    /// each servo's main-loop sampler declares once ≥ RESCUE_LOW_US of
+    /// Rescue pulse: line dominant for `us` (sec 9.1). Two modeled effects:
+    /// each servo's main-loop sampler declares once >= RESCUE_LOW_US of
     /// frozen-ring low has elapsed (measured from the pulse's ringed 0x00,
-    /// ~a byte-time in), and the pulse's END fires an ordinary break wake —
-    /// the detector latches only at the rising edge (silicon 2026-07-12).
+    /// ~a byte-time in), and the pulse's END fires an ordinary break wake --
+    /// the detector latches only at the rising edge (silicon).
     /// A pulse too short to cross the threshold delivers only the end wake.
     pub fn hold_line_low_at(&mut self, at_us: u64, us: u64) {
         let start = self.clamp_at(at_us);
@@ -439,7 +439,7 @@ impl Sim {
     }
 
     /// A handler body ended: deliver ONE pended vector (highest arbitration
-    /// first), then re-arm for the rest — each delivery is its own event so
+    /// first), then re-arm for the rest -- each delivery is its own event so
     /// every handler reads the clock at its true entry tick.
     fn cpu_free(&mut self, j: usize) {
         self.cpus[j].free_scheduled = false;
@@ -469,9 +469,9 @@ impl Sim {
         }
     }
 
-    /// Length-qualified break delivery (§3.4): the 10-bit span covers ≥10 of
+    /// Length-qualified break delivery (sec 3.4): the 10-bit span covers >=10 of
     /// the receiver's bit-times only at receivers at or above the talker's
-    /// rate — those decode the all-zeros character and wake. A slower
+    /// rate -- those decode the all-zeros character and wake. A slower
     /// receiver hears a sub-character low: compressed junk, no wake.
     fn deliver_break_to(&mut self, j: usize, baud: BaudRate) {
         if self.handles[j].baud.current().as_hz() >= baud.as_hz() {
@@ -493,13 +493,13 @@ impl Sim {
             if matched {
                 self.handles[j].ring.push(byte);
             } else {
-                // A baud mismatch garbles both value and framing (§2
+                // A baud mismatch garbles both value and framing (sec 2
                 // approximation): the sampled bits are wrong-rate noise, so
                 // the ringed byte must not survive as valid data at either a
-                // faster or slower receiver. No wake (§3.4): a data byte's
+                // faster or slower receiver. No wake (sec 3.4): a data byte's
                 // dominant runs stay under the detector's 10-bit bar in this
-                // model (silicon: rare slower-baud bytes do qualify — leg D
-                // of the lbd_wake spike — but the wake-into-junk exposure is
+                // model (silicon: rare slower-baud bytes do qualify -- leg D
+                // of the lbd_wake spike -- but the wake-into-junk exposure is
                 // already carried by the slower talker's breaks).
                 self.handles[j].ring.push(byte ^ MISMATCH_GARBLE);
             }
@@ -520,7 +520,7 @@ impl Sim {
 
     fn deliver_rescue_declare(&mut self) {
         // Every servo's sampler crosses the threshold together (the low is
-        // baud-agnostic); the declaration is thread-level — no vector, no
+        // baud-agnostic); the declaration is thread-level -- no vector, no
         // CPU pend, mirroring the chip's main-loop + critical-section path.
         // The pulse's own ringed 0x00 lands here (it rang a byte-time in;
         // the model folds it into the declaration instant).

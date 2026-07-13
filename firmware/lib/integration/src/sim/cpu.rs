@@ -1,6 +1,6 @@
 //! Per-servo PFIC occupancy model. The transport vectors share PFIC HIGH on
 //! the chip, so a handler body occupies the CPU and every event landing
-//! meanwhile *pends* — a flag per vector, not a queue — and a burst of same-
+//! meanwhile *pends* -- a flag per vector, not a queue -- and a burst of same-
 //! vector events coalesces into one late delivery, exactly as pended IRQs do
 //! on silicon. Ring bytes are DMA and always land at their wire tick; only
 //! handler invocations defer. Handler effects land at entry: the model
@@ -8,8 +8,8 @@
 
 use super::core::TICKS_PER_US;
 
-/// Sim-time cost of each `ServoBus` handler body, µs. Zero (the default)
-/// delivers every event at its wire tick — the ideal-CPU model the logical
+/// Sim-time cost of each `ServoBus` handler body, us. Zero (the default)
+/// delivers every event at its wire tick -- the ideal-CPU model the logical
 /// suites pin.
 #[derive(Copy, Clone, Default)]
 pub struct HandlerCost {
@@ -19,7 +19,7 @@ pub struct HandlerCost {
 }
 
 /// The transport vectors, in same-priority arbitration order (lowest
-/// interrupt number delivers first: SysTick, then USART1 — whose real body
+/// interrupt number delivers first: SysTick, then USART1 -- whose real body
 /// drains RX errors before TC).
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Vector {
@@ -90,7 +90,7 @@ impl Cpu {
         self.busy_until = now + us as u64 * TICKS_PER_US;
     }
 
-    /// `on_break` invocations actually delivered — the coalescing observable
+    /// `on_break` invocations actually delivered -- the coalescing observable
     /// (wire FE events minus this = pends that merged).
     pub fn delivered_breaks(&self) -> u64 {
         self.delivered_breaks

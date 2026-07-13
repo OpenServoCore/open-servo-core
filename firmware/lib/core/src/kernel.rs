@@ -25,7 +25,7 @@ impl<I: ControlIo> Kernel<I> {
         }
     }
 
-    /// Must complete well inside the kernel period (~50 µs at 20 kHz).
+    /// Must complete well inside the kernel period (~50 us at 20 kHz).
     pub fn on_tick(&mut self, _sample: Sample, _shared: &Shared) {
         // TODO: PID + mode dispatch + motor.write once the control loop lands.
     }

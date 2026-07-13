@@ -25,8 +25,8 @@ struct FakeReply {
     /// Span count of the last `send_status_gather` (0 = none seen).
     gather_spans: usize,
     staged_id: Option<u8>,
-    /// `set_id` value, plus the send count at that instant — ASSIGN must
-    /// apply the id BEFORE its ack so the ack leaves from the new id (§9.2).
+    /// `set_id` value, plus the send count at that instant -- ASSIGN must
+    /// apply the id BEFORE its ack so the ack leaves from the new id (sec 9.2).
     set_id: Option<(u8, usize)>,
     staged_baud: Option<BaudRate>,
     response_deadline: Option<u16>,
@@ -118,7 +118,7 @@ impl Reply for FakeReply {
     }
 }
 
-/// Dispatch one request and deliver a PASS verdict — the common whole-exchange
+/// Dispatch one request and deliver a PASS verdict -- the common whole-exchange
 /// shape (dispatch stages effects; the verdict commit promotes a staged table
 /// effect, exactly as the bus does after a clean CRC).
 fn go(shared: &Shared, staged: &mut StagedWrites, req: Request<'_>, may_reply: bool) -> FakeReply {
@@ -199,8 +199,8 @@ fn read_count_zero_rejects_range() {
 
 #[test]
 fn read_odd_addr_serves_bytes() {
-    // §5: any read address is legal — odd-addressed spans stage through the
-    // chip CRC provider's copy path (§3.2); dispatch is parity-blind.
+    // sec 5: any read address is legal -- odd-addressed spans stage through the
+    // chip CRC provider's copy path (sec 3.2); dispatch is parity-blind.
     let shared = Shared::new();
     let mut staged = StagedWrites::new();
     let reply = go(
@@ -258,11 +258,11 @@ fn read_silent_when_may_reply_false() {
     assert_eq!(reply.count(), 0);
 }
 
-// --- Profile read (§5.2) ---------------------------------------------------
+// --- Profile read (sec 5.2) ---------------------------------------------------
 
 use crate::regions::profile::span_word;
 
-/// Slot 0 → two spans: model_number (2 B at 0x000) and comms id (1 B).
+/// Slot 0 -> two spans: model_number (2 B at 0x000) and comms id (1 B).
 fn seed_profile_slot0(shared: &Shared) {
     use crate::regions::config::addr::comms::ID;
     shared.table.with_mut(|t| {
@@ -290,7 +290,7 @@ fn profile_read_skips_disabled_words() {
     shared.table.with_mut(|t| {
         t.config.identity.model_number = 0xABCD;
         // Hole at word 0 and word 2: disabled words are skipped, not
-        // terminators (§5.2).
+        // terminators (sec 5.2).
         t.profile.slots.words[1] = span_word(0, 1);
         t.profile.slots.words[3] = span_word(1, 1);
     });
@@ -333,7 +333,7 @@ fn profile_read_oob_span_rejects_range() {
 #[test]
 fn profile_read_over_ceiling_rejects_limit() {
     let shared = Shared::new();
-    // 5 × 63 B = 315 B > MAX_PAYLOAD.
+    // 5 x 63 B = 315 B > MAX_PAYLOAD.
     shared.table.with_mut(|t| {
         for w in 0..5 {
             t.profile.slots.words[w] = span_word(0, 63);
@@ -383,7 +383,7 @@ fn write_acks_ok_and_mutates() {
 fn write_validation_reject_maps_to_validation() {
     let shared = Shared::new();
     let mut staged = StagedWrites::new();
-    // 2 is outside a bool field's allowed {0, 1} — a field-rule rejection.
+    // 2 is outside a bool field's allowed {0, 1} -- a field-rule rejection.
     let reply = go(
         &shared,
         &mut staged,
@@ -397,8 +397,8 @@ fn write_validation_reject_maps_to_validation() {
     assert_eq!(reply.last().result, ResultCode::Validation);
 }
 
-/// osc separates write from persistence (§9.4): config writes are never
-/// torque-gated — only MGMT SAVE is.
+/// osc separates write from persistence (sec 9.4): config writes are never
+/// torque-gated -- only MGMT SAVE is.
 #[test]
 fn write_config_allowed_with_torque_on() {
     use crate::regions::config::addr::comms::ID;
@@ -595,7 +595,7 @@ fn mgmt_wrapped_enum_assign_reply_instruction() {
     }
 }
 
-// --- Save / Factory (§9.4/§9.5) ---------------------------------------------
+// --- Save / Factory (sec 9.4/sec 9.5) ---------------------------------------------
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
@@ -847,7 +847,7 @@ fn held_write_marks_dirty_at_commit_not_before() {
     assert_eq!(dirty(&shared), 1);
 }
 
-// --- Enumerate / Assign (§9.2) ----------------------------------------------
+// --- Enumerate / Assign (sec 9.2) ----------------------------------------------
 
 const UID: [u8; 16] = [0xA5, 0x5A, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 0xF0];
 
@@ -923,11 +923,11 @@ fn assign_matching_uid_sets_id_before_ack() {
     );
     assert_eq!(reply.last().result, ResultCode::Ok);
     // The id applies immediately and BEFORE the ack stages, so the ack
-    // already leaves from the new id (§9.2).
+    // already leaves from the new id (sec 9.2).
     assert_eq!(reply.set_id, Some((42, 0)));
     assert_eq!(reply.staged_id, None, "immediate, not deferred");
-    // Mirrored into the config table so a later SAVE persists it — which
-    // also marks modified-since-save (§9.4).
+    // Mirrored into the config table so a later SAVE persists it -- which
+    // also marks modified-since-save (sec 9.4).
     assert_eq!(shared.table.with(|t| t.config.comms.id), 42);
     assert_eq!(dirty(&shared), 1);
 }
@@ -1038,7 +1038,7 @@ fn write(addr: u16, data: &[u8], hold: bool) -> Request<'_> {
     }
 }
 
-/// A fresh dispatcher over the same session-owned `staged` + `pending` —
+/// A fresh dispatcher over the same session-owned `staged` + `pending` --
 /// mirrors the bus rebuilding one per wake.
 fn disp<'a>(
     shared: &'a Shared,
@@ -1062,7 +1062,7 @@ fn write_stages_then_commit_applies() {
     );
     assert!(matches!(out, Dispatched::Pending));
     assert_eq!(reply.last().result, ResultCode::Ok);
-    // Staged only — the live table is untouched until the verdict commits.
+    // Staged only -- the live table is untouched until the verdict commits.
     assert!(!shared.table.with(|t| t.control.lifecycle.torque_enable));
 
     disp(&shared, &mut staged, &mut pending).commit(&mut reply);
@@ -1088,7 +1088,7 @@ fn write_reverts_on_fail_verdict() {
     );
     assert!(matches!(out, Dispatched::Pending));
 
-    // CRC failed: revert — the table and staging are byte-identical to before.
+    // CRC failed: revert -- the table and staging are byte-identical to before.
     disp(&shared, &mut staged, &mut pending).revert();
     assert!(pending.is_none());
     assert!(staged.is_empty());
@@ -1132,7 +1132,7 @@ fn write_staging_full_nacks_busy_nothing_staged() {
         &mut reply,
     );
     assert!(matches!(out, Dispatched::Done));
-    // Held entries filled the buffer — a COMMIT drains it, so Busy is honest.
+    // Held entries filled the buffer -- a COMMIT drains it, so Busy is honest.
     assert_eq!(reply.last().result, ResultCode::Busy);
     assert!(pending.is_none());
     // Nothing staged on top: only the pre-existing filler entry remains.
@@ -1182,7 +1182,7 @@ fn real_commit_after_dangling_write_applies_only_held_entries() {
         &mut reply,
     );
     disp(&shared, &mut staged, &mut pending).commit(&mut reply);
-    // A write on top stages goal_velocity, then dies (dangling — no verdict).
+    // A write on top stages goal_velocity, then dies (dangling -- no verdict).
     let gv = 5i32.to_le_bytes();
     disp(&shared, &mut staged, &mut pending).dispatch(
         write(GOAL_VELOCITY, &gv, false),
@@ -1192,7 +1192,7 @@ fn real_commit_after_dangling_write_applies_only_held_entries() {
     assert!(pending.is_some());
 
     // Real COMMIT auto-reverts the dangling write, then applies only the held
-    // torque_enable — the phantom goal_velocity is gone.
+    // torque_enable -- the phantom goal_velocity is gone.
     disp(&shared, &mut staged, &mut pending).dispatch(
         Request::Commit,
         RequestCtx { may_reply: true },
@@ -1248,7 +1248,7 @@ fn hooks_fire_on_write_commit() {
         RequestCtx { may_reply: true },
         &mut reply,
     );
-    // Hooks are deferred to the verdict — nothing staged through the reply yet.
+    // Hooks are deferred to the verdict -- nothing staged through the reply yet.
     assert_eq!(reply.staged_id, None);
 
     disp(&shared, &mut staged, &mut pending).commit(&mut reply);

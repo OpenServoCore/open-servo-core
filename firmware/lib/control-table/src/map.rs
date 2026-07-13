@@ -36,8 +36,8 @@ pub struct SectionMeta {
 
 /// Live base pointer + size plus one pending overlay, so a check sees the value
 /// about to be committed on top of live storage. The overlay is up to two
-/// contiguous ranges — `o2` logically follows `o1` at `overlay_addr + o1.len()`
-/// — because a ring-seam write arrives as head + tail (`o2` empty otherwise).
+/// contiguous ranges -- `o2` logically follows `o1` at `overlay_addr + o1.len()`
+/// -- because a ring-seam write arrives as head + tail (`o2` empty otherwise).
 pub struct View<'a> {
     base: *const u8,
     size: usize,
@@ -87,11 +87,11 @@ impl<'a> View<'a> {
     ///
     /// Rule reads are almost always fully outside the overlay (a compare's
     /// RHS register, a lock byte) or fully inside `o1` (the field being
-    /// written) — those take straight byte loads; the per-byte pick pays
+    /// written) -- those take straight byte loads; the per-byte pick pays
     /// only on seam splits and overlay-edge straddles (bench: the pick chain
-    /// ran ~6.8 µs per load on flash-resident code, the write path's
+    /// ran ~6.8 us per load on flash-resident code, the write path's
     /// hottest function). Outlined: inlining at the (deduped) rule-body
-    /// sites measured zero gain for +146 B — the cost is the loads, not the
+    /// sites measured zero gain for +146 B -- the cost is the loads, not the
     /// call.
     #[inline(never)]
     pub fn read_fixed(&self, addr: u16, len: usize) -> Result<[u8; 4], Error> {
@@ -145,7 +145,7 @@ impl<'a> View<'a> {
 }
 
 /// Load `len` bytes (capped at 4) from `p` into a zero-padded `[u8; 4]` with
-/// unrolled byte loads — no per-byte range compares.
+/// unrolled byte loads -- no per-byte range compares.
 ///
 /// # Safety
 /// `p` must be valid for `len.min(4)` byte reads.
@@ -167,8 +167,8 @@ unsafe fn load_le4(p: *const u8, len: usize) -> [u8; 4] {
     out
 }
 
-/// Validate `[addr, addr+o1.len()+o2.len())` against the flat map: bounds →
-/// writable mask → rules, in that precedence. The view is live storage
+/// Validate `[addr, addr+o1.len()+o2.len())` against the flat map: bounds ->
+/// writable mask -> rules, in that precedence. The view is live storage
 /// plus this op's `o1`/`o2` overlay only (previously staged entries are not
 /// visible). `o2` continues after `o1` at the ring seam; it is empty for a
 /// contiguous write.
@@ -194,7 +194,7 @@ fn validate<M: RegisterMap + ?Sized>(m: &M, addr: u16, o1: &[u8], o2: &[u8]) -> 
         let word_lo = wi * 32;
         let start_bit = lo.saturating_sub(word_lo);
         let end_bit = (hi - word_lo).min(32);
-        // u32 shifts only — a runtime u64 shift is an __ashldi3 libcall on
+        // u32 shifts only -- a runtime u64 shift is an __ashldi3 libcall on
         // RV32E. `start_bit < 32` always; branch on the one amount that would
         // overflow a u32 shift.
         let covered = if end_bit == 32 {
@@ -212,7 +212,7 @@ fn validate<M: RegisterMap + ?Sized>(m: &M, addr: u16, o1: &[u8], o2: &[u8]) -> 
     let view = View::new_split(m.base() as *const u8, M::SIZE, addr, o1, o2);
 
     // Within a section allowed rules run before compare rules (previously
-    // interleaved in field order — only observable when one write spans
+    // interleaved in field order -- only observable when one write spans
     // multiple invalid fields of different kinds; not spec-pinned).
     for sec in M::SECTIONS {
         if !overlaps(sec.base as usize, sec.size as usize, lo, hi) {
@@ -340,7 +340,7 @@ pub trait RegisterFile: RegisterMap {
     }
 
     /// Apply only the entries pushed since `snap`, then truncate the buffer back
-    /// to it — a pending write's verdict commit, leaving any pre-`snap` HOLD
+    /// to it -- a pending write's verdict commit, leaving any pre-`snap` HOLD
     /// entries intact for a later real COMMIT.
     fn commit_from(&self, staged: &mut StagedWrites, snap: &Snapshot) {
         apply_from(self, staged, snap);

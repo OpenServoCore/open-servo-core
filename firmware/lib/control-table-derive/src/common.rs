@@ -69,7 +69,7 @@ pub(crate) fn parse_field_skip(attrs: &[Attribute], attr_ident: &str) -> syn::Re
     Ok(skip)
 }
 
-/// `__flat_meta_<crate>_<Block>` — the `<crate>` prefix prevents name collisions
+/// `__flat_meta_<crate>_<Block>` -- the `<crate>` prefix prevents name collisions
 /// at the consumer's crate root when two crates each derive a block with the
 /// same name. Section and Block must compute the same name for the macro the
 /// Block defines and the Section invokes; both run in the consumer's
