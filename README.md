@@ -9,7 +9,7 @@
 
 > An open platform for turning cheap servos into smart actuators.
 
-OpenServoCore (OSC) is open hardware and firmware that drops a CH32V006 control board into a $2-3 cloned hobby servo (SG90 and friends) and turns it into a Dynamixel-class smart actuator — position feedback, current sensing, bus-addressable, programmable. The bus speaks the **osc-native protocol**: our own break-framed wire protocol, inspired by Dynamixel Protocol 2.0 but redesigned to run whole on sub-$0.20 MCUs ([spec](docs/osc-native-protocol.md)).
+OpenServoCore (OSC) is open hardware and firmware that drops a CH32V006 control board into a $2-3 cloned hobby servo (SG90 and friends) and turns it into a Dynamixel-class smart actuator — position feedback, current sensing, bus-addressable, programmable. The bus speaks the **osc-native protocol**: OSC's own break-framed wire protocol, inspired by Dynamixel Protocol 2.0 but redesigned to run whole on sub-$0.20 MCUs ([spec](docs/osc-native-protocol.md)).
 
 The thesis is the price point: at mass-production volume, an OSC swap board should add **no more than ~$1 to the BOM** of a cloned servo. Cheap enough that "upgrade every servo in a robot to smart" stops being a premium decision and starts being a default.
 
@@ -64,7 +64,7 @@ Each board has its own README with full schematics, pinouts, jumper behaviour, a
 
 ## Firmware
 
-The Rust firmware v2 lives in `firmware/`: chip-agnostic library crates (protocol, drivers, control table, discrete-event integration tests), a CH32 chip crate, and board binaries. It speaks the osc-native protocol — our own break-framed bus protocol, inspired by Dynamixel Protocol 2.0. DXL 2.0 itself was implemented and tuned first, then replaced: its wire format (header hunting, byte stuffing, reply-grid timing) costs more than a $0.15 MCU should pay, and controlling both ends of the wire let us delete those subsystems outright — the story is in [design history](docs/design-history.md). The register-table conventions (flat control table, staged writes, alert semantics) keep the DXL flavor.
+The Rust firmware v2 lives in `firmware/`: chip-agnostic library crates (protocol, drivers, control table, discrete-event integration tests), a CH32 chip crate, and board binaries. It speaks the osc-native protocol — OSC's own break-framed bus protocol, inspired by Dynamixel Protocol 2.0. DXL 2.0 itself was implemented and tuned first, then replaced: its wire format (header hunting, byte stuffing, reply-grid timing) costs more than a $0.15 MCU should pay, and controlling both ends of the wire made those subsystems deletable outright — the story is in [design history](docs/design-history.md). The register-table conventions (flat control table, staged writes, alert semantics) keep the DXL flavor.
 
 The bus transport is bench-proven on silicon: 0.5-3 Mbaud, ~30 us ping turnaround at 1 M, multi-servo status chains, hardware CRC both directions. Control loops, persistence, and safety features are in progress; build instructions will appear as the rewrite matures.
 
@@ -77,7 +77,7 @@ Design docs live in [`docs/`](docs/):
 - **[osc-native protocol](docs/osc-native-protocol.md)** — the wire protocol spec: break framing, instruction set, management plane.
 - **[Servo transport](docs/osc-servo-transport.md)** — the servo-side transport design: DMA ring, deadline pipeline, hardware CRC.
 - **[Driver pattern](docs/driver-pattern.md)** — the firmware architecture: services / drivers / providers / HAL.
-- **[Design history](docs/design-history.md)** — what we tried and abandoned, and what it taught us.
+- **[Design history](docs/design-history.md)** — what I tried and abandoned, and what it taught.
 - **[Testing](docs/testing.md)** — the test strategy.
 
 ## Contributing

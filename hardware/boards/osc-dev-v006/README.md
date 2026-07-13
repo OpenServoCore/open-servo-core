@@ -108,7 +108,7 @@ Intended as the upgrade path for higher-precision position feedback (e.g. a cust
 OpenServoCore uses **single-wire half-duplex UART (Dynamixel-TTL electrical layer)** as its physical bus. Two reasons:
 
 - **Three wires only** (`GND` / `V+` / `DATA`) — the same pin count as the original 3-wire hobby-servo cable, so a stock SG90/MG90 cable is reused as-is when swapping the OEM control board for an OSC swap board.
-- **Prior art.** Dynamixel TTL is a well-understood, well-documented electrical bus. OSC copies the electrical layer as-is; the wire protocol on top is **osc-native** — our own break-framed protocol, inspired by Dynamixel 2.0 but redesigned for sub-$0.20 MCUs ([spec](../../../docs/osc-native-protocol.md)).
+- **Prior art.** Dynamixel TTL is a well-understood, well-documented electrical bus. OSC copies the electrical layer as-is; the wire protocol on top is **osc-native** — OSC's own break-framed protocol, inspired by Dynamixel 2.0 but redesigned for sub-$0.20 MCUs ([spec](../../../docs/osc-native-protocol.md)).
 
 Three connectors share the same `GND` / `V+` / `DATA` net — pick whichever fits your wiring:
 
