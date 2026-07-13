@@ -22,6 +22,8 @@ defmt-rtt     = { version = "1", optional = true }
 [features]
 default = []
 defmt   = ["dep:defmt", "dep:defmt-rtt", "osc-ch32/defmt"]
+# Debug-link-dumpable probe counters (no wire/table impact).
+bench   = ["osc-ch32/bench"]
 # Direct HDSEL single wire (rev C, or rev B with the buffer bypassed) —
 # tinyboot's flag. Default (absent) = rev B 74LVC2G241 buffer + TX_EN
 # (the current fleet).

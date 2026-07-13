@@ -1,5 +1,6 @@
 #![no_std]
 
+pub mod bench;
 pub mod bus;
 pub mod led;
 pub mod log;

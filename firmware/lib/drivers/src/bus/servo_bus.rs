@@ -396,29 +396,48 @@ impl<P: Providers> ServoBus<P> {
         let cursor = self.ring.cursor();
         let prev = self.drift_prev.replace((now, cursor));
         let seen = core::mem::replace(&mut self.drift_seen, VerifiedSpan::None);
-        let (
-            Some((t1, c1)),
+        crate::bench::trim_probe(|p| p.stamps += 1);
+        let (t1, c1) = match prev {
+            Some(pair) => pair,
+            None => {
+                crate::bench::trim_probe(|p| p.no_prev += 1);
+                return;
+            }
+        };
+        let footprint = match seen {
             VerifiedSpan::One {
                 footprint,
                 silent: true,
-            },
-        ) = (prev, seen)
-        else {
-            return;
+            } => footprint,
+            VerifiedSpan::One { silent: false, .. } => {
+                crate::bench::trim_probe(|p| p.unsilent += 1);
+                return;
+            }
+            VerifiedSpan::None => {
+                crate::bench::trim_probe(|p| p.span_none += 1);
+                return;
+            }
+            VerifiedSpan::Many => {
+                crate::bench::trim_probe(|p| p.span_many += 1);
+                return;
+            }
         };
         let len = self.ring.bytes().len();
         // Byte-exactness: the pair's ring span must be exactly the verified
         // frame — anything else intervened (a status, garble, an echo).
         if len == 0 || ring_wrap(cursor as usize + len - c1 as usize, len) as u16 != footprint {
+            crate::bench::trim_probe(|p| p.inexact += 1);
             return;
         }
         let span = (footprint as u32).wrapping_mul(self.tpb);
         let err = now.wrapping_sub(t1).wrapping_sub(span) as i32;
         if err.unsigned_abs() > span >> TRIM_GATE_SHIFT {
+            crate::bench::trim_probe(|p| p.gated += 1);
             return; // a real pause (inter-chain gap), not a seam
         }
         match self.drift_base {
             None => {
+                crate::bench::trim_probe(|p| p.base_pairs += 1);
                 self.drift_base_err = self.drift_base_err.wrapping_add(err);
                 self.drift_base_n += 1;
                 if self.drift_base_n >= DRIFT_BASELINE_PAIRS {
@@ -426,11 +445,13 @@ impl<P: Providers> ServoBus<P> {
                 }
             }
             Some(base) => {
+                crate::bench::trim_probe(|p| p.win_pairs += 1);
                 self.drift_win_err = self.drift_win_err.wrapping_add(err.wrapping_sub(base));
                 self.drift_win_span = self.drift_win_span.saturating_add(span);
                 self.drift_win_n += 1;
                 if self.drift_win_n >= DRIFT_WINDOW_PAIRS {
                     if !self.cal_ready && !self.drift_ready {
+                        crate::bench::trim_probe(|p| p.verdicts += 1);
                         self.cadence_err = self.drift_win_err;
                         self.cadence_span = self.drift_win_span;
                         self.drift_ready = true;

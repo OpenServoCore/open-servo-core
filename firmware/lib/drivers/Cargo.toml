@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 
 [features]
+# Hot-path probe bodies (crate::bench): counters in no_mangle statics the
+# debug link dumps by symbol. Call sites stay unconditional.
+bench = []
 defmt = ["osc-log/defmt", "osc-core/defmt"]
 log   = ["osc-log/log"]
 mocks = ["dep:mockall", "osc-protocol/software-crc"]
