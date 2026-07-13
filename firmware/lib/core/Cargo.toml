@@ -1,0 +1,29 @@
+[package]
+name    = "osc-core"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+heapless.workspace         = true
+bbqueue.workspace          = true
+portable-atomic.workspace  = true
+critical-section.workspace = true
+bitflags.workspace         = true
+# defmt's macros expand to absolute `::defmt::` paths, so a crate that *invokes*
+# a defmt log macro needs its own dep (osc-log re-exports, but the expansion is
+# resolved here). See osc-log.
+defmt = { version = "1", optional = true }
+
+osc-units.workspace     = true
+osc-log.workspace       = true
+osc-protocol.workspace  = true
+control-table.workspace = true
+
+[dev-dependencies]
+crc = { workspace = true }
+
+[features]
+default = []
+defmt   = ["dep:defmt", "osc-log/defmt", "control-table/defmt"]
+log     = ["osc-log/log"]
