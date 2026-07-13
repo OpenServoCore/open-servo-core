@@ -6,7 +6,7 @@
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
-use osc_core::BaudRate;
+use osc_servo_core::BaudRate;
 
 use super::{Source, WireFrame};
 

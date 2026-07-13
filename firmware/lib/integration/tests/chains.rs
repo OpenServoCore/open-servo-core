@@ -1,15 +1,15 @@
 //! Coordinated group reads/writes over the osc-native bus (sec 5, 6). Every case
-//! drives the REAL `ServoBus` + `osc_core` dispatch through the discrete-event
+//! drives the REAL `ServoBus` + `osc_servo_core` dispatch through the discrete-event
 //! `Sim` and asserts on the decoded shape of the recorded wire frames. Group
 //! payloads are hand-built per sec 5's tables and cross-checked against the
 //! `osc_protocol::group` parsers (the layout authority).
 
-use osc_core::regions::config::addr::identity::{FIRMWARE_VERSION, MODEL_NUMBER};
-use osc_core::regions::control::addr::lifecycle::GOAL_VELOCITY;
-use osc_core::regions::control::addr::streaming::{STREAM_DECIMATION, STREAM_FIELD_MASK};
-use osc_core::regions::profile::span_word;
 use osc_integration::sim::{Source, WireFrame, assert_valid, instruction, status};
 use osc_protocol::wire::{Inst, Opcode, ResultCode};
+use osc_servo_core::regions::config::addr::identity::{FIRMWARE_VERSION, MODEL_NUMBER};
+use osc_servo_core::regions::control::addr::lifecycle::GOAL_VELOCITY;
+use osc_servo_core::regions::control::addr::streaming::{STREAM_DECIMATION, STREAM_FIELD_MASK};
+use osc_servo_core::regions::profile::span_word;
 use rstest::rstest;
 use rstest_reuse::apply;
 

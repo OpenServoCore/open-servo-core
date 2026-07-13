@@ -33,16 +33,16 @@ jobs:
       - name: cargo test
         run: cargo test --workspace
       - name: cargo check --features mocks
-        run: cargo check -p osc-drivers --features mocks
+        run: cargo check -p osc-servo-drivers --features mocks
       - name: cargo check --features bench
-        run: cargo check -p osc-drivers --features bench
+        run: cargo check -p osc-servo-drivers --features bench
 
   ch32-build-test:
-    name: build + test (firmware/ch32)
+    name: build + test (firmware/servo-ch32)
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: firmware/ch32
+        working-directory: firmware/servo-ch32
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust (nightly + clippy + rustfmt)
@@ -51,7 +51,7 @@ jobs:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: firmware/ch32
+          workspaces: firmware/servo-ch32
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
       - name: cargo clippy

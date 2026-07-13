@@ -4,10 +4,12 @@
 //! parity is irrelevant (sec 3.2 self-aligning feed). Plain assertions on the
 //! observed diagnostics counters.
 
-use osc_core::BaudRate;
-use osc_core::regions::control::addr::lifecycle::{GOAL_POSITION, GOAL_VELOCITY, TORQUE_ENABLE};
 use osc_integration::sim::{Sim, Source, WireFrame, assert_valid, instruction, status};
 use osc_protocol::wire::{Inst, Opcode, ResultCode};
+use osc_servo_core::BaudRate;
+use osc_servo_core::regions::control::addr::lifecycle::{
+    GOAL_POSITION, GOAL_VELOCITY, TORQUE_ENABLE,
+};
 use rstest::rstest;
 use rstest_reuse::apply;
 

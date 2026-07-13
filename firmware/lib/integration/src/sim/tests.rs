@@ -2,8 +2,8 @@
 //! real dispatch -> real TX engine -> recorded reply) before the test-suite
 //! chunks build on this facade.
 
-use osc_core::BaudRate;
 use osc_protocol::wire::{Opcode, ResultCode};
+use osc_servo_core::BaudRate;
 
 use super::servo::{DEFAULT_FIRMWARE, DEFAULT_MODEL};
 use super::{HandlerCost, Sim, core::TICKS_PER_US};
@@ -41,7 +41,7 @@ fn ping_round_trip() {
     // Reply lead: >= reply gap (fixed us, sec 7) and < 200 us after the instruction.
     let lead = reply.at - inst.end;
     assert!(
-        lead >= osc_drivers::bus::REPLY_GAP_US as u64 * TICKS_PER_US,
+        lead >= osc_servo_drivers::bus::REPLY_GAP_US as u64 * TICKS_PER_US,
         "reply must lead by >= reply gap, got {lead} ticks"
     );
     assert!(

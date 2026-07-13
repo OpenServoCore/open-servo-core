@@ -61,13 +61,13 @@ pub fn build_read(id: u8, addr: u16, len: u16) -> Vec<u8> {
     build_instruction(id, Opcode::Read, 0, &payload)
 }
 
-/// PROFILE region base in the flat table (osc-core `regions::PROFILE_BASE_ADDR`;
+/// PROFILE region base in the flat table (osc-servo-core `regions::PROFILE_BASE_ADDR`;
 /// pinned here to keep the heavy core crate out of the bench build).
 pub const PROFILE_BASE_ADDR: u16 = 0x280;
-/// Span words per profile slot (osc-core `regions::profile::SPANS_PER_SLOT`).
+/// Span words per profile slot (osc-servo-core `regions::profile::SPANS_PER_SLOT`).
 pub const PROFILE_SPANS_PER_SLOT: usize = 8;
 
-/// Packed profile span word `[addr:10][count:6]` (protocol sec 5.2; mirrors osc-core
+/// Packed profile span word `[addr:10][count:6]` (protocol sec 5.2; mirrors osc-servo-core
 /// `regions::profile::span_word`). `count = 0` = word disabled.
 pub const fn profile_span_word(addr: u16, count: u8) -> u16 {
     (addr << 6) | (count as u16 & 0x3F)

@@ -6,11 +6,11 @@
 //! ordering, and drift tolerance against the ideal sim clock. Wall-clock
 //! turnaround (the ~41 us projection of sec 7) is the bench's job, not this suite.
 
-use osc_core::BaudRate;
-use osc_core::regions::calib::addr::pot_lut::LUT;
-use osc_core::regions::config::addr::identity::MODEL_NUMBER;
 use osc_integration::sim::{Sim, Source, WireFrame, assert_valid, instruction, status};
 use osc_protocol::wire::{Opcode, ResultCode};
+use osc_servo_core::BaudRate;
+use osc_servo_core::regions::calib::addr::pot_lut::LUT;
+use osc_servo_core::regions::config::addr::identity::MODEL_NUMBER;
 use rstest::rstest;
 use rstest_reuse::apply;
 

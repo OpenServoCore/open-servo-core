@@ -20,12 +20,12 @@ use bench::{RESCUE_BAUD, SUPPORTED_BAUDS, baud_index};
 use clap::{Parser, Subcommand};
 use osc_protocol::wire::{ResultCode, UID_LEN};
 
-/// Control-table address of `baud_rate_idx` (osc-core
+/// Control-table address of `baud_rate_idx` (osc-servo-core
 /// `regions::config::addr::comms::BAUD_RATE_IDX`; value pinned here to keep
 /// the heavy core crate out of the bench build).
 const BAUD_RATE_IDX_ADDR: u16 = 0x000D;
 
-/// Control-table address of `telemetry.clock.trim_steps` (osc-core
+/// Control-table address of `telemetry.clock.trim_steps` (osc-servo-core
 /// `regions::telemetry`; pinned like `BAUD_RATE_IDX_ADDR`). Signed chip trim
 /// steps the trim loop has applied, read-only, volatile (protocol sec 9.3).
 const TRIM_STEPS_ADDR: u16 = 0x0244;

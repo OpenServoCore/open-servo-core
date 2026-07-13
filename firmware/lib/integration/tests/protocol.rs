@@ -3,15 +3,15 @@
 //! status frame + table state. Reads as the spec -- plain assertions, no
 //! snapshots.
 
-use osc_core::BaudRate;
-use osc_core::regions::config::addr::comms::{BAUD_RATE_IDX, ID};
-use osc_core::regions::control::addr::lifecycle::TORQUE_ENABLE;
-use osc_core::regions::profile::span_word;
-use osc_core::regions::{CALIB_BASE_ADDR, PROFILE_BASE_ADDR};
 use osc_integration::sim::{
     HandlerCost, Sim, Source, WireFrame, assert_valid, instruction, status,
 };
 use osc_protocol::wire::{Id, Inst, MgmtOp, Opcode, ResultCode};
+use osc_servo_core::BaudRate;
+use osc_servo_core::regions::config::addr::comms::{BAUD_RATE_IDX, ID};
+use osc_servo_core::regions::control::addr::lifecycle::TORQUE_ENABLE;
+use osc_servo_core::regions::profile::span_word;
+use osc_servo_core::regions::{CALIB_BASE_ADDR, PROFILE_BASE_ADDR};
 use rstest::rstest;
 use rstest_reuse::apply;
 

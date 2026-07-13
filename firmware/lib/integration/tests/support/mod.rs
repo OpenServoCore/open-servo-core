@@ -7,8 +7,8 @@
 //! dead-code allow -- no single binary uses all of them.
 #![allow(unused_macros)]
 
-use osc_core::BaudRate;
 use osc_integration::sim::Sim;
+use osc_servo_core::BaudRate;
 use rstest_reuse::template;
 
 /// One `#[test]` per wire baud (0.5M / 1M / 2M / 3M -- `BaudRate` indices).
@@ -42,5 +42,5 @@ pub fn byte_ticks(baud_idx: u8) -> u64 {
 /// driver so the pin cannot drift from the spec constant.
 #[allow(dead_code)]
 pub fn reply_gap_ticks() -> u64 {
-    osc_drivers::bus::REPLY_GAP_US as u64 * 48
+    osc_servo_drivers::bus::REPLY_GAP_US as u64 * 48
 }

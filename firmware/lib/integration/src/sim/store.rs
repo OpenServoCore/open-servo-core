@@ -7,8 +7,8 @@
 
 use std::sync::Mutex;
 
-use osc_core::persist::{self, CONFIG_LEN, IMAGE_LEN, PROFILE_LEN, Slot, StoreError};
-use osc_core::{ConfigStore, ControlTableCell};
+use osc_servo_core::persist::{self, CONFIG_LEN, IMAGE_LEN, PROFILE_LEN, Slot, StoreError};
+use osc_servo_core::{ConfigStore, ControlTableCell};
 
 const ERASED: [u8; IMAGE_LEN] = [0xFF; IMAGE_LEN];
 

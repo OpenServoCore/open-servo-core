@@ -24,7 +24,7 @@ use std::env;
 use bench::SUPPORTED_BAUDS;
 use bench::osc::{build_read, build_write};
 use bench::run::{BurstReport, Stats, hot_loop_cycle, plain_flood_cycle};
-use osc_core::regions::control::addr::lifecycle::GOAL_POSITION;
+use osc_servo_core::regions::control::addr::lifecycle::GOAL_POSITION;
 use serial_test::serial;
 
 use crate::support::bench;

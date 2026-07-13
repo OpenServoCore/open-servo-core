@@ -3,7 +3,7 @@
 //! The chip-side board crate implements these traits to plug into the kernel
 //! control loop (`ControlIo`/`Sensors`/`Motor`) and the bus services layer
 //! (`Dispatch`/`Reply`). Associated boundary types are re-exported here so
-//! `use osc_core::traits::*` covers the full contract.
+//! `use osc_servo_core::traits::*` covers the full contract.
 
 mod control;
 mod services;

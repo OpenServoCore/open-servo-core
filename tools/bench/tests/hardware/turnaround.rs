@@ -1,8 +1,8 @@
 use bench::SUPPORTED_BAUDS;
 use bench::osc::{build_ping, build_read, build_write};
 use bench::run::Stats;
-use osc_core::regions::control::addr::lifecycle::GOAL_POSITION;
-use osc_core::regions::telemetry::addr::converted::PRESENT_POSITION;
+use osc_servo_core::regions::control::addr::lifecycle::GOAL_POSITION;
+use osc_servo_core::regions::telemetry::addr::converted::PRESENT_POSITION;
 use serial_test::serial;
 
 use crate::support::{Bench, bench};

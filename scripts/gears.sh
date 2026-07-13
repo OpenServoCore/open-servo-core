@@ -22,8 +22,8 @@ section "gear 1+2: unit + DES (firmware/lib)"
 ( cd firmware/lib && cargo test --workspace )
 
 # Chip-crate host-side unit tests (gear 1) behind the V006 feature.
-section "gear 1: firmware/ch32 lib"
-( cd firmware/ch32 && cargo test --features ch32v006x8x6 --lib )
+section "gear 1: firmware/servo-ch32 lib"
+( cd firmware/servo-ch32 && cargo test --features ch32v006x8x6 --lib )
 
 # Bench host-library units (gear 1): wire layout + CRC vectors.
 section "gear 1: bench lib"

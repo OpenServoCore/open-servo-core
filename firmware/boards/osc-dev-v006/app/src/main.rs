@@ -1,7 +1,7 @@
 #![no_std]
 #![no_main]
 
-use osc_ch32::prelude::*;
+use osc_servo_ch32::prelude::*;
 
 use panic_halt as _;
 
@@ -9,12 +9,12 @@ use panic_halt as _;
 use defmt_rtt as _;
 
 tinyboot_ch32::app::app_version!();
-osc_ch32::install_isrs!();
+osc_servo_ch32::install_isrs!();
 
 #[qingke_rt::entry]
 fn main() -> ! {
-    osc_ch32::log::info!("osc-dev-v006: boot");
-    osc_ch32::run!(BoardConfig {
+    osc_servo_ch32::log::info!("osc-dev-v006: boot");
+    osc_servo_ch32::run!(BoardConfig {
         wiring: BoardWiring {
             dbg: DigitalPin::PC3,
             drv_en: DrvEn {

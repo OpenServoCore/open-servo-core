@@ -4,7 +4,7 @@
       "initialization_options": {
         "linkedProjects": [
           "firmware/lib/Cargo.toml",
-          "firmware/ch32/Cargo.toml",
+          "firmware/servo-ch32/Cargo.toml",
           "firmware/boards/osc-dev-v006/Cargo.toml",
         ],
         "check": {

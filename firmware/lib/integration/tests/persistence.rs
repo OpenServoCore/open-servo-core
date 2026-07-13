@@ -3,12 +3,12 @@
 //! bit, and the boot overlay a rebuilt servo takes -- sharing one leaked
 //! store across two `Sim`s models a reboot with flash intact.
 
-use osc_core::persist::{Image, Slot};
-use osc_core::regions::config::addr::comms::RESPONSE_DEADLINE_US;
-use osc_core::regions::control::addr::lifecycle::TORQUE_ENABLE;
-use osc_core::regions::telemetry::addr::fault::CONFIG_DIRTY;
 use osc_integration::sim::{RamStore, Sim, Source, WireFrame, assert_valid, instruction, status};
 use osc_protocol::wire::{Id, MgmtOp, Opcode, ResultCode};
+use osc_servo_core::persist::{Image, Slot};
+use osc_servo_core::regions::config::addr::comms::RESPONSE_DEADLINE_US;
+use osc_servo_core::regions::control::addr::lifecycle::TORQUE_ENABLE;
+use osc_servo_core::regions::telemetry::addr::fault::CONFIG_DIRTY;
 use rstest::rstest;
 use rstest_reuse::apply;
 

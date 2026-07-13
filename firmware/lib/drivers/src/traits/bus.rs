@@ -2,7 +2,7 @@
 //! Owned by the bus driver; chip-side providers implement these over real
 //! peripherals (production) or recording mocks (tests).
 
-use osc_core::BaudRate;
+use osc_servo_core::BaudRate;
 
 /// Counted circular RX DMA ring, armed once at boot (sec 4.1). The driver reads
 /// the cursor and ring bytes in place; it never drains, and never reloads
