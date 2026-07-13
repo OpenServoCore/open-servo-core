@@ -1,6 +1,6 @@
 //! Discrete-event simulator for the osc-native bus. A single `Sim` owns the
 //! event queue, the shared half-duplex wire, and a set of boxed `SimServo`s
-//! (real `ServoBus` + real `osc_core` dispatch over sim providers). The wire
+//! (real `ServoBus` + real `osc_servo_core` dispatch over sim providers). The wire
 //! model is derived from the measured silicon facts (sec 12): break framing, one
 //! FE per break, DMA-ringed bytes, drive discipline. Handler invocations
 //! route through a per-servo PFIC occupancy model (`cpu`): with nonzero
@@ -21,10 +21,10 @@ mod tests;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use osc_core::regions::config::DEFAULT_RESPONSE_DEADLINE_US;
-use osc_core::{BaudRate, BootMode, ControlTable};
-use osc_drivers::bus::LinkDiag;
-use osc_drivers::bus::RESCUE_LOW_US;
+use osc_servo_core::regions::config::DEFAULT_RESPONSE_DEADLINE_US;
+use osc_servo_core::{BaudRate, BootMode, ControlTable};
+use osc_servo_drivers::bus::LinkDiag;
+use osc_servo_drivers::bus::RESCUE_LOW_US;
 
 use self::core::{Core, Event, TICKS_PER_US, Talker, break_ticks, byte_ticks};
 use self::cpu::{Cpu, Vector};

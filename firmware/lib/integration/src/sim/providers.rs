@@ -1,4 +1,4 @@
-//! The six `osc_drivers::traits::bus` providers over per-servo shared state
+//! The six `osc_servo_drivers::traits::bus` providers over per-servo shared state
 //! (`docs/osc-native-protocol.md` sec 4, 10). Each provider is a thin view onto
 //! `Rc`-shared cells the [`super::Sim`] also holds a handle to, so wire
 //! deliveries and the driver see one ring, one clock, one baud.
@@ -6,11 +6,11 @@
 use std::cell::{Cell, RefCell, UnsafeCell};
 use std::rc::Rc;
 
-use osc_core::BaudRate;
-use osc_drivers::traits::bus::{
+use osc_protocol::crc::osc_crc_continue;
+use osc_servo_core::BaudRate;
+use osc_servo_drivers::traits::bus::{
     CrcEngine, Deadline, Providers, RxRing, TxWire, UsartBaud, tick_reached,
 };
-use osc_protocol::crc::osc_crc_continue;
 
 use super::core::{Core, Event, Talker, break_ticks, byte_ticks};
 

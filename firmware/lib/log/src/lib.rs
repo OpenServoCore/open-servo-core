@@ -1,5 +1,5 @@
 //! Logging facade -- forwards to `defmt` on embedded, to `log` on host, else a
-//! no-op. Shared by the lib crates (`osc-core`, `osc-drivers`), each of which
+//! no-op. Shared by the lib crates (`osc-servo-core`, `osc-servo-drivers`), each of which
 //! re-exports it as its own `log` module so call sites read `crate::log::*`.
 //!
 //! NOTE: `defmt`'s macros expand to absolute `::defmt::...` paths, so any crate

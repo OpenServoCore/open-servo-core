@@ -1,6 +1,6 @@
 use bench::osc::{build_instruction, build_read, build_write};
-use osc_core::regions::control::addr::streaming::STREAM_FIELD_MASK;
 use osc_protocol::wire::{Inst, Opcode};
+use osc_servo_core::regions::control::addr::streaming::STREAM_FIELD_MASK;
 use serial_test::serial;
 
 use crate::support::bench;

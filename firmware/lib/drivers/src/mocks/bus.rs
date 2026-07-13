@@ -9,8 +9,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::vec::Vec;
 
-use osc_core::BaudRate;
 use osc_protocol::crc::osc_crc_continue;
+use osc_servo_core::BaudRate;
 
 use crate::bus::ServoBus;
 use crate::traits::bus::{CrcEngine, Deadline, Providers, RxRing, TxWire, UsartBaud};

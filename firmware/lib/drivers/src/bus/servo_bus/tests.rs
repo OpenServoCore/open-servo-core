@@ -3,11 +3,11 @@
 //! recorded wire bytes. The fakes advance `now` by reading the armed tick, so
 //! every deadline the mux computes is exercised end to end.
 
-use osc_core::regions::CONTROL_BASE_ADDR;
-use osc_core::regions::config::addr::comms::ID as ID_ADDR;
-use osc_core::{BaudRate, Dispatch, RegionStorage, Session, Shared};
 use osc_protocol::reply::FrameBuf;
 use osc_protocol::wire::{self, Id, Inst, MgmtOp, Opcode, ResultCode};
+use osc_servo_core::regions::CONTROL_BASE_ADDR;
+use osc_servo_core::regions::config::addr::comms::ID as ID_ADDR;
+use osc_servo_core::{BaudRate, Dispatch, RegionStorage, Session, Shared};
 
 use crate::mocks::bus::{FakeWire, Harness, RING_LEN, WireEvent};
 

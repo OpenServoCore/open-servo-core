@@ -4,10 +4,10 @@
 //! both ends of every gap, so entry latency cancels. Plain assertions on the
 //! trim decisions and on the transport's health after trains.
 
-use osc_core::BaudRate;
-use osc_core::regions::config::DEFAULT_RESPONSE_DEADLINE_US;
 use osc_integration::sim::{Sim, Source, instruction, status};
 use osc_protocol::wire::{Inst, Opcode, ResultCode};
+use osc_servo_core::BaudRate;
+use osc_servo_core::regions::config::DEFAULT_RESPONSE_DEADLINE_US;
 
 mod support;
 
@@ -279,7 +279,7 @@ const BURST_PERIOD_US: u64 = 114;
 const BURST_SETTLE_US: u64 = 5_000;
 
 fn goal_write(id: u8) -> Vec<u8> {
-    use osc_core::regions::control::addr::lifecycle::GOAL_POSITION;
+    use osc_servo_core::regions::control::addr::lifecycle::GOAL_POSITION;
     let mut payload = GOAL_POSITION.to_le_bytes().to_vec();
     payload.extend_from_slice(&0i32.to_le_bytes());
     instruction(id, Opcode::Write, Inst::FLAG_NOREPLY, &payload)

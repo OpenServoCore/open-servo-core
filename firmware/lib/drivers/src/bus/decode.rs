@@ -9,7 +9,6 @@
 //! Own instruction frames never echo while we are the responder (F9), so no
 //! self-filtering is coded here.
 
-use osc_core::traits::{Request, RequestCtx};
 use osc_protocol::FrameBytes;
 use osc_protocol::frame::{
     AssignReq, CalReq, EnumReq, Header, MgmtReq, ProfileReq, ReadReq, WriteReq,
@@ -19,6 +18,7 @@ use osc_protocol::group::{
     GwriteUniform,
 };
 use osc_protocol::wire::{Id, Inst, MgmtOp, Opcode};
+use osc_servo_core::traits::{Request, RequestCtx};
 
 /// What the frame is, from the composite's point of view.
 pub enum Decoded<'a> {

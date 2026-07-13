@@ -1,7 +1,7 @@
 //! The dispatch spine: resolver -> frame routing -> CRC verdict -> reply sequencing.
 
-use osc_core::traits::{Dispatch, Dispatched, Request, RequestCtx};
 use osc_protocol::wire::{ENUM_REPLY_SLOTS, ResultCode};
+use osc_servo_core::traits::{Dispatch, Dispatched, Request, RequestCtx};
 
 use super::super::chain::ChainOut;
 use super::super::decode::{Decoded, decode};

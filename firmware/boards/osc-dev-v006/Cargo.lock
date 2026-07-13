@@ -310,44 +310,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
-name = "osc-ch32"
-version = "0.0.0"
-dependencies = [
- "ch32-metapac",
- "critical-section",
- "defmt",
- "osc-core",
- "osc-drivers",
- "osc-log",
- "osc-protocol",
- "osc-units",
- "portable-atomic",
- "riscv 0.12.1",
-]
-
-[[package]]
-name = "osc-core"
-version = "0.0.0"
-dependencies = [
- "bbqueue",
- "bitflags 2.11.1",
- "control-table",
- "critical-section",
- "defmt",
- "heapless",
- "osc-log",
- "osc-protocol",
- "osc-units",
- "portable-atomic",
-]
-
-[[package]]
 name = "osc-dev-v006-app"
 version = "0.1.0"
 dependencies = [
  "defmt",
  "defmt-rtt",
- "osc-ch32",
+ "osc-servo-ch32",
  "panic-halt",
  "qingke",
  "qingke-rt",
@@ -364,16 +332,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "osc-drivers"
-version = "0.0.0"
-dependencies = [
- "heapless",
- "osc-core",
- "osc-log",
- "osc-protocol",
-]
-
-[[package]]
 name = "osc-log"
 version = "0.0.0"
 dependencies = [
@@ -383,6 +341,48 @@ dependencies = [
 [[package]]
 name = "osc-protocol"
 version = "0.0.0"
+
+[[package]]
+name = "osc-servo-ch32"
+version = "0.0.0"
+dependencies = [
+ "ch32-metapac",
+ "critical-section",
+ "defmt",
+ "osc-log",
+ "osc-protocol",
+ "osc-servo-core",
+ "osc-servo-drivers",
+ "osc-units",
+ "portable-atomic",
+ "riscv 0.12.1",
+]
+
+[[package]]
+name = "osc-servo-core"
+version = "0.0.0"
+dependencies = [
+ "bbqueue",
+ "bitflags 2.11.1",
+ "control-table",
+ "critical-section",
+ "defmt",
+ "heapless",
+ "osc-log",
+ "osc-protocol",
+ "osc-units",
+ "portable-atomic",
+]
+
+[[package]]
+name = "osc-servo-drivers"
+version = "0.0.0"
+dependencies = [
+ "heapless",
+ "osc-log",
+ "osc-protocol",
+ "osc-servo-core",
+]
 
 [[package]]
 name = "osc-units"

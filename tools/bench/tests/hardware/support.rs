@@ -20,8 +20,8 @@ use bench::osc::{
 use bench::pirate::{Client, auto_detect_pirate};
 use bench::run::{BurstCycle, BurstReport, Report, burst_measure, capture, drain, measure, xfer};
 use bench::{BOOT_BAUD, RESCUE_BAUD};
-use osc_core::regions::config::addr::comms::BAUD_RATE_IDX;
 use osc_protocol::wire::ResultCode;
+use osc_servo_core::regions::config::addr::comms::BAUD_RATE_IDX;
 
 pub struct Bench {
     client: Client,

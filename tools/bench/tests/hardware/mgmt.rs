@@ -2,9 +2,9 @@ use bench::osc::{
     REBOOT_SETTLE_MS, SAVE_SETTLE_MS, build_assign, build_enum, build_factory, build_ping,
     build_read, build_reboot, build_save, build_write,
 };
-use osc_core::regions::config::addr::comms::RESPONSE_DEADLINE_US;
-use osc_core::regions::telemetry::addr::fault::CONFIG_DIRTY;
 use osc_protocol::wire::UID_LEN;
+use osc_servo_core::regions::config::addr::comms::RESPONSE_DEADLINE_US;
+use osc_servo_core::regions::telemetry::addr::fault::CONFIG_DIRTY;
 use serial_test::serial;
 
 use crate::support::bench;

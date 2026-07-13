@@ -8,7 +8,7 @@ json-target-spec  = true
 [env]
 DEFMT_LOG = "trace"
 # Bus service caps -- bound dispatcher + buffer sizes at build time.
-# Defaults live in osc-core/services/dxl/limits.rs and control-table/stage.rs.
+# Defaults live in osc-servo-core/services/dxl/limits.rs and control-table/stage.rs.
 OSC_STAGE_DATA_CAP  = "128"
 OSC_STAGE_ENTRY_CAP = "16"
 

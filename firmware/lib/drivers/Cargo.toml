@@ -1,5 +1,5 @@
 [package]
-name    = "osc-drivers"
+name    = "osc-servo-drivers"
 version = "0.0.0"
 edition.workspace = true
 license.workspace = true
@@ -8,12 +8,12 @@ license.workspace = true
 # Hot-path probe bodies (crate::bench): counters in no_mangle statics the
 # debug link dumps by symbol. Call sites stay unconditional.
 bench = []
-defmt = ["osc-log/defmt", "osc-core/defmt"]
+defmt = ["osc-log/defmt", "osc-servo-core/defmt"]
 log   = ["osc-log/log"]
 mocks = ["dep:mockall", "osc-protocol/software-crc"]
 
 [dependencies]
-osc-core.workspace = true
+osc-servo-core.workspace = true
 osc-log.workspace = true
 osc-protocol.workspace = true
 heapless.workspace = true

@@ -4,9 +4,9 @@
 //! engine both TX generation and RX validation share, and muxes their
 //! deadlines onto the single tick-compare.
 
-use osc_core::traits::Dispatch;
-use osc_core::{BaudRate, BootMode};
 use osc_protocol::wire::{Id, Opcode};
+use osc_servo_core::traits::Dispatch;
+use osc_servo_core::{BaudRate, BootMode};
 
 use super::chain::Chain;
 use super::clock::ClockTracker;

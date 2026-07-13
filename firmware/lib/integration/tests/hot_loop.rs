@@ -9,11 +9,11 @@
 //! staging across frames, commit-before-read ordering). ISR-latency effects
 //! are silicon-only and out of scope here.
 
-use osc_core::BaudRate;
-use osc_core::regions::control::addr::lifecycle::GOAL_VELOCITY;
-use osc_core::regions::control::addr::streaming::STREAM_DECIMATION;
 use osc_integration::sim::{Source, WireFrame, assert_valid, instruction, status};
 use osc_protocol::wire::{Inst, Opcode, ResultCode};
+use osc_servo_core::BaudRate;
+use osc_servo_core::regions::control::addr::lifecycle::GOAL_VELOCITY;
+use osc_servo_core::regions::control::addr::streaming::STREAM_DECIMATION;
 use rstest::rstest;
 use rstest_reuse::apply;
 

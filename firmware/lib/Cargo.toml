@@ -17,7 +17,7 @@ crc              = { version = "3", default-features = false }
 osc-units            = { path = "units" }
 osc-log              = { path = "log" }
 osc-protocol         = { path = "osc-protocol" }
-osc-core             = { path = "core" }
-osc-drivers          = { path = "drivers" }
+osc-servo-core             = { path = "core" }
+osc-servo-drivers          = { path = "drivers" }
 control-table        = { path = "control-table" }
 control-table-derive = { path = "control-table-derive" }

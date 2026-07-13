@@ -10,7 +10,7 @@ use bench::run::measure;
 use clap::Parser;
 use osc_protocol::wire::ResultCode;
 
-/// Control-table address of `baud_rate_idx` (osc-core
+/// Control-table address of `baud_rate_idx` (osc-servo-core
 /// `regions::config::addr::comms::BAUD_RATE_IDX`; value pinned here to keep
 /// the heavy core crate out of the bench build).
 const BAUD_RATE_IDX_ADDR: u16 = 0x000D;

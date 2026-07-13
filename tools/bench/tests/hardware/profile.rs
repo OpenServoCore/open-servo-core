@@ -1,12 +1,12 @@
 use bench::SUPPORTED_BAUDS;
 use bench::osc::{build_profile_config, build_read, build_read_profile};
 use bench::run::Stats;
-use osc_core::regions::config::addr::comms::ID;
-use osc_core::regions::config::addr::identity::MODEL_NUMBER;
-use osc_core::regions::telemetry::addr::converted::{
+use osc_protocol::wire::ResultCode;
+use osc_servo_core::regions::config::addr::comms::ID;
+use osc_servo_core::regions::config::addr::identity::MODEL_NUMBER;
+use osc_servo_core::regions::telemetry::addr::converted::{
     PRESENT_CURRENT, PRESENT_POSITION, PRESENT_VBUS_MV,
 };
-use osc_protocol::wire::ResultCode;
 use serial_test::serial;
 
 use crate::support::bench;

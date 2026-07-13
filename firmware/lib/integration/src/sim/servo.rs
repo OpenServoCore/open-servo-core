@@ -1,12 +1,14 @@
-//! A simulated servo: the real `ServoBus` + real `osc_core` dispatch over the
+//! A simulated servo: the real `ServoBus` + real `osc_servo_core` dispatch over the
 //! sim providers, boxed for a stable address (the TX zero-copy path holds raw
 //! pointers into the control table while streaming a read reply, sec 4.2).
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use osc_core::{BaudRate, BootMode, ConfigDefaults, ControlTable, RegionStorage, Session, Shared};
-use osc_drivers::bus::{LinkDiag, ServoBus};
+use osc_servo_core::{
+    BaudRate, BootMode, ConfigDefaults, ControlTable, RegionStorage, Session, Shared,
+};
+use osc_servo_drivers::bus::{LinkDiag, ServoBus};
 
 use super::core::Core;
 use super::providers::{

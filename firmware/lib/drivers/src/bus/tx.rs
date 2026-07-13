@@ -6,10 +6,10 @@
 //! fetches just-in-time, so the patch beats the read).
 
 use crate::traits::bus::{CrcEngine, TxWire};
-use osc_core::traits::SendError;
 use osc_protocol::crc::osc_crc_continue;
 use osc_protocol::reply::FrameBuf;
 use osc_protocol::wire::{self, Id, Inst, ResultCode};
+use osc_servo_core::traits::SendError;
 
 /// Staging buffer size. Payloads stream from the engine's snapshot (sec 4.2), so
 /// the buffer holds only the header and CRC tail plus the <=

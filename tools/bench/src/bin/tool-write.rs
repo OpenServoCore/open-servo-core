@@ -10,7 +10,7 @@ use bench::run::{Stats, measure};
 use clap::Parser;
 use osc_protocol::wire::ResultCode;
 
-/// Control-table address of `goal_position` (osc-core
+/// Control-table address of `goal_position` (osc-servo-core
 /// `regions::control`, CONTROL_BASE_ADDR 0x180 + lifecycle offset 4; value
 /// pinned here to keep the heavy core crate out of the bench build). The
 /// hot-loop register: its ge/le soft-limit rules make it the representative

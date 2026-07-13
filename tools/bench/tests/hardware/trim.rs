@@ -19,9 +19,9 @@ use std::time::Duration;
 
 use bench::BOOT_BAUD;
 use bench::osc::{build_cal, build_instruction, build_read};
-use osc_core::regions::control::addr::lifecycle::GOAL_POSITION;
-use osc_core::regions::telemetry::addr::clock::TRIM_STEPS;
 use osc_protocol::wire::{Inst, Opcode};
+use osc_servo_core::regions::control::addr::lifecycle::GOAL_POSITION;
+use osc_servo_core::regions::telemetry::addr::clock::TRIM_STEPS;
 use serial_test::serial;
 
 use super::support::{Bench, SETTLE_MS, bench};

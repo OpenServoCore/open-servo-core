@@ -1,8 +1,8 @@
 //! The reply surface: `ReplyHandle` over disjoint bus fields and its builders.
 
-use osc_core::traits::{Reply, SendError, Status};
-use osc_core::{BaudRate, BootMode};
 use osc_protocol::wire::ResultCode;
+use osc_servo_core::traits::{Reply, SendError, Status};
+use osc_servo_core::{BaudRate, BootMode};
 
 use super::super::tx::TxEngine;
 use super::ServoBus;
