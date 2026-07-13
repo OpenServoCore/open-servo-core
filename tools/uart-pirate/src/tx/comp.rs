@@ -1,23 +1,23 @@
 //! TX-path latency compensation. Decomposed into the two clock domains
-//! the TX chain crosses (TIM4 CC2 match → wire start-bit edge):
+//! the TX chain crosses (TIM4 CC2 match -> wire start-bit edge):
 //!
 //!   TX_COMP_TICKS = TX_PIPELINE_TICKS
-//!                   + (TX_BIT_TIMES_Q4 × brr) / 16
+//!                   + (TX_BIT_TIMES_Q4 x brr) / 16
 //!
 //! `TX_PIPELINE_TICKS` covers the HCLK-domain pipeline:
-//!   TIM4 CC2 → DMA1_CH4 stamp → DMA1_CH2.CR (EN=1) → DMA fetch → USART3.DR
+//!   TIM4 CC2 -> DMA1_CH4 stamp -> DMA1_CH2.CR (EN=1) -> DMA fetch -> USART3.DR
 //! Fixed HCLK cycles + AHB arbitration; no baud dependency.
 //!
 //! `TX_BIT_TIMES_Q4` covers the USART bit-clock-domain pipeline in Q4
-//! (16 = 1.0 × brr). After the DR write, the byte waits 0..brr HCLK for
+//! (16 = 1.0 x brr). After the DR write, the byte waits 0..brr HCLK for
 //! the next bit-clock edge to load TSR; TSR loads on that edge and the
-//! start bit (high→low) falls at the same instant. IC1 captures the
-//! falling edge, so the latency we compensate is exactly the DR→edge
-//! wait — U[0, brr] per shot, mean 0.5 × brr → Q4 = 8.
+//! start bit (high->low) falls at the same instant. IC1 captures the
+//! falling edge, so the latency we compensate is exactly the DR->edge
+//! wait -- U[0, brr] per shot, mean 0.5 x brr -> Q4 = 8.
 //!
 //! Both atoms are runtime-tunable via the `COMP` protocol command so
 //! bench can write measured values back without a firmware rebuild.
-//! `TX_COMP_TICKS` is the precomputed sum read by the send fast path —
+//! `TX_COMP_TICKS` is the precomputed sum read by the send fast path --
 //! recomputed by `recompute` whenever brr or either tunable changes.
 
 use ch32_metapac::USART3;
@@ -25,7 +25,7 @@ use portable_atomic::{AtomicU32, Ordering};
 
 /// Defaults are the converged values from `tool-pirate-tune --stage
 /// tx-comp` on osc-dev-v20x at 144 MHz HCLK (median across 5 runs at
-/// n=64 shots/baud; per-run wobble ±~5 ticks on pipe, ±1 on bit_q4 —
+/// n=64 shots/baud; per-run wobble +/-~5 ticks on pipe, +/-1 on bit_q4 --
 /// bounded by the U[0, brr] median SE floor).
 const TX_PIPELINE_TICKS_DEFAULT: u32 = 45;
 const TX_BIT_TIMES_Q4_DEFAULT: u32 = 8;

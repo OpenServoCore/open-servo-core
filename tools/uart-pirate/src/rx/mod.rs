@@ -4,20 +4,20 @@
 //! predict-and-snap walker, the IC filter, the trace ring) is deleted.
 //! Capture is two hardware-fed rings and one short ISR:
 //!
-//! - `rings` — USART3 RX bytes via DMA1_CH3, circular, host-facing.
-//! - `boundary` — `(tick32, byte index)` recorded at each USART3
+//! - `rings` -- USART3 RX bytes via DMA1_CH3, circular, host-facing.
+//! - `boundary` -- `(tick32, byte index)` recorded at each USART3
 //!   RX-error service: a break rings as exactly one `0x00` and raises FE
 //!   1:1, so the service pins a real capture tick to the frame boundary.
-//!   Service-entry latency is common-mode — every bench consumer
+//!   Service-entry latency is common-mode -- every bench consumer
 //!   differences same-flavor boundary ticks (turnaround, chain gaps,
-//!   seam spans), so it cancels; only sub-µs service jitter survives.
-//! - `stamp` — drain-time synthesis: `BBATCH`/`BDRAIN` walk the byte
+//!   seam spans), so it cancels; only sub-us service jitter survives.
+//! - `stamp` -- drain-time synthesis: `BBATCH`/`BDRAIN` walk the byte
 //!   ring and emit the same per-byte records as before, with real ticks
 //!   on boundary bytes and nominal bit-time strides between them. Zero
-//!   CPU per byte at capture time; the wire-side ISR cost is ~1 µs per
+//!   CPU per byte at capture time; the wire-side ISR cost is ~1 us per
 //!   frame.
 //!
-//! One sticky-fatal condition remains: `stamp_overflow` — the host let
+//! One sticky-fatal condition remains: `stamp_overflow` -- the host let
 //! more than a ring of bytes accumulate undrained, so DMA lapped unread
 //! data. Host commands error out until `RESET` (or `BAUD`, which
 //! implicitly resets) clears it.
@@ -60,7 +60,7 @@ pub fn set_baud(bps: u32) -> Result<(), BaudError> {
 
 /// Drop all undrained capture state up to the current DMA head and clear
 /// the desync flag. Called from init, `set_baud`, and the host `RESET`
-/// command — the pending bytes are presumed stale at these points (boot
+/// command -- the pending bytes are presumed stale at these points (boot
 /// glitches, baud-bounce transients, or the backlog that tripped
 /// `stamp_overflow`).
 pub fn reset() {
@@ -78,7 +78,7 @@ pub fn current_baud() -> u32 {
     APB1_HZ.checked_div(stamp::bit_ticks()).unwrap_or(0)
 }
 
-/// Runtime LIN-mode toggle — the task #26 A/B discriminator. With LIN
+/// Runtime LIN-mode toggle -- the A/B discriminator. With LIN
 /// off the boundary recorder starves (no LBD services; stamps degrade
 /// to `COUNT_UNDER` placeholders) but the byte ring keeps ringing, so
 /// a probe can ask whether the skew-gated reply corruption lives in

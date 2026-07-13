@@ -18,25 +18,25 @@ use crate::tick::read_tick32;
 use crate::tx::comp;
 
 /// (send_at - now) below this many `tick32` ticks bypasses TIM4 and writes
-/// the run-CFGR word directly into DMA1_CH2. 256 ticks ≈ 1.8 µs at
-/// 144 MHz — safely above the register-write latency of the immediate
-/// path. A too-close deadline still kicks (wire-edge lands ≈ "now")
+/// the run-CFGR word directly into DMA1_CH2. 256 ticks ~ 1.8 us at
+/// 144 MHz -- safely above the register-write latency of the immediate
+/// path. A too-close deadline still kicks (wire-edge lands ~ "now")
 /// instead of silently missing on a wrap.
 const IMMEDIATE_SEND_THRESHOLD_TICKS: u32 = 256;
 
 /// Headroom added to `read_tick32()` when `send_now` schedules its
 /// near-future send through `schedule_or_send_now`. Sized so the
 /// resulting `delta` lands comfortably above `IMMEDIATE_SEND_THRESHOLD_TICKS`
-/// — keeping the scheduled (TIM4 OPM) path in play rather than falling
+/// -- keeping the scheduled (TIM4 OPM) path in play rather than falling
 /// back to the immediate DMA-direct branch, so `LAST_SEND_TICK` matches
-/// the commanded wire-start tick. 512 ticks ≈ 3.5 µs at 144 MHz —
+/// the commanded wire-start tick. 512 ticks ~ 3.5 us at 144 MHz --
 /// negligible added latency, well above the 256-tick scheduler threshold.
 pub(super) const IMMEDIATE_SEND_MARGIN_TICKS: u32 = 512;
 
-/// TIM4 ARR (u16) max in tick32 units. PSC=0 → 144 MHz tick = 1:1 with
-/// tick32, so ARR = delta directly and max schedule is 65 535 ticks ≈
-/// 455 µs. Deadlines beyond this fall back to the immediate path (host
-/// should never request them — typical wire-side slot timing is sub-ms).
+/// TIM4 ARR (u16) max in tick32 units. PSC=0 -> 144 MHz tick = 1:1 with
+/// tick32, so ARR = delta directly and max schedule is 65 535 ticks ~
+/// 455 us. Deadlines beyond this fall back to the immediate path (host
+/// should never request them -- typical wire-side slot timing is sub-ms).
 const TIM4_MAX_DELTA_TICKS: u32 = u16::MAX as u32;
 
 const TIM4_PSC: u16 = 0;
@@ -86,9 +86,9 @@ fn init_tim4() {
 /// DMA1_CH2 = USART3_TX + DMA1_CH4 = TIM4_CC2 stamper that flips CH2.EN
 /// on send. CH2.EN stays clear at init; `load_payload` reloads MAR/NDTR
 /// with EN=0 between sends. CH4 is circular single-word: copy
-/// CH2_CFGR_RUN_WORD → DMA1_CH2.CR. NDTR=1 auto-reloads each cycle
+/// CH2_CFGR_RUN_WORD -> DMA1_CH2.CR. NDTR=1 auto-reloads each cycle
 /// (CIRC=1), so we never re-program CH4 from software. CH4.EN=1
-/// permanently — the CC2DE gate kicks it, not EN.
+/// permanently -- the CC2DE gate kicks it, not EN.
 fn init_dma() {
     let ch2 = DMA1.ch(1);
     ch2.par().write_value(USART3.datar().as_ptr() as u32);
@@ -100,8 +100,8 @@ fn init_dma() {
         w.set_msize(Size::BITS8);
         w.set_psize(Size::BITS8);
         // HIGH, below the CH3 RX ring: RX sits ALONE at VERYHIGH so the
-        // drain beats the error IRQ per-beat (§6 A4). Channel priority
-        // was never the TX jitter lever anyway — the observed loopback
+        // drain beats the error IRQ per-beat (transport sec 7). Channel priority
+        // was never the TX jitter lever anyway -- the observed loopback
         // variance is CPU-vs-DMA AHB arbitration, which these bits
         // don't control.
         w.set_pl(Pl::HIGH);
@@ -151,7 +151,7 @@ pub(super) fn cancel() {
     });
 }
 
-/// Same effect as TIM4 CC2 → DMA1_CH4 kicking CH2, just bypassing the
+/// Same effect as TIM4 CC2 -> DMA1_CH4 kicking CH2, just bypassing the
 /// timer.
 #[inline]
 fn start_dma_send() {
@@ -163,7 +163,7 @@ fn start_dma_send() {
 
 /// Immediate CH2 kickoff for the break-framed send paths: the payload is
 /// preloaded and the wire is mid-window (break just drained), so no TIM4
-/// scheduling or comp alignment applies. No `LAST_SEND_TICK` stamp either —
+/// scheduling or comp alignment applies. No `LAST_SEND_TICK` stamp either --
 /// break-framed sends correlate via echo stamps, and a pipelined scheduled
 /// send's commanded tick must survive an interleaved `BRKSEND`.
 pub(super) fn kick_now() {

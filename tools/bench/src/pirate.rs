@@ -18,9 +18,9 @@ pub const PIRATE_PID: u16 = 0xCAFE;
 
 /// One drained stamp: byte + boundary-anchored tick. Break bytes carry
 /// real capture ticks from the pirate's RX-error service, lifted to the
-/// modeled break fall so the IC-era "tick ≈ fall" convention holds
+/// modeled break fall so the IC-era "tick ~ fall" convention holds
 /// (flags bit 1, BOUNDARY); interior bytes stride at nominal bit time
-/// from the last boundary — crystal-exact for the pirate's own TX echo.
+/// from the last boundary -- crystal-exact for the pirate's own TX echo.
 /// Flags bit 0 (COUNT_UNDER) marks a placeholder tick with no boundary
 /// anchor since reset. All load-bearing bench math differences
 /// boundary-flavor ticks, where the capture's service latency cancels.
@@ -87,12 +87,12 @@ pub struct PirateStatus {
 
 /// TX-comp tunables read from the pirate via `COMP?`. See firmware
 /// `inject.rs` for the decomposition:
-/// `TX_COMP_TICKS = pipe + (bit_q4 × brr) / 16`.
+/// `TX_COMP_TICKS = pipe + (bit_q4 x brr) / 16`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct TxComp {
-    /// Static HCLK-domain pipeline ticks (TIM4 CC2 → USART3.DR write).
+    /// Static HCLK-domain pipeline ticks (TIM4 CC2 -> USART3.DR write).
     pub pipe: u32,
-    /// USART bit-clock multiplier in Q4 (16 = 1.0 × brr).
+    /// USART bit-clock multiplier in Q4 (16 = 1.0 x brr).
     pub bit_q4: u32,
 }
 
@@ -105,7 +105,7 @@ pub struct ReplyCapture {
 }
 
 /// Replacement for the old `Round { req, first, last }`. All ticks are in
-/// the pirate's 144 MHz tick32 domain; derive elapsed µs via
+/// the pirate's 144 MHz tick32 domain; derive elapsed us via
 /// `Client::hz_per_us`.
 #[derive(Copy, Clone, Debug)]
 pub struct ReplyTiming {
@@ -241,7 +241,7 @@ impl Client {
     pub fn expect_ok(&mut self, line: &str) -> Result<()> {
         let reply = self.command(line)?;
         if reply != "OK" {
-            bail!("{line:?} → {reply:?}");
+            bail!("{line:?} -> {reply:?}");
         }
         Ok(())
     }
@@ -292,14 +292,14 @@ impl Client {
     }
 
     /// Drive TX dominant-low for `us` microseconds as a raw GPIO, then
-    /// release — the osc-native rescue break (§9.1), detectable at any baud.
+    /// release -- the osc-native rescue break (protocol sec 9.1), detectable at any baud.
     pub fn lowpulse(&mut self, us: u32) -> Result<()> {
         self.expect_ok(&format!("LOWPULSE us={us}"))
     }
 
     /// Break-framed `announce` then `breaks` bare breaks on an exact
-    /// `gap_us` grid, paced by the pirate's crystal — the MGMT CAL train
-    /// (§9.3). One pirate command: USB gaps between announce and train
+    /// `gap_us` grid, paced by the pirate's crystal -- the MGMT CAL train
+    /// (protocol sec 9.3). One pirate command: USB gaps between announce and train
     /// would blow the servo's 2-gap watchdog.
     pub fn cal_train(&mut self, announce: &[u8], gap_us: u32, breaks: u32) -> Result<()> {
         self.expect_ok(&format!(
@@ -310,7 +310,7 @@ impl Client {
 
     /// Zero-gap multi-frame burst (pirate `BURST`): each frame goes out as
     /// one break + its bytes, back-to-back with sub-byte spacing. Only the
-    /// last frame may elicit a reply — the burst owns the wire until it
+    /// last frame may elicit a reply -- the burst owns the wire until it
     /// drains.
     pub fn burst(&mut self, frames: &[Vec<u8>]) -> Result<()> {
         let mut stream = Vec::new();
@@ -345,14 +345,14 @@ impl Client {
     }
 
     /// Read TX-comp tunables: HCLK-domain pipeline ticks and the bit-clock
-    /// multiplier in Q4 (16 = 1.0 × brr). Bypasses the desync guard so
+    /// multiplier in Q4 (16 = 1.0 x brr). Bypasses the desync guard so
     /// it's safe to call after a stage trip.
     pub fn comp(&mut self) -> Result<TxComp> {
         let reply = self.command("COMP?")?;
         parse_comp(&reply)
     }
 
-    /// Write one or both TX-comp tunables. `bit_q4` clamps to a u32 — the
+    /// Write one or both TX-comp tunables. `bit_q4` clamps to a u32 -- the
     /// firmware refuses negative values at the parser layer.
     pub fn set_comp(&mut self, pipe: u32, bit_q4: u32) -> Result<()> {
         self.expect_ok(&format!("COMP pipe={pipe} bit_q4={bit_q4}"))
@@ -382,13 +382,13 @@ impl Client {
     }
 
     /// Pull up to `max` records as a binary BBATCH frame:
-    /// `[0xA5 0x5A][count:u16 LE][count × (tick:u32 LE | byte | flags)]`.
-    /// If the pirate is DESYNCED the reply is an ASCII `ERR desync …`
+    /// `[0xA5 0x5A][count:u16 LE][count x (tick:u32 LE | byte | flags)]`.
+    /// If the pirate is DESYNCED the reply is an ASCII `ERR desync ...`
     /// line instead; the desync is surfaced as `PirateDesync` in the
     /// error chain.
     pub fn bbatch(&mut self, max: u16) -> Result<Vec<BStamp>> {
         self.send_line(&format!("BBATCH {max}"))?;
-        // Peek the first byte: 0xA5 → binary frame; anything else → ASCII
+        // Peek the first byte: 0xA5 -> binary frame; anything else -> ASCII
         // error line. Both paths must read to end so the socket stays
         // aligned for the next command.
         let first = self.read_exact_bytes(1)?[0];
@@ -489,7 +489,7 @@ where
     let rest = reply
         .strip_prefix(tag)
         .and_then(|s| s.strip_prefix(' '))
-        .ok_or_else(|| anyhow!("{tag}? → {reply:?}"))?;
+        .ok_or_else(|| anyhow!("{tag}? -> {reply:?}"))?;
     rest.parse::<T>()
         .map_err(|e| anyhow!("{tag}? parse {rest:?}: {e}"))
 }

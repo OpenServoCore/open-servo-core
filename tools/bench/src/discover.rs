@@ -1,6 +1,6 @@
-//! Host-side discovery: the §9.2 prefix-tree walk over broadcast ENUM, and
+//! Host-side discovery: the protocol sec 9.2 prefix-tree walk over broadcast ENUM, and
 //! the per-baud bus probe built on it. Push-pull UART has no dominant-bit
-//! arbitration, so simultaneous ENUM responses arrive as garbage — and
+//! arbitration, so simultaneous ENUM responses arrive as garbage -- and
 //! garbage IS the collision signal that drives the descent.
 
 use anyhow::{Result, bail};
@@ -24,7 +24,7 @@ pub enum EnumOutcome {
 }
 
 /// One broadcast ENUM exchange, classified. `prefix` carries
-/// `ceil(prefix_len/8)` LSB-first bytes (§9.2).
+/// `ceil(prefix_len/8)` LSB-first bytes (protocol sec 9.2).
 pub fn enum_query(client: &mut Client, prefix_len: u8, prefix: &[u8]) -> Result<EnumOutcome> {
     let wire = build_enum(prefix_len, prefix);
     let (stamps, bit_ticks) = capture(client, &wire, SETTLE_MS)?;
@@ -44,7 +44,7 @@ pub fn enum_query(client: &mut Client, prefix_len: u8, prefix: &[u8]) -> Result<
     }
     Ok(match parse_exchange(&stamps, &wire, bit_ticks) {
         // Trailing energy after a clean frame is a peer matcher whose
-        // slot-delayed reply outlived the winner's (§9.2) — the frame parsed,
+        // slot-delayed reply outlived the winner's (protocol sec 9.2) -- the frame parsed,
         // but the wire says "more than one".
         Ok(ex) if ex.stamps_end < stamps.len() => EnumOutcome::Collision,
         Ok(ex)
@@ -74,7 +74,7 @@ pub struct Found {
 }
 
 /// Enumerate every servo at the current baud: DFS over LSB-first bit
-/// prefixes, descending one bit on every collision. O(bits · N) exchanges.
+/// prefixes, descending one bit on every collision. O(bits * N) exchanges.
 pub fn walk(client: &mut Client) -> Result<Vec<Found>> {
     let mut found = Vec::new();
     let mut stack = vec![(0u8, Vec::new(), false)];
@@ -86,12 +86,12 @@ pub fn walk(client: &mut Client) -> Result<Vec<Found>> {
         match out {
             EnumOutcome::Silent => {}
             // A clean One can be a synchronized-twin superposition reading
-            // back as a single frame (§9.2, task #30) — confirm it by
+            // back as a single frame (protocol sec 9.2) -- confirm it by
             // probing both children once: twins differing at this bit split
             // deterministically; twins agreeing land together in one child
-            // where the §9.2 slot draw re-rolls (a fresh 1-in-SLOTS shot at
-            // unison instead of a permanent hide). A confirmed One — or one
-            // at the full-UID depth, where a lone matcher is structural —
+            // where the protocol sec 9.2 slot draw re-rolls (a fresh 1-in-SLOTS shot at
+            // unison instead of a permanent hide). A confirmed One -- or one
+            // at the full-UID depth, where a lone matcher is structural --
             // is accepted.
             EnumOutcome::One { uid, id } if confirmed || len as usize >= UID_LEN * 8 => {
                 found.push(Found { uid, id })
@@ -130,7 +130,7 @@ fn extend(len: u8, prefix: &[u8], bit: bool) -> (u8, Vec<u8>) {
     (len + 1, p)
 }
 
-/// Whether anything answers ENUM at the current baud — a collision counts:
+/// Whether anything answers ENUM at the current baud -- a collision counts:
 /// garble still means servos are present.
 pub fn bus_present(client: &mut Client) -> Result<bool> {
     Ok(enum_query(client, 0, &[])? != EnumOutcome::Silent)
@@ -156,7 +156,7 @@ mod tests {
 
     #[test]
     fn extend_grows_the_prefix_lsb_first() {
-        // Root → bit 1 → bit 0 → bit 1: prefix bits are uid bit 0, 1, 2.
+        // Root -> bit 1 -> bit 0 -> bit 1: prefix bits are uid bit 0, 1, 2.
         let (len, p) = extend(0, &[], true);
         assert_eq!((len, p.as_slice()), (1, [0b001].as_slice()));
         let (len, p) = extend(len, &p, false);

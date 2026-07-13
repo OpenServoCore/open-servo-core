@@ -1,4 +1,4 @@
-//! osc-native READ: measure TURNAROUND for large replies — the streaming-TX
+//! osc-native READ: measure TURNAROUND for large replies -- the streaming-TX
 //! showcase (reply CRC + payload cost currently sits between frame end and
 //! the status break).
 

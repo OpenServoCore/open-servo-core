@@ -1,5 +1,5 @@
 //! Sticky-fatal "desynced" flag: the host let more than a ring of bytes
-//! accumulate undrained, so DMA lapped unread data (`stamp_overflow` —
+//! accumulate undrained, so DMA lapped unread data (`stamp_overflow` --
 //! a bench-script bug, not a wire condition). Once set, drains error
 //! out until a `RESET` (or `BAUD`, which implicitly resets) clears it.
 

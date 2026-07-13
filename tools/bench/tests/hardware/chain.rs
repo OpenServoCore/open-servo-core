@@ -1,18 +1,18 @@
-//! Single-board GREAD chain timing (`docs/osc-native-protocol.md` §6). We put
+//! Single-board GREAD chain timing (`docs/osc-native-protocol.md` sec 6). We put
 //! the DUT at a non-zero chain slot by listing a phantom id ahead of it, then
-//! watch how it sequences its reply on real silicon — the timing the DES sim,
+//! watch how it sequences its reply on real silicon -- the timing the DES sim,
 //! with its zero-cost handlers, cannot measure.
 //!
 //! The phantom slot-0 servo does not exist, so this exercises the RECLAIM path:
 //! the DUT waits the full `response_deadline_us` window for the silent
-//! predecessor, then fires its own reply flagged `PredecessorSilent` — the
-//! chain tail survives a silent predecessor (§6, "error replies keep the chain
+//! predecessor, then fires its own reply flagged `PredecessorSilent` -- the
+//! chain tail survives a silent predecessor (protocol sec 6, "error replies keep the chain
 //! alive") instead of collapsing. The reply must NOT come before the reclaim
 //! window elapses, or the DUT gave up on its predecessor too early.
 //!
 //! The complementary snoop-ADVANCE path (a live predecessor status the DUT sees
-//! and advances on) needs a break-framed injection inside the ~60 µs reclaim
-//! window — beyond host timing and the pirate's current scheduled-send (no
+//! and advances on) needs a break-framed injection inside the ~60 us reclaim
+//! window -- beyond host timing and the pirate's current scheduled-send (no
 //! break); it is left to a pirate-firmware follow-up.
 
 use bench::osc::{build_instruction, gread_uniform_payload};
@@ -33,7 +33,7 @@ const BCAST: u8 = 0xFE;
 fn gread_slot1_reclaims_silent_predecessor() {
     let mut b = bench();
     let id = b.id();
-    // Top of the unicast range (§3.1): never assigned on any bench or
+    // Top of the unicast range (protocol sec 3.1): never assigned on any bench or
     // fleet, so the slot-0 predecessor is guaranteed silent.
     const PHANTOM_ID: u8 = 249;
 

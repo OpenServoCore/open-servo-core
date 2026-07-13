@@ -7,8 +7,8 @@ use crate::support::bench;
 
 const BROADCAST: u8 = 0xFE;
 
-/// A NOREPLY write draws no status frame (§5 NOREPLY flag). We write the field's
-/// current value back — inert, but the write still executes silently.
+/// A NOREPLY write draws no status frame (protocol sec 5 NOREPLY flag). We write the field's
+/// current value back -- inert, but the write still executes silently.
 #[test]
 #[serial]
 fn noreply_write_is_silent() {
@@ -26,7 +26,7 @@ fn noreply_write_is_silent() {
     ));
 }
 
-/// A broadcast write is silent by addressing (§5): no servo replies to 0xFE.
+/// A broadcast write is silent by addressing (protocol sec 5): no servo replies to 0xFE.
 #[test]
 #[serial]
 fn broadcast_write_is_silent() {

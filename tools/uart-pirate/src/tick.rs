@@ -20,13 +20,13 @@ pub fn read_tick32() -> u32 {
         let lo_1 = TIM2.cnt().read();
         let hi = TIM3.cnt().read();
         let lo_2 = TIM2.cnt().read();
-        // `lo_2 >= lo_1` rejects a TIM2 wrap between the loads — but not
+        // `lo_2 >= lo_1` rejects a TIM2 wrap between the loads -- but not
         // TIM3's startup phase lead: TIM3.CNT increments a few HCLK
         // cycles BEFORE TIM2 wraps (CEN order in `init`), so a read
-        // inside that window pairs hi = N+1 with lo ≈ 0xFFFx, a tick
+        // inside that window pairs hi = N+1 with lo ~ 0xFFFx, a tick
         // ~65536 in the future. Reject the tail outright (bench
-        // signature: elapsed-since-t0 jumps 455 µs, tripping bounded
-        // polls like feed_bytes' TXE wait → spurious BRKSEND "ERR busy"
+        // signature: elapsed-since-t0 jumps 455 us, tripping bounded
+        // polls like feed_bytes' TXE wait -> spurious BRKSEND "ERR busy"
         // truncating the frame mid-send).
         if lo_2 >= lo_1 && lo_2 < 0xFFC0 {
             return ((hi as u32) << 16) | (lo_2 as u32);
@@ -35,7 +35,7 @@ pub fn read_tick32() -> u32 {
 }
 
 /// TIM2 free-runs at HCLK as the low half; TIM3 with PSC=0xFFFF counts
-/// once per TIM2 wrap as the high half. No capture channels — the IC
+/// once per TIM2 wrap as the high half. No capture channels -- the IC
 /// stamping machinery is gone; the pair exists only for `read_tick32`.
 ///
 /// Phase-lock startup: enable TIM3.CEN before TIM2.CEN so TIM3's

@@ -5,7 +5,7 @@ use serial_test::serial;
 use crate::support::bench;
 
 /// READ the read-only model_number span and cross-check it against PING, which
-/// also reports the model — the two must agree (no hardcoded model value).
+/// also reports the model -- the two must agree (no hardcoded model value).
 #[test]
 #[serial]
 fn read_model_number_matches_ping() {

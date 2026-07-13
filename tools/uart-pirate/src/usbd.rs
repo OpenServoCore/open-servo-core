@@ -1,4 +1,4 @@
-//! V20x USBD → embassy-usb-driver bridge.
+//! V20x USBD -> embassy-usb-driver bridge.
 //!
 //! Vendored from `ch32-hal/src/usbd.rs` and stripped to a concrete
 //! single-instance driver: no `T: Instance` typelevel dispatch, no
@@ -8,7 +8,7 @@
 //! for itself in the original HAL where many chips shared the code.
 //!
 //! Caller responsibilities:
-//! - Configure RCC so PLL=144 MHz and USBPRE=DIV3 (→ 48 MHz USB clock).
+//! - Configure RCC so PLL=144 MHz and USBPRE=DIV3 (-> 48 MHz USB clock).
 //! - Set PA11/PA12 as outputs and drive low BEFORE calling `Driver::new`
 //!   (V20x RM: "before USBD is enabled, the GPIO pins should be configured
 //!   as push-pull output low to avoid the host seeing a phantom device").

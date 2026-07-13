@@ -1,6 +1,6 @@
 //! Zero-gap bombardment on silicon: the production hot loop
-//! `[GWRITE(HOLD), COMMIT, GREAD]` — or a plain
-//! `[WRITE(NOREPLY) × N, READ]` — sent as ONE wire burst per cycle
+//! `[GWRITE(HOLD), COMMIT, GREAD]` -- or a plain
+//! `[WRITE(NOREPLY) x N, READ]` -- sent as ONE wire burst per cycle
 //! (pirate `BURST`: break + frame back-to-back, sub-byte spacing).
 //!
 //! This is the silicon complement to `firmware/lib/integration/tests/hot_loop.rs`:
@@ -8,7 +8,7 @@
 //! tool exposes the ISR-latency window the sim cannot model (frame N's
 //! end-deadline work vs frame N+1's break FE, same PFIC priority). A frame
 //! silently missed by the framer shows up here as a STALE read-back value
-//! (missed write/commit) or a missing reply (missed read) — plus whatever the
+//! (missed write/commit) or a missing reply (missed read) -- plus whatever the
 //! servo's crc/drop counters say via wlink.
 //!
 //! The cycle scenarios, loop, classification, and turnaround tally live in
@@ -27,7 +27,7 @@ use bench::run::{
 use clap::Parser;
 use osc_protocol::wire::{Inst, Opcode};
 
-/// goal_position (see tool-write): the rule-heavy hot-loop register —
+/// goal_position (see tool-write): the rule-heavy hot-loop register --
 /// its soft-limit rules make commit the representative worst-case work.
 const GOAL_POSITION_ADDR: u16 = 0x0184;
 const BCAST: u8 = 0xFE;
@@ -74,11 +74,11 @@ struct Args {
     #[arg(long, default_value_t = false)]
     commit_read: bool,
     /// Exit immediately on the first failing cycle (freeze chip-side
-    /// forensics — e.g. a debug_stamp ring — as close to the failure as
+    /// forensics -- e.g. a debug_stamp ring -- as close to the failure as
     /// possible for a wlink dump).
     #[arg(long, default_value_t = false)]
     stop_on_fail: bool,
-    /// Dump any OK cycle whose turnaround is below this many µs — catches
+    /// Dump any OK cycle whose turnaround is below this many us -- catches
     /// unanchored pirate stamps (COUNT_UNDER: no boundary capture since
     /// reset), which read as impossibly-fast replies.
     #[arg(long)]

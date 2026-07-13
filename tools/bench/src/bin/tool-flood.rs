@@ -2,7 +2,7 @@
 //! into one pirate BURST and send them back-to-back for `--secs`, with no
 //! reads or per-cycle drain. Used to measure kernel-tick starvation under a
 //! continuous write burst (read `telemetry.sample_tick` via wlink while this
-//! runs). Not a turnaround tool — it just floods the wire.
+//! runs). Not a turnaround tool -- it just floods the wire.
 
 use std::time::{Duration, Instant};
 
@@ -51,7 +51,7 @@ fn main() -> Result<()> {
     while Instant::now() < deadline {
         client.burst(&frames)?;
         bursts += 1;
-        // Drain the byte-stamp buffer so it never overflows — we don't use
+        // Drain the byte-stamp buffer so it never overflows -- we don't use
         // the stamps, this flood only generates wire traffic.
         while !client.bbatch(255)?.is_empty() {}
     }

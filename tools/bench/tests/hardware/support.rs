@@ -1,4 +1,4 @@
-//! Shared harness for the hardware suite. Config from env: `BENCH_PORT` (empty ⇒
+//! Shared harness for the hardware suite. Config from env: `BENCH_PORT` (empty =>
 //! autodetect the pirate), `BENCH_BAUD` (default the chip boot baud), `BENCH_ID`
 //! (default 1). One shared pirate client per test binary, acquired lazily;
 //! `#[serial]` on every test serialises access to it.
@@ -47,7 +47,7 @@ static BENCH: LazyLock<Mutex<Bench>> = LazyLock::new(|| {
     Mutex::new(Bench { client, id })
 });
 
-/// The shared bench. Recovers from mutex poison — a panicked test leaves the
+/// The shared bench. Recovers from mutex poison -- a panicked test leaves the
 /// pirate reusable (each exchange re-drains first), so one failure does not
 /// cascade into every later test.
 pub fn bench() -> MutexGuard<'static, Bench> {
@@ -60,12 +60,12 @@ impl Bench {
         self.id
     }
 
-    /// Pirate timer rate (ticks per µs), for converting `turnaround_ticks`.
+    /// Pirate timer rate (ticks per us), for converting `turnaround_ticks`.
     pub fn hz_per_us(&mut self) -> u32 {
         self.client.hz_per_us().expect("hz_per_us")
     }
 
-    /// One instruction→status exchange, decoded.
+    /// One instruction->status exchange, decoded.
     pub fn xfer(&mut self, wire: &[u8]) -> Result<Exchange> {
         xfer(&mut self.client, wire, SETTLE_MS)
     }
@@ -75,23 +75,23 @@ impl Bench {
         xfer(&mut self.client, wire, settle_ms)
     }
 
-    /// Rescue-pulse the bus (§9.1) and follow it to the rescue baud.
+    /// Rescue-pulse the bus (protocol sec 9.1) and follow it to the rescue baud.
     pub fn rescue_pulse(&mut self) {
         self.client.lowpulse(RESCUE_PULSE_US).expect("rescue pulse");
-        // Servo-side confirm completes ~100 µs after the pulse ends.
+        // Servo-side confirm completes ~100 us after the pulse ends.
         std::thread::sleep(Duration::from_millis(2));
         self.follow_baud(RESCUE_BAUD);
     }
 
-    /// Move the pirate to `baud` WITHOUT telling the servo — the harness
+    /// Move the pirate to `baud` WITHOUT telling the servo -- the harness
     /// side of losing (or finding) a servo whose rate the host doesn't know.
     pub fn follow_baud(&mut self, baud: u32) {
         self.client.set_baud(baud).expect("set pirate baud");
         self.client.reset().expect("reset pirate");
     }
 
-    /// §9.2 prefix-tree walk at the current baud.
-    /// The DUT's UID via the prefix walk — fleet-safe at any baud: the
+    /// protocol sec 9.2 prefix-tree walk at the current baud.
+    /// The DUT's UID via the prefix walk -- fleet-safe at any baud: the
     /// walk descends collisions (discover's algorithm), so it finds the DUT
     /// whether the bus holds one servo or a chain.
     pub fn dut_uid(&mut self) -> [u8; 16] {
@@ -107,9 +107,9 @@ impl Bench {
         discover::walk(&mut self.client).expect("prefix walk")
     }
 
-    /// §9.3 CAL train: broadcast `announce`, then `breaks` bare breaks
+    /// protocol sec 9.3 CAL train: broadcast `announce`, then `breaks` bare breaks
     /// `gap_us` apart, crystal-paced by the pirate. The announce and the
-    /// wire gap are separate on purpose — a mismatch is the trim test's
+    /// wire gap are separate on purpose -- a mismatch is the trim test's
     /// clock-offset injector.
     pub fn cal_train(&mut self, announce: &[u8], gap_us: u32, breaks: u32) {
         self.client
@@ -117,13 +117,13 @@ impl Bench {
             .expect("cal train");
     }
 
-    /// Raw zero-gap burst (grid-paced on the pirate), no reply parsing —
+    /// Raw zero-gap burst (grid-paced on the pirate), no reply parsing --
     /// tracker food, not an exchange.
     pub fn burst_frames(&mut self, frames: &[Vec<u8>]) {
         self.client.burst(frames).expect("burst frames");
     }
 
-    /// Drain and discard pending stamps — keeps a long food loop inside
+    /// Drain and discard pending stamps -- keeps a long food loop inside
     /// the pirate's ring contract without parsing anything.
     pub fn drain_stamps(&mut self) {
         drain(&mut self.client).expect("drain stamps");
@@ -134,8 +134,8 @@ impl Bench {
         self.status_ok_within(wire, SETTLE_MS)
     }
 
-    /// As [`Self::status_ok`] with a caller-chosen settle window — SAVE and
-    /// FACTORY ack only after the flash stall completes (§9.4), well past the
+    /// As [`Self::status_ok`] with a caller-chosen settle window -- SAVE and
+    /// FACTORY ack only after the flash stall completes (protocol sec 9.4), well past the
     /// standard window.
     pub fn status_ok_within(&mut self, wire: &[u8], settle_ms: u64) -> StatusFrame {
         let ex = xfer(&mut self.client, wire, settle_ms).expect("exchange");
@@ -149,7 +149,7 @@ impl Bench {
     }
 
     /// Assert the instruction reached the wire (its echo is captured) but drew
-    /// no status reply — the NOREPLY / broadcast / COMMIT silence contract (§5).
+    /// no status reply -- the NOREPLY / broadcast / COMMIT silence contract (protocol sec 5).
     pub fn expect_no_reply(&mut self, wire: &[u8]) {
         let (stamps, bit_ticks) = capture(&mut self.client, wire, SETTLE_MS).expect("capture");
         match parse_exchange(&stamps, wire, bit_ticks) {
@@ -179,7 +179,7 @@ impl Bench {
 
     /// Switch the servo (and pirate) to `baud`: WRITE `baud_rate_idx`, take the
     /// ack at the OLD baud (the servo applies the change only once the ack has
-    /// drained, §4.2), then follow. A no-op if already there.
+    /// drained, protocol sec 4.2), then follow. A no-op if already there.
     pub fn switch_baud(&mut self, baud: u32) {
         if self.client.current_baud() == baud {
             return;

@@ -90,7 +90,7 @@ pub fn parse_u16(s: &str) -> Result<u16> {
     })
 }
 
-/// Parse one profile span given as `addr:count` (§5.2 bounds).
+/// Parse one profile span given as `addr:count` (protocol sec 5.2 bounds).
 pub fn parse_span(s: &str) -> Result<(u16, u8)> {
     let (a, c) = s
         .split_once(':')

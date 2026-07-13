@@ -1,4 +1,4 @@
-//! `osc` — the operator multitool for an osc-native bus: discovery, rescue,
+//! `osc` -- the operator multitool for an osc-native bus: discovery, rescue,
 //! id/baud management, persistence, profiles, and one-shot reads/writes.
 //! The `tool-*` binaries measure distributions; this one operates the bus.
 
@@ -27,7 +27,7 @@ const BAUD_RATE_IDX_ADDR: u16 = 0x000D;
 
 /// Control-table address of `telemetry.clock.trim_steps` (osc-core
 /// `regions::telemetry`; pinned like `BAUD_RATE_IDX_ADDR`). Signed chip trim
-/// steps the trim loop has applied, read-only, volatile (§9.3).
+/// steps the trim loop has applied, read-only, volatile (protocol sec 9.3).
 const TRIM_STEPS_ADDR: u16 = 0x0244;
 
 #[derive(Parser, Debug)]
@@ -51,7 +51,7 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Cmd {
-    /// Enumerate every servo (UID + id) — all supported bauds, or just --baud.
+    /// Enumerate every servo (UID + id) -- all supported bauds, or just --baud.
     Discover,
     /// Rescue-pulse the bus to 0.5 M and enumerate whoever answers.
     Rescue {
@@ -64,7 +64,7 @@ enum Cmd {
         #[arg(long)]
         save: bool,
     },
-    /// One broadcast ENUM query (LSB-first bit prefix, §9.2).
+    /// One broadcast ENUM query (LSB-first bit prefix, protocol sec 9.2).
     Enum {
         /// Prefix length in bits (0..=128).
         #[arg(long, default_value_t = 0)]
@@ -85,20 +85,20 @@ enum Cmd {
         /// Target baud.
         to: u32,
     },
-    /// Persist the live config + profiles (§9.4; torque must be off).
+    /// Persist the live config + profiles (protocol sec 9.4; torque must be off).
     Save,
     /// Wipe both saved slots; the servo reboots itself to board defaults.
     Factory,
     /// Ack, then reset once the ack has drained.
     Reboot,
-    /// Read or configure a §5.2 profile slot.
+    /// Read or configure a protocol sec 5.2 profile slot.
     Profile {
         #[command(subcommand)]
         cmd: ProfileCmd,
     },
-    /// Broadcast a CAL break train (§9.3) and read trim_steps back.
+    /// Broadcast a CAL break train (protocol sec 9.3) and read trim_steps back.
     Cal {
-        /// Break spacing in µs, crystal-paced by the pirate.
+        /// Break spacing in us, crystal-paced by the pirate.
         #[arg(long, default_value_t = 400)]
         gap_us: u16,
         /// Measured gaps in the train (the pirate sends gaps + 1 breaks).
@@ -217,7 +217,7 @@ fn save(client: &mut Client, id: u8) -> Result<()> {
             println!("id {id}: saved");
             Ok(())
         }
-        Some(ResultCode::Access) => bail!("id {id}: SAVE needs torque disabled (§9.4)"),
+        Some(ResultCode::Access) => bail!("id {id}: SAVE needs torque disabled (protocol sec 9.4)"),
         r => bail!("id {id}: SAVE nacked: {r:?}"),
     }
 }
@@ -271,7 +271,7 @@ fn discover(cli: &Cli) -> Result<()> {
 fn rescue(cli: &Cli, set_baud: Option<u32>, do_save: bool) -> Result<()> {
     let mut client = open_pirate(cli.port.as_deref())?;
     client.lowpulse(RESCUE_PULSE_US)?;
-    // Servo-side confirm completes ~100 µs after the pulse ends.
+    // Servo-side confirm completes ~100 us after the pulse ends.
     sleep(Duration::from_millis(2));
     client.set_baud(RESCUE_BAUD)?;
     client.reset()?;
@@ -306,13 +306,13 @@ fn read_trim(client: &mut Client, id: u8) -> Result<i8> {
 
 /// Broadcast the CAL announce + break train, then read back each servo's
 /// applied trim total. A pre-read failure is reported as `?` rather than
-/// aborting — CAL is exactly what rescues a servo railed by a bad trim
-/// (§9.3), so it may only answer afterwards.
+/// aborting -- CAL is exactly what rescues a servo railed by a bad trim
+/// (protocol sec 9.3), so it may only answer afterwards.
 fn cal(client: &mut Client, gap_us: u16, gaps: u8, ids: &[u8]) -> Result<()> {
     let before: Vec<Option<i8>> = ids.iter().map(|&id| read_trim(client, id).ok()).collect();
     client.cal_train(&build_cal(gap_us, gaps), gap_us as u32, gaps as u32 + 1)?;
     println!("train sent: {gaps} gaps x {gap_us} us");
-    // The trim decision applies in the servo main loop between frames —
+    // The trim decision applies in the servo main loop between frames --
     // one settle window covers it.
     sleep(Duration::from_millis(SETTLE_MS));
     for (&id, before) in ids.iter().zip(&before) {

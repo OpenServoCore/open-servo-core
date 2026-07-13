@@ -1,6 +1,6 @@
 //! Fleet chain timing on silicon: one broadcast GREAD listing every servo,
-//! the replies arriving as a snoop-sequenced status chain (§6) — or the full
-//! production cycle (`GWRITE(HOLD) + COMMIT + GREAD chain`, --hot) — with
+//! the replies arriving as a snoop-sequenced status chain (protocol sec 6) -- or the full
+//! production cycle (`GWRITE(HOLD) + COMMIT + GREAD chain`, --hot) -- with
 //! per-slot chain-gap stats. The single-servo complement is `tool-burst`.
 
 use std::thread::sleep;

@@ -10,8 +10,8 @@ use serial_test::serial;
 use crate::support::bench;
 
 /// ENUM prefix matching, fleet-safe: the DUT's UID comes from the prefix
-/// walk (collision descent — a root query collides on a fleet BY DESIGN,
-/// §9.2, so no test may assert a clean root reply). The UID is the fixed
+/// walk (collision descent -- a root query collides on a fleet BY DESIGN,
+/// protocol sec 9.2, so no test may assert a clean root reply). The UID is the fixed
 /// 16-byte field: the V006's 96-bit ESIG in the low 12 bytes (not the
 /// all-zero pattern a missed ESIG read would seed), zero pad above. An
 /// exact 128-bit prefix selects exactly the DUT; one flipped bit nobody.
@@ -34,8 +34,8 @@ fn enum_prefix_selects_exactly_the_dut() {
     b.expect_no_reply(&build_enum(128, &miss));
 }
 
-/// Broadcast ASSIGN moves the servo to a new id — the ack already leaves from
-/// it (§9.2) — then back. PINGs prove the swap on the wire both ways.
+/// Broadcast ASSIGN moves the servo to a new id -- the ack already leaves from
+/// it (protocol sec 9.2) -- then back. PINGs prove the swap on the wire both ways.
 /// Fleet-safe: ASSIGN is UID-addressed (one matcher on any bus), and the
 /// away id sits outside every bench and fleet id map.
 #[test]
@@ -52,20 +52,20 @@ fn assign_moves_the_id_and_acks_from_it() {
     b.status_ok(&build_ping(away));
     b.expect_no_reply(&build_ping(home));
 
-    // Restore before asserting anything else — a failure here must not leave
+    // Restore before asserting anything else -- a failure here must not leave
     // the bench off its configured id.
     let back = b.status_ok(&build_assign(&uid, home));
     assert_eq!(back.id, home);
     b.status_ok(&build_ping(home));
 }
 
-/// The full §9.4/§9.5 silicon round trip: a config marker survives SAVE +
+/// The full protocol sec 9.4/protocol sec 9.5 silicon round trip: a config marker survives SAVE +
 /// REBOOT (real erase, page program, and boot overlay on real flash), then
 /// FACTORY wipes both slots and its self-reboot restores board defaults.
 /// Fleet-safe tail: factory also resets the DUT's ID to the board default
 /// (which may collide with a live fleet id), so the first post-factory
 /// exchange is a UID-addressed ASSIGN back home, then a SAVE re-persists
-/// the identity — the bus leaves exactly as found. Reads are collected
+/// the identity -- the bus leaves exactly as found. Reads are collected
 /// first and asserted only after the restore, so a bad marker never
 /// strands a saved image on the bench.
 #[test]

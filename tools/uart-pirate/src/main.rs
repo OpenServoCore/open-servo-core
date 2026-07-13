@@ -20,11 +20,11 @@ use panic_halt as _;
 use ch32_metapac::{AFIO, EXTEND, GPIOA, RCC};
 use embassy_executor::Spawner;
 
-// ── Wiring (MuseLab nanoCH32V203, V203C8T6 LQFP48)
+// -- Wiring (MuseLab nanoCH32V203, V203C8T6 LQFP48)
 //
-//   PB10  USART3_TX (AF OD)        ─► wire
-//   PB11  USART3_RX (input pullup) ◄─ wire  (jumpered to PB10)
-//   PB0   dbg marker (GP PP)       ─► scope ch2 (width-coded, `dbg.rs`)
+//   PB10  USART3_TX (AF OD)        --> wire
+//   PB11  USART3_RX (input pullup) <-- wire  (jumpered to PB10)
+//   PB0   dbg marker (GP PP)       --> scope ch2 (width-coded, `dbg.rs`)
 //   PA12  USB DP                       host
 //   PA11  USB DM                       host
 //
@@ -39,12 +39,12 @@ use embassy_executor::Spawner;
 // (prescaler DIV1), so BRR = 144_000_000 / 3_000_000 = 48 at 3 Mbaud.
 // tick32 (TIM2 low + TIM3 high) ticks at 144 MHz. RX capture is
 // DMA-ringed bytes plus break-boundary ticks stamped at the USART3
-// FE service (rx::boundary) — no input capture; TIM4 OPM CC2 →
-// DMA1_CH4 → DMA1_CH2 stamps USART3 TX with no IRQ between deadline and
+// FE service (rx::boundary) -- no input capture; TIM4 OPM CC2 ->
+// DMA1_CH4 -> DMA1_CH2 stamps USART3 TX with no IRQ between deadline and
 // wire edge.
 //
 // HSE (8 MHz crystal) is required, not HSI: this firmware doubles as the
-// bench timebase, and HSI's ±1% trim would systematically corrupt ppm-
+// bench timebase, and HSI's +/-1% trim would systematically corrupt ppm-
 // scale drift measurements of the chips it's measuring.
 
 #[qingke_rt::interrupt]
@@ -64,7 +64,7 @@ async fn main(spawner: Spawner) {
     RCC.apb2pcenr().modify(|w| w.set_iopaen(true));
     GPIOA.cfghr().modify(|w| {
         let mut v = w.0;
-        // mode=11 (50 MHz), cnf=00 (GP push-pull) → 0b0011
+        // mode=11 (50 MHz), cnf=00 (GP push-pull) -> 0b0011
         v &= !(0xF << 12);
         v |= 0b0011 << 12;
         v &= !(0xF << 16);
@@ -87,7 +87,7 @@ async fn main(spawner: Spawner) {
 
     // Pull D+ high via EXTEND so the host sees us. This is done inside
     // `usbd::Driver::new`, but we touch EXTEND here to keep the import
-    // path stable — no-op modify.
+    // path stable -- no-op modify.
     let _ = EXTEND;
 
     // embassy-executor 0.10's #[task] returns Result<SpawnToken, _>;

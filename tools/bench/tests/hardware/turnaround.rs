@@ -7,13 +7,13 @@ use serial_test::serial;
 
 use crate::support::{Bench, bench};
 
-/// Per-baud ceiling for the mean ping turnaround (µs). Ring-cadence timing,
-/// the fixed-µs reply gap, and the in-place chain trigger put the floor at
-/// ~30/32 µs (1M/500k) and ~39/41 µs (2M/3M, pipeline-bound — the
+/// Per-baud ceiling for the mean ping turnaround (us). Ring-cadence timing,
+/// the fixed-us reply gap, and the in-place chain trigger put the floor at
+/// ~30/32 us (1M/500k) and ~39/41 us (2M/3M, pipeline-bound -- the
 /// covered-overlap window shrinks below the dispatch body; RAM placement
-/// probed and rejected, see the transport pillar). Each ceiling sits ~6 µs
+/// probed and rejected, see the transport pillar). Each ceiling sits ~6 us
 /// above the measured floor: tight enough to catch a regression from the
-/// current baseline, loose enough for the ±5 µs flash-layout swing.
+/// current baseline, loose enough for the +/-5 us flash-layout swing.
 fn ping_budget_us(baud: u32) -> f64 {
     match baud {
         1_000_000 => 45.0,
@@ -27,7 +27,7 @@ fn ping_budget_us(baud: u32) -> f64 {
 /// READ ceiling: the reply break waits only on staging the copy-once
 /// snapshot kickoff, not the payload's wire time, so a 16 B read tracks the
 /// ping floor plus the read-dispatch body (measured means 36.5/37.8/41.1/40.5
-/// ascending baud, 2026-07-10). Same ~6 µs headroom policy.
+/// ascending baud). Same ~6 us headroom policy.
 fn read_budget_us(baud: u32) -> f64 {
     match baud {
         1_000_000 => 41.0,
@@ -38,15 +38,12 @@ fn read_budget_us(baud: u32) -> f64 {
     }
 }
 
-/// WRITE ceiling: goal_position is the rule-heavy hot-loop register — its
+/// WRITE ceiling: goal_position is the rule-heavy hot-loop register -- its
 /// soft-limit rules dominate the dispatch body (write-size is not the cost),
-/// and the production hot loop pays none of this — GWRITE is NOREPLY.
-/// Re-baselined 2026-07-13 (measured means 82.0/88.3/97.5/98.9 ascending
-/// baud) on the enum-slot fleet build — drift vs the 2026-07-12 evening
-/// baseline (80.0/83.1/95.5/96.1) is within the ±5 µs flash-layout swing.
-/// WATCH (2026-07-12): the low-baud writes moved +20/+10 µs vs that
-/// morning's 60.2/72.7 means while 2M/3M held — a #25-build shift worth a
-/// perf look, not a wire defect. Same ~6 µs headroom policy.
+/// and the production hot loop pays none of this -- GWRITE is NOREPLY.
+/// Measured means on the enum-slot fleet build: 82.0/88.3/97.5/98.9
+/// ascending baud, within the +/-5 us flash-layout swing. Same ~6 us
+/// headroom policy.
 fn write_budget_us(baud: u32) -> f64 {
     match baud {
         1_000_000 => 95.0,
@@ -80,7 +77,7 @@ fn gate(b: &mut Bench, wire: &[u8], label: &str, budget_us: fn(u32) -> f64) {
     }
 }
 
-/// THE metric: instruction wire-end → status break fall, swept across the
+/// THE metric: instruction wire-end -> status break fall, swept across the
 /// baud matrix.
 #[test]
 #[serial]

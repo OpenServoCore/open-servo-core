@@ -1,17 +1,17 @@
 //! Drain-time stamp synthesis. `BBATCH`/`BDRAIN` walk the byte ring and
-//! emit one record per byte — the same host-facing shape as the old
-//! walker pipeline — with ticks synthesized here instead of captured
+//! emit one record per byte -- the same host-facing shape as the old
+//! walker pipeline -- with ticks synthesized here instead of captured
 //! per byte:
 //!
 //! - a byte with an attached boundary gets its real capture tick,
 //!   lifted back to the modeled break fall ([`BOUNDARY_LIFT_BITS`]),
 //!   and the [`flags::BOUNDARY`] flag;
 //! - a standalone boundary (a law-shaped break whose character the LIN
-//!   receiver consumed — our own echoes) is RE-EMITTED as a synthetic
+//!   receiver consumed -- our own echoes) is RE-EMITTED as a synthetic
 //!   `0x00` stamp with its real tick, so the host-visible stream stays
 //!   byte-identical to a ringed break;
 //! - the byte after a boundary strides the break frame's own span
-//!   ([`BREAK_TO_NEXT_BITS`]), every later byte a full byte-time — for
+//!   ([`BREAK_TO_NEXT_BITS`]), every later byte a full byte-time -- for
 //!   our own DMA-fed TX echo those strides are crystal-exact;
 //! - bytes with no boundary seen since reset carry [`flags::COUNT_UNDER`]
 //!   (tick is a placeholder cadence, not a measurement).
@@ -38,11 +38,11 @@ use crate::tick::read_tick32;
 const BITS_PER_BYTE_8N1: u32 = 10;
 /// Captured boundary ticks are lifted back to the modeled break FALL:
 /// the receiver frames a break's `0x00` exactly 10 bit-times after the
-/// fall — for ANY break length (FE is the stop-bit verdict) — so the
+/// fall -- for ANY break length (FE is the stop-bit verdict) -- so the
 /// subtraction is shape-independent and break stamps keep the old
-/// IC-era "tick ≈ fall" convention every consumer was built on.
+/// IC-era "tick ~ fall" convention every consumer was built on.
 const BOUNDARY_LIFT_BITS: u32 = 10;
-/// Break fall → next byte's start: a 10-bit-exact break plus its stop
+/// Break fall -> next byte's start: a 10-bit-exact break plus its stop
 /// bit (our own frames; a longer SBK break makes foreign interiors read
 /// a few bits early, which nothing consumes quantitatively).
 const BREAK_TO_NEXT_BITS: u32 = 11;
@@ -55,7 +55,7 @@ pub struct ByteRecord {
 }
 
 pub mod flags {
-    /// No boundary anchor since reset — the tick is a placeholder
+    /// No boundary anchor since reset -- the tick is a placeholder
     /// cadence, not a measurement.
     pub const COUNT_UNDER: u8 = 1 << 0;
     /// The tick is a real capture from the RX-error service: this byte
@@ -102,7 +102,7 @@ pub fn drain_byte() -> Result<Option<ByteRecord>, DesyncCause> {
 
 /// Drain up to `out.len()` byte records into `out`. Returns the count
 /// written, or the sticky desync cause if the ring lapped undrained
-/// data (detected both before and after the copy — DMA keeps writing
+/// data (detected both before and after the copy -- DMA keeps writing
 /// while we read).
 pub fn drain_batch(out: &mut [ByteRecord]) -> Result<usize, DesyncCause> {
     if let Some(cause) = desync::desync_cause() {
@@ -127,16 +127,16 @@ pub fn drain_batch(out: &mut [ByteRecord]) -> Result<usize, DesyncCause> {
         let pos = tail0.wrapping_add(consumed);
         let (byte, tick, f) = match boundary::next_at(pos) {
             // A break whose character LIN consumed: re-emit it as a
-            // synthetic 0x00 stamp carrying the real capture tick —
+            // synthetic 0x00 stamp carrying the real capture tick --
             // the stream the host sees stays byte-identical to a
             // ringed break, and no ring byte is spent... unless the
             // swallow didn't happen after all: it is NONDETERMINISTIC
-            // on this die (bench 2026-07-12 — a law-shaped break's
+            // on this die (bench: a law-shaped break's
             // character sometimes rings late, past the recorder's
             // spin), and the duplicate zero corrupted reply headers.
             // A frame can never START with 0x00 (ID is never zero), so
             // a ring zero at the standalone's own position IS the
-            // break's late character — fold it into the synthetic.
+            // break's late character -- fold it into the synthetic.
             Some(boundary::Bound::Standalone(t)) => {
                 crate::dbg::mark_standalone();
                 if consumed < avail && rings::rx_at(pos) == 0x00 {

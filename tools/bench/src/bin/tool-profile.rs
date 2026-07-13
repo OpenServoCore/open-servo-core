@@ -1,4 +1,4 @@
-//! osc-native PROFILE read (§5.2): configure a profile slot over the wire,
+//! osc-native PROFILE read (protocol sec 5.2): configure a profile slot over the wire,
 //! then measure TURNAROUND for the gathered scattered-telemetry reply and
 //! compare against the same bytes as a plain contiguous READ.
 
@@ -19,7 +19,7 @@ struct Args {
     /// Profile slot to configure and read.
     #[arg(short, long, default_value_t = 0)]
     slot: u8,
-    /// Spans as `addr:count` pairs. Default: scattered telemetry —
+    /// Spans as `addr:count` pairs. Default: scattered telemetry --
     /// position(4) + current(2) + vbus(2) from the converted block.
     #[arg(long, value_delimiter = ',', default_values_t =
         ["0x200:4".to_string(), "0x208:2".to_string(), "0x20C:2".to_string()])]
@@ -44,7 +44,7 @@ fn main() -> Result<()> {
         .collect::<Result<_>>()?;
     let total: usize = spans.iter().map(|&(_, c)| c as usize).sum();
 
-    // Configure the slot (one ordinary WRITE, §5.2) and take the ack.
+    // Configure the slot (one ordinary WRITE, protocol sec 5.2) and take the ack.
     let config = build_profile_config(id, args.slot, &spans);
     measure(&mut client, &config, 1, SETTLE_MS, false, |ex| {
         if ex.status.result != Some(ResultCode::Ok) {
@@ -100,7 +100,7 @@ fn main() -> Result<()> {
         total
     );
     println!(
-        "exchanges    profile {} ok {} fail · plain {} ok {} fail",
+        "exchanges    profile {} ok {} fail * plain {} ok {} fail",
         profile.ok.len(),
         profile.fail,
         plain.ok.len(),

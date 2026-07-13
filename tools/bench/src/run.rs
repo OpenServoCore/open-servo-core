@@ -22,7 +22,7 @@ pub struct Report {
     pub fail: u32,
 }
 
-/// Run `count` exchanges of `wire` and collect turnaround in µs. `settle_ms`
+/// Run `count` exchanges of `wire` and collect turnaround in us. `settle_ms`
 /// must cover the reply's wire time plus servo latency. `check` validates the
 /// decoded exchange (payload length, result code) before it counts.
 pub fn measure(
@@ -82,7 +82,7 @@ fn send_and_drain(client: &mut Client, wire: &[u8], settle_ms: u64) -> Result<Ve
     drain(client)
 }
 
-/// One instruction→status exchange, decoded. The building block for the
+/// One instruction->status exchange, decoded. The building block for the
 /// hardware test suite; [`measure`] is the repeated form.
 pub fn xfer(client: &mut Client, wire: &[u8], settle_ms: u64) -> Result<Exchange> {
     let (stamps, bit_ticks) = capture(client, wire, settle_ms)?;
@@ -143,18 +143,18 @@ impl Stats {
 }
 
 /// One zero-gap burst cycle: `frames` are sent back-to-back (or host-paced),
-/// then the reply to `last` is parsed. `expect` present ⇒ its payload must match
+/// then the reply to `last` is parsed. `expect` present => its payload must match
 /// (a stale read-back means a frame was silently missed by the framer); absent
-/// ⇒ reply-presence only (no value check).
+/// => reply-presence only (no value check).
 pub struct BurstCycle {
     pub frames: Vec<Vec<u8>>,
     pub last: Vec<u8>,
     pub expect: Option<Vec<u8>>,
 }
 
-/// The production hot loop for one servo (`osc-native-protocol.md` §5.2): a
+/// The production hot loop for one servo (`osc-native-protocol.md` sec 5.2): a
 /// broadcast `GWRITE(HOLD)` staging `value` at `addr`, a broadcast `COMMIT`, and
-/// a `GREAD` reading it back — sent zero-gap. The GREAD reply must already carry
+/// a `GREAD` reading it back -- sent zero-gap. The GREAD reply must already carry
 /// `value` (commit-before-read), so a stale read-back means a silently-dropped
 /// GWRITE or COMMIT. Shared with `tool-burst` so the tool and the asserting
 /// bench test drive the identical cycle.
@@ -215,7 +215,7 @@ pub fn plain_flood_cycle(id: u8, addr: u16, writes: u32, value: i32) -> BurstCyc
 pub enum CycleOutcome {
     /// Reply OK and (if checked) the read-back value matched.
     Ok { turnaround_us: f64 },
-    /// Reply OK but the read-back value was stale — a missed write/commit.
+    /// Reply OK but the read-back value was stale -- a missed write/commit.
     Stale { got: Vec<u8>, expected: Vec<u8> },
     /// Reply parsed but carried a non-OK result code.
     ResultErr(Option<ResultCode>),
@@ -236,7 +236,7 @@ pub struct CycleObservation<'a> {
     pub outcome: &'a CycleOutcome,
 }
 
-/// Tally over a burst run: `ok` holds the clean cycles' turnaround (µs); the
+/// Tally over a burst run: `ok` holds the clean cycles' turnaround (us); the
 /// three counters are the silicon-only failure modes a zero-gap burst exposes
 /// (the DES sim's zero-cost handlers cannot model them).
 pub struct BurstReport {
@@ -273,7 +273,7 @@ pub fn burst_measure(
 ///
 /// The value schedule is owned here so the stale-detection invariant holds:
 /// adjacent cycles carry distinct values (`(index % 1000) + 1`), and the warmup
-/// uses a sentinel `0` that no cycle emits — so a stale read-back is never
+/// uses a sentinel `0` that no cycle emits -- so a stale read-back is never
 /// masked by an equal-valued neighbour.
 pub fn burst_measure_observed(
     client: &mut Client,

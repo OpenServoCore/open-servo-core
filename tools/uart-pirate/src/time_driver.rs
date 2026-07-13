@@ -1,4 +1,4 @@
-//! SysTick → `embassy_time_driver::Driver` bridge.
+//! SysTick -> `embassy_time_driver::Driver` bridge.
 //!
 //! Vendored from `ch32-hal/src/embassy/time_driver_systick.rs` with the
 //! `rcc::clocks()` lookup replaced by the constant HCLK we already

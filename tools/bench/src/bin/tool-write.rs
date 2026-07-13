@@ -1,4 +1,4 @@
-//! osc-native WRITE: measure TURNAROUND for the mutating path — the write is
+//! osc-native WRITE: measure TURNAROUND for the mutating path -- the write is
 //! staged through the LOW consumer at the covered checkpoint (decode +
 //! validate overlap the frame's wire tail), and the verdict at the frame end
 //! commits + sequences the ack break.

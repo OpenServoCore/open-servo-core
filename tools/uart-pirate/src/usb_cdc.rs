@@ -12,17 +12,17 @@ use crate::rx::{self, ByteRecord};
 use crate::tx::TX_BUF_LEN;
 use crate::usbd::Driver;
 
-// `SEND bytes=<TX_BUF_LEN*2 hex> at=<u32>` ≤ TX_BUF_LEN*2 + 35; +slop.
+// `SEND bytes=<TX_BUF_LEN*2 hex> at=<u32>` <= TX_BUF_LEN*2 + 35; +slop.
 const LINE_BUF_LEN: usize = TX_BUF_LEN * 2 + 64;
 
 /// CDC bulk EP max-packet size. CdcAcmClass::new sets this on both
-/// endpoints; `class.write_packet` requires the buffer to be ≤ this size
+/// endpoints; `class.write_packet` requires the buffer to be <= this size
 /// (an oversized write hangs the EP without erroring).
 const CDC_BULK_PACKET: u16 = 64;
 
 /// BBATCH per-call cap. Each record on the wire is 6 bytes (u32 tick LE,
 /// u8 byte, u8 flags); a 64-record batch is 384 B plus 16 B ASCII header
-/// and newline — ~6 CDC bulk packets per batch. Sized to keep the per-call
+/// and newline -- ~6 CDC bulk packets per batch. Sized to keep the per-call
 /// stack buffer small while amortizing CDC overhead.
 const BBATCH_MAX: usize = 64;
 const BSTAMP_SIZE: usize = 6;
@@ -115,7 +115,7 @@ async fn handle_batch<'d>(
         Err(cause) => return send_reply(class, Reply::Err(proto::desync_err_for(cause))).await,
     };
 
-    // Binary frame: sync header 0xA5 0x5A + count:u16 LE + n × (tick:u32 LE,
+    // Binary frame: sync header 0xA5 0x5A + count:u16 LE + n x (tick:u32 LE,
     // byte:u8, flags:u8). No trailing newline; framing is length-prefixed.
     // The sync header lets a host that lost framing scan-and-relock on the
     // next call.

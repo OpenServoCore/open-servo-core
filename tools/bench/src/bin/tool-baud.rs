@@ -1,6 +1,6 @@
 //! osc-native baud switch: WRITE the servo's baud register, take the ack at
 //! the OLD baud (the servo applies the change only after the ack drains,
-//! §4.2), then follow it and verify with a ping at the new rate.
+//! protocol sec 4.2), then follow it and verify with a ping at the new rate.
 
 use anyhow::{Result, anyhow, bail};
 use bench::baud_index;

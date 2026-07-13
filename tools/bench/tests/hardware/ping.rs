@@ -3,7 +3,7 @@ use serial_test::serial;
 
 use crate::support::bench;
 
-/// PING → status carries model(2) + fw(1), from the responder's id (§5).
+/// PING -> status carries model(2) + fw(1), from the responder's id (protocol sec 5).
 #[test]
 #[serial]
 fn ping_returns_model_and_fw() {

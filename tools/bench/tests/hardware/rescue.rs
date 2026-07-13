@@ -1,10 +1,10 @@
-//! §9.1 rescue break on silicon: a dominant low reaches a servo at ANY
+//! protocol sec 9.1 rescue break on silicon: a dominant low reaches a servo at ANY
 //! configured baud and drops it to the rescue rate; reboot exits back to
 //! the configured baud. Plus the full field-recovery flow through rescue.
 //!
 //! Both tests end with an UNCONDITIONAL rescue-based recovery tail (the
 //! pulse reaches the servo wherever a lost ack may have left it), and all
-//! asserts run after it — a transient pirate capture dropout must never
+//! asserts run after it -- a transient pirate capture dropout must never
 //! strand the bench unit off its id, baud, or with a stray saved image.
 
 use std::thread::sleep;
@@ -22,7 +22,7 @@ use serial_test::serial;
 use crate::support::bench;
 
 /// The pulse is baud-agnostic: servo moved to 3M (volatile) with the pirate
-/// back at the boot baud — unreachable — then one rescue pulse unifies the
+/// back at the boot baud -- unreachable -- then one rescue pulse unifies the
 /// bus at 0.5M. Reboot restores the configured (boot-default) baud.
 #[test]
 #[serial]
@@ -41,8 +41,8 @@ fn rescue_reaches_a_servo_at_any_baud_and_reboot_exits() {
     let rescued = b.xfer(&ping).map(|ex| ex.status.result);
 
     // Recovery tail: pulse again (idempotent on a rescue-parked servo) so
-    // the reboot reaches it regardless of what succeeded above — then a
-    // broadcast REBOOT (silent, takes immediately, §9.5) releases every
+    // the reboot reaches it regardless of what succeeded above -- then a
+    // broadcast REBOOT (silent, takes immediately, protocol sec 9.5) releases every
     // OTHER servo the bus-wide pulses parked at 0.5M; the fleet exits
     // rescue together and the bus leaves as found.
     b.rescue_pulse();
@@ -67,11 +67,11 @@ fn rescue_reaches_a_servo_at_any_baud_and_reboot_exits() {
     );
 }
 
-/// The field-recovery story end to end: rescue pulse → prefix-walk finds the
-/// UID at 0.5M → broadcast ASSIGN moves the id → SAVE persists it → REBOOT
+/// The field-recovery story end to end: rescue pulse -> prefix-walk finds the
+/// UID at 0.5M -> broadcast ASSIGN moves the id -> SAVE persists it -> REBOOT
 /// exits rescue and the new id answers at the configured baud. The restore
-/// tail then rescues again and FACTORYs the servo carrying OUR UID —
-/// wherever a partial failure left its id or a stray saved image — then
+/// tail then rescues again and FACTORYs the servo carrying OUR UID --
+/// wherever a partial failure left its id or a stray saved image -- then
 /// re-homes it by UID and re-persists. Fleet-safe throughout: the walk may
 /// find a whole chain (only the entry at our configured id is the DUT),
 /// every mutation is UID-scoped, and a silent broadcast REBOOT releases
@@ -100,11 +100,11 @@ fn rescue_walk_assign_save_survives_reboot_until_factory() {
     let away_alive = b.xfer(&build_ping(away)).map(|ex| ex.status.result);
 
     // Restore tail: rescue-based, so it targets the state actually on the
-    // bus rather than what the happy path predicts — but UID-scoped: only
+    // bus rather than what the happy path predicts -- but UID-scoped: only
     // the servo carrying OUR uid is factory'd (a fleet's other servos are
     // bystanders). The broadcast REBOOT then releases everyone else from
-    // rescue, and the factory'd DUT — booted at the board-default id,
-    // which may collide with a live fleet id — is re-homed by UID before
+    // rescue, and the factory'd DUT -- booted at the board-default id,
+    // which may collide with a live fleet id -- is re-homed by UID before
     // any id-addressed exchange, then re-persisted.
     b.rescue_pulse();
     let stranded = b.walk();

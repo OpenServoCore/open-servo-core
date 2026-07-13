@@ -12,7 +12,7 @@ use serial_test::serial;
 use crate::support::bench;
 
 /// The turnaround scatter: position(4) + current(2) + vbus(2) from the
-/// converted telemetry block — the §5.2 cyclic-telemetry shape.
+/// converted telemetry block -- the protocol sec 5.2 cyclic-telemetry shape.
 const SCATTER: [(u16, u8); 3] = [
     (PRESENT_POSITION, 4),
     (PRESENT_CURRENT, 2),
@@ -20,7 +20,7 @@ const SCATTER: [(u16, u8); 3] = [
 ];
 
 /// A gathered reply is byte-identical to the concatenation of plain READs of
-/// the same spans (odd interior span included — no parity constraint, §5.2).
+/// the same spans (odd interior span included -- no parity constraint, protocol sec 5.2).
 #[test]
 #[serial]
 fn profile_read_matches_plain_reads() {
@@ -38,7 +38,7 @@ fn profile_read_matches_plain_reads() {
     b.status_ok(&build_profile_config(id, 0, &[]));
 }
 
-/// Unconfigured and out-of-range slots reject `range` (§5.3).
+/// Unconfigured and out-of-range slots reject `range` (protocol sec 5.3).
 #[test]
 #[serial]
 fn profile_read_bad_slot_rejects_range() {
@@ -55,14 +55,13 @@ fn profile_read_bad_slot_rejects_range() {
     }
 }
 
-/// Per-baud ceiling for the mean profile-read turnaround (µs). Measured floor
-/// (2026-07-10 build, 3 spans / 8 B): 39.9 / 48.2 / 46.6 / 50.5 at
-/// 0.5M/1M/2M/3M — the two extra snapshot arms and the span resolution add
-/// ~4-11 µs over the same bytes as one contiguous READ. Each ceiling sits
-/// ~6 µs above the measured floor (the ping-budget convention: regression
-/// margin plus the ±5 µs flash-layout swing).
-/// Re-baselined 2026-07-13 (measured means 41.6/46.9/55.8/60.0 ascending
-/// baud) on the enum-slot fleet build.
+/// Per-baud ceiling for the mean profile-read turnaround (us). Measured floor
+/// (3 spans / 8 B): 39.9 / 48.2 / 46.6 / 50.5 at
+/// 0.5M/1M/2M/3M -- the two extra snapshot arms and the span resolution add
+/// ~4-11 us over the same bytes as one contiguous READ. Each ceiling sits
+/// ~6 us above the measured floor (the ping-budget convention: regression
+/// margin plus the +/-5 us flash-layout swing). Measured means on the
+/// enum-slot fleet build: 41.6/46.9/55.8/60.0 ascending baud.
 fn profile_turnaround_budget_us(baud: u32) -> f64 {
     match baud {
         500_000 => 48.0,
@@ -75,8 +74,8 @@ fn profile_turnaround_budget_us(baud: u32) -> f64 {
 
 /// Turnaround for the scattered-telemetry profile read, swept across the baud
 /// matrix; the distribution at each baud is printed for the record. The 2M
-/// leg is the regression gate for the pirate's DATAR discipline (task #7:
-/// an IDLE-clear DATAR read ate the reply's final byte 1/128 exchanges).
+/// leg is the regression gate for the pirate's DATAR discipline (an
+/// IDLE-clear DATAR read ate the reply's final byte 1/128 exchanges).
 #[test]
 #[serial]
 fn profile_read_turnaround_within_budget() {

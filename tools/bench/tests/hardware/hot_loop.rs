@@ -1,19 +1,19 @@
-//! Zero-gap burst survival on silicon, across the baud matrix — the bench twin
+//! Zero-gap burst survival on silicon, across the baud matrix -- the bench twin
 //! of `firmware/lib/integration/tests/hot_loop.rs`. The DES sim proves the
 //! LOGICAL zero-gap contract with zero-cost handlers; it cannot model the
 //! ISR-latency window where frame N's end-of-frame work races frame N+1's break.
 //! These tests bombard the real chip at every wire baud and assert the burst is
-//! PERFECTLY clean — zero stale read-backs (a silently-dropped GWRITE/COMMIT/
+//! PERFECTLY clean -- zero stale read-backs (a silently-dropped GWRITE/COMMIT/
 //! WRITE) and zero missed/malformed replies.
 //!
 //! The framer still has an intermittent low-baud glitch: a dropped or late frame
 //! that a second pass would recover (an unidentified bug, tracked as a separate
-//! task). We deliberately do NOT budget around it — a run that hits it FAILS
+//! task). We deliberately do NOT budget around it -- a run that hits it FAILS
 //! here, by design, so the bench stays an honest reproducer instead of a
 //! tolerance that hides the bug. Each baud is measured and printed before the
 //! verdict, so a red run names exactly where and how it glitched.
 //!
-//! Turnaround is reported for the record but NOT gated here — the burst reply
+//! Turnaround is reported for the record but NOT gated here -- the burst reply
 //! latency folds in GWRITE+COMMIT work plus the ISR tail, a different metric
 //! from the ping reply gap budget the `turnaround` suite owns.
 //!
@@ -84,7 +84,7 @@ fn hot_loop_zero_gap_survives() {
     );
 }
 
-/// A plain `[WRITE(NOREPLY) × 8, READ]` flood at every wire baud: no per-write
+/// A plain `[WRITE(NOREPLY) x 8, READ]` flood at every wire baud: no per-write
 /// reply paces the framer, so the READ read-back guards every silent write. The
 /// aggressive stress reproduces the low-baud glitch the most readily.
 #[test]

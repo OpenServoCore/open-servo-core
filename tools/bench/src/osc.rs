@@ -19,21 +19,21 @@ use osc_protocol::wire::{Id, Inst, MgmtOp, Opcode, ResultCode, UID_LEN};
 
 use crate::pirate::BStamp;
 
-/// Break byte / CRC prefix — a `0x00` stamp marks a frame anchor on the wire.
+/// Break byte / CRC prefix -- a `0x00` stamp marks a frame anchor on the wire.
 const BREAK: u8 = 0x00;
 /// Bit-times per byte on the wire: 1 start + 8 data + 1 stop.
 const BITS_PER_BYTE: u32 = 10;
 
 /// SAVE/FACTORY settle: the ack lands only after the erase + program stall
-/// (§9.4 — measured 5–10 ms; 50 ms is the host-timeout guidance).
+/// (protocol sec 9.4 -- measured 5-10 ms; 50 ms is the host-timeout guidance).
 pub const SAVE_SETTLE_MS: u64 = 50;
 /// Post-reset boot time before the servo answers again, with margin.
 pub const REBOOT_SETTLE_MS: u64 = 100;
-/// Host rescue pulse (§9.1): the servo confirm threshold is ~300 µs of
+/// Host rescue pulse (protocol sec 9.1): the servo confirm threshold is ~300 us of
 /// dominant low; 400 gives margin without meaningfully holding the bus.
-// ~3× the servo's 300 µs sampler floor: the main-loop sampler's cadence
+// ~3x the servo's 300 us sampler floor: the main-loop sampler's cadence
 // rides the 20 kHz idle tick and jitters under ISR load, and repeats are
-// idempotent — a fat pulse costs nothing on a recovery path.
+// idempotent -- a fat pulse costs nothing on a recovery path.
 pub const RESCUE_PULSE_US: u32 = 1_000;
 
 /// Build the wire bytes (no CRC-prefix; the physical break carries it) for one
@@ -67,7 +67,7 @@ pub const PROFILE_BASE_ADDR: u16 = 0x280;
 /// Span words per profile slot (osc-core `regions::profile::SPANS_PER_SLOT`).
 pub const PROFILE_SPANS_PER_SLOT: usize = 8;
 
-/// Packed profile span word `[addr:10][count:6]` (§5.2; mirrors osc-core
+/// Packed profile span word `[addr:10][count:6]` (protocol sec 5.2; mirrors osc-core
 /// `regions::profile::span_word`). `count = 0` = word disabled.
 pub const fn profile_span_word(addr: u16, count: u8) -> u16 {
     (addr << 6) | (count as u16 & 0x3F)
@@ -95,20 +95,20 @@ pub fn build_profile_config(id: u8, slot: u8, spans: &[(u16, u8)]) -> Vec<u8> {
     build_write(id, profile_slot_addr(slot), &data)
 }
 
-/// READ + PROFILE: the payload names a slot (§5.2).
+/// READ + PROFILE: the payload names a slot (protocol sec 5.2).
 pub fn build_read_profile(id: u8, slot: u8) -> Vec<u8> {
     build_instruction(id, Opcode::Read, Inst::FLAG_PROFILE, &[slot])
 }
 
 /// Broadcast MGMT ENUM: `prefix_len` bits (0..=128) + `ceil(prefix_len/8)`
-/// prefix bytes, LSB-first bit stream (§9.2; mirrors `EnumReq`).
+/// prefix bytes, LSB-first bit stream (protocol sec 9.2; mirrors `EnumReq`).
 pub fn build_enum(prefix_len: u8, prefix: &[u8]) -> Vec<u8> {
     let mut payload = vec![MgmtOp::Enum as u8, prefix_len];
     payload.extend_from_slice(prefix);
     build_instruction(Id::BROADCAST.as_byte(), Opcode::Mgmt, 0, &payload)
 }
 
-/// Broadcast MGMT ASSIGN: `uid(16)` + `new_id` (§9.2; mirrors `AssignReq`).
+/// Broadcast MGMT ASSIGN: `uid(16)` + `new_id` (protocol sec 9.2; mirrors `AssignReq`).
 pub fn build_assign(uid: &[u8; UID_LEN], new_id: u8) -> Vec<u8> {
     let mut payload = vec![MgmtOp::Assign as u8];
     payload.extend_from_slice(uid);
@@ -116,9 +116,9 @@ pub fn build_assign(uid: &[u8; UID_LEN], new_id: u8) -> Vec<u8> {
     build_instruction(Id::BROADCAST.as_byte(), Opcode::Mgmt, 0, &payload)
 }
 
-/// Broadcast MGMT CAL announce (§9.3; mirrors `CalReq`): commits the host to
+/// Broadcast MGMT CAL announce (protocol sec 9.3; mirrors `CalReq`): commits the host to
 /// follow with `gaps + 1` bare breaks spaced exactly `gap_us` apart. Draws no
-/// reply — an ack's own break would enter the train.
+/// reply -- an ack's own break would enter the train.
 pub fn build_cal(gap_us: u16, gaps: u8) -> Vec<u8> {
     let mut payload = vec![MgmtOp::Cal as u8];
     payload.extend_from_slice(&gap_us.to_le_bytes());
@@ -126,19 +126,19 @@ pub fn build_cal(gap_us: u16, gaps: u8) -> Vec<u8> {
     build_instruction(Id::BROADCAST.as_byte(), Opcode::Mgmt, 0, &payload)
 }
 
-/// MGMT SAVE (§9.4). The ack arrives only after the erase + program stall —
+/// MGMT SAVE (protocol sec 9.4). The ack arrives only after the erase + program stall --
 /// exchange with a SAVE-specific window, not the standard settle.
 pub fn build_save(id: u8) -> Vec<u8> {
     build_instruction(id, Opcode::Mgmt, 0, &[MgmtOp::Save as u8])
 }
 
-/// MGMT FACTORY (§9.5): wipes both saved slots, acks (same stall caveat as
+/// MGMT FACTORY (protocol sec 9.5): wipes both saved slots, acks (same stall caveat as
 /// SAVE), then the servo reboots itself.
 pub fn build_factory(id: u8) -> Vec<u8> {
     build_instruction(id, Opcode::Mgmt, 0, &[MgmtOp::Factory as u8])
 }
 
-/// MGMT REBOOT (§9.5): acks first, then resets once the ack has drained.
+/// MGMT REBOOT (protocol sec 9.5): acks first, then resets once the ack has drained.
 pub fn build_reboot(id: u8) -> Vec<u8> {
     build_instruction(id, Opcode::Mgmt, 0, &[MgmtOp::Reboot as u8])
 }
@@ -151,7 +151,7 @@ pub fn build_write(id: u8, addr: u16, data: &[u8]) -> Vec<u8> {
     build_instruction(id, Opcode::Write, 0, &payload)
 }
 
-/// Uniform GWRITE payload: `addr(2) count(1) [id(1) data(count)]×`, every target
+/// Uniform GWRITE payload: `addr(2) count(1) [id(1) data(count)]x`, every target
 /// sharing `data.len()` (mirrors `osc_protocol::group::GwriteUniform`). `count`
 /// is taken from the first entry.
 pub fn gwrite_uniform_payload(addr: u16, entries: &[(u8, &[u8])]) -> Vec<u8> {
@@ -166,7 +166,7 @@ pub fn gwrite_uniform_payload(addr: u16, entries: &[(u8, &[u8])]) -> Vec<u8> {
     p
 }
 
-/// Uniform GREAD payload: `addr(2) count(2) id-list` — one span, many servos
+/// Uniform GREAD payload: `addr(2) count(2) id-list` -- one span, many servos
 /// (mirrors `osc_protocol::group::GreadUniform`).
 pub fn gread_uniform_payload(addr: u16, count: u16, ids: &[u8]) -> Vec<u8> {
     let mut p = Vec::with_capacity(4 + ids.len());
@@ -191,8 +191,8 @@ pub struct Exchange {
     pub status: StatusFrame,
     pub turnaround_ticks: u32,
     /// Stamp index one past the reply frame. Stamps beyond it are energy the
-    /// parse ignored — for broadcast ENUM that means a slot-delayed peer's
-    /// reply trailing the winner's clean frame (§9.2): a collision, not a
+    /// parse ignored -- for broadcast ENUM that means a slot-delayed peer's
+    /// reply trailing the winner's clean frame (protocol sec 9.2): a collision, not a
     /// unique match.
     pub stamps_end: usize,
 }
@@ -307,7 +307,7 @@ mod tests {
 
     #[test]
     fn build_ping_matches_wire_vector() {
-        // CRC-16/ARC over `01 03 10` = 0xFC50 (osc-native-protocol.md §3.2).
+        // CRC-16/ARC over `01 03 10` = 0xFC50 (osc-native-protocol.md sec 3.2).
         assert_eq!(build_ping(1), [0x01, 0x03, 0x10, 0x50, 0xFC]);
     }
 
@@ -349,7 +349,7 @@ mod tests {
     #[test]
     fn parses_ping_exchange() {
         // A ping reply carries model(2) + fw(1), status Ok (INST 0x80). Build the
-        // frame with a computed CRC-16/ARC (§3.2) so it stays valid across CRC
+        // frame with a computed CRC-16/ARC (protocol sec 3.2) so it stays valid across CRC
         // changes; the 0x00 break stamp leads on the wire (init-0 no-op).
         const SPACING: u32 = 1440; // 1 Mbaud @ 144 ticks/bit
         const BIT_TICKS: u32 = 144;

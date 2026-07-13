@@ -1,4 +1,4 @@
-//! osc-native ping: measure TURNAROUND — the project's success metric. Pings a
+//! osc-native ping: measure TURNAROUND -- the project's success metric. Pings a
 //! servo `count` times over the pirate and reports the turnaround distribution.
 
 use anyhow::{Result, bail};
@@ -21,7 +21,7 @@ struct Args {
     /// Print a line per ping.
     #[arg(short, long)]
     verbose: bool,
-    /// Corrupt the wire CRC: every ping must draw SILENCE (§5.3 layer 1 —
+    /// Corrupt the wire CRC: every ping must draw SILENCE (protocol sec 5.3 layer 1 --
     /// a bad frame is never answered) and bump the servo's crc_fail counter.
     #[arg(long, default_value_t = false)]
     corrupt: bool,

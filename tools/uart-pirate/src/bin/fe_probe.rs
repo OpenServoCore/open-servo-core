@@ -1,18 +1,18 @@
-//! V203 FE-latch isolation probe (task #26 parked curiosity): does
+//! V203 FE-latch isolation probe: does
 //! STATR.FE ever latch for a break on this die when NOTHING else
-//! touches the USART — no DMA, no interrupts, no LIN, no stray
+//! touches the USART -- no DMA, no interrupts, no LIN, no stray
 //! register traffic? The pirate app couldn't answer this: its vector
-//! reads STATR on every entry (arming the SR half of the SR→DR clear)
+//! reads STATR on every entry (arming the SR half of the SR->DR clear)
 //! and its RX DMA's DATAR access completes the pair, so a latched FE
 //! could be retired within nanoseconds of setting.
 //!
-//! Self-loop over the bench PB10↔PB11 bridge, 250 kbaud on stock
-//! 8 MHz HSI, receiver always M=0. Four phases × 50 trials:
+//! Self-loop over the bench PB10<->PB11 bridge, 250 kbaud on stock
+//! 8 MHz HSI, receiver always M=0. Four phases x 50 trials:
 //!
 //!   0: hardware SBK break (also measures V203 SBK length on a scope)
-//!   1: GPIO-timed 10.0-bit low — the protocol-law shape
-//!   2: GPIO-timed  9.9-bit low — a fast transmitter's law break
-//!   3: GPIO-timed  5.0-bit low — sub-char garble control (no FE due)
+//!   1: GPIO-timed 10.0-bit low -- the protocol-law shape
+//!   2: GPIO-timed  9.9-bit low -- a fast transmitter's law break
+//!   3: GPIO-timed  5.0-bit low -- sub-char garble control (no FE due)
 //!
 //! Per trial three words land in `FE_RESULTS`: STATR after a settle,
 //! DATAR, STATR after the DR read. `FE_RESULTS[0]` turns to the magic
@@ -51,7 +51,7 @@ fn delay_ticks(n: u32) {
 }
 
 /// Drive PB10 low as plain GPIO for `tenth_bits`/10 bit-times, then
-/// hand back to USART3 AF (TE holds mark) — a break of exact,
+/// hand back to USART3 AF (TE holds mark) -- a break of exact,
 /// M-independent length at the M=0 receiver.
 fn pulse_low_tenths(tenth_bits: u32) {
     GPIOB.bshr().write(|w| w.set_br(10, true));
@@ -101,7 +101,7 @@ fn main() -> ! {
     for phase in 0..PHASES {
         for _ in 0..TRIALS {
             // Fresh LBD verdict per trial (rc_w0 clear, the app's
-            // clear_lbd_only pattern) — the v2 question: does the break
+            // clear_lbd_only pattern) -- the v2 question: does the break
             // DETECTOR run with LINEN=0, and down to what break length?
             USART3.statr().write(|w| {
                 w.0 = u32::MAX;
@@ -116,7 +116,7 @@ fn main() -> ! {
                 2 => pulse_low_tenths(99),
                 _ => pulse_low_tenths(50),
             }
-            // Settle ≥ 3 chars past the event before the one snapshot.
+            // Settle >= 3 chars past the event before the one snapshot.
             delay_ticks(BIT_TICKS * 30);
             let s1 = USART3.statr().read().0;
             let dr = USART3.datar().read().0;

@@ -1,9 +1,9 @@
 //! Host seam stationarity on silicon: the differential chain-pair tracker
-//! (§9.3) reads drift as a shift from a baseline that only means anything
+//! (protocol sec 9.3) reads drift as a shift from a baseline that only means anything
 //! if the host's queuing seam between back-to-back silent instructions is
 //! stationary. This tool measures that seam from the pirate's own TX echo
-//! stamps — bursts of identical WRITE(NOREPLY) frames, break-to-break
-//! spans inside each burst — and reports the distribution against the
+//! stamps -- bursts of identical WRITE(NOREPLY) frames, break-to-break
+//! spans inside each burst -- and reports the distribution against the
 //! servo's own pair gate (wire/16) and the per-pair ppm noise floor.
 
 use std::thread::sleep;
@@ -23,7 +23,7 @@ const BREAK: u8 = 0x00;
 const BITS_PER_BYTE: u32 = 10;
 /// A burst's wire time is well under a millisecond at any supported baud.
 const SETTLE_MS: u64 = 3;
-/// The servo's pair-qualification gate: |err| ≤ wire/2^4 (drivers
+/// The servo's pair-qualification gate: |err| <= wire/2^4 (drivers
 /// `TRIM_GATE_SHIFT`). A seam past it disqualifies every pair.
 const GATE_SHIFT: u32 = 4;
 
@@ -34,7 +34,7 @@ struct Args {
     conn: Connect,
     #[command(flatten)]
     target: Target,
-    /// Frames per burst (spans per burst = frames − 1).
+    /// Frames per burst (spans per burst = frames - 1).
     #[arg(long, default_value_t = 16)]
     frames: u32,
     /// Bursts.
@@ -85,13 +85,13 @@ fn main() -> Result<()> {
     println!("frames/burst {}  bursts {}", args.frames, args.count);
 
     // One silent write, repeated: every adjacent break pair brackets
-    // exactly one CRC-verified silent instruction — the tracker's food.
+    // exactly one CRC-verified silent instruction -- the tracker's food.
     let mut payload = GOAL_POSITION_ADDR.to_le_bytes().to_vec();
     payload.extend_from_slice(&0i32.to_le_bytes());
     let frame = build_instruction(args.target.id, Opcode::Write, Inst::FLAG_NOREPLY, &payload);
     let burst: Vec<Vec<u8>> = (0..args.frames).map(|_| frame.clone()).collect();
-    // The servo models the span as footprint·tpb: break ring byte + frame
-    // bytes, 10 bits each (§9.3). The seam is the span's excess over it.
+    // The servo models the span as footprint*tpb: break ring byte + frame
+    // bytes, 10 bits each (protocol sec 9.3). The seam is the span's excess over it.
     let wire_ticks = (1 + frame.len() as u32) * BITS_PER_BYTE * bit_ticks;
 
     let mut seams_us: Vec<f64> = Vec::new();

@@ -8,7 +8,7 @@ use crate::support::bench;
 const BROADCAST: u8 = 0xFE;
 
 /// WRITE+HOLD stages the value (the live field stays put); a broadcast COMMIT
-/// applies it. osc collapses DXL's RegWrite/Action into HOLD + COMMIT (§5). The
+/// applies it. osc collapses DXL's RegWrite/Action into HOLD + COMMIT (protocol sec 5). The
 /// original is restored (state discipline).
 #[test]
 #[serial]
