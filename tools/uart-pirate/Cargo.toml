@@ -1,0 +1,61 @@
+[package]
+name    = "uart-pirate"
+version = "0.1.0"
+edition = "2024"
+description = "Host-commanded half-duplex UART multi-tool (snoop + injection + hardware-stamped capture) firmware for nanoCH32V203 -- used by tools/bench"
+
+[[bin]]
+name  = "uart-pirate"
+path  = "src/main.rs"
+
+[dependencies]
+# PAC directly; no ch32-hal layer. uart-pirate's surface (TIM2/TIM3 IC,
+# USART3 + DMA, USBD) is mostly hot-path register pokes that the HAL's
+# abstractions either get in the way of or don't cover at all (custom
+# DMA1 channel ISRs collide with ch32-hal's auto-generated stubs). What
+# the HAL did provide -- RCC init, V20x USBD -> embassy-usb-driver bridge,
+# GPIO pin setup -- is vendored locally under `src/rcc.rs`, `src/usbd.rs`,
+# and inline pin pokes. Pinned to the same metapac rev ch32-hal main
+# uses.
+ch32-metapac = { git = "https://github.com/ch32-rs/ch32-metapac", rev = "23d667214e30fae690c739d27efca4cfe0e042d0", features = [
+  "ch32v203c8t6",
+  "rt",
+  "memory-x",
+] }
+# Pinned to git main for ch32-rs/qingke#25 -- V4 critical-section uses
+# the 0x88 mask (MIE + MPIE together) to avoid an INESTEN=1
+# MIE-stuck-at-0 wedge when `critical_section::with` runs inside an ISR
+# body.
+qingke    = { git = "https://github.com/ch32-rs/qingke", features = ["v4", "critical-section-impl"] }
+qingke-rt = { git = "https://github.com/ch32-rs/qingke", features = ["v4"] }
+
+embassy-executor         = { version = "0.10", features = ["platform-spin", "executor-thread"] }
+embassy-futures          = "0.1"
+embassy-sync             = "0.8"
+embassy-time             = "0.5"
+embassy-time-driver      = "0.2"
+embassy-time-queue-utils = "0.3"
+embassy-usb              = { version = "0.6", default-features = false }
+embassy-usb-driver       = "0.2"
+
+portable-atomic  = { version = "1", features = ["unsafe-assume-single-core"] }
+critical-section = "1"
+heapless         = "0.8"
+static_cell      = "2"
+
+panic-halt = "1"
+
+[profile.release]
+opt-level     = 3
+lto           = true
+codegen-units = 1
+panic         = "abort"
+debug         = 2
+
+[profile.dev]
+opt-level     = 3
+lto           = true
+codegen-units = 1
+debug         = 2
+debug-assertions = false
+
