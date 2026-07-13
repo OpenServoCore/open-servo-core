@@ -1,20 +1,23 @@
 //! osc-native transport composite (`docs/osc-native-protocol.md`, driver-pattern
-//! §4, §5.4). Routes break/deadline/TX events between the three sub-drivers
-//! (`Framer`, `Chain`, `TxEngine`), owns the one hardware CRC engine both TX
-//! generation and RX validation share, and muxes their deadlines onto the
-//! single tick-compare.
+//! §4, §5.4). Routes break/deadline/TX events between the four sub-drivers
+//! (`Framer`, `Chain`, `TxEngine`, `ClockTracker`), owns the one hardware CRC
+//! engine both TX generation and RX validation share, and muxes their
+//! deadlines onto the single tick-compare.
 
-use osc_core::traits::{Dispatch, Dispatched, Reply, Request, RequestCtx, SendError, Status};
+use osc_core::traits::Dispatch;
 use osc_core::{BaudRate, BootMode};
-use osc_protocol::wire::{ENUM_REPLY_SLOTS, Id, Inst, Opcode, ResultCode};
+use osc_protocol::wire::{Id, Opcode};
 
-use super::chain::{Chain, ChainOut};
+use super::chain::Chain;
 use super::clock::ClockTracker;
-use super::decode::{Decoded, decode};
-use super::framer::{FrameSpan, Framer, FramerOut};
+use super::framer::Framer;
+use super::ring_wrap;
 use super::tx::{TxEngine, TxOut};
-use super::{frame_view, ring_wrap};
-use crate::traits::bus::{CrcEngine, Deadline, Providers, RxRing, TxWire, UsartBaud, tick_reached};
+use crate::traits::bus::{Deadline, Providers, RxRing, UsartBaud, tick_reached};
+
+mod crc;
+mod reply;
+mod route;
 
 /// µs-per-byte numerator: 10 bit-times/byte × 1e6 µs/s. `tpb = TICKS_PER_US ×
 /// this / baud` stays within u32 for all four operational rates.
@@ -235,7 +238,7 @@ impl<P: Providers> ServoBus<P> {
 
     /// A verified frame between breaks: classify its shape from ring data
     /// (only silent shapes pair) and record it with the tracker.
-    fn drift_note_verified(&mut self, anchor: u16, footprint: u16) {
+    pub(super) fn drift_note_verified(&mut self, anchor: u16, footprint: u16) {
         // A second frame collapses the record to Many — its shape is never
         // read, so skip the ring classification.
         if !self.clock.pair_open() {
@@ -335,17 +338,17 @@ impl<P: Providers> ServoBus<P> {
         self.clock.poll()
     }
 
-    fn reply_gap(&self) -> u32 {
+    pub(super) fn reply_gap(&self) -> u32 {
         super::REPLY_GAP_US * <P::Deadline as Deadline>::TICKS_PER_US
     }
 
-    fn reclaim(&self) -> u32 {
+    pub(super) fn reclaim(&self) -> u32 {
         self.response_deadline_us as u32 * <P::Deadline as Deadline>::TICKS_PER_US
     }
 
     /// How long an observed predecessor break suspends its reclaim window:
     /// the largest legal frame plus the snooper's own end-detection slack.
-    fn frame_allowance(&self) -> u32 {
+    pub(super) fn frame_allowance(&self) -> u32 {
         (super::FRAME_MAX as u32 + FRAME_ALLOWANCE_SLACK_BYTES) * self.tpb
     }
 
@@ -374,64 +377,6 @@ impl<P: Providers> ServoBus<P> {
         match best {
             Some(at) => self.deadline.set(at),
             None => self.deadline.cancel(),
-        }
-    }
-
-    /// Drive the resolver as far as ring DATA allows (A2): complete backlog
-    /// frames process in-line with zero clock involvement; the frontier arms
-    /// a deadline and returns. Bounded per wake — past the bound the framer
-    /// slot re-arms at `now` (pend-on-past re-entry) so the other mux slots
-    /// are never starved by a deep backlog.
-    fn drive_framer<D: Dispatch>(&mut self, d: &mut D) {
-        for _ in 0..FRAMES_PER_WAKE {
-            let now = self.deadline.now();
-            let out = self
-                .framer
-                .resolve(self.ring.bytes(), self.ring.cursor(), now, self.tpb);
-            match out {
-                FramerOut::None => {
-                    self.framer_at = None;
-                    return;
-                }
-                FramerOut::Wait(t) => {
-                    self.framer_at = Some(t);
-                    return;
-                }
-                FramerOut::Covered { span, end_due } => {
-                    self.framer_at = Some(end_due);
-                    self.route_frame(span, false, d);
-                    return;
-                }
-                FramerOut::Frame(span) => {
-                    self.on_frame_end(span, d);
-                }
-            }
-        }
-        self.framer_at = Some(self.deadline.now());
-    }
-
-    fn route_chain(&mut self, mut out: ChainOut) {
-        loop {
-            match out {
-                ChainOut::None => return,
-                ChainOut::Wait(t) => {
-                    // A wait tick already reached needs no scheduling round
-                    // trip: consume the slot in place (high-baud grids and
-                    // backlog replies are past-due by sequencing time, and
-                    // an expired reclaim window is a reclaim by definition).
-                    let now = self.deadline.now();
-                    if !tick_reached(now, t) {
-                        self.chain_at = Some(t);
-                        return;
-                    }
-                    out = self.chain.on_deadline(now);
-                }
-                ChainOut::Trigger { predecessor_silent } => {
-                    let over = predecessor_silent.then_some(ResultCode::PredecessorSilent);
-                    self.tx.trigger(&mut self.crc, over);
-                    return;
-                }
-            }
         }
     }
 
@@ -476,433 +421,11 @@ impl<P: Providers> ServoBus<P> {
     /// applies directly on that contract). Everything else dispatches ahead of
     /// its verdict, effects gated by it. Read from the same INST byte
     /// [`decode`] reads, so routing and dispatch can never disagree.
-    fn verdict_first(&self, anchor: u16) -> bool {
+    pub(super) fn verdict_first(&self, anchor: u16) -> bool {
         !matches!(
             self.ring_inst(anchor).opcode(),
             Some(Opcode::Ping | Opcode::Read | Opcode::Gread | Opcode::Write | Opcode::Gwrite)
         )
-    }
-
-    /// Frame end (deadline B): a pending frame gets its verdict; anything else
-    /// is a complete frame entering the spine ([`Self::route_frame`]).
-    fn on_frame_end<D: Dispatch>(&mut self, span: FrameSpan, d: &mut D) {
-        match self.pending.take() {
-            Some(p) if p.anchor == span.anchor && p.footprint == span.footprint => {
-                self.verify(p, d);
-            }
-            Some(_) => {
-                // Defensive: a pending frame that isn't this one — drop it. Any
-                // dangling staged write is reclaimed by the dispatcher
-                // auto-revert on the next dispatch.
-                self.drop_staged();
-                self.route_frame(span, true, d);
-            }
-            None => self.route_frame(span, true, d),
-        }
-    }
-
-    /// The spine: dispatch a frame ahead of its CRC verdict when its effects
-    /// can stage (§4). `complete` distinguishes a whole frame (backlog / fast
-    /// path — every byte incl. the CRC is ringed, so the verdict fires now)
-    /// from a frontier frame at its covered checkpoint (the two CRC bytes still
-    /// inbound — the verdict is deferred to the frame end). A stageable op
-    /// (ping/read/gread/write/gwrite) dispatches inline with the CRC feed
-    /// chewing underneath; the verdict gates its effects — SEND/DON'T-SEND of a
-    /// staged reply, COMMIT/REVERT of a staged write. Verdict-first ops
-    /// (COMMIT/MGMT, effects unstageable) and any frame overlapping a live
-    /// reply pipeline check the CRC first, then dispatch. A frontier frame that
-    /// lands in the verdict-first path just defers — its frame end arrives here
-    /// `complete`.
-    fn route_frame<D: Dispatch>(&mut self, span: FrameSpan, complete: bool, d: &mut D) {
-        let anchor = span.anchor;
-        let footprint = span.footprint;
-        let packet_end = span.packet_end;
-        // Status frames only advance the snoop chain (§6) — framing-level
-        // truth, NO validation: the chain consumes nothing from the body, and
-        // skipping the CRC keeps the snapshot buffer free while our own reply
-        // streams from it. A frontier status defers to its frame end.
-        if self.ring_inst(anchor).is_status() {
-            if complete {
-                let out = self.chain.on_status_end(packet_end);
-                self.route_chain(out);
-            }
-            return;
-        }
-        // The spine runs only from an idle reply pipeline: superseding a live
-        // chain or staged reply belongs AFTER the CRC gate (a garbled frame
-        // must touch nothing, §5.3 L1), so those overlaps fall to verdict-first
-        // below. The guard also keeps the CRC engine free through a pending
-        // window — chain/tx activate only at a verdict, so no trigger reset
-        // can clobber a fed span.
-        if !self.chain.active() && !self.tx.busy() && !self.verdict_first(anchor) {
-            // Feed first so the engine chews the covered span under the
-            // dispatch body; the verdict then finds it settled.
-            self.crc_feed(anchor, footprint);
-            let (staged, slot, table) =
-                match self
-                    .dispatch_decoded(anchor, footprint, |req, ctx, h| d.dispatch(req, ctx, h))
-                {
-                    Some((staged, slot, out)) => (staged, slot, matches!(out, Dispatched::Pending)),
-                    // Skip (a group op not listing us): a bare verdict moves the
-                    // ladder (complete); the frame end does it for a frontier.
-                    None if complete => (false, 0, false),
-                    None => return,
-                };
-            let p = Pending {
-                anchor,
-                footprint,
-                packet_end,
-                slot,
-                staged,
-                table,
-            };
-            if complete {
-                self.verify(p, d);
-            } else {
-                self.pending = Some(p);
-            }
-            return;
-        }
-        // Verdict-first (only meaningful complete — a frontier defers): the CRC
-        // is checked before any effect. COMMIT/MGMT (unstageable), and frames
-        // overlapping a live reply pipeline. A fail drops silently (§5.3 L1),
-        // the hunt resuming one byte in (§3.3).
-        if !complete {
-            return;
-        }
-        if !self.crc_ok(anchor, footprint) {
-            if !self.framer.probing() {
-                self.crc_fails = self.crc_fails.wrapping_add(1);
-            }
-            let len = self.ring.bytes().len();
-            self.framer.on_frame_rejected(anchor, len);
-            return;
-        }
-        self.framer.on_frame_verified();
-        self.drift_note_verified(anchor, footprint);
-        // A fresh instruction supersedes any stale, not-yet-streaming reply —
-        // post-verdict, so a garbled frame touched nothing.
-        self.chain.reset();
-        self.chain_at = None;
-        if self.tx.staged() {
-            self.tx.abort();
-        }
-        // Dispatch inline — the CRC already passed, so a staged table effect
-        // commits directly and any reply sequences from the packet end. A frame
-        // that decodes as another servo's touches nothing.
-        let Some((staged, slot, out)) =
-            self.dispatch_decoded(anchor, footprint, |req, ctx, h| d.dispatch(req, ctx, h))
-        else {
-            return;
-        };
-        if matches!(out, Dispatched::Pending) {
-            let mut handle = self.reply_handle();
-            d.commit(&mut handle);
-        }
-        if staged && self.tx.staged() {
-            self.sequence_reply(slot, packet_end);
-        }
-    }
-
-    /// Verify a pending frame's CRC and resolve the verdict. Pass → commit a
-    /// staged table effect (COMMIT) and sequence a staged reply (SEND); fail
-    /// (or spin miss) → revert the write (REVERT), drop the reply
-    /// (DON'T-SEND), count, and rewind the ladder (§5.3 L1).
-    #[cfg_attr(target_os = "none", unsafe(link_section = ".highcode"))]
-    #[cfg_attr(target_os = "none", inline(never))]
-    fn verify<D: Dispatch>(&mut self, p: Pending, d: &mut D) {
-        if !self.crc_verify(p.anchor, p.footprint) {
-            if p.table {
-                d.revert();
-            }
-            self.drop_staged();
-            if !self.framer.probing() {
-                self.crc_fails = self.crc_fails.wrapping_add(1);
-            }
-            let len = self.ring.bytes().len();
-            self.framer.on_frame_rejected(p.anchor, len);
-            return;
-        }
-        self.framer.on_frame_verified();
-        self.drift_note_verified(p.anchor, p.footprint);
-        if p.table {
-            let mut handle = self.reply_handle();
-            d.commit(&mut handle);
-        }
-        // Sequence from the ENGINE's state, not the recorded flag: any path
-        // that reclaimed the staged reply between dispatch and here would
-        // otherwise arm the chain over an empty engine (ghost trigger).
-        if p.staged && self.tx.staged() {
-            self.sequence_reply(p.slot, p.packet_end);
-        }
-    }
-
-    /// Sequence a staged reply onto the snoop chain. reply gap is a wire gap
-    /// measured from the packet end (§7), not from this (later) verify wake —
-    /// the estimate is the framer's, conservative by the drift adder.
-    fn sequence_reply(&mut self, slot: u8, packet_end: u32) {
-        // §9.2 slot delay: a collision-tolerant reply offsets its trigger by
-        // (key ^ tick) & (SLOTS-1) byte-times. Twin matchers run
-        // cycle-identical firmware and otherwise answer in unison — and a
-        // sub-bit-aligned superposition of near-equal frames reads back as
-        // ONE clean frame instead of collision garble (task #30). The tick
-        // term re-draws every exchange, so equal keys never stick.
-        let gap = match self.tx.slot_key() {
-            Some(key) => {
-                let draw = (key ^ self.deadline.now() as u8) & (ENUM_REPLY_SLOTS - 1);
-                self.reply_gap().wrapping_add(draw as u32 * self.tpb)
-            }
-            None => self.reply_gap(),
-        };
-        let out = self.chain.on_reply_staged(
-            slot,
-            packet_end,
-            gap,
-            self.reclaim(),
-            self.frame_allowance(),
-        );
-        self.route_chain(out);
-    }
-
-    /// Drop a not-yet-streaming staged reply and any chain sequencing it began.
-    fn drop_staged(&mut self) {
-        if self.tx.staged() {
-            self.tx.abort();
-        }
-        self.chain.reset();
-        self.chain_at = None;
-    }
-
-    /// View the frame as up to two ring segments (one span unless it wraps the
-    /// seam), decode, and run `f` over disjoint borrows (driver-pattern §4.3):
-    /// the decoded request borrows the ring while `f` stages a reply through the
-    /// [`ReplyHandle`]. Returns `(staged, slot, f-result)`, or `None` for a frame
-    /// that isn't ours.
-    fn dispatch_decoded<T>(
-        &mut self,
-        anchor: u16,
-        footprint: u16,
-        f: impl FnOnce(Request<'_>, RequestCtx, &mut ReplyHandle<'_, P::Tx, P::Crc>) -> T,
-    ) -> Option<(bool, u8, T)> {
-        let frame = frame_view(self.ring.bytes(), anchor, footprint);
-        let (req, ctx, slot) = match decode(frame, self.id) {
-            Decoded::Own(req, ctx, slot) => (req, ctx, slot),
-            _ => return None,
-        };
-        // §9.2: an ENUM reply's staged wire effect is collision-tolerant —
-        // its job is to collide with peer matchers (the on_break kill site
-        // skips it, and staging keys its slot delay off the UID payload).
-        let tolerant = matches!(req, Request::Enumerate { .. });
-        // Disjoint field borrows: `frame`/`req` hold `&self.ring`; the handle
-        // takes the reply-staging fields mutably.
-        let mut handle = ReplyHandle {
-            tx: &mut self.tx,
-            crc: &mut self.crc,
-            id: &mut self.id,
-            pending_id: &mut self.pending_id,
-            pending_baud: &mut self.pending_baud,
-            pending_reboot: &mut self.pending_reboot,
-            pending_cal: &mut self.clock.pending_cal,
-            response_deadline_us: &mut self.response_deadline_us,
-            staged: false,
-            tolerant,
-        };
-        let out = f(req, ctx, &mut handle);
-        Some((handle.staged, slot, out))
-    }
-
-    /// A reply surface over the deferred-config fields, with no request decode —
-    /// used at verdict commit, where hooks stage baud/id but no frame is
-    /// re-parsed (the ring isn't borrowed here).
-    fn reply_handle(&mut self) -> ReplyHandle<'_, P::Tx, P::Crc> {
-        ReplyHandle {
-            tx: &mut self.tx,
-            crc: &mut self.crc,
-            id: &mut self.id,
-            pending_id: &mut self.pending_id,
-            pending_baud: &mut self.pending_baud,
-            pending_reboot: &mut self.pending_reboot,
-            pending_cal: &mut self.clock.pending_cal,
-            response_deadline_us: &mut self.response_deadline_us,
-            staged: false,
-            tolerant: false,
-        }
-    }
-
-    /// Feed the covered span into the CRC engine straight from the ring — no
-    /// M2M staging. Even-align the halfword feed by dropping the break's
-    /// leading `0x00` when the anchor is odd (an init-0 no-op, so the CRC is
-    /// unchanged); the ring base is halfword-aligned (`ring` is
-    /// `repr(align(2))`). A ring-wrap splits into two accumulating arms — the
-    /// engine sums across them. A trailing odd byte is left for the fold at
-    /// verify. Direct feed is safe against the live circular ring: the engine
-    /// runs ~8× wire speed, so it drains the covered span long before the write
-    /// cursor could lap the ring back onto it.
-    #[cfg_attr(target_os = "none", unsafe(link_section = ".highcode"))]
-    #[cfg_attr(target_os = "none", inline(never))]
-    fn crc_feed(&mut self, anchor: u16, footprint: u16) {
-        let ring = self.ring.bytes();
-        let len = ring.len();
-        let anchor = anchor as usize;
-        let start = anchor + (anchor & 1);
-        let end = anchor + footprint as usize - 2;
-        let bulk_end = end - ((end - start) & 1);
-        self.crc.reset();
-        if bulk_end <= len {
-            self.crc.feed(&ring[start..bulk_end]);
-        } else {
-            self.crc.feed(&ring[start..len]);
-            self.crc.feed(&ring[..bulk_end - len]);
-        }
-    }
-
-    /// The covered byte the even-bulk feed left behind, if the span was odd.
-    fn crc_tail(&self, anchor: u16, footprint: u16) -> Option<u8> {
-        let ring = self.ring.bytes();
-        let len = ring.len();
-        let anchor = anchor as usize;
-        let start = anchor + (anchor & 1);
-        let end = anchor + footprint as usize - 2;
-        if (end - start) & 1 == 1 {
-            Some(ring[(end - 1) % len])
-        } else {
-            None
-        }
-    }
-
-    /// Poll the CRC result, fold the trailing odd byte if the feed left one
-    /// (§3.2), and compare against the little-endian wire CRC at the
-    /// covered-span end. A spin miss counts as a fail — indistinguishable from
-    /// a bad frame, and never wedges the wire. Requires a prior
-    /// [`Self::crc_feed`] of the same span.
-    fn crc_verify(&mut self, anchor: u16, footprint: u16) -> bool {
-        let ring = self.ring.bytes();
-        let len = ring.len();
-        let covered = footprint as usize - 2;
-        let end = anchor as usize + covered;
-        let wire = u16::from_le_bytes([ring[end % len], ring[(end + 1) % len]]);
-        let tail = self.crc_tail(anchor, footprint);
-        let mut budget = super::SPIN_PER_BYTE * covered as u32;
-        loop {
-            if let Some(v) = self.crc.result() {
-                let v = match tail {
-                    Some(b) => osc_protocol::crc::osc_crc_continue(v, &[b]),
-                    None => v,
-                };
-                return v == wire;
-            }
-            if budget == 0 {
-                return false;
-            }
-            budget -= 1;
-            core::hint::spin_loop();
-        }
-    }
-
-    /// Feed then verify the covered span against the wire CRC (the full,
-    /// non-front-loaded path).
-    fn crc_ok(&mut self, anchor: u16, footprint: u16) -> bool {
-        if self.ring.bytes().is_empty() || (footprint as usize) < 2 {
-            return false;
-        }
-        self.crc_feed(anchor, footprint);
-        self.crc_verify(anchor, footprint)
-    }
-
-    /// The INST byte, 3 slots past the anchor (`[0x00][ID][LEN][INST]`).
-    fn ring_inst(&self, anchor: u16) -> Inst {
-        let ring = self.ring.bytes();
-        let len = ring.len();
-        Inst(ring[(anchor as usize + 3) % len])
-    }
-}
-
-/// Reply surface over disjoint `ServoBus` fields (driver-pattern §4.3): the
-/// decoded request still borrows the ring while the dispatcher stages the
-/// reply into the TX engine and the deferred-config fields.
-struct ReplyHandle<'a, W: TxWire, C: CrcEngine> {
-    tx: &'a mut TxEngine<W>,
-    crc: &'a mut C,
-    /// Write-through to the bus id: `set_id` applies here so a status staged
-    /// after it already carries the new id (the ASSIGN ack, §9.2).
-    id: &'a mut u8,
-    pending_id: &'a mut Option<u8>,
-    pending_baud: &'a mut Option<BaudRate>,
-    pending_reboot: &'a mut Option<BootMode>,
-    pending_cal: &'a mut Option<(u16, u8)>,
-    response_deadline_us: &'a mut u16,
-    staged: bool,
-    /// §9.2: the request is a broadcast ENUM — a reply staged through this
-    /// handle is marked collision-tolerant, keyed off its own payload (the
-    /// responder's UID) for the slot draw.
-    tolerant: bool,
-}
-
-/// §9.2 slot key: the reply payload IS the responder's UID for ENUM — fold
-/// its osc-CRC to a byte. The CRC mixing keeps same-reel sequential serials
-/// apart; sequencing XORs in the live tick, so equal keys still re-roll.
-fn slot_key(payload: &[u8]) -> u8 {
-    let crc = osc_protocol::crc::osc_crc(payload);
-    (crc ^ (crc >> 8)) as u8
-}
-
-impl<W: TxWire, C: CrcEngine> Reply for ReplyHandle<'_, W, C> {
-    fn send_status(&mut self, status: Status<'_>) -> Result<(), SendError> {
-        let r = self
-            .tx
-            .stage(self.crc, *self.id, status.result, status.alert, status.data);
-        if r.is_ok() {
-            self.staged = true;
-            if self.tolerant {
-                self.tx.mark_collision_tolerant(slot_key(status.data));
-            }
-        }
-        r
-    }
-
-    fn send_status_gather(
-        &mut self,
-        result: ResultCode,
-        alert: bool,
-        spans: &[&[u8]],
-    ) -> Result<(), SendError> {
-        let r = self
-            .tx
-            .stage_gather(self.crc, *self.id, result, alert, spans);
-        if r.is_ok() {
-            self.staged = true;
-            if self.tolerant {
-                let crc = spans
-                    .iter()
-                    .fold(0, |c, s| osc_protocol::crc::osc_crc_continue(c, s));
-                self.tx.mark_collision_tolerant((crc ^ (crc >> 8)) as u8);
-            }
-        }
-        r
-    }
-
-    fn stage_id(&mut self, id: u8) {
-        *self.pending_id = Some(id);
-    }
-
-    fn set_id(&mut self, id: u8) {
-        *self.id = id;
-    }
-
-    fn stage_baud(&mut self, baud: BaudRate) {
-        *self.pending_baud = Some(baud);
-    }
-
-    fn set_response_deadline(&mut self, us: u16) {
-        *self.response_deadline_us = us;
-    }
-
-    fn stage_reboot(&mut self, mode: BootMode) {
-        *self.pending_reboot = Some(mode);
-    }
-
-    fn begin_clock_cal(&mut self, gap_us: u16, gaps: u8) {
-        *self.pending_cal = Some((gap_us, gaps));
     }
 }
 
