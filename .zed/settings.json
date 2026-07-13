@@ -4,33 +4,36 @@
       "initialization_options": {
         "linkedProjects": [
           "firmware/lib/Cargo.toml",
-          "firmware/boards/osc-dev-v006/Cargo.toml"
+          "firmware/ch32/Cargo.toml",
+          "firmware/boards/osc-dev-v006/Cargo.toml",
         ],
         "check": {
           "command": "clippy",
-          "allTargets": false
+          "allTargets": false,
         },
         "cargo": {
-          "target": "riscv32imc-unknown-none-elf",
           "allTargets": false,
           "buildScripts": {
-            "enable": true
-          }
+            "enable": true,
+          },
+          "extraEnv": {
+            "CARGO_UNSTABLE_JSON_TARGET_SPEC": "true",
+          },
         },
         "procMacro": {
-          "enable": true
-        }
-      }
-    }
+          "enable": true,
+        },
+      },
+    },
   },
   "languages": {
     "Rust": {
       "tab_size": 4,
       "hard_tabs": false,
-      "format_on_save": "on"
+      "format_on_save": "on",
     },
     "TOML": {
-      "tab_size": 2
-    }
-  }
+      "tab_size": 2,
+    },
+  },
 }
