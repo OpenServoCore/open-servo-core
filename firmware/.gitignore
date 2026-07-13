@@ -1,0 +1,19 @@
+# Rust artifacts
+/target/
+**/target/
+
+# Workspace lock files (not committed for lib workspaces)
+lib/Cargo.lock
+ch32/Cargo.lock
+
+# Rust-analyzer
+/rust-project.json
+
+# Probe-rs output
+*.elf
+*.bin
+
+# RTT / debug logs
+rtt.log
+logs/
+**/logs/

@@ -1,0 +1,23 @@
+[workspace]
+resolver = "2"
+members = ["log", "osc-protocol", "units"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+heapless         = "0.9"
+bbqueue          = "0.7"
+portable-atomic  = { version = "1", default-features = false }
+critical-section = "1.2"
+bitflags         = "2"
+crc              = { version = "3", default-features = false }
+
+osc-units            = { path = "units" }
+osc-log              = { path = "log" }
+osc-protocol         = { path = "osc-protocol" }
+osc-core             = { path = "core" }
+osc-drivers          = { path = "drivers" }
+control-table        = { path = "control-table" }
+control-table-derive = { path = "control-table-derive" }
