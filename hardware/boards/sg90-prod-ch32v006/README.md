@@ -1,16 +1,16 @@
 # OSC SG90 CH32
 
 > ⚠️ **Designed, not spun. Pre-fabrication, pre-bringup.**
-> This board has never been fabbed. Numbers and behaviour described below are **design intent**, not measured. The schematic and layout exist; the firmware they're meant to run does not yet — firmware v2 is unstarted as of this writing. Don't fab this without doing your own review first, and expect changes when bringup finally happens.
+> This board has never been fabbed. Numbers and behaviour described below are **design intent**, not measured. The schematic and layout exist; firmware v2 now runs on the dev board (the bus transport is silicon-proven) but has never run on *this* board. Don't fab this without doing your own review first, and expect changes when bringup finally happens.
 
-OpenServoCore swap board for SG90-class hobby servos. Compact, double-sided, designed to physically replace the factory PCB inside an SG90 case. CH32V006-based, DXL-compatible half-duplex UART, drop-in mechanical fit.
+OpenServoCore swap board for SG90-class hobby servos. Compact, double-sided, designed to physically replace the factory PCB inside an SG90 case. CH32V006-based, single-wire TTL servo bus (osc-native protocol), drop-in mechanical fit.
 
 ## Overview
 
 - **MCU** — CH32V006F8U6 (RISC-V, 48 MHz, 62 KB flash, 8 KB RAM).
 - **Motor driver** — TI DRV8837 H-bridge (1.8 A peak, IN1/IN2 PWM).
 - **LDO** — TPAP2210K-3.3, 3.3 V logic rail.
-- **UART buffer** — SN74LVC1G07 open-drain for half-duplex DXL.
+- **UART buffer** — SN74LVC1G07 open-drain for the half-duplex TTL bus.
 - **Current shunt** — 25 mΩ, 1 % on the low side.
 - **Power input** — 3.3-8.4 V (1S-2S LiPo) via the servo cable.
 - **Debug** — 4-pad SWD interface for WCH-LinkE.
@@ -67,7 +67,7 @@ These are the targets the board was laid out around. None are measured.
 - **Position sensing** — 12-bit ADC on `VPOS` with an RC filter (10 kΩ + 100 nF, fc ≈ 160 Hz) to suppress wiper noise. Sub-degree resolution is the design goal; actual precision waits on bringup and firmware oversampling.
 - **Voltage sensing** — 20 kΩ / 10 kΩ dividers (ratio 0.333) on `VINS`, `VSNA`, `VSNB`. 8.4 V → 2.8 V at the ADC.
 - **Current sensing** — 25 mΩ low-side shunt, sized for the DRV8837's ~1.76 A peak via `R_shunt ≈ 44 mV / I_stall`, so the hardware stall-detect path trips near the driver's max output. Raw V_shunt = 25 mV at 1 A; firmware sets ADC sampling, gain path, and software overcurrent threshold.
-- **Communication** — DXL-style half-duplex UART. The SN74LVC1G07 open-drain buffer enables bidirectional comms over the single `DATA` line. Baud rate TBD — left to firmware v2 to choose.
+- **Communication** — single-wire half-duplex TTL servo bus (Dynamixel-TTL electrical layer; the wire protocol is [osc-native](../../../docs/osc-native-protocol.md)). The SN74LVC1G07 open-drain buffer enables bidirectional comms over the single `DATA` line. Bus rates: 0.5-3 Mbaud, default 1 M.
 - **Protection** — PESD5V0L1UL TVS on `DATA`.
 
 ## Assembly
