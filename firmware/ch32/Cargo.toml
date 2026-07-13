@@ -35,10 +35,10 @@ ch32-metapac = { git = "https://github.com/ch32-rs/ch32-metapac", default-featur
 default      = ["ch32v006x8x6"]
 ch32v006x8x6 = ["ch32-metapac/ch32v006x8x6"]
 rt           = ["ch32-metapac/rt"]
-# Forward the drivers' probe counters (crate::bench pattern, task #28 etc.).
+# Forward the drivers' probe counters (crate::bench pattern).
 bench        = ["osc-drivers/bench"]
 defmt        = ["dep:defmt", "osc-core/defmt", "osc-drivers/defmt", "osc-log/defmt"]
-# Direct single wire (rev C HDSEL, or rev B with the buffer bypassed) —
+# Direct single wire (rev C HDSEL, or rev B with the buffer bypassed) --
 # tinyboot's flag. Default (absent) = rev B 74LVC2G241 buffer + TX_EN,
 # full duplex behind it. Reshapes `cfg::BusWiring` to match.
 half-duplex = []

@@ -4,7 +4,7 @@
 #
 # The board targets rv32ec + zmmul: hardware 32x32 multiply, but NO hardware
 # divide. A runtime `/` or `%`, or any 64-bit `*` / `<<`, therefore pulls in a
-# compiler-builtins routine (__udivsi3, __umodsi3, __muldi3, __ashldi3, ...) —
+# compiler-builtins routine (__udivsi3, __umodsi3, __muldi3, __ashldi3, ...) --
 # hundreds of wasted cycles plus extra flash. The transport keeps every divisor
 # compile-time-constant (const{} folding: see `brr_for` / `tpb_for`) and all
 # arithmetic <= 32-bit, so none should ever be linked. This locks that in.
@@ -47,7 +47,7 @@ if [[ -n "$hits" ]]; then
     sed 's/^/    /' <<<"$hits"
     echo
     echo "rv32ec+zmmul has no hardware divide. Keep divisors compile-time"
-    echo "constant (const{} — see brr_for / tpb_for) and arithmetic <= 32-bit."
+    echo "constant (const{} -- see brr_for / tpb_for) and arithmetic <= 32-bit."
   } >&2
   exit 1
 fi

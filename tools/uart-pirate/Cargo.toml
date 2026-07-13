@@ -2,7 +2,7 @@
 name    = "uart-pirate"
 version = "0.1.0"
 edition = "2024"
-description = "Host-commanded half-duplex UART multi-tool (snoop + injection + hardware-stamped capture) firmware for nanoCH32V203 — used by tools/bench"
+description = "Host-commanded half-duplex UART multi-tool (snoop + injection + hardware-stamped capture) firmware for nanoCH32V203 -- used by tools/bench"
 
 [[bin]]
 name  = "uart-pirate"
@@ -13,8 +13,8 @@ path  = "src/main.rs"
 # USART3 + DMA, USBD) is mostly hot-path register pokes that the HAL's
 # abstractions either get in the way of or don't cover at all (custom
 # DMA1 channel ISRs collide with ch32-hal's auto-generated stubs). What
-# the HAL did provide — RCC init, V20x USBD → embassy-usb-driver bridge,
-# GPIO pin setup — is vendored locally under `src/rcc.rs`, `src/usbd.rs`,
+# the HAL did provide -- RCC init, V20x USBD -> embassy-usb-driver bridge,
+# GPIO pin setup -- is vendored locally under `src/rcc.rs`, `src/usbd.rs`,
 # and inline pin pokes. Pinned to the same metapac rev ch32-hal main
 # uses.
 ch32-metapac = { git = "https://github.com/ch32-rs/ch32-metapac", rev = "23d667214e30fae690c739d27efca4cfe0e042d0", features = [
@@ -22,7 +22,7 @@ ch32-metapac = { git = "https://github.com/ch32-rs/ch32-metapac", rev = "23d6672
   "rt",
   "memory-x",
 ] }
-# Pinned to git main for ch32-rs/qingke#25 — V4 critical-section uses
+# Pinned to git main for ch32-rs/qingke#25 -- V4 critical-section uses
 # the 0x88 mask (MIE + MPIE together) to avoid an INESTEN=1
 # MIE-stuck-at-0 wedge when `critical_section::with` runs inside an ISR
 # body.

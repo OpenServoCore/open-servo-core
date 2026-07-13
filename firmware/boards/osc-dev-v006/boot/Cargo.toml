@@ -15,7 +15,7 @@ panic-halt       = "1"
 
 [features]
 default = []
-# Direct single wire (rev C HDSEL) — tinyboot's flag, additive. Default
+# Direct single wire (rev C HDSEL) -- tinyboot's flag, additive. Default
 # (absent) = rev B 74LVC2G241 buffer + TX_EN, full duplex behind it (the
 # current fleet), matching the app's convention.
 half-duplex = ["tinyboot-ch32/half-duplex"]

@@ -3,9 +3,9 @@
 # Run the three test gears and pronounce the tree good only if every attached
 # gear passes. See docs/testing.md for what each gear proves.
 #
-#   gear 1 — unit           in-crate #[test]s: codec, CRC vectors, table rules
-#   gear 2 — DES            osc-integration discrete-event sim (deterministic)
-#   gear 3 — bench          hardware-in-the-loop against a flashed V006
+#   gear 1 -- unit           in-crate #[test]s: codec, CRC vectors, table rules
+#   gear 2 -- DES            osc-integration discrete-event sim (deterministic)
+#   gear 3 -- bench          hardware-in-the-loop against a flashed V006
 #
 # Gears 1 and 2 are deterministic and need no hardware. Gear 3 needs a
 # uart-pirate + flashed V006; it is SKIPPED (not failed) when no rig is found.

@@ -9,6 +9,6 @@ osc-protocol = { path = ".", features = ["software-crc"] }
 
 [features]
 default      = []
-# Reference implementation of osc-CRC-16 (§3.2). Off by default so chips
+# Reference implementation of osc-CRC-16 (protocol sec 3.2). Off by default so chips
 # bring their own (V006: SPI engine + DMA); hosts and tests turn it on.
 software-crc = []
