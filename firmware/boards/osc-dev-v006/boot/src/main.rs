@@ -34,9 +34,9 @@ fn main() -> ! {
     // Wire modes mirror the app's `half-duplex` feature: default = rev B's
     // 74LVC2G241 buffer + TX_EN (full duplex behind it); the feature =
     // direct single wire (tinyboot's `half-duplex`). Direct is only safe
-    // on the shared wire since OpenServoCore/tinyboot#32 (HDSEL-before-TE
-    // + open-drain park); v0.4.1 latched the TX output LOW and idled
-    // push-pull — a hard-low bus jam for every boot window.
+    // on the shared wire with the HDSEL-before-TE + open-drain park order;
+    // the older tinyboot latched the TX output LOW and idled
+    // push-pull -- a hard-low bus jam for every boot window.
     #[cfg(not(feature = "half-duplex"))]
     let transport = Usart::new(&UsartConfig {
         baud: BaudRate::B3000000,

@@ -1,5 +1,5 @@
 //! Chip-side control-loop layer. Mirrors `services/` for the other half of
-//! the osc-core trait surface (`Sensors`, `Motor`, `ControlIo`) — each
+//! the osc-core trait surface (`Sensors`, `Motor`, `ControlIo`) -- each
 //! submodule binds 1:1 to its osc-core trait; the bundle here impls
 //! `ControlIo` so the `Kernel` can reach both via `parts()`.
 

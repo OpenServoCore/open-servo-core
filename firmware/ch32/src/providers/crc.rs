@@ -1,6 +1,6 @@
-//! CRC-engine provider (osc-native §3.2, F6) — SPI1 as a DMA-fed CRC
+//! CRC-engine provider (protocol sec 3.2, F6) -- SPI1 as a DMA-fed CRC
 //! coprocessor. DMA1_CH3 shifts the covered span through SPI1's CRC unit
-//! (16-bit LSB-first = natural-order CRC-16/ARC = osc-CRC-16, §3.2); the
+//! (16-bit LSB-first = natural-order CRC-16/ARC = osc-CRC-16, protocol sec 3.2); the
 //! accumulator holds across arms so a ring-wrap split or a multi-span read
 //! sums into one CRC.
 //!
@@ -8,7 +8,7 @@
 //! lesson): SPI1's reset mapping puts SCK/PC5 and MOSI/PC6 on the motor's
 //! TIM1 AF pins, where every CRC feed would burst 24 MHz clock into the
 //! gate-drive mux. Remap 101 parks SCK/PA1 and MOSI/PA2 on analog-mode
-//! pins (digital driver disconnected — provably inert on this board),
+//! pins (digital driver disconnected -- provably inert on this board),
 //! MISO/PB5 is an input, and NSS stays internal under SSM.
 //!
 //! Register recipe ported from the `spi_crc` bringup spike (case 9: CRCEN
@@ -23,19 +23,19 @@ use osc_protocol::wire::MAX_PAYLOAD;
 
 use crate::hal::{afio, dma, rcc};
 
-/// osc-CRC-16 polynomial (§3.2: CRC-16/ARC; the engine register takes the
+/// osc-CRC-16 polynomial (protocol sec 3.2: CRC-16/ARC; the engine register takes the
 /// non-reflected form, LSBFIRST supplies the reflection).
 const OSC_CRC_POLY: u16 = 0x8005;
 
-/// Bounded drain spin between successive feeds (the engine runs ~8× wire
-/// speed, F6). An expiry leaves a partial accumulator → the frame fails CRC
-/// and drops, which is the sanctioned "spin miss = fail" outcome (§3.2).
+/// Bounded drain spin between successive feeds (the engine runs ~8x wire
+/// speed, F6). An expiry leaves a partial accumulator -> the frame fails CRC
+/// and drops, which is the sanctioned "spin miss = fail" outcome (protocol sec 3.2).
 const FEED_DRAIN_SPIN: u32 = 4096;
 
-/// The snapshot buffer (§4.2): a reply payload is CH6-copied here once, and
-/// both the CRC feed (CH3) and the wire arms (CH4) stream the copy — the reply
+/// The snapshot buffer (protocol sec 4.2): a reply payload is CH6-copied here once, and
+/// both the CRC feed (CH3) and the wire arms (CH4) stream the copy -- the reply
 /// CRC covers exactly the transmitted bytes. RX CRC feeds the ring directly
-/// (no staging), so this holds only a reply payload — one `MAX_PAYLOAD` span.
+/// (no staging), so this holds only a reply payload -- one `MAX_PAYLOAD` span.
 /// Even base (`repr(align(2))`): the feed reads halfwords from it.
 const SNAPSHOT_LEN: usize = MAX_PAYLOAD as usize;
 
@@ -48,10 +48,10 @@ static SNAPSHOT: SyncUnsafeCell<Snapshot> = SyncUnsafeCell::new(Snapshot([0; SNA
 pub struct Crc;
 
 impl Crc {
-    /// One-shot peripheral bring-up (driver-pattern §5.5): clock-gate SPI1,
+    /// One-shot peripheral bring-up (driver-pattern sec 5.5): clock-gate SPI1,
     /// lock master / SSM / 16-bit mode, load the poly, enable the calculator
     /// last (resets it with the mode fixed), then SPE + TX-DMA. Held live for
-    /// the whole program — `reset` re-zeros the accumulator per frame.
+    /// the whole program -- `reset` re-zeros the accumulator per frame.
     pub fn init() {
         rcc::enable_spi1();
         // Park the SPI functions off the motor pins (module doc). Verify
@@ -64,8 +64,8 @@ impl Crc {
             w.set_ssi(true);
             w.set_br(SpiBaud::DIV_2);
             // 16-bit LSB-first: each little-endian halfword shifts low byte
-            // first, low bit first — natural wire byte order, so the engine
-            // computes CRC-16/ARC with no pair packing (§3.2, spike
+            // first, low bit first -- natural wire byte order, so the engine
+            // computes CRC-16/ARC with no pair packing (protocol sec 3.2, spike
             // spi_crc_lsb_copy). TCRCR holds the bit-reversed checksum;
             // `result` un-reverses it.
             w.set_dff(true);
@@ -112,12 +112,12 @@ impl Crc {
 
 impl bus::CrcEngine for Crc {
     fn reset(&mut self) {
-        // Toggling CRCEN off→on clears the accumulator with the mode locked.
+        // Toggling CRCEN off->on clears the accumulator with the mode locked.
         // DMA channels are deliberately untouched: disabling one mid-transfer
         // freezes CNTR nonzero, so every later drain spin runs its full
-        // backstop budget (~2.1 ms, bench 2026-07-10) — and a killed CH6
+        // backstop budget (~2.1 ms) -- and a killed CH6
         // snapshot copy ships a stale reply tail (the wire arms read it,
-        // §4.2). Left alone, in-flight transfers drain to zero in µs.
+        // protocol sec 4.2). Left alone, in-flight transfers drain to zero in us.
         SPI1.ctlr1().modify(|w| w.set_crcen(false));
         SPI1.ctlr1().modify(|w| w.set_crcen(true));
     }
@@ -137,13 +137,13 @@ impl bus::CrcEngine for Crc {
     fn snapshot(&mut self, off: u16, src: &[u8]) -> *const u8 {
         // Best-effort streaming copy of a reply payload, fire-and-forget: CH6
         // runs HIGH, above CH3 (the CRC feed, MEDIUM), so the feed can't
-        // overtake the copy it reads (producer→consumer, see `hal::dma`). The
+        // overtake the copy it reads (producer -> consumer, see `hal::dma`). The
         // wire (CH4) reads it too but only reaches the payload arm byte-times
-        // later, by which point this µs-scale copy is long done. No spin, no
-        // lock: a kernel tick tearing the image by a µs-window is fine — wire
-        // and CRC both read the copy, so the reply stays CRC-consistent (§4.2).
+        // later, by which point this us-scale copy is long done. No spin, no
+        // lock: a kernel tick tearing the image by a us-window is fine -- wire
+        // and CRC both read the copy, so the reply stays CRC-consistent (protocol sec 4.2).
         // RX CRC no longer snapshots (it feeds the ring directly), so this
-        // holds one reply payload per exchange — a gathered reply (§5.2) lands
+        // holds one reply payload per exchange -- a gathered reply (protocol sec 5.2) lands
         // as several spans at cumulative offsets; only the LAST copy stays
         // fire-and-forget, so drain any prior span still in flight before
         // re-pointing the channel (bounded; M2M outruns this spin by design).
@@ -153,7 +153,7 @@ impl bus::CrcEngine for Crc {
             budget -= 1;
             core::hint::spin_loop();
         }
-        // SAFETY: single writer per exchange — snapshot calls are serialized
+        // SAFETY: single writer per exchange -- snapshot calls are serialized
         // by the bus driver, and consumers are ordered behind CH6 by the ladder.
         let dst = unsafe { (*SNAPSHOT.get()).0.as_ptr().add(off as usize) };
         dma::disable(dma::Channel::CH6);
@@ -171,7 +171,7 @@ impl bus::CrcEngine for Crc {
         if Self::drained() {
             dma::disable(dma::Channel::CH3);
             // LSB-first shifter mirrors the reflected algorithm: TCRCR is the
-            // bit-reversed osc-CRC-16 (§3.2). Un-reverse once per frame:
+            // bit-reversed osc-CRC-16 (protocol sec 3.2). Un-reverse once per frame:
             // three parallel in-byte swap stages, then the byte swap.
             let mut x = SPI1.tcrcr().read().txcrc() as u32;
             x = ((x & 0x5555) << 1) | ((x >> 1) & 0x5555);

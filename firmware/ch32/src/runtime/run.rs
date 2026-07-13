@@ -59,7 +59,7 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
         // HIGH). Main loop owns LED housekeeping, the link-diagnostics
         // publish, the deferred-reboot poll, and sleep.
         //
-        // STAT LED: solid when idle, blinking while the bus talks — any
+        // STAT LED: solid when idle, blinking while the bus talks -- any
         // USART1 wire event latches `BUS_ACTIVITY`, and the blink holds
         // past the last event so an exchange reads as one episode. The
         // `wfi` wake cadence is the poll cadence: wire IRQs while talking,
@@ -79,7 +79,7 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
         });
         led.poll();
 
-        // Publish transport health into the telemetry region (§5.3 layer 1:
+        // Publish transport health into the telemetry region (protocol sec 5.3 layer 1:
         // dropped frames are counted, never answered). The critical section
         // makes the `bus()` reach-in non-aliasing (HIGH owns it otherwise)
         // and folds the read-modify-write against a concurrent host clear
@@ -109,11 +109,11 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
             published = diag;
         });
 
-        // Clock-trim loop (§9.3): the transport measures host-instruction
-        // byte cadence ISR-side; the correction lands here, outside any
-        // transport ISR. A correction is ≤ 4 steps (~1%) — well inside the
-        // framing budget vs a crystal host, so trimming over a live wire is
-        // safe (bench 2026-07-11: the manual-knob experiment trimmed the
+        // Clock-trim loop (protocol sec 9.3): the transport measures
+        // host-instruction byte cadence ISR-side; the correction lands here,
+        // outside any transport ISR. A correction is <= 4 steps (~1%) -- well
+        // inside the framing budget vs a crystal host, so trimming over a live
+        // wire is safe (measured: the manual-knob experiment trimmed the
         // fleet mid-traffic with zero errors). The applied total mirrors
         // into telemetry, read-only, for fleet diagnosis.
         let trim = critical_section::with(|_| {
@@ -133,11 +133,11 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
             }
         }
 
-        // Deferred reboot (§9.5), honored after the ack has drained. The
+        // Deferred reboot (protocol sec 9.5), honored after the ack has drained. The
         // critical section is load-bearing: `bus()` is otherwise `&mut`-owned
         // by the HIGH transport ISRs, so masking them is what makes this
         // main-loop reach-in non-aliasing. Flash writes stay out of the ISR
-        // bodies — the stall is lethal under a live control loop.
+        // bodies -- the stall is lethal under a live control loop.
         let reboot: Option<BootMode> =
             critical_section::with(|_| unsafe { crate::runtime::Drivers::bus() }.take_reboot());
         if let Some(mode) = reboot {
@@ -145,16 +145,16 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
             pfic::software_reset();
         }
 
-        // §9.1 rescue sampler. The break detector latches only at a
-        // dominant span's END (silicon 2026-07-12), so no transport wake can
-        // observe a rescue pulse in progress — the slow loop measures it
-        // instead, which is where a 300 µs-scale signal belongs. One sample
+        // Rescue sampler (protocol sec 9.1). The break detector latches only at a
+        // dominant span's END, so no transport wake can
+        // observe a rescue pulse in progress -- the slow loop measures it
+        // instead, which is where a 300 us-scale signal belongs. One sample
         // per wfi wake; the 20 kHz ADC tick is the idle metronome, so the
-        // worst-case cadence is ~50 µs against a ≥300 µs window. The window
+        // worst-case cadence is ~50 us against a >= 300 us window. The window
         // requires every sample low AND the RX ring frozen: any completed
         // character moves NDTR (a real dominant low delivers no start
-        // edges), so UART traffic at any baud — including the pulse's own
-        // ringed 0x00, which re-anchors the window ~a byte-time in — can
+        // edges), so UART traffic at any baud -- including the pulse's own
+        // ringed 0x00, which re-anchors the window ~a byte-time in -- can
         // never impersonate a pulse. Declaration runs under a critical
         // section (the bus is otherwise HIGH-ISR-owned) while the pulse
         // still holds the line, so the driver resyncs at a provably-still

@@ -12,7 +12,7 @@ pub(crate) static KERNEL: SyncUnsafeCell<MaybeUninit<Kernel<Ch32ControlIo>>> =
 
 /// The per-servo dispatch session (write staging + the pending-verdict slot).
 /// Borrowed only by the HIGH transport ISRs (USART1 + SysTick), which
-/// materialize it per `Dispatch` call and share PFIC HIGH — so dispatch,
+/// materialize it per `Dispatch` call and share PFIC HIGH -- so dispatch,
 /// commit, and revert never overlap (the `HighDispatcher` invariant in
 /// `runtime::isr`). The main loop never reaches in.
 pub(crate) static SESSION: SyncUnsafeCell<MaybeUninit<Session>> =

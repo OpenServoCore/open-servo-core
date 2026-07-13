@@ -5,12 +5,12 @@
 use crate::hal::{Pin, Tim1Mapping, UsartMapping, adc, opa, timer};
 
 // === osc-native bus (USART1 on PC0/PC1; direct HDSEL single-wire, or the
-// rev B 74LVC2G241 buffered wire by default (`half-duplex` = direct) — see
+// rev B 74LVC2G241 buffered wire by default (`half-duplex` = direct) -- see
 // providers/tx_wire; the TX_EN pin is board wiring, `BusWiring`) ===
 
 pub const BUS_USART_MAPPING: UsartMapping = UsartMapping::Usart1Remap3;
 
-/// Pin whose input level tracks the bus wire (rescue-break sensing, §9.1):
+/// Pin whose input level tracks the bus wire (rescue-break sensing, protocol sec 9.1):
 /// the single-wire pin itself on the direct wire; the buffer's receive
 /// output (the USART RX pin) on the buffered wire.
 #[cfg(feature = "half-duplex")]
@@ -29,15 +29,15 @@ pub const CURRENT_SENSE_OPA_OUTPUT: opa::Output = opa::Output::Internal;
 // === Motor + STAT (TIM1 Remap8) ===
 //
 // Remap8, not Remap7: identical pins for every channel this board uses
-// (CH2/PC5, CH3/PC6, CH4/PC7 — the schematic's T1Cx_7 pins), but a remap
+// (CH2/PC5, CH3/PC6, CH4/PC7 -- the schematic's T1Cx_7 pins), but a remap
 // places FUNCTIONS, used or not, and Remap7 also puts the complementary
-// outputs CH1N/CH2N/CH3N on PC0/PC1/PC2 — double-tenanting the bus pin
+// outputs CH1N/CH2N/CH3N on PC0/PC1/PC2 -- double-tenanting the bus pin
 // (PC0 = USART1_TX under Usart1Remap3), which the RM forbids. A
 // never-enabled OC function's AF signal is its reset state (0), so
 // whenever HDSEL released the pin the mux fell through to CH1N's 0 and
 // clamped the bus (bench: wire stuck low at idle, rose the instant
 // TIM1EN dropped). Remap8 parks the unused CHxN functions on PA3 (analog
-// VPOS — digital mux disconnected) and PB0/PB1 (not bonded on TSSOP20).
+// VPOS -- digital mux disconnected) and PB0/PB1 (not bonded on TSSOP20).
 pub const MOTOR_TIM1_MAPPING: Tim1Mapping = Tim1Mapping::Remap8;
 pub const MOTOR_IN1_CH: timer::Channel = timer::Channel::CH3;
 pub const MOTOR_IN2_CH: timer::Channel = timer::Channel::CH2;

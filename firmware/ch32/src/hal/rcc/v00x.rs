@@ -59,21 +59,21 @@ pub fn enable_spi1() {
     RCC.pb2pcenr().modify(|w| w.set_spi1en(true));
 }
 
-/// HSITRIM[4:0] reset value — the V006 factory mid-trim default.
+/// HSITRIM[4:0] reset value -- the V006 factory mid-trim default.
 const HSITRIM_DEFAULT: i16 = 16;
 /// HSITRIM[4:0] valid range upper bound.
 const HSITRIM_MAX: i16 = 31;
 
-/// u64 inside the const eval: STEP_HZ × 1_000_000 overflows u32.
+/// u64 inside the const eval: STEP_HZ * 1_000_000 overflows u32.
 pub const CLOCK_TRIM_PPM_PER_STEP: u32 =
     (HSI_TRIM_STEP_HZ as u64 * 1_000_000 / HSI_HZ as u64) as u32;
 
 /// Apply the driver-level trim total (`TrimLoop` contract: signed steps
 /// from the factory default, positive = SLOW the oscillator). The register
 /// direction is this adapter's to know: V006 HSITRIM runs higher = faster
-/// — measured 2026-07-11 (register 6 ran ~2% slow; a same-sign mapping
-/// fed the trim loop positive and railed the fleet in −4 clamps) — so the
-/// mapping negates. ~0.25% HSI rate per step; clamped to the register.
+/// (measured: register 6 ran ~2% slow; a same-sign mapping fed the trim
+/// loop positive and railed the fleet in -4 clamps) -- so the mapping
+/// negates. ~0.25% HSI rate per step; clamped to the register.
 #[inline]
 pub fn apply_clock_trim(slow_steps: i8) {
     let v = (HSITRIM_DEFAULT - slow_steps as i16).clamp(0, HSITRIM_MAX) as u8;

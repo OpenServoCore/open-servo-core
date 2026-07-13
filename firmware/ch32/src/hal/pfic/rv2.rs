@@ -47,7 +47,7 @@ pub fn enable_systick() {
 /// of CNT == CMP. Used by `FastLastScheduler::schedule` when the requested
 /// deadline is already in the past: writing CMP near `now` races the few
 /// HCLK cycles between reading CNT and the CMP store, often leaving CMP
-/// behind CNT — at which point the next CNT == CMP match is a u32 wrap
+/// behind CNT -- at which point the next CNT == CMP match is a u32 wrap
 /// (~89 s) away, wedging the chip. Pending the IRQ directly via IPSR1
 /// sidesteps the match entirely. Write-only register; bit-set semantics
 /// (other bits unaffected).

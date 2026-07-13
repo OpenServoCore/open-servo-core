@@ -1,8 +1,8 @@
-//! RX ring provider (osc-native §4.1) — binds `RxRing` to DMA1_CH5, the
+//! RX ring provider (protocol sec 4.1) -- binds `RxRing` to DMA1_CH5, the
 //! USART1 RX byte ring armed once at boot and read as a counted cursor.
 //!
 //! The ring is `#[repr(align(2))]`: an even base is load-bearing so every
-//! frame anchor lands halfword-aligned for the SPI-CRC engine (§3.2), and
+//! frame anchor lands halfword-aligned for the SPI-CRC engine (protocol sec 3.2), and
 //! V006 DMA cannot feed an odd address anyway (F12).
 
 use core::cell::SyncUnsafeCell;
@@ -11,7 +11,7 @@ use osc_drivers::traits::bus;
 
 use crate::hal::dma;
 
-/// Ring depth (§11): must exceed the 258 B max frame with lap margin.
+/// Ring depth (protocol sec 11): must exceed the 258 B max frame with lap margin.
 const RING_LEN: usize = 512;
 
 #[repr(align(2))]
@@ -19,7 +19,7 @@ struct Ring([u8; RING_LEN]);
 
 static RING: SyncUnsafeCell<Ring> = SyncUnsafeCell::new(Ring([0; RING_LEN]));
 
-/// Production binding to DMA1_CH5 (USART1 RX → the circular ring).
+/// Production binding to DMA1_CH5 (USART1 RX -> the circular ring).
 pub struct RxRing;
 
 impl RxRing {

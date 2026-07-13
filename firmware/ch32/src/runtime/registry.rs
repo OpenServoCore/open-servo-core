@@ -1,15 +1,15 @@
-//! Driver registry — owns the static storage for each driver *instance*
+//! Driver registry -- owns the static storage for each driver *instance*
 //! and exposes typed accessors. Driver types themselves stay pure (no
 //! statics, no `install`, no `get`); the registry is the only place that
 //! knows which instance a driver type plays in this build.
 //!
 //! Adding an instance is a three-line change here (cell, install line,
-//! accessor) — the driver type stays untouched.
+//! accessor) -- the driver type stays untouched.
 //!
 //! Each instance has its own [`SyncUnsafeCell`], so simultaneous mutable
 //! access to two different instances (e.g. main loop touching `stat_led`
 //! while a transport ISR touches `bus`) doesn't pass through a shared
-//! `&mut Drivers` — no aliasing UB.
+//! `&mut Drivers` -- no aliasing UB.
 
 use core::cell::SyncUnsafeCell;
 
@@ -31,13 +31,13 @@ use crate::providers::usart_baud::UsartBaud;
 
 type StatLed = Led<DigitalOut, Monotonic>;
 
-/// Cross-cell wire-activity latch (driver-pattern §9.3 channel, not a
+/// Cross-cell wire-activity latch (driver-pattern sec 9.3 channel, not a
 /// driver cell): the USART1 vector's tail stores, the main-loop LED
 /// policy swaps. One relaxed store per wire IRQ.
 pub static BUS_ACTIVITY: AtomicBool = AtomicBool::new(false);
 
 /// Bundle of the chip-side providers the `ServoBus` composite consumes
-/// (driver-pattern §5.4). Each associated type maps to its zero-sized
+/// (driver-pattern sec 5.4). Each associated type maps to its zero-sized
 /// provider impl (one per `providers/<role>.rs`).
 pub struct V006Providers;
 
@@ -51,13 +51,13 @@ impl Providers for V006Providers {
 
 type Bus = ServoBus<V006Providers>;
 
-/// `Bus` holds raw span pointers (zero-copy TX arms, driver-pattern §4.2) and
+/// `Bus` holds raw span pointers (zero-copy TX arms, driver-pattern sec 4.2) and
 /// is therefore `!Sync`. All access is serialized: `&mut` only from the HIGH
 /// transport ISRs (which never preempt each other), and the main loop reaches
 /// in for `take_reboot` only under a critical section. This wrapper asserts
 /// that discipline so the cell can live in a `static`.
 struct BusCell(SyncUnsafeCell<Option<Bus>>);
-// SAFETY: see `BusCell` doc — access is serialized by PFIC priority + CS.
+// SAFETY: see `BusCell` doc -- access is serialized by PFIC priority + CS.
 unsafe impl Sync for BusCell {}
 
 struct Cells {
@@ -82,7 +82,7 @@ impl Drivers {
     /// SAFETY: bringup-only, pre-IRQ; sole writer. Must be called exactly
     /// once, after `runtime::init::bring_up_bus` has configured USART1, the
     /// CH5 ring, and the SPI-CRC engine, and after the table's comms block is
-    /// final (defaults seeded + saved image overlaid) — `ServoBus::new`
+    /// final (defaults seeded + saved image overlaid) -- `ServoBus::new`
     /// applies the effective baud to the live BRR.
     pub unsafe fn install(w: &BoardWiring) {
         // SAFETY: see fn doc.
@@ -98,7 +98,7 @@ impl Drivers {
             Monotonic,
         ));
 
-        // The table is the comms authority here — a saved image's id/baud
+        // The table is the comms authority here -- a saved image's id/baud
         // must be what the bus comes up as, not the board defaults.
         let (id, baud, deadline_us) = crate::runtime::statics::SHARED.table.with(|t| {
             (

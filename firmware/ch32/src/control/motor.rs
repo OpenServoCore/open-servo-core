@@ -1,7 +1,7 @@
 //! Chip-side motor service. Translates `osc_core::MotorCmd` into TIM1
 //! H-bridge writes per the DRV8212P truth table:
 //! (1,1)=BRAKE, (0,0)=COAST, (1,0)=fwd, (0,1)=rev.
-//! Slow decay holds the idle leg HIGH; Fast decay holds it LOW. Effort →
+//! Slow decay holds the idle leg HIGH; Fast decay holds it LOW. Effort ->
 //! duty math uses `>>15` to dodge soft-div in the ISR.
 
 use osc_core::{DecayMode, Motor as MotorTrait, MotorCmd};
@@ -83,7 +83,7 @@ impl MotorTrait for Ch32Motor {
     }
 }
 
-/// `mag · arr / 32767`, approximated with `>>15` to dodge soft-div in the ISR.
+/// `mag * arr / 32767`, approximated with `>>15` to dodge soft-div in the ISR.
 fn effort_to_ticks(mag: u16, pwm_arr: u16) -> u16 {
     let m = mag.min(i16::MAX as u16) as u32;
     let prod = m * pwm_arr as u32;

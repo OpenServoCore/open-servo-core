@@ -1,4 +1,4 @@
-//! Digital-output provider — binds `DigitalOut` to a single GPIO pin.
+//! Digital-output provider -- binds `DigitalOut` to a single GPIO pin.
 
 use osc_drivers::Level;
 use osc_drivers::traits;

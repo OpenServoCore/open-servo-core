@@ -125,7 +125,7 @@ fn unlock() {
     OPA.opa_key().write(|w| w.set_opa_key(KEY2));
 }
 
-/// Configures OPA1 as a PGA (RM 17.2.1.2–4). Caller settles before sampling.
+/// Configures OPA1 as a PGA (RM 17.2.1.2-4). Caller settles before sampling.
 pub fn init(cfg: &Config) {
     unlock();
     OPA.ctlr1().write(|w| {

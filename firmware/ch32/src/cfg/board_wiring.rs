@@ -10,11 +10,11 @@ use crate::cfg::chip::{AnalogChannel, DigitalPin};
 use crate::hal::Pin;
 use crate::hal::opa;
 
-/// Bus wire wiring — exists only on the buffered default wire (the
+/// Bus wire wiring -- exists only on the buffered default wire (the
 /// wire mode is a compile-time board choice; see `providers/tx_wire`). The
 /// direct wire needs no bus wiring at all: PC0 carries everything, and on a
 /// buffer-populated board running the direct wire, the board's TX_EN
-/// pull-down is what keeps the buffer released — no firmware involved.
+/// pull-down is what keeps the buffer released -- no firmware involved.
 #[cfg(not(feature = "half-duplex"))]
 #[derive(Copy, Clone)]
 pub struct BusWiring {
@@ -54,19 +54,19 @@ pub struct AdcPins {
     pub vmotor: (AnalogChannel, AnalogChannel),
 }
 
-/// `V_adc = V_in · bot_ohm / (top_ohm + bot_ohm)`.
+/// `V_adc = V_in * bot_ohm / (top_ohm + bot_ohm)`.
 #[derive(Copy, Clone)]
 pub struct Divider {
     pub top_ohm: u32,
     pub bot_ohm: u32,
 }
 
-/// β-model NTC params: `R_ntc(T) = r0_ohm · exp(beta · (1/T − 1/T₀))`.
+/// beta-model NTC params: `R_ntc(T) = r0_ohm * exp(beta * (1/T - 1/T0))`.
 #[derive(Copy, Clone)]
 pub struct NtcCal {
     pub beta: u16,
     pub r0_ohm: u32,
-    /// T₀ in centi-°C (matches `osc_units::CentiCelsius`).
+    /// T0 in centi-degC (matches `osc_units::CentiCelsius`).
     pub t0_cc: i16,
     pub bias_r_ohm: u32,
 }

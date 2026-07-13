@@ -25,7 +25,7 @@ pub fn delay_cycles(n: u32) {
     }
 }
 
-/// Busy-wait for `ms` ms. Reinitializes SYSTICK on entry — safe to call early.
+/// Busy-wait for `ms` ms. Reinitializes SYSTICK on entry -- safe to call early.
 pub fn delay_ms(ms: u32) {
     use ch32_metapac::SYSTICK;
     use ch32_metapac::systick::vals::Stclk;

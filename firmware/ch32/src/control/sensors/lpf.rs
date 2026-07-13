@@ -1,4 +1,4 @@
-//! Vcal reference low-pass filter. EWMA, α = 1/128. `state_q6` keeps 6
+//! Vcal reference low-pass filter. EWMA, alpha = 1/128. `state_q6` keeps 6
 //! sub-LSB bits so the filter resolves drift slower than 1 LSB per step
 //! without integer-rounding biasing the steady state.
 

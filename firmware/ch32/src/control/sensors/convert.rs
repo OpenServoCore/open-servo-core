@@ -1,4 +1,4 @@
-//! Stateless raw-ADC → engineering-unit math. `Scales` precomputes Q32
+//! Stateless raw-ADC -> engineering-unit math. `Scales` precomputes Q32
 //! reciprocals at compile time (called from `cfg::Precomputed`) so the
 //! 20 kHz ISR runs one `mulhu` per conversion and the linker drops
 //! `__udivdi3` / `__divdi3` entirely.
@@ -78,7 +78,7 @@ pub(super) fn shunt_to_milliamps(
 }
 
 pub(super) fn ntc_to_centi_celsius(_raw: u16, cal: &NtcCal) -> CentiCelsius {
-    // TODO: full β-model needs fixed-point ln; pass-through returns T₀.
+    // TODO: full beta-model needs fixed-point ln; pass-through returns T0.
     let _ = (cal.beta, cal.r0_ohm, cal.bias_r_ohm);
     CentiCelsius(cal.t0_cc)
 }

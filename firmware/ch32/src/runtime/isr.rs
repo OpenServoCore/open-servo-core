@@ -11,10 +11,10 @@ use crate::runtime::statics::{KERNEL, SESSION, SHARED};
 ///
 /// The transport vectors (USART1 for break/TC, SysTick for the framer
 /// deadlines) share PFIC HIGH so all `&mut` access into the `ServoBus`
-/// composite serializes — dispatch runs inline on these vectors. LOW holds
+/// composite serializes -- dispatch runs inline on these vectors. LOW holds
 /// only the motor kernel (DMA1_CH1 = 22), which HIGH preempts and which runs
-/// in the wire gaps between frames. DMA1_CH5 (RX ring) runs silent circular —
-/// no HT/TC IRQ — and CH4/CH3 raise none either.
+/// in the wire gaps between frames. DMA1_CH5 (RX ring) runs silent circular --
+/// no HT/TC IRQ -- and CH4/CH3 raise none either.
 pub fn install_irqs() {
     pfic::set_priority(pfic::Interrupt::USART1, pfic::Priority::High);
     pfic::set_systick_priority(pfic::Priority::High);
@@ -30,7 +30,7 @@ pub fn install_irqs() {
 ///
 /// SAFETY (the SESSION exclusivity invariant): `SESSION` is touched only by
 /// the HIGH transport ISRs (USART1 + SysTick), which share PFIC HIGH and so
-/// never preempt each other — dispatch at the covered checkpoint / fast path
+/// never preempt each other -- dispatch at the covered checkpoint / fast path
 /// and the verdict commit/revert all run to completion within one HIGH body.
 /// No other class reaches the session.
 struct HighDispatcher;
@@ -38,7 +38,7 @@ struct HighDispatcher;
 impl HighDispatcher {
     #[inline(always)]
     fn with<R>(&mut self, f: impl FnOnce(&mut osc_core::Dispatcher<'_>) -> R) -> R {
-        // SAFETY: see type doc — HIGH-exclusive, no concurrent borrow.
+        // SAFETY: see type doc -- HIGH-exclusive, no concurrent borrow.
         let session = unsafe { (*SESSION.get()).assume_init_mut() };
         f(&mut session.dispatcher(&SHARED))
     }
@@ -63,7 +63,7 @@ impl Dispatch for HighDispatcher {
     }
 }
 
-/// ADC DMA TC handler body — wire into the vector table via [`crate::install_isrs!`].
+/// ADC DMA TC handler body -- wire into the vector table via [`crate::install_isrs!`].
 pub fn on_adc_dma_tc() {
     DMA1.ifcr().write(|w| w.set_tcif(0, true));
 
@@ -86,7 +86,7 @@ pub fn on_adc_dma_tc() {
     }
 }
 
-/// USART1 vector — break detection (LBD) and TX arm completion.
+/// USART1 vector -- break detection (LBD) and TX arm completion.
 ///
 /// SAFETY: the bus driver is installed before this vector unmasks, and USART1
 /// shares PFIC HIGH with SysTick, so no concurrent `&mut` into the composite
@@ -96,33 +96,33 @@ pub fn on_usart1() {
     crate::log::trace!("usart1 isr");
     // One STATR image; the two enabled sources (LBDIE, TCIE) branch off it.
     // This path never reads DATAR: a CPU DATAR read while a byte is
-    // mid-reception kills the byte in the shifter — no flags, no ring
-    // entry, every later anchor shifts (bench 2026-07-09; the DMA ladder
+    // mid-reception kills the byte in the shifter -- no flags, no ring
+    // entry, every later anchor shifts (measured; the DMA ladder
     // only protects the byte already in RDR).
     let sr = usart::statr(USART1);
 
-    // (a) LBD: a genuine ≥10-bit dominant span — a break, and the ONLY RX
-    // wake (§3.4: garble never interrupts; FE/NE/ORE have no enable and
-    // latch silently). Cleared here by the flag-selective constant write,
-    // so the level pend is retired before the handler runs — a break
+    // (a) LBD: a genuine >=10-bit dominant span -- a break, and the ONLY RX
+    // wake (protocol sec 3.4: garble never interrupts; FE/NE/ORE have no enable
+    // and latch silently). Cleared here by the flag-selective constant write,
+    // so the level pend is retired before the handler runs -- a break
     // landing mid-body re-pends the vector, nothing is lost, and no flag
-    // can storm. on_break is idempotent (A2: position from ring data).
+    // can storm. on_break is idempotent (transport sec 5: position from ring data).
     if sr.lbd() {
         usart::clear_lbd(USART1);
-        // A2: the break handler resolves complete frames from ring data in
-        // place, so it carries the (lazy) HIGH dispatcher like the deadline
-        // body.
+        // The break handler resolves complete frames from ring data in
+        // place (transport sec 5), so it carries the (lazy) HIGH dispatcher
+        // like the deadline body.
         let mut dispatcher = HighDispatcher;
         // SAFETY: see fn doc.
         unsafe { Drivers::bus() }.on_break(&mut dispatcher);
     }
 
     // (b) TC: an armed TX arm drained (shifter empty). TCIE gates arbitration
-    // — the shared vector fans in LBD + TC, and a break entry could land
+    // -- the shared vector fans in LBD + TC, and a break entry could land
     // with a stale reset-value TC. Gate on TCIE so it can't walk into
     // on_tx_complete before the first reply is armed.
     //
-    // TC is NOT cleared here — `TxWire::send` clears it per-arm once the
+    // TC is NOT cleared here -- `TxWire::send` clears it per-arm once the
     // next arm's first byte is in flight, and the final arm's release drops
     // TCIE, leaving TC=1 as the natural idle state (STATR reset 0xC0).
     if sr.tc() && usart::is_tcie(USART1) {
@@ -135,7 +135,7 @@ pub fn on_usart1() {
     crate::runtime::registry::BUS_ACTIVITY.store(true, portable_atomic::Ordering::Relaxed);
 }
 
-/// SysTick compare — one or more framer/chain/rescue deadlines are due, or a
+/// SysTick compare -- one or more framer/chain/rescue deadlines are due, or a
 /// `pend_systick` late-arm wake. CNTIF is cleared first: a final deadline body
 /// returns without re-arming and a stale-but-latched flag would re-fire
 /// the IRQ the moment we return.
@@ -155,11 +155,11 @@ pub fn on_deadline_irq() {
 /// `#[qingke_rt::interrupt]` trampolines (save-ra + HPE hardware stacking,
 /// INTSYSCR=0x3 from qingke-rt's startup).
 ///
-/// The "HPE corrupts t0/t2" episode is DEBUNKED (bringup `hpe_matrix`,
-/// 2026-07-06): stock trampolines survived ~8M IRQ crossings across
+/// The "HPE corrupts t0/t2" concern is DEBUNKED (bringup `hpe_matrix`):
+/// stock trampolines survived ~8M IRQ crossings across
 /// single/nested/tail-chain/critical-section/100 kHz-storm legs with zero
 /// corruption. The corruptor was `wlink write-mem`, which resumes the hart
-/// with its scratch registers leaked into the running context — t0 = the
+/// with its scratch registers leaked into the running context -- t0 = the
 /// poked address, t2 = the poked value (canary-captured verbatim). Debug
 /// pokes perturb t0/t2; the runtime is sound.
 #[macro_export]

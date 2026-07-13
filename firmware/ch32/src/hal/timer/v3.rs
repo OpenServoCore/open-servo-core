@@ -58,7 +58,7 @@ pub fn set_duty(ch: Channel, value: u16) {
     TIM1.chcvr((ch as u8 - 1) as usize).write_value(value);
 }
 
-/// RCR=0 with center-aligned → UEV at both peak and trough.
+/// RCR=0 with center-aligned -> UEV at both peak and trough.
 pub fn set_repetition(rcr: u8) {
     TIM1.rptcr().write(|w| w.set_rptcr(rcr));
 }
@@ -67,7 +67,7 @@ pub fn set_trgo_update() {
     TIM1.ctlr2().modify(|w| w.set_mms(Mms::UPDATE));
 }
 
-/// Fires TRGO as a side effect — arm ADC after, not before.
+/// Fires TRGO as a side effect -- arm ADC after, not before.
 pub fn force_update_event() {
     TIM1.swevgr().write(|w| w.set_ug(true));
 }

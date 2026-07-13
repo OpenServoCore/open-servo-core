@@ -1,8 +1,8 @@
-//! ConfigStore provider (osc-native §9.4): the two CONFIG flash slots with
+//! ConfigStore provider (protocol sec 9.4): the two CONFIG flash slots with
 //! A/B alternation, plus the boot-time overlay. Both `save` and `wipe` are
-//! blocking — the CPU fetch-stalls for every erase/program while code runs
-//! from flash — which is exactly the §9.4 contract (dispatch's torque gate
-//! makes the stall safe, the post-completion ack makes it visible).
+//! blocking -- the CPU fetch-stalls for every erase/program while code runs
+//! from flash -- which is exactly the protocol sec 9.4 contract (dispatch's
+//! torque gate makes the stall safe, the post-completion ack makes it visible).
 
 use core::cell::SyncUnsafeCell;
 
@@ -13,7 +13,7 @@ use crate::runtime::statics::SHARED;
 
 /// Slot bases come from this crate's `osc-config.x` fragment (shipped into
 /// the link search path by build.rs; the board binary passes
-/// `-Tosc-config.x`), resolved against the board's CONFIG_A/B regions — the
+/// `-Tosc-config.x`), resolved against the board's CONFIG_A/B regions -- the
 /// flash layout has exactly one home. The target gate is deterministic host
 /// hygiene: an ungated extern symbol links on the host only while no pulled
 /// codegen unit references it, which is CGU-partition luck; host builds
@@ -50,7 +50,7 @@ struct State {
 
 pub struct ConfigStore {
     /// Written by `boot_load` (pre-IRQ), then only from HIGH dispatch (the
-    /// SESSION exclusivity invariant, `runtime::isr`) — never concurrent.
+    /// SESSION exclusivity invariant, `runtime::isr`) -- never concurrent.
     state: SyncUnsafeCell<State>,
 }
 
@@ -86,7 +86,7 @@ impl ConfigStore {
 
 impl osc_core::ConfigStore for ConfigStore {
     /// Erase the older slot, stream header + regions straight into the page
-    /// buffer (no staging copy), then readback-verify — the verify is what
+    /// buffer (no staging copy), then readback-verify -- the verify is what
     /// lets the ack mean durable.
     fn save(
         &self,

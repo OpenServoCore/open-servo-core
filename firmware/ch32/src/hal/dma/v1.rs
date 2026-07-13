@@ -4,19 +4,19 @@ pub use ch32_metapac::dma::vals::{Dir, Pl, Size};
 
 /// DMA1 priority ladder (arbiter: higher `Pl` wins; equal `Pl` breaks by
 /// lowest channel number). The one hard invariant is that an inbound RX byte's
-/// drain must never be deferred past the FE-IRQ entry — a deferred drain lets
+/// drain must never be deferred past the FE-IRQ entry -- a deferred drain lets
 /// the break IRQ read a cursor that hasn't counted the byte (no-reply) or a
 /// `DATAR` clear steal it (ring loss). A bringup spike (`rx_dma_drain_latency`)
 /// proved the arbiter preempts per-beat, so RX alone at the top bounds its
-/// drain wait to one in-flight transfer (« IRQ latency) regardless of any
-/// competitor's burst length:
+/// drain wait to one in-flight transfer (much less than IRQ latency) regardless
+/// of any competitor's burst length:
 ///
-///   VERYHIGH  CH5 RX ring          — inbound bytes, never deferred
-///   HIGH      CH1 ADC              — motor kernel; wins HIGH ties (lowest #)
-///             CH4 TX               — reply wire arms
-///             CH6 M2M → snapshot   — copies the reply payload for CRC + wire
-///   MEDIUM    CH3 SPI-CRC feed     — must run BEHIND CH6 so the copy it reads
-///                                    is written first (producer→consumer)
+///   VERYHIGH  CH5 RX ring          -- inbound bytes, never deferred
+///   HIGH      CH1 ADC              -- motor kernel; wins HIGH ties (lowest #)
+///             CH4 TX               -- reply wire arms
+///             CH6 M2M -> snapshot  -- copies the reply payload for CRC + wire
+///   MEDIUM    CH3 SPI-CRC feed     -- must run BEHIND CH6 so the copy it reads
+///                                    is written first (producer -> consumer)
 ///
 /// RX CRC feeds the SPI engine straight from the ring (no M2M staging), so CH6
 /// serves only the reply snapshot and CH7 is unused.
@@ -64,8 +64,8 @@ pub fn configure(ch: Channel, cfg: &Config, paddr: u32, maddr: u32, count: u16) 
     });
 }
 
-/// Memory-to-memory byte copy: `src` → `dst`, `count` bytes, started
-/// immediately (no peripheral request — MEM2MEM free-runs at bus speed).
+/// Memory-to-memory byte copy: `src` -> `dst`, `count` bytes, started
+/// immediately (no peripheral request -- MEM2MEM free-runs at bus speed).
 /// PAR is the source (DIR = from-peripheral), both sides increment.
 pub fn configure_m2m(ch: Channel, src: u32, dst: u32, count: u16, pl: Pl) {
     let n = (ch as u8 - 1) as usize;
@@ -93,11 +93,11 @@ pub fn set_count(ch: Channel, count: u16) {
 }
 
 // SAFETY: see hal/SAFETY.md. CH(n).CR is per-channel; channels driven from
-// ≥ 2 priority contexts (the DXL TX channel today, touched from MAIN and
+// >= 2 priority contexts (the CH4 TX channel today, touched from MAIN and
 // HIGH ISRs) need the CS to keep EN/TCIE RMW atomic. Single-context channels
 // pay the CS cost but stay correct.
 // `inline(always)` folds this into the TIM2 CC3 hot path so the wire-driver
-// activate sequence stays inside the `.highcode` body — no standalone flash
+// activate sequence stays inside the `.highcode` body -- no standalone flash
 // fetch per call.
 #[inline(always)]
 pub fn enable(ch: Channel) {

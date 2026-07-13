@@ -1,5 +1,5 @@
-//! USART-baud provider (osc-native §2/§9.1) — binds `UsartBaud` to USART1's
-//! BRR register. Owns the `BaudRate` → BRR map; the driver hands a rate and
+//! USART-baud provider (transport sec 2 / protocol sec 9.1) -- binds `UsartBaud` to USART1's
+//! BRR register. Owns the `BaudRate` -> BRR map; the driver hands a rate and
 //! stays unaware of the divisor.
 
 use ch32_metapac::USART1;

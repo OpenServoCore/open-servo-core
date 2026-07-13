@@ -1,4 +1,4 @@
-//! Monotonic provider — supplies `Monotonic` from HCLK-driven SysTick.
+//! Monotonic provider -- supplies `Monotonic` from HCLK-driven SysTick.
 
 use osc_drivers::traits;
 

@@ -12,7 +12,7 @@ fn wait_busy() {
         !FLASH.statr().read().wrprterr(),
         "flash write protection error"
     );
-    // EOP is W1C — required after every BUFRST, BUFLOAD, STRT.
+    // EOP is W1C -- required after every BUFRST, BUFLOAD, STRT.
     FLASH.statr().modify(|w| w.set_eop(true));
 }
 
@@ -31,7 +31,7 @@ fn lock() {
     });
 }
 
-/// Erase one 256-byte page (RM §18.4.6).
+/// Erase one 256-byte page (RM sec 18.4.6).
 pub fn erase(addr: u32) {
     unlock();
     FLASH.ctlr().write(|w| w.set_fter(true));
@@ -45,7 +45,7 @@ pub fn erase(addr: u32) {
     lock();
 }
 
-/// Fast-page write (RM §18.4.5) from scattered segments streamed in order —
+/// Fast-page write (RM sec 18.4.5) from scattered segments streamed in order --
 /// one buffer-load pass, one program cycle; no staging copy. `addr` 4-byte
 /// aligned, each segment's len a multiple of 4, the total must not cross a
 /// page boundary. Buffer words past the total program as erased (BUFRST

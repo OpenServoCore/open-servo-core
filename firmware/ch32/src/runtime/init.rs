@@ -36,7 +36,7 @@ pub fn bringup(
     crate::log::debug!("gpio configured");
 
     // Sole writer to CONFIG: pre-IRQ, pre-`Drivers::install`. Board defaults
-    // first, then the saved image overlays them (§9.4) — `Drivers::install`
+    // first, then the saved image overlays them (protocol sec 9.4) -- `Drivers::install`
     // reads the effective comms block from the table.
     SHARED.table.seed_config_defaults(defaults);
     config_store::ConfigStore::boot_load();
@@ -145,22 +145,22 @@ fn configure_pins(w: &BoardWiring) {
 
 #[cfg(feature = "half-duplex")]
 fn configure_bus_pins(_w: &BoardWiring) {
-    // PC0 idle: AF open-drain — released, the external bus pull-up holds
+    // PC0 idle: AF open-drain -- released, the external bus pull-up holds
     // mark (spike break_framing `pc0_drive`; a bare wire with no pull-up
     // floats low and trips rescue). TxWire flips to AF push-pull for the
-    // TX window so data edges never ride the pull-up (§2, F8).
+    // TX window so data edges never ride the pull-up (transport sec 2, F8).
     gpio::configure(chip::BUS_USART_MAPPING.tx_pin(), PinMode::AF_OPEN_DRAIN);
-    // The dedicated RX pin (PC1) is left unconfigured — HDSEL ties RX to
+    // The dedicated RX pin (PC1) is left unconfigured -- HDSEL ties RX to
     // the TX pin internally and ignores it. On a buffer-populated board
     // running this direct wire (bypassed rev B), the board's TX_EN
-    // pull-down is what holds the buffer released — no firmware involved.
+    // pull-down is what holds the buffer released -- no firmware involved.
 }
 
 #[cfg(not(feature = "half-duplex"))]
 fn configure_bus_pins(w: &BoardWiring) {
     // TX drives only the 74LVC2G241's buffer input, never the shared
-    // wire, so it stays AF push-pull for good — the buffer's tri-state
-    // (TX_EN) is the drive discipline (§2; F8 applies to the wire side
+    // wire, so it stays AF push-pull for good -- the buffer's tri-state
+    // (TX_EN) is the drive discipline (transport sec 2; F8 applies to the wire side
     // of the buffer).
     gpio::configure(chip::BUS_USART_MAPPING.tx_pin(), PinMode::AF_PUSH_PULL);
     // RX listens through the receive buffer; the internal pull-up idles
