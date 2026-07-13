@@ -1,0 +1,5 @@
+error: Enum derive requires unit variants only
+ --> tests/ui/enum_variant_with_fields.rs:7:5
+  |
+7 |     B(u8),
+  |     ^^^^^

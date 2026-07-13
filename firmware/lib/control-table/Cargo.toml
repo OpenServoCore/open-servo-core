@@ -1,0 +1,18 @@
+[package]
+name    = "control-table"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+heapless.workspace             = true
+control-table-derive.workspace = true
+defmt                          = { version = "1", optional = true }
+
+[dev-dependencies]
+trybuild = "1"
+
+[features]
+default          = ["sync-unsafe-cell"]
+defmt            = ["dep:defmt"]
+sync-unsafe-cell = []

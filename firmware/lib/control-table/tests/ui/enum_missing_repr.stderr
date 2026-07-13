@@ -1,0 +1,5 @@
+error: Enum derive requires #[repr(u8)]
+ --> tests/ui/enum_missing_repr.rs:4:6
+  |
+4 | enum MissingRepr {
+  |      ^^^^^^^^^^^

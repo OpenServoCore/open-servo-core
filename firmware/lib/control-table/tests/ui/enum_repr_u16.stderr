@@ -1,0 +1,5 @@
+error: Enum derive requires #[repr(u8)]
+ --> tests/ui/enum_repr_u16.rs:4:8
+  |
+4 | #[repr(u16)]
+  |        ^^^
