@@ -1,0 +1,34 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-test:
+    name: build + test (firmware/lib)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: firmware/lib
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust (nightly + clippy + rustfmt)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: firmware/lib
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+      - name: cargo clippy
+        run: cargo clippy --workspace --tests -- -D warnings
+      - name: cargo build
+        run: cargo build --workspace
+      - name: cargo test
+        run: cargo test --workspace
