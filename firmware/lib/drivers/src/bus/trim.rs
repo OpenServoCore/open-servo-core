@@ -66,14 +66,37 @@ impl TrimLoop {
         if span_ticks == 0 {
             return None; // defensive: no span, no reading
         }
-        let ppm = ((err_ticks as i64 * 1_000_000) / span_ticks as i64) as i32;
+        let ppm = ppm(err_ticks, span_ticks);
         if self.last_steps != 0 {
-            let observed = (self.last_ppm - ppm) / self.last_steps;
+            // Truncating division by the +/-1..=4 step count: |a/b| == |a|/|b|
+            // signed by XOR; constant divisors lower to mulhu magic, no libcall.
+            let delta = self.last_ppm - ppm;
+            let mag = delta.unsigned_abs();
+            let q = match self.last_steps.unsigned_abs() {
+                1 => mag,
+                2 => mag / 2,
+                3 => mag / 3,
+                _ => mag / 4,
+            };
+            let observed = if (delta < 0) == (self.last_steps < 0) {
+                q as i32
+            } else {
+                -(q as i32)
+            };
             if (STEP_PPM_MIN..=STEP_PPM_MAX).contains(&observed) {
                 self.step_ppm = observed;
             }
         }
-        let steps = round_div(ppm, self.step_ppm).clamp(-STEPS_MAX, STEPS_MAX);
+        // round(ppm / step_ppm) clamped to +/-STEPS_MAX, division-free: the
+        // half-step boundaries sit at odd multiples of step_ppm, so the
+        // clamped quotient is STEPS_MAX threshold compares.
+        let d = self.step_ppm as u32;
+        let t = 2 * ppm.unsigned_abs();
+        let mut mag = 0;
+        for k in 0..STEPS_MAX as u32 {
+            mag += (t >= (2 * k + 1) * d) as i32;
+        }
+        let steps = if ppm < 0 { -mag } else { mag };
         let total = (self.total as i32 + steps).clamp(-TOTAL_MAX, TOTAL_MAX);
         // Record what was APPLIED, not what was asked: at the rail the plant
         // moved less than `steps`, and the step-effect division must match.
@@ -95,19 +118,49 @@ impl TrimLoop {
     }
 }
 
-/// Round-to-nearest signed division, divisor positive.
-fn round_div(n: i32, d: i32) -> i32 {
-    let half = d / 2;
-    if n >= 0 {
-        (n + half) / d
-    } else {
-        (n - half) / d
+/// Exact `err * 1_000_000 / span`, truncated toward zero. Hand-rolled
+/// restoring division: the chip has no divider and the soft-arith gate bans
+/// the libcall. Every feeder gates |err| <= span and 1e6 < 2^20, so the
+/// quotient fits 20 bits; every u64 op here lowers inline on rv32+zmmul.
+pub(super) fn ppm(err: i32, span: u32) -> i32 {
+    debug_assert!(span != 0);
+    let neg = err < 0;
+    let mut rem = err.unsigned_abs() as u64 * 1_000_000;
+    let mut q: u32 = 0;
+    // Out-of-domain net: |err| > span means an upstream gate broke;
+    // saturate so the downstream sanity bands discard the reading.
+    if rem >= (span as u64) << 20 {
+        q = (1 << 20) - 1;
+        rem = 0;
     }
+    let mut dshift = (span as u64) << 19;
+    let mut bit: u32 = 1 << 19;
+    while bit != 0 {
+        if rem >= dshift {
+            rem -= dshift;
+            q |= bit;
+        }
+        dshift >>= 1;
+        bit >>= 1;
+    }
+    if neg { -(q as i32) } else { q as i32 }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Round-to-nearest signed division, divisor positive -- the original
+    /// closed form the threshold compares in `on_window` replaced. Kept as a
+    /// test oracle only.
+    fn round_div_reference(n: i32, d: i32) -> i32 {
+        let half = d / 2;
+        if n >= 0 {
+            (n + half) / d
+        } else {
+            (n - half) / d
+        }
+    }
 
     /// Closed-loop plant: a chip with a true clock offset and a true (possibly
     /// off-nominal) step effect, measured through noiseless windows.
@@ -223,5 +276,142 @@ mod tests {
     fn zero_span_reads_nothing() {
         let mut t = TrimLoop::new(2500);
         assert_eq!(t.on_window(1000, 0), None);
+    }
+
+    #[test]
+    fn ppm_matches_reference_division() {
+        // Bit-identical to the i64 quotient across the helper's domain
+        // (|err| <= span); errs are generated FROM each span so the bound
+        // holds by construction and the saturation net never trips.
+        fn reference(err: i32, span: u32) -> i32 {
+            (err as i64 * 1_000_000 / span as i64) as i32
+        }
+        let spans: [u32; 11] = [
+            1,
+            2,
+            3,
+            16,
+            4_000,
+            16_000,
+            153_600,
+            4_300_000,
+            8_600_000,
+            2_147_483_647,
+            u32::MAX,
+        ];
+        let mut cases = 0u32;
+        for &span in &spans {
+            let bound = (span as i64).min(i32::MAX as i64);
+            // Boundary and interior magnitudes, each clamped into [0, bound].
+            let mags = [
+                0,
+                1,
+                2,
+                (span / 16) as i64,
+                (span / 2) as i64,
+                bound - 1,
+                bound,
+            ];
+            for &m in &mags {
+                if !(0..=bound).contains(&m) {
+                    continue;
+                }
+                let err = m as i32;
+                assert_eq!(
+                    ppm(err, span),
+                    reference(err, span),
+                    "err {err} span {span}"
+                );
+                assert_eq!(
+                    ppm(-err, span),
+                    reference(-err, span),
+                    "err {} span {span}",
+                    -err
+                );
+                cases += 2;
+            }
+        }
+        assert!(cases >= 100, "grid too small: {cases}");
+
+        // Explicit saturation path (|err| > span, OUTSIDE the domain): the
+        // helper clamps to +/-(2^20 - 1) rather than dividing, carrying the
+        // input sign. The magnitude sits far past every downstream sanity band
+        // (drift 8000 ppm, step-effect 4000 ppm) so the reading is discarded.
+        let sat = ppm(1_000_000, 4);
+        assert!(sat >= 1 << 19, "saturation too small: {sat}");
+        assert_eq!(sat, (1 << 20) - 1);
+        // 8000 = clock::DRIFT_SANITY_PPM (the widest downstream band); the
+        // saturated magnitude clears it and the STEP_PPM band by >100x.
+        assert!(sat.unsigned_abs() > 8_000);
+        assert!(sat > STEP_PPM_MAX);
+        assert_eq!(ppm(-1_000_000, 4), -((1 << 20) - 1));
+    }
+
+    #[test]
+    fn steps_threshold_matches_round_div_reference() {
+        // The four-compare step selector must equal round_div_reference
+        // clamped to +/-STEPS_MAX across every plausible (d, n).
+        fn threshold(n: i32, d: u32) -> i32 {
+            let t = 2 * n.unsigned_abs();
+            let mag =
+                (t >= d) as i32 + (t >= 3 * d) as i32 + (t >= 5 * d) as i32 + (t >= 7 * d) as i32;
+            if n < 0 { -mag } else { mag }
+        }
+        for d in (STEP_PPM_MIN..=STEP_PPM_MAX).step_by(37) {
+            for n in (-(9 * d)..=(9 * d)).step_by(53) {
+                assert_eq!(
+                    threshold(n, d as u32),
+                    round_div_reference(n, d).clamp(-STEPS_MAX, STEPS_MAX),
+                    "d {d} n {n}"
+                );
+            }
+        }
+        // Exact half-step ties, even and odd d, both signs -- the load-bearing
+        // boundary the coarse sweep above straddles rather than lands on.
+        for &d in &[800i32, 801, 2500, 2501, 4000] {
+            for k in 0..=4 {
+                let n = k * d + d / 2;
+                assert_eq!(
+                    threshold(n, d as u32),
+                    round_div_reference(n, d).clamp(-STEPS_MAX, STEPS_MAX),
+                    "tie d {d} n {n}"
+                );
+                assert_eq!(
+                    threshold(-n, d as u32),
+                    round_div_reference(-n, d).clamp(-STEPS_MAX, STEPS_MAX),
+                    "tie d {d} n {}",
+                    -n
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn gain_constant_divisor_matches_truncating_division() {
+        // The match-on-|steps| gain divisor must equal signed truncating
+        // division for every divisor the loop can record.
+        fn gain(delta: i32, steps: i32) -> i32 {
+            let mag = delta.unsigned_abs();
+            let q = match steps.unsigned_abs() {
+                1 => mag,
+                2 => mag / 2,
+                3 => mag / 3,
+                _ => mag / 4,
+            };
+            if (delta < 0) == (steps < 0) {
+                q as i32
+            } else {
+                -(q as i32)
+            }
+        }
+        for delta in (-20_000..=20_000).step_by(37) {
+            for steps in [-4, -3, -2, -1, 1, 2, 3, 4] {
+                assert_eq!(
+                    gain(delta, steps),
+                    delta / steps,
+                    "delta {delta} steps {steps}"
+                );
+            }
+        }
     }
 }
