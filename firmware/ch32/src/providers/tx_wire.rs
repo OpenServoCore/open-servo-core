@@ -3,7 +3,7 @@
 //! USART1 TC ISR (shifter empty), never a CH4 TC — so the final release's
 //! wire handback and any deferred config can never garble in-flight bits.
 //!
-//! Two wire modes, selected by the board via the `wire-buffered` feature;
+//! Two wire modes, selected by the board via the `half-duplex` feature;
 //! `claim_wire`/`release_wire` are the only lines that differ:
 //!
 //! - **Direct** (rev C, and rev B with the buffer bypassed): PC0 under
@@ -27,49 +27,49 @@ use osc_drivers::traits::bus;
 
 use crate::hal::{dma, usart};
 
-#[cfg(feature = "wire-buffered")]
+#[cfg(not(feature = "half-duplex"))]
 use crate::cfg::BusWiring;
-#[cfg(not(feature = "wire-buffered"))]
+#[cfg(feature = "half-duplex")]
 use crate::cfg::chip;
-#[cfg(not(feature = "wire-buffered"))]
+#[cfg(feature = "half-duplex")]
 use crate::hal::gpio::{self, PinMode};
-#[cfg(feature = "wire-buffered")]
+#[cfg(not(feature = "half-duplex"))]
 use crate::hal::{Pin, gpio};
-#[cfg(feature = "wire-buffered")]
+#[cfg(not(feature = "half-duplex"))]
 use osc_drivers::Level;
 
 /// Production binding to the wire claim/release + USART1 SBK/TCIE + DMA1_CH4.
-#[cfg(not(feature = "wire-buffered"))]
+#[cfg(feature = "half-duplex")]
 pub struct TxWire;
 
 /// Production binding to the wire claim/release + USART1 SBK/TCIE + DMA1_CH4.
-#[cfg(feature = "wire-buffered")]
+#[cfg(not(feature = "half-duplex"))]
 pub struct TxWire {
     tx_en: Pin,
 }
 
 impl TxWire {
-    #[cfg(feature = "wire-buffered")]
+    #[cfg(not(feature = "half-duplex"))]
     pub fn new(bus: &BusWiring) -> Self {
         Self { tx_en: bus.tx_en }
     }
 
     /// Claim the wire for the TX window.
     fn claim_wire(&self) {
-        #[cfg(not(feature = "wire-buffered"))]
+        #[cfg(feature = "half-duplex")]
         // PC0 → AF push-pull: drive both wire edges ourselves.
         gpio::configure(chip::BUS_USART_MAPPING.tx_pin(), PinMode::AF_PUSH_PULL);
-        #[cfg(feature = "wire-buffered")]
+        #[cfg(not(feature = "half-duplex"))]
         // TX_EN high: the buffer drives TX onto the wire and mutes RX.
         gpio::set_level(self.tx_en, Level::High);
     }
 
     /// Hand the wire back: released, the bus pull-up holds mark.
     fn release_wire(&self) {
-        #[cfg(not(feature = "wire-buffered"))]
+        #[cfg(feature = "half-duplex")]
         // PC0 → AF open-drain; HDSEL RX keeps hearing through the pin.
         gpio::configure(chip::BUS_USART_MAPPING.tx_pin(), PinMode::AF_OPEN_DRAIN);
-        #[cfg(feature = "wire-buffered")]
+        #[cfg(not(feature = "half-duplex"))]
         // TX_EN low: the buffer releases the wire and resumes feeding it to RX.
         gpio::set_level(self.tx_en, Level::Low);
     }

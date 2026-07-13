@@ -111,9 +111,9 @@ impl Drivers {
         // SAFETY: see fn doc.
         let bus = unsafe { &mut *CELLS.bus.0.get() };
         debug_assert!(bus.is_none(), "Drivers: bus already installed");
-        #[cfg(not(feature = "wire-buffered"))]
+        #[cfg(feature = "half-duplex")]
         let tx_wire = TxWire;
-        #[cfg(feature = "wire-buffered")]
+        #[cfg(not(feature = "half-duplex"))]
         let tx_wire = TxWire::new(&w.bus);
         *bus = Some(ServoBus::new(
             RxRing,

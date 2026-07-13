@@ -47,7 +47,8 @@ at any time by protocol construction).
   no direction buffer [F7] — rev C deletes both. Bus side: series R +
   pull-up (+ optional TVS); the buffer's roles collapse into the drive
   discipline below.
-- **Buffered boards (rev B)**: supported via board config (`wire-buffered`).
+- **Buffered boards (rev B)**: the default board config (`half-duplex`
+  selects the direct wire — tinyboot's flag, same convention).
   The USART runs plain full duplex behind the 74LVC2G241: TX drives only
   the buffer input (push-pull, never released), and TX_EN gates the wire —
   high drives TX onto the data line and hardware-mutes the receive path
@@ -761,7 +762,7 @@ not just the live table.
 
 | resource            | use                                               |
 | ------------------- | ------------------------------------------------- |
-| USART1 + HDSEL, PC0 | the bus (rev B `wire-buffered` config: full duplex, PC1 RX + PC2 TX_EN; both pins freed on rev-c) |
+| USART1 + HDSEL, PC0 | the bus (rev B default config: full duplex, PC1 RX + PC2 TX_EN; the `half-duplex` feature frees both pins on rev-c) |
 | DMA1 CH5            | RX ring (circular, armed once)                    |
 | DMA1 CH4            | TX stream (enable-when-ready)                     |
 | DMA1 CH3 + SPI1     | CRC engine (no pins) [F6]                         |
@@ -774,7 +775,7 @@ not just the live table.
 Deleted relative to the DXL transport: edge IC (already gone), TIM-compare
 TX kickoff, RDT + tuning tools, byte-stuffing encode/unstuff, FF-FF-FD
 hunter, fold-CRC machinery, the 74LVC2G241 + TX_EN pin (direct wire; the
-rev B `wire-buffered` board config keeps them).
+rev B default board config keeps them).
 
 ## 11. Measured foundation
 

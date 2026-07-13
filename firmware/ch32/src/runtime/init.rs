@@ -1,6 +1,6 @@
 use ch32_metapac::{ADC, adc::vals::Extsel, dma::vals::Dir};
 use osc_core::ConfigDefaults;
-#[cfg(feature = "wire-buffered")]
+#[cfg(not(feature = "half-duplex"))]
 use osc_drivers::Level;
 
 use crate::control::sensors::scan::{ADC_DMA_BUF, ADC_DMA_BUF_LEN, ADC_SCAN_LEN, ADC_SENSOR_COUNT};
@@ -108,7 +108,7 @@ fn enable_clocks_and_remaps(w: &BoardWiring) {
     }
     rcc::enable_gpio(chip::BUS_USART_MAPPING.tx_pin().port_index());
     rcc::enable_gpio(chip::BUS_LINE_PIN.port_index());
-    #[cfg(feature = "wire-buffered")]
+    #[cfg(not(feature = "half-duplex"))]
     rcc::enable_gpio(w.bus.tx_en.port_index());
     rcc::enable_tim1();
     rcc::enable_adc1();
@@ -143,7 +143,7 @@ fn configure_pins(w: &BoardWiring) {
     configure_bus_pins(w);
 }
 
-#[cfg(not(feature = "wire-buffered"))]
+#[cfg(feature = "half-duplex")]
 fn configure_bus_pins(_w: &BoardWiring) {
     // PC0 idle: AF open-drain — released, the external bus pull-up holds
     // mark (spike break_framing `pc0_drive`; a bare wire with no pull-up
@@ -156,7 +156,7 @@ fn configure_bus_pins(_w: &BoardWiring) {
     // pull-down is what holds the buffer released — no firmware involved.
 }
 
-#[cfg(feature = "wire-buffered")]
+#[cfg(not(feature = "half-duplex"))]
 fn configure_bus_pins(w: &BoardWiring) {
     // TX drives only the 74LVC2G241's buffer input, never the shared
     // wire, so it stays AF push-pull for good — the buffer's tri-state
@@ -264,7 +264,7 @@ fn bring_up_bus(brr: u32) {
     dma::enable(dma::Channel::CH5);
 
     // Wire mode, TE/RE, BRR, UE, then RX-DMA + error IRQ. No IDLE IRQ.
-    usart::init_bus(regs, brr, cfg!(not(feature = "wire-buffered")));
+    usart::init_bus(regs, brr, cfg!(feature = "half-duplex"));
 
     // One-shot SPI-CRC engine setup (clock-gate + config; held live).
     Crc::init();

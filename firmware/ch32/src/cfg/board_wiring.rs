@@ -6,16 +6,16 @@
 use osc_drivers::Level;
 
 use crate::cfg::chip::{AnalogChannel, DigitalPin};
-#[cfg(feature = "wire-buffered")]
+#[cfg(not(feature = "half-duplex"))]
 use crate::hal::Pin;
 use crate::hal::opa;
 
-/// Bus wire wiring — exists only under the `wire-buffered` feature (the
+/// Bus wire wiring — exists only on the buffered default wire (the
 /// wire mode is a compile-time board choice; see `providers/tx_wire`). The
 /// direct wire needs no bus wiring at all: PC0 carries everything, and on a
 /// buffer-populated board running the direct wire, the board's TX_EN
 /// pull-down is what keeps the buffer released — no firmware involved.
-#[cfg(feature = "wire-buffered")]
+#[cfg(not(feature = "half-duplex"))]
 #[derive(Copy, Clone)]
 pub struct BusWiring {
     /// 74LVC2G241 direction pin: high = the buffer drives TX onto the data
@@ -86,7 +86,7 @@ pub struct BoardWiring {
     /// Scope/probe pad; toggled once per DMA-TC ISR.
     pub dbg: DigitalPin,
     pub drv_en: DrvEn,
-    #[cfg(feature = "wire-buffered")]
+    #[cfg(not(feature = "half-duplex"))]
     pub bus: BusWiring,
     pub current_sense: CurrentSenseConfig,
     pub sensors: AdcPins,
@@ -96,7 +96,7 @@ impl BoardWiring {
     /// Compile-time call site: `const _: () = WIRING.assert_valid();`
     pub const fn assert_valid(&self) {
         self.assert_scratch_distinct();
-        #[cfg(feature = "wire-buffered")]
+        #[cfg(not(feature = "half-duplex"))]
         self.assert_bus_distinct();
         self.assert_sensors_distinct();
     }
@@ -107,7 +107,7 @@ impl BoardWiring {
         }
     }
 
-    #[cfg(feature = "wire-buffered")]
+    #[cfg(not(feature = "half-duplex"))]
     const fn assert_bus_distinct(&self) {
         let tx_en = self.bus.tx_en;
         if (tx_en as u8) == (self.dbg.pin() as u8) || (tx_en as u8) == (self.drv_en.pin.pin() as u8)

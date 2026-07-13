@@ -22,6 +22,7 @@ defmt-rtt     = { version = "1", optional = true }
 [features]
 default = []
 defmt   = ["dep:defmt", "dep:defmt-rtt", "osc-ch32/defmt"]
-# Rev B wire: 74LVC2G241 buffer + TX_EN. Default (absent) = direct HDSEL
-# wire (rev C, or rev B with the buffer bypassed — the current bench units).
-wire-buffered = ["osc-ch32/wire-buffered"]
+# Direct HDSEL single wire (rev C, or rev B with the buffer bypassed) —
+# tinyboot's flag. Default (absent) = rev B 74LVC2G241 buffer + TX_EN
+# (the current fleet).
+half-duplex = ["osc-ch32/half-duplex"]

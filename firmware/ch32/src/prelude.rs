@@ -1,6 +1,6 @@
 pub use osc_drivers::Level;
 
-#[cfg(feature = "wire-buffered")]
+#[cfg(not(feature = "half-duplex"))]
 pub use crate::cfg::BusWiring;
 pub use crate::cfg::{
     AdcPins, AnalogChannel, BoardConfig, BoardWiring, Calibration, CurrentSenseConfig, DigitalPin,

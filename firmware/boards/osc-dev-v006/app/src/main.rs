@@ -21,11 +21,12 @@ fn main() -> ! {
                 pin: DigitalPin::PD0,
                 active: Level::High,
             },
-            // Rev B DXL TTL subsystem: `--features wire-buffered` puts the
-            // 74LVC2G241 in play, TX_EN = PC2 gating direction. The default
-            // direct wire carries no bus wiring — on a buffer-populated
-            // board the TX_EN pull-down (R16) keeps the buffer released.
-            #[cfg(feature = "wire-buffered")]
+            // Rev B DXL TTL subsystem (the default): the 74LVC2G241 is in
+            // play, TX_EN = PC2 gating direction. `--features half-duplex`
+            // drops the bus wiring — the direct HDSEL wire carries none,
+            // and on a buffer-populated board the TX_EN pull-down (R16)
+            // keeps the buffer released.
+            #[cfg(not(feature = "half-duplex"))]
             bus: BusWiring { tx_en: Pin::PC2 },
             current_sense: CurrentSenseConfig {
                 gain: opa::Gain::X32,

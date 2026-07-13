@@ -36,7 +36,7 @@ default      = ["ch32v006x8x6"]
 ch32v006x8x6 = ["ch32-metapac/ch32v006x8x6"]
 rt           = ["ch32-metapac/rt"]
 defmt        = ["dep:defmt", "osc-core/defmt", "osc-drivers/defmt", "osc-log/defmt"]
-# Rev B bus wire: full-duplex USART behind the 74LVC2G241 buffer, TX_EN
-# direction control. Absent = direct HDSEL single-wire (rev C, and rev B
-# units with the buffer bypassed). Reshapes `cfg::BusWiring` to match.
-wire-buffered = []
+# Direct single wire (rev C HDSEL, or rev B with the buffer bypassed) —
+# tinyboot's flag. Default (absent) = rev B 74LVC2G241 buffer + TX_EN,
+# full duplex behind it. Reshapes `cfg::BusWiring` to match.
+half-duplex = []

@@ -1,13 +1,6 @@
 #![no_std]
 #![no_main]
 
-#[cfg(all(feature = "direct-wire", feature = "wire-buffered"))]
-compile_error!("wire-buffered needs --no-default-features (direct-wire is the default)");
-#[cfg(not(any(feature = "direct-wire", feature = "wire-buffered")))]
-compile_error!(
-    "pick a wire: direct-wire (default) or --no-default-features --features wire-buffered"
-);
-
 use panic_halt as _;
 use tinyboot_ch32_rt as _;
 
@@ -38,14 +31,13 @@ fn init_48mhz_hsi_pll() {
 fn main() -> ! {
     init_48mhz_hsi_pll();
 
-    // Wire modes mirror the app's `wire-buffered` feature: rev B's
-    // 74LVC2G241 buffer + TX_EN (full duplex behind it), or the direct
-    // single wire — tinyboot's `half-duplex` feature, pulled in by this
-    // crate's `direct-wire` default. Direct is only safe on the shared wire
-    // since OpenServoCore/tinyboot#32 (HDSEL-before-TE + open-drain park);
-    // v0.4.1 latched the TX output LOW and idled push-pull — a hard-low
-    // bus jam for every boot window.
-    #[cfg(feature = "wire-buffered")]
+    // Wire modes mirror the app's `half-duplex` feature: default = rev B's
+    // 74LVC2G241 buffer + TX_EN (full duplex behind it); the feature =
+    // direct single wire (tinyboot's `half-duplex`). Direct is only safe
+    // on the shared wire since OpenServoCore/tinyboot#32 (HDSEL-before-TE
+    // + open-drain park); v0.4.1 latched the TX output LOW and idled
+    // push-pull — a hard-low bus jam for every boot window.
+    #[cfg(not(feature = "half-duplex"))]
     let transport = Usart::new(&UsartConfig {
         baud: BaudRate::B3000000,
         pclk: 48_000_000,
@@ -56,7 +48,7 @@ fn main() -> ! {
             tx_level: Level::High,
         }),
     });
-    #[cfg(not(feature = "wire-buffered"))]
+    #[cfg(feature = "half-duplex")]
     let transport = Usart::new(&UsartConfig {
         baud: BaudRate::B3000000,
         pclk: 48_000_000,

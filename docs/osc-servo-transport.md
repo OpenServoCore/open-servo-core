@@ -140,7 +140,8 @@ Every hardware resource the transport touches, and its duty cycle:
 | PC0 CNF         | drive discipline: open-drain listening / push-pull TX window | flipped at trigger/release |
 | main loop       | deferred reboot poll + §9.1 rescue line sampler (line pin + CH5 NDTR once per wfi wake — the detector latches only at a span's END, so the slow loop is the only observer of a pulse in progress) | cold path; sampler ~0.3 µs/wake |
 
-Rev B buffered boards (board config `wire-buffered`) swap the wire rows:
+Rev B buffered boards (the default config; `half-duplex` = direct wire)
+swap the wire rows:
 USART1 runs plain full duplex (no HDSEL, RX on PC1 through the 74LVC2G241's
 mute-gated receive buffer), and the PC0-CNF flip becomes the TX_EN (PC2)
 level — high claims the wire and mutes RX, low releases. Every discipline
