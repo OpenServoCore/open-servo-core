@@ -36,7 +36,11 @@ schedules the bus); encryption/auth.
 ## 2. Physical layer
 
 Single-wire half-duplex TTL bus, 3.3 V, host-scheduled (exactly one talker
-at any time by protocol construction).
+at any time by protocol construction). Two bus roles, and the names mean
+the roles: the **host** is the end that schedules every exchange; a
+**servo** is any addressable device that responds — a bus-device role, not
+a motor (a sensor node or a downstream gateway speaks the servo role
+unchanged).
 
 - **Servo pin**: the USART TX pin with `HDSEL` (single-wire mode). RX is
   internally tied to the pin; the direct wire needs no dedicated RX pin and

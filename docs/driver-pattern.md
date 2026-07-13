@@ -1,6 +1,6 @@
 # Hierarchical Driver Pattern
 
-A design convention for organizing firmware that has more than two or three peripherals interacting with a protocol stack. This doc captures the convention in generic terms so it can be applied to any project — examples are illustrative rather than tied to a specific codebase. For a full worked example in this tree, see the bus driver under `firmware/lib/drivers/src/bus/` (the composite `ServoBus` composing the `Framer`/`Chain`/`TxEngine`/`ClockTracker` sub-drivers) with its providers in `firmware/ch32/src/providers/`.
+A design convention for organizing firmware that has more than two or three peripherals interacting with a protocol stack. This doc captures the convention in generic terms so it can be applied to any project — examples are illustrative rather than tied to a specific codebase. For a full worked example in this tree, see the bus driver under `firmware/lib/drivers/src/bus/` (the composite `ServoBus` composing the `Framer`/`Chain`/`TxEngine`/`ClockTracker` sub-drivers) with its providers in `firmware/servo-ch32/src/providers/`.
 
 ---
 
@@ -149,6 +149,27 @@ providers/<role>.rs       -- cfg-routed impl (different chips need different reg
 ```
 
 A single-variant project uses flat files (`hal/types.rs`, `cfg/board_wiring.rs`, `providers/monotonic.rs`). When a second variant lands, each splits into a sub-directory (`hal/types/{mod,v006p8u6,v307vct6}.rs`, etc.) with cfg-routed re-exports. The pattern is the same at all three layers — one mental model handles every chip-variant axis.
+
+### 2.6 The role × abstraction grid (this repository)
+
+§2.4's crate stack describes one *bus role*. A project that ships both ends of a bus repeats the stack per role, and crate names form a grid: rows are the abstraction tiers (directories), columns are the roles (crate-name families). In this tree the roles are **servo** (bus device) and **host** (bus scheduler) — role names, not hardware kinds: a sensor node speaks the servo role without a motor, and products (`dev`, `adapter`) appear only at the board tier.
+
+| | servo | host |
+|---|---|---|
+| core lib (chip-agnostic) | `osc-servo-core`, `osc-servo-drivers` | `osc-host` |
+| chip lib (orchestration) | `osc-servo-ch32` (`firmware/servo-ch32/`) | `osc-host-ch32` (`firmware/host-ch32/`) |
+| board bins | `osc-dev-v006` | `osc-adapter-wchlinke` |
+| PC software | — | `osc-client` (`client/`) |
+
+(The host column is the naming scheme; its cells land with the host band.) Foundation crates — `osc-protocol`, `osc-units`, `osc-log`, `control-table(-derive)` — belong to no column. `osc-integration` is the one deliberate column-spanner: it closes both ends over a simulated wire.
+
+The grid laws:
+
+1. **Depend downward only, within a column.** A board bin depends on its chip lib, the chip lib on its core libs — never sideways or upward.
+2. **Never depend across columns.** The two ends meet only on the wire (`osc-protocol` encodes it) or inside `osc-integration`'s sim. A host crate importing a servo crate (or vice versa) is a layering bug, not a convenience.
+3. **`hal::*` lives only in the `osc-*-ch32` orchestration crates** — §2.4's build-time invariant, applied per role.
+4. **Foundation crates stay end-neutral.** No servo-shaped or host-shaped types in the shared row; each end brings its own vocabulary.
+5. **Roles compose on one die.** A limb gateway instantiates the servo stack toward its upstream bus and the host stack toward its downstream bus. The grid names roles, not chips — which is why the columns must never fuse.
 
 ---
 
