@@ -92,3 +92,50 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash .github/check-soft-arith.sh
         continue-on-error: true
+
+  bench-tools:
+    name: build + test (tools/bench)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tools/bench
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust (nightly + clippy + rustfmt)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tools/bench
+      - name: install libudev (serialport build dep)
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev pkg-config
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+      - name: cargo clippy
+        run: cargo clippy --tests -- -D warnings
+      - name: cargo test (units; hardware suite is on-rig only)
+        run: cargo test --lib
+
+  uart-pirate:
+    name: build (tools/uart-pirate)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tools/uart-pirate
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust (nightly + clippy + rustfmt + target)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: clippy, rustfmt
+          targets: riscv32imc-unknown-none-elf
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tools/uart-pirate
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+      - name: cargo clippy
+        run: cargo clippy -- -D warnings
+      - name: cargo build --release
+        run: cargo build --release

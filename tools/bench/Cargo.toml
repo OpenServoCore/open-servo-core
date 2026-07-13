@@ -1,0 +1,27 @@
+[package]
+name        = "bench"
+version     = "0.1.0"
+edition     = "2024"
+description = "Host-side bench tools: drive uart-pirate, talk to chip-side firmware over osc-native"
+license     = "MIT OR Apache-2.0"
+
+[workspace]
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+osc-protocol = { path = "../../firmware/lib/osc-protocol", features = ["software-crc"] }
+serialport   = "4"
+anyhow       = "1"
+clap         = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+# Authoritative control-table addresses for the hardware suite (host-linkable:
+# osc-core is no_std but never invokes critical-section).
+osc-core    = { path = "../../firmware/lib/core" }
+serial_test = "3"
+
+[[test]]
+name = "hardware"
+path = "tests/hardware/mod.rs"
