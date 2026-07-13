@@ -62,3 +62,33 @@ jobs:
         run: cargo test --features ch32v006x8x6 --lib
       - name: cargo check --features bench
         run: cargo check --features ch32v006x8x6,bench
+
+  osc-dev-v006-cross-build:
+    name: cross-build (boards/osc-dev-v006)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: firmware/boards/osc-dev-v006
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust (nightly + rust-src + llvm-tools)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src, llvm-tools, clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: firmware/boards/osc-dev-v006
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+      - name: cargo clippy
+        run: cargo clippy --workspace -- -D warnings
+      - name: cargo check --workspace
+        run: cargo check --workspace
+      - name: cargo build --release (app image)
+        run: cargo build --release -p osc-dev-v006-app
+      # Known red: trim math links soft division — issue #32. Flips to
+      # enforcing when that closes.
+      - name: no soft div/mod/mul gate
+        working-directory: ${{ github.workspace }}
+        run: bash .github/check-soft-arith.sh
+        continue-on-error: true
