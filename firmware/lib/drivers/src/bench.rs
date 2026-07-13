@@ -35,6 +35,24 @@ pub struct TrimProbe {
     pub win_pairs: u32,
     /// Window verdicts handed to the trim loop.
     pub verdicts: u32,
+    // --- verdict-content layer ---
+    /// Latest drift verdict's raw window sums at handoff.
+    pub verdict_err: i32,
+    pub verdict_span: u32,
+    /// `poll_clock_trim` consumptions by source.
+    pub poll_cal: u32,
+    pub poll_drift: u32,
+    /// Drift polls discarded by the ±8k ppm sanity band.
+    pub sanity_drop: u32,
+    /// Latest drift poll's computed ppm (pre-sanity).
+    pub poll_ppm: i32,
+    /// `TrimLoop::on_window` invocations (both sources) and its latest
+    /// measurement, effect estimate, applied steps, and running total.
+    pub windows: u32,
+    pub tw_ppm: i32,
+    pub tw_effect: i32,
+    pub tw_applied: i32,
+    pub tw_total: i32,
 }
 
 impl TrimProbe {
@@ -49,6 +67,17 @@ impl TrimProbe {
         base_pairs: 0,
         win_pairs: 0,
         verdicts: 0,
+        verdict_err: 0,
+        verdict_span: 0,
+        poll_cal: 0,
+        poll_drift: 0,
+        sanity_drop: 0,
+        poll_ppm: 0,
+        windows: 0,
+        tw_ppm: 0,
+        tw_effect: 0,
+        tw_applied: 0,
+        tw_total: 0,
     };
 }
 

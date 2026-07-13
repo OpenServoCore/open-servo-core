@@ -451,7 +451,11 @@ impl<P: Providers> ServoBus<P> {
                 self.drift_win_n += 1;
                 if self.drift_win_n >= DRIFT_WINDOW_PAIRS {
                     if !self.cal_ready && !self.drift_ready {
-                        crate::bench::trim_probe(|p| p.verdicts += 1);
+                        crate::bench::trim_probe(|p| {
+                            p.verdicts += 1;
+                            p.verdict_err = self.drift_win_err;
+                            p.verdict_span = self.drift_win_span;
+                        });
                         self.cadence_err = self.drift_win_err;
                         self.cadence_span = self.drift_win_span;
                         self.drift_ready = true;
@@ -581,6 +585,7 @@ impl<P: Providers> ServoBus<P> {
     /// slower — for the caller to apply to the oscillator between frames.
     pub fn poll_clock_trim(&mut self) -> Option<i8> {
         if self.cal_ready {
+            crate::bench::trim_probe(|p| p.poll_cal += 1);
             self.cal_ready = false;
             let (err, span) = (self.cadence_err, self.cadence_span);
             self.cadence_err = 0;
@@ -601,7 +606,12 @@ impl<P: Providers> ServoBus<P> {
             return None; // defensive: an empty window decides nothing
         }
         let ppm = (err as i64 * 1_000_000 / span as i64) as i32;
+        crate::bench::trim_probe(|p| {
+            p.poll_drift += 1;
+            p.poll_ppm = ppm;
+        });
         if ppm.unsigned_abs() > DRIFT_SANITY_PPM {
+            crate::bench::trim_probe(|p| p.sanity_drop += 1);
             return None; // not thermal — seam shift or garbage, discarded
         }
         let out = self.trim.on_window(err, span);

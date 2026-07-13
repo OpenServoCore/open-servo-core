@@ -78,6 +78,13 @@ impl TrimLoop {
         // Record what was APPLIED, not what was asked: at the rail the plant
         // moved less than `steps`, and the step-effect division must match.
         let applied = total - self.total as i32;
+        crate::bench::trim_probe(|p| {
+            p.windows += 1;
+            p.tw_ppm = ppm;
+            p.tw_effect = self.step_ppm;
+            p.tw_applied = applied;
+            p.tw_total = total;
+        });
         self.last_ppm = ppm;
         self.last_steps = applied;
         if applied == 0 {
