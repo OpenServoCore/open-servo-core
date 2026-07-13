@@ -4,6 +4,7 @@
 //! chunk; sub-drivers are pure state machines.
 
 pub mod chain;
+mod clock;
 mod decode;
 pub mod framer;
 mod servo_bus;
