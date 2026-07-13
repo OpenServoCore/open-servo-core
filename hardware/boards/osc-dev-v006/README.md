@@ -17,7 +17,7 @@ Component sizing favours flexibility over board cost: 5 A / 40 V Schottky power-
 - **MCU** — CH32V006F8P6 (RISC-V, 48 MHz, 62 KB flash, 8 KB RAM).
 - **Motor driver** — TI DRV8212PDSGR. H-bridge with IN1/IN2 PWM. 4 A peak, 1.76 A RMS continuous, VM 1.65–11 V.
 - **LDO** — HT7533-1, 3.3 V logic rail.
-- **UART buffer** — 74LVC2G241 for half-duplex DXL.
+- **UART buffer** — 74LVC2G241 for the half-duplex TTL bus.
 - **Current shunt** — 10 mΩ, 1%, 333 mW (RS1) on the low side.
 - **Power input** — USB-C 5 V, 1S–2S LiPo (3.0–8.4 V) via JST-PH or screw terminal, or WCH-LinkE `+5V`. Any combination, OR'd through SS54s.
 - **Debug** — WCH-LinkE over the CH32V006's 1-wire SWDIO.
@@ -103,12 +103,12 @@ Intended as the upgrade path for higher-precision position feedback (e.g. a cust
 - Row 2: +3V3, GND
 - Row 3: SWD, +5V
 
-#### DXL TTL Bus — J9 / J10 / J11
+#### Servo TTL Bus — J9 / J10 / J11
 
-OpenServoCore uses **single-wire half-duplex UART (Dynamixel TTL)** as its physical bus. Two reasons:
+OpenServoCore uses **single-wire half-duplex UART (Dynamixel-TTL electrical layer)** as its physical bus. Two reasons:
 
 - **Three wires only** (`GND` / `V+` / `DATA`) — the same pin count as the original 3-wire hobby-servo cable, so a stock SG90/MG90 cable is reused as-is when swapping the OEM control board for an OSC swap board.
-- **Prior art.** Dynamixel TTL is a well-understood, well-documented bus with a mature protocol (Dynamixel 2.0). OSC copies the electrical and protocol layer rather than inventing a new one.
+- **Prior art.** Dynamixel TTL is a well-understood, well-documented electrical bus. OSC copies the electrical layer as-is; the wire protocol on top is **osc-native** — our own break-framed protocol, inspired by Dynamixel 2.0 but redesigned for sub-$0.20 MCUs ([spec](../../../docs/osc-native-protocol.md)).
 
 Three connectors share the same `GND` / `V+` / `DATA` net — pick whichever fits your wiring:
 
@@ -130,9 +130,9 @@ Selects which thermistor feeds `VNTC`. The center pin (`NTC`) is the common sign
 
 ### UART RX Route — JP2
 
-Selects whether the MCU's `RX` pin is connected to the DXL buffer or floated. This exists so the WCH-LinkE's `TX` / `RX` pins on **J4** can be used as a regular UART (for `printf` / log output, host comms, etc.) without contention against the DXL buffer.
+Selects whether the MCU's `RX` pin is connected to the bus buffer or floated. This exists so the WCH-LinkE's `TX` / `RX` pins on **J4** can be used as a regular UART (for `printf` / log output, host comms, etc.) without contention against the bus buffer.
 
-- `RX` ↔ `TTL`: connects `RX` to the 74LVC2G241 buffer output. Use this for normal **DXL bus operation**.
+- `RX` ↔ `TTL`: connects `RX` to the 74LVC2G241 buffer output. Use this for normal **servo-bus operation**.
 - `RX` ↔ `NC`: floats `RX`. Use this when you want the **LinkE's UART** to drive `RX` directly via J4 — otherwise the buffer would hold `RX` high and contend with the LinkE's `TX`.
 
 ## Test points
@@ -150,7 +150,7 @@ Probe pads line three edges of the board, grouped by rail family for easy scope 
 | `RX`    | MCU UART RX.                                                                                     |
 | `TX`    | MCU UART TX.                                                                                     |
 | `TX_EN` | TX Enable. 74LVC2G241 buffer direction                                                           |
-| `DATA`  | Buffered DXL bus                                                                                 |
+| `DATA`  | Buffered servo bus (TTL)                                                                                 |
 
 ### Vertical rail — motor control / analog
 
