@@ -1,0 +1,25 @@
+[package]
+name    = "osc-drivers"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+
+[features]
+# Hot-path probe bodies (crate::bench): counters in no_mangle statics the
+# debug link dumps by symbol. Call sites stay unconditional.
+bench = []
+defmt = ["osc-log/defmt", "osc-core/defmt"]
+log   = ["osc-log/log"]
+mocks = ["dep:mockall", "osc-protocol/software-crc"]
+
+[dependencies]
+osc-core.workspace = true
+osc-log.workspace = true
+osc-protocol.workspace = true
+heapless.workspace = true
+mockall            = { version = "0.14", optional = true }
+
+[dev-dependencies]
+osc-protocol = { workspace = true, features = ["software-crc"] }
+heapless.workspace = true
+mockall      = "0.14"
