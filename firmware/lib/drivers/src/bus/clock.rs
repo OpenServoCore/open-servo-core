@@ -320,12 +320,13 @@ impl ClockTracker {
         if span == 0 {
             return None; // defensive: an empty window decides nothing
         }
-        let ppm = (err as i64 * 1_000_000 / span as i64) as i32;
+        // trunc-ppm > DRIFT_SANITY_PPM <=> |err|*1e6 >= (SANITY+1)*span:
+        // multiply-compare only; the quotient itself is bench diagnostics.
         crate::bench::trim_probe(|p| {
             p.poll_drift += 1;
-            p.poll_ppm = ppm;
+            p.poll_ppm = super::trim::ppm(err, span);
         });
-        if ppm.unsigned_abs() > DRIFT_SANITY_PPM {
+        if err.unsigned_abs() as u64 * 1_000_000 >= (DRIFT_SANITY_PPM as u64 + 1) * span as u64 {
             crate::bench::trim_probe(|p| p.sanity_drop += 1);
             return None; // not thermal -- seam shift or garbage, discarded
         }
