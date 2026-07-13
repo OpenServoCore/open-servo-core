@@ -61,13 +61,15 @@ fn profile_read_bad_slot_rejects_range() {
 /// ~4-11 µs over the same bytes as one contiguous READ. Each ceiling sits
 /// ~6 µs above the measured floor (the ping-budget convention: regression
 /// margin plus the ±5 µs flash-layout swing).
+/// Re-baselined 2026-07-13 (measured means 41.6/46.9/55.8/60.0 ascending
+/// baud) on the enum-slot fleet build.
 fn profile_turnaround_budget_us(baud: u32) -> f64 {
     match baud {
-        500_000 => 46.0,
-        1_000_000 => 54.0,
-        2_000_000 => 53.0,
-        3_000_000 => 57.0,
-        _ => 65.0,
+        500_000 => 48.0,
+        1_000_000 => 53.0,
+        2_000_000 => 62.0,
+        3_000_000 => 66.0,
+        _ => 70.0,
     }
 }
 

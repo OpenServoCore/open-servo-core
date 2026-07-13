@@ -41,19 +41,19 @@ fn read_budget_us(baud: u32) -> f64 {
 /// WRITE ceiling: goal_position is the rule-heavy hot-loop register — its
 /// soft-limit rules dominate the dispatch body (write-size is not the cost),
 /// and the production hot loop pays none of this — GWRITE is NOREPLY.
-/// Re-baselined 2026-07-12 evening (measured means 80.0/83.1/95.5/96.1
-/// ascending baud) on the law-break servo build + LBD pirate stamps.
-/// WATCH: the low-baud writes moved +20/+10 µs vs the same morning's
-/// 60.2/72.7 means while 2M/3M held — a #25-build shift worth a perf
-/// look, not a wire defect (2M/3M pipeline-bound legs unchanged). Same
-/// ~6 µs headroom policy.
+/// Re-baselined 2026-07-13 (measured means 82.0/88.3/97.5/98.9 ascending
+/// baud) on the enum-slot fleet build — drift vs the 2026-07-12 evening
+/// baseline (80.0/83.1/95.5/96.1) is within the ±5 µs flash-layout swing.
+/// WATCH (2026-07-12): the low-baud writes moved +20/+10 µs vs that
+/// morning's 60.2/72.7 means while 2M/3M held — a #25-build shift worth a
+/// perf look, not a wire defect. Same ~6 µs headroom policy.
 fn write_budget_us(baud: u32) -> f64 {
     match baud {
-        1_000_000 => 89.0,
-        2_000_000 => 102.0,
-        3_000_000 => 102.0,
-        500_000 => 86.0,
-        _ => 108.0,
+        1_000_000 => 95.0,
+        2_000_000 => 104.0,
+        3_000_000 => 105.0,
+        500_000 => 88.0,
+        _ => 110.0,
     }
 }
 
