@@ -1,0 +1,21 @@
+[build]
+target = "riscv32ec_zmmul-unknown-none-elf.json"
+
+[unstable]
+build-std         = ["core"]
+json-target-spec  = true
+
+[env]
+DEFMT_LOG = "trace"
+# Bus service caps -- bound dispatcher + buffer sizes at build time.
+# Defaults live in osc-core/services/dxl/limits.rs and control-table/stage.rs.
+OSC_STAGE_DATA_CAP  = "128"
+OSC_STAGE_ENTRY_CAP = "16"
+
+[target.riscv32ec_zmmul-unknown-none-elf]
+# probe-rs fork auto-detects WCH parts; no --chip needed.
+runner = "probe-rs run"
+rustflags = [
+  "-C", "link-arg=-Tlink.x",
+  "-C", "link-arg=--nmagic",
+]
