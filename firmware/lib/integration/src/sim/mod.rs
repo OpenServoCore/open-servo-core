@@ -158,6 +158,10 @@ impl Sim {
         let h = self.host.as_mut().expect("host attached");
         let rig = self.link.as_mut().expect("link attached");
         rig.server.on_pipe(bytes, &mut h.bus, &mut rig.out);
+        // Wire-silent commands (HostBaud, SetResponseDeadline) terminal
+        // inside on_pipe and schedule no wire event, so [`Self::run`] never
+        // reaches a pump -- drain the engine here or their records strand.
+        rig.server.pump(&mut h.bus, &mut rig.out);
     }
 
     /// Drain the outbound record byte stream (panics if no link).
