@@ -2,15 +2,11 @@
 //! surface (raw TX + edge capture) through osc-client, [`edges`] decodes
 //! captures into stamps, and [`osc`] turns osc-native frames into wire
 //! bytes and parses captured exchanges back into timing + status.
-//! [`pirate`] wraps the retired uart-pirate's USB-CDC grammar; it stays
-//! only as the dual-observer witness until the adapter instrument is
-//! cross-validated, then dies.
 
 pub mod cli;
 pub mod discover;
 pub mod edges;
 pub mod osc;
-pub mod pirate;
 pub mod run;
 pub mod wire;
 

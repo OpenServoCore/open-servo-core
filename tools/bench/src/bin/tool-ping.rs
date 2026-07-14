@@ -1,5 +1,5 @@
 //! osc-native ping: measure TURNAROUND -- the project's success metric. Pings a
-//! servo `count` times over the pirate and reports the turnaround distribution.
+//! servo `count` times over the adapter and reports the turnaround distribution.
 
 use anyhow::{Result, bail};
 use bench::cli::{Connect, SETTLE_MS, Target, gate_fail_rate, print_conn};

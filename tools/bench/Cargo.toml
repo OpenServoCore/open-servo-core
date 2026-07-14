@@ -2,7 +2,7 @@
 name        = "bench"
 version     = "0.1.0"
 edition     = "2024"
-description = "Host-side bench tools: drive uart-pirate, talk to chip-side firmware over osc-native"
+description = "Host-side bench tools: drive the osc-adapter wire instrument, talk to chip-side firmware over osc-native"
 license     = "MIT OR Apache-2.0"
 
 [workspace]
@@ -13,7 +13,6 @@ path = "src/lib.rs"
 [dependencies]
 osc-protocol = { path = "../../firmware/lib/osc-protocol", features = ["software-crc"] }
 osc-client   = { path = "../../client" }
-serialport   = "4"
 anyhow       = "1"
 clap         = { version = "4", features = ["derive"] }
 

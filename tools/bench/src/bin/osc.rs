@@ -89,7 +89,7 @@ enum Cmd {
         /// Break spacing in us, crystal-paced by the adapter.
         #[arg(long, default_value_t = 400)]
         gap_us: u16,
-        /// Measured gaps in the train (the pirate sends gaps + 1 breaks).
+        /// Measured gaps in the train (the adapter sends gaps + 1 breaks).
         #[arg(long, default_value_t = 8)]
         gaps: u8,
         /// Servos to read trim_steps from; defaults to --id.

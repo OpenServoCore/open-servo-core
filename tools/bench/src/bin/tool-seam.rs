@@ -1,7 +1,7 @@
 //! Host seam stationarity on silicon: the differential chain-pair tracker
 //! (protocol sec 9.3) reads drift as a shift from a baseline that only means anything
 //! if the host's queuing seam between back-to-back silent instructions is
-//! stationary. This tool measures that seam from the pirate's own TX echo
+//! stationary. This tool measures that seam from the adapter's own TX echo
 //! stamps -- bursts of identical WRITE(NOREPLY) frames, break-to-break
 //! spans inside each burst -- and reports the distribution against the
 //! servo's own pair gate (wire/16) and the per-pair ppm noise floor.
@@ -46,7 +46,7 @@ struct Args {
 }
 
 /// Break ticks of `n` identical `frame` echoes in one burst capture, or an
-/// error naming what broke (the tool measures the pirate, so a mismatched
+/// error naming what broke (the tool measures the host TX chain, so a mismatched
 /// echo is a finding, not noise to skip).
 fn break_ticks(stamps: &[BStamp], frame: &[u8], n: usize) -> Result<Vec<u32>> {
     let stride = 1 + frame.len();

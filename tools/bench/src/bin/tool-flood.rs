@@ -1,5 +1,5 @@
 //! Sustained NOREPLY-write flood: pack as many WRITE(NOREPLY) frames as fit
-//! into one pirate BURST and send them back-to-back for `--secs`, with no
+//! into one instrument burst and send them back-to-back for `--secs`, with no
 //! reads or per-cycle drain. Used to measure kernel-tick starvation under a
 //! continuous write burst (read `telemetry.sample_tick` via wlink while this
 //! runs). Not a turnaround tool -- it just floods the wire.

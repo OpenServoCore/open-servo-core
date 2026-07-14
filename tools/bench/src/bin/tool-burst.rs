@@ -1,7 +1,7 @@
 //! Zero-gap bombardment on silicon: the production hot loop
 //! `[GWRITE(HOLD), COMMIT, GREAD]` -- or a plain
 //! `[WRITE(NOREPLY) x N, READ]` -- sent as ONE wire burst per cycle
-//! (pirate `BURST`: break + frame back-to-back, sub-byte spacing).
+//! (instrument burst: break + frame back-to-back, sub-char spacing).
 //!
 //! This is the silicon complement to `firmware/lib/integration/tests/hot_loop.rs`:
 //! the sim proves the logical zero-gap contract with zero-cost handlers; this
@@ -18,8 +18,8 @@
 
 use anyhow::Result;
 use bench::cli::{Connect, Target, gate_fail_rate, print_conn};
+use bench::edges::BStamp;
 use bench::osc::{build_instruction, build_read, gread_uniform_payload, gwrite_uniform_payload};
-use bench::pirate::BStamp;
 use bench::run::{
     BurstCycle, CycleObservation, CycleOutcome, Stats, burst_measure_observed, hot_loop_cycle,
     plain_flood_cycle,

@@ -7,9 +7,9 @@
 #   gear 2 -- DES            osc-integration discrete-event sim (deterministic)
 #   gear 3 -- bench          hardware-in-the-loop against a flashed V006
 #
-# Gears 1 and 2 are deterministic and need no hardware. Gear 3 needs a
-# uart-pirate + flashed V006; it is SKIPPED (not failed) when no rig is found.
-# Force-skip with SKIP_BENCH=1; point at a specific pirate with BENCH_PORT.
+# Gears 1 and 2 are deterministic and need no hardware. Gear 3 needs an
+# osc-adapter + flashed V006; it is SKIPPED (not failed) when no rig is found.
+# Force-skip with SKIP_BENCH=1; force-run with BENCH_FORCE=1.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -33,14 +33,15 @@ section "gear 1: bench lib"
 section "gear 3: bench hardware"
 if [ "${SKIP_BENCH:-0}" = "1" ]; then
   echo "  SKIP_BENCH=1; skipping gear 3"
-elif [ -n "${BENCH_PORT:-}" ] \
-  || ls /dev/cu.usbmodem* >/dev/null 2>&1 \
-  || ls /dev/ttyACM* >/dev/null 2>&1; then
-  # #[serial] already serialises the shared pirate; --test-threads=1 is belt
+elif [ -n "${BENCH_FORCE:-}" ] \
+  || { command -v system_profiler >/dev/null 2>&1 \
+       && system_profiler SPUSBDataType 2>/dev/null | grep -q "osc-adapter"; } \
+  || { command -v lsusb >/dev/null 2>&1 && lsusb 2>/dev/null | grep -qi "1209:0001"; }; then
+  # #[serial] already serialises the shared adapter; --test-threads=1 is belt
   # and suspenders. A longer soak: BENCH_BURST_CYCLES=25000.
   ( cd tools/bench && cargo test --test hardware -- --test-threads=1 )
 else
-  echo "  no bench rig detected (set BENCH_PORT to force); skipping gear 3"
+  echo "  no osc-adapter detected (set BENCH_FORCE=1 to force); skipping gear 3"
 fi
 
 section "all attached gears green"
