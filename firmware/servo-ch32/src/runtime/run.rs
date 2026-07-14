@@ -14,10 +14,8 @@ use crate::control::Ch32ControlIo;
 use crate::hal::{dma, flash, gpio, pfic, rcc};
 use crate::providers::monotonic::Monotonic;
 
-/// STAT LED talk-blink: full blink cycle while the bus is talking (the
-/// pirate's cadence), and how long "talking" outlives the last wire IRQ
-/// so gapped exchanges read as one episode.
-const TALK_BLINK_PERIOD_US: u32 = 100_000;
+/// STAT LED activity hold: how long "talking" outlives the last wire IRQ,
+/// so gapped exchanges read as one lit episode. Dark at idle.
 const TALK_HOLD_US: u32 = 200_000;
 
 /// Const-asserts pin-uniqueness on the `BoardConfig` literal, then runs.
@@ -59,11 +57,11 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
         // HIGH). Main loop owns LED housekeeping, the link-diagnostics
         // publish, the deferred-reboot poll, and sleep.
         //
-        // STAT LED: solid when idle, blinking while the bus talks -- any
-        // USART1 wire event latches `BUS_ACTIVITY`, and the blink holds
-        // past the last event so an exchange reads as one episode. The
-        // `wfi` wake cadence is the poll cadence: wire IRQs while talking,
-        // the 20 kHz kernel tick otherwise.
+        // STAT LED: dark when idle, lit while the bus talks -- any USART1
+        // wire event latches `BUS_ACTIVITY`, and the light holds past the
+        // last event so an exchange reads as one episode. The `wfi` wake
+        // cadence is the poll cadence: wire IRQs while talking, the 20 kHz
+        // kernel tick otherwise.
         if crate::runtime::registry::BUS_ACTIVITY.swap(false, Ordering::Relaxed) {
             last_talk = Monotonic.ticks();
         }
@@ -71,11 +69,9 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
         // SAFETY: stat_led installed in bringup; main-loop sole accessor.
         let led = unsafe { crate::runtime::Drivers::stat_led() };
         led.set_pattern(if talking {
-            Pattern::Blink {
-                period_us: TALK_BLINK_PERIOD_US,
-            }
-        } else {
             Pattern::SolidOn
+        } else {
+            Pattern::SolidOff
         });
         led.poll();
 
