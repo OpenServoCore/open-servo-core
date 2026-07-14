@@ -154,16 +154,10 @@ impl TxWire for HostWire {
     }
 
     fn hold_low(&mut self) {
-        let baud = self.baud.current();
-        let mut c = self.core.borrow_mut();
-        let now = c.now();
+        let now = self.core.borrow().now();
+        // Width is unknowable here (instrument pulses are arbitrary); the
+        // sampler verdict waits for release.
         self.low_since.set(Some(now));
-        // The engine holds well past the sampler threshold by contract; the
-        // fleet-wide declaration lands mid-pulse (sec 9.1).
-        c.schedule(
-            Event::RescueDeclare,
-            now + byte_ticks(baud) + RESCUE_LOW_US as u64 * TICKS_PER_US,
-        );
     }
 
     fn release(&mut self) {
@@ -174,9 +168,18 @@ impl TxWire for HostWire {
             c.schedule(Event::HostFrameEnd, end.max(now));
         }
         if let Some(start) = self.low_since.take() {
-            // Pulse end: the rising edge is where break detectors latch.
             c.claim(Talker::Host, start, now);
             let baud = self.baud.current();
+            // Sampler model, mirroring `hold_line_low_at`: the fleet
+            // declares only if the frozen-ring threshold tick fell inside
+            // the held span. The wire stays host-claimed to the rise, so
+            // declare-at-release observes like the mid-pulse declaration
+            // (FIFO tie: declare lands before the rise's break wake, as on
+            // silicon). Then the rising edge is where break detectors latch.
+            let declare = start + byte_ticks(baud) + RESCUE_LOW_US as u64 * TICKS_PER_US;
+            if declare < now {
+                c.schedule(Event::RescueDeclare, now);
+            }
             c.schedule(Event::StrayBreak { baud }, now);
         }
     }
@@ -187,6 +190,22 @@ pub struct HostUsart(pub Rc<BaudState>);
 impl UsartBaud for HostUsart {
     fn apply(&mut self, baud: BaudRate) {
         self.0.apply(baud);
+    }
+
+    fn apply_raw(&mut self, bps: u32) {
+        // The sim's waveform machinery is catalog-rate-quantized; an
+        // off-catalog divisor models as the nearest rate (sub-percent
+        // detunes are silicon-only physics).
+        let nearest = [
+            BaudRate::B500000,
+            BaudRate::B1000000,
+            BaudRate::B2000000,
+            BaudRate::B3000000,
+        ]
+        .into_iter()
+        .min_by_key(|r| r.as_hz().abs_diff(bps))
+        .unwrap_or_default();
+        self.0.apply(nearest);
     }
 }
 

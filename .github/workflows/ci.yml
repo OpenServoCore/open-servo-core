@@ -155,8 +155,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: tools/bench
-      - name: install libudev (serialport build dep)
-        run: sudo apt-get update && sudo apt-get install -y libudev-dev pkg-config
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
       - name: cargo clippy

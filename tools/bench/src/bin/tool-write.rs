@@ -40,7 +40,7 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let mut client = args.conn.client()?;
+    let mut client = args.conn.wire()?;
 
     let data = parse_hex(&args.data)?;
     let wire = build_write(args.target.id, args.addr, &data);

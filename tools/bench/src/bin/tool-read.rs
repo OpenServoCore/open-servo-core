@@ -32,7 +32,7 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let mut client = args.conn.client()?;
+    let mut client = args.conn.wire()?;
 
     let wire = build_read(args.target.id, args.addr, args.len);
     // Settle: request + reply wire time at 10 bits/byte, plus servo latency

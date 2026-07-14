@@ -1,21 +1,24 @@
-//! Passive wire snoop: park the pirate on a bus someone else is driving and
-//! print every captured byte with timing. Debug glass for third-party hosts
-//! (e.g. the wch-linke adapter spike) -- shows break boundaries, byte hex,
-//! and inter-byte gaps so a foreign host's TX shape can be read byte-exact.
+//! Passive wire snoop: park the adapter's edge capture on a bus and print
+//! every decoded byte with timing. Debug glass for bus forensics -- shows
+//! break boundaries, byte hex, and inter-byte gaps so any talker's TX
+//! shape can be read byte-exact. Capture is passive by construction (the
+//! instrument drains edges without driving), but note the adapter IS the
+//! usual host -- as a third-party witness it only observes traffic it
+//! didn't originate if some other host drives the bus.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::Result;
 use bench::cli::Connect;
-use bench::pirate::BStamp;
+use bench::edges::BStamp;
 use clap::Parser;
 
 #[derive(Parser, Debug)]
-#[command(about = "Passively capture bus traffic through the pirate and dump it.")]
+#[command(about = "Passively capture bus traffic through the adapter and dump it.")]
 struct Args {
     #[command(flatten)]
     conn: Connect,
-    /// Seconds to listen before draining.
+    /// Seconds to listen (the capture is poll-drained throughout).
     #[arg(short, long, default_value_t = 3)]
     seconds: u64,
     /// Gap (us) that starts a new burst line.
@@ -25,26 +28,15 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let mut client = args.conn.client()?;
-    let hz_per_us = client.hz_per_us()?;
+    let mut wire = args.conn.wire()?;
+    let hz_per_us = wire.hz_per_us();
 
-    client.reset()?;
     println!(
-        "listening {} s at {} baud on {} ...",
+        "listening {} s at {} baud on the osc-adapter ...",
         args.seconds,
-        client.current_baud(),
-        client.port_path()
+        wire.current_baud(),
     );
-    std::thread::sleep(Duration::from_secs(args.seconds));
-
-    let mut stamps: Vec<BStamp> = Vec::new();
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while Instant::now() < deadline {
-        match client.drain_byte()? {
-            Some(s) => stamps.push(s),
-            None => break,
-        }
-    }
+    let stamps = wire.collect_stamps(Duration::from_secs(args.seconds).as_millis() as u64)?;
 
     if stamps.is_empty() {
         println!("no bytes captured");
@@ -66,6 +58,6 @@ fn main() -> Result<()> {
         print!("{:02x} ", s.byte);
     }
     println!();
-    println!("(|BRK| = break-boundary capture on that byte's stamp)");
+    println!("(|BRK| = law-derived break stamp ahead of that frame)");
     Ok(())
 }

@@ -184,7 +184,11 @@ fn handle<P: Providers>(
             });
             sink.record(record::rails_ack(out, rec[1] & 0x03));
         }
-        record::REC_WIRE_SEND | record::REC_WIRE_BURST | record::REC_WIRE_PULSE => {
+        record::REC_WIRE_SEND
+        | record::REC_WIRE_BURST
+        | record::REC_WIRE_PULSE
+        | record::REC_WIRE_TRAIN
+        | record::REC_WIRE_BAUD => {
             if rec.len() < 3 {
                 sink.record(record::unknown(out, rec[0]));
                 return;
@@ -194,7 +198,15 @@ fn handle<P: Providers>(
             let res = match rec[0] {
                 record::REC_WIRE_SEND => bus.wire_send(body),
                 record::REC_WIRE_BURST => bus.wire_burst(body),
-                _ if body.len() == 2 => bus.wire_pulse_low(u16::from_le_bytes([body[0], body[1]])),
+                record::REC_WIRE_PULSE if body.len() == 2 => {
+                    bus.wire_pulse_low(u16::from_le_bytes([body[0], body[1]]))
+                }
+                record::REC_WIRE_TRAIN if body.len() >= 4 => {
+                    bus.wire_train(&body[3..], u16::from_le_bytes([body[0], body[1]]), body[2])
+                }
+                record::REC_WIRE_BAUD if body.len() == 4 => {
+                    bus.wire_baud(u32::from_le_bytes(body.try_into().unwrap()))
+                }
                 _ => {
                     sink.record(record::rejected(out, seq, record::REASON_MALFORMED));
                     return;
@@ -303,6 +315,7 @@ mod tests {
         ring: FakeRing,
         clock: FakeDeadline,
         wire: FakeWire,
+        baud: FakeBaud,
         edges: FakeEdges,
         sink: Sink,
     }
@@ -327,6 +340,7 @@ mod tests {
             ring,
             clock,
             wire,
+            baud,
             edges,
             sink: Sink::default(),
         }
@@ -645,5 +659,66 @@ mod tests {
             .on_pipe(&rec(&[REC_EDGE_DRAIN, 64]), &mut r.bus, &mut r.sink);
         let e = r.sink.0.last().unwrap();
         assert_eq!((e[3], e[8], e[9]), (0, 0, 0));
+    }
+
+    #[test]
+    fn wire_train_dispatches_gap_breaks_and_announce() {
+        let mut r = rig();
+        // seq 7, gap 400 us, 4 breaks, announce FE 05 70.
+        r.server.on_pipe(
+            &rec(&[REC_WIRE_TRAIN, 7, 0, 0x90, 0x01, 4, 0xFE, 0x05, 0x70]),
+            &mut r.bus,
+            &mut r.sink,
+        );
+        assert!(
+            r.sink.0.is_empty(),
+            "accepted: no reply until the train ends"
+        );
+        assert_eq!(
+            r.wire.log(),
+            vec![
+                WireOp::Claim,
+                WireOp::Break,
+                WireOp::Send(vec![0xFE, 0x05, 0x70])
+            ]
+        );
+        r.bus.on_tx_complete();
+        for _ in 0..4 {
+            r.bus.on_deadline();
+        }
+        r.server.pump(&mut r.bus, &mut r.sink);
+        let done = r.sink.0.last().unwrap();
+        assert_eq!(done[2], REC_WIRE_DONE);
+        assert_eq!(u16::from_le_bytes([done[3], done[4]]), 7);
+        // Short body (no announce byte) is malformed on its seq.
+        r.server.on_pipe(
+            &rec(&[REC_WIRE_TRAIN, 8, 0, 0x90, 0x01, 4]),
+            &mut r.bus,
+            &mut r.sink,
+        );
+        let rej = r.sink.0.last().unwrap();
+        assert_eq!(rej[2], REC_REJECTED);
+        assert_eq!(rej[5], REASON_MALFORMED);
+    }
+
+    #[test]
+    fn wire_baud_dispatches_raw_bps() {
+        let mut r = rig();
+        r.server.on_pipe(
+            &rec(&[REC_WIRE_BAUD, 9, 0, 0xAF, 0x26, 0x0F, 0x00]),
+            &mut r.bus,
+            &mut r.sink,
+        );
+        r.server.pump(&mut r.bus, &mut r.sink);
+        let done = r.sink.0.last().unwrap();
+        assert_eq!(done[2], REC_WIRE_DONE);
+        assert_eq!(u16::from_le_bytes([done[3], done[4]]), 9);
+        assert_eq!(r.baud.applied_raw(), vec![0x000F_26AF]);
+        // Wrong body width rejects.
+        r.server
+            .on_pipe(&rec(&[REC_WIRE_BAUD, 10, 0, 1, 2]), &mut r.bus, &mut r.sink);
+        let rej = r.sink.0.last().unwrap();
+        assert_eq!(rej[2], REC_REJECTED);
+        assert_eq!(rej[5], REASON_MALFORMED);
     }
 }

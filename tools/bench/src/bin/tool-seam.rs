@@ -1,7 +1,7 @@
 //! Host seam stationarity on silicon: the differential chain-pair tracker
 //! (protocol sec 9.3) reads drift as a shift from a baseline that only means anything
 //! if the host's queuing seam between back-to-back silent instructions is
-//! stationary. This tool measures that seam from the pirate's own TX echo
+//! stationary. This tool measures that seam from the adapter's own TX echo
 //! stamps -- bursts of identical WRITE(NOREPLY) frames, break-to-break
 //! spans inside each burst -- and reports the distribution against the
 //! servo's own pair gate (wire/16) and the per-pair ppm noise floor.
@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use anyhow::{Result, bail};
 use bench::cli::{Connect, Target, print_conn};
+use bench::edges::BStamp;
 use bench::osc::build_instruction;
-use bench::pirate::BStamp;
 use bench::run::{Stats, drain};
 use clap::Parser;
 use osc_protocol::wire::{Inst, Opcode};
@@ -46,7 +46,7 @@ struct Args {
 }
 
 /// Break ticks of `n` identical `frame` echoes in one burst capture, or an
-/// error naming what broke (the tool measures the pirate, so a mismatched
+/// error naming what broke (the tool measures the host TX chain, so a mismatched
 /// echo is a finding, not noise to skip).
 fn break_ticks(stamps: &[BStamp], frame: &[u8], n: usize) -> Result<Vec<u32>> {
     let stride = 1 + frame.len();
@@ -78,9 +78,9 @@ fn main() -> Result<()> {
     if args.frames < 2 {
         bail!("need at least 2 frames per burst for a span");
     }
-    let mut client = args.conn.client()?;
-    let hz_per_us = client.hz_per_us()?;
-    let bit_ticks = (hz_per_us as u64 * 1_000_000 / client.current_baud() as u64) as u32;
+    let mut client = args.conn.wire()?;
+    let hz_per_us = client.hz_per_us();
+    let bit_ticks = client.bit_ticks();
     print_conn(&client, args.target.id);
     println!("frames/burst {}  bursts {}", args.frames, args.count);
 
@@ -96,7 +96,7 @@ fn main() -> Result<()> {
 
     let mut seams_us: Vec<f64> = Vec::new();
     for i in 0..args.count {
-        drain(&mut client)?;
+        client.reset()?;
         client.burst(&burst)?;
         sleep(Duration::from_millis(SETTLE_MS));
         let stamps = drain(&mut client)?;

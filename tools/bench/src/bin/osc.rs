@@ -6,7 +6,7 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use bench::cli::{SETTLE_MS, open_pirate, parse_hex, parse_span, parse_u16};
+use bench::cli::{SETTLE_MS, parse_hex, parse_span, parse_u16};
 use bench::discover::{EnumOutcome, enum_query, find_bus_baud, walk};
 use bench::osc::{
     PROFILE_SPANS_PER_SLOT, REBOOT_SETTLE_MS, RESCUE_PULSE_US, SAVE_SETTLE_MS, StatusFrame,
@@ -14,8 +14,8 @@ use bench::osc::{
     build_read_profile, build_reboot, build_save, build_write, profile_slot_addr,
     profile_span_split,
 };
-use bench::pirate::Client;
 use bench::run::xfer;
+use bench::wire::Wire;
 use bench::{RESCUE_BAUD, SUPPORTED_BAUDS, baud_index};
 use clap::{Parser, Subcommand};
 use osc_protocol::table::{BAUD_RATE_IDX, TRIM_STEPS};
@@ -27,9 +27,6 @@ use osc_protocol::wire::{ResultCode, UID_LEN};
     about = "Operate an osc-native servo bus: discover, rescue, configure."
 )]
 struct Cli {
-    /// Pirate USB-CDC device. Default: autodetect by VID/PID.
-    #[arg(short, long, global = true)]
-    port: Option<String>,
     /// Wire baud, or `auto` to find the bus by ENUM probe.
     #[arg(short, long, global = true, default_value = "auto")]
     baud: String,
@@ -89,10 +86,10 @@ enum Cmd {
     },
     /// Broadcast a CAL break train (protocol sec 9.3) and read trim_steps back.
     Cal {
-        /// Break spacing in us, crystal-paced by the pirate.
+        /// Break spacing in us, crystal-paced by the adapter.
         #[arg(long, default_value_t = 400)]
         gap_us: u16,
-        /// Measured gaps in the train (the pirate sends gaps + 1 breaks).
+        /// Measured gaps in the train (the adapter sends gaps + 1 breaks).
         #[arg(long, default_value_t = 8)]
         gaps: u8,
         /// Servos to read trim_steps from; defaults to --id.
@@ -143,8 +140,8 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 /// Connect for the unicast verbs: fixed baud, or `auto` via ENUM probe.
-fn connect(cli: &Cli) -> Result<Client> {
-    let mut client = open_pirate(cli.port.as_deref())?;
+fn connect(cli: &Cli) -> Result<Wire> {
+    let mut client = Wire::connect(bench::BOOT_BAUD)?;
     match cli.baud.as_str() {
         "auto" => match find_bus_baud(&mut client)? {
             Some(b) => println!("bus at {b} baud"),
@@ -153,14 +150,13 @@ fn connect(cli: &Cli) -> Result<Client> {
         s => {
             let baud: u32 = s.parse().context("--baud is a rate or `auto`")?;
             client.set_baud(baud)?;
-            client.reset()?;
         }
     }
     Ok(client)
 }
 
 /// One exchange that must come back OK; surfaces the ALERT bit.
-fn xfer_ok(client: &mut Client, wire: &[u8], settle_ms: u64) -> Result<StatusFrame> {
+fn xfer_ok(client: &mut Wire, wire: &[u8], settle_ms: u64) -> Result<StatusFrame> {
     let ex = xfer(client, wire, settle_ms)?;
     if ex.status.result != Some(ResultCode::Ok) {
         bail!("status {:?}", ex.status.result);
@@ -171,7 +167,7 @@ fn xfer_ok(client: &mut Client, wire: &[u8], settle_ms: u64) -> Result<StatusFra
     Ok(ex.status)
 }
 
-fn ping(client: &mut Client, id: u8) -> Result<()> {
+fn ping(client: &mut Wire, id: u8) -> Result<()> {
     let ex = xfer(client, &build_ping(id), SETTLE_MS)?;
     if ex.status.result != Some(ResultCode::Ok) {
         bail!("status {:?}", ex.status.result);
@@ -180,7 +176,7 @@ fn ping(client: &mut Client, id: u8) -> Result<()> {
     if p.len() != 3 {
         bail!("ping payload {} bytes, wanted model(2) + fw(1)", p.len());
     }
-    let us = ex.turnaround_ticks as f64 / client.hz_per_us()? as f64;
+    let us = ex.turnaround_ticks as f64 / client.hz_per_us() as f64;
     println!(
         "id {}  model {:#06x}  fw {}  turnaround {us:.1} us{}",
         ex.status.id,
@@ -191,7 +187,7 @@ fn ping(client: &mut Client, id: u8) -> Result<()> {
     Ok(())
 }
 
-fn read(client: &mut Client, id: u8, addr: u16, len: u16) -> Result<()> {
+fn read(client: &mut Wire, id: u8, addr: u16, len: u16) -> Result<()> {
     // Settle: request + reply wire time plus servo latency and USB slack.
     let settle_ms = (25 + len as u64) * 10_000 / client.current_baud() as u64 + 4;
     let status = xfer_ok(client, &build_read(id, addr, len), settle_ms)?;
@@ -201,7 +197,7 @@ fn read(client: &mut Client, id: u8, addr: u16, len: u16) -> Result<()> {
     Ok(())
 }
 
-fn save(client: &mut Client, id: u8) -> Result<()> {
+fn save(client: &mut Wire, id: u8) -> Result<()> {
     let ex = xfer(client, &build_save(id), SAVE_SETTLE_MS)?;
     match ex.status.result {
         Some(ResultCode::Ok) => {
@@ -215,7 +211,7 @@ fn save(client: &mut Client, id: u8) -> Result<()> {
 
 /// WRITE the baud register (ack arrives at the old rate; the servo applies
 /// the change once the ack drains), then follow and verify with a ping.
-fn switch_baud(client: &mut Client, ids: &[u8], to: u32) -> Result<()> {
+fn switch_baud(client: &mut Wire, ids: &[u8], to: u32) -> Result<()> {
     let idx = baud_index(to)
         .ok_or_else(|| anyhow::anyhow!("unsupported baud {to} (use {SUPPORTED_BAUDS:?})"))?;
     for &id in ids {
@@ -223,7 +219,6 @@ fn switch_baud(client: &mut Client, ids: &[u8], to: u32) -> Result<()> {
             .with_context(|| format!("baud write to id {id}"))?;
     }
     client.set_baud(to)?;
-    client.reset()?;
     for &id in ids {
         xfer_ok(client, &build_ping(id), SETTLE_MS)
             .with_context(|| format!("id {id} not answering at {to}"))?;
@@ -233,7 +228,7 @@ fn switch_baud(client: &mut Client, ids: &[u8], to: u32) -> Result<()> {
 }
 
 fn discover(cli: &Cli) -> Result<()> {
-    let mut client = open_pirate(cli.port.as_deref())?;
+    let mut client = Wire::connect(bench::BOOT_BAUD)?;
     let bauds: Vec<u32> = match cli.baud.as_str() {
         "auto" => SUPPORTED_BAUDS.to_vec(),
         s => vec![s.parse().context("--baud is a rate or `auto`")?],
@@ -241,7 +236,6 @@ fn discover(cli: &Cli) -> Result<()> {
     let mut total = 0;
     for baud in bauds {
         client.set_baud(baud)?;
-        client.reset()?;
         let found = walk(&mut client)?;
         if found.is_empty() {
             println!("{baud:>8}: -");
@@ -255,13 +249,12 @@ fn discover(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
-fn rescue(cli: &Cli, set_baud: Option<u32>, do_save: bool) -> Result<()> {
-    let mut client = open_pirate(cli.port.as_deref())?;
-    client.lowpulse(RESCUE_PULSE_US)?;
+fn rescue(set_baud: Option<u32>, do_save: bool) -> Result<()> {
+    let mut client = Wire::connect(bench::BOOT_BAUD)?;
+    client.pulse_low(RESCUE_PULSE_US)?;
     // Servo-side confirm completes ~100 us after the pulse ends.
     sleep(Duration::from_millis(2));
     client.set_baud(RESCUE_BAUD)?;
-    client.reset()?;
     let found = walk(&mut client)?;
     if found.is_empty() {
         bail!("rescue pulse sent but nothing answers at {RESCUE_BAUD} baud");
@@ -283,7 +276,7 @@ fn rescue(cli: &Cli, set_baud: Option<u32>, do_save: bool) -> Result<()> {
     Ok(())
 }
 
-fn read_trim(client: &mut Client, id: u8) -> Result<i8> {
+fn read_trim(client: &mut Wire, id: u8) -> Result<i8> {
     let status = xfer_ok(client, &build_read(id, TRIM_STEPS, 1), SETTLE_MS)?;
     match status.payload.as_slice() {
         [steps] => Ok(*steps as i8),
@@ -295,9 +288,9 @@ fn read_trim(client: &mut Client, id: u8) -> Result<i8> {
 /// applied trim total. A pre-read failure is reported as `?` rather than
 /// aborting -- CAL is exactly what rescues a servo railed by a bad trim
 /// (protocol sec 9.3), so it may only answer afterwards.
-fn cal(client: &mut Client, gap_us: u16, gaps: u8, ids: &[u8]) -> Result<()> {
+fn cal(client: &mut Wire, gap_us: u16, gaps: u8, ids: &[u8]) -> Result<()> {
     let before: Vec<Option<i8>> = ids.iter().map(|&id| read_trim(client, id).ok()).collect();
-    client.cal_train(&build_cal(gap_us, gaps), gap_us as u32, gaps as u32 + 1)?;
+    client.train(&build_cal(gap_us, gaps), gap_us as u32, gaps as u32 + 1)?;
     println!("train sent: {gaps} gaps x {gap_us} us");
     // The trim decision applies in the servo main loop between frames --
     // one settle window covers it.
@@ -312,7 +305,7 @@ fn cal(client: &mut Client, gap_us: u16, gaps: u8, ids: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn profile(client: &mut Client, id: u8, cmd: &ProfileCmd) -> Result<()> {
+fn profile(client: &mut Wire, id: u8, cmd: &ProfileCmd) -> Result<()> {
     match cmd {
         ProfileCmd::Get { slot } => {
             let words = xfer_ok(
@@ -360,7 +353,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match &cli.cmd {
         Cmd::Discover => discover(&cli),
-        Cmd::Rescue { set_baud, save } => rescue(&cli, *set_baud, *save),
+        Cmd::Rescue { set_baud, save } => rescue(*set_baud, *save),
         Cmd::Enum { prefix_len, prefix } => {
             let prefix = parse_hex(prefix)?;
             if *prefix_len > 128 || prefix.len() != (*prefix_len as usize).div_ceil(8) {

@@ -1,6 +1,7 @@
 //! Shared measurement loop for the osc turnaround tools: send one
-//! instruction repeatedly, parse each exchange from the stamp stream, and
-//! report the TURNAROUND distribution (see [`crate::osc`] for the metric).
+//! instruction repeatedly through the adapter instrument, decode each
+//! exchange from the edge capture, and report the TURNAROUND distribution
+//! (see [`crate::osc`] for the metric).
 
 use std::thread::sleep;
 use std::time::Duration;
@@ -8,11 +9,12 @@ use std::time::Duration;
 use anyhow::{Result, anyhow};
 use osc_protocol::wire::{Inst, Opcode, ResultCode};
 
+use crate::edges::BStamp;
 use crate::osc::{
     Exchange, ExchangeError, build_instruction, build_read, gread_uniform_payload,
     gwrite_uniform_payload, parse_exchange,
 };
-use crate::pirate::{BStamp, Client};
+use crate::wire::Wire;
 
 /// Broadcast id: group frames and COMMIT address every servo and draw no reply.
 const BROADCAST: u8 = 0xFE;
@@ -26,22 +28,22 @@ pub struct Report {
 /// must cover the reply's wire time plus servo latency. `check` validates the
 /// decoded exchange (payload length, result code) before it counts.
 pub fn measure(
-    client: &mut Client,
+    w: &mut Wire,
     wire: &[u8],
     count: u32,
     settle_ms: u64,
     verbose: bool,
     check: impl Fn(&Exchange) -> Result<()>,
 ) -> Result<Report> {
-    let hz_per_us = client.hz_per_us()?;
-    let bit_ticks = (hz_per_us as u64 * 1_000_000 / client.current_baud() as u64) as u32;
+    let hz_per_us = w.hz_per_us();
+    let bit_ticks = w.bit_ticks();
 
     let mut ok = Vec::new();
     let mut fail = 0u32;
     for i in 0..count {
         // No retry: a first-exchange (or any) failure is a real signal, not a
         // flake to paper over.
-        match attempt(client, wire, bit_ticks, settle_ms, &check) {
+        match attempt(w, wire, bit_ticks, settle_ms, &check) {
             Ok(ticks) => {
                 let us = ticks as f64 / hz_per_us as f64;
                 ok.push(us);
@@ -61,54 +63,45 @@ pub fn measure(
 }
 
 fn attempt(
-    client: &mut Client,
+    w: &mut Wire,
     wire: &[u8],
     bit_ticks: u32,
     settle_ms: u64,
     check: &impl Fn(&Exchange) -> Result<()>,
 ) -> Result<u32> {
-    let stamps = send_and_drain(client, wire, settle_ms)?;
+    let stamps = send_and_drain(w, wire, settle_ms)?;
     let ex = parse_exchange(&stamps, wire, bit_ticks).map_err(|e| anyhow!("{e}"))?;
     check(&ex)?;
     Ok(ex.turnaround_ticks)
 }
 
-/// Drain stale stamps, send `wire`, settle, and drain the exchange. The shared
-/// capture step for [`measure`] and [`xfer`].
-fn send_and_drain(client: &mut Client, wire: &[u8], settle_ms: u64) -> Result<Vec<BStamp>> {
-    drain(client)?;
-    client.brksend(wire)?;
-    sleep(Duration::from_millis(settle_ms));
-    drain(client)
+/// Clear stale capture, send `wire`, and poll-drain the exchange across
+/// the settle window. The shared capture step for [`measure`] and [`xfer`].
+fn send_and_drain(w: &mut Wire, wire: &[u8], settle_ms: u64) -> Result<Vec<BStamp>> {
+    w.reset()?;
+    w.send_frame(wire)?;
+    w.collect_stamps(settle_ms)
 }
 
 /// One instruction->status exchange, decoded. The building block for the
 /// hardware test suite; [`measure`] is the repeated form.
-pub fn xfer(client: &mut Client, wire: &[u8], settle_ms: u64) -> Result<Exchange> {
-    let (stamps, bit_ticks) = capture(client, wire, settle_ms)?;
+pub fn xfer(w: &mut Wire, wire: &[u8], settle_ms: u64) -> Result<Exchange> {
+    let (stamps, bit_ticks) = capture(w, wire, settle_ms)?;
     parse_exchange(&stamps, wire, bit_ticks).map_err(|e| anyhow!("{e}"))
 }
 
-/// Send `wire` and return the raw pirate stamps plus the `bit_ticks` needed to
+/// Send `wire` and return the decoded stamps plus the `bit_ticks` needed to
 /// parse them. Tests asserting silence inspect the [`crate::osc::ExchangeError`]
 /// variant directly instead of going through [`xfer`].
-pub fn capture(client: &mut Client, wire: &[u8], settle_ms: u64) -> Result<(Vec<BStamp>, u32)> {
-    let hz_per_us = client.hz_per_us()?;
-    let bit_ticks = (hz_per_us as u64 * 1_000_000 / client.current_baud() as u64) as u32;
-    let stamps = send_and_drain(client, wire, settle_ms)?;
+pub fn capture(w: &mut Wire, wire: &[u8], settle_ms: u64) -> Result<(Vec<BStamp>, u32)> {
+    let bit_ticks = w.bit_ticks();
+    let stamps = send_and_drain(w, wire, settle_ms)?;
     Ok((stamps, bit_ticks))
 }
 
-/// Drain every pending stamp from the pirate's capture buffer.
-pub fn drain(client: &mut Client) -> Result<Vec<BStamp>> {
-    let mut all = Vec::new();
-    loop {
-        let batch = client.bbatch(255)?;
-        if batch.is_empty() {
-            return Ok(all);
-        }
-        all.extend(batch);
-    }
+/// Drain and decode whatever the capture currently holds.
+pub fn drain(w: &mut Wire) -> Result<Vec<BStamp>> {
+    w.drain_stamps()
 }
 
 pub struct Stats {
@@ -260,13 +253,13 @@ impl BurstReport {
 /// modes. `build(value)` produces each cycle's frames; see
 /// [`burst_measure_observed`] for the value schedule and observer.
 pub fn burst_measure(
-    client: &mut Client,
+    w: &mut Wire,
     count: u32,
     settle_ms: u64,
     paced: bool,
     build: impl Fn(i32) -> BurstCycle,
 ) -> Result<BurstReport> {
-    burst_measure_observed(client, count, settle_ms, paced, build, |_| {})
+    burst_measure_observed(w, count, settle_ms, paced, build, |_| {})
 }
 
 /// [`burst_measure`] with a per-cycle `observe` callback for verbose/dump.
@@ -276,21 +269,21 @@ pub fn burst_measure(
 /// uses a sentinel `0` that no cycle emits -- so a stale read-back is never
 /// masked by an equal-valued neighbour.
 pub fn burst_measure_observed(
-    client: &mut Client,
+    w: &mut Wire,
     count: u32,
     settle_ms: u64,
     paced: bool,
     build: impl Fn(i32) -> BurstCycle,
     mut observe: impl FnMut(&CycleObservation),
 ) -> Result<BurstReport> {
-    let hz_per_us = client.hz_per_us()?;
-    let bit_ticks = (hz_per_us as u64 * 1_000_000 / client.current_baud() as u64) as u32;
+    let hz_per_us = w.hz_per_us();
+    let bit_ticks = w.bit_ticks();
 
-    // Warmup: prime the chip and flush any stale stamps before measuring.
+    // Warmup: prime the chip and flush any stale capture before measuring.
     let warm = build(0);
-    let _ = send_cycle(client, &warm, paced);
+    let _ = send_cycle(w, &warm, paced);
     sleep(Duration::from_millis(settle_ms));
-    drain(client)?;
+    w.reset()?;
 
     let mut report = BurstReport {
         ok: Vec::new(),
@@ -301,7 +294,7 @@ pub fn burst_measure_observed(
     for index in 0..count {
         let value = (index % 1000) as i32 + 1;
         let cycle = build(value);
-        let (stamps, outcome) = run_cycle(client, &cycle, paced, settle_ms, bit_ticks, hz_per_us)?;
+        let (stamps, outcome) = run_cycle(w, &cycle, paced, settle_ms, bit_ticks, hz_per_us)?;
         match &outcome {
             CycleOutcome::Ok { turnaround_us } => report.ok.push(*turnaround_us),
             CycleOutcome::Stale { .. } => report.stale += 1,
@@ -321,31 +314,30 @@ pub fn burst_measure_observed(
     Ok(report)
 }
 
-fn send_cycle(client: &mut Client, cycle: &BurstCycle, paced: bool) -> Result<()> {
+fn send_cycle(w: &mut Wire, cycle: &BurstCycle, paced: bool) -> Result<()> {
     if paced {
         cycle.frames.iter().try_for_each(|f| {
             sleep(Duration::from_millis(1));
-            client.brksend(f)
+            w.send_frame(f)
         })
     } else {
-        client.burst(&cycle.frames)
+        w.burst(&cycle.frames)
     }
 }
 
 fn run_cycle(
-    client: &mut Client,
+    w: &mut Wire,
     cycle: &BurstCycle,
     paced: bool,
     settle_ms: u64,
     bit_ticks: u32,
     hz_per_us: u32,
 ) -> Result<(Vec<BStamp>, CycleOutcome)> {
-    if let Err(e) = send_cycle(client, cycle, paced) {
+    if let Err(e) = send_cycle(w, cycle, paced) {
         sleep(Duration::from_millis(2));
         return Ok((Vec::new(), CycleOutcome::SendErr(e.to_string())));
     }
-    sleep(Duration::from_millis(settle_ms));
-    let stamps = drain(client)?;
+    let stamps = w.collect_stamps(settle_ms)?;
     let outcome = match parse_exchange(&stamps, &cycle.last, bit_ticks) {
         Ok(ex) if ex.status.result != Some(ResultCode::Ok) => {
             CycleOutcome::ResultErr(ex.status.result)

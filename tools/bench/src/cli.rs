@@ -1,48 +1,29 @@
 //! Shared CLI plumbing for the bench binaries: the connection args every
-//! tool repeats, the bootstrap that turns them into a ready pirate
-//! [`Client`], and the common report pieces.
-
-use std::time::Duration;
+//! tool repeats, the bootstrap that turns them into a ready adapter
+//! [`Wire`], and the common report pieces.
 
 use anyhow::{Result, bail};
 use clap::Args;
 
-use crate::pirate::{Client, auto_detect_pirate};
-
-/// Pirate USB-CDC open timeout.
-pub const OPEN_TIMEOUT: Duration = Duration::from_millis(500);
+use crate::wire::Wire;
 
 /// Standard per-exchange settle window (ms): covers the reply's wire time
 /// plus servo latency at every supported baud, with margin.
 pub const SETTLE_MS: u64 = 5;
 
-/// Open a pirate by explicit path or VID/PID autodetect.
-pub fn open_pirate(port: Option<&str>) -> Result<Client> {
-    let port = match port {
-        Some(p) => p.to_string(),
-        None => auto_detect_pirate()?,
-    };
-    Client::open(&port, OPEN_TIMEOUT)
-}
-
 /// Connection args shared by every wire-talking bench binary.
 #[derive(Args, Debug)]
 pub struct Connect {
-    /// Pirate USB-CDC device. Default: autodetect by VID/PID.
-    #[arg(short, long)]
-    pub port: Option<String>,
     /// Wire baud.
     #[arg(short, long, default_value_t = crate::BOOT_BAUD)]
     pub baud: u32,
 }
 
 impl Connect {
-    /// Open the pirate at the wire baud with stale capture state cleared.
-    pub fn client(&self) -> Result<Client> {
-        let mut client = open_pirate(self.port.as_deref())?;
-        client.set_baud(self.baud)?;
-        client.reset()?;
-        Ok(client)
+    /// Claim the adapter (VID/PID autodetect) at the wire baud with
+    /// capture state cleared.
+    pub fn wire(&self) -> Result<Wire> {
+        Wire::connect(self.baud)
     }
 }
 
@@ -55,9 +36,9 @@ pub struct Target {
 }
 
 /// Standard measurement report header: where, how fast, who.
-pub fn print_conn(client: &Client, id: u8) {
-    println!("port         {}", client.port_path());
-    println!("baud         {}", client.current_baud());
+pub fn print_conn(w: &Wire, id: u8) {
+    println!("adapter      osc-adapter (usb)");
+    println!("baud         {}", w.current_baud());
     println!("id           {id}");
 }
 

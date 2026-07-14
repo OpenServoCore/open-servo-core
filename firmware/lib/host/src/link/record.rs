@@ -56,6 +56,17 @@ pub const REC_EDGE_DRAIN: u8 = 0x64;
 /// Drop undrained captures + the overflow flag. Answered by
 /// [`REC_CAPTURE_ACK`].
 pub const REC_CAPTURE_RESET: u8 = 0x65;
+/// Instrument break train: announce frame + bare law breaks on the
+/// engine's deadline grid, the gap DECOUPLED from the announce payload (a
+/// lying announce is the trim suite's clock-offset injector; the engine's
+/// own CAL path always paces what it announces). Body:
+/// `seq(2 LE) gap_us(2 LE) breaks(1) announce(1..)`. Answered by
+/// [`REC_WIRE_DONE`] after the last break.
+pub const REC_WIRE_TRAIN: u8 = 0x66;
+/// Instrument host UART rate, raw bps: off-catalog divisors allowed (a
+/// detuned host is the clock-tracker's drift injector). Body:
+/// `seq(2 LE) bps(4 LE)`. Answered by [`REC_WIRE_DONE`] immediately.
+pub const REC_WIRE_BAUD: u8 = 0x67;
 pub const REC_INFO: u8 = 0x80;
 pub const REC_STATUS: u8 = 0x81;
 pub const REC_TERMINAL: u8 = 0x82;

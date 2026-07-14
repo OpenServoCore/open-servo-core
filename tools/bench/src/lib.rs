@@ -1,12 +1,14 @@
-//! Host-side bench library. Two layers: [`pirate`] wraps the uart-pirate's
-//! USB-CDC grammar, and [`osc`] turns osc-native frames into wire bytes and
-//! parses captured exchanges back into timing + status.
+//! Host-side bench library. [`wire`] drives the osc-adapter's instrument
+//! surface (raw TX + edge capture) through osc-client, [`edges`] decodes
+//! captures into stamps, and [`osc`] turns osc-native frames into wire
+//! bytes and parses captured exchanges back into timing + status.
 
 pub mod cli;
 pub mod discover;
+pub mod edges;
 pub mod osc;
-pub mod pirate;
 pub mod run;
+pub mod wire;
 
 /// Wire bauds the firmware supports, in ascending order.
 pub const SUPPORTED_BAUDS: [u32; 4] = [500_000, 1_000_000, 2_000_000, 3_000_000];

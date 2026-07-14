@@ -34,7 +34,7 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let mut client = args.conn.client()?;
+    let mut client = args.conn.wire()?;
     let id = args.target.id;
 
     let spans: Vec<(u16, u8)> = args

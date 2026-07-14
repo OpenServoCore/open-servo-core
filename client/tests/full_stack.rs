@@ -354,3 +354,103 @@ fn cycle_profile_telemetry_streams_the_slot() {
     assert_eq!(status.payload.len(), 6);
     assert_eq!(&status.payload[..4], &goal);
 }
+
+// --- wire instrument (0x6x family) ---
+
+#[test]
+fn wire_send_releases_and_reports_tick() {
+    let mut c = fleet(&[5]);
+    // A CRC-broken ping: rings at the servo, dies at its verdict, draws no
+    // reply -- raw means raw, the engine never validated it.
+    let t1 = c.wire_send(&[0x01, 0x03, 0x10, 0xFF, 0xFF]).expect("send");
+    let t2 = c.wire_send(&[0x55, 0xAA]).expect("send again");
+    assert!(t2 > t1, "release ticks advance with sim time");
+}
+
+#[test]
+fn engine_commands_stay_healthy_across_instrument_use() {
+    let mut c = fleet(&[5]);
+    c.wire_send(&[0x01, 0x03, 0x10, 0xFF, 0xFF]).expect("send");
+    c.wire_pulse_low(50).expect("pulse");
+    // The pulse reads as a break at the fleet (any >=10-bit low span), so
+    // the servo parks on a phantom candidate -- instrument traffic obeys
+    // the sec 8 pacing rule like any other garble source: one starve
+    // horizon of quiet before expecting crisp turnarounds.
+    c.pause(std::time::Duration::from_millis(1));
+    let ping = c.ping(Id::new(5)).expect("ping after instrument ops");
+    assert!(ping.model > 0);
+}
+
+#[test]
+fn wire_burst_chains_frames() {
+    let mut c = fleet(&[5]);
+    let f1 = [0x01, 0x03, 0x10, 0xFF, 0xFF];
+    let f2 = [0x02, 0x03, 0x10, 0xFF, 0xFF];
+    c.wire_burst(&[&f1, &f2]).expect("burst");
+}
+
+#[test]
+fn wire_burst_rejects_unencodable_frames_client_side() {
+    let mut c = fleet(&[5]);
+    let err = c.wire_burst(&[&[]]).unwrap_err();
+    assert_eq!(
+        err,
+        Error::Link(LinkError::Rejected(RejectReason::Malformed))
+    );
+    let long = vec![0u8; 256];
+    let err = c.wire_burst(&[&long]).unwrap_err();
+    assert_eq!(
+        err,
+        Error::Link(LinkError::Rejected(RejectReason::Malformed))
+    );
+}
+
+#[test]
+fn empty_wire_send_is_rejected_by_the_adapter() {
+    let mut c = fleet(&[5]);
+    // A bare break never raises TC, so the engine refuses to wedge on it --
+    // pinned here as the round-trip REJECTED path.
+    let err = c.wire_send(&[]).unwrap_err();
+    assert_eq!(
+        err,
+        Error::Link(LinkError::Rejected(RejectReason::Malformed))
+    );
+}
+
+#[test]
+fn edge_drain_and_reset_round_trip() {
+    let mut c = fleet(&[5]);
+    // The sim has no edge model (capture is silicon-only); the shape and
+    // the acks are what this pins.
+    let drain = c.drain_edges().expect("drain");
+    assert!(drain.edges.is_empty());
+    assert!(!drain.overflow);
+    c.reset_capture().expect("reset");
+    let drain = c.drain_edges().expect("drain after reset");
+    assert!(drain.edges.is_empty());
+}
+
+#[test]
+fn wire_train_and_raw_baud_round_trip() {
+    let mut c = fleet(&[5]);
+    // A truthful CAL announce via the raw train: MGMT CAL 400us x 3 gaps.
+    let mut p = [0u8; 8];
+    let n = osc_protocol::build::mgmt_cal(&mut p, 400, 3).expect("cal payload");
+    let announce = {
+        // Frame it as wire bytes: the raw verb takes the whole frame.
+        let mut f = vec![0xFE, (n + 3) as u8, 0x70];
+        f.extend_from_slice(&p[..n]);
+        let crc = osc_protocol::crc::osc_crc(&f);
+        f.extend_from_slice(&crc.to_le_bytes());
+        f
+    };
+    c.wire_train(&announce, 400, 4).expect("train");
+
+    // Raw baud: one BRR step off 1M models as the nearest catalog rate in
+    // the sim; the verb completes and the engine stays healthy.
+    c.wire_baud(993_103).expect("detune");
+    c.pause(std::time::Duration::from_millis(2));
+    let ping = c.ping(Id::new(5)).expect("ping after detune");
+    assert!(ping.model > 0);
+    c.wire_baud(1_000_000).expect("restore");
+}

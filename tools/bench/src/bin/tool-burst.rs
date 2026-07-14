@@ -1,7 +1,7 @@
 //! Zero-gap bombardment on silicon: the production hot loop
 //! `[GWRITE(HOLD), COMMIT, GREAD]` -- or a plain
 //! `[WRITE(NOREPLY) x N, READ]` -- sent as ONE wire burst per cycle
-//! (pirate `BURST`: break + frame back-to-back, sub-byte spacing).
+//! (instrument burst: break + frame back-to-back, sub-char spacing).
 //!
 //! This is the silicon complement to `firmware/lib/integration/tests/hot_loop.rs`:
 //! the sim proves the logical zero-gap contract with zero-cost handlers; this
@@ -18,8 +18,8 @@
 
 use anyhow::Result;
 use bench::cli::{Connect, Target, gate_fail_rate, print_conn};
+use bench::edges::BStamp;
 use bench::osc::{build_instruction, build_read, gread_uniform_payload, gwrite_uniform_payload};
-use bench::pirate::BStamp;
 use bench::run::{
     BurstCycle, CycleObservation, CycleOutcome, Stats, burst_measure_observed, hot_loop_cycle,
     plain_flood_cycle,
@@ -78,9 +78,8 @@ struct Args {
     /// possible for a wlink dump).
     #[arg(long, default_value_t = false)]
     stop_on_fail: bool,
-    /// Dump any OK cycle whose turnaround is below this many us -- catches
-    /// unanchored pirate stamps (COUNT_UNDER: no boundary capture since
-    /// reset), which read as impossibly-fast replies.
+    /// Dump any OK cycle whose turnaround is below this many us (an
+    /// impossibly-fast reply means the decode anchored on the wrong edge).
     #[arg(long)]
     dump_early: Option<f64>,
 }
@@ -144,11 +143,9 @@ fn dump_stamps(c: u32, stamps: &[BStamp], bit_ticks: u32) {
     println!("--- cycle {c} stamps ({}):", stamps.len());
     let mut prev: Option<u32> = None;
     for st in stamps {
-        // `^` = boundary capture (real tick), `!` = unanchored placeholder
-        // (COUNT_UNDER); interior strides print bare, unknown bits as `?`.
+        // `^` = break stamp (law-derived fall tick); data stamps print bare.
         let mark = match st.flags {
             0 => "",
-            1 => "!",
             2 => "^",
             _ => "?",
         };
@@ -165,7 +162,7 @@ fn dump_stamps(c: u32, stamps: &[BStamp], bit_ticks: u32) {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let mut client = args.conn.client()?;
+    let mut client = args.conn.wire()?;
 
     let report = burst_measure_observed(
         &mut client,

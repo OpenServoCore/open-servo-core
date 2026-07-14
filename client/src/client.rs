@@ -65,8 +65,8 @@ pub struct Chain {
 const DEFAULT_GUARD: Duration = Duration::from_secs(2);
 
 pub struct Client<P: Pipe> {
-    pipe: P,
-    session: Session,
+    pub(crate) pipe: P,
+    pub(crate) session: Session,
     info: LinkInfo,
     guard: Duration,
 }
@@ -125,7 +125,7 @@ impl<P: Pipe> Client<P> {
         }
     }
 
-    async fn next_record(&mut self) -> Result<Record, Error> {
+    pub(crate) async fn next_record(&mut self) -> Result<Record, Error> {
         loop {
             if let Some(record) = self.session.next_record()? {
                 return Ok(record);
@@ -379,10 +379,10 @@ fn chain_digest(reply: Reply) -> Chain {
     }
 }
 
-fn desync(expected: &str, got: &Record) -> Error {
+pub(crate) fn desync(expected: &str, got: &Record) -> Error {
     desync_msg(format!("expected {expected}, got {got:?}"))
 }
 
-fn desync_msg(msg: String) -> Error {
+pub(crate) fn desync_msg(msg: String) -> Error {
     Error::Link(LinkError::Desync(msg))
 }

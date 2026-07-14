@@ -3,14 +3,12 @@
 //! production cycle (`GWRITE(HOLD) + COMMIT + GREAD chain`, --hot) -- with
 //! per-slot chain-gap stats. The single-servo complement is `tool-burst`.
 
-use std::thread::sleep;
-use std::time::Duration;
-
 use anyhow::{Result, anyhow};
 use bench::cli::{Connect, gate_fail_rate};
+use bench::edges::BStamp;
 use bench::osc::{build_instruction, gread_uniform_payload, gwrite_uniform_payload};
-use bench::pirate::{BStamp, Client};
-use bench::run::{Stats, drain};
+use bench::run::Stats;
+use bench::wire::Wire;
 use clap::Parser;
 use osc_protocol::crc::osc_crc;
 use osc_protocol::frame::Header;
@@ -146,22 +144,14 @@ fn cycle_frames(args: &Args, value: i32) -> (Vec<Vec<u8>>, Vec<u8>) {
 /// One cycle's verdict: per-slot gaps come back only from fully-clean chains
 /// so the stats never mix failure modes with timing.
 fn run_cycle(
-    client: &mut Client,
+    client: &mut Wire,
     args: &Args,
     value: i32,
     bit_ticks: u32,
 ) -> Result<(f64, Vec<f64>, f64)> {
     let (frames, gread) = cycle_frames(args, value);
     client.burst(&frames)?;
-    sleep(Duration::from_millis(SETTLE_MS));
-    let stamps = drain(client)?;
-
-    // Timing needs anchored ticks: a COUNT_UNDER stamp has no boundary
-    // capture behind it. BOUNDARY-flagged stamps are the anchors themselves
-    // (every break stamp carries bit 1 since the boundary-capture pirate).
-    if stamps.iter().any(|s| s.flags & BStamp::COUNT_UNDER != 0) {
-        return Err(anyhow!("unanchored stamps (COUNT_UNDER)"));
-    }
+    let stamps = client.collect_stamps(SETTLE_MS)?;
     let (echo_end, slots) = parse_chain(&stamps, &gread, args.ids.len(), bit_ticks)?;
     if slots.len() != args.ids.len() {
         return Err(anyhow!(
@@ -198,9 +188,8 @@ fn run_cycle(
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let mut client = args.conn.client()?;
-    let hz_per_us = client.hz_per_us()?;
-    let bit_ticks = (hz_per_us as u64 * 1_000_000 / client.current_baud() as u64) as u32;
+    let mut client = args.conn.wire()?;
+    let bit_ticks = client.bit_ticks();
 
     // Warmup: prime the chip and flush stale stamps before measuring.
     let _ = run_cycle(&mut client, &args, 0, bit_ticks);

@@ -25,7 +25,7 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let mut client = args.conn.client()?;
+    let mut client = args.conn.wire()?;
     let idx = baud_index(args.to).ok_or_else(|| anyhow!("unsupported baud {}", args.to))?;
 
     let write = build_write(args.target.id, BAUD_RATE_IDX, &[idx]);
@@ -44,7 +44,6 @@ fn main() -> Result<()> {
     );
 
     client.set_baud(args.to)?;
-    client.reset()?;
     let ping = build_ping(args.target.id);
     let report = measure(&mut client, &ping, 3, SETTLE_MS, false, |ex| {
         if ex.status.result != Some(ResultCode::Ok) {

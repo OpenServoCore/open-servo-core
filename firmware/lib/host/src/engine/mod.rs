@@ -131,6 +131,14 @@ enum State {
     WireTx,
     /// Instrument low pulse held until the deadline.
     WirePulse,
+    /// Instrument break train: `left` bare breaks on the `gap`-tick grid.
+    /// The Training twin whose gap is caller-chosen instead of parsed from
+    /// the announce -- a lying announce is the trim suite's clock-offset
+    /// injector.
+    WireTrain {
+        left: u8,
+        gap: u32,
+    },
 }
 
 /// Rescue pulse hold: the sec 9.1 300 us sampler floor plus generous
@@ -311,22 +319,39 @@ impl<P: Providers> HostBus<P> {
     /// is time-critical); everything else treats the compare as a wake and
     /// advances in `poll`.
     pub fn on_deadline(&mut self) {
-        if let State::Training { left, gap } = self.state {
-            self.tx.send_break();
-            if left <= 1 {
-                self.tx.release();
-                self.finish(Outcome::Sent);
-            } else {
-                self.state = State::Training {
-                    left: left - 1,
-                    gap,
-                };
-                // Next slot on the grid from the previous target, not from
-                // `now` -- ISR entry jitter must not accumulate down the
-                // train (sec 9.3: the host crystal keeps the spacing).
-                self.deadline_at = self.deadline_at.wrapping_add(gap);
-                self.deadline.set(self.deadline_at);
+        match self.state {
+            State::Training { left, gap } => {
+                self.tx.send_break();
+                if left <= 1 {
+                    self.tx.release();
+                    self.finish(Outcome::Sent);
+                } else {
+                    self.state = State::Training {
+                        left: left - 1,
+                        gap,
+                    };
+                    // Next slot on the grid from the previous target, not
+                    // from `now` -- ISR entry jitter must not accumulate
+                    // down the train (sec 9.3: the host crystal keeps the
+                    // spacing).
+                    self.deadline_at = self.deadline_at.wrapping_add(gap);
+                    self.deadline.set(self.deadline_at);
+                }
             }
+            State::WireTrain { left, gap } => {
+                self.tx.send_break();
+                if left <= 1 {
+                    self.wire_release_done();
+                } else {
+                    self.state = State::WireTrain {
+                        left: left - 1,
+                        gap,
+                    };
+                    self.deadline_at = self.deadline_at.wrapping_add(gap);
+                    self.deadline.set(self.deadline_at);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -341,7 +366,11 @@ impl<P: Providers> HostBus<P> {
         }
         let now = self.deadline.now();
         match self.state {
-            State::Idle | State::Transmitting | State::Training { .. } | State::WireTx => {}
+            State::Idle
+            | State::Transmitting
+            | State::Training { .. }
+            | State::WireTx
+            | State::WireTrain { .. } => {}
             State::Pacing => {
                 if tick_reached(now, self.deadline_at) {
                     self.start_tx();
