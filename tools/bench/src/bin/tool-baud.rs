@@ -8,12 +8,8 @@ use bench::cli::{Connect, SETTLE_MS, Target};
 use bench::osc::{build_ping, build_write};
 use bench::run::measure;
 use clap::Parser;
+use osc_protocol::table::BAUD_RATE_IDX;
 use osc_protocol::wire::ResultCode;
-
-/// Control-table address of `baud_rate_idx` (osc-servo-core
-/// `regions::config::addr::comms::BAUD_RATE_IDX`; value pinned here to keep
-/// the heavy core crate out of the bench build).
-const BAUD_RATE_IDX_ADDR: u16 = 0x000D;
 
 #[derive(Parser, Debug)]
 #[command(about = "Switch a servo's baud and follow it (--baud = the current rate).")]
@@ -32,7 +28,7 @@ fn main() -> Result<()> {
     let mut client = args.conn.client()?;
     let idx = baud_index(args.to).ok_or_else(|| anyhow!("unsupported baud {}", args.to))?;
 
-    let write = build_write(args.target.id, BAUD_RATE_IDX_ADDR, &[idx]);
+    let write = build_write(args.target.id, BAUD_RATE_IDX, &[idx]);
     let report = measure(&mut client, &write, 1, SETTLE_MS, false, |ex| {
         if ex.status.result != Some(ResultCode::Ok) {
             bail!("write nacked: {:?}", ex.status.result);
