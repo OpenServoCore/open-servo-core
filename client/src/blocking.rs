@@ -7,8 +7,10 @@ use futures_lite::future::block_on;
 use osc_protocol::wire::{BaudRate, Id, Inst};
 
 use crate::client::{Chain, Ping, Reply};
+use crate::common::{self, Health, Identity};
+use crate::cyclic::Cycle;
 use crate::error::Error;
-use crate::mgmt::{self, Uid};
+use crate::mgmt::{self, CalTrace, Uid};
 use crate::pipe::Pipe;
 use crate::session::LinkInfo;
 
@@ -127,5 +129,41 @@ impl<P: Pipe> Client<P> {
 
     pub fn rescue_sweep(&mut self, ids: &[Id]) -> Result<Vec<(Id, bool)>, Error> {
         block_on(mgmt::rescue_sweep(&mut self.0, ids))
+    }
+
+    pub fn set_baud(&mut self, ids: &[Id], rate: BaudRate) -> Result<Vec<(Id, bool)>, Error> {
+        block_on(mgmt::set_baud(&mut self.0, ids, rate))
+    }
+
+    pub fn cal_verify(
+        &mut self,
+        ids: &[Id],
+        trains: u8,
+        gap_us: u16,
+        gaps: u8,
+    ) -> Result<Vec<CalTrace>, Error> {
+        block_on(mgmt::cal_verify(&mut self.0, ids, trains, gap_us, gaps))
+    }
+
+    pub fn identity(&mut self, id: Id) -> Result<Identity, Error> {
+        block_on(common::identity(&mut self.0, id))
+    }
+
+    pub fn health(&mut self, id: Id) -> Result<Health, Error> {
+        block_on(common::health(&mut self.0, id))
+    }
+
+    pub fn clear_counters(&mut self, id: Id) -> Result<(), Error> {
+        block_on(common::clear_counters(&mut self.0, id))
+    }
+
+    pub fn gread_profile(&mut self, ids: &[Id], slot: u8) -> Result<Chain, Error> {
+        block_on(self.0.gread_profile(ids, slot))
+    }
+
+    /// One [`Cycle`] exchange (see `cyclic`): held group writes, COMMIT,
+    /// telemetry chain.
+    pub fn step(&mut self, cycle: &Cycle, payloads: &[&[u8]]) -> Result<Chain, Error> {
+        block_on(cycle.step(&mut self.0, payloads))
     }
 }

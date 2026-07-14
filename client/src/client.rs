@@ -259,13 +259,18 @@ impl<P: Pipe> Client<P> {
             .ok_or(Error::Servo(ResultCode::Limit))?;
         let inst = Inst::instruction(Opcode::Gread, 0);
         let reply = self.exchange(Id::BROADCAST, inst, &p[..n]).await?;
-        Ok(Chain {
-            statuses: reply.statuses,
-            timeout_slot: match reply.outcome {
-                Outcome::Timeout { slot } => Some(slot),
-                _ => None,
-            },
-        })
+        Ok(chain_digest(reply))
+    }
+
+    /// Uniform profile-slot GREAD (sec 5.2): each target streams the span
+    /// list it pre-configured for `slot`.
+    pub async fn gread_profile(&mut self, ids: &[Id], slot: u8) -> Result<Chain, Error> {
+        let mut p = vec![0u8; ids.len() + 4];
+        let n = build::gread_profile_uniform(&mut p, slot, ids)
+            .ok_or(Error::Servo(ResultCode::Limit))?;
+        let inst = Inst::instruction(Opcode::Gread, Inst::FLAG_PROFILE);
+        let reply = self.exchange(Id::BROADCAST, inst, &p[..n]).await?;
+        Ok(chain_digest(reply))
     }
 
     /// Uniform GWRITE (silent unless a slice is missing -- completes at TX
@@ -355,6 +360,16 @@ impl<P: Pipe> Client<P> {
             Record::BootloaderAck => Ok(()),
             other => Err(desync("BOOTLOADER ack", &other)),
         }
+    }
+}
+
+fn chain_digest(reply: Reply) -> Chain {
+    Chain {
+        statuses: reply.statuses,
+        timeout_slot: match reply.outcome {
+            Outcome::Timeout { slot } => Some(slot),
+            _ => None,
+        },
     }
 }
 
