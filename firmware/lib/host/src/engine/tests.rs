@@ -330,6 +330,52 @@ fn trailing_energy_is_flagged() {
 }
 
 #[test]
+fn parked_collision_residue_is_still_evidence() {
+    // Superimposed ENUM replies can wire-AND into a plausible frame PREFIX
+    // that parks the resolver (real-fleet finding): the quiet horizon then
+    // completes the collect having killed nothing -- indistinguishable from
+    // an empty subtree unless unresolved ring bytes count as garble.
+    let mut r = rig();
+    let mut p = [0u8; 24];
+    let prefix = [0u8; UID_LEN];
+    let n = build::mgmt_enum(&mut p, 0, &prefix).unwrap();
+    exchange(
+        &mut r,
+        Id::BROADCAST,
+        Inst::instruction(Opcode::Mgmt, 0),
+        &p[..n],
+    );
+
+    // Break byte + a header claiming a 30-byte frame that never arrives.
+    r.ring.feed(&[0x00, 0x05, 30, 0x80]);
+    assert!(r.bus.poll().is_none());
+
+    r.clock.advance(10_000);
+    let t = expect_done(&mut r);
+    assert_eq!(t.outcome, Outcome::Complete);
+    assert_eq!(t.evidence.statuses, 0);
+    assert_eq!(t.evidence.garble, 4, "parked bytes are collision evidence");
+    assert!(t.evidence.garble_after_last_frame);
+}
+
+#[test]
+fn junk_behind_the_completing_status_is_trailing_evidence() {
+    let mut r = rig();
+    let (id, inst) = ping(5);
+    exchange(&mut r, id, inst, &[]);
+
+    // Reply and tail junk arrive together: completion at the clean frame
+    // must still see the tail (the sec 9.2 trailing-energy signal).
+    r.ring.feed(&sealed_status(5, ResultCode::Ok, &[1, 2, 3]));
+    r.ring.feed(&[0x00, 0x99]);
+    let _ = expect_status(&mut r);
+    let t = expect_done(&mut r);
+    assert_eq!(t.outcome, Outcome::Complete);
+    assert_eq!(t.evidence.garble, 2);
+    assert!(t.evidence.garble_after_last_frame);
+}
+
+#[test]
 fn cal_train_rides_a_drift_free_grid() {
     let mut r = rig();
     let mut p = [0u8; 8];

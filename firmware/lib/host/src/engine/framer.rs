@@ -58,6 +58,13 @@ impl Framer {
         self.anchor = cursor;
     }
 
+    /// The resolution frontier: everything in `anchor..cursor` is ring
+    /// content no verdict has consumed (a parked plausible prefix, junk a
+    /// hunt has not walked off).
+    pub fn anchor(&self) -> usize {
+        self.anchor
+    }
+
     /// Walk one step against the ring state. `cursor` is the next-write
     /// index in `[0, ring.len())`; the ring length must be a power of two.
     /// Lap hazard (same as the servo's): more than one ring of unconsumed
