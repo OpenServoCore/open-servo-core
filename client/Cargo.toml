@@ -1,0 +1,26 @@
+[workspace]
+resolver = "2"
+
+[package]
+name    = "osc-client"
+version = "0.1.0"
+edition = "2024"
+description = "Host-side client for the osc-native bus: transport-generic session over the adapter link pipe, typed command surface, MGMT choreographies."
+
+[features]
+default = ["nusb"]
+nusb = ["dep:nusb"]
+# In-process adapter over the DES sim: full-stack tests with no hardware.
+fake-adapter = ["dep:osc-integration"]
+
+[dependencies]
+futures-lite  = "2"
+futures-timer = "3"
+nusb          = { version = "0.1", optional = true }
+osc-host      = { path = "../firmware/lib/host" }
+osc-protocol  = { path = "../firmware/lib/osc-protocol", features = ["software-crc"] }
+osc-integration = { path = "../firmware/lib/integration", optional = true }
+
+[[example]]
+name = "fleet_smoke"
+required-features = ["nusb"]

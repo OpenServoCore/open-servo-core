@@ -335,6 +335,7 @@ impl<P: Providers> HostBus<P> {
         // Precomputed: the status arm below runs under a live ring borrow,
         // where whole-`self` helpers can't be called.
         let pace_at = now.wrapping_add(wire::STARVE_HORIZON_BYTE_TIMES * self.byte_ticks());
+        let ring_len = self.ring.bytes().len();
         // A yielded status is recorded as coordinates and materialized only
         // after every mutation -- returning the ring borrow from inside the
         // walk would pin it across the timeout path below.
@@ -349,6 +350,13 @@ impl<P: Providers> HostBus<P> {
                     if expected == Some(self.got) {
                         self.deadline.cancel();
                         self.state = State::Idle;
+                        // Ring content no verdict consumed by terminal time
+                        // is evidence, not silence (see the horizon path).
+                        let left = unresolved(self.framer.anchor(), cursor, ring_len);
+                        if left > 0 {
+                            self.evidence.garble = self.evidence.garble.saturating_add(left);
+                            self.evidence.garble_after_last_frame = true;
+                        }
                         if self.evidence.garble > 0 {
                             self.pace_until = Some(pace_at);
                         }
@@ -402,6 +410,15 @@ impl<P: Providers> HostBus<P> {
             self.deadline.set(self.deadline_at);
         } else if tick_reached(now, self.deadline_at) {
             self.deadline.cancel();
+            // Superimposed ENUM replies can wire-AND into a plausible frame
+            // PREFIX that parks the resolver: at the horizon those bytes are
+            // collision evidence, not silence -- without this fold an
+            // all-matcher collision reads exactly like an empty subtree.
+            let left = unresolved(self.framer.anchor(), cursor as usize, ring_len);
+            if left > 0 {
+                self.evidence.garble = self.evidence.garble.saturating_add(left);
+                self.evidence.garble_after_last_frame = true;
+            }
             let outcome = match plan.replies {
                 // Quiet horizon reached: that IS collect's completion.
                 Replies::Collect => Outcome::Complete,
@@ -469,4 +486,11 @@ impl<P: Providers> HostBus<P> {
     fn byte_ticks(&self) -> u32 {
         P::Deadline::TICKS_PER_US * 10_000_000 / self.rate.as_hz()
     }
+}
+
+/// Ring span `anchor..cursor` (mod `len`): bytes no framer verdict has
+/// consumed. Sound while an await window stays under one ring lap, which
+/// every reply window is by orders of magnitude.
+fn unresolved(anchor: usize, cursor: usize, len: usize) -> u16 {
+    ((cursor + len - anchor) % len) as u16
 }

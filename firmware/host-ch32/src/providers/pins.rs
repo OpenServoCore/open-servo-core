@@ -55,9 +55,8 @@ pub fn rail_3v3(on: bool) {
     gpio::set_level(GPIOA, 5, !on);
 }
 
-/// 5V header rail (CH217K U3 EN = PB12). Active-low is presumed from U4's
-/// measured polarity (same part, same topology) -- unverified, nothing is
-/// wired to the 5V pin yet.
+/// 5V header rail (CH217K U3 EN = PB12, ACTIVE LOW -- bench-verified by
+/// fleet power-cycle: off = ping timeout, on = ping complete).
 pub fn rail_5v(on: bool) {
     gpio::set_level(GPIOB, 12, !on);
     gpio::configure(GPIOB, 12, PinMode::OUTPUT_2MHZ);
