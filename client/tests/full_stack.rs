@@ -245,6 +245,10 @@ fn clear_counters_zeroes_both_in_one_write() {
     assert_eq!((h.crc_fail_count, h.framing_drop_count), (0, 0));
 }
 
+/// The park mechanism itself is pinned in osc-integration's `cross_baud`
+/// suite -- the link-mode rig cannot hold a parked resolver across
+/// commands (every exchange drains the sim queue = unbounded quiet), so
+/// this level pins the paced choreography only.
 #[test]
 fn set_baud_migrates_servo_first_and_reunites() {
     let mut c = fleet(&[1, 2]);

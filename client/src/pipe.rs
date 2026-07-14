@@ -3,12 +3,19 @@
 //! meaning -- records reassemble in the session.
 
 use std::fmt;
+use std::time::Duration;
 
 pub trait Pipe {
     /// Deliver bytes in order, whole.
     fn send(&mut self, bytes: &[u8]) -> impl Future<Output = Result<(), PipeError>>;
     /// The next delivered chunk (never empty). Pends until bytes arrive.
     fn recv(&mut self) -> impl Future<Output = Result<Vec<u8>, PipeError>>;
+    /// Let `d` of BUS time pass with the wire quiet -- the sec 8 pacing
+    /// primitive (post-garble settles). Wall time by default; the fake
+    /// adapter overrides with sim time so servo-side horizons really elapse.
+    fn pause(&mut self, d: Duration) -> impl Future<Output = ()> {
+        futures_timer::Delay::new(d)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

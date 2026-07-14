@@ -47,4 +47,8 @@ impl Pipe for FakePipe {
         }
         Ok(out)
     }
+
+    async fn pause(&mut self, d: std::time::Duration) {
+        self.sim.idle(d.as_micros() as u64);
+    }
 }
