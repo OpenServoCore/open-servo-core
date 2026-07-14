@@ -65,6 +65,21 @@ pub fn enum_query(w: &mut Wire, prefix_len: u8, prefix: &[u8]) -> Result<EnumOut
     Ok(out)
 }
 
+/// Silent is the dangerous verdict (a parked fleet reads as silence, and a
+/// pruned subtree is a lost servo): re-probe settled quiet before trusting
+/// it -- the client walk's hardening, mirrored.
+fn enum_query_settled(w: &mut Wire, prefix_len: u8, prefix: &[u8]) -> Result<EnumOutcome> {
+    let mut out = enum_query(w, prefix_len, prefix)?;
+    for _ in 0..2 {
+        if out != EnumOutcome::Silent {
+            return Ok(out);
+        }
+        w.client().pause(PROBE_SETTLE);
+        out = enum_query(w, prefix_len, prefix)?;
+    }
+    Ok(out)
+}
+
 /// One discovered servo.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Found {
@@ -78,7 +93,7 @@ pub fn walk(w: &mut Wire) -> Result<Vec<Found>> {
     let mut found = Vec::new();
     let mut stack = vec![(0u8, Vec::new(), false)];
     while let Some((len, prefix, confirmed)) = stack.pop() {
-        let out = enum_query(w, len, &prefix)?;
+        let out = enum_query_settled(w, len, &prefix)?;
         if std::env::var_os("WALK_TRACE").is_some() {
             eprintln!("walk {len:>3} {prefix:02x?} -> {out:?}");
         }

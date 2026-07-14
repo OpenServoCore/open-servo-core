@@ -2,7 +2,7 @@
 //!
 //! - CAL: the lying-announce train injects a known clock-offset reading
 //!   without touching the chip -- the announce declares a shorter gap
-//!   than the pirate's crystal actually paces, every gap reads long by
+//!   than the adapter's crystal actually paces, every gap reads long by
 //!   the same ratio, and the servo trims as if its own clock were fast.
 //!   The truthful trains that follow must pull the total back -- the
 //!   closed-loop plant-direction proof DES cannot give (the sim fakes
@@ -10,7 +10,7 @@
 //!   railed the fleet in max-step clamps while every DES trim test
 //!   stayed green).
 //! - Tracker: the host-detune probe injects drift the same way -- the
-//!   pirate moves one BRR step off nominal WITHOUT a CAL, so every
+//!   host moves one BRR step off nominal WITHOUT a CAL, so every
 //!   chain pair reads the shift, and the differential tracker must trim
 //!   it out from traffic alone (and trim back when the host returns).
 
@@ -26,7 +26,7 @@ use serial_test::serial;
 
 use super::support::{Bench, SETTLE_MS, bench};
 
-/// Wire gap the pirate actually paces, and the gaps per train.
+/// Wire gap the adapter actually paces, and the gaps per train.
 const GAP_US: u16 = 400;
 const GAPS: u8 = 8;
 /// Announced gap for the lying train: wire runs 400, so every gap reads
@@ -56,6 +56,14 @@ fn train(b: &mut Bench, announce_gap_us: u16) {
 #[test]
 fn lying_train_trims_and_truth_pulls_back() {
     let mut b = bench();
+    // Anchor: converge the CAL loop first (protocol sec 9.3 boot guidance;
+    // the tracker test's same first step). On a freshly rebooted chip the
+    // step effect is unidentified, and a LIE as the first train poisons
+    // the apply->remeasure identification pair -- the pull-back then
+    // overshoots. The test's subject is plant DIRECTION, not
+    // identification-from-cold.
+    train(&mut b, GAP_US);
+    train(&mut b, GAP_US);
     let start = read_trim(&mut b);
     assert!(
         start.abs() <= 8,
@@ -75,7 +83,7 @@ fn lying_train_trims_and_truth_pulls_back() {
     );
 }
 
-/// Host detune for the tracker probe: one BRR step off 1M on the pirate
+/// Host detune for the tracker probe: one BRR step off 1M on the host UART
 /// (144 MHz / 145 ~ 993.1 kbaud, -6.9k ppm). Inside every gate that
 /// matters -- pair qualification (0.69% of span vs the 1/16 gate), the
 /// tracker's +/-8k ppm sanity band, and framing margin (+/-3.4%, F10) -- and
@@ -83,7 +91,7 @@ fn lying_train_trims_and_truth_pulls_back() {
 const DETUNE_BAUD: u32 = 993_103;
 /// Frames per food burst. Each adjacent pair inside a burst brackets one
 /// CRC-verified silent WRITE(NOREPLY) -- the tracker's food (protocol sec 9.3); the
-/// pirate's grid pacing makes the seam stationary by construction.
+/// adapter's grid pacing makes the seam stationary by construction.
 const FOOD_FRAMES: usize = 24;
 /// Bursts that carry one tracker decision with margin: baseline (32
 /// pairs) + window (128) + a refinement round, at 23 pairs per burst --

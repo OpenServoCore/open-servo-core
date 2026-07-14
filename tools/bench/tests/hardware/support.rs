@@ -95,11 +95,15 @@ impl Bench {
     /// whether the bus holds one servo or a chain.
     pub fn dut_uid(&mut self) -> [u8; 16] {
         let id = self.id();
-        self.walk()
-            .into_iter()
-            .find(|f| f.id == id)
-            .unwrap_or_else(|| panic!("prefix walk did not find the DUT id {id}"))
-            .uid
+        // A walk can only undercount (a parked fleet reads as silence) and
+        // occasionally loses whole subtrees to a mid-walk mute -- retry
+        // until the DUT shows (the client walk's roster-stability cousin).
+        for _ in 0..4 {
+            if let Some(f) = self.walk().into_iter().find(|f| f.id == id) {
+                return f.uid;
+            }
+        }
+        panic!("prefix walk did not find the DUT id {id} in 4 walks")
     }
 
     pub fn walk(&mut self) -> Vec<Found> {

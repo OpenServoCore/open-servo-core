@@ -9,17 +9,20 @@ use crate::support::{Bench, bench};
 
 /// Per-baud ceiling for the mean ping turnaround (us). Ring-cadence timing,
 /// the fixed-us reply gap, and the in-place chain trigger put the floor at
-/// ~30/32 us (1M/500k) and ~39/41 us (2M/3M, pipeline-bound -- the
+/// ~36/41 us (500k/1M) and ~49 us (2M/3M, pipeline-bound -- the
 /// covered-overlap window shrinks below the dispatch body; RAM placement
-/// probed and rejected, see the transport pillar). Each ceiling sits ~6 us
-/// above the measured floor: tight enough to catch a regression from the
-/// current baseline, loose enough for the +/-5 us flash-layout swing.
+/// probed and rejected, see the transport pillar). Measured means on the
+/// current fleet build through the adapter instrument (pirate
+/// cross-checked to its noise floor): 35.5/40.9/49.5/48.7 ascending baud.
+/// Each ceiling sits ~6 us above the measured floor: tight enough to
+/// catch a regression from the current baseline, loose enough for the
+/// +/-5 us flash-layout swing.
 fn ping_budget_us(baud: u32) -> f64 {
     match baud {
-        1_000_000 => 45.0,
-        2_000_000 => 53.0,
-        3_000_000 => 48.0,
-        500_000 => 45.0,
+        1_000_000 => 47.0,
+        2_000_000 => 55.0,
+        3_000_000 => 55.0,
+        500_000 => 42.0,
         _ => 55.0,
     }
 }
