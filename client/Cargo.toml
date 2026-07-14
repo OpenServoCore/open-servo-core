@@ -28,3 +28,7 @@ required-features = ["nusb"]
 [[example]]
 name = "provision"
 required-features = ["nusb"]
+
+[[example]]
+name = "cycle_soak"
+required-features = ["nusb"]
