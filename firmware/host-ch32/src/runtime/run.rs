@@ -6,6 +6,7 @@ use osc_host::link::{AdapterRequest, LinkServer, RecordSink};
 use osc_host::traits::tick_reached;
 
 use crate::hal::systick;
+use crate::providers::edges::Edges;
 use crate::providers::pins;
 use crate::runtime::{Drivers, iap, init, usb::UsbDevice};
 
@@ -95,6 +96,9 @@ pub fn run() -> ! {
 
     loop {
         usb.poll();
+        // Keep the edge-capture lap accounting honest (main-loop cadence
+        // is the overflow detector's sampling clock).
+        Edges::poll_accumulate();
 
         // Inbound pipe bytes -> server -> engine. Held NAK-parked until
         // the queue can absorb the worst-case reply burst.

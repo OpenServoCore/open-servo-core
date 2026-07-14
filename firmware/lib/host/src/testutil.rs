@@ -154,12 +154,81 @@ impl traits::UsartBaud for FakeBaud {
     }
 }
 
+struct EdgeState {
+    falls: Vec<u16>,
+    rises: Vec<u16>,
+    overflow: bool,
+    resets: u32,
+}
+
+/// Preloadable edge-capture fake: tests stage ticks, drains pop in order.
+#[derive(Clone, Default)]
+pub struct FakeEdges(Rc<RefCell<Option<EdgeState>>>);
+
+impl FakeEdges {
+    fn state(&self) -> core::cell::RefMut<'_, EdgeState> {
+        core::cell::RefMut::map(self.0.borrow_mut(), |s| {
+            s.get_or_insert_with(|| EdgeState {
+                falls: Vec::new(),
+                rises: Vec::new(),
+                overflow: false,
+                resets: 0,
+            })
+        })
+    }
+
+    pub fn stage(&self, falls: &[u16], rises: &[u16]) {
+        let mut s = self.state();
+        s.falls.extend_from_slice(falls);
+        s.rises.extend_from_slice(rises);
+    }
+
+    pub fn set_overflow(&self) {
+        self.state().overflow = true;
+    }
+
+    pub fn resets(&self) -> u32 {
+        self.state().resets
+    }
+}
+
+impl traits::EdgeCapture for FakeEdges {
+    fn drain_falls(&mut self, buf: &mut [u16]) -> usize {
+        let mut s = self.state();
+        let n = buf.len().min(s.falls.len());
+        buf[..n].copy_from_slice(&s.falls[..n]);
+        s.falls.drain(..n);
+        n
+    }
+
+    fn drain_rises(&mut self, buf: &mut [u16]) -> usize {
+        let mut s = self.state();
+        let n = buf.len().min(s.rises.len());
+        buf[..n].copy_from_slice(&s.rises[..n]);
+        s.rises.drain(..n);
+        n
+    }
+
+    fn overflow(&self) -> bool {
+        self.state().overflow
+    }
+
+    fn reset(&mut self) {
+        let mut s = self.state();
+        s.falls.clear();
+        s.rises.clear();
+        s.overflow = false;
+        s.resets += 1;
+    }
+}
+
 pub struct TestProviders;
 impl traits::Providers for TestProviders {
     type Ring = FakeRing;
     type Deadline = FakeDeadline;
     type Tx = FakeWire;
     type Baud = FakeBaud;
+    type Edges = FakeEdges;
 }
 
 pub fn sealed_status(id: u8, result: ResultCode, payload: &[u8]) -> Vec<u8> {

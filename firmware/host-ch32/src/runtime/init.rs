@@ -5,8 +5,9 @@
 use ch32_metapac::USART3;
 use osc_protocol::wire::BaudRate;
 
-use crate::hal::{dma, pfic, systick, usart, usbhs};
+use crate::hal::{dma, pfic, systick, tim2cap, usart, usbhs};
 use crate::providers::clocks::Clocks;
+use crate::providers::edges::Edges;
 use crate::providers::pins::Pins;
 use crate::providers::ring::RxRing;
 use crate::providers::usart_baud::brr_for;
@@ -39,12 +40,47 @@ pub fn bringup() -> bool {
             // RX outranks the TX arm so an inbound byte's drain is never
             // deferred behind a TX burst (the arbiter preempts per-beat).
             pl: dma::Pl::VERYHIGH,
+            size: dma::Size::BITS8,
         },
         usart::data_addr(USART3),
         RxRing::base_addr(),
         RxRing::LEN as u16,
     );
     dma::enable(dma::Channel::CH3);
+
+    // The instrument's edge stopwatch: TIM2 IC on the bus pin, both
+    // polarities into circular rings, armed once here and never re-armed
+    // (the spike's capture-mangle lesson).
+    for (ch, paddr, maddr) in [
+        (
+            dma::Channel::CH1,
+            tim2cap::fall_capture_addr(),
+            Edges::falls_addr(),
+        ),
+        (
+            dma::Channel::CH7,
+            tim2cap::rise_capture_addr(),
+            Edges::rises_addr(),
+        ),
+    ] {
+        dma::configure(
+            ch,
+            &dma::Config {
+                dir: dma::Dir::FROMPERIPHERAL,
+                circ: true,
+                minc: true,
+                // Below the RX ring, above nothing that matters: capture
+                // beats are sparse (>= 2 bit-times apart per polarity).
+                pl: dma::Pl::MEDIUM,
+                size: dma::Size::BITS16,
+            },
+            paddr,
+            maddr,
+            Edges::LEN as u16,
+        );
+        dma::enable(ch);
+    }
+    tim2cap::init();
 
     usbhs::init_device();
 

@@ -55,6 +55,19 @@ enum Cmd {
     Rails { v3v3: String, v5: String },
     /// Hand the adapter to the WCH bootloader (4348:55e0, wlink-iap).
     Bootloader,
+    /// Instrument raw TX: law break + raw hex bytes, engine bypassed.
+    WireSend { hex: String },
+    /// Instrument burst: comma-separated hex frames, back-to-back.
+    WireBurst { frames: String },
+    /// Instrument dominant-low pulse of us microseconds.
+    Pulse { us: u16 },
+    /// Drain captured wire edges (up to max per polarity).
+    Drain {
+        #[arg(default_value_t = 64)]
+        max: u8,
+    },
+    /// Drop undrained captures + the overflow flag.
+    CaptureReset,
 }
 
 fn on_off(s: &str) -> Result<bool> {
@@ -181,6 +194,35 @@ fn encode(args: &Args) -> Result<(Vec<u8>, bool)> {
             (rec(&[record::REC_SET_RAILS, state]), false)
         }
         Cmd::Bootloader => (rec(&[record::REC_ENTER_BOOTLOADER]), false),
+        Cmd::WireSend { hex } => {
+            let mut body = vec![record::REC_WIRE_SEND, seq as u8, (seq >> 8) as u8];
+            body.extend_from_slice(&parse_hex(hex)?);
+            (rec(&body), true)
+        }
+        Cmd::WireBurst { frames } => {
+            let mut body = vec![record::REC_WIRE_BURST, seq as u8, (seq >> 8) as u8];
+            for f in frames.split(',') {
+                let bytes = parse_hex(f)?;
+                if bytes.is_empty() || bytes.len() > 255 {
+                    bail!("burst frame must be 1..=255 bytes");
+                }
+                body.push(bytes.len() as u8);
+                body.extend_from_slice(&bytes);
+            }
+            (rec(&body), true)
+        }
+        Cmd::Pulse { us } => (
+            rec(&[
+                record::REC_WIRE_PULSE,
+                seq as u8,
+                (seq >> 8) as u8,
+                *us as u8,
+                (us >> 8) as u8,
+            ]),
+            true,
+        ),
+        Cmd::Drain { max } => (rec(&[record::REC_EDGE_DRAIN, *max]), false),
+        Cmd::CaptureReset => (rec(&[record::REC_CAPTURE_RESET]), false),
     })
 }
 
@@ -294,6 +336,36 @@ fn print_record(body: Vec<u8>) -> bool {
         }
         record::REC_UNKNOWN => {
             println!("UNKNOWN record type {:#04x} (adapter echo)", body[1]);
+            true
+        }
+        record::REC_WIRE_DONE => {
+            let seq = u16::from_le_bytes([body[1], body[2]]);
+            let tick = u32::from_le_bytes([body[3], body[4], body[5], body[6]]);
+            println!("WIRE DONE seq={seq} tick={tick}");
+            true
+        }
+        record::REC_EDGES => {
+            let now = u32::from_le_bytes([body[2], body[3], body[4], body[5]]);
+            let (fall_n, rise_n) = (body[6] as usize, body[7] as usize);
+            let tick = |i: usize| u16::from_le_bytes([body[8 + 2 * i], body[9 + 2 * i]]);
+            let list = |from: usize, n: usize| {
+                (from..from + n)
+                    .map(|i| tick(i).to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            };
+            println!(
+                "EDGES overflow={} now={} falls[{}]: {}",
+                body[1] & 1 != 0,
+                now,
+                fall_n,
+                list(0, fall_n),
+            );
+            println!("  rises[{}]: {}", rise_n, list(fall_n, rise_n));
+            true
+        }
+        record::REC_CAPTURE_ACK => {
+            println!("CAPTURE RESET");
             true
         }
         other => {

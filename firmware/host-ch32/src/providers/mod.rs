@@ -4,6 +4,7 @@
 
 pub mod clocks;
 pub mod deadline;
+pub mod edges;
 pub mod pins;
 pub mod ring;
 pub mod tx_wire;

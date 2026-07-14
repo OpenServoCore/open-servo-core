@@ -20,6 +20,9 @@ use osc_protocol::reply::FrameBuf;
 use osc_protocol::wire::{self, BaudRate, Id, Inst};
 
 use crate::traits::{Deadline, Providers, RxRing, TxWire, UsartBaud, tick_reached};
+
+pub use wireop::WIRE_CAP;
+mod wireop;
 use framer::{Framer, Step};
 use shape::{InvalidReason, Replies, Shape};
 
@@ -103,6 +106,11 @@ pub enum Event<'a> {
         payload: FrameBytes<'a>,
     },
     Done(Terminal),
+    /// An instrument wire op (raw send / burst / pulse) finished; `tick` is
+    /// the wire-release moment.
+    WireDone {
+        tick: u32,
+    },
 }
 
 enum State {
@@ -119,6 +127,10 @@ enum State {
     /// Rescue pulse held dominant until the deadline.
     RescueHold,
     Awaiting,
+    /// Instrument raw TX in flight (wireop); `on_tx_complete` advances it.
+    WireTx,
+    /// Instrument low pulse held until the deadline.
+    WirePulse,
 }
 
 /// Rescue pulse hold: the sec 9.1 300 us sampler floor plus generous
@@ -156,6 +168,9 @@ pub struct HostBus<P: Providers> {
     last_cursor: u16,
     evidence: WireEvidence,
     pending_done: Option<Terminal>,
+    edges: P::Edges,
+    wire_job: wireop::WireJob,
+    pending_wire_done: Option<u32>,
 }
 
 impl<P: Providers> HostBus<P> {
@@ -165,6 +180,7 @@ impl<P: Providers> HostBus<P> {
         deadline: P::Deadline,
         tx: P::Tx,
         baud: P::Baud,
+        edges: P::Edges,
         rate: BaudRate,
     ) -> Self {
         Self {
@@ -185,11 +201,27 @@ impl<P: Providers> HostBus<P> {
             last_cursor: 0,
             evidence: WireEvidence::default(),
             pending_done: None,
+            edges,
+            wire_job: wireop::WireJob::new(),
+            pending_wire_done: None,
         }
     }
 
+    /// The instrument's capture organ, link-layer served (edge drains).
+    pub fn edges(&mut self) -> &mut P::Edges {
+        &mut self.edges
+    }
+
+    /// Current engine tick -- the drain reply's unwrap reference.
+    pub fn now(&self) -> u32 {
+        self.deadline.now()
+    }
+
     pub fn submit(&mut self, cmd: Command<'_>) -> Result<(), SubmitError> {
-        if !matches!(self.state, State::Idle) || self.pending_done.is_some() {
+        if !matches!(self.state, State::Idle)
+            || self.pending_done.is_some()
+            || self.pending_wire_done.is_some()
+        {
             return Err(SubmitError::Busy);
         }
         self.evidence = WireEvidence::default();
@@ -239,6 +271,10 @@ impl<P: Providers> HostBus<P> {
     /// Chip TC ISR: the armed frame span drained (never fired for bare
     /// breaks -- see [`TxWire::send_break`]).
     pub fn on_tx_complete(&mut self) {
+        if matches!(self.state, State::WireTx) {
+            self.wire_advance();
+            return;
+        }
         if !matches!(self.state, State::Transmitting) {
             return;
         }
@@ -300,9 +336,12 @@ impl<P: Providers> HostBus<P> {
         if let Some(done) = self.pending_done.take() {
             return Some(Event::Done(done));
         }
+        if let Some(tick) = self.pending_wire_done.take() {
+            return Some(Event::WireDone { tick });
+        }
         let now = self.deadline.now();
         match self.state {
-            State::Idle | State::Transmitting | State::Training { .. } => {}
+            State::Idle | State::Transmitting | State::Training { .. } | State::WireTx => {}
             State::Pacing => {
                 if tick_reached(now, self.deadline_at) {
                     self.start_tx();
@@ -317,7 +356,15 @@ impl<P: Providers> HostBus<P> {
                     self.finish(Outcome::Sent);
                 }
             }
+            State::WirePulse => {
+                if tick_reached(now, self.deadline_at) {
+                    self.wire_poll_pulse();
+                }
+            }
             State::Awaiting => return self.poll_await(now),
+        }
+        if let Some(tick) = self.pending_wire_done.take() {
+            return Some(Event::WireDone { tick });
         }
         self.pending_done.take().map(Event::Done)
     }
