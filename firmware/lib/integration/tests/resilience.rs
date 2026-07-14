@@ -405,7 +405,7 @@ fn rescue_pulse_drops_to_500k() {
     // Volatile: the config register still reads the operational baud.
     assert_eq!(
         sim.servo_table(s, |t| t.config.comms.baud_rate_idx),
-        BaudRate::B1000000
+        BaudRate::B1000000.as_idx()
     );
 
     // A ping at the operational 1M baud now mismatches the 0.5M servo -> no reply.
@@ -482,7 +482,7 @@ fn short_break_is_not_rescue(baud_idx: u8) {
     // No false rescue: the operational baud is unchanged.
     assert_eq!(
         sim.servo_table(s, |t| t.config.comms.baud_rate_idx),
-        BaudRate::from_idx(baud_idx).expect("valid baud idx")
+        baud_idx
     );
 }
 

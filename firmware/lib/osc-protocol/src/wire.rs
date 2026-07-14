@@ -52,6 +52,48 @@ impl Id {
     }
 }
 
+/// Operational baud (sec 2): four rates, default 1M. Recovery is the rescue
+/// break's job (sec 9.1), so no crawl-speed fallback exists. The discriminant
+/// IS the `baud_rate_idx` config register value -- wire ABI, do not reorder.
+#[repr(u8)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+pub enum BaudRate {
+    #[default]
+    B500000 = 0,
+    B1000000 = 1,
+    B2000000 = 2,
+    B3000000 = 3,
+}
+
+impl BaudRate {
+    /// The sec 9.1 rescue rate: the option floor, entered only via rescue
+    /// break -- volatile, config register untouched.
+    pub const RESCUE: Self = Self::B500000;
+
+    pub const fn as_idx(self) -> u8 {
+        self as u8
+    }
+
+    pub const fn as_hz(self) -> u32 {
+        match self {
+            BaudRate::B500000 => 500_000,
+            BaudRate::B1000000 => 1_000_000,
+            BaudRate::B2000000 => 2_000_000,
+            BaudRate::B3000000 => 3_000_000,
+        }
+    }
+
+    pub const fn from_idx(idx: u8) -> Option<Self> {
+        match idx {
+            0 => Some(BaudRate::B500000),
+            1 => Some(BaudRate::B1000000),
+            2 => Some(BaudRate::B2000000),
+            3 => Some(BaudRate::B3000000),
+            _ => None,
+        }
+    }
+}
+
 /// Instruction opcode, `INST` bits [6:4] (sec 5). `0x0` is invalid.
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]

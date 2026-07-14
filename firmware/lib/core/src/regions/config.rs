@@ -1,48 +1,13 @@
 use control_table::{Block, Enum, Section};
 
-/// osc-native operational baud (sec 2). Recovery is the rescue break's job, not a
-/// crawl-speed fallback, so only the four operational rates exist.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, Enum)]
-#[repr(u8)]
-pub enum BaudRate {
-    // Default = the sec 9.1 rescue floor, the always-reachable rate -- and the
-    // zero value, which keeps the table's const image all-zero so SHARED
-    // lands in .bss (no 1 KB flash init image). The operational default is
-    // the board's `ConfigDefaults.baud`, seeded at boot before the bus runs.
-    #[default]
-    B500000 = 0,
-    B1000000 = 1,
-    B2000000 = 2,
-    B3000000 = 3,
-}
+// Wire vocabulary, hoisted to the foundation crate so the host column can
+// name it (grid law 2). The table field below stays a raw index because the
+// `Enum` derive impls a control-table trait -- orphan-rule-bound to whichever
+// crate defines the type.
+pub use osc_protocol::wire::BaudRate;
 
 /// osc-native sec 7 default: chain reclaim + host timeout, not a reply-time floor.
 pub const DEFAULT_RESPONSE_DEADLINE_US: u16 = 60;
-
-impl BaudRate {
-    pub const fn as_idx(self) -> u8 {
-        self as u8
-    }
-
-    pub const fn as_hz(self) -> u32 {
-        match self {
-            BaudRate::B500000 => 500_000,
-            BaudRate::B1000000 => 1_000_000,
-            BaudRate::B2000000 => 2_000_000,
-            BaudRate::B3000000 => 3_000_000,
-        }
-    }
-
-    pub const fn from_idx(idx: u8) -> Option<Self> {
-        match idx {
-            0 => Some(BaudRate::B500000),
-            1 => Some(BaudRate::B1000000),
-            2 => Some(BaudRate::B2000000),
-            3 => Some(BaudRate::B3000000),
-            _ => None,
-        }
-    }
-}
 
 /// Stall detector policy. `repr(u8)`; constructing from an unlisted discriminant is UB,
 /// so validators MUST gate writes to `StallResponse::ALLOWED`.
@@ -75,8 +40,11 @@ pub struct ConfigIdentity {
 pub struct ConfigComms {
     #[ct_field(ge = 1u8, le = 249u8, hook = on_id_write)]
     pub id: u8,
-    #[ct_field(hook = on_baud_rate_idx_write)]
-    pub baud_rate_idx: BaudRate,
+    // `BaudRate` index; le gate = the enum ceiling. Zero (0.5M, the rescue
+    // floor) keeps the const image all-zero so SHARED lands in .bss; the
+    // operational default is `ConfigDefaults.baud`, seeded at boot.
+    #[ct_field(le = 3u8, hook = on_baud_rate_idx_write)]
+    pub baud_rate_idx: u8,
     #[ct_field(hook = on_response_deadline_us_write)]
     pub response_deadline_us: u16,
 }
