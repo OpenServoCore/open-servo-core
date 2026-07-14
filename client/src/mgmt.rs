@@ -43,8 +43,8 @@ fn matches_prefix(uid: &[u8; UID_LEN], prefix: &[u8; UID_LEN], len: u8) -> bool 
 /// fleet-measured (2 ms still lost occasional subtrees mid-walk).
 const PROBE_SETTLE: std::time::Duration = std::time::Duration::from_millis(5);
 
-async fn settle() {
-    futures_timer::Delay::new(PROBE_SETTLE).await;
+async fn settle<P: Pipe>(c: &mut Client<P>) {
+    c.pause(PROBE_SETTLE).await;
 }
 
 fn with_bit(prefix: &[u8; UID_LEN], k: u8, v: bool) -> [u8; UID_LEN] {
@@ -90,7 +90,7 @@ async fn probe<P: Pipe>(
         _ => Verdict::Collision,
     };
     if matches!(verdict, Verdict::Collision) {
-        settle().await;
+        settle(c).await;
     }
     Ok(verdict)
 }
@@ -108,7 +108,7 @@ async fn probe_settled<P: Pipe>(
         if !matches!(verdict, Verdict::Empty) {
             return Ok(verdict);
         }
-        settle().await;
+        settle(c).await;
         verdict = probe(c, len, prefix).await?;
     }
     Ok(verdict)
@@ -129,7 +129,7 @@ pub async fn discover<P: Pipe>(c: &mut Client<P>) -> Result<Vec<Uid>, Error> {
     const WALKS_CAP: usize = 5;
     let mut prev = walk(c).await?;
     for _ in 1..WALKS_CAP {
-        futures_timer::Delay::new(4 * PROBE_SETTLE).await;
+        c.pause(4 * PROBE_SETTLE).await;
         let next = walk(c).await?;
         if next == prev {
             return Ok(next);
@@ -256,9 +256,20 @@ pub async fn set_baud<P: Pipe>(
     rate: BaudRate,
 ) -> Result<Vec<(Id, bool)>, Error> {
     for &id in ids {
-        c.write(id, table::BAUD_RATE_IDX, &[rate.as_idx()]).await?;
+        match c.write(id, table::BAUD_RATE_IDX, &[rate.as_idx()]).await {
+            Ok(()) => {}
+            // Indeterminate: the servo may have applied with the ack lost
+            // (silicon-observed), and a retry at the old rate can only
+            // garble an applied switch -- the reunion sweep is the verdict.
+            Err(Error::Timeout { .. }) => {}
+            Err(e) => return Err(e),
+        }
     }
     c.host_baud(rate).await?;
+    // sec 8 pacing: the write burst was cross-rate garble to every servo
+    // that already applied -- one settle of quiet lets parked resolvers
+    // starve out before the sweep asks for proof of life.
+    settle(c).await;
     ping_sweep(c, ids).await
 }
 

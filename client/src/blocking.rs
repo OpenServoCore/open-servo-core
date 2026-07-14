@@ -42,6 +42,12 @@ impl<P: Pipe> Client<P> {
         block_on(self.0.exchange(id, inst, payload))
     }
 
+    /// Quiet bus time (sec 8 pacing): wall time on hardware, sim time on
+    /// the fake adapter.
+    pub fn pause(&mut self, d: Duration) {
+        block_on(self.0.pause(d));
+    }
+
     pub fn ping(&mut self, id: Id) -> Result<Ping, Error> {
         block_on(self.0.ping(id))
     }

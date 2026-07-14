@@ -186,6 +186,12 @@ impl<P: Pipe> Client<P> {
         self.submit(Command::Exchange { id, inst, payload }).await
     }
 
+    /// Quiet bus time (the sec 8 pacing primitive): wall time on hardware,
+    /// sim time on the fake adapter.
+    pub async fn pause(&mut self, d: Duration) {
+        self.pipe.pause(d).await;
+    }
+
     /// Digest a single-status reply: exactly one OK status or an error.
     fn sole_ok(reply: Reply) -> Result<Status, Error> {
         if let Outcome::Timeout { slot } = reply.outcome {
