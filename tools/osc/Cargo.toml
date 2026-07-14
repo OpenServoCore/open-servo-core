@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+
+[package]
+name        = "osc"
+version     = "0.1.0"
+edition     = "2024"
+description = "Operator CLI for an osc-native bus through the osc-adapter: discover, provision, calibrate, manage."
+license     = "MIT OR Apache-2.0"
+
+[dependencies]
+anyhow       = "1"
+clap         = { version = "4", features = ["derive"] }
+osc-client   = { path = "../../client" }
+osc-protocol = { path = "../../firmware/lib/osc-protocol" }
