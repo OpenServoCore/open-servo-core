@@ -1,10 +1,12 @@
 //! MGMT choreographies: client policy over engine evidence (the walk and
 //! its verdicts live here by phase-2 ruling -- the engine only ships
-//! WireEvidence). Everything address-free; the register-touching halves
-//! (set_baud, CAL verify, SAVE guard) arrive with the common-block consts.
+//! WireEvidence). Register-touching halves (set_baud, cal_verify) name only
+//! the sec 5.4 common block; SAVE has no client-side guard by design (the
+//! servo self-gates and answers `access`).
 
 use osc_protocol::build;
-use osc_protocol::wire::{Id, Inst, MgmtOp, Opcode, ResultCode, UID_LEN};
+use osc_protocol::table;
+use osc_protocol::wire::{BaudRate, Id, Inst, MgmtOp, Opcode, ResultCode, UID_LEN};
 
 use crate::client::{Client, Reply};
 use crate::error::Error;
@@ -197,8 +199,8 @@ pub async fn assign<P: Pipe>(c: &mut Client<P>, uid: &Uid, new_id: Id) -> Result
 }
 
 /// Broadcast CAL trains (>= 2 per protocol sec 9.3 boot guidance: the
-/// second train finishes weak-step chips). Convergence readback arrives
-/// with the common-block consts.
+/// second train finishes weak-step chips), blind: no readback. See
+/// [`cal_verify`] for the per-servo convergence trace.
 pub async fn cal<P: Pipe>(
     c: &mut Client<P>,
     trains: u8,
@@ -242,6 +244,67 @@ pub async fn rescue_sweep<P: Pipe>(
     ids: &[Id],
 ) -> Result<Vec<(Id, bool)>, Error> {
     c.rescue().await?;
+    ping_sweep(c, ids).await
+}
+
+/// Fleet baud migration, servo-first (protocol sec 8): every target acks
+/// the register write at the old rate and applies it deferred, then the
+/// host follows, then the ping sweep reports the reunion.
+pub async fn set_baud<P: Pipe>(
+    c: &mut Client<P>,
+    ids: &[Id],
+    rate: BaudRate,
+) -> Result<Vec<(Id, bool)>, Error> {
+    for &id in ids {
+        c.write(id, table::BAUD_RATE_IDX, &[rate.as_idx()]).await?;
+    }
+    c.host_baud(rate).await?;
+    ping_sweep(c, ids).await
+}
+
+/// Per-servo trim trace from a CAL run: `trims[k]` is the applied total
+/// after train k+1.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CalTrace {
+    pub id: Id,
+    pub trims: Vec<i8>,
+}
+
+impl CalTrace {
+    /// Converged = the last two trains agreed (protocol sec 9.3: a train
+    /// that moves nothing has nothing left to move).
+    pub fn converged(&self) -> bool {
+        matches!(self.trims.as_slice(), [.., a, b] if a == b)
+    }
+}
+
+/// CAL with convergence readback: one broadcast train at a time, each
+/// listed servo's `trim_steps` sampled after every train.
+pub async fn cal_verify<P: Pipe>(
+    c: &mut Client<P>,
+    ids: &[Id],
+    trains: u8,
+    gap_us: u16,
+    gaps: u8,
+) -> Result<Vec<CalTrace>, Error> {
+    let mut traces: Vec<CalTrace> = ids
+        .iter()
+        .map(|&id| CalTrace {
+            id,
+            trims: Vec::with_capacity(trains as usize),
+        })
+        .collect();
+    for _ in 0..trains {
+        cal(c, 1, gap_us, gaps).await?;
+        for trace in &mut traces {
+            let b = c.read(trace.id, table::TRIM_STEPS, 1).await?;
+            trace.trims.push(*b.first().unwrap_or(&0) as i8);
+        }
+    }
+    Ok(traces)
+}
+
+async fn ping_sweep<P: Pipe>(c: &mut Client<P>, ids: &[Id]) -> Result<Vec<(Id, bool)>, Error> {
     let mut roster = Vec::with_capacity(ids.len());
     for &id in ids {
         let alive = match c.ping(id).await {
