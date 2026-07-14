@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["control-table", "control-table-derive", "core", "drivers", "integration", "log", "osc-protocol", "units"]
+members = ["control-table", "control-table-derive", "core", "drivers", "host", "integration", "log", "osc-protocol", "units"]
 
 [workspace.package]
 edition = "2024"
@@ -19,5 +19,6 @@ osc-log              = { path = "log" }
 osc-protocol         = { path = "osc-protocol" }
 osc-servo-core             = { path = "core" }
 osc-servo-drivers          = { path = "drivers" }
+osc-host             = { path = "host" }
 control-table        = { path = "control-table" }
 control-table-derive = { path = "control-table-derive" }

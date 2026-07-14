@@ -82,7 +82,7 @@ impl ControlTableCell {
             cfg.pos_limits.pos_max_soft_urad = defaults.pos_max_phys_urad;
             cfg.calibration.vdd_mv = defaults.vdd_mv;
             cfg.comms.id = defaults.id;
-            cfg.comms.baud_rate_idx = defaults.baud;
+            cfg.comms.baud_rate_idx = defaults.baud.as_idx();
             cfg.comms.response_deadline_us = defaults.response_deadline_us;
         });
     }

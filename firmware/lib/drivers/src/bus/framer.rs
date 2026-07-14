@@ -90,7 +90,7 @@ const COVERED_TAIL_BYTES: u32 = 2;
 // horizon sacrificed live partials), waiting is free under break framing
 // (position, not the clock, is the truth), and the real bounds are the
 // host's retry timeout (~ms) and ring pressure (512 byte-times).
-const STARVE_GIVEUP_BYTES: u32 = 64;
+const STARVE_GIVEUP_BYTES: u32 = osc_protocol::wire::STARVE_HORIZON_BYTE_TIMES;
 
 // Hunt scan bound per resolve call, so a desynced wake stays bounded; the
 // composite's drive loop re-enters via pend-on-past.

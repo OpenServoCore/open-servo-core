@@ -28,8 +28,8 @@ const BCAST: u8 = 0xFE;
 
 /// The DUT at chain slot 1 behind a silent phantom must reclaim the predecessor
 /// and reply `PredecessorSilent`, and only after waiting out the reclaim window.
-#[test]
 #[serial]
+#[test]
 fn gread_slot1_reclaims_silent_predecessor() {
     let mut b = bench();
     let id = b.id();

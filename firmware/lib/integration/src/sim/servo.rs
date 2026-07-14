@@ -67,13 +67,14 @@ impl SimServo {
 
         // The table is the comms authority (registry `Drivers::install` does
         // the same read on the chip).
-        let (id, rate, response_deadline_us) = shared.table.with(|t| {
+        let (id, rate_idx, response_deadline_us) = shared.table.with(|t| {
             (
                 t.config.comms.id,
                 t.config.comms.baud_rate_idx,
                 t.config.comms.response_deadline_us,
             )
         });
+        let rate = BaudRate::from_idx(rate_idx).expect("seeded baud idx");
         let baud = BaudState::new(rate);
 
         let bus = ServoBus::new(

@@ -7,6 +7,7 @@
 //! osc-CRC-16 definition.
 #![no_std]
 
+pub mod build;
 pub mod bytes;
 pub mod crc;
 pub mod frame;

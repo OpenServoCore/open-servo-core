@@ -14,7 +14,7 @@ use crate::traits::Reply;
 
 pub(crate) trait ControlTableHookEvents {
     fn on_id_write(&mut self, value: u8);
-    fn on_baud_rate_idx_write(&mut self, value: BaudRate);
+    fn on_baud_rate_idx_write(&mut self, value: u8);
     fn on_response_deadline_us_write(&mut self, value: u16);
 }
 
@@ -32,8 +32,12 @@ impl<R: Reply + ?Sized> ControlTableHookEvents for ControlTableHooks<'_, R> {
     fn on_id_write(&mut self, value: u8) {
         self.reply.stage_id(value);
     }
-    fn on_baud_rate_idx_write(&mut self, value: BaudRate) {
-        self.reply.stage_baud(value);
+    fn on_baud_rate_idx_write(&mut self, value: u8) {
+        // The le=3 table rule makes from_idx infallible here; a violated
+        // invariant drops the stage rather than panicking.
+        if let Some(baud) = BaudRate::from_idx(value) {
+            self.reply.stage_baud(baud);
+        }
     }
     fn on_response_deadline_us_write(&mut self, value: u16) {
         self.reply.set_response_deadline(value);

@@ -52,6 +52,48 @@ impl Id {
     }
 }
 
+/// Operational baud (sec 2): four rates, default 1M. Recovery is the rescue
+/// break's job (sec 9.1), so no crawl-speed fallback exists. The discriminant
+/// IS the `baud_rate_idx` config register value -- wire ABI, do not reorder.
+#[repr(u8)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+pub enum BaudRate {
+    #[default]
+    B500000 = 0,
+    B1000000 = 1,
+    B2000000 = 2,
+    B3000000 = 3,
+}
+
+impl BaudRate {
+    /// The sec 9.1 rescue rate: the option floor, entered only via rescue
+    /// break -- volatile, config register untouched.
+    pub const RESCUE: Self = Self::B500000;
+
+    pub const fn as_idx(self) -> u8 {
+        self as u8
+    }
+
+    pub const fn as_hz(self) -> u32 {
+        match self {
+            BaudRate::B500000 => 500_000,
+            BaudRate::B1000000 => 1_000_000,
+            BaudRate::B2000000 => 2_000_000,
+            BaudRate::B3000000 => 3_000_000,
+        }
+    }
+
+    pub const fn from_idx(idx: u8) -> Option<Self> {
+        match idx {
+            0 => Some(BaudRate::B500000),
+            1 => Some(BaudRate::B1000000),
+            2 => Some(BaudRate::B2000000),
+            3 => Some(BaudRate::B3000000),
+            _ => None,
+        }
+    }
+}
+
 /// Instruction opcode, `INST` bits [6:4] (sec 5). `0x0` is invalid.
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -231,6 +273,17 @@ impl Inst {
 
 /// Max payload bytes; sized so the largest frame fits whole in the ring (sec 3.1).
 pub const MAX_PAYLOAD: u8 = 252;
+
+/// sec 7 default: chain reclaim + host timeout, not a reply-time prescription.
+pub const DEFAULT_RESPONSE_DEADLINE_US: u16 = 60;
+
+/// sec 3.4: byte-times of ring silence that kill a parked partial frame -- the
+/// fallback death authority servo-side, and the host's post-garble pacing gap.
+pub const STARVE_HORIZON_BYTE_TIMES: u32 = 64;
+
+/// sec 9.1 rescue pulse: the servo sampler declares rescue at this much
+/// continuous dominant low; hosts send ~1 ms for sampler-jitter margin.
+pub const RESCUE_PULSE_MIN_US: u32 = 300;
 
 /// UID field width in bytes (sec 9.2): UUID-width, fixed. A chip fills it
 /// LSB-first from its silicon ID and zero-pads the tail (the V006's 96-bit

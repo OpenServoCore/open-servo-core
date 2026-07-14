@@ -62,8 +62,8 @@ fn check(label: &str, baud: u32, report: &BurstReport, dirty: &mut Vec<String>) 
 
 /// The production hot loop `[GWRITE(HOLD), COMMIT, GREAD]` sent zero-gap at every
 /// wire baud: the GREAD must read back the just-committed value on every cycle.
-#[test]
 #[serial]
+#[test]
 fn hot_loop_zero_gap_survives() {
     let mut b = bench();
     let id = b.id();
@@ -87,8 +87,8 @@ fn hot_loop_zero_gap_survives() {
 /// A plain `[WRITE(NOREPLY) x 8, READ]` flood at every wire baud: no per-write
 /// reply paces the framer, so the READ read-back guards every silent write. The
 /// aggressive stress reproduces the low-baud glitch the most readily.
-#[test]
 #[serial]
+#[test]
 fn plain_write_flood_survives() {
     let mut b = bench();
     let id = b.id();

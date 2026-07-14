@@ -79,8 +79,8 @@ fn gate(b: &mut Bench, wire: &[u8], label: &str, budget_us: fn(u32) -> f64) {
 
 /// THE metric: instruction wire-end -> status break fall, swept across the
 /// baud matrix.
-#[test]
 #[serial]
+#[test]
 fn ping_turnaround_within_budget() {
     let mut b = bench();
     let id = b.id();
@@ -89,8 +89,8 @@ fn ping_turnaround_within_budget() {
 
 /// The copy-once read path at telemetry scale (16 B from the converted
 /// block).
-#[test]
 #[serial]
+#[test]
 fn read_turnaround_within_budget() {
     let mut b = bench();
     let id = b.id();
@@ -104,8 +104,8 @@ fn read_turnaround_within_budget() {
 
 /// The mutating path: validated goal_position write (board-default value,
 /// so the table state is untouched).
-#[test]
 #[serial]
+#[test]
 fn write_turnaround_within_budget() {
     let mut b = bench();
     let id = b.id();

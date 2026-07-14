@@ -13,7 +13,7 @@
 
 use core::cell::SyncUnsafeCell;
 
-use osc_servo_core::RegionStorage;
+use osc_servo_core::{BaudRate, RegionStorage};
 use osc_servo_drivers::Level;
 use osc_servo_drivers::bus::ServoBus;
 use osc_servo_drivers::led::Led;
@@ -100,13 +100,16 @@ impl Drivers {
 
         // The table is the comms authority here -- a saved image's id/baud
         // must be what the bus comes up as, not the board defaults.
-        let (id, baud, deadline_us) = crate::runtime::statics::SHARED.table.with(|t| {
+        let (id, baud_idx, deadline_us) = crate::runtime::statics::SHARED.table.with(|t| {
             (
                 t.config.comms.id,
                 t.config.comms.baud_rate_idx,
                 t.config.comms.response_deadline_us,
             )
         });
+        // Image parse gates enum UB only; a corrupt-but-CRC-valid idx falls
+        // back to the always-reachable rescue floor instead of panicking.
+        let baud = BaudRate::from_idx(baud_idx).unwrap_or(BaudRate::RESCUE);
 
         // SAFETY: see fn doc.
         let bus = unsafe { &mut *CELLS.bus.0.get() };
