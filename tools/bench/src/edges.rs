@@ -1,31 +1,29 @@
 //! Edge-to-stamp decoder: the adapter's captured wire edges reconstructed
-//! into the byte+tick stamps [`crate::osc::parse_exchange`] consumes.
+//! into the byte+tick stamp stream [`crate::osc::parse_exchange`] consumes.
 //!
-//! The capture contract (measured on silicon, own and foreign traffic):
-//! data-region edges -- each frame's byte-0 start fall through the last
-//! byte's interior edges -- are tick-exact; BREAK edges are never
-//! trustworthy. The break fall is never captured, the break rise only
-//! sometimes, and every break instead contributes one phantom fall plus
-//! one phantom rise at fixed sub-break offsets (rise ~4.0 bits, fall
-//! ~2.0-2.4 bits before the frame's byte-0 fall). A frame's final fall can
-//! also stamp ~12 ticks late (watch item: if that fall is decode-sensitive
-//! the frame fails its CRC and the exchange retries).
+//! The capture contract, measured on the production capture path at all
+//! four bauds (own and servo traffic): every edge is tick-exact, breaks
+//! included -- a break captures as its real fall plus a rise one law span
+//! (10 bits) later. The gap between a break's rise and its frame's byte-0
+//! fall is arbitrary idle (measured: 2-3 bits of TX-chain seam on the
+//! adapter's own frames, ~5 bits of enable-when-ready seam on a servo
+//! reply), so nothing anchors on law arithmetic: a dominant span of at
+//! least 9.5 bits is a break (the servo's own qualification bar, sitting
+//! between a 9-bit 0x00 character and the 10-bit law break at any legal
+//! clock skew), and each frame anchors on its own byte-0 start fall.
 //!
-//! The decoder therefore anchors every frame on its byte-0 start fall and
-//! derives break geometry by law arithmetic: break fall = anchor - 11
-//! rx-bits (10-bit law break + 1 stop, protocol sec 3), frame end = last
-//! byte's start fall + 10 bits. Characters sample at
-//! `start + bit*(3 + 2k)/2` (the integration resampler's math) and each
-//! re-anchors on its own captured start fall, so HSI drift never
-//! accumulates. Bare breaks (CAL trains, pulses) produce no stamps -- with
-//! no data region there is nothing trustworthy to anchor on.
+//! Characters sample at `start + bit*(3 + 2k)/2` (the integration
+//! resampler's math) and re-anchor per character on their captured start
+//! falls, so clock skew never accumulates. Unanchorable garble decodes as
+//! garbage characters rather than vanishing -- superimposed-reply energy
+//! stays visible to `parse_exchange` as trailing stamps.
 
 use osc_client::wire::{Level, WireEdge};
 
 /// One decoded stamp: byte + tick, wire order. Break stamps carry the
-/// law-derived fall tick (BOUNDARY); data stamps carry their own captured
-/// start-fall tick -- every interior byte is a real capture, not a stride
-/// synthesis.
+/// captured break-fall tick (BOUNDARY); data stamps carry their own
+/// captured start-fall tick -- every tick is a real capture, no stride
+/// synthesis anywhere.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct BStamp {
     pub tick: u32,
@@ -34,10 +32,7 @@ pub struct BStamp {
 }
 
 impl BStamp {
-    /// Pirate-era placeholder-tick marker: unset on every decoded stamp
-    /// (edge ticks are always real captures); dies with the pirate.
-    pub const COUNT_UNDER: u8 = 1 << 0;
-    /// Break stamp: tick is the law-derived break fall.
+    /// Break stamp: tick is the captured break fall.
     pub const BOUNDARY: u8 = 1 << 1;
 }
 
@@ -47,71 +42,46 @@ pub fn stamps_from_edges(edges: &[WireEdge], bit_ticks: u32) -> Vec<BStamp> {
     let b = bit_ticks as i64;
     let t = |i: usize| edges[i].tick as i64;
     let mut out = Vec::new();
-    let mut from = 0;
-    while let Some(a) = find_anchor(edges, from, b) {
-        out.push(BStamp {
-            tick: (t(a) - 11 * b) as u32,
-            byte: 0,
-            flags: BStamp::BOUNDARY,
-        });
-        let mut start = t(a);
+    let mut i = 0;
+    while i < edges.len() {
+        if edges[i].level != Level::Low {
+            i += 1;
+            continue;
+        }
+        let Some(next) = edges.get(i + 1) else {
+            // Dangling fall (a pulse or frame still in flight at the
+            // drain): nothing trustworthy to decode.
+            break;
+        };
+        // The break bar: a 0x00 character is 9 low bits, the law break 10.
+        if (next.tick as i64 - t(i)) * 2 >= 19 * b {
+            out.push(BStamp {
+                tick: edges[i].tick,
+                byte: 0,
+                flags: BStamp::BOUNDARY,
+            });
+            i += 1;
+            continue;
+        }
+        // A character start: decode the frame from here, one char per
+        // captured start fall. Back-to-back streaming puts the next char
+        // one char time out (+/- clock skew); anything later ends the
+        // frame.
+        let mut start = t(i);
         loop {
             out.push(BStamp {
                 tick: start as u32,
                 byte: sample_char(edges, start, b),
                 flags: 0,
             });
-            // Back-to-back streaming: the next character's start fall lands
-            // one char time out (+/- clock skew); anything later is the
-            // frame's end.
             match next_fall_in(edges, start + 19 * b / 2, start + 11 * b) {
                 Some(j) => start = t(j),
                 None => break,
             }
         }
-        from = edges.partition_point(|e| (e.tick as i64) < start + 10 * b);
+        i = edges.partition_point(|e| (e.tick as i64) < start + 10 * b);
     }
     out
-}
-
-/// Find the next frame anchor (byte-0 start fall) at or after `from`.
-///
-/// A real break leaves a fixed signature before the anchor: an
-/// edge-silent break body (the fall is never captured), then the phantom
-/// cluster inside the last ~4.5 bits. The phantom fall itself is a decoy
-/// candidate; what separates the true anchor is the cluster BEHIND it --
-/// the anchor is preceded by the phantom fall (a fall in its cluster),
-/// while the phantom fall is preceded only by the phantom rise, too far
-/// out to be a break rise.
-fn find_anchor(edges: &[WireEdge], from: usize, b: i64) -> Option<usize> {
-    for j in from..edges.len() {
-        if edges[j].level != Level::Low {
-            continue;
-        }
-        let f = edges[j].tick as i64;
-        let cluster_lo = f - 9 * b / 2;
-        let quiet_lo = f - 21 * b / 2;
-        let quiet = |e: &WireEdge| {
-            let x = e.tick as i64;
-            x >= quiet_lo && x < cluster_lo
-        };
-        if edges[..j].iter().rev().any(quiet) {
-            continue;
-        }
-        let cluster: Vec<&WireEdge> = edges[..j]
-            .iter()
-            .rev()
-            .take_while(|e| (e.tick as i64) >= cluster_lo)
-            .collect();
-        let has_fall = cluster.iter().any(|e| e.level == Level::Low);
-        // Sometimes-captured break rise: alone, one bit before byte 0.
-        let lone_break_rise = matches!(cluster.as_slice(), [e]
-            if e.level == Level::High && (f - e.tick as i64 - b).abs() <= 2 * b / 5);
-        if has_fall || lone_break_rise || cluster.is_empty() {
-            return Some(j);
-        }
-    }
-    None
 }
 
 /// Sample one 8N1 character anchored at its captured start fall.
@@ -169,36 +139,35 @@ mod tests {
         }
     }
 
-    /// Emit a break-framed frame the way the capture actually records it:
-    /// no break fall, the phantom pair at the measured sub-break offsets,
-    /// optionally the sometimes-captured break rise, then exact data
-    /// edges. `anchor` is the byte-0 start fall; `pitch` the char spacing
-    /// (10*b nominal; skew models the talker's HSI).
+    /// Emit a break-framed frame the way the capture records it: the break
+    /// fall, its rise 10 bits later, `seam` bits of idle, then exact data
+    /// edges. `pitch` is the char spacing (10*b nominal; skew models the
+    /// talker's HSI). `rise` = false drops the break rise (the capture
+    /// contract keeps it, this pins the decoder's tolerance).
     fn frame_edges(
-        anchor: i64,
+        break_fall: i64,
         b: i64,
+        seam: i64,
         pitch: i64,
         bytes: &[u8],
-        break_rise: bool,
+        rise: bool,
         out: &mut Vec<WireEdge>,
     ) {
         out.push(WireEdge {
-            tick: (anchor - 4 * b) as u32,
-            level: Level::High,
-        });
-        out.push(WireEdge {
-            tick: (anchor - 7 * b / 3) as u32,
+            tick: break_fall as u32,
             level: Level::Low,
         });
-        if break_rise {
+        if rise {
             out.push(WireEdge {
-                tick: (anchor - b) as u32,
+                tick: (break_fall + 10 * b) as u32,
                 level: Level::High,
             });
         }
+        let anchor = break_fall + 10 * b + seam;
         for (k, &byte) in bytes.iter().enumerate() {
             char_edges(anchor + k as i64 * pitch, b, byte, out);
         }
+        out.sort_by_key(|e| e.tick);
     }
 
     /// A valid ping status frame for servo `id` (LEN 6: model + fw + CRC).
@@ -210,41 +179,44 @@ mod tests {
     }
 
     #[test]
-    fn decodes_one_frame_with_law_derived_break() {
+    fn decodes_one_frame_with_captured_break() {
         let b = 18; // 1M in the 18 MHz tick domain
         let sent = build_ping(1);
         let mut edges = Vec::new();
-        frame_edges(1000, b, 10 * b, &sent, true, &mut edges);
+        // 2-bit own-TX seam between break rise and byte 0 (measured).
+        frame_edges(1000, b, 2 * b, 10 * b, &sent, true, &mut edges);
         let stamps = stamps_from_edges(&edges, b as u32);
         assert_eq!(stamps.len(), 1 + sent.len());
         assert_eq!(stamps[0].byte, 0);
         assert_eq!(stamps[0].flags, BStamp::BOUNDARY);
-        assert_eq!(stamps[0].tick, (1000 - 11 * b) as u32);
+        assert_eq!(stamps[0].tick, 1000, "break stamp = the captured fall");
+        let anchor = 1000 + 12 * b;
         for (k, s) in stamps[1..].iter().enumerate() {
             assert_eq!(s.byte, sent[k], "byte {k}");
-            assert_eq!(s.tick, (1000 + k as i64 * 10 * b) as u32, "tick {k}");
+            assert_eq!(s.tick, (anchor + k as i64 * 10 * b) as u32, "tick {k}");
         }
     }
 
     #[test]
-    fn phantom_cluster_is_never_a_frame() {
-        // A bare break (CAL mark / pulse): phantoms + break rise, no data.
-        let b: i64 = 18;
-        let edges = vec![
-            WireEdge {
-                tick: (5000 - 4 * b) as u32,
-                level: Level::High,
-            },
-            WireEdge {
-                tick: (5000 - 7 * b / 3) as u32,
+    fn bare_break_train_stamps_breaks_only() {
+        // A CAL train: announce-less bare breaks must never decode as data.
+        let b = 18;
+        let mut edges = Vec::new();
+        for k in 0..4i64 {
+            let fall = 5_000 + k * 400 * b;
+            edges.push(WireEdge {
+                tick: fall as u32,
                 level: Level::Low,
-            },
-            WireEdge {
-                tick: (5000 - b) as u32,
+            });
+            edges.push(WireEdge {
+                tick: (fall + 10 * b) as u32,
                 level: Level::High,
-            },
-        ];
-        assert!(stamps_from_edges(&edges, b as u32).is_empty());
+            });
+        }
+        let stamps = stamps_from_edges(&edges, b as u32);
+        assert_eq!(stamps.len(), 4);
+        assert!(stamps.iter().all(|s| s.flags == BStamp::BOUNDARY));
+        assert_eq!(stamps[3].tick, (5_000 + 3 * 400 * 18) as u32);
     }
 
     #[test]
@@ -253,14 +225,22 @@ mod tests {
         let sent = build_ping(1);
         let reply = ping_status(1);
         let mut edges = Vec::new();
-        let echo_anchor = 2000;
-        frame_edges(echo_anchor, b, 10 * b, &sent, false, &mut edges);
+        frame_edges(2000, b, 3 * b, 10 * b, &sent, true, &mut edges);
         // Instruction wire end = last echo char start + 10 bits.
+        let echo_anchor = 2000 + 13 * b;
         let echo_end = echo_anchor + (sent.len() as i64 - 1) * 10 * b + 10 * b;
         let turnaround = 700; // ~39 us at 3M
-        let reply_anchor = echo_end + turnaround + 11 * b;
-        // Reply rides the servo's HSI: chars 1 tick wide of nominal.
-        frame_edges(reply_anchor, b, 10 * b + 1, &reply, true, &mut edges);
+        // Reply rides the servo's HSI (chars 1 tick wide of nominal) with
+        // the ~5-bit enable-when-ready seam behind its break.
+        frame_edges(
+            echo_end + turnaround,
+            b,
+            5 * b,
+            10 * b + 1,
+            &reply,
+            true,
+            &mut edges,
+        );
         let stamps = stamps_from_edges(&edges, b as u32);
         let ex = parse_exchange(&stamps, &sent, b as u32).expect("parses");
         assert_eq!(ex.turnaround_ticks, turnaround as u32);
@@ -275,28 +255,28 @@ mod tests {
         let f1 = build_ping(1);
         let f2 = build_ping(2);
         let mut edges = Vec::new();
-        frame_edges(1000, b, 10 * b, &f1, true, &mut edges);
+        frame_edges(1000, b, 2 * b, 10 * b, &f1, true, &mut edges);
         // Next break fall lands half a char after frame 1's wire end
         // (burst chaining gap is under a character time).
-        let f1_end = 1000 + f1.len() as i64 * 10 * b;
-        let a2 = f1_end + 5 * b + 11 * b;
-        frame_edges(a2, b, 10 * b, &f2, false, &mut edges);
+        let f1_end = 1000 + 12 * b + f1.len() as i64 * 10 * b;
+        let brk2 = f1_end + 5 * b;
+        frame_edges(brk2, b, 2 * b, 10 * b, &f2, true, &mut edges);
         let stamps = stamps_from_edges(&edges, b as u32);
         assert_eq!(stamps.len(), 2 * (1 + f1.len()));
         let second = &stamps[1 + f1.len()..];
         assert_eq!(second[0].flags, BStamp::BOUNDARY);
-        assert_eq!(second[0].tick, (a2 - 11 * b) as u32);
+        assert_eq!(second[0].tick, brk2 as u32);
         assert_eq!(second[1].byte, f2[0]);
     }
 
     #[test]
     fn payload_zero_bytes_are_data_not_breaks() {
         let b = 18;
-        // WRITE id 5 addr 0x0100 data AA (protocol sec 3.2 vector): LEN
-        // even, contains 0x00 bytes in addr.
+        // WRITE id 2 addr 0x0100 data AA (protocol sec 3.2 vector): the
+        // 0x00 addr byte is a 9-bit low span -- under the break bar.
         let frame = [0x02, 0x06, 0x30, 0x00, 0x01, 0xAA, 0x07, 0x0D];
         let mut edges = Vec::new();
-        frame_edges(9000, b, 10 * b, &frame, true, &mut edges);
+        frame_edges(9000, b, 2 * b, 10 * b, &frame, true, &mut edges);
         let stamps = stamps_from_edges(&edges, b as u32);
         assert_eq!(stamps.len(), 1 + frame.len());
         let bytes: Vec<u8> = stamps[1..].iter().map(|s| s.byte).collect();
@@ -305,15 +285,32 @@ mod tests {
     }
 
     #[test]
-    fn missing_break_rise_still_anchors() {
+    fn missing_break_rise_still_detects_the_break() {
         let b = 6;
         let sent = build_ping(3);
         let mut edges = Vec::new();
-        frame_edges(4000, b, 10 * b, &sent, false, &mut edges);
-        // 3M phantom fall offset is -2.0 bits, not -2.33.
-        edges[1].tick = (4000 - 2 * b) as u32;
+        frame_edges(4000, b, 2 * b, 10 * b, &sent, false, &mut edges);
         let stamps = stamps_from_edges(&edges, b as u32);
         assert_eq!(stamps.len(), 1 + sent.len());
+        assert_eq!(stamps[0].flags, BStamp::BOUNDARY);
         assert_eq!(stamps[1].byte, sent[0]);
+    }
+
+    #[test]
+    fn skewed_break_span_still_qualifies() {
+        // A servo break at +1% clock reads 10.1 bits; the bar must take it.
+        let b = 18;
+        let sent = ping_status(1);
+        let mut edges = Vec::new();
+        frame_edges(3000, b, 5 * b, 10 * b, &sent, true, &mut edges);
+        // Stretch the break rise to 10.1 bits after the fall.
+        edges.iter_mut().for_each(|e| {
+            if e.tick == (3000 + 10 * b) as u32 && e.level == Level::High {
+                e.tick += (b / 10) as u32;
+            }
+        });
+        let stamps = stamps_from_edges(&edges, b as u32);
+        assert_eq!(stamps[0].flags, BStamp::BOUNDARY);
+        assert_eq!(stamps.len(), 1 + sent.len());
     }
 }

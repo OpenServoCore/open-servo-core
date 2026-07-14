@@ -119,7 +119,12 @@ impl Wire {
     /// Drain whatever capture currently holds and decode it. One-shot:
     /// callers pacing a longer window use [`Wire::collect_stamps`].
     pub fn drain_stamps(&mut self) -> Result<Vec<BStamp>> {
-        let edges = self.drain_edges_dry()?;
+        let mut edges = self.drain_edges_dry()?;
+        // The two polarity rings drain at slightly different instants, so
+        // an edge pair straddling that window lands across drain batches
+        // out of order -- time-order the accumulated view before decoding
+        // (the decoder's level timeline binary-searches it).
+        edges.sort_by_key(|e| e.tick);
         Ok(stamps_from_edges(&edges, self.bit_ticks()))
     }
 
@@ -138,6 +143,8 @@ impl Wire {
             std::thread::sleep(DRAIN_POLL);
         }
         edges.extend(self.drain_edges_dry()?);
+        // Cross-batch time order (see drain_stamps).
+        edges.sort_by_key(|e| e.tick);
         Ok(stamps_from_edges(&edges, self.bit_ticks()))
     }
 
