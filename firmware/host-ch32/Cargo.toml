@@ -1,0 +1,26 @@
+[workspace]
+resolver = "2"
+
+[package]
+name    = "osc-host-ch32"
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+ch32-metapac     = { git = "https://github.com/ch32-rs/ch32-metapac", default-features = false, features = ["pac", "ch32v305fbp6"] }
+osc-host         = { path = "../lib/host" }
+osc-protocol     = { path = "../lib/osc-protocol" }
+critical-section = "1.2"
+
+# RISC-V targets lack hardware CAS; opt into the single-core assumption so
+# RMW lowers to lw/sw pairs instead of pulling in critical-section. Host
+# builds (clippy, unit tests) use portable-atomic's native x86 path.
+[target.'cfg(target_arch = "riscv32")'.dependencies]
+portable-atomic = { version = "1", default-features = false, features = ["unsafe-assume-single-core"] }
+
+[dev-dependencies]
+critical-section = { version = "1.2", features = ["std"] }
+
+[features]
+rt = ["ch32-metapac/rt"]
