@@ -80,6 +80,26 @@ pub struct Sim {
     /// scripted `host_send*` and the engine can coexist but must not overlap
     /// on the wire -- the claim assert catches a scenario that mixes them.
     host: Option<host::SimHost>,
+    /// The production link server in front of the attached engine, when
+    /// attached (client-in-the-loop scenarios): pipe bytes in through
+    /// [`Self::link_send`], records out through [`Self::link_recv`]. Engine
+    /// events leave as records; `host_events` stays empty in this mode.
+    link: Option<LinkRig>,
+}
+
+struct LinkRig {
+    server: osc_host::link::LinkServer,
+    out: RecordLog,
+}
+
+/// Records append verbatim (length-prefixed already): the sink IS the pipe's
+/// outbound byte stream.
+struct RecordLog(Vec<u8>);
+
+impl osc_host::link::RecordSink for RecordLog {
+    fn record(&mut self, record: &[u8]) {
+        self.0.extend_from_slice(record);
+    }
 }
 
 impl Sim {
@@ -92,6 +112,7 @@ impl Sim {
             rate,
             host_free_at: 0,
             host: None,
+            link: None,
         }
     }
 
@@ -116,6 +137,32 @@ impl Sim {
     /// Drain everything the engine yielded since the last call.
     pub fn host_events(&mut self) -> Vec<HostEvent> {
         std::mem::take(&mut self.host.as_mut().expect("host attached").events)
+    }
+
+    /// Put the production link server in front of the attached engine
+    /// (panics if no host). From here the pipe surface replaces
+    /// `host_submit`/`host_events`.
+    pub fn attach_link(&mut self) {
+        assert!(self.host.is_some(), "attach_link needs an attached host");
+        assert!(self.link.is_none(), "link already attached");
+        self.link = Some(LinkRig {
+            server: osc_host::link::LinkServer::new(),
+            out: RecordLog(Vec::new()),
+        });
+    }
+
+    /// Feed pipe bytes to the attached link server (panics if none). The
+    /// caller advances the wire with [`Self::run`]; records accumulate for
+    /// [`Self::link_recv`].
+    pub fn link_send(&mut self, bytes: &[u8]) {
+        let h = self.host.as_mut().expect("host attached");
+        let rig = self.link.as_mut().expect("link attached");
+        rig.server.on_pipe(bytes, &mut h.bus, &mut rig.out);
+    }
+
+    /// Drain the outbound record byte stream (panics if no link).
+    pub fn link_recv(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.link.as_mut().expect("link attached").out.0)
     }
 
     /// Add a servo with the default table seed at this id; returns its index.
@@ -452,10 +499,15 @@ impl Sim {
         self.host_pump();
     }
 
-    /// Poll the attached engine to exhaustion, copying events out of the
-    /// ring for the harness.
+    /// Poll the attached engine to exhaustion. Link mode routes through the
+    /// production server (events leave as records); otherwise events copy
+    /// out of the ring for the harness.
     fn host_pump(&mut self) {
         let Some(h) = self.host.as_mut() else { return };
+        if let Some(rig) = self.link.as_mut() {
+            rig.server.pump(&mut h.bus, &mut rig.out);
+            return;
+        }
         loop {
             match h.bus.poll() {
                 Some(osc_host::engine::Event::Status {
