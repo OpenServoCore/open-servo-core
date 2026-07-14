@@ -44,6 +44,20 @@ pub enum Record {
     RailsAck {
         state: u8,
     },
+    /// A wire instrument op (send/burst/pulse) released the wire.
+    WireDone {
+        seq: u16,
+        tick: u32,
+    },
+    /// One edge drain: capture-order ticks (engine domain low 16 bits),
+    /// `now` = the 32-bit drain moment, the unwrap reference.
+    Edges {
+        overflow: bool,
+        now: u32,
+        falls: Vec<u16>,
+        rises: Vec<u16>,
+    },
+    CaptureAck,
     Unknown {
         rtype: u8,
     },
@@ -121,6 +135,37 @@ impl Session {
         seq
     }
 
+    /// Encode a raw wire send (instrument family: engine validation
+    /// deliberately bypassed); returns the seq its WIRE_DONE will carry.
+    pub fn encode_wire_send(&mut self, out: &mut Vec<u8>, bytes: &[u8]) -> u16 {
+        self.encode_wire_op(out, rec::REC_WIRE_SEND, bytes)
+    }
+
+    /// Encode a wire burst; `stream` is the `[len(1) bytes]+` frame train.
+    pub fn encode_wire_burst(&mut self, out: &mut Vec<u8>, stream: &[u8]) -> u16 {
+        self.encode_wire_op(out, rec::REC_WIRE_BURST, stream)
+    }
+
+    pub fn encode_wire_pulse(&mut self, out: &mut Vec<u8>, us: u16) -> u16 {
+        self.encode_wire_op(out, rec::REC_WIRE_PULSE, &us.to_le_bytes())
+    }
+
+    fn encode_wire_op(&mut self, out: &mut Vec<u8>, rtype: u8, body: &[u8]) -> u16 {
+        let seq = self.alloc_seq();
+        let mut rec = vec![rtype, seq as u8, (seq >> 8) as u8];
+        rec.extend_from_slice(body);
+        Self::frame(out, &rec);
+        seq
+    }
+
+    pub fn encode_edge_drain(out: &mut Vec<u8>, max: u8) {
+        Self::frame(out, &[rec::REC_EDGE_DRAIN, max]);
+    }
+
+    pub fn encode_capture_reset(out: &mut Vec<u8>) {
+        Self::frame(out, &[rec::REC_CAPTURE_RESET]);
+    }
+
     /// Feed a delivered chunk into the reassembly buffer.
     pub fn on_bytes(&mut self, chunk: &[u8]) {
         self.rx.extend_from_slice(chunk);
@@ -190,6 +235,23 @@ fn decode(body: &[u8]) -> Result<Record, LinkError> {
         rec::REC_RAILS_ACK => Record::RailsAck {
             state: *body.get(1).ok_or(LinkError::Malformed)?,
         },
+        rec::REC_WIRE_DONE => Record::WireDone {
+            seq: seq()?,
+            tick: u32::from_le_bytes(field(3..7)?.try_into().unwrap()),
+        },
+        rec::REC_EDGES => {
+            let fall_n = *body.get(6).ok_or(LinkError::Malformed)? as usize;
+            let rise_n = *body.get(7).ok_or(LinkError::Malformed)? as usize;
+            let ticks = field(8..8 + 2 * (fall_n + rise_n))?;
+            let tick = |i: usize| u16::from_le_bytes([ticks[2 * i], ticks[2 * i + 1]]);
+            Record::Edges {
+                overflow: body[1] & 1 != 0,
+                now: u32::from_le_bytes(field(2..6)?.try_into().unwrap()),
+                falls: (0..fall_n).map(tick).collect(),
+                rises: (fall_n..fall_n + rise_n).map(tick).collect(),
+            }
+        }
+        rec::REC_CAPTURE_ACK => Record::CaptureAck,
         rec::REC_UNKNOWN => Record::Unknown {
             rtype: *body.get(1).ok_or(LinkError::Malformed)?,
         },

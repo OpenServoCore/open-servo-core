@@ -13,6 +13,7 @@ use crate::error::Error;
 use crate::mgmt::{self, CalTrace, Uid};
 use crate::pipe::Pipe;
 use crate::session::LinkInfo;
+use crate::wire::EdgeDrain;
 
 pub struct Client<P: Pipe>(crate::Client<P>);
 
@@ -107,6 +108,26 @@ impl<P: Pipe> Client<P> {
 
     pub fn enter_bootloader(&mut self) -> Result<(), Error> {
         block_on(self.0.enter_bootloader())
+    }
+
+    pub fn wire_send(&mut self, bytes: &[u8]) -> Result<u32, Error> {
+        block_on(self.0.wire_send(bytes))
+    }
+
+    pub fn wire_burst(&mut self, frames: &[&[u8]]) -> Result<u32, Error> {
+        block_on(self.0.wire_burst(frames))
+    }
+
+    pub fn wire_pulse_low(&mut self, us: u16) -> Result<u32, Error> {
+        block_on(self.0.wire_pulse_low(us))
+    }
+
+    pub fn drain_edges(&mut self) -> Result<EdgeDrain, Error> {
+        block_on(self.0.drain_edges())
+    }
+
+    pub fn reset_capture(&mut self) -> Result<(), Error> {
+        block_on(self.0.reset_capture())
     }
 
     pub fn discover(&mut self) -> Result<Vec<Uid>, Error> {
