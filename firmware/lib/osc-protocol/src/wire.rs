@@ -274,6 +274,17 @@ impl Inst {
 /// Max payload bytes; sized so the largest frame fits whole in the ring (sec 3.1).
 pub const MAX_PAYLOAD: u8 = 252;
 
+/// sec 7 default: chain reclaim + host timeout, not a reply-time prescription.
+pub const DEFAULT_RESPONSE_DEADLINE_US: u16 = 60;
+
+/// sec 3.4: byte-times of ring silence that kill a parked partial frame -- the
+/// fallback death authority servo-side, and the host's post-garble pacing gap.
+pub const STARVE_HORIZON_BYTE_TIMES: u32 = 64;
+
+/// sec 9.1 rescue pulse: the servo sampler declares rescue at this much
+/// continuous dominant low; hosts send ~1 ms for sampler-jitter margin.
+pub const RESCUE_PULSE_MIN_US: u32 = 300;
+
 /// UID field width in bytes (sec 9.2): UUID-width, fixed. A chip fills it
 /// LSB-first from its silicon ID and zero-pads the tail (the V006's 96-bit
 /// ESIG leaves the top four bytes zero); no catalog MCU exceeds 128 bits.

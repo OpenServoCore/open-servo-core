@@ -4,10 +4,7 @@ use control_table::{Block, Enum, Section};
 // name it (grid law 2). The table field below stays a raw index because the
 // `Enum` derive impls a control-table trait -- orphan-rule-bound to whichever
 // crate defines the type.
-pub use osc_protocol::wire::BaudRate;
-
-/// osc-native sec 7 default: chain reclaim + host timeout, not a reply-time floor.
-pub const DEFAULT_RESPONSE_DEADLINE_US: u16 = 60;
+pub use osc_protocol::wire::{BaudRate, DEFAULT_RESPONSE_DEADLINE_US};
 
 /// Stall detector policy. `repr(u8)`; constructing from an unlisted discriminant is UB,
 /// so validators MUST gate writes to `StallResponse::ALLOWED`.
