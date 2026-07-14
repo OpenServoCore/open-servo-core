@@ -15,12 +15,15 @@ use osc_protocol::FrameBytes;
 use osc_protocol::crc::{osc_crc, osc_crc_continue};
 use osc_protocol::wire::{self, Id, Inst};
 
-/// One CRC-clean frame view over the ring.
+/// One CRC-clean frame view over the ring. `payload_pos` names the
+/// payload's ring index so a caller can re-materialize the view after the
+/// borrow ends (see [`payload_view`]).
 #[derive(Debug)]
 pub struct Frame<'a> {
     pub id: Id,
     pub inst: Inst,
     pub payload: FrameBytes<'a>,
+    pub payload_pos: usize,
 }
 
 /// Outcome of one [`Framer::step`]; callers loop until `Idle` or `Partial`.
@@ -103,13 +106,15 @@ impl Framer {
             return Step::Garble(self.hunt(ring, mask, avail));
         }
 
-        let payload = ring_bytes(
-            ring,
-            (self.anchor + 4) & mask,
-            wire::payload_len(len) as usize,
-        );
+        let payload_pos = (self.anchor + 4) & mask;
+        let payload = payload_view(ring, payload_pos, wire::payload_len(len) as usize);
         self.anchor = (self.anchor + footprint) & mask;
-        Step::Frame(Frame { id, inst, payload })
+        Step::Frame(Frame {
+            id,
+            inst,
+            payload,
+            payload_pos,
+        })
     }
 
     /// Advance past a dead candidate to the next `0x00` within `avail`
@@ -136,8 +141,10 @@ fn ring_crc(ring: &[u8], start: usize, n: usize) -> u16 {
     }
 }
 
-/// Zero-copy view over a possibly-wrapped ring span.
-fn ring_bytes(ring: &[u8], start: usize, n: usize) -> FrameBytes<'_> {
+/// Zero-copy view over a possibly-wrapped ring span. Public within the
+/// engine so a consumed frame's payload can be re-materialized from its
+/// [`Frame::payload_pos`] once the walk's borrow has ended.
+pub(crate) fn payload_view(ring: &[u8], start: usize, n: usize) -> FrameBytes<'_> {
     let head = n.min(ring.len() - start);
     FrameBytes::new(&ring[start..start + head], &ring[..n - head])
 }

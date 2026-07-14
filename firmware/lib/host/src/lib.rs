@@ -12,5 +12,8 @@
 //! design, not as a shared crate.
 #![no_std]
 
+#[cfg(test)]
+extern crate std;
+
 pub mod engine;
 pub mod traits;
