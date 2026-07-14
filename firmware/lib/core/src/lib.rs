@@ -18,11 +18,11 @@ pub use kernel::{Kernel, KernelState};
 pub use persist::{ConfigStore, StoreError};
 pub use regions::config::{BaudRate, ConfigDefaults};
 pub use regions::{
-    BemfCalibBlock, BootMode, CalibRegs, ConfigCalibration, ConfigComms, ConfigControlPosition,
-    ConfigIdentity, ConfigPosLimits, ConfigRegs, ConfigStall, ConfigThermal, ControlLifecycle,
-    ControlRegs, ControlStreaming, ControlSystem, ControlTable, ControlTableCell, Mode,
-    PotLutBlock, StallResponse, TelemetryBusLink, TelemetryConverted, TelemetryFault,
-    TelemetryIntermediaries, TelemetryRaw, TelemetryRegs,
+    BemfCalibBlock, BootMode, CalibRegs, ConfigCalibration, ConfigCommon, ConfigControlPosition,
+    ConfigPosLimits, ConfigRegs, ConfigStall, ConfigThermal, ControlLifecycle, ControlRegs,
+    ControlStreaming, ControlSystem, ControlTable, ControlTableCell, Mode, PotLutBlock,
+    StallResponse, TelemetryCommon, TelemetryConverted, TelemetryIntermediaries, TelemetryMode,
+    TelemetryRaw, TelemetryRegs,
 };
 pub use sample::{ConversionVariables, RawSamples, Sample};
 pub use services::bus::{Dispatcher, Session};

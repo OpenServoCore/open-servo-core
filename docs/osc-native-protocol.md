@@ -470,6 +470,54 @@ code shares the byte (bits [6:2], 32 values). Errors split by layer:
    the alarm register is nonzero, prompting the host to read it. The same
    alert-bit semantics as DXL, because they're right.
 
+### 5.4 Common register block
+
+The table map is per-model ABI — a servo and a sensor node share the
+protocol, not the register map (the DXL shape, and the right one: the
+map is where models differ). What **is** protocol is a small register
+set every node carries at fixed addresses, so model-agnostic tooling —
+rescue and baud migration, CAL verification, health polls, discovery
+triage — works on any node without knowing its model. Two 32-byte
+blocks, one at each region front:
+
+**CONFIG-COMMON** `0x000..0x020` — SAVE-persisted (§9.4); identity RO,
+comms RW:
+
+| addr  | name                   | width | access | notes                                  |
+| ----- | ---------------------- | ----- | ------ | -------------------------------------- |
+| 0x000 | `model_number`         | u16   | RO     | keys the per-model map                 |
+| 0x002 | `firmware_version`     | u8    | RO     |                                        |
+| 0x003 | `hardware_revision`    | u8    | RO     |                                        |
+| 0x004 | `capability_flags`     | u32   | RO     | no bits defined yet                    |
+| 0x008 | —                      | 8 B   | rsvd   |                                        |
+| 0x010 | `id`                   | u8    | RW     | unicast address `0x01..=0xF9` (§3.1)   |
+| 0x011 | `baud_rate_idx`        | u8    | RW     | §2 rate index                          |
+| 0x012 | `response_deadline_us` | u16   | RW     | §7                                     |
+| 0x014 | —                      | 12 B  | rsvd   |                                        |
+
+**TELEMETRY-COMMON** `0x200..0x220` — volatile:
+
+| addr  | name                 | width | access | notes                                       |
+| ----- | -------------------- | ----- | ------ | ------------------------------------------- |
+| 0x200 | `fault_flags`        | u8    | RO     | the §5.3 alarm register — ALERT's read target |
+| 0x201 | `status_flags`       | u8    | RO     | bit 0 = config-dirty (§9.4); bits 1–7 reserved |
+| 0x202 | `trim_steps`         | i8    | RO     | applied clock-trim total (§9.3)             |
+| 0x203 | —                    | 1 B   | rsvd   |                                             |
+| 0x204 | `crc_fail_count`     | u32   | RW     | §5.3 frame-level counters; hosts write 0 to clear |
+| 0x208 | `framing_drop_count` | u32   | RW     |                                             |
+| 0x20C | —                    | 20 B  | rsvd   |                                             |
+
+- Reserved bytes read zero; writes touching them reject with `access`.
+  Extension fills reserved slots, announced by `capability_flags` bits —
+  a host that doesn't know a bit ignores the bytes it covers.
+- Everything else is model-specific space (`0x020..0x200`,
+  `0x220..0x280`), except the profile region's own pin at
+  `0x280..0x2C0` (§5.2).
+- Deliberately absent: a torque switch (SAVE self-gates via `access`,
+  §9.4, and sensor nodes have no torque), the UID (MGMT ENUM is its only
+  reader, §9.2), boot mode (MGMT REBOOT's payload owns it), and every
+  motor semantic.
+
 ## 6. Coordinated reads (status chains)
 
 GREAD replies arrive as a chain of ordinary status frames, one per listed
@@ -727,7 +775,8 @@ so that is what gets gated:
   rules still apply to every write; anything genuinely unsafe to change
   mid-motion is the control kernel's job to sequence, not the table's to
   forbid.
-- A config-dirty bit in telemetry reports modified-since-save.
+- A config-dirty bit in telemetry reports modified-since-save
+  (`status_flags` bit 0, §5.4).
 
 Side effects: flash wear drops from program-per-write to
 program-per-session, and the ~10 ms write stall stops ambushing hosts on

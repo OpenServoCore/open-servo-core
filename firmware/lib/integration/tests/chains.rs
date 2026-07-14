@@ -6,7 +6,7 @@
 
 use osc_integration::sim::{Source, WireFrame, assert_valid, instruction, status};
 use osc_protocol::wire::{Inst, Opcode, ResultCode};
-use osc_servo_core::regions::config::addr::identity::{FIRMWARE_VERSION, MODEL_NUMBER};
+use osc_servo_core::regions::config::addr::common::{FIRMWARE_VERSION, MODEL_NUMBER};
 use osc_servo_core::regions::control::addr::lifecycle::GOAL_VELOCITY;
 use osc_servo_core::regions::control::addr::streaming::{STREAM_DECIMATION, STREAM_FIELD_MASK};
 use osc_servo_core::regions::profile::span_word;
@@ -103,7 +103,7 @@ fn gread_uniform_chains_in_list_order(baud_idx: u8) {
     // Distinct model per servo so each reply's data is traceable to its owner.
     let models = [0xAA01u16, 0xBB02, 0xCC03];
     for (i, m) in models.iter().enumerate() {
-        sim.servo_table_mut(i, |t| t.config.identity.model_number = *m);
+        sim.servo_table_mut(i, |t| t.config.common.model_number = *m);
     }
 
     sim.host_send(&instruction(
@@ -165,8 +165,8 @@ fn gread_profile_uniform_chains_gathered_replies(baud_idx: u8) {
     let models = [0x1122u16, 0x3344];
     for (i, m) in models.iter().enumerate() {
         sim.servo_table_mut(i, |t| {
-            t.config.identity.model_number = *m;
-            t.config.identity.firmware_version = 0x50 + i as u8;
+            t.config.common.model_number = *m;
+            t.config.common.firmware_version = 0x50 + i as u8;
             t.profile.slots.words[0] = span_word(MODEL_NUMBER, 2);
             t.profile.slots.words[1] = span_word(FIRMWARE_VERSION, 1);
         });
@@ -202,11 +202,11 @@ fn gread_profile_per_target_selects_distinct_slots(baud_idx: u8) {
         sim.add_servo_with(id, 0, CHAIN_DEADLINE_US);
     }
     sim.servo_table_mut(0, |t| {
-        t.config.identity.model_number = 0x1122;
+        t.config.common.model_number = 0x1122;
         t.profile.slots.words[0] = span_word(MODEL_NUMBER, 2);
     });
     sim.servo_table_mut(1, |t| {
-        t.config.identity.firmware_version = 0x77;
+        t.config.common.firmware_version = 0x77;
         // Servo 2 answers from slot 3 -- per-target slot selection.
         t.profile.slots.words[3 * 8] = span_word(FIRMWARE_VERSION, 1);
     });
@@ -234,9 +234,9 @@ fn gread_per_target_reads_distinct_spans(baud_idx: u8) {
     for id in [1u8, 2, 3] {
         sim.add_servo_with(id, 0, CHAIN_DEADLINE_US);
     }
-    sim.servo_table_mut(0, |t| t.config.identity.model_number = 0x1122);
-    sim.servo_table_mut(1, |t| t.config.identity.firmware_version = 0x5A);
-    sim.servo_table_mut(2, |t| t.config.identity.model_number = 0x3344);
+    sim.servo_table_mut(0, |t| t.config.common.model_number = 0x1122);
+    sim.servo_table_mut(1, |t| t.config.common.firmware_version = 0x5A);
+    sim.servo_table_mut(2, |t| t.config.common.model_number = 0x3344);
 
     // Each servo reads its own addr/count.
     let payload = gread_per_target(&[
@@ -269,8 +269,8 @@ fn missing_servo_reclaims_with_flag(baud_idx: u8) {
     // Only 1 and 3 present; 2 is absent from the bus.
     let s1 = sim.add_servo_with(1, 0, CHAIN_DEADLINE_US);
     let s3 = sim.add_servo_with(3, 0, CHAIN_DEADLINE_US);
-    sim.servo_table_mut(s1, |t| t.config.identity.model_number = 0x0101);
-    sim.servo_table_mut(s3, |t| t.config.identity.model_number = 0x0303);
+    sim.servo_table_mut(s1, |t| t.config.common.model_number = 0x0101);
+    sim.servo_table_mut(s3, |t| t.config.common.model_number = 0x0303);
 
     sim.host_send(&instruction(
         BCAST,
@@ -321,7 +321,7 @@ fn error_status_keeps_chain_alive(baud_idx: u8) {
     for id in [1u8, 2, 3] {
         sim.add_servo_with(id, 0, CHAIN_DEADLINE_US);
     }
-    sim.servo_table_mut(2, |t| t.config.identity.model_number = 0x9999);
+    sim.servo_table_mut(2, |t| t.config.common.model_number = 0x9999);
 
     // Per-target: servo 2's span is out of bounds -> Range error, empty payload.
     let payload = gread_per_target(&[(1, MODEL_NUMBER, 2), (2, 0xFFFE, 4), (3, MODEL_NUMBER, 2)]);

@@ -1,5 +1,5 @@
 use bench::osc::{build_ping, build_read};
-use osc_servo_core::regions::config::addr::identity::MODEL_NUMBER;
+use osc_servo_core::regions::config::addr::common::MODEL_NUMBER;
 use serial_test::serial;
 
 use crate::support::bench;

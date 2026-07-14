@@ -4,11 +4,12 @@
 //! store across two `Sim`s models a reboot with flash intact.
 
 use osc_integration::sim::{RamStore, Sim, Source, WireFrame, assert_valid, instruction, status};
+use osc_protocol::table::STATUS_FLAG_CONFIG_DIRTY;
 use osc_protocol::wire::{Id, MgmtOp, Opcode, ResultCode};
 use osc_servo_core::persist::{Image, Slot};
-use osc_servo_core::regions::config::addr::comms::RESPONSE_DEADLINE_US;
+use osc_servo_core::regions::config::addr::common::RESPONSE_DEADLINE_US;
 use osc_servo_core::regions::control::addr::lifecycle::TORQUE_ENABLE;
-use osc_servo_core::regions::telemetry::addr::fault::CONFIG_DIRTY;
+use osc_servo_core::regions::telemetry::addr::common::STATUS_FLAGS;
 use rstest::rstest;
 use rstest_reuse::apply;
 
@@ -67,14 +68,20 @@ fn save_persists_the_live_regions_and_clears_dirty(baud_idx: u8) {
     sim.add_servo_with_store(ID5, store);
 
     write_ok(&mut sim, ID5, RESPONSE_DEADLINE_US, &200u16.to_le_bytes());
-    assert_eq!(read_byte(&mut sim, ID5, CONFIG_DIRTY), 1);
+    assert_eq!(
+        read_byte(&mut sim, ID5, STATUS_FLAGS) & STATUS_FLAG_CONFIG_DIRTY,
+        1
+    );
 
     let frames = mgmt(&mut sim, ID5, MgmtOp::Save);
     let (inst, payload) = status(sole_reply(&frames));
     assert_eq!(inst.result(), Some(ResultCode::Ok));
     assert!(payload.is_empty());
     assert_eq!(store.saves(), 1);
-    assert_eq!(read_byte(&mut sim, ID5, CONFIG_DIRTY), 0);
+    assert_eq!(
+        read_byte(&mut sim, ID5, STATUS_FLAGS) & STATUS_FLAG_CONFIG_DIRTY,
+        0
+    );
 
     // The stored image is codec-valid and carries the written value.
     let img = store.slot(Slot::A).expect("first save lands in slot A");
@@ -107,7 +114,10 @@ fn save_failure_nacks_hardware_and_stays_dirty(baud_idx: u8) {
     let frames = mgmt(&mut sim, ID5, MgmtOp::Save);
     let (inst, _) = status(sole_reply(&frames));
     assert_eq!(inst.result(), Some(ResultCode::Hardware));
-    assert_eq!(read_byte(&mut sim, ID5, CONFIG_DIRTY), 1);
+    assert_eq!(
+        read_byte(&mut sim, ID5, STATUS_FLAGS) & STATUS_FLAG_CONFIG_DIRTY,
+        1
+    );
 }
 
 #[apply(matrix)]

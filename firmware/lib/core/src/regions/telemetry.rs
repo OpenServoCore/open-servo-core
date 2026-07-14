@@ -38,20 +38,47 @@ pub struct TelemetryIntermediaries {
     pub sample_tick: u32,
 }
 
-/// `fault_flags` writable-RO carve-out: host writing 0x00 clears non-latched bits.
+/// protocol sec 5.4 TELEMETRY-COMMON block, at the region front. Counters:
+/// host can Write zero to clear (bench instrumentation); the chip publishes
+/// deltas via raw pointer, bypassing the regmap, so a concurrent host clear +
+/// publish may drop one update -- acceptable for bench. `trim_steps`
+/// (sec 9.3) is the trim loop's applied total in signed chip trim steps from
+/// the factory default (positive = slowed), volatile by design -- every boot
+/// re-converges from live traffic.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
-pub struct TelemetryFault {
+pub struct TelemetryCommon {
+    /// The sec 5.3 alarm register -- ALERT's read target.
+    #[ct_field(access = ro)]
+    pub fault_flags: u8,
+    /// Bit 0 = config-dirty, modified-since-save (sec 9.4): set when a
+    /// committed write lands in CONFIG or PROFILE, cleared by a successful
+    /// SAVE; boot state is clean. Bits 1-7 reserved.
+    #[ct_field(access = ro)]
+    pub status_flags: u8,
+    #[ct_field(access = ro)]
+    pub trim_steps: i8,
+    #[ct_field(skip)]
+    pub _rsvd_align: u8,
+    #[ct_field(access = rw)]
+    pub crc_fail_count: u32,
+    #[ct_field(access = rw)]
+    pub framing_drop_count: u32,
+    #[ct_field(skip)]
+    pub _rsvd_tail: [u8; 20],
+}
+
+/// Model-specific mode + fault detail: sec 5.4 keeps only the alarm byte
+/// common; which faults exist and what the codes mean vary by node.
+#[repr(C)]
+#[derive(Copy, Clone, Block)]
+pub struct TelemetryMode {
     #[ct_field(access = ro)]
     pub mode_active: u8,
     #[ct_field(access = ro)]
-    pub fault_flags: u8,
-    #[ct_field(access = ro)]
     pub fault_code: u8,
-    /// Modified-since-save (sec 9.4): set when a committed write lands in
-    /// CONFIG or PROFILE, cleared by a successful SAVE; boot state is clean.
-    #[ct_field(access = ro)]
-    pub config_dirty: u8,
+    #[ct_field(skip)]
+    pub _rsvd_align: u16,
 }
 
 #[repr(C)]
@@ -75,40 +102,15 @@ pub struct TelemetryRaw {
     pub raw_enc_b: u16,
 }
 
-/// Host can Write zero to any field to clear it (bench instrumentation).
-/// Chip-side `report_fault` increments via raw pointer, bypassing the regmap.
-/// Concurrent host clear + ISR increment may drop one update -- acceptable for bench.
-#[repr(C)]
-#[derive(Copy, Clone, Block)]
-pub struct TelemetryBusLink {
-    #[ct_field(access = rw)]
-    pub crc_fail_count: u32,
-    #[ct_field(access = rw)]
-    pub framing_drop_count: u32,
-}
-
-/// Clock discipline (sec 9.3), read-only: the trim loop's applied total, in
-/// signed chip trim steps from the factory default (positive = slowed).
-/// Volatile by design -- every boot re-converges from live traffic.
-#[repr(C)]
-#[derive(Copy, Clone, Block)]
-pub struct TelemetryClock {
-    #[ct_field(access = ro)]
-    pub trim_steps: i8,
-    #[ct_field(skip)]
-    pub _rsvd_align: [u8; 3],
-}
-
 #[repr(C)]
 #[derive(Section)]
 #[ct_section(base = crate::regions::TELEMETRY_BASE_ADDR, size = crate::regions::TELEMETRY_REGION_SIZE)]
 pub struct TelemetryRegs {
+    pub common: TelemetryCommon,
+    pub mode: TelemetryMode,
     pub converted: TelemetryConverted,
     pub intermediaries: TelemetryIntermediaries,
-    pub fault: TelemetryFault,
     pub raw: TelemetryRaw,
-    pub link: TelemetryBusLink,
-    pub clock: TelemetryClock,
     #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 56],
+    pub _rsvd_tail: [u8; 36],
 }

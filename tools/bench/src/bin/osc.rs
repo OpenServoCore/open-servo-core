@@ -18,17 +18,8 @@ use bench::pirate::Client;
 use bench::run::xfer;
 use bench::{RESCUE_BAUD, SUPPORTED_BAUDS, baud_index};
 use clap::{Parser, Subcommand};
+use osc_protocol::table::{BAUD_RATE_IDX, TRIM_STEPS};
 use osc_protocol::wire::{ResultCode, UID_LEN};
-
-/// Control-table address of `baud_rate_idx` (osc-servo-core
-/// `regions::config::addr::comms::BAUD_RATE_IDX`; value pinned here to keep
-/// the heavy core crate out of the bench build).
-const BAUD_RATE_IDX_ADDR: u16 = 0x000D;
-
-/// Control-table address of `telemetry.clock.trim_steps` (osc-servo-core
-/// `regions::telemetry`; pinned like `BAUD_RATE_IDX_ADDR`). Signed chip trim
-/// steps the trim loop has applied, read-only, volatile (protocol sec 9.3).
-const TRIM_STEPS_ADDR: u16 = 0x0244;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -228,12 +219,8 @@ fn switch_baud(client: &mut Client, ids: &[u8], to: u32) -> Result<()> {
     let idx = baud_index(to)
         .ok_or_else(|| anyhow::anyhow!("unsupported baud {to} (use {SUPPORTED_BAUDS:?})"))?;
     for &id in ids {
-        xfer_ok(
-            client,
-            &build_write(id, BAUD_RATE_IDX_ADDR, &[idx]),
-            SETTLE_MS,
-        )
-        .with_context(|| format!("baud write to id {id}"))?;
+        xfer_ok(client, &build_write(id, BAUD_RATE_IDX, &[idx]), SETTLE_MS)
+            .with_context(|| format!("baud write to id {id}"))?;
     }
     client.set_baud(to)?;
     client.reset()?;
@@ -297,7 +284,7 @@ fn rescue(cli: &Cli, set_baud: Option<u32>, do_save: bool) -> Result<()> {
 }
 
 fn read_trim(client: &mut Client, id: u8) -> Result<i8> {
-    let status = xfer_ok(client, &build_read(id, TRIM_STEPS_ADDR, 1), SETTLE_MS)?;
+    let status = xfer_ok(client, &build_read(id, TRIM_STEPS, 1), SETTLE_MS)?;
     match status.payload.as_slice() {
         [steps] => Ok(*steps as i8),
         p => bail!("trim_steps read returned {} bytes", p.len()),

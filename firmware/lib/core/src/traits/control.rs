@@ -47,7 +47,7 @@ pub enum DecayMode {
 }
 
 bitflags::bitflags! {
-    /// Mirrors `capability_flags` in `ConfigIdentity`. Protocol-relevant only.
+    /// Mirrors `capability_flags` in `ConfigCommon`. Protocol-relevant only.
     #[derive(Copy, Clone, Debug, Default)]
     pub struct Capabilities: u32 {
         const HAS_MOTOR_ENCODER = 1 << 0;

@@ -5,6 +5,7 @@
 use heapless::Vec;
 
 use osc_protocol::FrameBytes;
+use osc_protocol::table::STATUS_FLAG_CONFIG_DIRTY;
 use osc_protocol::wire::{MgmtOp, ResultCode};
 
 use crate::regions::CONTROL_BASE_ADDR;
@@ -146,8 +147,8 @@ fn enable_torque(shared: &Shared) {
 fn ping_replies_model_and_firmware() {
     let shared = Shared::new();
     shared.table.with_mut(|t| {
-        t.config.identity.model_number = 0x1234;
-        t.config.identity.firmware_version = 0x56;
+        t.config.common.model_number = 0x1234;
+        t.config.common.firmware_version = 0x56;
     });
     let mut staged = StagedWrites::new();
     let reply = go(&shared, &mut staged, Request::Ping, true);
@@ -171,7 +172,7 @@ fn read_returns_table_slice() {
     let shared = Shared::new();
     shared
         .table
-        .with_mut(|t| t.config.identity.model_number = 0xABCD);
+        .with_mut(|t| t.config.common.model_number = 0xABCD);
     let mut staged = StagedWrites::new();
     let reply = go(
         &shared,
@@ -264,10 +265,10 @@ use crate::regions::profile::span_word;
 
 /// Slot 0 -> two spans: model_number (2 B at 0x000) and comms id (1 B).
 fn seed_profile_slot0(shared: &Shared) {
-    use crate::regions::config::addr::comms::ID;
+    use crate::regions::config::addr::common::ID;
     shared.table.with_mut(|t| {
-        t.config.identity.model_number = 0xABCD;
-        t.config.comms.id = 7;
+        t.config.common.model_number = 0xABCD;
+        t.config.common.id = 7;
         t.profile.slots.words[0] = span_word(0, 2);
         t.profile.slots.words[1] = span_word(ID, 1);
     });
@@ -288,7 +289,7 @@ fn profile_read_gathers_spans_in_order() {
 fn profile_read_skips_disabled_words() {
     let shared = Shared::new();
     shared.table.with_mut(|t| {
-        t.config.identity.model_number = 0xABCD;
+        t.config.common.model_number = 0xABCD;
         // Hole at word 0 and word 2: disabled words are skipped, not
         // terminators (sec 5.2).
         t.profile.slots.words[1] = span_word(0, 1);
@@ -401,7 +402,7 @@ fn write_validation_reject_maps_to_validation() {
 /// torque-gated -- only MGMT SAVE is.
 #[test]
 fn write_config_allowed_with_torque_on() {
-    use crate::regions::config::addr::comms::ID;
+    use crate::regions::config::addr::common::ID;
     let shared = Shared::new();
     enable_torque(&shared);
     let mut staged = StagedWrites::new();
@@ -416,7 +417,7 @@ fn write_config_allowed_with_torque_on() {
         true,
     );
     assert_eq!(reply.last().result, ResultCode::Ok);
-    assert_eq!(shared.table.with(|t| t.config.comms.id), 5);
+    assert_eq!(shared.table.with(|t| t.config.common.id), 5);
     assert_eq!(reply.staged_id, Some(5));
 }
 
@@ -440,7 +441,7 @@ fn write_applies_even_when_may_reply_false() {
 
 #[test]
 fn write_id_stages_via_reply() {
-    use crate::regions::config::addr::comms::ID;
+    use crate::regions::config::addr::common::ID;
     let shared = Shared::new();
     let mut staged = StagedWrites::new();
     let reply = go(
@@ -459,7 +460,7 @@ fn write_id_stages_via_reply() {
 
 #[test]
 fn write_baud_stages_via_reply() {
-    use crate::regions::config::addr::comms::BAUD_RATE_IDX;
+    use crate::regions::config::addr::common::BAUD_RATE_IDX;
     let shared = Shared::new();
     let mut staged = StagedWrites::new();
     let reply = go(
@@ -478,7 +479,7 @@ fn write_baud_stages_via_reply() {
 
 #[test]
 fn write_response_deadline_sets_via_reply() {
-    use crate::regions::config::addr::comms::RESPONSE_DEADLINE_US;
+    use crate::regions::config::addr::common::RESPONSE_DEADLINE_US;
     let shared = Shared::new();
     let mut staged = StagedWrites::new();
     let reply = go(
@@ -653,7 +654,9 @@ fn mgmt_req(op: MgmtOp) -> Request<'static> {
 }
 
 fn dirty(shared: &Shared) -> u8 {
-    shared.table.with(|t| t.telemetry.fault.config_dirty)
+    shared
+        .table
+        .with(|t| t.telemetry.common.status_flags & STATUS_FLAG_CONFIG_DIRTY)
 }
 
 /// CRC fingerprint of the live persisted regions, mirroring FakeStore::save.
@@ -684,7 +687,7 @@ fn write_at(shared: &Shared, staged: &mut StagedWrites, addr: u16, data: &[u8]) 
 
 #[test]
 fn save_streams_the_table_and_acks_after() {
-    use crate::regions::config::addr::comms::RESPONSE_DEADLINE_US;
+    use crate::regions::config::addr::common::RESPONSE_DEADLINE_US;
     static STORE: FakeStore = FakeStore::new();
     let shared = Shared::new();
     shared.seed_store(&STORE);
@@ -723,7 +726,7 @@ fn save_with_torque_on_nacks_access() {
 
 #[test]
 fn save_store_failure_nacks_hardware_and_stays_dirty() {
-    use crate::regions::config::addr::comms::RESPONSE_DEADLINE_US;
+    use crate::regions::config::addr::common::RESPONSE_DEADLINE_US;
     static STORE: FakeStore = FakeStore::new();
     STORE.fail.store(true, Ordering::Relaxed);
     let shared = Shared::new();
@@ -799,7 +802,7 @@ fn factory_wipe_failure_nacks_hardware_without_reboot() {
 #[test]
 fn dirty_bit_tracks_persistent_regions_only() {
     use crate::regions::PROFILE_BASE_ADDR;
-    use crate::regions::config::addr::comms::RESPONSE_DEADLINE_US;
+    use crate::regions::config::addr::common::RESPONSE_DEADLINE_US;
     static STORE: FakeStore = FakeStore::new();
     let shared = Shared::new();
     shared.seed_store(&STORE);
@@ -828,7 +831,7 @@ fn dirty_bit_tracks_persistent_regions_only() {
 
 #[test]
 fn held_write_marks_dirty_at_commit_not_before() {
-    use crate::regions::config::addr::comms::RESPONSE_DEADLINE_US;
+    use crate::regions::config::addr::common::RESPONSE_DEADLINE_US;
     let shared = Shared::new();
     let mut staged = StagedWrites::new();
     let reply = go(
@@ -928,7 +931,7 @@ fn assign_matching_uid_sets_id_before_ack() {
     assert_eq!(reply.staged_id, None, "immediate, not deferred");
     // Mirrored into the config table so a later SAVE persists it -- which
     // also marks modified-since-save (sec 9.4).
-    assert_eq!(shared.table.with(|t| t.config.comms.id), 42);
+    assert_eq!(shared.table.with(|t| t.config.common.id), 42);
     assert_eq!(dirty(&shared), 1);
 }
 
@@ -936,7 +939,7 @@ fn assign_matching_uid_sets_id_before_ack() {
 fn assign_foreign_uid_is_silent_and_inert() {
     let shared = shared_with_uid();
     let mut staged = StagedWrites::new();
-    let before = shared.table.with(|t| t.config.comms.id);
+    let before = shared.table.with(|t| t.config.common.id);
     let mut uid = UID;
     uid[15] ^= 0x80;
     let reply = go(
@@ -947,7 +950,7 @@ fn assign_foreign_uid_is_silent_and_inert() {
     );
     assert_eq!(reply.count(), 0);
     assert_eq!(reply.set_id, None);
-    assert_eq!(shared.table.with(|t| t.config.comms.id), before);
+    assert_eq!(shared.table.with(|t| t.config.common.id), before);
 }
 
 #[test]
@@ -984,7 +987,7 @@ fn assign_noreply_still_applies() {
     );
     assert_eq!(reply.count(), 0);
     assert_eq!(reply.set_id, Some((9, 0)));
-    assert_eq!(shared.table.with(|t| t.config.comms.id), 9);
+    assert_eq!(shared.table.with(|t| t.config.common.id), 9);
 }
 
 // --- Unsupported ----------------------------------------------------------
@@ -1012,7 +1015,7 @@ fn alert_bit_set_when_fault_flags_nonzero() {
     let shared = Shared::new();
     shared
         .table
-        .with_mut(|t| t.telemetry.fault.fault_flags = 0x04);
+        .with_mut(|t| t.telemetry.common.fault_flags = 0x04);
     let mut staged = StagedWrites::new();
     let reply = go(&shared, &mut staged, Request::Ping, true);
     assert!(reply.last().alert);
@@ -1237,7 +1240,7 @@ fn held_write_keeps_entries_through_its_verdict() {
 
 #[test]
 fn hooks_fire_on_write_commit() {
-    use crate::regions::config::addr::comms::ID;
+    use crate::regions::config::addr::common::ID;
     let shared = Shared::new();
     let mut staged = StagedWrites::new();
     let mut pending = None;
@@ -1258,7 +1261,7 @@ fn hooks_fire_on_write_commit() {
 #[test]
 fn hooks_fire_on_real_commit() {
     // A real COMMIT of a held hooked field fires its hook.
-    use crate::regions::config::addr::comms::ID;
+    use crate::regions::config::addr::common::ID;
     let shared = Shared::new();
     let mut staged = StagedWrites::new();
     let mut pending = None;

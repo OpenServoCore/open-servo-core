@@ -6,7 +6,7 @@
 use osc_protocol::reply::FrameBuf;
 use osc_protocol::wire::{self, Id, Inst, MgmtOp, Opcode, ResultCode};
 use osc_servo_core::regions::CONTROL_BASE_ADDR;
-use osc_servo_core::regions::config::addr::comms::ID as ID_ADDR;
+use osc_servo_core::regions::config::addr::common::ID as ID_ADDR;
 use osc_servo_core::{BaudRate, Dispatch, RegionStorage, Session, Shared};
 
 use crate::mocks::bus::{FakeWire, Harness, RING_LEN, WireEvent};
@@ -20,8 +20,8 @@ const REPLY_GAP: u32 = 12;
 fn shared_seeded() -> Shared {
     let shared = Shared::new();
     shared.table.with_mut(|t| {
-        t.config.identity.model_number = 0x1234;
-        t.config.identity.firmware_version = 0x56;
+        t.config.common.model_number = 0x1234;
+        t.config.common.firmware_version = 0x56;
     });
     shared
 }

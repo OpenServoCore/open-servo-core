@@ -16,7 +16,7 @@ use bench::osc::{
 };
 use bench::{BOOT_BAUD, baud_index};
 use osc_protocol::wire::{Id, ResultCode};
-use osc_servo_core::regions::config::addr::comms::BAUD_RATE_IDX;
+use osc_servo_core::regions::config::addr::common::BAUD_RATE_IDX;
 use serial_test::serial;
 
 use crate::support::bench;

@@ -4,7 +4,8 @@
 
 # Workspace lock files (not committed for lib workspaces)
 lib/Cargo.lock
-ch32/Cargo.lock
+servo-ch32/Cargo.lock
+host-ch32/Cargo.lock
 
 # Rust-analyzer
 /rust-project.json

@@ -2,6 +2,7 @@ use control_table::{RegisterFile, Snapshot};
 use heapless::Vec;
 use osc_protocol::FrameBytes;
 use osc_protocol::frame::uid_prefix_matches;
+use osc_protocol::table::STATUS_FLAG_CONFIG_DIRTY;
 use osc_protocol::wire::{Id, MAX_PAYLOAD, MgmtOp, ResultCode, UID_LEN};
 
 use crate::persist::{CONFIG_LEN, PROFILE_LEN, StoreError};
@@ -77,7 +78,7 @@ impl<'a> Dispatcher<'a> {
     fn alert(&self) -> bool {
         self.shared
             .table
-            .with(|t| t.telemetry.fault.fault_flags != 0)
+            .with(|t| t.telemetry.common.fault_flags != 0)
     }
 }
 
@@ -203,7 +204,7 @@ impl Dispatcher<'_> {
         if hits {
             self.shared
                 .table
-                .with_mut(|t| t.telemetry.fault.config_dirty = 1);
+                .with_mut(|t| t.telemetry.common.status_flags |= STATUS_FLAG_CONFIG_DIRTY);
         }
     }
 
@@ -225,12 +226,12 @@ impl Dispatcher<'_> {
         if !ctx.may_reply {
             return;
         }
-        // model_number + firmware_version are contiguous at the identity base:
+        // model_number + firmware_version are contiguous at the common-block front:
         // reply straight from the table so the TX engine streams in place (a
         // stack copy would force the slow copy-stage path).
         let data = RegisterFile::read(
             &self.shared.table,
-            crate::regions::config::addr::identity::MODEL_NUMBER,
+            crate::regions::config::addr::common::MODEL_NUMBER,
             3,
         )
         .unwrap_or(&[]);
@@ -460,8 +461,8 @@ impl Dispatcher<'_> {
             return Self::ack(alert, ctx, Err(e), reply);
         }
         self.shared.table.with_mut(|t| {
-            t.config.comms.id = new_id;
-            t.telemetry.fault.config_dirty = 1;
+            t.config.common.id = new_id;
+            t.telemetry.common.status_flags |= STATUS_FLAG_CONFIG_DIRTY;
         });
         reply.set_id(new_id);
         Self::ack(alert, ctx, Ok(()), reply);
@@ -501,7 +502,7 @@ impl Dispatcher<'_> {
             Ok(()) => {
                 self.shared
                     .table
-                    .with_mut(|t| t.telemetry.fault.config_dirty = 0);
+                    .with_mut(|t| t.telemetry.common.status_flags &= !STATUS_FLAG_CONFIG_DIRTY);
                 ResultCode::Ok
             }
             Err(StoreError) => ResultCode::Hardware,
