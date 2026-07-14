@@ -39,6 +39,7 @@ impl traits::TxWire for TxWire {
                 circ: false,
                 minc: true,
                 pl: dma::Pl::HIGH,
+                size: dma::Size::BITS8,
             },
             usart::data_addr(USART3),
             span.as_ptr() as u32,

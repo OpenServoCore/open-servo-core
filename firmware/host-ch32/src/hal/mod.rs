@@ -7,5 +7,6 @@ pub mod gpio;
 pub mod pfic;
 pub mod rcc;
 pub mod systick;
+pub mod tim2cap;
 pub mod usart;
 pub mod usbhs;
