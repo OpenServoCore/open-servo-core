@@ -10,7 +10,7 @@ use crate::client::{Chain, Ping, Reply};
 use crate::common::{self, Health, Identity};
 use crate::cyclic::Cycle;
 use crate::error::Error;
-use crate::mgmt::{self, CalTrace, Uid};
+use crate::mgmt::{self, CalTrace, Found, Uid};
 use crate::pipe::Pipe;
 use crate::session::LinkInfo;
 use crate::wire::EdgeDrain;
@@ -138,8 +138,16 @@ impl<P: Pipe> Client<P> {
         block_on(self.0.reset_capture())
     }
 
-    pub fn discover(&mut self) -> Result<Vec<Uid>, Error> {
+    pub fn discover(&mut self) -> Result<Vec<Found>, Error> {
         block_on(mgmt::discover(&mut self.0))
+    }
+
+    pub fn bus_present(&mut self) -> Result<bool, Error> {
+        block_on(mgmt::bus_present(&mut self.0))
+    }
+
+    pub fn find_bus_baud(&mut self) -> Result<Option<BaudRate>, Error> {
+        block_on(mgmt::find_bus_baud(&mut self.0))
     }
 
     pub fn assign(&mut self, uid: &Uid, new_id: Id) -> Result<(), Error> {
@@ -190,6 +198,10 @@ impl<P: Pipe> Client<P> {
 
     pub fn clear_counters(&mut self, id: Id) -> Result<(), Error> {
         block_on(common::clear_counters(&mut self.0, id))
+    }
+
+    pub fn read_profile(&mut self, id: Id, slot: u8) -> Result<Vec<u8>, Error> {
+        block_on(self.0.read_profile(id, slot))
     }
 
     pub fn gread_profile(&mut self, ids: &[Id], slot: u8) -> Result<Chain, Error> {

@@ -40,13 +40,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!("discover: walking...");
-    let uids = c.discover()?;
-    for uid in &uids {
-        println!("  uid {uid:?}");
+    let found = c.discover()?;
+    for f in &found {
+        println!("  id {:<3} uid {:?}", f.id.as_byte(), f.uid);
     }
     println!(
         "discover: {} servos found vs {} pinged",
-        uids.len(),
+        found.len(),
         fleet.len()
     );
     Ok(())

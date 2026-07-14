@@ -8,7 +8,7 @@ use osc_client::blocking::Client;
 use osc_client::common::{Health, Identity};
 use osc_client::cyclic::{Cycle, Group, Telemetry};
 use osc_client::fake::FakePipe;
-use osc_client::mgmt::Uid;
+use osc_client::mgmt::{Found, Uid};
 use osc_client::{BaudRate, Error, Id, LinkError, RejectReason};
 use osc_protocol::table;
 use osc_protocol::wire::UID_LEN;
@@ -148,7 +148,7 @@ fn cal_trains_complete_and_stay_wire_invisible() {
 }
 
 #[test]
-fn discover_walks_out_every_uid() {
+fn discover_walks_out_every_uid_with_its_id() {
     let mut c = fleet(&[1, 2, 3]);
     let mut want = Vec::new();
     for (i, seed) in [0x11u8, 0x2E, 0x93].into_iter().enumerate() {
@@ -156,11 +156,29 @@ fn discover_walks_out_every_uid() {
         uid[0] = seed;
         uid[5] = 0xC0 | i as u8;
         c.pipe_mut().sim_mut().seed_servo_uid(i, uid);
-        want.push(Uid(uid));
+        want.push(Found {
+            uid: Uid(uid),
+            id: Id::new(i as u8 + 1),
+        });
     }
-    want.sort();
+    want.sort_by_key(|f| f.uid);
     let found = c.discover().expect("discover");
     assert_eq!(found, want);
+}
+
+#[test]
+fn find_bus_baud_follows_the_fleet() {
+    let mut c = fleet(&[1, 2]);
+    assert_eq!(
+        c.find_bus_baud().expect("probe at boot"),
+        Some(BaudRate::B1000000)
+    );
+    let roster = c.set_baud(&[Id::new(1), Id::new(2)], BaudRate::B3000000);
+    assert!(roster.expect("migrate").iter().all(|&(_, alive)| alive));
+    assert_eq!(
+        c.find_bus_baud().expect("probe after migration"),
+        Some(BaudRate::B3000000)
+    );
 }
 
 #[test]
@@ -353,6 +371,9 @@ fn cycle_profile_telemetry_streams_the_slot() {
     };
     assert_eq!(status.payload.len(), 6);
     assert_eq!(&status.payload[..4], &goal);
+    // The single-target PROFILE read streams the same slot.
+    let direct = c.read_profile(Id::new(5), 0).expect("read_profile");
+    assert_eq!(direct, status.payload);
 }
 
 // --- wire instrument (0x6x family) ---
