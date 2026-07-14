@@ -9,16 +9,16 @@ use anyhow::{Context, Result, bail};
 use bench::cli::{SETTLE_MS, parse_hex, parse_span, parse_u16};
 use bench::discover::{EnumOutcome, enum_query, find_bus_baud, walk};
 use bench::osc::{
-    PROFILE_SPANS_PER_SLOT, REBOOT_SETTLE_MS, RESCUE_PULSE_US, SAVE_SETTLE_MS, StatusFrame,
-    build_assign, build_cal, build_factory, build_ping, build_profile_config, build_read,
-    build_read_profile, build_reboot, build_save, build_write, profile_slot_addr,
-    profile_span_split,
+    REBOOT_SETTLE_MS, RESCUE_PULSE_US, SAVE_SETTLE_MS, StatusFrame, build_assign, build_cal,
+    build_factory, build_ping, build_profile_config, build_read, build_read_profile, build_reboot,
+    build_save, build_write,
 };
 use bench::run::xfer;
 use bench::wire::Wire;
 use bench::{RESCUE_BAUD, SUPPORTED_BAUDS, baud_index};
 use clap::{Parser, Subcommand};
 use osc_protocol::table::{BAUD_RATE_IDX, TRIM_STEPS};
+use osc_protocol::table::{PROFILE_SPANS_PER_SLOT, profile_slot_addr, profile_span_split};
 use osc_protocol::wire::{ResultCode, UID_LEN};
 
 #[derive(Parser, Debug)]

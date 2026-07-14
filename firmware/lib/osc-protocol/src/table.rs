@@ -40,3 +40,50 @@ pub const FRAMING_DROP_COUNT: u16 = 0x208;
 
 /// `STATUS_FLAGS` bit 0: modified-since-save (sec 9.4).
 pub const STATUS_FLAG_CONFIG_DIRTY: u8 = 1 << 0;
+
+/// PROFILE region span (sec 5.2, pinned by sec 5.4): read-profile slots.
+pub const PROFILE_START: u16 = 0x280;
+/// Exclusive end.
+pub const PROFILE_END: u16 = 0x2C0;
+
+/// Slots in the region.
+pub const PROFILE_SLOTS: u8 = 4;
+/// Span words per slot.
+pub const PROFILE_SPANS_PER_SLOT: usize = 8;
+
+/// Pack a span word `[addr:10][count:6]` (sec 5.2). `addr` caps at 10 bits
+/// (1023), `count` at 6 bits (63); `count = 0` disables the word.
+pub const fn profile_span_word(addr: u16, count: u8) -> u16 {
+    (addr << 6) | (count as u16 & 0x3F)
+}
+
+/// Split a packed span word back into `(addr, count)`.
+pub const fn profile_span_split(word: u16) -> (u16, u8) {
+    (word >> 6, (word & 0x3F) as u8)
+}
+
+/// Table byte address of `slot`'s first span word.
+pub const fn profile_slot_addr(slot: u8) -> u16 {
+    PROFILE_START + slot as u16 * (PROFILE_SPANS_PER_SLOT as u16 * 2)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn profile_span_word_round_trips() {
+        assert_eq!(
+            profile_span_split(profile_span_word(0x208, 63)),
+            (0x208, 63)
+        );
+        assert_eq!(profile_span_split(profile_span_word(1023, 1)), (1023, 1));
+        assert_eq!(profile_span_split(profile_span_word(0x200, 0)), (0x200, 0));
+    }
+
+    #[test]
+    fn profile_slots_tile_the_region_exactly() {
+        assert_eq!(profile_slot_addr(0), PROFILE_START);
+        assert_eq!(profile_slot_addr(PROFILE_SLOTS), PROFILE_END);
+    }
+}
