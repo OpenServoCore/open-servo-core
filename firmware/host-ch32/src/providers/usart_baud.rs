@@ -16,6 +16,12 @@ impl osc_host::traits::UsartBaud for UsartBaud {
     fn apply(&mut self, baud: BaudRate) {
         usart::set_baud(USART3, brr_for(baud));
     }
+
+    fn apply_raw(&mut self, bps: u32) {
+        // Rounded divisor, floored at the USARTDIV >= 1 silicon minimum
+        // (BRR >= 16 at 16x oversampling).
+        usart::set_baud(USART3, ((PCLK1_HZ + bps / 2) / bps).max(16));
+    }
 }
 
 pub const fn brr_for(baud: BaudRate) -> u32 {

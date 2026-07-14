@@ -191,6 +191,22 @@ impl UsartBaud for HostUsart {
     fn apply(&mut self, baud: BaudRate) {
         self.0.apply(baud);
     }
+
+    fn apply_raw(&mut self, bps: u32) {
+        // The sim's waveform machinery is catalog-rate-quantized; an
+        // off-catalog divisor models as the nearest rate (sub-percent
+        // detunes are silicon-only physics).
+        let nearest = [
+            BaudRate::B500000,
+            BaudRate::B1000000,
+            BaudRate::B2000000,
+            BaudRate::B3000000,
+        ]
+        .into_iter()
+        .min_by_key(|r| r.as_hz().abs_diff(bps))
+        .unwrap_or_default();
+        self.0.apply(nearest);
+    }
 }
 
 /// Edge capture has no sim model (hardware-stamped pin transitions are

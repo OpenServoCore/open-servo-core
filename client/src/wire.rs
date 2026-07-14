@@ -82,6 +82,35 @@ impl<P: Pipe> Client<P> {
         self.await_wire_done(seq).await
     }
 
+    /// `announce` as a break-framed frame, then `breaks` bare law breaks
+    /// spaced `gap_us` apart on the adapter's crystal grid. The gap is
+    /// deliberately decoupled from the announce payload -- a lying CAL
+    /// announce injects a known clock-offset reading (protocol sec 9.3
+    /// trains through the engine always pace what they announce).
+    pub async fn wire_train(
+        &mut self,
+        announce: &[u8],
+        gap_us: u16,
+        breaks: u8,
+    ) -> Result<u32, Error> {
+        let mut out = Vec::new();
+        let seq = self
+            .session
+            .encode_wire_train(&mut out, announce, gap_us, breaks);
+        self.pipe.send(&out).await?;
+        self.await_wire_done(seq).await
+    }
+
+    /// Arbitrary host UART rate, raw bps -- off-catalog divisors allowed
+    /// (a detuned host is the clock-tracker's drift injector). Catalog
+    /// rate changes belong to [`Client::host_baud`].
+    pub async fn wire_baud(&mut self, bps: u32) -> Result<u32, Error> {
+        let mut out = Vec::new();
+        let seq = self.session.encode_wire_baud(&mut out, bps);
+        self.pipe.send(&out).await?;
+        self.await_wire_done(seq).await
+    }
+
     /// One capture drain (up to the adapter's per-polarity cap; loop until
     /// empty to exhaust a backlog).
     pub async fn drain_edges(&mut self) -> Result<EdgeDrain, Error> {

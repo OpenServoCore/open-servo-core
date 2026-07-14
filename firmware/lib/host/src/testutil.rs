@@ -140,17 +140,28 @@ impl traits::TxWire for FakeWire {
 }
 
 #[derive(Clone, Default)]
-pub struct FakeBaud(Rc<RefCell<Vec<BaudRate>>>);
+pub struct FakeBaud {
+    applied: Rc<RefCell<Vec<BaudRate>>>,
+    raw: Rc<RefCell<Vec<u32>>>,
+}
 
 impl FakeBaud {
     pub fn applied(&self) -> Vec<BaudRate> {
-        self.0.borrow().clone()
+        self.applied.borrow().clone()
+    }
+
+    pub fn applied_raw(&self) -> Vec<u32> {
+        self.raw.borrow().clone()
     }
 }
 
 impl traits::UsartBaud for FakeBaud {
     fn apply(&mut self, baud: BaudRate) {
-        self.0.borrow_mut().push(baud);
+        self.applied.borrow_mut().push(baud);
+    }
+
+    fn apply_raw(&mut self, bps: u32) {
+        self.raw.borrow_mut().push(bps);
     }
 }
 

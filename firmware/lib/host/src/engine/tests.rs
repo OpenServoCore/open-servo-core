@@ -581,3 +581,82 @@ fn malformed_wire_ops_reject_without_touching_the_wire() {
     ));
     assert!(r.wire.log().is_empty(), "nothing reached the wire");
 }
+
+#[test]
+fn wire_train_paces_breaks_on_the_grid_after_the_announce() {
+    let mut r = rig();
+    // Announce says 392, the wire paces 400: the lying-train injector the
+    // engine's own CAL path cannot express.
+    let mut p = [0u8; 8];
+    let n = build::mgmt_cal(&mut p, 392, 3).unwrap();
+    r.bus.wire_train(&p[..n], 400, 4).unwrap();
+    assert_eq!(r.wire.log()[..2], [WireOp::Claim, WireOp::Break]);
+    assert!(r.bus.poll().is_none(), "announce still in flight");
+
+    // The announce's TC anchors the grid.
+    r.bus.on_tx_complete();
+    let mut grid = Vec::new();
+    for _ in 0..4 {
+        grid.push(r.clock.armed().expect("train slot armed"));
+        r.bus.on_deadline();
+    }
+    assert_eq!(grid, vec![400, 800, 1200, 1600]);
+
+    let breaks = r
+        .wire
+        .log()
+        .iter()
+        .filter(|op| **op == WireOp::Break)
+        .count();
+    assert_eq!(breaks, 5, "announce break + 4 train breaks");
+    assert_eq!(*r.wire.log().last().unwrap(), WireOp::Release);
+    let _ = expect_wire_done(&mut r);
+}
+
+#[test]
+fn wire_train_rejects_empty_and_busy() {
+    let mut r = rig();
+    assert!(matches!(
+        r.bus.wire_train(&[], 400, 4),
+        Err(SubmitError::Invalid(_))
+    ));
+    assert!(matches!(
+        r.bus.wire_train(&[0xFE], 0, 4),
+        Err(SubmitError::Invalid(_))
+    ));
+    assert!(matches!(
+        r.bus.wire_train(&[0xFE], 400, 0),
+        Err(SubmitError::Invalid(_))
+    ));
+    r.bus.wire_send(&[0x55]).unwrap();
+    assert_eq!(r.bus.wire_train(&[0xFE], 400, 4), Err(SubmitError::Busy));
+}
+
+#[test]
+fn wire_baud_applies_raw_and_completes_immediately() {
+    let mut r = rig();
+    // One BRR step off 1M -- the tracker's host-detune probe rate.
+    r.bus.wire_baud(993_103).unwrap();
+    assert_eq!(r.baud.applied_raw(), vec![993_103]);
+    let _ = expect_wire_done(&mut r);
+
+    // Off-catalog rates park the engine's timing state on the nearest
+    // catalog rate, and the change paces like any baud change.
+    let (id, inst) = ping(5);
+    r.bus
+        .submit(Command::Exchange {
+            id,
+            inst,
+            payload: &[],
+        })
+        .unwrap();
+    assert!(r.wire.log().is_empty(), "paced after the rate change");
+}
+
+#[test]
+fn wire_baud_rejects_zero_and_busy() {
+    let mut r = rig();
+    assert!(matches!(r.bus.wire_baud(0), Err(SubmitError::Invalid(_))));
+    r.bus.wire_send(&[0x55]).unwrap();
+    assert_eq!(r.bus.wire_baud(1_000_000), Err(SubmitError::Busy));
+}

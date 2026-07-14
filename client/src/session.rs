@@ -150,6 +150,25 @@ impl Session {
         self.encode_wire_op(out, rec::REC_WIRE_PULSE, &us.to_le_bytes())
     }
 
+    /// Encode a break train: announce frame + `breaks` bare law breaks
+    /// `gap_us` apart on the adapter's deadline grid.
+    pub fn encode_wire_train(
+        &mut self,
+        out: &mut Vec<u8>,
+        announce: &[u8],
+        gap_us: u16,
+        breaks: u8,
+    ) -> u16 {
+        let mut body = gap_us.to_le_bytes().to_vec();
+        body.push(breaks);
+        body.extend_from_slice(announce);
+        self.encode_wire_op(out, rec::REC_WIRE_TRAIN, &body)
+    }
+
+    pub fn encode_wire_baud(&mut self, out: &mut Vec<u8>, bps: u32) -> u16 {
+        self.encode_wire_op(out, rec::REC_WIRE_BAUD, &bps.to_le_bytes())
+    }
+
     fn encode_wire_op(&mut self, out: &mut Vec<u8>, rtype: u8, body: &[u8]) -> u16 {
         let seq = self.alloc_seq();
         let mut rec = vec![rtype, seq as u8, (seq >> 8) as u8];

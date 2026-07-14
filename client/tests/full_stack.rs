@@ -429,3 +429,28 @@ fn edge_drain_and_reset_round_trip() {
     let drain = c.drain_edges().expect("drain after reset");
     assert!(drain.edges.is_empty());
 }
+
+#[test]
+fn wire_train_and_raw_baud_round_trip() {
+    let mut c = fleet(&[5]);
+    // A truthful CAL announce via the raw train: MGMT CAL 400us x 3 gaps.
+    let mut p = [0u8; 8];
+    let n = osc_protocol::build::mgmt_cal(&mut p, 400, 3).expect("cal payload");
+    let announce = {
+        // Frame it as wire bytes: the raw verb takes the whole frame.
+        let mut f = vec![0xFE, (n + 3) as u8, 0x70];
+        f.extend_from_slice(&p[..n]);
+        let crc = osc_protocol::crc::osc_crc(&f);
+        f.extend_from_slice(&crc.to_le_bytes());
+        f
+    };
+    c.wire_train(&announce, 400, 4).expect("train");
+
+    // Raw baud: one BRR step off 1M models as the nearest catalog rate in
+    // the sim; the verb completes and the engine stays healthy.
+    c.wire_baud(993_103).expect("detune");
+    c.pause(std::time::Duration::from_millis(2));
+    let ping = c.ping(Id::new(5)).expect("ping after detune");
+    assert!(ping.model > 0);
+    c.wire_baud(1_000_000).expect("restore");
+}

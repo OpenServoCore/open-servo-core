@@ -122,6 +122,14 @@ impl<P: Pipe> Client<P> {
         block_on(self.0.wire_pulse_low(us))
     }
 
+    pub fn wire_train(&mut self, announce: &[u8], gap_us: u16, breaks: u8) -> Result<u32, Error> {
+        block_on(self.0.wire_train(announce, gap_us, breaks))
+    }
+
+    pub fn wire_baud(&mut self, bps: u32) -> Result<u32, Error> {
+        block_on(self.0.wire_baud(bps))
+    }
+
     pub fn drain_edges(&mut self) -> Result<EdgeDrain, Error> {
         block_on(self.0.drain_edges())
     }
