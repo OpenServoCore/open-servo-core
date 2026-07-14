@@ -24,3 +24,7 @@ osc-integration = { path = "../firmware/lib/integration", optional = true }
 [[example]]
 name = "fleet_smoke"
 required-features = ["nusb"]
+
+[[example]]
+name = "provision"
+required-features = ["nusb"]
