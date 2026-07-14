@@ -9,7 +9,7 @@ use osc_protocol::wire::{BaudRate, Id, Inst, Opcode, ResultCode, UID_LEN};
 
 use super::*;
 use crate::testutil::{
-    FakeBaud, FakeDeadline, FakeRing, FakeWire, TestProviders, WireOp, sealed_status,
+    FakeBaud, FakeDeadline, FakeEdges, FakeRing, FakeWire, TestProviders, WireOp, sealed_status,
 };
 
 struct Rig {
@@ -30,6 +30,7 @@ fn rig() -> Rig {
         clock.clone(),
         wire.clone(),
         baud.clone(),
+        FakeEdges::default(),
         BaudRate::B1000000,
     );
     Rig {
@@ -460,4 +461,123 @@ fn response_deadline_setting_stretches_the_window() {
     let _ = expect_status(&mut r);
     let t = expect_done(&mut r);
     assert_eq!(t.outcome, Outcome::Complete);
+}
+
+fn expect_wire_done(r: &mut Rig) -> u32 {
+    match r.bus.poll() {
+        Some(Event::WireDone { tick }) => tick,
+        other => panic!("expected WireDone, got {other:?}"),
+    }
+}
+
+#[test]
+fn wire_send_is_break_plus_raw_bytes_then_wire_done() {
+    let mut r = rig();
+    // Deliberately not a legal frame -- raw means raw.
+    r.bus.wire_send(&[0xDE, 0xAD]).unwrap();
+    let log = r.wire.log();
+    assert_eq!(log[0], WireOp::Claim);
+    assert_eq!(log[1], WireOp::Break);
+    assert_eq!(log[2], WireOp::Send(vec![0xDE, 0xAD]));
+    assert!(r.bus.poll().is_none(), "in flight until TC");
+
+    r.clock.advance(70);
+    r.bus.on_tx_complete();
+    assert_eq!(r.wire.log().last(), Some(&WireOp::Release));
+    assert_eq!(expect_wire_done(&mut r), 70, "tick = wire release moment");
+    assert!(r.bus.poll().is_none(), "consumed");
+}
+
+#[test]
+fn wire_burst_chains_frames_on_tc() {
+    let mut r = rig();
+    r.bus.wire_burst(&[2, 0xAA, 0xBB, 1, 0xCC]).unwrap();
+    let log = r.wire.log();
+    assert_eq!(
+        log,
+        vec![WireOp::Claim, WireOp::Break, WireOp::Send(vec![0xAA, 0xBB])]
+    );
+
+    r.bus.on_tx_complete();
+    let log = r.wire.log();
+    assert_eq!(&log[3..], &[WireOp::Break, WireOp::Send(vec![0xCC])]);
+    assert!(r.bus.poll().is_none(), "second frame still in flight");
+
+    r.bus.on_tx_complete();
+    assert_eq!(r.wire.log().last(), Some(&WireOp::Release));
+    let _ = expect_wire_done(&mut r);
+}
+
+#[test]
+fn wire_pulse_holds_low_until_its_deadline() {
+    let mut r = rig();
+    r.bus.wire_pulse_low(300).unwrap();
+    let log = r.wire.log();
+    assert_eq!(log, vec![WireOp::Claim, WireOp::HoldLow]);
+
+    r.clock.advance(299);
+    assert!(r.bus.poll().is_none(), "still held");
+    r.clock.advance(1);
+    let tick = expect_wire_done(&mut r);
+    assert_eq!(tick, 300);
+    assert_eq!(r.wire.log().last(), Some(&WireOp::Release));
+}
+
+#[test]
+fn wire_ops_and_commands_reject_each_other_as_busy() {
+    let mut r = rig();
+    r.bus.wire_send(&[0x55]).unwrap();
+    let (id, inst) = ping(1);
+    assert_eq!(
+        r.bus.submit(Command::Exchange {
+            id,
+            inst,
+            payload: &[]
+        }),
+        Err(SubmitError::Busy),
+        "command rejected while a wire op owns the wire"
+    );
+    assert_eq!(r.bus.wire_send(&[0x55]), Err(SubmitError::Busy));
+    r.bus.on_tx_complete();
+    assert_eq!(
+        r.bus.wire_pulse_low(10),
+        Err(SubmitError::Busy),
+        "unconsumed WireDone still owns the engine"
+    );
+    let _ = expect_wire_done(&mut r);
+    r.bus.wire_pulse_low(10).unwrap();
+
+    // And the mirror: a command in flight rejects wire ops.
+    let mut r = rig();
+    r.bus
+        .submit(Command::Exchange {
+            id,
+            inst,
+            payload: &[],
+        })
+        .unwrap();
+    assert_eq!(r.bus.wire_send(&[0x55]), Err(SubmitError::Busy));
+}
+
+#[test]
+fn malformed_wire_ops_reject_without_touching_the_wire() {
+    let mut r = rig();
+    assert!(matches!(r.bus.wire_send(&[]), Err(SubmitError::Invalid(_))));
+    assert!(matches!(
+        r.bus.wire_burst(&[]),
+        Err(SubmitError::Invalid(_))
+    ));
+    assert!(matches!(
+        r.bus.wire_burst(&[0]),
+        Err(SubmitError::Invalid(_)),
+    ));
+    assert!(matches!(
+        r.bus.wire_burst(&[3, 0xAA]),
+        Err(SubmitError::Invalid(_)),
+    ));
+    assert!(matches!(
+        r.bus.wire_pulse_low(0),
+        Err(SubmitError::Invalid(_))
+    ));
+    assert!(r.wire.log().is_empty(), "nothing reached the wire");
 }

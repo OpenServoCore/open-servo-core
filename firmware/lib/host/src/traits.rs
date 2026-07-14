@@ -55,12 +55,35 @@ pub trait UsartBaud {
     fn apply(&mut self, baud: BaudRate);
 }
 
+/// Timestamped wire-edge capture, the adapter-as-instrument organ: both
+/// polarities of every wire transition, hardware-stamped on the `Deadline`
+/// tick domain's low 16 bits, captured continuously from boot (never
+/// re-armed -- re-arming mangles captures, linke-edgecap spike). Drains
+/// are consumer-paced like the rest of the instrument surface; a ring lap
+/// between drains sets the sticky overflow flag rather than lying.
+///
+/// Capture-fidelity contract the PC decoder must honor (spike-measured):
+/// data-region edges are exact; break edges are not captured faithfully
+/// (phantoms inside the break span, break fall never present), so frames
+/// anchor on their byte-0 start fall and break geometry is law-derived.
+pub trait EdgeCapture {
+    /// Pop up to `buf.len()` falling-edge ticks in capture order.
+    fn drain_falls(&mut self, buf: &mut [u16]) -> usize;
+    /// Pop up to `buf.len()` rising-edge ticks in capture order.
+    fn drain_rises(&mut self, buf: &mut [u16]) -> usize;
+    /// A ring lapped undrained captures since the last reset -- sticky.
+    fn overflow(&self) -> bool;
+    /// Drop unread captures and the overflow flag.
+    fn reset(&mut self);
+}
+
 /// Role bundle for the `HostBus` composite (driver-pattern sec 5.4).
 pub trait Providers {
     type Ring: RxRing;
     type Deadline: Deadline;
     type Tx: TxWire;
     type Baud: UsartBaud;
+    type Edges: EdgeCapture;
 }
 
 /// Wrap-aware "`a` is at or after `b`" on the u32 tick domain.

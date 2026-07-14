@@ -550,6 +550,9 @@ impl Sim {
                     });
                 }
                 Some(osc_host::engine::Event::Done(t)) => h.events.push(HostEvent::Done(t)),
+                Some(osc_host::engine::Event::WireDone { tick }) => {
+                    h.events.push(HostEvent::WireDone { tick })
+                }
                 None => return,
             }
         }

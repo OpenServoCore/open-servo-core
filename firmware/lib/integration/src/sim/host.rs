@@ -14,7 +14,7 @@ use std::rc::Rc;
 use std::vec::Vec;
 
 use osc_host::engine::{HostBus, Terminal};
-use osc_host::traits::{Deadline, Providers, RxRing, TxWire, UsartBaud};
+use osc_host::traits::{Deadline, EdgeCapture, Providers, RxRing, TxWire, UsartBaud};
 use osc_protocol::wire::BaudRate;
 use osc_servo_drivers::bus::RESCUE_LOW_US;
 
@@ -31,6 +31,10 @@ pub enum HostEvent {
         payload: Vec<u8>,
     },
     Done(Terminal),
+    /// An instrument wire op closed (raw send / burst / pulse).
+    WireDone {
+        tick: u32,
+    },
 }
 
 pub struct HostRing(pub Rc<RingState>);
@@ -186,6 +190,23 @@ impl UsartBaud for HostUsart {
     }
 }
 
+/// Edge capture has no sim model (hardware-stamped pin transitions are
+/// silicon-only by nature): drains answer empty, honestly.
+pub struct HostEdges;
+
+impl EdgeCapture for HostEdges {
+    fn drain_falls(&mut self, _buf: &mut [u16]) -> usize {
+        0
+    }
+    fn drain_rises(&mut self, _buf: &mut [u16]) -> usize {
+        0
+    }
+    fn overflow(&self) -> bool {
+        false
+    }
+    fn reset(&mut self) {}
+}
+
 /// Provider bundle for the sim-hosted engine.
 pub struct SimHostProviders;
 
@@ -194,6 +215,7 @@ impl Providers for SimHostProviders {
     type Deadline = HostDeadline;
     type Tx = HostWire;
     type Baud = HostUsart;
+    type Edges = HostEdges;
 }
 
 /// The attached host: the production engine plus the shared handles the
@@ -225,6 +247,7 @@ impl SimHost {
                 low_since: Cell::new(None),
             },
             HostUsart(baud.clone()),
+            HostEdges,
             rate,
         );
         Self {

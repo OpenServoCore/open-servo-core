@@ -16,8 +16,10 @@ use crate::engine::{Outcome, Terminal};
 /// Record type bytes. `0x00..=0x3F` client->adapter, `0x80..=0xBF`
 /// adapter->client. Reserved families: `0x40..=0x4F` firmware update
 /// (client->adapter `0x40..=0x47`, adapter->client `0x48..=0x4F`) and
-/// `0x60..=0x6F` bench (the IF1 personality; deliberate protocol-breaking
-/// lives only there).
+/// `0x60..=0x6F` the instrument family (client->adapter `0x60..=0x67`,
+/// adapter->client `0x68..=0x6F`) -- rails, raw wire verbs, edge-capture
+/// drains. Unconditional in every build; deliberate protocol-breaking
+/// lives only here, never in SUBMIT (whose Shape validation stands).
 pub const REC_HELLO: u8 = 0x00;
 pub const REC_SUBMIT: u8 = 0x01;
 /// Hand the adapter to the resident bootloader (the mandatory
@@ -32,6 +34,28 @@ pub const REC_ENTER_BOOTLOADER: u8 = 0x40;
 /// bit0 = 3V3 on, bit1 = 5V on -- absolute state, so queue last-wins is
 /// sound. Answered by [`REC_RAILS_ACK`] echoing the applied state.
 pub const REC_SET_RAILS: u8 = 0x60;
+/// Instrument raw TX: one law break + the body's raw bytes, engine command
+/// pipeline bypassed (no Shape validation -- malformed frames are the
+/// point). Body: `seq(2 LE) bytes(1..)`. Answered by [`REC_WIRE_DONE`] at
+/// wire release, or REJECTED (busy while a SUBMIT command or another wire
+/// op is outstanding, and vice versa -- one wire owner at a time).
+pub const REC_WIRE_SEND: u8 = 0x61;
+/// Instrument burst: length-prefixed frames fired back-to-back, each
+/// break-framed, chained on TC (gap = one TC service, under a character
+/// time at every operational baud). Body: `seq(2 LE) [len(1) bytes]+`.
+pub const REC_WIRE_BURST: u8 = 0x62;
+/// Instrument dominant-low pulse of arbitrary width (the engine's rescue
+/// verb owns the protocol-shaped pulse; this is the sweepable one).
+/// Body: `seq(2 LE) us(2 LE)`.
+pub const REC_WIRE_PULSE: u8 = 0x63;
+/// Drain captured wire edges (both polarities, capture order). Body:
+/// `max(1)` = per-ring entry cap, clamped to [`DRAIN_MAX`]. Answered by
+/// [`REC_EDGES`]. Consumer-paced: drain at least every few ms of wire
+/// activity or the overflow flag goes up (and stays, sticky).
+pub const REC_EDGE_DRAIN: u8 = 0x64;
+/// Drop undrained captures + the overflow flag. Answered by
+/// [`REC_CAPTURE_ACK`].
+pub const REC_CAPTURE_RESET: u8 = 0x65;
 pub const REC_INFO: u8 = 0x80;
 pub const REC_STATUS: u8 = 0x81;
 pub const REC_TERMINAL: u8 = 0x82;
@@ -40,6 +64,21 @@ pub const REC_REJECTED: u8 = 0x83;
 pub const REC_UNKNOWN: u8 = 0x84;
 pub const REC_BOOTLOADER_ACK: u8 = 0x48;
 pub const REC_RAILS_ACK: u8 = 0x68;
+/// A wire op (send/burst/pulse) finished. Body: `seq(2 LE) tick(4 LE)` --
+/// the wire-release engine tick.
+pub const REC_WIRE_DONE: u8 = 0x69;
+/// Edge drain reply. Body: `flags(1: bit0 overflow) now(4 LE)
+/// fall_n(1) rise_n(1) falls(fall_n x u16 LE) rises(rise_n x u16 LE)`.
+/// Edge ticks are the engine tick domain's low 16 bits; `now` is the
+/// 32-bit drain moment, the client's unwrap reference (unwrap ambiguity
+/// resets across gaps longer than one u16 wrap -- irrelevant within an
+/// exchange, which is all the instrument measures).
+pub const REC_EDGES: u8 = 0x6C;
+pub const REC_CAPTURE_ACK: u8 = 0x6D;
+
+/// Per-ring entry cap on one edge drain (keeps the reply inside the
+/// outbound scratch; the BBATCH-style polled-drain precedent).
+pub const DRAIN_MAX: usize = 64;
 
 /// SUBMIT verb byte (body: `seq(2 LE) verb(1) args`).
 pub const VERB_EXCHANGE: u8 = 0x00; // args: id(1) inst(1) payload(rest)
@@ -116,6 +155,38 @@ pub fn rails_ack(dst: &mut [u8], state: u8) -> &[u8] {
     dst[2] = REC_RAILS_ACK;
     dst[3] = state;
     sealed(dst, 2)
+}
+
+pub fn wire_done(dst: &mut [u8], seq: u16, tick: u32) -> &[u8] {
+    dst[2] = REC_WIRE_DONE;
+    dst[3..5].copy_from_slice(&seq.to_le_bytes());
+    dst[5..9].copy_from_slice(&tick.to_le_bytes());
+    sealed(dst, 7)
+}
+
+pub fn edges<'a>(
+    dst: &'a mut [u8],
+    overflow: bool,
+    now: u32,
+    falls: &[u16],
+    rises: &[u16],
+) -> &'a [u8] {
+    dst[2] = REC_EDGES;
+    dst[3] = overflow as u8;
+    dst[4..8].copy_from_slice(&now.to_le_bytes());
+    dst[8] = falls.len() as u8;
+    dst[9] = rises.len() as u8;
+    let mut at = 10;
+    for &t in falls.iter().chain(rises) {
+        dst[at..at + 2].copy_from_slice(&t.to_le_bytes());
+        at += 2;
+    }
+    sealed(dst, at - 2)
+}
+
+pub fn capture_ack(dst: &mut [u8]) -> &[u8] {
+    dst[2] = REC_CAPTURE_ACK;
+    sealed(dst, 1)
 }
 
 /// STATUS: `seq(2) slot(1) id(1) inst(1) payload`. The payload arrives as
