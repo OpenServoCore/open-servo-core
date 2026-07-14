@@ -1,0 +1,34 @@
+[workspace]
+resolver = "2"
+
+[package]
+name    = "osc-adapter-wchlinke"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name  = "osc-adapter-wchlinke"
+path  = "src/main.rs"
+test  = false
+bench = false
+
+[dependencies]
+osc-host-ch32 = { path = "../../host-ch32", features = ["rt"] }
+# Bleeding-edge: track ch32-rs/qingke main (V4 critical-section 0x88 mask).
+qingke        = { git = "https://github.com/ch32-rs/qingke.git", branch = "main", features = ["v4", "critical-section-impl"] }
+qingke-rt     = { git = "https://github.com/ch32-rs/qingke.git", branch = "main", features = ["v4"] }
+panic-halt    = "1"
+
+[profile.dev]
+opt-level     = 3
+lto           = true
+codegen-units = 1
+debug         = 2
+debug-assertions = false
+
+[profile.release]
+opt-level     = 3
+lto           = true
+codegen-units = 1
+panic         = "abort"
+debug         = 2
