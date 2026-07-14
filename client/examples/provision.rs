@@ -10,7 +10,7 @@
 //!   provision clear 1 2 3 4 5        zero the telemetry counters (rw-clear)
 //!   provision save 1 2 3 4 5         persist config, clears the dirty bit
 //!   provision reboot 1 2 3 4 5       MGMT REBOOT
-//!   provision cal 3 400 8            CAL trains; trim lands in `status`
+//!   provision cal 3 400 8 1 2 3 4 5  CAL trains + per-servo convergence trace
 //!   provision migrate 3 1 2 3 4 5    servo-first baud migration + reunion sweep
 //!   provision chain 50 1 2 3 4 5     GREAD chain soak, reports non-clean runs
 
@@ -72,27 +72,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         "status" => {
             for id in ids(rest)? {
-                let cfg = c.read(id, table::CONFIG_COMMON_START, 0x14)?;
-                let tel = c.read(id, table::TELEMETRY_COMMON_START, 0x0C)?;
+                let i = c.identity(id)?;
+                let h = c.health(id)?;
                 println!(
-                    "id {}: model {:#06x} fw {} hw {} cap {:#010x} | id {} baud_idx {} deadline {}us",
+                    "id {}: model {:#06x} fw {} hw {} cap {:#010x}",
                     id.as_byte(),
-                    u16::from_le_bytes([cfg[0], cfg[1]]),
-                    cfg[2],
-                    cfg[3],
-                    u32::from_le_bytes([cfg[4], cfg[5], cfg[6], cfg[7]]),
-                    cfg[0x10],
-                    cfg[0x11],
-                    u16::from_le_bytes([cfg[0x12], cfg[0x13]]),
+                    i.model,
+                    i.fw,
+                    i.hw,
+                    i.capabilities,
                 );
                 println!(
-                    "      fault {:#04x} status {:#04x} (dirty {}) trim {} | crc_fail {} framing_drop {}",
-                    tel[0],
-                    tel[1],
-                    (tel[1] & table::STATUS_FLAG_CONFIG_DIRTY) != 0,
-                    tel[2] as i8,
-                    u32::from_le_bytes([tel[4], tel[5], tel[6], tel[7]]),
-                    u32::from_le_bytes([tel[8], tel[9], tel[10], tel[11]]),
+                    "      fault {:#04x} dirty {} trim {} | crc_fail {} framing_drop {}",
+                    h.fault_flags,
+                    h.config_dirty,
+                    h.trim_steps,
+                    h.crc_fail_count,
+                    h.framing_drop_count,
                 );
             }
         }
@@ -104,8 +100,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         "clear" => {
             for id in ids(rest)? {
-                c.write(id, table::CRC_FAIL_COUNT, &0u32.to_le_bytes())?;
-                c.write(id, table::FRAMING_DROP_COUNT, &0u32.to_le_bytes())?;
+                c.clear_counters(id)?;
                 println!("id {}: counters cleared", id.as_byte());
             }
         }
@@ -125,18 +120,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let idx: u8 = rest.first().ok_or("migrate <baud_idx> <id...>")?.parse()?;
             let rate = BaudRate::from_idx(idx).ok_or("bad baud idx")?;
             let targets = ids(&rest[1..])?;
-            // Servo-first (they ack at the old rate, apply deferred), then
-            // the host follows and the sweep proves the reunion.
-            for &id in &targets {
-                c.write(id, table::BAUD_RATE_IDX, &[idx])?;
-            }
-            c.host_baud(rate)?;
-            for &id in &targets {
-                match c.ping(id) {
-                    Ok(_) => println!("ping {} at {}: ok", id.as_byte(), rate.as_hz()),
-                    Err(Error::Timeout { .. }) => println!("ping {}: ABSENT", id.as_byte()),
-                    Err(e) => return Err(e.into()),
-                }
+            for (id, alive) in c.set_baud(&targets, rate)? {
+                let verdict = if alive { "ok" } else { "ABSENT" };
+                println!("ping {} at {}: {verdict}", id.as_byte(), rate.as_hz());
             }
         }
         "chain" => {
@@ -163,14 +149,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("chains: {}/{n} clean", n - bad);
         }
         "cal" => {
-            let trains: u8 = rest
-                .first()
-                .ok_or("cal <trains> <gap_us> <gaps>")?
-                .parse()?;
-            let gap_us: u16 = rest.get(1).ok_or("cal <trains> <gap_us> <gaps>")?.parse()?;
-            let gaps: u8 = rest.get(2).ok_or("cal <trains> <gap_us> <gaps>")?.parse()?;
-            c.cal(trains, gap_us, gaps)?;
-            println!("cal: {trains} trains of {gaps} x {gap_us}us sent");
+            let usage = "cal <trains> <gap_us> <gaps> <id...>";
+            let trains: u8 = rest.first().ok_or(usage)?.parse()?;
+            let gap_us: u16 = rest.get(1).ok_or(usage)?.parse()?;
+            let gaps: u8 = rest.get(2).ok_or(usage)?.parse()?;
+            let targets = ids(&rest[3..])?;
+            for t in c.cal_verify(&targets, trains, gap_us, gaps)? {
+                let verdict = if t.converged() { "converged" } else { "MOVING" };
+                println!("id {}: trims {:?} {verdict}", t.id.as_byte(), t.trims);
+            }
         }
         other => return Err(format!("unknown command {other}").into()),
     }
