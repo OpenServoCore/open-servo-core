@@ -29,7 +29,7 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let mut client = args.conn.client()?;
+    let mut client = args.conn.wire()?;
 
     let mut ping = build_ping(args.target.id);
     if args.corrupt {

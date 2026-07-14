@@ -22,10 +22,24 @@
 
 use osc_client::wire::{Level, WireEdge};
 
-// Stamp semantics here: break stamps carry the law-derived fall tick
-// (BOUNDARY); data stamps carry their own captured start-fall tick --
-// every interior byte is a real capture, not a stride synthesis.
-use crate::pirate::BStamp;
+/// One decoded stamp: byte + tick, wire order. Break stamps carry the
+/// law-derived fall tick (BOUNDARY); data stamps carry their own captured
+/// start-fall tick -- every interior byte is a real capture, not a stride
+/// synthesis.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct BStamp {
+    pub tick: u32,
+    pub byte: u8,
+    pub flags: u8,
+}
+
+impl BStamp {
+    /// Pirate-era placeholder-tick marker: unset on every decoded stamp
+    /// (edge ticks are always real captures); dies with the pirate.
+    pub const COUNT_UNDER: u8 = 1 << 0;
+    /// Break stamp: tick is the law-derived break fall.
+    pub const BOUNDARY: u8 = 1 << 1;
+}
 
 /// Decode a time-ordered edge capture into wire-order stamps.
 /// `bit_ticks` = capture ticks per bit at the operational baud.

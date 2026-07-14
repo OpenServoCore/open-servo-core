@@ -32,7 +32,7 @@ struct Args {
 
 fn main() -> Result<()> {
     let args = Args::parse();
-    let mut client = args.conn.client()?;
+    let mut client = args.conn.wire()?;
 
     // One WRITE(NOREPLY) frame: addr + ramp payload.
     // Zero payload: valid for any writable span (0 is within every rule's
@@ -51,9 +51,9 @@ fn main() -> Result<()> {
     while Instant::now() < deadline {
         client.burst(&frames)?;
         bursts += 1;
-        // Drain the byte-stamp buffer so it never overflows -- we don't use
-        // the stamps, this flood only generates wire traffic.
-        while !client.bbatch(255)?.is_empty() {}
+        // Drop the capture so it never overflows -- we don't use the
+        // stamps, this flood only generates wire traffic.
+        client.reset()?;
     }
     let frames_sent = bursts * per as u64;
     println!(

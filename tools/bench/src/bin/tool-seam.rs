@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use anyhow::{Result, bail};
 use bench::cli::{Connect, Target, print_conn};
+use bench::edges::BStamp;
 use bench::osc::build_instruction;
-use bench::pirate::BStamp;
 use bench::run::{Stats, drain};
 use clap::Parser;
 use osc_protocol::wire::{Inst, Opcode};
@@ -78,9 +78,9 @@ fn main() -> Result<()> {
     if args.frames < 2 {
         bail!("need at least 2 frames per burst for a span");
     }
-    let mut client = args.conn.client()?;
-    let hz_per_us = client.hz_per_us()?;
-    let bit_ticks = (hz_per_us as u64 * 1_000_000 / client.current_baud() as u64) as u32;
+    let mut client = args.conn.wire()?;
+    let hz_per_us = client.hz_per_us();
+    let bit_ticks = client.bit_ticks();
     print_conn(&client, args.target.id);
     println!("frames/burst {}  bursts {}", args.frames, args.count);
 
@@ -96,7 +96,7 @@ fn main() -> Result<()> {
 
     let mut seams_us: Vec<f64> = Vec::new();
     for i in 0..args.count {
-        drain(&mut client)?;
+        client.reset()?;
         client.burst(&burst)?;
         sleep(Duration::from_millis(SETTLE_MS));
         let stamps = drain(&mut client)?;

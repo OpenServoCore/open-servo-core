@@ -16,27 +16,10 @@ pub const PIRATE_PID: u16 = 0xCAFE;
 // Public types (re-exported from lib.rs root)
 // ---------------------------------------------------------------------------
 
-/// One drained stamp: byte + boundary-anchored tick. Break bytes carry
-/// real capture ticks from the pirate's RX-error service, lifted to the
-/// modeled break fall so the IC-era "tick ~ fall" convention holds
-/// (flags bit 1, BOUNDARY); interior bytes stride at nominal bit time
-/// from the last boundary -- crystal-exact for the pirate's own TX echo.
-/// Flags bit 0 (COUNT_UNDER) marks a placeholder tick with no boundary
-/// anchor since reset. All load-bearing bench math differences
-/// boundary-flavor ticks, where the capture's service latency cancels.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
-pub struct BStamp {
-    pub tick: u32,
-    pub byte: u8,
-    pub flags: u8,
-}
-
-impl BStamp {
-    /// Placeholder tick with no boundary anchor since reset.
-    pub const COUNT_UNDER: u8 = 1 << 0;
-    /// Real boundary capture (break service tick, lifted to the fall).
-    pub const BOUNDARY: u8 = 1 << 1;
-}
+// Stamp vocabulary lives with the adapter decoder now; the pirate's
+// drains fill the same shape (break ticks lifted to the fall, interior
+// bytes strided at nominal bit time, COUNT_UNDER when unanchored).
+pub use crate::edges::BStamp;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum DesyncCause {

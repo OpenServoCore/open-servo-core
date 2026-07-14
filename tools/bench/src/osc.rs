@@ -1,9 +1,9 @@
 //! osc-native host library: build instruction wire bytes, and parse a captured
-//! pirate stamp stream back into a status frame plus the TURNAROUND metric.
+//! stamp stream back into a status frame plus the TURNAROUND metric.
 //!
 //! TURNAROUND is the project's success metric: the time between the END of the
 //! instruction packet (the last byte's stop bit completes) and the BEGINNING of
-//! the status packet (the reply break's falling edge). From pirate stamps:
+//! the status packet (the reply break's falling edge). From stamps:
 //!
 //! ```text
 //! turnaround = reply_break_stamp.tick - (last_instruction_echo_stamp.tick + 10 * bit_ticks)
@@ -17,7 +17,7 @@ use osc_protocol::frame::Header;
 use osc_protocol::reply::FrameBuf;
 use osc_protocol::wire::{Id, Inst, MgmtOp, Opcode, ResultCode, UID_LEN};
 
-use crate::pirate::BStamp;
+use crate::edges::BStamp;
 
 /// Break byte / CRC prefix -- a `0x00` stamp marks a frame anchor on the wire.
 const BREAK: u8 = 0x00;
