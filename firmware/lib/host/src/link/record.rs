@@ -14,18 +14,32 @@ use crate::engine::shape::InvalidReason;
 use crate::engine::{Outcome, Terminal};
 
 /// Record type bytes. `0x00..=0x3F` client->adapter, `0x80..=0xBF`
-/// adapter->client. Reserved families (documented now, served later):
-/// `0x40..=0x4F` firmware update -- ENTER_BOOTLOADER first (the mandatory
-/// revert-to-stock path, wlink-iap flow) -- and `0x60..=0x6F` bench (the
-/// IF1 personality; deliberate protocol-breaking lives only there).
+/// adapter->client. Reserved families: `0x40..=0x4F` firmware update
+/// (client->adapter `0x40..=0x47`, adapter->client `0x48..=0x4F`) and
+/// `0x60..=0x6F` bench (the IF1 personality; deliberate protocol-breaking
+/// lives only there).
 pub const REC_HELLO: u8 = 0x00;
 pub const REC_SUBMIT: u8 = 0x01;
+/// Hand the adapter to the resident bootloader (the mandatory
+/// revert-to-stock path, wlink-iap flow). No seq, never refused; quiescing
+/// the bus first is the client's job. The server acks, then the chip drains
+/// the queued [`AdapterRequest`](crate::link::AdapterRequest), flushes the
+/// pipe, disarms the loader, and resets -- the ack is the last record the
+/// port delivers.
+pub const REC_ENTER_BOOTLOADER: u8 = 0x40;
+/// Bench family: drive the adapter's DUT power rails (the adapter feeds
+/// the bus side's 3V3; 5V is a bench convenience). Body: one state byte,
+/// bit0 = 3V3 on, bit1 = 5V on -- absolute state, so queue last-wins is
+/// sound. Answered by [`REC_RAILS_ACK`] echoing the applied state.
+pub const REC_SET_RAILS: u8 = 0x60;
 pub const REC_INFO: u8 = 0x80;
 pub const REC_STATUS: u8 = 0x81;
 pub const REC_TERMINAL: u8 = 0x82;
 pub const REC_REJECTED: u8 = 0x83;
 /// Adapter's answer to a record type it does not serve.
 pub const REC_UNKNOWN: u8 = 0x84;
+pub const REC_BOOTLOADER_ACK: u8 = 0x48;
+pub const REC_RAILS_ACK: u8 = 0x68;
 
 /// SUBMIT verb byte (body: `seq(2 LE) verb(1) args`).
 pub const VERB_EXCHANGE: u8 = 0x00; // args: id(1) inst(1) payload(rest)
@@ -90,6 +104,17 @@ pub fn rejected(dst: &mut [u8], seq: u16, reason: u8) -> &[u8] {
 pub fn unknown(dst: &mut [u8], rtype: u8) -> &[u8] {
     dst[2] = REC_UNKNOWN;
     dst[3] = rtype;
+    sealed(dst, 2)
+}
+
+pub fn bootloader_ack(dst: &mut [u8]) -> &[u8] {
+    dst[2] = REC_BOOTLOADER_ACK;
+    sealed(dst, 1)
+}
+
+pub fn rails_ack(dst: &mut [u8], state: u8) -> &[u8] {
+    dst[2] = REC_RAILS_ACK;
+    dst[3] = state;
     sealed(dst, 2)
 }
 

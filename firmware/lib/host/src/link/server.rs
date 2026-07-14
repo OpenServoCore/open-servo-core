@@ -23,11 +23,23 @@ const RX_CAP: usize = 512;
 /// payload.
 const OUT_CAP: usize = 300;
 
+/// An adapter-level action a record requested: nothing the engine serves,
+/// everything the chip must. The server queues it (acking on the pipe);
+/// the chip drains via [`LinkServer::take_adapter_request`] and acts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdapterRequest {
+    /// Flush the pipe, disarm the resident bootloader's arm flag, reset.
+    EnterBootloader,
+    /// Drive the DUT power rails to this absolute state.
+    SetRails { v3v3: bool, v5: bool },
+}
+
 pub struct LinkServer {
     rx: [u8; RX_CAP],
     rx_len: usize,
     /// The seq owning the engine's outstanding command.
     active: Option<u16>,
+    adapter_req: Option<AdapterRequest>,
     out: [u8; OUT_CAP],
 }
 
@@ -43,8 +55,15 @@ impl LinkServer {
             rx: [0; RX_CAP],
             rx_len: 0,
             active: None,
+            adapter_req: None,
             out: [0; OUT_CAP],
         }
+    }
+
+    /// Drain the pending adapter-level request, if any. The chip polls this
+    /// after `on_pipe`; the matching ack record is already in the sink.
+    pub fn take_adapter_request(&mut self) -> Option<AdapterRequest> {
+        self.adapter_req.take()
     }
 
     /// Feed bytes as the pipe delivered them (any framing); complete
@@ -120,6 +139,7 @@ impl LinkServer {
             }
             handle(
                 &mut self.active,
+                &mut self.adapter_req,
                 &self.rx[2..2 + len],
                 bus,
                 &mut self.out,
@@ -134,6 +154,7 @@ impl LinkServer {
 /// One complete record (type + body).
 fn handle<P: Providers>(
     active: &mut Option<u16>,
+    adapter_req: &mut Option<AdapterRequest>,
     rec: &[u8],
     bus: &mut HostBus<P>,
     out: &mut [u8],
@@ -142,6 +163,17 @@ fn handle<P: Providers>(
     match rec[0] {
         record::REC_HELLO => {
             sink.record(record::info(out, P::Deadline::TICKS_PER_US));
+        }
+        record::REC_ENTER_BOOTLOADER => {
+            *adapter_req = Some(AdapterRequest::EnterBootloader);
+            sink.record(record::bootloader_ack(out));
+        }
+        record::REC_SET_RAILS if rec.len() >= 2 => {
+            *adapter_req = Some(AdapterRequest::SetRails {
+                v3v3: rec[1] & 1 != 0,
+                v5: rec[1] & 2 != 0,
+            });
+            sink.record(record::rails_ack(out, rec[1] & 0x03));
         }
         record::REC_SUBMIT => {
             if rec.len() < 4 {
@@ -367,6 +399,50 @@ mod tests {
         assert_eq!(term[2], REC_TERMINAL);
         assert_eq!(u16::from_le_bytes([term[3], term[4]]), 0x0A);
         assert_eq!(term[5], OUTCOME_COMPLETE);
+    }
+
+    #[test]
+    fn set_rails_acks_and_queues_absolute_state() {
+        let mut r = rig();
+        r.server
+            .on_pipe(&rec(&[REC_SET_RAILS, 0b01]), &mut r.bus, &mut r.sink);
+        assert_eq!(r.sink.0, vec![vec![2, 0, REC_RAILS_ACK, 0b01]]);
+        assert_eq!(
+            r.server.take_adapter_request(),
+            Some(AdapterRequest::SetRails {
+                v3v3: true,
+                v5: false
+            })
+        );
+
+        // Absolute state + single slot: back-to-back sets last-win.
+        r.server
+            .on_pipe(&rec(&[REC_SET_RAILS, 0b10]), &mut r.bus, &mut r.sink);
+        r.server
+            .on_pipe(&rec(&[REC_SET_RAILS, 0b11]), &mut r.bus, &mut r.sink);
+        assert_eq!(
+            r.server.take_adapter_request(),
+            Some(AdapterRequest::SetRails {
+                v3v3: true,
+                v5: true
+            })
+        );
+    }
+
+    #[test]
+    fn enter_bootloader_acks_and_queues_the_request() {
+        let mut r = rig();
+        assert_eq!(r.server.take_adapter_request(), None);
+
+        r.server
+            .on_pipe(&rec(&[REC_ENTER_BOOTLOADER]), &mut r.bus, &mut r.sink);
+        assert_eq!(r.sink.0, vec![vec![1, 0, REC_BOOTLOADER_ACK]]);
+        assert_eq!(
+            r.server.take_adapter_request(),
+            Some(AdapterRequest::EnterBootloader)
+        );
+        assert_eq!(r.server.take_adapter_request(), None, "drained");
+        assert!(r.wire.log().is_empty(), "nothing reaches the bus");
     }
 
     #[test]

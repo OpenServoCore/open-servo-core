@@ -5,4 +5,4 @@
 pub mod record;
 pub mod server;
 
-pub use server::{LinkServer, RecordSink};
+pub use server::{AdapterRequest, LinkServer, RecordSink};
