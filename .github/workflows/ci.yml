@@ -164,6 +164,32 @@ jobs:
       - name: cargo test (units; hardware suite is on-rig only)
         run: cargo test --lib
 
+  client:
+    name: build + test (client)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust (nightly + clippy + rustfmt)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: client
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+      - name: cargo clippy (fake-adapter)
+        run: cargo clippy --tests --no-default-features --features fake-adapter -- -D warnings
+      - name: cargo clippy (nusb)
+        run: cargo clippy --tests -- -D warnings
+      - name: cargo test (full stack over the fake adapter)
+        run: cargo test --no-default-features --features fake-adapter
+      - name: cargo build (nusb backend)
+        run: cargo build
+
   adapter-cli:
     name: build (tools/adapter-cli)
     runs-on: ubuntu-latest
