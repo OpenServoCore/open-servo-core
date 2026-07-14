@@ -10,7 +10,7 @@ use osc_integration::sim::{Sim, Source, WireFrame, assert_valid, instruction, st
 use osc_protocol::wire::{Opcode, ResultCode};
 use osc_servo_core::BaudRate;
 use osc_servo_core::regions::calib::addr::pot_lut::LUT;
-use osc_servo_core::regions::config::addr::identity::MODEL_NUMBER;
+use osc_servo_core::regions::config::addr::common::MODEL_NUMBER;
 use rstest::rstest;
 use rstest_reuse::apply;
 

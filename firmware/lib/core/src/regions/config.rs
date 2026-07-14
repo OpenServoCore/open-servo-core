@@ -16,25 +16,23 @@ pub enum StallResponse {
     Comply = 1,
 }
 
+/// protocol sec 5.4 CONFIG-COMMON block: identity RO at the region front,
+/// comms RW at 0x010, reserved bytes between and behind. Model-specific
+/// config starts at 0x020.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
-pub struct ConfigIdentity {
+#[ct_block(hooks = crate::regions::hooks::ControlTableHookEvents)]
+pub struct ConfigCommon {
     #[ct_field(access = ro)]
     pub model_number: u16,
     #[ct_field(access = ro)]
     pub firmware_version: u8,
-    #[ct_field(skip)]
-    pub _rsvd_align: u8,
     #[ct_field(access = ro)]
-    pub hardware_revision: u32,
+    pub hardware_revision: u8,
     #[ct_field(access = ro)]
     pub capability_flags: u32,
-}
-
-#[repr(C)]
-#[derive(Copy, Clone, Block)]
-#[ct_block(hooks = crate::regions::hooks::ControlTableHookEvents)]
-pub struct ConfigComms {
+    #[ct_field(skip)]
+    pub _rsvd_identity: [u8; 8],
     #[ct_field(ge = 1u8, le = 249u8, hook = on_id_write)]
     pub id: u8,
     // `BaudRate` index; le gate = the enum ceiling. Zero (0.5M, the rescue
@@ -44,6 +42,8 @@ pub struct ConfigComms {
     pub baud_rate_idx: u8,
     #[ct_field(hook = on_response_deadline_us_write)]
     pub response_deadline_us: u16,
+    #[ct_field(skip)]
+    pub _rsvd_tail: [u8; 12],
 }
 
 #[repr(C)]
@@ -132,15 +132,14 @@ pub struct ConfigControlPosition {
     hooks = crate::regions::hooks::ControlTableHookEvents,
 )]
 pub struct ConfigRegs {
-    pub identity: ConfigIdentity,
-    pub comms: ConfigComms,
+    pub common: ConfigCommon,
     pub pos_limits: ConfigPosLimits,
     pub stall: ConfigStall,
     pub thermal: ConfigThermal,
     pub ctrl_pos: ConfigControlPosition,
     pub calibration: ConfigCalibration,
     #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 44],
+    pub _rsvd_tail: [u8; 28],
 }
 
 /// Boot-time seed for `ControlTable.config`; stamped pre-IRQ, then host-owned.

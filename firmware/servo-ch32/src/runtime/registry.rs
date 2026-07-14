@@ -102,9 +102,9 @@ impl Drivers {
         // must be what the bus comes up as, not the board defaults.
         let (id, baud_idx, deadline_us) = crate::runtime::statics::SHARED.table.with(|t| {
             (
-                t.config.comms.id,
-                t.config.comms.baud_rate_idx,
-                t.config.comms.response_deadline_us,
+                t.config.common.id,
+                t.config.common.baud_rate_idx,
+                t.config.common.response_deadline_us,
             )
         });
         // Image parse gates enum UB only; a corrupt-but-CRC-valid idx falls

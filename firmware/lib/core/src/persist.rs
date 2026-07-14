@@ -168,11 +168,12 @@ impl ControlTableCell {
     /// Overlay a validated image onto the live table -- raw byte copy,
     /// deliberately bypassing ro masks and field rules (`Image::parse`
     /// already gated the UB-critical bytes; everything else was rule-valid
-    /// when saved). The identity block is skipped: model/fw must reflect the
+    /// when saved). The identity front (everything before `id`) is skipped:
+    /// model/fw must reflect the
     /// flashed firmware, never a stale saved image. Bringup-only, pre-IRQ;
     /// sole writer (the `seed_config_defaults` contract).
     pub fn overlay_persistent(&self, config: &[u8; CONFIG_LEN], profile: &[u8; PROFILE_LEN]) {
-        let skip = config::addr::comms::ID as usize;
+        let skip = config::addr::common::ID as usize;
         let base = RegisterMap::base(self);
         // SAFETY: base points at the flat map (RegisterMap contract), both
         // regions lie inside it, and the fn doc pins the sole-writer window.
@@ -235,9 +236,9 @@ mod tests {
     /// (zero) bytes in every enum/bool field.
     fn body() -> ([u8; CONFIG_LEN], [u8; PROFILE_LEN]) {
         let mut config = [0u8; CONFIG_LEN];
-        config[addr::comms::ID as usize] = 7;
-        config[addr::comms::RESPONSE_DEADLINE_US as usize] = 99;
-        config[addr::identity::MODEL_NUMBER as usize] = 0xEE;
+        config[addr::common::ID as usize] = 7;
+        config[addr::common::RESPONSE_DEADLINE_US as usize] = 99;
+        config[addr::common::MODEL_NUMBER as usize] = 0xEE;
         let mut profile = [0u8; PROFILE_LEN];
         profile[0] = 0xAA;
         profile[PROFILE_LEN - 1] = 0x55;
@@ -303,7 +304,7 @@ mod tests {
         let table = seeded_table();
         let newer = {
             let (mut config, profile) = body();
-            config[addr::comms::ID as usize] = 8;
+            config[addr::common::ID as usize] = 8;
             let mut img = [0u8; IMAGE_LEN];
             assemble(&mut img, 6, &config, &profile);
             img
@@ -317,7 +318,7 @@ mod tests {
                 loaded: true
             }
         );
-        assert_eq!(table.with(|t| t.config.comms.id), 8);
+        assert_eq!(table.with(|t| t.config.common.id), 8);
         assert_eq!(table.with(|t| t.profile.slots.words[0]), 0x00AA);
     }
 
@@ -342,7 +343,7 @@ mod tests {
                 (pick.next_slot, pick.next_seq, pick.loaded),
                 (next, 4, true)
             );
-            assert_eq!(table.with(|t| t.config.comms.id), 7);
+            assert_eq!(table.with(|t| t.config.common.id), 7);
         }
     }
 
@@ -358,17 +359,17 @@ mod tests {
                 loaded: false
             }
         );
-        assert_eq!(table.with(|t| t.config.comms.id), 1);
+        assert_eq!(table.with(|t| t.config.common.id), 1);
     }
 
     #[test]
-    fn overlay_skips_the_identity_block() {
+    fn overlay_skips_the_identity_front() {
         let table = seeded_table();
-        table.with_mut(|t| t.config.identity.model_number = 0x1234);
+        table.with_mut(|t| t.config.common.model_number = 0x1234);
         boot_overlay(&table, &image_of(1), &[0xFF; IMAGE_LEN]);
         // The image carried 0x00EE at MODEL_NUMBER; the flashed firmware's
         // identity stands.
-        assert_eq!(table.with(|t| t.config.identity.model_number), 0x1234);
-        assert_eq!(table.with(|t| t.config.comms.id), 7, "comms overlaid");
+        assert_eq!(table.with(|t| t.config.common.model_number), 0x1234);
+        assert_eq!(table.with(|t| t.config.common.id), 7, "comms overlaid");
     }
 }

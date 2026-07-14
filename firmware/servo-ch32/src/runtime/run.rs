@@ -41,7 +41,7 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
     crate::runtime::statics::install(io);
     crate::runtime::isr::install_irqs();
     // Last-published transport counters: the table gets DELTAS, so a host
-    // zero-write (the rw clear contract, `TelemetryBusLink`) sticks instead
+    // zero-write (the rw clear contract, `TelemetryCommon`) sticks instead
     // of being clobbered by the next publish of a monotonic total.
     let mut published = osc_servo_drivers::bus::LinkDiag {
         crc_fail_count: 0,
@@ -86,15 +86,15 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
             // SAFETY: table storage is 'static; field access is volatile and
             // ISR-masked, mirroring the sample_tick idiom in `isr.rs`.
             unsafe {
-                let link = &raw mut (*crate::runtime::statics::SHARED.table.region_ptr())
+                let common = &raw mut (*crate::runtime::statics::SHARED.table.region_ptr())
                     .telemetry
-                    .link;
-                let crc = &raw mut (*link).crc_fail_count;
+                    .common;
+                let crc = &raw mut (*common).crc_fail_count;
                 crc.write_volatile(
                     crc.read_volatile()
                         .wrapping_add(diag.crc_fail_count.wrapping_sub(published.crc_fail_count)),
                 );
-                let drops = &raw mut (*link).framing_drop_count;
+                let drops = &raw mut (*common).framing_drop_count;
                 drops.write_volatile(
                     drops.read_volatile().wrapping_add(
                         diag.framing_drop_count
@@ -123,7 +123,7 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
             unsafe {
                 (&raw mut (*crate::runtime::statics::SHARED.table.region_ptr())
                     .telemetry
-                    .clock
+                    .common
                     .trim_steps)
                     .write_volatile(total);
             }

@@ -2,9 +2,10 @@ use bench::osc::{
     REBOOT_SETTLE_MS, SAVE_SETTLE_MS, build_assign, build_enum, build_factory, build_ping,
     build_read, build_reboot, build_save, build_write,
 };
+use osc_protocol::table::STATUS_FLAG_CONFIG_DIRTY;
 use osc_protocol::wire::UID_LEN;
-use osc_servo_core::regions::config::addr::comms::RESPONSE_DEADLINE_US;
-use osc_servo_core::regions::telemetry::addr::fault::CONFIG_DIRTY;
+use osc_servo_core::regions::config::addr::common::RESPONSE_DEADLINE_US;
+use osc_servo_core::regions::telemetry::addr::common::STATUS_FLAGS;
 use serial_test::serial;
 
 use crate::support::bench;
@@ -82,10 +83,12 @@ fn save_persists_across_reboot_until_factory() {
         RESPONSE_DEADLINE_US,
         &MARKER.to_le_bytes(),
     ));
-    let dirty_before = b.status_ok(&build_read(id, CONFIG_DIRTY, 1)).payload[0];
+    let dirty_before =
+        b.status_ok(&build_read(id, STATUS_FLAGS, 1)).payload[0] & STATUS_FLAG_CONFIG_DIRTY;
 
     b.status_ok_within(&build_save(id), SAVE_SETTLE_MS);
-    let dirty_after = b.status_ok(&build_read(id, CONFIG_DIRTY, 1)).payload[0];
+    let dirty_after =
+        b.status_ok(&build_read(id, STATUS_FLAGS, 1)).payload[0] & STATUS_FLAG_CONFIG_DIRTY;
 
     // REBOOT acks first, then resets; the marker must come back from flash.
     b.status_ok(&build_reboot(id));

@@ -61,17 +61,17 @@ impl SimServo {
         // model/fw are read-only identity fields, seeded directly (not part of
         // ConfigDefaults) so PING has something to answer with.
         shared.table.with_mut(|t| {
-            t.config.identity.model_number = DEFAULT_MODEL;
-            t.config.identity.firmware_version = DEFAULT_FIRMWARE;
+            t.config.common.model_number = DEFAULT_MODEL;
+            t.config.common.firmware_version = DEFAULT_FIRMWARE;
         });
 
         // The table is the comms authority (registry `Drivers::install` does
         // the same read on the chip).
         let (id, rate_idx, response_deadline_us) = shared.table.with(|t| {
             (
-                t.config.comms.id,
-                t.config.comms.baud_rate_idx,
-                t.config.comms.response_deadline_us,
+                t.config.common.id,
+                t.config.common.baud_rate_idx,
+                t.config.common.response_deadline_us,
             )
         });
         let rate = BaudRate::from_idx(rate_idx).expect("seeded baud idx");

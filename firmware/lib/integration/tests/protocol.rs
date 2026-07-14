@@ -8,7 +8,7 @@ use osc_integration::sim::{
 };
 use osc_protocol::wire::{Id, Inst, MgmtOp, Opcode, ResultCode};
 use osc_servo_core::BaudRate;
-use osc_servo_core::regions::config::addr::comms::{BAUD_RATE_IDX, ID};
+use osc_servo_core::regions::config::addr::common::{BAUD_RATE_IDX, ID};
 use osc_servo_core::regions::control::addr::lifecycle::TORQUE_ENABLE;
 use osc_servo_core::regions::profile::span_word;
 use osc_servo_core::regions::{CALIB_BASE_ADDR, PROFILE_BASE_ADDR};
@@ -49,8 +49,8 @@ fn ping_reports_model_and_fw(baud_idx: u8) {
     assert_eq!(inst.result(), Some(ResultCode::Ok));
     let (model, fw) = sim.servo_table(s, |t| {
         (
-            t.config.identity.model_number,
-            t.config.identity.firmware_version,
+            t.config.common.model_number,
+            t.config.common.firmware_version,
         )
     });
     let m = model.to_le_bytes();
@@ -70,8 +70,8 @@ fn read_returns_table_bytes(baud_idx: u8) {
     assert_eq!(inst.result(), Some(ResultCode::Ok));
     let (model, fw) = sim.servo_table(s, |t| {
         (
-            t.config.identity.model_number,
-            t.config.identity.firmware_version,
+            t.config.common.model_number,
+            t.config.common.firmware_version,
         )
     });
     let m = model.to_le_bytes();
@@ -85,7 +85,7 @@ fn read_front_loaded_reply_matches_and_leaves_table(baud_idx: u8) {
     // never touches the table.
     let mut sim = sim(baud_idx);
     let s = sim.add_servo(ID5);
-    let before = sim.servo_table(s, |t| t.config.identity.model_number);
+    let before = sim.servo_table(s, |t| t.config.common.model_number);
 
     sim.host_send(&instruction(ID5, Opcode::Read, 0, &[0, 0, 4, 0]));
     let frames = sim.run();
@@ -96,7 +96,7 @@ fn read_front_loaded_reply_matches_and_leaves_table(baud_idx: u8) {
     assert_eq!(payload, &[m[0], m[1], 0x56, 0]);
     assert_eq!(sim.servo_diag(s).crc_fail_count, 0);
     assert_eq!(
-        sim.servo_table(s, |t| t.config.identity.model_number),
+        sim.servo_table(s, |t| t.config.common.model_number),
         before,
         "a read leaves the table untouched"
     );
@@ -459,7 +459,7 @@ fn mgmt_assign_takes_the_id_and_acks_from_it(baud_idx: u8) {
     assert_eq!(inst.result(), Some(ResultCode::Ok));
     assert!(payload.is_empty());
     assert_eq!(
-        sim.servo_table(s, |t| t.config.comms.id),
+        sim.servo_table(s, |t| t.config.common.id),
         42,
         "mirrored into the config ID register for a later SAVE"
     );
@@ -486,7 +486,7 @@ fn mgmt_assign_foreign_uid_is_silent_and_inert(baud_idx: u8) {
     let frames = sim.run();
 
     assert!(servo_frames(&frames).is_empty());
-    assert_eq!(sim.servo_table(s, |t| t.config.comms.id), ID5);
+    assert_eq!(sim.servo_table(s, |t| t.config.common.id), ID5);
     sim.host_send(&instruction(ID5, Opcode::Ping, 0, &[]));
     let (inst, _) = status(sole_reply(&sim.run()));
     assert_eq!(inst.result(), Some(ResultCode::Ok), "old id still answers");
@@ -511,7 +511,7 @@ fn mgmt_assign_invalid_id_nacks_validation(baud_idx: u8) {
     assert_eq!(reply.bytes[1], ID5, "the nack leaves from the unchanged id");
     let (inst, _) = status(reply);
     assert_eq!(inst.result(), Some(ResultCode::Validation));
-    assert_eq!(sim.servo_table(s, |t| t.config.comms.id), ID5);
+    assert_eq!(sim.servo_table(s, |t| t.config.common.id), ID5);
 }
 
 #[apply(matrix)]
@@ -539,8 +539,8 @@ fn profile_read_gathers_configured_spans(baud_idx: u8) {
     assert_eq!(inst.result(), Some(ResultCode::Ok));
     let (model, fw) = sim.servo_table(s, |t| {
         (
-            t.config.identity.model_number,
-            t.config.identity.firmware_version,
+            t.config.common.model_number,
+            t.config.common.firmware_version,
         )
     });
     let m = model.to_le_bytes();
@@ -622,7 +622,7 @@ fn alert_bit_mirrors_fault_flags(baud_idx: u8) {
     let mut sim = sim(baud_idx);
     let s = sim.add_servo(ID5);
 
-    sim.servo_table_mut(s, |t| t.telemetry.fault.fault_flags = 1);
+    sim.servo_table_mut(s, |t| t.telemetry.common.fault_flags = 1);
     sim.host_send(&instruction(ID5, Opcode::Ping, 0, &[]));
     let frames = sim.run();
     let (inst, _) = status(sole_reply(&frames));
@@ -631,7 +631,7 @@ fn alert_bit_mirrors_fault_flags(baud_idx: u8) {
         "ALERT set while fault_flags nonzero (sec 5.3)"
     );
 
-    sim.servo_table_mut(s, |t| t.telemetry.fault.fault_flags = 0);
+    sim.servo_table_mut(s, |t| t.telemetry.common.fault_flags = 0);
     sim.host_send(&instruction(ID5, Opcode::Ping, 0, &[]));
     let frames = sim.run();
     let (inst, _) = status(sole_reply(&frames));

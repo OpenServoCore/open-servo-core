@@ -23,13 +23,13 @@ pub mod telemetry;
 
 pub use calib::{BemfCalibBlock, CalibRegs, PotLutBlock};
 pub use config::{
-    BaudRate, ConfigCalibration, ConfigComms, ConfigControlPosition, ConfigIdentity,
-    ConfigPosLimits, ConfigRegs, ConfigStall, ConfigThermal, StallResponse,
+    BaudRate, ConfigCalibration, ConfigCommon, ConfigControlPosition, ConfigPosLimits, ConfigRegs,
+    ConfigStall, ConfigThermal, StallResponse,
 };
 pub use control::{BootMode, ControlLifecycle, ControlRegs, ControlStreaming, ControlSystem, Mode};
 pub use profile::{PROFILE_SLOTS, ProfileRegs, ProfileSlots, SPANS_PER_SLOT};
 pub use telemetry::{
-    TelemetryBusLink, TelemetryConverted, TelemetryFault, TelemetryIntermediaries, TelemetryRaw,
+    TelemetryCommon, TelemetryConverted, TelemetryIntermediaries, TelemetryMode, TelemetryRaw,
     TelemetryRegs,
 };
 
@@ -81,9 +81,63 @@ impl ControlTableCell {
             cfg.pos_limits.pos_min_soft_urad = defaults.pos_min_phys_urad;
             cfg.pos_limits.pos_max_soft_urad = defaults.pos_max_phys_urad;
             cfg.calibration.vdd_mv = defaults.vdd_mv;
-            cfg.comms.id = defaults.id;
-            cfg.comms.baud_rate_idx = defaults.baud.as_idx();
-            cfg.comms.response_deadline_us = defaults.response_deadline_us;
+            cfg.common.id = defaults.id;
+            cfg.common.baud_rate_idx = defaults.baud.as_idx();
+            cfg.common.response_deadline_us = defaults.response_deadline_us;
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use osc_protocol::table;
+
+    use super::config::addr as config_addr;
+    use super::telemetry::addr as telemetry_addr;
+
+    /// Pins the struct layout to the protocol sec 5.4 common register block:
+    /// every generated field address equals its protocol const, and the
+    /// model-specific space begins exactly at each block's end.
+    #[test]
+    fn common_register_block_offsets_match_the_protocol() {
+        assert_eq!(config_addr::common::MODEL_NUMBER, table::MODEL_NUMBER);
+        assert_eq!(
+            config_addr::common::FIRMWARE_VERSION,
+            table::FIRMWARE_VERSION
+        );
+        assert_eq!(
+            config_addr::common::HARDWARE_REVISION,
+            table::HARDWARE_REVISION
+        );
+        assert_eq!(
+            config_addr::common::CAPABILITY_FLAGS,
+            table::CAPABILITY_FLAGS
+        );
+        assert_eq!(config_addr::common::ID, table::ID);
+        assert_eq!(config_addr::common::BAUD_RATE_IDX, table::BAUD_RATE_IDX);
+        assert_eq!(
+            config_addr::common::RESPONSE_DEADLINE_US,
+            table::RESPONSE_DEADLINE_US
+        );
+        assert_eq!(
+            config_addr::pos_limits::POS_MIN_PHYS_URAD,
+            table::CONFIG_COMMON_END
+        );
+
+        assert_eq!(telemetry_addr::common::FAULT_FLAGS, table::FAULT_FLAGS);
+        assert_eq!(telemetry_addr::common::STATUS_FLAGS, table::STATUS_FLAGS);
+        assert_eq!(telemetry_addr::common::TRIM_STEPS, table::TRIM_STEPS);
+        assert_eq!(
+            telemetry_addr::common::CRC_FAIL_COUNT,
+            table::CRC_FAIL_COUNT
+        );
+        assert_eq!(
+            telemetry_addr::common::FRAMING_DROP_COUNT,
+            table::FRAMING_DROP_COUNT
+        );
+        assert_eq!(
+            telemetry_addr::mode::MODE_ACTIVE,
+            table::TELEMETRY_COMMON_END
+        );
     }
 }

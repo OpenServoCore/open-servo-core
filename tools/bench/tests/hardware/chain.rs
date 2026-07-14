@@ -19,7 +19,7 @@ use bench::osc::{build_instruction, gread_uniform_payload};
 use bench::run::Stats;
 use osc_protocol::wire::{Opcode, ResultCode};
 use osc_servo_core::regions::config::DEFAULT_RESPONSE_DEADLINE_US;
-use osc_servo_core::regions::config::addr::identity::MODEL_NUMBER;
+use osc_servo_core::regions::config::addr::common::MODEL_NUMBER;
 use serial_test::serial;
 
 use crate::support::bench;
