@@ -12,6 +12,7 @@ mod core;
 mod cpu;
 mod host;
 mod providers;
+mod resample;
 mod servo;
 mod store;
 mod support;
@@ -30,15 +31,12 @@ use osc_servo_drivers::bus::RESCUE_LOW_US;
 use self::core::{Core, Event, TICKS_PER_US, Talker, break_ticks, byte_ticks};
 use self::cpu::{Cpu, Vector};
 use self::providers::Handles;
+use self::resample::{CrossRx, RxOut};
 use self::servo::SimServo;
 
 pub use self::cpu::HandlerCost;
 pub use self::host::HostEvent;
 pub use self::store::RamStore;
-
-/// XOR mask applied to bytes ringed at a baud-mismatched receiver: arbitrary
-/// but nonzero, so mismatched data never survives as valid content.
-const MISMATCH_GARBLE: u8 = 0xA5;
 
 pub use self::support::{assert_valid, instruction, status};
 
@@ -73,6 +71,10 @@ pub struct Sim {
     servos: Vec<Box<SimServo>>,
     handles: Vec<Handles>,
     cpus: Vec<Cpu>,
+    /// Per-servo cross-baud reception machines (see `resample`): fed
+    /// whenever a wire event's rate differs from the receiver's.
+    cross: Vec<CrossRx>,
+    host_cross: Option<CrossRx>,
     rate: BaudRate,
     /// The scheduling host queues each frame after its own prior traffic.
     host_free_at: u64,
@@ -109,6 +111,8 @@ impl Sim {
             servos: Vec::new(),
             handles: Vec::new(),
             cpus: Vec::new(),
+            cross: Vec::new(),
+            host_cross: None,
             rate,
             host_free_at: 0,
             host: None,
@@ -122,6 +126,7 @@ impl Sim {
     pub fn attach_host(&mut self) {
         assert!(self.host.is_none(), "host already attached");
         self.host = Some(host::SimHost::build(&self.core, self.rate));
+        self.host_cross = Some(CrossRx::new(self.rate));
     }
 
     /// Submit one command to the attached engine (panics if none).
@@ -162,6 +167,15 @@ impl Sim {
         // inside on_pipe and schedule no wire event, so [`Self::run`] never
         // reaches a pump -- drain the engine here or their records strand.
         rig.server.pump(&mut h.bus, &mut rig.out);
+    }
+
+    /// Let `us` of quiet sim time pass (link mode's pipe pause): schedules
+    /// a no-op that far out and runs to it, so servo-side horizons that need
+    /// wire silence (starve resync, sec 3.4) actually elapse.
+    pub fn idle(&mut self, us: u64) {
+        let t = self.core.borrow().now() + us * TICKS_PER_US;
+        self.core.borrow_mut().schedule(Event::Idle, t);
+        self.run();
     }
 
     /// Drain the outbound record byte stream (panics if no link).
@@ -206,6 +220,7 @@ impl Sim {
         self.servos.push(servo);
         self.handles.push(handles);
         self.cpus.push(Cpu::default());
+        self.cross.push(CrossRx::new(self.rate));
         idx
     }
 
@@ -472,7 +487,11 @@ impl Sim {
                 let now = self.core.borrow().now();
                 self.handles[servo].deadline.set_skew(now, ppm);
             }
-            Event::HostFrameEnd => self.core.borrow_mut().finalize_frame(),
+            Event::HostFrameEnd => {
+                self.core.borrow_mut().finalize_frame();
+                self.flush_cross();
+            }
+            Event::Idle => {}
             Event::Compare { servo, generation } => {
                 // The generation gate is checked at the match instant only: a
                 // deadline re-aimed before its match never fires, but once
@@ -594,64 +613,119 @@ impl Sim {
             if talker == Talker::Servo(j) {
                 continue; // no own-TX echo (F9)
             }
-            self.deliver_break_to(j, baud);
+            self.deliver_break_to(j, baud, break_start);
         }
         // The host hears every foreign break (its ring contract excludes
         // only its own TX); no wake exists to qualify -- just the ring image.
-        if let Some(h) = &self.host
-            && talker != Talker::Host
-        {
-            if h.baud.current().as_hz() >= baud.as_hz() {
-                h.ring.push(0x00);
-            } else {
-                h.ring.push(MISMATCH_GARBLE);
+        if talker != Talker::Host {
+            let rx = self.host.as_ref().map(|h| h.baud.current());
+            if let Some(rx) = rx {
+                if rx == baud {
+                    self.host.as_ref().expect("host attached").ring.push(0x00);
+                } else {
+                    let mut out = Vec::new();
+                    let hc = self.host_cross.as_mut().expect("host attached");
+                    hc.retune(rx);
+                    hc.on_break(break_start, break_ticks(baud), &mut out);
+                    self.cross_deliver_host(out);
+                }
             }
         }
     }
 
-    /// Length-qualified break delivery (sec 3.4): the 10-bit span covers >=10 of
-    /// the receiver's bit-times only at receivers at or above the talker's
-    /// rate -- those decode the all-zeros character and wake. A slower
-    /// receiver hears a sub-character low: compressed junk, no wake.
-    fn deliver_break_to(&mut self, j: usize, baud: BaudRate) {
-        if self.handles[j].baud.current().as_hz() >= baud.as_hz() {
+    /// Break delivery: a matched receiver decodes the all-zeros character
+    /// and wakes; a mismatched one hears the span through its cross-baud
+    /// machine (sec 3.4 length qualification falls out of the resample --
+    /// faster receivers see a qualified break, slower ones sub-bar junk).
+    fn deliver_break_to(&mut self, j: usize, baud: BaudRate, break_start: u64) {
+        let rx = self.handles[j].baud.current();
+        if rx == baud {
             self.handles[j].ring.push(0x00);
             self.deliver(j, Vector::Break);
         } else {
-            self.handles[j].ring.push(MISMATCH_GARBLE);
+            let mut out = Vec::new();
+            self.cross[j].retune(rx);
+            self.cross[j].on_break(break_start, break_ticks(baud), &mut out);
+            self.cross_deliver(j, out);
         }
     }
 
     fn deliver_data(&mut self, talker: Talker, byte: u8, baud: BaudRate) {
         let now = self.core.borrow().now();
         self.core.borrow_mut().append_byte(byte, now);
-        if let Some(h) = &self.host
-            && talker != Talker::Host
-        {
-            if h.baud.current() == baud {
-                h.ring.push(byte);
-            } else {
-                h.ring.push(byte ^ MISMATCH_GARBLE);
+        if talker != Talker::Host {
+            let rx = self.host.as_ref().map(|h| h.baud.current());
+            if let Some(rx) = rx {
+                if rx == baud {
+                    self.host.as_ref().expect("host attached").ring.push(byte);
+                } else {
+                    let mut out = Vec::new();
+                    let hc = self.host_cross.as_mut().expect("host attached");
+                    hc.retune(rx);
+                    hc.on_byte(now, byte, baud, &mut out);
+                    self.cross_deliver_host(out);
+                }
             }
         }
         for j in 0..self.servos.len() {
             if talker == Talker::Servo(j) {
                 continue;
             }
-            let matched = self.handles[j].baud.current() == baud;
-            if matched {
+            let rx = self.handles[j].baud.current();
+            if rx == baud {
                 self.handles[j].ring.push(byte);
             } else {
-                // A baud mismatch garbles both value and framing (sec 2
-                // approximation): the sampled bits are wrong-rate noise, so
-                // the ringed byte must not survive as valid data at either a
-                // faster or slower receiver. No wake (sec 3.4): a data byte's
-                // dominant runs stay under the detector's 10-bit bar in this
-                // model (silicon: rare slower-baud bytes do qualify -- leg D
-                // of the lbd_wake spike -- but the wake-into-junk exposure is
-                // already carried by the slower talker's breaks).
-                self.handles[j].ring.push(byte ^ MISMATCH_GARBLE);
+                // Wrong-rate reception goes through the waveform model: a
+                // slower talker's characters multiply and its low runs can
+                // wake as spurious breaks (the baud-migration garble the
+                // fleet measures); a faster talker's spans mostly vanish.
+                let mut out = Vec::new();
+                self.cross[j].retune(rx);
+                self.cross[j].on_byte(now, byte, baud, &mut out);
+                self.cross_deliver(j, out);
             }
+        }
+    }
+
+    /// Ring cross-baud artifacts at servo `j`: characters ring as data, a
+    /// qualified break rings one 0x00 and wakes (F2/F3).
+    fn cross_deliver(&mut self, j: usize, out: Vec<RxOut>) {
+        for o in out {
+            match o {
+                RxOut::Byte(b) => self.handles[j].ring.push(b),
+                RxOut::Break => {
+                    self.handles[j].ring.push(0x00);
+                    self.deliver(j, Vector::Break);
+                }
+            }
+        }
+    }
+
+    fn cross_deliver_host(&mut self, out: Vec<RxOut>) {
+        if let Some(h) = &self.host {
+            for o in out {
+                match o {
+                    RxOut::Byte(b) => h.ring.push(b),
+                    RxOut::Break => h.ring.push(0x00),
+                }
+            }
+        }
+    }
+
+    /// A frame ended and the line is idle: complete every mismatched
+    /// receiver's in-flight sampling against the high line.
+    fn flush_cross(&mut self) {
+        for j in 0..self.cross.len() {
+            let mut out = Vec::new();
+            self.cross[j].flush(&mut out);
+            if !out.is_empty() {
+                self.cross_deliver(j, out);
+            }
+        }
+        if self.host_cross.is_some() {
+            let mut out = Vec::new();
+            self.host_cross.as_mut().expect("checked").flush(&mut out);
+            self.cross_deliver_host(out);
         }
     }
 
@@ -665,14 +739,18 @@ impl Sim {
     }
 
     fn deliver_stray_break(&mut self, baud: BaudRate) {
+        let start = {
+            let now = self.core.borrow().now();
+            now.saturating_sub(break_ticks(baud))
+        };
         for j in 0..self.servos.len() {
-            self.deliver_break_to(j, baud);
+            self.deliver_break_to(j, baud, start);
         }
         if let Some(h) = &self.host {
             if h.baud.current().as_hz() >= baud.as_hz() {
                 h.ring.push(0x00);
             } else {
-                h.ring.push(MISMATCH_GARBLE);
+                h.ring.push(0xA5); // injected junk, value arbitrary
             }
         }
     }

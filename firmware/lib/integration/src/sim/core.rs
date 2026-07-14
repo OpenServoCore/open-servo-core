@@ -86,6 +86,9 @@ pub enum Event {
     RescueDeclare,
     /// The host's frame drained -- finalize the recorded frame.
     HostFrameEnd,
+    /// Scheduled quiet: nothing happens, sim time passes (the paced-client
+    /// settle in link mode -- servo starve horizons need real quiet).
+    Idle,
     /// A servo's tick-compare fired; `generation` guards against a cancelled/re-armed
     /// deadline (stale generations are dropped on delivery).
     Compare { servo: usize, generation: u64 },
