@@ -1,0 +1,16 @@
+[workspace]
+resolver = "2"
+
+[package]
+name    = "adapter-cli"
+version = "0.1.0"
+edition = "2024"
+description = "Raw-record smoke tool for the osc-adapter link pipe -- phase-3 silicon validation, and phase 4's first test consumer. No session layer, no typed API."
+
+[dependencies]
+anyhow       = "1"
+clap         = { version = "4", features = ["derive"] }
+futures-lite = "2"
+nusb         = "0.1"
+osc-host     = { path = "../../firmware/lib/host" }
+osc-protocol = { path = "../../firmware/lib/osc-protocol", features = ["software-crc"] }
