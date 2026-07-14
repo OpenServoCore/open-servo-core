@@ -160,7 +160,13 @@ pub struct HostBus<P: Providers> {
 
 impl<P: Providers> HostBus<P> {
     /// `rate` is the UART's current rate as the provider configured it.
-    pub fn new(ring: P::Ring, deadline: P::Deadline, tx: P::Tx, baud: P::Baud) -> Self {
+    pub fn new(
+        ring: P::Ring,
+        deadline: P::Deadline,
+        tx: P::Tx,
+        baud: P::Baud,
+        rate: BaudRate,
+    ) -> Self {
         Self {
             ring,
             deadline,
@@ -170,7 +176,7 @@ impl<P: Providers> HostBus<P> {
             buf: TxBuf::new(),
             state: State::Idle,
             plan: None,
-            rate: BaudRate::B1000000,
+            rate,
             response_deadline_us: wire::DEFAULT_RESPONSE_DEADLINE_US,
             pace_until: None,
             deadline_at: 0,

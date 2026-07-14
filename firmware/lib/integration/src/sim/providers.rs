@@ -45,6 +45,17 @@ impl RingState {
         unsafe { (*self.buf.get()).0[i] = b };
         self.cursor.set(((i + 1) % RING_LEN) as u16);
     }
+
+    pub fn bytes(&self) -> &[u8] {
+        // SAFETY: test-only aliasing (see `push`); the buffer is never
+        // mutated while a returned slice is live.
+        let arr: &[u8; RING_LEN] = unsafe { &(*self.buf.get()).0 };
+        &arr[..]
+    }
+
+    pub fn cursor(&self) -> u16 {
+        self.cursor.get()
+    }
 }
 
 pub struct DeadlineState {
@@ -73,6 +84,13 @@ impl DeadlineState {
 
     pub fn generation(&self) -> u64 {
         self.generation.get()
+    }
+
+    /// Supersede any armed compare; returns the new generation.
+    pub fn bump(&self) -> u64 {
+        let g = self.generation.get() + 1;
+        self.generation.set(g);
+        g
     }
 
     /// The servo's local clock at `sim_now`, unwrapped.
@@ -114,6 +132,11 @@ impl BaudState {
     #[allow(dead_code)]
     pub fn applied(&self) -> Vec<BaudRate> {
         self.applied.borrow().clone()
+    }
+
+    pub fn apply(&self, baud: BaudRate) {
+        self.applied.borrow_mut().push(baud);
+        self.current.set(baud);
     }
 }
 
@@ -346,8 +369,7 @@ impl SimBaud {
 
 impl UsartBaud for SimBaud {
     fn apply(&mut self, baud: BaudRate) {
-        self.state.applied.borrow_mut().push(baud);
-        self.state.current.set(baud);
+        self.state.apply(baud);
     }
 }
 

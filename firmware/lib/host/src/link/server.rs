@@ -224,7 +224,13 @@ mod tests {
         let clock = FakeDeadline::new();
         let wire = FakeWire::default();
         let baud = FakeBaud::default();
-        let bus = HostBus::new(ring.clone(), clock.clone(), wire.clone(), baud.clone());
+        let bus = HostBus::new(
+            ring.clone(),
+            clock.clone(),
+            wire.clone(),
+            baud.clone(),
+            BaudRate::B1000000,
+        );
         Rig {
             server: LinkServer::new(),
             bus,

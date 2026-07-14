@@ -10,6 +10,7 @@
 
 mod core;
 mod cpu;
+mod host;
 mod providers;
 mod servo;
 mod store;
@@ -32,6 +33,7 @@ use self::providers::Handles;
 use self::servo::SimServo;
 
 pub use self::cpu::HandlerCost;
+pub use self::host::HostEvent;
 pub use self::store::RamStore;
 
 /// XOR mask applied to bytes ringed at a baud-mismatched receiver: arbitrary
@@ -74,6 +76,10 @@ pub struct Sim {
     rate: BaudRate,
     /// The scheduling host queues each frame after its own prior traffic.
     host_free_at: u64,
+    /// The production engine, when attached (host-in-the-loop scenarios);
+    /// scripted `host_send*` and the engine can coexist but must not overlap
+    /// on the wire -- the claim assert catches a scenario that mixes them.
+    host: Option<host::SimHost>,
 }
 
 impl Sim {
@@ -85,7 +91,31 @@ impl Sim {
             cpus: Vec::new(),
             rate,
             host_free_at: 0,
+            host: None,
         }
+    }
+
+    /// Attach the production host engine at the sim's wire rate. Submit
+    /// through [`Self::host_submit`], drain events after [`Self::run`]
+    /// through [`Self::host_events`].
+    pub fn attach_host(&mut self) {
+        assert!(self.host.is_none(), "host already attached");
+        self.host = Some(host::SimHost::build(&self.core, self.rate));
+    }
+
+    /// Submit one command to the attached engine (panics if none).
+    pub fn host_submit(
+        &mut self,
+        cmd: osc_host::engine::Command<'_>,
+    ) -> Result<(), osc_host::engine::SubmitError> {
+        let r = self.host.as_mut().expect("host attached").bus.submit(cmd);
+        self.host_pump();
+        r
+    }
+
+    /// Drain everything the engine yielded since the last call.
+    pub fn host_events(&mut self) -> Vec<HostEvent> {
+        std::mem::take(&mut self.host.as_mut().expect("host attached").events)
     }
 
     /// Add a servo with the default table seed at this id; returns its index.
@@ -404,6 +434,49 @@ impl Sim {
             Event::TxArmDone { servo } => self.deliver(servo, Vector::TxDone),
             Event::CpuFree { servo } => self.cpu_free(servo),
             Event::WakeRefire { servo } => self.deliver(servo, Vector::Break),
+            Event::HostCompare { generation } => {
+                if let Some(h) = self.host.as_mut()
+                    && h.deadline.generation() == generation
+                {
+                    h.bus.on_deadline();
+                }
+            }
+            Event::HostTxDone => {
+                if let Some(h) = self.host.as_mut() {
+                    h.bus.on_tx_complete();
+                }
+            }
+        }
+        // The adapter's main loop is a tight poll: drain the engine after
+        // every event so its clocks and framer track the wire promptly.
+        self.host_pump();
+    }
+
+    /// Poll the attached engine to exhaustion, copying events out of the
+    /// ring for the harness.
+    fn host_pump(&mut self) {
+        let Some(h) = self.host.as_mut() else { return };
+        loop {
+            match h.bus.poll() {
+                Some(osc_host::engine::Event::Status {
+                    slot,
+                    id,
+                    inst,
+                    payload,
+                }) => {
+                    let (a, b) = payload.segments();
+                    let mut bytes = a.to_vec();
+                    bytes.extend_from_slice(b);
+                    h.events.push(HostEvent::Status {
+                        slot,
+                        id: id.as_byte(),
+                        inst: inst.0,
+                        payload: bytes,
+                    });
+                }
+                Some(osc_host::engine::Event::Done(t)) => h.events.push(HostEvent::Done(t)),
+                None => return,
+            }
         }
     }
 
@@ -467,6 +540,17 @@ impl Sim {
             }
             self.deliver_break_to(j, baud);
         }
+        // The host hears every foreign break (its ring contract excludes
+        // only its own TX); no wake exists to qualify -- just the ring image.
+        if let Some(h) = &self.host
+            && talker != Talker::Host
+        {
+            if h.baud.current().as_hz() >= baud.as_hz() {
+                h.ring.push(0x00);
+            } else {
+                h.ring.push(MISMATCH_GARBLE);
+            }
+        }
     }
 
     /// Length-qualified break delivery (sec 3.4): the 10-bit span covers >=10 of
@@ -485,6 +569,15 @@ impl Sim {
     fn deliver_data(&mut self, talker: Talker, byte: u8, baud: BaudRate) {
         let now = self.core.borrow().now();
         self.core.borrow_mut().append_byte(byte, now);
+        if let Some(h) = &self.host
+            && talker != Talker::Host
+        {
+            if h.baud.current() == baud {
+                h.ring.push(byte);
+            } else {
+                h.ring.push(byte ^ MISMATCH_GARBLE);
+            }
+        }
         for j in 0..self.servos.len() {
             if talker == Talker::Servo(j) {
                 continue;
@@ -510,11 +603,21 @@ impl Sim {
         for j in 0..self.servos.len() {
             self.handles[j].ring.push(byte);
         }
+        if let Some(h) = &self.host {
+            h.ring.push(byte);
+        }
     }
 
     fn deliver_stray_break(&mut self, baud: BaudRate) {
         for j in 0..self.servos.len() {
             self.deliver_break_to(j, baud);
+        }
+        if let Some(h) = &self.host {
+            if h.baud.current().as_hz() >= baud.as_hz() {
+                h.ring.push(0x00);
+            } else {
+                h.ring.push(MISMATCH_GARBLE);
+            }
         }
     }
 

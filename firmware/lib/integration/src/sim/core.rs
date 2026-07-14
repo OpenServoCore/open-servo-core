@@ -101,6 +101,11 @@ pub enum Event {
     TxArmDone { servo: usize },
     /// A servo's handler body ended (`super::cpu`): deliver one pended vector.
     CpuFree { servo: usize },
+    /// The attached host engine's tick-compare fired; same generation gate
+    /// as `Compare`.
+    HostCompare { generation: u64 },
+    /// The host engine's TX span drained -- drive its `on_tx_complete`.
+    HostTxDone,
 }
 
 struct Scheduled {
