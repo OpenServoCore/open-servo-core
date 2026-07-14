@@ -10,6 +10,7 @@
 
 pub mod blocking;
 mod client;
+pub mod common;
 mod error;
 pub mod mgmt;
 pub mod pipe;
