@@ -32,3 +32,7 @@ required-features = ["nusb"]
 [[example]]
 name = "cycle_soak"
 required-features = ["nusb"]
+
+[[example]]
+name = "mute_probe"
+required-features = ["nusb"]
