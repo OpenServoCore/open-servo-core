@@ -6,8 +6,8 @@ use crate::support::bench;
 
 /// READ the read-only model_number span and cross-check it against PING, which
 /// also reports the model -- the two must agree (no hardcoded model value).
-#[test]
 #[serial]
+#[test]
 fn read_model_number_matches_ping() {
     let mut b = bench();
     let id = b.id();

@@ -21,8 +21,8 @@ const SCATTER: [(u16, u8); 3] = [
 
 /// A gathered reply is byte-identical to the concatenation of plain READs of
 /// the same spans (odd interior span included -- no parity constraint, protocol sec 5.2).
-#[test]
 #[serial]
+#[test]
 fn profile_read_matches_plain_reads() {
     let mut b = bench();
     let id = b.id();
@@ -39,8 +39,8 @@ fn profile_read_matches_plain_reads() {
 }
 
 /// Unconfigured and out-of-range slots reject `range` (protocol sec 5.3).
-#[test]
 #[serial]
+#[test]
 fn profile_read_bad_slot_rejects_range() {
     let mut b = bench();
     let id = b.id();
@@ -78,8 +78,8 @@ fn profile_turnaround_budget_us(baud: u32) -> f64 {
 /// matrix; the distribution at each baud is printed for the record. The 2M
 /// leg is the regression gate for the pirate's DATAR discipline (an
 /// IDLE-clear DATAR read ate the reply's final byte 1/128 exchanges).
-#[test]
 #[serial]
+#[test]
 fn profile_read_turnaround_within_budget() {
     let mut b = bench();
     let id = b.id();

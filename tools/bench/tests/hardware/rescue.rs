@@ -24,8 +24,8 @@ use crate::support::bench;
 /// The pulse is baud-agnostic: servo moved to 3M (volatile) with the pirate
 /// back at the boot baud -- unreachable -- then one rescue pulse unifies the
 /// bus at 0.5M. Reboot restores the configured (boot-default) baud.
-#[test]
 #[serial]
+#[test]
 fn rescue_reaches_a_servo_at_any_baud_and_reboot_exits() {
     let mut b = bench();
     let id = b.id();
@@ -76,8 +76,8 @@ fn rescue_reaches_a_servo_at_any_baud_and_reboot_exits() {
 /// find a whole chain (only the entry at our configured id is the DUT),
 /// every mutation is UID-scoped, and a silent broadcast REBOOT releases
 /// the servos the bus-wide pulses parked at 0.5M.
-#[test]
 #[serial]
+#[test]
 fn rescue_walk_assign_save_survives_reboot_until_factory() {
     let mut b = bench();
     let home = b.id();

@@ -9,8 +9,8 @@ const BROADCAST: u8 = 0xFE;
 
 /// A NOREPLY write draws no status frame (protocol sec 5 NOREPLY flag). We write the field's
 /// current value back -- inert, but the write still executes silently.
-#[test]
 #[serial]
+#[test]
 fn noreply_write_is_silent() {
     let mut b = bench();
     let id = b.id();
@@ -27,8 +27,8 @@ fn noreply_write_is_silent() {
 }
 
 /// A broadcast write is silent by addressing (protocol sec 5): no servo replies to 0xFE.
-#[test]
 #[serial]
+#[test]
 fn broadcast_write_is_silent() {
     let mut b = bench();
     let id = b.id();

@@ -10,8 +10,8 @@ const BROADCAST: u8 = 0xFE;
 /// WRITE+HOLD stages the value (the live field stays put); a broadcast COMMIT
 /// applies it. osc collapses DXL's RegWrite/Action into HOLD + COMMIT (protocol sec 5). The
 /// original is restored (state discipline).
-#[test]
 #[serial]
+#[test]
 fn hold_then_commit_applies() {
     let mut b = bench();
     let id = b.id();

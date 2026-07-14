@@ -15,8 +15,8 @@ use crate::support::bench;
 /// 16-byte field: the V006's 96-bit ESIG in the low 12 bytes (not the
 /// all-zero pattern a missed ESIG read would seed), zero pad above. An
 /// exact 128-bit prefix selects exactly the DUT; one flipped bit nobody.
-#[test]
 #[serial]
+#[test]
 fn enum_prefix_selects_exactly_the_dut() {
     let mut b = bench();
 
@@ -38,8 +38,8 @@ fn enum_prefix_selects_exactly_the_dut() {
 /// it (protocol sec 9.2) -- then back. PINGs prove the swap on the wire both ways.
 /// Fleet-safe: ASSIGN is UID-addressed (one matcher on any bus), and the
 /// away id sits outside every bench and fleet id map.
-#[test]
 #[serial]
+#[test]
 fn assign_moves_the_id_and_acks_from_it() {
     let mut b = bench();
     let home = b.id();
@@ -68,8 +68,8 @@ fn assign_moves_the_id_and_acks_from_it() {
 /// the identity -- the bus leaves exactly as found. Reads are collected
 /// first and asserted only after the restore, so a bad marker never
 /// strands a saved image on the bench.
-#[test]
 #[serial]
+#[test]
 fn save_persists_across_reboot_until_factory() {
     const MARKER: u16 = 123; // response_deadline_us; board default is 60
 

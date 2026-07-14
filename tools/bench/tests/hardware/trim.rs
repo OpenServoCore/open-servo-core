@@ -52,8 +52,8 @@ fn train(b: &mut Bench, announce_gap_us: u16) {
     sleep(Duration::from_millis(SETTLE_MS));
 }
 
-#[test]
 #[serial]
+#[test]
 fn lying_train_trims_and_truth_pulls_back() {
     let mut b = bench();
     let start = read_trim(&mut b);
@@ -104,8 +104,8 @@ fn feed(b: &mut Bench, burst: &[Vec<u8>], bursts: u32) {
     }
 }
 
-#[test]
 #[serial]
+#[test]
 fn tracker_follows_host_detune() {
     let mut b = bench();
     // The detune step is defined against the 1M BRR; pin the bus there.

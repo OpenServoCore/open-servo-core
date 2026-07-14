@@ -7,8 +7,8 @@ use crate::support::bench;
 /// WRITE -> empty OK ack, and the value lands. stream_field_mask is a plain u32
 /// bitmask (no range rule, no motion side-effect), so an arbitrary value is a
 /// clean round-trip probe. The original is restored (state discipline).
-#[test]
 #[serial]
+#[test]
 fn write_field_mask_round_trips() {
     let mut b = bench();
     let id = b.id();
