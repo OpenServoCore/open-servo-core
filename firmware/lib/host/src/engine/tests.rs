@@ -1,168 +1,16 @@
 //! `HostBus` scenarios over recording fakes (the drivers-crate mock spirit:
 //! cloneable `Rc` state companions, one clone moved into the engine).
 
-use std::cell::{Cell, UnsafeCell};
-use std::rc::Rc;
 use std::vec;
 use std::vec::Vec;
 
 use osc_protocol::build;
-use osc_protocol::reply::FrameBuf;
 use osc_protocol::wire::{BaudRate, Id, Inst, Opcode, ResultCode, UID_LEN};
 
 use super::*;
-use crate::traits;
-
-const RING_LEN: usize = 512;
-
-struct RingState {
-    buf: UnsafeCell<[u8; RING_LEN]>,
-    cursor: Cell<u16>,
-}
-
-/// Counted RX ring the test feeds like the wire would.
-#[derive(Clone)]
-struct FakeRing(Rc<RingState>);
-
-impl FakeRing {
-    fn new() -> Self {
-        FakeRing(Rc::new(RingState {
-            buf: UnsafeCell::new([0xFF; RING_LEN]),
-            cursor: Cell::new(0),
-        }))
-    }
-
-    /// Ring bytes in at the cursor, advancing it -- one wire arrival.
-    fn feed(&self, bytes: &[u8]) {
-        // SAFETY: test-only, single-threaded; never called while a
-        // `bytes()` slice is live.
-        let buf = unsafe { &mut *self.0.buf.get() };
-        let mut c = self.0.cursor.get() as usize;
-        for &b in bytes {
-            buf[c] = b;
-            c = (c + 1) % RING_LEN;
-        }
-        self.0.cursor.set(c as u16);
-    }
-}
-
-impl traits::RxRing for FakeRing {
-    fn bytes(&self) -> &[u8] {
-        // SAFETY: test-only aliasing; the buffer is never fed while a
-        // returned slice is live (see `feed`).
-        let arr: &[u8; RING_LEN] = unsafe { &*self.0.buf.get() };
-        &arr[..]
-    }
-
-    fn cursor(&self) -> u16 {
-        self.0.cursor.get()
-    }
-}
-
-struct ClockState {
-    now: Cell<u32>,
-    armed: Cell<Option<u32>>,
-}
-
-/// Settable clock + a record of the armed compare.
-#[derive(Clone)]
-struct FakeDeadline(Rc<ClockState>);
-
-impl FakeDeadline {
-    fn new() -> Self {
-        FakeDeadline(Rc::new(ClockState {
-            now: Cell::new(0),
-            armed: Cell::new(None),
-        }))
-    }
-
-    fn advance(&self, ticks: u32) {
-        self.0.now.set(self.0.now.get().wrapping_add(ticks));
-    }
-
-    fn armed(&self) -> Option<u32> {
-        self.0.armed.get()
-    }
-}
-
-impl traits::Deadline for FakeDeadline {
-    const TICKS_PER_US: u32 = 1;
-
-    fn now(&self) -> u32 {
-        self.0.now.get()
-    }
-
-    fn set(&mut self, at: u32) {
-        self.0.armed.set(Some(at));
-    }
-
-    fn cancel(&mut self) {
-        self.0.armed.set(None);
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum WireOp {
-    Claim,
-    Break,
-    Send(Vec<u8>),
-    HoldLow,
-    Release,
-}
-
-#[derive(Clone, Default)]
-struct FakeWire(Rc<std::cell::RefCell<Vec<WireOp>>>);
-
-impl FakeWire {
-    fn log(&self) -> Vec<WireOp> {
-        self.0.borrow().clone()
-    }
-
-    fn clear(&self) {
-        self.0.borrow_mut().clear();
-    }
-}
-
-impl traits::TxWire for FakeWire {
-    fn claim(&mut self) {
-        self.0.borrow_mut().push(WireOp::Claim);
-    }
-    fn send_break(&mut self) {
-        self.0.borrow_mut().push(WireOp::Break);
-    }
-    fn send(&mut self, span: &[u8]) {
-        self.0.borrow_mut().push(WireOp::Send(span.to_vec()));
-    }
-    fn hold_low(&mut self) {
-        self.0.borrow_mut().push(WireOp::HoldLow);
-    }
-    fn release(&mut self) {
-        self.0.borrow_mut().push(WireOp::Release);
-    }
-}
-
-#[derive(Clone, Default)]
-struct FakeBaud(Rc<std::cell::RefCell<Vec<BaudRate>>>);
-
-impl FakeBaud {
-    fn applied(&self) -> Vec<BaudRate> {
-        self.0.borrow().clone()
-    }
-}
-
-impl traits::UsartBaud for FakeBaud {
-    fn apply(&mut self, baud: BaudRate) {
-        self.0.borrow_mut().push(baud);
-    }
-}
-
-struct TestProviders;
-impl traits::Providers for TestProviders {
-    type Ring = FakeRing;
-    type Deadline = FakeDeadline;
-    type Tx = FakeWire;
-    type Baud = FakeBaud;
-}
+use crate::testutil::{
+    FakeBaud, FakeDeadline, FakeRing, FakeWire, TestProviders, WireOp, sealed_status,
+};
 
 struct Rig {
     bus: HostBus<TestProviders>,
@@ -185,14 +33,6 @@ fn rig() -> Rig {
         wire,
         baud,
     }
-}
-
-fn sealed_status(id: u8, result: ResultCode, payload: &[u8]) -> Vec<u8> {
-    let mut b = FrameBuf::<264>::new();
-    b.start(Id::new(id), Inst::status(result, false));
-    b.payload_mut()[..payload.len()].copy_from_slice(payload);
-    b.finish(payload.len() as u8);
-    b.seal().to_vec()
 }
 
 fn ping(id: u8) -> (Id, Inst) {

@@ -16,4 +16,8 @@
 extern crate std;
 
 pub mod engine;
+pub mod link;
 pub mod traits;
+
+#[cfg(test)]
+pub(crate) mod testutil;
