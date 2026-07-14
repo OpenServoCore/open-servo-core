@@ -12,6 +12,7 @@ path = "src/lib.rs"
 
 [dependencies]
 osc-protocol = { path = "../../firmware/lib/osc-protocol", features = ["software-crc"] }
+osc-client   = { path = "../../client" }
 serialport   = "4"
 anyhow       = "1"
 clap         = { version = "4", features = ["derive"] }

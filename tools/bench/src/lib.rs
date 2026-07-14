@@ -4,6 +4,7 @@
 
 pub mod cli;
 pub mod discover;
+pub mod edges;
 pub mod osc;
 pub mod pirate;
 pub mod run;
