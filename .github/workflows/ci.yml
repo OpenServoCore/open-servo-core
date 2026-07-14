@@ -90,6 +90,56 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: bash .github/check-soft-arith.sh
 
+  host-ch32-build-test:
+    name: build + test (firmware/host-ch32)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: firmware/host-ch32
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust (nightly + clippy + rustfmt)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: firmware/host-ch32
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+      - name: cargo clippy
+        run: cargo clippy --tests -- -D warnings
+      - name: cargo build
+        run: cargo build
+      - name: cargo test
+        run: cargo test --lib
+
+  osc-adapter-wchlinke-cross-build:
+    name: cross-build (boards/osc-adapter-wchlinke)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: firmware/boards/osc-adapter-wchlinke
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust (nightly + target + llvm-tools)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: llvm-tools, clippy, rustfmt
+          targets: riscv32imc-unknown-none-elf
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: firmware/boards/osc-adapter-wchlinke
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+      - name: cargo clippy
+        run: cargo clippy --workspace -- -D warnings
+      - name: cargo build --release (adapter image)
+        run: cargo build --release
+      - name: iap header gate (loader magic at 0x50/0x54)
+        working-directory: ${{ github.workspace }}
+        run: bash .github/check-iap-header.sh
+
   bench-tools:
     name: build + test (tools/bench)
     runs-on: ubuntu-latest
@@ -113,6 +163,28 @@ jobs:
         run: cargo clippy --tests -- -D warnings
       - name: cargo test (units; hardware suite is on-rig only)
         run: cargo test --lib
+
+  adapter-cli:
+    name: build (tools/adapter-cli)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tools/adapter-cli
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust (nightly + clippy + rustfmt)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tools/adapter-cli
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+      - name: cargo clippy
+        run: cargo clippy -- -D warnings
+      - name: cargo build
+        run: cargo build
 
   uart-pirate:
     name: build (tools/uart-pirate)
