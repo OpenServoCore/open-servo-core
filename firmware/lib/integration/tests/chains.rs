@@ -259,8 +259,8 @@ fn gread_per_target_reads_distinct_spans(baud_idx: u8) {
     assert_eq!(by_id(1).1, 0x1122u16.to_le_bytes());
     // Servo 2: 1-byte firmware version.
     assert_eq!(by_id(2).1, vec![0x5A]);
-    // Servo 3: 3-byte model + firmware (default fw 0x56).
-    assert_eq!(by_id(3).1, vec![0x44, 0x33, 0x56]);
+    // Servo 3: 3-byte model + firmware (the sim's seeded FIRMWARE_VERSION = 1).
+    assert_eq!(by_id(3).1, vec![0x44, 0x33, 0x01]);
 }
 
 #[apply(matrix)]

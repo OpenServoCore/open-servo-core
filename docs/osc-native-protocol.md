@@ -507,6 +507,11 @@ comms RW:
 | 0x208 | `framing_drop_count` | u32   | RW     |                                             |
 | 0x20C | —                    | 20 B  | rsvd   |                                             |
 
+- `model_number` is class-structured `[class:8][model:8]`: the high byte
+  names a device class, the low byte a model within it. `0x0000` is
+  reserved unassigned - what unseeded or dev firmware reports. The
+  registry (class names and assigned numbers) lives in
+  `osc-protocol::models`.
 - Reserved bytes read zero; writes touching them reject with `access`.
   Extension fills reserved slots, announced by `capability_flags` bits —
   a host that doesn't know a bit ignores the bytes it covers.

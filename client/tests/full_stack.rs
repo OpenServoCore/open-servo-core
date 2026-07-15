@@ -10,6 +10,7 @@ use osc_client::cyclic::{Cycle, Group, Telemetry};
 use osc_client::fake::FakePipe;
 use osc_client::mgmt::{Found, Uid};
 use osc_client::{BaudRate, Error, Id, LinkError, RejectReason};
+use osc_protocol::models::MODEL_OSC_SERVO;
 use osc_protocol::table;
 use osc_protocol::wire::UID_LEN;
 
@@ -223,8 +224,8 @@ fn identity_decodes_the_config_front() {
     assert_eq!(
         got,
         Identity {
-            model: 0x1234, // the sim's seeded default
-            fw: 0x56,
+            model: MODEL_OSC_SERVO, // the sim mirrors the servo's registry identity
+            fw: 1,                  // osc_servo_core::FIRMWARE_VERSION
             hw: 3,
             capabilities: 0x8000_0001,
         }

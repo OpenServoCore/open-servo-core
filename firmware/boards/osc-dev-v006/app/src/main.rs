@@ -65,5 +65,7 @@ fn main() -> ! {
             baud: BaudRate::B1000000,
             response_deadline_us: DEFAULT_RESPONSE_DEADLINE_US,
         },
+        model: MODEL_OSC_SERVO,
+        hw_rev: 1,
     })
 }

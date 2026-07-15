@@ -86,6 +86,20 @@ impl ControlTableCell {
             cfg.common.response_deadline_us = defaults.response_deadline_us;
         });
     }
+
+    /// Stamp the RO identity block (protocol sec 5.4). `firmware_version` is
+    /// not a caller argument: it is the compiled-in `crate::FIRMWARE_VERSION`
+    /// fact of this build, so a board cannot claim a version it is not running.
+    /// Caller must be sole writer (install-time, pre-IRQ).
+    pub fn seed_identity(&self, model: u16, hw_rev: u8) {
+        // SAFETY: install-time, pre-IRQ, sole writer.
+        self.with_mut(|t| {
+            let common = &mut t.config.common;
+            common.model_number = model;
+            common.hardware_revision = hw_rev;
+            common.firmware_version = crate::FIRMWARE_VERSION;
+        });
+    }
 }
 
 #[cfg(test)]
@@ -95,7 +109,19 @@ mod tests {
     use super::ControlTable;
     use super::config::addr as config_addr;
     use super::telemetry::addr as telemetry_addr;
+    use control_table::RegionStorage;
     use control_table::descriptor::{EnumVariant, FieldKind};
+
+    #[test]
+    fn seed_identity_stamps_the_block() {
+        let table = crate::ControlTableCell::new();
+        table.seed_identity(0x0101, 3);
+        table.with(|t| {
+            assert_eq!(t.config.common.model_number, 0x0101);
+            assert_eq!(t.config.common.hardware_revision, 3);
+            assert_eq!(t.config.common.firmware_version, crate::FIRMWARE_VERSION);
+        });
+    }
 
     /// Pins the struct layout to the protocol sec 5.4 common register block:
     /// every generated field address equals its protocol const, and the

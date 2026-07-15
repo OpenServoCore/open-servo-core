@@ -3,6 +3,12 @@
 
 pub mod debug;
 pub mod kernel;
+
+/// Firmware version stamped into the identity block (protocol sec 5.4). A
+/// table-ABI counter, bumped when a client-visible table ABI change lands;
+/// 0 is reserved for an unversioned dev build.
+pub const FIRMWARE_VERSION: u8 = 1;
+
 pub mod log;
 pub mod persist;
 pub mod regions;

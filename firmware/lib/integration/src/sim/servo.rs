@@ -17,10 +17,6 @@ use super::providers::{
 };
 use super::store::RamStore;
 
-/// Default identity a fresh sim servo answers PING with (model + fw).
-pub const DEFAULT_MODEL: u16 = 0x1234;
-pub const DEFAULT_FIRMWARE: u8 = 0x56;
-
 pub struct SimServo {
     shared: Shared,
     session: Session,
@@ -58,12 +54,12 @@ impl SimServo {
         // Default UID: the id repeated -- distinct per servo, predictable for
         // ENUM tests; override via `seed_uid` where prefix structure matters.
         shared.seed_uid([id; 16]);
-        // model/fw are read-only identity fields, seeded directly (not part of
-        // ConfigDefaults) so PING has something to answer with.
-        shared.table.with_mut(|t| {
-            t.config.common.model_number = DEFAULT_MODEL;
-            t.config.common.firmware_version = DEFAULT_FIRMWARE;
-        });
+        // Real identity: the sim mirrors the v006 servo's table ABI, so it
+        // seeds the registry model (not part of ConfigDefaults, same as the
+        // chip) - keeps descriptor-keyed clients testable against the sim.
+        shared
+            .table
+            .seed_identity(osc_protocol::models::MODEL_OSC_SERVO, 1);
 
         // The table is the comms authority (registry `Drivers::install` does
         // the same read on the chip).

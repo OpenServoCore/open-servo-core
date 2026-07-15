@@ -12,6 +12,7 @@ pub mod bytes;
 pub mod crc;
 pub mod frame;
 pub mod group;
+pub mod models;
 pub mod reply;
 pub mod table;
 pub mod wire;
