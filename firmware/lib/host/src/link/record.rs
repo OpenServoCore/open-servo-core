@@ -85,10 +85,11 @@ pub const REC_RAILS_ACK: u8 = 0x68;
 pub const REC_WIRE_DONE: u8 = 0x69;
 /// Edge drain reply. Body: `flags(1: bit0 overflow) now(4 LE)
 /// fall_n(1) rise_n(1) falls(fall_n x u16 LE) rises(rise_n x u16 LE)`.
-/// Edge ticks are the engine tick domain's low 16 bits; `now` is the
-/// 32-bit drain moment, the client's unwrap reference (unwrap ambiguity
-/// resets across gaps longer than one u16 wrap -- irrelevant within an
-/// exchange, which is all the instrument measures).
+/// Edge ticks are the engine tick domain's low 16 bits, ring-ordered
+/// (chronological); `now` is the 32-bit drain moment. The client merges
+/// the rings by alternation and chains every tick off one monotone
+/// anchor, using `now` only as the anchor floor on empty drains -- so a
+/// drain serviced late never aliases its batch.
 pub const REC_EDGES: u8 = 0x6C;
 pub const REC_CAPTURE_ACK: u8 = 0x6D;
 
