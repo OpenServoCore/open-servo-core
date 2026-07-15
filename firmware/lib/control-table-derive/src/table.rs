@@ -105,6 +105,7 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
 
     let n_cmp = quote!(0 #(+ <#sec_tys>::CT_CMP_RULES_ABS.len())*);
     let n_allowed = quote!(0 #(+ <#sec_tys>::CT_ALLOWED_RULES_ABS.len())*);
+    let n_fields = quote!(0 #(+ <#sec_tys>::CT_FIELDS_ABS.len())*);
 
     let cmp_fill: Vec<TokenStream2> = sec_tys
         .iter()
@@ -122,6 +123,17 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         .map(|ty| {
             crate::common::fill_loop(
                 quote!(<#ty>::CT_ALLOWED_RULES_ABS),
+                quote!(),
+                quote!(out[__n] = src[i];),
+            )
+        })
+        .collect();
+
+    let fields_fill: Vec<TokenStream2> = sec_tys
+        .iter()
+        .map(|ty| {
+            crate::common::fill_loop(
+                quote!(<#ty>::CT_FIELDS_ABS),
                 quote!(),
                 quote!(out[__n] = src[i];),
             )
@@ -191,6 +203,15 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
                     [::control_table::rules::AllowedRule { addr: 0, allowed: &[] }; #n_allowed];
                 let mut __n = 0;
                 #(#allowed_fill)*
+                out
+            };
+
+            // Table-absolute field descriptors for the host-side exporter; not
+            // in the RegisterMap trait - the exporter names the table directly.
+            pub const FIELDS: [::control_table::descriptor::FieldDesc; #n_fields] = {
+                let mut out = [::control_table::descriptor::FieldDesc::EMPTY; #n_fields];
+                let mut __n = 0;
+                #(#fields_fill)*
                 out
             };
         }

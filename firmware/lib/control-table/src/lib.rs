@@ -1,6 +1,7 @@
 #![no_std]
 #![cfg_attr(feature = "sync-unsafe-cell", feature(sync_unsafe_cell))]
 
+pub mod descriptor;
 pub mod map;
 mod region;
 pub mod rules;
@@ -33,6 +34,9 @@ pub const BOOL_ALLOWED: &[u8] = &[0, 1];
 )]
 pub trait HasAllowed {
     const ALLOWED: &'static [u8];
+    /// Variant name/value pairs for the field descriptor; only the Enum derive
+    /// implements this trait, so no manual impl carries the burden.
+    const VARIANTS: &'static [descriptor::EnumVariant];
 }
 
 pub use region::{Region, RegionStorage, RegionStorageRaw};
@@ -40,4 +44,5 @@ pub use stage::{STAGE_DATA_CAP, STAGE_ENTRY_CAP, Snapshot, StagedWrites};
 
 pub use control_table_derive::{Block, Enum, Section, Table};
 
+pub use descriptor::{EnumVariant, FieldDesc, FieldKind};
 pub use map::{RegisterFile, RegisterMap, SectionMeta, View};

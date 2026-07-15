@@ -1,9 +1,11 @@
 //! `osc` -- the operator CLI for an osc-native bus, driven through the
 //! osc-adapter: discovery, rescue, id/baud management, calibration,
-//! persistence, profiles, one-shot reads/writes, and the adapter's own
-//! management verbs (rails, bootloader). A thin surface over osc-client --
-//! every choreography lives in the library. Wire measurement is the bench
-//! `tool-*` binaries' job, not this tool's.
+//! persistence, profiles, one-shot reads/writes, typed get/set/dump, and the
+//! adapter's own management verbs (rails, bootloader). A thin surface over
+//! osc-client -- every choreography lives in the library. Wire measurement is
+//! the bench `tool-*` binaries' job, not this tool's.
+
+mod descriptor;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
@@ -181,6 +183,27 @@ enum Cmd {
     },
     /// Broadcast COMMIT: every held write applies in the same instant.
     Commit,
+    /// Read one register by name, decoded per the device descriptor.
+    Get {
+        /// Register name (see `dump` for the roster).
+        field: String,
+    },
+    /// Write one register by name, encoded per the device descriptor.
+    Set {
+        /// Register name.
+        field: String,
+        /// Value: decimal/0x-hex int, on|off for bool, variant name or number
+        /// for enum, hex bytes for a bytes field.
+        value: String,
+        /// Stage under HOLD; applied by the next COMMIT.
+        #[arg(long)]
+        hold: bool,
+        /// Fire-and-forget: no status frame owed.
+        #[arg(long, conflicts_with = "hold")]
+        noreply: bool,
+    },
+    /// Read the whole control table, one decoded line per descriptor field.
+    Dump,
 }
 
 #[derive(Subcommand, Debug)]
@@ -496,6 +519,98 @@ fn profile(c: &mut Client<NusbPipe>, id: Id, cmd: &ProfileCmd) -> Result<()> {
     }
 }
 
+/// Identity read (protocol sec 5.4 front) plus descriptor selection. Prints
+/// any advisory note at the call site so the codec stays print-free.
+fn select_descriptor<'a>(
+    c: &mut Client<NusbPipe>,
+    id: Id,
+    reg: &'a descriptor::Registry,
+) -> Result<&'a descriptor::Descriptor> {
+    let b = c.read(id, 0, 4)?;
+    if b.len() < 4 {
+        bail!("identity read returned {} B, expected 4", b.len());
+    }
+    let model = u16::from_le_bytes([b[0], b[1]]);
+    let fw = b[2];
+    let (d, note) = reg.select(model, fw)?;
+    if let Some(note) = note {
+        println!("{note}");
+    }
+    Ok(d)
+}
+
+fn get(c: &mut Client<NusbPipe>, id: Id, name: &str) -> Result<()> {
+    let reg = descriptor::Registry::load()?;
+    let d = select_descriptor(c, id, &reg)?;
+    let f = d.field(name)?;
+    let bytes = c.read(id, f.addr, f.width)?;
+    println!(
+        "{} = {}  (addr {:#06x}, {} B, raw {})",
+        f.name,
+        descriptor::decode(f, &bytes)?,
+        f.addr,
+        f.width,
+        hex(&bytes),
+    );
+    Ok(())
+}
+
+fn set(
+    c: &mut Client<NusbPipe>,
+    id: Id,
+    name: &str,
+    value: &str,
+    hold: bool,
+    noreply: bool,
+) -> Result<()> {
+    let reg = descriptor::Registry::load()?;
+    let d = select_descriptor(c, id, &reg)?;
+    let f = d.field(name)?;
+    let data = descriptor::encode(f, value)?;
+    if hold {
+        c.write_hold(id, f.addr, &data)?;
+        println!(
+            "staged {} = {value} at {:#06x} (HOLD; COMMIT applies)",
+            f.name, f.addr
+        );
+    } else if noreply {
+        c.write_noreply(id, f.addr, &data)?;
+        println!("sent {} = {value} at {:#06x} (NOREPLY)", f.name, f.addr);
+    } else {
+        c.write(id, f.addr, &data)?;
+        println!("wrote {} = {value} at {:#06x}", f.name, f.addr);
+    }
+    Ok(())
+}
+
+fn dump(c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
+    let reg = descriptor::Registry::load()?;
+    let d = select_descriptor(c, id, &reg)?;
+    // A status frame carries <= 252 payload bytes; walk the table in chunks
+    // and slice each field's bytes out of the flat image.
+    const CHUNK: u16 = 252;
+    let mut table = vec![0u8; d.table_size as usize];
+    let mut addr = 0u16;
+    while addr < d.table_size {
+        let len = CHUNK.min(d.table_size - addr);
+        let bytes = c.read(id, addr, len)?;
+        let start = addr as usize;
+        table[start..start + bytes.len()].copy_from_slice(&bytes);
+        addr += len;
+    }
+    for f in &d.fields {
+        let bytes = &table[f.addr as usize..f.end() as usize];
+        println!(
+            "{:#06x}  {:<28} {:<2}  {}",
+            f.addr,
+            f.name,
+            f.access.as_str(),
+            descriptor::decode(f, bytes)?,
+        );
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     let id = Id::new(cli.id);
@@ -691,5 +806,13 @@ fn main() -> Result<()> {
             Ok(())
         }
         Cmd::Profile { cmd } => profile(&mut connect_bus(&cli)?, id, cmd),
+        Cmd::Get { field } => get(&mut connect_bus(&cli)?, id, field),
+        Cmd::Set {
+            field,
+            value,
+            hold,
+            noreply,
+        } => set(&mut connect_bus(&cli)?, id, field, value, *hold, *noreply),
+        Cmd::Dump => dump(&mut connect_bus(&cli)?, id),
     }
 }

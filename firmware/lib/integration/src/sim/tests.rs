@@ -2,10 +2,10 @@
 //! real dispatch -> real TX engine -> recorded reply) before the test-suite
 //! chunks build on this facade.
 
+use osc_protocol::models::MODEL_OSC_SERVO;
 use osc_protocol::wire::{Opcode, ResultCode};
-use osc_servo_core::BaudRate;
+use osc_servo_core::{BaudRate, FIRMWARE_VERSION};
 
-use super::servo::{DEFAULT_FIRMWARE, DEFAULT_MODEL};
 use super::{HandlerCost, Sim, core::TICKS_PER_US};
 use super::{Source, assert_valid, instruction, status};
 
@@ -35,8 +35,8 @@ fn ping_round_trip() {
     let (rinst, payload) = status(reply);
     assert!(rinst.is_status());
     assert_eq!(rinst.result(), Some(ResultCode::Ok));
-    let m = DEFAULT_MODEL.to_le_bytes();
-    assert_eq!(payload, &[m[0], m[1], DEFAULT_FIRMWARE]);
+    let m = MODEL_OSC_SERVO.to_le_bytes();
+    assert_eq!(payload, &[m[0], m[1], FIRMWARE_VERSION]);
 
     // Reply lead: >= reply gap (fixed us, sec 7) and < 200 us after the instruction.
     let lead = reply.at - inst.end;

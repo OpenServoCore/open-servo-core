@@ -62,20 +62,21 @@ fn read_returns_table_bytes(baud_idx: u8) {
     let mut sim = sim(baud_idx);
     let s = sim.add_servo(ID5);
 
-    // READ config identity span [0, 4): model(2) + fw(1) + reserved(1).
+    // READ config identity span [0, 4): model(2) + fw(1) + hardware_revision(1).
     sim.host_send(&instruction(ID5, Opcode::Read, 0, &[0, 0, 4, 0]));
     let frames = sim.run();
 
     let (inst, payload) = status(sole_reply(&frames));
     assert_eq!(inst.result(), Some(ResultCode::Ok));
-    let (model, fw) = sim.servo_table(s, |t| {
+    let (model, fw, hw) = sim.servo_table(s, |t| {
         (
             t.config.common.model_number,
             t.config.common.firmware_version,
+            t.config.common.hardware_revision,
         )
     });
     let m = model.to_le_bytes();
-    assert_eq!(payload, &[m[0], m[1], fw, 0]);
+    assert_eq!(payload, &[m[0], m[1], fw, hw]);
 }
 
 #[apply(matrix)]
@@ -93,7 +94,9 @@ fn read_front_loaded_reply_matches_and_leaves_table(baud_idx: u8) {
     let (inst, payload) = status(sole_reply(&frames));
     assert_eq!(inst.result(), Some(ResultCode::Ok));
     let m = before.to_le_bytes();
-    assert_eq!(payload, &[m[0], m[1], 0x56, 0]);
+    // Identity span [0,4): model(2) + the sim's seeded fw(1) + hardware_revision(1),
+    // both 1 from `seed_identity`.
+    assert_eq!(payload, &[m[0], m[1], 0x01, 0x01]);
     assert_eq!(sim.servo_diag(s).crc_fail_count, 0);
     assert_eq!(
         sim.servo_table(s, |t| t.config.common.model_number),

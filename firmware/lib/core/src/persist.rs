@@ -372,4 +372,20 @@ mod tests {
         assert_eq!(table.with(|t| t.config.common.model_number), 0x1234);
         assert_eq!(table.with(|t| t.config.common.id), 7, "comms overlaid");
     }
+
+    #[test]
+    fn seeded_identity_survives_a_boot_overlay() {
+        // Boot order: seed identity, then overlay a valid saved image. The
+        // image's identity front (0x00EE at MODEL_NUMBER) is skipped, so the
+        // firmware's stamped identity stands while comms overlay.
+        let table = seeded_table();
+        table.seed_identity(0x0101, 3);
+        boot_overlay(&table, &image_of(1), &[0xFF; IMAGE_LEN]);
+        table.with(|t| {
+            assert_eq!(t.config.common.model_number, 0x0101);
+            assert_eq!(t.config.common.hardware_revision, 3);
+            assert_eq!(t.config.common.firmware_version, crate::FIRMWARE_VERSION);
+            assert_eq!(t.config.common.id, 7, "comms overlaid");
+        });
+    }
 }

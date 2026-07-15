@@ -27,6 +27,8 @@ pub struct BringupResult {
 pub fn bringup(
     wiring: &BoardWiring,
     defaults: &ConfigDefaults,
+    model: u16,
+    hw_rev: u8,
     pre: &Precomputed,
 ) -> BringupResult {
     enable_clocks_and_remaps(wiring);
@@ -39,6 +41,7 @@ pub fn bringup(
     // first, then the saved image overlays them (protocol sec 9.4) -- `Drivers::install`
     // reads the effective comms block from the table.
     SHARED.table.seed_config_defaults(defaults);
+    SHARED.table.seed_identity(model, hw_rev);
     config_store::ConfigStore::boot_load();
     SHARED.seed_uid(esig::uid());
 

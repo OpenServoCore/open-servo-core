@@ -18,6 +18,10 @@ pub struct BoardConfig {
     pub wiring: BoardWiring,
     pub calibration: Calibration,
     pub defaults: ConfigDefaults,
+    /// Identity the board stamps into the RO block (protocol sec 5.4); the
+    /// firmware version comes from `osc_servo_core::FIRMWARE_VERSION`, not here.
+    pub model: u16,
+    pub hw_rev: u8,
 }
 
 /// Boot-time-derived values that the `run!` macro folds at compile time so the

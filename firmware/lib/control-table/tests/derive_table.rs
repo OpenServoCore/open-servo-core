@@ -1,5 +1,6 @@
 #![feature(sync_unsafe_cell)]
 
+use control_table::descriptor::FieldKind;
 use control_table::{Block, Enum, Error, RegisterFile, RegisterMap, Table, ValidationKind};
 use core::mem::{offset_of, size_of};
 
@@ -231,6 +232,33 @@ fn hook_dispatches_through_table_for_hooked_field() {
     let mut miss = Rec { hit: None };
     tbl.dispatch_events(addr::config::ident::ID, 1, &mut miss);
     assert_eq!(miss.hit, None);
+}
+
+#[test]
+fn table_fields_concat_and_rebase_across_sections() {
+    let f = Table::FIELDS;
+    // Every kept field from both sections: config ident (model, id, spare),
+    // limits (max_ratio, mode, enabled), control goal (target, commit).
+    let by = |n: &str| f.iter().find(|d| d.name == n).unwrap();
+
+    // config section fields carry table-absolute addrs (base 0).
+    assert_eq!(by("model").addr, addr::config::ident::MODEL);
+    assert!(!by("model").writable);
+    assert_eq!(by("model").kind, FieldKind::UInt);
+    assert_eq!(by("max_ratio").addr, addr::config::limits::MAX_RATIO);
+    assert_eq!(by("max_ratio").max, Some(100));
+    assert!(matches!(by("mode").kind, FieldKind::Enum(_)));
+
+    // control section fields rebased past config (base 0x000C).
+    assert_eq!(by("target").addr, addr::control::goal::TARGET);
+    // target's `le` is a register RHS, so no exported bound.
+    assert_eq!((by("target").min, by("target").max), (None, None));
+    assert_eq!(by("commit").addr, addr::control::goal::COMMIT);
+
+    // Addresses strictly ascending across the concat.
+    for w in f.windows(2) {
+        assert!(w[0].addr < w[1].addr);
+    }
 }
 
 #[test]

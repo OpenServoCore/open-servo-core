@@ -26,6 +26,8 @@ impl Ch32ControlIo {
             wiring,
             calibration,
             defaults,
+            model,
+            hw_rev,
         } = cfg;
 
         crate::log::debug!(
@@ -38,7 +40,8 @@ impl Ch32ControlIo {
         let drv_en_pin = wiring.drv_en.pin.pin();
         let drv_en_active = wiring.drv_en.active;
 
-        let BringupResult { shunt_bias_raw } = crate::runtime::bringup(&wiring, &defaults, &pre);
+        let BringupResult { shunt_bias_raw } =
+            crate::runtime::bringup(&wiring, &defaults, model, hw_rev, &pre);
 
         crate::log::info!("Ch32ControlIo::new: complete");
         Self {
