@@ -37,12 +37,19 @@ struct Cli {
 enum Cmd {
     /// Adapter link info (version, tick rate).
     Info,
-    /// Drive the adapter's DUT power rails: on/off for 3V3 then 5V.
-    Rails {
+    /// Read the DUT power rail state (3V3 / 5V) without driving it.
+    Rails,
+    /// Drive the 3V3 rail, 5V untouched.
+    #[command(name = "3v3")]
+    Rail3v3 {
         #[arg(value_parser = on_off, action = clap::ArgAction::Set)]
-        v3v3: bool,
+        on: bool,
+    },
+    /// Drive the 5V rail, 3V3 untouched.
+    #[command(name = "5v")]
+    Rail5v {
         #[arg(value_parser = on_off, action = clap::ArgAction::Set)]
-        v5: bool,
+        on: bool,
     },
     /// Hand the adapter to the WCH bootloader (4348:55e0, wlink-iap).
     Bootloader,
@@ -141,7 +148,39 @@ enum Cmd {
         addr: String,
         /// Payload as hex bytes.
         data: String,
+        /// Stage under HOLD; applied by the next COMMIT.
+        #[arg(long)]
+        hold: bool,
+        /// Fire-and-forget: no status frame owed.
+        #[arg(long, conflicts_with = "hold")]
+        noreply: bool,
     },
+    /// Uniform group read: one status chain in list order (protocol sec 6).
+    Gread {
+        /// Table address (0x-hex or decimal).
+        addr: String,
+        /// Bytes per target.
+        #[arg(default_value_t = 4)]
+        count: u16,
+        /// Targets in chain order; defaults to --id.
+        #[arg(long, value_delimiter = ',')]
+        ids: Vec<u8>,
+    },
+    /// Uniform group write: the same data to every target, no replies.
+    Gwrite {
+        /// Table address (0x-hex or decimal).
+        addr: String,
+        /// Per-target data as hex bytes.
+        data: String,
+        /// Targets; defaults to --id.
+        #[arg(long, value_delimiter = ',')]
+        ids: Vec<u8>,
+        /// Stage under HOLD; the fleet applies on COMMIT.
+        #[arg(long)]
+        hold: bool,
+    },
+    /// Broadcast COMMIT: every held write applies in the same instant.
+    Commit,
 }
 
 #[derive(Subcommand, Debug)]
@@ -166,6 +205,15 @@ fn on_off(s: &str) -> Result<bool, String> {
         "off" => Ok(false),
         other => Err(format!("expected on|off, got {other:?}")),
     }
+}
+
+fn print_rails((v3v3, v5): (bool, bool)) -> Result<()> {
+    println!(
+        "rails: 3V3 {} / 5V {}",
+        if v3v3 { "on" } else { "off" },
+        if v5 { "on" } else { "off" },
+    );
+    Ok(())
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -461,16 +509,9 @@ fn main() -> Result<()> {
             );
             Ok(())
         }
-        Cmd::Rails { v3v3, v5 } => {
-            let mut c = connect()?;
-            c.set_rails(*v3v3, *v5)?;
-            println!(
-                "rails: 3V3 {} / 5V {}",
-                if *v3v3 { "on" } else { "off" },
-                if *v5 { "on" } else { "off" },
-            );
-            Ok(())
-        }
+        Cmd::Rails => print_rails(connect()?.rails()?),
+        Cmd::Rail3v3 { on } => print_rails(connect()?.set_rail_3v3(*on)?),
+        Cmd::Rail5v { on } => print_rails(connect()?.set_rail_5v(*on)?),
         Cmd::Bootloader => {
             let mut c = connect()?;
             c.enter_bootloader()?;
@@ -576,11 +617,77 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
-        Cmd::Write { addr, data } => {
+        Cmd::Write {
+            addr,
+            data,
+            hold,
+            noreply,
+        } => {
             let mut c = connect_bus(&cli)?;
             let data = parse_hex(data)?;
-            c.write(id, parse_u16(addr)?, &data)?;
-            println!("wrote {} B at {addr}", data.len());
+            let a = parse_u16(addr)?;
+            if *hold {
+                c.write_hold(id, a, &data)?;
+                println!("staged {} B at {addr} (HOLD; COMMIT applies)", data.len());
+            } else if *noreply {
+                c.write_noreply(id, a, &data)?;
+                println!("sent {} B at {addr} (NOREPLY)", data.len());
+            } else {
+                c.write(id, a, &data)?;
+                println!("wrote {} B at {addr}", data.len());
+            }
+            Ok(())
+        }
+        Cmd::Gread { addr, count, ids } => {
+            let mut c = connect_bus(&cli)?;
+            let ids = ids_or_default(ids, cli.id);
+            let chain = c.gread(&ids, parse_u16(addr)?, *count)?;
+            for s in &chain.statuses {
+                println!(
+                    "slot {} id {:<3} {:?}{}  {}",
+                    s.slot,
+                    s.id,
+                    s.result,
+                    if s.alert { " ALERT" } else { "" },
+                    hex(&s.payload),
+                );
+            }
+            match chain.timeout_slot {
+                Some(slot) => bail!("chain timed out at slot {slot}"),
+                None => Ok(()),
+            }
+        }
+        Cmd::Gwrite {
+            addr,
+            data,
+            ids,
+            hold,
+        } => {
+            let mut c = connect_bus(&cli)?;
+            let ids = ids_or_default(ids, cli.id);
+            let data = parse_hex(data)?;
+            let pairs: Vec<(Id, &[u8])> = ids.iter().map(|&id| (id, data.as_slice())).collect();
+            let a = parse_u16(addr)?;
+            if *hold {
+                c.gwrite_hold(a, data.len() as u8, &pairs)?;
+                println!(
+                    "staged {} B x {} target(s) at {addr} (HOLD; COMMIT applies)",
+                    data.len(),
+                    pairs.len(),
+                );
+            } else {
+                c.gwrite(a, data.len() as u8, &pairs)?;
+                println!(
+                    "sent {} B x {} target(s) at {addr}",
+                    data.len(),
+                    pairs.len()
+                );
+            }
+            Ok(())
+        }
+        Cmd::Commit => {
+            connect_bus(&cli)?.commit()?;
+            println!("committed");
             Ok(())
         }
         Cmd::Profile { cmd } => profile(&mut connect_bus(&cli)?, id, cmd),

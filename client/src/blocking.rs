@@ -102,8 +102,20 @@ impl<P: Pipe> Client<P> {
         block_on(self.0.set_response_deadline(us))
     }
 
-    pub fn set_rails(&mut self, v3v3: bool, v5: bool) -> Result<(), Error> {
+    pub fn set_rails(&mut self, v3v3: bool, v5: bool) -> Result<(bool, bool), Error> {
         block_on(self.0.set_rails(v3v3, v5))
+    }
+
+    pub fn set_rail_3v3(&mut self, on: bool) -> Result<(bool, bool), Error> {
+        block_on(self.0.set_rail_3v3(on))
+    }
+
+    pub fn set_rail_5v(&mut self, on: bool) -> Result<(bool, bool), Error> {
+        block_on(self.0.set_rail_5v(on))
+    }
+
+    pub fn rails(&mut self) -> Result<(bool, bool), Error> {
+        block_on(self.0.rails())
     }
 
     pub fn enter_bootloader(&mut self) -> Result<(), Error> {

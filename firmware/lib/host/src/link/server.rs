@@ -34,6 +34,14 @@ pub enum AdapterRequest {
     SetRails { v3v3: bool, v5: bool },
 }
 
+/// Adapter-level state the server owns: the queued chip request plus the
+/// rails mirror (the server is the rails' only writer after boot, so acks
+/// and masked sets compose against it).
+struct AdapterState {
+    req: Option<AdapterRequest>,
+    rails: u8,
+}
+
 pub struct LinkServer {
     rx: [u8; RX_CAP],
     rx_len: usize,
@@ -41,7 +49,7 @@ pub struct LinkServer {
     active: Option<u16>,
     /// The seq owning the outstanding instrument wire op.
     wire_active: Option<u16>,
-    adapter_req: Option<AdapterRequest>,
+    adapter: AdapterState,
     out: [u8; OUT_CAP],
 }
 
@@ -58,7 +66,10 @@ impl LinkServer {
             rx_len: 0,
             active: None,
             wire_active: None,
-            adapter_req: None,
+            adapter: AdapterState {
+                req: None,
+                rails: record::RAILS_BOOT_STATE,
+            },
             out: [0; OUT_CAP],
         }
     }
@@ -66,7 +77,7 @@ impl LinkServer {
     /// Drain the pending adapter-level request, if any. The chip polls this
     /// after `on_pipe`; the matching ack record is already in the sink.
     pub fn take_adapter_request(&mut self) -> Option<AdapterRequest> {
-        self.adapter_req.take()
+        self.adapter.req.take()
     }
 
     /// Feed bytes as the pipe delivered them (any framing); complete
@@ -147,7 +158,7 @@ impl LinkServer {
             handle(
                 &mut self.active,
                 &mut self.wire_active,
-                &mut self.adapter_req,
+                &mut self.adapter,
                 &self.rx[2..2 + len],
                 bus,
                 &mut self.out,
@@ -163,7 +174,7 @@ impl LinkServer {
 fn handle<P: Providers>(
     active: &mut Option<u16>,
     wire_active: &mut Option<u16>,
-    adapter_req: &mut Option<AdapterRequest>,
+    adapter: &mut AdapterState,
     rec: &[u8],
     bus: &mut HostBus<P>,
     out: &mut [u8],
@@ -174,15 +185,19 @@ fn handle<P: Providers>(
             sink.record(record::info(out, P::Deadline::TICKS_PER_US));
         }
         record::REC_ENTER_BOOTLOADER => {
-            *adapter_req = Some(AdapterRequest::EnterBootloader);
+            adapter.req = Some(AdapterRequest::EnterBootloader);
             sink.record(record::bootloader_ack(out));
         }
         record::REC_SET_RAILS if rec.len() >= 2 => {
-            *adapter_req = Some(AdapterRequest::SetRails {
-                v3v3: rec[1] & 1 != 0,
-                v5: rec[1] & 2 != 0,
-            });
-            sink.record(record::rails_ack(out, rec[1] & 0x03));
+            let mask = rec.get(2).copied().unwrap_or(0b11) & 0b11;
+            adapter.rails = (adapter.rails & !mask) | (rec[1] & mask);
+            if mask != 0 {
+                adapter.req = Some(AdapterRequest::SetRails {
+                    v3v3: adapter.rails & 1 != 0,
+                    v5: adapter.rails & 2 != 0,
+                });
+            }
+            sink.record(record::rails_ack(out, adapter.rails));
         }
         record::REC_WIRE_SEND
         | record::REC_WIRE_BURST
@@ -500,6 +515,38 @@ mod tests {
                 v5: true
             })
         );
+    }
+
+    #[test]
+    fn masked_rails_set_composes_against_the_mirror() {
+        let mut r = rig();
+        // 5V off, 3V3 untouched: boot mirror is both-on.
+        r.server
+            .on_pipe(&rec(&[REC_SET_RAILS, 0b00, 0b10]), &mut r.bus, &mut r.sink);
+        assert_eq!(r.sink.0, vec![vec![2, 0, REC_RAILS_ACK, 0b01]]);
+        assert_eq!(
+            r.server.take_adapter_request(),
+            Some(AdapterRequest::SetRails {
+                v3v3: true,
+                v5: false
+            })
+        );
+        // 3V3 off through the other mask: composed state goes dark.
+        r.server
+            .on_pipe(&rec(&[REC_SET_RAILS, 0b00, 0b01]), &mut r.bus, &mut r.sink);
+        assert_eq!(*r.sink.0.last().unwrap(), vec![2, 0, REC_RAILS_ACK, 0b00]);
+    }
+
+    #[test]
+    fn zero_mask_reads_the_rails_without_driving_them() {
+        let mut r = rig();
+        r.server
+            .on_pipe(&rec(&[REC_SET_RAILS, 0b11, 0b00]), &mut r.bus, &mut r.sink);
+        assert_eq!(
+            r.sink.0,
+            vec![vec![2, 0, REC_RAILS_ACK, record::RAILS_BOOT_STATE]]
+        );
+        assert_eq!(r.server.take_adapter_request(), None);
     }
 
     #[test]

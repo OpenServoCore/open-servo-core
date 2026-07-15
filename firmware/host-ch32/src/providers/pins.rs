@@ -8,7 +8,9 @@
 //! - PA5 = 3V3 header rail enable, ACTIVE LOW (CH217K U4), driven low at
 //!   boot so the DUT side has power. PA5 shares package pin 2 with PA1
 //!   (double bond): PA1 stays an input.
-//! - PB12 = 5V rail enable, left OFF (reset state).
+//! - PB12 = 5V rail enable, ACTIVE LOW (CH217K U3), driven low at boot --
+//!   both rails default ON so a bare adapter powers its bus; the link's
+//!   RAILS_BOOT_STATE mirror must match.
 //! - PB2 = unbonded die pad (datasheet Note 5): input pull-down to stop
 //!   input-buffer leakage.
 //! - PC9 = blue LED, active low. PA8 is its package-pin-12 twin (double
@@ -29,9 +31,11 @@ pub struct Pins;
 
 impl Pins {
     pub fn init() {
-        // Rail first: LOW = 3V3 on, before anything else so the DUT boots.
+        // Rails first: LOW = on, before anything else so the DUTs boot.
         gpio::set_level(GPIOA, 5, false);
         gpio::configure(GPIOA, 5, PinMode::OUTPUT_2MHZ);
+        gpio::set_level(GPIOB, 12, false);
+        gpio::configure(GPIOB, 12, PinMode::OUTPUT_2MHZ);
 
         gpio::set_level(GPIOB, 10, true); // idle-high before the AF block takes the pin
         gpio::configure(GPIOB, 10, PinMode::AF_OPEN_DRAIN_50MHZ);
@@ -59,7 +63,6 @@ pub fn rail_3v3(on: bool) {
 /// fleet power-cycle: off = ping timeout, on = ping complete).
 pub fn rail_5v(on: bool) {
     gpio::set_level(GPIOB, 12, !on);
-    gpio::configure(GPIOB, 12, PinMode::OUTPUT_2MHZ);
 }
 
 /// Bus wire drive for the TX claim window: push-pull drives both edges at

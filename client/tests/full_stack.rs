@@ -197,8 +197,19 @@ fn assign_moves_the_matcher_to_its_new_id() {
 #[test]
 fn rails_and_bootloader_ack() {
     let mut c = fleet(&[1]);
-    c.set_rails(true, false).expect("rails");
+    assert_eq!(c.set_rails(true, false).expect("rails"), (true, false));
     c.enter_bootloader().expect("bootloader");
+}
+
+#[test]
+fn rails_masked_sets_compose_and_read_back() {
+    let mut c = fleet(&[1]);
+    // Boot mirror: both rails on.
+    assert_eq!(c.rails().expect("readback"), (true, true));
+    assert_eq!(c.set_rail_5v(false).expect("5v off"), (true, false));
+    assert_eq!(c.set_rail_3v3(false).expect("3v3 off"), (false, false));
+    assert_eq!(c.set_rail_5v(true).expect("5v on"), (false, true));
+    assert_eq!(c.rails().expect("readback"), (false, true));
 }
 
 #[test]

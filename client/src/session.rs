@@ -105,9 +105,10 @@ impl Session {
         Self::frame(out, &[rec::REC_ENTER_BOOTLOADER]);
     }
 
-    pub fn encode_set_rails(out: &mut Vec<u8>, v3v3: bool, v5: bool) {
-        let state = v3v3 as u8 | (v5 as u8) << 1;
-        Self::frame(out, &[rec::REC_SET_RAILS, state]);
+    /// `mask` selects which rails the state byte applies to (bit0 = 3V3,
+    /// bit1 = 5V); mask 0 reads the state back without driving anything.
+    pub fn encode_set_rails(out: &mut Vec<u8>, state: u8, mask: u8) {
+        Self::frame(out, &[rec::REC_SET_RAILS, state, mask]);
     }
 
     /// Encode a SUBMIT; returns the seq that will tag its answer.

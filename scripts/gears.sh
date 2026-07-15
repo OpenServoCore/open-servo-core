@@ -34,8 +34,8 @@ section "gear 3: bench hardware"
 if [ "${SKIP_BENCH:-0}" = "1" ]; then
   echo "  SKIP_BENCH=1; skipping gear 3"
 elif [ -n "${BENCH_FORCE:-}" ] \
-  || { command -v system_profiler >/dev/null 2>&1 \
-       && system_profiler SPUSBDataType 2>/dev/null | grep -q "osc-adapter"; } \
+  || { command -v ioreg >/dev/null 2>&1 \
+       && ioreg -p IOUSB 2>/dev/null | grep -q "osc-adapter"; } \
   || { command -v lsusb >/dev/null 2>&1 && lsusb 2>/dev/null | grep -qi "1209:0001"; }; then
   # #[serial] already serialises the shared adapter; --test-threads=1 is belt
   # and suspenders. A longer soak: BENCH_BURST_CYCLES=25000.

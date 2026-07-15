@@ -29,11 +29,16 @@ pub const REC_SUBMIT: u8 = 0x01;
 /// pipe, disarms the loader, and resets -- the ack is the last record the
 /// port delivers.
 pub const REC_ENTER_BOOTLOADER: u8 = 0x40;
-/// Bench family: drive the adapter's DUT power rails (the adapter feeds
-/// the bus side's 3V3; 5V is a bench convenience). Body: one state byte,
-/// bit0 = 3V3 on, bit1 = 5V on -- absolute state, so queue last-wins is
-/// sound. Answered by [`REC_RAILS_ACK`] echoing the applied state.
+/// Bench family: drive the adapter's DUT power rails. Body:
+/// `state(1) [mask(1)]` -- bit0 = 3V3, bit1 = 5V; only masked bits apply
+/// (absent mask = both, wire-compatible with the mask-less form; mask 0 =
+/// pure readback). The server keeps the state mirror (it is the rails'
+/// only writer, seeded from [`RAILS_BOOT_STATE`]); the chip applies the
+/// composed absolute state. Answered by [`REC_RAILS_ACK`] carrying it.
 pub const REC_SET_RAILS: u8 = 0x60;
+/// Rails state out of adapter boot: both ON (the pins provider asserts
+/// them before anything else) -- a bare adapter powers its bus.
+pub const RAILS_BOOT_STATE: u8 = 0b11;
 /// Instrument raw TX: one law break + the body's raw bytes, engine command
 /// pipeline bypassed (no Shape validation -- malformed frames are the
 /// point). Body: `seq(2 LE) bytes(1..)`. Answered by [`REC_WIRE_DONE`] at
