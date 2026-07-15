@@ -1,8 +1,9 @@
 //! Walks `ControlTable::FIELDS` and prints a device-description JSON to
-//! stdout. Checked-in output lives at `descriptors/osc-servo-v006.json`;
+//! stdout. Checked-in output lives at `descriptors/osc-servo.json`;
 //! CI regenerates and diffs it to catch drift from the control table.
 
 use control_table::descriptor::FieldKind;
+use osc_protocol::models::{MODEL_OSC_SERVO, class_name, model_class};
 use osc_servo_core::regions::ControlTable;
 use serde::Serialize;
 
@@ -31,7 +32,9 @@ struct Field {
 struct Descriptor {
     format: u32,
     model: &'static str,
+    class: &'static str,
     model_number: u16,
+    firmware_version: u8,
     table_size: usize,
     generator: &'static str,
     fields: Vec<Field>,
@@ -71,14 +74,12 @@ fn build_descriptor() -> Descriptor {
         })
         .collect();
 
-    // Identity block is unseeded at this point in bringup, so model_number
-    // reads 0 here just as it does on the wire from a fresh servo.
-    let model_number = ControlTable::new().config.common.model_number;
-
     Descriptor {
         format: 1,
-        model: "osc-servo-v006",
-        model_number,
+        model: "osc-servo",
+        class: class_name(model_class(MODEL_OSC_SERVO)),
+        model_number: MODEL_OSC_SERVO,
+        firmware_version: osc_servo_core::FIRMWARE_VERSION,
         table_size: core::mem::size_of::<ControlTable>(),
         generator: "cargo run -p table-export (firmware/lib)",
         fields,
@@ -99,6 +100,9 @@ mod tests {
     fn descriptor_covers_all_fields_and_pins_id_bounds() {
         let json = serde_json::to_string(&super::build_descriptor()).unwrap();
         let value: Value = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(value["model_number"], 0x0101);
+        assert!(value["firmware_version"].as_u64().unwrap() >= 1);
 
         let fields = value["fields"].as_array().unwrap();
         assert_eq!(fields.len(), ControlTable::FIELDS.len());

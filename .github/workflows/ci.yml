@@ -33,7 +33,7 @@ jobs:
       - name: cargo test
         run: cargo test --workspace
       - name: descriptor freshness
-        run: cargo run -p table-export > ../../descriptors/osc-servo-v006.json && git diff --exit-code ../../descriptors
+        run: cargo run -p table-export > ../../descriptors/osc-servo.json && git diff --exit-code ../../descriptors
       - name: cargo check --features mocks
         run: cargo check -p osc-servo-drivers --features mocks
       - name: cargo check --features bench
