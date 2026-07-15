@@ -38,21 +38,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         "discover" => {
-            for uid in c.discover()? {
-                println!("uid {uid:?}");
+            for f in c.discover()? {
+                println!("id {:<3} uid {:?}", f.id.as_byte(), f.uid);
             }
         }
         "assign" => {
             let base: u8 = rest.first().ok_or("assign <base_id>")?.parse()?;
-            let mut uids = c.discover()?;
-            uids.sort_by_key(|u| u.0);
-            println!("{} servos found", uids.len());
-            for (i, uid) in uids.iter().enumerate() {
+            let found = c.discover()?;
+            println!("{} servos found", found.len());
+            for (i, f) in found.iter().enumerate() {
                 let id = Id::new(base + i as u8);
-                c.assign(uid, id)?;
-                println!("uid {uid:?} -> id {}", id.as_byte());
+                c.assign(&f.uid, id)?;
+                println!("uid {:?} -> id {}", f.uid, id.as_byte());
             }
-            for (i, _) in uids.iter().enumerate() {
+            for (i, _) in found.iter().enumerate() {
                 let id = Id::new(base + i as u8);
                 match c.ping(id) {
                     Ok(p) => println!("ping {}: model {:#06x} fw {}", id.as_byte(), p.model, p.fw),

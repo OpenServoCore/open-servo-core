@@ -3,18 +3,6 @@
 version = 4
 
 [[package]]
-name = "adapter-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "futures-lite",
- "nusb",
- "osc-host",
- "osc-protocol",
-]
-
-[[package]]
 name = "anstream"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -186,6 +174,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "futures-timer"
+version = "3.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "af43fadb8a98512d547e37b4e92e0ced13e205c061b87b4623eff01d918d6968"
+
+[[package]]
 name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -264,6 +258,27 @@ name = "once_cell_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
+
+[[package]]
+name = "osc"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "osc-client",
+ "osc-protocol",
+]
+
+[[package]]
+name = "osc-client"
+version = "0.1.0"
+dependencies = [
+ "futures-lite",
+ "futures-timer",
+ "nusb",
+ "osc-host",
+ "osc-protocol",
+]
 
 [[package]]
 name = "osc-host"

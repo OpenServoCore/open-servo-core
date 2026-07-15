@@ -15,6 +15,7 @@
 use osc_protocol::crc::osc_crc;
 use osc_protocol::frame::Header;
 use osc_protocol::reply::FrameBuf;
+use osc_protocol::table::{PROFILE_SPANS_PER_SLOT, profile_slot_addr, profile_span_word};
 use osc_protocol::wire::{Id, Inst, MgmtOp, Opcode, ResultCode, UID_LEN};
 
 use crate::edges::BStamp;
@@ -59,28 +60,6 @@ pub fn build_read(id: u8, addr: u16, len: u16) -> Vec<u8> {
     payload[..2].copy_from_slice(&addr.to_le_bytes());
     payload[2..].copy_from_slice(&len.to_le_bytes());
     build_instruction(id, Opcode::Read, 0, &payload)
-}
-
-/// PROFILE region base in the flat table (osc-servo-core `regions::PROFILE_BASE_ADDR`;
-/// pinned here to keep the heavy core crate out of the bench build).
-pub const PROFILE_BASE_ADDR: u16 = 0x280;
-/// Span words per profile slot (osc-servo-core `regions::profile::SPANS_PER_SLOT`).
-pub const PROFILE_SPANS_PER_SLOT: usize = 8;
-
-/// Packed profile span word `[addr:10][count:6]` (protocol sec 5.2; mirrors osc-servo-core
-/// `regions::profile::span_word`). `count = 0` = word disabled.
-pub const fn profile_span_word(addr: u16, count: u8) -> u16 {
-    (addr << 6) | (count as u16 & 0x3F)
-}
-
-/// Split a packed span word back into `(addr, count)`.
-pub const fn profile_span_split(word: u16) -> (u16, u8) {
-    (word >> 6, (word & 0x3F) as u8)
-}
-
-/// Table byte address of `slot`'s first span word.
-pub const fn profile_slot_addr(slot: u8) -> u16 {
-    PROFILE_BASE_ADDR + slot as u16 * (PROFILE_SPANS_PER_SLOT as u16 * 2)
 }
 
 /// WRITE that configures one whole profile slot: the given spans, remaining
@@ -309,13 +288,6 @@ mod tests {
     fn build_ping_matches_wire_vector() {
         // CRC-16/ARC over `01 03 10` = 0xFC50 (osc-native-protocol.md sec 3.2).
         assert_eq!(build_ping(1), [0x01, 0x03, 0x10, 0x50, 0xFC]);
-    }
-
-    #[test]
-    fn profile_span_word_round_trips() {
-        let w = profile_span_word(0x208, 63);
-        assert_eq!(profile_span_split(w), (0x208, 63));
-        assert_eq!(profile_span_split(profile_span_word(1023, 1)), (1023, 1));
     }
 
     #[test]

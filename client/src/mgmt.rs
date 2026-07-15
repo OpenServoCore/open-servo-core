@@ -55,10 +55,17 @@ fn with_bit(prefix: &[u8; UID_LEN], k: u8, v: bool) -> [u8; UID_LEN] {
     p
 }
 
+/// One discovered node: the UID that answered and the id it answered from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Found {
+    pub uid: Uid,
+    pub id: Id,
+}
+
 enum Verdict {
     /// One clean status carrying a full UID; unconfirmed until its children
     /// agree (superimposed twins can read back as one clean frame).
-    Candidate(Uid),
+    Candidate(Found),
     /// Garble, trailing energy, or multiple statuses: descend.
     Collision,
     /// Quiet subtree.
@@ -82,7 +89,10 @@ async fn probe<P: Pipe>(
             // A reply that does not extend the probe's own prefix is
             // superposition garbage wearing a clean CRC, not a matcher.
             if matches_prefix(&uid, prefix, len) {
-                Verdict::Candidate(Uid(uid))
+                Verdict::Candidate(Found {
+                    uid: Uid(uid),
+                    id: Id::new(s.id),
+                })
             } else {
                 Verdict::Collision
             }
@@ -118,7 +128,7 @@ async fn probe_settled<P: Pipe>(
 /// probes per servo. A full-depth collision verdict is retried (slot draws
 /// re-roll per probe); a leaf that never resolves is skipped rather than
 /// failing the walk.
-pub async fn discover<P: Pipe>(c: &mut Client<P>) -> Result<Vec<Uid>, Error> {
+pub async fn discover<P: Pipe>(c: &mut Client<P>) -> Result<Vec<Found>, Error> {
     // Roster-stability contract: two consecutive walks must agree. A walk
     // can only UNDERCOUNT (a parked fleet reads as silence; phantoms die at
     // the confirm probes), and the mute occasionally swallows subtrees
@@ -139,24 +149,26 @@ pub async fn discover<P: Pipe>(c: &mut Client<P>) -> Result<Vec<Uid>, Error> {
     Ok(prev)
 }
 
-async fn walk<P: Pipe>(c: &mut Client<P>) -> Result<Vec<Uid>, Error> {
+async fn walk<P: Pipe>(c: &mut Client<P>) -> Result<Vec<Found>, Error> {
     const FULL: u8 = (UID_LEN * 8) as u8;
     const FULL_DEPTH_RETRIES: usize = 3;
-    let mut found = Vec::new();
+    let mut found: Vec<Found> = Vec::new();
     let mut stack = vec![(0u8, [0u8; UID_LEN])];
     while let Some((len, prefix)) = stack.pop() {
         match probe_settled(c, len, &prefix).await? {
             Verdict::Empty => {}
-            Verdict::Candidate(uid) if len == FULL => found.push(uid),
-            Verdict::Candidate(uid) => {
+            Verdict::Candidate(node) if len == FULL => found.push(node),
+            Verdict::Candidate(node) => {
                 // Confirm: the uid's own child must re-elect it and the
                 // sibling must be empty; anything else means the clean frame
                 // was superimposed twins -- descend normally.
-                let b = bit(&uid.0, len);
+                let b = bit(&node.uid.0, len);
                 let own = probe_settled(c, len + 1, &with_bit(&prefix, len, b)).await?;
                 let sib = probe_settled(c, len + 1, &with_bit(&prefix, len, !b)).await?;
                 match (own, sib) {
-                    (Verdict::Candidate(u2), Verdict::Empty) if u2 == uid => found.push(uid),
+                    (Verdict::Candidate(n2), Verdict::Empty) if n2.uid == node.uid => {
+                        found.push(n2)
+                    }
                     _ => {
                         stack.push((len + 1, with_bit(&prefix, len, false)));
                         stack.push((len + 1, with_bit(&prefix, len, true)));
@@ -168,8 +180,8 @@ async fn walk<P: Pipe>(c: &mut Client<P>) -> Result<Vec<Uid>, Error> {
                 // draws re-roll per probe, so retry before giving up.
                 let mut resolved = false;
                 for _ in 0..FULL_DEPTH_RETRIES {
-                    if let Verdict::Candidate(uid) = probe(c, len, &prefix).await? {
-                        found.push(uid);
+                    if let Verdict::Candidate(node) = probe(c, len, &prefix).await? {
+                        found.push(node);
                         resolved = true;
                         break;
                     }
@@ -185,8 +197,37 @@ async fn walk<P: Pipe>(c: &mut Client<P>) -> Result<Vec<Uid>, Error> {
             }
         }
     }
-    found.sort();
+    found.sort_by_key(|f| f.uid);
     Ok(found)
+}
+
+/// Whether anything answers a root ENUM probe at the current rate -- a
+/// collision counts: garble still means servos are present. Silence is
+/// re-probed settled (the walk's hardening) before trusting it.
+pub async fn bus_present<P: Pipe>(c: &mut Client<P>) -> Result<bool, Error> {
+    Ok(!matches!(
+        probe_settled(c, 0, &[0u8; UID_LEN]).await?,
+        Verdict::Empty
+    ))
+}
+
+/// Find the bus rate by ENUM probe: the 1M protocol default first, then the
+/// remaining rates ascending. Leaves the host at the found rate (at the last
+/// probed rate when nothing answered).
+pub async fn find_bus_baud<P: Pipe>(c: &mut Client<P>) -> Result<Option<BaudRate>, Error> {
+    const ORDER: [BaudRate; 4] = [
+        BaudRate::B1000000,
+        BaudRate::B500000,
+        BaudRate::B2000000,
+        BaudRate::B3000000,
+    ];
+    for rate in ORDER {
+        c.host_baud(rate).await?;
+        if bus_present(c).await? {
+            return Ok(Some(rate));
+        }
+    }
+    Ok(None)
 }
 
 /// Broadcast ASSIGN: the sole UID matcher takes `new_id` and acks from it.

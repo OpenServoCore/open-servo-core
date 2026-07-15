@@ -1,5 +1,5 @@
-//! Host-side discovery: the protocol sec 9.2 prefix-tree walk over broadcast ENUM, and
-//! the per-baud bus probe built on it. Push-pull UART has no dominant-bit
+//! Hardware-suite discovery: the protocol sec 9.2 prefix-tree walk over
+//! broadcast ENUM. Push-pull UART has no dominant-bit
 //! arbitration, so simultaneous ENUM responses arrive as garbage -- and
 //! garbage IS the collision signal that drives the descent. Probes ride
 //! the adapter's engine (SUBMIT), whose terminal evidence (statuses,
@@ -12,7 +12,6 @@ use anyhow::{Result, bail};
 use osc_protocol::wire::{Id, Inst, MgmtOp, Opcode, ResultCode, UID_LEN};
 
 use crate::wire::Wire;
-use crate::{BOOT_BAUD, SUPPORTED_BAUDS};
 
 /// Post-collision settle (protocol sec 8 pacing; the client walk's
 /// fleet-measured margin).
@@ -20,7 +19,7 @@ const PROBE_SETTLE: Duration = Duration::from_millis(5);
 
 /// What one broadcast ENUM query drew from the bus.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum EnumOutcome {
+enum EnumOutcome {
     /// Nothing answered: empty subtree.
     Silent,
     /// Exactly one servo matched and answered cleanly.
@@ -32,7 +31,7 @@ pub enum EnumOutcome {
 /// One broadcast ENUM exchange, classified from the engine's terminal
 /// evidence. `prefix` carries `ceil(prefix_len/8)` LSB-first bytes
 /// (protocol sec 9.2).
-pub fn enum_query(w: &mut Wire, prefix_len: u8, prefix: &[u8]) -> Result<EnumOutcome> {
+fn enum_query(w: &mut Wire, prefix_len: u8, prefix: &[u8]) -> Result<EnumOutcome> {
     let mut payload = vec![MgmtOp::Enum as u8, prefix_len];
     payload.extend_from_slice(prefix);
     let inst = Inst::instruction(Opcode::Mgmt, 0);
@@ -142,25 +141,6 @@ fn extend(len: u8, prefix: &[u8], bit: bool) -> (u8, Vec<u8>) {
         p[(len / 8) as usize] |= 1 << (len % 8);
     }
     (len + 1, p)
-}
-
-/// Whether anything answers ENUM at the current baud -- a collision counts:
-/// garble still means servos are present.
-pub fn bus_present(w: &mut Wire) -> Result<bool> {
-    Ok(enum_query(w, 0, &[])? != EnumOutcome::Silent)
-}
-
-/// Find the bus by ENUM probe: the boot baud first (the common case), then
-/// the remaining rates ascending. Leaves the client at the found baud.
-pub fn find_bus_baud(w: &mut Wire) -> Result<Option<u32>> {
-    let rest = SUPPORTED_BAUDS.iter().copied().filter(|&b| b != BOOT_BAUD);
-    for baud in std::iter::once(BOOT_BAUD).chain(rest) {
-        w.set_baud(baud)?;
-        if bus_present(w)? {
-            return Ok(Some(baud));
-        }
-    }
-    Ok(None)
 }
 
 #[cfg(test)]

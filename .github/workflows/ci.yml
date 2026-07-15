@@ -188,12 +188,12 @@ jobs:
       - name: cargo build (nusb backend)
         run: cargo build
 
-  adapter-cli:
-    name: build (tools/adapter-cli)
+  osc-cli:
+    name: build (tools/osc)
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: tools/adapter-cli
+        working-directory: tools/osc
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust (nightly + clippy + rustfmt)
@@ -202,7 +202,7 @@ jobs:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: tools/adapter-cli
+          workspaces: tools/osc
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
       - name: cargo clippy

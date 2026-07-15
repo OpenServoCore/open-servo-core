@@ -25,10 +25,12 @@ silicon-only properties, not on logic.
 scripts/gears.sh
 ```
 
-Gears 1 and 2 are deterministic and need no hardware. Gear 3 needs a uart-pirate
-and a flashed V006; the script auto-detects the pirate and **skips** gear 3
-(rather than failing) when no rig is attached. Force-skip with `SKIP_BENCH=1`;
-point at a specific pirate with `BENCH_PORT=/dev/tty…`.
+Gears 1 and 2 are deterministic and need no hardware. Gear 3 needs an
+osc-adapter with a flashed V006 on its bus; the script auto-detects the adapter
+by its USB identity and **skips** gear 3 (rather than failing) when no rig is
+attached. Force-skip with `SKIP_BENCH=1`; force-run with `BENCH_FORCE=1`. The
+suite targets servo id 1 at the 1 M boot baud by default; override with
+`BENCH_ID` / `BENCH_BAUD`.
 
 The gears map to plain cargo invocations if you want to run one directly:
 
@@ -40,9 +42,12 @@ The gears map to plain cargo invocations if you want to run one directly:
 
 ## Gear 3 in detail
 
-The hardware suite drives a single flashed V006 over the pirate and asserts on
-the pirate's captured stamp stream — no wlink, no chip-counter reads; the wire is
-the failure surface. It sweeps the full baud matrix (0.5M / 1M / 2M / 3M).
+The hardware suite drives a flashed V006 through the osc-adapter and asserts
+on the wire itself: the adapter's timer captures every edge on the bus pin
+(its own TX included) and the bench decodes those edges into byte+tick stamps
+host-side, so assertions run on what the wire did, not on what any UART
+thinks it heard. No wlink, no chip-counter reads; the wire is the failure
+surface. The suite sweeps the full baud matrix (0.5 M / 1 M / 2 M / 3 M).
 
 - **turnaround** (`turnaround.rs`) — THE metric: instruction wire-end → status
   break fall, per baud, gated for ping AND read AND write. 1 M is the tuned
@@ -54,14 +59,19 @@ the failure surface. It sweeps the full baud matrix (0.5M / 1M / 2M / 3M).
   the full field-recovery flow (rescue → prefix-walk → ASSIGN → SAVE → reboot
   → FACTORY). Both tests end with a rescue-based recovery tail so a transient
   capture dropout never strands the bench unit.
+- **trim** (`trim.rs`) - the §9.3 clock discipline on real oscillators: CAL
+  trains converge the DUT's trim, the lying-train probe pins plant direction,
+  and the host-detune probe (an off-catalog rate one BRR step from nominal)
+  exercises the differential tracker.
 - **hot loop** (`hot_loop.rs`) — the production `[GWRITE(HOLD), COMMIT, GREAD]`
   zero-gap loop, the silicon twin of the DES `hot_loop` suite. The GREAD must
   read back the just-committed value every cycle; a stale read-back is a
   silently-dropped frame.
 - **plain flood** (`hot_loop.rs`) — an aggressive `[WRITE(NOREPLY) × 8, READ]`
   flood that surfaces the low-baud framer floor.
-- **ping / read / write / hold_commit / silence** — the single-servo
-  instruction-set happy path.
+- **ping / read / write / hold_commit / chain / profile / mgmt / silence** -
+  the single-servo instruction set, coordinated reads, and the management
+  plane happy paths.
 
 Longer soak: `BENCH_BURST_CYCLES=25000 scripts/gears.sh`.
 
@@ -79,5 +89,7 @@ signal too.
 
 The `tool-*` binaries in `tools/bench/src/bin` are the forensic instruments
 behind these tests — `tool-burst` shares the exact cycle engine the hot-loop
-test asserts on; `tool-reply-edges` dumps the IC edges when a reply artifact
-needs root-causing.
+test asserts on; `tool-snoop` passively dumps the decoded edge capture when
+a wire artifact needs root-causing. Bus operation (discovery, provisioning,
+rescue, calibration) is the `osc` CLI's job (`tools/osc`, built on
+osc-client), not the bench's.

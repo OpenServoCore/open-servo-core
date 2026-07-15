@@ -140,4 +140,22 @@ mod tests {
             table::TELEMETRY_COMMON_END
         );
     }
+
+    /// Pins the profile region to its protocol sec 5.4 address pin and its
+    /// sec 5.2 slot geometry.
+    #[test]
+    fn profile_region_matches_the_protocol() {
+        use super::profile;
+        assert_eq!(super::PROFILE_BASE_ADDR, table::PROFILE_START);
+        assert_eq!(
+            super::PROFILE_BASE_ADDR + super::PROFILE_REGION_SIZE,
+            table::PROFILE_END
+        );
+        assert_eq!(profile::PROFILE_SLOTS, table::PROFILE_SLOTS);
+        assert_eq!(profile::SPANS_PER_SLOT, table::PROFILE_SPANS_PER_SLOT);
+        assert_eq!(
+            profile::span_word(0x208, 63),
+            table::profile_span_word(0x208, 63)
+        );
+    }
 }

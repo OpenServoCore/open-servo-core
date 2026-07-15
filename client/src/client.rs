@@ -227,6 +227,16 @@ impl<P: Pipe> Client<P> {
         Ok(status.payload)
     }
 
+    /// Single-target PROFILE read (sec 5.2): the payload names a slot the
+    /// target pre-configured; the reply streams its gathered spans.
+    pub async fn read_profile(&mut self, id: Id, slot: u8) -> Result<Vec<u8>, Error> {
+        let mut p = [0u8; 1];
+        let n = build::read_profile(&mut p, slot).ok_or(Error::Servo(ResultCode::Range))?;
+        let inst = Inst::instruction(Opcode::Read, Inst::FLAG_PROFILE);
+        let status = Self::sole_ok(self.exchange(id, inst, &p[..n]).await?)?;
+        Ok(status.payload)
+    }
+
     pub async fn write(&mut self, id: Id, addr: u16, data: &[u8]) -> Result<(), Error> {
         self.write_flags(id, addr, data, 0).await
     }
