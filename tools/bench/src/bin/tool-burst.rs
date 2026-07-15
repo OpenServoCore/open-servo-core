@@ -18,11 +18,10 @@
 
 use anyhow::Result;
 use bench::cli::{Connect, Target, gate_fail_rate, print_conn};
-use bench::edges::BStamp;
 use bench::osc::{build_instruction, build_read, gread_uniform_payload, gwrite_uniform_payload};
 use bench::run::{
-    BurstCycle, CycleObservation, CycleOutcome, Stats, burst_measure_observed, hot_loop_cycle,
-    plain_flood_cycle,
+    BurstCycle, CycleObservation, CycleOutcome, Stats, burst_measure_observed, dump_stamps,
+    hot_loop_cycle, plain_flood_cycle,
 };
 use clap::Parser;
 use osc_protocol::wire::{Inst, Opcode};
@@ -137,27 +136,6 @@ fn cycle_for(args: &Args, value: i32) -> BurstCycle {
     } else {
         hot_loop_cycle(id, addr, value)
     }
-}
-
-fn dump_stamps(c: u32, stamps: &[BStamp], bit_ticks: u32) {
-    println!("--- cycle {c} stamps ({}):", stamps.len());
-    let mut prev: Option<u32> = None;
-    for st in stamps {
-        // `^` = break stamp (law-derived fall tick); data stamps print bare.
-        let mark = match st.flags {
-            0 => "",
-            2 => "^",
-            _ => "?",
-        };
-        let d = prev.map(|p| st.tick.wrapping_sub(p) as f64 / bit_ticks as f64);
-        match d {
-            Some(d) if d > 12.0 => println!("  {:02x}{mark} +{d:8.1}b", st.byte),
-            Some(_) => print!(" {:02x}{mark}", st.byte),
-            None => print!("  {:02x}{mark}", st.byte),
-        }
-        prev = Some(st.tick);
-    }
-    println!();
 }
 
 fn main() -> Result<()> {

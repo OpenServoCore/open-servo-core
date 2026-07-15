@@ -26,7 +26,9 @@ pub struct Report {
 
 /// Run `count` exchanges of `wire` and collect turnaround in us. `settle_ms`
 /// must cover the reply's wire time plus servo latency. `check` validates the
-/// decoded exchange (payload length, result code) before it counts.
+/// decoded exchange (payload length, result code) before it counts. Failures
+/// always print with their stamp stream (see [`burst_measure`]); `verbose`
+/// adds the per-exchange turnaround lines.
 pub fn measure(
     w: &mut Wire,
     wire: &[u8],
@@ -43,7 +45,11 @@ pub fn measure(
     for i in 0..count {
         // No retry: a first-exchange (or any) failure is a real signal, not a
         // flake to paper over.
-        match attempt(w, wire, bit_ticks, settle_ms, &check) {
+        let stamps = send_and_drain(w, wire, settle_ms)?;
+        let res = parse_exchange(&stamps, wire, bit_ticks)
+            .map_err(|e| anyhow!("{e}"))
+            .and_then(|ex| check(&ex).map(|()| ex.turnaround_ticks));
+        match res {
             Ok(ticks) => {
                 let us = ticks as f64 / hz_per_us as f64;
                 ok.push(us);
@@ -53,26 +59,12 @@ pub fn measure(
             }
             Err(e) => {
                 fail += 1;
-                if verbose {
-                    println!("exchange {i:>4}  FAIL: {e}");
-                }
+                println!("exchange {i:>4}  FAIL: {e}");
+                dump_stamps(i, &stamps, bit_ticks);
             }
         }
     }
     Ok(Report { ok, fail })
-}
-
-fn attempt(
-    w: &mut Wire,
-    wire: &[u8],
-    bit_ticks: u32,
-    settle_ms: u64,
-    check: &impl Fn(&Exchange) -> Result<()>,
-) -> Result<u32> {
-    let stamps = send_and_drain(w, wire, settle_ms)?;
-    let ex = parse_exchange(&stamps, wire, bit_ticks).map_err(|e| anyhow!("{e}"))?;
-    check(&ex)?;
-    Ok(ex.turnaround_ticks)
 }
 
 /// Clear stale capture, send `wire`, and poll-drain the exchange across
@@ -251,7 +243,10 @@ impl BurstReport {
 
 /// Bombard the bus with `count` zero-gap bursts and tally the silicon failure
 /// modes. `build(value)` produces each cycle's frames; see
-/// [`burst_measure_observed`] for the value schedule and observer.
+/// [`burst_measure_observed`] for the value schedule and observer. Every
+/// failing cycle prints its outcome and stamp stream -- the tally alone
+/// cannot say WHERE a run glitched or what the wire looked like, and a
+/// suite failure without that evidence costs a whole repro session.
 pub fn burst_measure(
     w: &mut Wire,
     count: u32,
@@ -259,7 +254,34 @@ pub fn burst_measure(
     paced: bool,
     build: impl Fn(i32) -> BurstCycle,
 ) -> Result<BurstReport> {
-    burst_measure_observed(w, count, settle_ms, paced, build, |_| {})
+    burst_measure_observed(w, count, settle_ms, paced, build, |obs| {
+        if !matches!(obs.outcome, CycleOutcome::Ok { .. }) {
+            println!("cycle {:>5}  {:?}", obs.index, obs.outcome);
+            dump_stamps(obs.index, obs.stamps, obs.bit_ticks);
+        }
+    })
+}
+
+/// Print one cycle's stamp stream: byte hex in wire order, `^` marking
+/// break stamps, gaps over 12 bit-times as `+N.Nb` deltas.
+pub fn dump_stamps(c: u32, stamps: &[BStamp], bit_ticks: u32) {
+    println!("--- cycle {c} stamps ({}):", stamps.len());
+    let mut prev: Option<u32> = None;
+    for st in stamps {
+        let mark = match st.flags {
+            0 => "",
+            2 => "^",
+            _ => "?",
+        };
+        let d = prev.map(|p| st.tick.wrapping_sub(p) as f64 / bit_ticks as f64);
+        match d {
+            Some(d) if d > 12.0 => println!("  {:02x}{mark} +{d:8.1}b", st.byte),
+            Some(_) => print!(" {:02x}{mark}", st.byte),
+            None => print!("  {:02x}{mark}", st.byte),
+        }
+        prev = Some(st.tick);
+    }
+    println!();
 }
 
 /// [`burst_measure`] with a per-cycle `observe` callback for verbose/dump.
