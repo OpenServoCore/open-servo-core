@@ -50,7 +50,7 @@ pub enum Record {
         tick: u32,
     },
     /// One edge drain: capture-order ticks (engine domain low 16 bits),
-    /// `now` = the 32-bit drain moment, the unwrap reference.
+    /// `now` = the 32-bit drain moment (the unwrap's anchor floor).
     Edges {
         overflow: bool,
         now: u32,
