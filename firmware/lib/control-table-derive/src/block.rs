@@ -86,6 +86,7 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let mut cmp_rules: Vec<TokenStream2> = Vec::new();
     let mut allowed_rules: Vec<TokenStream2> = Vec::new();
     let mut writable: Vec<TokenStream2> = Vec::new();
+    let mut field_descs: Vec<TokenStream2> = Vec::new();
     let mut size_terms: Vec<TokenStream2> = Vec::new();
     let mut new_inits: Vec<TokenStream2> = Vec::new();
     let mut kept_idents: Vec<&Ident> = Vec::new();
@@ -153,11 +154,28 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
             writable.push(quote!((#rel_addr, ::core::mem::size_of::<#ty>() as u16)));
         }
 
+        let name_str = name.to_string();
+        let kind = field_kind(ty);
+        let (min, max) = field_bounds(name, &attrs.compares, attrs.abs)?;
+        let writable_flag = !is_ro;
+        field_descs.push(quote! {
+            ::control_table::descriptor::FieldDesc {
+                name: #name_str,
+                addr: #rel_addr,
+                width: ::core::mem::size_of::<#ty>() as u16,
+                writable: #writable_flag,
+                kind: #kind,
+                min: #min,
+                max: #max,
+            }
+        });
+
         kept_upper.push(Ident::new(&name.to_string().to_uppercase(), name.span()));
         kept_idents.push(name);
     }
 
     let n_writable = writable.len();
+    let n_fields = field_descs.len();
     let n_cmp = cmp_rules.len();
     let n_allowed = allowed_rules.len();
     let meta_macro = Ident::new(
@@ -177,6 +195,11 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
                 [#(#cmp_rules),*];
             pub const CT_ALLOWED_RULES: [::control_table::rules::AllowedRule; #n_allowed] =
                 [#(#allowed_rules),*];
+
+            // Block-relative field descriptors; the Section derive rebases
+            // `addr` into table-absolute form.
+            pub const CT_FIELDS: [::control_table::descriptor::FieldDesc; #n_fields] =
+                [#(#field_descs),*];
         }
 
         #[allow(clippy::new_without_default)]
@@ -434,6 +457,77 @@ fn cmp_width_signed(ty: &Type) -> syn::Result<(u8, bool)> {
     Err(syn::Error::new(
         ty.span(),
         "compare clauses require a primitive integer (u8/u16/i8/i16/i32)",
+    ))
+}
+
+/// Descriptor `kind` token for a field type, mirroring the runtime helpers:
+/// `bool` -> Bool; unsigned ints -> UInt; signed ints -> Int; floats and
+/// arrays -> Bytes (no Float kind, none exist in tables); any other path type
+/// -> `Enum(<Ty as HasAllowed>::VARIANTS)`.
+fn field_kind(ty: &Type) -> TokenStream2 {
+    if let Type::Array(_) = ty {
+        return quote!(::control_table::descriptor::FieldKind::Bytes);
+    }
+    if let Type::Path(tp) = ty
+        && let Some(ident) = tp.path.get_ident()
+    {
+        match ident.to_string().as_str() {
+            "bool" => return quote!(::control_table::descriptor::FieldKind::Bool),
+            "u8" | "u16" | "u32" | "u64" | "u128" | "usize" => {
+                return quote!(::control_table::descriptor::FieldKind::UInt);
+            }
+            "i8" | "i16" | "i32" | "i64" | "i128" | "isize" => {
+                return quote!(::control_table::descriptor::FieldKind::Int);
+            }
+            "f32" | "f64" => return quote!(::control_table::descriptor::FieldKind::Bytes),
+            _ => {}
+        }
+    }
+    let Type::Path(tp) = ty else {
+        return quote!(::control_table::descriptor::FieldKind::Bytes);
+    };
+    let path = &tp.path;
+    quote!(::control_table::descriptor::FieldKind::Enum(
+        <#path as ::control_table::HasAllowed>::VARIANTS
+    ))
+}
+
+/// Descriptor `(min, max)` tokens from a field's compare clauses. Only
+/// immediate right-hand sides contribute: a register RHS names another field,
+/// and abs bounds are `|x|` bounds, not plain scalar bounds - both export as
+/// `None`. `gt`/`lt` fold to inclusive by +/-1; `eq`/`ne` contribute nothing.
+/// Two immediates on the same side of one field is an error, not last-wins.
+fn field_bounds(
+    name: &Ident,
+    compares: &[(CmpOp, Expr)],
+    abs: bool,
+) -> syn::Result<(TokenStream2, TokenStream2)> {
+    let mut min: Option<TokenStream2> = None;
+    let mut max: Option<TokenStream2> = None;
+    if !abs {
+        for (op, expr) in compares {
+            if let Expr::Reference(_) = expr {
+                continue;
+            }
+            let (slot, val) = match op {
+                CmpOp::Ge => (&mut min, quote!(Some((#expr) as i32))),
+                CmpOp::Gt => (&mut min, quote!(Some(((#expr) as i32) + 1))),
+                CmpOp::Le => (&mut max, quote!(Some((#expr) as i32))),
+                CmpOp::Lt => (&mut max, quote!(Some(((#expr) as i32) - 1))),
+                CmpOp::Eq | CmpOp::Ne => continue,
+            };
+            if slot.is_some() {
+                return Err(syn::Error::new(
+                    name.span(),
+                    "two immediate bounds on the same side of one field",
+                ));
+            }
+            *slot = Some(val);
+        }
+    }
+    Ok((
+        min.unwrap_or_else(|| quote!(None)),
+        max.unwrap_or_else(|| quote!(None)),
     ))
 }
 

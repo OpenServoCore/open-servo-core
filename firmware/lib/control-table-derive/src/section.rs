@@ -74,6 +74,7 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     let n_writable = quote!(0 #(+ <#block_tys>::CT_WRITABLE.len())*);
     let n_cmp = quote!(0 #(+ <#block_tys>::CT_CMP_RULES.len())*);
     let n_allowed = quote!(0 #(+ <#block_tys>::CT_ALLOWED_RULES.len())*);
+    let n_fields = quote!(0 #(+ <#block_tys>::CT_FIELDS.len())*);
 
     // Blocks in declaration order (= address order): preserves the old
     // sorted-by-offset first-failure precedence. Only `addr` is rebased into
@@ -95,6 +96,12 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         .iter()
         .zip(&base_exprs)
         .map(|(ty, base_expr)| rebase_rule(quote!(<#ty>::CT_ALLOWED_RULES), base_expr))
+        .collect();
+
+    let fields_copy: Vec<TokenStream2> = block_tys
+        .iter()
+        .zip(&base_exprs)
+        .map(|(ty, base_expr)| rebase_rule(quote!(<#ty>::CT_FIELDS), base_expr))
         .collect();
 
     let writable_copy: Vec<TokenStream2> = block_tys
@@ -171,6 +178,13 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
                     [::control_table::rules::AllowedRule { addr: 0, allowed: &[] }; #n_allowed];
                 let mut __n = 0;
                 #(#allowed_copy)*
+                out
+            };
+
+            pub const CT_FIELDS_ABS: [::control_table::descriptor::FieldDesc; #n_fields] = {
+                let mut out = [::control_table::descriptor::FieldDesc::EMPTY; #n_fields];
+                let mut __n = 0;
+                #(#fields_copy)*
                 out
             };
 

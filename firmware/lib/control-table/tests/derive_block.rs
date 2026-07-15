@@ -1,5 +1,6 @@
 #![feature(sync_unsafe_cell)]
 
+use control_table::descriptor::{EnumVariant, FieldKind};
 use control_table::{Block, Enum, Error, RegisterFile, Table, ValidationKind};
 use core::mem::{offset_of, size_of};
 
@@ -41,6 +42,57 @@ fn writable_covers_every_rw_field() {
             (offset_of!(Basic, d) as u16, 1),
         ]
     );
+}
+
+#[test]
+fn ct_fields_carry_name_addr_width_writable_and_kind() {
+    let f = Basic::CT_FIELDS;
+    // Every kept field, in declaration order.
+    assert_eq!(f.len(), 5);
+
+    assert_eq!(f[0].name, "b");
+    assert_eq!(f[0].addr, offset_of!(Basic, b) as u16);
+    assert_eq!(f[0].width, 2);
+    assert!(f[0].writable);
+    assert_eq!(f[0].kind, FieldKind::UInt);
+
+    assert_eq!(f[1].name, "a");
+    assert_eq!(f[1].width, 1);
+    assert_eq!(f[1].kind, FieldKind::UInt);
+
+    assert_eq!(f[2].name, "c");
+    assert_eq!(f[2].kind, FieldKind::Bool);
+
+    assert_eq!(f[3].name, "mode");
+    assert_eq!(f[3].addr, offset_of!(Basic, mode) as u16);
+    assert_eq!(
+        f[3].kind,
+        FieldKind::Enum(&[
+            EnumVariant {
+                name: "Stop",
+                value: 0
+            },
+            EnumVariant {
+                name: "Go",
+                value: 1
+            },
+        ])
+    );
+
+    assert_eq!(f[4].name, "d");
+    // No bounds on any Basic field.
+    assert!(f.iter().all(|d| d.min.is_none() && d.max.is_none()));
+}
+
+#[test]
+fn ct_fields_int_kind_and_ro_flag() {
+    // Access block: ro fields keep a descriptor but export writable = false.
+    let f = Access::CT_FIELDS;
+    let ro = f.iter().find(|d| d.name == "ro_field").unwrap();
+    assert!(!ro.writable);
+    assert_eq!(ro.kind, FieldKind::UInt);
+    let rw = f.iter().find(|d| d.name == "rw_field").unwrap();
+    assert!(rw.writable);
 }
 
 // Behavioral coverage of the generated `ct_check`: enum, an immediate compare, a
@@ -120,6 +172,37 @@ fn ct_check_write_outcomes() {
 
     // ro field rejected by the writable mask.
     assert_eq!(t.write(a::RO, &[0]), Err(Error::AccessError));
+}
+
+#[test]
+fn ct_fields_fold_immediate_bounds_only() {
+    // ratio le=100 -> max Some(100); trim abs -> both None; target register
+    // RHS -> both None.
+    let f = Checks::CT_FIELDS;
+    let ratio = f.iter().find(|d| d.name == "ratio").unwrap();
+    assert_eq!(ratio.min, None);
+    assert_eq!(ratio.max, Some(100));
+    let trim = f.iter().find(|d| d.name == "trim").unwrap();
+    assert_eq!((trim.min, trim.max), (None, None));
+    let target = f.iter().find(|d| d.name == "target").unwrap();
+    assert_eq!((target.min, target.max), (None, None));
+}
+
+#[repr(C)]
+#[derive(Block)]
+struct Exclusive {
+    #[ct_field(gt = 3i16, lt = 10i16)]
+    span: i16,
+}
+
+#[test]
+fn ct_fields_exclusive_bounds_fold_inclusive() {
+    // gt/lt shift by +/-1 into inclusive min/max.
+    let f = Exclusive::CT_FIELDS;
+    assert_eq!(f[0].name, "span");
+    assert_eq!(f[0].kind, FieldKind::Int);
+    assert_eq!(f[0].min, Some(4));
+    assert_eq!(f[0].max, Some(9));
 }
 
 #[repr(C)]

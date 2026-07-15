@@ -16,6 +16,7 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
     };
 
     let mut variant_idents: Vec<&Ident> = Vec::new();
+    let mut variant_names: Vec<String> = Vec::new();
     let mut default_variant: Option<&Ident> = None;
     for v in &e.variants {
         if !matches!(v.fields, Fields::Unit) {
@@ -27,6 +28,7 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
         if v.attrs.iter().any(|a| a.path().is_ident("default")) {
             default_variant = Some(&v.ident);
         }
+        variant_names.push(v.ident.to_string());
         variant_idents.push(&v.ident);
     }
 
@@ -51,6 +53,12 @@ pub fn expand(input: &DeriveInput) -> syn::Result<TokenStream2> {
 
         impl ::control_table::HasAllowed for #enum_ty {
             const ALLOWED: &'static [u8] = <Self>::ALLOWED;
+            const VARIANTS: &'static [::control_table::descriptor::EnumVariant] = &[
+                #(::control_table::descriptor::EnumVariant {
+                    name: #variant_names,
+                    value: Self::#variant_idents as u8,
+                }),*
+            ];
         }
 
         #new_impl

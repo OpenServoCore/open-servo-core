@@ -92,8 +92,10 @@ impl ControlTableCell {
 mod tests {
     use osc_protocol::table;
 
+    use super::ControlTable;
     use super::config::addr as config_addr;
     use super::telemetry::addr as telemetry_addr;
+    use control_table::descriptor::{EnumVariant, FieldKind};
 
     /// Pins the struct layout to the protocol sec 5.4 common register block:
     /// every generated field address equals its protocol const, and the
@@ -139,6 +141,68 @@ mod tests {
             telemetry_addr::mode::MODE_ACTIVE,
             table::TELEMETRY_COMMON_END
         );
+    }
+
+    /// Pins the exported field descriptors against the protocol consts: names
+    /// unique, addresses ascending, and the load-bearing identity/enum/bounds
+    /// facts a device-description exporter would rely on.
+    #[test]
+    fn field_descriptors_match_the_protocol() {
+        let f = ControlTable::FIELDS;
+        let by = |n: &str| f.iter().find(|d| d.name == n).unwrap();
+
+        // Names unique, addresses strictly ascending.
+        for (i, d) in f.iter().enumerate() {
+            assert!(
+                f[i + 1..].iter().all(|o| o.name != d.name),
+                "duplicate field name {}",
+                d.name
+            );
+        }
+        for w in f.windows(2) {
+            assert!(
+                w[0].addr < w[1].addr,
+                "addrs not ascending at {}",
+                w[1].name
+            );
+        }
+
+        let id = by("id");
+        assert_eq!(id.addr, table::ID);
+        assert_eq!(id.width, 1);
+        assert!(id.writable);
+        assert_eq!(id.min, Some(1));
+        assert_eq!(id.max, Some(249));
+
+        let model = by("model_number");
+        assert_eq!(model.addr, table::MODEL_NUMBER);
+        assert_eq!(model.width, 2);
+        assert!(!model.writable);
+        assert_eq!(model.kind, FieldKind::UInt);
+
+        assert_eq!(
+            by("stall_response").kind,
+            FieldKind::Enum(&[
+                EnumVariant {
+                    name: "Disable",
+                    value: 0
+                },
+                EnumVariant {
+                    name: "Comply",
+                    value: 1
+                },
+            ])
+        );
+
+        // goal_position's bounds are register-RHS (soft limits); they must not
+        // export as scalar bounds.
+        let goal = by("goal_position");
+        assert!(goal.writable);
+        assert_eq!((goal.min, goal.max), (None, None));
+
+        let lut = by("lut");
+        assert_eq!(lut.kind, FieldKind::Bytes);
+        assert_eq!(lut.width, 220);
     }
 
     /// Pins the profile region to its protocol sec 5.4 address pin and its

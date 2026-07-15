@@ -1,0 +1,5 @@
+error: two immediate bounds on the same side of one field
+ --> tests/ui/dup_same_side_bound.rs:7:5
+  |
+7 |     x: u8,
+  |     ^
