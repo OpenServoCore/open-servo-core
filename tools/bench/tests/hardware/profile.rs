@@ -75,9 +75,7 @@ fn profile_turnaround_budget_us(baud: u32) -> f64 {
 }
 
 /// Turnaround for the scattered-telemetry profile read, swept across the baud
-/// matrix; the distribution at each baud is printed for the record. The 2M
-/// leg is the regression gate for the pirate's DATAR discipline (an
-/// IDLE-clear DATAR read ate the reply's final byte 1/128 exchanges).
+/// matrix; the distribution at each baud is printed for the record.
 #[serial]
 #[test]
 fn profile_read_turnaround_within_budget() {

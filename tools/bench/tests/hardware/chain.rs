@@ -11,9 +11,9 @@
 //! window elapses, or the DUT gave up on its predecessor too early.
 //!
 //! The complementary snoop-ADVANCE path (a live predecessor status the DUT sees
-//! and advances on) needs a break-framed injection inside the ~60 us reclaim
-//! window -- beyond host timing and the pirate's current scheduled-send (no
-//! break); it is left to a pirate-firmware follow-up.
+//! and advances on) needs a break-framed injection landing inside the ~60 us
+//! reclaim window -- beyond a USB-paced instrument's timing authority; the DES
+//! chain suite pins that path.
 
 use bench::osc::{build_instruction, gread_uniform_payload};
 use bench::run::Stats;

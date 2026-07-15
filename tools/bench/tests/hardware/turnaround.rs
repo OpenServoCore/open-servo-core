@@ -12,8 +12,8 @@ use crate::support::{Bench, bench};
 /// ~36/41 us (500k/1M) and ~49 us (2M/3M, pipeline-bound -- the
 /// covered-overlap window shrinks below the dispatch body; RAM placement
 /// probed and rejected, see the transport pillar). Measured means on the
-/// current fleet build through the adapter instrument (pirate
-/// cross-checked to its noise floor): 35.5/40.9/49.5/48.7 ascending baud.
+/// current fleet build through the adapter instrument:
+/// 35.5/40.9/49.5/48.7 ascending baud.
 /// Each ceiling sits ~6 us above the measured floor: tight enough to
 /// catch a regression from the current baseline, loose enough for the
 /// +/-5 us flash-layout swing.
