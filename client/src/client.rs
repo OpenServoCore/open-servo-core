@@ -355,13 +355,33 @@ impl<P: Pipe> Client<P> {
         Ok(())
     }
 
-    /// Drive the adapter's DUT power rails (absolute state).
-    pub async fn set_rails(&mut self, v3v3: bool, v5: bool) -> Result<(), Error> {
+    /// Drive both DUT power rails (absolute state); returns the acked
+    /// `(3V3, 5V)` state.
+    pub async fn set_rails(&mut self, v3v3: bool, v5: bool) -> Result<(bool, bool), Error> {
+        self.rails_op(v3v3 as u8 | (v5 as u8) << 1, 0b11).await
+    }
+
+    /// Drive the 3V3 rail, 5V untouched.
+    pub async fn set_rail_3v3(&mut self, on: bool) -> Result<(bool, bool), Error> {
+        self.rails_op(on as u8, 0b01).await
+    }
+
+    /// Drive the 5V rail, 3V3 untouched.
+    pub async fn set_rail_5v(&mut self, on: bool) -> Result<(bool, bool), Error> {
+        self.rails_op((on as u8) << 1, 0b10).await
+    }
+
+    /// Read the rails without driving them.
+    pub async fn rails(&mut self) -> Result<(bool, bool), Error> {
+        self.rails_op(0, 0).await
+    }
+
+    async fn rails_op(&mut self, state: u8, mask: u8) -> Result<(bool, bool), Error> {
         let mut out = Vec::new();
-        Session::encode_set_rails(&mut out, v3v3, v5);
+        Session::encode_set_rails(&mut out, state, mask);
         self.pipe.send(&out).await?;
         match self.next_record().await? {
-            Record::RailsAck { .. } => Ok(()),
+            Record::RailsAck { state } => Ok((state & 1 != 0, state & 2 != 0)),
             other => Err(desync("RAILS ack", &other)),
         }
     }
