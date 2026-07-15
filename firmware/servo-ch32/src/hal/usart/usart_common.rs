@@ -34,10 +34,10 @@ pub fn init_bus(r: Regs, brr: u32, hdsel: bool) {
 /// Send the protocol-law break (protocol sec 3): one 9-bit
 /// `0x00` character under a bracketed M=1 -- start + 9 data lows = 10 low
 /// bit-times, then a clean stop. Replaces SBK, whose ~14-bit shape is
-/// off-law and a byte-sync hazard at LIN-mode receivers (the pirate, and
-/// bridge-class hosts: their break detector re-arms start hunting at bit
-/// 10 while SBK still holds the line low -- measured per-servo
-/// phase-dependent head-of-reply corruption).
+/// off-law and a byte-sync hazard at LIN-mode receivers (bridge-class
+/// hosts: their break detector re-arms start hunting at bit 10 while SBK
+/// still holds the line low -- measured per-servo phase-dependent
+/// head-of-reply corruption).
 ///
 /// Blocks until the character's stop bit commits (TC), the same
 /// shifter-state contract the SBK path kept: when this returns the wire

@@ -8,8 +8,8 @@
 //!
 //! The provider traits deliberately mirror the servo shapes without sharing
 //! code: consumer-owned interfaces (driver-pattern sec 5.1) plus the
-//! never-across-columns law outrank DRY -- the pirate RX design ports as
-//! design, not as a shared crate.
+//! never-across-columns law outrank DRY -- the servo-proven RX design ports
+//! as design, not as a shared crate.
 #![no_std]
 
 #[cfg(test)]

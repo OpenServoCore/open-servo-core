@@ -85,9 +85,9 @@ const COVERED_TAIL_BYTES: u32 = 2;
 // Dead-transmitter detector: a frontier whose ring made no progress for this
 // many byte-times is a sacrificed partial (host died, or a junk header's
 // footprint trapped the ladder) -- the hunt resumes one byte in (sec 3.3).
-// Generous by design: a live host's feeder can stall mid-frame (bench:
-// pirate walker bubbles pause the wire ~100 us mid-write and an 8-byte
-// horizon sacrificed live partials), waiting is free under break framing
+// Generous by design: a live host's feeder can stall mid-frame (bench: a
+// soft-timed host's feeder bubbles paused the wire ~100 us mid-write and an
+// 8-byte horizon sacrificed live partials), waiting is free under break framing
 // (position, not the clock, is the truth), and the real bounds are the
 // host's retry timeout (~ms) and ring pressure (512 byte-times).
 const STARVE_GIVEUP_BYTES: u32 = osc_protocol::wire::STARVE_HORIZON_BYTE_TIMES;

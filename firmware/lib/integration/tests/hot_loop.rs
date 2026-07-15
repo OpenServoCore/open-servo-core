@@ -343,7 +343,7 @@ fn plain_burst_survives_deadline_latency(baud_idx: u8) {
 
 /// The bench's plain burst (`tool-burst --plain`: 8 NOREPLY WRITEs +
 /// READ, host waits out the reply between cycles) with IRREGULAR intra-burst
-/// gaps: the pirate's TXE-poll bubbles put 0-3-byte-time pauses between
+/// gaps: a soft-timed host's TXE-poll bubbles put 0-3-byte-time pauses between
 /// frames, so each write resolves sometimes as a caught-up frontier
 /// (dispatched at its covered checkpoint) and sometimes as a backlog frame
 /// (dispatched complete) mid-burst -- every seam of the inline dispatch path.
@@ -418,8 +418,8 @@ fn frame_us(rate: BaudRate, n: u64) -> u64 {
     (bits * 1_000_000).div_ceil(rate.as_hz() as u64)
 }
 
-/// The failing silicon signature (bench, `tool-reply-edges` STALE dump): the
-/// pirate's TXE feed stalls 50-100 bit-times INSIDE a frame -- mid-write4 and
+/// The failing silicon signature (bench STALE edge dump): a soft-timed
+/// host's TXE feed stalls 50-100 bit-times INSIDE a frame -- mid-write4 and
 /// mid-READ on the captured cycle -- so the frontier burns its recheck budget
 /// and parks at the starvation horizon while the frame quietly completes (ring
 /// bytes raise no IRQ). The reply then rode a ~2x640 us-late wake carrying a
