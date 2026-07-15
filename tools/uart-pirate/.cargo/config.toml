@@ -1,9 +1,0 @@
-[build]
-target = "riscv32imc-unknown-none-elf"
-
-[target.riscv32imc-unknown-none-elf]
-runner = "probe-rs run --chip CH32V203C8T6"
-rustflags = [
-  "-C", "link-arg=-Tlink.x",
-  "-C", "link-arg=--nmagic",
-]
