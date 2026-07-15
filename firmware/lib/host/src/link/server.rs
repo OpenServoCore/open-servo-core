@@ -241,8 +241,13 @@ fn handle<P: Providers>(
             let max = (rec[1] as usize).min(DRAIN_MAX);
             let mut falls = [0u16; DRAIN_MAX];
             let mut rises = [0u16; DRAIN_MAX];
-            let fn_ = bus.edges().drain_falls(&mut falls[..max]);
+            // Rises snapshot FIRST: an edge pair landing between the two
+            // ring reads then tears as fall-now/rise-later, and the client
+            // defers the surplus falls until their rises drain (the wire
+            // idles high, falls lead). Falls-first would tear the other
+            // way -- a rise shipped a batch ahead of its fall.
             let rn = bus.edges().drain_rises(&mut rises[..max]);
+            let fn_ = bus.edges().drain_falls(&mut falls[..max]);
             let overflow = bus.edges().overflow();
             let now = bus.now();
             sink.record(record::edges(
@@ -670,7 +675,7 @@ mod tests {
         assert_eq!(
             u32::from_le_bytes([e[4], e[5], e[6], e[7]]),
             0x0001_0032,
-            "now = the unwrap anchor"
+            "now = the anchor floor"
         );
         assert_eq!(e[8], 3, "falls");
         assert_eq!(e[9], 2, "rises");

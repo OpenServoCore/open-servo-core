@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use osc_client::blocking::Client;
 use osc_client::nusb::NusbPipe;
-use osc_client::wire::WireEdge;
+use osc_client::wire::{Level, WireEdge};
 
 use crate::BOOT_BAUD;
 use crate::edges::{BStamp, stamps_from_edges};
@@ -18,12 +18,14 @@ pub struct Wire {
     client: Client<NusbPipe>,
     baud: u32,
     ticks_per_us: u32,
+    stall: StallInjector,
 }
 
-/// Capture-drain poll cadence. Edge ticks are the engine domain's low 16
-/// bits (one wrap = ~3.6 ms at 18 MHz), so every capture must be drained
-/// well inside a wrap of its birth -- the settle window is spent polling,
-/// never sleeping through.
+/// Capture-drain poll cadence. The client's anchor chain keeps a late
+/// batch's timeline exact, but absolute placement across a quiet stretch
+/// needs some drain (even empty) within a u16 tick wrap (~3.6 ms at
+/// 18 MHz) of it -- the settle window is spent polling, never sleeping
+/// through.
 const DRAIN_POLL: Duration = Duration::from_millis(1);
 
 impl Wire {
@@ -37,6 +39,7 @@ impl Wire {
             client,
             baud: BOOT_BAUD,
             ticks_per_us,
+            stall: StallInjector::from_env(),
         };
         if baud != BOOT_BAUD {
             wire.set_baud(baud)?;
@@ -129,9 +132,8 @@ impl Wire {
     }
 
     /// Poll-drain the capture across `settle_ms`, then decode. The window
-    /// is spent draining at [`DRAIN_POLL`] cadence so no capture ages past
-    /// the u16 tick wrap before its drain (a slept-through settle would
-    /// alias every early edge).
+    /// is spent draining at [`DRAIN_POLL`] cadence so quiet stretches stay
+    /// spanned by drains and absolute placement holds (see [`DRAIN_POLL`]).
     pub fn collect_stamps(&mut self, settle_ms: u64) -> Result<Vec<BStamp>> {
         let deadline = Instant::now() + Duration::from_millis(settle_ms);
         let mut edges = Vec::new();
@@ -154,7 +156,19 @@ impl Wire {
     fn drain_edges_dry(&mut self) -> Result<Vec<WireEdge>> {
         let mut all = Vec::new();
         loop {
+            self.stall.maybe_stall();
             let drain = self.client.drain_edges()?;
+            if std::env::var_os("BENCH_DUMP_EDGES").is_some() {
+                eprint!("[drain now={} n={}]", drain.now, drain.edges.len());
+                for e in &drain.edges {
+                    eprint!(
+                        " {}{}",
+                        e.tick,
+                        if e.level == Level::Low { "v" } else { "^" }
+                    );
+                }
+                eprintln!();
+            }
             if drain.overflow {
                 let _ = self.client.reset_capture();
                 bail!("edge capture overflow: undrained ring lapped (capture reset)");
@@ -163,6 +177,40 @@ impl Wire {
                 return Ok(all);
             }
             all.extend(drain.edges);
+        }
+    }
+}
+
+/// Host-stall injector: `BENCH_STALL_EVERY=N` + `BENCH_STALL_MS=M` sleeps
+/// M ms before every Nth drain. Multi-ms scheduler stalls in the drain
+/// path are what age captures past the u16 tick wrap -- injecting them on
+/// demand turns a once-per-thousand-cycles OS event into a deterministic
+/// reproducer for the unwrap's stall immunity.
+struct StallInjector {
+    every: u32,
+    ms: u64,
+    count: u32,
+}
+
+impl StallInjector {
+    fn from_env() -> Self {
+        fn read<T: std::str::FromStr>(k: &str) -> Option<T> {
+            std::env::var(k).ok().and_then(|v| v.parse().ok())
+        }
+        Self {
+            every: read("BENCH_STALL_EVERY").unwrap_or(0),
+            ms: read("BENCH_STALL_MS").unwrap_or(8),
+            count: 0,
+        }
+    }
+
+    fn maybe_stall(&mut self) {
+        if self.every == 0 {
+            return;
+        }
+        self.count += 1;
+        if self.count.is_multiple_of(self.every) {
+            std::thread::sleep(Duration::from_millis(self.ms));
         }
     }
 }

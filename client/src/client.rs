@@ -67,6 +67,7 @@ const DEFAULT_GUARD: Duration = Duration::from_secs(2);
 pub struct Client<P: Pipe> {
     pub(crate) pipe: P,
     pub(crate) session: Session,
+    pub(crate) anchor: crate::wire::EdgeAnchor,
     info: LinkInfo,
     guard: Duration,
 }
@@ -77,6 +78,7 @@ impl<P: Pipe> Client<P> {
         let mut c = Self {
             pipe,
             session: Session::new(),
+            anchor: Default::default(),
             info: LinkInfo {
                 version: 0,
                 ticks_per_us: 1,
