@@ -38,7 +38,7 @@ open-servo-core/
 │   └── templates/                    # KiCad project templates
 ├── docs/                             # Design docs — protocol spec, transport, driver pattern, history
 ├── firmware/                         # Firmware v2 (Rust) — chip-agnostic libs, CH32 chip crate, board binaries
-├── tools/                            # Bench + bus-forensics tooling (host-side test suite, uart-pirate)
+├── tools/                            # Host-side tooling — hardware test bench, `osc` operator CLI
 └── firmware-old/                     # Legacy firmware (do not use)
 ```
 

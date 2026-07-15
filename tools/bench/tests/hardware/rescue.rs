@@ -4,7 +4,7 @@
 //!
 //! Both tests end with an UNCONDITIONAL rescue-based recovery tail (the
 //! pulse reaches the servo wherever a lost ack may have left it), and all
-//! asserts run after it -- a transient pirate capture dropout must never
+//! asserts run after it -- a transient capture dropout must never
 //! strand the bench unit off its id, baud, or with a stray saved image.
 
 use std::thread::sleep;
@@ -21,7 +21,7 @@ use serial_test::serial;
 
 use crate::support::bench;
 
-/// The pulse is baud-agnostic: servo moved to 3M (volatile) with the pirate
+/// The pulse is baud-agnostic: servo moved to 3M (volatile) with the host
 /// back at the boot baud -- unreachable -- then one rescue pulse unifies the
 /// bus at 0.5M. Reboot restores the configured (boot-default) baud.
 #[serial]

@@ -338,10 +338,11 @@ impl Sim {
 
     /// Queue a host frame whose transmitter stalls mid-frame: bytes
     /// `..split` stream normally, then the wire idles high for `stall_us`,
-    /// then the rest streams. Models the pirate's TXE-poll bubbles (bench:
-    /// 58-94-bit pauses INSIDE frames on failing plain-burst cycles) -- a
-    /// legal wire per sec 4.1 (nothing times on idle), and the
-    /// stress that parks the frontier at the starvation horizon.
+    /// then the rest streams. Models a soft-timed host's TXE-poll bubbles
+    /// (bench-measured: 58-94-bit pauses INSIDE frames on failing
+    /// plain-burst cycles) -- a legal wire per sec 4.1 (nothing times on
+    /// idle), and the stress that parks the frontier at the starvation
+    /// horizon.
     pub fn host_send_stalled(&mut self, frame: &[u8], split: usize, stall_us: u64) {
         let start = self.host_free_at.max(self.core.borrow().now());
         let baud = self.rate;

@@ -209,26 +209,3 @@ jobs:
         run: cargo clippy -- -D warnings
       - name: cargo build
         run: cargo build
-
-  uart-pirate:
-    name: build (tools/uart-pirate)
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: tools/uart-pirate
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install Rust (nightly + clippy + rustfmt + target)
-        uses: dtolnay/rust-toolchain@nightly
-        with:
-          components: clippy, rustfmt
-          targets: riscv32imc-unknown-none-elf
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: tools/uart-pirate
-      - name: cargo fmt --check
-        run: cargo fmt --all -- --check
-      - name: cargo clippy
-        run: cargo clippy -- -D warnings
-      - name: cargo build --release
-        run: cargo build --release

@@ -92,7 +92,7 @@ chain-pair gates count the break as one byte slot, so an over-long
 break is a constant error tax on every span — and the law shape is
 precisely the LIN break definition (LBDL=0), so any LIN-capable
 receiver gets hardware break detection with a deterministic 10-bit
-anchor. Every node on the bus uses it: the pirate, bridge-class hosts,
+anchor. Every node on the bus uses it: bridge-class hosts
 and the servo itself (LBD-sans-LINEN break wake, §3.4 — the detector
 runs with the LIN engine off on the target silicon [F15]). Hardware
 `SBK` is off-law (~14 bit-times measured, F5).
@@ -581,8 +581,8 @@ ALERT bit on that servo's status (§5.3).
 
 ## 8. Host requirements
 
-- Crystal-clocked UART with break send (any USB-serial with SBK, or the
-  pirate).
+- Crystal-clocked UART with break send (the osc-adapter, or any
+  USB-serial with SBK).
 - osc-CRC (textbook CRC-16/ARC, §3.2).
 - Drive discipline if on a buffer-less bus (release when idle) [F8].
 - Schedule the bus: one outstanding instruction / chain at a time;

@@ -273,7 +273,7 @@ fn cal_anchors_then_tracker_follows() {
 // between them and against silicon localizes the starvation.
 
 /// Bench burst geometry at 1M: 10-byte frame + break = 110 us wire,
-/// 4-bit pirate seam, 24 frames per burst, settle gap between bursts.
+/// 4-bit host seam, 24 frames per burst, settle gap between bursts.
 const BURST_FRAMES: u64 = 24;
 const BURST_PERIOD_US: u64 = 114;
 const BURST_SETTLE_US: u64 = 5_000;
