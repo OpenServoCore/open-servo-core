@@ -652,7 +652,7 @@
   "schematic": {
     "annotate_start_num": 0,
     "annotation": {
-      "method": 0,
+      "method": 1,
       "sort_order": 0
     },
     "bom_export_filename": "${PROJECTNAME}.csv",
@@ -717,12 +717,60 @@
           "label": "Datasheet",
           "name": "Datasheet",
           "show": true
+        },
+        {
+          "group_by": false,
+          "label": "KLC_S3.3",
+          "name": "KLC_S3.3",
+          "show": false
+        },
+        {
+          "group_by": false,
+          "label": "KLC_S5.1",
+          "name": "KLC_S5.1",
+          "show": false
+        },
+        {
+          "group_by": false,
+          "label": "LCSC",
+          "name": "LCSC",
+          "show": false
+        },
+        {
+          "group_by": false,
+          "label": "MFPN",
+          "name": "MFPN",
+          "show": false
+        },
+        {
+          "group_by": false,
+          "label": "Sim.Pins",
+          "name": "Sim.Pins",
+          "show": false
+        },
+        {
+          "group_by": false,
+          "label": "JLC Type",
+          "name": "JLC Type",
+          "show": false
+        },
+        {
+          "group_by": false,
+          "label": "Description",
+          "name": "Description",
+          "show": false
+        },
+        {
+          "group_by": false,
+          "label": "#",
+          "name": "${ITEM_NUMBER}",
+          "show": false
         }
       ],
       "filter_string": "",
       "group_symbols": true,
       "include_excluded_from_bom": true,
-      "name": "Default Editing",
+      "name": "",
       "sort_asc": true,
       "sort_field": "Reference"
     },
@@ -775,7 +823,7 @@
         "uuid": "6062e7d2-0c72-467e-b49c-6387ba053e09"
       }
     ],
-    "used_designators": "R1,C1-5,#PWR1-5,D1,Q1,U1",
+    "used_designators": "R201,#FLG201,H101-104,TP1201-1227,C201-208,#PWR101-104,#PWR202-206,#PWR216-217,#PWR1212-1219,J1201-1202",
     "variants": []
   },
   "sheets": [
@@ -786,6 +834,46 @@
     [
       "ff54c923-a236-40ec-89f8-00d041008a40",
       "MCU"
+    ],
+    [
+      "7cf3afc9-cdd4-4ec1-a418-1271a46edb07",
+      "BRIDGE"
+    ],
+    [
+      "727d1dff-ec02-44d4-b4d3-1339a8adebf3",
+      "HALFBRIDGE1"
+    ],
+    [
+      "3a80e4bd-f62c-43c7-afc8-a654c0eaeb6f",
+      "SHUNT1"
+    ],
+    [
+      "73ea032f-62f2-48d6-ae8a-f8ffe10b8691",
+      "HALFBRIDGE2"
+    ],
+    [
+      "45ee31c1-fbe9-4850-9a6a-06d9e1b78fe6",
+      "SHUNT2"
+    ],
+    [
+      "f7bf0976-cb37-4b7b-8750-29991a593c29",
+      "HALFBRIDGE3"
+    ],
+    [
+      "16772291-8b66-4bca-9793-c37f2e864c04",
+      "POWER"
+    ],
+    [
+      "3609fa6e-cfaf-45f2-b317-156c82c00365",
+      "SENSORS"
+    ],
+    [
+      "faa792ba-08c9-4df9-a9d3-6eb6b4cf278b",
+      "BUS"
+    ],
+    [
+      "4047ca50-6cee-462e-8aea-0fd4ac81b1ba",
+      "TESTPOINTS"
     ]
   ],
   "text_variables": {
