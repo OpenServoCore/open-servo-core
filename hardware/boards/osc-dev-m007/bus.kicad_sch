@@ -765,8 +765,8 @@
 		(uuid "022f6f8e-463c-46f3-b65c-4a0e0675ae24")
 	)
 	(rectangle
-		(start 125.73 29.21)
-		(end 171.45 91.44)
+		(start 76.2 29.21)
+		(end 121.92 91.44)
 		(stroke
 			(width 0)
 			(type default)
@@ -776,21 +776,9 @@
 		)
 		(uuid "dab9b0ed-e2d8-4f92-b3fa-e9d318d57ee2")
 	)
-	(rectangle
-		(start 76.2 29.21)
-		(end 122.555 91.44)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(fill
-			(type none)
-		)
-		(uuid "f420bb9e-e086-4417-8568-50ad94868997")
-	)
 	(text "DXL TTL CONNECTOR\nJST-PH VERTICAL"
 		(exclude_from_sim no)
-		(at 128.27 31.75 0)
+		(at 78.74 31.75 0)
 		(effects
 			(font
 				(size 2 2)
@@ -811,18 +799,6 @@
 			(justify left top)
 		)
 		(uuid "352c2d59-28af-4bed-beae-b7e694f05c2f")
-	)
-	(text "OSC TTL CONNECTOR\n2.54mm 3P VERTICAL"
-		(exclude_from_sim no)
-		(at 78.74 31.75 0)
-		(effects
-			(font
-				(size 2 2)
-				(thickness 0.25)
-			)
-			(justify left top)
-		)
-		(uuid "a776762a-4805-4e89-8864-d2cfb9f4c8df")
 	)
 	(text_box "OSC BUS SUBSYSTEM"
 		(exclude_from_sim no)
@@ -923,7 +899,7 @@
 	)
 	(global_label "DATA"
 		(shape input)
-		(at 147.32 69.85 180)
+		(at 97.79 69.85 180)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -933,55 +909,7 @@
 		)
 		(uuid "096591ef-07c7-4fbd-a145-0f4a0161b7ed")
 		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 139.92 69.85 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify right)
-			)
-		)
-	)
-	(global_label "DATA"
-		(shape input)
-		(at 95.25 54.61 180)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right)
-		)
-		(uuid "0b1058cc-067f-4622-be30-5029d81f1323")
-		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 87.85 54.61 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify right)
-			)
-		)
-	)
-	(global_label "DATA"
-		(shape input)
-		(at 95.25 69.85 180)
-		(fields_autoplaced yes)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right)
-		)
-		(uuid "ad337bb3-1c34-41d9-b3fe-7fb5aea9b4fd")
-		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 87.85 69.85 0)
+			(at 90.39 69.85 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1019,7 +947,7 @@
 	)
 	(global_label "DATA"
 		(shape input)
-		(at 147.32 53.34 180)
+		(at 97.79 53.34 180)
 		(fields_autoplaced yes)
 		(effects
 			(font
@@ -1029,7 +957,7 @@
 		)
 		(uuid "fcd6c44d-db90-48aa-979e-5255e2c3c535")
 		(property "Intersheetrefs" "${INTERSHEET_REFS}"
-			(at 139.92 53.34 0)
+			(at 90.39 53.34 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1130,225 +1058,8 @@
 		)
 	)
 	(symbol
-		(lib_id "Connector_Generic:Conn_01x03")
-		(at 100.33 57.15 0)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(uuid "61c3c1d0-e35b-46e2-ad5f-82284dcabe04")
-		(property "Reference" "J1101"
-			(at 100.33 50.8 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "PIN-1-3P"
-			(at 100.33 50.8 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" "Connector_PinHeader_2.54mm:PinHeader_1x03_P2.54mm_Vertical"
-			(at 100.33 57.15 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C49257.html"
-			(at 100.33 57.15 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Generic connector, single row, 01x03, script generated (kicad-library-utils/schlib/autogen/connector/)"
-			(at 100.33 57.15 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "LCSC" "C49257"
-			(at 100.33 50.8 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "MFPN" "2.54-1*3P"
-			(at 100.33 50.8 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "JLC_Basic" "no"
-			(at 100.33 50.8 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "KLC_S3.3" ""
-			(at 100.33 57.15 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "KLC_S5.1" ""
-			(at 100.33 57.15 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "2"
-			(uuid "0c008d79-5e46-41cc-8c97-7322b6b97dfe")
-		)
-		(pin "1"
-			(uuid "7f519cf6-e306-494c-a50b-3032d1fa8194")
-		)
-		(pin "3"
-			(uuid "81d00446-10bf-4d24-a87f-17ba3c1c75bd")
-		)
-		(instances
-			(project "osc-dev-m007"
-				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/faa792ba-08c9-4df9-a9d3-6eb6b4cf278b"
-					(reference "J1101")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "power:GND")
-		(at 95.25 74.93 270)
-		(mirror x)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(uuid "6accfc7d-9062-4179-9173-20ff951d5b46")
-		(property "Reference" "#PWR01106"
-			(at 88.9 74.93 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "GND"
-			(at 91.44 74.93 90)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify right)
-			)
-		)
-		(property "Footprint" ""
-			(at 95.25 74.93 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 95.25 74.93 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 95.25 74.93 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "fc08a316-f944-488a-a408-d794c5e77a25")
-		)
-		(instances
-			(project "osc-dev-m007"
-				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/faa792ba-08c9-4df9-a9d3-6eb6b4cf278b"
-					(reference "#PWR01106")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
 		(lib_id "power:+5V")
-		(at 147.32 72.39 90)
+		(at 97.79 72.39 90)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -1358,8 +1069,8 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "82b3f790-4cd9-40e9-88b9-6f73a5ef143d")
-		(property "Reference" "#PWR01109"
-			(at 151.13 72.39 0)
+		(property "Reference" "#PWR01105"
+			(at 101.6 72.39 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1370,7 +1081,7 @@
 			)
 		)
 		(property "Value" "VSYS"
-			(at 143.51 72.3899 90)
+			(at 93.98 72.3899 90)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -1381,7 +1092,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 147.32 72.39 0)
+			(at 97.79 72.39 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1392,7 +1103,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 147.32 72.39 0)
+			(at 97.79 72.39 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1403,7 +1114,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"+5V\""
-			(at 147.32 72.39 0)
+			(at 97.79 72.39 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1419,7 +1130,7 @@
 		(instances
 			(project "osc-dev-m007"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/faa792ba-08c9-4df9-a9d3-6eb6b4cf278b"
-					(reference "#PWR01109")
+					(reference "#PWR01105")
 					(unit 1)
 				)
 			)
@@ -1427,7 +1138,7 @@
 	)
 	(symbol
 		(lib_id "power:+5V")
-		(at 147.32 55.88 90)
+		(at 97.79 55.88 90)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -1437,8 +1148,8 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "8559b3a4-786b-44f0-ac97-7c20548fc878")
-		(property "Reference" "#PWR01107"
-			(at 151.13 55.88 0)
+		(property "Reference" "#PWR01103"
+			(at 101.6 55.88 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1449,7 +1160,7 @@
 			)
 		)
 		(property "Value" "VSYS"
-			(at 143.51 55.8799 90)
+			(at 93.98 55.8799 90)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -1460,7 +1171,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 147.32 55.88 0)
+			(at 97.79 55.88 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1471,7 +1182,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 147.32 55.88 0)
+			(at 97.79 55.88 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1482,7 +1193,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"+5V\""
-			(at 147.32 55.88 0)
+			(at 97.79 55.88 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1498,7 +1209,7 @@
 		(instances
 			(project "osc-dev-m007"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/faa792ba-08c9-4df9-a9d3-6eb6b4cf278b"
-					(reference "#PWR01107")
+					(reference "#PWR01103")
 					(unit 1)
 				)
 			)
@@ -1585,7 +1296,7 @@
 	)
 	(symbol
 		(lib_id "power:GND")
-		(at 147.32 74.93 270)
+		(at 97.79 74.93 270)
 		(mirror x)
 		(unit 1)
 		(body_style 1)
@@ -1595,8 +1306,8 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "86613e4c-3f2d-43f8-ad53-ec84f37fcda3")
-		(property "Reference" "#PWR01110"
-			(at 140.97 74.93 0)
+		(property "Reference" "#PWR01106"
+			(at 91.44 74.93 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1607,7 +1318,7 @@
 			)
 		)
 		(property "Value" "GND"
-			(at 143.51 74.93 90)
+			(at 93.98 74.93 90)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -1618,7 +1329,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 147.32 74.93 0)
+			(at 97.79 74.93 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1629,7 +1340,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 147.32 74.93 0)
+			(at 97.79 74.93 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1640,7 +1351,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 147.32 74.93 0)
+			(at 97.79 74.93 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1656,7 +1367,7 @@
 		(instances
 			(project "osc-dev-m007"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/faa792ba-08c9-4df9-a9d3-6eb6b4cf278b"
-					(reference "#PWR01110")
+					(reference "#PWR01106")
 					(unit 1)
 				)
 			)
@@ -1664,7 +1375,7 @@
 	)
 	(symbol
 		(lib_id "Connector_Generic:Conn_01x03")
-		(at 152.4 55.88 0)
+		(at 102.87 55.88 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -1673,8 +1384,8 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "a1cfc860-a01a-48a9-ac3c-ca6b8898e449")
-		(property "Reference" "J1103"
-			(at 152.4 49.53 0)
+		(property "Reference" "J1101"
+			(at 102.87 49.53 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -1684,7 +1395,7 @@
 			)
 		)
 		(property "Value" "JST-PH-V"
-			(at 152.4 49.53 0)
+			(at 102.87 49.53 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1695,7 +1406,7 @@
 			)
 		)
 		(property "Footprint" "shared:CONN-TH_B3B-PH-K-S"
-			(at 152.4 55.88 0)
+			(at 102.87 55.88 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1706,7 +1417,7 @@
 			)
 		)
 		(property "Datasheet" "https://www.lcsc.com/product-detail/C131339.html"
-			(at 152.4 55.88 0)
+			(at 102.87 55.88 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1717,7 +1428,7 @@
 			)
 		)
 		(property "Description" "Generic connector, single row, 01x03, script generated (kicad-library-utils/schlib/autogen/connector/)"
-			(at 152.4 55.88 0)
+			(at 102.87 55.88 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1728,7 +1439,7 @@
 			)
 		)
 		(property "JLC Type" "Extended"
-			(at 152.4 55.88 0)
+			(at 102.87 55.88 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1739,7 +1450,7 @@
 			)
 		)
 		(property "LCSC" "C131339"
-			(at 152.4 49.53 0)
+			(at 102.87 49.53 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1750,7 +1461,7 @@
 			)
 		)
 		(property "MFPN" "B3B-PH-K-S(LF)(SN)"
-			(at 152.4 49.53 0)
+			(at 102.87 49.53 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1761,7 +1472,7 @@
 			)
 		)
 		(property "JLC_Basic" "no"
-			(at 152.4 49.53 0)
+			(at 102.87 49.53 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1772,7 +1483,7 @@
 			)
 		)
 		(property "KLC_S3.3" ""
-			(at 152.4 55.88 0)
+			(at 102.87 55.88 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1783,7 +1494,7 @@
 			)
 		)
 		(property "KLC_S5.1" ""
-			(at 152.4 55.88 0)
+			(at 102.87 55.88 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1805,7 +1516,7 @@
 		(instances
 			(project "osc-dev-m007"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/faa792ba-08c9-4df9-a9d3-6eb6b4cf278b"
-					(reference "J1103")
+					(reference "J1101")
 					(unit 1)
 				)
 			)
@@ -1948,7 +1659,7 @@
 	)
 	(symbol
 		(lib_id "Connector_Generic:Conn_01x03")
-		(at 152.4 72.39 0)
+		(at 102.87 72.39 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -1957,8 +1668,8 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "c1f953d8-6c44-4a6b-9e8f-1022bae8a46e")
-		(property "Reference" "J1104"
-			(at 152.4 66.04 0)
+		(property "Reference" "J1102"
+			(at 102.87 66.04 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -1968,7 +1679,7 @@
 			)
 		)
 		(property "Value" "JST-PH-V"
-			(at 152.4 66.04 0)
+			(at 102.87 66.04 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1979,7 +1690,7 @@
 			)
 		)
 		(property "Footprint" "shared:CONN-TH_B3B-PH-K-S"
-			(at 152.4 72.39 0)
+			(at 102.87 72.39 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1990,7 +1701,7 @@
 			)
 		)
 		(property "Datasheet" "https://www.lcsc.com/product-detail/C131339.html"
-			(at 152.4 72.39 0)
+			(at 102.87 72.39 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2001,7 +1712,7 @@
 			)
 		)
 		(property "Description" "Generic connector, single row, 01x03, script generated (kicad-library-utils/schlib/autogen/connector/)"
-			(at 152.4 72.39 0)
+			(at 102.87 72.39 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2012,7 +1723,7 @@
 			)
 		)
 		(property "JLC Type" "Extended"
-			(at 152.4 72.39 0)
+			(at 102.87 72.39 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2023,7 +1734,7 @@
 			)
 		)
 		(property "LCSC" "C131339"
-			(at 152.4 66.04 0)
+			(at 102.87 66.04 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2034,7 +1745,7 @@
 			)
 		)
 		(property "MFPN" "B3B-PH-K-S(LF)(SN)"
-			(at 152.4 66.04 0)
+			(at 102.87 66.04 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2045,7 +1756,7 @@
 			)
 		)
 		(property "JLC_Basic" "no"
-			(at 152.4 66.04 0)
+			(at 102.87 66.04 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2056,7 +1767,7 @@
 			)
 		)
 		(property "KLC_S3.3" ""
-			(at 152.4 72.39 0)
+			(at 102.87 72.39 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2067,7 +1778,7 @@
 			)
 		)
 		(property "KLC_S5.1" ""
-			(at 152.4 72.39 0)
+			(at 102.87 72.39 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2089,86 +1800,7 @@
 		(instances
 			(project "osc-dev-m007"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/faa792ba-08c9-4df9-a9d3-6eb6b4cf278b"
-					(reference "J1104")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "power:GND")
-		(at 95.25 59.69 270)
-		(mirror x)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(uuid "c493f9fd-0b1f-43cb-a904-c8e45b5c95cd")
-		(property "Reference" "#PWR01104"
-			(at 88.9 59.69 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "GND"
-			(at 91.44 59.69 90)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify right)
-			)
-		)
-		(property "Footprint" ""
-			(at 95.25 59.69 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 95.25 59.69 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 95.25 59.69 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "65835ec2-e644-42f5-945f-c3cb84b53b23")
-		)
-		(instances
-			(project "osc-dev-m007"
-				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/faa792ba-08c9-4df9-a9d3-6eb6b4cf278b"
-					(reference "#PWR01104")
+					(reference "J1102")
 					(unit 1)
 				)
 			)
@@ -2322,166 +1954,8 @@
 		)
 	)
 	(symbol
-		(lib_id "power:+5V")
-		(at 95.25 57.15 90)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(fields_autoplaced yes)
-		(uuid "dcd94ec7-a076-402d-953e-bd8d3c2ec863")
-		(property "Reference" "#PWR01103"
-			(at 99.06 57.15 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "VSYS"
-			(at 91.44 57.1499 90)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Footprint" ""
-			(at 95.25 57.15 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 95.25 57.15 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Power symbol creates a global label with name \"+5V\""
-			(at 95.25 57.15 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "252a3660-fc04-4dd1-af22-736e9cbffb21")
-		)
-		(instances
-			(project "osc-dev-m007"
-				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/faa792ba-08c9-4df9-a9d3-6eb6b4cf278b"
-					(reference "#PWR01103")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "power:+5V")
-		(at 95.25 72.39 90)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(fields_autoplaced yes)
-		(uuid "e78310db-02b3-44d5-a366-de4d3574fdb6")
-		(property "Reference" "#PWR01105"
-			(at 99.06 72.39 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "VSYS"
-			(at 91.44 72.3899 90)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Footprint" ""
-			(at 95.25 72.39 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 95.25 72.39 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Power symbol creates a global label with name \"+5V\""
-			(at 95.25 72.39 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "076ee0f7-b0ca-4800-978d-2ae57a039f34")
-		)
-		(instances
-			(project "osc-dev-m007"
-				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/faa792ba-08c9-4df9-a9d3-6eb6b4cf278b"
-					(reference "#PWR01105")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
 		(lib_id "power:GND")
-		(at 147.32 58.42 270)
+		(at 97.79 58.42 270)
 		(mirror x)
 		(unit 1)
 		(body_style 1)
@@ -2491,8 +1965,8 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "f4cca9bc-2f1f-4a27-bf10-721818d13f4b")
-		(property "Reference" "#PWR01108"
-			(at 140.97 58.42 0)
+		(property "Reference" "#PWR01104"
+			(at 91.44 58.42 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2503,7 +1977,7 @@
 			)
 		)
 		(property "Value" "GND"
-			(at 143.51 58.42 90)
+			(at 93.98 58.42 90)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -2514,7 +1988,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 147.32 58.42 0)
+			(at 97.79 58.42 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2525,7 +1999,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 147.32 58.42 0)
+			(at 97.79 58.42 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2536,7 +2010,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 147.32 58.42 0)
+			(at 97.79 58.42 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2552,7 +2026,7 @@
 		(instances
 			(project "osc-dev-m007"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/faa792ba-08c9-4df9-a9d3-6eb6b4cf278b"
-					(reference "#PWR01108")
+					(reference "#PWR01104")
 					(unit 1)
 				)
 			)
@@ -2690,144 +2164,6 @@
 			(project "osc-dev-m007"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/faa792ba-08c9-4df9-a9d3-6eb6b4cf278b"
 					(reference "R1102")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "Connector_Generic:Conn_01x03")
-		(at 100.33 72.39 0)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(uuid "ff866db1-9957-4279-8327-e4350b9dfdd8")
-		(property "Reference" "J1102"
-			(at 100.33 66.04 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "PIN-1-3P"
-			(at 100.33 66.04 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" "Connector_PinHeader_2.54mm:PinHeader_1x03_P2.54mm_Vertical"
-			(at 100.33 72.39 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C49257.html"
-			(at 100.33 72.39 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Generic connector, single row, 01x03, script generated (kicad-library-utils/schlib/autogen/connector/)"
-			(at 100.33 72.39 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "LCSC" "C49257"
-			(at 100.33 66.04 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "MFPN" "2.54-1*3P"
-			(at 100.33 66.04 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "JLC_Basic" "no"
-			(at 100.33 66.04 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "KLC_S3.3" ""
-			(at 100.33 72.39 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "KLC_S5.1" ""
-			(at 100.33 72.39 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "2"
-			(uuid "f2a8fc97-71d0-4036-b8a2-751561948461")
-		)
-		(pin "1"
-			(uuid "4a34e2f6-c9ec-465a-9cef-a66fc71dcc95")
-		)
-		(pin "3"
-			(uuid "29709042-2a62-4a0f-870c-7644c74805ea")
-		)
-		(instances
-			(project "osc-dev-m007"
-				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/faa792ba-08c9-4df9-a9d3-6eb6b4cf278b"
-					(reference "J1102")
 					(unit 1)
 				)
 			)

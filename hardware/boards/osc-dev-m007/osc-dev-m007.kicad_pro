@@ -39,9 +39,9 @@
         "other_text_thickness": 0.12,
         "other_text_upright": false,
         "pads": {
-          "drill": 0.8,
-          "height": 1.27,
-          "width": 2.54
+          "drill": 0.0,
+          "height": 1.45,
+          "width": 1.175
         },
         "silk_line_width": 0.15,
         "silk_text_italic": false,
@@ -63,7 +63,7 @@
           "min_clearance": 0.5,
           "min_island_area": 10.0,
           "min_thickness": 0.25,
-          "pad_connection": 1,
+          "pad_connection": 3,
           "remove_islands": 0,
           "thermal_relief_gap": 0.5,
           "thermal_relief_spoke_width": 0.5
@@ -76,13 +76,18 @@
           "width": 0.0
         }
       ],
-      "drc_exclusions": [],
+      "drc_exclusions": [
+        [
+          "lib_footprint_mismatch|141655273|117189902|aab402b7-e55e-4a05-91ae-725ff0a31fea|00000000-0000-0000-0000-000000000000",
+          ""
+        ]
+      ],
       "meta": {
         "version": 2
       },
       "rule_severities": {
         "annular_width": "error",
-        "clearance": "error",
+        "clearance": "ignore",
         "connection_width": "warning",
         "copper_edge_clearance": "error",
         "copper_sliver": "warning",
@@ -122,7 +127,7 @@
         "shorting_items": "error",
         "silk_edge_clearance": "warning",
         "silk_over_copper": "warning",
-        "silk_overlap": "warning",
+        "silk_overlap": "ignore",
         "skew_out_of_range": "error",
         "solder_mask_bridge": "error",
         "starved_thermal": "error",
@@ -146,20 +151,20 @@
       },
       "rules": {
         "max_error": 0.005,
-        "min_clearance": 0.09,
-        "min_connection": 0.09,
+        "min_clearance": 0.1,
+        "min_connection": 0.1,
         "min_copper_edge_clearance": 0.3,
         "min_groove_width": 0.0,
-        "min_hole_clearance": 0.254,
-        "min_hole_to_hole": 0.254,
+        "min_hole_clearance": 0.2,
+        "min_hole_to_hole": 0.2,
         "min_microvia_diameter": 0.2,
         "min_microvia_drill": 0.1,
         "min_resolved_spokes": 2,
         "min_silk_clearance": 0.0,
         "min_text_height": 1.0,
         "min_text_thickness": 0.15,
-        "min_through_hole_diameter": 0.2,
-        "min_track_width": 0.09,
+        "min_through_hole_diameter": 0.3,
+        "min_track_width": 0.1,
         "min_via_annular_width": 0.075,
         "min_via_diameter": 0.45,
         "solder_mask_to_copper_clearance": 0.0,
@@ -211,16 +216,14 @@
       ],
       "track_widths": [
         0.0,
-        0.09,
         0.1,
-        0.12,
-        0.127,
+        0.13,
         0.15,
         0.2,
         0.25,
         0.3,
         0.4,
-        0.5,
+        0.6,
         0.8,
         1.0
       ],
@@ -257,19 +260,11 @@
         },
         {
           "diameter": 0.45,
-          "drill": 0.2
+          "drill": 0.3
         },
         {
           "diameter": 0.6,
           "drill": 0.3
-        },
-        {
-          "diameter": 0.8,
-          "drill": 0.4
-        },
-        {
-          "diameter": 1.0,
-          "drill": 0.5
         }
       ],
       "zones_allow_external_fillets": false
@@ -541,78 +536,136 @@
     "classes": [
       {
         "bus_width": 12,
-        "clearance": 0.2,
-        "diff_pair_gap": 0.2,
+        "clearance": 0.13,
+        "diff_pair_gap": 0.25,
         "diff_pair_via_gap": 0.25,
-        "diff_pair_width": 0.2,
+        "diff_pair_width": 0.13,
         "line_style": 0,
-        "microvia_diameter": 0.45,
-        "microvia_drill": 0.2,
+        "microvia_diameter": 0.3,
+        "microvia_drill": 0.1,
         "name": "Default",
         "pcb_color": "rgba(0, 0, 0, 0.000)",
         "priority": 2147483647,
         "schematic_color": "rgba(0, 0, 0, 0.000)",
-        "track_width": 0.2,
+        "track_width": 0.13,
+        "tuning_profile": "",
+        "via_diameter": 0.45,
+        "via_drill": 0.3,
+        "wire_width": 6
+      },
+      {
+        "bus_width": 12,
+        "clearance": 0.2,
+        "diff_pair_gap": 0.25,
+        "diff_pair_via_gap": 0.25,
+        "diff_pair_width": 0.13,
+        "line_style": 0,
+        "microvia_diameter": 0.3,
+        "microvia_drill": 0.1,
+        "name": "ANALOG",
+        "pcb_color": "rgba(64, 200, 224, 0.800)",
+        "priority": 3,
+        "schematic_color": "rgba(64, 200, 224, 0.800)",
+        "track_width": 0.13,
+        "tuning_profile": "",
+        "via_diameter": 0.45,
+        "via_drill": 0.3,
+        "wire_width": 6
+      },
+      {
+        "bus_width": 12,
+        "clearance": 0.15,
+        "diff_pair_gap": 0.25,
+        "diff_pair_via_gap": 0.25,
+        "diff_pair_width": 0.15,
+        "line_style": 0,
+        "microvia_diameter": 0.3,
+        "microvia_drill": 0.1,
+        "name": "BUS",
+        "pcb_color": "rgba(88, 219, 106, 0.800)",
+        "priority": 4,
+        "schematic_color": "rgba(88, 219, 106, 0.800)",
+        "track_width": 0.15,
+        "tuning_profile": "",
+        "via_diameter": 0.45,
+        "via_drill": 0.3,
+        "wire_width": 6
+      },
+      {
+        "bus_width": 12,
+        "clearance": 0.13,
+        "diff_pair_gap": 0.25,
+        "diff_pair_via_gap": 0.25,
+        "diff_pair_width": 0.15,
+        "line_style": 0,
+        "microvia_diameter": 0.3,
+        "microvia_drill": 0.1,
+        "name": "GATE",
+        "pcb_color": "rgba(242, 202, 46, 0.800)",
+        "priority": 1,
+        "schematic_color": "rgba(242, 202, 46, 0.800)",
+        "track_width": 0.15,
+        "tuning_profile": "",
+        "via_diameter": 0.45,
+        "via_drill": 0.3,
+        "wire_width": 6
+      },
+      {
+        "bus_width": 12,
+        "clearance": 0.2,
+        "diff_pair_gap": 0.25,
+        "diff_pair_via_gap": 0.25,
+        "diff_pair_width": 0.6,
+        "line_style": 0,
+        "microvia_diameter": 0.3,
+        "microvia_drill": 0.1,
+        "name": "POWER",
+        "pcb_color": "rgba(235, 64, 52, 0.800)",
+        "priority": 0,
+        "schematic_color": "rgba(235, 64, 52, 0.800)",
+        "track_width": 0.6,
         "tuning_profile": "",
         "via_diameter": 0.6,
         "via_drill": 0.3,
         "wire_width": 6
       },
       {
-        "clearance": 0.1,
-        "diff_pair_gap": 0.1,
-        "diff_pair_width": 0.1,
-        "microvia_diameter": 0.45,
-        "microvia_drill": 0.2,
-        "name": "Dense",
-        "pcb_color": "rgba(0, 0, 0, 0.000)",
-        "priority": 3,
-        "schematic_color": "rgba(0, 0, 0, 0.000)",
-        "track_width": 0.1,
+        "bus_width": 12,
+        "clearance": 0.3,
+        "diff_pair_gap": 0.25,
+        "diff_pair_via_gap": 0.25,
+        "diff_pair_width": 0.15,
+        "line_style": 0,
+        "microvia_diameter": 0.3,
+        "microvia_drill": 0.1,
+        "name": "SENSE",
+        "pcb_color": "rgba(232, 78, 196, 0.800)",
+        "priority": 2,
+        "schematic_color": "rgba(232, 78, 196, 0.800)",
+        "track_width": 0.15,
         "tuning_profile": "",
         "via_diameter": 0.45,
-        "via_drill": 0.2
+        "via_drill": 0.3,
+        "wire_width": 6
       },
       {
-        "clearance": 0.25,
-        "microvia_diameter": 0.45,
-        "microvia_drill": 0.2,
-        "name": "Motor",
-        "pcb_color": "rgba(0, 0, 0, 0.000)",
-        "priority": 0,
-        "schematic_color": "rgba(0, 0, 0, 0.000)",
-        "track_width": 1.0,
-        "tuning_profile": "",
-        "via_diameter": 1.0,
-        "via_drill": 0.5
-      },
-      {
-        "clearance": 0.25,
-        "microvia_diameter": 0.45,
-        "microvia_drill": 0.2,
-        "name": "Power",
-        "pcb_color": "rgba(0, 0, 0, 0.000)",
-        "priority": 1,
-        "schematic_color": "rgba(0, 0, 0, 0.000)",
-        "track_width": 0.5,
-        "tuning_profile": "",
-        "via_diameter": 0.8,
-        "via_drill": 0.4
-      },
-      {
-        "clearance": 0.2,
+        "bus_width": 12,
+        "clearance": 0.13,
         "diff_pair_gap": 0.25,
-        "diff_pair_width": 0.25,
-        "microvia_diameter": 0.45,
-        "microvia_drill": 0.2,
-        "name": "Signal",
-        "pcb_color": "rgba(0, 0, 0, 0.000)",
-        "priority": 2,
-        "schematic_color": "rgba(0, 0, 0, 0.000)",
-        "track_width": 0.25,
+        "diff_pair_via_gap": 0.25,
+        "diff_pair_width": 0.2,
+        "line_style": 0,
+        "microvia_diameter": 0.3,
+        "microvia_drill": 0.1,
+        "name": "SUPPLY",
+        "pcb_color": "rgba(255, 152, 41, 0.800)",
+        "priority": 5,
+        "schematic_color": "rgba(255, 152, 41, 0.800)",
+        "track_width": 0.2,
         "tuning_profile": "",
-        "via_diameter": 0.6,
-        "via_drill": 0.3
+        "via_diameter": 0.45,
+        "via_drill": 0.3,
+        "wire_width": 6
       }
     ],
     "meta": {
@@ -622,16 +675,28 @@
     "netclass_assignments": null,
     "netclass_patterns": [
       {
-        "netclass": "Default",
-        "pattern": "^GND$|^GND_.*|^AGND$|^PGND$|^DGND$"
+        "netclass": "POWER",
+        "pattern": "VSYS|VBAT|VBUS|VEXT|VPROG|GND|/BRIDGE/PH_[ABC]|/BRIDGE/HALFBRIDGE[123]/LEG"
       },
       {
-        "netclass": "Power",
-        "pattern": "^\\+?3V3$|^\\+?5V$|^VCC$|^VDD$|^VBUS$"
+        "netclass": "GATE",
+        "pattern": "/BRIDGE/GATE_[ABC][HL]|/BRIDGE/HALFBRIDGE[123]/G_[HL]"
       },
       {
-        "netclass": "Motor",
-        "pattern": "^VM$|^MOTOR.*|^M[12]$|^M[12]_.*|^VBAT$|^VIN$"
+        "netclass": "SENSE",
+        "pattern": "/BRIDGE/ISNS.*|/BRIDGE/SHUNT[12]/ISNS_K"
+      },
+      {
+        "netclass": "ANALOG",
+        "pattern": "/BRIDGE/VSN[ABC]|/MCU/(POS|NTC|ENC)|/SENSORS/.*"
+      },
+      {
+        "netclass": "BUS",
+        "pattern": "/BUS/.*"
+      },
+      {
+        "netclass": "SUPPLY",
+        "pattern": "\\+5V|/MCU/VHREG"
       }
     ]
   },
@@ -765,6 +830,12 @@
           "label": "#",
           "name": "${ITEM_NUMBER}",
           "show": false
+        },
+        {
+          "group_by": false,
+          "label": "JLC_Basic",
+          "name": "JLC_Basic",
+          "show": false
         }
       ],
       "filter_string": "",
@@ -823,7 +894,7 @@
         "uuid": "6062e7d2-0c72-467e-b49c-6387ba053e09"
       }
     ],
-    "used_designators": "R201,#FLG201,H101-104,TP1201-1227,C201-208,#PWR101-104,#PWR202-206,#PWR216-217,#PWR1212-1219,J1201-1202",
+    "used_designators": "R201,R901-902,R1101-1102,TP1201-1227,H101-104,LED901-902,#FLG201,#FLG901-905,D901-902,D1101,C201-208,#PWR101-104,#PWR202-206,#PWR216-217,#PWR901-914,#PWR1101-1106,#PWR1201-1209,#PWR1212-1219,J301,J901,J1101-1102,J1201-1202",
     "variants": []
   },
   "sheets": [
@@ -877,12 +948,12 @@
     ]
   ],
   "text_variables": {
-    "BOARD": "jlc4l_1v6mm",
-    "DRU": "jlc4l_1v6mm.kicad_dru",
+    "BOARD": "osc-dev-m007",
+    "DRU": "osc-dev-m007.kicad_dru",
     "FAB": "JLCPCB",
     "PROJECT": "open-servo-core",
     "REV": "v0.0",
-    "STACKUP": "4L 1.6mm"
+    "STACKUP": "6L 1.6mm JLC06161H-3313"
   },
   "tuning_profiles": {
     "meta": {

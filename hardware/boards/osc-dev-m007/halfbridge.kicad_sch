@@ -1180,6 +1180,12 @@
 		(uuid "c84cd3e2-e123-4d52-ba42-a560fd62b0a4")
 	)
 	(junction
+		(at 143.51 66.04)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "06809469-9736-44d7-8e84-d30ccb542a29")
+	)
+	(junction
 		(at 54.61 49.53)
 		(diameter 0)
 		(color 0 0 0 0)
@@ -1249,7 +1255,7 @@
 	)
 	(wire
 		(pts
-			(xy 146.05 76.2) (xy 146.05 78.74)
+			(xy 143.51 73.66) (xy 143.51 76.2)
 		)
 		(stroke
 			(width 0)
@@ -1316,6 +1322,16 @@
 			(type default)
 		)
 		(uuid "36b10b8c-0c67-4a64-b367-251e2cd9eb22")
+	)
+	(wire
+		(pts
+			(xy 143.51 63.5) (xy 143.51 66.04)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "39b848a0-dcb7-48f1-9add-48360cb49cda")
 	)
 	(wire
 		(pts
@@ -1409,6 +1425,16 @@
 	)
 	(wire
 		(pts
+			(xy 156.21 66.04) (xy 143.51 66.04)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "9c34eaa0-92f3-4f64-8396-8732fca2162d")
+	)
+	(wire
+		(pts
 			(xy 99.06 77.47) (xy 99.06 76.2)
 		)
 		(stroke
@@ -1419,7 +1445,7 @@
 	)
 	(wire
 		(pts
-			(xy 146.05 58.42) (xy 146.05 54.61)
+			(xy 143.51 55.88) (xy 143.51 52.07)
 		)
 		(stroke
 			(width 0)
@@ -1436,16 +1462,6 @@
 			(type default)
 		)
 		(uuid "a6a051d0-9a96-46f7-a0d8-7dd7c69f8922")
-	)
-	(wire
-		(pts
-			(xy 146.05 66.04) (xy 146.05 68.58)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "a6ba620b-df8a-4bd1-916d-a367b5c475d3")
 	)
 	(wire
 		(pts
@@ -1607,6 +1623,16 @@
 		)
 		(uuid "44f7367f-962a-41db-9025-11ccc051e31b")
 	)
+	(label "SNUB"
+		(at 156.21 66.04 180)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right bottom)
+		)
+		(uuid "5112334b-1aaa-4beb-af13-32f0aa5fb045")
+	)
 	(label "G_H"
 		(at 43.18 59.69 0)
 		(effects
@@ -1619,7 +1645,7 @@
 	)
 	(hierarchical_label "PH"
 		(shape passive)
-		(at 146.05 54.61 90)
+		(at 143.51 52.07 90)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -1696,7 +1722,7 @@
 	)
 	(symbol
 		(lib_id "Device:C")
-		(at 146.05 72.39 0)
+		(at 143.51 69.85 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -1707,7 +1733,7 @@
 		(fields_autoplaced yes)
 		(uuid "13096676-316e-40ca-a8e4-51ab0f422b6f")
 		(property "Reference" "C403"
-			(at 149.86 71.1199 0)
+			(at 147.32 68.5799 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -1718,7 +1744,7 @@
 			)
 		)
 		(property "Value" "1nF"
-			(at 149.86 73.6599 0)
+			(at 147.32 71.1199 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -1729,7 +1755,7 @@
 			)
 		)
 		(property "Footprint" "Capacitor_SMD:C_0805_2012Metric_Pad1.18x1.45mm_HandSolder"
-			(at 147.0152 76.2 0)
+			(at 144.4752 73.66 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1740,7 +1766,7 @@
 			)
 		)
 		(property "Datasheet" "https://www.lcsc.com/product-detail/C46653.html"
-			(at 146.05 72.39 0)
+			(at 143.51 69.85 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1751,7 +1777,7 @@
 			)
 		)
 		(property "Description" "Unpolarized capacitor"
-			(at 146.05 72.39 0)
+			(at 143.51 69.85 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1762,7 +1788,7 @@
 			)
 		)
 		(property "MFPN" "CL21B102KBCNNNC"
-			(at 146.05 72.39 0)
+			(at 143.51 69.85 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1773,7 +1799,7 @@
 			)
 		)
 		(property "JLC_Basic" "yes"
-			(at 146.05 72.39 0)
+			(at 143.51 69.85 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1784,7 +1810,7 @@
 			)
 		)
 		(property "LCSC" "C46653"
-			(at 146.05 72.39 0)
+			(at 143.51 69.85 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2663,7 +2689,7 @@
 	)
 	(symbol
 		(lib_id "power:GND")
-		(at 146.05 78.74 0)
+		(at 143.51 76.2 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -2674,7 +2700,7 @@
 		(fields_autoplaced yes)
 		(uuid "7cea1a77-0d4c-4020-8a60-15bfbcc06caf")
 		(property "Reference" "#PWR0404"
-			(at 146.05 85.09 0)
+			(at 143.51 82.55 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2685,7 +2711,7 @@
 			)
 		)
 		(property "Value" "GND"
-			(at 146.05 83.82 0)
+			(at 143.51 81.28 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -2695,7 +2721,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 146.05 78.74 0)
+			(at 143.51 76.2 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2706,7 +2732,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 146.05 78.74 0)
+			(at 143.51 76.2 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2717,7 +2743,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 146.05 78.74 0)
+			(at 143.51 76.2 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3408,7 +3434,7 @@
 	)
 	(symbol
 		(lib_id "Device:R")
-		(at 146.05 62.23 0)
+		(at 143.51 59.69 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -3419,7 +3445,7 @@
 		(fields_autoplaced yes)
 		(uuid "f2fad313-f183-4c60-8a79-367e9b78a253")
 		(property "Reference" "R407"
-			(at 148.59 60.9599 0)
+			(at 146.05 58.4199 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -3430,7 +3456,7 @@
 			)
 		)
 		(property "Value" "10"
-			(at 148.59 63.4999 0)
+			(at 146.05 60.9599 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -3441,7 +3467,7 @@
 			)
 		)
 		(property "Footprint" "Resistor_SMD:R_0805_2012Metric_Pad1.20x1.40mm_HandSolder"
-			(at 144.272 62.23 90)
+			(at 141.732 59.69 90)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3452,7 +3478,7 @@
 			)
 		)
 		(property "Datasheet" "https://www.lcsc.com/product-detail/C17415.html"
-			(at 146.05 62.23 0)
+			(at 143.51 59.69 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3463,7 +3489,7 @@
 			)
 		)
 		(property "Description" "Resistor"
-			(at 146.05 62.23 0)
+			(at 143.51 59.69 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3474,7 +3500,7 @@
 			)
 		)
 		(property "MFPN" "0805W8F100JT5E"
-			(at 146.05 62.23 0)
+			(at 143.51 59.69 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3485,7 +3511,7 @@
 			)
 		)
 		(property "JLC_Basic" "yes"
-			(at 146.05 62.23 0)
+			(at 143.51 59.69 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3496,7 +3522,7 @@
 			)
 		)
 		(property "LCSC" "C17415"
-			(at 146.05 62.23 0)
+			(at 143.51 59.69 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)

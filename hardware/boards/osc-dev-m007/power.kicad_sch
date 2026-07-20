@@ -5,212 +5,6 @@
 	(uuid "d62384ed-83a0-4958-b642-c3bc566fe8bb")
 	(paper "A4")
 	(lib_symbols
-		(symbol "Connector:Screw_Terminal_01x02"
-			(pin_names
-				(offset 1.016)
-				(hide yes)
-			)
-			(exclude_from_sim no)
-			(in_bom yes)
-			(on_board yes)
-			(in_pos_files yes)
-			(duplicate_pin_numbers_are_jumpers no)
-			(property "Reference" "J"
-				(at 0 2.54 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Value" "Screw_Terminal_01x02"
-				(at 0 -5.08 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Footprint" ""
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Datasheet" ""
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Description" "Generic screw terminal, single row, 01x02, script generated (kicad-library-utils/schlib/autogen/connector/)"
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "ki_keywords" "screw terminal"
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "ki_fp_filters" "TerminalBlock*:*"
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(symbol "Screw_Terminal_01x02_1_1"
-				(rectangle
-					(start -1.27 1.27)
-					(end 1.27 -3.81)
-					(stroke
-						(width 0.254)
-						(type default)
-					)
-					(fill
-						(type background)
-					)
-				)
-				(polyline
-					(pts
-						(xy -0.5334 0.3302) (xy 0.3302 -0.508)
-					)
-					(stroke
-						(width 0.1524)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(polyline
-					(pts
-						(xy -0.5334 -2.2098) (xy 0.3302 -3.048)
-					)
-					(stroke
-						(width 0.1524)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(polyline
-					(pts
-						(xy -0.3556 0.508) (xy 0.508 -0.3302)
-					)
-					(stroke
-						(width 0.1524)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(polyline
-					(pts
-						(xy -0.3556 -2.032) (xy 0.508 -2.8702)
-					)
-					(stroke
-						(width 0.1524)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(circle
-					(center 0 0)
-					(radius 0.635)
-					(stroke
-						(width 0.1524)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(circle
-					(center 0 -2.54)
-					(radius 0.635)
-					(stroke
-						(width 0.1524)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(pin passive line
-					(at -5.08 0 0)
-					(length 3.81)
-					(name "Pin_1"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "1"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin passive line
-					(at -5.08 -2.54 0)
-					(length 3.81)
-					(name "Pin_2"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "2"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-			)
-			(embedded_fonts no)
-		)
 		(symbol "Connector_Generic:Conn_01x02"
 			(pin_names
 				(offset 1.016)
@@ -1245,268 +1039,10 @@
 			)
 			(embedded_fonts no)
 		)
-		(symbol "shared:TYPE-C6P(073)"
-			(exclude_from_sim no)
-			(in_bom yes)
-			(on_board yes)
-			(in_pos_files yes)
-			(duplicate_pin_numbers_are_jumpers no)
-			(property "Reference" "USB"
-				(at 0 10.16 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Value" "TYPE-C 6P(073)"
-				(at 0 -12.7 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Footprint" "shared:TYPE-C-SMD_TYPE-C-6P-073"
-				(at 0 -15.24 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Datasheet" "https://lcsc.com/product-detail/USB-Connectors_SHOU-HAN-TYPE-C-6P-073_C668623.html"
-				(at 0 -17.78 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "Description" ""
-				(at 0 0 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(property "LCSC" "C668623"
-				(at 0 -20.32 0)
-				(show_name no)
-				(do_not_autoplace no)
-				(hide yes)
-				(effects
-					(font
-						(size 1.27 1.27)
-					)
-				)
-			)
-			(symbol "TYPE-C6P(073)_0_1"
-				(rectangle
-					(start -7.62 7.62)
-					(end 7.62 -10.16)
-					(stroke
-						(width 0)
-						(type default)
-					)
-					(fill
-						(type background)
-					)
-				)
-				(circle
-					(center -6.35 6.35)
-					(radius 0.38)
-					(stroke
-						(width 0)
-						(type default)
-					)
-					(fill
-						(type none)
-					)
-				)
-				(pin passive line
-					(at 12.7 0 180)
-					(length 5.08)
-					(name "EH"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "7"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin bidirectional line
-					(at -12.7 0 0)
-					(length 5.08)
-					(name "CC1"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "A5"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin power_in line
-					(at -12.7 -5.08 0)
-					(length 5.08)
-					(name "VBUS"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "A9"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin power_in line
-					(at -12.7 -7.62 0)
-					(length 5.08)
-					(name "GND"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "A12"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin bidirectional line
-					(at -12.7 -2.54 0)
-					(length 5.08)
-					(name "CC2"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "B5"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin power_in line
-					(at -12.7 2.54 0)
-					(length 5.08)
-					(name "VBUS"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "B9"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-				(pin power_in line
-					(at -12.7 5.08 0)
-					(length 5.08)
-					(name "GND"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-					(number "B12"
-						(effects
-							(font
-								(size 1.27 1.27)
-							)
-						)
-					)
-				)
-			)
-			(embedded_fonts no)
-		)
 	)
 	(rectangle
-		(start 147.955 80.01)
-		(end 172.72 129.54)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(fill
-			(type none)
-		)
-		(uuid "04afff9e-5eaf-4d28-bd01-bac61a796c0d")
-	)
-	(rectangle
-		(start 13.97 27.94)
-		(end 90.17 77.47)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(fill
-			(type none)
-		)
-		(uuid "2fe0611e-8d19-473c-b58f-7241e64e9bf0")
-	)
-	(rectangle
-		(start 133.35 27.94)
-		(end 172.72 77.47)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(fill
-			(type none)
-		)
-		(uuid "741db44e-f797-492b-b899-91eced9a7703")
-	)
-	(rectangle
-		(start 13.97 80.01)
-		(end 90.17 129.54)
+		(start 54.61 27.94)
+		(end 117.475 77.47)
 		(stroke
 			(width 0)
 			(type default)
@@ -1517,8 +1053,8 @@
 		(uuid "c6eb0f7d-9e25-459a-afd6-1b0b72131067")
 	)
 	(rectangle
-		(start 92.71 27.94)
-		(end 130.81 77.47)
+		(start 13.97 27.94)
+		(end 52.07 77.47)
 		(stroke
 			(width 0)
 			(type default)
@@ -1529,8 +1065,8 @@
 		(uuid "c8aa192f-f4ab-4101-b4fd-db200a962e8b")
 	)
 	(rectangle
-		(start 92.71 80.01)
-		(end 146.05 129.54)
+		(start 119.38 27.94)
+		(end 172.72 77.47)
 		(stroke
 			(width 0)
 			(type default)
@@ -1540,33 +1076,9 @@
 		)
 		(uuid "efc441bd-ce18-42c9-a041-6a33111cc470")
 	)
-	(text "USB POWER CONNECTOR"
-		(exclude_from_sim no)
-		(at 16.51 30.48 0)
-		(effects
-			(font
-				(size 2 2)
-				(thickness 0.25)
-			)
-			(justify left top)
-		)
-		(uuid "07ec5b6d-02af-4a94-8ed8-8e8189b61e70")
-	)
-	(text "FLAGS"
-		(exclude_from_sim no)
-		(at 150.495 82.55 0)
-		(effects
-			(font
-				(size 2 2)
-				(thickness 0.25)
-			)
-			(justify left top)
-		)
-		(uuid "0d5d608d-2e24-4f42-83cb-ecd487dd49c8")
-	)
 	(text "POWER STATUS INDICATORS"
 		(exclude_from_sim no)
-		(at 95.25 82.55 0)
+		(at 121.92 30.48 0)
 		(effects
 			(font
 				(size 2 2)
@@ -1578,7 +1090,7 @@
 	)
 	(text "POWER SOURCE OR-ING"
 		(exclude_from_sim no)
-		(at 16.51 82.55 0)
+		(at 57.15 30.48 0)
 		(effects
 			(font
 				(size 2 2)
@@ -1590,7 +1102,7 @@
 	)
 	(text "BATTERY CONNECTOR\nJST-PH-2P"
 		(exclude_from_sim no)
-		(at 95.25 30.48 0)
+		(at 16.51 30.48 0)
 		(effects
 			(font
 				(size 2 2)
@@ -1600,21 +1112,9 @@
 		)
 		(uuid "5dddff70-21d1-4bf2-ac48-07371e2fc2a3")
 	)
-	(text "EXTERNAL POWER\n(TERMINAL-2P)"
-		(exclude_from_sim no)
-		(at 135.89 30.48 0)
-		(effects
-			(font
-				(size 2 2)
-				(thickness 0.25)
-			)
-			(justify left top)
-		)
-		(uuid "fb3c0d4d-7c29-4c6a-bd1d-882ea6badcee")
-	)
 	(text_box "2S or 3S LiPo batteries"
 		(exclude_from_sim no)
-		(at 92.71 71.12 0)
+		(at 13.97 71.12 0)
 		(size 38.1 6.35)
 		(margins 0.9525 0.9525 0.9525 0.9525)
 		(stroke
@@ -1631,26 +1131,6 @@
 			(justify left top)
 		)
 		(uuid "2a7eb18c-dd7b-4050-97eb-3756442daf13")
-	)
-	(text_box "7V-15V DC Terminal"
-		(exclude_from_sim no)
-		(at 133.35 71.12 0)
-		(size 39.37 6.35)
-		(margins 0.9525 0.9525 0.9525 0.9525)
-		(stroke
-			(width 0)
-			(type solid)
-		)
-		(fill
-			(type none)
-		)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify left top)
-		)
-		(uuid "49653614-e01e-4f6a-a7f4-52a34ba4997f")
 	)
 	(text_box "POWER SUBSYSTEM"
 		(exclude_from_sim no)
@@ -1674,62 +1154,26 @@
 		(uuid "9ce7f70c-5823-42e8-9b84-5dff5b8de842")
 	)
 	(junction
-		(at 45.72 63.5)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "07eb0d85-a139-437c-9626-6d56514d3958")
-	)
-	(junction
-		(at 58.42 111.76)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "1030ca6b-d8f9-4308-90ec-d0d6e04bff4f")
-	)
-	(junction
-		(at 58.42 106.68)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "196ae68a-87b6-4fac-acbf-a1e29a131e35")
-	)
-	(junction
-		(at 128.27 106.68)
+		(at 154.94 54.61)
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "2508e8c8-116b-49ae-be57-bc0f21be41d8")
 	)
 	(junction
-		(at 82.55 55.88)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "7c0ae215-d536-4a9b-aa8b-49a83c91de7e")
-	)
-	(junction
-		(at 58.42 101.6)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "95b17ec5-9da4-4fe4-9fa6-8db45a7bd25d")
-	)
-	(junction
-		(at 19.05 50.8)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "aeb59c40-c2db-40a5-b690-136792a54839")
-	)
-	(junction
-		(at 104.14 106.68)
+		(at 130.81 54.61)
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "b7c3fabb-211c-403a-b165-9abea4999d34")
 	)
 	(junction
-		(at 50.8 48.26)
+		(at 90.17 45.72)
 		(diameter 0)
 		(color 0 0 0 0)
-		(uuid "ee734cd3-6e9d-4ac8-87de-e12fb0a58a27")
+		(uuid "d0a097c1-7521-4087-ac0f-cbe336efa08e")
 	)
 	(wire
 		(pts
-			(xy 114.3 53.34) (xy 113.03 53.34)
+			(xy 35.56 53.34) (xy 34.29 53.34)
 		)
 		(stroke
 			(width 0)
@@ -1739,7 +1183,7 @@
 	)
 	(wire
 		(pts
-			(xy 128.27 105.41) (xy 128.27 106.68)
+			(xy 154.94 53.34) (xy 154.94 54.61)
 		)
 		(stroke
 			(width 0)
@@ -1749,17 +1193,7 @@
 	)
 	(wire
 		(pts
-			(xy 149.86 48.26) (xy 149.86 50.8)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "089bb019-a05c-40df-9e8b-6bc8960b176b")
-	)
-	(wire
-		(pts
-			(xy 128.27 116.84) (xy 128.27 115.57)
+			(xy 154.94 64.77) (xy 154.94 63.5)
 		)
 		(stroke
 			(width 0)
@@ -1769,47 +1203,7 @@
 	)
 	(wire
 		(pts
-			(xy 45.72 58.42) (xy 45.72 63.5)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "1eea6de6-fd24-42dc-8ce4-0293661d7ba5")
-	)
-	(wire
-		(pts
-			(xy 50.8 48.26) (xy 44.45 48.26)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "22a216f7-968f-4360-838f-ee6942de86f9")
-	)
-	(wire
-		(pts
-			(xy 58.42 111.76) (xy 58.42 121.92)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "2729f7e8-6de0-4e7d-8272-7ec3def0f65f")
-	)
-	(wire
-		(pts
-			(xy 44.45 41.91) (xy 19.05 41.91)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "340ba876-4fe4-4878-9a78-f5f292ccb29b")
-	)
-	(wire
-		(pts
-			(xy 41.91 101.6) (xy 45.72 101.6)
+			(xy 73.66 40.64) (xy 77.47 40.64)
 		)
 		(stroke
 			(width 0)
@@ -1819,7 +1213,7 @@
 	)
 	(wire
 		(pts
-			(xy 41.91 121.92) (xy 45.72 121.92)
+			(xy 73.66 50.8) (xy 77.47 50.8)
 		)
 		(stroke
 			(width 0)
@@ -1829,17 +1223,7 @@
 	)
 	(wire
 		(pts
-			(xy 58.42 91.44) (xy 53.34 91.44)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "40600db4-17de-4b16-b17b-df14a40b705e")
-	)
-	(wire
-		(pts
-			(xy 128.27 106.68) (xy 128.27 107.95)
+			(xy 154.94 54.61) (xy 154.94 55.88)
 		)
 		(stroke
 			(width 0)
@@ -1849,37 +1233,7 @@
 	)
 	(wire
 		(pts
-			(xy 44.45 55.88) (xy 50.8 55.88)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "479e35e5-6950-437b-9a6e-813756b4afb9")
-	)
-	(wire
-		(pts
-			(xy 149.86 53.34) (xy 149.86 54.61)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "4c0e0e1b-d9a6-4eec-a229-0d62f1dae61b")
-	)
-	(wire
-		(pts
-			(xy 58.42 101.6) (xy 58.42 106.68)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "51370c35-76dc-401b-8a94-44e6ccbb4978")
-	)
-	(wire
-		(pts
-			(xy 114.3 53.34) (xy 114.3 54.61)
+			(xy 35.56 53.34) (xy 35.56 54.61)
 		)
 		(stroke
 			(width 0)
@@ -1889,27 +1243,7 @@
 	)
 	(wire
 		(pts
-			(xy 149.86 53.34) (xy 151.13 53.34)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "53c1842e-b296-439b-9bef-17566656cc74")
-	)
-	(wire
-		(pts
-			(xy 69.85 55.88) (xy 73.66 55.88)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "55a825b4-332a-4017-bf43-6b98b9474340")
-	)
-	(wire
-		(pts
-			(xy 58.42 106.68) (xy 66.04 106.68)
+			(xy 90.17 45.72) (xy 97.79 45.72)
 		)
 		(stroke
 			(width 0)
@@ -1919,7 +1253,7 @@
 	)
 	(wire
 		(pts
-			(xy 53.34 101.6) (xy 58.42 101.6)
+			(xy 85.09 40.64) (xy 90.17 40.64)
 		)
 		(stroke
 			(width 0)
@@ -1929,37 +1263,7 @@
 	)
 	(wire
 		(pts
-			(xy 45.72 58.42) (xy 44.45 58.42)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "664298b7-9a07-417b-80bb-2528cfa61986")
-	)
-	(wire
-		(pts
-			(xy 41.91 91.44) (xy 45.72 91.44)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "6985fc91-1299-4285-90ed-5cf15bb6780a")
-	)
-	(wire
-		(pts
-			(xy 53.34 111.76) (xy 58.42 111.76)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "717e35f5-18cd-48c8-803b-f9c65032cded")
-	)
-	(wire
-		(pts
-			(xy 104.14 106.68) (xy 104.14 107.95)
+			(xy 130.81 54.61) (xy 130.81 55.88)
 		)
 		(stroke
 			(width 0)
@@ -1969,27 +1273,7 @@
 	)
 	(wire
 		(pts
-			(xy 50.8 48.26) (xy 50.8 55.88)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "7c703d09-0ab6-40e6-b0bc-c75d88809def")
-	)
-	(wire
-		(pts
-			(xy 69.85 46.99) (xy 73.66 46.99)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "7e239d02-9d9d-43af-861c-18da0cc4d18f")
-	)
-	(wire
-		(pts
-			(xy 104.14 105.41) (xy 104.14 106.68)
+			(xy 130.81 53.34) (xy 130.81 54.61)
 		)
 		(stroke
 			(width 0)
@@ -1999,27 +1283,17 @@
 	)
 	(wire
 		(pts
-			(xy 41.91 111.76) (xy 45.72 111.76)
+			(xy 90.17 45.72) (xy 90.17 50.8)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "864bc89d-7058-472c-b8a3-3e67c4534183")
+		(uuid "8920d298-df40-47e7-aebc-023b687dc3e1")
 	)
 	(wire
 		(pts
-			(xy 81.28 46.99) (xy 82.55 46.99)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "95be4902-63a0-4afc-bab3-d762e7b707f2")
-	)
-	(wire
-		(pts
-			(xy 104.14 97.79) (xy 104.14 96.52)
+			(xy 130.81 45.72) (xy 130.81 44.45)
 		)
 		(stroke
 			(width 0)
@@ -2029,7 +1303,7 @@
 	)
 	(wire
 		(pts
-			(xy 58.42 121.92) (xy 53.34 121.92)
+			(xy 90.17 50.8) (xy 85.09 50.8)
 		)
 		(stroke
 			(width 0)
@@ -2039,17 +1313,7 @@
 	)
 	(wire
 		(pts
-			(xy 19.05 50.8) (xy 19.05 63.5)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "9943962f-7ea5-4dcf-9d82-6b95bef036de")
-	)
-	(wire
-		(pts
-			(xy 128.27 97.79) (xy 128.27 96.52)
+			(xy 154.94 45.72) (xy 154.94 44.45)
 		)
 		(stroke
 			(width 0)
@@ -2059,17 +1323,7 @@
 	)
 	(wire
 		(pts
-			(xy 82.55 46.99) (xy 82.55 55.88)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "a73e5645-0b07-4f6f-9433-6f8b81949d2e")
-	)
-	(wire
-		(pts
-			(xy 125.73 106.68) (xy 128.27 106.68)
+			(xy 152.4 54.61) (xy 154.94 54.61)
 		)
 		(stroke
 			(width 0)
@@ -2079,7 +1333,7 @@
 	)
 	(wire
 		(pts
-			(xy 113.03 50.8) (xy 114.3 50.8)
+			(xy 34.29 50.8) (xy 35.56 50.8)
 		)
 		(stroke
 			(width 0)
@@ -2089,17 +1343,7 @@
 	)
 	(wire
 		(pts
-			(xy 45.72 63.5) (xy 45.72 66.04)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "b3abb547-a77f-446f-8ed6-0cb714d3edeb")
-	)
-	(wire
-		(pts
-			(xy 114.3 49.53) (xy 114.3 50.8)
+			(xy 35.56 49.53) (xy 35.56 50.8)
 		)
 		(stroke
 			(width 0)
@@ -2109,17 +1353,7 @@
 	)
 	(wire
 		(pts
-			(xy 19.05 63.5) (xy 45.72 63.5)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "b4d253b4-1527-40e5-bd7e-c869009ca8ee")
-	)
-	(wire
-		(pts
-			(xy 58.42 106.68) (xy 58.42 111.76)
+			(xy 90.17 40.64) (xy 90.17 45.72)
 		)
 		(stroke
 			(width 0)
@@ -2129,57 +1363,7 @@
 	)
 	(wire
 		(pts
-			(xy 44.45 45.72) (xy 44.45 41.91)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "cdfa4ef1-9520-4d73-bae8-439984859a73")
-	)
-	(wire
-		(pts
-			(xy 82.55 55.88) (xy 81.28 55.88)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "d8c6f47d-5309-43bc-a59b-d17ef2871c72")
-	)
-	(wire
-		(pts
-			(xy 50.8 45.72) (xy 50.8 48.26)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "d9bc12ea-fabe-4c38-a6bb-399c54b35df8")
-	)
-	(wire
-		(pts
-			(xy 58.42 91.44) (xy 58.42 101.6)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "da1d9d11-9dc1-4f55-8b90-522bb7f7c584")
-	)
-	(wire
-		(pts
-			(xy 149.86 50.8) (xy 151.13 50.8)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "dbfc7b75-e667-4f92-82d1-c9a8968a3ed5")
-	)
-	(wire
-		(pts
-			(xy 104.14 116.84) (xy 104.14 115.57)
+			(xy 130.81 64.77) (xy 130.81 63.5)
 		)
 		(stroke
 			(width 0)
@@ -2189,17 +1373,7 @@
 	)
 	(wire
 		(pts
-			(xy 19.05 41.91) (xy 19.05 50.8)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "e075698b-c1b5-491f-a477-531de065e653")
-	)
-	(wire
-		(pts
-			(xy 101.6 106.68) (xy 104.14 106.68)
+			(xy 128.27 54.61) (xy 130.81 54.61)
 		)
 		(stroke
 			(width 0)
@@ -2207,58 +1381,8 @@
 		)
 		(uuid "e7c8b0d4-f99f-474d-a005-1d66f28843e7")
 	)
-	(wire
-		(pts
-			(xy 48.26 50.8) (xy 44.45 50.8)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "e7c8cb55-3cc7-4748-9de1-e5fea667e5d2")
-	)
-	(wire
-		(pts
-			(xy 48.26 53.34) (xy 44.45 53.34)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "ed84fe01-70be-477a-afb5-e641d218a06a")
-	)
-	(wire
-		(pts
-			(xy 82.55 57.15) (xy 82.55 55.88)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "fdbb9d8e-4b74-4d87-ba12-c533a6c585e5")
-	)
-	(label "CC2"
-		(at 48.26 50.8 180)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right bottom)
-		)
-		(uuid "45eefcb6-b3a3-49ad-86b4-06b4f30726b2")
-	)
-	(label "CC1"
-		(at 69.85 46.99 0)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify left bottom)
-		)
-		(uuid "4db133c0-9f70-48a1-9a4e-00860d00424e")
-	)
 	(label "LED_VSYS"
-		(at 101.6 106.68 90)
+		(at 128.27 54.61 90)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -2268,18 +1392,8 @@
 		)
 		(uuid "89ee141f-cb1e-4de4-b17b-3d18d909cf0f")
 	)
-	(label "CC1"
-		(at 48.26 53.34 180)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right bottom)
-		)
-		(uuid "a6ac43ba-6069-45e9-ba31-32b9e6fc00e7")
-	)
 	(label "LED_5V"
-		(at 125.73 106.68 90)
+		(at 152.4 54.61 90)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -2289,98 +1403,9 @@
 		)
 		(uuid "e41acdcf-6eb0-4e51-a5dc-aeccf03a4076")
 	)
-	(label "CC2"
-		(at 69.85 55.88 0)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify left bottom)
-		)
-		(uuid "fd64b457-34e1-4a70-830b-6a735f550570")
-	)
 	(symbol
 		(lib_id "power:VBUS")
-		(at 158.75 105.41 90)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(fields_autoplaced yes)
-		(uuid "00605135-519c-4be6-82af-9a9ba1b203ca")
-		(property "Reference" "#PWR0920"
-			(at 162.56 105.41 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "VPROG"
-			(at 154.94 105.4099 90)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Footprint" ""
-			(at 158.75 105.41 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 158.75 105.41 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Power symbol creates a global label with name \"VBUS\""
-			(at 158.75 105.41 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "4d507800-dc1d-4cb1-8a30-e354529be6fa")
-		)
-		(instances
-			(project "osc-dev-m007"
-				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/16772291-8b66-4bca-9793-c37f2e864c04"
-					(reference "#PWR0920")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "power:VBUS")
-		(at 66.04 106.68 270)
+		(at 97.79 45.72 270)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -2390,8 +1415,8 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "024b5bfa-1a15-495b-a27c-20b2700e354b")
-		(property "Reference" "#PWR0907"
-			(at 62.23 106.68 0)
+		(property "Reference" "#PWR0905"
+			(at 93.98 45.72 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2402,7 +1427,7 @@
 			)
 		)
 		(property "Value" "VSYS"
-			(at 69.85 106.6799 90)
+			(at 101.6 45.7199 90)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -2413,7 +1438,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 66.04 106.68 0)
+			(at 97.79 45.72 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2424,7 +1449,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 66.04 106.68 0)
+			(at 97.79 45.72 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2435,7 +1460,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"VBUS\""
-			(at 66.04 106.68 0)
+			(at 97.79 45.72 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2451,85 +1476,7 @@
 		(instances
 			(project "osc-dev-m007"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/16772291-8b66-4bca-9793-c37f2e864c04"
-					(reference "#PWR0907")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "power:PWR_FLAG")
-		(at 158.75 93.98 270)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(uuid "070cd039-20d2-4cde-8fcc-2dbfaf6e5f66")
-		(property "Reference" "#FLG0901"
-			(at 160.655 93.98 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "PWR_FLAG"
-			(at 162.56 93.98 90)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Footprint" ""
-			(at 158.75 93.98 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 158.75 93.98 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Special symbol for telling ERC where power comes from"
-			(at 158.75 93.98 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "7dcdbd4c-7f51-4578-b7ea-a41f9f6807ce")
-		)
-		(instances
-			(project "osc-dev-m007"
-				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/16772291-8b66-4bca-9793-c37f2e864c04"
-					(reference "#FLG0901")
+					(reference "#PWR0905")
 					(unit 1)
 				)
 			)
@@ -2537,7 +1484,7 @@
 	)
 	(symbol
 		(lib_id "power:VBUS")
-		(at 41.91 121.92 90)
+		(at 73.66 50.8 90)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -2548,7 +1495,7 @@
 		(fields_autoplaced yes)
 		(uuid "0a8bf197-7acc-4cdc-96c0-98d77f279e72")
 		(property "Reference" "#PWR0904"
-			(at 45.72 121.92 0)
+			(at 77.47 50.8 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2559,7 +1506,7 @@
 			)
 		)
 		(property "Value" "VPROG"
-			(at 38.1 121.9199 90)
+			(at 69.85 50.7999 90)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -2570,7 +1517,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 41.91 121.92 0)
+			(at 73.66 50.8 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2581,7 +1528,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 41.91 121.92 0)
+			(at 73.66 50.8 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2592,7 +1539,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"VBUS\""
-			(at 41.91 121.92 0)
+			(at 73.66 50.8 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2615,86 +1562,8 @@
 		)
 	)
 	(symbol
-		(lib_id "power:PWR_FLAG")
-		(at 158.75 97.79 270)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(uuid "0b553356-bc61-43ce-a850-7ba85b9a8ac6")
-		(property "Reference" "#FLG0902"
-			(at 160.655 97.79 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "PWR_FLAG"
-			(at 162.56 97.79 90)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Footprint" ""
-			(at 158.75 97.79 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 158.75 97.79 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Special symbol for telling ERC where power comes from"
-			(at 158.75 97.79 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "cb609e0d-84bd-4456-95eb-7e9229d90ed8")
-		)
-		(instances
-			(project "osc-dev-m007"
-				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/16772291-8b66-4bca-9793-c37f2e864c04"
-					(reference "#FLG0902")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
 		(lib_id "Device:R")
-		(at 128.27 101.6 0)
+		(at 154.94 49.53 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -2704,8 +1573,8 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "0b613a47-2bfe-4b72-9ad2-d3be303af97b")
-		(property "Reference" "R904"
-			(at 130.81 100.3299 0)
+		(property "Reference" "R902"
+			(at 157.48 48.2599 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -2716,7 +1585,7 @@
 			)
 		)
 		(property "Value" "10kΩ"
-			(at 130.81 102.8699 0)
+			(at 157.48 50.7999 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -2727,7 +1596,7 @@
 			)
 		)
 		(property "Footprint" "Resistor_SMD:R_0805_2012Metric_Pad1.20x1.40mm_HandSolder"
-			(at 126.492 101.6 90)
+			(at 153.162 49.53 90)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2738,7 +1607,7 @@
 			)
 		)
 		(property "Datasheet" "https://www.lcsc.com/product-detail/C17414.html"
-			(at 128.27 101.6 0)
+			(at 154.94 49.53 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2749,7 +1618,7 @@
 			)
 		)
 		(property "Description" "Resistor"
-			(at 128.27 101.6 0)
+			(at 154.94 49.53 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2760,7 +1629,7 @@
 			)
 		)
 		(property "LCSC" "C17414"
-			(at 130.81 100.3299 0)
+			(at 157.48 48.2599 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2771,7 +1640,7 @@
 			)
 		)
 		(property "MFPN" "0805W8F1002T5E"
-			(at 130.81 100.3299 0)
+			(at 157.48 48.2599 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2782,7 +1651,7 @@
 			)
 		)
 		(property "JLC_Basic" "yes"
-			(at 130.81 100.3299 0)
+			(at 157.48 48.2599 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2793,7 +1662,7 @@
 			)
 		)
 		(property "KLC_S3.3" ""
-			(at 128.27 101.6 0)
+			(at 154.94 49.53 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2804,7 +1673,7 @@
 			)
 		)
 		(property "KLC_S5.1" ""
-			(at 128.27 101.6 0)
+			(at 154.94 49.53 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2823,7 +1692,7 @@
 		(instances
 			(project "osc-dev-m007"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/16772291-8b66-4bca-9793-c37f2e864c04"
-					(reference "R904")
+					(reference "R902")
 					(unit 1)
 				)
 			)
@@ -2831,7 +1700,7 @@
 	)
 	(symbol
 		(lib_id "power:GND")
-		(at 104.14 116.84 0)
+		(at 130.81 64.77 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -2840,8 +1709,8 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "11fd8e88-1a43-404c-a0da-97cf6433a034")
-		(property "Reference" "#PWR0910"
-			(at 104.14 123.19 0)
+		(property "Reference" "#PWR0912"
+			(at 130.81 71.12 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2852,7 +1721,7 @@
 			)
 		)
 		(property "Value" "GND"
-			(at 104.14 120.65 0)
+			(at 130.81 68.58 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -2862,7 +1731,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 104.14 116.84 0)
+			(at 130.81 64.77 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2873,7 +1742,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 104.14 116.84 0)
+			(at 130.81 64.77 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2884,7 +1753,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 104.14 116.84 0)
+			(at 130.81 64.77 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2900,7 +1769,7 @@
 		(instances
 			(project "osc-dev-m007"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/16772291-8b66-4bca-9793-c37f2e864c04"
-					(reference "#PWR0910")
+					(reference "#PWR0912")
 					(unit 1)
 				)
 			)
@@ -2908,86 +1777,7 @@
 	)
 	(symbol
 		(lib_id "power:VBUS")
-		(at 41.91 111.76 90)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(fields_autoplaced yes)
-		(uuid "132231f4-3038-4614-91b3-80849f678c58")
-		(property "Reference" "#PWR0903"
-			(at 45.72 111.76 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "VEXT"
-			(at 38.1 111.7599 90)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Footprint" ""
-			(at 41.91 111.76 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 41.91 111.76 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Power symbol creates a global label with name \"VBUS\""
-			(at 41.91 111.76 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "6a69964c-84e4-4a1e-bd99-2e3ec88d5d96")
-		)
-		(instances
-			(project "osc-dev-m007"
-				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/16772291-8b66-4bca-9793-c37f2e864c04"
-					(reference "#PWR0903")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "power:VBUS")
-		(at 41.91 101.6 90)
+		(at 73.66 40.64 90)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -2997,8 +1787,8 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "19382b95-7e7e-49d8-94f5-9c6be629c626")
-		(property "Reference" "#PWR0902"
-			(at 45.72 101.6 0)
+		(property "Reference" "#PWR0903"
+			(at 77.47 40.64 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3009,7 +1799,7 @@
 			)
 		)
 		(property "Value" "VBAT"
-			(at 38.1 101.5999 90)
+			(at 69.85 40.6399 90)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -3020,7 +1810,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 41.91 101.6 0)
+			(at 73.66 40.64 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3031,7 +1821,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 41.91 101.6 0)
+			(at 73.66 40.64 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3042,7 +1832,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"VBUS\""
-			(at 41.91 101.6 0)
+			(at 73.66 40.64 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3058,7 +1848,85 @@
 		(instances
 			(project "osc-dev-m007"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/16772291-8b66-4bca-9793-c37f2e864c04"
-					(reference "#PWR0902")
+					(reference "#PWR0903")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "power:GND")
+		(at 101.6 74.93 270)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "24254393-3d95-4277-9906-2250daab28ec")
+		(property "Reference" "#PWR0910"
+			(at 95.25 74.93 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "GND"
+			(at 97.79 74.93 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify right)
+			)
+		)
+		(property "Footprint" ""
+			(at 101.6 74.93 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 101.6 74.93 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
+			(at 101.6 74.93 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "32761b19-3a65-483e-a3ce-103ceaed45fc")
+		)
+		(instances
+			(project "osc-dev-m007"
+				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/16772291-8b66-4bca-9793-c37f2e864c04"
+					(reference "#PWR0910")
 					(unit 1)
 				)
 			)
@@ -3066,7 +1934,7 @@
 	)
 	(symbol
 		(lib_id "Diode:SS34")
-		(at 49.53 101.6 180)
+		(at 81.28 40.64 180)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -3075,8 +1943,8 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "299c4b23-2449-4b0a-9962-d8bf2e955040")
-		(property "Reference" "D902"
-			(at 49.53 99.06 0)
+		(property "Reference" "D901"
+			(at 81.28 38.1 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -3086,7 +1954,7 @@
 			)
 		)
 		(property "Value" "SS54"
-			(at 49.53 104.14 0)
+			(at 81.28 43.18 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -3096,7 +1964,7 @@
 			)
 		)
 		(property "Footprint" "Diode_SMD:D_SMA_Handsoldering"
-			(at 49.53 97.155 0)
+			(at 81.28 36.195 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3107,7 +1975,7 @@
 			)
 		)
 		(property "Datasheet" "https://www.lcsc.com/product-detail/C22452.html"
-			(at 49.53 101.6 0)
+			(at 81.28 40.64 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3118,7 +1986,7 @@
 			)
 		)
 		(property "Description" "40V 5A Schottky Diode, SMA"
-			(at 49.53 101.6 0)
+			(at 81.28 40.64 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3129,7 +1997,7 @@
 			)
 		)
 		(property "LCSC" "C22452"
-			(at 49.53 101.6 0)
+			(at 81.28 40.64 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3140,7 +2008,7 @@
 			)
 		)
 		(property "MFPN" "SS54"
-			(at 49.53 101.6 0)
+			(at 81.28 40.64 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3151,7 +2019,7 @@
 			)
 		)
 		(property "JLC_Basic" "yes"
-			(at 49.53 101.6 0)
+			(at 81.28 40.64 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3162,7 +2030,7 @@
 			)
 		)
 		(property "JLC Type" "Basic"
-			(at 49.53 101.6 0)
+			(at 81.28 40.64 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3173,7 +2041,7 @@
 			)
 		)
 		(property "KLC_S3.3" ""
-			(at 49.53 101.6 0)
+			(at 81.28 40.64 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3184,7 +2052,7 @@
 			)
 		)
 		(property "KLC_S5.1" ""
-			(at 49.53 101.6 0)
+			(at 81.28 40.64 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3203,15 +2071,15 @@
 		(instances
 			(project "osc-dev-m007"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/16772291-8b66-4bca-9793-c37f2e864c04"
-					(reference "D902")
+					(reference "D901")
 					(unit 1)
 				)
 			)
 		)
 	)
 	(symbol
-		(lib_id "power:GND")
-		(at 82.55 57.15 0)
+		(lib_id "power:VBUS")
+		(at 101.6 71.12 90)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -3219,9 +2087,10 @@
 		(on_board yes)
 		(in_pos_files yes)
 		(dnp no)
-		(uuid "2c4d3ac1-5248-47b8-8a8b-ee3f30a34de4")
-		(property "Reference" "#PWR0908"
-			(at 82.55 63.5 0)
+		(fields_autoplaced yes)
+		(uuid "2b2d88d8-d6c9-460d-97d0-928fba08cfb2")
+		(property "Reference" "#PWR0909"
+			(at 105.41 71.12 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3231,18 +2100,19 @@
 				)
 			)
 		)
-		(property "Value" "GND"
-			(at 82.55 60.96 0)
+		(property "Value" "+5V"
+			(at 97.79 71.1199 90)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
 				(font
 					(size 1.27 1.27)
 				)
+				(justify left)
 			)
 		)
 		(property "Footprint" ""
-			(at 82.55 57.15 0)
+			(at 101.6 71.12 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3253,7 +2123,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 82.55 57.15 0)
+			(at 101.6 71.12 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3263,139 +2133,8 @@
 				)
 			)
 		)
-		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 82.55 57.15 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "d32cd22d-8052-45c6-8b1f-e978b51eaf6e")
-		)
-		(instances
-			(project "osc-dev-m007"
-				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/16772291-8b66-4bca-9793-c37f2e864c04"
-					(reference "#PWR0908")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "Device:R")
-		(at 77.47 55.88 270)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(uuid "2d34ed7e-5c89-42c0-9126-8fed2cfc0894")
-		(property "Reference" "R902"
-			(at 77.47 53.34 90)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "5.1kΩ"
-			(at 77.47 58.42 90)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" "Resistor_SMD:R_0805_2012Metric_Pad1.20x1.40mm_HandSolder"
-			(at 77.47 54.102 90)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C27834.html"
-			(at 77.47 55.88 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Resistor"
-			(at 77.47 55.88 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "LCSC" "C27834"
-			(at 79.248 51.816 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "MFPN" "0805W8F5101T5E"
-			(at 79.248 51.816 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "JLC_Basic" "yes"
-			(at 79.248 51.816 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "KLC_S3.3" ""
-			(at 77.47 55.88 90)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "KLC_S5.1" ""
-			(at 77.47 55.88 90)
+		(property "Description" "Power symbol creates a global label with name \"VBUS\""
+			(at 101.6 71.12 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3406,15 +2145,12 @@
 			)
 		)
 		(pin "1"
-			(uuid "fb1fc0ea-c8f3-405c-8c44-13da99607914")
-		)
-		(pin "2"
-			(uuid "32aba2c5-0597-4524-babd-6f36393a652f")
+			(uuid "34aec27e-8d36-4e58-901b-01b5b6665f2a")
 		)
 		(instances
 			(project "osc-dev-m007"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/16772291-8b66-4bca-9793-c37f2e864c04"
-					(reference "R902")
+					(reference "#PWR0909")
 					(unit 1)
 				)
 			)
@@ -3422,7 +2158,7 @@
 	)
 	(symbol
 		(lib_id "Device:LED")
-		(at 128.27 111.76 90)
+		(at 154.94 59.69 90)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -3433,7 +2169,7 @@
 		(fields_autoplaced yes)
 		(uuid "2f261954-d08f-44bb-9eb2-8406450a7aeb")
 		(property "Reference" "LED902"
-			(at 132.08 112.0774 90)
+			(at 158.75 60.0074 90)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -3444,7 +2180,7 @@
 			)
 		)
 		(property "Value" "GREEN"
-			(at 132.08 114.6174 90)
+			(at 158.75 62.5474 90)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -3455,7 +2191,7 @@
 			)
 		)
 		(property "Footprint" "LED_SMD:LED_0805_2012Metric"
-			(at 128.27 111.76 0)
+			(at 154.94 59.69 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3466,7 +2202,7 @@
 			)
 		)
 		(property "Datasheet" "https://www.lcsc.com/product-detail/C2297.html"
-			(at 128.27 111.76 0)
+			(at 154.94 59.69 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3477,7 +2213,7 @@
 			)
 		)
 		(property "Description" "Light emitting diode"
-			(at 128.27 111.76 0)
+			(at 154.94 59.69 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3488,7 +2224,7 @@
 			)
 		)
 		(property "LCSC" "C2297"
-			(at 132.08 112.0774 0)
+			(at 158.75 60.0074 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3499,7 +2235,7 @@
 			)
 		)
 		(property "MFPN" "KT-0805G"
-			(at 132.08 112.0774 0)
+			(at 158.75 60.0074 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3510,7 +2246,7 @@
 			)
 		)
 		(property "JLC_Basic" "yes"
-			(at 132.08 112.0774 0)
+			(at 158.75 60.0074 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3521,7 +2257,7 @@
 			)
 		)
 		(property "Sim.Pins" "1=K 2=A"
-			(at 128.27 111.76 0)
+			(at 154.94 59.69 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3532,7 +2268,7 @@
 			)
 		)
 		(property "JLC Type" "Standard"
-			(at 128.27 111.76 90)
+			(at 154.94 59.69 90)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3543,7 +2279,7 @@
 			)
 		)
 		(property "KLC_S3.3" ""
-			(at 128.27 111.76 90)
+			(at 154.94 59.69 90)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3554,7 +2290,7 @@
 			)
 		)
 		(property "KLC_S5.1" ""
-			(at 128.27 111.76 90)
+			(at 154.94 59.69 90)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3581,7 +2317,7 @@
 	)
 	(symbol
 		(lib_id "Diode:SS34")
-		(at 49.53 121.92 180)
+		(at 81.28 50.8 180)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -3590,8 +2326,8 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "315286dd-7ad3-4065-b03c-666e75a7aa51")
-		(property "Reference" "D904"
-			(at 49.53 119.38 0)
+		(property "Reference" "D902"
+			(at 81.28 48.26 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -3601,7 +2337,7 @@
 			)
 		)
 		(property "Value" "SS54"
-			(at 49.53 124.46 0)
+			(at 81.28 53.34 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -3611,7 +2347,7 @@
 			)
 		)
 		(property "Footprint" "Diode_SMD:D_SMA_Handsoldering"
-			(at 49.53 117.475 0)
+			(at 81.28 46.355 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3622,7 +2358,7 @@
 			)
 		)
 		(property "Datasheet" "https://www.lcsc.com/product-detail/C22452.html"
-			(at 49.53 121.92 0)
+			(at 81.28 50.8 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3633,7 +2369,7 @@
 			)
 		)
 		(property "Description" "40V 5A Schottky Diode, SMA"
-			(at 49.53 121.92 0)
+			(at 81.28 50.8 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3644,7 +2380,7 @@
 			)
 		)
 		(property "LCSC" "C22452"
-			(at 49.53 121.92 0)
+			(at 81.28 50.8 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3655,7 +2391,7 @@
 			)
 		)
 		(property "MFPN" "SS54"
-			(at 49.53 121.92 0)
+			(at 81.28 50.8 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3666,7 +2402,7 @@
 			)
 		)
 		(property "JLC_Basic" "yes"
-			(at 49.53 121.92 0)
+			(at 81.28 50.8 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3677,7 +2413,7 @@
 			)
 		)
 		(property "JLC Type" "Basic"
-			(at 49.53 121.92 0)
+			(at 81.28 50.8 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3688,7 +2424,7 @@
 			)
 		)
 		(property "KLC_S3.3" ""
-			(at 49.53 121.92 0)
+			(at 81.28 50.8 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3699,7 +2435,7 @@
 			)
 		)
 		(property "KLC_S5.1" ""
-			(at 49.53 121.92 0)
+			(at 81.28 50.8 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3718,85 +2454,7 @@
 		(instances
 			(project "osc-dev-m007"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/16772291-8b66-4bca-9793-c37f2e864c04"
-					(reference "D904")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "power:VBUS")
-		(at 149.86 48.26 0)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(fields_autoplaced yes)
-		(uuid "34add692-ac74-4a97-8cc5-41e7d5a1f5c7")
-		(property "Reference" "#PWR0915"
-			(at 149.86 52.07 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "VEXT"
-			(at 149.86 43.18 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" ""
-			(at 149.86 48.26 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 149.86 48.26 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Power symbol creates a global label with name \"VBUS\""
-			(at 149.86 48.26 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "2f2c9acc-b358-4580-ab3a-ace456b834c4")
-		)
-		(instances
-			(project "osc-dev-m007"
-				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/16772291-8b66-4bca-9793-c37f2e864c04"
-					(reference "#PWR0915")
+					(reference "D902")
 					(unit 1)
 				)
 			)
@@ -3804,7 +2462,7 @@
 	)
 	(symbol
 		(lib_id "power:GND")
-		(at 128.27 116.84 0)
+		(at 154.94 64.77 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -3814,7 +2472,7 @@
 		(dnp no)
 		(uuid "38eb56a6-430e-4a71-af3b-f01feac203d4")
 		(property "Reference" "#PWR0914"
-			(at 128.27 123.19 0)
+			(at 154.94 71.12 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3825,7 +2483,7 @@
 			)
 		)
 		(property "Value" "GND"
-			(at 128.27 120.65 0)
+			(at 154.94 68.58 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -3835,7 +2493,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 128.27 116.84 0)
+			(at 154.94 64.77 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3846,7 +2504,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 128.27 116.84 0)
+			(at 154.94 64.77 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3857,7 +2515,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 128.27 116.84 0)
+			(at 154.94 64.77 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3881,7 +2539,7 @@
 	)
 	(symbol
 		(lib_id "power:GND")
-		(at 114.3 54.61 0)
+		(at 35.56 54.61 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -3890,8 +2548,8 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "39f2a96f-e116-4f35-8e0a-9bea3c23695b")
-		(property "Reference" "#PWR0912"
-			(at 114.3 60.96 0)
+		(property "Reference" "#PWR0902"
+			(at 35.56 60.96 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3902,7 +2560,7 @@
 			)
 		)
 		(property "Value" "GND"
-			(at 114.3 58.42 0)
+			(at 35.56 58.42 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -3912,7 +2570,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 114.3 54.61 0)
+			(at 35.56 54.61 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3923,7 +2581,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 114.3 54.61 0)
+			(at 35.56 54.61 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3934,7 +2592,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 114.3 54.61 0)
+			(at 35.56 54.61 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3950,7 +2608,7 @@
 		(instances
 			(project "osc-dev-m007"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/16772291-8b66-4bca-9793-c37f2e864c04"
-					(reference "#PWR0912")
+					(reference "#PWR0902")
 					(unit 1)
 				)
 			)
@@ -3958,7 +2616,7 @@
 	)
 	(symbol
 		(lib_id "power:VBUS")
-		(at 104.14 96.52 0)
+		(at 130.81 44.45 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -3968,8 +2626,8 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "4374d7e0-1a38-4770-a151-6b21332e6e2b")
-		(property "Reference" "#PWR0909"
-			(at 104.14 100.33 0)
+		(property "Reference" "#PWR0911"
+			(at 130.81 48.26 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3980,7 +2638,7 @@
 			)
 		)
 		(property "Value" "VSYS"
-			(at 104.14 91.44 0)
+			(at 130.81 39.37 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -3990,7 +2648,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 104.14 96.52 0)
+			(at 130.81 44.45 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4001,7 +2659,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 104.14 96.52 0)
+			(at 130.81 44.45 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4012,7 +2670,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"VBUS\""
-			(at 104.14 96.52 0)
+			(at 130.81 44.45 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4028,7 +2686,7 @@
 		(instances
 			(project "osc-dev-m007"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/16772291-8b66-4bca-9793-c37f2e864c04"
-					(reference "#PWR0909")
+					(reference "#PWR0911")
 					(unit 1)
 				)
 			)
@@ -4036,7 +2694,7 @@
 	)
 	(symbol
 		(lib_id "Connector_Generic:Conn_01x02")
-		(at 107.95 53.34 180)
+		(at 29.21 53.34 180)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -4046,7 +2704,7 @@
 		(dnp no)
 		(uuid "455424f4-23b5-4ed2-99d6-c5c4617926a9")
 		(property "Reference" "J901"
-			(at 107.95 55.88 0)
+			(at 29.21 55.88 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -4056,7 +2714,7 @@
 			)
 		)
 		(property "Value" "JST-PH-H"
-			(at 107.95 58.42 0)
+			(at 29.21 58.42 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4067,7 +2725,7 @@
 			)
 		)
 		(property "Footprint" "shared:CONN-TH_S2B-PH-K-S-LF-SN"
-			(at 107.95 53.34 0)
+			(at 29.21 53.34 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4078,7 +2736,7 @@
 			)
 		)
 		(property "Datasheet" "https://www.lcsc.com/product-detail/C173752.html"
-			(at 107.95 53.34 0)
+			(at 29.21 53.34 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4089,7 +2747,7 @@
 			)
 		)
 		(property "Description" "Generic connector, single row, 01x02, script generated (kicad-library-utils/schlib/autogen/connector/)"
-			(at 107.95 53.34 0)
+			(at 29.21 53.34 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4100,7 +2758,7 @@
 			)
 		)
 		(property "LCSC" "C173752"
-			(at 106.68 62.23 0)
+			(at 27.94 62.23 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4111,7 +2769,7 @@
 			)
 		)
 		(property "MFPN" "S2B-PH-K-S(LF)(SN)"
-			(at 106.68 62.23 0)
+			(at 27.94 62.23 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4122,7 +2780,7 @@
 			)
 		)
 		(property "JLC_Basic" "no"
-			(at 106.68 62.23 0)
+			(at 27.94 62.23 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4133,7 +2791,7 @@
 			)
 		)
 		(property "JLC Type" "Extended"
-			(at 107.95 53.34 0)
+			(at 29.21 53.34 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4144,7 +2802,7 @@
 			)
 		)
 		(property "KLC_S3.3" ""
-			(at 107.95 53.34 0)
+			(at 29.21 53.34 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4155,7 +2813,7 @@
 			)
 		)
 		(property "KLC_S5.1" ""
-			(at 107.95 53.34 0)
+			(at 29.21 53.34 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4181,321 +2839,8 @@
 		)
 	)
 	(symbol
-		(lib_id "power:VBUS")
-		(at 158.75 109.22 90)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(fields_autoplaced yes)
-		(uuid "473a542a-5131-4bbe-ad55-2f14b5bcf2d1")
-		(property "Reference" "#PWR0921"
-			(at 162.56 109.22 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "VSYS"
-			(at 154.94 109.2199 90)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Footprint" ""
-			(at 158.75 109.22 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 158.75 109.22 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Power symbol creates a global label with name \"VBUS\""
-			(at 158.75 109.22 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "49183fc7-f33f-42da-ba85-7bd95663da6b")
-		)
-		(instances
-			(project "osc-dev-m007"
-				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/16772291-8b66-4bca-9793-c37f2e864c04"
-					(reference "#PWR0921")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "power:GND")
-		(at 45.72 66.04 0)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(uuid "48591dba-4268-42fb-8adf-38abc85e695c")
-		(property "Reference" "#PWR0905"
-			(at 45.72 72.39 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "GND"
-			(at 45.72 69.85 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" ""
-			(at 45.72 66.04 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 45.72 66.04 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 45.72 66.04 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "01eb77d8-5109-4679-892e-561fa090d757")
-		)
-		(instances
-			(project "osc-dev-m007"
-				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/16772291-8b66-4bca-9793-c37f2e864c04"
-					(reference "#PWR0905")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "power:VBUS")
-		(at 41.91 91.44 90)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(fields_autoplaced yes)
-		(uuid "4d20f2d4-c225-4f61-a085-b101842c4000")
-		(property "Reference" "#PWR0901"
-			(at 45.72 91.44 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "VBUS"
-			(at 38.1 91.4399 90)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Footprint" ""
-			(at 41.91 91.44 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 41.91 91.44 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Power symbol creates a global label with name \"VBUS\""
-			(at 41.91 91.44 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "ce201f8b-884f-49bc-a24a-799ff8d72bd8")
-		)
-		(instances
-			(project "osc-dev-m007"
-				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/16772291-8b66-4bca-9793-c37f2e864c04"
-					(reference "#PWR0901")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "power:VBUS")
-		(at 50.8 45.72 0)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(fields_autoplaced yes)
-		(uuid "526a36ac-e8aa-4230-a149-fb74dec13f1d")
-		(property "Reference" "#PWR0906"
-			(at 50.8 49.53 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "VBUS"
-			(at 50.8 40.64 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" ""
-			(at 50.8 45.72 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 50.8 45.72 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Power symbol creates a global label with name \"VBUS\""
-			(at 50.8 45.72 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "93f16e7a-69aa-47fc-9e72-f95fff7c4094")
-		)
-		(instances
-			(project "osc-dev-m007"
-				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/16772291-8b66-4bca-9793-c37f2e864c04"
-					(reference "#PWR0906")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
 		(lib_id "power:PWR_FLAG")
-		(at 158.75 109.22 270)
+		(at 101.6 74.93 270)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -4503,9 +2848,9 @@
 		(on_board yes)
 		(in_pos_files yes)
 		(dnp no)
-		(uuid "5633171a-2c67-4931-b569-3873bc7519f8")
+		(uuid "4b746e60-e976-4e8c-b380-db5768785cff")
 		(property "Reference" "#FLG0905"
-			(at 160.655 109.22 0)
+			(at 103.505 74.93 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4516,7 +2861,7 @@
 			)
 		)
 		(property "Value" "PWR_FLAG"
-			(at 162.56 109.22 90)
+			(at 105.41 74.93 90)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -4527,7 +2872,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 158.75 109.22 0)
+			(at 101.6 74.93 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4538,7 +2883,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 158.75 109.22 0)
+			(at 101.6 74.93 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4549,7 +2894,7 @@
 			)
 		)
 		(property "Description" "Special symbol for telling ERC where power comes from"
-			(at 158.75 109.22 0)
+			(at 101.6 74.93 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4560,7 +2905,7 @@
 			)
 		)
 		(pin "1"
-			(uuid "838f8eea-2239-426a-8ce4-711b7ad6b844")
+			(uuid "03a3a632-e952-4ff2-a23d-4f9e36e81298")
 		)
 		(instances
 			(project "osc-dev-m007"
@@ -4573,7 +2918,7 @@
 	)
 	(symbol
 		(lib_id "power:VBUS")
-		(at 158.75 97.79 90)
+		(at 101.6 59.69 90)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -4582,9 +2927,9 @@
 		(in_pos_files yes)
 		(dnp no)
 		(fields_autoplaced yes)
-		(uuid "56e6dcd9-c728-4d45-ae26-aff8394d2eb4")
-		(property "Reference" "#PWR0918"
-			(at 162.56 97.79 0)
+		(uuid "55d3a5fb-4d04-4c9a-81b7-82e9c94ffd65")
+		(property "Reference" "#PWR0906"
+			(at 105.41 59.69 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4595,7 +2940,7 @@
 			)
 		)
 		(property "Value" "VBAT"
-			(at 154.94 97.7899 90)
+			(at 97.79 59.6899 90)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -4606,7 +2951,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 158.75 97.79 0)
+			(at 101.6 59.69 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4617,7 +2962,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 158.75 97.79 0)
+			(at 101.6 59.69 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4628,7 +2973,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"VBUS\""
-			(at 158.75 97.79 0)
+			(at 101.6 59.69 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4639,146 +2984,12 @@
 			)
 		)
 		(pin "1"
-			(uuid "56452a5e-fcd4-4ba8-a1f4-39657fe181de")
+			(uuid "dcbbc08e-44d7-4e8e-92bf-d52c099a2d6a")
 		)
 		(instances
 			(project "osc-dev-m007"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/16772291-8b66-4bca-9793-c37f2e864c04"
-					(reference "#PWR0918")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "Device:R")
-		(at 77.47 46.99 270)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(uuid "574ec215-3fc4-4257-8abd-e2d72516edaa")
-		(property "Reference" "R901"
-			(at 77.47 44.45 90)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "5.1kΩ"
-			(at 77.47 49.53 90)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" "Resistor_SMD:R_0805_2012Metric_Pad1.20x1.40mm_HandSolder"
-			(at 77.47 45.212 90)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C27834.html"
-			(at 77.47 46.99 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Resistor"
-			(at 77.47 46.99 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "LCSC" "C27834"
-			(at 79.248 42.926 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "MFPN" "0805W8F5101T5E"
-			(at 79.248 42.926 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "JLC_Basic" "yes"
-			(at 79.248 42.926 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "KLC_S3.3" ""
-			(at 77.47 46.99 90)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "KLC_S5.1" ""
-			(at 77.47 46.99 90)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "ec0aeb81-410e-4d0f-9725-97a3e3333a7f")
-		)
-		(pin "2"
-			(uuid "39ee18b6-0a30-4d28-a51c-b7ddaf9739c2")
-		)
-		(instances
-			(project "osc-dev-m007"
-				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/16772291-8b66-4bca-9793-c37f2e864c04"
-					(reference "R901")
+					(reference "#PWR0906")
 					(unit 1)
 				)
 			)
@@ -4786,7 +2997,7 @@
 	)
 	(symbol
 		(lib_id "power:VBUS")
-		(at 128.27 96.52 0)
+		(at 154.94 44.45 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -4797,7 +3008,7 @@
 		(fields_autoplaced yes)
 		(uuid "5ed8c70f-75ef-42f8-b940-d4296bbb9b18")
 		(property "Reference" "#PWR0913"
-			(at 128.27 100.33 0)
+			(at 154.94 48.26 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4808,7 +3019,7 @@
 			)
 		)
 		(property "Value" "+5V"
-			(at 128.27 91.44 0)
+			(at 154.94 39.37 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -4818,7 +3029,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 128.27 96.52 0)
+			(at 154.94 44.45 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4829,7 +3040,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 128.27 96.52 0)
+			(at 154.94 44.45 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4840,7 +3051,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"VBUS\""
-			(at 128.27 96.52 0)
+			(at 154.94 44.45 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4863,144 +3074,8 @@
 		)
 	)
 	(symbol
-		(lib_id "Connector:Screw_Terminal_01x02")
-		(at 156.21 50.8 0)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(uuid "60640812-e42f-4c39-92cf-1ca522e70624")
-		(property "Reference" "J902"
-			(at 156.21 48.26 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "TERM"
-			(at 151.13 50.8 90)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Footprint" "shared:CONN-TH_2P-P5.00_WJ500V-5.08-2P"
-			(at 156.21 50.8 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C8465.html"
-			(at 156.21 50.8 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Generic screw terminal, single row, 01x02, script generated (kicad-library-utils/schlib/autogen/connector/)"
-			(at 156.21 50.8 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "LCSC" "C8465"
-			(at 156.21 48.26 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "MFPN" "WJ500V-5.08-2P"
-			(at 156.21 48.26 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "JLC_Basic" "no"
-			(at 156.21 48.26 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "KLC_S3.3" ""
-			(at 156.21 50.8 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "KLC_S5.1" ""
-			(at 156.21 50.8 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "475bde88-c92d-4f0d-bbdf-ea4a3c818a9f")
-		)
-		(pin "2"
-			(uuid "1bbd07fb-48dc-4085-8637-7aed18c91c1f")
-		)
-		(instances
-			(project "osc-dev-m007"
-				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/16772291-8b66-4bca-9793-c37f2e864c04"
-					(reference "J902")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
 		(lib_id "power:PWR_FLAG")
-		(at 158.75 116.84 270)
+		(at 101.6 59.69 270)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -5008,9 +3083,9 @@
 		(on_board yes)
 		(in_pos_files yes)
 		(dnp no)
-		(uuid "60e449d8-c19e-46f1-97a6-94c1ada67a48")
-		(property "Reference" "#FLG0907"
-			(at 160.655 116.84 0)
+		(uuid "7e2d1169-adc5-409c-8e79-637e9187c399")
+		(property "Reference" "#FLG0901"
+			(at 103.505 59.69 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5021,7 +3096,7 @@
 			)
 		)
 		(property "Value" "PWR_FLAG"
-			(at 162.56 116.84 90)
+			(at 105.41 59.69 90)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -5032,7 +3107,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 158.75 116.84 0)
+			(at 101.6 59.69 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5043,7 +3118,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 158.75 116.84 0)
+			(at 101.6 59.69 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5054,7 +3129,7 @@
 			)
 		)
 		(property "Description" "Special symbol for telling ERC where power comes from"
-			(at 158.75 116.84 0)
+			(at 101.6 59.69 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5065,329 +3140,12 @@
 			)
 		)
 		(pin "1"
-			(uuid "4fa09b70-2bbb-49b0-9acf-699141713aaa")
+			(uuid "4c14f632-76a6-4d07-b504-cd9067d0f2ca")
 		)
 		(instances
 			(project "osc-dev-m007"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/16772291-8b66-4bca-9793-c37f2e864c04"
-					(reference "#FLG0907")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "power:GND")
-		(at 158.75 116.84 270)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(uuid "62a2eb74-fc99-4bcd-ad12-32aa49b46d4d")
-		(property "Reference" "#PWR0923"
-			(at 152.4 116.84 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "GND"
-			(at 154.94 116.84 90)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify right)
-			)
-		)
-		(property "Footprint" ""
-			(at 158.75 116.84 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 158.75 116.84 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 158.75 116.84 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "3047e999-52c1-43ef-ac56-bb79cc373b5b")
-		)
-		(instances
-			(project "osc-dev-m007"
-				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/16772291-8b66-4bca-9793-c37f2e864c04"
-					(reference "#PWR0923")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "shared:TYPE-C6P(073)")
-		(at 31.75 50.8 0)
-		(mirror y)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(uuid "77782d85-a819-458d-a238-b3ba59c43de8")
-		(property "Reference" "USB901"
-			(at 31.75 39.37 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "TYPE-C-H"
-			(at 31.75 40.64 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" "shared:TYPE-C-SMD_TYPE-C-6P-073"
-			(at 31.75 66.04 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C668623.html"
-			(at 31.75 68.58 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "USB Type-C receptacle, 6P, power-only (5V + CC)"
-			(at 31.75 50.8 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "LCSC" "C668623"
-			(at 31.75 38.1 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "MFPN" "TYPE-C 6P(073)"
-			(at 31.75 38.1 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "JLC_Basic" "no"
-			(at 31.75 38.1 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "JLC Type" "Extended"
-			(at 31.75 50.8 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "KLC_S3.3" ""
-			(at 31.75 50.8 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "KLC_S5.1" ""
-			(at 31.75 50.8 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "B12"
-			(uuid "8d31c949-6b46-434f-8f34-981d8eb0ed7b")
-		)
-		(pin "7"
-			(uuid "b92d3e29-6b05-4cc0-846d-338527c6ad3f")
-		)
-		(pin "A12"
-			(uuid "e06a2302-34f3-4ddc-b87e-a915ad0559be")
-		)
-		(pin "B9"
-			(uuid "526aca32-ba1a-41cf-832d-1c43bd1ba0ef")
-		)
-		(pin "A9"
-			(uuid "e1e83b14-db7c-4500-a5ea-09ed058b003a")
-		)
-		(pin "B5"
-			(uuid "fb84c2e8-ebf4-4332-a715-babfe44f91c5")
-		)
-		(pin "A5"
-			(uuid "e193a9ef-2e29-41e4-a495-cfbaf8a75587")
-		)
-		(instances
-			(project "osc-dev-m007"
-				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/16772291-8b66-4bca-9793-c37f2e864c04"
-					(reference "USB901")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "power:GND")
-		(at 149.86 54.61 0)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(uuid "78bb33dc-4829-41f9-8a53-29d08557bde1")
-		(property "Reference" "#PWR0916"
-			(at 149.86 60.96 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "GND"
-			(at 149.86 58.42 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" ""
-			(at 149.86 54.61 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 149.86 54.61 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 149.86 54.61 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "a8b0c5d8-508c-49c5-b858-add1c5b9033e")
-		)
-		(instances
-			(project "osc-dev-m007"
-				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/16772291-8b66-4bca-9793-c37f2e864c04"
-					(reference "#PWR0916")
+					(reference "#FLG0901")
 					(unit 1)
 				)
 			)
@@ -5395,7 +3153,7 @@
 	)
 	(symbol
 		(lib_id "power:VBUS")
-		(at 158.75 113.03 90)
+		(at 101.6 67.31 90)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -5404,9 +3162,9 @@
 		(in_pos_files yes)
 		(dnp no)
 		(fields_autoplaced yes)
-		(uuid "79878b69-558c-42f3-ae4f-f7f524951633")
-		(property "Reference" "#PWR0922"
-			(at 162.56 113.03 0)
+		(uuid "81b18953-0dc2-4209-9b35-7d43d3b6c894")
+		(property "Reference" "#PWR0908"
+			(at 105.41 67.31 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5416,8 +3174,8 @@
 				)
 			)
 		)
-		(property "Value" "+5V"
-			(at 154.94 113.0299 90)
+		(property "Value" "VSYS"
+			(at 97.79 67.3099 90)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -5428,7 +3186,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 158.75 113.03 0)
+			(at 101.6 67.31 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5439,7 +3197,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 158.75 113.03 0)
+			(at 101.6 67.31 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5450,7 +3208,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"VBUS\""
-			(at 158.75 113.03 0)
+			(at 101.6 67.31 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5461,157 +3219,12 @@
 			)
 		)
 		(pin "1"
-			(uuid "717ced46-a1fd-406b-bf1b-863aa06a4073")
+			(uuid "1c0a3162-8f69-4787-a01d-1992145e1722")
 		)
 		(instances
 			(project "osc-dev-m007"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/16772291-8b66-4bca-9793-c37f2e864c04"
-					(reference "#PWR0922")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "Diode:SS34")
-		(at 49.53 91.44 180)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(uuid "a9937e53-1c3d-4cc7-ba54-2a372b1b8685")
-		(property "Reference" "D901"
-			(at 49.53 88.9 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "SS54"
-			(at 49.53 93.98 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" "Diode_SMD:D_SMA_Handsoldering"
-			(at 49.53 86.995 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C22452.html"
-			(at 49.53 91.44 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "40V 5A Schottky Diode, SMA"
-			(at 49.53 91.44 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "LCSC" "C22452"
-			(at 49.53 91.44 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "MFPN" "SS54"
-			(at 49.53 91.44 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "JLC_Basic" "yes"
-			(at 49.53 91.44 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "JLC Type" "Basic"
-			(at 49.53 91.44 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "KLC_S3.3" ""
-			(at 49.53 91.44 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "KLC_S5.1" ""
-			(at 49.53 91.44 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "f5cfe65d-480d-46ed-95b5-9a4347e9548e")
-		)
-		(pin "2"
-			(uuid "4e5125fe-1bdb-4b83-aa16-e6aa7483bd24")
-		)
-		(instances
-			(project "osc-dev-m007"
-				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/16772291-8b66-4bca-9793-c37f2e864c04"
-					(reference "D901")
+					(reference "#PWR0908")
 					(unit 1)
 				)
 			)
@@ -5619,7 +3232,7 @@
 	)
 	(symbol
 		(lib_id "power:PWR_FLAG")
-		(at 158.75 105.41 270)
+		(at 101.6 67.31 270)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -5627,390 +3240,9 @@
 		(on_board yes)
 		(in_pos_files yes)
 		(dnp no)
-		(uuid "b06b43ef-311e-4e3c-a7ca-9fb29aa6fa7c")
-		(property "Reference" "#FLG0904"
-			(at 160.655 105.41 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "PWR_FLAG"
-			(at 162.56 105.41 90)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Footprint" ""
-			(at 158.75 105.41 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 158.75 105.41 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Special symbol for telling ERC where power comes from"
-			(at 158.75 105.41 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "87bf1e32-4794-4028-bd8e-140ebe4688dd")
-		)
-		(instances
-			(project "osc-dev-m007"
-				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/16772291-8b66-4bca-9793-c37f2e864c04"
-					(reference "#FLG0904")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "power:VBUS")
-		(at 158.75 93.98 90)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(fields_autoplaced yes)
-		(uuid "bf002396-6999-4d34-985b-c3a744b24df0")
-		(property "Reference" "#PWR0917"
-			(at 162.56 93.98 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "VBUS"
-			(at 154.94 93.9799 90)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Footprint" ""
-			(at 158.75 93.98 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 158.75 93.98 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Power symbol creates a global label with name \"VBUS\""
-			(at 158.75 93.98 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "a47e6a4c-49d1-4b54-a515-dda1025d62cf")
-		)
-		(instances
-			(project "osc-dev-m007"
-				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/16772291-8b66-4bca-9793-c37f2e864c04"
-					(reference "#PWR0917")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "Diode:SS34")
-		(at 49.53 111.76 180)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(uuid "ca198054-8a02-439e-8c62-ed47ca798f32")
-		(property "Reference" "D903"
-			(at 49.53 109.22 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "SS54"
-			(at 49.53 114.3 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" "Diode_SMD:D_SMA_Handsoldering"
-			(at 49.53 107.315 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C22452.html"
-			(at 49.53 111.76 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "40V 5A Schottky Diode, SMA"
-			(at 49.53 111.76 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "LCSC" "C22452"
-			(at 49.53 111.76 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "MFPN" "SS54"
-			(at 49.53 111.76 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "JLC_Basic" "yes"
-			(at 49.53 111.76 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "JLC Type" "Basic"
-			(at 49.53 111.76 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "KLC_S3.3" ""
-			(at 49.53 111.76 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "KLC_S5.1" ""
-			(at 49.53 111.76 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "495934e4-cc18-49a0-8036-1902b5ad5c06")
-		)
-		(pin "2"
-			(uuid "e3f57e53-5b35-4148-b554-51de2c03dc4e")
-		)
-		(instances
-			(project "osc-dev-m007"
-				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/16772291-8b66-4bca-9793-c37f2e864c04"
-					(reference "D903")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "power:VBUS")
-		(at 158.75 101.6 90)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(fields_autoplaced yes)
-		(uuid "cb287d57-0e79-44ac-8aa4-7fa4c5c1663a")
-		(property "Reference" "#PWR0919"
-			(at 162.56 101.6 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "VEXT"
-			(at 154.94 101.5999 90)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Footprint" ""
-			(at 158.75 101.6 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 158.75 101.6 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Power symbol creates a global label with name \"VBUS\""
-			(at 158.75 101.6 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "4a9ba70d-0dee-4daf-a3fe-7612de0c0eb7")
-		)
-		(instances
-			(project "osc-dev-m007"
-				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/16772291-8b66-4bca-9793-c37f2e864c04"
-					(reference "#PWR0919")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "power:PWR_FLAG")
-		(at 158.75 101.6 270)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(uuid "d4a676af-5758-4162-9ed2-1c8e2d69e5e5")
+		(uuid "81da0449-94f4-44df-b68d-7ad57bc6eeeb")
 		(property "Reference" "#FLG0903"
-			(at 160.655 101.6 0)
+			(at 103.505 67.31 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6021,7 +3253,7 @@
 			)
 		)
 		(property "Value" "PWR_FLAG"
-			(at 162.56 101.6 90)
+			(at 105.41 67.31 90)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -6032,7 +3264,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 158.75 101.6 0)
+			(at 101.6 67.31 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6043,7 +3275,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 158.75 101.6 0)
+			(at 101.6 67.31 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6054,7 +3286,7 @@
 			)
 		)
 		(property "Description" "Special symbol for telling ERC where power comes from"
-			(at 158.75 101.6 0)
+			(at 101.6 67.31 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6065,7 +3297,7 @@
 			)
 		)
 		(pin "1"
-			(uuid "edfb7df2-465f-476a-9601-2b556f5f8512")
+			(uuid "f523ea69-100b-419e-b1e2-9370936ce250")
 		)
 		(instances
 			(project "osc-dev-m007"
@@ -6077,8 +3309,243 @@
 		)
 	)
 	(symbol
+		(lib_id "power:VBUS")
+		(at 101.6 63.5 90)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "a15d8cad-15c7-4261-a041-5d195b6feb9a")
+		(property "Reference" "#PWR0907"
+			(at 105.41 63.5 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "VPROG"
+			(at 97.79 63.4999 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" ""
+			(at 101.6 63.5 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 101.6 63.5 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Power symbol creates a global label with name \"VBUS\""
+			(at 101.6 63.5 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "4683b86a-c81e-489e-9ffe-8381d80c9b47")
+		)
+		(instances
+			(project "osc-dev-m007"
+				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/16772291-8b66-4bca-9793-c37f2e864c04"
+					(reference "#PWR0907")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "power:PWR_FLAG")
+		(at 101.6 63.5 270)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "af099721-5976-4c48-8789-2fc023008f99")
+		(property "Reference" "#FLG0902"
+			(at 103.505 63.5 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "PWR_FLAG"
+			(at 105.41 63.5 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" ""
+			(at 101.6 63.5 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 101.6 63.5 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Special symbol for telling ERC where power comes from"
+			(at 101.6 63.5 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "7d733624-c968-4c6f-8546-a4db3e78625c")
+		)
+		(instances
+			(project "osc-dev-m007"
+				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/16772291-8b66-4bca-9793-c37f2e864c04"
+					(reference "#FLG0902")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "power:PWR_FLAG")
+		(at 101.6 71.12 270)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "d2d336fa-7f31-42c5-ac02-b288c6fc3c39")
+		(property "Reference" "#FLG0904"
+			(at 103.505 71.12 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "PWR_FLAG"
+			(at 105.41 71.12 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" ""
+			(at 101.6 71.12 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 101.6 71.12 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Special symbol for telling ERC where power comes from"
+			(at 101.6 71.12 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "2d0cc78f-3a74-48f0-9b7e-3af892e0aa93")
+		)
+		(instances
+			(project "osc-dev-m007"
+				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/16772291-8b66-4bca-9793-c37f2e864c04"
+					(reference "#FLG0904")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
 		(lib_id "Device:LED")
-		(at 104.14 111.76 90)
+		(at 130.81 59.69 90)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -6089,7 +3556,7 @@
 		(fields_autoplaced yes)
 		(uuid "e510bda5-58b2-4e04-9e27-07e480323d91")
 		(property "Reference" "LED901"
-			(at 107.95 112.0774 90)
+			(at 134.62 60.0074 90)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -6100,7 +3567,7 @@
 			)
 		)
 		(property "Value" "YELLOW"
-			(at 107.95 114.6174 90)
+			(at 134.62 62.5474 90)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -6111,7 +3578,7 @@
 			)
 		)
 		(property "Footprint" "LED_SMD:LED_0805_2012Metric"
-			(at 104.14 111.76 0)
+			(at 130.81 59.69 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6122,7 +3589,7 @@
 			)
 		)
 		(property "Datasheet" "https://www.lcsc.com/product-detail/C2296.html"
-			(at 104.14 111.76 0)
+			(at 130.81 59.69 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6133,7 +3600,7 @@
 			)
 		)
 		(property "Description" "Light emitting diode"
-			(at 104.14 111.76 0)
+			(at 130.81 59.69 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6144,7 +3611,7 @@
 			)
 		)
 		(property "LCSC" "C2296"
-			(at 107.95 112.0774 0)
+			(at 134.62 60.0074 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6155,7 +3622,7 @@
 			)
 		)
 		(property "MFPN" "KT-0805Y"
-			(at 107.95 112.0774 0)
+			(at 134.62 60.0074 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6166,7 +3633,7 @@
 			)
 		)
 		(property "JLC_Basic" "yes"
-			(at 107.95 112.0774 0)
+			(at 134.62 60.0074 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6177,7 +3644,7 @@
 			)
 		)
 		(property "Sim.Pins" "1=K 2=A"
-			(at 104.14 111.76 0)
+			(at 130.81 59.69 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6188,7 +3655,7 @@
 			)
 		)
 		(property "JLC Type" "Standard"
-			(at 104.14 111.76 90)
+			(at 130.81 59.69 90)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6199,7 +3666,7 @@
 			)
 		)
 		(property "KLC_S3.3" ""
-			(at 104.14 111.76 90)
+			(at 130.81 59.69 90)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6210,7 +3677,7 @@
 			)
 		)
 		(property "KLC_S5.1" ""
-			(at 104.14 111.76 90)
+			(at 130.81 59.69 90)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6237,7 +3704,7 @@
 	)
 	(symbol
 		(lib_id "power:VBUS")
-		(at 114.3 49.53 0)
+		(at 35.56 49.53 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -6247,8 +3714,8 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "e5533c62-9172-444f-aa2f-e74039ebeb94")
-		(property "Reference" "#PWR0911"
-			(at 114.3 53.34 0)
+		(property "Reference" "#PWR0901"
+			(at 35.56 53.34 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6259,7 +3726,7 @@
 			)
 		)
 		(property "Value" "VBAT"
-			(at 114.3 44.45 0)
+			(at 35.56 44.45 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -6269,7 +3736,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 114.3 49.53 0)
+			(at 35.56 49.53 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6280,7 +3747,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 114.3 49.53 0)
+			(at 35.56 49.53 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6291,7 +3758,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"VBUS\""
-			(at 114.3 49.53 0)
+			(at 35.56 49.53 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6307,7 +3774,7 @@
 		(instances
 			(project "osc-dev-m007"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/16772291-8b66-4bca-9793-c37f2e864c04"
-					(reference "#PWR0911")
+					(reference "#PWR0901")
 					(unit 1)
 				)
 			)
@@ -6315,7 +3782,7 @@
 	)
 	(symbol
 		(lib_id "Device:R")
-		(at 104.14 101.6 0)
+		(at 130.81 49.53 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -6325,8 +3792,8 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "e7098fb7-e3ce-463e-8d50-c7e53f0ef0ad")
-		(property "Reference" "R903"
-			(at 106.68 100.3299 0)
+		(property "Reference" "R901"
+			(at 133.35 48.2599 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -6337,7 +3804,7 @@
 			)
 		)
 		(property "Value" "22kΩ"
-			(at 106.68 102.8699 0)
+			(at 133.35 50.7999 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -6348,7 +3815,7 @@
 			)
 		)
 		(property "Footprint" "Resistor_SMD:R_0805_2012Metric_Pad1.20x1.40mm_HandSolder"
-			(at 102.362 101.6 90)
+			(at 129.032 49.53 90)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6359,7 +3826,7 @@
 			)
 		)
 		(property "Datasheet" "https://www.lcsc.com/product-detail/C17560.html"
-			(at 104.14 101.6 0)
+			(at 130.81 49.53 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6370,7 +3837,7 @@
 			)
 		)
 		(property "Description" "Resistor"
-			(at 104.14 101.6 0)
+			(at 130.81 49.53 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6381,7 +3848,7 @@
 			)
 		)
 		(property "LCSC" "C17560"
-			(at 106.68 100.3299 0)
+			(at 133.35 48.2599 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6392,7 +3859,7 @@
 			)
 		)
 		(property "MFPN" "0805W8F2202T5E"
-			(at 106.68 100.3299 0)
+			(at 133.35 48.2599 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6403,7 +3870,7 @@
 			)
 		)
 		(property "JLC_Basic" "yes"
-			(at 106.68 100.3299 0)
+			(at 133.35 48.2599 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6414,7 +3881,7 @@
 			)
 		)
 		(property "KLC_S3.3" ""
-			(at 104.14 101.6 0)
+			(at 130.81 49.53 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6425,7 +3892,7 @@
 			)
 		)
 		(property "KLC_S5.1" ""
-			(at 104.14 101.6 0)
+			(at 130.81 49.53 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -6444,85 +3911,7 @@
 		(instances
 			(project "osc-dev-m007"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/16772291-8b66-4bca-9793-c37f2e864c04"
-					(reference "R903")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "power:PWR_FLAG")
-		(at 158.75 113.03 270)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(uuid "ee4e2478-71c8-4d68-873d-c15cc739d869")
-		(property "Reference" "#FLG0906"
-			(at 160.655 113.03 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "PWR_FLAG"
-			(at 162.56 113.03 90)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Footprint" ""
-			(at 158.75 113.03 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 158.75 113.03 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Special symbol for telling ERC where power comes from"
-			(at 158.75 113.03 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "f0c7747d-505d-4b3a-9404-1ac1607c2436")
-		)
-		(instances
-			(project "osc-dev-m007"
-				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/16772291-8b66-4bca-9793-c37f2e864c04"
-					(reference "#FLG0906")
+					(reference "R901")
 					(unit 1)
 				)
 			)
