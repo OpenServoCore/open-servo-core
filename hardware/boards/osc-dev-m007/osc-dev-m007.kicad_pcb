@@ -1200,7 +1200,7 @@
 				)
 			)
 		)
-		(property "Value" "100K"
+		(property "Value" "100k"
 			(at 0 1.65 0)
 			(layer "F.Fab")
 			(hide yes)
@@ -1501,6 +1501,12 @@
 		(path "/16772291-8b66-4bca-9793-c37f2e864c04/455424f4-23b5-4ed2-99d6-c5c4617926a9")
 		(sheetname "/POWER/")
 		(sheetfile "power.kicad_sch")
+		(units
+			(unit
+				(name "A")
+				(pins "1" "2")
+			)
+		)
 		(attr through_hole)
 		(duplicate_pad_numbers_are_jumpers no)
 		(fp_line
@@ -1748,7 +1754,7 @@
 				)
 			)
 		)
-		(property "Value" "0.1µF"
+		(property "Value" "0.1uF"
 			(at 0 1.68 0)
 			(layer "F.Fab")
 			(hide yes)
@@ -4601,7 +4607,7 @@
 				)
 			)
 		)
-		(property "Value" "4.7kΩ"
+		(property "Value" "4.7k"
 			(at 0 1.65 0)
 			(layer "F.Fab")
 			(hide yes)
@@ -5435,7 +5441,7 @@
 				)
 			)
 		)
-		(property "Value" "10kΩ 3950K"
+		(property "Value" "10k 3950K"
 			(at 0 1.65 0)
 			(layer "F.Fab")
 			(hide yes)
@@ -6372,7 +6378,7 @@
 				)
 			)
 		)
-		(property "Value" "100Ω"
+		(property "Value" "100"
 			(at 0 1.65 90)
 			(layer "F.Fab")
 			(hide yes)
@@ -7021,7 +7027,7 @@
 				)
 			)
 		)
-		(property "Value" "10kΩ"
+		(property "Value" "10k"
 			(at 0 1.65 0)
 			(layer "F.Fab")
 			(hide yes)
@@ -7421,7 +7427,7 @@
 				)
 			)
 		)
-		(property "Value" "10K"
+		(property "Value" "10k"
 			(at 0 1.65 0)
 			(layer "F.Fab")
 			(hide yes)
@@ -8288,7 +8294,7 @@
 				)
 			)
 		)
-		(property "Value" "22kΩ"
+		(property "Value" "22k"
 			(at 0 1.65 0)
 			(layer "F.Fab")
 			(hide yes)
@@ -8501,7 +8507,7 @@
 				)
 			)
 		)
-		(property "Value" "10kΩ"
+		(property "Value" "10k"
 			(at 0 1.65 0)
 			(layer "F.Fab")
 			(hide yes)
@@ -9001,7 +9007,7 @@
 				)
 			)
 		)
-		(property "Value" "10kΩ"
+		(property "Value" "10k"
 			(at 0 1.65 0)
 			(layer "F.Fab")
 			(hide yes)
@@ -10228,7 +10234,7 @@
 				)
 			)
 		)
-		(property "Value" "4.7kΩ"
+		(property "Value" "4.7k"
 			(at 0 1.65 0)
 			(layer "F.Fab")
 			(hide yes)
@@ -10629,7 +10635,7 @@
 				)
 			)
 		)
-		(property "Value" "100K"
+		(property "Value" "100k"
 			(at 0 1.65 0)
 			(layer "F.Fab")
 			(hide yes)
@@ -11931,7 +11937,7 @@
 				)
 			)
 		)
-		(property "Value" "33Ω"
+		(property "Value" "33"
 			(at 0 1.65 0)
 			(layer "F.Fab")
 			(hide yes)
@@ -14015,7 +14021,7 @@
 				)
 			)
 		)
-		(property "Value" "0.1µF"
+		(property "Value" "0.1uF"
 			(at 0 1.68 0)
 			(layer "F.Fab")
 			(hide yes)
@@ -14415,7 +14421,7 @@
 				)
 			)
 		)
-		(property "Value" "0Ω"
+		(property "Value" "0"
 			(at 0 1.65 90)
 			(layer "F.Fab")
 			(hide yes)
@@ -15544,7 +15550,7 @@
 				)
 			)
 		)
-		(property "Value" "10K"
+		(property "Value" "10k"
 			(at 0 1.65 0)
 			(layer "F.Fab")
 			(hide yes)
@@ -16314,7 +16320,7 @@
 				)
 			)
 		)
-		(property "Value" "10K"
+		(property "Value" "10k"
 			(at 0 1.65 0)
 			(layer "F.Fab")
 			(hide yes)
@@ -18738,7 +18744,7 @@
 				)
 			)
 		)
-		(property "Value" "100K"
+		(property "Value" "100k"
 			(at 0.5 2.06 0)
 			(layer "F.Fab")
 			(hide yes)
@@ -18925,7 +18931,7 @@
 				)
 			)
 		)
-		(property "Value" "100K"
+		(property "Value" "100k"
 			(at 0 1.65 0)
 			(layer "F.Fab")
 			(hide yes)
@@ -20325,7 +20331,7 @@
 				)
 			)
 		)
-		(property "Value" "20K"
+		(property "Value" "20k"
 			(at 0 1.65 0)
 			(layer "F.Fab")
 			(hide yes)
@@ -20512,7 +20518,7 @@
 				)
 			)
 		)
-		(property "Value" "100K"
+		(property "Value" "100k"
 			(at 0 1.65 0)
 			(layer "F.Fab")
 			(hide yes)
@@ -21559,7 +21565,7 @@
 				)
 			)
 		)
-		(property "Value" "100K"
+		(property "Value" "100k"
 			(at -6 -10.35 0)
 			(layer "F.Fab")
 			(hide yes)
@@ -21746,7 +21752,7 @@
 				)
 			)
 		)
-		(property "Value" "20K"
+		(property "Value" "20k"
 			(at 0 1.65 0)
 			(layer "F.Fab")
 			(hide yes)
@@ -22309,7 +22315,7 @@
 				)
 			)
 		)
-		(property "Value" "10KΩ"
+		(property "Value" "10k"
 			(at 0 1.65 90)
 			(layer "F.Fab")
 			(hide yes)
@@ -23756,7 +23762,7 @@
 				)
 			)
 		)
-		(property "Value" "20K"
+		(property "Value" "20k"
 			(at 0 1.65 0)
 			(layer "F.Fab")
 			(hide yes)

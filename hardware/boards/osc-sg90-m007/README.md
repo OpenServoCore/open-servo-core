@@ -1,9 +1,12 @@
 # OSC SG90 M007
 
 > ⚠️ **Designed, not spun. Pre-fabrication, pre-bringup.**
-> This board has never been fabbed. Numbers and behaviour described below are **design intent**, not measured. The schematic is the M007 redesign; the layout in this directory is still the earlier CH32V006 revision and is **stale** - it gets redone against this schematic before any fab. Don't fab this without doing your own review first.
+> This board has never been fabbed. Numbers and behaviour described below are **design intent**, not measured. The M007 layout is fully routed and DRC-clean, but it exists as a feasibility study - the dev board gets built and validated first. Don't fab this without doing your own review.
 
 OpenServoCore swap board for SG90-class hobby servos. Compact, double-sided, designed to physically replace the factory PCB inside an SG90 case. CH32M007-based: one IC carries the MCU, the 3-phase gate pre-driver, the HV regulator, and the current-sense amplifier - no motor-driver IC, no LDO, no bus buffer.
+
+![Front](docs/front.webp)
+![Back](docs/back.webp)
 
 ## Overview
 

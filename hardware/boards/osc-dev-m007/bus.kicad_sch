@@ -1544,7 +1544,7 @@
 				)
 			)
 		)
-		(property "Value" "33Ω"
+		(property "Value" "33"
 			(at 36.83 64.516 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2055,7 +2055,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "10kΩ"
+		(property "Value" "10k"
 			(at 46.99 58.4199 0)
 			(show_name no)
 			(do_not_autoplace no)

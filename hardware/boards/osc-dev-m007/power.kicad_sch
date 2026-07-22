@@ -1584,7 +1584,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "10kΩ"
+		(property "Value" "10k"
 			(at 157.48 50.7999 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3803,7 +3803,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "22kΩ"
+		(property "Value" "22k"
 			(at 133.35 50.7999 0)
 			(show_name no)
 			(do_not_autoplace no)

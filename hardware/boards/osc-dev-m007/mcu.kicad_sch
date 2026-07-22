@@ -3382,7 +3382,7 @@
 				)
 			)
 		)
-		(property "Value" "0Ω"
+		(property "Value" "0"
 			(at 43.18 47.625 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3923,7 +3923,7 @@
 				)
 			)
 		)
-		(property "Value" "100Ω"
+		(property "Value" "100"
 			(at 90.17 130.302 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4957,7 +4957,7 @@
 				(justify left bottom)
 			)
 		)
-		(property "Value" "10KΩ"
+		(property "Value" "10k"
 			(at 48.006 124.714 0)
 			(show_name no)
 			(do_not_autoplace no)

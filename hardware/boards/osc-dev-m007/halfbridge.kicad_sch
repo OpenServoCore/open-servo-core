@@ -1989,7 +1989,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "10K"
+		(property "Value" "10k"
 			(at 101.6 72.3899 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2587,7 +2587,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "20K"
+		(property "Value" "20k"
 			(at 101.6 62.2299 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3087,7 +3087,7 @@
 				(justify right)
 			)
 		)
-		(property "Value" "100K"
+		(property "Value" "100k"
 			(at 39.37 78.486 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3209,7 +3209,7 @@
 				(justify right)
 			)
 		)
-		(property "Value" "100K"
+		(property "Value" "100k"
 			(at 39.624 55.626 0)
 			(show_name no)
 			(do_not_autoplace no)
