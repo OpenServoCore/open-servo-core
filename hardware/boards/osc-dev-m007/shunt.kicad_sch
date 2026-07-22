@@ -1022,7 +1022,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C859920.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C49164946.html"
 			(at 41.91 50.8 0)
 			(hide yes)
 			(show_name no)
@@ -1033,7 +1033,7 @@
 				)
 			)
 		)
-		(property "Description" "Current sense resistor 75mΩ ±1% 0.5W 1206"
+		(property "Description" "Current sense resistor 75mOhm 1% 1W 1206"
 			(at 41.91 50.8 0)
 			(hide yes)
 			(show_name no)
@@ -1044,7 +1044,7 @@
 				)
 			)
 		)
-		(property "MFPN" "RL1206FR-7W0R075L"
+		(property "MFPN" "JER1206F1R075"
 			(at 41.91 50.8 0)
 			(hide yes)
 			(show_name no)
@@ -1066,7 +1066,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C859920"
+		(property "LCSC" "C49164946"
 			(at 41.91 50.8 0)
 			(hide yes)
 			(show_name no)
@@ -1307,7 +1307,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C46653.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C94121.html"
 			(at 124.46 60.96 0)
 			(hide yes)
 			(show_name no)
@@ -1329,7 +1329,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CL21B102KBCNNNC"
+		(property "MFPN" "CC0805KRX7R9BB102"
 			(at 124.46 60.96 0)
 			(hide yes)
 			(show_name no)
@@ -1351,7 +1351,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C46653"
+		(property "LCSC" "C94121"
 			(at 124.46 60.96 0)
 			(hide yes)
 			(show_name no)
@@ -1544,7 +1544,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C859925.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C2683383.html"
 			(at 55.88 50.8 0)
 			(hide yes)
 			(show_name no)
@@ -1555,7 +1555,7 @@
 				)
 			)
 		)
-		(property "Description" "Current sense resistor 150mΩ ±1% 0.5W 1206"
+		(property "Description" "Current sense resistor 150mOhm 1% 1W 1206"
 			(at 55.88 50.8 0)
 			(hide yes)
 			(show_name no)
@@ -1566,7 +1566,7 @@
 				)
 			)
 		)
-		(property "MFPN" "RL1206FR-7W0R15L"
+		(property "MFPN" "RLH12FTCR150"
 			(at 55.88 50.8 0)
 			(hide yes)
 			(show_name no)
@@ -1588,7 +1588,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C859925"
+		(property "LCSC" "C2683383"
 			(at 55.88 50.8 0)
 			(hide yes)
 			(show_name no)

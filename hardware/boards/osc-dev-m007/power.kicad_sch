@@ -1606,7 +1606,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C17414.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C2907219.html"
 			(at 154.94 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -1628,7 +1628,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C17414"
+		(property "LCSC" "C2907219"
 			(at 157.48 48.2599 0)
 			(hide yes)
 			(show_name no)
@@ -1639,7 +1639,7 @@
 				)
 			)
 		)
-		(property "MFPN" "0805W8F1002T5E"
+		(property "MFPN" "FRC0805F1002TS"
 			(at 157.48 48.2599 0)
 			(hide yes)
 			(show_name no)

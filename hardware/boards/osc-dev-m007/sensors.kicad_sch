@@ -2100,7 +2100,7 @@
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
-		(in_bom yes)
+		(in_bom no)
 		(on_board yes)
 		(in_pos_files yes)
 		(dnp no)
@@ -2237,7 +2237,7 @@
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
-		(in_bom yes)
+		(in_bom no)
 		(on_board yes)
 		(in_pos_files yes)
 		(dnp no)
@@ -2918,7 +2918,7 @@
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
-		(in_bom yes)
+		(in_bom no)
 		(on_board yes)
 		(in_pos_files yes)
 		(dnp no)
@@ -3096,7 +3096,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C95968.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C49247662.html"
 			(at 102.87 104.14 0)
 			(hide yes)
 			(show_name no)
@@ -3107,7 +3107,7 @@
 				)
 			)
 		)
-		(property "Description" "NTC 10kΩ 3950K -55℃~+125℃"
+		(property "Description" "NTC 10k 3950K -40C~+125C"
 			(at 102.87 104.14 0)
 			(hide yes)
 			(show_name no)
@@ -3118,7 +3118,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C95968"
+		(property "LCSC" "C49247662"
 			(at 99.06 102.8699 0)
 			(hide yes)
 			(show_name no)
@@ -3129,7 +3129,7 @@
 				)
 			)
 		)
-		(property "MFPN" "SDNT2012X103F3950FTF"
+		(property "MFPN" "HNTC0805-103F3950FB"
 			(at 99.06 102.8699 0)
 			(hide yes)
 			(show_name no)
@@ -3233,7 +3233,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C17414.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C2907219.html"
 			(at 82.55 87.63 0)
 			(hide yes)
 			(show_name no)
@@ -3255,7 +3255,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C17414"
+		(property "LCSC" "C2907219"
 			(at 86.614 85.852 0)
 			(hide yes)
 			(show_name no)
@@ -3266,7 +3266,7 @@
 				)
 			)
 		)
-		(property "MFPN" "0805W8F1002T5E"
+		(property "MFPN" "FRC0805F1002TS"
 			(at 86.614 85.852 0)
 			(hide yes)
 			(show_name no)
@@ -3369,7 +3369,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C46653.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C94121.html"
 			(at 79.29 130.25 0)
 			(hide yes)
 			(show_name no)
@@ -3391,7 +3391,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C46653"
+		(property "LCSC" "C94121"
 			(at 91.694 151.384 0)
 			(hide yes)
 			(show_name no)
@@ -3402,7 +3402,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CL21B102KBCNNNC"
+		(property "MFPN" "CC0805KRX7R9BB102"
 			(at 91.694 151.384 0)
 			(hide yes)
 			(show_name no)
@@ -3818,7 +3818,7 @@
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
-		(in_bom yes)
+		(in_bom no)
 		(on_board yes)
 		(in_pos_files yes)
 		(dnp no)
