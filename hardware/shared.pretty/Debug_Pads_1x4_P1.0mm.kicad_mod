@@ -1,0 +1,122 @@
+(footprint "Debug_Pads_1x4_P1.0mm"
+	(version 20241229)
+	(generator "pcbnew")
+	(generator_version "9.0")
+	(layer "F.Cu")
+	(descr "Minimal 1x4 debug pads for pogo pins, 1.0mm pitch")
+	(tags "debug pogo swd test pad")
+	(property "Reference" "J_DBG"
+		(at 0 -2 0)
+		(layer "F.Fab")
+		(uuid "46985b09-d0b3-4448-aaed-98662bfc3bdb")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Value" "Debug"
+		(at 0 2 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "61778f5b-3123-4046-a690-7194327a2b40")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Datasheet" ""
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "13192942-4583-476b-92dd-61afd2f0d3df")
+		(effects
+			(font
+				(size 1.27 1.27)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Description" ""
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "91228870-0d30-4260-9736-47f4db2124f5")
+		(effects
+			(font
+				(size 1.27 1.27)
+				(thickness 0.15)
+			)
+		)
+	)
+	(attr smd)
+	(fp_line
+		(start -2.5 -0.6)
+		(end -2.5 0.6)
+		(stroke
+			(width 0.1)
+			(type default)
+		)
+		(layer "F.SilkS")
+		(uuid "1d50b7bb-9660-480c-8a18-5591de23d6e8")
+	)
+	(fp_line
+		(start -2.5 -0.6)
+		(end -2.3 -0.6)
+		(stroke
+			(width 0.1)
+			(type default)
+		)
+		(layer "F.SilkS")
+		(uuid "a120fd7a-b5c2-46f4-98d4-924f4e192db9")
+	)
+	(fp_line
+		(start -2.5 0.6)
+		(end -2.3 0.6)
+		(stroke
+			(width 0.1)
+			(type default)
+		)
+		(layer "F.SilkS")
+		(uuid "642e8d90-0194-4f38-b5b9-008c922e0716")
+	)
+	(fp_rect
+		(start -2.655 -0.75)
+		(end 2.655 0.75)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.CrtYd")
+		(uuid "096ad05a-fafc-43c4-8595-72bf31ff58cf")
+	)
+	(pad "1" smd circle
+		(at -1.5 0)
+		(size 0.8 0.8)
+		(layers "F.Cu" "F.Mask")
+		(uuid "6e8fbd6a-0a9c-4c77-bd0b-db023d5b4821")
+	)
+	(pad "2" smd circle
+		(at -0.5 0)
+		(size 0.8 0.8)
+		(layers "F.Cu" "F.Mask")
+		(uuid "8bb71570-574a-438d-aab9-e7e067af1dfa")
+	)
+	(pad "3" smd circle
+		(at 0.5 0)
+		(size 0.8 0.8)
+		(layers "F.Cu" "F.Mask")
+		(uuid "60d7ce58-831a-4deb-9cf6-e3597289170d")
+	)
+	(pad "4" smd circle
+		(at 1.5 0)
+		(size 0.8 0.8)
+		(layers "F.Cu" "F.Mask")
+		(uuid "1aaf66e3-adb3-4951-bc35-1684ade94928")
+	)
+	(embedded_fonts no)
+)

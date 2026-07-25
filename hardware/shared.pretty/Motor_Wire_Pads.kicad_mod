@@ -1,14 +1,14 @@
 (footprint "Motor_Wire_Pads"
-	(version 20241229)
+	(version 20260206)
 	(generator "pcbnew")
-	(generator_version "9.0")
+	(generator_version "10.0")
 	(layer "F.Cu")
 	(descr "Motor wire connection pads for servo motors, 2x 2.5mm pads with 7.4mm spacing")
 	(tags "motor wire solder pad servo")
 	(property "Reference" "M1"
 		(at 0 -3 0)
 		(layer "F.Fab")
-		(uuid "df691426-9d17-49c8-b6ff-6fb94951979d")
+		(uuid "34f93999-ce3d-4817-b0d3-ab195e8d6fd0")
 		(effects
 			(font
 				(size 1 1)
@@ -19,7 +19,7 @@
 	(property "Value" "Motor"
 		(at 0 3 0)
 		(layer "F.Fab")
-		(uuid "bf3dad73-0a00-40e5-aeb5-369e9bfb2d12")
+		(uuid "47b200be-b64a-484f-934a-e6e6dcc5c970")
 		(effects
 			(font
 				(size 1 1)
@@ -31,7 +31,7 @@
 		(at 0 0 0)
 		(layer "F.Fab")
 		(hide yes)
-		(uuid "4b012632-ef28-4d82-8b41-f3682e803bfe")
+		(uuid "0abeda52-92ff-4182-93ca-efa999aa3de1")
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -43,7 +43,7 @@
 		(at 0 0 0)
 		(layer "F.Fab")
 		(hide yes)
-		(uuid "18eb84f4-7cc5-4a93-a25c-042a12e9721e")
+		(uuid "4d130188-5577-469b-a5d8-ab35c3c695e4")
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -52,10 +52,11 @@
 		)
 	)
 	(attr through_hole)
+	(duplicate_pad_numbers_are_jumpers no)
 	(fp_text user "${REFERENCE}"
 		(at 0 0 0)
 		(layer "F.Fab")
-		(uuid "1f32002d-b3fd-42a7-a68b-2e8334f0d983")
+		(uuid "81e96c8e-d151-4c97-9274-50b4441fd1dc")
 		(effects
 			(font
 				(size 0.8 0.8)
@@ -64,24 +65,24 @@
 		)
 	)
 	(pad "1" thru_hole roundrect
-		(at -3.5 0)
+		(at -3.6 0)
 		(size 1.8 1.8)
 		(drill 0.75)
 		(layers "*.Cu" "*.Mask")
 		(remove_unused_layers no)
 		(roundrect_rratio 0.1388888889)
 		(zone_connect 2)
-		(uuid "f33096c1-82cb-4679-b3c7-2312cb9ff568")
+		(uuid "e6af83d8-9083-4414-a3bd-160e76727173")
 	)
 	(pad "2" thru_hole roundrect
-		(at 3.5 0)
+		(at 3.6 0)
 		(size 1.8 1.8)
 		(drill 0.75)
 		(layers "*.Cu" "*.Mask")
 		(remove_unused_layers no)
 		(roundrect_rratio 0.1388888889)
 		(zone_connect 2)
-		(uuid "6b82dd14-3bde-4674-8a80-8f3bd010fd15")
+		(uuid "8db4fac3-4cc1-4b43-a281-57af5fa050f1")
 	)
 	(embedded_fonts no)
 )

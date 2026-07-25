@@ -1,14 +1,14 @@
 (footprint "Pot_Wire_Pads"
-	(version 20241229)
+	(version 20260206)
 	(generator "pcbnew")
-	(generator_version "9.0")
+	(generator_version "10.0")
 	(layer "F.Cu")
 	(descr "Minimal 3-pin potentiometer connection pads")
 	(tags "pot potentiometer wire pad")
 	(property "Reference" "POT1"
 		(at 0 -2 0)
 		(layer "F.Fab")
-		(uuid "df78625d-88d7-4738-ad5a-454e4579b38d")
+		(uuid "f54f16b5-e997-4c06-b7a6-c443d4755007")
 		(effects
 			(font
 				(size 1 1)
@@ -20,7 +20,7 @@
 		(at 0 2 0)
 		(layer "F.Fab")
 		(hide yes)
-		(uuid "0a29ea51-8b77-4c1c-a454-cb51679f2dd3")
+		(uuid "3af62cc5-8035-49d4-9567-5ecd7b52f11b")
 		(effects
 			(font
 				(size 1 1)
@@ -32,7 +32,7 @@
 		(at 0 0 0)
 		(layer "F.Fab")
 		(hide yes)
-		(uuid "801175c2-ecd0-4f4b-b133-c8e8408bc40e")
+		(uuid "425f76f5-5b60-4faa-8802-c77c2174283e")
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -44,7 +44,7 @@
 		(at 0 0 0)
 		(layer "F.Fab")
 		(hide yes)
-		(uuid "fcc1a1db-bd45-4b4b-958c-4896c15f6727")
+		(uuid "9eb5ba43-579c-4abd-9b95-ba4af8059b1c")
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -53,14 +53,15 @@
 		)
 	)
 	(attr through_hole)
+	(duplicate_pad_numbers_are_jumpers no)
 	(pad "1" thru_hole circle
 		(at -2.54 0)
-		(size 0.9 0.9)
+		(size 0.1 0.1)
 		(drill 0.9)
 		(layers "*.Cu" "*.Mask")
 		(remove_unused_layers yes)
 		(keep_end_layers yes)
-		(uuid "85bea31f-bc26-4b3f-9a1d-b7366de90c04")
+		(uuid "ed975c4a-0a5b-4bed-87e1-84255527bf5e")
 		(padstack
 			(mode front_inner_back)
 			(layer "Inner"
@@ -77,12 +78,12 @@
 	)
 	(pad "2" thru_hole circle
 		(at 0 -1.4)
-		(size 0.9 0.9)
+		(size 0.1 0.1)
 		(drill 0.9)
 		(layers "*.Cu" "*.Mask")
 		(remove_unused_layers yes)
 		(keep_end_layers yes)
-		(uuid "1937b8b1-712e-4a95-b349-eca3a145e241")
+		(uuid "b59c9523-dbf2-4252-9137-5b0d42521357")
 		(padstack
 			(mode front_inner_back)
 			(layer "Inner"
@@ -99,12 +100,12 @@
 	)
 	(pad "3" thru_hole circle
 		(at 2.54 0)
-		(size 0.9 0.9)
+		(size 0.1 0.1)
 		(drill 0.9)
 		(layers "*.Cu" "*.Mask")
 		(remove_unused_layers yes)
 		(keep_end_layers yes)
-		(uuid "1fee40f9-bb7b-49a8-a315-7d3fd02d6536")
+		(uuid "ba95bfe3-263c-454f-a7b2-e0027ba39748")
 		(padstack
 			(mode front_inner_back)
 			(layer "Inner"

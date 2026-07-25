@@ -1,0 +1,203 @@
+(footprint "SW_SPST_TS-1088R_3.9x3.0mm"
+	(version 20241229)
+	(generator "pcbnew")
+	(generator_version "9.0")
+	(layer "F.Cu")
+	(descr "XUNPU TS-1088R SMD tact switch, 3.9x3.0mm body, 2 terminals; pads per datasheet recommended pattern (1.05x2.0 at 4.45mm centers)")
+	(tags "switch tact push button SPST TS-1088R")
+	(property "Reference" "REF**"
+		(at 0 -2.5 0)
+		(layer "F.SilkS")
+		(uuid "437f0cac-a81b-4ccd-9074-a9a4b28131ec")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Value" "SW_SPST_TS-1088R_3.9x3.0mm"
+		(at 0 2.5 0)
+		(layer "F.Fab")
+		(uuid "482359e8-8c5c-455a-8d2e-f9190d69cd92")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Datasheet" "https://www.lcsc.com/datasheet/C455280.pdf"
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "76867486-e197-4c9a-9a23-b7a5a5fdc471")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Description" "SMD tact switch 3.9x3.0mm, 50mA 12V"
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "51a9efc2-a54a-4cbe-be69-7004c980240f")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(attr smd)
+	(fp_line
+		(start -1.95 -1.61)
+		(end 1.95 -1.61)
+		(stroke
+			(width 0.12)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(uuid "a1b54a61-8766-49ff-a413-93d74d6d5643")
+	)
+	(fp_line
+		(start -1.95 1.61)
+		(end 1.95 1.61)
+		(stroke
+			(width 0.12)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(uuid "25b209ac-fb4f-45e0-98ac-699cacbac47c")
+	)
+	(fp_line
+		(start -1.95 -1.5)
+		(end 1.95 -1.5)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "bb268c18-375e-491a-a34f-600f807b6b88")
+	)
+	(fp_line
+		(start 1.95 -1.5)
+		(end 1.95 1.5)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "8bf96739-2eed-4170-b0ee-1a54505ec4c6")
+	)
+	(fp_line
+		(start 1.95 1.5)
+		(end -1.95 1.5)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "6271c14e-b37d-4c71-9c9f-523d303860c3")
+	)
+	(fp_line
+		(start -1.95 1.5)
+		(end -1.95 -1.5)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "cc2d8bd6-cd38-4d0d-a608-c2c869f3403c")
+	)
+	(fp_circle
+		(center 0 0)
+		(end 0.9 0)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.Fab")
+		(uuid "186b531a-b2c2-4b58-9478-822030e346e0")
+	)
+	(fp_text user "${REFERENCE}"
+		(at 0 0 0)
+		(layer "F.Fab")
+		(uuid "d59b2671-56c2-4f54-b3d4-a0c3cb278da6")
+		(effects
+			(font
+				(size 0.75 0.75)
+				(thickness 0.11)
+			)
+		)
+	)
+	(fp_line
+		(start -3.0 -1.75)
+		(end 3.0 -1.75)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "30cd2500-8945-4847-a128-8d754c7ad77c")
+	)
+	(fp_line
+		(start 3.0 -1.75)
+		(end 3.0 1.75)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "17e06e42-83ea-49fe-9a20-a28be550ab4b")
+	)
+	(fp_line
+		(start 3.0 1.75)
+		(end -3.0 1.75)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "f29ff532-2ab0-4cbe-b853-6cd83bc17526")
+	)
+	(fp_line
+		(start -3.0 1.75)
+		(end -3.0 -1.75)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "19537549-4d2c-4309-a124-aa779e372db1")
+	)
+	(pad "1" smd roundrect
+		(at -2.225 0)
+		(size 1.05 2)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(roundrect_rratio 0.25)
+		(uuid "6bf6717c-a34e-4bcb-811c-171df48e1281")
+	)
+	(pad "2" smd roundrect
+		(at 2.225 0)
+		(size 1.05 2)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(roundrect_rratio 0.25)
+		(uuid "0572a147-7f33-4861-90c1-7a778e08af2e")
+	)
+	(embedded_fonts no)
+	(model "${KIPRJMOD}/../../shared.3dshapes/SW_SPST_TS-1088R_3.9x3.0mm.step"
+		(offset
+			(xyz 0 0 0)
+		)
+		(scale
+			(xyz 1 1 1)
+		)
+		(rotate
+			(xyz 0 0 0)
+		)
+	)
+)

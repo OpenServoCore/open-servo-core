@@ -1,0 +1,70 @@
+(version 1)
+
+# JLCPCB 6-layer 1.6mm (JLC06161H-3313), 1oz outer / 0.5oz inner copper.
+# All vias 0.3mm drill, resin filled + capped (POFV, free on 6-20L) -> via-in-pad legal
+# board-wide. Fill process requires via hole <= 0.5mm; that max is enforced here.
+# Design floors (0.10mm track/clearance, 0.30mm drill) sit one notch above the
+# fab's absolute 0.09mm/0.15mm limits.
+
+(rule "Track width minimum"
+  (condition "A.Type == 'Track'")
+  (constraint track_width (min 0.10mm))
+)
+
+(rule "Copper clearance"
+  (condition "A.Net != B.Net")
+  (constraint clearance (min 0.10mm))
+)
+
+(rule "Global drill size limits"
+  (constraint hole_size (min 0.15mm) (max 6.30mm))
+)
+
+(rule "Via drill + annular ring"
+  (condition "A.Type == 'Via'")
+  (constraint hole_size (min 0.30mm) (max 0.50mm))
+  (constraint annular_width (min 0.075mm))
+)
+
+(rule "PTH drill limits"
+  (condition "A.Type == 'Pad' && A.Pad_Type == 'Through-hole' && A.isPlated()")
+  (constraint hole_size (min 0.30mm) (max 6.30mm))
+)
+
+(rule "PTH annular ring"
+  (condition "A.Type == 'Pad' && A.Pad_Type == 'Through-hole' && A.isPlated()")
+  (constraint annular_width (min 0.15mm))
+)
+
+(rule "NPTH minimum"
+  (condition "A.Type == 'Pad' && A.Pad_Type == 'NPTH, mechanical' && !A.isPlated()")
+  (constraint hole_size (min 0.50mm))
+)
+
+(rule "Pad-hole to pad-hole spacing"
+  (condition "A.Type == 'Pad' && B.Type == 'Pad' && A.Net != B.Net")
+  (constraint hole_to_hole (min 0.45mm))
+)
+
+(rule "Copper to board edge"
+  (condition "A.Type == 'Track' || A.Type == 'Via' || A.Type == 'Pad'")
+  (constraint edge_clearance (min 0.3mm))
+)
+
+(rule "Plated hole to board edge"
+  (condition "A.isPlated() || A.Type == 'Via'")
+  (constraint edge_clearance (min 1.0mm))
+)
+
+(rule "Silk text thickness"
+  (layer "?.Silkscreen")
+  (condition "A.Type == 'Text' || A.Type == 'Text Box'")
+  (constraint text_thickness (min 0.15mm))
+)
+
+# 0.8mm = JLC's stated minimum character height; accepted at fab floor (cosmetic only).
+(rule "Silk text height"
+  (layer "?.Silkscreen")
+  (condition "A.Type == 'Text' || A.Type == 'Text Box'")
+  (constraint text_height (min 0.8mm))
+)

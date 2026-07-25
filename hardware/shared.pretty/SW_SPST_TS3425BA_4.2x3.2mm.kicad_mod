@@ -1,0 +1,258 @@
+(footprint "SW_SPST_TS3425BA_4.2x3.2mm"
+	(version 20241229)
+	(generator "pcbnew")
+	(generator_version "9.0")
+	(layer "F.Cu")
+	(descr "SHOU HAN TS3425BA SMD tact switch, 4.2x3.2mm body, 2.5mm actuator; pads per datasheet recommended pattern (1.05x0.65 at 4.15x2.15mm centers); pins 1-2 and 3-4 are internally tied rails, mapped to pads 1/1/2/2")
+	(tags "switch tact push button SPST TS3425BA")
+	(property "Reference" "REF**"
+		(at 0 -2.6 0)
+		(layer "F.SilkS")
+		(uuid "9f472231-7819-4787-94e0-a1c08f1c0632")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Value" "SW_SPST_TS3425BA_4.2x3.2mm"
+		(at 0 2.6 0)
+		(layer "F.Fab")
+		(uuid "47f25116-5a87-41f1-a317-3804742def68")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Datasheet" "https://www.lcsc.com/datasheet/C2681476.pdf"
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "b44930e2-7fdf-42de-8363-6b7bca2a72db")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Description" "SMD tact switch 4.2x3.2mm, 50mA 12V, 250gf"
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "7032344b-d793-40dc-802d-aa5f7192fbb8")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(attr smd)
+	(fp_line
+		(start -2.1 -1.71)
+		(end 2.1 -1.71)
+		(stroke
+			(width 0.12)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(uuid "19d439b3-d30c-4ce7-9de5-c07c4e081ec1")
+	)
+	(fp_line
+		(start -2.1 1.71)
+		(end 2.1 1.71)
+		(stroke
+			(width 0.12)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(uuid "9d626414-4eb3-4627-b35e-d945cad0138e")
+	)
+	(fp_line
+		(start -2.21 -0.6)
+		(end -2.21 0.6)
+		(stroke
+			(width 0.12)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(uuid "b3b60f2c-d4f6-457a-b907-59f9e994442b")
+	)
+	(fp_line
+		(start 2.21 -0.6)
+		(end 2.21 0.6)
+		(stroke
+			(width 0.12)
+			(type solid)
+		)
+		(layer "F.SilkS")
+		(uuid "0303f1b8-faad-4871-a92a-8fc1d2226ac4")
+	)
+	(fp_circle
+		(center -3.1 -1.075)
+		(end -2.98 -1.075)
+		(stroke
+			(width 0.12)
+			(type solid)
+		)
+		(fill yes)
+		(layer "F.SilkS")
+		(uuid "9bb60443-d448-411e-b2b4-3781b2789d9a")
+	)
+	(fp_line
+		(start -1.85 -1.6)
+		(end 2.1 -1.6)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "cd23d262-2688-4260-a68e-af622275a18e")
+	)
+	(fp_line
+		(start 2.1 -1.6)
+		(end 2.1 1.6)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "e6e19dba-eff0-4fba-b4c8-186d3d95679f")
+	)
+	(fp_line
+		(start 2.1 1.6)
+		(end -2.1 1.6)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "de3513c8-d594-4c42-9f03-886002b7f9a6")
+	)
+	(fp_line
+		(start -2.1 1.6)
+		(end -2.1 -1.35)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "9a334433-6c5a-44dd-ae14-780c27a0bef5")
+	)
+	(fp_line
+		(start -2.1 -1.35)
+		(end -1.85 -1.6)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(layer "F.Fab")
+		(uuid "389b091b-2b03-4648-a82e-1ec8c3f3263f")
+	)
+	(fp_circle
+		(center 0 0)
+		(end 1.25 0)
+		(stroke
+			(width 0.1)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.Fab")
+		(uuid "5aaa30bf-8a03-4471-aac6-6382a144b55a")
+	)
+	(fp_text user "${REFERENCE}"
+		(at 0 0 0)
+		(layer "F.Fab")
+		(uuid "e855b831-f238-4c0a-ac4b-fa46f3e9e879")
+		(effects
+			(font
+				(size 0.75 0.75)
+				(thickness 0.11)
+			)
+		)
+	)
+	(fp_line
+		(start -2.85 -1.85)
+		(end 2.85 -1.85)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "a953ba4b-3299-4933-9be5-a3e9f8799cec")
+	)
+	(fp_line
+		(start 2.85 -1.85)
+		(end 2.85 1.85)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "8121c8ef-95df-4a92-82c9-11323a365715")
+	)
+	(fp_line
+		(start 2.85 1.85)
+		(end -2.85 1.85)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "ab54e355-c1e6-4d55-bd42-d3b31bb8c7a7")
+	)
+	(fp_line
+		(start -2.85 1.85)
+		(end -2.85 -1.85)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(layer "F.CrtYd")
+		(uuid "4d9fad35-67ba-4410-b3e0-7a37ab25a185")
+	)
+	(pad "1" smd roundrect
+		(at -2.075 -1.075)
+		(size 1.05 0.65)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(roundrect_rratio 0.25)
+		(uuid "d87285cb-9dc9-4e6e-93da-ae13158203b1")
+	)
+	(pad "1" smd roundrect
+		(at 2.075 -1.075)
+		(size 1.05 0.65)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(roundrect_rratio 0.25)
+		(uuid "75c6d1b8-0846-4400-89f6-951d7ae64170")
+	)
+	(pad "2" smd roundrect
+		(at -2.075 1.075)
+		(size 1.05 0.65)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(roundrect_rratio 0.25)
+		(uuid "25a7c2e1-13d2-4b1f-aa55-abae1e597183")
+	)
+	(pad "2" smd roundrect
+		(at 2.075 1.075)
+		(size 1.05 0.65)
+		(layers "F.Cu" "F.Mask" "F.Paste")
+		(roundrect_rratio 0.25)
+		(uuid "06525a31-1497-451b-9aef-97482871c8dd")
+	)
+	(embedded_fonts no)
+	(model "${KIPRJMOD}/../../shared.3dshapes/SW_SPST_TS3425BA_4.2x3.2mm.step"
+		(offset
+			(xyz 0 0 0)
+		)
+		(scale
+			(xyz 1 1 1)
+		)
+		(rotate
+			(xyz 0 0 0)
+		)
+	)
+)

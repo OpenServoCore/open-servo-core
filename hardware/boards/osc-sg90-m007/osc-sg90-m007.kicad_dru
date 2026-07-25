@@ -11,13 +11,13 @@
 )
 
 (rule "Global drill size limits"
-  (constraint hole_size (min 0.30mm) (max 6.00mm))
+  (constraint hole_size (min 0.20mm) (max 6.00mm))
 )
 
 (rule "Via drill + annular ring"
   (condition "A.Type == 'Via'")
-  (constraint hole_size (min 0.30mm))
-  (constraint annular_width (min 0.125mm))
+  (constraint hole_size (min 0.20mm))
+  (constraint annular_width (min 0.075mm))
 )
 
 (rule "PTH drill limits"
@@ -42,7 +42,7 @@
 
 (rule "Copper to board edge"
   (condition "A.Type == 'Track' || A.Type == 'Via' || A.Type == 'Pad'")
-  (constraint edge_clearance (min 0.4mm))
+  (constraint edge_clearance (min 0.3mm))
 )
 
 (rule "Silk text thickness"
