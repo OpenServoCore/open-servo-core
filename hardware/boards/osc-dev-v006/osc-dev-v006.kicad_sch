@@ -4936,7 +4936,7 @@
 				(justify right)
 			)
 		)
-		(pin "ENCA" input
+		(pin "ENCA" output
 			(at 115.57 142.24 180)
 			(uuid "52ede7a0-15f4-453f-98d2-2cec9125811b")
 			(effects
@@ -4946,7 +4946,7 @@
 				(justify left)
 			)
 		)
-		(pin "ENCB" input
+		(pin "ENCB" output
 			(at 115.57 144.78 180)
 			(uuid "f9aa4f2a-3e31-460c-848c-aae111f3dd0d")
 			(effects
