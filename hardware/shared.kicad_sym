@@ -1335,7 +1335,16 @@
 					)
 				)
 				(alternate "A7" passive line)
+				(alternate "T2C1ETR" input line)
+				(alternate "OPO0" passive line)
+				(alternate "T1C4_3" bidirectional line)
+				(alternate "T1ETR_1" input line)
+				(alternate "T1ETR_4" input line)
+				(alternate "T1ETR_5" input line)
+				(alternate "T1ETR_6" input line)
 				(alternate "T2C2_7" bidirectional line)
+				(alternate "RTS_9" output line)
+				(alternate "SCK_4" bidirectional line)
 			)
 			(pin bidirectional line
 				(at -16.51 8.89 0)
@@ -1355,6 +1364,11 @@
 					)
 				)
 				(alternate "A5" passive line)
+				(alternate "TX" output line)
+				(alternate "T2C4_3" bidirectional line)
+				(alternate "RX_1" input line)
+				(alternate "CTS_9" input line)
+				(alternate "MISO_4" bidirectional line)
 			)
 			(pin bidirectional line
 				(at -16.51 6.35 0)
@@ -1374,11 +1388,15 @@
 					)
 				)
 				(alternate "A6" passive line)
+				(alternate "RX" input line)
+				(alternate "T2C3_3" bidirectional line)
+				(alternate "TX_1" output line)
+				(alternate "MOSI_4" bidirectional line)
 			)
 			(pin bidirectional line
 				(at -16.51 3.81 0)
 				(length 2.54)
-				(name "PA4"
+				(name "PD7"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -1392,7 +1410,17 @@
 						)
 					)
 				)
+				(alternate "RST" input line)
+				(alternate "T2C4" bidirectional line)
+				(alternate "OPP1" passive line)
+				(alternate "T2C4_1" bidirectional line)
+				(alternate "CTS_4" input line)
+				(alternate "CTS_5" input line)
+				(alternate "PA4" bidirectional line)
+				(alternate "U2CTS" input line)
 				(alternate "OPN2" passive line)
+				(alternate "U2TX_1" output line)
+				(alternate "U2CTS_5" input line)
 			)
 			(pin bidirectional line
 				(at -16.51 1.27 0)
@@ -1412,6 +1440,19 @@
 					)
 				)
 				(alternate "A1" passive line)
+				(alternate "T1C2" bidirectional line)
+				(alternate "OPN0" passive line)
+				(alternate "XI" input line)
+				(alternate "T1C2_1" bidirectional line)
+				(alternate "T1C2_9" bidirectional line)
+				(alternate "T2C2_5" bidirectional line)
+				(alternate "T2C2_6" bidirectional line)
+				(alternate "RX_8" input line)
+				(alternate "U2RTS_2" output line)
+				(alternate "U2RTS_3" output line)
+				(alternate "U2RTS_4" output line)
+				(alternate "U2RTS_5" output line)
+				(alternate "SCK_5" bidirectional line)
 			)
 			(pin bidirectional line
 				(at -16.51 -1.27 0)
@@ -1430,8 +1471,21 @@
 						)
 					)
 				)
+				(alternate "A0" passive line)
+				(alternate "T1C2N" bidirectional line)
 				(alternate "OPP0" passive line)
+				(alternate "XO" output line)
+				(alternate "T1C3_9" bidirectional line)
+				(alternate "T1C2N_1" bidirectional line)
+				(alternate "T1C2N_4" bidirectional line)
+				(alternate "T1C2N_5" bidirectional line)
+				(alternate "T1C2N_6" bidirectional line)
+				(alternate "T2C3_5" bidirectional line)
+				(alternate "T2C3_6" bidirectional line)
 				(alternate "T2C3_7" bidirectional line)
+				(alternate "U2TX_2" output line)
+				(alternate "MOSI_5" bidirectional line)
+				(alternate "IETR_1" input line)
 			)
 			(pin power_in line
 				(at -16.51 -3.81 0)
@@ -1468,6 +1522,14 @@
 						)
 					)
 				)
+				(alternate "T1C1N" bidirectional line)
+				(alternate "OPN1" passive line)
+				(alternate "T1C1N_1" bidirectional line)
+				(alternate "T1C3N_4" bidirectional line)
+				(alternate "T1C3N_5" bidirectional line)
+				(alternate "T1C3N_6" bidirectional line)
+				(alternate "TX_2" output line)
+				(alternate "SDA_1" bidirectional line)
 			)
 			(pin power_in line
 				(at -16.51 -8.89 0)
@@ -1504,8 +1566,15 @@
 						)
 					)
 				)
+				(alternate "T2C3" bidirectional line)
+				(alternate "T1C3_2" bidirectional line)
 				(alternate "T1C1N_7" bidirectional line)
+				(alternate "T1C1N_9" bidirectional line)
+				(alternate "T2C1ETR_4" bidirectional line)
+				(alternate "T2C3_1" bidirectional line)
 				(alternate "TX_3" output line)
+				(alternate "NSS_1" bidirectional line)
+				(alternate "MOSI_3" bidirectional line)
 			)
 			(pin bidirectional line
 				(at 16.51 -11.43 180)
@@ -1524,8 +1593,18 @@
 						)
 					)
 				)
-				(alternate "RX_3" input line)
+				(alternate "SDA" bidirectional line)
+				(alternate "NSS" bidirectional line)
 				(alternate "T1C2N_7" bidirectional line)
+				(alternate "T1C2N_9" bidirectional line)
+				(alternate "T1BK_2" input line)
+				(alternate "T1BK_3" input line)
+				(alternate "T2C1ETR_1" bidirectional line)
+				(alternate "T2C1ETR_3" bidirectional line)
+				(alternate "T2C2_4" bidirectional line)
+				(alternate "T2C4_2" bidirectional line)
+				(alternate "RX_3" input line)
+				(alternate "NSS_5" bidirectional line)
 			)
 			(pin bidirectional line
 				(at 16.51 -8.89 180)
@@ -1544,7 +1623,16 @@
 						)
 					)
 				)
+				(alternate "T1BK" input line)
+				(alternate "RTS" output line)
+				(alternate "SCL" bidirectional line)
 				(alternate "T1C3N_7" bidirectional line)
+				(alternate "T1C3N_9" bidirectional line)
+				(alternate "T2C2_2" bidirectional line)
+				(alternate "RTS_2" output line)
+				(alternate "T1BK_1" input line)
+				(alternate "T1ETR_3" input line)
+				(alternate "RETR_1" input line)
 			)
 			(pin bidirectional line
 				(at 16.51 -6.35 180)
@@ -1563,6 +1651,13 @@
 						)
 					)
 				)
+				(alternate "T1C3" bidirectional line)
+				(alternate "T1C3_1" bidirectional line)
+				(alternate "T1C3_5" bidirectional line)
+				(alternate "T1C1N_2" bidirectional line)
+				(alternate "T1C1N_3" bidirectional line)
+				(alternate "T2C3_4" bidirectional line)
+				(alternate "CTS_2" input line)
 			)
 			(pin bidirectional line
 				(at 16.51 -3.81 180)
@@ -1582,7 +1677,17 @@
 					)
 				)
 				(alternate "A2" passive line)
+				(alternate "T1C4" bidirectional line)
+				(alternate "MCO" output line)
+				(alternate "T1C1_3" bidirectional line)
 				(alternate "T1C1_7" bidirectional line)
+				(alternate "T1C1_8" bidirectional line)
+				(alternate "T1C4_1" bidirectional line)
+				(alternate "T1C2N_2" bidirectional line)
+				(alternate "RX_9" input line)
+				(alternate "U2TX_5" output line)
+				(alternate "NSS_2" bidirectional line)
+				(alternate "NSS_6" bidirectional line)
 			)
 			(pin bidirectional line
 				(at 16.51 -1.27 180)
@@ -1601,7 +1706,17 @@
 						)
 					)
 				)
+				(alternate "T1ETR" input line)
+				(alternate "SCK" bidirectional line)
+				(alternate "RST" input line)
 				(alternate "T1C2_7" bidirectional line)
+				(alternate "T1C2_8" bidirectional line)
+				(alternate "T1C3_3" bidirectional line)
+				(alternate "T1ETR_2" input line)
+				(alternate "T2C1ETR_2" bidirectional line)
+				(alternate "TX_6" output line)
+				(alternate "SCL_2" bidirectional line)
+				(alternate "SCK_1" bidirectional line)
 			)
 			(pin bidirectional line
 				(at 16.51 1.27 180)
@@ -1620,7 +1735,16 @@
 						)
 					)
 				)
+				(alternate "MOSI" bidirectional line)
+				(alternate "T1C1_2" bidirectional line)
 				(alternate "T1C3_7" bidirectional line)
+				(alternate "T1C3_8" bidirectional line)
+				(alternate "T1C3N_3" bidirectional line)
+				(alternate "RX_6" input line)
+				(alternate "CTS_1" input line)
+				(alternate "CTS_3" input line)
+				(alternate "MOSI_1" bidirectional line)
+				(alternate "SDA_2" bidirectional line)
 			)
 			(pin bidirectional line
 				(at 16.51 3.81 180)
@@ -1639,7 +1763,18 @@
 						)
 					)
 				)
+				(alternate "MISO" bidirectional line)
+				(alternate "T1C2_2" bidirectional line)
+				(alternate "T1C2_3" bidirectional line)
 				(alternate "T1C4_7" bidirectional line)
+				(alternate "T1C4_8" bidirectional line)
+				(alternate "T2C2_3" bidirectional line)
+				(alternate "CTS_6" input line)
+				(alternate "CTS_7" input line)
+				(alternate "RTS_1" output line)
+				(alternate "RTS_3" output line)
+				(alternate "MISO_1" bidirectional line)
+				(alternate "MISO_6" bidirectional line)
 			)
 			(pin bidirectional line
 				(at 16.51 6.35 180)
@@ -1659,6 +1794,19 @@
 					)
 				)
 				(alternate "SWDIO" bidirectional line)
+				(alternate "T1C3N" bidirectional line)
+				(alternate "OPP3" passive line)
+				(alternate "IETR" input line)
+				(alternate "T1C4_4" bidirectional line)
+				(alternate "T1C4_5" bidirectional line)
+				(alternate "T1C3N_1" bidirectional line)
+				(alternate "T1C3N_2" bidirectional line)
+				(alternate "TX_4" output line)
+				(alternate "RX_2" input line)
+				(alternate "RX_5" input line)
+				(alternate "U2RX_5" input line)
+				(alternate "SCL_1" bidirectional line)
+				(alternate "SDA_4" bidirectional line)
 			)
 			(pin bidirectional line
 				(at 16.51 8.89 180)
@@ -1678,6 +1826,13 @@
 					)
 				)
 				(alternate "A3" passive line)
+				(alternate "T1C1" bidirectional line)
+				(alternate "T1C1_1" bidirectional line)
+				(alternate "T1C2N_3" bidirectional line)
+				(alternate "T2C3_2" bidirectional line)
+				(alternate "CTS_8" input line)
+				(alternate "U2TX_3" output line)
+				(alternate "SCK_2" bidirectional line)
 			)
 			(pin bidirectional line
 				(at 16.51 11.43 180)
@@ -1697,7 +1852,17 @@
 					)
 				)
 				(alternate "A4" passive line)
-				(alternate "T2C1_7" bidirectional line)
+				(alternate "T2C2" bidirectional line)
+				(alternate "CTS" input line)
+				(alternate "OPP2" passive line)
+				(alternate "RETR" input line)
+				(alternate "T1C4_2" bidirectional line)
+				(alternate "T2C1ETR_7" bidirectional line)
+				(alternate "T2C2_1" bidirectional line)
+				(alternate "RTS_8" output line)
+				(alternate "U2RX_3" input line)
+				(alternate "NSS_4" bidirectional line)
+				(alternate "MOSI_2" bidirectional line)
 			)
 		)
 		(embedded_fonts no)
@@ -1825,7 +1990,7 @@
 			(pin bidirectional line
 				(at -21.59 5.08 0)
 				(length 2.54)
-				(name "PD7/RST"
+				(name "PD7"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -1839,11 +2004,22 @@
 						)
 					)
 				)
+				(alternate "RST" input line)
+				(alternate "T2C4" bidirectional line)
+				(alternate "OPP1" passive line)
+				(alternate "T2C4_1" bidirectional line)
+				(alternate "CTS_4" input line)
+				(alternate "CTS_5" input line)
+				(alternate "PA4" bidirectional line)
+				(alternate "U2CTS" input line)
+				(alternate "OPN2" passive line)
+				(alternate "U2TX_1" output line)
+				(alternate "U2CTS_5" input line)
 			)
 			(pin bidirectional line
 				(at -21.59 2.54 0)
 				(length 2.54)
-				(name "PA1/OPN0"
+				(name "PA1"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -1857,11 +2033,25 @@
 						)
 					)
 				)
+				(alternate "A1" passive line)
+				(alternate "T1C2" bidirectional line)
+				(alternate "OPN0" passive line)
+				(alternate "XI" input line)
+				(alternate "T1C2_1" bidirectional line)
+				(alternate "T1C2_9" bidirectional line)
+				(alternate "T2C2_5" bidirectional line)
+				(alternate "T2C2_6" bidirectional line)
+				(alternate "RX_8" input line)
+				(alternate "U2RTS_2" output line)
+				(alternate "U2RTS_3" output line)
+				(alternate "U2RTS_4" output line)
+				(alternate "U2RTS_5" output line)
+				(alternate "SCK_5" bidirectional line)
 			)
 			(pin bidirectional line
 				(at -21.59 0 0)
 				(length 2.54)
-				(name "PA2/OPP0"
+				(name "PA2"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -1875,11 +2065,26 @@
 						)
 					)
 				)
+				(alternate "A0" passive line)
+				(alternate "T1C2N" bidirectional line)
+				(alternate "OPP0" passive line)
+				(alternate "XO" output line)
+				(alternate "T1C3_9" bidirectional line)
+				(alternate "T1C2N_1" bidirectional line)
+				(alternate "T1C2N_4" bidirectional line)
+				(alternate "T1C2N_5" bidirectional line)
+				(alternate "T1C2N_6" bidirectional line)
+				(alternate "T2C3_5" bidirectional line)
+				(alternate "T2C3_6" bidirectional line)
+				(alternate "T2C3_7" bidirectional line)
+				(alternate "U2TX_2" output line)
+				(alternate "MOSI_5" bidirectional line)
+				(alternate "IETR_1" input line)
 			)
 			(pin bidirectional line
 				(at -21.59 -5.08 0)
 				(length 2.54)
-				(name "PD0/TX_2"
+				(name "PD0"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -1893,6 +2098,14 @@
 						)
 					)
 				)
+				(alternate "T1C1N" bidirectional line)
+				(alternate "OPN1" passive line)
+				(alternate "T1C1N_1" bidirectional line)
+				(alternate "T1C3N_4" bidirectional line)
+				(alternate "T1C3N_5" bidirectional line)
+				(alternate "T1C3N_6" bidirectional line)
+				(alternate "TX_2" output line)
+				(alternate "SDA_1" bidirectional line)
 			)
 			(pin power_in line
 				(at -5.08 -21.59 90)
@@ -1915,7 +2128,7 @@
 			(pin bidirectional line
 				(at -2.54 -21.59 90)
 				(length 2.54)
-				(name "PC0/TX_3/T1C3_2"
+				(name "PC0"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -1929,11 +2142,20 @@
 						)
 					)
 				)
+				(alternate "T2C3" bidirectional line)
+				(alternate "T1C3_2" bidirectional line)
+				(alternate "T1C1N_7" bidirectional line)
+				(alternate "T1C1N_9" bidirectional line)
+				(alternate "T2C1ETR_4" bidirectional line)
+				(alternate "T2C3_1" bidirectional line)
+				(alternate "TX_3" output line)
+				(alternate "NSS_1" bidirectional line)
+				(alternate "MOSI_3" bidirectional line)
 			)
 			(pin bidirectional line
 				(at 0 -21.59 90)
 				(length 2.54)
-				(name "PC1/RX_3"
+				(name "PC1"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -1947,11 +2169,23 @@
 						)
 					)
 				)
+				(alternate "SDA" bidirectional line)
+				(alternate "NSS" bidirectional line)
+				(alternate "T1C2N_7" bidirectional line)
+				(alternate "T1C2N_9" bidirectional line)
+				(alternate "T1BK_2" input line)
+				(alternate "T1BK_3" input line)
+				(alternate "T2C1ETR_1" bidirectional line)
+				(alternate "T2C1ETR_3" bidirectional line)
+				(alternate "T2C2_4" bidirectional line)
+				(alternate "T2C4_2" bidirectional line)
+				(alternate "RX_3" input line)
+				(alternate "NSS_5" bidirectional line)
 			)
 			(pin bidirectional line
 				(at 2.54 -21.59 90)
 				(length 2.54)
-				(name "PC2/T2C2_2"
+				(name "PC2"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -1965,11 +2199,21 @@
 						)
 					)
 				)
+				(alternate "T1BK" input line)
+				(alternate "RTS" output line)
+				(alternate "SCL" bidirectional line)
+				(alternate "T1C3N_7" bidirectional line)
+				(alternate "T1C3N_9" bidirectional line)
+				(alternate "T2C2_2" bidirectional line)
+				(alternate "RTS_2" output line)
+				(alternate "T1BK_1" input line)
+				(alternate "T1ETR_3" input line)
+				(alternate "RETR_1" input line)
 			)
 			(pin bidirectional line
 				(at 5.08 -21.59 90)
 				(length 2.54)
-				(name "PC3/T1C3/T2C3_4"
+				(name "PC3"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -1983,11 +2227,18 @@
 						)
 					)
 				)
+				(alternate "T1C3" bidirectional line)
+				(alternate "T1C3_1" bidirectional line)
+				(alternate "T1C3_5" bidirectional line)
+				(alternate "T1C1N_2" bidirectional line)
+				(alternate "T1C1N_3" bidirectional line)
+				(alternate "T2C3_4" bidirectional line)
+				(alternate "CTS_2" input line)
 			)
 			(pin bidirectional line
 				(at 21.59 -5.08 180)
 				(length 2.54)
-				(name "PC4/A2"
+				(name "PC4"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -2001,11 +2252,23 @@
 						)
 					)
 				)
+				(alternate "A2" passive line)
+				(alternate "T1C4" bidirectional line)
+				(alternate "MCO" output line)
+				(alternate "T1C1_3" bidirectional line)
+				(alternate "T1C1_7" bidirectional line)
+				(alternate "T1C1_8" bidirectional line)
+				(alternate "T1C4_1" bidirectional line)
+				(alternate "T1C2N_2" bidirectional line)
+				(alternate "RX_9" input line)
+				(alternate "U2TX_5" output line)
+				(alternate "NSS_2" bidirectional line)
+				(alternate "NSS_6" bidirectional line)
 			)
 			(pin bidirectional line
 				(at 21.59 -2.54 180)
 				(length 2.54)
-				(name "PC5/T1C2_7"
+				(name "PC5"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -2019,11 +2282,22 @@
 						)
 					)
 				)
+				(alternate "T1ETR" input line)
+				(alternate "SCK" bidirectional line)
+				(alternate "RST" input line)
+				(alternate "T1C2_7" bidirectional line)
+				(alternate "T1C2_8" bidirectional line)
+				(alternate "T1C3_3" bidirectional line)
+				(alternate "T1ETR_2" input line)
+				(alternate "T2C1ETR_2" bidirectional line)
+				(alternate "TX_6" output line)
+				(alternate "SCL_2" bidirectional line)
+				(alternate "SCK_1" bidirectional line)
 			)
 			(pin bidirectional line
 				(at 21.59 0 180)
 				(length 2.54)
-				(name "PC6/T1C1_2"
+				(name "PC6"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -2037,11 +2311,21 @@
 						)
 					)
 				)
+				(alternate "MOSI" bidirectional line)
+				(alternate "T1C1_2" bidirectional line)
+				(alternate "T1C3_7" bidirectional line)
+				(alternate "T1C3_8" bidirectional line)
+				(alternate "T1C3N_3" bidirectional line)
+				(alternate "RX_6" input line)
+				(alternate "CTS_1" input line)
+				(alternate "CTS_3" input line)
+				(alternate "MOSI_1" bidirectional line)
+				(alternate "SDA_2" bidirectional line)
 			)
 			(pin bidirectional line
 				(at 21.59 2.54 180)
 				(length 2.54)
-				(name "PC7/T1C3_3"
+				(name "PC7"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -2055,11 +2339,23 @@
 						)
 					)
 				)
+				(alternate "MISO" bidirectional line)
+				(alternate "T1C2_2" bidirectional line)
+				(alternate "T1C2_3" bidirectional line)
+				(alternate "T1C4_7" bidirectional line)
+				(alternate "T1C4_8" bidirectional line)
+				(alternate "T2C2_3" bidirectional line)
+				(alternate "CTS_6" input line)
+				(alternate "CTS_7" input line)
+				(alternate "RTS_1" output line)
+				(alternate "RTS_3" output line)
+				(alternate "MISO_1" bidirectional line)
+				(alternate "MISO_6" bidirectional line)
 			)
 			(pin bidirectional line
 				(at 21.59 5.08 180)
 				(length 2.54)
-				(name "PD1/SWIO"
+				(name "PD1"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -2073,11 +2369,25 @@
 						)
 					)
 				)
+				(alternate "SWDIO" bidirectional line)
+				(alternate "T1C3N" bidirectional line)
+				(alternate "OPP3" passive line)
+				(alternate "IETR" input line)
+				(alternate "T1C4_4" bidirectional line)
+				(alternate "T1C4_5" bidirectional line)
+				(alternate "T1C3N_1" bidirectional line)
+				(alternate "T1C3N_2" bidirectional line)
+				(alternate "TX_4" output line)
+				(alternate "RX_2" input line)
+				(alternate "RX_5" input line)
+				(alternate "U2RX_5" input line)
+				(alternate "SCL_1" bidirectional line)
+				(alternate "SDA_4" bidirectional line)
 			)
 			(pin bidirectional line
 				(at 5.08 21.59 270)
 				(length 2.54)
-				(name "PD2/A3"
+				(name "PD2"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -2091,11 +2401,19 @@
 						)
 					)
 				)
+				(alternate "A3" passive line)
+				(alternate "T1C1" bidirectional line)
+				(alternate "T1C1_1" bidirectional line)
+				(alternate "T1C2N_3" bidirectional line)
+				(alternate "T2C3_2" bidirectional line)
+				(alternate "CTS_8" input line)
+				(alternate "U2TX_3" output line)
+				(alternate "SCK_2" bidirectional line)
 			)
 			(pin bidirectional line
 				(at 2.54 21.59 270)
 				(length 2.54)
-				(name "PD3/A4"
+				(name "PD3"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -2109,11 +2427,23 @@
 						)
 					)
 				)
+				(alternate "A4" passive line)
+				(alternate "T2C2" bidirectional line)
+				(alternate "CTS" input line)
+				(alternate "OPP2" passive line)
+				(alternate "RETR" input line)
+				(alternate "T1C4_2" bidirectional line)
+				(alternate "T2C1ETR_7" bidirectional line)
+				(alternate "T2C2_1" bidirectional line)
+				(alternate "RTS_8" output line)
+				(alternate "U2RX_3" input line)
+				(alternate "NSS_4" bidirectional line)
+				(alternate "MOSI_2" bidirectional line)
 			)
 			(pin bidirectional line
 				(at 0 21.59 270)
 				(length 2.54)
-				(name "PD4/A7"
+				(name "PD4"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -2127,11 +2457,22 @@
 						)
 					)
 				)
+				(alternate "A7" passive line)
+				(alternate "T2C1ETR" input line)
+				(alternate "OPO0" passive line)
+				(alternate "T1C4_3" bidirectional line)
+				(alternate "T1ETR_1" input line)
+				(alternate "T1ETR_4" input line)
+				(alternate "T1ETR_5" input line)
+				(alternate "T1ETR_6" input line)
+				(alternate "T2C2_7" bidirectional line)
+				(alternate "RTS_9" output line)
+				(alternate "SCK_4" bidirectional line)
 			)
 			(pin bidirectional line
 				(at -2.54 21.59 270)
 				(length 2.54)
-				(name "PD5/A5/TX/RX_1"
+				(name "PD5"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -2145,11 +2486,17 @@
 						)
 					)
 				)
+				(alternate "A5" passive line)
+				(alternate "TX" output line)
+				(alternate "T2C4_3" bidirectional line)
+				(alternate "RX_1" input line)
+				(alternate "CTS_9" input line)
+				(alternate "MISO_4" bidirectional line)
 			)
 			(pin bidirectional line
 				(at -5.08 21.59 270)
 				(length 2.54)
-				(name "PD6/A6/RX/TX_1"
+				(name "PD6"
 					(effects
 						(font
 							(size 1.27 1.27)
@@ -2163,6 +2510,11 @@
 						)
 					)
 				)
+				(alternate "A6" passive line)
+				(alternate "RX" input line)
+				(alternate "T2C3_3" bidirectional line)
+				(alternate "TX_1" output line)
+				(alternate "MOSI_4" bidirectional line)
 			)
 		)
 		(embedded_fonts no)
