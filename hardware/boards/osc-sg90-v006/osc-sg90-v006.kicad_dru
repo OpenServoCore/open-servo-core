@@ -1,0 +1,63 @@
+(version 1)
+
+(rule "Track width minimum"
+  (condition "A.Type == 'Track'")
+  (constraint track_width (min 0.10mm))
+)
+
+(rule "Copper clearance"
+  (condition "A.Net != B.Net")
+  (constraint clearance (min 0.10mm))
+)
+
+(rule "Global drill size limits"
+  (constraint hole_size (min 0.30mm) (max 6.00mm))
+)
+
+(rule "Via drill + annular ring"
+  (condition "A.Type == 'Via'")
+  (constraint hole_size (min 0.30mm))
+  (constraint annular_width (min 0.125mm))
+)
+
+(rule "PTH drill limits"
+  (condition "A.Type == 'Pad' && A.Pad_Type == 'Through-hole' && A.isPlated()")
+  (constraint hole_size (min 0.30mm) (max 6.00mm))
+)
+
+(rule "PTH annular ring"
+  (condition "A.Type == 'Pad' && A.Pad_Type == 'Through-hole' && A.isPlated()")
+  (constraint annular_width (min 0.125mm))
+)
+
+(rule "Hole-to-hole spacing"
+  (condition "A.Net != B.Net")
+  (constraint hole_to_hole (min 0.30mm))
+)
+
+(rule "Via-to-via stitching"
+  (condition "A.Type == 'Via' && B.Type == 'Via' && A.Net == B.Net")
+  (constraint hole_to_hole (min 0.20mm))
+)
+
+(rule "Copper to board edge"
+  (condition "A.Type == 'Track' || A.Type == 'Via' || A.Type == 'Pad'")
+  (constraint edge_clearance (min 0.4mm))
+)
+
+(rule "Silk text thickness"
+  (layer "?.Silkscreen")
+  (condition "A.Type == 'Text' || A.Type == 'Text Box'")
+  (constraint text_thickness (min 0.12mm))
+)
+
+(rule "Silk text height"
+  (layer "?.Silkscreen")
+  (condition "A.Type == 'Text' || A.Type == 'Text Box'")
+  (constraint text_height (min 0.80mm))
+)
+
+(rule "One-sided PTH annulus for Potentiometer"
+  (condition "A.Type == 'Pad' && A.Pad_Type == 'Through-hole' && A.memberOfFootprint('shared:Pot_Wire_Pads')")
+  (constraint annular_width (min 0.0mm))
+)
