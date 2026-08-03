@@ -3077,7 +3077,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C19271225.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C22383777.html"
 			(at 85.09 55.88 0)
 			(hide yes)
 			(show_name no)
@@ -3088,7 +3088,7 @@
 				)
 			)
 		)
-		(property "Description" "Polarized capacitor"
+		(property "Description" "100µF ±20% 35V aluminum electrolytic 6.3x5.4"
 			(at 85.09 55.88 0)
 			(hide yes)
 			(show_name no)
@@ -3099,7 +3099,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C19271225"
+		(property "LCSC" "C22383777"
 			(at 82.55 53.34 0)
 			(hide yes)
 			(show_name no)
@@ -3110,7 +3110,7 @@
 				)
 			)
 		)
-		(property "MFPN" "VT1V101M-CRE54"
+		(property "MFPN" "VT1V101M0605"
 			(at 82.55 53.34 0)
 			(hide yes)
 			(show_name no)
@@ -3392,7 +3392,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C24452.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C14663.html"
 			(at 31.21 31.76 0)
 			(hide yes)
 			(show_name no)
@@ -3403,7 +3403,7 @@
 				)
 			)
 		)
-		(property "Description" "Unpolarized capacitor"
+		(property "Description" "100nF ±10% 50V X7R 0603"
 			(at 31.21 31.76 0)
 			(hide yes)
 			(show_name no)
@@ -3414,7 +3414,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C24452"
+		(property "LCSC" "C14663"
 			(at 71.882 53.34 0)
 			(hide yes)
 			(show_name no)
@@ -3425,7 +3425,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CL21B104KCFNNNE"
+		(property "MFPN" "CC0603KRX7R9BB104"
 			(at 71.882 53.34 0)
 			(hide yes)
 			(show_name no)
@@ -3493,7 +3493,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C24452.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C14663.html"
 			(at 14.7 21.76 0)
 			(hide yes)
 			(show_name no)
@@ -3504,7 +3504,7 @@
 				)
 			)
 		)
-		(property "Description" "Unpolarized capacitor"
+		(property "Description" "100nF ±10% 50V X7R 0603"
 			(at 14.7 21.76 0)
 			(hide yes)
 			(show_name no)
@@ -3515,7 +3515,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C24452"
+		(property "LCSC" "C14663"
 			(at 38.1 53.34 0)
 			(hide yes)
 			(show_name no)
@@ -3526,7 +3526,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CL21B104KCFNNNE"
+		(property "MFPN" "CC0603KRX7R9BB104"
 			(at 38.1 53.34 0)
 			(hide yes)
 			(show_name no)

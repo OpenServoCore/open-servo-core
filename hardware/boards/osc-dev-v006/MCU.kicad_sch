@@ -5430,7 +5430,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C24452.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C14663.html"
 			(at 29.94 11.76 0)
 			(hide yes)
 			(show_name no)
@@ -5441,7 +5441,7 @@
 				)
 			)
 		)
-		(property "Description" "Unpolarized capacitor"
+		(property "Description" "100nF ±10% 50V X7R 0603"
 			(at 29.94 11.76 0)
 			(hide yes)
 			(show_name no)
@@ -5452,7 +5452,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C24452"
+		(property "LCSC" "C14663"
 			(at 37.846 53.34 0)
 			(hide yes)
 			(show_name no)
@@ -5463,7 +5463,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CL21B104KCFNNNE"
+		(property "MFPN" "CC0603KRX7R9BB104"
 			(at 37.846 53.34 0)
 			(hide yes)
 			(show_name no)

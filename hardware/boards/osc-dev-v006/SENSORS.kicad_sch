@@ -4083,7 +4083,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C21189.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C95177.html"
 			(at 57.15 64.77 0)
 			(hide yes)
 			(show_name no)
@@ -4094,7 +4094,7 @@
 				)
 			)
 		)
-		(property "Description" "Resistor"
+		(property "Description" "0Ω jumper 100mW 0603"
 			(at 57.15 64.77 0)
 			(hide yes)
 			(show_name no)
@@ -4105,7 +4105,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C21189"
+		(property "LCSC" "C95177"
 			(at 57.15 62.484 0)
 			(hide yes)
 			(show_name no)
@@ -4116,7 +4116,7 @@
 				)
 			)
 		)
-		(property "MFPN" "FRC0805F0000TS"
+		(property "MFPN" "RC0603JR-070RL"
 			(at 57.15 62.484 0)
 			(hide yes)
 			(show_name no)
@@ -5143,7 +5143,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C1653.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C105620.html"
 			(at 161.29 67.31 0)
 			(hide yes)
 			(show_name no)
@@ -5154,7 +5154,7 @@
 				)
 			)
 		)
-		(property "Description" "Unpolarized capacitor"
+		(property "Description" "22pF ±5% 50V NP0 0603"
 			(at 161.29 67.31 0)
 			(hide yes)
 			(show_name no)
@@ -5165,7 +5165,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C1653"
+		(property "LCSC" "C105620"
 			(at 165.1 66.0399 0)
 			(hide yes)
 			(show_name no)
@@ -5176,7 +5176,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CL21C220JBANNNC"
+		(property "MFPN" "CC0603JRNPO9BN220"
 			(at 165.1 66.0399 0)
 			(hide yes)
 			(show_name no)
@@ -5890,7 +5890,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C14858.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C14665.html"
 			(at 105.95 90.18 0)
 			(hide yes)
 			(show_name no)
@@ -5901,7 +5901,7 @@
 				)
 			)
 		)
-		(property "Description" "Unpolarized capacitor"
+		(property "Description" "100pF ±5% 50V NP0 0603"
 			(at 105.95 90.18 0)
 			(hide yes)
 			(show_name no)
@@ -5912,7 +5912,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C14858"
+		(property "LCSC" "C14665"
 			(at 65.278 111.76 0)
 			(hide yes)
 			(show_name no)
@@ -5923,7 +5923,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CC0805JRNPO9BN101"
+		(property "MFPN" "CC0603JRNPO9BN101"
 			(at 65.278 111.76 0)
 			(hide yes)
 			(show_name no)
@@ -6253,7 +6253,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C21189.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C95177.html"
 			(at 57.15 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -6264,7 +6264,7 @@
 				)
 			)
 		)
-		(property "Description" "Resistor"
+		(property "Description" "0Ω jumper 100mW 0603"
 			(at 57.15 49.53 0)
 			(hide yes)
 			(show_name no)
@@ -6275,7 +6275,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C21189"
+		(property "LCSC" "C95177"
 			(at 57.15 47.244 0)
 			(hide yes)
 			(show_name no)
@@ -6286,7 +6286,7 @@
 				)
 			)
 		)
-		(property "MFPN" "FRC0805F0000TS"
+		(property "MFPN" "RC0603JR-070RL"
 			(at 57.15 47.244 0)
 			(hide yes)
 			(show_name no)
@@ -6538,7 +6538,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C24452.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C14663.html"
 			(at 127.72 138.99 0)
 			(hide yes)
 			(show_name no)
@@ -6549,7 +6549,7 @@
 				)
 			)
 		)
-		(property "Description" "Unpolarized capacitor"
+		(property "Description" "100nF ±10% 50V X7R 0603"
 			(at 127.72 138.99 0)
 			(hide yes)
 			(show_name no)
@@ -6560,7 +6560,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C24452"
+		(property "LCSC" "C14663"
 			(at 115.316 117.856 0)
 			(hide yes)
 			(show_name no)
@@ -6571,7 +6571,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CL21B104KCFNNNE"
+		(property "MFPN" "CC0603KRX7R9BB104"
 			(at 115.316 117.856 0)
 			(hide yes)
 			(show_name no)
@@ -6955,7 +6955,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C14858.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C14665.html"
 			(at 62.23 57.15 0)
 			(hide yes)
 			(show_name no)
@@ -6966,7 +6966,7 @@
 				)
 			)
 		)
-		(property "Description" "Unpolarized capacitor"
+		(property "Description" "100pF ±5% 50V NP0 0603"
 			(at 62.23 57.15 0)
 			(hide yes)
 			(show_name no)
@@ -6977,7 +6977,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CL21C102JBCNNNC"
+		(property "MFPN" "CC0603JRNPO9BN101"
 			(at 62.23 57.15 0)
 			(hide yes)
 			(show_name no)
@@ -6999,7 +6999,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C14858"
+		(property "LCSC" "C14665"
 			(at 62.23 57.15 0)
 			(hide yes)
 			(show_name no)
@@ -7457,7 +7457,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C24452.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C14663.html"
 			(at 96.52 58.42 0)
 			(hide yes)
 			(show_name no)
@@ -7468,7 +7468,7 @@
 				)
 			)
 		)
-		(property "Description" "Unpolarized capacitor"
+		(property "Description" "100nF ±10% 50V X7R 0603"
 			(at 96.52 58.42 0)
 			(hide yes)
 			(show_name no)
@@ -7479,7 +7479,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C24452"
+		(property "LCSC" "C14663"
 			(at 98.044 55.626 0)
 			(hide yes)
 			(show_name no)
@@ -7490,7 +7490,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CL21B104KCFNNNE"
+		(property "MFPN" "CC0603KRX7R9BB104"
 			(at 98.044 55.626 0)
 			(hide yes)
 			(show_name no)
@@ -7664,7 +7664,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C14858.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C14665.html"
 			(at 177.8 57.15 0)
 			(hide yes)
 			(show_name no)
@@ -7675,7 +7675,7 @@
 				)
 			)
 		)
-		(property "Description" "Unpolarized capacitor"
+		(property "Description" "100pF ±5% 50V NP0 0603"
 			(at 177.8 57.15 0)
 			(hide yes)
 			(show_name no)
@@ -7686,7 +7686,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C14858"
+		(property "LCSC" "C14665"
 			(at 181.61 55.8799 0)
 			(hide yes)
 			(show_name no)
@@ -7697,7 +7697,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CC0805JRNPO9BN101"
+		(property "MFPN" "CC0603JRNPO9BN101"
 			(at 181.61 55.8799 0)
 			(hide yes)
 			(show_name no)
@@ -8050,7 +8050,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C1653.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C105620.html"
 			(at 161.29 46.99 0)
 			(hide yes)
 			(show_name no)
@@ -8061,7 +8061,7 @@
 				)
 			)
 		)
-		(property "Description" "Unpolarized capacitor"
+		(property "Description" "22pF ±5% 50V NP0 0603"
 			(at 161.29 46.99 0)
 			(hide yes)
 			(show_name no)
@@ -8072,7 +8072,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C1653"
+		(property "LCSC" "C105620"
 			(at 165.1 45.7199 0)
 			(hide yes)
 			(show_name no)
@@ -8083,7 +8083,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CL21C220JBANNNC"
+		(property "MFPN" "CC0603JRNPO9BN220"
 			(at 165.1 45.7199 0)
 			(hide yes)
 			(show_name no)
@@ -8232,7 +8232,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C14858.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C14665.html"
 			(at 67.85 90.18 0)
 			(hide yes)
 			(show_name no)
@@ -8243,7 +8243,7 @@
 				)
 			)
 		)
-		(property "Description" "Unpolarized capacitor"
+		(property "Description" "100pF ±5% 50V NP0 0603"
 			(at 67.85 90.18 0)
 			(hide yes)
 			(show_name no)
@@ -8254,7 +8254,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C14858"
+		(property "LCSC" "C14665"
 			(at 27.178 111.76 0)
 			(hide yes)
 			(show_name no)
@@ -8265,7 +8265,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CC0805JRNPO9BN101"
+		(property "MFPN" "CC0603JRNPO9BN101"
 			(at 27.178 111.76 0)
 			(hide yes)
 			(show_name no)
@@ -9032,7 +9032,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C1653.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C105620.html"
 			(at 121.92 182.88 0)
 			(hide yes)
 			(show_name no)
@@ -9043,7 +9043,7 @@
 				)
 			)
 		)
-		(property "Description" "Unpolarized capacitor"
+		(property "Description" "22pF ±5% 50V NP0 0603"
 			(at 121.92 182.88 0)
 			(hide yes)
 			(show_name no)
@@ -9054,7 +9054,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C1653"
+		(property "LCSC" "C105620"
 			(at 125.73 181.6099 0)
 			(hide yes)
 			(show_name no)
@@ -9065,7 +9065,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CC0805JRNPO9BN330"
+		(property "MFPN" "CC0603JRNPO9BN220"
 			(at 125.73 181.6099 0)
 			(hide yes)
 			(show_name no)

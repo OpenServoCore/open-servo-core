@@ -448,7 +448,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C19271225.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C22383777.html"
 			(at 0 0 0)
 			(layer "F.Fab")
 			(hide yes)
@@ -459,7 +459,7 @@
 				)
 			)
 		)
-		(property "Description" "Polarized capacitor"
+		(property "Description" "100µF ±20% 35V aluminum electrolytic 6.3x5.4"
 			(at 0 0 0)
 			(layer "F.Fab")
 			(hide yes)
@@ -470,7 +470,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C19271225"
+		(property "LCSC" "C22383777"
 			(at 0 0 0)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -483,7 +483,7 @@
 				)
 			)
 		)
-		(property "MFPN" "VT1V101M-CRE54"
+		(property "MFPN" "VT1V101M0605"
 			(at 0 0 0)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -1781,7 +1781,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C1653.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C105620.html"
 			(at 0 0 270)
 			(layer "F.Fab")
 			(hide yes)
@@ -1792,7 +1792,7 @@
 				)
 			)
 		)
-		(property "Description" "Unpolarized capacitor"
+		(property "Description" "22pF ±5% 50V NP0 0603"
 			(at 0 0 270)
 			(layer "F.Fab")
 			(hide yes)
@@ -1803,7 +1803,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C1653"
+		(property "LCSC" "C105620"
 			(at 0 0 270)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -1816,7 +1816,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CL21C220JBANNNC"
+		(property "MFPN" "CC0603JRNPO9BN220"
 			(at 0 0 270)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -3103,7 +3103,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C1653.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C105620.html"
 			(at 0 0 90)
 			(layer "F.Fab")
 			(hide yes)
@@ -3114,7 +3114,7 @@
 				)
 			)
 		)
-		(property "Description" "Unpolarized capacitor"
+		(property "Description" "22pF ±5% 50V NP0 0603"
 			(at 0 0 90)
 			(layer "F.Fab")
 			(hide yes)
@@ -3125,7 +3125,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C1653"
+		(property "LCSC" "C105620"
 			(at 0 0 90)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -3138,7 +3138,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CL21C220JBANNNC"
+		(property "MFPN" "CC0603JRNPO9BN220"
 			(at 0 0 90)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -3277,7 +3277,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C24452.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C14663.html"
 			(at 0 0 0)
 			(layer "F.Fab")
 			(hide yes)
@@ -3288,7 +3288,7 @@
 				)
 			)
 		)
-		(property "Description" "Unpolarized capacitor"
+		(property "Description" "100nF ±10% 50V X7R 0603"
 			(at 0 0 0)
 			(layer "F.Fab")
 			(hide yes)
@@ -3299,7 +3299,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C24452"
+		(property "LCSC" "C14663"
 			(at 0 0 0)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -3312,7 +3312,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CL21B104KCFNNNE"
+		(property "MFPN" "CC0603KRX7R9BB104"
 			(at 0 0 0)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -5534,7 +5534,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C21189.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C95177.html"
 			(at 0 0 90)
 			(layer "F.Fab")
 			(hide yes)
@@ -5545,7 +5545,7 @@
 				)
 			)
 		)
-		(property "Description" "Resistor"
+		(property "Description" "0Ω jumper 100mW 0603"
 			(at 0 0 90)
 			(layer "F.Fab")
 			(hide yes)
@@ -5556,7 +5556,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C21189"
+		(property "LCSC" "C95177"
 			(at 0 0 270)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -5569,7 +5569,7 @@
 				)
 			)
 		)
-		(property "MFPN" "FRC0805F0000TS"
+		(property "MFPN" "RC0603JR-070RL"
 			(at 0 0 270)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -6230,7 +6230,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C24452.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C14663.html"
 			(at 0 0 90)
 			(layer "F.Fab")
 			(hide yes)
@@ -6241,7 +6241,7 @@
 				)
 			)
 		)
-		(property "Description" "Unpolarized capacitor"
+		(property "Description" "100nF ±10% 50V X7R 0603"
 			(at 0 0 90)
 			(layer "F.Fab")
 			(hide yes)
@@ -6252,7 +6252,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C24452"
+		(property "LCSC" "C14663"
 			(at 0 0 270)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -6265,7 +6265,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CL21B104KCFNNNE"
+		(property "MFPN" "CC0603KRX7R9BB104"
 			(at 0 0 270)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -7567,7 +7567,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C14858.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C14665.html"
 			(at 0 0 0)
 			(layer "F.Fab")
 			(hide yes)
@@ -7578,7 +7578,7 @@
 				)
 			)
 		)
-		(property "Description" "Unpolarized capacitor"
+		(property "Description" "100pF ±5% 50V NP0 0603"
 			(at 0 0 0)
 			(layer "F.Fab")
 			(hide yes)
@@ -7589,7 +7589,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C14858"
+		(property "LCSC" "C14665"
 			(at 0 0 180)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -7602,7 +7602,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CC0805JRNPO9BN101"
+		(property "MFPN" "CC0603JRNPO9BN101"
 			(at 0 0 180)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -8501,7 +8501,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C24452.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C14663.html"
 			(at 0 0 90)
 			(layer "F.Fab")
 			(hide yes)
@@ -8512,7 +8512,7 @@
 				)
 			)
 		)
-		(property "Description" "Unpolarized capacitor"
+		(property "Description" "100nF ±10% 50V X7R 0603"
 			(at 0 0 90)
 			(layer "F.Fab")
 			(hide yes)
@@ -8523,7 +8523,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C24452"
+		(property "LCSC" "C14663"
 			(at 0 0 270)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -8536,7 +8536,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CL21B104KCFNNNE"
+		(property "MFPN" "CC0603KRX7R9BB104"
 			(at 0 0 270)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -8849,7 +8849,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C21189.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C95177.html"
 			(at 0 0 90)
 			(layer "F.Fab")
 			(hide yes)
@@ -8860,7 +8860,7 @@
 				)
 			)
 		)
-		(property "Description" "Resistor"
+		(property "Description" "0Ω jumper 100mW 0603"
 			(at 0 0 90)
 			(layer "F.Fab")
 			(hide yes)
@@ -8871,7 +8871,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C21189"
+		(property "LCSC" "C95177"
 			(at 0 0 90)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -8884,7 +8884,7 @@
 				)
 			)
 		)
-		(property "MFPN" "FRC0805F0000TS"
+		(property "MFPN" "RC0603JR-070RL"
 			(at 0 0 90)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -10152,7 +10152,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C14858.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C14665.html"
 			(at 0 0 0)
 			(layer "F.Fab")
 			(hide yes)
@@ -10163,7 +10163,7 @@
 				)
 			)
 		)
-		(property "Description" "Unpolarized capacitor"
+		(property "Description" "100pF ±5% 50V NP0 0603"
 			(at 0 0 0)
 			(layer "F.Fab")
 			(hide yes)
@@ -10174,7 +10174,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C14858"
+		(property "LCSC" "C14665"
 			(at 0 0 180)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -10187,7 +10187,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CL21C102JBCNNNC"
+		(property "MFPN" "CC0603JRNPO9BN101"
 			(at 0 0 180)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -11362,7 +11362,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C24452.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C14663.html"
 			(at 0 0 0)
 			(layer "F.Fab")
 			(hide yes)
@@ -11373,7 +11373,7 @@
 				)
 			)
 		)
-		(property "Description" "Unpolarized capacitor"
+		(property "Description" "100nF ±10% 50V X7R 0603"
 			(at 0 0 0)
 			(layer "F.Fab")
 			(hide yes)
@@ -11384,7 +11384,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C24452"
+		(property "LCSC" "C14663"
 			(at 0 0 0)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -11397,7 +11397,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CL21B104KCFNNNE"
+		(property "MFPN" "CC0603KRX7R9BB104"
 			(at 0 0 0)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -12001,7 +12001,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C24452.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C14663.html"
 			(at 0 0 90)
 			(layer "F.Fab")
 			(hide yes)
@@ -12012,7 +12012,7 @@
 				)
 			)
 		)
-		(property "Description" "Unpolarized capacitor"
+		(property "Description" "100nF ±10% 50V X7R 0603"
 			(at 0 0 90)
 			(layer "F.Fab")
 			(hide yes)
@@ -12023,7 +12023,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C24452"
+		(property "LCSC" "C14663"
 			(at 0 0 90)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -12036,7 +12036,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CL21B104KCFNNNE"
+		(property "MFPN" "CC0603KRX7R9BB104"
 			(at 0 0 90)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -12803,7 +12803,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C29936.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C559769.html"
 			(at 0 0 180)
 			(layer "F.Fab")
 			(hide yes)
@@ -12814,7 +12814,7 @@
 				)
 			)
 		)
-		(property "Description" "Unpolarized capacitor"
+		(property "Description" "1µF ±10% 50V X7R 0603"
 			(at 0 0 180)
 			(layer "F.Fab")
 			(hide yes)
@@ -12825,7 +12825,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C29936"
+		(property "LCSC" "C559769"
 			(at 0 0 180)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -12838,7 +12838,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CL21B105KBFNNNE"
+		(property "MFPN" "CC0603KRX7R9BB105"
 			(at 0 0 180)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -14486,7 +14486,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C14858.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C14665.html"
 			(at 0 0 0)
 			(layer "F.Fab")
 			(hide yes)
@@ -14497,7 +14497,7 @@
 				)
 			)
 		)
-		(property "Description" "Unpolarized capacitor"
+		(property "Description" "100pF ±5% 50V NP0 0603"
 			(at 0 0 0)
 			(layer "F.Fab")
 			(hide yes)
@@ -14508,7 +14508,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C14858"
+		(property "LCSC" "C14665"
 			(at 0 0 0)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -14521,7 +14521,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CC0805JRNPO9BN101"
+		(property "MFPN" "CC0603JRNPO9BN101"
 			(at 0 0 0)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -15991,7 +15991,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C14858.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C14665.html"
 			(at 0 0 0)
 			(layer "F.Fab")
 			(hide yes)
@@ -16002,7 +16002,7 @@
 				)
 			)
 		)
-		(property "Description" "Unpolarized capacitor"
+		(property "Description" "100pF ±5% 50V NP0 0603"
 			(at 0 0 0)
 			(layer "F.Fab")
 			(hide yes)
@@ -16013,7 +16013,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CC0805JRNPO9BN101"
+		(property "MFPN" "CC0603JRNPO9BN101"
 			(at 0 0 180)
 			(unlocked yes)
 			(layer "F.Fab")
@@ -16026,7 +16026,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C14858"
+		(property "LCSC" "C14665"
 			(at 0 0 180)
 			(unlocked yes)
 			(layer "F.Fab")
