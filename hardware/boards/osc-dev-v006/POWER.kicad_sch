@@ -2235,7 +2235,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C29936.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C559769.html"
 			(at 17.24 21.76 0)
 			(hide yes)
 			(show_name no)
@@ -2246,7 +2246,7 @@
 				)
 			)
 		)
-		(property "Description" "Unpolarized capacitor"
+		(property "Description" "1µF ±10% 50V X7R 0603"
 			(at 17.24 21.76 0)
 			(hide yes)
 			(show_name no)
@@ -2257,7 +2257,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C29936"
+		(property "LCSC" "C559769"
 			(at 40.64 53.34 0)
 			(hide yes)
 			(show_name no)
@@ -2268,7 +2268,7 @@
 				)
 			)
 		)
-		(property "MFPN" "CL21B105KBFNNNE"
+		(property "MFPN" "CC0603KRX7R9BB105"
 			(at 40.64 53.34 0)
 			(hide yes)
 			(show_name no)
