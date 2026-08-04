@@ -73,6 +73,7 @@ The legacy `firmware-old/` tree contains the original architecture (multi-crate 
 Design docs live in [`docs/`](docs/):
 
 - **[osc-native protocol](docs/osc-native-protocol.md)** — the wire protocol spec: break framing, instruction set, management plane.
+- **[Control theory](docs/control-theory.md)** — the control theory behind the servo: cascaded loops, estimators, sensing tiers.
 - **[Servo transport](docs/osc-servo-transport.md)** — the servo-side transport design: DMA ring, deadline pipeline, hardware CRC.
 - **[Driver pattern](docs/driver-pattern.md)** — the firmware architecture: services / drivers / providers / HAL.
 - **[Design history](docs/design-history.md)** — what I tried and abandoned, and what it taught.
