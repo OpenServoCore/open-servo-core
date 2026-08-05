@@ -17,9 +17,12 @@
 //!   bond, one output max): PA8 stays an input.
 //! - PC7 = IAP button, input (board 10k pull-up); read-only for us, the
 //!   loader's own cold-boot sampler is the brick-recovery path.
-//! - PB10 = USART3 TX, the bus wire under HDSEL: AF open-drain at rest
-//!   (released; the DUT-side pull-up holds mark). PB11 stays input
-//!   pull-up (the header RX pin is unwired in the HDSEL rig).
+//! - PB10 = USART3 TX, the bus wire under HDSEL: input pull-up at rest,
+//!   so the internal ~40k is the adapter-side mark source (weak; a long
+//!   harness still wants the bench 10k). The USART receiver samples the
+//!   pad fine in input mode; every TX including the break happens inside
+//!   a claim, after bus_drive(true). PB11 stays input pull-up (the
+//!   header RX pin is unwired in the HDSEL rig).
 
 use ch32_metapac::{GPIOA, GPIOB, GPIOC};
 
@@ -37,8 +40,8 @@ impl Pins {
         gpio::set_level(GPIOB, 12, false);
         gpio::configure(GPIOB, 12, PinMode::OUTPUT_2MHZ);
 
-        gpio::set_level(GPIOB, 10, true); // idle-high before the AF block takes the pin
-        gpio::configure(GPIOB, 10, PinMode::AF_OPEN_DRAIN_50MHZ);
+        gpio::set_level(GPIOB, 10, true); // pull-up select, doubles as mark for the claim modes
+        gpio::configure(GPIOB, 10, PinMode::INPUT_PULL);
         gpio::set_level(GPIOB, 11, true); // pull-up select
         gpio::configure(GPIOB, 11, PinMode::INPUT_PULL);
         gpio::set_level(GPIOB, 2, false); // pull-down select
@@ -66,7 +69,7 @@ pub fn rail_5v(on: bool) {
 }
 
 /// Bus wire drive for the TX claim window: push-pull drives both edges at
-/// 3M; open-drain hands the wire back to the pull-up.
+/// 3M; rest hands the wire to the internal pull-up.
 #[inline]
 pub fn bus_drive(push_pull: bool) {
     gpio::configure(
@@ -75,7 +78,7 @@ pub fn bus_drive(push_pull: bool) {
         if push_pull {
             PinMode::AF_PUSH_PULL_50MHZ
         } else {
-            PinMode::AF_OPEN_DRAIN_50MHZ
+            PinMode::INPUT_PULL
         },
     );
 }
@@ -87,9 +90,9 @@ pub fn bus_hold_low() {
     gpio::configure(GPIOB, BUS_PIN, PinMode::OUTPUT_50MHZ);
 }
 
-/// End of the rescue pulse: ODR back to mark, pin back to the USART.
+/// End of the rescue pulse: ODR back to mark/pull-up select, pin to rest.
 #[inline]
 pub fn bus_release_from_hold() {
     gpio::set_level(GPIOB, BUS_PIN, true);
-    gpio::configure(GPIOB, BUS_PIN, PinMode::AF_OPEN_DRAIN_50MHZ);
+    gpio::configure(GPIOB, BUS_PIN, PinMode::INPUT_PULL);
 }
