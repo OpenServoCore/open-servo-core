@@ -9,7 +9,7 @@
 
 > An open platform for turning cheap servos into smart actuators.
 
-OpenServoCore (OSC) is open hardware and firmware that drops a CH32V006 control board into a $2-3 cloned hobby servo (SG90 and friends) and turns it into a Dynamixel-class smart actuator — position feedback, current sensing, bus-addressable, programmable. The bus speaks the **osc-native protocol**: OSC's own break-framed wire protocol, inspired by Dynamixel Protocol 2.0 but redesigned to run whole on sub-$0.20 MCUs ([spec](docs/osc-native-protocol.md)).
+OpenServoCore (OSC) is open hardware and firmware that drops a CH32V006 control board into a $2-3 cloned hobby servo (SG90 and friends) and turns it into a Dynamixel-class smart actuator — position feedback, current sensing, bus-addressable, programmable. The bus speaks the **osc-native protocol**: OSC's own break-framed wire protocol, inspired by Dynamixel Protocol 2.0 but redesigned to run whole on sub-$0.20 MCUs ([design writeup](https://aaronqian.com/log/2026-08-08-servo-protocol-stream-processing/)).
 
 The thesis is the price point: at mass-production volume, an OSC swap board should add **no more than ~$1 to the BOM** of a cloned servo. Cheap enough that "upgrade every servo in a robot to smart" stops being a premium decision and starts being a default.
 
@@ -36,7 +36,7 @@ open-servo-core/
 │   │   └── motor-mount/              # 3D-printable test fixtures
 │   ├── shared.kicad_sym / shared.pretty / shared.3dshapes  # Shared KiCad libraries
 │   └── templates/                    # KiCad project templates
-├── docs/                             # Design docs — protocol spec, transport, driver pattern, history
+├── docs/                             # Internal design notes
 ├── firmware/                         # Firmware v2 (Rust) — chip-agnostic libs, CH32 chip crate, board binaries
 ├── tools/                            # Host-side tooling — hardware test bench, `osc` operator CLI
 └── firmware-old/                     # Legacy firmware (do not use)
@@ -62,7 +62,7 @@ Each board has its own README with full schematics, pinouts, jumper behaviour, a
 
 ## Firmware
 
-The Rust firmware v2 lives in `firmware/`: chip-agnostic library crates (protocol, drivers, control table, discrete-event integration tests), a CH32 chip crate, and board binaries. It speaks the osc-native protocol — OSC's own break-framed bus protocol, inspired by Dynamixel Protocol 2.0. DXL 2.0 itself was implemented and tuned first, then replaced: its wire format (header hunting, byte stuffing, reply-grid timing) costs more than a $0.15 MCU should pay, and controlling both ends of the wire made those subsystems deletable outright — the story is in [design history](docs/design-history.md). The register-table conventions (flat control table, staged writes, alert semantics) keep the DXL flavor.
+The Rust firmware v2 lives in `firmware/`: chip-agnostic library crates (protocol, drivers, control table, discrete-event integration tests), a CH32 chip crate, and board binaries. It speaks the osc-native protocol — OSC's own break-framed bus protocol, inspired by Dynamixel Protocol 2.0. DXL 2.0 itself was implemented and tuned first, then replaced: its wire format (header hunting, byte stuffing, reply-grid timing) costs more than a $0.15 MCU should pay, and controlling both ends of the wire made those subsystems deletable outright — the story is in [the protocol article](https://aaronqian.com/log/2026-08-08-servo-protocol-stream-processing/). The register-table conventions (flat control table, staged writes, alert semantics) keep the DXL flavor.
 
 The bus transport is bench-proven on silicon: 0.5-3 Mbaud, ~30 us ping turnaround at 1 M, multi-servo status chains, hardware CRC both directions. Control loops, persistence, and safety features are in progress; build instructions will appear as the rewrite matures.
 
@@ -70,14 +70,13 @@ The legacy `firmware-old/` tree contains the original architecture (multi-crate 
 
 ## Documentation
 
-Design docs live in [`docs/`](docs/):
+The engineering writeups live on the blog:
 
-- **[osc-native protocol](docs/osc-native-protocol.md)** — the wire protocol spec: break framing, instruction set, management plane.
-- **[Control theory](docs/control-theory.md)** — the control theory behind the servo: cascaded loops, estimators, sensing tiers.
-- **[Servo transport](docs/osc-servo-transport.md)** — the servo-side transport design: DMA ring, deadline pipeline, hardware CRC.
-- **[Driver pattern](docs/driver-pattern.md)** — the firmware architecture: services / drivers / providers / HAL.
-- **[Design history](docs/design-history.md)** — what I tried and abandoned, and what it taught.
-- **[Testing](docs/testing.md)** — the test strategy.
+- **[Stream processing on the wire](https://aaronqian.com/log/2026-08-08-servo-protocol-stream-processing/)** — why DXL 2.0 was replaced, and the streaming design that cut turnaround by a third to a half.
+- **[A chip-agnostic architecture for bare-metal embedded Rust](https://aaronqian.com/log/2026-08-01-chip-agnostic-architecture-bare-metal-rust/)** — the full firmware architecture, layer by layer, with code.
+- **[Using the SPI peripheral as a DMA-fed CRC engine](https://aaronqian.com/log/2026-07-25-spi-as-dma-crc-engine/)** — hardware CRC on a chip with no CRC peripheral.
+- **[HSI trim: calibrating a crystalless MCU over the bus](https://aaronqian.com/log/2026-07-18-hsi-trim-crystalless-mcu/)** — fleet clock calibration with nothing but the bus wire.
+- **[Dynamixel 2.0 servo side: RX timing](https://aaronqian.com/log/2026-07-04-dynamixel-servo-side-rx-timing/)** and **[Fast Sync/Bulk Read](https://aaronqian.com/log/2026-07-11-dynamixel-servo-side-fast-sync-bulk-read/)** — the DXL-era pair, still the reference if you are building a DXL-compatible device.
 
 ## Contributing
 
@@ -95,7 +94,7 @@ Dev boards are fabricated and assembled by **[PCBWay](https://www.pcbway.com/)**
 
 Five PCBA boards delivered. Build and assembly quality clean across all five — no fabrication issues. Bring-up turned up design issues on my side (VDD/VSS swap, silkscreen errors), but those traced back to my own schematic, not the manufacturing. The process itself was painless. A late BOM swap (RS1 shunt `100 mΩ` → `10 mΩ`) was accepted without fuss; the pre-fab assembly review caught a pad-clearance concern before manufacturing.
 
-Full spin + bring-up writeup: [CH32V006 dev board first spin](https://aaronqian.com/projects/open-servo-core/logs/2026-04-03-ch32v006-dev-board-first-spin/).
+Full spin + bring-up writeup: [CH32V006 dev board first spin](https://aaronqian.com/log/2026-04-03-ch32v006-dev-board-first-spin/).
 
 ### Rev B
 

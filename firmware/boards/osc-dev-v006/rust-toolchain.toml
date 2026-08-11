@@ -1,3 +1,5 @@
 [toolchain]
-channel    = "nightly"
+# Pinned. The 2026-08-10 nightly's rust-lld places .tb_version in RAM on top
+# of .bss and the link fails. 2026-08-04 is the last known good nightly.
+channel    = "nightly-2026-08-04"
 components = ["rust-src", "rustfmt", "clippy", "rust-analyzer"]
