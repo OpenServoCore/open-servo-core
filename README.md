@@ -9,102 +9,69 @@
 
 > An open platform for turning cheap servos into smart actuators.
 
-OpenServoCore (OSC) is open hardware and firmware that drops a CH32V006 control board into a $2-3 cloned hobby servo (SG90 and friends) and turns it into a Dynamixel-class smart actuator — position feedback, current sensing, bus-addressable, programmable. The bus speaks the **osc-native protocol**: OSC's own break-framed wire protocol, inspired by Dynamixel Protocol 2.0 but redesigned to run whole on sub-$0.20 MCUs ([design writeup](https://aaronqian.com/log/2026-08-08-servo-protocol-stream-processing/)).
+OpenServoCore (OSC) is open hardware and firmware that drops a CH32V006 control board into a $2-3 cloned hobby servo (SG90 and friends) and turns it into a Dynamixel-class smart actuator with position feedback, current sensing, bus addressing, and programmability. The bus speaks the **osc-native protocol**, a break-framed wire protocol designed to run whole on sub-$0.20 MCUs ([design writeup](https://aaronqian.com/log/2026-08-08-servo-protocol-stream-processing/)).
 
-The thesis is the price point: at mass-production volume, an OSC swap board should add **no more than ~$1 to the BOM** of a cloned servo. Cheap enough that "upgrade every servo in a robot to smart" stops being a premium decision and starts being a default.
+The thesis is the price point. At mass-production volume, an OSC swap board should add **no more than ~$1 to the BOM** of a cloned servo. That is cheap enough that upgrading every servo in a robot to smart becomes the default instead of a premium decision.
+
+If you are here for a board, jump to [Boards](#boards). The firmware and its progress are in [Firmware](#firmware), and the design writeups are in [Reading](#reading).
 
 ## Status
 
-**In active development. Nothing here is shippable yet.** The firmware is being rewritten, the dev board is validated and integrating with firmware, and the swap board is designed but not spun.
+**In active development. Nothing here is shippable yet.** What exists today:
 
-- **OSC Dev CH32** (`osc-dev-v006`) — Rev B validated. Firmware integration ongoing.
-- **OSC Dev M007** (`osc-dev-m007`) — experimental BLDC variant; unvalidated, do not fab.
-- **Firmware v1** (`firmware-old/`) — legacy. First pass was vibe-coded and got poor Reddit feedback. Kept as historical reference; **not a target for new work**.
-- **Firmware v2** (rewrite) — in progress. The osc-native protocol and the servo bus transport are implemented and bench-proven on silicon (0.5-3 Mbaud, multi-servo chains); control loops are next.
-- **tinyboot** (OSC bootloader) — v0.4.0 shipped. Lives at [`OpenServoCore/tinyboot`](https://github.com/OpenServoCore/tinyboot).
+- The **OSC Dev CH32** dev board is validated (Rev B) and you can order one.
+- The firmware's protocol and bus transport are implemented and bench-proven on real silicon. Control loops are next.
+- **[tinyboot](https://github.com/OpenServoCore/tinyboot)**, the OSC bootloader, has shipped v0.4.0 as its own repo.
 
-## Repo map
+The servo swap board (the one that goes inside a servo) is designed but not spun yet.
 
-```
-open-servo-core/
-├── hardware/
-│   ├── boards/
-│   │   ├── osc-dev-v006/             # OSC Dev CH32 — has its own README with pinouts, jumpers, bringup notes
-│   │   ├── osc-dev-m007/             # Experimental BLDC variant (unvalidated — do not fab)
-│   │   ├── servo-dev-board-stm32f301/# Retired hobby-phase STM32 dev board (legacy)
-│   │   ├── encoder-board/            # Optional quadrature encoder breakout for J8 experiments
-│   │   └── motor-mount/              # 3D-printable test fixtures
-│   ├── shared.kicad_sym / shared.pretty / shared.3dshapes  # Shared KiCad libraries
-│   └── templates/                    # KiCad project templates
-├── docs/                             # Internal design notes
-├── firmware/                         # Firmware v2 (Rust) — chip-agnostic libs, CH32 chip crate, board binaries
-├── tools/                            # Host-side tooling — hardware test bench, `osc` operator CLI
-└── firmware-old/                     # Legacy firmware (do not use)
-```
+## Boards
 
-The OSC bootloader, [`tinyboot`](https://github.com/OpenServoCore/tinyboot), is a separate repo. It's part of the OSC firmware stack but versioned and released independently — its chip-support matrix (V003 / V00x / V103) is broader than the OSC boards on purpose.
+**OSC Dev CH32** (`hardware/boards/osc-dev-v006/`) is the firmware development platform. It accepts any gutted hobby servo, takes power from USB-C, 1S-2S LiPo, or a WCH-LinkE, and fans out every rail and signal to edge test points. Rev B is validated. The [board README](hardware/boards/osc-dev-v006/README.md) has full schematics, pinouts, jumper behaviour, and bringup notes.
 
-## Naming
+Want one? The full KiCad design files live in `hardware/boards/osc-dev-v006/`, ready to send to the board house of your choice.
 
-OSC boards follow `OSC <Form> <ChipFamily>`:
-
-- **OSC Dev CH32** — dev board, exposes every rail and signal for firmware bringup. Directory: `osc-dev-v006`.
-
-Engineering SKUs (`osc-<form>-<chip>-rev-<letter>`) appear in BOMs and schematic title blocks; the names above are what you'll see in posts and docs.
-
-## Hardware
-
-OSC standardizes on the **CH32V006** — 48 MHz RISC-V, 62 KB flash, 8 KB RAM. Chosen because it's the chip that makes the ≤$1 BOM uplift work. No multi-chip roadmap; one chip, done well.
-
-Each board has its own README with full schematics, pinouts, jumper behaviour, and bringup notes:
-
-- **[OSC Dev CH32](hardware/boards/osc-dev-v006/README.md)** — accepts any gutted hobby servo, USB-C / 1S-2S LiPo / WCH-LinkE power, full edge test-point fanout. Rev B validated.
+There is also an experimental BLDC variant (`osc-dev-m007`) in the tree. It is unvalidated, so don't fab it.
 
 ## Firmware
 
-The Rust firmware v2 lives in `firmware/`: chip-agnostic library crates (protocol, drivers, control table, discrete-event integration tests), a CH32 chip crate, and board binaries. It speaks the osc-native protocol — OSC's own break-framed bus protocol, inspired by Dynamixel Protocol 2.0. DXL 2.0 itself was implemented and tuned first, then replaced: its wire format (header hunting, byte stuffing, reply-grid timing) costs more than a $0.15 MCU should pay, and controlling both ends of the wire made those subsystems deletable outright — the story is in [the protocol article](https://aaronqian.com/log/2026-08-08-servo-protocol-stream-processing/). The register-table conventions (flat control table, staged writes, alert semantics) keep the DXL flavor.
+The firmware is written in Rust and lives in `firmware/`. It is organized as chip-agnostic library crates (protocol, drivers, control table, discrete-event integration tests), a CH32 chip crate, and board binaries. The chip-agnostic layers compile and unit-test on a desktop with no hardware attached, and a discrete-event simulation runs the production crates ([the architecture writeup](https://aaronqian.com/log/2026-08-01-chip-agnostic-architecture-bare-metal-rust/) covers how).
 
-The bus transport is bench-proven on silicon: 0.5-3 Mbaud, ~30 us ping turnaround at 1 M, multi-servo status chains, hardware CRC both directions. Control loops, persistence, and safety features are in progress; build instructions will appear as the rewrite matures.
+What works today is the osc-native protocol and the servo bus transport. On the bench that means 0.5-3 Mbaud multi-servo status chains, ~30 µs ping turnaround at 1 Mbaud, and hardware CRC in both directions. The register-table conventions (flat control table, staged writes, alert semantics) will feel familiar if you have used Dynamixel. Control loops, persistence, and safety features are in progress, and build instructions will appear as the firmware matures.
 
-The legacy `firmware-old/` tree contains the original architecture (multi-crate workspace targeting STM32F301 and partly CH32V003) and is kept for reference only.
+The bootloader, [tinyboot](https://github.com/OpenServoCore/tinyboot), is a separate repo. It is part of the OSC firmware stack but versioned and released independently, and it supports more chips than the OSC boards on purpose (V003 / V00x / V103).
 
-## Documentation
+## Reading
 
-The engineering writeups live on the blog:
+The deep-dive writeups live on the blog:
 
-- **[Stream processing on the wire](https://aaronqian.com/log/2026-08-08-servo-protocol-stream-processing/)** — why DXL 2.0 was replaced, and the streaming design that cut turnaround by a third to a half.
-- **[A chip-agnostic architecture for bare-metal embedded Rust](https://aaronqian.com/log/2026-08-01-chip-agnostic-architecture-bare-metal-rust/)** — the full firmware architecture, layer by layer, with code.
-- **[Using the SPI peripheral as a DMA-fed CRC engine](https://aaronqian.com/log/2026-07-25-spi-as-dma-crc-engine/)** — hardware CRC on a chip with no CRC peripheral.
-- **[HSI trim: calibrating a crystalless MCU over the bus](https://aaronqian.com/log/2026-07-18-hsi-trim-crystalless-mcu/)** — fleet clock calibration with nothing but the bus wire.
-- **[Dynamixel 2.0 servo side: RX timing](https://aaronqian.com/log/2026-07-04-dynamixel-servo-side-rx-timing/)** and **[Fast Sync/Bulk Read](https://aaronqian.com/log/2026-07-11-dynamixel-servo-side-fast-sync-bulk-read/)** — the DXL-era pair, still the reference if you are building a DXL-compatible device.
+- **[Stream processing on the wire](https://aaronqian.com/log/2026-08-08-servo-protocol-stream-processing/)**: the osc-native protocol design, and how the servo replies in tens of microseconds on a $0.16 chip.
+- **[A chip-agnostic architecture for bare-metal embedded Rust](https://aaronqian.com/log/2026-08-01-chip-agnostic-architecture-bare-metal-rust/)**: the full firmware architecture, layer by layer, with code.
+- **[Using the SPI peripheral as a DMA-fed CRC engine](https://aaronqian.com/log/2026-07-25-spi-as-dma-crc-engine/)**: hardware CRC on a chip with no CRC peripheral.
+- **[HSI trim: calibrating a crystalless MCU over the bus](https://aaronqian.com/log/2026-07-18-hsi-trim-crystalless-mcu/)**: fleet clock calibration with nothing but the bus wire.
+- **[Dynamixel 2.0 servo side: RX timing](https://aaronqian.com/log/2026-07-04-dynamixel-servo-side-rx-timing/)** and **[Fast Sync/Bulk Read](https://aaronqian.com/log/2026-07-11-dynamixel-servo-side-fast-sync-bulk-read/)**: the reference pair if you are building a Dynamixel-compatible device.
+
+There is also one design doc in the repo worth reading. [Control theory](docs/control-theory.md) lays out the control design for the servo, with the cascaded loops, the estimators, and the sensing tiers. It is the plan, written ahead of the implementation, and it is not implemented yet.
+
+## AI Use
+
+I use AI heavily in this project. Claude (Fable 5, Opus 5, and earlier models) does a lot of the code generation and most of the document drafting, including parts of this README.
+
+That does not make this vibe-coded. I review every line before it lands, and the result has to survive checks that don't care how the code was written. CI builds and tests every crate and cross-builds every board image. A discrete-event simulation runs the production crates and caught over a dozen real bugs before they reached silicon. The transport numbers above were measured on the bench. And this project was not built in one prompt. The history spans multiple years and many revisions of both the hardware and the firmware.
+
+The documentation is more uneven than the code, and even this README could be easier to consume. That will improve, but working firmware comes first.
 
 ## Contributing
 
-This is early — the most useful thing right now is **following along and asking questions**, not opening PRs.
+This is early. The most useful thing right now is **following along and asking questions** rather than opening PRs.
 
-- **Discussions:** [github.com/OpenServoCore/open-servo-core/discussions](https://github.com/OpenServoCore/open-servo-core/discussions) — design questions, ideas, "is this on the roadmap?" go here.
+- **Discussions:** [github.com/OpenServoCore/open-servo-core/discussions](https://github.com/OpenServoCore/open-servo-core/discussions) is where design questions, ideas, and "is this on the roadmap?" go.
 - **Build journey:** posts at [aaronqian.com](https://aaronqian.com) document the design decisions, dead ends, and what shipped each week.
-- **Issues:** open ones on this repo are scoped to specific work (README, LICENSE, board revisions). Pre-firmware-v2, contributor scope is small.
-
-## Hardware sponsorship
-
-Dev boards are fabricated and assembled by **[PCBWay](https://www.pcbway.com/)** — sponsor since Feb 2026.
-
-### Rev A
-
-Five PCBA boards delivered. Build and assembly quality clean across all five — no fabrication issues. Bring-up turned up design issues on my side (VDD/VSS swap, silkscreen errors), but those traced back to my own schematic, not the manufacturing. The process itself was painless. A late BOM swap (RS1 shunt `100 mΩ` → `10 mΩ`) was accepted without fuss; the pre-fab assembly review caught a pad-clearance concern before manufacturing.
-
-Full spin + bring-up writeup: [CH32V006 dev board first spin](https://aaronqian.com/log/2026-04-03-ch32v006-dev-board-first-spin/).
-
-### Rev B
-
-Five PCBA boards delivered, May 2026. Validated. PCBWay's pre-fab manufacturability review flagged nothing, and build/assembly quality was again clean. A small bug found in the sponsored boards (shared `nRST` / `OPN2` pin) didn't warrant another validation round — patched in-rev with a solder bridge. The published files include the patch.
-
-Reference design available as a [PCBWay community project](https://www.pcbway.com/project/shareproject/OSC_Dev_V006_Rev_B_OpenServoCore_Development_Board_CH32V006_0f6621d7.html) for one-click ordering.
+- **Issues:** open ones are scoped to specific work. For now, contributor scope is small.
 
 ## License
 
-OSC is fully open. No dual licensing, no commercial gates.
+OSC is fully open source.
 
-- **Firmware** — [MIT](LICENSE-MIT) **OR** [Apache-2.0](LICENSE-APACHE), at your option (Rust ecosystem convention).
-- **Hardware** (schematics, layouts, board files) — [CERN-OHL-P v2.0](LICENSE-HARDWARE).
+- **Firmware**: [MIT](LICENSE-MIT) **OR** [Apache-2.0](LICENSE-APACHE), at your option (Rust ecosystem convention).
+- **Hardware** (schematics, layouts, board files): [CERN-OHL-P v2.0](LICENSE-HARDWARE).
