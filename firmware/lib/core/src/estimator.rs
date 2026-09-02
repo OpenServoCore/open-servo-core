@@ -1,21 +1,24 @@
-//! Vcal reference low-pass filter. EWMA, alpha = 1/128. `state_q6` keeps 6
-//! sub-LSB bits so the filter resolves drift slower than 1 LSB per step
-//! without integer-rounding biasing the steady state.
+//! Count-domain estimator blocks the kernel runs on a `RawFrame`. `VcalLpf`
+//! is the first.
 
-pub(super) struct VcalLpf {
+/// Vcal reference low-pass filter. EWMA, alpha = 1/128. `state_q6` keeps 6
+/// sub-LSB bits so the filter resolves drift slower than 1 LSB per step
+/// without integer-rounding biasing the steady state.
+#[derive(Default)]
+pub struct VcalLpf {
     state_q6: i32,
     initialized: bool,
 }
 
 impl VcalLpf {
-    pub(super) const fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             state_q6: 0,
             initialized: false,
         }
     }
 
-    pub(super) fn update(&mut self, raw: u16) -> u16 {
+    pub fn update(&mut self, raw: u16) -> u16 {
         let x = (raw as i32) << 6;
         if !self.initialized {
             self.state_q6 = x;

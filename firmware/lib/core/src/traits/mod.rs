@@ -16,4 +16,4 @@ pub use services::{
 // Boundary types defined elsewhere that callers of the traits need in scope.
 pub use crate::regions::BootMode;
 pub use crate::regions::config::ConfigDefaults;
-pub use crate::sample::{ConversionVariables, RawSamples, Sample};
+pub use crate::sample::RawFrame;

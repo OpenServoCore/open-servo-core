@@ -1,11 +1,11 @@
 use osc_units::Effort;
 
-use crate::{ConversionVariables, Sample};
+use crate::RawFrame;
 
 /// What the kernel control loop reads from the board hardware.
 pub trait Sensors {
-    /// One full ADC/encoder frame, called from the kernel tick.
-    fn sample(&mut self, vars: &ConversionVariables) -> Sample;
+    /// Acquisition only: one full ADC/encoder frame in device counts.
+    fn frame(&mut self) -> RawFrame;
 }
 
 /// What the kernel control loop writes to the motor driver.

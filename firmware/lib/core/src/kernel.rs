@@ -1,10 +1,12 @@
+use crate::estimator::VcalLpf;
 use crate::traits::ControlIo;
-use crate::{Sample, Shared};
+use crate::{RawFrame, Shared};
 
 /// Runs in the PWM ISR; one `on_tick` per period.
 pub struct Kernel<I: ControlIo> {
     pub io: I,
     pub state: KernelState,
+    pub vcal_lpf: VcalLpf,
     pub stream_decimation_counter: u8,
     pub stream_duration_remaining_ticks: u32,
 }
@@ -20,13 +22,15 @@ impl<I: ControlIo> Kernel<I> {
         Self {
             io,
             state: KernelState::default(),
+            vcal_lpf: VcalLpf::new(),
             stream_decimation_counter: 1,
             stream_duration_remaining_ticks: 0,
         }
     }
 
     /// Must complete well inside the kernel period (~50 us at 20 kHz).
-    pub fn on_tick(&mut self, _sample: Sample, _shared: &Shared) {
+    pub fn on_tick(&mut self, frame: RawFrame, _shared: &Shared) {
+        let _ = self.vcal_lpf.update(frame.vcal);
         // TODO: PID + mode dispatch + motor.write once the control loop lands.
     }
 }

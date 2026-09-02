@@ -20,17 +20,13 @@ use crate::cfg::{AdcPins, AnalogChannel, BoardWiring, CurrentSenseConfig, Precom
 const OPA_SETTLE_MS: u32 = 1;
 const VCAL_SAMPLE_TIME: adc::SampleTime = adc::SampleTime::CYCLES9;
 
-pub struct BringupResult {
-    pub shunt_bias_raw: u16,
-}
-
 pub fn bringup(
     wiring: &BoardWiring,
     defaults: &ConfigDefaults,
     model: u16,
     hw_rev: u8,
     pre: &Precomputed,
-) -> BringupResult {
+) {
     enable_clocks_and_remaps(wiring);
     crate::log::debug!("clocks + remaps configured");
 
@@ -55,13 +51,11 @@ pub fn bringup(
     // independent of any further `delay_ms` use.
     systick::init();
 
-    let shunt_bias_raw = wiring.current_sense.bias.quiescent_raw();
     configure_adc_dma_scan(&wiring.sensors);
     crate::log::debug!(
-        "adc/dma scan armed: scan_len={} buf_len={} shunt_bias_raw={}",
+        "adc/dma scan armed: scan_len={} buf_len={}",
         ADC_SCAN_LEN,
         ADC_DMA_BUF_LEN,
-        shunt_bias_raw,
     );
 
     bring_up_bus(pre.usart_brr);
@@ -83,8 +77,6 @@ pub fn bringup(
 
     #[cfg(feature = "defmt")]
     super::diag::dump_init_regs();
-
-    BringupResult { shunt_bias_raw }
 }
 
 // Order must mirror the scan tail in `configure_adc_dma_scan`.

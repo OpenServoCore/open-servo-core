@@ -10,7 +10,6 @@ pub use chip::{AnalogChannel, DigitalPin};
 
 use osc_servo_core::ConfigDefaults;
 
-use crate::control::Scales;
 use crate::providers::usart_baud;
 
 #[derive(Copy, Clone)]
@@ -28,7 +27,6 @@ pub struct BoardConfig {
 /// linker can drop __udivdi3 / __udivsi3 / __umodsi3 entirely.
 #[derive(Copy, Clone)]
 pub struct Precomputed {
-    pub scales: Scales,
     pub pwm_psc: u16,
     pub pwm_arr: u16,
     pub usart_brr: u32,
@@ -37,9 +35,7 @@ pub struct Precomputed {
 impl Precomputed {
     pub const fn compute(cfg: &BoardConfig) -> Self {
         let (pwm_psc, pwm_arr) = crate::hal::timer::pwm_dividers_from_hz(chip::MOTOR_PWM_FREQ_HZ);
-        let gain_factor = cfg.wiring.current_sense.gain.factor();
         Self {
-            scales: Scales::new(&cfg.calibration, gain_factor),
             pwm_psc,
             pwm_arr,
             usart_brr: usart_baud::brr_for(cfg.defaults.baud),

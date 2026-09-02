@@ -2,6 +2,7 @@
 #![feature(sync_unsafe_cell)]
 
 pub mod debug;
+pub mod estimator;
 pub mod kernel;
 
 /// Firmware version stamped into the identity block (protocol sec 5.4). A
@@ -30,7 +31,7 @@ pub use regions::{
     StallResponse, TelemetryCommon, TelemetryConverted, TelemetryIntermediaries, TelemetryMode,
     TelemetryRaw, TelemetryRegs,
 };
-pub use sample::{ConversionVariables, RawSamples, Sample};
+pub use sample::RawFrame;
 pub use services::bus::{Dispatcher, Session};
 pub use shared::Shared;
 pub use traits::{

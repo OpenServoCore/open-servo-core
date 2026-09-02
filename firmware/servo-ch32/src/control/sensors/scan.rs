@@ -23,6 +23,7 @@ pub(super) const SCAN_TROUGH_OFFSET: usize = 0;
 
 pub(super) const SCAN_IDX_SHUNT_POST: usize = 0;
 pub(super) const SCAN_IDX_POS: usize = 1;
+#[expect(dead_code)]
 pub(super) const SCAN_IDX_NTC: usize = 2;
 pub(super) const SCAN_IDX_VMOTOR_A: usize = 3;
 pub(super) const SCAN_IDX_VMOTOR_B: usize = 4;

@@ -1,6 +1,6 @@
 use ch32_metapac::{DMA1, USART1};
 use osc_servo_core::traits::{Dispatch, Dispatched, Reply, Request, RequestCtx};
-use osc_servo_core::{ControlIo, ConversionVariables, RegionStorageRaw, Sensors};
+use osc_servo_core::{ControlIo, RegionStorageRaw, Sensors};
 
 use crate::hal::{pfic, usart};
 use crate::runtime::Drivers;
@@ -77,12 +77,11 @@ pub fn on_adc_dma_tc() {
 
         // SAFETY: PFIC unmasks DMA1_CHANNEL1 only after install_kernel writes KERNEL.
         let kernel = (*KERNEL.get()).assume_init_mut();
-        let vars = ConversionVariables::snapshot(&SHARED);
-        let sample = {
+        let frame = {
             let (sensors, _motor) = kernel.io.parts();
-            sensors.sample(&vars)
+            sensors.frame()
         };
-        kernel.on_tick(sample, &SHARED);
+        kernel.on_tick(frame, &SHARED);
     }
 }
 
