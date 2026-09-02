@@ -1,7 +1,7 @@
 //! Board-tunable wiring. Schematic-fixed pieces (USART/TIM2/TIM1 remaps,
-//! OPA inputs, TX_EN, STAT, PWM frequency, ADC sample time) live in
-//! [`super::chip`]; anything tunable per board (within the analog/digital
-//! pin buckets the chip + this board's free-pin set allow) lives here.
+//! STAT, PWM frequency, ADC sample time) live in [`super::chip`]; anything
+//! tunable per board (within the analog/digital pin buckets the chip + this
+//! board's free-pin set allow) lives here.
 
 use osc_servo_drivers::Level;
 
@@ -42,8 +42,22 @@ impl DrvEn {
 
 #[derive(Copy, Clone)]
 pub struct CurrentSenseConfig {
-    pub gain: opa::Gain,
-    pub bias: opa::Bias,
+    pub opa: opa::BareConfig,
+    /// External feedback network Rf/Rg x1000. The bare op-amp has no gain of
+    /// its own, so this is board data, not a chip setting.
+    pub gain_milli: u16,
+}
+
+impl CurrentSenseConfig {
+    /// ADC channel the amplifier output lands on.
+    pub const fn current_channel(&self) -> AnalogChannel {
+        match self.opa.out {
+            opa::BareOutput::PD4 => AnalogChannel::A7,
+            // Dead arm: `BoardWiring::assert_valid` rejects a PA5 output at
+            // const-eval, because PA5 is not an ADC pin on this package.
+            opa::BareOutput::PA5 => AnalogChannel::A7,
+        }
+    }
 }
 
 #[derive(Copy, Clone)]
@@ -86,7 +100,14 @@ impl BoardWiring {
         self.assert_scratch_distinct();
         #[cfg(not(feature = "half-duplex"))]
         self.assert_bus_distinct();
+        self.assert_current_output_readable();
         self.assert_sensors_distinct();
+    }
+
+    const fn assert_current_output_readable(&self) {
+        if matches!(self.current_sense.opa.out, opa::BareOutput::PA5) {
+            panic!("BoardWiring: OPA output PA5 has no ADC channel on this package");
+        }
     }
 
     const fn assert_scratch_distinct(&self) {
@@ -105,7 +126,8 @@ impl BoardWiring {
     }
 
     const fn assert_sensors_distinct(&self) {
-        let chs: [AnalogChannel; 3] = [
+        let chs: [AnalogChannel; 4] = [
+            self.current_sense.current_channel(),
             self.sensors.pos,
             self.sensors.vmotor.0,
             self.sensors.vmotor.1,

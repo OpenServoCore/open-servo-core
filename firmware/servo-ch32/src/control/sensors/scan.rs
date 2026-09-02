@@ -8,7 +8,10 @@ use core::cell::SyncUnsafeCell;
 /// In `AdcPins` field order: pos, vmotor.0, vmotor.1.
 pub(crate) const ADC_SENSOR_COUNT: usize = 3;
 
-/// Scan = `[IN9/OpaOut, IN7/PD4/pos, IN5/PD5/vmA, IN6/PD6/vmB, IN10/Vcal]`.
+/// Slot 0 is the current-sense amplifier output, read on whichever external
+/// channel the board routes the OPA output to; the rest follow `AdcPins`.
+/// On osc-dev-v006 that is
+/// `[IN7/PD4 current, IN3/PD2 pos, IN5/PD5 vmA, IN6/PD6 vmB, IN10/Vcal]`.
 pub(crate) const ADC_SCAN_LEN: usize = 5;
 
 /// Two scans per PWM period (peak + trough under center-aligned PWM, RCR=0).

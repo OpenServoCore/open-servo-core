@@ -22,6 +22,11 @@ use crate::cfg::{
 const OPA_SETTLE_MS: u32 = 1;
 const VCAL_SAMPLE_TIME: adc::SampleTime = adc::SampleTime::CYCLES9;
 
+/// Boot bias averaging: a power-of-two count so the mean is a shift, never a
+/// divide (the linker must stay free of __udivsi3).
+const CURRENT_BIAS_SHIFT: u32 = 4;
+const CURRENT_BIAS_SAMPLES: u32 = 1 << CURRENT_BIAS_SHIFT;
+
 pub fn bringup(
     wiring: &BoardWiring,
     calibration: &Calibration,
@@ -50,6 +55,12 @@ pub fn bringup(
     bring_up_analog_chain(&wiring.current_sense);
     crate::log::debug!("opa settled");
 
+    // Bridge is quiet here: PWM starts at the end of bringup and DRV_EN was
+    // parked inactive in `configure_pins`, so the shunt carries no current.
+    SHARED
+        .table
+        .seed_current_bias(measure_current_bias(&wiring.current_sense));
+
     // SysTick drives both `Monotonic` (LED blinker) and the transport
     // deadline compare. Initialize *after* `bring_up_analog_chain` because
     // `delay_ms` reinitializes SYSTICK on every call; doing it here puts
@@ -57,7 +68,7 @@ pub fn bringup(
     // independent of any further `delay_ms` use.
     systick::init();
 
-    configure_adc_dma_scan(&wiring.sensors);
+    configure_adc_dma_scan(wiring);
     crate::log::debug!(
         "adc/dma scan armed: scan_len={} buf_len={}",
         ADC_SCAN_LEN,
@@ -86,10 +97,9 @@ pub fn bringup(
 }
 
 fn calib_sense(wiring: &BoardWiring, cal: &Calibration) -> CalibSense {
-    let gain_milli = wiring.current_sense.gain.factor() as u32 * 1000;
     CalibSense {
         shunt_r_mohm: cal.shunt_r_mohm,
-        gain_milli: gain_milli.min(u16::MAX as u32) as u16,
+        gain_milli: wiring.current_sense.gain_milli,
         vmotor_div_top: cal.vmotor_divider.top_ohm.min(u16::MAX as u32) as u16,
         vmotor_div_bot: cal.vmotor_divider.bot_ohm.min(u16::MAX as u32) as u16,
         vdd_mv: cal.vdd_mv,
@@ -102,7 +112,7 @@ fn sensor_channels(s: &AdcPins) -> [AnalogChannel; ADC_SENSOR_COUNT] {
 }
 
 fn enable_clocks_and_remaps(w: &BoardWiring) {
-    let opa_pos_pin = chip::CURRENT_SENSE_OPA_INPUT.pos().pin();
+    let (opa_pos, opa_neg, opa_out) = w.current_sense.opa.pins();
 
     rcc::init_pll();
     rcc::enable_afio();
@@ -111,10 +121,9 @@ fn enable_clocks_and_remaps(w: &BoardWiring) {
     rcc::enable_gpio(chip::MOTOR_IN1_PIN.port_index());
     rcc::enable_gpio(chip::MOTOR_IN2_PIN.port_index());
     rcc::enable_gpio(w.drv_en.pin.pin().port_index());
-    rcc::enable_gpio(opa_pos_pin.port_index());
-    if let Some(neg_pin) = chip::CURRENT_SENSE_OPA_INPUT.neg_pin() {
-        rcc::enable_gpio(neg_pin.port_index());
-    }
+    rcc::enable_gpio(opa_pos.port_index());
+    rcc::enable_gpio(opa_neg.port_index());
+    rcc::enable_gpio(opa_out.port_index());
     for ch in sensor_channels(&w.sensors) {
         rcc::enable_gpio(ch.pin().port_index());
     }
@@ -143,11 +152,12 @@ fn configure_pins(w: &BoardWiring) {
     gpio::configure(chip::MOTOR_IN1_PIN, PinMode::AF_PUSH_PULL);
     gpio::configure(chip::MOTOR_IN2_PIN, PinMode::AF_PUSH_PULL);
 
-    let opa_pos_pin = chip::CURRENT_SENSE_OPA_INPUT.pos().pin();
-    gpio::configure(opa_pos_pin, PinMode::ANALOG);
-    if let Some(neg_pin) = chip::CURRENT_SENSE_OPA_INPUT.neg_pin() {
-        gpio::configure(neg_pin, PinMode::ANALOG);
-    }
+    // Output pin included: the loop closes through the external network, so
+    // the pad is driven by the amplifier and read by the ADC, never by GPIO.
+    let (opa_pos, opa_neg, opa_out) = w.current_sense.opa.pins();
+    gpio::configure(opa_pos, PinMode::ANALOG);
+    gpio::configure(opa_neg, PinMode::ANALOG);
+    gpio::configure(opa_out, PinMode::ANALOG);
     for ch in sensor_channels(&w.sensors) {
         gpio::configure(ch.pin(), PinMode::ANALOG);
     }
@@ -186,17 +196,51 @@ fn configure_bus_pins(w: &BoardWiring) {
 }
 
 fn bring_up_analog_chain(cs: &CurrentSenseConfig) {
-    opa::init(&opa::Config {
-        input: chip::CURRENT_SENSE_OPA_INPUT,
-        gain: cs.gain,
-        bias: cs.bias,
-        output: chip::CURRENT_SENSE_OPA_OUTPUT,
-    });
+    opa::init_bare(&cs.opa);
     delay_ms(OPA_SETTLE_MS);
 }
 
-fn configure_adc_dma_scan(sensors: &AdcPins) {
-    adc::set_sample_time(adc::Channel::OpaOut, chip::ADC_SAMPLE_TIME);
+/// Zero-current output of the sense chain, averaged over
+/// `CURRENT_BIAS_SAMPLES` polled conversions. Leaves the ADC powered down so
+/// `configure_adc_dma_scan` still sees the off->on ADON transition it needs;
+/// every other register it touches is rewritten there.
+fn measure_current_bias(cs: &CurrentSenseConfig) -> u16 {
+    let ch = cs.current_channel().channel();
+    adc::set_sample_time(ch, chip::ADC_SAMPLE_TIME);
+    adc::set_low_power(false);
+    adc::set_scan_mode(false);
+    adc::set_dma(false);
+    // Arm the software trigger before ADON so EXTTRIG is already live when
+    // the first `convert_once` pulses SWSTART.
+    adc::set_external_trigger(adc::Extsel::SWSTART);
+    adc::enable();
+
+    let mut sum: u32 = 0;
+    let mut taken: u32 = 0;
+    while taken < CURRENT_BIAS_SAMPLES {
+        let Some(counts) = adc::convert_once(ch) else {
+            break;
+        };
+        sum += counts as u32;
+        taken += 1;
+    }
+    adc::disable();
+
+    if taken == CURRENT_BIAS_SAMPLES {
+        (sum >> CURRENT_BIAS_SHIFT) as u16
+    } else {
+        // SAFETY: a converter that never signals EOC must not stall bringup.
+        // Zero bias leaves current reading uncorrected rather than wrong.
+        crate::log::debug!("current bias: adc timeout after {} samples", taken);
+        0
+    }
+}
+
+fn configure_adc_dma_scan(w: &BoardWiring) {
+    let sensors = &w.sensors;
+    let current = w.current_sense.current_channel().channel();
+
+    adc::set_sample_time(current, chip::ADC_SAMPLE_TIME);
     adc::set_sample_time(sensors.pos.channel(), chip::ADC_SAMPLE_TIME);
     adc::set_sample_time(sensors.vmotor.0.channel(), chip::ADC_SAMPLE_TIME);
     adc::set_sample_time(sensors.vmotor.1.channel(), chip::ADC_SAMPLE_TIME);
@@ -204,7 +248,7 @@ fn configure_adc_dma_scan(sensors: &AdcPins) {
     adc::set_low_power(false);
 
     let seq = [
-        adc::Channel::OpaOut,
+        current,
         sensors.pos.channel(),
         sensors.vmotor.0.channel(),
         sensors.vmotor.1.channel(),

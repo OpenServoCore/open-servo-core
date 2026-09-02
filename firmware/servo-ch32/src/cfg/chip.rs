@@ -2,7 +2,7 @@
 //! board-tunable; anything here is determined by the chip + this board's
 //! schematic and lives in one place.
 
-use crate::hal::{Pin, Tim1Mapping, UsartMapping, adc, opa, timer};
+use crate::hal::{Pin, Tim1Mapping, UsartMapping, adc, timer};
 
 // === osc-native bus (USART1 on PC0/PC1; direct HDSEL single-wire, or the
 // rev B 74LVC2G241 buffered wire by default (`half-duplex` = direct) -- see
@@ -17,14 +17,6 @@ pub const BUS_USART_MAPPING: UsartMapping = UsartMapping::Usart1Remap3;
 pub const BUS_LINE_PIN: Pin = BUS_USART_MAPPING.tx_pin();
 #[cfg(not(feature = "half-duplex"))]
 pub const BUS_LINE_PIN: Pin = BUS_USART_MAPPING.rx_pin();
-
-// === OPA current sense ===
-
-pub const CURRENT_SENSE_OPA_INPUT: opa::InputMode = opa::InputMode::Differential {
-    pos: opa::PositiveInput::PA2,
-    neg: opa::NegativeInput::PA4,
-};
-pub const CURRENT_SENSE_OPA_OUTPUT: opa::Output = opa::Output::Internal;
 
 // === Motor + STAT (TIM1 Remap8) ===
 //
@@ -60,7 +52,8 @@ const fn tim1_channel_pin(m: Tim1Mapping, c: timer::Channel) -> Pin {
 pub const ADC_SAMPLE_TIME: adc::SampleTime = adc::SampleTime::CYCLES9;
 
 /// ADC channels available as board-configurable sensor inputs on the V006F8P6.
-/// Excludes A0 (PA2, claimed by the OPA current-sense input pair).
+/// Excludes A0 (PA2): the pin is reserved for OPA input routing, which is
+/// board wiring, not a sensor slot.
 #[derive(Copy, Clone)]
 #[repr(u8)]
 pub enum AnalogChannel {

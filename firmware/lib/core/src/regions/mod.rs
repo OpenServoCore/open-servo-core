@@ -105,6 +105,15 @@ impl ControlTableCell {
         // SAFETY: install-time, pre-IRQ, sole writer.
         self.with_mut(|t| t.calib.sense = *sense);
     }
+
+    /// Stamp the boot-measured zero-current output of the sense chain, in raw
+    /// ADC counts -- the offset every `raw_current` reading is relative to.
+    /// Caller must be sole writer (install-time, pre-IRQ).
+    pub fn seed_current_bias(&self, counts: u16) {
+        crate::log::debug!("seed current bias: {} counts", counts);
+        // SAFETY: install-time, pre-IRQ, sole writer.
+        self.with_mut(|t| t.telemetry.intermediaries.current_bias_counts = counts);
+    }
 }
 
 #[cfg(test)]

@@ -28,9 +28,15 @@ fn main() -> ! {
             // keeps the buffer released.
             #[cfg(not(feature = "half-duplex"))]
             bus: BusWiring { tx_en: Pin::PC2 },
+            // Rev B arm-B bodge: bare OPA closed by an external 1k/15k
+            // network (G = 15.0) off a 33 mohm shunt.
             current_sense: CurrentSenseConfig {
-                gain: opa::Gain::X32,
-                bias: opa::Bias::MidRail,
+                opa: opa::BareConfig {
+                    pos: opa::PositiveInput::PD3,
+                    neg: opa::BareNegativeInput::PA1,
+                    out: opa::BareOutput::PD4,
+                },
+                gain_milli: 15_000,
             },
             sensors: AdcPins {
                 pos: AnalogChannel::A3,
@@ -38,7 +44,7 @@ fn main() -> ! {
             },
         },
         calibration: Calibration {
-            shunt_r_mohm: 10,
+            shunt_r_mohm: 33,
             vmotor_divider: Divider {
                 top_ohm: 20_000,
                 bot_ohm: 10_000,
