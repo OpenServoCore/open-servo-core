@@ -68,4 +68,6 @@ if __name__ == "__main__":
     part = build()
     export_step(part, str(out / "sg90_fence.step"))
     export_stl(part, str(out / "sg90_fence.stl"), tolerance=0.01)
+    from blueprint import blueprint
+    blueprint(part, str(out / "sg90_fence_bp.svg"), name="sg90_fence")
     print(f"sg90_fence: volume {part.volume:.0f} mm^3 -> {out}")
