@@ -60,7 +60,7 @@ const fn tim1_channel_pin(m: Tim1Mapping, c: timer::Channel) -> Pin {
 pub const ADC_SAMPLE_TIME: adc::SampleTime = adc::SampleTime::CYCLES9;
 
 /// ADC channels available as board-configurable sensor inputs on the V006F8P6.
-/// Excludes A0 (PA0, claimed by the OPA current-sense input pair).
+/// Excludes A0 (PA2, claimed by the OPA current-sense input pair).
 #[derive(Copy, Clone)]
 #[repr(u8)]
 pub enum AnalogChannel {
@@ -89,12 +89,12 @@ impl AnalogChannel {
     pub const fn pin(self) -> Pin {
         match self {
             Self::A1 => Pin::PA1,
-            Self::A2 => Pin::PA2,
-            Self::A3 => Pin::PA3,
-            Self::A4 => Pin::PA4,
-            Self::A5 => Pin::PA5,
-            Self::A6 => Pin::PA6,
-            Self::A7 => Pin::PA7,
+            Self::A2 => Pin::PC4,
+            Self::A3 => Pin::PD2,
+            Self::A4 => Pin::PD3,
+            Self::A5 => Pin::PD5,
+            Self::A6 => Pin::PD6,
+            Self::A7 => Pin::PD4,
         }
     }
 }
@@ -112,6 +112,29 @@ impl DigitalPin {
         match self {
             Self::PC3 => Pin::PC3,
             Self::PD0 => Pin::PD0,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn analog_channel_pin_map_matches_v006_silicon() {
+        const MAP: &[(AnalogChannel, adc::Channel, Pin)] = &[
+            (AnalogChannel::A1, adc::Channel::IN1, Pin::PA1),
+            (AnalogChannel::A2, adc::Channel::IN2, Pin::PC4),
+            (AnalogChannel::A3, adc::Channel::IN3, Pin::PD2),
+            (AnalogChannel::A4, adc::Channel::IN4, Pin::PD3),
+            (AnalogChannel::A5, adc::Channel::IN5, Pin::PD5),
+            (AnalogChannel::A6, adc::Channel::IN6, Pin::PD6),
+            (AnalogChannel::A7, adc::Channel::IN7, Pin::PD4),
+        ];
+
+        for &(a, ch, pin) in MAP {
+            assert_eq!(a.channel() as u8, ch as u8);
+            assert_eq!(a.pin(), pin, "channel {} pin", ch as u8);
         }
     }
 }
