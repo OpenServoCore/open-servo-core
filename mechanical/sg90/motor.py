@@ -1,4 +1,5 @@
-"""FF-M20 flat-can motor. Axis = Z, rear face at z=0, shaft up."""
+"""M10 flat-can motor (8x10x12.3 donor; FF-M20SA dwg is the 15mm
+sibling). Axis = Z, rear face at z=0, shaft up."""
 import math
 
 from build123d import *
