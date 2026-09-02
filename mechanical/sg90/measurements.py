@@ -10,7 +10,8 @@ guesses are named *_EST and must be replaced by measurement before a part
 is trusted.
 """
 
-# --- FF-M20 motor (flat can) ---
+# --- M10 motor (flat can; donor = short variant of the FF-M20SA dwg,
+# sold as "M10 motor": 8x10 can, dual-rated 3V/18k + 5V/30k, Kv 6000) ---
 MOTOR_BODY_L = 12.3        # [cal] donor short variant (15mm-type dwg: 15.0)
 MOTOR_BODY_D = 10.0        # [dwg], [cal] "two circular tip" 10.0
 MOTOR_BODY_FLAT = 8.0      # [dwg], [cal] across flats
@@ -207,9 +208,24 @@ AXIS_POT_ARBOR = 5.865     # [der] re-measured span 7.39 - (1.85 + 1.20)/2
                            # (first span reading 7.13 discarded)
 AXIS_ARBOR_MOTOR = 5.65    # [der] 6.75 - (1.20 + 1.00)/2
 
+# --- pot pocket ears (middle shell, pot z-datum) ---
+CASE_POT_EAR_L = 3.0        # [cal] 2x3 tab; 3.0 = circumferential (split assumed)
+CASE_POT_EAR_W = 2.0        # [cal] radial
+CASE_POT_EAR_PAIR_DEG = 180 # [cal] two ears, opposite
+CASE_POT_EAR_H_EST = 0.8    # [cal] eyeballed 0.5-1, midpoint
+CASE_POT_EAR_ANGLE_EST = 0  # UNVERIFIED - assumed +/-X: must dodge the
+                            # leg zone (-90 +/- 48 deg, wiper at -Y)
+
 # --- pot shaft, disassembled (supersedes assembled-state guesses) ---
 POT_SHAFT_TOTAL_L = 12.79  # [cal] incl rear magnet boss
-POT_SHAFT_MAIN_D = 1.85    # [cal] base section (gear2 rides here)
+POT_SHAFT_MAIN_D = 1.85    # [cal] gear2's z-stop shoulder (z-stop requires
+                           # gear2 wheel bore < 1.85); 1.35 above is nominal
+                           # (confirmed across donors), gear4 D-bore mates
+                           # there. Gear2 bore UNMEASURED and load-bearing:
+                           # the old 1.9 figure may be derived, likely a
+                           # STEPPED bore (wheel ~1.4 / pinion relief ~1.9);
+                           # either way pinion wall ~0.12 (8T m0.30 root
+                           # 1.65), the tooth-strip stage - NEVER ream
 POT_SHAFT_TIP_D = 1.35     # [cal] tip round section (gear4 D-bore)
 POT_SHAFT_TIP_FLAT = 1.00  # [cal] across the D flat
 # step position along the shaft: not yet measured

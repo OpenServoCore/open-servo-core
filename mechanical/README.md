@@ -13,6 +13,27 @@ One folder per project; each project writes its printable outputs
   (hardware/boards/encoder-board): base, sled, clamp, discs, shims,
   paper patterns. Parametric over motor dims (imports
   `sg90.measurements`) and quadrature-phase presets.
+- `carrier/` - tier-2 encoder carrier: printed pot replacement (stator
+  body with coupon shelf + magnet cup rotor) around purchased 1.4mm rod
+  and brass tube stock; imports `sg90.measurements`, dims pending the
+  donor measurement session.
+- `stenciljig/` - solder-paste stencil jig, build123d implementation
+  of the mechanism from bobstay's parametric jig
+  (printables.com/model/1209372, credited with thanks). Heat-set
+  inserts swapped for captive M3 nuts, plate screws top-driven via
+  under-base nut bars. One part per file, shared spec in
+  `common.py`, mating cavities offset from the owning part's
+  profile; every part exports pre-oriented and support-free (all
+  internal ceilings are 45-degree tents, hoppers or cones). Two
+  stacking parts: the jig stands on screw-on feet next to an open
+  tote (`box.py`) standing on four of the same feet, holding the
+  thickness adapters, low-profile standing-wedge squeegees, stencil
+  sheets and spares; for transport the jig stacks onto the box as
+  its lid - the rear feet's hook noses latch the box wall and two
+  printed quarter-turn cam knobs seat under the box's descending
+  ceiling tents to draw it down tight, no hardware in the joint.
+  TPU desk pads snap into the feet's through bores (one pad and one
+  foot model everywhere).
 - `render.py` - shared headless STL preview.
 
 ## Setup

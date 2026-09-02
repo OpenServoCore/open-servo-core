@@ -267,4 +267,6 @@ if __name__ == "__main__":
     part = build()
     export_step(part, str(out / "sg90_case.step"))
     export_stl(part, str(out / "sg90_case.stl"), tolerance=0.01)
+    from blueprint import blueprint
+    blueprint(part, str(out / "sg90_case_bp.svg"), name="sg90_case")
     print(f"sg90_case: volume {part.volume:.0f} mm^3 -> {out}")

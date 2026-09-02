@@ -150,4 +150,6 @@ if __name__ == "__main__":
     part = build()
     export_step(part, str(out / "sg90_gears.step"))
     export_stl(part, str(out / "sg90_gears.stl"), tolerance=0.01)
+    from blueprint import blueprint
+    blueprint(part, str(out / "sg90_gears_bp.svg"), name="sg90_gears")
     print(f"sg90_gears: volume {part.volume:.0f} mm^3 -> {out}")

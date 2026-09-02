@@ -36,3 +36,6 @@ venv/
 
 # Root-level Rust build (subdir Rust crates have their own)
 /target
+
+# Generated board BOM outputs (ibom etc.)
+hardware/boards/*/bom/

@@ -1,4 +1,5 @@
-"""FF-M20 flat-can motor. Axis = Z, rear face at z=0, shaft up."""
+"""M10 flat-can motor (8x10x12.3 donor; FF-M20SA dwg is the 15mm
+sibling). Axis = Z, rear face at z=0, shaft up."""
 import math
 
 from build123d import *
@@ -206,4 +207,6 @@ if __name__ == "__main__":
     part = build()
     export_step(part, str(out / "sg90_motor.step"))
     export_stl(part, str(out / "sg90_motor.stl"), tolerance=0.01)
+    from blueprint import blueprint
+    blueprint(part, str(out / "sg90_motor_bp.svg"), name="sg90_motor")
     print(f"sg90_motor: volume {part.volume:.0f} mm^3 -> {out}")
