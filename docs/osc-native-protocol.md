@@ -523,6 +523,37 @@ comms RW:
   reader, §9.2), boot mode (MGMT REBOOT's payload owns it), and every
   motor semantic.
 
+### 5.5 Units: device counts
+
+Control-table quantities that mirror a sensor reading or feed control
+are raw device counts - ADC counts, encoder ticks - never engineering
+units. Alongside them the table publishes the calibration primitives
+that make counts interpretable, as integer rationals: shunt milliohms,
+amplifier gain x1000, divider resistances, measured bias counts, VDD in
+millivolts. Counts plus primitives are a complete description;
+milliamps alone are not, because the scale that produced them is gone.
+
+Conversion to physical units happens at the consumer that needs them: a
+UI, an SDK, planning code. Intermediate tiers - gateways, adapters -
+forward counts and calibration data uninterpreted; a tier that rescales
+is one more place for a scale error to hide, and everything below it
+loses the raw value.
+
+No hardware floor is implied. Converting a stream costs one software
+division per factor at connect time (building a fixed-point
+reciprocal), then one multiply-shift per sample - the same arithmetic
+discipline the servo itself uses. Divides sit at configuration edges,
+never in the per-sample path.
+
+Servo-side conversion would spend scarce cycles on a divide-free chip
+to produce numbers the servo itself never consumes; counts keep the
+loop math native and the calibration honest. It is also the established
+bus-servo convention - hosts convert.
+
+One obligation this puts on the host: coordinating servos in physical
+space requires converting first, since per-unit scales differ between
+servos.
+
 ## 6. Coordinated reads (status chains)
 
 GREAD replies arrive as a chain of ordinary status frames, one per listed
