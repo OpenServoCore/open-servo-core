@@ -734,8 +734,8 @@ impl Sim {
     }
 
     fn deliver_garble(&mut self, byte: u8) {
-        for j in 0..self.servos.len() {
-            self.handles[j].ring.push(byte);
+        for h in &self.handles {
+            h.ring.push(byte);
         }
         if let Some(h) = &self.host {
             h.ring.push(byte);
