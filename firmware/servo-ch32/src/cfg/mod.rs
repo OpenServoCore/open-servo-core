@@ -3,9 +3,7 @@ pub mod chip;
 
 #[cfg(not(feature = "half-duplex"))]
 pub use board_wiring::BusWiring;
-pub use board_wiring::{
-    AdcPins, BoardWiring, Calibration, CurrentSenseConfig, Divider, DrvEn, NtcCal,
-};
+pub use board_wiring::{AdcPins, BoardWiring, Calibration, CurrentSenseConfig, Divider, DrvEn};
 pub use chip::{AnalogChannel, DigitalPin};
 
 use osc_servo_core::ConfigDefaults;

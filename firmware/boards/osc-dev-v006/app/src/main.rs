@@ -34,27 +34,14 @@ fn main() -> ! {
             },
             sensors: AdcPins {
                 pos: AnalogChannel::A3,
-                ntc: AnalogChannel::A2,
-                vbus: AnalogChannel::A1,
                 vmotor: (AnalogChannel::A5, AnalogChannel::A6),
             },
         },
         calibration: Calibration {
             shunt_r_mohm: 10,
-            vbus_divider: Divider {
-                top_ohm: 20_000,
-                bot_ohm: 10_000,
-            },
             vmotor_divider: Divider {
                 top_ohm: 20_000,
                 bot_ohm: 10_000,
-            },
-            // TH1 SDNT2012X103F3950FTF.
-            ntc: NtcCal {
-                beta: 3950,
-                r0_ohm: 10_000,
-                t0_cc: 2500,
-                bias_r_ohm: 10_000,
             },
             vdd_mv: 3300,
         },

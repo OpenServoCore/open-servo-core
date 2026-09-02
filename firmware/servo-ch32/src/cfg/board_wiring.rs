@@ -49,8 +49,6 @@ pub struct CurrentSenseConfig {
 #[derive(Copy, Clone)]
 pub struct AdcPins {
     pub pos: AnalogChannel,
-    pub ntc: AnalogChannel,
-    pub vbus: AnalogChannel,
     pub vmotor: (AnalogChannel, AnalogChannel),
 }
 
@@ -61,23 +59,11 @@ pub struct Divider {
     pub bot_ohm: u32,
 }
 
-/// beta-model NTC params: `R_ntc(T) = r0_ohm * exp(beta * (1/T - 1/T0))`.
-#[derive(Copy, Clone)]
-pub struct NtcCal {
-    pub beta: u16,
-    pub r0_ohm: u32,
-    /// T0 in centi-degC (matches `osc_units::CentiCelsius`).
-    pub t0_cc: i16,
-    pub bias_r_ohm: u32,
-}
-
 /// Schematic-derived constants identical across every unit of a PCB design.
 #[derive(Copy, Clone)]
 pub struct Calibration {
     pub shunt_r_mohm: u16,
-    pub vbus_divider: Divider,
     pub vmotor_divider: Divider,
-    pub ntc: NtcCal,
     /// DMM-measured VDD at the chip pin; the v006 ADC reference is VDD itself.
     pub vdd_mv: u16,
 }
@@ -119,10 +105,8 @@ impl BoardWiring {
     }
 
     const fn assert_sensors_distinct(&self) {
-        let chs: [AnalogChannel; 5] = [
+        let chs: [AnalogChannel; 3] = [
             self.sensors.pos,
-            self.sensors.ntc,
-            self.sensors.vbus,
             self.sensors.vmotor.0,
             self.sensors.vmotor.1,
         ];
