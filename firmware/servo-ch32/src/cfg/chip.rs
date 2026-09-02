@@ -28,8 +28,8 @@ pub const BUS_LINE_PIN: Pin = BUS_USART_MAPPING.rx_pin();
 // never-enabled OC function's AF signal is its reset state (0), so
 // whenever HDSEL released the pin the mux fell through to CH1N's 0 and
 // clamped the bus (bench: wire stuck low at idle, rose the instant
-// TIM1EN dropped). Remap8 parks the unused CHxN functions on PA3 (analog
-// VPOS -- digital mux disconnected) and PB0/PB1 (not bonded on TSSOP20).
+// TIM1EN dropped). Remap8 parks the unused CHxN functions on PA3/PB0/PB1,
+// none bonded on TSSOP20.
 pub const MOTOR_TIM1_MAPPING: Tim1Mapping = Tim1Mapping::Remap8;
 pub const MOTOR_IN1_CH: timer::Channel = timer::Channel::CH3;
 pub const MOTOR_IN2_CH: timer::Channel = timer::Channel::CH2;

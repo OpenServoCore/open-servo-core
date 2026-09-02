@@ -124,7 +124,7 @@ pub fn convert_once(channel: Channel) -> Option<u16> {
     set_sequence(&[channel]);
     // SWSTART always changes state here (hardware clears it), so the
     // same-value ADON bit in this write cannot start a second conversion of
-    // its own (RM sec 9.3.13, ADON note).
+    // its own (RM sec 9.3.3, ADON note).
     ADC.ctlr2().modify(|w| {
         w.set_extsel(Extsel::SWSTART);
         w.set_exttrig(true);
