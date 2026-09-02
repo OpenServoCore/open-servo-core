@@ -336,8 +336,8 @@ fn profile_read_over_ceiling_rejects_limit() {
     let shared = Shared::new();
     // 5 x 63 B = 315 B > MAX_PAYLOAD.
     shared.table.with_mut(|t| {
-        for w in 0..5 {
-            t.profile.slots.words[w] = span_word(0, 63);
+        for w in &mut t.profile.slots.words[..5] {
+            *w = span_word(0, 63);
         }
     });
     let mut staged = StagedWrites::new();
