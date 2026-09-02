@@ -19,8 +19,8 @@ struct Args {
     /// Profile slot to configure and read.
     #[arg(short, long, default_value_t = 0)]
     slot: u8,
-    /// Spans as `addr:count` pairs. Default: scattered telemetry --
-    /// position(4) + current(2) + vbus(2) from the converted block.
+    /// Spans as `addr:count` pairs. Default: scattered telemetry from the
+    /// region front -- 4 B + 2 B + 2 B.
     #[arg(long, value_delimiter = ',', default_values_t =
         ["0x200:4".to_string(), "0x208:2".to_string(), "0x20C:2".to_string()])]
     spans: Vec<String>,

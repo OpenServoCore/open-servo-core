@@ -1,5 +1,5 @@
 use ch32_metapac::{ADC, adc::vals::Extsel, dma::vals::Dir};
-use osc_servo_core::ConfigDefaults;
+use osc_servo_core::{CalibSense, ConfigDefaults};
 #[cfg(not(feature = "half-duplex"))]
 use osc_servo_drivers::Level;
 
@@ -15,13 +15,16 @@ use crate::providers::ring::RxRing;
 use crate::runtime::Drivers;
 use crate::runtime::statics::SHARED;
 
-use crate::cfg::{AdcPins, AnalogChannel, BoardWiring, CurrentSenseConfig, Precomputed, chip};
+use crate::cfg::{
+    AdcPins, AnalogChannel, BoardWiring, Calibration, CurrentSenseConfig, Precomputed, chip,
+};
 
 const OPA_SETTLE_MS: u32 = 1;
 const VCAL_SAMPLE_TIME: adc::SampleTime = adc::SampleTime::CYCLES9;
 
 pub fn bringup(
     wiring: &BoardWiring,
+    calibration: &Calibration,
     defaults: &ConfigDefaults,
     model: u16,
     hw_rev: u8,
@@ -38,6 +41,9 @@ pub fn bringup(
     // reads the effective comms block from the table.
     SHARED.table.seed_config_defaults(defaults);
     SHARED.table.seed_identity(model, hw_rev);
+    SHARED
+        .table
+        .seed_calib_sense(&calib_sense(wiring, calibration));
     config_store::ConfigStore::boot_load();
     SHARED.seed_uid(esig::uid());
 
@@ -77,6 +83,17 @@ pub fn bringup(
 
     #[cfg(feature = "defmt")]
     super::diag::dump_init_regs();
+}
+
+fn calib_sense(wiring: &BoardWiring, cal: &Calibration) -> CalibSense {
+    let gain_milli = wiring.current_sense.gain.factor() as u32 * 1000;
+    CalibSense {
+        shunt_r_mohm: cal.shunt_r_mohm,
+        gain_milli: gain_milli.min(u16::MAX as u32) as u16,
+        vmotor_div_top: cal.vmotor_divider.top_ohm.min(u16::MAX as u32) as u16,
+        vmotor_div_bot: cal.vmotor_divider.bot_ohm.min(u16::MAX as u32) as u16,
+        vdd_mv: cal.vdd_mv,
+    }
 }
 
 // Order must mirror the scan tail in `configure_adc_dma_scan`.

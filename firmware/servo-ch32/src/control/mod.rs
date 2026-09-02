@@ -23,7 +23,7 @@ impl Ch32ControlIo {
         crate::log::info!("Ch32ControlIo::new: start");
         let BoardConfig {
             wiring,
-            calibration: _,
+            calibration,
             defaults,
             model,
             hw_rev,
@@ -32,7 +32,7 @@ impl Ch32ControlIo {
         let drv_en_pin = wiring.drv_en.pin.pin();
         let drv_en_active = wiring.drv_en.active;
 
-        crate::runtime::bringup(&wiring, &defaults, model, hw_rev, &pre);
+        crate::runtime::bringup(&wiring, &calibration, &defaults, model, hw_rev, &pre);
 
         crate::log::info!("Ch32ControlIo::new: complete");
         Self {

@@ -56,11 +56,11 @@ fn main() -> ! {
                 t0_cc: 2500,
                 bias_r_ohm: 10_000,
             },
+            vdd_mv: 3300,
         },
         defaults: ConfigDefaults {
             pos_min_phys_urad: -1_570_796,
             pos_max_phys_urad: 1_570_796,
-            vdd_mv: 3300,
             id: 1,
             baud: BaudRate::B1000000,
             response_deadline_us: DEFAULT_RESPONSE_DEADLINE_US,

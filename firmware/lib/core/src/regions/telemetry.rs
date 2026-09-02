@@ -2,26 +2,9 @@ use control_table::{Block, Section};
 
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
-pub struct TelemetryConverted {
-    #[ct_field(access = ro)]
-    pub present_position: i32,
-    #[ct_field(access = ro)]
-    pub present_velocity: i32,
-    #[ct_field(access = ro)]
-    pub present_current: i16,
-    #[ct_field(access = ro)]
-    pub present_temp: i16,
-    #[ct_field(access = ro)]
-    pub present_vbus_mv: u16,
-    #[ct_field(skip)]
-    pub _rsvd_tail: u16,
-}
-
-#[repr(C)]
-#[derive(Copy, Clone, Block)]
 pub struct TelemetryIntermediaries {
     #[ct_field(access = ro)]
-    pub vbus_filt_mv: u16,
+    pub current_bias_counts: u16,
     #[ct_field(access = ro)]
     pub t_winding_dc: i16,
     #[ct_field(access = ro)]
@@ -89,9 +72,9 @@ pub struct TelemetryRaw {
     #[ct_field(access = ro)]
     pub raw_current: u16,
     #[ct_field(access = ro)]
-    pub raw_temp: u16,
+    pub raw_vcal: u16,
     #[ct_field(access = ro)]
-    pub raw_vbus: u16,
+    pub raw_vcal_lpf: u16,
     #[ct_field(access = ro)]
     pub raw_vmotor_a: u16,
     #[ct_field(access = ro)]
@@ -108,7 +91,8 @@ pub struct TelemetryRaw {
 pub struct TelemetryRegs {
     pub common: TelemetryCommon,
     pub mode: TelemetryMode,
-    pub converted: TelemetryConverted,
+    #[ct_section(skip)]
+    pub _rsvd_converted: [u8; 16],
     pub intermediaries: TelemetryIntermediaries,
     pub raw: TelemetryRaw,
     #[ct_section(skip)]

@@ -78,6 +78,8 @@ pub struct Calibration {
     pub vbus_divider: Divider,
     pub vmotor_divider: Divider,
     pub ntc: NtcCal,
+    /// DMM-measured VDD at the chip pin; the v006 ADC reference is VDD itself.
+    pub vdd_mv: u16,
 }
 
 /// Board-tunable wiring; consumed during `Ch32ControlIo::new` and not retained.
