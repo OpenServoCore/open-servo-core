@@ -80,6 +80,10 @@ pub struct Calibration {
     pub vmotor_divider: Divider,
     /// DMM-measured VDD at the chip pin; the v006 ADC reference is VDD itself.
     pub vdd_mv: u16,
+    /// Shortest drive window (TIM1 ticks) with a valid shunt sample.
+    pub i_window_min_ticks: u16,
+    /// Shortest drive window (TIM1 ticks) with a valid vmotor sample.
+    pub v_window_min_ticks: u16,
 }
 
 /// Board-tunable wiring; consumed during `Ch32ControlIo::new` and not retained.

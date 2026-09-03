@@ -382,88 +382,144 @@
       "kind": "uint"
     },
     {
-      "name": "lut",
+      "name": "lut_corr",
       "addr": 132,
-      "width": 220,
+      "width": 110,
       "access": "rw",
       "kind": "bytes"
     },
     {
-      "name": "ke_uvs_per_rad",
-      "addr": 352,
-      "width": 2,
-      "access": "rw",
-      "kind": "uint"
-    },
-    {
-      "name": "r_motor_mohm",
-      "addr": 354,
-      "width": 2,
-      "access": "rw",
-      "kind": "uint"
-    },
-    {
-      "name": "calib_v_bus_mv",
-      "addr": 356,
-      "width": 2,
-      "access": "rw",
-      "kind": "uint"
-    },
-    {
-      "name": "calib_i_ma",
-      "addr": 358,
-      "width": 2,
-      "access": "rw",
-      "kind": "uint"
-    },
-    {
       "name": "shunt_r_mohm",
-      "addr": 360,
+      "addr": 242,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "gain_milli",
-      "addr": 362,
+      "addr": 244,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "vmotor_div_top",
-      "addr": 364,
+      "addr": 246,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "vmotor_div_bot",
-      "addr": 366,
+      "addr": 248,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "vdd_mv",
-      "addr": 368,
+      "addr": 250,
       "width": 2,
       "access": "rw",
       "kind": "uint"
     },
     {
-      "name": "r0_mohm",
-      "addr": 370,
+      "name": "tick_hz",
+      "addr": 252,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "i_window_min_ticks",
+      "addr": 254,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "v_window_min_ticks",
+      "addr": 256,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "r0_q12",
+      "addr": 258,
       "width": 2,
       "access": "rw",
       "kind": "uint"
     },
     {
       "name": "t0_cc",
-      "addr": 372,
+      "addr": 260,
       "width": 2,
       "access": "rw",
       "kind": "int"
+    },
+    {
+      "name": "k_r2t_q88",
+      "addr": 262,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "mu_q016",
+      "addr": 264,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "ke_uvs_per_rad",
+      "addr": 266,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "r_q12",
+      "addr": 268,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "recip_ke_q",
+      "addr": 270,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "b_i_q016",
+      "addr": 272,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "fric_fc_counts",
+      "addr": 274,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "fric_fv_q016",
+      "addr": 276,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "fric_breakaway_counts",
+      "addr": 278,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
     },
     {
       "name": "torque_enable",

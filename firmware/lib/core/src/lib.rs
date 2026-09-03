@@ -25,7 +25,7 @@ pub use kernel::{Kernel, KernelState};
 pub use persist::{ConfigStore, StoreError};
 pub use regions::config::{BaudRate, ConfigDefaults};
 pub use regions::{
-    BemfCalibBlock, BootMode, CalibRegs, CalibSense, CalibWinding, ConfigCommon, ConfigFaultCfg,
+    BootMode, CalibMotor, CalibRegs, CalibSense, CalibWinding, ConfigCommon, ConfigFaultCfg,
     ConfigFusion, ConfigLimits, ConfigLoopCurrent, ConfigLoopPosition, ConfigLoopVelocity,
     ConfigPosLimits, ConfigRegs, ConfigThermal, ControlLifecycle, ControlRegs, ControlSystem,
     ControlTable, ControlTableCell, DecaySelect, Mode, PotLutBlock, StallResponse, TelemetryCommon,

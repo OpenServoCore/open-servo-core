@@ -50,6 +50,9 @@ fn main() -> ! {
                 bot_ohm: 10_000,
             },
             vdd_mv: 3300,
+            // bench-measured floor pending
+            i_window_min_ticks: 240,
+            v_window_min_ticks: 220,
         },
         defaults: ConfigDefaults {
             pos_min_phys_counts: 0,

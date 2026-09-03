@@ -21,7 +21,7 @@ pub(crate) mod hooks;
 pub mod profile;
 pub mod telemetry;
 
-pub use calib::{BemfCalibBlock, CalibRegs, CalibSense, CalibWinding, PotLutBlock};
+pub use calib::{CalibMotor, CalibRegs, CalibSense, CalibWinding, PotLutBlock};
 pub use config::{
     BaudRate, ConfigCommon, ConfigFaultCfg, ConfigFusion, ConfigLimits, ConfigLoopCurrent,
     ConfigLoopPosition, ConfigLoopVelocity, ConfigPosLimits, ConfigRegs, ConfigThermal,
@@ -262,9 +262,9 @@ mod tests {
         assert!(goal.writable);
         assert_eq!((goal.min, goal.max), (None, None));
 
-        let lut = by("lut");
+        let lut = by("lut_corr");
         assert_eq!(lut.kind, FieldKind::Bytes);
-        assert_eq!(lut.width, 220);
+        assert_eq!(lut.width, 110);
     }
 
     /// Pins the profile region to its protocol sec 5.4 address pin and its
