@@ -1,6 +1,6 @@
 use crate::estimator::VcalLpf;
 use crate::traits::ControlIo;
-use crate::{RawFrame, Shared};
+use crate::{SensorFrame, Shared};
 
 /// Runs in the PWM ISR; one `on_tick` per period.
 pub struct Kernel<I: ControlIo> {
@@ -29,7 +29,7 @@ impl<I: ControlIo> Kernel<I> {
     }
 
     /// Must complete well inside the kernel period (~50 us at 20 kHz).
-    pub fn on_tick(&mut self, frame: RawFrame, _shared: &Shared) {
+    pub fn on_tick(&mut self, frame: SensorFrame, _shared: &Shared) {
         let _ = self.vcal_lpf.update(frame.vcal);
         // TODO: PID + mode dispatch + motor.write once the control loop lands.
     }

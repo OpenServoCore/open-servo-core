@@ -13,7 +13,7 @@ pub const FIRMWARE_VERSION: u8 = 1;
 pub mod log;
 pub mod persist;
 pub mod regions;
-pub mod sample;
+pub mod sensor_frame;
 pub mod services;
 pub mod shared;
 pub mod traits;
@@ -29,9 +29,9 @@ pub use regions::{
     ConfigControlPosition, ConfigPosLimits, ConfigRegs, ConfigStall, ConfigThermal,
     ControlLifecycle, ControlRegs, ControlStreaming, ControlSystem, ControlTable, ControlTableCell,
     Mode, PotLutBlock, StallResponse, TelemetryCommon, TelemetryIntermediaries, TelemetryMode,
-    TelemetryRaw, TelemetryRegs,
+    TelemetryRegs, TelemetrySensors,
 };
-pub use sample::RawFrame;
+pub use sensor_frame::SensorFrame;
 pub use services::bus::{Dispatcher, Session};
 pub use shared::Shared;
 pub use traits::{

@@ -1,7 +1,7 @@
 /// One acquisition frame in device counts. Conversion to engineering units
 /// is the host's job.
 #[derive(Copy, Clone, Debug, Default)]
-pub struct RawFrame {
+pub struct SensorFrame {
     pub tick: u32,
     pub pos: u16,
     pub current: u16,

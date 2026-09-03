@@ -66,7 +66,7 @@ pub struct TelemetryMode {
 
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
-pub struct TelemetryRaw {
+pub struct TelemetrySensors {
     #[ct_field(access = ro)]
     pub pos: u16,
     #[ct_field(access = ro)]
@@ -94,7 +94,7 @@ pub struct TelemetryRegs {
     #[ct_section(skip)]
     pub _rsvd_converted: [u8; 16],
     pub intermediaries: TelemetryIntermediaries,
-    pub raw: TelemetryRaw,
+    pub sensors: TelemetrySensors,
     #[ct_section(skip)]
     pub _rsvd_tail: [u8; 36],
 }

@@ -4,7 +4,7 @@ use bench::run::Stats;
 use osc_protocol::wire::ResultCode;
 use osc_servo_core::regions::config::addr::common::ID;
 use osc_servo_core::regions::config::addr::common::MODEL_NUMBER;
-use osc_servo_core::regions::telemetry::addr::raw::{ENC_A, POS, VMOTOR_A};
+use osc_servo_core::regions::telemetry::addr::sensors::{ENC_A, POS, VMOTOR_A};
 use serial_test::serial;
 
 use crate::support::bench;

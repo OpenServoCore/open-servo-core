@@ -1,4 +1,4 @@
-//! Count-domain estimator blocks the kernel runs on a `RawFrame`. `VcalLpf`
+//! Count-domain estimator blocks the kernel runs on a `SensorFrame`. `VcalLpf`
 //! is the first.
 
 /// Vcal reference low-pass filter. EWMA, alpha = 1/128. `state_q6` keeps 6

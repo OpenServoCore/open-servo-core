@@ -29,7 +29,7 @@ pub use config::{
 pub use control::{BootMode, ControlLifecycle, ControlRegs, ControlStreaming, ControlSystem, Mode};
 pub use profile::{PROFILE_SLOTS, ProfileRegs, ProfileSlots, SPANS_PER_SLOT};
 pub use telemetry::{
-    TelemetryCommon, TelemetryIntermediaries, TelemetryMode, TelemetryRaw, TelemetryRegs,
+    TelemetryCommon, TelemetryIntermediaries, TelemetryMode, TelemetryRegs, TelemetrySensors,
 };
 
 use crate::regions::config::ConfigDefaults;
@@ -107,7 +107,7 @@ impl ControlTableCell {
     }
 
     /// Stamp the boot-measured zero-current output of the sense chain, in raw
-    /// ADC counts -- the offset every `raw.current` reading is relative to.
+    /// ADC counts -- the offset every `sensors.current` reading is relative to.
     /// Caller must be sole writer (install-time, pre-IRQ).
     pub fn seed_current_bias(&self, counts: u16) {
         crate::log::debug!("seed current bias: {} counts", counts);

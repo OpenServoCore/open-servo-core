@@ -5,7 +5,7 @@
 
 pub(crate) mod scan;
 
-use osc_servo_core::{RawFrame, Sensors as SensorsTrait};
+use osc_servo_core::{SensorFrame, Sensors as SensorsTrait};
 
 use crate::runtime::statics::read_sample_tick;
 
@@ -25,12 +25,12 @@ impl Ch32Sensors {
 
 impl SensorsTrait for Ch32Sensors {
     /// Called from DMA1 TC ISR. Peak drives current; trough is diagnostic.
-    fn frame(&mut self) -> RawFrame {
+    fn frame(&mut self) -> SensorFrame {
         let current_trough = scan_slot(SCAN_TROUGH_OFFSET, SCAN_IDX_SHUNT_POST);
         let vmotor_a_trough = scan_slot(SCAN_TROUGH_OFFSET, SCAN_IDX_VMOTOR_A);
         let vmotor_b_trough = scan_slot(SCAN_TROUGH_OFFSET, SCAN_IDX_VMOTOR_B);
 
-        RawFrame {
+        SensorFrame {
             tick: read_sample_tick(),
             pos: scan_slot(SCAN_PEAK_OFFSET, SCAN_IDX_POS),
             current: scan_slot(SCAN_PEAK_OFFSET, SCAN_IDX_SHUNT_POST),
