@@ -11,6 +11,7 @@ pub mod kernel;
 pub const FIRMWARE_VERSION: u8 = 1;
 
 pub mod log;
+pub mod math;
 pub mod persist;
 pub mod regions;
 pub mod sensor_frame;
