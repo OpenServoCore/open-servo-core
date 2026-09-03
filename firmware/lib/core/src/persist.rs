@@ -284,7 +284,7 @@ mod tests {
         // A CRC-valid image planting an out-of-range discriminant must not
         // parse -- overlay would construct an invalid enum (UB).
         let (mut config, profile) = body();
-        config[addr::stall::STALL_RESPONSE as usize] = 2;
+        config[addr::limits::STALL_RESPONSE as usize] = 2;
         let mut img = [0u8; IMAGE_LEN];
         assemble(&mut img, 1, &config, &profile);
         assert!(Image::parse(&img).is_none());

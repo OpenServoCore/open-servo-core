@@ -23,8 +23,9 @@ pub mod telemetry;
 
 pub use calib::{BemfCalibBlock, CalibRegs, CalibSense, CalibWinding, PotLutBlock};
 pub use config::{
-    BaudRate, ConfigCommon, ConfigControlPosition, ConfigPosLimits, ConfigRegs, ConfigStall,
-    ConfigThermal, StallResponse,
+    BaudRate, ConfigCommon, ConfigFaultCfg, ConfigFusion, ConfigLimits, ConfigLoopCurrent,
+    ConfigLoopPosition, ConfigLoopVelocity, ConfigPosLimits, ConfigRegs, ConfigThermal,
+    DecaySelect, StallResponse,
 };
 pub use control::{BootMode, ControlLifecycle, ControlRegs, ControlSystem, Mode};
 pub use profile::{PROFILE_SLOTS, ProfileRegs, ProfileSlots, SPANS_PER_SLOT};
@@ -81,6 +82,27 @@ impl ControlTableCell {
             cfg.common.id = defaults.id;
             cfg.common.baud_rate_idx = defaults.baud.as_idx();
             cfg.common.response_deadline_us = defaults.response_deadline_us;
+            // Core-owned safe defaults; gains stay at their zero seed so
+            // every loop boots inert. Enum defaults are discriminant 0.
+            cfg.loop_current.duty_max_q15 = config::DEFAULT_DUTY_MAX_Q15;
+            cfg.limits.current_limit_counts = config::DEFAULT_CURRENT_LIMIT_COUNTS;
+            cfg.limits.drive_polarity = config::DEFAULT_DRIVE_POLARITY;
+            cfg.limits.stall_omega_max_cps = config::DEFAULT_STALL_OMEGA_MAX_CPS;
+            cfg.limits.stall_time_ms = config::DEFAULT_STALL_TIME_MS;
+            cfg.limits.stall_yield_counts = config::DEFAULT_STALL_YIELD_COUNTS;
+            cfg.limits.stall_release_counts = config::DEFAULT_STALL_RELEASE_COUNTS;
+            cfg.limits.oc_trip_counts = config::DEFAULT_OC_TRIP_COUNTS;
+            cfg.limits.oc_trip_ticks = config::DEFAULT_OC_TRIP_TICKS;
+            cfg.thermal.derate_start_cc = config::DEFAULT_DERATE_START_CC;
+            cfg.thermal.cutoff_cc = config::DEFAULT_CUTOFF_CC;
+            cfg.thermal.recover_cc = config::DEFAULT_RECOVER_CC;
+            cfg.thermal.v_undervolt_counts = config::DEFAULT_V_UNDERVOLT_COUNTS;
+            cfg.thermal.rtherm_i_min_counts = config::DEFAULT_RTHERM_I_MIN_COUNTS;
+            cfg.thermal.rtherm_omega_max_cps = config::DEFAULT_RTHERM_OMEGA_MAX_CPS;
+            cfg.fault_cfg.pos_error_counts = config::DEFAULT_POS_ERROR_COUNTS;
+            cfg.fault_cfg.pos_error_time_ms = config::DEFAULT_POS_ERROR_TIME_MS;
+            cfg.fault_cfg.sensor_delta_max = config::DEFAULT_SENSOR_DELTA_MAX;
+            cfg.fault_cfg.sensor_bad_count = config::DEFAULT_SENSOR_BAD_COUNT;
         });
     }
 
@@ -224,11 +246,11 @@ mod tests {
             by("stall_response").kind,
             FieldKind::Enum(&[
                 EnumVariant {
-                    name: "Disable",
+                    name: "Fault",
                     value: 0
                 },
                 EnumVariant {
-                    name: "Comply",
+                    name: "Yield",
                     value: 1
                 },
             ])

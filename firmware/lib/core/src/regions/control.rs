@@ -27,7 +27,7 @@ pub enum BootMode {
 pub struct ControlLifecycle {
     pub torque_enable: bool,
     pub mode: Mode,
-    // abs-le duty_max rule lands with the loop-gain block
+    #[ct_field(le = &config::addr::loop_current::DUTY_MAX_Q15, abs)]
     pub goal_duty: i16,
     #[ct_field(
         ge = &config::addr::pos_limits::POS_MIN_SOFT_COUNTS,
@@ -35,7 +35,7 @@ pub struct ControlLifecycle {
     )]
     pub goal_position: i32,
     pub goal_velocity: i32,
-    // abs-le current_limit_counts rule lands with the loop-gain block
+    #[ct_field(le = &config::addr::limits::CURRENT_LIMIT_COUNTS, abs)]
     pub goal_current: i16,
     #[ct_field(skip)]
     pub _rsvd_tail: [u8; 2],

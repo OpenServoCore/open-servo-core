@@ -12,7 +12,8 @@
 use osc_integration::sim::{Source, WireFrame, assert_valid, instruction, status};
 use osc_protocol::wire::{Inst, Opcode, ResultCode};
 use osc_servo_core::BaudRate;
-use osc_servo_core::regions::config::addr::stall::STALL_TIME_THRESHOLD_MS;
+use osc_servo_core::regions::config::DEFAULT_STALL_TIME_MS;
+use osc_servo_core::regions::config::addr::limits::STALL_TIME_MS;
 use osc_servo_core::regions::control::addr::lifecycle::GOAL_VELOCITY;
 use rstest::rstest;
 use rstest_reuse::apply;
@@ -106,11 +107,11 @@ fn hot_loop_cycles_survive_zero_gap(baud_idx: u8) {
             &gwrite_uniform(GOAL_VELOCITY, 4, &entries),
         ));
         // Second staged register: a 1-byte per-target write into the u16's
-        // low byte (high byte stays at its zero seed), so the per-target
+        // low byte (high byte keeps its boot seed), so the per-target
         // stride differs from the uniform frame's 4-byte stride.
         let aux_entries: Vec<(u8, u16, &[u8])> = IDS
             .iter()
-            .map(|&id| (id, STALL_TIME_THRESHOLD_MS, std::slice::from_ref(&aux)))
+            .map(|&id| (id, STALL_TIME_MS, std::slice::from_ref(&aux)))
             .collect();
         sim.host_send(&instruction(
             BCAST,
@@ -139,9 +140,9 @@ fn hot_loop_cycles_survive_zero_gap(baud_idx: u8) {
                 "cycle {cycle}: servo {i} goal_velocity committed"
             );
             assert_eq!(
-                sim.servo_table(i, |t| t.config.stall.stall_time_threshold_ms),
-                aux as u16,
-                "cycle {cycle}: servo {i} stall_time_threshold_ms committed"
+                sim.servo_table(i, |t| t.config.limits.stall_time_ms),
+                (DEFAULT_STALL_TIME_MS & 0xFF00) | aux as u16,
+                "cycle {cycle}: servo {i} stall_time_ms low byte committed"
             );
         }
 

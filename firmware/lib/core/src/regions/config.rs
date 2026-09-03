@@ -6,14 +6,25 @@ use control_table::{Block, Enum, Section};
 // crate defines the type.
 pub use osc_protocol::wire::{BaudRate, DEFAULT_RESPONSE_DEADLINE_US};
 
-/// Stall detector policy. `repr(u8)`; constructing from an unlisted discriminant is UB,
-/// so validators MUST gate writes to `StallResponse::ALLOWED`.
+/// Stall policy: Fault latches STALL; Yield folds the current limit.
+/// `repr(u8)`; constructing from an unlisted discriminant is UB, so
+/// validators MUST gate writes to `StallResponse::ALLOWED`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default, Enum)]
 #[repr(u8)]
 pub enum StallResponse {
     #[default]
-    Disable = 0,
-    Comply = 1,
+    Fault = 0,
+    Yield = 1,
+}
+
+/// Off-window decay for OpenLoop drive; closed-loop modes force Slow.
+/// `repr(u8)`; same UB gate as `StallResponse`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default, Enum)]
+#[repr(u8)]
+pub enum DecaySelect {
+    #[default]
+    Slow = 0,
+    Fast = 1,
 }
 
 /// protocol sec 5.4 CONFIG-COMMON block: identity RO at the region front,
@@ -67,50 +78,122 @@ pub struct ConfigPosLimits {
     pub pos_max_soft_counts: i32,
 }
 
+/// Current PI gains, voltage-domain clamp + back-calc anti-windup.
+/// Gains carry i_/v_/p_ prefixes: descriptor field names are table-flat.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
-pub struct ConfigStall {
-    pub stall_response: StallResponse,
-    #[ct_field(skip)]
-    pub _rsvd_align: u8,
-    pub stall_effort_threshold: i16,
-    pub stall_motion_threshold_urad: u32,
-    pub stall_time_threshold_ms: u16,
-    pub comply_release_window_ms: u16,
+pub struct ConfigLoopCurrent {
+    pub i_kp_q88: u16,
+    pub i_ki_q412: u16,
+    pub i_kaw_q412: u16,
+    #[ct_field(le = 32767u16)]
+    pub duty_max_q15: u16,
 }
 
+// Full-scale duty by default; gains stay zero so the loop boots inert.
+pub const DEFAULT_DUTY_MAX_Q15: u16 = 32767;
+
+/// Velocity PI gains + inertia feedforward.
+#[repr(C)]
+#[derive(Copy, Clone, Block)]
+pub struct ConfigLoopVelocity {
+    pub v_kp_q88: u16,
+    pub v_ki_q412: u16,
+    pub v_kaw_q412: u16,
+    pub j_ff_q88: u16,
+}
+
+/// Position P gain, anti-hunt hold window, trajectory limits.
+#[repr(C)]
+#[derive(Copy, Clone, Block)]
+pub struct ConfigLoopPosition {
+    pub p_kp_q88: u16,
+    /// 0 = hold disabled.
+    pub pos_deadband_counts: u16,
+    pub hold_omega_cps: u16,
+    pub velocity_limit_cps: u16,
+    /// c/s per medium tick.
+    pub accel_limit_q88: u16,
+}
+
+/// Current ceiling, stall policy, overcurrent trip window.
+#[repr(C)]
+#[derive(Copy, Clone, Block)]
+pub struct ConfigLimits {
+    pub current_limit_counts: u16,
+    pub stall_response: StallResponse,
+    /// true = positive duty increases position counts.
+    pub drive_polarity: bool,
+    pub stall_omega_max_cps: u16,
+    pub stall_time_ms: u16,
+    pub stall_yield_counts: u16,
+    pub stall_release_counts: u16,
+    pub oc_trip_counts: u16,
+    pub oc_trip_ticks: u8,
+    pub openloop_decay: DecaySelect,
+}
+
+// Permissive-safe SG90-class limits: core-owned policy seeded at boot,
+// host-tunable per rig.
+pub const DEFAULT_CURRENT_LIMIT_COUNTS: u16 = 1200;
+pub const DEFAULT_DRIVE_POLARITY: bool = true;
+pub const DEFAULT_STALL_OMEGA_MAX_CPS: u16 = 500;
+pub const DEFAULT_STALL_TIME_MS: u16 = 500;
+pub const DEFAULT_STALL_YIELD_COUNTS: u16 = 300;
+pub const DEFAULT_STALL_RELEASE_COUNTS: u16 = 150;
+pub const DEFAULT_OC_TRIP_COUNTS: u16 = 2400;
+pub const DEFAULT_OC_TRIP_TICKS: u8 = 8;
+
+/// Thermal derate/cutoff, undervolt floor, winding-R estimator gates.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct ConfigThermal {
-    pub motor_thermal_k_q88: u16,
-    pub motor_thermal_tau_ms: u16,
-    #[ct_field(gt = &addr::thermal::WINDING_RECOVER_CC)]
-    pub winding_cutoff_cc: i16,
-    #[ct_field(lt = &addr::thermal::WINDING_CUTOFF_CC)]
-    pub winding_recover_cc: i16,
-    pub v_undervolt_mv: u16,
-    #[ct_field(skip)]
-    pub _rsvd_tail: u16,
+    pub derate_start_cc: i16,
+    #[ct_field(gt = &addr::thermal::RECOVER_CC)]
+    pub cutoff_cc: i16,
+    #[ct_field(lt = &addr::thermal::CUTOFF_CC)]
+    pub recover_cc: i16,
+    pub v_undervolt_counts: u16,
+    pub rtherm_i_min_counts: u16,
+    pub rtherm_omega_max_cps: u16,
 }
 
+// 80C derate onset / 100C cutoff / 90C recover; undervolt below the 2S
+// brown-out floor in vbus counts.
+pub const DEFAULT_DERATE_START_CC: i16 = 8000;
+pub const DEFAULT_CUTOFF_CC: i16 = 10000;
+pub const DEFAULT_RECOVER_CC: i16 = 9000;
+pub const DEFAULT_V_UNDERVOLT_COUNTS: u16 = 2200;
+pub const DEFAULT_RTHERM_I_MIN_COUNTS: u16 = 300;
+pub const DEFAULT_RTHERM_OMEGA_MAX_CPS: u16 = 400;
+
+/// Fusion observer correction gains; l_bemf 0 = bemf blend off.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
-pub struct ConfigControlPosition {
-    pub pid_kp_q88: u16,
-    pub pid_ki_q88: u16,
-    pub pid_kd_q88: u16,
-    #[ct_field(skip)]
-    pub _rsvd_align: u16,
-    pub pid_i_limit: i32,
-    pub pos_deadband_urad: u32,
-    #[ct_field(le = 50u8)]
-    pub pwm_deadband_pct: u8,
-    pub v_comp_enable: bool,
-    pub max_effort: i16,
-    pub v_nominal_mv: u16,
-    #[ct_field(skip)]
-    pub _rsvd_tail: u16,
+pub struct ConfigFusion {
+    pub l1_q016: u16,
+    pub l2_q88: u16,
+    pub l3_q88: u16,
+    pub l_bemf_q016: u16,
 }
+
+/// Fault thresholds: position-error window, sensor-delta screen.
+#[repr(C)]
+#[derive(Copy, Clone, Block)]
+pub struct ConfigFaultCfg {
+    pub pos_error_counts: u16,
+    pub pos_error_time_ms: u16,
+    pub sensor_delta_max: u16,
+    pub sensor_bad_count: u8,
+    #[ct_field(skip)]
+    pub _rsvd_align: u8,
+}
+
+// Wide screens so healthy motion never trips; tighten per application.
+pub const DEFAULT_POS_ERROR_COUNTS: u16 = 400;
+pub const DEFAULT_POS_ERROR_TIME_MS: u16 = 500;
+pub const DEFAULT_SENSOR_DELTA_MAX: u16 = 256;
+pub const DEFAULT_SENSOR_BAD_COUNT: u8 = 4;
 
 /// Config section: always writable (normal field validation applies), volatile
 /// until `MGMT SAVE` persists it -- SAVE is the only torque-gated operation
@@ -125,11 +208,15 @@ pub struct ConfigControlPosition {
 pub struct ConfigRegs {
     pub common: ConfigCommon,
     pub pos_limits: ConfigPosLimits,
-    pub stall: ConfigStall,
+    pub loop_current: ConfigLoopCurrent,
+    pub loop_velocity: ConfigLoopVelocity,
+    pub loop_position: ConfigLoopPosition,
+    pub limits: ConfigLimits,
     pub thermal: ConfigThermal,
-    pub ctrl_pos: ConfigControlPosition,
+    pub fusion: ConfigFusion,
+    pub fault_cfg: ConfigFaultCfg,
     #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 32],
+    pub _rsvd_tail: [u8; 10],
 }
 
 /// Boot-time seed for `ControlTable.config`; stamped pre-IRQ, then host-owned.

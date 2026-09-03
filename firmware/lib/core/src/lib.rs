@@ -25,11 +25,11 @@ pub use kernel::{Kernel, KernelState};
 pub use persist::{ConfigStore, StoreError};
 pub use regions::config::{BaudRate, ConfigDefaults};
 pub use regions::{
-    BemfCalibBlock, BootMode, CalibRegs, CalibSense, CalibWinding, ConfigCommon,
-    ConfigControlPosition, ConfigPosLimits, ConfigRegs, ConfigStall, ConfigThermal,
-    ControlLifecycle, ControlRegs, ControlSystem, ControlTable, ControlTableCell, Mode,
-    PotLutBlock, StallResponse, TelemetryCommon, TelemetryIntermediaries, TelemetryMode,
-    TelemetryRegs, TelemetrySensors,
+    BemfCalibBlock, BootMode, CalibRegs, CalibSense, CalibWinding, ConfigCommon, ConfigFaultCfg,
+    ConfigFusion, ConfigLimits, ConfigLoopCurrent, ConfigLoopPosition, ConfigLoopVelocity,
+    ConfigPosLimits, ConfigRegs, ConfigThermal, ControlLifecycle, ControlRegs, ControlSystem,
+    ControlTable, ControlTableCell, DecaySelect, Mode, PotLutBlock, StallResponse, TelemetryCommon,
+    TelemetryIntermediaries, TelemetryMode, TelemetryRegs, TelemetrySensors,
 };
 pub use sensor_frame::SensorFrame;
 pub use services::bus::{Dispatcher, Session};
