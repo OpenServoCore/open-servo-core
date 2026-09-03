@@ -27,8 +27,8 @@ pub use regions::config::{BaudRate, ConfigDefaults};
 pub use regions::{
     BemfCalibBlock, BootMode, CalibRegs, CalibSense, CalibWinding, ConfigCommon,
     ConfigControlPosition, ConfigPosLimits, ConfigRegs, ConfigStall, ConfigThermal,
-    ControlLifecycle, ControlRegs, ControlStreaming, ControlSystem, ControlTable, ControlTableCell,
-    Mode, PotLutBlock, StallResponse, TelemetryCommon, TelemetryIntermediaries, TelemetryMode,
+    ControlLifecycle, ControlRegs, ControlSystem, ControlTable, ControlTableCell, Mode,
+    PotLutBlock, StallResponse, TelemetryCommon, TelemetryIntermediaries, TelemetryMode,
     TelemetryRegs, TelemetrySensors,
 };
 pub use sensor_frame::SensorFrame;

@@ -26,7 +26,7 @@ pub use config::{
     BaudRate, ConfigCommon, ConfigControlPosition, ConfigPosLimits, ConfigRegs, ConfigStall,
     ConfigThermal, StallResponse,
 };
-pub use control::{BootMode, ControlLifecycle, ControlRegs, ControlStreaming, ControlSystem, Mode};
+pub use control::{BootMode, ControlLifecycle, ControlRegs, ControlSystem, Mode};
 pub use profile::{PROFILE_SLOTS, ProfileRegs, ProfileSlots, SPANS_PER_SLOT};
 pub use telemetry::{
     TelemetryCommon, TelemetryIntermediaries, TelemetryMode, TelemetryRegs, TelemetrySensors,

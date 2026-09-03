@@ -41,18 +41,6 @@ pub struct ControlLifecycle {
 
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
-pub struct ControlStreaming {
-    pub stream_enable: bool,
-    pub stream_decimation: u8,
-    #[ct_field(ge = 1u16)]
-    pub stream_duration_ms: u16,
-    pub stream_field_mask: u32,
-    #[ct_field(access = ro)]
-    pub stream_dropped: u32,
-}
-
-#[repr(C)]
-#[derive(Copy, Clone, Block)]
 pub struct ControlSystem {
     pub boot_mode: BootMode,
 }
@@ -62,10 +50,9 @@ pub struct ControlSystem {
 #[ct_section(base = crate::regions::CONTROL_BASE_ADDR, size = crate::regions::CONTROL_REGION_SIZE)]
 pub struct ControlRegs {
     pub lifecycle: ControlLifecycle,
-    pub streaming: ControlStreaming,
     pub system: ControlSystem,
     #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 99],
+    pub _rsvd_tail: [u8; 111],
 }
 
 #[cfg(test)]

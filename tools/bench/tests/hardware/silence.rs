@@ -1,6 +1,6 @@
 use bench::osc::{build_instruction, build_read, build_write};
 use osc_protocol::wire::{Inst, Opcode};
-use osc_servo_core::regions::control::addr::streaming::STREAM_FIELD_MASK;
+use osc_servo_core::regions::control::addr::lifecycle::GOAL_VELOCITY;
 use serial_test::serial;
 
 use crate::support::bench;
@@ -14,9 +14,9 @@ const BROADCAST: u8 = 0xFE;
 fn noreply_write_is_silent() {
     let mut b = bench();
     let id = b.id();
-    let orig = b.status_ok(&build_read(id, STREAM_FIELD_MASK, 4)).payload;
+    let orig = b.status_ok(&build_read(id, GOAL_VELOCITY, 4)).payload;
 
-    let mut payload = STREAM_FIELD_MASK.to_le_bytes().to_vec();
+    let mut payload = GOAL_VELOCITY.to_le_bytes().to_vec();
     payload.extend_from_slice(&orig);
     b.expect_no_reply(&build_instruction(
         id,
@@ -32,6 +32,6 @@ fn noreply_write_is_silent() {
 fn broadcast_write_is_silent() {
     let mut b = bench();
     let id = b.id();
-    let orig = b.status_ok(&build_read(id, STREAM_FIELD_MASK, 4)).payload;
-    b.expect_no_reply(&build_write(BROADCAST, STREAM_FIELD_MASK, &orig));
+    let orig = b.status_ok(&build_read(id, GOAL_VELOCITY, 4)).payload;
+    b.expect_no_reply(&build_write(BROADCAST, GOAL_VELOCITY, &orig));
 }

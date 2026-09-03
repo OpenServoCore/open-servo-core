@@ -7,8 +7,6 @@ pub struct Kernel<I: ControlIo> {
     pub io: I,
     pub state: KernelState,
     pub vcal_lpf: VcalLpf,
-    pub stream_decimation_counter: u8,
-    pub stream_duration_remaining_ticks: u32,
 }
 
 #[derive(Default)]
@@ -23,8 +21,6 @@ impl<I: ControlIo> Kernel<I> {
             io,
             state: KernelState::default(),
             vcal_lpf: VcalLpf::new(),
-            stream_decimation_counter: 1,
-            stream_duration_remaining_ticks: 0,
         }
     }
 

@@ -375,44 +375,8 @@
       "kind": "int"
     },
     {
-      "name": "stream_enable",
-      "addr": 400,
-      "width": 1,
-      "access": "rw",
-      "kind": "bool"
-    },
-    {
-      "name": "stream_decimation",
-      "addr": 401,
-      "width": 1,
-      "access": "rw",
-      "kind": "uint"
-    },
-    {
-      "name": "stream_duration_ms",
-      "addr": 402,
-      "width": 2,
-      "access": "rw",
-      "kind": "uint",
-      "min": 1
-    },
-    {
-      "name": "stream_field_mask",
-      "addr": 404,
-      "width": 4,
-      "access": "rw",
-      "kind": "uint"
-    },
-    {
-      "name": "stream_dropped",
-      "addr": 408,
-      "width": 4,
-      "access": "ro",
-      "kind": "uint"
-    },
-    {
       "name": "boot_mode",
-      "addr": 412,
+      "addr": 400,
       "width": 1,
       "access": "rw",
       "kind": "enum",
