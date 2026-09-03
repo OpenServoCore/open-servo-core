@@ -87,6 +87,7 @@ pub struct Kernel<I: ControlIo> {
     booted: bool,
     te_prev: bool,
     run_prev: bool,
+    fwd_prev: bool,
     mode_prev: Mode,
     /// MEDIUM's current command, consumed by the FAST current loop.
     i_ref_cc: i32,
@@ -140,6 +141,7 @@ impl<I: ControlIo> Kernel<I> {
             booted: false,
             te_prev: false,
             run_prev: false,
+            fwd_prev: true,
             mode_prev: Mode::OpenLoop,
             i_ref_cc: 0,
             omega_ref_q16: 0,
@@ -204,15 +206,26 @@ impl<I: ControlIo> Kernel<I> {
         self.te_prev = life.torque_enable;
 
         // Window from the PREVIOUS tick's command: this frame's scan sampled
-        // the period that command drove.
+        // the period that command drove. Both extraction paths additionally
+        // require the duty SIGN stable across the last two commands: the
+        // command -> CCR-preload -> scan pipeline is a period deep, and a
+        // sample attributed across a sign flip picks the wrong terminal and
+        // the wrong current sign - under a hunting loop that aliased the
+        // vbus EWMA down to the low-side leg and latched a false undervolt
+        // (caught on the bench).
         let ticks = window::drive_ticks(self.duty_q15, self.timing.pwm_arr);
-        let sel = window::select(
+        let fwd = self.duty_q15 >= 0;
+        let mut sel = window::select(
             self.decay,
             ticks,
             sense.i_window_min_ticks,
             sense.v_window_min_ticks,
         );
-        let fwd = self.duty_q15 >= 0;
+        if fwd != self.fwd_prev {
+            sel.i_valid = false;
+            sel.v_valid = false;
+        }
+        self.fwd_prev = fwd;
         let i_meas = window::i_from_frame(&frame, sel, fwd, bias);
         if let Some(i) = i_meas {
             self.i_meas_last = i.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
