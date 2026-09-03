@@ -522,6 +522,13 @@
       "kind": "uint"
     },
     {
+      "name": "ke_vpc_q",
+      "addr": 280,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
       "name": "torque_enable",
       "addr": 384,
       "width": 1,

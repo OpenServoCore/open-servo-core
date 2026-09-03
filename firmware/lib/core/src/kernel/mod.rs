@@ -1,3 +1,7 @@
+pub mod current;
+
+pub use current::{CurrentGains, CurrentLoop};
+
 use crate::estimator::VcalLpf;
 use crate::traits::ControlIo;
 use crate::{RegionStorageRaw, SensorFrame, Shared};

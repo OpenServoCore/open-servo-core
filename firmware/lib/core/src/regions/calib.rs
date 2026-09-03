@@ -50,8 +50,11 @@ pub struct CalibWinding {
 /// Motor identification: `ke_uvs_per_rad` is the host-facing record; the rest
 /// are firmware-shaped -- bemf subtract R (Q4.12), reciprocal Ke (c/s per
 /// vcount Q6.10, estimator::bemf convention), fusion current gain (bakes
-/// Ts/J), and the friction model (Coulomb ccounts, viscous Q0.16, breakaway
-/// ccounts).
+/// Ts/J), the friction model (Coulomb ccounts, viscous Q0.16, breakaway
+/// ccounts), and forward Ke (vcounts per c/s Q4.12, the current loop's bemf
+/// decoupling feedforward). Forward and reciprocal Ke are both host-written:
+/// the chip has no divide to derive one from the other. SG90 scale ~0.28
+/// vcounts per c/s (~1150 stored); the u16 caps at 16, 57x headroom.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct CalibMotor {
@@ -62,6 +65,7 @@ pub struct CalibMotor {
     pub fric_fc_counts: u16,
     pub fric_fv_q016: u16,
     pub fric_breakaway_counts: u16,
+    pub ke_vpc_q: u16,
 }
 
 /// Calibration section: always writable (normal field validation applies),
@@ -78,5 +82,5 @@ pub struct CalibRegs {
     pub winding: CalibWinding,
     pub motor: CalibMotor,
     #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 104],
+    pub _rsvd_tail: [u8; 102],
 }
