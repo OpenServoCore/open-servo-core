@@ -17,7 +17,7 @@ pub mod trajectory;
 pub mod velocity;
 
 pub use current::{CurrentGains, CurrentLoop};
-pub use limits::{LimitCfg, LimitState};
+pub use limits::{IBand, LimitCfg, LimitState};
 pub use position::{PosOut, PositionCfg};
 pub use trajectory::{TrajCfg, TrajGen};
 pub use velocity::{VelocityGains, VelocityLoop};
@@ -78,6 +78,7 @@ pub struct Kernel<I: ControlIo> {
     cur: CurrentLoop,
     vel: VelocityLoop,
     limits: LimitState,
+    i_band: IBand,
     vbus: VbusEst,
     thermal: WindingTherm,
     bemf: BemfObs,
@@ -130,6 +131,7 @@ impl<I: ControlIo> Kernel<I> {
             cur: CurrentLoop::new(),
             vel: VelocityLoop::new(),
             limits: LimitState::new(),
+            i_band: IBand { lo: 0, hi: 0 },
             vbus: VbusEst::new(),
             thermal: WindingTherm::new(),
             bemf: BemfObs::new(),
@@ -364,14 +366,14 @@ impl<I: ControlIo> Kernel<I> {
                 pos_max_soft_counts: pos_lim.pos_max_soft_counts,
             };
             let omega_abs_cps = omega_hat.unsigned_abs() >> 16;
-            let i_lim = self.limits.fold(
+            let band = self.limits.fold(
                 pinned,
                 omega_abs_cps,
                 self.fusion.tau_d_counts().unsigned_abs(),
                 theta_hat >> 16,
-                self.i_ref_cc >= 0,
                 &lcfg,
             );
+            self.i_band = band;
             if run && self.limits.stall_fault_pending() {
                 self.faults.raise(faults::BIT_STALL, faults::CODE_STALL);
             }
@@ -392,7 +394,7 @@ impl<I: ControlIo> Kernel<I> {
                             omega_hat,
                             self.traj.alpha_star_q16(),
                             self.traj.omega_star_q16(),
-                            i_lim,
+                            band,
                             &vg,
                         );
                     }
@@ -508,7 +510,7 @@ impl<I: ControlIo> Kernel<I> {
                 (&raw mut (*e).theta_hat_q16).write_volatile(theta_hat);
                 (&raw mut (*e).omega_hat_cps).write_volatile(omega_hat);
                 (&raw mut (*e).tau_d_counts).write_volatile(self.fusion.tau_d_counts());
-                (&raw mut (*e).i_lim_counts).write_volatile(i_lim);
+                (&raw mut (*e).i_lim_counts).write_volatile(self.limits.i_lim_counts());
                 (&raw mut (*e).t_winding_cc).write_volatile(self.thermal.t_cc());
                 (&raw mut (*e).vbus_counts).write_volatile(self.vbus.vbus_counts());
                 (&raw mut (*e).duty_applied_q15).write_volatile(self.duty_q15);
@@ -548,8 +550,9 @@ impl<I: ControlIo> Kernel<I> {
                 }
                 mode => {
                     if mode == Mode::Current {
-                        let lim = self.limits.i_lim_counts() as i32;
-                        self.i_ref_cc = (life.goal_current as i32).clamp(-lim, lim);
+                        // directional band: an endstop blocks only inward
+                        // goals; retreat clamps against the composed limit
+                        self.i_ref_cc = self.i_band.clamp(life.goal_current as i32);
                     }
                     if self.hold {
                         // anti-hunt: park instead of dithering on friction;

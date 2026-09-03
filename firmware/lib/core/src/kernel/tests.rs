@@ -215,6 +215,47 @@ fn enable_edge_clears_hand_era_tau_d() {
 }
 
 #[test]
+fn endstop_allows_retreat_from_the_wall() {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::Current;
+        t.control.lifecycle.goal_current = 120;
+    });
+    let mut k = kernel();
+    // parked hard against the top wall (bench: horn ratcheted to the rail)
+    for _ in 0..400 {
+        k.on_tick(frame(4095, BIAS), &sh);
+    }
+    // inward goal is banded to zero: no drive into the wall
+    match last_cmd(&k) {
+        MotorCmd::Drive { duty, .. } => assert_eq!(duty.0, 0),
+        MotorCmd::Coast | MotorCmd::Disabled => {}
+        MotorCmd::Brake => panic!("brake is never commanded"),
+    }
+    // the door back out must be open: a retreat goal drives immediately
+    // (the magnitude-fold deadlock read the zeroed i_ref as inward forever).
+    // Reverse drive samples the OTHER terminal, so the frame carries the
+    // rail on vmotor_b - a forward-shaped frame would read the low leg as
+    // a collapsed rail and latch UNDER_VOLT.
+    sh.table
+        .with_mut(|t| t.control.lifecycle.goal_current = -120);
+    let mut rev = frame(4095, BIAS);
+    (rev.vmotor_a, rev.vmotor_a_trough) = (40, 40);
+    (rev.vmotor_b, rev.vmotor_b_trough) = (3000, 3000);
+    let mut drove = false;
+    for _ in 0..400 {
+        k.on_tick(rev, &sh);
+        if let MotorCmd::Drive { duty, .. } = last_cmd(&k) {
+            drove |= duty.0 < 0;
+        }
+    }
+    assert!(drove, "retreat from the wall never drove");
+    assert_eq!(k.faults.mask(), 0);
+}
+
+#[test]
 fn undervolt_needs_fresh_evidence_no_stale_relatch() {
     let sh = Shared::new();
     seed(&sh);

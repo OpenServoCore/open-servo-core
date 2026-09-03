@@ -68,21 +68,22 @@ impl VelocityLoop {
         self.integ_ccq16 = 0;
     }
 
-    /// One MEDIUM-tick update -> i_ref, whole ccounts clamped to +-i_lim.
+    /// One MEDIUM-tick update -> i_ref, whole ccounts clamped into `band`.
     /// `omega_ref_q16` is the position loop's output; alpha_star/omega_star
-    /// come from the trajectory generator; `i_lim_counts` from the limits
-    /// fold. The clip excess i_ref - i_raw IS that fold's clip, fed back
-    /// through kaw. The integrator is also clamped to +-(i_lim << 16) - a
-    /// belt on top of back-calc, and when i_lim shrinks mid-run (derate,
-    /// stall fold, endstop) the clamp drains the stale charge to the new
-    /// ceiling in one tick: intended, the fold propagates instantly.
+    /// come from the trajectory generator; `band` from the limits fold
+    /// (directional: an endstop zeroes only the inward side). The clip
+    /// excess i_ref - i_raw IS that fold's clip, fed back through kaw. The
+    /// integrator is also clamped to the band's widest side << 16 - a belt
+    /// on top of back-calc, and when the band shrinks mid-run (derate,
+    /// stall fold) the clamp drains the stale charge to the new ceiling in
+    /// one tick: intended, the fold propagates instantly.
     pub fn step(
         &mut self,
         omega_ref_q16: i32,
         omega_hat_q16: i32,
         alpha_star_q16: i32,
         omega_star_q16: i32,
-        i_lim_counts: u16,
+        band: super::limits::IBand,
         gains: &VelocityGains,
     ) -> i32 {
         let e = omega_ref_q16
@@ -96,8 +97,7 @@ impl VelocityLoop {
         let i_raw = i_p
             .saturating_add(self.integ_ccq16 >> 16)
             .saturating_add(i_ff);
-        let i_lim = i_lim_counts as i32;
-        let i_ref = i_raw.clamp(-i_lim, i_lim);
+        let i_ref = band.clamp(i_raw);
         let aw = i_ref.saturating_sub(i_raw).clamp(-AW_LIM_CC, AW_LIM_CC);
         // Q4.12 * csQ16 -> ccQ16 needs >> 12, split as >> 16 then << 4 so
         // the q_mul result stays i32-exact (<= 2^30 per E_LIM) and only the
@@ -106,7 +106,7 @@ impl VelocityLoop {
         // saturate too (12-bit shunt scale keeps real limits far below).
         let ki_term = q_mul(gains.ki_q412 as i32, e, 16).saturating_mul(1 << 4);
         let aw_term = q_mul(gains.kaw_q412 as i32, aw, 0).saturating_mul(1 << 4);
-        let lim = i_lim.saturating_mul(1 << 16);
+        let lim = band.hi.abs().max(band.lo.abs()).saturating_mul(1 << 16);
         self.integ_ccq16 = self
             .integ_ccq16
             .saturating_add(ki_term)
@@ -119,6 +119,11 @@ impl VelocityLoop {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::kernel::limits::IBand;
+
+    fn band(l: i32) -> IBand {
+        IBand { lo: -l, hi: l }
+    }
 
     const I_LIM: u16 = 4095;
 
@@ -145,14 +150,23 @@ mod tests {
         // kp 1.0 ccount per c/s: e = +-500 c/s -> +-500 ccounts exactly
         let gains = g(1 << 8, 0, 0, 0, 0, 0);
         let mut vel = VelocityLoop::new();
-        assert_eq!(vel.step(500 << 16, 0, 0, 0, I_LIM, &gains), 500);
-        assert_eq!(vel.step(-(500 << 16), 0, 0, 0, I_LIM, &gains), -500);
+        assert_eq!(
+            vel.step(500 << 16, 0, 0, 0, band(I_LIM as i32), &gains),
+            500
+        );
+        assert_eq!(
+            vel.step(-(500 << 16), 0, 0, 0, band(I_LIM as i32), &gains),
+            -500
+        );
         // kp 1/256: 500/256 floors to 1, arithmetic shift floors -500/256
         // to -2
         let gains = g(1, 0, 0, 0, 0, 0);
         let mut vel = VelocityLoop::new();
-        assert_eq!(vel.step(500 << 16, 0, 0, 0, I_LIM, &gains), 1);
-        assert_eq!(vel.step(-(500 << 16), 0, 0, 0, I_LIM, &gains), -2);
+        assert_eq!(vel.step(500 << 16, 0, 0, 0, band(I_LIM as i32), &gains), 1);
+        assert_eq!(
+            vel.step(-(500 << 16), 0, 0, 0, band(I_LIM as i32), &gains),
+            -2
+        );
     }
 
     #[test]
@@ -164,7 +178,7 @@ mod tests {
         let mut vel = VelocityLoop::new();
         let mut omega = 0i32;
         for _ in 0..500 {
-            let i_ref = vel.step(500 << 16, omega, 0, 0, I_LIM, &p_only);
+            let i_ref = vel.step(500 << 16, omega, 0, 0, band(I_LIM as i32), &p_only);
             omega = plant_omega(omega, i_ref);
         }
         assert!(omega >> 16 < 100, "p-only omega={}", omega >> 16);
@@ -174,7 +188,7 @@ mod tests {
         let mut omega = 0i32;
         let mut i_ref = 0i32;
         for _ in 0..5000 {
-            i_ref = vel.step(500 << 16, omega, 0, 0, I_LIM, &pi);
+            i_ref = vel.step(500 << 16, omega, 0, 0, band(I_LIM as i32), &pi);
             omega = plant_omega(omega, i_ref);
         }
         assert!(((omega >> 16) - 500).abs() <= 1, "pi omega={}", omega >> 16);
@@ -188,15 +202,27 @@ mod tests {
         let gains = g(0, 0, 0, 1 << 8, 50, 1 << 8);
         let mut vel = VelocityLoop::new();
         // 100 + 50 + floor(1000/256) = 100 + 50 + 3
-        assert_eq!(vel.step(0, 0, 100 << 16, 1000 << 16, I_LIM, &gains), 153);
+        assert_eq!(
+            vel.step(0, 0, 100 << 16, 1000 << 16, band(I_LIM as i32), &gains),
+            153
+        );
         // reverse: -50 + floor(-1000/256) = -50 - 4 (arithmetic shift)
-        assert_eq!(vel.step(0, 0, 0, -(1000 << 16), I_LIM, &gains), -54);
+        assert_eq!(
+            vel.step(0, 0, 0, -(1000 << 16), band(I_LIM as i32), &gains),
+            -54
+        );
         // zero band: |omega_star| <= 1 c/s suppresses Coulomb, viscous
         // 1/256 of 1 c/s floors to 0
-        assert_eq!(vel.step(0, 0, 0, 1 << 16, I_LIM, &gains), 0);
-        assert_eq!(vel.step(0, 0, 0, -(1 << 16), I_LIM, &gains), -1);
+        assert_eq!(vel.step(0, 0, 0, 1 << 16, band(I_LIM as i32), &gains), 0);
+        assert_eq!(
+            vel.step(0, 0, 0, -(1 << 16), band(I_LIM as i32), &gains),
+            -1
+        );
         // one past the band: Coulomb kicks in
-        assert_eq!(vel.step(0, 0, 0, (1 << 16) + 1, I_LIM, &gains), 50);
+        assert_eq!(
+            vel.step(0, 0, 0, (1 << 16) + 1, band(I_LIM as i32), &gains),
+            50
+        );
     }
 
     #[test]
@@ -213,13 +239,13 @@ mod tests {
             let mut omega = 0i32;
             let mut i_ref = 0i32;
             for _ in 0..300 {
-                i_ref = vel.step(500 << 16, omega, 0, 0, 100, &gains);
+                i_ref = vel.step(500 << 16, omega, 0, 0, band(100), &gains);
                 omega = plant_omega(omega, i_ref);
             }
             assert_eq!(i_ref, 100, "saturated, kaw={kaw}");
             let mut ticks = 0u32;
             while ticks < 500 {
-                i_ref = vel.step(10 << 16, omega, 0, 0, 100, &gains);
+                i_ref = vel.step(10 << 16, omega, 0, 0, band(100), &gains);
                 omega = plant_omega(omega, i_ref);
                 if i_ref <= 60 {
                     break;
@@ -243,11 +269,11 @@ mod tests {
         let gains = g(0, 1 << 12, 0, 0, 0, 0);
         let mut vel = VelocityLoop::new();
         for _ in 0..200 {
-            vel.step(1000 << 16, 0, 0, 0, 4000, &gains);
+            vel.step(1000 << 16, 0, 0, 0, band(4000), &gains);
         }
-        assert_eq!(vel.step(0, 0, 0, 0, 4000, &gains), 4000);
-        assert_eq!(vel.step(0, 0, 0, 0, 500, &gains), 500);
-        assert_eq!(vel.step(0, 0, 0, 0, 4000, &gains), 500);
+        assert_eq!(vel.step(0, 0, 0, 0, band(4000), &gains), 4000);
+        assert_eq!(vel.step(0, 0, 0, 0, band(500), &gains), 500);
+        assert_eq!(vel.step(0, 0, 0, 0, band(4000), &gains), 500);
     }
 
     #[test]
@@ -262,7 +288,7 @@ mod tests {
                     for star in [i32::MIN, 0, i32::MAX] {
                         let mut vel = VelocityLoop::new();
                         for _ in 0..20 {
-                            let i = vel.step(o_ref, o_hat, star, star, lim, &gains);
+                            let i = vel.step(o_ref, o_hat, star, star, band(lim as i32), &gains);
                             assert!(
                                 i.unsigned_abs() <= lim as u32,
                                 "i={i} lim={lim} o_ref={o_ref} o_hat={o_hat} star={star}"
@@ -279,10 +305,10 @@ mod tests {
         let gains = g(64, 200, 0, 0, 0, 0);
         let mut vel = VelocityLoop::new();
         for _ in 0..50 {
-            vel.step(500 << 16, 0, 0, 0, I_LIM, &gains);
+            vel.step(500 << 16, 0, 0, 0, band(I_LIM as i32), &gains);
         }
-        assert_ne!(vel.step(0, 0, 0, 0, I_LIM, &gains), 0);
+        assert_ne!(vel.step(0, 0, 0, 0, band(I_LIM as i32), &gains), 0);
         vel.reset();
-        assert_eq!(vel.step(0, 0, 0, 0, I_LIM, &gains), 0);
+        assert_eq!(vel.step(0, 0, 0, 0, band(I_LIM as i32), &gains), 0);
     }
 }
