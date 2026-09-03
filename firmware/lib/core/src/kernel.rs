@@ -1,6 +1,6 @@
 use crate::estimator::VcalLpf;
 use crate::traits::ControlIo;
-use crate::{SensorFrame, Shared};
+use crate::{RegionStorageRaw, SensorFrame, Shared};
 
 /// Runs in the PWM ISR; one `on_tick` per period.
 pub struct Kernel<I: ControlIo> {
@@ -29,8 +29,20 @@ impl<I: ControlIo> Kernel<I> {
     }
 
     /// Must complete well inside the kernel period (~50 us at 20 kHz).
-    pub fn on_tick(&mut self, frame: SensorFrame, _shared: &Shared) {
-        let _ = self.vcal_lpf.update(frame.vcal);
+    pub fn on_tick(&mut self, frame: SensorFrame, shared: &Shared) {
+        let vcal_lpf = self.vcal_lpf.update(frame.vcal);
+
+        // SAFETY: ISR context is the region's sole writer (the `sample_tick`
+        // contract); volatile per field so the stores survive optimization.
+        unsafe {
+            let s = &raw mut (*shared.table.region_ptr()).telemetry.sensors;
+            (&raw mut (*s).pos).write_volatile(frame.pos);
+            (&raw mut (*s).current).write_volatile(frame.current);
+            (&raw mut (*s).vcal).write_volatile(frame.vcal);
+            (&raw mut (*s).vcal_lpf).write_volatile(vcal_lpf);
+            (&raw mut (*s).vmotor_a).write_volatile(frame.vmotor_a);
+            (&raw mut (*s).vmotor_b).write_volatile(frame.vmotor_b);
+        }
         // TODO: PID + mode dispatch + motor.write once the control loop lands.
     }
 }
