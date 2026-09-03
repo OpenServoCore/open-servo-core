@@ -49,8 +49,9 @@ pub struct CalibWinding {
 
 /// Motor identification: `ke_uvs_per_rad` is the host-facing record; the rest
 /// are firmware-shaped -- bemf subtract R (Q4.12), reciprocal Ke (c/s per
-/// vcount), fusion current gain (bakes Ts/J), and the friction model
-/// (Coulomb ccounts, viscous Q0.16, breakaway ccounts).
+/// vcount Q6.10, estimator::bemf convention), fusion current gain (bakes
+/// Ts/J), and the friction model (Coulomb ccounts, viscous Q0.16, breakaway
+/// ccounts).
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct CalibMotor {
