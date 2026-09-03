@@ -1,6 +1,8 @@
 pub mod current;
+pub mod limits;
 
 pub use current::{CurrentGains, CurrentLoop};
+pub use limits::{LimitCfg, LimitState};
 
 use crate::estimator::VcalLpf;
 use crate::traits::ControlIo;
