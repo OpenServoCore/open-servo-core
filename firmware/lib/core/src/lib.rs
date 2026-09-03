@@ -22,7 +22,7 @@ pub mod traits;
 pub use control_table::{
     Error, Region, RegionStorage, RegionStorageRaw, StagedWrites, ValidationKind,
 };
-pub use kernel::{Kernel, KernelState};
+pub use kernel::{Kernel, KernelTiming};
 pub use persist::{ConfigStore, StoreError};
 pub use regions::config::{BaudRate, ConfigDefaults};
 pub use regions::{

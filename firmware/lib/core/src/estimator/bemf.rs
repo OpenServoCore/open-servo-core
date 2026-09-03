@@ -11,7 +11,9 @@ use crate::math::q_mul;
 /// `recip_arr` Q: chip const-evals `(1 << RECIP_ARR_SHIFT) / pwm_arr`. Q24
 /// keeps reciprocal quantization under arr/2^24 relative (arr=1200 -> 0.007%
 /// vs 1.2% at Q16). `drive_ticks * vdiff` <= 65535 * 4095 fits i32 and
-/// `q_mul` widens to i64, so the extra shift is free.
+/// `q_mul` widens to i64, so the extra shift is free. The kernel computes
+/// `v_mean = q_mul(drive_ticks * vdiff, recip_arr, RECIP_ARR_SHIFT)` once
+/// per medium tick and feeds it here AND to the winding thermometer.
 pub const RECIP_ARR_SHIFT: u32 = 24;
 
 /// `recip_ke_q` (CALIB motor block) Q: c/s per vcount at Q6.10. SG90-scale
@@ -39,25 +41,19 @@ impl BemfObs {
         }
     }
 
-    /// One MEDIUM-tick update. `vdiff_drive` from `vdrive_from_frame`,
-    /// `i_meas` from `i_from_frame`; either `None` (window too narrow) holds
-    /// the last output. `recip_arr` and `recip_ke_q` per the shift consts
-    /// above, `r_q12` vcounts/ccount Q4.12. Returns the telemetry value.
+    /// One MEDIUM-tick update. `v_mean` is the kernel-hoisted period-average
+    /// applied differential (see `RECIP_ARR_SHIFT`), `i_meas` from
+    /// `i_from_frame`; either `None` (window too narrow) holds the last
+    /// output. `recip_ke_q` per the shift const above, `r_q12`
+    /// vcounts/ccount Q4.12. Returns the telemetry value.
     pub fn step(
         &mut self,
-        vdiff_drive: Option<i32>,
+        v_mean: Option<i32>,
         i_meas: Option<i32>,
-        drive_ticks: u32,
-        recip_arr: u32,
         r_q12: u16,
         recip_ke_q: u16,
     ) -> i16 {
-        if let (Some(vdiff), Some(i)) = (vdiff_drive, i_meas) {
-            let v_mean = q_mul(
-                drive_ticks as i32 * vdiff,
-                recip_arr as i32,
-                RECIP_ARR_SHIFT,
-            );
+        if let (Some(v_mean), Some(i)) = (v_mean, i_meas) {
             let r_drop = q_mul(r_q12 as i32, i, 12);
             let omega = q_mul(v_mean - r_drop, recip_ke_q as i32, RECIP_KE_SHIFT);
             let x = omega << GUARD;
@@ -87,27 +83,33 @@ mod tests {
     use super::*;
 
     const ARR: u32 = 1200;
-    const RECIP_ARR: u32 = (1 << RECIP_ARR_SHIFT) / ARR;
     // unity Ke: 1.0 c/s per vcount
     const KE_UNITY: u16 = 1 << RECIP_KE_SHIFT;
+
+    /// The kernel-side hoisted computation, per `RECIP_ARR_SHIFT`.
+    fn v_mean(vdiff: i32, ticks: u32, arr: u32) -> i32 {
+        let recip = (1u32 << RECIP_ARR_SHIFT) / arr;
+        q_mul(ticks as i32 * vdiff, recip as i32, RECIP_ARR_SHIFT)
+    }
 
     #[test]
     fn zero_current_scaling() {
         // 50% duty of vdiff=3000 -> v_mean ideal 1500, floor 1499
+        let vm = v_mean(3000, 600, ARR);
+        assert_eq!(vm, 1499);
         let mut obs = BemfObs::new();
-        let out = obs.step(Some(3000), Some(0), 600, RECIP_ARR, 4096, KE_UNITY);
-        assert_eq!(out, 1499);
+        assert_eq!(obs.step(Some(vm), Some(0), 4096, KE_UNITY), 1499);
         // rig-scale recip_ke ~3.61 c/s per vcount: 1499 * 3700 >> 10
         let mut obs = BemfObs::new();
-        let out = obs.step(Some(3000), Some(0), 600, RECIP_ARR, 4096, 3700);
-        assert_eq!(out, 5416);
+        assert_eq!(obs.step(Some(vm), Some(0), 4096, 3700), 5416);
     }
 
     #[test]
     fn r_drop_reduces_omega_toward_zero() {
         // v_mean 1499; r=0.5 Q4.12, i=2048 -> r_drop 1024 -> omega 475
+        let vm = v_mean(3000, 600, ARR);
         let mut obs = BemfObs::new();
-        let out = obs.step(Some(3000), Some(2048), 600, RECIP_ARR, 2048, KE_UNITY);
+        let out = obs.step(Some(vm), Some(2048), 2048, KE_UNITY);
         assert_eq!(out, 475);
         assert!(out < 1499);
         assert!(out > 0);
@@ -116,60 +118,50 @@ mod tests {
     #[test]
     fn sign_symmetry() {
         // exact-power-of-two drive: arr=1024, ticks=512, vdiff +-2048 -> +-1024
-        let recip = (1u32 << RECIP_ARR_SHIFT) / 1024;
         let mut fwd = BemfObs::new();
         let mut rev = BemfObs::new();
-        let f = fwd.step(Some(2048), Some(0), 512, recip, 4096, KE_UNITY);
-        let r = rev.step(Some(-2048), Some(0), 512, recip, 4096, KE_UNITY);
+        let f = fwd.step(Some(v_mean(2048, 512, 1024)), Some(0), 4096, KE_UNITY);
+        let r = rev.step(Some(v_mean(-2048, 512, 1024)), Some(0), 4096, KE_UNITY);
         assert_eq!(f, 1024);
         assert_eq!(r, -1024);
     }
 
     #[test]
     fn invalid_window_holds_last_output() {
-        let recip = (1u32 << RECIP_ARR_SHIFT) / 1024;
+        let vm = v_mean(2048, 512, 1024);
         let mut obs = BemfObs::new();
-        assert_eq!(
-            obs.step(Some(2048), Some(0), 512, recip, 4096, KE_UNITY),
-            1024
-        );
-        assert_eq!(obs.step(None, Some(0), 512, recip, 4096, KE_UNITY), 1024);
-        assert_eq!(obs.step(Some(2048), None, 512, recip, 4096, KE_UNITY), 1024);
-        assert_eq!(obs.step(None, None, 0, recip, 4096, KE_UNITY), 1024);
+        assert_eq!(obs.step(Some(vm), Some(0), 4096, KE_UNITY), 1024);
+        assert_eq!(obs.step(None, Some(0), 4096, KE_UNITY), 1024);
+        assert_eq!(obs.step(Some(vm), None, 4096, KE_UNITY), 1024);
+        assert_eq!(obs.step(None, None, 4096, KE_UNITY), 1024);
         // valid sample moves it again
-        assert!(obs.step(Some(0), Some(0), 512, recip, 4096, KE_UNITY) < 1024);
+        assert!(obs.step(Some(0), Some(0), 4096, KE_UNITY) < 1024);
     }
 
     #[test]
     fn saturates_at_i16_bounds() {
         // full duty, full vdiff, max recip_ke: omega 262012 >> i16::MAX
         let mut obs = BemfObs::new();
-        let out = obs.step(Some(4095), Some(0), ARR, RECIP_ARR, 0, u16::MAX);
+        let out = obs.step(Some(v_mean(4095, ARR, ARR)), Some(0), 0, u16::MAX);
         assert_eq!(out, i16::MAX);
         assert_eq!(obs.omega_cps(), 262_012);
         let mut obs = BemfObs::new();
-        let out = obs.step(Some(-4095), Some(0), ARR, RECIP_ARR, 0, u16::MAX);
+        let out = obs.step(Some(v_mean(-4095, ARR, ARR)), Some(0), 0, u16::MAX);
         assert_eq!(out, i16::MIN);
         assert_eq!(obs.omega_cps(), -262_077);
     }
 
     #[test]
     fn ewma_seeds_then_converges() {
-        let recip = (1u32 << RECIP_ARR_SHIFT) / 1024;
+        let vm = v_mean(2048, 512, 1024);
         let mut obs = BemfObs::new();
         // seed at 0, then step toward 1024: alpha 1/4 from the seed
-        assert_eq!(obs.step(Some(0), Some(0), 512, recip, 4096, KE_UNITY), 0);
-        assert_eq!(
-            obs.step(Some(2048), Some(0), 512, recip, 4096, KE_UNITY),
-            256
-        );
-        assert_eq!(
-            obs.step(Some(2048), Some(0), 512, recip, 4096, KE_UNITY),
-            448
-        );
+        assert_eq!(obs.step(Some(0), Some(0), 4096, KE_UNITY), 0);
+        assert_eq!(obs.step(Some(vm), Some(0), 4096, KE_UNITY), 256);
+        assert_eq!(obs.step(Some(vm), Some(0), 4096, KE_UNITY), 448);
         let mut last = 0i16;
         for _ in 0..40 {
-            last = obs.step(Some(2048), Some(0), 512, recip, 4096, KE_UNITY);
+            last = obs.step(Some(vm), Some(0), 4096, KE_UNITY);
         }
         assert!((last as i32 - 1024).abs() <= 1, "last={last}");
     }

@@ -128,6 +128,16 @@ impl LimitState {
         lim
     }
 
+    /// Torque-enable ack: drop the pending fault, unfold, re-arm a full
+    /// stall window. The derate cache survives - it is thermal state, not a
+    /// latch, and clearing it would hand a hot winding one SLOW period of
+    /// full current.
+    pub fn ack(&mut self) {
+        self.fault_pending = false;
+        self.stalled = false;
+        self.stall_ticks = 0;
+    }
+
     /// Cached output of the last `fold`.
     pub fn i_lim_counts(&self) -> u16 {
         self.i_lim

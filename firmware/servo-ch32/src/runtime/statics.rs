@@ -1,6 +1,6 @@
 use core::cell::SyncUnsafeCell;
 use core::mem::MaybeUninit;
-use osc_servo_core::{Kernel, RegionStorageRaw, Session, Shared};
+use osc_servo_core::{Kernel, KernelTiming, RegionStorageRaw, Session, Shared};
 
 use crate::control::Ch32ControlIo;
 
@@ -18,9 +18,9 @@ pub(crate) static KERNEL: SyncUnsafeCell<MaybeUninit<Kernel<Ch32ControlIo>>> =
 pub(crate) static SESSION: SyncUnsafeCell<MaybeUninit<Session>> =
     SyncUnsafeCell::new(MaybeUninit::uninit());
 
-pub fn install(io: Ch32ControlIo) {
+pub fn install(io: Ch32ControlIo, timing: KernelTiming) {
     unsafe {
-        (*KERNEL.get()).write(Kernel::new(io));
+        (*KERNEL.get()).write(Kernel::new(io, timing));
         (*SESSION.get()).write(Session::new());
     }
     crate::log::info!("kernel + session installed");

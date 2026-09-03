@@ -38,7 +38,7 @@ macro_rules! run {
 #[doc(hidden)]
 pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
     let io = Ch32ControlIo::new(cfg, pre);
-    crate::runtime::statics::install(io);
+    crate::runtime::statics::install(io, pre.kernel_timing);
     crate::runtime::isr::install_irqs();
     // Last-published transport counters: the table gets DELTAS, so a host
     // zero-write (the rw clear contract, `TelemetryCommon`) sticks instead
