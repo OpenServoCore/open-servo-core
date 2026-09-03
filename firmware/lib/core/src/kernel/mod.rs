@@ -1,8 +1,10 @@
 pub mod current;
 pub mod limits;
+pub mod velocity;
 
 pub use current::{CurrentGains, CurrentLoop};
 pub use limits::{LimitCfg, LimitState};
+pub use velocity::{VelocityGains, VelocityLoop};
 
 use crate::estimator::VcalLpf;
 use crate::traits::ControlIo;
