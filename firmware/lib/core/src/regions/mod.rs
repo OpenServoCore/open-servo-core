@@ -65,19 +65,19 @@ impl ControlTableCell {
     /// Caller must be sole writer (install-time, pre-IRQ).
     pub fn seed_config_defaults(&self, defaults: &ConfigDefaults) {
         crate::log::debug!(
-            "seed CONFIG: phys=[{}, {}] urad  id={}  baud_idx={}",
-            defaults.pos_min_phys_urad,
-            defaults.pos_max_phys_urad,
+            "seed CONFIG: phys=[{}, {}] counts  id={}  baud_idx={}",
+            defaults.pos_min_phys_counts,
+            defaults.pos_max_phys_counts,
             defaults.id,
             defaults.baud.as_idx(),
         );
         // SAFETY: install-time, pre-IRQ, sole writer.
         self.with_mut(|t| {
             let cfg = &mut t.config;
-            cfg.pos_limits.pos_min_phys_urad = defaults.pos_min_phys_urad;
-            cfg.pos_limits.pos_max_phys_urad = defaults.pos_max_phys_urad;
-            cfg.pos_limits.pos_min_soft_urad = defaults.pos_min_phys_urad;
-            cfg.pos_limits.pos_max_soft_urad = defaults.pos_max_phys_urad;
+            cfg.pos_limits.pos_min_phys_counts = defaults.pos_min_phys_counts;
+            cfg.pos_limits.pos_max_phys_counts = defaults.pos_max_phys_counts;
+            cfg.pos_limits.pos_min_soft_counts = defaults.pos_min_phys_counts;
+            cfg.pos_limits.pos_max_soft_counts = defaults.pos_max_phys_counts;
             cfg.common.id = defaults.id;
             cfg.common.baud_rate_idx = defaults.baud.as_idx();
             cfg.common.response_deadline_us = defaults.response_deadline_us;
@@ -162,7 +162,7 @@ mod tests {
             table::RESPONSE_DEADLINE_US
         );
         assert_eq!(
-            config_addr::pos_limits::POS_MIN_PHYS_URAD,
+            config_addr::pos_limits::POS_MIN_PHYS_COUNTS,
             table::CONFIG_COMMON_END
         );
 

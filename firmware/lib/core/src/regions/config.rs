@@ -49,22 +49,22 @@ pub struct ConfigCommon {
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct ConfigPosLimits {
-    #[ct_field(lt = &addr::pos_limits::POS_MAX_PHYS_URAD)]
-    pub pos_min_phys_urad: i32,
-    #[ct_field(gt = &addr::pos_limits::POS_MIN_PHYS_URAD)]
-    pub pos_max_phys_urad: i32,
+    #[ct_field(lt = &addr::pos_limits::POS_MAX_PHYS_COUNTS)]
+    pub pos_min_phys_counts: i32,
+    #[ct_field(gt = &addr::pos_limits::POS_MIN_PHYS_COUNTS)]
+    pub pos_max_phys_counts: i32,
     #[ct_field(
-        ge = &addr::pos_limits::POS_MIN_PHYS_URAD,
-        le = &addr::pos_limits::POS_MAX_PHYS_URAD,
-        lt = &addr::pos_limits::POS_MAX_SOFT_URAD,
+        ge = &addr::pos_limits::POS_MIN_PHYS_COUNTS,
+        le = &addr::pos_limits::POS_MAX_PHYS_COUNTS,
+        lt = &addr::pos_limits::POS_MAX_SOFT_COUNTS,
     )]
-    pub pos_min_soft_urad: i32,
+    pub pos_min_soft_counts: i32,
     #[ct_field(
-        ge = &addr::pos_limits::POS_MIN_PHYS_URAD,
-        le = &addr::pos_limits::POS_MAX_PHYS_URAD,
-        gt = &addr::pos_limits::POS_MIN_SOFT_URAD,
+        ge = &addr::pos_limits::POS_MIN_PHYS_COUNTS,
+        le = &addr::pos_limits::POS_MAX_PHYS_COUNTS,
+        gt = &addr::pos_limits::POS_MIN_SOFT_COUNTS,
     )]
-    pub pos_max_soft_urad: i32,
+    pub pos_max_soft_counts: i32,
 }
 
 #[repr(C)]
@@ -135,8 +135,8 @@ pub struct ConfigRegs {
 /// Boot-time seed for `ControlTable.config`; stamped pre-IRQ, then host-owned.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct ConfigDefaults {
-    pub pos_min_phys_urad: i32,
-    pub pos_max_phys_urad: i32,
+    pub pos_min_phys_counts: i32,
+    pub pos_max_phys_counts: i32,
     pub id: u8,
     pub baud: BaudRate,
     pub response_deadline_us: u16,

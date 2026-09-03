@@ -60,28 +60,28 @@
       "kind": "uint"
     },
     {
-      "name": "pos_min_phys_urad",
+      "name": "pos_min_phys_counts",
       "addr": 32,
       "width": 4,
       "access": "rw",
       "kind": "int"
     },
     {
-      "name": "pos_max_phys_urad",
+      "name": "pos_max_phys_counts",
       "addr": 36,
       "width": 4,
       "access": "rw",
       "kind": "int"
     },
     {
-      "name": "pos_min_soft_urad",
+      "name": "pos_min_soft_counts",
       "addr": 40,
       "width": 4,
       "access": "rw",
       "kind": "int"
     },
     {
-      "name": "pos_max_soft_urad",
+      "name": "pos_max_soft_counts",
       "addr": 44,
       "width": 4,
       "access": "rw",

@@ -28,8 +28,8 @@ pub struct ControlLifecycle {
     #[ct_field(skip)]
     pub _rsvd_align: [u8; 2],
     #[ct_field(
-        ge = &config::addr::pos_limits::POS_MIN_SOFT_URAD,
-        le = &config::addr::pos_limits::POS_MAX_SOFT_URAD,
+        ge = &config::addr::pos_limits::POS_MIN_SOFT_COUNTS,
+        le = &config::addr::pos_limits::POS_MAX_SOFT_COUNTS,
     )]
     pub goal_position: i32,
     pub goal_velocity: i32,

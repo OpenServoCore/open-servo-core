@@ -52,8 +52,8 @@ fn main() -> ! {
             vdd_mv: 3300,
         },
         defaults: ConfigDefaults {
-            pos_min_phys_urad: -1_570_796,
-            pos_max_phys_urad: 1_570_796,
+            pos_min_phys_counts: 0,
+            pos_max_phys_counts: 4095,
             id: 1,
             baud: BaudRate::B1000000,
             response_deadline_us: DEFAULT_RESPONSE_DEADLINE_US,
