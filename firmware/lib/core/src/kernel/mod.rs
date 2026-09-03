@@ -247,8 +247,12 @@ impl<I: ControlIo> Kernel<I> {
         let run = life.torque_enable && self.faults.mask() == 0;
         if run != self.run_prev {
             // both edges zero the loop chain; the enable edge additionally
-            // reseeds the profile at the estimate - bumpless
+            // reseeds fusion at the measurement (torque-off tau_d is built
+            // from i_use = 0 fiction - a hand-moved shaft rails it and every
+            // enable would re-latch STALL via the collision check) and the
+            // profile at the fresh estimate - bumpless
             if run {
+                self.fusion.seed(frame.pos);
                 self.traj.reseed(self.fusion.theta_q16());
             }
             self.cur.reset();

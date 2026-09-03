@@ -186,6 +186,35 @@ fn enable_edge_reseeds_without_transient() {
 }
 
 #[test]
+fn enable_edge_clears_hand_era_tau_d() {
+    let sh = Shared::new();
+    seed(&sh);
+    let mut k = kernel();
+    // torque off, shaft hand-swept: i_use = 0 fiction rails tau_d
+    for i in 0..4000u32 {
+        let pos = 1000 + ((i / 4) % 2000) as u16;
+        k.on_tick(frame(pos, BIAS), &sh);
+    }
+    assert!(
+        k.fusion.tau_d_counts().unsigned_abs() > 200,
+        "precondition: hand motion railed tau_d, got {}",
+        k.fusion.tau_d_counts()
+    );
+    // enable at rest: fusion reseeds, so the collision check never sees the
+    // stale disturbance and STALL must not latch
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::Current;
+        t.control.lifecycle.goal_current = 0;
+    });
+    for _ in 0..200 {
+        k.on_tick(frame(1500, BIAS), &sh);
+    }
+    assert_eq!(k.faults.mask(), 0, "stale tau_d re-latched STALL");
+    assert!(k.fusion.tau_d_counts().unsigned_abs() < 50);
+}
+
+#[test]
 fn oc_latch_forces_disabled_despite_torque_enable() {
     let sh = Shared::new();
     seed(&sh);
