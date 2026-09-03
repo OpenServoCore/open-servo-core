@@ -1,7 +1,7 @@
 use crate::regions::config;
 use control_table::{Block, Enum, Section};
 
-/// Position controller mode. `repr(u8)` so the byte-level commit path round-trips
+/// Control mode. `repr(u8)` so the byte-level commit path round-trips
 /// cleanly; validators MUST gate writes to `Mode::ALLOWED` because constructing a
 /// `Mode` from an unlisted discriminant is UB.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default, Enum)]
@@ -9,7 +9,9 @@ use control_table::{Block, Enum, Section};
 pub enum Mode {
     #[default]
     OpenLoop = 0,
-    PositionPid = 1,
+    Current = 1,
+    Velocity = 2,
+    Position = 3,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default, Enum)]
@@ -25,16 +27,16 @@ pub enum BootMode {
 pub struct ControlLifecycle {
     pub torque_enable: bool,
     pub mode: Mode,
-    #[ct_field(skip)]
-    pub _rsvd_align: [u8; 2],
+    // abs-le duty_max rule lands with the loop-gain block
+    pub goal_duty: i16,
     #[ct_field(
         ge = &config::addr::pos_limits::POS_MIN_SOFT_COUNTS,
         le = &config::addr::pos_limits::POS_MAX_SOFT_COUNTS,
     )]
     pub goal_position: i32,
     pub goal_velocity: i32,
-    #[ct_field(le = &config::addr::ctrl_pos::MAX_EFFORT, abs)]
-    pub goal_effort: i16,
+    // abs-le current_limit_counts rule lands with the loop-gain block
+    pub goal_current: i16,
     #[ct_field(skip)]
     pub _rsvd_tail: [u8; 2],
 }

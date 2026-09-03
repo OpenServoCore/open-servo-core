@@ -348,10 +348,25 @@
           "value": 0
         },
         {
-          "name": "PositionPid",
+          "name": "Current",
           "value": 1
+        },
+        {
+          "name": "Velocity",
+          "value": 2
+        },
+        {
+          "name": "Position",
+          "value": 3
         }
       ]
+    },
+    {
+      "name": "goal_duty",
+      "addr": 386,
+      "width": 2,
+      "access": "rw",
+      "kind": "int"
     },
     {
       "name": "goal_position",
@@ -368,7 +383,7 @@
       "kind": "int"
     },
     {
-      "name": "goal_effort",
+      "name": "goal_current",
       "addr": 396,
       "width": 2,
       "access": "rw",

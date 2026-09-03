@@ -421,10 +421,10 @@ mod tests {
     fn enum_by_name_and_number() {
         let d = builtin();
         let f = field(&d, "mode");
-        assert_eq!(encode(&f, "PositionPid").unwrap(), vec![1]);
-        assert_eq!(encode(&f, "positionpid").unwrap(), vec![1]); // case-insensitive
-        assert_eq!(encode(&f, "1").unwrap(), vec![1]);
-        assert_eq!(decode(&f, &[1]).unwrap(), "PositionPid (1)");
+        assert_eq!(encode(&f, "Position").unwrap(), vec![3]);
+        assert_eq!(encode(&f, "position").unwrap(), vec![3]); // case-insensitive
+        assert_eq!(encode(&f, "3").unwrap(), vec![3]);
+        assert_eq!(decode(&f, &[3]).unwrap(), "Position (3)");
         // off-registry discriminant falls back to the raw number
         assert_eq!(decode(&f, &[7]).unwrap(), "7");
     }
@@ -445,7 +445,7 @@ mod tests {
         let d = builtin();
         let f = field(&d, "response_deadline_us"); // u16
         assert!(encode(&f, "70000").is_err());
-        let g = field(&d, "goal_effort"); // i16
+        let g = field(&d, "goal_current"); // i16
         assert!(encode(&g, "40000").is_err());
     }
 
