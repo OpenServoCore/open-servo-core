@@ -215,6 +215,47 @@ fn enable_edge_clears_hand_era_tau_d() {
 }
 
 #[test]
+fn undervolt_needs_fresh_evidence_no_stale_relatch() {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::OpenLoop;
+        t.control.lifecycle.goal_duty = 8192;
+    });
+    let mut k = kernel();
+    // sagged rail: valid drive windows carry va under the undervolt floor
+    let mut sagged = frame(2000, BIAS);
+    sagged.vmotor_a = 1000;
+    sagged.vmotor_a_trough = 1000;
+    for _ in 0..400 {
+        k.on_tick(sagged, &sh);
+    }
+    assert_eq!(k.faults.mask(), faults::BIT_UNDER_VOLT, "sag latches");
+    assert!(matches!(last_cmd(&k), MotorCmd::Disabled));
+    // bridge off -> no window -> vbus estimate frozen at the sag; the ack
+    // must stick because there is no fresh evidence
+    sh.table
+        .with_mut(|t| t.control.lifecycle.torque_enable = false);
+    for _ in 0..400 {
+        k.on_tick(sagged, &sh);
+    }
+    sh.table
+        .with_mut(|t| t.control.lifecycle.torque_enable = true);
+    // recovered rail from here on
+    for _ in 0..2000 {
+        k.on_tick(frame(2000, BIAS), &sh);
+    }
+    assert_eq!(k.faults.mask(), 0, "stale sag re-latched undervolt");
+    assert!(matches!(last_cmd(&k), MotorCmd::Drive { .. }));
+    // a genuinely low rail re-latches through the same retry probe
+    for _ in 0..2000 {
+        k.on_tick(sagged, &sh);
+    }
+    assert_eq!(k.faults.mask(), faults::BIT_UNDER_VOLT);
+}
+
+#[test]
 fn oc_latch_forces_disabled_despite_torque_enable() {
     let sh = Shared::new();
     seed(&sh);

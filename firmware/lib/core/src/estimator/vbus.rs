@@ -18,6 +18,7 @@ pub struct VbusEst {
     state_qg: i32,
     initialized: bool,
     recip_q15: u32,
+    fresh: bool,
 }
 
 impl VbusEst {
@@ -26,7 +27,17 @@ impl VbusEst {
             state_qg: 0,
             initialized: false,
             recip_q15: 0,
+            fresh: false,
         }
+    }
+
+    /// True iff a valid drive-window sample landed since the last call;
+    /// clears on read. Undervolt verdicts gate on this: a held (stale)
+    /// estimate is not evidence - a sagged reading frozen by the fault's
+    /// own bridge-off otherwise re-latches forever (fault -> no drive ->
+    /// no fresh sample -> fault).
+    pub fn take_fresh(&mut self) -> bool {
+        core::mem::take(&mut self.fresh)
     }
 
     /// Install-time seed from the first frame or a nominal, so boot does not
@@ -49,6 +60,7 @@ impl VbusEst {
                 self.state_qg = x;
                 self.initialized = true;
             }
+            self.fresh = true;
         }
         self.update_recip(undervolt_floor_counts);
     }

@@ -490,10 +490,12 @@ impl<I: ControlIo> Kernel<I> {
                     self.faults
                         .raise(faults::BIT_OVER_TEMP, faults::CODE_OVER_TEMP);
                 }
-                // unseeded vbus reads 0: no undervolt verdict until the
-                // first valid drive-window sample seeds the estimator
+                // undervolt needs FRESH evidence: a held estimate frozen by
+                // the fault's own bridge-off (no drive -> no window) would
+                // re-latch forever off a recovered rail. Recovery is a retry
+                // probe: ack -> drive resumes -> fresh sample -> verdict.
                 let vb = self.vbus.vbus_counts();
-                if vb != 0 && vb < therm_cfg.v_undervolt_counts {
+                if self.vbus.take_fresh() && vb < therm_cfg.v_undervolt_counts {
                     self.faults
                         .raise(faults::BIT_UNDER_VOLT, faults::CODE_UNDER_VOLT);
                 }
