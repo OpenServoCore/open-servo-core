@@ -1,9 +1,13 @@
 pub mod current;
 pub mod limits;
+pub mod position;
+pub mod trajectory;
 pub mod velocity;
 
 pub use current::{CurrentGains, CurrentLoop};
 pub use limits::{LimitCfg, LimitState};
+pub use position::{PosOut, PositionCfg};
+pub use trajectory::{TrajCfg, TrajGen};
 pub use velocity::{VelocityGains, VelocityLoop};
 
 use crate::estimator::VcalLpf;
