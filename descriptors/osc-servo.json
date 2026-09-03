@@ -232,13 +232,6 @@
       "kind": "uint"
     },
     {
-      "name": "vdd_mv",
-      "addr": 96,
-      "width": 2,
-      "access": "rw",
-      "kind": "uint"
-    },
-    {
       "name": "raw_min",
       "addr": 128,
       "width": 2,
@@ -286,6 +279,55 @@
       "width": 2,
       "access": "rw",
       "kind": "uint"
+    },
+    {
+      "name": "shunt_r_mohm",
+      "addr": 360,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "gain_milli",
+      "addr": 362,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "vmotor_div_top",
+      "addr": 364,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "vmotor_div_bot",
+      "addr": 366,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "vdd_mv",
+      "addr": 368,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "r0_mohm",
+      "addr": 370,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "t0_cc",
+      "addr": 372,
+      "width": 2,
+      "access": "rw",
+      "kind": "int"
     },
     {
       "name": "torque_enable",
@@ -435,42 +477,7 @@
       "kind": "uint"
     },
     {
-      "name": "present_position",
-      "addr": 548,
-      "width": 4,
-      "access": "ro",
-      "kind": "int"
-    },
-    {
-      "name": "present_velocity",
-      "addr": 552,
-      "width": 4,
-      "access": "ro",
-      "kind": "int"
-    },
-    {
-      "name": "present_current",
-      "addr": 556,
-      "width": 2,
-      "access": "ro",
-      "kind": "int"
-    },
-    {
-      "name": "present_temp",
-      "addr": 558,
-      "width": 2,
-      "access": "ro",
-      "kind": "int"
-    },
-    {
-      "name": "present_vbus_mv",
-      "addr": 560,
-      "width": 2,
-      "access": "ro",
-      "kind": "uint"
-    },
-    {
-      "name": "vbus_filt_mv",
+      "name": "current_bias_counts",
       "addr": 564,
       "width": 2,
       "access": "ro",
@@ -519,56 +526,56 @@
       "kind": "uint"
     },
     {
-      "name": "raw_pos",
+      "name": "pos",
       "addr": 588,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
-      "name": "raw_current",
+      "name": "current",
       "addr": 590,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
-      "name": "raw_temp",
+      "name": "vcal",
       "addr": 592,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
-      "name": "raw_vbus",
+      "name": "vcal_lpf",
       "addr": 594,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
-      "name": "raw_vmotor_a",
+      "name": "vmotor_a",
       "addr": 596,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
-      "name": "raw_vmotor_b",
+      "name": "vmotor_b",
       "addr": 598,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
-      "name": "raw_enc_a",
+      "name": "enc_a",
       "addr": 600,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
-      "name": "raw_enc_b",
+      "name": "enc_b",
       "addr": 602,
       "width": 2,
       "access": "ro",

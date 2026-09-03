@@ -477,7 +477,7 @@ mod tests {
     #[test]
     fn ro_set_rejects() {
         let d = builtin();
-        let f = field(&d, "present_position"); // ro
+        let f = field(&d, "pos"); // ro
         let err = encode(&f, "0").unwrap_err().to_string();
         assert!(err.contains("read-only"));
     }

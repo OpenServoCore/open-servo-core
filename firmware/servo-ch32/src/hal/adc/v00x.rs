@@ -16,13 +16,12 @@ pub enum Channel {
     IN6 = 6,
     IN7 = 7,
     // IN8 is unused on v006 (no external bonding on this package).
-    OpaOut = 9,
     /// IN10 = "Vcal" per datasheet block diagram. SMP lives in SAMPTR1.
     Vcal = 10,
 }
 
 impl Channel {
-    /// `None` for internal channels (OpaOut, Vcal). Caller configures pin as analog input.
+    /// `None` for internal channels (Vcal). Caller configures pin as analog input.
     pub const fn pin(self) -> Option<Pin> {
         match self {
             Channel::IN0 => Some(Pin::PA2),
@@ -33,7 +32,7 @@ impl Channel {
             Channel::IN5 => Some(Pin::PD5),
             Channel::IN6 => Some(Pin::PD6),
             Channel::IN7 => Some(Pin::PD4),
-            Channel::OpaOut | Channel::Vcal => None,
+            Channel::Vcal => None,
         }
     }
 }
@@ -94,15 +93,52 @@ pub fn set_dma(enable: bool) {
     ADC.ctlr2().modify(|w| w.set_dma(enable));
 }
 
-/// CTLR3.ADC_LP. Reset default is set; gates the internal OPA->IN9 path,
-/// so it must be cleared before the OpaOut channel reads non-zero.
+/// CTLR3.ADC_LP (RM sec 9.3.14). Reset default is set (low-power, sub-1M
+/// sampling); clearing it picks the high-power converter.
 pub fn set_low_power(enable: bool) {
     ADC.ctlr3().modify(|w| w.set_adc_lp(enable));
 }
 
+/// ADON off->on wakes the converter from power-down; the delay covers tSTAB
+/// (RM sec 9.2.2). An on->on write instead *starts* a conversion, so callers
+/// that already enabled the ADC must [`disable`] it first.
 pub fn enable() {
     ADC.ctlr2().modify(|w| w.set_adon(true));
     crate::hal::delay_cycles(1_000);
+}
+
+pub fn disable() {
+    ADC.ctlr2().modify(|w| w.set_adon(false));
+}
+
+/// Polls for EOC this many times before giving up. A conversion is ~20 ADCCLK
+/// cycles, so exceeding this means the converter is not running.
+const EOC_POLL_LIMIT: u32 = 100_000;
+
+/// One software-triggered conversion of `channel`, polled. Overwrites the
+/// regular sequence and the trigger source; the caller owns ADON, scan and
+/// DMA state, and must have armed [`set_external_trigger`] with
+/// [`Extsel::SWSTART`] beforehand. `None` = EOC never arrived (see
+/// [`EOC_POLL_LIMIT`]).
+pub fn convert_once(channel: Channel) -> Option<u16> {
+    set_sequence(&[channel]);
+    // SWSTART always changes state here (hardware clears it), so the
+    // same-value ADON bit in this write cannot start a second conversion of
+    // its own (RM sec 9.3.3, ADON note).
+    ADC.ctlr2().modify(|w| {
+        w.set_extsel(Extsel::SWSTART);
+        w.set_exttrig(true);
+        w.set_swstart(true);
+    });
+    let mut polls = EOC_POLL_LIMIT;
+    while !ADC.statr().read().eoc() {
+        polls -= 1;
+        if polls == 0 {
+            return None;
+        }
+    }
+    // Reading RDATAR clears EOC.
+    Some(ADC.rdatar().read().data())
 }
 
 #[cfg(test)]
@@ -129,7 +165,6 @@ mod tests {
 
     #[test]
     fn internal_channels_have_no_pin() {
-        assert!(Channel::OpaOut.pin().is_none());
         assert!(Channel::Vcal.pin().is_none());
     }
 

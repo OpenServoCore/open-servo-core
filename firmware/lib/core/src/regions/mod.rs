@@ -21,16 +21,15 @@ pub(crate) mod hooks;
 pub mod profile;
 pub mod telemetry;
 
-pub use calib::{BemfCalibBlock, CalibRegs, PotLutBlock};
+pub use calib::{BemfCalibBlock, CalibRegs, CalibSense, CalibWinding, PotLutBlock};
 pub use config::{
-    BaudRate, ConfigCalibration, ConfigCommon, ConfigControlPosition, ConfigPosLimits, ConfigRegs,
-    ConfigStall, ConfigThermal, StallResponse,
+    BaudRate, ConfigCommon, ConfigControlPosition, ConfigPosLimits, ConfigRegs, ConfigStall,
+    ConfigThermal, StallResponse,
 };
 pub use control::{BootMode, ControlLifecycle, ControlRegs, ControlStreaming, ControlSystem, Mode};
 pub use profile::{PROFILE_SLOTS, ProfileRegs, ProfileSlots, SPANS_PER_SLOT};
 pub use telemetry::{
-    TelemetryCommon, TelemetryConverted, TelemetryIntermediaries, TelemetryMode, TelemetryRaw,
-    TelemetryRegs,
+    TelemetryCommon, TelemetryIntermediaries, TelemetryMode, TelemetryRegs, TelemetrySensors,
 };
 
 use crate::regions::config::ConfigDefaults;
@@ -66,10 +65,9 @@ impl ControlTableCell {
     /// Caller must be sole writer (install-time, pre-IRQ).
     pub fn seed_config_defaults(&self, defaults: &ConfigDefaults) {
         crate::log::debug!(
-            "seed CONFIG: phys=[{}, {}] urad  vdd_mv={}  id={}  baud_idx={}",
+            "seed CONFIG: phys=[{}, {}] urad  id={}  baud_idx={}",
             defaults.pos_min_phys_urad,
             defaults.pos_max_phys_urad,
-            defaults.vdd_mv,
             defaults.id,
             defaults.baud.as_idx(),
         );
@@ -80,7 +78,6 @@ impl ControlTableCell {
             cfg.pos_limits.pos_max_phys_urad = defaults.pos_max_phys_urad;
             cfg.pos_limits.pos_min_soft_urad = defaults.pos_min_phys_urad;
             cfg.pos_limits.pos_max_soft_urad = defaults.pos_max_phys_urad;
-            cfg.calibration.vdd_mv = defaults.vdd_mv;
             cfg.common.id = defaults.id;
             cfg.common.baud_rate_idx = defaults.baud.as_idx();
             cfg.common.response_deadline_us = defaults.response_deadline_us;
@@ -99,6 +96,23 @@ impl ControlTableCell {
             common.hardware_revision = hw_rev;
             common.firmware_version = crate::FIRMWARE_VERSION;
         });
+    }
+
+    /// Stamp the RO sense primitives the host converts raw counts with
+    /// (protocol sec 5.5) -- board facts, not host-writable state.
+    /// Caller must be sole writer (install-time, pre-IRQ).
+    pub fn seed_calib_sense(&self, sense: &CalibSense) {
+        // SAFETY: install-time, pre-IRQ, sole writer.
+        self.with_mut(|t| t.calib.sense = *sense);
+    }
+
+    /// Stamp the boot-measured zero-current output of the sense chain, in raw
+    /// ADC counts -- the offset every `sensors.current` reading is relative to.
+    /// Caller must be sole writer (install-time, pre-IRQ).
+    pub fn seed_current_bias(&self, counts: u16) {
+        crate::log::debug!("seed current bias: {} counts", counts);
+        // SAFETY: install-time, pre-IRQ, sole writer.
+        self.with_mut(|t| t.telemetry.intermediaries.current_bias_counts = counts);
     }
 }
 

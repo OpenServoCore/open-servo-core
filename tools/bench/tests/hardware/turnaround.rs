@@ -2,7 +2,7 @@ use bench::SUPPORTED_BAUDS;
 use bench::osc::{build_ping, build_read, build_write};
 use bench::run::Stats;
 use osc_servo_core::regions::control::addr::lifecycle::GOAL_POSITION;
-use osc_servo_core::regions::telemetry::addr::converted::PRESENT_POSITION;
+use osc_servo_core::regions::telemetry::addr::sensors::POS;
 use serial_test::serial;
 
 use crate::support::{Bench, bench};
@@ -90,19 +90,13 @@ fn ping_turnaround_within_budget() {
     gate(&mut b, &build_ping(id), "ping", ping_budget_us);
 }
 
-/// The copy-once read path at telemetry scale (16 B from the converted
-/// block).
+/// The copy-once read path at telemetry scale (16 B from the raw block).
 #[serial]
 #[test]
 fn read_turnaround_within_budget() {
     let mut b = bench();
     let id = b.id();
-    gate(
-        &mut b,
-        &build_read(id, PRESENT_POSITION, 16),
-        "read",
-        read_budget_us,
-    );
+    gate(&mut b, &build_read(id, POS, 16), "read", read_budget_us);
 }
 
 /// The mutating path: validated goal_position write (board-default value,

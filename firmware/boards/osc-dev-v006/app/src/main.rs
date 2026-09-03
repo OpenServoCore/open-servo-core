@@ -28,39 +28,32 @@ fn main() -> ! {
             // keeps the buffer released.
             #[cfg(not(feature = "half-duplex"))]
             bus: BusWiring { tx_en: Pin::PC2 },
+            // Rev B arm-B bodge: bare OPA closed by an external 1k/15k
+            // network (G = 15.0) off a 33 mohm shunt.
             current_sense: CurrentSenseConfig {
-                gain: opa::Gain::X32,
-                bias: opa::Bias::MidRail,
+                opa: opa::Config {
+                    pos: opa::PositiveInput::PD3,
+                    neg: opa::NegativeInput::PA1,
+                    out: opa::Output::PD4,
+                },
+                gain_milli: 15_000,
             },
             sensors: AdcPins {
                 pos: AnalogChannel::A3,
-                ntc: AnalogChannel::A2,
-                vbus: AnalogChannel::A1,
                 vmotor: (AnalogChannel::A5, AnalogChannel::A6),
             },
         },
         calibration: Calibration {
-            shunt_r_mohm: 10,
-            vbus_divider: Divider {
-                top_ohm: 20_000,
-                bot_ohm: 10_000,
-            },
+            shunt_r_mohm: 33,
             vmotor_divider: Divider {
                 top_ohm: 20_000,
                 bot_ohm: 10_000,
             },
-            // TH1 SDNT2012X103F3950FTF.
-            ntc: NtcCal {
-                beta: 3950,
-                r0_ohm: 10_000,
-                t0_cc: 2500,
-                bias_r_ohm: 10_000,
-            },
+            vdd_mv: 3300,
         },
         defaults: ConfigDefaults {
             pos_min_phys_urad: -1_570_796,
             pos_max_phys_urad: 1_570_796,
-            vdd_mv: 3300,
             id: 1,
             baud: BaudRate::B1000000,
             response_deadline_us: DEFAULT_RESPONSE_DEADLINE_US,

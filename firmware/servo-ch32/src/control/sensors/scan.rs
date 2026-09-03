@@ -5,12 +5,14 @@
 
 use core::cell::SyncUnsafeCell;
 
-/// In `AdcPins` field order: pos, ntc, vbus, vmotor.0, vmotor.1.
-pub(crate) const ADC_SENSOR_COUNT: usize = 5;
+/// In `AdcPins` field order: pos, vmotor.0, vmotor.1.
+pub(crate) const ADC_SENSOR_COUNT: usize = 3;
 
-/// Scan = `[IN9/OpaOut, IN7/PD4/pos, IN2/PC4/ntc,
-///          IN5/PD5/vmA, IN6/PD6/vmB, IN10/Vcal]`. IN1 (PA1/vbus) excluded.
-pub(crate) const ADC_SCAN_LEN: usize = 6;
+/// Slot 0 is the current-sense amplifier output, read on whichever external
+/// channel the board routes the OPA output to; the rest follow `AdcPins`.
+/// On osc-dev-v006 that is
+/// `[IN7/PD4 current, IN3/PD2 pos, IN5/PD5 vmA, IN6/PD6 vmB, IN10/Vcal]`.
+pub(crate) const ADC_SCAN_LEN: usize = 5;
 
 /// Two scans per PWM period (peak + trough under center-aligned PWM, RCR=0).
 pub(crate) const ADC_DMA_BUF_LEN: usize = ADC_SCAN_LEN * 2;
@@ -23,10 +25,9 @@ pub(super) const SCAN_TROUGH_OFFSET: usize = 0;
 
 pub(super) const SCAN_IDX_SHUNT_POST: usize = 0;
 pub(super) const SCAN_IDX_POS: usize = 1;
-pub(super) const SCAN_IDX_NTC: usize = 2;
-pub(super) const SCAN_IDX_VMOTOR_A: usize = 3;
-pub(super) const SCAN_IDX_VMOTOR_B: usize = 4;
-pub(super) const SCAN_IDX_VCAL: usize = 5;
+pub(super) const SCAN_IDX_VMOTOR_A: usize = 2;
+pub(super) const SCAN_IDX_VMOTOR_B: usize = 3;
+pub(super) const SCAN_IDX_VCAL: usize = 4;
 
 /// Read trough slots before peak; DMA overwrites trough first after TC.
 #[inline(always)]

@@ -4,7 +4,7 @@ pub use osc_servo_drivers::Level;
 pub use crate::cfg::BusWiring;
 pub use crate::cfg::{
     AdcPins, AnalogChannel, BoardConfig, BoardWiring, Calibration, CurrentSenseConfig, DigitalPin,
-    Divider, DrvEn, NtcCal,
+    Divider, DrvEn,
 };
 pub use crate::hal::{Pin, opa};
 pub use crate::{BaudRate, ConfigDefaults};

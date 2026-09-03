@@ -1,10 +1,12 @@
+use crate::estimator::VcalLpf;
 use crate::traits::ControlIo;
-use crate::{Sample, Shared};
+use crate::{RegionStorageRaw, SensorFrame, Shared};
 
 /// Runs in the PWM ISR; one `on_tick` per period.
 pub struct Kernel<I: ControlIo> {
     pub io: I,
     pub state: KernelState,
+    pub vcal_lpf: VcalLpf,
     pub stream_decimation_counter: u8,
     pub stream_duration_remaining_ticks: u32,
 }
@@ -20,13 +22,27 @@ impl<I: ControlIo> Kernel<I> {
         Self {
             io,
             state: KernelState::default(),
+            vcal_lpf: VcalLpf::new(),
             stream_decimation_counter: 1,
             stream_duration_remaining_ticks: 0,
         }
     }
 
     /// Must complete well inside the kernel period (~50 us at 20 kHz).
-    pub fn on_tick(&mut self, _sample: Sample, _shared: &Shared) {
+    pub fn on_tick(&mut self, frame: SensorFrame, shared: &Shared) {
+        let vcal_lpf = self.vcal_lpf.update(frame.vcal);
+
+        // SAFETY: ISR context is the region's sole writer (the `sample_tick`
+        // contract); volatile per field so the stores survive optimization.
+        unsafe {
+            let s = &raw mut (*shared.table.region_ptr()).telemetry.sensors;
+            (&raw mut (*s).pos).write_volatile(frame.pos);
+            (&raw mut (*s).current).write_volatile(frame.current);
+            (&raw mut (*s).vcal).write_volatile(frame.vcal);
+            (&raw mut (*s).vcal_lpf).write_volatile(vcal_lpf);
+            (&raw mut (*s).vmotor_a).write_volatile(frame.vmotor_a);
+            (&raw mut (*s).vmotor_b).write_volatile(frame.vmotor_b);
+        }
         // TODO: PID + mode dispatch + motor.write once the control loop lands.
     }
 }

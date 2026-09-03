@@ -93,15 +93,6 @@ pub struct ConfigThermal {
     pub _rsvd_tail: u16,
 }
 
-/// `vdd_mv` is the DMM-measured VDD-at-chip-pin baked in per board.
-#[repr(C)]
-#[derive(Copy, Clone, Block)]
-pub struct ConfigCalibration {
-    pub vdd_mv: u16,
-    #[ct_field(skip)]
-    pub _rsvd_align: u16,
-}
-
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct ConfigControlPosition {
@@ -137,9 +128,8 @@ pub struct ConfigRegs {
     pub stall: ConfigStall,
     pub thermal: ConfigThermal,
     pub ctrl_pos: ConfigControlPosition,
-    pub calibration: ConfigCalibration,
     #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 28],
+    pub _rsvd_tail: [u8; 32],
 }
 
 /// Boot-time seed for `ControlTable.config`; stamped pre-IRQ, then host-owned.
@@ -147,8 +137,6 @@ pub struct ConfigRegs {
 pub struct ConfigDefaults {
     pub pos_min_phys_urad: i32,
     pub pos_max_phys_urad: i32,
-    /// VDD-at-chip-pin in mV; the v006 ADC reference is VDD itself.
-    pub vdd_mv: u16,
     pub id: u8,
     pub baud: BaudRate,
     pub response_deadline_us: u16,
