@@ -31,10 +31,10 @@ fn main() -> ! {
             // Rev B arm-B bodge: bare OPA closed by an external 1k/15k
             // network (G = 15.0) off a 33 mohm shunt.
             current_sense: CurrentSenseConfig {
-                opa: opa::BareConfig {
+                opa: opa::Config {
                     pos: opa::PositiveInput::PD3,
-                    neg: opa::BareNegativeInput::PA1,
-                    out: opa::BareOutput::PD4,
+                    neg: opa::NegativeInput::PA1,
+                    out: opa::Output::PD4,
                 },
                 gain_milli: 15_000,
             },

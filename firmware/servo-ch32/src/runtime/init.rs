@@ -196,7 +196,7 @@ fn configure_bus_pins(w: &BoardWiring) {
 }
 
 fn bring_up_analog_chain(cs: &CurrentSenseConfig) {
-    opa::init_bare(&cs.opa);
+    opa::init(&cs.opa);
     delay_ms(OPA_SETTLE_MS);
 }
 

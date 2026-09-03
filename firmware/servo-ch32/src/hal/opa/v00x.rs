@@ -28,16 +28,16 @@ impl PositiveInput {
 /// Pin-selected negative input (OPA_CTLR1.NSEL1).
 #[derive(Copy, Clone)]
 #[repr(u8)]
-pub enum BareNegativeInput {
+pub enum NegativeInput {
     PA1 = 0b000,
     PD0 = 0b001,
 }
 
-impl BareNegativeInput {
+impl NegativeInput {
     pub const fn pin(self) -> Pin {
         match self {
-            BareNegativeInput::PA1 => Pin::PA1,
-            BareNegativeInput::PD0 => Pin::PD0,
+            NegativeInput::PA1 => Pin::PA1,
+            NegativeInput::PD0 => Pin::PD0,
         }
     }
 }
@@ -46,29 +46,29 @@ impl BareNegativeInput {
 /// external feedback network needs the amplifier output on a pad.
 #[derive(Copy, Clone)]
 #[repr(u8)]
-pub enum BareOutput {
+pub enum Output {
     PD4 = 0b00,
     PA5 = 0b01,
 }
 
-impl BareOutput {
+impl Output {
     pub const fn pin(self) -> Pin {
         match self {
-            BareOutput::PD4 => Pin::PD4,
-            BareOutput::PA5 => Pin::PA5,
+            Output::PD4 => Pin::PD4,
+            Output::PA5 => Pin::PA5,
         }
     }
 }
 
 /// Bare op-amp: both inputs and the output on pins, loop closed externally.
 #[derive(Copy, Clone)]
-pub struct BareConfig {
+pub struct Config {
     pub pos: PositiveInput,
-    pub neg: BareNegativeInput,
-    pub out: BareOutput,
+    pub neg: NegativeInput,
+    pub out: Output,
 }
 
-impl BareConfig {
+impl Config {
     /// Pins to configure as analog inputs: (positive, negative, output).
     pub const fn pins(&self) -> (Pin, Pin, Pin) {
         (self.pos.pin(), self.neg.pin(), self.out.pin())
@@ -82,7 +82,7 @@ fn unlock() {
 
 /// Configures OPA1 as a stand-alone op-amp (RM 17.2.1.1): no internal feedback
 /// ladder, no bias, gain set by the external resistor network.
-pub fn init_bare(cfg: &BareConfig) {
+pub fn init(cfg: &Config) {
     unlock();
     OPA.ctlr1().write(|w| {
         // HS on: the external-network settle budget needs the bandwidth;

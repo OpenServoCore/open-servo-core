@@ -42,7 +42,7 @@ impl DrvEn {
 
 #[derive(Copy, Clone)]
 pub struct CurrentSenseConfig {
-    pub opa: opa::BareConfig,
+    pub opa: opa::Config,
     /// External feedback network Rf/Rg x1000. The bare op-amp has no gain of
     /// its own, so this is board data, not a chip setting.
     pub gain_milli: u16,
@@ -52,10 +52,10 @@ impl CurrentSenseConfig {
     /// ADC channel the amplifier output lands on.
     pub const fn current_channel(&self) -> AnalogChannel {
         match self.opa.out {
-            opa::BareOutput::PD4 => AnalogChannel::A7,
+            opa::Output::PD4 => AnalogChannel::A7,
             // Dead arm: `BoardWiring::assert_valid` rejects a PA5 output at
             // const-eval, because PA5 is not an ADC pin on this package.
-            opa::BareOutput::PA5 => AnalogChannel::A7,
+            opa::Output::PA5 => AnalogChannel::A7,
         }
     }
 }
@@ -105,7 +105,7 @@ impl BoardWiring {
     }
 
     const fn assert_current_output_readable(&self) {
-        if matches!(self.current_sense.opa.out, opa::BareOutput::PA5) {
+        if matches!(self.current_sense.opa.out, opa::Output::PA5) {
             panic!("BoardWiring: OPA output PA5 has no ADC channel on this package");
         }
     }
