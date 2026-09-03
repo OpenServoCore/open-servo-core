@@ -526,56 +526,56 @@
       "kind": "uint"
     },
     {
-      "name": "raw_pos",
+      "name": "pos",
       "addr": 588,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
-      "name": "raw_current",
+      "name": "current",
       "addr": 590,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
-      "name": "raw_vcal",
+      "name": "vcal",
       "addr": 592,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
-      "name": "raw_vcal_lpf",
+      "name": "vcal_lpf",
       "addr": 594,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
-      "name": "raw_vmotor_a",
+      "name": "vmotor_a",
       "addr": 596,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
-      "name": "raw_vmotor_b",
+      "name": "vmotor_b",
       "addr": 598,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
-      "name": "raw_enc_a",
+      "name": "enc_a",
       "addr": 600,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
-      "name": "raw_enc_b",
+      "name": "enc_b",
       "addr": 602,
       "width": 2,
       "access": "ro",

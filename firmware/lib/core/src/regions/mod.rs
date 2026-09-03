@@ -107,7 +107,7 @@ impl ControlTableCell {
     }
 
     /// Stamp the boot-measured zero-current output of the sense chain, in raw
-    /// ADC counts -- the offset every `raw_current` reading is relative to.
+    /// ADC counts -- the offset every `raw.current` reading is relative to.
     /// Caller must be sole writer (install-time, pre-IRQ).
     pub fn seed_current_bias(&self, counts: u16) {
         crate::log::debug!("seed current bias: {} counts", counts);

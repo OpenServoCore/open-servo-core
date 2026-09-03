@@ -2,7 +2,7 @@ use bench::SUPPORTED_BAUDS;
 use bench::osc::{build_ping, build_read, build_write};
 use bench::run::Stats;
 use osc_servo_core::regions::control::addr::lifecycle::GOAL_POSITION;
-use osc_servo_core::regions::telemetry::addr::raw::RAW_POS;
+use osc_servo_core::regions::telemetry::addr::raw::POS;
 use serial_test::serial;
 
 use crate::support::{Bench, bench};
@@ -96,7 +96,7 @@ fn ping_turnaround_within_budget() {
 fn read_turnaround_within_budget() {
     let mut b = bench();
     let id = b.id();
-    gate(&mut b, &build_read(id, RAW_POS, 16), "read", read_budget_us);
+    gate(&mut b, &build_read(id, POS, 16), "read", read_budget_us);
 }
 
 /// The mutating path: validated goal_position write (board-default value,

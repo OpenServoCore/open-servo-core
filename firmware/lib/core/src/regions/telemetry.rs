@@ -68,21 +68,21 @@ pub struct TelemetryMode {
 #[derive(Copy, Clone, Block)]
 pub struct TelemetryRaw {
     #[ct_field(access = ro)]
-    pub raw_pos: u16,
+    pub pos: u16,
     #[ct_field(access = ro)]
-    pub raw_current: u16,
+    pub current: u16,
     #[ct_field(access = ro)]
-    pub raw_vcal: u16,
+    pub vcal: u16,
     #[ct_field(access = ro)]
-    pub raw_vcal_lpf: u16,
+    pub vcal_lpf: u16,
     #[ct_field(access = ro)]
-    pub raw_vmotor_a: u16,
+    pub vmotor_a: u16,
     #[ct_field(access = ro)]
-    pub raw_vmotor_b: u16,
+    pub vmotor_b: u16,
     #[ct_field(access = ro)]
-    pub raw_enc_a: u16,
+    pub enc_a: u16,
     #[ct_field(access = ro)]
-    pub raw_enc_b: u16,
+    pub enc_b: u16,
 }
 
 #[repr(C)]
