@@ -3,11 +3,14 @@
 //! select, OC trip, current PI, motor write), MEDIUM every DECIM_MED ticks
 //! (fusion, trajectory, position/velocity, limits, vbus/bemf, detectors,
 //! estimates publish), SLOW every DECIM_SLOW medium ticks (thermometer,
-//! derate, undervolt/overtemp). Tick-indexed by design: a missed tick
-//! dilates time, nothing compensates and nothing reads a wall clock.
+//! derate, undervolt/overtemp). Identification aggregates ride their own
+//! /16 fast-tick window (`ident`), independent of DECIM_MED. Tick-indexed
+//! by design: a missed tick dilates time, nothing compensates and nothing
+//! reads a wall clock.
 
 pub mod current;
 pub mod faults;
+pub mod ident;
 pub mod limits;
 pub mod position;
 pub mod trajectory;
@@ -98,6 +101,11 @@ pub struct Kernel<I: ControlIo> {
     decay: DecayMode,
     /// Last window-valid measurement, for the `i_hat_counts` publish.
     i_meas_last: i16,
+    /// Identification aggregator, own /16 fast-tick window.
+    ident: ident::IdentAgg,
+    /// Last v-valid drive-window differential (va - vb), for the ident
+    /// accumulation - same hold-last-valid pattern as `i_meas_last`.
+    vdiff_last: i16,
     /// ms -> medium-tick conversions, recomputed each SLOW pass; primed
     /// never-trip so no detector fires before the first pass computes them.
     stall_time_ticks: u32,
@@ -137,6 +145,8 @@ impl<I: ControlIo> Kernel<I> {
             duty_q15: 0,
             decay: DecayMode::Slow,
             i_meas_last: 0,
+            ident: ident::IdentAgg::new(),
+            vdiff_last: 0,
             stall_time_ticks: u32::MAX,
             pos_error_time_ticks: u32::MAX,
             therm_r0: 0,
@@ -209,6 +219,29 @@ impl<I: ControlIo> Kernel<I> {
         if self.det.oc_sample(oc_over, lim_cfg.oc_trip_ticks) {
             self.faults
                 .raise(faults::BIT_OVER_CURRENT, faults::CODE_OVER_CURRENT);
+        }
+
+        // IDENT: per-tick sample aligned to the window the PREVIOUS command
+        // drove - duty_q15 still holds that command here; i/vdiff hold
+        // last-valid through invalid windows (ident module doc).
+        if let Some((_, vdiff)) = window::vdrive_from_frame(&frame, sel, fwd) {
+            self.vdiff_last = vdiff.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+        }
+        if let Some(agg) = self
+            .ident
+            .sample(self.i_meas_last, self.vdiff_last, self.duty_q15)
+        {
+            // SAFETY: sole-telemetry-writer contract (type doc); volatile
+            // per-field stores at the ident window boundary.
+            unsafe {
+                let d = &raw mut (*p).telemetry.ident;
+                (&raw mut (*d).i_mean_counts).write_volatile(agg.i_mean_counts);
+                (&raw mut (*d).i_min_counts).write_volatile(agg.i_min_counts);
+                (&raw mut (*d).i_max_counts).write_volatile(agg.i_max_counts);
+                (&raw mut (*d).vdiff_mean).write_volatile(agg.vdiff_mean);
+                (&raw mut (*d).duty_mean_q15).write_volatile(agg.duty_mean_q15);
+                (&raw mut (*d).agg_seq).write_volatile(agg.agg_seq);
+            }
         }
 
         let run = life.torque_enable && self.faults.mask() == 0;

@@ -377,6 +377,107 @@ fn publishes_land_in_the_table() {
     });
 }
 
+// --- Ident aggregates -----------------------------------------------------
+
+fn ident_setup(sh: &Shared) {
+    seed(sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::OpenLoop;
+        // drive_ticks(8000) = 293 >= the 100-tick floors: windows valid
+        // from tick 2 on (tick 1 measures the boot duty of 0)
+        t.control.lifecycle.goal_duty = 8000;
+    });
+}
+
+#[test]
+fn ident_window_pins_aggregates() {
+    let sh = Shared::new();
+    ident_setup(&sh);
+    let mut k = kernel();
+    // window 1 (ticks 1-16) is boot-mixed; spend it
+    for _ in 0..16 {
+        k.on_tick(frame(2000, BIAS + 100), &sh);
+    }
+    sh.table.with(|t| assert_eq!(t.telemetry.ident.agg_seq, 1));
+    // window 2: 8 ticks at +100, 4 at +300, 4 at -60, all windows valid
+    for _ in 0..8 {
+        k.on_tick(frame(2000, BIAS + 100), &sh);
+    }
+    // seq holds mid-window: publish only at the /16 boundary
+    sh.table.with(|t| assert_eq!(t.telemetry.ident.agg_seq, 1));
+    for _ in 0..4 {
+        k.on_tick(frame(2000, BIAS + 300), &sh);
+    }
+    for _ in 0..4 {
+        k.on_tick(frame(2000, BIAS - 60), &sh);
+    }
+    sh.table.with(|t| {
+        let d = &t.telemetry.ident;
+        // (8*100 + 4*300 + 4*-60) >> 4 = 1760/16 = 110
+        assert_eq!(d.i_mean_counts, 110);
+        assert_eq!(d.i_min_counts, -60);
+        assert_eq!(d.i_max_counts, 300);
+        assert_eq!(d.vdiff_mean, 2960); // va 3000 - vb 40, every tick
+        assert_eq!(d.duty_mean_q15, 8000);
+        assert_eq!(d.agg_seq, 2);
+    });
+}
+
+#[test]
+fn ident_invalid_ticks_hold_last_valid() {
+    let sh = Shared::new();
+    ident_setup(&sh);
+    let mut k = kernel();
+    for _ in 0..32 {
+        k.on_tick(frame(2000, BIAS + 200), &sh);
+    }
+    // disable: windows go invalid one tick later (tick 33 still measures
+    // the period tick 32's command drove)
+    sh.table
+        .with_mut(|t| t.control.lifecycle.torque_enable = false);
+    for _ in 0..16 {
+        k.on_tick(frame(2000, BIAS + 200), &sh);
+    }
+    sh.table.with(|t| {
+        let d = &t.telemetry.ident;
+        // 15 invalid ticks held the last valid i/vdiff: means stay put
+        assert_eq!(d.i_mean_counts, 200);
+        assert_eq!(d.i_min_counts, 200);
+        assert_eq!(d.i_max_counts, 200);
+        assert_eq!(d.vdiff_mean, 2960);
+        // duty is per-tick truth: 8000 on tick 33 only -> 8000>>4 = 500
+        assert_eq!(d.duty_mean_q15, 500);
+        assert_eq!(d.agg_seq, 3);
+    });
+}
+
+#[test]
+fn ident_accumulators_reset_between_windows() {
+    let sh = Shared::new();
+    ident_setup(&sh);
+    let mut k = kernel();
+    // windows 1 (boot-mixed) and 2 at a big current
+    for _ in 0..32 {
+        k.on_tick(frame(2000, BIAS + 1000), &sh);
+    }
+    sh.table
+        .with(|t| assert_eq!(t.telemetry.ident.i_max_counts, 1000));
+    // window 3: 15 ticks at 0, one at -5; window 2's 1000 must not leak
+    for _ in 0..15 {
+        k.on_tick(frame(2000, BIAS), &sh);
+    }
+    k.on_tick(frame(2000, BIAS - 5), &sh);
+    sh.table.with(|t| {
+        let d = &t.telemetry.ident;
+        assert_eq!(d.i_max_counts, 0);
+        assert_eq!(d.i_min_counts, -5);
+        // sum -5 >> 4: arithmetic shift floors to -1
+        assert_eq!(d.i_mean_counts, -1);
+        assert_eq!(d.agg_seq, 3);
+    });
+}
+
 // --- Closed-loop plant ----------------------------------------------------
 
 /// Crude integer plant in the identification-model shape:

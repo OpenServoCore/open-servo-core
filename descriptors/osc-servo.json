@@ -806,21 +806,21 @@
       "addr": 596,
       "width": 2,
       "access": "ro",
-      "kind": "uint"
+      "kind": "int"
     },
     {
       "name": "i_min_counts",
       "addr": 598,
       "width": 2,
       "access": "ro",
-      "kind": "uint"
+      "kind": "int"
     },
     {
       "name": "i_max_counts",
       "addr": 600,
       "width": 2,
       "access": "ro",
-      "kind": "uint"
+      "kind": "int"
     },
     {
       "name": "vdiff_mean",

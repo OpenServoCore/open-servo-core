@@ -108,19 +108,23 @@ pub struct TelemetrySensors {
 }
 
 /// Identification aggregates on their own fast-tick /16 window (mean =
-/// sum>>4); `agg_seq` increments per window so the host pairs a consistent
-/// set.
+/// sum>>4, arithmetic); `agg_seq` increments per window so the host pairs a
+/// consistent set. Current fields are SIGNED bias-subtracted counts - the
+/// fitter's domain. Ticks with an invalid window contribute the last valid
+/// current/vdiff sample, not zero (kernel/ident.rs doc).
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct TelemetryIdent {
     #[ct_field(access = ro)]
-    pub i_mean_counts: u16,
+    pub i_mean_counts: i16,
     #[ct_field(access = ro)]
-    pub i_min_counts: u16,
+    pub i_min_counts: i16,
     #[ct_field(access = ro)]
-    pub i_max_counts: u16,
+    pub i_max_counts: i16,
+    /// Drive-window `va - vb` differential mean.
     #[ct_field(access = ro)]
     pub vdiff_mean: i16,
+    /// Mean of the per-tick commanded duty (always defined, 0 while off).
     #[ct_field(access = ro)]
     pub duty_mean_q15: i16,
     #[ct_field(access = ro)]
