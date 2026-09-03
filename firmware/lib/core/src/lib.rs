@@ -29,7 +29,7 @@ pub use regions::{
     ConfigFusion, ConfigLimits, ConfigLoopCurrent, ConfigLoopPosition, ConfigLoopVelocity,
     ConfigPosLimits, ConfigRegs, ConfigThermal, ControlLifecycle, ControlRegs, ControlSystem,
     ControlTable, ControlTableCell, DecaySelect, Mode, PotLutBlock, StallResponse, TelemetryCommon,
-    TelemetryIntermediaries, TelemetryMode, TelemetryRegs, TelemetrySensors,
+    TelemetryEstimates, TelemetryIdent, TelemetryMode, TelemetryRegs, TelemetrySensors,
 };
 pub use sensor_frame::SensorFrame;
 pub use services::bus::{Dispatcher, Session};

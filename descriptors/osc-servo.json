@@ -648,106 +648,190 @@
       "kind": "uint"
     },
     {
-      "name": "current_bias_counts",
-      "addr": 564,
+      "name": "theta_hat_q16",
+      "addr": 548,
+      "width": 4,
+      "access": "ro",
+      "kind": "int"
+    },
+    {
+      "name": "omega_hat_cps",
+      "addr": 552,
+      "width": 4,
+      "access": "ro",
+      "kind": "int"
+    },
+    {
+      "name": "tau_d_counts",
+      "addr": 556,
+      "width": 2,
+      "access": "ro",
+      "kind": "int"
+    },
+    {
+      "name": "i_lim_counts",
+      "addr": 558,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
-      "name": "t_winding_dc",
+      "name": "t_winding_cc",
+      "addr": 560,
+      "width": 2,
+      "access": "ro",
+      "kind": "int"
+    },
+    {
+      "name": "vbus_counts",
+      "addr": 562,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "duty_applied_q15",
+      "addr": 564,
+      "width": 2,
+      "access": "ro",
+      "kind": "int"
+    },
+    {
+      "name": "omega_bemf_cps",
       "addr": 566,
       "width": 2,
       "access": "ro",
       "kind": "int"
     },
     {
-      "name": "pwm_duty_actual",
+      "name": "r_hat_q12",
       "addr": 568,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "i_hat_counts",
+      "addr": 570,
       "width": 2,
       "access": "ro",
       "kind": "int"
     },
     {
-      "name": "pid_error_last",
-      "addr": 572,
-      "width": 4,
-      "access": "ro",
-      "kind": "int"
-    },
-    {
-      "name": "pid_output_last",
-      "addr": 576,
-      "width": 4,
-      "access": "ro",
-      "kind": "int"
-    },
-    {
-      "name": "internal_goal",
-      "addr": 580,
-      "width": 4,
-      "access": "ro",
-      "kind": "int"
-    },
-    {
       "name": "sample_tick",
-      "addr": 584,
+      "addr": 572,
       "width": 4,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "pos",
-      "addr": 588,
+      "addr": 576,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "current",
-      "addr": 590,
+      "addr": 578,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "vcal",
-      "addr": 592,
+      "addr": 580,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "vcal_lpf",
-      "addr": 594,
+      "addr": 582,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "vmotor_a",
-      "addr": 596,
+      "addr": 584,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "vmotor_b",
-      "addr": 598,
+      "addr": 586,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "enc_a",
-      "addr": 600,
+      "addr": 588,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "enc_b",
+      "addr": 590,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "current_trough",
+      "addr": 592,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "current_bias_counts",
+      "addr": 594,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "i_mean_counts",
+      "addr": 596,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "i_min_counts",
+      "addr": 598,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "i_max_counts",
+      "addr": 600,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "vdiff_mean",
       "addr": 602,
+      "width": 2,
+      "access": "ro",
+      "kind": "int"
+    },
+    {
+      "name": "duty_mean_q15",
+      "addr": 604,
+      "width": 2,
+      "access": "ro",
+      "kind": "int"
+    },
+    {
+      "name": "agg_seq",
+      "addr": 606,
       "width": 2,
       "access": "ro",
       "kind": "uint"

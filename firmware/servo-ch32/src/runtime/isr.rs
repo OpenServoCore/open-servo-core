@@ -69,10 +69,7 @@ pub fn on_adc_dma_tc() {
 
     unsafe {
         // Volatile pair: load-bearing against optimizer hoisting in the pump.
-        let tick = &raw mut (*SHARED.table.region_ptr())
-            .telemetry
-            .intermediaries
-            .sample_tick;
+        let tick = &raw mut (*SHARED.table.region_ptr()).telemetry.estimates.sample_tick;
         tick.write_volatile(tick.read_volatile().wrapping_add(1));
 
         // SAFETY: PFIC unmasks DMA1_CHANNEL1 only after install_kernel writes KERNEL.

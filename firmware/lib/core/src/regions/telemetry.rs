@@ -1,26 +1,5 @@
 use control_table::{Block, Section};
 
-#[repr(C)]
-#[derive(Copy, Clone, Block)]
-pub struct TelemetryIntermediaries {
-    #[ct_field(access = ro)]
-    pub current_bias_counts: u16,
-    #[ct_field(access = ro)]
-    pub t_winding_dc: i16,
-    #[ct_field(access = ro)]
-    pub pwm_duty_actual: i16,
-    #[ct_field(skip)]
-    pub _rsvd_align: u16,
-    #[ct_field(access = ro)]
-    pub pid_error_last: i32,
-    #[ct_field(access = ro)]
-    pub pid_output_last: i32,
-    #[ct_field(access = ro)]
-    pub internal_goal: i32,
-    #[ct_field(access = ro)]
-    pub sample_tick: u32,
-}
-
 /// protocol sec 5.4 TELEMETRY-COMMON block, at the region front. Counters:
 /// host can Write zero to clear (bench instrumentation); the chip publishes
 /// deltas via raw pointer, bypassing the regmap, so a concurrent host clear +
@@ -64,6 +43,44 @@ pub struct TelemetryMode {
     pub _rsvd_align: u16,
 }
 
+/// Estimator outputs, published at the medium boundary (`sample_tick` at
+/// every fast tick). Counts-domain throughout; conversion is the host's job.
+#[repr(C)]
+#[derive(Copy, Clone, Block)]
+pub struct TelemetryEstimates {
+    /// Fused position, cQ16 (pot counts x 2^16).
+    #[ct_field(access = ro)]
+    pub theta_hat_q16: i32,
+    /// Fused velocity, raw csQ16 ((counts/s) x 2^16) -- published unshifted.
+    #[ct_field(access = ro)]
+    pub omega_hat_cps: i32,
+    /// Disturbance-torque estimate, current counts.
+    #[ct_field(access = ro)]
+    pub tau_d_counts: i16,
+    /// Effective current ceiling after limit folds.
+    #[ct_field(access = ro)]
+    pub i_lim_counts: u16,
+    /// Winding temperature, centi-C.
+    #[ct_field(access = ro)]
+    pub t_winding_cc: i16,
+    #[ct_field(access = ro)]
+    pub vbus_counts: u16,
+    /// Post-clamp post-gate duty actually written to the bridge.
+    #[ct_field(access = ro)]
+    pub duty_applied_q15: i16,
+    /// Telemetry-only bemf observer, whole c/s.
+    #[ct_field(access = ro)]
+    pub omega_bemf_cps: i16,
+    /// Winding-R LMS estimate, vcounts/ccount Q4.12.
+    #[ct_field(access = ro)]
+    pub r_hat_q12: u16,
+    /// Window-selected, bias-subtracted, signed current sample.
+    #[ct_field(access = ro)]
+    pub i_hat_counts: i16,
+    #[ct_field(access = ro)]
+    pub sample_tick: u32,
+}
+
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct TelemetrySensors {
@@ -83,6 +100,31 @@ pub struct TelemetrySensors {
     pub enc_a: u16,
     #[ct_field(access = ro)]
     pub enc_b: u16,
+    #[ct_field(access = ro)]
+    pub current_trough: u16,
+    /// Boot-measured zero-current sense-chain output, raw ADC counts.
+    #[ct_field(access = ro)]
+    pub current_bias_counts: u16,
+}
+
+/// Identification aggregates on their own fast-tick /16 window (mean =
+/// sum>>4); `agg_seq` increments per window so the host pairs a consistent
+/// set.
+#[repr(C)]
+#[derive(Copy, Clone, Block)]
+pub struct TelemetryIdent {
+    #[ct_field(access = ro)]
+    pub i_mean_counts: u16,
+    #[ct_field(access = ro)]
+    pub i_min_counts: u16,
+    #[ct_field(access = ro)]
+    pub i_max_counts: u16,
+    #[ct_field(access = ro)]
+    pub vdiff_mean: i16,
+    #[ct_field(access = ro)]
+    pub duty_mean_q15: i16,
+    #[ct_field(access = ro)]
+    pub agg_seq: u16,
 }
 
 #[repr(C)]
@@ -91,10 +133,9 @@ pub struct TelemetrySensors {
 pub struct TelemetryRegs {
     pub common: TelemetryCommon,
     pub mode: TelemetryMode,
-    #[ct_section(skip)]
-    pub _rsvd_converted: [u8; 16],
-    pub intermediaries: TelemetryIntermediaries,
+    pub estimates: TelemetryEstimates,
     pub sensors: TelemetrySensors,
+    pub ident: TelemetryIdent,
     #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 36],
+    pub _rsvd_tail: [u8; 32],
 }

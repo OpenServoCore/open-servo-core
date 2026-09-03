@@ -30,7 +30,8 @@ pub use config::{
 pub use control::{BootMode, ControlLifecycle, ControlRegs, ControlSystem, Mode};
 pub use profile::{PROFILE_SLOTS, ProfileRegs, ProfileSlots, SPANS_PER_SLOT};
 pub use telemetry::{
-    TelemetryCommon, TelemetryIntermediaries, TelemetryMode, TelemetryRegs, TelemetrySensors,
+    TelemetryCommon, TelemetryEstimates, TelemetryIdent, TelemetryMode, TelemetryRegs,
+    TelemetrySensors,
 };
 
 use crate::regions::config::ConfigDefaults;
@@ -134,7 +135,7 @@ impl ControlTableCell {
     pub fn seed_current_bias(&self, counts: u16) {
         crate::log::debug!("seed current bias: {} counts", counts);
         // SAFETY: install-time, pre-IRQ, sole writer.
-        self.with_mut(|t| t.telemetry.intermediaries.current_bias_counts = counts);
+        self.with_mut(|t| t.telemetry.sensors.current_bias_counts = counts);
     }
 }
 

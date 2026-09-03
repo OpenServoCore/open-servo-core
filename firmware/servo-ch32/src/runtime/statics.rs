@@ -30,10 +30,7 @@ pub fn install(io: Ch32ControlIo) {
 /// because LLVM can't see the DMA TC ISR writing this asynchronously.
 pub fn read_sample_tick() -> u32 {
     unsafe {
-        let p = &raw const (*SHARED.table.region_ptr())
-            .telemetry
-            .intermediaries
-            .sample_tick;
+        let p = &raw const (*SHARED.table.region_ptr()).telemetry.estimates.sample_tick;
         p.read_volatile()
     }
 }

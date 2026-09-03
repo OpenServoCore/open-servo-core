@@ -38,6 +38,7 @@ impl<I: ControlIo> Kernel<I> {
             (&raw mut (*s).vcal_lpf).write_volatile(vcal_lpf);
             (&raw mut (*s).vmotor_a).write_volatile(frame.vmotor_a);
             (&raw mut (*s).vmotor_b).write_volatile(frame.vmotor_b);
+            (&raw mut (*s).current_trough).write_volatile(frame.current_trough);
         }
         // TODO: PID + mode dispatch + motor.write once the control loop lands.
     }
