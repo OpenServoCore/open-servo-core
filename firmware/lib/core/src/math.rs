@@ -28,17 +28,34 @@ pub fn wide_ge(a: u32, b: u32, c: u32, d: u32) -> bool {
     a as u64 * b as u64 >= c as u64 * d as u64
 }
 
-/// clz-based seed for a Q15 reciprocal Newton iteration. Contract: the
-/// converged recip satisfies `(recip * v) >> 15 ~= 32767`, i.e.
-/// `duty = q_mul(u, recip, 15)` maps `u == vbus` to ~full-scale 32767. The
-/// seed is `2^(clz(v)-1)`, so `seed * v` lands in `[2^30, 2^31)` - within a
-/// factor of 2 of the `32767 << 15` target for any `v` in `1..2^31` (vbus
-/// counts are 12-bit in practice); the vbus estimator's Newton steps refine
-/// it. `v == 0` has no reciprocal and just yields the max seed - no panic.
-/// `leading_zeros` is an intrinsic, no libcall.
-#[inline]
-pub fn recip_seed_q15(v: u32) -> u32 {
-    1u32 << v.leading_zeros().saturating_sub(1)
+// Q1.30 linear reciprocal seed r0 = 48/17 - (32/17)x for the normalized
+// x in [0.5, 1): max relative error 1/17, so two Newton steps land at
+// (1/17)^4 ~ 1.2e-5. A clz power-of-two seed can start a factor of 2 off,
+// where r*(2 - r*d) convergence stalls and needs ~8 steps; the linear seed
+// keeps the full-accuracy reciprocal one-shot at ~10 multiplies, cheap
+// enough for every caller to share this implementation.
+const SEED_C1_Q30: u32 = 3_031_741_621; // round(48/17 << 30)
+const SEED_C2_Q30: u32 = 2_021_161_080; // round(32/17 << 30)
+
+/// `num / d` without a divide. Normalize d into [2^31, 2^32) (Q0.32), linear
+/// seed + two Newton steps `r' = r*(2 - r*d)` in Q1.30, then one widening
+/// multiply denormalizes straight into the quotient. Error <= 1.2e-5
+/// relative plus truncation (pinned in tests). d == 0 has no quotient;
+/// callers gate the degenerate span, num is the no-panic backstop.
+pub fn recip_div(num: u32, d: u32) -> u32 {
+    if d <= 1 {
+        return num;
+    }
+    let n = d.leading_zeros(); // 1..=30 for d >= 2
+    let dn = d << n;
+    let mut r = SEED_C1_Q30 - q_mul_u(SEED_C2_Q30, dn, 32);
+    r = q_mul_u(r, (2u32 << 30) - q_mul_u(r, dn, 32), 30);
+    r = q_mul_u(r, (2u32 << 30) - q_mul_u(r, dn, 32), 30);
+    // num/d = num*r >> (62-n), split as (>> 32) then (>> 30-n): identical
+    // bits, but the u64 shift stays constant and the variable shift is u32 -
+    // a variable 64-bit shift is soft on rv32ec (check-soft-arith.sh bans it)
+    let p = num as u64 * r as u64;
+    ((p >> 32) as u32) >> (30 - n)
 }
 
 #[cfg(test)]
@@ -102,21 +119,21 @@ mod tests {
     }
 
     #[test]
-    fn recip_seed_within_factor_of_two() {
-        let target = (32767u64) << 15;
-        for v in 512..=4095u32 {
-            let seed = recip_seed_q15(v);
-            assert!(seed > 0);
-            let p = seed as u64 * v as u64;
-            assert!(p >= target / 2, "v={v} seed={seed} p={p}");
-            assert!(p <= target * 2, "v={v} seed={seed} p={p}");
+    fn recip_div_accuracy_pinned() {
+        // worst seeds are just under a power of two (x -> 1 from below maps
+        // to r near the interval edge); sweep those plus a dense band and
+        // the u32-extreme numerator. Bound: 1.2e-5 relative + 2 LSB.
+        let spot = [32767u32, 32768, 65534, 65535];
+        for d in (1..=4096u32).chain(spot) {
+            for num in [1u32, 999, 1_200 * 2_000, 4_294_836_225] {
+                let got = recip_div(num, d);
+                let exact = (num / d) as i64;
+                let err = (got as i64 - exact).abs();
+                assert!(
+                    err <= exact / 65536 + 2,
+                    "num={num} d={d} got={got} exact={exact}"
+                );
+            }
         }
-    }
-
-    #[test]
-    fn recip_seed_edges_no_panic() {
-        assert_eq!(recip_seed_q15(0), 1 << 31);
-        assert_eq!(recip_seed_q15(1), 1 << 30);
-        assert_eq!(recip_seed_q15(u32::MAX), 1);
     }
 }

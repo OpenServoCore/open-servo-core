@@ -5,7 +5,7 @@
 //! (position walls). `fold` runs at MEDIUM and is compare/min only; the
 //! derate ceiling needs a reciprocal, so it is recomputed at SLOW and cached.
 
-use crate::math::q_mul_u;
+use crate::math::recip_div;
 use crate::regions::config::StallResponse;
 
 /// CONFIG limits + thermal + pos-limits fields the block consumes, loaded
@@ -26,37 +26,6 @@ pub struct LimitCfg {
     pub cutoff_cc: i16,
     pub pos_min_soft_counts: i32,
     pub pos_max_soft_counts: i32,
-}
-
-// Q1.30 linear reciprocal seed r0 = 48/17 - (32/17)x for the normalized
-// x in [0.5, 1): max relative error 1/17, so two Newton steps land at
-// (1/17)^4 ~ 1.2e-5. The power-of-two seed (math::recip_seed_q15) can start
-// a factor of 2 off, where r*(2 - r*d) convergence stalls - the default
-// 2000cc derate span seeds at x = 1.95 and would need ~8 steps - so the
-// one-shot derate uses the linear seed; the seed_q15 path stays for
-// estimators that refine across ticks.
-const SEED_C1_Q30: u32 = 3_031_741_621; // round(48/17 << 30)
-const SEED_C2_Q30: u32 = 2_021_161_080; // round(32/17 << 30)
-
-/// `num / d` without a divide. Normalize d into [2^31, 2^32) (Q0.32), linear
-/// seed + two Newton steps `r' = r*(2 - r*d)` in Q1.30, then one widening
-/// multiply denormalizes straight into the quotient. Error <= 1.2e-5
-/// relative plus truncation (pinned in tests). d == 0 has no quotient;
-/// callers gate the degenerate span, num is the no-panic backstop.
-fn recip_div_u(num: u32, d: u32) -> u32 {
-    if d <= 1 {
-        return num;
-    }
-    let n = d.leading_zeros(); // 1..=30 for d >= 2
-    let dn = d << n;
-    let mut r = SEED_C1_Q30 - q_mul_u(SEED_C2_Q30, dn, 32);
-    r = q_mul_u(r, (2u32 << 30) - q_mul_u(r, dn, 32), 30);
-    r = q_mul_u(r, (2u32 << 30) - q_mul_u(r, dn, 32), 30);
-    // num/d = num*r >> (62-n), split as (>> 32) then (>> 30-n): identical
-    // bits, but the u64 shift stays constant and the variable shift is u32 -
-    // a variable 64-bit shift is soft on rv32ec (check-soft-arith.sh bans it)
-    let p = num as u64 * r as u64;
-    ((p >> 32) as u32) >> (30 - n)
 }
 
 /// Stall timer + fold flag + the SLOW-cached derate ceiling. `derate_cache`
@@ -97,7 +66,7 @@ impl LimitState {
             // head in [1, span], both <= 65535: num fits u32 exactly
             let head = (cfg.cutoff_cc as i32 - t_winding_cc as i32) as u32;
             let num = cfg.current_limit_counts as u32 * head;
-            recip_div_u(num, span as u32).min(cfg.current_limit_counts as u32) as u16
+            recip_div(num, span as u32).min(cfg.current_limit_counts as u32) as u16
         };
     }
 
@@ -244,25 +213,6 @@ mod tests {
         assert_eq!(free_fold(&mut st, &cfg), 1200);
         st.update_derate(10000, &cfg);
         assert_eq!(free_fold(&mut st, &cfg), 0);
-    }
-
-    #[test]
-    fn recip_div_accuracy_pinned() {
-        // worst seeds are just under a power of two (x -> 1 from below maps
-        // to r near the interval edge); sweep those plus a dense band and
-        // the u32-extreme numerator. Bound: 1.2e-5 relative + 2 LSB.
-        let spot = [32767u32, 32768, 65534, 65535];
-        for d in (1..=4096u32).chain(spot) {
-            for num in [1u32, 999, 1_200 * 2_000, 4_294_836_225] {
-                let got = recip_div_u(num, d);
-                let exact = (num / d) as i64;
-                let err = (got as i64 - exact).abs();
-                assert!(
-                    err <= exact / 65536 + 2,
-                    "num={num} d={d} got={got} exact={exact}"
-                );
-            }
-        }
     }
 
     #[test]

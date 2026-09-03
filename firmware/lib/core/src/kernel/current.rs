@@ -62,9 +62,9 @@ impl CurrentLoop {
     /// freezes the whole integrator update - ki term and back-calc both -
     /// and the output rides integrator + feedforward until the window
     /// returns. `omega_hat_q16` csQ16 from fusion; `recip_vbus_q15` is the
-    /// vbus estimator's Newton reciprocal, contract `(recip * vbus) >> 15
-    /// ~= 32767` (math::recip_seed_q15) - the pair must describe the same
-    /// vbus or the duty cap is off by their mismatch.
+    /// vbus estimator's reciprocal, contract `(recip * vbus) >> 15
+    /// ~= 32767` (estimator::vbus::VbusEst) - the pair must describe the
+    /// same vbus or the duty cap is off by their mismatch.
     pub fn step(
         &mut self,
         i_ref: i32,
