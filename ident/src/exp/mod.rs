@@ -24,6 +24,7 @@ pub mod endstop;
 pub mod inertia;
 pub mod ladder;
 pub mod resistance;
+pub mod sweep;
 pub mod verify;
 
 use crate::frame::{SeqUnwrap, TelemetrySnapshot};
