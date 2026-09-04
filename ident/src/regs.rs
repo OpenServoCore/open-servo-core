@@ -40,6 +40,12 @@ pub mod config {
 pub mod calib {
     use super::{Reg, reg};
 
+    // PotLutBlock: the first CALIB block. lut_corr is a 110-byte Bytes field
+    // written as one blob, so it stays out of the scalar ALL cross-check.
+    pub const POT_LUT_RAW_MIN: Reg = reg(0x0080, 2);
+    pub const POT_LUT_RAW_MAX: Reg = reg(0x0082, 2);
+    pub const POT_LUT_CORR: Reg = reg(0x0084, 110);
+
     pub const SHUNT_R_MOHM: Reg = reg(0x00f2, 2);
     pub const GAIN_MILLI: Reg = reg(0x00f4, 2);
     pub const VMOTOR_DIV_TOP: Reg = reg(0x00f6, 2);
@@ -128,6 +134,10 @@ pub const ALL: &[(&str, Reg)] = &[
     ("l2_q88", config::L2_Q88),
     ("l3_q88", config::L3_Q88),
     ("l_bemf_q016", config::L_BEMF_Q016),
+    // lut_corr omitted: a 110-byte Bytes field, not a scalar reg (write_reg
+    // and reg_by_name assume width <= 4); raw_min/raw_max are plain u16.
+    ("raw_min", calib::POT_LUT_RAW_MIN),
+    ("raw_max", calib::POT_LUT_RAW_MAX),
     ("shunt_r_mohm", calib::SHUNT_R_MOHM),
     ("gain_milli", calib::GAIN_MILLI),
     ("vmotor_div_top", calib::VMOTOR_DIV_TOP),
