@@ -12,5 +12,7 @@ pub mod exp;
 pub mod fitmath;
 pub mod fits;
 pub mod frame;
+pub mod gains;
 pub mod regs;
+pub mod report;
 pub mod ripple;
