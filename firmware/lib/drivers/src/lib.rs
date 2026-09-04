@@ -4,6 +4,7 @@ pub mod bench;
 pub mod bus;
 pub mod led;
 pub mod log;
+pub mod tel;
 pub mod traits;
 
 #[cfg(any(test, feature = "mocks"))]
