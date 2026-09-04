@@ -26,12 +26,21 @@ pub struct RippleEstimate {
     pub strength: f64,
 }
 
+/// Lowest ripple frequency the autocorr band tracks; also fixes the max lag
+/// (fs/F_LO samples) and thus ripple_speed's minimum input length.
+const F_LO: f64 = 500.0;
+
+/// Minimum sample count ripple_speed needs at `fs`: 4 periods of the slowest
+/// tracked ripple. cumulative_phase in [`crate::lut`] sizes its window off it.
+pub fn min_window(fs: f64) -> usize {
+    4 * (fs / F_LO).round() as usize
+}
+
 /// Estimate ripple frequency in `i` sampled at `fs` Hz. `ripple_per_rev`
 /// = commutation events per rotor rev (6 for a 3-slot brushed motor).
 /// Searches 500 Hz..fs/5; None when the series is too short, flat, or no
 /// autocorrelation peak clears the confidence floor.
 pub fn ripple_speed(i: &[f64], fs: f64, ripple_per_rev: f64) -> Option<RippleEstimate> {
-    const F_LO: f64 = 500.0;
     const MIN_STRENGTH: f64 = 0.15;
     // band = F_LO .. fs/5: below 5 samples per period the parabolic
     // interpolation has nothing to stand on
