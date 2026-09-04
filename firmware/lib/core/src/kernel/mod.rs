@@ -361,6 +361,7 @@ impl<I: ControlIo> Kernel<I> {
                 stall_time_ticks: self.stall_time_ticks,
                 stall_yield_counts: lim_cfg.stall_yield_counts,
                 stall_release_counts: lim_cfg.stall_release_counts,
+                stall_tau_trip_counts: lim_cfg.stall_tau_trip_counts,
                 derate_start_cc: therm_cfg.derate_start_cc,
                 cutoff_cc: therm_cfg.cutoff_cc,
                 pos_min_soft_counts: pos_lim.pos_min_soft_counts,

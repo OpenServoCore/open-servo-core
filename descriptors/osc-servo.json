@@ -239,22 +239,29 @@
       "kind": "uint"
     },
     {
-      "name": "oc_trip_counts",
+      "name": "stall_tau_trip_counts",
       "addr": 86,
       "width": 2,
       "access": "rw",
       "kind": "uint"
     },
     {
-      "name": "oc_trip_ticks",
+      "name": "oc_trip_counts",
       "addr": 88,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "oc_trip_ticks",
+      "addr": 90,
       "width": 1,
       "access": "rw",
       "kind": "uint"
     },
     {
       "name": "openloop_decay",
-      "addr": 89,
+      "addr": 91,
       "width": 1,
       "access": "rw",
       "kind": "enum",
@@ -271,98 +278,98 @@
     },
     {
       "name": "derate_start_cc",
-      "addr": 90,
-      "width": 2,
-      "access": "rw",
-      "kind": "int"
-    },
-    {
-      "name": "cutoff_cc",
       "addr": 92,
       "width": 2,
       "access": "rw",
       "kind": "int"
     },
     {
-      "name": "recover_cc",
+      "name": "cutoff_cc",
       "addr": 94,
       "width": 2,
       "access": "rw",
       "kind": "int"
     },
     {
-      "name": "v_undervolt_counts",
+      "name": "recover_cc",
       "addr": 96,
       "width": 2,
       "access": "rw",
-      "kind": "uint"
+      "kind": "int"
     },
     {
-      "name": "rtherm_i_min_counts",
+      "name": "v_undervolt_counts",
       "addr": 98,
       "width": 2,
       "access": "rw",
       "kind": "uint"
     },
     {
-      "name": "rtherm_omega_max_cps",
+      "name": "rtherm_i_min_counts",
       "addr": 100,
       "width": 2,
       "access": "rw",
       "kind": "uint"
     },
     {
-      "name": "l1_q016",
+      "name": "rtherm_omega_max_cps",
       "addr": 102,
       "width": 2,
       "access": "rw",
       "kind": "uint"
     },
     {
-      "name": "l2_q88",
+      "name": "l1_q016",
       "addr": 104,
       "width": 2,
       "access": "rw",
       "kind": "uint"
     },
     {
-      "name": "l3_q88",
+      "name": "l2_q88",
       "addr": 106,
       "width": 2,
       "access": "rw",
       "kind": "uint"
     },
     {
-      "name": "l_bemf_q016",
+      "name": "l3_q88",
       "addr": 108,
       "width": 2,
       "access": "rw",
       "kind": "uint"
     },
     {
-      "name": "pos_error_counts",
+      "name": "l_bemf_q016",
       "addr": 110,
       "width": 2,
       "access": "rw",
       "kind": "uint"
     },
     {
-      "name": "pos_error_time_ms",
+      "name": "pos_error_counts",
       "addr": 112,
       "width": 2,
       "access": "rw",
       "kind": "uint"
     },
     {
-      "name": "sensor_delta_max",
+      "name": "pos_error_time_ms",
       "addr": 114,
       "width": 2,
       "access": "rw",
       "kind": "uint"
     },
     {
-      "name": "sensor_bad_count",
+      "name": "sensor_delta_max",
       "addr": 116,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "sensor_bad_count",
+      "addr": 118,
       "width": 1,
       "access": "rw",
       "kind": "uint"

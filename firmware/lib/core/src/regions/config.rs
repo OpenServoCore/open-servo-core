@@ -128,6 +128,8 @@ pub struct ConfigLimits {
     pub stall_time_ms: u16,
     pub stall_yield_counts: u16,
     pub stall_release_counts: u16,
+    /// Collision trip: |tau_d| above this is model-unexplained torque.
+    pub stall_tau_trip_counts: u16,
     pub oc_trip_counts: u16,
     pub oc_trip_ticks: u8,
     pub openloop_decay: DecaySelect,
@@ -141,6 +143,7 @@ pub const DEFAULT_STALL_OMEGA_MAX_CPS: u16 = 500;
 pub const DEFAULT_STALL_TIME_MS: u16 = 500;
 pub const DEFAULT_STALL_YIELD_COUNTS: u16 = 300;
 pub const DEFAULT_STALL_RELEASE_COUNTS: u16 = 150;
+pub const DEFAULT_STALL_TAU_TRIP_COUNTS: u16 = 1200;
 pub const DEFAULT_OC_TRIP_COUNTS: u16 = 2400;
 pub const DEFAULT_OC_TRIP_TICKS: u8 = 8;
 
@@ -216,7 +219,7 @@ pub struct ConfigRegs {
     pub fusion: ConfigFusion,
     pub fault_cfg: ConfigFaultCfg,
     #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 10],
+    pub _rsvd_tail: [u8; 8],
 }
 
 /// Boot-time seed for `ControlTable.config`; stamped pre-IRQ, then host-owned.

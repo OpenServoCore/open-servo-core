@@ -22,6 +22,7 @@ pub struct LimitCfg {
     pub stall_time_ticks: u32,
     pub stall_yield_counts: u16,
     pub stall_release_counts: u16,
+    pub stall_tau_trip_counts: u16,
     pub derate_start_cc: i16,
     pub cutoff_cc: i16,
     pub pos_min_soft_counts: i32,
@@ -97,10 +98,9 @@ impl LimitState {
     /// inward push, and the door never reopens (caught on the bench).
     ///
     /// Stall: pinned and |omega_hat| < stall_omega_max for stall_time_ticks,
-    /// or a tau_d spike (collision). The v1 collision threshold is
-    /// tau_d_abs > current_limit_counts - model-unexplained torque exceeding
-    /// the commanded ceiling class - bench-tunable through the existing
-    /// fields, no new config. Yield folds to stall_yield_counts until
+    /// or a tau_d spike past stall_tau_trip_counts (collision) - its own
+    /// threshold, so a low bench ceiling does not hair-trigger the
+    /// collision path. Yield folds to stall_yield_counts until
     /// |tau_d| relaxes below stall_release_counts; Fault only pends -
     /// latching is kernel fault policy, and the kernel disables on latch, so
     /// folding here too would double-act.
@@ -118,7 +118,7 @@ impl LimitState {
             self.stalled = false;
             self.stall_ticks = 0;
         }
-        let mut trip = tau_d_abs_counts > cfg.current_limit_counts;
+        let mut trip = tau_d_abs_counts > cfg.stall_tau_trip_counts;
         if i_ref_pinned && omega_hat_abs_cps < cfg.stall_omega_max_cps as u32 {
             self.stall_ticks = self.stall_ticks.saturating_add(1);
             trip |= self.stall_ticks >= cfg.stall_time_ticks;
@@ -208,6 +208,7 @@ mod tests {
         stall_time_ticks: 10,
         stall_yield_counts: 300,
         stall_release_counts: 150,
+        stall_tau_trip_counts: 1200,
         derate_start_cc: 8000,
         cutoff_cc: 10000,
         pos_min_soft_counts: -4000,

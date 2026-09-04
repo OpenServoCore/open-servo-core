@@ -88,6 +88,7 @@ fn seed(shared: &Shared) {
         c.limits.stall_time_ms = 50;
         c.limits.stall_yield_counts = 300;
         c.limits.stall_release_counts = 150;
+        c.limits.stall_tau_trip_counts = 1200;
         c.limits.oc_trip_counts = 2400;
         c.limits.oc_trip_ticks = 4;
         c.limits.openloop_decay = DecaySelect::Slow;

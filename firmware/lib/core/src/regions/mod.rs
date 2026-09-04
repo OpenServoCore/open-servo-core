@@ -92,6 +92,7 @@ impl ControlTableCell {
             cfg.limits.stall_time_ms = config::DEFAULT_STALL_TIME_MS;
             cfg.limits.stall_yield_counts = config::DEFAULT_STALL_YIELD_COUNTS;
             cfg.limits.stall_release_counts = config::DEFAULT_STALL_RELEASE_COUNTS;
+            cfg.limits.stall_tau_trip_counts = config::DEFAULT_STALL_TAU_TRIP_COUNTS;
             cfg.limits.oc_trip_counts = config::DEFAULT_OC_TRIP_COUNTS;
             cfg.limits.oc_trip_ticks = config::DEFAULT_OC_TRIP_TICKS;
             cfg.thermal.derate_start_cc = config::DEFAULT_DERATE_START_CC;
