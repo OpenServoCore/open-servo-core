@@ -324,6 +324,13 @@ fn build_sweep(tel: &[TelFrame]) -> Option<(Vec<u16>, Vec<f64>)> {
 /// certainly a corruption fragment, so it is dropped from the stitch.
 const MIN_CHUNK_SAMPLES: usize = 200;
 
+/// A chunk whose pos span is below this is a STALL, not a sweep segment: the
+/// open-loop constant-duty traverse can overshoot into a rail and buzz there
+/// with pos frozen while commutation ripple keeps accruing revs. Such a chunk
+/// has many samples but ~0 pos travel, so its revs/count is nonsense (spikes
+/// the stitched anchor and dumps a bogus rail correction); drop it by span.
+const MIN_CHUNK_SPAN: u16 = 50;
+
 /// ALL clean sweep chunks (not just the longest): each maximal run of
 /// seq-contiguous, in-range (pos<=4095) frames, as (pos, current). Chunks
 /// shorter than MIN_CHUNK_SAMPLES are dropped as corruption fragments. The
@@ -354,9 +361,18 @@ pub(super) fn build_sweep_chunks(tel: &[TelFrame]) -> Vec<(Vec<u16>, Vec<f64>)> 
 }
 
 /// Push one maximal seq-contiguous run as a (pos, current) chunk, dropping it
-/// when shorter than MIN_CHUNK_SAMPLES.
+/// when shorter than MIN_CHUNK_SAMPLES or when its pos span is below
+/// MIN_CHUNK_SPAN (a rail stall, not a sweep segment).
 fn emit_chunk(run: &[(u8, u16, f64)], chunks: &mut Vec<(Vec<u16>, Vec<f64>)>) {
-    if run.len() >= MIN_CHUNK_SAMPLES {
+    if run.len() < MIN_CHUNK_SAMPLES {
+        return;
+    }
+    let (mut lo, mut hi) = (run[0].1, run[0].1);
+    for x in run {
+        lo = lo.min(x.1);
+        hi = hi.max(x.1);
+    }
+    if hi - lo >= MIN_CHUNK_SPAN {
         chunks.push((
             run.iter().map(|x| x.1).collect(),
             run.iter().map(|x| x.2).collect(),
@@ -1027,27 +1043,40 @@ mod tests {
     }
 
     #[test]
-    fn build_sweep_chunks_keeps_big_runs_drops_fragments() {
-        // seq = index (u8, wraps cleanly), pos in-range except at two split
-        // points. Run A = 250, run B = 300 (both >= MIN_CHUNK_SAMPLES), and a
-        // trailing 50-sample fragment (< MIN_CHUNK_SAMPLES) is dropped.
-        let mut frames: Vec<TelFrame> = (0..602u32)
-            .map(|i| TelFrame {
-                seq: i as u8,
-                pos: Some(1000 + (i % 3) as u16),
-                current: Some(50),
-                ..Default::default()
-            })
-            .collect();
-        frames[250].pos = Some(9999); // splits run A | run B
-        frames[551].pos = Some(9999); // splits run B | tiny fragment
+    fn build_sweep_chunks_keeps_big_runs_drops_fragments_and_stalls() {
+        // seq = index (u8, wraps cleanly). Three moving runs (pos sweeps a real
+        // span) split by out-of-range pos, plus a trailing short fragment and a
+        // long STALL run (pos frozen at a rail). Kept: the two big MOVING runs.
+        // Dropped: the <MIN_CHUNK_SAMPLES fragment AND the stall (span 0).
+        let mut frames: Vec<TelFrame> = Vec::new();
+        let mut push = |base: u16, count: u32, moving: bool| {
+            for j in 0..count {
+                let seq = frames.len() as u8;
+                let pos = if moving { base + j as u16 } else { base };
+                frames.push(TelFrame {
+                    seq,
+                    pos: Some(pos),
+                    current: Some(50),
+                    ..Default::default()
+                });
+            }
+        };
+        push(1000, 250, true); // run A: span 249, kept
+        push(9999, 1, true); // split (out-of-range)
+        push(2000, 300, true); // run B: span 299, kept
+        push(9999, 1, true); // split
+        push(3000, 50, true); // fragment: < MIN_CHUNK_SAMPLES, dropped
+        push(9999, 1, true); // split
+        push(4095, 250, false); // stall: >= samples but span 0, dropped
+
         let chunks = build_sweep_chunks(&frames);
-        assert_eq!(chunks.len(), 2, "exactly the two big chunks survive");
+        assert_eq!(chunks.len(), 2, "only the two moving runs survive");
         assert_eq!(chunks[0].0.len(), 250);
         assert_eq!(chunks[1].0.len(), 300);
-        // current vec length tracks pos in each chunk
         assert_eq!(chunks[0].1.len(), 250);
         assert_eq!(chunks[1].1.len(), 300);
+        // the stall run (span 0) is gone despite having >= MIN_CHUNK_SAMPLES
+        assert!(chunks.iter().all(|(p, _)| p.iter().max() != Some(&4095)));
     }
 
     #[test]
