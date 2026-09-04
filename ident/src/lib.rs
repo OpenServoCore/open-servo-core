@@ -13,3 +13,4 @@ pub mod fitmath;
 pub mod fits;
 pub mod frame;
 pub mod regs;
+pub mod ripple;

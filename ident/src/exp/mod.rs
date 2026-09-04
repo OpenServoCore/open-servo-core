@@ -20,6 +20,7 @@
 
 pub mod bias;
 pub mod breakaway;
+pub mod inertia;
 pub mod ladder;
 pub mod resistance;
 

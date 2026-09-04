@@ -5,7 +5,7 @@
 //! transient the settle discard exists for.
 
 use super::{Cmd, Experiment};
-use crate::frame::TelemetrySnapshot;
+use crate::frame::{TelFrame, TelemetrySnapshot};
 use crate::regs::{ALL, Reg, control};
 
 pub struct FakeServo {
@@ -19,6 +19,15 @@ pub struct FakeServo {
     /// Steady omega from the motor equation instead of the free_speed
     /// shortcut: omega = (|v| - R*fc) / (Ke + R*fv), signed by duty.
     pub physical_motion: bool,
+    /// First-order dynamics for the inertia transient: omega integrates
+    /// alpha = b * f_med * (i - fc*sgn - fv*omega) with i = (v - Ke*w)/R,
+    /// so the planted `b` is exactly what the estimators must recover.
+    /// Steady state matches `physical_motion` by construction.
+    pub dynamic: bool,
+    /// B, (c/s per medium tick) per ccount (dynamic model).
+    pub b: f64,
+    /// Medium rate, tick_hz / 10.
+    pub f_med: f64,
     /// Static friction: no motion below this |duty| (0 = none).
     pub breakaway_q15: i16,
     /// Reported pos gains +80 counts inside this zone (slip artifact).
@@ -29,6 +38,10 @@ pub struct FakeServo {
     pub fault_at_ms: Option<f64>,
     pub torque: bool,
     pub duty: i16,
+    pub tel_enable: bool,
+    pub tel_mask: u16,
+    tel_seq: u8,
+    omega_dyn: f64,
     pub t_ms: f64,
     t_duty_change: f64,
     pub transient_windows: f64,
@@ -46,6 +59,9 @@ impl FakeServo {
             fv: 0.0,
             free_speed: 10_000.0,
             physical_motion: false,
+            dynamic: false,
+            b: 0.1,
+            f_med: 2010.0,
             breakaway_q15: 0,
             glitch_zone: None,
             pos: 2400.0,
@@ -54,6 +70,10 @@ impl FakeServo {
             fault_at_ms: None,
             torque: false,
             duty: 0,
+            tel_enable: false,
+            tel_mask: 0,
+            tel_seq: 0,
+            omega_dyn: 0.0,
             t_ms: 0.0,
             t_duty_change: -1e9,
             transient_windows: 3.0,
@@ -72,6 +92,9 @@ impl FakeServo {
     }
 
     fn omega(&self) -> f64 {
+        if self.dynamic {
+            return self.omega_dyn;
+        }
         if !self.torque || self.duty == 0 || self.duty.unsigned_abs() < self.breakaway_q15 as u16 {
             return 0.0;
         }
@@ -89,18 +112,109 @@ impl FakeServo {
         }
     }
 
+    /// The winding current the dynamic model carries right now: ohmic on
+    /// the applied volts minus bemf. Friction is mechanical - it consumes
+    /// torque, not extra current - so nothing else is added.
+    fn i_dyn(&self) -> f64 {
+        if !self.torque || self.duty == 0 {
+            return 0.0;
+        }
+        let v = self.duty as f64 / 32767.0 * self.vbus;
+        (v - self.ke * self.omega_dyn) / self.r
+    }
+
     pub fn write(&mut self, reg: Reg, value: i32) {
         if reg == control::TORQUE_ENABLE {
             self.torque = value != 0;
         } else if reg == control::GOAL_DUTY {
             self.duty = value as i16;
             self.t_duty_change = self.t_ms;
+        } else if reg == control::TEL_ENABLE {
+            self.tel_enable = value != 0;
+        } else if reg == control::TEL_MASK {
+            self.tel_mask = value as u16;
+        }
+    }
+
+    /// One dynamic-model integration substep.
+    fn substep(&mut self, dt: f64) {
+        let i = self.i_dyn();
+        let w = self.omega_dyn;
+        let fric = if w != 0.0 {
+            self.fc * w.signum() + self.fv * w
+        } else if i.abs() > self.fc {
+            self.fc * i.signum()
+        } else {
+            i // no net torque below stiction: alpha = 0
+        };
+        let alpha = self.b * self.f_med * (i - fric);
+        let w2 = w + alpha * dt;
+        // coasting friction never reverses the spin through zero
+        self.omega_dyn = if !self.torque || self.duty == 0 {
+            if w != 0.0 && w.signum() != w2.signum() {
+                0.0
+            } else {
+                w2
+            }
+        } else {
+            w2
+        };
+        self.pos = (self.pos + self.omega_dyn * dt).clamp(self.ends.0, self.ends.1);
+        if (self.pos <= self.ends.0 && self.omega_dyn < 0.0)
+            || (self.pos >= self.ends.1 && self.omega_dyn > 0.0)
+        {
+            self.omega_dyn = 0.0;
         }
     }
 
     pub fn advance(&mut self, ms: u32) {
-        let dt = ms as f64 / 1000.0;
-        self.pos = (self.pos + self.omega() * dt).clamp(self.ends.0, self.ends.1);
+        if self.dynamic {
+            // tick-sized substeps keep the ~tens-of-ms tau integration exact
+            let dt = 1.0 / (self.f_med * 10.0);
+            let n = (ms as f64 / 1000.0 / dt).round() as u64;
+            for _ in 0..n {
+                self.substep(dt);
+            }
+        } else {
+            let dt = ms as f64 / 1000.0;
+            self.pos = (self.pos + self.omega() * dt).clamp(self.ends.0, self.ends.1);
+        }
+        self.t_ms += ms as f64;
+    }
+
+    /// Like [`advance`], emitting one TEL frame per fast tick while the
+    /// table has the stream armed (ladder mask assumed: pos, current,
+    /// duty, vdiff). No L-transient inflation here - the electrical
+    /// transient is about one tick long on the real rig.
+    pub fn advance_tel(&mut self, ms: u32, sink: &mut Vec<TelFrame>) {
+        let dt = 1.0 / (self.f_med * 10.0);
+        let n = (ms as f64 / 1000.0 / dt).round() as u64;
+        for _ in 0..n {
+            if self.dynamic {
+                self.substep(dt);
+            } else {
+                self.pos = (self.pos + self.omega() * dt).clamp(self.ends.0, self.ends.1);
+            }
+            if self.tel_enable && self.tel_mask != 0 {
+                let noise = self.noise();
+                let driving = self.torque && self.duty != 0;
+                sink.push(TelFrame {
+                    seq: self.tel_seq,
+                    window_valid: driving,
+                    pos: Some((self.pos + noise).round().clamp(0.0, 4095.0) as u16),
+                    current: Some(self.i_dyn().round() as i16),
+                    current_trough: None,
+                    duty_q15: Some(if driving { self.duty } else { 0 }),
+                    vdiff: Some(if driving {
+                        (self.vbus * self.duty.signum() as f64) as i16
+                    } else {
+                        0
+                    }),
+                    vbus: None,
+                });
+                self.tel_seq = self.tel_seq.wrapping_add(1);
+            }
+        }
         self.t_ms += ms as f64;
     }
 
@@ -110,9 +224,9 @@ impl FakeServo {
             let v = self.duty as f64 / 32767.0 * self.vbus;
             let omega = self.omega();
             // friction current only while moving: stalled current is ohmic.
-            // The physical model needs no extra term - its steady omega
-            // already makes (v - ke*omega)/r equal fc + fv*|omega|.
-            let fric = if omega != 0.0 && !self.physical_motion {
+            // The physical and dynamic models need no extra term - their
+            // (v - ke*omega)/r IS the winding current at every instant.
+            let fric = if omega != 0.0 && !self.physical_motion && !self.dynamic {
                 self.fc * self.duty.signum() as f64
             } else {
                 0.0
@@ -169,6 +283,36 @@ pub fn pump<E: Experiment>(exp: &mut E, servo: &mut FakeServo, max_steps: u32) -
             }
             Cmd::Read => pending = Some(servo.read()),
             Cmd::Pause { ms } => servo.advance(ms),
+            Cmd::Done => return log,
+        }
+    }
+    log.push("OVERRUN".into());
+    log
+}
+
+/// [`pump`] with the TEL side channel live: every Pause synthesizes the
+/// tick-rate frames the wire would carry and hands them to the inertia
+/// experiment, the way the CLI pumps deframer output between commands.
+pub fn pump_tel(
+    exp: &mut super::inertia::Inertia,
+    servo: &mut FakeServo,
+    max_steps: u32,
+) -> Vec<String> {
+    let mut log = Vec::new();
+    let mut pending: Option<TelemetrySnapshot> = None;
+    let mut frames = Vec::new();
+    for _ in 0..max_steps {
+        match exp.step(pending.take().as_ref()) {
+            Cmd::Write { reg, value } => {
+                servo.write(reg, value);
+                log.push(format!("write {} {}", reg_name(reg), value));
+            }
+            Cmd::Read => pending = Some(servo.read()),
+            Cmd::Pause { ms } => {
+                frames.clear();
+                servo.advance_tel(ms, &mut frames);
+                exp.push_tel(&frames);
+            }
             Cmd::Done => return log,
         }
     }
