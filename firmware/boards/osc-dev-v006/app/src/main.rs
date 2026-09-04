@@ -50,9 +50,13 @@ fn main() -> ! {
                 bot_ohm: 10_000,
             },
             vdd_mv: 3300,
-            // bench-measured floor pending
             i_window_min_ticks: 240,
-            v_window_min_ticks: 220,
+            // one floor for BOTH terminals: the scan converts vmotor_b one
+            // slot after vmotor_a, so B's edge sits ~50 ticks later (bench:
+            // B garbage at 238, clean at 274; A clean at 222). A floor
+            // below B's edge let a position-mode launch seed the vbus EWMA
+            // from off-phase samples and latch a false undervolt.
+            v_window_min_ticks: 300,
         },
         defaults: ConfigDefaults {
             pos_min_phys_counts: 0,
