@@ -15,6 +15,10 @@ const fn reg(addr: u16, width: u8) -> Reg {
 pub mod config {
     use super::{Reg, reg};
 
+    pub const POS_MIN_PHYS_COUNTS: Reg = reg(0x0020, 4);
+    pub const POS_MAX_PHYS_COUNTS: Reg = reg(0x0024, 4);
+    pub const POS_MIN_SOFT_COUNTS: Reg = reg(0x0028, 4);
+    pub const POS_MAX_SOFT_COUNTS: Reg = reg(0x002c, 4);
     pub const I_KP_Q88: Reg = reg(0x0030, 2);
     pub const I_KI_Q412: Reg = reg(0x0032, 2);
     pub const I_KAW_Q412: Reg = reg(0x0034, 2);
@@ -25,6 +29,7 @@ pub mod config {
     pub const J_FF_Q88: Reg = reg(0x003e, 2);
     pub const P_KP_Q88: Reg = reg(0x0040, 2);
     pub const CURRENT_LIMIT_COUNTS: Reg = reg(0x004a, 2);
+    pub const DRIVE_POLARITY: Reg = reg(0x004d, 1);
     pub const V_UNDERVOLT_COUNTS: Reg = reg(0x0062, 2);
     pub const L1_Q016: Reg = reg(0x0068, 2);
     pub const L2_Q88: Reg = reg(0x006a, 2);
@@ -103,6 +108,10 @@ pub mod telemetry {
 /// Every const above with its descriptor field name - the cross-check
 /// test's worklist, and a name lookup for reports.
 pub const ALL: &[(&str, Reg)] = &[
+    ("pos_min_phys_counts", config::POS_MIN_PHYS_COUNTS),
+    ("pos_max_phys_counts", config::POS_MAX_PHYS_COUNTS),
+    ("pos_min_soft_counts", config::POS_MIN_SOFT_COUNTS),
+    ("pos_max_soft_counts", config::POS_MAX_SOFT_COUNTS),
     ("i_kp_q88", config::I_KP_Q88),
     ("i_ki_q412", config::I_KI_Q412),
     ("i_kaw_q412", config::I_KAW_Q412),
@@ -113,6 +122,7 @@ pub const ALL: &[(&str, Reg)] = &[
     ("j_ff_q88", config::J_FF_Q88),
     ("p_kp_q88", config::P_KP_Q88),
     ("current_limit_counts", config::CURRENT_LIMIT_COUNTS),
+    ("drive_polarity", config::DRIVE_POLARITY),
     ("v_undervolt_counts", config::V_UNDERVOLT_COUNTS),
     ("l1_q016", config::L1_Q016),
     ("l2_q88", config::L2_Q88),
