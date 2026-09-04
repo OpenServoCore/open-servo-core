@@ -10,6 +10,8 @@
 //! the kinematics/units/lut math live in osc-ident; this wrapper owns USB,
 //! the TEL port, prompts, and files.
 
+pub mod replay;
+
 use std::path::Path;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -272,6 +274,12 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     Ok(())
 }
 
+/// A plausible pot reading: the ADC is 12-bit, so a valid pos is 0..=4095.
+/// Anything larger is bit-corrupted.
+fn pos_plausible(pos: u16) -> bool {
+    pos <= 4095
+}
+
 /// Time-aligned (pos, current) sweep from the captured frames: the longest
 /// seq-contiguous run. Splitting on seq gaps is the ONLY selection - it keeps
 /// the sample spacing uniform, which the ripple autocorr assumes. Pos is NOT
@@ -281,9 +289,17 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
 /// flat stall segment self-rejects downstream (no ripple -> None). None when
 /// nothing was captured.
 fn build_sweep(tel: &[TelFrame]) -> Option<(Vec<u16>, Vec<f64>)> {
+    // Drop value-domain corruption: pos > 4095 is impossible from a 12-bit ADC,
+    // so a set bit above b11 is a bit error. Dropping the frame removes its seq,
+    // which splits the contiguous run at that point and isolates the corruption.
+    // Catches pos corruption only; a current(ripple)-domain bit-error is not
+    // caught here - that needs a firmware frame CRC (deferred).
     let s: Vec<(u8, u16, f64)> = tel
         .iter()
-        .filter_map(|f| Some((f.seq, f.pos?, f.current? as f64)))
+        .filter_map(|f| {
+            let pos = f.pos?;
+            pos_plausible(pos).then_some((f.seq, pos, f.current? as f64))
+        })
         .collect();
     let (lo, hi) = longest_contiguous_run(&s)?;
     Some((
@@ -939,6 +955,37 @@ mod tests {
     #[test]
     fn build_sweep_none_without_frames() {
         assert!(build_sweep(&[]).is_none());
+    }
+
+    #[test]
+    fn pos_plausible_rejects_above_12bit() {
+        assert!(pos_plausible(0));
+        assert!(pos_plausible(4095));
+        assert!(!pos_plausible(4096));
+        assert!(!pos_plausible(9999));
+    }
+
+    #[test]
+    fn build_sweep_drops_out_of_range_pos() {
+        // seqs 0..10, all pos in-range except seq 5 which is bit-corrupt (>4095).
+        // Dropping it removes its seq, so the contiguous run splits there: the
+        // longer half is seqs 0..=4 (5 samples) and the corrupt pos is excluded.
+        let frames: Vec<TelFrame> = (0..10u8)
+            .map(|k| TelFrame {
+                seq: k,
+                pos: Some(if k == 5 { 9999 } else { 1000 + k as u16 }),
+                current: Some(50),
+                ..Default::default()
+            })
+            .collect();
+        let (pos, current) = build_sweep(&frames).expect("a run survives");
+        assert!(
+            pos.iter().all(|&p| p <= 4095),
+            "corrupt pos leaked: {pos:?}"
+        );
+        assert!(!pos.contains(&9999));
+        assert_eq!(pos, vec![1000, 1001, 1002, 1003, 1004]);
+        assert_eq!(current.len(), pos.len());
     }
 
     #[test]
