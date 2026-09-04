@@ -46,10 +46,13 @@ pub fn bringup(
     // reads the effective comms block from the table.
     SHARED.table.seed_config_defaults(defaults);
     SHARED.table.seed_identity(model, hw_rev);
+    config_store::ConfigStore::boot_load();
+    // After boot_load: the calib overlay copies the whole region, so the RO
+    // board facts (tick_hz, window floors) must land last to win over a
+    // stale saved image.
     SHARED
         .table
         .seed_calib_sense(&calib_sense(wiring, calibration));
-    config_store::ConfigStore::boot_load();
     SHARED.seed_uid(esig::uid());
 
     bring_up_analog_chain(&wiring.current_sense);

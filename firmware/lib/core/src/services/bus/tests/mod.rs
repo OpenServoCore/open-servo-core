@@ -600,7 +600,7 @@ fn mgmt_wrapped_enum_assign_reply_instruction() {
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
-use crate::persist::{CONFIG_LEN, ConfigStore, PROFILE_LEN, StoreError};
+use crate::persist::{CALIB_LEN, CONFIG_LEN, ConfigStore, PROFILE_LEN, StoreError};
 
 /// Atomics-only recording store (these tests are no_std): counts calls,
 /// fingerprints the saved bytes by CRC, arms failure via `fail`.
@@ -627,11 +627,15 @@ impl ConfigStore for FakeStore {
         &self,
         config: &[u8; CONFIG_LEN],
         profile: &[u8; PROFILE_LEN],
+        calib: &[u8; CALIB_LEN],
     ) -> Result<(), StoreError> {
         if self.fail.load(Ordering::Relaxed) {
             return Err(StoreError);
         }
-        let crc = osc_protocol::crc::osc_crc_continue(osc_protocol::crc::osc_crc(config), profile);
+        let crc = osc_protocol::crc::osc_crc_continue(
+            osc_protocol::crc::osc_crc_continue(osc_protocol::crc::osc_crc(config), profile),
+            calib,
+        );
         self.saved_crc.store(crc as u32, Ordering::Relaxed);
         self.saves.fetch_add(1, Ordering::Relaxed);
         Ok(())
@@ -662,13 +666,18 @@ fn dirty(shared: &Shared) -> u8 {
 /// CRC fingerprint of the live persisted regions, mirroring FakeStore::save.
 fn table_crc(shared: &Shared) -> u32 {
     use crate::regions::{
-        CONFIG_BASE_ADDR, CONFIG_REGION_SIZE, PROFILE_BASE_ADDR, PROFILE_REGION_SIZE,
+        CALIB_BASE_ADDR, CALIB_REGION_SIZE, CONFIG_BASE_ADDR, CONFIG_REGION_SIZE,
+        PROFILE_BASE_ADDR, PROFILE_REGION_SIZE,
     };
     use control_table::RegisterFile;
     let config = RegisterFile::read(&shared.table, CONFIG_BASE_ADDR, CONFIG_REGION_SIZE).unwrap();
     let profile =
         RegisterFile::read(&shared.table, PROFILE_BASE_ADDR, PROFILE_REGION_SIZE).unwrap();
-    osc_protocol::crc::osc_crc_continue(osc_protocol::crc::osc_crc(config), profile) as u32
+    let calib = RegisterFile::read(&shared.table, CALIB_BASE_ADDR, CALIB_REGION_SIZE).unwrap();
+    osc_protocol::crc::osc_crc_continue(
+        osc_protocol::crc::osc_crc_continue(osc_protocol::crc::osc_crc(config), profile),
+        calib,
+    ) as u32
 }
 
 fn write_at(shared: &Shared, staged: &mut StagedWrites, addr: u16, data: &[u8]) {

@@ -55,12 +55,15 @@ pub struct StoreError;
 /// `save` stalls the caller for the erase + program time (ms-scale) -- the
 /// torque gate in dispatch is what makes that stall safe.
 pub trait ConfigStore: Sync {
+    /// Persist both images (config+profile and calib), each into its own
+    /// A/B slot pair.
     fn save(
         &self,
         config: &[u8; CONFIG_LEN],
         profile: &[u8; PROFILE_LEN],
+        calib: &[u8; CALIB_LEN],
     ) -> Result<(), StoreError>;
-    /// FACTORY (sec 9.5): invalidate both slots -- the erased store IS the
+    /// FACTORY (sec 9.5): invalidate every slot -- the erased store IS the
     /// factory state; the follow-up reboot re-seeds board defaults.
     fn wipe(&self) -> Result<(), StoreError>;
 }
