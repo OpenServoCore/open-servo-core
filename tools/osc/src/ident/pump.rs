@@ -13,8 +13,8 @@ use osc_ident::exp::{Cmd, Experiment};
 use osc_ident::frame::{TelFrame, TelemetrySnapshot};
 use osc_ident::regs::{Reg, control, telemetry};
 
-use crate::csvio::SnapshotLog;
-use crate::tel::TelSink;
+use super::csvio::SnapshotLog;
+use super::tel::TelSink;
 
 pub static STOP: AtomicBool = AtomicBool::new(false);
 

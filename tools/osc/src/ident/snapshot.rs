@@ -11,8 +11,8 @@ use osc_client::blocking::Client;
 use osc_client::nusb::NusbPipe;
 use osc_ident::regs::{ALL, Reg, calib, config};
 
-use crate::params::GainJson;
-use crate::pump::write_reg;
+use super::params::GainJson;
+use super::pump::write_reg;
 
 /// name -> Reg for every writable field the gain set names.
 pub fn reg_by_name(name: &str) -> Option<Reg> {

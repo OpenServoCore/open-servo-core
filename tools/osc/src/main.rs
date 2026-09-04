@@ -6,6 +6,7 @@
 //! the bench `tool-*` binaries' job, not this tool's.
 
 mod descriptor;
+mod ident;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
@@ -205,6 +206,9 @@ enum Cmd {
     },
     /// Read the whole control table, one decoded line per descriptor field.
     Dump,
+    /// Identify the motor and synthesize its gains: experiments, fits,
+    /// write-back.
+    Ident(ident::Args),
 }
 
 #[derive(Subcommand, Debug)]
@@ -815,5 +819,6 @@ fn main() -> Result<()> {
             noreply,
         } => set(&mut connect_bus(&cli)?, id, field, value, *hold, *noreply),
         Cmd::Dump => dump(&mut connect_bus(&cli)?, id),
+        Cmd::Ident(args) => ident::run(args, cli.baud.clone(), cli.id),
     }
 }

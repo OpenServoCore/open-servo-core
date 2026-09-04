@@ -1,8 +1,8 @@
-//! `ident` -- the identification CLI: drives the osc-ident experiments over
-//! the osc-adapter, records raw + derived CSVs, fits the plant, synthesizes
-//! and encodes gains, and writes them back with snapshot/rollback safety.
-//! The sans-io engine lives in osc-ident; this wrapper owns USB, the TEL
-//! serial port, wall time, and files.
+//! `osc ident` -- the identification subcommand: drives the osc-ident
+//! experiments over the osc-adapter, records raw + derived CSVs, fits the
+//! plant, synthesizes and encodes gains, and writes them back with
+//! snapshot/rollback safety. The sans-io engine lives in osc-ident; this
+//! wrapper owns USB, the TEL serial port, wall time, and files.
 
 mod csvio;
 mod params;
@@ -13,7 +13,7 @@ mod tel;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
-use clap::{Parser, Subcommand};
+use clap::Subcommand;
 use osc_client::Id;
 use osc_client::blocking::Client;
 use osc_client::nusb::NusbPipe;
@@ -36,18 +36,11 @@ use params::{
 };
 use pump::{Pump, write_reg};
 
-#[derive(Parser, Debug)]
-#[command(
-    name = "ident",
-    about = "Identify a servo's motor and synthesize its gains."
-)]
-struct Cli {
-    /// Wire baud, or `auto` to find the bus by ENUM probe.
-    #[arg(short, long, global = true, default_value = "auto")]
-    baud: String,
-    /// Servo id.
-    #[arg(short, long, global = true, default_value_t = 1)]
-    id: u8,
+/// The `osc ident` arg group: TEL wiring, output, rig envelope, and
+/// bandwidth targets, all scoped to the ident subtree. `--baud`/`--id` come
+/// from the top-level osc globals.
+#[derive(clap::Args, Debug)]
+pub struct Args {
     /// TEL stream serial device (the LinkE CDC); empty disables TEL.
     #[arg(long, global = true, default_value = "/dev/cu.usbmodemB3608F06381D2")]
     tel_port: String,
@@ -84,6 +77,26 @@ struct Cli {
     cmd: Cmd,
 }
 
+/// Runner context: the ident args plus the resolved bus baud, threaded
+/// through every experiment fn (the runners predate the arg-group split and
+/// still read `cli.field`).
+struct Ctx {
+    baud: String,
+    tel_port: String,
+    out: PathBuf,
+    guard_lo: u16,
+    guard_hi: u16,
+    slip_lo: u16,
+    slip_hi: u16,
+    i_abort: i16,
+    l_henries: f64,
+    gear_ratio: Option<f64>,
+    f_ci: f64,
+    f_cv: f64,
+    f_cp: f64,
+    f_o: f64,
+}
+
 #[derive(Subcommand, Debug)]
 enum Cmd {
     /// The full pipeline: bias -> resistance -> breakaway -> ladder ->
@@ -116,15 +129,32 @@ enum Cmd {
     Show,
 }
 
-fn main() -> Result<()> {
-    let cli = Cli::parse();
+/// Entry from the top-level `osc ident` dispatch. `baud`/`id` are the osc
+/// globals; `args` carries the ident-scoped flags and subcommand.
+pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
+    let cli = Ctx {
+        baud,
+        tel_port: args.tel_port.clone(),
+        out: args.out.clone(),
+        guard_lo: args.guard_lo,
+        guard_hi: args.guard_hi,
+        slip_lo: args.slip_lo,
+        slip_hi: args.slip_hi,
+        i_abort: args.i_abort,
+        l_henries: args.l_henries,
+        gear_ratio: args.gear_ratio,
+        f_ci: args.f_ci,
+        f_cv: args.f_cv,
+        f_cp: args.f_cp,
+        f_o: args.f_o,
+    };
     pump::install_ctrlc();
-    if let Cmd::Fit { dir } = &cli.cmd {
+    if let Cmd::Fit { dir } = &args.cmd {
         return fit_dir(&cli, dir.clone());
     }
     let mut c = connect(&cli)?;
-    let id = Id::new(cli.id);
-    match &cli.cmd {
+    let id = Id::new(id);
+    match &args.cmd {
         Cmd::Run => run_all(&cli, &mut c, id),
         Cmd::Bias => {
             let out = csvio::OutDir::create(&cli.out)?;
@@ -213,7 +243,7 @@ fn main() -> Result<()> {
     }
 }
 
-fn connect(cli: &Cli) -> Result<Client<NusbPipe>> {
+fn connect(cli: &Ctx) -> Result<Client<NusbPipe>> {
     let mut c = Client::connect(NusbPipe::open()?)?;
     match cli.baud.as_str() {
         "auto" => match c.find_bus_baud()? {
@@ -233,7 +263,7 @@ fn connect(cli: &Cli) -> Result<Client<NusbPipe>> {
     Ok(c)
 }
 
-fn rig(cli: &Cli) -> RigParams {
+fn rig(cli: &Ctx) -> RigParams {
     RigParams {
         pos_guard: Some((cli.guard_lo, cli.guard_hi)),
         i_abort: cli.i_abort,
@@ -242,7 +272,7 @@ fn rig(cli: &Cli) -> RigParams {
     }
 }
 
-fn targets(cli: &Cli) -> BwTargets {
+fn targets(cli: &Ctx) -> BwTargets {
     BwTargets {
         f_ci: cli.f_ci,
         f_cv: cli.f_cv,
@@ -314,7 +344,7 @@ fn read_sense(c: &mut Client<NusbPipe>, id: Id) -> Result<SenseJson> {
 // --- experiment runners -----------------------------------------------------
 
 fn run_bias(
-    cli: &Cli,
+    cli: &Ctx,
     c: &mut Client<NusbPipe>,
     id: Id,
     out: &csvio::OutDir,
@@ -344,7 +374,7 @@ fn run_bias(
 }
 
 fn run_resistance(
-    cli: &Cli,
+    cli: &Ctx,
     c: &mut Client<NusbPipe>,
     id: Id,
     out: &csvio::OutDir,
@@ -370,7 +400,7 @@ fn run_resistance(
 }
 
 fn run_breakaway(
-    cli: &Cli,
+    cli: &Ctx,
     c: &mut Client<NusbPipe>,
     id: Id,
     out: &csvio::OutDir,
@@ -396,7 +426,7 @@ fn run_breakaway(
 }
 
 fn run_ladder(
-    cli: &Cli,
+    cli: &Ctx,
     c: &mut Client<NusbPipe>,
     id: Id,
     out: &csvio::OutDir,
@@ -427,7 +457,7 @@ fn run_ladder(
 }
 
 fn run_inertia(
-    cli: &Cli,
+    cli: &Ctx,
     c: &mut Client<NusbPipe>,
     id: Id,
     out: &csvio::OutDir,
@@ -487,7 +517,7 @@ impl<E: osc_ident::exp::Experiment> osc_ident::exp::Experiment for PumpAdapter<'
     }
 }
 
-fn run_verify(cli: &Cli, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
+fn run_verify(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
     let params = rig(cli);
     let tick_hz = snapshot::read_u16(c, id, calib::TICK_HZ)? as f64;
     recenter(c, id)?;
@@ -574,7 +604,7 @@ fn priors_of(r_vpc: f64, l: &LadderResult, sense: &SenseJson) -> InertiaPriors {
     }
 }
 
-fn run_all(cli: &Cli, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
+fn run_all(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
     let out = csvio::OutDir::create(&cli.out)?;
     println!("recording to {}", out.0.display());
     let sense = read_sense(c, id)?;
@@ -605,7 +635,7 @@ fn run_all(cli: &Cli, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
 /// Refit from a recorded directory: reads params.json (bias, breakaway,
 /// sense) plus the derived CSVs, recomputes every fit, synthesizes, and
 /// rewrites params.json with the plant and encoded gains.
-fn fit_dir(cli: &Cli, dir: PathBuf) -> Result<()> {
+fn fit_dir(cli: &Ctx, dir: PathBuf) -> Result<()> {
     let path = dir.join("params.json");
     let mut p = ParamsFile::load(&path)?;
     let sense = p.sense.context("params.json has no sense block")?;
