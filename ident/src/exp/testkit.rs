@@ -13,7 +13,16 @@ pub struct FakeServo {
     pub vbus: f64,
     pub ke: f64,
     pub fc: f64,
+    /// Viscous friction, ccounts per c/s (physical model only).
+    pub fv: f64,
     pub free_speed: f64,
+    /// Steady omega from the motor equation instead of the free_speed
+    /// shortcut: omega = (|v| - R*fc) / (Ke + R*fv), signed by duty.
+    pub physical_motion: bool,
+    /// Static friction: no motion below this |duty| (0 = none).
+    pub breakaway_q15: i16,
+    /// Reported pos gains +80 counts inside this zone (slip artifact).
+    pub glitch_zone: Option<(f64, f64)>,
     pub pos: f64,
     pub ends: (f64, f64),
     pub pos_noise: f64,
@@ -34,7 +43,11 @@ impl FakeServo {
             vbus: 1731.0,
             ke: 0.1731,
             fc: 20.0,
+            fv: 0.0,
             free_speed: 10_000.0,
+            physical_motion: false,
+            breakaway_q15: 0,
+            glitch_zone: None,
             pos: 2400.0,
             ends: (200.0, 4000.0),
             pos_noise: 0.0,
@@ -59,13 +72,18 @@ impl FakeServo {
     }
 
     fn omega(&self) -> f64 {
-        if !self.torque || self.duty == 0 {
+        if !self.torque || self.duty == 0 || self.duty.unsigned_abs() < self.breakaway_q15 as u16 {
             return 0.0;
         }
         let stalled = (self.pos <= self.ends.0 && self.duty < 0)
             || (self.pos >= self.ends.1 && self.duty > 0);
         if stalled {
-            0.0
+            return 0.0;
+        }
+        if self.physical_motion {
+            let v = self.duty.unsigned_abs() as f64 / 32767.0 * self.vbus;
+            let mag = ((v - self.r * self.fc) / (self.ke + self.r * self.fv)).max(0.0);
+            mag * self.duty.signum() as f64
         } else {
             self.duty as f64 / 32767.0 * self.free_speed
         }
@@ -91,8 +109,10 @@ impl FakeServo {
         let (i, vdiff) = if driving {
             let v = self.duty as f64 / 32767.0 * self.vbus;
             let omega = self.omega();
-            // friction current only while moving: stalled current is ohmic
-            let fric = if omega != 0.0 {
+            // friction current only while moving: stalled current is ohmic.
+            // The physical model needs no extra term - its steady omega
+            // already makes (v - ke*omega)/r equal fc + fv*|omega|.
+            let fric = if omega != 0.0 && !self.physical_motion {
                 self.fc * self.duty.signum() as f64
             } else {
                 0.0
@@ -106,7 +126,13 @@ impl FakeServo {
             (0.0, 0.0)
         };
         let fault = matches!(self.fault_at_ms, Some(at) if self.t_ms >= at);
-        let pos = (self.pos + self.noise()).round().clamp(0.0, 4095.0) as u16;
+        let glitch = match self.glitch_zone {
+            Some((lo, hi)) if (lo..=hi).contains(&self.pos) => 80.0,
+            _ => 0.0,
+        };
+        let pos = (self.pos + glitch + self.noise())
+            .round()
+            .clamp(0.0, 4095.0) as u16;
         TelemetrySnapshot {
             fault_flags: if fault { 32 } else { 0 },
             fault_code: if fault { 6 } else { 0 },

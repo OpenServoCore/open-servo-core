@@ -19,6 +19,8 @@
 //! live in [`RigParams`], the one home for bench constants.
 
 pub mod bias;
+pub mod breakaway;
+pub mod ladder;
 pub mod resistance;
 
 use crate::frame::{SeqUnwrap, TelemetrySnapshot};
