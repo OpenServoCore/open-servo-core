@@ -52,6 +52,9 @@ pub mod calib {
     pub const FRIC_FV_Q016: Reg = reg(0x0114, 2);
     pub const FRIC_BREAKAWAY_COUNTS: Reg = reg(0x0116, 2);
     pub const KE_VPC_Q: Reg = reg(0x0118, 2);
+    pub const ANGLE_MIN_CDEG: Reg = reg(0x011a, 2);
+    pub const ANGLE_MAX_CDEG: Reg = reg(0x011c, 2);
+    pub const GEAR_RATIO_CENTI: Reg = reg(0x011e, 2);
 }
 
 pub mod control {
@@ -132,6 +135,9 @@ pub const ALL: &[(&str, Reg)] = &[
     ("fric_fv_q016", calib::FRIC_FV_Q016),
     ("fric_breakaway_counts", calib::FRIC_BREAKAWAY_COUNTS),
     ("ke_vpc_q", calib::KE_VPC_Q),
+    ("angle_min_cdeg", calib::ANGLE_MIN_CDEG),
+    ("angle_max_cdeg", calib::ANGLE_MAX_CDEG),
+    ("gear_ratio_centi", calib::GEAR_RATIO_CENTI),
     ("torque_enable", control::TORQUE_ENABLE),
     ("tel_enable", control::TEL_ENABLE),
     ("tel_mask", control::TEL_MASK),
