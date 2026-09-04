@@ -108,8 +108,11 @@ impl Pump<'_> {
                             }
                             let st = s.stats();
                             eprintln!(
-                                "tel: {} frames, {} seq gaps, {} realigns",
-                                st.frames, st.seq_gaps, st.realigns
+                                "tel: {} bytes, {} frames, {} seq gaps, {} realigns",
+                                s.bytes_read(),
+                                st.frames,
+                                st.seq_gaps,
+                                st.realigns
                             );
                         }
                     }

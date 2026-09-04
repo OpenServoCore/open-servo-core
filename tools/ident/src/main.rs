@@ -274,6 +274,33 @@ fn with_guard<T>(
     r
 }
 
+/// OpenLoop nudge to mid-travel. End-stop work (E2) parks the pot on a
+/// rail where the next experiment's pos guard would abort before it can
+/// move; every in-band experiment recenters first.
+fn recenter(c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
+    const LO: u16 = 1750;
+    const HI: u16 = 2350;
+    let pos0 = pump::read_snapshot(c, id)?.pos;
+    if (LO..=HI).contains(&pos0) {
+        return Ok(());
+    }
+    println!("[recenter] pos {pos0} -> mid-travel");
+    with_guard(c, id, |c| {
+        pump::write_reg(c, id, control::MODE, 0)?;
+        pump::write_reg(c, id, control::TORQUE_ENABLE, 1)?;
+        for _ in 0..200 {
+            let pos = pump::read_snapshot(c, id)?.pos;
+            if (LO..=HI).contains(&pos) {
+                return Ok(());
+            }
+            let duty = if pos < LO { 9000 } else { -9000 };
+            pump::write_reg(c, id, control::GOAL_DUTY, duty)?;
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        anyhow::bail!("recenter: not in band after 5 s (gear slipping?)")
+    })
+}
+
 fn read_sense(c: &mut Client<NusbPipe>, id: Id) -> Result<SenseJson> {
     Ok(SenseJson {
         shunt_r_mohm: snapshot::read_u16(c, id, calib::SHUNT_R_MOHM)?,
@@ -293,6 +320,8 @@ fn run_bias(
     out: &csvio::OutDir,
 ) -> Result<(osc_ident::exp::bias::BiasResult, f64)> {
     println!("[E0 bias]");
+    // a rail-parked pot clips the noise measurement (and trips the guard)
+    recenter(c, id)?;
     let mut log = csvio::SnapshotLog::create(out, "bias_snapshots.csv")?;
     let mut exp = Guarded::new(Bias::new(BiasCfg::default()), rig(cli));
     with_guard(c, id, |c| {
@@ -349,6 +378,7 @@ fn run_breakaway(
     vbus_mean: f64,
 ) -> Result<osc_ident::exp::breakaway::BreakawayResult> {
     println!("[E1 breakaway]");
+    recenter(c, id)?;
     let mut log = csvio::SnapshotLog::create(out, "breakaway_snapshots.csv")?;
     let mut exp = Guarded::new(Breakaway::new(BreakawayCfg::default()), rig(cli));
     with_guard(c, id, |c| {
@@ -373,6 +403,7 @@ fn run_ladder(
     r_vpc: f64,
 ) -> Result<LadderResult> {
     println!("[E3 ladder]");
+    recenter(c, id)?;
     let params = rig(cli);
     let mut log = csvio::SnapshotLog::create(out, "ladder_snapshots.csv")?;
     let mut exp = Guarded::new(Ladder::new(LadderCfg::default(), &params), params);
@@ -410,6 +441,7 @@ fn run_inertia(
             ""
         }
     );
+    recenter(c, id)?;
     let params = rig(cli);
     let cfg = InertiaCfg {
         tick_hz: priors.tick_hz,
@@ -458,6 +490,7 @@ impl<E: osc_ident::exp::Experiment> osc_ident::exp::Experiment for PumpAdapter<'
 fn run_verify(cli: &Cli, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
     let params = rig(cli);
     let tick_hz = snapshot::read_u16(c, id, calib::TICK_HZ)? as f64;
+    recenter(c, id)?;
     println!("[E5 current steps]");
     let mut e5 = Guarded::new(
         VerifyCurrent::new(VerifyCurrentCfg::default(), &params),

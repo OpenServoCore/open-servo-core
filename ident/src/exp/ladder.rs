@@ -21,7 +21,10 @@ pub struct LadderCfg {
     pub rungs_q15: Vec<i16>,
     /// Seek drive toward the start end, q15.
     pub seek_duty_q15: i16,
-    /// Sweep start/stop distance from the guard edges, counts.
+    /// Sweep start/stop distance from the guard edges, counts. OpenLoop
+    /// cannot brake: a duty-0 at speed coasts several hundred counts, and
+    /// this absorbs it (bench: the 26% sweep-end coast breached a 600
+    /// margin by 18 counts).
     pub stop_margin: u16,
     pub poll_ms: u32,
     pub seek_poll_ms: u32,
@@ -44,7 +47,7 @@ impl Default for LadderCfg {
             // 26/33/40/47/55/64% of 32767
             rungs_q15: vec![8520, 10813, 13107, 15400, 18022, 20971],
             seek_duty_q15: 8520,
-            stop_margin: 250,
+            stop_margin: 900,
             poll_ms: 2,
             seek_poll_ms: 30,
             rest_ms: 300,
@@ -485,6 +488,9 @@ mod tests {
         };
         let cfg = LadderCfg {
             min_steady: 40,
+            // frictionless fake never coasts; keep the scaled-down band's
+            // sweep span alive
+            stop_margin: 250,
             ..LadderCfg::default()
         };
         let (exp, _) = run_cfg(&mut servo, cfg, params);
