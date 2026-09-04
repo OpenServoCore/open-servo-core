@@ -70,23 +70,27 @@ pub fn ripple_speed(i: &[f64], fs: f64, ripple_per_rev: f64) -> Option<RippleEst
         .enumerate()
         .max_by(|a, b| a.1.total_cmp(b.1))
         .map(|(k, _)| k)?;
+    // Reject a peak at either band edge: at lag_min it is short-range sample
+    // correlation (the acceleration/reversal transient locks here), at lag_max
+    // it is the detrend tail - neither is a real ripple period, and only an
+    // interior peak has the two neighbors parabolic interpolation needs.
+    if k == 0 || k + 1 == ac.len() {
+        return None;
+    }
     let strength = ac[k];
     if strength < MIN_STRENGTH {
         return None;
     }
-    // parabolic interpolation around the peak lag (interior peaks only)
-    let lag = (lag_min + k) as f64
-        + if k > 0 && k + 1 < ac.len() {
-            let (a, b, c) = (ac[k - 1], ac[k], ac[k + 1]);
-            let den = a - 2.0 * b + c;
-            if den.abs() > 1e-12 {
-                (0.5 * (a - c) / den).clamp(-0.5, 0.5)
-            } else {
-                0.0
-            }
+    // parabolic interpolation around the peak lag (guaranteed interior above)
+    let lag = (lag_min + k) as f64 + {
+        let (a, b, c) = (ac[k - 1], ac[k], ac[k + 1]);
+        let den = a - 2.0 * b + c;
+        if den.abs() > 1e-12 {
+            (0.5 * (a - c) / den).clamp(-0.5, 0.5)
         } else {
             0.0
-        };
+        }
+    };
     let freq_hz = fs / lag;
     Some(RippleEstimate {
         freq_hz,
