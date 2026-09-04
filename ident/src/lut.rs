@@ -33,10 +33,10 @@ const MIN_SAMPLES: usize = 4;
 /// sweep SNR is too low to trust as an angle clock.
 const MIN_GOOD_FRAC: f64 = 0.5;
 
-/// A sweep covering less than this fraction of the rail span has its phase
-/// mis-scaled to [0,1] as if it spanned rail-to-rail, so `build` would fabricate
-/// large corrections in the uncovered rail regions (the ~1742-count cliff).
-/// Below this coverage `build` returns identity instead.
+/// A sweep covering less than this fraction of the rail span leaves too much of
+/// travel for `build`'s affine anchoring to extrapolate through: the anchoring
+/// assumes local linearity over the uncovered insets, which fails once whole
+/// rail regions are uncovered. Below this coverage `build` returns identity.
 pub const MIN_SPAN_COVER: f64 = 0.7;
 
 /// Host mirror of the firmware PotLutBlock (raw_min/raw_max/lut_corr).
@@ -141,8 +141,11 @@ pub fn cumulative_phase(current: &[f64], fs: f64, ripple_per_rev: f64) -> Option
 }
 
 /// Fraction of the rail span [raw_min,raw_max] the sweep's raw pot samples
-/// actually covered: (observed max-min of raw_pot) / (raw_max - raw_min),
-/// clamped to [0,1]. 0.0 on empty input or a zero/degenerate denominator.
+/// actually covered, from robust 2/98 percentiles of raw_pot rather than
+/// absolute min/max: (p98 - p2) / (raw_max - raw_min), clamped to [0,1]. The
+/// percentiles keep a couple of outlier samples near a rail from inflating a
+/// partial sweep to full coverage. 0.0 on empty input or a zero/degenerate
+/// denominator.
 pub fn span_coverage(raw_pot: &[u16], raw_min: u16, raw_max: u16) -> f64 {
     if raw_pot.is_empty() {
         return 0.0;
@@ -151,20 +154,21 @@ pub fn span_coverage(raw_pot: &[u16], raw_min: u16, raw_max: u16) -> f64 {
     if denom <= 0.0 {
         return 0.0;
     }
-    let mut lo = raw_pot[0];
-    let mut hi = raw_pot[0];
-    for &r in raw_pot {
-        lo = lo.min(r);
-        hi = hi.max(r);
-    }
-    ((hi as f64 - lo as f64) / denom).clamp(0.0, 1.0)
+    let mut sorted = raw_pot.to_vec();
+    sorted.sort_unstable();
+    let n = sorted.len();
+    let idx = |p: f64| ((n - 1) as f64 * p).round() as usize;
+    let lo = sorted[idx(0.02)] as f64;
+    let hi = sorted[idx(0.98)] as f64;
+    ((hi - lo) / denom).clamp(0.0, 1.0)
 }
 
 /// Build the LUT from time-aligned raw pot samples and the cumulative motor
-/// phase (monotonic, from cumulative_phase). Normalizes phase to a true
-/// fraction, forms a monotone raw->fraction curve, and sets each knot's corr
-/// to the count offset that lands its corrected value on the curve. Degenerate
-/// input (too few samples, length mismatch, zero raw or phase span) -> identity.
+/// phase (monotonic, from cumulative_phase). Anchors the captured phase shape
+/// into full-rail true-fraction space via the covered pot endpoints, forms a
+/// monotone raw->fraction curve, and sets each knot's corr to the count offset
+/// that lands its corrected value on the curve. Degenerate input (too few
+/// samples, length mismatch, zero raw or phase span) -> identity.
 pub fn build(raw_pot: &[u16], motor_phase: &[f64], raw_min: u16, raw_max: u16) -> PotLut {
     let n = raw_pot.len();
     let span = raw_max as i32 - raw_min as i32;
@@ -176,15 +180,18 @@ pub fn build(raw_pot: &[u16], motor_phase: &[f64], raw_min: u16, raw_max: u16) -
     if !pspan.is_finite() || pspan == 0.0 {
         return PotLut::identity(raw_min, raw_max);
     }
-    // partial-coverage guard: phase is normalized to [0,1] as if the run
-    // spanned rail-to-rail, so a sweep over only part of travel mis-scales it
-    // and fabricates large rail corrections (the ~1742-count cliff).
+    // partial-coverage guard: the affine anchoring below assumes local
+    // linearity over the uncovered rail insets. That holds for the small
+    // insets of a near-full sweep, but a sweep over only part of travel leaves
+    // whole rail regions to extrapolate through, where the assumption breaks
+    // and the corrections become untrustworthy. Below MIN_SPAN_COVER, bail.
     if span_coverage(raw_pot, raw_min, raw_max) < MIN_SPAN_COVER {
         return PotLut::identity(raw_min, raw_max);
     }
-    // (raw, true_frac) pairs. Orient frac to increase with raw: raw is
-    // monotonic in true angle and so is phase, making frac monotone in raw
-    // regardless of sweep direction.
+    let span_f = span as f64;
+    // (raw, rel) pairs; rel = phase fraction over the CAPTURED range (0..1).
+    // Orient rel to increase with raw: raw is monotonic in true angle and so
+    // is phase, making rel monotone in raw regardless of sweep direction.
     let mut pts: Vec<(f64, f64)> = (0..n)
         .map(|k| (raw_pot[k] as f64, (motor_phase[k] - p0) / pspan))
         .collect();
@@ -194,6 +201,29 @@ pub fn build(raw_pot: &[u16], motor_phase: &[f64], raw_min: u16, raw_max: u16) -
             p.1 = 1.0 - p.1;
         }
     }
+    // Anchor rel into full-rail true-fraction space. rel spans 0..1 over only
+    // the covered pot range [rp_lo,rp_hi]; map it affinely onto that range's
+    // fractions of the FULL rail span, assuming local linearity over the small
+    // uncovered insets. A full-rail sweep has rp_lo=raw_min, rp_hi=raw_max ->
+    // tf_lo=0, tf_hi=1 -> the mapping is the identity (backward compatible).
+    let rp_lo = pts[0].0;
+    let rp_hi = pts[pts.len() - 1].0;
+    let tf_lo = (rp_lo - raw_min as f64) / span_f;
+    let tf_hi = (rp_hi - raw_min as f64) / span_f;
+    if tf_hi == tf_lo {
+        return PotLut::identity(raw_min, raw_max);
+    }
+    for p in pts.iter_mut() {
+        p.1 = tf_lo + p.1 * (tf_hi - tf_lo);
+    }
+    // pin the mechanical rails to frac 0/1: raw_min/raw_max are the kinematics
+    // endpoints, so linearize must return exactly 0/1 there. interp then links
+    // each rail linearly to the nearest covered endpoint, tapering inset corr to
+    // 0 at the rail. A full-rail sweep already carries tf_lo=0/tf_hi=1 there, so
+    // the dedup pass averages the duplicate rail cleanly (behavior unchanged).
+    pts.push((raw_min as f64, 0.0));
+    pts.push((raw_max as f64, 1.0));
+    pts.sort_by(|a, b| a.0.total_cmp(&b.0));
     // average duplicate raws (pot flat spots, rounding collisions)
     let mut curve: Vec<(f64, f64)> = Vec::with_capacity(pts.len());
     let mut i = 0;
@@ -217,14 +247,13 @@ pub fn build(raw_pot: &[u16], motor_phase: &[f64], raw_min: u16, raw_max: u16) -
             curve[j].1 = curve[j - 1].1;
         }
     }
-    let span_f = span as f64;
     let mut corr = [0i16; N_KNOTS];
     for (k, c) in corr.iter_mut().enumerate() {
         let raw_i = raw_min as f64 + k as f64 * span_f / N_INTERVALS as f64;
-        // knots past the covered range fall on the clamped end of the curve;
-        // over a thin sliver of uncovered raw that stays small, but a whole
-        // uncovered rail region would fabricate a large corr - the span_coverage
-        // gate above rejects such sweeps before reaching here.
+        // uncovered-inset knots lie on the interp segment from the rail anchor
+        // (frac 0/1) to the nearest covered endpoint, so their corr tapers to 0
+        // at the rail; the span_coverage gate above rejects sweeps whose
+        // uncovered regions would grow that taper large.
         let frac = interp(&curve, raw_i);
         let corrected = raw_min as f64 + frac * span_f;
         *c = sat_i16((corrected - raw_i).round());
@@ -408,6 +437,68 @@ mod tests {
         let lut = build(&raw, &phase, RAW_MIN, RAW_MAX);
         assert_eq!(lut, PotLut::identity(RAW_MIN, RAW_MAX));
         assert!(lut.corr.iter().all(|&c| c == 0), "corr {:?}", lut.corr);
+    }
+
+    #[test]
+    fn build_inset_sweep_no_rail_cliff() {
+        // 94%-coverage sweep: f in [0.03,0.97], nonlinear pot inset ~3% from
+        // each rail. The un-anchored normalization stretched the covered pot
+        // range onto the full rails, fabricating large rail-region corrections
+        // (hundreds+ here, unbounded as the inset grows). Affine anchoring plus
+        // rail-anchor pins tapers near-rail corr toward 0 and pins the rails to
+        // frac 0/1, while the interior keeps the measured shape.
+        let a = 0.15;
+        let m = 400;
+        let mut raw = Vec::with_capacity(m);
+        let mut phase = Vec::with_capacity(m);
+        for k in 0..m {
+            let f = 0.03 + 0.94 * k as f64 / (m - 1) as f64;
+            raw.push(pot_raw(f, a));
+            phase.push(3.0 * f);
+        }
+        // (a) coverage clears the gate, so build produces a real curve
+        assert!(
+            span_coverage(&raw, RAW_MIN, RAW_MAX) > MIN_SPAN_COVER,
+            "coverage {}",
+            span_coverage(&raw, RAW_MIN, RAW_MAX)
+        );
+        let lut = build(&raw, &phase, RAW_MIN, RAW_MAX);
+        // (b) near-rail knot corrections taper small (no fabricated cliff)
+        assert!(lut.corr[1].abs() < 30, "corr[1] {}", lut.corr[1]);
+        assert!(
+            lut.corr[N_KNOTS - 2].abs() < 30,
+            "corr[N-2] {}",
+            lut.corr[N_KNOTS - 2]
+        );
+        // rails pin to frac 0/1 (kinematics endpoints)
+        assert!((lut.linearize(RAW_MIN) - 0.0).abs() < 1e-9);
+        assert!((lut.linearize(RAW_MAX) - 1.0).abs() < 1e-9);
+        // (c) linearize tracks the true fraction to < 2% of span over the
+        // covered range (the anchor's local-linearity residual for a=0.15)
+        let mut emax = 0.0f64;
+        for (k, &r) in raw.iter().enumerate() {
+            let f = 0.03 + 0.94 * k as f64 / (m - 1) as f64;
+            emax = emax.max((lut.linearize(r) - f).abs());
+        }
+        assert!(emax < 0.02, "linearize err {emax}");
+    }
+
+    #[test]
+    fn span_coverage_ignores_outliers() {
+        // ~40%-coverage sweep (middle of travel) plus one outlier near each
+        // rail. Absolute min/max would report ~full coverage; robust 2/98
+        // percentiles reject the outliers and keep it below the 0.7 gate.
+        let m = 300;
+        let mut raw: Vec<u16> = Vec::with_capacity(m + 2);
+        for k in 0..m {
+            let f = 0.3 + 0.4 * k as f64 / (m - 1) as f64;
+            raw.push(pot_raw(f, 0.0));
+        }
+        raw.push(RAW_MIN + 1);
+        raw.push(RAW_MAX - 1);
+        let cov = span_coverage(&raw, RAW_MIN, RAW_MAX);
+        assert!(cov < MIN_SPAN_COVER, "outliers inflated coverage to {cov}");
+        assert!(cov > 0.35 && cov < 0.45, "coverage {cov}");
     }
 
     #[test]
