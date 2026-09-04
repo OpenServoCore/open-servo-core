@@ -32,7 +32,7 @@ const OSC_CRC_POLY: u16 = 0x8005;
 /// and drops, which is the sanctioned "spin miss = fail" outcome (protocol sec 3.2).
 const FEED_DRAIN_SPIN: u32 = 4096;
 
-/// The snapshot buffer (protocol sec 4.2): a reply payload is CH6-copied here once, and
+/// The snapshot buffer (protocol sec 4.2): a reply payload is CH7-copied here once, and
 /// both the CRC feed (CH3) and the wire arms (CH4) stream the copy -- the reply
 /// CRC covers exactly the transmitted bytes. RX CRC feeds the ring directly
 /// (no staging), so this holds only a reply payload -- one `MAX_PAYLOAD` span.
@@ -96,7 +96,7 @@ impl Crc {
             htie: false,
             tcie: false,
             // MEDIUM: the feed sits at the ladder floor (see `hal::dma`), below
-            // CH6 so a reply snapshot is written before this reads it.
+            // CH7 so a reply snapshot is written before this reads it.
             pl: dma::Pl::MEDIUM,
         };
         dma::configure(
@@ -115,7 +115,7 @@ impl bus::CrcEngine for Crc {
         // Toggling CRCEN off->on clears the accumulator with the mode locked.
         // DMA channels are deliberately untouched: disabling one mid-transfer
         // freezes CNTR nonzero, so every later drain spin runs its full
-        // backstop budget (~2.1 ms) -- and a killed CH6
+        // backstop budget (~2.1 ms) -- and a killed CH7
         // snapshot copy ships a stale reply tail (the wire arms read it,
         // protocol sec 4.2). Left alone, in-flight transfers drain to zero in us.
         SPI1.ctlr1().modify(|w| w.set_crcen(false));
@@ -135,7 +135,7 @@ impl bus::CrcEngine for Crc {
     }
 
     fn snapshot(&mut self, off: u16, src: &[u8]) -> *const u8 {
-        // Best-effort streaming copy of a reply payload, fire-and-forget: CH6
+        // Best-effort streaming copy of a reply payload, fire-and-forget: CH7
         // runs HIGH, above CH3 (the CRC feed, MEDIUM), so the feed can't
         // overtake the copy it reads (producer -> consumer, see `hal::dma`). The
         // wire (CH4) reads it too but only reaches the payload arm byte-times
@@ -149,16 +149,16 @@ impl bus::CrcEngine for Crc {
         // re-pointing the channel (bounded; M2M outruns this spin by design).
         debug_assert!(off as usize + src.len() <= SNAPSHOT_LEN);
         let mut budget = FEED_DRAIN_SPIN;
-        while dma::remaining(dma::Channel::CH6) != 0 && budget != 0 {
+        while dma::remaining(dma::Channel::CH7) != 0 && budget != 0 {
             budget -= 1;
             core::hint::spin_loop();
         }
         // SAFETY: single writer per exchange -- snapshot calls are serialized
-        // by the bus driver, and consumers are ordered behind CH6 by the ladder.
+        // by the bus driver, and consumers are ordered behind CH7 by the ladder.
         let dst = unsafe { (*SNAPSHOT.get()).0.as_ptr().add(off as usize) };
-        dma::disable(dma::Channel::CH6);
+        dma::disable(dma::Channel::CH7);
         dma::configure_m2m(
-            dma::Channel::CH6,
+            dma::Channel::CH7,
             src.as_ptr() as u32,
             dst as u32,
             src.len() as u16,

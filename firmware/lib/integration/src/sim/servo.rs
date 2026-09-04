@@ -6,7 +6,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use osc_servo_core::{
-    BaudRate, BootMode, ConfigDefaults, ControlTable, RegionStorage, Session, Shared,
+    BaudRate, BootMode, CalibSense, ConfigDefaults, ControlTable, RegionStorage, Session, Shared,
 };
 use osc_servo_drivers::bus::{LinkDiag, ServoBus};
 
@@ -51,6 +51,19 @@ impl SimServo {
             store.boot_load(&shared.table);
             shared.seed_store(store);
         }
+        // After boot_load, mirroring chip bringup: the calib overlay copies
+        // the whole region, so RO board facts land last and win over a
+        // stale saved image.
+        shared.table.seed_calib_sense(&CalibSense {
+            shunt_r_mohm: 33,
+            gain_milli: 15000,
+            vmotor_div_top: 10000,
+            vmotor_div_bot: 10000,
+            vdd_mv: 3300,
+            tick_hz: 20000,
+            i_window_min_ticks: 240,
+            v_window_min_ticks: 300,
+        });
         // Default UID: the id repeated -- distinct per servo, predictable for
         // ENUM tests; override via `seed_uid` where prefix structure matters.
         shared.seed_uid([id; 16]);

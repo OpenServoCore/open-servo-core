@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+
+[package]
+name        = "osc-ident"
+version     = "0.1.0"
+edition     = "2024"
+description = "Sans-io servo identification: experiments emit wire commands and consume telemetry; fits and gain synthesis are pure functions. Compiles to wasm for the GUI."
+license     = "MIT OR Apache-2.0"
+
+[dependencies]
+
+[dev-dependencies]
+serde_json = "1"

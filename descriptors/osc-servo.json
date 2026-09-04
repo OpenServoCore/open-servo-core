@@ -543,8 +543,23 @@
       "kind": "bool"
     },
     {
-      "name": "mode",
+      "name": "tel_enable",
       "addr": 385,
+      "width": 1,
+      "access": "rw",
+      "kind": "bool"
+    },
+    {
+      "name": "tel_mask",
+      "addr": 386,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint",
+      "max": 63
+    },
+    {
+      "name": "mode",
+      "addr": 388,
       "width": 1,
       "access": "rw",
       "kind": "enum",
@@ -569,35 +584,35 @@
     },
     {
       "name": "goal_duty",
-      "addr": 386,
+      "addr": 390,
       "width": 2,
       "access": "rw",
       "kind": "int"
     },
     {
       "name": "goal_position",
-      "addr": 388,
-      "width": 4,
-      "access": "rw",
-      "kind": "int"
-    },
-    {
-      "name": "goal_velocity",
       "addr": 392,
       "width": 4,
       "access": "rw",
       "kind": "int"
     },
     {
-      "name": "goal_current",
+      "name": "goal_velocity",
       "addr": 396,
+      "width": 4,
+      "access": "rw",
+      "kind": "int"
+    },
+    {
+      "name": "goal_current",
+      "addr": 400,
       "width": 2,
       "access": "rw",
       "kind": "int"
     },
     {
       "name": "boot_mode",
-      "addr": 400,
+      "addr": 404,
       "width": 1,
       "access": "rw",
       "kind": "enum",

@@ -5,3 +5,7 @@
    Consumed by providers/config_store.rs. */
 _config_a = ORIGIN(CONFIG_A);
 _config_b = ORIGIN(CONFIG_B);
+/* Calib slots (own A/B image, two 256 B pages each) at the CALIB region
+   front; the rest of the 4K region stays spare. */
+_calib_a = ORIGIN(CALIB);
+_calib_b = ORIGIN(CALIB) + 512;

@@ -29,6 +29,7 @@ use crate::estimator::{
 use crate::math::{q_mul, q_mul_u};
 use crate::regions::config::DecaySelect;
 use crate::regions::control::Mode;
+use crate::tel::{TelSample, TelStream};
 use crate::traits::{ControlIo, DecayMode, Motor, MotorCmd};
 use crate::{RegionStorageRaw, SensorFrame, Shared};
 use osc_units::Effort;
@@ -67,8 +68,9 @@ pub struct KernelTiming {
 /// forming `&T`, cross-field tearing accepted (each field is independently
 /// sane). The kernel is the sole writer of TELEMETRY sensors/estimates/mode
 /// and the `fault_flags` byte.
-pub struct Kernel<I: ControlIo> {
+pub struct Kernel<I: ControlIo, T: TelStream = ()> {
     pub io: I,
+    tel: T,
     timing: KernelTiming,
     decim_med: u8,
     decim_slow: u8,
@@ -117,8 +119,15 @@ pub struct Kernel<I: ControlIo> {
 
 impl<I: ControlIo> Kernel<I> {
     pub fn new(io: I, timing: KernelTiming) -> Self {
+        Self::with_tel(io, (), timing)
+    }
+}
+
+impl<I: ControlIo, T: TelStream> Kernel<I, T> {
+    pub fn with_tel(io: I, tel: T, timing: KernelTiming) -> Self {
         Self {
             io,
+            tel,
             timing,
             // primed so the FIRST tick runs the full medium+slow chain: the
             // ms->tick conversions and the vbus reciprocal exist before any
@@ -230,6 +239,26 @@ impl<I: ControlIo> Kernel<I> {
         if let Some((_, vdiff)) = window::vdrive_from_frame(&frame, sel, fwd) {
             self.vdiff_last = vdiff.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
         }
+        // TEL emits HERE, on the fast path before the medium/slow branches:
+        // duty_q15 still holds the command whose window this frame's samples
+        // measured (the same previous-tick alignment the ident aggregate
+        // uses), and the send lands at a near-constant tick offset. Emitting
+        // at on_tick's end loses the DMA drain margin every medium tick -
+        // bench: >=9 B frames dropped at exactly the medium cadence.
+        if life.tel_enable && life.tel_mask != 0 {
+            let s = TelSample {
+                pos: frame.pos,
+                current: self.i_meas_last,
+                current_trough: frame.current_trough,
+                duty_q15: self.duty_q15,
+                vdiff: self.vdiff_last,
+                vbus: self.vbus.vbus_counts(),
+                window_valid: i_meas.is_some(),
+            };
+            self.tel.configure(true, life.tel_mask);
+            self.tel.on_tick(&s);
+        }
+
         if let Some(agg) = self
             .ident
             .sample(self.i_meas_last, self.vdiff_last, self.duty_q15)

@@ -11,6 +11,8 @@
 pub mod bus;
 pub mod digital_out;
 pub mod monotonic;
+pub mod tel_tx;
 
 pub use digital_out::MockDigitalOut;
 pub use monotonic::MockMonotonic;
+pub use tel_tx::MockTelTx;

@@ -1,7 +1,9 @@
 //! Fixed-gain 3-state fusion observer (control-theory "The Fusion Filter").
-//! Predict pushes theta/omega through the mechanical model - b_i bakes
-//! Kt*Ts/J so current counts map straight to csQ16 - and correct nudges all
-//! three states against the measured pot position. The third state is the
+//! Predict pushes theta/omega through the mechanical model - b_i_q016 =
+//! round(B * 65536) where B bakes Kt*Ts/J as (c/s per medium tick) per
+//! ccount, so the shift-0 product couples current counts straight into
+//! csQ16 - and correct nudges all three states against the measured pot
+//! position. The third state is the
 //! disturbance torque the model cannot explain, in current counts; it feeds
 //! stall/collision detection and telemetry. Gains are host-synthesized
 //! constants (no runtime matrix math on this chip).
@@ -29,6 +31,10 @@ const OMEGA_LIM_CSQ16: i32 = 32767 << 16;
 /// Full shunt scale in ccQ16 - a disturbance beyond +-4095 current counts
 /// is not resolvable by the model anyway.
 const TAU_D_LIM_CCQ16: i32 = 4095 << 16;
+
+/// Model-input clamp, 2x shunt full scale: 65535 * 8192 < 2^31 keeps the
+/// shift-0 b_i product i32-exact for any gain encoding.
+const ACCEL_LIM_CC: i32 = 8192;
 
 /// CALIB motor (b_i, fric_fc) + CONFIG fusion correction gains, loaded fresh
 /// each step by the kernel.
@@ -90,15 +96,18 @@ impl FusionObs {
         dt_med_q32: u32,
         gains: &FusionGains,
     ) {
-        // Predict. b_i Q0.16 < 1.0 so |delta| <= |accel|; saturating subs
-        // guard a hostile i_counts, everything downstream is clamp-bounded.
+        // Predict. b_i is Q0.16 of B (c/s per ccount per tick), so the
+        // shift-0 product lands in csQ16 directly; ACCEL_LIM_CC bounds it
+        // i32-exact. Saturating subs guard a hostile i_counts, everything
+        // downstream is clamp-bounded.
         let fric = fric_c(self.omega_q16, gains.fric_fc_counts);
         let accel = i_counts
             .saturating_sub(fric)
-            .saturating_sub(self.tau_d_q16 >> 16);
+            .saturating_sub(self.tau_d_q16 >> 16)
+            .clamp(-ACCEL_LIM_CC, ACCEL_LIM_CC);
         self.omega_q16 = self
             .omega_q16
-            .saturating_add(q_mul(gains.b_i_q016 as i32, accel, 16))
+            .saturating_add(q_mul(gains.b_i_q016 as i32, accel, 0))
             .clamp(-OMEGA_LIM_CSQ16, OMEGA_LIM_CSQ16);
         // |omega| <= 2^31, dt < 2^31 -> |delta| < 2^30
         self.theta_q16 = self
@@ -155,18 +164,19 @@ mod tests {
     // 2 kHz MEDIUM rate, matching the kernel's DT_MED_Q32 derivation.
     const DT: u32 = ((1u64 << 32) / 2000) as u32;
 
-    // Hand-picked stable set for the 2 kHz discrete observer: l1 = 0.25,
-    // l2 = 4.0 c/s per count, l3 = 64.0 cc per count, b_i ~ 1.0. The b_i
-    // encoding couples current into omega at <= 1 q16 per ccount per tick,
-    // so tau_d only acts through whole counts (tau_d >> 16) and needs a
-    // large l3 for usable bandwidth; l2 stays small so the position
-    // transient does not rail omega. If a convergence test oscillates the
-    // fix is smaller gains, not more iterations.
+    // Hand-picked stable set for the 2 kHz discrete observer: b_i = 6554 =
+    // Q0.16 of B = 0.1 c/s per tick per ccount (mid rig-physical range),
+    // l1 = 0.25, l2 = 4.0 c/s per count, l3 = 8.0 cc per count. With the
+    // coupling live, the e -> tau_d -> omega -> theta loop gain scales as
+    // l3 * B, so l3 must shrink as b_i grows: 64.0 rails the filter at
+    // this B (integer-sim verified), 8.0 sits inside the stable region
+    // with the disturbance step still settling exactly. If a convergence
+    // test oscillates the fix is smaller gains, not more iterations.
     const G: FusionGains = FusionGains {
-        b_i_q016: 65535,
+        b_i_q016: 6554,
         l1_q016: 16384,
         l2_q88: 1024,
-        l3_q88: 16384,
+        l3_q88: 2048,
         l_bemf_q016: 0,
         fric_fc_counts: 0,
     };
@@ -183,18 +193,33 @@ mod tests {
     #[test]
     fn static_convergence() {
         // Seed 10 counts below the measurement, zero current: theta locks
-        // to the measurement, omega and tau_d bleed back to ~0. 40000
-        // ticks (20 s) because the tau_d -> omega bleed path only sees
-        // whole counts of tau_d. Residuals below the quantization floors
-        // (omega under ~2200 q16 moves theta by 0 per tick), pinned exact.
+        // to the measurement, omega and tau_d bleed back to ~0 (the live
+        // b_i bleed path settles by ~10000 ticks; 40000 keeps margin).
+        // Residuals below the quantization floors (omega under ~2000 q16
+        // moves theta by 0 per tick: q_mul(omega, DT, 32) truncates
+        // omega/2000 to zero), pinned exact.
         let mut f = FusionObs::new();
         f.seed(1990);
         for _ in 0..40000 {
             f.step(0, 2000, None, DT, &G);
         }
         assert_eq!(f.theta_q16(), 2000 << 16, "pin");
-        assert_eq!(f.omega_q16(), 1998, "pin");
+        assert_eq!(f.omega_q16(), 1966, "pin");
         assert_eq!(f.tau_d_counts(), 0, "pin");
+    }
+
+    #[test]
+    fn current_couples_at_full_scale() {
+        // One step from rest, e = 0 going in: predict alone moves omega by
+        // q_mul(b_i, i, 0) = 6554 * 100 = 655400 q16 (~10 c/s) - the
+        // shift-0 encoding couples whole ccounts into csQ16 directly (the
+        // old shift-16 form moved <= 1 q16 per ccount and left b_i inert).
+        // The correct step then subtracts l2*e for the 327-q16 theta
+        // advance: 655400 - (1024 * 327 >> 8) = 654092.
+        let mut f = FusionObs::new();
+        f.seed(2000);
+        f.step(100, 2000, None, DT, &G);
+        assert_eq!(f.omega_q16(), 654092, "pin");
     }
 
     #[test]
@@ -222,8 +247,8 @@ mod tests {
         for _ in 0..20000 {
             f.step(500, 2000, None, DT, &G);
         }
-        let tau = f.tau_d_counts();
-        assert!((480..=505).contains(&tau), "tau_d={tau}");
+        // the live bleed path settles tau_d onto the drive exactly
+        assert_eq!(f.tau_d_counts(), 500, "pin");
         let theta_err = (f.theta_q16() - (2000 << 16)).abs();
         assert!(theta_err < 1 << 16, "theta={}", f.theta_q16());
         assert!(f.omega_q16().abs() < 1 << 16, "omega={}", f.omega_q16());

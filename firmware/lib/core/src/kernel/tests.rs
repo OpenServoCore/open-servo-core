@@ -100,7 +100,9 @@ fn seed(shared: &Shared) {
         c.thermal.rtherm_omega_max_cps = 400;
         c.fusion.l1_q016 = 16384;
         c.fusion.l2_q88 = 1024;
-        c.fusion.l3_q88 = 16384;
+        // l3 * B is the tau_d loop gain: at the plant's B (~1.0 saturated
+        // into b_i below) 0.5 cc per count is stable, 2.0 rails the filter
+        c.fusion.l3_q88 = 128;
         c.fusion.l_bemf_q016 = 0;
         c.fault_cfg.pos_error_counts = 400;
         c.fault_cfg.pos_error_time_ms = 500;
@@ -112,6 +114,8 @@ fn seed(shared: &Shared) {
         cal.motor.ke_vpc_q = 256; // 0.0625 vcounts per c/s
         cal.motor.r_q12 = 8192; // 2.0 vcounts/ccount
         cal.motor.recip_ke_q = 16 << 10; // 16 c/s per vcount
+        // plant B ~= 1.33 c/s per ccount per medium tick (200/1500 x 10),
+        // saturated to the Q0.16 ceiling; correction gains absorb the gap
         cal.motor.b_i_q016 = 65535;
         t.telemetry.sensors.current_bias_counts = BIAS;
         t.control.lifecycle.torque_enable = false;
@@ -146,8 +150,10 @@ fn torque_off_disables_and_estimators_still_track() {
     assert!(matches!(last_cmd(&k), MotorCmd::Disabled));
     // boot seeded the fusion at the first measurement
     assert_eq!(k.fusion.theta_q16(), 2500 << 16);
-    // the pot moves while disabled: the observer follows it anyway
-    for _ in 0..4000 {
+    // the pot moves while disabled: the observer follows it anyway (the
+    // live b_i bleed at the plant's saturated B settles the 1500-count
+    // step in ~920 medium ticks, integer-sim verified)
+    for _ in 0..12000 {
         k.on_tick(frame(1000, BIAS), &sh);
     }
     assert!(matches!(last_cmd(&k), MotorCmd::Disabled));
@@ -191,10 +197,15 @@ fn enable_edge_clears_hand_era_tau_d() {
     let sh = Shared::new();
     seed(&sh);
     let mut k = kernel();
-    // torque off, shaft hand-swept: i_use = 0 fiction rails tau_d
+    // torque off, shaft hand-swept then snapped back: with the b_i bleed
+    // live, steady-rate motion is model-explained and leaves tau_d near
+    // zero - only the snap transient (e pinned at the clamp) pumps it
     for i in 0..4000u32 {
         let pos = 1000 + ((i / 4) % 2000) as u16;
         k.on_tick(frame(pos, BIAS), &sh);
+    }
+    for _ in 0..150 {
+        k.on_tick(frame(1000, BIAS), &sh);
     }
     assert!(
         k.fusion.tau_d_counts().unsigned_abs() > 200,
@@ -744,15 +755,29 @@ fn hard_wall_stall_yields() {
     let mut k = kernel();
     let mut plant = Plant::new(500);
     plant.frozen = true;
-    // into the push, the command pins at the full limit
-    run_plant(&mut k, &sh, &mut plant, 2000);
-    assert_eq!(k.i_ref_cc, 1200, "pinned at i_lim");
-    run_plant(&mut k, &sh, &mut plant, 20_000); // 1 s against the wall
+    // The live observer first books the wall current as tau_d, so the
+    // wind-up is integrator-paced (~230 ms to the full limit); the stall
+    // verdict then folds i_lim to yield, the weaker drive lets tau_d
+    // bleed below release, and the fold opens into another probe. That
+    // probe-the-wall cycle (bench: re-trips through grip-strength dips)
+    // makes any single-phase pin flaky - assert the cycle's invariants
+    // across a run instead.
+    let mut saw_full = false;
+    let mut saw_fold = false;
+    for _ in 0..24_000 {
+        run_plant(&mut k, &sh, &mut plant, 1);
+        if k.i_ref_cc == 1200 {
+            saw_full = true;
+        }
+        let mut lim = 0u16;
+        sh.table.with(|t| lim = t.telemetry.estimates.i_lim_counts);
+        if lim == 300 {
+            saw_fold = true;
+        }
+    }
+    assert!(saw_full, "wind-up reached i_lim");
+    assert!(saw_fold, "stall verdict folded to yield");
     assert_eq!(k.faults.mask(), 0, "Yield never latches");
-    assert!(k.limits.stalled());
-    sh.table.with(|t| {
-        assert_eq!(t.telemetry.estimates.i_lim_counts, 300, "folded to yield");
-    });
 }
 
 #[test]
@@ -813,4 +838,73 @@ fn position_step_survives_tick_deletion() {
         hi = hi.max(plant.pos());
     }
     assert!(hi - lo <= 4, "limit cycle: spread {}", hi - lo);
+}
+
+// --- TEL stream ------------------------------------------------------------
+
+#[derive(Default)]
+struct RecTel {
+    cfg: Option<(bool, u16)>,
+    samples: heapless::Vec<crate::tel::TelSample, 64>,
+}
+impl crate::tel::TelStream for RecTel {
+    fn configure(&mut self, enabled: bool, mask: u16) {
+        self.cfg = Some((enabled, mask));
+    }
+    fn on_tick(&mut self, sample: &crate::tel::TelSample) {
+        let _ = self.samples.push(*sample);
+    }
+}
+
+#[test]
+fn tel_stream_gated_by_enable_and_mask() {
+    let sh = Shared::new();
+    seed(&sh);
+    let mut k = Kernel::with_tel(
+        FakeIo {
+            sensors: FakeSensors,
+            motor: FakeMotor { last: None },
+        },
+        RecTel::default(),
+        TIMING,
+    );
+    // enable/mask both zero, then each alone: no emission
+    for _ in 0..10 {
+        k.on_tick(frame(2000, BIAS), &sh);
+    }
+    sh.table.with_mut(|t| t.control.lifecycle.tel_enable = true);
+    for _ in 0..10 {
+        k.on_tick(frame(2000, BIAS), &sh);
+    }
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.tel_enable = false;
+        t.control.lifecycle.tel_mask = crate::tel::MASK_ALL;
+    });
+    for _ in 0..10 {
+        k.on_tick(frame(2000, BIAS), &sh);
+    }
+    assert!(k.tel.samples.is_empty());
+    assert!(k.tel.cfg.is_none());
+
+    // both set: one sample per tick, table mask forwarded
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.tel_enable = true;
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::OpenLoop;
+        t.control.lifecycle.goal_duty = 8000;
+    });
+    for _ in 0..20 {
+        k.on_tick(frame(2100, BIAS + 40), &sh);
+    }
+    assert_eq!(k.tel.samples.len(), 20);
+    assert_eq!(k.tel.cfg, Some((true, crate::tel::MASK_ALL)));
+    let s = k.tel.samples.last().unwrap();
+    assert_eq!(s.pos, 2100);
+    assert_eq!(s.current_trough, BIAS + 40);
+    // previous-tick alignment: the sampled duty is the command whose window
+    // this frame measured
+    assert_eq!(s.duty_q15, 8000);
+    // duty 8000/32767 of ARR is far above the 100-tick window floors
+    assert!(s.window_valid);
+    assert_eq!(s.current, 40);
 }

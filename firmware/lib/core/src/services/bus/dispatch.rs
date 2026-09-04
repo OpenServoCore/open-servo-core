@@ -5,10 +5,11 @@ use osc_protocol::frame::uid_prefix_matches;
 use osc_protocol::table::STATUS_FLAG_CONFIG_DIRTY;
 use osc_protocol::wire::{Id, MAX_PAYLOAD, MgmtOp, ResultCode, UID_LEN};
 
-use crate::persist::{CONFIG_LEN, PROFILE_LEN, StoreError};
+use crate::persist::{CALIB_LEN, CONFIG_LEN, PROFILE_LEN, StoreError};
 use crate::regions::hooks::ControlTableHooks;
 use crate::regions::{
-    CONFIG_BASE_ADDR, CONFIG_REGION_SIZE, PROFILE_BASE_ADDR, PROFILE_REGION_SIZE,
+    CALIB_BASE_ADDR, CALIB_REGION_SIZE, CONFIG_BASE_ADDR, CONFIG_REGION_SIZE, PROFILE_BASE_ADDR,
+    PROFILE_REGION_SIZE,
 };
 use crate::traits::{Dispatch, Dispatched, GATHER_MAX, Reply, Request, RequestCtx, Status};
 use crate::{Error, RegionStorage, Shared, StagedWrites};
@@ -527,7 +528,12 @@ impl Dispatcher<'_> {
                 .ok()
                 .and_then(|s| s.try_into().ok())
                 .ok_or(StoreError)?;
-        store.save(config, profile)
+        let calib: &[u8; CALIB_LEN] =
+            RegisterFile::read(&self.shared.table, CALIB_BASE_ADDR, CALIB_REGION_SIZE)
+                .ok()
+                .and_then(|s| s.try_into().ok())
+                .ok_or(StoreError)?;
+        store.save(config, profile, calib)
     }
 
     /// sec 9.5 FACTORY: wipe both saved slots, ack, then stage the reboot that

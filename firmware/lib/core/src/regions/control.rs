@@ -26,7 +26,17 @@ pub enum BootMode {
 #[derive(Copy, Clone, Block)]
 pub struct ControlLifecycle {
     pub torque_enable: bool,
+    /// TEL stream gate, deliberately adjacent to `torque_enable`: one 2-byte
+    /// write starts motion and capture in the same bus transaction. The
+    /// stream runs when enabled AND `tel_mask` != 0.
+    pub tel_enable: bool,
+    /// TEL frame layout, one bit per field (`tel` module). The le rule
+    /// rejects reserved bits; every v1 mask fits the wire budget.
+    #[ct_field(le = crate::tel::MASK_ALL)]
+    pub tel_mask: u16,
     pub mode: Mode,
+    #[ct_field(skip)]
+    pub _rsvd_align: u8,
     #[ct_field(le = &config::addr::loop_current::DUTY_MAX_Q15, abs)]
     pub goal_duty: i16,
     #[ct_field(
@@ -54,7 +64,7 @@ pub struct ControlRegs {
     pub lifecycle: ControlLifecycle,
     pub system: ControlSystem,
     #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 111],
+    pub _rsvd_tail: [u8; 107],
 }
 
 #[cfg(test)]

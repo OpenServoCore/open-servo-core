@@ -16,7 +16,7 @@ use osc_protocol::wire::UID_LEN;
 
 /// V006 map fact used by read/write round trips (control.lifecycle
 /// goal_velocity); the common block is the only protocol-fixed address space.
-const GOAL_VELOCITY: u16 = 392;
+const GOAL_VELOCITY: u16 = 396;
 /// Slot 0 of the profile region (protocol sec 5.2 pin).
 const PROFILE_SLOT0: u16 = 0x280;
 

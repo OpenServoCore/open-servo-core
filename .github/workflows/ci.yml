@@ -208,8 +208,33 @@ jobs:
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
       - name: cargo clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --tests -- -D warnings
       - name: cargo build
         run: cargo build
       - name: cargo test
         run: cargo test
+
+  osc-ident:
+    name: build + test (ident)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ident
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust (nightly + clippy + rustfmt + wasm)
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: clippy, rustfmt
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ident
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+      - name: cargo clippy
+        run: cargo clippy --tests -- -D warnings
+      - name: cargo test
+        run: cargo test
+      - name: cargo check (wasm32, the lib must stay sans-io)
+        run: cargo check --target wasm32-unknown-unknown
