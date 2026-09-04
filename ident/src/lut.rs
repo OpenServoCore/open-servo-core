@@ -22,7 +22,6 @@
 //!   linearize equal to the plain linear fraction.
 
 use crate::ripple;
-use std::collections::BTreeMap;
 
 /// Knot count = the firmware PotLutBlock's lut_corr length.
 const N_KNOTS: usize = 55;
@@ -288,13 +287,23 @@ struct Stitch {
     coverage: f64,
 }
 
-/// Integrate a per-count motor-rev slope over the rail span from multiple
-/// clean chunks. Each chunk contributes its local rev/count slope (motor phase
-/// from cumulative_phase, distributed across the counts it traversed); the pos
-/// axis is global and monotonic in true angle, so the chunks share one count
-/// grid and bridge each other's gaps. A chunk whose ripple phase can't be
-/// recovered is skipped, not fatal. None when the span is degenerate, fewer
-/// than two bins are covered, or the integrated rev span is non-positive.
+/// Integrate a per-count motor-rev density over the rail span from multiple
+/// clean chunks. Each chunk contributes its local rev/count density (motor
+/// phase from cumulative_phase); the pos axis is global and monotonic in true
+/// angle, so the chunks share one count grid and bridge each other's gaps. A
+/// chunk whose ripple phase can't be recovered is skipped, not fatal. None when
+/// the span is degenerate, fewer than two bins are covered, or the integrated
+/// rev span is non-positive.
+///
+/// Density comes from TIME-ORDERED steps, not a pos-sorted scan: phase is the
+/// clean monotone clock while pot pos is noisy (the ADC dithers +/-several
+/// counts around a slow advance). Depositing each step's dphi into the count(s)
+/// occupied at that instant makes each bin accumulate exactly the revs turned
+/// while sitting near that count, so a chunk's deposits sum to its raw phase
+/// span with no loss. A pos-sorted dedup instead averages phase across every
+/// time a jittered pos revisits a count, which breaks phase monotonicity vs pos
+/// (spurious reversals) and, once negative windows are dropped, both loses
+/// coverage and over-counts revs.
 fn stitch_slope(
     chunks: &[(Vec<u16>, Vec<f64>)],
     fs: f64,
@@ -307,8 +316,13 @@ fn stitch_slope(
         return None;
     }
     let bins = span as usize + 1;
-    let mut slope_sum = vec![0.0; bins];
-    let mut slope_cnt = vec![0u32; bins];
+    // acc[b] = sum over covering chunks of that chunk's local rev/count density
+    // at bin b; chunk_cov[b] = how many chunks covered b. Density = acc/chunk_cov
+    // (chunks that overlap in pos measured the same physical count and average).
+    let mut acc = vec![0.0; bins];
+    let mut chunk_cov = vec![0u32; bins];
+    let mut local = vec![0.0; bins];
+    let mut touched = vec![false; bins];
     for (pos, current) in chunks {
         if pos.len() != current.len() || pos.len() < MIN_SAMPLES {
             continue;
@@ -318,62 +332,67 @@ fn stitch_slope(
         } else {
             continue;
         };
-        // Collapse oversampling+jitter first: the pot ADC lands many samples on
-        // each count (and dithers +/-1), so a raw per-step scan would split one
-        // count's dphi across many crossings and dilute the averaged slope by
-        // the oversampling factor. Reduce to one mean phase per unique pos.
-        let mut by_pos: BTreeMap<u16, (f64, u32)> = BTreeMap::new();
-        for (&p, &ph) in pos.iter().zip(phi.iter()) {
-            let e = by_pos.entry(p).or_insert((0.0, 0));
-            e.0 += ph;
-            e.1 += 1;
-        }
-        let deduped: Vec<(u16, f64)> = by_pos
-            .into_iter()
-            .map(|(p, (sum, cnt))| (p, sum / cnt as f64))
-            .collect();
-        // Distribute each pos-step's phase increment across the counts it
-        // crossed; each covered count now gets ~one full-per-count contribution
-        // per chunk (multi-chunk overlap still averages correctly).
-        for w in deduped.windows(2) {
-            let (pos_i, phi_i) = w[0];
-            let (pos_j, phi_j) = w[1];
-            let dphi = phi_j - phi_i;
-            let (a, b) = (pos_i.min(pos_j), pos_i.max(pos_j));
-            let counts = (b - a) as f64;
-            if counts > 0.0 && dphi >= 0.0 {
-                let s = dphi / counts;
-                // b maps to the next bin; the top count lands in bin b-1
+        local.iter_mut().for_each(|x| *x = 0.0);
+        touched.iter_mut().for_each(|x| *x = false);
+        for k in 0..pos.len() - 1 {
+            let dphi = (phi[k + 1] - phi[k]).max(0.0);
+            let (a, b) = (pos[k].min(pos[k + 1]), pos[k].max(pos[k + 1]));
+            if a == b {
+                // sat at one count for this step: all of dphi lands in bin a.
+                // A sample sitting exactly at raw_max folds into the top interval
+                // (bin raw_max-1) rather than being dropped, so a rail dwell
+                // keeps its revs.
+                if a >= raw_min && a <= raw_max {
+                    let idx = (a.min(raw_max - 1) - raw_min) as usize;
+                    local[idx] += dphi;
+                    touched[idx] = true;
+                }
+            } else {
+                // crossed [a,b): spread dphi evenly over the counts traversed
+                let s = dphi / (b - a) as f64;
                 for c in a..b {
                     if c >= raw_min && c < raw_max {
                         let idx = (c - raw_min) as usize;
-                        slope_sum[idx] += s;
-                        slope_cnt[idx] += 1;
+                        local[idx] += s;
+                        touched[idx] = true;
                     }
                 }
             }
         }
+        for b in 0..bins {
+            if touched[b] {
+                acc[b] += local[b];
+                chunk_cov[b] += 1;
+            }
+        }
     }
-    let covered = slope_cnt.iter().filter(|&&c| c > 0).count();
+    let covered = chunk_cov.iter().filter(|&&c| c > 0).count();
     if covered < 2 {
         return None;
     }
-    let fc = slope_cnt.iter().position(|&c| c > 0).unwrap();
-    let lc = slope_cnt.iter().rposition(|&c| c > 0).unwrap();
+    let fc = chunk_cov.iter().position(|&c| c > 0).unwrap();
+    let lc = chunk_cov.iter().rposition(|&c| c > 0).unwrap();
     let coverage = covered as f64 / bins as f64;
     let mut avg = vec![0.0; bins];
     for b in 0..bins {
-        if slope_cnt[b] > 0 {
-            avg[b] = slope_sum[b] / slope_cnt[b] as f64;
+        if chunk_cov[b] > 0 {
+            avg[b] = acc[b] / chunk_cov[b] as f64;
         }
     }
     // linearly interpolate uncovered interior bins between covered neighbours so
-    // the integrated cumulative stays continuous and monotone across gaps
+    // the integrated cumulative stays continuous and monotone across gaps. The
+    // anchors are the MEDIAN density over up to GAP_ANCHOR covered bins scanning
+    // inward from each edge, not the single boundary bin: a chunk's outermost
+    // bin is partially occupied (the chunk was cut off mid-count) and reads low,
+    // so anchoring a wide gap on it under-fills the revs the motor turned while
+    // crossing that gap. The median over a small interior neighbourhood is the
+    // representative local density.
     let mut prev = fc;
     for b in (fc + 1)..=lc {
-        if slope_cnt[b] > 0 {
+        if chunk_cov[b] > 0 {
             if b > prev + 1 {
-                let (y0, y1) = (avg[prev], avg[b]);
+                let y0 = anchor_density(&avg, &chunk_cov, prev, -1, fc, lc);
+                let y1 = anchor_density(&avg, &chunk_cov, b, 1, fc, lc);
                 let dx = (b - prev) as f64;
                 for (j, g) in avg[(prev + 1)..b].iter_mut().enumerate() {
                     *g = y0 + (y1 - y0) * ((j + 1) as f64 / dx);
@@ -449,6 +468,37 @@ pub fn stitched_motor_revs(
     let count_span = raw_max as f64 - raw_min as f64;
     let full = crate::kinematics::full_span_motor_revs(revs, pot_disp, count_span);
     (full != 0.0).then_some((full, st.coverage))
+}
+
+/// Count of covered bins scanned inward from a gap edge to form the anchor
+/// median (see stitch_slope's interpolation).
+const GAP_ANCHOR: usize = 8;
+
+/// Median density over up to GAP_ANCHOR covered bins scanning from `start` in
+/// direction `dir` (+1/-1), staying within [lo,lc]. Skips uncovered bins (gap
+/// fills), so anchors are always real measurements. 0.0 if none found.
+fn anchor_density(
+    avg: &[f64],
+    chunk_cov: &[u32],
+    start: usize,
+    dir: i32,
+    lo: usize,
+    hi: usize,
+) -> f64 {
+    let mut vals: Vec<f64> = Vec::with_capacity(GAP_ANCHOR);
+    let mut b = start as i64;
+    while vals.len() < GAP_ANCHOR && b >= lo as i64 && b <= hi as i64 {
+        let idx = b as usize;
+        if chunk_cov[idx] > 0 {
+            vals.push(avg[idx]);
+        }
+        b += dir as i64;
+    }
+    if vals.is_empty() {
+        return 0.0;
+    }
+    vals.sort_by(f64::total_cmp);
+    vals[vals.len() / 2]
 }
 
 /// Rate (rev/s) at sample index x by linear interp over window centers,
