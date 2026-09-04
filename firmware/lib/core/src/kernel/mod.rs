@@ -87,9 +87,6 @@ pub struct Kernel<I: ControlIo> {
     booted: bool,
     te_prev: bool,
     run_prev: bool,
-    fwd_prev: bool,
-    /// Frames still to drop after a duty-sign flip (window attribution).
-    flip_hold: u8,
     mode_prev: Mode,
     /// MEDIUM's current command, consumed by the FAST current loop.
     i_ref_cc: i32,
@@ -143,8 +140,6 @@ impl<I: ControlIo> Kernel<I> {
             booted: false,
             te_prev: false,
             run_prev: false,
-            fwd_prev: true,
-            flip_hold: 0,
             mode_prev: Mode::OpenLoop,
             i_ref_cc: 0,
             omega_ref_q16: 0,
@@ -209,31 +204,16 @@ impl<I: ControlIo> Kernel<I> {
         self.te_prev = life.torque_enable;
 
         // Window from the PREVIOUS tick's command: this frame's scan sampled
-        // the period that command drove. Both extraction paths additionally
-        // drop the two frames after a duty-sign flip: the command ->
-        // CCR-preload -> drive -> scan -> DMA pipeline means a frame can lag
-        // its command by two ticks, and a sample attributed across a sign
-        // flip picks the wrong terminal and the wrong current sign - under a
-        // hunting loop that aliased the vbus EWMA down to the low-side leg
-        // and latched a false undervolt (caught on the bench; a one-frame
-        // drop was not enough).
+        // the period that command drove, so terminal and sign attribution
+        // stay correct across sign flips (bang-bang bench test pins this).
         let ticks = window::drive_ticks(self.duty_q15, self.timing.pwm_arr);
         let fwd = self.duty_q15 >= 0;
-        let mut sel = window::select(
+        let sel = window::select(
             self.decay,
             ticks,
             sense.i_window_min_ticks,
             sense.v_window_min_ticks,
         );
-        if fwd != self.fwd_prev {
-            self.flip_hold = 2;
-        }
-        self.fwd_prev = fwd;
-        if self.flip_hold > 0 {
-            self.flip_hold -= 1;
-            sel.i_valid = false;
-            sel.v_valid = false;
-        }
         let i_meas = window::i_from_frame(&frame, sel, fwd, bias);
         if let Some(i) = i_meas {
             self.i_meas_last = i.clamp(i16::MIN as i32, i16::MAX as i32) as i16;

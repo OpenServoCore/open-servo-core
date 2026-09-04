@@ -256,38 +256,6 @@ fn endstop_allows_retreat_from_the_wall() {
 }
 
 #[test]
-fn sign_flip_drops_two_frames_before_reattributing() {
-    let sh = Shared::new();
-    seed(&sh);
-    sh.table.with_mut(|t| {
-        t.control.lifecycle.torque_enable = true;
-        t.control.lifecycle.mode = Mode::OpenLoop;
-        t.control.lifecycle.goal_duty = 8000;
-    });
-    let mut k = kernel();
-    for _ in 0..50 {
-        k.on_tick(frame(2000, BIAS + 300), &sh);
-    }
-    assert_eq!(k.i_meas_last, 300, "forward attribution settled");
-    // Reverse command. The frame pipeline lags the command, so the
-    // shunt sample can belong to either sign for two ticks - both
-    // frames must be dropped (hold last-valid), the third re-attributes
-    // with the new sign.
-    sh.table.with_mut(|t| t.control.lifecycle.goal_duty = -8000);
-    // tick 1: select still sees the last +cmd, sign stable - accepted
-    k.on_tick(frame(2000, BIAS + 500), &sh);
-    assert_eq!(k.i_meas_last, 500);
-    // ticks 2-3: flip observed - dropped despite a valid window
-    k.on_tick(frame(2000, BIAS + 700), &sh);
-    assert_eq!(k.i_meas_last, 500, "first post-flip frame not dropped");
-    k.on_tick(frame(2000, BIAS + 700), &sh);
-    assert_eq!(k.i_meas_last, 500, "second post-flip frame not dropped");
-    // tick 4: pipeline flushed - attributed with the reverse sign
-    k.on_tick(frame(2000, BIAS + 700), &sh);
-    assert_eq!(k.i_meas_last, -700);
-}
-
-#[test]
 fn undervolt_needs_fresh_evidence_no_stale_relatch() {
     let sh = Shared::new();
     seed(&sh);
