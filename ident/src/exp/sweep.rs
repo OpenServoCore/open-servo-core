@@ -1,4 +1,4 @@
-//! Dedicated constant-duty ripple sweep: one clean rail-to-rail traverse
+//! Dedicated constant-duty ripple capture: one clean constant-duty traverse
 //! whose per-tick TEL current carries an uninterrupted commutation-ripple
 //! signal for the tachometer and pot LUT.
 //!
@@ -11,34 +11,34 @@
 //! so the pump drains TEL continuously and the whole traverse lands as a
 //! single long contiguous run.
 //!
+//! No positioning or speed probe here: the caller positions to the capture
+//! start rail (with TEL off, where polling is free) and sizes capture_ms from
+//! a measured speed so the traverse stays off BOTH mechanical rails - the
+//! clone can jam at either end, so the capture must never reach a stop.
+//!
 //! No safety Reads during the traverse (they would re-fragment the capture):
-//! the firmware current limit + fault protection are the winding's backstop,
-//! and the identical seek duty was just proven safe against both hard stops
-//! by [`super::endstop`]. The caller parks duty 0 + torque off on exit.
+//! the time-bounded, speed-sized duration is the backstop, and the firmware
+//! current limit + fault protection guard the winding. The caller parks duty 0
+//! + torque off on exit.
 
 use super::{Cmd, Experiment};
 use crate::frame::TelemetrySnapshot;
 use crate::regs::control;
 
 pub struct SweepCfg {
-    /// Constant sweep drive magnitude, q15 (mirrors the end-stop seek duty so
+    /// Constant capture drive magnitude, q15 (mirrors the end-stop seek duty so
     /// the winding load is the same proven-safe operating point).
     pub duty_q15: i16,
-    /// Drive to the start rail for this long before the capturing traverse, so
-    /// the sweep begins from a known end rather than mid-travel.
-    pub prime_ms: u32,
-    /// Constant-duty traverse duration. Longer than a full traverse takes: the
-    /// tail dwells stalled at the far rail and is trimmed by the moving-run
-    /// selector, so overshoot is free.
-    pub sweep_ms: u32,
+    /// Constant-duty capture duration. The caller sizes this from a measured
+    /// speed so the motion covers the count-inset span without reaching a rail.
+    pub capture_ms: u32,
 }
 
 impl Default for SweepCfg {
     fn default() -> Self {
         Self {
             duty_q15: 8520,
-            prime_ms: 500,
-            sweep_ms: 800,
+            capture_ms: 800,
         }
     }
 }
@@ -46,20 +46,18 @@ impl Default for SweepCfg {
 enum Phase {
     ModeWrite,
     TorqueOn,
-    PrimeDuty,
-    PrimePause,
-    SweepDuty,
-    SweepPause,
-    FinishDuty,
-    FinishTorque,
+    CaptureDuty,
+    CapturePause,
+    ZeroDuty,
+    TorqueOff,
     Finished,
 }
 
 pub struct Sweep {
     cfg: SweepCfg,
     phase: Phase,
-    /// Duty sign that drives pos toward the far rail (the capture direction);
-    /// the caller derives it from the measured drive polarity.
+    /// Duty sign that drives pos toward the capture end (increasing pos); the
+    /// caller derives it from the measured drive polarity.
     sweep_sign: i8,
 }
 
@@ -72,7 +70,7 @@ impl Sweep {
         }
     }
 
-    fn sweep_duty(&self) -> i32 {
+    fn capture_duty(&self) -> i32 {
         self.sweep_sign as i32 * self.cfg.duty_q15 as i32
     }
 }
@@ -88,46 +86,33 @@ impl Experiment for Sweep {
                 }
             }
             Phase::TorqueOn => {
-                self.phase = Phase::PrimeDuty;
+                self.phase = Phase::CaptureDuty;
                 Cmd::Write {
                     reg: control::TORQUE_ENABLE,
                     value: 1,
                 }
             }
-            Phase::PrimeDuty => {
-                self.phase = Phase::PrimePause;
+            Phase::CaptureDuty => {
+                self.phase = Phase::CapturePause;
                 Cmd::Write {
                     reg: control::GOAL_DUTY,
-                    value: -self.sweep_duty(),
+                    value: self.capture_duty(),
                 }
             }
-            Phase::PrimePause => {
-                self.phase = Phase::SweepDuty;
+            Phase::CapturePause => {
+                self.phase = Phase::ZeroDuty;
                 Cmd::Pause {
-                    ms: self.cfg.prime_ms,
+                    ms: self.cfg.capture_ms,
                 }
             }
-            Phase::SweepDuty => {
-                self.phase = Phase::SweepPause;
-                Cmd::Write {
-                    reg: control::GOAL_DUTY,
-                    value: self.sweep_duty(),
-                }
-            }
-            Phase::SweepPause => {
-                self.phase = Phase::FinishDuty;
-                Cmd::Pause {
-                    ms: self.cfg.sweep_ms,
-                }
-            }
-            Phase::FinishDuty => {
-                self.phase = Phase::FinishTorque;
+            Phase::ZeroDuty => {
+                self.phase = Phase::TorqueOff;
                 Cmd::Write {
                     reg: control::GOAL_DUTY,
                     value: 0,
                 }
             }
-            Phase::FinishTorque => {
+            Phase::TorqueOff => {
                 self.phase = Phase::Finished;
                 Cmd::Write {
                     reg: control::TORQUE_ENABLE,
@@ -155,7 +140,7 @@ mod tests {
     }
 
     #[test]
-    fn choreography_is_safe_and_primes_opposite_the_sweep() {
+    fn choreography_is_safe() {
         let log = run(1);
         // mode set before anything drives
         assert_eq!(log[0], "write mode 0");
@@ -169,16 +154,12 @@ mod tests {
             .position(|l| l.starts_with("write goal_duty") && !l.ends_with(" 0"))
             .unwrap();
         assert!(torque_on < first_duty);
-        // prime drives negative (toward the start rail), sweep positive
+        // single nonzero capture duty (no prime): exactly one drive write
         let duties: Vec<&String> = log
             .iter()
             .filter(|l| l.starts_with("write goal_duty"))
             .collect();
-        assert_eq!(
-            duties[0], "write goal_duty -8520",
-            "prime toward start rail"
-        );
-        assert_eq!(duties[1], "write goal_duty 8520", "sweep toward far rail");
+        assert_eq!(duties[0], "write goal_duty 8520", "capture toward far rail");
         // ends parked: duty 0 then torque off
         let tail: Vec<&String> = log.iter().rev().take(2).collect();
         assert_eq!(*tail[1], "write goal_duty 0");
@@ -186,13 +167,18 @@ mod tests {
     }
 
     #[test]
-    fn negative_polarity_flips_prime_and_sweep() {
-        let log = run(-1);
-        let duties: Vec<&String> = log
+    fn negative_sign_flips_capture_duty() {
+        let pos = run(1);
+        let neg = run(-1);
+        let pos_duty = pos
             .iter()
-            .filter(|l| l.starts_with("write goal_duty"))
-            .collect();
-        assert_eq!(duties[0], "write goal_duty 8520");
-        assert_eq!(duties[1], "write goal_duty -8520");
+            .find(|l| l.starts_with("write goal_duty") && !l.ends_with(" 0"))
+            .unwrap();
+        let neg_duty = neg
+            .iter()
+            .find(|l| l.starts_with("write goal_duty") && !l.ends_with(" 0"))
+            .unwrap();
+        assert_eq!(pos_duty, "write goal_duty 8520");
+        assert_eq!(neg_duty, "write goal_duty -8520");
     }
 }

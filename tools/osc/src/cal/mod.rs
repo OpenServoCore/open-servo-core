@@ -120,9 +120,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     // build_sweep takes the longest moving run. Skipped without --tel-port.
     let sweep = match &tel_port {
         Some(port) => {
-            // sweep toward increasing pos; polarity maps duty sign to direction
-            let sweep_sign = if drive_polarity { 1 } else { -1 };
-            let tel = run_sweep(&mut c, id, port, sweep_sign)?;
+            let tel = run_sweep(&mut c, id, port, pos_min_phys, pos_max_phys, drive_polarity)?;
             let s = build_sweep(&tel);
             match &s {
                 Some((pos, _)) => println!(
@@ -379,17 +377,55 @@ fn run_endstop(c: &mut Client<NusbPipe>, id: Id, out: &OutDir) -> Result<Endstop
         .context("endstop did not reach both rails - no writes")
 }
 
-/// One dedicated constant-duty ripple traverse, TEL captured throughout. The
-/// pump does nothing but drain the side channel during the sweep (no polls),
-/// so the traverse lands as a single long seq-contiguous run for build_sweep.
+/// One dedicated constant-duty ripple capture, TEL captured throughout. The
+/// motion stays strictly between count-insets from both rails, so the clone's
+/// end-jam is never reached: positioning + a speed probe run first with TEL off
+/// (polling is free there), then the capture is TIME-bounded (no polls), sized
+/// from the probed speed so the pump drains TEL as a single long seq-contiguous
+/// run for build_sweep. The ~3% inset clears the rail jam yet leaves ~94% of
+/// travel captured (still passes the LUT coverage gate).
 fn run_sweep(
     c: &mut Client<NusbPipe>,
     id: Id,
     port: &str,
-    sweep_sign: i8,
+    pos_min_phys: i32,
+    pos_max_phys: i32,
+    drive_polarity: bool,
 ) -> Result<Vec<TelFrame>> {
-    println!("[sweep] constant-duty ripple traverse");
-    let mut exp = Sweep::new(SweepCfg::default(), sweep_sign);
+    const DUTY: i16 = 8520;
+    let span = (pos_max_phys - pos_min_phys) as f64;
+    let inset = (span * 0.03).max(80.0) as i32;
+    let mut start = pos_min_phys + inset;
+    let mut end = pos_max_phys - inset;
+    if end <= start {
+        // travel too short for an inset capture: fall back to the rails rather
+        // than crossing over (capture_ms still clamps the duration).
+        start = pos_min_phys;
+        end = pos_max_phys;
+    }
+    // capture direction = increasing pos; polarity maps duty sign to direction
+    let sweep_sign = if drive_polarity { 1 } else { -1 };
+
+    // speed probe, TEL off: drive AWAY from the nearer rail (toward the
+    // interior) for a short window so the probe itself never reaches a stop.
+    let mid = (pos_min_phys + pos_max_phys) / 2;
+    let here = read_snapshot(c, id)?.pos as i32;
+    let probe_sign = if here < mid { sweep_sign } else { -sweep_sign };
+    let speed = probe_speed(c, id, DUTY, probe_sign, 150)?;
+
+    // position to the capture start rail-inset (still TEL off, polling free)
+    drive_to(c, id, start, drive_polarity, DUTY)?;
+
+    let ms = capture_ms(end as f64 - start as f64, speed, 0.95);
+    println!("[sweep] capture {ms} ms over counts {start}..{end} (speed {speed:.0} cps)");
+
+    let mut exp = Sweep::new(
+        SweepCfg {
+            duty_q15: DUTY,
+            capture_ms: ms,
+        },
+        sweep_sign,
+    );
     let mut tel: Vec<TelFrame> = Vec::new();
     // 0x1B = pos|current|duty|vdiff (same TEL mask as ident inertia)
     let tel_mask: u16 = 0x1B;
@@ -521,6 +557,94 @@ fn recenter(
     park(c);
     println!("[recenter] did not reach mid-travel (gear slip?), left parked");
     Ok(())
+}
+
+/// Measure traverse speed (counts/s) at the capture duty over a short window,
+/// TEL off so pos polling is free. Drives one fixed duty for `ms` and divides
+/// the pos delta by the elapsed time. Leaves duty 0 + torque ON (the caller
+/// positions next); ctrl-c parks duty 0 + torque off and bails.
+fn probe_speed(c: &mut Client<NusbPipe>, id: Id, duty_q15: i16, sign: i8, ms: u32) -> Result<f64> {
+    let park = |c: &mut Client<NusbPipe>| {
+        let _ = write_reg(c, id, control::GOAL_DUTY, 0);
+        let _ = write_reg(c, id, control::TORQUE_ENABLE, 0);
+    };
+    if pump::STOP.load(Ordering::SeqCst) {
+        park(c);
+        bail!("interrupted");
+    }
+    write_reg(c, id, control::MODE, 0)?;
+    write_reg(c, id, control::TORQUE_ENABLE, 1)?;
+    let p0 = read_snapshot(c, id)?.pos as f64;
+    write_reg(c, id, control::GOAL_DUTY, sign as i32 * duty_q15 as i32)?;
+    std::thread::sleep(Duration::from_millis(ms as u64));
+    if pump::STOP.load(Ordering::SeqCst) {
+        park(c);
+        bail!("interrupted");
+    }
+    let p1 = read_snapshot(c, id)?.pos as f64;
+    write_reg(c, id, control::GOAL_DUTY, 0)?;
+    Ok((p1 - p0).abs() / (ms as f64 / 1000.0))
+}
+
+/// Closed-loop drive toward a target count, TEL off. Polls pos, picks the duty
+/// sign toward target via the measured polarity, and stops within a small band.
+/// Leaves duty 0 + torque ON (holds position for the capture that follows);
+/// ctrl-c parks duty 0 + torque off and bails.
+fn drive_to(
+    c: &mut Client<NusbPipe>,
+    id: Id,
+    target: i32,
+    drive_polarity: bool,
+    duty_q15: i16,
+) -> Result<()> {
+    // fixed band, well inside the >=80 count rail inset so we never settle on
+    // (or overshoot into) a stop.
+    const BAND: i32 = 40;
+    let duty = duty_q15 as i32;
+    let park = |c: &mut Client<NusbPipe>| {
+        let _ = write_reg(c, id, control::GOAL_DUTY, 0);
+        let _ = write_reg(c, id, control::TORQUE_ENABLE, 0);
+    };
+    write_reg(c, id, control::MODE, 0)?;
+    write_reg(c, id, control::TORQUE_ENABLE, 1)?;
+    for _ in 0..200 {
+        if pump::STOP.load(Ordering::SeqCst) {
+            park(c);
+            bail!("interrupted");
+        }
+        let pos = read_snapshot(c, id)?.pos as i32;
+        if (pos - target).abs() <= BAND {
+            write_reg(c, id, control::GOAL_DUTY, 0)?;
+            return Ok(());
+        }
+        // duty sign toward target: polarity maps count direction to sign
+        let toward_higher = pos < target;
+        let d = if toward_higher == drive_polarity {
+            duty
+        } else {
+            -duty
+        };
+        write_reg(c, id, control::GOAL_DUTY, d)?;
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    write_reg(c, id, control::GOAL_DUTY, 0)?;
+    println!("[sweep] drive_to did not reach start inset (gear slip?), capturing from here");
+    Ok(())
+}
+
+/// Capture duration (ms) to traverse `span_counts` at `speed_cps`, scaled by a
+/// `safety` factor and clamped to [200, 4000] ms so a bad speed reading can
+/// never drive for minutes. A non-positive or non-finite speed returns the
+/// 4000 ms max (defensive - the clamp still bounds it).
+fn capture_ms(span_counts: f64, speed_cps: f64, safety: f64) -> u32 {
+    if !speed_cps.is_finite() || speed_cps <= 0.0 {
+        return 4000;
+    }
+    let ms = span_counts / speed_cps * 1000.0 * safety;
+    if !ms.is_finite() {
+        return 4000;
+    }
+    ms.clamp(200.0, 4000.0).round() as u32
 }
 
 /// Phys angle at each rail: from flags under `--yes` (both required), else
@@ -870,6 +994,21 @@ mod tests {
         );
         // gear flag but no ripple and no travel -> nothing to anchor on
         assert_eq!(resolve_anchor(None, Some(150.0), None, None), (0.0, 0.0, 0));
+    }
+
+    #[test]
+    fn capture_ms_scales_clamps_and_defends() {
+        // 3400 counts at 3400 cps * 0.95 safety = 950 ms
+        assert_eq!(capture_ms(3400.0, 3400.0, 0.95), 950);
+        // fast motor -> below the 200 ms floor -> clamped up
+        assert_eq!(capture_ms(100.0, 20000.0, 0.95), 200);
+        // slow motor -> above the 4000 ms ceiling -> clamped down
+        assert_eq!(capture_ms(4000.0, 200.0, 0.95), 4000);
+        // bad speed readings -> defensive 4000 ms max
+        assert_eq!(capture_ms(3400.0, 0.0, 0.95), 4000);
+        assert_eq!(capture_ms(3400.0, -50.0, 0.95), 4000);
+        assert_eq!(capture_ms(3400.0, f64::NAN, 0.95), 4000);
+        assert_eq!(capture_ms(3400.0, f64::INFINITY, 0.95), 4000);
     }
 
     #[test]
