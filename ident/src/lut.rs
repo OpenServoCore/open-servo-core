@@ -188,7 +188,6 @@ pub fn build(raw_pot: &[u16], motor_phase: &[f64], raw_min: u16, raw_max: u16) -
     if span_coverage(raw_pot, raw_min, raw_max) < MIN_SPAN_COVER {
         return PotLut::identity(raw_min, raw_max);
     }
-    let span_f = span as f64;
     // (raw, rel) pairs; rel = phase fraction over the CAPTURED range (0..1).
     // Orient rel to increase with raw: raw is monotonic in true angle and so
     // is phase, making rel monotone in raw regardless of sweep direction.
@@ -201,6 +200,18 @@ pub fn build(raw_pot: &[u16], motor_phase: &[f64], raw_min: u16, raw_max: u16) -
             p.1 = 1.0 - p.1;
         }
     }
+    fit_knots(pts, raw_min, raw_max)
+}
+
+/// Fit the 55-knot correction table from `pts` = (raw, rel), where rel is in
+/// [0,1] and ALREADY oriented to increase with raw. Anchors the covered pot
+/// endpoints affinely into full-rail true-fraction space, pins the rails to
+/// frac 0/1, forms a monotone raw->fraction curve, and sets each knot's corr
+/// to the count offset landing its corrected value on the curve. Degenerate
+/// input (single raw value, <2 curve points) -> identity.
+fn fit_knots(mut pts: Vec<(f64, f64)>, raw_min: u16, raw_max: u16) -> PotLut {
+    pts.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let span_f = raw_max as f64 - raw_min as f64;
     // Anchor rel into full-rail true-fraction space. rel spans 0..1 over only
     // the covered pot range [rp_lo,rp_hi]; map it affinely onto that range's
     // fractions of the FULL rail span, assuming local linearity over the small
@@ -263,6 +274,169 @@ pub fn build(raw_pot: &[u16], motor_phase: &[f64], raw_min: u16, raw_max: u16) -
         raw_max,
         corr,
     }
+}
+
+/// Per-count cumulative motor revs stitched from several chunks over the
+/// shared pos axis. `cum` is indexed by bin (bin b = count raw_min+b); `fc`/
+/// `lc` bracket the covered bins; `coverage` is the covered fraction of the
+/// rail span.
+struct Stitch {
+    cum: Vec<f64>,
+    fc: usize,
+    lc: usize,
+    coverage: f64,
+}
+
+/// Integrate a per-count motor-rev slope over the rail span from multiple
+/// clean chunks. Each chunk contributes its local rev/count slope (motor phase
+/// from cumulative_phase, distributed across the counts it traversed); the pos
+/// axis is global and monotonic in true angle, so the chunks share one count
+/// grid and bridge each other's gaps. A chunk whose ripple phase can't be
+/// recovered is skipped, not fatal. None when the span is degenerate, fewer
+/// than two bins are covered, or the integrated rev span is non-positive.
+fn stitch_slope(
+    chunks: &[(Vec<u16>, Vec<f64>)],
+    fs: f64,
+    ripple_per_rev: f64,
+    raw_min: u16,
+    raw_max: u16,
+) -> Option<Stitch> {
+    let span = raw_max as i32 - raw_min as i32;
+    if span <= 0 {
+        return None;
+    }
+    let bins = span as usize + 1;
+    let mut slope_sum = vec![0.0; bins];
+    let mut slope_cnt = vec![0u32; bins];
+    for (pos, current) in chunks {
+        if pos.len() != current.len() || pos.len() < MIN_SAMPLES {
+            continue;
+        }
+        let phi = if let Some((phi, _)) = cumulative_phase(current, fs, ripple_per_rev) {
+            phi
+        } else {
+            continue;
+        };
+        // Distribute each pos-change's phase increment across the counts it
+        // crossed (pos is quantized: it steps only every several samples).
+        let mut prev_pos = pos[0];
+        let mut prev_phi = phi[0];
+        for i in 1..pos.len() {
+            if pos[i] != prev_pos {
+                let dphi = phi[i] - prev_phi;
+                let (a, b) = (prev_pos.min(pos[i]), prev_pos.max(pos[i]));
+                let counts = (b - a) as f64;
+                if counts > 0.0 && dphi >= 0.0 {
+                    let s = dphi / counts;
+                    // b maps to the next bin; the top count lands in bin b-1
+                    for c in a..b {
+                        if c >= raw_min && c < raw_max {
+                            let idx = (c - raw_min) as usize;
+                            slope_sum[idx] += s;
+                            slope_cnt[idx] += 1;
+                        }
+                    }
+                }
+                prev_pos = pos[i];
+                prev_phi = phi[i];
+            }
+        }
+    }
+    let covered = slope_cnt.iter().filter(|&&c| c > 0).count();
+    if covered < 2 {
+        return None;
+    }
+    let fc = slope_cnt.iter().position(|&c| c > 0).unwrap();
+    let lc = slope_cnt.iter().rposition(|&c| c > 0).unwrap();
+    let coverage = covered as f64 / bins as f64;
+    let mut avg = vec![0.0; bins];
+    for b in 0..bins {
+        if slope_cnt[b] > 0 {
+            avg[b] = slope_sum[b] / slope_cnt[b] as f64;
+        }
+    }
+    // linearly interpolate uncovered interior bins between covered neighbours so
+    // the integrated cumulative stays continuous and monotone across gaps
+    let mut prev = fc;
+    for b in (fc + 1)..=lc {
+        if slope_cnt[b] > 0 {
+            if b > prev + 1 {
+                let (y0, y1) = (avg[prev], avg[b]);
+                let dx = (b - prev) as f64;
+                for (j, g) in avg[(prev + 1)..b].iter_mut().enumerate() {
+                    *g = y0 + (y1 - y0) * ((j + 1) as f64 / dx);
+                }
+            }
+            prev = b;
+        }
+    }
+    let mut cum = vec![0.0; bins];
+    for b in (fc + 1)..=lc {
+        cum[b] = cum[b - 1] + avg[b];
+    }
+    for b in (lc + 1)..bins {
+        cum[b] = cum[lc];
+    }
+    if cum[lc] - cum[fc] <= 0.0 {
+        return None;
+    }
+    Some(Stitch {
+        cum,
+        fc,
+        lc,
+        coverage,
+    })
+}
+
+/// Build the pot LUT from MULTIPLE clean sweep chunks (each (pos, current)),
+/// stitched over the shared pos axis. Chunks may cover overlapping or disjoint
+/// pos ranges with gaps between them; the per-count slope integration bridges
+/// the gaps. Identity when coverage < MIN_SPAN_COVER or the stitch is degenerate.
+pub fn build_multi(
+    chunks: &[(Vec<u16>, Vec<f64>)],
+    fs: f64,
+    ripple_per_rev: f64,
+    raw_min: u16,
+    raw_max: u16,
+) -> PotLut {
+    let st = match stitch_slope(chunks, fs, ripple_per_rev, raw_min, raw_max) {
+        Some(s) => s,
+        None => return PotLut::identity(raw_min, raw_max),
+    };
+    if st.coverage < MIN_SPAN_COVER {
+        return PotLut::identity(raw_min, raw_max);
+    }
+    let total = st.cum[st.lc] - st.cum[st.fc];
+    if total <= 0.0 {
+        return PotLut::identity(raw_min, raw_max);
+    }
+    // (pos, rel), rel in [0,1] ascending with pos (no flip needed)
+    let pts: Vec<(f64, f64)> = (st.fc..=st.lc)
+        .map(|b| {
+            (
+                raw_min as f64 + b as f64,
+                (st.cum[b] - st.cum[st.fc]) / total,
+            )
+        })
+        .collect();
+    fit_knots(pts, raw_min, raw_max)
+}
+
+/// Full-travel motor revs + coverage from the stitched chunks, for the gear/
+/// travel anchor. Extrapolates the covered-span revs to the full rail span.
+pub fn stitched_motor_revs(
+    chunks: &[(Vec<u16>, Vec<f64>)],
+    fs: f64,
+    ripple_per_rev: f64,
+    raw_min: u16,
+    raw_max: u16,
+) -> Option<(f64, f64)> {
+    let st = stitch_slope(chunks, fs, ripple_per_rev, raw_min, raw_max)?;
+    let revs = st.cum[st.lc] - st.cum[st.fc];
+    let pot_disp = (st.lc - st.fc) as f64;
+    let count_span = raw_max as f64 - raw_min as f64;
+    let full = crate::kinematics::full_span_motor_revs(revs, pot_disp, count_span);
+    (full != 0.0).then_some((full, st.coverage))
 }
 
 /// Rate (rev/s) at sample index x by linear interp over window centers,
@@ -556,5 +730,126 @@ mod tests {
         let noise: Vec<f64> = (0..4000).map(|_| 512.0 + lcg.next(3.0)).collect();
         assert!(cumulative_phase(&noise, FS, 6.0).is_none(), "pure noise");
         assert!(cumulative_phase(&[1.0; 10], FS, 6.0).is_none(), "too short");
+    }
+
+    // --- build_multi / stitched_motor_revs ---
+
+    // Full nonlinear sweep with a CONSTANT-frequency ripple current: constant
+    // duty => constant motor speed => true fraction f linear in sample index.
+    fn ripple_sweep(a: f64, freq: f64, n: usize) -> (Vec<u16>, Vec<f64>) {
+        let pos: Vec<u16> = (0..n)
+            .map(|k| pot_raw(k as f64 / (n - 1) as f64, a))
+            .collect();
+        let cur = ripple_series(freq, 4.0, 3.0, n);
+        (pos, cur)
+    }
+
+    fn chunkify(pos: &[u16], cur: &[f64], ranges: &[(usize, usize)]) -> Vec<(Vec<u16>, Vec<f64>)> {
+        ranges
+            .iter()
+            .map(|&(lo, hi)| (pos[lo..hi].to_vec(), cur[lo..hi].to_vec()))
+            .collect()
+    }
+
+    #[test]
+    fn build_multi_recovers_full_sweep_from_chunks() {
+        let a = 0.15;
+        let n = 4500;
+        let (pos, cur) = ripple_sweep(a, 1800.0, n);
+        // 5 seq-contiguous chunks with ~100-sample gaps dropped between them
+        let ranges = [
+            (0, 850),
+            (950, 1750),
+            (1850, 2700),
+            (2800, 3600),
+            (3700, 4500),
+        ];
+        let chunks = chunkify(&pos, &cur, &ranges);
+        let lut = build_multi(&chunks, FS, 6.0, RAW_MIN, RAW_MAX);
+        let ident = PotLut::identity(RAW_MIN, RAW_MAX);
+        // (a) not identity
+        assert!(
+            lut.corr.iter().any(|&c| c != 0),
+            "corr all zero {:?}",
+            lut.corr
+        );
+        // (b)/(c) error over the covered chunk samples
+        let mut lut_max = 0.0f64;
+        let mut ident_max = 0.0f64;
+        for &(lo, hi) in ranges.iter() {
+            for (j, &r) in pos[lo..hi].iter().enumerate() {
+                let f = (lo + j) as f64 / (n - 1) as f64;
+                lut_max = lut_max.max((lut.linearize(r) - f).abs());
+                ident_max = ident_max.max((ident.linearize(r) - f).abs());
+            }
+        }
+        assert!(lut_max < 0.025, "lut err {lut_max}");
+        assert!(lut_max < ident_max / 5.0, "lut {lut_max} ident {ident_max}");
+    }
+
+    #[test]
+    fn build_multi_coverage_gate_is_identity() {
+        // chunks covering only the middle ~40% of travel -> below the gate
+        let a = 0.15;
+        let n = 4500;
+        let (pos, cur) = ripple_sweep(a, 1800.0, n);
+        let lo = (0.30 * (n - 1) as f64) as usize;
+        let mid = (0.50 * (n - 1) as f64) as usize;
+        let hi = (0.70 * (n - 1) as f64) as usize;
+        let chunks = chunkify(&pos, &cur, &[(lo, mid), (mid, hi)]);
+        let lut = build_multi(&chunks, FS, 6.0, RAW_MIN, RAW_MAX);
+        assert_eq!(lut, PotLut::identity(RAW_MIN, RAW_MAX));
+    }
+
+    #[test]
+    fn build_multi_single_chunk_reasonable() {
+        let a = 0.15;
+        let n = 4500;
+        let (pos, cur) = ripple_sweep(a, 1800.0, n);
+        let chunks = chunkify(&pos, &cur, &[(0, n)]);
+        let lut = build_multi(&chunks, FS, 6.0, RAW_MIN, RAW_MAX);
+        assert!(
+            lut.corr.iter().any(|&c| c != 0),
+            "corr all zero {:?}",
+            lut.corr
+        );
+        let mut emax = 0.0f64;
+        for (k, &r) in pos.iter().enumerate() {
+            let f = k as f64 / (n - 1) as f64;
+            emax = emax.max((lut.linearize(r) - f).abs());
+        }
+        assert!(emax < 0.025, "linearize err {emax}");
+    }
+
+    #[test]
+    fn stitched_motor_revs_recovers_total() {
+        let a = 0.15;
+        let n = 4500;
+        let (pos, cur) = ripple_sweep(a, 1800.0, n);
+        let ranges = [
+            (0, 850),
+            (950, 1750),
+            (1850, 2700),
+            (2800, 3600),
+            (3700, 4500),
+        ];
+        let chunks = chunkify(&pos, &cur, &ranges);
+        let (full, cov) = stitched_motor_revs(&chunks, FS, 6.0, RAW_MIN, RAW_MAX).expect("revs");
+        // 1800 Hz / 6 = 300 rev/s over N/FS s
+        let total = 300.0 * n as f64 / FS;
+        assert!(
+            (full - total).abs() / total < 0.05,
+            "revs {full} vs {total}"
+        );
+        assert!(cov > MIN_SPAN_COVER && cov <= 1.0, "coverage {cov}");
+    }
+
+    #[test]
+    fn build_multi_and_revs_degenerate() {
+        assert_eq!(
+            build_multi(&[], FS, 6.0, RAW_MIN, RAW_MAX),
+            PotLut::identity(RAW_MIN, RAW_MAX)
+        );
+        assert!(stitched_motor_revs(&[], FS, 6.0, RAW_MIN, RAW_MAX).is_none());
     }
 }
