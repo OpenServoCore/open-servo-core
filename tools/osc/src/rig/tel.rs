@@ -25,7 +25,7 @@ const IOSSIOSPEED: libc::c_ulong = 0x8004_5402;
 /// sample at exactly this.
 const TEL_BAUD: libc::c_int = 3_000_000;
 
-pub struct TelSink {
+pub(crate) struct TelSink {
     rx: Arc<Mutex<Vec<u8>>>,
     stop: Arc<AtomicBool>,
     bytes: Arc<AtomicU64>,
@@ -35,7 +35,7 @@ pub struct TelSink {
 }
 
 impl TelSink {
-    pub fn open(path: &str, mask: u16) -> Result<Self> {
+    pub(crate) fn open(path: &str, mask: u16) -> Result<Self> {
         let mut port = std::fs::OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY)
@@ -106,22 +106,22 @@ impl TelSink {
     }
 
     /// Feed everything the reader thread has buffered through the deframer.
-    pub fn drain(&mut self) {
+    pub(crate) fn drain(&mut self) {
         let bytes = std::mem::take(&mut *self.rx.lock().expect("tel buf"));
         if !bytes.is_empty() {
             self.deframer.push(&bytes, &mut self.frames);
         }
     }
 
-    pub fn take_frames(&mut self) -> Vec<TelFrame> {
+    pub(crate) fn take_frames(&mut self) -> Vec<TelFrame> {
         std::mem::take(&mut self.frames)
     }
 
-    pub fn stats(&self) -> TelStats {
+    pub(crate) fn stats(&self) -> TelStats {
         self.deframer.stats()
     }
 
-    pub fn bytes_read(&self) -> u64 {
+    pub(crate) fn bytes_read(&self) -> u64 {
         self.bytes.load(Ordering::Relaxed)
     }
 }

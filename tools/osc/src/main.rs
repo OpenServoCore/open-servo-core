@@ -7,6 +7,7 @@
 
 mod descriptor;
 mod ident;
+mod rig;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
