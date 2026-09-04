@@ -139,28 +139,36 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
 
     recenter(&mut c, id, pos_min_phys, pos_max_phys, drive_polarity)?;
 
-    let (phys_min, phys_max) = phys_angles(args)?;
+    // Full-traverse motor revs from the ripple sweep: anchor-free geometry,
+    // extrapolated from the moving run's phase span to the whole count span.
+    // Paired with a gear ratio it yields travel; paired with a travel angle it
+    // yields the gear. Both anchors consume this same ripple half.
+    let count_span = pos_max_phys as f64 - pos_min_phys as f64;
+    let motor_revs_full = sweep
+        .as_ref()
+        .and_then(|s| full_motor_revs(s, fs, count_span));
+    let mrf = motor_revs_full.map(|(m, _)| m);
+    let coverage = motor_revs_full.map(|(_, c)| c);
+
+    // Resolve the anchor: gear is preferred, travel is the fallback. --yes stays
+    // headless through the pure resolve_anchor; interactively the operator
+    // anchors on the gear first (enter 0 to switch to a travel angle instead).
+    let (phys_min, phys_max, gear_ratio_centi) = if args.yes {
+        let (lo, hi, gear) = resolve_anchor(
+            mrf,
+            args.gear_ratio,
+            args.phys_angle_min,
+            args.phys_angle_max,
+        );
+        report_yes_anchor(args, mrf, coverage, lo, hi, gear);
+        (lo, hi, gear)
+    } else {
+        resolve_anchor_interactive(args, mrf, coverage)?
+    };
+
     let (soft_min_deg, soft_max_deg) = soft_angles(args, phys_min, phys_max)?;
     let (angle_min_cdeg, angle_max_cdeg) = angle_endpoints(phys_min, phys_max);
     let dpc = kinematics::deg_per_count(angle_min_cdeg, angle_max_cdeg, pos_min_phys, pos_max_phys);
-
-    // measure-first: the ripple-derived gear ratio is the prompt's default,
-    // the operator overrides. None (no sweep / low SNR / 0) keeps commit 6's
-    // plain-input behavior.
-    let measured = sweep.as_ref().and_then(|s| measure_gear(s, fs, dpc));
-    if let Some((centi, coverage)) = measured {
-        let conf = if coverage < RIPPLE_CONF_MIN {
-            " (low confidence)"
-        } else {
-            ""
-        };
-        println!(
-            "measured gear ratio {:.2}, ripple-derived ({:.0}% coverage){conf}",
-            centi as f64 / 100.0,
-            coverage * 100.0,
-        );
-    }
-    let gear_ratio_centi = gear_ratio(args, measured.map(|(c, _)| c))?;
 
     // pot LUT from the same sweep; identity when the ripple SNR is too low to
     // clock true angle. No sweep at all -> None, LUT left untouched below.
@@ -301,13 +309,13 @@ fn longest_contiguous_run(s: &[(u8, u16, f64)]) -> Option<(usize, usize)> {
     (best_hi - best_lo >= 2).then_some((best_lo, best_hi))
 }
 
-/// Ripple-derived gear ratio (centi) + ripple coverage (0..1) from a sweep.
-/// Counts total motor revs by integrating the windowed ripple speed over the
-/// whole traverse (drift-resistant, no constant-velocity assumption) and
-/// divides by the output revs the pot turned through. dt cancels, so total
-/// motor revs and total pot displacement feed gear_ratio_centi directly. None
-/// when the ripple coverage is too low or the result hits the 0 sentinel.
-fn measure_gear(sweep: &(Vec<u16>, Vec<f64>), fs: f64, dpc: f64) -> Option<(u16, f64)> {
+/// Full-traverse motor revs + ripple coverage (0..1) from a sweep. Counts motor
+/// revs over the moving run by integrating the windowed ripple speed (drift-
+/// resistant, no constant-velocity assumption), then extrapolates to the whole
+/// rail-to-rail count span. This is the ripple half shared by both anchors: a
+/// gear ratio turns it into travel, a travel angle turns it into the gear. None
+/// when the ripple coverage is too low or the extrapolation hits the 0 sentinel.
+fn full_motor_revs(sweep: &(Vec<u16>, Vec<f64>), fs: f64, count_span: f64) -> Option<(f64, f64)> {
     let (pos, current) = sweep;
     if pos.len() < 2 || fs <= 0.0 {
         return None;
@@ -315,8 +323,8 @@ fn measure_gear(sweep: &(Vec<u16>, Vec<f64>), fs: f64, dpc: f64) -> Option<(u16,
     let (phase, coverage) = lut::cumulative_phase(current, fs, RIPPLE_PER_REV)?;
     let motor_revs = phase[phase.len() - 1] - phase[0];
     let pot_disp = (pos[pos.len() - 1] as f64 - pos[0] as f64).abs();
-    let centi = kinematics::gear_ratio_centi(motor_revs, pot_disp, dpc);
-    (centi != 0).then_some((centi, coverage))
+    let full = kinematics::full_span_motor_revs(motor_revs, pot_disp, count_span);
+    (full != 0.0).then_some((full, coverage))
 }
 
 /// Write the PotLutBlock: raw_min/raw_max as scalars, then the 55 corr knots
@@ -558,44 +566,135 @@ fn soft_angles(args: &Args, phys_min: f64, phys_max: f64) -> Result<(f64, f64)> 
     Ok((min, max))
 }
 
-/// Gear ratio as centi (x100); 0 is the firmware "unset" sentinel. Precedence:
-/// an explicit `--gear-ratio` flag wins, else the ripple-`measured` value, else
-/// the interactive prompt / unset(0). The flag wins because the bench ratio is
-/// a known counted constant; the ripple value is only a cross-check. Under
-/// `--yes` the winner is stored with no prompt; interactively it seeds the
-/// prompt's default, which the operator can still override. Whenever a flag and
-/// a measured value are both present and diverge by >10%, warn (the flag still
-/// wins) - divergence flags a wrong travel angle, gear slip, or wrong
-/// ripple-per-rev.
-fn gear_ratio(args: &Args, measured: Option<u16>) -> Result<u16> {
-    if let (Some(g), Some(m)) = (args.gear_ratio, measured) {
-        let entered_centi = ratio_to_centi(Some(g));
-        if gear_divergent(entered_centi, m, 0.1) {
-            eprintln!(
-                "warning: entered gear ratio {:.2} diverges from ripple-measured {:.2} by >10% - can indicate a wrong travel angle, gear slip, or wrong ripple-per-rev",
-                entered_centi as f64 / 100.0,
-                m as f64 / 100.0,
-            );
+/// Resolve the headless (`--yes`) anchor to (angle_at_min, angle_at_max,
+/// gear_centi). GEAR is the preferred anchor: given a `--gear-ratio` flag and a
+/// ripple-derived `motor_revs_full`, the physical travel is derived from the
+/// gear (pure geometry, protocol-free) and the counted gear stored as-is;
+/// angle_at_min comes from `--phys-angle-min` (0 default), angle_at_max is that
+/// plus the derived travel. Falling back: explicit `--phys-angle-min/max` flags
+/// anchor on travel and the gear is derived from ripple (the inverse) - though a
+/// counted `--gear-ratio` flag, when present, still wins for storage (matching
+/// the pre-inverse precedence). Neither anchor -> the 0/0/0 unset sentinels.
+fn resolve_anchor(
+    motor_revs_full: Option<f64>,
+    gear_flag: Option<f64>,
+    phys_min_flag: Option<f64>,
+    phys_max_flag: Option<f64>,
+) -> (f64, f64, u16) {
+    if let (Some(g), Some(m)) = (gear_flag, motor_revs_full)
+        && g > 0.0
+    {
+        let travel = kinematics::travel_deg_from_gear(m, g);
+        let angle_min = phys_min_flag.unwrap_or(0.0);
+        return (angle_min, angle_min + travel, ratio_to_centi(Some(g)));
+    }
+    if let (Some(lo), Some(hi)) = (phys_min_flag, phys_max_flag) {
+        let ripple_centi = motor_revs_full
+            .map(|m| ratio_to_centi(travel_to_gear(m, hi - lo)))
+            .unwrap_or(0);
+        let gear_centi = match gear_flag {
+            Some(g) if g > 0.0 => ratio_to_centi(Some(g)),
+            _ => ripple_centi,
+        };
+        return (lo, hi, gear_centi);
+    }
+    (0.0, 0.0, 0)
+}
+
+/// Print the headless anchor outcome. Gear anchor -> the derived travel (and,
+/// when an explicit travel is also given, a divergence warning; gear still wins
+/// for storage). Travel anchor with a ripple-derived gear -> the ripple info
+/// line. Divergence flags a wrong travel angle, gear slip, or wrong ripple-per-rev.
+fn report_yes_anchor(
+    args: &Args,
+    mrf: Option<f64>,
+    coverage: Option<f64>,
+    angle_min: f64,
+    angle_max: f64,
+    gear_centi: u16,
+) {
+    let gear_flag = args.gear_ratio.filter(|&g| g > 0.0);
+    if let (Some(_), Some(m)) = (gear_flag, mrf) {
+        println!(
+            "derived travel {:.1} deg from gear {:.2}",
+            angle_max - angle_min,
+            gear_centi as f64 / 100.0,
+        );
+        if let (Some(lo), Some(hi)) = (args.phys_angle_min, args.phys_angle_max) {
+            let ripple_centi = ratio_to_centi(travel_to_gear(m, hi - lo));
+            if gear_divergent(gear_centi, ripple_centi, 0.1) {
+                eprintln!(
+                    "warning: entered gear ratio {:.2} diverges from ripple-measured {:.2} by >10% - can indicate a wrong travel angle, gear slip, or wrong ripple-per-rev",
+                    gear_centi as f64 / 100.0,
+                    ripple_centi as f64 / 100.0,
+                );
+            }
         }
+    } else if gear_flag.is_none() && gear_centi != 0 {
+        print_ripple_gear(gear_centi, coverage.unwrap_or(0.0));
     }
-    if args.yes {
-        return Ok(match args.gear_ratio {
-            Some(_) => ratio_to_centi(args.gear_ratio),
-            None => measured.unwrap_or(0),
-        });
+}
+
+/// Interactive anchor resolution, nudged toward the gear. Prompts the gear ratio
+/// first: a positive gear with a ripple-derived `motor_revs_full` derives travel
+/// (gear anchor); entering 0, or having no ripple, falls back to the travel-angle
+/// prompts and derives the gear from ripple (the inverse). With no ripple at all,
+/// an entered gear still stands so a known ratio can be stored without a sweep.
+fn resolve_anchor_interactive(
+    args: &Args,
+    mrf: Option<f64>,
+    coverage: Option<f64>,
+) -> Result<(f64, f64, u16)> {
+    let gear = input_f64(
+        "gear ratio (motor rev per output rev) - most accurate if you counted the teeth; 0 to enter travel angle instead",
+        args.gear_ratio.unwrap_or(1.0),
+    )?;
+    if gear > 0.0
+        && let Some(m) = mrf
+    {
+        let travel = kinematics::travel_deg_from_gear(m, gear);
+        let angle_min = input_f64(
+            "phys angle at min rail (deg)",
+            args.phys_angle_min.unwrap_or(0.0),
+        )?;
+        println!("derived travel {travel:.1} deg from gear {gear:.2}");
+        return Ok((angle_min, angle_min + travel, ratio_to_centi(Some(gear))));
     }
-    // interactive default: flag > measured > known-ratio prompt path
-    let default = args
-        .gear_ratio
-        .or_else(|| measured.map(|m| m as f64 / 100.0));
-    let ratio = if let Some(d) = default {
-        Some(input_f64("gear ratio (motor rev per output rev)", d)?)
-    } else if confirm("enter a known gear ratio", false)? {
-        Some(input_f64("gear ratio (motor rev per output rev)", 1.0)?)
-    } else {
-        None
+    let (lo, hi) = phys_angles(args)?;
+    let gear_centi = match mrf {
+        Some(m) => {
+            let centi = ratio_to_centi(travel_to_gear(m, hi - lo));
+            if centi != 0 {
+                print_ripple_gear(centi, coverage.unwrap_or(0.0));
+            }
+            centi
+        }
+        None => ratio_to_centi((gear > 0.0).then_some(gear)),
     };
-    Ok(ratio_to_centi(ratio))
+    Ok((lo, hi, gear_centi))
+}
+
+/// Ripple gear ratio (motor rev per output rev) implied by the full-traverse
+/// motor revs and an operator travel angle - the inverse of
+/// kinematics::travel_deg_from_gear. None on a zero/non-finite travel, so
+/// ratio_to_centi then stores the 0 sentinel.
+fn travel_to_gear(motor_revs_full: f64, travel_deg: f64) -> Option<f64> {
+    (travel_deg.is_finite() && travel_deg > 0.0).then_some(motor_revs_full * 360.0 / travel_deg)
+}
+
+/// The ripple-derived gear info line (the historical "measured gear ratio ..."
+/// print), shown when the travel anchor is used.
+fn print_ripple_gear(gear_centi: u16, coverage: f64) {
+    let conf = if coverage < RIPPLE_CONF_MIN {
+        " (low confidence)"
+    } else {
+        ""
+    };
+    println!(
+        "measured gear ratio {:.2}, ripple-derived ({:.0}% coverage){conf}",
+        gear_centi as f64 / 100.0,
+        coverage * 100.0,
+    );
 }
 
 /// True when the ripple-`measured_centi` gear ratio diverges from the operator-
@@ -703,20 +802,6 @@ mod tests {
         assert!(build_sweep(&[]).is_none());
     }
 
-    /// `--yes` Args with the given gear-ratio flag; other fields unset.
-    fn yes_args(gear_ratio: Option<f64>) -> Args {
-        Args {
-            out: None,
-            phys_angle_min: None,
-            phys_angle_max: None,
-            soft_angle_min: None,
-            soft_angle_max: None,
-            gear_ratio,
-            tel_port: String::new(),
-            yes: true,
-        }
-    }
-
     #[test]
     fn gear_divergent_relative_threshold_and_zero_safe() {
         // 234.73 counted vs a >10% off ripple value -> divergent
@@ -730,16 +815,61 @@ mod tests {
     }
 
     #[test]
-    fn gear_ratio_yes_flag_wins_over_measured() {
-        // flag present -> flag wins even when measured is Some and different
+    fn resolve_anchor_gear_flag_derives_travel() {
+        // gear 150 + motor_revs_full 79.1667 -> travel ~190 deg; endpoints 0..190
+        let (lo, hi, gear) = resolve_anchor(Some(79.166_667), Some(150.0), None, None);
+        assert_eq!(lo, 0.0);
+        assert!((hi - 190.0).abs() < 0.01, "hi {hi}");
+        assert_eq!(gear, 15000);
+    }
+
+    #[test]
+    fn resolve_anchor_gear_flag_honors_min_offset() {
+        // angle_at_min from --phys-angle-min, angle_at_max = min + derived travel
+        let (lo, hi, gear) = resolve_anchor(Some(79.166_667), Some(150.0), Some(-95.0), None);
+        assert_eq!(lo, -95.0);
+        assert!((hi - 95.0).abs() < 0.01, "hi {hi}");
+        assert_eq!(gear, 15000);
+    }
+
+    #[test]
+    fn resolve_anchor_travel_flags_derive_gear() {
+        // travel 0..190 deg + motor_revs_full 79.1667 -> ripple gear ~150
+        let (lo, hi, gear) = resolve_anchor(Some(79.166_667), None, Some(0.0), Some(190.0));
+        assert_eq!((lo, hi), (0.0, 190.0));
+        assert!((gear as i32 - 15000).abs() <= 2, "gear {gear}");
+    }
+
+    #[test]
+    fn resolve_anchor_gear_flag_wins_when_both_given() {
+        // both a gear flag and travel flags: gear anchor wins, travel derived
+        // from the gear (max ignores --phys-angle-max as an endpoint)
+        let (lo, hi, gear) = resolve_anchor(Some(79.166_667), Some(150.0), Some(0.0), Some(999.0));
+        assert_eq!(lo, 0.0);
+        assert!((hi - 190.0).abs() < 0.01, "hi {hi}");
+        assert_eq!(gear, 15000);
+    }
+
+    #[test]
+    fn resolve_anchor_flag_stored_without_ripple() {
+        // travel flags but no ripple: endpoints kept, counted gear flag stored
         assert_eq!(
-            gear_ratio(&yes_args(Some(234.73)), Some(30000)).unwrap(),
-            23473
+            resolve_anchor(None, Some(234.73), Some(0.0), Some(190.0)),
+            (0.0, 190.0, 23473)
         );
-        // flag absent -> measured used
-        assert_eq!(gear_ratio(&yes_args(None), Some(30000)).unwrap(), 30000);
-        // neither -> 0 sentinel
-        assert_eq!(gear_ratio(&yes_args(None), None).unwrap(), 0);
+    }
+
+    #[test]
+    fn resolve_anchor_unset_sentinels() {
+        // neither anchor -> all-zero sentinel
+        assert_eq!(resolve_anchor(Some(79.0), None, None, None), (0.0, 0.0, 0));
+        // travel flags, no ripple, no gear flag -> gear unset
+        assert_eq!(
+            resolve_anchor(None, None, Some(0.0), Some(190.0)),
+            (0.0, 190.0, 0)
+        );
+        // gear flag but no ripple and no travel -> nothing to anchor on
+        assert_eq!(resolve_anchor(None, Some(150.0), None, None), (0.0, 0.0, 0));
     }
 
     #[test]

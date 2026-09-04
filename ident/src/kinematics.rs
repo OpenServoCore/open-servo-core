@@ -58,6 +58,29 @@ pub fn gear_ratio_centi(motor_rev_s: f64, pot_omega_cps: f64, deg_per_count: f64
     centi.min(u16::MAX as f64) as u16
 }
 
+/// Total motor revs over a FULL rail-to-rail traverse, extrapolated from a
+/// partial (soft-bounded) sweep via the per-count rate: anchor-free geometry,
+/// so a run turning `motor_revs_run` over `pot_disp` counts scales to the whole
+/// `count_span`. 0.0 when the sweep covered no counts or the span is non-finite.
+pub fn full_span_motor_revs(motor_revs_run: f64, pot_disp: f64, count_span: f64) -> f64 {
+    if pot_disp > 0.0 && count_span.is_finite() {
+        motor_revs_run * count_span / pot_disp
+    } else {
+        0.0
+    }
+}
+
+/// Output travel (deg) implied by a counted gear ratio and the full-traverse
+/// motor revs: `motor_revs_full * 360 / gear_ratio`. The inverse of the
+/// travel-anchored gear derivation. 0.0 on a zero/non-finite gear ratio.
+pub fn travel_deg_from_gear(motor_revs_full: f64, gear_ratio: f64) -> f64 {
+    if gear_ratio > 0.0 && gear_ratio.is_finite() {
+        motor_revs_full * 360.0 / gear_ratio
+    } else {
+        0.0
+    }
+}
+
 /// Assemble the three encoded values from the endstop sweep and the
 /// human-supplied travel angles.
 pub fn resolve(
@@ -131,6 +154,38 @@ mod tests {
     #[test]
     fn gear_ratio_saturates_to_u16() {
         assert_eq!(gear_ratio_centi(1e9, 1.0, 0.05), u16::MAX);
+    }
+
+    #[test]
+    fn travel_from_gear_round_trips_through_gear_ratio_centi() {
+        // gear 150, motor_revs_full 79.1667 -> travel 190 deg over a 3900-count
+        // span; feeding count_span as pot speed and travel/count_span as dpc
+        // recovers the gear (gear_ratio_centi = motor_revs_full*360/travel).
+        let motor_revs_full = 79.166_667;
+        let gear = 150.0;
+        let count_span = 3900.0;
+        let travel = travel_deg_from_gear(motor_revs_full, gear);
+        assert!((travel - 190.0).abs() < 1e-3, "travel {travel}");
+        let dpc = travel / count_span;
+        let g = gear_ratio_centi(motor_revs_full, count_span, dpc);
+        assert!((g as f64 / 100.0 - gear).abs() < 0.02, "gear {g}");
+    }
+
+    #[test]
+    fn full_span_scales_by_count_ratio() {
+        // 20 motor revs over 1000 counts of a 4000-count span -> 80 full revs
+        assert!((full_span_motor_revs(20.0, 1000.0, 4000.0) - 80.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn full_span_and_travel_degenerate_guards() {
+        assert_eq!(full_span_motor_revs(20.0, 0.0, 4000.0), 0.0);
+        assert_eq!(full_span_motor_revs(20.0, 1000.0, f64::INFINITY), 0.0);
+        assert_eq!(full_span_motor_revs(20.0, 1000.0, f64::NAN), 0.0);
+        assert_eq!(travel_deg_from_gear(80.0, 0.0), 0.0);
+        assert_eq!(travel_deg_from_gear(80.0, -1.0), 0.0);
+        assert_eq!(travel_deg_from_gear(80.0, f64::NAN), 0.0);
+        assert_eq!(travel_deg_from_gear(80.0, f64::INFINITY), 0.0);
     }
 
     #[test]
