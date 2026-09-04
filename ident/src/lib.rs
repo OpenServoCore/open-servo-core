@@ -18,4 +18,5 @@ pub mod lut;
 pub mod regs;
 pub mod report;
 pub mod ripple;
+pub mod slip;
 pub mod units;

@@ -26,6 +26,7 @@ use osc_ident::frame::{TelFrame, TelemetrySnapshot};
 use osc_ident::kinematics::{self, KinematicsResult, angle_endpoints};
 use osc_ident::lut::{self, PotLut};
 use osc_ident::regs::{calib, config, control};
+use osc_ident::slip;
 use osc_ident::units::{self, SenseParams};
 
 use crate::rig::csvio::{OutDir, SnapshotLog};
@@ -188,6 +189,25 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
             coverage * 100.0
         ),
         None => {}
+    }
+
+    // gear-mesh slip check on the SAME sweep: pot must advance in fixed
+    // proportion to motor rotation; a slipping/stripped tooth spikes or zeros
+    // a segment. Advisory - one sweep can miss a localized slip zone.
+    if let Some((pos, current)) = &sweep
+        && let Some((phase, _)) = lut::cumulative_phase(current, fs, RIPPLE_PER_REV)
+        && let Some(rep) = slip::slip_metrics(pos, &phase, 10, 1)
+    {
+        println!(
+            "gear mesh: slip CoV {:.2} ({} core segments)",
+            rep.slip_cov, rep.core_segments
+        );
+        if rep.flagged {
+            eprintln!(
+                "warning: possible worn/stripped gear teeth - gear-slip signature (slip CoV {:.2}, {} stuck segment(s)); a single sweep is not conclusive, re-run cal to confirm",
+                rep.slip_cov, rep.stuck_count
+            );
+        }
     }
 
     // soft angle -> phys count via the linear phys map, clamped to the rails
