@@ -54,6 +54,13 @@ pub fn enable_usart1() {
     RCC.pb2pcenr().modify(|w| w.set_usart1en(true));
 }
 
+/// USART2EN lives in PB2PCENR (bit 13) even though the peripheral maps at
+/// the APB1 address - RM sec 3.4.7 (bench-validated, bringup tel_blast).
+#[inline]
+pub fn enable_usart2() {
+    RCC.pb2pcenr().modify(|w| w.set_usart2en(true));
+}
+
 #[inline]
 pub fn enable_spi1() {
     RCC.pb2pcenr().modify(|w| w.set_spi1en(true));

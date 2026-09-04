@@ -57,12 +57,17 @@ pub struct TelSample {
 }
 
 /// The kernel's per-fast-tick stream hook; core never names the transport.
+/// The kernel calls `configure` then `on_tick` only on ticks where the
+/// table enables the stream (tel_enable set, mask nonzero), so a sink never
+/// needs its own gate.
 pub trait TelStream {
+    fn configure(&mut self, enabled: bool, mask: u16);
     fn on_tick(&mut self, sample: &TelSample);
 }
 
 /// Stream absent (boards without TEL wiring, tests).
 impl TelStream for () {
+    fn configure(&mut self, _enabled: bool, _mask: u16) {}
     fn on_tick(&mut self, _sample: &TelSample) {}
 }
 

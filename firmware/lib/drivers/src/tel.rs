@@ -50,6 +50,14 @@ impl<T: TelTx> Tel<T> {
 }
 
 impl<T: TelTx> TelStream for Tel<T> {
+    /// Per-tick table sync (kernel contract): invalid masks are rejected by
+    /// `set_mask`, retaining the last valid one - belt only, the table rule
+    /// already gates reserved bits at write time.
+    fn configure(&mut self, enabled: bool, mask: u16) {
+        self.set_enabled(enabled);
+        self.set_mask(mask);
+    }
+
     fn on_tick(&mut self, sample: &TelSample) {
         if !self.enabled || self.mask == 0 {
             return;

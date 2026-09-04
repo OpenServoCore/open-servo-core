@@ -64,6 +64,18 @@ pub fn send_break(r: Regs) {
 /// 0.5M rescue floor ~= 1050 HCLK cycles); 4096 covers it with slack.
 const BREAK_COMMIT_SPINS: u32 = 4096;
 
+/// TX-only bring-up (the TEL stream): TE + fixed BRR + UE, DMAT held on
+/// for good - the DMA channel's EN is the per-frame gate, and a pending
+/// TXE request with the channel idle transfers nothing. No RE, no
+/// interrupts: completion is observed as channel-drained at the next send.
+#[inline]
+pub fn init_tx_only(r: Regs, brr: u32) {
+    r.ctlr1().modify(|w| w.set_te(true));
+    r.brr().write_value(ch32_metapac::usart::regs::Brr(brr));
+    r.ctlr1().modify(|w| w.set_ue(true));
+    r.ctlr3().modify(|w| w.set_dmat(true));
+}
+
 /// Live BRR write -- no UE bounce. Caller must ensure no TX/RX is in flight
 /// (retuning mid-byte garbages the wire); the driver applies baud changes
 /// only on an idle bus (protocol sec 4.2 deferred config). The UE bounce

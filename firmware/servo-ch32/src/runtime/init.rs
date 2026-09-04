@@ -78,6 +78,9 @@ pub fn bringup(
     bring_up_bus(pre.usart_brr);
     crate::log::debug!("bus usart + rx ring + crc engine armed");
 
+    crate::providers::tel_tx::TelTx::init();
+    crate::log::debug!("tel usart armed");
+
     // Drivers::install runs after the bus peripherals are live: `ServoBus
     // ::new` applies the table's effective baud to the already-configured BRR.
     // SAFETY: bringup-only, pre-IRQ; sole writer.

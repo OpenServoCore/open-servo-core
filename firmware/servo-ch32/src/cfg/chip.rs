@@ -18,6 +18,15 @@ pub const BUS_LINE_PIN: Pin = BUS_USART_MAPPING.tx_pin();
 #[cfg(not(feature = "half-duplex"))]
 pub const BUS_LINE_PIN: Pin = BUS_USART_MAPPING.rx_pin();
 
+// === TEL stream (USART2 remap 5, TX-only on PC4) ===
+//
+// PC4 is the TEL pad on rev-2A and the /VNTC net (JP1 center) on rev B --
+// chip-fixed here like the bus mapping. It doubles as ADC A2; boards that
+// wire a sensor to A2 cannot also stream TEL.
+
+pub const TEL_USART_MAPPING: UsartMapping = UsartMapping::Usart2Remap5;
+pub const TEL_BAUD: u32 = 3_000_000;
+
 // === Motor + STAT (TIM1 Remap8) ===
 //
 // Remap8, not Remap7: identical pins for every channel this board uses

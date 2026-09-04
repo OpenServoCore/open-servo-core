@@ -14,12 +14,16 @@ pub use ch32_metapac::dma::vals::{Dir, Pl, Size};
 ///   VERYHIGH  CH5 RX ring          -- inbound bytes, never deferred
 ///   HIGH      CH1 ADC              -- motor kernel; wins HIGH ties (lowest #)
 ///             CH4 TX               -- reply wire arms
-///             CH6 M2M -> snapshot  -- copies the reply payload for CRC + wire
-///   MEDIUM    CH3 SPI-CRC feed     -- must run BEHIND CH6 so the copy it reads
+///             CH7 M2M -> snapshot  -- copies the reply payload for CRC + wire
+///   MEDIUM    CH3 SPI-CRC feed     -- must run BEHIND CH7 so the copy it reads
 ///                                    is written first (producer -> consumer)
+///   LOW       CH6 TEL TX           -- USART2's fixed request channel (the
+///                                    reason the snapshot M2M, which can run
+///                                    anywhere, sits on CH7); a deferred TEL
+///                                    beat only delays a background frame
 ///
-/// RX CRC feeds the SPI engine straight from the ring (no M2M staging), so CH6
-/// serves only the reply snapshot and CH7 is unused.
+/// RX CRC feeds the SPI engine straight from the ring (no M2M staging), so
+/// CH7 serves only the reply snapshot.
 #[derive(Copy, Clone)]
 #[repr(u8)]
 pub enum Channel {
