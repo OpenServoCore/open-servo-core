@@ -9,7 +9,7 @@
 //! CLOCAL|CREAD set and the speed configured - a bare O_NONBLOCK open
 //! reads almost nothing (that combination is what pyserial sets up).
 
-use std::io::Read;
+use std::io::{BufWriter, Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -35,7 +35,7 @@ pub(crate) struct TelSink {
 }
 
 impl TelSink {
-    pub(crate) fn open(path: &str, mask: u16) -> Result<Self> {
+    pub(crate) fn open(path: &str, mask: u16, raw_path: Option<&std::path::Path>) -> Result<Self> {
         let mut port = std::fs::OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY)
@@ -73,6 +73,10 @@ impl TelSink {
             libc::fcntl(fd, libc::F_SETFL, 0);
         }
 
+        // Best-effort: raw capture is a post-mortem artifact, so a file that
+        // fails to create just means no raw copy, never an aborted capture.
+        let raw_writer = raw_path.and_then(|p| std::fs::File::create(p).ok().map(BufWriter::new));
+
         let rx = Arc::new(Mutex::new(Vec::new()));
         let stop = Arc::new(AtomicBool::new(false));
         let bytes = Arc::new(AtomicU64::new(0));
@@ -82,15 +86,22 @@ impl TelSink {
             let bytes = bytes.clone();
             std::thread::spawn(move || {
                 let mut buf = [0u8; 65536];
+                let mut w = raw_writer;
                 while !stop.load(Ordering::Relaxed) {
                     match port.read(&mut buf) {
                         Ok(0) => {}
                         Ok(n) => {
                             bytes.fetch_add(n as u64, Ordering::Relaxed);
                             rx.lock().expect("tel buf").extend_from_slice(&buf[..n]);
+                            if let Some(w) = w.as_mut() {
+                                let _ = w.write_all(&buf[..n]);
+                            }
                         }
                         Err(_) => break,
                     }
+                }
+                if let Some(w) = w.as_mut() {
+                    let _ = w.flush();
                 }
             })
         };

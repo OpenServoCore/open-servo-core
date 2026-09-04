@@ -338,6 +338,7 @@ fn run_bias(
             tel_port: None,
             tel_mask: 0,
             log: Some(&mut log),
+            tel_raw_path: None,
         }
         .run(&mut exp, |_| {})
     })?;
@@ -367,6 +368,7 @@ fn run_resistance(
             tel_port: None,
             tel_mask: 0,
             log: Some(&mut log),
+            tel_raw_path: None,
         }
         .run(&mut exp, |_| {})
     })?;
@@ -395,6 +397,7 @@ fn run_breakaway(
             tel_port: None,
             tel_mask: 0,
             log: Some(&mut log),
+            tel_raw_path: None,
         }
         .run(&mut exp, |_| {})
     })?;
@@ -421,6 +424,7 @@ fn run_ladder(
             tel_port: None,
             tel_mask: 0,
             log: Some(&mut log),
+            tel_raw_path: None,
         }
         .run(&mut exp, |_| {})
     })?;
@@ -464,6 +468,7 @@ fn run_inertia(
             tel_port: (!cli.tel_port.is_empty()).then(|| cli.tel_port.clone()),
             tel_mask: 0x1B,
             log: Some(&mut log),
+            tel_raw_path: None,
         };
         // split borrow: hand frames to the guarded experiment mid-run
         let exp_cell = std::cell::RefCell::new(&mut exp);
@@ -510,6 +515,7 @@ fn run_verify(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
             tel_port: None,
             tel_mask: 0,
             log: None,
+            tel_raw_path: None,
         }
         .run(&mut e5, |_| {})
     })?;
@@ -527,6 +533,7 @@ fn run_verify(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
             tel_port: None,
             tel_mask: 0,
             log: None,
+            tel_raw_path: None,
         }
         .run(&mut e6, |_| {})
     })?;

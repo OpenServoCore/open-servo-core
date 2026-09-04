@@ -120,7 +120,15 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     // build_sweep takes the longest moving run. Skipped without --tel-port.
     let sweep = match &tel_port {
         Some(port) => {
-            let tel = run_sweep(&mut c, id, port, pos_min_phys, pos_max_phys, drive_polarity)?;
+            let tel = run_sweep(
+                &mut c,
+                id,
+                port,
+                pos_min_phys,
+                pos_max_phys,
+                drive_polarity,
+                &out,
+            )?;
             let s = build_sweep(&tel);
             match &s {
                 Some((pos, _)) => println!(
@@ -363,6 +371,7 @@ fn run_endstop(c: &mut Client<NusbPipe>, id: Id, out: &OutDir) -> Result<Endstop
         tel_port: None,
         tel_mask: 0,
         log: Some(&mut log),
+        tel_raw_path: None,
     }
     .run(&mut exp, |_| {});
     // park safe whether the run finished, errored, or was ctrl-c'd
@@ -391,6 +400,7 @@ fn run_sweep(
     pos_min_phys: i32,
     pos_max_phys: i32,
     drive_polarity: bool,
+    out: &OutDir,
 ) -> Result<Vec<TelFrame>> {
     const DUTY: i16 = 8520;
     let span = (pos_max_phys - pos_min_phys) as f64;
@@ -440,12 +450,17 @@ fn run_sweep(
         tel_port: Some(port.to_string()),
         tel_mask,
         log: None,
+        tel_raw_path: Some(out.0.join("tel-raw.bin")),
     }
     .run(&mut wrap, |frames| tel.extend_from_slice(frames));
     // park safe whether the run finished, errored, or was ctrl-c'd
     let _ = write_reg(c, id, control::GOAL_DUTY, 0);
     let _ = write_reg(c, id, control::TORQUE_ENABLE, 0);
     ran?;
+    println!(
+        "[sweep] raw bytes -> {}",
+        out.0.join("tel-raw.bin").display()
+    );
     Ok(tel)
 }
 

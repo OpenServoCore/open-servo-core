@@ -65,6 +65,9 @@ pub(crate) struct Pump<'a> {
     pub(crate) tel_port: Option<String>,
     pub(crate) tel_mask: u16,
     pub(crate) log: Option<&'a mut SnapshotLog>,
+    /// Lossless raw-byte capture of the TEL stream, in addition to the live
+    /// deframing; None skips the file (e.g. endstop has no ripple sweep).
+    pub(crate) tel_raw_path: Option<std::path::PathBuf>,
 }
 
 impl Pump<'_> {
@@ -97,6 +100,7 @@ impl Pump<'_> {
                             sink = Some(TelSink::open(
                                 self.tel_port.as_deref().expect("checked"),
                                 self.tel_mask,
+                                self.tel_raw_path.as_deref(),
                             )?);
                         } else if value == 0
                             && let Some(mut s) = sink.take()
