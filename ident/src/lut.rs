@@ -22,6 +22,7 @@
 //!   linearize equal to the plain linear fraction.
 
 use crate::ripple;
+use std::collections::BTreeMap;
 
 /// Knot count = the firmware PotLutBlock's lut_corr length.
 const N_KNOTS: usize = 55;
@@ -317,28 +318,39 @@ fn stitch_slope(
         } else {
             continue;
         };
-        // Distribute each pos-change's phase increment across the counts it
-        // crossed (pos is quantized: it steps only every several samples).
-        let mut prev_pos = pos[0];
-        let mut prev_phi = phi[0];
-        for i in 1..pos.len() {
-            if pos[i] != prev_pos {
-                let dphi = phi[i] - prev_phi;
-                let (a, b) = (prev_pos.min(pos[i]), prev_pos.max(pos[i]));
-                let counts = (b - a) as f64;
-                if counts > 0.0 && dphi >= 0.0 {
-                    let s = dphi / counts;
-                    // b maps to the next bin; the top count lands in bin b-1
-                    for c in a..b {
-                        if c >= raw_min && c < raw_max {
-                            let idx = (c - raw_min) as usize;
-                            slope_sum[idx] += s;
-                            slope_cnt[idx] += 1;
-                        }
+        // Collapse oversampling+jitter first: the pot ADC lands many samples on
+        // each count (and dithers +/-1), so a raw per-step scan would split one
+        // count's dphi across many crossings and dilute the averaged slope by
+        // the oversampling factor. Reduce to one mean phase per unique pos.
+        let mut by_pos: BTreeMap<u16, (f64, u32)> = BTreeMap::new();
+        for (&p, &ph) in pos.iter().zip(phi.iter()) {
+            let e = by_pos.entry(p).or_insert((0.0, 0));
+            e.0 += ph;
+            e.1 += 1;
+        }
+        let deduped: Vec<(u16, f64)> = by_pos
+            .into_iter()
+            .map(|(p, (sum, cnt))| (p, sum / cnt as f64))
+            .collect();
+        // Distribute each pos-step's phase increment across the counts it
+        // crossed; each covered count now gets ~one full-per-count contribution
+        // per chunk (multi-chunk overlap still averages correctly).
+        for w in deduped.windows(2) {
+            let (pos_i, phi_i) = w[0];
+            let (pos_j, phi_j) = w[1];
+            let dphi = phi_j - phi_i;
+            let (a, b) = (pos_i.min(pos_j), pos_i.max(pos_j));
+            let counts = (b - a) as f64;
+            if counts > 0.0 && dphi >= 0.0 {
+                let s = dphi / counts;
+                // b maps to the next bin; the top count lands in bin b-1
+                for c in a..b {
+                    if c >= raw_min && c < raw_max {
+                        let idx = (c - raw_min) as usize;
+                        slope_sum[idx] += s;
+                        slope_cnt[idx] += 1;
                     }
                 }
-                prev_pos = pos[i];
-                prev_phi = phi[i];
             }
         }
     }
@@ -851,5 +863,65 @@ mod tests {
             PotLut::identity(RAW_MIN, RAW_MAX)
         );
         assert!(stitched_motor_revs(&[], FS, 6.0, RAW_MIN, RAW_MAX).is_none());
+    }
+
+    // Oversampled + jittered sweep: pos advances well under 1 count/sample (the
+    // pot ADC lands many samples on each count) and dithers +/-1 count. Mirrors
+    // the real capture that undercounted revs ~oversampling-fold before the
+    // per-chunk pos dedup in stitch_slope.
+    fn jitter_ripple_sweep(a: f64, freq: f64, n: usize) -> (Vec<u16>, Vec<f64>) {
+        let mut lcg = Lcg(7);
+        let pos: Vec<u16> = (0..n)
+            .map(|k| {
+                let f = k as f64 / (n - 1) as f64;
+                let j = lcg.next(1.5).round() as i32; // -1, 0, or +1 count
+                (pot_raw(f, a) as i32 + j).clamp(RAW_MIN as i32, RAW_MAX as i32) as u16
+            })
+            .collect();
+        let cur = ripple_series(freq, 4.0, 3.0, n);
+        (pos, cur)
+    }
+
+    #[test]
+    fn stitched_motor_revs_survives_oversampling_and_jitter() {
+        let a = 0.15;
+        // ~8 samples per count over the 3700-count span
+        let n = 30_000;
+        let (pos, cur) = jitter_ripple_sweep(a, 1800.0, n);
+        // 1800 Hz / 6 = 300 rev/s over N/FS s
+        let total = 300.0 * n as f64 / FS;
+        // single oversampled chunk: dedup must recover the full rev count, not
+        // an oversampling-diluted fraction of it
+        let single = vec![(pos.clone(), cur.clone())];
+        let (full1, cov1) = stitched_motor_revs(&single, FS, 6.0, RAW_MIN, RAW_MAX).expect("revs");
+        assert!(
+            (full1 - total).abs() / total < 0.05,
+            "single {full1} vs {total}"
+        );
+        assert!(cov1 > MIN_SPAN_COVER && cov1 <= 1.0, "coverage {cov1}");
+        // same data split into gapped chunks
+        let ranges = [
+            (0, 6000),
+            (6500, 12000),
+            (12500, 18000),
+            (18500, 24000),
+            (24500, 30000),
+        ];
+        let chunks = chunkify(&pos, &cur, &ranges);
+        let (fullc, _) = stitched_motor_revs(&chunks, FS, 6.0, RAW_MIN, RAW_MAX).expect("revs");
+        assert!(
+            (fullc - total).abs() / total < 0.05,
+            "chunked {fullc} vs {total}"
+        );
+        // build_multi's normalized shape still tracks true fraction on jitter
+        let lut = build_multi(&chunks, FS, 6.0, RAW_MIN, RAW_MAX);
+        let mut emax = 0.0f64;
+        for &(lo, hi) in ranges.iter() {
+            for (j, &r) in pos[lo..hi].iter().enumerate() {
+                let f = (lo + j) as f64 / (n - 1) as f64;
+                emax = emax.max((lut.linearize(r) - f).abs());
+            }
+        }
+        assert!(emax < 0.03, "linearize err {emax}");
     }
 }
