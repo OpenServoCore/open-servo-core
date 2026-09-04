@@ -17,6 +17,7 @@ pub mod regions;
 pub mod sensor_frame;
 pub mod services;
 pub mod shared;
+pub mod tel;
 pub mod traits;
 
 pub use control_table::{
@@ -35,6 +36,7 @@ pub use regions::{
 pub use sensor_frame::SensorFrame;
 pub use services::bus::{Dispatcher, Session};
 pub use shared::Shared;
+pub use tel::{TelSample, TelStream};
 pub use traits::{
     Capabilities, ControlIo, DecayMode, Dispatch, Dispatched, Motor, MotorCmd, Reply, Request,
     RequestCtx, SendError, Sensors, Status,
