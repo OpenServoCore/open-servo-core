@@ -11,6 +11,7 @@ pub mod kernel;
 pub const FIRMWARE_VERSION: u8 = 1;
 
 pub mod log;
+pub mod math;
 pub mod persist;
 pub mod regions;
 pub mod sensor_frame;
@@ -21,15 +22,15 @@ pub mod traits;
 pub use control_table::{
     Error, Region, RegionStorage, RegionStorageRaw, StagedWrites, ValidationKind,
 };
-pub use kernel::{Kernel, KernelState};
+pub use kernel::{Kernel, KernelTiming};
 pub use persist::{ConfigStore, StoreError};
 pub use regions::config::{BaudRate, ConfigDefaults};
 pub use regions::{
-    BemfCalibBlock, BootMode, CalibRegs, CalibSense, CalibWinding, ConfigCommon,
-    ConfigControlPosition, ConfigPosLimits, ConfigRegs, ConfigStall, ConfigThermal,
-    ControlLifecycle, ControlRegs, ControlStreaming, ControlSystem, ControlTable, ControlTableCell,
-    Mode, PotLutBlock, StallResponse, TelemetryCommon, TelemetryIntermediaries, TelemetryMode,
-    TelemetryRegs, TelemetrySensors,
+    BootMode, CalibMotor, CalibRegs, CalibSense, CalibWinding, ConfigCommon, ConfigFaultCfg,
+    ConfigFusion, ConfigLimits, ConfigLoopCurrent, ConfigLoopPosition, ConfigLoopVelocity,
+    ConfigPosLimits, ConfigRegs, ConfigThermal, ControlLifecycle, ControlRegs, ControlSystem,
+    ControlTable, ControlTableCell, DecaySelect, Mode, PotLutBlock, StallResponse, TelemetryCommon,
+    TelemetryEstimates, TelemetryIdent, TelemetryMode, TelemetryRegs, TelemetrySensors,
 };
 pub use sensor_frame::SensorFrame;
 pub use services::bus::{Dispatcher, Session};

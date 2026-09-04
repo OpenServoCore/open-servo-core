@@ -194,6 +194,7 @@ enum Cmd {
         field: String,
         /// Value: decimal/0x-hex int, on|off for bool, variant name or number
         /// for enum, hex bytes for a bytes field.
+        #[arg(allow_hyphen_values = true)]
         value: String,
         /// Stage under HOLD; applied by the next COMMIT.
         #[arg(long)]

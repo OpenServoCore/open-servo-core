@@ -8,7 +8,6 @@ use osc_integration::sim::{Source, WireFrame, assert_valid, instruction, status}
 use osc_protocol::wire::{Inst, Opcode, ResultCode};
 use osc_servo_core::regions::config::addr::common::{FIRMWARE_VERSION, MODEL_NUMBER};
 use osc_servo_core::regions::control::addr::lifecycle::GOAL_VELOCITY;
-use osc_servo_core::regions::control::addr::streaming::{STREAM_DECIMATION, STREAM_FIELD_MASK};
 use osc_servo_core::regions::profile::span_word;
 use rstest::rstest;
 use rstest_reuse::apply;
@@ -395,19 +394,21 @@ fn gwrite_hold_commit_is_atomic_fleet_update(baud_idx: u8) {
 }
 
 #[apply(matrix)]
-fn gwrite_per_target_applies_distinct_fields(baud_idx: u8) {
+fn gwrite_per_target_applies_distinct_entries(baud_idx: u8) {
     let mut sim = sim(baud_idx);
     for id in [1u8, 2, 3] {
         sim.add_servo(id);
     }
     let gv: i32 = 0x1234_5678;
-    let mask: u32 = 0xDEAD_BEEF;
-    let deci: u8 = 7;
+    let gv2: i32 = 0x5EED_F00D;
+    let lo: u8 = 7;
 
+    // Entry strides vary (4, 4, 1): the 1-byte entry pins per-entry length
+    // parsing, landing in goal_velocity's low byte over a zeroed field.
     let payload = gwrite_per_target(&[
         (1, GOAL_VELOCITY, &gv.to_le_bytes()),
-        (2, STREAM_FIELD_MASK, &mask.to_le_bytes()),
-        (3, STREAM_DECIMATION, &[deci]),
+        (2, GOAL_VELOCITY, &gv2.to_le_bytes()),
+        (3, GOAL_VELOCITY, &[lo]),
     ]);
     sim.host_send(&instruction(
         BCAST,
@@ -423,12 +424,12 @@ fn gwrite_per_target_applies_distinct_fields(baud_idx: u8) {
         gv
     );
     assert_eq!(
-        sim.servo_table(1, |t| t.control.streaming.stream_field_mask),
-        mask
+        sim.servo_table(1, |t| t.control.lifecycle.goal_velocity),
+        gv2
     );
     assert_eq!(
-        sim.servo_table(2, |t| t.control.streaming.stream_decimation),
-        deci
+        sim.servo_table(2, |t| t.control.lifecycle.goal_velocity),
+        lo as i32
     );
 }
 
@@ -442,7 +443,7 @@ fn back_to_back_instructions_all_land(baud_idx: u8) {
     let mut sim = sim(baud_idx);
     sim.add_servo(1);
     let gv: i32 = 0x0AA0_1BB1;
-    let mask: u32 = 0x00C0_FFEE;
+    let gv2: i32 = 0x00C0_FFEE;
 
     let addr_gv = GOAL_VELOCITY.to_le_bytes();
     let mut w1 = vec![addr_gv[0], addr_gv[1]];
@@ -454,23 +455,23 @@ fn back_to_back_instructions_all_land(baud_idx: u8) {
     let (res1, data1) = decoded(r1[0]);
     assert_eq!(res1, ResultCode::Ok);
     assert!(data1.is_empty(), "write ack is empty");
+    assert_eq!(
+        sim.servo_table(0, |t| t.control.lifecycle.goal_velocity),
+        gv,
+        "first write applied before the second lands"
+    );
 
-    let addr_mask = STREAM_FIELD_MASK.to_le_bytes();
-    let mut w2 = vec![addr_mask[0], addr_mask[1]];
-    w2.extend_from_slice(&mask.to_le_bytes());
+    let mut w2 = vec![addr_gv[0], addr_gv[1]];
+    w2.extend_from_slice(&gv2.to_le_bytes());
     sim.host_send(&instruction(1, Opcode::Write, 0, &w2));
     let f2 = sim.run();
     let r2 = replies(&f2);
     assert_eq!(r2.len(), 1, "second write acked: {f2:#?}");
     assert_eq!(decoded(r2[0]).0, ResultCode::Ok);
 
-    // Both applied, in order.
     assert_eq!(
         sim.servo_table(0, |t| t.control.lifecycle.goal_velocity),
-        gv
-    );
-    assert_eq!(
-        sim.servo_table(0, |t| t.control.streaming.stream_field_mask),
-        mask
+        gv2,
+        "second write applied"
     );
 }

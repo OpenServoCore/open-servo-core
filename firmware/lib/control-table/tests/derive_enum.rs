@@ -6,7 +6,7 @@ use control_table::descriptor::EnumVariant;
 #[repr(u8)]
 enum Mode {
     OpenLoop = 0,
-    PositionPid = 1,
+    Current = 1,
 }
 
 #[derive(Copy, Clone, Enum)]
@@ -48,7 +48,7 @@ fn variants_pair_name_with_value() {
                 value: 0
             },
             EnumVariant {
-                name: "PositionPid",
+                name: "Current",
                 value: 1
             },
         ]

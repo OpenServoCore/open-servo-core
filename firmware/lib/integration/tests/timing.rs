@@ -9,7 +9,7 @@
 use osc_integration::sim::{Sim, Source, WireFrame, assert_valid, instruction, status};
 use osc_protocol::wire::{Opcode, ResultCode};
 use osc_servo_core::BaudRate;
-use osc_servo_core::regions::calib::addr::pot_lut::LUT;
+use osc_servo_core::regions::calib::addr::pot_lut::LUT_CORR;
 use osc_servo_core::regions::config::addr::common::MODEL_NUMBER;
 use rstest::rstest;
 use rstest_reuse::apply;
@@ -144,10 +144,10 @@ fn skewed_servo_survives_long_frame(baud_idx: u8) {
     let mut sim = Sim::new(rate);
     sim.add_servo_with(1, 10_000, 60);
 
-    // 50 i32 words = 200 B into the rule-free calibration LUT (torque off by
+    // 55 i16 words = 110 B into the rule-free calibration LUT (torque off by
     // default -> the persistent section is writable).
-    let words: Vec<i32> = (0..50).map(|i| 0x0100_0000 + i).collect();
-    let addr = LUT.to_le_bytes();
+    let words: Vec<i16> = (0..55).map(|i| 0x0100 + i).collect();
+    let addr = LUT_CORR.to_le_bytes();
     let mut payload = vec![addr[0], addr[1]];
     for w in &words {
         payload.extend_from_slice(&w.to_le_bytes());
@@ -160,8 +160,8 @@ fn skewed_servo_survives_long_frame(baud_idx: u8) {
     assert_eq!(inst.result(), Some(ResultCode::Ok), "long write applies");
     assert!(data.is_empty(), "write ack is empty");
 
-    let stored = sim.servo_table(0, |t| t.calib.pot_lut.lut);
-    assert_eq!(&stored[..50], &words[..], "all 200 B landed under drift");
+    let stored = sim.servo_table(0, |t| t.calib.pot_lut.lut_corr);
+    assert_eq!(&stored[..], &words[..], "all 110 B landed under drift");
     assert_eq!(sim.servo_diag(0).framing_drop_count, 0);
 }
 

@@ -210,16 +210,17 @@ fn hold_then_commit_applies_atomically(baud_idx: u8) {
 
 #[apply(matrix)]
 fn large_write_stages_and_applies(baud_idx: u8) {
-    // LEN is the only size limit (sec 5.1): a >128 B write stages like any other
-    // (the buffer fits the largest legal write) and commits at its verdict.
-    // Target the calib pot-LUT span (writable, no field rules).
+    // LEN is the only size limit (sec 5.1): the largest legal write -- the
+    // full 114 B pot-LUT block, the map's widest rule-free writable span --
+    // stages like any other and commits at its verdict.
     let mut sim = sim(baud_idx);
     let s = sim.add_servo(ID5);
 
-    let mut data = vec![0u8; 130];
+    let mut data = vec![0u8; 114];
     data[0..2].copy_from_slice(&0x1234u16.to_le_bytes()); // raw_min
     data[2..4].copy_from_slice(&0x5678u16.to_le_bytes()); // raw_max
     data[4] = 0xAB; // first LUT byte
+    data[113] = 0x7C; // last LUT byte
 
     let a = CALIB_BASE_ADDR.to_le_bytes();
     let mut payload = vec![a[0], a[1]];
@@ -230,16 +231,18 @@ fn large_write_stages_and_applies(baud_idx: u8) {
     let (inst, _) = status(sole_reply(&frames));
     assert_eq!(inst.result(), Some(ResultCode::Ok));
     assert_eq!(sim.servo_diag(s).crc_fail_count, 0);
-    let (raw_min, raw_max, lut0) = sim.servo_table(s, |t| {
+    let (raw_min, raw_max, lut0, lut54) = sim.servo_table(s, |t| {
         (
             t.calib.pot_lut.raw_min,
             t.calib.pot_lut.raw_max,
-            t.calib.pot_lut.lut[0],
+            t.calib.pot_lut.lut_corr[0],
+            t.calib.pot_lut.lut_corr[54],
         )
     });
     assert_eq!(raw_min, 0x1234);
     assert_eq!(raw_max, 0x5678);
-    assert_eq!((lut0 as u32) & 0xFF, 0xAB, "the >128 B payload landed");
+    assert_eq!((lut0 as u16) & 0xFF, 0xAB);
+    assert_eq!((lut54 as u16) >> 8, 0x7C, "the full 114 B payload landed");
 }
 
 #[apply(matrix)]

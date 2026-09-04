@@ -96,6 +96,10 @@ pub fn bringup(
     super::diag::dump_init_regs();
 }
 
+// tick_hz stamps from the constant that programs TIM1, so the table can
+// never disagree with silicon; the cast must stay lossless.
+const _: () = assert!(chip::MOTOR_PWM_FREQ_HZ <= u16::MAX as u32);
+
 fn calib_sense(wiring: &BoardWiring, cal: &Calibration) -> CalibSense {
     CalibSense {
         shunt_r_mohm: cal.shunt_r_mohm,
@@ -103,6 +107,9 @@ fn calib_sense(wiring: &BoardWiring, cal: &Calibration) -> CalibSense {
         vmotor_div_top: cal.vmotor_divider.top_ohm.min(u16::MAX as u32) as u16,
         vmotor_div_bot: cal.vmotor_divider.bot_ohm.min(u16::MAX as u32) as u16,
         vdd_mv: cal.vdd_mv,
+        tick_hz: chip::MOTOR_PWM_FREQ_HZ as u16,
+        i_window_min_ticks: cal.i_window_min_ticks,
+        v_window_min_ticks: cal.v_window_min_ticks,
     }
 }
 

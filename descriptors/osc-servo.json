@@ -60,174 +60,317 @@
       "kind": "uint"
     },
     {
-      "name": "pos_min_phys_urad",
+      "name": "pos_min_phys_counts",
       "addr": 32,
       "width": 4,
       "access": "rw",
       "kind": "int"
     },
     {
-      "name": "pos_max_phys_urad",
+      "name": "pos_max_phys_counts",
       "addr": 36,
       "width": 4,
       "access": "rw",
       "kind": "int"
     },
     {
-      "name": "pos_min_soft_urad",
+      "name": "pos_min_soft_counts",
       "addr": 40,
       "width": 4,
       "access": "rw",
       "kind": "int"
     },
     {
-      "name": "pos_max_soft_urad",
+      "name": "pos_max_soft_counts",
       "addr": 44,
       "width": 4,
       "access": "rw",
       "kind": "int"
     },
     {
-      "name": "stall_response",
+      "name": "i_kp_q88",
       "addr": 48,
-      "width": 1,
-      "access": "rw",
-      "kind": "enum",
-      "variants": [
-        {
-          "name": "Disable",
-          "value": 0
-        },
-        {
-          "name": "Comply",
-          "value": 1
-        }
-      ]
-    },
-    {
-      "name": "stall_effort_threshold",
-      "addr": 50,
       "width": 2,
-      "access": "rw",
-      "kind": "int"
-    },
-    {
-      "name": "stall_motion_threshold_urad",
-      "addr": 52,
-      "width": 4,
       "access": "rw",
       "kind": "uint"
     },
     {
-      "name": "stall_time_threshold_ms",
+      "name": "i_ki_q412",
+      "addr": 50,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "i_kaw_q412",
+      "addr": 52,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "duty_max_q15",
+      "addr": 54,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint",
+      "max": 32767
+    },
+    {
+      "name": "v_kp_q88",
       "addr": 56,
       "width": 2,
       "access": "rw",
       "kind": "uint"
     },
     {
-      "name": "comply_release_window_ms",
+      "name": "v_ki_q412",
       "addr": 58,
       "width": 2,
       "access": "rw",
       "kind": "uint"
     },
     {
-      "name": "motor_thermal_k_q88",
+      "name": "v_kaw_q412",
       "addr": 60,
       "width": 2,
       "access": "rw",
       "kind": "uint"
     },
     {
-      "name": "motor_thermal_tau_ms",
+      "name": "j_ff_q88",
       "addr": 62,
       "width": 2,
       "access": "rw",
       "kind": "uint"
     },
     {
-      "name": "winding_cutoff_cc",
+      "name": "p_kp_q88",
       "addr": 64,
       "width": 2,
       "access": "rw",
-      "kind": "int"
+      "kind": "uint"
     },
     {
-      "name": "winding_recover_cc",
+      "name": "pos_deadband_counts",
       "addr": 66,
       "width": 2,
       "access": "rw",
-      "kind": "int"
+      "kind": "uint"
     },
     {
-      "name": "v_undervolt_mv",
+      "name": "hold_omega_cps",
       "addr": 68,
       "width": 2,
       "access": "rw",
       "kind": "uint"
     },
     {
-      "name": "pid_kp_q88",
+      "name": "velocity_limit_cps",
+      "addr": 70,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "accel_limit_q88",
       "addr": 72,
       "width": 2,
       "access": "rw",
       "kind": "uint"
     },
     {
-      "name": "pid_ki_q88",
+      "name": "current_limit_counts",
       "addr": 74,
       "width": 2,
       "access": "rw",
       "kind": "uint"
     },
     {
-      "name": "pid_kd_q88",
+      "name": "stall_response",
       "addr": 76,
-      "width": 2,
-      "access": "rw",
-      "kind": "uint"
-    },
-    {
-      "name": "pid_i_limit",
-      "addr": 80,
-      "width": 4,
-      "access": "rw",
-      "kind": "int"
-    },
-    {
-      "name": "pos_deadband_urad",
-      "addr": 84,
-      "width": 4,
-      "access": "rw",
-      "kind": "uint"
-    },
-    {
-      "name": "pwm_deadband_pct",
-      "addr": 88,
       "width": 1,
       "access": "rw",
-      "kind": "uint",
-      "max": 50
+      "kind": "enum",
+      "variants": [
+        {
+          "name": "Fault",
+          "value": 0
+        },
+        {
+          "name": "Yield",
+          "value": 1
+        }
+      ]
     },
     {
-      "name": "v_comp_enable",
-      "addr": 89,
+      "name": "drive_polarity",
+      "addr": 77,
       "width": 1,
       "access": "rw",
       "kind": "bool"
     },
     {
-      "name": "max_effort",
+      "name": "stall_omega_max_cps",
+      "addr": 78,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "stall_time_ms",
+      "addr": 80,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "stall_yield_counts",
+      "addr": 82,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "stall_release_counts",
+      "addr": 84,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "stall_tau_trip_counts",
+      "addr": 86,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "oc_trip_counts",
+      "addr": 88,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "oc_trip_ticks",
       "addr": 90,
+      "width": 1,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "openloop_decay",
+      "addr": 91,
+      "width": 1,
+      "access": "rw",
+      "kind": "enum",
+      "variants": [
+        {
+          "name": "Slow",
+          "value": 0
+        },
+        {
+          "name": "Fast",
+          "value": 1
+        }
+      ]
+    },
+    {
+      "name": "derate_start_cc",
+      "addr": 92,
       "width": 2,
       "access": "rw",
       "kind": "int"
     },
     {
-      "name": "v_nominal_mv",
-      "addr": 92,
+      "name": "cutoff_cc",
+      "addr": 94,
       "width": 2,
+      "access": "rw",
+      "kind": "int"
+    },
+    {
+      "name": "recover_cc",
+      "addr": 96,
+      "width": 2,
+      "access": "rw",
+      "kind": "int"
+    },
+    {
+      "name": "v_undervolt_counts",
+      "addr": 98,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "rtherm_i_min_counts",
+      "addr": 100,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "rtherm_omega_max_cps",
+      "addr": 102,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "l1_q016",
+      "addr": 104,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "l2_q88",
+      "addr": 106,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "l3_q88",
+      "addr": 108,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "l_bemf_q016",
+      "addr": 110,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "pos_error_counts",
+      "addr": 112,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "pos_error_time_ms",
+      "addr": 114,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "sensor_delta_max",
+      "addr": 116,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "sensor_bad_count",
+      "addr": 118,
+      "width": 1,
       "access": "rw",
       "kind": "uint"
     },
@@ -246,88 +389,151 @@
       "kind": "uint"
     },
     {
-      "name": "lut",
+      "name": "lut_corr",
       "addr": 132,
-      "width": 220,
+      "width": 110,
       "access": "rw",
       "kind": "bytes"
     },
     {
-      "name": "ke_uvs_per_rad",
-      "addr": 352,
-      "width": 2,
-      "access": "rw",
-      "kind": "uint"
-    },
-    {
-      "name": "r_motor_mohm",
-      "addr": 354,
-      "width": 2,
-      "access": "rw",
-      "kind": "uint"
-    },
-    {
-      "name": "calib_v_bus_mv",
-      "addr": 356,
-      "width": 2,
-      "access": "rw",
-      "kind": "uint"
-    },
-    {
-      "name": "calib_i_ma",
-      "addr": 358,
-      "width": 2,
-      "access": "rw",
-      "kind": "uint"
-    },
-    {
       "name": "shunt_r_mohm",
-      "addr": 360,
+      "addr": 242,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "gain_milli",
-      "addr": 362,
+      "addr": 244,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "vmotor_div_top",
-      "addr": 364,
+      "addr": 246,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "vmotor_div_bot",
-      "addr": 366,
+      "addr": 248,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "vdd_mv",
-      "addr": 368,
+      "addr": 250,
       "width": 2,
       "access": "rw",
       "kind": "uint"
     },
     {
-      "name": "r0_mohm",
-      "addr": 370,
+      "name": "tick_hz",
+      "addr": 252,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "i_window_min_ticks",
+      "addr": 254,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "v_window_min_ticks",
+      "addr": 256,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "r0_q12",
+      "addr": 258,
       "width": 2,
       "access": "rw",
       "kind": "uint"
     },
     {
       "name": "t0_cc",
-      "addr": 372,
+      "addr": 260,
       "width": 2,
       "access": "rw",
       "kind": "int"
+    },
+    {
+      "name": "k_r2t_q88",
+      "addr": 262,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "mu_q016",
+      "addr": 264,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "ke_uvs_per_rad",
+      "addr": 266,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "r_q12",
+      "addr": 268,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "recip_ke_q",
+      "addr": 270,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "b_i_q016",
+      "addr": 272,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "fric_fc_counts",
+      "addr": 274,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "fric_fv_q016",
+      "addr": 276,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "fric_breakaway_counts",
+      "addr": 278,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "ke_vpc_q",
+      "addr": 280,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
     },
     {
       "name": "torque_enable",
@@ -348,10 +554,25 @@
           "value": 0
         },
         {
-          "name": "PositionPid",
+          "name": "Current",
           "value": 1
+        },
+        {
+          "name": "Velocity",
+          "value": 2
+        },
+        {
+          "name": "Position",
+          "value": 3
         }
       ]
+    },
+    {
+      "name": "goal_duty",
+      "addr": 386,
+      "width": 2,
+      "access": "rw",
+      "kind": "int"
     },
     {
       "name": "goal_position",
@@ -368,51 +589,15 @@
       "kind": "int"
     },
     {
-      "name": "goal_effort",
+      "name": "goal_current",
       "addr": 396,
       "width": 2,
       "access": "rw",
       "kind": "int"
     },
     {
-      "name": "stream_enable",
-      "addr": 400,
-      "width": 1,
-      "access": "rw",
-      "kind": "bool"
-    },
-    {
-      "name": "stream_decimation",
-      "addr": 401,
-      "width": 1,
-      "access": "rw",
-      "kind": "uint"
-    },
-    {
-      "name": "stream_duration_ms",
-      "addr": 402,
-      "width": 2,
-      "access": "rw",
-      "kind": "uint",
-      "min": 1
-    },
-    {
-      "name": "stream_field_mask",
-      "addr": 404,
-      "width": 4,
-      "access": "rw",
-      "kind": "uint"
-    },
-    {
-      "name": "stream_dropped",
-      "addr": 408,
-      "width": 4,
-      "access": "ro",
-      "kind": "uint"
-    },
-    {
       "name": "boot_mode",
-      "addr": 412,
+      "addr": 400,
       "width": 1,
       "access": "rw",
       "kind": "enum",
@@ -477,106 +662,190 @@
       "kind": "uint"
     },
     {
-      "name": "current_bias_counts",
-      "addr": 564,
+      "name": "theta_hat_q16",
+      "addr": 548,
+      "width": 4,
+      "access": "ro",
+      "kind": "int"
+    },
+    {
+      "name": "omega_hat_cps",
+      "addr": 552,
+      "width": 4,
+      "access": "ro",
+      "kind": "int"
+    },
+    {
+      "name": "tau_d_counts",
+      "addr": 556,
+      "width": 2,
+      "access": "ro",
+      "kind": "int"
+    },
+    {
+      "name": "i_lim_counts",
+      "addr": 558,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
-      "name": "t_winding_dc",
+      "name": "t_winding_cc",
+      "addr": 560,
+      "width": 2,
+      "access": "ro",
+      "kind": "int"
+    },
+    {
+      "name": "vbus_counts",
+      "addr": 562,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "duty_applied_q15",
+      "addr": 564,
+      "width": 2,
+      "access": "ro",
+      "kind": "int"
+    },
+    {
+      "name": "omega_bemf_cps",
       "addr": 566,
       "width": 2,
       "access": "ro",
       "kind": "int"
     },
     {
-      "name": "pwm_duty_actual",
+      "name": "r_hat_q12",
       "addr": 568,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "i_hat_counts",
+      "addr": 570,
       "width": 2,
       "access": "ro",
       "kind": "int"
     },
     {
-      "name": "pid_error_last",
-      "addr": 572,
-      "width": 4,
-      "access": "ro",
-      "kind": "int"
-    },
-    {
-      "name": "pid_output_last",
-      "addr": 576,
-      "width": 4,
-      "access": "ro",
-      "kind": "int"
-    },
-    {
-      "name": "internal_goal",
-      "addr": 580,
-      "width": 4,
-      "access": "ro",
-      "kind": "int"
-    },
-    {
       "name": "sample_tick",
-      "addr": 584,
+      "addr": 572,
       "width": 4,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "pos",
-      "addr": 588,
+      "addr": 576,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "current",
-      "addr": 590,
+      "addr": 578,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "vcal",
-      "addr": 592,
+      "addr": 580,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "vcal_lpf",
-      "addr": 594,
+      "addr": 582,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "vmotor_a",
-      "addr": 596,
+      "addr": 584,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "vmotor_b",
-      "addr": 598,
+      "addr": 586,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "enc_a",
-      "addr": 600,
+      "addr": 588,
       "width": 2,
       "access": "ro",
       "kind": "uint"
     },
     {
       "name": "enc_b",
+      "addr": 590,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "current_trough",
+      "addr": 592,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "current_bias_counts",
+      "addr": 594,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "i_mean_counts",
+      "addr": 596,
+      "width": 2,
+      "access": "ro",
+      "kind": "int"
+    },
+    {
+      "name": "i_min_counts",
+      "addr": 598,
+      "width": 2,
+      "access": "ro",
+      "kind": "int"
+    },
+    {
+      "name": "i_max_counts",
+      "addr": 600,
+      "width": 2,
+      "access": "ro",
+      "kind": "int"
+    },
+    {
+      "name": "vdiff_mean",
       "addr": 602,
+      "width": 2,
+      "access": "ro",
+      "kind": "int"
+    },
+    {
+      "name": "duty_mean_q15",
+      "addr": 604,
+      "width": 2,
+      "access": "ro",
+      "kind": "int"
+    },
+    {
+      "name": "agg_seq",
+      "addr": 606,
       "width": 2,
       "access": "ro",
       "kind": "uint"

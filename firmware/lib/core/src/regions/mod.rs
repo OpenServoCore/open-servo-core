@@ -21,15 +21,17 @@ pub(crate) mod hooks;
 pub mod profile;
 pub mod telemetry;
 
-pub use calib::{BemfCalibBlock, CalibRegs, CalibSense, CalibWinding, PotLutBlock};
+pub use calib::{CalibMotor, CalibRegs, CalibSense, CalibWinding, PotLutBlock};
 pub use config::{
-    BaudRate, ConfigCommon, ConfigControlPosition, ConfigPosLimits, ConfigRegs, ConfigStall,
-    ConfigThermal, StallResponse,
+    BaudRate, ConfigCommon, ConfigFaultCfg, ConfigFusion, ConfigLimits, ConfigLoopCurrent,
+    ConfigLoopPosition, ConfigLoopVelocity, ConfigPosLimits, ConfigRegs, ConfigThermal,
+    DecaySelect, StallResponse,
 };
-pub use control::{BootMode, ControlLifecycle, ControlRegs, ControlStreaming, ControlSystem, Mode};
+pub use control::{BootMode, ControlLifecycle, ControlRegs, ControlSystem, Mode};
 pub use profile::{PROFILE_SLOTS, ProfileRegs, ProfileSlots, SPANS_PER_SLOT};
 pub use telemetry::{
-    TelemetryCommon, TelemetryIntermediaries, TelemetryMode, TelemetryRegs, TelemetrySensors,
+    TelemetryCommon, TelemetryEstimates, TelemetryIdent, TelemetryMode, TelemetryRegs,
+    TelemetrySensors,
 };
 
 use crate::regions::config::ConfigDefaults;
@@ -65,22 +67,44 @@ impl ControlTableCell {
     /// Caller must be sole writer (install-time, pre-IRQ).
     pub fn seed_config_defaults(&self, defaults: &ConfigDefaults) {
         crate::log::debug!(
-            "seed CONFIG: phys=[{}, {}] urad  id={}  baud_idx={}",
-            defaults.pos_min_phys_urad,
-            defaults.pos_max_phys_urad,
+            "seed CONFIG: phys=[{}, {}] counts  id={}  baud_idx={}",
+            defaults.pos_min_phys_counts,
+            defaults.pos_max_phys_counts,
             defaults.id,
             defaults.baud.as_idx(),
         );
         // SAFETY: install-time, pre-IRQ, sole writer.
         self.with_mut(|t| {
             let cfg = &mut t.config;
-            cfg.pos_limits.pos_min_phys_urad = defaults.pos_min_phys_urad;
-            cfg.pos_limits.pos_max_phys_urad = defaults.pos_max_phys_urad;
-            cfg.pos_limits.pos_min_soft_urad = defaults.pos_min_phys_urad;
-            cfg.pos_limits.pos_max_soft_urad = defaults.pos_max_phys_urad;
+            cfg.pos_limits.pos_min_phys_counts = defaults.pos_min_phys_counts;
+            cfg.pos_limits.pos_max_phys_counts = defaults.pos_max_phys_counts;
+            cfg.pos_limits.pos_min_soft_counts = defaults.pos_min_phys_counts;
+            cfg.pos_limits.pos_max_soft_counts = defaults.pos_max_phys_counts;
             cfg.common.id = defaults.id;
             cfg.common.baud_rate_idx = defaults.baud.as_idx();
             cfg.common.response_deadline_us = defaults.response_deadline_us;
+            // Core-owned safe defaults; gains stay at their zero seed so
+            // every loop boots inert. Enum defaults are discriminant 0.
+            cfg.loop_current.duty_max_q15 = config::DEFAULT_DUTY_MAX_Q15;
+            cfg.limits.current_limit_counts = config::DEFAULT_CURRENT_LIMIT_COUNTS;
+            cfg.limits.drive_polarity = config::DEFAULT_DRIVE_POLARITY;
+            cfg.limits.stall_omega_max_cps = config::DEFAULT_STALL_OMEGA_MAX_CPS;
+            cfg.limits.stall_time_ms = config::DEFAULT_STALL_TIME_MS;
+            cfg.limits.stall_yield_counts = config::DEFAULT_STALL_YIELD_COUNTS;
+            cfg.limits.stall_release_counts = config::DEFAULT_STALL_RELEASE_COUNTS;
+            cfg.limits.stall_tau_trip_counts = config::DEFAULT_STALL_TAU_TRIP_COUNTS;
+            cfg.limits.oc_trip_counts = config::DEFAULT_OC_TRIP_COUNTS;
+            cfg.limits.oc_trip_ticks = config::DEFAULT_OC_TRIP_TICKS;
+            cfg.thermal.derate_start_cc = config::DEFAULT_DERATE_START_CC;
+            cfg.thermal.cutoff_cc = config::DEFAULT_CUTOFF_CC;
+            cfg.thermal.recover_cc = config::DEFAULT_RECOVER_CC;
+            cfg.thermal.v_undervolt_counts = config::DEFAULT_V_UNDERVOLT_COUNTS;
+            cfg.thermal.rtherm_i_min_counts = config::DEFAULT_RTHERM_I_MIN_COUNTS;
+            cfg.thermal.rtherm_omega_max_cps = config::DEFAULT_RTHERM_OMEGA_MAX_CPS;
+            cfg.fault_cfg.pos_error_counts = config::DEFAULT_POS_ERROR_COUNTS;
+            cfg.fault_cfg.pos_error_time_ms = config::DEFAULT_POS_ERROR_TIME_MS;
+            cfg.fault_cfg.sensor_delta_max = config::DEFAULT_SENSOR_DELTA_MAX;
+            cfg.fault_cfg.sensor_bad_count = config::DEFAULT_SENSOR_BAD_COUNT;
         });
     }
 
@@ -112,7 +136,7 @@ impl ControlTableCell {
     pub fn seed_current_bias(&self, counts: u16) {
         crate::log::debug!("seed current bias: {} counts", counts);
         // SAFETY: install-time, pre-IRQ, sole writer.
-        self.with_mut(|t| t.telemetry.intermediaries.current_bias_counts = counts);
+        self.with_mut(|t| t.telemetry.sensors.current_bias_counts = counts);
     }
 }
 
@@ -162,7 +186,7 @@ mod tests {
             table::RESPONSE_DEADLINE_US
         );
         assert_eq!(
-            config_addr::pos_limits::POS_MIN_PHYS_URAD,
+            config_addr::pos_limits::POS_MIN_PHYS_COUNTS,
             table::CONFIG_COMMON_END
         );
 
@@ -224,11 +248,11 @@ mod tests {
             by("stall_response").kind,
             FieldKind::Enum(&[
                 EnumVariant {
-                    name: "Disable",
+                    name: "Fault",
                     value: 0
                 },
                 EnumVariant {
-                    name: "Comply",
+                    name: "Yield",
                     value: 1
                 },
             ])
@@ -240,9 +264,9 @@ mod tests {
         assert!(goal.writable);
         assert_eq!((goal.min, goal.max), (None, None));
 
-        let lut = by("lut");
+        let lut = by("lut_corr");
         assert_eq!(lut.kind, FieldKind::Bytes);
-        assert_eq!(lut.width, 220);
+        assert_eq!(lut.width, 110);
     }
 
     /// Pins the profile region to its protocol sec 5.4 address pin and its
