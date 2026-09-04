@@ -8,6 +8,7 @@
 //! firmware, not imported: the descriptor cross-check test in [`regs`] and
 //! the golden vectors in [`frame`] pin the mirror to the published ABI.
 
+pub mod exp;
 pub mod fitmath;
 pub mod frame;
 pub mod regs;
