@@ -88,12 +88,13 @@ impl PotLut {
 }
 
 /// Cumulative motor phase (revs) per sample from a constant-duty sweep's
-/// current series. Slides ripple_speed over the series, integrates the
-/// per-window rev/s (drift-resistant: an occasional dropped window is
-/// interpolated across, not extrapolated from one global rate), and returns
-/// a monotonic phase. None when input is too short or a majority of windows
-/// fail the ripple confidence floor.
-pub fn cumulative_phase(current: &[f64], fs: f64, ripple_per_rev: f64) -> Option<Vec<f64>> {
+/// current series, paired with the fraction of windows that found ripple (a
+/// coverage/confidence metric in `MIN_GOOD_FRAC..=1.0`). Slides ripple_speed
+/// over the series, integrates the per-window rev/s (drift-resistant: an
+/// occasional dropped window is interpolated across, not extrapolated from one
+/// global rate), and returns a monotonic phase. None when input is too short
+/// or a majority of windows fail the ripple confidence floor.
+pub fn cumulative_phase(current: &[f64], fs: f64, ripple_per_rev: f64) -> Option<(Vec<f64>, f64)> {
     let n = current.len();
     if fs <= 0.0 || ripple_per_rev <= 0.0 {
         return None;
@@ -117,6 +118,7 @@ pub fn cumulative_phase(current: &[f64], fs: f64, ripple_per_rev: f64) -> Option
     if centers.len() < 2 || (centers.len() as f64) < MIN_GOOD_FRAC * total as f64 {
         return None;
     }
+    let good_frac = centers.len() as f64 / total as f64;
     // per-sample rev/s: linear interp across window centers, clamped at the
     // ends; cumulative-trapezoid to revs. rev/s >= 0 keeps phase monotone.
     let mut phase = Vec::with_capacity(n);
@@ -129,7 +131,7 @@ pub fn cumulative_phase(current: &[f64], fs: f64, ripple_per_rev: f64) -> Option
         phase.push(acc);
         prev = rs;
     }
-    Some(phase)
+    Some((phase, good_frac))
 }
 
 /// Build the LUT from time-aligned raw pot samples and the cumulative motor
@@ -375,8 +377,9 @@ mod tests {
     fn cumulative_phase_recovers_total_revs() {
         let n = 4000;
         let i = ripple_series(1800.0, 4.0, 3.0, n);
-        let phase = cumulative_phase(&i, FS, 6.0).expect("phase found");
+        let (phase, good) = cumulative_phase(&i, FS, 6.0).expect("phase found");
         assert_eq!(phase.len(), n);
+        assert!((MIN_GOOD_FRAC..=1.0).contains(&good), "coverage {good}");
         // monotone non-decreasing
         assert!(phase.windows(2).all(|w| w[1] >= w[0]));
         // 1800 Hz / 6 = 300 rev/s over (n-1)/fs s

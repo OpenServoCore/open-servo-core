@@ -20,12 +20,12 @@ use osc_client::Id;
 use osc_client::blocking::Client;
 use osc_client::nusb::NusbPipe;
 use osc_ident::exp::endstop::{Endstop, EndstopCfg, EndstopResult};
+use osc_ident::exp::sweep::{Sweep, SweepCfg};
 use osc_ident::exp::{Cmd, Experiment, Guarded, RigParams};
 use osc_ident::frame::{TelFrame, TelemetrySnapshot};
 use osc_ident::kinematics::{self, KinematicsResult, angle_endpoints};
 use osc_ident::lut::{self, PotLut};
 use osc_ident::regs::{calib, config, control};
-use osc_ident::ripple;
 use osc_ident::units::{self, SenseParams};
 
 use crate::rig::csvio::{OutDir, SnapshotLog};
@@ -36,9 +36,10 @@ use crate::rig::snapshot::{self, read_u16};
 /// tach and the LUT angle clock both count 6 per revolution.
 const RIPPLE_PER_REV: f64 = 6.0;
 
-/// Autocorr strength below this flags the ripple gear estimate as
-/// low-confidence in the printout (still used - expected on a stripped gear).
-const RIPPLE_CONF_MIN: f64 = 0.3;
+/// Ripple coverage (fraction of sweep windows that found ripple) below this
+/// flags the gear estimate as low-confidence in the printout - still used, as
+/// expected on a stripped gear where slip corrupts the pot displacement.
+const RIPPLE_CONF_MIN: f64 = 0.7;
 
 /// Assumed total rated travel when the operator gives no phys angle: a 0..180
 /// deg span. Only a default; every real servo overrides it.
@@ -100,7 +101,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
 
     let tel_port = (!args.tel_port.is_empty()).then(|| args.tel_port.clone());
     let out = OutDir::create(args.out.as_deref().unwrap_or(Path::new("./cal-out")))?;
-    let (r, tel) = run_endstop(&mut c, id, &out, tel_port)?;
+    let r = run_endstop(&mut c, id, &out)?;
     let EndstopResult {
         pos_min_phys,
         pos_max_phys,
@@ -113,16 +114,27 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
         if drive_polarity { "normal" } else { "reversed" },
     );
 
-    // The clean full-travel traverse = the longest monotonic-pos run of the
-    // captured frames; the pure lut/ripple fns then take it from here.
-    let sweep = build_sweep(&tel);
-    if let Some((pos, _)) = &sweep {
-        println!(
-            "[sweep] {} tel frames, monotonic run {} (fs {fs:.0} Hz from tick_hz)",
-            tel.len(),
-            pos.len()
-        );
-    }
+    // Dedicated constant-duty traverse = the ripple/LUT source: one clean
+    // uninterrupted sweep (no stall dwells, no poll fragmentation), from which
+    // build_sweep takes the longest moving run. Skipped without --tel-port.
+    let sweep = match &tel_port {
+        Some(port) => {
+            // sweep toward increasing pos; polarity maps duty sign to direction
+            let sweep_sign = if drive_polarity { 1 } else { -1 };
+            let tel = run_sweep(&mut c, id, port, sweep_sign)?;
+            let s = build_sweep(&tel);
+            match &s {
+                Some((pos, _)) => println!(
+                    "[sweep] {} tel frames, moving run {} (fs {fs:.0} Hz from tick_hz)",
+                    tel.len(),
+                    pos.len()
+                ),
+                None => println!("[sweep] {} tel frames, no usable moving run", tel.len()),
+            }
+            s
+        }
+        None => None,
+    };
 
     recenter(&mut c, id, pos_min_phys, pos_max_phys, drive_polarity)?;
 
@@ -135,15 +147,16 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     // the operator overrides. None (no sweep / low SNR / 0) keeps commit 6's
     // plain-input behavior.
     let measured = sweep.as_ref().and_then(|s| measure_gear(s, fs, dpc));
-    if let Some((centi, strength)) = measured {
-        let conf = if strength < RIPPLE_CONF_MIN {
+    if let Some((centi, coverage)) = measured {
+        let conf = if coverage < RIPPLE_CONF_MIN {
             " (low confidence)"
         } else {
             ""
         };
         println!(
-            "measured gear ratio {:.2}, ripple-derived{conf}",
-            centi as f64 / 100.0
+            "measured gear ratio {:.2}, ripple-derived ({:.0}% coverage){conf}",
+            centi as f64 / 100.0,
+            coverage * 100.0,
         );
     }
     let gear_ratio_centi = gear_ratio(args, measured.map(|(c, _)| c))?;
@@ -154,7 +167,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
         let phase = lut::cumulative_phase(current, fs, RIPPLE_PER_REV);
         let populated = phase.is_some();
         let l = match phase {
-            Some(p) => lut::build(pos, &p, pos_min_phys as u16, pos_max_phys as u16),
+            Some((p, _)) => lut::build(pos, &p, pos_min_phys as u16, pos_max_phys as u16),
             None => PotLut::identity(pos_min_phys as u16, pos_max_phys as u16),
         };
         (l, populated)
@@ -217,70 +230,64 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
 }
 
 /// Time-aligned (pos, current) sweep from the captured frames: the longest
-/// monotonic-pos run is the clean constant-duty full-travel traverse. None
-/// when no frames were captured or the run is too short to fit anything.
+/// seq-contiguous run. Splitting on seq gaps is the ONLY selection - it keeps
+/// the sample spacing uniform, which the ripple autocorr assumes. Pos is NOT
+/// required to be monotonic: the commutation ripple lives on the winding
+/// current, so a slipping stripped gear (pos jittering while the motor spins)
+/// still carries a clean signal, and lut::build sorts by pos regardless. A
+/// flat stall segment self-rejects downstream (no ripple -> None). None when
+/// nothing was captured.
 fn build_sweep(tel: &[TelFrame]) -> Option<(Vec<u16>, Vec<f64>)> {
-    if tel.is_empty() {
+    let s: Vec<(u8, u16, f64)> = tel
+        .iter()
+        .filter_map(|f| Some((f.seq, f.pos?, f.current? as f64)))
+        .collect();
+    let (lo, hi) = longest_contiguous_run(&s)?;
+    Some((
+        s[lo..hi].iter().map(|x| x.1).collect(),
+        s[lo..hi].iter().map(|x| x.2).collect(),
+    ))
+}
+
+/// Longest half-open index range `[lo, hi)` of samples whose u8 seq increments
+/// by exactly one each step (no dropped frames). None when nothing has >= 2
+/// contiguous samples.
+fn longest_contiguous_run(s: &[(u8, u16, f64)]) -> Option<(usize, usize)> {
+    if s.len() < 2 {
         return None;
     }
-    let samples: Vec<(u16, f64)> = tel
-        .iter()
-        .filter_map(|f| Some((f.pos?, f.current? as f64)))
-        .collect();
-    let (pos, current) = longest_monotonic_run(&samples);
-    (pos.len() >= 2).then_some((pos, current))
-}
-
-/// Longest run of consecutive samples whose pos is monotonic (non-decreasing
-/// OR non-increasing); equal steps keep both directions alive.
-fn longest_monotonic_run(samples: &[(u16, f64)]) -> (Vec<u16>, Vec<f64>) {
-    if samples.is_empty() {
-        return (Vec::new(), Vec::new());
-    }
-    let (mut best_lo, mut best_hi) = (0usize, 1usize);
-    let (mut inc_start, mut dec_start) = (0usize, 0usize);
-    for i in 1..samples.len() {
-        let (prev, cur) = (samples[i - 1].0, samples[i].0);
-        if cur < prev {
-            inc_start = i;
-        }
-        if cur > prev {
-            dec_start = i;
-        }
-        let inc_len = i + 1 - inc_start;
-        let dec_len = i + 1 - dec_start;
-        let (start, len) = if inc_len >= dec_len {
-            (inc_start, inc_len)
-        } else {
-            (dec_start, dec_len)
-        };
-        if len > best_hi - best_lo {
-            best_lo = start;
-            best_hi = i + 1;
+    let (mut best_lo, mut best_hi) = (0usize, 0usize);
+    let mut lo = 0usize;
+    for i in 1..s.len() {
+        if s[i].0 != s[i - 1].0.wrapping_add(1) {
+            if i - lo > best_hi - best_lo {
+                (best_lo, best_hi) = (lo, i);
+            }
+            lo = i;
         }
     }
-    let run = &samples[best_lo..best_hi];
-    (
-        run.iter().map(|s| s.0).collect(),
-        run.iter().map(|s| s.1).collect(),
-    )
+    if s.len() - lo > best_hi - best_lo {
+        (best_lo, best_hi) = (lo, s.len());
+    }
+    (best_hi - best_lo >= 2).then_some((best_lo, best_hi))
 }
 
-/// Ripple-derived gear ratio (centi) + autocorr strength from a monotonic
-/// sweep. None when the ripple SNR is too low to clock motor speed or the
-/// result degenerates to the 0 sentinel.
+/// Ripple-derived gear ratio (centi) + ripple coverage (0..1) from a sweep.
+/// Counts total motor revs by integrating the windowed ripple speed over the
+/// whole traverse (drift-resistant, no constant-velocity assumption) and
+/// divides by the output revs the pot turned through. dt cancels, so total
+/// motor revs and total pot displacement feed gear_ratio_centi directly. None
+/// when the ripple coverage is too low or the result hits the 0 sentinel.
 fn measure_gear(sweep: &(Vec<u16>, Vec<f64>), fs: f64, dpc: f64) -> Option<(u16, f64)> {
     let (pos, current) = sweep;
-    let n = pos.len();
-    if n < 2 || fs <= 0.0 {
+    if pos.len() < 2 || fs <= 0.0 {
         return None;
     }
-    let est = ripple::ripple_speed(current, fs, RIPPLE_PER_REV)?;
-    let dt = (n - 1) as f64 / fs;
-    // endpoint slope of pos vs time = output shaft speed in counts/s
-    let pot_omega_cps = ((pos[n - 1] as f64 - pos[0] as f64) / dt).abs();
-    let centi = kinematics::gear_ratio_centi(est.motor_rev_s, pot_omega_cps, dpc);
-    (centi != 0).then_some((centi, est.strength))
+    let (phase, coverage) = lut::cumulative_phase(current, fs, RIPPLE_PER_REV)?;
+    let motor_revs = phase[phase.len() - 1] - phase[0];
+    let pot_disp = (pos[pos.len() - 1] as f64 - pos[0] as f64).abs();
+    let centi = kinematics::gear_ratio_centi(motor_revs, pot_disp, dpc);
+    (centi != 0).then_some((centi, coverage))
 }
 
 /// Write the PotLutBlock: raw_min/raw_max as scalars, then the 55 corr knots
@@ -309,47 +316,20 @@ fn read_sense(c: &mut Client<NusbPipe>, id: Id) -> Result<SenseParams> {
     })
 }
 
-fn run_endstop(
-    c: &mut Client<NusbPipe>,
-    id: Id,
-    out: &OutDir,
-    tel_port: Option<String>,
-) -> Result<(EndstopResult, Vec<TelFrame>)> {
+fn run_endstop(c: &mut Client<NusbPipe>, id: Id, out: &OutDir) -> Result<EndstopResult> {
     println!("[endstop] seeking both rails (pos guard off)");
     // pos guard off: driving into the physical ends IS the method
     let params = RigParams::default().without_pos_guard();
     let mut log = SnapshotLog::create(out, "endstop_snapshots.csv")?;
     let mut exp = Guarded::new(Endstop::new(EndstopCfg::default(), &params), params);
-    let mut tel: Vec<TelFrame> = Vec::new();
-    // 0x1B = pos|current|duty|vdiff (same TEL mask as ident inertia)
-    let tel_mask: u16 = 0x1B;
-    let ran = if let Some(port) = tel_port {
-        // Endstop itself never enables TEL; wrap it so the pump streams the
-        // side-channel around the rail-to-rail seek (the second seek is a
-        // constant-duty full-travel sweep - the LUT/gear source).
-        let mut wrap = TelWrap {
-            inner: &mut exp,
-            phase: TelInject::MaskOn,
-            mask: tel_mask,
-        };
-        Pump {
-            client: c,
-            id,
-            tel_port: Some(port),
-            tel_mask,
-            log: Some(&mut log),
-        }
-        .run(&mut wrap, |frames| tel.extend_from_slice(frames))
-    } else {
-        Pump {
-            client: c,
-            id,
-            tel_port: None,
-            tel_mask: 0,
-            log: Some(&mut log),
-        }
-        .run(&mut exp, |_| {})
-    };
+    let ran = Pump {
+        client: c,
+        id,
+        tel_port: None,
+        tel_mask: 0,
+        log: Some(&mut log),
+    }
+    .run(&mut exp, |_| {});
     // park safe whether the run finished, errored, or was ctrl-c'd
     let _ = write_reg(c, id, control::GOAL_DUTY, 0);
     let _ = write_reg(c, id, control::TORQUE_ENABLE, 0);
@@ -357,11 +337,43 @@ fn run_endstop(
     if let Some(reason) = exp.abort() {
         bail!("endstop aborted by the safety envelope: {reason:?}");
     }
-    let r = exp
-        .into_inner()
+    exp.into_inner()
         .result()
-        .context("endstop did not reach both rails - no writes")?;
-    Ok((r, tel))
+        .context("endstop did not reach both rails - no writes")
+}
+
+/// One dedicated constant-duty ripple traverse, TEL captured throughout. The
+/// pump does nothing but drain the side channel during the sweep (no polls),
+/// so the traverse lands as a single long seq-contiguous run for build_sweep.
+fn run_sweep(
+    c: &mut Client<NusbPipe>,
+    id: Id,
+    port: &str,
+    sweep_sign: i8,
+) -> Result<Vec<TelFrame>> {
+    println!("[sweep] constant-duty ripple traverse");
+    let mut exp = Sweep::new(SweepCfg::default(), sweep_sign);
+    let mut tel: Vec<TelFrame> = Vec::new();
+    // 0x1B = pos|current|duty|vdiff (same TEL mask as ident inertia)
+    let tel_mask: u16 = 0x1B;
+    let mut wrap = TelWrap {
+        inner: &mut exp,
+        phase: TelInject::MaskOn,
+        mask: tel_mask,
+    };
+    let ran = Pump {
+        client: c,
+        id,
+        tel_port: Some(port.to_string()),
+        tel_mask,
+        log: None,
+    }
+    .run(&mut wrap, |frames| tel.extend_from_slice(frames));
+    // park safe whether the run finished, errored, or was ctrl-c'd
+    let _ = write_reg(c, id, control::GOAL_DUTY, 0);
+    let _ = write_reg(c, id, control::TORQUE_ENABLE, 0);
+    ran?;
+    Ok(tel)
 }
 
 /// Injects the TEL enable/mask writes around an inner experiment so the pump
@@ -595,29 +607,39 @@ mod tests {
         assert_eq!(soft_to_count(50.0, 90.0, 90.0, 100, 4000), 100);
     }
 
-    #[test]
-    fn monotonic_run_picks_longest_clean_traverse() {
-        // rising 5, a bump, then a longer falling run of 6 -> the fall wins
-        let s: Vec<(u16, f64)> = [10u16, 20, 30, 40, 50, 45, 60, 55, 44, 33, 22, 11]
-            .iter()
-            .map(|&p| (p, p as f64))
-            .collect();
-        let (pos, cur) = longest_monotonic_run(&s);
-        assert_eq!(pos, vec![60, 55, 44, 33, 22, 11]);
-        assert_eq!(cur.len(), pos.len());
+    /// Contiguous-seq samples from a pos list (current = pos for simplicity).
+    fn seqd(pos: &[u16]) -> Vec<(u8, u16, f64)> {
+        pos.iter()
+            .enumerate()
+            .map(|(i, &p)| (i as u8, p, p as f64))
+            .collect()
     }
 
     #[test]
-    fn monotonic_run_allows_equal_steps() {
-        let s: Vec<(u16, f64)> = [1u16, 1, 2, 2, 3, 3].iter().map(|&p| (p, 0.0)).collect();
-        let (pos, _) = longest_monotonic_run(&s);
-        assert_eq!(pos, vec![1, 1, 2, 2, 3, 3]);
+    fn contiguous_run_splits_on_seq_gap_and_picks_longest() {
+        // 30 samples, seq gap at index 20: the longer half [0,20) wins, and
+        // pos need not be monotonic (slip is fine - current carries ripple).
+        let mut s = seqd(&(0..30).map(|k| 1000 + (k % 3) * 10).collect::<Vec<_>>());
+        for e in s.iter_mut().skip(20) {
+            e.0 = e.0.wrapping_add(7); // punch a seq discontinuity at 20
+        }
+        assert_eq!(longest_contiguous_run(&s), Some((0, 20)));
     }
 
     #[test]
-    fn monotonic_run_empty_and_single() {
-        assert_eq!(longest_monotonic_run(&[]), (Vec::new(), Vec::new()));
-        assert_eq!(longest_monotonic_run(&[(7, 1.0)]), (vec![7], vec![1.0]));
+    fn contiguous_run_seq_wraps_cleanly() {
+        // u8 seq wrapping 255->0 mid-run stays contiguous.
+        let mut s = seqd(&[10u16; 6]);
+        for (i, e) in s.iter_mut().enumerate() {
+            e.0 = (253u8).wrapping_add(i as u8); // 253,254,255,0,1,2
+        }
+        assert_eq!(longest_contiguous_run(&s), Some((0, 6)));
+    }
+
+    #[test]
+    fn contiguous_run_none_when_too_short() {
+        assert!(longest_contiguous_run(&[]).is_none());
+        assert!(longest_contiguous_run(&seqd(&[7])).is_none());
     }
 
     #[test]
