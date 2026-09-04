@@ -529,27 +529,54 @@ fn soft_angles(args: &Args, phys_min: f64, phys_max: f64) -> Result<(f64, f64)> 
     Ok((min, max))
 }
 
-/// Gear ratio as centi (x100); 0 is the firmware "unset" sentinel. `measured`
-/// (ripple-derived) is the measure-first default: under `--yes` it becomes the
-/// value with no prompt; interactively it is the prompt's default the operator
-/// can override. None keeps commit 6's plain-input behavior.
+/// Gear ratio as centi (x100); 0 is the firmware "unset" sentinel. Precedence:
+/// an explicit `--gear-ratio` flag wins, else the ripple-`measured` value, else
+/// the interactive prompt / unset(0). The flag wins because the bench ratio is
+/// a known counted constant; the ripple value is only a cross-check. Under
+/// `--yes` the winner is stored with no prompt; interactively it seeds the
+/// prompt's default, which the operator can still override. Whenever a flag and
+/// a measured value are both present and diverge by >10%, warn (the flag still
+/// wins) - divergence flags a wrong travel angle, gear slip, or wrong
+/// ripple-per-rev.
 fn gear_ratio(args: &Args, measured: Option<u16>) -> Result<u16> {
-    if args.yes {
-        return Ok(measured.unwrap_or_else(|| ratio_to_centi(args.gear_ratio)));
+    if let (Some(g), Some(m)) = (args.gear_ratio, measured) {
+        let entered_centi = ratio_to_centi(Some(g));
+        if gear_divergent(entered_centi, m, 0.1) {
+            eprintln!(
+                "warning: entered gear ratio {:.2} diverges from ripple-measured {:.2} by >10% - can indicate a wrong travel angle, gear slip, or wrong ripple-per-rev",
+                entered_centi as f64 / 100.0,
+                m as f64 / 100.0,
+            );
+        }
     }
-    let ratio = if let Some(m) = measured {
-        Some(input_f64(
-            "gear ratio (motor rev per output rev)",
-            m as f64 / 100.0,
-        )?)
-    } else if let Some(g) = args.gear_ratio {
-        Some(input_f64("gear ratio (motor rev per output rev)", g)?)
+    if args.yes {
+        return Ok(match args.gear_ratio {
+            Some(_) => ratio_to_centi(args.gear_ratio),
+            None => measured.unwrap_or(0),
+        });
+    }
+    // interactive default: flag > measured > known-ratio prompt path
+    let default = args
+        .gear_ratio
+        .or_else(|| measured.map(|m| m as f64 / 100.0));
+    let ratio = if let Some(d) = default {
+        Some(input_f64("gear ratio (motor rev per output rev)", d)?)
     } else if confirm("enter a known gear ratio", false)? {
         Some(input_f64("gear ratio (motor rev per output rev)", 1.0)?)
     } else {
         None
     };
     Ok(ratio_to_centi(ratio))
+}
+
+/// True when the ripple-`measured_centi` gear ratio diverges from the operator-
+/// entered `entered_centi` by more than `frac` (relative). entered_centi==0
+/// (flag unset or invalid) can never diverge.
+fn gear_divergent(entered_centi: u16, measured_centi: u16, frac: f64) -> bool {
+    if entered_centi == 0 {
+        return false;
+    }
+    ((measured_centi as f64 / entered_centi as f64) - 1.0).abs() > frac
 }
 
 fn ratio_to_centi(ratio: Option<f64>) -> u16 {
@@ -645,6 +672,45 @@ mod tests {
     #[test]
     fn build_sweep_none_without_frames() {
         assert!(build_sweep(&[]).is_none());
+    }
+
+    /// `--yes` Args with the given gear-ratio flag; other fields unset.
+    fn yes_args(gear_ratio: Option<f64>) -> Args {
+        Args {
+            out: None,
+            phys_angle_min: None,
+            phys_angle_max: None,
+            soft_angle_min: None,
+            soft_angle_max: None,
+            gear_ratio,
+            tel_port: String::new(),
+            yes: true,
+        }
+    }
+
+    #[test]
+    fn gear_divergent_relative_threshold_and_zero_safe() {
+        // 234.73 counted vs a >10% off ripple value -> divergent
+        assert!(gear_divergent(23473, 30000, 0.1));
+        // within 10% -> not divergent
+        assert!(!gear_divergent(23473, 24000, 0.1));
+        assert!(!gear_divergent(10000, 10500, 0.1));
+        assert!(gear_divergent(10000, 11500, 0.1));
+        // entered unset -> never diverges (no divide by zero)
+        assert!(!gear_divergent(0, 30000, 0.1));
+    }
+
+    #[test]
+    fn gear_ratio_yes_flag_wins_over_measured() {
+        // flag present -> flag wins even when measured is Some and different
+        assert_eq!(
+            gear_ratio(&yes_args(Some(234.73)), Some(30000)).unwrap(),
+            23473
+        );
+        // flag absent -> measured used
+        assert_eq!(gear_ratio(&yes_args(None), Some(30000)).unwrap(), 30000);
+        // neither -> 0 sentinel
+        assert_eq!(gear_ratio(&yes_args(None), None).unwrap(), 0);
     }
 
     #[test]
