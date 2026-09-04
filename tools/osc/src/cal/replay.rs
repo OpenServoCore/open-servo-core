@@ -12,9 +12,9 @@
 
 use anyhow::{Context, Result, bail};
 use osc_ident::frame::{TelDeframer, TelFrame};
-use osc_ident::lut::{self, PotLut};
+use osc_ident::lut::{self, build_multi, stitched_motor_revs};
 
-use super::{RIPPLE_PER_REV, build_sweep, full_motor_revs, pos_plausible};
+use super::{RIPPLE_PER_REV, build_sweep, build_sweep_chunks, pos_plausible};
 
 /// A pos delta larger than this across two truly-consecutive samples is
 /// physically impossible at the sweep sample rate (the capture traverses at a
@@ -127,6 +127,8 @@ pub fn run(args: &Args) -> Result<()> {
     let raw_max = args.raw_max.or(obs_max).unwrap_or(0);
 
     let sweep = build_sweep(&frames);
+    let chunks = build_sweep_chunks(&frames);
+    let chunk_samples: usize = chunks.iter().map(|(pos, _)| pos.len()).sum();
     let run_len = sweep.as_ref().map(|(pos, _)| pos.len()).unwrap_or(0);
     let run_cov = sweep
         .as_ref()
@@ -163,47 +165,45 @@ pub fn run(args: &Args) -> Result<()> {
         "longest run:       {run_len} samples, span coverage {:.0}% of rails {raw_min}..{raw_max}",
         run_cov * 100.0
     );
+    println!(
+        "chunks:            {} (samples total {chunk_samples})",
+        chunks.len()
+    );
     println!("verdict:           {verdict}");
 
     println!("--- pipeline replay ---");
-    match sweep.as_ref() {
-        Some(s) => {
-            let (pos, current) = s;
-            println!("moving run: {} samples", pos.len());
-            let phase = lut::cumulative_phase(current, args.fs, RIPPLE_PER_REV);
-            match &phase {
-                Some((_, good)) => println!("ripple coverage: {:.0}%", good * 100.0),
-                None => println!("ripple coverage: none (SNR too low or run too short)"),
-            }
-            let count_span = raw_max as f64 - raw_min as f64;
-            match full_motor_revs(s, args.fs, count_span) {
-                Some((m, cov)) => println!(
-                    "motor revs (full travel): {m:.2} (ripple coverage {:.0}%)",
-                    cov * 100.0
-                ),
-                None => println!("motor revs (full travel): unavailable"),
-            }
-            // same LUT summary logic/wording as cal::run
-            let phase_found = phase.is_some();
-            let l = match &phase {
-                Some((p, _)) => lut::build(pos, p, raw_min, raw_max),
-                None => PotLut::identity(raw_min, raw_max),
-            };
-            let populated = l.corr.iter().any(|&c| c != 0);
-            let cov = lut::span_coverage(pos, raw_min, raw_max);
-            if populated {
-                let maxc = l.corr.iter().map(|&c| c.unsigned_abs()).max().unwrap_or(0);
-                println!("pot LUT: populated, max |corr| {maxc} counts");
-            } else if !phase_found {
-                println!("pot LUT: identity (ripple SNR too low)");
-            } else {
-                println!(
-                    "pot LUT: identity (sweep covered only {:.0}% of travel)",
-                    cov * 100.0
-                );
-            }
+    if chunks.is_empty() {
+        println!("no usable chunks");
+    } else {
+        println!(
+            "stitching {} chunks ({chunk_samples} samples)",
+            chunks.len()
+        );
+        match stitched_motor_revs(&chunks, args.fs, RIPPLE_PER_REV, raw_min, raw_max) {
+            Some((m, cov)) => println!(
+                "motor revs (full travel): {m:.2} (stitched coverage {:.0}%)",
+                cov * 100.0
+            ),
+            None => println!("motor revs (full travel): unavailable"),
         }
-        None => println!("no usable moving run"),
+        // same LUT summary wording as cal::run; build_multi decides populated vs
+        // identity (stitched coverage / ripple SNR) internally.
+        let l = build_multi(&chunks, args.fs, RIPPLE_PER_REV, raw_min, raw_max);
+        let populated = l.corr.iter().any(|&c| c != 0);
+        if populated {
+            let maxc = l.corr.iter().map(|&c| c.unsigned_abs()).max().unwrap_or(0);
+            println!("pot LUT: populated, max |corr| {maxc} counts");
+        } else {
+            let all_pos: Vec<u16> = chunks
+                .iter()
+                .flat_map(|(pos, _)| pos.iter().copied())
+                .collect();
+            let cov = lut::span_coverage(&all_pos, raw_min, raw_max);
+            println!(
+                "pot LUT: identity (stitched coverage {:.0}% of travel)",
+                cov * 100.0
+            );
+        }
     }
     Ok(())
 }

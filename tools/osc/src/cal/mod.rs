@@ -26,7 +26,7 @@ use osc_ident::exp::sweep::{Sweep, SweepCfg};
 use osc_ident::exp::{Cmd, Experiment, Guarded, RigParams};
 use osc_ident::frame::{TelFrame, TelemetrySnapshot};
 use osc_ident::kinematics::{self, KinematicsResult, angle_endpoints};
-use osc_ident::lut::{self, PotLut};
+use osc_ident::lut::{self, PotLut, build_multi, stitched_motor_revs};
 use osc_ident::regs::{calib, config, control};
 use osc_ident::slip;
 use osc_ident::units::{self, SenseParams};
@@ -117,10 +117,12 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
         if drive_polarity { "normal" } else { "reversed" },
     );
 
-    // Dedicated constant-duty traverse = the ripple/LUT source: one clean
-    // uninterrupted sweep (no stall dwells, no poll fragmentation), from which
-    // build_sweep takes the longest moving run. Skipped without --tel-port.
-    let sweep = match &tel_port {
+    // Dedicated constant-duty traverse = the ripple/LUT source. A real capture
+    // fragments into several clean chunks (poll seams, brief dropouts), so the
+    // LUT + anchor stitch ALL chunks (build_sweep_chunks) over the shared pos
+    // axis; the single longest run (build_sweep) is kept only for the slip
+    // health-check and the moving-run print. Skipped without --tel-port.
+    let (sweep, chunks) = match &tel_port {
         Some(port) => {
             let tel = run_sweep(
                 &mut c,
@@ -132,6 +134,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
                 &out,
             )?;
             let s = build_sweep(&tel);
+            let chunks = build_sweep_chunks(&tel);
             match &s {
                 Some((pos, _)) => println!(
                     "[sweep] {} tel frames, moving run {} (fs {fs:.0} Hz from tick_hz)",
@@ -140,23 +143,34 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
                 ),
                 None => println!("[sweep] {} tel frames, no usable moving run", tel.len()),
             }
-            s
+            (s, chunks)
         }
-        None => None,
+        None => (None, Vec::new()),
     };
 
     recenter(&mut c, id, pos_min_phys, pos_max_phys, drive_polarity)?;
 
     // Full-traverse motor revs from the ripple sweep: anchor-free geometry,
-    // extrapolated from the moving run's phase span to the whole count span.
-    // Paired with a gear ratio it yields travel; paired with a travel angle it
-    // yields the gear. Both anchors consume this same ripple half.
-    let count_span = pos_max_phys as f64 - pos_min_phys as f64;
-    let motor_revs_full = sweep
-        .as_ref()
-        .and_then(|s| full_motor_revs(s, fs, count_span));
+    // stitched over all chunks and extrapolated from the covered phase span to
+    // the whole rail count span. Paired with a gear ratio it yields travel;
+    // paired with a travel angle it yields the gear. Both anchors consume this
+    // same ripple half. Empty chunks (no --tel-port) -> None.
+    let motor_revs_full = stitched_motor_revs(
+        &chunks,
+        fs,
+        RIPPLE_PER_REV,
+        pos_min_phys as u16,
+        pos_max_phys as u16,
+    );
     let mrf = motor_revs_full.map(|(m, _)| m);
     let coverage = motor_revs_full.map(|(_, c)| c);
+    if tel_port.is_some() {
+        println!(
+            "[sweep] {} clean chunks, stitched coverage {:.0}%",
+            chunks.len(),
+            coverage.unwrap_or(0.0) * 100.0
+        );
+    }
 
     // Resolve the anchor: gear is preferred, travel is the fallback. --yes stays
     // headless through the pure resolve_anchor; interactively the operator
@@ -178,31 +192,29 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     let (angle_min_cdeg, angle_max_cdeg) = angle_endpoints(phys_min, phys_max);
     let dpc = kinematics::deg_per_count(angle_min_cdeg, angle_max_cdeg, pos_min_phys, pos_max_phys);
 
-    // pot LUT from the same sweep; identity when the ripple SNR is too low to
-    // clock true angle. No sweep at all -> None, LUT left untouched below.
-    let lut = sweep.as_ref().map(|(pos, current)| {
-        let (raw_min, raw_max) = (pos_min_phys as u16, pos_max_phys as u16);
-        let phase = lut::cumulative_phase(current, fs, RIPPLE_PER_REV);
-        let phase_found = phase.is_some();
-        let l = match phase {
-            Some((p, _)) => lut::build(pos, &p, raw_min, raw_max),
-            None => PotLut::identity(raw_min, raw_max),
-        };
-        // build may return identity even with a phase (low span coverage), so
-        // read populated off the result, not phase.is_some().
+    // pot LUT stitched from all chunks; identity when the stitched coverage is
+    // too low (or the ripple SNR is too low to clock true angle) - build_multi
+    // decides internally and returns identity in either case. No chunks at all
+    // (no --tel-port) -> None, LUT left untouched below.
+    let lut = (!chunks.is_empty()).then(|| {
+        let l = build_multi(
+            &chunks,
+            fs,
+            RIPPLE_PER_REV,
+            pos_min_phys as u16,
+            pos_max_phys as u16,
+        );
         let populated = l.corr.iter().any(|&c| c != 0);
-        let coverage = lut::span_coverage(pos, raw_min, raw_max);
-        (l, phase_found, populated, coverage)
+        (l, populated)
     });
     match &lut {
-        Some((l, _, true, _)) => {
+        Some((l, true)) => {
             let maxc = l.corr.iter().map(|&c| c.unsigned_abs()).max().unwrap_or(0);
             println!("pot LUT: populated, max |corr| {maxc} counts");
         }
-        Some((_, false, _, _)) => println!("pot LUT: identity (ripple SNR too low)"),
-        Some((_, true, false, coverage)) => println!(
-            "pot LUT: identity (sweep covered only {:.0}% of travel)",
-            coverage * 100.0
+        Some((_, false)) => println!(
+            "pot LUT: identity (stitched coverage {:.0}% of travel)",
+            coverage.unwrap_or(0.0) * 100.0
         ),
         None => {}
     }
@@ -308,6 +320,50 @@ fn build_sweep(tel: &[TelFrame]) -> Option<(Vec<u16>, Vec<f64>)> {
     ))
 }
 
+/// A chunk shorter than this is too short to carry usable ripple and is almost
+/// certainly a corruption fragment, so it is dropped from the stitch.
+const MIN_CHUNK_SAMPLES: usize = 200;
+
+/// ALL clean sweep chunks (not just the longest): each maximal run of
+/// seq-contiguous, in-range (pos<=4095) frames, as (pos, current). Chunks
+/// shorter than MIN_CHUNK_SAMPLES are dropped as corruption fragments. The
+/// stitch (lut::build_multi) reassembles them over the shared pos axis.
+pub(super) fn build_sweep_chunks(tel: &[TelFrame]) -> Vec<(Vec<u16>, Vec<f64>)> {
+    // Same filter as build_sweep: a dropped (corrupt/absent) frame removes its
+    // seq, so the run splits there just as a seq gap would.
+    let s: Vec<(u8, u16, f64)> = tel
+        .iter()
+        .filter_map(|f| {
+            let pos = f.pos?;
+            pos_plausible(pos).then_some((f.seq, pos, f.current? as f64))
+        })
+        .collect();
+    let mut chunks = Vec::new();
+    if s.is_empty() {
+        return chunks;
+    }
+    let mut lo = 0usize;
+    for i in 1..s.len() {
+        if s[i].0 != s[i - 1].0.wrapping_add(1) {
+            emit_chunk(&s[lo..i], &mut chunks);
+            lo = i;
+        }
+    }
+    emit_chunk(&s[lo..], &mut chunks);
+    chunks
+}
+
+/// Push one maximal seq-contiguous run as a (pos, current) chunk, dropping it
+/// when shorter than MIN_CHUNK_SAMPLES.
+fn emit_chunk(run: &[(u8, u16, f64)], chunks: &mut Vec<(Vec<u16>, Vec<f64>)>) {
+    if run.len() >= MIN_CHUNK_SAMPLES {
+        chunks.push((
+            run.iter().map(|x| x.1).collect(),
+            run.iter().map(|x| x.2).collect(),
+        ));
+    }
+}
+
 /// Longest half-open index range `[lo, hi)` of samples whose u8 seq increments
 /// by exactly one each step (no dropped frames). None when nothing has >= 2
 /// contiguous samples.
@@ -329,24 +385,6 @@ fn longest_contiguous_run(s: &[(u8, u16, f64)]) -> Option<(usize, usize)> {
         (best_lo, best_hi) = (lo, s.len());
     }
     (best_hi - best_lo >= 2).then_some((best_lo, best_hi))
-}
-
-/// Full-traverse motor revs + ripple coverage (0..1) from a sweep. Counts motor
-/// revs over the moving run by integrating the windowed ripple speed (drift-
-/// resistant, no constant-velocity assumption), then extrapolates to the whole
-/// rail-to-rail count span. This is the ripple half shared by both anchors: a
-/// gear ratio turns it into travel, a travel angle turns it into the gear. None
-/// when the ripple coverage is too low or the extrapolation hits the 0 sentinel.
-fn full_motor_revs(sweep: &(Vec<u16>, Vec<f64>), fs: f64, count_span: f64) -> Option<(f64, f64)> {
-    let (pos, current) = sweep;
-    if pos.len() < 2 || fs <= 0.0 {
-        return None;
-    }
-    let (phase, coverage) = lut::cumulative_phase(current, fs, RIPPLE_PER_REV)?;
-    let motor_revs = phase[phase.len() - 1] - phase[0];
-    let pot_disp = (pos[pos.len() - 1] as f64 - pos[0] as f64).abs();
-    let full = kinematics::full_span_motor_revs(motor_revs, pot_disp, count_span);
-    (full != 0.0).then_some((full, coverage))
 }
 
 /// Write the PotLutBlock: raw_min/raw_max as scalars, then the 55 corr knots
@@ -986,6 +1024,35 @@ mod tests {
         assert!(!pos.contains(&9999));
         assert_eq!(pos, vec![1000, 1001, 1002, 1003, 1004]);
         assert_eq!(current.len(), pos.len());
+    }
+
+    #[test]
+    fn build_sweep_chunks_keeps_big_runs_drops_fragments() {
+        // seq = index (u8, wraps cleanly), pos in-range except at two split
+        // points. Run A = 250, run B = 300 (both >= MIN_CHUNK_SAMPLES), and a
+        // trailing 50-sample fragment (< MIN_CHUNK_SAMPLES) is dropped.
+        let mut frames: Vec<TelFrame> = (0..602u32)
+            .map(|i| TelFrame {
+                seq: i as u8,
+                pos: Some(1000 + (i % 3) as u16),
+                current: Some(50),
+                ..Default::default()
+            })
+            .collect();
+        frames[250].pos = Some(9999); // splits run A | run B
+        frames[551].pos = Some(9999); // splits run B | tiny fragment
+        let chunks = build_sweep_chunks(&frames);
+        assert_eq!(chunks.len(), 2, "exactly the two big chunks survive");
+        assert_eq!(chunks[0].0.len(), 250);
+        assert_eq!(chunks[1].0.len(), 300);
+        // current vec length tracks pos in each chunk
+        assert_eq!(chunks[0].1.len(), 250);
+        assert_eq!(chunks[1].1.len(), 300);
+    }
+
+    #[test]
+    fn build_sweep_chunks_empty_without_frames() {
+        assert!(build_sweep_chunks(&[]).is_empty());
     }
 
     #[test]
