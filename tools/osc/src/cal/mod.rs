@@ -164,20 +164,29 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     // pot LUT from the same sweep; identity when the ripple SNR is too low to
     // clock true angle. No sweep at all -> None, LUT left untouched below.
     let lut = sweep.as_ref().map(|(pos, current)| {
+        let (raw_min, raw_max) = (pos_min_phys as u16, pos_max_phys as u16);
         let phase = lut::cumulative_phase(current, fs, RIPPLE_PER_REV);
-        let populated = phase.is_some();
+        let phase_found = phase.is_some();
         let l = match phase {
-            Some((p, _)) => lut::build(pos, &p, pos_min_phys as u16, pos_max_phys as u16),
-            None => PotLut::identity(pos_min_phys as u16, pos_max_phys as u16),
+            Some((p, _)) => lut::build(pos, &p, raw_min, raw_max),
+            None => PotLut::identity(raw_min, raw_max),
         };
-        (l, populated)
+        // build may return identity even with a phase (low span coverage), so
+        // read populated off the result, not phase.is_some().
+        let populated = l.corr.iter().any(|&c| c != 0);
+        let coverage = lut::span_coverage(pos, raw_min, raw_max);
+        (l, phase_found, populated, coverage)
     });
     match &lut {
-        Some((l, true)) => {
+        Some((l, _, true, _)) => {
             let maxc = l.corr.iter().map(|&c| c.unsigned_abs()).max().unwrap_or(0);
             println!("pot LUT: populated, max |corr| {maxc} counts");
         }
-        Some((_, false)) => println!("pot LUT: identity (ripple SNR too low)"),
+        Some((_, false, _, _)) => println!("pot LUT: identity (ripple SNR too low)"),
+        Some((_, true, false, coverage)) => println!(
+            "pot LUT: identity (sweep covered only {:.0}% of travel)",
+            coverage * 100.0
+        ),
         None => {}
     }
 
@@ -218,7 +227,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     write_reg(&mut c, id, calib::ANGLE_MAX_CDEG, angle_max_cdeg as i32)?;
     write_reg(&mut c, id, calib::GEAR_RATIO_CENTI, gear_ratio_centi as i32)?;
 
-    if let Some((l, _)) = &lut {
+    if let Some((l, ..)) = &lut {
         write_pot_lut(&mut c, id, l)?;
     }
 
