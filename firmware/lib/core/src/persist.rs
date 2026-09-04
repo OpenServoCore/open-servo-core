@@ -14,24 +14,38 @@
 //! The CRC sits in the header (not the tail) so every segment is a whole
 //! number of words -- the flash provider streams header/config/profile
 //! straight into the page buffer with no byte packing and no staging copy.
+//!
+//! The CALIB region persists as its own image (same header layout, magic
+//! `b'K'`, own version and A/B seq): body = the raw 256 B region, so the
+//! 264 B image spans two pages per slot. Separate images keep the two
+//! save/version cadences independent -- identification rewrites calib
+//! without touching config, and a config layout bump does not orphan a
+//! stored calibration.
 
 use control_table::RegisterMap;
 use osc_protocol::crc::{osc_crc, osc_crc_continue};
 
 use crate::ControlTableCell;
 use crate::regions::{
-    CONFIG_BASE_ADDR, CONFIG_REGION_SIZE, PROFILE_BASE_ADDR, PROFILE_REGION_SIZE, config,
+    CALIB_BASE_ADDR, CALIB_REGION_SIZE, CONFIG_BASE_ADDR, CONFIG_REGION_SIZE, PROFILE_BASE_ADDR,
+    PROFILE_REGION_SIZE, config,
 };
 
 pub const CONFIG_LEN: usize = CONFIG_REGION_SIZE as usize;
 pub const PROFILE_LEN: usize = PROFILE_REGION_SIZE as usize;
+pub const CALIB_LEN: usize = CALIB_REGION_SIZE as usize;
 pub const HEADER_LEN: usize = 8;
 pub const IMAGE_LEN: usize = HEADER_LEN + CONFIG_LEN + PROFILE_LEN;
+pub const CALIB_IMAGE_LEN: usize = HEADER_LEN + CALIB_LEN;
 
 pub const IMAGE_MAGIC: u8 = b'C';
 /// Bump on any CONFIG/PROFILE layout change; a mismatched image is ignored
 /// (boot keeps board defaults) rather than migrated.
 pub const IMAGE_VERSION: u8 = 2;
+
+pub const CALIB_IMAGE_MAGIC: u8 = b'K';
+/// Bump on any CALIB layout change; independent of [`IMAGE_VERSION`].
+pub const CALIB_IMAGE_VERSION: u8 = 1;
 
 /// Store failure (erase/program/verify); dispatch answers `hardware` (sec 5.3).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -75,6 +89,22 @@ pub struct BootPick {
     pub next_seq: u16,
     /// A valid image was found and overlaid (false = board defaults stand).
     pub loaded: bool,
+}
+
+/// Wrapping-newest of two validated slot images: the winner overlays, the
+/// loser's slot takes the next SAVE.
+fn pick_newest<T>(a: Option<T>, b: Option<T>, seq: impl Fn(&T) -> u16) -> (Option<T>, Slot) {
+    match (a, b) {
+        (Some(a), Some(b)) => {
+            if (seq(&a).wrapping_sub(seq(&b)) as i16) > 0 {
+                (Some(a), Slot::B)
+            } else {
+                (Some(b), Slot::A)
+            }
+        }
+        (Some(a), None) => (Some(a), Slot::B),
+        (None, b) => (b, Slot::A),
+    }
 }
 
 /// Build the 8-byte header for an image whose body is `config ++ profile`.
@@ -164,6 +194,72 @@ impl<'a> Image<'a> {
     }
 }
 
+/// Build the 8-byte header for a calib image (body = the raw CALIB region).
+pub fn calib_header(seq: u16, calib: &[u8; CALIB_LEN]) -> [u8; HEADER_LEN] {
+    let mut h = [0u8; HEADER_LEN];
+    h[0] = CALIB_IMAGE_MAGIC;
+    h[1] = CALIB_IMAGE_VERSION;
+    h[2..4].copy_from_slice(&seq.to_le_bytes());
+    h[4..6].copy_from_slice(&(CALIB_LEN as u16).to_le_bytes());
+    let crc = osc_crc_continue(osc_crc(&h[..6]), calib);
+    h[6..8].copy_from_slice(&crc.to_le_bytes());
+    h
+}
+
+/// Assemble a whole calib image in RAM -- hosts, fakes, and tests; the chip
+/// provider streams header + region across its two pages instead.
+pub fn calib_assemble(out: &mut [u8; CALIB_IMAGE_LEN], seq: u16, calib: &[u8; CALIB_LEN]) {
+    out[..HEADER_LEN].copy_from_slice(&calib_header(seq, calib));
+    out[HEADER_LEN..].copy_from_slice(calib);
+}
+
+/// A validated stored calib image; the region ref borrows the slot bytes.
+pub struct CalibImage<'a> {
+    pub seq: u16,
+    pub calib: &'a [u8; CALIB_LEN],
+}
+
+impl<'a> CalibImage<'a> {
+    /// Validate a slot (extra bytes past `CALIB_IMAGE_LEN` -- the rest of the
+    /// second page -- are ignored). Same gates as [`Image::parse`]; the
+    /// allowed-rules pass covers CALIB enum/bool fields if any are ever
+    /// added (today the region carries none, so it is vacuously true).
+    pub fn parse(slot: &'a [u8]) -> Option<CalibImage<'a>> {
+        let bytes = slot.get(..CALIB_IMAGE_LEN)?;
+        if bytes[0] != CALIB_IMAGE_MAGIC || bytes[1] != CALIB_IMAGE_VERSION {
+            return None;
+        }
+        let seq = u16::from_le_bytes([bytes[2], bytes[3]]);
+        if u16::from_le_bytes([bytes[4], bytes[5]]) != CALIB_LEN as u16 {
+            return None;
+        }
+        let crc = u16::from_le_bytes([bytes[6], bytes[7]]);
+        if osc_crc_continue(osc_crc(&bytes[..6]), &bytes[HEADER_LEN..]) != crc {
+            return None;
+        }
+        let img = CalibImage {
+            seq,
+            calib: bytes[HEADER_LEN..].try_into().ok()?,
+        };
+        img.fields_allowed().then_some(img)
+    }
+
+    fn fields_allowed(&self) -> bool {
+        <ControlTableCell as RegisterMap>::ALLOWED_RULES
+            .iter()
+            .all(|r| match self.persisted_byte(r.addr) {
+                Some(b) => r.allowed.contains(&b),
+                None => true,
+            })
+    }
+
+    fn persisted_byte(&self, addr: u16) -> Option<u8> {
+        (CALIB_BASE_ADDR..CALIB_BASE_ADDR + CALIB_REGION_SIZE)
+            .contains(&addr)
+            .then(|| self.calib[(addr - CALIB_BASE_ADDR) as usize])
+    }
+}
+
 impl ControlTableCell {
     /// Overlay a validated image onto the live table -- raw byte copy,
     /// deliberately bypassing ro masks and field rules (`Image::parse`
@@ -190,28 +286,56 @@ impl ControlTableCell {
             );
         }
     }
+
+    /// Overlay a validated calib image -- whole region, nothing skipped: every
+    /// field is data. RO board facts (the `CalibSense` block) must be
+    /// re-seeded by install AFTER this overlay so board data always wins over
+    /// a stale image. Bringup-only, pre-IRQ; sole writer.
+    pub fn overlay_persistent_calib(&self, calib: &[u8; CALIB_LEN]) {
+        let base = RegisterMap::base(self);
+        // SAFETY: base points at the flat map (RegisterMap contract), the
+        // region lies inside it, and the fn doc pins the sole-writer window.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                calib.as_ptr(),
+                base.add(CALIB_BASE_ADDR as usize),
+                CALIB_LEN,
+            );
+        }
+    }
 }
 
 /// Boot-time load: parse both slots, overlay the wrapping-newest valid image
 /// (board defaults, already seeded, stand when neither validates), and hand
 /// back the store state for the impl. Bringup-only, pre-IRQ.
 pub fn boot_overlay(table: &ControlTableCell, slot_a: &[u8], slot_b: &[u8]) -> BootPick {
-    let a = Image::parse(slot_a);
-    let b = Image::parse(slot_b);
-    let (img, next_slot) = match (a, b) {
-        (Some(a), Some(b)) => {
-            if (a.seq.wrapping_sub(b.seq) as i16) > 0 {
-                (Some(a), Slot::B)
-            } else {
-                (Some(b), Slot::A)
-            }
-        }
-        (Some(a), None) => (Some(a), Slot::B),
-        (None, b) => (b, Slot::A),
-    };
+    let (img, next_slot) = pick_newest(Image::parse(slot_a), Image::parse(slot_b), |i| i.seq);
     match img {
         Some(img) => {
             table.overlay_persistent(img.config, img.profile);
+            BootPick {
+                next_slot,
+                next_seq: img.seq.wrapping_add(1),
+                loaded: true,
+            }
+        }
+        None => BootPick {
+            next_slot: Slot::A,
+            next_seq: 1,
+            loaded: false,
+        },
+    }
+}
+
+/// Boot-time calib load: same A/B rule as [`boot_overlay`], own slots and
+/// seq. Bringup-only, pre-IRQ; caller re-seeds RO board facts after.
+pub fn boot_overlay_calib(table: &ControlTableCell, slot_a: &[u8], slot_b: &[u8]) -> BootPick {
+    let (img, next_slot) = pick_newest(CalibImage::parse(slot_a), CalibImage::parse(slot_b), |i| {
+        i.seq
+    });
+    match img {
+        Some(img) => {
+            table.overlay_persistent_calib(img.calib);
             BootPick {
                 next_slot,
                 next_seq: img.seq.wrapping_add(1),
@@ -371,6 +495,133 @@ mod tests {
         // identity stands.
         assert_eq!(table.with(|t| t.config.common.model_number), 0x1234);
         assert_eq!(table.with(|t| t.config.common.id), 7, "comms overlaid");
+    }
+
+    fn calib_body() -> [u8; CALIB_LEN] {
+        use crate::regions::calib::addr;
+        let mut calib = [0u8; CALIB_LEN];
+        calib[(addr::sense::TICK_HZ - CALIB_BASE_ADDR) as usize] = 0x20;
+        calib[(addr::motor::R_Q12 - CALIB_BASE_ADDR) as usize..][..2]
+            .copy_from_slice(&13800u16.to_le_bytes());
+        calib[0] = 0xAA;
+        calib[CALIB_LEN - 1] = 0x55;
+        calib
+    }
+
+    fn calib_image_of(seq: u16) -> [u8; CALIB_IMAGE_LEN] {
+        let mut img = [0u8; CALIB_IMAGE_LEN];
+        calib_assemble(&mut img, seq, &calib_body());
+        img
+    }
+
+    #[test]
+    fn calib_image_round_trips() {
+        let img = calib_image_of(9);
+        let parsed = CalibImage::parse(&img).expect("valid image");
+        assert_eq!(parsed.seq, 9);
+        assert_eq!(parsed.calib, &calib_body());
+    }
+
+    #[test]
+    fn calib_parse_rejects_each_gate() {
+        let img = calib_image_of(1);
+        assert!(
+            CalibImage::parse(&img[..CALIB_IMAGE_LEN - 1]).is_none(),
+            "short slot"
+        );
+        for (i, name) in [(0, "magic"), (1, "version"), (4, "len"), (6, "crc")] {
+            let mut bad = img;
+            bad[i] ^= 0x01;
+            assert!(CalibImage::parse(&bad).is_none(), "{name} must gate");
+        }
+        // A config image in a calib slot fails on magic, not by accident.
+        assert!(CalibImage::parse(&image_of(1)).is_none());
+        assert!(CalibImage::parse(&[0xFF; CALIB_IMAGE_LEN]).is_none());
+        // Extra bytes past CALIB_IMAGE_LEN (rest of the second page) ignored.
+        let mut pages = [0xFF; 512];
+        pages[..CALIB_IMAGE_LEN].copy_from_slice(&img);
+        assert!(CalibImage::parse(&pages).is_some());
+    }
+
+    #[test]
+    fn calib_boot_overlay_picks_newest_and_lands_fields() {
+        let table = seeded_table();
+        let newer = {
+            let mut calib = calib_body();
+            calib[(crate::regions::calib::addr::motor::R_Q12 - CALIB_BASE_ADDR) as usize..][..2]
+                .copy_from_slice(&14000u16.to_le_bytes());
+            let mut img = [0u8; CALIB_IMAGE_LEN];
+            calib_assemble(&mut img, 6, &calib);
+            img
+        };
+        let pick = boot_overlay_calib(&table, &calib_image_of(5), &newer);
+        assert_eq!(
+            pick,
+            BootPick {
+                next_slot: Slot::A,
+                next_seq: 7,
+                loaded: true
+            }
+        );
+        assert_eq!(table.with(|t| t.calib.motor.r_q12), 14000);
+        assert_eq!(table.with(|t| t.calib.sense.tick_hz), 0x20);
+    }
+
+    #[test]
+    fn calib_boot_overlay_seq_compare_wraps() {
+        let table = seeded_table();
+        let pick = boot_overlay_calib(&table, &calib_image_of(0xFFFF), &calib_image_of(0));
+        assert_eq!(pick.next_slot, Slot::A);
+        assert_eq!(pick.next_seq, 1);
+    }
+
+    #[test]
+    fn calib_boot_overlay_single_valid_slot_wins_either_side() {
+        for (a, b, next) in [
+            (
+                &calib_image_of(3)[..],
+                &[0xFF; CALIB_IMAGE_LEN][..],
+                Slot::B,
+            ),
+            (
+                &[0xFF; CALIB_IMAGE_LEN][..],
+                &calib_image_of(3)[..],
+                Slot::A,
+            ),
+        ] {
+            let table = seeded_table();
+            let pick = boot_overlay_calib(&table, a, b);
+            assert_eq!(
+                (pick.next_slot, pick.next_seq, pick.loaded),
+                (next, 4, true)
+            );
+            assert_eq!(table.with(|t| t.calib.motor.r_q12), 13800);
+        }
+    }
+
+    #[test]
+    fn calib_boot_overlay_without_valid_image_keeps_seeds() {
+        let table = seeded_table();
+        table.seed_calib_sense(&crate::regions::calib::CalibSense {
+            shunt_r_mohm: 0,
+            gain_milli: 0,
+            vmotor_div_top: 0,
+            vmotor_div_bot: 0,
+            vdd_mv: 0,
+            tick_hz: 20000,
+            i_window_min_ticks: 0,
+            v_window_min_ticks: 0,
+        });
+        let pick = boot_overlay_calib(&table, &[0xFF; CALIB_IMAGE_LEN], &[0u8; CALIB_IMAGE_LEN]);
+        assert_eq!(
+            pick,
+            BootPick {
+                next_slot: Slot::A,
+                next_seq: 1,
+                loaded: false
+            }
+        );
+        assert_eq!(table.with(|t| t.calib.sense.tick_hz), 20000);
     }
 
     #[test]
