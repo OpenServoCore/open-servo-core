@@ -124,26 +124,31 @@ impl Resistance {
         &self.samples
     }
 
+    pub fn fit(&self) -> Option<ResistanceResult> {
+        Self::fit_samples(&self.samples)
+    }
+
     /// Fold and fit: v = duty * vdiff / 32767 (positive both directions -
     /// duty and vdiff carry the same sign), i folded by drive sign so
-    /// current into the stall is positive.
-    pub fn fit(&self) -> Option<ResistanceResult> {
+    /// current into the stall is positive. Associated so the CLI can refit
+    /// offline from recorded samples.
+    pub fn fit_samples(samples: &[DwellSample]) -> Option<ResistanceResult> {
         let iv = |s: &DwellSample| {
             let v = s.w.duty_q15 * s.w.vdiff / 32767.0;
             let i = s.w.i * s.w.duty_q15.signum();
             (i, v)
         };
-        let all: Vec<(f64, f64)> = self.samples.iter().map(iv).collect();
+        let all: Vec<(f64, f64)> = samples.iter().map(iv).collect();
         let fit = origin_ls(&all)?;
         let side = |d: i8| {
-            let pts: Vec<(f64, f64)> = self.samples.iter().filter(|s| s.dir == d).map(iv).collect();
+            let pts: Vec<(f64, f64)> = samples.iter().filter(|s| s.dir == d).map(iv).collect();
             origin_ls(&pts).map(|f| f.slope)
         };
         // per-dwell R centroid vs time -> heating drift
         let mut dwell_rs: Vec<(f64, f64)> = Vec::new();
         let mut d = 0;
         while let Some(pts) = {
-            let pts: Vec<&DwellSample> = self.samples.iter().filter(|s| s.dwell == d).collect();
+            let pts: Vec<&DwellSample> = samples.iter().filter(|s| s.dwell == d).collect();
             if pts.is_empty() { None } else { Some(pts) }
         } {
             let t = pts.iter().map(|s| s.w.t_ms).sum::<f64>() / pts.len() as f64 / 1000.0;

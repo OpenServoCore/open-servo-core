@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+
+[package]
+name        = "ident"
+version     = "0.1.0"
+edition     = "2024"
+description = "Identification CLI: drives osc-ident experiments over the osc-adapter, records CSVs, fits, synthesizes gains, writes them back."
+license     = "MIT OR Apache-2.0"
+
+[dependencies]
+anyhow     = "1"
+clap       = { version = "4", features = ["derive"] }
+ctrlc      = "3"
+libc       = "0.2"
+osc-client = { path = "../../client" }
+osc-ident  = { path = "../../ident" }
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"

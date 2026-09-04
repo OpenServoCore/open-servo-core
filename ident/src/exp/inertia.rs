@@ -295,6 +295,15 @@ impl Inertia {
         ))
     }
 
+    /// Every captured step reduced to its fit series, tagged TEL/aggregate -
+    /// the CLI records these for offline refits.
+    pub fn step_series(&self) -> Vec<(StepSeries, bool)> {
+        self.captures
+            .iter()
+            .filter_map(|c| self.series_of(c))
+            .collect()
+    }
+
     /// Assemble series and run both estimators. Half-windows: TEL gets
     /// ~10 ms of ticks, the aggregate path the same span in windows.
     pub fn fit(&self, priors: &InertiaPriors) -> Option<InertiaResult> {

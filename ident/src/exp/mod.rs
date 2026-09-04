@@ -23,6 +23,7 @@ pub mod breakaway;
 pub mod inertia;
 pub mod ladder;
 pub mod resistance;
+pub mod verify;
 
 use crate::frame::{SeqUnwrap, TelemetrySnapshot};
 use crate::regs::{Reg, control};
@@ -134,6 +135,12 @@ impl<E: Experiment> Guarded<E> {
 
     pub fn into_inner(self) -> E {
         self.exp
+    }
+
+    /// Mid-run access for side channels (the driver hands TEL frames to a
+    /// guarded [`inertia::Inertia`] between commands).
+    pub fn inner_mut(&mut self) -> &mut E {
+        &mut self.exp
     }
 
     fn violation(&self, o: &TelemetrySnapshot) -> Option<AbortReason> {
