@@ -19,6 +19,12 @@ use std::thread::JoinHandle;
 use anyhow::{Context, Result};
 use osc_ident::frame::{TelDeframer, TelFrame, TelStats};
 
+/// macOS `IOSSIOSPEED`: set a nonstandard tty speed from a raw integer.
+const IOSSIOSPEED: libc::c_ulong = 0x8004_5402;
+/// The servo's TEL wire baud (osc_servo_core TEL_BAUD); the CDC bridge must
+/// sample at exactly this.
+const TEL_BAUD: libc::c_int = 3_000_000;
+
 pub struct TelSink {
     rx: Arc<Mutex<Vec<u8>>>,
     stop: Arc<AtomicBool>,
@@ -44,17 +50,22 @@ impl TelSink {
             }
             libc::cfmakeraw(&mut tio);
             // CLOCAL (ignore modem lines) + CREAD (enable receiver) are what
-            // actually start the byte flow; the speed is cosmetic for CDC but
-            // the driver wants it set.
+            // actually start the byte flow.
             tio.c_cflag |= libc::CLOCAL | libc::CREAD;
-            libc::cfsetispeed(&mut tio, libc::B115200);
-            libc::cfsetospeed(&mut tio, libc::B115200);
             // VMIN 0 + VTIME 1 (0.1 s): a blocking read returns on data or
             // after the idle tick, so the reader thread can poll the stop flag.
             tio.c_cc[libc::VMIN] = 0;
             tio.c_cc[libc::VTIME] = 1;
             if libc::tcsetattr(fd, libc::TCSANOW, &tio) != 0 {
                 anyhow::bail!("tcsetattr {path}");
+            }
+            // The CDC line-coding baud sets the LinkE UART's sampling rate, so
+            // it MUST be the servo's 3 Mbaud or the bridge garbles the stream.
+            // macOS termios speed constants cap out below 3M; IOSSIOSPEED
+            // takes the raw integer (the ioctl pyserial uses for high bauds).
+            let speed: libc::c_int = TEL_BAUD;
+            if libc::ioctl(fd, IOSSIOSPEED, &speed) != 0 {
+                anyhow::bail!("set tel baud {TEL_BAUD} (IOSSIOSPEED)");
             }
             libc::tcflush(fd, libc::TCIFLUSH);
             // Clear O_NONBLOCK: the reader thread wants blocking reads so it
