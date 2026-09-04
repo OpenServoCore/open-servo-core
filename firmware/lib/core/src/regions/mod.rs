@@ -21,7 +21,7 @@ pub(crate) mod hooks;
 pub mod profile;
 pub mod telemetry;
 
-pub use calib::{CalibMotor, CalibRegs, CalibSense, CalibWinding, PotLutBlock};
+pub use calib::{CalibKinematics, CalibMotor, CalibRegs, CalibSense, CalibWinding, PotLutBlock};
 pub use config::{
     BaudRate, ConfigCommon, ConfigFaultCfg, ConfigFusion, ConfigLimits, ConfigLoopCurrent,
     ConfigLoopPosition, ConfigLoopVelocity, ConfigPosLimits, ConfigRegs, ConfigThermal,

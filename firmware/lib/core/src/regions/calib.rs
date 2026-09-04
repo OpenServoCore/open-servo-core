@@ -68,6 +68,18 @@ pub struct CalibMotor {
     pub ke_vpc_q: u16,
 }
 
+/// Count<->angle scale and gearing, pure host-facing metadata: firmware never
+/// reads it, the ISR stays in counts. Angles are centi-degrees at the pot LUT
+/// endpoints raw_min/raw_max (which equal pos_min/max_phys); `gear_ratio_centi`
+/// is motor revs per output rev x100. All-zero = unset.
+#[repr(C)]
+#[derive(Copy, Clone, Block)]
+pub struct CalibKinematics {
+    pub angle_min_cdeg: i16,
+    pub angle_max_cdeg: i16,
+    pub gear_ratio_centi: u16,
+}
+
 /// Calibration section: always writable (normal field validation applies),
 /// volatile until persisted -- persistence is SAVE's job, not a write gate.
 #[repr(C)]
@@ -81,6 +93,7 @@ pub struct CalibRegs {
     pub sense: CalibSense,
     pub winding: CalibWinding,
     pub motor: CalibMotor,
+    pub kinematics: CalibKinematics,
     #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 102],
+    pub _rsvd_tail: [u8; 96],
 }
