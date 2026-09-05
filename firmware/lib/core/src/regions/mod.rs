@@ -262,7 +262,7 @@ mod tests {
             ])
         );
 
-        // goal_position's bounds are register-RHS (soft limits); they must not
+        // goal_position's bounds are register-RHS (phys limits); they must not
         // export as scalar bounds.
         let goal = by("goal_position");
         assert!(goal.writable);
