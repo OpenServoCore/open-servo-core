@@ -48,6 +48,10 @@ const RIPPLE_CONF_MIN: f64 = 0.7;
 /// deg span. Only a default; every real servo overrides it.
 const DEFAULT_TRAVEL_DEG: f64 = 180.0;
 
+/// Default soft-limit span, centered in the phys range (or the full phys
+/// range when it is narrower).
+const DEFAULT_SOFT_TRAVEL_DEG: f64 = 180.0;
+
 /// `osc cal` args: output dir plus the headless overrides. `--baud`/`--id`
 /// come from the top-level osc globals.
 #[derive(clap::Args, Debug)]
@@ -61,10 +65,12 @@ pub struct Args {
     /// Real angle (deg) at the max-count rail.
     #[arg(long)]
     phys_angle_max: Option<f64>,
-    /// App-facing working-range min (deg); defaults to the phys min.
+    /// App-facing working-range min (deg); defaults to the low edge of a
+    /// 180 deg window centered in the phys range.
     #[arg(long)]
     soft_angle_min: Option<f64>,
-    /// App-facing working-range max (deg); defaults to the phys max.
+    /// App-facing working-range max (deg); defaults to the high edge of a
+    /// 180 deg window centered in the phys range.
     #[arg(long)]
     soft_angle_max: Option<f64>,
     /// Known gear ratio (motor rev per output rev); unset leaves it 0.
@@ -816,20 +822,19 @@ fn phys_angles(args: &Args) -> Result<(f64, f64)> {
 /// Soft (working-range) angle: flags under `--yes` (defaulting to phys), else
 /// prompted with the flags or the phys angles as defaults.
 fn soft_angles(args: &Args, phys_min: f64, phys_max: f64) -> Result<(f64, f64)> {
+    // default = DEFAULT_SOFT_TRAVEL_DEG centered in the phys range: soft
+    // limits set to the rails hand every mode's endstop zero coast margin
+    let span = (phys_max - phys_min).min(DEFAULT_SOFT_TRAVEL_DEG);
+    let mid = (phys_min + phys_max) / 2.0;
+    let (dmin, dmax) = (mid - span / 2.0, mid + span / 2.0);
     if args.yes {
         return Ok((
-            args.soft_angle_min.unwrap_or(phys_min),
-            args.soft_angle_max.unwrap_or(phys_max),
+            args.soft_angle_min.unwrap_or(dmin),
+            args.soft_angle_max.unwrap_or(dmax),
         ));
     }
-    let min = input_f64(
-        "soft angle min (deg)",
-        args.soft_angle_min.unwrap_or(phys_min),
-    )?;
-    let max = input_f64(
-        "soft angle max (deg)",
-        args.soft_angle_max.unwrap_or(phys_max),
-    )?;
+    let min = input_f64("soft angle min (deg)", args.soft_angle_min.unwrap_or(dmin))?;
+    let max = input_f64("soft angle max (deg)", args.soft_angle_max.unwrap_or(dmax))?;
     Ok((min, max))
 }
 
