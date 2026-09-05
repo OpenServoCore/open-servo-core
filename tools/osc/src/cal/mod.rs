@@ -314,9 +314,12 @@ fn build_sweep(tel: &[TelFrame]) -> Option<(Vec<u16>, Vec<f64>)> {
         })
         .collect();
     let (lo, hi) = longest_contiguous_run(&s)?;
+    // trim fused rail dwell here too: the slip check reads this run, and a
+    // pinned-pot buzz segment reads as a stuck (slipping) gear segment.
+    let run = trim_edge_dwell(&s[lo..hi]);
     Some((
-        s[lo..hi].iter().map(|x| x.1).collect(),
-        s[lo..hi].iter().map(|x| x.2).collect(),
+        run.iter().map(|x| x.1).collect(),
+        run.iter().map(|x| x.2).collect(),
     ))
 }
 
@@ -330,6 +333,56 @@ const MIN_CHUNK_SAMPLES: usize = 200;
 /// has many samples but ~0 pos travel, so its revs/count is nonsense (spikes
 /// the stitched anchor and dumps a bogus rail correction); drop it by span.
 const MIN_CHUNK_SPAN: u16 = 50;
+
+/// A moving run can also carry a rail dwell FUSED to its ends (too much travel
+/// for the span gate above to catch): the traverse overshoots into an end-stop
+/// and buzzes there seq-contiguously with the sweep, pot pinned while the motor
+/// keeps turning. Those samples accrue ripple revs with ~zero pot travel and
+/// poison the per-count density (bench: 270 ms of max-rail buzz fused to one
+/// chunk deposited 71 garbage revs into the top bins - travel read 340 deg on a
+/// ~225 deg servo, and the pinned-pot segment faked a gear-slip warning). Trim
+/// each end at the sweep's first crossing out of / into the band this many
+/// counts from that end's extreme pos.
+const EDGE_DWELL_COUNTS: u16 = 8;
+
+/// Trim rail dwell fused to a run's ends (see EDGE_DWELL_COUNTS): keep from the
+/// first sample past the head-extreme band to the first sample reaching the
+/// tail-extreme band. First-crossing on both ends is robust to buzz wiggle and
+/// mid-run jitter; on a clean rail-to-rail sweep it costs only the outermost
+/// EDGE_DWELL_COUNTS counts of each end. Runs narrower than the two bands are
+/// returned unchanged.
+fn trim_edge_dwell(run: &[(u8, u16, f64)]) -> &[(u8, u16, f64)] {
+    let (mut lo, mut hi) = (run[0].1, run[0].1);
+    for x in run {
+        lo = lo.min(x.1);
+        hi = hi.max(x.1);
+    }
+    if hi - lo <= 2 * EDGE_DWELL_COUNTS {
+        return run;
+    }
+    let up = run[run.len() - 1].1 >= run[0].1;
+    let past_head = |p: u16| {
+        if up {
+            p > lo + EDGE_DWELL_COUNTS
+        } else {
+            p < hi - EDGE_DWELL_COUNTS
+        }
+    };
+    let at_tail = |p: u16| {
+        if up {
+            p >= hi - EDGE_DWELL_COUNTS
+        } else {
+            p <= lo + EDGE_DWELL_COUNTS
+        }
+    };
+    let start = run.iter().position(|x| past_head(x.1)).unwrap_or(0);
+    let end = run
+        .iter()
+        .position(|x| at_tail(x.1))
+        .map(|i| i + 1)
+        .unwrap_or(run.len());
+    &run[start..end.max(start + 1)]
+}
 
 /// ALL clean sweep chunks (not just the longest): each maximal run of
 /// seq-contiguous, in-range (pos<=4095) frames, as (pos, current). Chunks
@@ -362,7 +415,8 @@ pub(super) fn build_sweep_chunks(tel: &[TelFrame]) -> Vec<(Vec<u16>, Vec<f64>)> 
 
 /// Push one maximal seq-contiguous run as a (pos, current) chunk, dropping it
 /// when shorter than MIN_CHUNK_SAMPLES or when its pos span is below
-/// MIN_CHUNK_SPAN (a rail stall, not a sweep segment).
+/// MIN_CHUNK_SPAN (a rail stall, not a sweep segment). Rail dwell fused to the
+/// ends is trimmed first; the length gate re-applies to the trimmed run.
 fn emit_chunk(run: &[(u8, u16, f64)], chunks: &mut Vec<(Vec<u16>, Vec<f64>)>) {
     if run.len() < MIN_CHUNK_SAMPLES {
         return;
@@ -372,7 +426,11 @@ fn emit_chunk(run: &[(u8, u16, f64)], chunks: &mut Vec<(Vec<u16>, Vec<f64>)>) {
         lo = lo.min(x.1);
         hi = hi.max(x.1);
     }
-    if hi - lo >= MIN_CHUNK_SPAN {
+    if hi - lo < MIN_CHUNK_SPAN {
+        return;
+    }
+    let run = trim_edge_dwell(run);
+    if run.len() >= MIN_CHUNK_SAMPLES {
         chunks.push((
             run.iter().map(|x| x.1).collect(),
             run.iter().map(|x| x.2).collect(),
@@ -1044,10 +1102,11 @@ mod tests {
 
     #[test]
     fn build_sweep_chunks_keeps_big_runs_drops_fragments_and_stalls() {
-        // seq = index (u8, wraps cleanly). Three moving runs (pos sweeps a real
-        // span) split by out-of-range pos, plus a trailing short fragment and a
-        // long STALL run (pos frozen at a rail). Kept: the two big MOVING runs.
-        // Dropped: the <MIN_CHUNK_SAMPLES fragment AND the stall (span 0).
+        // seq = index (u8, wraps cleanly). Moving runs (pos sweeps a real span)
+        // split by out-of-range pos, plus a trailing short fragment, a long
+        // STALL run (pos frozen at a rail), and a moving run with a rail buzz
+        // FUSED to its tail. Kept: the moving runs, edge-trimmed by
+        // EDGE_DWELL_COUNTS; the fused buzz tail is trimmed off entirely.
         let mut frames: Vec<TelFrame> = Vec::new();
         let mut push = |base: u16, count: u32, moving: bool| {
             for j in 0..count {
@@ -1061,22 +1120,31 @@ mod tests {
                 });
             }
         };
-        push(1000, 250, true); // run A: span 249, kept
+        push(1000, 250, true); // run A: span 249, kept (trimmed)
         push(9999, 1, true); // split (out-of-range)
-        push(2000, 300, true); // run B: span 299, kept
+        push(2000, 300, true); // run B: span 299, kept (trimmed)
         push(9999, 1, true); // split
         push(3000, 50, true); // fragment: < MIN_CHUNK_SAMPLES, dropped
         push(9999, 1, true); // split
         push(4095, 250, false); // stall: >= samples but span 0, dropped
+        push(9999, 1, true); // split
+        push(3600, 300, true); // run C sweeps 3600..3899 ...
+        push(3899, 400, false); // ... then buzzes at the rail seq-contiguously
 
         let chunks = build_sweep_chunks(&frames);
-        assert_eq!(chunks.len(), 2, "only the two moving runs survive");
-        assert_eq!(chunks[0].0.len(), 250);
-        assert_eq!(chunks[1].0.len(), 300);
-        assert_eq!(chunks[0].1.len(), 250);
-        assert_eq!(chunks[1].1.len(), 300);
+        assert_eq!(chunks.len(), 3, "the three moving runs survive");
+        // each end trimmed at the first crossing out of the extreme band:
+        // head loses EDGE_DWELL_COUNTS+1 samples, tail keeps through the first
+        // sample inside the band (1 count/sample here)
+        let trimmed = |n: usize| n - (2 * EDGE_DWELL_COUNTS as usize + 1);
+        assert_eq!(chunks[0].0.len(), trimmed(250));
+        assert_eq!(chunks[1].0.len(), trimmed(300));
+        assert_eq!(chunks[0].1.len(), trimmed(250));
         // the stall run (span 0) is gone despite having >= MIN_CHUNK_SAMPLES
         assert!(chunks.iter().all(|(p, _)| p.iter().max() != Some(&4095)));
+        // run C: the 400-sample fused buzz is trimmed off with the tail band
+        assert_eq!(chunks[2].0.len(), trimmed(300));
+        assert!(chunks[2].0.iter().max() < Some(&3899));
     }
 
     #[test]
