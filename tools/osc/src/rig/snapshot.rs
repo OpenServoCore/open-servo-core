@@ -26,7 +26,7 @@ pub(crate) const SNAPSHOT_FIELDS: &[(&str, Reg)] = &[
     ("t0_cc", calib::T0_CC),
     ("ke_vpc_q", calib::KE_VPC_Q),
     ("recip_ke_q", calib::RECIP_KE_Q),
-    ("b_i_q016", calib::B_I_Q016),
+    ("b_i_q313", calib::B_I_Q313),
     ("fric_fc_counts", calib::FRIC_FC_COUNTS),
     ("fric_fv_q016", calib::FRIC_FV_Q016),
     ("fric_breakaway_counts", calib::FRIC_BREAKAWAY_COUNTS),

@@ -100,8 +100,8 @@ fn seed(shared: &Shared) {
         c.thermal.rtherm_omega_max_cps = 400;
         c.fusion.l1_q016 = 16384;
         c.fusion.l2_q88 = 1024;
-        // l3 * B is the tau_d loop gain: at the plant's B (~1.0 saturated
-        // into b_i below) 0.5 cc per count is stable, 2.0 rails the filter
+        // l3 * B is the tau_d loop gain: at the b_i-encoded B (1.0 below)
+        // 0.5 cc per count is stable, 2.0 rails the filter
         c.fusion.l3_q88 = 128;
         c.fusion.l_bemf_q016 = 0;
         c.fault_cfg.pos_error_counts = 400;
@@ -114,9 +114,10 @@ fn seed(shared: &Shared) {
         cal.motor.ke_vpc_q = 256; // 0.0625 vcounts per c/s
         cal.motor.r_q12 = 8192; // 2.0 vcounts/ccount
         cal.motor.recip_ke_q = 16 << 10; // 16 c/s per vcount
-        // plant B ~= 1.33 c/s per ccount per medium tick (200/1500 x 10),
-        // saturated to the Q0.16 ceiling; correction gains absorb the gap
-        cal.motor.b_i_q016 = 65535;
+        // plant B ~= 1.33 c/s per ccount per medium tick (200/1500 x 10);
+        // encoded 1.0 (the old Q0.16-ceiling dynamics, kept so the pinned
+        // integer sims stand); correction gains absorb the gap
+        cal.motor.b_i_q313 = 8192;
         t.telemetry.sensors.current_bias_counts = BIAS;
         t.control.lifecycle.torque_enable = false;
         t.control.lifecycle.mode = Mode::Position;

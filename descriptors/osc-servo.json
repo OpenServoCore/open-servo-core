@@ -501,7 +501,7 @@
       "kind": "uint"
     },
     {
-      "name": "b_i_q016",
+      "name": "b_i_q313",
       "addr": 272,
       "width": 2,
       "access": "rw",

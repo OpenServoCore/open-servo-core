@@ -58,7 +58,7 @@ pub mod calib {
     pub const T0_CC: Reg = reg(0x0104, 2);
     pub const R_Q12: Reg = reg(0x010c, 2);
     pub const RECIP_KE_Q: Reg = reg(0x010e, 2);
-    pub const B_I_Q016: Reg = reg(0x0110, 2);
+    pub const B_I_Q313: Reg = reg(0x0110, 2);
     pub const FRIC_FC_COUNTS: Reg = reg(0x0112, 2);
     pub const FRIC_FV_Q016: Reg = reg(0x0114, 2);
     pub const FRIC_BREAKAWAY_COUNTS: Reg = reg(0x0116, 2);
@@ -150,7 +150,7 @@ pub const ALL: &[(&str, Reg)] = &[
     ("t0_cc", calib::T0_CC),
     ("r_q12", calib::R_Q12),
     ("recip_ke_q", calib::RECIP_KE_Q),
-    ("b_i_q016", calib::B_I_Q016),
+    ("b_i_q313", calib::B_I_Q313),
     ("fric_fc_counts", calib::FRIC_FC_COUNTS),
     ("fric_fv_q016", calib::FRIC_FV_Q016),
     ("fric_breakaway_counts", calib::FRIC_BREAKAWAY_COUNTS),

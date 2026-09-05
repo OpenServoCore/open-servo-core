@@ -323,7 +323,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             // predicts torque-free.
             let i_use = i_meas.unwrap_or(self.i_ref_cc);
             let fg = FusionGains {
-                b_i_q016: motor_cal.b_i_q016,
+                b_i_q313: motor_cal.b_i_q313,
                 l1_q016: fus_cfg.l1_q016,
                 l2_q88: fus_cfg.l2_q88,
                 l3_q88: fus_cfg.l3_q88,
