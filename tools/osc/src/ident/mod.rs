@@ -521,6 +521,9 @@ fn run_verify(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
     })?;
     check_abort("verify-current", e5.abort())?;
     let cur = e5.into_inner().result();
+    // E5 ends stalled against an end-stop; E6 runs with the pos guard on
+    // and its first read would abort right there
+    recenter(c, id)?;
     println!("[E6 velocity legs]");
     let mut e6 = Guarded::new(
         VerifyVelocity::new(VerifyVelocityCfg::default(), &params, tick_hz),
