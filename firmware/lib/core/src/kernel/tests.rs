@@ -802,6 +802,42 @@ fn hard_wall_stall_faults() {
 }
 
 #[test]
+fn current_mode_endstop_unwinds_duty_to_zero() {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::Current;
+        t.control.lifecycle.goal_current = 300;
+        t.config.pos_limits.pos_max_soft_counts = 3000;
+        t.config.fault_cfg.pos_error_counts = u16::MAX;
+        t.config.limits.stall_tau_trip_counts = u16::MAX;
+    });
+    let mut k = kernel();
+    let mut plant = Plant::new(1000);
+    // free flight into the soft wall with a wound-up loop
+    run_plant(&mut k, &sh, &mut plant, 20_000);
+    assert_eq!(k.faults.mask(), 0);
+    assert!(
+        plant.pos() >= 3000,
+        "never reached the wall: {}",
+        plant.pos()
+    );
+    // past the wall the endstop zeroes i_ref; the loop must unwind ALL the
+    // way to zero, not freeze at the sub-floor duty the honest-zero feed
+    // leaves behind (bench: 18% duty held grinding into the rail)
+    assert_eq!(k.duty_q15, 0, "duty froze above zero at the wall");
+    let mut zero = 0u32;
+    for _ in 0..2000 {
+        run_plant(&mut k, &sh, &mut plant, 1);
+        if k.duty_q15 == 0 {
+            zero += 1;
+        }
+    }
+    assert!(zero >= 1990, "duty kept firing at the wall: {zero} of 2000");
+}
+
+#[test]
 fn position_step_survives_tick_deletion() {
     let sh = Shared::new();
     seed(&sh);
