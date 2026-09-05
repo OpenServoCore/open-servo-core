@@ -371,7 +371,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                         self.hold = out.hold;
                     }
                     Mode::Velocity => {
-                        self.traj.step_velocity(life.goal_velocity, &tc);
+                        self.traj.step_velocity(life.goal_velocity, theta_hat, &tc);
                         self.omega_ref_q16 = self.traj.omega_star_q16();
                         self.hold = false;
                     }

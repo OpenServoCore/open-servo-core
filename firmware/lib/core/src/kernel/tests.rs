@@ -838,6 +838,55 @@ fn current_mode_endstop_unwinds_duty_to_zero() {
 }
 
 #[test]
+fn velocity_mode_brakes_at_the_soft_wall() {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::Velocity;
+        t.control.lifecycle.goal_velocity = 2000;
+        t.config.pos_limits.pos_max_soft_counts = 3000;
+        t.config.fault_cfg.pos_error_counts = u16::MAX;
+        t.config.limits.stall_tau_trip_counts = u16::MAX;
+    });
+    let mut k = kernel();
+    let mut plant = Plant::new(1000);
+    run_plant(&mut k, &sh, &mut plant, 30_000);
+    assert_eq!(k.faults.mask(), 0);
+    // the wall ramp shrinks the inward goal with distance: the profile
+    // decelerates INTO the wall instead of leaving momentum to coast on an
+    // open-loop current cut, and parks without a flip-flop limit cycle
+    assert!(
+        plant.pos() >= 2950 && plant.pos() <= 3020,
+        "rest pos {}",
+        plant.pos()
+    );
+    let (mut lo, mut hi) = (i32::MAX, i32::MIN);
+    let mut star_max = 0i32;
+    for _ in 0..4000 {
+        run_plant(&mut k, &sh, &mut plant, 1);
+        lo = lo.min(plant.pos());
+        hi = hi.max(plant.pos());
+        star_max = star_max.max(k.traj.omega_star_q16());
+    }
+    assert!(hi - lo <= 4, "limit cycle at the wall: spread {}", hi - lo);
+    assert!(
+        star_max <= 64 << 16,
+        "profile still commands inward speed: {}",
+        star_max >> 16
+    );
+    // the door back out stays open
+    sh.table
+        .with_mut(|t| t.control.lifecycle.goal_velocity = -500);
+    run_plant(&mut k, &sh, &mut plant, 20_000);
+    assert!(
+        plant.pos() < 2900,
+        "retreat from the wall failed: {}",
+        plant.pos()
+    );
+}
+
+#[test]
 fn position_step_survives_tick_deletion() {
     let sh = Shared::new();
     seed(&sh);
