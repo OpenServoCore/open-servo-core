@@ -323,7 +323,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             // predicts torque-free.
             let i_use = i_meas.unwrap_or(self.i_ref_cc);
             let fg = FusionGains {
-                b_i_q016: motor_cal.b_i_q016,
+                b_i_q313: motor_cal.b_i_q313,
                 l1_q016: fus_cfg.l1_q016,
                 l2_q88: fus_cfg.l2_q88,
                 l3_q88: fus_cfg.l3_q88,
@@ -371,7 +371,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                         self.hold = out.hold;
                     }
                     Mode::Velocity => {
-                        self.traj.step_velocity(life.goal_velocity, &tc);
+                        self.traj.step_velocity(life.goal_velocity, theta_hat, &tc);
                         self.omega_ref_q16 = self.traj.omega_star_q16();
                         self.hold = false;
                     }
@@ -590,6 +590,21 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                         // the frozen loop resumes bumplessly on exit
                         self.duty_q15 = 0;
                         MotorCmd::Coast
+                    } else if self.i_ref_cc == 0 && i_meas.is_none() {
+                        // zero ref with no window: the honest-zero feed
+                        // below makes e = 0, freezing the PI at whatever
+                        // sub-floor duty it unwound to - stalled at an
+                        // endstop that grinds the gears forever (bench:
+                        // 18% duty held into the rail). Zero duty is the
+                        // honest actuation; slow decay shorts the winding,
+                        // passively braking whatever momentum remains.
+                        self.cur.reset();
+                        self.duty_q15 = 0;
+                        self.decay = DecayMode::Slow;
+                        MotorCmd::Drive {
+                            duty: Effort(0),
+                            decay: DecayMode::Slow,
+                        }
                     } else {
                         let gains = CurrentGains {
                             kp_q88: loop_cur.i_kp_q88,

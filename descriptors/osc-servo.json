@@ -501,7 +501,7 @@
       "kind": "uint"
     },
     {
-      "name": "b_i_q016",
+      "name": "b_i_q313",
       "addr": 272,
       "width": 2,
       "access": "rw",
@@ -531,6 +531,27 @@
     {
       "name": "ke_vpc_q",
       "addr": 280,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "angle_min_cdeg",
+      "addr": 282,
+      "width": 2,
+      "access": "rw",
+      "kind": "int"
+    },
+    {
+      "name": "angle_max_cdeg",
+      "addr": 284,
+      "width": 2,
+      "access": "rw",
+      "kind": "int"
+    },
+    {
+      "name": "gear_ratio_centi",
+      "addr": 286,
       "width": 2,
       "access": "rw",
       "kind": "uint"

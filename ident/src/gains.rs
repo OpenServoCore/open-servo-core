@@ -4,12 +4,13 @@
 //! updates (current.rs / velocity.rs / fusion.rs) and is the authority on
 //! stability - the placement formulas are only as good as those runs.
 //!
-//! Q formats (verified against firmware/lib/core, commit-4 fusion encoding):
+//! Q formats (verified against firmware/lib/core, Q3.13 fusion coupling):
 //! i_kp_q88 vcounts/ccount; i_ki/i_kaw_q412 per FAST tick; v_kp_q88
 //! ccounts per c/s; v_ki/v_kaw_q412 per MEDIUM tick; j_ff_q88 = 256/B;
 //! p_kp_q88 c/s per count; l1_q016; l2_q88 c/s per count; l3_q88 cc per
-//! count; b_i_q016 = round(B*65536); r_q12/ke_vpc_q Q4.12; recip_ke_q
-//! Q6.10; fric_fv_q016 Q0.16; fric_fc/breakaway whole ccounts.
+//! count; b_i_q313 = round(B*8192) (rig B runs ~3.4, Q0.16 saturated);
+//! r_q12/ke_vpc_q Q4.12; recip_ke_q Q6.10; fric_fv_q016 Q0.16;
+//! fric_fc/breakaway whole ccounts.
 
 /// Bench model-card inductance (SG90 clone donor motor), henries. L is not
 /// identifiable from the fixed-phase shunt sampling - this is the CLI
@@ -218,7 +219,7 @@ pub struct EncodedGains {
     pub l1_q016: Encoded,
     pub l2_q88: Encoded,
     pub l3_q88: Encoded,
-    pub b_i_q016: Encoded,
+    pub b_i_q313: Encoded,
     pub r_q12: Encoded,
     pub ke_vpc_q: Encoded,
     pub recip_ke_q: Encoded,
@@ -235,7 +236,7 @@ impl EncodedGains {
             ("r_q12", self.r_q12),
             ("ke_vpc_q", self.ke_vpc_q),
             ("recip_ke_q", self.recip_ke_q),
-            ("b_i_q016", self.b_i_q016),
+            ("b_i_q313", self.b_i_q313),
             ("fric_fc_counts", self.fric_fc_counts),
             ("fric_fv_q016", self.fric_fv_q016),
             ("fric_breakaway_counts", self.fric_breakaway_counts),
@@ -267,7 +268,7 @@ pub fn encode(g: &GainSet) -> EncodedGains {
         l1_q016: enc(g.l1, 65536.0),
         l2_q88: enc(g.l2, 256.0),
         l3_q88: enc(g.l3, 256.0),
-        b_i_q016: enc(g.b, 65536.0),
+        b_i_q313: enc(g.b, 8192.0),
         r_q12: enc(g.r_vpc, 4096.0),
         ke_vpc_q: enc(g.ke_vpc, 4096.0),
         recip_ke_q: enc(g.recip_ke, 1024.0),
@@ -321,11 +322,11 @@ mod tests {
             assert!(!f.saturated, "{name} saturated: {f:?}");
             assert!(f.quantization_pct < 5.0, "{name} quant {f:?}");
         }
-        // B too big for Q0.16 saturates and flags, never wraps
-        let big = GainSet { b: 1.5, ..g };
+        // B too big for Q3.13 saturates and flags, never wraps
+        let big = GainSet { b: 9.0, ..g };
         let e = encode(&big);
-        assert_eq!(e.b_i_q016.raw, u16::MAX);
-        assert!(e.b_i_q016.saturated);
+        assert_eq!(e.b_i_q313.raw, u16::MAX);
+        assert!(e.b_i_q313.saturated);
         // negative clamps to zero flagged
         let neg = GainSet { fric_fc: -3.0, ..g };
         assert!(encode(&neg).fric_fc_counts.saturated);
@@ -346,7 +347,7 @@ mod tests {
         assert!(g.l3 > 0.1 && g.l3 < 20.0, "l3={}", g.l3);
     }
 
-    /// Mirror of estimator/fusion.rs (commit-4 encoding), integer-exact.
+    /// Mirror of estimator/fusion.rs (Q3.13 b_i coupling), integer-exact.
     struct FusionMirror {
         theta: i32,
         omega: i32,
@@ -389,7 +390,7 @@ mod tests {
                 .clamp(-ACCEL_LIM, ACCEL_LIM);
             self.omega = self
                 .omega
-                .saturating_add(q_mul(g.b_i as i32, accel, 0))
+                .saturating_add(q_mul(g.b_i as i32, accel, 0).saturating_mul(1 << 3))
                 .clamp(-OMEGA_LIM, OMEGA_LIM);
             self.theta = self
                 .theta
@@ -413,7 +414,7 @@ mod tests {
 
     fn fusion_raw(e: &EncodedGains) -> FusionRaw {
         FusionRaw {
-            b_i: e.b_i_q016.raw,
+            b_i: e.b_i_q313.raw,
             l1: e.l1_q016.raw,
             l2: e.l2_q88.raw,
             l3: e.l3_q88.raw,

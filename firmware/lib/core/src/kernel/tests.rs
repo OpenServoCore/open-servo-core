@@ -100,8 +100,8 @@ fn seed(shared: &Shared) {
         c.thermal.rtherm_omega_max_cps = 400;
         c.fusion.l1_q016 = 16384;
         c.fusion.l2_q88 = 1024;
-        // l3 * B is the tau_d loop gain: at the plant's B (~1.0 saturated
-        // into b_i below) 0.5 cc per count is stable, 2.0 rails the filter
+        // l3 * B is the tau_d loop gain: at the b_i-encoded B (1.0 below)
+        // 0.5 cc per count is stable, 2.0 rails the filter
         c.fusion.l3_q88 = 128;
         c.fusion.l_bemf_q016 = 0;
         c.fault_cfg.pos_error_counts = 400;
@@ -114,9 +114,10 @@ fn seed(shared: &Shared) {
         cal.motor.ke_vpc_q = 256; // 0.0625 vcounts per c/s
         cal.motor.r_q12 = 8192; // 2.0 vcounts/ccount
         cal.motor.recip_ke_q = 16 << 10; // 16 c/s per vcount
-        // plant B ~= 1.33 c/s per ccount per medium tick (200/1500 x 10),
-        // saturated to the Q0.16 ceiling; correction gains absorb the gap
-        cal.motor.b_i_q016 = 65535;
+        // plant B ~= 1.33 c/s per ccount per medium tick (200/1500 x 10);
+        // encoded 1.0 (the old Q0.16-ceiling dynamics, kept so the pinned
+        // integer sims stand); correction gains absorb the gap
+        cal.motor.b_i_q313 = 8192;
         t.telemetry.sensors.current_bias_counts = BIAS;
         t.control.lifecycle.torque_enable = false;
         t.control.lifecycle.mode = Mode::Position;
@@ -798,6 +799,91 @@ fn hard_wall_stall_faults() {
     assert!(matches!(last_cmd(&k), MotorCmd::Disabled));
     sh.table
         .with(|t| assert_eq!(t.telemetry.mode.fault_code, faults::CODE_STALL));
+}
+
+#[test]
+fn current_mode_endstop_unwinds_duty_to_zero() {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::Current;
+        t.control.lifecycle.goal_current = 300;
+        t.config.pos_limits.pos_max_soft_counts = 3000;
+        t.config.fault_cfg.pos_error_counts = u16::MAX;
+        t.config.limits.stall_tau_trip_counts = u16::MAX;
+    });
+    let mut k = kernel();
+    let mut plant = Plant::new(1000);
+    // free flight into the soft wall with a wound-up loop
+    run_plant(&mut k, &sh, &mut plant, 20_000);
+    assert_eq!(k.faults.mask(), 0);
+    assert!(
+        plant.pos() >= 3000,
+        "never reached the wall: {}",
+        plant.pos()
+    );
+    // past the wall the endstop zeroes i_ref; the loop must unwind ALL the
+    // way to zero, not freeze at the sub-floor duty the honest-zero feed
+    // leaves behind (bench: 18% duty held grinding into the rail)
+    assert_eq!(k.duty_q15, 0, "duty froze above zero at the wall");
+    let mut zero = 0u32;
+    for _ in 0..2000 {
+        run_plant(&mut k, &sh, &mut plant, 1);
+        if k.duty_q15 == 0 {
+            zero += 1;
+        }
+    }
+    assert!(zero >= 1990, "duty kept firing at the wall: {zero} of 2000");
+}
+
+#[test]
+fn velocity_mode_brakes_at_the_soft_wall() {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::Velocity;
+        t.control.lifecycle.goal_velocity = 2000;
+        t.config.pos_limits.pos_max_soft_counts = 3000;
+        t.config.fault_cfg.pos_error_counts = u16::MAX;
+        t.config.limits.stall_tau_trip_counts = u16::MAX;
+    });
+    let mut k = kernel();
+    let mut plant = Plant::new(1000);
+    run_plant(&mut k, &sh, &mut plant, 30_000);
+    assert_eq!(k.faults.mask(), 0);
+    // the wall ramp shrinks the inward goal with distance: the profile
+    // decelerates INTO the wall instead of leaving momentum to coast on an
+    // open-loop current cut, and parks without a flip-flop limit cycle
+    assert!(
+        plant.pos() >= 2950 && plant.pos() <= 3020,
+        "rest pos {}",
+        plant.pos()
+    );
+    let (mut lo, mut hi) = (i32::MAX, i32::MIN);
+    let mut star_max = 0i32;
+    for _ in 0..4000 {
+        run_plant(&mut k, &sh, &mut plant, 1);
+        lo = lo.min(plant.pos());
+        hi = hi.max(plant.pos());
+        star_max = star_max.max(k.traj.omega_star_q16());
+    }
+    assert!(hi - lo <= 4, "limit cycle at the wall: spread {}", hi - lo);
+    assert!(
+        star_max <= 64 << 16,
+        "profile still commands inward speed: {}",
+        star_max >> 16
+    );
+    // the door back out stays open
+    sh.table
+        .with_mut(|t| t.control.lifecycle.goal_velocity = -500);
+    run_plant(&mut k, &sh, &mut plant, 20_000);
+    assert!(
+        plant.pos() < 2900,
+        "retreat from the wall failed: {}",
+        plant.pos()
+    );
 }
 
 #[test]

@@ -116,6 +116,13 @@ pub struct ConfigLoopPosition {
     pub accel_limit_q88: u16,
 }
 
+// Trajectory limits are clamps, not gains: at 0 the profile pins omega_ref
+// to 0 and velocity/position modes are inert even with live gains, so they
+// get real defaults (bench-validated on the SG90 rig: 1500 c/s, 15 c/s per
+// medium tick = 0 -> 1500 in 50 ms).
+pub const DEFAULT_VELOCITY_LIMIT_CPS: u16 = 1500;
+pub const DEFAULT_ACCEL_LIMIT_Q88: u16 = 3840;
+
 /// Current ceiling, stall policy, overcurrent trip window.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
