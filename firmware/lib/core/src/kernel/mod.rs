@@ -252,6 +252,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                 vdiff: self.vdiff_last,
                 vbus: self.vbus.vbus_counts(),
                 window_valid: i_meas.is_some(),
+                fault: self.faults.mask() != 0,
             };
             self.tel.on_tick(&s);
         }

@@ -1151,4 +1151,5 @@ fn tel_stream_gated_by_sink_active() {
     // duty 8000/32767 of ARR is far above the 100-tick window floors
     assert!(s.window_valid);
     assert_eq!(s.current, 40);
+    assert!(!s.fault);
 }

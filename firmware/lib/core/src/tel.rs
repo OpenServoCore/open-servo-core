@@ -55,6 +55,9 @@ pub struct TelSample {
     pub vdiff: i16,
     pub vbus: u16,
     pub window_valid: bool,
+    /// Kernel fault mask nonzero this tick. Travels in the frame's INST
+    /// ALERT bit (the fault contract), never in the payload.
+    pub fault: bool,
 }
 
 /// The kernel's per-fast-tick stream hook; core never names the transport.
@@ -72,10 +75,59 @@ impl TelStream for () {
     fn on_tick(&mut self, _sample: &TelSample) {}
 }
 
-/// Serialize one stream payload into `buf`, returning its length. `mask`
-/// reserved bits are ignored (callers gate on `mask_valid`); `samples`
+/// Serialize the 4-byte stream header. Order-free vs the samples: it never
+/// touches bytes past [`STREAM_HDR`], so an incremental encoder writes it
+/// last, once the batch's `valid` bitmap is known.
+pub fn encode_stream_hdr(
+    stream_seq: u8,
+    last: bool,
+    valid: u16,
+    buf: &mut [u8; STREAM_PAYLOAD_MAX],
+) {
+    buf[0] = stream_seq;
+    buf[1] = if last { FLAG_LAST } else { 0 };
+    buf[2..4].copy_from_slice(&valid.to_le_bytes());
+}
+
+/// Byte offset of sample `i` in a stream payload.
+pub const fn sample_offset(mask: u16, i: usize) -> usize {
+    STREAM_HDR + i * sample_len(mask)
+}
+
+/// Serialize one sample's mask-selected fields at `at`, returning the next
+/// offset. `mask` reserved bits are ignored (callers gate on `mask_valid`);
+/// `at` past the last sample slot clamps (caller contract, debug-asserted),
+/// so the fixed-size buffer keeps every write structurally in-bounds.
+pub fn encode_sample(
+    mask: u16,
+    s: &TelSample,
+    buf: &mut [u8; STREAM_PAYLOAD_MAX],
+    at: usize,
+) -> usize {
+    let m = mask & MASK_ALL;
+    let cap = sample_offset(m, STREAM_SAMPLES_MAX - 1);
+    debug_assert!(at <= cap);
+    let mut n = if at > cap { cap } else { at };
+    let mut put = |bit: u16, le: [u8; 2]| {
+        if m & bit != 0 {
+            buf[n] = le[0];
+            buf[n + 1] = le[1];
+            n += 2;
+        }
+    };
+    put(BIT_POS, s.pos.to_le_bytes());
+    put(BIT_CURRENT, s.current.to_le_bytes());
+    put(BIT_CURRENT_TROUGH, s.current_trough.to_le_bytes());
+    put(BIT_DUTY, s.duty_q15.to_le_bytes());
+    put(BIT_VDIFF, s.vdiff.to_le_bytes());
+    put(BIT_VBUS, s.vbus.to_le_bytes());
+    n
+}
+
+/// Serialize one stream payload into `buf`, returning its length. `samples`
 /// beyond [`STREAM_SAMPLES_MAX`] truncate (caller contract, debug-asserted).
-/// The fixed-size buffer makes the writes structurally in-bounds.
+/// Built on the same appenders the driver-side incremental encoder uses, so
+/// the two paths cannot diverge.
 pub fn encode_stream(
     mask: u16,
     stream_seq: u8,
@@ -89,30 +141,15 @@ pub fn encode_stream(
     } else {
         samples.len()
     };
-    buf[0] = stream_seq;
-    buf[1] = if last { FLAG_LAST } else { 0 };
-    let m = mask & MASK_ALL;
     let mut valid: u16 = 0;
     let mut n = STREAM_HDR;
     for (i, s) in samples[..count].iter().enumerate() {
         if s.window_valid {
             valid |= 1 << i;
         }
-        let mut put = |bit: u16, le: [u8; 2]| {
-            if m & bit != 0 {
-                buf[n] = le[0];
-                buf[n + 1] = le[1];
-                n += 2;
-            }
-        };
-        put(BIT_POS, s.pos.to_le_bytes());
-        put(BIT_CURRENT, s.current.to_le_bytes());
-        put(BIT_CURRENT_TROUGH, s.current_trough.to_le_bytes());
-        put(BIT_DUTY, s.duty_q15.to_le_bytes());
-        put(BIT_VDIFF, s.vdiff.to_le_bytes());
-        put(BIT_VBUS, s.vbus.to_le_bytes());
+        n = encode_sample(mask, s, buf, n);
     }
-    buf[2..4].copy_from_slice(&valid.to_le_bytes());
+    encode_stream_hdr(stream_seq, last, valid, buf);
     n
 }
 
@@ -156,6 +193,9 @@ mod tests {
             vdiff: -300 - i as i16,
             vbus: 1800 + i as u16,
             window_valid: i.is_multiple_of(2),
+            // varies across samples; the goldens below pin that it never
+            // reaches the payload
+            fault: i.is_multiple_of(3),
         }
     }
 
@@ -242,6 +282,31 @@ mod tests {
         assert_eq!(buf[..4], [0xFF, FLAG_LAST, 0x05, 0x00]);
         assert_eq!(buf[4..10], [0x00, 0x10, 0x01, 0x10, 0x02, 0x10]);
         assert!(buf[10..].iter().all(|&b| b == 0xEE));
+    }
+
+    /// The driver-side incremental path (per-tick `encode_sample`, header
+    /// last) is byte-identical to `encode_stream` for the same inputs.
+    #[test]
+    fn incremental_encode_matches_encode_stream() {
+        for (mask, count) in [(MASK_ALL, 16), (0x1B, 16), (BIT_POS, 3), (MASK_ALL, 1)] {
+            let samples: heapless::Vec<TelSample, 16> = (0..count).map(sample).collect();
+            let mut whole = [0u8; STREAM_PAYLOAD_MAX];
+            let n = encode_stream(mask, 7, true, &samples, &mut whole);
+
+            let mut inc = [0u8; STREAM_PAYLOAD_MAX];
+            let mut valid = 0u16;
+            let mut at = STREAM_HDR;
+            for (i, s) in samples.iter().enumerate() {
+                if s.window_valid {
+                    valid |= 1 << i;
+                }
+                assert_eq!(at, sample_offset(mask, i));
+                at = encode_sample(mask, s, &mut inc, at);
+            }
+            encode_stream_hdr(7, true, valid, &mut inc);
+            assert_eq!(at, n);
+            assert_eq!(inc[..n], whole[..n]);
+        }
     }
 
     #[test]
