@@ -45,7 +45,11 @@ impl Default for InertiaCfg {
             seek_margin: 700,
             seek_poll_ms: 30,
             rest_ms: 300,
-            capture_ms: 400,
+            // Sized to the runway, not the transient: ~2900 counts from the
+            // seek band to the far soft wall covers ~150 ms at the 55% step
+            // before the firmware wall-cut would fire (bench: 400 ms coasted
+            // through the cut into the pot rail and tripped the pos guard).
+            capture_ms: 150,
             stall_eps: 3,
             stall_polls: 10,
             seek_cap_polls: 400,
@@ -451,8 +455,8 @@ mod tests {
         // six step bursts, each a goal+arm commit
         let streams: Vec<&String> = log.iter().filter(|l| l.starts_with("stream ")).collect();
         assert_eq!(streams.len(), 6);
-        assert_eq!(*streams[0], "stream 8040 goal_duty 11468");
-        assert_eq!(*streams[1], "stream 8040 goal_duty -11468");
+        assert_eq!(*streams[0], "stream 3015 goal_duty 11468");
+        assert_eq!(*streams[1], "stream 3015 goal_duty -11468");
         // last duty write is the safety zero
         let last_duty = log
             .iter()
