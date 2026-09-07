@@ -409,12 +409,19 @@ fn run_verify(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
     let params = rig(cli);
     let tick_hz = snapshot::read_u16(c, id, calib::TICK_HZ)? as f64;
     recenter(c, id)?;
-    println!("[E5 current steps]");
+    println!("[E5 current steps] (end-stop stalls; pos limits widened)");
     let mut e5 = Guarded::new(
         VerifyCurrent::new(VerifyCurrentCfg::default(), &params),
         params.without_pos_guard(),
     );
-    with_guard(c, id, |c| Pump::new(c, id, None).run(&mut e5))?;
+    with_guard(c, id, |c| {
+        // deliberate rail stall in Current mode: the directional endstop
+        // band would zero i_ref at the soft wall - open the gates, as E2
+        let saved = pump::widen_pos_limits(c, id)?;
+        let ran = Pump::new(c, id, None).run(&mut e5);
+        let restored = pump::restore_pos_limits(c, id, saved);
+        ran.and(restored)
+    })?;
     check_abort("verify-current", e5.abort())?;
     let cur = e5.into_inner().result();
     // E5 ends stalled against an end-stop; E6 runs with the pos guard on

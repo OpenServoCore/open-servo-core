@@ -31,6 +31,7 @@ pub mod config {
     pub const POS_DEADBAND_COUNTS: Reg = reg(0x0042, 2);
     pub const CURRENT_LIMIT_COUNTS: Reg = reg(0x0048, 2);
     pub const DRIVE_POLARITY: Reg = reg(0x004b, 1);
+    pub const STALL_TAU_TRIP_COUNTS: Reg = reg(0x0054, 2);
     pub const V_UNDERVOLT_COUNTS: Reg = reg(0x0060, 2);
     pub const L1_Q016: Reg = reg(0x0066, 2);
     pub const L2_Q88: Reg = reg(0x0068, 2);
@@ -131,6 +132,7 @@ pub const ALL: &[(&str, Reg)] = &[
     ("pos_deadband_counts", config::POS_DEADBAND_COUNTS),
     ("current_limit_counts", config::CURRENT_LIMIT_COUNTS),
     ("drive_polarity", config::DRIVE_POLARITY),
+    ("stall_tau_trip_counts", config::STALL_TAU_TRIP_COUNTS),
     ("v_undervolt_counts", config::V_UNDERVOLT_COUNTS),
     ("l1_q016", config::L1_Q016),
     ("l2_q88", config::L2_Q88),

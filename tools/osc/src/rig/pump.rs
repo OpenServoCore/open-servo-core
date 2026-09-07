@@ -85,9 +85,9 @@ pub(crate) fn with_guard<T>(
     r
 }
 
-/// Saved position-limit set for [`restore_pos_limits`]: (phys_lo, phys_hi,
-/// soft_lo, soft_hi).
-pub(crate) type SavedLimits = (i32, i32, i32, i32);
+/// Saved rail-gate set for [`restore_pos_limits`]: (phys_lo, phys_hi,
+/// soft_lo, soft_hi, stall_tau_trip).
+pub(crate) type SavedLimits = (i32, i32, i32, i32, u16);
 
 /// Sentinels comfortably beyond any theta_hat (the pot saturates at 4095):
 /// the firmware duty clamp compares theta_hat against the soft limits, so
@@ -108,23 +108,30 @@ pub(crate) fn widen_pos_limits(c: &mut Client<NusbPipe>, id: Id) -> Result<Saved
         read_i32(c, id, config::POS_MAX_PHYS_COUNTS)?,
         read_i32(c, id, config::POS_MIN_SOFT_COUNTS)?,
         read_i32(c, id, config::POS_MAX_SOFT_COUNTS)?,
+        super::snapshot::read_u16(c, id, config::STALL_TAU_TRIP_COUNTS)?,
     );
     write_reg(c, id, config::POS_MAX_PHYS_COUNTS, WIDE_HI)?;
     write_reg(c, id, config::POS_MAX_SOFT_COUNTS, WIDE_HI)?;
     write_reg(c, id, config::POS_MIN_PHYS_COUNTS, WIDE_LO)?;
     write_reg(c, id, config::POS_MIN_SOFT_COUNTS, WIDE_LO)?;
+    // A deliberate rail stall on an uncalibrated servo rails tau_d (the
+    // fusion model runs on zeroed constants), latching the collision fault
+    // mid-seek; the trip is parked while the gates are open. OpenLoop never
+    // pins i_ref, so the tau trip is the only stall path in play.
+    write_reg(c, id, config::STALL_TAU_TRIP_COUNTS, u16::MAX as i32)?;
     Ok(saved)
 }
 
 pub(crate) fn restore_pos_limits(
     c: &mut Client<NusbPipe>,
     id: Id,
-    (phys_lo, phys_hi, soft_lo, soft_hi): SavedLimits,
+    (phys_lo, phys_hi, soft_lo, soft_hi, tau_trip): SavedLimits,
 ) -> Result<()> {
     write_reg(c, id, config::POS_MIN_SOFT_COUNTS, soft_lo)?;
     write_reg(c, id, config::POS_MIN_PHYS_COUNTS, phys_lo)?;
     write_reg(c, id, config::POS_MAX_SOFT_COUNTS, soft_hi)?;
     write_reg(c, id, config::POS_MAX_PHYS_COUNTS, phys_hi)?;
+    write_reg(c, id, config::STALL_TAU_TRIP_COUNTS, tau_trip as i32)?;
     Ok(())
 }
 
