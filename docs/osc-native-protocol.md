@@ -463,7 +463,9 @@ code shares the byte (bits [6:2], 32 values). Errors split by layer:
    `validation` (value rejected by field rules), `busy`, `limit`
    (requested reply exceeds the frame ceiling, §5.1), `predecessor-silent`
    (§6),
-   `hardware`. Exact numeric assignments live with the implementation.
+   `hardware`. One more code is not an error at all: `stream` marks the
+   unsolicited TEL burst frames of sec 5.6. Exact numeric assignments
+   live with the implementation.
 3. **Device-level** (alarms: overtemperature, overcurrent, encoder fault):
    orthogonal to any one instruction's result, so it takes no result-code
    space — status bit 0 (**ALERT**) is set on *every* status frame while
@@ -553,6 +555,60 @@ bus-servo convention - hosts convert.
 One obligation this puts on the host: coordinating servos in physical
 space requires converting first, since per-unit scales differ between
 servos.
+
+### 5.6 Telemetry stream (TEL bursts)
+
+High-rate telemetry rides the bus as a bounded burst of status frames
+the servo emits on its own schedule - no extra wire, no side channel,
+and every frame under the same CRC as the rest of the protocol. Two
+control registers arm it: `tel_mask` selects the per-sample fields (one
+bit per field, canonical order; reserved bits reject), and a committed
+nonzero write to `tel_count` starts a burst of that many control-tick
+samples. Both compose with HOLD/COMMIT, so a goal write and the arm
+apply in the same instant - the step edge lands inside the capture. A
+committed `tel_count` of 0 disarms.
+
+Burst frames are ordinary status frames with result code `stream` - the
+one result code that marks a frame no instruction directly owes.
+Payload, all LE:
+
+```
+[0]    stream_seq  u8, increments per frame, wraps
+[1]    flags       bit 0 = LAST frame of the burst; rest reserved 0
+[2..4] valid       u16 bitmap, bit i = sample i measured a fresh window
+[4..]  samples     the mask-selected fields in bit order, 2 B each
+```
+
+Samples batch up to 16 per frame (the burst's final frame may carry
+fewer); the count is implicit in `LEN`. Batching is what makes the CRC
+affordable: framing overhead amortizes to well under one byte per
+sample, and the largest legal frame (full mask, 16 samples, 203 wire
+bytes) fits its own 16-tick batch window at 3 M with margin - the full
+field set sustains the tick rate, which the old per-tick side channel
+could not.
+
+The wire contract during a burst: the host is silent. The servo owns
+the line from the arm's ack (or the arming COMMIT's silence) through
+the LAST-flagged frame, then the line frees on its own - no polling, no
+handshake. Any host break mid-burst aborts the burst immediately;
+reclaiming the line IS the host's abort lever, and the one in-flight
+frame it garbles is the host's chosen cost. The instruction that
+arrived is then served normally, including a fresh re-arm.
+
+Integrity is the point: a corrupted burst frame fails CRC and is
+dropped whole by the host framer - it can never decode as plausible
+data - and the drop is visible as a hole in the `stream_seq` numbering
+(16 samples per missing frame). ALERT on a burst frame carries the OR
+of the batch's fault state, per the sec 5.3 device-level contract.
+
+Timing: a batch completes every 16 control ticks; the frame must clear
+the wire inside that window or the producer drops whole batches
+(drop-not-block, surfaced as seq holes). At 3 M every mask fits; below
+2 M a full-rate burst outruns the wire by design - run captures at 3 M,
+or accept the decimation the holes record. Safety through the silent
+window is the servo's own - current limit, soft-position clamps, and
+fault latches run in firmware regardless of the bus - and the host's
+supervisory reads resume between bursts.
 
 ## 6. Coordinated reads (status chains)
 
