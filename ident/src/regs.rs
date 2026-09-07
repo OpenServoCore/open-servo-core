@@ -73,13 +73,13 @@ pub mod control {
     use super::{Reg, reg};
 
     pub const TORQUE_ENABLE: Reg = reg(0x0180, 1);
-    pub const TEL_ENABLE: Reg = reg(0x0181, 1);
     pub const TEL_MASK: Reg = reg(0x0182, 2);
     pub const MODE: Reg = reg(0x0184, 1);
     pub const GOAL_DUTY: Reg = reg(0x0186, 2);
     pub const GOAL_POSITION: Reg = reg(0x0188, 4);
     pub const GOAL_VELOCITY: Reg = reg(0x018c, 4);
     pub const GOAL_CURRENT: Reg = reg(0x0190, 2);
+    pub const TEL_COUNT: Reg = reg(0x0192, 2);
 }
 
 pub mod telemetry {
@@ -161,13 +161,13 @@ pub const ALL: &[(&str, Reg)] = &[
     ("angle_max_cdeg", calib::ANGLE_MAX_CDEG),
     ("gear_ratio_centi", calib::GEAR_RATIO_CENTI),
     ("torque_enable", control::TORQUE_ENABLE),
-    ("tel_enable", control::TEL_ENABLE),
     ("tel_mask", control::TEL_MASK),
     ("mode", control::MODE),
     ("goal_duty", control::GOAL_DUTY),
     ("goal_position", control::GOAL_POSITION),
     ("goal_velocity", control::GOAL_VELOCITY),
     ("goal_current", control::GOAL_CURRENT),
+    ("tel_count", control::TEL_COUNT),
     ("fault_flags", telemetry::FAULT_FLAGS),
     ("status_flags", telemetry::STATUS_FLAGS),
     ("mode_active", telemetry::MODE_ACTIVE),

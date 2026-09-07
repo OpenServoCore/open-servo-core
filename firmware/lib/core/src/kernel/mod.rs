@@ -242,10 +242,8 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         // TEL emits HERE, on the fast path before the medium/slow branches:
         // duty_q15 still holds the command whose window this frame's samples
         // measured (the same previous-tick alignment the ident aggregate
-        // uses), and the send lands at a near-constant tick offset. Emitting
-        // at on_tick's end loses the DMA drain margin every medium tick -
-        // bench: >=9 B frames dropped at exactly the medium cadence.
-        if life.tel_enable && life.tel_mask != 0 {
+        // uses), and the sample lands at a near-constant tick offset.
+        if self.tel.active() {
             let s = TelSample {
                 pos: frame.pos,
                 current: self.i_meas_last,
@@ -255,7 +253,6 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                 vbus: self.vbus.vbus_counts(),
                 window_valid: i_meas.is_some(),
             };
-            self.tel.configure(true, life.tel_mask);
             self.tel.on_tick(&s);
         }
 

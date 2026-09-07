@@ -124,7 +124,9 @@ impl Opcode {
     }
 }
 
-/// Status result code, `INST` bits [6:2] (sec 5.3). `9..=31` reserved/invalid.
+/// Status result code, `INST` bits [6:2] (sec 5.3). `10..=31` reserved/invalid.
+/// `Stream` marks a servo-initiated TEL burst frame (not a command ack), so
+/// parsers split the two without state.
 #[repr(u8)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ResultCode {
@@ -137,10 +139,11 @@ pub enum ResultCode {
     Limit = 6,
     PredecessorSilent = 7,
     Hardware = 8,
+    Stream = 9,
 }
 
 impl ResultCode {
-    /// `b` is the already-extracted 5-bit field; `9..=31` reject.
+    /// `b` is the already-extracted 5-bit field; `10..=31` reject.
     #[inline]
     pub const fn from_bits(b: u8) -> Option<ResultCode> {
         match b {
@@ -153,6 +156,7 @@ impl ResultCode {
             6 => Some(ResultCode::Limit),
             7 => Some(ResultCode::PredecessorSilent),
             8 => Some(ResultCode::Hardware),
+            9 => Some(ResultCode::Stream),
             _ => None,
         }
     }
@@ -378,7 +382,8 @@ mod tests {
             Some(ResultCode::PredecessorSilent)
         );
         assert_eq!(ResultCode::from_bits(8), Some(ResultCode::Hardware));
-        assert_eq!(ResultCode::from_bits(9), None);
+        assert_eq!(ResultCode::from_bits(9), Some(ResultCode::Stream));
+        assert_eq!(ResultCode::from_bits(10), None);
         assert_eq!(ResultCode::from_bits(31), None);
     }
 

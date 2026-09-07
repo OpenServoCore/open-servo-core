@@ -134,7 +134,7 @@ impl FakeServo {
         } else if reg == control::GOAL_DUTY {
             self.duty = value as i16;
             self.t_duty_change = self.t_ms;
-        } else if reg == control::TEL_ENABLE {
+        } else if reg == control::TEL_COUNT {
             self.tel_enable = value != 0;
         } else if reg == control::TEL_MASK {
             self.tel_mask = value as u16;

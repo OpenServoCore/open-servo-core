@@ -108,6 +108,10 @@ impl<W: TxWire, C: CrcEngine> Reply for ReplyHandle<'_, W, C> {
         *self.response_deadline_us = us;
     }
 
+    fn tel_arm(&mut self, _mask: u16, _count: u16) {
+        // Burst producer not wired yet; the arm is dropped.
+    }
+
     fn stage_reboot(&mut self, mode: BootMode) {
         *self.pending_reboot = Some(mode);
     }

@@ -273,7 +273,7 @@ fn with_guard<T>(
         (control::GOAL_CURRENT, 0),
         (control::GOAL_VELOCITY, 0),
         (control::TORQUE_ENABLE, 0),
-        (control::TEL_ENABLE, 0),
+        (control::TEL_COUNT, 0),
         (control::TEL_MASK, 0),
     ] {
         let _ = write_reg(c, id, reg, v);

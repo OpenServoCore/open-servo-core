@@ -630,7 +630,7 @@ impl<E: Experiment> Experiment for TelWrap<'_, E> {
             TelInject::EnaOn => {
                 self.phase = TelInject::Body;
                 Cmd::Write {
-                    reg: control::TEL_ENABLE,
+                    reg: control::TEL_COUNT,
                     value: 1,
                 }
             }
@@ -639,7 +639,7 @@ impl<E: Experiment> Experiment for TelWrap<'_, E> {
                 if matches!(cmd, Cmd::Done) {
                     self.phase = TelInject::EnaOff;
                     Cmd::Write {
-                        reg: control::TEL_ENABLE,
+                        reg: control::TEL_COUNT,
                         value: 0,
                     }
                 } else {

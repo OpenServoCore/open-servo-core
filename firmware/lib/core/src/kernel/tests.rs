@@ -1101,12 +1101,12 @@ fn position_step_survives_tick_deletion() {
 
 #[derive(Default)]
 struct RecTel {
-    cfg: Option<(bool, u16)>,
+    active: bool,
     samples: heapless::Vec<crate::tel::TelSample, 64>,
 }
 impl crate::tel::TelStream for RecTel {
-    fn configure(&mut self, enabled: bool, mask: u16) {
-        self.cfg = Some((enabled, mask));
+    fn active(&self) -> bool {
+        self.active
     }
     fn on_tick(&mut self, sample: &crate::tel::TelSample) {
         let _ = self.samples.push(*sample);
@@ -1114,7 +1114,7 @@ impl crate::tel::TelStream for RecTel {
 }
 
 #[test]
-fn tel_stream_gated_by_enable_and_mask() {
+fn tel_stream_gated_by_sink_active() {
     let sh = Shared::new();
     seed(&sh);
     let mut k = Kernel::with_tel(
@@ -1125,27 +1125,15 @@ fn tel_stream_gated_by_enable_and_mask() {
         RecTel::default(),
         TIMING,
     );
-    // enable/mask both zero, then each alone: no emission
-    for _ in 0..10 {
-        k.on_tick(frame(2000, BIAS), &sh);
-    }
-    sh.table.with_mut(|t| t.control.lifecycle.tel_enable = true);
-    for _ in 0..10 {
-        k.on_tick(frame(2000, BIAS), &sh);
-    }
-    sh.table.with_mut(|t| {
-        t.control.lifecycle.tel_enable = false;
-        t.control.lifecycle.tel_mask = crate::tel::MASK_ALL;
-    });
+    // sink inactive: no emission
     for _ in 0..10 {
         k.on_tick(frame(2000, BIAS), &sh);
     }
     assert!(k.tel.samples.is_empty());
-    assert!(k.tel.cfg.is_none());
 
-    // both set: one sample per tick, table mask forwarded
+    // sink active: one sample per tick
+    k.tel.active = true;
     sh.table.with_mut(|t| {
-        t.control.lifecycle.tel_enable = true;
         t.control.lifecycle.torque_enable = true;
         t.control.lifecycle.mode = Mode::OpenLoop;
         t.control.lifecycle.goal_duty = 8000;
@@ -1154,7 +1142,6 @@ fn tel_stream_gated_by_enable_and_mask() {
         k.on_tick(frame(2100, BIAS + 40), &sh);
     }
     assert_eq!(k.tel.samples.len(), 20);
-    assert_eq!(k.tel.cfg, Some((true, crate::tel::MASK_ALL)));
     let s = k.tel.samples.last().unwrap();
     assert_eq!(s.pos, 2100);
     assert_eq!(s.current_trough, BIAS + 40);

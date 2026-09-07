@@ -557,13 +557,6 @@
       "kind": "bool"
     },
     {
-      "name": "tel_enable",
-      "addr": 385,
-      "width": 1,
-      "access": "rw",
-      "kind": "bool"
-    },
-    {
       "name": "tel_mask",
       "addr": 386,
       "width": 2,
@@ -623,6 +616,13 @@
       "width": 2,
       "access": "rw",
       "kind": "int"
+    },
+    {
+      "name": "tel_count",
+      "addr": 402,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
     },
     {
       "name": "boot_mode",

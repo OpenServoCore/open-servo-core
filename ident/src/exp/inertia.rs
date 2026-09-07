@@ -377,7 +377,7 @@ impl Experiment for Inertia {
             Phase::TelOn => {
                 self.phase = Phase::SeekSet;
                 Cmd::Write {
-                    reg: control::TEL_ENABLE,
+                    reg: control::TEL_COUNT,
                     value: 1,
                 }
             }
@@ -507,7 +507,7 @@ impl Experiment for Inertia {
             Phase::TelOff => {
                 self.phase = Phase::TelMaskOff;
                 Cmd::Write {
-                    reg: control::TEL_ENABLE,
+                    reg: control::TEL_COUNT,
                     value: 0,
                 }
             }
@@ -624,8 +624,8 @@ mod tests {
         let (_, log) = run_agg();
         let idx = |needle: &str| log.iter().position(|l| l == needle).unwrap();
         let mask_on = idx("write tel_mask 27");
-        let tel_on = idx("write tel_enable 1");
-        let tel_off = idx("write tel_enable 0");
+        let tel_on = idx("write tel_count 1");
+        let tel_off = idx("write tel_count 0");
         let mask_off = idx("write tel_mask 0");
         let torque_off = log
             .iter()

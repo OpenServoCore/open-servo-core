@@ -1,17 +1,12 @@
 use core::cell::SyncUnsafeCell;
 use core::mem::MaybeUninit;
 use osc_servo_core::{Kernel, KernelTiming, RegionStorageRaw, Session, Shared};
-use osc_servo_drivers::tel::Tel;
 
 use crate::control::Ch32ControlIo;
-use crate::providers::tel_tx::TelTx;
 
 pub static SHARED: Shared = Shared::new();
 
-/// The Tel driver rides inside the kernel (its `TelStream` sink), NOT the
-/// HIGH-side `Drivers` composite: it is called from the PFIC LOW kernel
-/// tick, and kernel ownership keeps the `&mut` single-context.
-type Ch32Kernel = Kernel<Ch32ControlIo, Tel<TelTx>>;
+type Ch32Kernel = Kernel<Ch32ControlIo>;
 
 /// Initialised by `install`; the ADC DMA TC IRQ is PFIC-masked until then.
 pub(crate) static KERNEL: SyncUnsafeCell<MaybeUninit<Ch32Kernel>> =
@@ -27,7 +22,7 @@ pub(crate) static SESSION: SyncUnsafeCell<MaybeUninit<Session>> =
 
 pub fn install(io: Ch32ControlIo, timing: KernelTiming) {
     unsafe {
-        (*KERNEL.get()).write(Kernel::with_tel(io, Tel::new(TelTx), timing));
+        (*KERNEL.get()).write(Kernel::new(io, timing));
         (*SESSION.get()).write(Session::new());
     }
     crate::log::info!("kernel + session installed");

@@ -31,6 +31,7 @@ struct FakeReply {
     set_id: Option<(u8, usize)>,
     staged_baud: Option<BaudRate>,
     response_deadline: Option<u16>,
+    tel_arm: Option<(u16, u16)>,
     reboot: Option<BootMode>,
     clock_cal: Option<(u16, u8)>,
 }
@@ -44,6 +45,7 @@ impl FakeReply {
             set_id: None,
             staged_baud: None,
             response_deadline: None,
+            tel_arm: None,
             reboot: None,
             clock_cal: None,
         }
@@ -108,6 +110,10 @@ impl Reply for FakeReply {
 
     fn set_response_deadline(&mut self, us: u16) {
         self.response_deadline = Some(us);
+    }
+
+    fn tel_arm(&mut self, mask: u16, count: u16) {
+        self.tel_arm = Some((mask, count));
     }
 
     fn stage_reboot(&mut self, mode: BootMode) {
@@ -1291,4 +1297,79 @@ fn hooks_fire_on_real_commit() {
         &mut reply,
     );
     assert_eq!(reply.staged_id, Some(42), "COMMIT fires the deferred hook");
+}
+
+/// Dispatch through a fresh dispatcher over shared session state, delivering
+/// a PASS verdict into the caller's recording reply.
+fn pass(
+    shared: &Shared,
+    staged: &mut StagedWrites,
+    pending: &mut Option<crate::services::bus::PendingWrite>,
+    reply: &mut FakeReply,
+    req: Request<'_>,
+) {
+    let mut d = disp(shared, staged, pending);
+    if matches!(
+        d.dispatch(req, RequestCtx { may_reply: true }, reply),
+        Dispatched::Pending
+    ) {
+        d.commit(reply);
+    }
+}
+
+#[test]
+fn tel_count_write_arms_with_the_live_mask() {
+    use crate::regions::control::addr::lifecycle::{TEL_COUNT, TEL_MASK};
+    let shared = Shared::new();
+    let mut staged = StagedWrites::new();
+    let mut pending = None;
+    let mut reply = FakeReply::new();
+    let mut go = |reply: &mut FakeReply, req| pass(&shared, &mut staged, &mut pending, reply, req);
+
+    go(&mut reply, write(TEL_MASK, &[0x1B, 0], false));
+    assert_eq!(reply.tel_arm, None, "mask write alone never signals");
+
+    let count = 320u16.to_le_bytes();
+    go(&mut reply, write(TEL_COUNT, &count, false));
+    assert_eq!(reply.tel_arm, Some((0x1B, 320)));
+
+    // count 0 is the disarm
+    go(&mut reply, write(TEL_COUNT, &[0, 0], false));
+    assert_eq!(reply.tel_arm, Some((0x1B, 0)));
+
+    // mask 0 cannot arm: the signal degrades to a disarm
+    go(&mut reply, write(TEL_MASK, &[0, 0], false));
+    go(&mut reply, write(TEL_COUNT, &[5, 0], false));
+    assert_eq!(reply.tel_arm, Some((0, 0)));
+}
+
+#[test]
+fn held_mask_and_count_arm_together_at_commit() {
+    use crate::regions::control::addr::lifecycle::{TEL_COUNT, TEL_MASK};
+    let shared = Shared::new();
+    let mut staged = StagedWrites::new();
+    let mut pending = None;
+    let mut reply = FakeReply::new();
+
+    for (addr, data) in [(TEL_MASK, [0x1B, 0]), (TEL_COUNT, [16, 0])] {
+        pass(
+            &shared,
+            &mut staged,
+            &mut pending,
+            &mut reply,
+            write(addr, &data, true),
+        );
+    }
+    assert_eq!(reply.tel_arm, None, "held entries stay silent");
+
+    disp(&shared, &mut staged, &mut pending).dispatch(
+        Request::Commit,
+        RequestCtx { may_reply: true },
+        &mut reply,
+    );
+    assert_eq!(
+        reply.tel_arm,
+        Some((0x1B, 16)),
+        "arm sees the mask from the same COMMIT"
+    );
 }

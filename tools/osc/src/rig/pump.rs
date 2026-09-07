@@ -60,8 +60,8 @@ pub(crate) fn read_snapshot(c: &mut Client<NusbPipe>, id: Id) -> Result<Telemetr
 pub(crate) struct Pump<'a> {
     pub(crate) client: &'a mut Client<NusbPipe>,
     pub(crate) id: Id,
-    /// TEL device path; the sink opens on the experiment's tel_enable=1
-    /// write and closes (frames flushed) on tel_enable=0.
+    /// TEL device path; the sink opens on the experiment's nonzero
+    /// tel_count write and closes (frames flushed) on tel_count=0.
     pub(crate) tel_port: Option<String>,
     pub(crate) tel_mask: u16,
     pub(crate) log: Option<&'a mut SnapshotLog>,
@@ -95,7 +95,7 @@ impl Pump<'_> {
             }
             match cmd {
                 Cmd::Write { reg, value } => {
-                    if reg == control::TEL_ENABLE && self.tel_port.is_some() {
+                    if reg == control::TEL_COUNT && self.tel_port.is_some() {
                         if value != 0 && sink.is_none() {
                             sink = Some(TelSink::open(
                                 self.tel_port.as_deref().expect("checked"),

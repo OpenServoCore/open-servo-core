@@ -1,23 +1,17 @@
-//! TEL streaming frame layout: the per-fast-tick binary side-channel
-//! (USART2/TEL pad) the host identification fitter consumes. Transport-
-//! independent and mirrored verbatim by the host parser, so every layout
-//! fact lives here. Frame = 3 B header (sync, seq, flags) + the fields
-//! selected by `tel_mask` in bit order, little-endian; length is a pure
-//! function of the mask. No CRC: the link is a point-to-point wire and
-//! sync + seq continuity is the integrity mechanism - a corrupt byte
-//! surfaces as a realign plus seq gap at the host.
+//! TEL stream payload layout: the bounded burst of osc-native status
+//! frames (result = `Stream`, protocol sec 5.3) a servo emits on the main
+//! bus after a committed nonzero `tel_count` write. Each frame is
+//! break-delimited and osc-CRC-16 protected, so a corrupt frame is
+//! detectable; this module owns only the payload bytes between INST and
+//! CRC. Layout, all LE:
+//!
+//!   [0]    stream_seq  u8, increments per frame, wraps
+//!   [1]    flags       bit 0 = LAST frame of the burst; rest reserved 0
+//!   [2..4] valid       u16 bitmap, bit i = sample i window_valid
+//!   [4..]  samples     the `tel_mask`-selected fields in bit order,
+//!                      2 bytes each; count = payload remainder / sample_len
 
-/// Not 0x00/0xFF (dominant idle/saturated data bytes); false locks resolve
-/// via seq continuity, so low collision odds suffice.
-pub const SYNC: u8 = 0xA7;
-
-pub const HDR_LEN: usize = 3;
-
-/// Header flags bit 0: this tick's drive window met the sampling floors
-/// (current/vdiff carry a fresh measurement, not last-valid hold).
-pub const FLAG_WINDOW_VALID: u8 = 1 << 0;
-
-/// `tel_mask` bits, in canonical frame order. All v1 fields are 2 bytes.
+/// `tel_mask` bits, in canonical sample order. All v1 fields are 2 bytes.
 pub const BIT_POS: u16 = 1 << 0;
 pub const BIT_CURRENT: u16 = 1 << 1;
 pub const BIT_CURRENT_TROUGH: u16 = 1 << 2;
@@ -26,25 +20,32 @@ pub const BIT_VDIFF: u16 = 1 << 4;
 pub const BIT_VBUS: u16 = 1 << 5;
 pub const MASK_ALL: u16 = 0x3F;
 
-/// One fast tick on the wire: 3 Mbaud / 10 bits per byte / 20 kHz = 15 B.
-/// A longer frame cannot sustain one-per-tick; masks over budget are
-/// rejected. The all-bits v1 frame lands exactly here.
-pub const FRAME_BUDGET: usize = 15;
+/// Payload flags bit 0: last frame of the burst; the line frees after it.
+pub const FLAG_LAST: u8 = 1 << 0;
 
-pub const fn frame_len(mask: u16) -> usize {
-    HDR_LEN + 2 * (mask & MASK_ALL).count_ones() as usize
+/// Fixed batch size: one frame carries up to 16 fast-tick samples (the
+/// burst's last frame may carry fewer).
+pub const STREAM_SAMPLES_MAX: usize = 16;
+
+pub const STREAM_HDR: usize = 4;
+
+pub const fn sample_len(mask: u16) -> usize {
+    2 * (mask & MASK_ALL).count_ones() as usize
 }
 
-/// Reserved bits and over-budget frames are both invalid; mask 0 is valid
-/// (stream off). Budget is structural headroom - every v1 mask fits.
+pub const STREAM_PAYLOAD_MAX: usize = STREAM_HDR + STREAM_SAMPLES_MAX * sample_len(MASK_ALL);
+
+/// Reserved bits are invalid; mask 0 is valid (stream disarmed).
 pub const fn mask_valid(mask: u16) -> bool {
-    mask & !MASK_ALL == 0 && frame_len(mask) <= FRAME_BUDGET
+    mask & !MASK_ALL == 0
 }
 
 /// One fast tick's streamable primitives, in device counts. `current` is
 /// the signed bias-subtracted window sample (the fitter's domain, matching
 /// `i_hat_counts`); `current_trough` and `vbus` stay raw unsigned like
-/// their telemetry counterparts.
+/// their telemetry counterparts. `window_valid` (this tick's drive window
+/// met the sampling floors) travels in the frame's `valid` bitmap, not per
+/// sample.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct TelSample {
     pub pos: u16,
@@ -57,42 +58,61 @@ pub struct TelSample {
 }
 
 /// The kernel's per-fast-tick stream hook; core never names the transport.
-/// The kernel calls `configure` then `on_tick` only on ticks where the
-/// table enables the stream (tel_enable set, mask nonzero), so a sink never
-/// needs its own gate.
+/// The sink owns its own gate: `on_tick` fires only while `active`.
 pub trait TelStream {
-    fn configure(&mut self, enabled: bool, mask: u16);
+    fn active(&self) -> bool;
     fn on_tick(&mut self, sample: &TelSample);
 }
 
-/// Stream absent (boards without TEL wiring, tests).
+/// Stream absent (boards without a burst producer, tests).
 impl TelStream for () {
-    fn configure(&mut self, _enabled: bool, _mask: u16) {}
+    fn active(&self) -> bool {
+        false
+    }
     fn on_tick(&mut self, _sample: &TelSample) {}
 }
 
-/// Serialize one frame into `buf`, returning its length. `mask` reserved
-/// bits are ignored (callers gate on `mask_valid`); the fixed-size buffer
-/// makes the writes structurally in-bounds.
-pub fn encode(mask: u16, seq: u8, s: &TelSample, buf: &mut [u8; FRAME_BUDGET]) -> usize {
-    buf[0] = SYNC;
-    buf[1] = seq;
-    buf[2] = if s.window_valid { FLAG_WINDOW_VALID } else { 0 };
-    let mut n = HDR_LEN;
-    let m = mask & MASK_ALL;
-    let mut put = |bit: u16, le: [u8; 2]| {
-        if m & bit != 0 {
-            buf[n] = le[0];
-            buf[n + 1] = le[1];
-            n += 2;
-        }
+/// Serialize one stream payload into `buf`, returning its length. `mask`
+/// reserved bits are ignored (callers gate on `mask_valid`); `samples`
+/// beyond [`STREAM_SAMPLES_MAX`] truncate (caller contract, debug-asserted).
+/// The fixed-size buffer makes the writes structurally in-bounds.
+pub fn encode_stream(
+    mask: u16,
+    stream_seq: u8,
+    last: bool,
+    samples: &[TelSample],
+    buf: &mut [u8; STREAM_PAYLOAD_MAX],
+) -> usize {
+    debug_assert!(samples.len() <= STREAM_SAMPLES_MAX);
+    let count = if samples.len() > STREAM_SAMPLES_MAX {
+        STREAM_SAMPLES_MAX
+    } else {
+        samples.len()
     };
-    put(BIT_POS, s.pos.to_le_bytes());
-    put(BIT_CURRENT, s.current.to_le_bytes());
-    put(BIT_CURRENT_TROUGH, s.current_trough.to_le_bytes());
-    put(BIT_DUTY, s.duty_q15.to_le_bytes());
-    put(BIT_VDIFF, s.vdiff.to_le_bytes());
-    put(BIT_VBUS, s.vbus.to_le_bytes());
+    buf[0] = stream_seq;
+    buf[1] = if last { FLAG_LAST } else { 0 };
+    let m = mask & MASK_ALL;
+    let mut valid: u16 = 0;
+    let mut n = STREAM_HDR;
+    for (i, s) in samples[..count].iter().enumerate() {
+        if s.window_valid {
+            valid |= 1 << i;
+        }
+        let mut put = |bit: u16, le: [u8; 2]| {
+            if m & bit != 0 {
+                buf[n] = le[0];
+                buf[n + 1] = le[1];
+                n += 2;
+            }
+        };
+        put(BIT_POS, s.pos.to_le_bytes());
+        put(BIT_CURRENT, s.current.to_le_bytes());
+        put(BIT_CURRENT_TROUGH, s.current_trough.to_le_bytes());
+        put(BIT_DUTY, s.duty_q15.to_le_bytes());
+        put(BIT_VDIFF, s.vdiff.to_le_bytes());
+        put(BIT_VBUS, s.vbus.to_le_bytes());
+    }
+    buf[2..4].copy_from_slice(&valid.to_le_bytes());
     n
 }
 
@@ -101,78 +121,151 @@ mod tests {
     use super::*;
 
     #[test]
-    fn frame_len_counts_selected_fields() {
-        assert_eq!(frame_len(0), HDR_LEN);
-        assert_eq!(frame_len(BIT_POS), HDR_LEN + 2);
-        assert_eq!(frame_len(BIT_POS | BIT_DUTY | BIT_VDIFF), HDR_LEN + 6);
-        assert_eq!(frame_len(MASK_ALL), FRAME_BUDGET);
-    }
-
-    #[test]
-    fn all_bits_is_exactly_budget_and_valid() {
-        assert_eq!(frame_len(MASK_ALL), FRAME_BUDGET);
-        assert!(mask_valid(MASK_ALL));
-        assert!(mask_valid(0));
+    fn sample_len_counts_selected_fields() {
+        assert_eq!(sample_len(0), 0);
+        assert_eq!(sample_len(BIT_POS), 2);
+        assert_eq!(sample_len(BIT_POS | BIT_DUTY | BIT_VDIFF), 6);
+        assert_eq!(sample_len(MASK_ALL), 12);
+        assert_eq!(STREAM_PAYLOAD_MAX, STREAM_HDR + 16 * 12);
     }
 
     #[test]
     fn reserved_bits_are_invalid() {
+        assert!(mask_valid(0));
+        assert!(mask_valid(MASK_ALL));
         assert!(!mask_valid(1 << 6));
         assert!(!mask_valid(1 << 15));
         assert!(!mask_valid(MASK_ALL | 1 << 6));
     }
 
+    /// Frame wire time must not outrun the batch it carries: the largest
+    /// frame (full mask, 16 samples, 196 B payload + 6 B frame overhead +
+    /// break) fits 16 fast ticks at 3 Mbaud with >= 5% margin.
     #[test]
-    fn encode_golden_all_fields() {
-        let s = TelSample {
-            pos: 0x1234,
-            current: -2,
-            current_trough: 0xBEEF,
-            duty_q15: 0x7FFF,
-            vdiff: -300,
-            vbus: 1822,
-            window_valid: true,
-        };
-        let mut buf = [0u8; FRAME_BUDGET];
-        let n = encode(MASK_ALL, 0x42, &s, &mut buf);
-        assert_eq!(n, FRAME_BUDGET);
-        let mut want = [0u8; FRAME_BUDGET];
-        want[..3].copy_from_slice(&[SYNC, 0x42, FLAG_WINDOW_VALID]);
-        want[3..5].copy_from_slice(&0x1234u16.to_le_bytes());
-        want[5..7].copy_from_slice(&(-2i16).to_le_bytes());
-        want[7..9].copy_from_slice(&0xBEEFu16.to_le_bytes());
-        want[9..11].copy_from_slice(&0x7FFFi16.to_le_bytes());
-        want[11..13].copy_from_slice(&(-300i16).to_le_bytes());
-        want[13..15].copy_from_slice(&1822u16.to_le_bytes());
-        assert_eq!(buf, want);
+    fn largest_frame_fits_its_batch_window() {
+        const WIRE_BYTES: usize = STREAM_PAYLOAD_MAX + 6 + 1;
+        const { assert!(WIRE_BYTES * 10 <= STREAM_SAMPLES_MAX * 150 * 95 / 100) }
+    }
+
+    fn sample(i: usize) -> TelSample {
+        TelSample {
+            pos: 0x1000 + i as u16,
+            current: -(i as i16) - 1,
+            current_trough: 0xB000 + i as u16,
+            duty_q15: 0x2000 + i as i16,
+            vdiff: -300 - i as i16,
+            vbus: 1800 + i as u16,
+            window_valid: i.is_multiple_of(2),
+        }
+    }
+
+    /// Test-local decoder: splits one payload back into header + samples.
+    fn decode(mask: u16, payload: &[u8]) -> (u8, u8, u16, heapless::Vec<TelSample, 16>) {
+        let slen = sample_len(mask);
+        let (seq, flags) = (payload[0], payload[1]);
+        let valid = u16::from_le_bytes([payload[2], payload[3]]);
+        let body = &payload[STREAM_HDR..];
+        assert_eq!(body.len() % slen, 0);
+        let mut out = heapless::Vec::new();
+        for (i, ch) in body.chunks(slen).enumerate() {
+            let mut s = TelSample {
+                window_valid: valid & (1 << i) != 0,
+                ..Default::default()
+            };
+            let mut off = 0;
+            let mut take = |bit: u16| {
+                if mask & bit != 0 {
+                    let v = u16::from_le_bytes([ch[off], ch[off + 1]]);
+                    off += 2;
+                    v
+                } else {
+                    0
+                }
+            };
+            s.pos = take(BIT_POS);
+            s.current = take(BIT_CURRENT) as i16;
+            s.current_trough = take(BIT_CURRENT_TROUGH);
+            s.duty_q15 = take(BIT_DUTY) as i16;
+            s.vdiff = take(BIT_VDIFF) as i16;
+            s.vbus = take(BIT_VBUS);
+            out.push(s).unwrap();
+        }
+        (seq, flags, valid, out)
     }
 
     #[test]
-    fn encode_subset_packs_in_bit_order() {
-        let s = TelSample {
-            pos: 100,
-            current: -7,
-            duty_q15: 5,
-            vdiff: 9,
-            ..Default::default()
-        };
-        let mut buf = [0u8; FRAME_BUDGET];
-        // ladder mask: pos + current + duty + vdiff = 11 B
-        let mask = BIT_POS | BIT_CURRENT | BIT_DUTY | BIT_VDIFF;
-        let n = encode(mask, 7, &s, &mut buf);
-        assert_eq!(n, 11);
-        assert_eq!(buf[2], 0, "window_valid false");
-        assert_eq!(buf[3..5], 100u16.to_le_bytes());
-        assert_eq!(buf[5..7], (-7i16).to_le_bytes());
-        assert_eq!(buf[7..9], 5i16.to_le_bytes());
-        assert_eq!(buf[9..11], 9i16.to_le_bytes());
+    fn encode_golden_full_mask_full_batch() {
+        let samples: heapless::Vec<TelSample, 16> = (0..16).map(sample).collect();
+        let mut buf = [0u8; STREAM_PAYLOAD_MAX];
+        let n = encode_stream(MASK_ALL, 0x42, false, &samples, &mut buf);
+        assert_eq!(n, STREAM_PAYLOAD_MAX);
+        // header: seq, flags (not LAST), valid = even sample indices
+        assert_eq!(buf[..4], [0x42, 0x00, 0x55, 0x55]);
+        // first sample, all six fields in bit order
+        assert_eq!(
+            buf[4..16],
+            [
+                0x00, 0x10, 0xFF, 0xFF, 0x00, 0xB0, 0x00, 0x20, 0xD4, 0xFE, 0x08, 0x07
+            ]
+        );
+        // last sample (i = 15)
+        assert_eq!(
+            buf[184..196],
+            [
+                0x0F, 0x10, 0xF0, 0xFF, 0x0F, 0xB0, 0x0F, 0x20, 0xC5, 0xFE, 0x17, 0x07
+            ]
+        );
     }
 
     #[test]
-    fn encode_tail_stays_untouched() {
-        let mut buf = [0xEEu8; FRAME_BUDGET];
-        let n = encode(BIT_VBUS, 1, &TelSample::default(), &mut buf);
-        assert_eq!(n, 5);
-        assert!(buf[5..].iter().all(|&b| b == 0xEE));
+    fn encode_subset_mask_packs_in_bit_order() {
+        // ladder mask 0x1B: pos + current + duty + vdiff
+        let mask = 0x1B;
+        let samples = [sample(0), sample(1)];
+        let mut buf = [0u8; STREAM_PAYLOAD_MAX];
+        let n = encode_stream(mask, 7, false, &samples, &mut buf);
+        assert_eq!(n, STREAM_HDR + 2 * 8);
+        assert_eq!(buf[..4], [7, 0, 0x01, 0x00]);
+        assert_eq!(buf[4..12], [0x00, 0x10, 0xFF, 0xFF, 0x00, 0x20, 0xD4, 0xFE]);
+        assert_eq!(
+            buf[12..20],
+            [0x01, 0x10, 0xFE, 0xFF, 0x01, 0x20, 0xD3, 0xFE]
+        );
+    }
+
+    #[test]
+    fn encode_partial_last_frame() {
+        let samples = [sample(0), sample(1), sample(2)];
+        let mut buf = [0xEEu8; STREAM_PAYLOAD_MAX];
+        let n = encode_stream(BIT_POS, 0xFF, true, &samples, &mut buf);
+        assert_eq!(n, STREAM_HDR + 3 * 2);
+        assert_eq!(buf[..4], [0xFF, FLAG_LAST, 0x05, 0x00]);
+        assert_eq!(buf[4..10], [0x00, 0x10, 0x01, 0x10, 0x02, 0x10]);
+        assert!(buf[10..].iter().all(|&b| b == 0xEE));
+    }
+
+    #[test]
+    fn round_trip_all_masks() {
+        for mask in [MASK_ALL, 0x1B, BIT_VBUS] {
+            let samples: heapless::Vec<TelSample, 16> = (0..5).map(sample).collect();
+            let mut buf = [0u8; STREAM_PAYLOAD_MAX];
+            let n = encode_stream(mask, 9, true, &samples, &mut buf);
+            let (seq, flags, _, got) = decode(mask, &buf[..n]);
+            assert_eq!((seq, flags), (9, FLAG_LAST));
+            assert_eq!(got.len(), samples.len());
+            for (g, w) in got.iter().zip(&samples) {
+                assert_eq!(g.window_valid, w.window_valid);
+                let m = |bit: u16, v: i32| if mask & bit != 0 { v } else { 0 };
+                assert_eq!(g.pos as i32, m(BIT_POS, w.pos as i32));
+                assert_eq!(g.current as i32, m(BIT_CURRENT, w.current as i32));
+                assert_eq!(
+                    g.current_trough as i32,
+                    m(BIT_CURRENT_TROUGH, w.current_trough as i32)
+                );
+                assert_eq!(g.duty_q15 as i32, m(BIT_DUTY, w.duty_q15 as i32));
+                assert_eq!(g.vdiff as i32, m(BIT_VDIFF, w.vdiff as i32));
+                assert_eq!(g.vbus as i32, m(BIT_VBUS, w.vbus as i32));
+            }
+        }
     }
 }

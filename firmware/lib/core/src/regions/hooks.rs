@@ -16,15 +16,19 @@ pub(crate) trait ControlTableHookEvents {
     fn on_id_write(&mut self, value: u8);
     fn on_baud_rate_idx_write(&mut self, value: u8);
     fn on_response_deadline_us_write(&mut self, value: u16);
+    fn on_tel_count_write(&mut self, value: u16);
 }
 
 pub(crate) struct ControlTableHooks<'a, R: Reply + ?Sized> {
     reply: &'a mut R,
+    /// Post-commit `tel_mask`, snapshotted by the dispatcher so a
+    /// `tel_count` hook can pair the arm with the mask it streams under.
+    tel_mask: u16,
 }
 
 impl<'a, R: Reply + ?Sized> ControlTableHooks<'a, R> {
-    pub(crate) fn new(reply: &'a mut R) -> Self {
-        Self { reply }
+    pub(crate) fn new(reply: &'a mut R, tel_mask: u16) -> Self {
+        Self { reply, tel_mask }
     }
 }
 
@@ -41,5 +45,10 @@ impl<R: Reply + ?Sized> ControlTableHookEvents for ControlTableHooks<'_, R> {
     }
     fn on_response_deadline_us_write(&mut self, value: u16) {
         self.reply.set_response_deadline(value);
+    }
+    fn on_tel_count_write(&mut self, value: u16) {
+        // Mask 0 cannot arm; count 0 carries the disarm.
+        let count = if self.tel_mask == 0 { 0 } else { value };
+        self.reply.tel_arm(self.tel_mask, count);
     }
 }
