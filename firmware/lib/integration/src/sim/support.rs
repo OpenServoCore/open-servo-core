@@ -6,7 +6,7 @@ use osc_protocol::crc::osc_crc;
 use osc_protocol::frame::Header;
 use osc_protocol::reply::FrameBuf;
 use osc_protocol::wire::{self, Id, Inst, Opcode};
-use osc_servo_core::tel::TelSample;
+use osc_servo_core::tel::{STREAM_PAYLOAD_MAX, STREAM_SAMPLES_MAX, TelSample, encode_stream};
 
 use super::WireFrame;
 
@@ -63,6 +63,24 @@ pub fn tel_sample(i: u32) -> TelSample {
         window_valid: i.is_multiple_of(2),
         fault: false,
     }
+}
+
+/// Expected payload of burst frame `seq` for a `count`-sample burst whose
+/// ticks ran uninterrupted from 0 -- the pump's synthesis run through the
+/// same encoder, so tests pin payload bytes end to end.
+pub fn expect_tel_payload(mask: u16, count: u32, seq: usize) -> Vec<u8> {
+    let samples: Vec<TelSample> = (0..count).map(tel_sample).collect();
+    let a = seq * STREAM_SAMPLES_MAX;
+    let b = (a + STREAM_SAMPLES_MAX).min(count as usize);
+    let mut buf = [0u8; STREAM_PAYLOAD_MAX];
+    let n = encode_stream(
+        mask,
+        seq as u8,
+        b == count as usize,
+        &samples[a..b],
+        &mut buf,
+    );
+    buf[..n].to_vec()
 }
 
 /// Decode a status frame into its `INST` byte and payload slice.

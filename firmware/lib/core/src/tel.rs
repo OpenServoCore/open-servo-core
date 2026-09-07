@@ -166,6 +166,20 @@ mod tests {
         assert_eq!(STREAM_PAYLOAD_MAX, STREAM_HDR + 16 * 12);
     }
 
+    /// The host detects the burst end through osc-protocol's mirror of the
+    /// LAST bit; the two consts must never drift.
+    #[test]
+    fn flag_last_matches_the_protocol_mirror() {
+        use osc_protocol::wire::{Inst, ResultCode, STREAM_FLAG_LAST, stream_last};
+        assert_eq!(FLAG_LAST, STREAM_FLAG_LAST);
+        let mut buf = [0u8; STREAM_PAYLOAD_MAX];
+        let n = encode_stream(BIT_POS, 0, true, &[sample(0)], &mut buf);
+        let inst = Inst::status(ResultCode::Stream, false);
+        assert!(stream_last(inst, buf[..n].into()));
+        let n = encode_stream(BIT_POS, 0, false, &[sample(0)], &mut buf);
+        assert!(!stream_last(inst, buf[..n].into()));
+    }
+
     #[test]
     fn reserved_bits_are_invalid() {
         assert!(mask_valid(0));

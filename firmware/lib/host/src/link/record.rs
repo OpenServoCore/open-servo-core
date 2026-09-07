@@ -102,6 +102,10 @@ pub const VERB_EXCHANGE: u8 = 0x00; // args: id(1) inst(1) payload(rest)
 pub const VERB_RESCUE: u8 = 0x01; // no args
 pub const VERB_HOST_BAUD: u8 = 0x02; // args: rate idx(1)
 pub const VERB_SET_RESPONSE_DEADLINE: u8 = 0x03; // args: us(2 LE)
+/// Stream-tagged Exchange (TEL burst carrier): after the arm's own ack the
+/// engine keeps collecting status frames until the LAST-flagged one, inside
+/// one `window_us`-wide await window.
+pub const VERB_EXCHANGE_STREAM: u8 = 0x04; // args: id(1) inst(1) window_us(4 LE) payload(rest)
 
 /// REJECTED reason byte.
 pub const REASON_BAD_ID: u8 = 0x00;
@@ -227,8 +231,8 @@ pub fn status<'a>(
     sealed(dst, 6 + n + payload.1.len())
 }
 
-/// TERMINAL: `seq(2) outcome(1) slot(1) tick(4 LE) statuses(1) garble(2 LE)
-/// flags(1)`.
+/// TERMINAL: `seq(2) outcome(1) slot(1) tick(4 LE) statuses(2 LE)
+/// garble(2 LE) flags(1)`.
 pub fn terminal<'a>(dst: &'a mut [u8], seq: u16, t: &Terminal) -> &'a [u8] {
     let (outcome, slot) = match t.outcome {
         Outcome::Sent => (OUTCOME_SENT, 0),
@@ -240,12 +244,12 @@ pub fn terminal<'a>(dst: &'a mut [u8], seq: u16, t: &Terminal) -> &'a [u8] {
     dst[5] = outcome;
     dst[6] = slot;
     dst[7..11].copy_from_slice(&t.tick.to_le_bytes());
-    dst[11] = t.evidence.statuses;
-    dst[12..14].copy_from_slice(&t.evidence.garble.to_le_bytes());
-    dst[14] = if t.evidence.garble_after_last_frame {
+    dst[11..13].copy_from_slice(&t.evidence.statuses.to_le_bytes());
+    dst[13..15].copy_from_slice(&t.evidence.garble.to_le_bytes());
+    dst[15] = if t.evidence.garble_after_last_frame {
         FLAG_GARBLE_AFTER_LAST_FRAME
     } else {
         0
     };
-    sealed(dst, 13)
+    sealed(dst, 14)
 }

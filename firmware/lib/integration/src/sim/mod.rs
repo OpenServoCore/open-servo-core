@@ -38,7 +38,9 @@ pub use self::cpu::HandlerCost;
 pub use self::host::HostEvent;
 pub use self::store::RamStore;
 
-pub use self::support::{assert_valid, frame_crc_ok, instruction, status, tel_sample};
+pub use self::support::{
+    assert_valid, expect_tel_payload, frame_crc_ok, instruction, status, tel_sample,
+};
 
 /// TEL fast-tick period: the kernel's 20 kHz control tick.
 const TEL_TICK_US: u64 = 50;

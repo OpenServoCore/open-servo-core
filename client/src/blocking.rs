@@ -6,7 +6,7 @@ use std::time::Duration;
 use futures_lite::future::block_on;
 use osc_protocol::wire::{BaudRate, Id, Inst};
 
-use crate::client::{Chain, Ping, Reply};
+use crate::client::{Chain, Ping, Reply, StreamReply};
 use crate::common::{self, Health, Identity};
 use crate::cyclic::Cycle;
 use crate::error::Error;
@@ -41,6 +41,16 @@ impl<P: Pipe> Client<P> {
 
     pub fn exchange(&mut self, id: Id, inst: Inst, payload: &[u8]) -> Result<Reply, Error> {
         block_on(self.0.exchange(id, inst, payload))
+    }
+
+    pub fn exchange_stream(
+        &mut self,
+        id: Id,
+        inst: Inst,
+        payload: &[u8],
+        window: Duration,
+    ) -> Result<StreamReply, Error> {
+        block_on(self.0.exchange_stream(id, inst, payload, window))
     }
 
     /// Quiet bus time (sec 8 pacing): wall time on hardware, sim time on

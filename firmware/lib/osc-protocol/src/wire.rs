@@ -1,6 +1,8 @@
 //! osc-native wire primitives: ID, packed `INST` byte, and frame span math
 //! (`docs/osc-native-protocol.md` sec 3, sec 5, sec 9). Layout only -- no buffering.
 
+use crate::bytes::FrameBytes;
+
 /// Frame ID byte. `0x01..=0xF9` unicast, `0xFE` broadcast; `0x00`/`0xFF` and
 /// `0xFA..=0xFD` never address a servo on the wire (sec 3.1).
 #[repr(transparent)]
@@ -302,6 +304,20 @@ pub const UID_LEN: usize = 16;
 /// the collision garble the walk descends on.
 pub const ENUM_REPLY_SLOTS: u8 = 16;
 
+/// TEL burst payload flags byte (payload[1]) bit 0: LAST frame of the
+/// burst, the line frees after it. The payload layout authority is
+/// osc-servo-core's `tel` module; the bit is mirrored here so hosts detect
+/// the burst end without the servo crate (cross-checked by a core test).
+pub const STREAM_FLAG_LAST: u8 = 1 << 0;
+
+/// True iff this frame ends a TEL burst: a `Stream` status whose payload
+/// flags byte carries the LAST bit.
+#[inline]
+pub fn stream_last(inst: Inst, payload: FrameBytes<'_>) -> bool {
+    inst.result() == Some(ResultCode::Stream)
+        && payload.u8_at(1).is_some_and(|f| f & STREAM_FLAG_LAST != 0)
+}
+
 /// TX-buffer alignment byte at offset 0 (sec 3.2): keeps the hardware CRC feed
 /// halfword-aligned and even; a CRC no-op (leading zero, init = 0). Not part
 /// of the wire checksum definition.
@@ -431,6 +447,25 @@ mod tests {
         assert_eq!(s.0, 0x80);
         assert!(!s.alert());
         assert_eq!(s.result(), Some(ResultCode::Ok));
+    }
+
+    #[test]
+    fn stream_last_detects_the_burst_end() {
+        let s = Inst::status(ResultCode::Stream, false);
+        assert!(stream_last(
+            s,
+            FrameBytes::from(&[0u8, STREAM_FLAG_LAST][..])
+        ));
+        assert!(!stream_last(s, FrameBytes::from(&[0u8, 0x02][..])));
+        assert!(!stream_last(s, FrameBytes::from(&[0u8][..])));
+        assert!(!stream_last(
+            Inst::status(ResultCode::Ok, false),
+            FrameBytes::from(&[0u8, STREAM_FLAG_LAST][..])
+        ));
+        assert!(!stream_last(
+            Inst::instruction(Opcode::Ping, 0),
+            FrameBytes::from(&[0u8, STREAM_FLAG_LAST][..])
+        ));
     }
 
     #[test]

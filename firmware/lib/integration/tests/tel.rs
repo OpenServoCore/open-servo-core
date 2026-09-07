@@ -18,12 +18,12 @@
 //! lever, and garble IS the wire fault.
 
 use osc_integration::sim::{
-    Sim, Source, WireFrame, assert_valid, frame_crc_ok, instruction, status, tel_sample,
+    Sim, Source, WireFrame, assert_valid, expect_tel_payload, frame_crc_ok, instruction, status,
 };
 use osc_protocol::wire::{Inst, Opcode, ResultCode};
 use osc_servo_core::BaudRate;
 use osc_servo_core::regions::control::addr::lifecycle::{GOAL_DUTY, TEL_COUNT, TEL_MASK};
-use osc_servo_core::tel::{FLAG_LAST, STREAM_PAYLOAD_MAX, TelSample, encode_stream};
+use osc_servo_core::tel::FLAG_LAST;
 
 mod support;
 
@@ -78,21 +78,8 @@ fn stream_frames(frames: &[WireFrame]) -> Vec<&WireFrame> {
         .collect()
 }
 
-/// Expected payload of burst frame `seq` for a `count`-sample burst whose
-/// ticks ran uninterrupted from 0.
 fn expect_payload(count: u32, seq: usize) -> Vec<u8> {
-    let samples: Vec<TelSample> = (0..count).map(tel_sample).collect();
-    let a = seq * 16;
-    let b = (a + 16).min(count as usize);
-    let mut buf = [0u8; STREAM_PAYLOAD_MAX];
-    let n = encode_stream(
-        MASK,
-        seq as u8,
-        b == count as usize,
-        &samples[a..b],
-        &mut buf,
-    );
-    buf[..n].to_vec()
+    expect_tel_payload(MASK, count, seq)
 }
 
 #[test_log::test]

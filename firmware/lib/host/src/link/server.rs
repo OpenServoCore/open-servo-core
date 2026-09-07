@@ -275,6 +275,12 @@ fn handle<P: Providers>(
                     inst: Inst(args[1]),
                     payload: &args[2..],
                 },
+                record::VERB_EXCHANGE_STREAM if args.len() >= 6 => Command::ExchangeStream {
+                    id: Id::new(args[0]),
+                    inst: Inst(args[1]),
+                    window_us: u32::from_le_bytes([args[2], args[3], args[4], args[5]]),
+                    payload: &args[6..],
+                },
                 record::VERB_RESCUE if args.is_empty() => Command::Rescue,
                 record::VERB_HOST_BAUD if args.len() == 1 => match BaudRate::from_idx(args[0]) {
                     Some(rate) => Command::HostBaud(rate),
@@ -420,12 +426,60 @@ mod tests {
         assert_eq!(term[2], REC_TERMINAL);
         assert_eq!(u16::from_le_bytes([term[3], term[4]]), 0x1234);
         assert_eq!(term[5], OUTCOME_COMPLETE);
-        assert_eq!(term[11], 1, "statuses");
+        assert_eq!(u16::from_le_bytes([term[11], term[12]]), 1, "statuses");
 
         // The seq is retired: a new submit is accepted.
         r.server
             .on_pipe(&submit_ping(0x1235, 5), &mut r.bus, &mut r.sink);
         assert_eq!(r.sink.0.len(), 2, "accepted, no rejection");
+    }
+
+    #[test]
+    fn exchange_stream_verb_collects_the_burst_on_its_seq() {
+        let mut r = rig();
+        let mut p = [0u8; 8];
+        let n = osc_protocol::build::write(&mut p, 0x0192, &[2, 0]).unwrap();
+        let inst = Inst::instruction(Opcode::Write, 0);
+        // seq 9, window 100 ms.
+        let mut body = vec![REC_SUBMIT, 9, 0, VERB_EXCHANGE_STREAM, 5, inst.0];
+        body.extend_from_slice(&100_000u32.to_le_bytes());
+        body.extend_from_slice(&p[..n]);
+        r.server.on_pipe(&rec(&body), &mut r.bus, &mut r.sink);
+        assert_eq!(r.wire.log()[0], WireOp::Claim, "engine took the wire");
+
+        r.bus.on_tx_complete();
+        r.ring.feed(&sealed_status(5, ResultCode::Ok, &[]));
+        r.ring
+            .feed(&sealed_status(5, ResultCode::Stream, &[0, 0, 1, 0, 8, 8]));
+        r.ring
+            .feed(&sealed_status(5, ResultCode::Stream, &[1, 1, 1, 0, 9, 9]));
+        r.server.pump(&mut r.bus, &mut r.sink);
+
+        // Ack + two burst frames stream on seq 9, then the terminal.
+        assert_eq!(r.sink.0.len(), 4);
+        for (i, s) in r.sink.0[..3].iter().enumerate() {
+            assert_eq!(s[2], REC_STATUS);
+            assert_eq!(u16::from_le_bytes([s[3], s[4]]), 9);
+            assert_eq!(s[5] as usize, i, "slot = arrival index");
+        }
+        let term = &r.sink.0[3];
+        assert_eq!(term[2], REC_TERMINAL);
+        assert_eq!(term[5], OUTCOME_COMPLETE);
+        assert_eq!(u16::from_le_bytes([term[11], term[12]]), 3, "statuses");
+    }
+
+    #[test]
+    fn short_exchange_stream_body_rejects_malformed() {
+        let mut r = rig();
+        r.server.on_pipe(
+            &rec(&[REC_SUBMIT, 9, 0, VERB_EXCHANGE_STREAM, 5, 0x30, 1, 2]),
+            &mut r.bus,
+            &mut r.sink,
+        );
+        let rej = r.sink.0.last().unwrap();
+        assert_eq!(rej[2], REC_REJECTED);
+        assert_eq!(rej[5], REASON_MALFORMED);
+        assert!(r.wire.log().is_empty(), "nothing reached the wire");
     }
 
     #[test]
