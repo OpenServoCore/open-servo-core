@@ -85,28 +85,46 @@ pub(crate) fn with_guard<T>(
     r
 }
 
-/// Park the soft limits at the phys limits so an experiment can stall at
-/// the mechanical rails (the firmware clamps OpenLoop duty to zero at
-/// pos_min/max_soft_counts); returns the originals for the restore.
-pub(crate) fn widen_soft_limits(c: &mut Client<NusbPipe>, id: Id) -> Result<(i32, i32)> {
+/// Saved position-limit set for [`restore_pos_limits`]: (phys_lo, phys_hi,
+/// soft_lo, soft_hi).
+pub(crate) type SavedLimits = (i32, i32, i32, i32);
+
+/// Sentinels comfortably beyond any theta_hat (the pot saturates at 4095):
+/// the firmware duty clamp compares theta_hat against the soft limits, so
+/// "widened" must mean unreachable, not merely at-the-rail - cal records
+/// the phys limits AS the settled stall positions, so a soft limit parked
+/// at phys still fires the instant the horn touches the stop (bench: E2
+/// measured pure noise, r2 negative).
+const WIDE_LO: i32 = -4096;
+const WIDE_HI: i32 = 8191;
+
+/// Open both position-limit gates so an experiment can stall at the
+/// mechanical rails. Soft limits are rule-bound inside phys, so phys widens
+/// too; write order satisfies the cross-field rules at every step. Returns
+/// the originals for the restore.
+pub(crate) fn widen_pos_limits(c: &mut Client<NusbPipe>, id: Id) -> Result<SavedLimits> {
     let saved = (
+        read_i32(c, id, config::POS_MIN_PHYS_COUNTS)?,
+        read_i32(c, id, config::POS_MAX_PHYS_COUNTS)?,
         read_i32(c, id, config::POS_MIN_SOFT_COUNTS)?,
         read_i32(c, id, config::POS_MAX_SOFT_COUNTS)?,
     );
-    let phys_lo = read_i32(c, id, config::POS_MIN_PHYS_COUNTS)?;
-    let phys_hi = read_i32(c, id, config::POS_MAX_PHYS_COUNTS)?;
-    write_reg(c, id, config::POS_MIN_SOFT_COUNTS, phys_lo)?;
-    write_reg(c, id, config::POS_MAX_SOFT_COUNTS, phys_hi)?;
+    write_reg(c, id, config::POS_MAX_PHYS_COUNTS, WIDE_HI)?;
+    write_reg(c, id, config::POS_MAX_SOFT_COUNTS, WIDE_HI)?;
+    write_reg(c, id, config::POS_MIN_PHYS_COUNTS, WIDE_LO)?;
+    write_reg(c, id, config::POS_MIN_SOFT_COUNTS, WIDE_LO)?;
     Ok(saved)
 }
 
-pub(crate) fn restore_soft_limits(
+pub(crate) fn restore_pos_limits(
     c: &mut Client<NusbPipe>,
     id: Id,
-    (lo, hi): (i32, i32),
+    (phys_lo, phys_hi, soft_lo, soft_hi): SavedLimits,
 ) -> Result<()> {
-    write_reg(c, id, config::POS_MIN_SOFT_COUNTS, lo)?;
-    write_reg(c, id, config::POS_MAX_SOFT_COUNTS, hi)?;
+    write_reg(c, id, config::POS_MIN_SOFT_COUNTS, soft_lo)?;
+    write_reg(c, id, config::POS_MIN_PHYS_COUNTS, phys_lo)?;
+    write_reg(c, id, config::POS_MAX_SOFT_COUNTS, soft_hi)?;
+    write_reg(c, id, config::POS_MAX_PHYS_COUNTS, phys_hi)?;
     Ok(())
 }
 

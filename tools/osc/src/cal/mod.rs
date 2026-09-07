@@ -479,12 +479,12 @@ fn run_endstop(c: &mut Client<NusbPipe>, id: Id, out: &OutDir) -> Result<Endstop
     // firmware clamps OpenLoop duty at the soft limits, so a recalibration
     // on an already-calibrated servo parks them at the phys limits for the
     // seek and restores them before the park (an abort still restores).
-    let saved = pump::widen_soft_limits(c, id)?;
+    let saved = pump::widen_pos_limits(c, id)?;
     let params = RigParams::default().without_pos_guard();
     let mut log = SnapshotLog::create(out, "endstop_snapshots.csv")?;
     let mut exp = Guarded::new(Endstop::new(EndstopCfg::default(), &params), params);
     let ran = Pump::new(c, id, Some(&mut log)).run(&mut exp);
-    let restored = pump::restore_soft_limits(c, id, saved);
+    let restored = pump::restore_pos_limits(c, id, saved);
     // park safe whether the run finished, errored, or was ctrl-c'd
     let _ = write_reg(c, id, control::GOAL_DUTY, 0);
     let _ = write_reg(c, id, control::TORQUE_ENABLE, 0);

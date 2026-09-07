@@ -327,9 +327,9 @@ fn run_resistance(
     with_guard(c, id, |c| {
         // stalling at the mechanical rails IS the method; restore inside
         // the guard so an abort still restores
-        let saved = pump::widen_soft_limits(c, id)?;
+        let saved = pump::widen_pos_limits(c, id)?;
         let ran = Pump::new(c, id, Some(&mut log)).run(&mut exp);
-        let restored = pump::restore_soft_limits(c, id, saved);
+        let restored = pump::restore_pos_limits(c, id, saved);
         ran.and(restored)
     })?;
     check_abort("resistance", exp.abort())?;
