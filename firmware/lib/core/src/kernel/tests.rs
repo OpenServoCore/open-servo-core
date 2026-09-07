@@ -428,6 +428,37 @@ fn openloop_duty_passthrough_clamped_with_decay() {
     }
 }
 
+fn openloop_duty(k: &Kernel<FakeIo>) -> i16 {
+    match last_cmd(k) {
+        MotorCmd::Drive { duty, .. } => duty.0,
+        other => panic!("expected Drive, got {other:?}"),
+    }
+}
+
+#[test]
+fn openloop_endstop_polarity_flip() {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::OpenLoop;
+        t.control.lifecycle.goal_duty = -8000;
+        t.config.limits.drive_polarity = false;
+    });
+    let mut k = kernel();
+    // inverted polarity: negative duty is the outbound push at the top wall
+    for _ in 0..400 {
+        k.on_tick(frame(4095, BIAS), &sh);
+    }
+    assert_eq!(openloop_duty(&k), 0);
+    sh.table.with_mut(|t| t.control.lifecycle.goal_duty = 8000);
+    for _ in 0..400 {
+        k.on_tick(frame(4095, BIAS), &sh);
+    }
+    assert_eq!(openloop_duty(&k), 8000);
+    assert_eq!(k.faults.mask(), 0);
+}
+
 #[test]
 fn current_mode_clamps_goal_to_i_lim() {
     let sh = Shared::new();
@@ -980,6 +1011,50 @@ fn velocity_mode_brakes_at_the_soft_wall() {
         "retreat from the wall failed: {}",
         plant.pos()
     );
+}
+
+#[test]
+fn openloop_endstop_zeroes_outbound_duty() {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::OpenLoop;
+        t.control.lifecycle.goal_duty = 8000;
+        t.config.pos_limits.pos_max_soft_counts = 3000;
+        t.config.limits.stall_tau_trip_counts = u16::MAX;
+    });
+    let mut k = kernel();
+    let mut plant = Plant::new(1000);
+    // free flight into the top soft wall: the cut leaves only coast
+    // momentum past it (the open-loop sweep that crashed the horn)
+    run_plant(&mut k, &sh, &mut plant, 20_000);
+    assert_eq!(k.faults.mask(), 0);
+    assert!(
+        plant.pos() >= 3000 && plant.pos() <= 3050,
+        "wall not respected: {}",
+        plant.pos()
+    );
+    assert_eq!(k.duty_q15, 0, "outbound duty still firing at the wall");
+    // retreat duty applies untouched and drives back off the wall
+    sh.table.with_mut(|t| t.control.lifecycle.goal_duty = -8000);
+    run_plant(&mut k, &sh, &mut plant, 2_000);
+    assert_eq!(k.duty_q15, -8000, "retreat from the wall blocked");
+    // mirrored at the min wall, crossed in free flight like the top one
+    sh.table
+        .with_mut(|t| t.config.pos_limits.pos_min_soft_counts = 500);
+    run_plant(&mut k, &sh, &mut plant, 25_000);
+    assert!(
+        plant.pos() >= 450 && plant.pos() <= 500,
+        "min wall not respected: {}",
+        plant.pos()
+    );
+    assert_eq!(k.duty_q15, 0, "outbound duty still firing at the min wall");
+    sh.table.with_mut(|t| t.control.lifecycle.goal_duty = 8000);
+    run_plant(&mut k, &sh, &mut plant, 5_000);
+    assert_eq!(k.duty_q15, 8000, "retreat from the min wall blocked");
+    assert!(plant.pos() > 600, "never drove off the min wall");
+    assert_eq!(k.faults.mask(), 0);
 }
 
 #[test]

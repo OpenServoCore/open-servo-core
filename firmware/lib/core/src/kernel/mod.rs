@@ -576,7 +576,14 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                     // raw passthrough, duty_max-clamped; NO vbus comp -
                     // identification wants unconfounded actuation
                     let max = loop_cur.duty_max_q15.min(i16::MAX as u16) as i32;
-                    let duty = (life.goal_duty as i32).clamp(-max, max) as i16;
+                    let mut duty = (life.goal_duty as i32).clamp(-max, max) as i16;
+                    // endstop: a collapsed band side forbids that sign of
+                    // current, and duty of the same sign is what drives it -
+                    // zero the outbound push, retreat passes (bench: an
+                    // open-loop sweep crashed the horn into the rail)
+                    if (self.i_band.hi == 0 && duty > 0) || (self.i_band.lo == 0 && duty < 0) {
+                        duty = 0;
+                    }
                     let decay = match lim_cfg.openloop_decay {
                         DecaySelect::Slow => DecayMode::Slow,
                         DecaySelect::Fast => DecayMode::Fast,
