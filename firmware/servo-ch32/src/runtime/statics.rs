@@ -1,12 +1,19 @@
 use core::cell::SyncUnsafeCell;
 use core::mem::MaybeUninit;
 use osc_servo_core::{Kernel, KernelTiming, RegionStorageRaw, Session, Shared};
+use osc_servo_drivers::tel::{TelChannel, TelFeed};
 
 use crate::control::Ch32ControlIo;
 
 pub static SHARED: Shared = Shared::new();
 
-type Ch32Kernel = Kernel<Ch32ControlIo>;
+/// TEL burst seam, split once in `install`: the kernel keeps the `TelFeed`
+/// half (its `TelStream` sink) -- fed from the PFIC LOW kernel tick, so
+/// kernel ownership keeps the `&mut` single-context -- and the `TelDrain`
+/// half rides in the HIGH-side bus composite (`attach_tel`).
+static TEL_CHANNEL: TelChannel = TelChannel::new();
+
+type Ch32Kernel = Kernel<Ch32ControlIo, TelFeed>;
 
 /// Initialised by `install`; the ADC DMA TC IRQ is PFIC-masked until then.
 pub(crate) static KERNEL: SyncUnsafeCell<MaybeUninit<Ch32Kernel>> =
@@ -21,8 +28,12 @@ pub(crate) static SESSION: SyncUnsafeCell<MaybeUninit<Session>> =
     SyncUnsafeCell::new(MaybeUninit::uninit());
 
 pub fn install(io: Ch32ControlIo, timing: KernelTiming) {
+    let (feed, drain) = TEL_CHANNEL.split();
     unsafe {
-        (*KERNEL.get()).write(Kernel::new(io, timing));
+        // SAFETY: pre-IRQ (install_irqs runs after) and `Drivers::install`
+        // already built the bus in bringup, so the reach-in is single-context.
+        crate::runtime::Drivers::bus().attach_tel(drain);
+        (*KERNEL.get()).write(Kernel::with_tel(io, feed, timing));
         (*SESSION.get()).write(Session::new());
     }
     crate::log::info!("kernel + session installed");

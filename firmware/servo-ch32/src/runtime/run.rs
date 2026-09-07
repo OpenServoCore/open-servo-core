@@ -55,7 +55,7 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
     loop {
         // Transport RX/TX/deadlines are ISR-driven (USART1 + SysTick, PFIC
         // HIGH). Main loop owns LED housekeeping, the link-diagnostics
-        // publish, the deferred-reboot poll, and sleep.
+        // publish, the TEL burst poll, the deferred-reboot poll, and sleep.
         //
         // STAT LED: dark when idle, lit while the bus talks -- any USART1
         // wire event latches `BUS_ACTIVITY`, and the light holds past the
@@ -128,6 +128,15 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
                     .write_volatile(total);
             }
         }
+
+        // TEL burst (protocol sec 5.3): stage the next kernel-encoded batch
+        // onto the reply TX path when the wire is ours. Every wfi wake polls
+        // (>= 20 kHz); a batch banks at most every ~800 us, so the cadence
+        // has huge margin. Same reach-in contract as `take_reboot` below.
+        critical_section::with(|_| {
+            // SAFETY: bus installed in bringup; ISRs masked by the CS.
+            unsafe { crate::runtime::Drivers::bus() }.poll_tel()
+        });
 
         // Deferred reboot (protocol sec 9.5), honored after the ack has drained. The
         // critical section is load-bearing: `bus()` is otherwise `&mut`-owned
