@@ -9,6 +9,7 @@ mod cal;
 mod descriptor;
 mod ident;
 mod rig;
+mod sweep;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
@@ -214,9 +215,12 @@ enum Cmd {
     /// Calibrate: find the end-stops, confirm the angle range, write limits +
     /// polarity + angle endpoints, then SAVE.
     Cal(cal::Args),
-    /// Replay a saved cal tel-raw.bin offline: classify stream corruption and
-    /// re-run the pot-LUT / motor-rev pipeline without a servo.
+    /// Replay a saved cal sweep_tel.csv offline: classify capture corruption
+    /// and re-run the pot-LUT / motor-rev pipeline without a servo.
     CalReplay(cal::replay::Args),
+    /// Raw open-loop duty sweep: burst-captured TEL rungs across a duty grid
+    /// for empirical plant capture (sweep.csv + meta.json).
+    Sweep(sweep::Args),
 }
 
 #[derive(Subcommand, Debug)]
@@ -271,7 +275,7 @@ fn parse_hex(s: &str) -> Result<Vec<u8>> {
         .collect()
 }
 
-fn parse_u16(s: &str) -> Result<u16> {
+pub(crate) fn parse_u16(s: &str) -> Result<u16> {
     Ok(match s.strip_prefix("0x") {
         Some(h) => u16::from_str_radix(h, 16)?,
         None => s.parse()?,
@@ -830,5 +834,6 @@ fn main() -> Result<()> {
         Cmd::Ident(args) => ident::run(args, cli.baud.clone(), cli.id),
         Cmd::Cal(args) => cal::run(args, cli.baud.clone(), cli.id),
         Cmd::CalReplay(a) => cal::replay::run(a),
+        Cmd::Sweep(args) => sweep::run(args, cli.baud.clone(), cli.id),
     }
 }

@@ -1,11 +1,10 @@
 //! Shared rig plumbing for the experiment subcommands: the bus connection,
-//! the four-arm driver pump, table snapshot/rollback, CSV record/replay, and
-//! the TEL side-channel. `ident` drives these; `cal` reaches the same set.
+//! the driver pump (TEL bursts included), table snapshot/rollback, and CSV
+//! record/replay. `ident` drives these; `cal` and `sweep` reach the same set.
 
 pub(crate) mod csvio;
 pub(crate) mod pump;
 pub(crate) mod snapshot;
-pub(crate) mod tel;
 
 use anyhow::{Context, Result, bail};
 use osc_client::blocking::Client;

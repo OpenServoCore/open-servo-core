@@ -1,20 +1,21 @@
-//! The four-arm driver loop from osc-ident's exp module doc: Write ->
-//! wire write, Read -> telemetry gread + parse, Pause -> sleep in slices
-//! that drain TEL and honor ctrl-c, Done -> break.
+//! The driver loop from osc-ident's exp module doc: Write -> wire write,
+//! Read -> telemetry gread + parse, Pause -> sleep in slices that honor
+//! ctrl-c, Stream -> one TEL burst on the main bus (HOLD+COMMIT when it
+//! carries a goal), Done -> break.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use osc_client::Id;
 use osc_client::blocking::Client;
 use osc_client::nusb::NusbPipe;
+use osc_client::{Id, Inst, Opcode, Outcome, ResultCode};
 use osc_ident::exp::{Cmd, Experiment};
-use osc_ident::frame::{TelFrame, TelemetrySnapshot};
-use osc_ident::regs::{Reg, control, telemetry};
+use osc_ident::frame::{StreamAssembler, TelFrame, TelemetrySnapshot};
+use osc_ident::regs::{Reg, config, control, telemetry};
+use osc_protocol::build;
 
 use super::csvio::SnapshotLog;
-use super::tel::TelSink;
 
 pub(crate) static STOP: AtomicBool = AtomicBool::new(false);
 
@@ -29,6 +30,11 @@ pub(crate) fn write_reg(c: &mut Client<NusbPipe>, id: Id, reg: Reg, value: i32) 
     c.write(id, reg.addr, &bytes[..reg.width as usize])
         .with_context(|| format!("write addr {:#06x}", reg.addr))?;
     Ok(())
+}
+
+pub(crate) fn read_i32(c: &mut Client<NusbPipe>, id: Id, reg: Reg) -> Result<i32> {
+    let raw = c.read(id, reg.addr, 4).context("field read")?;
+    Ok(i32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]))
 }
 
 const TEL_BASE: u16 = telemetry::FAULT_FLAGS.addr;
@@ -57,68 +63,171 @@ pub(crate) fn read_snapshot(c: &mut Client<NusbPipe>, id: Id) -> Result<Telemetr
     Ok(last.expect("loop ran"))
 }
 
-pub(crate) struct Pump<'a> {
-    pub(crate) client: &'a mut Client<NusbPipe>,
-    pub(crate) id: Id,
-    /// TEL device path; the sink opens on the experiment's nonzero
-    /// tel_count write and closes (frames flushed) on tel_count=0.
-    pub(crate) tel_port: Option<String>,
-    pub(crate) tel_mask: u16,
-    pub(crate) log: Option<&'a mut SnapshotLog>,
-    /// Lossless raw-byte capture of the TEL stream, in addition to the live
-    /// deframing; None skips the file (e.g. endstop has no ripple sweep).
-    pub(crate) tel_raw_path: Option<std::path::PathBuf>,
+/// Run the closure, then force the servo safe (duty/goals zero, torque and
+/// TEL off) whether it succeeded, failed, or was ctrl-c'd. A hard kill
+/// skips this - the servo's own protections are the backstop.
+pub(crate) fn with_guard<T>(
+    c: &mut Client<NusbPipe>,
+    id: Id,
+    f: impl FnOnce(&mut Client<NusbPipe>) -> Result<T>,
+) -> Result<T> {
+    let r = f(c);
+    for (reg, v) in [
+        (control::GOAL_DUTY, 0),
+        (control::GOAL_CURRENT, 0),
+        (control::GOAL_VELOCITY, 0),
+        (control::TORQUE_ENABLE, 0),
+        (control::TEL_COUNT, 0),
+        (control::TEL_MASK, 0),
+    ] {
+        let _ = write_reg(c, id, reg, v);
+    }
+    r
 }
 
-impl Pump<'_> {
-    /// Run one experiment to completion. `on_tel` receives decoded TEL
-    /// frames as they drain (inertia's push_tel; pass |_| {} otherwise).
-    pub(crate) fn run(
-        &mut self,
-        exp: &mut dyn Experiment,
-        mut on_tel: impl FnMut(&[TelFrame]),
-    ) -> Result<()> {
+/// Park the soft limits at the phys limits so an experiment can stall at
+/// the mechanical rails (the firmware clamps OpenLoop duty to zero at
+/// pos_min/max_soft_counts); returns the originals for the restore.
+pub(crate) fn widen_soft_limits(c: &mut Client<NusbPipe>, id: Id) -> Result<(i32, i32)> {
+    let saved = (
+        read_i32(c, id, config::POS_MIN_SOFT_COUNTS)?,
+        read_i32(c, id, config::POS_MAX_SOFT_COUNTS)?,
+    );
+    let phys_lo = read_i32(c, id, config::POS_MIN_PHYS_COUNTS)?;
+    let phys_hi = read_i32(c, id, config::POS_MAX_PHYS_COUNTS)?;
+    write_reg(c, id, config::POS_MIN_SOFT_COUNTS, phys_lo)?;
+    write_reg(c, id, config::POS_MAX_SOFT_COUNTS, phys_hi)?;
+    Ok(saved)
+}
+
+pub(crate) fn restore_soft_limits(
+    c: &mut Client<NusbPipe>,
+    id: Id,
+    (lo, hi): (i32, i32),
+) -> Result<()> {
+    write_reg(c, id, config::POS_MIN_SOFT_COUNTS, lo)?;
+    write_reg(c, id, config::POS_MAX_SOFT_COUNTS, hi)?;
+    Ok(())
+}
+
+/// Whole-burst window: the sampled span plus wire/turnaround margin. The
+/// client pipe guard must sit above it (see exchange_stream).
+fn stream_window(samples: u16) -> Duration {
+    Duration::from_micros(samples as u64 * 50 * 5 / 4 + 250_000)
+}
+
+/// Per-burst evidence for the diag line.
+pub(crate) struct BurstStats {
+    pub(crate) frames: usize,
+    pub(crate) samples: usize,
+    pub(crate) holes: u64,
+    pub(crate) garble: u16,
+}
+
+/// One TEL burst on the main bus. With `goal` Some the goal write and the
+/// TEL_COUNT arm are staged under HOLD and a broadcast COMMIT (the stream
+/// carrier) applies both in the same instant; with None the acked
+/// TEL_COUNT write itself carries the stream. Frames decode through
+/// [`StreamAssembler`] under `mask`; corrupt frames never appear (the
+/// adapter drops them into garble + a seq hole).
+pub(crate) fn exchange_tel_burst(
+    c: &mut Client<NusbPipe>,
+    id: Id,
+    samples: u16,
+    goal: Option<(Reg, i32)>,
+    mask: u16,
+) -> Result<(Vec<TelFrame>, BurstStats)> {
+    let window = stream_window(samples);
+    c.set_guard(window + Duration::from_secs(1));
+    let reply = match goal {
+        Some((reg, value)) => {
+            let bytes = value.to_le_bytes();
+            c.write_hold(id, reg.addr, &bytes[..reg.width as usize])
+                .context("hold goal")?;
+            c.write_hold(id, control::TEL_COUNT.addr, &samples.to_le_bytes())
+                .context("hold tel_count")?;
+            let inst = Inst::instruction(Opcode::Commit, 0);
+            c.exchange_stream(Id::BROADCAST, inst, &[], window)
+        }
+        None => {
+            let mut p = [0u8; 8];
+            let n = build::write(&mut p, control::TEL_COUNT.addr, &samples.to_le_bytes())
+                .context("tel_count payload")?;
+            let inst = Inst::instruction(Opcode::Write, 0);
+            c.exchange_stream(id, inst, &p[..n], window)
+        }
+    };
+    c.set_guard(Duration::from_secs(2));
+    let reply = reply?;
+    if let Some(ack) = &reply.ack
+        && ack.result != Some(ResultCode::Ok)
+    {
+        bail!("stream arm answered {:?}", ack.result);
+    }
+    let mut asm = StreamAssembler::new(mask).context("tel mask invalid for a stream arm")?;
+    let mut frames = Vec::new();
+    for f in &reply.frames {
+        asm.push(
+            f.result == Some(ResultCode::Stream),
+            &f.payload,
+            &mut frames,
+        );
+    }
+    let stats = BurstStats {
+        frames: reply.frames.len(),
+        samples: frames.len(),
+        holes: asm.holes() + asm.skipped(),
+        garble: reply.garble,
+    };
+    if matches!(reply.outcome, Outcome::Timeout { .. }) {
+        bail!(
+            "tel burst timed out mid-stream ({} of {} samples)",
+            stats.samples,
+            samples
+        );
+    }
+    Ok((frames, stats))
+}
+
+pub(crate) struct Pump<'a> {
+    client: &'a mut Client<NusbPipe>,
+    id: Id,
+    log: Option<&'a mut SnapshotLog>,
+    /// Mirror of the sticky TEL_MASK register, tracked off the experiment's
+    /// own writes; the stream decoder keys on it.
+    mask: u16,
+    /// Every decoded frame across the run's bursts, in order - the CSV log
+    /// source (the experiment gets the same frames via push_tel).
+    pub(crate) tel: Vec<TelFrame>,
+}
+
+impl<'a> Pump<'a> {
+    pub(crate) fn new(
+        client: &'a mut Client<NusbPipe>,
+        id: Id,
+        log: Option<&'a mut SnapshotLog>,
+    ) -> Self {
+        Self {
+            client,
+            id,
+            log,
+            mask: 0,
+            tel: Vec::new(),
+        }
+    }
+
+    /// Run one experiment to completion.
+    pub(crate) fn run(&mut self, exp: &mut dyn Experiment) -> Result<()> {
         let mut pending: Option<TelemetrySnapshot> = None;
-        let mut sink: Option<TelSink> = None;
         let t0 = Instant::now();
         loop {
             if STOP.load(Ordering::SeqCst) {
                 bail!("interrupted");
             }
-            let cmd = exp.step(pending.take().as_ref());
-            if let Some(s) = sink.as_mut() {
-                s.drain();
-                let frames = s.take_frames();
-                if !frames.is_empty() {
-                    on_tel(&frames);
-                }
-            }
-            match cmd {
+            match exp.step(pending.take().as_ref()) {
                 Cmd::Write { reg, value } => {
-                    if reg == control::TEL_COUNT && self.tel_port.is_some() {
-                        if value != 0 && sink.is_none() {
-                            sink = Some(TelSink::open(
-                                self.tel_port.as_deref().expect("checked"),
-                                self.tel_mask,
-                                self.tel_raw_path.as_deref(),
-                            )?);
-                        } else if value == 0
-                            && let Some(mut s) = sink.take()
-                        {
-                            s.drain();
-                            let frames = s.take_frames();
-                            if !frames.is_empty() {
-                                on_tel(&frames);
-                            }
-                            let st = s.stats();
-                            eprintln!(
-                                "tel: {} bytes, {} frames, {} seq gaps, {} realigns",
-                                s.bytes_read(),
-                                st.frames,
-                                st.seq_gaps,
-                                st.realigns
-                            );
-                        }
+                    if reg == control::TEL_MASK {
+                        self.mask = value as u16;
                     }
                     write_reg(self.client, self.id, reg, value)?;
                 }
@@ -130,26 +239,26 @@ impl Pump<'_> {
                     pending = Some(snap);
                 }
                 Cmd::Pause { ms } => {
-                    // 5 ms slices keep the CDC drained and ctrl-c prompt
+                    // 5 ms slices keep ctrl-c prompt
                     let mut left = ms;
-                    loop {
+                    while left > 0 {
                         if STOP.load(Ordering::SeqCst) {
                             bail!("interrupted");
-                        }
-                        if let Some(s) = sink.as_mut() {
-                            s.drain();
-                            let frames = s.take_frames();
-                            if !frames.is_empty() {
-                                on_tel(&frames);
-                            }
-                        }
-                        if left == 0 {
-                            break;
                         }
                         let slice = left.min(5);
                         std::thread::sleep(Duration::from_millis(slice as u64));
                         left -= slice;
                     }
+                }
+                Cmd::Stream { samples, goal } => {
+                    let (frames, st) =
+                        exchange_tel_burst(self.client, self.id, samples, goal, self.mask)?;
+                    eprintln!(
+                        "tel: {} frames, {} samples, {} seq holes, {} garble bytes",
+                        st.frames, st.samples, st.holes, st.garble
+                    );
+                    exp.push_tel(&frames);
+                    self.tel.extend_from_slice(&frames);
                 }
                 Cmd::Done => return Ok(()),
             }
@@ -186,5 +295,13 @@ mod tests {
         assert_eq!(TEL_LEN, 0x60);
         assert_eq!(IDENT_BASE, 0x254);
         assert_eq!(IDENT_LEN, 12);
+    }
+
+    #[test]
+    fn stream_window_covers_the_burst_with_margin() {
+        // 3000 samples = 150 ms of ticks: window must exceed that span
+        assert!(stream_window(3000) > Duration::from_millis(150));
+        // the biggest arm still fits under the raised pipe guard
+        assert!(stream_window(u16::MAX) < Duration::from_secs(5));
     }
 }

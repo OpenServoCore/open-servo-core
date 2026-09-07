@@ -90,21 +90,55 @@ impl SnapshotLog {
 
 pub(crate) fn write_tel_frames(dir: &OutDir, name: &str, frames: &[TelFrame]) -> Result<()> {
     let mut w = dir.file(name)?;
-    writeln!(w, "seq,window_valid,pos,current,duty_q15,vdiff")?;
+    writeln!(
+        w,
+        "tick,window_valid,pos,current,current_trough,duty_q15,vdiff,vbus"
+    )?;
     let opt = |v: Option<i32>| v.map(|v| v.to_string()).unwrap_or_default();
     for f in frames {
         writeln!(
             w,
-            "{},{},{},{},{},{}",
-            f.seq,
+            "{},{},{},{},{},{},{},{}",
+            f.tick,
             f.window_valid as u8,
             opt(f.pos.map(|v| v as i32)),
             opt(f.current.map(|v| v as i32)),
+            opt(f.current_trough.map(|v| v as i32)),
             opt(f.duty_q15.map(|v| v as i32)),
             opt(f.vdiff.map(|v| v as i32)),
+            opt(f.vbus.map(|v| v as i32)),
         )?;
     }
     Ok(())
+}
+
+/// Decoded frames back from a `write_tel_frames` CSV (cal-replay's input);
+/// empty cells are unselected fields.
+pub(crate) fn read_tel_frames(path: &Path) -> Result<Vec<TelFrame>> {
+    fn opt<T: std::str::FromStr>(s: &str) -> Result<Option<T>>
+    where
+        T::Err: std::error::Error + Send + Sync + 'static,
+    {
+        if s.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(s.parse()?))
+        }
+    }
+    let mut out = Vec::new();
+    for parts in rows(path, 8)? {
+        out.push(TelFrame {
+            tick: parts[0].parse()?,
+            window_valid: parts[1] == "1",
+            pos: opt(&parts[2])?,
+            current: opt(&parts[3])?,
+            current_trough: opt(&parts[4])?,
+            duty_q15: opt(&parts[5])?,
+            vdiff: opt(&parts[6])?,
+            vbus: opt(&parts[7])?,
+        });
+    }
+    Ok(out)
 }
 
 // --- derived fit inputs -----------------------------------------------------
@@ -267,6 +301,36 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ident-csv-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         OutDir(dir)
+    }
+
+    #[test]
+    fn tel_frames_round_trip_with_unselected_fields() {
+        let dir = tmp();
+        let frames = vec![
+            TelFrame {
+                tick: 0,
+                window_valid: true,
+                pos: Some(2048),
+                current: Some(-33),
+                current_trough: Some(500),
+                duty_q15: Some(8520),
+                vdiff: Some(-1700),
+                vbus: Some(1731),
+            },
+            TelFrame {
+                tick: 17,
+                window_valid: false,
+                pos: Some(2049),
+                current: Some(12),
+                current_trough: None,
+                duty_q15: Some(0),
+                vdiff: Some(0),
+                vbus: None,
+            },
+        ];
+        write_tel_frames(&dir, "tel.csv", &frames).unwrap();
+        let back = read_tel_frames(&dir.0.join("tel.csv")).unwrap();
+        assert_eq!(back, frames);
     }
 
     #[test]

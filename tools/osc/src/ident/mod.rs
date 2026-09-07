@@ -2,13 +2,14 @@
 //! experiments over the osc-adapter, records raw + derived CSVs, fits the
 //! plant, synthesizes and encodes gains, and writes them back with
 //! snapshot/rollback safety. The sans-io engine lives in osc-ident; this
-//! wrapper owns USB, the TEL serial port, wall time, and files.
+//! wrapper owns USB, wall time, and files. TEL captures ride the main bus
+//! as bursts (the pump's Stream arm) - no side channel.
 
 pub(crate) mod params;
 
 use std::path::PathBuf;
 
-use crate::rig::pump::{self, Pump, write_reg};
+use crate::rig::pump::{self, Pump, with_guard, write_reg};
 use crate::rig::{csvio, snapshot};
 use anyhow::{Context, Result, bail};
 use clap::Subcommand;
@@ -33,14 +34,11 @@ use params::{
     ResistanceJson, SenseJson,
 };
 
-/// The `osc ident` arg group: TEL wiring, output, rig envelope, and
-/// bandwidth targets, all scoped to the ident subtree. `--baud`/`--id` come
-/// from the top-level osc globals.
+/// The `osc ident` arg group: output, rig envelope, and bandwidth targets,
+/// all scoped to the ident subtree. `--baud`/`--id` come from the top-level
+/// osc globals.
 #[derive(clap::Args, Debug)]
 pub struct Args {
-    /// TEL stream serial device (the LinkE CDC); empty disables TEL.
-    #[arg(long, global = true, default_value = "/dev/cu.usbmodemB3608F06381D2")]
-    tel_port: String,
     /// Output directory root; runs land in <out>/<timestamp>/.
     #[arg(long, global = true, default_value = "./ident-out")]
     out: PathBuf,
@@ -79,7 +77,6 @@ pub struct Args {
 /// still read `cli.field`).
 struct Ctx {
     baud: String,
-    tel_port: String,
     out: PathBuf,
     guard_lo: u16,
     guard_hi: u16,
@@ -131,7 +128,6 @@ enum Cmd {
 pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     let cli = Ctx {
         baud,
-        tel_port: args.tel_port.clone(),
         out: args.out.clone(),
         guard_lo: args.guard_lo,
         guard_hi: args.guard_hi,
@@ -258,29 +254,6 @@ fn targets(cli: &Ctx) -> BwTargets {
     }
 }
 
-/// Every drive path funnels through this: run the closure, then force the
-/// servo safe (duty/goals zero, torque and TEL off) whether it succeeded,
-/// failed, or was ctrl-c'd. A hard kill skips this - the servo's own
-/// protections are the backstop.
-fn with_guard<T>(
-    c: &mut Client<NusbPipe>,
-    id: Id,
-    f: impl FnOnce(&mut Client<NusbPipe>) -> Result<T>,
-) -> Result<T> {
-    let r = f(c);
-    for (reg, v) in [
-        (control::GOAL_DUTY, 0),
-        (control::GOAL_CURRENT, 0),
-        (control::GOAL_VELOCITY, 0),
-        (control::TORQUE_ENABLE, 0),
-        (control::TEL_COUNT, 0),
-        (control::TEL_MASK, 0),
-    ] {
-        let _ = write_reg(c, id, reg, v);
-    }
-    r
-}
-
 /// OpenLoop nudge to mid-travel. End-stop work (E2) parks the pot on a
 /// rail where the next experiment's pos guard would abort before it can
 /// move; every in-band experiment recenters first.
@@ -331,17 +304,7 @@ fn run_bias(
     recenter(c, id)?;
     let mut log = csvio::SnapshotLog::create(out, "bias_snapshots.csv")?;
     let mut exp = Guarded::new(Bias::new(BiasCfg::default()), rig(cli));
-    with_guard(c, id, |c| {
-        Pump {
-            client: c,
-            id,
-            tel_port: None,
-            tel_mask: 0,
-            log: Some(&mut log),
-            tel_raw_path: None,
-        }
-        .run(&mut exp, |_| {})
-    })?;
+    with_guard(c, id, |c| Pump::new(c, id, Some(&mut log)).run(&mut exp))?;
     check_abort("bias", exp.abort())?;
     let b = exp
         .into_inner()
@@ -357,20 +320,17 @@ fn run_resistance(
     id: Id,
     out: &csvio::OutDir,
 ) -> Result<osc_ident::exp::resistance::ResistanceResult> {
-    println!("[E2 resistance] (end-stop stalls; pos guard off)");
+    println!("[E2 resistance] (end-stop stalls; pos guard off, soft limits widened)");
     let params = rig(cli).without_pos_guard();
     let mut log = csvio::SnapshotLog::create(out, "resistance_snapshots.csv")?;
     let mut exp = Guarded::new(Resistance::new(ResistanceCfg::default(), &params), params);
     with_guard(c, id, |c| {
-        Pump {
-            client: c,
-            id,
-            tel_port: None,
-            tel_mask: 0,
-            log: Some(&mut log),
-            tel_raw_path: None,
-        }
-        .run(&mut exp, |_| {})
+        // stalling at the mechanical rails IS the method; restore inside
+        // the guard so an abort still restores
+        let saved = pump::widen_soft_limits(c, id)?;
+        let ran = Pump::new(c, id, Some(&mut log)).run(&mut exp);
+        let restored = pump::restore_soft_limits(c, id, saved);
+        ran.and(restored)
     })?;
     check_abort("resistance", exp.abort())?;
     let exp = exp.into_inner();
@@ -390,17 +350,7 @@ fn run_breakaway(
     recenter(c, id)?;
     let mut log = csvio::SnapshotLog::create(out, "breakaway_snapshots.csv")?;
     let mut exp = Guarded::new(Breakaway::new(BreakawayCfg::default()), rig(cli));
-    with_guard(c, id, |c| {
-        Pump {
-            client: c,
-            id,
-            tel_port: None,
-            tel_mask: 0,
-            log: Some(&mut log),
-            tel_raw_path: None,
-        }
-        .run(&mut exp, |_| {})
-    })?;
+    with_guard(c, id, |c| Pump::new(c, id, Some(&mut log)).run(&mut exp))?;
     check_abort("breakaway", exp.abort())?;
     Ok(exp.into_inner().fit(r_vpc, vbus_mean))
 }
@@ -417,17 +367,7 @@ fn run_ladder(
     let params = rig(cli);
     let mut log = csvio::SnapshotLog::create(out, "ladder_snapshots.csv")?;
     let mut exp = Guarded::new(Ladder::new(LadderCfg::default(), &params), params);
-    with_guard(c, id, |c| {
-        Pump {
-            client: c,
-            id,
-            tel_port: None,
-            tel_mask: 0,
-            log: Some(&mut log),
-            tel_raw_path: None,
-        }
-        .run(&mut exp, |_| {})
-    })?;
+    with_guard(c, id, |c| Pump::new(c, id, Some(&mut log)).run(&mut exp))?;
     check_abort("ladder", exp.abort())?;
     let l = exp
         .into_inner()
@@ -444,14 +384,7 @@ fn run_inertia(
     out: &csvio::OutDir,
     priors: &InertiaPriors,
 ) -> Result<osc_ident::exp::inertia::InertiaResult> {
-    println!(
-        "[E4 inertia]{}",
-        if cli.tel_port.is_empty() {
-            " (no TEL)"
-        } else {
-            ""
-        }
-    );
+    println!("[E4 inertia]");
     recenter(c, id)?;
     let params = rig(cli);
     let cfg = InertiaCfg {
@@ -460,43 +393,16 @@ fn run_inertia(
     };
     let mut log = csvio::SnapshotLog::create(out, "inertia_snapshots.csv")?;
     let mut exp = Guarded::new(Inertia::new(cfg, &params), params);
-    let mut all_tel = Vec::new();
-    with_guard(c, id, |c| {
-        let mut pump = Pump {
-            client: c,
-            id,
-            tel_port: (!cli.tel_port.is_empty()).then(|| cli.tel_port.clone()),
-            tel_mask: 0x1B,
-            log: Some(&mut log),
-            tel_raw_path: None,
-        };
-        // split borrow: hand frames to the guarded experiment mid-run
-        let exp_cell = std::cell::RefCell::new(&mut exp);
-        let mut adapter = PumpAdapter { exp: &exp_cell };
-        pump.run(&mut adapter, |frames| {
-            all_tel.extend_from_slice(frames);
-            exp_cell.borrow_mut().inner_mut().push_tel(frames);
-        })
+    let all_tel = with_guard(c, id, |c| {
+        let mut pump = Pump::new(c, id, Some(&mut log));
+        pump.run(&mut exp)?;
+        Ok(std::mem::take(&mut pump.tel))
     })?;
     check_abort("inertia", exp.abort())?;
     let exp = exp.into_inner();
     csvio::write_tel_frames(out, "inertia_tel.csv", &all_tel)?;
     csvio::write_step_series(out, &exp.step_series())?;
     exp.fit(priors).context("inertia fit degenerate")
-}
-
-/// Lets the TEL callback borrow the experiment the pump is stepping: the
-/// pump only holds this thin adapter, and both it and the callback reach
-/// the real experiment through the RefCell (never concurrently - the pump
-/// is single-threaded).
-struct PumpAdapter<'a, 'b, E> {
-    exp: &'a std::cell::RefCell<&'b mut E>,
-}
-
-impl<E: osc_ident::exp::Experiment> osc_ident::exp::Experiment for PumpAdapter<'_, '_, E> {
-    fn step(&mut self, obs: Option<&osc_ident::frame::TelemetrySnapshot>) -> osc_ident::exp::Cmd {
-        self.exp.borrow_mut().step(obs)
-    }
 }
 
 fn run_verify(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
@@ -508,17 +414,7 @@ fn run_verify(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
         VerifyCurrent::new(VerifyCurrentCfg::default(), &params),
         params.without_pos_guard(),
     );
-    with_guard(c, id, |c| {
-        Pump {
-            client: c,
-            id,
-            tel_port: None,
-            tel_mask: 0,
-            log: None,
-            tel_raw_path: None,
-        }
-        .run(&mut e5, |_| {})
-    })?;
+    with_guard(c, id, |c| Pump::new(c, id, None).run(&mut e5))?;
     check_abort("verify-current", e5.abort())?;
     let cur = e5.into_inner().result();
     // E5 ends stalled against an end-stop; E6 runs with the pos guard on
@@ -529,17 +425,7 @@ fn run_verify(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
         VerifyVelocity::new(VerifyVelocityCfg::default(), &params, tick_hz),
         params,
     );
-    with_guard(c, id, |c| {
-        Pump {
-            client: c,
-            id,
-            tel_port: None,
-            tel_mask: 0,
-            log: None,
-            tel_raw_path: None,
-        }
-        .run(&mut e6, |_| {})
-    })?;
+    with_guard(c, id, |c| Pump::new(c, id, None).run(&mut e6))?;
     check_abort("verify-velocity", e6.abort())?;
     let vel = e6.into_inner().result();
     for s in &cur.steps {

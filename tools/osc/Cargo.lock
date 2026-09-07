@@ -399,7 +399,6 @@ dependencies = [
  "clap",
  "ctrlc",
  "dialoguer",
- "libc",
  "osc-client",
  "osc-ident",
  "osc-protocol",
