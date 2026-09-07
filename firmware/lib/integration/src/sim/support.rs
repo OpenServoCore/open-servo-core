@@ -6,6 +6,7 @@ use osc_protocol::crc::osc_crc;
 use osc_protocol::frame::Header;
 use osc_protocol::reply::FrameBuf;
 use osc_protocol::wire::{self, Id, Inst, Opcode};
+use osc_servo_core::tel::TelSample;
 
 use super::WireFrame;
 
@@ -32,6 +33,36 @@ pub fn assert_valid(frame: &WireFrame) {
     let want = osc_crc(&b[..covered]);
     let got = u16::from_le_bytes([b[covered], b[covered + 1]]);
     assert_eq!(want, got, "CRC mismatch on {b:02X?}");
+}
+
+/// [`assert_valid`] as a predicate -- the host-side keep/drop gate for
+/// unsolicited TEL burst frames (a corrupt frame drops; the stream seq
+/// numbering exposes the gap).
+pub fn frame_crc_ok(frame: &WireFrame) -> bool {
+    let b = &frame.bytes;
+    if b.len() < 6 || b[2] < 3 {
+        return false;
+    }
+    let covered = wire::covered_len(b[2]);
+    if b.len() < covered + 2 {
+        return false;
+    }
+    osc_crc(&b[..covered]) == u16::from_le_bytes([b[covered], b[covered + 1]])
+}
+
+/// Deterministic fast-tick sample for per-burst tick `i` -- the pump feeds
+/// these, so tests compute expected payload bytes from the same function.
+pub fn tel_sample(i: u32) -> TelSample {
+    TelSample {
+        pos: 0x4000u16.wrapping_add(i as u16),
+        current: -(i as i16) - 1,
+        current_trough: 0xB000u16.wrapping_add(i as u16),
+        duty_q15: 0x2000i16.wrapping_add(i as i16),
+        vdiff: (-300i16).wrapping_sub(i as i16),
+        vbus: 1800u16.wrapping_add(i as u16),
+        window_valid: i.is_multiple_of(2),
+        fault: false,
+    }
 }
 
 /// Decode a status frame into its `INST` byte and payload slice.

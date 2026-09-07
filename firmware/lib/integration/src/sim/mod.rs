@@ -38,7 +38,10 @@ pub use self::cpu::HandlerCost;
 pub use self::host::HostEvent;
 pub use self::store::RamStore;
 
-pub use self::support::{assert_valid, instruction, status};
+pub use self::support::{assert_valid, frame_crc_ok, instruction, status, tel_sample};
+
+/// TEL fast-tick period: the kernel's 20 kHz control tick.
+const TEL_TICK_US: u64 = 50;
 
 /// Who put a frame on the wire, as recorded.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -74,6 +77,8 @@ pub struct Sim {
     /// Per-servo cross-baud reception machines (see `resample`): fed
     /// whenever a wire event's rate differs from the receiver's.
     cross: Vec<CrossRx>,
+    /// Per-servo TEL fast-tick pumps (see `tel_pump`).
+    tels: Vec<TelPump>,
     host_cross: Option<CrossRx>,
     rate: BaudRate,
     /// The scheduling host queues each frame after its own prior traffic.
@@ -87,6 +92,20 @@ pub struct Sim {
     /// [`Self::link_send`], records out through [`Self::link_recv`]. Engine
     /// events leave as records; `host_events` stays empty in this mode.
     link: Option<LinkRig>,
+}
+
+/// One servo's TEL fast-tick pump: the sim's stand-in for the kernel's 50 us
+/// ADC tick, running only while a burst is armed (the kernel's `tel.active()`
+/// gate). Sample values are synthesized from the per-burst tick index
+/// ([`tel_sample`]), so tests pin payload bytes against the same function.
+struct TelPump {
+    running: bool,
+    /// Stale scheduled ticks die by epoch (the Compare generation idiom).
+    epoch: u64,
+    /// Per-burst tick index, reset at every pump start.
+    n: u32,
+    /// Synthesized samples carry fault=true over ticks [from, to).
+    fault: Option<(u32, u32)>,
 }
 
 struct LinkRig {
@@ -112,6 +131,7 @@ impl Sim {
             handles: Vec::new(),
             cpus: Vec::new(),
             cross: Vec::new(),
+            tels: Vec::new(),
             host_cross: None,
             rate,
             host_free_at: 0,
@@ -221,7 +241,19 @@ impl Sim {
         self.handles.push(handles);
         self.cpus.push(Cpu::default());
         self.cross.push(CrossRx::new(self.rate));
+        self.tels.push(TelPump {
+            running: false,
+            epoch: 0,
+            n: 0,
+            fault: None,
+        });
         idx
+    }
+
+    /// Servo `i`'s synthesized samples carry fault=true over per-burst ticks
+    /// [from, to) -- the sim's stand-in for a kernel fault window mid-burst.
+    pub fn set_tel_fault_ticks(&mut self, i: usize, from: u32, to: u32) {
+        self.tels[i].fault = Some((from, to));
     }
 
     /// Give servo `i`'s handler bodies sim-time cost (`cpu` module): events
@@ -503,6 +535,7 @@ impl Sim {
                 }
             }
             Event::TxArmDone { servo } => self.deliver(servo, Vector::TxDone),
+            Event::TelTick { servo, epoch } => self.tel_tick(servo, epoch),
             Event::CpuFree { servo } => self.cpu_free(servo),
             Event::WakeRefire { servo } => self.deliver(servo, Vector::Break),
             Event::HostCompare { generation } => {
@@ -521,6 +554,59 @@ impl Sim {
         // The adapter's main loop is a tight poll: drain the engine after
         // every event so its clocks and framer track the wire promptly.
         self.host_pump();
+        self.tel_pump();
+    }
+
+    /// The servos' main-loop residue after every event: the TEL poll (the
+    /// chip's ISR-masked main loop poll), then start the fast-tick pump for
+    /// any burst the event just armed. Sub-event poll latency is the chip's
+    /// own (its loop spins far faster than a byte-time).
+    fn tel_pump(&mut self) {
+        let now = self.core.borrow().now();
+        for j in 0..self.servos.len() {
+            if !self.cpus[j].busy(now) {
+                self.servos[j].poll_tel();
+            }
+            if self.servos[j].tel_active() {
+                if !self.tels[j].running {
+                    let t = &mut self.tels[j];
+                    t.running = true;
+                    t.epoch += 1;
+                    t.n = 0;
+                    let period = TEL_TICK_US * TICKS_PER_US;
+                    let at = (now / period + 1) * period;
+                    self.core.borrow_mut().schedule(
+                        Event::TelTick {
+                            servo: j,
+                            epoch: t.epoch,
+                        },
+                        at,
+                    );
+                }
+            } else {
+                self.tels[j].running = false;
+            }
+        }
+    }
+
+    /// One 50 us fast tick at servo `j`: synthesize the next sample, feed the
+    /// kernel-side encoder, re-arm. Ticks from a dead pump (burst ended or
+    /// aborted since scheduling) drop by the running/epoch gates.
+    fn tel_tick(&mut self, j: usize, epoch: u64) {
+        let t = &mut self.tels[j];
+        if !t.running || t.epoch != epoch || !self.servos[j].tel_active() {
+            return;
+        }
+        let mut s = tel_sample(t.n);
+        if let Some((from, to)) = t.fault {
+            s.fault = t.n >= from && t.n < to;
+        }
+        t.n += 1;
+        self.servos[j].tel_tick(&s);
+        let at = self.core.borrow().now() + TEL_TICK_US * TICKS_PER_US;
+        self.core
+            .borrow_mut()
+            .schedule(Event::TelTick { servo: j, epoch }, at);
     }
 
     /// Poll the attached engine to exhaustion. Link mode routes through the
@@ -734,6 +820,14 @@ impl Sim {
     }
 
     fn deliver_garble(&mut self, byte: u8) {
+        // Mid-frame noise corrupts the recorded image too -- every listener
+        // rings the byte, so the record (a host collector's view of an
+        // unsolicited frame) must carry it.
+        {
+            let mut c = self.core.borrow_mut();
+            let now = c.now();
+            c.append_byte(byte, now);
+        }
         for h in &self.handles {
             h.ring.push(byte);
         }
