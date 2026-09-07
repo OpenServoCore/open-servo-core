@@ -7,8 +7,8 @@
 //! --out (no timestamp subdir).
 //!
 //! Duty sign is taken as-is (fwd = +duty): the seek's bang-bang polling
-//! assumes normal drive polarity, and the guard envelope bails the run if a
-//! reversed servo walks away from the band.
+//! assumes normal drive polarity and bails the run if a reversed servo
+//! walks away from the band.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -104,27 +104,28 @@ fn check_fault(c: &mut Client<NusbPipe>, id: Id) -> Result<u16> {
 }
 
 /// Open-loop bang-bang seek into [lo, hi], 20 ms cadence, ctrl-c aware.
-/// Bails on a fault or on leaving the guard envelope; leaves duty 0 and
-/// torque ON (the rung drives next).
-fn seek_band(
-    c: &mut Client<NusbPipe>,
-    id: Id,
-    (lo, hi): (u16, u16),
-    duty_q15: i16,
-    guard: (u16, u16),
-) -> Result<()> {
+/// Bails on a fault or on the band distance growing (reversed polarity);
+/// leaves duty 0 and torque ON (the rung drives next).
+fn seek_band(c: &mut Client<NusbPipe>, id: Id, (lo, hi): (u16, u16), duty_q15: i16) -> Result<()> {
     write_reg(c, id, control::MODE, 0)?;
     write_reg(c, id, control::TORQUE_ENABLE, 1)?;
+    // Distance to the band, not envelope membership: a seek may legally
+    // START at a rail (that is what it is for); reversed polarity shows as
+    // the distance GROWING while driving.
+    let dist = |pos: u16| (lo.saturating_sub(pos)) as u32 + (pos.saturating_sub(hi)) as u32;
+    let mut best = u32::MAX;
     for _ in 0..500 {
         check_stop()?;
         let pos = check_fault(c, id)?;
-        if !(guard.0..=guard.1).contains(&pos) {
-            write_reg(c, id, control::GOAL_DUTY, 0)?;
-            bail!("seek left the guard envelope at pos {pos} (reversed polarity?)");
-        }
         if (lo..=hi).contains(&pos) {
             write_reg(c, id, control::GOAL_DUTY, 0)?;
             return Ok(());
+        }
+        let d = dist(pos);
+        best = best.min(d);
+        if d > best + 200 {
+            write_reg(c, id, control::GOAL_DUTY, 0)?;
+            bail!("seek moving away from {lo}..{hi} at pos {pos} (reversed polarity?)");
         }
         let duty = if pos < lo { duty_q15 } else { -duty_q15 };
         write_reg(c, id, control::GOAL_DUTY, duty as i32)?;
@@ -235,13 +236,12 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     )?;
 
     let seek_duty = pct_q15(args.seek_duty_pct);
-    let guard = (args.guard_lo, args.guard_hi);
     let r = with_guard(&mut c, id, |c| {
         write_reg(c, id, control::TEL_MASK, mask as i32)?;
 
         // baseline: mid-travel, torque off, noise floor at full tick rate
         println!("[baseline] {} ms torque-off", args.baseline_ms);
-        seek_band(c, id, (1750, 2350), seek_duty, guard)?;
+        seek_band(c, id, (1750, 2350), seek_duty)?;
         write_reg(c, id, control::TORQUE_ENABLE, 0)?;
         let (frames, st) = exchange_tel_burst(c, id, samples_of_ms(args.baseline_ms), None, mask)?;
         println!(
@@ -261,7 +261,6 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
                     id,
                     start_band(dir, args.guard_lo, args.guard_hi),
                     seek_duty,
-                    guard,
                 )?;
                 write_reg(c, id, control::MODE, 0)?;
                 write_reg(c, id, control::TORQUE_ENABLE, 1)?;
