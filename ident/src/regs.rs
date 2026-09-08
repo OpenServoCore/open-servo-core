@@ -32,11 +32,11 @@ pub mod config {
     pub const CURRENT_LIMIT_COUNTS: Reg = reg(0x0048, 2);
     pub const DRIVE_POLARITY: Reg = reg(0x004b, 1);
     pub const STALL_TAU_TRIP_COUNTS: Reg = reg(0x0054, 2);
-    pub const V_UNDERVOLT_COUNTS: Reg = reg(0x0060, 2);
-    pub const L1_Q016: Reg = reg(0x0066, 2);
-    pub const L2_Q88: Reg = reg(0x0068, 2);
-    pub const L3_Q88: Reg = reg(0x006a, 2);
-    pub const L_BEMF_Q016: Reg = reg(0x006c, 2);
+    pub const V_UNDERVOLT_COUNTS: Reg = reg(0x0062, 2);
+    pub const L1_Q016: Reg = reg(0x0068, 2);
+    pub const L2_Q88: Reg = reg(0x006a, 2);
+    pub const L3_Q88: Reg = reg(0x006c, 2);
+    pub const L_BEMF_Q016: Reg = reg(0x006e, 2);
 }
 
 pub mod calib {

@@ -9,9 +9,10 @@ use core::cell::SyncUnsafeCell;
 pub(crate) const ADC_SENSOR_COUNT: usize = 3;
 
 /// Slot 0 is the current-sense amplifier output, read on whichever external
-/// channel the board routes the OPA output to; the rest follow `AdcPins`.
+/// channel the board routes the OPA output to; then both motor terminals
+/// (drive-window-critical, so they convert early), then pos, then Vcal.
 /// On osc-dev-v006 that is
-/// `[IN7/PD4 current, IN3/PD2 pos, IN5/PD5 vmA, IN6/PD6 vmB, IN10/Vcal]`.
+/// `[IN7/PD4 current, IN5/PD5 vmA, IN6/PD6 vmB, IN3/PD2 pos, IN10/Vcal]`.
 pub(crate) const ADC_SCAN_LEN: usize = 5;
 
 /// Two scans per PWM period (peak + trough under center-aligned PWM, RCR=0).
@@ -24,9 +25,9 @@ pub(super) const SCAN_PEAK_OFFSET: usize = ADC_SCAN_LEN;
 pub(super) const SCAN_TROUGH_OFFSET: usize = 0;
 
 pub(super) const SCAN_IDX_SHUNT_POST: usize = 0;
-pub(super) const SCAN_IDX_POS: usize = 1;
-pub(super) const SCAN_IDX_VMOTOR_A: usize = 2;
-pub(super) const SCAN_IDX_VMOTOR_B: usize = 3;
+pub(super) const SCAN_IDX_VMOTOR_A: usize = 1;
+pub(super) const SCAN_IDX_VMOTOR_B: usize = 2;
+pub(super) const SCAN_IDX_POS: usize = 3;
 pub(super) const SCAN_IDX_VCAL: usize = 4;
 
 /// Read trough slots before peak; DMA overwrites trough first after TC.

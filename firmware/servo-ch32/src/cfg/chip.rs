@@ -60,6 +60,10 @@ const fn tim1_channel_pin(m: Tim1Mapping, c: timer::Channel) -> Pin {
 
 pub const ADC_SAMPLE_TIME: adc::SampleTime = adc::SampleTime::CYCLES9;
 
+/// OPA output is low-Z, so the short aperture is safe; the divider/pot
+/// channels need `ADC_SAMPLE_TIME`.
+pub const ADC_SHUNT_SAMPLE_TIME: adc::SampleTime = adc::SampleTime::CYCLES3;
+
 /// ADC channels available as board-configurable sensor inputs on the V006F8P6.
 /// Excludes A0 (PA2): the pin is reserved for OPA input routing, which is
 /// board wiring, not a sensor slot.

@@ -50,13 +50,15 @@ fn main() -> ! {
                 bot_ohm: 10_000,
             },
             vdd_mv: 3300,
-            i_window_min_ticks: 240,
-            // one floor for BOTH terminals: the scan converts vmotor_b one
-            // slot after vmotor_a, so B's edge sits ~50 ticks later (bench:
-            // B garbage at 238, clean at 274; A clean at 222). A floor
-            // below B's edge let a position-mode launch seed the vbus EWMA
-            // from off-phase samples and latch a false undervolt.
-            v_window_min_ticks: 300,
+            // Scan order is [shunt, vmA, vmB, pos, vcal]. The i floor is
+            // amp-settling-bound: arm-B network measured true from duty 13%
+            // (bringup docs/armb-comp-sizing.md). The v floor covers
+            // vmotor_b's S/H close ~182 ticks after the crest trigger plus
+            // margin; a v floor below the true edge lets off-phase samples
+            // seed the vbus EWMA and latch a false undervolt. Both floors
+            // pending bench re-validation on the new order.
+            i_window_min_ticks: 160,
+            v_window_min_ticks: 210,
         },
         defaults: ConfigDefaults {
             pos_min_phys_counts: 0,

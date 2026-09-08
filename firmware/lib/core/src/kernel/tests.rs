@@ -91,6 +91,7 @@ fn seed(shared: &Shared) {
         c.limits.oc_trip_counts = 2400;
         c.limits.oc_trip_ticks = 4;
         c.limits.openloop_decay = DecaySelect::Slow;
+        c.limits.openloop_zero_brake = false;
         c.thermal.derate_start_cc = 8000;
         c.thermal.cutoff_cc = 10000;
         c.thermal.recover_cc = 9000;
@@ -424,6 +425,60 @@ fn openloop_duty_passthrough_clamped_with_decay() {
     k.on_tick(frame(2000, BIAS), &sh);
     match last_cmd(&k) {
         MotorCmd::Drive { duty, .. } => assert_eq!(duty.0, 5000),
+        other => panic!("expected Drive, got {other:?}"),
+    }
+}
+
+#[test]
+fn openloop_zero_duty_drives_zero_when_brake_flag_clear() {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::OpenLoop;
+        t.control.lifecycle.goal_duty = 0;
+    });
+    let mut k = kernel();
+    k.on_tick(frame(2000, BIAS), &sh);
+    match last_cmd(&k) {
+        MotorCmd::Drive { duty, decay } => {
+            assert_eq!(duty.0, 0);
+            assert!(matches!(decay, DecayMode::Slow));
+        }
+        other => panic!("expected Drive, got {other:?}"),
+    }
+}
+
+#[test]
+fn openloop_zero_duty_brakes_when_flag_set() {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::OpenLoop;
+        t.control.lifecycle.goal_duty = 0;
+        t.config.limits.openloop_zero_brake = true;
+    });
+    let mut k = kernel();
+    k.on_tick(frame(2000, BIAS), &sh);
+    assert!(matches!(last_cmd(&k), MotorCmd::Brake));
+    assert_eq!(k.duty_q15, 0);
+}
+
+#[test]
+fn openloop_nonzero_duty_drives_despite_brake_flag() {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::OpenLoop;
+        t.control.lifecycle.goal_duty = 8000;
+        t.config.limits.openloop_zero_brake = true;
+    });
+    let mut k = kernel();
+    k.on_tick(frame(2000, BIAS), &sh);
+    match last_cmd(&k) {
+        MotorCmd::Drive { duty, .. } => assert_eq!(duty.0, 8000),
         other => panic!("expected Drive, got {other:?}"),
     }
 }
