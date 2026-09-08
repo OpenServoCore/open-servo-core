@@ -135,6 +135,34 @@ fn seek_band(c: &mut Client<NusbPipe>, id: Id, (lo, hi): (u16, u16), duty_q15: i
     bail!("seek did not reach {lo}..{hi} in 10 s (gear slipping?)")
 }
 
+/// 3 PWM ticks at ARR 1200 (0.25% drive) - enough to dodge motor.rs's
+/// ticks==0 coast mapping, small enough that the slow-decay brake dominates.
+const BRAKE_DUTY_Q15: i32 = 82;
+
+/// Dynamic brake after a rung: with openloop_decay Slow, a token duty holds
+/// the idle H-bridge leg HIGH for the rest of each PWM period - the winding
+/// shorts through the driver and momentum dies in a few hundred counts.
+/// A plain duty-0 write is COAST (motor.rs maps zero ticks to both-low);
+/// at battery volts the freewheel from a top rung crosses the remaining
+/// runway and slams the physical stop. Retreat sign so the firmware
+/// soft-limit clamp can never zero the brake near a wall. Leaves duty 0,
+/// torque ON (the caller torques off).
+fn brake_to_rest(c: &mut Client<NusbPipe>, id: Id, dir: i8) -> Result<()> {
+    write_reg(c, id, control::GOAL_DUTY, -(dir as i32) * BRAKE_DUTY_Q15)?;
+    let mut last = check_fault(c, id)?;
+    for _ in 0..50 {
+        check_stop()?;
+        std::thread::sleep(Duration::from_millis(20));
+        let pos = check_fault(c, id)?;
+        if pos.abs_diff(last) < 4 {
+            break;
+        }
+        last = pos;
+    }
+    write_reg(c, id, control::GOAL_DUTY, 0)?;
+    Ok(())
+}
+
 fn rest(ms: u32) -> Result<()> {
     let mut left = ms;
     while left > 0 {
@@ -219,6 +247,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
         "seek_duty_pct": args.seek_duty_pct,
         "guard": [args.guard_lo, args.guard_hi],
         "tel_mask": mask,
+        "post_rung_brake": true,
         "git_sha": git_sha(),
     });
     let meta_path = args.out.join("meta.json");
@@ -280,7 +309,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
                     st.garble
                 );
                 write_rows(&mut w, seg, duty as i16, dir, &frames)?;
-                write_reg(c, id, control::GOAL_DUTY, 0)?;
+                brake_to_rest(c, id, dir)?;
                 write_reg(c, id, control::TORQUE_ENABLE, 0)?;
                 rest(args.rest_ms)?;
                 seg += 1;
