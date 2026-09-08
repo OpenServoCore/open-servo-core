@@ -60,9 +60,10 @@ pub struct Args {
     guard_lo: u16,
     #[arg(long, default_value_t = 3950)]
     guard_hi: u16,
-    /// TEL field mask (hex ok). Default = the full mask; batching killed
-    /// the old per-tick wire budget.
-    #[arg(long, default_value = "0x3f")]
+    /// TEL field mask (hex ok). Default = the raw six: pos, raw current,
+    /// trough, applied duty, vmotor_a, vmotor_b - measurements only, kernel
+    /// conclusions (vdiff/vbus/i_meas) stay out of raw captures.
+    #[arg(long, default_value = "0x1cd")]
     tel_mask: String,
 }
 
@@ -185,7 +186,7 @@ fn write_rows(
     for f in frames {
         writeln!(
             w,
-            "{seg},{cmd_duty_q15},{dir},{},{},{},{},{},{},{},{}",
+            "{seg},{cmd_duty_q15},{dir},{},{},{},{},{},{},{},{},{},{},{}",
             f.tick,
             f.window_valid as u8,
             opt(f.pos.map(|v| v as i32)),
@@ -194,6 +195,9 @@ fn write_rows(
             opt(f.duty_q15.map(|v| v as i32)),
             opt(f.vdiff.map(|v| v as i32)),
             opt(f.vbus.map(|v| v as i32)),
+            opt(f.current_raw.map(|v| v as i32)),
+            opt(f.vmotor_a.map(|v| v as i32)),
+            opt(f.vmotor_b.map(|v| v as i32)),
         )?;
     }
     Ok(())
@@ -261,7 +265,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     );
     writeln!(
         w,
-        "seg,cmd_duty_q15,dir,tick,window_valid,pos,current,current_trough,duty_q15,vdiff,vbus"
+        "seg,cmd_duty_q15,dir,tick,window_valid,pos,current,current_trough,duty_q15,vdiff,vbus,current_raw,vmotor_a,vmotor_b"
     )?;
 
     let seek_duty = pct_q15(args.seek_duty_pct);

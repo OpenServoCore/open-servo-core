@@ -92,13 +92,13 @@ pub(crate) fn write_tel_frames(dir: &OutDir, name: &str, frames: &[TelFrame]) ->
     let mut w = dir.file(name)?;
     writeln!(
         w,
-        "tick,window_valid,pos,current,current_trough,duty_q15,vdiff,vbus"
+        "tick,window_valid,pos,current,current_trough,duty_q15,vdiff,vbus,current_raw,vmotor_a,vmotor_b"
     )?;
     let opt = |v: Option<i32>| v.map(|v| v.to_string()).unwrap_or_default();
     for f in frames {
         writeln!(
             w,
-            "{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{}",
             f.tick,
             f.window_valid as u8,
             opt(f.pos.map(|v| v as i32)),
@@ -107,6 +107,9 @@ pub(crate) fn write_tel_frames(dir: &OutDir, name: &str, frames: &[TelFrame]) ->
             opt(f.duty_q15.map(|v| v as i32)),
             opt(f.vdiff.map(|v| v as i32)),
             opt(f.vbus.map(|v| v as i32)),
+            opt(f.current_raw.map(|v| v as i32)),
+            opt(f.vmotor_a.map(|v| v as i32)),
+            opt(f.vmotor_b.map(|v| v as i32)),
         )?;
     }
     Ok(())
@@ -126,7 +129,7 @@ pub(crate) fn read_tel_frames(path: &Path) -> Result<Vec<TelFrame>> {
         }
     }
     let mut out = Vec::new();
-    for parts in rows(path, 8)? {
+    for parts in rows(path, 11)? {
         out.push(TelFrame {
             tick: parts[0].parse()?,
             window_valid: parts[1] == "1",
@@ -136,6 +139,9 @@ pub(crate) fn read_tel_frames(path: &Path) -> Result<Vec<TelFrame>> {
             duty_q15: opt(&parts[5])?,
             vdiff: opt(&parts[6])?,
             vbus: opt(&parts[7])?,
+            current_raw: opt(&parts[8])?,
+            vmotor_a: opt(&parts[9])?,
+            vmotor_b: opt(&parts[10])?,
         });
     }
     Ok(out)
@@ -316,6 +322,9 @@ mod tests {
                 duty_q15: Some(8520),
                 vdiff: Some(-1700),
                 vbus: Some(1731),
+                current_raw: Some(620),
+                vmotor_a: Some(1710),
+                vmotor_b: Some(12),
             },
             TelFrame {
                 tick: 17,
@@ -326,6 +335,9 @@ mod tests {
                 duty_q15: Some(0),
                 vdiff: Some(0),
                 vbus: None,
+                current_raw: None,
+                vmotor_a: None,
+                vmotor_b: Some(3),
             },
         ];
         write_tel_frames(&dir, "tel.csv", &frames).unwrap();

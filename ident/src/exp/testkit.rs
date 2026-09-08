@@ -229,6 +229,19 @@ impl FakeServo {
                     }
                 }),
                 vbus: sel(1 << 5).then_some(self.vbus as u16),
+                // raw terminal fakes: driven side carries the rail, the
+                // other sits low; raw current rides a 512-count bias
+                current_raw: sel(1 << 6).then(|| (512.0 + i).round() as u16),
+                vmotor_a: sel(1 << 7).then_some(if driving && self.duty > 0 {
+                    self.vbus as u16
+                } else {
+                    0
+                }),
+                vmotor_b: sel(1 << 8).then_some(if driving && self.duty < 0 {
+                    self.vbus as u16
+                } else {
+                    0
+                }),
             });
         }
         self.t_ms += samples as f64 * dt * 1000.0;

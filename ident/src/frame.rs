@@ -110,7 +110,21 @@ pub const TEL_BIT_CURRENT_TROUGH: u16 = 1 << 2;
 pub const TEL_BIT_DUTY: u16 = 1 << 3;
 pub const TEL_BIT_VDIFF: u16 = 1 << 4;
 pub const TEL_BIT_VBUS: u16 = 1 << 5;
-pub const TEL_MASK_ALL: u16 = 0x3F;
+pub const TEL_BIT_CURRENT_RAW: u16 = 1 << 6;
+pub const TEL_BIT_VMOTOR_A: u16 = 1 << 7;
+pub const TEL_BIT_VMOTOR_B: u16 = 1 << 8;
+pub const TEL_MASK_ALL: u16 = 0x1FF;
+
+/// Wire budget mirror: at most 6 selected fields sustain 20 kHz at 3 Mbaud.
+pub const TEL_FIELDS_MAX: u32 = 6;
+
+/// The raw-capture default: the per-tick ADC frame set plus applied duty.
+pub const TEL_MASK_RAW: u16 = TEL_BIT_POS
+    | TEL_BIT_CURRENT_RAW
+    | TEL_BIT_CURRENT_TROUGH
+    | TEL_BIT_DUTY
+    | TEL_BIT_VMOTOR_A
+    | TEL_BIT_VMOTOR_B;
 
 pub const STREAM_HDR: usize = 4;
 pub const STREAM_SAMPLES_MAX: usize = 16;
@@ -134,6 +148,9 @@ pub struct TelFrame {
     pub duty_q15: Option<i16>,
     pub vdiff: Option<i16>,
     pub vbus: Option<u16>,
+    pub current_raw: Option<u16>,
+    pub vmotor_a: Option<u16>,
+    pub vmotor_b: Option<u16>,
 }
 
 /// Decode one stream payload into per-tick frames; sample i lands at
@@ -173,6 +190,9 @@ pub fn decode_stream_payload(mask: u16, payload: &[u8], tick_base: u64) -> Optio
             duty_q15: take(TEL_BIT_DUTY).map(i16::from_le_bytes),
             vdiff: take(TEL_BIT_VDIFF).map(i16::from_le_bytes),
             vbus: take(TEL_BIT_VBUS).map(u16::from_le_bytes),
+            current_raw: take(TEL_BIT_CURRENT_RAW).map(u16::from_le_bytes),
+            vmotor_a: take(TEL_BIT_VMOTOR_A).map(u16::from_le_bytes),
+            vmotor_b: take(TEL_BIT_VMOTOR_B).map(u16::from_le_bytes),
         });
     }
     Some(out)
@@ -192,9 +212,10 @@ pub struct StreamAssembler {
 }
 
 impl StreamAssembler {
-    /// None if the mask has reserved bits set or selects nothing.
+    /// None if the mask has reserved bits set, selects nothing, or blows
+    /// the wire budget.
     pub fn new(mask: u16) -> Option<Self> {
-        if mask & !TEL_MASK_ALL != 0 || mask == 0 {
+        if mask & !TEL_MASK_ALL != 0 || mask == 0 || mask.count_ones() > TEL_FIELDS_MAX {
             return None;
         }
         Some(Self {
@@ -251,13 +272,16 @@ mod tests {
     /// Mirror of the core tel.rs test vector generator: sample(i) with all
     /// six fields, window_valid on even i.
     fn sample_bytes(mask: u16, i: u16) -> Vec<u8> {
-        let fields: [(u16, u16); 6] = [
+        let fields: [(u16, u16); 9] = [
             (TEL_BIT_POS, 0x1000 + i),
             (TEL_BIT_CURRENT, (-(i as i16) - 1) as u16),
             (TEL_BIT_CURRENT_TROUGH, 0xB000 + i),
             (TEL_BIT_DUTY, 0x2000 + i),
             (TEL_BIT_VDIFF, (-300 - i as i16) as u16),
             (TEL_BIT_VBUS, 1800 + i),
+            (TEL_BIT_CURRENT_RAW, 0x0100 + i),
+            (TEL_BIT_VMOTOR_A, 0x0A00 + i),
+            (TEL_BIT_VMOTOR_B, 0x0B00 + i),
         ];
         let mut out = Vec::new();
         for (bit, v) in fields {
@@ -283,8 +307,8 @@ mod tests {
 
     #[test]
     fn stream_golden_full_mask_full_batch() {
-        // the exact bytes core's encode_golden_full_mask_full_batch pins
-        let p = stream_payload(TEL_MASK_ALL, 0x42, false, 16);
+        // the exact bytes core's encode_golden_six_field_mask_full_batch pins
+        let p = stream_payload(0x3F, 0x42, false, 16);
         assert_eq!(p.len(), STREAM_HDR + 16 * 12);
         assert_eq!(p[..4], [0x42, 0x00, 0x55, 0x55]);
         assert_eq!(
@@ -300,7 +324,7 @@ mod tests {
             ]
         );
 
-        let frames = decode_stream_payload(TEL_MASK_ALL, &p, 320).expect("decodes");
+        let frames = decode_stream_payload(0x3F, &p, 320).expect("decodes");
         assert_eq!(frames.len(), 16);
         let f = frames[0];
         assert_eq!(f.tick, 320);
@@ -396,10 +420,27 @@ mod tests {
     }
 
     #[test]
+    fn stream_raw_mask_decodes_the_adc_frame_set() {
+        let p = stream_payload(TEL_MASK_RAW, 0, true, 2);
+        let frames = decode_stream_payload(TEL_MASK_RAW, &p, 0).expect("decodes");
+        let f = frames[1];
+        assert_eq!(f.pos, Some(0x1001));
+        assert_eq!(f.current_raw, Some(0x0101));
+        assert_eq!(f.current_trough, Some(0xB001));
+        assert_eq!(f.duty_q15, Some(0x2001));
+        assert_eq!(f.vmotor_a, Some(0x0A01));
+        assert_eq!(f.vmotor_b, Some(0x0B01));
+        assert_eq!((f.current, f.vdiff, f.vbus), (None, None, None));
+    }
+
+    #[test]
     fn assembler_rejects_bad_masks() {
         assert!(StreamAssembler::new(0).is_none());
-        assert!(StreamAssembler::new(1 << 6).is_none());
-        assert!(StreamAssembler::new(TEL_MASK_ALL).is_some());
+        assert!(StreamAssembler::new(1 << 9).is_none());
+        // all nine fields blows the wire budget; six is the cap
+        assert!(StreamAssembler::new(TEL_MASK_ALL).is_none());
+        assert!(StreamAssembler::new(0x3F).is_some());
+        assert!(StreamAssembler::new(TEL_MASK_RAW).is_some());
     }
 
     #[test]
