@@ -1,0 +1,5 @@
+.venv/
+.ipynb_checkpoints/
+.virtual_documents/
+__pycache__/
+*.pyc
