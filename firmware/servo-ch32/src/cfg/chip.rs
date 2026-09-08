@@ -18,15 +18,6 @@ pub const BUS_LINE_PIN: Pin = BUS_USART_MAPPING.tx_pin();
 #[cfg(not(feature = "half-duplex"))]
 pub const BUS_LINE_PIN: Pin = BUS_USART_MAPPING.rx_pin();
 
-// === TEL stream (USART2 remap 5, TX-only on PC4) ===
-//
-// PC4 is the TEL pad on rev-2A and the /VNTC net (JP1 center) on rev B --
-// chip-fixed here like the bus mapping. It doubles as ADC A2; boards that
-// wire a sensor to A2 cannot also stream TEL.
-
-pub const TEL_USART_MAPPING: UsartMapping = UsartMapping::Usart2Remap5;
-pub const TEL_BAUD: u32 = 3_000_000;
-
 // === Motor + STAT (TIM1 Remap8) ===
 //
 // Remap8, not Remap7: identical pins for every channel this board uses
@@ -65,11 +56,13 @@ pub const ADC_SAMPLE_TIME: adc::SampleTime = adc::SampleTime::CYCLES9;
 pub const ADC_SHUNT_SAMPLE_TIME: adc::SampleTime = adc::SampleTime::CYCLES3;
 
 /// ADC channels available as board-configurable sensor inputs on the V006F8P6.
-/// Excludes A0 (PA2): the pin is reserved for OPA input routing, which is
-/// board wiring, not a sensor slot.
+/// A0 (PA2) doubles as an OPA positive-input route (PSEL=00), so a board
+/// gets it as a sensor only with the amplifier's input elsewhere
+/// (`BoardWiring::assert_valid`).
 #[derive(Copy, Clone)]
 #[repr(u8)]
 pub enum AnalogChannel {
+    A0,
     A1,
     A2,
     A3,
@@ -82,6 +75,7 @@ pub enum AnalogChannel {
 impl AnalogChannel {
     pub const fn channel(self) -> adc::Channel {
         match self {
+            Self::A0 => adc::Channel::IN0,
             Self::A1 => adc::Channel::IN1,
             Self::A2 => adc::Channel::IN2,
             Self::A3 => adc::Channel::IN3,
@@ -94,6 +88,7 @@ impl AnalogChannel {
 
     pub const fn pin(self) -> Pin {
         match self {
+            Self::A0 => Pin::PA2,
             Self::A1 => Pin::PA1,
             Self::A2 => Pin::PC4,
             Self::A3 => Pin::PD2,
@@ -129,6 +124,7 @@ mod tests {
     #[test]
     fn analog_channel_pin_map_matches_v006_silicon() {
         const MAP: &[(AnalogChannel, adc::Channel, Pin)] = &[
+            (AnalogChannel::A0, adc::Channel::IN0, Pin::PA2),
             (AnalogChannel::A1, adc::Channel::IN1, Pin::PA1),
             (AnalogChannel::A2, adc::Channel::IN2, Pin::PC4),
             (AnalogChannel::A3, adc::Channel::IN3, Pin::PD2),

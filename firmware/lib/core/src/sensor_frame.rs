@@ -11,4 +11,6 @@ pub struct SensorFrame {
     pub vmotor_b: u16,
     pub vmotor_b_trough: u16,
     pub vcal: u16,
+    pub vbus_raw: u16,
+    pub ntc_raw: u16,
 }

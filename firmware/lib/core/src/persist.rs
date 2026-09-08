@@ -291,7 +291,7 @@ impl ControlTableCell {
     }
 
     /// Overlay a validated calib image -- whole region, nothing skipped: every
-    /// field is data. RO board facts (the `CalibSense` block) must be
+    /// field is data. RO board facts (`CalibSense`, `CalibSenseExt`) must be
     /// re-seeded by install AFTER this overlay so board data always wins over
     /// a stale image. Bringup-only, pre-IRQ; sole writer.
     pub fn overlay_persistent_calib(&self, calib: &[u8; CALIB_LEN]) {
@@ -605,16 +605,26 @@ mod tests {
     #[test]
     fn calib_boot_overlay_without_valid_image_keeps_seeds() {
         let table = seeded_table();
-        table.seed_calib_sense(&crate::regions::calib::CalibSense {
-            shunt_r_mohm: 0,
-            gain_milli: 0,
-            vmotor_div_top: 0,
-            vmotor_div_bot: 0,
-            vdd_mv: 0,
-            tick_hz: 20000,
-            i_window_min_ticks: 0,
-            v_window_min_ticks: 0,
-        });
+        table.seed_calib_sense(
+            &crate::regions::calib::CalibSense {
+                shunt_r_mohm: 0,
+                gain_milli: 0,
+                vmotor_div_top: 0,
+                vmotor_div_bot: 0,
+                vdd_mv: 0,
+                tick_hz: 20000,
+                i_window_min_ticks: 0,
+                v_window_min_ticks: 0,
+            },
+            &crate::regions::calib::CalibSenseExt {
+                vbus_div_top_ohm: 0,
+                vbus_div_bot_ohm: 0,
+                ntc_pullup_ohm: 0,
+                ntc_r25_ohm: 0,
+                ntc_beta: 0,
+                vmotor_bias_nom_counts: 0,
+            },
+        );
         let pick = boot_overlay_calib(&table, &[0xFF; CALIB_IMAGE_LEN], &[0u8; CALIB_IMAGE_LEN]);
         assert_eq!(
             pick,

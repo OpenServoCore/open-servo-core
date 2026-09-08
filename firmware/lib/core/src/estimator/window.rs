@@ -49,12 +49,12 @@ pub fn i_from_frame(
     Some(if duty_sign_positive { mag } else { -mag })
 }
 
-/// Drive-window vmotor pair: (driven-high terminal sample = vbus candidate,
-/// differential `va - vb`). Positive duty drives IN1 (TIM1 CH3, PC6) ->
-/// DRV8212P OUT1 -> MOT_A -> VSNA -> `vmotor_a`, so forward drive reads
-/// `vmotor_a` and `va - vb` is positive under forward drive, negative under
-/// reverse - the sign convention downstream bemf math relies on.
-pub fn vdrive_from_frame(frame: &SensorFrame, sel: WindowSel, forward: bool) -> Option<(u16, i32)> {
+/// Drive-window terminal differential `va - vb`. Positive duty drives IN1
+/// (TIM1 CH3, PC6) -> DRV8212P OUT1 -> MOT_A -> VSNA -> `vmotor_a`, so
+/// `va - vb` is positive under forward drive, negative under reverse - the
+/// sign convention downstream bemf math relies on. Both taps share the
+/// board's terminal bias, so it cancels here.
+pub fn vdiff_from_frame(frame: &SensorFrame, sel: WindowSel) -> Option<i32> {
     if !sel.v_valid {
         return None;
     }
@@ -63,8 +63,7 @@ pub fn vdrive_from_frame(frame: &SensorFrame, sel: WindowSel, forward: bool) -> 
     } else {
         (frame.vmotor_a, frame.vmotor_b)
     };
-    let vdrive = if forward { va } else { vb };
-    Some((vdrive, va as i32 - vb as i32))
+    Some(va as i32 - vb as i32)
 }
 
 /// Mirrors chip-side `effort_to_ticks` (`mag * arr / 32767` approximated as
@@ -153,48 +152,32 @@ mod tests {
     }
 
     #[test]
-    fn vdrive_geometry_all_four_rows() {
+    fn vdiff_peak_vs_trough_pick() {
         let f = frame();
-        // Slow fwd: vmotor_a peak
-        assert_eq!(
-            vdrive_from_frame(&f, valid(false), true),
-            Some((3000, 2900))
-        );
-        // Slow rev: vmotor_b peak
-        assert_eq!(
-            vdrive_from_frame(&f, valid(false), false),
-            Some((100, 2900))
-        );
-        // Fast fwd: vmotor_a trough
-        assert_eq!(vdrive_from_frame(&f, valid(true), true), Some((2900, 2810)));
-        // Fast rev: vmotor_b trough
-        assert_eq!(vdrive_from_frame(&f, valid(true), false), Some((90, 2810)));
+        assert_eq!(vdiff_from_frame(&f, valid(false)), Some(2900));
+        assert_eq!(vdiff_from_frame(&f, valid(true)), Some(2810));
     }
 
     #[test]
-    fn vdrive_differential_sign_tracks_drive_direction() {
-        let fwd = frame();
-        let (_, d) = vdrive_from_frame(&fwd, valid(false), true).unwrap();
-        assert!(d > 0);
+    fn vdiff_sign_tracks_drive_direction() {
+        assert!(vdiff_from_frame(&frame(), valid(false)).unwrap() > 0);
         let rev = SensorFrame {
             vmotor_a: 100,
             vmotor_b: 3000,
             ..Default::default()
         };
-        let (v, d) = vdrive_from_frame(&rev, valid(false), false).unwrap();
-        assert_eq!(v, 3000);
-        assert!(d < 0);
+        assert_eq!(vdiff_from_frame(&rev, valid(false)), Some(-2900));
     }
 
     #[test]
-    fn vdrive_invalid_window_is_none() {
+    fn vdiff_invalid_window_is_none() {
         let f = frame();
         let sel = WindowSel {
             i_valid: true,
             v_valid: false,
             use_trough: false,
         };
-        assert_eq!(vdrive_from_frame(&f, sel, true), None);
+        assert_eq!(vdiff_from_frame(&f, sel), None);
     }
 
     #[test]

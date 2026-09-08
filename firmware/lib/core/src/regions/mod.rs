@@ -21,7 +21,9 @@ pub(crate) mod hooks;
 pub mod profile;
 pub mod telemetry;
 
-pub use calib::{CalibKinematics, CalibMotor, CalibRegs, CalibSense, CalibWinding, PotLutBlock};
+pub use calib::{
+    CalibKinematics, CalibMotor, CalibRegs, CalibSense, CalibSenseExt, CalibWinding, PotLutBlock,
+};
 pub use config::{
     BaudRate, ConfigCommon, ConfigFaultCfg, ConfigFusion, ConfigLimits, ConfigLoopCurrent,
     ConfigLoopPosition, ConfigLoopVelocity, ConfigPosLimits, ConfigRegs, ConfigThermal,
@@ -130,9 +132,12 @@ impl ControlTableCell {
     /// Stamp the RO sense primitives the host converts raw counts with
     /// (protocol sec 5.5) -- board facts, not host-writable state.
     /// Caller must be sole writer (install-time, pre-IRQ).
-    pub fn seed_calib_sense(&self, sense: &CalibSense) {
+    pub fn seed_calib_sense(&self, sense: &CalibSense, ext: &CalibSenseExt) {
         // SAFETY: install-time, pre-IRQ, sole writer.
-        self.with_mut(|t| t.calib.sense = *sense);
+        self.with_mut(|t| {
+            t.calib.sense = *sense;
+            t.calib.sense_ext = *ext;
+        });
     }
 
     /// Stamp the boot-measured zero-current output of the sense chain, in raw
@@ -142,6 +147,15 @@ impl ControlTableCell {
         crate::log::debug!("seed current bias: {} counts", counts);
         // SAFETY: install-time, pre-IRQ, sole writer.
         self.with_mut(|t| t.telemetry.sensors.current_bias_counts = counts);
+    }
+
+    /// Stamp the boot-measured motor-terminal divider bias (both terminals
+    /// high-impedance, driver disabled), in raw ADC counts.
+    /// Caller must be sole writer (install-time, pre-IRQ).
+    pub fn seed_vmotor_bias(&self, counts: u16) {
+        crate::log::debug!("seed vmotor bias: {} counts", counts);
+        // SAFETY: install-time, pre-IRQ, sole writer.
+        self.with_mut(|t| t.telemetry.sensors.vmotor_bias_counts = counts);
     }
 }
 

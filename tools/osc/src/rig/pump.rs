@@ -317,8 +317,8 @@ mod tests {
     #[test]
     fn telemetry_span_covers_the_ident_block() {
         assert_eq!(TEL_BASE, 0x200);
-        assert_eq!(TEL_LEN, 0x60);
-        assert_eq!(IDENT_BASE, 0x254);
+        assert_eq!(TEL_LEN, 0x66);
+        assert_eq!(IDENT_BASE, 0x25a);
         assert_eq!(IDENT_LEN, 12);
     }
 

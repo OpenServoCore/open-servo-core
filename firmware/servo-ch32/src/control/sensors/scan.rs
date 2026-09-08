@@ -2,18 +2,26 @@
 //! PWM (peak + trough); UG fires TRGO at CNT=0 before CEN=1 so the trough
 //! scan lands at offset 0 and the peak scan lands at `ADC_SCAN_LEN`. Slot
 //! indices within a scan reflect the configured RSQR sequence.
+//!
+//! Budget at ADCCLK 12 MHz (TCONV = sampling + 12.5, RM sec 9.3): a scan is
+//! 6 x 21.5 + 15.5 = 144.5 cycles = 12.0 us. The peak scan's TC lands 12 us
+//! after its trigger and the trough trigger follows 25 us after it, so the
+//! TC ISR has ~14 us to drain the trough slots before slot 0 is rewritten;
+//! the peak slots stand until the next peak trigger.
 
 use core::cell::SyncUnsafeCell;
 
-/// In `AdcPins` field order: pos, vmotor.0, vmotor.1.
-pub(crate) const ADC_SENSOR_COUNT: usize = 3;
+/// In `AdcPins` field order: pos, vmotor.0, vmotor.1, vbus, ntc.
+pub(crate) const ADC_SENSOR_COUNT: usize = 5;
 
 /// Slot 0 is the current-sense amplifier output, read on whichever external
 /// channel the board routes the OPA output to; then both motor terminals
-/// (drive-window-critical, so they convert early), then pos, then Vcal.
-/// On osc-dev-v006 that is
-/// `[IN7/PD4 current, IN5/PD5 vmA, IN6/PD6 vmB, IN3/PD2 pos, IN10/Vcal]`.
-pub(crate) const ADC_SCAN_LEN: usize = 5;
+/// (drive-window-critical, so they convert early), then pos, then Vcal,
+/// then the slow board taps (rail, NTC) appended last so the bench-validated
+/// terminal window floors keep their meaning. On osc-dev-v006 that is
+/// `[IN7/PD4 current, IN5/PD5 vmA, IN6/PD6 vmB, IN3/PD2 pos, IN10/Vcal,
+/// IN0/PA2 vbus, IN2/PC4 ntc]`.
+pub(crate) const ADC_SCAN_LEN: usize = 7;
 
 /// Two scans per PWM period (peak + trough under center-aligned PWM, RCR=0).
 pub(crate) const ADC_DMA_BUF_LEN: usize = ADC_SCAN_LEN * 2;
@@ -29,6 +37,8 @@ pub(super) const SCAN_IDX_VMOTOR_A: usize = 1;
 pub(super) const SCAN_IDX_VMOTOR_B: usize = 2;
 pub(super) const SCAN_IDX_POS: usize = 3;
 pub(super) const SCAN_IDX_VCAL: usize = 4;
+pub(super) const SCAN_IDX_VBUS: usize = 5;
+pub(super) const SCAN_IDX_NTC: usize = 6;
 
 /// Read trough slots before peak; DMA overwrites trough first after TC.
 #[inline(always)]

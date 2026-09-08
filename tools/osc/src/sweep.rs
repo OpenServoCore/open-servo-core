@@ -269,7 +269,7 @@ fn write_rows(
     for f in frames {
         writeln!(
             w,
-            "{seg},{cmd_duty_q15},{dir},{},{},{},{},{},{},{},{},{},{},{}",
+            "{seg},{cmd_duty_q15},{dir},{},{},{},{},{},{},{},{},{},{},{},{},{}",
             f.tick,
             f.window_valid as u8,
             opt(f.pos.map(|v| v as i32)),
@@ -281,6 +281,8 @@ fn write_rows(
             opt(f.current_raw.map(|v| v as i32)),
             opt(f.vmotor_a.map(|v| v as i32)),
             opt(f.vmotor_b.map(|v| v as i32)),
+            opt(f.vbus_raw.map(|v| v as i32)),
+            opt(f.ntc_raw.map(|v| v as i32)),
         )?;
     }
     Ok(())
@@ -363,7 +365,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     );
     writeln!(
         w,
-        "seg,cmd_duty_q15,dir,tick,window_valid,pos,current,current_trough,duty_q15,vdiff,vbus,current_raw,vmotor_a,vmotor_b"
+        "seg,cmd_duty_q15,dir,tick,window_valid,pos,current,current_trough,duty_q15,vdiff,vbus,current_raw,vmotor_a,vmotor_b,vbus_raw,ntc_raw"
     )?;
 
     let seek_duty = pct_q15(args.seek_duty_pct);

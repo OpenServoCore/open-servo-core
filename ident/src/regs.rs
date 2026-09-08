@@ -68,6 +68,12 @@ pub mod calib {
     pub const ANGLE_MIN_CDEG: Reg = reg(0x011a, 2);
     pub const ANGLE_MAX_CDEG: Reg = reg(0x011c, 2);
     pub const GEAR_RATIO_CENTI: Reg = reg(0x011e, 2);
+    pub const VBUS_DIV_TOP_OHM: Reg = reg(0x0120, 2);
+    pub const VBUS_DIV_BOT_OHM: Reg = reg(0x0122, 2);
+    pub const NTC_PULLUP_OHM: Reg = reg(0x0124, 2);
+    pub const NTC_R25_OHM: Reg = reg(0x0126, 2);
+    pub const NTC_BETA: Reg = reg(0x0128, 2);
+    pub const VMOTOR_BIAS_NOM_COUNTS: Reg = reg(0x012a, 2);
 }
 
 pub mod control {
@@ -105,12 +111,15 @@ pub mod telemetry {
     pub const CURRENT: Reg = reg(0x0242, 2);
     pub const CURRENT_TROUGH: Reg = reg(0x0250, 2);
     pub const CURRENT_BIAS_COUNTS: Reg = reg(0x0252, 2);
-    pub const I_MEAN_COUNTS: Reg = reg(0x0254, 2);
-    pub const I_MIN_COUNTS: Reg = reg(0x0256, 2);
-    pub const I_MAX_COUNTS: Reg = reg(0x0258, 2);
-    pub const VDIFF_MEAN: Reg = reg(0x025a, 2);
-    pub const DUTY_MEAN_Q15: Reg = reg(0x025c, 2);
-    pub const AGG_SEQ: Reg = reg(0x025e, 2);
+    pub const VBUS_RAW: Reg = reg(0x0254, 2);
+    pub const NTC_RAW: Reg = reg(0x0256, 2);
+    pub const VMOTOR_BIAS_COUNTS: Reg = reg(0x0258, 2);
+    pub const I_MEAN_COUNTS: Reg = reg(0x025a, 2);
+    pub const I_MIN_COUNTS: Reg = reg(0x025c, 2);
+    pub const I_MAX_COUNTS: Reg = reg(0x025e, 2);
+    pub const VDIFF_MEAN: Reg = reg(0x0260, 2);
+    pub const DUTY_MEAN_Q15: Reg = reg(0x0262, 2);
+    pub const AGG_SEQ: Reg = reg(0x0264, 2);
 }
 
 /// Every const above with its descriptor field name - the cross-check
@@ -162,6 +171,12 @@ pub const ALL: &[(&str, Reg)] = &[
     ("angle_min_cdeg", calib::ANGLE_MIN_CDEG),
     ("angle_max_cdeg", calib::ANGLE_MAX_CDEG),
     ("gear_ratio_centi", calib::GEAR_RATIO_CENTI),
+    ("vbus_div_top_ohm", calib::VBUS_DIV_TOP_OHM),
+    ("vbus_div_bot_ohm", calib::VBUS_DIV_BOT_OHM),
+    ("ntc_pullup_ohm", calib::NTC_PULLUP_OHM),
+    ("ntc_r25_ohm", calib::NTC_R25_OHM),
+    ("ntc_beta", calib::NTC_BETA),
+    ("vmotor_bias_nom_counts", calib::VMOTOR_BIAS_NOM_COUNTS),
     ("torque_enable", control::TORQUE_ENABLE),
     ("tel_mask", control::TEL_MASK),
     ("mode", control::MODE),
@@ -189,6 +204,9 @@ pub const ALL: &[(&str, Reg)] = &[
     ("current", telemetry::CURRENT),
     ("current_trough", telemetry::CURRENT_TROUGH),
     ("current_bias_counts", telemetry::CURRENT_BIAS_COUNTS),
+    ("vbus_raw", telemetry::VBUS_RAW),
+    ("ntc_raw", telemetry::NTC_RAW),
+    ("vmotor_bias_counts", telemetry::VMOTOR_BIAS_COUNTS),
     ("i_mean_counts", telemetry::I_MEAN_COUNTS),
     ("i_min_counts", telemetry::I_MIN_COUNTS),
     ("i_max_counts", telemetry::I_MAX_COUNTS),

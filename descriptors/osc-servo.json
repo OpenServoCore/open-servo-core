@@ -557,6 +557,48 @@
       "kind": "uint"
     },
     {
+      "name": "vbus_div_top_ohm",
+      "addr": 288,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "vbus_div_bot_ohm",
+      "addr": 290,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "ntc_pullup_ohm",
+      "addr": 292,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "ntc_r25_ohm",
+      "addr": 294,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "ntc_beta",
+      "addr": 296,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "vmotor_bias_nom_counts",
+      "addr": 298,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
       "name": "torque_enable",
       "addr": 384,
       "width": 1,
@@ -844,43 +886,64 @@
       "kind": "uint"
     },
     {
-      "name": "i_mean_counts",
+      "name": "vbus_raw",
       "addr": 596,
       "width": 2,
       "access": "ro",
-      "kind": "int"
+      "kind": "uint"
     },
     {
-      "name": "i_min_counts",
+      "name": "ntc_raw",
       "addr": 598,
       "width": 2,
       "access": "ro",
-      "kind": "int"
+      "kind": "uint"
     },
     {
-      "name": "i_max_counts",
+      "name": "vmotor_bias_counts",
       "addr": 600,
       "width": 2,
       "access": "ro",
-      "kind": "int"
+      "kind": "uint"
     },
     {
-      "name": "vdiff_mean",
+      "name": "i_mean_counts",
       "addr": 602,
       "width": 2,
       "access": "ro",
       "kind": "int"
     },
     {
-      "name": "duty_mean_q15",
+      "name": "i_min_counts",
       "addr": 604,
       "width": 2,
       "access": "ro",
       "kind": "int"
     },
     {
-      "name": "agg_seq",
+      "name": "i_max_counts",
       "addr": 606,
+      "width": 2,
+      "access": "ro",
+      "kind": "int"
+    },
+    {
+      "name": "vdiff_mean",
+      "addr": 608,
+      "width": 2,
+      "access": "ro",
+      "kind": "int"
+    },
+    {
+      "name": "duty_mean_q15",
+      "addr": 610,
+      "width": 2,
+      "access": "ro",
+      "kind": "int"
+    },
+    {
+      "name": "agg_seq",
+      "addr": 612,
       "width": 2,
       "access": "ro",
       "kind": "uint"

@@ -1,5 +1,5 @@
 use ch32_metapac::{ADC, adc::vals::Extsel, dma::vals::Dir};
-use osc_servo_core::{CalibSense, ConfigDefaults};
+use osc_servo_core::{CalibSense, CalibSenseExt, ConfigDefaults};
 #[cfg(not(feature = "half-duplex"))]
 use osc_servo_drivers::Level;
 
@@ -24,8 +24,13 @@ const VCAL_SAMPLE_TIME: adc::SampleTime = adc::SampleTime::CYCLES9;
 
 /// Boot bias averaging: a power-of-two count so the mean is a shift, never a
 /// divide (the linker must stay free of __udivsi3).
-const CURRENT_BIAS_SHIFT: u32 = 4;
-const CURRENT_BIAS_SAMPLES: u32 = 1 << CURRENT_BIAS_SHIFT;
+const BIAS_SHIFT: u32 = 4;
+const BIAS_SAMPLES: u32 = 1 << BIAS_SHIFT;
+
+/// Both terminal taps sit at the same bias with the driver parked; a wider
+/// split means a tap is not at rest (or a leg is missing) and the nominal
+/// stands in.
+const VMOTOR_BIAS_AGREE_COUNTS: u16 = 64;
 
 pub fn bringup(
     wiring: &BoardWiring,
@@ -50,19 +55,25 @@ pub fn bringup(
     // After boot_load: the calib overlay copies the whole region, so the RO
     // board facts (tick_hz, window floors) must land last to win over a
     // stale saved image.
-    SHARED
-        .table
-        .seed_calib_sense(&calib_sense(wiring, calibration));
+    SHARED.table.seed_calib_sense(
+        &calib_sense(wiring, calibration),
+        &calib_sense_ext(calibration),
+    );
     SHARED.seed_uid(esig::uid());
 
     bring_up_analog_chain(&wiring.current_sense);
     crate::log::debug!("opa settled");
 
     // Bridge is quiet here: PWM starts at the end of bringup and DRV_EN was
-    // parked inactive in `configure_pins`, so the shunt carries no current.
+    // parked inactive in `configure_pins`, so the shunt carries no current
+    // and both motor terminals float at the divider bias.
     SHARED
         .table
         .seed_current_bias(measure_current_bias(&wiring.current_sense));
+    SHARED.table.seed_vmotor_bias(measure_vmotor_bias(
+        &wiring.sensors,
+        calibration.vmotor_bias_nom_counts,
+    ));
 
     // SysTick drives both `Monotonic` (LED blinker) and the transport
     // deadline compare. Initialize *after* `bring_up_analog_chain` because
@@ -116,9 +127,20 @@ fn calib_sense(wiring: &BoardWiring, cal: &Calibration) -> CalibSense {
     }
 }
 
-// Order must mirror the scan tail in `configure_adc_dma_scan`.
+fn calib_sense_ext(cal: &Calibration) -> CalibSenseExt {
+    CalibSenseExt {
+        vbus_div_top_ohm: cal.vbus_divider.top_ohm.min(u16::MAX as u32) as u16,
+        vbus_div_bot_ohm: cal.vbus_divider.bot_ohm.min(u16::MAX as u32) as u16,
+        ntc_pullup_ohm: cal.ntc.pullup_ohm.min(u16::MAX as u32) as u16,
+        ntc_r25_ohm: cal.ntc.r25_ohm.min(u16::MAX as u32) as u16,
+        ntc_beta: cal.ntc.beta,
+        vmotor_bias_nom_counts: cal.vmotor_bias_nom_counts,
+    }
+}
+
+// Order mirrors the scan tail in `configure_adc_dma_scan` (Vcal aside).
 fn sensor_channels(s: &AdcPins) -> [AnalogChannel; ADC_SENSOR_COUNT] {
-    [s.vmotor.0, s.vmotor.1, s.pos]
+    [s.vmotor.0, s.vmotor.1, s.pos, s.vbus, s.ntc]
 }
 
 fn enable_clocks_and_remaps(w: &BoardWiring) {
@@ -210,13 +232,13 @@ fn bring_up_analog_chain(cs: &CurrentSenseConfig) {
     delay_ms(OPA_SETTLE_MS);
 }
 
-/// Zero-current output of the sense chain, averaged over
-/// `CURRENT_BIAS_SAMPLES` polled conversions. Leaves the ADC powered down so
-/// `configure_adc_dma_scan` still sees the off->on ADON transition it needs;
-/// every other register it touches is rewritten there.
-fn measure_current_bias(cs: &CurrentSenseConfig) -> u16 {
-    let ch = cs.current_channel().channel();
-    adc::set_sample_time(ch, chip::ADC_SHUNT_SAMPLE_TIME);
+/// `BIAS_SAMPLES` polled conversions of `ch`, averaged; `None` when EOC
+/// never arrives (a converter that never signals must not stall bringup).
+/// Leaves the ADC powered down so `configure_adc_dma_scan` still sees the
+/// off->on ADON transition it needs; every other register it touches is
+/// rewritten there.
+fn measure_rest(ch: adc::Channel, t: adc::SampleTime) -> Option<u16> {
+    adc::set_sample_time(ch, t);
     adc::set_low_power(false);
     adc::set_scan_mode(false);
     adc::set_dma(false);
@@ -227,7 +249,7 @@ fn measure_current_bias(cs: &CurrentSenseConfig) -> u16 {
 
     let mut sum: u32 = 0;
     let mut taken: u32 = 0;
-    while taken < CURRENT_BIAS_SAMPLES {
+    while taken < BIAS_SAMPLES {
         let Some(counts) = adc::convert_once(ch) else {
             break;
         };
@@ -236,13 +258,34 @@ fn measure_current_bias(cs: &CurrentSenseConfig) -> u16 {
     }
     adc::disable();
 
-    if taken == CURRENT_BIAS_SAMPLES {
-        (sum >> CURRENT_BIAS_SHIFT) as u16
+    if taken == BIAS_SAMPLES {
+        Some((sum >> BIAS_SHIFT) as u16)
     } else {
-        // SAFETY: a converter that never signals EOC must not stall bringup.
-        // Zero bias leaves current reading uncorrected rather than wrong.
-        crate::log::debug!("current bias: adc timeout after {} samples", taken);
-        0
+        crate::log::debug!("rest measure: adc timeout after {} samples", taken);
+        None
+    }
+}
+
+/// Zero-current output of the sense chain. Zero on timeout leaves current
+/// uncorrected rather than wrong.
+fn measure_current_bias(cs: &CurrentSenseConfig) -> u16 {
+    measure_rest(cs.current_channel().channel(), chip::ADC_SHUNT_SAMPLE_TIME).unwrap_or(0)
+}
+
+/// Terminal-divider bias: with the driver parked both terminals float, so
+/// each tap reads the bias directly. The taps must agree within
+/// `VMOTOR_BIAS_AGREE_COUNTS`, else the board nominal stands in.
+fn measure_vmotor_bias(s: &AdcPins, nominal: u16) -> u16 {
+    let a = measure_rest(s.vmotor.0.channel(), chip::ADC_SAMPLE_TIME);
+    let b = measure_rest(s.vmotor.1.channel(), chip::ADC_SAMPLE_TIME);
+    match (a, b) {
+        (Some(a), Some(b)) if a.abs_diff(b) <= VMOTOR_BIAS_AGREE_COUNTS => {
+            ((a as u32 + b as u32) >> 1) as u16
+        }
+        _ => {
+            crate::log::debug!("vmotor bias: taps disagree, nominal {}", nominal);
+            nominal
+        }
     }
 }
 
@@ -255,6 +298,8 @@ fn configure_adc_dma_scan(w: &BoardWiring) {
     adc::set_sample_time(sensors.vmotor.0.channel(), chip::ADC_SAMPLE_TIME);
     adc::set_sample_time(sensors.vmotor.1.channel(), chip::ADC_SAMPLE_TIME);
     adc::set_sample_time(adc::Channel::Vcal, VCAL_SAMPLE_TIME);
+    adc::set_sample_time(sensors.vbus.channel(), chip::ADC_SAMPLE_TIME);
+    adc::set_sample_time(sensors.ntc.channel(), chip::ADC_SAMPLE_TIME);
     adc::set_low_power(false);
 
     let seq = [
@@ -263,6 +308,8 @@ fn configure_adc_dma_scan(w: &BoardWiring) {
         sensors.vmotor.1.channel(),
         sensors.pos.channel(),
         adc::Channel::Vcal,
+        sensors.vbus.channel(),
+        sensors.ntc.channel(),
     ];
     adc::set_sequence(&seq);
     adc::set_scan_mode(true);

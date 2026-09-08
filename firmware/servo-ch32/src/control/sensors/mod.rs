@@ -10,8 +10,8 @@ use osc_servo_core::{SensorFrame, Sensors as SensorsTrait};
 use crate::runtime::statics::read_sample_tick;
 
 use scan::{
-    SCAN_IDX_POS, SCAN_IDX_SHUNT_POST, SCAN_IDX_VCAL, SCAN_IDX_VMOTOR_A, SCAN_IDX_VMOTOR_B,
-    SCAN_PEAK_OFFSET, SCAN_TROUGH_OFFSET, scan_slot,
+    SCAN_IDX_NTC, SCAN_IDX_POS, SCAN_IDX_SHUNT_POST, SCAN_IDX_VBUS, SCAN_IDX_VCAL,
+    SCAN_IDX_VMOTOR_A, SCAN_IDX_VMOTOR_B, SCAN_PEAK_OFFSET, SCAN_TROUGH_OFFSET, scan_slot,
 };
 
 #[derive(Default)]
@@ -40,6 +40,8 @@ impl SensorsTrait for Ch32Sensors {
             vmotor_b: scan_slot(SCAN_PEAK_OFFSET, SCAN_IDX_VMOTOR_B),
             vmotor_b_trough,
             vcal: scan_slot(SCAN_PEAK_OFFSET, SCAN_IDX_VCAL),
+            vbus_raw: scan_slot(SCAN_PEAK_OFFSET, SCAN_IDX_VBUS),
+            ntc_raw: scan_slot(SCAN_PEAK_OFFSET, SCAN_IDX_NTC),
         }
     }
 }
