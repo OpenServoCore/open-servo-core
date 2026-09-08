@@ -6,6 +6,7 @@ use osc_servo_core::{BaudRate, BootMode};
 
 use super::super::tx::TxEngine;
 use super::ServoBus;
+use super::tel::TelBurst;
 use crate::traits::bus::{CrcEngine, Providers, TxWire};
 
 /// Reply surface over disjoint `ServoBus` fields (driver-pattern sec 4.3): the
@@ -22,6 +23,7 @@ pub(super) struct ReplyHandle<'a, W: TxWire, C: CrcEngine> {
     pub(super) pending_reboot: &'a mut Option<BootMode>,
     pub(super) pending_cal: &'a mut Option<(u16, u8)>,
     pub(super) response_deadline_us: &'a mut u16,
+    pub(super) burst: &'a mut TelBurst,
     pub(super) staged: bool,
     /// sec 9.2: the request is a broadcast ENUM -- a reply staged through this
     /// handle is marked collision-tolerant, keyed off its own payload (the
@@ -51,6 +53,7 @@ impl<P: Providers> ServoBus<P> {
             pending_reboot: &mut self.pending_reboot,
             pending_cal: &mut self.clock.pending_cal,
             response_deadline_us: &mut self.response_deadline_us,
+            burst: &mut self.burst,
             staged: false,
             tolerant: false,
         }
@@ -106,6 +109,10 @@ impl<W: TxWire, C: CrcEngine> Reply for ReplyHandle<'_, W, C> {
 
     fn set_response_deadline(&mut self, us: u16) {
         *self.response_deadline_us = us;
+    }
+
+    fn tel_arm(&mut self, mask: u16, count: u16) {
+        self.burst.arm(mask, count);
     }
 
     fn stage_reboot(&mut self, mode: BootMode) {

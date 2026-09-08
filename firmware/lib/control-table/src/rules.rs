@@ -16,6 +16,10 @@ pub const OP_GT: u8 = 2;
 pub const OP_GE: u8 = 3;
 pub const OP_EQ: u8 = 4;
 pub const OP_NE: u8 = 5;
+/// Bitfield ops: `bits` = value is a subset of the rhs mask, `max_ones` =
+/// popcount cap. Both compare raw field bits (sign/abs never apply).
+pub const OP_BITS: u8 = 6;
+pub const OP_MAX_ONES: u8 = 7;
 
 const SPEC_SIGNED: u16 = 1 << 4;
 const SPEC_ABS: u16 = 1 << 5;
@@ -106,6 +110,8 @@ pub fn check_cmp(view: &View, addr: u16, spec: u16, rhs: Rhs) -> Result<(), Erro
         OP_GT => a > r,
         OP_GE => a >= r,
         OP_EQ => a == r,
+        OP_BITS => a as u32 & !(r as u32) == 0,
+        OP_MAX_ONES => (a as u32).count_ones() <= r as u32,
         _ => a != r,
     };
     if ok {
@@ -182,6 +188,29 @@ mod tests {
         let s = i16::MIN.to_le_bytes();
         let v = view_over(&s);
         assert!(cmp(&v, 2, true, true, OP_EQ, Rhs::Imm(i16::MAX as i32)).is_ok());
+    }
+
+    #[test]
+    fn bits_requires_a_subset_of_the_mask() {
+        let s = 0x01C5u16.to_le_bytes();
+        let v = view_over(&s);
+        assert!(cmp(&v, 2, false, false, OP_BITS, Rhs::Imm(0x01FF)).is_ok());
+        assert!(cmp(&v, 2, false, false, OP_BITS, Rhs::Imm(0x01C5)).is_ok());
+        assert!(cmp(&v, 2, false, false, OP_BITS, Rhs::Imm(0x00FF)).is_err());
+        let s = 0u16.to_le_bytes();
+        let v = view_over(&s);
+        assert!(cmp(&v, 2, false, false, OP_BITS, Rhs::Imm(0)).is_ok());
+    }
+
+    #[test]
+    fn max_ones_caps_the_popcount() {
+        let s = 0x003Fu16.to_le_bytes(); // 6 bits set
+        let v = view_over(&s);
+        assert!(cmp(&v, 2, false, false, OP_MAX_ONES, Rhs::Imm(6)).is_ok());
+        assert!(cmp(&v, 2, false, false, OP_MAX_ONES, Rhs::Imm(5)).is_err());
+        let s = 0u16.to_le_bytes();
+        let v = view_over(&s);
+        assert!(cmp(&v, 2, false, false, OP_MAX_ONES, Rhs::Imm(0)).is_ok());
     }
 
     #[test]

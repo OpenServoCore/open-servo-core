@@ -41,9 +41,7 @@ pub struct FakeServo {
     pub fault_at_ms: Option<f64>,
     pub torque: bool,
     pub duty: i16,
-    pub tel_enable: bool,
     pub tel_mask: u16,
-    tel_seq: u8,
     omega_dyn: f64,
     pub t_ms: f64,
     t_duty_change: f64,
@@ -74,9 +72,7 @@ impl FakeServo {
             fault_at_ms: None,
             torque: false,
             duty: 0,
-            tel_enable: false,
             tel_mask: 0,
-            tel_seq: 0,
             omega_dyn: 0.0,
             t_ms: 0.0,
             t_duty_change: -1e9,
@@ -134,8 +130,6 @@ impl FakeServo {
         } else if reg == control::GOAL_DUTY {
             self.duty = value as i16;
             self.t_duty_change = self.t_ms;
-        } else if reg == control::TEL_ENABLE {
-            self.tel_enable = value != 0;
         } else if reg == control::TEL_MASK {
             self.tel_mask = value as u16;
         }
@@ -172,6 +166,15 @@ impl FakeServo {
         }
     }
 
+    /// One fast-tick advance shared by [`advance`] and [`stream`].
+    fn tick(&mut self, dt: f64) {
+        if self.dynamic {
+            self.substep(dt);
+        } else {
+            self.pos = (self.pos + self.omega() * dt).clamp(self.ends.0, self.ends.1);
+        }
+    }
+
     pub fn advance(&mut self, ms: u32) {
         if self.dynamic {
             // tick-sized substeps keep the ~tens-of-ms tau integration exact
@@ -187,40 +190,61 @@ impl FakeServo {
         self.t_ms += ms as f64;
     }
 
-    /// Like [`advance`], emitting one TEL frame per fast tick while the
-    /// table has the stream armed (ladder mask assumed: pos, current,
-    /// duty, vdiff). No L-transient inflation here - the electrical
-    /// transient is about one tick long on the real rig.
-    pub fn advance_tel(&mut self, ms: u32, sink: &mut Vec<TelFrame>) {
+    /// One armed TEL burst: `samples` fast ticks integrated from t0 (the
+    /// arm instant - any goal write is already applied), one frame per tick
+    /// with the mask-selected fields. Mask 0 streams nothing, like the
+    /// firmware's disarmed producer.
+    pub fn stream(&mut self, samples: u16, sink: &mut Vec<TelFrame>) {
         let dt = 1.0 / (self.f_med * 10.0);
-        let n = (ms as f64 / 1000.0 / dt).round() as u64;
-        for _ in 0..n {
-            if self.dynamic {
-                self.substep(dt);
-            } else {
-                self.pos = (self.pos + self.omega() * dt).clamp(self.ends.0, self.ends.1);
+        for k in 0..samples {
+            self.tick(dt);
+            if self.tel_mask == 0 {
+                continue;
             }
-            if self.tel_enable && self.tel_mask != 0 {
-                let noise = self.noise();
-                let driving = self.torque && self.duty != 0;
-                sink.push(TelFrame {
-                    seq: self.tel_seq,
-                    window_valid: driving,
-                    pos: Some((self.pos + noise).round().clamp(0.0, 4095.0) as u16),
-                    current: Some(self.i_dyn().round() as i16),
-                    current_trough: None,
-                    duty_q15: Some(if driving { self.duty } else { 0 }),
-                    vdiff: Some(if driving {
+            let noise = self.noise();
+            let driving = self.torque && self.duty != 0;
+            let sel = |bit: u16| self.tel_mask & bit != 0;
+            let i = if self.dynamic {
+                self.i_dyn()
+            } else {
+                let v = self.duty as f64 / 32767.0 * self.vbus;
+                if driving {
+                    (v - self.ke * self.omega()) / self.r
+                } else {
+                    0.0
+                }
+            };
+            sink.push(TelFrame {
+                tick: k as u64,
+                window_valid: driving,
+                pos: sel(1 << 0).then(|| (self.pos + noise).round().clamp(0.0, 4095.0) as u16),
+                current: sel(1 << 1).then(|| i.round() as i16),
+                current_trough: sel(1 << 2).then_some(512),
+                duty_q15: sel(1 << 3).then_some(if driving { self.duty } else { 0 }),
+                vdiff: sel(1 << 4).then(|| {
+                    if driving {
                         (self.vbus * self.duty.signum() as f64) as i16
                     } else {
                         0
-                    }),
-                    vbus: None,
-                });
-                self.tel_seq = self.tel_seq.wrapping_add(1);
-            }
+                    }
+                }),
+                vbus: sel(1 << 5).then_some(self.vbus as u16),
+                // raw terminal fakes: driven side carries the rail, the
+                // other sits low; raw current rides a 512-count bias
+                current_raw: sel(1 << 6).then(|| (512.0 + i).round() as u16),
+                vmotor_a: sel(1 << 7).then_some(if driving && self.duty > 0 {
+                    self.vbus as u16
+                } else {
+                    0
+                }),
+                vmotor_b: sel(1 << 8).then_some(if driving && self.duty < 0 {
+                    self.vbus as u16
+                } else {
+                    0
+                }),
+            });
         }
-        self.t_ms += ms as f64;
+        self.t_ms += samples as f64 * dt * 1000.0;
     }
 
     pub fn read(&mut self) -> TelemetrySnapshot {
@@ -276,33 +300,11 @@ fn reg_name(reg: Reg) -> &'static str {
 }
 
 /// Drive an experiment against the fake servo; returns the command log
-/// ("write <field> <value>" entries plus a trailing marker on overrun).
+/// ("write <field> <value>" entries, "stream <samples> [<field> <value>]"
+/// per burst, plus a trailing marker on overrun). A Stream arm applies its
+/// goal at t0, synthesizes the burst's per-tick frames from the plant, and
+/// hands them back through `push_tel` - the driver contract.
 pub fn pump<E: Experiment>(exp: &mut E, servo: &mut FakeServo, max_steps: u32) -> Vec<String> {
-    let mut log = Vec::new();
-    let mut pending: Option<TelemetrySnapshot> = None;
-    for _ in 0..max_steps {
-        match exp.step(pending.take().as_ref()) {
-            Cmd::Write { reg, value } => {
-                servo.write(reg, value);
-                log.push(format!("write {} {}", reg_name(reg), value));
-            }
-            Cmd::Read => pending = Some(servo.read()),
-            Cmd::Pause { ms } => servo.advance(ms),
-            Cmd::Done => return log,
-        }
-    }
-    log.push("OVERRUN".into());
-    log
-}
-
-/// [`pump`] with the TEL side channel live: every Pause synthesizes the
-/// tick-rate frames the wire would carry and hands them to the inertia
-/// experiment, the way the CLI pumps deframer output between commands.
-pub fn pump_tel(
-    exp: &mut super::inertia::Inertia,
-    servo: &mut FakeServo,
-    max_steps: u32,
-) -> Vec<String> {
     let mut log = Vec::new();
     let mut pending: Option<TelemetrySnapshot> = None;
     let mut frames = Vec::new();
@@ -313,9 +315,17 @@ pub fn pump_tel(
                 log.push(format!("write {} {}", reg_name(reg), value));
             }
             Cmd::Read => pending = Some(servo.read()),
-            Cmd::Pause { ms } => {
+            Cmd::Pause { ms } => servo.advance(ms),
+            Cmd::Stream { samples, goal } => {
+                match goal {
+                    Some((reg, value)) => {
+                        servo.write(reg, value);
+                        log.push(format!("stream {} {} {}", samples, reg_name(reg), value));
+                    }
+                    None => log.push(format!("stream {samples}")),
+                }
                 frames.clear();
-                servo.advance_tel(ms, &mut frames);
+                servo.stream(samples, &mut frames);
                 exp.push_tel(&frames);
             }
             Cmd::Done => return log,

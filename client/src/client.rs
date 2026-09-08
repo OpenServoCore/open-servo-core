@@ -42,6 +42,26 @@ pub struct Reply {
     pub trailing: bool,
 }
 
+/// One collected TEL burst. `frames` are the CRC-clean `Stream` statuses in
+/// arrival order (payload byte 0 is the stream_seq -- a corrupt frame is
+/// dropped by the adapter and shows up as `garble` plus a seq gap).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamReply {
+    /// The arm's own ack, when the instruction owed one (a broadcast or
+    /// NOREPLY arm owes none).
+    pub ack: Option<Status>,
+    pub frames: Vec<Status>,
+    /// `Complete` at the LAST-flagged frame; `Timeout` when the window
+    /// expired first.
+    pub outcome: Outcome,
+    pub tick: u32,
+    /// Engine-counted clean statuses (ack + frames) -- a cross-check
+    /// against record loss.
+    pub statuses: u16,
+    pub garble: u16,
+    pub trailing: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Ping {
     pub model: u16,
@@ -137,11 +157,9 @@ impl<P: Pipe> Client<P> {
         }
     }
 
-    /// Submit one engine command and collect its full answer.
-    pub async fn submit(&mut self, cmd: Command<'_>) -> Result<Reply, Error> {
-        let mut out = Vec::new();
-        let seq = self.session.encode_submit(&mut out, &cmd);
-        self.pipe.send(&out).await?;
+    /// Send one encoded SUBMIT and gather its statuses up to the terminal.
+    async fn collect(&mut self, out: &[u8], seq: u16) -> Result<(Vec<Status>, Closed), Error> {
+        self.pipe.send(out).await?;
         let mut statuses = Vec::new();
         loop {
             match self.next_record().await? {
@@ -162,17 +180,20 @@ impl<P: Pipe> Client<P> {
                     seq: s,
                     outcome,
                     tick,
+                    statuses: counted,
                     garble,
                     trailing,
-                    ..
                 } if s == seq => {
-                    return Ok(Reply {
+                    return Ok((
                         statuses,
-                        outcome,
-                        tick,
-                        garble,
-                        trailing,
-                    });
+                        Closed {
+                            outcome,
+                            tick,
+                            statuses: counted,
+                            garble,
+                            trailing,
+                        },
+                    ));
                 }
                 Record::Rejected { seq: s, reason } if s == seq => {
                     return Err(Error::Link(LinkError::Rejected(RejectReason::from_byte(
@@ -184,8 +205,61 @@ impl<P: Pipe> Client<P> {
         }
     }
 
+    /// Submit one engine command and collect its full answer.
+    pub async fn submit(&mut self, cmd: Command<'_>) -> Result<Reply, Error> {
+        let mut out = Vec::new();
+        let seq = self.session.encode_submit(&mut out, &cmd);
+        let (statuses, t) = self.collect(&out, seq).await?;
+        Ok(Reply {
+            statuses,
+            outcome: t.outcome,
+            tick: t.tick,
+            garble: t.garble,
+            trailing: t.trailing,
+        })
+    }
+
     pub async fn exchange(&mut self, id: Id, inst: Inst, payload: &[u8]) -> Result<Reply, Error> {
         self.submit(Command::Exchange { id, inst, payload }).await
+    }
+
+    /// Stream-tagged exchange (TEL burst carrier): submit `inst`, then keep
+    /// collecting until the LAST-flagged frame or until `window` -- the
+    /// whole-burst allowance the adapter enforces -- expires (the reply then
+    /// carries `Outcome::Timeout`). The pipe guard must exceed `window` for
+    /// a burst that goes quiet mid-stream ([`Client::set_guard`]).
+    pub async fn exchange_stream(
+        &mut self,
+        id: Id,
+        inst: Inst,
+        payload: &[u8],
+        window: Duration,
+    ) -> Result<StreamReply, Error> {
+        let window_us = u32::try_from(window.as_micros()).unwrap_or(u32::MAX);
+        let mut out = Vec::new();
+        let seq = self.session.encode_submit(
+            &mut out,
+            &Command::ExchangeStream {
+                id,
+                inst,
+                payload,
+                window_us,
+            },
+        );
+        let (mut collected, t) = self.collect(&out, seq).await?;
+        let ack = match collected.first() {
+            Some(s) if s.result != Some(ResultCode::Stream) => Some(collected.remove(0)),
+            _ => None,
+        };
+        Ok(StreamReply {
+            ack,
+            frames: collected,
+            outcome: t.outcome,
+            tick: t.tick,
+            statuses: t.statuses,
+            garble: t.garble,
+            trailing: t.trailing,
+        })
     }
 
     /// Quiet bus time (the sec 8 pacing primitive): wall time on hardware,
@@ -399,6 +473,15 @@ impl<P: Pipe> Client<P> {
             other => Err(desync("BOOTLOADER ack", &other)),
         }
     }
+}
+
+/// A command's terminal, digested off the record.
+struct Closed {
+    outcome: Outcome,
+    tick: u32,
+    statuses: u16,
+    garble: u16,
+    trailing: bool,
 }
 
 fn chain_digest(reply: Reply) -> Chain {

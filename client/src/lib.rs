@@ -23,7 +23,7 @@ pub mod fake;
 #[cfg(feature = "nusb")]
 pub mod nusb;
 
-pub use client::{Chain, Client, Ping, Reply, Status};
+pub use client::{Chain, Client, Ping, Reply, Status, StreamReply};
 pub use error::{Error, LinkError, RejectReason};
 
 pub use osc_host::engine::Outcome;

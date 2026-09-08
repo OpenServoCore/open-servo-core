@@ -102,6 +102,9 @@ pub enum Event {
     WakeRefire { servo: usize },
     /// A servo TX DMA arm completed -- drive `on_tx_complete`.
     TxArmDone { servo: usize },
+    /// A servo's TEL fast-tick pump fired (kernel 50 us grid): synthesize one
+    /// sample into the kernel-side feed. Stale epochs (aborted bursts) drop.
+    TelTick { servo: usize, epoch: u64 },
     /// A servo's handler body ended (`super::cpu`): deliver one pended vector.
     CpuFree { servo: usize },
     /// The attached host engine's tick-compare fired; same generation gate

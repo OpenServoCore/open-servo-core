@@ -10,6 +10,7 @@
 //!         Cmd::Write { reg, value } => client.write(reg, value),
 //!         Cmd::Read => pending = Some(read_telemetry_region()),
 //!         Cmd::Pause { ms } => sleep_ms(ms),
+//!         Cmd::Stream { samples, goal } => exp.push_tel(&run_burst(samples, goal)),
 //!         Cmd::Done => break,
 //!     }
 //! }
@@ -27,23 +28,40 @@ pub mod resistance;
 pub mod sweep;
 pub mod verify;
 
-use crate::frame::{SeqUnwrap, TelemetrySnapshot};
+use crate::frame::{SeqUnwrap, TelFrame, TelemetrySnapshot};
 use crate::regs::{Reg, control};
 
 /// One driver action. `Write` is a single-field wire write (the value is
 /// truncated to the reg width by the driver); `Read` is one gread of the
-/// telemetry region whose parsed snapshot feeds the NEXT `step`.
+/// telemetry region whose parsed snapshot feeds the NEXT `step`; `Stream`
+/// arms a TEL burst of `samples` fast ticks - with `goal` Some the driver
+/// stages that write and the arm under HOLD and fires one broadcast COMMIT,
+/// so the write applies in the same instant the capture starts. Decoded
+/// frames return through [`Experiment::push_tel`] before the next `step`.
+/// The mask is sticky: write TEL_MASK with an ordinary `Write` first.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Cmd {
-    Write { reg: Reg, value: i32 },
+    Write {
+        reg: Reg,
+        value: i32,
+    },
     Read,
-    Pause { ms: u32 },
+    Pause {
+        ms: u32,
+    },
+    Stream {
+        samples: u16,
+        goal: Option<(Reg, i32)>,
+    },
     Done,
 }
 
 /// A pumpable experiment. `step` with `Some` only in reply to [`Cmd::Read`].
 pub trait Experiment {
     fn step(&mut self, obs: Option<&TelemetrySnapshot>) -> Cmd;
+    /// Decoded TEL frames from the last [`Cmd::Stream`] burst; experiments
+    /// that never stream keep the drop default.
+    fn push_tel(&mut self, _frames: &[TelFrame]) {}
 }
 
 /// Rig constants with bench defaults - the single home. Experiments take
@@ -146,12 +164,6 @@ impl<E: Experiment> Guarded<E> {
         self.exp
     }
 
-    /// Mid-run access for side channels (the driver hands TEL frames to a
-    /// guarded [`inertia::Inertia`] between commands).
-    pub fn inner_mut(&mut self) -> &mut E {
-        &mut self.exp
-    }
-
     fn violation(&self, o: &TelemetrySnapshot) -> Option<AbortReason> {
         if o.fault_flags != 0 {
             return Some(AbortReason::Fault {
@@ -202,6 +214,10 @@ impl<E: Experiment> Experiment for Guarded<E> {
             }
             GuardState::Finished => Cmd::Done,
         }
+    }
+
+    fn push_tel(&mut self, frames: &[TelFrame]) {
+        self.exp.push_tel(frames);
     }
 }
 

@@ -39,6 +39,19 @@ pub enum Command<'a> {
         inst: Inst,
         payload: &'a [u8],
     },
+    /// An Exchange whose committed effect arms a servo-initiated TEL burst
+    /// (the engine cannot know which writes are special; the client tags
+    /// the exchange). After the arm's own ack -- none under NOREPLY or a
+    /// silent broadcast -- the engine keeps collecting status frames until
+    /// one satisfies [`wire::stream_last`]. `window_us` is the
+    /// client-computed whole-burst allowance: one wide await window, never
+    /// re-armed per frame; expiry before LAST is [`Outcome::Timeout`].
+    ExchangeStream {
+        id: Id,
+        inst: Inst,
+        payload: &'a [u8],
+        window_us: u32,
+    },
     /// Rescue pulse (protocol sec 9.1: ~1 ms dominant low), then the host
     /// UART drops to 0.5M in the same verb -- rescued servos are at the
     /// rescue rate by definition, so there is no way to half-do it.
@@ -62,8 +75,9 @@ pub enum SubmitError {
 /// policy over these counts -- the walk never lives in the engine.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WireEvidence {
-    /// CRC-clean status frames delivered.
-    pub statuses: u8,
+    /// CRC-clean status frames delivered (a TEL burst can run to
+    /// thousands).
+    pub statuses: u16,
     /// Ring bytes that anchored no clean status (junk, CRC failures, and
     /// any rogue non-status frame).
     pub garble: u16,
@@ -100,6 +114,8 @@ pub struct Terminal {
 pub enum Event<'a> {
     Status {
         /// GREAD list position; 0 for unicast; arrival order under Collect.
+        /// For TEL burst frames a wrapping arrival index -- the payload's
+        /// stream_seq is the real ordering.
         slot: u8,
         id: Id,
         inst: Inst,
@@ -255,23 +271,45 @@ impl<P: Providers> HostBus<P> {
                 );
             }
             Command::Exchange { id, inst, payload } => {
-                let plan = Shape::derive(id, inst, payload).map_err(SubmitError::Invalid)?;
-                self.buf.start(id, inst);
-                self.buf.payload_mut()[..payload.len()].copy_from_slice(payload);
-                self.buf.finish(payload.len() as u8);
-                self.buf.seal();
-                self.plan = Some(plan);
-                // Quiet-bus bootstrap: drop anything unconsumed before the
-                // TX window opens (host-side analog of the servo's rule).
-                self.framer.resync(self.ring.cursor() as usize);
-                match self.pace_until.take() {
-                    Some(until) if !tick_reached(self.deadline.now(), until) => {
-                        self.state = State::Pacing;
-                        self.arm(until);
-                    }
-                    _ => self.start_tx(),
-                }
+                self.start_exchange(id, inst, payload, None)?;
             }
+            Command::ExchangeStream {
+                id,
+                inst,
+                payload,
+                window_us,
+            } => {
+                self.start_exchange(id, inst, payload, Some(window_us))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn start_exchange(
+        &mut self,
+        id: Id,
+        inst: Inst,
+        payload: &[u8],
+        stream_window_us: Option<u32>,
+    ) -> Result<(), SubmitError> {
+        let mut plan = Shape::derive(id, inst, payload).map_err(SubmitError::Invalid)?;
+        if let Some(us) = stream_window_us {
+            plan = plan.stream(us).map_err(SubmitError::Invalid)?;
+        }
+        self.buf.start(id, inst);
+        self.buf.payload_mut()[..payload.len()].copy_from_slice(payload);
+        self.buf.finish(payload.len() as u8);
+        self.buf.seal();
+        self.plan = Some(plan);
+        // Quiet-bus bootstrap: drop anything unconsumed before the
+        // TX window opens (host-side analog of the servo's rule).
+        self.framer.resync(self.ring.cursor() as usize);
+        match self.pace_until.take() {
+            Some(until) if !tick_reached(self.deadline.now(), until) => {
+                self.state = State::Pacing;
+                self.arm(until);
+            }
+            _ => self.start_tx(),
         }
         Ok(())
     }
@@ -403,11 +441,14 @@ impl<P: Providers> HostBus<P> {
         let expected = match plan.replies {
             Replies::Single => Some(1),
             Replies::Chain(n) => Some(n),
-            Replies::Collect => None,
+            Replies::Collect | Replies::Stream { .. } => None,
             // Unreachable by construction (Replies::None never awaits);
             // fall back to a single-reply window rather than wedging.
             Replies::None => Some(1),
         };
+        // Stream awaits ride the one wide client window: no per-frame or
+        // per-progress re-arm anywhere below.
+        let stream = matches!(plan.replies, Replies::Stream { .. });
         // Precomputed: the status arm below runs under a live ring borrow,
         // where whole-`self` helpers can't be called.
         let pace_at = now.wrapping_add(wire::STARVE_HORIZON_BYTE_TIMES * self.byte_ticks());
@@ -420,10 +461,15 @@ impl<P: Providers> HostBus<P> {
             let cursor = self.ring.cursor() as usize;
             match self.framer.step(self.ring.bytes(), cursor) {
                 Step::Frame(f) if f.inst.is_status() => {
-                    self.got = self.got.saturating_add(1);
+                    self.got = self.got.wrapping_add(1);
                     self.evidence.statuses = self.evidence.statuses.saturating_add(1);
                     self.evidence.garble_after_last_frame = false;
-                    if expected == Some(self.got) {
+                    let done = if stream {
+                        wire::stream_last(f.inst, f.payload)
+                    } else {
+                        expected == Some(self.got)
+                    };
+                    if done {
                         self.deadline.cancel();
                         self.state = State::Idle;
                         // Ring content no verdict consumed by terminal time
@@ -442,12 +488,18 @@ impl<P: Providers> HostBus<P> {
                             evidence: core::mem::take(&mut self.evidence),
                         });
                         self.plan = None;
-                    } else {
+                    } else if !stream {
                         self.deadline_at = now.wrapping_add(self.window);
                         self.deadline.set(self.deadline_at);
                     }
                     self.last_cursor = cursor as u16;
-                    emit = Some((self.got - 1, f.id, f.inst, f.payload_pos, f.payload.len()));
+                    emit = Some((
+                        self.got.wrapping_sub(1),
+                        f.id,
+                        f.inst,
+                        f.payload_pos,
+                        f.payload.len(),
+                    ));
                     break;
                 }
                 Step::Frame(f) => {
@@ -456,14 +508,18 @@ impl<P: Providers> HostBus<P> {
                     let footprint = f.payload.len() as u16 + 6;
                     self.evidence.garble = self.evidence.garble.saturating_add(footprint);
                     self.evidence.garble_after_last_frame = true;
-                    self.deadline_at = now.wrapping_add(self.window);
-                    self.deadline.set(self.deadline_at);
+                    if !stream {
+                        self.deadline_at = now.wrapping_add(self.window);
+                        self.deadline.set(self.deadline_at);
+                    }
                 }
                 Step::Garble(n) => {
                     self.evidence.garble = self.evidence.garble.saturating_add(n);
                     self.evidence.garble_after_last_frame = true;
-                    self.deadline_at = now.wrapping_add(self.window);
-                    self.deadline.set(self.deadline_at);
+                    if !stream {
+                        self.deadline_at = now.wrapping_add(self.window);
+                        self.deadline.set(self.deadline_at);
+                    }
                 }
                 Step::Partial | Step::Idle => break,
             }
@@ -481,7 +537,7 @@ impl<P: Providers> HostBus<P> {
         let cursor = self.ring.cursor();
         let progressed = cursor != self.last_cursor;
         self.last_cursor = cursor;
-        if progressed {
+        if progressed && !stream {
             self.deadline_at = now.wrapping_add(self.window);
             self.deadline.set(self.deadline_at);
         } else if tick_reached(now, self.deadline_at) {
@@ -544,6 +600,9 @@ impl<P: Providers> HostBus<P> {
     /// grid -- transport sec 9.4's "elastically late" rule made concrete.
     fn window_for(&self, plan: &Shape) -> u32 {
         let t = P::Deadline::TICKS_PER_US;
+        if let Replies::Stream { window_us } = plan.replies {
+            return window_us.saturating_mul(t);
+        }
         let byte = self.byte_ticks();
         let mut w = self.response_deadline_us as u32 * t
             + plan.reply_footprint as u32 * byte

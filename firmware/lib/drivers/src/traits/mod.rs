@@ -7,10 +7,8 @@
 
 mod digital_out;
 mod monotonic;
-mod tel_tx;
 
 pub mod bus;
 
 pub use digital_out::{DigitalOut, Level};
 pub use monotonic::Monotonic;
-pub use tel_tx::TelTx;

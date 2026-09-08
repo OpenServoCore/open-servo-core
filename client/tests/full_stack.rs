@@ -4,12 +4,17 @@
 
 #![cfg(feature = "fake-adapter")]
 
+use std::time::Duration;
+
 use osc_client::blocking::Client;
 use osc_client::common::{Health, Identity};
 use osc_client::cyclic::{Cycle, Group, Telemetry};
 use osc_client::fake::FakePipe;
 use osc_client::mgmt::{Found, Uid};
-use osc_client::{BaudRate, Error, Id, LinkError, RejectReason};
+use osc_client::{
+    BaudRate, Error, Id, Inst, LinkError, Opcode, Outcome, RejectReason, ResultCode, StreamReply,
+};
+use osc_integration::sim::{Source, expect_tel_payload, status};
 use osc_protocol::models::MODEL_OSC_SERVO;
 use osc_protocol::table;
 use osc_protocol::wire::UID_LEN;
@@ -461,6 +466,143 @@ fn edge_drain_and_reset_round_trip() {
     c.reset_capture().expect("reset");
     let drain = c.drain_edges().expect("drain after reset");
     assert!(drain.edges.is_empty());
+}
+
+// --- TEL stream (burst carrier) ---
+
+/// V006 map facts (control.lifecycle): the burst arm registers.
+const TEL_MASK: u16 = 386;
+const TEL_COUNT: u16 = 402;
+/// pos + current + duty + vdiff -- the ident ladder's mask.
+const TEL_LADDER_MASK: u16 = 0x1B;
+const BURST_WINDOW: Duration = Duration::from_millis(50);
+
+/// TEL runs at 3M: at lower rates the producer outruns the wire and drops
+/// samples by design (see the DES tel suite).
+fn tel_fleet() -> Client<FakePipe> {
+    Client::connect(FakePipe::new(BaudRate::B3000000, &[5])).expect("connect")
+}
+
+fn write_mask(c: &mut Client<FakePipe>) {
+    c.write(Id::new(5), TEL_MASK, &TEL_LADDER_MASK.to_le_bytes())
+        .expect("mask");
+}
+
+/// Arm the burst: a stream-tagged unicast WRITE to tel_count.
+fn arm_tel(c: &mut Client<FakePipe>, count: u16) -> StreamReply {
+    let mut p = [0u8; 8];
+    let n = osc_protocol::build::write(&mut p, TEL_COUNT, &count.to_le_bytes()).expect("payload");
+    let inst = Inst::instruction(Opcode::Write, 0);
+    c.exchange_stream(Id::new(5), inst, &p[..n], BURST_WINDOW)
+        .expect("stream exchange")
+}
+
+#[test]
+fn tel_stream_collects_ack_frames_and_last() {
+    let mut c = tel_fleet();
+    write_mask(&mut c);
+    let reply = arm_tel(&mut c, 40);
+    assert_eq!(reply.outcome, Outcome::Complete);
+    let ack = reply.ack.expect("acked WRITE arm");
+    assert_eq!(ack.result, Some(ResultCode::Ok));
+    assert_eq!(reply.frames.len(), 3, "40 samples = 16 + 16 + 8");
+    for (i, f) in reply.frames.iter().enumerate() {
+        assert_eq!(f.result, Some(ResultCode::Stream));
+        assert_eq!(
+            f.payload,
+            expect_tel_payload(TEL_LADDER_MASK, 40, i),
+            "frame {i} payload"
+        );
+    }
+    assert_eq!(reply.statuses, 4, "ack + three frames");
+    assert_eq!(reply.garble, 0);
+    assert!(!reply.trailing);
+
+    // The line frees after LAST: an ordinary read still answers.
+    let got = c.read(Id::new(5), TEL_MASK, 2).expect("read after burst");
+    assert_eq!(got, TEL_LADDER_MASK.to_le_bytes());
+}
+
+#[test]
+fn tel_stream_hold_commit_broadcast_carrier() {
+    let mut c = tel_fleet();
+    c.write_hold(Id::new(5), TEL_MASK, &TEL_LADDER_MASK.to_le_bytes())
+        .expect("hold mask");
+    c.write_hold(Id::new(5), TEL_COUNT, &24u16.to_le_bytes())
+        .expect("hold count");
+    let inst = Inst::instruction(Opcode::Commit, 0);
+    let reply = c
+        .exchange_stream(Id::BROADCAST, inst, &[], BURST_WINDOW)
+        .expect("commit stream");
+    assert_eq!(reply.outcome, Outcome::Complete);
+    assert!(reply.ack.is_none(), "broadcast COMMIT owes no ack");
+    assert_eq!(reply.frames.len(), 2, "24 samples = 16 + 8");
+    for (i, f) in reply.frames.iter().enumerate() {
+        assert_eq!(
+            f.payload,
+            expect_tel_payload(TEL_LADDER_MASK, 24, i),
+            "frame {i} payload"
+        );
+    }
+    assert_eq!(reply.statuses, 2);
+}
+
+#[test]
+fn tel_stream_alert_marks_the_faulted_batch() {
+    let mut c = tel_fleet();
+    c.pipe_mut().sim_mut().set_tel_fault_ticks(0, 16, 32);
+    write_mask(&mut c);
+    let reply = arm_tel(&mut c, 48);
+    assert_eq!(reply.outcome, Outcome::Complete);
+    assert!(!reply.ack.expect("ack").alert);
+    let alerts: Vec<bool> = reply.frames.iter().map(|f| f.alert).collect();
+    assert_eq!(alerts, [false, true, false], "ALERT on the faulted batch");
+}
+
+#[test]
+fn tel_stream_drops_a_corrupt_frame_as_garble() {
+    // Probe run: the sim is deterministic, so frame 1's wire span in a
+    // clean run holds for the injected rerun.
+    let garble_at_us = {
+        let mut c = tel_fleet();
+        write_mask(&mut c);
+        c.pipe_mut().take_frames();
+        let reply = arm_tel(&mut c, 48);
+        assert_eq!(reply.frames.len(), 3);
+        let tpu = c.info().ticks_per_us as u64;
+        let frames = c.pipe_mut().take_frames();
+        let f1 = frames
+            .iter()
+            .filter(|f| {
+                matches!(f.from, Source::Servo(_))
+                    && status(f).0.result() == Some(ResultCode::Stream)
+            })
+            .nth(1)
+            .expect("frame 1 recorded");
+        (f1.at + f1.end) / 2 / tpu
+    };
+
+    let mut c = tel_fleet();
+    write_mask(&mut c);
+    c.pipe_mut().sim_mut().inject_garble_at(garble_at_us, 0xA5);
+    let reply = arm_tel(&mut c, 48);
+    assert_eq!(
+        reply.outcome,
+        Outcome::Complete,
+        "LAST still closes the burst"
+    );
+    assert!(reply.garble > 0, "the corrupt frame is evidence");
+    let seqs: Vec<u8> = reply.frames.iter().map(|f| f.payload[0]).collect();
+    assert_eq!(
+        seqs,
+        [0, 2],
+        "corrupt frame dropped; the seq gap exposes it"
+    );
+    assert_eq!(reply.statuses, 3, "ack + two clean frames");
+    assert_eq!(
+        reply.frames[1].payload,
+        expect_tel_payload(TEL_LADDER_MASK, 48, 2)
+    );
 }
 
 #[test]

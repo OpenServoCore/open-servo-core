@@ -242,10 +242,8 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         // TEL emits HERE, on the fast path before the medium/slow branches:
         // duty_q15 still holds the command whose window this frame's samples
         // measured (the same previous-tick alignment the ident aggregate
-        // uses), and the send lands at a near-constant tick offset. Emitting
-        // at on_tick's end loses the DMA drain margin every medium tick -
-        // bench: >=9 B frames dropped at exactly the medium cadence.
-        if life.tel_enable && life.tel_mask != 0 {
+        // uses), and the sample lands at a near-constant tick offset.
+        if self.tel.active() {
             let s = TelSample {
                 pos: frame.pos,
                 current: self.i_meas_last,
@@ -253,9 +251,12 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                 duty_q15: self.duty_q15,
                 vdiff: self.vdiff_last,
                 vbus: self.vbus.vbus_counts(),
+                current_raw: frame.current,
+                vmotor_a: frame.vmotor_a,
+                vmotor_b: frame.vmotor_b,
                 window_valid: i_meas.is_some(),
+                fault: self.faults.mask() != 0,
             };
-            self.tel.configure(true, life.tel_mask);
             self.tel.on_tick(&s);
         }
 
@@ -576,7 +577,14 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                     // raw passthrough, duty_max-clamped; NO vbus comp -
                     // identification wants unconfounded actuation
                     let max = loop_cur.duty_max_q15.min(i16::MAX as u16) as i32;
-                    let duty = (life.goal_duty as i32).clamp(-max, max) as i16;
+                    let mut duty = (life.goal_duty as i32).clamp(-max, max) as i16;
+                    // endstop: a collapsed band side forbids that sign of
+                    // current, and duty of the same sign is what drives it -
+                    // zero the outbound push, retreat passes (bench: an
+                    // open-loop sweep crashed the horn into the rail)
+                    if (self.i_band.hi == 0 && duty > 0) || (self.i_band.lo == 0 && duty < 0) {
+                        duty = 0;
+                    }
                     let decay = match lim_cfg.openloop_decay {
                         DecaySelect::Slow => DecayMode::Slow,
                         DecaySelect::Fast => DecayMode::Fast,
@@ -608,18 +616,16 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                         // PI at whatever sub-floor duty it unwound to -
                         // stalled at an endstop that grinds the gears
                         // forever (bench: 18% duty held into the rail).
-                        // Zero duty is the honest actuation; slow decay
-                        // shorts the winding, passively braking whatever
-                        // momentum remains. Scoped to a collapsed band so a
+                        // Brake shorts the winding, passively holding
+                        // against whatever momentum remains; it must be
+                        // commanded explicitly - chip-side Drive{0, Slow}
+                        // maps to coast. Scoped to a collapsed band so a
                         // transient i_ref zero crossing in normal travel
                         // can never reset the loop mid-reversal.
                         self.cur.reset();
                         self.duty_q15 = 0;
                         self.decay = DecayMode::Slow;
-                        MotorCmd::Drive {
-                            duty: Effort(0),
-                            decay: DecayMode::Slow,
-                        }
+                        MotorCmd::Brake
                     } else {
                         let gains = CurrentGains {
                             kp_q88: loop_cur.i_kp_q88,

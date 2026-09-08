@@ -259,6 +259,22 @@ be staged behind the CRC verdict:
   applies the whole buffer; MGMT reboots), so the CRC is checked FIRST
   and dispatch runs only on a pass. Rare, short frames — the ~2 µs
   blocking CRC poll is affordable where staging isn't possible.
+- **Unsolicited - TEL bursts (protocol sec 5.6).** The one place the
+  servo transmits without an instruction on the wire. A committed
+  nonzero `tel_count` arms it; the host is silent by contract until the
+  LAST-flagged frame, so the reply TX engine and CRC engine are
+  structurally idle and the burst borrows them whole - no second TX
+  path exists. Mechanics: the kernel encodes each control-tick sample
+  once, directly at its final wire offset in a ping-pong buffer pair
+  (LOW context); the main loop's ISR-masked `poll_tel` stages a ready
+  buffer through the ordinary stage/trigger path (HIGH-owned state,
+  same as `take_reboot`). Cross-context traffic is three flags and an
+  arm mailbox, single-writer volatile discipline, no atomics. Any RX
+  break aborts the burst with the speculation-kill trio (disarm,
+  tx.abort, chain reset); buffers published under a dead arm epoch are
+  discarded on sight, which closes the mid-tick re-arm race. A stalled
+  consumer drops whole batches and counts them - the fast tick never
+  blocks.
 
 Backpressure is structural: at most one pending-verdict frame exists at a
 time (the pending frame IS the frontier), so the single staging slot and

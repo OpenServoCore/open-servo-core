@@ -240,12 +240,12 @@ fn endstop_allows_retreat_from_the_wall() {
     for _ in 0..400 {
         k.on_tick(frame(4095, BIAS), &sh);
     }
-    // inward goal is banded to zero: no drive into the wall
-    match last_cmd(&k) {
-        MotorCmd::Drive { duty, .. } => assert_eq!(duty.0, 0),
-        MotorCmd::Coast | MotorCmd::Disabled => {}
-        MotorCmd::Brake => panic!("brake is never commanded"),
-    }
+    // inward goal is banded to zero: the winding short holds at the wall
+    assert!(
+        matches!(last_cmd(&k), MotorCmd::Brake),
+        "expected brake at the wall, got {:?}",
+        last_cmd(&k)
+    );
     // the door back out must be open: a retreat goal drives immediately
     // (the magnitude-fold deadlock read the zeroed i_ref as inward forever).
     // Reverse drive samples the OTHER terminal, so the frame carries the
@@ -426,6 +426,37 @@ fn openloop_duty_passthrough_clamped_with_decay() {
         MotorCmd::Drive { duty, .. } => assert_eq!(duty.0, 5000),
         other => panic!("expected Drive, got {other:?}"),
     }
+}
+
+fn openloop_duty(k: &Kernel<FakeIo>) -> i16 {
+    match last_cmd(k) {
+        MotorCmd::Drive { duty, .. } => duty.0,
+        other => panic!("expected Drive, got {other:?}"),
+    }
+}
+
+#[test]
+fn openloop_endstop_polarity_flip() {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::OpenLoop;
+        t.control.lifecycle.goal_duty = -8000;
+        t.config.limits.drive_polarity = false;
+    });
+    let mut k = kernel();
+    // inverted polarity: negative duty is the outbound push at the top wall
+    for _ in 0..400 {
+        k.on_tick(frame(4095, BIAS), &sh);
+    }
+    assert_eq!(openloop_duty(&k), 0);
+    sh.table.with_mut(|t| t.control.lifecycle.goal_duty = 8000);
+    for _ in 0..400 {
+        k.on_tick(frame(4095, BIAS), &sh);
+    }
+    assert_eq!(openloop_duty(&k), 8000);
+    assert_eq!(k.faults.mask(), 0);
 }
 
 #[test]
@@ -983,6 +1014,50 @@ fn velocity_mode_brakes_at_the_soft_wall() {
 }
 
 #[test]
+fn openloop_endstop_zeroes_outbound_duty() {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::OpenLoop;
+        t.control.lifecycle.goal_duty = 8000;
+        t.config.pos_limits.pos_max_soft_counts = 3000;
+        t.config.limits.stall_tau_trip_counts = u16::MAX;
+    });
+    let mut k = kernel();
+    let mut plant = Plant::new(1000);
+    // free flight into the top soft wall: the cut leaves only coast
+    // momentum past it (the open-loop sweep that crashed the horn)
+    run_plant(&mut k, &sh, &mut plant, 20_000);
+    assert_eq!(k.faults.mask(), 0);
+    assert!(
+        plant.pos() >= 3000 && plant.pos() <= 3050,
+        "wall not respected: {}",
+        plant.pos()
+    );
+    assert_eq!(k.duty_q15, 0, "outbound duty still firing at the wall");
+    // retreat duty applies untouched and drives back off the wall
+    sh.table.with_mut(|t| t.control.lifecycle.goal_duty = -8000);
+    run_plant(&mut k, &sh, &mut plant, 2_000);
+    assert_eq!(k.duty_q15, -8000, "retreat from the wall blocked");
+    // mirrored at the min wall, crossed in free flight like the top one
+    sh.table
+        .with_mut(|t| t.config.pos_limits.pos_min_soft_counts = 500);
+    run_plant(&mut k, &sh, &mut plant, 25_000);
+    assert!(
+        plant.pos() >= 450 && plant.pos() <= 500,
+        "min wall not respected: {}",
+        plant.pos()
+    );
+    assert_eq!(k.duty_q15, 0, "outbound duty still firing at the min wall");
+    sh.table.with_mut(|t| t.control.lifecycle.goal_duty = 8000);
+    run_plant(&mut k, &sh, &mut plant, 5_000);
+    assert_eq!(k.duty_q15, 8000, "retreat from the min wall blocked");
+    assert!(plant.pos() > 600, "never drove off the min wall");
+    assert_eq!(k.faults.mask(), 0);
+}
+
+#[test]
 fn position_step_survives_tick_deletion() {
     let sh = Shared::new();
     seed(&sh);
@@ -1026,12 +1101,12 @@ fn position_step_survives_tick_deletion() {
 
 #[derive(Default)]
 struct RecTel {
-    cfg: Option<(bool, u16)>,
+    active: bool,
     samples: heapless::Vec<crate::tel::TelSample, 64>,
 }
 impl crate::tel::TelStream for RecTel {
-    fn configure(&mut self, enabled: bool, mask: u16) {
-        self.cfg = Some((enabled, mask));
+    fn active(&self) -> bool {
+        self.active
     }
     fn on_tick(&mut self, sample: &crate::tel::TelSample) {
         let _ = self.samples.push(*sample);
@@ -1039,7 +1114,7 @@ impl crate::tel::TelStream for RecTel {
 }
 
 #[test]
-fn tel_stream_gated_by_enable_and_mask() {
+fn tel_stream_gated_by_sink_active() {
     let sh = Shared::new();
     seed(&sh);
     let mut k = Kernel::with_tel(
@@ -1050,27 +1125,15 @@ fn tel_stream_gated_by_enable_and_mask() {
         RecTel::default(),
         TIMING,
     );
-    // enable/mask both zero, then each alone: no emission
-    for _ in 0..10 {
-        k.on_tick(frame(2000, BIAS), &sh);
-    }
-    sh.table.with_mut(|t| t.control.lifecycle.tel_enable = true);
-    for _ in 0..10 {
-        k.on_tick(frame(2000, BIAS), &sh);
-    }
-    sh.table.with_mut(|t| {
-        t.control.lifecycle.tel_enable = false;
-        t.control.lifecycle.tel_mask = crate::tel::MASK_ALL;
-    });
+    // sink inactive: no emission
     for _ in 0..10 {
         k.on_tick(frame(2000, BIAS), &sh);
     }
     assert!(k.tel.samples.is_empty());
-    assert!(k.tel.cfg.is_none());
 
-    // both set: one sample per tick, table mask forwarded
+    // sink active: one sample per tick
+    k.tel.active = true;
     sh.table.with_mut(|t| {
-        t.control.lifecycle.tel_enable = true;
         t.control.lifecycle.torque_enable = true;
         t.control.lifecycle.mode = Mode::OpenLoop;
         t.control.lifecycle.goal_duty = 8000;
@@ -1079,7 +1142,6 @@ fn tel_stream_gated_by_enable_and_mask() {
         k.on_tick(frame(2100, BIAS + 40), &sh);
     }
     assert_eq!(k.tel.samples.len(), 20);
-    assert_eq!(k.tel.cfg, Some((true, crate::tel::MASK_ALL)));
     let s = k.tel.samples.last().unwrap();
     assert_eq!(s.pos, 2100);
     assert_eq!(s.current_trough, BIAS + 40);
@@ -1089,4 +1151,5 @@ fn tel_stream_gated_by_enable_and_mask() {
     // duty 8000/32767 of ARR is far above the 100-tick window floors
     assert!(s.window_valid);
     assert_eq!(s.current, 40);
+    assert!(!s.fault);
 }

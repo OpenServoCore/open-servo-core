@@ -764,6 +764,7 @@ mod tests {
                     });
                 }
                 Cmd::Pause { .. } => {}
+                Cmd::Stream { .. } => unreachable!("verify never streams"),
                 Cmd::Done => break,
             }
         }
@@ -818,6 +819,7 @@ mod tests {
                     });
                 }
                 Cmd::Pause { .. } => {}
+                Cmd::Stream { .. } => unreachable!("verify never streams"),
                 Cmd::Done => break,
             }
         }

@@ -38,6 +38,11 @@ pub enum Replies {
     Chain(u8),
     /// Broadcast ENUM: 0..N replies, gathered until the bus goes quiet.
     Collect,
+    /// TEL burst carrier: the arm's own ack streams first (none when the
+    /// base shape owed no reply), then `Stream` statuses until one carries
+    /// the LAST flag. `window_us` is the client-computed whole-burst
+    /// allowance -- one wide window, never re-armed per frame.
+    Stream { window_us: u32 },
 }
 
 /// The engine's plan for one Exchange, derived purely from the instruction.
@@ -124,6 +129,19 @@ impl Shape {
             shape.replies = Replies::None;
         }
         Ok(shape)
+    }
+
+    /// Stream-tag a derived plan (the engine cannot know which writes arm
+    /// a TEL burst, so the client marks the exchange). Only a plain ack
+    /// shape can carry a burst: Chain/Collect/train carriers refuse.
+    pub fn stream(self, window_us: u32) -> Result<Shape, InvalidReason> {
+        if self.train.is_some() || !matches!(self.replies, Replies::Single | Replies::None) {
+            return Err(InvalidReason::BadInst);
+        }
+        Ok(Shape {
+            replies: Replies::Stream { window_us },
+            ..self
+        })
     }
 
     /// Plain-op reply rule (sec 5): unicast answers, broadcast is silent.
@@ -388,6 +406,35 @@ mod tests {
             Shape::derive(UNI, inst(Opcode::Mgmt, 0), &b[..n]),
             Err(InvalidReason::BadPayload)
         );
+    }
+
+    #[test]
+    fn stream_tags_plain_shapes_and_refuses_the_rest() {
+        let mut b = [0u8; 16];
+        let n = build::write(&mut b, 0x0192, &[8, 0]).unwrap();
+        let s = Shape::derive(UNI, inst(Opcode::Write, 0), &b[..n]).unwrap();
+        let s = s.stream(5_000).unwrap();
+        assert_eq!(s.replies, Replies::Stream { window_us: 5_000 });
+
+        // Broadcast COMMIT: no ack owed, the stream is still collected.
+        let s = Shape::derive(BC, inst(Opcode::Commit, 0), &[]).unwrap();
+        assert_eq!(
+            s.stream(9).unwrap().replies,
+            Replies::Stream { window_us: 9 }
+        );
+
+        // Chain, Collect, and train carriers cannot arm a burst.
+        let ids = [Id(1), Id(2)];
+        let n = build::gread_uniform(&mut b, 0, 4, &ids).unwrap();
+        let s = Shape::derive(BC, inst(Opcode::Gread, 0), &b[..n]).unwrap();
+        assert_eq!(s.stream(9), Err(InvalidReason::BadInst));
+        let prefix = [0u8; wire::UID_LEN];
+        let n = build::mgmt_enum(&mut b, 0, &prefix).unwrap();
+        let s = Shape::derive(BC, inst(Opcode::Mgmt, 0), &b[..n]).unwrap();
+        assert_eq!(s.stream(9), Err(InvalidReason::BadInst));
+        let n = build::mgmt_cal(&mut b, 400, 8).unwrap();
+        let s = Shape::derive(BC, inst(Opcode::Mgmt, 0), &b[..n]).unwrap();
+        assert_eq!(s.stream(9), Err(InvalidReason::BadInst));
     }
 
     #[test]

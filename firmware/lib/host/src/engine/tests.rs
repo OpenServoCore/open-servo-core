@@ -463,6 +463,135 @@ fn response_deadline_setting_stretches_the_window() {
     assert_eq!(t.outcome, Outcome::Complete);
 }
 
+/// Submit a stream-tagged tel_count WRITE and drive its TX out.
+fn arm_stream(r: &mut Rig, id: Id, window_us: u32) {
+    let mut p = [0u8; 8];
+    let n = build::write(&mut p, 0x0192, &[2, 0]).unwrap();
+    r.bus
+        .submit(Command::ExchangeStream {
+            id,
+            inst: Inst::instruction(Opcode::Write, 0),
+            payload: &p[..n],
+            window_us,
+        })
+        .expect("valid stream exchange");
+    r.bus.on_tx_complete();
+}
+
+#[test]
+fn stream_collects_frames_until_last() {
+    let mut r = rig();
+    arm_stream(&mut r, Id::new(5), 5_000);
+
+    r.ring.feed(&sealed_status(5, ResultCode::Ok, &[]));
+    let (slot, _) = expect_status(&mut r);
+    assert_eq!(slot, 0, "the arm's own ack streams first");
+    assert!(r.bus.poll().is_none(), "the ack does not finish a stream");
+
+    r.ring
+        .feed(&sealed_status(5, ResultCode::Stream, &[0, 0, 1, 0, 8, 8]));
+    let (slot, _) = expect_status(&mut r);
+    assert_eq!(slot, 1);
+    assert!(r.bus.poll().is_none());
+
+    r.ring
+        .feed(&sealed_status(5, ResultCode::Stream, &[1, 1, 1, 0, 9, 9]));
+    let (slot, _) = expect_status(&mut r);
+    assert_eq!(slot, 2);
+    let t = expect_done(&mut r);
+    assert_eq!(t.outcome, Outcome::Complete);
+    assert_eq!(t.evidence.statuses, 3);
+    assert_eq!(t.evidence.garble, 0);
+}
+
+#[test]
+fn broadcast_stream_arm_owes_no_ack_but_still_collects() {
+    let mut r = rig();
+    // Broadcast COMMIT as the carrier: silent arm, the burst still streams.
+    r.bus
+        .submit(Command::ExchangeStream {
+            id: Id::BROADCAST,
+            inst: Inst::instruction(Opcode::Commit, 0),
+            payload: &[],
+            window_us: 5_000,
+        })
+        .unwrap();
+    r.bus.on_tx_complete();
+    assert!(r.bus.poll().is_none(), "awaiting the stream, not Sent");
+
+    r.ring
+        .feed(&sealed_status(5, ResultCode::Stream, &[0, 1, 1, 0, 8, 8]));
+    let (slot, _) = expect_status(&mut r);
+    assert_eq!(slot, 0);
+    let t = expect_done(&mut r);
+    assert_eq!(t.outcome, Outcome::Complete);
+    assert_eq!(t.evidence.statuses, 1);
+}
+
+#[test]
+fn corrupt_stream_frame_is_garble_never_a_status() {
+    let mut r = rig();
+    arm_stream(&mut r, Id::new(5), 5_000);
+    r.ring.feed(&sealed_status(5, ResultCode::Ok, &[]));
+    let _ = expect_status(&mut r);
+
+    // Frame seq 0 arrives with its CRC flipped: no status may surface.
+    let mut bad = sealed_status(5, ResultCode::Stream, &[0, 2, 1, 0, 8, 8]);
+    let at = bad.len() - 1;
+    bad[at] ^= 0xFF;
+    r.ring.feed(&bad);
+    assert!(r.bus.poll().is_none(), "corrupt frame yields no status");
+
+    r.ring
+        .feed(&sealed_status(5, ResultCode::Stream, &[1, 1, 1, 0, 9, 9]));
+    let (slot, _) = expect_status(&mut r);
+    assert_eq!(slot, 1, "the clean LAST frame is the second arrival");
+    let t = expect_done(&mut r);
+    assert_eq!(t.outcome, Outcome::Complete);
+    assert_eq!(
+        t.evidence.statuses, 2,
+        "ack + LAST; the corrupt frame is not counted"
+    );
+    assert!(t.evidence.garble > 0, "the corrupt frame is evidence");
+}
+
+#[test]
+fn stream_window_never_rearms_on_progress() {
+    let mut r = rig();
+    arm_stream(&mut r, Id::new(5), 1_000);
+    r.ring.feed(&sealed_status(5, ResultCode::Ok, &[]));
+    let _ = expect_status(&mut r);
+
+    // Frames keep arriving but LAST never does: the one wide window
+    // expires on schedule despite continuous wire progress.
+    r.clock.advance(600);
+    r.ring
+        .feed(&sealed_status(5, ResultCode::Stream, &[0, 0, 1, 0, 8, 8]));
+    let _ = expect_status(&mut r);
+    r.clock.advance(600);
+    let t = expect_done(&mut r);
+    assert_eq!(t.outcome, Outcome::Timeout { slot: 2 });
+    assert_eq!(t.evidence.statuses, 2);
+}
+
+#[test]
+fn stream_refuses_chain_and_collect_carriers() {
+    let mut r = rig();
+    let mut p = [0u8; 16];
+    let ids = [Id::new(1), Id::new(2)];
+    let n = build::gread_uniform(&mut p, 0x0084, 4, &ids).unwrap();
+    assert!(matches!(
+        r.bus.submit(Command::ExchangeStream {
+            id: Id::BROADCAST,
+            inst: Inst::instruction(Opcode::Gread, 0),
+            payload: &p[..n],
+            window_us: 5_000,
+        }),
+        Err(SubmitError::Invalid(shape::InvalidReason::BadInst))
+    ));
+    assert!(r.wire.log().is_empty(), "refused before the wire");
+}
+
 fn expect_wire_done(r: &mut Rig) -> u32 {
     match r.bus.poll() {
         Some(Event::WireDone { tick }) => tick,

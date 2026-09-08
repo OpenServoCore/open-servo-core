@@ -2,24 +2,17 @@
 //! whose per-tick TEL current carries an uninterrupted commutation-ripple
 //! signal for the tachometer and pot LUT.
 //!
-//! Why a separate motion and not the end-stop seek: the seek must poll pos to
-//! detect each stall, and every poll is a bus read the pump cannot drain TEL
-//! through - so the seek capture is shredded into sub-millisecond seq-
-//! contiguous fragments, too short for the autocorr window, and it spends
-//! most of its time dwelling stalled at a rail (flat current, no ripple).
-//! This experiment instead drives one fixed duty and does nothing but Pause,
-//! so the pump drains TEL continuously and the whole traverse lands as a
-//! single long contiguous run.
+//! The whole traverse is ONE burst ([`Cmd::Stream`]): the constant duty and
+//! the capture arm commit in the same instant, and the bus carries nothing
+//! but the stream until LAST - so the capture lands seq-contiguous by
+//! construction, with no poll seams to shred the autocorr window.
 //!
 //! No positioning or speed probe here: the caller positions to the capture
-//! start rail (with TEL off, where polling is free) and sizes capture_ms from
-//! a measured speed so the traverse stays off BOTH mechanical rails - the
-//! clone can jam at either end, so the capture must never reach a stop.
-//!
-//! No safety Reads during the traverse (they would re-fragment the capture):
-//! the time-bounded, speed-sized duration is the backstop, and the firmware
-//! current limit + fault protection guard the winding. The caller parks duty 0
-//! + torque off on exit.
+//! start rail-inset first (polling is free before the arm) and sizes
+//! `samples` from a measured speed so the traverse stays off BOTH
+//! mechanical rails - the clone can jam at either end. The firmware
+//! current limit + fault protection guard the winding during the silent
+//! window; the caller parks duty 0 + torque off on exit.
 
 use super::{Cmd, Experiment};
 use crate::frame::TelemetrySnapshot;
@@ -29,16 +22,19 @@ pub struct SweepCfg {
     /// Constant capture drive magnitude, q15 (mirrors the end-stop seek duty so
     /// the winding load is the same proven-safe operating point).
     pub duty_q15: i16,
-    /// Constant-duty capture duration. The caller sizes this from a measured
+    /// Burst length in fast ticks. The caller sizes this from a measured
     /// speed so the motion covers the count-inset span without reaching a rail.
-    pub capture_ms: u32,
+    pub samples: u16,
+    /// TEL field selection, written before the arm (mask is sticky).
+    pub mask: u16,
 }
 
 impl Default for SweepCfg {
     fn default() -> Self {
         Self {
             duty_q15: 8520,
-            capture_ms: 800,
+            samples: 16_000,
+            mask: 0x1B,
         }
     }
 }
@@ -46,10 +42,11 @@ impl Default for SweepCfg {
 enum Phase {
     ModeWrite,
     TorqueOn,
-    CaptureDuty,
-    CapturePause,
+    MaskOn,
+    Stream,
     ZeroDuty,
     TorqueOff,
+    MaskOff,
     Finished,
 }
 
@@ -86,23 +83,24 @@ impl Experiment for Sweep {
                 }
             }
             Phase::TorqueOn => {
-                self.phase = Phase::CaptureDuty;
+                self.phase = Phase::MaskOn;
                 Cmd::Write {
                     reg: control::TORQUE_ENABLE,
                     value: 1,
                 }
             }
-            Phase::CaptureDuty => {
-                self.phase = Phase::CapturePause;
+            Phase::MaskOn => {
+                self.phase = Phase::Stream;
                 Cmd::Write {
-                    reg: control::GOAL_DUTY,
-                    value: self.capture_duty(),
+                    reg: control::TEL_MASK,
+                    value: self.cfg.mask as i32,
                 }
             }
-            Phase::CapturePause => {
+            Phase::Stream => {
                 self.phase = Phase::ZeroDuty;
-                Cmd::Pause {
-                    ms: self.cfg.capture_ms,
+                Cmd::Stream {
+                    samples: self.cfg.samples,
+                    goal: Some((control::GOAL_DUTY, self.capture_duty())),
                 }
             }
             Phase::ZeroDuty => {
@@ -113,9 +111,16 @@ impl Experiment for Sweep {
                 }
             }
             Phase::TorqueOff => {
-                self.phase = Phase::Finished;
+                self.phase = Phase::MaskOff;
                 Cmd::Write {
                     reg: control::TORQUE_ENABLE,
+                    value: 0,
+                }
+            }
+            Phase::MaskOff => {
+                self.phase = Phase::Finished;
+                Cmd::Write {
+                    reg: control::TEL_MASK,
                     value: 0,
                 }
             }
@@ -144,41 +149,28 @@ mod tests {
         let log = run(1);
         // mode set before anything drives
         assert_eq!(log[0], "write mode 0");
-        // torque on before any nonzero duty
+        // torque on and mask written before the burst arms
         let torque_on = log
             .iter()
             .position(|l| l == "write torque_enable 1")
             .unwrap();
-        let first_duty = log
-            .iter()
-            .position(|l| l.starts_with("write goal_duty") && !l.ends_with(" 0"))
-            .unwrap();
-        assert!(torque_on < first_duty);
-        // single nonzero capture duty (no prime): exactly one drive write
-        let duties: Vec<&String> = log
-            .iter()
-            .filter(|l| l.starts_with("write goal_duty"))
-            .collect();
-        assert_eq!(duties[0], "write goal_duty 8520", "capture toward far rail");
-        // ends parked: duty 0 then torque off
-        let tail: Vec<&String> = log.iter().rev().take(2).collect();
-        assert_eq!(*tail[1], "write goal_duty 0");
-        assert_eq!(*tail[0], "write torque_enable 0");
+        let mask_on = log.iter().position(|l| l == "write tel_mask 27").unwrap();
+        let stream = log.iter().position(|l| l.starts_with("stream ")).unwrap();
+        assert!(torque_on < stream);
+        assert!(mask_on < stream);
+        // one burst carrying the constant capture duty
+        assert_eq!(log[stream], "stream 16000 goal_duty 8520");
+        // ends parked: duty 0, torque off, mask off
+        let tail: Vec<&String> = log.iter().rev().take(3).collect();
+        assert_eq!(*tail[2], "write goal_duty 0");
+        assert_eq!(*tail[1], "write torque_enable 0");
+        assert_eq!(*tail[0], "write tel_mask 0");
     }
 
     #[test]
     fn negative_sign_flips_capture_duty() {
-        let pos = run(1);
         let neg = run(-1);
-        let pos_duty = pos
-            .iter()
-            .find(|l| l.starts_with("write goal_duty") && !l.ends_with(" 0"))
-            .unwrap();
-        let neg_duty = neg
-            .iter()
-            .find(|l| l.starts_with("write goal_duty") && !l.ends_with(" 0"))
-            .unwrap();
-        assert_eq!(pos_duty, "write goal_duty 8520");
-        assert_eq!(neg_duty, "write goal_duty -8520");
+        let neg_duty = neg.iter().find(|l| l.starts_with("stream ")).unwrap();
+        assert_eq!(neg_duty, "stream 16000 goal_duty -8520");
     }
 }

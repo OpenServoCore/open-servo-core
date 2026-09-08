@@ -100,6 +100,11 @@ pub trait Reply {
     fn stage_baud(&mut self, baud: BaudRate);
     /// Immediate: the bus caches this for chain-reclaim timing (sec 6).
     fn set_response_deadline(&mut self, us: u16);
+    /// TEL burst arm, fired on every committed `tel_count` write: stream
+    /// `count` samples under `mask` as `Stream` status frames once the line
+    /// is host-silent. `count` 0 disarms (the hook zeroes it when `mask` is
+    /// 0, so an armed signal always carries a streamable mask).
+    fn tel_arm(&mut self, mask: u16, count: u16);
     /// Deferred reboot, honored after any in-flight TX drains.
     fn stage_reboot(&mut self, mode: BootMode);
     /// MGMT CAL accepted (sec 9.3): the bus measures the announced break train

@@ -1,20 +1,22 @@
 //! `osc cal-replay` -- offline replay + corruption diagnostic for a saved
-//! `tel-raw.bin`. `osc cal --tel-port` streams the ripple sweep and writes the
-//! raw side-channel bytes; this command deframes those bytes without a servo,
-//! classifies which corruption mode (if any) the stream carries, and re-runs
-//! the same pot-LUT / motor-rev pipeline so the analysis can be iterated
-//! offline. It NEVER connects to the servo (no baud/id).
+//! sweep_tel.csv. `osc cal` streams the ripple sweep as a TEL burst and
+//! writes the decoded frames; this command reads them back without a servo,
+//! classifies which corruption mode (if any) the capture carries, and
+//! re-runs the same pot-LUT / motor-rev pipeline so the analysis can be
+//! iterated offline. It NEVER connects to the servo (no baud/id).
 //!
-//! Two corruption modes are distinguished: whole-frame CDC drops (the values
-//! that survive are clean, seq continuity has holes) versus in-frame bit-errors
-//! (frame framing holds but field contents are corrupted - pos out of the
-//! 12-bit range, or a within-range pos jump no motor could make in one sample).
+//! Two corruption modes are distinguished: dropped frames (CRC-failed on
+//! the bus; the values that survive are clean, tick continuity has 16-tick
+//! holes) versus value-domain bit-errors (pos out of the 12-bit range, or a
+//! within-range pos jump no motor could make in one sample - old side-
+//! channel captures replayed through the CSV can still carry these).
 
-use anyhow::{Context, Result, bail};
-use osc_ident::frame::{TelDeframer, TelFrame};
+use anyhow::{Context, Result};
+use osc_ident::frame::TelFrame;
 use osc_ident::lut::{self, build_multi, stitched_motor_revs};
 
 use super::{RIPPLE_PER_REV, build_sweep, build_sweep_chunks, pos_plausible};
+use crate::rig::csvio;
 
 /// A pos delta larger than this across two truly-consecutive samples is
 /// physically impossible at the sweep sample rate (the capture traverses at a
@@ -22,14 +24,14 @@ use super::{RIPPLE_PER_REV, build_sweep, build_sweep_chunks, pos_plausible};
 /// marks a within-range bit-flip rather than real motion.
 const MAX_STEP_COUNTS: u32 = 200;
 
-/// `osc cal-replay` args. Offline: only the file and decode parameters, no bus.
+/// `osc cal-replay` args. Offline: only the file and decode parameters, no
+/// bus. Old raw side-channel captures (tel-raw.bin) are unsupported - the
+/// CDC channel is gone; replay reads the decoded frames CSV.
 #[derive(clap::Args, Debug)]
 pub struct Args {
-    /// The tel-raw.bin captured during `osc cal --tel-port`.
+    /// The sweep_tel.csv a cal run writes (tel-raw.bin files from the old
+    /// CDC side channel are unsupported).
     path: std::path::PathBuf,
-    /// TEL mask used at capture (hex ok, e.g. 0x1B); must match the capture.
-    #[arg(long, default_value = "0x1B")]
-    mask: String,
     /// Ripple sample rate (Hz); the cal capture uses the servo tick_hz.
     #[arg(long, default_value_t = 20000.0)]
     fs: f64,
@@ -41,21 +43,13 @@ pub struct Args {
     raw_max: Option<u16>,
 }
 
-/// Parse a mask given as decimal-free hex, with or without a `0x` prefix.
-fn parse_mask(s: &str) -> Result<u16> {
-    let t = s.trim();
-    let t = t
-        .strip_prefix("0x")
-        .or_else(|| t.strip_prefix("0X"))
-        .unwrap_or(t);
-    u16::from_str_radix(t, 16).with_context(|| format!("invalid --mask hex {s:?}"))
-}
-
 /// Corruption tallies from a decoded frame list.
 struct Classification {
+    /// Missing samples in tick continuity (dropped frames x 16).
+    tick_holes: u64,
     /// Frames with pos > 4095 (12-bit ADC overflow = definite bit corruption).
     out_of_range: usize,
-    /// Truly-consecutive (seq delta 1) within-range pos pairs whose |delta|
+    /// Truly-consecutive (tick delta 1) within-range pos pairs whose |delta|
     /// exceeds MAX_STEP_COUNTS - a within-range bit-flip.
     implausible_jumps: usize,
     /// Largest |pos delta| seen across the same within-range consecutive pairs.
@@ -67,12 +61,14 @@ fn classify(frames: &[TelFrame]) -> Classification {
         .iter()
         .filter(|f| matches!(f.pos, Some(p) if !pos_plausible(p)))
         .count();
+    let mut tick_holes = 0u64;
     let mut implausible_jumps = 0usize;
     let mut max_consec_delta = 0u32;
     for w in frames.windows(2) {
         let (a, b) = (&w[0], &w[1]);
-        // only truly consecutive frames (no dropped seq in between)
-        if b.seq.wrapping_sub(a.seq) != 1 {
+        // only truly consecutive samples (no dropped frame in between)
+        if b.tick.saturating_sub(a.tick) != 1 {
+            tick_holes += b.tick.saturating_sub(a.tick).saturating_sub(1);
             continue;
         }
         // both ends within range: an out-of-range end is already counted above,
@@ -89,6 +85,7 @@ fn classify(frames: &[TelFrame]) -> Classification {
         }
     }
     Classification {
+        tick_holes,
         out_of_range,
         implausible_jumps,
         max_consec_delta,
@@ -96,18 +93,10 @@ fn classify(frames: &[TelFrame]) -> Classification {
 }
 
 pub fn run(args: &Args) -> Result<()> {
-    let mask = parse_mask(&args.mask)?;
-    let bytes =
-        std::fs::read(&args.path).with_context(|| format!("read {}", args.path.display()))?;
-    println!("file: {} ({} bytes)", args.path.display(), bytes.len());
+    let frames = csvio::read_tel_frames(&args.path)
+        .with_context(|| format!("read {} (a decoded frames CSV)", args.path.display()))?;
+    println!("file: {} ({} frames)", args.path.display(), frames.len());
 
-    let mut d = match TelDeframer::new(mask) {
-        Some(d) => d,
-        None => bail!("invalid TEL mask {mask:#06x}: reserved bits set or empty"),
-    };
-    let mut frames: Vec<TelFrame> = Vec::new();
-    d.push(&bytes, &mut frames);
-    let stats = d.stats();
     let cls = classify(&frames);
 
     // resolve rails: explicit flags win; otherwise fall back to the observed
@@ -135,27 +124,29 @@ pub fn run(args: &Args) -> Result<()> {
         .map(|(pos, _)| lut::span_coverage(pos, raw_min, raw_max))
         .unwrap_or(0.0);
 
-    // significant when >1% of decoded frames went missing (advisory heuristic)
-    let significant_gaps = stats.frames > 0 && stats.seq_gaps.saturating_mul(100) > stats.frames;
+    // significant when >1% of samples went missing (advisory heuristic)
+    let significant_holes =
+        !frames.is_empty() && cls.tick_holes.saturating_mul(100) > frames.len() as u64;
     let verdict = if cls.out_of_range > 0 || cls.implausible_jumps > 0 {
-        "looks like bit-errors in-frame (LinkE UART / PWM noise corrupting contents)"
-    } else if significant_gaps {
-        "looks like CDC frame drops (values clean, whole frames lost)"
+        "looks like value-domain bit-errors (an old side-channel capture?)"
+    } else if significant_holes {
+        "looks like dropped frames (values clean, whole 16-sample frames lost)"
     } else {
-        "stream looks clean"
+        "capture looks clean"
     };
 
     println!("--- classification ---");
-    println!("bytes:             {}", bytes.len());
-    println!("frames decoded:    {}", stats.frames);
-    println!("realigns:          {}", stats.realigns);
-    println!("seq gaps:          {}", stats.seq_gaps);
+    println!("frames:            {}", frames.len());
     println!(
-        "out-of-range pos:  {} (pos > 4095, in-frame bit corruption)",
+        "tick holes:        {} samples missing (dropped frames x 16)",
+        cls.tick_holes
+    );
+    println!(
+        "out-of-range pos:  {} (pos > 4095, bit corruption)",
         cls.out_of_range
     );
     println!(
-        "implausible jumps: {} (|pos delta| > {} across consecutive seq; max consec delta {})",
+        "implausible jumps: {} (|pos delta| > {} across consecutive ticks; max consec delta {})",
         cls.implausible_jumps, MAX_STEP_COUNTS, cls.max_consec_delta
     );
     if observed_used {
@@ -212,19 +203,9 @@ pub fn run(args: &Args) -> Result<()> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn mask_parses_hex_with_and_without_prefix() {
-        assert_eq!(parse_mask("0x1B").unwrap(), 0x1B);
-        assert_eq!(parse_mask("1b").unwrap(), 0x1B);
-        assert_eq!(parse_mask("3F").unwrap(), 0x3F);
-        assert_eq!(parse_mask(" 0X0f ").unwrap(), 0x0F);
-        assert!(parse_mask("zz").is_err());
-        assert!(parse_mask("").is_err());
-    }
-
-    fn frame(seq: u8, pos: u16) -> TelFrame {
+    fn frame(tick: u64, pos: u16) -> TelFrame {
         TelFrame {
-            seq,
+            tick,
             pos: Some(pos),
             current: Some(0),
             ..Default::default()
@@ -232,28 +213,30 @@ mod tests {
     }
 
     #[test]
-    fn classify_counts_out_of_range_and_within_range_jumps() {
+    fn classify_counts_out_of_range_holes_and_within_range_jumps() {
         let frames = vec![
             frame(0, 1000),
-            frame(1, 1010), // +10, ok
-            frame(2, 5000), // out-of-range (bit corruption)
-            frame(3, 1020), // 2->3 consecutive but seq 2 out-of-range -> not a jump
-            frame(4, 1900), // 1020->1900 = 880, within-range implausible jump
-            frame(6, 1905), // seq gap (5 dropped) -> not consecutive, skipped
+            frame(1, 1010),  // +10, ok
+            frame(2, 5000),  // out-of-range (bit corruption)
+            frame(3, 1020),  // 2->3 consecutive but tick 2 out-of-range -> not a jump
+            frame(4, 1900),  // 1020->1900 = 880, within-range implausible jump
+            frame(21, 1905), // 16-tick hole (a dropped frame) -> not consecutive
         ];
         let c = classify(&frames);
         assert_eq!(c.out_of_range, 1);
         assert_eq!(c.implausible_jumps, 1);
         assert_eq!(c.max_consec_delta, 880);
+        assert_eq!(c.tick_holes, 16);
     }
 
     #[test]
     fn classify_clean_stream_has_no_flags() {
         // small monotonic steps, all consecutive, all in range
-        let frames: Vec<TelFrame> = (0..8u8).map(|k| frame(k, 1000 + k as u16)).collect();
+        let frames: Vec<TelFrame> = (0..8u64).map(|k| frame(k, 1000 + k as u16)).collect();
         let c = classify(&frames);
         assert_eq!(c.out_of_range, 0);
         assert_eq!(c.implausible_jumps, 0);
         assert_eq!(c.max_consec_delta, 1);
+        assert_eq!(c.tick_holes, 0);
     }
 }

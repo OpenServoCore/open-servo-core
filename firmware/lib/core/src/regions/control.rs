@@ -24,15 +24,14 @@ pub enum BootMode {
 
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
+#[ct_block(hooks = crate::regions::hooks::ControlTableHookEvents)]
 pub struct ControlLifecycle {
     pub torque_enable: bool,
-    /// TEL stream gate, deliberately adjacent to `torque_enable`: one 2-byte
-    /// write starts motion and capture in the same bus transaction. The
-    /// stream runs when enabled AND `tel_mask` != 0.
-    pub tel_enable: bool,
-    /// TEL frame layout, one bit per field (`tel` module). The le rule
-    /// rejects reserved bits; every v1 mask fits the wire budget.
-    #[ct_field(le = crate::tel::MASK_ALL)]
+    #[ct_field(skip)]
+    pub _rsvd_tel: u8,
+    /// TEL sample layout, one bit per field (`tel` module). `bits` rejects
+    /// reserved bits; `max_ones` caps the field count at the wire budget.
+    #[ct_field(bits = crate::tel::MASK_ALL, max_ones = crate::tel::FIELDS_MAX)]
     pub tel_mask: u16,
     pub mode: Mode,
     #[ct_field(skip)]
@@ -50,8 +49,12 @@ pub struct ControlLifecycle {
     pub goal_velocity: i32,
     #[ct_field(le = &config::addr::limits::CURRENT_LIMIT_COUNTS, abs)]
     pub goal_current: i16,
-    #[ct_field(skip)]
-    pub _rsvd_tail: [u8; 2],
+    /// TEL burst arm: a committed nonzero write streams that many samples
+    /// (one per fast tick, batched 16 per `Stream` frame), then stops and
+    /// releases the line; 0 is disarmed. Composes with HOLD/COMMIT so a
+    /// goal write and the arm apply in the same instant.
+    #[ct_field(hook = on_tel_count_write)]
+    pub tel_count: u16,
 }
 
 #[repr(C)]
@@ -62,7 +65,11 @@ pub struct ControlSystem {
 
 #[repr(C)]
 #[derive(Section)]
-#[ct_section(base = crate::regions::CONTROL_BASE_ADDR, size = crate::regions::CONTROL_REGION_SIZE)]
+#[ct_section(
+    base = crate::regions::CONTROL_BASE_ADDR,
+    size = crate::regions::CONTROL_REGION_SIZE,
+    hooks = crate::regions::hooks::ControlTableHookEvents,
+)]
 pub struct ControlRegs {
     pub lifecycle: ControlLifecycle,
     pub system: ControlSystem,

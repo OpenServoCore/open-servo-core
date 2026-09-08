@@ -32,7 +32,7 @@ pub enum Record {
         seq: u16,
         outcome: Outcome,
         tick: u32,
-        statuses: u8,
+        statuses: u16,
         garble: u16,
         trailing: bool,
     },
@@ -120,6 +120,18 @@ impl Session {
                 body.push(rec::VERB_EXCHANGE);
                 body.push(id.as_byte());
                 body.push(inst.0);
+                body.extend_from_slice(payload);
+            }
+            Command::ExchangeStream {
+                id,
+                inst,
+                payload,
+                window_us,
+            } => {
+                body.push(rec::VERB_EXCHANGE_STREAM);
+                body.push(id.as_byte());
+                body.push(inst.0);
+                body.extend_from_slice(&window_us.to_le_bytes());
                 body.extend_from_slice(payload);
             }
             Command::Rescue => body.push(rec::VERB_RESCUE),
@@ -240,9 +252,9 @@ fn decode(body: &[u8]) -> Result<Record, LinkError> {
                 seq: seq()?,
                 outcome,
                 tick: u32::from_le_bytes(field(5..9)?.try_into().unwrap()),
-                statuses: *body.get(9).ok_or(LinkError::Malformed)?,
-                garble: u16::from_le_bytes(field(10..12)?.try_into().unwrap()),
-                trailing: *body.get(12).ok_or(LinkError::Malformed)?
+                statuses: u16::from_le_bytes(field(9..11)?.try_into().unwrap()),
+                garble: u16::from_le_bytes(field(11..13)?.try_into().unwrap()),
+                trailing: *body.get(13).ok_or(LinkError::Malformed)?
                     & rec::FLAG_GARBLE_AFTER_LAST_FRAME
                     != 0,
             }

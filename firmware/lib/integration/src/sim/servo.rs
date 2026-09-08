@@ -5,10 +5,12 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use osc_servo_core::tel::{TelSample, TelStream};
 use osc_servo_core::{
     BaudRate, BootMode, CalibSense, ConfigDefaults, ControlTable, RegionStorage, Session, Shared,
 };
 use osc_servo_drivers::bus::{LinkDiag, ServoBus};
+use osc_servo_drivers::tel::{TelChannel, TelFeed};
 
 use super::core::Core;
 use super::providers::{
@@ -21,6 +23,8 @@ pub struct SimServo {
     shared: Shared,
     session: Session,
     bus: ServoBus<SimProviders>,
+    /// Kernel-side half of the TEL channel; the sim's fast-tick pump feeds it.
+    feed: TelFeed,
 }
 
 impl SimServo {
@@ -86,7 +90,7 @@ impl SimServo {
         let rate = BaudRate::from_idx(rate_idx).expect("seeded baud idx");
         let baud = BaudState::new(rate);
 
-        let bus = ServoBus::new(
+        let mut bus = ServoBus::new(
             SimRing::new(ring.clone()),
             SimDeadline::new(core.clone(), deadline.clone(), idx, skew_ppm),
             SimCrc::new(),
@@ -96,11 +100,16 @@ impl SimServo {
             rate,
             response_deadline_us,
         );
+        // Leaked like a shared RamStore: `split` wants the chip's 'static
+        // channel; test-scoped, one per servo per Sim.
+        let (feed, drain) = Box::leak(Box::new(TelChannel::new())).split();
+        bus.attach_tel(drain);
 
         let servo = Box::new(SimServo {
             shared,
             session: Session::new(),
             bus,
+            feed,
         });
         let handles = Handles {
             ring,
@@ -154,6 +163,23 @@ impl SimServo {
     /// calling it between exchanges.
     pub fn poll_clock_trim(&mut self) -> Option<i8> {
         self.bus.poll_clock_trim()
+    }
+
+    /// The kernel fast tick's TEL gate (`Kernel::on_tick` checks it before
+    /// building a sample) -- the sim's tick pump runs only while it holds.
+    pub fn tel_active(&self) -> bool {
+        self.feed.active()
+    }
+
+    /// One fast-tick sample into the kernel-side encoder.
+    pub fn tel_tick(&mut self, s: &TelSample) {
+        self.feed.on_tick(s);
+    }
+
+    /// The chip main loop's TEL poll (ISRs masked there); the sim calls it
+    /// between handler bodies.
+    pub fn poll_tel(&mut self) {
+        self.bus.poll_tel();
     }
 
     pub fn with_table<R>(&self, f: impl FnOnce(&ControlTable) -> R) -> R {

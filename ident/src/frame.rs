@@ -1,7 +1,8 @@
 //! Byte-level parsers: the telemetry-region snapshot (bus gread) and the
-//! TEL side-channel stream (USART2 at 3 Mbaud). Both mirror the firmware
-//! layout - offsets come from [`crate::regs`], the TEL shape from the core
-//! `tel` module - and are pinned by golden vectors, never imported.
+//! TEL burst stream (`Stream`-result status frames on the main bus). Both
+//! mirror the firmware layout - offsets come from [`crate::regs`], the
+//! stream shape from the core `tel` module - and are pinned by golden
+//! vectors, never imported.
 
 use crate::regs::{Reg, telemetry};
 
@@ -96,11 +97,12 @@ impl SeqUnwrap {
 }
 
 // --- TEL stream ------------------------------------------------------------
-// Mirror of firmware/lib/core/src/tel.rs; the golden test pins the bytes.
-
-pub const TEL_SYNC: u8 = 0xA7;
-pub const TEL_HDR_LEN: usize = 3;
-pub const TEL_FLAG_WINDOW_VALID: u8 = 1 << 0;
+// Mirror of firmware/lib/core/src/tel.rs; the golden tests pin the bytes.
+// One Stream-result status payload, all LE:
+//   [0]    stream_seq  u8, increments per frame, wraps; restarts at 0 per arm
+//   [1]    flags       bit 0 = LAST frame of the burst
+//   [2..4] valid       u16 bitmap, bit i = sample i window_valid
+//   [4..]  up to 16 samples x the tel_mask-selected 2-byte fields in bit order
 
 pub const TEL_BIT_POS: u16 = 1 << 0;
 pub const TEL_BIT_CURRENT: u16 = 1 << 1;
@@ -108,16 +110,37 @@ pub const TEL_BIT_CURRENT_TROUGH: u16 = 1 << 2;
 pub const TEL_BIT_DUTY: u16 = 1 << 3;
 pub const TEL_BIT_VDIFF: u16 = 1 << 4;
 pub const TEL_BIT_VBUS: u16 = 1 << 5;
-pub const TEL_MASK_ALL: u16 = 0x3F;
+pub const TEL_BIT_CURRENT_RAW: u16 = 1 << 6;
+pub const TEL_BIT_VMOTOR_A: u16 = 1 << 7;
+pub const TEL_BIT_VMOTOR_B: u16 = 1 << 8;
+pub const TEL_MASK_ALL: u16 = 0x1FF;
 
-pub const fn tel_frame_len(mask: u16) -> usize {
-    TEL_HDR_LEN + 2 * (mask & TEL_MASK_ALL).count_ones() as usize
+/// Wire budget mirror: at most 6 selected fields sustain 20 kHz at 3 Mbaud.
+pub const TEL_FIELDS_MAX: u32 = 6;
+
+/// The raw-capture default: the per-tick ADC frame set plus applied duty.
+pub const TEL_MASK_RAW: u16 = TEL_BIT_POS
+    | TEL_BIT_CURRENT_RAW
+    | TEL_BIT_CURRENT_TROUGH
+    | TEL_BIT_DUTY
+    | TEL_BIT_VMOTOR_A
+    | TEL_BIT_VMOTOR_B;
+
+pub const STREAM_HDR: usize = 4;
+pub const STREAM_SAMPLES_MAX: usize = 16;
+pub const STREAM_FLAG_LAST: u8 = 1 << 0;
+
+pub const fn sample_len(mask: u16) -> usize {
+    2 * (mask & TEL_MASK_ALL).count_ones() as usize
 }
 
-/// One decoded TEL frame; unselected fields are None.
+/// One decoded TEL sample; unselected fields are None. `tick` is the
+/// absolute fast-tick index within one burst (unwrapped stream_seq x 16 +
+/// position in frame), so time = tick / tick_hz and a dropped frame shows
+/// as a 16-tick hole.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct TelFrame {
-    pub seq: u8,
+    pub tick: u64,
     pub window_valid: bool,
     pub pos: Option<u16>,
     pub current: Option<i16>,
@@ -125,136 +148,119 @@ pub struct TelFrame {
     pub duty_q15: Option<i16>,
     pub vdiff: Option<i16>,
     pub vbus: Option<u16>,
+    pub current_raw: Option<u16>,
+    pub vmotor_a: Option<u16>,
+    pub vmotor_b: Option<u16>,
 }
 
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
-pub struct TelStats {
-    /// Frames decoded.
-    pub frames: u64,
-    /// Lock losses (sync mismatch at a frame boundary).
-    pub realigns: u64,
-    /// Frames missing from seq continuity - the firmware bumps seq per
-    /// attempted frame, so a drop-on-busy surfaces here, not as corruption.
-    pub seq_gaps: u64,
-}
-
-/// Consecutive sync + seq-continuous frames required to (re)acquire lock.
-/// Bench-proven against the live 3 Mbaud stream; a mid-data 0xA7 cannot
-/// sustain the predicate.
-const LOCK_FRAMES: usize = 4;
-
-/// Stateful deframer for one fixed mask: push raw serial bytes, collect
-/// decoded frames. Never panics on garbage; realigns and continues.
-pub struct TelDeframer {
-    mask: u16,
-    flen: usize,
-    buf: Vec<u8>,
-    cur: usize,
-    locked: bool,
-    last_seq: Option<u8>,
-    stats: TelStats,
-}
-
-impl TelDeframer {
-    /// None if the mask has reserved bits set or selects nothing.
-    pub fn new(mask: u16) -> Option<Self> {
-        if mask & !TEL_MASK_ALL != 0 || mask == 0 {
-            return None;
-        }
-        Some(Self {
-            mask,
-            flen: tel_frame_len(mask),
-            buf: Vec::new(),
-            cur: 0,
-            locked: false,
-            last_seq: None,
-            stats: TelStats::default(),
-        })
+/// Decode one stream payload into per-tick frames; sample i lands at
+/// `tick_base + i`. None when the payload cannot be a `mask` stream frame
+/// (short header, non-integral sample remainder, over 16 samples).
+pub fn decode_stream_payload(mask: u16, payload: &[u8], tick_base: u64) -> Option<Vec<TelFrame>> {
+    let slen = sample_len(mask);
+    if payload.len() < STREAM_HDR {
+        return None;
     }
-
-    pub fn stats(&self) -> TelStats {
-        self.stats
+    let valid = u16::from_le_bytes([payload[2], payload[3]]);
+    let body = &payload[STREAM_HDR..];
+    if slen == 0 {
+        return body.is_empty().then(Vec::new);
     }
-
-    pub fn push(&mut self, bytes: &[u8], out: &mut Vec<TelFrame>) {
-        self.buf.extend_from_slice(bytes);
-        loop {
-            if !self.locked && !self.acquire() {
-                break;
-            }
-            if self.buf.len() - self.cur < self.flen {
-                break;
-            }
-            if self.buf[self.cur] != TEL_SYNC {
-                self.locked = false;
-                self.last_seq = None;
-                self.stats.realigns += 1;
-                continue;
-            }
-            let frame = self.decode_at(self.cur);
-            if let Some(last) = self.last_seq {
-                let d = frame.seq.wrapping_sub(last);
-                if d != 1 {
-                    self.stats.seq_gaps += d.wrapping_sub(1) as u64;
-                }
-            }
-            self.last_seq = Some(frame.seq);
-            self.stats.frames += 1;
-            out.push(frame);
-            self.cur += self.flen;
-        }
-        // compact the consumed prefix so the buffer stays bounded
-        if self.cur > 0 {
-            self.buf.drain(..self.cur);
-            self.cur = 0;
-        }
+    if !body.len().is_multiple_of(slen) || body.len() / slen > STREAM_SAMPLES_MAX {
+        return None;
     }
-
-    /// Slide until LOCK_FRAMES consecutive frames check out at the cursor.
-    /// Keeps the tail short when no lock is found.
-    fn acquire(&mut self) -> bool {
-        let need = LOCK_FRAMES * self.flen;
-        while self.cur + need <= self.buf.len() {
-            let b = &self.buf[self.cur..];
-            let synced = (0..LOCK_FRAMES).all(|k| b[k * self.flen] == TEL_SYNC);
-            let continuous = (0..LOCK_FRAMES - 1)
-                .all(|k| b[(k + 1) * self.flen + 1] == b[k * self.flen + 1].wrapping_add(1));
-            if synced && continuous {
-                self.locked = true;
-                return true;
-            }
-            self.cur += 1;
-        }
-        let keep = need.saturating_sub(1);
-        if self.buf.len() - self.cur > keep {
-            let drop_to = self.buf.len() - keep;
-            self.cur = self.cur.max(drop_to);
-        }
-        false
-    }
-
-    fn decode_at(&self, at: usize) -> TelFrame {
-        let b = &self.buf[at..at + self.flen];
-        let mut off = TEL_HDR_LEN;
+    let mut out = Vec::with_capacity(body.len() / slen);
+    for (i, ch) in body.chunks(slen).enumerate() {
+        let mut off = 0;
         let mut take = |bit: u16| {
-            if self.mask & bit != 0 {
-                let v = [b[off], b[off + 1]];
+            if mask & bit != 0 {
+                let v = [ch[off], ch[off + 1]];
                 off += 2;
                 Some(v)
             } else {
                 None
             }
         };
-        TelFrame {
-            seq: b[1],
-            window_valid: b[2] & TEL_FLAG_WINDOW_VALID != 0,
+        out.push(TelFrame {
+            tick: tick_base + i as u64,
+            window_valid: valid & (1 << i) != 0,
             pos: take(TEL_BIT_POS).map(u16::from_le_bytes),
             current: take(TEL_BIT_CURRENT).map(i16::from_le_bytes),
             current_trough: take(TEL_BIT_CURRENT_TROUGH).map(u16::from_le_bytes),
             duty_q15: take(TEL_BIT_DUTY).map(i16::from_le_bytes),
             vdiff: take(TEL_BIT_VDIFF).map(i16::from_le_bytes),
             vbus: take(TEL_BIT_VBUS).map(u16::from_le_bytes),
+            current_raw: take(TEL_BIT_CURRENT_RAW).map(u16::from_le_bytes),
+            vmotor_a: take(TEL_BIT_VMOTOR_A).map(u16::from_le_bytes),
+            vmotor_b: take(TEL_BIT_VMOTOR_B).map(u16::from_le_bytes),
+        });
+    }
+    Some(out)
+}
+
+/// Assembles one burst's Stream statuses, in arrival order, into ticked
+/// frames: unwraps the u8 stream_seq (wraps every 256 frames = 4096
+/// samples) and spreads each frame's samples over its 16-tick slot, so a
+/// dropped or corrupt frame leaves a 16-tick hole rather than a time skew.
+/// Bursts restart stream_seq at 0, so one assembler serves one burst.
+pub struct StreamAssembler {
+    mask: u16,
+    last_seq: Option<u8>,
+    frame_idx: u64,
+    holes: u64,
+    skipped: u64,
+}
+
+impl StreamAssembler {
+    /// None if the mask has reserved bits set, selects nothing, or blows
+    /// the wire budget.
+    pub fn new(mask: u16) -> Option<Self> {
+        if mask & !TEL_MASK_ALL != 0 || mask == 0 || mask.count_ones() > TEL_FIELDS_MAX {
+            return None;
         }
+        Some(Self {
+            mask,
+            last_seq: None,
+            frame_idx: 0,
+            holes: 0,
+            skipped: 0,
+        })
+    }
+
+    /// Consume one status: `stream` is true for a Stream-result frame
+    /// (anything else is skipped and counted). Decoded samples append to
+    /// `out` with correct ticks and per-sample window_valid.
+    pub fn push(&mut self, stream: bool, payload: &[u8], out: &mut Vec<TelFrame>) {
+        if !stream || payload.len() < STREAM_HDR {
+            self.skipped += 1;
+            return;
+        }
+        let seq = payload[0];
+        let (idx, expected) = match self.last_seq {
+            // bursts arm at seq 0: a nonzero first seq means missed frames
+            None => (seq as u64, 0),
+            Some(last) => (
+                self.frame_idx + seq.wrapping_sub(last) as u64,
+                self.frame_idx + 1,
+            ),
+        };
+        self.holes += idx.saturating_sub(expected);
+        match decode_stream_payload(self.mask, payload, idx * STREAM_SAMPLES_MAX as u64) {
+            Some(frames) => out.extend(frames),
+            None => self.skipped += 1,
+        }
+        self.last_seq = Some(seq);
+        self.frame_idx = idx;
+    }
+
+    /// Frames missing from stream_seq continuity (dropped or corrupt).
+    pub fn holes(&self) -> u64 {
+        self.holes
+    }
+
+    /// Statuses that were not decodable stream frames.
+    pub fn skipped(&self) -> u64 {
+        self.skipped
     }
 }
 
@@ -263,144 +269,178 @@ mod tests {
     use super::*;
     use crate::regs::telemetry as t;
 
-    fn tel_encode(mask: u16, seq: u8, window_valid: bool, fields: &[(u16, u16)]) -> Vec<u8> {
-        let mut f = vec![TEL_SYNC, seq, if window_valid { 1 } else { 0 }];
-        for bit in 0..6 {
-            let b = 1u16 << bit;
-            if mask & b != 0 {
-                let v = fields
-                    .iter()
-                    .find(|(fb, _)| *fb == b)
-                    .map_or(0, |(_, v)| *v);
-                f.extend_from_slice(&v.to_le_bytes());
+    /// Mirror of the core tel.rs test vector generator: sample(i) with all
+    /// six fields, window_valid on even i.
+    fn sample_bytes(mask: u16, i: u16) -> Vec<u8> {
+        let fields: [(u16, u16); 9] = [
+            (TEL_BIT_POS, 0x1000 + i),
+            (TEL_BIT_CURRENT, (-(i as i16) - 1) as u16),
+            (TEL_BIT_CURRENT_TROUGH, 0xB000 + i),
+            (TEL_BIT_DUTY, 0x2000 + i),
+            (TEL_BIT_VDIFF, (-300 - i as i16) as u16),
+            (TEL_BIT_VBUS, 1800 + i),
+            (TEL_BIT_CURRENT_RAW, 0x0100 + i),
+            (TEL_BIT_VMOTOR_A, 0x0A00 + i),
+            (TEL_BIT_VMOTOR_B, 0x0B00 + i),
+        ];
+        let mut out = Vec::new();
+        for (bit, v) in fields {
+            if mask & bit != 0 {
+                out.extend_from_slice(&v.to_le_bytes());
             }
         }
-        f
+        out
     }
 
-    /// The core tel.rs golden vector: all fields, seq 0x42, window valid.
-    fn golden_fields() -> Vec<(u16, u16)> {
-        vec![
-            (TEL_BIT_POS, 0x1234),
-            (TEL_BIT_CURRENT, (-2i16) as u16),
-            (TEL_BIT_CURRENT_TROUGH, 0xBEEF),
-            (TEL_BIT_DUTY, 0x7FFF),
-            (TEL_BIT_VDIFF, (-300i16) as u16),
-            (TEL_BIT_VBUS, 1822),
-        ]
+    fn stream_payload(mask: u16, seq: u8, last: bool, count: u16) -> Vec<u8> {
+        let mut valid = 0u16;
+        let mut p = vec![seq, if last { STREAM_FLAG_LAST } else { 0 }, 0, 0];
+        for i in 0..count {
+            if i < 16 && i.is_multiple_of(2) {
+                valid |= 1 << i;
+            }
+            p.extend(sample_bytes(mask, i));
+        }
+        p[2..4].copy_from_slice(&valid.to_le_bytes());
+        p
     }
 
     #[test]
-    fn golden_all_fields_frame_round_trips() {
-        // pin the exact wire bytes first (mirrors the core encode test)
-        let frame = tel_encode(TEL_MASK_ALL, 0x42, true, &golden_fields());
-        let want = [
-            0xA7, 0x42, 0x01, 0x34, 0x12, 0xFE, 0xFF, 0xEF, 0xBE, 0xFF, 0x7F, 0xD4, 0xFE, 0x1E,
-            0x07,
-        ];
-        assert_eq!(frame, want);
+    fn stream_golden_full_mask_full_batch() {
+        // the exact bytes core's encode_golden_six_field_mask_full_batch pins
+        let p = stream_payload(0x3F, 0x42, false, 16);
+        assert_eq!(p.len(), STREAM_HDR + 16 * 12);
+        assert_eq!(p[..4], [0x42, 0x00, 0x55, 0x55]);
+        assert_eq!(
+            p[4..16],
+            [
+                0x00, 0x10, 0xFF, 0xFF, 0x00, 0xB0, 0x00, 0x20, 0xD4, 0xFE, 0x08, 0x07
+            ]
+        );
+        assert_eq!(
+            p[184..196],
+            [
+                0x0F, 0x10, 0xF0, 0xFF, 0x0F, 0xB0, 0x0F, 0x20, 0xC5, 0xFE, 0x17, 0x07
+            ]
+        );
 
-        let mut d = TelDeframer::new(TEL_MASK_ALL).unwrap();
-        let mut stream = Vec::new();
-        for k in 0..5u8 {
-            stream.extend(tel_encode(
-                TEL_MASK_ALL,
-                0x42u8.wrapping_add(k),
-                true,
-                &golden_fields(),
-            ));
-        }
-        let mut out = Vec::new();
-        d.push(&stream, &mut out);
-        assert_eq!(out.len(), 5);
-        let f = out[0];
-        assert_eq!(f.seq, 0x42);
+        let frames = decode_stream_payload(0x3F, &p, 320).expect("decodes");
+        assert_eq!(frames.len(), 16);
+        let f = frames[0];
+        assert_eq!(f.tick, 320);
         assert!(f.window_valid);
-        assert_eq!(f.pos, Some(0x1234));
-        assert_eq!(f.current, Some(-2));
-        assert_eq!(f.current_trough, Some(0xBEEF));
-        assert_eq!(f.duty_q15, Some(0x7FFF));
+        assert_eq!(f.pos, Some(0x1000));
+        assert_eq!(f.current, Some(-1));
+        assert_eq!(f.current_trough, Some(0xB000));
+        assert_eq!(f.duty_q15, Some(0x2000));
         assert_eq!(f.vdiff, Some(-300));
-        assert_eq!(f.vbus, Some(1822));
-        assert_eq!(d.stats().seq_gaps, 0);
+        assert_eq!(f.vbus, Some(1800));
+        let l = frames[15];
+        assert_eq!(l.tick, 335);
+        assert!(!l.window_valid);
+        assert_eq!(l.pos, Some(0x100F));
+        assert_eq!(l.vbus, Some(1815));
     }
 
     #[test]
-    fn subset_mask_leaves_unselected_none() {
-        let mask = TEL_BIT_POS | TEL_BIT_VDIFF;
-        let mut d = TelDeframer::new(mask).unwrap();
-        let mut stream = Vec::new();
-        for k in 0..4u8 {
-            stream.extend(tel_encode(
-                mask,
-                k,
-                false,
-                &[(TEL_BIT_POS, 2048), (TEL_BIT_VDIFF, 1709)],
-            ));
-        }
+    fn stream_golden_ladder_subset_leaves_unselected_none() {
+        // core's encode_subset_mask_packs_in_bit_order vector: mask 0x1B
+        let mask = 0x1B;
+        let p = stream_payload(mask, 7, false, 2);
+        assert_eq!(p[..4], [7, 0, 0x01, 0x00]);
+        assert_eq!(p[4..12], [0x00, 0x10, 0xFF, 0xFF, 0x00, 0x20, 0xD4, 0xFE]);
+        assert_eq!(p[12..20], [0x01, 0x10, 0xFE, 0xFF, 0x01, 0x20, 0xD3, 0xFE]);
+
+        let frames = decode_stream_payload(mask, &p, 0).expect("decodes");
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].pos, Some(0x1000));
+        assert_eq!(frames[0].current, Some(-1));
+        assert_eq!(frames[0].duty_q15, Some(0x2000));
+        assert_eq!(frames[0].vdiff, Some(-300));
+        assert_eq!(frames[0].current_trough, None);
+        assert_eq!(frames[0].vbus, None);
+        assert!(frames[0].window_valid);
+        assert!(!frames[1].window_valid);
+        assert_eq!(frames[1].tick, 1);
+    }
+
+    #[test]
+    fn decode_rejects_malformed_payloads() {
+        assert!(decode_stream_payload(TEL_MASK_ALL, &[0, 0, 0], 0).is_none());
+        // remainder not an integral sample count for the mask
+        let mut p = stream_payload(0x1B, 0, false, 2);
+        p.pop();
+        assert!(decode_stream_payload(0x1B, &p, 0).is_none());
+        // over 16 samples cannot come from one frame
+        let p = stream_payload(TEL_BIT_POS, 0, false, 17);
+        assert!(decode_stream_payload(TEL_BIT_POS, &p, 0).is_none());
+    }
+
+    #[test]
+    fn assembler_ticks_run_through_the_seq_wrap() {
+        // 258 frames of one sample each: seq wraps 255 -> 0 with no hole
+        let mut a = StreamAssembler::new(TEL_BIT_POS).unwrap();
         let mut out = Vec::new();
-        d.push(&stream, &mut out);
-        assert_eq!(out.len(), 4);
-        assert_eq!(out[0].pos, Some(2048));
-        assert_eq!(out[0].vdiff, Some(1709));
-        assert_eq!(out[0].current, None);
-        assert_eq!(out[0].vbus, None);
-        assert!(!out[0].window_valid);
-    }
-
-    #[test]
-    fn lock_skips_garbage_prefix() {
-        let mask = TEL_BIT_POS;
-        let mut d = TelDeframer::new(mask).unwrap();
-        let mut stream = vec![0x00, 0xA7, 0x13, 0xFF]; // garbage incl. a stray sync
-        for k in 10..16u8 {
-            stream.extend(tel_encode(mask, k, false, &[(TEL_BIT_POS, 100)]));
+        for k in 0..258u64 {
+            let p = stream_payload(TEL_BIT_POS, k as u8, k == 257, 1);
+            a.push(true, &p, &mut out);
         }
-        let mut out = Vec::new();
-        d.push(&stream, &mut out);
-        assert_eq!(out.len(), 6);
-        assert_eq!(out[0].seq, 10);
-        assert_eq!(d.stats().seq_gaps, 0);
+        assert_eq!(out.len(), 258);
+        assert_eq!(out[0].tick, 0);
+        assert_eq!(out[255].tick, 255 * 16);
+        assert_eq!(out[257].tick, 257 * 16);
+        assert_eq!(a.holes(), 0);
+        assert_eq!(a.skipped(), 0);
     }
 
     #[test]
-    fn realign_on_corrupt_byte_recovers() {
-        let mask = TEL_BIT_POS;
-        let flen = tel_frame_len(mask);
-        let mut stream = Vec::new();
-        for k in 0..20u8 {
-            stream.extend(tel_encode(mask, k, false, &[(TEL_BIT_POS, 300)]));
+    fn assembler_missing_frame_leaves_a_16_tick_hole() {
+        let mut a = StreamAssembler::new(TEL_BIT_POS).unwrap();
+        let mut out = Vec::new();
+        for seq in [0u8, 1, 3] {
+            let p = stream_payload(TEL_BIT_POS, seq, seq == 3, 16);
+            a.push(true, &p, &mut out);
         }
-        stream[8 * flen] = 0x55; // corrupt frame 8's sync
-        let mut d = TelDeframer::new(mask).unwrap();
-        let mut out = Vec::new();
-        d.push(&stream, &mut out);
-        assert_eq!(d.stats().realigns, 1);
-        // 8 clean before the corruption, relock consumes nothing extra
-        assert!(out.len() >= 8 + 8, "recovered after realign: {}", out.len());
-        assert_eq!(out.last().unwrap().seq, 19);
+        assert_eq!(out.len(), 48);
+        assert_eq!(out[31].tick, 31);
+        assert_eq!(out[32].tick, 48, "frame 2 dropped: ticks jump 32 -> 48");
+        assert_eq!(a.holes(), 1);
     }
 
     #[test]
-    fn seq_gap_counts_dropped_frames() {
-        let mask = TEL_BIT_POS;
-        let mut stream = Vec::new();
-        for k in [0u8, 1, 2, 3, 4, 6, 7, 10, 11, 12] {
-            stream.extend(tel_encode(mask, k, false, &[(TEL_BIT_POS, 7)]));
-        }
-        let mut d = TelDeframer::new(mask).unwrap();
+    fn assembler_skips_non_stream_statuses() {
+        let mut a = StreamAssembler::new(TEL_BIT_POS).unwrap();
         let mut out = Vec::new();
-        d.push(&stream, &mut out);
-        assert_eq!(out.len(), 10);
-        assert_eq!(d.stats().seq_gaps, 3, "5 and 8, 9 dropped");
-        assert_eq!(d.stats().realigns, 0);
+        a.push(false, &[0x55, 0xAA], &mut out); // an OK ack, not a frame
+        let p = stream_payload(TEL_BIT_POS, 0, true, 2);
+        a.push(true, &p, &mut out);
+        assert_eq!(out.len(), 2);
+        assert_eq!(a.skipped(), 1);
+        assert_eq!(a.holes(), 0);
     }
 
     #[test]
-    fn deframer_rejects_bad_masks() {
-        assert!(TelDeframer::new(0).is_none());
-        assert!(TelDeframer::new(1 << 6).is_none());
-        assert!(TelDeframer::new(TEL_MASK_ALL).is_some());
+    fn stream_raw_mask_decodes_the_adc_frame_set() {
+        let p = stream_payload(TEL_MASK_RAW, 0, true, 2);
+        let frames = decode_stream_payload(TEL_MASK_RAW, &p, 0).expect("decodes");
+        let f = frames[1];
+        assert_eq!(f.pos, Some(0x1001));
+        assert_eq!(f.current_raw, Some(0x0101));
+        assert_eq!(f.current_trough, Some(0xB001));
+        assert_eq!(f.duty_q15, Some(0x2001));
+        assert_eq!(f.vmotor_a, Some(0x0A01));
+        assert_eq!(f.vmotor_b, Some(0x0B01));
+        assert_eq!((f.current, f.vdiff, f.vbus), (None, None, None));
+    }
+
+    #[test]
+    fn assembler_rejects_bad_masks() {
+        assert!(StreamAssembler::new(0).is_none());
+        assert!(StreamAssembler::new(1 << 9).is_none());
+        // all nine fields blows the wire budget; six is the cap
+        assert!(StreamAssembler::new(TEL_MASK_ALL).is_none());
+        assert!(StreamAssembler::new(0x3F).is_some());
+        assert!(StreamAssembler::new(TEL_MASK_RAW).is_some());
     }
 
     #[test]

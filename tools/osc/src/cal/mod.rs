@@ -2,13 +2,13 @@
 //! confirm the real-world angle range with the operator, print the
 //! count->unit report, then write the limits + drive polarity + angle
 //! endpoints + gear + pot LUT and persist with MGMT SAVE. Interactive by
-//! default; flags make it headless. With `--tel-port` the rail-to-rail seek
-//! streams a TEL current+pos sweep: its commutation ripple gives a MEASURED
-//! gear ratio (the gear prompt's default) and fills the pot linearization
-//! LUT. Both are gear-2-dependent and degrade gracefully (identity LUT /
-//! operator-input gear) when ripple SNR is low. The endstop state machine and
-//! the kinematics/units/lut math live in osc-ident; this wrapper owns USB,
-//! the TEL port, prompts, and files.
+//! default; flags make it headless. The rail-to-rail traverse streams a TEL
+//! current+pos sweep as one bus burst: its commutation ripple gives a
+//! MEASURED gear ratio (the gear prompt's default) and fills the pot
+//! linearization LUT. Both are gear-2-dependent and degrade gracefully
+//! (identity LUT / operator-input gear) when ripple SNR is low. The endstop
+//! state machine and the kinematics/units/lut math live in osc-ident; this
+//! wrapper owns USB, prompts, and files.
 
 pub mod replay;
 
@@ -23,15 +23,15 @@ use osc_client::blocking::Client;
 use osc_client::nusb::NusbPipe;
 use osc_ident::exp::endstop::{Endstop, EndstopCfg, EndstopResult};
 use osc_ident::exp::sweep::{Sweep, SweepCfg};
-use osc_ident::exp::{Cmd, Experiment, Guarded, RigParams};
-use osc_ident::frame::{TelFrame, TelemetrySnapshot};
+use osc_ident::exp::{Guarded, RigParams};
+use osc_ident::frame::TelFrame;
 use osc_ident::kinematics::{self, KinematicsResult, angle_endpoints};
 use osc_ident::lut::{self, PotLut, build_multi, stitched_motor_revs};
 use osc_ident::regs::{calib, config, control};
 use osc_ident::slip;
 use osc_ident::units::{self, SenseParams};
 
-use crate::rig::csvio::{OutDir, SnapshotLog};
+use crate::rig::csvio::{self, OutDir, SnapshotLog};
 use crate::rig::pump::{self, Pump, read_snapshot, write_reg};
 use crate::rig::snapshot::{self, read_u16};
 
@@ -76,10 +76,6 @@ pub struct Args {
     /// Known gear ratio (motor rev per output rev); unset leaves it 0.
     #[arg(long)]
     gear_ratio: Option<f64>,
-    /// TEL stream serial device (the LinkE CDC); empty disables the ripple
-    /// sweep (no measured gear, LUT left untouched).
-    #[arg(long, default_value = "")]
-    tel_port: String,
     /// Assume yes: never prompt. Required values must come from flags.
     #[arg(long)]
     yes: bool,
@@ -108,7 +104,6 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
         }
     }
 
-    let tel_port = (!args.tel_port.is_empty()).then(|| args.tel_port.clone());
     let out = OutDir::create(args.out.as_deref().unwrap_or(Path::new("./cal-out")))?;
     let r = run_endstop(&mut c, id, &out)?;
     let EndstopResult {
@@ -123,36 +118,23 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
         if drive_polarity { "normal" } else { "reversed" },
     );
 
-    // Dedicated constant-duty traverse = the ripple/LUT source. A real capture
-    // fragments into several clean chunks (poll seams, brief dropouts), so the
-    // LUT + anchor stitch ALL chunks (build_sweep_chunks) over the shared pos
-    // axis; the single longest run (build_sweep) is kept only for the slip
-    // health-check and the moving-run print. Skipped without --tel-port.
-    let (sweep, chunks) = match &tel_port {
-        Some(port) => {
-            let tel = run_sweep(
-                &mut c,
-                id,
-                port,
-                pos_min_phys,
-                pos_max_phys,
-                drive_polarity,
-                &out,
-            )?;
-            let s = build_sweep(&tel);
-            let chunks = build_sweep_chunks(&tel);
-            match &s {
-                Some((pos, _)) => println!(
-                    "[sweep] {} tel frames, moving run {} (fs {fs:.0} Hz from tick_hz)",
-                    tel.len(),
-                    pos.len()
-                ),
-                None => println!("[sweep] {} tel frames, no usable moving run", tel.len()),
-            }
-            (s, chunks)
-        }
-        None => (None, Vec::new()),
-    };
+    // Dedicated constant-duty traverse = the ripple/LUT source, captured as
+    // one bus burst. A real capture can still fragment on dropped frames
+    // (16-tick holes), so the LUT + anchor stitch ALL chunks
+    // (build_sweep_chunks) over the shared pos axis; the single longest run
+    // (build_sweep) is kept only for the slip health-check and the
+    // moving-run print.
+    let tel = run_sweep(&mut c, id, pos_min_phys, pos_max_phys, drive_polarity, &out)?;
+    let sweep = build_sweep(&tel);
+    let chunks = build_sweep_chunks(&tel);
+    match &sweep {
+        Some((pos, _)) => println!(
+            "[sweep] {} tel frames, moving run {} (fs {fs:.0} Hz from tick_hz)",
+            tel.len(),
+            pos.len()
+        ),
+        None => println!("[sweep] {} tel frames, no usable moving run", tel.len()),
+    }
 
     recenter(&mut c, id, pos_min_phys, pos_max_phys, drive_polarity)?;
 
@@ -160,7 +142,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     // stitched over all chunks and extrapolated from the covered phase span to
     // the whole rail count span. Paired with a gear ratio it yields travel;
     // paired with a travel angle it yields the gear. Both anchors consume this
-    // same ripple half. Empty chunks (no --tel-port) -> None.
+    // same ripple half.
     let motor_revs_full = stitched_motor_revs(
         &chunks,
         fs,
@@ -170,13 +152,11 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     );
     let mrf = motor_revs_full.map(|(m, _)| m);
     let coverage = motor_revs_full.map(|(_, c)| c);
-    if tel_port.is_some() {
-        println!(
-            "[sweep] {} clean chunks, stitched coverage {:.0}%",
-            chunks.len(),
-            coverage.unwrap_or(0.0) * 100.0
-        );
-    }
+    println!(
+        "[sweep] {} clean chunks, stitched coverage {:.0}%",
+        chunks.len(),
+        coverage.unwrap_or(0.0) * 100.0
+    );
 
     // Resolve the anchor: gear is preferred, travel is the fallback. --yes stays
     // headless through the pure resolve_anchor; interactively the operator
@@ -201,7 +181,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     // pot LUT stitched from all chunks; identity when the stitched coverage is
     // too low (or the ripple SNR is too low to clock true angle) - build_multi
     // decides internally and returns identity in either case. No chunks at all
-    // (no --tel-port) -> None, LUT left untouched below.
+    // (an unusable capture) -> None, LUT left untouched below.
     let lut = (!chunks.is_empty()).then(|| {
         let l = build_multi(
             &chunks,
@@ -299,24 +279,24 @@ fn pos_plausible(pos: u16) -> bool {
 }
 
 /// Time-aligned (pos, current) sweep from the captured frames: the longest
-/// seq-contiguous run. Splitting on seq gaps is the ONLY selection - it keeps
-/// the sample spacing uniform, which the ripple autocorr assumes. Pos is NOT
-/// required to be monotonic: the commutation ripple lives on the winding
-/// current, so a slipping stripped gear (pos jittering while the motor spins)
-/// still carries a clean signal, and lut::build sorts by pos regardless. A
-/// flat stall segment self-rejects downstream (no ripple -> None). None when
-/// nothing was captured.
+/// tick-contiguous run. Splitting on tick holes is the ONLY selection - it
+/// keeps the sample spacing uniform, which the ripple autocorr assumes. Pos
+/// is NOT required to be monotonic: the commutation ripple lives on the
+/// winding current, so a slipping stripped gear (pos jittering while the
+/// motor spins) still carries a clean signal, and lut::build sorts by pos
+/// regardless. A flat stall segment self-rejects downstream (no ripple ->
+/// None). None when nothing was captured.
 fn build_sweep(tel: &[TelFrame]) -> Option<(Vec<u16>, Vec<f64>)> {
-    // Drop value-domain corruption: pos > 4095 is impossible from a 12-bit ADC,
-    // so a set bit above b11 is a bit error. Dropping the frame removes its seq,
-    // which splits the contiguous run at that point and isolates the corruption.
-    // Catches pos corruption only; a current(ripple)-domain bit-error is not
-    // caught here - that needs a firmware frame CRC (deferred).
-    let s: Vec<(u8, u16, f64)> = tel
+    // Drop value-domain corruption: pos > 4095 is impossible from a 12-bit
+    // ADC, so a set bit above b11 is a bit error (the stream is CRC-clean,
+    // but recorded CSVs from older captures replay through here too).
+    // Dropping the frame removes its tick, which splits the contiguous run
+    // at that point and isolates the corruption.
+    let s: Vec<(u64, u16, f64)> = tel
         .iter()
         .filter_map(|f| {
             let pos = f.pos?;
-            pos_plausible(pos).then_some((f.seq, pos, f.current? as f64))
+            pos_plausible(pos).then_some((f.tick, pos, f.current? as f64))
         })
         .collect();
     let (lo, hi) = longest_contiguous_run(&s)?;
@@ -357,7 +337,7 @@ const EDGE_DWELL_COUNTS: u16 = 8;
 /// mid-run jitter; on a clean rail-to-rail sweep it costs only the outermost
 /// EDGE_DWELL_COUNTS counts of each end. Runs narrower than the two bands are
 /// returned unchanged.
-fn trim_edge_dwell(run: &[(u8, u16, f64)]) -> &[(u8, u16, f64)] {
+fn trim_edge_dwell(run: &[(u64, u16, f64)]) -> &[(u64, u16, f64)] {
     let (mut lo, mut hi) = (run[0].1, run[0].1);
     for x in run {
         lo = lo.min(x.1);
@@ -391,17 +371,17 @@ fn trim_edge_dwell(run: &[(u8, u16, f64)]) -> &[(u8, u16, f64)] {
 }
 
 /// ALL clean sweep chunks (not just the longest): each maximal run of
-/// seq-contiguous, in-range (pos<=4095) frames, as (pos, current). Chunks
+/// tick-contiguous, in-range (pos<=4095) frames, as (pos, current). Chunks
 /// shorter than MIN_CHUNK_SAMPLES are dropped as corruption fragments. The
 /// stitch (lut::build_multi) reassembles them over the shared pos axis.
 pub(super) fn build_sweep_chunks(tel: &[TelFrame]) -> Vec<(Vec<u16>, Vec<f64>)> {
-    // Same filter as build_sweep: a dropped (corrupt/absent) frame removes its
-    // seq, so the run splits there just as a seq gap would.
-    let s: Vec<(u8, u16, f64)> = tel
+    // Same filter as build_sweep: a dropped (corrupt/absent) frame removes
+    // its tick, so the run splits there just as a 16-tick hole would.
+    let s: Vec<(u64, u16, f64)> = tel
         .iter()
         .filter_map(|f| {
             let pos = f.pos?;
-            pos_plausible(pos).then_some((f.seq, pos, f.current? as f64))
+            pos_plausible(pos).then_some((f.tick, pos, f.current? as f64))
         })
         .collect();
     let mut chunks = Vec::new();
@@ -410,7 +390,7 @@ pub(super) fn build_sweep_chunks(tel: &[TelFrame]) -> Vec<(Vec<u16>, Vec<f64>)> 
     }
     let mut lo = 0usize;
     for i in 1..s.len() {
-        if s[i].0 != s[i - 1].0.wrapping_add(1) {
+        if s[i].0 != s[i - 1].0 + 1 {
             emit_chunk(&s[lo..i], &mut chunks);
             lo = i;
         }
@@ -423,7 +403,7 @@ pub(super) fn build_sweep_chunks(tel: &[TelFrame]) -> Vec<(Vec<u16>, Vec<f64>)> 
 /// when shorter than MIN_CHUNK_SAMPLES or when its pos span is below
 /// MIN_CHUNK_SPAN (a rail stall, not a sweep segment). Rail dwell fused to the
 /// ends is trimmed first; the length gate re-applies to the trimmed run.
-fn emit_chunk(run: &[(u8, u16, f64)], chunks: &mut Vec<(Vec<u16>, Vec<f64>)>) {
+fn emit_chunk(run: &[(u64, u16, f64)], chunks: &mut Vec<(Vec<u16>, Vec<f64>)>) {
     if run.len() < MIN_CHUNK_SAMPLES {
         return;
     }
@@ -444,17 +424,17 @@ fn emit_chunk(run: &[(u8, u16, f64)], chunks: &mut Vec<(Vec<u16>, Vec<f64>)>) {
     }
 }
 
-/// Longest half-open index range `[lo, hi)` of samples whose u8 seq increments
+/// Longest half-open index range `[lo, hi)` of samples whose tick increments
 /// by exactly one each step (no dropped frames). None when nothing has >= 2
 /// contiguous samples.
-fn longest_contiguous_run(s: &[(u8, u16, f64)]) -> Option<(usize, usize)> {
+fn longest_contiguous_run(s: &[(u64, u16, f64)]) -> Option<(usize, usize)> {
     if s.len() < 2 {
         return None;
     }
     let (mut best_lo, mut best_hi) = (0usize, 0usize);
     let mut lo = 0usize;
     for i in 1..s.len() {
-        if s[i].0 != s[i - 1].0.wrapping_add(1) {
+        if s[i].0 != s[i - 1].0 + 1 {
             if i - lo > best_hi - best_lo {
                 (best_lo, best_hi) = (lo, i);
             }
@@ -494,24 +474,22 @@ fn read_sense(c: &mut Client<NusbPipe>, id: Id) -> Result<SenseParams> {
 }
 
 fn run_endstop(c: &mut Client<NusbPipe>, id: Id, out: &OutDir) -> Result<EndstopResult> {
-    println!("[endstop] seeking both rails (pos guard off)");
-    // pos guard off: driving into the physical ends IS the method
+    println!("[endstop] seeking both rails (pos guard off, soft limits widened)");
+    // pos guard off: driving into the physical ends IS the method. The
+    // firmware clamps OpenLoop duty at the soft limits, so a recalibration
+    // on an already-calibrated servo parks them at the phys limits for the
+    // seek and restores them before the park (an abort still restores).
+    let saved = pump::widen_pos_limits(c, id)?;
     let params = RigParams::default().without_pos_guard();
     let mut log = SnapshotLog::create(out, "endstop_snapshots.csv")?;
     let mut exp = Guarded::new(Endstop::new(EndstopCfg::default(), &params), params);
-    let ran = Pump {
-        client: c,
-        id,
-        tel_port: None,
-        tel_mask: 0,
-        log: Some(&mut log),
-        tel_raw_path: None,
-    }
-    .run(&mut exp, |_| {});
+    let ran = Pump::new(c, id, Some(&mut log)).run(&mut exp);
+    let restored = pump::restore_pos_limits(c, id, saved);
     // park safe whether the run finished, errored, or was ctrl-c'd
     let _ = write_reg(c, id, control::GOAL_DUTY, 0);
     let _ = write_reg(c, id, control::TORQUE_ENABLE, 0);
     ran?;
+    restored?;
     if let Some(reason) = exp.abort() {
         bail!("endstop aborted by the safety envelope: {reason:?}");
     }
@@ -520,17 +498,17 @@ fn run_endstop(c: &mut Client<NusbPipe>, id: Id, out: &OutDir) -> Result<Endstop
         .context("endstop did not reach both rails - no writes")
 }
 
-/// One dedicated constant-duty ripple capture, TEL captured throughout. The
-/// motion stays strictly between count-insets from both rails, so the clone's
-/// end-jam is never reached: positioning + a speed probe run first with TEL off
-/// (polling is free there), then the capture is TIME-bounded (no polls), sized
-/// from the probed speed so the pump drains TEL as a single long seq-contiguous
-/// run for build_sweep. The ~3% inset clears the rail jam yet leaves ~94% of
-/// travel captured (still passes the LUT coverage gate).
+/// One dedicated constant-duty ripple capture: goal + TEL arm in one COMMIT
+/// (the Sweep experiment's burst), so the whole traverse lands as one
+/// tick-contiguous run. The motion stays strictly between count-insets from
+/// both rails, so the clone's end-jam is never reached: positioning + a
+/// speed probe run first (polling is free before the arm), then the burst
+/// is sized from the probed speed. The ~3% inset clears the rail jam yet
+/// leaves ~94% of travel captured (still passes the LUT coverage gate).
+/// The decoded frames land in sweep_tel.csv - cal-replay's input.
 fn run_sweep(
     c: &mut Client<NusbPipe>,
     id: Id,
-    port: &str,
     pos_min_phys: i32,
     pos_max_phys: i32,
     drive_polarity: bool,
@@ -550,116 +528,45 @@ fn run_sweep(
     // capture direction = increasing pos; polarity maps duty sign to direction
     let sweep_sign = if drive_polarity { 1 } else { -1 };
 
-    // speed probe, TEL off: drive AWAY from the nearer rail (toward the
-    // interior) for a short window so the probe itself never reaches a stop.
+    // speed probe: drive AWAY from the nearer rail (toward the interior)
+    // for a short window so the probe itself never reaches a stop.
     let mid = (pos_min_phys + pos_max_phys) / 2;
     let here = read_snapshot(c, id)?.pos as i32;
     let probe_sign = if here < mid { sweep_sign } else { -sweep_sign };
     let speed = probe_speed(c, id, DUTY, probe_sign, 150)?;
 
-    // position to the capture start rail-inset (still TEL off, polling free)
+    // position to the capture start rail-inset (polling free before the arm)
     drive_to(c, id, start, drive_polarity, DUTY)?;
 
     let ms = capture_ms(end as f64 - start as f64, speed, 0.95);
-    println!("[sweep] capture {ms} ms over counts {start}..{end} (speed {speed:.0} cps)");
+    // 20 fast ticks per ms; TEL_COUNT is u16, so the arm caps at ~3.2 s
+    let samples = ms.saturating_mul(20).min(u16::MAX as u32) as u16;
+    println!(
+        "[sweep] capture {ms} ms ({samples} samples) over counts {start}..{end} (speed {speed:.0} cps)"
+    );
 
     let mut exp = Sweep::new(
         SweepCfg {
             duty_q15: DUTY,
-            capture_ms: ms,
+            samples,
+            // 0x1B = pos|current|duty|vdiff (same TEL mask as ident inertia)
+            mask: 0x1B,
         },
         sweep_sign,
     );
-    let mut tel: Vec<TelFrame> = Vec::new();
-    // 0x1B = pos|current|duty|vdiff (same TEL mask as ident inertia)
-    let tel_mask: u16 = 0x1B;
-    let mut wrap = TelWrap {
-        inner: &mut exp,
-        phase: TelInject::MaskOn,
-        mask: tel_mask,
-    };
-    let ran = Pump {
-        client: c,
-        id,
-        tel_port: Some(port.to_string()),
-        tel_mask,
-        log: None,
-        tel_raw_path: Some(out.0.join("tel-raw.bin")),
-    }
-    .run(&mut wrap, |frames| tel.extend_from_slice(frames));
+    let mut pump = Pump::new(c, id, None);
+    let ran = pump.run(&mut exp);
+    let tel = std::mem::take(&mut pump.tel);
     // park safe whether the run finished, errored, or was ctrl-c'd
     let _ = write_reg(c, id, control::GOAL_DUTY, 0);
     let _ = write_reg(c, id, control::TORQUE_ENABLE, 0);
     ran?;
+    csvio::write_tel_frames(out, "sweep_tel.csv", &tel)?;
     println!(
-        "[sweep] raw bytes -> {}",
-        out.0.join("tel-raw.bin").display()
+        "[sweep] decoded frames -> {}",
+        out.0.join("sweep_tel.csv").display()
     );
     Ok(tel)
-}
-
-/// Injects the TEL enable/mask writes around an inner experiment so the pump
-/// opens the side-channel for a run that would not enable TEL on its own
-/// (Endstop). Prepends mask+enable, delegates the body, appends enable=0 +
-/// mask=0 when the inner run reports Done.
-enum TelInject {
-    MaskOn,
-    EnaOn,
-    Body,
-    EnaOff,
-    MaskOff,
-    Done,
-}
-
-struct TelWrap<'a, E> {
-    inner: &'a mut E,
-    phase: TelInject,
-    mask: u16,
-}
-
-impl<E: Experiment> Experiment for TelWrap<'_, E> {
-    fn step(&mut self, obs: Option<&TelemetrySnapshot>) -> Cmd {
-        match self.phase {
-            TelInject::MaskOn => {
-                self.phase = TelInject::EnaOn;
-                Cmd::Write {
-                    reg: control::TEL_MASK,
-                    value: self.mask as i32,
-                }
-            }
-            TelInject::EnaOn => {
-                self.phase = TelInject::Body;
-                Cmd::Write {
-                    reg: control::TEL_ENABLE,
-                    value: 1,
-                }
-            }
-            TelInject::Body => {
-                let cmd = self.inner.step(obs);
-                if matches!(cmd, Cmd::Done) {
-                    self.phase = TelInject::EnaOff;
-                    Cmd::Write {
-                        reg: control::TEL_ENABLE,
-                        value: 0,
-                    }
-                } else {
-                    cmd
-                }
-            }
-            TelInject::EnaOff => {
-                self.phase = TelInject::MaskOff;
-                Cmd::Write {
-                    reg: control::TEL_MASK,
-                    value: 0,
-                }
-            }
-            TelInject::MaskOff => {
-                self.phase = TelInject::Done;
-                Cmd::Done
-            }
-            TelInject::Done => Cmd::Done,
-        }
-    }
 }
 
 /// Drive to the rail midpoint so the servo does not rest on a hard stop.
@@ -708,8 +615,8 @@ fn recenter(
     Ok(())
 }
 
-/// Measure traverse speed (counts/s) at the capture duty over a short window,
-/// TEL off so pos polling is free. Drives one fixed duty for `ms` and divides
+/// Measure traverse speed (counts/s) at the capture duty over a short window
+/// (no burst armed, so pos polling is free). Drives one fixed duty for `ms` and divides
 /// the pos delta by the elapsed time. Leaves duty 0 + torque ON (the caller
 /// positions next); ctrl-c parks duty 0 + torque off and bails.
 fn probe_speed(c: &mut Client<NusbPipe>, id: Id, duty_q15: i16, sign: i8, ms: u32) -> Result<f64> {
@@ -735,7 +642,7 @@ fn probe_speed(c: &mut Client<NusbPipe>, id: Id, duty_q15: i16, sign: i8, ms: u3
     Ok((p1 - p0).abs() / (ms as f64 / 1000.0))
 }
 
-/// Closed-loop drive toward a target count, TEL off. Polls pos, picks the duty
+/// Closed-loop drive toward a target count. Polls pos, picks the duty
 /// sign toward target via the measured polarity, and stops within a small band.
 /// Leaves duty 0 + torque ON (holds position for the capture that follows);
 /// ctrl-c parks duty 0 + torque off and bails.
@@ -1034,39 +941,29 @@ mod tests {
         assert_eq!(soft_to_count(50.0, 90.0, 90.0, 100, 4000), 100);
     }
 
-    /// Contiguous-seq samples from a pos list (current = pos for simplicity).
-    fn seqd(pos: &[u16]) -> Vec<(u8, u16, f64)> {
+    /// Contiguous-tick samples from a pos list (current = pos for simplicity).
+    fn ticked(pos: &[u16]) -> Vec<(u64, u16, f64)> {
         pos.iter()
             .enumerate()
-            .map(|(i, &p)| (i as u8, p, p as f64))
+            .map(|(i, &p)| (i as u64, p, p as f64))
             .collect()
     }
 
     #[test]
-    fn contiguous_run_splits_on_seq_gap_and_picks_longest() {
-        // 30 samples, seq gap at index 20: the longer half [0,20) wins, and
+    fn contiguous_run_splits_on_tick_hole_and_picks_longest() {
+        // 30 samples, tick hole at index 20: the longer half [0,20) wins, and
         // pos need not be monotonic (slip is fine - current carries ripple).
-        let mut s = seqd(&(0..30).map(|k| 1000 + (k % 3) * 10).collect::<Vec<_>>());
+        let mut s = ticked(&(0..30).map(|k| 1000 + (k % 3) * 10).collect::<Vec<_>>());
         for e in s.iter_mut().skip(20) {
-            e.0 = e.0.wrapping_add(7); // punch a seq discontinuity at 20
+            e.0 += 16; // a dropped frame's 16-tick hole at 20
         }
         assert_eq!(longest_contiguous_run(&s), Some((0, 20)));
     }
 
     #[test]
-    fn contiguous_run_seq_wraps_cleanly() {
-        // u8 seq wrapping 255->0 mid-run stays contiguous.
-        let mut s = seqd(&[10u16; 6]);
-        for (i, e) in s.iter_mut().enumerate() {
-            e.0 = (253u8).wrapping_add(i as u8); // 253,254,255,0,1,2
-        }
-        assert_eq!(longest_contiguous_run(&s), Some((0, 6)));
-    }
-
-    #[test]
     fn contiguous_run_none_when_too_short() {
         assert!(longest_contiguous_run(&[]).is_none());
-        assert!(longest_contiguous_run(&seqd(&[7])).is_none());
+        assert!(longest_contiguous_run(&ticked(&[7])).is_none());
     }
 
     #[test]
@@ -1084,12 +981,13 @@ mod tests {
 
     #[test]
     fn build_sweep_drops_out_of_range_pos() {
-        // seqs 0..10, all pos in-range except seq 5 which is bit-corrupt (>4095).
-        // Dropping it removes its seq, so the contiguous run splits there: the
-        // longer half is seqs 0..=4 (5 samples) and the corrupt pos is excluded.
-        let frames: Vec<TelFrame> = (0..10u8)
+        // ticks 0..10, all pos in-range except tick 5 which is bit-corrupt
+        // (>4095, an old-capture replay). Dropping it removes its tick, so the
+        // contiguous run splits there: the longer half is ticks 0..=4 (5
+        // samples) and the corrupt pos is excluded.
+        let frames: Vec<TelFrame> = (0..10u64)
             .map(|k| TelFrame {
-                seq: k,
+                tick: k,
                 pos: Some(if k == 5 { 9999 } else { 1000 + k as u16 }),
                 current: Some(50),
                 ..Default::default()
@@ -1107,18 +1005,18 @@ mod tests {
 
     #[test]
     fn build_sweep_chunks_keeps_big_runs_drops_fragments_and_stalls() {
-        // seq = index (u8, wraps cleanly). Moving runs (pos sweeps a real span)
-        // split by out-of-range pos, plus a trailing short fragment, a long
-        // STALL run (pos frozen at a rail), and a moving run with a rail buzz
-        // FUSED to its tail. Kept: the moving runs, edge-trimmed by
-        // EDGE_DWELL_COUNTS; the fused buzz tail is trimmed off entirely.
+        // tick = index. Moving runs (pos sweeps a real span) split by
+        // out-of-range pos, plus a trailing short fragment, a long STALL run
+        // (pos frozen at a rail), and a moving run with a rail buzz FUSED to
+        // its tail. Kept: the moving runs, edge-trimmed by EDGE_DWELL_COUNTS;
+        // the fused buzz tail is trimmed off entirely.
         let mut frames: Vec<TelFrame> = Vec::new();
         let mut push = |base: u16, count: u32, moving: bool| {
             for j in 0..count {
-                let seq = frames.len() as u8;
+                let tick = frames.len() as u64;
                 let pos = if moving { base + j as u16 } else { base };
                 frames.push(TelFrame {
-                    seq,
+                    tick,
                     pos: Some(pos),
                     current: Some(50),
                     ..Default::default()

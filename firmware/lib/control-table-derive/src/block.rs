@@ -19,6 +19,8 @@ enum CmpOp {
     Ge,
     Eq,
     Ne,
+    Bits,
+    MaxOnes,
 }
 
 impl CmpOp {
@@ -31,6 +33,8 @@ impl CmpOp {
             CmpOp::Ge => quote!(::control_table::rules::OP_GE),
             CmpOp::Eq => quote!(::control_table::rules::OP_EQ),
             CmpOp::Ne => quote!(::control_table::rules::OP_NE),
+            CmpOp::Bits => quote!(::control_table::rules::OP_BITS),
+            CmpOp::MaxOnes => quote!(::control_table::rules::OP_MAX_ONES),
         }
     }
 }
@@ -407,6 +411,8 @@ fn cmp_op_for_path(path: &Path) -> Option<CmpOp> {
         "ge" => CmpOp::Ge,
         "eq" => CmpOp::Eq,
         "ne" => CmpOp::Ne,
+        "bits" => CmpOp::Bits,
+        "max_ones" => CmpOp::MaxOnes,
         _ => return None,
     })
 }
@@ -514,7 +520,8 @@ fn field_bounds(
                 CmpOp::Gt => (&mut min, quote!(Some(((#expr) as i32) + 1))),
                 CmpOp::Le => (&mut max, quote!(Some((#expr) as i32))),
                 CmpOp::Lt => (&mut max, quote!(Some(((#expr) as i32) - 1))),
-                CmpOp::Eq | CmpOp::Ne => continue,
+                // bit ops are mask contracts, not scalar bounds
+                CmpOp::Eq | CmpOp::Ne | CmpOp::Bits | CmpOp::MaxOnes => continue,
             };
             if slot.is_some() {
                 return Err(syn::Error::new(

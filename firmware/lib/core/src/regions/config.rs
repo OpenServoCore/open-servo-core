@@ -172,12 +172,16 @@ pub struct ConfigThermal {
     pub rtherm_omega_max_cps: u16,
 }
 
-// 80C derate onset / 100C cutoff / 90C recover; undervolt below the 2S
-// brown-out floor in vbus counts.
+// 80C derate onset / 100C cutoff / 90C recover.
 pub const DEFAULT_DERATE_START_CC: i16 = 8000;
 pub const DEFAULT_CUTOFF_CC: i16 = 10000;
 pub const DEFAULT_RECOVER_CC: i16 = 9000;
-pub const DEFAULT_V_UNDERVOLT_COUNTS: u16 = 2200;
+// True brown-out floor (~2.9 V), not a battery-health line: the default
+// must sit below every legal supply - a USB-fed 5 V bench bus idles at
+// ~1760 counts (~4.3 V), so the old 2S-floor 2200 faulted every loaded
+// move on a factory-fresh board. Pack-health thresholds are per-product
+// tuning, written by the host.
+pub const DEFAULT_V_UNDERVOLT_COUNTS: u16 = 1200;
 pub const DEFAULT_RTHERM_I_MIN_COUNTS: u16 = 300;
 pub const DEFAULT_RTHERM_OMEGA_MAX_CPS: u16 = 400;
 

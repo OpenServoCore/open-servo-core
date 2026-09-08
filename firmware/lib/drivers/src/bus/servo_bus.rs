@@ -18,6 +18,9 @@ use crate::traits::bus::{Deadline, Providers, RxRing, UsartBaud, tick_reached};
 mod crc;
 mod reply;
 mod route;
+mod tel;
+
+use tel::TelBurst;
 
 /// us-per-byte numerator: 10 bit-times/byte x 1e6 us/s. `tpb = TICKS_PER_US x
 /// this / baud` stays within u32 for all four operational rates.
@@ -85,6 +88,8 @@ pub struct ServoBus<P: Providers> {
     chain_at: Option<u32>,
     // Clock discipline (sec 9.3): MGMT CAL + drift tracker + trim loop.
     clock: ClockTracker,
+    // TEL burst stager (sec 5.3): armed by tel_count, fed by `poll_tel`.
+    burst: TelBurst,
 }
 
 /// Ticks per byte-time at `rate` on the transport clock. Each arm folds to a
@@ -142,7 +147,14 @@ impl<P: Providers> ServoBus<P> {
             framer_at: None,
             chain_at: None,
             clock: ClockTracker::new(<P::Deadline as Deadline>::CLOCK_TRIM_STEP_PPM),
+            burst: TelBurst::new(),
         }
+    }
+
+    /// Bind the TEL sample channel's consumer half. Bringup-only, before any
+    /// arm can arrive; without it `tel_arm` stays a drop.
+    pub fn attach_tel(&mut self, drain: crate::tel::TelDrain) {
+        self.burst.attach(drain);
     }
 
     /// Break-wake ISR (LBD: a genuine >=10-bit dominant span landed, sec 3.4
@@ -169,6 +181,18 @@ impl<P: Providers> ServoBus<P> {
                 self.arm_deadline();
             }
             return;
+        }
+        // A break during a live burst is the host reclaiming the line -- and
+        // the host's abort lever. Kill the burst and any in-flight frame
+        // before the resolver runs (the garbled frame is the host's chosen
+        // cost); the arriving instruction then handles normally, including a
+        // fresh tel_count re-arm. Inactive burst: this block is inert, so
+        // non-burst exchanges are untouched.
+        if self.burst.active() {
+            self.burst.abort();
+            self.tx.abort();
+            self.chain.reset();
+            self.chain_at = None;
         }
         // Freshness first, resolve second: the fault service computes one
         // bit (did bytes ring since the last service?) and nothing else --
@@ -308,6 +332,7 @@ impl<P: Providers> ServoBus<P> {
                 self.clock.restart();
             }
             // A pending reboot waits for the main loop's `take_reboot`.
+            self.burst.on_tx_released();
         }
     }
 
@@ -406,6 +431,7 @@ impl<P: Providers> ServoBus<P> {
         let cursor = self.ring.cursor();
         self.framer.resync(cursor);
         self.chain.reset();
+        self.burst.abort();
         self.tx.abort();
         // A dropped pending frame's staged table effect is reclaimed by the
         // dispatcher's auto-revert on the next dispatch.
