@@ -124,7 +124,49 @@ pub const OUTCOME_TIMEOUT: u8 = 0x02;
 /// TERMINAL flags byte.
 pub const FLAG_GARBLE_AFTER_LAST_FRAME: u8 = 1 << 0;
 
-pub const LINK_VERSION: u8 = 1;
+/// v2: INFO carries the adapter diagnostics tail ([`Diag`]).
+pub const LINK_VERSION: u8 = 2;
+
+/// INFO `reset` byte: the chip's reset-cause flags, read and cleared at
+/// adapter boot (so each boot reports only the resets since the last).
+pub const RESET_PIN: u8 = 1 << 0;
+pub const RESET_POR: u8 = 1 << 1;
+pub const RESET_SFT: u8 = 1 << 2;
+pub const RESET_IWDG: u8 = 1 << 3;
+pub const RESET_WWDG: u8 = 1 << 4;
+pub const RESET_LPWR: u8 = 1 << 5;
+
+/// INFO `phase` byte: where the adapter's main loop stood when the last
+/// reset hit (kept in reset-surviving RAM). Names an IWDG death's location
+/// the way mcause/mepc name an exception's.
+pub const PHASE_NONE: u8 = 0;
+pub const PHASE_BRINGUP: u8 = 1;
+pub const PHASE_USB_POLL: u8 = 2;
+pub const PHASE_PIPE: u8 = 3;
+pub const PHASE_ADAPTER_REQ: u8 = 4;
+pub const PHASE_PUMP: u8 = 5;
+pub const PHASE_USB_TX: u8 = 6;
+pub const PHASE_HSE_FAIL: u8 = 7;
+
+/// Adapter diagnostics, the INFO tail: `reset(1) phase(1) crash_seq(4 LE)
+/// mcause(4 LE) mepc(4 LE) mtval(4 LE) hse_fail(4 LE)`. The crash fields
+/// describe the last synchronous exception the adapter trapped (persist
+/// across resets until the next exception overwrites them; `crash_seq`
+/// counts them, 0 = none on record); `hse_fail` counts crystal-start
+/// failures. A chip-less server (DES sim) reports all zeros.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Diag {
+    pub reset: u8,
+    pub phase: u8,
+    pub crash_seq: u32,
+    pub mcause: u32,
+    pub mepc: u32,
+    pub mtval: u32,
+    pub hse_fail: u32,
+}
+
+/// Byte length of the INFO tail.
+pub const DIAG_LEN: usize = 22;
 
 /// The `seq` a record carries when no command owns it (a status or
 /// terminal surfacing outside any active seq -- a server invariant breach
@@ -147,11 +189,19 @@ fn sealed(dst: &mut [u8], body_len: usize) -> &[u8] {
     &dst[..2 + body_len]
 }
 
-pub fn info(dst: &mut [u8], ticks_per_us: u32) -> &[u8] {
+/// INFO: `version(1) ticks_per_us(4 LE)` + the [`Diag`] tail.
+pub fn info<'a>(dst: &'a mut [u8], ticks_per_us: u32, diag: &Diag) -> &'a [u8] {
     dst[2] = REC_INFO;
     dst[3] = LINK_VERSION;
     dst[4..8].copy_from_slice(&ticks_per_us.to_le_bytes());
-    sealed(dst, 6)
+    dst[8] = diag.reset;
+    dst[9] = diag.phase;
+    dst[10..14].copy_from_slice(&diag.crash_seq.to_le_bytes());
+    dst[14..18].copy_from_slice(&diag.mcause.to_le_bytes());
+    dst[18..22].copy_from_slice(&diag.mepc.to_le_bytes());
+    dst[22..26].copy_from_slice(&diag.mtval.to_le_bytes());
+    dst[26..30].copy_from_slice(&diag.hse_fail.to_le_bytes());
+    sealed(dst, 6 + DIAG_LEN)
 }
 
 pub fn rejected(dst: &mut [u8], seq: u16, reason: u8) -> &[u8] {

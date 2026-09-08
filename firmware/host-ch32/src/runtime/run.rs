@@ -2,13 +2,16 @@
 //! events out as records -> USB IN. The transport ISRs run underneath;
 //! every main-loop touch of the bus sits inside a critical section.
 
+use osc_host::link::record::{
+    PHASE_ADAPTER_REQ, PHASE_PIPE, PHASE_PUMP, PHASE_USB_POLL, PHASE_USB_TX,
+};
 use osc_host::link::{AdapterRequest, LinkServer, RecordSink};
 use osc_host::traits::tick_reached;
 
-use crate::hal::systick;
+use crate::hal::{iwdg, pfic, systick};
 use crate::providers::edges::Edges;
 use crate::providers::pins;
-use crate::runtime::{Drivers, iap, init, usb::UsbDevice};
+use crate::runtime::{Drivers, crash, iap, init, usb::UsbDevice};
 
 /// Outbound record staging between the sans-io server and USB IN packets.
 /// Sized so a whole RX ring of statuses fits; the pump gate below keeps
@@ -20,8 +23,9 @@ const TXQ_CAP: usize = 4096;
 const PUMP_HEADROOM: usize = 2048;
 
 /// Pipe flush bound before the bootloader reset: a host that stops reading
-/// after requesting the bootloader forfeits its ack.
-const FLUSH_BOUND_US: u32 = 100_000;
+/// after requesting the bootloader forfeits its ack. The longest bounded
+/// stall on the main loop; the watchdog period derives from it.
+pub(crate) const FLUSH_BOUND_US: u32 = 100_000;
 
 /// LED pulse stretch per pipe-activity event: long enough to see, short
 /// enough that a busy pipe reads as flicker. Dark at idle.
@@ -84,17 +88,21 @@ impl RecordSink for TxQueue {
 /// Bring the adapter up and serve forever.
 pub fn run() -> ! {
     if !init::bringup() {
+        crash::note_hse_fail();
         fail_blink();
     }
 
     let mut usb = UsbDevice::new();
     let mut server = LinkServer::new();
+    server.set_diag(crash::diag());
     let mut txq = TxQueue::new();
     // Latched out once reached: a bare tick comparison would re-fire every
     // half wrap (~119 s) of the tick domain and strobe the idle LED.
     let mut led_until: Option<u32> = None;
 
     loop {
+        iwdg::kick();
+        crash::phase(PHASE_USB_POLL);
         usb.poll();
         // Keep the edge-capture lap accounting honest (main-loop cadence
         // is the overflow detector's sampling clock).
@@ -105,6 +113,7 @@ pub fn run() -> ! {
         if txq.free() >= PUMP_HEADROOM
             && let Some(bytes) = usb.rx()
         {
+            crash::phase(PHASE_PIPE);
             critical_section::with(|_| {
                 // SAFETY: main-loop bus access under CS (registry doc).
                 let bus = unsafe { Drivers::bus() };
@@ -116,6 +125,7 @@ pub fn run() -> ! {
 
         match server.take_adapter_request() {
             Some(AdapterRequest::EnterBootloader) => {
+                crash::phase(PHASE_ADAPTER_REQ);
                 flush_pipe(&mut usb, &mut txq);
                 iap::enter_bootloader();
             }
@@ -128,6 +138,7 @@ pub fn run() -> ! {
 
         // Engine events -> records, same headroom gate.
         if txq.free() >= PUMP_HEADROOM {
+            crash::phase(PHASE_PUMP);
             critical_section::with(|_| {
                 // SAFETY: main-loop bus access under CS (registry doc).
                 let bus = unsafe { Drivers::bus() };
@@ -136,6 +147,7 @@ pub fn run() -> ! {
         }
 
         if usb.tx_ready() && !txq.is_empty() {
+            crash::phase(PHASE_USB_TX);
             let mut pkt = [0u8; 512];
             let mps = usb.mps().min(pkt.len());
             let n = txq.pop_into(&mut pkt[..mps]);
@@ -171,18 +183,20 @@ fn flush_pipe(usb: &mut UsbDevice, txq: &mut TxQueue) {
     }
 }
 
-/// Dead crystal: triple pulse forever. Timing runs off whatever clock the
-/// loader left (visibly wrong scale is fine -- the pattern is the signal).
+/// Dead crystal: one triple pulse, then reset and try again: a marginal
+/// crystal recovers on its own, and the pattern keeps repeating across
+/// resets if it never does (the record counts the attempts). Timing runs
+/// off whatever clock the loader left (visibly wrong scale is fine, the
+/// pattern is the signal); the watchdog, already running, backstops it.
 fn fail_blink() -> ! {
-    loop {
-        for _ in 0..3 {
-            blink_delay(120_000);
-            pins::led(true);
-            blink_delay(120_000);
-            pins::led(false);
-        }
-        blink_delay(800_000);
+    for _ in 0..3 {
+        blink_delay(120_000);
+        pins::led(true);
+        blink_delay(120_000);
+        pins::led(false);
     }
+    blink_delay(800_000);
+    pfic::software_reset()
 }
 
 fn blink_delay(us: u32) {

@@ -16,6 +16,7 @@ use clap::{Parser, Subcommand};
 use osc_client::blocking::Client;
 use osc_client::mgmt::Uid;
 use osc_client::nusb::NusbPipe;
+use osc_client::record::{self, Diag};
 use osc_client::{BaudRate, Id, Inst, Opcode, ResultCode};
 use osc_protocol::build;
 use osc_protocol::table::{
@@ -254,6 +255,49 @@ fn print_rails((v3v3, v5): (bool, bool)) -> Result<()> {
         if v5 { "on" } else { "off" },
     );
     Ok(())
+}
+
+fn print_diag(d: &Diag) {
+    const RESETS: [(u8, &str); 6] = [
+        (record::RESET_PIN, "PIN"),
+        (record::RESET_POR, "POR"),
+        (record::RESET_SFT, "SFT"),
+        (record::RESET_IWDG, "IWDG"),
+        (record::RESET_WWDG, "WWDG"),
+        (record::RESET_LPWR, "LPWR"),
+    ];
+    let mut causes: Vec<&str> = RESETS
+        .iter()
+        .filter(|(bit, _)| d.reset & bit != 0)
+        .map(|(_, name)| *name)
+        .collect();
+    if causes.is_empty() {
+        causes.push("none");
+    }
+    let phase = match d.phase {
+        record::PHASE_NONE => "none".to_string(),
+        record::PHASE_BRINGUP => "bringup".to_string(),
+        record::PHASE_USB_POLL => "usb-poll".to_string(),
+        record::PHASE_PIPE => "pipe".to_string(),
+        record::PHASE_ADAPTER_REQ => "adapter-req".to_string(),
+        record::PHASE_PUMP => "pump".to_string(),
+        record::PHASE_USB_TX => "usb-tx".to_string(),
+        record::PHASE_HSE_FAIL => "hse-fail".to_string(),
+        other => format!("{other:#04x}"),
+    };
+    println!(
+        "last reset: {} at phase {phase}; hse failures {}",
+        causes.join("+"),
+        d.hse_fail
+    );
+    if d.crash_seq == 0 {
+        println!("crash record: none");
+    } else {
+        println!(
+            "crash record: #{} mcause {:#010x} mepc {:#010x} mtval {:#010x}",
+            d.crash_seq, d.mcause, d.mepc, d.mtval
+        );
+    }
 }
 
 fn hex(bytes: &[u8]) -> String {
@@ -639,6 +683,9 @@ fn main() -> Result<()> {
                 "osc-adapter: link v{}, {} ticks/us",
                 info.version, info.ticks_per_us
             );
+            if let Some(d) = info.diag {
+                print_diag(&d);
+            }
             Ok(())
         }
         Cmd::Rails => print_rails(connect()?.rails()?),

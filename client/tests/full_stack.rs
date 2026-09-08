@@ -37,8 +37,10 @@ fn fleet(ids: &[u8]) -> Client<FakePipe> {
 #[test]
 fn connect_reports_link_info() {
     let c = fleet(&[1]);
-    assert_eq!(c.info().version, 1);
+    assert_eq!(c.info().version, osc_host::link::record::LINK_VERSION);
     assert!(c.info().ticks_per_us > 0);
+    // A chip-less adapter has nothing to report, but the tail is present.
+    assert_eq!(c.info().diag, Some(Default::default()));
 }
 
 #[test]

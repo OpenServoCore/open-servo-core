@@ -1,7 +1,9 @@
 //! Orchestration: registry (installed instances), init (bringup order),
-//! isr (transport vector bodies), trap (vector-table backstop), usb (the
-//! polled USBHS pipe), iap (loader disarm), run (the main loop).
+//! isr (transport vector bodies), trap (vector-table backstops), crash (the
+//! reset-surviving record the backstop and the watchdog leave behind), usb
+//! (the polled USBHS pipe), iap (loader disarm), run (the main loop).
 
+pub mod crash;
 pub mod iap;
 pub mod init;
 pub mod isr;
