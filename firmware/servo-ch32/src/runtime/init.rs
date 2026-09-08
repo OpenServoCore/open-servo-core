@@ -118,7 +118,7 @@ fn calib_sense(wiring: &BoardWiring, cal: &Calibration) -> CalibSense {
 
 // Order must mirror the scan tail in `configure_adc_dma_scan`.
 fn sensor_channels(s: &AdcPins) -> [AnalogChannel; ADC_SENSOR_COUNT] {
-    [s.pos, s.vmotor.0, s.vmotor.1]
+    [s.vmotor.0, s.vmotor.1, s.pos]
 }
 
 fn enable_clocks_and_remaps(w: &BoardWiring) {
@@ -216,7 +216,7 @@ fn bring_up_analog_chain(cs: &CurrentSenseConfig) {
 /// every other register it touches is rewritten there.
 fn measure_current_bias(cs: &CurrentSenseConfig) -> u16 {
     let ch = cs.current_channel().channel();
-    adc::set_sample_time(ch, chip::ADC_SAMPLE_TIME);
+    adc::set_sample_time(ch, chip::ADC_SHUNT_SAMPLE_TIME);
     adc::set_low_power(false);
     adc::set_scan_mode(false);
     adc::set_dma(false);
@@ -250,7 +250,7 @@ fn configure_adc_dma_scan(w: &BoardWiring) {
     let sensors = &w.sensors;
     let current = w.current_sense.current_channel().channel();
 
-    adc::set_sample_time(current, chip::ADC_SAMPLE_TIME);
+    adc::set_sample_time(current, chip::ADC_SHUNT_SAMPLE_TIME);
     adc::set_sample_time(sensors.pos.channel(), chip::ADC_SAMPLE_TIME);
     adc::set_sample_time(sensors.vmotor.0.channel(), chip::ADC_SAMPLE_TIME);
     adc::set_sample_time(sensors.vmotor.1.channel(), chip::ADC_SAMPLE_TIME);
@@ -259,9 +259,9 @@ fn configure_adc_dma_scan(w: &BoardWiring) {
 
     let seq = [
         current,
-        sensors.pos.channel(),
         sensors.vmotor.0.channel(),
         sensors.vmotor.1.channel(),
+        sensors.pos.channel(),
         adc::Channel::Vcal,
     ];
     adc::set_sequence(&seq);
