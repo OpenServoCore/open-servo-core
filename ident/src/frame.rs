@@ -113,7 +113,9 @@ pub const TEL_BIT_VBUS: u16 = 1 << 5;
 pub const TEL_BIT_CURRENT_RAW: u16 = 1 << 6;
 pub const TEL_BIT_VMOTOR_A: u16 = 1 << 7;
 pub const TEL_BIT_VMOTOR_B: u16 = 1 << 8;
-pub const TEL_MASK_ALL: u16 = 0x1FF;
+pub const TEL_BIT_VBUS_RAW: u16 = 1 << 9;
+pub const TEL_BIT_NTC_RAW: u16 = 1 << 10;
+pub const TEL_MASK_ALL: u16 = 0x7FF;
 
 /// Wire budget mirror: at most 6 selected fields sustain 20 kHz at 3 Mbaud.
 pub const TEL_FIELDS_MAX: u32 = 6;
@@ -151,6 +153,8 @@ pub struct TelFrame {
     pub current_raw: Option<u16>,
     pub vmotor_a: Option<u16>,
     pub vmotor_b: Option<u16>,
+    pub vbus_raw: Option<u16>,
+    pub ntc_raw: Option<u16>,
 }
 
 /// Decode one stream payload into per-tick frames; sample i lands at
@@ -193,6 +197,8 @@ pub fn decode_stream_payload(mask: u16, payload: &[u8], tick_base: u64) -> Optio
             current_raw: take(TEL_BIT_CURRENT_RAW).map(u16::from_le_bytes),
             vmotor_a: take(TEL_BIT_VMOTOR_A).map(u16::from_le_bytes),
             vmotor_b: take(TEL_BIT_VMOTOR_B).map(u16::from_le_bytes),
+            vbus_raw: take(TEL_BIT_VBUS_RAW).map(u16::from_le_bytes),
+            ntc_raw: take(TEL_BIT_NTC_RAW).map(u16::from_le_bytes),
         });
     }
     Some(out)
@@ -269,10 +275,10 @@ mod tests {
     use super::*;
     use crate::regs::telemetry as t;
 
-    /// Mirror of the core tel.rs test vector generator: sample(i) with all
-    /// six fields, window_valid on even i.
+    /// Mirror of the core tel.rs test vector generator: sample(i) with every
+    /// field, window_valid on even i.
     fn sample_bytes(mask: u16, i: u16) -> Vec<u8> {
-        let fields: [(u16, u16); 9] = [
+        let fields: [(u16, u16); 11] = [
             (TEL_BIT_POS, 0x1000 + i),
             (TEL_BIT_CURRENT, (-(i as i16) - 1) as u16),
             (TEL_BIT_CURRENT_TROUGH, 0xB000 + i),
@@ -282,6 +288,8 @@ mod tests {
             (TEL_BIT_CURRENT_RAW, 0x0100 + i),
             (TEL_BIT_VMOTOR_A, 0x0A00 + i),
             (TEL_BIT_VMOTOR_B, 0x0B00 + i),
+            (TEL_BIT_VBUS_RAW, 0x0C00 + i),
+            (TEL_BIT_NTC_RAW, 0x0D00 + i),
         ];
         let mut out = Vec::new();
         for (bit, v) in fields {
@@ -436,9 +444,10 @@ mod tests {
     #[test]
     fn assembler_rejects_bad_masks() {
         assert!(StreamAssembler::new(0).is_none());
-        assert!(StreamAssembler::new(1 << 9).is_none());
-        // all nine fields blows the wire budget; six is the cap
+        assert!(StreamAssembler::new(1 << 11).is_none());
+        // every field blows the wire budget; six is the cap
         assert!(StreamAssembler::new(TEL_MASK_ALL).is_none());
+        assert!(StreamAssembler::new(TEL_BIT_VBUS_RAW | TEL_BIT_NTC_RAW).is_some());
         assert!(StreamAssembler::new(0x3F).is_some());
         assert!(StreamAssembler::new(TEL_MASK_RAW).is_some());
     }
@@ -455,7 +464,7 @@ mod tests {
     #[test]
     fn telemetry_snapshot_parses_a_synthetic_region() {
         let base = 0x0200u16;
-        let mut bytes = vec![0u8; 0x60];
+        let mut bytes = vec![0u8; 0x66];
         let put = |b: &mut [u8], r: crate::regs::Reg, v: &[u8]| {
             let off = (r.addr - base) as usize;
             b[off..off + v.len()].copy_from_slice(v);

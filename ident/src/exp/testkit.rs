@@ -242,6 +242,8 @@ impl FakeServo {
                 } else {
                     0
                 }),
+                vbus_raw: sel(1 << 9).then_some(self.vbus as u16),
+                ntc_raw: sel(1 << 10).then_some(2048),
             });
         }
         self.t_ms += samples as f64 * dt * 1000.0;
