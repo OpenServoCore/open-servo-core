@@ -1,0 +1,33 @@
+{
+  "baseline_ms": 1000,
+  "decay": "slow",
+  "dirs": [
+    1,
+    -1
+  ],
+  "fw": 1,
+  "git_sha": "26977564c888e69233ce410b09cf22041eb3e699",
+  "guard": [
+    450,
+    3650
+  ],
+  "model": 257,
+  "post_rung_brake": true,
+  "rest_ms": 500,
+  "schedule": [
+    "30",
+    "coast:300"
+  ],
+  "seek_duty_pct": 15,
+  "sense": {
+    "gain_milli": 15000,
+    "shunt_r_mohm": 33,
+    "vdd_mv": 3300,
+    "vmotor_div_bot": 10000,
+    "vmotor_div_top": 20000
+  },
+  "tel_mask": 461,
+  "tick_hz": 20000,
+  "vbus_counts": 3068,
+  "window_ms": 80
+}

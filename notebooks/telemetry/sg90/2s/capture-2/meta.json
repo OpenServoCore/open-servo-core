@@ -6,7 +6,7 @@
     -1
   ],
   "fw": 1,
-  "git_sha": "caaaa843af196590eeb60cf071845674ee967620",
+  "git_sha": "26977564c888e69233ce410b09cf22041eb3e699",
   "guard": [
     450,
     3650
@@ -46,6 +46,6 @@
   },
   "tel_mask": 461,
   "tick_hz": 20000,
-  "vbus_counts": 0,
+  "vbus_counts": 3088,
   "window_ms": 80
 }
