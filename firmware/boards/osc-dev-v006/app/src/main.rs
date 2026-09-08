@@ -41,6 +41,8 @@ fn main() -> ! {
             sensors: AdcPins {
                 pos: AnalogChannel::A3,
                 vmotor: (AnalogChannel::A5, AnalogChannel::A6),
+                vbus: AnalogChannel::A0,
+                ntc: AnalogChannel::A2,
             },
         },
         calibration: Calibration {
@@ -49,8 +51,20 @@ fn main() -> ! {
                 top_ohm: 20_000,
                 bot_ohm: 10_000,
             },
+            // Board D bodge; rev-2A lands 20_000/10_000.
+            vbus_divider: Divider {
+                top_ohm: 22_000,
+                bot_ohm: 10_000,
+            },
+            ntc: Ntc {
+                pullup_ohm: 10_000,
+                r25_ohm: 10_000,
+                beta: 3950,
+            },
+            // Terminal-divider bias VB from 3V3 through 430/100: 4095 x 100 / 530.
+            vmotor_bias_nom_counts: 773,
             vdd_mv: 3300,
-            // Scan order is [shunt, vmA, vmB, pos, vcal]. The i floor is
+            // Scan order is [shunt, vmA, vmB, pos, vcal, vbus, ntc]. The i floor is
             // amp-settling-bound: arm-B network measured true from duty 13%
             // (bringup docs/armb-comp-sizing.md). The v floor covers
             // vmotor_b's S/H close ~182 ticks after the crest trigger plus

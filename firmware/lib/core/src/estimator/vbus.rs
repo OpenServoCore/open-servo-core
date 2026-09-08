@@ -1,66 +1,49 @@
-//! Supply-voltage estimator. EWMA of the driven-terminal sample (fwd ->
-//! vmotor_a, rev -> vmotor_b; the kernel window-selects) plus the cached Q15
-//! supply reciprocal the current loop compensates with. The spec sketches an
-//! incremental one-Newton-step-per-tick reciprocal; this runs the shared
-//! full-accuracy `math::recip_div` every step instead - ~10 multiplies at
-//! MEDIUM (2 kHz) is noise, and one reciprocal implementation beats two.
+//! Supply-voltage estimator. EWMA of the direct rail tap (`vbus_raw`, every
+//! tick, drive or not) rescaled into motor-terminal divider counts - the
+//! unit `v_undervolt_counts`, the bemf math and the current loop already
+//! speak - plus the cached Q15 supply reciprocal the current loop
+//! compensates with. The spec sketches an incremental
+//! one-Newton-step-per-tick reciprocal; this runs the shared full-accuracy
+//! `math::recip_div` every step instead - ~10 multiplies at MEDIUM (2 kHz)
+//! is noise, and one reciprocal implementation beats two.
 
-use crate::math::recip_div;
+use crate::math::{q_mul_u, recip_div};
 
 const GUARD: u32 = 3;
 const ALPHA_SHIFT: u32 = 3;
 
-/// EWMA alpha 1/8 with 3 guard bits; the first valid sample seeds the state
+/// EWMA alpha 1/8 with 3 guard bits; the first sample seeds the state
 /// (`BemfObs` convention). A fresh `new()` carries recip 0 - duty 0 through
-/// the current loop - until the first sample or an install-time `seed`.
-#[derive(Default)]
+/// the current loop - until the first step.
 pub struct VbusEst {
     state_qg: i32,
     initialized: bool,
     recip_q15: u32,
-    fresh: bool,
+    scale_q15: u32,
 }
 
 impl VbusEst {
-    pub const fn new() -> Self {
+    /// `scale_q15` maps rail-tap counts onto vmotor-tap counts:
+    /// `(vbus_top + vbus_bot) * vmotor_bot / (vbus_bot * (vmotor_top +
+    /// vmotor_bot))` in Q15, const-evaluated chip-side from the board's two
+    /// dividers (`Precomputed`), so core never divides.
+    pub const fn new(scale_q15: u32) -> Self {
         Self {
             state_qg: 0,
             initialized: false,
             recip_q15: 0,
-            fresh: false,
+            scale_q15,
         }
     }
 
-    /// True iff a valid drive-window sample landed since the last call;
-    /// clears on read. Undervolt verdicts gate on this: a held (stale)
-    /// estimate is not evidence - a sagged reading frozen by the fault's
-    /// own bridge-off otherwise re-latches forever (fault -> no drive ->
-    /// no fresh sample -> fault).
-    pub fn take_fresh(&mut self) -> bool {
-        core::mem::take(&mut self.fresh)
-    }
-
-    /// Install-time seed from the first frame or a nominal, so boot does not
-    /// ride a zero reciprocal through an EWMA settle.
-    pub fn seed(&mut self, vbus_counts: u16, floor: u16) {
-        self.state_qg = (vbus_counts as i32) << GUARD;
-        self.initialized = true;
-        self.update_recip(floor);
-    }
-
-    /// One MEDIUM-tick update. `vdrive` = the window-selected driven-terminal
-    /// sample; `None` (window under the vmotor validity floor) holds the last
-    /// estimate - vbus moves slowly.
-    pub fn step(&mut self, vdrive: Option<u16>, undervolt_floor_counts: u16) {
-        if let Some(v) = vdrive {
-            let x = (v as i32) << GUARD;
-            if self.initialized {
-                self.state_qg += (x - self.state_qg) >> ALPHA_SHIFT;
-            } else {
-                self.state_qg = x;
-                self.initialized = true;
-            }
-            self.fresh = true;
+    /// One MEDIUM-tick update from the tick's rail tap.
+    pub fn step(&mut self, vbus_raw: u16, undervolt_floor_counts: u16) {
+        let x = (q_mul_u(vbus_raw as u32, self.scale_q15, 15) as i32) << GUARD;
+        if self.initialized {
+            self.state_qg += (x - self.state_qg) >> ALPHA_SHIFT;
+        } else {
+            self.state_qg = x;
+            self.initialized = true;
         }
         self.update_recip(undervolt_floor_counts);
     }
@@ -91,62 +74,62 @@ mod tests {
     use super::*;
     use crate::math::q_mul;
 
+    const UNITY: u32 = 1 << 15;
+    /// osc-dev-v006 board D: 22k/10k rail divider over the 20k/10k terminal
+    /// dividers, 32000 x 10000 / (10000 x 30000) = 1.0667.
+    const BOARD_D: u32 = 34952;
+
     /// Contract residual: 0 means q_mul(vbus, recip, 15) hit 32767 exactly.
     fn recip_err(vbus: u16, recip: u32) -> i32 {
         q_mul(vbus as i32, recip as i32, 15) - 32767
     }
 
     #[test]
-    fn seed_sets_state_and_recip() {
-        let mut est = VbusEst::new();
-        assert_eq!(est.recip_q15(), 0);
-        est.seed(3000, 100);
-        assert_eq!(est.vbus_counts(), 3000);
-        assert!(recip_err(3000, est.recip_q15()).abs() <= 1);
-    }
-
-    #[test]
     fn first_sample_seeds_then_ewma_pins() {
-        let mut est = VbusEst::new();
-        est.step(Some(800), 1);
+        let mut est = VbusEst::new(UNITY);
+        assert_eq!(est.recip_q15(), 0);
+        est.step(800, 1);
         assert_eq!(est.vbus_counts(), 800);
+        assert!(recip_err(800, est.recip_q15()).abs() <= 1);
         // alpha 1/8: 800 + 800/8 = 900, then 900 + 700/8 = 987 in Q3
-        est.step(Some(1600), 1);
+        est.step(1600, 1);
         assert_eq!(est.vbus_counts(), 900);
-        est.step(Some(1600), 1);
+        est.step(1600, 1);
         assert_eq!(est.vbus_counts(), 987);
     }
 
     #[test]
-    fn none_holds_value_and_recip() {
-        let mut est = VbusEst::new();
-        est.seed(2500, 1);
-        let r = est.recip_q15();
-        est.step(None, 1);
-        assert_eq!(est.vbus_counts(), 2500);
-        assert_eq!(est.recip_q15(), r);
+    fn scale_maps_rail_tap_onto_terminal_counts() {
+        // 2S at 7.4 V: 2313 on the 22k/10k tap reads as 2467 on a 20k/10k tap
+        let mut est = VbusEst::new(BOARD_D);
+        est.step(2313, 1);
+        assert_eq!(est.vbus_counts(), 2467);
+        // a 20k/10k rail tap (rev-2A) is the identity
+        let mut est = VbusEst::new(UNITY);
+        est.step(2313, 1);
+        assert_eq!(est.vbus_counts(), 2313);
     }
 
     #[test]
     fn floor_clamps_recip() {
         // vbus sags to 5: the estimate follows but the reciprocal caps at
         // the floor's, not 5's (~200x larger)
-        let mut est = VbusEst::new();
-        est.seed(5, 1000);
+        let mut est = VbusEst::new(UNITY);
+        est.step(5, 1000);
         assert_eq!(est.vbus_counts(), 5);
         assert!(recip_err(1000, est.recip_q15()).abs() <= 1);
-        // never-seeded zero vbus with floor 0: the >= 1 backstop pins the
-        // recip_div d <= 1 path
-        let mut cold = VbusEst::new();
-        cold.step(None, 0);
+        // zero rail with floor 0: the >= 1 backstop pins the recip_div
+        // d <= 1 path
+        let mut cold = VbusEst::new(UNITY);
+        cold.step(0, 0);
         assert_eq!(cold.recip_q15(), 32767 << 15);
     }
 
     #[test]
     fn recip_contract_sweep() {
-        let mut est = VbusEst::new();
         for vbus in 1000..4000u16 {
-            est.seed(vbus, 1);
+            let mut est = VbusEst::new(UNITY);
+            est.step(vbus, 1);
             let err = recip_err(vbus, est.recip_q15());
             assert!(err.abs() <= 1, "vbus={vbus} err={err}");
         }
@@ -154,11 +137,11 @@ mod tests {
 
     #[test]
     fn recip_tracks_vbus_step_within_ewma_lag() {
-        let mut est = VbusEst::new();
-        est.seed(4000, 100);
+        let mut est = VbusEst::new(UNITY);
+        est.step(4000, 100);
         // tau ~8 steps; 80 steps is >5 tau plus the truncation tail
         for _ in 0..80 {
-            est.step(Some(3000), 100);
+            est.step(3000, 100);
         }
         let v = est.vbus_counts();
         assert!((v as i32 - 3000).abs() <= 1, "v={v}");

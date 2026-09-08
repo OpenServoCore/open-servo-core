@@ -64,6 +64,16 @@ impl CurrentSenseConfig {
 pub struct AdcPins {
     pub pos: AnalogChannel,
     pub vmotor: (AnalogChannel, AnalogChannel),
+    /// Direct supply-rail divider tap.
+    pub vbus: AnalogChannel,
+    /// NTC divider tap.
+    pub ntc: AnalogChannel,
+}
+
+impl AdcPins {
+    const fn all(&self) -> [AnalogChannel; 5] {
+        [self.pos, self.vmotor.0, self.vmotor.1, self.vbus, self.ntc]
+    }
 }
 
 /// `V_adc = V_in * bot_ohm / (top_ohm + bot_ohm)`.
@@ -73,11 +83,25 @@ pub struct Divider {
     pub bot_ohm: u32,
 }
 
+/// NTC to GND under a pull-up to VDD: `V_adc = VDD * R_ntc / (pullup + R_ntc)`.
+#[derive(Copy, Clone)]
+pub struct Ntc {
+    pub pullup_ohm: u32,
+    pub r25_ohm: u32,
+    pub beta: u16,
+}
+
 /// Schematic-derived constants identical across every unit of a PCB design.
 #[derive(Copy, Clone)]
 pub struct Calibration {
     pub shunt_r_mohm: u16,
     pub vmotor_divider: Divider,
+    /// Direct supply-rail divider (`vbus_raw`).
+    pub vbus_divider: Divider,
+    pub ntc: Ntc,
+    /// Nominal bias both motor-terminal dividers return to, ADC counts; the
+    /// fallback when the boot measurement's two taps disagree.
+    pub vmotor_bias_nom_counts: u16,
     /// DMM-measured VDD at the chip pin; the v006 ADC reference is VDD itself.
     pub vdd_mv: u16,
     /// Shortest drive window (TIM1 ticks) with a valid shunt sample.
@@ -106,6 +130,7 @@ impl BoardWiring {
         self.assert_bus_distinct();
         self.assert_current_output_readable();
         self.assert_sensors_distinct();
+        self.assert_sensors_clear_of_opa_inputs();
     }
 
     const fn assert_current_output_readable(&self) {
@@ -130,11 +155,14 @@ impl BoardWiring {
     }
 
     const fn assert_sensors_distinct(&self) {
-        let chs: [AnalogChannel; 4] = [
+        let s = self.sensors.all();
+        let chs: [AnalogChannel; 6] = [
             self.current_sense.current_channel(),
-            self.sensors.pos,
-            self.sensors.vmotor.0,
-            self.sensors.vmotor.1,
+            s[0],
+            s[1],
+            s[2],
+            s[3],
+            s[4],
         ];
         let n = chs.len();
         let mut i = 0;
@@ -145,6 +173,21 @@ impl BoardWiring {
                     panic!("BoardWiring: duplicate sensor AnalogChannel");
                 }
                 j += 1;
+            }
+            i += 1;
+        }
+    }
+
+    /// An OPA input pad (PA2 = A0, PA1 = A1, ...) is the amplifier's, not a
+    /// sensor's: its analog switch would load the divider.
+    const fn assert_sensors_clear_of_opa_inputs(&self) {
+        let (opa_pos, opa_neg, _) = self.current_sense.opa.pins();
+        let s = self.sensors.all();
+        let mut i = 0;
+        while i < s.len() {
+            let pin = s[i].pin() as u8;
+            if pin == opa_pos as u8 || pin == opa_neg as u8 {
+                panic!("BoardWiring: sensor AnalogChannel shares a pin with an OPA input");
             }
             i += 1;
         }

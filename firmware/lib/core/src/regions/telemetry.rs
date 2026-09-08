@@ -105,6 +105,17 @@ pub struct TelemetrySensors {
     /// Boot-measured zero-current sense-chain output, raw ADC counts.
     #[ct_field(access = ro)]
     pub current_bias_counts: u16,
+    /// Direct supply divider tap, raw ADC counts (the rail `vbus_counts`
+    /// derives from).
+    #[ct_field(access = ro)]
+    pub vbus_raw: u16,
+    /// NTC divider tap, raw ADC counts.
+    #[ct_field(access = ro)]
+    pub ntc_raw: u16,
+    /// Boot-measured motor-terminal divider bias (terminals high-impedance),
+    /// raw ADC counts; the terminal taps read this with the rail at 0.
+    #[ct_field(access = ro)]
+    pub vmotor_bias_counts: u16,
 }
 
 /// Identification aggregates on their own fast-tick /16 window (mean =
@@ -141,5 +152,5 @@ pub struct TelemetryRegs {
     pub sensors: TelemetrySensors,
     pub ident: TelemetryIdent,
     #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 32],
+    pub _rsvd_tail: [u8; 26],
 }

@@ -39,9 +39,10 @@ pub const DECIM_MED: u8 = 10;
 /// MEDIUM -> SLOW decimation: SLOW_HZ = MED_HZ / DECIM_SLOW (62.5 Hz).
 pub const DECIM_SLOW: u8 = 32;
 
-/// Finished timing constants the chip const-evals from `MOTOR_PWM_FREQ_HZ`
-/// and the TIM1 ARR, so core never divides at runtime or install - every
-/// field is a compile-time quotient on the chip side (`Precomputed`).
+/// Finished constants the chip const-evals from `MOTOR_PWM_FREQ_HZ`, the
+/// TIM1 ARR and the board's dividers, so core never divides at runtime or
+/// install - every field is a compile-time quotient on the chip side
+/// (`Precomputed`).
 #[derive(Copy, Clone)]
 pub struct KernelTiming {
     /// The TIM1 auto-reload the motor write programs; drive-window widths
@@ -59,6 +60,8 @@ pub struct KernelTiming {
     pub dt_med_q32: u32,
     /// `(MED_HZ << 16) / 1000`: ms -> medium ticks via `q_mul_u(ms, ., 16)`.
     pub med_ticks_per_ms_q16: u32,
+    /// Rail-tap -> vmotor-tap counts, Q15 (`VbusEst::new`).
+    pub vbus_scale_q15: u32,
 }
 
 /// Runs in the ADC DMA TC ISR (PFIC LOW); one `on_tick` per PWM period.
@@ -141,7 +144,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             vel: VelocityLoop::new(),
             limits: LimitState::new(),
             i_band: IBand { lo: 0, hi: 0 },
-            vbus: VbusEst::new(),
+            vbus: VbusEst::new(timing.vbus_scale_q15),
             thermal: WindingTherm::new(),
             bemf: BemfObs::new(),
             faults: faults::FaultLatch::new(),
@@ -200,6 +203,8 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             (&raw mut (*s).vmotor_a).write_volatile(frame.vmotor_a);
             (&raw mut (*s).vmotor_b).write_volatile(frame.vmotor_b);
             (&raw mut (*s).current_trough).write_volatile(frame.current_trough);
+            (&raw mut (*s).vbus_raw).write_volatile(frame.vbus_raw);
+            (&raw mut (*s).ntc_raw).write_volatile(frame.ntc_raw);
         }
 
         // torque_enable 0->1 is the fault ack: latch, detectors, and the
@@ -236,7 +241,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         // IDENT: per-tick sample aligned to the window the PREVIOUS command
         // drove - duty_q15 still holds that command here; i/vdiff hold
         // last-valid through invalid windows (ident module doc).
-        if let Some((_, vdiff)) = window::vdrive_from_frame(&frame, sel, fwd) {
+        if let Some(vdiff) = window::vdiff_from_frame(&frame, sel) {
             self.vdiff_last = vdiff.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
         }
         // TEL emits HERE, on the fast path before the medium/slow branches:
@@ -254,6 +259,8 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                 current_raw: frame.current,
                 vmotor_a: frame.vmotor_a,
                 vmotor_b: frame.vmotor_b,
+                vbus_raw: frame.vbus_raw,
+                ntc_raw: frame.ntc_raw,
                 window_valid: i_meas.is_some(),
                 fault: self.faults.mask() != 0,
             };
@@ -445,12 +452,10 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                 }
             }
 
-            // vbus plus the shared v_mean: computed ONCE here, consumed by
-            // bemf now and the thermometer at SLOW (bemf RECIP_ARR contract)
-            let vdrive = window::vdrive_from_frame(&frame, sel, fwd);
-            self.vbus
-                .step(vdrive.map(|(v, _)| v), therm_cfg.v_undervolt_counts);
-            let v_mean = vdrive.map(|(_, vdiff)| {
+            self.vbus.step(frame.vbus_raw, therm_cfg.v_undervolt_counts);
+            // the shared v_mean: computed ONCE here, consumed by bemf now and
+            // the thermometer at SLOW (bemf RECIP_ARR contract)
+            let v_mean = window::vdiff_from_frame(&frame, sel).map(|vdiff| {
                 q_mul(
                     ticks as i32 * vdiff,
                     self.timing.recip_arr_q24 as i32,
@@ -533,12 +538,9 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                     self.faults
                         .raise(faults::BIT_OVER_TEMP, faults::CODE_OVER_TEMP);
                 }
-                // undervolt needs FRESH evidence: a held estimate frozen by
-                // the fault's own bridge-off (no drive -> no window) would
-                // re-latch forever off a recovered rail. Recovery is a retry
-                // probe: ack -> drive resumes -> fresh sample -> verdict.
-                let vb = self.vbus.vbus_counts();
-                if self.vbus.take_fresh() && vb < therm_cfg.v_undervolt_counts {
+                // the rail tap samples drive or not, so a held sag never
+                // outlives the sag itself: ack clears once the rail is back
+                if self.vbus.vbus_counts() < therm_cfg.v_undervolt_counts {
                     self.faults
                         .raise(faults::BIT_UNDER_VOLT, faults::CODE_UNDER_VOLT);
                 }

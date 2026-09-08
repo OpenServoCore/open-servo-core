@@ -3,7 +3,9 @@ pub mod chip;
 
 #[cfg(not(feature = "half-duplex"))]
 pub use board_wiring::BusWiring;
-pub use board_wiring::{AdcPins, BoardWiring, Calibration, CurrentSenseConfig, Divider, DrvEn};
+pub use board_wiring::{
+    AdcPins, BoardWiring, Calibration, CurrentSenseConfig, Divider, DrvEn, Ntc,
+};
 pub use chip::{AnalogChannel, DigitalPin};
 
 use osc_servo_core::estimator::bemf::RECIP_ARR_SHIFT;
@@ -39,6 +41,13 @@ impl Precomputed {
         // Const-eval quotients per the KernelTiming field docs; the divides
         // fold at compile time so no soft-div symbol ever links.
         let med_hz = chip::MOTOR_PWM_FREQ_HZ / DECIM_MED as u32;
+        let (rail, term) = (
+            &cfg.calibration.vbus_divider,
+            &cfg.calibration.vmotor_divider,
+        );
+        let vbus_scale_q15 = ((rail.top_ohm + rail.bot_ohm) as u64 * term.bot_ohm as u64 * 32768
+            / (rail.bot_ohm as u64 * (term.top_ohm + term.bot_ohm) as u64))
+            as u32;
         Self {
             pwm_psc,
             pwm_arr,
@@ -49,6 +58,7 @@ impl Precomputed {
                 tick_hz: chip::MOTOR_PWM_FREQ_HZ as u16,
                 dt_med_q32: ((1u64 << 32) / med_hz as u64) as u32,
                 med_ticks_per_ms_q16: ((med_hz as u64 * 65536) / 1000) as u32,
+                vbus_scale_q15,
             },
         }
     }

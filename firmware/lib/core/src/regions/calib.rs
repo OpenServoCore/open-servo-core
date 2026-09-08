@@ -81,6 +81,29 @@ pub struct CalibKinematics {
     pub gear_ratio_centi: u16,
 }
 
+/// Supply-sense and thermistor board data (protocol sec 5.5): the direct
+/// rail divider legs, the NTC pull-up / R25 / beta, and the nominal
+/// motor-terminal divider bias (the boot-measured value publishes in
+/// telemetry). Lands after `kinematics` in what was the reserved tail so no
+/// persisted CALIB field moves: images saved before this block carry zeros
+/// here, harmless because install re-stamps every RO block after the overlay.
+#[repr(C)]
+#[derive(Copy, Clone, Block)]
+pub struct CalibSenseExt {
+    #[ct_field(access = ro)]
+    pub vbus_div_top_ohm: u16,
+    #[ct_field(access = ro)]
+    pub vbus_div_bot_ohm: u16,
+    #[ct_field(access = ro)]
+    pub ntc_pullup_ohm: u16,
+    #[ct_field(access = ro)]
+    pub ntc_r25_ohm: u16,
+    #[ct_field(access = ro)]
+    pub ntc_beta: u16,
+    #[ct_field(access = ro)]
+    pub vmotor_bias_nom_counts: u16,
+}
+
 /// Calibration section: always writable (normal field validation applies),
 /// volatile until persisted -- persistence is SAVE's job, not a write gate.
 #[repr(C)]
@@ -95,6 +118,7 @@ pub struct CalibRegs {
     pub winding: CalibWinding,
     pub motor: CalibMotor,
     pub kinematics: CalibKinematics,
+    pub sense_ext: CalibSenseExt,
     #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 96],
+    pub _rsvd_tail: [u8; 84],
 }

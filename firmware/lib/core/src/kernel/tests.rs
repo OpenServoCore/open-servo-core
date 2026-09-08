@@ -10,6 +10,8 @@ use crate::{RegionStorage, Shared};
 
 const BIAS: u16 = 2048;
 const ARR: u16 = 1200;
+/// osc-dev-v006 board D rail scale (22k/10k tap over 20k/10k terminals).
+const VBUS_SCALE_Q15: u32 = 34952;
 
 // The chip-side const-eval for a 20 kHz FAST rate (MED 2 kHz).
 const TIMING: KernelTiming = KernelTiming {
@@ -18,6 +20,7 @@ const TIMING: KernelTiming = KernelTiming {
     tick_hz: 20_000,
     dt_med_q32: ((1u64 << 32) / 2000) as u32,
     med_ticks_per_ms_q16: 2 << 16,
+    vbus_scale_q15: VBUS_SCALE_Q15,
 };
 
 struct FakeSensors;
@@ -124,6 +127,11 @@ fn seed(shared: &Shared) {
     });
 }
 
+/// Rail-tap counts that scale to exactly `vmotor` terminal counts.
+fn vbus_raw(vmotor: u16) -> u16 {
+    ((vmotor as u32 * 32768).div_ceil(VBUS_SCALE_Q15)) as u16
+}
+
 fn frame(pos: u16, current: u16) -> SensorFrame {
     SensorFrame {
         pos,
@@ -134,6 +142,8 @@ fn frame(pos: u16, current: u16) -> SensorFrame {
         vmotor_b: 40,
         vmotor_b_trough: 40,
         vcal: 1200,
+        vbus_raw: vbus_raw(3000),
+        ntc_raw: 2048,
         tick: 0,
     }
 }
@@ -249,9 +259,8 @@ fn endstop_allows_retreat_from_the_wall() {
     );
     // the door back out must be open: a retreat goal drives immediately
     // (the magnitude-fold deadlock read the zeroed i_ref as inward forever).
-    // Reverse drive samples the OTHER terminal, so the frame carries the
-    // rail on vmotor_b - a forward-shaped frame would read the low leg as
-    // a collapsed rail and latch UNDER_VOLT.
+    // Reverse drive puts the rail on vmotor_b, so va - vb flips with the
+    // command (the bemf sign convention).
     sh.table
         .with_mut(|t| t.control.lifecycle.goal_current = -120);
     let mut rev = frame(4095, BIAS);
@@ -269,7 +278,7 @@ fn endstop_allows_retreat_from_the_wall() {
 }
 
 #[test]
-fn undervolt_needs_fresh_evidence_no_stale_relatch() {
+fn undervolt_follows_the_rail_tap_through_bridge_off() {
     let sh = Shared::new();
     seed(&sh);
     sh.table.with_mut(|t| {
@@ -278,17 +287,16 @@ fn undervolt_needs_fresh_evidence_no_stale_relatch() {
         t.control.lifecycle.goal_duty = 8192;
     });
     let mut k = kernel();
-    // sagged rail: valid drive windows carry va under the undervolt floor
+    // sagged rail on the direct tap; the terminal taps are irrelevant
     let mut sagged = frame(2000, BIAS);
-    sagged.vmotor_a = 1000;
-    sagged.vmotor_a_trough = 1000;
+    sagged.vbus_raw = vbus_raw(1000);
     for _ in 0..400 {
         k.on_tick(sagged, &sh);
     }
     assert_eq!(k.faults.mask(), faults::BIT_UNDER_VOLT, "sag latches");
     assert!(matches!(last_cmd(&k), MotorCmd::Disabled));
-    // bridge off -> no window -> vbus estimate frozen at the sag; the ack
-    // must stick because there is no fresh evidence
+    // the tap keeps sampling with the bridge off: an ack against a still
+    // sagged rail re-latches, an ack against a recovered rail sticks
     sh.table
         .with_mut(|t| t.control.lifecycle.torque_enable = false);
     for _ in 0..400 {
@@ -296,17 +304,25 @@ fn undervolt_needs_fresh_evidence_no_stale_relatch() {
     }
     sh.table
         .with_mut(|t| t.control.lifecycle.torque_enable = true);
-    // recovered rail from here on
-    for _ in 0..2000 {
-        k.on_tick(frame(2000, BIAS), &sh);
-    }
-    assert_eq!(k.faults.mask(), 0, "stale sag re-latched undervolt");
-    assert!(matches!(last_cmd(&k), MotorCmd::Drive { .. }));
-    // a genuinely low rail re-latches through the same retry probe
     for _ in 0..2000 {
         k.on_tick(sagged, &sh);
     }
-    assert_eq!(k.faults.mask(), faults::BIT_UNDER_VOLT);
+    assert_eq!(k.faults.mask(), faults::BIT_UNDER_VOLT, "sag re-latches");
+    sh.table
+        .with_mut(|t| t.control.lifecycle.torque_enable = false);
+    for _ in 0..400 {
+        k.on_tick(frame(2000, BIAS), &sh);
+    }
+    sh.table
+        .with_mut(|t| t.control.lifecycle.torque_enable = true);
+    for _ in 0..2000 {
+        k.on_tick(frame(2000, BIAS), &sh);
+    }
+    assert_eq!(k.faults.mask(), 0, "recovered rail re-latched undervolt");
+    assert!(matches!(last_cmd(&k), MotorCmd::Drive { .. }));
+    // EWMA truncation tail: settles within 1 count of the rail
+    let v = sh.table.with(|t| t.telemetry.estimates.vbus_counts) as i32;
+    assert!((v - 3000).abs() <= 1, "vbus_counts={v}");
 }
 
 #[test]
@@ -579,7 +595,7 @@ fn publishes_land_in_the_table() {
         assert_eq!(t.telemetry.estimates.omega_hat_cps, k.fusion.omega_q16());
         assert_eq!(t.telemetry.estimates.i_lim_counts, 1200);
         assert_eq!(t.telemetry.estimates.duty_applied_q15, 0);
-        assert_eq!(t.telemetry.estimates.vbus_counts, 0); // never driven
+        assert_eq!(t.telemetry.estimates.vbus_counts, 3000);
         assert_eq!(t.telemetry.mode.mode_active, Mode::Position as u8);
         assert_eq!(t.telemetry.mode.fault_code, faults::CODE_NONE);
         assert_eq!(t.telemetry.common.fault_flags, 0);
@@ -744,6 +760,8 @@ impl Plant {
             vmotor_b: vb,
             vmotor_b_trough: vb,
             vcal: 1200,
+            vbus_raw: vbus_raw(self.vbus),
+            ntc_raw: 2048,
             tick: 0,
         }
     }
