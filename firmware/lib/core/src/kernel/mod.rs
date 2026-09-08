@@ -616,18 +616,16 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                         // PI at whatever sub-floor duty it unwound to -
                         // stalled at an endstop that grinds the gears
                         // forever (bench: 18% duty held into the rail).
-                        // Zero duty is the honest actuation; slow decay
-                        // shorts the winding, passively braking whatever
-                        // momentum remains. Scoped to a collapsed band so a
+                        // Brake shorts the winding, passively holding
+                        // against whatever momentum remains; it must be
+                        // commanded explicitly - chip-side Drive{0, Slow}
+                        // maps to coast. Scoped to a collapsed band so a
                         // transient i_ref zero crossing in normal travel
                         // can never reset the loop mid-reversal.
                         self.cur.reset();
                         self.duty_q15 = 0;
                         self.decay = DecayMode::Slow;
-                        MotorCmd::Drive {
-                            duty: Effort(0),
-                            decay: DecayMode::Slow,
-                        }
+                        MotorCmd::Brake
                     } else {
                         let gains = CurrentGains {
                             kp_q88: loop_cur.i_kp_q88,

@@ -240,12 +240,12 @@ fn endstop_allows_retreat_from_the_wall() {
     for _ in 0..400 {
         k.on_tick(frame(4095, BIAS), &sh);
     }
-    // inward goal is banded to zero: no drive into the wall
-    match last_cmd(&k) {
-        MotorCmd::Drive { duty, .. } => assert_eq!(duty.0, 0),
-        MotorCmd::Coast | MotorCmd::Disabled => {}
-        MotorCmd::Brake => panic!("brake is never commanded"),
-    }
+    // inward goal is banded to zero: the winding short holds at the wall
+    assert!(
+        matches!(last_cmd(&k), MotorCmd::Brake),
+        "expected brake at the wall, got {:?}",
+        last_cmd(&k)
+    );
     // the door back out must be open: a retreat goal drives immediately
     // (the magnitude-fold deadlock read the zeroed i_ref as inward forever).
     // Reverse drive samples the OTHER terminal, so the frame carries the
