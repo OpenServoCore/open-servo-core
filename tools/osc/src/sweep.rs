@@ -10,6 +10,9 @@
 //! the preceding drive step feeds it without a settle (momentum carries
 //! across the burst gap), and a brake segment runs with openloop_zero_brake
 //! set (cleared again right after, so coast segments always see it clear).
+//! `then:PCT` is a drive step chained the same way (no seek before it): a
+//! reversal pair like `20,then:-20` captures gear play with no reposition
+//! between the two drives.
 //!
 //! Duty sign is taken as-is (fwd = +duty): the seek's bang-bang polling
 //! assumes normal drive polarity and bails the run if a reversed servo
@@ -53,10 +56,12 @@ impl Decay {
     }
 }
 
-/// One schedule entry: a drive rung, or a zero-duty coast/brake segment.
+/// One schedule entry: a drive rung, a chained drive, or a zero-duty
+/// coast/brake segment.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum Step {
     Drive(u8),
+    Then(i8),
     Coast(u32),
     Brake(u32),
 }
@@ -65,6 +70,7 @@ impl std::fmt::Display for Step {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Step::Drive(pct) => write!(f, "{pct}"),
+            Step::Then(pct) => write!(f, "then:{pct}"),
             Step::Coast(ms) => write!(f, "coast:{ms}"),
             Step::Brake(ms) => write!(f, "brake:{ms}"),
         }
@@ -79,9 +85,28 @@ fn parse_step(s: &str) -> Result<Step, String> {
     if let Some(v) = s.strip_prefix("brake:") {
         return Ok(Step::Brake(ms(v)?));
     }
+    if let Some(v) = s.strip_prefix("then:") {
+        let pct: i8 = v.parse().map_err(|_| format!("bad pct {v:?}"))?;
+        if pct == 0 || pct.unsigned_abs() > 100 {
+            return Err(format!(
+                "then: pct must be nonzero within +/-100, got {pct}"
+            ));
+        }
+        return Ok(Step::Then(pct));
+    }
     s.parse()
         .map(Step::Drive)
-        .map_err(|_| format!("step is duty pct, coast:MS, or brake:MS, got {s:?}"))
+        .map_err(|_| format!("step is duty pct, then:PCT, coast:MS, or brake:MS, got {s:?}"))
+}
+
+/// Whether step k feeds step k+1 with no settle between them: then/coast/
+/// brake steps chain to their predecessor so momentum carries across the
+/// burst gap.
+fn feeds(steps: &[Step], k: usize) -> bool {
+    matches!(
+        steps.get(k + 1),
+        Some(Step::Then(_) | Step::Coast(_) | Step::Brake(_))
+    )
 }
 
 /// `osc sweep` args. `--baud`/`--id` come from the top-level osc globals.
@@ -91,7 +116,8 @@ pub struct Args {
     #[arg(long, default_value = "./sweep-out")]
     out: PathBuf,
     /// Duty grid, percent of full scale; `coast:MS` / `brake:MS` entries
-    /// capture a zero-duty segment chained to the preceding step.
+    /// capture a zero-duty segment chained to the preceding step, `then:PCT`
+    /// a signed drive chained the same way (no seek).
     #[arg(long, value_delimiter = ',', value_parser = parse_step,
           default_values_t = (1..=20u8).map(|k| Step::Drive(k * 5)))]
     duty_pct: Vec<Step>,
@@ -358,36 +384,36 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
         write_rows(&mut w, 0, 0, 0, &frames)?;
 
         let steps = &args.duty_pct;
-        // A coast/brake segment chains to the step before it: no settle in
-        // between, so the drive's momentum carries into the zero-duty burst.
-        let feeds = |k: usize| matches!(steps.get(k + 1), Some(Step::Coast(_) | Step::Brake(_)));
 
         let mut seg = 1u32;
         for &dir in dirs {
             let mut live = false;
             for (k, &step) in steps.iter().enumerate() {
                 check_stop()?;
+                // Drive is never chained, so it always arrives with live
+                // false: the seek is the only difference in its prep.
+                if let Step::Drive(_) = step {
+                    check_fault(c, id)?;
+                    seek_band(
+                        c,
+                        id,
+                        start_band(dir, args.guard_lo, args.guard_hi),
+                        seek_duty,
+                    )?;
+                } else if !live {
+                    check_fault(c, id)?;
+                }
+                if !live {
+                    write_reg(c, id, control::MODE, 0)?;
+                    write_reg(c, id, control::TORQUE_ENABLE, 1)?;
+                }
                 let (ms, duty) = match step {
-                    Step::Drive(pct) => {
-                        check_fault(c, id)?;
-                        seek_band(
-                            c,
-                            id,
-                            start_band(dir, args.guard_lo, args.guard_hi),
-                            seek_duty,
-                        )?;
-                        write_reg(c, id, control::MODE, 0)?;
-                        write_reg(c, id, control::TORQUE_ENABLE, 1)?;
-                        (args.window_ms, dir as i32 * pct_q15(pct) as i32)
-                    }
-                    Step::Coast(ms) | Step::Brake(ms) => {
-                        if !live {
-                            check_fault(c, id)?;
-                            write_reg(c, id, control::MODE, 0)?;
-                            write_reg(c, id, control::TORQUE_ENABLE, 1)?;
-                        }
-                        (ms, 0)
-                    }
+                    Step::Drive(pct) => (args.window_ms, dir as i32 * pct_q15(pct) as i32),
+                    Step::Then(pct) => (
+                        args.window_ms,
+                        dir as i32 * pct.signum() as i32 * pct_q15(pct.unsigned_abs()) as i32,
+                    ),
+                    Step::Coast(ms) | Step::Brake(ms) => (ms, 0),
                 };
                 if matches!(step, Step::Brake(_)) {
                     write_reg(c, id, zb_reg, 1)?;
@@ -412,6 +438,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
                 }
                 let what = match step {
                     Step::Drive(pct) => format!("duty {:+}%", dir as i32 * pct as i32),
+                    Step::Then(pct) => format!("then {:+}%", dir as i32 * pct as i32),
                     Step::Coast(ms) => format!("coast {ms} ms"),
                     Step::Brake(ms) => format!("brake {ms} ms"),
                 };
@@ -420,7 +447,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
                     st.frames, st.samples, st.holes, st.garble
                 );
                 write_rows(&mut w, seg, duty as i16, dir, &frames)?;
-                if feeds(k) {
+                if feeds(steps, k) {
                     live = true;
                 } else {
                     brake_to_rest(c, id, dir)?;
@@ -466,6 +493,8 @@ mod tests {
     fn steps_parse_and_display_round_trip() {
         for (s, want) in [
             ("35", Step::Drive(35)),
+            ("then:-20", Step::Then(-20)),
+            ("then:20", Step::Then(20)),
             ("coast:200", Step::Coast(200)),
             ("brake:150", Step::Brake(150)),
         ] {
@@ -474,7 +503,24 @@ mod tests {
         }
         assert!(parse_step("coast").is_err());
         assert!(parse_step("brake:x").is_err());
+        assert!(parse_step("then:0").is_err());
+        assert!(parse_step("then:101").is_err());
+        assert!(parse_step("then:-101").is_err());
+        assert!(parse_step("then:x").is_err());
         assert!(parse_step("slow").is_err());
+    }
+
+    #[test]
+    fn chained_steps_feed_from_their_predecessor() {
+        let steps = [
+            Step::Drive(20),
+            Step::Then(-20),
+            Step::Then(20),
+            Step::Brake(200),
+        ];
+        let fed: Vec<bool> = (0..steps.len()).map(|k| feeds(&steps, k)).collect();
+        assert_eq!(fed, [true, true, true, false]);
+        assert!(!feeds(&[Step::Then(-20), Step::Drive(20)], 0));
     }
 
     #[test]
