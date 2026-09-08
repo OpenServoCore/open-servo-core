@@ -102,6 +102,7 @@ impl<P: Pipe> Client<P> {
             info: LinkInfo {
                 version: 0,
                 ticks_per_us: 1,
+                diag: None,
             },
             guard: DEFAULT_GUARD,
         };

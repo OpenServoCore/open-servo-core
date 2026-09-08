@@ -27,4 +27,5 @@ pub use client::{Chain, Client, Ping, Reply, Status, StreamReply};
 pub use error::{Error, LinkError, RejectReason};
 
 pub use osc_host::engine::Outcome;
+pub use osc_host::link::record;
 pub use osc_protocol::wire::{BaudRate, Id, Inst, MgmtOp, Opcode, ResultCode};

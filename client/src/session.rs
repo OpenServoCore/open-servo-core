@@ -15,6 +15,8 @@ use crate::error::LinkError;
 pub struct LinkInfo {
     pub version: u8,
     pub ticks_per_us: u32,
+    /// Adapter diagnostics tail; `None` from a pre-v2 adapter.
+    pub diag: Option<rec::Diag>,
 }
 
 /// One decoded adapter->client record.
@@ -231,6 +233,18 @@ fn decode(body: &[u8]) -> Result<Record, LinkError> {
         rec::REC_INFO => Record::Info(LinkInfo {
             version: *body.get(1).ok_or(LinkError::Malformed)?,
             ticks_per_us: u32::from_le_bytes(field(2..6)?.try_into().unwrap()),
+            diag: body.get(6..6 + rec::DIAG_LEN).map(|d| {
+                let word = |at: usize| u32::from_le_bytes(d[at..at + 4].try_into().unwrap());
+                rec::Diag {
+                    reset: d[0],
+                    phase: d[1],
+                    crash_seq: word(2),
+                    mcause: word(6),
+                    mepc: word(10),
+                    mtval: word(14),
+                    hse_fail: word(18),
+                }
+            }),
         }),
         rec::REC_STATUS => Record::Status {
             seq: seq()?,

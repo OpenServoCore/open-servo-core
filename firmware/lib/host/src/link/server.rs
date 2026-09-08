@@ -40,6 +40,7 @@ pub enum AdapterRequest {
 struct AdapterState {
     req: Option<AdapterRequest>,
     rails: u8,
+    diag: record::Diag,
 }
 
 pub struct LinkServer {
@@ -69,9 +70,15 @@ impl LinkServer {
             adapter: AdapterState {
                 req: None,
                 rails: record::RAILS_BOOT_STATE,
+                diag: record::Diag::default(),
             },
             out: [0; OUT_CAP],
         }
+    }
+
+    /// Install the chip's boot diagnostics; every INFO carries them.
+    pub fn set_diag(&mut self, diag: record::Diag) {
+        self.adapter.diag = diag;
     }
 
     /// Drain the pending adapter-level request, if any. The chip polls this
@@ -182,7 +189,7 @@ fn handle<P: Providers>(
 ) {
     match rec[0] {
         record::REC_HELLO => {
-            sink.record(record::info(out, P::Deadline::TICKS_PER_US));
+            sink.record(record::info(out, P::Deadline::TICKS_PER_US, &adapter.diag));
         }
         record::REC_ENTER_BOOTLOADER => {
             adapter.req = Some(AdapterRequest::EnterBootloader);
@@ -396,10 +403,32 @@ mod tests {
         let mut r = rig();
         let bytes = rec(&[REC_HELLO]);
         r.server.on_pipe(&bytes, &mut r.bus, &mut r.sink);
-        assert_eq!(
-            r.sink.0,
-            vec![vec![6, 0, REC_INFO, LINK_VERSION, 1, 0, 0, 0]]
-        );
+        let mut want = vec![6 + DIAG_LEN as u8, 0, REC_INFO, LINK_VERSION, 1, 0, 0, 0];
+        want.extend_from_slice(&[0; DIAG_LEN]);
+        assert_eq!(r.sink.0, vec![want]);
+    }
+
+    #[test]
+    fn info_carries_diag() {
+        let mut r = rig();
+        r.server.set_diag(Diag {
+            reset: RESET_IWDG,
+            phase: PHASE_PUMP,
+            crash_seq: 3,
+            mcause: 5,
+            mepc: 0x2a1c,
+            mtval: 0x2000_4000,
+            hse_fail: 1,
+        });
+        let bytes = rec(&[REC_HELLO]);
+        r.server.on_pipe(&bytes, &mut r.bus, &mut r.sink);
+        let info = &r.sink.0[0];
+        assert_eq!(&info[8..10], &[RESET_IWDG, PHASE_PUMP]);
+        assert_eq!(&info[10..14], &3u32.to_le_bytes());
+        assert_eq!(&info[14..18], &5u32.to_le_bytes());
+        assert_eq!(&info[18..22], &0x2a1cu32.to_le_bytes());
+        assert_eq!(&info[22..26], &0x2000_4000u32.to_le_bytes());
+        assert_eq!(&info[26..30], &1u32.to_le_bytes());
     }
 
     #[test]
