@@ -71,6 +71,16 @@ wlink-iap -f osc-adapter.bin          # flash the adapter APP
 adapter side that door is `osc bootloader` (the adapter does not implement
 the stock protocol). Verify with `osc info` (enumerates as `1209:0001`).
 
+## Diagnostics
+
+`osc info` also prints what the adapter recorded about its last reset: the
+RCC reset cause (PIN/POR/SFT/IWDG), the main-loop phase the reset caught,
+and the last trapped exception (mcause/mepc/mtval, with a running count).
+The record lives in a reserved RAM word block that survives resets; a
+synchronous exception records itself and resets, and an independent
+watchdog (2 s nominal) resets a hung loop, so either way the dongle
+re-enumerates on its own instead of dropping off the bus.
+
 ## Recovery
 
 The loader is never erased by either direction, so a broken or interrupted

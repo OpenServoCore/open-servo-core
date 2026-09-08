@@ -12,6 +12,14 @@ pub const PCLK1_HZ: u32 = SYSCLK_HZ;
 /// HSE-ready poll bound; a crystal that has not started by then is dead.
 const HSE_READY_SPINS: u32 = 200_000;
 
+/// Reset-cause flags (RM sec 3.4.10), cleared on read so the next boot
+/// sees only the resets since this one.
+pub fn take_reset_flags() -> ch32_metapac::rcc::regs::Rstsckr {
+    let r = RCC.rstsckr().read();
+    RCC.rstsckr().modify(|w| w.set_rmvf(true));
+    r
+}
+
 /// Peripheral clock gates for everything this crate claims. USBHS is
 /// enabled separately by the usb service (it also owns the reset pulse).
 pub fn enable_peripherals() {
