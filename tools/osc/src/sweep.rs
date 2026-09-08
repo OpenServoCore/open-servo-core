@@ -6,6 +6,11 @@
 //! land in sweep.csv, the run's constants in meta.json, both directly in
 //! --out (no timestamp subdir).
 //!
+//! `coast:MS` / `brake:MS` schedule entries capture a zero-duty segment:
+//! the preceding drive step feeds it without a settle (momentum carries
+//! across the burst gap), and a brake segment runs with openloop_zero_brake
+//! set (cleared again right after, so coast segments always see it clear).
+//!
 //! Duty sign is taken as-is (fwd = +duty): the seek's bang-bang polling
 //! assumes normal drive polarity and bails the run if a reversed servo
 //! walks away from the band.
@@ -20,8 +25,9 @@ use osc_client::Id;
 use osc_client::blocking::Client;
 use osc_client::nusb::NusbPipe;
 use osc_ident::frame::TelFrame;
-use osc_ident::regs::{calib, control};
+use osc_ident::regs::{Reg, calib, control};
 
+use crate::descriptor;
 use crate::rig::pump::{self, STOP, exchange_tel_burst, read_snapshot, with_guard, write_reg};
 use crate::rig::snapshot::read_u16;
 
@@ -32,17 +38,68 @@ enum Dirs {
     Rev,
 }
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+enum Decay {
+    Slow,
+    Fast,
+}
+
+impl Decay {
+    fn as_str(self) -> &'static str {
+        match self {
+            Decay::Slow => "slow",
+            Decay::Fast => "fast",
+        }
+    }
+}
+
+/// One schedule entry: a drive rung, or a zero-duty coast/brake segment.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Step {
+    Drive(u8),
+    Coast(u32),
+    Brake(u32),
+}
+
+impl std::fmt::Display for Step {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Step::Drive(pct) => write!(f, "{pct}"),
+            Step::Coast(ms) => write!(f, "coast:{ms}"),
+            Step::Brake(ms) => write!(f, "brake:{ms}"),
+        }
+    }
+}
+
+fn parse_step(s: &str) -> Result<Step, String> {
+    let ms = |v: &str| v.parse().map_err(|_| format!("bad ms {v:?}"));
+    if let Some(v) = s.strip_prefix("coast:") {
+        return Ok(Step::Coast(ms(v)?));
+    }
+    if let Some(v) = s.strip_prefix("brake:") {
+        return Ok(Step::Brake(ms(v)?));
+    }
+    s.parse()
+        .map(Step::Drive)
+        .map_err(|_| format!("step is duty pct, coast:MS, or brake:MS, got {s:?}"))
+}
+
 /// `osc sweep` args. `--baud`/`--id` come from the top-level osc globals.
 #[derive(clap::Args, Debug)]
 pub struct Args {
     /// Output dir; sweep.csv + meta.json land here directly.
     #[arg(long, default_value = "./sweep-out")]
     out: PathBuf,
-    /// Duty grid, percent of full scale.
-    #[arg(long, value_delimiter = ',', default_values_t = (1..=20u8).map(|k| k * 5))]
-    duty_pct: Vec<u8>,
+    /// Duty grid, percent of full scale; `coast:MS` / `brake:MS` entries
+    /// capture a zero-duty segment chained to the preceding step.
+    #[arg(long, value_delimiter = ',', value_parser = parse_step,
+          default_values_t = (1..=20u8).map(|k| Step::Drive(k * 5)))]
+    duty_pct: Vec<Step>,
     #[arg(long, value_enum, default_value_t = Dirs::Both)]
     dirs: Dirs,
+    /// openloop_decay written before the run.
+    #[arg(long, value_enum, default_value_t = Decay::Slow)]
+    decay: Decay,
     /// Capture per rung; samples = window_ms x 20 ticks.
     #[arg(long, default_value_t = 150)]
     window_ms: u32,
@@ -224,6 +281,20 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     std::fs::create_dir_all(&args.out).with_context(|| format!("mkdir {}", args.out.display()))?;
 
     let identity = c.identity(id)?;
+    let registry = descriptor::Registry::load()?;
+    let (d, note) = registry.select(identity.model, identity.fw)?;
+    if let Some(note) = note {
+        println!("{note}");
+    }
+    let field_reg = |name: &str| -> Result<Reg> {
+        let f = d.field(name)?;
+        Ok(Reg {
+            addr: f.addr,
+            width: f.width as u8,
+        })
+    };
+    let decay_reg = field_reg("openloop_decay")?;
+    let zb_reg = field_reg("openloop_zero_brake")?;
     let tick_hz = read_u16(&mut c, id, calib::TICK_HZ)?;
     let vbus_counts = read_snapshot(&mut c, id)?.vbus_counts;
     let dirs: &[i8] = match args.dirs {
@@ -243,7 +314,8 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
             "vmotor_div_bot": read_u16(&mut c, id, calib::VMOTOR_DIV_BOT)?,
             "vdd_mv": read_u16(&mut c, id, calib::VDD_MV)?,
         },
-        "duty_pct": args.duty_pct,
+        "schedule": args.duty_pct.iter().map(Step::to_string).collect::<Vec<_>>(),
+        "decay": args.decay.as_str(),
         "dirs": dirs,
         "window_ms": args.window_ms,
         "rest_ms": args.rest_ms,
@@ -270,6 +342,8 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
 
     let seek_duty = pct_q15(args.seek_duty_pct);
     let r = with_guard(&mut c, id, |c| {
+        write_reg(c, id, decay_reg, args.decay as i32)?;
+        write_reg(c, id, zb_reg, 0)?;
         write_reg(c, id, control::TEL_MASK, mask as i32)?;
 
         // baseline: mid-travel, torque off, noise floor at full tick rate
@@ -283,44 +357,76 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
         );
         write_rows(&mut w, 0, 0, 0, &frames)?;
 
+        let steps = &args.duty_pct;
+        // A coast/brake segment chains to the step before it: no settle in
+        // between, so the drive's momentum carries into the zero-duty burst.
+        let feeds = |k: usize| matches!(steps.get(k + 1), Some(Step::Coast(_) | Step::Brake(_)));
+
         let mut seg = 1u32;
         for &dir in dirs {
-            for &pct in &args.duty_pct {
+            let mut live = false;
+            for (k, &step) in steps.iter().enumerate() {
                 check_stop()?;
-                check_fault(c, id)?;
-                let duty = dir as i32 * pct_q15(pct) as i32;
-                seek_band(
-                    c,
-                    id,
-                    start_band(dir, args.guard_lo, args.guard_hi),
-                    seek_duty,
-                )?;
-                write_reg(c, id, control::MODE, 0)?;
-                write_reg(c, id, control::TORQUE_ENABLE, 1)?;
+                let (ms, duty) = match step {
+                    Step::Drive(pct) => {
+                        check_fault(c, id)?;
+                        seek_band(
+                            c,
+                            id,
+                            start_band(dir, args.guard_lo, args.guard_hi),
+                            seek_duty,
+                        )?;
+                        write_reg(c, id, control::MODE, 0)?;
+                        write_reg(c, id, control::TORQUE_ENABLE, 1)?;
+                        (args.window_ms, dir as i32 * pct_q15(pct) as i32)
+                    }
+                    Step::Coast(ms) | Step::Brake(ms) => {
+                        if !live {
+                            check_fault(c, id)?;
+                            write_reg(c, id, control::MODE, 0)?;
+                            write_reg(c, id, control::TORQUE_ENABLE, 1)?;
+                        }
+                        (ms, 0)
+                    }
+                };
+                if matches!(step, Step::Brake(_)) {
+                    write_reg(c, id, zb_reg, 1)?;
+                }
                 let (frames, st) = exchange_tel_burst(
                     c,
                     id,
-                    samples_of_ms(args.window_ms),
+                    samples_of_ms(ms),
                     Some((control::GOAL_DUTY, duty)),
                     mask,
                 )?;
+                if matches!(step, Step::Brake(_)) {
+                    write_reg(c, id, zb_reg, 0)?;
+                }
+                let what = match step {
+                    Step::Drive(pct) => format!("duty {:+}%", dir as i32 * pct as i32),
+                    Step::Coast(ms) => format!("coast {ms} ms"),
+                    Step::Brake(ms) => format!("brake {ms} ms"),
+                };
                 println!(
-                    "  seg {seg} (duty {:+}%): {} frames, {} samples, {} seq holes, {} garble bytes",
-                    dir as i32 * pct as i32,
-                    st.frames,
-                    st.samples,
-                    st.holes,
-                    st.garble
+                    "  seg {seg} ({what}): {} frames, {} samples, {} seq holes, {} garble bytes",
+                    st.frames, st.samples, st.holes, st.garble
                 );
                 write_rows(&mut w, seg, duty as i16, dir, &frames)?;
-                brake_to_rest(c, id, dir)?;
-                write_reg(c, id, control::TORQUE_ENABLE, 0)?;
-                rest(args.rest_ms)?;
+                if feeds(k) {
+                    live = true;
+                } else {
+                    brake_to_rest(c, id, dir)?;
+                    write_reg(c, id, control::TORQUE_ENABLE, 0)?;
+                    rest(args.rest_ms)?;
+                    live = false;
+                }
                 seg += 1;
             }
         }
         Ok(())
     });
+    // Belt for a run cut mid-brake-segment: the flag must end the sweep clear.
+    let _ = write_reg(&mut c, id, zb_reg, 0);
     w.flush()?;
     r?;
     println!("sweep: {}", csv_path.display());
@@ -345,6 +451,21 @@ mod tests {
         assert_eq!(samples_of_ms(150), 3000);
         assert_eq!(samples_of_ms(1000), 20000);
         assert_eq!(samples_of_ms(10_000), u16::MAX);
+    }
+
+    #[test]
+    fn steps_parse_and_display_round_trip() {
+        for (s, want) in [
+            ("35", Step::Drive(35)),
+            ("coast:200", Step::Coast(200)),
+            ("brake:150", Step::Brake(150)),
+        ] {
+            assert_eq!(parse_step(s).unwrap(), want);
+            assert_eq!(want.to_string(), s);
+        }
+        assert!(parse_step("coast").is_err());
+        assert!(parse_step("brake:x").is_err());
+        assert!(parse_step("slow").is_err());
     }
 
     #[test]
