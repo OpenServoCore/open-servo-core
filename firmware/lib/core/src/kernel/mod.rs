@@ -585,15 +585,22 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                     if (self.i_band.hi == 0 && duty > 0) || (self.i_band.lo == 0 && duty < 0) {
                         duty = 0;
                     }
-                    let decay = match lim_cfg.openloop_decay {
-                        DecaySelect::Slow => DecayMode::Slow,
-                        DecaySelect::Fast => DecayMode::Fast,
-                    };
                     self.duty_q15 = duty;
-                    self.decay = decay;
-                    MotorCmd::Drive {
-                        duty: Effort(duty),
-                        decay,
+                    if duty == 0 && lim_cfg.openloop_zero_brake {
+                        // chip-side Drive{0, Slow} maps to coast; a winding
+                        // short must be commanded explicitly
+                        self.decay = DecayMode::Slow;
+                        MotorCmd::Brake
+                    } else {
+                        let decay = match lim_cfg.openloop_decay {
+                            DecaySelect::Slow => DecayMode::Slow,
+                            DecaySelect::Fast => DecayMode::Fast,
+                        };
+                        self.decay = decay;
+                        MotorCmd::Drive {
+                            duty: Effort(duty),
+                            decay,
+                        }
                     }
                 }
                 mode => {

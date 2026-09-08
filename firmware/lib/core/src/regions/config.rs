@@ -144,6 +144,10 @@ pub struct ConfigLimits {
     pub oc_trip_counts: u16,
     pub oc_trip_ticks: u8,
     pub openloop_decay: DecaySelect,
+    /// true = Brake at zero commanded duty in OpenLoop (default coast).
+    pub openloop_zero_brake: bool,
+    #[ct_field(skip)]
+    pub _rsvd_align: u8,
 }
 
 // Permissive-safe SG90-class limits: core-owned policy seeded at boot,
@@ -234,7 +238,7 @@ pub struct ConfigRegs {
     pub fusion: ConfigFusion,
     pub fault_cfg: ConfigFaultCfg,
     #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 10],
+    pub _rsvd_tail: [u8; 8],
 }
 
 /// Boot-time seed for `ControlTable.config`; stamped pre-IRQ, then host-owned.
