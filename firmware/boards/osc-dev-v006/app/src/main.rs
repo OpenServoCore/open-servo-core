@@ -51,9 +51,9 @@ fn main() -> ! {
                 top_ohm: 20_000,
                 bot_ohm: 10_000,
             },
-            // Board D bodge; rev-2A lands 20_000/10_000.
+            // Board D bodge as fitted (15k/10k); rev-2A lands 20_000/10_000.
             vbus_divider: Divider {
-                top_ohm: 22_000,
+                top_ohm: 15_000,
                 bot_ohm: 10_000,
             },
             ntc: Ntc {
