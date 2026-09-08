@@ -97,7 +97,7 @@ pub struct Args {
     duty_pct: Vec<Step>,
     #[arg(long, value_enum, default_value_t = Dirs::Both)]
     dirs: Dirs,
-    /// openloop_decay written before the run.
+    /// openloop_decay for the capture bursts; seeks and brakes stay slow.
     #[arg(long, value_enum, default_value_t = Decay::Slow)]
     decay: Decay,
     /// Capture per rung; samples = window_ms x 20 ticks.
@@ -342,7 +342,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
 
     let seek_duty = pct_q15(args.seek_duty_pct);
     let r = with_guard(&mut c, id, |c| {
-        write_reg(c, id, decay_reg, args.decay as i32)?;
+        write_reg(c, id, decay_reg, Decay::Slow as i32)?;
         write_reg(c, id, zb_reg, 0)?;
         write_reg(c, id, control::TEL_MASK, mask as i32)?;
 
@@ -392,6 +392,11 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
                 if matches!(step, Step::Brake(_)) {
                     write_reg(c, id, zb_reg, 1)?;
                 }
+                // Fast decay only inside the burst: the seek and the post-step
+                // brake need slow decay to move and to stop.
+                if args.decay == Decay::Fast {
+                    write_reg(c, id, decay_reg, Decay::Fast as i32)?;
+                }
                 let (frames, st) = exchange_tel_burst(
                     c,
                     id,
@@ -399,6 +404,9 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
                     Some((control::GOAL_DUTY, duty)),
                     mask,
                 )?;
+                if args.decay == Decay::Fast {
+                    write_reg(c, id, decay_reg, Decay::Slow as i32)?;
+                }
                 if matches!(step, Step::Brake(_)) {
                     write_reg(c, id, zb_reg, 0)?;
                 }
@@ -425,8 +433,9 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
         }
         Ok(())
     });
-    // Belt for a run cut mid-brake-segment: the flag must end the sweep clear.
+    // Belt for a run cut mid-burst: brake flag clear, decay back to slow.
     let _ = write_reg(&mut c, id, zb_reg, 0);
+    let _ = write_reg(&mut c, id, decay_reg, Decay::Slow as i32);
     w.flush()?;
     r?;
     println!("sweep: {}", csv_path.display());
