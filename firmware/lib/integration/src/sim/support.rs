@@ -60,6 +60,9 @@ pub fn tel_sample(i: u32) -> TelSample {
         duty_q15: 0x2000i16.wrapping_add(i as i16),
         vdiff: (-300i16).wrapping_sub(i as i16),
         vbus: 1800u16.wrapping_add(i as u16),
+        current_raw: 0x0100u16.wrapping_add(i as u16),
+        vmotor_a: 0x0A00u16.wrapping_add(i as u16),
+        vmotor_b: 0x0B00u16.wrapping_add(i as u16),
         window_valid: i.is_multiple_of(2),
         fault: false,
     }

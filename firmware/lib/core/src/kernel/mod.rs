@@ -251,6 +251,9 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                 duty_q15: self.duty_q15,
                 vdiff: self.vdiff_last,
                 vbus: self.vbus.vbus_counts(),
+                current_raw: frame.current,
+                vmotor_a: frame.vmotor_a,
+                vmotor_b: frame.vmotor_b,
                 window_valid: i_meas.is_some(),
                 fault: self.faults.mask() != 0,
             };

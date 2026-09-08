@@ -133,7 +133,13 @@ impl TelFeed {
             }
             self.epoch = seq;
             self.mask = mask;
-            self.remaining = count;
+            // Belt to the table rule's suspenders: an invalid mask parks
+            // the burst instead of overrunning the fixed payload buffers.
+            self.remaining = if osc_servo_core::tel::mask_valid(mask) {
+                count
+            } else {
+                0
+            };
             self.seq = 0;
             self.idx = 0;
             self.at = STREAM_HDR;
@@ -282,7 +288,8 @@ impl TelDrain {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use osc_servo_core::tel::{FLAG_LAST, MASK_ALL, encode_stream};
+    use osc_servo_core::tel::{FLAG_LAST, encode_stream};
+    const MASK_SIX: u16 = 0x3F;
 
     fn channel() -> (TelFeed, TelDrain) {
         std::boxed::Box::leak(std::boxed::Box::new(TelChannel::new())).split()
@@ -317,19 +324,19 @@ mod tests {
     #[test]
     fn batches_match_encode_stream_byte_for_byte() {
         let (mut feed, mut drain) = channel();
-        let epoch = arm(&mut drain, MASK_ALL, 20);
+        let epoch = arm(&mut drain, MASK_SIX, 20);
         let samples: std::vec::Vec<TelSample> = (0..20).map(sample).collect();
         for s in &samples {
             feed.on_tick(s);
         }
 
         let mut want = [0u8; STREAM_PAYLOAD_MAX];
-        let n0 = encode_stream(MASK_ALL, 0, false, &samples[..16], &mut want);
+        let n0 = encode_stream(MASK_SIX, 0, false, &samples[..16], &mut want);
         let m0 = drain.ready(0, epoch).expect("first batch ready");
         assert_eq!((m0.len as usize, m0.last), (n0, false));
         assert_eq!(drain.payload(0)[..n0], want[..n0]);
 
-        let n1 = encode_stream(MASK_ALL, 1, true, &samples[16..], &mut want);
+        let n1 = encode_stream(MASK_SIX, 1, true, &samples[16..], &mut want);
         let m1 = drain.ready(1, epoch).expect("last batch ready");
         assert_eq!((m1.len as usize, m1.last), (n1, true));
         assert_eq!(drain.payload(1)[..n1], want[..n1]);
@@ -339,7 +346,7 @@ mod tests {
     #[test]
     fn stalled_consumer_drops_and_counts() {
         let (mut feed, mut drain) = channel();
-        let epoch = arm(&mut drain, MASK_ALL, 200);
+        let epoch = arm(&mut drain, MASK_SIX, 200);
         for i in 0..37 {
             feed.on_tick(&sample(i));
         }
@@ -359,14 +366,14 @@ mod tests {
     #[test]
     fn rearm_discards_the_old_epoch() {
         let (mut feed, mut drain) = channel();
-        let e1 = arm(&mut drain, MASK_ALL, 16);
+        let e1 = arm(&mut drain, MASK_SIX, 16);
         for i in 0..16 {
             feed.on_tick(&sample(i));
         }
         assert!(drain.ready(0, e1).is_some());
 
         // new burst: the un-staged old batch is a stray now
-        let e2 = arm(&mut drain, MASK_ALL, 5);
+        let e2 = arm(&mut drain, MASK_SIX, 5);
         assert!(drain.ready(0, e2).is_none(), "old epoch discarded");
         for i in 0..5 {
             feed.on_tick(&sample(50 + i));
@@ -380,11 +387,11 @@ mod tests {
     #[test]
     fn count_zero_arm_parks_the_encoder() {
         let (mut feed, mut drain) = channel();
-        arm(&mut drain, MASK_ALL, 32);
+        arm(&mut drain, MASK_SIX, 32);
         for i in 0..4 {
             feed.on_tick(&sample(i));
         }
-        let e = drain.send_arm(MASK_ALL, 0);
+        let e = drain.send_arm(MASK_SIX, 0);
         drain.clear_ready();
         drain.set_active(false);
         for i in 0..40 {

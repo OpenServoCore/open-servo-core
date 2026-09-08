@@ -12,13 +12,25 @@
 //!                      2 bytes each; count = payload remainder / sample_len
 
 /// `tel_mask` bits, in canonical sample order. All v1 fields are 2 bytes.
+/// Bits 0..6 predate the raw set; 6..9 are the per-tick ADC frame raw
+/// values (`current` at bit 1 is the kernel's bias-subtracted held window
+/// sample - a conclusion, streamable for validating against host math).
 pub const BIT_POS: u16 = 1 << 0;
 pub const BIT_CURRENT: u16 = 1 << 1;
 pub const BIT_CURRENT_TROUGH: u16 = 1 << 2;
 pub const BIT_DUTY: u16 = 1 << 3;
 pub const BIT_VDIFF: u16 = 1 << 4;
 pub const BIT_VBUS: u16 = 1 << 5;
-pub const MASK_ALL: u16 = 0x3F;
+pub const BIT_CURRENT_RAW: u16 = 1 << 6;
+pub const BIT_VMOTOR_A: u16 = 1 << 7;
+pub const BIT_VMOTOR_B: u16 = 1 << 8;
+pub const MASK_ALL: u16 = 0x1FF;
+
+/// Wire budget: a 16-sample batch must fit its own tick window at 3 Mbaud,
+/// which caps a sample at 6 fields (12 bytes). `tel_mask`'s table rule and
+/// [`mask_valid`] both enforce it; buffers are sized to it.
+pub const FIELDS_MAX: u16 = 6;
+pub const SAMPLE_LEN_MAX: usize = 2 * FIELDS_MAX as usize;
 
 /// Payload flags bit 0: last frame of the burst; the line frees after it.
 pub const FLAG_LAST: u8 = 1 << 0;
@@ -33,19 +45,21 @@ pub const fn sample_len(mask: u16) -> usize {
     2 * (mask & MASK_ALL).count_ones() as usize
 }
 
-pub const STREAM_PAYLOAD_MAX: usize = STREAM_HDR + STREAM_SAMPLES_MAX * sample_len(MASK_ALL);
+pub const STREAM_PAYLOAD_MAX: usize = STREAM_HDR + STREAM_SAMPLES_MAX * SAMPLE_LEN_MAX;
 
-/// Reserved bits are invalid; mask 0 is valid (stream disarmed).
+/// Reserved bits and over-budget field counts are invalid; mask 0 is valid
+/// (stream disarmed).
 pub const fn mask_valid(mask: u16) -> bool {
-    mask & !MASK_ALL == 0
+    mask & !MASK_ALL == 0 && sample_len(mask) <= SAMPLE_LEN_MAX
 }
 
-/// One fast tick's streamable primitives, in device counts. `current` is
-/// the signed bias-subtracted window sample (the fitter's domain, matching
-/// `i_hat_counts`); `current_trough` and `vbus` stay raw unsigned like
-/// their telemetry counterparts. `window_valid` (this tick's drive window
-/// met the sampling floors) travels in the frame's `valid` bitmap, not per
-/// sample.
+/// One fast tick's streamable primitives, in device counts. `pos`,
+/// `current_raw`, `current_trough`, `vmotor_a`, `vmotor_b` are the tick's
+/// raw ADC frame; `current` (signed, bias-subtracted, held - the fitter's
+/// domain, matching `i_hat_counts`), `vdiff`, and `vbus` are kernel
+/// conclusions, streamable to validate them against host re-derivations.
+/// `window_valid` (this tick's drive window met the sampling floors)
+/// travels in the frame's `valid` bitmap, not per sample.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct TelSample {
     pub pos: u16,
@@ -54,6 +68,9 @@ pub struct TelSample {
     pub duty_q15: i16,
     pub vdiff: i16,
     pub vbus: u16,
+    pub current_raw: u16,
+    pub vmotor_a: u16,
+    pub vmotor_b: u16,
     pub window_valid: bool,
     /// Kernel fault mask nonzero this tick. Travels in the frame's INST
     /// ALERT bit (the fault contract), never in the payload.
@@ -105,6 +122,12 @@ pub fn encode_sample(
     at: usize,
 ) -> usize {
     let m = mask & MASK_ALL;
+    // Over-budget masks never arm (table rule + driver gate); refusing here
+    // keeps the fixed buffer in-bounds even if one slips through.
+    debug_assert!(mask_valid(m));
+    if sample_len(m) > SAMPLE_LEN_MAX {
+        return at;
+    }
     let cap = sample_offset(m, STREAM_SAMPLES_MAX - 1);
     debug_assert!(at <= cap);
     let mut n = if at > cap { cap } else { at };
@@ -121,6 +144,9 @@ pub fn encode_sample(
     put(BIT_DUTY, s.duty_q15.to_le_bytes());
     put(BIT_VDIFF, s.vdiff.to_le_bytes());
     put(BIT_VBUS, s.vbus.to_le_bytes());
+    put(BIT_CURRENT_RAW, s.current_raw.to_le_bytes());
+    put(BIT_VMOTOR_A, s.vmotor_a.to_le_bytes());
+    put(BIT_VMOTOR_B, s.vmotor_b.to_le_bytes());
     n
 }
 
@@ -157,13 +183,22 @@ pub fn encode_stream(
 mod tests {
     use super::*;
 
+    /// The pre-raw six fields: the byte-golden mask below pins that adding
+    /// bits 6..9 moved nothing.
+    const MASK_SIX: u16 = 0x3F;
+    /// The raw-capture default: the ADC frame set plus applied duty.
+    const MASK_RAW: u16 =
+        BIT_POS | BIT_CURRENT_RAW | BIT_CURRENT_TROUGH | BIT_DUTY | BIT_VMOTOR_A | BIT_VMOTOR_B;
+
     #[test]
     fn sample_len_counts_selected_fields() {
         assert_eq!(sample_len(0), 0);
         assert_eq!(sample_len(BIT_POS), 2);
         assert_eq!(sample_len(BIT_POS | BIT_DUTY | BIT_VDIFF), 6);
-        assert_eq!(sample_len(MASK_ALL), 12);
-        assert_eq!(STREAM_PAYLOAD_MAX, STREAM_HDR + 16 * 12);
+        assert_eq!(sample_len(MASK_SIX), 12);
+        assert_eq!(sample_len(MASK_RAW), 12);
+        assert_eq!(sample_len(MASK_ALL), 18);
+        assert_eq!(STREAM_PAYLOAD_MAX, STREAM_HDR + 16 * SAMPLE_LEN_MAX);
     }
 
     /// The host detects the burst end through osc-protocol's mirror of the
@@ -181,12 +216,18 @@ mod tests {
     }
 
     #[test]
-    fn reserved_bits_are_invalid() {
+    fn reserved_bits_and_over_budget_masks_are_invalid() {
         assert!(mask_valid(0));
-        assert!(mask_valid(MASK_ALL));
-        assert!(!mask_valid(1 << 6));
+        assert!(mask_valid(MASK_SIX));
+        assert!(mask_valid(MASK_RAW));
+        assert!(mask_valid(
+            BIT_VMOTOR_A | BIT_VMOTOR_B | BIT_VDIFF | BIT_VBUS
+        ));
+        assert!(!mask_valid(1 << 9));
         assert!(!mask_valid(1 << 15));
-        assert!(!mask_valid(MASK_ALL | 1 << 6));
+        // 7+ fields outruns the batch's tick window at 3 Mbaud
+        assert!(!mask_valid(MASK_SIX | BIT_CURRENT_RAW));
+        assert!(!mask_valid(MASK_ALL));
     }
 
     /// Frame wire time must not outrun the batch it carries: the largest
@@ -206,6 +247,9 @@ mod tests {
             duty_q15: 0x2000 + i as i16,
             vdiff: -300 - i as i16,
             vbus: 1800 + i as u16,
+            current_raw: 0x0100 + i as u16,
+            vmotor_a: 0x0A00 + i as u16,
+            vmotor_b: 0x0B00 + i as u16,
             window_valid: i.is_multiple_of(2),
             // varies across samples; the goldens below pin that it never
             // reaches the payload
@@ -242,16 +286,19 @@ mod tests {
             s.duty_q15 = take(BIT_DUTY) as i16;
             s.vdiff = take(BIT_VDIFF) as i16;
             s.vbus = take(BIT_VBUS);
+            s.current_raw = take(BIT_CURRENT_RAW);
+            s.vmotor_a = take(BIT_VMOTOR_A);
+            s.vmotor_b = take(BIT_VMOTOR_B);
             out.push(s).unwrap();
         }
         (seq, flags, valid, out)
     }
 
     #[test]
-    fn encode_golden_full_mask_full_batch() {
+    fn encode_golden_six_field_mask_full_batch() {
         let samples: heapless::Vec<TelSample, 16> = (0..16).map(sample).collect();
         let mut buf = [0u8; STREAM_PAYLOAD_MAX];
-        let n = encode_stream(MASK_ALL, 0x42, false, &samples, &mut buf);
+        let n = encode_stream(MASK_SIX, 0x42, false, &samples, &mut buf);
         assert_eq!(n, STREAM_PAYLOAD_MAX);
         // header: seq, flags (not LAST), valid = even sample indices
         assert_eq!(buf[..4], [0x42, 0x00, 0x55, 0x55]);
@@ -302,7 +349,13 @@ mod tests {
     /// last) is byte-identical to `encode_stream` for the same inputs.
     #[test]
     fn incremental_encode_matches_encode_stream() {
-        for (mask, count) in [(MASK_ALL, 16), (0x1B, 16), (BIT_POS, 3), (MASK_ALL, 1)] {
+        for (mask, count) in [
+            (MASK_SIX, 16),
+            (MASK_RAW, 16),
+            (0x1B, 16),
+            (BIT_POS, 3),
+            (MASK_SIX, 1),
+        ] {
             let samples: heapless::Vec<TelSample, 16> = (0..count).map(sample).collect();
             let mut whole = [0u8; STREAM_PAYLOAD_MAX];
             let n = encode_stream(mask, 7, true, &samples, &mut whole);
@@ -325,7 +378,7 @@ mod tests {
 
     #[test]
     fn round_trip_all_masks() {
-        for mask in [MASK_ALL, 0x1B, BIT_VBUS] {
+        for mask in [MASK_SIX, MASK_RAW, 0x1B, BIT_VBUS | BIT_VMOTOR_A] {
             let samples: heapless::Vec<TelSample, 16> = (0..5).map(sample).collect();
             let mut buf = [0u8; STREAM_PAYLOAD_MAX];
             let n = encode_stream(mask, 9, true, &samples, &mut buf);
@@ -344,6 +397,12 @@ mod tests {
                 assert_eq!(g.duty_q15 as i32, m(BIT_DUTY, w.duty_q15 as i32));
                 assert_eq!(g.vdiff as i32, m(BIT_VDIFF, w.vdiff as i32));
                 assert_eq!(g.vbus as i32, m(BIT_VBUS, w.vbus as i32));
+                assert_eq!(
+                    g.current_raw as i32,
+                    m(BIT_CURRENT_RAW, w.current_raw as i32)
+                );
+                assert_eq!(g.vmotor_a as i32, m(BIT_VMOTOR_A, w.vmotor_a as i32));
+                assert_eq!(g.vmotor_b as i32, m(BIT_VMOTOR_B, w.vmotor_b as i32));
             }
         }
     }

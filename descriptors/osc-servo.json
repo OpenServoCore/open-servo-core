@@ -561,8 +561,7 @@
       "addr": 386,
       "width": 2,
       "access": "rw",
-      "kind": "uint",
-      "max": 63
+      "kind": "uint"
     },
     {
       "name": "mode",

@@ -29,9 +29,9 @@ pub struct ControlLifecycle {
     pub torque_enable: bool,
     #[ct_field(skip)]
     pub _rsvd_tel: u8,
-    /// TEL sample layout, one bit per field (`tel` module). The le rule
-    /// rejects reserved bits.
-    #[ct_field(le = crate::tel::MASK_ALL)]
+    /// TEL sample layout, one bit per field (`tel` module). `bits` rejects
+    /// reserved bits; `max_ones` caps the field count at the wire budget.
+    #[ct_field(bits = crate::tel::MASK_ALL, max_ones = crate::tel::FIELDS_MAX)]
     pub tel_mask: u16,
     pub mode: Mode,
     #[ct_field(skip)]
