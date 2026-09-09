@@ -69,15 +69,18 @@ fn main() -> ! {
             vdd_mv: 3300,
             // Scan order is [shunt, vmA, vmB, pos, vcal, vbus, ntc]. The i floor is
             // amp-settling-bound: arm-B network measured true from duty 13%
-            // (bringup docs/armb-comp-sizing.md). The v floor covers
-            // vmotor_b's S/H close, 44 ticks (0.91 us) after the crest
-            // trigger at ADCCLK 48 MHz (vmotor_a's at 24 ticks, 0.49 us),
-            // plus settling: on the 6k8/3k3 + 150 pF dividers both terminals
-            // read the rail within 1% from 96 ticks (duty 8%, edge grid both
-            // directions), 24 ticks margin. A v floor below the true edge lets
-            // off-phase samples seed the vbus EWMA and latch a false undervolt.
+            // (bringup docs/armb-comp-sizing.md); the shunt S/H closes 27
+            // ticks after the trigger, far inside it. The v floor covers
+            // vmotor_b's S/H close, 131 ticks (2.73 us) after the crest
+            // trigger at ADCCLK 24 MHz with 13.5-cycle apertures (vmotor_a's
+            // at 79 ticks, 1.65 us), 29 ticks margin. Divider settling is no
+            // longer the binding term - on the 6k8/3k3 + 150 pF taps both
+            // terminals read the rail within 1% from 96 ticks (duty 8%, edge
+            // grid both directions), and the slower scan now samples them
+            // well past that. A v floor below the true edge lets off-phase
+            // samples seed the vbus EWMA and latch a false undervolt.
             i_window_min_ticks: 160,
-            v_window_min_ticks: 120,
+            v_window_min_ticks: 160,
         },
         defaults: ConfigDefaults {
             pos_min_phys_counts: 0,
