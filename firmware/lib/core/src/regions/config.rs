@@ -151,15 +151,19 @@ pub struct ConfigLimits {
 }
 
 // Permissive-safe SG90-class limits: core-owned policy seeded at boot,
-// host-tunable per rig.
-pub const DEFAULT_CURRENT_LIMIT_COUNTS: u16 = 1200;
+// host-tunable per rig. Current thresholds are physical (mA) and reach the
+// table in counts through `CurrentDefaults::from_sense`.
+pub const DEFAULT_CURRENT_LIMIT_MA: u16 = 1953;
 pub const DEFAULT_DRIVE_POLARITY: bool = true;
 pub const DEFAULT_STALL_OMEGA_MAX_CPS: u16 = 500;
 pub const DEFAULT_STALL_TIME_MS: u16 = 500;
-pub const DEFAULT_STALL_YIELD_COUNTS: u16 = 300;
-pub const DEFAULT_STALL_RELEASE_COUNTS: u16 = 150;
-pub const DEFAULT_STALL_TAU_TRIP_COUNTS: u16 = 1200;
-pub const DEFAULT_OC_TRIP_COUNTS: u16 = 2400;
+pub const DEFAULT_STALL_YIELD_MA: u16 = 488;
+pub const DEFAULT_STALL_RELEASE_MA: u16 = 244;
+pub const DEFAULT_STALL_TAU_TRIP_MA: u16 = 1953;
+// 3.0 A sits above any SG90-class stall on 2S (2.1 A) and below the
+// arm-B chain's saturation on a 60 mOhm shunt (~3.4 A), so the trip stays
+// measurable on both rig shunts.
+pub const DEFAULT_OC_TRIP_MA: u16 = 3000;
 pub const DEFAULT_OC_TRIP_TICKS: u8 = 8;
 
 /// Thermal derate/cutoff, undervolt floor, winding-R estimator gates.
@@ -186,7 +190,7 @@ pub const DEFAULT_RECOVER_CC: i16 = 9000;
 // move on a factory-fresh board. Pack-health thresholds are per-product
 // tuning, written by the host.
 pub const DEFAULT_V_UNDERVOLT_COUNTS: u16 = 1200;
-pub const DEFAULT_RTHERM_I_MIN_COUNTS: u16 = 300;
+pub const DEFAULT_RTHERM_I_MIN_MA: u16 = 488;
 pub const DEFAULT_RTHERM_OMEGA_MAX_CPS: u16 = 400;
 
 /// Fusion observer correction gains; l_bemf 0 = bemf blend off.
@@ -249,4 +253,96 @@ pub struct ConfigDefaults {
     pub id: u8,
     pub baud: BaudRate,
     pub response_deadline_us: u16,
+}
+
+/// Count-domain seeds for the current thresholds: the `DEFAULT_*_MA` policy
+/// scaled through the board's sense chain (`CalibSense` inputs). Const-eval
+/// only; the chip has no divide.
+#[derive(Copy, Clone, Debug)]
+pub struct CurrentDefaults {
+    pub current_limit_counts: u16,
+    pub stall_yield_counts: u16,
+    pub stall_release_counts: u16,
+    pub stall_tau_trip_counts: u16,
+    pub oc_trip_counts: u16,
+    pub rtherm_i_min_counts: u16,
+}
+
+impl CurrentDefaults {
+    pub const fn from_sense(shunt_r_mohm: u16, gain_milli: u16, vdd_mv: u16) -> Self {
+        Self {
+            current_limit_counts: current_counts(
+                DEFAULT_CURRENT_LIMIT_MA,
+                shunt_r_mohm,
+                gain_milli,
+                vdd_mv,
+            ),
+            stall_yield_counts: current_counts(
+                DEFAULT_STALL_YIELD_MA,
+                shunt_r_mohm,
+                gain_milli,
+                vdd_mv,
+            ),
+            stall_release_counts: current_counts(
+                DEFAULT_STALL_RELEASE_MA,
+                shunt_r_mohm,
+                gain_milli,
+                vdd_mv,
+            ),
+            stall_tau_trip_counts: current_counts(
+                DEFAULT_STALL_TAU_TRIP_MA,
+                shunt_r_mohm,
+                gain_milli,
+                vdd_mv,
+            ),
+            oc_trip_counts: current_counts(DEFAULT_OC_TRIP_MA, shunt_r_mohm, gain_milli, vdd_mv),
+            rtherm_i_min_counts: current_counts(
+                DEFAULT_RTHERM_I_MIN_MA,
+                shunt_r_mohm,
+                gain_milli,
+                vdd_mv,
+            ),
+        }
+    }
+}
+
+const ADC_COUNTS_PER_VDD: u64 = 4096;
+
+/// counts = mA x gain x R_shunt x 4096 / VDD, rounded: the chain puts
+/// gain x R_shunt volts per amp onto a VDD-referenced 12-bit ADC. The arm-B
+/// rig (33 mOhm, G 15.000, 3300 mV) is 614.4 counts/A, where the mA defaults
+/// round back onto the seeds they replaced: 1953 -> 1200, 488 -> 300,
+/// 244 -> 150; the OC trip was lowered from 2400 counts (3.9 A) to 3.0 A.
+pub const fn current_counts(ma: u16, shunt_r_mohm: u16, gain_milli: u16, vdd_mv: u16) -> u16 {
+    let num = ma as u64 * gain_milli as u64 * shunt_r_mohm as u64 * ADC_COUNTS_PER_VDD;
+    let den = vdd_mv as u64 * 1_000_000;
+    let counts = (num + den / 2) / den;
+    if counts > u16::MAX as u64 {
+        u16::MAX
+    } else {
+        counts as u16
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn arm_b_rig_reproduces_the_count_seeds() {
+        let d = CurrentDefaults::from_sense(33, 15_000, 3300);
+        assert_eq!(d.current_limit_counts, 1200);
+        assert_eq!(d.stall_yield_counts, 300);
+        assert_eq!(d.stall_release_counts, 150);
+        assert_eq!(d.stall_tau_trip_counts, 1200);
+        assert_eq!(d.oc_trip_counts, 1843);
+        assert_eq!(d.rtherm_i_min_counts, 300);
+    }
+
+    #[test]
+    fn current_counts_scales_with_the_shunt_and_saturates() {
+        assert_eq!(current_counts(1953, 60, 15_000, 3300), 2182);
+        assert_eq!(current_counts(0, 60, 15_000, 3300), 0);
+        assert_eq!(current_counts(u16::MAX, u16::MAX, u16::MAX, 1), u16::MAX);
+    }
 }

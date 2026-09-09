@@ -36,7 +36,7 @@ pub use telemetry::{
     TelemetrySensors,
 };
 
-use crate::regions::config::ConfigDefaults;
+use crate::regions::config::{ConfigDefaults, CurrentDefaults};
 use control_table::{RegionStorage, Table};
 
 pub const CONFIG_REGION_SIZE: u16 = 128;
@@ -67,7 +67,7 @@ pub struct ControlTable {
 impl ControlTableCell {
     /// Soft limits init to physical limits per control-table doc.
     /// Caller must be sole writer (install-time, pre-IRQ).
-    pub fn seed_config_defaults(&self, defaults: &ConfigDefaults) {
+    pub fn seed_config_defaults(&self, defaults: &ConfigDefaults, current: &CurrentDefaults) {
         crate::log::debug!(
             "seed CONFIG: phys=[{}, {}] counts  id={}  baud_idx={}",
             defaults.pos_min_phys_counts,
@@ -93,20 +93,20 @@ impl ControlTableCell {
             cfg.loop_position.velocity_limit_cps = config::DEFAULT_VELOCITY_LIMIT_CPS;
             cfg.loop_position.accel_limit_q88 = config::DEFAULT_ACCEL_LIMIT_Q88;
             cfg.loop_position.pos_deadband_counts = config::DEFAULT_POS_DEADBAND_COUNTS;
-            cfg.limits.current_limit_counts = config::DEFAULT_CURRENT_LIMIT_COUNTS;
+            cfg.limits.current_limit_counts = current.current_limit_counts;
             cfg.limits.drive_polarity = config::DEFAULT_DRIVE_POLARITY;
             cfg.limits.stall_omega_max_cps = config::DEFAULT_STALL_OMEGA_MAX_CPS;
             cfg.limits.stall_time_ms = config::DEFAULT_STALL_TIME_MS;
-            cfg.limits.stall_yield_counts = config::DEFAULT_STALL_YIELD_COUNTS;
-            cfg.limits.stall_release_counts = config::DEFAULT_STALL_RELEASE_COUNTS;
-            cfg.limits.stall_tau_trip_counts = config::DEFAULT_STALL_TAU_TRIP_COUNTS;
-            cfg.limits.oc_trip_counts = config::DEFAULT_OC_TRIP_COUNTS;
+            cfg.limits.stall_yield_counts = current.stall_yield_counts;
+            cfg.limits.stall_release_counts = current.stall_release_counts;
+            cfg.limits.stall_tau_trip_counts = current.stall_tau_trip_counts;
+            cfg.limits.oc_trip_counts = current.oc_trip_counts;
             cfg.limits.oc_trip_ticks = config::DEFAULT_OC_TRIP_TICKS;
             cfg.thermal.derate_start_cc = config::DEFAULT_DERATE_START_CC;
             cfg.thermal.cutoff_cc = config::DEFAULT_CUTOFF_CC;
             cfg.thermal.recover_cc = config::DEFAULT_RECOVER_CC;
             cfg.thermal.v_undervolt_counts = config::DEFAULT_V_UNDERVOLT_COUNTS;
-            cfg.thermal.rtherm_i_min_counts = config::DEFAULT_RTHERM_I_MIN_COUNTS;
+            cfg.thermal.rtherm_i_min_counts = current.rtherm_i_min_counts;
             cfg.thermal.rtherm_omega_max_cps = config::DEFAULT_RTHERM_OMEGA_MAX_CPS;
             cfg.fault_cfg.pos_error_counts = config::DEFAULT_POS_ERROR_COUNTS;
             cfg.fault_cfg.pos_error_time_ms = config::DEFAULT_POS_ERROR_TIME_MS;

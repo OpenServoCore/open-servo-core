@@ -25,7 +25,7 @@ pub use control_table::{
 };
 pub use kernel::{Kernel, KernelTiming};
 pub use persist::{ConfigStore, StoreError};
-pub use regions::config::{BaudRate, ConfigDefaults};
+pub use regions::config::{BaudRate, ConfigDefaults, CurrentDefaults};
 pub use regions::{
     BootMode, CalibKinematics, CalibMotor, CalibRegs, CalibSense, CalibSenseExt, CalibWinding,
     ConfigCommon, ConfigFaultCfg, ConfigFusion, ConfigLimits, ConfigLoopCurrent,

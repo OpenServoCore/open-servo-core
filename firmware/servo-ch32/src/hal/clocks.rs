@@ -7,7 +7,9 @@ pub const PLL_MUL: u32 = 2;
 pub const SYSCLK_HZ: u32 = HSI_HZ * PLL_MUL;
 
 pub const HPRE_DIV: u32 = 1;
-pub const ADCPRE_DIV: u32 = 4;
+/// fADC is rated 16-48 MHz (V006 datasheet Table 3-23); /2 is the only
+/// divider from the 48 MHz bus that lands inside it.
+pub const ADCPRE_DIV: u32 = 2;
 
 pub const HCLK_HZ: u32 = SYSCLK_HZ / HPRE_DIV;
 pub const PCLK_HZ: u32 = HCLK_HZ;

@@ -94,7 +94,8 @@ pub fn set_dma(enable: bool) {
 }
 
 /// CTLR3.ADC_LP (RM sec 9.3.14). Reset default is set (low-power, sub-1M
-/// sampling); clearing it picks the high-power converter.
+/// sampling); clearing it picks the high-power converter, which the
+/// datasheet rates for VDD >= 4.5 V only.
 pub fn set_low_power(enable: bool) {
     ADC.ctlr3().modify(|w| w.set_adc_lp(enable));
 }
@@ -111,7 +112,7 @@ pub fn disable() {
     ADC.ctlr2().modify(|w| w.set_adon(false));
 }
 
-/// Polls for EOC this many times before giving up. A conversion is ~20 ADCCLK
+/// Polls for EOC this many times before giving up. A conversion is ~26 ADCCLK
 /// cycles, so exceeding this means the converter is not running.
 const EOC_POLL_LIMIT: u32 = 100_000;
 

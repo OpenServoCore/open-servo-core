@@ -20,7 +20,6 @@ use crate::cfg::{
 };
 
 const OPA_SETTLE_MS: u32 = 1;
-const VCAL_SAMPLE_TIME: adc::SampleTime = adc::SampleTime::CYCLES9;
 
 /// Boot bias averaging: a power-of-two count so the mean is a shift, never a
 /// divide (the linker must stay free of __udivsi3).
@@ -49,7 +48,9 @@ pub fn bringup(
     // Sole writer to CONFIG: pre-IRQ, pre-`Drivers::install`. Board defaults
     // first, then the saved image overlays them (protocol sec 9.4) -- `Drivers::install`
     // reads the effective comms block from the table.
-    SHARED.table.seed_config_defaults(defaults);
+    SHARED
+        .table
+        .seed_config_defaults(defaults, &pre.current_defaults);
     SHARED.table.seed_identity(model, hw_rev);
     config_store::ConfigStore::boot_load();
     // After boot_load: the calib overlay copies the whole region, so the RO
@@ -239,7 +240,7 @@ fn bring_up_analog_chain(cs: &CurrentSenseConfig) {
 /// rewritten there.
 fn measure_rest(ch: adc::Channel, t: adc::SampleTime) -> Option<u16> {
     adc::set_sample_time(ch, t);
-    adc::set_low_power(false);
+    adc::set_low_power(true);
     adc::set_scan_mode(false);
     adc::set_dma(false);
     // Arm the software trigger before ADON so EXTTRIG is already live when
@@ -269,7 +270,7 @@ fn measure_rest(ch: adc::Channel, t: adc::SampleTime) -> Option<u16> {
 /// Zero-current output of the sense chain. Zero on timeout leaves current
 /// uncorrected rather than wrong.
 fn measure_current_bias(cs: &CurrentSenseConfig) -> u16 {
-    measure_rest(cs.current_channel().channel(), chip::ADC_SHUNT_SAMPLE_TIME).unwrap_or(0)
+    measure_rest(cs.current_channel().channel(), chip::ADC_SAMPLE_TIME).unwrap_or(0)
 }
 
 /// Terminal-divider bias: with the driver parked both terminals float, so
@@ -293,14 +294,14 @@ fn configure_adc_dma_scan(w: &BoardWiring) {
     let sensors = &w.sensors;
     let current = w.current_sense.current_channel().channel();
 
-    adc::set_sample_time(current, chip::ADC_SHUNT_SAMPLE_TIME);
+    adc::set_sample_time(current, chip::ADC_SAMPLE_TIME);
     adc::set_sample_time(sensors.pos.channel(), chip::ADC_SAMPLE_TIME);
     adc::set_sample_time(sensors.vmotor.0.channel(), chip::ADC_SAMPLE_TIME);
     adc::set_sample_time(sensors.vmotor.1.channel(), chip::ADC_SAMPLE_TIME);
-    adc::set_sample_time(adc::Channel::Vcal, VCAL_SAMPLE_TIME);
+    adc::set_sample_time(adc::Channel::Vcal, chip::ADC_SAMPLE_TIME);
     adc::set_sample_time(sensors.vbus.channel(), chip::ADC_SAMPLE_TIME);
     adc::set_sample_time(sensors.ntc.channel(), chip::ADC_SAMPLE_TIME);
-    adc::set_low_power(false);
+    adc::set_low_power(true);
 
     let seq = [
         current,

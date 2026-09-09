@@ -29,7 +29,8 @@ fn main() -> ! {
             #[cfg(not(feature = "half-duplex"))]
             bus: BusWiring { tx_en: Pin::PC2 },
             // Rev B arm-B bodge: bare OPA closed by an external 1k/15k
-            // network (G = 15.0) off a 33 mohm shunt.
+            // network (G = 15.0) off a 60 mohm 1206 shunt: 0.9 V/A, 0.9 mA
+            // per count.
             current_sense: CurrentSenseConfig {
                 opa: opa::Config {
                     pos: opa::PositiveInput::PD3,
@@ -46,7 +47,7 @@ fn main() -> ! {
             },
         },
         calibration: Calibration {
-            shunt_r_mohm: 33,
+            shunt_r_mohm: 60,
             vmotor_divider: Divider {
                 top_ohm: 20_000,
                 bot_ohm: 10_000,
@@ -67,10 +68,11 @@ fn main() -> ! {
             // Scan order is [shunt, vmA, vmB, pos, vcal, vbus, ntc]. The i floor is
             // amp-settling-bound: arm-B network measured true from duty 13%
             // (bringup docs/armb-comp-sizing.md). The v floor covers
-            // vmotor_b's S/H close ~182 ticks after the crest trigger plus
-            // margin; a v floor below the true edge lets off-phase samples
-            // seed the vbus EWMA and latch a false undervolt. Both floors
-            // pending bench re-validation on the new order.
+            // vmotor_b's S/H close ~131 ticks (2.7 us) after the crest
+            // trigger plus margin; a v floor below the true edge lets
+            // off-phase samples seed the vbus EWMA and latch a false
+            // undervolt. Both floors pending bench re-validation at the new
+            // ADC clock.
             i_window_min_ticks: 160,
             v_window_min_ticks: 210,
         },

@@ -357,7 +357,7 @@ pub fn boot_overlay_calib(table: &ControlTableCell, slot_a: &[u8], slot_b: &[u8]
 mod tests {
     use super::*;
     use crate::regions::config::addr;
-    use crate::{ConfigDefaults, RegionStorage};
+    use crate::{ConfigDefaults, CurrentDefaults, RegionStorage};
 
     /// A plausible table snapshot: pattern data in rule-free fields, valid
     /// (zero) bytes in every enum/bool field.
@@ -419,10 +419,13 @@ mod tests {
 
     fn seeded_table() -> crate::ControlTableCell {
         let table = crate::ControlTableCell::new();
-        table.seed_config_defaults(&ConfigDefaults {
-            id: 1,
-            ..Default::default()
-        });
+        table.seed_config_defaults(
+            &ConfigDefaults {
+                id: 1,
+                ..Default::default()
+            },
+            &CurrentDefaults::from_sense(33, 15_000, 3300),
+        );
         table
     }
 

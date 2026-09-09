@@ -7,8 +7,8 @@ use std::rc::Rc;
 
 use osc_servo_core::tel::{TelSample, TelStream};
 use osc_servo_core::{
-    BaudRate, BootMode, CalibSense, CalibSenseExt, ConfigDefaults, ControlTable, RegionStorage,
-    Session, Shared,
+    BaudRate, BootMode, CalibSense, CalibSenseExt, ConfigDefaults, ControlTable, CurrentDefaults,
+    RegionStorage, Session, Shared,
 };
 use osc_servo_drivers::bus::{LinkDiag, ServoBus};
 use osc_servo_drivers::tel::{TelChannel, TelFeed};
@@ -19,6 +19,18 @@ use super::providers::{
     SimRing, SimWire,
 };
 use super::store::RamStore;
+
+/// The v006 arm-B sense chain the sim mirrors.
+const SENSE: CalibSense = CalibSense {
+    shunt_r_mohm: 33,
+    gain_milli: 15000,
+    vmotor_div_top: 10000,
+    vmotor_div_bot: 10000,
+    vdd_mv: 3300,
+    tick_hz: 20000,
+    i_window_min_ticks: 240,
+    v_window_min_ticks: 300,
+};
 
 pub struct SimServo {
     shared: Shared,
@@ -46,12 +58,15 @@ impl SimServo {
         let deadline = DeadlineState::new();
 
         let shared = Shared::new();
-        shared.table.seed_config_defaults(&ConfigDefaults {
-            id,
-            baud: rate,
-            response_deadline_us,
-            ..Default::default()
-        });
+        shared.table.seed_config_defaults(
+            &ConfigDefaults {
+                id,
+                baud: rate,
+                response_deadline_us,
+                ..Default::default()
+            },
+            &CurrentDefaults::from_sense(SENSE.shunt_r_mohm, SENSE.gain_milli, SENSE.vdd_mv),
+        );
         if let Some(store) = store {
             store.boot_load(&shared.table);
             shared.seed_store(store);
@@ -60,16 +75,7 @@ impl SimServo {
         // the whole region, so RO board facts land last and win over a
         // stale saved image.
         shared.table.seed_calib_sense(
-            &CalibSense {
-                shunt_r_mohm: 33,
-                gain_milli: 15000,
-                vmotor_div_top: 10000,
-                vmotor_div_bot: 10000,
-                vdd_mv: 3300,
-                tick_hz: 20000,
-                i_window_min_ticks: 240,
-                v_window_min_ticks: 300,
-            },
+            &SENSE,
             &CalibSenseExt {
                 vbus_div_top_ohm: 20000,
                 vbus_div_bot_ohm: 10000,

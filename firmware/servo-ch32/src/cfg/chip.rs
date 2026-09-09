@@ -49,11 +49,11 @@ const fn tim1_channel_pin(m: Tim1Mapping, c: timer::Channel) -> Pin {
 
 // === ADC ===
 
-pub const ADC_SAMPLE_TIME: adc::SampleTime = adc::SampleTime::CYCLES9;
-
-/// OPA output is low-Z, so the short aperture is safe; the divider/pot
-/// channels need `ADC_SAMPLE_TIME`.
-pub const ADC_SHUNT_SAMPLE_TIME: adc::SampleTime = adc::SampleTime::CYCLES3;
+/// 13.5 sampling + 12.5 conversion = 26 ADCCLK cycles per slot, 0.92 Msps at
+/// 24 MHz: the longest aperture that still keeps every channel (the OPA
+/// output included) under the low-power buffer's 1 Msps ceiling; the >= 1
+/// Msps buffer is rated for VDD >= 4.5 V only (RM sec 9.3.14).
+pub const ADC_SAMPLE_TIME: adc::SampleTime = adc::SampleTime::CYCLES15;
 
 /// ADC channels available as board-configurable sensor inputs on the V006F8P6.
 /// A0 (PA2) doubles as an OPA positive-input route (PSEL=00), so a board
