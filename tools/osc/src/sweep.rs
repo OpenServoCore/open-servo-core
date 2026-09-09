@@ -506,7 +506,14 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
                             st.frames, st.samples, st.holes, st.garble
                         );
                         if st.holes > 0 || st.garble > 0 {
-                            dirty = Some(line.clone());
+                            // Deliberately NOT the seg wording above: callers
+                            // scrape stdout for "N seq holes" to judge a
+                            // recording, so a retry line quoting it makes a
+                            // rung we RECOVERED read as a failed capture.
+                            dirty = Some(format!(
+                                "  seg {seg} ({what}) dirty: holes={} garble={}",
+                                st.holes, st.garble
+                            ));
                         }
                         pending.push((seg, duty, frames, line));
                         if feeds(steps, k) {
@@ -521,13 +528,13 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
                     }
                     match dirty {
                         None => break,
-                        Some(line) if attempt < args.rung_tries => {
-                            println!("  RETRY rung (attempt {attempt}):{}", line.trim_start());
+                        Some(why) if attempt < args.rung_tries => {
+                            println!("  retry rung, attempt {attempt}:{}", why.trim_start());
                         }
-                        Some(line) => bail!(
+                        Some(why) => bail!(
                             "rung failed {} attempts, giving up:{}",
                             args.rung_tries,
-                            line.trim_start()
+                            why.trim_start()
                         ),
                     }
                 }
