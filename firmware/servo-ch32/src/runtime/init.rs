@@ -48,7 +48,9 @@ pub fn bringup(
     // Sole writer to CONFIG: pre-IRQ, pre-`Drivers::install`. Board defaults
     // first, then the saved image overlays them (protocol sec 9.4) -- `Drivers::install`
     // reads the effective comms block from the table.
-    SHARED.table.seed_config_defaults(defaults);
+    SHARED
+        .table
+        .seed_config_defaults(defaults, &pre.current_defaults);
     SHARED.table.seed_identity(model, hw_rev);
     config_store::ConfigStore::boot_load();
     // After boot_load: the calib overlay copies the whole region, so the RO

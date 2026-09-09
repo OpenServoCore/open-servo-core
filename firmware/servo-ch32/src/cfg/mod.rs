@@ -10,7 +10,7 @@ pub use chip::{AnalogChannel, DigitalPin};
 
 use osc_servo_core::estimator::bemf::RECIP_ARR_SHIFT;
 use osc_servo_core::kernel::DECIM_MED;
-use osc_servo_core::{ConfigDefaults, KernelTiming};
+use osc_servo_core::{ConfigDefaults, CurrentDefaults, KernelTiming};
 
 use crate::providers::usart_baud;
 
@@ -33,6 +33,7 @@ pub struct Precomputed {
     pub pwm_arr: u16,
     pub usart_brr: u32,
     pub kernel_timing: KernelTiming,
+    pub current_defaults: CurrentDefaults,
 }
 
 impl Precomputed {
@@ -60,6 +61,11 @@ impl Precomputed {
                 med_ticks_per_ms_q16: ((med_hz as u64 * 65536) / 1000) as u32,
                 vbus_scale_q15,
             },
+            current_defaults: CurrentDefaults::from_sense(
+                cfg.calibration.shunt_r_mohm,
+                cfg.wiring.current_sense.gain_milli,
+                cfg.calibration.vdd_mv,
+            ),
         }
     }
 }
