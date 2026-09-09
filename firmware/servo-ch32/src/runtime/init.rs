@@ -270,15 +270,15 @@ fn measure_rest(ch: adc::Channel, t: adc::SampleTime) -> Option<u16> {
 /// Zero-current output of the sense chain. Zero on timeout leaves current
 /// uncorrected rather than wrong.
 fn measure_current_bias(cs: &CurrentSenseConfig) -> u16 {
-    measure_rest(cs.current_channel().channel(), chip::ADC_SAMPLE_TIME).unwrap_or(0)
+    measure_rest(cs.current_channel().channel(), chip::ADC_SHUNT_SAMPLE_TIME).unwrap_or(0)
 }
 
 /// Terminal-divider bias: with the driver parked both terminals float, so
 /// each tap reads the bias directly. The taps must agree within
 /// `VMOTOR_BIAS_AGREE_COUNTS`, else the board nominal stands in.
 fn measure_vmotor_bias(s: &AdcPins, nominal: u16) -> u16 {
-    let a = measure_rest(s.vmotor.0.channel(), chip::ADC_SAMPLE_TIME);
-    let b = measure_rest(s.vmotor.1.channel(), chip::ADC_SAMPLE_TIME);
+    let a = measure_rest(s.vmotor.0.channel(), chip::ADC_TERMINAL_SAMPLE_TIME);
+    let b = measure_rest(s.vmotor.1.channel(), chip::ADC_TERMINAL_SAMPLE_TIME);
     match (a, b) {
         (Some(a), Some(b)) if a.abs_diff(b) <= VMOTOR_BIAS_AGREE_COUNTS => {
             ((a as u32 + b as u32) >> 1) as u16
@@ -294,13 +294,13 @@ fn configure_adc_dma_scan(w: &BoardWiring) {
     let sensors = &w.sensors;
     let current = w.current_sense.current_channel().channel();
 
-    adc::set_sample_time(current, chip::ADC_SAMPLE_TIME);
-    adc::set_sample_time(sensors.pos.channel(), chip::ADC_SAMPLE_TIME);
-    adc::set_sample_time(sensors.vmotor.0.channel(), chip::ADC_SAMPLE_TIME);
-    adc::set_sample_time(sensors.vmotor.1.channel(), chip::ADC_SAMPLE_TIME);
-    adc::set_sample_time(adc::Channel::Vcal, chip::ADC_SAMPLE_TIME);
-    adc::set_sample_time(sensors.vbus.channel(), chip::ADC_SAMPLE_TIME);
-    adc::set_sample_time(sensors.ntc.channel(), chip::ADC_SAMPLE_TIME);
+    adc::set_sample_time(current, chip::ADC_SHUNT_SAMPLE_TIME);
+    adc::set_sample_time(sensors.pos.channel(), chip::ADC_RESERVOIR_SAMPLE_TIME);
+    adc::set_sample_time(sensors.vmotor.0.channel(), chip::ADC_TERMINAL_SAMPLE_TIME);
+    adc::set_sample_time(sensors.vmotor.1.channel(), chip::ADC_TERMINAL_SAMPLE_TIME);
+    adc::set_sample_time(adc::Channel::Vcal, chip::ADC_RESERVOIR_SAMPLE_TIME);
+    adc::set_sample_time(sensors.vbus.channel(), chip::ADC_RESERVOIR_SAMPLE_TIME);
+    adc::set_sample_time(sensors.ntc.channel(), chip::ADC_RESERVOIR_SAMPLE_TIME);
     adc::set_low_power(true);
 
     let seq = [

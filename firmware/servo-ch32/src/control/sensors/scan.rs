@@ -3,11 +3,15 @@
 //! scan lands at offset 0 and the peak scan lands at `ADC_SCAN_LEN`. Slot
 //! indices within a scan reflect the configured RSQR sequence.
 //!
-//! Budget at ADCCLK 24 MHz (TCONV = 13.5 sampling + 12.5, RM sec 9.3): a
-//! scan is 7 x 26 = 182 cycles = 7.58 us. The peak scan's TC lands 7.6 us
-//! after its trigger and the trough trigger follows 25 us after it, so the
-//! TC ISR has ~18 us to drain the trough slots before slot 0 is rewritten;
-//! the peak slots stand until the next peak trigger.
+//! Budget at ADCCLK 48 MHz (TCONV = aperture + 12.5, RM sec 9.3; apertures
+//! in `cfg::chip`): the shunt slot is 3.5 + 12.5 = 16 cycles = 0.33 us, the
+//! other six 7.5 + 12.5 = 20 cycles = 0.42 us each, so a scan is 136 cycles
+//! = 2.83 us. vmA's S/H closes 16 + 7.5 = 23.5 cycles = 0.49 us = 24 TIM1
+//! ticks after the trigger, vmB's at 43.5 cycles = 0.91 us = 44 ticks. The
+//! peak scan's TC lands 2.8 us after its trigger and the trough trigger
+//! follows 25 us after it, so the TC ISR has ~22 us to drain the trough
+//! slots before slot 0 is rewritten; the peak slots stand until the next
+//! peak trigger.
 
 use core::cell::SyncUnsafeCell;
 

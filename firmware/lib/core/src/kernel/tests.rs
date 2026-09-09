@@ -132,11 +132,13 @@ fn vbus_raw(vmotor: u16) -> u16 {
     ((vmotor as u32 * 32768).div_ceil(VBUS_SCALE_Q15)) as u16
 }
 
+/// Slow-decay frames: the trough scan lands in the brake phase, so the shunt
+/// reads its offset there.
 fn frame(pos: u16, current: u16) -> SensorFrame {
     SensorFrame {
         pos,
         current,
-        current_trough: current,
+        current_trough: BIAS,
         vmotor_a: 3000,
         vmotor_a_trough: 3000,
         vmotor_b: 40,
@@ -602,6 +604,115 @@ fn publishes_land_in_the_table() {
     });
 }
 
+fn published_bias(sh: &Shared) -> u16 {
+    sh.table.with(|t| t.telemetry.sensors.current_bias_counts)
+}
+
+#[test]
+fn trough_bias_tracks_only_inside_slow_drive_windows() {
+    let sh = Shared::new();
+    seed(&sh);
+    let mut k = kernel();
+    let shifted = || {
+        let mut f = frame(2000, BIAS);
+        f.current_trough = BIAS + 500;
+        f
+    };
+    // tick 1 already runs on the boot seed
+    k.on_tick(shifted(), &sh);
+    assert_eq!(published_bias(&sh), BIAS);
+    // Disabled: no PWM, no brake phase
+    for _ in 0..300 {
+        k.on_tick(shifted(), &sh);
+    }
+    assert!(matches!(last_cmd(&k), MotorCmd::Disabled));
+    assert_eq!(published_bias(&sh), BIAS);
+    // Fast decay: the trough IS the drive window
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::OpenLoop;
+        t.control.lifecycle.goal_duty = 8000;
+        t.config.limits.openloop_decay = DecaySelect::Fast;
+    });
+    for _ in 0..300 {
+        k.on_tick(shifted(), &sh);
+    }
+    assert!(matches!(
+        last_cmd(&k),
+        MotorCmd::Drive {
+            decay: DecayMode::Fast,
+            ..
+        }
+    ));
+    assert_eq!(published_bias(&sh), BIAS);
+    // full-scale Slow: idle leg never leaves CCR 0, no off phase
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.goal_duty = i16::MAX;
+        t.config.limits.openloop_decay = DecaySelect::Slow;
+    });
+    for _ in 0..300 {
+        k.on_tick(shifted(), &sh);
+    }
+    assert!(matches!(last_cmd(&k), MotorCmd::Drive { duty, .. } if duty.0 == i16::MAX));
+    assert_eq!(published_bias(&sh), BIAS);
+    // Brake as a command
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.goal_duty = 0;
+        t.config.limits.openloop_zero_brake = true;
+    });
+    for _ in 0..300 {
+        k.on_tick(shifted(), &sh);
+    }
+    assert!(matches!(last_cmd(&k), MotorCmd::Brake));
+    assert_eq!(published_bias(&sh), BIAS);
+    // a partial Slow window: the trough is the brake phase, the tracker follows
+    sh.table.with_mut(|t| t.control.lifecycle.goal_duty = 8000);
+    for _ in 0..1500 {
+        k.on_tick(shifted(), &sh);
+    }
+    assert!(matches!(
+        last_cmd(&k),
+        MotorCmd::Drive {
+            decay: DecayMode::Slow,
+            ..
+        }
+    ));
+    assert_eq!(published_bias(&sh), BIAS + 500);
+}
+
+#[test]
+fn drifting_trough_bias_leaves_i_meas_flat() {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::OpenLoop;
+        t.control.lifecycle.goal_duty = 8000;
+    });
+    let mut k = kernel();
+    // offset walks 100 counts over 4000 ticks (1 count per 40 ticks, well
+    // under the 128-tick tracker time constant); the true current is a
+    // constant 300 counts above it
+    let mut b = BIAS;
+    for n in 0..4000u16 {
+        b = BIAS + n / 40;
+        let mut f = frame(2000, b + 300);
+        f.current_trough = b;
+        k.on_tick(f, &sh);
+        if n >= 300 {
+            let i = k.i_meas_last as i32;
+            assert!((i - 300).abs() <= 5, "tick {n}: i_meas {i}, bias {b}");
+        }
+    }
+    assert!(
+        published_bias(&sh).abs_diff(b) <= 5,
+        "{}",
+        published_bias(&sh)
+    );
+    // the untracked boot value would have read 400 here
+    assert_eq!(b, BIAS + 99);
+}
+
 // --- Ident aggregates -----------------------------------------------------
 
 fn ident_setup(sh: &Shared) {
@@ -754,7 +865,7 @@ impl Plant {
         SensorFrame {
             pos,
             current: sample,
-            current_trough: sample,
+            current_trough: BIAS,
             vmotor_a: va,
             vmotor_a_trough: va,
             vmotor_b: vb,
@@ -1217,7 +1328,7 @@ fn tel_stream_gated_by_sink_active() {
     assert_eq!(k.tel.samples.len(), 20);
     let s = k.tel.samples.last().unwrap();
     assert_eq!(s.pos, 2100);
-    assert_eq!(s.current_trough, BIAS + 40);
+    assert_eq!(s.current_trough, BIAS);
     // previous-tick alignment: the sampled duty is the command whose window
     // this frame measured
     assert_eq!(s.duty_q15, 8000);

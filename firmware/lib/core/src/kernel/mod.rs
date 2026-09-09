@@ -23,8 +23,8 @@ pub use trajectory::{TrajCfg, TrajGen};
 pub use velocity::{VelocityGains, VelocityLoop};
 
 use crate::estimator::{
-    BemfObs, FusionGains, FusionObs, ThermAnchor, ThermGates, VbusEst, VcalLpf, WindingTherm, bemf,
-    window,
+    BemfObs, BiasTracker, FusionGains, FusionObs, ThermAnchor, ThermGates, VbusEst, VcalLpf,
+    WindingTherm, bemf, window,
 };
 use crate::math::{q_mul, q_mul_u};
 use crate::regions::config::DecaySelect;
@@ -78,6 +78,9 @@ pub struct Kernel<I: ControlIo, T: TelStream = ()> {
     decim_med: u8,
     decim_slow: u8,
     vcal_lpf: VcalLpf,
+    /// Shunt zero-current offset in use; its value is republished to
+    /// `current_bias_counts` every tick.
+    bias: BiasTracker,
     traj: TrajGen,
     fusion: FusionObs,
     cur: CurrentLoop,
@@ -138,6 +141,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             decim_med: DECIM_MED - 1,
             decim_slow: DECIM_SLOW - 1,
             vcal_lpf: VcalLpf::new(),
+            bias: BiasTracker::new(),
             traj: TrajGen::new(),
             fusion: FusionObs::new(),
             cur: CurrentLoop::new(),
@@ -174,7 +178,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         // SAFETY: reads of transport-owned regions - raw-pointer volatile
         // block copies, no `&T` formed, aligned repr(C) blocks inside the
         // static table (single-writer contract in the type doc).
-        let (life, loop_cur, lim_cfg, therm_cfg, sense, motor_cal, bias) = unsafe {
+        let (life, loop_cur, lim_cfg, therm_cfg, sense, motor_cal) = unsafe {
             (
                 (&raw const (*p).control.lifecycle).read_volatile(),
                 (&raw const (*p).config.loop_current).read_volatile(),
@@ -182,13 +186,18 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                 (&raw const (*p).config.thermal).read_volatile(),
                 (&raw const (*p).calib.sense).read_volatile(),
                 (&raw const (*p).calib.motor).read_volatile(),
-                (&raw const (*p).telemetry.sensors.current_bias_counts).read_volatile(),
             )
         };
 
         if !self.booted {
             self.booted = true;
             self.fusion.seed(frame.pos);
+            // SAFETY: same volatile read contract; install stamped the boot
+            // rest measurement here before the first tick, and from here on
+            // this kernel is the field's sole writer.
+            self.bias.seed(unsafe {
+                (&raw const (*p).telemetry.sensors.current_bias_counts).read_volatile()
+            });
         }
         let vcal_lpf = self.vcal_lpf.update(frame.vcal);
 
@@ -228,6 +237,20 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             sense.i_window_min_ticks,
             sense.v_window_min_ticks,
         );
+        let bias = if window::trough_is_brake(
+            self.decay,
+            ticks,
+            self.timing.pwm_arr,
+            sense.i_window_min_ticks,
+        ) {
+            self.bias.update(frame.current_trough)
+        } else {
+            self.bias.counts()
+        };
+        // SAFETY: sole-telemetry-writer contract (type doc); volatile store.
+        unsafe {
+            (&raw mut (*p).telemetry.sensors.current_bias_counts).write_volatile(bias);
+        }
         let i_meas = window::i_from_frame(&frame, sel, fwd, bias);
         if let Some(i) = i_meas {
             self.i_meas_last = i.clamp(i16::MIN as i32, i16::MAX as i32) as i16;

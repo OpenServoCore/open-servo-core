@@ -49,11 +49,16 @@ const fn tim1_channel_pin(m: Tim1Mapping, c: timer::Channel) -> Pin {
 
 // === ADC ===
 
-/// 13.5 sampling + 12.5 conversion = 26 ADCCLK cycles per slot, 0.92 Msps at
-/// 24 MHz: the longest aperture that still keeps every channel (the OPA
-/// output included) under the low-power buffer's 1 Msps ceiling; the >= 1
-/// Msps buffer is rated for VDD >= 4.5 V only (RM sec 9.3.14).
-pub const ADC_SAMPLE_TIME: adc::SampleTime = adc::SampleTime::CYCLES15;
+// Apertures at ADCCLK 48 MHz, sized to each source's impedance (V006
+// datasheet RAIN table: 3.5 cycles holds under 1.5 kOhm, 7.5 under 3 kOhm).
+// TCONV = aperture + 12.5.
+
+/// OPA output, low-Z: 3.5 cycles.
+pub const ADC_SHUNT_SAMPLE_TIME: adc::SampleTime = adc::SampleTime::CYCLES3;
+/// Motor-terminal dividers, under 3 kOhm with reservoir caps: 7.5 cycles.
+pub const ADC_TERMINAL_SAMPLE_TIME: adc::SampleTime = adc::SampleTime::CYCLES9;
+/// Cap-backed or internal taps (pot, rail, NTC, Vcal): 7.5 cycles.
+pub const ADC_RESERVOIR_SAMPLE_TIME: adc::SampleTime = adc::SampleTime::CYCLES9;
 
 /// ADC channels available as board-configurable sensor inputs on the V006F8P6.
 /// A0 (PA2) doubles as an OPA positive-input route (PSEL=00), so a board

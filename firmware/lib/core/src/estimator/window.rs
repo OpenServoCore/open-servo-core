@@ -66,6 +66,21 @@ pub fn vdiff_from_frame(frame: &SensorFrame, sel: WindowSel) -> Option<i32> {
     Some(va as i32 - vb as i32)
 }
 
+/// True when the trough scan sampled a Slow-decay brake phase: both
+/// low-side FETs on, the winding current recirculating inside the bridge
+/// and none of it crossing the return-path shunt, so the shunt reading is
+/// pure amplifier offset. Fast decay puts the drive window at the trough,
+/// zero ticks is Coast/Brake/Disabled (no PWM edge), and the brake half-
+/// width must clear the same settling floor as the drive window, or the
+/// trough sample still carries the amplifier's tail from the drive current.
+pub fn trough_is_brake(decay: DecayMode, drive_ticks: u32, pwm_arr: u16, i_floor: u16) -> bool {
+    let brake_ticks = (pwm_arr as u32).saturating_sub(drive_ticks);
+    matches!(decay, DecayMode::Slow)
+        && drive_ticks != 0
+        && brake_ticks != 0
+        && brake_ticks >= i_floor as u32
+}
+
 /// Mirrors chip-side `effort_to_ticks` (`mag * arr / 32767` approximated as
 /// round(`mag * arr >> 15`)) so validity floors compare against the same
 /// width the motor write programs.
@@ -178,6 +193,23 @@ mod tests {
             use_trough: false,
         };
         assert_eq!(vdiff_from_frame(&f, sel), None);
+    }
+
+    #[test]
+    fn trough_is_brake_only_inside_a_settled_slow_brake_phase() {
+        assert!(trough_is_brake(DecayMode::Slow, 1, 1200, 160));
+        assert!(trough_is_brake(DecayMode::Slow, 600, 1200, 160));
+        assert!(trough_is_brake(DecayMode::Slow, 1040, 1200, 160));
+        assert!(!trough_is_brake(DecayMode::Slow, 1041, 1200, 160));
+        assert!(!trough_is_brake(DecayMode::Fast, 600, 1200, 160));
+        assert!(!trough_is_brake(DecayMode::Slow, 0, 1200, 160));
+        assert!(!trough_is_brake(DecayMode::Slow, 1200, 1200, 0));
+        assert!(!trough_is_brake(
+            DecayMode::Slow,
+            drive_ticks(i16::MAX, 1200),
+            1200,
+            0
+        ));
     }
 
     #[test]

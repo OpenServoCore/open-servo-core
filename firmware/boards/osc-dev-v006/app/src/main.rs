@@ -48,9 +48,11 @@ fn main() -> ! {
         },
         calibration: Calibration {
             shunt_r_mohm: 60,
+            // Hacked board D: 6k8 0805 top / 3k3 THT bottom returned to VB,
+            // ~150 pF reservoir at each tap (2.2 kohm source, fast aperture).
             vmotor_divider: Divider {
-                top_ohm: 20_000,
-                bot_ohm: 10_000,
+                top_ohm: 6_800,
+                bot_ohm: 3_300,
             },
             // Board D bodge as fitted (15k/10k); rev-2A lands 20_000/10_000.
             vbus_divider: Divider {
@@ -62,17 +64,17 @@ fn main() -> ! {
                 r25_ohm: 10_000,
                 beta: 3950,
             },
-            // Terminal-divider bias VB from 3V3 through 430/100: 4095 x 100 / 530.
-            vmotor_bias_nom_counts: 773,
+            // Terminal-divider bias VB from 3V3 through 200/47: 4095 x 47 / 247.
+            vmotor_bias_nom_counts: 779,
             vdd_mv: 3300,
             // Scan order is [shunt, vmA, vmB, pos, vcal, vbus, ntc]. The i floor is
             // amp-settling-bound: arm-B network measured true from duty 13%
             // (bringup docs/armb-comp-sizing.md). The v floor covers
-            // vmotor_b's S/H close ~131 ticks (2.7 us) after the crest
-            // trigger plus margin; a v floor below the true edge lets
-            // off-phase samples seed the vbus EWMA and latch a false
-            // undervolt. Both floors pending bench re-validation at the new
-            // ADC clock.
+            // vmotor_b's S/H close, 44 ticks (0.91 us) after the crest
+            // trigger at ADCCLK 48 MHz (vmotor_a's at 24 ticks, 0.49 us),
+            // plus margin; a v floor below the true edge lets off-phase
+            // samples seed the vbus EWMA and latch a false undervolt. Both
+            // floors pending the edge grid on the hacked dividers.
             i_window_min_ticks: 160,
             v_window_min_ticks: 210,
         },

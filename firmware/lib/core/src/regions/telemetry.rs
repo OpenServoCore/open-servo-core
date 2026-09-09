@@ -102,7 +102,8 @@ pub struct TelemetrySensors {
     pub enc_b: u16,
     #[ct_field(access = ro)]
     pub current_trough: u16,
-    /// Boot-measured zero-current sense-chain output, raw ADC counts.
+    /// Zero-current sense-chain output in use, raw ADC counts: the boot
+    /// rest measurement, then tracked from the Slow-decay trough sample.
     #[ct_field(access = ro)]
     pub current_bias_counts: u16,
     /// Direct supply divider tap, raw ADC counts (the rail `vbus_counts`
