@@ -57,11 +57,16 @@ impl Decay {
 }
 
 /// One schedule entry: a drive rung, a chained drive, or a zero-duty
-/// coast/brake segment.
+/// coast/brake segment. Drive and Then carry an optional per-step window in
+/// ms, overriding `--window-ms`. A rung is one unpolled burst that nothing can
+/// cut short, so its window is the ONLY thing bounding how far the shaft
+/// travels: a slow rung needs a long one to cross the same span a fast rung
+/// crosses in 150 ms, and a fast rung given the slow one's window drives into
+/// the end stop.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum Step {
-    Drive(u8),
-    Then(i8),
+    Drive(u8, Option<u32>),
+    Then(i8, Option<u32>),
     Coast(u32),
     Brake(u32),
 }
@@ -69,8 +74,10 @@ enum Step {
 impl std::fmt::Display for Step {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Step::Drive(pct) => write!(f, "{pct}"),
-            Step::Then(pct) => write!(f, "then:{pct}"),
+            Step::Drive(pct, None) => write!(f, "{pct}"),
+            Step::Drive(pct, Some(ms)) => write!(f, "{pct}@{ms}"),
+            Step::Then(pct, None) => write!(f, "then:{pct}"),
+            Step::Then(pct, Some(ms)) => write!(f, "then:{pct}@{ms}"),
             Step::Coast(ms) => write!(f, "coast:{ms}"),
             Step::Brake(ms) => write!(f, "brake:{ms}"),
         }
@@ -85,18 +92,33 @@ fn parse_step(s: &str) -> Result<Step, String> {
     if let Some(v) = s.strip_prefix("brake:") {
         return Ok(Step::Brake(ms(v)?));
     }
-    if let Some(v) = s.strip_prefix("then:") {
+    // `PCT@MS` splits the window off first so both drive forms share it.
+    let (head, window) = match s.split_once('@') {
+        Some((h, w)) => {
+            let w: u32 = ms(w)?;
+            if w == 0 {
+                return Err("step window must be nonzero".into());
+            }
+            (h, Some(w))
+        }
+        None => (s, None),
+    };
+    if let Some(v) = head.strip_prefix("then:") {
         let pct: i8 = v.parse().map_err(|_| format!("bad pct {v:?}"))?;
         if pct == 0 || pct.unsigned_abs() > 100 {
             return Err(format!(
                 "then: pct must be nonzero within +/-100, got {pct}"
             ));
         }
-        return Ok(Step::Then(pct));
+        return Ok(Step::Then(pct, window));
     }
-    s.parse()
-        .map(Step::Drive)
-        .map_err(|_| format!("step is duty pct, then:PCT, coast:MS, or brake:MS, got {s:?}"))
+    head.parse()
+        .map(|pct| Step::Drive(pct, window))
+        .map_err(|_| {
+            format!(
+                "step is duty pct, then:PCT, coast:MS, or brake:MS, each optionally @MS, got {s:?}"
+            )
+        })
 }
 
 /// Whether step k feeds step k+1 with no settle between them: then/coast/
@@ -105,7 +127,7 @@ fn parse_step(s: &str) -> Result<Step, String> {
 fn feeds(steps: &[Step], k: usize) -> bool {
     matches!(
         steps.get(k + 1),
-        Some(Step::Then(_) | Step::Coast(_) | Step::Brake(_))
+        Some(Step::Then(..) | Step::Coast(_) | Step::Brake(_))
     )
 }
 
@@ -119,7 +141,7 @@ pub struct Args {
     /// capture a zero-duty segment chained to the preceding step, `then:PCT`
     /// a signed drive chained the same way (no seek).
     #[arg(long, value_delimiter = ',', value_parser = parse_step,
-          default_values_t = (1..=20u8).map(|k| Step::Drive(k * 5)))]
+          default_values_t = (1..=20u8).map(|k| Step::Drive(k * 5, None)))]
     duty_pct: Vec<Step>,
     #[arg(long, value_enum, default_value_t = Dirs::Both)]
     dirs: Dirs,
@@ -148,16 +170,26 @@ pub struct Args {
     /// conclusions (vdiff/vbus/i_meas) stay out of raw captures.
     #[arg(long, default_value = "0x1cd")]
     tel_mask: String,
+    /// Attempts per rung before the sweep gives up. A rung is captured as one
+    /// burst, so a dropped frame anywhere in it corrupts that rung alone -
+    /// retrying just the rung costs seconds where discarding the recording
+    /// costs a minute and a half of good rungs with it.
+    #[arg(long, default_value_t = 3)]
+    rung_tries: u32,
 }
 
-/// One rung's start band: fwd launches near the low guard edge, rev
-/// mirrored, so the whole window fits before the far soft limit.
+/// One rung's start band: a narrow window CENTRED on the launch guard, so a
+/// rung starts at `guard_lo` (fwd) or `guard_hi` (rev) give or take
+/// `BAND_HALF`. Centring matters because the seek stops the instant it
+/// enters the band and it does not always arrive from mid travel - a rung
+/// that ends against a rail leaves the next seek approaching from the far
+/// side, and a band offset to one side of the guard then starts the rung a
+/// full band-width from where it was asked to.
+const BAND_HALF: u16 = 75;
+
 fn start_band(dir: i8, guard_lo: u16, guard_hi: u16) -> (u16, u16) {
-    if dir > 0 {
-        (guard_lo + 250, guard_lo + 550)
-    } else {
-        (guard_hi - 550, guard_hi - 250)
-    }
+    let c = if dir > 0 { guard_lo } else { guard_hi };
+    (c.saturating_sub(BAND_HALF), c.saturating_add(BAND_HALF))
 }
 
 fn pct_q15(pct: u8) -> i16 {
@@ -346,6 +378,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
         "decay": args.decay.as_str(),
         "dirs": dirs,
         "window_ms": args.window_ms,
+        "rung_tries": args.rung_tries,
         "rest_ms": args.rest_ms,
         "baseline_ms": args.baseline_ms,
         "seek_duty_pct": args.seek_duty_pct,
@@ -387,77 +420,121 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
 
         let steps = &args.duty_pct;
 
+        // Retry granularity is the CHAIN, not the step: then/coast/brake steps
+        // inherit momentum from the drive they follow, so replaying one alone
+        // would capture it from the wrong state. A chain starts wherever the
+        // previous step does not feed this one.
+        let starts: Vec<usize> = (0..steps.len())
+            .filter(|&k| k == 0 || !feeds(steps, k - 1))
+            .collect();
+
         let mut seg = 1u32;
         for &dir in dirs {
-            let mut live = false;
-            for (k, &step) in steps.iter().enumerate() {
-                check_stop()?;
-                // Drive is never chained, so it always arrives with live
-                // false: the seek is the only difference in its prep.
-                if let Step::Drive(_) = step {
-                    check_fault(c, id)?;
-                    seek_band(
-                        c,
-                        id,
-                        start_band(dir, args.guard_lo, args.guard_hi),
-                        seek_duty,
-                    )?;
-                } else if !live {
-                    check_fault(c, id)?;
+            for (ci, &chain0) in starts.iter().enumerate() {
+                let chain_end = starts.get(ci + 1).copied().unwrap_or(steps.len());
+                let seg0 = seg;
+                let mut attempt = 0u32;
+                let mut pending: Vec<(u32, i32, Vec<TelFrame>, String)> = Vec::new();
+                loop {
+                    attempt += 1;
+                    pending.clear();
+                    let mut dirty = None;
+                    let mut live = false;
+                    seg = seg0;
+                    for k in chain0..chain_end {
+                        let step = steps[k];
+                        check_stop()?;
+                        // Drive is never chained, so it always arrives with live
+                        // false: the seek is the only difference in its prep.
+                        if let Step::Drive(..) = step {
+                            check_fault(c, id)?;
+                            seek_band(
+                                c,
+                                id,
+                                start_band(dir, args.guard_lo, args.guard_hi),
+                                seek_duty,
+                            )?;
+                        } else if !live {
+                            check_fault(c, id)?;
+                        }
+                        if !live {
+                            write_reg(c, id, control::MODE, 0)?;
+                            write_reg(c, id, control::TORQUE_ENABLE, 1)?;
+                        }
+                        let (ms, duty) = match step {
+                            Step::Drive(pct, ms) => (
+                                ms.unwrap_or(args.window_ms),
+                                dir as i32 * pct_q15(pct) as i32,
+                            ),
+                            Step::Then(pct, ms) => (
+                                ms.unwrap_or(args.window_ms),
+                                dir as i32
+                                    * pct.signum() as i32
+                                    * pct_q15(pct.unsigned_abs()) as i32,
+                            ),
+                            Step::Coast(ms) | Step::Brake(ms) => (ms, 0),
+                        };
+                        if matches!(step, Step::Brake(_)) {
+                            write_reg(c, id, zb_reg, 1)?;
+                        }
+                        // Fast decay only inside the burst: the seek and the post-step
+                        // brake need slow decay to move and to stop.
+                        if args.decay == Decay::Fast {
+                            write_reg(c, id, decay_reg, Decay::Fast as i32)?;
+                        }
+                        let (frames, st) = exchange_tel_burst(
+                            c,
+                            id,
+                            samples_of_ms(ms),
+                            Some((control::GOAL_DUTY, duty)),
+                            mask,
+                        )?;
+                        if args.decay == Decay::Fast {
+                            write_reg(c, id, decay_reg, Decay::Slow as i32)?;
+                        }
+                        if matches!(step, Step::Brake(_)) {
+                            write_reg(c, id, zb_reg, 0)?;
+                        }
+                        let what = match step {
+                            Step::Drive(pct, _) => format!("duty {:+}%", dir as i32 * pct as i32),
+                            Step::Then(pct, _) => format!("then {:+}%", dir as i32 * pct as i32),
+                            Step::Coast(ms) => format!("coast {ms} ms"),
+                            Step::Brake(ms) => format!("brake {ms} ms"),
+                        };
+                        let line = format!(
+                            "  seg {seg} ({what}): {} frames, {} samples, {} seq holes, {} garble bytes",
+                            st.frames, st.samples, st.holes, st.garble
+                        );
+                        if st.holes > 0 || st.garble > 0 {
+                            dirty = Some(line.clone());
+                        }
+                        pending.push((seg, duty, frames, line));
+                        if feeds(steps, k) {
+                            live = true;
+                        } else {
+                            brake_to_rest(c, id, dir)?;
+                            write_reg(c, id, control::TORQUE_ENABLE, 0)?;
+                            rest(args.rest_ms)?;
+                            live = false;
+                        }
+                        seg += 1;
+                    }
+                    match dirty {
+                        None => break,
+                        Some(line) if attempt < args.rung_tries => {
+                            println!("  RETRY rung (attempt {attempt}):{}", line.trim_start());
+                        }
+                        Some(line) => bail!(
+                            "rung failed {} attempts, giving up:{}",
+                            args.rung_tries,
+                            line.trim_start()
+                        ),
+                    }
                 }
-                if !live {
-                    write_reg(c, id, control::MODE, 0)?;
-                    write_reg(c, id, control::TORQUE_ENABLE, 1)?;
+                for (sg, duty, frames, line) in pending.drain(..) {
+                    println!("{line}");
+                    write_rows(&mut w, sg, duty as i16, dir, &frames)?;
                 }
-                let (ms, duty) = match step {
-                    Step::Drive(pct) => (args.window_ms, dir as i32 * pct_q15(pct) as i32),
-                    Step::Then(pct) => (
-                        args.window_ms,
-                        dir as i32 * pct.signum() as i32 * pct_q15(pct.unsigned_abs()) as i32,
-                    ),
-                    Step::Coast(ms) | Step::Brake(ms) => (ms, 0),
-                };
-                if matches!(step, Step::Brake(_)) {
-                    write_reg(c, id, zb_reg, 1)?;
-                }
-                // Fast decay only inside the burst: the seek and the post-step
-                // brake need slow decay to move and to stop.
-                if args.decay == Decay::Fast {
-                    write_reg(c, id, decay_reg, Decay::Fast as i32)?;
-                }
-                let (frames, st) = exchange_tel_burst(
-                    c,
-                    id,
-                    samples_of_ms(ms),
-                    Some((control::GOAL_DUTY, duty)),
-                    mask,
-                )?;
-                if args.decay == Decay::Fast {
-                    write_reg(c, id, decay_reg, Decay::Slow as i32)?;
-                }
-                if matches!(step, Step::Brake(_)) {
-                    write_reg(c, id, zb_reg, 0)?;
-                }
-                let what = match step {
-                    Step::Drive(pct) => format!("duty {:+}%", dir as i32 * pct as i32),
-                    Step::Then(pct) => format!("then {:+}%", dir as i32 * pct as i32),
-                    Step::Coast(ms) => format!("coast {ms} ms"),
-                    Step::Brake(ms) => format!("brake {ms} ms"),
-                };
-                println!(
-                    "  seg {seg} ({what}): {} frames, {} samples, {} seq holes, {} garble bytes",
-                    st.frames, st.samples, st.holes, st.garble
-                );
-                write_rows(&mut w, seg, duty as i16, dir, &frames)?;
-                if feeds(steps, k) {
-                    live = true;
-                } else {
-                    brake_to_rest(c, id, dir)?;
-                    write_reg(c, id, control::TORQUE_ENABLE, 0)?;
-                    rest(args.rest_ms)?;
-                    live = false;
-                }
-                seg += 1;
             }
         }
         Ok(())
@@ -494,9 +571,11 @@ mod tests {
     #[test]
     fn steps_parse_and_display_round_trip() {
         for (s, want) in [
-            ("35", Step::Drive(35)),
-            ("then:-20", Step::Then(-20)),
-            ("then:20", Step::Then(20)),
+            ("35", Step::Drive(35, None)),
+            ("35@800", Step::Drive(35, Some(800))),
+            ("then:-20", Step::Then(-20, None)),
+            ("then:20", Step::Then(20, None)),
+            ("then:20@450", Step::Then(20, Some(450))),
             ("coast:200", Step::Coast(200)),
             ("brake:150", Step::Brake(150)),
         ] {
@@ -510,24 +589,28 @@ mod tests {
         assert!(parse_step("then:-101").is_err());
         assert!(parse_step("then:x").is_err());
         assert!(parse_step("slow").is_err());
+        assert!(parse_step("35@0").is_err());
+        assert!(parse_step("35@x").is_err());
+        assert!(parse_step("@800").is_err());
     }
 
     #[test]
     fn chained_steps_feed_from_their_predecessor() {
         let steps = [
-            Step::Drive(20),
-            Step::Then(-20),
-            Step::Then(20),
+            Step::Drive(20, None),
+            Step::Then(-20, None),
+            Step::Then(20, None),
             Step::Brake(200),
         ];
         let fed: Vec<bool> = (0..steps.len()).map(|k| feeds(&steps, k)).collect();
         assert_eq!(fed, [true, true, true, false]);
-        assert!(!feeds(&[Step::Then(-20), Step::Drive(20)], 0));
+        assert!(!feeds(&[Step::Then(-20, None), Step::Drive(20, None)], 0));
     }
 
     #[test]
     fn start_bands_hug_the_guard_edges() {
-        assert_eq!(start_band(1, 150, 3950), (400, 700));
-        assert_eq!(start_band(-1, 150, 3950), (3400, 3700));
+        // centred on the guard, so approach direction cannot shift the start
+        assert_eq!(start_band(1, 400, 3700), (325, 475));
+        assert_eq!(start_band(-1, 400, 3700), (3625, 3775));
     }
 }
