@@ -3,19 +3,21 @@ use ch32_metapac::{
     rcc::vals::{Pllsrc, Sw},
 };
 
-use crate::hal::clocks::{HSI_HZ, HSI_TRIM_STEP_HZ, hpre_val};
+use crate::hal::clocks::{HSI_HZ, HSI_TRIM_STEP_HZ, adcpre_val, hpre_val};
 
 pub fn init_pll() {
     const HPRE: ch32_metapac::rcc::vals::Hpre = hpre_val();
+    const ADCPRE: ch32_metapac::rcc::vals::Adcpre = adcpre_val();
 
     FLASH.actlr().modify(|w| w.set_latency(2));
 
     RCC.cfgr0().modify(|w| {
         w.set_pllsrc(Pllsrc::HSI);
         w.set_hpre(HPRE);
-        // undivided HB clock to the ADC (`clocks::ADCCLK_HZ`); ADC_CLK_ADJ
-        // stays at its 1/2-duty reset
-        w.set_adc_clk_mode(true);
+        // divided HB clock to the ADC (`clocks::ADCCLK_HZ`); ADCPRE is only
+        // read when ADC_CLK_MODE is 0
+        w.set_adc_clk_mode(false);
+        w.set_adcpre(ADCPRE);
     });
 
     RCC.ctlr().modify(|w| w.set_pllon(true));
