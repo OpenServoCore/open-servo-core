@@ -6,7 +6,7 @@
     -1
   ],
   "fw": 1,
-  "git_sha": "f3fd81c721986f3ca69d9c55aa10b465f5a1d6ac",
+  "git_sha": "4da36e394811ee030265efa6d11865e08a05c173",
   "guard": [
     450,
     3650
@@ -39,13 +39,14 @@
   "seek_duty_pct": 15,
   "sense": {
     "gain_milli": 15000,
-    "shunt_r_mohm": 33,
+    "shunt_r_mohm": 60,
     "vdd_mv": 3300,
-    "vmotor_div_bot": 10000,
-    "vmotor_div_top": 20000
+    "vmotor_div_bot": 3300,
+    "vmotor_div_top": 6800
   },
+  "supply": "usb",
   "tel_mask": 461,
   "tick_hz": 20000,
-  "vbus_counts": 1836,
+  "vbus_counts": 1919,
   "window_ms": 80
 }
