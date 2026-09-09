@@ -1,0 +1,45 @@
+{
+  "baseline_ms": 1000,
+  "decay": "slow",
+  "dirs": [
+    1,
+    -1
+  ],
+  "fw": 1,
+  "git_sha": "46f5bff1673fa4df7802a665ff2ff18d220002f0",
+  "guard": [
+    432,
+    3625
+  ],
+  "model": 257,
+  "post_rung_brake": true,
+  "rest_ms": 1500,
+  "rung_tries": 3,
+  "schedule": [
+    "20",
+    "coast:400",
+    "20",
+    "brake:400",
+    "30",
+    "coast:400",
+    "30",
+    "brake:400",
+    "40",
+    "coast:400",
+    "40",
+    "brake:400"
+  ],
+  "seek_duty_pct": 15,
+  "sense": {
+    "gain_milli": 15000,
+    "shunt_r_mohm": 60,
+    "vdd_mv": 3300,
+    "vmotor_div_bot": 3300,
+    "vmotor_div_top": 6800
+  },
+  "supply": "2s",
+  "tel_mask": 461,
+  "tick_hz": 20000,
+  "vbus_counts": 3086,
+  "window_ms": 80
+}
