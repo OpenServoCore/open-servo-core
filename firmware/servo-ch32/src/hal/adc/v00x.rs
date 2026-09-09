@@ -112,8 +112,8 @@ pub fn disable() {
     ADC.ctlr2().modify(|w| w.set_adon(false));
 }
 
-/// Polls for EOC this many times before giving up. A conversion is ~26 ADCCLK
-/// cycles, so exceeding this means the converter is not running.
+/// Polls for EOC this many times before giving up. A conversion is at most
+/// 54 ADCCLK cycles, so exceeding this means the converter is not running.
 const EOC_POLL_LIMIT: u32 = 100_000;
 
 /// One software-triggered conversion of `channel`, polled. Overwrites the
