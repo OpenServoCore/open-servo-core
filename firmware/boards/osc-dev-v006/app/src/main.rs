@@ -72,11 +72,12 @@ fn main() -> ! {
             // (bringup docs/armb-comp-sizing.md). The v floor covers
             // vmotor_b's S/H close, 44 ticks (0.91 us) after the crest
             // trigger at ADCCLK 48 MHz (vmotor_a's at 24 ticks, 0.49 us),
-            // plus margin; a v floor below the true edge lets off-phase
-            // samples seed the vbus EWMA and latch a false undervolt. Both
-            // floors pending the edge grid on the hacked dividers.
+            // plus settling: on the 6k8/3k3 + 150 pF dividers both terminals
+            // read the rail within 1% from 96 ticks (duty 8%, edge grid both
+            // directions), 24 ticks margin. A v floor below the true edge lets
+            // off-phase samples seed the vbus EWMA and latch a false undervolt.
             i_window_min_ticks: 160,
-            v_window_min_ticks: 210,
+            v_window_min_ticks: 120,
         },
         defaults: ConfigDefaults {
             pos_min_phys_counts: 0,
