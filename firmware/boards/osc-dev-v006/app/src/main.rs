@@ -29,7 +29,8 @@ fn main() -> ! {
             #[cfg(not(feature = "half-duplex"))]
             bus: BusWiring { tx_en: Pin::PC2 },
             // Rev B arm-B bodge: bare OPA closed by an external 1k/15k
-            // network (G = 15.0) off a 33 mohm shunt.
+            // network (G = 15.0) off a 60 mohm 1206 shunt: 0.9 V/A, 0.9 mA
+            // per count.
             current_sense: CurrentSenseConfig {
                 opa: opa::Config {
                     pos: opa::PositiveInput::PD3,
@@ -46,7 +47,7 @@ fn main() -> ! {
             },
         },
         calibration: Calibration {
-            shunt_r_mohm: 33,
+            shunt_r_mohm: 60,
             vmotor_divider: Divider {
                 top_ohm: 20_000,
                 bot_ohm: 10_000,
