@@ -192,6 +192,22 @@ fn start_band(dir: i8, guard_lo: u16, guard_hi: u16) -> (u16, u16) {
     (c.saturating_sub(BAND_HALF), c.saturating_add(BAND_HALF))
 }
 
+/// Why a rung is being replayed. Deliberately avoids the words the committed
+/// segment line uses: callers scrape sweep stdout to decide a whole recording
+/// failed (`captures/chain3/campaign.sh` greps `[1-9][0-9]* seq holes` and
+/// `[1-9][0-9]* garble`), so a note about a rung we RECOVERED must not read as
+/// a failed capture. Both halves matter - quoting only the counts still trips
+/// the garble half via `holes=2 garble=0`. `retry_note_cannot_read_as_failure`
+/// pins it.
+fn retry_note(
+    seg: u32,
+    what: &str,
+    holes: impl std::fmt::Display,
+    garble: impl std::fmt::Display,
+) -> String {
+    format!("  seg {seg} ({what}) [h={holes} g={garble}]")
+}
+
 fn pct_q15(pct: u8) -> i16 {
     (pct as i32 * 32767 / 100) as i16
 }
@@ -506,14 +522,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
                             st.frames, st.samples, st.holes, st.garble
                         );
                         if st.holes > 0 || st.garble > 0 {
-                            // Deliberately NOT the seg wording above: callers
-                            // scrape stdout for "N seq holes" to judge a
-                            // recording, so a retry line quoting it makes a
-                            // rung we RECOVERED read as a failed capture.
-                            dirty = Some(format!(
-                                "  seg {seg} ({what}) dirty: holes={} garble={}",
-                                st.holes, st.garble
-                            ));
+                            dirty = Some(retry_note(seg, &what, st.holes, st.garble));
                         }
                         pending.push((seg, duty, frames, line));
                         if feeds(steps, k) {
@@ -612,6 +621,30 @@ mod tests {
         let fed: Vec<bool> = (0..steps.len()).map(|k| feeds(&steps, k)).collect();
         assert_eq!(fed, [true, true, true, false]);
         assert!(!feeds(&[Step::Then(-20, None), Step::Drive(20, None)], 0));
+    }
+
+    #[test]
+    fn retry_note_cannot_read_as_failure() {
+        // the exact pattern captures/chain3/campaign.sh scrapes stdout with
+        let bad = regex_lite(&retry_note(7, "duty +35%", 4, 9));
+        assert!(!bad, "retry note reads as a failed capture");
+        // and the committed line for a genuinely dirty rung still must match,
+        // otherwise the outer gate would stop catching anything
+        assert!(regex_lite(
+            "  seg 7 (duty +35%): 200 frames, 4 seq holes, 0 garble bytes"
+        ));
+    }
+
+    /// `[1-9][0-9]* seq holes` or `[1-9][0-9]* garble`, without a regex dep:
+    /// a digit run ending just before the tail, whose first digit is not 0.
+    fn regex_lite(line: &str) -> bool {
+        [" seq holes", " garble"].iter().any(|tail| {
+            line.match_indices(tail).any(|(i, _)| {
+                let head = &line[..i];
+                let digits = head.len() - head.trim_end_matches(|c: char| c.is_ascii_digit()).len();
+                digits > 0 && !head[head.len() - digits..].starts_with('0')
+            })
+        })
     }
 
     #[test]
