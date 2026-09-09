@@ -67,10 +67,11 @@ fn main() -> ! {
             // Scan order is [shunt, vmA, vmB, pos, vcal, vbus, ntc]. The i floor is
             // amp-settling-bound: arm-B network measured true from duty 13%
             // (bringup docs/armb-comp-sizing.md). The v floor covers
-            // vmotor_b's S/H close ~182 ticks after the crest trigger plus
-            // margin; a v floor below the true edge lets off-phase samples
-            // seed the vbus EWMA and latch a false undervolt. Both floors
-            // pending bench re-validation on the new order.
+            // vmotor_b's S/H close ~131 ticks (2.7 us) after the crest
+            // trigger plus margin; a v floor below the true edge lets
+            // off-phase samples seed the vbus EWMA and latch a false
+            // undervolt. Both floors pending bench re-validation at the new
+            // ADC clock.
             i_window_min_ticks: 160,
             v_window_min_ticks: 210,
         },
