@@ -93,6 +93,32 @@ pub fn set_dma(enable: bool) {
     ADC.ctlr2().modify(|w| w.set_dma(enable));
 }
 
+/// CTLR2.CONT: the converter re-triggers itself after each conversion instead
+/// of waiting for the next trigger.
+pub fn set_continuous(enable: bool) {
+    ADC.ctlr2().modify(|w| w.set_cont(enable));
+}
+
+/// Launches a free-running software-triggered run with the DMA tap open, in
+/// ONE CTLR2 write. Any CTLR2 write with ADON set starts a conversion (RM sec
+/// 9.3.3), so splitting this would open the tap onto a conversion that had
+/// already begun and land a partial first sample. Caller owns SCAN, the
+/// regular sequence, and the armed DMA channel.
+pub fn start_continuous_dma() {
+    ADC.ctlr2().modify(|w| {
+        w.set_extsel(Extsel::SWSTART);
+        w.set_exttrig(true);
+        w.set_cont(true);
+        w.set_dma(true);
+        w.set_swstart(true);
+    });
+}
+
+/// RDATAR's absolute address, for a DMA peripheral-side program.
+pub fn data_addr() -> u32 {
+    ADC.rdatar().as_ptr() as u32
+}
+
 /// CTLR3.ADC_LP (RM sec 9.3.14). Reset default is set (low-power, sub-1M
 /// sampling); clearing it picks the high-power converter, which the
 /// datasheet rates for VDD >= 4.5 V only.

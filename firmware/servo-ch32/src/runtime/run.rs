@@ -138,6 +138,11 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
             unsafe { crate::runtime::Drivers::bus() }.poll_tel()
         });
 
+        // Shunt-burst page copy: republishes one page of the frozen capture
+        // into the BURST window. Main-loop side on purpose -- the copy is
+        // ~120 words and has no business inside a 20 kHz ISR.
+        crate::control::burst::poll_page(&crate::runtime::statics::SHARED);
+
         // Deferred reboot (protocol sec 9.5), honored after the ack has drained. The
         // critical section is load-bearing: `bus()` is otherwise `&mut`-owned
         // by the HIGH transport ISRs, so masking them is what makes this

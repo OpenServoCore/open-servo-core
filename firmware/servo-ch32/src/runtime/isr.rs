@@ -65,6 +65,14 @@ impl Dispatch for HighDispatcher {
 
 /// ADC DMA TC handler body -- wire into the vector table via [`crate::install_isrs!`].
 pub fn on_adc_dma_tc() {
+    // A shunt burst time-shares DMA1 CH1, so its HT and TC arrive on this
+    // vector; the buffer then holds raw shunt codes, not a 7-slot scan, and
+    // nothing below may run against it.
+    if crate::control::burst::capturing() {
+        crate::control::burst::on_dma_event(&SHARED);
+        return;
+    }
+
     DMA1.ifcr().write(|w| w.set_tcif(0, true));
 
     unsafe {
@@ -80,6 +88,10 @@ pub fn on_adc_dma_tc() {
         };
         kernel.on_tick(frame, &SHARED);
     }
+
+    // Trailing on purpose: the burst handshake must never displace a kernel
+    // tick, and a launch wants the scan TC's slack ahead of the next trigger.
+    crate::control::burst::poll_arm(&SHARED);
 }
 
 /// USART1 vector -- break detection (LBD) and TX arm completion.
