@@ -220,6 +220,13 @@ fn seek_band(c: &mut Client<NusbPipe>, id: Id, (lo, hi): (u16, u16), duty_q15: i
     // the distance GROWING while driving.
     let dist = |pos: u16| (lo.saturating_sub(pos)) as u32 + (pos.saturating_sub(hi)) as u32;
     let mut best = u32::MAX;
+    // Leaving a stop costs more than arriving at one, and this seek starts
+    // wherever the last rung parked - often hard against a rail. Escalate
+    // when nothing moves: it drives TOWARD the middle, so there is nothing to
+    // hit and the extra duty is free. The gentle duty belongs on the arrival.
+    let mut mag = duty_q15 as i32;
+    let mut still = 0;
+    let mut last = u16::MAX;
     for _ in 0..500 {
         check_stop()?;
         let pos = check_fault(c, id)?;
@@ -233,8 +240,18 @@ fn seek_band(c: &mut Client<NusbPipe>, id: Id, (lo, hi): (u16, u16), duty_q15: i
             write_reg(c, id, control::GOAL_DUTY, 0)?;
             bail!("seek moving away from {lo}..{hi} at pos {pos} (reversed polarity?)");
         }
-        let duty = if pos < lo { duty_q15 } else { -duty_q15 };
-        write_reg(c, id, control::GOAL_DUTY, duty as i32)?;
+        if pos.abs_diff(last) > STALL_EPS {
+            still = 0;
+        } else {
+            still += 1;
+            if still >= STALL_POLLS {
+                still = 0;
+                mag = (mag + SEEK_STEP_Q15).min(SEEK_CAP_Q15);
+            }
+        }
+        last = pos;
+        let duty = if pos < lo { mag } else { -mag };
+        write_reg(c, id, control::GOAL_DUTY, duty)?;
         std::thread::sleep(Duration::from_millis(20));
     }
     write_reg(c, id, control::GOAL_DUTY, 0)?;
@@ -250,6 +267,13 @@ const STALL_POLLS: u32 = 8;
 /// scale per stalled window, giving up at 45%.
 const SEEK_STEP_Q15: i32 = 1638;
 const SEEK_CAP_Q15: i32 = 14745;
+/// Counts of travel before a seek believes it has actually gone somewhere.
+/// STALL_EPS is far too small for this: a few counts of ELASTIC WIND-UP at a
+/// stop passes it, and a seek that mistakes wind-up for travel declares the
+/// stop it is leaning on to be the one it was sent to find. Measured: a
+/// reverse ladder ran eleven rungs against the FORWARD stop that way, then
+/// broke free mid-ladder and traversed half the range.
+const SEEK_TRAVEL_MIN: u16 = 100;
 
 /// Drive into the physical end stop and leave the shaft pressed against it.
 /// The rungs push the same way, so the train's backlash is taken up before
@@ -265,7 +289,8 @@ fn seek_stop(c: &mut Client<NusbPipe>, id: Id, dir: i8, duty_q15: i16) -> Result
     write_reg(c, id, control::MODE, 0)?;
     write_reg(c, id, control::TORQUE_ENABLE, 1)?;
     let mut duty = duty_q15 as i32;
-    let mut last = check_fault(c, id)?;
+    let start = check_fault(c, id)?;
+    let mut last = start;
     let mut still = 0;
     // A stop only counts once the shaft has actually travelled. Standing
     // still is what BOTH "arrived" and "stuck against the far stop" look
@@ -277,9 +302,11 @@ fn seek_stop(c: &mut Client<NusbPipe>, id: Id, dir: i8, duty_q15: i16) -> Result
         write_reg(c, id, control::GOAL_DUTY, dir as i32 * duty)?;
         std::thread::sleep(Duration::from_millis(20));
         let pos = check_fault(c, id)?;
+        if pos.abs_diff(start) >= SEEK_TRAVEL_MIN {
+            moved = true;
+        }
         if pos.abs_diff(last) > STALL_EPS {
             still = 0;
-            moved = true;
         } else {
             still += 1;
             if still >= STALL_POLLS {
