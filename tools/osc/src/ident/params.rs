@@ -8,13 +8,16 @@ use anyhow::{Context, Result};
 use osc_ident::exp::bias::BiasResult;
 use osc_ident::exp::breakaway::BreakawayResult;
 use osc_ident::exp::resistance::ResistanceResult;
+use osc_ident::exp::rl::{RlResult, Scales};
 use osc_ident::gains::{BwTargets, Encoded, EncodedGains, PlantParams};
+use osc_ident::units::SenseParams;
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Default)]
 pub struct ParamsFile {
     pub bias: Option<BiasJson>,
     pub resistance: Option<ResistanceJson>,
+    pub rl: Option<RlJson>,
     pub breakaway: Option<BreakawayJson>,
     pub ladder: Option<LadderJson>,
     pub inertia: Option<InertiaJson>,
@@ -72,6 +75,69 @@ impl From<&ResistanceResult> for ResistanceJson {
     }
 }
 
+/// The R/L run as recorded. `ok` is the gate verdict: false means the run
+/// may not feed gain synthesis.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct RlJson {
+    pub r_ohm: f64,
+    pub r_vpc: f64,
+    pub r_bracket: (f64, f64),
+    pub r_origin_ohm: f64,
+    pub r_rail_ohm: f64,
+    pub r2: f64,
+    pub v0_volts: f64,
+    pub r_fwd: Option<f64>,
+    pub r_rev: Option<f64>,
+    pub r_bias_lo: Option<f64>,
+    pub r_bias_hi: Option<f64>,
+    pub r_up: Option<f64>,
+    pub r_down: Option<f64>,
+    pub tau_us: f64,
+    pub tau_bracket: (f64, f64),
+    pub l_henries: f64,
+    pub l_bracket: (f64, f64),
+    pub src_ohm: f64,
+    pub supply_soft: bool,
+    pub null_step_counts: Option<f64>,
+    pub transitions: usize,
+    pub gates: Vec<(String, bool, String)>,
+    pub ok: bool,
+}
+
+impl From<&RlResult> for RlJson {
+    fn from(x: &RlResult) -> Self {
+        Self {
+            r_ohm: x.r_ohm,
+            r_vpc: x.r_vpc,
+            r_bracket: x.r_bracket,
+            r_origin_ohm: x.r_origin_ohm,
+            r_rail_ohm: x.r_rail_ohm,
+            r2: x.r2,
+            v0_volts: x.v0_volts,
+            r_fwd: x.r_fwd,
+            r_rev: x.r_rev,
+            r_bias_lo: x.r_bias_lo,
+            r_bias_hi: x.r_bias_hi,
+            r_up: x.r_up,
+            r_down: x.r_down,
+            tau_us: x.tau_us,
+            tau_bracket: x.tau_bracket,
+            l_henries: x.l_henries,
+            l_bracket: x.l_bracket,
+            src_ohm: x.src_ohm,
+            supply_soft: x.supply_soft,
+            null_step_counts: x.null_step_counts,
+            transitions: x.transitions,
+            gates: x
+                .gates
+                .iter()
+                .map(|g| (g.name.to_string(), g.pass, g.detail.clone()))
+                .collect(),
+            ok: x.ok,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Copy)]
 pub struct BreakawayJson {
     pub duty_bk_fwd: Option<i16>,
@@ -122,6 +188,31 @@ pub struct SenseJson {
     pub vmotor_div_top: u16,
     pub vmotor_div_bot: u16,
     pub tick_hz: u16,
+    /// The R/L band's additions; a run recorded before it has them zero,
+    /// which the scales below reject rather than guess around.
+    #[serde(default)]
+    pub vdd_mv: u16,
+    #[serde(default)]
+    pub vbus_div_top_ohm: u16,
+    #[serde(default)]
+    pub vbus_div_bot_ohm: u16,
+}
+
+impl SenseJson {
+    pub fn params(&self) -> SenseParams {
+        SenseParams {
+            shunt_r_mohm: self.shunt_r_mohm,
+            gain_milli: self.gain_milli,
+            vmotor_div_top: self.vmotor_div_top,
+            vmotor_div_bot: self.vmotor_div_bot,
+            vdd_mv: self.vdd_mv,
+            tick_hz: self.tick_hz,
+        }
+    }
+
+    pub fn scales(&self) -> Option<Scales> {
+        Scales::from_sense(&self.params(), self.vbus_div_top_ohm, self.vbus_div_bot_ohm)
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy)]

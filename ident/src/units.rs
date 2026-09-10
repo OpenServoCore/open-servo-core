@@ -35,8 +35,37 @@ pub struct UnitFactors {
     pub kt_motor_nm_per_a: Option<f64>,
 }
 
-/// Derive every conversion factor. 4096 = 12-bit ADC full scale (ref = VDD),
-/// 1000 = milli scaling, 100 = centi, 180/PI = deg<->rad.
+/// ADC lsb in volts: 4096 = 12-bit full scale, ref = VDD.
+pub fn adc_lsb_v(sense: &SenseParams) -> f64 {
+    sense.vdd_mv as f64 / 1000.0 / 4096.0
+}
+
+/// Shunt + PGA scale; 0.0 on a degenerate front end.
+pub fn amps_per_count(sense: &SenseParams) -> f64 {
+    let denom = sense.gain_milli as f64 / 1000.0 * (sense.shunt_r_mohm as f64 / 1000.0);
+    if denom > 0.0 {
+        adc_lsb_v(sense) / denom
+    } else {
+        0.0
+    }
+}
+
+/// Volts per count behind any resistive divider on the same ADC ref. The
+/// vmotor taps return to one common bias node, so a terminal DIFFERENCE
+/// scales by exactly this factor - the bias cancels.
+pub fn div_volts_per_count(sense: &SenseParams, top: u16, bot: u16) -> f64 {
+    if bot == 0 {
+        return 0.0;
+    }
+    adc_lsb_v(sense) * (top as f64 + bot as f64) / bot as f64
+}
+
+pub fn volts_per_count(sense: &SenseParams) -> f64 {
+    div_volts_per_count(sense, sense.vmotor_div_top, sense.vmotor_div_bot)
+}
+
+/// Derive every conversion factor. 1000 = milli scaling, 100 = centi,
+/// 180/PI = deg<->rad.
 pub fn derive(
     sense: &SenseParams,
     kin: &KinematicsResult,
@@ -44,24 +73,8 @@ pub fn derive(
     pos_max_phys: i32,
     ke_vpc_q: u16,
 ) -> UnitFactors {
-    let adc_lsb_v = sense.vdd_mv as f64 / 1000.0 / 4096.0;
-    let shunt_ohm = sense.shunt_r_mohm as f64 / 1000.0;
-    let gain = sense.gain_milli as f64 / 1000.0;
-
-    let sense_denom = gain * shunt_ohm;
-    let amps_per_count = if sense_denom > 0.0 {
-        adc_lsb_v / sense_denom
-    } else {
-        0.0
-    };
-
-    let volts_per_count = if sense.vmotor_div_bot != 0 {
-        let vdiv = (sense.vmotor_div_top as f64 + sense.vmotor_div_bot as f64)
-            / sense.vmotor_div_bot as f64;
-        adc_lsb_v * vdiv
-    } else {
-        0.0
-    };
+    let amps_per_count = amps_per_count(sense);
+    let volts_per_count = volts_per_count(sense);
 
     let deg_per_count = kinematics::deg_per_count(
         kin.angle_min_cdeg,
