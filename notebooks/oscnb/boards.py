@@ -15,6 +15,8 @@ edit a number here to silence that error, fix the entry or the selection.
 
 from dataclasses import dataclass, field
 
+from .servos import Measured
+
 
 @dataclass(frozen=True)
 class Board:
@@ -41,6 +43,7 @@ class Board:
     floor_i_ticks: int = 160
     floor_v_ticks: int = 160
     floors_verified: bool = False
+    measured: dict = field(default_factory=dict)
     notes: str = ""
 
     # --- derived: volts ---
@@ -152,6 +155,24 @@ BOARDS = {
         floor_i_ticks=160,
         floor_v_ticks=160,
         floors_verified=False,
+        measured={
+            "vb_bias_measured": Measured(
+                781, 775, 783, "counts", "Hi-Z rest baseline, 2S grid + stepcoast",
+                "nominal 779 from the 200/47 network, so 0.3%. Read it from the "
+                "Hi-Z rest tap directly; the brake-low route (VB = tap*r/(r-1)) "
+                "needs settled brake samples and reads ~6% low on transients"),
+            "rail_droop_usb_measured": Measured(
+                -3.5, -4.0, -3.0, "% over 20-100% duty", "2S vs USB grid, 5 captures each",
+                "USB also dips -21.8% transiently at 0.76 A; 2S is flat (+0.1%) "
+                "and dips only -5.9% at 1.70 A. ~1.3 ohm vs ~0.27 ohm source Z"),
+            "opa_noise_floor_measured": Measured(
+                2.2, 2.0, 2.4, "counts RMS", "bringup isns-diff run29",
+                "arm-B external network at G15; the internal PGA arms ran 10-15"),
+            "esd_clamp_skew_measured": Measured(
+                1.8, 1.7, 1.9, "V bemf", "bringup isns-diff findings",
+                "above this the A-side ESD clamp skews the divider split - use "
+                "the positive terminal, and distrust coast BEMF above it"),
+        },
         notes=(
             "Temporary hacked rig, not the settled design. 60 mOhm shunt, "
             "6k8/3k3 terminal taps with 150 pF, returned to a VB bias from "
