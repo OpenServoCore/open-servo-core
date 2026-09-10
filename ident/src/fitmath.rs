@@ -119,6 +119,29 @@ pub struct QuadDeriv {
     pub d2y: Vec<Option<f64>>,
 }
 
+/// y = a + b * x by Theil-Sen: the median of all pairwise slopes, then the
+/// median residual as the intercept. Costs O(n^2) pairs, so it is for the
+/// short runs (tens of points) where one settling sample or one dropped
+/// conversion would drag a least-squares slope.
+pub fn theil_sen(xy: &[(f64, f64)]) -> Option<LinearFit> {
+    let n = xy.len();
+    if n < 2 || !finite_xy(xy) {
+        return None;
+    }
+    let mut slopes = Vec::with_capacity(n * (n - 1) / 2);
+    for (i, (xi, yi)) in xy.iter().enumerate() {
+        for (xj, yj) in &xy[i + 1..] {
+            if xj != xi {
+                slopes.push((yj - yi) / (xj - xi));
+            }
+        }
+    }
+    let b = median(&slopes)?;
+    let a = median(&xy.iter().map(|(x, y)| y - b * x).collect::<Vec<_>>())?;
+    let (r2, rms) = fit_quality(xy, |x| a + b * x)?;
+    Some(LinearFit { a, b, r2, rms, n })
+}
+
 /// Sliding local-quadratic derivative (Savitzky-Golay flavor, nonuniform t
 /// allowed): at each i, fit y = c0 + c1*u + c2*u^2 over u = t - t[i] for
 /// the 2*half_window + 1 samples around i, then dy = c1, d2y = 2*c2.

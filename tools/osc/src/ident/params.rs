@@ -7,6 +7,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use osc_ident::exp::bias::BiasResult;
 use osc_ident::exp::breakaway::BreakawayResult;
+use osc_ident::exp::inductance::InductanceResult;
 use osc_ident::exp::resistance::ResistanceResult;
 use osc_ident::exp::rl::{RlResult, Scales};
 use osc_ident::gains::{BwTargets, Encoded, EncodedGains, PlantParams};
@@ -18,6 +19,7 @@ pub struct ParamsFile {
     pub bias: Option<BiasJson>,
     pub resistance: Option<ResistanceJson>,
     pub rl: Option<RlJson>,
+    pub inductance: Option<InductanceJson>,
     pub breakaway: Option<BreakawayJson>,
     pub ladder: Option<LadderJson>,
     pub inertia: Option<InertiaJson>,
@@ -128,6 +130,56 @@ impl From<&RlResult> for RlJson {
             supply_soft: x.supply_soft,
             null_step_counts: x.null_step_counts,
             transitions: x.transitions,
+            gates: x
+                .gates
+                .iter()
+                .map(|g| (g.name.to_string(), g.pass, g.detail.clone()))
+                .collect(),
+            ok: x.ok,
+        }
+    }
+}
+
+/// The high-rate burst run as recorded. `ok` is the gate verdict; nothing
+/// downstream reads any of it yet.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct InductanceJson {
+    pub l_henries: f64,
+    pub l_bracket: (f64, f64),
+    pub tau_us: f64,
+    pub tau_bracket: (f64, f64),
+    pub r_pair_ohm: Option<f64>,
+    pub r_pair_bracket: Option<(f64, f64)>,
+    pub r_capture_ohm: f64,
+    /// (step duty as a fraction of full scale, L in henries).
+    pub l_by_duty: Vec<(f64, f64)>,
+    pub bias_counts: f64,
+    pub skip: usize,
+    pub settle_us: f64,
+    pub cadence_samples: f64,
+    pub rest_captures: usize,
+    pub hold_captures: usize,
+    pub gates: Vec<(String, bool, String)>,
+    pub ok: bool,
+}
+
+impl From<&InductanceResult> for InductanceJson {
+    fn from(x: &InductanceResult) -> Self {
+        Self {
+            l_henries: x.l_henries,
+            l_bracket: x.l_bracket,
+            tau_us: x.tau_us,
+            tau_bracket: x.tau_bracket,
+            r_pair_ohm: x.r_pair_ohm,
+            r_pair_bracket: x.r_pair_bracket,
+            r_capture_ohm: x.r_capture_ohm,
+            l_by_duty: x.l_by_duty.clone(),
+            bias_counts: x.bias_counts,
+            skip: x.skip,
+            settle_us: x.settle_us,
+            cadence_samples: x.cadence_samples,
+            rest_captures: x.rest_captures,
+            hold_captures: x.hold_captures,
             gates: x
                 .gates
                 .iter()
