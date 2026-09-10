@@ -147,6 +147,14 @@ pub struct Args {
     /// Seek drive, percent of full scale.
     #[arg(long, default_value_t = 28)]
     seek_duty_pct: u8,
+    /// Ceiling for the breakout escalation, percent of full scale. LEAVING a
+    /// stop needs far more torque than holding against one, and the supply
+    /// sets what a given duty buys: 40% frees this servo on 2S (~0.58 A) but
+    /// the same current needs ~63% on USB's 4.5 V rail, so a 45% cap strands
+    /// the shaft there. Raise it only as far as needed - breakout loads the
+    /// teeth like a stall does, and this servo slips above ~0.3 A.
+    #[arg(long, default_value_t = 45)]
+    seek_cap_pct: u8,
     /// Seek the physical end stop and ladder against it instead of seeking a
     /// start band. Chain the rungs (`20,then:25,...`) to hold the gear train
     /// wound up across the whole ladder: released, it unwinds and the next
@@ -212,7 +220,13 @@ fn check_fault(c: &mut Client<NusbPipe>, id: Id) -> Result<u16> {
 /// Open-loop bang-bang seek into [lo, hi], 20 ms cadence, ctrl-c aware.
 /// Bails on a fault or on the band distance growing (reversed polarity);
 /// leaves duty 0 and torque ON (the rung drives next).
-fn seek_band(c: &mut Client<NusbPipe>, id: Id, (lo, hi): (u16, u16), duty_q15: i16) -> Result<()> {
+fn seek_band(
+    c: &mut Client<NusbPipe>,
+    id: Id,
+    (lo, hi): (u16, u16),
+    duty_q15: i16,
+    cap: i32,
+) -> Result<()> {
     write_reg(c, id, control::MODE, 0)?;
     write_reg(c, id, control::TORQUE_ENABLE, 1)?;
     // Distance to the band, not envelope membership: a seek may legally
@@ -246,7 +260,7 @@ fn seek_band(c: &mut Client<NusbPipe>, id: Id, (lo, hi): (u16, u16), duty_q15: i
             still += 1;
             if still >= STALL_POLLS {
                 still = 0;
-                mag = (mag + SEEK_STEP_Q15).min(SEEK_CAP_Q15);
+                mag = (mag + SEEK_STEP_Q15).min(cap);
             }
         }
         last = pos;
@@ -264,9 +278,8 @@ fn seek_band(c: &mut Client<NusbPipe>, id: Id, (lo, hi): (u16, u16), duty_q15: i
 const STALL_EPS: u16 = 3;
 const STALL_POLLS: u32 = 8;
 /// Breakout escalation when the shaft will not leave a stop: +5% of full
-/// scale per stalled window, giving up at 45%.
+/// scale per stalled window, up to `--seek-cap-pct`.
 const SEEK_STEP_Q15: i32 = 1638;
-const SEEK_CAP_Q15: i32 = 14745;
 /// Counts of travel before a seek believes it has actually gone somewhere.
 /// STALL_EPS is far too small for this: a few counts of ELASTIC WIND-UP at a
 /// stop passes it, and a seek that mistakes wind-up for travel declares the
@@ -285,7 +298,7 @@ const SEEK_TRAVEL_MIN: u16 = 100;
 /// tells them apart: it holds at a real stop and reads zero at a soft limit.
 /// Without that check a run would ladder against a clamped duty and record a
 /// grid of zero-current rungs.
-fn seek_stop(c: &mut Client<NusbPipe>, id: Id, dir: i8, duty_q15: i16) -> Result<()> {
+fn seek_stop(c: &mut Client<NusbPipe>, id: Id, dir: i8, duty_q15: i16, cap: i32) -> Result<()> {
     write_reg(c, id, control::MODE, 0)?;
     write_reg(c, id, control::TORQUE_ENABLE, 1)?;
     let mut duty = duty_q15 as i32;
@@ -325,7 +338,7 @@ fn seek_stop(c: &mut Client<NusbPipe>, id: Id, dir: i8, duty_q15: i16) -> Result
                 // full scale draws current without moving the shaft at all
                 // where 40% frees it. Step up rather than guess a constant.
                 duty += SEEK_STEP_Q15;
-                if duty > SEEK_CAP_Q15 {
+                if duty > cap {
                     write_reg(c, id, control::GOAL_DUTY, 0)?;
                     bail!(
                         "shaft never moved at pos {pos}, up to {duty} q15 - jammed, \
@@ -469,6 +482,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
         "rest_ms": args.rest_ms,
         "baseline_ms": args.baseline_ms,
         "seek_duty_pct": args.seek_duty_pct,
+        "seek_cap_pct": args.seek_cap_pct,
         "settle_ms": args.settle_ms,
         "stall": args.stall,
         "guard": [args.guard_lo, args.guard_hi],
@@ -491,6 +505,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     )?;
 
     let seek_duty = pct_q15(args.seek_duty_pct);
+    let seek_cap = pct_q15(args.seek_cap_pct) as i32;
     let r = with_guard(&mut c, id, |c| {
         write_reg(c, id, decay_reg, Decay::Slow as i32)?;
         write_reg(c, id, zb_reg, 0)?;
@@ -501,7 +516,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
 
         // baseline: mid-travel, torque off, noise floor at full tick rate
         println!("[baseline] {} ms torque-off", args.baseline_ms);
-        seek_band(c, id, (1750, 2350), seek_duty)?;
+        seek_band(c, id, (1750, 2350), seek_duty, seek_cap)?;
         write_reg(c, id, control::TORQUE_ENABLE, 0)?;
         let (frames, st) = exchange_tel_burst(c, id, samples_of_ms(args.baseline_ms), None, mask)?;
         println!(
@@ -524,13 +539,14 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
                     if args.stall {
                         // Already stopped, and still pressed into the stop:
                         // nothing to brake and nothing to let settle.
-                        seek_stop(c, id, dir, seek_duty)?;
+                        seek_stop(c, id, dir, seek_duty, seek_cap)?;
                     } else {
                         seek_band(
                             c,
                             id,
                             start_band(dir, args.guard_lo, args.guard_hi),
                             seek_duty,
+                            seek_cap,
                         )?;
                         // Kill the seek's momentum and let the shaft ring
                         // down. Sign is -dir, the mirror of the post-rung
