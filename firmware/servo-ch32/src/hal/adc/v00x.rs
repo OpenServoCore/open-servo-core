@@ -114,6 +114,21 @@ pub fn start_continuous_dma() {
     });
 }
 
+/// Re-arms the externally-triggered scan in ONE CTLR2 write: trigger source,
+/// trigger enable, and the DMA tap together. Splitting it opens a window in
+/// which a trigger starts a scan the DMA cannot deliver, and the tap then
+/// opens partway through that scan -- the buffer fills from the middle of the
+/// sequence and every slot index is off by however far it got (bench: the
+/// sensor frame came back rotated three slots and the undervolt fault
+/// latched). Caller has SCAN, the regular sequence, and the DMA channel ready.
+pub fn arm_scan(source: Extsel) {
+    ADC.ctlr2().modify(|w| {
+        w.set_extsel(source);
+        w.set_exttrig(true);
+        w.set_dma(true);
+    });
+}
+
 /// RDATAR's absolute address, for a DMA peripheral-side program.
 pub fn data_addr() -> u32 {
     ADC.rdatar().as_ptr() as u32
