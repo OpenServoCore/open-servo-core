@@ -71,6 +71,23 @@ class Rig:
         df = pd.DataFrame(rows, columns=["where", "quantity", "value", "unit"])
         return df.set_index(["where", "quantity", "unit"]).round(4)
 
+    def measured_table(self):
+        """Measured values, kept apart from the declared constants above.
+
+        A declared constant is what the hardware IS. A measured value is what
+        somebody found when they looked, and it carries a bracket, a source and
+        any caveat that came with it. Mixing the two in one table is how a
+        fitted number ends up being treated as a specification."""
+        import pandas as pd
+        rows = []
+        for where, obj in (("board", self.board), ("servo", self.servo)):
+            for name, m in getattr(obj, "measured", {}).items():
+                rows.append({"where": where, "quantity": name.replace("_measured", ""),
+                             "value": m.value, "unit": m.unit,
+                             "bracket": f"[{m.lo:g}, {m.hi:g}]",
+                             "source": m.source, "caveat": m.note})
+        return pd.DataFrame(rows).set_index(["where", "quantity"])
+
     def show(self):
         print(self.label)
         for note, who in ((self.board.notes, "board"), (self.servo.notes, "servo")):
@@ -121,9 +138,13 @@ def _show():
     try:
         from IPython.display import display
         display(d.summary())
+        print("\nderived constants (what the hardware is)")
         display(r.table())
+        print("\nmeasured values (what someone found when they looked)")
+        display(r.measured_table())
     except ImportError:
         print(d.summary().to_string()); print(r.table().to_string())
+        print(r.measured_table().to_string())
 
 
 def dataset():
