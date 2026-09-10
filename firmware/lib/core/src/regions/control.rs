@@ -27,8 +27,15 @@ pub enum BootMode {
 #[ct_block(hooks = crate::regions::hooks::ControlTableHookEvents)]
 pub struct ControlLifecycle {
     pub torque_enable: bool,
-    #[ct_field(skip)]
-    pub _rsvd_tel: u8,
+    /// Let the motor stall on purpose: drops the stall trip and the endstop
+    /// band, and NOTHING else - the current limit and the thermal derate
+    /// still compose. Identification pushes into a hard stop to measure R and
+    /// L, which is precisely what those two guards exist to prevent, and no
+    /// soft-limit value can express it because a stop can sit AT the position
+    /// rail. Lives in the control region, so it is RAM only: never saved, and
+    /// a reboot clears it. A tool that dies mid-run cannot leave a servo
+    /// unguarded.
+    pub stall_permit: bool,
     /// TEL sample layout, one bit per field (`tel` module). `bits` rejects
     /// reserved bits; `max_ones` caps the field count at the wire budget.
     #[ct_field(bits = crate::tel::MASK_ALL, max_ones = crate::tel::FIELDS_MAX)]
