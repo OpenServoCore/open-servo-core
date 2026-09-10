@@ -129,8 +129,9 @@ SERVOS = {
             # touched, which is the whole point: against pot speed the same
             # captures give 13-28% low with CV 26%.
             "ke_measured": Measured(
-                7.367, 7.29, 7.49, "mV per motor rev/s",
-                "ripple speed + coast BEMF, 2S bridge spindown, n=28, CV 1.9%",
+                7.584, 7.44, 7.73, "mV per motor rev/s",
+                "nb03 route R: ripple speed + coast BEMF over 2 whole ripple "
+                "periods, 2S, n=30, CV 0.94%, flat across 20/30/40% and both dirs",
                 "IN-SERVO, geared and enclosed. run28's 7.542 is a BARE CAN "
                 "with pinion, by a two-point Kv slope that needs I*R to cancel "
                 "between its points - an assumption gears would break. This "
@@ -147,7 +148,11 @@ SERVOS = {
                 "Known bias in THIS "
                 "number: drive ripple is an average while the shaft still "
                 "accelerates, BEMF is near final speed, so it reads slightly "
-                "HIGH - the wrong direction to explain the gap."),
+                "HIGH - the wrong direction to explain the gap. SUPERSEDES an "
+                "earlier 7.367 (CV 1.9%) from the same method: that one used a "
+                "1400 Hz lower search band, which EXCLUDES the 20% rung whose "
+                "line sits at 800 Hz, and averaged BEMF over a fixed sample "
+                "count rather than 2 whole ripple periods. Use 600-5200 Hz."),
         },
         notes=(
             "Gears serviced and cleaned after a run of end stop crashes; back "
