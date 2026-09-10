@@ -305,11 +305,17 @@ fn seek_stop(c: &mut Client<NusbPipe>, id: Id, dir: i8, duty_q15: i16) -> Result
         if pos.abs_diff(start) >= SEEK_TRAVEL_MIN {
             moved = true;
         }
-        if pos.abs_diff(last) > STALL_EPS {
+        // Judge PROGRESS over a window, not stillness poll to poll. Consecutive
+        // -still counting is defeated by a couple of counts of ADC jitter at
+        // the position rail: `still` resets, so the escalation below never
+        // fires and the seek just drives at its opening duty until the loop
+        // runs out. Net travel over the window is immune to that.
+        still += 1;
+        if still >= STALL_POLLS {
             still = 0;
-        } else {
-            still += 1;
-            if still >= STALL_POLLS {
+            let progress = pos.abs_diff(last) >= SEEK_TRAVEL_MIN;
+            last = pos;
+            if !progress {
                 if moved {
                     // Duty stays on: releasing lets the train unwind, and the
                     // burst would then re-wind it inside the measurement.
@@ -318,7 +324,6 @@ fn seek_stop(c: &mut Client<NusbPipe>, id: Id, dir: i8, duty_q15: i16) -> Result
                 // Leaving a stop costs more than holding against one: 20% of
                 // full scale draws current without moving the shaft at all
                 // where 40% frees it. Step up rather than guess a constant.
-                still = 0;
                 duty += SEEK_STEP_Q15;
                 if duty > SEEK_CAP_Q15 {
                     write_reg(c, id, control::GOAL_DUTY, 0)?;
@@ -329,7 +334,6 @@ fn seek_stop(c: &mut Client<NusbPipe>, id: Id, dir: i8, duty_q15: i16) -> Result
                 }
             }
         }
-        last = pos;
     }
     write_reg(c, id, control::GOAL_DUTY, 0)?;
     bail!("no end stop in 10 s driving {dir:+} at {duty} q15")
