@@ -606,6 +606,13 @@
       "kind": "bool"
     },
     {
+      "name": "stall_permit",
+      "addr": 385,
+      "width": 1,
+      "access": "rw",
+      "kind": "bool"
+    },
+    {
       "name": "tel_mask",
       "addr": 386,
       "width": 2,
