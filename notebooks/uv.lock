@@ -1417,6 +1417,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "ipykernel" },
     { name = "ipympl" },
+    { name = "ipywidgets" },
     { name = "jupyterlab" },
     { name = "matplotlib" },
     { name = "numpy" },
@@ -1428,6 +1429,7 @@ dependencies = [
 requires-dist = [
     { name = "ipykernel", specifier = ">=6.29" },
     { name = "ipympl", specifier = ">=0.9" },
+    { name = "ipywidgets", specifier = ">=8.1" },
     { name = "jupyterlab", specifier = ">=4.2" },
     { name = "matplotlib", specifier = ">=3.9" },
     { name = "numpy", specifier = ">=2.1" },

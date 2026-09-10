@@ -1,0 +1,8 @@
+{
+  "board": "dev-v006-D",
+  "servo": "sg90-a",
+  "supply": "usb",
+  "captured": "2026-09-09",
+  "adc": "24 MHz, 13.5 cycle apertures",
+  "notes": "Per-duty windows sized to ~2554 counts of travel from this supply's own v_ss fit, 10-170 deg envelope, rest 1500 ms, cooldown 150 s, one warm-up recording discarded per experiment."
+}
