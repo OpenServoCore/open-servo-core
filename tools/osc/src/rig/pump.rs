@@ -10,6 +10,7 @@ use anyhow::{Context, Result, bail};
 use osc_client::blocking::Client;
 use osc_client::nusb::NusbPipe;
 use osc_client::{Id, Inst, Opcode, Outcome, ResultCode};
+use osc_ident::burst::{self, BurstIo, Capture, CaptureCfg, Pre};
 use osc_ident::exp::{Cmd, Experiment};
 use osc_ident::frame::{StreamAssembler, TelFrame, TelemetrySnapshot};
 use osc_ident::regs::{Reg, config, control, telemetry};
@@ -214,6 +215,66 @@ pub(crate) fn exchange_tel_burst(
     Ok((frames, stats))
 }
 
+/// The burst handshake's wire moves. The arm has to be atomic - a servo
+/// that sees arm=1 before the new duty captures the old level - so duty and
+/// arm go out under HOLD and one broadcast COMMIT applies both.
+struct WireBurstIo<'a> {
+    c: &'a mut Client<NusbPipe>,
+    id: Id,
+}
+
+impl BurstIo for WireBurstIo<'_> {
+    type Error = anyhow::Error;
+
+    fn arm(&mut self, duty_q15: i16) -> Result<()> {
+        self.c
+            .write_hold(self.id, burst::wire::DUTY_Q15.addr, &duty_q15.to_le_bytes())
+            .context("hold burst duty")?;
+        self.c
+            .write_hold(self.id, burst::wire::ARM.addr, &[1])
+            .context("hold burst arm")?;
+        self.c.commit().context("commit burst arm")?;
+        Ok(())
+    }
+
+    fn select_page(&mut self, page: u8) -> Result<()> {
+        write_reg(self.c, self.id, burst::wire::PAGE, page as i32)
+    }
+
+    fn release(&mut self) -> Result<()> {
+        write_reg(self.c, self.id, burst::wire::ARM, 0)
+    }
+
+    fn read_burst(&mut self, addr: u16, len: u16) -> Result<Vec<u8>> {
+        self.c
+            .read(self.id, addr, len)
+            .with_context(|| format!("burst read {addr:#06x}"))
+    }
+
+    fn pause_ms(&mut self, ms: u32) {
+        std::thread::sleep(Duration::from_millis(ms as u64));
+    }
+}
+
+/// One high-rate capture. The rail and the current-sense zero are read
+/// BEFORE the arm: the burst suspends the scan, so neither is measurable
+/// inside the window.
+pub(crate) fn capture_burst(
+    c: &mut Client<NusbPipe>,
+    id: Id,
+    duty_q15: i16,
+    pre_q15: i16,
+) -> Result<Capture> {
+    let pre = Pre {
+        pre_q15,
+        vbus_raw: super::snapshot::read_u16(c, id, telemetry::VBUS_RAW)?,
+        bias: super::snapshot::read_u16(c, id, telemetry::CURRENT_BIAS_COUNTS)?,
+    };
+    let mut io = WireBurstIo { c, id };
+    burst::capture(&mut io, duty_q15, pre, &CaptureCfg::default())
+        .map_err(|e| anyhow::anyhow!("burst capture: {e}"))
+}
+
 pub(crate) struct Pump<'a> {
     client: &'a mut Client<NusbPipe>,
     id: Id,
@@ -284,6 +345,17 @@ impl<'a> Pump<'a> {
                     );
                     exp.push_tel(&frames);
                     self.tel.extend_from_slice(&frames);
+                }
+                Cmd::Burst { duty_q15, pre_q15 } => {
+                    let cap = capture_burst(self.client, self.id, duty_q15, pre_q15)?;
+                    eprintln!(
+                        "burst: {} samples, step at {}, duty {} (pre {})",
+                        cap.samples.len(),
+                        cap.meta.step_index,
+                        duty_q15,
+                        pre_q15
+                    );
+                    exp.push_burst(&cap);
                 }
                 Cmd::Done => return Ok(()),
             }

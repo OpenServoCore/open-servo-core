@@ -7,6 +7,7 @@ use core::fmt::Write as _;
 
 use crate::exp::bias::BiasResult;
 use crate::exp::breakaway::BreakawayResult;
+use crate::exp::inductance::InductanceResult;
 use crate::exp::inertia::InertiaResult;
 use crate::exp::ladder::LadderResult;
 use crate::exp::resistance::ResistanceResult;
@@ -34,6 +35,7 @@ pub struct ReportInputs<'a> {
     pub bias: Option<&'a BiasResult>,
     pub resistance: Option<&'a ResistanceResult>,
     pub rl: Option<&'a RlResult>,
+    pub inductance: Option<&'a InductanceResult>,
     pub breakaway: Option<&'a BreakawayResult>,
     pub ladder: Option<&'a LadderResult>,
     pub inertia: Option<&'a InertiaResult>,
@@ -143,6 +145,78 @@ pub fn render(r: &ReportInputs<'_>) -> String {
                 "  verdict       {}",
                 if x.ok {
                     "gates pass; advisory only - E2 is the table's R"
+                } else {
+                    "GATES FAILED - numbers unusable"
+                }
+            );
+            for w in &x.warnings {
+                let _ = writeln!(s, "  warn: {w}");
+            }
+        }
+        None => {
+            let _ = writeln!(s, "  skipped");
+        }
+    }
+
+    let _ = writeln!(
+        s,
+        "\n[E8 winding L] (high-rate shunt burst; NOT the table's R)"
+    );
+    match r.inductance {
+        Some(x) => {
+            let _ = writeln!(
+                s,
+                "  L             {:.4} mH [{:.4}, {:.4}]  from {} from-rest captures",
+                x.l_henries * 1e3,
+                x.l_bracket.0 * 1e3,
+                x.l_bracket.1 * 1e3,
+                x.rest_captures
+            );
+            let _ = writeln!(
+                s,
+                "  tau           {:.1} us [{:.1}, {:.1}]",
+                x.tau_us, x.tau_bracket.0, x.tau_bracket.1
+            );
+            let _ = writeln!(
+                s,
+                "  R             {} ohm from {} pair(s){}; per capture {:.3} ohm",
+                x.r_pair_ohm.map_or("-".into(), |v| format!("{v:.3}")),
+                x.pairs.len(),
+                x.r_pair_bracket
+                    .map(|(lo, hi)| format!(" [{lo:.3}, {hi:.3}]"))
+                    .unwrap_or_default(),
+                x.r_capture_ohm
+            );
+            let by_duty: Vec<String> = x
+                .l_by_duty
+                .iter()
+                .map(|(d, l)| format!("{:.0}% {:.3} mH", d * 100.0, l * 1e3))
+                .collect();
+            let _ = writeln!(s, "  L by duty     {}", by_duty.join(", "));
+            let _ = writeln!(
+                s,
+                "  trace         cadence {:.2} samples/period, skip {} ({:.1} us amplifier \
+                 settling), bias {:.1} counts",
+                x.cadence_samples, x.skip, x.settle_us, x.bias_counts
+            );
+            let gates: Vec<String> = x
+                .gates
+                .iter()
+                .map(|g| {
+                    format!(
+                        "{} {} ({})",
+                        if g.pass { "pass" } else { "FAIL" },
+                        g.name,
+                        g.detail
+                    )
+                })
+                .collect();
+            let _ = writeln!(s, "  gates         {}", gates.join(", "));
+            let _ = writeln!(
+                s,
+                "  verdict       {}",
+                if x.ok {
+                    "gates pass; advisory only - nothing consumes L yet"
                 } else {
                     "GATES FAILED - numbers unusable"
                 }
@@ -344,10 +418,52 @@ mod tests {
         assert!(s.contains("(SOFT)"));
     }
 
+    /// The E8 section off the real bench captures - the CSV, the fit and
+    /// the render in one chain, so a column or field rename shows up here.
+    #[test]
+    fn inductance_section_renders_the_bench_captures() {
+        use crate::burst::from_csv;
+        use crate::exp::inductance::{FitCfg, fit_captures};
+        use crate::exp::rl::Scales;
+        use crate::units::SenseParams;
+
+        const BOARD_D: SenseParams = SenseParams {
+            shunt_r_mohm: 60,
+            gain_milli: 15_000,
+            vmotor_div_top: 6_800,
+            vmotor_div_bot: 3_300,
+            vdd_mv: 3_300,
+            tick_hz: 20_100,
+        };
+        let sc = Scales::from_sense(&BOARD_D, 15_000, 10_000).unwrap();
+        let caps: Vec<_> = [
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/testdata/burst/rest-to-20.csv"
+            )),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/testdata/burst/rest-to-40.csv"
+            )),
+        ]
+        .iter()
+        .map(|t| from_csv(t).expect("fixture"))
+        .collect();
+        let r = fit_captures(&caps, &sc, &FitCfg::default()).expect("fit");
+        let s = render(&ReportInputs {
+            inductance: Some(&r),
+            ..Default::default()
+        });
+        assert!(s.contains("[E8 winding L]"), "{s}");
+        assert!(s.contains("L by duty     20%"), "{s}");
+        assert!(s.contains("pass cadence"), "{s}");
+        assert!(s.contains("1 pair(s)"), "{s}");
+    }
+
     #[test]
     fn renders_empty_and_partial_inputs() {
         let all_skipped = render(&ReportInputs::default());
-        assert_eq!(all_skipped.matches("skipped").count(), 7);
+        assert_eq!(all_skipped.matches("skipped").count(), 8);
 
         let p = PlantParams {
             r_vpc: 3.37,

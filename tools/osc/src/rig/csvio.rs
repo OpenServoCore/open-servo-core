@@ -9,6 +9,7 @@ use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use osc_ident::burst::{self, Capture};
 use osc_ident::exp::WindowSample;
 use osc_ident::exp::ladder::RungSummary;
 use osc_ident::exp::resistance::DwellSample;
@@ -283,6 +284,32 @@ pub(crate) fn read_step_series(dir: &Path) -> Result<Vec<(StepSeries, bool)>> {
     Ok(out)
 }
 
+/// One high-rate shunt capture per file, `burst-0.csv` up. The column
+/// layout is osc-ident's own, so a bench capture from anywhere replays
+/// through the same reader.
+pub(crate) fn write_bursts(dir: &OutDir, caps: &[Capture]) -> Result<()> {
+    for (k, cap) in caps.iter().enumerate() {
+        let mut w = dir.file(&format!("burst-{k}.csv"))?;
+        w.write_all(burst::to_csv(cap).as_bytes())?;
+    }
+    Ok(())
+}
+
+/// Read `burst-0.csv` up until one is missing - the write order, so a run
+/// cut short reads back in order with no gaps.
+pub(crate) fn read_bursts(dir: &Path) -> Result<Vec<Capture>> {
+    let mut out = Vec::new();
+    for k in 0.. {
+        let p = dir.join(format!("burst-{k}.csv"));
+        if !p.exists() {
+            break;
+        }
+        let text = std::fs::read_to_string(&p).with_context(|| format!("read {}", p.display()))?;
+        out.push(burst::from_csv(&text).map_err(|e| anyhow::anyhow!("{}: {e}", p.display()))?);
+    }
+    Ok(out)
+}
+
 /// Every captured burst of an R/L run, one row per sample: the segment
 /// tag then the raw frame. `ident fit` refits R, tau and the gates from
 /// this alone.
@@ -388,6 +415,31 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ident-csv-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         OutDir(dir)
+    }
+
+    #[test]
+    fn bursts_round_trip_in_write_order() {
+        let dir = tmp();
+        let caps: Vec<Capture> = (0..2)
+            .map(|n| Capture {
+                samples: (0..osc_ident::burst::SAMPLES)
+                    .map(|k| (100 + n * 10 + k % 200) as u16)
+                    .collect(),
+                meta: osc_ident::burst::Meta {
+                    pre_q15: 0,
+                    step_q15: 8520,
+                    step_index: 485,
+                    start_cnt: 1094,
+                    pwm_arr: 1200,
+                    start_dir: 1,
+                    restore_dir: 0,
+                    vbus_raw: 2169,
+                    bias: 118,
+                },
+            })
+            .collect();
+        write_bursts(&dir, &caps).unwrap();
+        assert_eq!(read_bursts(&dir.0).unwrap(), caps);
     }
 
     #[test]

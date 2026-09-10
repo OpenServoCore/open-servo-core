@@ -18,6 +18,7 @@ use osc_client::blocking::Client;
 use osc_client::nusb::NusbPipe;
 use osc_ident::exp::bias::{Bias, BiasCfg};
 use osc_ident::exp::breakaway::{Breakaway, BreakawayCfg};
+use osc_ident::exp::inductance::{Cfg as InductanceCfg, FitCfg, Inductance, InductanceResult};
 use osc_ident::exp::inertia::{Inertia, InertiaCfg};
 use osc_ident::exp::ladder::{Ladder, LadderCfg, LadderResult};
 use osc_ident::exp::resistance::{Resistance, ResistanceCfg};
@@ -31,8 +32,8 @@ use osc_ident::gains::{self, BwTargets, PlantParams};
 use osc_ident::regs::{calib, control};
 use osc_ident::report::{self, ReportInputs};
 use params::{
-    BiasJson, BreakawayJson, GainJson, InertiaJson, LadderJson, ParamsFile, PlantJson,
-    ResistanceJson, RlJson, SenseJson,
+    BiasJson, BreakawayJson, GainJson, InductanceJson, InertiaJson, LadderJson, ParamsFile,
+    PlantJson, ResistanceJson, RlJson, SenseJson,
 };
 
 /// The `osc ident` arg group: output, rig envelope, and bandwidth targets,
@@ -62,6 +63,15 @@ pub struct Args {
     /// `exp::rl`.
     #[arg(long, global = true, default_value_t = 20)]
     step_periods: u16,
+    /// E8 step duties, percent of full scale.
+    #[arg(long, global = true, value_delimiter = ',', default_values_t = [20u8, 30, 40])]
+    burst_pct: Vec<u8>,
+    /// E8 captures per step duty and sign.
+    #[arg(long, global = true, default_value_t = 5)]
+    burst_repeats: u32,
+    /// Settled winding current the E8 duty ladder stays under, amps.
+    #[arg(long, global = true, default_value_t = 0.4)]
+    burst_i_max: f64,
     /// Nominal gear ratio, informational only (printed in the report dir).
     #[arg(long, global = true)]
     gear_ratio: Option<f64>,
@@ -91,6 +101,9 @@ struct Ctx {
     i_abort: i16,
     l_henries: f64,
     step_periods: u16,
+    burst_pct: Vec<u8>,
+    burst_repeats: u32,
+    burst_i_max: f64,
     gear_ratio: Option<f64>,
     f_ci: f64,
     f_cv: f64,
@@ -112,6 +125,8 @@ enum Cmd {
     /// E7: free-shaft duty toggles -> winding R and L (advisory; the
     /// 1 ms step is rotor-followed and biased).
     Rl,
+    /// E8: high-rate shunt bursts -> winding L, tau and R (advisory).
+    Burst,
     /// E1: breakaway duty ramp (needs R; runs its own bias first).
     Breakaway,
     /// E3: steady-state duty ladder -> Ke + friction line (needs R).
@@ -148,6 +163,9 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
         i_abort: args.i_abort,
         l_henries: args.l_henries,
         step_periods: args.step_periods,
+        burst_pct: args.burst_pct.clone(),
+        burst_repeats: args.burst_repeats,
+        burst_i_max: args.burst_i_max,
         gear_ratio: args.gear_ratio,
         f_ci: args.f_ci,
         f_cv: args.f_cv,
@@ -191,6 +209,20 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
                 "{}",
                 render_partial(ReportInputs {
                     rl: Some(&r),
+                    ..Default::default()
+                })
+            );
+            Ok(())
+        }
+        Cmd::Burst => {
+            let out = csvio::OutDir::create(&cli.out)?;
+            println!("recording to {}", out.0.display());
+            let sense = read_sense(&mut c, id)?;
+            let r = run_inductance(&cli, &mut c, id, &out, &sense)?;
+            println!(
+                "{}",
+                render_partial(ReportInputs {
+                    inductance: Some(&r),
                     ..Default::default()
                 })
             );
@@ -413,6 +445,43 @@ fn run_rl(
     })
 }
 
+fn run_inductance(
+    cli: &Ctx,
+    c: &mut Client<NusbPipe>,
+    id: Id,
+    out: &csvio::OutDir,
+    sense: &SenseJson,
+) -> Result<InductanceResult> {
+    println!("[E8 winding L] (high-rate shunt bursts at mid travel)");
+    recenter(c, id)?;
+    let params = rig(cli);
+    let sc = sense
+        .scales()
+        .context("CalibSense scales degenerate (shunt/gain/dividers/vdd)")?;
+    let cfg = InductanceCfg {
+        step_pct: cli.burst_pct.clone(),
+        repeats: cli.burst_repeats,
+        i_max_a: cli.burst_i_max,
+        ..InductanceCfg::default()
+    };
+    let mut log = csvio::SnapshotLog::create(out, "inductance_snapshots.csv")?;
+    let mut exp = Guarded::new(Inductance::new(cfg, &params, sc), params);
+    with_guard(c, id, |c| Pump::new(c, id, Some(&mut log)).run(&mut exp))?;
+    check_abort("inductance", exp.abort())?;
+    let exp = exp.into_inner();
+    csvio::write_bursts(out, exp.captures())?;
+    exp.fit().with_context(|| {
+        format!(
+            "inductance fit degenerate ({} captures; notes: {})",
+            exp.captures().len(),
+            match exp.warnings() {
+                [] => "none".to_string(),
+                w => w.join("; "),
+            }
+        )
+    })
+}
+
 fn run_breakaway(
     cli: &Ctx,
     c: &mut Client<NusbPipe>,
@@ -617,6 +686,17 @@ fn fit_dir(cli: &Ctx, dir: PathBuf) -> Result<()> {
         }
         false => None,
     };
+    // Same standing as the rl block: refitted and reported, consumed by
+    // nothing while the method is advisory.
+    let inductance = match csvio::read_bursts(&dir)?.as_slice() {
+        [] => None,
+        caps => {
+            let sc = sense.scales().context(
+                "params.json sense block predates the R/L band (no vdd_mv / vbus divider)",
+            )?;
+            osc_ident::exp::inductance::fit_captures(caps, &sc, &FitCfg::default())
+        }
+    };
     let rungs = csvio::read_rungs(&dir)?;
     let pts: Vec<fits::RungPoint> = csvio::read_rung_points(&dir)?;
     let ke = fits::ke_fit(&pts, resistance.r_vpc).context("ke refit degenerate")?;
@@ -714,6 +794,7 @@ fn fit_dir(cli: &Ctx, dir: PathBuf) -> Result<()> {
         bias: bias_res.as_ref(),
         resistance: Some(&resistance),
         rl: rl.as_ref(),
+        inductance: inductance.as_ref(),
         breakaway: bk_res.as_ref(),
         ladder: Some(&ladder),
         inertia: Some(&inertia),
@@ -724,6 +805,7 @@ fn fit_dir(cli: &Ctx, dir: PathBuf) -> Result<()> {
 
     p.resistance = Some(ResistanceJson::from(&resistance));
     p.rl = rl.as_ref().map(RlJson::from);
+    p.inductance = inductance.as_ref().map(InductanceJson::from);
     p.ladder = Some(LadderJson {
         ke_vpc: ladder.ke.ke_vpc,
         ke_r2: ladder.ke.r2,

@@ -5,6 +5,7 @@
 //! transient the settle discard exists for.
 
 use super::{Cmd, Experiment};
+use crate::burst::{Capture, Meta, SAMPLE_HCLK, SAMPLE_US, SAMPLES};
 use crate::frame::{TelFrame, TelemetrySnapshot};
 use crate::regs::{ALL, Reg, control};
 
@@ -297,6 +298,119 @@ impl FakeServo {
     }
 }
 
+/// A switched RL winding sampled the way the firmware burst samples it: a
+/// centre-aligned PWM period of `2 * arr` HCLK, the drive window straddling
+/// the crest, the shunt live only during ON, and a first-order amplifier
+/// lag on the edge. Separate from [`FakeServo`], which has no electrical
+/// model at microsecond resolution.
+#[derive(Clone, Debug)]
+pub struct SynthBurst {
+    /// Loop resistance seen by the winding, ohms.
+    pub r: f64,
+    pub l: f64,
+    pub v_rail: f64,
+    pub arr: u16,
+    pub bias: f64,
+    /// Shunt amplifier edge time constant, microseconds.
+    pub settle_us: f64,
+    /// Peak-to-peak measurement noise, counts.
+    pub noise_counts: f64,
+    pub amps_per_count: f64,
+    pub v_rail_per_count: f64,
+    pub step_index: u16,
+    /// Samples from the step to the crest whose update event latches the
+    /// new compare value. The window straddling that crest is a HALF
+    /// window - the bench captures show it and so must this.
+    pub latch_delay: usize,
+}
+
+impl SynthBurst {
+    /// Board D as fitted: 60 mohm shunt at G 15, 15k/10k rail tap, a 4.37 V
+    /// USB rail, ARR 1200.
+    pub fn board_d() -> Self {
+        let lsb = 3.3 / 4096.0;
+        Self {
+            r: 4.0,
+            l: 0.6e-3,
+            v_rail: 4.37,
+            arr: 1200,
+            bias: 112.0,
+            settle_us: 0.9,
+            noise_counts: 2.0,
+            amps_per_count: lsb / (15.0 * 0.060),
+            v_rail_per_count: lsb * 2.5,
+            step_index: 485,
+            latch_delay: 21,
+        }
+    }
+
+    /// Samples per PWM period at the burst's own sample clock.
+    pub fn period(&self) -> f64 {
+        2.0 * self.arr as f64 / SAMPLE_HCLK
+    }
+
+    pub fn capture(&self, step_q15: i16, pre_q15: i16) -> Capture {
+        const SUBSTEPS: usize = 8;
+        let p = self.period();
+        let crest0 = self.step_index as f64 + self.latch_delay as f64;
+        let duty_at = |k: f64| {
+            let q = if k >= 0.0 { step_q15 } else { pre_q15 };
+            (q as f64 / 32767.0).abs()
+        };
+        let on_at = |x: f64| {
+            let k = ((x - crest0) / p).round();
+            let u = x - (crest0 + k * p);
+            let d = if u >= 0.0 {
+                duty_at(k)
+            } else {
+                duty_at(k - 1.0)
+            };
+            u.abs() <= d * p / 2.0
+        };
+        let dt = SAMPLE_US * 1e-6 / SUBSTEPS as f64;
+        let a_amp = 1.0 - (-SAMPLE_US / SUBSTEPS as f64 / self.settle_us).exp();
+        let mut i = 0.0f64;
+        let mut m = self.bias;
+        let mut lcg = 0x2545F4914F6CDD1Du64;
+        let mut noise = || {
+            lcg = lcg
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((lcg >> 11) as f64 / (1u64 << 53) as f64 - 0.5) * self.noise_counts
+        };
+        let mut samples = Vec::with_capacity(SAMPLES);
+        for n in 0..SAMPLES {
+            for s in 0..SUBSTEPS {
+                let x = n as f64 + s as f64 / SUBSTEPS as f64;
+                let on = on_at(x);
+                let v = if on { self.v_rail } else { 0.0 };
+                i += (v - i * self.r) / self.l * dt;
+                let target = if on {
+                    self.bias + i / self.amps_per_count
+                } else {
+                    self.bias
+                };
+                m += (target - m) * a_amp;
+            }
+            samples.push((m + noise()).round().max(0.0) as u16);
+        }
+        Capture {
+            samples,
+            meta: Meta {
+                pre_q15,
+                step_q15,
+                step_index: self.step_index,
+                start_cnt: 1094,
+                pwm_arr: self.arr,
+                start_dir: 1,
+                restore_dir: 0,
+                vbus_raw: (self.v_rail / self.v_rail_per_count).round() as u16,
+                bias: self.bias.round() as u16,
+            },
+        }
+    }
+}
+
 fn reg_name(reg: Reg) -> &'static str {
     ALL.iter()
         .find(|(_, r)| *r == reg)
@@ -332,6 +446,17 @@ pub fn pump<E: Experiment>(exp: &mut E, servo: &mut FakeServo, max_steps: u32) -
                 frames.clear();
                 servo.stream(samples, &mut frames);
                 exp.push_tel(&frames);
+            }
+            Cmd::Burst { duty_q15, pre_q15 } => {
+                log.push(format!("burst {duty_q15} pre {pre_q15}"));
+                // r 8 ohm keeps the whole default duty ladder inside the
+                // 0.4 A envelope, so the plan is not pruned by accident
+                let plant = SynthBurst {
+                    r: 8.0,
+                    ..SynthBurst::board_d()
+                };
+                exp.push_burst(&plant.capture(duty_q15, pre_q15));
+                servo.advance(2);
             }
             Cmd::Done => return log,
         }
