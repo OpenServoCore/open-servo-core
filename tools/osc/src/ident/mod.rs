@@ -21,6 +21,7 @@ use osc_ident::exp::breakaway::{Breakaway, BreakawayCfg};
 use osc_ident::exp::inertia::{Inertia, InertiaCfg};
 use osc_ident::exp::ladder::{Ladder, LadderCfg, LadderResult};
 use osc_ident::exp::resistance::{Resistance, ResistanceCfg};
+use osc_ident::exp::rl::{Rl, RlCfg, RlFitCfg, RlResult};
 use osc_ident::exp::verify::{
     VerifyCurrent, VerifyCurrentCfg, VerifyResult, VerifyVelocity, VerifyVelocityCfg,
 };
@@ -31,7 +32,7 @@ use osc_ident::regs::{calib, control};
 use osc_ident::report::{self, ReportInputs};
 use params::{
     BiasJson, BreakawayJson, GainJson, InertiaJson, LadderJson, ParamsFile, PlantJson,
-    ResistanceJson, SenseJson,
+    ResistanceJson, RlJson, SenseJson,
 };
 
 /// The `osc ident` arg group: output, rig envelope, and bandwidth targets,
@@ -56,6 +57,11 @@ pub struct Args {
     /// Motor inductance, henries (not identifiable from this telemetry).
     #[arg(long, global = true, default_value_t = gains::DEFAULT_L_HENRIES)]
     l_henries: f64,
+    /// E7 toggle step, PWM periods. The default 20 (1 ms) is long enough
+    /// for the rotor to follow, which biases R and L - see osc-ident's
+    /// `exp::rl`.
+    #[arg(long, global = true, default_value_t = 20)]
+    step_periods: u16,
     /// Nominal gear ratio, informational only (printed in the report dir).
     #[arg(long, global = true)]
     gear_ratio: Option<f64>,
@@ -84,6 +90,7 @@ struct Ctx {
     slip_hi: u16,
     i_abort: i16,
     l_henries: f64,
+    step_periods: u16,
     gear_ratio: Option<f64>,
     f_ci: f64,
     f_cv: f64,
@@ -93,13 +100,18 @@ struct Ctx {
 
 #[derive(Subcommand, Debug)]
 enum Cmd {
-    /// The full pipeline: bias -> resistance -> breakaway -> ladder ->
-    /// inertia -> fit -> report + params.json. Write-back stays explicit.
+    /// The full pipeline: bias -> resistance -> rl -> breakaway -> ladder
+    /// -> inertia -> fit -> report + params.json. R comes from resistance;
+    /// the rl capture is recorded and reported, not consumed. Write-back
+    /// stays explicit.
     Run,
     /// E0: torque-off noise and bias floor.
     Bias,
-    /// E2: end-stop stall duty ladder -> winding R.
+    /// E2: end-stop stall duty ladder -> winding R (the table's R).
     Resistance,
+    /// E7: free-shaft duty toggles -> winding R and L (advisory; the
+    /// 1 ms step is rotor-followed and biased).
+    Rl,
     /// E1: breakaway duty ramp (needs R; runs its own bias first).
     Breakaway,
     /// E3: steady-state duty ladder -> Ke + friction line (needs R).
@@ -135,6 +147,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
         slip_hi: args.slip_hi,
         i_abort: args.i_abort,
         l_henries: args.l_henries,
+        step_periods: args.step_periods,
         gear_ratio: args.gear_ratio,
         f_ci: args.f_ci,
         f_cv: args.f_cv,
@@ -167,6 +180,19 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
             println!(
                 "R = {:.4} vcounts/ccount (r2 {:.4}, n {}, drift {:+.5}/s)",
                 r.r_vpc, r.r2, r.n, r.drift_vpc_per_s
+            );
+            Ok(())
+        }
+        Cmd::Rl => {
+            let out = csvio::OutDir::create(&cli.out)?;
+            let sense = read_sense(&mut c, id)?;
+            let r = run_rl(&cli, &mut c, id, &out, &sense)?;
+            println!(
+                "{}",
+                render_partial(ReportInputs {
+                    rl: Some(&r),
+                    ..Default::default()
+                })
             );
             Ok(())
         }
@@ -288,7 +314,18 @@ fn read_sense(c: &mut Client<NusbPipe>, id: Id) -> Result<SenseJson> {
         vmotor_div_top: snapshot::read_u16(c, id, calib::VMOTOR_DIV_TOP)?,
         vmotor_div_bot: snapshot::read_u16(c, id, calib::VMOTOR_DIV_BOT)?,
         tick_hz: snapshot::read_u16(c, id, calib::TICK_HZ)?,
+        vdd_mv: snapshot::read_u16(c, id, calib::VDD_MV)?,
+        vbus_div_top_ohm: snapshot::read_u16(c, id, calib::VBUS_DIV_TOP_OHM)?,
+        vbus_div_bot_ohm: snapshot::read_u16(c, id, calib::VBUS_DIV_BOT_OHM)?,
     })
+}
+
+/// Fit knobs anchored to the servo's own tick rate.
+fn rl_fit_cfg(sense: &SenseJson) -> RlFitCfg {
+    RlFitCfg {
+        tick_hz: sense.tick_hz as f64,
+        ..RlFitCfg::default()
+    }
 }
 
 // --- experiment runners -----------------------------------------------------
@@ -336,6 +373,44 @@ fn run_resistance(
     let exp = exp.into_inner();
     csvio::write_dwell_samples(out, exp.samples())?;
     exp.fit().context("resistance fit degenerate")
+}
+
+fn run_rl(
+    cli: &Ctx,
+    c: &mut Client<NusbPipe>,
+    id: Id,
+    out: &csvio::OutDir,
+    sense: &SenseJson,
+) -> Result<RlResult> {
+    println!("[E7 winding R/L] (free shaft at mid travel, chained duty toggles)");
+    recenter(c, id)?;
+    let params = rig(cli);
+    let sc = sense
+        .scales()
+        .context("CalibSense scales degenerate (shunt/gain/dividers/vdd)")?;
+    let cfg = RlCfg {
+        step_periods: cli.step_periods,
+        fit: rl_fit_cfg(sense),
+        ..RlCfg::default()
+    };
+    let mut log = csvio::SnapshotLog::create(out, "rl_snapshots.csv")?;
+    let mut exp = Guarded::new(Rl::new(cfg, &params, sc), params);
+    with_guard(c, id, |c| Pump::new(c, id, Some(&mut log)).run(&mut exp))?;
+    check_abort("rl", exp.abort())?;
+    let exp = exp.into_inner();
+    csvio::write_rl_segments(out, exp.segments())?;
+    // The planner's notes are the only account of a run that captured
+    // nothing to fit; on the failure path they ARE the error.
+    exp.fit().with_context(|| {
+        format!(
+            "rl fit degenerate ({} bursts captured; notes: {})",
+            exp.segments().len(),
+            match exp.warnings() {
+                [] => "none".to_string(),
+                w => w.join("; "),
+            }
+        )
+    })
 }
 
 fn run_breakaway(
@@ -490,6 +565,9 @@ fn run_all(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
     let sense = read_sense(c, id)?;
     let (bias, vbus) = run_bias(cli, c, id, &out)?;
     let resistance = run_resistance(cli, c, id, &out)?;
+    // recorded for the R/L method's own development; nothing downstream
+    // reads it while the toggle step is rotor-followed
+    let rl = run_rl(cli, c, id, &out, &sense)?;
     let breakaway = run_breakaway(cli, c, id, &out, resistance.r_vpc, vbus)?;
     let ladder = run_ladder(cli, c, id, &out, resistance.r_vpc)?;
     let priors = priors_of(resistance.r_vpc, &ladder, &sense);
@@ -500,6 +578,7 @@ fn run_all(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
     let p = ParamsFile {
         bias: Some(BiasJson::from(&bias)),
         resistance: Some(ResistanceJson::from(&resistance)),
+        rl: Some(RlJson::from(&rl)),
         breakaway: Some(BreakawayJson::from(&breakaway)),
         sense: Some(sense),
         ..Default::default()
@@ -523,6 +602,21 @@ fn fit_dir(cli: &Ctx, dir: PathBuf) -> Result<()> {
 
     let dwells = csvio::read_dwell_samples(&dir)?;
     let resistance = Resistance::fit_samples(&dwells).context("resistance refit degenerate")?;
+    // Refitted and reported when the run captured one, consumed by nothing:
+    // the 1 ms toggle step is rotor-followed (osc-ident `exp::rl`).
+    let rl = match dir.join("rl.csv").exists() {
+        true => {
+            let segs = csvio::read_rl_segments(&dir)?;
+            let sc = sense.scales().context(
+                "params.json sense block predates the R/L band (no vdd_mv / vbus divider)",
+            )?;
+            Some(
+                osc_ident::exp::rl::fit_segments(&segs, &sc, &rl_fit_cfg(&sense))
+                    .context("rl refit degenerate")?,
+            )
+        }
+        false => None,
+    };
     let rungs = csvio::read_rungs(&dir)?;
     let pts: Vec<fits::RungPoint> = csvio::read_rung_points(&dir)?;
     let ke = fits::ke_fit(&pts, resistance.r_vpc).context("ke refit degenerate")?;
@@ -619,6 +713,7 @@ fn fit_dir(cli: &Ctx, dir: PathBuf) -> Result<()> {
     let text = report::render(&ReportInputs {
         bias: bias_res.as_ref(),
         resistance: Some(&resistance),
+        rl: rl.as_ref(),
         breakaway: bk_res.as_ref(),
         ladder: Some(&ladder),
         inertia: Some(&inertia),
@@ -628,6 +723,7 @@ fn fit_dir(cli: &Ctx, dir: PathBuf) -> Result<()> {
     std::fs::write(dir.join("report.txt"), &text)?;
 
     p.resistance = Some(ResistanceJson::from(&resistance));
+    p.rl = rl.as_ref().map(RlJson::from);
     p.ladder = Some(LadderJson {
         ke_vpc: ladder.ke.ke_vpc,
         ke_r2: ladder.ke.r2,

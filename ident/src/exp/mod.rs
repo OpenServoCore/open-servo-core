@@ -25,6 +25,7 @@ pub mod endstop;
 pub mod inertia;
 pub mod ladder;
 pub mod resistance;
+pub mod rl;
 pub mod sweep;
 pub mod verify;
 

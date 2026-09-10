@@ -10,6 +10,7 @@ use crate::exp::breakaway::BreakawayResult;
 use crate::exp::inertia::InertiaResult;
 use crate::exp::ladder::LadderResult;
 use crate::exp::resistance::ResistanceResult;
+use crate::exp::rl::RlResult;
 use crate::gains::{EncodedGains, GainSet};
 
 /// The board-D rig's hand-eyeballed seeds (kernel band), for the comparison
@@ -32,6 +33,7 @@ const HAND_SEEDS: [(&str, u16); 8] = [
 pub struct ReportInputs<'a> {
     pub bias: Option<&'a BiasResult>,
     pub resistance: Option<&'a ResistanceResult>,
+    pub rl: Option<&'a RlResult>,
     pub breakaway: Option<&'a BreakawayResult>,
     pub ladder: Option<&'a LadderResult>,
     pub inertia: Option<&'a InertiaResult>,
@@ -73,6 +75,81 @@ pub fn render(r: &ReportInputs<'_>) -> String {
             );
             let _ = writeln!(s, "  fwd/rev       {} / {}", opt(x.r_fwd), opt(x.r_rev));
             let _ = writeln!(s, "  heat drift    {:.5} vpc/s", x.drift_vpc_per_s);
+        }
+        None => {
+            let _ = writeln!(s, "  skipped");
+        }
+    }
+
+    let _ = writeln!(
+        s,
+        "\n[E7 winding R/L] (free shaft, duty toggles; NOT the table's R)"
+    );
+    match r.rl {
+        Some(x) => {
+            let _ = writeln!(
+                s,
+                "  R             {:.4} ohm [{:.4}, {:.4}] (origin {:.4}, r2 {:.4}, n={})",
+                x.r_ohm, x.r_bracket.0, x.r_bracket.1, x.r_origin_ohm, x.r2, x.transitions
+            );
+            let _ = writeln!(
+                s,
+                "                {:.4} vcounts/ccount; rail-referenced {:.4} ohm (adds the bridge)",
+                x.r_vpc, x.r_rail_ohm
+            );
+            let _ = writeln!(
+                s,
+                "  tau           {:.1} us [{:.1}, {:.1}]  ->  L {:.4} mH [{:.4}, {:.4}]",
+                x.tau_us,
+                x.tau_bracket.0,
+                x.tau_bracket.1,
+                x.l_henries * 1e3,
+                x.l_bracket.0 * 1e3,
+                x.l_bracket.1 * 1e3
+            );
+            let _ = writeln!(
+                s,
+                "  fwd/rev       {} / {}   bias lo/hi {} / {}   up/down {} / {}",
+                opt(x.r_fwd),
+                opt(x.r_rev),
+                opt(x.r_bias_lo),
+                opt(x.r_bias_hi),
+                opt(x.r_up),
+                opt(x.r_down)
+            );
+            let _ = writeln!(
+                s,
+                "  supply        {:.3} ohm source{}   v0 {:.3} V   bias {:.1} counts",
+                x.src_ohm,
+                if x.supply_soft { " (SOFT)" } else { "" },
+                x.v0_volts,
+                x.bias_counts
+            );
+            let gates: Vec<String> = x
+                .gates
+                .iter()
+                .map(|g| {
+                    format!(
+                        "{} {} ({})",
+                        if g.pass { "pass" } else { "FAIL" },
+                        g.name,
+                        g.detail
+                    )
+                })
+                .collect();
+            let _ = writeln!(s, "  gates         {}", gates.join(", "));
+            let _ = writeln!(
+                s,
+                "  verdict       {}",
+                if x.ok {
+                    "gates pass; advisory only - E2 is the table's R"
+                } else {
+                    "GATES FAILED - numbers unusable"
+                }
+            );
+            for w in &x.warnings {
+                let _ = writeln!(s, "  warn: {w}");
+            }
         }
         None => {
             let _ = writeln!(s, "  skipped");
@@ -212,12 +289,65 @@ pub fn render(r: &ReportInputs<'_>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::exp::rl::RlResult;
     use crate::gains::{BwTargets, PlantParams, encode, synthesize};
+
+    #[test]
+    fn rl_section_shows_the_verdict() {
+        let mut x = RlResult {
+            r_ohm: 4.0,
+            r_origin_ohm: 4.01,
+            r_rail_ohm: 4.3,
+            r_bracket: (3.9, 4.1),
+            r_vpc: 2.87,
+            v0_volts: 0.01,
+            r2: 0.999,
+            r_fwd: Some(4.0),
+            r_rev: Some(4.02),
+            r_bias_lo: Some(3.99),
+            r_bias_hi: Some(4.01),
+            r_up: Some(3.95),
+            r_down: Some(4.05),
+            tau_us: 150.0,
+            tau_bracket: (145.0, 155.0),
+            l_henries: 0.6e-3,
+            l_bracket: (0.55e-3, 0.65e-3),
+            src_ohm: 0.27,
+            supply_soft: false,
+            bias_counts: 512.0,
+            null_step_counts: Some(0.3),
+            transitions: 156,
+            gates: vec![crate::exp::rl::Gate {
+                name: "null",
+                pass: true,
+                detail: "0.3 counts of step".into(),
+            }],
+            ok: true,
+            warnings: Vec::new(),
+        };
+        let s = render(&ReportInputs {
+            rl: Some(&x),
+            ..Default::default()
+        });
+        assert!(s.contains("0.6000 mH"), "L missing:\n{s}");
+        assert!(s.contains("advisory only"));
+
+        x.ok = false;
+        x.supply_soft = true;
+        x.gates[0].pass = false;
+        let s = render(&ReportInputs {
+            rl: Some(&x),
+            ..Default::default()
+        });
+        assert!(s.contains("GATES FAILED"), "verdict missing:\n{s}");
+        assert!(s.contains("FAIL null"));
+        assert!(s.contains("(SOFT)"));
+    }
 
     #[test]
     fn renders_empty_and_partial_inputs() {
         let all_skipped = render(&ReportInputs::default());
-        assert_eq!(all_skipped.matches("skipped").count(), 6);
+        assert_eq!(all_skipped.matches("skipped").count(), 7);
 
         let p = PlantParams {
             r_vpc: 3.37,

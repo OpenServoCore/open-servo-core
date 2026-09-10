@@ -90,6 +90,27 @@ pub mod control {
     pub const GOAL_VELOCITY: Reg = reg(0x018c, 4);
     pub const GOAL_CURRENT: Reg = reg(0x0190, 2);
     pub const TEL_COUNT: Reg = reg(0x0192, 2);
+    pub const BURST_DUTY_Q15: Reg = reg(0x0196, 2);
+    pub const BURST_ARM: Reg = reg(0x0198, 1);
+    pub const BURST_PAGE: Reg = reg(0x0199, 1);
+}
+
+/// BURST readback section, all RO. One READ of `PAGE_ECHO..=RESTORE_DIR` is
+/// 252 B: the selected page plus the whole header.
+pub mod burst {
+    use super::{Reg, reg};
+
+    pub const PAGE_ECHO: Reg = reg(0x02c0, 1);
+    pub const STATE: Reg = reg(0x02c1, 1);
+    /// 120 LE u16 raw shunt codes; a Bytes field like `lut_corr`, so it stays
+    /// out of the scalar ALL cross-check.
+    pub const SAMPLES: Reg = reg(0x02c2, 240);
+    pub const SAMPLES_LEN: Reg = reg(0x03b2, 2);
+    pub const STEP_INDEX: Reg = reg(0x03b4, 2);
+    pub const START_CNT: Reg = reg(0x03b6, 2);
+    pub const PWM_ARR: Reg = reg(0x03b8, 2);
+    pub const START_DIR: Reg = reg(0x03ba, 1);
+    pub const RESTORE_DIR: Reg = reg(0x03bb, 1);
 }
 
 pub mod telemetry {
@@ -188,6 +209,9 @@ pub const ALL: &[(&str, Reg)] = &[
     ("goal_velocity", control::GOAL_VELOCITY),
     ("goal_current", control::GOAL_CURRENT),
     ("tel_count", control::TEL_COUNT),
+    ("duty_q15", control::BURST_DUTY_Q15),
+    ("arm", control::BURST_ARM),
+    ("page", control::BURST_PAGE),
     ("fault_flags", telemetry::FAULT_FLAGS),
     ("status_flags", telemetry::STATUS_FLAGS),
     ("mode_active", telemetry::MODE_ACTIVE),
@@ -216,6 +240,14 @@ pub const ALL: &[(&str, Reg)] = &[
     ("vdiff_mean", telemetry::VDIFF_MEAN),
     ("duty_mean_q15", telemetry::DUTY_MEAN_Q15),
     ("agg_seq", telemetry::AGG_SEQ),
+    ("page_echo", burst::PAGE_ECHO),
+    ("state", burst::STATE),
+    ("samples_len", burst::SAMPLES_LEN),
+    ("step_index", burst::STEP_INDEX),
+    ("start_cnt", burst::START_CNT),
+    ("pwm_arr", burst::PWM_ARR),
+    ("start_dir", burst::START_DIR),
+    ("restore_dir", burst::RESTORE_DIR),
 ];
 
 #[cfg(test)]

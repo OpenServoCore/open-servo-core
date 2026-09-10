@@ -72,6 +72,24 @@ pub fn mean(v: &[f64]) -> Option<f64> {
     Some(v.iter().sum::<f64>() / v.len() as f64)
 }
 
+/// Linear-interpolated quantile, `q` in [0, 1]. None on empty or
+/// non-finite input.
+pub fn quantile(v: &[f64], q: f64) -> Option<f64> {
+    if v.is_empty() || !v.iter().all(|x| x.is_finite()) || !(0.0..=1.0).contains(&q) {
+        return None;
+    }
+    let mut s = v.to_vec();
+    s.sort_by(f64::total_cmp);
+    let h = q * (s.len() - 1) as f64;
+    let lo = h.floor() as usize;
+    let hi = h.ceil() as usize;
+    Some(s[lo] + (s[hi] - s[lo]) * (h - lo as f64))
+}
+
+pub fn median(v: &[f64]) -> Option<f64> {
+    quantile(v, 0.5)
+}
+
 /// Sample standard deviation (n - 1 divisor).
 pub fn stddev(v: &[f64]) -> Option<f64> {
     if v.len() < 2 {
@@ -252,6 +270,18 @@ mod tests {
             "degenerate x"
         );
         assert!(linear_ls(&[(1.0, f64::NAN), (2.0, 1.0)]).is_none());
+    }
+
+    #[test]
+    fn quantiles_interpolate_and_median_splits_even_n() {
+        let v = [4.0, 1.0, 3.0, 2.0];
+        assert_eq!(median(&v), Some(2.5));
+        assert_eq!(quantile(&v, 0.0), Some(1.0));
+        assert_eq!(quantile(&v, 1.0), Some(4.0));
+        assert_eq!(quantile(&v, 0.25), Some(1.75));
+        assert_eq!(median(&[7.0]), Some(7.0));
+        assert!(median(&[]).is_none());
+        assert!(quantile(&[1.0, f64::NAN], 0.5).is_none());
     }
 
     #[test]

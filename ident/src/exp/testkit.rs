@@ -230,8 +230,11 @@ impl FakeServo {
                 }),
                 vbus: sel(1 << 5).then_some(self.vbus as u16),
                 // raw terminal fakes: driven side carries the rail, the
-                // other sits low; raw current rides a 512-count bias
-                current_raw: sel(1 << 6).then(|| (512.0 + i).round() as u16),
+                // other sits low; raw current rides a 512-count bias and
+                // is a MAGNITUDE - the low-side shunt sees drive current
+                // the same way whichever way the bridge is pointed
+                // (window.rs applies the direction sign downstream)
+                current_raw: sel(1 << 6).then(|| (512.0 + i.abs()).round() as u16),
                 vmotor_a: sel(1 << 7).then_some(if driving && self.duty > 0 {
                     self.vbus as u16
                 } else {

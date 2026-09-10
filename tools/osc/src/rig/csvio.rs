@@ -12,6 +12,7 @@ use anyhow::{Context, Result};
 use osc_ident::exp::WindowSample;
 use osc_ident::exp::ladder::RungSummary;
 use osc_ident::exp::resistance::DwellSample;
+use osc_ident::exp::rl::{SegKind, Segment};
 use osc_ident::fits::{RungPoint, StepSeries};
 use osc_ident::frame::{TelFrame, TelemetrySnapshot};
 
@@ -282,6 +283,82 @@ pub(crate) fn read_step_series(dir: &Path) -> Result<Vec<(StepSeries, bool)>> {
     Ok(out)
 }
 
+/// Every captured burst of an R/L run, one row per sample: the segment
+/// tag then the raw frame. `ident fit` refits R, tau and the gates from
+/// this alone.
+pub(crate) fn write_rl_segments(dir: &OutDir, segs: &[Segment]) -> Result<()> {
+    let mut w = dir.file("rl.csv")?;
+    writeln!(
+        w,
+        "seg,chain,kind,dir,bias,cmd_duty_q15,tick,window_valid,pos,duty_q15,current_raw,vmotor_a,vmotor_b,vbus_raw"
+    )?;
+    let opt = |v: Option<i32>| v.map(|v| v.to_string()).unwrap_or_default();
+    for (k, s) in segs.iter().enumerate() {
+        for f in &s.tel {
+            writeln!(
+                w,
+                "{k},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+                s.chain,
+                s.kind.as_str(),
+                s.dir,
+                s.bias,
+                s.cmd_duty_q15,
+                f.tick,
+                f.window_valid as u8,
+                opt(f.pos.map(|v| v as i32)),
+                opt(f.duty_q15.map(|v| v as i32)),
+                opt(f.current_raw.map(|v| v as i32)),
+                opt(f.vmotor_a.map(|v| v as i32)),
+                opt(f.vmotor_b.map(|v| v as i32)),
+                opt(f.vbus_raw.map(|v| v as i32)),
+            )?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn read_rl_segments(dir: &Path) -> Result<Vec<Segment>> {
+    fn opt<T: std::str::FromStr>(s: &str) -> Result<Option<T>>
+    where
+        T::Err: std::error::Error + Send + Sync + 'static,
+    {
+        if s.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(s.parse()?))
+        }
+    }
+    let mut out: Vec<Segment> = Vec::new();
+    let mut cur: Option<usize> = None;
+    for parts in rows(&dir.join("rl.csv"), 14)? {
+        let k: usize = parts[0].parse()?;
+        if cur != Some(k) {
+            cur = Some(k);
+            out.push(Segment {
+                chain: parts[1].parse()?,
+                kind: SegKind::parse(&parts[2])
+                    .with_context(|| format!("unknown rl segment kind {:?}", parts[2]))?,
+                dir: parts[3].parse()?,
+                bias: parts[4].parse()?,
+                cmd_duty_q15: parts[5].parse()?,
+                tel: Vec::new(),
+            });
+        }
+        out.last_mut().expect("pushed").tel.push(TelFrame {
+            tick: parts[6].parse()?,
+            window_valid: parts[7] == "1",
+            pos: opt(&parts[8])?,
+            duty_q15: opt(&parts[9])?,
+            current_raw: opt(&parts[10])?,
+            vmotor_a: opt(&parts[11])?,
+            vmotor_b: opt(&parts[12])?,
+            vbus_raw: opt(&parts[13])?,
+            ..Default::default()
+        });
+    }
+    Ok(out)
+}
+
 fn rows(path: &Path, cols: usize) -> Result<Vec<Vec<String>>> {
     let f = File::open(path).with_context(|| format!("open {}", path.display()))?;
     let mut out = Vec::new();
@@ -419,6 +496,48 @@ mod tests {
         assert_eq!(pts[0].omega, 1500.5);
         assert_eq!(pts[0].i, 40.0);
         assert_eq!(pts[0].v, 450.0);
+    }
+
+    #[test]
+    fn rl_segments_round_trip() {
+        let dir = tmp();
+        let frame = |tick: u64, duty: i16, raw: u16| TelFrame {
+            tick,
+            window_valid: true,
+            pos: Some(2048),
+            duty_q15: Some(duty),
+            current_raw: Some(raw),
+            vmotor_a: Some(1800),
+            vmotor_b: Some(775),
+            vbus_raw: Some(2000),
+            ..Default::default()
+        };
+        let segs = vec![
+            Segment {
+                chain: 0,
+                kind: SegKind::Rest,
+                dir: 0,
+                bias: 0,
+                cmd_duty_q15: 0,
+                tel: vec![TelFrame {
+                    tick: 0,
+                    window_valid: false,
+                    current_raw: Some(512),
+                    ..Default::default()
+                }],
+            },
+            Segment {
+                chain: 1,
+                kind: SegKind::Toggle,
+                dir: -1,
+                bias: 1,
+                cmd_duty_q15: -9830,
+                tel: vec![frame(0, -9830, 640), frame(1, -9830, 690)],
+            },
+        ];
+        write_rl_segments(&dir, &segs).unwrap();
+        let back = read_rl_segments(&dir.0).unwrap();
+        assert_eq!(back, segs);
     }
 
     #[test]
