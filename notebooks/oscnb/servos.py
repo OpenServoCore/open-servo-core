@@ -124,6 +124,25 @@ SERVOS = {
                 0.197, 0.19, 0.204, "V per wiper V/s", "nb01, chain 2",
                 "chain 2 had GND-returned taps, the defect the VB bias fixed - "
                 "re-measure on chain 3 before trusting"),
+            # THE Ke CLOSURE. Speed from the ripple line during the DRIVE
+            # segment, BEMF from the coast that follows. The pot is never
+            # touched, which is the whole point: against pot speed the same
+            # captures give 13-28% low with CV 26%.
+            "ke_measured": Measured(
+                7.367, 7.29, 7.49, "mV per motor rev/s",
+                "ripple speed + coast BEMF, 2S bridge spindown, n=28, CV 1.9%",
+                "IN-SERVO, geared and enclosed. run28's 7.542 is a BARE CAN "
+                "with pinion, by a two-point Kv slope that needs I*R to cancel "
+                "between its points - an assumption gears would break. This "
+                "route has no I*R term at all (coast means i=0). The -2.3% gap "
+                "is NOT within-campaign heating: Ke drifts only +0.19% across "
+                "5 captures, and the wrong way for warming. Candidates for the "
+                "offset: different physical can (magnet spread in a clone "
+                "family is a few %), different steady temperature (ferrite Br "
+                "is about -0.2%/C), +/-1% HSI on both sides. Known bias in THIS "
+                "number: drive ripple is an average while the shaft still "
+                "accelerates, BEMF is near final speed, so it reads slightly "
+                "HIGH - the wrong direction to explain the gap."),
         },
         notes=(
             "Gears serviced and cleaned after a run of end stop crashes; back "
