@@ -80,6 +80,9 @@ pub mod control {
     use super::{Reg, reg};
 
     pub const TORQUE_ENABLE: Reg = reg(0x0180, 1);
+    /// Deliberate stall: drops the stall trip and the endstop band, keeps the
+    /// current limit and the thermal derate. RAM only, cleared by a reboot.
+    pub const STALL_PERMIT: Reg = reg(0x0181, 1);
     pub const TEL_MASK: Reg = reg(0x0182, 2);
     pub const MODE: Reg = reg(0x0184, 1);
     pub const GOAL_DUTY: Reg = reg(0x0186, 2);
