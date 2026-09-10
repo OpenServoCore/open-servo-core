@@ -1,5 +1,6 @@
 //! `osc sweep` -- raw open-loop duty sweep for empirical plant capture:
-//! per direction x per duty rung, seek to a start band by polling, then one
+//! per direction x per duty rung, seek to a start band by polling, brake and
+//! settle so the rung opens on a still shaft, then one
 //! goal+arm COMMIT captures a TEL burst at full tick rate - no mid-rung
 //! polling (the firmware soft-limit duty clamp, current limit, and faults
 //! guard the silent window). A torque-off baseline burst runs first. Rows
@@ -138,6 +139,13 @@ pub struct Args {
     /// Seek drive, percent of full scale.
     #[arg(long, default_value_t = 28)]
     seek_duty_pct: u8,
+    /// Brake-and-hold after the seek, before the rung arms. Without it the
+    /// rung opens on a shaft still coasting from the seek, and since a fwd
+    /// rung's start band is at the LOW guard the coast is BACKWARD: measured
+    /// -0.70 V of entry EMF, which lands in the intercept of any onset fit.
+    /// Settled-window analysis does not care; onset R and L do.
+    #[arg(long, default_value_t = 300)]
+    settle_ms: u32,
     /// Seek envelope only - the captures themselves run unpolled.
     #[arg(long, default_value_t = 150)]
     guard_lo: u16,
@@ -349,6 +357,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
         "rest_ms": args.rest_ms,
         "baseline_ms": args.baseline_ms,
         "seek_duty_pct": args.seek_duty_pct,
+        "settle_ms": args.settle_ms,
         "guard": [args.guard_lo, args.guard_hi],
         "tel_mask": mask,
         "post_rung_brake": true,
@@ -402,6 +411,12 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
                         start_band(dir, args.guard_lo, args.guard_hi),
                         seek_duty,
                     )?;
+                    // Kill the seek's momentum and let the shaft ring down.
+                    // Sign is -dir, the mirror of the post-rung call: the
+                    // seek parks NEAR its start-band wall, so the token
+                    // brake duty has to point away from that one instead.
+                    brake_to_rest(c, id, -dir)?;
+                    rest(args.settle_ms)?;
                 } else if !live {
                     check_fault(c, id)?;
                 }
