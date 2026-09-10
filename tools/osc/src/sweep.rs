@@ -21,9 +21,11 @@
 //!
 //! `--stall` seeks the physical end stop instead of a start band and leaves
 //! the shaft there, so the rungs push into it: a locked-output ladder for
-//! resistance and inductance, with no back-EMF in the onset. It needs the
-//! soft position limits opened to the physical range first, or the kernel
-//! zeroes the outbound duty at the soft limit and the seek stops short.
+//! resistance and inductance, with no back-EMF in the onset. It sets the
+//! control table's `stall_permit` for the run and clears it after. Without
+//! that the kernel zeroes the outbound duty at the wall and trips the stall
+//! timer, and no soft-limit value avoids it - a stop can sit AT the position
+//! rail, which is where both of this servo's are.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -35,7 +37,7 @@ use osc_client::Id;
 use osc_client::blocking::Client;
 use osc_client::nusb::NusbPipe;
 use osc_ident::frame::TelFrame;
-use osc_ident::regs::{Reg, calib, control, telemetry};
+use osc_ident::regs::{Reg, calib, control};
 
 use crate::descriptor;
 use crate::rig::pump::{self, STOP, exchange_tel_burst, read_snapshot, with_guard, write_reg};
@@ -244,6 +246,10 @@ fn seek_band(c: &mut Client<NusbPipe>, id: Id, (lo, hi): (u16, u16), duty_q15: i
 /// end-stop detector so the two agree on where the ends are.
 const STALL_EPS: u16 = 3;
 const STALL_POLLS: u32 = 8;
+/// Breakout escalation when the shaft will not leave a stop: +5% of full
+/// scale per stalled window, giving up at 45%.
+const SEEK_STEP_Q15: i32 = 1638;
+const SEEK_CAP_Q15: i32 = 14745;
 
 /// Drive into the physical end stop and leave the shaft pressed against it.
 /// The rungs push the same way, so the train's backlash is taken up before
@@ -258,36 +264,48 @@ const STALL_POLLS: u32 = 8;
 fn seek_stop(c: &mut Client<NusbPipe>, id: Id, dir: i8, duty_q15: i16) -> Result<()> {
     write_reg(c, id, control::MODE, 0)?;
     write_reg(c, id, control::TORQUE_ENABLE, 1)?;
-    let duty = dir as i32 * duty_q15 as i32;
+    let mut duty = duty_q15 as i32;
     let mut last = check_fault(c, id)?;
     let mut still = 0;
+    // A stop only counts once the shaft has actually travelled. Standing
+    // still is what BOTH "arrived" and "stuck against the far stop" look
+    // like, and reading the second as the first runs the whole ladder at the
+    // wrong end - measured, and it walked free mid-ladder once the duty rose.
+    let mut moved = false;
     for _ in 0..500 {
         check_stop()?;
-        write_reg(c, id, control::GOAL_DUTY, duty)?;
+        write_reg(c, id, control::GOAL_DUTY, dir as i32 * duty)?;
         std::thread::sleep(Duration::from_millis(20));
         let pos = check_fault(c, id)?;
         if pos.abs_diff(last) > STALL_EPS {
             still = 0;
+            moved = true;
         } else {
             still += 1;
             if still >= STALL_POLLS {
-                let applied = read_u16(c, id, telemetry::DUTY_APPLIED_Q15)? as i16;
-                if applied == 0 {
+                if moved {
+                    // Duty stays on: releasing lets the train unwind, and the
+                    // burst would then re-wind it inside the measurement.
+                    return Ok(());
+                }
+                // Leaving a stop costs more than holding against one: 20% of
+                // full scale draws current without moving the shaft at all
+                // where 40% frees it. Step up rather than guess a constant.
+                still = 0;
+                duty += SEEK_STEP_Q15;
+                if duty > SEEK_CAP_Q15 {
                     write_reg(c, id, control::GOAL_DUTY, 0)?;
                     bail!(
-                        "stopped at pos {pos} with duty applied 0: that is a SOFT LIMIT, \
-                         not the end stop - open pos_min/max_soft_counts to the physical range"
+                        "shaft never moved at pos {pos}, up to {duty} q15 - jammed, \
+                         or stall_permit is not set and the kernel is zeroing the duty"
                     );
                 }
-                // Duty stays on: releasing here lets the train unwind, and
-                // the burst would then re-wind it inside the measurement.
-                return Ok(());
             }
         }
         last = pos;
     }
     write_reg(c, id, control::GOAL_DUTY, 0)?;
-    bail!("no end stop in 10 s driving {dir:+} at {duty_q15} q15")
+    bail!("no end stop in 10 s driving {dir:+} at {duty} q15")
 }
 
 /// 3 PWM ticks at ARR 1200 (0.25% drive) - enough to dodge motor.rs's
@@ -446,6 +464,9 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
         write_reg(c, id, decay_reg, Decay::Slow as i32)?;
         write_reg(c, id, zb_reg, 0)?;
         write_reg(c, id, control::TEL_MASK, mask as i32)?;
+        if args.stall {
+            write_reg(c, id, control::STALL_PERMIT, 1)?;
+        }
 
         // baseline: mid-travel, torque off, noise floor at full tick rate
         println!("[baseline] {} ms torque-off", args.baseline_ms);
@@ -548,9 +569,12 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
         }
         Ok(())
     });
-    // Belt for a run cut mid-burst: brake flag clear, decay back to slow.
+    // Belt for a run cut mid-burst: brake flag clear, decay back to slow,
+    // guards back on. The permit is RAM-only so a power cycle clears it
+    // anyway, but a servo left unguarded until someone reboots it is a trap.
     let _ = write_reg(&mut c, id, zb_reg, 0);
     let _ = write_reg(&mut c, id, decay_reg, Decay::Slow as i32);
+    let _ = write_reg(&mut c, id, control::STALL_PERMIT, 0);
     w.flush()?;
     r?;
     println!("sweep: {}", csv_path.display());
