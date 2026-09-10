@@ -16,9 +16,9 @@
 use core::cell::SyncUnsafeCell;
 use core::sync::atomic::compiler_fence;
 
-use portable_atomic::{AtomicU8, Ordering};
+use portable_atomic::{AtomicBool, AtomicU8, Ordering};
 
-use osc_servo_core::regions::burst::{BURST_LEN, PAGE_MID_COPY, page_span, state};
+use osc_servo_core::regions::burst::{BURST_LEN, PAGE_MID_COPY, dir, page_span, state};
 use osc_servo_core::regions::{ControlTable, DecaySelect, Mode};
 use osc_servo_core::{ControlIo as _, DecayMode, Motor as _, MotorCmd, RegionStorageRaw, Shared};
 use osc_units::Effort;
@@ -41,8 +41,9 @@ const BURST_SETTLE_TICKS: u16 = 16;
 const DRAIN_ITERS_PER_US: u32 = HCLK_HZ / 1_000_000;
 /// One 7-slot scan retires: 182 ADCCLK at 24 MHz = 7.58 us.
 const ADC_SCAN_DRAIN: u32 = 8 * DRAIN_ITERS_PER_US;
-/// One conversion retires: 26 ADCCLK at 24 MHz = 1.08 us.
-const ADC_CONV_DRAIN: u32 = 2 * DRAIN_ITERS_PER_US;
+/// Two conversions retire: the one in flight when CONT is cleared plus the one
+/// that CTLR2 write starts of its own accord. 26 ADCCLK at 24 MHz = 1.08 us each.
+const ADC_CONV_DRAIN: u32 = 3 * DRAIN_ITERS_PER_US;
 
 /// Free-running single-channel capture. Not circular: the run stops itself at
 /// TC and the buffer stays frozen for readback. HT is the step trigger.
@@ -63,20 +64,21 @@ static BURST_BUF: SyncUnsafeCell<[u16; BURST_LEN]> = SyncUnsafeCell::new([0; BUR
 /// it while the DMA1 CH1 vector writes it. Written only from that vector.
 static STATE: AtomicU8 = AtomicU8::new(state::IDLE);
 
+/// Set at restore, cleared by the scan TC that stamps `restore_dir`. Same
+/// vector writes and reads it; atomic so the prologue's load stands on its own.
+static WITNESS_DUE: AtomicBool = AtomicBool::new(false);
+
 /// The rest of the FSM: DMA1 CH1 vector (PFIC LOW) only, never the main loop.
 struct Fsm {
     settle: u16,
     duty_q15: i16,
     decay: DecayMode,
-    /// Set at restore; the next scan tick stamps `restore_dir` and clears it.
-    witness_due: bool,
 }
 
 static FSM: SyncUnsafeCell<Fsm> = SyncUnsafeCell::new(Fsm {
     settle: 0,
     duty_q15: 0,
     decay: DecayMode::Slow,
-    witness_due: false,
 });
 
 #[inline(always)]
@@ -90,6 +92,34 @@ fn fsm() -> &'static mut Fsm {
 #[inline(always)]
 pub fn capturing() -> bool {
     STATE.load(Ordering::Relaxed) == state::CAPTURING
+}
+
+/// TIM1's counting phase in the published `dir` encoding.
+#[inline]
+fn dir_now() -> u8 {
+    if timer::counting_down() {
+        dir::DOWN
+    } else {
+        dir::UP
+    }
+}
+
+/// Scan-geometry witness, and it MUST be sampled at the scan TC itself. DIR
+/// answers "which scan landed second" only inside the ~17 us between the peak
+/// scan's TC and the next trough trigger; the kernel body that runs after this
+/// point is longer than that window, so a sample taken at the ISR tail reads a
+/// later, arbitrary half of the period and says nothing (bench: UP on every
+/// capture while the geometry was verifiably correct).
+#[inline(always)]
+pub fn witness_scan_tc(shared: &Shared) {
+    if !WITNESS_DUE.load(Ordering::Relaxed) {
+        return;
+    }
+    WITNESS_DUE.store(false, Ordering::Relaxed);
+    // SAFETY: BURST is RO to the host, so this context is its sole writer.
+    unsafe {
+        (&raw mut (*shared.table.region_ptr()).burst.window.restore_dir).write_volatile(dir_now())
+    };
 }
 
 #[inline]
@@ -115,14 +145,6 @@ pub fn poll_arm(shared: &Shared) {
         )
     };
     let f = fsm();
-
-    if f.witness_due {
-        f.witness_due = false;
-        // SAFETY: sole writer, as above.
-        unsafe {
-            (&raw mut (*p).burst.window.restore_dir).write_volatile(timer::counting_down() as u8)
-        };
-    }
 
     match STATE.load(Ordering::Relaxed) {
         state::IDLE => {
@@ -183,16 +205,26 @@ pub fn on_dma_event(shared: &Shared) {
     }
 }
 
-/// Suspend the scan and open the capture. Runs from the peak-scan TC, which
-/// leaves ~17 us before the next TRGO -- and that TRGO is ignored anyway, the
-/// trigger source being SWSTART for the duration.
+/// Suspend the scan and open the capture. The drains below outlast the TC's
+/// ~17 us of slack, which costs nothing: the DMA tap is shut first, so the
+/// trough TRGO that lands mid-drain starts a scan that makes no request, and
+/// the trigger source is SWSTART by the time the capture opens. That is also
+/// why `start_cnt` / `start_dir` record the phase of the launch write itself
+/// rather than the phase of the TC that led to it.
 fn launch(p: *mut ControlTable) {
+    // Source first, channel second: a request can only latch if it is
+    // GENERATED while the channel is disabled, so shutting CTLR2.DMA before
+    // DMA1_CH1.CR.EN is what makes the disable safe (the reverse order is the
+    // V006 latching-request trap). Any request already generated is served
+    // while the channel is still enabled.
     adc::set_dma(false);
     dma::disable(CH);
     dma::clear_tc_flag(CH);
     dma::clear_ht_flag(CH);
     // The CTLR2 write above started a stray scan; it makes no DMA request with
-    // the tap shut, but it must retire before RSQR changes under it.
+    // the tap shut, but it must retire before RSQR changes under it. EXTSEL is
+    // still TIM1_TRGO here, so a trigger can start one more; both are harmless
+    // for the same reason, and the capture opens on SWSTART regardless.
     delay_cycles(ADC_SCAN_DRAIN);
     adc::set_scan_mode(false);
     adc::set_sequence(&[scan::shunt_channel()]);
@@ -210,11 +242,11 @@ fn launch(p: *mut ControlTable) {
     unsafe {
         let w = &raw mut (*p).burst.window;
         (&raw mut (*w).start_cnt).write_volatile(timer::counter());
-        (&raw mut (*w).start_dir).write_volatile(timer::counting_down() as u8);
+        (&raw mut (*w).start_dir).write_volatile(dir_now());
         (&raw mut (*w).pwm_arr).write_volatile(timer::period());
         (&raw mut (*w).samples_len).write_volatile(BURST_LEN as u16);
         (&raw mut (*w).step_index).write_volatile(0);
-        (&raw mut (*w).restore_dir).write_volatile(0);
+        (&raw mut (*w).restore_dir).write_volatile(dir::UP);
         // No page of this capture is published yet; a host reading before its
         // first page write must not be handed the previous capture's page.
         (&raw mut (*w).page_echo).write_volatile(PAGE_MID_COPY);
@@ -240,18 +272,33 @@ fn step(p: *mut ControlTable) {
     unsafe { (&raw mut (*p).burst.window.step_index).write_volatile(at) };
 }
 
-/// Put the scan back, unconditionally. ORDER IS LOAD-BEARING at the tail: the
-/// scan geometry (trough slots at offset 0, peak at `ADC_SCAN_LEN`) is set by
-/// which trigger the re-opened DMA tap catches first, and only the pairing of
-/// `set_dma(true)` with the forced update event fixes it. Opening the tap with
-/// ADON already on may itself start a scan; if it does, that scan is the trough
-/// scan and UG's TRGO is swallowed by the busy converter, and if it does not,
-/// UG's TRGO starts the trough scan. Either way offset 0 is the trough. A
-/// preemption between the two stores is the one interleave that breaks it,
-/// which is what the critical section forbids. UG costs one truncated PWM
-/// period; at CNT = 0 both legs are in the normal brake state, so the early
-/// brake is <= 25 us and MOE is untouched.
+/// Put the scan back, unconditionally.
+///
+/// ORDER IS LOAD-BEARING THROUGHOUT. EXTSEL stays at SWSTART, with no SWSTART
+/// ever pulsed, from entry until the last write: while it does, NOTHING can
+/// trigger a scan, so the converter is provably idle when SCAN and RSQR are
+/// reprogrammed and no scan can be in flight when the DMA tap opens. Re-arming
+/// the trigger any earlier loses that (bench: a TRGO landing between the
+/// re-arm and the tap opening started a scan the DMA never delivered, the tap
+/// opened mid-sequence, and every frame after came back rotated).
+///
+/// The tail then fixes the scan geometry (trough slots at offset 0, peak at
+/// `ADC_SCAN_LEN`), which is decided by which scan the freshly-opened tap
+/// delivers first. `arm_scan` is one CTLR2 write, and with ADON already on it
+/// starts a scan itself; that scan is the trough scan, and UG's TRGO -- fired
+/// on the very next instruction -- is swallowed by the busy converter, so the
+/// next crest TRGO fills the peak half. If the ADON on->on write should ever
+/// NOT start a conversion, UG's own TRGO starts the trough scan instead and
+/// the geometry is the same. A preemption between the two stores is the one
+/// interleave that breaks it, which is what the critical section forbids. UG
+/// costs one truncated PWM period; at CNT = 0 both legs are in the normal
+/// brake state, so the early brake is <= 25 us and MOE is untouched.
 fn restore() {
+    // Source first, channel second: a request can only latch if it is
+    // GENERATED while the channel is disabled, so shutting CTLR2.DMA before
+    // DMA1_CH1.CR.EN is what makes the disable safe (the reverse order is the
+    // V006 latching-request trap). Any request already generated is served
+    // while the channel is still enabled.
     adc::set_dma(false);
     dma::disable(CH);
     dma::clear_tc_flag(CH);
@@ -260,14 +307,12 @@ fn restore() {
     delay_cycles(ADC_CONV_DRAIN);
     adc::set_scan_mode(true);
     adc::set_sequence(scan::seq());
-    adc::set_external_trigger(adc::Extsel::TIM1_TRGO);
-    delay_cycles(ADC_SCAN_DRAIN);
     scan::arm_dma();
     critical_section::with(|_| {
-        adc::set_dma(true);
+        adc::arm_scan(adc::Extsel::TIM1_TRGO);
         timer::force_update_event();
     });
-    fsm().witness_due = true;
+    WITNESS_DUE.store(true, Ordering::Relaxed);
 }
 
 /// Main-loop page copy. Publishing the page under `PAGE_MID_COPY` and only

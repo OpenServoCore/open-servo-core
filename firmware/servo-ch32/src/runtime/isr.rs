@@ -72,6 +72,9 @@ pub fn on_adc_dma_tc() {
         crate::control::burst::on_dma_event(&SHARED);
         return;
     }
+    // Ahead of the body on purpose: the scan-geometry witness reads TIM1's
+    // counting phase, which is only meaningful this close to the TC.
+    crate::control::burst::witness_scan_tc(&SHARED);
 
     DMA1.ifcr().write(|w| w.set_tcif(0, true));
 

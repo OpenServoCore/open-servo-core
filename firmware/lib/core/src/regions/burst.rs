@@ -33,6 +33,16 @@ pub mod state {
     pub const REJECTED: u8 = 4;
 }
 
+/// `start_dir` / `restore_dir` encoding: the TIM1 CTLR1.DIR bit verbatim, so
+/// the published byte reads as the silicon does. Under center-aligned PWM DOWN
+/// is the crest-to-trough half, which is where a peak scan's TC lands -- so
+/// `restore_dir == DOWN` is the witness that the crest scan landed second and
+/// the trough slots are back at offset 0.
+pub mod dir {
+    pub const UP: u8 = 0;
+    pub const DOWN: u8 = 1;
+}
+
 /// Sample index range `[start, end)` of readback `page`; `None` past the last
 /// page (sec 5.3: `range`).
 #[inline]
@@ -114,6 +124,13 @@ mod tests {
             window::RESTORE_DIR + 1 - window::PAGE_ECHO,
             osc_protocol::wire::MAX_PAYLOAD as u16
         );
+    }
+
+    /// The published dir byte is the TIM1 CTLR1.DIR bit, not a re-encoding:
+    /// a host comparing against the reference manual must be right.
+    #[test]
+    fn dir_encoding_is_the_timer_bit() {
+        assert_eq!((dir::UP, dir::DOWN), (0, 1));
     }
 
     #[test]

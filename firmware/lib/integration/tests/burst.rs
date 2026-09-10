@@ -6,7 +6,7 @@
 use osc_integration::sim::{Source, WireFrame, assert_valid, instruction, status};
 use osc_protocol::wire::{Id, Inst, Opcode, ResultCode};
 use osc_servo_core::regions::BURST_BASE_ADDR;
-use osc_servo_core::regions::burst::{PAGE_SAMPLES, PAGES, page_span, state};
+use osc_servo_core::regions::burst::{PAGE_SAMPLES, PAGES, dir, page_span, state};
 use osc_servo_core::regions::control::addr::burst::{ARM, DUTY_Q15, PAGE};
 use rstest::rstest;
 use rstest_reuse::apply;
@@ -116,8 +116,8 @@ fn one_read_returns_the_page_and_the_header(baud_idx: u8) {
         w.step_index = 481;
         w.start_cnt = 640;
         w.pwm_arr = 1200;
-        w.start_dir = 1;
-        w.restore_dir = 1;
+        w.start_dir = dir::DOWN;
+        w.restore_dir = dir::DOWN;
         for (i, s) in w.samples.iter_mut().enumerate() {
             *s = 0x0400 + i as u16;
         }
@@ -148,7 +148,8 @@ fn one_read_returns_the_page_and_the_header(baud_idx: u8) {
     assert_eq!(u16::from_le_bytes([tail[2], tail[3]]), 481);
     assert_eq!(u16::from_le_bytes([tail[4], tail[5]]), 640);
     assert_eq!(u16::from_le_bytes([tail[6], tail[7]]), 1200);
-    assert_eq!((tail[8], tail[9]), (1, 1));
+    // The geometry witness: DOWN means the crest scan landed second.
+    assert_eq!((tail[8], tail[9]), (dir::DOWN, dir::DOWN));
 }
 
 #[apply(matrix)]
