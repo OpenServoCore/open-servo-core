@@ -116,7 +116,17 @@ SERVOS = {
                 0.081, 0.078, 0.084, "A", "bringup isns-diff run28", "at duty 65"),
             # --- in-servo, this dataset ---
             "r_winding_measured": Measured(
-                4.5, 4.3, 4.8, "Ohm", "nb03, full duty onset anchor", ""),
+                3.91, 3.85, 3.99, "Ohm", "nb02 part 2, locked-rotor ladder on 2S",
+                "five captures, locked rungs only, terminal referenced; the "
+                "free-shaft onset route read 4.23 through a coasting shaft"),
+            "tau_e_measured": Measured(
+                154, 140, 171, "us", "nb02 part 2, sample-to-sample pole",
+                "loop time constant L/R_eff at a rung onset; 146 us on USB. "
+                "An independent ARX fit on the same data gave 142 +/- 9"),
+            "l_motor_in_servo_measured": Measured(
+                0.64, 0.55, 0.75, "mH", "nb02 part 2, tau x R_eff",
+                "bracket is the R_eff choice (3.94 to 4.34 Ohm) plus capture "
+                "scatter; l_motor_measured below is the bare can, a different unit"),
             "pot_scale_measured": Measured(
                 19.30, 19.30, 19.43, "counts/deg",
                 "nb06 sec 5.5, travel-weighted ripple cycle counting against "
