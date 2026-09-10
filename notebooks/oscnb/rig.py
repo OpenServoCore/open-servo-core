@@ -1,19 +1,22 @@
-"""Pick a board and a servo, and show what that choice means.
+"""Pick a dataset, and show what that choice means.
 
-A Rig is one board paired with one servo. Notebooks select a rig once, near the
-top, then read every constant off it. Nothing downstream hardcodes a divider or
-a shunt.
+A Rig is one board paired with one servo. You do not normally choose those: a
+dataset's manifest names them, because a capture is a fact about the hardware
+that produced it. Selecting a dataset selects the rig.
 
-Two ways to select, and both end at the same place:
+  rig.pick()                       dropdown of datasets, for working in Jupyter
+  rig.use("sg90-a__dev-v006-D__2s")            explicit, for a headless run
 
-  rig.picker()              two dropdowns, for working in Jupyter
-  rig.select("dev-v006-D", "sg90-a")    explicit, for a headless run
+Overriding board or servo by hand is for REPROCESSING - re-reading old captures
+under a corrected constants entry. It is deliberately awkward:
 
-The picker only changes what the NEXT cells see, so change a dropdown and run
-the notebook below it. Under `nbconvert --execute` there is nobody to click, so
-the defaults apply and the table still prints into the committed output - which
-is the point of printing it: a human reading the notebook on GitHub can check
-the numbers without running anything.
+  rig.use(key, board="...", servo="...")
+
+The picker only changes what the NEXT cells see, so change it and run the
+notebook below. Under `nbconvert --execute` there is nobody to click, so the
+default dataset applies and the table still prints into the committed output -
+which is the point of printing it: a human reading the notebook on GitHub can
+check the numbers without running anything.
 """
 
 from dataclasses import dataclass
@@ -82,48 +85,86 @@ class Rig:
         return self
 
 
-_current = Rig(BOARDS[DEFAULT_BOARD], SERVOS[DEFAULT_SERVO])
+_dataset = None
+_current = None
 
 
-def select(board=DEFAULT_BOARD, servo=DEFAULT_SERVO, show=True):
-    """Set the rig every later cell will read."""
-    global _current
-    _current = Rig(BOARDS[board], SERVOS[servo])
-    return _current.show() if show else _current
+def use(key=None, board=None, servo=None, show=True):
+    """Select a dataset. Board and servo come from its manifest unless
+    overridden, which is only for reprocessing under corrected constants."""
+    global _dataset, _current
+    from . import datasets
+    found = datasets.find()
+    if key is None:
+        live = [k for k, d in found.items() if not d.retired]
+        if not live:
+            raise RuntimeError("no dataset with a manifest under telemetry/")
+        key = sorted(live)[0]
+    _dataset = found[key] if key in found else datasets.load(key)
+    b = BOARDS[board] if board else _dataset.board
+    s = SERVOS[servo] if servo else _dataset.servo
+    _current = Rig(b, s)
+    if board or servo:
+        print(f"OVERRIDE: reading {key} as {b.key} / {s.key}, "
+              f"not the {_dataset.manifest['board']} / {_dataset.manifest['servo']} "
+              f"its manifest names.\n")
+    if show:
+        _show()
+    return _dataset
+
+
+def _show():
+    d, r = _dataset, _current
+    print(f"dataset  {d.key}")
+    print(f"supply   {d.supply}")
+    print(f"rig      {r.label}\n")
+    try:
+        from IPython.display import display
+        display(d.summary())
+        display(r.table())
+    except ImportError:
+        print(d.summary().to_string()); print(r.table().to_string())
+
+
+def dataset():
+    if _dataset is None:
+        use(show=False)
+    return _dataset
 
 
 def current() -> Rig:
+    if _current is None:
+        use(show=False)
     return _current
 
 
-def picker():
-    """Two dropdowns. Change either, then run the cells below.
+def pick():
+    """A dropdown of every dataset with a manifest. Change it, then run below.
 
-    Falls back to printing the default selection when ipywidgets is missing or
-    when nothing is driving the UI, so a headless execute still produces the
-    table rather than an empty cell."""
+    Falls back to the default selection when ipywidgets is missing, so a
+    headless execute still produces the table rather than an empty cell."""
+    from . import datasets
+    found = {k: v for k, v in datasets.find().items() if not v.retired}
     try:
         import ipywidgets as w
         from IPython.display import display, clear_output
     except ImportError:
-        print("ipywidgets not available, using defaults")
-        return select(show=True)
+        print("ipywidgets not available, using the default dataset")
+        return use(show=True)
 
-    b = w.Dropdown(options=[(v.label, k) for k, v in BOARDS.items()],
-                   value=_current.board.key, description="board:",
-                   layout=w.Layout(width="640px"), style={"description_width": "60px"})
-    s = w.Dropdown(options=[(v.label, k) for k, v in SERVOS.items()],
-                   value=_current.servo.key, description="servo:",
-                   layout=w.Layout(width="640px"), style={"description_width": "60px"})
+    opts = [(f"{k}   ({v.manifest['servo']} on {v.manifest['board']}, {v.supply})", k)
+            for k, v in found.items()]
+    dd = w.Dropdown(options=opts, value=(_dataset.key if _dataset else opts[0][1]),
+                    description="dataset:", layout=w.Layout(width="720px"),
+                    style={"description_width": "70px"})
     out = w.Output()
 
     def redraw(_=None):
         with out:
             clear_output(wait=True)
-            select(b.value, s.value, show=True)
+            use(dd.value, show=True)
 
-    b.observe(redraw, names="value")
-    s.observe(redraw, names="value")
-    display(w.VBox([b, s, out]))
+    dd.observe(redraw, names="value")
+    display(w.VBox([dd, out]))
     redraw()
-    return _current
+    return _dataset

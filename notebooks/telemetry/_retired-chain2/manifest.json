@@ -1,0 +1,7 @@
+{
+  "board": null,
+  "servo": "sg90-a",
+  "supply": "2s",
+  "retired": true,
+  "notes": "Chain 2, superseded. Captured on the pre-bodge board (33 mOhm shunt, 20k/10k terminal taps returned to GND) and on the 48 MHz ADC. The GND-returned taps make coast back-EMF unreadable, which is the defect the VB bias bodge fixed. Kept for reference only; no board entry exists for it, so oscnb will refuse to load it."
+}
