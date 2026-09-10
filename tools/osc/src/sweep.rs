@@ -18,6 +18,12 @@
 //! Duty sign is taken as-is (fwd = +duty): the seek's bang-bang polling
 //! assumes normal drive polarity and bails the run if a reversed servo
 //! walks away from the band.
+//!
+//! `--stall` seeks the physical end stop instead of a start band and leaves
+//! the shaft there, so the rungs push into it: a locked-output ladder for
+//! resistance and inductance, with no back-EMF in the onset. It needs the
+//! soft position limits opened to the physical range first, or the kernel
+//! zeroes the outbound duty at the soft limit and the seek stops short.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -29,7 +35,7 @@ use osc_client::Id;
 use osc_client::blocking::Client;
 use osc_client::nusb::NusbPipe;
 use osc_ident::frame::TelFrame;
-use osc_ident::regs::{Reg, calib, control};
+use osc_ident::regs::{Reg, calib, control, telemetry};
 
 use crate::descriptor;
 use crate::rig::pump::{self, STOP, exchange_tel_burst, read_snapshot, with_guard, write_reg};
@@ -139,6 +145,12 @@ pub struct Args {
     /// Seek drive, percent of full scale.
     #[arg(long, default_value_t = 28)]
     seek_duty_pct: u8,
+    /// Seek the physical end stop and ladder against it instead of seeking a
+    /// start band. Chain the rungs (`20,then:25,...`) to hold the gear train
+    /// wound up across the whole ladder: released, it unwinds and the next
+    /// onset measures the re-wind instead of the winding.
+    #[arg(long)]
+    stall: bool,
     /// Brake-and-hold after the seek, before the rung arms. Without it the
     /// rung opens on a shaft still coasting from the seek, and since a fwd
     /// rung's start band is at the LOW guard the coast is BACKWARD: measured
@@ -225,6 +237,57 @@ fn seek_band(c: &mut Client<NusbPipe>, id: Id, (lo, hi): (u16, u16), duty_q15: i
     }
     write_reg(c, id, control::GOAL_DUTY, 0)?;
     bail!("seek did not reach {lo}..{hi} in 10 s (gear slipping?)")
+}
+
+/// End-stop detect: `STALL_POLLS` consecutive reads moving no more than
+/// `STALL_EPS` counts call it the mechanical rail. Mirrors osc-ident's
+/// end-stop detector so the two agree on where the ends are.
+const STALL_EPS: u16 = 3;
+const STALL_POLLS: u32 = 8;
+
+/// Drive into the physical end stop and leave the shaft pressed against it.
+/// The rungs push the same way, so the train's backlash is taken up before
+/// the first burst instead of during it.
+///
+/// A soft position limit is indistinguishable from a mechanical stop by
+/// position alone - the kernel zeroes outbound open-loop duty when the
+/// endstop band collapses, so the shaft stops either way. DUTY_APPLIED_Q15
+/// tells them apart: it holds at a real stop and reads zero at a soft limit.
+/// Without that check a run would ladder against a clamped duty and record a
+/// grid of zero-current rungs.
+fn seek_stop(c: &mut Client<NusbPipe>, id: Id, dir: i8, duty_q15: i16) -> Result<()> {
+    write_reg(c, id, control::MODE, 0)?;
+    write_reg(c, id, control::TORQUE_ENABLE, 1)?;
+    let duty = dir as i32 * duty_q15 as i32;
+    let mut last = check_fault(c, id)?;
+    let mut still = 0;
+    for _ in 0..500 {
+        check_stop()?;
+        write_reg(c, id, control::GOAL_DUTY, duty)?;
+        std::thread::sleep(Duration::from_millis(20));
+        let pos = check_fault(c, id)?;
+        if pos.abs_diff(last) > STALL_EPS {
+            still = 0;
+        } else {
+            still += 1;
+            if still >= STALL_POLLS {
+                let applied = read_u16(c, id, telemetry::DUTY_APPLIED_Q15)? as i16;
+                if applied == 0 {
+                    write_reg(c, id, control::GOAL_DUTY, 0)?;
+                    bail!(
+                        "stopped at pos {pos} with duty applied 0: that is a SOFT LIMIT, \
+                         not the end stop - open pos_min/max_soft_counts to the physical range"
+                    );
+                }
+                // Duty stays on: releasing here lets the train unwind, and
+                // the burst would then re-wind it inside the measurement.
+                return Ok(());
+            }
+        }
+        last = pos;
+    }
+    write_reg(c, id, control::GOAL_DUTY, 0)?;
+    bail!("no end stop in 10 s driving {dir:+} at {duty_q15} q15")
 }
 
 /// 3 PWM ticks at ARR 1200 (0.25% drive) - enough to dodge motor.rs's
@@ -358,6 +421,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
         "baseline_ms": args.baseline_ms,
         "seek_duty_pct": args.seek_duty_pct,
         "settle_ms": args.settle_ms,
+        "stall": args.stall,
         "guard": [args.guard_lo, args.guard_hi],
         "tel_mask": mask,
         "post_rung_brake": true,
@@ -405,18 +469,25 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
                 // false: the seek is the only difference in its prep.
                 if let Step::Drive(_) = step {
                     check_fault(c, id)?;
-                    seek_band(
-                        c,
-                        id,
-                        start_band(dir, args.guard_lo, args.guard_hi),
-                        seek_duty,
-                    )?;
-                    // Kill the seek's momentum and let the shaft ring down.
-                    // Sign is -dir, the mirror of the post-rung call: the
-                    // seek parks NEAR its start-band wall, so the token
-                    // brake duty has to point away from that one instead.
-                    brake_to_rest(c, id, -dir)?;
-                    rest(args.settle_ms)?;
+                    if args.stall {
+                        // Already stopped, and still pressed into the stop:
+                        // nothing to brake and nothing to let settle.
+                        seek_stop(c, id, dir, seek_duty)?;
+                    } else {
+                        seek_band(
+                            c,
+                            id,
+                            start_band(dir, args.guard_lo, args.guard_hi),
+                            seek_duty,
+                        )?;
+                        // Kill the seek's momentum and let the shaft ring
+                        // down. Sign is -dir, the mirror of the post-rung
+                        // call: the seek parks NEAR its start-band wall, so
+                        // the token brake duty has to point away from that
+                        // one instead.
+                        brake_to_rest(c, id, -dir)?;
+                        rest(args.settle_ms)?;
+                    }
                 } else if !live {
                     check_fault(c, id)?;
                 }
