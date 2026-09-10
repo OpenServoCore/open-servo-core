@@ -115,8 +115,24 @@ class Board:
         return (current_raw - rest_bias) * self.a_per_count
 
     def vsys_v(self, vbus_raw):
-        """Direct rail tap. Unbiased, valid at rest, every tick."""
+        """Volts from the DIRECT rail tap `vbus_raw` (TEL bit 9, register 0x254).
+        Unbiased, valid at rest, every tick.
+
+        DO NOT pass `vbus_counts` (register 0x232, and the `vbus_counts` field in
+        meta.json) to this. That is a different quantity in different units and
+        you will get an answer ~18% low that still looks plausible. Use
+        `rail_from_vbus_counts` for it. This has caught three people."""
         return vbus_raw * self.v_adc_per_count * self.vbus_ratio
+
+    def rail_from_vbus_counts(self, vbus_counts):
+        """Volts from `vbus_counts` (register 0x232, meta.json `vbus_counts`).
+
+        The firmware's estimator already did the divider conversion: it takes an
+        EWMA of vbus_raw and rescales it by scale_q15 into VMOTOR-TAP units, so
+        undervolt, bemf and the current loop all speak one unit. So this value is
+        already in tap counts and needs the TERMINAL ratio, not the rail one.
+        Sending it through the rail divider a second time is the mistake above."""
+        return vbus_counts * self.v_term_per_count
 
     # --- guard ---
     @property
