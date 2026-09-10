@@ -697,6 +697,27 @@
       ]
     },
     {
+      "name": "duty_q15",
+      "addr": 406,
+      "width": 2,
+      "access": "rw",
+      "kind": "int"
+    },
+    {
+      "name": "arm",
+      "addr": 408,
+      "width": 1,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "page",
+      "addr": 409,
+      "width": 1,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
       "name": "fault_flags",
       "addr": 512,
       "width": 1,
@@ -961,6 +982,69 @@
       "width": 64,
       "access": "rw",
       "kind": "bytes"
+    },
+    {
+      "name": "page_echo",
+      "addr": 704,
+      "width": 1,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "state",
+      "addr": 705,
+      "width": 1,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "samples",
+      "addr": 706,
+      "width": 240,
+      "access": "ro",
+      "kind": "bytes"
+    },
+    {
+      "name": "samples_len",
+      "addr": 946,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "step_index",
+      "addr": 948,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "start_cnt",
+      "addr": 950,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "pwm_arr",
+      "addr": 952,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "start_dir",
+      "addr": 954,
+      "width": 1,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "restore_dir",
+      "addr": 955,
+      "width": 1,
+      "access": "ro",
+      "kind": "uint"
     }
   ]
 }

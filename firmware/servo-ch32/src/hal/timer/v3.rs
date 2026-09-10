@@ -1,5 +1,5 @@
 use ch32_metapac::TIM1;
-use ch32_metapac::timer::vals::{Cms, Mms, Ocm};
+use ch32_metapac::timer::vals::{Cms, Dir, Mms, Ocm};
 
 use crate::hal::clocks::TIM_CLK_HZ;
 
@@ -70,6 +70,21 @@ pub fn set_trgo_update() {
 /// Fires TRGO as a side effect -- arm ADC after, not before.
 pub fn force_update_event() {
     TIM1.swevgr().write(|w| w.set_ug(true));
+}
+
+#[inline]
+pub fn counter() -> u16 {
+    TIM1.cnt().read()
+}
+
+pub fn period() -> u16 {
+    TIM1.atrlr().read()
+}
+
+/// Center-aligned counting phase: `true` between crest and trough.
+#[inline]
+pub fn counting_down() -> bool {
+    matches!(TIM1.ctlr1().read().dir(), Dir::DOWN)
 }
 
 pub fn enable_main_output() {

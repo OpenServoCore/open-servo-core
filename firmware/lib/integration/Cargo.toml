@@ -37,3 +37,7 @@ path = "tests/timing.rs"
 [[test]]
 name = "host_loop"
 path = "tests/host_loop.rs"
+
+[[test]]
+name = "burst"
+path = "tests/burst.rs"

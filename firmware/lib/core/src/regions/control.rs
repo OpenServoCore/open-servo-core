@@ -68,6 +68,21 @@ pub struct ControlLifecycle {
 #[derive(Copy, Clone, Block)]
 pub struct ControlSystem {
     pub boot_mode: BootMode,
+    #[ct_field(skip)]
+    pub _rsvd_align: u8,
+}
+
+/// Shunt-burst request. `arm` is level, not an edge: 1 asks for a capture, 0
+/// releases the result back to Idle, so a host that dies mid-run leaves a
+/// servo that only has to be told 0. `page` selects which slice of the
+/// capture the BURST section publishes.
+#[repr(C)]
+#[derive(Copy, Clone, Block)]
+pub struct ControlBurst {
+    #[ct_field(le = &config::addr::loop_current::DUTY_MAX_Q15, abs)]
+    pub duty_q15: i16,
+    pub arm: u8,
+    pub page: u8,
 }
 
 #[repr(C)]
@@ -80,8 +95,9 @@ pub struct ControlSystem {
 pub struct ControlRegs {
     pub lifecycle: ControlLifecycle,
     pub system: ControlSystem,
+    pub burst: ControlBurst,
     #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 107],
+    pub _rsvd_tail: [u8; 102],
 }
 
 #[cfg(test)]

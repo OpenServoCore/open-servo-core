@@ -3,6 +3,7 @@
 //! submodule binds 1:1 to its osc-servo-core trait; the bundle here impls
 //! `ControlIo` so the `Kernel` can reach both via `parts()`.
 
+pub mod burst;
 pub mod motor;
 pub mod sensors;
 

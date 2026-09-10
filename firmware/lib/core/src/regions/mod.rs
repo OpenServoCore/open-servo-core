@@ -8,12 +8,14 @@
 //!   CONTROL   0x180..0x200  (128 B) -- RW volatile
 //!   TELEMETRY 0x200..0x280  (128 B) -- RO from host
 //!   PROFILE   0x280..0x2C0  ( 64 B) -- read-profile span words (sec 5.2)
-//!   (reserved 0x2C0..0x400  320 B)
+//!   BURST     0x2C0..0x3C0  (256 B) -- RO paged shunt-capture readback
+//!   (reserved 0x3C0..0x400   64 B)
 //!
 //! Owners go through `RegionStorage::with`/`with_mut` on the storage cell.
 //! Cross-domain readers that must avoid forming `&T` (aliasing-sensitive
 //! paths) use raw-pointer reads via `RegionStorageRaw::region_ptr`.
 
+pub mod burst;
 pub mod calib;
 pub mod config;
 pub mod control;
@@ -21,6 +23,7 @@ pub(crate) mod hooks;
 pub mod profile;
 pub mod telemetry;
 
+pub use burst::{BurstRegs, BurstWindow};
 pub use calib::{
     CalibKinematics, CalibMotor, CalibRegs, CalibSense, CalibSenseExt, CalibWinding, PotLutBlock,
 };
@@ -29,7 +32,7 @@ pub use config::{
     ConfigLoopPosition, ConfigLoopVelocity, ConfigPosLimits, ConfigRegs, ConfigThermal,
     DecaySelect, StallResponse,
 };
-pub use control::{BootMode, ControlLifecycle, ControlRegs, ControlSystem, Mode};
+pub use control::{BootMode, ControlBurst, ControlLifecycle, ControlRegs, ControlSystem, Mode};
 pub use profile::{PROFILE_SLOTS, ProfileRegs, ProfileSlots, SPANS_PER_SLOT};
 pub use telemetry::{
     TelemetryCommon, TelemetryEstimates, TelemetryIdent, TelemetryMode, TelemetryRegs,
@@ -44,12 +47,14 @@ pub const CALIB_REGION_SIZE: u16 = 256;
 pub const CONTROL_REGION_SIZE: u16 = 128;
 pub const TELEMETRY_REGION_SIZE: u16 = 128;
 pub const PROFILE_REGION_SIZE: u16 = 64;
+pub const BURST_REGION_SIZE: u16 = 256;
 
 pub const CONFIG_BASE_ADDR: u16 = 0x000;
 pub const CALIB_BASE_ADDR: u16 = 0x080;
 pub const CONTROL_BASE_ADDR: u16 = 0x180;
 pub const TELEMETRY_BASE_ADDR: u16 = 0x200;
 pub const PROFILE_BASE_ADDR: u16 = 0x280;
+pub const BURST_BASE_ADDR: u16 = 0x2C0;
 
 #[repr(C)]
 #[derive(Table)]
@@ -60,8 +65,9 @@ pub struct ControlTable {
     pub control: ControlRegs,
     pub telemetry: TelemetryRegs,
     pub profile: ProfileRegs,
+    pub burst: BurstRegs,
     #[ct_table(skip)]
-    _rsvd: [u8; 320],
+    _rsvd: [u8; 64],
 }
 
 impl ControlTableCell {
@@ -286,6 +292,55 @@ mod tests {
         let lut = by("lut_corr");
         assert_eq!(lut.kind, FieldKind::Bytes);
         assert_eq!(lut.width, 110);
+
+        // The burst page is a byte blob, not a scalar: a host reads it as
+        // 120 LE u16 codes, and no field rule may be inferred from it.
+        let samples = by("samples");
+        assert_eq!(samples.addr, super::BURST_BASE_ADDR + 2);
+        assert_eq!(samples.kind, FieldKind::Bytes);
+        assert_eq!(samples.width, 2 * super::burst::PAGE_SAMPLES as u16);
+        assert!(!samples.writable);
+        for name in [
+            "page_echo",
+            "state",
+            "samples_len",
+            "step_index",
+            "restore_dir",
+        ] {
+            assert!(!by(name).writable, "{name} must stay RO");
+        }
+
+        // The arm surface is the writable half of the pair.
+        let duty = by("duty_q15");
+        assert!(duty.writable);
+        assert_eq!(duty.kind, FieldKind::Int);
+        // Register-RHS abs bound (duty_max_q15): no scalar bounds export.
+        assert_eq!((duty.min, duty.max), (None, None));
+        assert!(by("arm").writable);
+        assert!(by("page").writable);
+    }
+
+    /// `boot_mode` is an ABI pin: the burst block appends after
+    /// `ControlSystem`, and its explicit alignment byte keeps `ControlBurst`
+    /// two-byte aligned without repr(C) inserting invisible padding.
+    #[test]
+    fn control_burst_appends_without_moving_boot_mode() {
+        use super::control::addr::{burst, system};
+        assert_eq!(system::BOOT_MODE, 0x194);
+        assert_eq!(burst::DUTY_Q15, 0x196);
+        assert_eq!(burst::ARM, 0x198);
+        assert_eq!(burst::PAGE, 0x199);
+    }
+
+    /// Pins the BURST section to its base and its one-READ geometry.
+    #[test]
+    fn burst_region_is_one_read_wide() {
+        use super::burst::{self, addr::window};
+        assert_eq!(super::BURST_BASE_ADDR, 0x2C0);
+        assert_eq!(window::PAGE_ECHO, super::BURST_BASE_ADDR);
+        assert_eq!(window::SAMPLES_LEN, 0x3B2);
+        assert_eq!(window::RESTORE_DIR, 0x3BB);
+        assert_eq!(burst::BURST_LEN, burst::PAGES * burst::PAGE_SAMPLES);
     }
 
     /// Pins the profile region to its protocol sec 5.4 address pin and its

@@ -1,9 +1,9 @@
-use ch32_metapac::{ADC, adc::vals::Extsel, dma::vals::Dir};
+use ch32_metapac::{adc::vals::Extsel, dma::vals::Dir};
 use osc_servo_core::{CalibSense, CalibSenseExt, ConfigDefaults};
 #[cfg(not(feature = "half-duplex"))]
 use osc_servo_drivers::Level;
 
-use crate::control::sensors::scan::{ADC_DMA_BUF, ADC_DMA_BUF_LEN, ADC_SCAN_LEN, ADC_SENSOR_COUNT};
+use crate::control::sensors::scan::{self, ADC_DMA_BUF_LEN, ADC_SCAN_LEN, ADC_SENSOR_COUNT};
 use crate::hal::{
     adc, afio, delay_ms, dma, esig,
     gpio::{self, PinMode},
@@ -303,7 +303,7 @@ fn configure_adc_dma_scan(w: &BoardWiring) {
     adc::set_sample_time(sensors.ntc.channel(), chip::ADC_RESERVOIR_SAMPLE_TIME);
     adc::set_low_power(true);
 
-    let seq = [
+    scan::seed_seq([
         current,
         sensors.vmotor.0.channel(),
         sensors.vmotor.1.channel(),
@@ -311,37 +311,13 @@ fn configure_adc_dma_scan(w: &BoardWiring) {
         adc::Channel::Vcal,
         sensors.vbus.channel(),
         sensors.ntc.channel(),
-    ];
-    adc::set_sequence(&seq);
+    ]);
     adc::set_scan_mode(true);
     adc::set_dma(true);
     adc::set_external_trigger(Extsel::TIM1_TRGO);
     adc::enable();
 
-    let dma_cfg = dma::Config {
-        dir: Dir::FROMPERIPHERAL,
-        circ: true,
-        pinc: false,
-        minc: true,
-        size: dma::Size::BITS16,
-        htie: false,
-        tcie: true,
-        // HIGH, not VERYHIGH: RX (CH5) alone owns the top so an inbound byte's
-        // drain outranks everything (see the ladder in `hal::dma`). ADC is the
-        // lowest-numbered HIGH channel, so it still wins every HIGH tie and
-        // only ever yields to the sparse RX drain.
-        pl: dma::Pl::HIGH,
-    };
-    let paddr = ADC.rdatar().as_ptr() as u32;
-    let maddr = ADC_DMA_BUF.get() as u32;
-    dma::configure(
-        dma::Channel::CH1,
-        &dma_cfg,
-        paddr,
-        maddr,
-        ADC_DMA_BUF_LEN as u16,
-    );
-    dma::enable(dma::Channel::CH1);
+    scan::arm_dma();
 }
 
 /// osc-native transport bring-up: USART1 (single-wire HDSEL on the direct
