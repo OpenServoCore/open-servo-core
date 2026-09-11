@@ -12,7 +12,8 @@ use crate::exp::inertia::InertiaResult;
 use crate::exp::ladder::LadderResult;
 use crate::exp::resistance::ResistanceResult;
 use crate::exp::rl::RlResult;
-use crate::gains::{EncodedGains, GainSet};
+use crate::gains::{EncodedGains, GainSet, PlantParams};
+use crate::sources::{Source, Winding};
 
 /// The board-D rig's hand-eyeballed seeds (kernel band), for the comparison
 /// column. b_i 655 predates both coupling rescales (it was inert under the
@@ -40,6 +41,16 @@ pub struct ReportInputs<'a> {
     pub ladder: Option<&'a LadderResult>,
     pub inertia: Option<&'a InertiaResult>,
     pub gains: Option<(&'a GainSet, &'a EncodedGains)>,
+    /// The plant the gains were synthesized from and where its winding
+    /// terms and noise floor came from.
+    pub plant: Option<PlantInputs<'a>>,
+}
+
+#[derive(Copy, Clone)]
+pub struct PlantInputs<'a> {
+    pub plant: &'a PlantParams,
+    pub winding: &'a Winding,
+    pub sigma_from: Source,
 }
 
 fn opt(v: Option<f64>) -> String {
@@ -77,6 +88,9 @@ pub fn render(r: &ReportInputs<'_>) -> String {
             );
             let _ = writeln!(s, "  fwd/rev       {} / {}", opt(x.r_fwd), opt(x.r_rev));
             let _ = writeln!(s, "  heat drift    {:.5} vpc/s", x.drift_vpc_per_s);
+        }
+        None if r.plant.is_some_and(|p| p.winding.r_from == Source::Burst) => {
+            let _ = writeln!(s, "  not run: E8 supplied R");
         }
         None => {
             let _ = writeln!(s, "  skipped");
@@ -158,94 +172,9 @@ pub fn render(r: &ReportInputs<'_>) -> String {
         }
     }
 
-    let _ = writeln!(
-        s,
-        "\n[E8 winding L] (high-rate shunt burst; NOT the table's R)"
-    );
+    let _ = writeln!(s, "\n[E8 winding R/L] (high-rate shunt burst)");
     match r.inductance {
-        Some(x) => {
-            let _ = writeln!(
-                s,
-                "  L ripple      {:.4} mH [{:.4}, {:.4}]  incremental, one ON window (~25 us)",
-                x.l_ripple_h * 1e3,
-                x.l_ripple_bracket.0 * 1e3,
-                x.l_ripple_bracket.1 * 1e3
-            );
-            let _ = writeln!(
-                s,
-                "                {} mH from the brake decay - same timescale, no rail term",
-                x.l_off_h.map_or("-".into(), |v| format!("{:.4}", v * 1e3))
-            );
-            let _ = writeln!(
-                s,
-                "  L envelope    {:.4} mH [{:.4}, {:.4}]  R x tau, hundreds of us",
-                x.l_env_h * 1e3,
-                x.l_env_bracket.0 * 1e3,
-                x.l_env_bracket.1 * 1e3
-            );
-            let _ = writeln!(
-                s,
-                "  tau           {:.1} us [{:.1}, {:.1}]   tau_off {:.1} us",
-                x.tau_us, x.tau_bracket.0, x.tau_bracket.1, x.tau_off_us
-            );
-            let _ = writeln!(
-                s,
-                "  R             {} ohm from {} pair(s){}; asymptote route {:.3} ohm",
-                x.r_pair_ohm.map_or("-".into(), |v| format!("{v:.3}")),
-                x.pairs.len(),
-                x.r_pair_bracket
-                    .map(|(lo, hi)| format!(" [{lo:.3}, {hi:.3}]"))
-                    .unwrap_or_default(),
-                x.r_asym_ohm
-            );
-            let _ = writeln!(
-                s,
-                "  V0            {:.3} V ({})",
-                x.v0_volts,
-                if x.v0_measured {
-                    "from the from-a-hold control"
-                } else {
-                    "pre-registered default - no usable control"
-                }
-            );
-            let by_duty: Vec<String> = x
-                .l_by_duty
-                .iter()
-                .map(|(d, l)| format!("{:.0}% {:.3} mH", d * 100.0, l * 1e3))
-                .collect();
-            let _ = writeln!(s, "  L by duty     {}", by_duty.join(", "));
-            let _ = writeln!(
-                s,
-                "  trace         cadence {:.2} samples/period, {:.1}-sample ON windows, \
-                 {:.2} us amplifier settling, bias {:.1} counts",
-                x.cadence_samples, x.window_samples, x.settle_us, x.bias_counts
-            );
-            let gates: Vec<String> = x
-                .gates
-                .iter()
-                .map(|g| {
-                    format!(
-                        "{} {} ({})",
-                        if g.pass { "pass" } else { "FAIL" },
-                        g.name,
-                        g.detail
-                    )
-                })
-                .collect();
-            let _ = writeln!(s, "  gates         {}", gates.join(", "));
-            let _ = writeln!(
-                s,
-                "  verdict       {}",
-                if x.ok {
-                    "gates pass; advisory only - nothing consumes L yet"
-                } else {
-                    "GATES FAILED - numbers unusable"
-                }
-            );
-            for w in &x.warnings {
-                let _ = writeln!(s, "  warn: {w}");
-            }
-        }
+        Some(x) => render_e8(&mut s, x),
         None => {
             let _ = writeln!(s, "  skipped");
         }
@@ -339,6 +268,43 @@ pub fn render(r: &ReportInputs<'_>) -> String {
     }
 
     let _ = writeln!(s, "\n[gains]");
+    if let Some(p) = r.plant {
+        let w = p.winding;
+        let _ = writeln!(s, "  plant inputs");
+        let _ = writeln!(
+            s,
+            "    r_vpc        {:>10.4} vcounts/ccount{}  {}",
+            p.plant.r_vpc,
+            w.r_ohm.map_or(String::new(), |r| format!(" ({r:.3} ohm)")),
+            w.r_from.as_str()
+        );
+        let _ = writeln!(
+            s,
+            "    l            {:>10.4} mH                {}",
+            w.l_h * 1e3,
+            w.l_from.as_str()
+        );
+        let _ = writeln!(
+            s,
+            "    ke, fc, fv   {:>10.5} {:.2} {:.6}   {}",
+            p.plant.ke_vpc,
+            p.plant.fc,
+            p.plant.fv,
+            Source::Ladder.as_str()
+        );
+        let _ = writeln!(
+            s,
+            "    b            {:>10.5}                   {}",
+            p.plant.b,
+            Source::Inertia.as_str()
+        );
+        let _ = writeln!(
+            s,
+            "    sigma_theta  {:>10.3} counts            {}",
+            p.plant.sigma_theta,
+            p.sigma_from.as_str()
+        );
+    }
     match r.gains {
         Some((g, e)) => {
             let _ = writeln!(
@@ -379,6 +345,185 @@ pub fn render(r: &ReportInputs<'_>) -> String {
         }
     }
     s
+}
+
+fn gate_line(gates: &[crate::exp::rl::Gate]) -> String {
+    gates
+        .iter()
+        .map(|g| {
+            format!(
+                "{} {} ({})",
+                if g.pass { "pass" } else { "FAIL" },
+                g.name,
+                g.detail
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn render_e8(s: &mut String, x: &InductanceResult) {
+    let v = &x.volts;
+    let _ = writeln!(
+        s,
+        "  voltage       {}",
+        match v.route {
+            Some(r) => format!(
+                "measured in the burst: {} ({} captures)",
+                r.as_str(),
+                v.captures
+            ),
+            None => format!(
+                "pre-arm rail less an estimated bridge drop, not measured ({} captures)",
+                v.captures
+            ),
+        }
+    );
+    let _ = writeln!(
+        s,
+        "  R pairs       {} ohm from {} pair(s){}  settled asymptotes against the settled mean V",
+        v.r_pair_ohm.map_or("-".into(), |r| format!("{r:.3}")),
+        v.pairs.len(),
+        v.r_pair_bracket
+            .map(|(lo, hi)| format!(" [{lo:.3}, {hi:.3}]"))
+            .unwrap_or_default()
+    );
+    match v.reg {
+        Some(g) => {
+            let _ = writeln!(
+                s,
+                "  R regression  {:.3} ohm   L_env {:.4} mH   tau {:.1} us   c {:.3} V{}  ({} periods)",
+                g.r_ohm,
+                g.l_h * 1e3,
+                g.tau_us,
+                g.c_volts,
+                g.emf_v_per_ms
+                    .map(|e| format!("   back-EMF {e:+.3} V/ms (time term earned its place)"))
+                    .unwrap_or_default(),
+                g.n
+            );
+        }
+        None => {
+            let _ = writeln!(s, "  R regression  - (degenerate)");
+        }
+    }
+    let ripple = if x.l_ripple_ok {
+        format!(
+            "{:.4} mH [{:.4}, {:.4}]",
+            x.l_ripple_h * 1e3,
+            x.l_ripple_bracket.0 * 1e3,
+            x.l_ripple_bracket.1 * 1e3
+        )
+    } else {
+        format!("declined ({:.4} mH recorded)", x.l_ripple_h * 1e3)
+    };
+    let _ = writeln!(
+        s,
+        "  L ripple      {ripple}  incremental, one ON window (~25 us); brake decay {} mH",
+        x.l_off_h.map_or("-".into(), |v| format!("{:.4}", v * 1e3))
+    );
+    let _ = writeln!(
+        s,
+        "  envelope      tau {:.1} us [{:.1}, {:.1}] charge balance; ON window {:.1} us, tau_off {:.1} us",
+        x.tau_cb_us, x.tau_cb_bracket.0, x.tau_cb_bracket.1, x.tau_us, x.tau_off_us
+    );
+    let _ = writeln!(
+        s,
+        "  shunt charge  shunt_on_share {} inside the ON window",
+        x.shunt_on_share.map_or("-".into(), |v| format!("{v:.3}"))
+    );
+    let _ = writeln!(
+        s,
+        "  pre-arm rail  R pairs {} ohm ON window, {} charge balance (bridge included); \
+         asymptote route {:.3}; L_env {:.4} mH",
+        x.r_pair_ohm.map_or("-".into(), |v| format!("{v:.3}")),
+        x.r_pair_cb_ohm.map_or("-".into(), |v| format!("{v:.3}")),
+        x.r_asym_ohm,
+        x.l_env_h * 1e3
+    );
+    let _ = writeln!(
+        s,
+        "  supply        pre-arm source {}",
+        x.src_prearm_ohm
+            .map_or("- (no from-a-hold control)".into(), |z| format!(
+                "{z:.3} ohm"
+            ))
+    );
+    if let Some(d) = &v.diag {
+        let _ = writeln!(
+            s,
+            "  in-burst      source {} ohm ({}), open-circuit {} V",
+            d.z_src_ohm.map_or("-".into(), |z| format!("{z:.3}")),
+            if d.z_from_rail {
+                "rail"
+            } else {
+                "driven terminal less R_hs"
+            },
+            d.rail_open_v.map_or("-".into(), |v| format!("{v:.3}"))
+        );
+        let _ = writeln!(
+            s,
+            "  OFF phase     chopping terminal median {} V, min {} V{}",
+            d.off_median_v.map_or("-".into(), |v| format!("{v:+.3}")),
+            d.off_min_v.map_or("-".into(), |v| format!("{v:+.3}")),
+            if d.body_diode {
+                "  BODY DIODE: the terminal sits below ground through the brake"
+            } else {
+                ""
+            }
+        );
+        let _ = writeln!(
+            s,
+            "  ON window     {} ({} over {:.1} us); effective duty {} x commanded",
+            match d.on_flat {
+                Some(true) => "flat",
+                Some(false) => "SAGS",
+                None => "-",
+            },
+            d.on_sag_v
+                .map_or("-".into(), |v| format!("{:+.1} mV", v * 1e3)),
+            d.on_span_us,
+            d.duty_ratio.map_or("-".into(), |v| format!("{v:.3}"))
+        );
+    }
+    let _ = writeln!(
+        s,
+        "  V0            {:.3} V ({})",
+        x.v0_volts,
+        if x.v0_measured {
+            "from the from-a-hold control"
+        } else {
+            "pre-registered default - no usable control"
+        }
+    );
+    let by_duty: Vec<String> = x
+        .l_by_duty
+        .iter()
+        .map(|(d, l)| format!("{:.0}% {:.3} mH", d * 100.0, l * 1e3))
+        .collect();
+    let _ = writeln!(s, "  L by duty     {}", by_duty.join(", "));
+    let _ = writeln!(
+        s,
+        "  trace         cadence {:.2} samples/period, {:.1}-sample ON windows, \
+         {:.2} us amplifier settling, bias {:.1} counts",
+        x.cadence_samples, x.window_samples, x.settle_us, x.bias_counts
+    );
+    let _ = writeln!(s, "  gates         {}", gate_line(&x.gates));
+    let _ = writeln!(
+        s,
+        "  verdict       {}",
+        if x.promotable() {
+            "PROMOTED - the gains take R and L_env from the regression".to_string()
+        } else {
+            format!(
+                "declined ({}) - E2 supplies R, L stays at the default",
+                x.blocking().join(", ")
+            )
+        }
+    );
+    for w in &x.warnings {
+        let _ = writeln!(s, "  warn: {w}");
+    }
 }
 
 #[cfg(test)]
@@ -475,12 +620,69 @@ mod tests {
             inductance: Some(&r),
             ..Default::default()
         });
-        assert!(s.contains("[E8 winding L]"), "{s}");
+        assert!(s.contains("[E8 winding R/L]"), "{s}");
         assert!(s.contains("L by duty     20%"), "{s}");
         assert!(s.contains("L ripple"), "{s}");
-        assert!(s.contains("L envelope"), "{s}");
+        assert!(s.contains("R regression"), "{s}");
+        assert!(s.contains("shunt_on_share"), "{s}");
         assert!(s.contains("pass cadence"), "{s}");
-        assert!(s.contains("1 pair(s)"), "{s}");
+        assert!(
+            s.contains("pre-arm rail, not measured") || s.contains("not measured"),
+            "{s}"
+        );
+        assert!(s.contains("verdict       "), "{s}");
+    }
+
+    #[test]
+    fn every_winding_input_names_its_source() {
+        use crate::sources::{Source, Winding};
+        let p = PlantParams {
+            r_vpc: 2.87,
+            ke_vpc: 0.2,
+            fc: 20.0,
+            fv: 0.001,
+            b: 0.1,
+            sigma_theta: 1.0,
+            l_cd: 3.58e-4,
+            tick_hz: 20_100.0,
+            f_med: 2_010.0,
+        };
+        let burst = Winding {
+            r_ohm: Some(4.0),
+            r_vpc: 2.87,
+            r_from: Source::Burst,
+            l_h: 0.6e-3,
+            l_from: Source::Burst,
+        };
+        let s = render(&ReportInputs {
+            plant: Some(PlantInputs {
+                plant: &p,
+                winding: &burst,
+                sigma_from: Source::Bias,
+            }),
+            ..Default::default()
+        });
+        assert!(s.contains("not run: E8 supplied R"), "{s}");
+        assert!(s.contains("(4.000 ohm)  E8 burst"), "{s}");
+        assert!(s.contains("0.6000 mH                E8 burst"), "{s}");
+        assert!(s.contains("E0 bias"), "{s}");
+        let stall = Winding {
+            r_ohm: None,
+            r_from: Source::StallFallback,
+            l_h: 0.5e-3,
+            l_from: Source::Default,
+            ..burst
+        };
+        let s = render(&ReportInputs {
+            plant: Some(PlantInputs {
+                plant: &p,
+                winding: &stall,
+                sigma_from: Source::Default,
+            }),
+            ..Default::default()
+        });
+        assert!(s.contains("E2 fallback"), "{s}");
+        assert!(s.contains("0.5000 mH                default"), "{s}");
     }
 
     #[test]

@@ -5,7 +5,10 @@
 //! transient the settle discard exists for.
 
 use super::{Cmd, Experiment};
-use crate::burst::{Capture, Meta, SAMPLE_HCLK, SAMPLE_US, SAMPLES};
+use crate::burst::{
+    CHAN_VBUS, CHAN_VMOTOR_A, CHAN_VMOTOR_B, Capture, Meta, SAMPLE_HCLK, SAMPLE_US, SAMPLES,
+    frame_len,
+};
 use crate::frame::{TelFrame, TelemetrySnapshot};
 use crate::regs::{ALL, Reg, control};
 
@@ -48,6 +51,9 @@ pub struct FakeServo {
     t_duty_change: f64,
     pub transient_windows: f64,
     pub transient_gain: f64,
+    /// The plant a [`Cmd::Burst`] captures from; the burst's own mask
+    /// replaces `chans`.
+    pub burst: SynthBurst,
     lcg: u64,
 }
 
@@ -79,6 +85,12 @@ impl FakeServo {
             t_duty_change: -1e9,
             transient_windows: 3.0,
             transient_gain: 1.5,
+            // r 8 ohm keeps the whole default duty ladder inside the 0.4 A
+            // envelope, so the plan is not pruned by accident
+            burst: SynthBurst {
+                r: 8.0,
+                ..SynthBurst::board_d()
+            },
             lcg: 0x9E3779B97F4A7C15,
         }
     }
@@ -303,44 +315,113 @@ impl FakeServo {
 /// the crest, the shunt live only during ON, and a first-order amplifier
 /// lag on the edge. Separate from [`FakeServo`], which has no electrical
 /// model at microsecond resolution.
+///
+/// The bridge is explicit when `rds` and `r_shunt` are set: during ON the
+/// driven terminal sits one high-side drop under the rail node and the idle
+/// terminal one low-side drop plus the shunt above ground; during the brake
+/// both low sides short the winding and nothing crosses the shunt. With
+/// both zero, `r` is the whole loop, the model the older tests use.
+///
+/// `c_island` is decoupling inside the shunt's ground island, fed from the
+/// rail node through `r_feed`: it supplies part of each pulse and is
+/// repaid through the shunt during OFF, so the shunt carries the island's
+/// feed current rather than the winding's.
 #[derive(Clone, Debug)]
 pub struct SynthBurst {
-    /// Loop resistance seen by the winding, ohms.
+    /// Winding resistance, ohms; the whole loop when `rds` and `r_shunt`
+    /// are zero.
     pub r: f64,
     pub l: f64,
+    /// Open-circuit source voltage.
     pub v_rail: f64,
+    /// Source resistance behind `c_bulk`; zero is a stiff rail.
+    pub r_src: f64,
+    pub c_bulk: f64,
+    pub c_island: f64,
+    pub r_feed: f64,
+    /// Per bridge FET, ohms.
+    pub rds: f64,
+    pub r_shunt: f64,
+    /// Brush drop against the winding current, volts.
+    pub v0: f64,
+    /// Back-EMF growth after the step latches, volts per ms.
+    pub emf_v_per_ms: f64,
+    /// The chopping leg's low side never turns on: its body diode carries
+    /// the whole OFF phase.
+    pub body_diode: bool,
     pub arr: u16,
     pub bias: f64,
     /// Shunt amplifier edge time constant, microseconds.
     pub settle_us: f64,
+    /// Terminal tap RC, microseconds.
+    pub tap_us: f64,
+    /// Terminal divider bias node, raw counts.
+    pub vb: f64,
     /// Peak-to-peak measurement noise, counts.
     pub noise_counts: f64,
     pub amps_per_count: f64,
     pub v_rail_per_count: f64,
+    pub v_term_per_count: f64,
+    pub adc_lsb_v: f64,
     pub step_index: u16,
     /// Samples from the step to the crest whose update event latches the
     /// new compare value. The window straddling that crest is a HALF
     /// window - the bench captures show it and so must this.
     pub latch_delay: usize,
+    pub chans: u8,
 }
 
+/// Body diode forward drop, volts.
+const DIODE_V: f64 = 0.7;
+
+/// Periods a from-a-hold capture runs at its pre-step duty before sample 0,
+/// so the pre-step half and the pre-arm rail read are settled.
+const PRIME_PERIODS: usize = 40;
+
+/// Where the servo's scan samples the rail: slot 5 of the crest scan,
+/// 2.16 us after the crest, in conversion periods.
+const PRE_ARM_RAIL_SAMPLES: f64 = 2.0;
+
 impl SynthBurst {
-    /// Board D as fitted: 60 mohm shunt at G 15, 15k/10k rail tap, a 4.37 V
-    /// USB rail, ARR 1200.
+    /// Board D as fitted: 60 mohm shunt at G 15, 15k/10k rail tap, 6k8/3k3
+    /// terminal taps to a 779-count bias node, a 4.37 V USB rail, ARR 1200.
     pub fn board_d() -> Self {
         let lsb = 3.3 / 4096.0;
         Self {
             r: 4.0,
             l: 0.6e-3,
             v_rail: 4.37,
+            r_src: 0.0,
+            c_bulk: 100e-6,
+            c_island: 0.0,
+            r_feed: 0.0,
+            rds: 0.0,
+            r_shunt: 0.0,
+            v0: 0.0,
+            emf_v_per_ms: 0.0,
+            body_diode: false,
             arr: 1200,
             bias: 112.0,
             settle_us: 0.9,
+            tap_us: 0.33,
+            vb: 779.0,
             noise_counts: 2.0,
             amps_per_count: lsb / (15.0 * 0.060),
             v_rail_per_count: lsb * 2.5,
+            v_term_per_count: lsb * 10_100.0 / 3_300.0,
+            adc_lsb_v: lsb,
             step_index: 485,
             latch_delay: 21,
+            chans: 0,
+        }
+    }
+
+    /// Board D's bridge made explicit: DRV8212P FETs and the 60 mohm shunt.
+    pub fn with_bridge(self) -> Self {
+        Self {
+            rds: 0.140,
+            r_shunt: 0.060,
+            ..self
         }
     }
 
@@ -357,7 +438,8 @@ impl SynthBurst {
             let q = if k >= 0.0 { step_q15 } else { pre_q15 };
             (q as f64 / 32767.0).abs()
         };
-        let on_at = |x: f64| {
+        // (on, duty of the half period x falls in, offset from its crest)
+        let phase = |x: f64| {
             let k = ((x - crest0) / p).round();
             let u = x - (crest0 + k * p);
             let d = if u >= 0.0 {
@@ -365,12 +447,77 @@ impl SynthBurst {
             } else {
                 duty_at(k - 1.0)
             };
-            u.abs() <= d * p / 2.0
+            (u.abs() <= d * p / 2.0, d, u)
         };
         let dt = SAMPLE_US * 1e-6 / SUBSTEPS as f64;
         let a_amp = 1.0 - (-SAMPLE_US / SUBSTEPS as f64 / self.settle_us).exp();
-        let mut i = 0.0f64;
-        let mut m = self.bias;
+        let a_tap = 1.0 - (-SAMPLE_US / SUBSTEPS as f64 / self.tap_us).exp();
+        let vb_v = self.vb * self.adc_lsb_v;
+        let fwd = step_q15 >= 0;
+        let slots: Vec<u8> = [CHAN_VMOTOR_A, CHAN_VMOTOR_B, CHAN_VBUS]
+            .into_iter()
+            .filter(|b| self.chans & b != 0)
+            .collect();
+        let fl = frame_len(self.chans);
+
+        let mut pre_arm_rail = self.v_rail;
+        // winding current, rail node, island, amplifier, tap A, tap B
+        let step = |x: f64, st: &mut [f64; 6]| {
+            let [i, vc, isl, m, ta, tb] = st;
+            let (on, d, _) = phase(x);
+            let drive = on && d != 0.0;
+            let e = self.emf_v_per_ms * ((x - crest0).max(0.0) * SAMPLE_US * 1e-3);
+            let v0 = if *i > 0.0 { self.v0 } else { 0.0 };
+            let i_bridge = if drive { *i } else { 0.0 };
+            // (bridge supply above PGND, shunt current)
+            let (vm, i_sh) = if self.c_island > 0.0 {
+                (*isl, (*vc - *isl) / (self.r_feed + self.r_shunt))
+            } else {
+                (*vc - i_bridge * self.r_shunt, i_bridge)
+            };
+            let pgnd = i_sh * self.r_shunt;
+            // terminals against ground, in the drive frame: hi is the
+            // chopping leg
+            let (hi, lo) = if d == 0.0 {
+                (vb_v, vb_v)
+            } else if on {
+                (vm + pgnd - *i * self.rds, pgnd + *i * self.rds)
+            } else if self.body_diode && *i > 0.0 {
+                (-DIODE_V, pgnd + *i * self.rds)
+            } else {
+                (pgnd - *i * self.rds, pgnd + *i * self.rds)
+            };
+            if d != 0.0 {
+                *i += (hi - lo - *i * self.r - v0 - e) / self.l * dt;
+                if !on {
+                    *i = i.max(0.0);
+                }
+            }
+            if self.c_island > 0.0 {
+                *isl += (i_sh - i_bridge) / self.c_island * dt;
+            }
+            if self.r_src > 0.0 {
+                *vc += ((self.v_rail - *vc) / self.r_src - i_sh) / self.c_bulk * dt;
+            }
+            *m += (self.bias + i_sh / self.amps_per_count - *m) * a_amp;
+            let (va, vbv) = if fwd { (hi, lo) } else { (lo, hi) };
+            *ta += (va - *ta) * a_tap;
+            *tb += (vbv - *tb) * a_tap;
+        };
+        let mut st = [0.0, self.v_rail, self.v_rail, self.bias, vb_v, vb_v];
+        if pre_q15 != 0 {
+            let x0 = -(PRIME_PERIODS as f64) * p;
+            let n = (PRIME_PERIODS as f64 * p * SUBSTEPS as f64) as usize;
+            for s in 0..n {
+                let x = x0 + s as f64 / SUBSTEPS as f64;
+                step(x, &mut st);
+                let (_, _, u) = phase(x);
+                if (PRE_ARM_RAIL_SAMPLES..PRE_ARM_RAIL_SAMPLES + 1.0 / SUBSTEPS as f64).contains(&u)
+                {
+                    pre_arm_rail = st[1];
+                }
+            }
+        }
         let mut lcg = 0x2545F4914F6CDD1Du64;
         let mut noise = || {
             lcg = lcg
@@ -378,21 +525,22 @@ impl SynthBurst {
                 .wrapping_add(1442695040888963407);
             ((lcg >> 11) as f64 / (1u64 << 53) as f64 - 0.5) * self.noise_counts
         };
+        let tap_code = |v: f64| self.vb + (v - vb_v) / self.v_term_per_count;
         let mut samples = Vec::with_capacity(SAMPLES);
         for n in 0..SAMPLES {
             for s in 0..SUBSTEPS {
                 let x = n as f64 + s as f64 / SUBSTEPS as f64;
-                let on = on_at(x);
-                let v = if on { self.v_rail } else { 0.0 };
-                i += (v - i * self.r) / self.l * dt;
-                let target = if on {
-                    self.bias + i / self.amps_per_count
-                } else {
-                    self.bias
-                };
-                m += (target - m) * a_amp;
+                step(x, &mut st);
             }
-            samples.push((m + noise()).round().max(0.0) as u16);
+            let code = match n % fl {
+                0 => st[3],
+                slot => match slots[slot - 1] {
+                    CHAN_VMOTOR_A => tap_code(st[4]),
+                    CHAN_VMOTOR_B => tap_code(st[5]),
+                    _ => st[1] / self.v_rail_per_count,
+                },
+            };
+            samples.push((code + noise()).round().clamp(0.0, 4095.0) as u16);
         }
         Capture {
             samples,
@@ -404,8 +552,11 @@ impl SynthBurst {
                 pwm_arr: self.arr,
                 start_dir: 1,
                 restore_dir: 0,
-                vbus_raw: (self.v_rail / self.v_rail_per_count).round() as u16,
+                vbus_raw: (pre_arm_rail / self.v_rail_per_count).round() as u16,
                 bias: self.bias.round() as u16,
+                chans: self.chans,
+                frame_len: fl as u8,
+                vmotor_bias: self.vb.round() as u16,
             },
         }
     }
@@ -447,13 +598,15 @@ pub fn pump<E: Experiment>(exp: &mut E, servo: &mut FakeServo, max_steps: u32) -
                 servo.stream(samples, &mut frames);
                 exp.push_tel(&frames);
             }
-            Cmd::Burst { duty_q15, pre_q15 } => {
-                log.push(format!("burst {duty_q15} pre {pre_q15}"));
-                // r 8 ohm keeps the whole default duty ladder inside the
-                // 0.4 A envelope, so the plan is not pruned by accident
+            Cmd::Burst {
+                duty_q15,
+                pre_q15,
+                chans,
+            } => {
+                log.push(format!("burst {duty_q15} pre {pre_q15} chans {chans}"));
                 let plant = SynthBurst {
-                    r: 8.0,
-                    ..SynthBurst::board_d()
+                    chans,
+                    ..servo.burst.clone()
                 };
                 exp.push_burst(&plant.capture(duty_q15, pre_q15));
                 servo.advance(2);

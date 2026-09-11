@@ -435,6 +435,9 @@ mod tests {
                     restore_dir: 0,
                     vbus_raw: 2169,
                     bias: 118,
+                    chans: osc_ident::burst::CHAN_VMOTOR_A,
+                    frame_len: 2,
+                    vmotor_bias: 779,
                 },
             })
             .collect();

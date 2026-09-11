@@ -216,8 +216,10 @@ pub(crate) fn exchange_tel_burst(
 }
 
 /// The burst handshake's wire moves. The arm has to be atomic - a servo
-/// that sees arm=1 before the new duty captures the old level - so duty and
-/// arm go out under HOLD and one broadcast COMMIT applies both.
+/// that sees arm=1 before the new duty or mask captures the old one - so
+/// duty, mask and arm go out under HOLD and one broadcast COMMIT applies
+/// all three. The mask is its own one-byte write: the byte after it is a
+/// reserved alignment byte that refuses writes.
 struct WireBurstIo<'a> {
     c: &'a mut Client<NusbPipe>,
     id: Id,
@@ -226,10 +228,13 @@ struct WireBurstIo<'a> {
 impl BurstIo for WireBurstIo<'_> {
     type Error = anyhow::Error;
 
-    fn arm(&mut self, duty_q15: i16) -> Result<()> {
+    fn arm(&mut self, duty_q15: i16, chans: u8) -> Result<()> {
         self.c
             .write_hold(self.id, burst::wire::DUTY_Q15.addr, &duty_q15.to_le_bytes())
             .context("hold burst duty")?;
+        self.c
+            .write_hold(self.id, burst::wire::CHANS.addr, &[chans])
+            .context("hold burst chans")?;
         self.c
             .write_hold(self.id, burst::wire::ARM.addr, &[1])
             .context("hold burst arm")?;
@@ -256,22 +261,23 @@ impl BurstIo for WireBurstIo<'_> {
     }
 }
 
-/// One high-rate capture. The rail and the current-sense zero are read
-/// BEFORE the arm: the burst suspends the scan, so neither is measurable
-/// inside the window.
+/// One high-rate capture. The rail, the current-sense zero and the terminal
+/// divider bias are read BEFORE the arm: the burst suspends the scan.
 pub(crate) fn capture_burst(
     c: &mut Client<NusbPipe>,
     id: Id,
     duty_q15: i16,
     pre_q15: i16,
+    chans: u8,
 ) -> Result<Capture> {
     let pre = Pre {
         pre_q15,
         vbus_raw: super::snapshot::read_u16(c, id, telemetry::VBUS_RAW)?,
         bias: super::snapshot::read_u16(c, id, telemetry::CURRENT_BIAS_COUNTS)?,
+        vmotor_bias: super::snapshot::read_u16(c, id, telemetry::VMOTOR_BIAS_COUNTS)?,
     };
     let mut io = WireBurstIo { c, id };
-    burst::capture(&mut io, duty_q15, pre, &CaptureCfg::default())
+    burst::capture(&mut io, duty_q15, chans, pre, &CaptureCfg::default())
         .map_err(|e| anyhow::anyhow!("burst capture: {e}"))
 }
 
@@ -346,14 +352,20 @@ impl<'a> Pump<'a> {
                     exp.push_tel(&frames);
                     self.tel.extend_from_slice(&frames);
                 }
-                Cmd::Burst { duty_q15, pre_q15 } => {
-                    let cap = capture_burst(self.client, self.id, duty_q15, pre_q15)?;
+                Cmd::Burst {
+                    duty_q15,
+                    pre_q15,
+                    chans,
+                } => {
+                    let cap = capture_burst(self.client, self.id, duty_q15, pre_q15, chans)?;
                     eprintln!(
-                        "burst: {} samples, step at {}, duty {} (pre {})",
+                        "burst: {} samples, step at {}, duty {} (pre {}), chans {} frame_len {}",
                         cap.samples.len(),
                         cap.meta.step_index,
                         duty_q15,
-                        pre_q15
+                        pre_q15,
+                        cap.meta.chans,
+                        cap.meta.frame_len
                     );
                     exp.push_burst(&cap);
                 }

@@ -11,7 +11,9 @@
 //!         Cmd::Read => pending = Some(read_telemetry_region()),
 //!         Cmd::Pause { ms } => sleep_ms(ms),
 //!         Cmd::Stream { samples, goal } => exp.push_tel(&run_burst(samples, goal)),
-//!         Cmd::Burst { duty_q15, pre_q15 } => exp.push_burst(&capture(duty_q15, pre_q15)),
+//!         Cmd::Burst { duty_q15, pre_q15, chans } => {
+//!             exp.push_burst(&capture(duty_q15, pre_q15, chans))
+//!         }
 //!         Cmd::Done => break,
 //!     }
 //! }
@@ -30,6 +32,7 @@ pub mod resistance;
 pub mod rl;
 pub mod sweep;
 pub mod verify;
+pub mod winding;
 
 use crate::burst::Capture;
 use crate::frame::{SeqUnwrap, TelFrame, TelemetrySnapshot};
@@ -57,14 +60,15 @@ pub enum Cmd {
         samples: u16,
         goal: Option<(Reg, i32)>,
     },
-    /// One high-rate shunt burst: the driver stages `duty_q15` and the arm
-    /// under HOLD, fires one COMMIT, polls to Done and walks the readback
-    /// pages ([`crate::burst`]). `pre_q15` is the duty already in force -
-    /// bookkeeping for the capture's meta, not a write. The assembled
-    /// capture returns through [`Experiment::push_burst`].
+    /// One high-rate shunt burst: the driver stages `duty_q15`, the `chans`
+    /// mask and the arm under HOLD, fires one COMMIT, polls to Done and
+    /// walks the readback pages ([`crate::burst`]). `pre_q15` is the duty
+    /// already in force - bookkeeping for the capture's meta, not a write.
+    /// The assembled capture returns through [`Experiment::push_burst`].
     Burst {
         duty_q15: i16,
         pre_q15: i16,
+        chans: u8,
     },
     Done,
 }

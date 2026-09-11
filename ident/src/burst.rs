@@ -1,7 +1,12 @@
 //! Host side of the firmware high-rate shunt burst: arm, poll, walk the
-//! eight readback pages, release. One capture is 960 raw shunt codes at one
-//! ADC conversion period each - a current step sampled ~46x per PWM period
+//! eight readback pages, release. One capture is 960 raw ADC codes at one
+//! conversion period each - a current step sampled ~46x per PWM period
 //! instead of the once per period ordinary telemetry gives.
+//!
+//! `chans` interleaves voltage channels behind the shunt: every frame is the
+//! shunt then the selected extras in bit order, so a channel in slot s is
+//! sampled s conversions after its frame's shunt sample. chans 0 is one
+//! shunt code per frame.
 //!
 //! Sans-io like the rest of the crate: [`BurstIo`] is the four wire moves
 //! and the sleep the handshake needs, the driver supplies them. The page
@@ -10,8 +15,8 @@
 //! guard (0xFF while copying, the page number after a fence), so a reply
 //! whose echo does not match the requested page is a plain retry.
 //!
-//! The capture carries no rail voltage: the burst window is ADC time the
-//! scan does not run, so vbus and the current-sense bias come from a
+//! The burst window is ADC time the scan does not run, so the pre-arm rail,
+//! the current-sense bias and the terminal divider bias come from a
 //! telemetry read taken just before the arm (see [`Pre`]).
 
 use core::fmt;
@@ -45,6 +50,52 @@ pub const HCLK_MHZ: f64 = 48.0;
 /// spacing is the ruler for the PWM period.
 pub const SAMPLE_US: f64 = SAMPLE_HCLK / HCLK_MHZ;
 
+/// `chans` bits: extras sampled behind the shunt, in this order.
+pub const CHAN_VMOTOR_A: u8 = 1 << 0;
+pub const CHAN_VMOTOR_B: u8 = 1 << 1;
+pub const CHAN_VBUS: u8 = 1 << 2;
+/// Largest mask the servo accepts.
+pub const CHANS_MAX: u8 = CHAN_VMOTOR_A | CHAN_VMOTOR_B | CHAN_VBUS;
+
+/// Codes per frame for a mask: the shunt plus one per selected extra.
+pub const fn frame_len(chans: u8) -> usize {
+    1 + chans.count_ones() as usize
+}
+
+/// The extras a capture asks for. `Driven` samples only the tap of the
+/// terminal the step drives (OUT1 -> MOT_A -> vmotor_a for a forward step,
+/// vmotor_b for a reverse one): the chopping leg, so one channel gives the
+/// winding's high side through the ON phase and the OFF phase both, at
+/// frame_len 2. Every extra thins the shunt stream: at frame_len 3 a 20%
+/// ON window is three shunt samples and no window fit survives it.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Chans {
+    Fixed(u8),
+    Driven,
+}
+
+impl Chans {
+    pub fn for_step(self, step_q15: i16) -> u8 {
+        match self {
+            Chans::Fixed(m) => m,
+            Chans::Driven if step_q15 >= 0 => CHAN_VMOTOR_A,
+            Chans::Driven => CHAN_VMOTOR_B,
+        }
+    }
+
+    /// `driven` or a mask 0..=7.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "driven" => Some(Chans::Driven),
+            _ => s
+                .parse::<u8>()
+                .ok()
+                .filter(|m| *m <= CHANS_MAX)
+                .map(Chans::Fixed),
+        }
+    }
+}
+
 /// Samples per PWM period the sample clock predicts. Center-aligned, so one
 /// period is 2 x ARR of HCLK. The measured cadence is gated against this.
 pub fn nominal_cadence(pwm_arr: u16) -> f64 {
@@ -60,13 +111,16 @@ pub struct Pre {
     pub vbus_raw: u16,
     /// Current-sense zero as the servo's trough tracker reports it.
     pub bias: u16,
+    /// Terminal divider bias measured at boot with the bridge Hi-Z, raw.
+    pub vmotor_bias: u16,
 }
 
 /// The burst header as one READ returns it, minus the page payload.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Meta {
     pub pre_q15: i16,
     pub step_q15: i16,
+    /// Raw sample index, not frame index.
     pub step_index: u16,
     pub start_cnt: u16,
     pub pwm_arr: u16,
@@ -74,12 +128,69 @@ pub struct Meta {
     pub restore_dir: u8,
     pub vbus_raw: u16,
     pub bias: u16,
+    /// The mask the servo echoed and the frame length it sampled with.
+    pub chans: u8,
+    pub frame_len: u8,
+    /// 0 when the recording predates the voltage channels.
+    pub vmotor_bias: u16,
+}
+
+impl Default for Meta {
+    fn default() -> Self {
+        Self {
+            pre_q15: 0,
+            step_q15: 0,
+            step_index: 0,
+            start_cnt: 0,
+            pwm_arr: 0,
+            start_dir: 0,
+            restore_dir: 0,
+            vbus_raw: 0,
+            bias: 0,
+            chans: 0,
+            frame_len: 1,
+            vmotor_bias: 0,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Capture {
+    /// Raw codes in conversion order, frames interleaved.
     pub samples: Vec<u16>,
     pub meta: Meta,
+}
+
+impl Capture {
+    pub fn frame_len(&self) -> usize {
+        self.meta.frame_len as usize
+    }
+
+    /// Slot of a channel bit inside a frame, None when it is not selected.
+    pub fn slot(&self, bit: u8) -> Option<usize> {
+        (self.meta.chans & bit != 0)
+            .then(|| 1 + (self.meta.chans & (bit - 1)).count_ones() as usize)
+    }
+
+    /// One slot's codes, one per frame.
+    pub fn stream(&self, slot: usize) -> Vec<u16> {
+        self.samples
+            .iter()
+            .skip(slot)
+            .step_by(self.frame_len())
+            .copied()
+            .collect()
+    }
+
+    pub fn shunt(&self) -> Vec<u16> {
+        self.stream(0)
+    }
+
+    /// Raw sample index of one slot of one frame: its sampling instant in
+    /// conversion periods from the start of the capture.
+    pub fn raw_index(&self, frame: usize, slot: usize) -> usize {
+        frame * self.frame_len() + slot
+    }
 }
 
 /// Poll and retry budgets. Defaults: the capture itself is ~2 ms
@@ -103,13 +214,13 @@ impl Default for CaptureCfg {
     }
 }
 
-/// The wire moves a capture needs. `arm` must apply duty and arm in the
-/// same instant (HOLD both, one COMMIT): a servo that sees arm before the
-/// duty captures the old level.
+/// The wire moves a capture needs. `arm` must apply duty, mask and arm in
+/// the same instant (HOLD all three, one COMMIT): a servo that sees arm
+/// before the duty captures the old level.
 pub trait BurstIo {
     type Error;
 
-    fn arm(&mut self, duty_q15: i16) -> Result<(), Self::Error>;
+    fn arm(&mut self, duty_q15: i16, chans: u8) -> Result<(), Self::Error>;
     fn select_page(&mut self, page: u8) -> Result<(), Self::Error>;
     fn release(&mut self) -> Result<(), Self::Error>;
     /// One READ of the burst section, `len` bytes from `addr`.
@@ -142,6 +253,16 @@ pub enum Error<E> {
     Len {
         got: u16,
     },
+    /// The servo sampled a different mask than the one armed.
+    Chans {
+        want: u8,
+        got: u8,
+    },
+    /// The published frame length does not match the echoed mask.
+    FrameLen {
+        chans: u8,
+        got: u8,
+    },
 }
 
 impl<E: fmt::Display> fmt::Display for Error<E> {
@@ -161,6 +282,16 @@ impl<E: fmt::Display> fmt::Display for Error<E> {
             Error::Short { got, want } => write!(f, "burst read returned {got} B, need {want}"),
             Error::Len { got } => {
                 write!(f, "servo published samples_len {got}, expected {SAMPLES}")
+            }
+            Error::Chans { want, got } => {
+                write!(f, "armed chans {want}, servo echoed {got}")
+            }
+            Error::FrameLen { chans, got } => {
+                write!(
+                    f,
+                    "chans {chans} needs frame_len {}, servo published {got}",
+                    frame_len(*chans)
+                )
             }
         }
     }
@@ -212,20 +343,25 @@ pub fn parse_page(raw: &[u8]) -> impl Iterator<Item = u16> + '_ {
     (0..PAGE_SAMPLES).map(move |k| u16_at(raw, base + 2 * k))
 }
 
-/// One capture end to end: arm at `duty_q15`, wait for Done, walk the
-/// pages, release. `pre` is the host's pre-arm telemetry read; it is copied
-/// into the capture's meta unchanged.
+/// The mask echo and frame length sit one past the page READ.
+const TAIL_LEN: u16 = reg::FRAME_LEN.addr + 1 - reg::CHANS_ECHO.addr;
+
+/// One capture end to end: arm at `duty_q15` sampling the `chans` extras,
+/// wait for Done, check the echoed mask, walk the pages, release. `pre` is
+/// the host's pre-arm telemetry read; it is copied into the capture's meta
+/// unchanged.
 pub fn capture<IO: BurstIo>(
     io: &mut IO,
     duty_q15: i16,
+    chans: u8,
     pre: Pre,
     cfg: &CaptureCfg,
 ) -> Result<Capture, Error<IO::Error>> {
-    io.arm(duty_q15).map_err(Error::Io)?;
-    let head = poll_done(io, cfg);
+    io.arm(duty_q15, chans).map_err(Error::Io)?;
+    let head = poll_done(io, cfg).and_then(|h| tail(io, chans).map(|t| (h, t)));
     // Release whatever the poll found: a rejected or wedged arm must not be
     // left holding the servo's burst FSM.
-    let head = match head {
+    let (head, (echo, flen)) = match head {
         Ok(h) => h,
         Err(e) => {
             let _ = io.release();
@@ -247,8 +383,34 @@ pub fn capture<IO: BurstIo>(
             restore_dir: head.restore_dir,
             vbus_raw: pre.vbus_raw,
             bias: pre.bias,
+            chans: echo,
+            frame_len: flen,
+            vmotor_bias: pre.vmotor_bias,
         },
     })
+}
+
+/// (chans_echo, frame_len), both checked against the armed mask.
+fn tail<IO: BurstIo>(io: &mut IO, chans: u8) -> Result<(u8, u8), Error<IO::Error>> {
+    let raw = io
+        .read_burst(reg::CHANS_ECHO.addr, TAIL_LEN)
+        .map_err(Error::Io)?;
+    let (Some(&echo), Some(&flen)) = (raw.first(), raw.get(1)) else {
+        return Err(Error::Short {
+            got: raw.len(),
+            want: TAIL_LEN as usize,
+        });
+    };
+    if echo != chans {
+        return Err(Error::Chans {
+            want: chans,
+            got: echo,
+        });
+    }
+    if flen as usize != frame_len(chans) {
+        return Err(Error::FrameLen { chans, got: flen });
+    }
+    Ok((echo, flen))
 }
 
 fn poll_done<IO: BurstIo>(io: &mut IO, cfg: &CaptureCfg) -> Result<Header, Error<IO::Error>> {
@@ -310,10 +472,17 @@ fn walk_pages<IO: BurstIo>(io: &mut IO, cfg: &CaptureCfg) -> Result<Vec<u16>, Er
 
 // --- csv --------------------------------------------------------------------
 
-/// Column header of a `burst-N.csv`. The meta columns carry a value on the
-/// first data row only - they are one capture's constants, not a series.
-pub const CSV_HEADER: &str = "k,current_raw,pre_q15,step_q15,step_index,start_cnt,pwm_arr,\
-                              start_dir,restore_dir,vbus_raw,bias";
+/// Column header of a `burst-N.csv`. `code` is the raw buffer in
+/// conversion order, frames interleaved. The meta columns carry a value on
+/// the first data row only - they are one capture's constants, not a series.
+pub const CSV_HEADER: &str = "k,code,pre_q15,step_q15,step_index,start_cnt,pwm_arr,\
+                              start_dir,restore_dir,vbus_raw,bias,chans,frame_len,vmotor_bias";
+
+/// Columns a first row carries: the eleven every recording has, then the
+/// three the voltage channels added. A recording with only the eleven is a
+/// shunt-only capture.
+const CSV_META_COLS: usize = 11;
+const CSV_COLS: usize = 14;
 
 pub fn to_csv(cap: &Capture) -> String {
     let m = &cap.meta;
@@ -325,7 +494,7 @@ pub fn to_csv(cap: &Capture) -> String {
             let _ = fmt::Write::write_fmt(
                 &mut s,
                 format_args!(
-                    "0,{v},{},{},{},{},{},{},{},{},{}\n",
+                    "0,{v},{},{},{},{},{},{},{},{},{},{},{},{}\n",
                     m.pre_q15,
                     m.step_q15,
                     m.step_index,
@@ -334,7 +503,10 @@ pub fn to_csv(cap: &Capture) -> String {
                     m.start_dir,
                     m.restore_dir,
                     m.vbus_raw,
-                    m.bias
+                    m.bias,
+                    m.chans,
+                    m.frame_len,
+                    m.vmotor_bias
                 ),
             );
         } else {
@@ -371,9 +543,9 @@ pub fn from_csv(text: &str) -> Result<Capture, CsvError> {
         if c.len() < 2 {
             return Err(err("needs at least k and current_raw"));
         }
-        let raw: u16 = c[1].parse().map_err(|_| err("current_raw not a u16"))?;
+        let raw: u16 = c[1].parse().map_err(|_| err("code not a u16"))?;
         if samples.is_empty() {
-            if c.len() < 11 {
+            if c.len() < CSV_META_COLS {
                 return Err(err("first row must carry the meta columns"));
             }
             let i16at = |i: usize| c[i].parse::<i16>().map_err(|_| err("meta not an i16"));
@@ -389,7 +561,16 @@ pub fn from_csv(text: &str) -> Result<Capture, CsvError> {
                 restore_dir: u8at(8)?,
                 vbus_raw: u16at(9)?,
                 bias: u16at(10)?,
+                ..Meta::default()
             };
+            if c.len() >= CSV_COLS {
+                meta.chans = u8at(11)?;
+                meta.frame_len = u8at(12)?;
+                meta.vmotor_bias = u16at(13)?;
+                if meta.chans > CHANS_MAX || meta.frame_len as usize != frame_len(meta.chans) {
+                    return Err(err("frame_len does not match chans"));
+                }
+            }
         }
         samples.push(raw);
     }
@@ -397,6 +578,12 @@ pub fn from_csv(text: &str) -> Result<Capture, CsvError> {
         return Err(CsvError {
             line: 0,
             what: "no sample rows",
+        });
+    }
+    if samples.len() % meta.frame_len as usize != 0 {
+        return Err(CsvError {
+            line: 0,
+            what: "sample count is not a whole number of frames",
         });
     }
     Ok(Capture { samples, meta })
@@ -408,6 +595,7 @@ pub mod wire {
     use crate::regs::Reg;
 
     pub const DUTY_Q15: Reg = super::control::BURST_DUTY_Q15;
+    pub const CHANS: Reg = super::control::BURST_CHANS;
     pub const ARM: Reg = super::control::BURST_ARM;
     pub const PAGE: Reg = super::control::BURST_PAGE;
 }
@@ -428,6 +616,9 @@ mod tests {
         stutter: bool,
         stuttered: Vec<u8>,
         armed: Option<i16>,
+        chans: u8,
+        /// What the servo echoes, when it disagrees with the arm.
+        echo: Option<u8>,
         released: bool,
         reads: u32,
     }
@@ -442,6 +633,8 @@ mod tests {
                 stutter: false,
                 stuttered: Vec::new(),
                 armed: None,
+                chans: 0,
+                echo: None,
                 released: false,
                 reads: 0,
             }
@@ -471,8 +664,9 @@ mod tests {
     impl BurstIo for Fake {
         type Error = &'static str;
 
-        fn arm(&mut self, duty_q15: i16) -> Result<(), &'static str> {
+        fn arm(&mut self, duty_q15: i16, chans: u8) -> Result<(), &'static str> {
             self.armed = Some(duty_q15);
+            self.chans = chans;
             self.state = STATE_CAPTURING;
             self.polls = 0;
             Ok(())
@@ -489,8 +683,12 @@ mod tests {
             Ok(())
         }
 
-        fn read_burst(&mut self, _addr: u16, _len: u16) -> Result<Vec<u8>, &'static str> {
+        fn read_burst(&mut self, addr: u16, len: u16) -> Result<Vec<u8>, &'static str> {
             self.reads += 1;
+            if addr == reg::CHANS_ECHO.addr {
+                let echo = self.echo.unwrap_or(self.chans);
+                return Ok(vec![echo, frame_len(echo) as u8][..len as usize].to_vec());
+            }
             if self.state == STATE_CAPTURING {
                 self.polls += 1;
                 if self.polls > self.busy {
@@ -518,8 +716,16 @@ mod tests {
             pre_q15: 0,
             vbus_raw: 2169,
             bias: 118,
+            vmotor_bias: 779,
         };
-        let cap = capture(&mut f, 13107, pre, &CaptureCfg::default()).expect("capture");
+        let cap = capture(
+            &mut f,
+            13107,
+            CHAN_VMOTOR_A | CHAN_VBUS,
+            pre,
+            &CaptureCfg::default(),
+        )
+        .expect("capture");
         assert_eq!(cap.samples.len(), SAMPLES);
         // the fake numbers every code with its own index
         assert!(
@@ -532,15 +738,33 @@ mod tests {
         assert_eq!(cap.meta.step_index, 485);
         assert_eq!(cap.meta.vbus_raw, 2169);
         assert_eq!(cap.meta.bias, 118);
+        assert_eq!((cap.meta.chans, cap.meta.frame_len), (5, 3));
         assert_eq!(f.armed, Some(13107));
         assert!(f.released, "arm must be dropped after the walk");
+    }
+
+    #[test]
+    fn a_mask_the_servo_did_not_sample_fails_the_capture() {
+        let mut f = Fake::new();
+        f.echo = Some(0);
+        let e = capture(
+            &mut f,
+            8520,
+            CHAN_VMOTOR_A,
+            Pre::default(),
+            &CaptureCfg::default(),
+        )
+        .unwrap_err();
+        assert_eq!(e, Error::Chans { want: 1, got: 0 });
+        assert!(f.released, "a refused echo still releases");
     }
 
     #[test]
     fn a_stuttering_page_is_retried_not_spliced() {
         let mut f = Fake::new();
         f.stutter = true;
-        let cap = capture(&mut f, 8520, Pre::default(), &CaptureCfg::default()).expect("capture");
+        let cap =
+            capture(&mut f, 8520, 0, Pre::default(), &CaptureCfg::default()).expect("capture");
         assert!(
             cap.samples
                 .iter()
@@ -554,8 +778,8 @@ mod tests {
         struct Mute(Fake);
         impl BurstIo for Mute {
             type Error = &'static str;
-            fn arm(&mut self, d: i16) -> Result<(), &'static str> {
-                self.0.arm(d)
+            fn arm(&mut self, d: i16, c: u8) -> Result<(), &'static str> {
+                self.0.arm(d, c)
             }
             fn select_page(&mut self, p: u8) -> Result<(), &'static str> {
                 self.0.select_page(p)
@@ -565,7 +789,7 @@ mod tests {
             }
             fn read_burst(&mut self, a: u16, l: u16) -> Result<Vec<u8>, &'static str> {
                 let mut raw = self.0.read_burst(a, l)?;
-                if self.0.state != STATE_CAPTURING {
+                if self.0.state != STATE_CAPTURING && a == reg::PAGE_ECHO.addr {
                     raw[off(reg::PAGE_ECHO)] = PAGE_BUSY;
                 }
                 Ok(raw)
@@ -575,7 +799,7 @@ mod tests {
             }
         }
         let mut m = Mute(Fake::new());
-        let e = capture(&mut m, 8520, Pre::default(), &CaptureCfg::default()).unwrap_err();
+        let e = capture(&mut m, 8520, 0, Pre::default(), &CaptureCfg::default()).unwrap_err();
         assert_eq!(
             e,
             Error::Page {
@@ -594,8 +818,8 @@ mod tests {
         struct Reject(Fake);
         impl BurstIo for Reject {
             type Error = &'static str;
-            fn arm(&mut self, d: i16) -> Result<(), &'static str> {
-                self.0.arm(d)?;
+            fn arm(&mut self, d: i16, c: u8) -> Result<(), &'static str> {
+                self.0.arm(d, c)?;
                 self.0.state = STATE_REJECTED;
                 Ok(())
             }
@@ -613,7 +837,7 @@ mod tests {
             }
         }
         let mut r = Reject(f);
-        let e = capture(&mut r, 8520, Pre::default(), &CaptureCfg::default()).unwrap_err();
+        let e = capture(&mut r, 8520, 0, Pre::default(), &CaptureCfg::default()).unwrap_err();
         assert_eq!(e, Error::Rejected);
         assert!(r.0.released);
     }
@@ -623,7 +847,7 @@ mod tests {
         struct Wedged;
         impl BurstIo for Wedged {
             type Error = &'static str;
-            fn arm(&mut self, _: i16) -> Result<(), &'static str> {
+            fn arm(&mut self, _: i16, _: u8) -> Result<(), &'static str> {
                 Ok(())
             }
             fn select_page(&mut self, _: u8) -> Result<(), &'static str> {
@@ -643,7 +867,7 @@ mod tests {
             max_polls: 7,
             ..CaptureCfg::default()
         };
-        let e = capture(&mut Wedged, 0, Pre::default(), &cfg).unwrap_err();
+        let e = capture(&mut Wedged, 0, 0, Pre::default(), &cfg).unwrap_err();
         assert_eq!(
             e,
             Error::Timeout {
@@ -659,8 +883,11 @@ mod tests {
         assert_eq!(off(reg::STATE), 1);
         assert_eq!(off(reg::SAMPLES), 2);
         assert_eq!(off(reg::SAMPLES_LEN), 2 + 2 * PAGE_SAMPLES);
-        // the header's last byte is the last byte one READ can carry
+        // the header's last byte is the last byte one READ can carry; the
+        // mask echo and frame length are the tail read's
         assert_eq!(off(reg::RESTORE_DIR), READ_LEN as usize - 1);
+        assert_eq!(reg::CHANS_ECHO.addr, reg::RESTORE_DIR.addr + 1);
+        assert_eq!(TAIL_LEN, 2);
         assert_eq!(PAGES as usize * PAGE_SAMPLES, SAMPLES);
     }
 
@@ -678,10 +905,50 @@ mod tests {
                 restore_dir: 0,
                 vbus_raw: 2154,
                 bias: 113,
+                chans: CHAN_VMOTOR_A | CHAN_VBUS,
+                frame_len: 3,
+                vmotor_bias: 779,
             },
         };
         let back = from_csv(&to_csv(&cap)).expect("parse");
         assert_eq!(back, cap);
+    }
+
+    #[test]
+    fn csv_rejects_a_frame_len_that_contradicts_chans() {
+        let e =
+            from_csv("h\n0,113,0,8520,485,1094,1200,1,0,2169,118,5,2,779\n1,112\n").unwrap_err();
+        assert_eq!(e.what, "frame_len does not match chans");
+    }
+
+    #[test]
+    fn slots_follow_the_mask_in_bit_order() {
+        let cap = |chans: u8| Capture {
+            samples: (0..SAMPLES as u16).collect(),
+            meta: Meta {
+                chans,
+                frame_len: frame_len(chans) as u8,
+                ..Meta::default()
+            },
+        };
+        let c = cap(CHAN_VMOTOR_A | CHAN_VBUS);
+        assert_eq!(c.slot(CHAN_VMOTOR_A), Some(1));
+        assert_eq!(c.slot(CHAN_VMOTOR_B), None);
+        assert_eq!(c.slot(CHAN_VBUS), Some(2));
+        let c = cap(CHANS_MAX);
+        assert_eq!(
+            [CHAN_VMOTOR_A, CHAN_VMOTOR_B, CHAN_VBUS].map(|b| c.slot(b)),
+            [Some(1), Some(2), Some(3)]
+        );
+        // the fake numbers every code with its raw index
+        let vbus = c.stream(3);
+        assert_eq!(vbus.len(), SAMPLES / 4);
+        assert!(
+            vbus.iter()
+                .enumerate()
+                .all(|(k, v)| *v as usize == c.raw_index(k, 3))
+        );
+        assert_eq!(cap(0).shunt(), cap(0).samples);
     }
 
     #[test]
@@ -702,5 +969,7 @@ mod tests {
         assert_eq!(cap.meta.pre_q15, 0);
         assert_eq!(cap.meta.step_index, 485);
         assert_eq!(cap.meta.pwm_arr, 1200);
+        // a shunt-only recording predates the voltage columns
+        assert_eq!((cap.meta.chans, cap.meta.frame_len), (0, 1));
     }
 }

@@ -1,10 +1,21 @@
-//! Winding L from the firmware high-rate shunt burst. One capture is a
-//! duty step sampled every ~1.08 us for 1.04 ms - fast enough that the
+//! Winding R and L from the firmware high-rate shunt burst. One capture is
+//! a duty step sampled every ~1.08 us for 1.04 ms - fast enough that the
 //! rotor cannot follow it, which is the bias [`super::rl`] could not shed.
 //!
-//! NOTHING HERE FEEDS GAIN SYNTHESIS YET, same standing as E7: the run is
-//! recorded, fitted, gated and reported, and [`super::resistance`] remains
-//! the R the table is built from.
+//! The run feeds gain synthesis when it passes [`PROMOTION_GATES`]; the
+//! gains then take R and L_env from the per-period regression of
+//! [`super::winding`], over charge-balance currents and the volt-seconds the
+//! burst's voltage channels measured. Otherwise [`super::resistance`] runs
+//! and supplies R.
+//!
+//! The winding current is the shunt's mean over a whole PWM period over the
+//! duty (charge balance), not the ON-window level: decoupling inside the
+//! shunt's ground island carries part of each pulse and is repaid through
+//! the shunt during OFF, which the ON window cannot see and the period mean
+//! nets out. It is exact while the island's voltage repeats period to
+//! period; a rail that sags on the envelope's own timescale lets the
+//! island's slow discharge reach the winding unseen and stretches the
+//! envelope - tau and L_env read long, R holds.
 //!
 //! What the trace looks like. Under slow decay the shunt carries current
 //! only during the ON half of each PWM period, so the capture is amplifier
@@ -55,9 +66,10 @@
 use core::fmt::Write as _;
 
 use super::rl::{Gate, Scales};
+use super::winding::{VoltRun, capture_volts, volt_run};
 use super::{Cmd, Experiment, RigParams};
-use crate::burst::{Capture, SAMPLE_US, nominal_cadence};
-use crate::fitmath::{lag_ls, median, quantile, stddev};
+use crate::burst::{Capture, Chans, SAMPLE_US, nominal_cadence};
+use crate::fitmath::{lag_ls, linear_ls, median, quantile, stddev, theil_sen};
 use crate::frame::TelemetrySnapshot;
 use crate::regs::control;
 
@@ -66,14 +78,27 @@ const Q15: f64 = 32767.0;
 /// Mid travel with no soft guard configured: the pot's own midpoint.
 const POT_MID: u16 = 2048;
 
-/// Autocorrelation search band for the PWM period, in samples. 20 is well
-/// under any PWM period this ADC clock can produce, 120 well over.
+/// Autocorrelation search band for the PWM period, in conversions. 20 is
+/// well under any PWM period this ADC clock can produce, 120 well over.
 const LAG_MIN: usize = 20;
 const LAG_MAX: usize = 120;
+
+/// A lag at half the correlation peak's that reaches this fraction of its
+/// correlation is the true period, the peak a multiple of it.
+const SUBHARMONIC_FRAC: f64 = 0.8;
 
 /// Windows whose last sample lands this close to the end of the buffer are
 /// truncated by the capture, not by the PWM edge.
 const CLIP_MARGIN: usize = 2;
+
+/// A window whose rising edge is further than this off the PWM grid is not
+/// a whole period's window, samples. Quantisation alone gives half.
+const GRID_TOL: f64 = 1.0;
+
+/// Samples before a window's start that set the late-OFF level its rising
+/// edge is found against. A median of five stays on the OFF level with
+/// the start up to two samples late.
+const RISE_LOOKBACK: usize = 5;
 
 /// The drive edge falls INSIDE one conversion aperture, so that sample is
 /// a time average of before and after and no model describes it. Exactly
@@ -131,8 +156,14 @@ pub struct FitCfg {
     /// Largest relative spread of one L across the repeats of a duty, and
     /// between the per-duty L medians.
     pub l_agree_tol: f64,
-    /// Largest relative gap between the two measured R routes.
+    /// Smallest share of the shunt charge the ON window may miss before
+    /// L_ripple is declined.
+    pub on_share_min: f64,
+    /// Largest relative gap between the two R routes of the run's voltage
+    /// source: from-rest pairs against the per-period regression.
     pub r_agree_tol: f64,
+    /// A pre-arm source resistance under this is a stiff supply, ohms.
+    pub stiff_supply_ohm: f64,
     /// Smallest duty span a from-rest pair may carry for R, fraction of
     /// full scale. Under it the asymptote extrapolation error swamps
     /// delta(asymptote): the bench 20-vs-26% pair reads R 4x high.
@@ -156,7 +187,9 @@ impl Default for FitCfg {
             settle_us: None,
             l_windows: 3,
             l_agree_tol: 0.35,
-            r_agree_tol: 0.25,
+            on_share_min: 0.95,
+            r_agree_tol: 0.10,
+            stiff_supply_ohm: 0.5,
             pair_min_duty_span: 0.10,
         }
     }
@@ -192,9 +225,10 @@ pub struct Segmentation {
 
 /// PWM period from the trace alone. Autocorrelating the FIRST DIFFERENCE,
 /// not the trace: the difference is blind to the rising envelope that a
-/// raw-level autocorrelation would lock onto.
-fn period_samples(v: &[f64]) -> Option<f64> {
-    if v.len() < LAG_MAX * 3 {
+/// raw-level autocorrelation would lock onto. `lag_min..=lag_max` is the
+/// search band in this stream's own samples.
+fn period_samples(v: &[f64], lag_min: usize, lag_max: usize) -> Option<f64> {
+    if v.len() < lag_max * 3 {
         return None;
     }
     let d: Vec<f64> = v.windows(2).map(|w| w[1] - w[0]).collect();
@@ -206,15 +240,29 @@ fn period_samples(v: &[f64]) -> Option<f64> {
     }
     let corr =
         |lag: usize| -> f64 { x.iter().zip(&x[lag..]).map(|(a, b)| a * b).sum::<f64>() / c0 };
-    let mut best = (f64::NEG_INFINITY, LAG_MIN);
-    for lag in LAG_MIN..=LAG_MAX {
-        let c = corr(lag);
-        if c > best.0 {
-            best = (c, lag);
+    let peak = |lo: usize, hi: usize| {
+        let mut best = (f64::NEG_INFINITY, lo);
+        for lag in lo..=hi {
+            let c = corr(lag);
+            if c > best.0 {
+                best = (c, lag);
+            }
         }
+        best
+    };
+    let mut best = peak(lag_min, lag_max);
+    // A periodic trace correlates at every multiple of its period, and a
+    // short stream can peak at twice it; a half lag that correlates nearly
+    // as well is the period.
+    while best.1 / 2 > lag_min {
+        let half = peak(best.1 / 2 - 1, best.1 / 2 + 1);
+        if half.0 < SUBHARMONIC_FRAC * best.0 {
+            break;
+        }
+        best = half;
     }
     let l = best.1;
-    if l == LAG_MIN || l == LAG_MAX {
+    if l == lag_min || l == lag_max {
         return Some(l as f64);
     }
     // parabolic refinement on the three correlations around the peak
@@ -250,14 +298,15 @@ fn rolling_peak(v: &[f64], w: usize) -> Vec<f64> {
         .collect()
 }
 
-/// Find the ON windows. The OFF phase holds most of each period, so a
-/// rolling median tracks the OFF level and an ON window is a run of samples
-/// that departs from it - in EITHER direction, because a step taken from a
+/// Find the ON windows in a shunt stream sampled once per `frame_len`
+/// conversions. The OFF phase holds most of each period, so a rolling
+/// median tracks the OFF level and an ON window is a run of samples that
+/// departs from it - in EITHER direction, because a step taken from a
 /// spinning rotor can drive the winding current negative (the ON window
 /// then reads BELOW the bias; a from-a-hold capture on the bench does).
-pub fn segment(samples: &[u16], cfg: &FitCfg) -> Option<Segmentation> {
+pub fn segment(samples: &[u16], frame_len: usize, cfg: &FitCfg) -> Option<Segmentation> {
     let v: Vec<f64> = samples.iter().map(|&x| x as f64).collect();
-    let period = period_samples(&v)?;
+    let period = period_samples(&v, LAG_MIN / frame_len, LAG_MAX / frame_len)?;
     let w = (period.round() as usize) | 1;
     let noise = median(
         &v.windows(2)
@@ -348,6 +397,21 @@ pub struct WindowFit {
     pub rms_counts: f64,
 }
 
+/// One whole post-step PWM period by charge balance. Needs no fit of the
+/// ON window, so a window too short for one still counts here.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct CbWindow {
+    pub start: usize,
+    /// First sample off the late-OFF level at the drive edge; `start` can
+    /// lag it.
+    pub rise: usize,
+    /// Winding current over the ON window: the shunt's mean over the whole
+    /// period opening at `rise`, over the duty.
+    pub level_a: f64,
+    /// The ON-window fit's level for the same window, when it has one.
+    pub on_level_a: Option<f64>,
+}
+
 impl WindowFit {
     pub fn ripple_a(&self) -> f64 {
         self.i_end_a - self.i_start_a
@@ -391,6 +455,13 @@ pub struct CaptureFit {
     pub tau_off_us: f64,
     /// Envelope asymptote, amps. An extrapolation - see the module note.
     pub asymptote_a: f64,
+    /// The same envelope on the charge-balance levels.
+    pub tau_cb_us: f64,
+    pub asymptote_cb_a: f64,
+    /// Share of the period's shunt charge the ON window carries: the
+    /// ON-window levels over the charge-balance ones. None without a
+    /// charge-balance level.
+    pub on_share: Option<f64>,
     /// delta(D x V) / delta(settled current) across the capture's own two
     /// halves. From rest the pre-step half is zero current at zero duty, so
     /// this is D x V / asymptote with the fixed bridge drop folded in.
@@ -401,6 +472,18 @@ pub struct CaptureFit {
     /// Exactly zero from rest, where it is not separable from R.
     pub drop_volts: f64,
     pub step_index: u16,
+    /// Every window index above counts shunt-stream samples: one per frame
+    /// of `frame_len` conversions, `sample_us` apart, the step at `step`.
+    pub frame_len: usize,
+    pub sample_us: f64,
+    /// One conversion, microseconds.
+    pub raw_us: f64,
+    pub step: usize,
+    /// Rising drive edge of PWM period p after the first post-step window,
+    /// `a + b p` in shunt-stream samples, each edge somewhere in the sample
+    /// before a window's `rise`. None with too few windows.
+    pub rise_line: Option<(f64, f64)>,
+    pub cb: Vec<CbWindow>,
     pub gates: Vec<Gate>,
     pub ok: bool,
     pub notes: Vec<String>,
@@ -485,7 +568,7 @@ pub fn settle_profile(caps: &[Capture], sc: &Scales, cfg: &FitCfg) -> f64 {
     let prepared: Vec<(&Capture, Segmentation)> = caps
         .iter()
         .step_by(stride)
-        .filter_map(|c| segment(&c.samples, cfg).map(|s| (c, s)))
+        .filter_map(|c| segment(&c.shunt(), c.frame_len(), cfg).map(|s| (c, s)))
         .collect();
     let cost = |us: f64| -> f64 {
         let probe = FitCfg {
@@ -508,7 +591,7 @@ pub fn settle_profile(caps: &[Capture], sc: &Scales, cfg: &FitCfg) -> f64 {
 
 /// Everything one capture gives, from the samples alone.
 pub fn fit_capture(cap: &Capture, sc: &Scales, cfg: &FitCfg) -> Option<CaptureFit> {
-    let seg = segment(&cap.samples, cfg)?;
+    let seg = segment(&cap.shunt(), cap.frame_len(), cfg)?;
     fit_segmented(cap, sc, cfg, &seg)
 }
 
@@ -518,9 +601,13 @@ fn fit_segmented(
     cfg: &FitCfg,
     seg: &Segmentation,
 ) -> Option<CaptureFit> {
-    let n = cap.samples.len();
-    let v: Vec<f64> = cap.samples.iter().map(|&x| x as f64).collect();
-    let step_index = cap.meta.step_index as usize;
+    let fl = cap.frame_len();
+    let v: Vec<f64> = cap.shunt().iter().map(|&x| x as f64).collect();
+    let n = v.len();
+    // Everything below is in shunt-stream samples; the published step index
+    // counts raw conversions.
+    let h_us = cfg.sample_us * fl as f64;
+    let step_index = (cap.meta.step_index as usize).div_ceil(fl);
     if step_index >= n {
         return None;
     }
@@ -575,7 +662,7 @@ fn fit_segmented(
     // like a forward one; no direction sign enters here. A reading BELOW
     // the bias is real regeneration, not a reversed drive.
     let amps = |k: usize| (v[k] - bias) * sc.amps_per_count;
-    let t = |k: usize| k as f64 * cfg.sample_us * 1e-6;
+    let t = |k: usize| k as f64 * h_us * 1e-6;
     let counts = |a: f64| a / (sc.amps_per_count.max(f64::MIN_POSITIVE));
 
     // One ON window as a ramp read through a first-order lag. Dropping
@@ -609,6 +696,84 @@ fn fit_segmented(
             cfg.settle_band_us.1 * 1e-6,
             pooled_rms,
         ),
+    };
+
+    // Charge balance. Under slow decay the winding current crosses the
+    // shunt only while the drive is on, but decoupling inside the shunt's
+    // ground island supplies part of each pulse and is repaid through the
+    // shunt during OFF, so the ON window under-reads the winding (1-3.5% on
+    // 2S, 17-25% on USB). Over one whole period the island's charge nets
+    // to zero - and a linear amplifier's lag preserves area - so the
+    // period mean of the shunt is D x the winding current whatever either
+    // does. The period opens half a sample before the aperture sample the
+    // drive edge fell in, so it holds one ON edge and all of its repayment.
+    let duty = (cap.meta.step_q15 as f64 / Q15).abs();
+    let duty_pre = (cap.meta.pre_q15 as f64 / Q15).abs();
+    let period = seg.period_samples;
+    // The drive's rising edges sit on the PWM grid, each somewhere in the
+    // sample before its window's start. A robust line through them places
+    // every edge to a fraction of a sample, and a window off it is the half
+    // window the step's latch cut, whatever length it showed: its period
+    // would overlap the next window's.
+    //
+    // `start` is no ruler for it: the segmentation's rolling median rides
+    // up once the ON window and its decay tail hold over half a period (40%
+    // with a lagged amplifier), and the window then opens a sample or two
+    // late. The first sample off the late-OFF level just before it is -
+    // local, because the island's repayment can still hold the shunt
+    // counts above the bias there.
+    let rise = |w: &Window| {
+        let lo = w.start.saturating_sub(RISE_LOOKBACK);
+        let Some(off) = median(&v[lo..w.start]) else {
+            return w.start;
+        };
+        let sgn = if v[w.start] >= off { 1.0 } else { -1.0 };
+        let mut k = w.start;
+        while k > lo && (v[k - 1] - off) * sgn > cfg.start_dev_counts {
+            k -= 1;
+        }
+        k
+    };
+    // Theil-Sen only sorts the windows: its median slope snaps to the
+    // integer spacings, a sample of drift across the capture. The line
+    // itself is least squares over the windows on it.
+    let rise_line = {
+        let first = keep.first().map_or(0.0, |w| rise(w) as f64);
+        let pts: Vec<(f64, f64)> = keep
+            .iter()
+            .map(|w| {
+                let s = rise(w) as f64;
+                (((s - first) / period).round(), s - 0.5)
+            })
+            .collect();
+        theil_sen(&pts).and_then(|ts| {
+            let on: Vec<(f64, f64)> = pts
+                .iter()
+                .copied()
+                .filter(|(j, y)| (y - ts.a - ts.b * j).abs() <= GRID_TOL)
+                .collect();
+            linear_ls(&on).map(|l| (l.a, l.b))
+        })
+    };
+    let on_grid = |w: &Window| {
+        rise_line.is_some_and(|(a, b)| {
+            let r = rise(w) as f64 - 0.5 - a;
+            (r - (r / b).round() * b).abs() <= GRID_TOL
+        })
+    };
+    let level_cb = |w: &Window, d: f64| -> Option<f64> {
+        let a = rise(w) as f64 - 0.5;
+        let b = a + period;
+        if d <= 0.0 || a < 0.0 || b.ceil() as usize >= n || !on_grid(w) {
+            return None;
+        }
+        let q: f64 = (a.floor() as usize..=b.ceil() as usize)
+            .map(|k| {
+                let span = (k as f64 + 0.5).min(b) - (k as f64 - 0.5).max(a);
+                (v[k] - bias) * span.max(0.0)
+            })
+            .sum();
+        Some(q / period * sc.amps_per_count / d)
     };
 
     let mut windows = Vec::new();
@@ -665,14 +830,35 @@ fn fit_segmented(
         median(&ratios).unwrap_or(0.0)
     };
 
-    let duty = (cap.meta.step_q15 as f64 / Q15).abs();
-    let duty_pre = (cap.meta.pre_q15 as f64 / Q15).abs();
     let v_rail = cap.meta.vbus_raw as f64 * sc.v_rail_per_count;
     let env: Vec<(f64, f64)> = windows
         .iter()
         .map(|w| (t(w.start) - t(step_index), w.level_a))
         .collect();
     let (tau_s, asym) = fit_exponential(&env).unwrap_or((0.0, 0.0));
+    let cb: Vec<CbWindow> = keep
+        .iter()
+        .filter_map(|w| {
+            Some(CbWindow {
+                start: w.start,
+                rise: rise(w),
+                level_a: level_cb(w, duty)?,
+                on_level_a: windows
+                    .iter()
+                    .find(|f| f.start == w.start)
+                    .map(|f| f.level_a),
+            })
+        })
+        .collect();
+    let env_cb: Vec<(f64, f64)> = cb
+        .iter()
+        .map(|w| (t(w.rise) - t(step_index), w.level_a))
+        .collect();
+    let (tau_cb_s, asym_cb) = fit_exponential(&env_cb).unwrap_or((0.0, 0.0));
+    let (on_sum, cb_sum) = cb
+        .iter()
+        .filter_map(|w| w.on_level_a.map(|l| (l, w.level_a)))
+        .fold((0.0, 0.0), |(a, b), (l, c)| (a + l, b + c));
     // Both halves of one capture see the same rotor speed (500 us of
     // mechanical time), so D V = I R + drop with drop = E + the bridge and
     // brush offset solves for R and drop from the pair of settled levels.
@@ -692,7 +878,7 @@ fn fit_segmented(
     // A window has to outlive the amplifier before its slope means
     // anything: the aperture sample, then `settle_taus` of edge transient,
     // then something to fit.
-    let settle_samples = (cfg.settle_taus * settle_s * 1e6 / cfg.sample_us).ceil();
+    let settle_samples = (cfg.settle_taus * settle_s * 1e6 / h_us).ceil();
     let slope_min = APERTURE_SKIP as f64 + settle_samples + cfg.min_fit_points as f64;
     let slope_ok = full >= slope_min;
     if !slope_ok {
@@ -705,7 +891,7 @@ fn fit_segmented(
         ));
     }
 
-    let nominal = nominal_cadence(cap.meta.pwm_arr);
+    let nominal = nominal_cadence(cap.meta.pwm_arr) / fl as f64;
     let gates = vec![
         gate(
             "cadence",
@@ -737,10 +923,12 @@ fn fit_segmented(
         },
         gate(
             "windows",
-            windows.len() >= cfg.min_post_windows,
+            cb.len() >= cfg.min_post_windows,
             format!(
-                "{} post-step, {} usable, {full:.0} samples each (slope needs {slope_min:.0})",
+                "{} post-step, {} whole periods, {} ON fits, {full:.0} samples each \
+                 (slope needs {slope_min:.0})",
                 post.len(),
+                cb.len(),
                 windows.len()
             ),
         ),
@@ -771,10 +959,19 @@ fn fit_segmented(
         tau_us: tau_s * 1e6,
         tau_off_us,
         asymptote_a: asym,
+        tau_cb_us: tau_cb_s * 1e6,
+        asymptote_cb_a: asym_cb,
+        on_share: (cb_sum > 0.0).then(|| on_sum / cb_sum),
         r_capture_ohm: r_capture,
         pre_level_a: pre_level,
         drop_volts: drop,
         step_index: cap.meta.step_index,
+        frame_len: fl,
+        sample_us: h_us,
+        raw_us: cfg.sample_us,
+        step: step_index,
+        rise_line,
+        cb,
         gates,
         ok,
         notes,
@@ -869,6 +1066,19 @@ pub struct InductanceResult {
     pub tau_us: f64,
     pub tau_bracket: (f64, f64),
     pub tau_off_us: f64,
+    /// The envelope on the charge-balance levels, the primary tau.
+    pub tau_cb_us: f64,
+    pub tau_cb_bracket: (f64, f64),
+    /// Share of each period's shunt charge the ON window carries, median
+    /// over the from-rest captures.
+    pub shunt_on_share: Option<f64>,
+    /// `shunt_on_share` cleared `on_share_min`; otherwise `l_ripple_h`,
+    /// `l_off_h` and `l_by_duty` are recorded but declined.
+    pub l_ripple_ok: bool,
+    /// Pre-arm pairs on the charge-balance asymptotes, rail referenced like
+    /// `r_pair_ohm`.
+    pub r_pair_cb_ohm: Option<f64>,
+    pub pairs_cb: Vec<PairR>,
     /// R from from-rest pairs, ohms. None when no pair cleared the duty
     /// span the asymptote extrapolation needs. This is the run's R.
     pub r_pair_ohm: Option<f64>,
@@ -894,10 +1104,71 @@ pub struct InductanceResult {
     pub cadence_samples: f64,
     pub rest_captures: usize,
     pub hold_captures: usize,
+    /// The run's voltage source and its two R routes: measured in the
+    /// burst when any capture carried a usable channel, the pre-arm rail
+    /// less an estimated bridge drop otherwise. Winding referenced, like
+    /// E2's terminal-difference R, where `r_pair_ohm` above carries the
+    /// bridge.
+    pub volts: VoltRun,
+    /// Source resistance behind the bulk capacitor from the pre-arm rail
+    /// reads: the from-a-hold controls' rail drop over the supply's mean
+    /// current (duty x winding current). Where no capacitor averages the
+    /// pulse this over-reads, so it can only err toward declining. None
+    /// without a usable control.
+    pub src_prearm_ohm: Option<f64>,
     pub gates: Vec<Gate>,
-    /// Every gate passed. Advisory: nothing consumes this yet.
+    /// Every gate passed, `l-duty` included. [`Self::promotable`] is the
+    /// verdict that decides whether the gains use this run.
     pub ok: bool,
     pub warnings: Vec<String>,
+}
+
+/// THE PROMOTION RULE, the one place it is stated: E8 feeds gain synthesis
+/// when every one of these gates passes - the trace gates (captures,
+/// cadence, step-index, pre-bias, windows), r-consistency (from-rest pairs
+/// against the per-period regression on the run's voltage source, within
+/// `r_agree_tol`), the per-route spreads across repeats (l-ripple-spread,
+/// l-env-spread, within `l_agree_tol`), and supply (the voltage was
+/// measured inside the burst, or the pre-arm source resistance is under
+/// `stiff_supply_ohm`). `l-duty` is left out: L_ripple feeds no gain.
+pub const PROMOTION_GATES: [&str; 9] = [
+    "captures",
+    "cadence",
+    "step-index",
+    "pre-bias",
+    "windows",
+    "r-consistency",
+    "l-ripple-spread",
+    "l-env-spread",
+    "supply",
+];
+
+impl InductanceResult {
+    pub fn promotable(&self) -> bool {
+        self.gates
+            .iter()
+            .filter(|g| PROMOTION_GATES.contains(&g.name))
+            .all(|g| g.pass)
+    }
+
+    /// The gate names that keep this run from promoting.
+    pub fn blocking(&self) -> Vec<&'static str> {
+        self.gates
+            .iter()
+            .filter(|g| PROMOTION_GATES.contains(&g.name) && !g.pass)
+            .map(|g| g.name)
+            .collect()
+    }
+
+    /// Winding R (ohms) and L (henries) for gain synthesis, both from the
+    /// per-period regression so they share one tau. L is L_env, not
+    /// L_ripple: the current loop closes at ~1 kHz, a ~160 us time
+    /// constant on the envelope timescale, while L_ripple is the
+    /// eddy-shunted inductance of one 25 us ON window.
+    pub fn gain_r_l(&self) -> Option<(f64, f64)> {
+        let g = self.volts.reg?;
+        (self.promotable() && g.r_ohm > 0.0 && g.l_h > 0.0).then_some((g.r_ohm, g.l_h))
+    }
 }
 
 fn bracket(v: &[f64], fallback: f64) -> (f64, f64) {
@@ -935,13 +1206,14 @@ pub fn fit_captures(caps: &[Capture], sc: &Scales, cfg: &FitCfg) -> Option<Induc
             .or_else(|| Some(settle_profile(caps, sc, cfg))),
         ..cfg.clone()
     };
-    let fits: Vec<CaptureFit> = caps
+    let fitted: Vec<(&Capture, CaptureFit)> = caps
         .iter()
-        .filter_map(|c| fit_capture(c, sc, cfg))
+        .filter_map(|c| fit_capture(c, sc, cfg).map(|f| (c, f)))
         .collect();
-    if fits.is_empty() {
+    if fitted.is_empty() {
         return None;
     }
+    let fits: Vec<CaptureFit> = fitted.iter().map(|(_, f)| f.clone()).collect();
     let rest: Vec<&CaptureFit> = fits.iter().filter(|f| f.from_rest).collect();
     let holds: Vec<&CaptureFit> = fits.iter().filter(|f| !f.from_rest).collect();
     let hold = holds.len();
@@ -988,6 +1260,31 @@ pub fn fit_captures(caps: &[Capture], sc: &Scales, cfg: &FitCfg) -> Option<Induc
             rs.iter().copied().fold(r, f64::max),
         )
     });
+    // The same pairs on the charge-balance asymptotes.
+    let mut pairs_cb = Vec::new();
+    let groups_cb: Vec<CaptureFit> = by_duty
+        .iter()
+        .zip(&groups)
+        .map(|(same, g)| CaptureFit {
+            asymptote_a: median(&same.iter().map(|f| f.asymptote_cb_a).collect::<Vec<_>>())
+                .unwrap_or(0.0),
+            ..g.clone()
+        })
+        .collect();
+    for (i, a) in groups_cb.iter().enumerate() {
+        for b in &groups_cb[i + 1..] {
+            if let Some(p) = pair_resistance(a, b, cfg) {
+                pairs_cb.push(p);
+            }
+        }
+    }
+    let taus_cb: Vec<f64> = rest
+        .iter()
+        .map(|f| f.tau_cb_us)
+        .filter(|t| *t > 0.0)
+        .collect();
+    let tau_cb = median(&taus_cb).unwrap_or(0.0);
+    let on_share = median(&rest.iter().filter_map(|f| f.on_share).collect::<Vec<_>>());
 
     // V0 from the control: its two halves see one rotor speed, so the
     // solve returns E + V0 together. E is not separable, which is why the
@@ -1050,7 +1347,7 @@ pub fn fit_captures(caps: &[Capture], sc: &Scales, cfg: &FitCfg) -> Option<Induc
     let env_spread = worst_spread(
         &by_duty
             .iter()
-            .map(|g| g.iter().map(|f| f.tau_us).filter(|t| *t > 0.0).collect())
+            .map(|g| g.iter().map(|f| f.tau_cb_us).filter(|t| *t > 0.0).collect())
             .collect::<Vec<Vec<f64>>>(),
     );
 
@@ -1115,10 +1412,54 @@ pub fn fit_captures(caps: &[Capture], sc: &Scales, cfg: &FitCfg) -> Option<Induc
         (lo, hi) if l_ripple_h > 0.0 && lo.is_finite() && hi > 0.0 => (hi - lo) / l_ripple_h,
         _ => f64::INFINITY,
     };
-    let r_gap = match (r_pair, r_asym > 0.0) {
-        (Some(r), true) => (r - r_asym).abs() / r_asym,
+    // The voltage source: measured wherever any from-rest capture carried
+    // a channel that gives the winding, the pre-arm rail otherwise. A run
+    // that mixes the two pools only the measured captures.
+    let measured: Vec<(&CaptureFit, super::winding::CaptureVolts)> = fitted
+        .iter()
+        .filter(|(_, f)| f.from_rest)
+        .filter_map(|(c, f)| capture_volts(c, f, sc, true).map(|v| (f, v)))
+        .filter(|(_, v)| v.route.is_some())
+        .collect();
+    let volts = if measured.is_empty() {
+        let pre: Vec<(&CaptureFit, super::winding::CaptureVolts)> = fitted
+            .iter()
+            .filter(|(_, f)| f.from_rest)
+            .filter_map(|(c, f)| capture_volts(c, f, sc, false).map(|v| (f, v)))
+            .collect();
+        volt_run(&pre, cfg.pair_min_duty_span)
+    } else {
+        volt_run(&measured, cfg.pair_min_duty_span)
+    };
+    let source = match volts.route {
+        Some(r) => r.as_str(),
+        None => "pre-arm rail",
+    };
+    let v_gap = match (volts.r_pair_ohm, volts.reg) {
+        (Some(p), Some(g)) if g.r_ohm > 0.0 => (p - g.r_ohm).abs() / g.r_ohm,
         _ => f64::INFINITY,
     };
+    let src_prearm = {
+        let v_rest = median(&rest.iter().map(|f| f.v_rail).collect::<Vec<_>>());
+        median(
+            &holds
+                .iter()
+                .filter(|f| f.duty_pre > 0.0 && f.pre_level_a > 0.0)
+                .filter_map(|f| v_rest.map(|v| (v - f.v_rail) / (f.duty_pre * f.pre_level_a)))
+                .collect::<Vec<_>>(),
+        )
+    };
+    warnings.extend(volts.notes.iter().cloned());
+    // The ON-window slope is the winding's less the island capacitor's, so
+    // L_ripple stands only where the ON window carries nearly all the charge.
+    let l_ripple_ok = on_share.is_some_and(|x| x >= cfg.on_share_min);
+    if !l_ripple_ok {
+        warnings.push(
+            "L_ripple declined: the shunt island's capacitors carry part of each pulse, so the \
+             ON-window slope is not the winding's"
+                .into(),
+        );
+    }
     let mut gates = vec![
         gate(
             "captures",
@@ -1131,12 +1472,27 @@ pub fn fit_captures(caps: &[Capture], sc: &Scales, cfg: &FitCfg) -> Option<Induc
         fold("windows", &rest),
         gate(
             "r-consistency",
-            r_gap <= cfg.r_agree_tol,
+            v_gap <= cfg.r_agree_tol,
             format!(
-                "pairs {} vs asymptote {r_asym:.2} ohm ({:.0}% apart)",
-                r_pair.map_or("-".into(), |r| format!("{r:.2}")),
-                r_gap * 100.0
+                "{source}: pairs {} vs regression {} ohm ({:.0}% apart)",
+                volts.r_pair_ohm.map_or("-".into(), |r| format!("{r:.2}")),
+                volts.reg.map_or("-".into(), |g| format!("{:.2}", g.r_ohm)),
+                v_gap * 100.0
             ),
+        ),
+        gate(
+            "supply",
+            volts.route.is_some() || src_prearm.is_some_and(|z| z < cfg.stiff_supply_ohm),
+            match (volts.route, src_prearm) {
+                (Some(r), _) => format!("measured in the burst: {}", r.as_str()),
+                (None, Some(z)) => format!(
+                    "not measured; pre-arm source {z:.2} ohm (stiff under {:.2})",
+                    cfg.stiff_supply_ohm
+                ),
+                (None, None) => {
+                    "not measured, and no from-a-hold control to size the source".into()
+                }
+            },
         ),
         gate(
             "l-ripple-spread",
@@ -1149,7 +1505,21 @@ pub fn fit_captures(caps: &[Capture], sc: &Scales, cfg: &FitCfg) -> Option<Induc
         gate(
             "l-env-spread",
             env_spread <= cfg.l_agree_tol,
-            format!("{:.0}% across the repeats of one duty", env_spread * 100.0),
+            format!(
+                "charge-balance tau {:.0}% across the repeats of one duty",
+                env_spread * 100.0
+            ),
+        ),
+        gate(
+            "shunt-on-share",
+            l_ripple_ok,
+            match on_share {
+                Some(x) => format!(
+                    "{:.3} of the shunt charge inside the ON window (L_ripple needs {:.2})",
+                    x, cfg.on_share_min
+                ),
+                None => "no charge-balance level".into(),
+            },
         ),
         gate(
             "l-duty",
@@ -1212,6 +1582,12 @@ pub fn fit_captures(caps: &[Capture], sc: &Scales, cfg: &FitCfg) -> Option<Induc
                 .collect::<Vec<_>>(),
         )
         .unwrap_or(0.0),
+        tau_cb_us: tau_cb,
+        tau_cb_bracket: bracket(&taus_cb, tau_cb),
+        shunt_on_share: on_share,
+        l_ripple_ok,
+        r_pair_cb_ohm: median(&pairs_cb.iter().map(|p| p.r_ohm).collect::<Vec<_>>()),
+        pairs_cb,
         r_pair_ohm: r_pair,
         r_pair_bracket,
         pairs,
@@ -1229,6 +1605,8 @@ pub fn fit_captures(caps: &[Capture], sc: &Scales, cfg: &FitCfg) -> Option<Induc
             .unwrap_or(0.0),
         rest_captures: rest.len(),
         hold_captures: hold,
+        volts,
+        src_prearm_ohm: src_prearm,
         gates,
         ok,
         warnings,
@@ -1266,6 +1644,7 @@ pub struct Cfg {
     /// drive has to reach steady speed, and a braked shaft has to stop.
     pub settle_ms: u32,
     pub rest_ms: u32,
+    pub chans: Chans,
     pub fit: FitCfg,
 }
 
@@ -1283,6 +1662,7 @@ impl Default for Cfg {
             seek_cap_polls: 400,
             settle_ms: 200,
             rest_ms: 150,
+            chans: Chans::Driven,
             fit: FitCfg::default(),
         }
     }
@@ -1390,12 +1770,14 @@ impl Inductance {
 
     /// Drop every remaining rung whose settled current the last capture
     /// says would clear the envelope. The settled current is proportional
-    /// to duty from rest, so one measured rung sizes all of them.
+    /// to duty from rest, so one measured rung sizes all of them; the larger
+    /// of the two asymptotes, because the ON window under-reads.
     fn prune(&mut self, from: &CaptureFit) {
-        if from.duty <= 0.0 || from.asymptote_a <= 0.0 {
+        let asym = from.asymptote_a.max(from.asymptote_cb_a);
+        if from.duty <= 0.0 || asym <= 0.0 {
             return;
         }
-        let per_duty = from.asymptote_a / from.duty;
+        let per_duty = asym / from.duty;
         let cap_q15 = (self.cfg.i_max_a / per_duty * Q15) as i32;
         let before = self.plan.len();
         let at = self.at;
@@ -1411,7 +1793,7 @@ impl Inductance {
                  {:.0}% would clear the {:.2} A envelope",
                 before - self.plan.len(),
                 from.duty * 100.0,
-                from.asymptote_a,
+                asym,
                 cap_q15 as f64 / Q15 * 100.0,
                 self.cfg.i_max_a
             ));
@@ -1511,6 +1893,7 @@ impl Experiment for Inductance {
                 Cmd::Burst {
                     duty_q15: a.step_q15,
                     pre_q15: a.pre_q15,
+                    chans: self.cfg.chans.for_step(a.step_q15),
                 }
             }
             Phase::ArmRelax => {
@@ -1680,12 +2063,13 @@ mod tests {
             );
             assert_eq!(f.step_index, 485, "{name} step_index");
             // 26-to-10 steps DOWN to a 4.6-sample ON window. One aperture
-            // sample in, three are left and the lag fit needs four: this
-            // capture carries no windows at all, let alone an envelope.
+            // sample in, three are left and the lag fit needs four: no ON
+            // fit and no ON-window envelope. Charge balance needs no fit, so
+            // the whole periods still count.
             if name == "26-to-10" {
                 assert!(f.windows.is_empty(), "{} windows", f.windows.len());
                 assert!(!f.slope_ok);
-                assert!(!f.gates.iter().find(|g| g.name == "windows").unwrap().pass);
+                assert!(f.cb.iter().all(|w| w.on_level_a.is_none()));
                 continue;
             }
             assert!(
@@ -1712,6 +2096,84 @@ mod tests {
             println!("{name:12} L_ripple {:.3} mH", l * 1e3);
             assert!((0.3e-3..1.2e-3).contains(&l), "{name} L {} mH", l * 1e3);
         }
+    }
+
+    /// The shunt-only fixtures through the de-interleaving path give the
+    /// ON-window route's numbers exactly as before the voltage channels
+    /// existed: per capture and pooled, compared bit for bit.
+    #[test]
+    fn chans_zero_fixtures_replay_to_the_last_digit() {
+        let sc = scales();
+        let cfg = FitCfg::default();
+        let caps: Vec<Capture> = fixtures().into_iter().map(|(_, c)| c).collect();
+        assert!(caps.iter().all(|c| c.meta.chans == 0 && c.frame_len() == 1));
+        // (tau us, asymptote A, R from the two halves, tau_off us, settle us,
+        // ON fits)
+        let want: [(f64, f64, f64, f64, f64, usize); 5] = [
+            (
+                205.33975566498248,
+                0.13517763089492335,
+                6.460288820775614,
+                189.83095508456495,
+                2.271719398831756,
+                9,
+            ),
+            (
+                203.6486448673659,
+                0.14379428705078653,
+                7.917987687627546,
+                126.15907758427167,
+                1.8689609921850272,
+                9,
+            ),
+            (
+                170.52404066250008,
+                0.23105019046281142,
+                7.563343762609452,
+                100.82077240083717,
+                1.7709964820318067,
+                9,
+            ),
+            (
+                138.05948302551676,
+                0.09980362721705854,
+                6.956957913026385,
+                113.56228196630086,
+                2.999999999749099,
+                10,
+            ),
+            (0.0, 0.0, 19.949500459123588, 0.0, 0.3119395255183584, 0),
+        ];
+        for (c, w) in caps.iter().zip(want) {
+            let f = fit_capture(c, &sc, &cfg).unwrap();
+            let got = (
+                f.tau_us,
+                f.asymptote_a,
+                f.r_capture_ohm,
+                f.tau_off_us,
+                f.settle_us,
+                f.windows.len(),
+            );
+            assert_eq!(got, w);
+        }
+        let all = fit_captures(&caps, &sc, &cfg).unwrap();
+        assert_eq!(all.l_ripple_h, 0.0008659555431879517);
+        assert_eq!(all.l_env_h, 0.0016270020525415909);
+        assert_eq!(all.tau_us, 203.2243799920984);
+        assert_eq!(all.r_pair_ohm, Some(8.005939310061375));
+        assert_eq!(all.r_asym_ohm, 4.925645504560387);
+        assert_eq!(all.v0_volts, 0.4288237762614158);
+        assert_eq!(all.l_off_h, Some(0.001034888936039038));
+        assert_eq!(all.settle_us, 2.032557100179988);
+        assert_eq!(all.ripple_spread, 0.0);
+        let rest = fit_captures(&caps[..3], &sc, &cfg).unwrap();
+        assert_eq!(rest.l_ripple_h, 0.000868257264019766);
+        assert_eq!(rest.l_env_h, 0.0016293384199411367);
+        assert_eq!(rest.tau_us, 203.6082580981472);
+        assert_eq!(rest.r_pair_ohm, Some(8.002319921403835));
+        assert_eq!(rest.r_asym_ohm, 5.1352459884526285);
+        assert_eq!(rest.l_off_h, Some(0.0010119087090096311));
+        assert_eq!(rest.settle_us, 1.8847502664885039);
     }
 
     #[test]
@@ -1777,7 +2239,7 @@ mod tests {
             .into_iter()
             .find(|(n, _)| *n == "26-to-10")
             .unwrap();
-        let seg = segment(&cap.samples, &FitCfg::default()).expect("segment");
+        let seg = segment(&cap.samples, 1, &FitCfg::default()).expect("segment");
         let v = &cap.samples;
         let below = seg
             .windows
