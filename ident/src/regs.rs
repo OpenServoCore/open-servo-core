@@ -93,6 +93,9 @@ pub mod control {
     pub const BURST_DUTY_Q15: Reg = reg(0x0196, 2);
     pub const BURST_ARM: Reg = reg(0x0198, 1);
     pub const BURST_PAGE: Reg = reg(0x0199, 1);
+    /// Extras behind the shunt: bit 0 vmotor_a, bit 1 vmotor_b, bit 2 vbus.
+    /// Latched at the arm; values above 7 reject with Validation.
+    pub const BURST_CHANS: Reg = reg(0x019a, 1);
 }
 
 /// BURST readback section, all RO. One READ of `PAGE_ECHO..=RESTORE_DIR` is
@@ -111,6 +114,10 @@ pub mod burst {
     pub const PWM_ARR: Reg = reg(0x03b8, 2);
     pub const START_DIR: Reg = reg(0x03ba, 1);
     pub const RESTORE_DIR: Reg = reg(0x03bb, 1);
+    /// One past the page READ, constant for the capture: the mask it used
+    /// and its frame length (1 + popcount).
+    pub const CHANS_ECHO: Reg = reg(0x03bc, 1);
+    pub const FRAME_LEN: Reg = reg(0x03bd, 1);
 }
 
 pub mod telemetry {
@@ -212,6 +219,7 @@ pub const ALL: &[(&str, Reg)] = &[
     ("duty_q15", control::BURST_DUTY_Q15),
     ("arm", control::BURST_ARM),
     ("page", control::BURST_PAGE),
+    ("chans", control::BURST_CHANS),
     ("fault_flags", telemetry::FAULT_FLAGS),
     ("status_flags", telemetry::STATUS_FLAGS),
     ("mode_active", telemetry::MODE_ACTIVE),
@@ -248,6 +256,8 @@ pub const ALL: &[(&str, Reg)] = &[
     ("pwm_arr", burst::PWM_ARR),
     ("start_dir", burst::START_DIR),
     ("restore_dir", burst::RESTORE_DIR),
+    ("chans_echo", burst::CHANS_ECHO),
+    ("frame_len", burst::FRAME_LEN),
 ];
 
 #[cfg(test)]

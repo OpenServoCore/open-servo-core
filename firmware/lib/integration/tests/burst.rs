@@ -6,8 +6,11 @@
 use osc_integration::sim::{Source, WireFrame, assert_valid, instruction, status};
 use osc_protocol::wire::{Id, Inst, Opcode, ResultCode};
 use osc_servo_core::regions::BURST_BASE_ADDR;
-use osc_servo_core::regions::burst::{PAGE_SAMPLES, PAGES, dir, page_span, state};
-use osc_servo_core::regions::control::addr::burst::{ARM, DUTY_Q15, PAGE};
+use osc_servo_core::regions::burst::addr::window::{CHANS_ECHO, FRAME_LEN, SAMPLES_LEN};
+use osc_servo_core::regions::burst::{
+    PAGE_SAMPLES, PAGES, chans, dir, frame_len, page_span, state,
+};
+use osc_servo_core::regions::control::addr::burst::{ARM, CHANS, DUTY_Q15, PAGE};
 use rstest::rstest;
 use rstest_reuse::apply;
 
@@ -89,6 +92,47 @@ fn burst_duty_over_duty_max_is_validation(baud_idx: u8) {
 }
 
 #[apply(matrix)]
+fn burst_chans_past_the_extras_is_validation(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
+    let s = sim.add_servo(ID5);
+
+    // Bit 3 names no channel; the field rule rejects it before the arm gate
+    // ever sees it.
+    sim.host_send(&instruction(
+        ID5,
+        Opcode::Write,
+        0,
+        &write_args(CHANS, &[chans::ALL + 1]),
+    ));
+    let (inst, _) = status(sole_reply(&sim.run()));
+    assert_eq!(inst.result(), Some(ResultCode::Validation));
+    assert_eq!(sim.servo_table(s, |t| t.control.burst.chans), 0);
+
+    // The byte behind it is alignment, reserved like the tail it came from.
+    sim.host_send(&instruction(
+        ID5,
+        Opcode::Write,
+        0,
+        &write_args(CHANS + 1, &[0]),
+    ));
+    let (inst, _) = status(sole_reply(&sim.run()));
+    assert_eq!(inst.result(), Some(ResultCode::Access));
+
+    // Every legal mask lands.
+    for mask in 0..=chans::ALL {
+        sim.host_send(&instruction(
+            ID5,
+            Opcode::Write,
+            0,
+            &write_args(CHANS, &[mask]),
+        ));
+        let (inst, _) = status(sole_reply(&sim.run()));
+        assert_eq!(inst.result(), Some(ResultCode::Ok), "chans {mask}");
+        assert_eq!(sim.servo_table(s, |t| t.control.burst.chans), mask);
+    }
+}
+
+#[apply(matrix)]
 fn burst_window_rejects_host_writes(baud_idx: u8) {
     let mut sim = sim(baud_idx);
     let s = sim.add_servo(ID5);
@@ -96,7 +140,13 @@ fn burst_window_rejects_host_writes(baud_idx: u8) {
 
     // Every byte of the section is chip-owned; a host write is an access fault,
     // not a silent no-op.
-    for addr in [BURST_BASE_ADDR, BURST_BASE_ADDR + 1, BURST_BASE_ADDR + 2] {
+    for addr in [
+        BURST_BASE_ADDR,
+        BURST_BASE_ADDR + 1,
+        BURST_BASE_ADDR + 2,
+        CHANS_ECHO,
+        FRAME_LEN,
+    ] {
         sim.host_send(&instruction(ID5, Opcode::Write, 0, &write_args(addr, &[7])));
         let (inst, _) = status(sole_reply(&sim.run()));
         assert_eq!(inst.result(), Some(ResultCode::Access), "addr {addr:#x}");
@@ -152,6 +202,39 @@ fn one_read_returns_the_page_and_the_header(baud_idx: u8) {
     assert_eq!((tail[8], tail[9]), (dir::DOWN, dir::DOWN));
 }
 
+/// The frame words sit one past the page READ, so a host fetches them with
+/// the header: `samples_len` through `frame_len` in one READ.
+#[apply(matrix)]
+fn header_read_carries_the_frame_words(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
+    let s = sim.add_servo(ID5);
+    let mask = chans::VMOTOR_A | chans::VBUS;
+    sim.servo_table_mut(s, |t| {
+        let w = &mut t.burst.window;
+        w.samples_len = (PAGES * PAGE_SAMPLES) as u16;
+        w.step_index = 480;
+        w.restore_dir = dir::DOWN;
+        w.chans_echo = mask;
+        w.frame_len = frame_len(mask);
+    });
+
+    let count = FRAME_LEN + 1 - SAMPLES_LEN;
+    sim.host_send(&instruction(
+        ID5,
+        Opcode::Read,
+        0,
+        &read_args(SAMPLES_LEN, count),
+    ));
+    let frames = sim.run();
+    let (inst, payload) = status(sole_reply(&frames));
+    assert_eq!(inst.result(), Some(ResultCode::Ok));
+    assert_eq!(payload.len(), count as usize);
+    assert_eq!(u16::from_le_bytes([payload[0], payload[1]]), 960);
+    assert_eq!(u16::from_le_bytes([payload[2], payload[3]]), 480);
+    assert_eq!(payload[9], dir::DOWN);
+    assert_eq!((payload[10], payload[11]), (mask, 3));
+}
+
 #[apply(matrix)]
 fn read_past_the_window_is_limit(baud_idx: u8) {
     let mut sim = sim(baud_idx);
@@ -174,9 +257,13 @@ fn step_and_arm_commit_in_one_instant(baud_idx: u8) {
     let mut sim = sim(baud_idx);
     let s = sim.add_servo(ID5);
 
-    // The step target and the arm must never be live apart: a committed arm
-    // over a stale duty would capture the wrong step.
-    for (addr, data) in [(DUTY_Q15, 8520i16.to_le_bytes().to_vec()), (ARM, vec![1])] {
+    // The step target, the frame, and the arm must never be live apart: a
+    // committed arm over a stale duty or mask would capture the wrong run.
+    for (addr, data) in [
+        (DUTY_Q15, 8520i16.to_le_bytes().to_vec()),
+        (CHANS, vec![chans::VBUS]),
+        (ARM, vec![1]),
+    ] {
         sim.host_send(&instruction(
             ID5,
             Opcode::Write,
@@ -186,19 +273,20 @@ fn step_and_arm_commit_in_one_instant(baud_idx: u8) {
         let (inst, _) = status(sole_reply(&sim.run()));
         assert_eq!(inst.result(), Some(ResultCode::Ok));
     }
+    let live = |t: &osc_servo_core::regions::ControlTable| {
+        let b = &t.control.burst;
+        (b.duty_q15, b.chans, b.arm)
+    };
     assert_eq!(
-        sim.servo_table(s, |t| (t.control.burst.duty_q15, t.control.burst.arm)),
-        (0, 0),
+        sim.servo_table(s, live),
+        (0, 0, 0),
         "staged writes stay off the live fields"
     );
 
     sim.host_send(&instruction(Id::BROADCAST.0, Opcode::Commit, 0, &[]));
     let frames = sim.run();
     assert!(servo_frames(&frames).is_empty());
-    assert_eq!(
-        sim.servo_table(s, |t| (t.control.burst.duty_q15, t.control.burst.arm)),
-        (8520, 1),
-    );
+    assert_eq!(sim.servo_table(s, live), (8520, chans::VBUS, 1));
 }
 
 #[apply(matrix)]

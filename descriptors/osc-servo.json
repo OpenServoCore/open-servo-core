@@ -718,6 +718,14 @@
       "kind": "uint"
     },
     {
+      "name": "chans",
+      "addr": 410,
+      "width": 1,
+      "access": "rw",
+      "kind": "uint",
+      "max": 7
+    },
+    {
       "name": "fault_flags",
       "addr": 512,
       "width": 1,
@@ -1042,6 +1050,20 @@
     {
       "name": "restore_dir",
       "addr": 955,
+      "width": 1,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "chans_echo",
+      "addr": 956,
+      "width": 1,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "frame_len",
+      "addr": 957,
       "width": 1,
       "access": "ro",
       "kind": "uint"

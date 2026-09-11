@@ -306,6 +306,8 @@ mod tests {
             "samples_len",
             "step_index",
             "restore_dir",
+            "chans_echo",
+            "frame_len",
         ] {
             assert!(!by(name).writable, "{name} must stay RO");
         }
@@ -318,6 +320,17 @@ mod tests {
         assert_eq!((duty.min, duty.max), (None, None));
         assert!(by("arm").writable);
         assert!(by("page").writable);
+
+        // The extras mask: a scalar with an immediate ceiling, so the bound
+        // exports and a host can read it off the descriptor.
+        let chans = by("chans");
+        assert!(chans.writable);
+        assert_eq!(chans.kind, FieldKind::UInt);
+        assert_eq!(chans.width, 1);
+        assert_eq!(
+            (chans.min, chans.max),
+            (None, Some(super::burst::chans::ALL as i32))
+        );
     }
 
     /// `boot_mode` is an ABI pin: the burst block appends after
@@ -330,6 +343,7 @@ mod tests {
         assert_eq!(burst::DUTY_Q15, 0x196);
         assert_eq!(burst::ARM, 0x198);
         assert_eq!(burst::PAGE, 0x199);
+        assert_eq!(burst::CHANS, 0x19A);
     }
 
     /// Pins the BURST section to its base and its one-READ geometry.
@@ -340,6 +354,8 @@ mod tests {
         assert_eq!(window::PAGE_ECHO, super::BURST_BASE_ADDR);
         assert_eq!(window::SAMPLES_LEN, 0x3B2);
         assert_eq!(window::RESTORE_DIR, 0x3BB);
+        assert_eq!(window::CHANS_ECHO, 0x3BC);
+        assert_eq!(window::FRAME_LEN, 0x3BD);
         assert_eq!(burst::BURST_LEN, burst::PAGES * burst::PAGE_SAMPLES);
     }
 

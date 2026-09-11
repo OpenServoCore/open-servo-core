@@ -75,7 +75,8 @@ pub struct ControlSystem {
 /// Shunt-burst request. `arm` is level, not an edge: 1 asks for a capture, 0
 /// releases the result back to Idle, so a host that dies mid-run leaves a
 /// servo that only has to be told 0. `page` selects which slice of the
-/// capture the BURST section publishes.
+/// capture the BURST section publishes. `chans` (`burst::chans`) picks the
+/// extras interleaved behind the shunt; latched with `duty_q15` at the arm.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct ControlBurst {
@@ -83,6 +84,10 @@ pub struct ControlBurst {
     pub duty_q15: i16,
     pub arm: u8,
     pub page: u8,
+    #[ct_field(le = crate::regions::burst::chans::ALL)]
+    pub chans: u8,
+    #[ct_field(skip)]
+    pub _rsvd_align: u8,
 }
 
 #[repr(C)]
@@ -97,7 +102,7 @@ pub struct ControlRegs {
     pub system: ControlSystem,
     pub burst: ControlBurst,
     #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 102],
+    pub _rsvd_tail: [u8; 100],
 }
 
 #[cfg(test)]

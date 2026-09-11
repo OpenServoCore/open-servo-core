@@ -1,8 +1,11 @@
 //! High-rate shunt capture. The normal scan samples the shunt once per PWM
 //! period, which is ~6 points across a 150 us electrical time constant; a
-//! burst suspends the scan and free-runs the converter on the shunt alone at
-//! one sample per 1.083 us, steps the bridge halfway through, and freezes
-//! `BURST_LEN` codes for paged readback (`regions::burst`).
+//! burst suspends the scan and free-runs the converter at one conversion per
+//! 1.083 us over a frame of the shunt plus the extras `chans` selects, steps
+//! the bridge halfway through, and freezes `BURST_LEN` codes for paged
+//! readback (`regions::burst`). Continuous scan mode repeats the frame with
+//! no gap and one DMA request per conversion (RM sec 9.2.4, 9.2.2), so each
+//! extra is sampled its slot index x 1.083 us after the shunt.
 //!
 //! The burst time-shares DMA1 CH1 with the scan, so its HT and TC land on the
 //! kernel's own vector: `runtime::isr` routes them here while `capturing()`
@@ -18,7 +21,9 @@ use core::sync::atomic::compiler_fence;
 
 use portable_atomic::{AtomicBool, AtomicU8, Ordering};
 
-use osc_servo_core::regions::burst::{BURST_LEN, PAGE_MID_COPY, dir, page_span, state};
+use osc_servo_core::regions::burst::{
+    BURST_LEN, PAGE_MID_COPY, chans, dir, frame_len, page_span, state,
+};
 use osc_servo_core::regions::{ControlTable, DecaySelect, Mode};
 use osc_servo_core::{ControlIo as _, DecayMode, Motor as _, MotorCmd, RegionStorageRaw, Shared};
 use osc_units::Effort;
@@ -41,11 +46,12 @@ const BURST_SETTLE_TICKS: u16 = 16;
 const DRAIN_ITERS_PER_US: u32 = HCLK_HZ / 1_000_000;
 /// One 7-slot scan retires: 182 ADCCLK at 24 MHz = 7.58 us.
 const ADC_SCAN_DRAIN: u32 = 8 * DRAIN_ITERS_PER_US;
-/// Two conversions retire: the one in flight when CONT is cleared plus the one
-/// that CTLR2 write starts of its own accord. 26 ADCCLK at 24 MHz = 1.08 us each.
-const ADC_CONV_DRAIN: u32 = 3 * DRAIN_ITERS_PER_US;
+/// Per frame slot, two conversions retire: clearing CONT lets the frame in
+/// flight finish, and that CTLR2 write can start one more frame of its own
+/// accord. 26 ADCCLK at 24 MHz = 1.08 us each.
+const ADC_SLOT_DRAIN: u32 = 3 * DRAIN_ITERS_PER_US;
 
-/// Free-running single-channel capture. Not circular: the run stops itself at
+/// Free-running frame capture. Not circular: the run stops itself at
 /// TC and the buffer stays frozen for readback. HT is the step trigger.
 const DMA_CFG: dma::Config = dma::Config {
     dir: dma::Dir::FROMPERIPHERAL,
@@ -73,12 +79,14 @@ struct Fsm {
     settle: u16,
     duty_q15: i16,
     decay: DecayMode,
+    chans: u8,
 }
 
 static FSM: SyncUnsafeCell<Fsm> = SyncUnsafeCell::new(Fsm {
     settle: 0,
     duty_q15: 0,
     decay: DecayMode::Slow,
+    chans: 0,
 });
 
 #[inline(always)]
@@ -154,7 +162,8 @@ pub fn poll_arm(shared: &Shared) {
             let armable = life.torque_enable
                 && life.mode == Mode::OpenLoop
                 && life.tel_count == 0
-                && faults == 0;
+                && faults == 0
+                && req.chans & !chans::ALL == 0;
             if !armable {
                 publish_state(p, state::REJECTED);
                 return;
@@ -167,6 +176,7 @@ pub fn poll_arm(shared: &Shared) {
                 DecaySelect::Slow => DecayMode::Slow,
                 DecaySelect::Fast => DecayMode::Fast,
             };
+            f.chans = req.chans;
             f.settle = BURST_SETTLE_TICKS;
             publish_state(p, state::ARMED);
         }
@@ -206,28 +216,30 @@ pub fn on_dma_event(shared: &Shared) {
 }
 
 /// Suspend the scan and open the capture. The drains below outlast the TC's
-/// ~17 us of slack, which costs nothing: the DMA tap is shut first, so the
-/// trough TRGO that lands mid-drain starts a scan that makes no request, and
-/// the trigger source is SWSTART by the time the capture opens. That is also
-/// why `start_cnt` / `start_dir` record the phase of the launch write itself
-/// rather than the phase of the TC that led to it.
+/// ~17 us of slack, which costs nothing: the tap is shut and the trigger
+/// parked in the first write, so no TRGO starts anything after it. That is
+/// also why `start_cnt` / `start_dir` record the phase of the launch write
+/// itself rather than the phase of the TC that led to it.
 fn launch(p: *mut ControlTable) {
+    let f = fsm();
     // Source first, channel second: a request can only latch if it is
     // GENERATED while the channel is disabled, so shutting CTLR2.DMA before
     // DMA1_CH1.CR.EN is what makes the disable safe (the reverse order is the
     // V006 latching-request trap). Any request already generated is served
     // while the channel is still enabled.
-    adc::set_dma(false);
+    adc::park();
     dma::disable(CH);
     dma::clear_tc_flag(CH);
     dma::clear_ht_flag(CH);
-    // The CTLR2 write above started a stray scan; it makes no DMA request with
-    // the tap shut, but it must retire before RSQR changes under it. EXTSEL is
-    // still TIM1_TRGO here, so a trigger can start one more; both are harmless
-    // for the same reason, and the capture opens on SWSTART regardless.
+    // The park write started a stray scan, or found one a TRGO had started;
+    // either makes no DMA request with the tap shut, and it must retire
+    // before RSQR changes: an RSQR write under a live conversion restarts it
+    // on the new group (RM sec 9.2.2), and a frame the launch write then found
+    // mid-round would deliver slot k first and rotate every frame after.
     delay_cycles(ADC_SCAN_DRAIN);
-    adc::set_scan_mode(false);
-    adc::set_sequence(&[scan::shunt_channel()]);
+    let len = frame_len(f.chans);
+    adc::set_scan_mode(len > 1);
+    scan::set_burst_sequence(f.chans);
     dma::configure(
         CH,
         &DMA_CFG,
@@ -247,6 +259,8 @@ fn launch(p: *mut ControlTable) {
         (&raw mut (*w).samples_len).write_volatile(BURST_LEN as u16);
         (&raw mut (*w).step_index).write_volatile(0);
         (&raw mut (*w).restore_dir).write_volatile(dir::UP);
+        (&raw mut (*w).chans_echo).write_volatile(f.chans);
+        (&raw mut (*w).frame_len).write_volatile(len);
         // No page of this capture is published yet; a host reading before its
         // first page write must not be handed the previous capture's page.
         (&raw mut (*w).page_echo).write_volatile(PAGE_MID_COPY);
@@ -304,7 +318,7 @@ fn restore() {
     dma::clear_tc_flag(CH);
     dma::clear_ht_flag(CH);
     adc::set_continuous(false);
-    delay_cycles(ADC_CONV_DRAIN);
+    delay_cycles(ADC_SLOT_DRAIN * frame_len(fsm().chans) as u32);
     adc::set_scan_mode(true);
     adc::set_sequence(scan::seq());
     scan::arm_dma();
