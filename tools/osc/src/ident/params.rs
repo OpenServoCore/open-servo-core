@@ -7,6 +7,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use osc_ident::exp::bias::BiasResult;
 use osc_ident::exp::breakaway::BreakawayResult;
+use osc_ident::exp::held::HeldRun;
 use osc_ident::exp::inductance::InductanceResult;
 use osc_ident::exp::resistance::ResistanceResult;
 use osc_ident::exp::rl::{RlResult, Scales};
@@ -143,7 +144,8 @@ impl From<&RlResult> for RlJson {
 }
 
 /// The high-rate burst run as recorded. `promoted` is the verdict that
-/// decides whether the gains used it; `ok` additionally requires `l-duty`.
+/// decides whether the gains used it (either route); `gates`, `ok` and
+/// `blocking` are the free shaft's, and `ok` additionally requires `l-duty`.
 /// L_ripple and L_env are different quantities, not two estimates of one -
 /// see osc-ident's `exp::inductance`. Fields after `ok` postdate the
 /// voltage channels and default when an older recording is refitted.
@@ -190,6 +192,56 @@ pub struct InductanceJson {
     pub src_prearm_ohm: Option<f64>,
     #[serde(default)]
     pub volts: VoltsJson,
+    /// The route that fed the gains; None when both declined.
+    #[serde(default)]
+    pub route: Option<String>,
+    #[serde(default)]
+    pub held: HeldJson,
+}
+
+/// The held-at-a-stop route as recorded.
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub struct HeldJson {
+    pub captures: usize,
+    /// (drive sign toward the stop, pos, hold duty, hold current in amps).
+    pub seats: Vec<(i8, u16, f64, Option<f64>)>,
+    pub rest_zeroed: bool,
+    pub r_ohm: Option<f64>,
+    pub l_h: Option<f64>,
+    pub tau_us: Option<f64>,
+    pub c_volts: Option<f64>,
+    pub rows: usize,
+    pub hold_rows: usize,
+    pub l_spread: f64,
+    pub gates: Vec<(String, bool, String)>,
+    pub promoted: bool,
+}
+
+impl From<&HeldRun> for HeldJson {
+    fn from(h: &HeldRun) -> Self {
+        Self {
+            captures: h.captures,
+            seats: h
+                .seats
+                .iter()
+                .map(|s| (s.dir, s.pos, s.hold_duty, s.i_hold_a))
+                .collect(),
+            rest_zeroed: h.rest_zeroed,
+            r_ohm: h.reg.map(|g| g.r_ohm),
+            l_h: h.reg.map(|g| g.l_h),
+            tau_us: h.reg.map(|g| g.tau_us),
+            c_volts: h.reg.map(|g| g.c_volts),
+            rows: h.reg.map_or(0, |g| g.n),
+            hold_rows: h.hold_rows,
+            l_spread: h.l_spread,
+            gates: h
+                .gates
+                .iter()
+                .map(|g| (g.name.to_string(), g.pass, g.detail.clone()))
+                .collect(),
+            promoted: h.promotable(),
+        }
+    }
 }
 
 /// The run's voltage source and its two R routes, winding referenced.
@@ -281,6 +333,8 @@ impl From<&InductanceResult> for InductanceJson {
             r_pair_cb_ohm: x.r_pair_cb_ohm,
             src_prearm_ohm: x.src_prearm_ohm,
             volts: VoltsJson::from(&x.volts),
+            route: x.route().map(|r| r.as_str().to_string()),
+            held: HeldJson::from(&x.held),
         }
     }
 }

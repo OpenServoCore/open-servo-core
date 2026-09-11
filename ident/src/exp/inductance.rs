@@ -2,11 +2,12 @@
 //! a duty step sampled every ~1.08 us for 1.04 ms - fast enough that the
 //! rotor cannot follow it, which is the bias [`super::rl`] could not shed.
 //!
-//! The run feeds gain synthesis when it passes [`PROMOTION_GATES`]; the
-//! gains then take R and L_env from the per-period regression of
-//! [`super::winding`], over charge-balance currents and the volt-seconds the
-//! burst's voltage channels measured. Otherwise [`super::resistance`] runs
-//! and supplies R.
+//! The run feeds gain synthesis through the first route [`PROMOTION_GATES`]
+//! passes - held at a stop ([`super::held`]), else the free shaft from rest
+//! described here; the gains then take R and L_env from that route's
+//! per-period regression of [`super::winding`], over charge-balance currents
+//! and the volt-seconds the burst's voltage channels measured. When both
+//! decline, [`super::resistance`] runs and supplies R.
 //!
 //! The winding current is the shunt's mean over a whole PWM period over the
 //! duty (charge balance), not the ON-window level: decoupling inside the
@@ -65,8 +66,9 @@
 
 use core::fmt::Write as _;
 
+use super::held::{HeldRun, held_run};
 use super::rl::{Gate, Scales};
-use super::winding::{VoltRun, capture_volts, volt_run};
+use super::winding::{TapZeros, VoltRun, capture_volts, volt_run};
 use super::{Cmd, Experiment, RigParams};
 use crate::burst::{Capture, Chans, SAMPLE_US, nominal_cadence};
 use crate::fitmath::{lag_ls, linear_ls, median, quantile, stddev, theil_sen};
@@ -86,6 +88,12 @@ const LAG_MAX: usize = 120;
 /// A lag at half the correlation peak's that reaches this fraction of its
 /// correlation is the true period, the peak a multiple of it.
 const SUBHARMONIC_FRAC: f64 = 0.8;
+
+/// The shortest ON window a plan arms, conversions: 20% of the 46-conversion
+/// period. A window has to hold that many above the threshold, counted in
+/// its own stream's samples and clamped to two (one sample is an edge, not a
+/// window) through three: at frame_len 4 a 20% window is 2.3 samples.
+const MIN_WINDOW_RAW: usize = 9;
 
 /// Windows whose last sample lands this close to the end of the buffer are
 /// truncated by the capture, not by the PWM edge.
@@ -318,6 +326,7 @@ pub fn segment(samples: &[u16], frame_len: usize, cfg: &FitCfg) -> Option<Segmen
     let dev: Vec<f64> = v.iter().zip(&base).map(|(a, b)| a - b).collect();
     let peak = rolling_peak(&dev, w);
     let start_dev = cfg.start_dev_counts.max(2.0 * noise);
+    let min_run = (MIN_WINDOW_RAW / frame_len).clamp(2, 3);
 
     let mut windows = Vec::new();
     let mut i = 0;
@@ -332,7 +341,7 @@ pub fn segment(samples: &[u16], frame_len: usize, cfg: &FitCfg) -> Option<Segmen
         while j + 1 < v.len() && dev[j + 1].abs() >= thr(j + 1) && (dev[j + 1] > 0.0) == up {
             j += 1;
         }
-        if j >= i + 2 {
+        if j + 1 - i >= min_run {
             // The ramp direction is the ON window's own sign, not the edge's:
             // a regenerating winding steps DOWN into the window and ramps up
             // through it.
@@ -355,7 +364,7 @@ pub fn segment(samples: &[u16], frame_len: usize, cfg: &FitCfg) -> Option<Segmen
             while start > 0 && dev[start - 1] * sgn > start_dev {
                 start -= 1;
             }
-            if end >= start + 2 {
+            if end + 1 - start >= min_run {
                 windows.push(Window { start, end });
             }
         }
@@ -366,6 +375,12 @@ pub fn segment(samples: &[u16], frame_len: usize, cfg: &FitCfg) -> Option<Segmen
         .map(|p| (p[1].start - p[0].start) as f64)
         .collect();
     let cadence = median(&gaps).unwrap_or(period);
+    // Successive windows are one period apart whatever they look like, so
+    // they arbitrate the harmonic. The correlation can peak at a multiple:
+    // at frame_len 4 a period is 11.54 samples, alternate windows land half
+    // a sample apart on the sample grid and look different, and only every
+    // second one repeats.
+    let period = period / (period / cadence).round().max(1.0);
     Some(Segmentation {
         period_samples: period,
         cadence_samples: cadence,
@@ -489,8 +504,43 @@ pub struct CaptureFit {
     pub notes: Vec<String>,
 }
 
-fn gate(name: &'static str, pass: bool, detail: String) -> Gate {
+pub(super) fn gate(name: &'static str, pass: bool, detail: String) -> Gate {
     Gate { name, pass, detail }
+}
+
+/// One per-capture gate over a set of captures: it passes only if it
+/// passed on every one.
+pub(super) fn fold(name: &'static str, over: &[&CaptureFit]) -> Gate {
+    let bad: Vec<&&CaptureFit> = over
+        .iter()
+        .filter(|f| f.gates.iter().any(|g| g.name == name && !g.pass))
+        .collect();
+    match bad.first() {
+        None => gate(name, true, format!("{} captures", over.len())),
+        Some(f) => gate(
+            name,
+            false,
+            format!(
+                "{} of {} failed, first: {}",
+                bad.len(),
+                over.len(),
+                f.gates
+                    .iter()
+                    .find(|g| g.name == name)
+                    .map(|g| g.detail.clone())
+                    .unwrap_or_default()
+            ),
+        ),
+    }
+}
+
+/// Largest step duty whose settled current stays under `i_max_a`, fraction
+/// of full scale. The settled current is taken proportional to duty, so one
+/// measured rung sizes the rest; the larger of its two asymptotes, because
+/// the ON window under-reads.
+pub(super) fn duty_cap(f: &CaptureFit, i_max_a: f64) -> Option<f64> {
+    let asym = f.asymptote_a.max(f.asymptote_cb_a);
+    (f.duty > 0.0 && asym > 0.0).then(|| i_max_a / (asym / f.duty))
 }
 
 /// Minimise `cost` over a time constant in [lo, hi]: log grid, then golden
@@ -647,13 +697,14 @@ fn fit_segmented(
     // The first post-step window is a HALF window: the compare register
     // latches at the crest, so only the falling half of that period carries
     // the new duty. Its slope is honest, its centre is not the period's, so
-    // it is dropped rather than fitted.
+    // it is dropped rather than fitted. A length is good to a sample, which
+    // a 2-sample window at frame_len 4 cannot express as a fraction.
     let keep: Vec<Window> = post
         .iter()
         .copied()
         .filter(|w| {
             let l = w.samples() as f64;
-            l >= 0.6 * full && l <= 1.4 * full
+            (l >= 0.6 * full && l <= 1.4 * full) || (l - full).abs() <= 1.0
         })
         .collect();
 
@@ -755,6 +806,21 @@ fn fit_segmented(
             linear_ls(&on).map(|l| (l.a, l.b))
         })
     };
+    // The new duty latches at the first update event after the step, crest
+    // or trough (RCR 0), so a window whose crest lies within half a period
+    // of the step may be the half window. From a hold that window opens on
+    // the old duty's rising edge, off the new grid by (D - D_pre) x P / 2:
+    // for 20% from 12%, 1.8 samples at frame_len 1 and under half a sample
+    // at frame_len 4, where neither its length nor the grid tells it from a
+    // whole period. Its crest on the grid does; a whole window this close
+    // is dropped with it.
+    let step_at = cap.meta.step_index as f64 / fl as f64;
+    let latched = |w: &Window| {
+        rise_line.is_none_or(|(a, b)| {
+            let r = a + ((rise(w) as f64 - 0.5 - a) / b).round() * b;
+            r + duty * b / 2.0 <= step_at + b / 2.0 + GRID_TOL
+        })
+    };
     let on_grid = |w: &Window| {
         rise_line.is_some_and(|(a, b)| {
             let r = rise(w) as f64 - 0.5 - a;
@@ -763,17 +829,10 @@ fn fit_segmented(
     };
     let level_cb = |w: &Window, d: f64| -> Option<f64> {
         let a = rise(w) as f64 - 0.5;
-        let b = a + period;
-        if d <= 0.0 || a < 0.0 || b.ceil() as usize >= n || !on_grid(w) {
+        if d <= 0.0 || !on_grid(w) {
             return None;
         }
-        let q: f64 = (a.floor() as usize..=b.ceil() as usize)
-            .map(|k| {
-                let span = (k as f64 + 0.5).min(b) - (k as f64 - 0.5).max(a);
-                (v[k] - bias) * span.max(0.0)
-            })
-            .sum();
-        Some(q / period * sc.amps_per_count / d)
+        Some(charge(&v, bias, a, a + period)? / period * sc.amps_per_count / d)
     };
 
     let mut windows = Vec::new();
@@ -838,6 +897,7 @@ fn fit_segmented(
     let (tau_s, asym) = fit_exponential(&env).unwrap_or((0.0, 0.0));
     let cb: Vec<CbWindow> = keep
         .iter()
+        .filter(|w| !latched(w))
         .filter_map(|w| {
             Some(CbWindow {
                 start: w.start,
@@ -1120,17 +1180,41 @@ pub struct InductanceResult {
     /// Every gate passed, `l-duty` included. [`Self::promotable`] is the
     /// verdict that decides whether the gains use this run.
     pub ok: bool,
+    /// The seated captures' route, with its own gates.
+    pub held: HeldRun,
     pub warnings: Vec<String>,
 }
 
-/// THE PROMOTION RULE, the one place it is stated: E8 feeds gain synthesis
-/// when every one of these gates passes - the trace gates (captures,
-/// cadence, step-index, pre-bias, windows), r-consistency (from-rest pairs
-/// against the per-period regression on the run's voltage source, within
-/// `r_agree_tol`), the per-route spreads across repeats (l-ripple-spread,
-/// l-env-spread, within `l_agree_tol`), and supply (the voltage was
-/// measured inside the burst, or the pre-arm source resistance is under
-/// `stiff_supply_ohm`). `l-duty` is left out: L_ripple feeds no gain.
+/// Which of E8's routes feeds the gains.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum BurstRoute {
+    Held,
+    Free,
+}
+
+impl BurstRoute {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            BurstRoute::Held => "held at a stop",
+            BurstRoute::Free => "free shaft from rest",
+        }
+    }
+}
+
+/// THE PROMOTION RULE, the one place it is stated. E8 feeds gain synthesis
+/// through the first of its routes that passes:
+///
+///   1. held at a stop, when every [`super::held::HELD_GATES`] gate passes;
+///   2. free shaft from rest, when every gate below passes - the trace
+///      gates (captures, cadence, step-index, pre-bias, windows),
+///      r-consistency (from-rest pairs against the per-period regression on
+///      the run's voltage source, within `r_agree_tol`), the per-route
+///      spreads across repeats (l-ripple-spread, l-env-spread, within
+///      `l_agree_tol`), and supply (the voltage was measured inside the
+///      burst, or the pre-arm source resistance is under
+///      `stiff_supply_ohm`). `l-duty` is left out: L_ripple feeds no gain.
+///
+/// When both decline, E2 supplies R and L stays at the default.
 pub const PROMOTION_GATES: [&str; 9] = [
     "captures",
     "cadence",
@@ -1144,14 +1228,20 @@ pub const PROMOTION_GATES: [&str; 9] = [
 ];
 
 impl InductanceResult {
-    pub fn promotable(&self) -> bool {
-        self.gates
-            .iter()
-            .filter(|g| PROMOTION_GATES.contains(&g.name))
-            .all(|g| g.pass)
+    /// The route [`PROMOTION_GATES`] picks, None when both decline.
+    pub fn route(&self) -> Option<BurstRoute> {
+        match (self.held.promotable(), self.blocking().is_empty()) {
+            (true, _) => Some(BurstRoute::Held),
+            (false, true) => Some(BurstRoute::Free),
+            (false, false) => None,
+        }
     }
 
-    /// The gate names that keep this run from promoting.
+    pub fn promotable(&self) -> bool {
+        self.route().is_some()
+    }
+
+    /// The free-shaft gate names that keep that route from promoting.
     pub fn blocking(&self) -> Vec<&'static str> {
         self.gates
             .iter()
@@ -1161,13 +1251,16 @@ impl InductanceResult {
     }
 
     /// Winding R (ohms) and L (henries) for gain synthesis, both from the
-    /// per-period regression so they share one tau. L is L_env, not
-    /// L_ripple: the current loop closes at ~1 kHz, a ~160 us time
-    /// constant on the envelope timescale, while L_ripple is the
+    /// promoted route's per-period regression so they share one tau. L is
+    /// L_env, not L_ripple: the current loop closes at ~1 kHz, a ~160 us
+    /// time constant on the envelope timescale, while L_ripple is the
     /// eddy-shunted inductance of one 25 us ON window.
     pub fn gain_r_l(&self) -> Option<(f64, f64)> {
-        let g = self.volts.reg?;
-        (self.promotable() && g.r_ohm > 0.0 && g.l_h > 0.0).then_some((g.r_ohm, g.l_h))
+        let g = match self.route()? {
+            BurstRoute::Held => self.held.reg?,
+            BurstRoute::Free => self.volts.reg?,
+        };
+        (g.r_ohm > 0.0 && g.l_h > 0.0).then_some((g.r_ohm, g.l_h))
     }
 }
 
@@ -1181,7 +1274,7 @@ fn bracket(v: &[f64], fallback: f64) -> (f64, f64) {
 /// Worst (max - min) / median across the groups, each group being one step
 /// duty's repeats. Grouping first keeps a real duty dependence out of the
 /// repeat-spread number.
-fn worst_spread(groups: &[Vec<f64>]) -> f64 {
+pub(super) fn worst_spread(groups: &[Vec<f64>]) -> f64 {
     groups
         .iter()
         .filter_map(|g| {
@@ -1200,17 +1293,33 @@ fn worst_spread(groups: &[Vec<f64>]) -> f64 {
 /// has: fit every capture, solve R from the pairs and V0 from the control,
 /// then read L out of the per-capture geometry with both in hand.
 pub fn fit_captures(caps: &[Capture], sc: &Scales, cfg: &FitCfg) -> Option<InductanceResult> {
+    // A zero-duty capture is a rest reference: it only zeroes the taps.
+    let refs: Vec<&Capture> = caps.iter().filter(|c| c.meta.step_q15 == 0).collect();
+    let (seated, caps): (Vec<Capture>, Vec<Capture>) = caps
+        .iter()
+        .filter(|c| c.meta.step_q15 != 0)
+        .cloned()
+        .partition(|c| c.meta.seated);
     let cfg = &FitCfg {
-        settle_us: cfg
-            .settle_us
-            .or_else(|| Some(settle_profile(caps, sc, cfg))),
+        settle_us: cfg.settle_us.or_else(|| {
+            Some(settle_profile(
+                if caps.is_empty() { &seated } else { &caps },
+                sc,
+                cfg,
+            ))
+        }),
         ..cfg.clone()
     };
+    let seated: Vec<(&Capture, CaptureFit)> = seated
+        .iter()
+        .filter_map(|c| fit_capture(c, sc, cfg).map(|f| (c, f)))
+        .collect();
+    let held = held_run(&seated, &TapZeros::from_rest(&refs), sc, cfg);
     let fitted: Vec<(&Capture, CaptureFit)> = caps
         .iter()
         .filter_map(|c| fit_capture(c, sc, cfg).map(|f| (c, f)))
         .collect();
-    if fitted.is_empty() {
+    if fitted.is_empty() && held.captures == 0 {
         return None;
     }
     let fits: Vec<CaptureFit> = fitted.iter().map(|(_, f)| f.clone()).collect();
@@ -1369,29 +1478,6 @@ pub fn fit_captures(caps: &[Capture], sc: &Scales, cfg: &FitCfg) -> Option<Induc
     // index, bias) is every capture's business, while the fit gates cover
     // only the from-rest captures the pooled numbers come from. A control
     // that failed is a warning below, not a verdict on L.
-    let fold = |name: &'static str, over: &[&CaptureFit]| -> Gate {
-        let bad: Vec<&&CaptureFit> = over
-            .iter()
-            .filter(|f| f.gates.iter().any(|g| g.name == name && !g.pass))
-            .collect();
-        match bad.first() {
-            None => gate(name, true, format!("{} captures", over.len())),
-            Some(f) => gate(
-                name,
-                false,
-                format!(
-                    "{} of {} failed, first: {}",
-                    bad.len(),
-                    over.len(),
-                    f.gates
-                        .iter()
-                        .find(|g| g.name == name)
-                        .map(|g| g.detail.clone())
-                        .unwrap_or_default()
-                ),
-            ),
-        }
-    };
     let every: Vec<&CaptureFit> = fits.iter().collect();
     for f in holds.iter().filter(|f| !f.ok) {
         warnings.push(format!(
@@ -1415,17 +1501,18 @@ pub fn fit_captures(caps: &[Capture], sc: &Scales, cfg: &FitCfg) -> Option<Induc
     // The voltage source: measured wherever any from-rest capture carried
     // a channel that gives the winding, the pre-arm rail otherwise. A run
     // that mixes the two pools only the measured captures.
+    let none = TapZeros::default();
     let measured: Vec<(&CaptureFit, super::winding::CaptureVolts)> = fitted
         .iter()
         .filter(|(_, f)| f.from_rest)
-        .filter_map(|(c, f)| capture_volts(c, f, sc, true).map(|v| (f, v)))
+        .filter_map(|(c, f)| capture_volts(c, f, sc, true, &none).map(|v| (f, v)))
         .filter(|(_, v)| v.route.is_some())
         .collect();
     let volts = if measured.is_empty() {
         let pre: Vec<(&CaptureFit, super::winding::CaptureVolts)> = fitted
             .iter()
             .filter(|(_, f)| f.from_rest)
-            .filter_map(|(c, f)| capture_volts(c, f, sc, false).map(|v| (f, v)))
+            .filter_map(|(c, f)| capture_volts(c, f, sc, false, &none).map(|v| (f, v)))
             .collect();
         volt_run(&pre, cfg.pair_min_duty_span)
     } else {
@@ -1566,6 +1653,9 @@ pub fn fit_captures(caps: &[Capture], sc: &Scales, cfg: &FitCfg) -> Option<Induc
     }
     gates.retain(|g| !(g.name == "pre-bias" && rest.is_empty()));
     let ok = gates.iter().all(|g| g.pass);
+    if fits.is_empty() {
+        warnings.clear();
+    }
     Some(InductanceResult {
         l_ripple_h,
         l_ripple_bracket: bracket(&ls, l_ripple_h),
@@ -1609,6 +1699,7 @@ pub fn fit_captures(caps: &[Capture], sc: &Scales, cfg: &FitCfg) -> Option<Induc
         src_prearm_ohm: src_prearm,
         gates,
         ok,
+        held,
         warnings,
     })
 }
@@ -1773,12 +1864,11 @@ impl Inductance {
     /// to duty from rest, so one measured rung sizes all of them; the larger
     /// of the two asymptotes, because the ON window under-reads.
     fn prune(&mut self, from: &CaptureFit) {
-        let asym = from.asymptote_a.max(from.asymptote_cb_a);
-        if from.duty <= 0.0 || asym <= 0.0 {
+        let Some(cap) = duty_cap(from, self.cfg.i_max_a) else {
             return;
-        }
-        let per_duty = asym / from.duty;
-        let cap_q15 = (self.cfg.i_max_a / per_duty * Q15) as i32;
+        };
+        let asym = from.asymptote_a.max(from.asymptote_cb_a);
+        let cap_q15 = (cap * Q15) as i32;
         let before = self.plan.len();
         let at = self.at;
         let mut k = 0;
@@ -1894,6 +1984,7 @@ impl Experiment for Inductance {
                     duty_q15: a.step_q15,
                     pre_q15: a.pre_q15,
                     chans: self.cfg.chans.for_step(a.step_q15),
+                    seated: false,
                 }
             }
             Phase::ArmRelax => {
@@ -1940,6 +2031,23 @@ impl Experiment for Inductance {
         }
         self.caps.push(cap.clone());
     }
+}
+
+/// The shunt's charge over [a, b] in stream samples, counts x samples above
+/// `bias`, each sample weighted by the part of its aperture inside the span.
+/// None when the span leaves the stream.
+pub(super) fn charge(v: &[f64], bias: f64, a: f64, b: f64) -> Option<f64> {
+    if a < 0.0 || b.ceil() as usize >= v.len() {
+        return None;
+    }
+    Some(
+        (a.floor() as usize..=b.ceil() as usize)
+            .map(|k| {
+                let span = (k as f64 + 0.5).min(b) - (k as f64 - 0.5).max(a);
+                (v[k] - bias) * span.max(0.0)
+            })
+            .sum(),
+    )
 }
 
 /// One-line geometry summary per capture for the run log. No L: the slope
