@@ -1,6 +1,7 @@
 //! Chip-shape ADC scan layout, and the single definition of the scan geometry:
-//! sequence, DMA program, and the arm. Bringup seeds it and the shunt burst's
-//! restore re-arms from the same statics, so the two can never disagree.
+//! sequence, DMA program, and the arm. Bringup seeds it, the shunt burst draws
+//! its frame channels from it, and the burst's restore re-arms from the same
+//! statics, so none of them can disagree.
 //!
 //! Two scans per PWM period under center-aligned PWM (peak + trough); UG fires
 //! TRGO at CNT=0 before CEN=1 so the trough scan lands at offset 0 and the peak
@@ -16,6 +17,8 @@
 //! peak slots stand until the next peak trigger.
 
 use core::cell::SyncUnsafeCell;
+
+use osc_servo_core::regions::burst::{FRAME_MAX, chans};
 
 use crate::hal::{adc, dma};
 
@@ -76,14 +79,31 @@ pub(crate) fn seed_seq(channels: [adc::Channel; ADC_SCAN_LEN]) {
 }
 
 /// The frozen slot order, as RSQR must be programmed.
-pub(crate) fn seq() -> &'static [adc::Channel] {
+pub(crate) fn seq() -> &'static [adc::Channel; ADC_SCAN_LEN] {
     // SAFETY: written only by `seed_seq` pre-IRQ; read-only afterward.
     unsafe { &*SEQ.get() }
 }
 
-/// The shunt channel, from the same definition the slot indices name.
-pub(crate) fn shunt_channel() -> adc::Channel {
-    seq()[SCAN_IDX_SHUNT_POST]
+/// Scan slot of each `burst::chans` extra, in the frame order the ABI fixes.
+const BURST_EXTRAS: [(u8, usize); FRAME_MAX - 1] = [
+    (chans::VMOTOR_A, SCAN_IDX_VMOTOR_A),
+    (chans::VMOTOR_B, SCAN_IDX_VMOTOR_B),
+    (chans::VBUS, SCAN_IDX_VBUS),
+];
+
+/// Program RSQR with one burst frame: the shunt, then each extra `mask`
+/// selects. Its length is `burst::frame_len(mask)`.
+pub(crate) fn set_burst_sequence(mask: u8) {
+    let seq = seq();
+    let mut frame = [seq[SCAN_IDX_SHUNT_POST]; FRAME_MAX];
+    let mut len = 1;
+    for (bit, idx) in BURST_EXTRAS {
+        if mask & bit != 0 {
+            frame[len] = seq[idx];
+            len += 1;
+        }
+    }
+    adc::set_sequence(&frame[..len]);
 }
 
 /// Point CH1 at `ADC_DMA_BUF` and enable it. Leaves `ADC.CTLR2.DMA` alone:

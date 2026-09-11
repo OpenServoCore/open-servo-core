@@ -1,8 +1,11 @@
 //! BURST region: readback surface for the high-rate shunt capture. The buffer
-//! is `BURST_LEN` raw shunt codes -- far past the `MAX_PAYLOAD` reply ceiling
-//! -- so it is exposed as a paged span instead of a field: the host selects
-//! `control.burst.page` and one READ of the whole section returns that page
-//! plus every header word. All-RO; the chip is the sole writer.
+//! is `BURST_LEN` raw codes, frame by frame: the shunt, then each extra
+//! channel `control.burst.chans` selected. That is far past the `MAX_PAYLOAD`
+//! reply ceiling, so it is exposed as a paged span instead of a field: the
+//! host selects `control.burst.page` and one READ from the section base
+//! returns that page plus the per-page header. `chans_echo` / `frame_len` sit
+//! past that READ and hold for the whole capture. All-RO; the chip is the
+//! sole writer.
 //!
 //! The page handshake carries no lock. The copier writes `page_echo =
 //! PAGE_MID_COPY`, then the samples, then `page_echo = page`; the reply
@@ -13,7 +16,8 @@
 use control_table::{Block, Section};
 
 /// Samples per capture: a whole number of pages, and at the 1.083 us
-/// conversion period a ~1.04 ms window.
+/// conversion period a ~1.04 ms window. Divisible by every `frame_len`, and so
+/// is its half, the step sample.
 pub const BURST_LEN: usize = 960;
 /// Samples per readback page: 240 B, which with the header fits one 252 B reply.
 pub const PAGE_SAMPLES: usize = 120;
@@ -32,6 +36,24 @@ pub mod state {
     pub const DONE: u8 = 3;
     pub const REJECTED: u8 = 4;
 }
+
+/// `control.burst.chans` bits. The shunt is always slot 0 of a frame; the
+/// selected extras follow in bit order.
+pub mod chans {
+    pub const VMOTOR_A: u8 = 1 << 0;
+    pub const VMOTOR_B: u8 = 1 << 1;
+    pub const VBUS: u8 = 1 << 2;
+    pub const ALL: u8 = VMOTOR_A | VMOTOR_B | VBUS;
+}
+
+/// Conversions per frame for a `chans` mask.
+#[inline]
+pub const fn frame_len(mask: u8) -> u8 {
+    1 + (mask & chans::ALL).count_ones() as u8
+}
+
+/// The widest frame: the shunt plus every extra.
+pub const FRAME_MAX: usize = frame_len(chans::ALL) as usize;
 
 /// `start_dir` / `restore_dir` encoding: the TIM1 CTLR1.DIR bit verbatim, so
 /// the published byte reads as the silicon does. Under center-aligned PWM DOWN
@@ -54,8 +76,8 @@ pub const fn page_span(page: u8) -> Option<(usize, usize)> {
     Some((at, at + PAGE_SAMPLES))
 }
 
-/// One READ of the whole section returns `samples` for the selected page and
-/// every header word, so a host never has to correlate two replies.
+/// One READ from the section base returns `samples` for the selected page and
+/// every per-page header word, so a host never has to correlate two replies.
 /// `step_index` is measured from the DMA counter at the step, not assumed;
 /// `start_cnt` / `start_dir` / `pwm_arr` cross-check the trace's own PWM
 /// edges, which are the ruler. `restore_dir` is the scan-geometry witness:
@@ -81,8 +103,12 @@ pub struct BurstWindow {
     pub start_dir: u8,
     #[ct_field(access = ro)]
     pub restore_dir: u8,
+    #[ct_field(access = ro)]
+    pub chans_echo: u8,
+    #[ct_field(access = ro)]
+    pub frame_len: u8,
     #[ct_field(skip)]
-    pub _rsvd: [u8; 4],
+    pub _rsvd: [u8; 2],
 }
 
 #[repr(C)]
@@ -131,6 +157,21 @@ mod tests {
     #[test]
     fn dir_encoding_is_the_timer_bit() {
         assert_eq!((dir::UP, dir::DOWN), (0, 1));
+    }
+
+    /// Slot 0 is the shunt, then one slot per selected extra; every frame
+    /// length tiles the capture and lands the step half on a frame boundary.
+    #[test]
+    fn frame_len_counts_the_shunt_and_every_extra() {
+        let expect = [1, 2, 2, 3, 2, 3, 3, 4];
+        for (mask, &len) in expect.iter().enumerate() {
+            let n = frame_len(mask as u8);
+            assert_eq!(n, len, "chans {mask:#05b}");
+            assert_eq!(BURST_LEN % n as usize, 0, "chans {mask:#05b}");
+            assert_eq!((BURST_LEN / 2) % n as usize, 0, "chans {mask:#05b}");
+        }
+        assert_eq!(chans::ALL, 7);
+        assert_eq!(FRAME_MAX, 4);
     }
 
     #[test]

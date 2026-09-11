@@ -93,6 +93,17 @@ pub fn set_dma(enable: bool) {
     ADC.ctlr2().modify(|w| w.set_dma(enable));
 }
 
+/// Shuts the DMA tap and parks the trigger on SWSTART, never pulsed, in ONE
+/// CTLR2 write. That write starts a conversion of its own (RM sec 9.3.3), but
+/// after it nothing else can until the next CTLR2 write, so once that one
+/// retires the converter is provably idle.
+pub fn park() {
+    ADC.ctlr2().modify(|w| {
+        w.set_extsel(Extsel::SWSTART);
+        w.set_dma(false);
+    });
+}
+
 /// CTLR2.CONT: the converter re-triggers itself after each conversion instead
 /// of waiting for the next trigger.
 pub fn set_continuous(enable: bool) {
