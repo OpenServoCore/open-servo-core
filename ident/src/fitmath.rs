@@ -142,6 +142,45 @@ pub fn theil_sen(xy: &[(f64, f64)]) -> Option<LinearFit> {
     Some(LinearFit { a, b, r2, rms, n })
 }
 
+/// y = a + b*x + c*exp(-x/tau) least squares at a FIXED tau: a ramp read
+/// through a first-order lag. `b` is the ramp's own slope with the lag's
+/// contribution taken out, so no leading samples have to be discarded to
+/// escape it. `x` must start at 0 (the caller centres on the first sample)
+/// or the exponential column loses conditioning.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct LagFit {
+    pub a: f64,
+    pub b: f64,
+    /// Lag amplitude; negative while the reading is still catching up.
+    pub c: f64,
+    pub rms: f64,
+    pub n: usize,
+}
+
+pub fn lag_ls(xy: &[(f64, f64)], tau: f64) -> Option<LagFit> {
+    let n = xy.len();
+    if n < 4 || tau <= 0.0 || !finite_xy(xy) {
+        return None;
+    }
+    let mut m = [[0.0f64; 4]; 3];
+    for (x, y) in xy {
+        let p = [1.0, *x, (-x / tau).exp()];
+        for (r, &pr) in p.iter().enumerate() {
+            for (c, &pc) in p.iter().enumerate() {
+                m[r][c] += pr * pc;
+            }
+            m[r][3] += pr * y;
+        }
+    }
+    let v = solve3(&mut m)?;
+    let (a, b, c) = (v[0], v[1], v[2]);
+    if !(a.is_finite() && b.is_finite() && c.is_finite()) {
+        return None;
+    }
+    let (_, rms) = fit_quality(xy, |x| a + b * x + c * (-x / tau).exp())?;
+    Some(LagFit { a, b, c, rms, n })
+}
+
 /// Sliding local-quadratic derivative (Savitzky-Golay flavor, nonuniform t
 /// allowed): at each i, fit y = c0 + c1*u + c2*u^2 over u = t - t[i] for
 /// the 2*half_window + 1 samples around i, then dy = c1, d2y = 2*c2.
