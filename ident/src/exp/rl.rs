@@ -70,6 +70,8 @@ pub struct Scales {
     /// scales by the plain divider ratio.
     pub v_term_per_count: f64,
     pub v_rail_per_count: f64,
+    pub adc_lsb_v: f64,
+    pub shunt_ohm: f64,
 }
 
 impl Scales {
@@ -80,6 +82,8 @@ impl Scales {
             amps_per_count: units::amps_per_count(sense),
             v_term_per_count: units::volts_per_count(sense),
             v_rail_per_count: units::div_volts_per_count(sense, vbus_div_top, vbus_div_bot),
+            adc_lsb_v: units::adc_lsb_v(sense),
+            shunt_ohm: sense.shunt_r_mohm as f64 / 1000.0,
         };
         (sc.amps_per_count > 0.0 && sc.v_term_per_count > 0.0 && sc.v_rail_per_count > 0.0)
             .then_some(sc)
@@ -88,6 +92,13 @@ impl Scales {
     /// Ohms -> the control table's vcounts per ccount.
     pub fn r_vpc(&self, r_ohm: f64) -> f64 {
         r_ohm * self.amps_per_count / self.v_term_per_count
+    }
+
+    /// One terminal's absolute volts from its tap code. The divider returns
+    /// to the bias node, so a single tap reads the bias plus the terminal
+    /// scaled down: `vb` is that node in raw counts.
+    pub fn terminal_volts(&self, tap: f64, vb: f64) -> f64 {
+        self.v_term_per_count * (tap - vb) + self.adc_lsb_v * vb
     }
 }
 

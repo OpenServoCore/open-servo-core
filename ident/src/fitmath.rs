@@ -181,6 +181,73 @@ pub fn lag_ls(xy: &[(f64, f64)], tau: f64) -> Option<LagFit> {
     Some(LagFit { a, b, c, rms, n })
 }
 
+/// y = x . b least squares over a few columns, by the normal equations
+/// with every column scaled to unit RMS first - the callers mix amps,
+/// volts, ones and milliseconds in one design matrix. Every row must be as
+/// wide as the first. Returns the coefficients and the residual sum of
+/// squares.
+pub fn lstsq(x: &[Vec<f64>], y: &[f64]) -> Option<(Vec<f64>, f64)> {
+    let n = x.len();
+    let m = x.first()?.len();
+    if n != y.len()
+        || n <= m
+        || x.iter().any(|r| r.len() != m)
+        || !y.iter().chain(x.iter().flatten()).all(|v| v.is_finite())
+    {
+        return None;
+    }
+    let mut scale = vec![0.0f64; m];
+    for (c, sc) in scale.iter_mut().enumerate() {
+        *sc = (x.iter().map(|r| r[c] * r[c]).sum::<f64>() / n as f64).sqrt();
+        if *sc <= 0.0 {
+            return None;
+        }
+    }
+    let mut a = vec![vec![0.0f64; m]; m];
+    let mut b = vec![0.0f64; m];
+    for (row, yv) in x.iter().zip(y) {
+        for r in 0..m {
+            let xr = row[r] / scale[r];
+            for c in 0..m {
+                a[r][c] += xr * row[c] / scale[c];
+            }
+            b[r] += xr * yv;
+        }
+    }
+    for col in 0..m {
+        let piv = (col..m).max_by(|&p, &q| a[p][col].abs().total_cmp(&a[q][col].abs()))?;
+        if a[piv][col].abs() < 1e-12 {
+            return None;
+        }
+        a.swap(col, piv);
+        b.swap(col, piv);
+        for r in col + 1..m {
+            let f = a[r][col] / a[col][col];
+            for c in col..m {
+                a[r][c] -= f * a[col][c];
+            }
+            b[r] -= f * b[col];
+        }
+    }
+    let mut coef = vec![0.0f64; m];
+    for r in (0..m).rev() {
+        let s: f64 = (r + 1..m).map(|c| a[r][c] * coef[c]).sum();
+        coef[r] = (b[r] - s) / a[r][r];
+    }
+    for (c, sc) in coef.iter_mut().zip(&scale) {
+        *c /= sc;
+    }
+    let rss = x
+        .iter()
+        .zip(y)
+        .map(|(row, yv)| {
+            let p: f64 = row.iter().zip(&coef).map(|(a, b)| a * b).sum();
+            (yv - p) * (yv - p)
+        })
+        .sum();
+    coef.iter().all(|c| c.is_finite()).then_some((coef, rss))
+}
+
 /// Sliding local-quadratic derivative (Savitzky-Golay flavor, nonuniform t
 /// allowed): at each i, fit y = c0 + c1*u + c2*u^2 over u = t - t[i] for
 /// the 2*half_window + 1 samples around i, then dy = c1, d2y = 2*c2.
@@ -440,5 +507,29 @@ mod tests {
         let f = linear_ls(&fr_pts).unwrap();
         assert!((f.a - fc).abs() < 1e-12, "fc {}", f.a);
         assert!((f.b - fv).abs() < 1e-12, "fv {}", f.b);
+    }
+
+    #[test]
+    fn lstsq_recovers_mixed_scale_columns() {
+        // amps, volts, ones and milliseconds: six decades between columns
+        let truth = [0.72, 0.064, -0.013, 0.002];
+        let x: Vec<Vec<f64>> = (0..40)
+            .map(|k| {
+                let k = k as f64;
+                vec![0.01 * k, 1.5 + (k % 3.0), 1.0, 0.05 * (k % 7.0)]
+            })
+            .collect();
+        let y: Vec<f64> = x
+            .iter()
+            .map(|r| r.iter().zip(&truth).map(|(a, b)| a * b).sum())
+            .collect();
+        let (b, rss) = lstsq(&x, &y).unwrap();
+        for (got, want) in b.iter().zip(&truth) {
+            assert!((got - want).abs() < 1e-9, "{got} vs {want}");
+        }
+        assert!(rss < 1e-18);
+        // a column of zeros has no scale and no solution
+        let flat: Vec<Vec<f64>> = (0..5).map(|k| vec![k as f64, 0.0]).collect();
+        assert!(lstsq(&flat, &[0.0; 5]).is_none());
     }
 }

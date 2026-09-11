@@ -10,7 +10,9 @@ use osc_ident::exp::breakaway::BreakawayResult;
 use osc_ident::exp::inductance::InductanceResult;
 use osc_ident::exp::resistance::ResistanceResult;
 use osc_ident::exp::rl::{RlResult, Scales};
+use osc_ident::exp::winding::VoltRun;
 use osc_ident::gains::{BwTargets, Encoded, EncodedGains, PlantParams};
+use osc_ident::sources::Winding;
 use osc_ident::units::SenseParams;
 use serde::{Deserialize, Serialize};
 
@@ -140,9 +142,11 @@ impl From<&RlResult> for RlJson {
     }
 }
 
-/// The high-rate burst run as recorded. `ok` is the gate verdict; nothing
-/// downstream reads any of it yet. The two L fields are different
-/// quantities, not two estimates of one - see osc-ident's `exp::inductance`.
+/// The high-rate burst run as recorded. `promoted` is the verdict that
+/// decides whether the gains used it; `ok` additionally requires `l-duty`.
+/// L_ripple and L_env are different quantities, not two estimates of one -
+/// see osc-ident's `exp::inductance`. Fields after `ok` postdate the
+/// voltage channels and default when an older recording is refitted.
 #[derive(Serialize, Deserialize, Clone)]
 pub struct InductanceJson {
     pub l_ripple_h: f64,
@@ -170,6 +174,72 @@ pub struct InductanceJson {
     pub hold_captures: usize,
     pub gates: Vec<(String, bool, String)>,
     pub ok: bool,
+    #[serde(default)]
+    pub promoted: bool,
+    #[serde(default)]
+    pub blocking: Vec<String>,
+    #[serde(default)]
+    pub tau_cb_us: f64,
+    #[serde(default)]
+    pub shunt_on_share: Option<f64>,
+    #[serde(default)]
+    pub l_ripple_ok: bool,
+    #[serde(default)]
+    pub r_pair_cb_ohm: Option<f64>,
+    #[serde(default)]
+    pub src_prearm_ohm: Option<f64>,
+    #[serde(default)]
+    pub volts: VoltsJson,
+}
+
+/// The run's voltage source and its two R routes, winding referenced.
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub struct VoltsJson {
+    /// None when the pre-arm rail stood in for a measurement.
+    pub route: Option<String>,
+    pub captures: usize,
+    pub r_pair_ohm: Option<f64>,
+    pub r_pair_bracket: Option<(f64, f64)>,
+    pub r_reg_ohm: Option<f64>,
+    pub l_env_h: Option<f64>,
+    pub tau_reg_us: Option<f64>,
+    pub c_volts: Option<f64>,
+    pub emf_v_per_ms: Option<f64>,
+    pub periods: usize,
+    pub z_src_ohm: Option<f64>,
+    pub rail_open_v: Option<f64>,
+    pub off_median_v: Option<f64>,
+    pub off_min_v: Option<f64>,
+    pub body_diode: Option<bool>,
+    pub on_sag_v: Option<f64>,
+    pub on_flat: Option<bool>,
+    pub duty_ratio: Option<f64>,
+}
+
+impl From<&VoltRun> for VoltsJson {
+    fn from(v: &VoltRun) -> Self {
+        let d = v.diag.as_ref();
+        Self {
+            route: v.route.map(|r| r.as_str().to_string()),
+            captures: v.captures,
+            r_pair_ohm: v.r_pair_ohm,
+            r_pair_bracket: v.r_pair_bracket,
+            r_reg_ohm: v.reg.map(|g| g.r_ohm),
+            l_env_h: v.reg.map(|g| g.l_h),
+            tau_reg_us: v.reg.map(|g| g.tau_us),
+            c_volts: v.reg.map(|g| g.c_volts),
+            emf_v_per_ms: v.reg.and_then(|g| g.emf_v_per_ms),
+            periods: v.reg.map_or(0, |g| g.n),
+            z_src_ohm: d.and_then(|d| d.z_src_ohm),
+            rail_open_v: d.and_then(|d| d.rail_open_v),
+            off_median_v: d.and_then(|d| d.off_median_v),
+            off_min_v: d.and_then(|d| d.off_min_v),
+            body_diode: d.map(|d| d.body_diode),
+            on_sag_v: d.and_then(|d| d.on_sag_v),
+            on_flat: d.and_then(|d| d.on_flat),
+            duty_ratio: d.and_then(|d| d.duty_ratio),
+        }
+    }
 }
 
 impl From<&InductanceResult> for InductanceJson {
@@ -203,6 +273,14 @@ impl From<&InductanceResult> for InductanceJson {
                 .map(|g| (g.name.to_string(), g.pass, g.detail.clone()))
                 .collect(),
             ok: x.ok,
+            promoted: x.promotable(),
+            blocking: x.blocking().iter().map(|b| b.to_string()).collect(),
+            tau_cb_us: x.tau_cb_us,
+            shunt_on_share: x.shunt_on_share,
+            l_ripple_ok: x.l_ripple_ok,
+            r_pair_cb_ohm: x.r_pair_cb_ohm,
+            src_prearm_ohm: x.src_prearm_ohm,
+            volts: VoltsJson::from(&x.volts),
         }
     }
 }
@@ -284,7 +362,7 @@ impl SenseJson {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Copy)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct PlantJson {
     pub r_vpc: f64,
     pub ke_vpc: f64,
@@ -299,10 +377,22 @@ pub struct PlantJson {
     pub f_cv: f64,
     pub f_cp: f64,
     pub f_o: f64,
+    /// Which experiment each input came from.
+    #[serde(default)]
+    pub r_source: String,
+    /// The winding R in ohms when the burst supplied it.
+    #[serde(default)]
+    pub r_ohm: Option<f64>,
+    #[serde(default)]
+    pub l_source: String,
+    #[serde(default)]
+    pub l_henries: f64,
+    #[serde(default)]
+    pub sigma_source: String,
 }
 
 impl PlantJson {
-    pub fn new(p: &PlantParams, t: &BwTargets) -> Self {
+    pub fn new(p: &PlantParams, t: &BwTargets, w: &Winding, sigma_from: &str) -> Self {
         Self {
             r_vpc: p.r_vpc,
             ke_vpc: p.ke_vpc,
@@ -317,6 +407,11 @@ impl PlantJson {
             f_cv: t.f_cv,
             f_cp: t.f_cp,
             f_o: t.f_o,
+            r_source: w.r_from.as_str().into(),
+            r_ohm: w.r_ohm,
+            l_source: w.l_from.as_str().into(),
+            l_henries: w.l_h,
+            sigma_source: sigma_from.into(),
         }
     }
 }
