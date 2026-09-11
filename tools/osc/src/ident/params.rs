@@ -141,21 +141,30 @@ impl From<&RlResult> for RlJson {
 }
 
 /// The high-rate burst run as recorded. `ok` is the gate verdict; nothing
-/// downstream reads any of it yet.
+/// downstream reads any of it yet. The two L fields are different
+/// quantities, not two estimates of one - see osc-ident's `exp::inductance`.
 #[derive(Serialize, Deserialize, Clone)]
 pub struct InductanceJson {
-    pub l_henries: f64,
-    pub l_bracket: (f64, f64),
+    pub l_ripple_h: f64,
+    pub l_ripple_bracket: (f64, f64),
+    pub l_off_h: Option<f64>,
+    pub l_env_h: f64,
+    pub l_env_bracket: (f64, f64),
     pub tau_us: f64,
     pub tau_bracket: (f64, f64),
+    pub tau_off_us: f64,
     pub r_pair_ohm: Option<f64>,
     pub r_pair_bracket: Option<(f64, f64)>,
-    pub r_capture_ohm: f64,
-    /// (step duty as a fraction of full scale, L in henries).
+    pub r_asym_ohm: f64,
+    pub v0_volts: f64,
+    pub v0_measured: bool,
+    /// (step duty as a fraction of full scale, L_ripple in henries).
     pub l_by_duty: Vec<(f64, f64)>,
+    pub ripple_spread: f64,
+    pub env_spread: f64,
     pub bias_counts: f64,
-    pub skip: usize,
     pub settle_us: f64,
+    pub window_samples: f64,
     pub cadence_samples: f64,
     pub rest_captures: usize,
     pub hold_captures: usize,
@@ -166,17 +175,25 @@ pub struct InductanceJson {
 impl From<&InductanceResult> for InductanceJson {
     fn from(x: &InductanceResult) -> Self {
         Self {
-            l_henries: x.l_henries,
-            l_bracket: x.l_bracket,
+            l_ripple_h: x.l_ripple_h,
+            l_ripple_bracket: x.l_ripple_bracket,
+            l_off_h: x.l_off_h,
+            l_env_h: x.l_env_h,
+            l_env_bracket: x.l_env_bracket,
             tau_us: x.tau_us,
             tau_bracket: x.tau_bracket,
+            tau_off_us: x.tau_off_us,
             r_pair_ohm: x.r_pair_ohm,
             r_pair_bracket: x.r_pair_bracket,
-            r_capture_ohm: x.r_capture_ohm,
+            r_asym_ohm: x.r_asym_ohm,
+            v0_volts: x.v0_volts,
+            v0_measured: x.v0_measured,
             l_by_duty: x.l_by_duty.clone(),
+            ripple_spread: x.ripple_spread,
+            env_spread: x.env_spread,
             bias_counts: x.bias_counts,
-            skip: x.skip,
             settle_us: x.settle_us,
+            window_samples: x.window_samples,
             cadence_samples: x.cadence_samples,
             rest_captures: x.rest_captures,
             hold_captures: x.hold_captures,

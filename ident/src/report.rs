@@ -166,26 +166,47 @@ pub fn render(r: &ReportInputs<'_>) -> String {
         Some(x) => {
             let _ = writeln!(
                 s,
-                "  L             {:.4} mH [{:.4}, {:.4}]  from {} from-rest captures",
-                x.l_henries * 1e3,
-                x.l_bracket.0 * 1e3,
-                x.l_bracket.1 * 1e3,
-                x.rest_captures
+                "  L ripple      {:.4} mH [{:.4}, {:.4}]  incremental, one ON window (~25 us)",
+                x.l_ripple_h * 1e3,
+                x.l_ripple_bracket.0 * 1e3,
+                x.l_ripple_bracket.1 * 1e3
             );
             let _ = writeln!(
                 s,
-                "  tau           {:.1} us [{:.1}, {:.1}]",
-                x.tau_us, x.tau_bracket.0, x.tau_bracket.1
+                "                {} mH from the brake decay - same timescale, no rail term",
+                x.l_off_h.map_or("-".into(), |v| format!("{:.4}", v * 1e3))
             );
             let _ = writeln!(
                 s,
-                "  R             {} ohm from {} pair(s){}; per capture {:.3} ohm",
+                "  L envelope    {:.4} mH [{:.4}, {:.4}]  R x tau, hundreds of us",
+                x.l_env_h * 1e3,
+                x.l_env_bracket.0 * 1e3,
+                x.l_env_bracket.1 * 1e3
+            );
+            let _ = writeln!(
+                s,
+                "  tau           {:.1} us [{:.1}, {:.1}]   tau_off {:.1} us",
+                x.tau_us, x.tau_bracket.0, x.tau_bracket.1, x.tau_off_us
+            );
+            let _ = writeln!(
+                s,
+                "  R             {} ohm from {} pair(s){}; asymptote route {:.3} ohm",
                 x.r_pair_ohm.map_or("-".into(), |v| format!("{v:.3}")),
                 x.pairs.len(),
                 x.r_pair_bracket
                     .map(|(lo, hi)| format!(" [{lo:.3}, {hi:.3}]"))
                     .unwrap_or_default(),
-                x.r_capture_ohm
+                x.r_asym_ohm
+            );
+            let _ = writeln!(
+                s,
+                "  V0            {:.3} V ({})",
+                x.v0_volts,
+                if x.v0_measured {
+                    "from the from-a-hold control"
+                } else {
+                    "pre-registered default - no usable control"
+                }
             );
             let by_duty: Vec<String> = x
                 .l_by_duty
@@ -195,9 +216,9 @@ pub fn render(r: &ReportInputs<'_>) -> String {
             let _ = writeln!(s, "  L by duty     {}", by_duty.join(", "));
             let _ = writeln!(
                 s,
-                "  trace         cadence {:.2} samples/period, skip {} ({:.1} us amplifier \
-                 settling), bias {:.1} counts",
-                x.cadence_samples, x.skip, x.settle_us, x.bias_counts
+                "  trace         cadence {:.2} samples/period, {:.1}-sample ON windows, \
+                 {:.2} us amplifier settling, bias {:.1} counts",
+                x.cadence_samples, x.window_samples, x.settle_us, x.bias_counts
             );
             let gates: Vec<String> = x
                 .gates
@@ -456,6 +477,8 @@ mod tests {
         });
         assert!(s.contains("[E8 winding L]"), "{s}");
         assert!(s.contains("L by duty     20%"), "{s}");
+        assert!(s.contains("L ripple"), "{s}");
+        assert!(s.contains("L envelope"), "{s}");
         assert!(s.contains("pass cadence"), "{s}");
         assert!(s.contains("1 pair(s)"), "{s}");
     }

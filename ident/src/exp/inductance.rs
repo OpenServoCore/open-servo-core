@@ -10,32 +10,54 @@
 //! only during the ON half of each PWM period, so the capture is amplifier
 //! bias with an ON window every ~46 samples. Inside a window the current
 //! ramps; the first samples carry the shunt amplifier's edge settling
-//! (~1 us, so 2 to 4 samples); the last full sample is the ripple peak and
-//! the sample straddling the OFF edge is a partial aperture.
+//! (2 to 3 us on this board, so 2 to 5 samples); the last full sample is
+//! the ripple peak and the sample straddling the OFF edge is a partial
+//! aperture.
 //!
-//! Three numbers come out, in falling order of trust:
+//! TWO INDUCTANCES come out, and they are different quantities rather than
+//! two estimates of one:
 //!
-//!   - L from the ON-window slope. During ON the winding sees the rail
-//!     whatever the duty is, so L = (V - E - i R) / (di/dt) is duty
-//!     independent - the run's own consistency check. From rest E = 0 and
-//!     i R is a ~10% correction taken from the same capture's settled
-//!     level, so L rides on the slope and the rail alone.
-//!   - tau from the envelope of the per-window levels, one exponential.
-//!   - R from PAIRS of from-rest captures at two step duties:
-//!     delta(asymptote) / delta(D x V), where the fixed bridge and brush
-//!     drop cancels in the difference. R x tau is the cross-check on L.
+//!   - `L_ripple`, the incremental inductance over one ~25 us ON window.
+//!     During ON the winding sees the rail whatever the duty is, so
+//!     L = (V - V0 - i R) / (di/dt) and the duty never enters - which is
+//!     the run's own consistency check. R comes from the pairs route and
+//!     V0 from the from-a-hold control, because neither is separable
+//!     inside a single from-rest capture. [`l_off`] measures the same
+//!     quantity through the brake decay with no voltage term at all.
+//!   - `L_env`, R x tau from the envelope of the per-window levels, over
+//!     hundreds of microseconds.
+//!
+//! An iron-core motor reads LOWER at the PWM timescale - eddy currents in
+//! the laminations oppose fast flux change - so L_ripple under L_env is
+//! the expected sign and not a fault. The gates are a consistency check on
+//! R (the pairs route against the asymptote route) and a spread check on
+//! each L across the repeats of one duty.
+//!
+//! R itself comes from PAIRS of from-rest captures at two step duties:
+//! delta(asymptote) / delta(D x V), where the fixed bridge and brush drop
+//! cancels in the difference.
+//!
+//! Two bench facts shape the fit. The rail is read BEFORE the arm with no
+//! load, so on a soft supply the winding sees less than that during the ON
+//! window and the slope route reads L high - the same run's pairs R reads
+//! high by the same mechanism, which is the tell. And the shunt amplifier
+//! SLEWS on a big edge: on a 7.3 V rail a 40% ON edge moves 500 counts and
+//! takes four or five samples, not one. That is why the ON window is fitted
+//! with the lag as a column of the basis rather than by skipping leading
+//! samples - at 20% duty the whole window is nine samples - and why a
+//! window that is mostly transient declines its slope instead of reporting
+//! the amplifier's catch-up as di/dt.
 //!
 //! The envelope's asymptote is an EXTRAPOLATION: the post-step half of a
 //! capture is ~520 us, under four tau, so tau and every R route that leans
-//! on the asymptote carry that error while the slope route does not. The
-//! gates say so rather than hiding it.
+//! on the asymptote carry that error while the slope route does not.
 
 use core::fmt::Write as _;
 
 use super::rl::{Gate, Scales};
 use super::{Cmd, Experiment, RigParams};
 use crate::burst::{Capture, SAMPLE_US, nominal_cadence};
-use crate::fitmath::{median, quantile, stddev, theil_sen};
+use crate::fitmath::{lag_ls, median, quantile, stddev};
 use crate::frame::TelemetrySnapshot;
 use crate::regs::control;
 
@@ -52,6 +74,20 @@ const LAG_MAX: usize = 120;
 /// Windows whose last sample lands this close to the end of the buffer are
 /// truncated by the capture, not by the PWM edge.
 const CLIP_MARGIN: usize = 2;
+
+/// The drive edge falls INSIDE one conversion aperture, so that sample is
+/// a time average of before and after and no model describes it. Exactly
+/// one: the lag basis covers everything after it.
+const APERTURE_SKIP: usize = 1;
+
+/// Fixed series drop - bridge FETs plus brushes - assumed when no
+/// from-a-hold control measured it. Volts; the value E7's plant model
+/// carries, stated wherever it is used rather than folded in silently.
+pub const V0_DEFAULT_VOLTS: f64 = 0.4;
+
+/// A control whose solved drop exceeds this is reporting mostly back-EMF,
+/// not the fixed series drop, and is refused as a V0 source. Volts.
+const V0_MAX_VOLTS: f64 = 1.5;
 
 // --- fit configuration ------------------------------------------------------
 
@@ -74,16 +110,29 @@ pub struct FitCfg {
     /// its start back to the drive edge, counts.
     pub start_dev_counts: f64,
     pub min_fit_points: usize,
-    /// Leading samples skipped by the probe fit the settling is measured
-    /// against; also the largest skip the estimator may choose.
-    pub probe_skip: usize,
-    /// A leading sample is settled once its residual is under this, counts.
-    pub settle_resid_counts: f64,
+    /// Search band for the amplifier edge time constant, microseconds. The
+    /// ceiling is load bearing: at one conversion per 1.08 us an
+    /// exponential slower than a couple of microseconds is collinear with
+    /// the ramp column, and the profile will happily trade slope for lag.
+    pub settle_band_us: (f64, f64),
+    /// Settling time constants an ON window must hold, on top of the
+    /// aperture sample and the fit itself, before its slope is trusted.
+    /// The amplifier SLEWS on a big step - on a 7.3 V rail a 40% ON edge
+    /// moves 500 counts - so a window that is mostly transient reports the
+    /// amplifier's catch-up as di/dt and L reads low.
+    pub settle_taus: f64,
+    /// Amplifier edge time constant to use instead of profiling this
+    /// capture alone, microseconds. [`fit_captures`] profiles it once over
+    /// the whole run and fills it in - it is a property of the board, not
+    /// of one capture, and one window is a thin thing to fit it on.
+    pub settle_us: Option<f64>,
     /// Post-step windows the slope route averages L over.
     pub l_windows: usize,
-    /// Largest relative gap between the slope and R x tau routes for L,
-    /// and between the per-duty L medians.
+    /// Largest relative spread of one L across the repeats of a duty, and
+    /// between the per-duty L medians.
     pub l_agree_tol: f64,
+    /// Largest relative gap between the two measured R routes.
+    pub r_agree_tol: f64,
     /// Smallest duty span a from-rest pair may carry for R, fraction of
     /// full scale. Under it the asymptote extrapolation error swamps
     /// delta(asymptote): the bench 20-vs-26% pair reads R 4x high.
@@ -102,10 +151,12 @@ impl Default for FitCfg {
             min_dev_counts: 5.0,
             start_dev_counts: 3.0,
             min_fit_points: 4,
-            probe_skip: 4,
-            settle_resid_counts: 1.5,
+            settle_band_us: (0.3, 3.0),
+            settle_taus: 2.0,
+            settle_us: None,
             l_windows: 3,
             l_agree_tol: 0.35,
+            r_agree_tol: 0.25,
             pair_min_duty_span: 0.10,
         }
     }
@@ -276,19 +327,31 @@ pub fn segment(samples: &[u16], cfg: &FitCfg) -> Option<Segmentation> {
 
 // --- per-capture fit --------------------------------------------------------
 
-/// One ON window reduced to a slope and a level.
+/// One ON window reduced to a slope and a level. Every current here is the
+/// LAG-FREE part of the fit: the amplifier's edge transient is a column of
+/// the basis, not an error to be skipped past.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct WindowFit {
     pub start: usize,
     pub end: usize,
-    /// Signed so a reverse step reads positive: di/dt inside the window.
     pub didt_a_per_s: f64,
     /// Period-mean current, amps, bias subtracted. The ripple is
     /// piecewise linear, so the ramp fit at the ON window's centre is the
     /// mean over the whole period - no OFF-phase samples needed.
     pub level_a: f64,
-    /// L this window alone gives, henries.
-    pub l_henries: f64,
+    /// Current at the first and last fitted sample: the ripple trough and
+    /// peak. Their difference is the ripple this window carries.
+    pub i_start_a: f64,
+    pub i_end_a: f64,
+    /// Fit residual, counts. A window the lag model does not describe
+    /// (a dropped conversion, a commutation event) shows up here.
+    pub rms_counts: f64,
+}
+
+impl WindowFit {
+    pub fn ripple_a(&self) -> f64 {
+        self.i_end_a - self.i_start_a
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -302,17 +365,30 @@ pub struct CaptureFit {
     /// half instead of the servo's published tracker value.
     pub bias_from_trace: bool,
     pub pre_sd_counts: f64,
-    /// Leading samples per window the slope fit dropped.
-    pub skip: usize,
-    /// Amplifier edge settling the leading residuals imply, microseconds.
+    /// Amplifier edge time constant profiled out of this capture's own
+    /// windows, microseconds.
     pub settle_us: f64,
+    /// Median ON-window length, samples.
+    pub window_samples: f64,
+    /// The ON windows are long enough for an unbiased slope. False means
+    /// the envelope numbers stand but L_ripple declines.
+    pub slope_ok: bool,
     pub windows: Vec<WindowFit>,
     /// Step duty as a fraction of full scale, magnitude.
     pub duty: f64,
+    /// Pre-step duty as a fraction of full scale, magnitude.
+    pub duty_pre: f64,
+    /// Rail as the host read it BEFORE the arm - no load. Under a soft
+    /// supply the winding sees less than this during the ON window.
     pub v_rail: f64,
     /// The capture started from a braked shaft at zero duty (E = 0).
     pub from_rest: bool,
     pub tau_us: f64,
+    /// Decay time constant of the OFF (brake) phase, from the peak of each
+    /// window to the trough of the next. Measured at the PWM timescale and
+    /// with no voltage term at all, so R x tau_off is an inductance the
+    /// rail reading cannot bias.
+    pub tau_off_us: f64,
     /// Envelope asymptote, amps. An extrapolation - see the module note.
     pub asymptote_a: f64,
     /// delta(D x V) / delta(settled current) across the capture's own two
@@ -324,11 +400,6 @@ pub struct CaptureFit {
     /// E plus the fixed bridge and brush drop the two halves imply, volts.
     /// Exactly zero from rest, where it is not separable from R.
     pub drop_volts: f64,
-    /// L from the first `l_windows` ON-window slopes, henries.
-    pub l_slope_h: f64,
-    pub l_bracket: (f64, f64),
-    /// r_capture x tau: the cross-check route.
-    pub l_tau_h: f64,
     pub step_index: u16,
     pub gates: Vec<Gate>,
     pub ok: bool,
@@ -339,17 +410,41 @@ fn gate(name: &'static str, pass: bool, detail: String) -> Gate {
     Gate { name, pass, detail }
 }
 
-/// Fit A - B * exp(-t / tau) by profiling tau: A and B are closed form at
-/// each tau, so the search is one dimensional. Log grid then golden
-/// section. None when the basis is degenerate.
+/// Minimise `cost` over a time constant in [lo, hi]: log grid, then golden
+/// section around the best cell. Both time constants this module fits - the
+/// amplifier edge and the current envelope - are one-dimensional profiles
+/// with everything else closed form at each trial value.
+fn profile_min(lo: f64, hi: f64, cost: impl Fn(f64) -> f64) -> f64 {
+    const GRID: usize = 60;
+    const GOLDEN_STEPS: usize = 40;
+    let mut best = (f64::INFINITY, lo);
+    for k in 0..GRID {
+        let x = lo * (hi / lo).powf(k as f64 / (GRID - 1) as f64);
+        let c = cost(x);
+        if c < best.0 {
+            best = (c, x);
+        }
+    }
+    let step = (hi / lo).powf(1.0 / (GRID - 1) as f64);
+    let (mut a, mut b) = ((best.1 / step).max(lo), (best.1 * step).min(hi));
+    let phi = (5f64.sqrt() - 1.0) / 2.0;
+    for _ in 0..GOLDEN_STEPS {
+        let x1 = b - phi * (b - a);
+        let x2 = a + phi * (b - a);
+        if cost(x1) < cost(x2) { b = x2 } else { a = x1 }
+    }
+    (a + b) / 2.0
+}
+
+/// Fit A - B * exp(-t / tau) to the level envelope by profiling tau: A and
+/// B are closed form at each tau. None when the basis is degenerate.
 fn fit_exponential(pts: &[(f64, f64)]) -> Option<(f64, f64)> {
     const TAU_LO: f64 = 10e-6;
     const TAU_HI: f64 = 3000e-6;
-    const GRID: usize = 300;
     if pts.len() < 3 || !pts.iter().all(|(t, y)| t.is_finite() && y.is_finite()) {
         return None;
     }
-    let solve = |tau: f64| -> Option<(f64, f64, f64)> {
+    let solve = |tau: f64| -> Option<(f64, f64)> {
         let n = pts.len() as f64;
         let (mut se, mut see, mut sy, mut sey) = (0.0, 0.0, 0.0, 0.0);
         for (t, y) in pts {
@@ -369,37 +464,60 @@ fn fit_exponential(pts: &[(f64, f64)]) -> Option<(f64, f64)> {
             .iter()
             .map(|(t, y)| (y - (a + c * (-t / tau).exp())).powi(2))
             .sum::<f64>();
-        Some((rss, a, -c))
+        Some((rss, a))
     };
-    let mut best = (f64::INFINITY, TAU_LO);
-    for k in 0..GRID {
-        let tau = TAU_LO * (TAU_HI / TAU_LO).powf(k as f64 / (GRID - 1) as f64);
-        if let Some((rss, _, _)) = solve(tau)
-            && rss < best.0
-        {
-            best = (rss, tau);
-        }
-    }
-    if !best.0.is_finite() {
-        return None;
-    }
-    let phi = (5f64.sqrt() - 1.0) / 2.0;
-    let (mut lo, mut hi) = (best.1 / 1.3, best.1 * 1.3);
-    for _ in 0..60 {
-        let x1 = hi - phi * (hi - lo);
-        let x2 = lo + phi * (hi - lo);
-        let r1 = solve(x1).map_or(f64::INFINITY, |r| r.0);
-        let r2 = solve(x2).map_or(f64::INFINITY, |r| r.0);
-        if r1 < r2 { hi = x2 } else { lo = x1 }
-    }
-    let tau = (lo + hi) / 2.0;
-    let (_, a, _) = solve(tau)?;
+    let tau = profile_min(TAU_LO, TAU_HI, |x| solve(x).map_or(f64::INFINITY, |r| r.0));
+    let (_, a) = solve(tau)?;
     (tau.is_finite() && a.is_finite()).then_some((tau, a))
+}
+
+/// Captures the settle profile samples. The amplifier edge is one number
+/// for the board, so a handful of captures spread across the run pins it;
+/// profiling on all forty buys nothing and costs a segmentation each.
+const SETTLE_PROFILE_CAPTURES: usize = 8;
+
+/// The board's amplifier edge time constant, microseconds, profiled over a
+/// spread of the run's captures. Segmentation is hoisted out of the search:
+/// a profile re-fits every window a few hundred times and re-segmenting
+/// each trial would dominate the run.
+pub fn settle_profile(caps: &[Capture], sc: &Scales, cfg: &FitCfg) -> f64 {
+    let stride = caps.len().div_ceil(SETTLE_PROFILE_CAPTURES).max(1);
+    let prepared: Vec<(&Capture, Segmentation)> = caps
+        .iter()
+        .step_by(stride)
+        .filter_map(|c| segment(&c.samples, cfg).map(|s| (c, s)))
+        .collect();
+    let cost = |us: f64| -> f64 {
+        let probe = FitCfg {
+            settle_us: Some(us),
+            ..cfg.clone()
+        };
+        let rs: Vec<f64> = prepared
+            .iter()
+            .filter_map(|(c, seg)| fit_segmented(c, sc, &probe, seg))
+            .flat_map(|f| f.windows.into_iter().map(|w| w.rms_counts))
+            .collect();
+        if rs.is_empty() {
+            f64::INFINITY
+        } else {
+            rs.iter().sum::<f64>() / rs.len() as f64
+        }
+    };
+    profile_min(cfg.settle_band_us.0, cfg.settle_band_us.1, cost)
 }
 
 /// Everything one capture gives, from the samples alone.
 pub fn fit_capture(cap: &Capture, sc: &Scales, cfg: &FitCfg) -> Option<CaptureFit> {
     let seg = segment(&cap.samples, cfg)?;
+    fit_segmented(cap, sc, cfg, &seg)
+}
+
+fn fit_segmented(
+    cap: &Capture,
+    sc: &Scales,
+    cfg: &FitCfg,
+    seg: &Segmentation,
+) -> Option<CaptureFit> {
     let n = cap.samples.len();
     let v: Vec<f64> = cap.samples.iter().map(|&x| x as f64).collect();
     let step_index = cap.meta.step_index as usize;
@@ -452,54 +570,64 @@ pub fn fit_capture(cap: &Capture, sc: &Scales, cfg: &FitCfg) -> Option<CaptureFi
         })
         .collect();
 
-    // Settling: fit each window past `probe_skip`, then read the leading
-    // samples' residuals. They decay geometrically at the amplifier's edge
-    // time constant; the skip is the first sample back under the noise.
     // The low-side shunt sees drive current the same way whichever way the
     // bridge is pointed, so a reverse step reads above the bias exactly
     // like a forward one; no direction sign enters here. A reading BELOW
     // the bias is real regeneration, not a reversed drive.
     let amps = |k: usize| (v[k] - bias) * sc.amps_per_count;
     let t = |k: usize| k as f64 * cfg.sample_us * 1e-6;
-    let line = |w: &Window, skip: usize| {
-        let pts: Vec<(f64, f64)> = (w.start + skip..=w.end).map(|k| (t(k), amps(k))).collect();
+    let counts = |a: f64| a / (sc.amps_per_count.max(f64::MIN_POSITIVE));
+
+    // One ON window as a ramp read through a first-order lag. Dropping
+    // leading samples instead cannot work at low duty - a 20% window is
+    // nine samples and the edge is two or three of them - so the lag is a
+    // column of the fit and every sample is used. APERTURE_SKIP drops the
+    // one sample the drive edge falls inside, which no model describes.
+    let fit_window = |w: &Window, tau_s: f64| {
+        let pts: Vec<(f64, f64)> = (w.start + APERTURE_SKIP..=w.end)
+            .map(|k| (t(k) - t(w.start + APERTURE_SKIP), amps(k)))
+            .collect();
         (pts.len() >= cfg.min_fit_points)
-            .then(|| theil_sen(&pts))
+            .then(|| lag_ls(&pts, tau_s))
             .flatten()
     };
-    let mut resid = vec![Vec::new(); cfg.probe_skip + 1];
-    for w in &keep {
-        if let Some(f) = line(w, cfg.probe_skip) {
-            for (j, r) in resid.iter_mut().enumerate() {
-                if w.start + j <= w.end {
-                    r.push(amps(w.start + j) - (f.a + f.b * t(w.start + j)));
-                }
-            }
+    let pooled_rms = |tau_s: f64| -> f64 {
+        let rs: Vec<f64> = keep
+            .iter()
+            .filter_map(|w| fit_window(w, tau_s).map(|f| f.rms))
+            .collect();
+        if rs.is_empty() {
+            f64::INFINITY
+        } else {
+            rs.iter().sum::<f64>() / rs.len() as f64
         }
-    }
-    let counts = |a: f64| a / (sc.amps_per_count.max(f64::MIN_POSITIVE));
-    let med_resid: Vec<f64> = resid.iter().map(|r| median(r).unwrap_or(0.0)).collect();
-    let limit = cfg.settle_resid_counts.max(2.0 * seg.noise_counts);
-    let skip = med_resid
-        .iter()
-        .position(|r| counts(*r).abs() <= limit)
-        .unwrap_or(cfg.probe_skip);
-    // r_j = r_0 * a^j while the amplifier is still catching up
-    let settle_us = match (counts(med_resid[0]).abs(), counts(med_resid[1]).abs()) {
-        (r0, r1) if r1 > 0.0 && r0 > r1 => cfg.sample_us / (r0 / r1).ln(),
-        _ => 0.0,
+    };
+    let settle_s = match cfg.settle_us {
+        Some(us) => us * 1e-6,
+        None => profile_min(
+            cfg.settle_band_us.0 * 1e-6,
+            cfg.settle_band_us.1 * 1e-6,
+            pooled_rms,
+        ),
     };
 
     let mut windows = Vec::new();
     for w in &keep {
-        let Some(f) = line(w, skip) else { continue };
-        let centre = t(w.start) + (t(w.end) - t(w.start)) / 2.0;
+        let Some(f) = fit_window(w, settle_s) else {
+            continue;
+        };
+        let span = t(w.end) - t(w.start + APERTURE_SKIP);
         windows.push(WindowFit {
             start: w.start,
             end: w.end,
             didt_a_per_s: f.b,
-            level_a: f.a + f.b * centre,
-            l_henries: 0.0,
+            // The window's own centre, not the fitted span's: the fitted
+            // span starts one aperture in.
+            level_a: f.a
+                + f.b * (t(w.start) + (t(w.end) - t(w.start)) / 2.0 - t(w.start + APERTURE_SKIP)),
+            i_start_a: f.a,
+            i_end_a: f.a + f.b * span,
+            rms_counts: counts(f.rms),
         });
     }
 
@@ -512,13 +640,29 @@ pub fn fit_capture(cap: &Capture, sc: &Scales, cfg: &FitCfg) -> Option<CaptureFi
             .iter()
             .take(3)
             .filter_map(|w| {
-                line(w, skip).map(|f| {
-                    let c = t(w.start) + (t(w.end) - t(w.start)) / 2.0;
-                    f.a + f.b * c
+                fit_window(w, settle_s).map(|f| {
+                    f.a + f.b
+                        * (t(w.start) + (t(w.end) - t(w.start)) / 2.0 - t(w.start + APERTURE_SKIP))
                 })
             })
             .collect();
         median(&lv).unwrap_or(0.0)
+    };
+
+    // OFF-phase decay: the peak of one window to the trough of the next,
+    // over the OFF interval between them. No voltage term enters, so this
+    // tau is immune to whatever the rail actually did under load.
+    let tau_off_us = {
+        let ratios: Vec<f64> = windows
+            .windows(2)
+            .filter_map(|p| {
+                let t_off = t(p[1].start + APERTURE_SKIP) - t(p[0].end);
+                let (peak, trough) = (p[0].i_end_a, p[1].i_start_a);
+                (t_off > 0.0 && peak > 0.0 && trough > 0.0 && trough < peak)
+                    .then(|| -t_off / (trough / peak).ln() * 1e6)
+            })
+            .collect();
+        median(&ratios).unwrap_or(0.0)
     };
 
     let duty = (cap.meta.step_q15 as f64 / Q15).abs();
@@ -545,43 +689,23 @@ pub fn fit_capture(cap: &Capture, sc: &Scales, cfg: &FitCfg) -> Option<CaptureFi
         0.0
     };
     let drop = duty_pre * v_rail - pre_level * r_capture;
-    // The slope route needs a window that outlives the amplifier: the skip
-    // plus a fittable run. At 10% duty an ON window is under five samples
-    // and the edge eats three of them, so there is no honest slope and the
-    // route declines rather than fitting the settling.
-    let slope_min = (cfg.probe_skip + cfg.min_fit_points) as f64;
-    let long_enough = full >= slope_min;
-    if !long_enough {
+    // A window has to outlive the amplifier before its slope means
+    // anything: the aperture sample, then `settle_taus` of edge transient,
+    // then something to fit.
+    let settle_samples = (cfg.settle_taus * settle_s * 1e6 / cfg.sample_us).ceil();
+    let slope_min = APERTURE_SKIP as f64 + settle_samples + cfg.min_fit_points as f64;
+    let slope_ok = full >= slope_min;
+    if !slope_ok {
         notes.push(format!(
             "ON windows are {full:.0} samples at {:.0}% duty, under the {slope_min:.0} the \
-             settling skip plus a fit needs: no slope route",
-            duty * 100.0
+             aperture sample plus {:.1} us of settling plus a fit needs: no slope route, \
+             the envelope numbers stand",
+            duty * 100.0,
+            cfg.settle_taus * settle_s * 1e6
         ));
     }
-    for w in windows.iter_mut() {
-        if w.didt_a_per_s > 0.0 && long_enough {
-            w.l_henries = (v_rail - drop - w.level_a * r_capture) / w.didt_a_per_s;
-        }
-    }
-    let firsts: Vec<f64> = windows
-        .iter()
-        .take(cfg.l_windows)
-        .map(|w| w.l_henries)
-        .filter(|l| *l > 0.0)
-        .collect();
-    let l_slope = median(&firsts).unwrap_or(0.0);
-    let l_bracket = (
-        firsts.iter().copied().fold(l_slope, f64::min),
-        firsts.iter().copied().fold(l_slope, f64::max),
-    );
-    let l_tau = r_capture * tau_s;
 
     let nominal = nominal_cadence(cap.meta.pwm_arr);
-    let l_gap = if l_slope > 0.0 {
-        (l_slope - l_tau).abs() / l_slope
-    } else {
-        f64::INFINITY
-    };
     let gates = vec![
         gate(
             "cadence",
@@ -613,29 +737,19 @@ pub fn fit_capture(cap: &Capture, sc: &Scales, cfg: &FitCfg) -> Option<CaptureFi
         },
         gate(
             "windows",
-            windows.len() >= cfg.min_post_windows && long_enough,
+            windows.len() >= cfg.min_post_windows,
             format!(
-                "{} post-step, {} usable, {full:.0} samples each (need {slope_min:.0})",
+                "{} post-step, {} usable, {full:.0} samples each (slope needs {slope_min:.0})",
                 post.len(),
                 windows.len()
-            ),
-        ),
-        gate(
-            "l-routes",
-            l_gap <= cfg.l_agree_tol,
-            format!(
-                "slope {:.3} mH vs r x tau {:.3} mH ({:.0}% apart)",
-                l_slope * 1e3,
-                l_tau * 1e3,
-                l_gap * 100.0
             ),
         ),
     ];
     let ok = gates.iter().all(|g| g.pass);
     if !from_rest {
         notes.push(
-            "pre-step drive: the rotor is spinning, so E is not zero and both L routes read \
-             the winding plus an unknown back-EMF term - control only"
+            "pre-step drive: the rotor is spinning, so the two-half solve reports E plus the \
+             bridge drop together in drop_volts - which is what makes it the V0 source"
                 .into(),
         );
     }
@@ -646,25 +760,58 @@ pub fn fit_capture(cap: &Capture, sc: &Scales, cfg: &FitCfg) -> Option<CaptureFi
         bias_counts: bias,
         bias_from_trace,
         pre_sd_counts: pre_sd,
-        skip,
-        settle_us,
+        settle_us: settle_s * 1e6,
+        window_samples: full,
+        slope_ok,
         windows,
         duty,
+        duty_pre,
         v_rail,
         from_rest,
         tau_us: tau_s * 1e6,
+        tau_off_us,
         asymptote_a: asym,
         r_capture_ohm: r_capture,
         pre_level_a: pre_level,
         drop_volts: drop,
-        l_slope_h: l_slope,
-        l_bracket,
-        l_tau_h: l_tau,
         step_index: cap.meta.step_index,
         gates,
         ok,
         notes,
     })
+}
+
+/// L at the PWM timescale from a capture's ON-window slopes: during ON the
+/// winding sees the rail less the fixed series drop and its own i R, so
+/// L = (V - V0 - i R) / (di/dt) and the duty never enters. `r_ohm` and
+/// `v0` are the RUN's numbers - the pairs route and the from-a-hold
+/// control - because neither is separable inside one from-rest capture.
+///
+/// `V` is the rail as read before the arm. On a soft supply the winding
+/// sees less than that while the drive is on and this route reads high;
+/// [`l_off`] is the version with no voltage term at all.
+pub fn l_ripple(f: &CaptureFit, r_ohm: f64, v0: f64, cfg: &FitCfg) -> Option<f64> {
+    if !f.slope_ok {
+        return None;
+    }
+    let ls: Vec<f64> = f
+        .windows
+        .iter()
+        .take(cfg.l_windows)
+        .filter(|w| w.didt_a_per_s > 0.0)
+        .map(|w| (f.v_rail - v0 - w.level_a * r_ohm) / w.didt_a_per_s)
+        .filter(|l| *l > 0.0 && l.is_finite())
+        .collect();
+    median(&ls)
+}
+
+/// L at the PWM timescale with no voltage term: during the brake phase the
+/// winding is shorted, so the decay is pure L/R. The same incremental
+/// inductance as [`l_ripple`], measured through a different loop - the
+/// brake path is both low-side FETs where the drive path adds the high
+/// side and the supply wiring - so a few percent apart is expected.
+pub fn l_off(f: &CaptureFit, r_ohm: f64) -> Option<f64> {
+    (f.slope_ok && f.tau_off_us > 0.0 && r_ohm > 0.0).then_some(r_ohm * f.tau_off_us * 1e-6)
 }
 
 /// R from one pair of from-rest captures at two step duties. V0 - the
@@ -700,26 +847,50 @@ pub fn pair_resistance(a: &CaptureFit, b: &CaptureFit, cfg: &FitCfg) -> Option<P
 
 // --- run result -------------------------------------------------------------
 
+/// The run's two inductances. They are DIFFERENT QUANTITIES, not two
+/// estimates of one: `ripple` is the incremental inductance the winding
+/// shows over one ~25 us ON window, `env` the effective inductance the
+/// current envelope integrates over hundreds of microseconds. An iron-core
+/// motor reads lower at the PWM timescale - eddy currents in the laminations
+/// oppose fast flux change - so ripple below env is the expected sign, and
+/// only their spread ACROSS REPEATS is a gate.
 #[derive(Clone, Debug)]
 pub struct InductanceResult {
-    /// Pooled L from the from-rest captures' slope route, henries.
-    pub l_henries: f64,
-    pub l_bracket: (f64, f64),
+    /// Incremental L from the ON-window slopes, henries.
+    pub l_ripple_h: f64,
+    pub l_ripple_bracket: (f64, f64),
+    /// The same incremental L measured through the brake path, with no
+    /// voltage term: R x tau_off. None when no capture resolved the OFF
+    /// decay.
+    pub l_off_h: Option<f64>,
+    /// Envelope L: R x tau. Henries.
+    pub l_env_h: f64,
+    pub l_env_bracket: (f64, f64),
     pub tau_us: f64,
     pub tau_bracket: (f64, f64),
+    pub tau_off_us: f64,
     /// R from from-rest pairs, ohms. None when no pair cleared the duty
-    /// span the asymptote extrapolation needs.
+    /// span the asymptote extrapolation needs. This is the run's R.
     pub r_pair_ohm: Option<f64>,
     pub r_pair_bracket: Option<(f64, f64)>,
     pub pairs: Vec<PairR>,
-    /// Median of the per-capture two-half route. From rest it carries the
-    /// fixed bridge drop folded into R and reads high.
-    pub r_capture_ohm: f64,
-    /// L per step duty - the duty-independence check, (duty, L).
+    /// (D x V - V0) / asymptote, median over the from-rest captures - the
+    /// second measured R, independent of the pair differencing.
+    pub r_asym_ohm: f64,
+    /// Fixed series drop used by the slope route, volts.
+    pub v0_volts: f64,
+    /// True when V0 came from a from-a-hold control rather than the
+    /// pre-registered default.
+    pub v0_measured: bool,
+    /// L_ripple per step duty - the duty-independence check, (duty, L).
     pub l_by_duty: Vec<(f64, f64)>,
+    /// Worst relative spread of L_ripple / L_env across the repeats of one
+    /// step duty.
+    pub ripple_spread: f64,
+    pub env_spread: f64,
     pub bias_counts: f64,
-    pub skip: usize,
     pub settle_us: f64,
+    pub window_samples: f64,
     pub cadence_samples: f64,
     pub rest_captures: usize,
     pub hold_captures: usize,
@@ -736,9 +907,34 @@ fn bracket(v: &[f64], fallback: f64) -> (f64, f64) {
     }
 }
 
+/// Worst (max - min) / median across the groups, each group being one step
+/// duty's repeats. Grouping first keeps a real duty dependence out of the
+/// repeat-spread number.
+fn worst_spread(groups: &[Vec<f64>]) -> f64 {
+    groups
+        .iter()
+        .filter_map(|g| {
+            let m = median(g)?;
+            let lo = g.iter().copied().fold(f64::MAX, f64::min);
+            let hi = g.iter().copied().fold(f64::MIN, f64::max);
+            (m > 0.0 && g.len() > 1).then(|| (hi - lo) / m)
+        })
+        .fold(0.0f64, f64::max)
+}
+
 /// Every number the run reports, from recorded captures alone - so the
 /// offline refit and the live fit cannot diverge.
+///
+/// Three passes, because the slope route needs numbers only the whole run
+/// has: fit every capture, solve R from the pairs and V0 from the control,
+/// then read L out of the per-capture geometry with both in hand.
 pub fn fit_captures(caps: &[Capture], sc: &Scales, cfg: &FitCfg) -> Option<InductanceResult> {
+    let cfg = &FitCfg {
+        settle_us: cfg
+            .settle_us
+            .or_else(|| Some(settle_profile(caps, sc, cfg))),
+        ..cfg.clone()
+    };
     let fits: Vec<CaptureFit> = caps
         .iter()
         .filter_map(|c| fit_capture(c, sc, cfg))
@@ -747,48 +943,33 @@ pub fn fit_captures(caps: &[Capture], sc: &Scales, cfg: &FitCfg) -> Option<Induc
         return None;
     }
     let rest: Vec<&CaptureFit> = fits.iter().filter(|f| f.from_rest).collect();
-    let hold = fits.len() - rest.len();
+    let holds: Vec<&CaptureFit> = fits.iter().filter(|f| !f.from_rest).collect();
+    let hold = holds.len();
     let mut warnings = Vec::new();
 
-    let ls: Vec<f64> = rest
-        .iter()
-        .map(|f| f.l_slope_h)
-        .filter(|l| *l > 0.0)
-        .collect();
     let taus: Vec<f64> = rest.iter().map(|f| f.tau_us).filter(|t| *t > 0.0).collect();
-    let l = median(&ls).unwrap_or(0.0);
     let tau = median(&taus).unwrap_or(0.0);
-    let r_capture = median(
-        &rest
-            .iter()
-            .map(|f| f.r_capture_ohm)
-            .filter(|r| *r > 0.0)
-            .collect::<Vec<_>>(),
-    )
-    .unwrap_or(0.0);
 
-    // group by step duty so the pair route differences GROUP medians, not
-    // single noisy asymptotes
+    // Group the from-rest captures by step duty: the pair route differences
+    // GROUP medians, not single noisy asymptotes.
     let mut duties: Vec<f64> = rest.iter().map(|f| f.duty).collect();
     duties.sort_by(f64::total_cmp);
     duties.dedup_by(|a, b| (*a - *b).abs() < 1e-6);
+    let by_duty: Vec<Vec<&CaptureFit>> = duties
+        .iter()
+        .map(|d| {
+            rest.iter()
+                .copied()
+                .filter(|f| (f.duty - d).abs() < 1e-6)
+                .collect()
+        })
+        .collect();
     let mut groups: Vec<CaptureFit> = Vec::new();
-    let mut l_by_duty = Vec::new();
-    for d in &duties {
-        let same: Vec<&&CaptureFit> = rest.iter().filter(|f| (f.duty - d).abs() < 1e-6).collect();
-        let mut rep = (*same[0]).clone();
+    for same in &by_duty {
+        let mut rep = same[0].clone();
         rep.asymptote_a =
             median(&same.iter().map(|f| f.asymptote_a).collect::<Vec<_>>()).unwrap_or(0.0);
         rep.v_rail = median(&same.iter().map(|f| f.v_rail).collect::<Vec<_>>()).unwrap_or(0.0);
-        let ld = median(
-            &same
-                .iter()
-                .map(|f| f.l_slope_h)
-                .filter(|l| *l > 0.0)
-                .collect::<Vec<_>>(),
-        )
-        .unwrap_or(0.0);
-        l_by_duty.push((*d, ld));
         groups.push(rep);
     }
     let mut pairs = Vec::new();
@@ -807,6 +988,84 @@ pub fn fit_captures(caps: &[Capture], sc: &Scales, cfg: &FitCfg) -> Option<Induc
             rs.iter().copied().fold(r, f64::max),
         )
     });
+
+    // V0 from the control: its two halves see one rotor speed, so the
+    // solve returns E + V0 together. E is not separable, which is why the
+    // control is the floor on V0 and not a measurement of it - a control
+    // taken with the shaft barely turning is the useful one.
+    let v0_measured = median(
+        &holds
+            .iter()
+            .map(|f| f.drop_volts)
+            .filter(|v| (-V0_MAX_VOLTS..V0_MAX_VOLTS).contains(v))
+            .collect::<Vec<_>>(),
+    );
+    // A control taken while the shaft was already turning solves to a
+    // slightly negative drop when the two halves disagree; clamp rather
+    // than hand the slope route a voltage that adds energy.
+    let v0 = v0_measured.unwrap_or(V0_DEFAULT_VOLTS).max(0.0);
+    if v0_measured.is_none() {
+        warnings.push(format!(
+            "no from-a-hold control produced a usable drop; the slope route uses the \
+             pre-registered V0 = {V0_DEFAULT_VOLTS} V"
+        ));
+    }
+
+    // Pass three: L with the run's R and V0 in hand.
+    let r = r_pair.unwrap_or(0.0);
+    let ls: Vec<f64> = rest
+        .iter()
+        .filter_map(|f| l_ripple(f, r, v0, cfg))
+        .collect();
+    let l_ripple_h = median(&ls).unwrap_or(0.0);
+    let l_offs: Vec<f64> = rest.iter().filter_map(|f| l_off(f, r)).collect();
+    let envs: Vec<f64> = taus.iter().map(|t| r * t * 1e-6).collect();
+    let l_env_h = r * tau * 1e-6;
+    // A duty whose ON windows are too short for a slope contributes no L
+    // at all rather than a zero - it must not drag the duty spread.
+    let l_by_duty: Vec<(f64, f64)> = duties
+        .iter()
+        .zip(&by_duty)
+        .filter_map(|(d, g)| {
+            let v: Vec<f64> = g.iter().filter_map(|f| l_ripple(f, r, v0, cfg)).collect();
+            median(&v).map(|l| (*d, l))
+        })
+        .collect();
+    for (d, g) in duties.iter().zip(&by_duty) {
+        if g.iter().all(|f| !f.slope_ok) {
+            warnings.push(format!(
+                "the {:.0}% rung's {:.0}-sample ON windows are mostly amplifier edge, so it \
+                 feeds the envelope and the pairs R but no slope",
+                d * 100.0,
+                g[0].window_samples
+            ));
+        }
+    }
+    let ripple_spread = worst_spread(
+        &by_duty
+            .iter()
+            .map(|g| g.iter().filter_map(|f| l_ripple(f, r, v0, cfg)).collect())
+            .collect::<Vec<Vec<f64>>>(),
+    );
+    let env_spread = worst_spread(
+        &by_duty
+            .iter()
+            .map(|g| g.iter().map(|f| f.tau_us).filter(|t| *t > 0.0).collect())
+            .collect::<Vec<Vec<f64>>>(),
+    );
+
+    // The second R: the same asymptote with V0 taken off explicitly. It
+    // shares the envelope extrapolation with the pair route but not the
+    // differencing, so agreement says the extrapolation is stable.
+    let r_asym = median(
+        &rest
+            .iter()
+            .filter(|f| f.asymptote_a > 0.0)
+            .map(|f| (f.duty * f.v_rail - v0) / f.asymptote_a)
+            .filter(|r| *r > 0.0)
+            .collect::<Vec<_>>(),
+    )
+    .unwrap_or(0.0);
 
     // Per-capture gates fold into the run's: one bad capture must not hide
     // inside a median. `over` scopes the fold - rig health (cadence, step
@@ -837,25 +1096,27 @@ pub fn fit_captures(caps: &[Capture], sc: &Scales, cfg: &FitCfg) -> Option<Induc
         }
     };
     let every: Vec<&CaptureFit> = fits.iter().collect();
-    for f in fits.iter().filter(|f| !f.from_rest) {
-        if !f.ok {
-            warnings.push(format!(
-                "from-a-hold control at {:.0}% failed its own gates: {}",
-                f.duty * 100.0,
-                f.gates
-                    .iter()
-                    .filter(|g| !g.pass)
-                    .map(|g| format!("{} ({})", g.name, g.detail))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
-        }
+    for f in holds.iter().filter(|f| !f.ok) {
+        warnings.push(format!(
+            "from-a-hold control at {:.0}% failed its own gates: {}",
+            f.duty * 100.0,
+            f.gates
+                .iter()
+                .filter(|g| !g.pass)
+                .map(|g| format!("{} ({})", g.name, g.detail))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
     }
     let duty_spread = match (
         l_by_duty.iter().map(|(_, l)| *l).fold(f64::MAX, f64::min),
         l_by_duty.iter().map(|(_, l)| *l).fold(0.0f64, f64::max),
     ) {
-        (lo, hi) if l > 0.0 && lo.is_finite() && hi > 0.0 => (hi - lo) / l,
+        (lo, hi) if l_ripple_h > 0.0 && lo.is_finite() && hi > 0.0 => (hi - lo) / l_ripple_h,
+        _ => f64::INFINITY,
+    };
+    let r_gap = match (r_pair, r_asym > 0.0) {
+        (Some(r), true) => (r - r_asym).abs() / r_asym,
         _ => f64::INFINITY,
     };
     let mut gates = vec![
@@ -868,12 +1129,33 @@ pub fn fit_captures(caps: &[Capture], sc: &Scales, cfg: &FitCfg) -> Option<Induc
         fold("step-index", &every),
         fold("pre-bias", &every),
         fold("windows", &rest),
-        fold("l-routes", &rest),
+        gate(
+            "r-consistency",
+            r_gap <= cfg.r_agree_tol,
+            format!(
+                "pairs {} vs asymptote {r_asym:.2} ohm ({:.0}% apart)",
+                r_pair.map_or("-".into(), |r| format!("{r:.2}")),
+                r_gap * 100.0
+            ),
+        ),
+        gate(
+            "l-ripple-spread",
+            ripple_spread <= cfg.l_agree_tol,
+            format!(
+                "{:.0}% across the repeats of one duty",
+                ripple_spread * 100.0
+            ),
+        ),
+        gate(
+            "l-env-spread",
+            env_spread <= cfg.l_agree_tol,
+            format!("{:.0}% across the repeats of one duty", env_spread * 100.0),
+        ),
         gate(
             "l-duty",
             duty_spread <= cfg.l_agree_tol,
             format!(
-                "{:.0}% across {} step duties",
+                "{:.0}% across the {} step duties that carry a slope",
                 duty_spread * 100.0,
                 l_by_duty.len()
             ),
@@ -894,38 +1176,55 @@ pub fn fit_captures(caps: &[Capture], sc: &Scales, cfg: &FitCfg) -> Option<Induc
             ),
         },
     ];
-    if let Some(r) = r_pair
-        && r_capture > 0.0
-        && (r - r_capture).abs() / r_capture > cfg.l_agree_tol
+    if let Some(lo) = median(&l_offs)
+        && l_ripple_h > 0.0
+        && (lo - l_ripple_h).abs() / l_ripple_h > cfg.l_agree_tol
     {
         warnings.push(format!(
-            "pair R {r:.2} ohm and per-capture R {r_capture:.2} ohm disagree: the per-capture \
-             route folds the fixed bridge drop into R, and both lean on an asymptote \
-             extrapolated from under four tau of post-step capture"
+            "the two incremental-L routes disagree: ON slope {:.3} mH against brake decay \
+             {:.3} mH. The slope route is the one that uses the rail reading, so a soft \
+             supply moves it and not the other",
+            l_ripple_h * 1e3,
+            lo * 1e3
         ));
     }
     if hold > 0 {
         warnings.push(format!(
             "{hold} from-a-hold captures recorded as the E-nonzero control; they are excluded \
-             from the pooled L, tau and R"
+             from the pooled L, tau and R and supply V0 only"
         ));
     }
     gates.retain(|g| !(g.name == "pre-bias" && rest.is_empty()));
     let ok = gates.iter().all(|g| g.pass);
     Some(InductanceResult {
-        l_henries: l,
-        l_bracket: bracket(&ls, l),
+        l_ripple_h,
+        l_ripple_bracket: bracket(&ls, l_ripple_h),
+        l_off_h: median(&l_offs),
+        l_env_h,
+        l_env_bracket: bracket(&envs, l_env_h),
         tau_us: tau,
         tau_bracket: bracket(&taus, tau),
+        tau_off_us: median(
+            &rest
+                .iter()
+                .map(|f| f.tau_off_us)
+                .filter(|t| *t > 0.0)
+                .collect::<Vec<_>>(),
+        )
+        .unwrap_or(0.0),
         r_pair_ohm: r_pair,
         r_pair_bracket,
         pairs,
-        r_capture_ohm: r_capture,
+        r_asym_ohm: r_asym,
+        v0_volts: v0,
+        v0_measured: v0_measured.is_some(),
         l_by_duty,
+        ripple_spread,
+        env_spread,
         bias_counts: median(&fits.iter().map(|f| f.bias_counts).collect::<Vec<_>>()).unwrap_or(0.0),
-        skip: median(&fits.iter().map(|f| f.skip as f64).collect::<Vec<_>>()).unwrap_or(0.0)
-            as usize,
         settle_us: median(&fits.iter().map(|f| f.settle_us).collect::<Vec<_>>()).unwrap_or(0.0),
+        window_samples: median(&rest.iter().map(|f| f.window_samples).collect::<Vec<_>>())
+            .unwrap_or(0.0),
         cadence_samples: median(&fits.iter().map(|f| f.cadence_samples).collect::<Vec<_>>())
             .unwrap_or(0.0),
         rest_captures: rest.len(),
@@ -1260,23 +1559,30 @@ impl Experiment for Inductance {
     }
 }
 
-/// One-line summary per capture for the run log.
+/// One-line geometry summary per capture for the run log. No L: the slope
+/// route needs the run's R and V0, which one capture does not have.
 pub fn render_capture(f: &CaptureFit) -> String {
+    let first = f.windows.first();
+    let mid = f.windows.get(f.windows.len() / 2);
     let mut s = String::new();
     let _ = write!(
         s,
-        "duty {:.0}%{} L {:.3} mH tau {:.0} us r1 {:.2} ohm  cad {:.2} skip {} \
-         ({:.1} us settling) drop {:.2} V windows {}",
+        "duty {:>3.0}%{} {:>2} windows of {:>4.1} | didt {:>6.0} -> {:>6.0} A/s  \
+         ripple {:.4} A  asym {:.4} A  tau {:>5.1} us  tau_off {:>5.1} us  \
+         settle {:.2} us  cad {:.2}  drop {:.3} V",
         f.duty * 100.0,
         if f.from_rest { " rest" } else { " hold" },
-        f.l_slope_h * 1e3,
+        f.windows.len(),
+        f.window_samples,
+        first.map_or(0.0, |w| w.didt_a_per_s),
+        mid.map_or(0.0, |w| w.didt_a_per_s),
+        mid.map_or(0.0, |w| w.ripple_a()),
+        f.asymptote_a,
         f.tau_us,
-        f.r_capture_ohm,
-        f.cadence_samples,
-        f.skip,
+        f.tau_off_us,
         f.settle_us,
-        f.drop_volts,
-        f.windows.len()
+        f.cadence_samples,
+        f.drop_volts
     );
     s
 }
@@ -1303,6 +1609,12 @@ mod tests {
     fn scales() -> Scales {
         Scales::from_sense(&BOARD_D, VBUS_DIV.0, VBUS_DIV.1).unwrap()
     }
+
+    /// What the three from-rest fixtures' pair route and their from-a-hold
+    /// control give, so a single-capture assertion reads against the same
+    /// numbers the run would hand it.
+    const FIXTURE_R_OHM: f64 = 7.0;
+    const FIXTURE_V0_VOLTS: f64 = 0.44;
 
     const FIXTURES: [(&str, &str); 5] = [
         (
@@ -1367,26 +1679,38 @@ mod tests {
                 f.cadence_samples
             );
             assert_eq!(f.step_index, 485, "{name} step_index");
+            // 26-to-10 steps DOWN to a 4.6-sample ON window. One aperture
+            // sample in, three are left and the lag fit needs four: this
+            // capture carries no windows at all, let alone an envelope.
+            if name == "26-to-10" {
+                assert!(f.windows.is_empty(), "{} windows", f.windows.len());
+                assert!(!f.slope_ok);
+                assert!(!f.gates.iter().find(|g| g.name == "windows").unwrap().pass);
+                continue;
+            }
             assert!(
                 (80.0..250.0).contains(&f.tau_us),
                 "{name} tau {} us",
                 f.tau_us
             );
-            // 26-to-10 steps DOWN to a 4.6-sample ON window: the slope
-            // route declines rather than fitting the amplifier edge, and
-            // says so on the windows gate
-            if name == "26-to-10" {
-                assert_eq!(f.l_slope_h, 0.0, "a 10% window has no honest slope");
-                assert!(!f.gates.iter().find(|g| g.name == "windows").unwrap().pass);
+            // A 20% ON window is nine samples and the amplifier edge owns
+            // four of them: the slope route declines and says so, while
+            // the envelope numbers above stand.
+            if !f.slope_ok {
+                assert!(f.notes.iter().any(|n| n.contains("no slope route")));
+                assert!(
+                    f.window_samples < 10.0,
+                    "{name} declined a {}-sample window",
+                    f.window_samples
+                );
                 continue;
             }
             // smoke bounds, not a number pin: the fixtures are one motor on
-            // one soft rail
-            assert!(
-                (0.3e-3..1.2e-3).contains(&f.l_slope_h),
-                "{name} L {} mH",
-                f.l_slope_h * 1e3
-            );
+            // one soft rail. R and V0 are the run's, so a single capture is
+            // read against the pairs R the three from-rest fixtures give.
+            let l = l_ripple(&f, FIXTURE_R_OHM, FIXTURE_V0_VOLTS, &cfg).expect("L");
+            println!("{name:12} L_ripple {:.3} mH", l * 1e3);
+            assert!((0.3e-3..1.2e-3).contains(&l), "{name} L {} mH", l * 1e3);
         }
     }
 
@@ -1411,12 +1735,13 @@ mod tests {
             );
         }
         println!(
-            "pooled L {:.3} mH {:?} tau {:.0} us R pair {:?} single {:.2}",
-            r.l_henries * 1e3,
-            (r.l_bracket.0 * 1e3, r.l_bracket.1 * 1e3),
+            "pooled L_ripple {:.3} mH {:?} L_env {:.3} mH tau {:.0} us R pair {:?} asym {:.2}",
+            r.l_ripple_h * 1e3,
+            (r.l_ripple_bracket.0 * 1e3, r.l_ripple_bracket.1 * 1e3),
+            r.l_env_h * 1e3,
             r.tau_us,
             r.r_pair_ohm,
-            r.r_capture_ohm
+            r.r_asym_ohm
         );
         // the 20-vs-26% span is under pair_min_duty_span, so it never
         // reaches the median that made it read 30 ohm
@@ -1440,7 +1765,7 @@ mod tests {
         assert!(r.warnings.iter().any(|w| w.contains("E-nonzero")));
         let f = fit_capture(&caps[3], &sc, &cfg).unwrap();
         assert!(!f.from_rest);
-        assert!(f.notes.iter().any(|n| n.contains("back-EMF")));
+        assert!(f.notes.iter().any(|n| n.contains("drop_volts")));
     }
 
     /// The regenerating capture: after a step DOWN from a 26% hold the
@@ -1475,13 +1800,17 @@ mod tests {
             ..SynthBurst::board_d()
         };
         let cap = plant.capture(pct_q15(26), 0);
-        let f = fit_capture(&cap, &sc, &FitCfg::default()).expect("fit");
+        let cfg = FitCfg::default();
+        let f = fit_capture(&cap, &sc, &cfg).expect("fit");
         println!("{}", render_capture(&f));
         let tau = plant.l / plant.r * 1e6;
+        // V0 is zero in the synthetic plant - the bridge drop is folded
+        // into its R - so the slope route is read with V0 = 0 here.
+        let l = l_ripple(&f, plant.r, 0.0, &cfg).expect("L");
         assert!(
-            (f.l_slope_h - plant.l).abs() / plant.l < 0.05,
+            (l - plant.l).abs() / plant.l < 0.05,
             "L {} mH vs {} mH",
-            f.l_slope_h * 1e3,
+            l * 1e3,
             plant.l * 1e3
         );
         assert!(
@@ -1489,14 +1818,13 @@ mod tests {
             "tau {} us vs {tau} us",
             f.tau_us
         );
-        // the settling estimate has to land near the planted 0.9 us, and
-        // the skip has to clear it
+        // the profiled edge time constant has to land near the planted one
         assert!(
             (0.5..2.0).contains(&f.settle_us),
             "settle {} us",
             f.settle_us
         );
-        assert!((2..=4).contains(&f.skip), "skip {}", f.skip);
+        assert!(f.slope_ok, "windows {} samples", f.window_samples);
         assert!(f.ok, "gates {:?}", f.gates);
     }
 
@@ -1510,13 +1838,21 @@ mod tests {
             noise_counts: 2.0,
             ..SynthBurst::board_d()
         };
-        let caps: Vec<Capture> = [20u8, 30, 40]
+        let mut caps: Vec<Capture> = [20u8, 30, 40]
             .iter()
             .map(|p| plant.capture(pct_q15(*p), 0))
             .collect();
+        // the control the run plans: without it V0 falls back to the
+        // pre-registered 0.4 V, which this plant does not have
+        caps.push(plant.capture(pct_q15(26), pct_q15(10)));
         let r = fit_captures(&caps, &sc, &FitCfg::default()).expect("fit");
         let pair = r.r_pair_ohm.expect("pair R");
-        println!("pair R {pair:.3} per-capture {:.3}", r.r_capture_ohm);
+        println!(
+            "pair R {pair:.3} asymptote {:.3} L_ripple {:.4} mH L_env {:.4} mH",
+            r.r_asym_ohm,
+            r.l_ripple_h * 1e3,
+            r.l_env_h * 1e3
+        );
         assert!((pair - plant.r).abs() / plant.r < 0.10, "R {pair}");
         assert!(r.ok, "gates {:?}", r.gates);
         // L is duty independent by construction: the ON-phase voltage is
