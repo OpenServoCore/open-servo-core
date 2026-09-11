@@ -209,6 +209,7 @@ pub const ALL: &[(&str, Reg)] = &[
     ("ntc_beta", calib::NTC_BETA),
     ("vmotor_bias_nom_counts", calib::VMOTOR_BIAS_NOM_COUNTS),
     ("torque_enable", control::TORQUE_ENABLE),
+    ("stall_permit", control::STALL_PERMIT),
     ("tel_mask", control::TEL_MASK),
     ("mode", control::MODE),
     ("goal_duty", control::GOAL_DUTY),

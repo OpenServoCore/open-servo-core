@@ -113,6 +113,9 @@ pub struct Pre {
     pub bias: u16,
     /// Terminal divider bias measured at boot with the bridge Hi-Z, raw.
     pub vmotor_bias: u16,
+    pub pos: u16,
+    /// The rotor is held against a mechanical stop: no back-EMF.
+    pub seated: bool,
 }
 
 /// The burst header as one READ returns it, minus the page payload.
@@ -133,6 +136,9 @@ pub struct Meta {
     pub frame_len: u8,
     /// 0 when the recording predates the voltage channels.
     pub vmotor_bias: u16,
+    /// Position read before the arm; 0 when the recording predates it.
+    pub pos: u16,
+    pub seated: bool,
 }
 
 impl Default for Meta {
@@ -150,6 +156,8 @@ impl Default for Meta {
             chans: 0,
             frame_len: 1,
             vmotor_bias: 0,
+            pos: 0,
+            seated: false,
         }
     }
 }
@@ -386,6 +394,8 @@ pub fn capture<IO: BurstIo>(
             chans: echo,
             frame_len: flen,
             vmotor_bias: pre.vmotor_bias,
+            pos: pre.pos,
+            seated: pre.seated,
         },
     })
 }
@@ -476,13 +486,15 @@ fn walk_pages<IO: BurstIo>(io: &mut IO, cfg: &CaptureCfg) -> Result<Vec<u16>, Er
 /// conversion order, frames interleaved. The meta columns carry a value on
 /// the first data row only - they are one capture's constants, not a series.
 pub const CSV_HEADER: &str = "k,code,pre_q15,step_q15,step_index,start_cnt,pwm_arr,\
-                              start_dir,restore_dir,vbus_raw,bias,chans,frame_len,vmotor_bias";
+                              start_dir,restore_dir,vbus_raw,bias,chans,frame_len,vmotor_bias,\
+                              pos,seated";
 
-/// Columns a first row carries: the eleven every recording has, then the
-/// three the voltage channels added. A recording with only the eleven is a
-/// shunt-only capture.
+/// Columns a first row carries: the eleven every recording has, the three
+/// the voltage channels added, then the two the held variant added. A
+/// recording with only the eleven is a shunt-only capture.
 const CSV_META_COLS: usize = 11;
-const CSV_COLS: usize = 14;
+const CSV_CHANS_COLS: usize = 14;
+const CSV_COLS: usize = 16;
 
 pub fn to_csv(cap: &Capture) -> String {
     let m = &cap.meta;
@@ -494,7 +506,7 @@ pub fn to_csv(cap: &Capture) -> String {
             let _ = fmt::Write::write_fmt(
                 &mut s,
                 format_args!(
-                    "0,{v},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+                    "0,{v},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
                     m.pre_q15,
                     m.step_q15,
                     m.step_index,
@@ -506,7 +518,9 @@ pub fn to_csv(cap: &Capture) -> String {
                     m.bias,
                     m.chans,
                     m.frame_len,
-                    m.vmotor_bias
+                    m.vmotor_bias,
+                    m.pos,
+                    m.seated as u8
                 ),
             );
         } else {
@@ -563,13 +577,17 @@ pub fn from_csv(text: &str) -> Result<Capture, CsvError> {
                 bias: u16at(10)?,
                 ..Meta::default()
             };
-            if c.len() >= CSV_COLS {
+            if c.len() >= CSV_CHANS_COLS {
                 meta.chans = u8at(11)?;
                 meta.frame_len = u8at(12)?;
                 meta.vmotor_bias = u16at(13)?;
                 if meta.chans > CHANS_MAX || meta.frame_len as usize != frame_len(meta.chans) {
                     return Err(err("frame_len does not match chans"));
                 }
+            }
+            if c.len() >= CSV_COLS {
+                meta.pos = u16at(14)?;
+                meta.seated = u8at(15)? != 0;
             }
         }
         samples.push(raw);
@@ -717,6 +735,8 @@ mod tests {
             vbus_raw: 2169,
             bias: 118,
             vmotor_bias: 779,
+            pos: 122,
+            seated: true,
         };
         let cap = capture(
             &mut f,
@@ -739,6 +759,7 @@ mod tests {
         assert_eq!(cap.meta.vbus_raw, 2169);
         assert_eq!(cap.meta.bias, 118);
         assert_eq!((cap.meta.chans, cap.meta.frame_len), (5, 3));
+        assert_eq!((cap.meta.pos, cap.meta.seated), (122, true));
         assert_eq!(f.armed, Some(13107));
         assert!(f.released, "arm must be dropped after the walk");
     }
@@ -908,6 +929,8 @@ mod tests {
                 chans: CHAN_VMOTOR_A | CHAN_VBUS,
                 frame_len: 3,
                 vmotor_bias: 779,
+                pos: 122,
+                seated: true,
             },
         };
         let back = from_csv(&to_csv(&cap)).expect("parse");

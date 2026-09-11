@@ -12,14 +12,17 @@ use std::path::PathBuf;
 use crate::rig::pump::{self, Pump, with_guard, write_reg};
 use crate::rig::{csvio, snapshot};
 use anyhow::{Context, Result, bail};
-use clap::Subcommand;
+use clap::{Subcommand, ValueEnum};
 use osc_client::Id;
 use osc_client::blocking::Client;
 use osc_client::nusb::NusbPipe;
 use osc_ident::burst::Chans;
 use osc_ident::exp::bias::{Bias, BiasCfg};
 use osc_ident::exp::breakaway::{Breakaway, BreakawayCfg};
-use osc_ident::exp::inductance::{Cfg as InductanceCfg, FitCfg, Inductance, InductanceResult};
+use osc_ident::exp::held::{Held, HeldCfg, Stops};
+use osc_ident::exp::inductance::{
+    Cfg as InductanceCfg, FitCfg, Inductance, InductanceResult, fit_captures,
+};
 use osc_ident::exp::inertia::{Inertia, InertiaCfg};
 use osc_ident::exp::ladder::{Ladder, LadderCfg, LadderResult};
 use osc_ident::exp::resistance::{Resistance, ResistanceCfg};
@@ -80,6 +83,17 @@ pub struct Args {
     /// OFF on both signs; the unbuffered rail tap reads ~1% low in-burst.
     #[arg(long, global = true, default_value = "driven", value_parser = parse_chans)]
     burst_chans: Chans,
+    /// E8 held route: the duty the seek arrives at and the bursts step
+    /// from, percent of full scale.
+    #[arg(long, global = true, default_value_t = 12)]
+    burst_hold_pct: u8,
+    /// E8 held route: the mechanical stops to seat against. Low by default:
+    /// this unit's high-count end has slipped at ~0.17 A of steady torque.
+    #[arg(long, global = true, value_enum, default_value_t = BurstStops::Low)]
+    burst_stops: BurstStops,
+    /// E8 held route: captures per step duty at each stop.
+    #[arg(long, global = true, default_value_t = 4)]
+    burst_hold_repeats: u32,
     /// Nominal gear ratio, informational only (printed in the report dir).
     #[arg(long, global = true)]
     gear_ratio: Option<f64>,
@@ -94,6 +108,23 @@ pub struct Args {
     f_o: f64,
     #[command(subcommand)]
     cmd: Cmd,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+enum BurstStops {
+    Low,
+    High,
+    Both,
+}
+
+impl From<BurstStops> for Stops {
+    fn from(s: BurstStops) -> Self {
+        match s {
+            BurstStops::Low => Stops::Low,
+            BurstStops::High => Stops::High,
+            BurstStops::Both => Stops::Both,
+        }
+    }
 }
 
 /// Runner context: the ident args plus the resolved bus baud, threaded
@@ -113,6 +144,9 @@ struct Ctx {
     burst_repeats: u32,
     burst_i_max: f64,
     burst_chans: Chans,
+    burst_hold_pct: u8,
+    burst_stops: BurstStops,
+    burst_hold_repeats: u32,
     gear_ratio: Option<f64>,
     f_ci: f64,
     f_cv: f64,
@@ -135,7 +169,8 @@ enum Cmd {
     /// 1 ms step is rotor-followed and biased).
     Rl,
     /// E8: high-rate shunt bursts -> winding R, L and tau (the gain
-    /// source when it promotes).
+    /// source when it promotes): held at a stop first, the free shaft from
+    /// rest only if the held route declines.
     Burst,
     /// E1: breakaway duty ramp (needs R; runs its own bias first).
     Breakaway,
@@ -177,6 +212,9 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
         burst_repeats: args.burst_repeats,
         burst_i_max: args.burst_i_max,
         burst_chans: args.burst_chans,
+        burst_hold_pct: args.burst_hold_pct,
+        burst_stops: args.burst_stops,
+        burst_hold_repeats: args.burst_hold_repeats,
         gear_ratio: args.gear_ratio,
         f_ci: args.f_ci,
         f_cv: args.f_cv,
@@ -460,6 +498,9 @@ fn run_rl(
     })
 }
 
+/// E8: the held route, then the free shaft only if the held route
+/// declines. Both land in one burst family; the fit sorts them by their
+/// `seated` flag.
 fn run_inductance(
     cli: &Ctx,
     c: &mut Client<NusbPipe>,
@@ -467,35 +508,76 @@ fn run_inductance(
     out: &csvio::OutDir,
     sense: &SenseJson,
 ) -> Result<InductanceResult> {
-    println!("[E8 winding L] (high-rate shunt bursts at mid travel)");
-    recenter(c, id)?;
-    let params = rig(cli);
     let sc = sense
         .scales()
         .context("CalibSense scales degenerate (shunt/gain/dividers/vdd)")?;
-    let cfg = InductanceCfg {
+    let params = rig(cli);
+    println!(
+        "[E8 held] (seat at the {:?} stop at {}%, burst toward it; stall_permit for the run)",
+        cli.burst_stops, cli.burst_hold_pct
+    );
+    let cfg = HeldCfg {
+        stops: cli.burst_stops.into(),
+        hold_pct: cli.burst_hold_pct,
         step_pct: cli.burst_pct.clone(),
-        repeats: cli.burst_repeats,
+        repeats: cli.burst_hold_repeats,
         i_max_a: cli.burst_i_max,
         chans: cli.burst_chans,
-        ..InductanceCfg::default()
+        ..HeldCfg::default()
     };
-    let mut log = csvio::SnapshotLog::create(out, "inductance_snapshots.csv")?;
-    let mut exp = Guarded::new(Inductance::new(cfg, &params, sc), params);
-    with_guard(c, id, |c| Pump::new(c, id, Some(&mut log)).run(&mut exp))?;
-    check_abort("inductance", exp.abort())?;
-    let exp = exp.into_inner();
-    csvio::write_bursts(out, exp.captures())?;
-    exp.fit().with_context(|| {
+    let mut log = csvio::SnapshotLog::create(out, "held_snapshots.csv")?;
+    let mut held = Guarded::new(Held::new(cfg, &params, sc), params.without_pos_guard());
+    with_guard(c, id, |c| Pump::new(c, id, Some(&mut log)).run(&mut held))?;
+    check_abort("held burst", held.abort())?;
+    let held = held.into_inner();
+    for s in held.seats() {
+        println!(
+            "  seated at pos {} driving {:+}: applied {} q15 at the hold, arrived at {} q15",
+            s.pos, s.dir, s.duty_applied_q15, s.arrived_q15
+        );
+    }
+    for w in held.warnings() {
+        println!("  warn: {w}");
+    }
+    let mut caps = held.captures().to_vec();
+    let mut warnings = held.warnings().to_vec();
+    let first = fit_captures(&caps, &sc, &FitCfg::default());
+    if !first.as_ref().is_some_and(|r| r.held.promotable()) {
+        println!(
+            "[E8 free] held route declined ({}): free shaft from rest at mid travel",
+            first
+                .as_ref()
+                .map_or("no fit".into(), |r| r.held.blocking().join(", "))
+        );
+        recenter(c, id)?;
+        let cfg = InductanceCfg {
+            step_pct: cli.burst_pct.clone(),
+            repeats: cli.burst_repeats,
+            i_max_a: cli.burst_i_max,
+            chans: cli.burst_chans,
+            ..InductanceCfg::default()
+        };
+        let mut log = csvio::SnapshotLog::create(out, "inductance_snapshots.csv")?;
+        let mut exp = Guarded::new(Inductance::new(cfg, &params, sc), params);
+        with_guard(c, id, |c| Pump::new(c, id, Some(&mut log)).run(&mut exp))?;
+        check_abort("inductance", exp.abort())?;
+        let exp = exp.into_inner();
+        caps.extend_from_slice(exp.captures());
+        warnings.extend_from_slice(exp.warnings());
+    }
+    csvio::write_bursts(out, &caps)?;
+    let mut r = fit_captures(&caps, &sc, &FitCfg::default()).with_context(|| {
         format!(
             "inductance fit degenerate ({} captures; notes: {})",
-            exp.captures().len(),
-            match exp.warnings() {
+            caps.len(),
+            match warnings.as_slice() {
                 [] => "none".to_string(),
                 w => w.join("; "),
             }
         )
-    })
+    })?;
+    r.warnings.splice(0..0, warnings);
+    Ok(r)
 }
 
 fn run_breakaway(
@@ -663,7 +745,11 @@ fn run_all(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
     let e2 = match sources::needs_stall(e8.as_ref()) {
         true => {
             if let Some(r) = &e8 {
-                println!("[E8] declined ({}): E2 supplies R", r.blocking().join(", "));
+                println!(
+                    "[E8] declined (held: {}; free: {}): E2 supplies R",
+                    r.held.blocking().join(", "),
+                    r.blocking().join(", ")
+                );
             }
             Some(run_resistance(cli, c, id, &out)?)
         }

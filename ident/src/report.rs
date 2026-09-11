@@ -7,7 +7,8 @@ use core::fmt::Write as _;
 
 use crate::exp::bias::BiasResult;
 use crate::exp::breakaway::BreakawayResult;
-use crate::exp::inductance::InductanceResult;
+use crate::exp::held::HeldRun;
+use crate::exp::inductance::{BurstRoute, InductanceResult};
 use crate::exp::inertia::InertiaResult;
 use crate::exp::ladder::LadderResult;
 use crate::exp::resistance::ResistanceResult;
@@ -89,7 +90,10 @@ pub fn render(r: &ReportInputs<'_>) -> String {
             let _ = writeln!(s, "  fwd/rev       {} / {}", opt(x.r_fwd), opt(x.r_rev));
             let _ = writeln!(s, "  heat drift    {:.5} vpc/s", x.drift_vpc_per_s);
         }
-        None if r.plant.is_some_and(|p| p.winding.r_from == Source::Burst) => {
+        None if r
+            .plant
+            .is_some_and(|p| matches!(p.winding.r_from, Source::Burst | Source::BurstHeld)) =>
+        {
             let _ = writeln!(s, "  not run: E8 supplied R");
         }
         None => {
@@ -362,8 +366,101 @@ fn gate_line(gates: &[crate::exp::rl::Gate]) -> String {
         .join(", ")
 }
 
+fn render_held(s: &mut String, h: &HeldRun) {
+    let duties: Vec<String> = h
+        .duties
+        .iter()
+        .map(|d| format!("{:.0}", d * 100.0))
+        .collect();
+    let _ = writeln!(
+        s,
+        "  held route    {} seated captures stepping to {}%; voltage {}; taps {}",
+        h.captures,
+        duties.join("/"),
+        h.route.map_or("not measured", |r| r.as_str()),
+        if h.rest_zeroed {
+            "zeroed on the rest reference"
+        } else {
+            "not zeroed (no rest reference: their split rides in c)"
+        }
+    );
+    for seat in &h.seats {
+        let _ = writeln!(
+            s,
+            "  seat          {} stop at pos {}, hold {:.0}% draws {} A ({} captures)",
+            if seat.dir < 0 { "low" } else { "high" },
+            seat.pos,
+            seat.hold_duty * 100.0,
+            seat.i_hold_a.map_or("-".into(), |i| format!("{i:.3}")),
+            seat.captures
+        );
+    }
+    match h.reg {
+        Some(g) => {
+            let _ = writeln!(
+                s,
+                "  R regression  {:.3} ohm   L_env {:.4} mH   tau {:.1} us   c {:.3} V  \
+                 ({} rows, {} hold levels)",
+                g.r_ohm,
+                g.l_h * 1e3,
+                g.tau_us,
+                g.c_volts,
+                g.n,
+                h.hold_rows
+            );
+        }
+        None => {
+            let _ = writeln!(s, "  R regression  - (degenerate)");
+        }
+    }
+    let _ = writeln!(s, "  held gates    {}", gate_line(&h.gates));
+}
+
 fn render_e8(s: &mut String, x: &InductanceResult) {
+    if x.held.captures > 0 {
+        render_held(s, &x.held);
+    }
+    if x.rest_captures + x.hold_captures > 0 {
+        render_free(s, x);
+    }
+    let _ = writeln!(
+        s,
+        "  verdict       {}",
+        match x.route() {
+            Some(BurstRoute::Held) => {
+                "PROMOTED via the held route - the gains take R and L_env from its regression"
+                    .to_string()
+            }
+            Some(BurstRoute::Free) => format!(
+                "PROMOTED via the free-shaft route{} - the gains take R and L_env from its \
+                 regression",
+                match x.held.captures {
+                    0 => String::new(),
+                    _ => format!(" (held declined: {})", x.held.blocking().join(", ")),
+                }
+            ),
+            None => format!(
+                "declined (held: {}; free: {}) - E2 supplies R, L stays at the default",
+                match x.held.captures {
+                    0 => "no seated captures".to_string(),
+                    _ => x.held.blocking().join(", "),
+                },
+                x.blocking().join(", ")
+            ),
+        }
+    );
+    for w in &x.warnings {
+        let _ = writeln!(s, "  warn: {w}");
+    }
+}
+
+fn render_free(s: &mut String, x: &InductanceResult) {
     let v = &x.volts;
+    let _ = writeln!(
+        s,
+        "  free shaft    {} from rest, {} from a hold",
+        x.rest_captures, x.hold_captures
+    );
     let _ = writeln!(
         s,
         "  voltage       {}",
@@ -509,21 +606,6 @@ fn render_e8(s: &mut String, x: &InductanceResult) {
         x.cadence_samples, x.window_samples, x.settle_us, x.bias_counts
     );
     let _ = writeln!(s, "  gates         {}", gate_line(&x.gates));
-    let _ = writeln!(
-        s,
-        "  verdict       {}",
-        if x.promotable() {
-            "PROMOTED - the gains take R and L_env from the regression".to_string()
-        } else {
-            format!(
-                "declined ({}) - E2 supplies R, L stays at the default",
-                x.blocking().join(", ")
-            )
-        }
-    );
-    for w in &x.warnings {
-        let _ = writeln!(s, "  warn: {w}");
-    }
 }
 
 #[cfg(test)]
@@ -631,6 +713,62 @@ mod tests {
             "{s}"
         );
         assert!(s.contains("verdict       "), "{s}");
+    }
+
+    #[test]
+    fn the_held_route_renders_its_seat_and_feeds_the_verdict() {
+        use crate::burst::from_csv;
+        use crate::exp::inductance::{FitCfg, fit_captures};
+        use crate::exp::rl::Scales;
+        use crate::units::SenseParams;
+
+        let sense = SenseParams {
+            shunt_r_mohm: 60,
+            gain_milli: 15_000,
+            vmotor_div_top: 6_800,
+            vmotor_div_bot: 3_300,
+            vdd_mv: 3_300,
+            tick_hz: 20_100,
+        };
+        let sc = Scales::from_sense(&sense, 15_000, 10_000).unwrap();
+        let caps: Vec<_> = [
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/testdata/burst/held/c7-n20-0.csv"
+            )),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/testdata/burst/held/c7-n30-0.csv"
+            )),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/testdata/burst/held/c7-n40-0.csv"
+            )),
+        ]
+        .iter()
+        .map(|t| from_csv(t).expect("fixture"))
+        .collect();
+        let r = fit_captures(&caps, &sc, &FitCfg::default()).expect("fit");
+        let s = render(&ReportInputs {
+            inductance: Some(&r),
+            ..Default::default()
+        });
+        assert!(
+            s.contains("held route    3 seated captures stepping to 20/30/40%"),
+            "{s}"
+        );
+        assert!(
+            s.contains("seat          low stop at pos 122, hold 12% draws"),
+            "{s}"
+        );
+        assert!(s.contains("held gates    pass captures"), "{s}");
+        assert!(!s.contains("  free shaft    "), "{s}");
+        // one capture per duty leaves the spread nothing to judge
+        assert!(s.contains("FAIL l-spread"), "{s}");
+        assert!(
+            s.contains("verdict       declined (held: l-spread; free: captures"),
+            "{s}"
+        );
     }
 
     #[test]

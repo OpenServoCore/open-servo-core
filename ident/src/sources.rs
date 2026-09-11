@@ -1,16 +1,17 @@
 //! Where every plant input gain synthesis uses came from. The winding's R
-//! and L come from the E8 burst when it promotes
-//! ([`InductanceResult::promotable`]); otherwise R falls back to the E2
-//! end-stop stall and L to the configured default. The rest have one source
-//! each.
+//! and L come from the E8 burst when one of its routes promotes
+//! ([`InductanceResult::route`]); otherwise R falls back to the E2 end-stop
+//! stall and L to the configured default. The rest have one source each.
 
-use crate::exp::inductance::InductanceResult;
+use crate::exp::inductance::{BurstRoute, InductanceResult};
 use crate::exp::resistance::ResistanceResult;
 use crate::exp::rl::Scales;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Source {
-    /// E8, the high-rate burst, promoted.
+    /// E8 held at a stop, promoted.
+    BurstHeld,
+    /// E8 on the free shaft from rest, promoted.
     Burst,
     /// E2, the end-stop stall, run because E8 declined.
     StallFallback,
@@ -27,7 +28,8 @@ pub enum Source {
 impl Source {
     pub fn as_str(self) -> &'static str {
         match self {
-            Source::Burst => "E8 burst",
+            Source::BurstHeld => "E8 burst, held",
+            Source::Burst => "E8 burst, free",
             Source::StallFallback => "E2 fallback",
             Source::Default => "default",
             Source::Ladder => "E3 ladder",
@@ -48,27 +50,33 @@ pub struct Winding {
     pub l_from: Source,
 }
 
-/// True when the stall has to run: E8 was not run, or it declined.
+/// True when the stall has to run: E8 was not run, or both its routes
+/// declined.
 pub fn needs_stall(e8: Option<&InductanceResult>) -> bool {
     !e8.is_some_and(|r| r.promotable())
 }
 
-/// E8's R and L when it promotes, else E2's R with `l_default_h`. None when
-/// E8 declined and no stall ran. `sc` converts E8's ohms to the table's
-/// units; a recording too old to carry the scales has no E8 to promote.
+/// E8's R and L from the route that promotes, else E2's R with
+/// `l_default_h`. None when E8 declined and no stall ran. `sc` converts
+/// E8's ohms to the table's units; a recording too old to carry the scales
+/// has no E8 to promote.
 pub fn winding(
     e8: Option<&InductanceResult>,
     e2: Option<&ResistanceResult>,
     sc: Option<&Scales>,
     l_default_h: f64,
 ) -> Option<Winding> {
-    match e8.and_then(InductanceResult::gain_r_l).zip(sc) {
-        Some(((r, l), sc)) => Some(Winding {
+    let from = |r: BurstRoute| match r {
+        BurstRoute::Held => Source::BurstHeld,
+        BurstRoute::Free => Source::Burst,
+    };
+    match e8.and_then(|x| x.route().zip(x.gain_r_l())).zip(sc) {
+        Some(((route, (r, l)), sc)) => Some(Winding {
             r_ohm: Some(r),
             r_vpc: sc.r_vpc(r),
-            r_from: Source::Burst,
+            r_from: from(route),
             l_h: l,
-            l_from: Source::Burst,
+            l_from: from(route),
         }),
         None => e2.map(|x| Winding {
             r_ohm: None,
@@ -83,7 +91,7 @@ pub fn winding(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::burst::Chans;
+    use crate::burst::{Capture, Chans};
     use crate::exp::inductance::{Cfg as InductanceCfg, Inductance};
     use crate::exp::resistance::{Resistance, ResistanceCfg};
     use crate::exp::testkit::{FakeServo, SynthBurst, pump};
@@ -175,6 +183,60 @@ mod tests {
         assert!((w.r_vpc - 3.37).abs() / 3.37 < 0.05, "E2 R {}", w.r_vpc);
         assert_eq!(w.l_h, DEFAULT_L_HENRIES);
         assert!(w.r_ohm.is_none());
+    }
+
+    /// The promotion order: held first, the free shaft when the held route
+    /// declines, E2 only when both do.
+    #[test]
+    fn a_seated_burst_outranks_the_free_shaft() {
+        use crate::exp::inductance::{BurstRoute, FitCfg, fit_captures};
+        let plant = usb_plant();
+        let at = |q: i16| SynthBurst {
+            chans: Chans::Driven.for_step(q),
+            ..plant.clone()
+        };
+        let mut free = Vec::new();
+        for pct in [20i32, 30, 40] {
+            for sgn in [1i32, -1] {
+                let q = (sgn * pct * 32767 / 100) as i16;
+                free.push(at(q).capture(q, 0));
+            }
+        }
+        let hold = -(12 * 32767 / 100) as i16;
+        let seated = |pcts: &[i32]| -> Vec<Capture> {
+            let mut v = vec![at(hold).capture(0, 0)];
+            for pct in pcts {
+                for _ in 0..2 {
+                    let q = -(pct * 32767 / 100) as i16;
+                    let mut c = at(q).capture(q, hold);
+                    c.meta.seated = true;
+                    v.push(c);
+                }
+            }
+            v
+        };
+        let sc = scales();
+        let fit = |caps: Vec<Capture>| fit_captures(&caps, &sc, &FitCfg::default()).unwrap();
+        let w =
+            |r: &InductanceResult| winding(Some(r), None, Some(&sc), DEFAULT_L_HENRIES).unwrap();
+
+        let both = fit([free.clone(), seated(&[20, 30, 40])].concat());
+        assert_eq!(both.route(), Some(BurstRoute::Held));
+        assert_eq!(w(&both).r_from, Source::BurstHeld);
+        assert!(!needs_stall(Some(&both)));
+
+        // one step duty is too thin for the held route: the free shaft stands in
+        let thin = fit([free.clone(), seated(&[30])].concat());
+        assert_eq!(thin.held.blocking(), vec!["captures"]);
+        assert_eq!(thin.route(), Some(BurstRoute::Free));
+        assert_eq!(
+            (w(&thin).r_from, w(&thin).l_from),
+            (Source::Burst, Source::Burst)
+        );
+
+        let alone = fit(seated(&[30]));
+        assert_eq!(alone.route(), None);
+        assert!(needs_stall(Some(&alone)));
     }
 
     #[test]

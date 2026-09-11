@@ -23,9 +23,9 @@
 //! the divider bias, the idle side estimated; the rail alone gives the
 //! winding only after an estimated drop on both sides of the bridge.
 
-use super::inductance::{CaptureFit, PairR};
+use super::inductance::{CaptureFit, PairR, charge};
 use super::rl::Scales;
-use crate::burst::{CHAN_VBUS, CHAN_VMOTOR_A, CHAN_VMOTOR_B, Capture};
+use crate::burst::{CHAN_VBUS, CHAN_VMOTOR_A, CHAN_VMOTOR_B, Capture, nominal_cadence};
 use crate::fitmath::{linear_ls, lstsq, median};
 
 /// DRV8212P RDS(on) per FET, typical at 27 C (SLVSFZ0A sec 7.5 gives no
@@ -57,6 +57,42 @@ pub const EMF_TERM_F_MIN: f64 = 10.0;
 /// A tap at full scale is a rail beyond its range, not a reading: the
 /// unbiased 15k/10k rail tap clips above 8.25 V.
 const ADC_FULL_SCALE: u16 = 4095;
+
+/// Each terminal tap's code with the winding at rest, the zero it is read
+/// against. The two differ by a few counts (the dividers never match), which
+/// a terminal difference would carry into its intercept.
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub struct TapZeros {
+    pub a: Option<f64>,
+    pub b: Option<f64>,
+}
+
+impl TapZeros {
+    /// Each tap's median over the rest references: zero-duty captures with
+    /// the shaft still. A seated capture's own pre-step half is driven, so
+    /// its zeros have to come from one of these.
+    pub fn from_rest(refs: &[&Capture]) -> Self {
+        let tap = |bit: u8| {
+            let v: Vec<f64> = refs
+                .iter()
+                .filter_map(|c| c.slot(bit).map(|s| (c, s)))
+                .flat_map(|(c, s)| c.stream(s).into_iter().map(f64::from))
+                .collect();
+            median(&v)
+        };
+        Self {
+            a: tap(CHAN_VMOTOR_A),
+            b: tap(CHAN_VMOTOR_B),
+        }
+    }
+
+    fn get(&self, bit: u8) -> Option<f64> {
+        match bit {
+            CHAN_VMOTOR_A => self.a,
+            _ => self.b,
+        }
+    }
+}
 
 /// Where a capture's winding voltage comes from, weakest first.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -97,6 +133,19 @@ pub struct Period {
     pub v: f64,
 }
 
+impl Period {
+    /// A settled level as a row of the regression: i1 = i0 constrains R
+    /// and the intercept, whatever tau is.
+    fn settled(i: f64, v: f64) -> Self {
+        Self {
+            t_ms: 0.0,
+            i0: i,
+            i1: i,
+            v,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct CaptureVolts {
     /// None: the pre-arm rail stands in for a measurement.
@@ -107,6 +156,10 @@ pub struct CaptureVolts {
     pub periods: Vec<Period>,
     /// Mean winding voltage at the envelope asymptote, volts.
     pub v_settled: f64,
+    /// The pre-step drive's settled level as a regression row: a from-a-hold
+    /// capture's current by charge balance over its whole pre-step periods,
+    /// its voltage the same D x V_on + (1 - D) x V_off as every period.
+    pub hold: Option<Period>,
     /// (window current, the high side's ON level as sampled): the rail, or
     /// the driven terminal one high-side drop under it.
     pub hi_on: Vec<(f64, f64)>,
@@ -152,15 +205,20 @@ fn slot_samples(
         .collect()
 }
 
-fn slot_mean(
+/// One slot's mean over every sample inside the spans.
+fn spans_mean(
     cap: &Capture,
     f: &CaptureFit,
     slot: usize,
-    span: (f64, f64),
+    spans: &[(f64, f64)],
     conv: impl Fn(f64) -> f64,
 ) -> Option<f64> {
-    let v = slot_samples(cap, f, slot, span);
-    (!v.is_empty()).then(|| v.iter().map(|(_, c)| conv(*c)).sum::<f64>() / v.len() as f64)
+    let v: Vec<f64> = spans
+        .iter()
+        .flat_map(|&s| slot_samples(cap, f, slot, s))
+        .map(|(_, c)| conv(c))
+        .collect();
+    (!v.is_empty()).then(|| v.iter().sum::<f64>() / v.len() as f64)
 }
 
 /// Each window's drive edges, microseconds: the rising edge from the
@@ -181,12 +239,14 @@ fn edges(f: &CaptureFit) -> Option<Vec<(f64, f64)>> {
 
 /// Everything one capture's voltage channels say, or the pre-arm stand-in
 /// when `measured` is false or no channel gives the winding. None when the
-/// capture holds fewer than two windows.
+/// capture holds fewer than two windows. `zeros` stands in for the taps'
+/// rest levels when the capture's own pre-step half is driven.
 pub fn capture_volts(
     cap: &Capture,
     f: &CaptureFit,
     sc: &Scales,
     measured: bool,
+    zeros: &TapZeros,
 ) -> Option<CaptureVolts> {
     if f.cb.len() < 2 {
         return None;
@@ -207,16 +267,25 @@ pub fn capture_volts(
     let rail = usable(CHAN_VBUS);
 
     // Before a from-rest step the bridge coasts, so a tap sits exactly on
-    // the divider bias: that reading, in the same capture and aperture,
-    // beats the boot-time one.
-    let taps: Vec<usize> = [hi_tap, lo_tap].into_iter().flatten().collect();
-    let pre: Vec<f64> = taps
-        .iter()
-        .flat_map(|&s| (0..f.step).map(move |k| cap.samples[k * fl + s] as f64))
-        .collect();
-    let vb = match (f.from_rest, median(&pre)) {
-        (true, Some(v)) => Some(v),
-        _ => (cap.meta.vmotor_bias > 0).then_some(cap.meta.vmotor_bias as f64),
+    // its rest level: that reading, in the same capture and aperture, beats
+    // the boot-time one. Each tap is read against its own zero and the
+    // common bias is their mean.
+    let zero = |tap: Option<usize>, bit: u8| {
+        let s = tap?;
+        match f.from_rest {
+            true => median(
+                &(0..f.step)
+                    .map(|k| cap.samples[k * fl + s] as f64)
+                    .collect::<Vec<_>>(),
+            ),
+            false => zeros.get(bit),
+        }
+    };
+    let (z_hi, z_lo) = (zero(hi_tap, hi_bit), zero(lo_tap, lo_bit));
+    let vb = match (z_hi, z_lo) {
+        (Some(h), Some(l)) => Some((h + l) / 2.0),
+        (Some(z), None) | (None, Some(z)) => Some(z),
+        (None, None) => (cap.meta.vmotor_bias > 0).then_some(cap.meta.vmotor_bias as f64),
     };
     let route = match (measured, hi_tap, lo_tap, rail, vb) {
         (false, ..) => None,
@@ -238,7 +307,9 @@ pub fn capture_volts(
         ));
     }
     let vbv = vb.unwrap_or(0.0);
-    let tap_v = |c: f64| sc.terminal_volts(c, vbv);
+    let (off_hi, off_lo) = (z_hi.map_or(0.0, |z| z - vbv), z_lo.map_or(0.0, |z| z - vbv));
+    let tap_hi = |c: f64| sc.terminal_volts(c - off_hi, vbv);
+    let tap_lo = |c: f64| sc.terminal_volts(c - off_lo, vbv);
     let rail_v = |c: f64| c * sc.v_rail_per_count;
     let hi_is_tap = matches!(route, Some(Route::Terminals | Route::DrivenTap));
     let lo_is_tap = matches!(route, Some(Route::Terminals | Route::RailIdleTap));
@@ -247,35 +318,39 @@ pub fn capture_volts(
     let on_span = |k: usize| (edge[k].0 + TAP_CLEAR_US, edge[k].1 - EDGE_GUARD_US);
     let off_span = |k: usize| (edge[k].1 + TAP_CLEAR_US, edge[k + 1].0 - EDGE_GUARD_US);
     // The high side as sampled, before any drop correction.
-    let hi_raw_on = |k: usize| -> Option<f64> {
+    let hi_raw_on = |span: &[(f64, f64)]| -> Option<f64> {
         match route {
-            Some(Route::Terminals | Route::DrivenTap) => {
-                slot_mean(cap, f, hi_tap?, on_span(k), tap_v)
-            }
-            Some(Route::Rail | Route::RailIdleTap) => slot_mean(cap, f, rail?, on_span(k), rail_v),
+            Some(Route::Terminals | Route::DrivenTap) => spans_mean(cap, f, hi_tap?, span, tap_hi),
+            Some(Route::Rail | Route::RailIdleTap) => spans_mean(cap, f, rail?, span, rail_v),
             None => Some(f.v_rail),
         }
     };
-    let v_on = |k: usize| -> Option<f64> {
-        let i = f.cb[k].level_a;
-        let hi = hi_raw_on(k)? - if hi_is_tap { 0.0 } else { i * RDS_ON_OHM };
+    // Winding volts over ON and OFF spans carrying current i.
+    let v_on_at = |span: &[(f64, f64)], i: f64| -> Option<f64> {
+        let hi = hi_raw_on(span)? - if hi_is_tap { 0.0 } else { i * RDS_ON_OHM };
         let lo = match lo_is_tap {
-            true => slot_mean(cap, f, lo_tap?, on_span(k), tap_v)?,
+            true => spans_mean(cap, f, lo_tap?, span, tap_lo)?,
             false => i * (RDS_ON_OHM + sc.shunt_ohm),
         };
         Some(hi - lo)
     };
-    let v_off = |k: usize| -> Option<f64> {
-        let i = (f.cb[k].level_a + f.cb[k + 1].level_a) / 2.0;
+    let v_off_at = |span: &[(f64, f64)], i: f64| -> Option<f64> {
         let hi = match hi_is_tap {
-            true => slot_mean(cap, f, hi_tap?, off_span(k), tap_v)?,
+            true => spans_mean(cap, f, hi_tap?, span, tap_hi)?,
             false => -i * RDS_ON_OHM,
         };
         let lo = match lo_is_tap {
-            true => slot_mean(cap, f, lo_tap?, off_span(k), tap_v)?,
+            true => spans_mean(cap, f, lo_tap?, span, tap_lo)?,
             false => i * RDS_ON_OHM,
         };
         Some(hi - lo)
+    };
+    let v_on = |k: usize| v_on_at(&[on_span(k)], f.cb[k].level_a);
+    let v_off = |k: usize| {
+        v_off_at(
+            &[off_span(k)],
+            (f.cb[k].level_a + f.cb[k + 1].level_a) / 2.0,
+        )
     };
 
     let d = f.duty;
@@ -304,6 +379,61 @@ pub fn capture_volts(
         }
     };
 
+    // The pre-step drive on the same grid: its windows share the new duty's
+    // crests, only narrower. Periods whose next rising edge is still before
+    // the step are the old duty's whole. Ten periods back the rise line's
+    // slope, quantised when the rises drift under a sample across the
+    // capture, walks a sample off; the timer's period does not - the PWM and
+    // the sample clock divide one HCLK - so the line keeps its centroid and
+    // takes that slope.
+    let hold = (f.duty_pre > 0.0)
+        .then(|| {
+            let (a, b) = {
+                let (a, b) = f.rise_line?;
+                let j: Vec<f64> =
+                    f.cb.iter()
+                        .map(|w| ((w.rise as f64 - 0.5 - a) / b).round())
+                        .collect();
+                let bn = nominal_cadence(cap.meta.pwm_arr) / fl as f64;
+                (a + (b - bn) * j.iter().sum::<f64>() / j.len() as f64, bn)
+            };
+            let (dp, us) = (f.duty_pre, f.sample_us);
+            let step_at = cap.meta.step_index as f64 / fl as f64;
+            let crest = |p: f64| a + b * p + d * b / 2.0;
+            let p0 = ((dp * b / 2.0 - a - d * b / 2.0) / b).ceil();
+            let n = ((step_at + dp * b / 2.0 - a - d * b / 2.0) / b - p0).floor();
+            if n < 1.0 {
+                return None;
+            }
+            let rise0 = crest(p0) - dp * b / 2.0;
+            let shunt: Vec<f64> = cap.shunt().iter().map(|&c| c as f64).collect();
+            let i = charge(&shunt, f.bias_counts, rise0, rise0 + n * b)? / (n * b)
+                * sc.amps_per_count
+                / dp;
+            let ps = (0..n as usize).map(|k| p0 + k as f64);
+            let on: Vec<(f64, f64)> = ps
+                .clone()
+                .map(|p| {
+                    let c = crest(p) * us;
+                    (
+                        c - dp * b / 2.0 * us + TAP_CLEAR_US,
+                        c + dp * b / 2.0 * us - EDGE_GUARD_US,
+                    )
+                })
+                .collect();
+            let off: Vec<(f64, f64)> = ps
+                .map(|p| {
+                    (
+                        (crest(p) + dp * b / 2.0) * us + TAP_CLEAR_US,
+                        (crest(p + 1.0) - dp * b / 2.0) * us - EDGE_GUARD_US,
+                    )
+                })
+                .collect();
+            let v = dp * v_on_at(&on, i)? + (1.0 - dp) * v_off_at(&off, i)?;
+            Some(Period::settled(i, v))
+        })
+        .flatten();
+
     // Diagnostics read the channels as sampled; the pre-arm stand-in has
     // none to read.
     let mut hi_on = Vec::new();
@@ -312,7 +442,7 @@ pub fn capture_volts(
     let mut spans = Vec::new();
     let abs_ok = !hi_is_tap || vb.is_some();
     let hi_slot = if hi_is_tap { hi_tap } else { rail };
-    let hi_conv = |c: f64| if hi_is_tap { tap_v(c) } else { rail_v(c) };
+    let hi_conv = |c: f64| if hi_is_tap { tap_hi(c) } else { rail_v(c) };
     if let (Some(_), Some(slot), true) = (route, hi_slot, abs_ok) {
         for (k, w) in f.cb.iter().enumerate() {
             let i = w.level_a;
@@ -332,7 +462,7 @@ pub fn capture_volts(
                 off.extend(
                     slot_samples(cap, f, slot, off_span(k))
                         .iter()
-                        .map(|(_, c)| tap_v(*c)),
+                        .map(|(_, c)| tap_hi(*c)),
                 );
             }
         }
@@ -354,7 +484,7 @@ pub fn capture_volts(
                         (c - period_us / 2.0, c + period_us / 2.0 - f.raw_us),
                     )
                 })
-                .map(|(_, c)| tap_v(c))
+                .map(|(_, c)| tap_hi(c))
                 .collect();
             let on = median(&hi_on.iter().map(|p| p.1).collect::<Vec<_>>());
             match (all.is_empty(), on, median(&off)) {
@@ -372,6 +502,7 @@ pub fn capture_volts(
         asymptote_a: f.asymptote_cb_a,
         periods,
         v_settled,
+        hold,
         hi_on,
         hi_is_rail: !hi_is_tap,
         off,

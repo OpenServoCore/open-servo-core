@@ -43,6 +43,14 @@ pub struct FakeServo {
     pub drive_polarity: bool,
     pub pos_noise: f64,
     pub fault_at_ms: Option<f64>,
+    /// Latch a fault once this many [`Cmd::Burst`]s have been captured.
+    pub fault_after_bursts: Option<u32>,
+    pub bursts: u32,
+    /// The kernel's soft endstop: outbound duty at or past a limit is zeroed
+    /// unless the stall permit is set (and honored).
+    pub soft: Option<(f64, f64)>,
+    pub permit: bool,
+    pub honors_permit: bool,
     pub torque: bool,
     pub duty: i16,
     pub tel_mask: u16,
@@ -77,6 +85,11 @@ impl FakeServo {
             drive_polarity: true,
             pos_noise: 0.0,
             fault_at_ms: None,
+            fault_after_bursts: None,
+            bursts: 0,
+            soft: None,
+            permit: false,
+            honors_permit: true,
             torque: false,
             duty: 0,
             tel_mask: 0,
@@ -104,25 +117,41 @@ impl FakeServo {
         ((self.lcg >> 11) as f64 / (1u64 << 53) as f64 - 0.5) * self.pos_noise
     }
 
+    /// The duty the bridge actually sees: zero with torque off, and zero
+    /// driving outward at a soft limit the permit does not open.
+    fn applied(&self) -> i16 {
+        let out = self.duty as f64 * if self.drive_polarity { 1.0 } else { -1.0 };
+        let clamped = self
+            .soft
+            .is_some_and(|(lo, hi)| (self.pos <= lo && out < 0.0) || (self.pos >= hi && out > 0.0))
+            && !(self.permit && self.honors_permit);
+        if !self.torque || clamped {
+            0
+        } else {
+            self.duty
+        }
+    }
+
     fn omega(&self) -> f64 {
         if self.dynamic {
             return self.omega_dyn;
         }
-        if !self.torque || self.duty == 0 || self.duty.unsigned_abs() < self.breakaway_q15 as u16 {
+        let duty = self.applied();
+        if duty == 0 || duty.unsigned_abs() < self.breakaway_q15 as u16 {
             return 0.0;
         }
-        let vsign = self.duty.signum() as f64 * if self.drive_polarity { 1.0 } else { -1.0 };
+        let vsign = duty.signum() as f64 * if self.drive_polarity { 1.0 } else { -1.0 };
         let stalled =
             (self.pos <= self.ends.0 && vsign < 0.0) || (self.pos >= self.ends.1 && vsign > 0.0);
         if stalled {
             return 0.0;
         }
         if self.physical_motion {
-            let v = self.duty.unsigned_abs() as f64 / 32767.0 * self.vbus;
+            let v = duty.unsigned_abs() as f64 / 32767.0 * self.vbus;
             let mag = ((v - self.r * self.fc) / (self.ke + self.r * self.fv)).max(0.0);
             mag * vsign
         } else {
-            self.duty.unsigned_abs() as f64 / 32767.0 * self.free_speed * vsign
+            duty.unsigned_abs() as f64 / 32767.0 * self.free_speed * vsign
         }
     }
 
@@ -130,10 +159,11 @@ impl FakeServo {
     /// the applied volts minus bemf. Friction is mechanical - it consumes
     /// torque, not extra current - so nothing else is added.
     fn i_dyn(&self) -> f64 {
-        if !self.torque || self.duty == 0 {
+        let duty = self.applied();
+        if duty == 0 {
             return 0.0;
         }
-        let v = self.duty as f64 / 32767.0 * self.vbus;
+        let v = duty as f64 / 32767.0 * self.vbus;
         (v - self.ke * self.omega_dyn) / self.r
     }
 
@@ -145,6 +175,8 @@ impl FakeServo {
             self.t_duty_change = self.t_ms;
         } else if reg == control::TEL_MASK {
             self.tel_mask = value as u16;
+        } else if reg == control::STALL_PERMIT {
+            self.permit = value != 0;
         }
     }
 
@@ -162,7 +194,7 @@ impl FakeServo {
         let alpha = self.b * self.f_med * (i - fric);
         let w2 = w + alpha * dt;
         // coasting friction never reverses the spin through zero
-        self.omega_dyn = if !self.torque || self.duty == 0 {
+        self.omega_dyn = if self.applied() == 0 {
             if w != 0.0 && w.signum() != w2.signum() {
                 0.0
             } else {
@@ -266,15 +298,16 @@ impl FakeServo {
     }
 
     pub fn read(&mut self) -> TelemetrySnapshot {
-        let driving = self.torque && self.duty != 0;
+        let duty = self.applied();
+        let driving = duty != 0;
         let (i, vdiff) = if driving {
-            let v = self.duty as f64 / 32767.0 * self.vbus;
+            let v = duty as f64 / 32767.0 * self.vbus;
             let omega = self.omega();
             // friction current only while moving: stalled current is ohmic.
             // The physical and dynamic models need no extra term - their
             // (v - ke*omega)/r IS the winding current at every instant.
             let fric = if omega != 0.0 && !self.physical_motion && !self.dynamic {
-                self.fc * self.duty.signum() as f64
+                self.fc * duty.signum() as f64
             } else {
                 0.0
             };
@@ -282,11 +315,12 @@ impl FakeServo {
             if (self.t_ms - self.t_duty_change) / 0.8 < self.transient_windows {
                 i *= self.transient_gain;
             }
-            (i, self.vbus * self.duty.signum() as f64)
+            (i, self.vbus * duty.signum() as f64)
         } else {
             (0.0, 0.0)
         };
-        let fault = matches!(self.fault_at_ms, Some(at) if self.t_ms >= at);
+        let fault = matches!(self.fault_at_ms, Some(at) if self.t_ms >= at)
+            || matches!(self.fault_after_bursts, Some(n) if self.bursts >= n);
         let glitch = match self.glitch_zone {
             Some((lo, hi)) if (lo..=hi).contains(&self.pos) => 80.0,
             _ => 0.0,
@@ -303,7 +337,8 @@ impl FakeServo {
             vbus_counts: self.vbus as u16,
             i_mean_counts: i.round() as i16,
             vdiff_mean: vdiff.round() as i16,
-            duty_mean_q15: if driving { self.duty } else { 0 },
+            duty_mean_q15: duty,
+            duty_applied_q15: duty,
             agg_seq: (self.t_ms / 0.8) as u64 as u16,
             ..Default::default()
         }
@@ -357,6 +392,9 @@ pub struct SynthBurst {
     pub tap_us: f64,
     /// Terminal divider bias node, raw counts.
     pub vb: f64,
+    /// Tap B's code over tap A's with the winding at rest, counts: the two
+    /// dividers never match.
+    pub split: f64,
     /// Peak-to-peak measurement noise, counts.
     pub noise_counts: f64,
     pub amps_per_count: f64,
@@ -405,6 +443,7 @@ impl SynthBurst {
             settle_us: 0.9,
             tap_us: 0.33,
             vb: 779.0,
+            split: 0.0,
             noise_counts: 2.0,
             amps_per_count: lsb / (15.0 * 0.060),
             v_rail_per_count: lsb * 2.5,
@@ -536,7 +575,7 @@ impl SynthBurst {
                 0 => st[3],
                 slot => match slots[slot - 1] {
                     CHAN_VMOTOR_A => tap_code(st[4]),
-                    CHAN_VMOTOR_B => tap_code(st[5]),
+                    CHAN_VMOTOR_B => tap_code(st[5]) + self.split,
                     _ => st[1] / self.v_rail_per_count,
                 },
             };
@@ -557,6 +596,7 @@ impl SynthBurst {
                 chans: self.chans,
                 frame_len: fl as u8,
                 vmotor_bias: self.vb.round() as u16,
+                ..Meta::default()
             },
         }
     }
@@ -602,13 +642,22 @@ pub fn pump<E: Experiment>(exp: &mut E, servo: &mut FakeServo, max_steps: u32) -
                 duty_q15,
                 pre_q15,
                 chans,
+                seated,
             } => {
-                log.push(format!("burst {duty_q15} pre {pre_q15} chans {chans}"));
+                let pos = servo.pos.round() as u16;
+                log.push(format!(
+                    "burst {duty_q15} pre {pre_q15} chans {chans} pos {pos}{}",
+                    if seated { " seated" } else { "" }
+                ));
                 let plant = SynthBurst {
                     chans,
                     ..servo.burst.clone()
                 };
-                exp.push_burst(&plant.capture(duty_q15, pre_q15));
+                let mut cap = plant.capture(duty_q15, pre_q15);
+                cap.meta.pos = pos;
+                cap.meta.seated = seated;
+                exp.push_burst(&cap);
+                servo.bursts += 1;
                 servo.advance(2);
             }
             Cmd::Done => return log,

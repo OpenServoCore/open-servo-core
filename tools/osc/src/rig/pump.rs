@@ -64,9 +64,10 @@ pub(crate) fn read_snapshot(c: &mut Client<NusbPipe>, id: Id) -> Result<Telemetr
     Ok(last.expect("loop ran"))
 }
 
-/// Run the closure, then force the servo safe (duty/goals zero, torque and
-/// TEL off) whether it succeeded, failed, or was ctrl-c'd. A hard kill
-/// skips this - the servo's own protections are the backstop.
+/// Run the closure, then force the servo safe (duty/goals zero, torque,
+/// stall permit and TEL off) whether it succeeded, failed, or was ctrl-c'd.
+/// A hard kill skips this - the permit is RAM only and the servo's own
+/// protections are the backstop.
 pub(crate) fn with_guard<T>(
     c: &mut Client<NusbPipe>,
     id: Id,
@@ -78,6 +79,7 @@ pub(crate) fn with_guard<T>(
         (control::GOAL_CURRENT, 0),
         (control::GOAL_VELOCITY, 0),
         (control::TORQUE_ENABLE, 0),
+        (control::STALL_PERMIT, 0),
         (control::TEL_COUNT, 0),
         (control::TEL_MASK, 0),
     ] {
@@ -261,20 +263,24 @@ impl BurstIo for WireBurstIo<'_> {
     }
 }
 
-/// One high-rate capture. The rail, the current-sense zero and the terminal
-/// divider bias are read BEFORE the arm: the burst suspends the scan.
+/// One high-rate capture. The rail, the current-sense zero, the terminal
+/// divider bias and the position are read BEFORE the arm: the burst
+/// suspends the scan.
 pub(crate) fn capture_burst(
     c: &mut Client<NusbPipe>,
     id: Id,
     duty_q15: i16,
     pre_q15: i16,
     chans: u8,
+    seated: bool,
 ) -> Result<Capture> {
     let pre = Pre {
         pre_q15,
         vbus_raw: super::snapshot::read_u16(c, id, telemetry::VBUS_RAW)?,
         bias: super::snapshot::read_u16(c, id, telemetry::CURRENT_BIAS_COUNTS)?,
         vmotor_bias: super::snapshot::read_u16(c, id, telemetry::VMOTOR_BIAS_COUNTS)?,
+        pos: super::snapshot::read_u16(c, id, telemetry::POS)?,
+        seated,
     };
     let mut io = WireBurstIo { c, id };
     burst::capture(&mut io, duty_q15, chans, pre, &CaptureCfg::default())
@@ -356,16 +362,21 @@ impl<'a> Pump<'a> {
                     duty_q15,
                     pre_q15,
                     chans,
+                    seated,
                 } => {
-                    let cap = capture_burst(self.client, self.id, duty_q15, pre_q15, chans)?;
+                    let cap =
+                        capture_burst(self.client, self.id, duty_q15, pre_q15, chans, seated)?;
                     eprintln!(
-                        "burst: {} samples, step at {}, duty {} (pre {}), chans {} frame_len {}",
+                        "burst: {} samples, step at {}, duty {} (pre {}), chans {} frame_len {}, \
+                         pos {}{}",
                         cap.samples.len(),
                         cap.meta.step_index,
                         duty_q15,
                         pre_q15,
                         cap.meta.chans,
-                        cap.meta.frame_len
+                        cap.meta.frame_len,
+                        cap.meta.pos,
+                        if seated { " seated" } else { "" }
                     );
                     exp.push_burst(&cap);
                 }

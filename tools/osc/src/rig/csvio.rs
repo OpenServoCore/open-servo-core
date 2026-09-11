@@ -438,6 +438,8 @@ mod tests {
                     chans: osc_ident::burst::CHAN_VMOTOR_A,
                     frame_len: 2,
                     vmotor_bias: 779,
+                    pos: 122,
+                    seated: true,
                 },
             })
             .collect();
