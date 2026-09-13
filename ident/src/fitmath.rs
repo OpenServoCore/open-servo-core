@@ -72,6 +72,24 @@ pub fn mean(v: &[f64]) -> Option<f64> {
     Some(v.iter().sum::<f64>() / v.len() as f64)
 }
 
+/// Linear-interpolated quantile, `q` in [0, 1]. None on empty or
+/// non-finite input.
+pub fn quantile(v: &[f64], q: f64) -> Option<f64> {
+    if v.is_empty() || !v.iter().all(|x| x.is_finite()) || !(0.0..=1.0).contains(&q) {
+        return None;
+    }
+    let mut s = v.to_vec();
+    s.sort_by(f64::total_cmp);
+    let h = q * (s.len() - 1) as f64;
+    let lo = h.floor() as usize;
+    let hi = h.ceil() as usize;
+    Some(s[lo] + (s[hi] - s[lo]) * (h - lo as f64))
+}
+
+pub fn median(v: &[f64]) -> Option<f64> {
+    quantile(v, 0.5)
+}
+
 /// Sample standard deviation (n - 1 divisor).
 pub fn stddev(v: &[f64]) -> Option<f64> {
     if v.len() < 2 {
@@ -99,6 +117,135 @@ pub fn trimmed_mean(v: &[f64], trim_frac: f64) -> Option<f64> {
 pub struct QuadDeriv {
     pub dy: Vec<Option<f64>>,
     pub d2y: Vec<Option<f64>>,
+}
+
+/// y = a + b * x by Theil-Sen: the median of all pairwise slopes, then the
+/// median residual as the intercept. Costs O(n^2) pairs, so it is for the
+/// short runs (tens of points) where one settling sample or one dropped
+/// conversion would drag a least-squares slope.
+pub fn theil_sen(xy: &[(f64, f64)]) -> Option<LinearFit> {
+    let n = xy.len();
+    if n < 2 || !finite_xy(xy) {
+        return None;
+    }
+    let mut slopes = Vec::with_capacity(n * (n - 1) / 2);
+    for (i, (xi, yi)) in xy.iter().enumerate() {
+        for (xj, yj) in &xy[i + 1..] {
+            if xj != xi {
+                slopes.push((yj - yi) / (xj - xi));
+            }
+        }
+    }
+    let b = median(&slopes)?;
+    let a = median(&xy.iter().map(|(x, y)| y - b * x).collect::<Vec<_>>())?;
+    let (r2, rms) = fit_quality(xy, |x| a + b * x)?;
+    Some(LinearFit { a, b, r2, rms, n })
+}
+
+/// y = a + b*x + c*exp(-x/tau) least squares at a FIXED tau: a ramp read
+/// through a first-order lag. `b` is the ramp's own slope with the lag's
+/// contribution taken out, so no leading samples have to be discarded to
+/// escape it. `x` must start at 0 (the caller centres on the first sample)
+/// or the exponential column loses conditioning.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct LagFit {
+    pub a: f64,
+    pub b: f64,
+    /// Lag amplitude; negative while the reading is still catching up.
+    pub c: f64,
+    pub rms: f64,
+    pub n: usize,
+}
+
+pub fn lag_ls(xy: &[(f64, f64)], tau: f64) -> Option<LagFit> {
+    let n = xy.len();
+    if n < 4 || tau <= 0.0 || !finite_xy(xy) {
+        return None;
+    }
+    let mut m = [[0.0f64; 4]; 3];
+    for (x, y) in xy {
+        let p = [1.0, *x, (-x / tau).exp()];
+        for (r, &pr) in p.iter().enumerate() {
+            for (c, &pc) in p.iter().enumerate() {
+                m[r][c] += pr * pc;
+            }
+            m[r][3] += pr * y;
+        }
+    }
+    let v = solve3(&mut m)?;
+    let (a, b, c) = (v[0], v[1], v[2]);
+    if !(a.is_finite() && b.is_finite() && c.is_finite()) {
+        return None;
+    }
+    let (_, rms) = fit_quality(xy, |x| a + b * x + c * (-x / tau).exp())?;
+    Some(LagFit { a, b, c, rms, n })
+}
+
+/// y = x . b least squares over a few columns, by the normal equations
+/// with every column scaled to unit RMS first - the callers mix amps,
+/// volts, ones and milliseconds in one design matrix. Every row must be as
+/// wide as the first. Returns the coefficients and the residual sum of
+/// squares.
+pub fn lstsq(x: &[Vec<f64>], y: &[f64]) -> Option<(Vec<f64>, f64)> {
+    let n = x.len();
+    let m = x.first()?.len();
+    if n != y.len()
+        || n <= m
+        || x.iter().any(|r| r.len() != m)
+        || !y.iter().chain(x.iter().flatten()).all(|v| v.is_finite())
+    {
+        return None;
+    }
+    let mut scale = vec![0.0f64; m];
+    for (c, sc) in scale.iter_mut().enumerate() {
+        *sc = (x.iter().map(|r| r[c] * r[c]).sum::<f64>() / n as f64).sqrt();
+        if *sc <= 0.0 {
+            return None;
+        }
+    }
+    let mut a = vec![vec![0.0f64; m]; m];
+    let mut b = vec![0.0f64; m];
+    for (row, yv) in x.iter().zip(y) {
+        for r in 0..m {
+            let xr = row[r] / scale[r];
+            for c in 0..m {
+                a[r][c] += xr * row[c] / scale[c];
+            }
+            b[r] += xr * yv;
+        }
+    }
+    for col in 0..m {
+        let piv = (col..m).max_by(|&p, &q| a[p][col].abs().total_cmp(&a[q][col].abs()))?;
+        if a[piv][col].abs() < 1e-12 {
+            return None;
+        }
+        a.swap(col, piv);
+        b.swap(col, piv);
+        for r in col + 1..m {
+            let f = a[r][col] / a[col][col];
+            for c in col..m {
+                a[r][c] -= f * a[col][c];
+            }
+            b[r] -= f * b[col];
+        }
+    }
+    let mut coef = vec![0.0f64; m];
+    for r in (0..m).rev() {
+        let s: f64 = (r + 1..m).map(|c| a[r][c] * coef[c]).sum();
+        coef[r] = (b[r] - s) / a[r][r];
+    }
+    for (c, sc) in coef.iter_mut().zip(&scale) {
+        *c /= sc;
+    }
+    let rss = x
+        .iter()
+        .zip(y)
+        .map(|(row, yv)| {
+            let p: f64 = row.iter().zip(&coef).map(|(a, b)| a * b).sum();
+            (yv - p) * (yv - p)
+        })
+        .sum();
+    coef.iter().all(|c| c.is_finite()).then_some((coef, rss))
 }
 
 /// Sliding local-quadratic derivative (Savitzky-Golay flavor, nonuniform t
@@ -255,6 +402,18 @@ mod tests {
     }
 
     #[test]
+    fn quantiles_interpolate_and_median_splits_even_n() {
+        let v = [4.0, 1.0, 3.0, 2.0];
+        assert_eq!(median(&v), Some(2.5));
+        assert_eq!(quantile(&v, 0.0), Some(1.0));
+        assert_eq!(quantile(&v, 1.0), Some(4.0));
+        assert_eq!(quantile(&v, 0.25), Some(1.75));
+        assert_eq!(median(&[7.0]), Some(7.0));
+        assert!(median(&[]).is_none());
+        assert!(quantile(&[1.0, f64::NAN], 0.5).is_none());
+    }
+
+    #[test]
     fn trimmed_mean_kills_outliers() {
         let mut v = vec![10.0; 18];
         v.push(1e6);
@@ -348,5 +507,29 @@ mod tests {
         let f = linear_ls(&fr_pts).unwrap();
         assert!((f.a - fc).abs() < 1e-12, "fc {}", f.a);
         assert!((f.b - fv).abs() < 1e-12, "fv {}", f.b);
+    }
+
+    #[test]
+    fn lstsq_recovers_mixed_scale_columns() {
+        // amps, volts, ones and milliseconds: six decades between columns
+        let truth = [0.72, 0.064, -0.013, 0.002];
+        let x: Vec<Vec<f64>> = (0..40)
+            .map(|k| {
+                let k = k as f64;
+                vec![0.01 * k, 1.5 + (k % 3.0), 1.0, 0.05 * (k % 7.0)]
+            })
+            .collect();
+        let y: Vec<f64> = x
+            .iter()
+            .map(|r| r.iter().zip(&truth).map(|(a, b)| a * b).sum())
+            .collect();
+        let (b, rss) = lstsq(&x, &y).unwrap();
+        for (got, want) in b.iter().zip(&truth) {
+            assert!((got - want).abs() < 1e-9, "{got} vs {want}");
+        }
+        assert!(rss < 1e-18);
+        // a column of zeros has no scale and no solution
+        let flat: Vec<Vec<f64>> = (0..5).map(|k| vec![k as f64, 0.0]).collect();
+        assert!(lstsq(&flat, &[0.0; 5]).is_none());
     }
 }

@@ -93,6 +93,58 @@ pub fn set_dma(enable: bool) {
     ADC.ctlr2().modify(|w| w.set_dma(enable));
 }
 
+/// Shuts the DMA tap and parks the trigger on SWSTART, never pulsed, in ONE
+/// CTLR2 write. That write starts a conversion of its own (RM sec 9.3.3), but
+/// after it nothing else can until the next CTLR2 write, so once that one
+/// retires the converter is provably idle.
+pub fn park() {
+    ADC.ctlr2().modify(|w| {
+        w.set_extsel(Extsel::SWSTART);
+        w.set_dma(false);
+    });
+}
+
+/// CTLR2.CONT: the converter re-triggers itself after each conversion instead
+/// of waiting for the next trigger.
+pub fn set_continuous(enable: bool) {
+    ADC.ctlr2().modify(|w| w.set_cont(enable));
+}
+
+/// Launches a free-running software-triggered run with the DMA tap open, in
+/// ONE CTLR2 write. Any CTLR2 write with ADON set starts a conversion (RM sec
+/// 9.3.3), so splitting this would open the tap onto a conversion that had
+/// already begun and land a partial first sample. Caller owns SCAN, the
+/// regular sequence, and the armed DMA channel.
+pub fn start_continuous_dma() {
+    ADC.ctlr2().modify(|w| {
+        w.set_extsel(Extsel::SWSTART);
+        w.set_exttrig(true);
+        w.set_cont(true);
+        w.set_dma(true);
+        w.set_swstart(true);
+    });
+}
+
+/// Re-arms the externally-triggered scan in ONE CTLR2 write: trigger source,
+/// trigger enable, and the DMA tap together. Splitting it opens a window in
+/// which a trigger starts a scan the DMA cannot deliver, and the tap then
+/// opens partway through that scan -- the buffer fills from the middle of the
+/// sequence and every slot index is off by however far it got (bench: the
+/// sensor frame came back rotated three slots and the undervolt fault
+/// latched). Caller has SCAN, the regular sequence, and the DMA channel ready.
+pub fn arm_scan(source: Extsel) {
+    ADC.ctlr2().modify(|w| {
+        w.set_extsel(source);
+        w.set_exttrig(true);
+        w.set_dma(true);
+    });
+}
+
+/// RDATAR's absolute address, for a DMA peripheral-side program.
+pub fn data_addr() -> u32 {
+    ADC.rdatar().as_ptr() as u32
+}
+
 /// CTLR3.ADC_LP (RM sec 9.3.14). Reset default is set (low-power, sub-1M
 /// sampling); clearing it picks the high-power converter, which the
 /// datasheet rates for VDD >= 4.5 V only.

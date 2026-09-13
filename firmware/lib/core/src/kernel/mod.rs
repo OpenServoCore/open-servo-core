@@ -424,6 +424,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                 cutoff_cc: therm_cfg.cutoff_cc,
                 pos_min_soft_counts: pos_lim.pos_min_soft_counts,
                 pos_max_soft_counts: pos_lim.pos_max_soft_counts,
+                stall_permit: life.stall_permit,
             };
             let omega_abs_cps = omega_hat.unsigned_abs() >> 16;
             let band = self.limits.fold(

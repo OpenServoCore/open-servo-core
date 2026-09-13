@@ -11,6 +11,9 @@
 //!         Cmd::Read => pending = Some(read_telemetry_region()),
 //!         Cmd::Pause { ms } => sleep_ms(ms),
 //!         Cmd::Stream { samples, goal } => exp.push_tel(&run_burst(samples, goal)),
+//!         Cmd::Burst { duty_q15, pre_q15, chans, seated } => {
+//!             exp.push_burst(&capture(duty_q15, pre_q15, chans, seated))
+//!         }
 //!         Cmd::Done => break,
 //!     }
 //! }
@@ -22,12 +25,17 @@
 pub mod bias;
 pub mod breakaway;
 pub mod endstop;
+pub mod held;
+pub mod inductance;
 pub mod inertia;
 pub mod ladder;
 pub mod resistance;
+pub mod rl;
 pub mod sweep;
 pub mod verify;
+pub mod winding;
 
+use crate::burst::Capture;
 use crate::frame::{SeqUnwrap, TelFrame, TelemetrySnapshot};
 use crate::regs::{Reg, control};
 
@@ -53,6 +61,18 @@ pub enum Cmd {
         samples: u16,
         goal: Option<(Reg, i32)>,
     },
+    /// One high-rate shunt burst: the driver stages `duty_q15`, the `chans`
+    /// mask and the arm under HOLD, fires one COMMIT, polls to Done and
+    /// walks the readback pages ([`crate::burst`]). `pre_q15` is the duty
+    /// already in force and `seated` says the rotor is held against a stop -
+    /// bookkeeping for the capture's meta, not writes. The assembled capture
+    /// returns through [`Experiment::push_burst`].
+    Burst {
+        duty_q15: i16,
+        pre_q15: i16,
+        chans: u8,
+        seated: bool,
+    },
     Done,
 }
 
@@ -62,6 +82,8 @@ pub trait Experiment {
     /// Decoded TEL frames from the last [`Cmd::Stream`] burst; experiments
     /// that never stream keep the drop default.
     fn push_tel(&mut self, _frames: &[TelFrame]) {}
+    /// The capture from the last [`Cmd::Burst`].
+    fn push_burst(&mut self, _cap: &Capture) {}
 }
 
 /// Rig constants with bench defaults - the single home. Experiments take
@@ -132,17 +154,20 @@ enum GuardState {
     Run,
     DutyOff,
     TorqueOff,
+    PermitOff,
     Finished,
 }
 
 /// Safety envelope: checks every observation, and on a violation preempts
 /// the inner experiment with duty-0 + torque-off before reporting Done.
-/// The inner experiment is left unstepped from that point on.
+/// The inner experiment is left unstepped from that point on, so a stall
+/// permit it granted is withdrawn here: the envelope watches the writes.
 pub struct Guarded<E> {
     exp: E,
     params: RigParams,
     state: GuardState,
     abort: Option<AbortReason>,
+    permit: bool,
 }
 
 impl<E: Experiment> Guarded<E> {
@@ -152,6 +177,7 @@ impl<E: Experiment> Guarded<E> {
             params,
             state: GuardState::Run,
             abort: None,
+            permit: false,
         }
     }
 
@@ -197,7 +223,15 @@ impl<E: Experiment> Experiment for Guarded<E> {
             self.state = GuardState::DutyOff;
         }
         match self.state {
-            GuardState::Run => self.exp.step(obs),
+            GuardState::Run => {
+                let cmd = self.exp.step(obs);
+                if let Cmd::Write { reg, value } = cmd
+                    && reg == control::STALL_PERMIT
+                {
+                    self.permit = value != 0;
+                }
+                cmd
+            }
             GuardState::DutyOff => {
                 self.state = GuardState::TorqueOff;
                 Cmd::Write {
@@ -206,9 +240,21 @@ impl<E: Experiment> Experiment for Guarded<E> {
                 }
             }
             GuardState::TorqueOff => {
-                self.state = GuardState::Finished;
+                self.state = if self.permit {
+                    GuardState::PermitOff
+                } else {
+                    GuardState::Finished
+                };
                 Cmd::Write {
                     reg: control::TORQUE_ENABLE,
+                    value: 0,
+                }
+            }
+            GuardState::PermitOff => {
+                self.state = GuardState::Finished;
+                self.permit = false;
+                Cmd::Write {
+                    reg: control::STALL_PERMIT,
                     value: 0,
                 }
             }
@@ -218,6 +264,10 @@ impl<E: Experiment> Experiment for Guarded<E> {
 
     fn push_tel(&mut self, frames: &[TelFrame]) {
         self.exp.push_tel(frames);
+    }
+
+    fn push_burst(&mut self, cap: &Capture) {
+        self.exp.push_burst(cap);
     }
 }
 

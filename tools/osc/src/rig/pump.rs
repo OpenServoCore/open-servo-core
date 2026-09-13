@@ -10,6 +10,7 @@ use anyhow::{Context, Result, bail};
 use osc_client::blocking::Client;
 use osc_client::nusb::NusbPipe;
 use osc_client::{Id, Inst, Opcode, Outcome, ResultCode};
+use osc_ident::burst::{self, BurstIo, Capture, CaptureCfg, Pre};
 use osc_ident::exp::{Cmd, Experiment};
 use osc_ident::frame::{StreamAssembler, TelFrame, TelemetrySnapshot};
 use osc_ident::regs::{Reg, config, control, telemetry};
@@ -63,9 +64,10 @@ pub(crate) fn read_snapshot(c: &mut Client<NusbPipe>, id: Id) -> Result<Telemetr
     Ok(last.expect("loop ran"))
 }
 
-/// Run the closure, then force the servo safe (duty/goals zero, torque and
-/// TEL off) whether it succeeded, failed, or was ctrl-c'd. A hard kill
-/// skips this - the servo's own protections are the backstop.
+/// Run the closure, then force the servo safe (duty/goals zero, torque,
+/// stall permit and TEL off) whether it succeeded, failed, or was ctrl-c'd.
+/// A hard kill skips this - the permit is RAM only and the servo's own
+/// protections are the backstop.
 pub(crate) fn with_guard<T>(
     c: &mut Client<NusbPipe>,
     id: Id,
@@ -77,6 +79,7 @@ pub(crate) fn with_guard<T>(
         (control::GOAL_CURRENT, 0),
         (control::GOAL_VELOCITY, 0),
         (control::TORQUE_ENABLE, 0),
+        (control::STALL_PERMIT, 0),
         (control::TEL_COUNT, 0),
         (control::TEL_MASK, 0),
     ] {
@@ -214,6 +217,76 @@ pub(crate) fn exchange_tel_burst(
     Ok((frames, stats))
 }
 
+/// The burst handshake's wire moves. The arm has to be atomic - a servo
+/// that sees arm=1 before the new duty or mask captures the old one - so
+/// duty, mask and arm go out under HOLD and one broadcast COMMIT applies
+/// all three. The mask is its own one-byte write: the byte after it is a
+/// reserved alignment byte that refuses writes.
+struct WireBurstIo<'a> {
+    c: &'a mut Client<NusbPipe>,
+    id: Id,
+}
+
+impl BurstIo for WireBurstIo<'_> {
+    type Error = anyhow::Error;
+
+    fn arm(&mut self, duty_q15: i16, chans: u8) -> Result<()> {
+        self.c
+            .write_hold(self.id, burst::wire::DUTY_Q15.addr, &duty_q15.to_le_bytes())
+            .context("hold burst duty")?;
+        self.c
+            .write_hold(self.id, burst::wire::CHANS.addr, &[chans])
+            .context("hold burst chans")?;
+        self.c
+            .write_hold(self.id, burst::wire::ARM.addr, &[1])
+            .context("hold burst arm")?;
+        self.c.commit().context("commit burst arm")?;
+        Ok(())
+    }
+
+    fn select_page(&mut self, page: u8) -> Result<()> {
+        write_reg(self.c, self.id, burst::wire::PAGE, page as i32)
+    }
+
+    fn release(&mut self) -> Result<()> {
+        write_reg(self.c, self.id, burst::wire::ARM, 0)
+    }
+
+    fn read_burst(&mut self, addr: u16, len: u16) -> Result<Vec<u8>> {
+        self.c
+            .read(self.id, addr, len)
+            .with_context(|| format!("burst read {addr:#06x}"))
+    }
+
+    fn pause_ms(&mut self, ms: u32) {
+        std::thread::sleep(Duration::from_millis(ms as u64));
+    }
+}
+
+/// One high-rate capture. The rail, the current-sense zero, the terminal
+/// divider bias and the position are read BEFORE the arm: the burst
+/// suspends the scan.
+pub(crate) fn capture_burst(
+    c: &mut Client<NusbPipe>,
+    id: Id,
+    duty_q15: i16,
+    pre_q15: i16,
+    chans: u8,
+    seated: bool,
+) -> Result<Capture> {
+    let pre = Pre {
+        pre_q15,
+        vbus_raw: super::snapshot::read_u16(c, id, telemetry::VBUS_RAW)?,
+        bias: super::snapshot::read_u16(c, id, telemetry::CURRENT_BIAS_COUNTS)?,
+        vmotor_bias: super::snapshot::read_u16(c, id, telemetry::VMOTOR_BIAS_COUNTS)?,
+        pos: super::snapshot::read_u16(c, id, telemetry::POS)?,
+        seated,
+    };
+    let mut io = WireBurstIo { c, id };
+    burst::capture(&mut io, duty_q15, chans, pre, &CaptureCfg::default())
+        .map_err(|e| anyhow::anyhow!("burst capture: {e}"))
+}
+
 pub(crate) struct Pump<'a> {
     client: &'a mut Client<NusbPipe>,
     id: Id,
@@ -284,6 +357,28 @@ impl<'a> Pump<'a> {
                     );
                     exp.push_tel(&frames);
                     self.tel.extend_from_slice(&frames);
+                }
+                Cmd::Burst {
+                    duty_q15,
+                    pre_q15,
+                    chans,
+                    seated,
+                } => {
+                    let cap =
+                        capture_burst(self.client, self.id, duty_q15, pre_q15, chans, seated)?;
+                    eprintln!(
+                        "burst: {} samples, step at {}, duty {} (pre {}), chans {} frame_len {}, \
+                         pos {}{}",
+                        cap.samples.len(),
+                        cap.meta.step_index,
+                        duty_q15,
+                        pre_q15,
+                        cap.meta.chans,
+                        cap.meta.frame_len,
+                        cap.meta.pos,
+                        if seated { " seated" } else { "" }
+                    );
+                    exp.push_burst(&cap);
                 }
                 Cmd::Done => return Ok(()),
             }

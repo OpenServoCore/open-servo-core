@@ -27,8 +27,15 @@ pub enum BootMode {
 #[ct_block(hooks = crate::regions::hooks::ControlTableHookEvents)]
 pub struct ControlLifecycle {
     pub torque_enable: bool,
-    #[ct_field(skip)]
-    pub _rsvd_tel: u8,
+    /// Let the motor stall on purpose: drops the stall trip and the endstop
+    /// band, and NOTHING else - the current limit and the thermal derate
+    /// still compose. Identification pushes into a hard stop to measure R and
+    /// L, which is precisely what those two guards exist to prevent, and no
+    /// soft-limit value can express it because a stop can sit AT the position
+    /// rail. Lives in the control region, so it is RAM only: never saved, and
+    /// a reboot clears it. A tool that dies mid-run cannot leave a servo
+    /// unguarded.
+    pub stall_permit: bool,
     /// TEL sample layout, one bit per field (`tel` module). `bits` rejects
     /// reserved bits; `max_ones` caps the field count at the wire budget.
     #[ct_field(bits = crate::tel::MASK_ALL, max_ones = crate::tel::FIELDS_MAX)]
@@ -61,6 +68,26 @@ pub struct ControlLifecycle {
 #[derive(Copy, Clone, Block)]
 pub struct ControlSystem {
     pub boot_mode: BootMode,
+    #[ct_field(skip)]
+    pub _rsvd_align: u8,
+}
+
+/// Shunt-burst request. `arm` is level, not an edge: 1 asks for a capture, 0
+/// releases the result back to Idle, so a host that dies mid-run leaves a
+/// servo that only has to be told 0. `page` selects which slice of the
+/// capture the BURST section publishes. `chans` (`burst::chans`) picks the
+/// extras interleaved behind the shunt; latched with `duty_q15` at the arm.
+#[repr(C)]
+#[derive(Copy, Clone, Block)]
+pub struct ControlBurst {
+    #[ct_field(le = &config::addr::loop_current::DUTY_MAX_Q15, abs)]
+    pub duty_q15: i16,
+    pub arm: u8,
+    pub page: u8,
+    #[ct_field(le = crate::regions::burst::chans::ALL)]
+    pub chans: u8,
+    #[ct_field(skip)]
+    pub _rsvd_align: u8,
 }
 
 #[repr(C)]
@@ -73,8 +100,9 @@ pub struct ControlSystem {
 pub struct ControlRegs {
     pub lifecycle: ControlLifecycle,
     pub system: ControlSystem,
+    pub burst: ControlBurst,
     #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 107],
+    pub _rsvd_tail: [u8; 100],
 }
 
 #[cfg(test)]

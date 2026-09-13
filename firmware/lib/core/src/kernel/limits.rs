@@ -27,6 +27,9 @@ pub struct LimitCfg {
     pub cutoff_cc: i16,
     pub pos_min_soft_counts: i32,
     pub pos_max_soft_counts: i32,
+    /// Deliberate-stall escape hatch, from the control table. See the field
+    /// doc on `ControlLifecycle::stall_permit`.
+    pub stall_permit: bool,
 }
 
 /// The signed current band every command clamps into: `lo <= i_ref <= hi`.
@@ -112,6 +115,19 @@ impl LimitState {
         theta_hat_counts: i32,
         cfg: &LimitCfg,
     ) -> IBand {
+        // Deliberate stall: drop the trip and the endstop, keep everything
+        // electrical. Taken before the triggers so a permit granted while
+        // already tripped releases instead of staying folded.
+        if cfg.stall_permit {
+            self.stalled = false;
+            self.stall_ticks = 0;
+            let lim = cfg.current_limit_counts.min(self.derate_cache);
+            self.i_lim = lim;
+            return IBand {
+                lo: -(lim as i32),
+                hi: lim as i32,
+            };
+        }
         // release before the triggers: a relax re-arms a full stall window
         // instead of instantly re-tripping off the stale timer
         if self.stalled && tau_d_abs_counts < cfg.stall_release_counts {
@@ -213,6 +229,12 @@ mod tests {
         cutoff_cc: 10000,
         pos_min_soft_counts: -4000,
         pos_max_soft_counts: 4000,
+        stall_permit: false,
+    };
+
+    const PERMIT: LimitCfg = LimitCfg {
+        stall_permit: true,
+        ..CFG
     };
 
     /// Mid-range, unpinned, no load: nothing but limit/derate can bind.
@@ -389,5 +411,56 @@ mod tests {
         assert!((5..=6).contains(&lim), "lim={lim}");
         // endstop zero beats everything
         assert_eq!(st.fold(true, 0, 200, 4000, &CFG).hi, 0);
+    }
+
+    /// The whole point of the permit: pushing into a wall keeps its current.
+    /// Without it the inward side collapses to 0 and the drive is dead, and
+    /// no soft-limit value can express "stall here" when the stop sits AT
+    /// the position rail.
+    #[test]
+    fn permit_keeps_the_band_open_at_both_walls() {
+        let mut st = LimitState::new();
+        assert_eq!(st.fold(false, 0, 0, 4000, &CFG).hi, 0);
+        assert_eq!(st.fold(false, 0, 0, 4000, &PERMIT).hi, 1200);
+        assert_eq!(st.fold(false, 0, 0, -4000, &CFG).lo, 0);
+        assert_eq!(st.fold(false, 0, 0, -4000, &PERMIT).lo, -1200);
+    }
+
+    /// Pinned and slow is the stall signature, and holding against a stop is
+    /// exactly that. Under the permit the timer must never trip, however long
+    /// it is held - a bench run presses for seconds before the first rung.
+    #[test]
+    fn permit_never_trips_the_stall_timer() {
+        let mut st = LimitState::new();
+        for _ in 0..(CFG.stall_time_ticks * 10) {
+            st.fold(true, 0, 0, 0, &PERMIT);
+        }
+        assert!(!st.stalled());
+        assert!(!st.stall_fault_pending());
+        assert_eq!(st.i_lim_counts(), 1200);
+    }
+
+    /// Granted while already folded, the permit releases rather than leaving
+    /// the yield latched: the tool sets the bit after the servo has been
+    /// fighting the stop, not before.
+    #[test]
+    fn permit_releases_an_existing_stall() {
+        let mut st = LimitState::new();
+        for _ in 0..CFG.stall_time_ticks {
+            st.fold(true, 0, 0, 0, &CFG);
+        }
+        assert!(st.stalled());
+        assert_eq!(st.fold(true, 0, 0, 0, &PERMIT).hi, 1200);
+        assert!(!st.stalled());
+    }
+
+    /// It drops the two MOTION guards and nothing else. A permit that also
+    /// dropped the thermal cutoff would cook a winding, so the derate still
+    /// binds and a cut-off servo still reads zero.
+    #[test]
+    fn permit_does_not_touch_thermal_or_current_limits() {
+        let mut st = LimitState::new();
+        st.update_derate(CFG.cutoff_cc, &CFG);
+        assert_eq!(st.fold(false, 0, 0, 0, &PERMIT).hi, 0);
     }
 }
