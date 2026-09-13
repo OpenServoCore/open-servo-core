@@ -183,6 +183,12 @@ pub struct Args {
     /// onset measures the re-wind instead of the winding.
     #[arg(long)]
     stall: bool,
+    /// The load is a resistor, not a motor: no shaft to seek, brake or
+    /// settle, so every seek is skipped and the rungs drive directly.
+    /// Implies the stall permit - the rungs draw current with no motion,
+    /// which is exactly what the stall trip exists to catch.
+    #[arg(long)]
+    static_load: bool,
     /// Brake-and-hold after the seek, before the rung arms. Without it the
     /// rung opens on a shaft still coasting from the seek, and since a fwd
     /// rung's start band is at the LOW guard the coast is BACKWARD: measured
@@ -534,6 +540,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
         "seek_cap_pct": args.seek_cap_pct,
         "settle_ms": args.settle_ms,
         "stall": args.stall,
+        "static_load": args.static_load,
         "guard": [args.guard_lo, args.guard_hi],
         "tel_mask": mask,
         "post_rung_brake": true,
@@ -559,13 +566,15 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
         write_reg(c, id, decay_reg, Decay::Slow as i32)?;
         write_reg(c, id, zb_reg, 0)?;
         write_reg(c, id, control::TEL_MASK, mask as i32)?;
-        if args.stall {
+        if args.stall || args.static_load {
             write_reg(c, id, control::STALL_PERMIT, 1)?;
         }
 
         // baseline: mid-travel, torque off, noise floor at full tick rate
         println!("[baseline] {} ms torque-off", args.baseline_ms);
-        seek_band(c, id, (1750, 2350), seek_duty, seek_cap)?;
+        if !args.static_load {
+            seek_band(c, id, (1750, 2350), seek_duty, seek_cap)?;
+        }
         write_reg(c, id, control::TORQUE_ENABLE, 0)?;
         let (frames, st) = exchange_tel_burst(c, id, samples_of_ms(args.baseline_ms), None, mask)?;
         println!(
@@ -604,7 +613,9 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
                         // false: the seek is the only difference in its prep.
                         if let Step::Drive(..) = step {
                             check_fault(c, id)?;
-                            if args.stall {
+                            if args.static_load {
+                                // nothing to seek
+                            } else if args.stall {
                                 // Already stopped, and still pressed into the stop:
                                 // nothing to brake and nothing to let settle.
                                 seek_stop(c, id, dir, seek_duty, seek_cap)?;
