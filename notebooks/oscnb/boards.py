@@ -188,6 +188,23 @@ BOARDS = {
                 1.8, 1.7, 1.9, "V bemf", "bringup isns-diff findings",
                 "above this the A-side ESD clamp skews the divider split - use "
                 "the positive terminal, and distrust coast BEMF above it"),
+            "vdd_measured": Measured(
+                3.28, 3.27, 3.29, "V", "nb00 sec 10.1, DMM at the 3V3 test point",
+                "vdd_mv stays 3300 so the sense block every capture carries is "
+                "stable; apply this only where absolute volts or amps are quoted, "
+                "ratios cancel it (0.6%)"),
+            "terminal_chain_measured": Measured(
+                0.0, -0.7, 0.7, "% vs DMM", "nb00 sec 10.2, 4x4 grid at 1.7 A",
+                "both directions inside the meter's band or within 0.7% of its "
+                "midpoint; VB bias, 6k8/3k3 ratio and rail-from-tap are right"),
+            "current_chain_scale_measured": Measured(
+                1.2, -1.5, 3.9, "% high vs grid route", "nb00 sec 10.3, 2S DC laps",
+                "no gross scale error; the bracket is the grid's 0.1 ohm last "
+                "digit plus meter class, no series ammeter (10 A jack dead)"),
+            "crest_floor_measured": Measured(
+                15, 15, 17, "% duty on 2S", "nb00 sec 10.5-10.6, static-load ladders + bursts",
+                "honest crest current from 15% on 2S (amplifier edge ~3-4 us); "
+                "USB needs about 30% (island-cap charge sharing on the soft rail)"),
         },
         notes=(
             "Temporary hacked rig, not the settled design. 60 mOhm shunt, "
