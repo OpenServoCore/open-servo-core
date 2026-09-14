@@ -7,7 +7,7 @@
 
 pub(crate) mod params;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::rig::pump::{self, Pump, with_guard, write_reg};
 use crate::rig::{csvio, snapshot};
@@ -35,20 +35,24 @@ use osc_ident::fits::{self, InertiaPriors};
 use osc_ident::gains::{self, BwTargets, PlantParams};
 use osc_ident::regs::{calib, control};
 use osc_ident::report::{self, PlantInputs, ReportInputs};
-use osc_ident::sources::{self, Source};
+use osc_ident::sources::{self, Source, Winding};
 use params::{
     BiasJson, BreakawayJson, GainJson, InductanceJson, InertiaJson, LadderJson, ParamsFile,
     PlantJson, ResistanceJson, RlJson, SenseJson,
 };
+
+/// Where recorded runs land when `--out` is absent.
+const DEFAULT_OUT: &str = "./ident-out";
 
 /// The `osc ident` arg group: output, rig envelope, and bandwidth targets,
 /// all scoped to the ident subtree. `--baud`/`--id` come from the top-level
 /// osc globals.
 #[derive(clap::Args, Debug)]
 pub struct Args {
-    /// Output directory root; runs land in <out>/<timestamp>/.
-    #[arg(long, global = true, default_value = "./ident-out")]
-    out: PathBuf,
+    /// Output directory root; runs land in <out>/<timestamp>/ [default:
+    /// ./ident-out]. `synth` takes it as the params.json path instead.
+    #[arg(long, global = true)]
+    out: Option<PathBuf>,
     // rig envelope
     #[arg(long, global = true, default_value_t = 150)]
     guard_lo: u16,
@@ -188,6 +192,31 @@ enum Cmd {
     Verify,
     /// Refit offline from a recorded run directory.
     Fit { dir: PathBuf },
+    /// Synthesize gains from a hand-written plant - no run directory.
+    ///
+    /// <FILE> is JSON carrying a `plant` object in the params.json schema;
+    /// every other params.json section may be absent. Fields, counts
+    /// domain unless noted:
+    ///   r_vpc        vcounts per ccount
+    ///   ke_vpc       vcounts per (count/s)
+    ///   fc           ccounts
+    ///   fv           ccounts per (count/s)
+    ///   b            count/s per medium tick per ccount
+    ///   sigma_theta  counts
+    ///   l_cd         vcount*s per ccount; omit or zero to derive it
+    ///   l_henries    H, the SI inductance l_cd derives from
+    ///   tick_hz      fast tick rate, Hz
+    ///   f_med        medium tick rate, Hz
+    ///   f_ci f_cv f_cp f_o   bandwidth targets, Hz; absent = the flags
+    ///   r_ohm r_source l_source sigma_source   provenance, reported only
+    ///
+    /// Deriving l_cd needs the sense block (shunt_r_mohm, gain_milli,
+    /// vmotor_div_top, vmotor_div_bot): put a `sense` object in the file
+    /// or leave it out and the servo is read for it.
+    ///
+    /// The params.json lands at --out, else next to <FILE>.
+    #[command(verbatim_doc_comment)]
+    Synth { file: PathBuf },
     /// Write a params.json gain set to the table (snapshot taken first).
     Write {
         params: PathBuf,
@@ -206,7 +235,7 @@ enum Cmd {
 pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     let cli = Ctx {
         baud,
-        out: args.out.clone(),
+        out: args.out.clone().unwrap_or_else(|| DEFAULT_OUT.into()),
         guard_lo: args.guard_lo,
         guard_hi: args.guard_hi,
         slip_lo: args.slip_lo,
@@ -231,6 +260,9 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     pump::install_ctrlc();
     if let Cmd::Fit { dir } = &args.cmd {
         return fit_dir(&cli, dir.clone());
+    }
+    if let Cmd::Synth { file } = &args.cmd {
+        return synth_file(&cli, id, file, args.out.as_deref());
     }
     let mut c = crate::rig::connect(&cli.baud)?;
     let id = Id::new(id);
@@ -346,7 +378,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
         }
         Cmd::Rollback { snapshot } => snapshot::rollback(&mut c, id, snapshot),
         Cmd::Show => snapshot::show(&mut c, id),
-        Cmd::Fit { .. } => unreachable!("handled above"),
+        Cmd::Fit { .. } | Cmd::Synth { .. } => unreachable!("handled above"),
     }
 }
 
@@ -985,10 +1017,161 @@ fn fit_dir(cli: &Ctx, dir: PathBuf) -> Result<()> {
     Ok(())
 }
 
+// --- hand-written plant -----------------------------------------------------
+
+/// The plant as `gains::synthesize` takes it, plus the targets it runs
+/// against: `l_cd` either as written or derived from `l_henries` through the
+/// sense block, and each absent bandwidth target filled from `cli`.
+fn synth_plant(
+    p: &PlantJson,
+    sense: Option<&SenseJson>,
+    cli: &BwTargets,
+) -> Result<(PlantParams, BwTargets)> {
+    let l_cd = if p.l_cd > 0.0 {
+        p.l_cd
+    } else {
+        if p.l_henries <= 0.0 {
+            bail!("plant has neither l_cd nor l_henries");
+        }
+        let s = sense.context("no sense block: l_cd cannot be derived from l_henries")?;
+        gains::l_cd_from_si(
+            p.l_henries,
+            s.shunt_r_mohm,
+            s.gain_milli,
+            s.vmotor_div_top,
+            s.vmotor_div_bot,
+        )
+        .context("sense scales degenerate")?
+    };
+    let pick = |v: f64, d: f64| if v > 0.0 { v } else { d };
+    let t = BwTargets {
+        f_ci: pick(p.f_ci, cli.f_ci),
+        f_cv: pick(p.f_cv, cli.f_cv),
+        f_cp: pick(p.f_cp, cli.f_cp),
+        f_o: pick(p.f_o, cli.f_o),
+    };
+    let plant = PlantParams {
+        r_vpc: p.r_vpc,
+        ke_vpc: p.ke_vpc,
+        fc: p.fc,
+        fv: p.fv,
+        b: p.b,
+        sigma_theta: p.sigma_theta,
+        l_cd,
+        tick_hz: p.tick_hz,
+        f_med: p.f_med,
+    };
+    Ok((plant, t))
+}
+
+/// Synthesize from a hand-written plant: same synthesis, encoding and
+/// report as the fit path, none of the experiments. The servo is touched
+/// only for a sense block the file omits.
+fn synth_file(cli: &Ctx, id: u8, file: &Path, out: Option<&Path>) -> Result<()> {
+    let f = ParamsFile::load(file)?;
+    let pj = f
+        .plant
+        .clone()
+        .with_context(|| format!("{}: no plant section", file.display()))?;
+    let path = match out {
+        Some(p) => p.to_path_buf(),
+        None => file.parent().unwrap_or(Path::new(".")).join("params.json"),
+    };
+    if path == file {
+        bail!("{} would overwrite the input: pass --out", path.display());
+    }
+    let mut sense = f.sense;
+    if pj.l_cd <= 0.0 && sense.is_none() {
+        let mut c = crate::rig::connect(&cli.baud)?;
+        sense = Some(read_sense(&mut c, Id::new(id))?);
+    }
+    let (plant, t) = synth_plant(&pj, sense.as_ref(), &targets(cli))?;
+    let g = gains::synthesize(&plant, &t);
+    let encoded = gains::encode(&g);
+    // the file's own source strings stay in params.json; the report has
+    // only the enum, and a hand-written plant is measured by none of E0-E8
+    let w = Winding {
+        r_ohm: pj.r_ohm,
+        r_vpc: plant.r_vpc,
+        r_from: Source::Default,
+        l_h: pj.l_henries,
+        l_from: Source::Default,
+    };
+    println!(
+        "{}",
+        render_partial(ReportInputs {
+            gains: Some((&g, &encoded)),
+            plant: Some(PlantInputs {
+                plant: &plant,
+                winding: &w,
+                sigma_from: Source::Default,
+            }),
+            ..Default::default()
+        })
+    );
+    let p = ParamsFile {
+        sense,
+        plant: Some(PlantJson {
+            l_cd: plant.l_cd,
+            f_ci: t.f_ci,
+            f_cv: t.f_cv,
+            f_cp: t.f_cp,
+            f_o: t.f_o,
+            ..pj
+        }),
+        gains: GainJson::set(&encoded),
+        ..Default::default()
+    };
+    p.save(&path)?;
+    println!("params: {}", path.display());
+    println!("next: ident write {} [--save]", path.display());
+    Ok(())
+}
+
 fn series_only(s: &[(fits::StepSeries, bool)]) -> Vec<fits::StepSeries> {
     s.iter().map(|(s, _)| s.clone()).collect()
 }
 
 fn render_partial(inputs: ReportInputs<'_>) -> String {
     report::render(&inputs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The `ident synth` path end to end without a servo: a hand-written
+    /// plant with no l_cd takes it from l_henries through the file's own
+    /// sense block, and the absent targets fall back to the CLI's.
+    #[test]
+    fn synth_encodes_a_hand_written_plant() {
+        let json = r#"{
+          "plant": {
+            "r_vpc": 3.37, "ke_vpc": 0.2, "fc": 20.0, "fv": 0.001,
+            "b": 0.1, "sigma_theta": 6.9, "tick_hz": 20100.0, "f_med": 2010.0,
+            "l_henries": 0.0005
+          },
+          "sense": {
+            "shunt_r_mohm": 33, "gain_milli": 15000,
+            "vmotor_div_top": 18200, "vmotor_div_bot": 10000, "tick_hz": 20100
+          }
+        }"#;
+        let dir = std::env::temp_dir().join(format!("ident-synth-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("plant.json");
+        std::fs::write(&path, json).unwrap();
+
+        let f = ParamsFile::load(&path).unwrap();
+        let pj = f.plant.clone().unwrap();
+        let (plant, t) = synth_plant(&pj, f.sense.as_ref(), &BwTargets::default()).unwrap();
+        let encoded = gains::encode(&gains::synthesize(&plant, &t));
+        let set = GainJson::set(&encoded);
+
+        assert!(!set.is_empty());
+        let fc = set.iter().find(|g| g.name == "fric_fc_counts").unwrap();
+        assert_eq!(fc.raw, 20);
+        let expect = gains::l_cd_from_si(0.5e-3, 33, 15_000, 18_200, 10_000).unwrap();
+        assert!((plant.l_cd - expect).abs() < 1e-12);
+        assert_eq!(t.f_ci, BwTargets::default().f_ci);
+    }
 }
