@@ -36,7 +36,6 @@ pub mod config {
     pub const L1_Q016: Reg = reg(0x0068, 2);
     pub const L2_Q88: Reg = reg(0x006a, 2);
     pub const L3_Q88: Reg = reg(0x006c, 2);
-    pub const L_BEMF_Q016: Reg = reg(0x006e, 2);
 }
 
 pub mod calib {
@@ -179,7 +178,6 @@ pub const ALL: &[(&str, Reg)] = &[
     ("l1_q016", config::L1_Q016),
     ("l2_q88", config::L2_Q88),
     ("l3_q88", config::L3_Q88),
-    ("l_bemf_q016", config::L_BEMF_Q016),
     // lut_corr omitted: a 110-byte Bytes field, not a scalar reg (write_reg
     // and reg_by_name assume width <= 4); raw_min/raw_max are plain u16.
     ("raw_min", calib::POT_LUT_RAW_MIN),

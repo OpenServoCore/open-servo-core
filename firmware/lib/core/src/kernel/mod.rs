@@ -363,7 +363,6 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                 l1_q016: fus_cfg.l1_q016,
                 l2_q88: fus_cfg.l2_q88,
                 l3_q88: fus_cfg.l3_q88,
-                l_bemf_q016: fus_cfg.l_bemf_q016,
                 fric_fc_counts: motor_cal.fric_fc_counts,
             };
             let omega_bemf = self.bemf.close_half(
@@ -371,13 +370,8 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                 motor_cal.recip_ke_q,
                 self.timing.recip_arr_q24,
             );
-            self.fusion.step(
-                i_use,
-                frame.pos,
-                omega_bemf.map(|w| w.clamp(-32767, 32767) << 16),
-                self.timing.dt_med_q32,
-                &fg,
-            );
+            self.fusion
+                .step(i_use, frame.pos, self.timing.dt_med_q32, &fg);
             let theta_hat = self.fusion.theta_q16();
             // The observer's omega keeps the rest-shaped consumers (stall
             // verdict, thermometer gate): it is always there and reads

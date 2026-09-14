@@ -46,7 +46,6 @@ pub struct FusionGains {
     pub l1_q016: u16,
     pub l2_q88: u16,
     pub l3_q88: u16,
-    pub l_bemf_q016: u16,
     pub fric_fc_counts: u16,
 }
 
@@ -90,14 +89,7 @@ impl FusionObs {
     /// i_ref - the observer never sees the validity flag. `dt_med_q32` =
     /// 2^32 / MED_HZ (MED_HZ >= 2 keeps it under 2^31, so the i32 cast is
     /// value-preserving).
-    pub fn step(
-        &mut self,
-        i_counts: i32,
-        pos_meas: u16,
-        omega_bemf_cps_q16: Option<i32>,
-        dt_med_q32: u32,
-        gains: &FusionGains,
-    ) {
+    pub fn step(&mut self, i_counts: i32, pos_meas: u16, dt_med_q32: u32, gains: &FusionGains) {
         // Predict. b_i is Q3.13 of B (c/s per ccount per tick), so the
         // shift-0 product lands in csQ13; the << 3 to csQ16 saturates only
         // beyond omega full scale (ACCEL_LIM_CC keeps the product itself
@@ -132,17 +124,6 @@ impl FusionObs {
             .tau_d_q16
             .saturating_sub(q_mul(gains.l3_q88 as i32, e, 8))
             .clamp(-TAU_D_LIM_CCQ16, TAU_D_LIM_CCQ16);
-
-        // bemf blend; config defaults l_bemf 0 = off until bench-validated.
-        if gains.l_bemf_q016 > 0
-            && let Some(w) = omega_bemf_cps_q16
-        {
-            let e_w = w.saturating_sub(self.omega_q16);
-            self.omega_q16 = self
-                .omega_q16
-                .saturating_add(q_mul(gains.l_bemf_q016 as i32, e_w, 16))
-                .clamp(-OMEGA_LIM_CSQ16, OMEGA_LIM_CSQ16);
-        }
     }
 
     pub fn theta_q16(&self) -> i32 {
@@ -181,7 +162,6 @@ mod tests {
         l1_q016: 16384,
         l2_q88: 1024,
         l3_q88: 2048,
-        l_bemf_q016: 0,
         fric_fc_counts: 0,
     };
 
@@ -205,7 +185,7 @@ mod tests {
         let mut f = FusionObs::new();
         f.seed(1990);
         for _ in 0..40000 {
-            f.step(0, 2000, None, DT, &G);
+            f.step(0, 2000, DT, &G);
         }
         assert_eq!(f.theta_q16(), 2000 << 16, "pin");
         assert_eq!(f.omega_q16(), 1964, "pin");
@@ -222,7 +202,7 @@ mod tests {
         // theta advance: 655200 - (1024 * 327 >> 8) = 653892.
         let mut f = FusionObs::new();
         f.seed(2000);
-        f.step(100, 2000, None, DT, &G);
+        f.step(100, 2000, DT, &G);
         assert_eq!(f.omega_q16(), 653892, "pin");
     }
 
@@ -233,7 +213,7 @@ mod tests {
         let mut f = FusionObs::new();
         f.seed(0);
         for n in 1..=3000u16 {
-            f.step(0, n, None, DT, &G);
+            f.step(0, n, DT, &G);
         }
         let target = 2000i32 << 16;
         let err = (f.omega_q16() - target).abs();
@@ -249,7 +229,7 @@ mod tests {
         let mut f = FusionObs::new();
         f.seed(2000);
         for _ in 0..20000 {
-            f.step(500, 2000, None, DT, &G);
+            f.step(500, 2000, DT, &G);
         }
         // the live bleed path settles tau_d onto the drive exactly
         assert_eq!(f.tau_d_counts(), 500, "pin");
@@ -269,38 +249,11 @@ mod tests {
         let mut f = FusionObs::new();
         f.seed(2048);
         for _ in 0..100 {
-            f.step(0, 2048, None, DT, &g);
+            f.step(0, 2048, DT, &g);
             assert_eq!(f.theta_q16(), 2048 << 16);
             assert_eq!(f.omega_q16(), 0);
             assert_eq!(f.tau_d_counts(), 0);
         }
-    }
-
-    #[test]
-    fn bemf_blend_off_at_zero_gain() {
-        let mut with = FusionObs::new();
-        let mut without = FusionObs::new();
-        with.seed(1000);
-        without.seed(1000);
-        for n in 0..500u16 {
-            with.step(200, 1000 + n, Some(5000 << 16), DT, &G);
-            without.step(200, 1000 + n, None, DT, &G);
-            assert_eq!(with.theta_q16(), without.theta_q16());
-            assert_eq!(with.omega_q16(), without.omega_q16());
-            assert_eq!(with.tau_d_counts(), without.tau_d_counts());
-        }
-    }
-
-    #[test]
-    fn bemf_blend_pulls_omega() {
-        let g = FusionGains {
-            l_bemf_q016: 16384,
-            ..G
-        };
-        let mut f = FusionObs::new();
-        f.seed(2000);
-        f.step(0, 2000, Some(1000 << 16), DT, &g);
-        assert!(f.omega_q16() > 0, "omega={}", f.omega_q16());
     }
 
     #[test]
@@ -312,15 +265,13 @@ mod tests {
             l1_q016: u16::MAX,
             l2_q88: u16::MAX,
             l3_q88: u16::MAX,
-            l_bemf_q016: u16::MAX,
             fric_fc_counts: u16::MAX,
         };
         let mut f = FusionObs::new();
         for n in 0..2000 {
             let pos = if n & 1 == 0 { 0 } else { 4095 };
             let i = if n & 2 == 0 { i32::MAX } else { i32::MIN };
-            let w = Some(if n & 4 == 0 { i32::MAX } else { i32::MIN });
-            f.step(i, pos, w, DT, &g);
+            f.step(i, pos, DT, &g);
             assert!(f.theta_q16().abs() <= THETA_LIM_CQ16);
             assert!(f.omega_q16().abs() <= OMEGA_LIM_CSQ16);
             assert!((f.tau_d_q16).abs() <= TAU_D_LIM_CCQ16);

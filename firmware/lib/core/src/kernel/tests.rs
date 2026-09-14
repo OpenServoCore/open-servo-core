@@ -107,7 +107,6 @@ fn seed(shared: &Shared) {
         // l3 * B is the tau_d loop gain: at the b_i-encoded B (1.0 below)
         // 0.5 cc per count is stable, 2.0 rails the filter
         c.fusion.l3_q88 = 128;
-        c.fusion.l_bemf_q016 = 0;
         c.fault_cfg.pos_error_counts = 400;
         c.fault_cfg.pos_error_time_ms = 500;
         c.fault_cfg.sensor_delta_max = 256;
