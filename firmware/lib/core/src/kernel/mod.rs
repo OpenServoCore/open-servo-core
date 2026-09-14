@@ -264,9 +264,11 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         // IDENT: per-tick sample aligned to the window the PREVIOUS command
         // drove - duty_q15 still holds that command here; i/vdiff hold
         // last-valid through invalid windows (ident module doc).
-        if let Some(vdiff) = window::vdiff_from_frame(&frame, sel) {
+        let vdiff = window::vdiff_from_frame(&frame, sel);
+        if let Some(vdiff) = vdiff {
             self.vdiff_last = vdiff.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
         }
+        self.bemf.sample(ticks, vdiff, i_meas);
         // TEL emits HERE, on the fast path before the medium/slow branches:
         // duty_q15 still holds the command whose window this frame's samples
         // measured (the same previous-tick alignment the ident aggregate
@@ -361,13 +363,15 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                 l_bemf_q016: fus_cfg.l_bemf_q016,
                 fric_fc_counts: motor_cal.fric_fc_counts,
             };
-            // previous medium tick's bemf estimate: one tick stale is fine
-            // for a blend that defaults off
-            let omega_bemf_q16 = self.bemf.omega_cps().clamp(-32767, 32767) << 16;
+            let omega_bemf = self.bemf.close_half(
+                motor_cal.r_q12,
+                motor_cal.recip_ke_q,
+                self.timing.recip_arr_q24,
+            );
             self.fusion.step(
                 i_use,
                 frame.pos,
-                Some(omega_bemf_q16),
+                omega_bemf.map(|w| w.clamp(-32767, 32767) << 16),
                 self.timing.dt_med_q32,
                 &fg,
             );
@@ -477,18 +481,15 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             }
 
             self.vbus.step(frame.vbus_raw, therm_cfg.v_undervolt_counts);
-            // the shared v_mean: computed ONCE here, consumed by bemf now and
-            // the thermometer at SLOW (bemf RECIP_ARR contract)
-            let v_mean = window::vdiff_from_frame(&frame, sel).map(|vdiff| {
+            // this tick's v_mean for the thermometer at SLOW (bemf
+            // RECIP_ARR contract)
+            let v_mean = vdiff.map(|vdiff| {
                 q_mul(
                     ticks as i32 * vdiff,
                     self.timing.recip_arr_q24 as i32,
                     bemf::RECIP_ARR_SHIFT,
                 )
             });
-            let omega_bemf = self
-                .bemf
-                .step(v_mean, i_meas, motor_cal.r_q12, motor_cal.recip_ke_q);
 
             // raw-pot sanity screen runs in every mode, torque-off included
             if self.det.sensor_sample(
@@ -581,7 +582,8 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                 (&raw mut (*e).t_winding_cc).write_volatile(self.thermal.t_cc());
                 (&raw mut (*e).vbus_counts).write_volatile(self.vbus.vbus_counts());
                 (&raw mut (*e).duty_applied_q15).write_volatile(self.duty_q15);
-                (&raw mut (*e).omega_bemf_cps).write_volatile(omega_bemf);
+                (&raw mut (*e).omega_bemf_cps)
+                    .write_volatile(bemf::omega_cps_i16(omega_bemf.unwrap_or(0)));
                 (&raw mut (*e).r_hat_q12).write_volatile(self.thermal.r_q12());
                 (&raw mut (*e).i_hat_counts).write_volatile(self.i_meas_last);
                 let m = &raw mut (*p).telemetry.mode;

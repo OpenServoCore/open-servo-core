@@ -814,6 +814,46 @@ fn ident_accumulators_reset_between_windows() {
     });
 }
 
+// --- Back-EMF boxcar ------------------------------------------------------
+
+#[test]
+fn bemf_boxcar_lands_on_the_closed_form_after_20_ticks() {
+    let sh = Shared::new();
+    ident_setup(&sh);
+    let mut k = kernel();
+    // tick 0 drives the boot duty of 0 (sub-floor); ticks 1.. measure duty
+    // 8000: drive_ticks 293, vdiff 2960, i 100. The half closed at tick 10
+    // is the first clean one, tick 20 pairs it with a second.
+    for _ in 0..20 {
+        k.on_tick(frame(2000, BIAS + 100), &sh);
+        sh.table
+            .with(|t| assert_eq!(t.telemetry.estimates.omega_bemf_cps, 0));
+    }
+    k.on_tick(frame(2000, BIAS + 100), &sh);
+    // closed form: (293 * 2960 / 1200 - 2.0 * 100) * 16 c/s per vcount
+    let ticks = window::drive_ticks(8000, ARR) as i64;
+    let v_sum = (bemf::BOXCAR_TICKS as i64 * ticks * 2960 * TIMING.recip_arr_q24 as i64) >> 24;
+    let r_sum = (8192i64 * bemf::BOXCAR_TICKS as i64 * 100) >> 12;
+    let expect = ((v_sum - r_sum) * 16) / bemf::BOXCAR_TICKS as i64;
+    let got = sh.table.with(|t| t.telemetry.estimates.omega_bemf_cps) as i64;
+    assert!((got - expect).abs() <= 1, "got {got} expect {expect}");
+    assert_eq!(got, 8363, "pin");
+    // torque off: tick 21 still measures the last drive, tick 22 on are
+    // sub-floor, so the half closed at tick 30 voids and the publish drops
+    // to 0 with it
+    sh.table
+        .with_mut(|t| t.control.lifecycle.torque_enable = false);
+    for _ in 0..9 {
+        k.on_tick(frame(2000, BIAS + 100), &sh);
+    }
+    assert_eq!(
+        sh.table.with(|t| t.telemetry.estimates.omega_bemf_cps),
+        8363
+    );
+    k.on_tick(frame(2000, BIAS + 100), &sh);
+    assert_eq!(sh.table.with(|t| t.telemetry.estimates.omega_bemf_cps), 0);
+}
+
 // --- Closed-loop plant ----------------------------------------------------
 
 /// Crude integer plant in the identification-model shape:
