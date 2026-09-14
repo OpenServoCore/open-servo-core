@@ -29,6 +29,7 @@ pub struct ParamsFile {
     /// CalibSense scales read off the table - the offline fit's l_cd input.
     pub sense: Option<SenseJson>,
     pub plant: Option<PlantJson>,
+    #[serde(default)]
     pub gains: Vec<GainJson>,
 }
 
@@ -424,12 +425,21 @@ pub struct PlantJson {
     pub fv: f64,
     pub b: f64,
     pub sigma_theta: f64,
+    /// Zero means absent: `ident synth` then derives it from `l_henries`
+    /// through the sense block. The fit path always writes it.
+    #[serde(default)]
     pub l_cd: f64,
     pub tick_hz: f64,
     pub f_med: f64,
+    /// The targets the gains were synthesized against. Zero means absent,
+    /// which `ident synth` fills from the CLI flags.
+    #[serde(default)]
     pub f_ci: f64,
+    #[serde(default)]
     pub f_cv: f64,
+    #[serde(default)]
     pub f_cp: f64,
+    #[serde(default)]
     pub f_o: f64,
     /// Which experiment each input came from.
     #[serde(default)]
