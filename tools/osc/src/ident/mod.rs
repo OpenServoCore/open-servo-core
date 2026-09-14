@@ -94,6 +94,11 @@ pub struct Args {
     /// E8 held route: captures per step duty at each stop.
     #[arg(long, global = true, default_value_t = 4)]
     burst_hold_repeats: u32,
+    /// E4 step length, ms. Sized to the runway: the 150 ms default fits a
+    /// 55% step from the seek band to the far soft wall on a 5 V rail; a
+    /// 2S rail runs ~1.6x faster and wants ~80 ms.
+    #[arg(long, global = true, default_value_t = 150)]
+    inertia_ms: u32,
     /// Nominal gear ratio, informational only (printed in the report dir).
     #[arg(long, global = true)]
     gear_ratio: Option<f64>,
@@ -147,6 +152,7 @@ struct Ctx {
     burst_hold_pct: u8,
     burst_stops: BurstStops,
     burst_hold_repeats: u32,
+    inertia_ms: u32,
     gear_ratio: Option<f64>,
     f_ci: f64,
     f_cv: f64,
@@ -215,6 +221,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
         burst_hold_pct: args.burst_hold_pct,
         burst_stops: args.burst_stops,
         burst_hold_repeats: args.burst_hold_repeats,
+        inertia_ms: args.inertia_ms,
         gear_ratio: args.gear_ratio,
         f_ci: args.f_ci,
         f_cv: args.f_cv,
@@ -631,6 +638,7 @@ fn run_inertia(
     let params = rig(cli);
     let cfg = InertiaCfg {
         tick_hz: priors.tick_hz,
+        capture_ms: cli.inertia_ms,
         ..InertiaCfg::default()
     };
     let mut log = csvio::SnapshotLog::create(out, "inertia_snapshots.csv")?;
