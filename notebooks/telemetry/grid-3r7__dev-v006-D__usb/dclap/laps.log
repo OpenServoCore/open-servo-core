@@ -1,0 +1,191 @@
+== 2026-09-13 16:46:49 session start, board D, 4x4 grid on MOT_A/B, USB
+DMM VDD (3V3 TP vs GND TP) = 3.28 V
+DMM grid at its own header pins, disconnected: 3.9 ohm on 200 ohm range, probes-together 0.2 -> 3.7 ohm
+== lap 100% for 4s lap1 USB +100, DMM V across board screw terminals A-B
+pre:  fault_code= vbus_raw= current_bias_counts= vmotor_bias_counts= vmotor_a= vmotor_b= current= 
+== lap 100% for 4s lap1 USB +100, DMM V across board screw terminals A-B
+pre:  fault_code= vbus_raw= current_bias_counts= vmotor_bias_counts= vmotor_a= vmotor_b= current= 
+== lap 100% for 4s lap1 USB +100, DMM V across board screw terminals A-B
+pre:  fault_code=baud
+00) vbus_raw=baud
+07) current_bias_counts=baud
+00) vmotor_bias_counts=baud
+03) vmotor_a=baud
+03) vmotor_b=baud
+03) current=baud
+00) 
+t=1s duty_applied_q15=baud
+7f) vbus_raw=baud
+06) vmotor_a=baud
+07) vmotor_b=baud
+02) current=baud
+03) fault_code=baud
+00) 
+t=2s duty_applied_q15=baud
+00) vbus_raw=baud
+08) vmotor_a=baud
+03) vmotor_b=baud
+03) current=baud
+00) fault_code=baud
+00) 
+t=3s duty_applied_q15=baud
+00) vbus_raw=baud
+08) vmotor_a=baud
+03) vmotor_b=baud
+03) current=baud
+00) fault_code=baud
+00) 
+t=4s duty_applied_q15=baud
+00) vbus_raw=baud
+08) vmotor_a=baud
+03) vmotor_b=baud
+03) current=baud
+00) fault_code=baud
+00) 
+post: fault_code=baud
+00) vmotor_a=baud
+03) vmotor_b=baud
+03) current=baud
+00) 
+== lap 100% for 12s lap1 USB +100, DMM V across OUTA-OUTB pads
+pre:  fault_code=0 vbus_raw=2175 current_bias_counts=106 vmotor_bias_counts=788 vmotor_a=778 vmotor_b=781 current=108 
+t=1s duty_applied_q15=32767 vbus_raw=1765 vmotor_a=1937 vmotor_b=621 current=108 fault_code=0 
+t=2s duty_applied_q15=0 vbus_raw=2353 vmotor_a=778 vmotor_b=780 current=109 fault_code=0 
+t=3s duty_applied_q15=0 vbus_raw=2340 vmotor_a=778 vmotor_b=781 current=107 fault_code=0 
+t=4s duty_applied_q15=0 vbus_raw=2344 vmotor_a=779 vmotor_b=782 current=109 fault_code=0 
+t=5s duty_applied_q15=0 vbus_raw=2345 vmotor_a=778 vmotor_b=781 current=108 fault_code=0 
+t=6s duty_applied_q15=0 vbus_raw=2339 vmotor_a=777 vmotor_b=782 current=108 fault_code=0 
+t=7s duty_applied_q15=0 vbus_raw=2341 vmotor_a=780 vmotor_b=781 current=109 fault_code=0 
+t=8s duty_applied_q15=0 vbus_raw=2339 vmotor_a=777 vmotor_b=780 current=107 fault_code=0 
+t=9s duty_applied_q15=0 vbus_raw=2346 vmotor_a=778 vmotor_b=781 current=108 fault_code=0 
+t=10s duty_applied_q15=0 vbus_raw=2339 vmotor_a=777 vmotor_b=781 current=109 fault_code=0 
+t=11s duty_applied_q15=0 vbus_raw=2342 vmotor_a=778 vmotor_b=781 current=108 fault_code=0 
+t=12s duty_applied_q15=0 vbus_raw=2340 vmotor_a=777 vmotor_b=781 current=107 fault_code=0 
+post: fault_code=0 vmotor_a=778 vmotor_b=783 current=108 
+FINDING: USB cannot hold a 100% DC lap into the ~4.9 ohm loop. t=1s chip: duty 32767, current 1022c (bias 106, ~0.82 A), vbus_raw 1770c (~3.5 V), vmA 1927 / vmB 618; by t=2-3s goal 0, torque off, no fault = MCU brown-out reboot (LDO dropout at VSYS ~3.5 V). Aaron's DMM: first blink rose unstably, later laps 0. DC laps move to 2S; USB keeps only the 10-25% ladder.
+== lap 100% for 6s lap1 2S +100, DMM V across OUTA-OUTB pads
+pre:  fault_code=0 vbus_raw=3598 current_bias_counts=106 vmotor_bias_counts=788 vmotor_a=778 vmotor_b=781 current=105 
+t=1s duty_applied_q15=32767 vbus_raw=3427 vmotor_a=3275 vmotor_b=709 current=2028 fault_code=0 
+t=2s duty_applied_q15=32767 vbus_raw=3413 vmotor_a=3269 vmotor_b=709 current=2023 fault_code=0 
+t=3s duty_applied_q15=32767 vbus_raw=3404 vmotor_a=3261 vmotor_b=710 current=2017 fault_code=0 
+t=4s duty_applied_q15=32767 vbus_raw=3401 vmotor_a=3256 vmotor_b=710 current=2010 fault_code=0 
+t=5s duty_applied_q15=32767 vbus_raw=3397 vmotor_a=3253 vmotor_b=710 current=2007 fault_code=0 
+t=6s duty_applied_q15=32767 vbus_raw=3395 vmotor_a=3250 vmotor_b=709 current=2003 fault_code=0 
+post: fault_code=0 vmotor_a=775 vmotor_b=781 current=106 
+lap1 2S +100 RESULT: DMM OUTA-OUTB 6.28-6.31 V. Chip (VDD 3.28, 6k8/3k3, Vb 788c): A 6.70 V, B 0.44 V, A-B 6.26 V mean (6.29 at t=1, 6.23 at t=6), current (2015-106)c -> 1.70 A at 0.9 V/A, implied loop 3.68 ohm = grid 3.7. Rail 7.21 -> 6.83 V under 1.7 A (~0.22 ohm). Terminal chain agrees with DMM to <0.5%.
+== lap 100% for 5s lap3 2S +100, DMM 10A in series at the grid header
+pre:  fault_code=0 vbus_raw=3588 current_bias_counts=106 vmotor_bias_counts=788 vmotor_a=778 vmotor_b=781 current=107 
+t=1s duty_applied_q15=32767 vbus_raw=3587 vmotor_a=3500 vmotor_b=566 current=113 fault_code=0 
+t=2s duty_applied_q15=32767 vbus_raw=3588 vmotor_a=3498 vmotor_b=566 current=114 fault_code=0 
+t=3s duty_applied_q15=32767 vbus_raw=3586 vmotor_a=3499 vmotor_b=566 current=115 fault_code=0 
+t=4s duty_applied_q15=32767 vbus_raw=3588 vmotor_a=3499 vmotor_b=566 current=114 fault_code=0 
+t=5s duty_applied_q15=32767 vbus_raw=3585 vmotor_a=3498 vmotor_b=566 current=114 fault_code=0 
+post: fault_code=0 vmotor_a=775 vmotor_b=781 current=107 
+== lap 100% for 5s lap2 2S +100, DMM V across the grid header pins
+pre:  fault_code=0 vbus_raw=3584 current_bias_counts=106 vmotor_bias_counts=788 vmotor_a=777 vmotor_b=781 current=107 
+t=1s duty_applied_q15=32767 vbus_raw=3406 vmotor_a=3264 vmotor_b=710 current=2037 fault_code=0 
+t=2s duty_applied_q15=32767 vbus_raw=3400 vmotor_a=3259 vmotor_b=711 current=2029 fault_code=0 
+t=3s duty_applied_q15=32767 vbus_raw=3392 vmotor_a=3251 vmotor_b=710 current=2024 fault_code=0 
+t=4s duty_applied_q15=32767 vbus_raw=3387 vmotor_a=3245 vmotor_b=710 current=2022 fault_code=0 
+t=5s duty_applied_q15=32767 vbus_raw=3390 vmotor_a=3242 vmotor_b=709 current=2018 fault_code=0 
+post: fault_code=0 vmotor_a=776 vmotor_b=779 current=105 
+lap3 2S +100 DMM 10A in series: OPEN (display 0.00, chip current 114c = bias, A at rail, no sag). Meter 10 A path dead, fuse suspected. Ohms via 10A jack also open.
+lap2 2S +100 RESULT: DMM across grid header pins 6.22 -> 6.18 V. Chip A-B 6.26 -> 6.21 V (lead drop ~0.04 V), chip current (2026-106)c -> 1.709 A. I from grid = 6.20/3.7 = 1.676 A -> chip/meter-route = +2.0% +/- 2.7% (0.1 ohm resolution on 3.7).
+== lap -100% for 5s lap5 2S -100, DMM V across OUTA-OUTB pads
+pre:  fault_code=0 vbus_raw=3584 current_bias_counts=106 vmotor_bias_counts=788 vmotor_a=777 vmotor_b=780 current=104 
+t=1s duty_applied_q15=-32767 vbus_raw=3406 vmotor_a=710 vmotor_b=3229 current=2031 fault_code=0 
+t=2s duty_applied_q15=-32767 vbus_raw=3398 vmotor_a=710 vmotor_b=3221 current=2024 fault_code=0 
+t=3s duty_applied_q15=-32767 vbus_raw=3392 vmotor_a=711 vmotor_b=3216 current=2018 fault_code=0 
+t=4s duty_applied_q15=-32767 vbus_raw=3389 vmotor_a=710 vmotor_b=3215 current=2011 fault_code=0 
+t=5s duty_applied_q15=-32767 vbus_raw=3378 vmotor_a=711 vmotor_b=3207 current=2006 fault_code=0 
+post: fault_code=0 vmotor_a=774 vmotor_b=780 current=107 
+lap5 2S -100 RESULT: DMM OUTA-OUTB 6.19 -> 6.14 V (sign ignored). Chip B 6.59 V, A 0.44 V, B-A 6.18 -> 6.12 V, current (2018-106)c -> 1.712 A. Terminal chains agree with DMM both directions to <0.5%.
+NOTE: reverse terminal voltage 2% below forward at the same chip current, seen by chip AND DMM. Grid was cold for lap1, warm for lap5 (10.7 W laps): negative film tempco is the likely cause, so the 3.7 ohm cold value overstates the hot grid and route 1's +2.0% is soft. Next: 22 ohm bank (22.0-22.4 by DMM, 0.32 A on 2S, no heating) for a ~1% current anchor.
+== lap -100% for 5s lap6 2S -100 COLD grid, DMM OUTA-OUTB
+pre:  fault_code=0 vbus_raw=3588 current_bias_counts=107 vmotor_bias_counts=788 vmotor_a=778 vmotor_b=781 current=107 
+t=1s duty_applied_q15=-32767 vbus_raw=3403 vmotor_a=708 vmotor_b=3226 current=2023 fault_code=0 
+t=2s duty_applied_q15=-32767 vbus_raw=3395 vmotor_a=710 vmotor_b= current= fault_code= 
+t=3s duty_applied_q15=-32767 vbus_raw=3393 vmotor_a=709 vmotor_b=3223 current=2011 fault_code=0 
+t=4s duty_applied_q15= vbus_raw=3382 vmotor_a=710 vmotor_b=3209 current=2003 fault_code=0 
+t=5s duty_applied_q15=-32767 vbus_raw=3380 vmotor_a=708 vmotor_b=3206 current=1999 fault_code=0 
+post: fault_code=0 vmotor_a=775 vmotor_b=784 current=106 
+== lap 100% for 5s lap7 2S +100 warm grid, DMM OUTA-OUTB
+pre:  fault_code=0 vbus_raw=3567 current_bias_counts=107 vmotor_bias_counts=788 vmotor_a=777 vmotor_b=782 current=106 
+t=1s duty_applied_q15=32767 vbus_raw=3398 vmotor_a=3256 vmotor_b=709 current=2022 fault_code=0 
+t=2s duty_applied_q15=32767 vbus_raw=3386 vmotor_a=3246 vmotor_b=710 current=2016 fault_code=0 
+t=3s duty_applied_q15=32767 vbus_raw=3381 vmotor_a=3243 vmotor_b=709 current=2011 fault_code=0 
+t=4s duty_applied_q15= vbus_raw= vmotor_a= vmotor_b= current= fault_code= 
+t=5s duty_applied_q15=32767 vbus_raw=3374 vmotor_a=3233 vmotor_b=708 current=1990 fault_code=0 
+post: fault_code=0 vmotor_a=776 vmotor_b=781 current=106 
+== lap -100% for 5s lap8 2S -100 warm grid, DMM OUTA-OUTB
+pre:  fault_code=0 vbus_raw=3563 current_bias_counts=107 vmotor_bias_counts=788 vmotor_a=779 vmotor_b=784 current=108 
+t=1s duty_applied_q15=-32767 vbus_raw=3390 vmotor_a=710 vmotor_b=3221 current=2011 fault_code=0 
+t=2s duty_applied_q15=-32767 vbus_raw=3384 vmotor_a=709 vmotor_b=3213 current=2006 fault_code=0 
+t=3s duty_applied_q15=-32767 vbus_raw=3379 vmotor_a=709 vmotor_b=3205 current=2001 fault_code=0 
+t=4s duty_applied_q15=-32767 vbus_raw=3372 vmotor_a=710 vmotor_b=3205 current=1994 fault_code=0 
+t=5s duty_applied_q15=-32767 vbus_raw=3367 vmotor_a=708 vmotor_b=3196 current=1998 fault_code=0 
+post: fault_code=0 vmotor_a=777 vmotor_b=782 current=107 
+laps 6-8 2S discriminator (grid rested >5 min before lap6): lap6 -100 cold: DMM 6.15-6.13, chip B-A 6.15, I 1.71 A. lap7 +100 warm: DMM missed, chip A-B 6.22, I 1.70. lap8 -100 warm: DMM 6.16-6.11, chip 6.13, I 1.70. Grid hot to the touch after.
+FINDING: heating is NOT the cause (cold = warm reverse within 0.2%). Direction effect is real: reverse terminal voltage 2.4% below forward on a passive load, seen by chip dividers and DMM alike, while the shunt chain reads the same current both ways (+/-0.5%). => board-D current chain has a ~2% direction-dependent error; Kelvin/island geometry (entry from B-side vs A-side low FET) is the fitting mechanism, ~1.2 mohm of copper difference suffices. High-side drop asymmetric too: 0.13 V fwd vs 0.25 V rev at 1.7 A. Chain scale vs grid route: +2% fwd, +3% rev, bracket ~3%.
+== lap 100% for 5s lap9 2S +100, DMM OUTA-OUTB
+pre:  fault_code=0 vbus_raw=3561 current_bias_counts=107 vmotor_bias_counts=788 vmotor_a=777 vmotor_b=782 current=106 
+t=1s duty_applied_q15=32767 vbus_raw=3390 vmotor_a=3250 vmotor_b=709 current=2014 fault_code=0 
+t=2s duty_applied_q15=32767 vbus_raw=3379 vmotor_a=3243 vmotor_b=708 current=2010 fault_code=0 
+t=3s duty_applied_q15=32767 vbus_raw=3374 vmotor_a=3239 vmotor_b=709 current=2001 fault_code=0 
+t=4s duty_applied_q15=32767 vbus_raw=3368 vmotor_a=3229 vmotor_b=707 current=1995 fault_code=0 
+t=5s duty_applied_q15=32767 vbus_raw=3364 vmotor_a=3227 vmotor_b=708 current=1991 fault_code=0 
+post: fault_code=0 vmotor_a=776 vmotor_b=781 current=104 
+== lap -100% for 5s lap10 2S -100, DMM OUTA-OUTB
+pre:  fault_code=0 vbus_raw=3556 current_bias_counts=107 vmotor_bias_counts=788 vmotor_a=777 vmotor_b=782 current=104 
+t=1s duty_applied_q15=-32767 vbus_raw=3384 vmotor_a=707 vmotor_b=3217 current=2000 fault_code=0 
+t=2s duty_applied_q15=-32767 vbus_raw=3377 vmotor_a=707 vmotor_b=3205 current=1993 fault_code=0 
+t=3s duty_applied_q15=-32767 vbus_raw=3372 vmotor_a=708 vmotor_b=3201 current=1992 fault_code=0 
+t=4s duty_applied_q15=-32767 vbus_raw=3371 vmotor_a=708 vmotor_b=3197 current=1985 fault_code=0 
+t=5s duty_applied_q15=-32767 vbus_raw=3362 vmotor_a=709 vmotor_b=3193 current=1979 fault_code=0 
+post: fault_code=0 vmotor_a=776 vmotor_b=780 current=105 
+== lap 100% for 5s lap11 2S +100, DMM OUTA-OUTB
+pre:  fault_code=0 vbus_raw=3549 current_bias_counts=107 vmotor_bias_counts=788 vmotor_a=777 vmotor_b=782 current=106 
+t=1s duty_applied_q15=32767 vbus_raw=3384 vmotor_a=3242 vmotor_b=707 current=2005 fault_code=0 
+t=2s duty_applied_q15=32767 vbus_raw=3371 vmotor_a=3236 vmotor_b=710 current=2001 fault_code=0 
+t=3s duty_applied_q15=32767 vbus_raw=3367 vmotor_a=3228 vmotor_b=708 current=1993 fault_code=0 
+t=4s duty_applied_q15=32767 vbus_raw=3365 vmotor_a=3227 vmotor_b=707 current=1991 fault_code=0 
+t=5s duty_applied_q15=32767 vbus_raw=3360 vmotor_a=3222 vmotor_b=708 current=1983 fault_code=0 
+post: fault_code=0 vmotor_a=776 vmotor_b=780 current=104 
+laps 9-11 2S chip-only (dividers validated vs DMM, no probes needed): +100 A-B 6.20 V / 1.70 A; -100 B-A 6.12 V / 1.69 A; +100 6.19 V / 1.69 A. Reverse V 1.2% low, reverse I 0.5% low -> unexplained 0.7% this round (2% in laps 1/5/6). Direction-dependent shunt-vs-terminal discrepancy is 1-2% class and not stable; recorded as a board-D island/Kelvin limitation. HS drop 0.13 V fwd / 0.24 V rev at 1.7 A. Pack rest rail 7.21 -> 7.11 V over the session.
+== lap 100% for 4s lap12 USB-C x2 +100 trial, chip only
+pre:  fault_code=0 vbus_raw=2444 current_bias_counts=107 vmotor_bias_counts=788 vmotor_a=776 vmotor_b=782 current=106 
+t=1s duty_applied_q15=32767 vbus_raw=2262 vmotor_a=2343 vmotor_b=642 current=1366 fault_code=0 
+t=2s duty_applied_q15=32767 vbus_raw=2272 vmotor_a=2339 vmotor_b=643 current=1367 fault_code=0 
+t=3s duty_applied_q15=32767 vbus_raw=2266 vmotor_a=2342 vmotor_b=643 current=1369 fault_code=0 
+t=4s duty_applied_q15=32767 vbus_raw=2267 vmotor_a=2341 vmotor_b=643 current=1370 fault_code=0 
+post: fault_code=0 vmotor_a=777 vmotor_b=781 current=104 
+== lap 100% for 3s lap13 external USB-C only, LinkE 5V out, +100 trial
+pre:  fault_code=0 vbus_raw=2443 current_bias_counts=104 vmotor_bias_counts=788 vmotor_a=778 vmotor_b=782 current=106 
+t=1s duty_applied_q15=32767 vbus_raw=2266 vmotor_a=2338 vmotor_b=643 current=1373 fault_code=0 
+t=2s duty_applied_q15=32767 vbus_raw=2265 vmotor_a=2346 vmotor_b=644 current=1369 fault_code=0 
+t=3s duty_applied_q15=32767 vbus_raw=2265 vmotor_a=2339 vmotor_b=643 current=1376 fault_code=0 
+post: fault_code=0 vmotor_a=777 vmotor_b=781 current=109 
+grid-3r7__dev-v006-D__2s/ladder: 5 captures, 330 rungs, bias 106.6c, vb 781c
+ dir  adut  n      i_A      v_V        r     r_sd     i_sd     rail
+  -1    10 10   1.4121  -4.2011  -2.9750   0.0068   0.0027   7.1388
+  -1    12 10   1.5669  -6.3028  -4.0226   0.0089   0.0028   7.1299
+  -1    15 10   1.7249  -6.2983  -3.6513   0.0057   0.0024   7.0986
+  -1    20 10   1.7794  -6.3033  -3.5424   0.0013   0.0025   6.9680
+  -1    25 10   1.7395  -6.2980  -3.6205   0.0013   0.0029   6.8971
+  -1   100  5   1.7301  -6.2453  -3.6099   0.0004   0.0036   6.8500
+   1    10 10   1.4131   6.4091   4.5356   0.0093   0.0025   7.1363
+   1    12 10   1.5705   6.3481   4.0420   0.0069   0.0026   7.1272
+   1    15 10   1.7335   6.3697   3.6746   0.0048   0.0036   7.0956
+   1    20 10   1.7879   6.3726   3.5644   0.0011   0.0022   6.9671
+   1    25 10   1.7485   6.3639   3.6397   0.0011   0.0023   6.8967
+   1   100  5   1.7370   6.3183   3.6375   0.0026   0.0040   6.8494
+dir -1: R over 10-25%: mean -3.6372, sd 0.2569, min -4.2488 at 11%, max -2.9672 at 10%
+dir +1: R over 10-25%: mean 3.7550, sd 0.2781, min 3.5622 at 20%, max 4.5526 at 10%
+dir -1: 100% rung R -3.6099 sd 0.0004, i 1.730 A, rail 6.850 V
+dir +1: 100% rung R 3.6375 sd 0.0026, i 1.737 A, rail 6.849 V
+BURSTS on the grid (shunt-only, 960 x 1.083 us, folded on the 20 kHz period, A per slot after the ON edge):
+ 2S : 1.05 1.47 1.72 1.76 1.74 1.71 1.71 1.71 ...  settled by slot 3 (~3.3 us) to V/R within 1%; fall edge 3 slots.
+ USB: 0.56 0.75 0.88 0.97 1.03 1.07 1.09 1.10 1.11 1.12  settled by slot 9-10 (~10 us); OFF window carries a slow recharge tail (0.86 0.45 0.27 0.16 0.10).
+ => two floors: amplifier edge ~3 us (both supplies; 2A 6k4/430 + 22 pF should ~halve it; late-window sampling removes the x2), and island-cap charge sharing on the soft rail (USB only; fix = every DRV/bulk cap returns to GND outside the shunt loop). Crest current honest from 15% on 2S, ~30% on USB, on board D.
+ USB ladder (2 captures): R_app 5.66 at 10% -> 4.00 at 25% -> 3.69 at 100%. 2S ladder (5 captures): 4.54 at 10%, 3.67 at 15%, 3.56-3.64 from 16% to 100%.
+DESIGN (Aaron 2026-09-14): no external CSA (no ADC pin, and 350-400 kHz CSAs settle no faster than the OPA at G15); keep DNP pads for the OPA network; target honest crest from 8% duty on 2A, 3-4% with late-window sampling.

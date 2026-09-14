@@ -1,0 +1,16 @@
+lap,supply,duty_pct,where,v_lo,v_hi,note
+setup,usb,0,VDD at the 3V3 test point [V],3.28,3.28,"the ADC reference; boards.py declares 3.30, so every absolute volt and amp off this board reads 0.61 percent high"
+setup,usb,0,grid resistance at its own header pins [ohm],3.7,3.7,3.9 on the 200 ohm range with the probes-together 0.2 removed; cold; 0.1 ohm resolution is the dominant bracket
+1-usb-hub,usb,100,OUTA-OUTB pads [V],,,"brown-out on the LinkE hub, VSYS fell to about 3.5 V at 0.8 A, the MCU rebooted, applied duty went to 0 after 1 s and the meter never settled; excluded from every fit"
+1,2s,100,OUTA-OUTB pads [V],6.28,6.31,cold grid
+2,2s,100,grid header pins [V],6.18,6.22,6.22 falling to 6.18 across the hold; reads below the OUTA-OUTB pads by the lead and clip drop
+3,2s,100,10 A jack in series at the grid header [A],0.0,0.0,"the meter's 10 A path is dead, display 0.00 with the chip current at bias and terminal A at the rail, so the loop was open; recorded and excluded from every fit"
+5,2s,-100,OUTA-OUTB pads [V],6.14,6.19,warm grid; the meter's sign is ignored
+6,2s,-100,OUTA-OUTB pads [V],6.13,6.15,"cold grid, rested over five minutes"
+7,2s,100,OUTA-OUTB pads [V],,,meter reading missed; chip only
+8,2s,-100,OUTA-OUTB pads [V],6.11,6.16,warm grid
+9,2s,100,OUTA-OUTB pads [V],,,"chip only, the dividers were already validated against the meter"
+10,2s,-100,OUTA-OUTB pads [V],,,chip only
+11,2s,100,OUTA-OUTB pads [V],,,chip only
+12,usb,100,OUTA-OUTB pads [V],,,chip only; external USB-C supply in place of the LinkE hub
+13,usb,100,OUTA-OUTB pads [V],,,"chip only; external USB-C supply alone, LinkE 5 V out"
