@@ -17,7 +17,7 @@ The render predates the 2A refresh, so the connector set on it is one revision b
 - **MCU** - CH32V006F8P6 (RISC-V, 48 MHz, 62 KB flash, 8 KB RAM, TSSOP20). Every pin is used, including the reset pin.
 - **Motor driver** - TI DRV8212PDSGR (U3). H-bridge with IN1/IN2 PWM. 4 A peak, 1.76 A RMS continuous, VM 1.65-11 V.
 - **Current sense** - 60 mOhm kelvin-connected low-side shunt (Rs1) feeding the MCU's on-chip op-amp in bare mode. An external four-resistor difference network sets G = 14.88 against a 0.52 V bias, so both current directions are visible.
-- **LDO** - HT7533-1 (U1) for the 3.3 V logic rail. One logic rail: the DRV8212P VCC hangs off the same `+3V3` as the MCU.
+- **LDO** - HT7533-1 (U1) for the 3.3 V logic rail. The DRV8212P VCC (`+3V3_DRV`) hangs off the same `+3V3` as the MCU through Rh2, a fitted 0R that a ferrite can replace.
 - **Servo bus** - single-wire half-duplex UART on `PC0`, wired straight to the MCU through a 33 Ohm series resistor. No buffer, no TX_EN. Direction turnaround and RX timing are firmware's job.
 - **Telemetry** - no dedicated pin. Telemetry rides the `DATA` wire as bounded CRC'd bursts, so there is no second UART on the board.
 - **Qwiic** - SH 1.0 mm 4P I2C connector (J3) for an encoder module, either magnetic (I2C) or a quadrature encoder breakout.
@@ -61,8 +61,8 @@ CH32V006F8P6, TSSOP20. The "Function used" column is what the board wires the pi
 |12|`PC2`|`SCL`|I2C1 SCL, Qwiic (J3).|
 |13|`PC3`|`DRV_EN`|GPIO to the DRV8212P nSLEEP. A 10K pulldown (Rh1) keeps the driver asleep at reset.|
 |14|`PC4`|`VSNS`|ADC `A2`, `VSYS` supply divider.|
-|15|`PC5`|`DRV_IN2`|TIM1 CH2 (remap 7), H-bridge PWM.|
-|16|`PC6`|`DRV_IN1`|TIM1 CH3 (remap 7), H-bridge PWM.|
+|15|`PC5`|`DRV_IN2`|TIM1 CH2 (remap 8), H-bridge PWM.|
+|16|`PC6`|`DRV_IN1`|TIM1 CH3 (remap 8), H-bridge PWM.|
 |17|`PC7`|`STAT`|STAT LED, active low. The only firmware-driven lamp.|
 |18|`PD1`|`SWDIO`|1-wire debug, 100 Ohm series (Ru1) to J2.|
 |19|`PD2`|`ENCB`|Encoder B. ADC `A3`, analog quadrature sampling.|
@@ -120,7 +120,7 @@ This is a future expansion connector for an ADC-sampled custom IR quadrature enc
 
 ### External NTC - J7
 
-1x02 pin header, signal / `GND`, for an external NTC thermistor. Select it with JP2. The on-board 10K pull-up (Rn1) lives on the internal leg only, so an external thermistor brings its own pull-up to `+3V3` (or is a sensor with a driven output).
+1x03 pin header, `VNTC_EXT` / `+3V3` / `GND`, for an external NTC thermistor or temperature sensor. Select it with JP2. The `+3V3` pin is there so the external part can bring its own pull-up or supply: a bare thermistor divides against a resistor on the connector, a sensor with a driven output just takes the rail. Rn1 10K serves the internal TH1 leg only, so nothing on the board loads the external node.
 
 ### Servo TTL bus - J8 / J9 / J10
 
@@ -170,12 +170,13 @@ This is a swap-and-measure board, so the populated values are a starting point a
 
 |Ref|Value|Purpose when fitted|
 |---|---|---|
-|`Cc3` / `Cc4`|47 pF|Stack on the 22 pF comp caps for a slower, quieter corner (about 360 kHz).|
+|`Cc3` / `Cc4`|22 pF|Stack on the 22 pF comp caps for a slower, quieter corner (about 570 kHz).|
 |`Ck1`|100 pF|Differential filter across the kelvin pair, ahead of the gain resistors.|
-|`Co1`|47 pF|Load cap on the op-amp output. Layout insurance.|
+|`Co1`|100 pF|Load cap on the op-amp output. Layout insurance.|
 |`Rd3`|300|Parallels Rd2, dropping `VREF` to 0.28 V for a near-unipolar range.|
-|`Rs2`|33 mOhm|Alternative shunt in the same `PGND` to `GND` slot. Swapped in for Rs1 it gives 491 mV/A and more headroom; fitted alongside, the pair is 21 mOhm.|
 |`Rx2`|10K|`DATA` bus pull-up for single-device bench setups.|
+
+The shunt itself has no alternate footprint. Other values (22 to 150 mOhm, all 1206) swap onto Rs1's own pads, so the kelvin taps never move. A second shunt in parallel would split the current by pad and trace resistance and break the symmetric entry, so there is no pad for one.
 
 The DRV8212P's own OCP / TSD is the first protection layer. V006 has no comparator units, so the rest is firmware: a kernel I2t limit drops `DRV_EN` and latches a stall fault that only the user can clear, IWDG covers hung firmware, and any reset kills the bridge through the Rh1 pulldown.
 
@@ -190,13 +191,13 @@ The DRV8212P's own OCP / TSD is the first protection layer. V006 has no comparat
 - A 2S rail at 8.4 V taps about 2.18 V, well inside the ADC range.
 - During coast, the free terminal sits a diode below `PGND` or a diode above `VSYS`. At -0.9 V the tap is still 0.32 V, and at 9.3 V it is 2.36 V, so neither phase clips.
 
-That is the point of the bias: both terminals stay readable while the bridge coasts, so `vA - vB` is real back-EMF rather than a rail-clamped stub. The rail comes back as `(tap - 0.8 x VB) / 0.2`.
+That is the point of the bias: both terminals stay readable while the bridge coasts, so `vA - vB` is real back-EMF rather than a rail-clamped stub. The rail comes back as `5 x tap - 4 x VB`.
 
-`VB` is self-measured at boot. Brake-low pulls both terminals to `PGND`, so both taps read `0.8 x VB` and firmware recovers the bias with no extra pin. The bias also shifts with drive current, since the divider bottoms inject into the `VB` node against its own ~83 Ohm source impedance, about +80 mV at full 2S duty. Firmware models that from the two taps.
+`VB` is read at boot with the driver parked. With the bridge Hi-Z no current flows in either leg, so both taps sit at `VB` itself and firmware recovers the bias with no extra pin. The bias also shifts with drive current, since the divider bottoms inject into the `VB` node against its own 81 Ohm source impedance: about +80 mV at full duty on a 2S rail, which the 0.20 ratio turns into 0.3 V on a single-terminal reading. Both terminals are measured, so the injected current is known and firmware corrects `VB` from the two taps with one multiply-add; `vA - vB` is immune either way.
 
 ### Supply voltage
 
-`VSYS` has its own divider straight to `GND`: Rv5 20K / Rv6 10K with Cv3 100nF, into ADC `A2`. Divide by 3, so 8.4 V lands at 2.8 V.
+`VSYS` has its own divider straight to `GND`: Rv5 6K4 / Rv6 1K6 with Cv3 100 pF, into ADC `A2`. Divide by 5, so 8.4 V lands at 1.68 V. Same reels and the same phase as the terminal dividers, so the two chains track each other and rail minus terminal resolves the bridge drop instead of disappearing into a ratio disagreement.
 
 ### Position
 
@@ -219,7 +220,7 @@ Passives are numbered by the net they serve, not by the sheet they are drawn on.
 |`o`|OPA output|Co1|
 |`d`|VREF divider|Rd1 - Rd3, Cd1|
 |`k`|Kelvin taps|Rk1, Rk2, Ck1|
-|`s`|Shunt|Rs1, Rs2|
+|`s`|Shunt|Rs1|
 |`v`|Terminal and supply dividers|Rv1 - Rv6, Cv1 - Cv3|
 |`b`|VB bias|Rb1, Rb2, Cb1, Cb2|
 |`n`|NTC|Rn1|
@@ -227,7 +228,7 @@ Passives are numbered by the net they serve, not by the sheet they are drawn on.
 |`l`|Lamps (LEDs and their resistors)|Dl1 - Dl4, Rl1 - Rl4|
 |`u`|MCU supply and debug|Cu1, Cu2, Ru1|
 |`q`|Qwiic I2C|Rq1 - Rq4|
-|`h`|H-bridge|Ch1 - Ch5, Rh1|
+|`h`|H-bridge|Ch1 - Ch5, Rh1, Rh2|
 |`a`|Angle sensor (pot)|Ra1, Ca1|
 |`x`|One-wire bus|Rx1, Rx2, Dx1|
 
@@ -248,9 +249,9 @@ Three GND probe points (TP1-TP3) are spread across the board for scope ground sp
 
 ## Power and grounding
 
-Battery (`VBAT`) and LinkE 5 V (`VPROG`) OR into `VSYS` through Dp1 / Dp2. `VSYS` is the raw motor rail and also feeds the LDO. `+3V3` is logic and the DRV8212P VCC, one rail with no separate driver supply.
+Battery (`VBAT`) and LinkE 5 V (`VPROG`) OR into `VSYS` through Dp1 / Dp2. `VSYS` is the raw motor rail and also feeds the LDO. `+3V3` is logic and, through Rh2, the DRV8212P VCC (`+3V3_DRV`). Rh2 ships as 0R; it is the swap point for a ferrite (600 Ohm at 100 MHz) if driver noise ever shows on the MCU rail, which is also the ADC reference.
 
-The bridge decoupling (Ch1 100nF on `+3V3`, Ch2 100nF plus Ch3 / Ch4 10uF plus Ch5 100uF on `VSYS`) returns to `GND`, not `PGND`. That is deliberate. At PWM timescales the motor current loops cap to bridge to motor to `PGND` and back to the cap. If those caps landed on the `PGND` side, the loop would close without crossing the shunt and the ADC would only see average draw instead of the real chopped current.
+The bridge decoupling (Ch1 100nF on `+3V3_DRV`, Ch2 100nF plus Ch3 / Ch4 10uF plus Ch5 100uF on `VSYS`) returns to `GND`, not `PGND`. That is deliberate. At PWM timescales the motor current loops cap to bridge to motor to `PGND` and back to the cap. If those caps landed on the `PGND` side, the loop would close without crossing the shunt and the ADC would only see average draw instead of the real chopped current.
 
 `PGND` is a tiny top-layer island: the driver's GND pins and thermal pad, Rh1, NT1, and the `PGND` side of the shunt. Nothing else.
 

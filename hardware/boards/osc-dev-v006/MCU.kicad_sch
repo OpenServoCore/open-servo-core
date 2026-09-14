@@ -2234,7 +2234,7 @@
 		)
 		(uuid "2205c2f7-70da-42af-936f-c3340ad76eec")
 	)
-	(text_box "CH32V006F8P6, picked for cost. Every pin is used up, even the RST pin!\n\n- TIM1: center-aligned PWM on DRV_IN1/IN2 (CH3/CH2 on remap 7). CCR4 is the ADC phase knob.\n- OPA runs in bare mode with an external 4R diff network: OPA_N on PD0 (OPN1), OPA_P on PD7 (OPP1). The output is PD4 (OPO0), and the ADC reads that same pin as A7.\n- USART1 HDSEL = osc-native bus. One wire, no TX_EN. Telemetry rides that same wire as bounded CRC'd bursts, so there is no second UART and no TEL pin.\n- I2C1 = expansion/Qwiic, polled.\n\nJP1 BOOTSTRAP: PD7 comes from the factory as RST (RST_MODE=10). Ship with the jumper open. First boot is a one-time bootstrap: flash, use the probe to set User Option Bytes RST_MODE=11 so PD7 becomes a GPIO,\nthen close the jumper with solder. Don't close it early! On an unprovisioned chip the OPA network parks the pin near GND and the chip is held in reset. Recovery = reopen the jumper.\n\nV006 has no CMP units, so protection is layered instead. DRV OCP/TSD catches shorts. Kernel I2t forces DRV_EN low + a latched STALL_FAULT that only the user can clear (firmware never re-enables itself). IWDG covers hung firmware, and any reset kills the bridge via the DRV_EN pulldown. The DATA LED is just a passive activity lamp. STAT is the only firmware-driven one (active low)."
+	(text_box "CH32V006F8P6, picked for cost. Every pin is used up, even the RST pin!\n\n- TIM1: center-aligned PWM on DRV_IN1/IN2 (CH3/CH2 on remap 8; remap 7 would put CH1N on PC0, the DATA pin). CCR4 is the ADC phase knob.\n- OPA runs in bare mode with an external 4R diff network: OPA_N on PD0 (OPN1), OPA_P on PD7 (OPP1). The output is PD4 (OPO0), and the ADC reads that same pin as A7.\n- USART1 HDSEL = osc-native bus. One wire, no TX_EN. Telemetry rides that same wire as bounded CRC'd bursts, so there is no second UART and no TEL pin.\n- I2C1 = expansion/Qwiic, polled.\n\nJP1 BOOTSTRAP: PD7 comes from the factory as RST (RST_MODE=10). Ship with the jumper open. First boot is a one-time bootstrap: flash, use the probe to set User Option Bytes RST_MODE=11 so PD7 becomes a GPIO,\nthen close the jumper with solder. Don't close it early! On an unprovisioned chip the OPA network parks the pin near GND and the chip is held in reset. Recovery = reopen the jumper.\n\nV006 has no CMP units, so protection is layered instead. DRV OCP/TSD catches shorts. Kernel I2t forces DRV_EN low + a latched STALL_FAULT that only the user can clear (firmware never re-enables itself). IWDG covers hung firmware, and any reset kills the bridge via the DRV_EN pulldown. The DATA LED is just a passive activity lamp. STAT is the only firmware-driven one (active low)."
 		(exclude_from_sim no)
 		(at 172.72 29.21 0)
 		(size 109.22 100.9649)
@@ -4160,7 +4160,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C65114.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C49257.html"
 			(at 39.37 109.22 0)
 			(hide yes)
 			(show_name no)
@@ -4182,7 +4182,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C65114"
+		(property "LCSC" "C49257"
 			(at 39.37 118.11 0)
 			(hide yes)
 			(show_name no)
@@ -4193,7 +4193,7 @@
 				)
 			)
 		)
-		(property "MFPN" "2.54-2*3P"
+		(property "MFPN" "2.54-1*3P"
 			(at 39.37 118.11 0)
 			(hide yes)
 			(show_name no)

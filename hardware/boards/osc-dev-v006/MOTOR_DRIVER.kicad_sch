@@ -1527,7 +1527,7 @@
 		)
 		(uuid "a8b07c1f-3a9c-4525-98fd-9c5a3763db2b")
 	)
-	(text_box "DRV8212P H-bridge, inputs straight from TIM1. VM = VSYS, logic VCC = +3V3 off the same rail as the MCU.\n\n- Ch1-Ch5 return to GND, NOT PGND. This is on purpose. The shunt sits between PGND and GND, and at PWM timescales the motor current loops cap -> bridge -> motor -> PGND -> back to the cap. If the caps land on the PGND side, that loop closes without ever crossing the shunt, and the ADC only sees the average draw instead of the real chopped current. Don't 'fix' this in layout.\n- Rh1 keeps DRV_EN low whenever nothing drives it, so any reset = bridge off. It pulls to PGND, the driver's own logic ground.\n- The driver's own OCP/TSD is the first layer of the protection stack. The rest is in the MCU sheet notes.\n\nLayout (6L, via-in-pad):\n- L2 is one unbroken GND plane. No PGND pour on inner layers, and no splits under the driver. Return currents image right under their traces.\n- Keep the PGND island tiny and top-layer only: driver GND pin and thermal pad, Rh1, NT1, and the top of the shunt. Nothing else lives there.\n- The shunt is the ONLY PGND-GND connection. No stitching vias, no pour merge. A second path splits the return current and the shunt under-reads.\n- Ch1-Ch5 hug the VM pin (100nF closest) and their ground pads drop straight into L2 with via-in-pad. The plane is only ~0.1mm down, so the switching loop (VM -> cap -> L2 -> shunt -> driver GND pin) closes right under the parts. Cluster the caps, shunt and driver anyway, plane current still spreads with distance.\n- Kelvin taps (ISNS_K+/-) come off the shunt pads themselves, routed as a tight pair over solid GND, away from the power loop. No power current on the sense traces, ever."
+	(text_box "DRV8212P H-bridge, inputs straight from TIM1. VM = VSYS. Logic VCC is +3V3_DRV: the MCU's +3V3 through Rh2, a fitted 0R. Swap Rh2 for a ferrite (C108301, 600R at 100 MHz) if driver noise ever shows on the MCU rail, which is also the ADC reference.\n\n- Ch1-Ch5 return to GND, NOT PGND. This is on purpose. The shunt sits between PGND and GND, and at PWM timescales the motor current loops cap -> bridge -> motor -> PGND -> back to the cap. If the caps land on the PGND side, that loop closes without ever crossing the shunt, and the ADC only sees the average draw instead of the real chopped current. Don't 'fix' this in layout.\n- Rh1 keeps DRV_EN low whenever nothing drives it, so any reset = bridge off. It pulls to PGND, the driver's own logic ground.\n- The driver's own OCP/TSD is the first layer of the protection stack. The rest is in the MCU sheet notes.\n\nLayout (6L, via-in-pad):\n- L2 is one unbroken GND plane. No PGND pour on inner layers, and no splits under the driver. Return currents image right under their traces.\n- Keep the PGND island tiny and top-layer only: driver GND pin and thermal pad, Rh1, NT1, and the top of the shunt. Nothing else lives there.\n- The shunt is the ONLY PGND-GND connection. No stitching vias, no pour merge. A second path splits the return current and the shunt under-reads.\n- Ch1-Ch5 hug the VM pin (100nF closest) and their ground pads drop straight into L2 with via-in-pad. The plane is only ~0.1mm down, so the switching loop (VM -> cap -> L2 -> shunt -> driver GND pin) closes right under the parts. Cluster the caps, shunt and driver anyway, plane current still spreads with distance.\n- Kelvin taps (ISNS_K+/-) come off the shunt pads themselves, routed as a tight pair over solid GND, away from the power loop. No power current on the sense traces, ever."
 		(exclude_from_sim no)
 		(at 209.55 27.94 0)
 		(size 72.39 132.7149)
@@ -1549,19 +1549,19 @@
 		(uuid "c86148ad-1112-4b1c-9c4e-81277ed45b65")
 	)
 	(junction
-		(at 46.99 66.04)
+		(at 53.34 68.58)
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "0082ee5b-4fd3-4248-8fb3-c98778a46452")
 	)
 	(junction
-		(at 46.99 45.72)
+		(at 53.34 48.26)
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "26bf64ca-9a30-462c-a6ad-c22b77c9fce5")
 	)
 	(junction
-		(at 57.15 45.72)
+		(at 63.5 48.26)
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "4211bfce-5ff3-4e16-95ae-b48e686836b3")
@@ -1573,7 +1573,13 @@
 		(uuid "5b6f803b-367e-4a06-a00e-8e407c46ddcb")
 	)
 	(junction
-		(at 36.83 66.04)
+		(at 34.29 52.07)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "7f298d2d-7111-4d66-bb92-5983d9562d4e")
+	)
+	(junction
+		(at 43.18 68.58)
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "8a029058-6354-49ef-978c-d6979ed5d417")
@@ -1585,14 +1591,14 @@
 		(uuid "c09fe795-b0d3-4339-9707-8a8f5b85541e")
 	)
 	(junction
-		(at 57.15 66.04)
+		(at 63.5 68.58)
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "e9876b81-6c3b-428b-9527-d60c9365168c")
 	)
 	(wire
 		(pts
-			(xy 46.99 66.04) (xy 57.15 66.04)
+			(xy 53.34 68.58) (xy 63.5 68.58)
 		)
 		(stroke
 			(width 0)
@@ -1602,7 +1608,7 @@
 	)
 	(wire
 		(pts
-			(xy 36.83 45.72) (xy 46.99 45.72)
+			(xy 43.18 48.26) (xy 53.34 48.26)
 		)
 		(stroke
 			(width 0)
@@ -1612,7 +1618,7 @@
 	)
 	(wire
 		(pts
-			(xy 67.31 59.69) (xy 67.31 66.04)
+			(xy 73.66 62.23) (xy 73.66 68.58)
 		)
 		(stroke
 			(width 0)
@@ -1642,7 +1648,7 @@
 	)
 	(wire
 		(pts
-			(xy 36.83 59.69) (xy 36.83 66.04)
+			(xy 43.18 62.23) (xy 43.18 68.58)
 		)
 		(stroke
 			(width 0)
@@ -1652,7 +1658,7 @@
 	)
 	(wire
 		(pts
-			(xy 57.15 59.69) (xy 57.15 66.04)
+			(xy 63.5 62.23) (xy 63.5 68.58)
 		)
 		(stroke
 			(width 0)
@@ -1682,7 +1688,7 @@
 	)
 	(wire
 		(pts
-			(xy 57.15 45.72) (xy 57.15 52.07)
+			(xy 63.5 48.26) (xy 63.5 54.61)
 		)
 		(stroke
 			(width 0)
@@ -1692,7 +1698,7 @@
 	)
 	(wire
 		(pts
-			(xy 36.83 66.04) (xy 46.99 66.04)
+			(xy 43.18 68.58) (xy 53.34 68.58)
 		)
 		(stroke
 			(width 0)
@@ -1702,7 +1708,7 @@
 	)
 	(wire
 		(pts
-			(xy 46.99 45.72) (xy 57.15 45.72)
+			(xy 53.34 48.26) (xy 63.5 48.26)
 		)
 		(stroke
 			(width 0)
@@ -1732,7 +1738,7 @@
 	)
 	(wire
 		(pts
-			(xy 67.31 52.07) (xy 67.31 45.72)
+			(xy 73.66 54.61) (xy 73.66 48.26)
 		)
 		(stroke
 			(width 0)
@@ -1752,7 +1758,7 @@
 	)
 	(wire
 		(pts
-			(xy 36.83 45.72) (xy 36.83 52.07)
+			(xy 43.18 48.26) (xy 43.18 54.61)
 		)
 		(stroke
 			(width 0)
@@ -1762,7 +1768,7 @@
 	)
 	(wire
 		(pts
-			(xy 46.99 52.07) (xy 46.99 45.72)
+			(xy 53.34 54.61) (xy 53.34 48.26)
 		)
 		(stroke
 			(width 0)
@@ -1772,7 +1778,7 @@
 	)
 	(wire
 		(pts
-			(xy 46.99 59.69) (xy 46.99 66.04)
+			(xy 53.34 62.23) (xy 53.34 68.58)
 		)
 		(stroke
 			(width 0)
@@ -1792,7 +1798,7 @@
 	)
 	(wire
 		(pts
-			(xy 57.15 45.72) (xy 67.31 45.72)
+			(xy 63.5 48.26) (xy 73.66 48.26)
 		)
 		(stroke
 			(width 0)
@@ -1802,7 +1808,7 @@
 	)
 	(wire
 		(pts
-			(xy 27.94 66.04) (xy 36.83 66.04)
+			(xy 34.29 68.58) (xy 43.18 68.58)
 		)
 		(stroke
 			(width 0)
@@ -1812,23 +1818,13 @@
 	)
 	(wire
 		(pts
-			(xy 57.15 66.04) (xy 67.31 66.04)
+			(xy 63.5 68.58) (xy 73.66 68.58)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
 		(uuid "a9e1376f-944f-4687-8807-893cc625007a")
-	)
-	(wire
-		(pts
-			(xy 27.94 52.07) (xy 27.94 43.18)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "ab46cce2-2543-4a6f-8f47-9f56c173fe21")
 	)
 	(wire
 		(pts
@@ -1842,7 +1838,17 @@
 	)
 	(wire
 		(pts
-			(xy 46.99 68.58) (xy 46.99 66.04)
+			(xy 30.48 52.07) (xy 34.29 52.07)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "c023c1c9-99b8-49ca-825a-0e4c32b951f9")
+	)
+	(wire
+		(pts
+			(xy 53.34 71.12) (xy 53.34 68.58)
 		)
 		(stroke
 			(width 0)
@@ -1862,6 +1868,16 @@
 	)
 	(wire
 		(pts
+			(xy 34.29 54.61) (xy 34.29 52.07)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "d4a71f2b-72dd-48a7-b9b9-e4c51826c87e")
+	)
+	(wire
+		(pts
 			(xy 109.22 57.15) (xy 109.22 58.42)
 		)
 		(stroke
@@ -1869,6 +1885,36 @@
 			(type default)
 		)
 		(uuid "dab4efd8-5321-45d7-8518-c3d5ca1d1b28")
+	)
+	(wire
+		(pts
+			(xy 34.29 52.07) (xy 34.29 50.8)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "db7cb1d9-d27d-4028-9cec-7b69cad828d3")
+	)
+	(wire
+		(pts
+			(xy 34.29 41.91) (xy 34.29 43.18)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "e08054d1-e2bf-418b-94c3-164047470e4d")
+	)
+	(wire
+		(pts
+			(xy 177.8 73.66) (xy 179.07 73.66)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "e2cca4a2-8f5e-4f3b-87e0-aa997b5d7f01")
 	)
 	(wire
 		(pts
@@ -1882,7 +1928,7 @@
 	)
 	(wire
 		(pts
-			(xy 46.99 43.18) (xy 46.99 45.72)
+			(xy 53.34 45.72) (xy 53.34 48.26)
 		)
 		(stroke
 			(width 0)
@@ -1892,7 +1938,7 @@
 	)
 	(wire
 		(pts
-			(xy 27.94 59.69) (xy 27.94 66.04)
+			(xy 34.29 62.23) (xy 34.29 68.58)
 		)
 		(stroke
 			(width 0)
@@ -2188,7 +2234,7 @@
 	)
 	(symbol
 		(lib_id "power:VBUS")
-		(at 27.94 43.18 0)
+		(at 30.48 52.07 90)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -2196,9 +2242,9 @@
 		(on_board yes)
 		(in_pos_files yes)
 		(dnp no)
-		(uuid "35b8d561-e22d-4278-bb40-e8fd99828d63")
-		(property "Reference" "#PWR042"
-			(at 27.94 46.99 0)
+		(uuid "3ea2607d-324e-4111-9330-ed85962b9631")
+		(property "Reference" "#PWR045"
+			(at 34.29 52.07 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2208,8 +2254,8 @@
 				)
 			)
 		)
-		(property "Value" "+3V3"
-			(at 27.94 39.37 0)
+		(property "Value" "+3V3_DRV"
+			(at 22.606 52.07 90)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -2219,7 +2265,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 27.94 43.18 0)
+			(at 30.48 52.07 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2230,7 +2276,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 27.94 43.18 0)
+			(at 30.48 52.07 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2241,7 +2287,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"VBUS\""
-			(at 27.94 43.18 0)
+			(at 30.48 52.07 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2252,12 +2298,12 @@
 			)
 		)
 		(pin "1"
-			(uuid "0d38b244-0d8f-47ae-a5bb-83cb1d67f735")
+			(uuid "eede42ae-52c9-40e5-881b-228b79049a88")
 		)
 		(instances
 			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/ada02f24-9f0e-4313-921a-475b46fb1a47"
-					(reference "#PWR042")
+					(reference "#PWR045")
 					(unit 1)
 				)
 			)
@@ -2285,7 +2331,7 @@
 				)
 			)
 		)
-		(property "Value" "+3V3"
+		(property "Value" "+3V3_DRV"
 			(at 124.46 35.56 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2342,8 +2388,109 @@
 		)
 	)
 	(symbol
+		(lib_id "Device:R")
+		(at 34.29 46.99 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "45e16f78-6fbe-4681-870b-c6b377c1082e")
+		(property "Reference" "Rh2"
+			(at 31.115 45.72 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "0R"
+			(at 32.004 48.006 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" "Resistor_SMD:R_0603_1608Metric_Pad0.98x0.95mm_HandSolder"
+			(at 32.512 46.99 90)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C95177.html"
+			(at 34.29 46.99 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "0Ω jumper 100mW 0603"
+			(at 34.29 46.99 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "LCSC" "C95177"
+			(at 30.226 45.212 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "MFPN" "RC0603JR-070RL"
+			(at 30.226 45.212 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "34f5aa2d-b298-4d40-8fd2-b4a339ac5ce3")
+		)
+		(pin "2"
+			(uuid "bc966f33-bbf4-46bb-af4c-e9fda5cb84c1")
+		)
+		(instances
+			(project "osc-dev-v006"
+				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/ada02f24-9f0e-4313-921a-475b46fb1a47"
+					(reference "Rh2")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
 		(lib_id "Device:C")
-		(at 27.94 55.88 0)
+		(at 34.29 58.42 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -2353,7 +2500,7 @@
 		(dnp no)
 		(uuid "5de80adc-e7e0-4442-8cc1-31253e62086c")
 		(property "Reference" "Ch1"
-			(at 29.972 53.34 0)
+			(at 36.322 55.88 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -2363,7 +2510,7 @@
 			)
 		)
 		(property "Value" "100nF"
-			(at 31.242 58.674 0)
+			(at 37.592 61.214 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -2373,7 +2520,7 @@
 			)
 		)
 		(property "Footprint" "Capacitor_SMD:C_0603_1608Metric_Pad1.08x0.95mm_HandSolder"
-			(at -9.7348 35.57 0)
+			(at -3.3848 38.11 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2384,7 +2531,7 @@
 			)
 		)
 		(property "Datasheet" "https://www.lcsc.com/product-detail/C14663.html"
-			(at -10.7 31.76 0)
+			(at -4.35 34.3 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2395,7 +2542,7 @@
 			)
 		)
 		(property "Description" "100nF +/-10% 50V X7R 0603"
-			(at -10.7 31.76 0)
+			(at -4.35 34.3 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2406,7 +2553,7 @@
 			)
 		)
 		(property "LCSC" "C14663"
-			(at 29.972 53.34 0)
+			(at 36.322 55.88 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2417,7 +2564,7 @@
 			)
 		)
 		(property "MFPN" "CC0603KRX7R9BB104"
-			(at 29.972 53.34 0)
+			(at 36.322 55.88 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2437,6 +2584,85 @@
 			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/ada02f24-9f0e-4313-921a-475b46fb1a47"
 					(reference "Ch1")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "power:GND")
+		(at 179.07 73.66 90)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "64a3652d-a641-4909-a7bb-fee3dc548275")
+		(property "Reference" "#PWR075"
+			(at 185.42 74.295 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "+3V3_DRV"
+			(at 182.88 73.6599 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify right)
+			)
+		)
+		(property "Footprint" ""
+			(at 179.07 74.295 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 179.07 74.295 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
+			(at 179.07 74.295 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "48d420bd-2fe4-4d39-a564-905ef995b666")
+		)
+		(instances
+			(project "osc-dev-v006"
+				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/ada02f24-9f0e-4313-921a-475b46fb1a47"
+					(reference "#PWR075")
 					(unit 1)
 				)
 			)
@@ -2545,7 +2771,7 @@
 	)
 	(symbol
 		(lib_id "power:VBUS")
-		(at 46.99 43.18 0)
+		(at 53.34 45.72 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -2555,7 +2781,7 @@
 		(dnp no)
 		(uuid "72181c12-d081-4b77-83b6-b41c5c5fd05e")
 		(property "Reference" "#PWR033"
-			(at 46.99 46.99 0)
+			(at 53.34 49.53 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2566,7 +2792,7 @@
 			)
 		)
 		(property "Value" "VSYS"
-			(at 46.99 39.37 0)
+			(at 53.34 41.91 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -2576,7 +2802,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 46.99 43.18 0)
+			(at 53.34 45.72 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2587,7 +2813,7 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 46.99 43.18 0)
+			(at 53.34 45.72 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2598,7 +2824,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"VBUS\""
-			(at 46.99 43.18 0)
+			(at 53.34 45.72 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2622,7 +2848,7 @@
 	)
 	(symbol
 		(lib_id "Device:C")
-		(at 46.99 55.88 0)
+		(at 53.34 58.42 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -2632,7 +2858,7 @@
 		(dnp no)
 		(uuid "7bb8e9b4-1d0f-4c8d-a3d2-256cdb0771e1")
 		(property "Reference" "Ch3"
-			(at 49.53 53.34 0)
+			(at 55.88 55.88 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -2642,7 +2868,7 @@
 			)
 		)
 		(property "Value" "10uF"
-			(at 50.8 58.42 0)
+			(at 57.15 60.96 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -2652,7 +2878,7 @@
 			)
 		)
 		(property "Footprint" "Capacitor_SMD:C_0805_2012Metric_Pad1.18x1.45mm_HandSolder"
-			(at 22.0152 25.57 0)
+			(at 28.3652 28.11 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2663,7 +2889,7 @@
 			)
 		)
 		(property "Datasheet" "https://www.lcsc.com/product-detail/C15850.html"
-			(at 21.05 21.76 0)
+			(at 27.4 24.3 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2674,7 +2900,7 @@
 			)
 		)
 		(property "Description" "Unpolarized capacitor"
-			(at 21.05 21.76 0)
+			(at 27.4 24.3 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2685,7 +2911,7 @@
 			)
 		)
 		(property "LCSC" "C15850"
-			(at 44.45 53.34 0)
+			(at 50.8 55.88 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2696,7 +2922,7 @@
 			)
 		)
 		(property "MFPN" "CL21A106KAYNNNE"
-			(at 44.45 53.34 0)
+			(at 50.8 55.88 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2723,7 +2949,7 @@
 	)
 	(symbol
 		(lib_id "Device:C_Polarized")
-		(at 67.31 55.88 0)
+		(at 73.66 58.42 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -2733,7 +2959,7 @@
 		(dnp no)
 		(uuid "864bf0de-2066-4667-ad51-cf67bc1cc09e")
 		(property "Reference" "Ch5"
-			(at 71.12 53.34 0)
+			(at 77.47 55.88 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -2743,7 +2969,7 @@
 			)
 		)
 		(property "Value" "100uF"
-			(at 71.12 58.42 0)
+			(at 77.47 60.96 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -2753,7 +2979,7 @@
 			)
 		)
 		(property "Footprint" "Capacitor_SMD:CP_Elec_6.3x5.4"
-			(at 68.2752 59.69 0)
+			(at 74.6252 62.23 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2764,7 +2990,7 @@
 			)
 		)
 		(property "Datasheet" "https://www.lcsc.com/product-detail/C22383777.html"
-			(at 67.31 55.88 0)
+			(at 73.66 58.42 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2775,7 +3001,7 @@
 			)
 		)
 		(property "Description" "100µF +/-20% 35V aluminum electrolytic 6.3x5.4"
-			(at 67.31 55.88 0)
+			(at 73.66 58.42 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2786,7 +3012,7 @@
 			)
 		)
 		(property "LCSC" "C22383777"
-			(at 64.77 53.34 0)
+			(at 71.12 55.88 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2797,7 +3023,7 @@
 			)
 		)
 		(property "MFPN" "VT1V101M0605"
-			(at 64.77 53.34 0)
+			(at 71.12 55.88 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2947,6 +3173,83 @@
 		)
 	)
 	(symbol
+		(lib_id "power:VBUS")
+		(at 34.29 41.91 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "a6f1499a-aa15-4d58-83b6-2c019ed27440")
+		(property "Reference" "#PWR042"
+			(at 34.29 45.72 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "+3V3"
+			(at 34.29 38.1 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at 34.29 41.91 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 34.29 41.91 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Power symbol creates a global label with name \"VBUS\""
+			(at 34.29 41.91 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "eea3d421-5d42-4890-98a1-618c952bc561")
+		)
+		(instances
+			(project "osc-dev-v006"
+				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/ada02f24-9f0e-4313-921a-475b46fb1a47"
+					(reference "#PWR042")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
 		(lib_id "power:PWR_FLAG")
 		(at 177.8 76.2 90)
 		(unit 1)
@@ -3027,7 +3330,7 @@
 	)
 	(symbol
 		(lib_id "Device:C")
-		(at 36.83 55.88 0)
+		(at 43.18 58.42 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -3037,7 +3340,7 @@
 		(dnp no)
 		(uuid "c3234567-89ab-cdef-0123-456789abcdef")
 		(property "Reference" "Ch2"
-			(at 38.862 53.34 0)
+			(at 45.212 55.88 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -3047,7 +3350,7 @@
 			)
 		)
 		(property "Value" "100nF"
-			(at 40.132 58.674 0)
+			(at 46.482 61.214 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -3057,7 +3360,7 @@
 			)
 		)
 		(property "Footprint" "Capacitor_SMD:C_0603_1608Metric_Pad1.08x0.95mm_HandSolder"
-			(at -0.8448 35.57 0)
+			(at 5.5052 38.11 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3068,7 +3371,7 @@
 			)
 		)
 		(property "Datasheet" "https://www.lcsc.com/product-detail/C14663.html"
-			(at -1.81 31.76 0)
+			(at 4.54 34.3 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3079,7 +3382,7 @@
 			)
 		)
 		(property "Description" "100nF +/-10% 50V X7R 0603"
-			(at -1.81 31.76 0)
+			(at 4.54 34.3 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3090,7 +3393,7 @@
 			)
 		)
 		(property "LCSC" "C14663"
-			(at 38.862 53.34 0)
+			(at 45.212 55.88 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3101,7 +3404,7 @@
 			)
 		)
 		(property "MFPN" "CC0603KRX7R9BB104"
-			(at 38.862 53.34 0)
+			(at 45.212 55.88 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3128,7 +3431,7 @@
 	)
 	(symbol
 		(lib_id "Device:C")
-		(at 57.15 55.88 0)
+		(at 63.5 58.42 0)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -3138,7 +3441,7 @@
 		(dnp no)
 		(uuid "da96be61-bf29-4a77-a17b-2181a90180e2")
 		(property "Reference" "Ch4"
-			(at 59.69 53.34 0)
+			(at 66.04 55.88 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -3148,7 +3451,7 @@
 			)
 		)
 		(property "Value" "10uF"
-			(at 60.96 58.42 0)
+			(at 67.31 60.96 0)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -3158,7 +3461,7 @@
 			)
 		)
 		(property "Footprint" "Capacitor_SMD:C_0805_2012Metric_Pad1.18x1.45mm_HandSolder"
-			(at 32.1752 25.57 0)
+			(at 38.5252 28.11 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3169,7 +3472,7 @@
 			)
 		)
 		(property "Datasheet" "https://www.lcsc.com/product-detail/C15850.html"
-			(at 31.21 21.76 0)
+			(at 37.56 24.3 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3180,7 +3483,7 @@
 			)
 		)
 		(property "Description" "Unpolarized capacitor"
-			(at 31.21 21.76 0)
+			(at 37.56 24.3 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3191,7 +3494,7 @@
 			)
 		)
 		(property "LCSC" "C15850"
-			(at 54.61 53.34 0)
+			(at 60.96 55.88 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3202,7 +3505,7 @@
 			)
 		)
 		(property "MFPN" "CL21A106KAYNNNE"
-			(at 54.61 53.34 0)
+			(at 60.96 55.88 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3228,8 +3531,8 @@
 		)
 	)
 	(symbol
-		(lib_id "power:GND")
-		(at 46.99 68.58 0)
+		(lib_id "power:PWR_FLAG")
+		(at 177.8 73.66 90)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -3238,9 +3541,9 @@
 		(in_pos_files yes)
 		(dnp no)
 		(fields_autoplaced yes)
-		(uuid "e83bbcfb-12fe-48d4-bea6-39423ab73057")
-		(property "Reference" "#PWR034"
-			(at 46.99 74.93 0)
+		(uuid "dc301437-1fa5-4687-86db-a84897c937c1")
+		(property "Reference" "#FLG07"
+			(at 175.895 74.295 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3250,8 +3553,8 @@
 				)
 			)
 		)
-		(property "Value" "GND"
-			(at 49.53 69.8499 0)
+		(property "Value" "PWR_FLAG"
+			(at 173.99 74.2949 90)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -3262,7 +3565,7 @@
 			)
 		)
 		(property "Footprint" ""
-			(at 46.99 68.58 0)
+			(at 177.8 74.295 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3273,7 +3576,86 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 46.99 68.58 0)
+			(at 177.8 74.295 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Special symbol for telling ERC where power comes from"
+			(at 177.8 74.295 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "ea58c777-e5ab-4cc6-93d3-c96fd2556023")
+		)
+		(instances
+			(project "osc-dev-v006"
+				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/ada02f24-9f0e-4313-921a-475b46fb1a47"
+					(reference "#FLG07")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "power:GND")
+		(at 53.34 71.12 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "e83bbcfb-12fe-48d4-bea6-39423ab73057")
+		(property "Reference" "#PWR034"
+			(at 53.34 77.47 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "GND"
+			(at 55.88 72.3899 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" ""
+			(at 53.34 71.12 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 53.34 71.12 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3284,7 +3666,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 46.99 68.58 0)
+			(at 53.34 71.12 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
