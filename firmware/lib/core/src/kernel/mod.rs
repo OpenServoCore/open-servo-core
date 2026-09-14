@@ -690,10 +690,16 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                         // no duty). OC and the estimators keep the strict
                         // validity view.
                         let i_loop = Some(i_meas.unwrap_or(0));
+                        // Ke decoupling rides the profile, not an estimate
+                        // (current.rs step doc); Current mode has no profile
+                        let omega_ff_q16 = match mode {
+                            Mode::Velocity | Mode::Position => self.traj.omega_star_q16(),
+                            Mode::Current | Mode::OpenLoop => 0,
+                        };
                         let duty = self.cur.step(
                             self.i_ref_cc,
                             i_loop,
-                            self.fusion.omega_q16(),
+                            omega_ff_q16,
                             vbus_eff,
                             self.vbus.recip_q15(),
                             &gains,

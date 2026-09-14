@@ -892,6 +892,51 @@ fn velocity_feedback_switches_to_the_bemf_and_back() {
     assert_eq!(published(&sh), (k.fusion.omega_q16(), 0));
 }
 
+// --- Current-loop feedforward ---------------------------------------------
+
+#[test]
+fn ke_feedforward_rides_the_profile_never_an_estimate() {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        // current PI inert: the duty IS the Ke feedforward
+        t.config.loop_current.i_kp_q88 = 0;
+        t.config.loop_current.i_ki_q412 = 0;
+        t.config.loop_current.i_kaw_q412 = 0;
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::Velocity;
+        t.control.lifecycle.goal_velocity = 1600;
+    });
+    let mut k = kernel();
+    // profile ramps 50 c/s per medium tick to 1600 and holds; the pot sits
+    // still, so both velocity estimates read ~0 - the feed must not
+    for _ in 0..1000 {
+        k.on_tick(frame(2000, BIAS), &sh);
+    }
+    assert_eq!(k.traj.omega_star_q16(), 1600 << 16);
+    // ke 0.0625 vcounts per c/s * 1600 c/s = 100 vcounts on a 3000 rail
+    let u_ff = q_mul(1600 << 16, 256, 28);
+    assert_eq!(u_ff, 100);
+    let expect = q_mul(u_ff, k.vbus.recip_q15() as i32, 15) as i16;
+    assert_eq!(k.duty_q15, expect);
+    assert!((expect as i32 - 1092).abs() <= 1, "duty={expect}");
+    // Current mode: no profile, no feed - even with the shaft spinning
+    // (the pot observer would read ~2000 c/s here)
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.mode = Mode::Current;
+        t.control.lifecycle.goal_current = 0;
+    });
+    for n in 0..2000u16 {
+        k.on_tick(frame(1000 + n / 10, BIAS), &sh);
+    }
+    assert!(
+        k.fusion.omega_q16() > 1000 << 16,
+        "pot omega {}",
+        k.fusion.omega_q16() >> 16
+    );
+    assert_eq!(k.duty_q15, 0);
+}
+
 // --- Closed-loop plant ----------------------------------------------------
 
 /// Crude integer plant in the identification-model shape:

@@ -61,15 +61,19 @@ impl CurrentLoop {
     /// One FAST-tick update -> duty. `i_meas` None (shunt window invalid)
     /// freezes the whole integrator update - ki term and back-calc both -
     /// and the output rides integrator + feedforward until the window
-    /// returns. `omega_hat_q16` csQ16 from fusion; `recip_vbus_q15` is the
-    /// vbus estimator's reciprocal, contract `(recip * vbus) >> 15
+    /// returns. `omega_ff_q16` csQ16 is the decoupling reference the kernel
+    /// picks per mode - the trajectory's omega_star in Velocity/Position,
+    /// zero otherwise - never a velocity estimate: the back-EMF estimate is
+    /// this loop's own output read back, the pot observer rails at rest.
+    /// `recip_vbus_q15` is the vbus estimator's reciprocal, contract
+    /// `(recip * vbus) >> 15
     /// ~= 32767` (estimator::vbus::VbusEst) - the pair must describe the
     /// same vbus or the duty cap is off by their mismatch.
     pub fn step(
         &mut self,
         i_ref: i32,
         i_meas: Option<i32>,
-        omega_hat_q16: i32,
+        omega_ff_q16: i32,
         vbus_counts: u16,
         recip_vbus_q15: u32,
         gains: &CurrentGains,
@@ -81,7 +85,7 @@ impl CurrentLoop {
         // kp * 2^13 <= 2^29, i32-exact before the shift
         let u_pi = q_mul(gains.kp_q88 as i32, e, 8).saturating_add(self.integ_vq16 >> 16);
         // csQ16 * Q4.12 >> 28 -> vcounts; i64 product <= 2^31 * 2^16 = 2^47
-        let u_ff = q_mul(omega_hat_q16, gains.ke_q412 as i32, 28);
+        let u_ff = q_mul(omega_ff_q16, gains.ke_q412 as i32, 28);
         let u = u_pi.saturating_add(u_ff);
         // duty_max * vbus <= 2^15 * 2^16 = 2^31, exact in the i64 widen
         let v_max = q_mul(gains.duty_max_q15 as i32, vbus_counts as i32, 15);
