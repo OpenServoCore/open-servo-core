@@ -14,6 +14,7 @@ pub struct TelemetrySnapshot {
     pub status_flags: u8,
     pub mode_active: u8,
     pub fault_code: u8,
+    pub omega_hat_src: u8,
     pub theta_hat_q16: i32,
     pub omega_hat_cps: i32,
     pub tau_d_counts: i16,
@@ -51,6 +52,7 @@ impl TelemetrySnapshot {
             status_flags: u8::from_le_bytes(get(base, bytes, t::STATUS_FLAGS)?),
             mode_active: u8::from_le_bytes(get(base, bytes, t::MODE_ACTIVE)?),
             fault_code: u8::from_le_bytes(get(base, bytes, t::FAULT_CODE)?),
+            omega_hat_src: u8::from_le_bytes(get(base, bytes, t::OMEGA_HAT_SRC)?),
             theta_hat_q16: i32::from_le_bytes(get(base, bytes, t::THETA_HAT_Q16)?),
             omega_hat_cps: i32::from_le_bytes(get(base, bytes, t::OMEGA_HAT_CPS)?),
             tau_d_counts: i16::from_le_bytes(get(base, bytes, t::TAU_D_COUNTS)?),
@@ -471,6 +473,7 @@ mod tests {
         };
         put(&mut bytes, t::FAULT_FLAGS, &[0x20]);
         put(&mut bytes, t::FAULT_CODE, &[6]);
+        put(&mut bytes, t::OMEGA_HAT_SRC, &[1]);
         put(&mut bytes, t::THETA_HAT_Q16, &(2421i32 << 16).to_le_bytes());
         put(&mut bytes, t::TAU_D_COUNTS, &(-42i16).to_le_bytes());
         put(&mut bytes, t::VBUS_COUNTS, &1713u16.to_le_bytes());
@@ -480,6 +483,7 @@ mod tests {
         let s = TelemetrySnapshot::parse(base, &bytes).unwrap();
         assert_eq!(s.fault_flags, 0x20);
         assert_eq!(s.fault_code, 6);
+        assert_eq!(s.omega_hat_src, 1);
         assert_eq!(s.theta_hat_q16, 2421 << 16);
         assert_eq!(s.tau_d_counts, -42);
         assert_eq!(s.vbus_counts, 1713);

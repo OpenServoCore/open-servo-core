@@ -49,7 +49,7 @@ impl SnapshotLog {
         writeln!(
             w,
             "host_ms,fault_flags,fault_code,mode_active,theta_hat_q16,omega_hat_cps,\
-             tau_d_counts,i_lim_counts,t_winding_cc,vbus_counts,duty_applied_q15,\
+             omega_hat_src,tau_d_counts,i_lim_counts,t_winding_cc,vbus_counts,duty_applied_q15,\
              omega_bemf_cps,r_hat_q12,i_hat_counts,sample_tick,pos,current,\
              current_trough,current_bias_counts,i_mean_counts,i_min_counts,\
              i_max_counts,vdiff_mean,duty_mean_q15,agg_seq"
@@ -60,12 +60,13 @@ impl SnapshotLog {
     pub(crate) fn push(&mut self, host_ms: f64, s: &TelemetrySnapshot) -> Result<()> {
         writeln!(
             self.w,
-            "{host_ms:.1},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            "{host_ms:.1},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
             s.fault_flags,
             s.fault_code,
             s.mode_active,
             s.theta_hat_q16,
             s.omega_hat_cps,
+            s.omega_hat_src,
             s.tau_d_counts,
             s.i_lim_counts,
             s.t_winding_cc,

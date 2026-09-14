@@ -23,8 +23,8 @@ pub use trajectory::{TrajCfg, TrajGen};
 pub use velocity::{VelocityGains, VelocityLoop};
 
 use crate::estimator::{
-    BemfObs, BiasTracker, FusionGains, FusionObs, ThermAnchor, ThermGates, VbusEst, VcalLpf,
-    WindingTherm, bemf, window,
+    BemfObs, BiasTracker, FusionGains, FusionObs, OmegaSwitch, ThermAnchor, ThermGates, VbusEst,
+    VcalLpf, WindingTherm, bemf, window,
 };
 use crate::math::{q_mul, q_mul_u};
 use crate::regions::config::DecaySelect;
@@ -90,6 +90,8 @@ pub struct Kernel<I: ControlIo, T: TelStream = ()> {
     vbus: VbusEst,
     thermal: WindingTherm,
     bemf: BemfObs,
+    /// Velocity-loop feedback pick: back-EMF boxcar or the observer's omega.
+    omega_sw: OmegaSwitch,
     faults: faults::FaultLatch,
     det: faults::Detectors,
     booted: bool,
@@ -151,6 +153,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             vbus: VbusEst::new(timing.vbus_scale_q15),
             thermal: WindingTherm::new(),
             bemf: BemfObs::new(),
+            omega_sw: OmegaSwitch::new(),
             faults: faults::FaultLatch::new(),
             det: faults::Detectors::new(),
             booted: false,
@@ -264,9 +267,11 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         // IDENT: per-tick sample aligned to the window the PREVIOUS command
         // drove - duty_q15 still holds that command here; i/vdiff hold
         // last-valid through invalid windows (ident module doc).
-        if let Some(vdiff) = window::vdiff_from_frame(&frame, sel) {
+        let vdiff = window::vdiff_from_frame(&frame, sel);
+        if let Some(vdiff) = vdiff {
             self.vdiff_last = vdiff.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
         }
+        self.bemf.sample(ticks, vdiff, i_meas);
         // TEL emits HERE, on the fast path before the medium/slow branches:
         // duty_q15 still holds the command whose window this frame's samples
         // measured (the same previous-tick alignment the ident aggregate
@@ -358,21 +363,21 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                 l1_q016: fus_cfg.l1_q016,
                 l2_q88: fus_cfg.l2_q88,
                 l3_q88: fus_cfg.l3_q88,
-                l_bemf_q016: fus_cfg.l_bemf_q016,
                 fric_fc_counts: motor_cal.fric_fc_counts,
             };
-            // previous medium tick's bemf estimate: one tick stale is fine
-            // for a blend that defaults off
-            let omega_bemf_q16 = self.bemf.omega_cps().clamp(-32767, 32767) << 16;
-            self.fusion.step(
-                i_use,
-                frame.pos,
-                Some(omega_bemf_q16),
-                self.timing.dt_med_q32,
-                &fg,
+            let omega_bemf = self.bemf.close_half(
+                motor_cal.r_q12,
+                motor_cal.recip_ke_q,
+                self.timing.recip_arr_q24,
             );
+            self.fusion
+                .step(i_use, frame.pos, self.timing.dt_med_q32, &fg);
             let theta_hat = self.fusion.theta_q16();
-            let omega_hat = self.fusion.omega_q16();
+            // The observer's omega keeps the rest-shaped consumers (stall
+            // verdict, thermometer gate): it is always there and reads
+            // small at rest, where the boxcar has no window at all.
+            let omega_pot = self.fusion.omega_q16();
+            let omega_hat = self.omega_sw.step(omega_bemf, omega_pot);
 
             let tc = TrajCfg {
                 vel_limit_cps: loop_pos.velocity_limit_cps,
@@ -426,7 +431,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                 pos_max_soft_counts: pos_lim.pos_max_soft_counts,
                 stall_permit: life.stall_permit,
             };
-            let omega_abs_cps = omega_hat.unsigned_abs() >> 16;
+            let omega_abs_cps = omega_pot.unsigned_abs() >> 16;
             let band = self.limits.fold(
                 pinned,
                 omega_abs_cps,
@@ -442,9 +447,10 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             if run {
                 match life.mode {
                     // Parked: the drive coasts, so the velocity loop must stop
-                    // too. omega_hat is pot-noise driven at rest (+-hundreds
-                    // c/s); left running, the PI integrates that phantom error
-                    // until i_ref pins at the current limit, and pinned + slow
+                    // too. omega_hat is the pot observer at rest (no window,
+                    // +-hundreds c/s of noise); left running, the PI
+                    // integrates that phantom error until i_ref pins at the
+                    // current limit, and pinned + slow
                     // false-trips the stall detector (bench: CODE_STALL a few
                     // seconds into a clean hold). Zero the command and drain
                     // the integrator so it never winds and resumes bumplessly.
@@ -477,18 +483,15 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             }
 
             self.vbus.step(frame.vbus_raw, therm_cfg.v_undervolt_counts);
-            // the shared v_mean: computed ONCE here, consumed by bemf now and
-            // the thermometer at SLOW (bemf RECIP_ARR contract)
-            let v_mean = window::vdiff_from_frame(&frame, sel).map(|vdiff| {
+            // this tick's v_mean for the thermometer at SLOW (bemf
+            // RECIP_ARR contract)
+            let v_mean = vdiff.map(|vdiff| {
                 q_mul(
                     ticks as i32 * vdiff,
                     self.timing.recip_arr_q24 as i32,
                     bemf::RECIP_ARR_SHIFT,
                 )
             });
-            let omega_bemf = self
-                .bemf
-                .step(v_mean, i_meas, motor_cal.r_q12, motor_cal.recip_ke_q);
 
             // raw-pot sanity screen runs in every mode, torque-off included
             if self.det.sensor_sample(
@@ -581,12 +584,14 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                 (&raw mut (*e).t_winding_cc).write_volatile(self.thermal.t_cc());
                 (&raw mut (*e).vbus_counts).write_volatile(self.vbus.vbus_counts());
                 (&raw mut (*e).duty_applied_q15).write_volatile(self.duty_q15);
-                (&raw mut (*e).omega_bemf_cps).write_volatile(omega_bemf);
+                (&raw mut (*e).omega_bemf_cps)
+                    .write_volatile(bemf::omega_cps_i16(omega_bemf.unwrap_or(0)));
                 (&raw mut (*e).r_hat_q12).write_volatile(self.thermal.r_q12());
                 (&raw mut (*e).i_hat_counts).write_volatile(self.i_meas_last);
                 let m = &raw mut (*p).telemetry.mode;
                 (&raw mut (*m).mode_active).write_volatile(life.mode as u8);
                 (&raw mut (*m).fault_code).write_volatile(self.faults.code());
+                (&raw mut (*m).omega_hat_src).write_volatile(self.omega_sw.source() as u8);
                 (&raw mut (*p).telemetry.common.fault_flags).write_volatile(self.faults.mask());
             }
         }
@@ -679,10 +684,16 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                         // no duty). OC and the estimators keep the strict
                         // validity view.
                         let i_loop = Some(i_meas.unwrap_or(0));
+                        // Ke decoupling rides the profile, not an estimate
+                        // (current.rs step doc); Current mode has no profile
+                        let omega_ff_q16 = match mode {
+                            Mode::Velocity | Mode::Position => self.traj.omega_star_q16(),
+                            Mode::Current | Mode::OpenLoop => 0,
+                        };
                         let duty = self.cur.step(
                             self.i_ref_cc,
                             i_loop,
-                            self.fusion.omega_q16(),
+                            omega_ff_q16,
                             vbus_eff,
                             self.vbus.recip_q15(),
                             &gains,

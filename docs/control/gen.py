@@ -272,15 +272,17 @@ sign(d, s1.absanchors['SE'], '−', dx=0.3, dy=-0.4)
 d += elm.Arrow().at(s1.E).right(1.2).label('ê', loc='top', fontsize=FSS).color(C_EST)
 d += (ke := dsp.Box(w=1.8, h=BH).anchor('W').label('× 1/Ke').color(C_EST))
 d += elm.Arrow().at(ke.E).right(1.0).color(C_EST)
-d += (lp := dsp.Box(w=1.5, h=BH).anchor('W').label('LPF').color(C_EST))
+d += (lp := dsp.Box(w=2.6, h=BH).anchor('W').label('1 ms boxcar', fontsize=FSS).color(C_EST))
 d += elm.Arrow().at(lp.E).right(1.6).label('ω̂_bemf', loc='top').color(C_EST)
+d += elm.Label(label='void if any sample in it missed a window floor', fontsize=FSS).at(
+    (lp.absanchors['N'][0], lp.absanchors['N'][1] + 0.55))
 dse = s1.absanchors['SE']
 d += elm.Arrow().at((dse[0] + 0.6, dse[1] - 0.85)).theta(125).length(1.05).color(C_EST)
 d += elm.Label(label='L·dî/dt  (drop when PWM-averaged)', fontsize=FSS).at((dse[0] + 3.0, dse[1] - 1.1))
 # thermometry chain below
 ty = -3.4
 d.here = (0.2, ty)
-d += (gt := dsp.Box(w=4.4, h=1.6).anchor('W').label('gate: |î| high AND\n(|ω̂| ≈ 0 OR encoder ω̂)').color(C_EST))
+d += (gt := dsp.Box(w=4.4, h=1.6).anchor('W').label('gate: |î| high AND\n(|ω̂_pot| ≈ 0 OR encoder ω̂)').color(C_EST))
 d += elm.Arrow().at(gt.E).right(1.0).color(C_EST)
 d += (ir := dsp.Box(w=4.2, h=1.6).anchor('W').label('slow IIR\nR̂ = (v̂_diff − Ke·ω̂) / î').color(C_EST))
 d += elm.Arrow().at(ir.E).right(1.0).color(C_EST)
@@ -299,30 +301,46 @@ d += elm.Label(label='timescale separation resolves the R̂ <-> ω̂_bemf circul
                fontsize=FSS).at((tw.absanchors['S'][0] - 2.0, tw.absanchors['S'][1] - 1.0))
 save(d, 'bemf-thermometry.svg')
 
-# --------------------------------------------------------- kalman fusion
+# ----------------------------------------------------------- pot observer
 d = diagram()
 d += elm.Arrow().right(1.6).label('î', loc='top').color(C_EST)
 d += (pr := dsp.Box(w=5.2, h=2.0).anchor('W').label('predict (model)\nω̂ += (Kt·î − τ̂fric − τ̂d)·Ts/J\nθ̂ += ω̂·Ts').color(C_EST))
 d += elm.Arrow().at(pr.E).right(1.4).color(C_EST)
-d += (co := dsp.Box(w=5.2, h=2.0).anchor('W').label('correct\n[θ̂, ω̂, τ̂d] += [L1, L2, L3]·innov\ninnov = θ_meas − θ̂').color(C_EST))
+d += (co := dsp.Box(w=5.2, h=2.0).anchor('W').label('correct (pot innovation)\n[θ̂, ω̂, τ̂d] += [L1, L2, L3]·innov\ninnov = θ_meas − θ̂').color(C_EST))
 d += elm.Arrow().at(co.E).right(1.5).label('θ̂, ω̂, τ̂d', loc='top').color(C_EST)
-# measurement inputs
+# the only measurement: position. no velocity input, no blend term
 coN = co.absanchors['N']
-d += elm.Arrow().at((coN[0] - 1.2, coN[1] + 1.9)).down(1.9).label(
+d += elm.Arrow().at((coN[0], coN[1] + 1.9)).down(1.9).label(
     'θ_meas  (pot·N / mag / IR)', loc='top', fontsize=FSS).color(C_EST)
-d += elm.Arrow(ls='--').at((coN[0] + 1.2, coN[1] + 0.85)).down(0.85).color(C_EST)
-d += elm.Label(label='ω̂_bemf  (small weight)', fontsize=FSS, color=C_EST).at((coN[0] + 3.1, coN[1] + 0.8))
 # state feedback
 coS = co.absanchors['S']
 prS = pr.absanchors['S']
 d += elm.Line().at(coS).down(1.0).color(C_EST)
 d += elm.Line().at((coS[0], coS[1] - 1.0)).left(coS[0] - prS[0]).label('state feedback', loc='top', fontsize=FSS).color(C_EST)
 d += elm.Arrow().at((prS[0], coS[1] - 1.0)).up(1.0).color(C_EST)
-d += elm.Label(label='L1..L3 fixed — steady-state gains computed offline at cal (identified J, friction, sensor noise)',
+d += elm.Label(label='L1..L3 fixed - steady-state gains computed offline at cal (identified J, friction, sensor noise)',
                fontsize=FSS).at(((prS[0] + coS[0]) / 2 + 0.6, coS[1] - 1.75))
-d += elm.Arrow(ls='--').at((co.absanchors['E'][0] + 0.4, co.absanchors['E'][1] - 0.55)).right(1.1).label(
-    'τ̂d -> contact detect', loc='bottom', ofst=(0.2, -0.25), fontsize=FSS).color(C_EST)
-save(d, 'kalman-fusion.svg')
+d += elm.Label(label='θ̂ -> position loop        τ̂d -> contact detect, stall, collision        ω̂ -> rest, stall verdict, thermometer gate',
+               fontsize=FSS, color=C_EST).at(((prS[0] + coS[0]) / 2 + 0.6, coS[1] - 2.45))
+save(d, 'pot-observer.svg')
+
+# ------------------------------------------------------- omega source switch
+d = diagram()
+d += elm.Arrow().right(1.8).label('v̂_diff, î', loc='top').color(C_EST)
+d += (mb := dsp.Box(w=3.8, h=1.6).anchor('W').label('model BEMF\n(v̂_diff − R̂·î) / Ke', fontsize=FSS).color(C_EST))
+d += elm.Arrow().at(mb.E).right(1.0).color(C_EST)
+d += (bx := dsp.Box(w=3.0, h=1.6).anchor('W').label('1 ms boxcar\n(two halves)', fontsize=FSS).color(C_EST))
+d += elm.Arrow().at(bx.E).right(1.0).color(C_EST)
+d += (vg := dsp.Box(w=3.4, h=1.6).anchor('W').label('validity\nevery tick above\nthe window floors', fontsize=FSS).color(C_EST))
+d += elm.Arrow().at(vg.E).right(2.4).label('ω̂_bemf or none', loc='top', fontsize=FSS).color(C_EST)
+d += (sw := dsp.Box(w=3.8, h=2.4).anchor('W').label('source switch\nto BEMF: 4 valid\nto pot: 2 void', fontsize=FSS).color(C_EST))
+d += elm.Arrow().at(sw.E).right(2.8).label('ω̂ -> velocity PI', loc='top').color(C_VEL)
+swS = sw.absanchors['S']
+d += elm.Arrow().at((swS[0], swS[1] - 1.5)).up(1.5).label('ω̂_pot  (pot observer)', loc='bottom', fontsize=FSS).color(C_EST)
+d += elm.Arrow(ls='--').at(sw.N).up(1.0).label('omega_hat_src', loc='top', fontsize=FSS).color(C_EST)
+d += elm.Label(label='one source or the other, never a blend: the measured weight on a pot velocity is 1 part in 17,804',
+               fontsize=FSS).at(((mb.absanchors['W'][0] + sw.absanchors['E'][0]) / 2, swS[1] - 2.3))
+save(d, 'omega-switch.svg')
 
 # ------------------------------------------------ putting it all together
 d = diagram()
@@ -361,7 +379,7 @@ d += (pic := dsp.Box(w=1.2, h=1.1).anchor('W').label('PI').color(C_CUR))
 d += elm.Arrow().at(pic.E).right(0.5).color(C_CUR)
 d += (si2 := dsp.Sum().anchor('W').color(C_CUR))
 sign(d, si2.absanchors['NW'], '+', dx=-0.22, dy=0.08)
-sign(d, si2.absanchors['SW'], '+', dx=-0.26, dy=-0.34)
+sign(d, si2.absanchors['N'], '+', dx=-0.28, dy=0.3)
 d += elm.Arrow().at(si2.E).right(0.5).color(C_CUR)
 d += (rc := dsp.Box(w=1.7, h=1.1).anchor('W').label('× 1/V̂bus', fontsize=FSS).color(C_CUR))
 d += elm.Arrow().at(rc.E).right(0.6).color(C_CUR)
@@ -429,9 +447,9 @@ d += elm.Arrow().at((posx, FEED)).down(FEED - FE_N).color(C_HW)
 
 # observers row
 d += (bemf := dsp.Box(w=4.2, h=1.2).at((shx + 0.2, OB_C)).anchor('center').label(
-    'BEMF observer +\nwinding thermometry', fontsize=FSS).color(C_EST))
+    'BEMF boxcar (1 ms)\n+ winding thermometry', fontsize=FSS).color(C_EST))
 d += (kf := dsp.Box(w=4.2, h=1.2).at((svS[0], OB_C)).anchor('center').label(
-    'Kalman fusion\n[θ̂, ω̂, τ̂d]', fontsize=FSS).color(C_EST))
+    'pot observer\n[θ̂, ω̂, τ̂d]', fontsize=FSS).color(C_EST))
 bN = bemf.absanchors['N']
 kN = kf.absanchors['N']
 
@@ -451,15 +469,13 @@ d += elm.Arrow().at((shx + 0.85, VD)).down(VD - bN[1]).color(C_EST)
 # theta_meas: position FE down into KF
 d += elm.Arrow().at((posx, FE_S)).down(FE_S - kN[1]).color(C_EST)
 d += elm.Label(label='θ_meas', fontsize=FSS, color=C_EST).at((posx + 0.9, FE_S - 0.4))
-# omega_bemf: bemf into KF
-d += elm.Arrow().at(bemf.W).left(bemf.absanchors['W'][0] - kf.absanchors['E'][0]).label('ω̂_bemf', loc='top', fontsize=FSS).color(C_EST)
 # Twind up into the clamp
 twx = bemf.absanchors['W'][0] + 0.5
 d += elm.Line().at((twx, bN[1])).up(bN[1] * -1 - 1.85).color(C_EST)
 d += elm.Line().at((twx, -1.85)).left(twx - cS[0]).color(C_EST)
 d += elm.Arrow().at((cS[0], -1.85)).up(1.85 + cS[1]).color(C_EST)
 d += elm.Label(label='T̂wind', fontsize=FSS, color=C_EST).at((cS[0] + 0.62, -1.2))
-d += elm.Label(label='i_lim = min(torque_limit,\nderate, stall, endstop(θ̂))', fontsize=FSS, color=C_LIM).at((cS[0] - 3.0, -2.35))
+d += elm.Label(label='i_lim = min(torque_limit,\nderate, stall,\nendstop(θ̂))', fontsize=FSS, color=C_LIM).at((cS[0] - 1.9, -2.3))
 # theta-hat: KF left and up into the position sum
 kW = kf.absanchors['W']
 d += elm.Line().at(kW).left(kW[0] - spS[0]).color(C_EST)
@@ -473,23 +489,39 @@ d += elm.Line().at((-0.5, -0.75)).up(LANE3 + 0.75).color(C_EST)
 d += elm.Line().at((-0.5, LANE3)).right(ffN[0] + 1.0 + 0.5).color(C_EST)
 d += elm.Arrow().at((ffN[0] + 1.0, LANE3)).down(LANE3 - ffN[1]).color(C_EST)
 d += elm.Label(label='θ̂_m', fontsize=FSS, color=C_EST).at((ffN[0] + 1.6, ffN[1] + 0.5))
-# omega-hat: KF up into the velocity sum, branch right for BEMF decoupling
-KLANE = -1.5
-d += elm.Line().at((svS[0], kN[1])).up(KLANE - kN[1]).color(C_EST)
-d += elm.Dot(radius=0.06).at((svS[0], KLANE)).color(C_EST)
-d += elm.Arrow().at((svS[0], KLANE)).up(svS[1] - KLANE).color(C_EST)
-d += elm.Label(label='ω̂', fontsize=FSS, color=C_EST).at((svS[0] + 0.3, -1.0))
-d += elm.Line().at((svS[0], KLANE)).right(s2S[0] - svS[0]).color(C_EST)
-d += elm.Arrow().at((s2S[0], KLANE)).up(s2S[1] - KLANE).color(C_EST)
-d += elm.Label(label='Ke·ω̂', fontsize=FSS, color=C_EST).at((s2S[0] + 0.55, -1.0))
+# omega source switch: the pot observer from below, the BEMF boxcar from the
+# right, one selected estimate up into the velocity sum. never a blend
+SWY = -3.6
+SWX = (posx + 1.5 + shx - 1.0) / 2       # corridor between the two front ends
+d += (osw := dsp.Box(w=3.0, h=1.0).at((svS[0], SWY)).anchor('center').label(
+    'ω source switch', fontsize=FSS).color(C_EST))
+oswS = osw.absanchors['S']
+oswN = osw.absanchors['N']
+d += elm.Arrow().at((svS[0], kN[1])).up(oswS[1] - kN[1]).color(C_EST)
+d += elm.Label(label='ω̂_pot', fontsize=FSS, color=C_EST).at((svS[0] + 0.75, -6.85))
+d += elm.Arrow().at(oswN).up(svS[1] - oswN[1]).color(C_EST)
+d += elm.Label(label='ω̂', fontsize=FSS, color=C_EST).at((svS[0] + 0.3, -1.3))
+bW = bemf.absanchors['W']
+d += elm.Line().at(bW).left(bW[0] - SWX).color(C_EST)
+d += elm.Line().at((SWX, bW[1])).up(SWY - bW[1]).color(C_EST)
+d += elm.Arrow().at((SWX, SWY)).left(SWX - osw.absanchors['E'][0]).label(
+    'ω̂_bemf', loc='bottom', fontsize=FSS).color(C_EST)
 # vbus: second output of the terminal FE, out the east side and up into
 # the reciprocal block (keeps the riser clear of the Ke-omega label)
 tvE = tvfe.absanchors['E']
 d += elm.Line().at(tvE).right(rS[0] - tvE[0]).color(C_EST)
 d += elm.Arrow().at((rS[0], tvE[1])).up(rS[1] - tvE[1]).color(C_EST)
 d += elm.Label(label='V̂bus', fontsize=FSS, color=C_EST).at((rS[0] + 0.55, -1.0))
+# Ke decoupling comes off the trajectory, NOT the estimator: its own lane
+# above everything, down into the current loop's feedforward sum
+LANE4 = 4.15
+si2N = si2.absanchors['N']
+d += elm.Line().at((tN[0], LANE2)).up(LANE4 - LANE2).color(C_TRA)
+d += elm.Line().at((tN[0], LANE4)).right(si2N[0] - tN[0]).label('ω*', loc='top', fontsize=FSS).color(C_TRA)
+d += elm.Arrow().at((si2N[0], LANE4)).down(LANE4 - si2N[1]).color(C_TRA)
+d += elm.Label(label='Ke·ω*', fontsize=FSS, color=C_TRA).at((si2N[0] + 0.75, 1.1))
 # disturbance torque out
-d += elm.Arrow(ls='--').at(kf.S).down(0.7).label('τ̂d (load estimate)', loc='bottom', fontsize=FSS).color(C_EST)
+d += elm.Arrow(ls='--').at(kf.S).down(0.7).label('τ̂d -> contact, stall, collision', loc='bottom', fontsize=FSS).color(C_EST)
 save(d, 'everything.svg')
 
 print('done')

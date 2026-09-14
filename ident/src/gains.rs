@@ -145,7 +145,7 @@ pub struct GainSet {
 ///   l3 = gamma / (2 * dt * B) = (1-p)^3 * f_med / (2*B) [cc per count]
 ///
 /// The theta predict omits the a*dt^2/2 half-step - a structural deviation
-/// the integer verification suite absorbs. l_bemf = 0 (blend off in v1).
+/// the integer verification suite absorbs.
 pub fn synthesize(p: &PlantParams, t: &BwTargets) -> GainSet {
     let w_ci = core::f64::consts::TAU * t.f_ci;
     let w_cv = core::f64::consts::TAU * t.f_cv;

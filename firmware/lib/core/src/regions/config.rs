@@ -193,15 +193,24 @@ pub const DEFAULT_V_UNDERVOLT_COUNTS: u16 = 1200;
 pub const DEFAULT_RTHERM_I_MIN_MA: u16 = 488;
 pub const DEFAULT_RTHERM_OMEGA_MAX_CPS: u16 = 400;
 
-/// Fusion observer correction gains; l_bemf 0 = bemf blend off.
+/// Fusion observer correction gains.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct ConfigFusion {
     pub l1_q016: u16,
     pub l2_q88: u16,
     pub l3_q88: u16,
-    pub l_bemf_q016: u16,
 }
+
+// Observer corrections are not loop gains: at 0 the observer is an open
+// integrator on the shunt current, theta_hat rails within a second of
+// drive and the endstop band folds on the railed estimate, zeroing
+// outbound open-loop duty (bench: recentre seeks crawled after a config
+// image reset). The fusion.rs test set, stable against b_i up to ~8192;
+// identification refines them from the fitted B.
+pub const DEFAULT_L1_Q016: u16 = 16384;
+pub const DEFAULT_L2_Q88: u16 = 1024;
+pub const DEFAULT_L3_Q88: u16 = 128;
 
 /// Fault thresholds: position-error window, sensor-delta screen.
 #[repr(C)]
@@ -242,7 +251,7 @@ pub struct ConfigRegs {
     pub fusion: ConfigFusion,
     pub fault_cfg: ConfigFaultCfg,
     #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 8],
+    pub _rsvd_tail: [u8; 10],
 }
 
 /// Boot-time seed for `ControlTable.config`; stamped pre-IRQ, then host-owned.

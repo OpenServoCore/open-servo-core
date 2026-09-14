@@ -4,6 +4,7 @@
 //! behavior against a crude integer plant.
 
 use super::*;
+use crate::estimator::OmegaSource;
 use crate::regions::config::StallResponse;
 use crate::traits::Sensors;
 use crate::{RegionStorage, Shared};
@@ -106,7 +107,6 @@ fn seed(shared: &Shared) {
         // l3 * B is the tau_d loop gain: at the b_i-encoded B (1.0 below)
         // 0.5 cc per count is stable, 2.0 rails the filter
         c.fusion.l3_q88 = 128;
-        c.fusion.l_bemf_q016 = 0;
         c.fault_cfg.pos_error_counts = 400;
         c.fault_cfg.pos_error_time_ms = 500;
         c.fault_cfg.sensor_delta_max = 256;
@@ -812,6 +812,128 @@ fn ident_accumulators_reset_between_windows() {
         assert_eq!(d.i_mean_counts, -1);
         assert_eq!(d.agg_seq, 3);
     });
+}
+
+// --- Back-EMF boxcar ------------------------------------------------------
+
+#[test]
+fn bemf_boxcar_lands_on_the_closed_form_after_20_ticks() {
+    let sh = Shared::new();
+    ident_setup(&sh);
+    let mut k = kernel();
+    // tick 0 drives the boot duty of 0 (sub-floor); ticks 1.. measure duty
+    // 8000: drive_ticks 293, vdiff 2960, i 100. The half closed at tick 10
+    // is the first clean one, tick 20 pairs it with a second.
+    for _ in 0..20 {
+        k.on_tick(frame(2000, BIAS + 100), &sh);
+        sh.table
+            .with(|t| assert_eq!(t.telemetry.estimates.omega_bemf_cps, 0));
+    }
+    k.on_tick(frame(2000, BIAS + 100), &sh);
+    // closed form: (293 * 2960 / 1200 - 2.0 * 100) * 16 c/s per vcount
+    let ticks = window::drive_ticks(8000, ARR) as i64;
+    let v_sum = (bemf::BOXCAR_TICKS as i64 * ticks * 2960 * TIMING.recip_arr_q24 as i64) >> 24;
+    let r_sum = (8192i64 * bemf::BOXCAR_TICKS as i64 * 100) >> 12;
+    let expect = ((v_sum - r_sum) * 16) / bemf::BOXCAR_TICKS as i64;
+    let got = sh.table.with(|t| t.telemetry.estimates.omega_bemf_cps) as i64;
+    assert!((got - expect).abs() <= 1, "got {got} expect {expect}");
+    assert_eq!(got, 8363, "pin");
+    // torque off: tick 21 still measures the last drive, tick 22 on are
+    // sub-floor, so the half closed at tick 30 voids and the publish drops
+    // to 0 with it
+    sh.table
+        .with_mut(|t| t.control.lifecycle.torque_enable = false);
+    for _ in 0..9 {
+        k.on_tick(frame(2000, BIAS + 100), &sh);
+    }
+    assert_eq!(
+        sh.table.with(|t| t.telemetry.estimates.omega_bemf_cps),
+        8363
+    );
+    k.on_tick(frame(2000, BIAS + 100), &sh);
+    assert_eq!(sh.table.with(|t| t.telemetry.estimates.omega_bemf_cps), 0);
+}
+
+#[test]
+fn velocity_feedback_switches_to_the_bemf_and_back() {
+    let sh = Shared::new();
+    ident_setup(&sh);
+    let mut k = kernel();
+    let published = |sh: &Shared| {
+        sh.table.with(|t| {
+            (
+                t.telemetry.estimates.omega_hat_cps,
+                t.telemetry.mode.omega_hat_src,
+            )
+        })
+    };
+    // valid boxcars close at ticks 20, 30, 40, 50: the fourth flips the
+    // source; until then omega_hat is the observer's omega
+    for _ in 0..50 {
+        k.on_tick(frame(2000, BIAS + 100), &sh);
+        assert_eq!(published(&sh), (k.fusion.omega_q16(), 0));
+    }
+    k.on_tick(frame(2000, BIAS + 100), &sh);
+    assert_eq!(published(&sh), (8363 << 16, 1));
+    assert_eq!(k.omega_sw.source(), OmegaSource::Bemf);
+    // torque off: tick 51 still measures the last drive; the half closed
+    // at tick 60 voids and the source rides the held boxcar through that
+    // one result, then falls back at tick 70
+    sh.table
+        .with_mut(|t| t.control.lifecycle.torque_enable = false);
+    for _ in 0..10 {
+        k.on_tick(frame(2000, BIAS + 100), &sh);
+    }
+    assert_eq!(published(&sh), (8363 << 16, 1));
+    for _ in 0..10 {
+        k.on_tick(frame(2000, BIAS + 100), &sh);
+    }
+    assert_eq!(published(&sh), (k.fusion.omega_q16(), 0));
+}
+
+// --- Current-loop feedforward ---------------------------------------------
+
+#[test]
+fn ke_feedforward_rides_the_profile_never_an_estimate() {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        // current PI inert: the duty IS the Ke feedforward
+        t.config.loop_current.i_kp_q88 = 0;
+        t.config.loop_current.i_ki_q412 = 0;
+        t.config.loop_current.i_kaw_q412 = 0;
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::Velocity;
+        t.control.lifecycle.goal_velocity = 1600;
+    });
+    let mut k = kernel();
+    // profile ramps 50 c/s per medium tick to 1600 and holds; the pot sits
+    // still, so both velocity estimates read ~0 - the feed must not
+    for _ in 0..1000 {
+        k.on_tick(frame(2000, BIAS), &sh);
+    }
+    assert_eq!(k.traj.omega_star_q16(), 1600 << 16);
+    // ke 0.0625 vcounts per c/s * 1600 c/s = 100 vcounts on a 3000 rail
+    let u_ff = q_mul(1600 << 16, 256, 28);
+    assert_eq!(u_ff, 100);
+    let expect = q_mul(u_ff, k.vbus.recip_q15() as i32, 15) as i16;
+    assert_eq!(k.duty_q15, expect);
+    assert!((expect as i32 - 1092).abs() <= 1, "duty={expect}");
+    // Current mode: no profile, no feed - even with the shaft spinning
+    // (the pot observer would read ~2000 c/s here)
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.mode = Mode::Current;
+        t.control.lifecycle.goal_current = 0;
+    });
+    for n in 0..2000u16 {
+        k.on_tick(frame(1000 + n / 10, BIAS), &sh);
+    }
+    assert!(
+        k.fusion.omega_q16() > 1000 << 16,
+        "pot omega {}",
+        k.fusion.omega_q16() >> 16
+    );
+    assert_eq!(k.duty_q15, 0);
 }
 
 // --- Closed-loop plant ----------------------------------------------------

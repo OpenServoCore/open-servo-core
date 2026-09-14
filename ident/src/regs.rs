@@ -36,7 +36,6 @@ pub mod config {
     pub const L1_Q016: Reg = reg(0x0068, 2);
     pub const L2_Q88: Reg = reg(0x006a, 2);
     pub const L3_Q88: Reg = reg(0x006c, 2);
-    pub const L_BEMF_Q016: Reg = reg(0x006e, 2);
 }
 
 pub mod calib {
@@ -127,6 +126,8 @@ pub mod telemetry {
     pub const STATUS_FLAGS: Reg = reg(0x0201, 1);
     pub const MODE_ACTIVE: Reg = reg(0x0220, 1);
     pub const FAULT_CODE: Reg = reg(0x0221, 1);
+    /// 0 = pot observer, 1 = back-EMF boxcar behind `omega_hat_cps`.
+    pub const OMEGA_HAT_SRC: Reg = reg(0x0222, 1);
     pub const THETA_HAT_Q16: Reg = reg(0x0224, 4);
     pub const OMEGA_HAT_CPS: Reg = reg(0x0228, 4);
     pub const TAU_D_COUNTS: Reg = reg(0x022c, 2);
@@ -177,7 +178,6 @@ pub const ALL: &[(&str, Reg)] = &[
     ("l1_q016", config::L1_Q016),
     ("l2_q88", config::L2_Q88),
     ("l3_q88", config::L3_Q88),
-    ("l_bemf_q016", config::L_BEMF_Q016),
     // lut_corr omitted: a 110-byte Bytes field, not a scalar reg (write_reg
     // and reg_by_name assume width <= 4); raw_min/raw_max are plain u16.
     ("raw_min", calib::POT_LUT_RAW_MIN),
@@ -225,6 +225,7 @@ pub const ALL: &[(&str, Reg)] = &[
     ("status_flags", telemetry::STATUS_FLAGS),
     ("mode_active", telemetry::MODE_ACTIVE),
     ("fault_code", telemetry::FAULT_CODE),
+    ("omega_hat_src", telemetry::OMEGA_HAT_SRC),
     ("theta_hat_q16", telemetry::THETA_HAT_Q16),
     ("omega_hat_cps", telemetry::OMEGA_HAT_CPS),
     ("tau_d_counts", telemetry::TAU_D_COUNTS),
