@@ -23,8 +23,8 @@ pub use trajectory::{TrajCfg, TrajGen};
 pub use velocity::{VelocityGains, VelocityLoop};
 
 use crate::estimator::{
-    BemfObs, BiasTracker, FusionGains, FusionObs, ThermAnchor, ThermGates, VbusEst, VcalLpf,
-    WindingTherm, bemf, window,
+    BemfObs, BiasTracker, FusionGains, FusionObs, OmegaSwitch, ThermAnchor, ThermGates, VbusEst,
+    VcalLpf, WindingTherm, bemf, window,
 };
 use crate::math::{q_mul, q_mul_u};
 use crate::regions::config::DecaySelect;
@@ -90,6 +90,8 @@ pub struct Kernel<I: ControlIo, T: TelStream = ()> {
     vbus: VbusEst,
     thermal: WindingTherm,
     bemf: BemfObs,
+    /// Velocity-loop feedback pick: back-EMF boxcar or the observer's omega.
+    omega_sw: OmegaSwitch,
     faults: faults::FaultLatch,
     det: faults::Detectors,
     booted: bool,
@@ -151,6 +153,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             vbus: VbusEst::new(timing.vbus_scale_q15),
             thermal: WindingTherm::new(),
             bemf: BemfObs::new(),
+            omega_sw: OmegaSwitch::new(),
             faults: faults::FaultLatch::new(),
             det: faults::Detectors::new(),
             booted: false,
@@ -376,7 +379,11 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                 &fg,
             );
             let theta_hat = self.fusion.theta_q16();
-            let omega_hat = self.fusion.omega_q16();
+            // The observer's omega keeps the rest-shaped consumers (stall
+            // verdict, thermometer gate): it is always there and reads
+            // small at rest, where the boxcar has no window at all.
+            let omega_pot = self.fusion.omega_q16();
+            let omega_hat = self.omega_sw.step(omega_bemf, omega_pot);
 
             let tc = TrajCfg {
                 vel_limit_cps: loop_pos.velocity_limit_cps,
@@ -430,7 +437,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                 pos_max_soft_counts: pos_lim.pos_max_soft_counts,
                 stall_permit: life.stall_permit,
             };
-            let omega_abs_cps = omega_hat.unsigned_abs() >> 16;
+            let omega_abs_cps = omega_pot.unsigned_abs() >> 16;
             let band = self.limits.fold(
                 pinned,
                 omega_abs_cps,
@@ -446,9 +453,10 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             if run {
                 match life.mode {
                     // Parked: the drive coasts, so the velocity loop must stop
-                    // too. omega_hat is pot-noise driven at rest (+-hundreds
-                    // c/s); left running, the PI integrates that phantom error
-                    // until i_ref pins at the current limit, and pinned + slow
+                    // too. omega_hat is the pot observer at rest (no window,
+                    // +-hundreds c/s of noise); left running, the PI
+                    // integrates that phantom error until i_ref pins at the
+                    // current limit, and pinned + slow
                     // false-trips the stall detector (bench: CODE_STALL a few
                     // seconds into a clean hold). Zero the command and drain
                     // the integrator so it never winds and resumes bumplessly.
@@ -589,6 +597,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                 let m = &raw mut (*p).telemetry.mode;
                 (&raw mut (*m).mode_active).write_volatile(life.mode as u8);
                 (&raw mut (*m).fault_code).write_volatile(self.faults.code());
+                (&raw mut (*m).omega_hat_src).write_volatile(self.omega_sw.source() as u8);
                 (&raw mut (*p).telemetry.common.fault_flags).write_volatile(self.faults.mask());
             }
         }

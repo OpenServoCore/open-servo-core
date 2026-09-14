@@ -775,6 +775,13 @@
       "kind": "uint"
     },
     {
+      "name": "omega_hat_src",
+      "addr": 546,
+      "width": 1,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
       "name": "theta_hat_q16",
       "addr": 548,
       "width": 4,

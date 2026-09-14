@@ -39,8 +39,12 @@ pub struct TelemetryMode {
     pub mode_active: u8,
     #[ct_field(access = ro)]
     pub fault_code: u8,
+    /// Velocity-loop feedback source behind `omega_hat_cps`: 0 = the pot
+    /// observer's omega, 1 = the back-EMF boxcar (estimator::OmegaSource).
+    #[ct_field(access = ro)]
+    pub omega_hat_src: u8,
     #[ct_field(skip)]
-    pub _rsvd_align: u16,
+    pub _rsvd_align: u8,
 }
 
 /// Estimator outputs, published at the medium boundary (`sample_tick` at
@@ -51,7 +55,8 @@ pub struct TelemetryEstimates {
     /// Fused position, cQ16 (pot counts x 2^16).
     #[ct_field(access = ro)]
     pub theta_hat_q16: i32,
-    /// Fused velocity, raw csQ16 ((counts/s) x 2^16) -- published unshifted.
+    /// Velocity-loop feedback, raw csQ16 ((counts/s) x 2^16) - published
+    /// unshifted; `omega_hat_src` names which estimate it is.
     #[ct_field(access = ro)]
     pub omega_hat_cps: i32,
     /// Disturbance-torque estimate, current counts.
@@ -68,7 +73,8 @@ pub struct TelemetryEstimates {
     /// Post-clamp post-gate duty actually written to the bridge.
     #[ct_field(access = ro)]
     pub duty_applied_q15: i16,
-    /// Telemetry-only bemf observer, whole c/s.
+    /// Back-EMF boxcar, whole c/s; 0 while a sub-floor window sits inside
+    /// the boxcar (`omega_hat_src` then reads 0 within a millisecond).
     #[ct_field(access = ro)]
     pub omega_bemf_cps: i16,
     /// Winding-R LMS estimate, vcounts/ccount Q4.12.

@@ -4,6 +4,7 @@
 //! behavior against a crude integer plant.
 
 use super::*;
+use crate::estimator::OmegaSource;
 use crate::regions::config::StallResponse;
 use crate::traits::Sensors;
 use crate::{RegionStorage, Shared};
@@ -852,6 +853,43 @@ fn bemf_boxcar_lands_on_the_closed_form_after_20_ticks() {
     );
     k.on_tick(frame(2000, BIAS + 100), &sh);
     assert_eq!(sh.table.with(|t| t.telemetry.estimates.omega_bemf_cps), 0);
+}
+
+#[test]
+fn velocity_feedback_switches_to_the_bemf_and_back() {
+    let sh = Shared::new();
+    ident_setup(&sh);
+    let mut k = kernel();
+    let published = |sh: &Shared| {
+        sh.table.with(|t| {
+            (
+                t.telemetry.estimates.omega_hat_cps,
+                t.telemetry.mode.omega_hat_src,
+            )
+        })
+    };
+    // valid boxcars close at ticks 20, 30, 40, 50: the fourth flips the
+    // source; until then omega_hat is the observer's omega
+    for _ in 0..50 {
+        k.on_tick(frame(2000, BIAS + 100), &sh);
+        assert_eq!(published(&sh), (k.fusion.omega_q16(), 0));
+    }
+    k.on_tick(frame(2000, BIAS + 100), &sh);
+    assert_eq!(published(&sh), (8363 << 16, 1));
+    assert_eq!(k.omega_sw.source(), OmegaSource::Bemf);
+    // torque off: tick 51 still measures the last drive; the half closed
+    // at tick 60 voids and the source rides the held boxcar through that
+    // one result, then falls back at tick 70
+    sh.table
+        .with_mut(|t| t.control.lifecycle.torque_enable = false);
+    for _ in 0..10 {
+        k.on_tick(frame(2000, BIAS + 100), &sh);
+    }
+    assert_eq!(published(&sh), (8363 << 16, 1));
+    for _ in 0..10 {
+        k.on_tick(frame(2000, BIAS + 100), &sh);
+    }
+    assert_eq!(published(&sh), (k.fusion.omega_q16(), 0));
 }
 
 // --- Closed-loop plant ----------------------------------------------------
