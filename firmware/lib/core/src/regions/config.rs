@@ -202,6 +202,16 @@ pub struct ConfigFusion {
     pub l3_q88: u16,
 }
 
+// Observer corrections are not loop gains: at 0 the observer is an open
+// integrator on the shunt current, theta_hat rails within a second of
+// drive and the endstop band folds on the railed estimate, zeroing
+// outbound open-loop duty (bench: recentre seeks crawled after a config
+// image reset). The fusion.rs test set, stable against b_i up to ~8192;
+// identification refines them from the fitted B.
+pub const DEFAULT_L1_Q016: u16 = 16384;
+pub const DEFAULT_L2_Q88: u16 = 1024;
+pub const DEFAULT_L3_Q88: u16 = 128;
+
 /// Fault thresholds: position-error window, sensor-delta screen.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
