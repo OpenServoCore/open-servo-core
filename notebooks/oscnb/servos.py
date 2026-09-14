@@ -200,6 +200,25 @@ SERVOS = {
             "the only thing bounding travel."
         ),
     ),
+    # Not a servo: the 4x4 grid of 3.3 ohm 0.5 W resistors wired in place of
+    # the motor for the sensor-chain session. A static load has no pot, so the
+    # position fields are identity placeholders and travel/guard are empty.
+    "grid-3r7": Servo(
+        key="grid-3r7",
+        label="static load, 4x4 grid of 3.3 ohm",
+        model="load",
+        pos_intercept=0.0,
+        pos_per_deg=1.0,
+        travel_deg=(0.0, 0.0),
+        guard_counts=(0, 0),
+        measured={
+            "r_load": Measured(3.7, 3.6, 3.8, "Ohm",
+                               "DMM 200 ohm range at the grid header pins, probe offset 0.2 removed",
+                               "cold; 10.7 W laps heat it, tempco unmeasured"),
+        },
+        notes="no motor, no pot: ladders run with osc sweep --static-load",
+    ),
 }
+
 
 DEFAULT_SERVO = "sg90-a"
