@@ -116,17 +116,33 @@ SERVOS = {
                 0.081, 0.078, 0.084, "A", "bringup isns-diff run28", "at duty 65"),
             # --- in-servo, this dataset ---
             "r_winding_measured": Measured(
-                3.91, 3.85, 3.99, "Ohm", "nb02 part 2, locked-rotor ladder on 2S",
-                "five captures, locked rungs only, terminal referenced; the "
-                "free-shaft onset route read 4.23 through a coasting shaft"),
+                3.77, 3.68, 3.92, "Ohm",
+                "nb02 sec 21 route (i): locked-rotor ladder on 2S, rungs 15-24% "
+                "only, 4 captures passing the span gate",
+                "V0 +0.455 [0.409, 0.484] V from the same fit, terminal "
+                "referenced. SUPERSEDES 3.91 [3.85, 3.99] with V0 +0.413, which "
+                "was fitted 12-24%: the 12% rung is 144 ticks under the 160-tick "
+                "floor, window_valid clear, and on a resistor the crest current "
+                "sample reads 10% low there (nb02 sec 20). Correcting that rung "
+                "by the resistor factor instead gives 4.23 with V0 +0.34, "
+                "rejected because the corrected point sits 88 mV, 3 rms, off the "
+                "honest line. R and V0 trade off across a 0.16 to 0.33 A span so "
+                "the pair moves together; the 2% hump correction on the honest "
+                "rungs alone gives 3.86. The free-shaft onset route read 4.23 "
+                "through a coasting shaft"),
             "tau_e_measured": Measured(
                 154, 140, 171, "us", "nb02 part 2, sample-to-sample pole",
                 "loop time constant L/R_eff at a rung onset; 146 us on USB. "
-                "An independent ARX fit on the same data gave 142 +/- 9"),
+                "An independent ARX fit on the same data gave 142 +/- 9. "
+                "Unchanged by the crest floor of nb02 sec 20: the pole is a ratio "
+                "of samples at one duty and one phase, so a per-duty under-read "
+                "cancels"),
             "l_motor_in_servo_measured": Measured(
-                0.64, 0.55, 0.75, "mH", "nb02 part 2, tau x R_eff",
-                "bracket is the R_eff choice (3.94 to 4.34 Ohm) plus capture "
-                "scatter; l_motor_measured below is the bare can, a different unit"),
+                0.62, 0.53, 0.74, "mH",
+                "nb02 sec 21, tau x R_eff with the route (i) R",
+                "bracket is the R_eff choice (3.79 to 4.34 Ohm) times the tau "
+                "capture scatter; was 0.64 [0.55, 0.75] on the 12-24% R. "
+                "l_motor_measured above is the bare can, a different unit"),
             "pot_scale_measured": Measured(
                 19.30, 19.30, 19.43, "counts/deg",
                 "nb06 sec 5.5, travel-weighted ripple cycle counting against "
