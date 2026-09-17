@@ -23,7 +23,7 @@ The render predates the 2A refresh, so the connector set on it is one revision b
 - **Qwiic** - SH 1.0 mm 4P I2C connector (J3) for an encoder module, either magnetic (I2C) or a quadrature encoder breakout.
 - **Power input** - 1S-2S LiPo (3.0-8.4 V) via JST-PH, or the WCH-LinkE 5 V rail. Either or both, OR'd through SS54 Schottkys.
 - **Debug** - WCH-LinkE over the CH32V006 1-wire SWDIO, on a 1x03 header (J2).
-- **Position feedback** - potentiometer or analog magnetic encoder on J5, I2C encoder on J3, or ADC-sampled custom quadrature on J6.
+- **Position feedback** - potentiometer or analog magnetic encoder on J5, I2C encoder on J3, or an ADC-sampled IR encoder on J6 (pins) or J11 (flex landing).
 - **Supply and terminal sense** - `VSYS` measured directly through its own divider, plus both motor terminals referenced to a common bias so back-EMF is readable while the bridge coasts.
 - **Temperature** - onboard NTC (TH1) or external NTC (J7), selected with JP2.
 - **Board** - 50 x 40 mm, 6-layer 1.6 mm (JLCPCB JLC06161H-3313 stackup), ENIG, via-in-pad.
@@ -117,6 +117,21 @@ With a pot or a single-output encoder, leave `POS2` unconnected and jump JP2 for
 2x02 pin header. `+3V3` / `GND` on one row, `ENCA` / `ENCB` on the other, going into ADC channels `A4` / `A3`.
 
 This is a future expansion connector for an ADC-sampled custom IR quadrature encoder, in the style of [ServoProject](https://github.com/adamb314/ServoProject). The analog A/B phases get oversampled and interpolated for sub-count resolution. Hardware quadrature counting is not possible here since `PD2` / `PD3` don't carry TIM2 CH1/CH2, so I never considered it. A digital encoder belongs on Qwiic instead.
+
+### Motor encoder flex - J11
+
+Six bare pads at 1.0 mm pitch for the motor-shaft encoder flex, attached tin-and-iron: the flex fingers are pre-tinned, laid on the pads and pressed with an iron, then hot glue over the pad row takes the strain. The footprint pair (`Flex_Landing_1x06_P1.0mm` on the board, `Flex_Fingers_1x06_P1.0mm` on the flex) lives in the shared library, and the same landing goes on the swap board, so the dev board rehearses the real attach. Pin 1 is at the bracket mark.
+
+|Pin|Net|Notes|
+|---|---|---|
+|1|`GND`|Outer ground, guards the pair.|
+|2|`+3V3`|Emitter and phototransistor supply.|
+|3|`ENCA`|IR sensor A, ADC `A4`. Same net as J6.|
+|4|`ENCB`|IR sensor B, ADC `A3`. Same net as J6.|
+|5|`VNTC_EXT`|Thermistor on the motor can, into the external leg of JP2. The divider resistor sits on the flex.|
+|6|`GND`|Outer ground.|
+
+J6 and J11 are the same encoder input in two shapes: pins for a wired breakout or the bench coupon, the landing for the flex. Populate one.
 
 ### External NTC - J7
 

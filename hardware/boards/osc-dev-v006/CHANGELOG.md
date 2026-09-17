@@ -24,6 +24,7 @@ To get files at a specific revision, check out the corresponding tag (e.g. `git 
 
 - **Qwiic connector** (I2C, 4K7 pull-ups, 100 Ohm series) for an encoder module, magnetic or quadrature breakout.
 - **`VB` bias node** for the motor terminal dividers, so both terminals stay readable while the bridge coasts.
+- **Motor encoder flex landing.** J11 is a row of six bare 1.0 mm pads (`GND` / `+3V3` / `ENCA` / `ENCB` / `VNTC_EXT` / `GND`) for the tier-3 IR encoder flex, soldered tin-and-iron. It parallels the J6 encoder pins and adds the on-can thermistor into the JP2 external leg.
 - **Second analog position channel.** J5 is 1x04 (`+3V3` / `GND` / `POS1` / `POS2`) for a dual-output transducer; `POS2` shares ADC `A0` (`PA2`) with the NTC through JP2, behind the same 4K7 / 100nF filter as `POS1`. Jump JP2 for the NTC, leave it open for the second channel.
 - **DNP experiment footprints** around the current sense block: comp-cap stack (`Cc3`/`Cc4`), kelvin filter (`Ck1`), output cap (`Co1`), VREF shift (`Rd3`), bus pull-up (`Rx2`), plus fitted 0R kelvin series swap points (`Rk1`/`Rk2`).
 - ESD clamp (PESD5V0L1BA) on the bus `DATA` line, ahead of the series resistor.

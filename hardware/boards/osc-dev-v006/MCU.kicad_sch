@@ -3215,6 +3215,83 @@
 		)
 	)
 	(symbol
+		(lib_id "power:GND")
+		(at 44.45 109.22 90)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "390bb80f-762f-4612-b416-7e2d8ed5baa0")
+		(property "Reference" "#PWR021"
+			(at 50.8 109.22 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "GND"
+			(at 50.038 109.22 90)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at 44.45 109.22 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 44.45 109.22 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
+			(at 44.45 109.22 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "d1767681-83b3-4f04-9200-d05eb0c67f93")
+		)
+		(instances
+			(project "osc-dev-v006"
+				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/77d3819f-1672-490a-859c-8df54ad0ab77"
+					(reference "#PWR021")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
 		(lib_id "shared:CH32V006F8P6")
 		(at 113.03 55.88 0)
 		(unit 1)
@@ -4036,83 +4113,6 @@
 			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/77d3819f-1672-490a-859c-8df54ad0ab77"
 					(reference "Cu1")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "power:VBUS")
-		(at 44.45 109.22 270)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(uuid "8e5b32fe-d468-4999-99fd-b2826b800452")
-		(property "Reference" "#PWR020"
-			(at 40.64 109.22 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "VPROG"
-			(at 51.054 109.22 90)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" ""
-			(at 44.45 109.22 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 44.45 109.22 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Power symbol creates a global label with name \"VBUS\""
-			(at 44.45 109.22 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "2a8fb34a-b46b-4cfc-8100-d875765d9739")
-		)
-		(instances
-			(project "osc-dev-v006"
-				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/77d3819f-1672-490a-859c-8df54ad0ab77"
-					(reference "#PWR020")
 					(unit 1)
 				)
 			)
@@ -5259,8 +5259,8 @@
 		)
 	)
 	(symbol
-		(lib_id "power:GND")
-		(at 44.45 111.76 0)
+		(lib_id "power:VBUS")
+		(at 44.45 111.76 270)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
@@ -5268,9 +5268,9 @@
 		(on_board yes)
 		(in_pos_files yes)
 		(dnp no)
-		(uuid "fa07f57b-cf4b-4ed1-8737-8000bcdd9da5")
-		(property "Reference" "#PWR021"
-			(at 44.45 118.11 0)
+		(uuid "f1f24998-33ed-4b93-b51e-71a64c85359e")
+		(property "Reference" "#PWR020"
+			(at 40.64 111.76 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -5280,8 +5280,8 @@
 				)
 			)
 		)
-		(property "Value" "GND"
-			(at 44.45 115.824 0)
+		(property "Value" "VPROG"
+			(at 51.054 111.76 90)
 			(show_name no)
 			(do_not_autoplace no)
 			(effects
@@ -5312,7 +5312,7 @@
 				)
 			)
 		)
-		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
+		(property "Description" "Power symbol creates a global label with name \"VBUS\""
 			(at 44.45 111.76 0)
 			(hide yes)
 			(show_name no)
@@ -5324,12 +5324,12 @@
 			)
 		)
 		(pin "1"
-			(uuid "ace8c28b-55d0-4084-a955-56bd9d396fd7")
+			(uuid "5e95f65a-216b-4feb-855c-29d63069ef5b")
 		)
 		(instances
 			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/77d3819f-1672-490a-859c-8df54ad0ab77"
-					(reference "#PWR021")
+					(reference "#PWR020")
 					(unit 1)
 				)
 			)
