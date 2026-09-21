@@ -2288,18 +2288,6 @@
 		(uuid "64f6a57f-56d4-4dac-8449-3188ffc03dc1")
 	)
 	(rectangle
-		(start 116.84 144.78)
-		(end 203.2 165.1)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(fill
-			(type none)
-		)
-		(uuid "655c4391-7d5e-4514-9897-bb7f49327a3a")
-	)
-	(rectangle
 		(start 15.24 29.21)
 		(end 80.01 86.36)
 		(stroke
@@ -2346,18 +2334,6 @@
 			(justify left top)
 		)
 		(uuid "028e3a3f-d1da-486e-92ab-416ccb21ea7b")
-	)
-	(text "GND test points"
-		(exclude_from_sim no)
-		(at 119.888 146.304 0)
-		(effects
-			(font
-				(size 2 2)
-				(thickness 0.25)
-			)
-			(justify left top)
-		)
-		(uuid "4cdddcef-6e3f-4f17-9512-715c1acadd93")
 	)
 	(text "Current sense shunt"
 		(exclude_from_sim no)
@@ -2591,10 +2567,22 @@
 		(uuid "22c62c44-990e-49c4-86c5-ce2a6a010e46")
 	)
 	(junction
+		(at 180.34 76.2)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "22f1d790-65af-4663-b105-b5c76aac6b3f")
+	)
+	(junction
 		(at 157.48 45.72)
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "2c00f9d9-ab48-473e-bc37-ff275b7cdcf0")
+	)
+	(junction
+		(at 77.47 113.03)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "3424dc26-86c3-4184-83e6-9f88f78cf06d")
 	)
 	(junction
 		(at 148.59 45.72)
@@ -2681,6 +2669,12 @@
 		(uuid "812a4e83-9c80-4ca9-858d-849881ef875a")
 	)
 	(junction
+		(at 27.94 107.95)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "8bf55da9-1da5-49bf-8136-7fcb9077e9e7")
+	)
+	(junction
 		(at 180.34 66.04)
 		(diameter 0)
 		(color 0 0 0 0)
@@ -2703,6 +2697,12 @@
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "c370351a-ad06-4e67-a1e4-da4d60e5f9c6")
+	)
+	(junction
+		(at 55.88 107.95)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "c5173145-7616-4e8d-b62d-084d923c3ead")
 	)
 	(junction
 		(at 173.99 55.88)
@@ -2774,6 +2774,16 @@
 	)
 	(wire
 		(pts
+			(xy 180.34 66.04) (xy 180.34 63.5)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "0393cace-5576-4287-9feb-071c1005c15b")
+	)
+	(wire
+		(pts
 			(xy 85.09 113.03) (xy 85.09 114.3)
 		)
 		(stroke
@@ -2824,7 +2834,7 @@
 	)
 	(wire
 		(pts
-			(xy 180.34 76.2) (xy 180.34 74.93)
+			(xy 180.34 74.93) (xy 180.34 76.2)
 		)
 		(stroke
 			(width 0)
@@ -2894,6 +2904,16 @@
 	)
 	(wire
 		(pts
+			(xy 105.41 115.57) (xy 106.68 115.57)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "17a5cd91-a429-45e8-9976-509b3ca2cc77")
+	)
+	(wire
+		(pts
 			(xy 123.19 115.57) (xy 121.92 115.57)
 		)
 		(stroke
@@ -2921,16 +2941,6 @@
 			(type default)
 		)
 		(uuid "1a046129-50e6-47a1-b4bf-cb15e856c325")
-	)
-	(wire
-		(pts
-			(xy 151.13 154.94) (xy 151.13 153.67)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "1a92f50e-054d-436a-ba82-18e018ea2fee")
 	)
 	(wire
 		(pts
@@ -3064,6 +3074,16 @@
 	)
 	(wire
 		(pts
+			(xy 180.34 76.2) (xy 182.88 76.2)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "371d6c4a-5676-4b74-bdb1-f039f929a317")
+	)
+	(wire
+		(pts
 			(xy 129.54 55.88) (xy 137.16 55.88)
 		)
 		(stroke
@@ -3071,6 +3091,26 @@
 			(type default)
 		)
 		(uuid "38782fd4-e2ba-475c-9e53-e24f5f5652ff")
+	)
+	(wire
+		(pts
+			(xy 168.91 66.04) (xy 180.34 66.04)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "3886297d-be0a-4686-9f89-1ad2a0cf32b0")
+	)
+	(wire
+		(pts
+			(xy 27.94 106.68) (xy 27.94 107.95)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "388fb2fa-852d-4544-ae16-c92cbff9cfca")
 	)
 	(wire
 		(pts
@@ -3144,13 +3184,13 @@
 	)
 	(wire
 		(pts
-			(xy 168.91 66.04) (xy 180.34 66.04)
+			(xy 180.34 76.2) (xy 180.34 77.47)
 		)
 		(stroke
 			(width 0)
 			(type default)
 		)
-		(uuid "43592fe9-ac11-48ef-a28a-e3272cd6e00e")
+		(uuid "4409c0fd-27ba-4b7d-9531-bf956ee936bc")
 	)
 	(wire
 		(pts
@@ -3364,16 +3404,6 @@
 	)
 	(wire
 		(pts
-			(xy 139.7 154.94) (xy 139.7 153.67)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "7e101a65-594b-47cf-995f-66de82d6c06d")
-	)
-	(wire
-		(pts
 			(xy 55.88 107.95) (xy 63.5 107.95)
 		)
 		(stroke
@@ -3454,6 +3484,26 @@
 	)
 	(wire
 		(pts
+			(xy 55.88 106.68) (xy 55.88 107.95)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "983167b2-b867-4576-9763-65cdfc7ec3c0")
+	)
+	(wire
+		(pts
+			(xy 77.47 111.76) (xy 77.47 113.03)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "98538e60-a36a-4da6-be91-e42895eacf62")
+	)
+	(wire
+		(pts
 			(xy 173.99 45.72) (xy 173.99 46.99)
 		)
 		(stroke
@@ -3521,6 +3571,16 @@
 			(type default)
 		)
 		(uuid "a2a88836-ae05-4488-89c6-c53b36abcf9c")
+	)
+	(wire
+		(pts
+			(xy 120.65 115.57) (xy 121.92 115.57)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "a31b8a49-ce83-4362-856d-208a6c2e445d")
 	)
 	(wire
 		(pts
@@ -3861,16 +3921,6 @@
 			(type default)
 		)
 		(uuid "dcb59e4c-35a7-48c9-9472-bea27403fcbf")
-	)
-	(wire
-		(pts
-			(xy 161.29 154.94) (xy 161.29 153.67)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "dd77ab47-6e51-4ae4-9e10-887861d51cb3")
 	)
 	(wire
 		(pts
@@ -4519,83 +4569,6 @@
 			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/61206fd6-d342-4deb-8154-766226a761fd"
 					(reference "Rf2")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "power:GND")
-		(at 161.29 154.94 0)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(uuid "0ab11b97-9c7e-4f90-a55b-ffd1a97a55be")
-		(property "Reference" "#PWR068"
-			(at 161.29 161.29 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "GND"
-			(at 161.29 160.02 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" ""
-			(at 161.29 154.94 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 161.29 154.94 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 161.29 154.94 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "64687cc1-a5ae-4c16-ac71-88411a1e043a")
-		)
-		(instances
-			(project "osc-dev-v006"
-				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/61206fd6-d342-4deb-8154-766226a761fd"
-					(reference "#PWR068")
 					(unit 1)
 				)
 			)
@@ -5329,6 +5302,85 @@
 		)
 	)
 	(symbol
+		(lib_id "Connector:TestPoint_Small")
+		(at 182.88 76.2 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom no)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "2ec442a8-bded-4a76-97e9-58e450dc05ea")
+		(property "Reference" "TP1"
+			(at 184.15 76.2 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "GND"
+			(at 184.15 77.4699 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "TestPoint:TestPoint_Pad_D1.0mm"
+			(at 187.96 76.2 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 187.96 76.2 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "test point"
+			(at 182.88 76.2 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "e2ceb43e-3bde-4c7d-9d1b-e4b7f7237d98")
+		)
+		(instances
+			(project "osc-dev-v006"
+				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/61206fd6-d342-4deb-8154-766226a761fd"
+					(reference "TP1")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
 		(lib_id "Device:C")
 		(at 157.48 60.96 0)
 		(unit 1)
@@ -5427,85 +5479,6 @@
 			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/61206fd6-d342-4deb-8154-766226a761fd"
 					(reference "Cc2")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "Connector:TestPoint_Small")
-		(at 139.7 153.67 0)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom no)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(fields_autoplaced yes)
-		(uuid "32239606-ab35-4498-89fb-00cab621848e")
-		(property "Reference" "TP1"
-			(at 140.97 152.3999 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Value" "GND"
-			(at 140.97 154.9399 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Footprint" "TestPoint:TestPoint_Pad_D1.0mm"
-			(at 144.78 153.67 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 144.78 153.67 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "test point"
-			(at 139.7 153.67 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "0fa5a3f8-e08a-43bd-9340-277f733eaf5b")
-		)
-		(instances
-			(project "osc-dev-v006"
-				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/61206fd6-d342-4deb-8154-766226a761fd"
-					(reference "TP1")
 					(unit 1)
 				)
 			)
@@ -6416,85 +6389,6 @@
 		)
 	)
 	(symbol
-		(lib_id "Connector:TestPoint_Small")
-		(at 151.13 153.67 0)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom no)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(fields_autoplaced yes)
-		(uuid "6310ae2f-38de-4873-b195-795096ba8411")
-		(property "Reference" "TP2"
-			(at 152.4 152.3999 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Value" "GND"
-			(at 152.4 154.9399 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Footprint" "TestPoint:TestPoint_Pad_D1.0mm"
-			(at 156.21 153.67 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 156.21 153.67 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "test point"
-			(at 151.13 153.67 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "7d2e90ee-067c-48d2-990a-9f2e9bc0c684")
-		)
-		(instances
-			(project "osc-dev-v006"
-				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/61206fd6-d342-4deb-8154-766226a761fd"
-					(reference "TP2")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
 		(lib_id "Connector_Generic:Conn_01x06")
 		(at 50.8 176.53 0)
 		(unit 1)
@@ -7053,6 +6947,162 @@
 			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/61206fd6-d342-4deb-8154-766226a761fd"
 					(reference "J5")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Connector:TestPoint_Small")
+		(at 120.65 115.57 180)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom no)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "75ef1cde-ff52-4a45-be47-0054a53660c5")
+		(property "Reference" "TP9"
+			(at 117.602 115.57 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "VP2"
+			(at 121.92 116.84 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "TestPoint:TestPoint_Pad_D1.0mm"
+			(at 125.73 115.57 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 125.73 115.57 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "test point"
+			(at 120.65 115.57 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "b0d2c3f2-0308-4eb1-a7b8-731409fb1a26")
+		)
+		(instances
+			(project "osc-dev-v006"
+				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/61206fd6-d342-4deb-8154-766226a761fd"
+					(reference "TP9")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Connector:TestPoint_Small")
+		(at 77.47 111.76 180)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom no)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "7604c5a1-748f-46cc-9679-31b13929d92f")
+		(property "Reference" "TP7"
+			(at 77.47 109.982 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "VS"
+			(at 78.74 113.03 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "TestPoint:TestPoint_Pad_D1.0mm"
+			(at 82.55 111.76 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 82.55 111.76 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "test point"
+			(at 77.47 111.76 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "b8c7b8d7-8c3c-414d-9b8b-8f5d0b61a37d")
+		)
+		(instances
+			(project "osc-dev-v006"
+				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/61206fd6-d342-4deb-8154-766226a761fd"
+					(reference "TP7")
 					(unit 1)
 				)
 			)
@@ -8479,6 +8529,84 @@
 		)
 	)
 	(symbol
+		(lib_id "Connector:TestPoint_Small")
+		(at 180.34 63.5 180)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom no)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "9bb156ae-baa6-4f35-a397-d0c135908e5b")
+		(property "Reference" "TP2"
+			(at 180.34 61.722 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "OPA"
+			(at 181.61 64.77 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "TestPoint:TestPoint_Pad_D1.0mm"
+			(at 185.42 63.5 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 185.42 63.5 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "test point"
+			(at 180.34 63.5 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "00edf110-92d8-4d6e-8057-0b40a05c6135")
+		)
+		(instances
+			(project "osc-dev-v006"
+				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/61206fd6-d342-4deb-8154-766226a761fd"
+					(reference "TP2")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
 		(lib_id "Device:C")
 		(at 173.99 50.8 0)
 		(unit 1)
@@ -9255,6 +9383,84 @@
 		)
 	)
 	(symbol
+		(lib_id "Connector:TestPoint_Small")
+		(at 105.41 115.57 180)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom no)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "b0486145-f84e-4413-8f97-5652d38d6068")
+		(property "Reference" "TP8"
+			(at 102.87 115.57 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "VP1"
+			(at 106.68 116.84 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "TestPoint:TestPoint_Pad_D1.0mm"
+			(at 110.49 115.57 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 110.49 115.57 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "test point"
+			(at 105.41 115.57 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "c76293a9-4507-4318-b17f-0d0f0a7d713d")
+		)
+		(instances
+			(project "osc-dev-v006"
+				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/61206fd6-d342-4deb-8154-766226a761fd"
+					(reference "TP8")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
 		(lib_id "Device:R")
 		(at 140.97 55.88 90)
 		(unit 1)
@@ -9356,18 +9562,28 @@
 		)
 	)
 	(symbol
-		(lib_id "power:GND")
-		(at 180.34 76.2 0)
+		(lib_id "Connector:TestPoint_Small")
+		(at 27.94 106.68 180)
 		(unit 1)
 		(body_style 1)
 		(exclude_from_sim no)
-		(in_bom yes)
+		(in_bom no)
 		(on_board yes)
 		(in_pos_files yes)
 		(dnp no)
-		(uuid "b2f024ad-0e40-438b-bdee-d47eb78d2a98")
-		(property "Reference" "#PWR074"
-			(at 180.34 82.55 0)
+		(uuid "b11ae2ec-f270-42b9-b083-c0b2bb13b12b")
+		(property "Reference" "TP5"
+			(at 27.94 104.902 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "VA"
+			(at 29.21 107.95 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -9375,20 +9591,11 @@
 				(font
 					(size 1.27 1.27)
 				)
+				(justify left)
 			)
 		)
-		(property "Value" "GND"
-			(at 180.34 80.264 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" ""
-			(at 180.34 76.2 0)
+		(property "Footprint" "TestPoint:TestPoint_Pad_D1.0mm"
+			(at 33.02 106.68 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -9399,7 +9606,84 @@
 			)
 		)
 		(property "Datasheet" ""
-			(at 180.34 76.2 0)
+			(at 33.02 106.68 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "test point"
+			(at 27.94 106.68 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "baf5714f-fc21-4aae-b350-c7b95e1998e8")
+		)
+		(instances
+			(project "osc-dev-v006"
+				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/61206fd6-d342-4deb-8154-766226a761fd"
+					(reference "TP5")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "power:GND")
+		(at 180.34 77.47 0)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "b2f024ad-0e40-438b-bdee-d47eb78d2a98")
+		(property "Reference" "#PWR074"
+			(at 180.34 83.82 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "GND"
+			(at 180.34 81.534 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at 180.34 77.47 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 180.34 77.47 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -9410,7 +9694,7 @@
 			)
 		)
 		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 180.34 76.2 0)
+			(at 180.34 77.47 0)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -9509,6 +9793,84 @@
 			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/61206fd6-d342-4deb-8154-766226a761fd"
 					(reference "NT1")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "Connector:TestPoint_Small")
+		(at 55.88 106.68 180)
+		(unit 1)
+		(body_style 1)
+		(exclude_from_sim no)
+		(in_bom no)
+		(on_board yes)
+		(in_pos_files yes)
+		(dnp no)
+		(uuid "b870851d-68a8-4842-9547-1a6d63eb07d9")
+		(property "Reference" "TP6"
+			(at 55.88 104.902 0)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "VB"
+			(at 57.15 107.95 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "TestPoint:TestPoint_Pad_D1.0mm"
+			(at 60.96 106.68 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Datasheet" ""
+			(at 60.96 106.68 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Description" "test point"
+			(at 55.88 106.68 0)
+			(hide yes)
+			(show_name no)
+			(do_not_autoplace no)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(pin "1"
+			(uuid "bde14444-3a51-40a0-ad0c-7a511c64ad61")
+		)
+		(instances
+			(project "osc-dev-v006"
+				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/61206fd6-d342-4deb-8154-766226a761fd"
+					(reference "TP6")
 					(unit 1)
 				)
 			)
@@ -9664,83 +10026,6 @@
 			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/61206fd6-d342-4deb-8154-766226a761fd"
 					(reference "#PWR038")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "power:GND")
-		(at 151.13 154.94 0)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(uuid "bee773b6-50d4-421b-b740-acacf963430a")
-		(property "Reference" "#PWR067"
-			(at 151.13 161.29 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "GND"
-			(at 151.13 160.02 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" ""
-			(at 151.13 154.94 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 151.13 154.94 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 151.13 154.94 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "a5939cea-7275-4024-9fe5-ea6995c12aa3")
-		)
-		(instances
-			(project "osc-dev-v006"
-				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/61206fd6-d342-4deb-8154-766226a761fd"
-					(reference "#PWR067")
 					(unit 1)
 				)
 			)
@@ -10651,85 +10936,6 @@
 		)
 	)
 	(symbol
-		(lib_id "Connector:TestPoint_Small")
-		(at 161.29 153.67 0)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom no)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(fields_autoplaced yes)
-		(uuid "f3b9bc40-f2c7-4a2f-8b2b-4277cd1daaef")
-		(property "Reference" "TP3"
-			(at 162.56 152.3999 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Value" "GND"
-			(at 162.56 154.9399 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(justify left)
-			)
-		)
-		(property "Footprint" "TestPoint:TestPoint_Pad_D1.0mm"
-			(at 166.37 153.67 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 166.37 153.67 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "test point"
-			(at 161.29 153.67 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "efec6683-f39c-4fb7-bcca-1a69acd83586")
-		)
-		(instances
-			(project "osc-dev-v006"
-				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/61206fd6-d342-4deb-8154-766226a761fd"
-					(reference "TP3")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
 		(lib_id "Device:R")
 		(at 63.5 113.03 0)
 		(unit 1)
@@ -10930,83 +11136,6 @@
 			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/61206fd6-d342-4deb-8154-766226a761fd"
 					(reference "Ra2")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "power:GND")
-		(at 139.7 154.94 0)
-		(unit 1)
-		(body_style 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(in_pos_files yes)
-		(dnp no)
-		(uuid "fa19f570-a308-4a91-92d4-e0b6a604b03b")
-		(property "Reference" "#PWR065"
-			(at 139.7 161.29 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Value" "GND"
-			(at 139.7 160.02 0)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" ""
-			(at 139.7 154.94 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Datasheet" ""
-			(at 139.7 154.94 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 139.7 154.94 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(pin "1"
-			(uuid "0bcf0171-013d-4d36-9273-2b00394a3f80")
-		)
-		(instances
-			(project "osc-dev-v006"
-				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/61206fd6-d342-4deb-8154-766226a761fd"
-					(reference "#PWR065")
 					(unit 1)
 				)
 			)

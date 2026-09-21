@@ -45,28 +45,28 @@
         },
         "silk_line_width": 0.15,
         "silk_text_italic": false,
-        "silk_text_size_h": 1.0,
-        "silk_text_size_v": 1.0,
-        "silk_text_thickness": 0.15,
+        "silk_text_size_h": 0.8,
+        "silk_text_size_v": 0.8,
+        "silk_text_thickness": 0.12,
         "silk_text_upright": false,
         "zones": {
           "border_display_style": 2,
           "border_hatch_pitch": 0.5,
           "corner_radius": 0.0,
-          "corner_smoothing": 1,
+          "corner_smoothing": 0,
           "fill_mode": 0,
           "hatch_gap": 1.5,
           "hatch_orientation": 0.0,
           "hatch_smoothing_level": 0,
           "hatch_smoothing_value": 0.1,
           "hatch_thickness": 1.0,
-          "min_clearance": 0.2,
+          "min_clearance": 0.0,
           "min_island_area": 10.0,
           "min_thickness": 0.1,
           "pad_connection": 2,
-          "remove_islands": 0,
-          "thermal_relief_gap": 0.1,
-          "thermal_relief_spoke_width": 0.1
+          "remove_islands": 1,
+          "thermal_relief_gap": 0.5,
+          "thermal_relief_spoke_width": 0.5
         }
       },
       "diff_pair_dimensions": [
@@ -76,36 +76,7 @@
           "width": 0.0
         }
       ],
-      "drc_exclusions": [
-        [
-          "clearance|129520000|123847500|047bb5c3-fb97-4c7a-a14b-01d5712c557c|66773da3-4c63-42c5-acb0-f1843caf57ee",
-          ""
-        ],
-        [
-          "clearance|135365000|123892500|047bb5c3-fb97-4c7a-a14b-01d5712c557c|6029779e-b0cf-4014-aa14-c2601808f609",
-          ""
-        ],
-        [
-          "clearance|137430000|130066250|047bb5c3-fb97-4c7a-a14b-01d5712c557c|3523a95b-7711-44b7-b1be-f9263e8aa299",
-          ""
-        ],
-        [
-          "clearance|139100000|120665000|047bb5c3-fb97-4c7a-a14b-01d5712c557c|962981de-c0a6-422c-b7f7-989f48d2c39a",
-          ""
-        ],
-        [
-          "clearance|139100000|121895000|047bb5c3-fb97-4c7a-a14b-01d5712c557c|cdc15119-4363-4113-a359-38b966297df1",
-          ""
-        ],
-        [
-          "clearance|139100000|130066250|00e0fc67-12fb-41f6-918f-b7c520f6a732|047bb5c3-fb97-4c7a-a14b-01d5712c557c",
-          ""
-        ],
-        [
-          "clearance|139100000|130250000|047bb5c3-fb97-4c7a-a14b-01d5712c557c|18c6921a-a346-4650-9d0a-9e981ef17c7b",
-          ""
-        ]
-      ],
+      "drc_exclusions": [],
       "meta": {
         "version": 2
       },
@@ -185,8 +156,8 @@
         "min_microvia_drill": 0.1,
         "min_resolved_spokes": 2,
         "min_silk_clearance": 0.0,
-        "min_text_height": 1.0,
-        "min_text_thickness": 0.15,
+        "min_text_height": 0.6,
+        "min_text_thickness": 0.1,
         "min_through_hole_diameter": 0.2,
         "min_track_width": 0.09,
         "min_via_annular_width": 0.075,
@@ -988,7 +959,7 @@
         "uuid": "6062e7d2-0c72-467e-b49c-6387ba053e09"
       }
     ],
-    "used_designators": "Rh2,Cn1,#FLG1-7,Ra2,Ca2,NT1-4,Rn1-2,CN1,JP1-4,J1-10,J12-16,J1101-1102,TH1-2,Cv1-5,Rv1-8,FB1-2,C1-19,C501,SW1,U1-3,U5,Cd1,RS1-3,LED1-2,Rg1-2,#PWR1-76,#PWR1101-1108,D1-8,D1101-1102,Rf1-2,Rd1-3,TP1-3,R1-31,R501,R1101-1104,Cin1,H1-4,Cc1-4,Cc7,LOGO1",
+    "used_designators": "#FLG1-7,Ra2,Ca2,Rh2,Cn1,NT1-4,Rn1-2,CN1,JP1-4,J1-16,J1101-1102,TH1-2,Cv1-5,Rv1-8,FB1-2,C1-19,C501,SW1,U1-3,U5,Cd1,RS1-3,LED1-2,Rg1-2,#PWR1-78,#PWR1101-1108,D1-8,D1101-1102,Rf1-2,Rd1-3,TP1-3,TP5-9,LOGO1,R1-31,R501,R1101-1104,Cin1,H1-4,Cc1-4,Cc7",
     "variants": []
   },
   "sheets": [
