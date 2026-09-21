@@ -84,8 +84,8 @@ JST-PH 2P horizontal. **1S-2S LiPo only (3.0-8.4 V).** The DRV8212P caps the saf
 
 |Pin|Net|Notes|
 |---|---|---|
-|1|`GND`||
-|2|`VPROG`|LinkE 5 V rail, OR'd into `VSYS` through an SS54 (Dp2).|
+|1|`VPROG`|LinkE 5 V rail, OR'd into `VSYS` through an SS54 (Dp2).|
+|2|`GND`||
 |3|`SWDIO`|1-wire debug, through a 100 Ohm series resistor (Ru1).|
 
 Three pins is the whole header now. Telemetry rides the servo bus, so the LinkE's TX / RX are not connected to anything.
