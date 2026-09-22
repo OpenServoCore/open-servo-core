@@ -1,5 +1,5 @@
 //! Edge-capture provider -- binds the engine's `EdgeCapture` to the TIM2
-//! capture rings (DMA1_CH1 falls / DMA1_CH7 rises, armed once at bringup).
+//! capture rings (DMA1_CH1 falls / DMA1_CH7 rises, armed once by `arm`).
 //! Drains are consumer-paced; `poll_accumulate` (main loop) keeps the
 //! written totals honest between drains so a full ring lap can never
 //! masquerade as fresh data.
@@ -13,7 +13,7 @@ use core::cell::SyncUnsafeCell;
 
 use osc_host::traits;
 
-use crate::hal::dma;
+use crate::hal::{dma, tim2cap};
 
 /// Entries per ring (2 KB each). At the worst-case sustained edge rate
 /// (alternating bits at 3M = one edge per bit) a ring holds ~340 us of
@@ -66,6 +66,43 @@ impl Edges {
     pub fn rises_addr() -> u32 {
         // SAFETY: as above.
         unsafe { (*RISES.get()).as_ptr() as u32 }
+    }
+
+    /// Arm the capture rings, bringup-only (pre-IRQ, after DMA clocks).
+    pub fn arm() {
+        // The instrument's edge stopwatch: TIM2 IC on the bus pin, both
+        // polarities into circular rings, armed once here and never re-armed
+        // (the spike's capture-mangle lesson).
+        for (ch, paddr, maddr) in [
+            (
+                dma::Channel::CH1,
+                tim2cap::fall_capture_addr(),
+                Edges::falls_addr(),
+            ),
+            (
+                dma::Channel::CH7,
+                tim2cap::rise_capture_addr(),
+                Edges::rises_addr(),
+            ),
+        ] {
+            dma::configure(
+                ch,
+                &dma::Config {
+                    dir: dma::Dir::FROMPERIPHERAL,
+                    circ: true,
+                    minc: true,
+                    // Below the RX ring, above nothing that matters: capture
+                    // beats are sparse (>= 2 bit-times apart per polarity).
+                    pl: dma::Pl::MEDIUM,
+                    size: dma::Size::BITS16,
+                },
+                paddr,
+                maddr,
+                Edges::LEN as u16,
+            );
+            dma::enable(ch);
+        }
+        tim2cap::init();
     }
 
     /// Fold ring progress into the running totals; the main loop calls this

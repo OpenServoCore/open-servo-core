@@ -14,8 +14,6 @@ use std::rc::Rc;
 use std::vec::Vec;
 
 use osc_host::engine::{HostBus, Terminal};
-#[cfg(feature = "bench")]
-use osc_host::traits::EdgeCapture;
 use osc_host::traits::{Deadline, Providers, RxRing, TxWire, UsartBaud};
 use osc_protocol::wire::BaudRate;
 use osc_servo_drivers::bus::RESCUE_LOW_US;
@@ -33,8 +31,8 @@ pub enum HostEvent {
         payload: Vec<u8>,
     },
     Done(Terminal),
-    /// An instrument wire op closed (raw send / burst / pulse).
-    #[cfg(feature = "bench")]
+    /// An instrument wire op closed (raw send / burst / pulse). Never
+    /// produced without `bench`.
     WireDone {
         tick: u32,
     },
@@ -213,24 +211,28 @@ impl UsartBaud for HostUsart {
     }
 }
 
-/// Edge capture has no sim model (hardware-stamped pin transitions are
-/// silicon-only by nature): drains answer empty, honestly.
+/// The instrument side of the sim host.
 #[cfg(feature = "bench")]
-#[derive(Default)]
-pub struct HostEdges;
+pub mod bench {
+    use osc_host::traits::EdgeCapture;
 
-#[cfg(feature = "bench")]
-impl EdgeCapture for HostEdges {
-    fn drain_falls(&mut self, _buf: &mut [u16]) -> usize {
-        0
+    /// Edge capture has no sim model (hardware-stamped pin transitions are
+    /// silicon-only by nature): drains answer empty, honestly.
+    #[derive(Default)]
+    pub struct HostEdges;
+
+    impl EdgeCapture for HostEdges {
+        fn drain_falls(&mut self, _buf: &mut [u16]) -> usize {
+            0
+        }
+        fn drain_rises(&mut self, _buf: &mut [u16]) -> usize {
+            0
+        }
+        fn overflow(&self) -> bool {
+            false
+        }
+        fn reset(&mut self) {}
     }
-    fn drain_rises(&mut self, _buf: &mut [u16]) -> usize {
-        0
-    }
-    fn overflow(&self) -> bool {
-        false
-    }
-    fn reset(&mut self) {}
 }
 
 /// Provider bundle for the sim-hosted engine.
@@ -242,7 +244,7 @@ impl Providers for SimHostProviders {
     type Tx = HostWire;
     type Baud = HostUsart;
     #[cfg(feature = "bench")]
-    type Edges = HostEdges;
+    type Edges = bench::HostEdges;
 }
 
 /// The attached host: the production engine plus the shared handles the

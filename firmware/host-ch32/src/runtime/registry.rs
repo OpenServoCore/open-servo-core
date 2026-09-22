@@ -10,8 +10,6 @@ use osc_host::traits::Providers;
 use osc_protocol::wire::BaudRate;
 
 use crate::providers::deadline::Deadline;
-#[cfg(feature = "bench")]
-use crate::providers::edges::Edges;
 use crate::providers::ring::RxRing;
 use crate::providers::tx_wire::TxWire;
 use crate::providers::usart_baud::UsartBaud;
@@ -26,7 +24,7 @@ impl Providers for LinkEProviders {
     type Tx = TxWire;
     type Baud = UsartBaud;
     #[cfg(feature = "bench")]
-    type Edges = Edges;
+    type Edges = crate::providers::edges::Edges;
 }
 
 pub type Bus = HostBus<LinkEProviders>;

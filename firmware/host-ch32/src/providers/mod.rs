@@ -4,7 +4,7 @@
 
 pub mod clocks;
 pub mod deadline;
-#[cfg(feature = "bench")]
+#[cfg_attr(not(feature = "bench"), path = "edges_stub.rs")]
 pub mod edges;
 pub mod pins;
 pub mod ring;

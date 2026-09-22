@@ -5,11 +5,8 @@
 use ch32_metapac::USART3;
 use osc_protocol::wire::BaudRate;
 
-#[cfg(feature = "bench")]
-use crate::hal::tim2cap;
 use crate::hal::{dma, iwdg, pfic, systick, usart, usbhs};
 use crate::providers::clocks::Clocks;
-#[cfg(feature = "bench")]
 use crate::providers::edges::Edges;
 use crate::providers::pins::Pins;
 use crate::providers::ring::RxRing;
@@ -67,42 +64,7 @@ pub fn bringup() -> bool {
     );
     dma::enable(dma::Channel::CH3);
 
-    #[cfg(feature = "bench")]
-    {
-        // The instrument's edge stopwatch: TIM2 IC on the bus pin, both
-        // polarities into circular rings, armed once here and never re-armed
-        // (the spike's capture-mangle lesson).
-        for (ch, paddr, maddr) in [
-            (
-                dma::Channel::CH1,
-                tim2cap::fall_capture_addr(),
-                Edges::falls_addr(),
-            ),
-            (
-                dma::Channel::CH7,
-                tim2cap::rise_capture_addr(),
-                Edges::rises_addr(),
-            ),
-        ] {
-            dma::configure(
-                ch,
-                &dma::Config {
-                    dir: dma::Dir::FROMPERIPHERAL,
-                    circ: true,
-                    minc: true,
-                    // Below the RX ring, above nothing that matters: capture
-                    // beats are sparse (>= 2 bit-times apart per polarity).
-                    pl: dma::Pl::MEDIUM,
-                    size: dma::Size::BITS16,
-                },
-                paddr,
-                maddr,
-                Edges::LEN as u16,
-            );
-            dma::enable(ch);
-        }
-        tim2cap::init();
-    }
+    Edges::arm();
 
     usbhs::init_device();
 

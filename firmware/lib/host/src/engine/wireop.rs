@@ -24,6 +24,20 @@ enum Mode {
     Stream,
 }
 
+/// Which instrument op owns the engine while `State::Wire`.
+#[derive(Clone, Copy)]
+enum Phase {
+    /// Raw TX in flight; `on_tx_complete` advances it.
+    Tx,
+    /// Low pulse held until the deadline.
+    Pulse,
+    /// Break train: `left` bare breaks on the `gap`-tick grid. The
+    /// Training twin whose gap is caller-chosen instead of parsed from the
+    /// announce -- a lying announce is the trim suite's clock-offset
+    /// injector.
+    Train { left: u8, gap: u32 },
+}
+
 /// Instrument state the engine carries only under `bench`.
 pub(super) struct Wire<P: Providers> {
     edges: P::Edges,
@@ -31,11 +45,12 @@ pub(super) struct Wire<P: Providers> {
     len: usize,
     cursor: usize,
     mode: Mode,
+    phase: Phase,
     /// Break train staged behind the announce: the announce's TC anchors
     /// the grid, exactly like the engine's own CAL handoff.
     train: Option<(u8, u32)>,
     /// Wire-release tick of a finished op, queued for the next `poll`.
-    pub(super) pending_done: Option<u32>,
+    pending_done: Option<u32>,
 }
 
 impl<P: Providers> Wire<P> {
@@ -46,9 +61,19 @@ impl<P: Providers> Wire<P> {
             len: 0,
             cursor: 0,
             mode: Mode::Single,
+            phase: Phase::Tx,
             train: None,
             pending_done: None,
         }
+    }
+
+    /// An unconsumed WireDone still owns the engine.
+    pub(super) fn busy(&self) -> bool {
+        self.pending_done.is_some()
+    }
+
+    pub(super) fn take_done(&mut self) -> Option<u32> {
+        self.pending_done.take()
     }
 }
 
@@ -89,7 +114,8 @@ impl<P: Providers> HostBus<P> {
         self.tx.claim();
         self.tx.send_break();
         self.tx.send(&self.wire.buf[..self.wire.len]);
-        self.state = State::WireTx;
+        self.wire.phase = Phase::Tx;
+        self.state = State::Wire;
         Ok(())
     }
 
@@ -118,7 +144,8 @@ impl<P: Providers> HostBus<P> {
         self.tx.claim();
         self.tx.send_break();
         self.tx.send(&self.wire.buf[..self.wire.len]);
-        self.state = State::WireTx;
+        self.wire.phase = Phase::Tx;
+        self.state = State::Wire;
         Ok(())
     }
 
@@ -163,7 +190,8 @@ impl<P: Providers> HostBus<P> {
         self.wire.mode = Mode::Stream;
         self.tx.claim();
         self.wire_next_frame();
-        self.state = State::WireTx;
+        self.wire.phase = Phase::Tx;
+        self.state = State::Wire;
         Ok(())
     }
 
@@ -177,7 +205,8 @@ impl<P: Providers> HostBus<P> {
         }
         self.tx.claim();
         self.tx.hold_low();
-        self.state = State::WirePulse;
+        self.wire.phase = Phase::Pulse;
+        self.state = State::Wire;
         self.arm(
             self.deadline
                 .now()
@@ -186,13 +215,16 @@ impl<P: Providers> HostBus<P> {
         Ok(())
     }
 
-    /// TC while `WireTx`: chain the next burst frame, hand off to the
+    /// TC while `State::Wire`: chain the next burst frame, hand off to the
     /// break-train grid, or close the op.
-    pub(super) fn wire_advance(&mut self) {
+    pub(super) fn wire_tx_complete(&mut self) {
+        if !matches!(self.wire.phase, Phase::Tx) {
+            return;
+        }
         if let Some((left, gap)) = self.wire.train.take() {
             // The wire stays claimed for the whole train (the engine's own
             // CAL discipline: steady drive keeps the break edges crisp).
-            self.state = State::WireTrain { left, gap };
+            self.wire.phase = Phase::Train { left, gap };
             self.arm(self.deadline.now().wrapping_add(gap));
             return;
         }
@@ -204,10 +236,29 @@ impl<P: Providers> HostBus<P> {
         }
     }
 
-    /// `poll` while an instrument state owns the engine: only the pulse
-    /// advances here (TX and the train ride their ISRs).
+    /// Deadline while `State::Wire`: the train's next break (time-critical
+    /// in the ISR, like the engine's own CAL train).
+    pub(super) fn wire_deadline(&mut self) {
+        let Phase::Train { left, gap } = self.wire.phase else {
+            return;
+        };
+        self.tx.send_break();
+        if left <= 1 {
+            self.wire_finish();
+        } else {
+            self.wire.phase = Phase::Train {
+                left: left - 1,
+                gap,
+            };
+            self.deadline_at = self.deadline_at.wrapping_add(gap);
+            self.deadline.set(self.deadline_at);
+        }
+    }
+
+    /// `poll` while `State::Wire`: only the pulse advances here (TX and
+    /// the train ride their ISRs).
     pub(super) fn wire_poll(&mut self, now: u32) {
-        if matches!(self.state, State::WirePulse) && tick_reached(now, self.deadline_at) {
+        if matches!(self.wire.phase, Phase::Pulse) && tick_reached(now, self.deadline_at) {
             self.wire_finish();
         }
     }
@@ -224,11 +275,6 @@ impl<P: Providers> HostBus<P> {
         self.tx.release();
         self.state = State::Idle;
         self.wire.pending_done = Some(self.deadline.now());
-    }
-
-    /// Train's last break sent: release and close (`on_deadline` calls in).
-    pub(super) fn wire_release_done(&mut self) {
-        self.wire_finish();
     }
 }
 

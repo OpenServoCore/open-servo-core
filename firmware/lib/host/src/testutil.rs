@@ -150,11 +150,6 @@ impl FakeBaud {
     pub fn applied(&self) -> Vec<BaudRate> {
         self.applied.borrow().clone()
     }
-
-    #[cfg(feature = "bench")]
-    pub fn applied_raw(&self) -> Vec<u32> {
-        self.raw.borrow().clone()
-    }
 }
 
 impl traits::UsartBaud for FakeBaud {
@@ -168,61 +163,6 @@ impl traits::UsartBaud for FakeBaud {
     }
 }
 
-/// Preloadable edge-capture fake, reached through `HostBus::edges`: tests
-/// stage ticks, drains pop in order.
-#[cfg(feature = "bench")]
-#[derive(Default)]
-pub struct FakeEdges {
-    falls: Vec<u16>,
-    rises: Vec<u16>,
-    overflow: bool,
-    resets: u32,
-}
-
-#[cfg(feature = "bench")]
-impl FakeEdges {
-    pub fn stage(&mut self, falls: &[u16], rises: &[u16]) {
-        self.falls.extend_from_slice(falls);
-        self.rises.extend_from_slice(rises);
-    }
-
-    pub fn set_overflow(&mut self) {
-        self.overflow = true;
-    }
-
-    pub fn resets(&self) -> u32 {
-        self.resets
-    }
-}
-
-#[cfg(feature = "bench")]
-impl traits::EdgeCapture for FakeEdges {
-    fn drain_falls(&mut self, buf: &mut [u16]) -> usize {
-        let n = buf.len().min(self.falls.len());
-        buf[..n].copy_from_slice(&self.falls[..n]);
-        self.falls.drain(..n);
-        n
-    }
-
-    fn drain_rises(&mut self, buf: &mut [u16]) -> usize {
-        let n = buf.len().min(self.rises.len());
-        buf[..n].copy_from_slice(&self.rises[..n]);
-        self.rises.drain(..n);
-        n
-    }
-
-    fn overflow(&self) -> bool {
-        self.overflow
-    }
-
-    fn reset(&mut self) {
-        self.falls.clear();
-        self.rises.clear();
-        self.overflow = false;
-        self.resets += 1;
-    }
-}
-
 pub struct TestProviders;
 impl traits::Providers for TestProviders {
     type Ring = FakeRing;
@@ -230,7 +170,7 @@ impl traits::Providers for TestProviders {
     type Tx = FakeWire;
     type Baud = FakeBaud;
     #[cfg(feature = "bench")]
-    type Edges = FakeEdges;
+    type Edges = bench::FakeEdges;
 }
 
 pub fn sealed_status(id: u8, result: ResultCode, payload: &[u8]) -> Vec<u8> {
@@ -239,4 +179,147 @@ pub fn sealed_status(id: u8, result: ResultCode, payload: &[u8]) -> Vec<u8> {
     b.payload_mut()[..payload.len()].copy_from_slice(payload);
     b.finish(payload.len() as u8);
     b.seal().to_vec()
+}
+
+/// The instrument side of the fakes.
+#[cfg(feature = "bench")]
+pub mod bench {
+    use std::vec::Vec;
+
+    use super::{FakeBaud, traits};
+
+    impl FakeBaud {
+        pub fn applied_raw(&self) -> Vec<u32> {
+            self.raw.borrow().clone()
+        }
+    }
+
+    /// Preloadable edge-capture fake, reached through `HostBus::edges`:
+    /// tests stage ticks, drains pop in order.
+    #[derive(Default)]
+    pub struct FakeEdges {
+        falls: Vec<u16>,
+        rises: Vec<u16>,
+        overflow: bool,
+        resets: u32,
+    }
+
+    impl FakeEdges {
+        pub fn stage(&mut self, falls: &[u16], rises: &[u16]) {
+            self.falls.extend_from_slice(falls);
+            self.rises.extend_from_slice(rises);
+        }
+
+        pub fn set_overflow(&mut self) {
+            self.overflow = true;
+        }
+
+        pub fn resets(&self) -> u32 {
+            self.resets
+        }
+    }
+
+    impl traits::EdgeCapture for FakeEdges {
+        fn drain_falls(&mut self, buf: &mut [u16]) -> usize {
+            let n = buf.len().min(self.falls.len());
+            buf[..n].copy_from_slice(&self.falls[..n]);
+            self.falls.drain(..n);
+            n
+        }
+
+        fn drain_rises(&mut self, buf: &mut [u16]) -> usize {
+            let n = buf.len().min(self.rises.len());
+            buf[..n].copy_from_slice(&self.rises[..n]);
+            self.rises.drain(..n);
+            n
+        }
+
+        fn overflow(&self) -> bool {
+            self.overflow
+        }
+
+        fn reset(&mut self) {
+            self.falls.clear();
+            self.rises.clear();
+            self.overflow = false;
+            self.resets += 1;
+        }
+    }
+}
+
+/// Link-server rig: the production server over the engine on the fakes.
+pub mod link {
+    use std::vec;
+    use std::vec::Vec;
+
+    use osc_protocol::wire::{BaudRate, Inst, Opcode};
+
+    use crate::engine::HostBus;
+    use crate::link::record::{REC_SUBMIT, VERB_EXCHANGE};
+    use crate::link::{LinkServer, RecordSink};
+
+    use super::{FakeBaud, FakeDeadline, FakeRing, FakeWire, TestProviders};
+
+    #[derive(Default)]
+    pub struct Sink(pub Vec<Vec<u8>>);
+
+    impl RecordSink for Sink {
+        fn record(&mut self, record: &[u8]) {
+            self.0.push(record.to_vec());
+        }
+    }
+
+    pub struct Rig {
+        pub server: LinkServer,
+        pub bus: HostBus<TestProviders>,
+        pub ring: FakeRing,
+        pub clock: FakeDeadline,
+        pub wire: FakeWire,
+        #[cfg(feature = "bench")]
+        pub baud: FakeBaud,
+        pub sink: Sink,
+    }
+
+    pub fn rig() -> Rig {
+        let ring = FakeRing::new();
+        let clock = FakeDeadline::new();
+        let wire = FakeWire::default();
+        let baud = FakeBaud::default();
+        let bus = HostBus::new(
+            ring.clone(),
+            clock.clone(),
+            wire.clone(),
+            baud.clone(),
+            BaudRate::B1000000,
+        );
+        Rig {
+            server: LinkServer::new(),
+            bus,
+            ring,
+            clock,
+            wire,
+            #[cfg(feature = "bench")]
+            baud,
+            sink: Sink::default(),
+        }
+    }
+
+    /// Length-prefix a type+body into pipe bytes.
+    pub fn rec(body: &[u8]) -> Vec<u8> {
+        let mut v = vec![body.len() as u8, (body.len() >> 8) as u8];
+        v.extend_from_slice(body);
+        v
+    }
+
+    pub fn submit_ping(seq: u16, id: u8) -> Vec<u8> {
+        let inst = Inst::instruction(Opcode::Ping, 0);
+        rec(&[
+            REC_SUBMIT,
+            seq as u8,
+            (seq >> 8) as u8,
+            VERB_EXCHANGE,
+            id,
+            inst.0,
+        ])
+    }
 }

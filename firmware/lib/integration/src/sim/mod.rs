@@ -639,7 +639,6 @@ impl Sim {
                     });
                 }
                 Some(osc_host::engine::Event::Done(t)) => h.events.push(HostEvent::Done(t)),
-                #[cfg(feature = "bench")]
                 Some(osc_host::engine::Event::WireDone { tick }) => {
                     h.events.push(HostEvent::WireDone { tick })
                 }

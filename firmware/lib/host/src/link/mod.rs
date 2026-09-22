@@ -4,5 +4,7 @@
 
 pub mod record;
 pub mod server;
+#[cfg_attr(not(feature = "bench"), path = "wire_stub.rs")]
+mod wire;
 
 pub use server::{AdapterRequest, LinkServer, RecordSink};
