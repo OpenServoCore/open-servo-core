@@ -1,5 +1,5 @@
 //! Register addresses the identification pipeline reads and writes,
-//! mirrored from descriptors/osc-servo.json. The cross-check test below
+//! mirrored from descriptors/osc-servo/0.1.json. The cross-check test below
 //! fails loudly on any ABI drift, so these consts are safe to hardcode.
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -268,7 +268,10 @@ mod tests {
 
     #[test]
     fn consts_match_descriptor() {
-        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../descriptors/osc-servo.json");
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../descriptors/osc-servo/0.1.json"
+        );
         let json: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(path).expect("descriptor readable"))
                 .expect("descriptor parses");

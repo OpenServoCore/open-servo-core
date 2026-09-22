@@ -1,25 +1,29 @@
 //! Descriptor-driven typed register access. A descriptor is the firmware's
-//! exported device description (descriptors/osc-servo.json); it maps register
-//! names to table addresses, widths, access, and value kinds so the operator
-//! names `goal_position` instead of `0x0184`. Built-ins are compiled in;
-//! operators drop model-matching JSON in their config dir to override or add.
+//! exported device description (descriptors/<model>/<major>.<minor>.json);
+//! it maps register names to table addresses, widths, access, and value
+//! kinds so the operator names `goal_position` instead of `0x0184`. Built-ins
+//! are compiled in; operators drop model-matching JSON in their config dir to
+//! override or add.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
+use osc_protocol::version::unpack_version;
+
 use crate::{hex, parse_hex};
 
 /// One built-in descriptor, compiled from the checked-in export. A second
 /// built-in is one more entry.
-const BUILTINS: &[&str] = &[include_str!("../../../descriptors/osc-servo.json")];
+const BUILTINS: &[&str] = &[include_str!("../../../descriptors/osc-servo/0.1.json")];
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Descriptor {
     pub model: String,
     pub model_number: u16,
-    pub firmware_version: u16,
+    pub firmware_major: u8,
+    pub firmware_minor: u8,
     pub table_size: u16,
     pub fields: Vec<Field>,
 }
@@ -96,14 +100,16 @@ impl Registry {
         Ok(Registry { descriptors })
     }
 
-    /// Pick the descriptor for a servo-reported (model, fw). Returns the
+    /// Pick the descriptor for a servo-reported (model, packed fw); a
+    /// descriptor names a major.minor layout, patch is irrelevant. Returns the
     /// selection plus any advisory note to print at the call site.
     pub fn select(&self, model: u16, fw: u16) -> Result<(&Descriptor, Option<String>)> {
         if let Some(d) = self.descriptors.iter().find(|d| d.model_number == model) {
-            let note = (d.firmware_version != fw).then(|| {
+            let (major, minor, _) = unpack_version(fw);
+            let note = ((d.firmware_major, d.firmware_minor) != (major, minor)).then(|| {
                 format!(
-                    "warning: descriptor {} is fw {}, servo reports fw {} (common block is protocol-stable)",
-                    d.model, d.firmware_version, fw
+                    "warning: descriptor {} is fw {}.{}, servo reports fw {}.{} (common block is protocol-stable)",
+                    d.model, d.firmware_major, d.firmware_minor, major, minor
                 )
             });
             return Ok((d, note));
@@ -503,7 +509,8 @@ mod tests {
         let reg = Registry {
             descriptors: vec![builtin()],
         };
-        let fw = reg.descriptors[0].firmware_version;
+        let b = &reg.descriptors[0];
+        let fw = osc_protocol::version::pack_version(b.firmware_major, b.firmware_minor, 7);
         let (d, note) = reg.select(257, fw).unwrap();
         assert_eq!(d.model_number, 257);
         assert!(note.is_none());

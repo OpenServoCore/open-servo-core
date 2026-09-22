@@ -1,11 +1,12 @@
 {
-  "format": 1,
+  "format": 2,
   "model": "osc-servo",
   "class": "servo",
   "model_number": 257,
-  "firmware_version": 64,
+  "firmware_major": 0,
+  "firmware_minor": 1,
   "table_size": 1024,
-  "generator": "cargo run -p table-export (firmware/lib)",
+  "generator": "cargo run -p table-export -- ../../descriptors (firmware/lib)",
   "fields": [
     {
       "name": "model_number",
