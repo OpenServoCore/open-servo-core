@@ -923,7 +923,7 @@
 		)
 		(uuid "e0db66cc-ca91-4a1e-9ffe-d0861bf268a8")
 	)
-	(text "CONNECTORS"
+	(text "Bus connectors"
 		(exclude_from_sim no)
 		(at 86.36 31.75 0)
 		(effects
@@ -935,7 +935,7 @@
 		)
 		(uuid "c8620ced-c024-4823-bf9c-7efec8f8dfd9")
 	)
-	(text "OSC BUS"
+	(text "One-wire bus"
 		(exclude_from_sim no)
 		(at 18.034 32.512 0)
 		(effects
@@ -947,7 +947,7 @@
 		)
 		(uuid "cc681932-950b-421c-a08f-c79b33b8dbc5")
 	)
-	(text_box "One wire, TTL level. USART1 half-duplex drives DATA directly, so no buffer and no TX_EN this time.\n\n- R23 is 33R instead of the usual 100R. DATA is the one line where edge speed matters (3Mbps over the whole chain), so it trades protection for speed and lets the TVS do the heavy lifting.\n- R1104 is DNP. The bus wants exactly ONE pull-up, at the host end, and servos self-bias internally. Populate it only when this board is the end of the wire on the bench.\n- D1102 clamps at the connector, BEFORE the series R. Order matters: connector -> TVS -> 33R -> pin.\n- Pinout is G,V,D with V in the center, so a reversed bench header only swaps DATA and GND, never power."
+	(text_box "One wire, TTL level. USART1 half-duplex drives DATA directly, so no buffer and no TX_EN this time. Telemetry rides this same wire as bounded CRC'd bursts, so there is no second UART on the board.\n\n- Rx1 is 33R instead of the usual 100R. DATA is the one line where edge speed matters (3Mbps over the whole chain), so it trades protection for speed and lets the TVS do the heavy lifting.\n- Rx2 is DNP. The bus wants exactly ONE pull-up, at the host end, and servos self-bias internally. Populate it only when this board is the end of the wire on the bench.\n- Dx1 clamps at the connector, BEFORE the series R. Order matters: connector -> TVS -> 33R -> pin.\n- Pinout is G,V,D with V in the center, so a reversed bench header only swaps DATA and GND, never power. V+ is VSYS straight through, unprotected."
 		(exclude_from_sim yes)
 		(at 209.55 29.21 0)
 		(size 72.39 64.77)
@@ -1293,17 +1293,6 @@
 				)
 			)
 		)
-		(property "JLC Type" "Extended"
-			(at 128.27 55.88 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
 		(property "LCSC" "C131339"
 			(at 128.27 49.53 0)
 			(hide yes)
@@ -1591,7 +1580,7 @@
 		(dnp yes)
 		(fields_autoplaced yes)
 		(uuid "286019a1-1153-493a-b50b-3a54312fe7e8")
-		(property "Reference" "R24"
+		(property "Reference" "Rx2"
 			(at 50.8 49.5299 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1657,18 +1646,7 @@
 				)
 			)
 		)
-		(property "MFPN" "FRC0805F1002TS"
-			(at 50.8 49.5299 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "JLC_Basic" "yes"
+		(property "MFPN" "FRC0603F1002TS"
 			(at 50.8 49.5299 0)
 			(hide yes)
 			(show_name no)
@@ -1688,7 +1666,7 @@
 		(instances
 			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/d650f1be-e012-4c20-9ca8-eaa5ec4968ee"
-					(reference "R24")
+					(reference "Rx2")
 					(unit 1)
 				)
 			)
@@ -1706,7 +1684,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "2cd7245d-9e27-4229-b610-ea7ec8bf56c3")
-		(property "Reference" "R23"
+		(property "Reference" "Rx1"
 			(at 40.64 53.848 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -1770,18 +1748,7 @@
 				)
 			)
 		)
-		(property "MFPN" "FRC0805F33R0TS"
-			(at 41.9101 53.34 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "JLC_Basic" "yes"
+		(property "MFPN" "RC0603FR-0733RL"
 			(at 41.9101 53.34 0)
 			(hide yes)
 			(show_name no)
@@ -1801,7 +1768,7 @@
 		(instances
 			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/d650f1be-e012-4c20-9ca8-eaa5ec4968ee"
-					(reference "R23")
+					(reference "Rx1")
 					(unit 1)
 				)
 			)
@@ -2082,7 +2049,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "9f05f6fc-2c1b-4c7e-873b-0a12a4451de5")
-		(property "Reference" "D6"
+		(property "Reference" "Dx1"
 			(at 50.8 59.6899 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2159,28 +2126,6 @@
 				)
 			)
 		)
-		(property "JLC_Basic" "no"
-			(at 48.26 60.96 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "JLC Type" "Extended"
-			(at 48.26 60.96 90)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
 		(pin "2"
 			(uuid "09f5bfb6-6a10-455c-ad1b-bf2d16cf0694")
 		)
@@ -2190,7 +2135,7 @@
 		(instances
 			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/d650f1be-e012-4c20-9ca8-eaa5ec4968ee"
-					(reference "D6")
+					(reference "Dx1")
 					(unit 1)
 				)
 			)
@@ -2489,17 +2434,6 @@
 			)
 		)
 		(property "Description" "Generic connector, single row, 01x03, script generated (kicad-library-utils/schlib/autogen/connector/)"
-			(at 154.94 55.88 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "JLC Type" "Extended"
 			(at 154.94 55.88 0)
 			(hide yes)
 			(show_name no)

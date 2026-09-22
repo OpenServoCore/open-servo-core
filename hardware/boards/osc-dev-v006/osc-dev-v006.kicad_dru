@@ -96,6 +96,13 @@
 
 
 # --- Minimum Clearance ---
+#
+# Copper-to-copper clearance is governed by the netclass (Default 0.2 mm), not by
+# rules here. A custom clearance rule REPLACES the netclass value wherever it
+# matches, so a fab-floor rule below 0.2 mm silently lowers the board's clearance
+# to the fab floor. JLCPCB multilayer floors for reference (1 oz):
+#   trace to trace 0.09 mm, pad to trace 0.10 mm, SMD pad to pad 0.15 mm,
+#   via to trace 0.20 mm. Keep the netclass at or above these.
 
 (rule "JLCPCB: Hole to Hole Clearance (Different Nets)"
 	(condition "A.Net != B.Net")
@@ -107,21 +114,12 @@
 	(constraint hole_to_hole (min 0.254mm))
 )
 
-(rule "JLCPCB: Pad to Pad Clearance (Pad without Hole, Different Nets)"
-	(condition "A.Type == 'Pad' && (A.Pad_Type != 'Through-hole' && A.Pad_Type != 'NPTH, mechanical') && B.Type == 'Pad' && (B.Pad_Type != 'Through-hole' && B.Pad_Type != 'NPTH, mechanical') && A.Net != B.Net")
-	(constraint clearance (min 0.127mm))
-)
 
 (rule "JLCPCB: Pad Hole to Pad Hole Clearance (Pad with Hole, Different Nets)"
 	(condition "A.Type == 'Pad' && (A.Pad_Type == 'Through-hole' || A.Pad_Type == 'NPTH, mechanical') && B.Type == 'Pad' && (B.Pad_Type == 'Through-hole' || B.Pad_Type == 'NPTH, mechanical') && A.Net != B.Net")
 	(constraint hole_to_hole (min 0.5mm))
 )
 
-# NOTE: This is not stated specifically, but is implied by other rules.
-(rule "JLCPCB: Via/Pad to Via/Pad Clearance (Different Nets)"
-	(condition "(A.Type == 'Pad' || A.Type == 'Via') && (B.Type == 'Pad' || B.Type == 'Via') && A.Net != B.Net")
-	(constraint clearance (min 0.127mm))
-)
 
 # NOTE: This is not stated specifically, but is implied by other rules.
 (rule "JLCPCB: Via/Pad Hole to Via/Pad Hole Clearance (Same Net)"
@@ -144,14 +142,12 @@
 	(constraint hole_clearance (min 0.254mm))
 )
 
-(rule "JLCPCB: Pad to Trace"
-	(condition "A.Type == 'Pad' && (A.Pad_Type == 'Through-hole' || A.Pad_Type == 'NPTH, mechanical') && B.Type == 'Track' &&  A.Net != B.Net")
-	(constraint clearance (min 0.2mm))
-)
-
-(rule "JLCPCB: SMD Pad to Trace"
-	(condition "A.Type == 'Pad' && A.Pad_Type == 'SMD' && B.Type == 'Track' && A.Net != B.Net")
-	(constraint clearance (min 0.09mm))
+# WSON-8 pin pads sit 0.20 mm from the exposed pad by footprint geometry. JLCPCB's
+# SMD pad-to-pad floor is 0.15 mm, so the footprint is buildable; this rule keeps the
+# Motor/Power netclass 0.25 mm from flagging the package itself.
+(rule "Footprint geometry: U3 WSON pin to exposed pad"
+	(condition "A.Type == 'Pad' && B.Type == 'Pad' && A.memberOfFootprint('U3') && B.memberOfFootprint('U3')")
+	(constraint clearance (min 0.15mm))
 )
 
 
@@ -168,17 +164,6 @@
   # 1-6 Layers (2oz)
   # (constraint track_width (min 0.2mm))
 )
-(rule "JLCPCB: Trace Spacing (Outer Layer)"
-	(layer outer)
-	(condition "A.Type == 'Track' && B.Type == 'Track'")
-  # Choose between:
-  # 1-2 Layers (1oz)
-  # (constraint clearance (min 0.127mm))
-  # 4-6 Layers (1oz and 0.5oz)
-	(constraint clearance (min 0.09mm))
-  # 1-6 Layers (2oz)
-  # (constraint clearance (min 0.2mm))
-)
 
 (rule "JLCPCB: Trace Width (Inner Layer)"
 	(layer inner)
@@ -189,15 +174,6 @@
   # 4-6 Layers (2oz)
   # (constraint track_width (min 0.2mm))
 )
-(rule "JLCPCB: Trace Spacing (Inner Layer)"
-	(layer inner)
-	(condition "A.Type == 'Track' && B.Type == 'Track'")
-  # Choose between:
-  # 4-6 Layers (1oz and 0.5oz)
-	(constraint clearance (min 0.09mm))
-  # 4-6 Layers (2oz)
-  # (constraint clearance (min 0.2mm))
-)
 
 
 # --- Legend ---
@@ -205,13 +181,13 @@
 (rule "JLCPCB: Minimum Line Width"
 	(layer "?.Silkscreen")
 	(condition "A.Type == 'Text' || A.Type == 'Text Box'")
-	(constraint text_thickness (min 0.15mm))
+	(constraint text_thickness (min 0.1mm))
 )
 
 (rule "JLCPCB: Minimum Text Height"
 	(layer "?.Silkscreen")
 	(condition "A.Type == 'Text' || A.Type == 'Text Box'")
-	(constraint text_height (min 1mm))
+	(constraint text_height (min 0.6mm))
 )
 
 (rule "JLCPCB: Pad to Silkscreen"

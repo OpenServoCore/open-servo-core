@@ -1,0 +1,160 @@
+(footprint "Flex_Landing_1x06_P1.0mm"
+	(version 20241229)
+	(generator "pcbnew")
+	(generator_version "9.0")
+	(layer "F.Cu")
+	(descr "Tier-3 motor encoder flex landing: 6 bare pads 0.6x1.8mm at 1.0mm pitch for a tin-and-iron flex attach, place at a board edge with the flex arriving from the pin-1 mark side. Mates Flex_Fingers_1x06_P1.0mm. Pin order GND 3V3 ENCA ENCB VNTC GND. Pad length 1.8 mm: sized to the SG90 swap board, where the row lands in the ~2.4 mm strip between the motor can (x 0.5) and the pot leg pads (x -1.9) after a ~0.5 mm fold.")
+	(tags "flex landing solder fingers encoder tier3")
+	(property "Reference" "J**"
+		(at 0 -2.3 0)
+		(layer "F.SilkS")
+		(uuid "832d1258-4edc-4983-8ee6-e69ee3c73c34")
+		(effects
+			(font
+				(size 0.8 0.8)
+				(thickness 0.12)
+			)
+		)
+	)
+	(property "Value" "FLEX"
+		(at 0 2.3 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "a4dcda63-fb92-4535-bceb-b33344cc5258")
+		(effects
+			(font
+				(size 1 1)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Datasheet" ""
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "17f089a6-ef47-4cb3-a58b-e66f4e2453f6")
+		(effects
+			(font
+				(size 1.27 1.27)
+				(thickness 0.15)
+			)
+		)
+	)
+	(property "Description" ""
+		(at 0 0 0)
+		(layer "F.Fab")
+		(hide yes)
+		(uuid "9f7153f1-e37b-4dbc-ad00-b7f748c755ed")
+		(effects
+			(font
+				(size 1.27 1.27)
+				(thickness 0.15)
+			)
+		)
+	)
+	(attr smd)
+	(fp_line
+		(start -3.2 -1.1)
+		(end -3.2 1.1)
+		(stroke
+			(width 0.1)
+			(type default)
+		)
+		(layer "F.SilkS")
+		(uuid "bc13d77b-c1ee-4776-97dd-8f67c9ba7eca")
+	)
+	(fp_line
+		(start -3.2 -1.1)
+		(end -2.9 -1.1)
+		(stroke
+			(width 0.1)
+			(type default)
+		)
+		(layer "F.SilkS")
+		(uuid "d1dc9ce2-a223-4a29-86f7-0fb283e7dc82")
+	)
+	(fp_line
+		(start -3.2 1.1)
+		(end -2.9 1.1)
+		(stroke
+			(width 0.1)
+			(type default)
+		)
+		(layer "F.SilkS")
+		(uuid "f99d1bb9-5f91-4ec5-bff9-9519c9fad437")
+	)
+	(fp_line
+		(start -3.2 1.3)
+		(end 3.2 1.3)
+		(stroke
+			(width 0.1)
+			(type default)
+		)
+		(layer "F.Fab")
+		(uuid "2f51678b-914e-420b-8003-ede2b9366d0a")
+	)
+	(fp_line
+		(start -3.2 -1.3)
+		(end 3.2 -1.3)
+		(stroke
+			(width 0.1)
+			(type default)
+		)
+		(layer "F.Fab")
+		(uuid "21481510-fb60-4a72-b62d-a061ba04041c")
+	)
+	(fp_rect
+		(start -3.35 -1.25)
+		(end 3.35 1.25)
+		(stroke
+			(width 0.05)
+			(type solid)
+		)
+		(fill no)
+		(layer "F.CrtYd")
+		(uuid "c1651ac4-16ea-4d29-8f2e-4e61e32b827c")
+	)
+	(pad "1" smd roundrect
+		(at -2.5 0)
+		(size 0.6 1.8)
+		(layers "F.Cu" "F.Mask")
+		(roundrect_rratio 0.2)
+		(uuid "da858567-e37a-4955-9433-7741fa741084")
+	)
+	(pad "2" smd roundrect
+		(at -1.5 0)
+		(size 0.6 1.8)
+		(layers "F.Cu" "F.Mask")
+		(roundrect_rratio 0.2)
+		(uuid "2c9f47f5-66dd-4197-af36-d72513f71aa7")
+	)
+	(pad "3" smd roundrect
+		(at -0.5 0)
+		(size 0.6 1.8)
+		(layers "F.Cu" "F.Mask")
+		(roundrect_rratio 0.2)
+		(uuid "6ee13229-75e7-4197-9134-8a75b1e0f542")
+	)
+	(pad "4" smd roundrect
+		(at 0.5 0)
+		(size 0.6 1.8)
+		(layers "F.Cu" "F.Mask")
+		(roundrect_rratio 0.2)
+		(uuid "9c769b44-50df-423d-9d31-4c2f80760b8a")
+	)
+	(pad "5" smd roundrect
+		(at 1.5 0)
+		(size 0.6 1.8)
+		(layers "F.Cu" "F.Mask")
+		(roundrect_rratio 0.2)
+		(uuid "80c92f25-5885-4f75-bfe4-5100cc673f14")
+	)
+	(pad "6" smd roundrect
+		(at 2.5 0)
+		(size 0.6 1.8)
+		(layers "F.Cu" "F.Mask")
+		(roundrect_rratio 0.2)
+		(uuid "f9eb5dc0-b3e1-4fe8-91c8-96c352b2f3c9")
+	)
+	(embedded_fonts no)
+)

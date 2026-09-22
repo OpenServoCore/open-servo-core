@@ -1544,7 +1544,7 @@
 		)
 		(uuid "62b5da44-5246-40c2-b97a-0f07c0fbb905")
 	)
-	(text "BATTERY CONNECTOR\nJST-PH-2P"
+	(text "Battery input\nJST-PH 2P"
 		(exclude_from_sim no)
 		(at 17.78 82.55 0)
 		(effects
@@ -1556,7 +1556,7 @@
 		)
 		(uuid "22c09bca-2267-4495-a688-c79d9932b568")
 	)
-	(text "POWER REGULATION"
+	(text "3V3 LDO"
 		(exclude_from_sim no)
 		(at 17.78 30.48 0)
 		(effects
@@ -1568,7 +1568,7 @@
 		)
 		(uuid "896632e6-ac63-4590-866c-9c32c84889ba")
 	)
-	(text "POWER STATUS INDICATORS"
+	(text "Rail indicators"
 		(exclude_from_sim no)
 		(at 59.69 82.55 0)
 		(effects
@@ -1580,7 +1580,7 @@
 		)
 		(uuid "ad867a35-1db0-467f-b7fd-483636c89b47")
 	)
-	(text "POWER SOURCE OR-ING"
+	(text "Source OR-ing"
 		(exclude_from_sim no)
 		(at 93.98 30.48 0)
 		(effects
@@ -1613,7 +1613,7 @@
 		)
 		(uuid "18550ddd-567f-469c-8d8e-20a5283cea12")
 	)
-	(text_box "Power comes in from the battery connector or the LinkE header, whichever is plugged. Both at once is fine, the SS54s OR them into VSYS and the loser just sits behind its diode.\n\nInputs:\n- VBAT - bench 5V up to 2S LiPo (DRV VM tops out at 11V, so no 3S)\n- VPROG - 5V from the WCH-LinkE\n\nRails:\n- VSYS - raw motor rail, also feeds the LDO\n- +3V3 - logic\n\nLEDs are deliberately dim (0.1-0.3mA class). Yellow = VSYS, green = 3V3. STAT over on the MCU sheet is the only one allowed to yell."
+	(text_box "Power comes in from the battery connector or the LinkE header, whichever is plugged. Both at once is fine, the SS54s OR them into VSYS and the loser just sits behind its diode.\n\nInputs:\n- VBAT - bench 5V up to 2S LiPo (DRV VM tops out at 11V, so no 3S)\n- VPROG - 5V from the WCH-LinkE\n\nRails:\n- VSYS - raw motor rail, also feeds the LDO\n- +3V3 - logic, and the DRV8212P VCC. One rail, no separate driver rail.\n\nLEDs are deliberately dim (0.1-0.3mA class). Yellow = VSYS, green = 3V3. STAT over on the MCU sheet is the only firmware-driven one."
 		(exclude_from_sim no)
 		(at 180.34 27.94 0)
 		(size 101.6 135.255)
@@ -2204,7 +2204,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "0783940c-bbab-4021-a5ba-9ffeb6650ed2")
-		(property "Reference" "C2"
+		(property "Reference" "Cp2"
 			(at 40.64 53.34 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2214,7 +2214,7 @@
 				)
 			)
 		)
-		(property "Value" "1µF"
+		(property "Value" "1uF"
 			(at 40.64 58.674 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2246,7 +2246,7 @@
 				)
 			)
 		)
-		(property "Description" "1µF ±10% 50V X7R 0603"
+		(property "Description" "1µF +/-10% 50V X7R 0603"
 			(at 17.24 21.76 0)
 			(hide yes)
 			(show_name no)
@@ -2288,7 +2288,7 @@
 		(instances
 			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/1e728d76-963a-4d02-a5f6-92f3889aa8bb"
-					(reference "C2")
+					(reference "Cp2")
 					(unit 1)
 				)
 			)
@@ -2306,7 +2306,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "08285f3f-9b7f-4484-afe1-ef286bbee655")
-		(property "Reference" "LED1"
+		(property "Reference" "Dl1"
 			(at 72.39 112.0774 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2339,7 +2339,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C51933295.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C497929.html"
 			(at 68.58 111.76 0)
 			(hide yes)
 			(show_name no)
@@ -2361,7 +2361,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C51933295"
+		(property "LCSC" "C497929"
 			(at 72.39 112.0774 0)
 			(hide yes)
 			(show_name no)
@@ -2372,30 +2372,8 @@
 				)
 			)
 		)
-		(property "MFPN" "KT-0805Y"
+		(property "MFPN" "HL-PST-1608U32YC"
 			(at 72.39 112.0774 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Sim.Pins" "1=K 2=A"
-			(at 68.58 111.76 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "JLC Type" "Standard"
-			(at 68.58 111.76 90)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2414,7 +2392,7 @@
 		(instances
 			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/1e728d76-963a-4d02-a5f6-92f3889aa8bb"
-					(reference "LED1")
+					(reference "Dl1")
 					(unit 1)
 				)
 			)
@@ -2742,7 +2720,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "4225193b-31f5-4f51-9e89-06922c11c460")
-		(property "Reference" "R1"
+		(property "Reference" "Rl1"
 			(at 71.12 100.3299 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -2808,7 +2786,7 @@
 				)
 			)
 		)
-		(property "MFPN" "FRC0805F2002TS"
+		(property "MFPN" "FRC0603F2002TS"
 			(at 71.12 100.3299 0)
 			(hide yes)
 			(show_name no)
@@ -2828,7 +2806,7 @@
 		(instances
 			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/1e728d76-963a-4d02-a5f6-92f3889aa8bb"
-					(reference "R1")
+					(reference "Rl1")
 					(unit 1)
 				)
 			)
@@ -3234,17 +3212,6 @@
 				)
 			)
 		)
-		(property "JLC Type" "Basic"
-			(at 55.88 53.34 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
 		(pin "2"
 			(uuid "88081bd4-8469-4cd9-96c0-e563141ea603")
 		)
@@ -3429,17 +3396,6 @@
 				)
 			)
 		)
-		(property "JLC Type" "Extended"
-			(at 31.75 106.68 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
 		(pin "1"
 			(uuid "f452bab0-e7c6-4e8a-99c8-2b6ed8ce09bd")
 		)
@@ -3466,7 +3422,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "9cdc4fe3-be2d-4c1a-bd79-1b414230a827")
-		(property "Reference" "D2"
+		(property "Reference" "Dp2"
 			(at 124.46 62.23 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3541,17 +3497,6 @@
 				)
 			)
 		)
-		(property "JLC Type" "Basic"
-			(at 124.46 64.77 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
 		(pin "1"
 			(uuid "14148a94-acfc-44cd-8064-ca60198aa220")
 		)
@@ -3561,7 +3506,7 @@
 		(instances
 			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/1e728d76-963a-4d02-a5f6-92f3889aa8bb"
-					(reference "D2")
+					(reference "Dp2")
 					(unit 1)
 				)
 			)
@@ -3736,7 +3681,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "af4f9331-f675-4f73-a2e3-65a83be27d90")
-		(property "Reference" "D1"
+		(property "Reference" "Dp1"
 			(at 124.46 41.91 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -3811,17 +3756,6 @@
 				)
 			)
 		)
-		(property "JLC Type" "Basic"
-			(at 124.46 44.45 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
 		(pin "1"
 			(uuid "a64fbd48-9788-419b-a71e-44bc28d704e9")
 		)
@@ -3831,7 +3765,7 @@
 		(instances
 			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/1e728d76-963a-4d02-a5f6-92f3889aa8bb"
-					(reference "D1")
+					(reference "Dp1")
 					(unit 1)
 				)
 			)
@@ -4242,7 +4176,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "de244648-2874-4145-a986-279a9789d7c5")
-		(property "Reference" "C1"
+		(property "Reference" "Cp1"
 			(at 26.67 53.34 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4252,7 +4186,7 @@
 				)
 			)
 		)
-		(property "Value" "10µF"
+		(property "Value" "10uF"
 			(at 26.67 58.674 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4326,7 +4260,7 @@
 		(instances
 			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/1e728d76-963a-4d02-a5f6-92f3889aa8bb"
-					(reference "C1")
+					(reference "Cp1")
 					(unit 1)
 				)
 			)
@@ -4343,7 +4277,7 @@
 		(in_pos_files yes)
 		(dnp no)
 		(uuid "e3ee813f-ee8d-42f7-a54b-10d710c4b2ce")
-		(property "Reference" "C3"
+		(property "Reference" "Cp3"
 			(at 74.168 53.594 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4353,7 +4287,7 @@
 				)
 			)
 		)
-		(property "Value" "10µF"
+		(property "Value" "10uF"
 			(at 75.184 58.928 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4427,7 +4361,7 @@
 		(instances
 			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/1e728d76-963a-4d02-a5f6-92f3889aa8bb"
-					(reference "C3")
+					(reference "Cp3")
 					(unit 1)
 				)
 			)
@@ -4445,7 +4379,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "e5a58e60-54ba-4207-91e8-e80722f71964")
-		(property "Reference" "LED2"
+		(property "Reference" "Dl2"
 			(at 96.52 112.0774 90)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4478,7 +4412,7 @@
 				)
 			)
 		)
-		(property "Datasheet" "https://www.lcsc.com/product-detail/C51933293.html"
+		(property "Datasheet" "https://www.lcsc.com/product-detail/C497927.html"
 			(at 92.71 111.76 0)
 			(hide yes)
 			(show_name no)
@@ -4500,7 +4434,7 @@
 				)
 			)
 		)
-		(property "LCSC" "C51933293"
+		(property "LCSC" "C497927"
 			(at 96.52 112.0774 0)
 			(hide yes)
 			(show_name no)
@@ -4511,30 +4445,8 @@
 				)
 			)
 		)
-		(property "MFPN" "KT-0805G"
+		(property "MFPN" "HL-PST-1608U51GC"
 			(at 96.52 112.0774 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Sim.Pins" "1=K 2=A"
-			(at 92.71 111.76 0)
-			(hide yes)
-			(show_name no)
-			(do_not_autoplace no)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "JLC Type" "Standard"
-			(at 92.71 111.76 90)
 			(hide yes)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4553,7 +4465,7 @@
 		(instances
 			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/1e728d76-963a-4d02-a5f6-92f3889aa8bb"
-					(reference "LED2")
+					(reference "Dl2")
 					(unit 1)
 				)
 			)
@@ -4806,7 +4718,7 @@
 		(dnp no)
 		(fields_autoplaced yes)
 		(uuid "ef8a4d4f-aae2-4eab-b7ad-109d3a7a8c0e")
-		(property "Reference" "R2"
+		(property "Reference" "Rl2"
 			(at 95.25 100.3299 0)
 			(show_name no)
 			(do_not_autoplace no)
@@ -4872,7 +4784,7 @@
 				)
 			)
 		)
-		(property "MFPN" "FRC0805F1002TS"
+		(property "MFPN" "FRC0603F1002TS"
 			(at 95.25 100.3299 0)
 			(hide yes)
 			(show_name no)
@@ -4892,7 +4804,7 @@
 		(instances
 			(project "osc-dev-v006"
 				(path "/6062e7d2-0c72-467e-b49c-6387ba053e09/1e728d76-963a-4d02-a5f6-92f3889aa8bb"
-					(reference "R2")
+					(reference "Rl2")
 					(unit 1)
 				)
 			)
