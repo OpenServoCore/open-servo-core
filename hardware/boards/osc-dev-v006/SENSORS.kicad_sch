@@ -7829,7 +7829,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "100pF"
+		(property "Value" "22pF"
 			(at 184.15 72.3899 0)
 			(show_name no)
 			(do_not_autoplace no)
