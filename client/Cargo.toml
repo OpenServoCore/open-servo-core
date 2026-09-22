@@ -20,6 +20,8 @@ nusb          = { version = "0.1", optional = true }
 osc-host      = { path = "../firmware/lib/host" }
 osc-protocol  = { path = "../firmware/lib/osc-protocol", features = ["software-crc"] }
 osc-integration = { path = "../firmware/lib/integration", optional = true }
+serde         = { version = "1", features = ["derive"] }
+serde_json    = "1"
 
 [[example]]
 name = "fleet_smoke"

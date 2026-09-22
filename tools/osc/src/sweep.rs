@@ -496,13 +496,13 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     std::fs::create_dir_all(&args.out).with_context(|| format!("mkdir {}", args.out.display()))?;
 
     let identity = c.identity(id)?;
-    let registry = descriptor::Registry::load()?;
-    let (d, note) = registry.select(identity.model, identity.fw)?;
+    let registry = descriptor::load()?;
+    let (d, note) = descriptor::select(&registry, identity.model, identity.fw)?;
     if let Some(note) = note {
         println!("{note}");
     }
     let field_reg = |name: &str| -> Result<Reg> {
-        let f = d.field(name)?;
+        let f = descriptor::field(d, name)?;
         Ok(Reg {
             addr: f.addr,
             width: f.width as u8,
