@@ -3,6 +3,12 @@
 //! [`OscClient`] exists on wasm32 only (the pipe it wraps is target-gated
 //! in osc-client); the descriptor surface and the pure helpers build
 //! everywhere so native `cargo test` covers them.
+//!
+//! `OscClient.fake(ids)` opens the same client over a simulated adapter and
+//! fleet instead of a device, so the app and its browser tests run with no
+//! hardware. It lives behind the `fake` feature, on by default so the
+//! shipped package carries it; each servo's UID is derived from its id, so
+//! the same roster always discovers the same UIDs.
 
 #[cfg(target_arch = "wasm32")]
 mod client;

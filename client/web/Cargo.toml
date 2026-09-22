@@ -8,6 +8,12 @@ license     = "MIT OR Apache-2.0"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = ["fake"]
+# The simulated adapter: a fleet in the wasm module, no hardware. Default so
+# the shipped package can run the app and its browser tests offline.
+fake = ["osc-client/fake-adapter"]
+
 [dependencies]
 osc-client           = { path = "..", default-features = false, features = ["webusb"] }
 osc-protocol         = { path = "../../firmware/lib/osc-protocol" }
