@@ -25,6 +25,10 @@ osc-integration = { path = "../firmware/lib/integration", optional = true }
 serde         = { version = "1", features = ["derive"] }
 serde_json    = "1"
 
+# The guard timer has no thread to fall back on in a browser.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+futures-timer = { version = "3", features = ["wasm-bindgen"] }
+
 [[example]]
 name = "fleet_smoke"
 required-features = ["nusb"]

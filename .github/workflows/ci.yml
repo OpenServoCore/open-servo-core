@@ -183,10 +183,11 @@ jobs:
         working-directory: client
     steps:
       - uses: actions/checkout@v4
-      - name: Install Rust (nightly + clippy + rustfmt)
+      - name: Install Rust (nightly + clippy + rustfmt + wasm)
         uses: dtolnay/rust-toolchain@nightly
         with:
           components: clippy, rustfmt
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: client
@@ -204,6 +205,10 @@ jobs:
         run: cargo test --no-default-features --features fake-adapter,bench
       - name: cargo build (nusb backend)
         run: cargo build
+      - name: cargo check (wasm32, no default features)
+        run: cargo check --target wasm32-unknown-unknown --no-default-features
+      - name: cargo clippy (wasm32, no default features)
+        run: cargo clippy --target wasm32-unknown-unknown --no-default-features -- -D warnings
 
   osc-cli:
     name: build (tools/osc)
