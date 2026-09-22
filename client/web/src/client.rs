@@ -19,12 +19,14 @@ use tsify::{Ts, Tsify};
 use wasm_bindgen::prelude::*;
 
 #[cfg(feature = "fake")]
-use osc_client::fake::FakePipe;
+use osc_client::fake::{FakePipe, TelSample};
 #[cfg(feature = "fake")]
 use osc_protocol::wire::UID_LEN;
 
 use crate::descriptor::Descriptor;
 use crate::types::{Alive, BaudRate, Found, Health, Identity, LinkInfo, Ping, Rails, TelBurst};
+#[cfg(feature = "fake")]
+use crate::types::{FakeServo, Track};
 
 /// Prompt for an osc-adapter; must run from a user gesture.
 #[wasm_bindgen(js_name = requestDevice)]
@@ -258,6 +260,33 @@ impl OscClient {
     pub async fn fake(
         #[wasm_bindgen(unchecked_param_type = "number[]")] ids: Vec<u8>,
     ) -> Result<OscClient, JsError> {
+        Self::fake_fleet(ids, Vec::new()).await
+    }
+
+    /// `fake` with an optional recorded track per servo: the sim plays
+    /// each track back at the fast-tick rate, so bursts and the live
+    /// telemetry registers show captured data instead of the synthetic
+    /// ramp. A track's columns must be non-empty and equal in length.
+    #[wasm_bindgen(js_name = fakeWithTracks)]
+    pub async fn fake_with_tracks(
+        #[wasm_bindgen(unchecked_param_type = "FakeServo[]")] fleet: JsValue,
+    ) -> Result<OscClient, JsError> {
+        let fleet: Vec<FakeServo> = serde_wasm_bindgen::from_value(fleet)?;
+        let mut ids = Vec::with_capacity(fleet.len());
+        let mut tracks = Vec::with_capacity(fleet.len());
+        for s in fleet {
+            ids.push(s.id);
+            tracks.push(s.track.map(track_rows).transpose()?);
+        }
+        Self::fake_fleet(ids, tracks).await
+    }
+
+    /// `tracks` pairs with `ids` by index; shorter (or empty) leaves the
+    /// rest on the synthetic samples.
+    async fn fake_fleet(
+        ids: Vec<u8>,
+        tracks: Vec<Option<Vec<TelSample>>>,
+    ) -> Result<OscClient, JsError> {
         if ids.is_empty() {
             return Err(JsError::new("fake: the fleet needs at least one id"));
         }
@@ -272,12 +301,61 @@ impl OscClient {
         for (i, &id) in ids.iter().enumerate() {
             pipe.sim_mut().seed_servo_uid(i, uid(id));
         }
+        for (i, track) in tracks.into_iter().enumerate() {
+            if let Some(track) = track {
+                pipe.set_track(i, track);
+            }
+        }
         let c = Client::connect(pipe).await?;
         Ok(OscClient {
             info: c.info(),
             inner: RefCell::new(Some(Backend::Fake(Box::new(c)))),
         })
     }
+}
+
+/// Columnar track to the sim's row form.
+#[cfg(feature = "fake")]
+fn track_rows(t: Track) -> Result<Vec<TelSample>, JsError> {
+    let n = t.pos.len();
+    if n == 0 {
+        return Err(JsError::new("fakeWithTracks: empty track"));
+    }
+    let lens = [
+        t.current.len(),
+        t.current_trough.len(),
+        t.duty_q15.len(),
+        t.vdiff.len(),
+        t.vbus.len(),
+        t.current_raw.len(),
+        t.vmotor_a.len(),
+        t.vmotor_b.len(),
+        t.vbus_raw.len(),
+        t.ntc_raw.len(),
+        t.window_valid.len(),
+    ];
+    if lens.iter().any(|&l| l != n) {
+        return Err(JsError::new(
+            "fakeWithTracks: track columns differ in length",
+        ));
+    }
+    Ok((0..n)
+        .map(|i| TelSample {
+            pos: t.pos[i],
+            current: t.current[i],
+            current_trough: t.current_trough[i],
+            duty_q15: t.duty_q15[i],
+            vdiff: t.vdiff[i],
+            vbus: t.vbus[i],
+            current_raw: t.current_raw[i],
+            vmotor_a: t.vmotor_a[i],
+            vmotor_b: t.vmotor_b[i],
+            vbus_raw: t.vbus_raw[i],
+            ntc_raw: t.ntc_raw[i],
+            window_valid: t.window_valid[i] != 0,
+            fault: false,
+        })
+        .collect())
 }
 
 /// splitmix64 over the id: the same roster always discovers the same UIDs,
