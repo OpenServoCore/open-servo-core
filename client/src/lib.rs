@@ -17,6 +17,7 @@ mod error;
 pub mod mgmt;
 pub mod pipe;
 pub mod session;
+#[cfg(feature = "bench")]
 pub mod wire;
 
 #[cfg(feature = "fake-adapter")]

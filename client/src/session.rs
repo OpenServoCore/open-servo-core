@@ -47,18 +47,21 @@ pub enum Record {
         state: u8,
     },
     /// A wire instrument op (send/burst/pulse) released the wire.
+    #[cfg(feature = "bench")]
     WireDone {
         seq: u16,
         tick: u32,
     },
     /// One edge drain: capture-order ticks (engine domain low 16 bits),
     /// `now` = the 32-bit drain moment (the unwrap's anchor floor).
+    #[cfg(feature = "bench")]
     Edges {
         overflow: bool,
         now: u32,
         falls: Vec<u16>,
         rises: Vec<u16>,
     },
+    #[cfg(feature = "bench")]
     CaptureAck,
     Unknown {
         rtype: u8,
@@ -150,6 +153,32 @@ impl Session {
         seq
     }
 
+    /// Feed a delivered chunk into the reassembly buffer.
+    pub fn on_bytes(&mut self, chunk: &[u8]) {
+        self.rx.extend_from_slice(chunk);
+    }
+
+    /// Pop the next complete record, if one has fully arrived.
+    pub fn next_record(&mut self) -> Result<Option<Record>, LinkError> {
+        if self.rx.len() < 2 {
+            return Ok(None);
+        }
+        let len = u16::from_le_bytes([self.rx[0], self.rx[1]]) as usize;
+        if len == 0 {
+            return Err(LinkError::Malformed);
+        }
+        if self.rx.len() < 2 + len {
+            return Ok(None);
+        }
+        let record = decode(&self.rx[2..2 + len])?;
+        self.rx.drain(..2 + len);
+        Ok(Some(record))
+    }
+}
+
+/// The 0x6x instrument family, `bench` only.
+#[cfg(feature = "bench")]
+impl Session {
     /// Encode a raw wire send (instrument family: engine validation
     /// deliberately bypassed); returns the seq its WIRE_DONE will carry.
     pub fn encode_wire_send(&mut self, out: &mut Vec<u8>, bytes: &[u8]) -> u16 {
@@ -198,28 +227,6 @@ impl Session {
 
     pub fn encode_capture_reset(out: &mut Vec<u8>) {
         Self::frame(out, &[rec::REC_CAPTURE_RESET]);
-    }
-
-    /// Feed a delivered chunk into the reassembly buffer.
-    pub fn on_bytes(&mut self, chunk: &[u8]) {
-        self.rx.extend_from_slice(chunk);
-    }
-
-    /// Pop the next complete record, if one has fully arrived.
-    pub fn next_record(&mut self) -> Result<Option<Record>, LinkError> {
-        if self.rx.len() < 2 {
-            return Ok(None);
-        }
-        let len = u16::from_le_bytes([self.rx[0], self.rx[1]]) as usize;
-        if len == 0 {
-            return Err(LinkError::Malformed);
-        }
-        if self.rx.len() < 2 + len {
-            return Ok(None);
-        }
-        let record = decode(&self.rx[2..2 + len])?;
-        self.rx.drain(..2 + len);
-        Ok(Some(record))
     }
 }
 
@@ -281,10 +288,12 @@ fn decode(body: &[u8]) -> Result<Record, LinkError> {
         rec::REC_RAILS_ACK => Record::RailsAck {
             state: *body.get(1).ok_or(LinkError::Malformed)?,
         },
+        #[cfg(feature = "bench")]
         rec::REC_WIRE_DONE => Record::WireDone {
             seq: seq()?,
             tick: u32::from_le_bytes(field(3..7)?.try_into().unwrap()),
         },
+        #[cfg(feature = "bench")]
         rec::REC_EDGES => {
             let fall_n = *body.get(6).ok_or(LinkError::Malformed)? as usize;
             let rise_n = *body.get(7).ok_or(LinkError::Malformed)? as usize;
@@ -297,6 +306,7 @@ fn decode(body: &[u8]) -> Result<Record, LinkError> {
                 rises: (fall_n..fall_n + rise_n).map(tick).collect(),
             }
         }
+        #[cfg(feature = "bench")]
         rec::REC_CAPTURE_ACK => Record::CaptureAck,
         rec::REC_UNKNOWN => Record::Unknown {
             rtype: *body.get(1).ok_or(LinkError::Malformed)?,

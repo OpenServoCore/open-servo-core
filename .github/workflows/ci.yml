@@ -198,6 +198,10 @@ jobs:
         run: cargo clippy --tests -- -D warnings
       - name: cargo test (full stack over the fake adapter)
         run: cargo test --no-default-features --features fake-adapter
+      - name: cargo clippy (fake-adapter + bench)
+        run: cargo clippy --tests --no-default-features --features fake-adapter,bench -- -D warnings
+      - name: cargo test (full stack, wire instrument)
+        run: cargo test --no-default-features --features fake-adapter,bench
       - name: cargo build (nusb backend)
         run: cargo build
 

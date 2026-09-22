@@ -509,6 +509,7 @@ dependencies = [
  "futures-timer",
  "nusb",
  "osc-host",
+ "osc-integration",
  "osc-protocol",
 ]
 
@@ -520,8 +521,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "osc-integration"
+version = "0.0.0"
+dependencies = [
+ "control-table",
+ "log",
+ "osc-host",
+ "osc-protocol",
+ "osc-servo-core",
+ "osc-servo-drivers",
+]
+
+[[package]]
 name = "osc-log"
 version = "0.0.0"
+dependencies = [
+ "log",
+]
 
 [[package]]
 name = "osc-protocol"
@@ -540,6 +556,16 @@ dependencies = [
  "osc-protocol",
  "osc-units",
  "portable-atomic",
+]
+
+[[package]]
+name = "osc-servo-drivers"
+version = "0.0.0"
+dependencies = [
+ "heapless",
+ "osc-log",
+ "osc-protocol",
+ "osc-servo-core",
 ]
 
 [[package]]
