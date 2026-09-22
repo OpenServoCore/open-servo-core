@@ -8,7 +8,9 @@ use panic_halt as _;
 #[cfg(feature = "defmt")]
 use defmt_rtt as _;
 
-tinyboot_ch32::app::app_version!();
+#[unsafe(link_section = ".tb_version")]
+#[used]
+static APP_VERSION: u16 = osc_servo_ch32::FIRMWARE_VERSION;
 osc_servo_ch32::install_isrs!();
 
 #[qingke_rt::entry]

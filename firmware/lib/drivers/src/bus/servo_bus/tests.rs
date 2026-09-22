@@ -21,7 +21,7 @@ fn shared_seeded() -> Shared {
     let shared = Shared::new();
     shared.table.with_mut(|t| {
         t.config.common.model_number = 0x1234;
-        t.config.common.firmware_version = 0x56;
+        t.config.common.firmware_version = 0x7856;
     });
     shared
 }
@@ -154,13 +154,13 @@ fn s1_ping_round_trip() {
     drain_tx(&mut bus, &h);
 
     // Exact bytes: sealed status(model, fw), valid CRC.
-    let reference = status(ID, ResultCode::Ok, &[0x34, 0x12, 0x56]);
+    let reference = status(ID, ResultCode::Ok, &[0x34, 0x12, 0x56, 0x78]);
     assert_eq!(h.wire.sent(), reference[1..]);
     let (id, inst, data) = last_reply(&h.wire);
     assert_eq!(id, ID);
     assert!(inst.is_status());
     assert_eq!(inst.result(), Some(ResultCode::Ok));
-    assert_eq!(data, &[0x34, 0x12, 0x56]);
+    assert_eq!(data, &[0x34, 0x12, 0x56, 0x78]);
 }
 
 #[test]
@@ -331,7 +331,7 @@ fn s8_odd_anchor_round_trips() {
     assert_eq!(id, ID);
     assert!(inst.is_status());
     assert_eq!(inst.result(), Some(ResultCode::Ok));
-    assert_eq!(data, &[0x34, 0x12, 0x56]);
+    assert_eq!(data, &[0x34, 0x12, 0x56, 0x78]);
     assert_eq!(bus.diag().framing_drop_count, 0);
 }
 
@@ -352,7 +352,7 @@ fn s9_frame_wrapping_ring_boundary_decodes() {
     let (id, inst, data) = last_reply(&h.wire);
     assert_eq!(id, ID);
     assert!(inst.is_status());
-    assert_eq!(data, &[0x34, 0x12, 0x56]);
+    assert_eq!(data, &[0x34, 0x12, 0x56, 0x78]);
 }
 
 #[test]

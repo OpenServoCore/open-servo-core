@@ -234,7 +234,7 @@ impl Dispatcher<'_> {
         let data = RegisterFile::read(
             &self.shared.table,
             crate::regions::config::addr::common::MODEL_NUMBER,
-            3,
+            4,
         )
         .unwrap_or(&[]);
         Self::send(

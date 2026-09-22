@@ -15,6 +15,7 @@ pub mod group;
 pub mod models;
 pub mod reply;
 pub mod table;
+pub mod version;
 pub mod wire;
 
 pub use bytes::FrameBytes;

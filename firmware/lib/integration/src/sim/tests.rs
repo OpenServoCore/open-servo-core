@@ -29,14 +29,15 @@ fn ping_round_trip() {
         .find(|f| matches!(f.from, Source::Servo(_)))
         .expect("servo reply");
 
-    // A well-formed status from id 5 carrying model(2) + fw(1), p=3 (no pad).
+    // A well-formed status from id 5 carrying model(2) + fw(2), p=4 (no pad).
     assert_eq!(reply.from, Source::Servo(SERVO_ID));
     assert_valid(reply);
     let (rinst, payload) = status(reply);
     assert!(rinst.is_status());
     assert_eq!(rinst.result(), Some(ResultCode::Ok));
     let m = MODEL_OSC_SERVO.to_le_bytes();
-    assert_eq!(payload, &[m[0], m[1], FIRMWARE_VERSION]);
+    let f = FIRMWARE_VERSION.to_le_bytes();
+    assert_eq!(payload, &[m[0], m[1], f[0], f[1]]);
 
     // Reply lead: >= reply gap (fixed us, sec 7) and < 200 us after the instruction.
     let lead = reply.at - inst.end;

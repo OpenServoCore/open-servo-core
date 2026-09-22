@@ -3,7 +3,7 @@
 #![allow(unexpected_cfgs)]
 
 pub use osc_servo_core::bp;
-pub use osc_servo_core::{BaudRate, ConfigDefaults};
+pub use osc_servo_core::{BaudRate, ConfigDefaults, FIRMWARE_VERSION};
 
 pub mod cfg;
 pub mod control;

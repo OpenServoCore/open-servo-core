@@ -14,7 +14,7 @@ use crate::pipe::Pipe;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Identity {
     pub model: u16,
-    pub fw: u8,
+    pub fw: u16,
     pub hw: u8,
     pub capabilities: u32,
 }
@@ -32,15 +32,15 @@ pub struct Health {
 }
 
 pub async fn identity<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<Identity, Error> {
-    let b = c.read(id, table::MODEL_NUMBER, 8).await?;
-    if b.len() < 8 {
+    let b = c.read(id, table::MODEL_NUMBER, 9).await?;
+    if b.len() < 9 {
         return Err(short("identity"));
     }
     Ok(Identity {
         model: u16::from_le_bytes([b[0], b[1]]),
-        fw: b[2],
-        hw: b[3],
+        fw: u16::from_le_bytes([b[2], b[3]]),
         capabilities: u32::from_le_bytes([b[4], b[5], b[6], b[7]]),
+        hw: b[8],
     })
 }
 

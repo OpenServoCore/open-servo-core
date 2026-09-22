@@ -187,8 +187,8 @@ fn timeout_when_the_bus_stays_silent() {
     exchange(&mut r, id, inst, &[]);
     assert!(r.bus.poll().is_none());
 
-    // Window: RESPONSE_DEADLINE(60) + (9 + 16 margin) bytes x 10 us = 310.
-    r.clock.advance(311);
+    // Window: RESPONSE_DEADLINE(60) + (10 + 16 margin) bytes x 10 us = 320.
+    r.clock.advance(321);
     let t = expect_done(&mut r);
     assert_eq!(t.outcome, Outcome::Timeout { slot: 0 });
     assert_eq!(t.evidence.statuses, 0);

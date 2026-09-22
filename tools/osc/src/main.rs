@@ -592,8 +592,8 @@ fn select_descriptor<'a>(
         bail!("identity read returned {} B, expected 4", b.len());
     }
     let model = u16::from_le_bytes([b[0], b[1]]);
-    let fw = b[2];
-    let (d, note) = reg.select(model, fw)?;
+    let fw = u16::from_le_bytes([b[2], b[3]]);
+    let (d, note) = descriptor::select(reg, model, fw)?;
     if let Some(note) = note {
         println!("{note}");
     }
@@ -601,9 +601,9 @@ fn select_descriptor<'a>(
 }
 
 fn get(c: &mut Client<NusbPipe>, id: Id, name: &str) -> Result<()> {
-    let reg = descriptor::Registry::load()?;
+    let reg = descriptor::load()?;
     let d = select_descriptor(c, id, &reg)?;
-    let f = d.field(name)?;
+    let f = descriptor::field(d, name)?;
     let bytes = c.read(id, f.addr, f.width)?;
     println!(
         "{} = {}  (addr {:#06x}, {} B, raw {})",
@@ -624,9 +624,9 @@ fn set(
     hold: bool,
     noreply: bool,
 ) -> Result<()> {
-    let reg = descriptor::Registry::load()?;
+    let reg = descriptor::load()?;
     let d = select_descriptor(c, id, &reg)?;
-    let f = d.field(name)?;
+    let f = descriptor::field(d, name)?;
     let data = descriptor::encode(f, value)?;
     if hold {
         c.write_hold(id, f.addr, &data)?;
@@ -645,7 +645,7 @@ fn set(
 }
 
 fn dump(c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
-    let reg = descriptor::Registry::load()?;
+    let reg = descriptor::load()?;
     let d = select_descriptor(c, id, &reg)?;
     // A status frame carries <= 252 payload bytes; walk the table in chunks
     // and slice each field's bytes out of the flat image.

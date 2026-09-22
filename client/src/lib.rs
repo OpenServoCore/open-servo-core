@@ -1,9 +1,9 @@
 //! osc-client -- the host-side client for the osc-native bus (host-band
 //! phase 4). Transport-generic: an async [`Client`] drives the adapter's
 //! record pipe over any [`pipe::Pipe`]; [`blocking`] wraps it for
-//! synchronous callers. Deliberately model-agnostic: register access is raw
-//! addr+len, protocol-normative common registers arrive as osc-protocol
-//! consts, per-model typed maps are a later band.
+//! synchronous callers. Register access is raw addr+len; protocol-normative
+//! common registers arrive as osc-protocol consts, per-model names through
+//! a [`descriptor`] the caller supplies (none is compiled in).
 //!
 //! All protocol timing lives in the adapter's engine; the only clock here is
 //! a coarse pipe guard that catches an unplugged adapter.
@@ -12,6 +12,7 @@ pub mod blocking;
 mod client;
 pub mod common;
 pub mod cyclic;
+pub mod descriptor;
 mod error;
 pub mod mgmt;
 pub mod pipe;

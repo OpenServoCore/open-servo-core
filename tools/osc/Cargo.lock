@@ -415,6 +415,8 @@ dependencies = [
  "nusb",
  "osc-host",
  "osc-protocol",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -223,16 +223,17 @@ fn rails_masked_sets_compose_and_read_back() {
 #[test]
 fn identity_decodes_the_config_front() {
     let mut c = fleet(&[5]);
-    c.pipe_mut().sim_mut().servo_table_mut(0, |t| {
+    let fw = c.pipe_mut().sim_mut().servo_table_mut(0, |t| {
         t.config.common.hardware_revision = 3;
         t.config.common.capability_flags = 0x8000_0001;
+        t.config.common.firmware_version
     });
     let got = c.identity(Id::new(5)).expect("identity");
     assert_eq!(
         got,
         Identity {
             model: MODEL_OSC_SERVO, // the sim mirrors the servo's registry identity
-            fw: 1,                  // osc_servo_core::FIRMWARE_VERSION
+            fw,                     // osc_servo_core::FIRMWARE_VERSION
             hw: 3,
             capabilities: 0x8000_0001,
         }

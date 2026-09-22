@@ -65,7 +65,7 @@ pub struct StreamReply {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Ping {
     pub model: u16,
-    pub fw: u8,
+    pub fw: u16,
     pub alert: bool,
 }
 
@@ -286,12 +286,12 @@ impl<P: Pipe> Client<P> {
     pub async fn ping(&mut self, id: Id) -> Result<Ping, Error> {
         let inst = Inst::instruction(Opcode::Ping, 0);
         let status = Self::sole_ok(self.exchange(id, inst, &[]).await?)?;
-        if status.payload.len() < 3 {
+        if status.payload.len() < 4 {
             return Err(desync_msg("short PING payload".into()));
         }
         Ok(Ping {
             model: u16::from_le_bytes([status.payload[0], status.payload[1]]),
-            fw: status.payload[2],
+            fw: u16::from_le_bytes([status.payload[2], status.payload[3]]),
             alert: status.alert,
         })
     }
