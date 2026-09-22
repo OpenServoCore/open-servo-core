@@ -18,11 +18,13 @@
 //! lever, and garble IS the wire fault.
 
 use osc_integration::sim::{
-    Sim, Source, WireFrame, assert_valid, expect_tel_payload, frame_crc_ok, instruction, status,
+    Sim, Source, TelSample, WireFrame, assert_valid, expect_tel_payload, expect_tel_payload_rows,
+    frame_crc_ok, instruction, status,
 };
 use osc_protocol::wire::{Inst, Opcode, ResultCode};
 use osc_servo_core::BaudRate;
 use osc_servo_core::regions::control::addr::lifecycle::{GOAL_DUTY, TEL_COUNT, TEL_MASK};
+use osc_servo_core::regions::telemetry::addr::sensors::POS;
 use osc_servo_core::tel::FLAG_LAST;
 
 mod support;
@@ -332,4 +334,135 @@ fn multi_servo_silence() {
     assert_eq!(servo[0].from, Source::Servo(ID6));
     assert_valid(servo[0]);
     assert_eq!(status(servo[0]).0.result(), Some(ResultCode::Ok));
+}
+
+// --- recorded-track playback ---
+
+/// A short track with a unique `pos` per row, so a burst's first sample
+/// locates the cursor it started at.
+fn track(len: u16) -> Vec<TelSample> {
+    (0..len)
+        .map(|i| TelSample {
+            pos: 1000 + i * 7,
+            current: -(i as i16) * 3,
+            current_trough: 90 + i,
+            duty_q15: 0x0100 * i as i16,
+            vdiff: -(i as i16) - 40,
+            vbus: 3000 + i,
+            current_raw: 0x200 + i,
+            vmotor_a: 800 + i,
+            vmotor_b: 600 - i,
+            vbus_raw: 2000 + i,
+            ntc_raw: 1500 + i,
+            window_valid: !i.is_multiple_of(3),
+            fault: false,
+        })
+        .collect()
+}
+
+#[test_log::test]
+fn track_rows_stream_in_order_and_loop() {
+    let mut sim = sim3m();
+    let s = sim.add_servo(ID5);
+    let rows = track(24);
+    sim.set_track(s, rows.clone());
+
+    let frames = arm(&mut sim, 40);
+    let servo = servo_frames(&frames);
+    let burst = stream_frames(&frames);
+    assert_eq!(burst.len(), 3);
+    // The pump ticks on the 50 us grid: the first sample is the row at the
+    // first grid point after the count write's ack armed the burst.
+    let first = u16::from_le_bytes([status(burst[0]).1[4], status(burst[0]).1[5]]);
+    let k = rows
+        .iter()
+        .position(|r| r.pos == first)
+        .expect("first sample is a track row");
+    assert_eq!(k, (servo[0].at / TICK + 1) as usize % rows.len());
+    // 40 samples over a 24-row track wrap once; the payloads pin every row
+    // through the same encoder, in order.
+    let served: Vec<TelSample> = (0..40).map(|i| rows[(k + i) % rows.len()]).collect();
+    for (i, f) in burst.iter().enumerate() {
+        assert_valid(f);
+        assert_eq!(
+            status(f).1,
+            expect_tel_payload_rows(MASK, &served, i),
+            "frame {i} payload"
+        );
+    }
+
+    // An empty track restores the synthesized samples, byte for byte.
+    sim.set_track(s, Vec::new());
+    sim.host_send(&write_u16(ID5, 0, TEL_COUNT, 40));
+    let frames = sim.run();
+    for (i, f) in stream_frames(&frames).iter().enumerate() {
+        assert_eq!(status(f).1, expect_payload(40, i), "synthesized frame {i}");
+    }
+}
+
+#[test_log::test]
+fn track_mirrors_into_the_live_table() {
+    let mut sim = sim3m();
+    let s = sim.add_servo(ID5);
+    let rows = track(24);
+    sim.set_track(s, rows.clone());
+
+    // Row 0 lands at set_track: the raw ADC frame into the sensors block,
+    // the row's kernel conclusions into the estimates block.
+    let r = rows[0];
+    sim.servo_table(s, |t| {
+        let sn = &t.telemetry.sensors;
+        assert_eq!(
+            (
+                sn.pos,
+                sn.current,
+                sn.current_trough,
+                sn.vmotor_a,
+                sn.vmotor_b,
+                sn.vbus_raw,
+                sn.ntc_raw
+            ),
+            (
+                r.pos,
+                r.current_raw,
+                r.current_trough,
+                r.vmotor_a,
+                r.vmotor_b,
+                r.vbus_raw,
+                r.ntc_raw
+            )
+        );
+        let es = &t.telemetry.estimates;
+        assert_eq!(
+            (es.vbus_counts, es.duty_applied_q15, es.i_hat_counts),
+            (r.vbus, r.duty_q15, r.current)
+        );
+    });
+
+    // The cursor is sim time at the fast-tick rate, wrapping past the track;
+    // after every exchange the table holds the cursor's row.
+    for k in 1..=3 {
+        sim.host_send_at(k * 1234, &instruction(ID5, Opcode::Ping, 0, &[]));
+        sim.run();
+        let row = sim.track_row(s).expect("track set");
+        assert_eq!(row, (sim.now_us() / 50) as usize % rows.len());
+        assert_eq!(
+            sim.servo_table(s, |t| t.telemetry.sensors.pos),
+            rows[row].pos,
+            "exchange {k}"
+        );
+    }
+
+    // A wire read of `pos` images the row current while the reply streamed.
+    let a = POS.to_le_bytes();
+    sim.host_send(&instruction(ID5, Opcode::Read, 0, &[a[0], a[1], 2, 0]));
+    let frames = sim.run();
+    let reply = servo_frames(&frames)[0];
+    let (inst, payload) = status(reply);
+    assert_eq!(inst.result(), Some(ResultCode::Ok));
+    let got = u16::from_le_bytes([payload[0], payload[1]]);
+    let on_wire: Vec<u16> = (reply.at / TICK..=reply.end / TICK)
+        .map(|r| rows[r as usize % rows.len()].pos)
+        .collect();
+    assert!(on_wire.contains(&got), "read {got} not in {on_wire:?}");
 }

@@ -75,16 +75,16 @@ pub fn tel_sample(i: u32) -> TelSample {
 /// same encoder, so tests pin payload bytes end to end.
 pub fn expect_tel_payload(mask: u16, count: u32, seq: usize) -> Vec<u8> {
     let samples: Vec<TelSample> = (0..count).map(tel_sample).collect();
+    expect_tel_payload_rows(mask, &samples, seq)
+}
+
+/// Expected payload of burst frame `seq` when the burst's ticks served
+/// exactly `rows`, in order (a played-back track, sliced at its cursor).
+pub fn expect_tel_payload_rows(mask: u16, rows: &[TelSample], seq: usize) -> Vec<u8> {
     let a = seq * STREAM_SAMPLES_MAX;
-    let b = (a + STREAM_SAMPLES_MAX).min(count as usize);
+    let b = (a + STREAM_SAMPLES_MAX).min(rows.len());
     let mut buf = [0u8; STREAM_PAYLOAD_MAX];
-    let n = encode_stream(
-        mask,
-        seq as u8,
-        b == count as usize,
-        &samples[a..b],
-        &mut buf,
-    );
+    let n = encode_stream(mask, seq as u8, b == rows.len(), &rows[a..b], &mut buf);
     buf[..n].to_vec()
 }
 

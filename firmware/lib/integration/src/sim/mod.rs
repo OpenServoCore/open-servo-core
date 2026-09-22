@@ -39,11 +39,14 @@ pub use self::host::HostEvent;
 pub use self::store::RamStore;
 
 pub use self::support::{
-    assert_valid, expect_tel_payload, frame_crc_ok, instruction, status, tel_sample,
+    assert_valid, expect_tel_payload, expect_tel_payload_rows, frame_crc_ok, instruction, status,
+    tel_sample,
 };
+pub use osc_servo_core::tel::TelSample;
 
 /// TEL fast-tick period: the kernel's 20 kHz control tick.
 const TEL_TICK_US: u64 = 50;
+const TEL_TICK: u64 = TEL_TICK_US * TICKS_PER_US;
 
 /// Who put a frame on the wire, as recorded.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -99,7 +102,8 @@ pub struct Sim {
 /// One servo's TEL fast-tick pump: the sim's stand-in for the kernel's 50 us
 /// ADC tick, running only while a burst is armed (the kernel's `tel.active()`
 /// gate). Sample values are synthesized from the per-burst tick index
-/// ([`tel_sample`]), so tests pin payload bytes against the same function.
+/// ([`tel_sample`]), so tests pin payload bytes against the same function -
+/// or, with a [`Track`], played back from recorded rows.
 struct TelPump {
     running: bool,
     /// Stale scheduled ticks die by epoch (the Compare generation idiom).
@@ -108,6 +112,25 @@ struct TelPump {
     n: u32,
     /// Synthesized samples carry fault=true over ticks [from, to).
     fault: Option<(u32, u32)>,
+    track: Option<Track>,
+}
+
+/// Recorded fast-tick rows a servo plays back in place of the synthesized
+/// samples. The cursor is sim time itself: row = fast ticks elapsed since
+/// `base`, mod length - so the burst pump (ticking on the 50 us grid) and
+/// the between-events table mirror read the same row at the same instant.
+struct Track {
+    rows: Vec<TelSample>,
+    base: u64,
+    /// Row last written into the live table; skips the rewrite while the
+    /// same row is current (a dozen wire events per tick at 3 M).
+    mirrored: Option<usize>,
+}
+
+impl Track {
+    fn row(&self, now: u64) -> usize {
+        ((now - self.base) / TEL_TICK) as usize % self.rows.len()
+    }
 }
 
 struct LinkRig {
@@ -248,8 +271,30 @@ impl Sim {
             epoch: 0,
             n: 0,
             fault: None,
+            track: None,
         });
         idx
+    }
+
+    /// Servo `i` plays `track` back at the fast-tick rate from now: bursts
+    /// serve its rows in place of [`tel_sample`] (looping), and the live
+    /// telemetry table mirrors the current row ahead of every event. Playback
+    /// only - no control or fault behaviour follows from the rows. An empty
+    /// track restores the synthesized samples.
+    pub fn set_track(&mut self, i: usize, track: Vec<TelSample>) {
+        let now = self.core.borrow().now();
+        self.tels[i].track = (!track.is_empty()).then_some(Track {
+            rows: track,
+            base: now,
+            mirrored: None,
+        });
+        self.mirror_track(i, now);
+    }
+
+    /// The track row servo `i` is at now (`None` without a track).
+    pub fn track_row(&self, i: usize) -> Option<usize> {
+        let now = self.core.borrow().now();
+        self.tels[i].track.as_ref().map(|t| t.row(now))
     }
 
     /// Servo `i`'s synthesized samples carry fault=true over per-burst ticks
@@ -508,6 +553,10 @@ impl Sim {
     }
 
     fn dispatch(&mut self, ev: Event) {
+        let now = self.core.borrow().now();
+        for j in 0..self.servos.len() {
+            self.mirror_track(j, now);
+        }
         match ev {
             Event::WireBreak {
                 talker,
@@ -575,8 +624,7 @@ impl Sim {
                     t.running = true;
                     t.epoch += 1;
                     t.n = 0;
-                    let period = TEL_TICK_US * TICKS_PER_US;
-                    let at = (now / period + 1) * period;
+                    let at = (now / TEL_TICK + 1) * TEL_TICK;
                     self.core.borrow_mut().schedule(
                         Event::TelTick {
                             servo: j,
@@ -591,24 +639,58 @@ impl Sim {
         }
     }
 
-    /// One 50 us fast tick at servo `j`: synthesize the next sample, feed the
-    /// kernel-side encoder, re-arm. Ticks from a dead pump (burst ended or
-    /// aborted since scheduling) drop by the running/epoch gates.
+    /// One 50 us fast tick at servo `j`: synthesize (or play back) the next
+    /// sample, feed the kernel-side encoder, re-arm. Ticks from a dead pump
+    /// (burst ended or aborted since scheduling) drop by the running/epoch
+    /// gates.
     fn tel_tick(&mut self, j: usize, epoch: u64) {
+        let now = self.core.borrow().now();
         let t = &mut self.tels[j];
         if !t.running || t.epoch != epoch || !self.servos[j].tel_active() {
             return;
         }
-        let mut s = tel_sample(t.n);
+        let mut s = match &t.track {
+            Some(track) => track.rows[track.row(now)],
+            None => tel_sample(t.n),
+        };
         if let Some((from, to)) = t.fault {
             s.fault = t.n >= from && t.n < to;
         }
         t.n += 1;
         self.servos[j].tel_tick(&s);
-        let at = self.core.borrow().now() + TEL_TICK_US * TICKS_PER_US;
         self.core
             .borrow_mut()
-            .schedule(Event::TelTick { servo: j, epoch }, at);
+            .schedule(Event::TelTick { servo: j, epoch }, now + TEL_TICK);
+    }
+
+    /// Image servo `j`'s current track row in its live table: the raw ADC
+    /// frame into the sensors block, the kernel conclusions the row carries
+    /// into the estimates block. Runs ahead of every event, so a reply
+    /// streamed at this instant reads the row the burst pump would serve.
+    fn mirror_track(&mut self, j: usize, now: u64) {
+        let Some(t) = self.tels[j].track.as_mut() else {
+            return;
+        };
+        let row = t.row(now);
+        if t.mirrored == Some(row) {
+            return;
+        }
+        t.mirrored = Some(row);
+        let s = t.rows[row];
+        self.servos[j].with_table_mut(|tb| {
+            let sn = &mut tb.telemetry.sensors;
+            sn.pos = s.pos;
+            sn.current = s.current_raw;
+            sn.current_trough = s.current_trough;
+            sn.vmotor_a = s.vmotor_a;
+            sn.vmotor_b = s.vmotor_b;
+            sn.vbus_raw = s.vbus_raw;
+            sn.ntc_raw = s.ntc_raw;
+            let es = &mut tb.telemetry.estimates;
+            es.vbus_counts = s.vbus;
+            es.duty_applied_q15 = s.duty_q15;
+            es.i_hat_counts = s.current;
+        });
     }
 
     /// Poll the attached engine to exhaustion. Link mode routes through the

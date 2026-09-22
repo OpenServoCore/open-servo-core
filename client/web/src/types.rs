@@ -201,6 +201,50 @@ pub struct TelBurst {
     pub trailing: bool,
 }
 
+/// A recorded fast-tick track for the simulated adapter: one column per
+/// `TelSample` field, all the same length, in device counts as captured
+/// (`windowValid` is 0/1). Plain `number[]` columns are accepted too.
+#[cfg(feature = "fake")]
+#[derive(Debug, Clone, Deserialize, Tsify)]
+#[serde(rename_all = "camelCase")]
+pub struct Track {
+    #[tsify(type = "Uint16Array")]
+    pub pos: Vec<u16>,
+    #[tsify(type = "Int16Array")]
+    pub current: Vec<i16>,
+    #[tsify(type = "Uint16Array")]
+    pub current_trough: Vec<u16>,
+    #[tsify(type = "Int16Array")]
+    pub duty_q15: Vec<i16>,
+    #[tsify(type = "Int16Array")]
+    pub vdiff: Vec<i16>,
+    #[tsify(type = "Uint16Array")]
+    pub vbus: Vec<u16>,
+    #[tsify(type = "Uint16Array")]
+    pub current_raw: Vec<u16>,
+    #[tsify(type = "Uint16Array")]
+    pub vmotor_a: Vec<u16>,
+    #[tsify(type = "Uint16Array")]
+    pub vmotor_b: Vec<u16>,
+    #[tsify(type = "Uint16Array")]
+    pub vbus_raw: Vec<u16>,
+    #[tsify(type = "Uint16Array")]
+    pub ntc_raw: Vec<u16>,
+    #[tsify(type = "Uint8Array")]
+    pub window_valid: Vec<u8>,
+}
+
+/// One `fakeWithTracks` roster entry: a servo id, optionally playing a
+/// track back.
+#[cfg(feature = "fake")]
+#[derive(Debug, Clone, Deserialize, Tsify)]
+#[serde(rename_all = "camelCase")]
+pub struct FakeServo {
+    pub id: u8,
+    #[tsify(optional)]
+    pub track: Option<Track>,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Tsify)]
 #[serde(rename_all = "lowercase")]
 pub enum Access {
