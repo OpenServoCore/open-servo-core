@@ -28,7 +28,7 @@ pub mod nusb;
 #[cfg(all(feature = "webusb", target_arch = "wasm32"))]
 pub mod webusb;
 
-pub use client::{Chain, Client, Ping, Reply, Status, StreamReply};
+pub use client::{Chain, Client, DEFAULT_GUARD, Ping, Reply, Status, StreamReply};
 pub use error::{Error, LinkError, RejectReason};
 
 pub use osc_host::engine::Outcome;
