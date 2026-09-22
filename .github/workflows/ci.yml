@@ -34,6 +34,11 @@ jobs:
         run: cargo test --workspace
       - name: descriptor freshness
         run: cargo run -p table-export -- ../../descriptors && git diff --exit-code ../../descriptors && test -z "$(git status --porcelain ../../descriptors)"
+      - name: descriptor version gate
+        working-directory: ${{ github.workspace }}
+        run: |
+          git fetch --no-tags --depth=1 origin +refs/heads/main:refs/remotes/origin/main
+          bash .github/check-descriptor-version.sh
       - name: cargo check --features mocks
         run: cargo check -p osc-servo-drivers --features mocks
       - name: cargo check --features bench

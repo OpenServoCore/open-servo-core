@@ -525,6 +525,23 @@ comms RW:
   reader, §9.2), boot mode (MGMT REBOOT's payload owns it), and every
   motor semantic.
 
+**Versioning.** `firmware_version` is the firmware's semver applied to
+the control table: MAJOR bumps on a breaking table change (a field
+moved, removed, retyped, or its access changed), MINOR on an additive
+one (new fields only), PATCH when the table is untouched. Saved config
+is unaffected - the persisted image carries its own layout version
+(§9.4). While MAJOR is 0 the firmware is in active development and
+promises no compatibility: the table may change without a bump, and
+hosts track the latest code. The bump rule binds from 1.0.0.
+
+A descriptor - the exported device description at
+`descriptors/<model>/<major>.<minor>.json` - names one layout; PATCH
+never changes it. Host selection: read `model_number` and
+`firmware_version`, require the same MAJOR, take the largest known
+MINOR at or below the servo's (a same-major older descriptor is a valid
+subset). A different MAJOR, or no descriptor at all, means typed access
+to the common blocks above only, plus a warning.
+
 ### 5.5 Units: device counts
 
 Control-table quantities that mirror a sensor reading or feed control
