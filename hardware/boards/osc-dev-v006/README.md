@@ -38,7 +38,7 @@ Rev. 2A is a big respin. Here is what changed:
 - `VSNS` is back, on its own pin, as a direct divider off `VSYS`.
 - USB-C and screw-terminal power inputs are dropped. Battery and LinkE 5 V remain.
 - The PWM servo header is dropped. Qwiic (I2C) is added.
-- The edge test-point pads are replaced by three GND probe points. Signals are probed at their silk-labeled component pads.
+- The edge test-point hook rails are replaced by a row of nine 1.0 mm probe pads next to the sense network. See [Test points](#test-points--probing).
 - 4 layers to 6 layers, and all connectors are renumbered.
 
 ## MCU pinout
@@ -114,7 +114,7 @@ With a pot or a single-output encoder, leave `POS2` unconnected and jump JP2 for
 
 ### Encoder - J6
 
-2x02 pin header. `+3V3` / `GND` on one row, `ENCA` / `ENCB` on the other, going into ADC channels `A4` / `A3`.
+2x02 pin header. `+3V3` / `GND` on one row, `ENCA` / `ENCB` on the other, going into ADC channels `A4` / `A3`. Silk reads `QA` / `QB` for the two phases.
 
 This is a future expansion connector for an ADC-sampled custom IR quadrature encoder, in the style of [ServoProject](https://github.com/adamb314/ServoProject). The analog A/B phases get oversampled and interpolated for sub-count resolution. Hardware quadrature counting is not possible here since `PD2` / `PD3` don't carry TIM2 CH1/CH2, so I never considered it. A digital encoder belongs on Qwiic instead.
 
@@ -126,9 +126,9 @@ Six bare pads at 1.0 mm pitch for the motor-shaft encoder flex, attached tin-and
 |---|---|---|
 |1|`GND`|Outer ground, guards the pair.|
 |2|`+3V3`|Emitter and phototransistor supply.|
-|3|`ENCA`|IR sensor A, ADC `A4`. Same net as J6.|
-|4|`ENCB`|IR sensor B, ADC `A3`. Same net as J6.|
-|5|`VNTC_EXT`|Thermistor on the motor can, into the external leg of JP2. The divider resistor sits on the flex.|
+|3|`ENCA`|IR sensor A, ADC `A4`. Same net as J6. Silk `QA`.|
+|4|`ENCB`|IR sensor B, ADC `A3`. Same net as J6. Silk `QB`.|
+|5|`VNTC_EXT`|Thermistor on the motor can, into the external leg of JP2. The divider resistor sits on the flex. Silk `NTC`.|
 |6|`GND`|Outer ground.|
 
 J6 and J11 are the same encoder input in two shapes: pins for a wired breakout or the bench coupon, the landing for the flex. Populate one.
@@ -260,7 +260,21 @@ All four are deliberately dim, in the 0.1-0.3 mA class.
 
 ## Test points & probing
 
-Three GND probe points (TP1-TP3) are spread across the board for scope ground springs. The 4x M2 mounting holes (2.2 mm) are also tied to `GND`, handy for an alligator clip. Signals are probed at their component pads, and the nets of interest are silk-labeled.
+Nine 1.0 mm probe pads sit in two rows between the position header and the sense network, labeled on silk. They take a scope tip or a pogo pin; nothing clips on, so for hands-free capture solder a wire loop to the pad.
+
+|Silk|Ref|Net|What it is|
+|---|---|---|---|
+|`GND`|TP1|`GND`|Ground for the row. Within spring reach of every other pad.|
+|`OPA`|TP2|`OPA_OUT`|Op-amp output, ADC `A7`. Inline on the trace into `PD4`.|
+|`IN1`|TP3|`DRV_IN1`|H-bridge PWM input 1 (`PC6`, TIM1 CH3).|
+|`IN2`|TP4|`DRV_IN2`|H-bridge PWM input 2 (`PC5`, TIM1 CH2).|
+|`VA`|TP5|`VSNA`|`MOT_A` divider tap, ADC `A5`. Inline on the trace into `PD5`.|
+|`VB`|TP6|`VSNB`|`MOT_B` divider tap, ADC `A6`. Inline on the trace into `PD6`. Not the bias node `VB`, which is probed at Cb2.|
+|`VS`|TP7|`VSNS`|`VSYS` divider tap, ADC `A2`.|
+|`VP1`|TP8|`VPOS1`|Position channel 1 after its RC filter, ADC `A1`.|
+|`VP2`|TP9|`VPOS2_NTC`|Position channel 2 or the NTC divider after its RC filter, ADC `A0`. Follows JP2.|
+
+`OPA`, `VA` and `VB` are in the signal path, so the pad adds no stub to those nets. The rest are short spurs off filtered or driven nodes. `VREF` has no pad: probe the DNP `Rd3` footprint. The kelvin pair `ISNS+` / `ISNS-` has no pad on purpose. The 4x M2 mounting holes (2.2 mm) are tied to `GND` for an alligator clip.
 
 ## Power and grounding
 
