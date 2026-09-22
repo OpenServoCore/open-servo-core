@@ -5,6 +5,10 @@
 use std::fmt;
 use std::time::Duration;
 
+/// The osc-adapter's vendor device, 1209:0001.
+pub const VID: u16 = 0x1209;
+pub const PID: u16 = 0x0001;
+
 pub trait Pipe {
     /// Deliver bytes in order, whole.
     fn send(&mut self, bytes: &[u8]) -> impl Future<Output = Result<(), PipeError>>;

@@ -209,6 +209,10 @@ jobs:
         run: cargo check --target wasm32-unknown-unknown --no-default-features
       - name: cargo clippy (wasm32, no default features)
         run: cargo clippy --target wasm32-unknown-unknown --no-default-features -- -D warnings
+      - name: cargo check (wasm32, webusb backend)
+        run: cargo check --target wasm32-unknown-unknown --no-default-features --features webusb
+      - name: cargo clippy (wasm32, webusb backend)
+        run: cargo clippy --target wasm32-unknown-unknown --no-default-features --features webusb -- -D warnings
 
   osc-cli:
     name: build (tools/osc)

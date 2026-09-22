@@ -25,6 +25,8 @@ pub mod wire;
 pub mod fake;
 #[cfg(feature = "nusb")]
 pub mod nusb;
+#[cfg(all(feature = "webusb", target_arch = "wasm32"))]
+pub mod webusb;
 
 pub use client::{Chain, Client, Ping, Reply, Status, StreamReply};
 pub use error::{Error, LinkError, RejectReason};
