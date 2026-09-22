@@ -82,7 +82,7 @@ pub struct Chain {
 /// Client-side watchdog on pipe delivery: catches a dead adapter, carries
 /// no protocol meaning (the engine owns every protocol window), so it sits
 /// orders of magnitude above them.
-const DEFAULT_GUARD: Duration = Duration::from_secs(2);
+pub const DEFAULT_GUARD: Duration = Duration::from_secs(2);
 
 pub struct Client<P: Pipe> {
     pub(crate) pipe: P,
@@ -131,6 +131,11 @@ impl<P: Pipe> Client<P> {
 
     pub fn set_guard(&mut self, guard: Duration) {
         self.guard = guard;
+    }
+
+    /// Give the transport back (to close a pipe that closes by value).
+    pub fn into_pipe(self) -> P {
+        self.pipe
     }
 
     /// Convert a terminal tick count (a span, not an instant) to wall time.

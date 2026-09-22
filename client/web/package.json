@@ -1,0 +1,22 @@
+{
+  "name": "@openservocore/client",
+  "version": "0.1.0",
+  "description": "osc-client in the browser: the osc-adapter over WebUSB, with generated TypeScript declarations.",
+  "license": "MIT OR Apache-2.0",
+  "private": false,
+  "type": "module",
+  "files": [
+    "pkg"
+  ],
+  "main": "./pkg/osc_client_web.js",
+  "types": "./pkg/osc_client_web.d.ts",
+  "exports": {
+    ".": {
+      "types": "./pkg/osc_client_web.d.ts",
+      "default": "./pkg/osc_client_web.js"
+    }
+  },
+  "scripts": {
+    "build": "wasm-pack build --target web --out-dir pkg"
+  }
+}

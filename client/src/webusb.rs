@@ -20,7 +20,7 @@ const IN_CAP: u32 = 4096;
 
 #[wasm_bindgen]
 extern "C" {
-    #[wasm_bindgen(js_name = USBDevice)]
+    #[wasm_bindgen(js_name = USBDevice, typescript_type = "USBDevice")]
     pub type UsbDevice;
     #[wasm_bindgen(js_namespace = ["navigator", "usb"], js_name = requestDevice, catch)]
     fn request_device_js(opts: &JsValue) -> Result<Promise, JsValue>;

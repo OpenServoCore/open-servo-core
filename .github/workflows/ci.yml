@@ -213,6 +213,17 @@ jobs:
         run: cargo check --target wasm32-unknown-unknown --no-default-features --features webusb
       - name: cargo clippy (wasm32, webusb backend)
         run: cargo clippy --target wasm32-unknown-unknown --no-default-features --features webusb -- -D warnings
+      - name: cargo clippy (osc-client-web, wasm32)
+        run: cargo clippy --target wasm32-unknown-unknown -p osc-client-web -- -D warnings
+      - name: cargo test (osc-client-web helpers, native)
+        run: cargo test -p osc-client-web
+      - name: Install wasm-pack
+        uses: jetli/wasm-pack-action@v0.4.0
+        with:
+          version: latest
+      - name: wasm-pack build (osc-client-web, generated .d.ts must build)
+        working-directory: client/web
+        run: wasm-pack build --target web --out-dir pkg
 
   osc-cli:
     name: build (tools/osc)
