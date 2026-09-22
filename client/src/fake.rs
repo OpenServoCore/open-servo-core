@@ -8,6 +8,8 @@ use osc_protocol::wire::BaudRate;
 
 use crate::pipe::{Pipe, PipeError};
 
+pub use osc_integration::sim::TelSample;
+
 pub struct FakePipe {
     sim: Sim,
     frames: Vec<WireFrame>,
@@ -30,6 +32,13 @@ impl FakePipe {
     /// Reach into the rig (seed UIDs, peek tables, read diag counters).
     pub fn sim_mut(&mut self) -> &mut Sim {
         &mut self.sim
+    }
+
+    /// Servo `i` (roster index) plays `track` back at the fast-tick rate:
+    /// its bursts and live telemetry registers show the recorded rows
+    /// instead of the synthetic ramp (see `Sim::set_track`).
+    pub fn set_track(&mut self, i: usize, track: Vec<TelSample>) {
+        self.sim.set_track(i, track);
     }
 
     /// Drain the wire frames recorded across every `send`'s sim run --
