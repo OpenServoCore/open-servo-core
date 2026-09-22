@@ -43,6 +43,10 @@ jobs:
         run: cargo check -p osc-servo-drivers --features mocks
       - name: cargo check --features bench
         run: cargo check -p osc-servo-drivers --features bench
+      - name: cargo test osc-host --features bench
+        run: cargo test -p osc-host --features bench
+      - name: cargo check osc-integration --features bench
+        run: cargo check -p osc-integration --features bench
 
   ch32-build-test:
     name: build + test (firmware/servo-ch32)
@@ -120,6 +124,8 @@ jobs:
         run: cargo build
       - name: cargo test
         run: cargo test --lib
+      - name: cargo check --no-default-features (basic profile)
+        run: cargo check --no-default-features
 
   osc-adapter-wchlinke-cross-build:
     name: cross-build (boards/osc-adapter-wchlinke)
@@ -177,10 +183,11 @@ jobs:
         working-directory: client
     steps:
       - uses: actions/checkout@v4
-      - name: Install Rust (nightly + clippy + rustfmt)
+      - name: Install Rust (nightly + clippy + rustfmt + wasm)
         uses: dtolnay/rust-toolchain@nightly
         with:
           components: clippy, rustfmt
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: client
@@ -192,8 +199,20 @@ jobs:
         run: cargo clippy --tests -- -D warnings
       - name: cargo test (full stack over the fake adapter)
         run: cargo test --no-default-features --features fake-adapter
+      - name: cargo clippy (fake-adapter + bench)
+        run: cargo clippy --tests --no-default-features --features fake-adapter,bench -- -D warnings
+      - name: cargo test (full stack, wire instrument)
+        run: cargo test --no-default-features --features fake-adapter,bench
       - name: cargo build (nusb backend)
         run: cargo build
+      - name: cargo check (wasm32, no default features)
+        run: cargo check --target wasm32-unknown-unknown --no-default-features
+      - name: cargo clippy (wasm32, no default features)
+        run: cargo clippy --target wasm32-unknown-unknown --no-default-features -- -D warnings
+      - name: cargo check (wasm32, webusb backend)
+        run: cargo check --target wasm32-unknown-unknown --no-default-features --features webusb
+      - name: cargo clippy (wasm32, webusb backend)
+        run: cargo clippy --target wasm32-unknown-unknown --no-default-features --features webusb -- -D warnings
 
   osc-cli:
     name: build (tools/osc)

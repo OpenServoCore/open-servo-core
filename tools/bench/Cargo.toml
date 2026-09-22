@@ -12,7 +12,7 @@ path = "src/lib.rs"
 
 [dependencies]
 osc-protocol = { path = "../../firmware/lib/osc-protocol", features = ["software-crc"] }
-osc-client   = { path = "../../client" }
+osc-client   = { path = "../../client", features = ["bench"] }
 anyhow       = "1"
 clap         = { version = "4", features = ["derive"] }
 

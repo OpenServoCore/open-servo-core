@@ -23,4 +23,7 @@ portable-atomic = { version = "1", default-features = false, features = ["unsafe
 critical-section = { version = "1.2", features = ["std"] }
 
 [features]
-rt = ["ch32-metapac/rt"]
+default = ["bench"]
+rt      = ["ch32-metapac/rt"]
+# The flashed adapter is the bench instrument: edge capture + raw wire ops.
+bench   = ["osc-host/bench"]

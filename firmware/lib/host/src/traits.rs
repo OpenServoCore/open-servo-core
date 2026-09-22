@@ -56,6 +56,7 @@ pub trait UsartBaud {
     /// Arbitrary rate, instrument-only: off-catalog divisors (a detuned
     /// host is the clock-tracker's drift injector). The engine's own
     /// timing state stays on the nearest catalog rate.
+    #[cfg(feature = "bench")]
     fn apply_raw(&mut self, bps: u32);
 }
 
@@ -70,6 +71,7 @@ pub trait UsartBaud {
 /// data-region edges are exact; break edges are not captured faithfully
 /// (phantoms inside the break span, break fall never present), so frames
 /// anchor on their byte-0 start fall and break geometry is law-derived.
+#[cfg(feature = "bench")]
 pub trait EdgeCapture {
     /// Pop up to `buf.len()` falling-edge ticks in capture order.
     fn drain_falls(&mut self, buf: &mut [u16]) -> usize;
@@ -87,7 +89,10 @@ pub trait Providers {
     type Deadline: Deadline;
     type Tx: TxWire;
     type Baud: UsartBaud;
-    type Edges: EdgeCapture;
+    /// `Default`: the capture organ is a handle to armed-at-boot rings,
+    /// so the engine constructs it rather than threading it through `new`.
+    #[cfg(feature = "bench")]
+    type Edges: EdgeCapture + Default;
 }
 
 /// Wrap-aware "`a` is at or after `b`" on the u32 tick domain.

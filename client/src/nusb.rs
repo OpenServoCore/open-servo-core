@@ -3,10 +3,8 @@
 
 use nusb::transfer::{Queue, RequestBuffer};
 
-use crate::pipe::{Pipe, PipeError};
+use crate::pipe::{PID, Pipe, PipeError, VID};
 
-pub const VID: u16 = 0x1209;
-pub const PID: u16 = 0x0001;
 const EP_OUT: u8 = 0x01;
 const EP_IN: u8 = 0x81;
 // IN_DEPTH x IN_CAP = 32 kB queued with the xHCI: ~128 ms of the 255 kB/s

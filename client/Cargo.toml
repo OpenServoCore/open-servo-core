@@ -10,8 +10,12 @@ description = "Host-side client for the osc-native bus: transport-generic sessio
 [features]
 default = ["nusb"]
 nusb = ["dep:nusb"]
+# Browser backend over WebUSB; a no-op off wasm32 (its deps are target-gated).
+webusb = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:js-sys"]
 # In-process adapter over the DES sim: full-stack tests with no hardware.
 fake-adapter = ["dep:osc-integration"]
+# Raw-wire instrument surface (`wire`, the 0x6x records): tools/bench only.
+bench = ["osc-host/bench", "osc-integration?/bench"]
 
 [dependencies]
 futures-lite  = "2"
@@ -22,6 +26,13 @@ osc-protocol  = { path = "../firmware/lib/osc-protocol", features = ["software-c
 osc-integration = { path = "../firmware/lib/integration", optional = true }
 serde         = { version = "1", features = ["derive"] }
 serde_json    = "1"
+
+# The guard timer has no thread to fall back on in a browser.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+futures-timer = { version = "3", features = ["wasm-bindgen"] }
+wasm-bindgen         = { version = "0.2", optional = true }
+wasm-bindgen-futures = { version = "0.4", optional = true }
+js-sys               = { version = "0.3", optional = true }
 
 [[example]]
 name = "fleet_smoke"

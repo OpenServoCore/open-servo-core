@@ -8,6 +8,7 @@
 //! All protocol timing lives in the adapter's engine; the only clock here is
 //! a coarse pipe guard that catches an unplugged adapter.
 
+#[cfg(not(target_arch = "wasm32"))]
 pub mod blocking;
 mod client;
 pub mod common;
@@ -17,12 +18,15 @@ mod error;
 pub mod mgmt;
 pub mod pipe;
 pub mod session;
+#[cfg(feature = "bench")]
 pub mod wire;
 
 #[cfg(feature = "fake-adapter")]
 pub mod fake;
 #[cfg(feature = "nusb")]
 pub mod nusb;
+#[cfg(all(feature = "webusb", target_arch = "wasm32"))]
+pub mod webusb;
 
 pub use client::{Chain, Client, Ping, Reply, Status, StreamReply};
 pub use error::{Error, LinkError, RejectReason};

@@ -9,7 +9,7 @@ use osc_protocol::wire::{BaudRate, Id, Inst, Opcode, ResultCode, UID_LEN};
 
 use super::*;
 use crate::testutil::{
-    FakeBaud, FakeDeadline, FakeEdges, FakeRing, FakeWire, TestProviders, WireOp, sealed_status,
+    FakeBaud, FakeDeadline, FakeRing, FakeWire, TestProviders, WireOp, sealed_status,
 };
 
 struct Rig {
@@ -30,7 +30,6 @@ fn rig() -> Rig {
         clock.clone(),
         wire.clone(),
         baud.clone(),
-        FakeEdges::default(),
         BaudRate::B1000000,
     );
     Rig {
@@ -592,200 +591,205 @@ fn stream_refuses_chain_and_collect_carriers() {
     assert!(r.wire.log().is_empty(), "refused before the wire");
 }
 
-fn expect_wire_done(r: &mut Rig) -> u32 {
-    match r.bus.poll() {
-        Some(Event::WireDone { tick }) => tick,
-        other => panic!("expected WireDone, got {other:?}"),
+#[cfg(feature = "bench")]
+mod wire {
+    use super::*;
+
+    fn expect_wire_done(r: &mut Rig) -> u32 {
+        match r.bus.poll() {
+            Some(Event::WireDone { tick }) => tick,
+            other => panic!("expected WireDone, got {other:?}"),
+        }
     }
-}
 
-#[test]
-fn wire_send_is_break_plus_raw_bytes_then_wire_done() {
-    let mut r = rig();
-    // Deliberately not a legal frame -- raw means raw.
-    r.bus.wire_send(&[0xDE, 0xAD]).unwrap();
-    let log = r.wire.log();
-    assert_eq!(log[0], WireOp::Claim);
-    assert_eq!(log[1], WireOp::Break);
-    assert_eq!(log[2], WireOp::Send(vec![0xDE, 0xAD]));
-    assert!(r.bus.poll().is_none(), "in flight until TC");
+    #[test]
+    fn wire_send_is_break_plus_raw_bytes_then_wire_done() {
+        let mut r = rig();
+        // Deliberately not a legal frame -- raw means raw.
+        r.bus.wire_send(&[0xDE, 0xAD]).unwrap();
+        let log = r.wire.log();
+        assert_eq!(log[0], WireOp::Claim);
+        assert_eq!(log[1], WireOp::Break);
+        assert_eq!(log[2], WireOp::Send(vec![0xDE, 0xAD]));
+        assert!(r.bus.poll().is_none(), "in flight until TC");
 
-    r.clock.advance(70);
-    r.bus.on_tx_complete();
-    assert_eq!(r.wire.log().last(), Some(&WireOp::Release));
-    assert_eq!(expect_wire_done(&mut r), 70, "tick = wire release moment");
-    assert!(r.bus.poll().is_none(), "consumed");
-}
-
-#[test]
-fn wire_burst_chains_frames_on_tc() {
-    let mut r = rig();
-    r.bus.wire_burst(&[2, 0xAA, 0xBB, 1, 0xCC]).unwrap();
-    let log = r.wire.log();
-    assert_eq!(
-        log,
-        vec![WireOp::Claim, WireOp::Break, WireOp::Send(vec![0xAA, 0xBB])]
-    );
-
-    r.bus.on_tx_complete();
-    let log = r.wire.log();
-    assert_eq!(&log[3..], &[WireOp::Break, WireOp::Send(vec![0xCC])]);
-    assert!(r.bus.poll().is_none(), "second frame still in flight");
-
-    r.bus.on_tx_complete();
-    assert_eq!(r.wire.log().last(), Some(&WireOp::Release));
-    let _ = expect_wire_done(&mut r);
-}
-
-#[test]
-fn wire_pulse_holds_low_until_its_deadline() {
-    let mut r = rig();
-    r.bus.wire_pulse_low(300).unwrap();
-    let log = r.wire.log();
-    assert_eq!(log, vec![WireOp::Claim, WireOp::HoldLow]);
-
-    r.clock.advance(299);
-    assert!(r.bus.poll().is_none(), "still held");
-    r.clock.advance(1);
-    let tick = expect_wire_done(&mut r);
-    assert_eq!(tick, 300);
-    assert_eq!(r.wire.log().last(), Some(&WireOp::Release));
-}
-
-#[test]
-fn wire_ops_and_commands_reject_each_other_as_busy() {
-    let mut r = rig();
-    r.bus.wire_send(&[0x55]).unwrap();
-    let (id, inst) = ping(1);
-    assert_eq!(
-        r.bus.submit(Command::Exchange {
-            id,
-            inst,
-            payload: &[]
-        }),
-        Err(SubmitError::Busy),
-        "command rejected while a wire op owns the wire"
-    );
-    assert_eq!(r.bus.wire_send(&[0x55]), Err(SubmitError::Busy));
-    r.bus.on_tx_complete();
-    assert_eq!(
-        r.bus.wire_pulse_low(10),
-        Err(SubmitError::Busy),
-        "unconsumed WireDone still owns the engine"
-    );
-    let _ = expect_wire_done(&mut r);
-    r.bus.wire_pulse_low(10).unwrap();
-
-    // And the mirror: a command in flight rejects wire ops.
-    let mut r = rig();
-    r.bus
-        .submit(Command::Exchange {
-            id,
-            inst,
-            payload: &[],
-        })
-        .unwrap();
-    assert_eq!(r.bus.wire_send(&[0x55]), Err(SubmitError::Busy));
-}
-
-#[test]
-fn malformed_wire_ops_reject_without_touching_the_wire() {
-    let mut r = rig();
-    assert!(matches!(r.bus.wire_send(&[]), Err(SubmitError::Invalid(_))));
-    assert!(matches!(
-        r.bus.wire_burst(&[]),
-        Err(SubmitError::Invalid(_))
-    ));
-    assert!(matches!(
-        r.bus.wire_burst(&[0]),
-        Err(SubmitError::Invalid(_)),
-    ));
-    assert!(matches!(
-        r.bus.wire_burst(&[3, 0xAA]),
-        Err(SubmitError::Invalid(_)),
-    ));
-    assert!(matches!(
-        r.bus.wire_pulse_low(0),
-        Err(SubmitError::Invalid(_))
-    ));
-    assert!(r.wire.log().is_empty(), "nothing reached the wire");
-}
-
-#[test]
-fn wire_train_paces_breaks_on_the_grid_after_the_announce() {
-    let mut r = rig();
-    // Announce says 392, the wire paces 400: the lying-train injector the
-    // engine's own CAL path cannot express.
-    let mut p = [0u8; 8];
-    let n = build::mgmt_cal(&mut p, 392, 3).unwrap();
-    r.bus.wire_train(&p[..n], 400, 4).unwrap();
-    assert_eq!(r.wire.log()[..2], [WireOp::Claim, WireOp::Break]);
-    assert!(r.bus.poll().is_none(), "announce still in flight");
-
-    // The announce's TC anchors the grid.
-    r.bus.on_tx_complete();
-    let mut grid = Vec::new();
-    for _ in 0..4 {
-        grid.push(r.clock.armed().expect("train slot armed"));
-        r.bus.on_deadline();
+        r.clock.advance(70);
+        r.bus.on_tx_complete();
+        assert_eq!(r.wire.log().last(), Some(&WireOp::Release));
+        assert_eq!(expect_wire_done(&mut r), 70, "tick = wire release moment");
+        assert!(r.bus.poll().is_none(), "consumed");
     }
-    assert_eq!(grid, vec![400, 800, 1200, 1600]);
 
-    let breaks = r
-        .wire
-        .log()
-        .iter()
-        .filter(|op| **op == WireOp::Break)
-        .count();
-    assert_eq!(breaks, 5, "announce break + 4 train breaks");
-    assert_eq!(*r.wire.log().last().unwrap(), WireOp::Release);
-    let _ = expect_wire_done(&mut r);
-}
+    #[test]
+    fn wire_burst_chains_frames_on_tc() {
+        let mut r = rig();
+        r.bus.wire_burst(&[2, 0xAA, 0xBB, 1, 0xCC]).unwrap();
+        let log = r.wire.log();
+        assert_eq!(
+            log,
+            vec![WireOp::Claim, WireOp::Break, WireOp::Send(vec![0xAA, 0xBB])]
+        );
 
-#[test]
-fn wire_train_rejects_empty_and_busy() {
-    let mut r = rig();
-    assert!(matches!(
-        r.bus.wire_train(&[], 400, 4),
-        Err(SubmitError::Invalid(_))
-    ));
-    assert!(matches!(
-        r.bus.wire_train(&[0xFE], 0, 4),
-        Err(SubmitError::Invalid(_))
-    ));
-    assert!(matches!(
-        r.bus.wire_train(&[0xFE], 400, 0),
-        Err(SubmitError::Invalid(_))
-    ));
-    r.bus.wire_send(&[0x55]).unwrap();
-    assert_eq!(r.bus.wire_train(&[0xFE], 400, 4), Err(SubmitError::Busy));
-}
+        r.bus.on_tx_complete();
+        let log = r.wire.log();
+        assert_eq!(&log[3..], &[WireOp::Break, WireOp::Send(vec![0xCC])]);
+        assert!(r.bus.poll().is_none(), "second frame still in flight");
 
-#[test]
-fn wire_baud_applies_raw_and_completes_immediately() {
-    let mut r = rig();
-    // One BRR step off 1M -- the tracker's host-detune probe rate.
-    r.bus.wire_baud(993_103).unwrap();
-    assert_eq!(r.baud.applied_raw(), vec![993_103]);
-    let _ = expect_wire_done(&mut r);
+        r.bus.on_tx_complete();
+        assert_eq!(r.wire.log().last(), Some(&WireOp::Release));
+        let _ = expect_wire_done(&mut r);
+    }
 
-    // Off-catalog rates park the engine's timing state on the nearest
-    // catalog rate, and the change paces like any baud change.
-    let (id, inst) = ping(5);
-    r.bus
-        .submit(Command::Exchange {
-            id,
-            inst,
-            payload: &[],
-        })
-        .unwrap();
-    assert!(r.wire.log().is_empty(), "paced after the rate change");
-}
+    #[test]
+    fn wire_pulse_holds_low_until_its_deadline() {
+        let mut r = rig();
+        r.bus.wire_pulse_low(300).unwrap();
+        let log = r.wire.log();
+        assert_eq!(log, vec![WireOp::Claim, WireOp::HoldLow]);
 
-#[test]
-fn wire_baud_rejects_zero_and_busy() {
-    let mut r = rig();
-    assert!(matches!(r.bus.wire_baud(0), Err(SubmitError::Invalid(_))));
-    r.bus.wire_send(&[0x55]).unwrap();
-    assert_eq!(r.bus.wire_baud(1_000_000), Err(SubmitError::Busy));
+        r.clock.advance(299);
+        assert!(r.bus.poll().is_none(), "still held");
+        r.clock.advance(1);
+        let tick = expect_wire_done(&mut r);
+        assert_eq!(tick, 300);
+        assert_eq!(r.wire.log().last(), Some(&WireOp::Release));
+    }
+
+    #[test]
+    fn wire_ops_and_commands_reject_each_other_as_busy() {
+        let mut r = rig();
+        r.bus.wire_send(&[0x55]).unwrap();
+        let (id, inst) = ping(1);
+        assert_eq!(
+            r.bus.submit(Command::Exchange {
+                id,
+                inst,
+                payload: &[]
+            }),
+            Err(SubmitError::Busy),
+            "command rejected while a wire op owns the wire"
+        );
+        assert_eq!(r.bus.wire_send(&[0x55]), Err(SubmitError::Busy));
+        r.bus.on_tx_complete();
+        assert_eq!(
+            r.bus.wire_pulse_low(10),
+            Err(SubmitError::Busy),
+            "unconsumed WireDone still owns the engine"
+        );
+        let _ = expect_wire_done(&mut r);
+        r.bus.wire_pulse_low(10).unwrap();
+
+        // And the mirror: a command in flight rejects wire ops.
+        let mut r = rig();
+        r.bus
+            .submit(Command::Exchange {
+                id,
+                inst,
+                payload: &[],
+            })
+            .unwrap();
+        assert_eq!(r.bus.wire_send(&[0x55]), Err(SubmitError::Busy));
+    }
+
+    #[test]
+    fn malformed_wire_ops_reject_without_touching_the_wire() {
+        let mut r = rig();
+        assert!(matches!(r.bus.wire_send(&[]), Err(SubmitError::Invalid(_))));
+        assert!(matches!(
+            r.bus.wire_burst(&[]),
+            Err(SubmitError::Invalid(_))
+        ));
+        assert!(matches!(
+            r.bus.wire_burst(&[0]),
+            Err(SubmitError::Invalid(_)),
+        ));
+        assert!(matches!(
+            r.bus.wire_burst(&[3, 0xAA]),
+            Err(SubmitError::Invalid(_)),
+        ));
+        assert!(matches!(
+            r.bus.wire_pulse_low(0),
+            Err(SubmitError::Invalid(_))
+        ));
+        assert!(r.wire.log().is_empty(), "nothing reached the wire");
+    }
+
+    #[test]
+    fn wire_train_paces_breaks_on_the_grid_after_the_announce() {
+        let mut r = rig();
+        // Announce says 392, the wire paces 400: the lying-train injector the
+        // engine's own CAL path cannot express.
+        let mut p = [0u8; 8];
+        let n = build::mgmt_cal(&mut p, 392, 3).unwrap();
+        r.bus.wire_train(&p[..n], 400, 4).unwrap();
+        assert_eq!(r.wire.log()[..2], [WireOp::Claim, WireOp::Break]);
+        assert!(r.bus.poll().is_none(), "announce still in flight");
+
+        // The announce's TC anchors the grid.
+        r.bus.on_tx_complete();
+        let mut grid = Vec::new();
+        for _ in 0..4 {
+            grid.push(r.clock.armed().expect("train slot armed"));
+            r.bus.on_deadline();
+        }
+        assert_eq!(grid, vec![400, 800, 1200, 1600]);
+
+        let breaks = r
+            .wire
+            .log()
+            .iter()
+            .filter(|op| **op == WireOp::Break)
+            .count();
+        assert_eq!(breaks, 5, "announce break + 4 train breaks");
+        assert_eq!(*r.wire.log().last().unwrap(), WireOp::Release);
+        let _ = expect_wire_done(&mut r);
+    }
+
+    #[test]
+    fn wire_train_rejects_empty_and_busy() {
+        let mut r = rig();
+        assert!(matches!(
+            r.bus.wire_train(&[], 400, 4),
+            Err(SubmitError::Invalid(_))
+        ));
+        assert!(matches!(
+            r.bus.wire_train(&[0xFE], 0, 4),
+            Err(SubmitError::Invalid(_))
+        ));
+        assert!(matches!(
+            r.bus.wire_train(&[0xFE], 400, 0),
+            Err(SubmitError::Invalid(_))
+        ));
+        r.bus.wire_send(&[0x55]).unwrap();
+        assert_eq!(r.bus.wire_train(&[0xFE], 400, 4), Err(SubmitError::Busy));
+    }
+
+    #[test]
+    fn wire_baud_applies_raw_and_completes_immediately() {
+        let mut r = rig();
+        // One BRR step off 1M -- the tracker's host-detune probe rate.
+        r.bus.wire_baud(993_103).unwrap();
+        assert_eq!(r.baud.applied_raw(), vec![993_103]);
+        let _ = expect_wire_done(&mut r);
+
+        // Off-catalog rates park the engine's timing state on the nearest
+        // catalog rate, and the change paces like any baud change.
+        let (id, inst) = ping(5);
+        r.bus
+            .submit(Command::Exchange {
+                id,
+                inst,
+                payload: &[],
+            })
+            .unwrap();
+        assert!(r.wire.log().is_empty(), "paced after the rate change");
+    }
+
+    #[test]
+    fn wire_baud_rejects_zero_and_busy() {
+        let mut r = rig();
+        assert!(matches!(r.bus.wire_baud(0), Err(SubmitError::Invalid(_))));
+        r.bus.wire_send(&[0x55]).unwrap();
+        assert_eq!(r.bus.wire_baud(1_000_000), Err(SubmitError::Busy));
+    }
 }

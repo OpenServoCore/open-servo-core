@@ -14,7 +14,7 @@ use std::rc::Rc;
 use std::vec::Vec;
 
 use osc_host::engine::{HostBus, Terminal};
-use osc_host::traits::{Deadline, EdgeCapture, Providers, RxRing, TxWire, UsartBaud};
+use osc_host::traits::{Deadline, Providers, RxRing, TxWire, UsartBaud};
 use osc_protocol::wire::BaudRate;
 use osc_servo_drivers::bus::RESCUE_LOW_US;
 
@@ -31,7 +31,8 @@ pub enum HostEvent {
         payload: Vec<u8>,
     },
     Done(Terminal),
-    /// An instrument wire op closed (raw send / burst / pulse).
+    /// An instrument wire op closed (raw send / burst / pulse). Never
+    /// produced without `bench`.
     WireDone {
         tick: u32,
     },
@@ -192,6 +193,7 @@ impl UsartBaud for HostUsart {
         self.0.apply(baud);
     }
 
+    #[cfg(feature = "bench")]
     fn apply_raw(&mut self, bps: u32) {
         // The sim's waveform machinery is catalog-rate-quantized; an
         // off-catalog divisor models as the nearest rate (sub-percent
@@ -209,21 +211,28 @@ impl UsartBaud for HostUsart {
     }
 }
 
-/// Edge capture has no sim model (hardware-stamped pin transitions are
-/// silicon-only by nature): drains answer empty, honestly.
-pub struct HostEdges;
+/// The instrument side of the sim host.
+#[cfg(feature = "bench")]
+pub mod bench {
+    use osc_host::traits::EdgeCapture;
 
-impl EdgeCapture for HostEdges {
-    fn drain_falls(&mut self, _buf: &mut [u16]) -> usize {
-        0
+    /// Edge capture has no sim model (hardware-stamped pin transitions are
+    /// silicon-only by nature): drains answer empty, honestly.
+    #[derive(Default)]
+    pub struct HostEdges;
+
+    impl EdgeCapture for HostEdges {
+        fn drain_falls(&mut self, _buf: &mut [u16]) -> usize {
+            0
+        }
+        fn drain_rises(&mut self, _buf: &mut [u16]) -> usize {
+            0
+        }
+        fn overflow(&self) -> bool {
+            false
+        }
+        fn reset(&mut self) {}
     }
-    fn drain_rises(&mut self, _buf: &mut [u16]) -> usize {
-        0
-    }
-    fn overflow(&self) -> bool {
-        false
-    }
-    fn reset(&mut self) {}
 }
 
 /// Provider bundle for the sim-hosted engine.
@@ -234,7 +243,8 @@ impl Providers for SimHostProviders {
     type Deadline = HostDeadline;
     type Tx = HostWire;
     type Baud = HostUsart;
-    type Edges = HostEdges;
+    #[cfg(feature = "bench")]
+    type Edges = bench::HostEdges;
 }
 
 /// The attached host: the production engine plus the shared handles the
@@ -266,7 +276,6 @@ impl SimHost {
                 low_since: Cell::new(None),
             },
             HostUsart(baud.clone()),
-            HostEdges,
             rate,
         );
         Self {
