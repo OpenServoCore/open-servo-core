@@ -15,9 +15,9 @@ The render predates the 2A refresh, so the connector set on it is one revision b
 ## Overview
 
 - **MCU** - CH32V006F8P6 (RISC-V, 48 MHz, 62 KB flash, 8 KB RAM, TSSOP20). Every pin is used, including the reset pin.
-- **Motor driver** - TI DRV8212PDSGR (U3). H-bridge with IN1/IN2 PWM. 4 A peak, 1.76 A RMS continuous, VM 1.65-11 V.
+- **Motor driver** - TI DRV8212PDSGR (U3). H-bridge with IN1/IN2 PWM. 4 A peak, VM 1.65-11 V. Continuous current is thermally limited on this layout to about 1.4 A at room temperature; the exposed pad sits on the top-only `PGND` island and dumps heat through the prepreg into the ground plane, not into a copper plane of its own.
 - **Current sense** - 60 mOhm kelvin-connected low-side shunt (Rs1) feeding the MCU's on-chip op-amp in bare mode. An external four-resistor difference network sets G = 14.88 against a 0.52 V bias, so both current directions are visible.
-- **LDO** - HT7533-1 (U1) for the 3.3 V logic rail. The DRV8212P VCC (`+3V3_DRV`) hangs off the same `+3V3` as the MCU through Rh2, a fitted 0R that a ferrite can replace.
+- **LDO** - HT7533-1 (U1) for the 3.3 V logic rail. No thermal shutdown, and its 500 mW budget at 2S caps the `+3V3` load at about 55 mA, board included, so keep add-ons on the 3V3 pins light and mind probe slips on the 3V3 headers. The DRV8212P VCC (`+3V3_DRV`) hangs off the same `+3V3` as the MCU through Rh2, a fitted 0R that a ferrite can replace.
 - **Servo bus** - single-wire half-duplex UART on `PC0`, wired straight to the MCU through a 33 Ohm series resistor. No buffer, no TX_EN. Direction turnaround and RX timing are firmware's job.
 - **Telemetry** - no dedicated pin. Telemetry rides the `DATA` wire as bounded CRC'd bursts, so there is no second UART on the board.
 - **Qwiic** - SH 1.0 mm 4P I2C connector (J3) for an encoder module, either magnetic (I2C) or a quadrature encoder breakout.
@@ -187,13 +187,13 @@ This is a swap-and-measure board, so the populated values are a starting point a
 |---|---|---|
 |`Cc3` / `Cc4`|22 pF|Stack on the 22 pF comp caps for a slower, quieter corner (about 570 kHz).|
 |`Ck1`|100 pF|Differential filter across the kelvin pair, ahead of the gain resistors.|
-|`Co1`|100 pF|Load cap on the op-amp output. Layout insurance.|
+|`Co1`|22 pF|Load cap on the op-amp output. Layout insurance. `PD4` is both the op-amp output and the ADC pin, so the cap sits straight on the output; keep it under the 50 pF load limit.|
 |`Rd3`|300|Parallels Rd2, dropping `VREF` to 0.28 V for a near-unipolar range.|
 |`Rx2`|10K|`DATA` bus pull-up for single-device bench setups.|
 
 The shunt itself has no alternate footprint. Other values (22 to 150 mOhm, all 1206) swap onto Rs1's own pads, so the kelvin taps never move. A second shunt in parallel would split the current by pad and trace resistance and break the symmetric entry, so there is no pad for one.
 
-The DRV8212P's own OCP / TSD is the first protection layer. V006 has no comparator units, so the rest is firmware: a kernel I2t limit drops `DRV_EN` and latches a stall fault that only the user can clear, IWDG covers hung firmware, and any reset kills the bridge through the Rh1 pulldown.
+The DRV8212P's own OCP / TSD is the first protection layer. OCP trips at 4 A minimum, above the 3.1 A where the sense chain saturates, and a hobby motor stalls below it, so a hard stall lands on TSD first and the driver hiccups at about 1 Hz until firmware drops `DRV_EN`. OCP only fires on a shorted lead pair, in 4 us pulses the ADC will not see. V006 has no comparator units, so the rest is firmware: a kernel I2t limit drops `DRV_EN` and latches a stall fault that only the user can clear, IWDG covers hung firmware, and any reset kills the bridge through the Rh1 pulldown.
 
 ## Other sensing
 
