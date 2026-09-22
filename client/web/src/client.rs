@@ -9,6 +9,7 @@ use std::cell::{RefCell, RefMut};
 use std::time::Duration;
 
 use osc_client::descriptor as desc;
+use osc_client::pipe::Pipe;
 use osc_client::webusb::{UsbDevice, WebUsbPipe};
 use osc_client::{
     Client, DEFAULT_GUARD, Error, Id, Inst, Opcode, Outcome, ResultCode, common, mgmt,
@@ -16,6 +17,11 @@ use osc_client::{
 use osc_protocol::build;
 use tsify::{Ts, Tsify};
 use wasm_bindgen::prelude::*;
+
+#[cfg(feature = "fake")]
+use osc_client::fake::FakePipe;
+#[cfg(feature = "fake")]
+use osc_protocol::wire::UID_LEN;
 
 use crate::descriptor::Descriptor;
 use crate::types::{Alive, BaudRate, Found, Health, Identity, LinkInfo, Ping, Rails, TelBurst};
@@ -26,9 +32,35 @@ pub async fn request_device() -> Result<UsbDevice, JsError> {
     Ok(osc_client::webusb::request_device().await?)
 }
 
+/// The open transport. [`Client`] is generic over it, so a command differs
+/// only in which arm it lands in.
+enum Backend {
+    Usb(Client<WebUsbPipe>),
+    // Boxed: the sim rig behind it dwarfs a usb client, and every
+    // OscClient would otherwise carry that footprint.
+    #[cfg(feature = "fake")]
+    Fake(Box<Client<FakePipe>>),
+}
+
+/// Run one command body against whichever backend is open, so each command
+/// stays a single line and the two transports never drift apart.
+macro_rules! cmd {
+    ($self:expr, |$c:ident| $body:expr) => {{
+        let mut g = $self.backend()?;
+        match &mut *g {
+            Backend::Usb($c) => $body,
+            #[cfg(feature = "fake")]
+            Backend::Fake(b) => {
+                let $c = &mut **b;
+                $body
+            }
+        }
+    }};
+}
+
 #[wasm_bindgen]
 pub struct OscClient {
-    inner: RefCell<Option<Client<WebUsbPipe>>>,
+    inner: RefCell<Option<Backend>>,
     info: osc_client::session::LinkInfo,
 }
 
@@ -40,18 +72,22 @@ impl OscClient {
         let c = Client::connect(pipe).await?;
         Ok(OscClient {
             info: c.info(),
-            inner: RefCell::new(Some(c)),
+            inner: RefCell::new(Some(Backend::Usb(c))),
         })
     }
 
     pub async fn close(&self) -> Result<(), JsError> {
-        let c = self
+        let b = self
             .inner
             .try_borrow_mut()
             .map_err(|_| busy())?
             .take()
             .ok_or_else(closed)?;
-        Ok(c.into_pipe().close().await?)
+        match b {
+            Backend::Usb(c) => Ok(c.into_pipe().close().await?),
+            #[cfg(feature = "fake")]
+            Backend::Fake(_) => Ok(()),
+        }
     }
 
     #[wasm_bindgen(js_name = linkInfo)]
@@ -60,28 +96,24 @@ impl OscClient {
     }
 
     pub async fn rails(&self) -> Result<Ts<Rails>, JsError> {
-        let mut c = self.client()?;
-        Ok(Rails::from(c.rails().await?).into_ts()?)
+        Ok(Rails::from(cmd!(self, |c| c.rails().await?)).into_ts()?)
     }
 
     /// Drive both rails; resolves to the acked state.
     #[wasm_bindgen(js_name = setRails)]
     pub async fn set_rails(&self, v3v3: bool, v5: bool) -> Result<Ts<Rails>, JsError> {
-        let mut c = self.client()?;
-        Ok(Rails::from(c.set_rails(v3v3, v5).await?).into_ts()?)
+        Ok(Rails::from(cmd!(self, |c| c.set_rails(v3v3, v5).await?)).into_ts()?)
     }
 
     #[wasm_bindgen(js_name = busPresent)]
     pub async fn bus_present(&self) -> Result<bool, JsError> {
-        let mut c = self.client()?;
-        Ok(mgmt::bus_present(&mut c).await?)
+        Ok(cmd!(self, |c| mgmt::bus_present(c).await?))
     }
 
     /// Probe the rates for the bus; the host stays at the found rate.
     #[wasm_bindgen(js_name = findBusBaud)]
     pub async fn find_bus_baud(&self) -> Result<Option<Ts<BaudRate>>, JsError> {
-        let mut c = self.client()?;
-        match mgmt::find_bus_baud(&mut c).await? {
+        match cmd!(self, |c| mgmt::find_bus_baud(c).await?) {
             Some(r) => Ok(Some(BaudRate::from(r).into_ts()?)),
             None => Ok(None),
         }
@@ -91,59 +123,56 @@ impl OscClient {
     #[wasm_bindgen(js_name = hostBaud)]
     pub async fn host_baud(&self, rate: Ts<BaudRate>) -> Result<(), JsError> {
         let rate: BaudRate = rate.to_rust()?;
-        let mut c = self.client()?;
-        Ok(c.host_baud(rate.into()).await?)
+        cmd!(self, |c| c.host_baud(rate.into()).await?);
+        Ok(())
     }
 
     #[wasm_bindgen(unchecked_return_type = "Found[]")]
     pub async fn discover(&self) -> Result<JsValue, JsError> {
-        let mut c = self.client()?;
-        let found = mgmt::discover(&mut c).await?;
+        let found = cmd!(self, |c| mgmt::discover(c).await?);
         list(found.iter().map(Found::from))
     }
 
     pub async fn ping(&self, id: u8) -> Result<Ts<Ping>, JsError> {
-        let mut c = self.client()?;
-        Ok(Ping::from(c.ping(Id::new(id)).await?).into_ts()?)
+        Ok(Ping::from(cmd!(self, |c| c.ping(Id::new(id)).await?)).into_ts()?)
     }
 
     pub async fn identity(&self, id: u8) -> Result<Ts<Identity>, JsError> {
-        let mut c = self.client()?;
-        Ok(Identity::from(common::identity(&mut c, Id::new(id)).await?).into_ts()?)
+        let v = cmd!(self, |c| common::identity(c, Id::new(id)).await?);
+        Ok(Identity::from(v).into_ts()?)
     }
 
     pub async fn health(&self, id: u8) -> Result<Ts<Health>, JsError> {
-        let mut c = self.client()?;
-        Ok(Health::from(common::health(&mut c, Id::new(id)).await?).into_ts()?)
+        let v = cmd!(self, |c| common::health(c, Id::new(id)).await?);
+        Ok(Health::from(v).into_ts()?)
     }
 
     #[wasm_bindgen(js_name = clearCounters)]
     pub async fn clear_counters(&self, id: u8) -> Result<(), JsError> {
-        let mut c = self.client()?;
-        Ok(common::clear_counters(&mut c, Id::new(id)).await?)
+        cmd!(self, |c| common::clear_counters(c, Id::new(id)).await?);
+        Ok(())
     }
 
     pub async fn read(&self, id: u8, addr: u16, count: u16) -> Result<Vec<u8>, JsError> {
-        let mut c = self.client()?;
-        Ok(c.read(Id::new(id), addr, count).await?)
+        Ok(cmd!(self, |c| c.read(Id::new(id), addr, count).await?))
     }
 
     pub async fn write(&self, id: u8, addr: u16, data: &[u8]) -> Result<(), JsError> {
-        let mut c = self.client()?;
-        Ok(c.write(Id::new(id), addr, data).await?)
+        cmd!(self, |c| c.write(Id::new(id), addr, data).await?);
+        Ok(())
     }
 
     /// HOLD-staged write: applied by the next `commit`.
     #[wasm_bindgen(js_name = writeHold)]
     pub async fn write_hold(&self, id: u8, addr: u16, data: &[u8]) -> Result<(), JsError> {
-        let mut c = self.client()?;
-        Ok(c.write_hold(Id::new(id), addr, data).await?)
+        cmd!(self, |c| c.write_hold(Id::new(id), addr, data).await?);
+        Ok(())
     }
 
     /// Broadcast COMMIT: every held write applies in the same instant.
     pub async fn commit(&self) -> Result<(), JsError> {
-        let mut c = self.client()?;
-        Ok(c.commit().await?)
+        cmd!(self, |c| c.commit().await?);
+        Ok(())
     }
 
     /// Broadcast ASSIGN: the UID's owner takes `new_id`.
@@ -153,8 +182,8 @@ impl OscClient {
         #[wasm_bindgen(js_name = newId)] new_id: u8,
     ) -> Result<(), JsError> {
         let uid = crate::uid::parse(uid).map_err(|e| JsError::new(&e))?;
-        let mut c = self.client()?;
-        Ok(mgmt::assign(&mut c, &uid, Id::new(new_id)).await?)
+        cmd!(self, |c| mgmt::assign(c, &uid, Id::new(new_id)).await?);
+        Ok(())
     }
 
     /// Fleet baud migration, servo-first; resolves to the reunion roster.
@@ -166,8 +195,7 @@ impl OscClient {
     ) -> Result<JsValue, JsError> {
         let rate: BaudRate = rate.to_rust()?;
         let ids: Vec<Id> = ids.into_iter().map(Id::new).collect();
-        let mut c = self.client()?;
-        let roster = mgmt::set_baud(&mut c, &ids, rate.into()).await?;
+        let roster = cmd!(self, |c| mgmt::set_baud(c, &ids, rate.into()).await?);
         list(roster.iter().map(|&(id, alive)| Alive {
             id: id.as_byte(),
             alive,
@@ -175,18 +203,18 @@ impl OscClient {
     }
 
     pub async fn save(&self, id: u8) -> Result<(), JsError> {
-        let mut c = self.client()?;
-        Ok(mgmt::save(&mut c, Id::new(id)).await?)
+        cmd!(self, |c| mgmt::save(c, Id::new(id)).await?);
+        Ok(())
     }
 
     pub async fn reboot(&self, id: u8) -> Result<(), JsError> {
-        let mut c = self.client()?;
-        Ok(mgmt::reboot(&mut c, Id::new(id)).await?)
+        cmd!(self, |c| mgmt::reboot(c, Id::new(id)).await?);
+        Ok(())
     }
 
     pub async fn factory(&self, id: u8) -> Result<(), JsError> {
-        let mut c = self.client()?;
-        Ok(mgmt::factory(&mut c, Id::new(id)).await?)
+        cmd!(self, |c| mgmt::factory(c, Id::new(id)).await?);
+        Ok(())
     }
 
     /// One TEL burst (protocol sec 5.6): write `tel_mask`, then a
@@ -206,44 +234,109 @@ impl OscClient {
         let mask_b = desc::encode(mask_f, &desc::Value::Uint(mask as u64))?;
         let count_b = desc::encode(count_f, &desc::Value::Uint(count as u64))?;
         let id = Id::new(id);
-        let mut c = self.client()?;
-        c.write(id, mask_f.addr, &mask_b).await?;
-        let mut p = vec![0u8; count_b.len() + 4];
-        let n =
-            build::write(&mut p, count_f.addr, &count_b).ok_or(Error::Servo(ResultCode::Limit))?;
-        let inst = Inst::instruction(Opcode::Write, 0);
         let window = Duration::from_micros(window_us as u64);
-        // The pipe guard must outlast the whole burst (see exchange_stream).
-        c.set_guard(window + Duration::from_secs(1));
-        let reply = c.exchange_stream(id, inst, &p[..n], window).await;
-        c.set_guard(DEFAULT_GUARD);
-        let reply = reply?;
-        if let Some(ack) = &reply.ack
-            && ack.result != Some(ResultCode::Ok)
-        {
-            return Err(JsError::new(&format!(
-                "stream arm answered {:?}",
-                ack.result
-            )));
-        }
-        Ok(TelBurst {
-            frames: reply
-                .frames
-                .into_iter()
-                .map(|f| serde_bytes::ByteBuf::from(f.payload))
-                .collect(),
-            complete: matches!(reply.outcome, Outcome::Complete),
-            tick: reply.tick,
-            statuses: reply.statuses,
-            garble: reply.garble,
-            trailing: reply.trailing,
-        }
-        .into_ts()?)
+        let out = cmd!(self, |c| burst(
+            c,
+            id,
+            (mask_f.addr, &mask_b),
+            (count_f.addr, &count_b),
+            window
+        )
+        .await?);
+        Ok(out.into_ts()?)
     }
 }
 
+/// The simulated adapter: the production link server and servo stacks over
+/// the DES sim, in the wasm module. Sim time, so every window resolves at
+/// once and a run is deterministic.
+#[cfg(feature = "fake")]
+#[wasm_bindgen]
 impl OscClient {
-    fn client(&self) -> Result<RefMut<'_, Client<WebUsbPipe>>, JsError> {
+    /// A fleet of `ids` on a simulated bus, already HELLOed. No hardware,
+    /// no user gesture; each servo's UID is derived from its id.
+    pub async fn fake(
+        #[wasm_bindgen(unchecked_param_type = "number[]")] ids: Vec<u8>,
+    ) -> Result<OscClient, JsError> {
+        if ids.is_empty() {
+            return Err(JsError::new("fake: the fleet needs at least one id"));
+        }
+        for (i, id) in ids.iter().enumerate() {
+            if ids[..i].contains(id) {
+                return Err(JsError::new(&format!("fake: duplicate id {id}")));
+            }
+        }
+        // The rate a servo leaves the factory at, so the fleet answers
+        // before any migration.
+        let mut pipe = FakePipe::new(osc_client::BaudRate::B1000000, &ids);
+        for (i, &id) in ids.iter().enumerate() {
+            pipe.sim_mut().seed_servo_uid(i, uid(id));
+        }
+        let c = Client::connect(pipe).await?;
+        Ok(OscClient {
+            info: c.info(),
+            inner: RefCell::new(Some(Backend::Fake(Box::new(c)))),
+        })
+    }
+}
+
+/// splitmix64 over the id: the same roster always discovers the same UIDs,
+/// and they carry a real part's entropy rather than a run of zeros.
+#[cfg(feature = "fake")]
+fn uid(id: u8) -> [u8; UID_LEN] {
+    let mut s = 0x05C0_DE00_0000_0000 | id as u64;
+    let mut out = [0u8; UID_LEN];
+    for w in out.chunks_mut(8) {
+        s = s.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = s;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        w.copy_from_slice(&(z ^ (z >> 31)).to_le_bytes());
+    }
+    out
+}
+
+/// The burst choreography, written once for every backend.
+async fn burst<P: Pipe>(
+    c: &mut Client<P>,
+    id: Id,
+    mask: (u16, &[u8]),
+    count: (u16, &[u8]),
+    window: Duration,
+) -> Result<TelBurst, JsError> {
+    c.write(id, mask.0, mask.1).await?;
+    let mut p = vec![0u8; count.1.len() + 4];
+    let n = build::write(&mut p, count.0, count.1).ok_or(Error::Servo(ResultCode::Limit))?;
+    let inst = Inst::instruction(Opcode::Write, 0);
+    // The pipe guard must outlast the whole burst (see exchange_stream).
+    c.set_guard(window + Duration::from_secs(1));
+    let reply = c.exchange_stream(id, inst, &p[..n], window).await;
+    c.set_guard(DEFAULT_GUARD);
+    let reply = reply?;
+    if let Some(ack) = &reply.ack
+        && ack.result != Some(ResultCode::Ok)
+    {
+        return Err(JsError::new(&format!(
+            "stream arm answered {:?}",
+            ack.result
+        )));
+    }
+    Ok(TelBurst {
+        frames: reply
+            .frames
+            .into_iter()
+            .map(|f| serde_bytes::ByteBuf::from(f.payload))
+            .collect(),
+        complete: matches!(reply.outcome, Outcome::Complete),
+        tick: reply.tick,
+        statuses: reply.statuses,
+        garble: reply.garble,
+        trailing: reply.trailing,
+    })
+}
+
+impl OscClient {
+    fn backend(&self) -> Result<RefMut<'_, Backend>, JsError> {
         let g = self.inner.try_borrow_mut().map_err(|_| busy())?;
         RefMut::filter_map(g, Option::as_mut).map_err(|_| closed())
     }
