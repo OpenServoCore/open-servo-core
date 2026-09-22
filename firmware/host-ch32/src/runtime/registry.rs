@@ -10,6 +10,7 @@ use osc_host::traits::Providers;
 use osc_protocol::wire::BaudRate;
 
 use crate::providers::deadline::Deadline;
+#[cfg(feature = "bench")]
 use crate::providers::edges::Edges;
 use crate::providers::ring::RxRing;
 use crate::providers::tx_wire::TxWire;
@@ -24,6 +25,7 @@ impl Providers for LinkEProviders {
     type Deadline = Deadline;
     type Tx = TxWire;
     type Baud = UsartBaud;
+    #[cfg(feature = "bench")]
     type Edges = Edges;
 }
 
@@ -51,9 +53,7 @@ impl Drivers {
         // SAFETY: see fn doc.
         let bus = unsafe { &mut *BUS.0.get() };
         debug_assert!(bus.is_none(), "Drivers: bus already installed");
-        *bus = Some(HostBus::new(
-            RxRing, Deadline, TxWire, UsartBaud, Edges, boot_rate,
-        ));
+        *bus = Some(HostBus::new(RxRing, Deadline, TxWire, UsartBaud, boot_rate));
     }
 
     /// SAFETY: bringup installs the bus before any IRQ unmasks; runtime

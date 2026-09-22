@@ -142,6 +142,7 @@ impl traits::TxWire for FakeWire {
 #[derive(Clone, Default)]
 pub struct FakeBaud {
     applied: Rc<RefCell<Vec<BaudRate>>>,
+    #[cfg(feature = "bench")]
     raw: Rc<RefCell<Vec<u32>>>,
 }
 
@@ -150,6 +151,7 @@ impl FakeBaud {
         self.applied.borrow().clone()
     }
 
+    #[cfg(feature = "bench")]
     pub fn applied_raw(&self) -> Vec<u32> {
         self.raw.borrow().clone()
     }
@@ -160,76 +162,64 @@ impl traits::UsartBaud for FakeBaud {
         self.applied.borrow_mut().push(baud);
     }
 
+    #[cfg(feature = "bench")]
     fn apply_raw(&mut self, bps: u32) {
         self.raw.borrow_mut().push(bps);
     }
 }
 
-struct EdgeState {
+/// Preloadable edge-capture fake, reached through `HostBus::edges`: tests
+/// stage ticks, drains pop in order.
+#[cfg(feature = "bench")]
+#[derive(Default)]
+pub struct FakeEdges {
     falls: Vec<u16>,
     rises: Vec<u16>,
     overflow: bool,
     resets: u32,
 }
 
-/// Preloadable edge-capture fake: tests stage ticks, drains pop in order.
-#[derive(Clone, Default)]
-pub struct FakeEdges(Rc<RefCell<Option<EdgeState>>>);
-
+#[cfg(feature = "bench")]
 impl FakeEdges {
-    fn state(&self) -> core::cell::RefMut<'_, EdgeState> {
-        core::cell::RefMut::map(self.0.borrow_mut(), |s| {
-            s.get_or_insert_with(|| EdgeState {
-                falls: Vec::new(),
-                rises: Vec::new(),
-                overflow: false,
-                resets: 0,
-            })
-        })
+    pub fn stage(&mut self, falls: &[u16], rises: &[u16]) {
+        self.falls.extend_from_slice(falls);
+        self.rises.extend_from_slice(rises);
     }
 
-    pub fn stage(&self, falls: &[u16], rises: &[u16]) {
-        let mut s = self.state();
-        s.falls.extend_from_slice(falls);
-        s.rises.extend_from_slice(rises);
-    }
-
-    pub fn set_overflow(&self) {
-        self.state().overflow = true;
+    pub fn set_overflow(&mut self) {
+        self.overflow = true;
     }
 
     pub fn resets(&self) -> u32 {
-        self.state().resets
+        self.resets
     }
 }
 
+#[cfg(feature = "bench")]
 impl traits::EdgeCapture for FakeEdges {
     fn drain_falls(&mut self, buf: &mut [u16]) -> usize {
-        let mut s = self.state();
-        let n = buf.len().min(s.falls.len());
-        buf[..n].copy_from_slice(&s.falls[..n]);
-        s.falls.drain(..n);
+        let n = buf.len().min(self.falls.len());
+        buf[..n].copy_from_slice(&self.falls[..n]);
+        self.falls.drain(..n);
         n
     }
 
     fn drain_rises(&mut self, buf: &mut [u16]) -> usize {
-        let mut s = self.state();
-        let n = buf.len().min(s.rises.len());
-        buf[..n].copy_from_slice(&s.rises[..n]);
-        s.rises.drain(..n);
+        let n = buf.len().min(self.rises.len());
+        buf[..n].copy_from_slice(&self.rises[..n]);
+        self.rises.drain(..n);
         n
     }
 
     fn overflow(&self) -> bool {
-        self.state().overflow
+        self.overflow
     }
 
     fn reset(&mut self) {
-        let mut s = self.state();
-        s.falls.clear();
-        s.rises.clear();
-        s.overflow = false;
-        s.resets += 1;
+        self.falls.clear();
+        self.rises.clear();
+        self.overflow = false;
+        self.resets += 1;
     }
 }
 
@@ -239,6 +229,7 @@ impl traits::Providers for TestProviders {
     type Deadline = FakeDeadline;
     type Tx = FakeWire;
     type Baud = FakeBaud;
+    #[cfg(feature = "bench")]
     type Edges = FakeEdges;
 }
 

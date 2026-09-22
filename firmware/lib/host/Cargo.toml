@@ -4,5 +4,10 @@ version = "0.0.0"
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Raw-wire instrument surface (wireop, EdgeCapture, apply_raw, the link
+# 0x6x handlers): tools/bench only. Off = the basic profile a C port targets.
+bench = []
+
 [dependencies]
 osc-protocol = { workspace = true, features = ["software-crc"] }

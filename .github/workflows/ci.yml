@@ -43,6 +43,10 @@ jobs:
         run: cargo check -p osc-servo-drivers --features mocks
       - name: cargo check --features bench
         run: cargo check -p osc-servo-drivers --features bench
+      - name: cargo test osc-host --features bench
+        run: cargo test -p osc-host --features bench
+      - name: cargo check osc-integration --features bench
+        run: cargo check -p osc-integration --features bench
 
   ch32-build-test:
     name: build + test (firmware/servo-ch32)
@@ -120,6 +124,8 @@ jobs:
         run: cargo build
       - name: cargo test
         run: cargo test --lib
+      - name: cargo check --no-default-features (basic profile)
+        run: cargo check --no-default-features
 
   osc-adapter-wchlinke-cross-build:
     name: cross-build (boards/osc-adapter-wchlinke)

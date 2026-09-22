@@ -17,6 +17,7 @@ impl osc_host::traits::UsartBaud for UsartBaud {
         usart::set_baud(USART3, brr_for(baud));
     }
 
+    #[cfg(feature = "bench")]
     fn apply_raw(&mut self, bps: u32) {
         // Rounded divisor, floored at the USARTDIV >= 1 silicon minimum
         // (BRR >= 16 at 16x oversampling).

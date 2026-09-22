@@ -11,7 +11,9 @@ description = "Host-side client for the osc-native bus: transport-generic sessio
 default = ["nusb"]
 nusb = ["dep:nusb"]
 # In-process adapter over the DES sim: full-stack tests with no hardware.
-fake-adapter = ["dep:osc-integration"]
+# The full-stack suite drives the wire instrument, so the sim's engine
+# carries the bench surface.
+fake-adapter = ["dep:osc-integration", "osc-host/bench", "osc-integration/bench"]
 
 [dependencies]
 futures-lite  = "2"

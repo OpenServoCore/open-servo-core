@@ -6,9 +6,11 @@
 use osc_protocol::wire::{BaudRate, Id, Inst};
 
 use crate::engine::{Command, Event, HostBus, SubmitError};
-use crate::traits::{Deadline, EdgeCapture, Providers};
+#[cfg(feature = "bench")]
+use crate::traits::EdgeCapture;
+use crate::traits::{Deadline, Providers};
 
-use super::record::{self, DRAIN_MAX, SEQ_NONE};
+use super::record::{self, SEQ_NONE};
 
 /// Where outbound records go (USB IN endpoint queue, a test log, a DES
 /// pipe). Called once per complete record.
@@ -46,10 +48,9 @@ struct AdapterState {
 pub struct LinkServer {
     rx: [u8; RX_CAP],
     rx_len: usize,
-    /// The seq owning the engine's outstanding command.
+    /// The seq owning the engine's outstanding command or wire op: one
+    /// wire owner at a time (the engine's Busy rule), so one slot serves.
     active: Option<u16>,
-    /// The seq owning the outstanding instrument wire op.
-    wire_active: Option<u16>,
     adapter: AdapterState,
     out: [u8; OUT_CAP],
 }
@@ -66,7 +67,6 @@ impl LinkServer {
             rx: [0; RX_CAP],
             rx_len: 0,
             active: None,
-            wire_active: None,
             adapter: AdapterState {
                 req: None,
                 rails: record::RAILS_BOOT_STATE,
@@ -137,8 +137,9 @@ impl LinkServer {
                     let seq = self.active.take().unwrap_or(SEQ_NONE);
                     sink.record(record::terminal(&mut self.out, seq, &t));
                 }
+                #[cfg(feature = "bench")]
                 Some(Event::WireDone { tick }) => {
-                    let seq = self.wire_active.take().unwrap_or(SEQ_NONE);
+                    let seq = self.active.take().unwrap_or(SEQ_NONE);
                     sink.record(record::wire_done(&mut self.out, seq, tick));
                 }
                 None => return,
@@ -164,7 +165,6 @@ impl LinkServer {
             }
             handle(
                 &mut self.active,
-                &mut self.wire_active,
                 &mut self.adapter,
                 &self.rx[2..2 + len],
                 bus,
@@ -180,7 +180,6 @@ impl LinkServer {
 /// One complete record (type + body).
 fn handle<P: Providers>(
     active: &mut Option<u16>,
-    wire_active: &mut Option<u16>,
     adapter: &mut AdapterState,
     rec: &[u8],
     bus: &mut HostBus<P>,
@@ -206,6 +205,7 @@ fn handle<P: Providers>(
             }
             sink.record(record::rails_ack(out, adapter.rails));
         }
+        #[cfg(feature = "bench")]
         record::REC_WIRE_SEND
         | record::REC_WIRE_BURST
         | record::REC_WIRE_PULSE
@@ -235,7 +235,7 @@ fn handle<P: Providers>(
                 }
             };
             match res {
-                Ok(()) => *wire_active = Some(seq),
+                Ok(()) => *active = Some(seq),
                 Err(SubmitError::Busy) => {
                     sink.record(record::rejected(out, seq, record::REASON_BUSY));
                 }
@@ -244,10 +244,11 @@ fn handle<P: Providers>(
                 }
             }
         }
+        #[cfg(feature = "bench")]
         record::REC_EDGE_DRAIN if rec.len() >= 2 => {
-            let max = (rec[1] as usize).min(DRAIN_MAX);
-            let mut falls = [0u16; DRAIN_MAX];
-            let mut rises = [0u16; DRAIN_MAX];
+            let max = (rec[1] as usize).min(record::DRAIN_MAX);
+            let mut falls = [0u16; record::DRAIN_MAX];
+            let mut rises = [0u16; record::DRAIN_MAX];
             // Rises snapshot FIRST: an edge pair landing between the two
             // ring reads then tears as fall-now/rise-later, and the client
             // defers the surplus falls until their rises drain (the wire
@@ -265,6 +266,7 @@ fn handle<P: Providers>(
                 &rises[..rn],
             ));
         }
+        #[cfg(feature = "bench")]
         record::REC_CAPTURE_RESET => {
             bus.edges().reset();
             sink.record(record::capture_ack(out));
@@ -330,7 +332,7 @@ mod tests {
     use super::super::record::*;
     use super::*;
     use crate::testutil::{
-        FakeBaud, FakeDeadline, FakeEdges, FakeRing, FakeWire, TestProviders, WireOp, sealed_status,
+        FakeBaud, FakeDeadline, FakeRing, FakeWire, TestProviders, WireOp, sealed_status,
     };
 
     #[derive(Default)]
@@ -348,8 +350,8 @@ mod tests {
         ring: FakeRing,
         clock: FakeDeadline,
         wire: FakeWire,
+        #[cfg(feature = "bench")]
         baud: FakeBaud,
-        edges: FakeEdges,
         sink: Sink,
     }
 
@@ -358,13 +360,11 @@ mod tests {
         let clock = FakeDeadline::new();
         let wire = FakeWire::default();
         let baud = FakeBaud::default();
-        let edges = FakeEdges::default();
         let bus = HostBus::new(
             ring.clone(),
             clock.clone(),
             wire.clone(),
             baud.clone(),
-            edges.clone(),
             BaudRate::B1000000,
         );
         Rig {
@@ -373,8 +373,8 @@ mod tests {
             ring,
             clock,
             wire,
+            #[cfg(feature = "bench")]
             baud,
-            edges,
             sink: Sink::default(),
         }
     }
@@ -666,194 +666,199 @@ mod tests {
         assert_eq!(term[6], 0, "missing slot");
     }
 
-    #[test]
-    fn wire_send_round_trips_on_its_seq() {
-        let mut r = rig();
-        // seq 0x0BB8, raw bytes DE AD -- no Shape validation applies.
-        r.server.on_pipe(
-            &rec(&[REC_WIRE_SEND, 0xB8, 0x0B, 0xDE, 0xAD]),
-            &mut r.bus,
-            &mut r.sink,
-        );
-        assert!(r.sink.0.is_empty(), "accepted: no reply until TC");
-        assert_eq!(
-            r.wire.log(),
-            vec![WireOp::Claim, WireOp::Break, WireOp::Send(vec![0xDE, 0xAD])]
-        );
+    #[cfg(feature = "bench")]
+    mod wire {
+        use super::*;
 
-        r.clock.advance(55);
-        r.bus.on_tx_complete();
-        r.server.pump(&mut r.bus, &mut r.sink);
-        let done = r.sink.0.last().unwrap();
-        assert_eq!(done[2], REC_WIRE_DONE);
-        assert_eq!(u16::from_le_bytes([done[3], done[4]]), 0x0BB8);
-        assert_eq!(u32::from_le_bytes([done[5], done[6], done[7], done[8]]), 55);
+        #[test]
+        fn wire_send_round_trips_on_its_seq() {
+            let mut r = rig();
+            // seq 0x0BB8, raw bytes DE AD -- no Shape validation applies.
+            r.server.on_pipe(
+                &rec(&[REC_WIRE_SEND, 0xB8, 0x0B, 0xDE, 0xAD]),
+                &mut r.bus,
+                &mut r.sink,
+            );
+            assert!(r.sink.0.is_empty(), "accepted: no reply until TC");
+            assert_eq!(
+                r.wire.log(),
+                vec![WireOp::Claim, WireOp::Break, WireOp::Send(vec![0xDE, 0xAD])]
+            );
 
-        // Retired: the next wire op is accepted.
-        r.server.on_pipe(
-            &rec(&[REC_WIRE_PULSE, 2, 0, 100, 0]),
-            &mut r.bus,
-            &mut r.sink,
-        );
-        assert_eq!(r.sink.0.len(), 1, "no rejection");
-    }
+            r.clock.advance(55);
+            r.bus.on_tx_complete();
+            r.server.pump(&mut r.bus, &mut r.sink);
+            let done = r.sink.0.last().unwrap();
+            assert_eq!(done[2], REC_WIRE_DONE);
+            assert_eq!(u16::from_le_bytes([done[3], done[4]]), 0x0BB8);
+            assert_eq!(u32::from_le_bytes([done[5], done[6], done[7], done[8]]), 55);
 
-    #[test]
-    fn wire_ops_and_submits_reject_each_other_busy() {
-        let mut r = rig();
-        r.server
-            .on_pipe(&submit_ping(1, 5), &mut r.bus, &mut r.sink);
-        r.server
-            .on_pipe(&rec(&[REC_WIRE_SEND, 2, 0, 0x55]), &mut r.bus, &mut r.sink);
-        let rej = r.sink.0.last().unwrap();
-        assert_eq!(rej[2], REC_REJECTED);
-        assert_eq!(u16::from_le_bytes([rej[3], rej[4]]), 2);
-        assert_eq!(rej[5], REASON_BUSY);
-
-        let mut r = rig();
-        r.server
-            .on_pipe(&rec(&[REC_WIRE_SEND, 2, 0, 0x55]), &mut r.bus, &mut r.sink);
-        r.server
-            .on_pipe(&submit_ping(1, 5), &mut r.bus, &mut r.sink);
-        let rej = r.sink.0.last().unwrap();
-        assert_eq!(rej[2], REC_REJECTED);
-        assert_eq!(rej[5], REASON_BUSY);
-    }
-
-    #[test]
-    fn malformed_wire_ops_reject_on_their_seq() {
-        let mut r = rig();
-        // Empty send body: a bare break never raises TC.
-        r.server
-            .on_pipe(&rec(&[REC_WIRE_SEND, 7, 0]), &mut r.bus, &mut r.sink);
-        let rej = r.sink.0.last().unwrap();
-        assert_eq!(rej[2], REC_REJECTED);
-        assert_eq!(rej[5], REASON_MALFORMED);
-
-        // Burst stream with a truncated frame.
-        r.server.on_pipe(
-            &rec(&[REC_WIRE_BURST, 8, 0, 5, 0xAA]),
-            &mut r.bus,
-            &mut r.sink,
-        );
-        assert_eq!(r.sink.0.last().unwrap()[5], REASON_MALFORMED);
-
-        // Pulse body must be exactly two bytes.
-        r.server
-            .on_pipe(&rec(&[REC_WIRE_PULSE, 9, 0, 10]), &mut r.bus, &mut r.sink);
-        assert_eq!(r.sink.0.last().unwrap()[5], REASON_MALFORMED);
-        assert!(r.wire.log().is_empty(), "nothing reached the wire");
-    }
-
-    #[test]
-    fn edge_drain_ships_staged_captures_and_the_drain_anchor() {
-        let mut r = rig();
-        r.edges.stage(&[100, 300, 65500], &[110, 310]);
-        r.clock.advance(0x0001_0032);
-        r.server
-            .on_pipe(&rec(&[REC_EDGE_DRAIN, 64]), &mut r.bus, &mut r.sink);
-        let e = r.sink.0.last().unwrap();
-        assert_eq!(e[2], REC_EDGES);
-        assert_eq!(e[3], 0, "no overflow");
-        assert_eq!(
-            u32::from_le_bytes([e[4], e[5], e[6], e[7]]),
-            0x0001_0032,
-            "now = the anchor floor"
-        );
-        assert_eq!(e[8], 3, "falls");
-        assert_eq!(e[9], 2, "rises");
-        let t = |i: usize| u16::from_le_bytes([e[10 + 2 * i], e[11 + 2 * i]]);
-        assert_eq!([t(0), t(1), t(2)], [100, 300, 65500]);
-        assert_eq!([t(3), t(4)], [110, 310]);
-
-        // Drained: a second drain answers empty.
-        r.server
-            .on_pipe(&rec(&[REC_EDGE_DRAIN, 64]), &mut r.bus, &mut r.sink);
-        let e = r.sink.0.last().unwrap();
-        assert_eq!((e[8], e[9]), (0, 0));
-    }
-
-    #[test]
-    fn edge_drain_clamps_and_reports_sticky_overflow() {
-        let mut r = rig();
-        let many: Vec<u16> = (0..100).collect();
-        r.edges.stage(&many, &[]);
-        r.edges.set_overflow();
-        r.server
-            .on_pipe(&rec(&[REC_EDGE_DRAIN, 255]), &mut r.bus, &mut r.sink);
-        let e = r.sink.0.last().unwrap();
-        assert_eq!(e[8] as usize, DRAIN_MAX, "clamped per ring");
-        assert_eq!(e[3], 1, "overflow flagged");
-
-        // Reset clears captures + the flag.
-        r.server
-            .on_pipe(&rec(&[REC_CAPTURE_RESET]), &mut r.bus, &mut r.sink);
-        assert_eq!(r.sink.0.last().unwrap()[2], REC_CAPTURE_ACK);
-        assert_eq!(r.edges.resets(), 1);
-        r.server
-            .on_pipe(&rec(&[REC_EDGE_DRAIN, 64]), &mut r.bus, &mut r.sink);
-        let e = r.sink.0.last().unwrap();
-        assert_eq!((e[3], e[8], e[9]), (0, 0, 0));
-    }
-
-    #[test]
-    fn wire_train_dispatches_gap_breaks_and_announce() {
-        let mut r = rig();
-        // seq 7, gap 400 us, 4 breaks, announce FE 05 70.
-        r.server.on_pipe(
-            &rec(&[REC_WIRE_TRAIN, 7, 0, 0x90, 0x01, 4, 0xFE, 0x05, 0x70]),
-            &mut r.bus,
-            &mut r.sink,
-        );
-        assert!(
-            r.sink.0.is_empty(),
-            "accepted: no reply until the train ends"
-        );
-        assert_eq!(
-            r.wire.log(),
-            vec![
-                WireOp::Claim,
-                WireOp::Break,
-                WireOp::Send(vec![0xFE, 0x05, 0x70])
-            ]
-        );
-        r.bus.on_tx_complete();
-        for _ in 0..4 {
-            r.bus.on_deadline();
+            // Retired: the next wire op is accepted.
+            r.server.on_pipe(
+                &rec(&[REC_WIRE_PULSE, 2, 0, 100, 0]),
+                &mut r.bus,
+                &mut r.sink,
+            );
+            assert_eq!(r.sink.0.len(), 1, "no rejection");
         }
-        r.server.pump(&mut r.bus, &mut r.sink);
-        let done = r.sink.0.last().unwrap();
-        assert_eq!(done[2], REC_WIRE_DONE);
-        assert_eq!(u16::from_le_bytes([done[3], done[4]]), 7);
-        // Short body (no announce byte) is malformed on its seq.
-        r.server.on_pipe(
-            &rec(&[REC_WIRE_TRAIN, 8, 0, 0x90, 0x01, 4]),
-            &mut r.bus,
-            &mut r.sink,
-        );
-        let rej = r.sink.0.last().unwrap();
-        assert_eq!(rej[2], REC_REJECTED);
-        assert_eq!(rej[5], REASON_MALFORMED);
-    }
 
-    #[test]
-    fn wire_baud_dispatches_raw_bps() {
-        let mut r = rig();
-        r.server.on_pipe(
-            &rec(&[REC_WIRE_BAUD, 9, 0, 0xAF, 0x26, 0x0F, 0x00]),
-            &mut r.bus,
-            &mut r.sink,
-        );
-        r.server.pump(&mut r.bus, &mut r.sink);
-        let done = r.sink.0.last().unwrap();
-        assert_eq!(done[2], REC_WIRE_DONE);
-        assert_eq!(u16::from_le_bytes([done[3], done[4]]), 9);
-        assert_eq!(r.baud.applied_raw(), vec![0x000F_26AF]);
-        // Wrong body width rejects.
-        r.server
-            .on_pipe(&rec(&[REC_WIRE_BAUD, 10, 0, 1, 2]), &mut r.bus, &mut r.sink);
-        let rej = r.sink.0.last().unwrap();
-        assert_eq!(rej[2], REC_REJECTED);
-        assert_eq!(rej[5], REASON_MALFORMED);
+        #[test]
+        fn wire_ops_and_submits_reject_each_other_busy() {
+            let mut r = rig();
+            r.server
+                .on_pipe(&submit_ping(1, 5), &mut r.bus, &mut r.sink);
+            r.server
+                .on_pipe(&rec(&[REC_WIRE_SEND, 2, 0, 0x55]), &mut r.bus, &mut r.sink);
+            let rej = r.sink.0.last().unwrap();
+            assert_eq!(rej[2], REC_REJECTED);
+            assert_eq!(u16::from_le_bytes([rej[3], rej[4]]), 2);
+            assert_eq!(rej[5], REASON_BUSY);
+
+            let mut r = rig();
+            r.server
+                .on_pipe(&rec(&[REC_WIRE_SEND, 2, 0, 0x55]), &mut r.bus, &mut r.sink);
+            r.server
+                .on_pipe(&submit_ping(1, 5), &mut r.bus, &mut r.sink);
+            let rej = r.sink.0.last().unwrap();
+            assert_eq!(rej[2], REC_REJECTED);
+            assert_eq!(rej[5], REASON_BUSY);
+        }
+
+        #[test]
+        fn malformed_wire_ops_reject_on_their_seq() {
+            let mut r = rig();
+            // Empty send body: a bare break never raises TC.
+            r.server
+                .on_pipe(&rec(&[REC_WIRE_SEND, 7, 0]), &mut r.bus, &mut r.sink);
+            let rej = r.sink.0.last().unwrap();
+            assert_eq!(rej[2], REC_REJECTED);
+            assert_eq!(rej[5], REASON_MALFORMED);
+
+            // Burst stream with a truncated frame.
+            r.server.on_pipe(
+                &rec(&[REC_WIRE_BURST, 8, 0, 5, 0xAA]),
+                &mut r.bus,
+                &mut r.sink,
+            );
+            assert_eq!(r.sink.0.last().unwrap()[5], REASON_MALFORMED);
+
+            // Pulse body must be exactly two bytes.
+            r.server
+                .on_pipe(&rec(&[REC_WIRE_PULSE, 9, 0, 10]), &mut r.bus, &mut r.sink);
+            assert_eq!(r.sink.0.last().unwrap()[5], REASON_MALFORMED);
+            assert!(r.wire.log().is_empty(), "nothing reached the wire");
+        }
+
+        #[test]
+        fn edge_drain_ships_staged_captures_and_the_drain_anchor() {
+            let mut r = rig();
+            r.bus.edges().stage(&[100, 300, 65500], &[110, 310]);
+            r.clock.advance(0x0001_0032);
+            r.server
+                .on_pipe(&rec(&[REC_EDGE_DRAIN, 64]), &mut r.bus, &mut r.sink);
+            let e = r.sink.0.last().unwrap();
+            assert_eq!(e[2], REC_EDGES);
+            assert_eq!(e[3], 0, "no overflow");
+            assert_eq!(
+                u32::from_le_bytes([e[4], e[5], e[6], e[7]]),
+                0x0001_0032,
+                "now = the anchor floor"
+            );
+            assert_eq!(e[8], 3, "falls");
+            assert_eq!(e[9], 2, "rises");
+            let t = |i: usize| u16::from_le_bytes([e[10 + 2 * i], e[11 + 2 * i]]);
+            assert_eq!([t(0), t(1), t(2)], [100, 300, 65500]);
+            assert_eq!([t(3), t(4)], [110, 310]);
+
+            // Drained: a second drain answers empty.
+            r.server
+                .on_pipe(&rec(&[REC_EDGE_DRAIN, 64]), &mut r.bus, &mut r.sink);
+            let e = r.sink.0.last().unwrap();
+            assert_eq!((e[8], e[9]), (0, 0));
+        }
+
+        #[test]
+        fn edge_drain_clamps_and_reports_sticky_overflow() {
+            let mut r = rig();
+            let many: Vec<u16> = (0..100).collect();
+            r.bus.edges().stage(&many, &[]);
+            r.bus.edges().set_overflow();
+            r.server
+                .on_pipe(&rec(&[REC_EDGE_DRAIN, 255]), &mut r.bus, &mut r.sink);
+            let e = r.sink.0.last().unwrap();
+            assert_eq!(e[8] as usize, DRAIN_MAX, "clamped per ring");
+            assert_eq!(e[3], 1, "overflow flagged");
+
+            // Reset clears captures + the flag.
+            r.server
+                .on_pipe(&rec(&[REC_CAPTURE_RESET]), &mut r.bus, &mut r.sink);
+            assert_eq!(r.sink.0.last().unwrap()[2], REC_CAPTURE_ACK);
+            assert_eq!(r.bus.edges().resets(), 1);
+            r.server
+                .on_pipe(&rec(&[REC_EDGE_DRAIN, 64]), &mut r.bus, &mut r.sink);
+            let e = r.sink.0.last().unwrap();
+            assert_eq!((e[3], e[8], e[9]), (0, 0, 0));
+        }
+
+        #[test]
+        fn wire_train_dispatches_gap_breaks_and_announce() {
+            let mut r = rig();
+            // seq 7, gap 400 us, 4 breaks, announce FE 05 70.
+            r.server.on_pipe(
+                &rec(&[REC_WIRE_TRAIN, 7, 0, 0x90, 0x01, 4, 0xFE, 0x05, 0x70]),
+                &mut r.bus,
+                &mut r.sink,
+            );
+            assert!(
+                r.sink.0.is_empty(),
+                "accepted: no reply until the train ends"
+            );
+            assert_eq!(
+                r.wire.log(),
+                vec![
+                    WireOp::Claim,
+                    WireOp::Break,
+                    WireOp::Send(vec![0xFE, 0x05, 0x70])
+                ]
+            );
+            r.bus.on_tx_complete();
+            for _ in 0..4 {
+                r.bus.on_deadline();
+            }
+            r.server.pump(&mut r.bus, &mut r.sink);
+            let done = r.sink.0.last().unwrap();
+            assert_eq!(done[2], REC_WIRE_DONE);
+            assert_eq!(u16::from_le_bytes([done[3], done[4]]), 7);
+            // Short body (no announce byte) is malformed on its seq.
+            r.server.on_pipe(
+                &rec(&[REC_WIRE_TRAIN, 8, 0, 0x90, 0x01, 4]),
+                &mut r.bus,
+                &mut r.sink,
+            );
+            let rej = r.sink.0.last().unwrap();
+            assert_eq!(rej[2], REC_REJECTED);
+            assert_eq!(rej[5], REASON_MALFORMED);
+        }
+
+        #[test]
+        fn wire_baud_dispatches_raw_bps() {
+            let mut r = rig();
+            r.server.on_pipe(
+                &rec(&[REC_WIRE_BAUD, 9, 0, 0xAF, 0x26, 0x0F, 0x00]),
+                &mut r.bus,
+                &mut r.sink,
+            );
+            r.server.pump(&mut r.bus, &mut r.sink);
+            let done = r.sink.0.last().unwrap();
+            assert_eq!(done[2], REC_WIRE_DONE);
+            assert_eq!(u16::from_le_bytes([done[3], done[4]]), 9);
+            assert_eq!(r.baud.applied_raw(), vec![0x000F_26AF]);
+            // Wrong body width rejects.
+            r.server
+                .on_pipe(&rec(&[REC_WIRE_BAUD, 10, 0, 1, 2]), &mut r.bus, &mut r.sink);
+            let rej = r.sink.0.last().unwrap();
+            assert_eq!(rej[2], REC_REJECTED);
+            assert_eq!(rej[5], REASON_MALFORMED);
+        }
     }
 }

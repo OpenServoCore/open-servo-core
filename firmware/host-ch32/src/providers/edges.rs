@@ -52,6 +52,7 @@ static STATE: SyncUnsafeCell<State> = SyncUnsafeCell::new(State {
 });
 
 /// Production binding to the TIM2 capture rings.
+#[derive(Default)]
 pub struct Edges;
 
 impl Edges {

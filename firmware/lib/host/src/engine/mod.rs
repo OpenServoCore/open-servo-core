@@ -21,7 +21,9 @@ use osc_protocol::wire::{self, BaudRate, Id, Inst};
 
 use crate::traits::{Deadline, Providers, RxRing, TxWire, UsartBaud, tick_reached};
 
+#[cfg(feature = "bench")]
 pub use wireop::WIRE_CAP;
+#[cfg(feature = "bench")]
 mod wireop;
 use framer::{Framer, Step};
 use shape::{InvalidReason, Replies, Shape};
@@ -124,6 +126,7 @@ pub enum Event<'a> {
     Done(Terminal),
     /// An instrument wire op (raw send / burst / pulse) finished; `tick` is
     /// the wire-release moment.
+    #[cfg(feature = "bench")]
     WireDone {
         tick: u32,
     },
@@ -144,13 +147,16 @@ enum State {
     RescueHold,
     Awaiting,
     /// Instrument raw TX in flight (wireop); `on_tx_complete` advances it.
+    #[cfg(feature = "bench")]
     WireTx,
     /// Instrument low pulse held until the deadline.
+    #[cfg(feature = "bench")]
     WirePulse,
     /// Instrument break train: `left` bare breaks on the `gap`-tick grid.
     /// The Training twin whose gap is caller-chosen instead of parsed from
     /// the announce -- a lying announce is the trim suite's clock-offset
     /// injector.
+    #[cfg(feature = "bench")]
     WireTrain {
         left: u8,
         gap: u32,
@@ -192,9 +198,8 @@ pub struct HostBus<P: Providers> {
     last_cursor: u16,
     evidence: WireEvidence,
     pending_done: Option<Terminal>,
-    edges: P::Edges,
-    wire_job: wireop::WireJob,
-    pending_wire_done: Option<u32>,
+    #[cfg(feature = "bench")]
+    wire: wireop::Wire<P>,
 }
 
 impl<P: Providers> HostBus<P> {
@@ -204,7 +209,6 @@ impl<P: Providers> HostBus<P> {
         deadline: P::Deadline,
         tx: P::Tx,
         baud: P::Baud,
-        edges: P::Edges,
         rate: BaudRate,
     ) -> Self {
         Self {
@@ -225,27 +229,22 @@ impl<P: Providers> HostBus<P> {
             last_cursor: 0,
             evidence: WireEvidence::default(),
             pending_done: None,
-            edges,
-            wire_job: wireop::WireJob::new(),
-            pending_wire_done: None,
+            #[cfg(feature = "bench")]
+            wire: wireop::Wire::new(),
         }
     }
 
-    /// The instrument's capture organ, link-layer served (edge drains).
-    pub fn edges(&mut self) -> &mut P::Edges {
-        &mut self.edges
-    }
-
-    /// Current engine tick -- the drain reply's unwrap reference.
-    pub fn now(&self) -> u32 {
-        self.deadline.now()
+    /// One outstanding op ever, an unconsumed terminal included.
+    fn busy(&self) -> bool {
+        #[cfg(feature = "bench")]
+        if self.wire.pending_done.is_some() {
+            return true;
+        }
+        !matches!(self.state, State::Idle) || self.pending_done.is_some()
     }
 
     pub fn submit(&mut self, cmd: Command<'_>) -> Result<(), SubmitError> {
-        if !matches!(self.state, State::Idle)
-            || self.pending_done.is_some()
-            || self.pending_wire_done.is_some()
-        {
+        if self.busy() {
             return Err(SubmitError::Busy);
         }
         self.evidence = WireEvidence::default();
@@ -317,6 +316,7 @@ impl<P: Providers> HostBus<P> {
     /// Chip TC ISR: the armed frame span drained (never fired for bare
     /// breaks -- see [`TxWire::send_break`]).
     pub fn on_tx_complete(&mut self) {
+        #[cfg(feature = "bench")]
         if matches!(self.state, State::WireTx) {
             self.wire_advance();
             return;
@@ -376,6 +376,7 @@ impl<P: Providers> HostBus<P> {
                     self.deadline.set(self.deadline_at);
                 }
             }
+            #[cfg(feature = "bench")]
             State::WireTrain { left, gap } => {
                 self.tx.send_break();
                 if left <= 1 {
@@ -399,16 +400,13 @@ impl<P: Providers> HostBus<P> {
         if let Some(done) = self.pending_done.take() {
             return Some(Event::Done(done));
         }
-        if let Some(tick) = self.pending_wire_done.take() {
+        #[cfg(feature = "bench")]
+        if let Some(tick) = self.wire.pending_done.take() {
             return Some(Event::WireDone { tick });
         }
         let now = self.deadline.now();
         match self.state {
-            State::Idle
-            | State::Transmitting
-            | State::Training { .. }
-            | State::WireTx
-            | State::WireTrain { .. } => {}
+            State::Idle | State::Transmitting | State::Training { .. } => {}
             State::Pacing => {
                 if tick_reached(now, self.deadline_at) {
                     self.start_tx();
@@ -423,14 +421,12 @@ impl<P: Providers> HostBus<P> {
                     self.finish(Outcome::Sent);
                 }
             }
-            State::WirePulse => {
-                if tick_reached(now, self.deadline_at) {
-                    self.wire_poll_pulse();
-                }
-            }
+            #[cfg(feature = "bench")]
+            State::WireTx | State::WirePulse | State::WireTrain { .. } => self.wire_poll(now),
             State::Awaiting => return self.poll_await(now),
         }
-        if let Some(tick) = self.pending_wire_done.take() {
+        #[cfg(feature = "bench")]
+        if let Some(tick) = self.wire.pending_done.take() {
             return Some(Event::WireDone { tick });
         }
         self.pending_done.take().map(Event::Done)

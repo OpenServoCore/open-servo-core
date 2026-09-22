@@ -8,7 +8,7 @@
 
 use osc_protocol::wire::BaudRate;
 
-use crate::traits::{Deadline, Providers, TxWire, UsartBaud};
+use crate::traits::{Deadline, Providers, TxWire, UsartBaud, tick_reached};
 
 use super::shape::InvalidReason;
 use super::{HostBus, State, SubmitError};
@@ -24,7 +24,9 @@ enum Mode {
     Stream,
 }
 
-pub(super) struct WireJob {
+/// Instrument state the engine carries only under `bench`.
+pub(super) struct Wire<P: Providers> {
+    edges: P::Edges,
     buf: [u8; WIRE_CAP],
     len: usize,
     cursor: usize,
@@ -32,26 +34,37 @@ pub(super) struct WireJob {
     /// Break train staged behind the announce: the announce's TC anchors
     /// the grid, exactly like the engine's own CAL handoff.
     train: Option<(u8, u32)>,
+    /// Wire-release tick of a finished op, queued for the next `poll`.
+    pub(super) pending_done: Option<u32>,
 }
 
-impl WireJob {
+impl<P: Providers> Wire<P> {
     pub(super) fn new() -> Self {
         Self {
+            edges: P::Edges::default(),
             buf: [0; WIRE_CAP],
             len: 0,
             cursor: 0,
             mode: Mode::Single,
             train: None,
+            pending_done: None,
         }
     }
 }
 
 impl<P: Providers> HostBus<P> {
+    /// The instrument's capture organ, link-layer served (edge drains).
+    pub fn edges(&mut self) -> &mut P::Edges {
+        &mut self.wire.edges
+    }
+
+    /// Current engine tick -- the drain reply's unwrap reference.
+    pub fn now(&self) -> u32 {
+        self.deadline.now()
+    }
+
     fn wire_ready(&self) -> Result<(), SubmitError> {
-        if !matches!(self.state, State::Idle)
-            || self.pending_done.is_some()
-            || self.pending_wire_done.is_some()
-        {
+        if self.busy() {
             return Err(SubmitError::Busy);
         }
         Ok(())
@@ -69,13 +82,13 @@ impl<P: Providers> HostBus<P> {
         if bytes.len() > WIRE_CAP {
             return Err(SubmitError::Invalid(InvalidReason::TooLong));
         }
-        self.wire_job.buf[..bytes.len()].copy_from_slice(bytes);
-        self.wire_job.len = bytes.len();
-        self.wire_job.mode = Mode::Single;
-        self.wire_job.train = None;
+        self.wire.buf[..bytes.len()].copy_from_slice(bytes);
+        self.wire.len = bytes.len();
+        self.wire.mode = Mode::Single;
+        self.wire.train = None;
         self.tx.claim();
         self.tx.send_break();
-        self.tx.send(&self.wire_job.buf[..self.wire_job.len]);
+        self.tx.send(&self.wire.buf[..self.wire.len]);
         self.state = State::WireTx;
         Ok(())
     }
@@ -98,13 +111,13 @@ impl<P: Providers> HostBus<P> {
         if announce.len() > WIRE_CAP {
             return Err(SubmitError::Invalid(InvalidReason::TooLong));
         }
-        self.wire_job.buf[..announce.len()].copy_from_slice(announce);
-        self.wire_job.len = announce.len();
-        self.wire_job.mode = Mode::Single;
-        self.wire_job.train = Some((breaks, gap_us as u32 * P::Deadline::TICKS_PER_US));
+        self.wire.buf[..announce.len()].copy_from_slice(announce);
+        self.wire.len = announce.len();
+        self.wire.mode = Mode::Single;
+        self.wire.train = Some((breaks, gap_us as u32 * P::Deadline::TICKS_PER_US));
         self.tx.claim();
         self.tx.send_break();
-        self.tx.send(&self.wire_job.buf[..self.wire_job.len]);
+        self.tx.send(&self.wire.buf[..self.wire.len]);
         self.state = State::WireTx;
         Ok(())
     }
@@ -121,7 +134,7 @@ impl<P: Providers> HostBus<P> {
         self.baud.apply_raw(bps);
         self.rate = nearest_rate(bps);
         self.pace();
-        self.pending_wire_done = Some(self.deadline.now());
+        self.wire.pending_done = Some(self.deadline.now());
         Ok(())
     }
 
@@ -144,10 +157,10 @@ impl<P: Providers> HostBus<P> {
         if at == 0 {
             return Err(SubmitError::Invalid(InvalidReason::BadPayload));
         }
-        self.wire_job.buf[..stream.len()].copy_from_slice(stream);
-        self.wire_job.len = stream.len();
-        self.wire_job.cursor = 0;
-        self.wire_job.mode = Mode::Stream;
+        self.wire.buf[..stream.len()].copy_from_slice(stream);
+        self.wire.len = stream.len();
+        self.wire.cursor = 0;
+        self.wire.mode = Mode::Stream;
         self.tx.claim();
         self.wire_next_frame();
         self.state = State::WireTx;
@@ -176,15 +189,14 @@ impl<P: Providers> HostBus<P> {
     /// TC while `WireTx`: chain the next burst frame, hand off to the
     /// break-train grid, or close the op.
     pub(super) fn wire_advance(&mut self) {
-        if let Some((left, gap)) = self.wire_job.train.take() {
+        if let Some((left, gap)) = self.wire.train.take() {
             // The wire stays claimed for the whole train (the engine's own
             // CAL discipline: steady drive keeps the break edges crisp).
             self.state = State::WireTrain { left, gap };
             self.arm(self.deadline.now().wrapping_add(gap));
             return;
         }
-        let more =
-            matches!(self.wire_job.mode, Mode::Stream) && self.wire_job.cursor < self.wire_job.len;
+        let more = matches!(self.wire.mode, Mode::Stream) && self.wire.cursor < self.wire.len;
         if more {
             self.wire_next_frame();
         } else {
@@ -192,23 +204,26 @@ impl<P: Providers> HostBus<P> {
         }
     }
 
-    /// Pulse deadline reached: release and close.
-    pub(super) fn wire_poll_pulse(&mut self) {
-        self.wire_finish();
+    /// `poll` while an instrument state owns the engine: only the pulse
+    /// advances here (TX and the train ride their ISRs).
+    pub(super) fn wire_poll(&mut self, now: u32) {
+        if matches!(self.state, State::WirePulse) && tick_reached(now, self.deadline_at) {
+            self.wire_finish();
+        }
     }
 
     fn wire_next_frame(&mut self) {
-        let at = self.wire_job.cursor;
-        let flen = self.wire_job.buf[at] as usize;
-        self.wire_job.cursor = at + 1 + flen;
+        let at = self.wire.cursor;
+        let flen = self.wire.buf[at] as usize;
+        self.wire.cursor = at + 1 + flen;
         self.tx.send_break();
-        self.tx.send(&self.wire_job.buf[at + 1..at + 1 + flen]);
+        self.tx.send(&self.wire.buf[at + 1..at + 1 + flen]);
     }
 
     fn wire_finish(&mut self) {
         self.tx.release();
         self.state = State::Idle;
-        self.pending_wire_done = Some(self.deadline.now());
+        self.wire.pending_done = Some(self.deadline.now());
     }
 
     /// Train's last break sent: release and close (`on_deadline` calls in).

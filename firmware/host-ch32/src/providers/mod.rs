@@ -4,6 +4,7 @@
 
 pub mod clocks;
 pub mod deadline;
+#[cfg(feature = "bench")]
 pub mod edges;
 pub mod pins;
 pub mod ring;

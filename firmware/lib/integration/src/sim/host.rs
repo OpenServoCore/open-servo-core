@@ -14,7 +14,9 @@ use std::rc::Rc;
 use std::vec::Vec;
 
 use osc_host::engine::{HostBus, Terminal};
-use osc_host::traits::{Deadline, EdgeCapture, Providers, RxRing, TxWire, UsartBaud};
+#[cfg(feature = "bench")]
+use osc_host::traits::EdgeCapture;
+use osc_host::traits::{Deadline, Providers, RxRing, TxWire, UsartBaud};
 use osc_protocol::wire::BaudRate;
 use osc_servo_drivers::bus::RESCUE_LOW_US;
 
@@ -32,6 +34,7 @@ pub enum HostEvent {
     },
     Done(Terminal),
     /// An instrument wire op closed (raw send / burst / pulse).
+    #[cfg(feature = "bench")]
     WireDone {
         tick: u32,
     },
@@ -192,6 +195,7 @@ impl UsartBaud for HostUsart {
         self.0.apply(baud);
     }
 
+    #[cfg(feature = "bench")]
     fn apply_raw(&mut self, bps: u32) {
         // The sim's waveform machinery is catalog-rate-quantized; an
         // off-catalog divisor models as the nearest rate (sub-percent
@@ -211,8 +215,11 @@ impl UsartBaud for HostUsart {
 
 /// Edge capture has no sim model (hardware-stamped pin transitions are
 /// silicon-only by nature): drains answer empty, honestly.
+#[cfg(feature = "bench")]
+#[derive(Default)]
 pub struct HostEdges;
 
+#[cfg(feature = "bench")]
 impl EdgeCapture for HostEdges {
     fn drain_falls(&mut self, _buf: &mut [u16]) -> usize {
         0
@@ -234,6 +241,7 @@ impl Providers for SimHostProviders {
     type Deadline = HostDeadline;
     type Tx = HostWire;
     type Baud = HostUsart;
+    #[cfg(feature = "bench")]
     type Edges = HostEdges;
 }
 
@@ -266,7 +274,6 @@ impl SimHost {
                 low_since: Cell::new(None),
             },
             HostUsart(baud.clone()),
-            HostEdges,
             rate,
         );
         Self {
