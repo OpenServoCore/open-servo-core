@@ -19,7 +19,7 @@ const BUILTINS: &[&str] = &[include_str!("../../../descriptors/osc-servo.json")]
 pub struct Descriptor {
     pub model: String,
     pub model_number: u16,
-    pub firmware_version: u8,
+    pub firmware_version: u16,
     pub table_size: u16,
     pub fields: Vec<Field>,
 }
@@ -98,7 +98,7 @@ impl Registry {
 
     /// Pick the descriptor for a servo-reported (model, fw). Returns the
     /// selection plus any advisory note to print at the call site.
-    pub fn select(&self, model: u16, fw: u8) -> Result<(&Descriptor, Option<String>)> {
+    pub fn select(&self, model: u16, fw: u16) -> Result<(&Descriptor, Option<String>)> {
         if let Some(d) = self.descriptors.iter().find(|d| d.model_number == model) {
             let note = (d.firmware_version != fw).then(|| {
                 format!(
@@ -503,7 +503,8 @@ mod tests {
         let reg = Registry {
             descriptors: vec![builtin()],
         };
-        let (d, note) = reg.select(257, 1).unwrap();
+        let fw = reg.descriptors[0].firmware_version;
+        let (d, note) = reg.select(257, fw).unwrap();
         assert_eq!(d.model_number, 257);
         assert!(note.is_none());
     }

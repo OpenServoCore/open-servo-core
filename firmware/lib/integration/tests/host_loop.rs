@@ -51,7 +51,7 @@ fn ping_round_trips_through_the_engine() {
         } => {
             assert_eq!((*slot, *id), (0, ID5));
             assert_eq!(status_result(*inst), Some(ResultCode::Ok));
-            assert_eq!(payload.len(), 3, "model(2) + fw(1)");
+            assert_eq!(payload.len(), 4, "model(2) + fw(2)");
         }
         other => panic!("expected Status, got {other:?}"),
     }

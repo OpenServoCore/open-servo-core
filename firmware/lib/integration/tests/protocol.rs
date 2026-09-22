@@ -54,7 +54,8 @@ fn ping_reports_model_and_fw(baud_idx: u8) {
         )
     });
     let m = model.to_le_bytes();
-    assert_eq!(payload, &[m[0], m[1], fw]);
+    let f = fw.to_le_bytes();
+    assert_eq!(payload, &[m[0], m[1], f[0], f[1]]);
 }
 
 #[apply(matrix)]
@@ -62,21 +63,21 @@ fn read_returns_table_bytes(baud_idx: u8) {
     let mut sim = sim(baud_idx);
     let s = sim.add_servo(ID5);
 
-    // READ config identity span [0, 4): model(2) + fw(1) + hardware_revision(1).
+    // READ config identity span [0, 4): model(2) + fw(2).
     sim.host_send(&instruction(ID5, Opcode::Read, 0, &[0, 0, 4, 0]));
     let frames = sim.run();
 
     let (inst, payload) = status(sole_reply(&frames));
     assert_eq!(inst.result(), Some(ResultCode::Ok));
-    let (model, fw, hw) = sim.servo_table(s, |t| {
+    let (model, fw) = sim.servo_table(s, |t| {
         (
             t.config.common.model_number,
             t.config.common.firmware_version,
-            t.config.common.hardware_revision,
         )
     });
     let m = model.to_le_bytes();
-    assert_eq!(payload, &[m[0], m[1], fw, hw]);
+    let f = fw.to_le_bytes();
+    assert_eq!(payload, &[m[0], m[1], f[0], f[1]]);
 }
 
 #[apply(matrix)]
@@ -94,9 +95,9 @@ fn read_front_loaded_reply_matches_and_leaves_table(baud_idx: u8) {
     let (inst, payload) = status(sole_reply(&frames));
     assert_eq!(inst.result(), Some(ResultCode::Ok));
     let m = before.to_le_bytes();
-    // Identity span [0,4): model(2) + the sim's seeded fw(1) + hardware_revision(1),
-    // both 1 from `seed_identity`.
-    assert_eq!(payload, &[m[0], m[1], 0x01, 0x01]);
+    // Identity span [0,4): model(2) + the fw(2) `seed_identity` stamps.
+    let f = osc_servo_core::FIRMWARE_VERSION.to_le_bytes();
+    assert_eq!(payload, &[m[0], m[1], f[0], f[1]]);
     assert_eq!(sim.servo_diag(s).crc_fail_count, 0);
     assert_eq!(
         sim.servo_table(s, |t| t.config.common.model_number),
@@ -526,8 +527,8 @@ fn profile_read_gathers_configured_spans(baud_idx: u8) {
     let s = sim.add_servo(ID5);
 
     // Configure slot 0 over the wire (sec 5.2: ordinary WRITEs, no new
-    // instruction): model+fw (3 B at 0x000, odd length -- no parity
-    // constraint) then the comms id byte.
+    // instruction): model + the fw low byte (3 B at 0x000, odd length -- no
+    // parity constraint) then the comms id byte.
     let words = [span_word(0, 3), span_word(ID, 1)];
     let mut payload = PROFILE_BASE_ADDR.to_le_bytes().to_vec();
     for w in words {
@@ -550,7 +551,8 @@ fn profile_read_gathers_configured_spans(baud_idx: u8) {
         )
     });
     let m = model.to_le_bytes();
-    assert_eq!(payload, &[m[0], m[1], fw, ID5]);
+    let f = fw.to_le_bytes();
+    assert_eq!(payload, &[m[0], m[1], f[0], ID5]);
 }
 
 #[apply(matrix)]

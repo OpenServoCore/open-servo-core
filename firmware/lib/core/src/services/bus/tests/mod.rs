@@ -154,13 +154,13 @@ fn ping_replies_model_and_firmware() {
     let shared = Shared::new();
     shared.table.with_mut(|t| {
         t.config.common.model_number = 0x1234;
-        t.config.common.firmware_version = 0x56;
+        t.config.common.firmware_version = 0x7856;
     });
     let mut staged = StagedWrites::new();
     let reply = go(&shared, &mut staged, Request::Ping, true);
     assert_eq!(reply.count(), 1);
     assert_eq!(reply.last().result, ResultCode::Ok);
-    assert_eq!(&reply.last().data[..], &[0x34, 0x12, 0x56]);
+    assert_eq!(&reply.last().data[..], &[0x34, 0x12, 0x56, 0x78]);
 }
 
 #[test]

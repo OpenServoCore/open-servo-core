@@ -360,7 +360,7 @@ frames (§5.1), each independently snapshotted and CRC'd.
 | op  | name    | payload                                                              | reply                                 |
 | --- | ------- | -------------------------------------------------------------------- | ------------------------------------- |
 | 0x0 | invalid | (INST 0x00 never valid, like ID 0x00)                                |                                       |
-| 0x1 | PING    | —                                                                    | status: model(2), fw(1) — no UID: 16 more bytes on the hottest liveness check; the UID is an internal value and MGMT ENUM (§9.2) is its only reader |
+| 0x1 | PING    | —                                                                    | status: model(2), fw(2) — no UID: 16 more bytes on the hottest liveness check; the UID is an internal value and MGMT ENUM (§9.2) is its only reader |
 | 0x2 | READ    | addr(2), count(2)                                                    | status: data(count)                   |
 | 0x3 | WRITE   | addr(2), data(n)                                                     | status: empty (ack)                   |
 | 0x4 | COMMIT  | — (broadcast)                                                        | none                                  |
@@ -488,10 +488,10 @@ comms RW:
 | addr  | name                   | width | access | notes                                  |
 | ----- | ---------------------- | ----- | ------ | -------------------------------------- |
 | 0x000 | `model_number`         | u16   | RO     | keys the per-model map                 |
-| 0x002 | `firmware_version`     | u8    | RO     |                                        |
-| 0x003 | `hardware_revision`    | u8    | RO     |                                        |
+| 0x002 | `firmware_version`     | u16   | RO     | semver packed 5.5.6: `[major:5][minor:5][patch:6]` |
 | 0x004 | `capability_flags`     | u32   | RO     | no bits defined yet                    |
-| 0x008 | —                      | 8 B   | rsvd   |                                        |
+| 0x008 | `hardware_revision`    | u8    | RO     |                                        |
+| 0x009 | —                      | 7 B   | rsvd   |                                        |
 | 0x010 | `id`                   | u8    | RW     | unicast address `0x01..=0xF9` (§3.1)   |
 | 0x011 | `baud_rate_idx`        | u8    | RW     | §2 rate index                          |
 | 0x012 | `response_deadline_us` | u16   | RW     | §7                                     |

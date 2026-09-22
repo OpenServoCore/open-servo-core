@@ -34,7 +34,7 @@ struct Descriptor {
     model: &'static str,
     class: &'static str,
     model_number: u16,
-    firmware_version: u8,
+    firmware_version: u16,
     table_size: usize,
     generator: &'static str,
     fields: Vec<Field>,

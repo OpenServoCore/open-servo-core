@@ -3,7 +3,7 @@
   "model": "osc-servo",
   "class": "servo",
   "model_number": 257,
-  "firmware_version": 1,
+  "firmware_version": 64,
   "table_size": 1024,
   "generator": "cargo run -p table-export (firmware/lib)",
   "fields": [
@@ -17,14 +17,7 @@
     {
       "name": "firmware_version",
       "addr": 2,
-      "width": 1,
-      "access": "ro",
-      "kind": "uint"
-    },
-    {
-      "name": "hardware_revision",
-      "addr": 3,
-      "width": 1,
+      "width": 2,
       "access": "ro",
       "kind": "uint"
     },
@@ -32,6 +25,13 @@
       "name": "capability_flags",
       "addr": 4,
       "width": 4,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "hardware_revision",
+      "addr": 8,
+      "width": 1,
       "access": "ro",
       "kind": "uint"
     },

@@ -37,13 +37,13 @@ pub struct ConfigCommon {
     #[ct_field(access = ro)]
     pub model_number: u16,
     #[ct_field(access = ro)]
-    pub firmware_version: u8,
-    #[ct_field(access = ro)]
-    pub hardware_revision: u8,
+    pub firmware_version: u16,
     #[ct_field(access = ro)]
     pub capability_flags: u32,
+    #[ct_field(access = ro)]
+    pub hardware_revision: u8,
     #[ct_field(skip)]
-    pub _rsvd_identity: [u8; 8],
+    pub _rsvd_identity: [u8; 7],
     #[ct_field(ge = 1u8, le = 249u8, hook = on_id_write)]
     pub id: u8,
     // `BaudRate` index; le gate = the enum ceiling. Zero (0.5M, the rescue

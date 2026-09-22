@@ -9,12 +9,12 @@ pub const CONFIG_COMMON_END: u16 = 0x020;
 
 /// u16 RO -- keys the per-model register map.
 pub const MODEL_NUMBER: u16 = 0x000;
-/// u8 RO.
+/// u16 RO - semver packed 5.5.6 (`version::pack_version`).
 pub const FIRMWARE_VERSION: u16 = 0x002;
-/// u8 RO.
-pub const HARDWARE_REVISION: u16 = 0x003;
 /// u32 RO -- reserved-slot extension signal; no bits defined yet.
 pub const CAPABILITY_FLAGS: u16 = 0x004;
+/// u8 RO.
+pub const HARDWARE_REVISION: u16 = 0x008;
 /// u8 RW -- unicast address, 0x01..=0xF9 (sec 3.1).
 pub const ID: u16 = 0x010;
 /// u8 RW -- sec 2 rate index (`BaudRate` discriminant).

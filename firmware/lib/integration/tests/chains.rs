@@ -160,12 +160,13 @@ fn gread_profile_uniform_chains_gathered_replies(baud_idx: u8) {
     for id in [1u8, 2] {
         sim.add_servo_with(id, 0, CHAIN_DEADLINE_US);
     }
-    // Each servo's slot 0 gathers model(2) + fw(1); distinct values per servo.
+    // Each servo's slot 0 gathers model(2) + the fw low byte; distinct values
+    // per servo.
     let models = [0x1122u16, 0x3344];
     for (i, m) in models.iter().enumerate() {
         sim.servo_table_mut(i, |t| {
             t.config.common.model_number = *m;
-            t.config.common.firmware_version = 0x50 + i as u8;
+            t.config.common.firmware_version = 0x50 + i as u16;
             t.profile.slots.words[0] = span_word(MODEL_NUMBER, 2);
             t.profile.slots.words[1] = span_word(FIRMWARE_VERSION, 1);
         });
@@ -258,8 +259,9 @@ fn gread_per_target_reads_distinct_spans(baud_idx: u8) {
     assert_eq!(by_id(1).1, 0x1122u16.to_le_bytes());
     // Servo 2: 1-byte firmware version.
     assert_eq!(by_id(2).1, vec![0x5A]);
-    // Servo 3: 3-byte model + firmware (the sim's seeded FIRMWARE_VERSION = 1).
-    assert_eq!(by_id(3).1, vec![0x44, 0x33, 0x01]);
+    // Servo 3: 3-byte model + fw low byte (the sim's seeded FIRMWARE_VERSION).
+    let f = osc_servo_core::FIRMWARE_VERSION.to_le_bytes();
+    assert_eq!(by_id(3).1, vec![0x44, 0x33, f[0]]);
 }
 
 #[apply(matrix)]

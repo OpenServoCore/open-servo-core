@@ -592,7 +592,7 @@ fn select_descriptor<'a>(
         bail!("identity read returned {} B, expected 4", b.len());
     }
     let model = u16::from_le_bytes([b[0], b[1]]);
-    let fw = b[2];
+    let fw = u16::from_le_bytes([b[2], b[3]]);
     let (d, note) = reg.select(model, fw)?;
     if let Some(note) = note {
         println!("{note}");

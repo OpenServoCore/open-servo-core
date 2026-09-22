@@ -63,8 +63,8 @@ pub struct Shape {
 const MAX_REPLY: u16 = wire::footprint(u8::MAX) as u16;
 /// Empty-payload status footprint (acks, nacks).
 const ACK_REPLY: u16 = wire::footprint(3) as u16;
-/// PING status: model(2) + fw(1).
-const PING_REPLY: u16 = wire::footprint(6) as u16;
+/// PING status: model(2) + fw(2).
+const PING_REPLY: u16 = wire::footprint(7) as u16;
 /// ENUM status: the full 16-byte UID.
 const ENUM_REPLY: u16 = wire::footprint(3 + wire::UID_LEN as u8) as u16;
 
@@ -273,7 +273,7 @@ mod tests {
     fn ping_shapes() {
         let s = Shape::derive(UNI, inst(Opcode::Ping, 0), &[]).unwrap();
         assert_eq!(s.replies, Replies::Single);
-        assert_eq!(s.reply_footprint, 9);
+        assert_eq!(s.reply_footprint, 10);
         let s = Shape::derive(BC, inst(Opcode::Ping, 0), &[]).unwrap();
         assert_eq!(s.replies, Replies::None);
         assert_eq!(
