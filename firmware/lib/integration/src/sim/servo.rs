@@ -14,10 +14,7 @@ use osc_servo_drivers::bus::{LinkDiag, ServoBus};
 use osc_servo_drivers::tel::{TelChannel, TelFeed};
 
 use super::core::Core;
-use super::providers::{
-    BaudState, DeadlineState, Handles, RingState, SimBaud, SimCrc, SimDeadline, SimProviders,
-    SimRing, SimWire,
-};
+use super::providers::{Handles, SimBaud, SimCrc, SimDeadline, SimProviders, SimRing, SimWire};
 use super::store::RamStore;
 
 /// The v006 arm-B sense chain the sim mirrors.
@@ -38,6 +35,18 @@ pub struct SimServo {
     bus: ServoBus<SimProviders>,
     /// Kernel-side half of the TEL channel; the sim's fast-tick pump feeds it.
     feed: TelFeed,
+    seed: Seed,
+}
+
+/// Everything bringup needs, kept so a staged reboot can run it again.
+struct Seed {
+    core: Rc<RefCell<Core>>,
+    idx: usize,
+    id: u8,
+    rate: BaudRate,
+    response_deadline_us: u16,
+    store: Option<&'static RamStore>,
+    handles: Handles,
 }
 
 impl SimServo {
@@ -54,20 +63,44 @@ impl SimServo {
         response_deadline_us: u16,
         store: Option<&'static RamStore>,
     ) -> (Box<SimServo>, Handles) {
-        let ring = RingState::new();
-        let deadline = DeadlineState::new();
+        let handles = Handles::new(rate);
+        handles.deadline.set_skew(core.borrow().now(), skew_ppm);
+        let seed = Seed {
+            core: core.clone(),
+            idx,
+            id,
+            rate,
+            response_deadline_us,
+            store,
+            handles: handles.clone(),
+        };
+        let (shared, bus, feed) = Self::bringup(&seed, [id; 16]);
+        let servo = Box::new(SimServo {
+            shared,
+            session: Session::new(),
+            bus,
+            feed,
+            seed,
+        });
+        (servo, handles)
+    }
+
+    /// One power-on: a fresh table under the board seed, the store's overlay
+    /// on top, and a driver whose comms block comes from what that left.
+    fn bringup(seed: &Seed, uid: [u8; 16]) -> (Shared, ServoBus<SimProviders>, TelFeed) {
+        seed.handles.ring.reset();
 
         let shared = Shared::new();
         shared.table.seed_config_defaults(
             &ConfigDefaults {
-                id,
-                baud: rate,
-                response_deadline_us,
+                id: seed.id,
+                baud: seed.rate,
+                response_deadline_us: seed.response_deadline_us,
                 ..Default::default()
             },
             &CurrentDefaults::from_sense(SENSE.shunt_r_mohm, SENSE.gain_milli, SENSE.vdd_mv),
         );
-        if let Some(store) = store {
+        if let Some(store) = seed.store {
             store.boot_load(&shared.table);
             shared.seed_store(store);
         }
@@ -87,7 +120,9 @@ impl SimServo {
         );
         // Default UID: the id repeated -- distinct per servo, predictable for
         // ENUM tests; override via `seed_uid` where prefix structure matters.
-        shared.seed_uid([id; 16]);
+        // A reboot passes the live one back in: the UID is silicon (ESIG on
+        // the chip), so neither a reboot nor a FACTORY wipe moves it.
+        shared.seed_uid(uid);
         // Real identity: the sim mirrors the v006 servo's table ABI, so it
         // seeds the registry model (not part of ConfigDefaults, same as the
         // chip) - keeps descriptor-keyed clients testable against the sim.
@@ -105,35 +140,35 @@ impl SimServo {
             )
         });
         let rate = BaudRate::from_idx(rate_idx).expect("seeded baud idx");
-        let baud = BaudState::new(rate);
 
         let mut bus = ServoBus::new(
-            SimRing::new(ring.clone()),
-            SimDeadline::new(core.clone(), deadline.clone(), idx, skew_ppm),
+            SimRing::new(seed.handles.ring.clone()),
+            SimDeadline::new(seed.core.clone(), seed.handles.deadline.clone(), seed.idx),
             SimCrc::new(),
-            SimWire::new(core.clone(), baud.clone(), idx),
-            SimBaud::new(baud.clone()),
+            SimWire::new(seed.core.clone(), seed.handles.baud.clone(), seed.idx),
+            SimBaud::new(seed.handles.baud.clone()),
             id,
             rate,
             response_deadline_us,
         );
         // Leaked like a shared RamStore: `split` wants the chip's 'static
-        // channel; test-scoped, one per servo per Sim.
+        // channel; test-scoped, one per servo per bringup.
         let (feed, drain) = Box::leak(Box::new(TelChannel::new())).split();
         bus.attach_tel(drain);
+        (shared, bus, feed)
+    }
 
-        let servo = Box::new(SimServo {
-            shared,
-            session: Session::new(),
-            bus,
-            feed,
-        });
-        let handles = Handles {
-            ring,
-            deadline,
-            baud,
-        };
-        (servo, handles)
+    /// Honor a staged reboot in place (sec 9.4/9.5): the store decides what
+    /// the table comes back with, so a wiped store boots board defaults.
+    /// Only ever called with the TX drained (`take_reboot` withholds until
+    /// then), so no reply is streaming out of the table being replaced.
+    pub fn reboot(&mut self) {
+        let uid = *self.shared.uid();
+        let (shared, bus, feed) = Self::bringup(&self.seed, uid);
+        self.shared = shared;
+        self.session = Session::new();
+        self.bus = bus;
+        self.feed = feed;
     }
 
     /// sec 9.1: the chip main-loop sampler's declaration (thread-level, not a

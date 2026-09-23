@@ -97,6 +97,8 @@ pub struct Sim {
     /// [`Self::link_send`], records out through [`Self::link_recv`]. Engine
     /// events leave as records; `host_events` stays empty in this mode.
     link: Option<LinkRig>,
+    /// Run the main loop's reboot poll (see [`Self::set_self_reboot`]).
+    self_reboot: bool,
 }
 
 /// One servo's TEL fast-tick pump: the sim's stand-in for the kernel's 50 us
@@ -162,6 +164,7 @@ impl Sim {
             host_free_at: 0,
             host: None,
             link: None,
+            self_reboot: false,
         }
     }
 
@@ -338,6 +341,15 @@ impl Sim {
 
     pub fn take_reboot(&mut self, i: usize) -> Option<BootMode> {
         self.servos[i].take_reboot()
+    }
+
+    /// Model the chip main loop's reboot poll: a servo that staged a reboot
+    /// (MGMT REBOOT, or FACTORY's self-reset) re-runs bringup mid-run once
+    /// its ack has drained, so the store's verdict shows up on the wire
+    /// without rebuilding the `Sim`. Off by default - scenarios that assert
+    /// the staged mode consume it through [`Self::take_reboot`] instead.
+    pub fn set_self_reboot(&mut self, on: bool) {
+        self.self_reboot = on;
     }
 
     /// Replace servo `i`'s factory UID (the chip band seeds it from ESIG at
@@ -606,6 +618,34 @@ impl Sim {
         // every event so its clocks and framer track the wire promptly.
         self.host_pump();
         self.tel_pump();
+        self.reboot_pump();
+    }
+
+    /// The servos' other main-loop residue: honor any staged reboot. A body
+    /// mid-run owns the CPU, so the poll waits for it like the real loop.
+    fn reboot_pump(&mut self) {
+        if !self.self_reboot {
+            return;
+        }
+        let now = self.core.borrow().now();
+        for j in 0..self.servos.len() {
+            if self.cpus[j].busy(now) || self.servos[j].take_reboot().is_none() {
+                continue;
+            }
+            self.servos[j].reboot();
+            // The burst died with the old driver: park the pump and retire
+            // its scheduled ticks by epoch. A track outlives the reboot (it
+            // is the rig's stimulus, not servo state) but must re-image,
+            // since the rebuilt table lost the mirrored row.
+            let t = &mut self.tels[j];
+            t.running = false;
+            t.epoch += 1;
+            t.n = 0;
+            if let Some(track) = t.track.as_mut() {
+                track.mirrored = None;
+            }
+            self.cross[j] = CrossRx::new(self.rate);
+        }
     }
 
     /// The servos' main-loop residue after every event: the TEL poll (the
