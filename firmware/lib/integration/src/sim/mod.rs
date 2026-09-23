@@ -43,6 +43,7 @@ pub use self::support::{
     tel_sample,
 };
 pub use osc_servo_core::tel::TelSample;
+pub use osc_servo_core::{CalibSense, CalibSenseExt};
 
 /// TEL fast-tick period: the kernel's 20 kHz control tick.
 const TEL_TICK_US: u64 = 50;
@@ -328,6 +329,20 @@ impl Sim {
     /// sim's stand-in for the control/fault ISRs the chip band will own.
     pub fn servo_table_mut<R>(&self, i: usize, f: impl FnOnce(&mut ControlTable) -> R) -> R {
         self.servos[i].with_table_mut(f)
+    }
+
+    /// Give servo `i` another board's sense chain: install re-stamps these
+    /// RO facts at every bringup, so a FACTORY wipe leaves them standing.
+    /// Power-cycles the servo onto them - pre-traffic only.
+    pub fn set_servo_sense(&mut self, i: usize, sense: CalibSense, sense_ext: CalibSenseExt) {
+        self.servos[i].set_sense(sense, sense_ext);
+    }
+
+    /// Persist servo `i`'s live CONFIG, PROFILE and CALIB regions into its
+    /// store, as MGMT SAVE would (sec 9.4) but without the wire: what a
+    /// servo that left the bench calibrated carries in flash.
+    pub fn persist_servo(&self, i: usize) {
+        self.servos[i].persist();
     }
 
     pub fn servo_diag(&self, i: usize) -> LinkDiag {
