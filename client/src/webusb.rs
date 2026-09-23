@@ -84,6 +84,7 @@ pub struct WebUsbPipe {
     // Dropping a JsFuture does not cancel the transfer; the browser would
     // deliver its bytes to nobody, so a guard-lapsed recv resumes it.
     pending: Option<JsFuture>,
+    transfers_in: u64,
 }
 
 impl WebUsbPipe {
@@ -95,7 +96,14 @@ impl WebUsbPipe {
         Ok(Self {
             device,
             pending: None,
+            transfers_in: 0,
         })
+    }
+
+    /// `transferIn` calls issued since open. A resumed recv reuses its
+    /// pending transfer, so this counts transfers, not recv calls.
+    pub fn transfers_in(&self) -> u64 {
+        self.transfers_in
     }
 
     pub async fn close(self) -> Result<(), PipeError> {
@@ -110,10 +118,12 @@ impl Pipe for WebUsbPipe {
     }
 
     async fn recv(&mut self) -> Result<Vec<u8>, PipeError> {
-        let (device, pending) = (&self.device, &mut self.pending);
+        let (device, pending, issued) = (&self.device, &mut self.pending, &mut self.transfers_in);
         let res = poll_fn(|cx| {
-            let f =
-                pending.get_or_insert_with(|| JsFuture::from(device.transfer_in(EP_IN, IN_CAP)));
+            let f = pending.get_or_insert_with(|| {
+                *issued += 1;
+                JsFuture::from(device.transfer_in(EP_IN, IN_CAP))
+            });
             Pin::new(f).poll(cx)
         })
         .await;
