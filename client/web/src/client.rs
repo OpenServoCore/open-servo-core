@@ -300,6 +300,7 @@ impl OscClient {
         let mut pipe = FakePipe::new(osc_client::BaudRate::B1000000, &ids);
         for (i, &id) in ids.iter().enumerate() {
             pipe.sim_mut().seed_servo_uid(i, uid(id));
+            seed_calibrated(&mut pipe, i);
         }
         for (i, track) in tracks.into_iter().enumerate() {
             if let Some(track) = track {
@@ -312,6 +313,34 @@ impl OscClient {
             inner: RefCell::new(Some(Backend::Fake(Box::new(c)))),
         })
     }
+}
+
+/// Overwrite servo `i`'s calibration with the recorded table
+/// ([`crate::fake_seed`]): the sim seeds a blank one, which the app reads as
+/// uncalibrated and renders in raw counts. Sense fields the sim already
+/// matches stay as it seeded them.
+#[cfg(feature = "fake")]
+fn seed_calibrated(pipe: &mut FakePipe, i: usize) {
+    use crate::fake_seed as s;
+
+    pipe.sim_mut().servo_table_mut(i, |t| {
+        t.calib.pot_lut.raw_min = s::RAW_MIN;
+        t.calib.pot_lut.raw_max = s::RAW_MAX;
+        t.calib.pot_lut.lut_corr = s::LUT_CORR;
+        t.calib.kinematics.angle_min_cdeg = s::ANGLE_MIN_CDEG;
+        t.calib.kinematics.angle_max_cdeg = s::ANGLE_MAX_CDEG;
+        t.calib.kinematics.gear_ratio_centi = s::GEAR_RATIO_CENTI;
+        t.calib.sense.shunt_r_mohm = s::SHUNT_R_MOHM;
+        t.calib.sense.vmotor_div_top = s::VMOTOR_DIV_TOP;
+        t.calib.sense.vmotor_div_bot = s::VMOTOR_DIV_BOT;
+        t.calib.sense_ext.vbus_div_top_ohm = s::VBUS_DIV_TOP_OHM;
+        t.calib.sense_ext.vmotor_bias_nom_counts = s::VMOTOR_BIAS_NOM_COUNTS;
+        t.config.pos_limits.pos_min_phys_counts = s::POS_MIN_PHYS_COUNTS;
+        t.config.pos_limits.pos_max_phys_counts = s::POS_MAX_PHYS_COUNTS;
+        t.config.pos_limits.pos_min_soft_counts = s::POS_MIN_SOFT_COUNTS;
+        t.config.pos_limits.pos_max_soft_counts = s::POS_MAX_SOFT_COUNTS;
+        t.config.limits.drive_polarity = s::DRIVE_POLARITY;
+    });
 }
 
 /// Columnar track to the sim's row form.
