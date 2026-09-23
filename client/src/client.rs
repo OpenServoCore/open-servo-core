@@ -133,6 +133,10 @@ impl<P: Pipe> Client<P> {
         self.guard = guard;
     }
 
+    pub fn guard(&self) -> Duration {
+        self.guard
+    }
+
     /// Give the transport back (to close a pipe that closes by value).
     pub fn into_pipe(self) -> P {
         self.pipe

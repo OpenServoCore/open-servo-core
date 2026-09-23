@@ -11,9 +11,7 @@ use std::time::Duration;
 use osc_client::descriptor as desc;
 use osc_client::pipe::Pipe;
 use osc_client::webusb::{UsbDevice, WebUsbPipe};
-use osc_client::{
-    Client, DEFAULT_GUARD, Error, Id, Inst, Opcode, Outcome, ResultCode, common, mgmt,
-};
+use osc_client::{Client, Error, Id, Inst, Opcode, Outcome, ResultCode, common, mgmt};
 use osc_protocol::build;
 use tsify::{Ts, Tsify};
 use wasm_bindgen::prelude::*;
@@ -27,6 +25,10 @@ use crate::descriptor::Descriptor;
 use crate::types::{Alive, BaudRate, Found, Health, Identity, LinkInfo, Ping, Rails, TelBurst};
 #[cfg(feature = "fake")]
 use crate::types::{FakeServo, Track};
+
+/// Floor under `setGuard`: below this the watchdog would fire inside a
+/// healthy exchange and every command would look like a dead adapter.
+const MIN_GUARD_MS: f64 = 10.0;
 
 /// Prompt for an osc-adapter; must run from a user gesture.
 #[wasm_bindgen(js_name = requestDevice)]
@@ -95,6 +97,30 @@ impl OscClient {
     #[wasm_bindgen(js_name = linkInfo)]
     pub fn link_info(&self) -> Result<Ts<LinkInfo>, JsError> {
         Ok(LinkInfo::from(self.info).into_ts()?)
+    }
+
+    /// Client-side watchdog on pipe delivery, for every later command.
+    #[wasm_bindgen(js_name = setGuard)]
+    pub fn set_guard(&self, ms: f64) -> Result<(), JsError> {
+        if !(ms.is_finite() && ms >= MIN_GUARD_MS) {
+            return Err(JsError::new(&format!(
+                "setGuard: the guard must be at least {MIN_GUARD_MS} ms"
+            )));
+        }
+        let guard = Duration::from_micros((ms * 1_000.0) as u64);
+        cmd!(self, |c| c.set_guard(guard));
+        Ok(())
+    }
+
+    /// `transferIn` calls the transport has issued since open; the
+    /// simulated adapter moves no bytes over USB and reports 0.
+    #[wasm_bindgen(js_name = transfersIn)]
+    pub fn transfers_in(&self) -> Result<f64, JsError> {
+        Ok(match &mut *self.backend()? {
+            Backend::Usb(c) => c.pipe_mut().transfers_in() as f64,
+            #[cfg(feature = "fake")]
+            Backend::Fake(_) => 0.0,
+        })
     }
 
     pub async fn rails(&self) -> Result<Ts<Rails>, JsError> {
@@ -415,10 +441,12 @@ async fn burst<P: Pipe>(
     let mut p = vec![0u8; count.1.len() + 4];
     let n = build::write(&mut p, count.0, count.1).ok_or(Error::Servo(ResultCode::Limit))?;
     let inst = Inst::instruction(Opcode::Write, 0);
-    // The pipe guard must outlast the whole burst (see exchange_stream).
+    // The pipe guard must outlast the whole burst (see exchange_stream),
+    // and the caller's own guard has to survive the detour.
+    let prev = c.guard();
     c.set_guard(window + Duration::from_secs(1));
     let reply = c.exchange_stream(id, inst, &p[..n], window).await;
-    c.set_guard(DEFAULT_GUARD);
+    c.set_guard(prev);
     let reply = reply?;
     if let Some(ack) = &reply.ack
         && ack.result != Some(ResultCode::Ok)
