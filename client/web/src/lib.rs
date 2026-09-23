@@ -13,6 +13,9 @@
 #[cfg(target_arch = "wasm32")]
 mod client;
 mod descriptor;
+#[cfg(feature = "fake")]
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+mod fake_seed;
 mod types;
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 mod uid;
