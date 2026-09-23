@@ -9,7 +9,7 @@ use std::time::Duration;
 use osc_client::blocking::Client;
 use osc_client::common::{Health, Identity};
 use osc_client::cyclic::{Cycle, Group, Telemetry};
-use osc_client::fake::FakePipe;
+use osc_client::fake::{FakePipe, seed};
 use osc_client::mgmt::{Found, Uid};
 use osc_client::{
     BaudRate, Error, Id, Inst, LinkError, Opcode, Outcome, RejectReason, ResultCode, StreamReply,
@@ -29,6 +29,18 @@ const PROFILE_SLOT0: u16 = 0x280;
 const VELOCITY_LIMIT_CPS: u16 = 68;
 const DEFAULT_VELOCITY_LIMIT_CPS: u16 = 1500;
 
+/// V006 map facts the seeded calibration lands in: calib.pot_lut.raw_max,
+/// calib.kinematics.angle_max_cdeg and .gear_ratio_centi, the RO board fact
+/// calib.sense.shunt_r_mohm, and config.pos_limits.pos_max_soft_counts.
+const RAW_MAX: u16 = 130;
+const ANGLE_MAX_CDEG: u16 = 284;
+const GEAR_RATIO_CENTI: u16 = 286;
+const SHUNT_R_MOHM: u16 = 242;
+const POS_MAX_SOFT_COUNTS: u16 = 44;
+/// The soft limit a wiped store boots: the board default travel, the pot's
+/// full 12-bit span.
+const DEFAULT_POS_MAX_SOFT_COUNTS: i32 = 4095;
+
 /// Span word encoding, protocol sec 5.2: `[addr:10][count:6]`.
 const fn span_word(addr: u16, count: u16) -> u16 {
     (addr << 6) | count
@@ -36,6 +48,16 @@ const fn span_word(addr: u16, count: u16) -> u16 {
 
 fn fleet(ids: &[u8]) -> Client<FakePipe> {
     Client::connect(FakePipe::new(BaudRate::B1000000, ids)).expect("connect")
+}
+
+fn read_u16(c: &mut Client<FakePipe>, id: Id, addr: u16) -> u16 {
+    let b = c.read(id, addr, 2).expect("read u16");
+    u16::from_le_bytes([b[0], b[1]])
+}
+
+fn read_i32(c: &mut Client<FakePipe>, id: Id, addr: u16) -> i32 {
+    let b = c.read(id, addr, 4).expect("read i32");
+    i32::from_le_bytes([b[0], b[1], b[2], b[3]])
 }
 
 #[test]
@@ -235,6 +257,61 @@ fn save_survives_reboot_and_factory_restores_defaults() {
     let found = c.discover().expect("discover after factory");
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].id, id);
+}
+
+/// The seeded fleet ships the way a servo leaves the calibration bench: the
+/// dump is SAVEd, not just written into the live table. So it boots back
+/// after a reboot and FACTORY wipes it exactly as hardware does - CALIB to
+/// zero, the travel limits to the board's full span - while the board's own
+/// facts (install re-stamps the sense chain, ESIG carries the UID) stand.
+#[test]
+fn factory_wipes_the_seeded_calibration_like_hardware() {
+    let mut pipe = FakePipe::new(BaudRate::B1000000, &[1]);
+    pipe.seed_calibrated(0);
+    let uid = pipe.sim_mut().servo_uid(0);
+    let mut c = Client::connect(pipe).expect("connect");
+    let id = Id::new(1);
+
+    assert_eq!(read_u16(&mut c, id, RAW_MAX), seed::RAW_MAX);
+    assert_eq!(
+        read_u16(&mut c, id, ANGLE_MAX_CDEG),
+        seed::ANGLE_MAX_CDEG as u16
+    );
+    assert_eq!(
+        read_u16(&mut c, id, GEAR_RATIO_CENTI),
+        seed::GEAR_RATIO_CENTI
+    );
+    assert_eq!(
+        read_i32(&mut c, id, POS_MAX_SOFT_COUNTS),
+        seed::POS_MAX_SOFT_COUNTS
+    );
+
+    c.reboot(id).expect("reboot");
+    assert_eq!(
+        read_u16(&mut c, id, RAW_MAX),
+        seed::RAW_MAX,
+        "a SAVEd calibration is what boots"
+    );
+
+    c.factory(id).expect("factory");
+    assert_eq!(read_u16(&mut c, id, RAW_MAX), 0, "CALIB is wiped");
+    assert_eq!(read_u16(&mut c, id, ANGLE_MAX_CDEG), 0);
+    assert_eq!(read_u16(&mut c, id, GEAR_RATIO_CENTI), 0);
+    assert_eq!(
+        read_i32(&mut c, id, POS_MAX_SOFT_COUNTS),
+        DEFAULT_POS_MAX_SOFT_COUNTS,
+        "the travel limits fall back to board defaults"
+    );
+    assert_eq!(
+        read_u16(&mut c, id, SHUNT_R_MOHM),
+        seed::SENSE.shunt_r_mohm,
+        "the sense chain is board data, not table state"
+    );
+    assert_eq!(
+        c.pipe_mut().sim_mut().servo_uid(0),
+        uid,
+        "the UID is silicon"
+    );
 }
 
 #[test]

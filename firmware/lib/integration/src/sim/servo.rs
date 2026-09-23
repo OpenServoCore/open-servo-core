@@ -5,6 +5,12 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use control_table::RegisterFile;
+use osc_servo_core::persist::{CALIB_LEN, CONFIG_LEN, PROFILE_LEN};
+use osc_servo_core::regions::{
+    CALIB_BASE_ADDR, CALIB_REGION_SIZE, CONFIG_BASE_ADDR, CONFIG_REGION_SIZE, PROFILE_BASE_ADDR,
+    PROFILE_REGION_SIZE,
+};
 use osc_servo_core::tel::{TelSample, TelStream};
 use osc_servo_core::{
     BaudRate, BootMode, CalibSense, CalibSenseExt, ConfigDefaults, ControlTable, CurrentDefaults,
@@ -17,7 +23,8 @@ use super::core::Core;
 use super::providers::{Handles, SimBaud, SimCrc, SimDeadline, SimProviders, SimRing, SimWire};
 use super::store::RamStore;
 
-/// The v006 arm-B sense chain the sim mirrors.
+/// The v006 arm-B sense chain the sim mirrors; per-servo board facts
+/// override it through [`SimServo::set_sense`].
 const SENSE: CalibSense = CalibSense {
     shunt_r_mohm: 33,
     gain_milli: 15000,
@@ -28,6 +35,19 @@ const SENSE: CalibSense = CalibSense {
     i_window_min_ticks: 240,
     v_window_min_ticks: 300,
 };
+
+const SENSE_EXT: CalibSenseExt = CalibSenseExt {
+    vbus_div_top_ohm: 20000,
+    vbus_div_bot_ohm: 10000,
+    ntc_pullup_ohm: 10000,
+    ntc_r25_ohm: 10000,
+    ntc_beta: 3950,
+    vmotor_bias_nom_counts: 773,
+};
+
+/// Board travel the config defaults seed (the v006 pot's 12-bit span): what
+/// the soft limits fall back to when a wiped store boots.
+const PHYS_MAX_COUNTS: i32 = 4095;
 
 pub struct SimServo {
     shared: Shared,
@@ -47,6 +67,10 @@ struct Seed {
     response_deadline_us: u16,
     store: Option<&'static RamStore>,
     handles: Handles,
+    /// Board sense facts: install re-stamps them at every bringup, so they
+    /// are the part of CALIB a FACTORY wipe cannot move.
+    sense: CalibSense,
+    sense_ext: CalibSenseExt,
 }
 
 impl SimServo {
@@ -73,6 +97,8 @@ impl SimServo {
             response_deadline_us,
             store,
             handles: handles.clone(),
+            sense: SENSE,
+            sense_ext: SENSE_EXT,
         };
         let (shared, bus, feed) = Self::bringup(&seed, [id; 16]);
         let servo = Box::new(SimServo {
@@ -96,9 +122,14 @@ impl SimServo {
                 id: seed.id,
                 baud: seed.rate,
                 response_deadline_us: seed.response_deadline_us,
+                pos_max_phys_counts: PHYS_MAX_COUNTS,
                 ..Default::default()
             },
-            &CurrentDefaults::from_sense(SENSE.shunt_r_mohm, SENSE.gain_milli, SENSE.vdd_mv),
+            &CurrentDefaults::from_sense(
+                seed.sense.shunt_r_mohm,
+                seed.sense.gain_milli,
+                seed.sense.vdd_mv,
+            ),
         );
         if let Some(store) = seed.store {
             store.boot_load(&shared.table);
@@ -107,17 +138,7 @@ impl SimServo {
         // After boot_load, mirroring chip bringup: the calib overlay copies
         // the whole region, so RO board facts land last and win over a
         // stale saved image.
-        shared.table.seed_calib_sense(
-            &SENSE,
-            &CalibSenseExt {
-                vbus_div_top_ohm: 20000,
-                vbus_div_bot_ohm: 10000,
-                ntc_pullup_ohm: 10000,
-                ntc_r25_ohm: 10000,
-                ntc_beta: 3950,
-                vmotor_bias_nom_counts: 773,
-            },
-        );
+        shared.table.seed_calib_sense(&seed.sense, &seed.sense_ext);
         // Default UID: the id repeated -- distinct per servo, predictable for
         // ENUM tests; override via `seed_uid` where prefix structure matters.
         // A reboot passes the live one back in: the UID is silicon (ESIG on
@@ -169,6 +190,38 @@ impl SimServo {
         self.session = Session::new();
         self.bus = bus;
         self.feed = feed;
+    }
+
+    /// Replace the board sense facts and power-cycle onto them: install
+    /// stamps them from the board at every bringup, so a servo that models a
+    /// different board must model it from boot on. Pre-traffic.
+    pub fn set_sense(&mut self, sense: CalibSense, sense_ext: CalibSenseExt) {
+        self.seed.sense = sense;
+        self.seed.sense_ext = sense_ext;
+        self.reboot();
+    }
+
+    /// A bench SAVE without the wire (sec 9.4): the live CONFIG, PROFILE and
+    /// CALIB regions land in the store, so the next boot overlays them back
+    /// and FACTORY wipes them.
+    pub fn persist(&self) {
+        let store = self.shared.store().expect("servo built with a store");
+        let config: &[u8; CONFIG_LEN] =
+            RegisterFile::read(&self.shared.table, CONFIG_BASE_ADDR, CONFIG_REGION_SIZE)
+                .ok()
+                .and_then(|s| s.try_into().ok())
+                .expect("whole CONFIG region");
+        let profile: &[u8; PROFILE_LEN] =
+            RegisterFile::read(&self.shared.table, PROFILE_BASE_ADDR, PROFILE_REGION_SIZE)
+                .ok()
+                .and_then(|s| s.try_into().ok())
+                .expect("whole PROFILE region");
+        let calib: &[u8; CALIB_LEN] =
+            RegisterFile::read(&self.shared.table, CALIB_BASE_ADDR, CALIB_REGION_SIZE)
+                .ok()
+                .and_then(|s| s.try_into().ok())
+                .expect("whole CALIB region");
+        store.save(config, profile, calib).expect("store save");
     }
 
     /// sec 9.1: the chip main-loop sampler's declaration (thread-level, not a
