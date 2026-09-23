@@ -3,7 +3,7 @@
 //! with no hardware; time is sim time, so every engine window resolves
 //! instantly and deterministically.
 
-use osc_integration::sim::{Sim, WireFrame};
+use osc_integration::sim::{RamStore, Sim, WireFrame};
 use osc_protocol::wire::BaudRate;
 
 use crate::pipe::{Pipe, PipeError};
@@ -21,8 +21,16 @@ impl FakePipe {
         sim.attach_host();
         sim.attach_link();
         for &id in servo_ids {
-            sim.add_servo(id);
+            // One store per servo, leaked: the sim wants `&'static`, and a
+            // fake fleet lives as long as the client that owns it, so the
+            // leak is bounded by the roster. Without a store the servo
+            // answers SAVE and FACTORY `hardware` (protocol sec 9.4).
+            sim.add_servo_with_store(id, RamStore::leak());
         }
+        // SAVE/FACTORY only mean anything with the reboot behind them: the
+        // sim's main loop honors the staged reset, so a wiped store boots
+        // board defaults and the servo answers on its default id again.
+        sim.set_self_reboot(true);
         Self {
             sim,
             frames: Vec::new(),
