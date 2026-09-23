@@ -56,6 +56,12 @@ impl RingState {
     pub fn cursor(&self) -> u16 {
         self.cursor.get()
     }
+
+    /// Empty the ring: the DMA state a reset leaves behind, so a rebuilt
+    /// driver's framer (cursor 0) agrees with the buffer.
+    pub fn reset(&self) {
+        self.cursor.set(0);
+    }
 }
 
 pub struct DeadlineState {
@@ -141,10 +147,24 @@ impl BaudState {
 }
 
 /// Handles the Sim keeps to reach into one servo's state during delivery.
+/// Cloned into the servo itself so a reboot re-enters bringup over the same
+/// peripherals: the ring, the skewed clock and the applied baud are silicon,
+/// only the driver on top of them restarts.
+#[derive(Clone)]
 pub struct Handles {
     pub ring: Rc<RingState>,
     pub deadline: Rc<DeadlineState>,
     pub baud: Rc<BaudState>,
+}
+
+impl Handles {
+    pub fn new(rate: BaudRate) -> Self {
+        Self {
+            ring: RingState::new(),
+            deadline: DeadlineState::new(),
+            baud: BaudState::new(rate),
+        }
+    }
 }
 
 // --- providers --------------------------------------------------------------
@@ -178,13 +198,7 @@ pub struct SimDeadline {
 }
 
 impl SimDeadline {
-    pub fn new(
-        core: Rc<RefCell<Core>>,
-        state: Rc<DeadlineState>,
-        idx: usize,
-        skew_ppm: i32,
-    ) -> Self {
-        state.skew_ppm.set(skew_ppm);
+    pub fn new(core: Rc<RefCell<Core>>, state: Rc<DeadlineState>, idx: usize) -> Self {
         Self { core, state, idx }
     }
 }

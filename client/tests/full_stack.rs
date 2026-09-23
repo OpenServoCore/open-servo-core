@@ -24,6 +24,10 @@ use osc_protocol::wire::UID_LEN;
 const GOAL_VELOCITY: u16 = 396;
 /// Slot 0 of the profile region (protocol sec 5.2 pin).
 const PROFILE_SLOT0: u16 = 0x280;
+/// V006 map fact: config.loop_position.velocity_limit_cps, and the board
+/// default the factory state comes back with.
+const VELOCITY_LIMIT_CPS: u16 = 68;
+const DEFAULT_VELOCITY_LIMIT_CPS: u16 = 1500;
 
 /// Span word encoding, protocol sec 5.2: `[addr:10][count:6]`.
 const fn span_word(addr: u16, count: u16) -> u16 {
@@ -200,6 +204,37 @@ fn assign_moves_the_matcher_to_its_new_id() {
         Err(Error::Timeout { .. }) => {}
         other => panic!("old id must be vacant, got {other:?}"),
     }
+}
+
+/// protocol sec 9.4/9.5 end to end: every simulated servo carries its own
+/// store, so SAVE is durable across the reboot that follows and FACTORY
+/// really wipes - the GUI rescans straight after, so the wiped servo has to
+/// answer on its board id.
+#[test]
+fn save_survives_reboot_and_factory_restores_defaults() {
+    let mut c = fleet(&[1]);
+    let id = Id::new(1);
+    let val = 777u16.to_le_bytes();
+    c.write(id, VELOCITY_LIMIT_CPS, &val).expect("write");
+    c.save(id).expect("save");
+    c.reboot(id).expect("reboot");
+    assert_eq!(
+        c.read(id, VELOCITY_LIMIT_CPS, 2)
+            .expect("read after reboot"),
+        val,
+        "the saved image is what booted"
+    );
+
+    c.factory(id).expect("factory");
+    assert_eq!(
+        c.read(id, VELOCITY_LIMIT_CPS, 2)
+            .expect("read after factory"),
+        DEFAULT_VELOCITY_LIMIT_CPS.to_le_bytes(),
+        "a wiped store boots board defaults"
+    );
+    let found = c.discover().expect("discover after factory");
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].id, id);
 }
 
 #[test]
