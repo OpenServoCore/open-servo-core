@@ -1,8 +1,10 @@
 //! Shared rig plumbing for the experiment subcommands: the bus connection,
-//! the driver pump (TEL bursts included), table snapshot/rollback, and CSV
-//! record/replay. `ident` drives these; `cal` and `sweep` reach the same set.
+//! the driver pump (TEL bursts included), table snapshot/rollback, CSV
+//! record/replay, and the horn park. `ident` drives these; `cal` and `sweep`
+//! reach the same set.
 
 pub(crate) mod csvio;
+pub(crate) mod park;
 pub(crate) mod pump;
 pub(crate) mod snapshot;
 
