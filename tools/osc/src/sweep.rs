@@ -1,4 +1,4 @@
-//! `osc sweep` -- raw open-loop duty sweep for empirical plant capture:
+//! `osc sweep` - raw open-loop duty sweep for empirical plant capture:
 //! per direction x per duty rung, seek to a start band by polling, brake and
 //! settle so the rung opens on a still shaft, then one
 //! goal+arm COMMIT captures a TEL burst at full tick rate - no mid-rung
@@ -15,9 +15,10 @@
 //! reversal pair like `20,then:-20` captures gear play with no reposition
 //! between the two drives.
 //!
-//! Duty sign is taken as-is (fwd = +duty): the seek's bang-bang polling
-//! assumes normal drive polarity and bails the run if a reversed servo
-//! walks away from the band.
+//! Duty sign is taken as-is (fwd = +duty): the kernel applies
+//! `drive_polarity` at the motor output, so +duty moves counts up on a
+//! calibrated servo. The seek's distance-growing bail stays as the guard for
+//! a servo that was never calibrated.
 //!
 //! `--stall` seeks the physical end stop instead of a start band and leaves
 //! the shaft there, so the rungs push into it: a locked-output ladder for
@@ -37,21 +38,34 @@ use osc_client::Id;
 use osc_client::blocking::Client;
 use osc_client::nusb::NusbPipe;
 use osc_ident::frame::TelFrame;
-use osc_ident::regs::{Reg, calib, control};
+use osc_ident::regs::{Reg, calib, config, control};
 
 use crate::descriptor;
-use crate::rig::pump::{self, STOP, exchange_tel_burst, read_snapshot, with_guard, write_reg};
+use crate::rig::park::park;
+use crate::rig::pump::{
+    self, BurstStats, STOP, exchange_tel_burst, read_snapshot, with_guard, write_reg,
+};
 use crate::rig::snapshot::read_u16;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
-enum Dirs {
+pub(crate) enum Dirs {
     Both,
     Fwd,
     Rev,
 }
 
+impl Dirs {
+    fn signs(self) -> &'static [i8] {
+        match self {
+            Dirs::Both => &[1, -1],
+            Dirs::Fwd => &[1],
+            Dirs::Rev => &[-1],
+        }
+    }
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
-enum Decay {
+pub(crate) enum Decay {
     Slow,
     Fast,
 }
@@ -73,7 +87,7 @@ impl Decay {
 /// crosses in 150 ms, and a fast rung given the slow one's window drives into
 /// the end stop.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum Step {
+pub(crate) enum Step {
     Drive(u8, Option<u32>),
     Then(i8, Option<u32>),
     Coast(u32),
@@ -93,7 +107,15 @@ impl std::fmt::Display for Step {
     }
 }
 
-fn parse_step(s: &str) -> Result<Step, String> {
+impl std::str::FromStr for Step {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        parse_step(s)
+    }
+}
+
+pub(crate) fn parse_step(s: &str) -> Result<Step, String> {
     let ms = |v: &str| v.parse().map_err(|_| format!("bad ms {v:?}"));
     if let Some(v) = s.strip_prefix("coast:") {
         return Ok(Step::Coast(ms(v)?));
@@ -214,6 +236,63 @@ pub struct Args {
     rung_tries: u32,
 }
 
+/// What one sweep run drives: `Args` minus the output dir, mask parsed.
+pub(crate) struct Cfg {
+    pub(crate) steps: Vec<Step>,
+    pub(crate) dirs: Dirs,
+    pub(crate) decay: Decay,
+    pub(crate) window_ms: u32,
+    pub(crate) rest_ms: u32,
+    pub(crate) baseline_ms: u32,
+    pub(crate) seek_duty_pct: u8,
+    pub(crate) seek_cap_pct: u8,
+    pub(crate) settle_ms: u32,
+    pub(crate) stall: bool,
+    pub(crate) static_load: bool,
+    pub(crate) guard: (u16, u16),
+    pub(crate) tel_mask: u16,
+    pub(crate) rung_tries: u32,
+}
+
+impl TryFrom<&Args> for Cfg {
+    type Error = anyhow::Error;
+
+    fn try_from(a: &Args) -> Result<Self> {
+        Ok(Self {
+            steps: a.duty_pct.clone(),
+            dirs: a.dirs,
+            decay: a.decay,
+            window_ms: a.window_ms,
+            rest_ms: a.rest_ms,
+            baseline_ms: a.baseline_ms,
+            seek_duty_pct: a.seek_duty_pct,
+            seek_cap_pct: a.seek_cap_pct,
+            settle_ms: a.settle_ms,
+            stall: a.stall,
+            static_load: a.static_load,
+            guard: (a.guard_lo, a.guard_hi),
+            tel_mask: crate::parse_u16(&a.tel_mask).context("--tel-mask")?,
+            rung_tries: a.rung_tries,
+        })
+    }
+}
+
+/// One committed segment: the baseline (seg 0) or one schedule step of one
+/// direction, after its chain passed clean.
+pub(crate) struct Segment {
+    pub(crate) seg: u32,
+    pub(crate) dir: i8,
+    pub(crate) cmd_duty_q15: i16,
+    pub(crate) frames: Vec<TelFrame>,
+    pub(crate) stats: BurstStats,
+}
+
+/// A run that completed every chain, segments in commit order.
+pub(crate) struct Recording {
+    #[expect(dead_code, reason = "the CLI streams rows through on_seg instead")]
+    pub(crate) segments: Vec<Segment>,
+}
+
 /// One rung's start band: a narrow window CENTRED on the launch guard, so a
 /// rung starts at `guard_lo` (fwd) or `guard_hi` (rev) give or take
 /// `BAND_HALF`. Centring matters because the seek stops the instant it
@@ -221,7 +300,7 @@ pub struct Args {
 /// that ends against a rail leaves the next seek approaching from the far
 /// side, and a band offset to one side of the guard then starts the rung a
 /// full band-width from where it was asked to.
-const BAND_HALF: u16 = 75;
+pub(crate) const BAND_HALF: u16 = 75;
 
 fn start_band(dir: i8, guard_lo: u16, guard_hi: u16) -> (u16, u16) {
     let c = if dir > 0 { guard_lo } else { guard_hi };
@@ -244,11 +323,11 @@ fn retry_note(
     format!("  seg {seg} ({what}) [h={holes} g={garble}]")
 }
 
-fn pct_q15(pct: u8) -> i16 {
+pub(crate) fn pct_q15(pct: u8) -> i16 {
     (pct as i32 * 32767 / 100) as i16
 }
 
-fn samples_of_ms(ms: u32) -> u16 {
+pub(crate) fn samples_of_ms(ms: u32) -> u16 {
     ms.saturating_mul(20).min(u16::MAX as u32) as u16
 }
 
@@ -445,15 +524,12 @@ fn rest(ms: u32) -> Result<()> {
     Ok(())
 }
 
-fn write_rows(
-    w: &mut impl Write,
-    seg: u32,
-    cmd_duty_q15: i16,
-    dir: i8,
-    frames: &[TelFrame],
-) -> Result<()> {
+pub(crate) const CSV_HEADER: &str = "seg,cmd_duty_q15,dir,tick,window_valid,pos,current,current_trough,duty_q15,vdiff,vbus,current_raw,vmotor_a,vmotor_b,vbus_raw,ntc_raw";
+
+fn write_rows(w: &mut impl Write, s: &Segment) -> Result<()> {
     let opt = |v: Option<i32>| v.map(|v| v.to_string()).unwrap_or_default();
-    for f in frames {
+    let (seg, cmd_duty_q15, dir) = (s.seg, s.cmd_duty_q15, s.dir);
+    for f in &s.frames {
         writeln!(
             w,
             "{seg},{cmd_duty_q15},{dir},{},{},{},{},{},{},{},{},{},{},{},{},{}",
@@ -486,15 +562,49 @@ fn git_sha() -> String {
         .unwrap_or_else(|| "unknown".into())
 }
 
-/// Entry from the top-level `osc sweep` dispatch.
-pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
-    pump::install_ctrlc();
-    let mask = crate::parse_u16(&args.tel_mask).context("--tel-mask")?;
-    let mut c = crate::rig::connect(&baud)?;
-    let id = Id::new(id);
+/// The run's constants, written as meta.json before the first burst.
+pub(crate) fn meta(c: &mut Client<NusbPipe>, id: Id, cfg: &Cfg) -> Result<serde_json::Value> {
+    let identity = c.identity(id)?;
+    let tick_hz = read_u16(c, id, calib::TICK_HZ)?;
+    let vbus_counts = read_snapshot(c, id)?.vbus_counts;
+    Ok(serde_json::json!({
+        "model": identity.model,
+        "fw": identity.fw,
+        "tick_hz": tick_hz,
+        "vbus_counts": vbus_counts,
+        "sense": {
+            "shunt_r_mohm": read_u16(c, id, calib::SHUNT_R_MOHM)?,
+            "gain_milli": read_u16(c, id, calib::GAIN_MILLI)?,
+            "vmotor_div_top": read_u16(c, id, calib::VMOTOR_DIV_TOP)?,
+            "vmotor_div_bot": read_u16(c, id, calib::VMOTOR_DIV_BOT)?,
+            "vdd_mv": read_u16(c, id, calib::VDD_MV)?,
+        },
+        "schedule": cfg.steps.iter().map(Step::to_string).collect::<Vec<_>>(),
+        "decay": cfg.decay.as_str(),
+        "dirs": cfg.dirs.signs(),
+        "window_ms": cfg.window_ms,
+        "rung_tries": cfg.rung_tries,
+        "rest_ms": cfg.rest_ms,
+        "baseline_ms": cfg.baseline_ms,
+        "seek_duty_pct": cfg.seek_duty_pct,
+        "seek_cap_pct": cfg.seek_cap_pct,
+        "settle_ms": cfg.settle_ms,
+        "stall": cfg.stall,
+        "static_load": cfg.static_load,
+        "guard": [cfg.guard.0, cfg.guard.1],
+        "tel_mask": cfg.tel_mask,
+        "post_rung_brake": true,
+        "git_sha": git_sha(),
+    }))
+}
 
-    std::fs::create_dir_all(&args.out).with_context(|| format!("mkdir {}", args.out.display()))?;
+/// The descriptor-placed open-loop registers the run toggles.
+struct Regs {
+    decay: Reg,
+    zero_brake: Reg,
+}
 
+fn resolve_regs(c: &mut Client<NusbPipe>, id: Id) -> Result<Regs> {
     let identity = c.identity(id)?;
     let registry = descriptor::load()?;
     let (d, note) = descriptor::select(&registry, identity.model, identity.fw)?;
@@ -508,44 +618,228 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
             width: f.width as u8,
         })
     };
-    let decay_reg = field_reg("openloop_decay")?;
-    let zb_reg = field_reg("openloop_zero_brake")?;
-    let tick_hz = read_u16(&mut c, id, calib::TICK_HZ)?;
-    let vbus_counts = read_snapshot(&mut c, id)?.vbus_counts;
-    let dirs: &[i8] = match args.dirs {
-        Dirs::Both => &[1, -1],
-        Dirs::Fwd => &[1],
-        Dirs::Rev => &[-1],
+    Ok(Regs {
+        decay: field_reg("openloop_decay")?,
+        zero_brake: field_reg("openloop_zero_brake")?,
+    })
+}
+
+/// Baseline, then every chain of every direction. Each committed segment
+/// reaches `on_seg` as it lands, so a caller keeps what was captured before
+/// a later chain gives up. Leaves the servo guarded and torqued off.
+pub(crate) fn record(
+    c: &mut Client<NusbPipe>,
+    id: Id,
+    cfg: &Cfg,
+    mut on_seg: impl FnMut(&Segment) -> Result<()>,
+) -> Result<Recording> {
+    let regs = resolve_regs(c, id)?;
+    let r = with_guard(c, id, |c| chains(c, id, cfg, &regs, &mut on_seg));
+    // Belt for a run cut mid-burst: brake flag clear, decay back to slow,
+    // guards back on. The permit is RAM-only so a power cycle clears it
+    // anyway, but a servo left unguarded until someone reboots it is a trap.
+    let _ = write_reg(c, id, regs.zero_brake, 0);
+    let _ = write_reg(c, id, regs.decay, Decay::Slow as i32);
+    let _ = write_reg(c, id, control::STALL_PERMIT, 0);
+    r
+}
+
+fn chains(
+    c: &mut Client<NusbPipe>,
+    id: Id,
+    cfg: &Cfg,
+    regs: &Regs,
+    on_seg: &mut impl FnMut(&Segment) -> Result<()>,
+) -> Result<Recording> {
+    let mask = cfg.tel_mask;
+    let seek_duty = pct_q15(cfg.seek_duty_pct);
+    let seek_cap = pct_q15(cfg.seek_cap_pct) as i32;
+    let mut segments = Vec::new();
+    let mut commit = |s: Segment| -> Result<()> {
+        on_seg(&s)?;
+        segments.push(s);
+        Ok(())
     };
-    let meta = serde_json::json!({
-        "model": identity.model,
-        "fw": identity.fw,
-        "tick_hz": tick_hz,
-        "vbus_counts": vbus_counts,
-        "sense": {
-            "shunt_r_mohm": read_u16(&mut c, id, calib::SHUNT_R_MOHM)?,
-            "gain_milli": read_u16(&mut c, id, calib::GAIN_MILLI)?,
-            "vmotor_div_top": read_u16(&mut c, id, calib::VMOTOR_DIV_TOP)?,
-            "vmotor_div_bot": read_u16(&mut c, id, calib::VMOTOR_DIV_BOT)?,
-            "vdd_mv": read_u16(&mut c, id, calib::VDD_MV)?,
-        },
-        "schedule": args.duty_pct.iter().map(Step::to_string).collect::<Vec<_>>(),
-        "decay": args.decay.as_str(),
-        "dirs": dirs,
-        "window_ms": args.window_ms,
-        "rung_tries": args.rung_tries,
-        "rest_ms": args.rest_ms,
-        "baseline_ms": args.baseline_ms,
-        "seek_duty_pct": args.seek_duty_pct,
-        "seek_cap_pct": args.seek_cap_pct,
-        "settle_ms": args.settle_ms,
-        "stall": args.stall,
-        "static_load": args.static_load,
-        "guard": [args.guard_lo, args.guard_hi],
-        "tel_mask": mask,
-        "post_rung_brake": true,
-        "git_sha": git_sha(),
-    });
+
+    write_reg(c, id, regs.decay, Decay::Slow as i32)?;
+    write_reg(c, id, regs.zero_brake, 0)?;
+    write_reg(c, id, control::TEL_MASK, mask as i32)?;
+    if cfg.stall || cfg.static_load {
+        write_reg(c, id, control::STALL_PERMIT, 1)?;
+    }
+
+    // baseline: mid-travel, torque off, noise floor at full tick rate
+    println!("[baseline] {} ms torque-off", cfg.baseline_ms);
+    if !cfg.static_load {
+        seek_band(c, id, (1750, 2350), seek_duty, seek_cap)?;
+    }
+    write_reg(c, id, control::TORQUE_ENABLE, 0)?;
+    let (frames, st) = exchange_tel_burst(c, id, samples_of_ms(cfg.baseline_ms), None, mask)?;
+    println!(
+        "  seg 0: {} frames, {} samples, {} seq holes, {} garble bytes",
+        st.frames, st.samples, st.holes, st.garble
+    );
+    commit(Segment {
+        seg: 0,
+        dir: 0,
+        cmd_duty_q15: 0,
+        frames,
+        stats: st,
+    })?;
+
+    let steps = &cfg.steps;
+
+    // Retry granularity is the CHAIN, not the step: then/coast/brake steps
+    // inherit momentum from the drive they follow, so replaying one alone
+    // would capture it from the wrong state. A chain starts wherever the
+    // previous step does not feed this one.
+    let starts: Vec<usize> = (0..steps.len())
+        .filter(|&k| k == 0 || !feeds(steps, k - 1))
+        .collect();
+
+    let mut seg = 1u32;
+    for &dir in cfg.dirs.signs() {
+        for (ci, &chain0) in starts.iter().enumerate() {
+            let chain_end = starts.get(ci + 1).copied().unwrap_or(steps.len());
+            let seg0 = seg;
+            let mut attempt = 0u32;
+            let mut pending: Vec<(Segment, String)> = Vec::new();
+            loop {
+                attempt += 1;
+                pending.clear();
+                let mut dirty = None;
+                let mut live = false;
+                seg = seg0;
+                for k in chain0..chain_end {
+                    let step = steps[k];
+                    check_stop()?;
+                    // Drive is never chained, so it always arrives with live
+                    // false: the seek is the only difference in its prep.
+                    if let Step::Drive(..) = step {
+                        check_fault(c, id)?;
+                        if cfg.static_load {
+                            // nothing to seek
+                        } else if cfg.stall {
+                            // Already stopped, and still pressed into the stop:
+                            // nothing to brake and nothing to let settle.
+                            seek_stop(c, id, dir, seek_duty, seek_cap)?;
+                        } else {
+                            seek_band(
+                                c,
+                                id,
+                                start_band(dir, cfg.guard.0, cfg.guard.1),
+                                seek_duty,
+                                seek_cap,
+                            )?;
+                            // Kill the seek's momentum and let the shaft ring
+                            // down. Sign is -dir, the mirror of the post-rung
+                            // call: the seek parks NEAR its start-band wall, so
+                            // the token brake duty has to point away from that
+                            // one instead.
+                            brake_to_rest(c, id, -dir)?;
+                            rest(cfg.settle_ms)?;
+                        }
+                    } else if !live {
+                        check_fault(c, id)?;
+                    }
+                    if !live {
+                        write_reg(c, id, control::MODE, 0)?;
+                        write_reg(c, id, control::TORQUE_ENABLE, 1)?;
+                    }
+                    let (ms, duty) = match step {
+                        Step::Drive(pct, ms) => (
+                            ms.unwrap_or(cfg.window_ms),
+                            dir as i32 * pct_q15(pct) as i32,
+                        ),
+                        Step::Then(pct, ms) => (
+                            ms.unwrap_or(cfg.window_ms),
+                            dir as i32 * pct.signum() as i32 * pct_q15(pct.unsigned_abs()) as i32,
+                        ),
+                        Step::Coast(ms) | Step::Brake(ms) => (ms, 0),
+                    };
+                    if matches!(step, Step::Brake(_)) {
+                        write_reg(c, id, regs.zero_brake, 1)?;
+                    }
+                    // Fast decay only inside the burst: the seek and the post-step
+                    // brake need slow decay to move and to stop.
+                    if cfg.decay == Decay::Fast {
+                        write_reg(c, id, regs.decay, Decay::Fast as i32)?;
+                    }
+                    let (frames, st) = exchange_tel_burst(
+                        c,
+                        id,
+                        samples_of_ms(ms),
+                        Some((control::GOAL_DUTY, duty)),
+                        mask,
+                    )?;
+                    if cfg.decay == Decay::Fast {
+                        write_reg(c, id, regs.decay, Decay::Slow as i32)?;
+                    }
+                    if matches!(step, Step::Brake(_)) {
+                        write_reg(c, id, regs.zero_brake, 0)?;
+                    }
+                    let what = match step {
+                        Step::Drive(pct, _) => format!("duty {:+}%", dir as i32 * pct as i32),
+                        Step::Then(pct, _) => format!("then {:+}%", dir as i32 * pct as i32),
+                        Step::Coast(ms) => format!("coast {ms} ms"),
+                        Step::Brake(ms) => format!("brake {ms} ms"),
+                    };
+                    if st.holes > 0 || st.garble > 0 {
+                        dirty = Some(retry_note(seg, &what, st.holes, st.garble));
+                    }
+                    let s = Segment {
+                        seg,
+                        dir,
+                        cmd_duty_q15: duty as i16,
+                        frames,
+                        stats: st,
+                    };
+                    pending.push((s, what));
+                    if feeds(steps, k) {
+                        live = true;
+                    } else {
+                        brake_to_rest(c, id, dir)?;
+                        write_reg(c, id, control::TORQUE_ENABLE, 0)?;
+                        rest(cfg.rest_ms)?;
+                        live = false;
+                    }
+                    seg += 1;
+                }
+                match dirty {
+                    None => break,
+                    Some(why) if attempt < cfg.rung_tries => {
+                        println!("  retry rung, attempt {attempt}:{}", why.trim_start());
+                    }
+                    Some(why) => bail!(
+                        "rung failed {} attempts, giving up:{}",
+                        cfg.rung_tries,
+                        why.trim_start()
+                    ),
+                }
+            }
+            for (s, what) in pending.drain(..) {
+                let st = &s.stats;
+                println!(
+                    "  seg {} ({what}): {} frames, {} samples, {} seq holes, {} garble bytes",
+                    s.seg, st.frames, st.samples, st.holes, st.garble
+                );
+                commit(s)?;
+            }
+        }
+    }
+    Ok(Recording { segments })
+}
+
+/// Entry from the top-level `osc sweep` dispatch.
+pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
+    pump::install_ctrlc();
+    let cfg = Cfg::try_from(args)?;
+    let mut c = crate::rig::connect(&baud)?;
+    let id = Id::new(id);
+
+    std::fs::create_dir_all(&args.out).with_context(|| format!("mkdir {}", args.out.display()))?;
+
+    let meta = meta(&mut c, id, &cfg)?;
     let meta_path = args.out.join("meta.json");
     std::fs::write(&meta_path, serde_json::to_string_pretty(&meta)?)
         .with_context(|| format!("write {}", meta_path.display()))?;
@@ -555,179 +849,23 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
         std::fs::File::create(&csv_path)
             .with_context(|| format!("create {}", csv_path.display()))?,
     );
-    writeln!(
-        w,
-        "seg,cmd_duty_q15,dir,tick,window_valid,pos,current,current_trough,duty_q15,vdiff,vbus,current_raw,vmotor_a,vmotor_b,vbus_raw,ntc_raw"
-    )?;
+    writeln!(w, "{CSV_HEADER}")?;
 
-    let seek_duty = pct_q15(args.seek_duty_pct);
-    let seek_cap = pct_q15(args.seek_cap_pct) as i32;
-    let r = with_guard(&mut c, id, |c| {
-        write_reg(c, id, decay_reg, Decay::Slow as i32)?;
-        write_reg(c, id, zb_reg, 0)?;
-        write_reg(c, id, control::TEL_MASK, mask as i32)?;
-        if args.stall || args.static_load {
-            write_reg(c, id, control::STALL_PERMIT, 1)?;
-        }
+    // A resistor has no shaft to park.
+    let center = if cfg.static_load {
+        None
+    } else {
+        let lo = pump::read_i32(&mut c, id, config::POS_MIN_SOFT_COUNTS)?;
+        let hi = pump::read_i32(&mut c, id, config::POS_MAX_SOFT_COUNTS)?;
+        Some(((lo + hi) / 2).clamp(0, u16::MAX as i32) as u16)
+    };
 
-        // baseline: mid-travel, torque off, noise floor at full tick rate
-        println!("[baseline] {} ms torque-off", args.baseline_ms);
-        if !args.static_load {
-            seek_band(c, id, (1750, 2350), seek_duty, seek_cap)?;
-        }
-        write_reg(c, id, control::TORQUE_ENABLE, 0)?;
-        let (frames, st) = exchange_tel_burst(c, id, samples_of_ms(args.baseline_ms), None, mask)?;
-        println!(
-            "  seg 0: {} frames, {} samples, {} seq holes, {} garble bytes",
-            st.frames, st.samples, st.holes, st.garble
-        );
-        write_rows(&mut w, 0, 0, 0, &frames)?;
-
-        let steps = &args.duty_pct;
-
-        // Retry granularity is the CHAIN, not the step: then/coast/brake steps
-        // inherit momentum from the drive they follow, so replaying one alone
-        // would capture it from the wrong state. A chain starts wherever the
-        // previous step does not feed this one.
-        let starts: Vec<usize> = (0..steps.len())
-            .filter(|&k| k == 0 || !feeds(steps, k - 1))
-            .collect();
-
-        let mut seg = 1u32;
-        for &dir in dirs {
-            for (ci, &chain0) in starts.iter().enumerate() {
-                let chain_end = starts.get(ci + 1).copied().unwrap_or(steps.len());
-                let seg0 = seg;
-                let mut attempt = 0u32;
-                let mut pending: Vec<(u32, i32, Vec<TelFrame>, String)> = Vec::new();
-                loop {
-                    attempt += 1;
-                    pending.clear();
-                    let mut dirty = None;
-                    let mut live = false;
-                    seg = seg0;
-                    for k in chain0..chain_end {
-                        let step = steps[k];
-                        check_stop()?;
-                        // Drive is never chained, so it always arrives with live
-                        // false: the seek is the only difference in its prep.
-                        if let Step::Drive(..) = step {
-                            check_fault(c, id)?;
-                            if args.static_load {
-                                // nothing to seek
-                            } else if args.stall {
-                                // Already stopped, and still pressed into the stop:
-                                // nothing to brake and nothing to let settle.
-                                seek_stop(c, id, dir, seek_duty, seek_cap)?;
-                            } else {
-                                seek_band(
-                                    c,
-                                    id,
-                                    start_band(dir, args.guard_lo, args.guard_hi),
-                                    seek_duty,
-                                    seek_cap,
-                                )?;
-                                // Kill the seek's momentum and let the shaft ring
-                                // down. Sign is -dir, the mirror of the post-rung
-                                // call: the seek parks NEAR its start-band wall, so
-                                // the token brake duty has to point away from that
-                                // one instead.
-                                brake_to_rest(c, id, -dir)?;
-                                rest(args.settle_ms)?;
-                            }
-                        } else if !live {
-                            check_fault(c, id)?;
-                        }
-                        if !live {
-                            write_reg(c, id, control::MODE, 0)?;
-                            write_reg(c, id, control::TORQUE_ENABLE, 1)?;
-                        }
-                        let (ms, duty) = match step {
-                            Step::Drive(pct, ms) => (
-                                ms.unwrap_or(args.window_ms),
-                                dir as i32 * pct_q15(pct) as i32,
-                            ),
-                            Step::Then(pct, ms) => (
-                                ms.unwrap_or(args.window_ms),
-                                dir as i32
-                                    * pct.signum() as i32
-                                    * pct_q15(pct.unsigned_abs()) as i32,
-                            ),
-                            Step::Coast(ms) | Step::Brake(ms) => (ms, 0),
-                        };
-                        if matches!(step, Step::Brake(_)) {
-                            write_reg(c, id, zb_reg, 1)?;
-                        }
-                        // Fast decay only inside the burst: the seek and the post-step
-                        // brake need slow decay to move and to stop.
-                        if args.decay == Decay::Fast {
-                            write_reg(c, id, decay_reg, Decay::Fast as i32)?;
-                        }
-                        let (frames, st) = exchange_tel_burst(
-                            c,
-                            id,
-                            samples_of_ms(ms),
-                            Some((control::GOAL_DUTY, duty)),
-                            mask,
-                        )?;
-                        if args.decay == Decay::Fast {
-                            write_reg(c, id, decay_reg, Decay::Slow as i32)?;
-                        }
-                        if matches!(step, Step::Brake(_)) {
-                            write_reg(c, id, zb_reg, 0)?;
-                        }
-                        let what = match step {
-                            Step::Drive(pct, _) => format!("duty {:+}%", dir as i32 * pct as i32),
-                            Step::Then(pct, _) => format!("then {:+}%", dir as i32 * pct as i32),
-                            Step::Coast(ms) => format!("coast {ms} ms"),
-                            Step::Brake(ms) => format!("brake {ms} ms"),
-                        };
-                        let line = format!(
-                            "  seg {seg} ({what}): {} frames, {} samples, {} seq holes, {} garble bytes",
-                            st.frames, st.samples, st.holes, st.garble
-                        );
-                        if st.holes > 0 || st.garble > 0 {
-                            dirty = Some(retry_note(seg, &what, st.holes, st.garble));
-                        }
-                        pending.push((seg, duty, frames, line));
-                        if feeds(steps, k) {
-                            live = true;
-                        } else {
-                            brake_to_rest(c, id, dir)?;
-                            write_reg(c, id, control::TORQUE_ENABLE, 0)?;
-                            rest(args.rest_ms)?;
-                            live = false;
-                        }
-                        seg += 1;
-                    }
-                    match dirty {
-                        None => break,
-                        Some(why) if attempt < args.rung_tries => {
-                            println!("  retry rung, attempt {attempt}:{}", why.trim_start());
-                        }
-                        Some(why) => bail!(
-                            "rung failed {} attempts, giving up:{}",
-                            args.rung_tries,
-                            why.trim_start()
-                        ),
-                    }
-                }
-                for (sg, duty, frames, line) in pending.drain(..) {
-                    println!("{line}");
-                    write_rows(&mut w, sg, duty as i16, dir, &frames)?;
-                }
-            }
-        }
-        Ok(())
-    });
-    // Belt for a run cut mid-burst: brake flag clear, decay back to slow,
-    // guards back on. The permit is RAM-only so a power cycle clears it
-    // anyway, but a servo left unguarded until someone reboots it is a trap.
-    let _ = write_reg(&mut c, id, zb_reg, 0);
-    let _ = write_reg(&mut c, id, decay_reg, Decay::Slow as i32);
-    let _ = write_reg(&mut c, id, control::STALL_PERMIT, 0);
-    w.flush()?;
+    let r = record(&mut c, id, &cfg, |s| write_rows(&mut w, s));
+    let flushed = w.flush();
+    let parked = center.map_or(Ok(()), |at| park(&mut c, id, at));
+    flushed?;
     r?;
+    parked?;
     println!("sweep: {}", csv_path.display());
     println!("meta:  {}", meta_path.display());
     Ok(())
@@ -813,6 +951,46 @@ mod tests {
                 digits > 0 && !head[head.len() - digits..].starts_with('0')
             })
         })
+    }
+
+    #[test]
+    fn cfg_carries_the_cli_defaults() {
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(flatten)]
+            args: Args,
+        }
+        let cli = <Cli as clap::Parser>::try_parse_from(["sweep"]).unwrap();
+        let cfg = Cfg::try_from(&cli.args).unwrap();
+        let grid: Vec<Step> = (1..=20u8).map(|k| Step::Drive(k * 5, None)).collect();
+        assert_eq!(cfg.steps, grid);
+        assert_eq!(cfg.dirs, Dirs::Both);
+        assert_eq!(cfg.decay, Decay::Slow);
+        assert_eq!(cfg.window_ms, 150);
+        assert_eq!(cfg.rest_ms, 500);
+        assert_eq!(cfg.baseline_ms, 1000);
+        assert_eq!((cfg.seek_duty_pct, cfg.seek_cap_pct), (28, 45));
+        assert_eq!(cfg.settle_ms, 300);
+        assert!(!cfg.stall && !cfg.static_load);
+        assert_eq!(cfg.guard, (150, 3950));
+        assert_eq!(cfg.tel_mask, 0x1cd);
+        assert_eq!(cfg.rung_tries, 3);
+    }
+
+    #[test]
+    fn schedule_strings_parse_through_the_cli_grammar() {
+        let steps: Vec<Step> = ["20@450", "then:-20", "brake:150"]
+            .iter()
+            .map(|s| s.parse().unwrap())
+            .collect();
+        assert_eq!(
+            steps,
+            [
+                Step::Drive(20, Some(450)),
+                Step::Then(-20, None),
+                Step::Brake(150)
+            ]
+        );
     }
 
     #[test]
