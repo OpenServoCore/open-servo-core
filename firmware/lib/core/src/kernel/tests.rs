@@ -484,6 +484,33 @@ fn openloop_zero_duty_brakes_when_flag_set() {
 }
 
 #[test]
+fn openloop_endstop_brakes_instead_of_coasting() {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::OpenLoop;
+        t.control.lifecycle.goal_duty = 8000;
+    });
+    let mut k = kernel();
+    for _ in 0..400 {
+        k.on_tick(frame(4095, BIAS), &sh);
+    }
+    assert!(
+        matches!(last_cmd(&k), MotorCmd::Brake),
+        "expected brake at the wall, got {:?}",
+        last_cmd(&k)
+    );
+    assert_eq!(k.duty_q15, 0);
+    sh.table.with_mut(|t| t.control.lifecycle.goal_duty = -8000);
+    k.on_tick(frame(4095, BIAS), &sh);
+    match last_cmd(&k) {
+        MotorCmd::Drive { duty, .. } => assert_eq!(duty.0, -8000),
+        other => panic!("expected retreat Drive, got {other:?}"),
+    }
+}
+
+#[test]
 fn openloop_nonzero_duty_drives_despite_brake_flag() {
     let sh = Shared::new();
     seed(&sh);
@@ -523,7 +550,7 @@ fn openloop_endstop_polarity_flip() {
     for _ in 0..400 {
         k.on_tick(frame(4095, BIAS), &sh);
     }
-    assert_eq!(openloop_duty(&k), 0);
+    assert!(matches!(last_cmd(&k), MotorCmd::Brake));
     sh.table.with_mut(|t| t.control.lifecycle.goal_duty = 8000);
     for _ in 0..400 {
         k.on_tick(frame(4095, BIAS), &sh);

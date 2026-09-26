@@ -613,11 +613,15 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                     // current, and duty of the same sign is what drives it -
                     // zero the outbound push, retreat passes (bench: an
                     // open-loop sweep crashed the horn into the rail)
-                    if (self.i_band.hi == 0 && duty > 0) || (self.i_band.lo == 0 && duty < 0) {
+                    let blocked =
+                        (self.i_band.hi == 0 && duty > 0) || (self.i_band.lo == 0 && duty < 0);
+                    if blocked {
                         duty = 0;
                     }
                     self.duty_q15 = duty;
-                    if duty == 0 && lim_cfg.openloop_zero_brake {
+                    // a zeroed push still coasts on its momentum into the
+                    // physical stop, so the wall brakes whatever the flag says
+                    if blocked || (duty == 0 && lim_cfg.openloop_zero_brake) {
                         // chip-side Drive{0, Slow} maps to coast; a winding
                         // short must be commanded explicitly
                         self.decay = DecayMode::Slow;
