@@ -185,7 +185,7 @@ pub struct Args {
     /// Torque-off cool-down between rungs.
     #[arg(long, default_value_t = 500)]
     rest_ms: u32,
-    /// Torque-off noise-floor capture before the grid.
+    /// Torque-off noise-floor capture before the grid; 0 skips it.
     #[arg(long, default_value_t = 1000)]
     baseline_ms: u32,
     /// Seek drive, percent of full scale.
@@ -289,7 +289,6 @@ pub(crate) struct Segment {
 
 /// A run that completed every chain, segments in commit order.
 pub(crate) struct Recording {
-    #[expect(dead_code, reason = "the CLI streams rows through on_seg instead")]
     pub(crate) segments: Vec<Segment>,
 }
 
@@ -551,7 +550,7 @@ fn write_rows(w: &mut impl Write, s: &Segment) -> Result<()> {
     Ok(())
 }
 
-fn git_sha() -> String {
+pub(crate) fn git_sha() -> String {
     std::process::Command::new("git")
         .args(["rev-parse", "HEAD"])
         .output()
@@ -560,6 +559,17 @@ fn git_sha() -> String {
         .and_then(|o| String::from_utf8(o.stdout).ok())
         .map(|s| s.trim().to_string())
         .unwrap_or_else(|| "unknown".into())
+}
+
+pub(crate) fn git_toplevel() -> Result<PathBuf> {
+    std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| PathBuf::from(s.trim()))
+        .context("not inside a git checkout: pass --root")
 }
 
 /// The run's constants, written as meta.json before the first burst.
@@ -669,23 +679,25 @@ fn chains(
     }
 
     // baseline: mid-travel, torque off, noise floor at full tick rate
-    println!("[baseline] {} ms torque-off", cfg.baseline_ms);
-    if !cfg.static_load {
-        seek_band(c, id, (1750, 2350), seek_duty, seek_cap)?;
+    if cfg.baseline_ms > 0 {
+        println!("[baseline] {} ms torque-off", cfg.baseline_ms);
+        if !cfg.static_load {
+            seek_band(c, id, (1750, 2350), seek_duty, seek_cap)?;
+        }
+        write_reg(c, id, control::TORQUE_ENABLE, 0)?;
+        let (frames, st) = exchange_tel_burst(c, id, samples_of_ms(cfg.baseline_ms), None, mask)?;
+        println!(
+            "  seg 0: {} frames, {} samples, {} seq holes, {} garble bytes",
+            st.frames, st.samples, st.holes, st.garble
+        );
+        commit(Segment {
+            seg: 0,
+            dir: 0,
+            cmd_duty_q15: 0,
+            frames,
+            stats: st,
+        })?;
     }
-    write_reg(c, id, control::TORQUE_ENABLE, 0)?;
-    let (frames, st) = exchange_tel_burst(c, id, samples_of_ms(cfg.baseline_ms), None, mask)?;
-    println!(
-        "  seg 0: {} frames, {} samples, {} seq holes, {} garble bytes",
-        st.frames, st.samples, st.holes, st.garble
-    );
-    commit(Segment {
-        seg: 0,
-        dir: 0,
-        cmd_duty_q15: 0,
-        frames,
-        stats: st,
-    })?;
 
     let steps = &cfg.steps;
 

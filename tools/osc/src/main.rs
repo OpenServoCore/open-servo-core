@@ -6,6 +6,7 @@
 //! the bench `tool-*` binaries' job, not this tool's.
 
 mod cal;
+mod capture;
 mod descriptor;
 mod ident;
 mod rig;
@@ -222,6 +223,9 @@ enum Cmd {
     /// Raw open-loop duty sweep: burst-captured TEL rungs across a duty grid
     /// for empirical plant capture (sweep.csv + meta.json).
     Sweep(sweep::Args),
+    /// Plant-capture campaign on one servo and supply: `pilot` measures the
+    /// servo and writes the dataset's envelope.toml.
+    Capture(capture::Args),
 }
 
 #[derive(Subcommand, Debug)]
@@ -882,5 +886,6 @@ fn main() -> Result<()> {
         Cmd::Cal(args) => cal::run(args, cli.baud.clone(), cli.id),
         Cmd::CalReplay(a) => cal::replay::run(a),
         Cmd::Sweep(args) => sweep::run(args, cli.baud.clone(), cli.id),
+        Cmd::Capture(args) => capture::run(args, cli.baud.clone(), cli.id),
     }
 }
