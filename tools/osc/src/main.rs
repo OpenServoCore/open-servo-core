@@ -225,7 +225,7 @@ enum Cmd {
     Sweep(sweep::Args),
     /// Plant-capture campaign on one servo and supply: `pilot` measures the
     /// servo and writes the dataset's envelope.toml, `plan` shows the session
-    /// it sizes, `check` re-reads a landed capture.
+    /// it sizes, `session` runs it, `check` re-reads a landed capture.
     Capture(capture::Args),
 }
 
