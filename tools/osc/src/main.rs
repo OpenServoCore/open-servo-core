@@ -224,7 +224,8 @@ enum Cmd {
     /// for empirical plant capture (sweep.csv + meta.json).
     Sweep(sweep::Args),
     /// Plant-capture campaign on one servo and supply: `pilot` measures the
-    /// servo and writes the dataset's envelope.toml.
+    /// servo and writes the dataset's envelope.toml, `plan` shows the session
+    /// it sizes, `check` re-reads a landed capture.
     Capture(capture::Args),
 }
 

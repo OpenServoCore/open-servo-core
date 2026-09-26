@@ -1,0 +1,98 @@
+# osc capture session: one capture = two recordings that between them hold
+# every free-shaft procedure the notebooks read.
+#
+#   slow  one sweep: grid + coast + step + reversal + breakaway blocks
+#   fast  the grid again under fast decay
+#
+# Every procedure of a capture runs within minutes of the others, on the same
+# rail and the same gear temperature. notebooks/oscnb/session.py slices a
+# recording back into the classic views from the block map in its meta.json,
+# so block names are that file's view names.
+#
+# Rung windows come from the dataset's envelope.toml (osc capture pilot): a
+# rung is one unpolled burst and its window is the only bound on travel.
+#
+# This file is the compiled default. A session.toml in
+# $XDG_CONFIG_HOME/osc/capture/ (else ~/.config/osc/capture/) replaces it
+# whole; nothing is merged.
+
+# Repeats per session: the spread across them is what control synthesis
+# consumes, and 5 is the fewest that measures one.
+captures = 5
+# The first drive after an idle spell runs at a different friction than the
+# steady state that follows, so one full capture is run and discarded first.
+warmup = true
+# Rest between captures, then a reboot. At 150 s here and 1500 ms rest_ms,
+# v_ss holds flat to +/-1% across a dataset; at 60 s / 500 ms the grease
+# warmed and 20% v_ss rose 12% over three recordings.
+cooldown_s = 150
+# Torque-off between chains, sized with cooldown_s. The gap also lets the host
+# drain the adapter's RX ring between long rungs.
+rest_ms = 1500
+# Torque-off noise-floor burst before the first rung.
+baseline_ms = 1000
+# Seek drive, percent of full scale: gentle on arrival at the start band.
+seek_pct = 15
+# TEL fields: the raw six (pos, raw current, trough, applied duty, vmotor_a,
+# vmotor_b). Kernel conclusions stay out of raw captures.
+tel_mask = 0x1cd
+# Block order rotates by capture index, so warming within a session lands as a
+# testable trend against block position instead of hiding inside one block.
+rotate = true
+
+# Battery gate, read at rest before the warm-up and before every capture:
+# refuse under cells x cell_floor_mv, warn under cells x cell_warn_mv. The pack
+# is the rail read through the board's vbus divider plus its rail_drop_mv (the
+# feed diode). A supply with no table here (usb) is not gated.
+[supply.2s]
+cells = 2
+# Discharge floor at rest; a capture started under it sags further mid-run.
+cell_floor_mv = 3500
+# Near the floor: one session may not fit in what is left.
+cell_warn_mv = 3700
+
+# Recordings of one capture, in run order.
+[[recording]]
+name = "slow"
+decay = "slow"
+blocks = ["grid", "coast", "step", "reversal", "breakaway"]
+
+[[recording]]
+name = "fast"
+decay = "fast"
+blocks = ["grid"]
+
+# Duty ladder, every rung from a still shaft, each at the envelope's window
+# for its duty.
+[block.grid]
+duties = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100]
+
+# Spin-down: each duty runs d@drive_ms,coast:coast_ms,d@drive_ms,brake:coast_ms.
+# Duties above the envelope's coast top_pct are dropped and top_pct becomes the
+# top rung (the pilot ran it both ways). That derate was measured on the
+# pilot's own 80 ms drive and 400 ms coast: change either and rerun the pilot.
+# A 100% entry does not fit the runway: on mg90-a 2S the 80% coast already
+# peaked 690 counts inside the soft limit.
+[block.coast]
+duties = [20, 30, 40, 60, 80]
+drive_ms = 80
+coast_ms = 400
+
+# Step response: 30% for each drive length, then a coast. session.py's step:W
+# view needs 30@W followed by a coast exactly once in the recording; the coast
+# block's 30@80,coast:400 is the 80 ms step, so it is not repeated here.
+[block.step]
+steps = ["30@20", "coast:400", "30@40", "coast:400", "30@60", "coast:400", "30@120", "coast:400"]
+
+# Gear play: drive, reverse, re-reverse with no reposition between, then brake.
+# A 60 ms leg at 40% crosses ~500 counts on mg90-a 2S, so the chain nets one
+# leg of travel.
+[block.reversal]
+steps = ["20@60", "then:-20@60", "then:20@60", "brake:200", "40@60", "then:-40@60", "then:40@60", "brake:200"]
+
+# Onset ladder, from rest at every duty: chaining it would change what every
+# rung above onset measures. Top duty at least 2x the expected onset. 18% in
+# 200 ms crosses ~650 counts on mg90-a 2S, well inside the runway.
+[block.breakaway]
+duties = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
+window_ms = 200

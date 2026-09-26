@@ -55,7 +55,7 @@ pub(crate) enum Dirs {
 }
 
 impl Dirs {
-    fn signs(self) -> &'static [i8] {
+    pub(crate) fn signs(self) -> &'static [i8] {
         match self {
             Dirs::Both => &[1, -1],
             Dirs::Fwd => &[1],
@@ -64,14 +64,15 @@ impl Dirs {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub(crate) enum Decay {
     Slow,
     Fast,
 }
 
 impl Decay {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Decay::Slow => "slow",
             Decay::Fast => "fast",
@@ -112,6 +113,12 @@ impl std::str::FromStr for Step {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         parse_step(s)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Step {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        parse_step(&String::deserialize(d)?).map_err(serde::de::Error::custom)
     }
 }
 
@@ -525,7 +532,7 @@ fn rest(ms: u32) -> Result<()> {
 
 pub(crate) const CSV_HEADER: &str = "seg,cmd_duty_q15,dir,tick,window_valid,pos,current,current_trough,duty_q15,vdiff,vbus,current_raw,vmotor_a,vmotor_b,vbus_raw,ntc_raw";
 
-fn write_rows(w: &mut impl Write, s: &Segment) -> Result<()> {
+pub(crate) fn write_rows(w: &mut impl Write, s: &Segment) -> Result<()> {
     let opt = |v: Option<i32>| v.map(|v| v.to_string()).unwrap_or_default();
     let (seg, cmd_duty_q15, dir) = (s.seg, s.cmd_duty_q15, s.dir);
     for f in &s.frames {
