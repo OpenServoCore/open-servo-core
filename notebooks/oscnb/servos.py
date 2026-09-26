@@ -216,6 +216,36 @@ SERVOS = {
             "the only thing bounding travel."
         ),
     ),
+    "mg90-a": Servo(
+        key="mg90-a",
+        label="Vorpal MG90 clone, unit A",
+        model="MG90",
+        # PROVISIONAL. No angle reference yet: 0 deg is put at the low hand
+        # stop (pos 209) and the slope is a round 20 counts per degree, the
+        # same class as sg90-a. Anything in degrees from this servo is a
+        # placeholder until an indexed horn or dial read replaces it; counts
+        # and wiper volts are unaffected.
+        pos_intercept=209.0,
+        pos_per_deg=20.0,
+        # the guards below, expressed through the provisional mapping
+        travel_deg=(15.55, 166.55),
+        # 75+ counts inside the soft limits 432/3626 so a seek band never
+        # meets the soft-limit clamp; hand stops at 209/3849
+        guard_counts=(520, 3540),
+        measured={},
+        notes=(
+            "All-metal four-stage train, ball-bearing output, plastic D-key "
+            "coupling to the pot. Hand stops 209/3849 (low counts = left). "
+            "Gear ratio (tooth count) and ripple order (commutator segments) "
+            "are not yet known, so the notebooks that need them cannot run on "
+            "this servo until they are. 2S windows come from its own pilot: "
+            "v_ss = 0.2275*d - 0.845 counts/ms over 10-50%, about 0.83x "
+            "sg90-a. Speed keeps rising to 100% (about 20 counts/ms at the "
+            "end of a 140 ms rung, rail flat at 7.9 V), but spin-up takes "
+            "50-60 ms, so the 30 ms allowance in the window rule leaves the "
+            "high-duty rungs 5-8% short of the travel target."
+        ),
+    ),
     # Not a servo: the 4x4 grid of 3.3 ohm 0.5 W resistors wired in place of
     # the motor for the sensor-chain session. A static load has no pot, so the
     # position fields are identity placeholders and travel/guard are empty.
