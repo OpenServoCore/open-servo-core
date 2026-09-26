@@ -133,7 +133,8 @@ pub const DEFAULT_POS_DEADBAND_COUNTS: u16 = 12;
 pub struct ConfigLimits {
     pub current_limit_counts: u16,
     pub stall_response: StallResponse,
-    /// true = positive duty increases position counts.
+    /// false = the wiring is reversed: the kernel negates its motor output so
+    /// positive duty and current still increase position counts.
     pub drive_polarity: bool,
     pub stall_omega_max_cps: u16,
     pub stall_time_ms: u16,

@@ -593,6 +593,13 @@
       "kind": "uint"
     },
     {
+      "name": "rail_drop_mv",
+      "addr": 300,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
       "name": "torque_enable",
       "addr": 384,
       "width": 1,

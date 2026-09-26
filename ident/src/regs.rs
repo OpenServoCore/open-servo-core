@@ -73,6 +73,7 @@ pub mod calib {
     pub const NTC_R25_OHM: Reg = reg(0x0126, 2);
     pub const NTC_BETA: Reg = reg(0x0128, 2);
     pub const VMOTOR_BIAS_NOM_COUNTS: Reg = reg(0x012a, 2);
+    pub const RAIL_DROP_MV: Reg = reg(0x012c, 2);
 }
 
 pub mod control {
@@ -208,6 +209,7 @@ pub const ALL: &[(&str, Reg)] = &[
     ("ntc_r25_ohm", calib::NTC_R25_OHM),
     ("ntc_beta", calib::NTC_BETA),
     ("vmotor_bias_nom_counts", calib::VMOTOR_BIAS_NOM_COUNTS),
+    ("rail_drop_mv", calib::RAIL_DROP_MV),
     ("torque_enable", control::TORQUE_ENABLE),
     ("stall_permit", control::STALL_PERMIT),
     ("tel_mask", control::TEL_MASK),

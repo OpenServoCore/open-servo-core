@@ -14,7 +14,6 @@ use crate::regions::config::StallResponse;
 pub struct LimitCfg {
     pub current_limit_counts: u16,
     pub stall_response: StallResponse,
-    pub drive_polarity: bool,
     pub stall_omega_max_cps: u16,
     /// Consecutive pinned-and-slow MEDIUM ticks before the stall trips. The
     /// table field is `stall_time_ms`; the kernel converts ms -> ticks once
@@ -152,30 +151,18 @@ impl LimitState {
             lim = lim.min(cfg.stall_yield_counts);
         }
         self.i_lim = lim;
-        // endstop: with drive_polarity true, positive current moves counts
-        // up, so the max wall zeroes hi and the min wall zeroes lo; an
-        // inverted polarity swaps which side each wall owns
+        // endstop: positive current moves counts up (drive polarity is
+        // applied at the motor output), so the max wall zeroes hi and the
+        // min wall zeroes lo
         let mut band = IBand {
             lo: -(lim as i32),
             hi: lim as i32,
         };
-        let (at_max, at_min) = (
-            theta_hat_counts >= cfg.pos_max_soft_counts,
-            theta_hat_counts <= cfg.pos_min_soft_counts,
-        );
-        if at_max {
-            if cfg.drive_polarity {
-                band.hi = 0;
-            } else {
-                band.lo = 0;
-            }
+        if theta_hat_counts >= cfg.pos_max_soft_counts {
+            band.hi = 0;
         }
-        if at_min {
-            if cfg.drive_polarity {
-                band.lo = 0;
-            } else {
-                band.hi = 0;
-            }
+        if theta_hat_counts <= cfg.pos_min_soft_counts {
+            band.lo = 0;
         }
         band
     }
@@ -219,7 +206,6 @@ mod tests {
     const CFG: LimitCfg = LimitCfg {
         current_limit_counts: 1200,
         stall_response: StallResponse::Yield,
-        drive_polarity: true,
         stall_omega_max_cps: 500,
         stall_time_ticks: 10,
         stall_yield_counts: 300,
@@ -369,7 +355,7 @@ mod tests {
     #[test]
     fn endstop_directional_all_combos() {
         let mut st = LimitState::new();
-        // at max: the inward (positive, polarity true) side collapses,
+        // at max: the inward (positive) side collapses,
         // retreat keeps the composed limit - one band carries both verdicts
         let b = st.fold(false, 1000, 0, 4000, &CFG);
         assert_eq!((b.lo, b.hi), (-1200, 0));
@@ -381,15 +367,9 @@ mod tests {
         // mid-range: symmetric
         let b = st.fold(false, 1000, 0, 0, &CFG);
         assert_eq!((b.lo, b.hi), (-1200, 1200));
-        // reversed polarity flips which side each wall owns
-        let rev = LimitCfg {
-            drive_polarity: false,
-            ..CFG
-        };
-        let b = st.fold(false, 1000, 0, 4000, &rev);
+        // past the min wall mirrors it
+        let b = st.fold(false, 1000, 0, -5000, &CFG);
         assert_eq!((b.lo, b.hi), (0, 1200));
-        let b = st.fold(false, 1000, 0, -4000, &rev);
-        assert_eq!((b.lo, b.hi), (-1200, 0));
         // the deadlock regression: a zeroed command must not re-read as an
         // inward push - the band's retreat side stays open regardless
         let b = st.fold(false, 1000, 0, 4000, &CFG);

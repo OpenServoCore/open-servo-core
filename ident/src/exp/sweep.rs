@@ -53,8 +53,8 @@ enum Phase {
 pub struct Sweep {
     cfg: SweepCfg,
     phase: Phase,
-    /// Duty sign that drives pos toward the capture end (increasing pos); the
-    /// caller derives it from the measured drive polarity.
+    /// Capture direction as a duty sign, +1 = counts up: the kernel applies
+    /// drive polarity at its output, so the sign needs no wiring mapping.
     sweep_sign: i8,
 }
 

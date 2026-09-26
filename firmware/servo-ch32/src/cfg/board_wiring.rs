@@ -102,6 +102,8 @@ pub struct Calibration {
     /// Nominal bias both motor-terminal dividers return to, ADC counts; the
     /// fallback when the boot measurement's two taps disagree.
     pub vmotor_bias_nom_counts: u16,
+    /// Supply connector -> VSYS drop across the input diode at rest, mV.
+    pub rail_drop_mv: u16,
     /// DMM-measured VDD at the chip pin; the v006 ADC reference is VDD itself.
     pub vdd_mv: u16,
     /// Shortest drive window (TIM1 ticks) with a valid shunt sample.
