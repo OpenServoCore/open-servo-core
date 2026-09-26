@@ -1,8 +1,9 @@
 """Pick a dataset, and show what that choice means.
 
 A Rig is one board paired with one servo. You do not normally choose those: a
-dataset's manifest names them, because a capture is a fact about the hardware
-that produced it. Selecting a dataset selects the rig.
+dataset's dataset.toml names the servo and its recordings identify the board,
+because a capture is a fact about the hardware that produced it. Selecting a
+dataset selects the rig.
 
   rig.pick()                       dropdown of datasets, for working in Jupyter
   rig.use("sg90-a__dev-v006-D__2s")            explicit, for a headless run
@@ -107,15 +108,16 @@ _current = None
 
 
 def use(key=None, board=None, servo=None, show=True):
-    """Select a dataset. Board and servo come from its manifest unless
-    overridden, which is only for reprocessing under corrected constants."""
+    """Select a dataset. The servo comes from its dataset.toml and the board
+    from its recordings unless overridden, which is only for reprocessing under
+    corrected constants."""
     global _dataset, _current
     from . import datasets
     found = datasets.find()
     if key is None:
         live = [k for k, d in found.items() if not d.retired]
         if not live:
-            raise RuntimeError("no dataset with a manifest under telemetry/")
+            raise RuntimeError("no dataset with a dataset.toml under telemetry/")
         key = sorted(live)[0]
     _dataset = found[key] if key in found else datasets.load(key)
     b = BOARDS[board] if board else _dataset.board
@@ -123,11 +125,18 @@ def use(key=None, board=None, servo=None, show=True):
     _current = Rig(b, s)
     if board or servo:
         print(f"OVERRIDE: reading {key} as {b.key} / {s.key}, "
-              f"not the {_dataset.manifest['board']} / {_dataset.manifest['servo']} "
-              f"its manifest names.\n")
+              f"not the {_board_key(_dataset)} / {_dataset.decl['servo']} "
+              f"it was recorded on.\n")
     if show:
         _show()
     return _dataset
+
+
+def _board_key(d):
+    try:
+        return d.board.key
+    except LookupError:
+        return "?"
 
 
 def _show():
@@ -160,7 +169,7 @@ def current() -> Rig:
 
 
 def pick():
-    """A dropdown of every dataset with a manifest. Change it, then run below.
+    """A dropdown of every live dataset. Change it, then run below.
 
     Falls back to the default selection when ipywidgets is missing, so a
     headless execute still produces the table rather than an empty cell."""
@@ -173,7 +182,7 @@ def pick():
         print("ipywidgets not available, using the default dataset")
         return use(show=True)
 
-    opts = [(f"{k}   ({v.manifest['servo']} on {v.manifest['board']}, {v.supply})", k)
+    opts = [(f"{k}   ({v.decl['servo']} on {_board_key(v)}, {v.supply})", k)
             for k, v in found.items()]
     dd = w.Dropdown(options=opts, value=(_dataset.key if _dataset else opts[0][1]),
                     description="dataset:", layout=w.Layout(width="720px"),

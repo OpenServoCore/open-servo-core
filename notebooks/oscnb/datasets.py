@@ -1,10 +1,12 @@
 """Datasets: captures grouped by the hardware that produced them.
 
-A dataset is one board paired with one servo on one supply. Its manifest.json
-names the board and servo, so a capture carries its own constants rather than
-relying on whoever opens it to remember which rig it came off.
+A dataset is one servo on one supply, recorded through one board. Its
+dataset.toml declares what the recordings cannot say about themselves: which
+servo was bolted on, which supply fed it, when it was captured. The board is
+not declared. Every recording's meta.json carries a `sense` block read from the
+control table at capture time, and the board is identified from that.
 
-  telemetry/<dataset>/manifest.json      {board, servo, supply, ...}
+  telemetry/<dataset>/dataset.toml       {servo, supply, captured, notes, ...}
   telemetry/<dataset>/<experiment>/capture-N/<recording>.csv.gz
                                             /<recording>.meta.json
 
@@ -12,9 +14,10 @@ An experiment is a named measurement procedure - grid, bridge, breakaway,
 stepcoast, ripple, reversal. A capture is one repeat of it. Some experiments
 write several recordings per capture (bridge writes slow, fast and spindown).
 
-Reading a recording checks its meta.json `sense` block against the board the
-manifest claims, so a dataset pointed at the wrong board fails at load rather
-than silently producing numbers that are off by the ratio of two shunts.
+The board comes from the dataset's first recording, and reading any recording
+checks its own `sense` block against that board, so a dataset that mixes
+captures from two boards fails at load rather than silently producing numbers
+that are off by the ratio of two shunts.
 """
 
 from dataclasses import dataclass
@@ -23,8 +26,9 @@ from pathlib import Path
 
 import gzip
 import json
+import tomllib
 
-from .boards import BOARDS
+from . import boards
 from .servos import SERVOS
 
 ROOT = Path(__file__).resolve().parent.parent / "telemetry"
@@ -60,32 +64,43 @@ class Recording:
 class Dataset:
     key: str
     path: Path
-    manifest: dict
+    decl: dict
+    """What dataset.toml declares: servo, supply, captured, notes, retired."""
 
     @property
     def supply(self):
-        return self.manifest["supply"]
+        return self.decl["supply"]
 
     @property
     def retired(self):
-        return bool(self.manifest.get("retired"))
+        return bool(self.decl.get("retired"))
+
+    def first_recording(self):
+        for e in self.experiments:
+            for c in self.captures(e):
+                for r in self.recordings(e, c):
+                    return r
+        return None
 
     @cached_property
     def board(self):
-        k = self.manifest["board"]
-        if k not in BOARDS:
-            raise KeyError(
-                f"{self.key}: manifest names board {k!r}, which has no entry in "
-                f"boards.py. Add it rather than reusing a board that does not "
-                f"describe this hardware."
+        r = self.first_recording()
+        if r is None:
+            raise LookupError(f"{self.key}: no recording to read the board from")
+        b = boards.from_meta(r.meta)
+        if b is None:
+            raise LookupError(
+                f"{r}: meta.json sense {r.meta['sense']} matches no entry in "
+                f"boards.py. Add the board to boards.py rather than bending an "
+                f"entry that does not describe this hardware."
             )
-        return BOARDS[k]
+        return b
 
     @cached_property
     def servo(self):
-        k = self.manifest["servo"]
+        k = self.decl["servo"]
         if k not in SERVOS:
-            raise KeyError(f"{self.key}: manifest names servo {k!r}, absent from servos.py")
+            raise KeyError(f"{self.key}: dataset.toml names servo {k!r}, absent from servos.py")
         return SERVOS[k]
 
     @cached_property
@@ -129,8 +144,8 @@ class Dataset:
 
 def find(root=ROOT) -> dict:
     out = {}
-    for m in sorted(Path(root).glob("*/manifest.json")):
-        out[m.parent.name] = Dataset(m.parent.name, m.parent, json.loads(m.read_text()))
+    for m in sorted(Path(root).glob("*/dataset.toml")):
+        out[m.parent.name] = Dataset(m.parent.name, m.parent, tomllib.loads(m.read_text()))
     return out
 
 
