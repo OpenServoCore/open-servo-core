@@ -102,6 +102,10 @@ pub struct CalibSenseExt {
     pub ntc_beta: u16,
     #[ct_field(access = ro)]
     pub vmotor_bias_nom_counts: u16,
+    /// Supply connector -> VSYS drop across the input Schottky at rest, mV,
+    /// so a host can estimate the pack voltage from `vbus_raw`.
+    #[ct_field(access = ro)]
+    pub rail_drop_mv: u16,
 }
 
 /// Calibration section: always writable (normal field validation applies),
@@ -120,5 +124,5 @@ pub struct CalibRegs {
     pub kinematics: CalibKinematics,
     pub sense_ext: CalibSenseExt,
     #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 84],
+    pub _rsvd_tail: [u8; 82],
 }

@@ -36,6 +36,7 @@ pub mod seed {
         ntc_r25_ohm: 10_000,
         ntc_beta: 3950,
         vmotor_bias_nom_counts: 779,
+        rail_drop_mv: 250,
     };
 
     // Table state a bench calibration wrote and SAVEd: the CALIB region and

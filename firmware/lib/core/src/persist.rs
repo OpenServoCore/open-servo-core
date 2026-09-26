@@ -626,6 +626,7 @@ mod tests {
                 ntc_r25_ohm: 0,
                 ntc_beta: 0,
                 vmotor_bias_nom_counts: 0,
+                rail_drop_mv: 0,
             },
         );
         let pick = boot_overlay_calib(&table, &[0xFF; CALIB_IMAGE_LEN], &[0u8; CALIB_IMAGE_LEN]);

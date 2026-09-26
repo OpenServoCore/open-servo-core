@@ -68,6 +68,8 @@ fn main() -> ! {
             },
             // Terminal-divider bias VB from 3V3 through 200/47: 4095 x 47 / 247.
             vmotor_bias_nom_counts: 779,
+            // SS54 input Schottky: VSYS measured ~0.25 V under the pack.
+            rail_drop_mv: 250,
             vdd_mv: 3300,
             // Scan order is [shunt, vmA, vmB, pos, vcal, vbus, ntc]. The i floor is
             // amp-settling-bound: arm-B network measured true from duty 13%

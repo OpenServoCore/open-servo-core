@@ -136,6 +136,7 @@ fn calib_sense_ext(cal: &Calibration) -> CalibSenseExt {
         ntc_r25_ohm: cal.ntc.r25_ohm.min(u16::MAX as u32) as u16,
         ntc_beta: cal.ntc.beta,
         vmotor_bias_nom_counts: cal.vmotor_bias_nom_counts,
+        rail_drop_mv: cal.rail_drop_mv,
     }
 }
 
