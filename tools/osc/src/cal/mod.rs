@@ -1,10 +1,10 @@
-//! `osc cal` -- the calibration orchestrator: find the mechanical end-stops,
-//! confirm the real-world angle range with the operator, print the
-//! count->unit report, then write the limits + drive polarity + angle
-//! endpoints + gear + pot LUT and persist with MGMT SAVE. Interactive by
-//! default; flags make it headless. The rail-to-rail traverse streams a TEL
-//! current+pos sweep as one bus burst: its commutation ripple gives a
-//! MEASURED gear ratio (the gear prompt's default) and fills the pot
+//! `osc cal` - the calibration orchestrator: find the mechanical end-stops
+//! and the drive polarity (applied at once), confirm the real-world angle
+//! range with the operator, print the count->unit report, then write the
+//! limits + angle endpoints + gear + pot LUT and persist with MGMT SAVE.
+//! Interactive by default; flags make it headless. The rail-to-rail traverse
+//! streams a TEL current+pos sweep as one bus burst: its commutation ripple
+//! gives a MEASURED gear ratio (the gear prompt's default) and fills the pot
 //! linearization LUT. Both are gear-2-dependent and degrade gracefully
 //! (identity LUT / operator-input gear) when ripple SNR is low. The endstop
 //! state machine and the kinematics/units/lut math live in osc-ident; this
@@ -117,6 +117,10 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
         "rails: min {pos_min_phys} max {pos_max_phys} span {span} counts, polarity {}, stall {i_stall_counts} counts",
         if drive_polarity { "normal" } else { "reversed" },
     );
+    // Written before the operator confirms so the sweep and recenter below
+    // drive in the logical convention; RAM only until SAVE, and the value is
+    // the physical truth whether or not the rest is accepted.
+    write_reg(&mut c, id, config::DRIVE_POLARITY, drive_polarity as i32)?;
 
     // Dedicated constant-duty traverse = the ripple/LUT source, captured as
     // one bus burst. A real capture can still fragment on dropped frames
@@ -124,7 +128,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     // (build_sweep_chunks) over the shared pos axis; the single longest run
     // (build_sweep) is kept only for the slip health-check and the
     // moving-run print.
-    let tel = run_sweep(&mut c, id, pos_min_phys, pos_max_phys, drive_polarity, &out)?;
+    let tel = run_sweep(&mut c, id, pos_min_phys, pos_max_phys, &out)?;
     let sweep = build_sweep(&tel);
     let chunks = build_sweep_chunks(&tel);
     match &sweep {
@@ -136,7 +140,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
         None => println!("[sweep] {} tel frames, no usable moving run", tel.len()),
     }
 
-    recenter(&mut c, id, pos_min_phys, pos_max_phys, drive_polarity)?;
+    recenter(&mut c, id, pos_min_phys, pos_max_phys)?;
 
     // Full-traverse motor revs from the ripple sweep: anchor-free geometry,
     // stitched over all chunks and extrapolated from the covered phase span to
@@ -256,7 +260,6 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     write_reg(&mut c, id, config::POS_MAX_PHYS_COUNTS, pos_max_phys)?;
     write_reg(&mut c, id, config::POS_MIN_SOFT_COUNTS, soft_min_count)?;
     write_reg(&mut c, id, config::POS_MAX_SOFT_COUNTS, soft_max_count)?;
-    write_reg(&mut c, id, config::DRIVE_POLARITY, drive_polarity as i32)?;
     write_reg(&mut c, id, calib::ANGLE_MIN_CDEG, angle_min_cdeg as i32)?;
     write_reg(&mut c, id, calib::ANGLE_MAX_CDEG, angle_max_cdeg as i32)?;
     write_reg(&mut c, id, calib::GEAR_RATIO_CENTI, gear_ratio_centi as i32)?;
@@ -473,7 +476,23 @@ fn read_sense(c: &mut Client<NusbPipe>, id: Id) -> Result<SenseParams> {
     })
 }
 
+/// Polarity forced normal for the seek: the probe must see the raw wiring,
+/// or a stale reversed flag makes a reversed servo read as normal and cal
+/// flips it back. Any failure restores the old flag, since a reversed servo
+/// left at 1 drives the wrong way and clamps the wrong endstop side.
 fn run_endstop(c: &mut Client<NusbPipe>, id: Id, out: &OutDir) -> Result<EndstopResult> {
+    let polarity = c
+        .read(id, config::DRIVE_POLARITY.addr, 1)
+        .context("field read")?[0];
+    write_reg(c, id, config::DRIVE_POLARITY, 1)?;
+    let r = seek_rails(c, id, out);
+    if r.is_err() {
+        let _ = write_reg(c, id, config::DRIVE_POLARITY, polarity as i32);
+    }
+    r
+}
+
+fn seek_rails(c: &mut Client<NusbPipe>, id: Id, out: &OutDir) -> Result<EndstopResult> {
     println!("[endstop] seeking both rails (pos guard off, soft limits widened)");
     // pos guard off: driving into the physical ends IS the method. The
     // firmware clamps OpenLoop duty at the soft limits, so a recalibration
@@ -511,7 +530,6 @@ fn run_sweep(
     id: Id,
     pos_min_phys: i32,
     pos_max_phys: i32,
-    drive_polarity: bool,
     out: &OutDir,
 ) -> Result<Vec<TelFrame>> {
     const DUTY: i16 = 8520;
@@ -525,18 +543,15 @@ fn run_sweep(
         start = pos_min_phys;
         end = pos_max_phys;
     }
-    // capture direction = increasing pos; polarity maps duty sign to direction
-    let sweep_sign = if drive_polarity { 1 } else { -1 };
-
     // speed probe: drive AWAY from the nearer rail (toward the interior)
     // for a short window so the probe itself never reaches a stop.
     let mid = (pos_min_phys + pos_max_phys) / 2;
     let here = read_snapshot(c, id)?.pos as i32;
-    let probe_sign = if here < mid { sweep_sign } else { -sweep_sign };
+    let probe_sign = if here < mid { 1 } else { -1 };
     let speed = probe_speed(c, id, DUTY, probe_sign, 150)?;
 
     // position to the capture start rail-inset (polling free before the arm)
-    drive_to(c, id, start, drive_polarity, DUTY)?;
+    drive_to(c, id, start, DUTY)?;
 
     let ms = capture_ms(end as f64 - start as f64, speed, 0.95);
     // 20 fast ticks per ms; TEL_COUNT is u16, so the arm caps at ~3.2 s
@@ -552,7 +567,7 @@ fn run_sweep(
             // 0x1B = pos|current|duty|vdiff (same TEL mask as ident inertia)
             mask: 0x1B,
         },
-        sweep_sign,
+        1,
     );
     let mut pump = Pump::new(c, id, None);
     let ran = pump.run(&mut exp);
@@ -570,15 +585,9 @@ fn run_sweep(
 }
 
 /// Drive to the rail midpoint so the servo does not rest on a hard stop.
-/// Best-effort: uses the measured polarity to pick the duty sign toward the
-/// midpoint, parks torque-off on arrival, and gives up quietly after the loop.
-fn recenter(
-    c: &mut Client<NusbPipe>,
-    id: Id,
-    pos_min: i32,
-    pos_max: i32,
-    drive_polarity: bool,
-) -> Result<()> {
+/// Best-effort: drives the duty sign toward the midpoint, parks torque-off on
+/// arrival, and gives up quietly after the loop.
+fn recenter(c: &mut Client<NusbPipe>, id: Id, pos_min: i32, pos_max: i32) -> Result<()> {
     const DUTY: i32 = 9000;
     let mid = (pos_min + pos_max) / 2;
     let margin = ((pos_max - pos_min) / 10).max(1);
@@ -600,13 +609,7 @@ fn recenter(
             park(c);
             return Ok(());
         }
-        // duty sign toward the midpoint: polarity maps count direction to sign
-        let toward_higher = (pos as i32) < mid;
-        let duty = if toward_higher == drive_polarity {
-            DUTY
-        } else {
-            -DUTY
-        };
+        let duty = if (pos as i32) < mid { DUTY } else { -DUTY };
         write_reg(c, id, control::GOAL_DUTY, duty)?;
         std::thread::sleep(Duration::from_millis(25));
     }
@@ -643,16 +646,10 @@ fn probe_speed(c: &mut Client<NusbPipe>, id: Id, duty_q15: i16, sign: i8, ms: u3
 }
 
 /// Closed-loop drive toward a target count. Polls pos, picks the duty
-/// sign toward target via the measured polarity, and stops within a small band.
+/// sign toward target, and stops within a small band.
 /// Leaves duty 0 + torque ON (holds position for the capture that follows);
 /// ctrl-c parks duty 0 + torque off and bails.
-fn drive_to(
-    c: &mut Client<NusbPipe>,
-    id: Id,
-    target: i32,
-    drive_polarity: bool,
-    duty_q15: i16,
-) -> Result<()> {
+fn drive_to(c: &mut Client<NusbPipe>, id: Id, target: i32, duty_q15: i16) -> Result<()> {
     // fixed band, well inside the >=80 count rail inset so we never settle on
     // (or overshoot into) a stop.
     const BAND: i32 = 40;
@@ -673,13 +670,7 @@ fn drive_to(
             write_reg(c, id, control::GOAL_DUTY, 0)?;
             return Ok(());
         }
-        // duty sign toward target: polarity maps count direction to sign
-        let toward_higher = pos < target;
-        let d = if toward_higher == drive_polarity {
-            duty
-        } else {
-            -duty
-        };
+        let d = if pos < target { duty } else { -duty };
         write_reg(c, id, control::GOAL_DUTY, d)?;
         std::thread::sleep(Duration::from_millis(25));
     }

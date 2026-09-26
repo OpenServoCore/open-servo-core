@@ -528,35 +528,89 @@ fn openloop_nonzero_duty_drives_despite_brake_flag() {
     }
 }
 
-fn openloop_duty(k: &Kernel<FakeIo>) -> i16 {
+fn written_duty(k: &Kernel<FakeIo>) -> i16 {
     match last_cmd(k) {
         MotorCmd::Drive { duty, .. } => duty.0,
         other => panic!("expected Drive, got {other:?}"),
     }
 }
 
-#[test]
-fn openloop_endstop_polarity_flip() {
-    let sh = Shared::new();
-    seed(&sh);
+fn reversed(sh: &Shared, mode: Mode) {
     sh.table.with_mut(|t| {
         t.control.lifecycle.torque_enable = true;
-        t.control.lifecycle.mode = Mode::OpenLoop;
-        t.control.lifecycle.goal_duty = -8000;
+        t.control.lifecycle.mode = mode;
         t.config.limits.drive_polarity = false;
     });
+}
+
+#[test]
+fn reversed_polarity_endstop_stays_positional() {
+    let sh = Shared::new();
+    seed(&sh);
+    reversed(&sh, Mode::OpenLoop);
+    sh.table.with_mut(|t| t.control.lifecycle.goal_duty = 8000);
     let mut k = kernel();
-    // inverted polarity: negative duty is the outbound push at the top wall
+    // +duty is still the outbound push at the top wall
     for _ in 0..400 {
         k.on_tick(frame(4095, BIAS), &sh);
     }
     assert!(matches!(last_cmd(&k), MotorCmd::Brake));
-    sh.table.with_mut(|t| t.control.lifecycle.goal_duty = 8000);
+    assert_eq!(k.duty_q15, 0);
+    sh.table.with_mut(|t| t.control.lifecycle.goal_duty = -8000);
     for _ in 0..400 {
         k.on_tick(frame(4095, BIAS), &sh);
     }
-    assert_eq!(openloop_duty(&k), 8000);
+    assert_eq!(k.duty_q15, -8000);
+    assert_eq!(written_duty(&k), 8000);
     assert_eq!(k.faults.mask(), 0);
+}
+
+#[test]
+fn reversed_polarity_negates_the_openloop_write() {
+    let sh = Shared::new();
+    seed(&sh);
+    reversed(&sh, Mode::OpenLoop);
+    sh.table.with_mut(|t| t.control.lifecycle.goal_duty = 8000);
+    let mut k = kernel();
+    // past the next medium publish, which reports the previous tick's duty
+    for _ in 0..=DECIM_MED {
+        k.on_tick(frame(2000, BIAS), &sh);
+    }
+    assert_eq!(written_duty(&k), -8000);
+    assert_eq!(k.duty_q15, 8000);
+    sh.table
+        .with(|t| assert_eq!(t.telemetry.estimates.duty_applied_q15, 8000));
+}
+
+#[test]
+fn reversed_polarity_negates_the_closed_loop_write() {
+    let sh = Shared::new();
+    seed(&sh);
+    reversed(&sh, Mode::Current);
+    sh.table
+        .with_mut(|t| t.control.lifecycle.goal_current = 500);
+    let mut k = kernel();
+    for _ in 0..20 {
+        k.on_tick(frame(2000, BIAS), &sh);
+    }
+    assert!(k.duty_q15 > 0, "logical duty={}", k.duty_q15);
+    assert_eq!(written_duty(&k), -k.duty_q15);
+}
+
+#[test]
+fn reversed_polarity_negates_vdiff() {
+    let sh = Shared::new();
+    seed(&sh);
+    reversed(&sh, Mode::OpenLoop);
+    sh.table.with_mut(|t| t.control.lifecycle.goal_duty = 8000);
+    let mut k = kernel();
+    // the second tick samples the window the first tick's duty drove
+    k.on_tick(frame(2000, BIAS), &sh);
+    k.on_tick(frame(2000, BIAS), &sh);
+    assert_eq!(k.vdiff_last, -(3000 - 40));
+    sh.table.with_mut(|t| t.config.limits.drive_polarity = true);
+    k.on_tick(frame(2000, BIAS), &sh);
+    assert_eq!(k.vdiff_last, 3000 - 40);
 }
 
 #[test]

@@ -267,7 +267,10 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         // IDENT: per-tick sample aligned to the window the PREVIOUS command
         // drove - duty_q15 still holds that command here; i/vdiff hold
         // last-valid through invalid windows (ident module doc).
-        let vdiff = window::vdiff_from_frame(&frame, sel);
+        // the taps read physical va - vb; a reversed motor makes that the
+        // negative of the logical drive direction every consumer expects
+        let vdiff = window::vdiff_from_frame(&frame, sel)
+            .map(|v| if lim_cfg.drive_polarity { v } else { -v });
         if let Some(vdiff) = vdiff {
             self.vdiff_last = vdiff.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
         }
@@ -419,7 +422,6 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             let lcfg = LimitCfg {
                 current_limit_counts: lim_cfg.current_limit_counts,
                 stall_response: lim_cfg.stall_response,
-                drive_polarity: lim_cfg.drive_polarity,
                 stall_omega_max_cps: lim_cfg.stall_omega_max_cps,
                 stall_time_ticks: self.stall_time_ticks,
                 stall_yield_counts: lim_cfg.stall_yield_counts,
@@ -713,6 +715,15 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                     }
                 }
             }
+        };
+        // logical (+duty moves counts up) -> wiring, on the output only:
+        // duty_q15 and the published duty stay logical
+        let cmd = match cmd {
+            MotorCmd::Drive { duty, decay } if !lim_cfg.drive_polarity => MotorCmd::Drive {
+                duty: Effort(duty.0.saturating_neg()),
+                decay,
+            },
+            cmd => cmd,
         };
         let (_sensors, motor) = self.io.parts();
         motor.write(cmd);
