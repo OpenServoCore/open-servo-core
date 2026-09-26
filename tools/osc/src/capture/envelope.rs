@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 use super::Supply;
@@ -125,14 +125,15 @@ impl Envelope {
         Ok(path)
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the campaign subcommands read it")
-    )]
     pub(crate) fn load(dir: &Path) -> Result<Self> {
         let path = dir.join(FILE);
-        let s =
-            std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+        let s = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                bail!("no {}: run osc capture pilot first", path.display())
+            }
+            Err(e) => return Err(e).with_context(|| format!("read {}", path.display())),
+        };
         toml::from_str(&s).with_context(|| format!("parse {}", path.display()))
     }
 }
@@ -156,47 +157,48 @@ pub(crate) fn civil_date(secs: u64) -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
+/// The pinned mg90 numbers, as the pilot would save them.
+#[cfg(test)]
+pub(super) fn mg90() -> Envelope {
+    let fwd = Fit::rounded(0.2275, -0.845, 0.998);
+    Envelope {
+        supply: Supply::TwoS,
+        fw: 64,
+        git_sha: "5ee25770".into(),
+        measured: civil_date(1_758_758_400),
+        seek_pct: super::SEEK_PCT,
+        limits: Limits {
+            soft: [432, 3626],
+            phys: [209, 3849],
+            guard: [532, 3526],
+            center: 2029,
+            runway: 2994,
+        },
+        v_ss: Speed {
+            duties: vec![10, 20, 30, 40, 50],
+            used: Dir::Fwd,
+            fwd,
+            rev: Fit::rounded(0.2141, -0.712, 0.997),
+        },
+        windows_ms: [(5, 1500), (10, 1500), (60, 219), (100, 140)].into(),
+        coast: Coast {
+            probe_pct: 40,
+            probe_entry: 8.255,
+            probe_travel: 310,
+            top_pct: 80,
+            peak_inside_soft: 690,
+        },
+        verified: vec![Verified {
+            step: "60@219".into(),
+            travel: 2310,
+            predicted: 2395,
+        }],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The pinned mg90 numbers, as the pilot would save them.
-    fn mg90() -> Envelope {
-        let fwd = Fit::rounded(0.2275, -0.845, 0.998);
-        Envelope {
-            supply: Supply::TwoS,
-            fw: 64,
-            git_sha: "5ee25770".into(),
-            measured: civil_date(1_758_758_400),
-            seek_pct: super::super::SEEK_PCT,
-            limits: Limits {
-                soft: [432, 3626],
-                phys: [209, 3849],
-                guard: [532, 3526],
-                center: 2029,
-                runway: 2994,
-            },
-            v_ss: Speed {
-                duties: vec![10, 20, 30, 40, 50],
-                used: Dir::Fwd,
-                fwd,
-                rev: Fit::rounded(0.2141, -0.712, 0.997),
-            },
-            windows_ms: [(5, 1500), (10, 1500), (60, 219), (100, 140)].into(),
-            coast: Coast {
-                probe_pct: 40,
-                probe_entry: 8.255,
-                probe_travel: 310,
-                top_pct: 80,
-                peak_inside_soft: 690,
-            },
-            verified: vec![Verified {
-                step: "60@219".into(),
-                travel: 2310,
-                predicted: 2395,
-            }],
-        }
-    }
 
     #[test]
     fn toml_round_trips() {

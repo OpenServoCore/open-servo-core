@@ -522,7 +522,7 @@ fn window_ms(v: f64, runway: u16) -> u32 {
     ((RUNWAY_FRAC * runway as f64 / v).round() as u32 + SPINUP_MS).min(WINDOW_MAX_MS)
 }
 
-fn windows(fit: &Fit, runway: u16) -> BTreeMap<u8, u32> {
+pub(super) fn windows(fit: &Fit, runway: u16) -> BTreeMap<u8, u32> {
     (1..=20u8)
         .map(|k| k * 5)
         .map(|d| (d, window_ms(fit.at(d), runway)))
