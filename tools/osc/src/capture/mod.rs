@@ -1,20 +1,16 @@
 //! `osc capture` - the plant-capture campaign around `osc sweep`'s recorder.
 //! A dataset is one servo on one supply, `<root>/<servo>__<supply>`; `pilot`
 //! measures the servo and writes the envelope the campaign sizes its rung
-//! windows by, `plan` expands the session procedure against it, and `check`
-//! re-reads a landed capture.
+//! windows by, `plan` expands the session procedure against it, `session`
+//! runs it on the servo, and `check` re-reads a landed capture.
 
-#[expect(dead_code, reason = "the session run loop gates on it")]
 mod battery;
 mod check;
 mod envelope;
 mod pilot;
 mod plan;
 mod procs;
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the session run loop writes through it")
-)]
+mod run;
 mod store;
 mod verdict;
 
@@ -44,6 +40,10 @@ enum CaptureCmd {
     /// map and each recording's schedule, expanded against the dataset's
     /// envelope. No servo needed.
     Plan(PlanArgs),
+    /// Run the session procedure on the servo: battery gate, a discarded
+    /// warm-up, then each capture's recordings, each accepted only when
+    /// complete and clean. A rerun resumes at the first capture not landed.
+    Session(run::Args),
     /// Re-read a landed capture dir: every recording must hold every segment
     /// its meta promises, every direction driven, none empty. No servo needed.
     Check(check::Args),
@@ -97,12 +97,16 @@ pub(crate) const REST_MS: u32 = 500;
 pub(crate) const RUNG_TRIES: u32 = 3;
 /// The raw six; `osc sweep --tel-mask`'s default.
 pub(crate) const TEL_MASK: u16 = 0x1cd;
+/// `osc sweep --window-ms`'s default. Every planned step carries its own
+/// window, so this only reaches meta.json, where session.py reads it.
+pub(crate) const WINDOW_MS: u32 = 150;
 
 /// Entry from the top-level `osc capture` dispatch.
 pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     match &args.cmd {
         CaptureCmd::Pilot(a) => pilot::run(a, baud, id),
         CaptureCmd::Plan(a) => print_plan(a),
+        CaptureCmd::Session(a) => run::run(a, baud, id),
         CaptureCmd::Check(a) => check::run(a),
     }
 }

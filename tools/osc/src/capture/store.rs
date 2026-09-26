@@ -32,6 +32,17 @@ impl Store {
     pub(crate) fn new(dir: PathBuf) -> Self {
         Self { dir }
     }
+
+    fn capture_dir(&self, experiment: &str, n: u32) -> PathBuf {
+        self.dir.join(experiment).join(format!("capture-{n}"))
+    }
+
+    /// Recording `name` of capture `n` landed; creates nothing.
+    pub(crate) fn landed(&self, experiment: &str, n: u32, name: &str) -> bool {
+        self.capture_dir(experiment, n)
+            .join(format!("{name}.csv.gz"))
+            .is_file()
+    }
 }
 
 /// What dataset.toml declares: what the recordings cannot say about
@@ -80,7 +91,7 @@ pub(crate) struct Capture {
 
 impl Capture {
     pub(crate) fn open(s: &Store, experiment: &str, n: u32) -> Result<Self> {
-        let dir = s.dir.join(experiment).join(format!("capture-{n}"));
+        let dir = s.capture_dir(experiment, n);
         std::fs::create_dir_all(&dir).with_context(|| format!("mkdir {}", dir.display()))?;
         Ok(Self {
             dir,
@@ -104,11 +115,17 @@ impl Capture {
         &self.dir
     }
 
-    /// Every named recording landed: nothing left to capture here.
-    pub(crate) fn complete(&self, names: &[&str]) -> bool {
-        names
-            .iter()
-            .all(|n| self.dir.join(format!("{n}.csv.gz")).is_file())
+    /// Remove landed recording `name`, its `.csv.gz` (the done marker) first.
+    pub(crate) fn discard(&self, name: &str) -> Result<()> {
+        for f in [format!("{name}.csv.gz"), format!("{name}.meta.json")] {
+            let path = self.dir.join(f);
+            match std::fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e).with_context(|| format!("rm {}", path.display())),
+            }
+        }
+        Ok(())
     }
 
     /// Start one try of recording `name` with its sweep meta.
@@ -431,7 +448,7 @@ mod tests {
             attempt: 1,
         };
         assert!(t.accept(&extra).is_err());
-        assert!(!cap.complete(&["slow"]));
+        assert!(!store.landed("session", 1, "slow"));
         std::fs::remove_dir_all(&root).unwrap();
     }
 
@@ -471,18 +488,27 @@ mod tests {
     }
 
     #[test]
-    fn complete_needs_every_recording() {
-        let root = tmp("complete");
+    fn landed_reads_the_marker_and_creates_nothing() {
+        let root = tmp("landed");
         let store = Store::new(root.clone());
         land(&store, &clean());
+        assert!(store.landed("session", 1, "slow"));
+        assert!(!store.landed("session", 1, "fast"));
+        assert!(!store.landed("session", 2, "slow"));
+        assert!(!root.join("session/capture-2").exists());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn discard_unlands_a_recording() {
+        let root = tmp("discard");
+        let store = Store::new(root.clone());
+        let dir = land(&store, &clean());
         let cap = Capture::open(&store, "session", 1).unwrap();
-        assert!(cap.complete(&["slow"]));
-        assert!(!cap.complete(&["slow", "fast"]));
-        assert!(
-            !Capture::open(&store, "session", 2)
-                .unwrap()
-                .complete(&["slow"])
-        );
+        cap.discard("slow").unwrap();
+        assert!(!store.landed("session", 1, "slow"));
+        assert!(listing(&dir).is_empty());
+        cap.discard("slow").unwrap();
         std::fs::remove_dir_all(&root).unwrap();
     }
 }

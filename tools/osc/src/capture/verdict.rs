@@ -10,10 +10,6 @@ pub(crate) fn expected_segments(baseline: bool, dirs: usize, steps: usize) -> us
 /// The check on a recording `sweep::record` returned Ok (a chain that gave
 /// up is already an Err): every segment present, numbered in order, clean,
 /// and every direction driven.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the session run loop judges with it")
-)]
 pub(crate) fn verdict(rec: &Recording, cfg: &Cfg) -> Result<(), String> {
     let segs = &rec.segments;
     let baseline = cfg.baseline_ms > 0;
