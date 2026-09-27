@@ -1,0 +1,5 @@
+servo = "mg90-a"
+supply = "usb"
+captured = "2026-09-25"
+adc = "24 MHz, 13.5 cycle apertures"
+notes = "Merged session captures (session/capture-1..5: slow = grid + coast + step + reversal + breakaway, block order rotated per capture; fast = grid under fast decay). Windows from this supply's own v_ss fit, guards 520/3540, rest 1500 ms, cooldown 150 s, one warm-up session discarded."

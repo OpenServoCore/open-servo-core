@@ -1,0 +1,152 @@
+{
+  "baseline_ms": 1000,
+  "capture": {
+    "n": 2,
+    "order": [
+      "coast",
+      "step",
+      "reversal",
+      "breakaway",
+      "grid"
+    ],
+    "try": 1,
+    "warmup": false
+  },
+  "decay": "slow",
+  "dirs": [
+    1,
+    -1
+  ],
+  "fw": 64,
+  "git_sha": "21bf0d3d76c6607dbcb02d8c3fcbe8ec82186689",
+  "guard": [
+    532,
+    3526
+  ],
+  "model": 257,
+  "post_rung_brake": true,
+  "rest_ms": 1500,
+  "rung_tries": 3,
+  "schedule": [
+    "20@80",
+    "coast:400",
+    "20@80",
+    "brake:400",
+    "30@80",
+    "coast:400",
+    "30@80",
+    "brake:400",
+    "40@80",
+    "coast:400",
+    "40@80",
+    "brake:400",
+    "60@80",
+    "coast:400",
+    "60@80",
+    "brake:400",
+    "66@80",
+    "coast:400",
+    "66@80",
+    "brake:400",
+    "30@20",
+    "coast:400",
+    "30@40",
+    "coast:400",
+    "30@60",
+    "coast:400",
+    "30@120",
+    "coast:400",
+    "20@60",
+    "then:-20@60",
+    "then:20@60",
+    "brake:200",
+    "40@60",
+    "then:-40@60",
+    "then:40@60",
+    "brake:200",
+    "1@200",
+    "2@200",
+    "3@200",
+    "4@200",
+    "5@200",
+    "6@200",
+    "7@200",
+    "8@200",
+    "9@200",
+    "10@200",
+    "11@200",
+    "12@200",
+    "13@200",
+    "14@200",
+    "15@200",
+    "16@200",
+    "17@200",
+    "18@200",
+    "5@1500",
+    "10@1500",
+    "15@1077",
+    "20@750",
+    "25@579",
+    "30@473",
+    "35@402",
+    "40@350",
+    "45@311",
+    "50@280",
+    "55@256",
+    "60@236",
+    "65@219",
+    "70@205",
+    "75@192",
+    "80@182",
+    "85@172",
+    "90@164",
+    "95@157",
+    "100@150"
+  ],
+  "seek_cap_pct": 45,
+  "seek_duty_pct": 15,
+  "sense": {
+    "gain_milli": 15000,
+    "shunt_r_mohm": 60,
+    "vdd_mv": 3300,
+    "vmotor_div_bot": 3300,
+    "vmotor_div_top": 6800
+  },
+  "session": {
+    "blocks": [
+      {
+        "count": 20,
+        "first": 0,
+        "name": "coast"
+      },
+      {
+        "count": 8,
+        "first": 20,
+        "name": "step"
+      },
+      {
+        "count": 8,
+        "first": 28,
+        "name": "reversal"
+      },
+      {
+        "count": 18,
+        "first": 36,
+        "name": "breakaway"
+      },
+      {
+        "count": 20,
+        "first": 54,
+        "name": "grid"
+      }
+    ]
+  },
+  "settle_ms": 300,
+  "stall": false,
+  "static_load": false,
+  "supply": "2s",
+  "tel_mask": 461,
+  "tick_hz": 20000,
+  "vbus_counts": 3198,
+  "window_ms": 150
+}

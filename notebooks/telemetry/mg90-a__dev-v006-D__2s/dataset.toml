@@ -1,0 +1,5 @@
+servo = "mg90-a"
+supply = "2s"
+captured = "2026-09-25"
+adc = "24 MHz, 13.5 cycle apertures"
+notes = "Classic experiments (grid x10, bridge, breakaway, stepcoast, ripple x5, reversal x1). Per-duty windows sized from this supply's own v_ss fit plus a 30 ms spin-up, which leaves the top rungs 5-8% short of the target (mg90 spin-up is 50-60 ms). Guards 520/3540, rest 1500 ms, cooldown 150 s, one warm-up recording discarded per experiment."
