@@ -232,7 +232,29 @@ SERVOS = {
         # 75+ counts inside the soft limits 432/3626 so a seek band never
         # meets the soft-limit clamp; hand stops at 209/3849
         guard_counts=(520, 3540),
-        measured={},
+        measured={
+            "r_winding_measured": Measured(
+                4.89, 4.49, 4.98, "Ohm",
+                "bringup captures/mg90/plant.py, onset regression over samples "
+                "3..40 of every >= 20% rung, mg90-a__2s session grid, 5 captures",
+                "value and upper bracket from the onset route (4.84 to 4.98 per "
+                "capture), lower bracket from the short route without the i*t "
+                "term (4.49 to 4.55), an open 7% gap between the two. A free "
+                "shaft ladder cannot fit R: i and speed are collinear"),
+            "ke_ripple_measured": Measured(
+                1.295, 1.284, 1.306, "mV per ripple Hz",
+                "nb09 sec 3, settled windows of the 15-50% grid rungs, 2S "
+                "session, back-EMF against counted ripple frequency, R pinned",
+                "forward 1.306, reverse 1.284, fitted per direction with a "
+                "free intercept (+11 / +67 mV). The pot never enters. Reads 5 "
+                "to 28% fast from 55 to 100% duty, where it was not fitted"),
+            "backlash_measured": Measured(
+                1.48, 1.25, 1.50, "ripple cycles",
+                "nb09 sec 4, reversal blocks, commutation steps while the pot "
+                "sits on its turning point (nb06 sec 7 method), 2S session, 40 flips",
+                "about 5.7 raw counts at the mean coupling. Bracket is the span "
+                "of the four datasets' means; single flips count 0 to 4"),
+        },
         notes=(
             "All-metal four-stage train, ball-bearing output, plastic D-key "
             "coupling to the pot. Hand stops 209/3849 (low counts = left). "
