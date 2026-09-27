@@ -1,0 +1,70 @@
+# osc capture pilot envelope. Positions in pot counts, speeds in counts/ms,
+# times in ms. limits: soft/phys read from the servo, guard = soft inset,
+# runway = guard_hi - guard_lo. v_ss: counts/ms = slope x duty_pct + intercept,
+# `used` sizes the windows. windows_ms: duty_pct = window. coast: top_pct is
+# the coast block's top duty; peak_inside_soft its closest approach to soft.
+supply = "2s"
+fw = 64
+git_sha = "21bf0d3d76c6607dbcb02d8c3fcbe8ec82186689"
+measured = "2026-09-26"
+seek_pct = 15
+
+[limits]
+soft = [432, 3626]
+phys = [209, 3849]
+guard = [532, 3526]
+center = 2029
+runway = 2994
+
+[v_ss]
+duties = [10, 20, 30, 40, 50]
+used = "rev"
+
+[v_ss.fwd]
+slope = 0.2047
+intercept = -0.721
+r2 = 0.9968
+
+[v_ss.rev]
+slope = 0.2079
+intercept = -0.831
+r2 = 0.9983
+
+[windows_ms]
+5 = 1500
+10 = 1500
+15 = 1077
+20 = 750
+25 = 579
+30 = 473
+35 = 402
+40 = 350
+45 = 311
+50 = 280
+55 = 256
+60 = 236
+65 = 219
+70 = 205
+75 = 192
+80 = 182
+85 = 172
+90 = 164
+95 = 157
+100 = 150
+
+[coast]
+probe_pct = 40
+probe_entry = 7.293
+probe_travel = 551
+top_pct = 66
+peak_inside_soft = 1187
+
+[[verified]]
+step = "60@236"
+travel = 2401
+predicted = 2398
+
+[[verified]]
+step = "100@150"
+travel = 2261
+predicted = 2395
