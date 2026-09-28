@@ -8,6 +8,7 @@ use std::fmt;
 use osc_protocol::wire::ResultCode;
 
 use crate::pipe::PipeError;
+use crate::pot_lut::LutError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
@@ -23,6 +24,8 @@ pub enum Error {
     /// The descriptor cannot name what the call needs (a field, the stamp
     /// recipe): the servo was never asked.
     Descriptor(String),
+    /// A pot LUT write that did not go live.
+    Lut(LutError),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,6 +76,7 @@ impl fmt::Display for Error {
             Error::Timeout { slot } => write!(f, "no reply (slot {slot})"),
             Error::Servo(code) => write!(f, "servo answered {code:?}"),
             Error::Descriptor(m) => write!(f, "descriptor: {m}"),
+            Error::Lut(e) => write!(f, "{e}"),
         }
     }
 }

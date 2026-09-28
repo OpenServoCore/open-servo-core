@@ -65,9 +65,38 @@ pub fn fault_name(code: u8) -> Option<String> {
     osc_client::data_state::fault::name(code).map(String::from)
 }
 
+/// A `lut_state` by name (`"LIVE"` while the kernel applies the table);
+/// undefined for a value this build does not know.
+#[wasm_bindgen(js_name = lutStateName)]
+pub fn lut_state_name(state: u8) -> Option<String> {
+    osc_client::pot_lut::state::name(state).map(String::from)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pot_lut_mirrors_state_and_knots() {
+        use osc_client::pot_lut::{self, INTERVALS};
+        let mut knots = [0i16; INTERVALS];
+        knots[40] = -7;
+        let l = PotLut::from(pot_lut::PotLut {
+            state: pot_lut::state::LIVE,
+            knots,
+        });
+        assert_eq!((l.state, l.live), (pot_lut::state::LIVE, true));
+        assert_eq!(l.state_name.as_deref(), Some("LIVE"));
+        assert_eq!(l.knots.len(), INTERVALS);
+        assert_eq!(l.knots[40], -7);
+        let l = PotLut::from(pot_lut::PotLut {
+            state: pot_lut::state::REJECT_ENDS,
+            knots,
+        });
+        assert!(!l.live);
+        assert_eq!(lut_state_name(l.state).as_deref(), Some("REJECT_ENDS"));
+        assert_eq!(lut_state_name(9), None);
+    }
 
     #[test]
     fn unpack_version_passes_through() {
