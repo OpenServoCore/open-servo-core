@@ -243,7 +243,10 @@ enum Cmd {
     /// it sizes, `session` runs it, `check` re-reads a landed capture.
     Capture(capture::Args),
     /// Pot linearization table: `build` stitches one from a capture
-    /// dataset's settled rungs and writes the image JSON. No servo needed.
+    /// dataset's settled rungs and writes the image JSON, `grade` graphs
+    /// it, `write` puts it on the servo, `show` reads the servo's back,
+    /// `clear` returns it to the identity. A write never stamps: closed
+    /// loop is refused until `osc ident`.
     Lut(lut::Args),
 }
 
@@ -965,7 +968,7 @@ fn main() -> Result<()> {
         Cmd::CalReplay(a) => cal::replay::run(a),
         Cmd::Sweep(args) => sweep::run(args, cli.baud.clone(), cli.id),
         Cmd::Capture(args) => capture::run(args, cli.baud.clone(), cli.id),
-        Cmd::Lut(args) => lut::run(args),
+        Cmd::Lut(args) => lut::run(args, cli.baud.clone(), cli.id),
     }
 }
 
