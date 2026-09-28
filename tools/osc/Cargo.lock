@@ -550,6 +550,9 @@ dependencies = [
 [[package]]
 name = "osc-ident"
 version = "0.1.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "osc-protocol"

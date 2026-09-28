@@ -9,6 +9,13 @@ description = "Sans-io servo identification: experiments emit wire commands and 
 license     = "MIT OR Apache-2.0"
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
+flate2     = "1"
 serde_json = "1"
+
+# The mg90-a parity build tracks 100 rungs of 20 kHz current: minutes
+# unoptimized, seconds optimized. Overflow checks and debug assertions stay.
+[profile.test]
+opt-level = 2
