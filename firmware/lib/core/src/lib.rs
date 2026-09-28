@@ -34,6 +34,7 @@ const fn parse_decimal(s: &str) -> u8 {
 pub mod log;
 pub mod math;
 pub mod persist;
+pub mod pot_lut;
 pub mod regions;
 pub mod sensor_frame;
 pub mod services;
