@@ -9,6 +9,7 @@ mod cal;
 mod capture;
 mod descriptor;
 mod ident;
+mod lut;
 mod rig;
 mod sweep;
 
@@ -227,6 +228,9 @@ enum Cmd {
     /// servo and writes the dataset's envelope.toml, `plan` shows the session
     /// it sizes, `session` runs it, `check` re-reads a landed capture.
     Capture(capture::Args),
+    /// Pot linearization table: `build` stitches one from a capture
+    /// dataset's settled rungs and writes the image JSON. No servo needed.
+    Lut(lut::Args),
 }
 
 #[derive(Subcommand, Debug)]
@@ -901,6 +905,7 @@ fn main() -> Result<()> {
         Cmd::CalReplay(a) => cal::replay::run(a),
         Cmd::Sweep(args) => sweep::run(args, cli.baud.clone(), cli.id),
         Cmd::Capture(args) => capture::run(args, cli.baud.clone(), cli.id),
+        Cmd::Lut(args) => lut::run(args),
     }
 }
 
