@@ -42,6 +42,7 @@ struct AdapterState {
     req: Option<AdapterRequest>,
     rails: u8,
     diag: record::Diag,
+    uptime_ticks: u64,
 }
 
 pub struct LinkServer {
@@ -70,6 +71,7 @@ impl LinkServer {
                 req: None,
                 rails: record::RAILS_BOOT_STATE,
                 diag: record::Diag::default(),
+                uptime_ticks: 0,
             },
             out: [0; OUT_CAP],
         }
@@ -78,6 +80,13 @@ impl LinkServer {
     /// Install the chip's boot diagnostics; every INFO carries them.
     pub fn set_diag(&mut self, diag: record::Diag) {
         self.adapter.diag = diag;
+    }
+
+    /// The chip's time since boot on the full-width `Deadline` tick count
+    /// (the engine's u32 domain wraps in minutes). Refreshed ahead of
+    /// `on_pipe`; INFO reports it as `uptime_ms`.
+    pub fn set_uptime_ticks(&mut self, ticks: u64) {
+        self.adapter.uptime_ticks = ticks;
     }
 
     /// Drain the pending adapter-level request, if any. The chip polls this
@@ -186,7 +195,12 @@ fn handle<P: Providers>(
 ) {
     match rec[0] {
         record::REC_HELLO => {
-            sink.record(record::info(out, P::Deadline::TICKS_PER_US, &adapter.diag));
+            let ticks_per_ms = P::Deadline::TICKS_PER_US as u64 * 1_000;
+            let diag = record::Diag {
+                uptime_ms: (adapter.uptime_ticks / ticks_per_ms) as u32,
+                ..adapter.diag
+            };
+            sink.record(record::info(out, P::Deadline::TICKS_PER_US, &diag));
         }
         record::REC_ENTER_BOOTLOADER => {
             adapter.req = Some(AdapterRequest::EnterBootloader);
@@ -290,7 +304,10 @@ mod tests {
             mepc: 0x2a1c,
             mtval: 0x2000_4000,
             hse_fail: 1,
+            resets: 4,
+            uptime_ms: 0,
         });
+        r.server.set_uptime_ticks(5_000_000_123);
         let bytes = rec(&[REC_HELLO]);
         r.server.on_pipe(&bytes, &mut r.bus, &mut r.sink);
         let info = &r.sink.0[0];
@@ -300,6 +317,8 @@ mod tests {
         assert_eq!(&info[18..22], &0x2a1cu32.to_le_bytes());
         assert_eq!(&info[22..26], &0x2000_4000u32.to_le_bytes());
         assert_eq!(&info[26..30], &1u32.to_le_bytes());
+        assert_eq!(&info[30..34], &4u32.to_le_bytes());
+        assert_eq!(&info[34..38], &5_000_000u32.to_le_bytes(), "1 tick/us");
     }
 
     #[test]

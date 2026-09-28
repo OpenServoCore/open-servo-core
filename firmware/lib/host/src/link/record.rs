@@ -124,8 +124,9 @@ pub const OUTCOME_TIMEOUT: u8 = 0x02;
 /// TERMINAL flags byte.
 pub const FLAG_GARBLE_AFTER_LAST_FRAME: u8 = 1 << 0;
 
-/// v2: INFO carries the adapter diagnostics tail ([`Diag`]).
-pub const LINK_VERSION: u8 = 2;
+/// v2: INFO carries the adapter diagnostics tail ([`Diag`]). v3: the tail
+/// grows `resets` and `uptime_ms`.
+pub const LINK_VERSION: u8 = 3;
 
 /// INFO `reset` byte: the chip's reset-cause flags, read and cleared at
 /// adapter boot (so each boot reports only the resets since the last).
@@ -149,11 +150,14 @@ pub const PHASE_USB_TX: u8 = 6;
 pub const PHASE_HSE_FAIL: u8 = 7;
 
 /// Adapter diagnostics, the INFO tail: `reset(1) phase(1) crash_seq(4 LE)
-/// mcause(4 LE) mepc(4 LE) mtval(4 LE) hse_fail(4 LE)`. The crash fields
-/// describe the last synchronous exception the adapter trapped (persist
-/// across resets until the next exception overwrites them; `crash_seq`
-/// counts them, 0 = none on record); `hse_fail` counts crystal-start
-/// failures. A chip-less server (DES sim) reports all zeros.
+/// mcause(4 LE) mepc(4 LE) mtval(4 LE) hse_fail(4 LE) resets(4 LE)
+/// uptime_ms(4 LE)`. The crash fields describe the last synchronous
+/// exception the adapter trapped (persist across resets until the next
+/// exception overwrites them; `crash_seq` counts them, 0 = none on record);
+/// `hse_fail` counts crystal-start failures; `resets` counts resets since
+/// the last power-on. `uptime_ms` is live, stamped per INFO (wraps at ~49
+/// days): shorter than the time since a USB drop means the adapter
+/// restarted. A chip-less server (DES sim) reports all zeros.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Diag {
     pub reset: u8,
@@ -163,10 +167,12 @@ pub struct Diag {
     pub mepc: u32,
     pub mtval: u32,
     pub hse_fail: u32,
+    pub resets: u32,
+    pub uptime_ms: u32,
 }
 
 /// Byte length of the INFO tail.
-pub const DIAG_LEN: usize = 22;
+pub const DIAG_LEN: usize = 30;
 
 /// The `seq` a record carries when no command owns it (a status or
 /// terminal surfacing outside any active seq -- a server invariant breach
@@ -201,6 +207,8 @@ pub fn info<'a>(dst: &'a mut [u8], ticks_per_us: u32, diag: &Diag) -> &'a [u8] {
     dst[18..22].copy_from_slice(&diag.mepc.to_le_bytes());
     dst[22..26].copy_from_slice(&diag.mtval.to_le_bytes());
     dst[26..30].copy_from_slice(&diag.hse_fail.to_le_bytes());
+    dst[30..34].copy_from_slice(&diag.resets.to_le_bytes());
+    dst[34..38].copy_from_slice(&diag.uptime_ms.to_le_bytes());
     sealed(dst, 6 + DIAG_LEN)
 }
 

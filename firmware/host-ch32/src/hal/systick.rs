@@ -32,6 +32,18 @@ pub fn ticks() -> u32 {
     SYSTICK.cntl().read()
 }
 
+/// The full 64-bit count since `init`, carry-guarded like `set_cmp_low`.
+pub fn ticks64() -> u64 {
+    let high = SYSTICK.cnth().read();
+    let low = SYSTICK.cntl().read();
+    let high2 = SYSTICK.cnth().read();
+    if high2 == high {
+        ((high as u64) << 32) | low as u64
+    } else {
+        ((high2 as u64) << 32) | SYSTICK.cntl().read() as u64
+    }
+}
+
 /// Arm the 64-bit compare at the next occurrence of low word == `at`.
 /// The high-word read pair guards the 32-bit carry (one tick every ~238 s);
 /// an `at` at-or-behind the current low word lands in the NEXT epoch, and
