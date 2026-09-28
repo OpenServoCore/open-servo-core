@@ -855,6 +855,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     let cfg = Cfg::try_from(args)?;
     let mut c = crate::rig::connect(&baud)?;
     let id = Id::new(id);
+    crate::state::check(&mut c, id)?;
 
     std::fs::create_dir_all(&args.out).with_context(|| format!("mkdir {}", args.out.display()))?;
 

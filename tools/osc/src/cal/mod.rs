@@ -87,6 +87,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     pump::install_ctrlc();
     let mut c = crate::rig::connect(&baud)?;
     let id = Id::new(id);
+    crate::state::check(&mut c, id)?;
 
     let sense = read_sense(&mut c, id)?;
     // TEL frames arrive one per fast tick, so tick_hz is the sweep sample rate.

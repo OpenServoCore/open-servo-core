@@ -11,6 +11,7 @@ mod descriptor;
 mod ident;
 mod lut;
 mod rig;
+mod state;
 mod sweep;
 
 use anyhow::{Context, Result, bail};
@@ -108,10 +109,22 @@ enum Cmd {
     },
     /// Persist the live config + profiles (protocol sec 9.4; torque must be off).
     Save,
+    /// Bless the set the servo holds now as the identified set (after
+    /// deliberate manual tuning of stamp-covered fields): torque off, the
+    /// plant stamp over the live set, SAVE with --save.
+    Stamp {
+        /// Persist with MGMT SAVE after the stamp.
+        #[arg(long)]
+        save: bool,
+    },
     /// Wipe both saved slots; the servo reboots itself to board defaults.
     Factory,
     /// Ack, then reset once the ack has drained.
     Reboot,
+    /// Recover a servo whose data state refuses closed loop: report it,
+    /// FACTORY-reset a CONFIG_CORRUPT one (the only exit from that state)
+    /// and, with --from, restore a saved table, restamp and SAVE.
+    Recover(state::RecoverArgs),
     /// Read or configure a protocol sec 5.2 profile slot.
     Profile {
         #[command(subcommand)]
@@ -135,7 +148,8 @@ enum Cmd {
     },
     /// One ping: model, firmware, the ALERT bit.
     Ping,
-    /// Identity + health from the common register block (protocol sec 5.4).
+    /// Identity + health from the common register block (protocol sec 5.4),
+    /// then the data state and the plant stamp verdict.
     Status,
     /// Zero the telemetry transport counters (rw-clear).
     Clear {
@@ -487,7 +501,16 @@ fn migrate(c: &mut Client<NusbPipe>, ids: &[Id], rate: BaudRate) -> Result<()> {
     Ok(())
 }
 
+/// SAVE, refused on a CONFIG_CORRUPT servo: it would bless board defaults
+/// as this servo's config, which only `osc recover` may decide.
 fn save(c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
+    let s = state::check(c, id)?;
+    if s.flags & osc_client::data_state::CONFIG_CORRUPT != 0 {
+        bail!(
+            "id {}: saved settings are unreadable and board defaults are running; run osc recover",
+            id.as_byte()
+        );
+    }
     match c.save(id) {
         Ok(()) => {
             println!("id {}: saved", id.as_byte());
@@ -552,7 +575,8 @@ fn status(c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
         "      fault {:#04x}  dirty {}  trim {}  crc_fail {}  framing_drop {}",
         h.fault_flags, h.config_dirty, h.trim_steps, h.crc_fail_count, h.framing_drop_count,
     );
-    Ok(())
+    let d = state::descriptor(c, id)?;
+    state::report(c, id, &d)
 }
 
 fn profile(c: &mut Client<NusbPipe>, id: Id, cmd: &ProfileCmd) -> Result<()> {
@@ -604,7 +628,7 @@ fn profile(c: &mut Client<NusbPipe>, id: Id, cmd: &ProfileCmd) -> Result<()> {
 
 /// Identity read (protocol sec 5.4 front) plus descriptor selection. Prints
 /// any advisory note at the call site so the codec stays print-free.
-fn select_descriptor<'a>(
+pub(crate) fn select_descriptor<'a>(
     c: &mut Client<NusbPipe>,
     id: Id,
     reg: &'a descriptor::Registry,
@@ -622,9 +646,7 @@ fn select_descriptor<'a>(
     Ok(d)
 }
 
-fn get(c: &mut Client<NusbPipe>, id: Id, name: &str) -> Result<()> {
-    let reg = descriptor::load()?;
-    let d = select_descriptor(c, id, &reg)?;
+fn get(c: &mut Client<NusbPipe>, id: Id, d: &descriptor::Descriptor, name: &str) -> Result<()> {
     let f = descriptor::field(d, name)?;
     let bytes = c.read(id, f.addr, f.width)?;
     println!(
@@ -638,16 +660,17 @@ fn get(c: &mut Client<NusbPipe>, id: Id, name: &str) -> Result<()> {
     Ok(())
 }
 
+/// A hand edit; a stamp-covered field leaves the set marked stale until
+/// `osc stamp` or an ident refit blesses it (`state::covered_note`).
 fn set(
     c: &mut Client<NusbPipe>,
     id: Id,
+    d: &descriptor::Descriptor,
     name: &str,
     value: &str,
     hold: bool,
     noreply: bool,
 ) -> Result<()> {
-    let reg = descriptor::load()?;
-    let d = select_descriptor(c, id, &reg)?;
     let f = descriptor::field(d, name)?;
     let data = descriptor::encode(f, value)?;
     if hold {
@@ -663,12 +686,11 @@ fn set(
         c.write(id, f.addr, &data)?;
         println!("wrote {} = {value} at {:#06x}", f.name, f.addr);
     }
+    state::covered_note(d, f);
     Ok(())
 }
 
-fn dump(c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
-    let reg = descriptor::load()?;
-    let d = select_descriptor(c, id, &reg)?;
+fn dump(c: &mut Client<NusbPipe>, id: Id, d: &descriptor::Descriptor) -> Result<()> {
     // A status frame carries <= 252 payload bytes; walk the table in chunks
     // and slice each field's bytes out of the flat image.
     const CHUNK: u16 = 252;
@@ -737,6 +759,7 @@ fn main() -> Result<()> {
         ),
         Cmd::Deadline { us, ids } => {
             let mut c = connect_bus(&cli)?;
+            state::check_each(&mut c, &ids_or_default(ids, cli.id))?;
             for &id in &ids_or_default(ids, cli.id) {
                 c.write(
                     id,
@@ -750,8 +773,10 @@ fn main() -> Result<()> {
             Ok(())
         }
         Cmd::Save => save(&mut connect_bus(&cli)?, id),
+        Cmd::Stamp { save } => state::stamp(&mut connect_bus(&cli)?, id, *save),
         Cmd::Factory => {
             let mut c = connect_bus(&cli)?;
+            state::check(&mut c, id)?;
             c.factory(id)?;
             println!(
                 "id {}: slots wiped, rebooting to board defaults",
@@ -759,8 +784,10 @@ fn main() -> Result<()> {
             );
             Ok(())
         }
+        Cmd::Recover(args) => state::recover(args, cli.baud.clone(), cli.id),
         Cmd::Reboot => {
             let mut c = connect_bus(&cli)?;
+            state::check(&mut c, id)?;
             c.reboot(id)?;
             println!(
                 "id {}: rebooting (back at its configured baud)",
@@ -775,6 +802,7 @@ fn main() -> Result<()> {
             ids,
         } => {
             let mut c = connect_bus(&cli)?;
+            state::check_each(&mut c, &ids_or_default(ids, cli.id))?;
             let traces = c.cal_verify(&ids_or_default(ids, cli.id), *trains, *gap_us, *gaps)?;
             println!("{trains} train(s) x {gaps} gaps x {gap_us} us");
             for t in traces {
@@ -798,11 +826,17 @@ fn main() -> Result<()> {
                 p.fw,
                 if p.alert { "  ALERT" } else { "" },
             );
+            if p.alert {
+                state::alert(&mut c, id)?;
+            } else {
+                state::check(&mut c, id)?;
+            }
             Ok(())
         }
         Cmd::Status => status(&mut connect_bus(&cli)?, id),
         Cmd::Clear { ids } => {
             let mut c = connect_bus(&cli)?;
+            state::check_each(&mut c, &ids_or_default(ids, cli.id))?;
             for &id in &ids_or_default(ids, cli.id) {
                 c.clear_counters(id)?;
                 println!("id {}: counters cleared", id.as_byte());
@@ -811,6 +845,7 @@ fn main() -> Result<()> {
         }
         Cmd::Read { addr, len } => {
             let mut c = connect_bus(&cli)?;
+            state::check(&mut c, id)?;
             let addr = parse_u16(addr)?;
             let data = c.read(id, addr, *len)?;
             for (i, chunk) in data.chunks(16).enumerate() {
@@ -825,6 +860,7 @@ fn main() -> Result<()> {
             noreply,
         } => {
             let mut c = connect_bus(&cli)?;
+            state::check(&mut c, id)?;
             let data = parse_hex(data)?;
             let a = parse_u16(addr)?;
             if *hold {
@@ -842,6 +878,7 @@ fn main() -> Result<()> {
         Cmd::Gread { addr, count, ids } => {
             let mut c = connect_bus(&cli)?;
             let ids = ids_or_default(ids, cli.id);
+            state::check_each(&mut c, &ids)?;
             let chain = c.gread(&ids, parse_u16(addr)?, *count)?;
             for s in &chain.statuses {
                 println!(
@@ -852,6 +889,9 @@ fn main() -> Result<()> {
                     if s.alert { " ALERT" } else { "" },
                     hex(&s.payload),
                 );
+            }
+            for s in chain.statuses.iter().filter(|s| s.alert) {
+                state::alert(&mut c, Id::new(s.id))?;
             }
             match chain.timeout_slot {
                 Some(slot) => bail!("chain timed out at slot {slot}"),
@@ -866,6 +906,7 @@ fn main() -> Result<()> {
         } => {
             let mut c = connect_bus(&cli)?;
             let ids = ids_or_default(ids, cli.id);
+            state::check_each(&mut c, &ids)?;
             let data = parse_hex(data)?;
             let pairs: Vec<(Id, &[u8])> = ids.iter().map(|&id| (id, data.as_slice())).collect();
             let a = parse_u16(addr)?;
@@ -891,15 +932,34 @@ fn main() -> Result<()> {
             println!("committed");
             Ok(())
         }
-        Cmd::Profile { cmd } => profile(&mut connect_bus(&cli)?, id, cmd),
-        Cmd::Get { field } => get(&mut connect_bus(&cli)?, id, field),
+        Cmd::Profile { cmd } => {
+            let mut c = connect_bus(&cli)?;
+            state::check(&mut c, id)?;
+            profile(&mut c, id, cmd)
+        }
+        Cmd::Get { field } => {
+            let mut c = connect_bus(&cli)?;
+            let d = state::descriptor(&mut c, id)?;
+            state::warn(&mut c, id, &d)?;
+            get(&mut c, id, &d, field)
+        }
         Cmd::Set {
             field,
             value,
             hold,
             noreply,
-        } => set(&mut connect_bus(&cli)?, id, field, value, *hold, *noreply),
-        Cmd::Dump => dump(&mut connect_bus(&cli)?, id),
+        } => {
+            let mut c = connect_bus(&cli)?;
+            let d = state::descriptor(&mut c, id)?;
+            state::warn(&mut c, id, &d)?;
+            set(&mut c, id, &d, field, value, *hold, *noreply)
+        }
+        Cmd::Dump => {
+            let mut c = connect_bus(&cli)?;
+            let d = state::descriptor(&mut c, id)?;
+            state::warn(&mut c, id, &d)?;
+            dump(&mut c, id, &d)
+        }
         Cmd::Ident(args) => ident::run(args, cli.baud.clone(), cli.id),
         Cmd::Cal(args) => cal::run(args, cli.baud.clone(), cli.id),
         Cmd::CalReplay(a) => cal::replay::run(a),
