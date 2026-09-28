@@ -136,9 +136,7 @@ pub fn seed(shared: &Shared) {
         t.control.lifecycle.mode = Mode::Position;
     });
     stamp(shared);
-    shared
-        .table
-        .publish_data_state(ImageState::Loaded, ImageState::Loaded);
+    shared.publish_data_state(ImageState::Loaded, ImageState::Loaded);
 }
 
 /// The host's stamp over the live set, as `osc ident` writes it last.

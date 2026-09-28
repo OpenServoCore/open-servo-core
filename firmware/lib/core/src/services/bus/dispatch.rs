@@ -196,10 +196,12 @@ impl Dispatcher<'_> {
     }
 
     /// The post-commit bookkeeping every committed span gets: the dirty
-    /// bit, then the data-state consequences of a covered or stamp write.
+    /// bit, a pot LUT command, then the data-state consequences of a
+    /// covered or stamp write.
     fn after_commit(&self, addr: u16, len: u16) {
         self.mark_dirty_if_persistent(addr, len);
-        self.shared.table.data_state_after_commit(addr, len);
+        self.shared.pot_lut_after_commit(addr, len);
+        self.shared.data_state_after_commit(addr, len);
     }
 
     /// sec 9.4 modified-since-save: a committed span landing in CONFIG or
@@ -510,14 +512,14 @@ impl Dispatcher<'_> {
         {
             return Self::ack(alert, ctx, Err(Error::AccessError), reply);
         }
-        self.shared.table.data_state_checkpoint();
+        self.shared.data_state_checkpoint();
         let saved = self.persist_table();
         let code = match saved {
             Ok(()) => {
                 self.shared
                     .table
                     .with_mut(|t| t.telemetry.common.status_flags &= !STATUS_FLAG_CONFIG_DIRTY);
-                self.shared.table.data_state_saved();
+                self.shared.data_state_saved();
                 ResultCode::Ok
             }
             Err(StoreError) => ResultCode::Hardware,

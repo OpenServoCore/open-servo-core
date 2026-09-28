@@ -374,6 +374,32 @@ mod tests {
         assert_eq!(burst::CHANS, 0x19A);
     }
 
+    /// The pot LUT window appends after the burst block: page, command and
+    /// knots contiguous so one WRITE carries a page, the state RO behind
+    /// them, the knots a writable byte blob with no scalar rule.
+    #[test]
+    fn control_pot_lut_window_appends_after_burst() {
+        use super::control::addr::pot_lut;
+        use crate::pot_lut::{PAGE_KNOTS, PAGES, cmd};
+        assert_eq!(pot_lut::LUT_PAGE, 0x19C);
+        assert_eq!(pot_lut::LUT_CMD, 0x19D);
+        assert_eq!(pot_lut::LUT_KNOTS, 0x19E);
+        assert_eq!(pot_lut::LUT_STATE, 0x1DE);
+        let f = ControlTable::FIELDS;
+        let by = |n: &str| f.iter().find(|d| d.name == n).unwrap();
+        let page = by("lut_page");
+        assert!(page.writable);
+        assert_eq!(page.max, Some(PAGES as i32 - 1));
+        let cmd = by("lut_cmd");
+        assert!(cmd.writable);
+        assert_eq!(cmd.max, Some(cmd::MAX as i32));
+        let knots = by("lut_knots");
+        assert!(knots.writable);
+        assert_eq!(knots.kind, FieldKind::Bytes);
+        assert_eq!(knots.width, 2 * PAGE_KNOTS as u16);
+        assert!(!by("lut_state").writable);
+    }
+
     /// Pins the BURST section to its base and its one-READ geometry.
     #[test]
     fn burst_region_is_one_read_wide() {

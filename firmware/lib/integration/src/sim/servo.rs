@@ -5,6 +5,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use osc_servo_core::pot_lut::KNOTS;
 use osc_servo_core::tel::{TelSample, TelStream};
 use osc_servo_core::{
     BaudRate, BootMode, CalibSense, CalibSenseExt, ConfigDefaults, ControlTable, CurrentDefaults,
@@ -127,7 +128,7 @@ impl SimServo {
             ),
         );
         if let Some(store) = seed.store {
-            store.boot_load(&shared.table);
+            store.boot_load(&shared);
             shared.seed_store(store);
         }
         // After boot_load, mirroring chip bringup: the calib overlay copies
@@ -277,5 +278,9 @@ impl SimServo {
     /// state the wire cannot set on a read-only field.
     pub fn with_table_mut<R>(&self, f: impl FnOnce(&mut ControlTable) -> R) -> R {
         self.shared.table.with_mut(f)
+    }
+
+    pub fn with_pot_lut<R>(&self, f: impl FnOnce(&[i16; KNOTS]) -> R) -> R {
+        self.shared.with_pot_lut(f)
     }
 }

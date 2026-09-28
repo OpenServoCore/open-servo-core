@@ -17,7 +17,7 @@ use osc_servo_core::regions::{
     CALIB_BASE_ADDR, CALIB_REGION_SIZE, CONFIG_BASE_ADDR, CONFIG_REGION_SIZE, PROFILE_BASE_ADDR,
     PROFILE_REGION_SIZE,
 };
-use osc_servo_core::{ConfigStore, ControlTableCell};
+use osc_servo_core::{ConfigStore, ControlTableCell, Shared};
 
 const ERASED: [u8; IMAGE_LEN] = [0xFF; IMAGE_LEN];
 const CALIB_ERASED: [u8; CALIB_IMAGE_LEN] = [0xFF; CALIB_IMAGE_LEN];
@@ -79,7 +79,8 @@ impl RamStore {
     /// data state the two verdicts make. Called by `SimServo::build` before
     /// the bus reads the table's comms block; the caller re-seeds RO calib
     /// sense facts after (board data wins).
-    pub fn boot_load(&self, table: &ControlTableCell) {
+    pub fn boot_load(&self, shared: &Shared) {
+        let table = &shared.table;
         let mut g = self.inner.lock().unwrap();
         let a = g.slots[0].unwrap_or(ERASED);
         let b = g.slots[1].unwrap_or(ERASED);
@@ -91,7 +92,7 @@ impl RamStore {
         let calib_pick = persist::boot_overlay_calib(table, &a, &b);
         g.calib_next_slot = idx(calib_pick.next_slot);
         g.calib_next_seq = calib_pick.next_seq;
-        table.publish_data_state(pick.state, calib_pick.state);
+        shared.publish_data_state(pick.state, calib_pick.state);
     }
 
     /// A bench SAVE without the wire (sec 9.4): the live CONFIG, PROFILE and

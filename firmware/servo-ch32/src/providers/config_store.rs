@@ -110,9 +110,7 @@ impl ConfigStore {
             calib_slot_bytes(Slot::A),
             calib_slot_bytes(Slot::B),
         );
-        SHARED
-            .table
-            .publish_data_state(pick.state, calib_pick.state);
+        SHARED.publish_data_state(pick.state, calib_pick.state);
         // SAFETY: pre-IRQ sole writer, see fn doc.
         unsafe {
             *CONFIG_STORE.state.get() = State {

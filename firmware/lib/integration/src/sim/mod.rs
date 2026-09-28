@@ -23,6 +23,7 @@ mod tests;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use osc_servo_core::pot_lut::KNOTS;
 use osc_servo_core::regions::config::DEFAULT_RESPONSE_DEADLINE_US;
 use osc_servo_core::{BaudRate, BootMode, ControlTable};
 use osc_servo_drivers::bus::LinkDiag;
@@ -338,6 +339,11 @@ impl Sim {
     /// sim's stand-in for the control/fault ISRs the chip band will own.
     pub fn servo_table_mut<R>(&self, i: usize, f: impl FnOnce(&mut ControlTable) -> R) -> R {
         self.servos[i].with_table_mut(f)
+    }
+
+    /// Inspect a servo's pot LUT array behind the CONTROL window.
+    pub fn servo_pot_lut<R>(&self, i: usize, f: impl FnOnce(&[i16; KNOTS]) -> R) -> R {
+        self.servos[i].with_pot_lut(f)
     }
 
     /// Give servo `i` another board's sense chain: install re-stamps these

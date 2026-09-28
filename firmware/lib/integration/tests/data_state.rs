@@ -62,7 +62,7 @@ fn boot(store: &RamStore) -> Shared {
         t.calib.motor.ke_vpc_q = 0;
         t.calib.stamp.plant_stamp = 0;
     });
-    store.boot_load(&sh.table);
+    store.boot_load(&sh);
     sh
 }
 
@@ -640,7 +640,7 @@ fn live_gain_edit_keeps_the_running_loop_until_reenable() {
     assert!(drives(&rig.run(&sh, 2000)));
     // the dispatcher's post-commit hook on a covered write
     set(&sh, |t| t.config.loop_velocity.v_kp_q88 = 70);
-    sh.table.data_state_after_commit(V_KP_Q88, 2);
+    sh.data_state_after_commit(V_KP_Q88, 2);
     assert_eq!(data_flags(&sh), STAMP_MISMATCH);
     let cmds = rig.run(&sh, 3 * DECIM_MED as u32);
     assert!(cmds.iter().all(|c| matches!(c, MotorCmd::Drive { .. })));
@@ -655,7 +655,7 @@ fn live_gain_edit_keeps_the_running_loop_until_reenable() {
     set(&sh, |t| t.control.lifecycle.torque_enable = false);
     rig.run(&sh, 20);
     stamp(&sh);
-    sh.table.data_state_after_commit(PLANT_STAMP, 2);
+    sh.data_state_after_commit(PLANT_STAMP, 2);
     assert_eq!(data_flags(&sh), 0);
     set(&sh, |t| t.control.lifecycle.torque_enable = true);
     assert!(drives(&rig.run(&sh, 2000)));
