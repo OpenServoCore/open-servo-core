@@ -26,6 +26,7 @@ use control_table::RegisterMap;
 use osc_protocol::crc::{osc_crc, osc_crc_continue};
 
 use crate::ControlTableCell;
+use crate::data_state::ImageState;
 use crate::regions::{
     CALIB_BASE_ADDR, CALIB_REGION_SIZE, CONFIG_BASE_ADDR, CONFIG_REGION_SIZE, PROFILE_BASE_ADDR,
     PROFILE_REGION_SIZE, config,
@@ -39,8 +40,9 @@ pub const IMAGE_LEN: usize = HEADER_LEN + CONFIG_LEN + PROFILE_LEN;
 pub const CALIB_IMAGE_LEN: usize = HEADER_LEN + CALIB_LEN;
 
 pub const IMAGE_MAGIC: u8 = b'C';
-/// Bump on any CONFIG/PROFILE layout change; a mismatched image is ignored
-/// (boot keeps board defaults) rather than migrated.
+/// Bump on any CONFIG/PROFILE layout change; a mismatched image boots
+/// `ImageState::Stale` (board defaults stand, closed loop gated) rather
+/// than migrating.
 pub const IMAGE_VERSION: u8 = 5;
 
 pub const CALIB_IMAGE_MAGIC: u8 = b'K';
@@ -90,8 +92,54 @@ impl Slot {
 pub struct BootPick {
     pub next_slot: Slot,
     pub next_seq: u16,
-    /// A valid image was found and overlaid (false = board defaults stand).
-    pub loaded: bool,
+    /// `Loaded` = a valid image was overlaid; anything else leaves board
+    /// defaults standing and says why (`data_state`).
+    pub state: ImageState,
+}
+
+impl BootPick {
+    const fn unloaded(state: ImageState) -> Self {
+        Self {
+            next_slot: Slot::A,
+            next_seq: 1,
+            state,
+        }
+    }
+}
+
+/// Every byte over the image length erased.
+fn erased(slot: &[u8], len: usize) -> bool {
+    slot.get(..len)
+        .is_some_and(|s| s.iter().all(|&b| b == 0xFF))
+}
+
+/// A CRC-valid image of another layout version: sound bytes this firmware
+/// cannot read. The version byte is under the CRC, so this is a whole-image
+/// verdict, not a header guess.
+fn stale(slot: &[u8], magic: u8, version: u8, body_len: usize) -> bool {
+    let Some(bytes) = slot.get(..HEADER_LEN + body_len) else {
+        return false;
+    };
+    bytes[0] == magic
+        && bytes[1] != version
+        && u16::from_le_bytes([bytes[4], bytes[5]]) == body_len as u16
+        && osc_crc_continue(osc_crc(&bytes[..6]), &bytes[HEADER_LEN..])
+            == u16::from_le_bytes([bytes[6], bytes[7]])
+}
+
+/// Why neither slot parsed. A stale image beside a rotten one still says
+/// the store held a real save once, so stale wins over corrupt. Cold boot
+/// path shared by both images: one copy, not one per call site.
+#[inline(never)]
+fn unloaded_state(a: &[u8], b: &[u8], magic: u8, version: u8, body_len: usize) -> ImageState {
+    let len = HEADER_LEN + body_len;
+    if erased(a, len) && erased(b, len) {
+        ImageState::Virgin
+    } else if stale(a, magic, version, body_len) || stale(b, magic, version, body_len) {
+        ImageState::Stale
+    } else {
+        ImageState::Corrupt
+    }
 }
 
 /// Wrapping-newest of two validated slot images: the winner overlays, the
@@ -319,14 +367,16 @@ pub fn boot_overlay(table: &ControlTableCell, slot_a: &[u8], slot_b: &[u8]) -> B
             BootPick {
                 next_slot,
                 next_seq: img.seq.wrapping_add(1),
-                loaded: true,
+                state: ImageState::Loaded,
             }
         }
-        None => BootPick {
-            next_slot: Slot::A,
-            next_seq: 1,
-            loaded: false,
-        },
+        None => BootPick::unloaded(unloaded_state(
+            slot_a,
+            slot_b,
+            IMAGE_MAGIC,
+            IMAGE_VERSION,
+            CONFIG_LEN + PROFILE_LEN,
+        )),
     }
 }
 
@@ -342,14 +392,16 @@ pub fn boot_overlay_calib(table: &ControlTableCell, slot_a: &[u8], slot_b: &[u8]
             BootPick {
                 next_slot,
                 next_seq: img.seq.wrapping_add(1),
-                loaded: true,
+                state: ImageState::Loaded,
             }
         }
-        None => BootPick {
-            next_slot: Slot::A,
-            next_seq: 1,
-            loaded: false,
-        },
+        None => BootPick::unloaded(unloaded_state(
+            slot_a,
+            slot_b,
+            CALIB_IMAGE_MAGIC,
+            CALIB_IMAGE_VERSION,
+            CALIB_LEN,
+        )),
     }
 }
 
@@ -445,7 +497,7 @@ mod tests {
             BootPick {
                 next_slot: Slot::A,
                 next_seq: 7,
-                loaded: true
+                state: ImageState::Loaded
             }
         );
         assert_eq!(table.with(|t| t.config.common.id), 8);
@@ -470,8 +522,8 @@ mod tests {
             let table = seeded_table();
             let pick = boot_overlay(&table, a, b);
             assert_eq!(
-                (pick.next_slot, pick.next_seq, pick.loaded),
-                (next, 4, true)
+                (pick.next_slot, pick.next_seq, pick.state),
+                (next, 4, ImageState::Loaded)
             );
             assert_eq!(table.with(|t| t.config.common.id), 7);
         }
@@ -486,7 +538,7 @@ mod tests {
             BootPick {
                 next_slot: Slot::A,
                 next_seq: 1,
-                loaded: false
+                state: ImageState::Corrupt
             }
         );
         assert_eq!(table.with(|t| t.config.common.id), 1);
@@ -566,7 +618,7 @@ mod tests {
             BootPick {
                 next_slot: Slot::A,
                 next_seq: 7,
-                loaded: true
+                state: ImageState::Loaded
             }
         );
         assert_eq!(table.with(|t| t.calib.motor.r_q12), 14000);
@@ -598,8 +650,8 @@ mod tests {
             let table = seeded_table();
             let pick = boot_overlay_calib(&table, a, b);
             assert_eq!(
-                (pick.next_slot, pick.next_seq, pick.loaded),
-                (next, 4, true)
+                (pick.next_slot, pick.next_seq, pick.state),
+                (next, 4, ImageState::Loaded)
             );
             assert_eq!(table.with(|t| t.calib.motor.r_q12), 13800);
         }
@@ -635,7 +687,7 @@ mod tests {
             BootPick {
                 next_slot: Slot::A,
                 next_seq: 1,
-                loaded: false
+                state: ImageState::Corrupt
             }
         );
         assert_eq!(table.with(|t| t.calib.sense.tick_hz), 20000);
@@ -655,5 +707,99 @@ mod tests {
             assert_eq!(t.config.common.firmware_version, crate::FIRMWARE_VERSION);
             assert_eq!(t.config.common.id, 7, "comms overlaid");
         });
+    }
+
+    /// The image re-sealed under another layout version: CRC-valid, so it
+    /// is a real save this firmware cannot read.
+    fn reseal_version(img: &mut [u8], version: u8) {
+        img[1] = version;
+        let crc = osc_crc_continue(osc_crc(&img[..6]), &img[HEADER_LEN..]);
+        img[6..8].copy_from_slice(&crc.to_le_bytes());
+    }
+
+    #[test]
+    fn boot_classifies_erased_as_virgin_and_garbage_as_corrupt() {
+        let erased = [0xFF; IMAGE_LEN];
+        let zeros = [0u8; IMAGE_LEN];
+        let mut torn = image_of(1);
+        torn[HEADER_LEN + 3] ^= 0x80;
+        for (a, b, want) in [
+            (&erased[..], &erased[..], ImageState::Virgin),
+            (&erased[..], &zeros[..], ImageState::Corrupt),
+            (&torn[..], &erased[..], ImageState::Corrupt),
+            (&torn[..], &zeros[..], ImageState::Corrupt),
+        ] {
+            let table = seeded_table();
+            let pick = boot_overlay(&table, a, b);
+            assert_eq!(pick, BootPick::unloaded(want));
+            assert_eq!(table.with(|t| t.config.common.id), 1, "defaults stand");
+        }
+        // One valid slot loads whatever sits beside it.
+        let table = seeded_table();
+        assert_eq!(
+            boot_overlay(&table, &torn, &image_of(2)).state,
+            ImageState::Loaded
+        );
+        // The same verdicts for the calib image.
+        let calib_erased = [0xFF; CALIB_IMAGE_LEN];
+        let mut calib_torn = calib_image_of(1);
+        calib_torn[HEADER_LEN] ^= 0x01;
+        let table = seeded_table();
+        assert_eq!(
+            boot_overlay_calib(&table, &calib_erased, &calib_erased),
+            BootPick::unloaded(ImageState::Virgin)
+        );
+        assert_eq!(
+            boot_overlay_calib(&table, &calib_torn, &calib_erased).state,
+            ImageState::Corrupt
+        );
+    }
+
+    #[test]
+    fn version_bump_is_stale() {
+        let mut old = image_of(4);
+        reseal_version(&mut old, IMAGE_VERSION.wrapping_add(1));
+        assert!(
+            Image::parse(&old).is_none(),
+            "another version never overlays"
+        );
+        let erased = [0xFF; IMAGE_LEN];
+        let mut torn = image_of(1);
+        torn[HEADER_LEN] ^= 0x01;
+        for (a, b) in [
+            (&old[..], &erased[..]),
+            (&erased[..], &old[..]),
+            (&old[..], &torn[..]),
+        ] {
+            let table = seeded_table();
+            let pick = boot_overlay(&table, a, b);
+            assert_eq!(pick, BootPick::unloaded(ImageState::Stale));
+            assert_eq!(table.with(|t| t.config.common.id), 1, "defaults stand");
+        }
+        // A newer valid image beside a stale one loads as usual.
+        let table = seeded_table();
+        assert_eq!(
+            boot_overlay(&table, &old, &image_of(1)),
+            BootPick {
+                next_slot: Slot::A,
+                next_seq: 2,
+                state: ImageState::Loaded
+            }
+        );
+        // A re-sealed CRC is what makes it stale: the same bytes with the
+        // old CRC are corrupt.
+        let mut unsealed = image_of(4);
+        unsealed[1] = IMAGE_VERSION.wrapping_add(1);
+        assert_eq!(
+            boot_overlay(&seeded_table(), &unsealed, &erased).state,
+            ImageState::Corrupt
+        );
+        // Calib: same rule.
+        let mut old_calib = calib_image_of(2);
+        reseal_version(&mut old_calib, CALIB_IMAGE_VERSION.wrapping_add(1));
+        assert_eq!(
+            boot_overlay_calib(&seeded_table(), &old_calib, &[0xFF; CALIB_IMAGE_LEN]).state,
+            ImageState::Stale
+        );
     }
 }

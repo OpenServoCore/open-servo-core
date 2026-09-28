@@ -70,7 +70,8 @@ pub struct KernelTiming {
 /// kernel only ever reads those regions - volatile via `region_ptr`, never
 /// forming `&T`, cross-field tearing accepted (each field is independently
 /// sane). The kernel is the sole writer of TELEMETRY sensors/estimates/mode
-/// and the `fault_flags` byte.
+/// (`data_flags` excepted: boot and dispatch write it, the kernel reads) and
+/// the `fault_flags` byte.
 pub struct Kernel<I: ControlIo, T: TelStream = ()> {
     pub io: I,
     tel: T,
@@ -222,12 +223,35 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         // torque_enable 0->1 is the fault ack: latch, detectors, and the
         // limits pend all clear; a still-present condition re-latches
         // through the normal detectors.
-        if life.torque_enable && !self.te_prev {
+        let enable_edge = life.torque_enable && !self.te_prev;
+        if enable_edge {
             self.faults.clear();
             self.det.reset();
             self.limits.ack();
         }
         self.te_prev = life.torque_enable;
+
+        // Data-state entry check (data_state module): at the enable edge and
+        // at a mode change under torque, a named reason refuses closed loop
+        // for this run. A reason that appears mid-run (a live edit) waits
+        // for the next entry; only the Ke belt below stops a running loop.
+        if life.torque_enable && (enable_edge || life.mode != self.mode_prev) {
+            // SAFETY: same volatile read contract; boot and the dispatcher
+            // own this byte, the kernel only reads it.
+            let data = unsafe { (&raw const (*p).telemetry.mode.data_flags).read_volatile() };
+            if !crate::data_state::allows(life.mode, data) {
+                self.faults.raise(faults::BIT_DATA, faults::CODE_DATA);
+            }
+        }
+        // Physics belt: a closed loop on a zero Ke runs open (the boxcar
+        // yields nothing, the current loop decouples nothing), whatever the
+        // flags say - a live write of 0 into a running loop stops it here.
+        if life.torque_enable
+            && matches!(life.mode, Mode::Velocity | Mode::Position)
+            && (motor_cal.recip_ke_q == 0 || motor_cal.ke_vpc_q == 0)
+        {
+            self.faults.raise(faults::BIT_DATA, faults::CODE_DATA);
+        }
 
         // Window from the PREVIOUS tick's command: this frame's scan sampled
         // the period that command drove, so terminal and sign attribution

@@ -491,7 +491,9 @@ impl Dispatcher<'_> {
     /// sec 9.4 SAVE -- the only flash-touching operation. Torque gates it (the
     /// ms-scale program stall is the mid-motion hazard, not the data), and
     /// the ack leaves AFTER the store returns: ack == durable, and a failed
-    /// program surfaces as `hardware` instead of a lie.
+    /// program surfaces as `hardware` instead of a lie. A data-state
+    /// checkpoint precedes the program; success retires the fresh-servo
+    /// reasons (`data_state::SAVE_CLEARS`).
     fn save<R: Reply>(&mut self, alert: bool, ctx: &RequestCtx, reply: &mut R) {
         if self
             .shared
@@ -500,12 +502,14 @@ impl Dispatcher<'_> {
         {
             return Self::ack(alert, ctx, Err(Error::AccessError), reply);
         }
+        self.shared.table.data_state_checkpoint();
         let saved = self.persist_table();
         let code = match saved {
             Ok(()) => {
                 self.shared
                     .table
                     .with_mut(|t| t.telemetry.common.status_flags &= !STATUS_FLAG_CONFIG_DIRTY);
+                self.shared.table.data_state_saved();
                 ResultCode::Ok
             }
             Err(StoreError) => ResultCode::Hardware,

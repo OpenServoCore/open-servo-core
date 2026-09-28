@@ -8,7 +8,7 @@
 
 use osc_servo_core::estimator::bemf::RECIP_ARR_SHIFT;
 use osc_servo_core::{
-    ControlIo, DecaySelect, Kernel, KernelTiming, Mode, Motor, MotorCmd, RegionStorage,
+    ControlIo, DecaySelect, ImageState, Kernel, KernelTiming, Mode, Motor, MotorCmd, RegionStorage,
     SensorFrame, Sensors, Shared, StallResponse,
 };
 
@@ -74,7 +74,8 @@ pub fn last_cmd(k: &Kernel<FakeIo>) -> MotorCmd {
 /// Hand-stable rig baseline: the gains the core kernel tests settle the
 /// plant with, the winding anchor at the plant's R, position tracking
 /// screen out (the plant/gain pair is qualitative), zero open-loop duty
-/// braking.
+/// braking. A fully loaded servo: both images loaded, Ke set, so the
+/// data state opens every mode.
 pub fn seed(shared: &Shared) {
     shared.table.with_mut(|t| {
         let c = &mut t.config;
@@ -133,6 +134,9 @@ pub fn seed(shared: &Shared) {
         t.control.lifecycle.torque_enable = false;
         t.control.lifecycle.mode = Mode::Position;
     });
+    shared
+        .table
+        .publish_data_state(ImageState::Loaded, ImageState::Loaded);
 }
 
 /// Rail-tap counts that scale to exactly `vmotor` terminal counts.

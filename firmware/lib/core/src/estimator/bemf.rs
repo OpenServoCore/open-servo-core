@@ -77,7 +77,8 @@ impl BemfObs {
     /// MEDIUM-boundary close: folds the open half and returns the boxcar
     /// velocity in whole c/s when both halves are valid. `recip_arr_q24`
     /// per `RECIP_ARR_SHIFT`, `recip_ke_q` per `RECIP_KE_SHIFT`, `r_q12`
-    /// vcounts/ccount Q4.12.
+    /// vcounts/ccount Q4.12. An unset Ke (0) yields no estimate: a zero
+    /// would read as "at rest" to the velocity loop, the runaway seed.
     pub fn close_half(&mut self, r_q12: u16, recip_ke_q: u16, recip_arr_q24: u32) -> Option<i32> {
         let half = if self.half_valid {
             // sum(v_mean) - R * sum(i): |sum_i| <= 10 * 4095 keeps the R
@@ -94,7 +95,7 @@ impl BemfObs {
             // (a + b) / BOXCAR_TICKS * recip_ke in one truncation: the
             // reciprocal product <= 65535 * 3277 stays i32, the i64 widen
             // holds |a + b| * that for any half sum
-            (Some(a), Some(b)) => Some(q_mul(
+            (Some(a), Some(b)) if recip_ke_q != 0 => Some(q_mul(
                 a.saturating_add(b),
                 recip_ke_q as i32 * RECIP_BOXCAR,
                 RECIP_KE_SHIFT + RECIP_BOXCAR_SHIFT,
@@ -221,6 +222,18 @@ mod tests {
             }
             assert_eq!(obs.close_half(4096, KE_UNITY, RECIP_ARR), None);
         }
+    }
+
+    #[test]
+    fn zero_recip_ke_yields_no_estimate() {
+        let mut obs = BemfObs::new();
+        half(&mut obs, 600, Some(3000), Some(0));
+        for _ in 0..HALF {
+            obs.sample(600, Some(3000), Some(0));
+        }
+        assert_eq!(obs.close_half(4096, 0, RECIP_ARR), None);
+        // the halves kept folding: the next clean close pairs as usual
+        assert_eq!(half(&mut obs, 600, Some(3000), Some(0)), Some(1499));
     }
 
     #[test]
