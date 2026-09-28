@@ -5,12 +5,10 @@
 //! a virgin servo in OpenLoop shows no ALERT. Writers: boot (pre-IRQ), then
 //! the HIGH dispatcher only (commits, SAVE); the kernel reads.
 
-use crate::regions::ControlTable;
 use crate::regions::calib::CalibMotor;
 use crate::regions::calib::addr::stamp::PLANT_STAMP;
 use crate::regions::control::Mode;
-use crate::stamp;
-use crate::{ControlTableCell, RegionStorage};
+use crate::{RegionStorage, Shared, pot_lut, stamp};
 
 /// Boot found both CONFIG slots erased.
 pub const CONFIG_VIRGIN: u8 = 1 << 0;
@@ -79,33 +77,41 @@ fn plant_flag(motor: &CalibMotor) -> u8 {
     }
 }
 
-/// The checkpoint verdict over the live set. No LUT is applied yet, so
-/// the stamp covers the identity table.
-fn checkpoint_flags(t: &ControlTable) -> u8 {
-    let stamp = if stamp::compute(t, None) == t.calib.stamp.plant_stamp {
-        0
-    } else {
-        STAMP_MISMATCH
-    };
-    plant_flag(&t.calib.motor) | stamp
-}
+impl Shared {
+    /// The checkpoint verdict over the live set: the stamp covers the pot
+    /// LUT the kernel applies, the array while LIVE and the identity
+    /// otherwise.
+    fn checkpoint_flags(&self) -> u8 {
+        self.with_pot_lut(|k| {
+            self.table.with(|t| {
+                let live = t.control.pot_lut.lut_state == pot_lut::state::LIVE;
+                let knots = if live { k.first_chunk() } else { None };
+                let stamp = if stamp::compute(t, knots) == t.calib.stamp.plant_stamp {
+                    0
+                } else {
+                    STAMP_MISMATCH
+                };
+                plant_flag(&t.calib.motor) | stamp
+            })
+        })
+    }
 
-impl ControlTableCell {
     /// Boot publish, after both overlays: the image verdicts plus the
     /// checkpoint over the overlaid set. Pre-IRQ; sole writer.
     pub fn publish_data_state(&self, config: ImageState, calib: ImageState) {
-        self.with_mut(|t| {
+        let flags = self.checkpoint_flags();
+        self.table.with_mut(|t| {
             t.telemetry.mode.data_flags = config.flags(CONFIG_VIRGIN, CONFIG_CORRUPT, CONFIG_STALE)
                 | calib.flags(CALIB_VIRGIN, CALIB_CORRUPT, CALIB_STALE)
-                | checkpoint_flags(t);
+                | flags;
         });
     }
 
     /// Checkpoint: STAMP_MISMATCH and PLANT_UNSET follow the live set. A
-    /// torque-off stamp write and SAVE; HIGH dispatch only.
+    /// torque-off stamp write, a LUT COMMIT and SAVE; HIGH dispatch only.
     pub fn data_state_checkpoint(&self) {
-        self.with_mut(|t| {
-            let flags = checkpoint_flags(t);
+        let flags = self.checkpoint_flags();
+        self.table.with_mut(|t| {
             t.telemetry.mode.data_flags = (t.telemetry.mode.data_flags & !CHECKPOINT) | flags;
         });
     }
@@ -124,17 +130,19 @@ impl ControlTableCell {
         if !stamp_hit && !stamp::covers(addr, len) {
             return;
         }
-        let torque = self.with(|t| t.control.lifecycle.torque_enable);
+        let torque = self.table.with(|t| t.control.lifecycle.torque_enable);
         if stamp_hit && !torque {
             self.data_state_checkpoint();
         } else {
-            self.with_mut(|t| t.telemetry.mode.data_flags |= STAMP_MISMATCH);
+            self.table
+                .with_mut(|t| t.telemetry.mode.data_flags |= STAMP_MISMATCH);
         }
     }
 
     /// A successful SAVE retires [`SAVE_CLEARS`]. HIGH dispatch only.
     pub fn data_state_saved(&self) {
-        self.with_mut(|t| t.telemetry.mode.data_flags &= !SAVE_CLEARS);
+        self.table
+            .with_mut(|t| t.telemetry.mode.data_flags &= !SAVE_CLEARS);
     }
 }
 
@@ -162,20 +170,21 @@ mod tests {
         CALIB_STALE,
     ];
 
-    fn flags(table: &ControlTableCell) -> u8 {
-        table.with(|t| t.telemetry.mode.data_flags)
+    fn flags(sh: &Shared) -> u8 {
+        sh.table.with(|t| t.telemetry.mode.data_flags)
     }
 
-    fn set_ke(table: &ControlTableCell) {
-        table.with_mut(|t| {
+    fn set_ke(sh: &Shared) {
+        sh.table.with_mut(|t| {
             t.calib.motor.recip_ke_q = 3700;
             t.calib.motor.ke_vpc_q = 1150;
         });
     }
 
     /// The host's stamp over the intended set.
-    fn stamp(table: &ControlTableCell) {
-        table.with_mut(|t| t.calib.stamp.plant_stamp = stamp::compute(t, None));
+    fn stamp(sh: &Shared) {
+        sh.table
+            .with_mut(|t| t.calib.stamp.plant_stamp = stamp::compute(t, None));
     }
 
     #[test]
@@ -202,15 +211,15 @@ mod tests {
 
     #[test]
     fn boot_publish_folds_both_images_and_the_checkpoint() {
-        let table = ControlTableCell::new();
-        table.publish_data_state(ImageState::Loaded, ImageState::Loaded);
+        let sh = Shared::new();
+        sh.publish_data_state(ImageState::Loaded, ImageState::Loaded);
         assert_eq!(
-            flags(&table),
+            flags(&sh),
             STAMP_MISMATCH | PLANT_UNSET,
             "zero Ke, never stamped"
         );
-        set_ke(&table);
-        stamp(&table);
+        set_ke(&sh);
+        stamp(&sh);
         for (config, calib, want) in [
             (ImageState::Loaded, ImageState::Loaded, 0),
             (
@@ -229,20 +238,20 @@ mod tests {
                 CONFIG_STALE | CALIB_CORRUPT,
             ),
         ] {
-            table.publish_data_state(config, calib);
-            assert_eq!(flags(&table), want);
+            sh.publish_data_state(config, calib);
+            assert_eq!(flags(&sh), want);
         }
-        table.with_mut(|t| t.calib.motor.ke_vpc_q = 0);
-        table.publish_data_state(ImageState::Virgin, ImageState::Loaded);
+        sh.table.with_mut(|t| t.calib.motor.ke_vpc_q = 0);
+        sh.publish_data_state(ImageState::Virgin, ImageState::Loaded);
         assert_eq!(
-            flags(&table),
+            flags(&sh),
             CONFIG_VIRGIN | STAMP_MISMATCH | PLANT_UNSET,
             "a covered value moved under the stamp"
         );
-        stamp(&table);
-        table.publish_data_state(ImageState::Virgin, ImageState::Loaded);
+        stamp(&sh);
+        sh.publish_data_state(ImageState::Virgin, ImageState::Loaded);
         assert_eq!(
-            flags(&table),
+            flags(&sh),
             CONFIG_VIRGIN | PLANT_UNSET,
             "a stamped zero-Ke set is consistent, not identified"
         );
@@ -250,76 +259,78 @@ mod tests {
 
     #[test]
     fn save_checkpoint_recomputes_and_success_retires_the_fresh_reasons() {
-        let table = ControlTableCell::new();
-        table.publish_data_state(ImageState::Corrupt, ImageState::Stale);
+        let sh = Shared::new();
+        sh.publish_data_state(ImageState::Corrupt, ImageState::Stale);
         assert_eq!(
-            flags(&table),
+            flags(&sh),
             CONFIG_CORRUPT | CALIB_STALE | STAMP_MISMATCH | PLANT_UNSET
         );
-        set_ke(&table);
-        stamp(&table);
-        table.data_state_checkpoint();
-        assert_eq!(flags(&table), CONFIG_CORRUPT | CALIB_STALE);
-        table.data_state_saved();
+        set_ke(&sh);
+        stamp(&sh);
+        sh.data_state_checkpoint();
+        assert_eq!(flags(&sh), CONFIG_CORRUPT | CALIB_STALE);
+        sh.data_state_saved();
         assert_eq!(
-            flags(&table),
+            flags(&sh),
             CONFIG_CORRUPT,
             "SAVE never blesses a corrupt config"
         );
-        table.with_mut(|t| t.calib.motor.recip_ke_q = 0);
-        table.data_state_checkpoint();
-        assert_eq!(flags(&table), CONFIG_CORRUPT | STAMP_MISMATCH | PLANT_UNSET);
+        sh.table.with_mut(|t| t.calib.motor.recip_ke_q = 0);
+        sh.data_state_checkpoint();
+        assert_eq!(flags(&sh), CONFIG_CORRUPT | STAMP_MISMATCH | PLANT_UNSET);
     }
 
     #[test]
     fn covered_write_marks_mismatch_until_a_torque_off_stamp_write() {
-        let table = ControlTableCell::new();
-        set_ke(&table);
-        stamp(&table);
-        table.publish_data_state(ImageState::Loaded, ImageState::Loaded);
-        assert_eq!(flags(&table), 0);
+        let sh = Shared::new();
+        set_ke(&sh);
+        stamp(&sh);
+        sh.publish_data_state(ImageState::Loaded, ImageState::Loaded);
+        assert_eq!(flags(&sh), 0);
 
         // uncovered writes leave the verdict alone
-        table.data_state_after_commit(CURRENT_LIMIT_COUNTS, 2);
-        table.data_state_after_commit(0x180, 4);
-        assert_eq!(flags(&table), 0);
+        sh.data_state_after_commit(CURRENT_LIMIT_COUNTS, 2);
+        sh.data_state_after_commit(0x180, 4);
+        assert_eq!(flags(&sh), 0);
 
         // a covered write marks at once, whatever the value did
-        table.data_state_after_commit(V_KP_Q88, 2);
-        assert_eq!(flags(&table), STAMP_MISMATCH);
+        sh.data_state_after_commit(V_KP_Q88, 2);
+        assert_eq!(flags(&sh), STAMP_MISMATCH);
         // the stamp write verifies: the set still matches the stamp
-        table.data_state_after_commit(PLANT_STAMP, 2);
-        assert_eq!(flags(&table), 0);
+        sh.data_state_after_commit(PLANT_STAMP, 2);
+        assert_eq!(flags(&sh), 0);
 
         // the value moved, the stamp did not
-        table.with_mut(|t| t.config.limits.drive_polarity = true);
-        table.data_state_after_commit(DRIVE_POLARITY, 1);
-        table.data_state_after_commit(PLANT_STAMP, 2);
-        assert_eq!(flags(&table), STAMP_MISMATCH, "an end-to-end miss");
-        stamp(&table);
-        table.data_state_after_commit(PLANT_STAMP, 2);
-        assert_eq!(flags(&table), 0);
+        sh.table.with_mut(|t| t.config.limits.drive_polarity = true);
+        sh.data_state_after_commit(DRIVE_POLARITY, 1);
+        sh.data_state_after_commit(PLANT_STAMP, 2);
+        assert_eq!(flags(&sh), STAMP_MISMATCH, "an end-to-end miss");
+        stamp(&sh);
+        sh.data_state_after_commit(PLANT_STAMP, 2);
+        assert_eq!(flags(&sh), 0);
 
         // under torque a stamp write lands unverified
-        table.with_mut(|t| t.control.lifecycle.torque_enable = true);
-        table.with_mut(|t| t.calib.motor.recip_ke_q = 0);
-        table.data_state_after_commit(RECIP_KE_Q, 2);
-        assert_eq!(flags(&table), STAMP_MISMATCH, "no checkpoint under torque");
-        stamp(&table);
-        table.data_state_after_commit(PLANT_STAMP, 2);
-        assert_eq!(flags(&table), STAMP_MISMATCH, "unverified");
-        table.with_mut(|t| t.control.lifecycle.torque_enable = false);
-        table.data_state_after_commit(PLANT_STAMP, 2);
+        sh.table
+            .with_mut(|t| t.control.lifecycle.torque_enable = true);
+        sh.table.with_mut(|t| t.calib.motor.recip_ke_q = 0);
+        sh.data_state_after_commit(RECIP_KE_Q, 2);
+        assert_eq!(flags(&sh), STAMP_MISMATCH, "no checkpoint under torque");
+        stamp(&sh);
+        sh.data_state_after_commit(PLANT_STAMP, 2);
+        assert_eq!(flags(&sh), STAMP_MISMATCH, "unverified");
+        sh.table
+            .with_mut(|t| t.control.lifecycle.torque_enable = false);
+        sh.data_state_after_commit(PLANT_STAMP, 2);
         assert_eq!(
-            flags(&table),
+            flags(&sh),
             PLANT_UNSET,
             "the torque-off checkpoint sees a stamped zero-Ke set"
         );
 
         // a write spanning the stamp and a covered field verifies as one
-        table.with_mut(|t| t.calib.motor.recip_ke_q = 3700);
-        stamp(&table);
-        table.data_state_after_commit(RECIP_KE_Q, PLANT_STAMP + 2 - RECIP_KE_Q);
-        assert_eq!(flags(&table), 0);
+        sh.table.with_mut(|t| t.calib.motor.recip_ke_q = 3700);
+        stamp(&sh);
+        sh.data_state_after_commit(RECIP_KE_Q, PLANT_STAMP + 2 - RECIP_KE_Q);
+        assert_eq!(flags(&sh), 0);
     }
 }

@@ -5,15 +5,50 @@
 //! c[k]` at a knot), so counts stay counts downstream. `notebooks/oscnb/
 //! potlut.py` mirrors `index`, `interp_q4` and `validate` bit for bit; the
 //! mg90-a test below pins the two against each other.
+//!
+//! The table lives in `Shared` RAM behind a paged window in CONTROL
+//! (`ControlPotLut`): the host STOREs it `PAGE_KNOTS` at a time, COMMITs,
+//! and the kernel applies it only while `lut_state` reads LIVE. Nothing
+//! here persists; a reboot is the identity again.
+
+use crate::data_state::STAMP_MISMATCH;
+use crate::regions::control::addr::pot_lut::LUT_CMD;
+use crate::{RegionStorage, Shared};
 
 pub const ADC_BITS: u32 = 12;
 pub const GRID_SHIFT: u32 = 4;
 pub const GRID: usize = 1 << GRID_SHIFT;
 pub const INTERVALS: usize = 1 << (ADC_BITS - GRID_SHIFT);
 pub const KNOTS: usize = INTERVALS + 1;
+/// Knots per window page: 64 B, so page, command and knots ride one WRITE.
+pub const PAGE_KNOTS: usize = 32;
+/// Pages covering the host-written knots; the fixed last knot has none.
+pub const PAGES: usize = INTERVALS / PAGE_KNOTS;
 const ADC_MASK: u16 = (1 << ADC_BITS) - 1;
 const FRAC_MASK: u16 = GRID as u16 - 1;
 const GAIN_MAX: i32 = 16;
+
+/// `lut_state` values. Plain consts, not an `Enum` derive: the field is
+/// RO, so no discriminant validation ever runs on it.
+pub mod state {
+    pub const IDENTITY: u8 = 0;
+    /// Pages landed since the last COMMIT; the kernel applies the identity.
+    pub const LOADING: u8 = 1;
+    pub const LIVE: u8 = 2;
+    pub const REJECT_TORQUE: u8 = 3;
+    pub const REJECT_ENDS: u8 = 4;
+    pub const REJECT_SHAPE: u8 = 5;
+}
+
+/// `lut_cmd` values; the field's `le` rule admits nothing above `MAX`.
+/// A committed write carrying one runs it and reads back `NONE`.
+pub mod cmd {
+    pub const NONE: u8 = 0;
+    pub const STORE: u8 = 1;
+    pub const FETCH: u8 = 2;
+    pub const COMMIT: u8 = 3;
+    pub const MAX: u8 = COMMIT;
+}
 
 /// Why a table cannot be applied.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -63,6 +98,85 @@ pub fn validate(knots: &[i16; KNOTS], raw_min: u16, raw_max: u16) -> Result<(), 
         (1..GAIN_MAX * GRID as i32).contains(&d)
     });
     if shape { Ok(()) } else { Err(Reject::Shape) }
+}
+
+impl Reject {
+    const fn state(self) -> u8 {
+        match self {
+            Reject::Ends => state::REJECT_ENDS,
+            Reject::Shape => state::REJECT_SHAPE,
+        }
+    }
+}
+
+impl Shared {
+    /// Run the command a committed write left in `lut_cmd`, then clear it.
+    /// STORE copies the window into the array's page and leaves LOADING;
+    /// FETCH copies that page back into the window; COMMIT validates the
+    /// array against the stops and lands LIVE or a REJECT, then runs the
+    /// stamp checkpoint (the effective table changed). STORE and COMMIT are
+    /// torque-gated: from LIVE a refusal leaves LIVE standing, since the
+    /// state is what the kernel applies and a refusal must not move it
+    /// under a running loop; from any other state it reads REJECT_TORQUE.
+    /// Leaving LIVE by STORE marks the stamp stale the way a covered write
+    /// does. HIGH dispatch only; one copy behind both commit sites.
+    #[inline(never)]
+    pub fn pot_lut_after_commit(&self, addr: u16, len: u16) {
+        if addr > LUT_CMD || addr.saturating_add(len) <= LUT_CMD {
+            return;
+        }
+        let (checkpoint, stale) = self.with_pot_lut_mut(|k| {
+            self.table.with_mut(|t| {
+                let torque = t.control.lifecycle.torque_enable;
+                let (raw_min, raw_max) = (t.calib.pot.raw_min, t.calib.pot.raw_max);
+                let w = &mut t.control.pot_lut;
+                let at = w.lut_page as usize * PAGE_KNOTS;
+                let refused = if w.lut_state == state::LIVE {
+                    state::LIVE
+                } else {
+                    state::REJECT_TORQUE
+                };
+                let mut checkpoint = false;
+                let mut stale = false;
+                match w.lut_cmd {
+                    cmd::STORE if torque => w.lut_state = refused,
+                    cmd::STORE => {
+                        stale = w.lut_state == state::LIVE;
+                        w.lut_state = state::LOADING;
+                        if let Some(dst) = k.get_mut(at..) {
+                            for (d, s) in dst.iter_mut().zip(&w.lut_knots) {
+                                *d = *s;
+                            }
+                        }
+                    }
+                    cmd::FETCH => {
+                        if let Some(src) = k.get(at..) {
+                            for (d, s) in w.lut_knots.iter_mut().zip(src) {
+                                *d = *s;
+                            }
+                        }
+                    }
+                    cmd::COMMIT if torque => w.lut_state = refused,
+                    cmd::COMMIT => {
+                        w.lut_state = match validate(k, raw_min, raw_max) {
+                            Ok(()) => state::LIVE,
+                            Err(r) => r.state(),
+                        };
+                        checkpoint = true;
+                    }
+                    _ => {}
+                }
+                w.lut_cmd = cmd::NONE;
+                (checkpoint, stale)
+            })
+        });
+        if checkpoint {
+            self.data_state_checkpoint();
+        } else if stale {
+            self.table
+                .with_mut(|t| t.telemetry.mode.data_flags |= STAMP_MISMATCH);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -250,5 +364,201 @@ mod tests {
     fn interp_wraps_like_the_u16_cast() {
         assert_eq!(interp_q4(0, &table(&[(0, -1)])), 0xFFF0);
         assert_eq!(interp_q4(4095, &table(&[(255, 1)])), 65521);
+    }
+
+    // The window: what the dispatcher's post-commit step runs.
+
+    use crate::data_state::STAMP_MISMATCH;
+    use crate::regions::control::addr::pot_lut::{LUT_KNOTS, LUT_PAGE, LUT_STATE};
+    use crate::stamp;
+
+    fn servo() -> Shared {
+        let sh = Shared::new();
+        sh.table.with_mut(|t| {
+            t.calib.pot.raw_min = MG90_A_MIN;
+            t.calib.pot.raw_max = MG90_A_MAX;
+            t.calib.motor.recip_ke_q = 3700;
+            t.calib.motor.ke_vpc_q = 1150;
+            t.calib.stamp.plant_stamp = stamp::compute(t, None);
+        });
+        sh.data_state_checkpoint();
+        assert_eq!(flags(&sh), 0);
+        sh
+    }
+
+    fn flags(sh: &Shared) -> u8 {
+        sh.table.with(|t| t.telemetry.mode.data_flags)
+    }
+
+    fn lut_state(sh: &Shared) -> u8 {
+        sh.table.with(|t| t.control.pot_lut.lut_state)
+    }
+
+    fn window(sh: &Shared) -> [i16; PAGE_KNOTS] {
+        sh.table.with(|t| t.control.pot_lut.lut_knots)
+    }
+
+    /// One committed window write: page, command and knots as one span.
+    fn command(sh: &Shared, page: u8, c: u8, knots: &[i16; PAGE_KNOTS]) {
+        sh.table.with_mut(|t| {
+            t.control.pot_lut.lut_page = page;
+            t.control.pot_lut.lut_cmd = c;
+            t.control.pot_lut.lut_knots = *knots;
+        });
+        sh.pot_lut_after_commit(LUT_PAGE, 2 + 2 * PAGE_KNOTS as u16);
+        assert_eq!(sh.table.with(|t| t.control.pot_lut.lut_cmd), cmd::NONE);
+    }
+
+    fn store_all(sh: &Shared, k: &[i16; KNOTS]) {
+        for page in 0..PAGES {
+            let mut w = [0; PAGE_KNOTS];
+            w.copy_from_slice(&k[page * PAGE_KNOTS..][..PAGE_KNOTS]);
+            command(sh, page as u8, cmd::STORE, &w);
+            assert_eq!(lut_state(sh), state::LOADING);
+        }
+    }
+
+    fn commit(sh: &Shared) -> u8 {
+        command(sh, 0, cmd::COMMIT, &[0; PAGE_KNOTS]);
+        lut_state(sh)
+    }
+
+    #[test]
+    fn store_commit_goes_live_and_fetch_reads_back() {
+        let sh = servo();
+        let k = mg90_a();
+        assert_eq!(lut_state(&sh), state::IDENTITY);
+        store_all(&sh, &k);
+        assert_eq!(flags(&sh), 0, "loading applies the identity");
+        assert_eq!(commit(&sh), state::LIVE);
+        sh.with_pot_lut(|live| assert_eq!(live, &k));
+        assert_eq!(flags(&sh), STAMP_MISMATCH, "the hashed knots changed");
+        sh.table.with_mut(|t| {
+            t.calib.stamp.plant_stamp = stamp::compute(t, Some(&MG90_A));
+        });
+        sh.data_state_after_commit(crate::regions::calib::addr::stamp::PLANT_STAMP, 2);
+        assert_eq!(flags(&sh), 0);
+        for page in 0..PAGES {
+            command(&sh, page as u8, cmd::FETCH, &[0; PAGE_KNOTS]);
+            assert_eq!(window(&sh), k[page * PAGE_KNOTS..][..PAGE_KNOTS]);
+        }
+        assert_eq!(lut_state(&sh), state::LIVE, "fetch moves nothing");
+    }
+
+    #[test]
+    fn zero_table_committed_live_keeps_the_stamp() {
+        let sh = servo();
+        store_all(&sh, &ZERO);
+        assert_eq!(commit(&sh), state::LIVE);
+        assert_eq!(flags(&sh), 0);
+    }
+
+    #[test]
+    fn commit_rejects_and_the_kernel_stays_identity() {
+        let sh = servo();
+        // a nonzero knot inside the low inset of stop 209
+        let mut ends = mg90_a();
+        ends[14] = 1;
+        store_all(&sh, &ends);
+        assert_eq!(commit(&sh), state::REJECT_ENDS);
+        assert_eq!(flags(&sh), 0, "identity hashes as before");
+        let mut shape = mg90_a();
+        shape[100] = shape[99] - GRID as i16;
+        store_all(&sh, &shape);
+        assert_eq!(commit(&sh), state::REJECT_SHAPE);
+        assert_eq!(flags(&sh), 0);
+        // a rejected array is still there to fix page by page
+        store_all(&sh, &mg90_a());
+        assert_eq!(commit(&sh), state::LIVE);
+        assert_eq!(flags(&sh), STAMP_MISMATCH);
+        // the stops moved into the table: LIVE falls back and the stamp
+        // over the array no longer holds
+        sh.table.with_mut(|t| {
+            t.calib.stamp.plant_stamp = stamp::compute(t, Some(&MG90_A));
+        });
+        sh.data_state_checkpoint();
+        assert_eq!(flags(&sh), 0);
+        sh.table.with_mut(|t| t.calib.pot.raw_max = 3000);
+        assert_eq!(commit(&sh), state::REJECT_ENDS);
+        assert_eq!(flags(&sh), STAMP_MISMATCH);
+    }
+
+    #[test]
+    fn torque_refuses_store_and_commit() {
+        let sh = servo();
+        let k = mg90_a();
+        sh.table
+            .with_mut(|t| t.control.lifecycle.torque_enable = true);
+        let mut w = [0; PAGE_KNOTS];
+        w.copy_from_slice(&k[64..96]);
+        command(&sh, 2, cmd::STORE, &w);
+        assert_eq!(lut_state(&sh), state::REJECT_TORQUE);
+        sh.with_pot_lut(|a| assert_eq!(a, &ZERO));
+        assert_eq!(commit(&sh), state::REJECT_TORQUE);
+        assert_eq!(flags(&sh), 0);
+        command(&sh, 2, cmd::FETCH, &[0; PAGE_KNOTS]);
+        assert_eq!(window(&sh), [0; PAGE_KNOTS], "fetch is not gated");
+
+        sh.table
+            .with_mut(|t| t.control.lifecycle.torque_enable = false);
+        store_all(&sh, &k);
+        assert_eq!(commit(&sh), state::LIVE);
+        // under torque a live table stands: a refusal never moves what the
+        // kernel applies
+        sh.table
+            .with_mut(|t| t.control.lifecycle.torque_enable = true);
+        command(&sh, 2, cmd::STORE, &[7; PAGE_KNOTS]);
+        assert_eq!(lut_state(&sh), state::LIVE);
+        sh.with_pot_lut(|a| assert_eq!(a, &k));
+        assert_eq!(commit(&sh), state::LIVE);
+        assert_eq!(flags(&sh), STAMP_MISMATCH, "unchanged since the commit");
+    }
+
+    #[test]
+    fn store_out_of_live_marks_the_stamp_stale() {
+        let sh = servo();
+        let k = mg90_a();
+        store_all(&sh, &k);
+        assert_eq!(commit(&sh), state::LIVE);
+        sh.table.with_mut(|t| {
+            t.calib.stamp.plant_stamp = stamp::compute(t, Some(&MG90_A));
+        });
+        sh.data_state_checkpoint();
+        assert_eq!(flags(&sh), 0);
+        let mut w = [0; PAGE_KNOTS];
+        w.copy_from_slice(&k[..PAGE_KNOTS]);
+        command(&sh, 0, cmd::STORE, &w);
+        assert_eq!(lut_state(&sh), state::LOADING);
+        assert_eq!(flags(&sh), STAMP_MISMATCH);
+        // the same table back: the checkpoint matches again
+        assert_eq!(commit(&sh), state::LIVE);
+        assert_eq!(flags(&sh), 0);
+    }
+
+    #[test]
+    fn checkpoint_hashes_the_array_only_while_live() {
+        let sh = servo();
+        let k = mg90_a();
+        store_all(&sh, &k);
+        sh.data_state_checkpoint();
+        assert_eq!(flags(&sh), 0, "loading hashes the identity");
+        assert_eq!(commit(&sh), state::LIVE);
+        assert_eq!(flags(&sh), STAMP_MISMATCH);
+    }
+
+    #[test]
+    fn only_a_write_covering_the_command_runs_it() {
+        let sh = servo();
+        sh.table.with_mut(|t| {
+            t.control.pot_lut.lut_cmd = cmd::STORE;
+            t.control.pot_lut.lut_knots[0] = 5;
+        });
+        sh.pot_lut_after_commit(LUT_PAGE, 1);
+        sh.pot_lut_after_commit(LUT_KNOTS, 64);
+        sh.pot_lut_after_commit(LUT_STATE, 1);
+        assert_eq!(lut_state(&sh), state::IDENTITY);
+        sh.pot_lut_after_commit(LUT_CMD, 1);
+        assert_eq!(lut_state(&sh), state::LOADING);
+        sh.with_pot_lut(|a| assert_eq!(a[0], 5));
     }
 }

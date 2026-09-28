@@ -2,8 +2,9 @@
 //! LUT as one transaction. The host computes the stamp over the set it
 //! INTENDED to write and stores it in `plant_stamp`; firmware recomputes
 //! over what actually landed at every checkpoint (boot, a torque-off stamp
-//! write, SAVE), so a write that never landed, a torn save, a hand edit or
-//! a table rebuilt under old constants all read `STAMP_MISMATCH`.
+//! write, a LUT COMMIT, SAVE), so a write that never landed, a torn save,
+//! a hand edit or a table rebuilt under old constants all read
+//! `STAMP_MISMATCH`.
 //!
 //! Covered: the fields a fit or a cal produces, in table order, named once
 //! in [`COVERED_NAMES`] and exported through the descriptor so hosts keep

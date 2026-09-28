@@ -768,6 +768,36 @@
       "max": 7
     },
     {
+      "name": "lut_page",
+      "addr": 412,
+      "width": 1,
+      "access": "rw",
+      "kind": "uint",
+      "max": 7
+    },
+    {
+      "name": "lut_cmd",
+      "addr": 413,
+      "width": 1,
+      "access": "rw",
+      "kind": "uint",
+      "max": 3
+    },
+    {
+      "name": "lut_knots",
+      "addr": 414,
+      "width": 64,
+      "access": "rw",
+      "kind": "bytes"
+    },
+    {
+      "name": "lut_state",
+      "addr": 478,
+      "width": 1,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
       "name": "fault_flags",
       "addr": 512,
       "width": 1,

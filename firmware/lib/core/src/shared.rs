@@ -4,6 +4,7 @@ use osc_protocol::wire::UID_LEN;
 
 use crate::ControlTableCell;
 use crate::persist::ConfigStore;
+use crate::pot_lut::KNOTS;
 
 #[repr(C)]
 pub struct Shared {
@@ -15,6 +16,10 @@ pub struct Shared {
     /// The sec 9.4 persistence store; MGMT SAVE/FACTORY are its only callers
     /// (cold path -- `dyn` costs nothing that matters here).
     store: SyncUnsafeCell<Option<&'static dyn ConfigStore>>,
+    /// The pot LUT (`pot_lut` module), all-zero = identity; the CONTROL
+    /// window loads it a page at a time. Boot, then the HIGH dispatcher
+    /// alone, write it - the table's single-writer contract.
+    pot_lut: SyncUnsafeCell<[i16; KNOTS]>,
 }
 
 #[allow(clippy::new_without_default)]
@@ -24,7 +29,20 @@ impl Shared {
             table: ControlTableCell::new(),
             uid: SyncUnsafeCell::new([0; UID_LEN]),
             store: SyncUnsafeCell::new(None),
+            pot_lut: SyncUnsafeCell::new([0; KNOTS]),
         }
+    }
+
+    /// Borrow the pot LUT; the caller upholds the single-writer contract.
+    pub fn with_pot_lut<T>(&self, f: impl FnOnce(&[i16; KNOTS]) -> T) -> T {
+        // SAFETY: see fn doc.
+        f(unsafe { &*self.pot_lut.get() })
+    }
+
+    /// Mutably borrow the pot LUT; HIGH dispatch (and pre-IRQ boot) only.
+    pub fn with_pot_lut_mut<T>(&self, f: impl FnOnce(&mut [i16; KNOTS]) -> T) -> T {
+        // SAFETY: see fn doc.
+        f(unsafe { &mut *self.pot_lut.get() })
     }
 
     /// Seed the ESIG-derived UID. Bringup-only, pre-IRQ; sole writer (the
