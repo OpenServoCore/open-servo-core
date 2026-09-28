@@ -15,6 +15,8 @@ use anyhow::{Context, Result, bail};
 use clap::{Subcommand, ValueEnum};
 use osc_client::Id;
 use osc_client::blocking::Client;
+use osc_client::data_state::{self, DataState, STAMP_MISMATCH};
+use osc_client::descriptor::Descriptor;
 use osc_client::nusb::NusbPipe;
 use osc_ident::burst::Chans;
 use osc_ident::exp::bias::{Bias, BiasCfg};
@@ -188,7 +190,9 @@ enum Cmd {
     Ladder,
     /// E4: duty-step transients -> B (TEL when wired).
     Inertia,
-    /// E5/E6: closed-loop verification on the written gains.
+    /// E5/E6: closed-loop verification on the written gains. Needs a clean
+    /// data state: a set written but not SAVEd on a fresh servo is refused
+    /// (`ident write --save` first).
     Verify,
     /// Refit offline from a recorded run directory.
     Fit { dir: PathBuf },
@@ -217,14 +221,27 @@ enum Cmd {
     /// The params.json lands at --out, else next to <FILE>.
     #[command(verbatim_doc_comment)]
     Synth { file: PathBuf },
-    /// Write a params.json gain set to the table (snapshot taken first).
+    /// Write a params.json gain set to the table and stamp it: torque off,
+    /// snapshot, read-back verified writes, the plant stamp over the set
+    /// as written (the servo's checkpoint verifies it), SAVE with --save.
+    ///
+    /// A servo that boots CALIB_STALE or CALIB_VIRGIN (factory-fresh, or
+    /// flashed across a CALIB layout change) reaches a clean data state
+    /// without re-running the experiments:
+    ///   osc status                              the reasons and the stamp
+    ///   osc cal --yes --gear-ratio <g>          stops, polarity, angles; stamps + SAVEs
+    ///   osc ident write <params.json> --save    the identified set + stamp, SAVE
+    ///   osc ident verify                        closed loop, only now
+    /// VIRGIN and STALE clear only on SAVE, so verify comes after --save.
+    /// Without motion, a saved table does the same: osc recover --from.
+    #[command(verbatim_doc_comment)]
     Write {
         params: PathBuf,
-        /// Persist with MGMT SAVE after the verified write.
+        /// Persist with MGMT SAVE after the stamp.
         #[arg(long)]
         save: bool,
     },
-    /// Restore a snapshot.json written by `write`.
+    /// Restore a snapshot.json written by `write`, then restamp.
     Rollback { snapshot: PathBuf },
     /// Print the current table values of every ident-owned field.
     Show,
@@ -364,20 +381,32 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
                     params.display()
                 );
             }
+            let d = crate::state::descriptor(&mut c, id)?;
+            write_reg(&mut c, id, control::TORQUE_ENABLE, 0)?;
             let snap = params
                 .parent()
                 .unwrap_or(std::path::Path::new("."))
                 .join("snapshot.json");
             snapshot::take_snapshot(&mut c, id, &snap)?;
             snapshot::write_gains(&mut c, id, &p.gains)?;
-            if *save {
-                write_reg(&mut c, id, control::TORQUE_ENABLE, 0)?;
-                c.save(id).context("MGMT SAVE")?;
-                println!("saved");
+            let s = crate::state::commit(&mut c, id, &d, *save)?;
+            if data_state::allows(s.flags, true) {
+                println!("next: ident verify");
+            } else if !*save {
+                println!(
+                    "next: ident write {} --save, then ident verify",
+                    params.display()
+                );
             }
             Ok(())
         }
-        Cmd::Rollback { snapshot } => snapshot::rollback(&mut c, id, snapshot),
+        Cmd::Rollback { snapshot } => {
+            let d = crate::state::descriptor(&mut c, id)?;
+            write_reg(&mut c, id, control::TORQUE_ENABLE, 0)?;
+            snapshot::rollback(&mut c, id, snapshot)?;
+            crate::state::commit(&mut c, id, &d, false)?;
+            Ok(())
+        }
         Cmd::Show => snapshot::show(&mut c, id),
         Cmd::Fit { .. } | Cmd::Synth { .. } => unreachable!("handled above"),
     }
@@ -486,6 +515,7 @@ fn run_resistance(
     let params = rig(cli).without_pos_guard();
     let mut log = csvio::SnapshotLog::create(out, "resistance_snapshots.csv")?;
     let mut exp = Guarded::new(Resistance::new(ResistanceCfg::default(), &params), params);
+    let (d, before) = servo_state(c, id)?;
     with_guard(c, id, |c| {
         // stalling at the mechanical rails IS the method; restore inside
         // the guard so an abort still restores
@@ -494,6 +524,7 @@ fn run_resistance(
         let restored = pump::restore_pos_limits(c, id, saved);
         ran.and(restored)
     })?;
+    keep_stamp(c, id, &d, before)?;
     check_abort("resistance", exp.abort())?;
     let exp = exp.into_inner();
     csvio::write_dwell_samples(out, exp.samples())?;
@@ -691,6 +722,8 @@ fn run_inertia(
 fn run_verify(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
     let params = rig(cli);
     let tick_hz = snapshot::read_u16(c, id, calib::TICK_HZ)? as f64;
+    let (d, before) = servo_state(c, id)?;
+    refuse_closed_loop(&before)?;
     recenter(c, id)?;
     println!("[E5 current steps] (end-stop stalls; pos limits widened)");
     let mut e5 = Guarded::new(
@@ -705,8 +738,10 @@ fn run_verify(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
         let restored = pump::restore_pos_limits(c, id, saved);
         ran.and(restored)
     })?;
+    keep_stamp(c, id, &d, before)?;
     check_abort("verify-current", e5.abort())?;
     let cur = e5.into_inner().result();
+    refuse_closed_loop(&c.data_state(id, &d)?)?;
     // E5 ends stalled against an end-stop; E6 runs with the pos guard on
     // and its first read would abort right there
     recenter(c, id)?;
@@ -748,6 +783,38 @@ fn check_abort(name: &str, abort: Option<osc_ident::exp::AbortReason>) -> Result
         None => Ok(()),
         Some(r) => bail!("{name} aborted by the safety envelope: {r:?}"),
     }
+}
+
+fn servo_state(c: &mut Client<NusbPipe>, id: Id) -> Result<(Descriptor, DataState)> {
+    let d = crate::state::descriptor(c, id)?;
+    let s = c.data_state(id, &d)?;
+    Ok((d, s))
+}
+
+/// A rail-stall experiment opens the pos gates (stamp-covered fields) and
+/// puts them back: the set is unchanged, so a stamp that verified before
+/// is written again with torque off (the guard left it off) and verifies
+/// again. A set that already mismatched stays that way: the tool that
+/// changed it commits it, never a side effect of an experiment.
+fn keep_stamp(c: &mut Client<NusbPipe>, id: Id, d: &Descriptor, before: DataState) -> Result<()> {
+    if before.flags & STAMP_MISMATCH != 0 {
+        return Ok(());
+    }
+    c.restamp(id, d)?;
+    Ok(())
+}
+
+/// The servo refuses closed loop under any reason; verify says so before
+/// an enable latches CODE_DATA.
+fn refuse_closed_loop(s: &DataState) -> Result<()> {
+    if data_state::allows(s.flags, true) {
+        return Ok(());
+    }
+    bail!(
+        "closed loop refused: {} - {}",
+        s.names(),
+        s.message().unwrap_or_default()
+    )
 }
 
 // --- fitting ----------------------------------------------------------------

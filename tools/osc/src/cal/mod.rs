@@ -1,7 +1,8 @@
 //! `osc cal` - the calibration orchestrator: find the mechanical end-stops
 //! and the drive polarity (applied at once), confirm the real-world angle
 //! range with the operator, print the count->unit report, then write the
-//! limits + pot stops + angle endpoints + gear and persist with MGMT SAVE.
+//! limits + pot stops + angle endpoints + gear, stamp the set and persist
+//! with MGMT SAVE.
 //! Interactive by default; flags make it headless. The rail-to-rail traverse
 //! streams a TEL current+pos sweep as one bus burst: its commutation ripple
 //! gives a MEASURED gear ratio (the gear prompt's default), gear-2-dependent
@@ -87,7 +88,8 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     pump::install_ctrlc();
     let mut c = crate::rig::connect(&baud)?;
     let id = Id::new(id);
-    crate::state::check(&mut c, id)?;
+    let d = crate::state::descriptor(&mut c, id)?;
+    crate::state::warn(&mut c, id, &d)?;
 
     let sense = read_sense(&mut c, id)?;
     // TEL frames arrive one per fast tick, so tick_hz is the sweep sample rate.
@@ -241,10 +243,12 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     write_reg(&mut c, id, calib::ANGLE_MAX_CDEG, angle_max_cdeg as i32)?;
     write_reg(&mut c, id, calib::GEAR_RATIO_CENTI, gear_ratio_centi as i32)?;
 
-    // SAVE needs torque off (protocol sec 9.4); park was already torque-off.
-    write_reg(&mut c, id, control::TORQUE_ENABLE, 0)?;
-    c.save(id).context("MGMT SAVE")?;
-    println!("saved");
+    // Cal stamps only while its run leaves the effective pot LUT
+    // unchanged. No LUT window is in the table yet, so every servo runs
+    // identity and that always holds; the LUT band adds the LIVE
+    // re-COMMIT check here, and a table that falls to REJECT_ENDS gets
+    // "rebuild the LUT, then run osc ident" instead of a stamp.
+    crate::state::commit(&mut c, id, &d, true)?;
     Ok(())
 }
 
