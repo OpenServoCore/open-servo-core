@@ -456,6 +456,8 @@ fn track_rows(t: Track) -> Result<Vec<TelSample>, JsError> {
             vmotor_b: t.vmotor_b[i],
             vbus_raw: t.vbus_raw[i],
             ntc_raw: t.ntc_raw[i],
+            // the fake fleet applies no table: the identity Q4 word
+            pos_lin_q4: t.pos[i] << 4,
             window_valid: t.window_valid[i] != 0,
             fault: false,
         })

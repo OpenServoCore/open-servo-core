@@ -329,6 +329,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                 vmotor_b: frame.vmotor_b,
                 vbus_raw: frame.vbus_raw,
                 ntc_raw: frame.ntc_raw,
+                pos_lin_q4: pos_q4,
                 window_valid: i_meas.is_some(),
                 fault: self.faults.mask() != 0,
             };

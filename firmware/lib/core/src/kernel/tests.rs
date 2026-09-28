@@ -1531,6 +1531,7 @@ fn tel_stream_gated_by_sink_active() {
     assert_eq!(k.tel.samples.len(), 20);
     let s = k.tel.samples.last().unwrap();
     assert_eq!(s.pos, 2100);
+    assert_eq!(s.pos_lin_q4, 2100 << 4, "identity: no table live");
     assert_eq!(s.current_trough, BIAS);
     // previous-tick alignment: the sampled duty is the command whose window
     // this frame measured

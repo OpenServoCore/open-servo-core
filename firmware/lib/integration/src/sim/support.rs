@@ -65,6 +65,7 @@ pub fn tel_sample(i: u32) -> TelSample {
         vmotor_b: 0x0B00u16.wrapping_add(i as u16),
         vbus_raw: 0x0C00u16.wrapping_add(i as u16),
         ntc_raw: 0x0D00u16.wrapping_add(i as u16),
+        pos_lin_q4: 0x0E00u16.wrapping_add(i as u16),
         window_valid: i.is_multiple_of(2),
         fault: false,
     }
