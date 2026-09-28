@@ -3,6 +3,7 @@
 //! every other scalar as number.
 
 use osc_client::BaudRate as WireBaud;
+use osc_client::data_state;
 use osc_client::descriptor as desc;
 use serde::{Deserialize, Serialize};
 use tsify::Tsify;
@@ -187,6 +188,79 @@ impl From<osc_client::common::Health> for Health {
     }
 }
 
+/// One `data_flags` reason: its firmware name and what to do about it.
+#[derive(Debug, Clone, Serialize, Tsify)]
+#[serde(rename_all = "camelCase")]
+pub struct DataReason {
+    pub name: String,
+    pub text: String,
+}
+
+impl From<data_state::Reason> for DataReason {
+    fn from(r: data_state::Reason) -> Self {
+        DataReason {
+            name: r.name().into(),
+            text: r.text().into(),
+        }
+    }
+}
+
+/// Whether the persisted images and the identified set are the servo's
+/// own (`data_flags`), with the kernel's latched fault beside it.
+#[derive(Debug, Clone, Serialize, Tsify)]
+#[serde(rename_all = "camelCase")]
+pub struct DataState {
+    pub flags: u8,
+    pub fault_code: u8,
+    /// `faultCode` by name; absent for a code this build does not know.
+    #[tsify(optional)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fault: Option<String>,
+    /// Most urgent first.
+    pub reasons: Vec<DataReason>,
+    /// The operator line; absent when nothing is wrong.
+    #[tsify(optional)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// OpenLoop and Current may be enabled.
+    pub open_loop: bool,
+    /// Velocity and Position may be enabled.
+    pub closed_loop: bool,
+}
+
+impl From<data_state::DataState> for DataState {
+    fn from(s: data_state::DataState) -> Self {
+        DataState {
+            flags: s.flags,
+            fault_code: s.fault_code,
+            fault: data_state::fault::name(s.fault_code).map(String::from),
+            reasons: s.reasons().into_iter().map(DataReason::from).collect(),
+            message: s.message(),
+            open_loop: data_state::allows(s.flags, false),
+            closed_loop: data_state::allows(s.flags, true),
+        }
+    }
+}
+
+/// The stamp the servo holds beside the one its live set computes to.
+#[derive(Debug, Clone, Copy, Serialize, Tsify)]
+#[serde(rename_all = "camelCase")]
+pub struct StampVerdict {
+    pub stored: u16,
+    pub computed: u16,
+    pub matches: bool,
+}
+
+impl From<osc_client::stamp::Verdict> for StampVerdict {
+    fn from(v: osc_client::stamp::Verdict) -> Self {
+        StampVerdict {
+            stored: v.stored,
+            computed: v.computed,
+            matches: v.matches(),
+        }
+    }
+}
+
 /// One collected TEL burst (protocol sec 5.6): the CRC-clean stream frame
 /// payloads in arrival order (byte 0 is the stream_seq; a dropped frame
 /// is a seq hole plus `garble`), `complete` false when the window expired
@@ -239,7 +313,8 @@ pub struct Track {
 }
 
 /// One `fakeWithTracks` roster entry: a servo id, optionally playing a
-/// track back.
+/// track back, optionally factory-fresh (never calibrated, identified or
+/// saved: every `data_flags` reason set) instead of stamped.
 #[cfg(feature = "fake")]
 #[derive(Debug, Clone, Deserialize, Tsify)]
 #[serde(rename_all = "camelCase")]
@@ -247,6 +322,9 @@ pub struct FakeServo {
     pub id: u8,
     #[tsify(optional)]
     pub track: Option<Track>,
+    #[tsify(optional)]
+    #[serde(default)]
+    pub virgin: bool,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Tsify)]

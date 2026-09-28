@@ -20,6 +20,9 @@ pub enum Error {
     },
     /// Instruction-level rejection from the servo.
     Servo(ResultCode),
+    /// The descriptor cannot name what the call needs (a field, the stamp
+    /// recipe): the servo was never asked.
+    Descriptor(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,6 +72,7 @@ impl fmt::Display for Error {
             Error::Link(LinkError::Malformed) => write!(f, "malformed record"),
             Error::Timeout { slot } => write!(f, "no reply (slot {slot})"),
             Error::Servo(code) => write!(f, "servo answered {code:?}"),
+            Error::Descriptor(m) => write!(f, "descriptor: {m}"),
         }
     }
 }

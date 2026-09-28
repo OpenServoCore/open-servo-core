@@ -13,11 +13,13 @@ pub mod blocking;
 mod client;
 pub mod common;
 pub mod cyclic;
+pub mod data_state;
 pub mod descriptor;
 mod error;
 pub mod mgmt;
 pub mod pipe;
 pub mod session;
+pub mod stamp;
 #[cfg(feature = "bench")]
 pub mod wire;
 

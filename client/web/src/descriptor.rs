@@ -63,6 +63,10 @@ impl Descriptor {
 }
 
 impl Descriptor {
+    pub(crate) fn inner(&self) -> &desc::Descriptor {
+        &self.0
+    }
+
     pub(crate) fn field(&self, name: &str) -> Result<&desc::Field, JsError> {
         self.0
             .field(name)

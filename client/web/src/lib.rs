@@ -49,6 +49,22 @@ fn version(fw: u16) -> Version {
     Version(major, minor, patch)
 }
 
+/// The reasons set in a `data_flags` byte, most urgent first.
+#[wasm_bindgen(js_name = dataReasons)]
+pub fn data_reasons(flags: u8) -> Result<Vec<Ts<DataReason>>, JsError> {
+    Ok(osc_client::data_state::reasons(flags)
+        .into_iter()
+        .map(|r| DataReason::from(r).into_ts())
+        .collect::<Result<_, _>>()?)
+}
+
+/// A `fault_code` by name (`"data"` for a refused closed-loop enable);
+/// undefined for a code this build does not know.
+#[wasm_bindgen(js_name = faultName)]
+pub fn fault_name(code: u8) -> Option<String> {
+    osc_client::data_state::fault::name(code).map(String::from)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -58,6 +74,30 @@ mod tests {
         let fw = osc_protocol::version::pack_version(1, 2, 3);
         assert_eq!(version(fw), Version(1, 2, 3));
         assert_eq!(version(0xFFFF), Version(31, 31, 63));
+    }
+
+    #[test]
+    fn data_state_mirrors_name_text_and_verdicts() {
+        use osc_client::data_state::{self, CALIB_STALE, PLANT_UNSET, STAMP_MISMATCH, fault};
+        let s = DataState::from(data_state::DataState {
+            flags: CALIB_STALE | STAMP_MISMATCH | PLANT_UNSET,
+            fault_code: fault::DATA,
+        });
+        let names: Vec<&str> = s.reasons.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["CALIB_STALE", "STAMP_MISMATCH", "PLANT_UNSET"]);
+        assert_eq!(s.fault.as_deref(), Some("data"));
+        assert!(s.message.unwrap().starts_with("closed loop refused: "));
+        assert!(s.open_loop);
+        assert!(!s.closed_loop);
+        let clean = DataState::from(data_state::DataState {
+            flags: 0,
+            fault_code: fault::NONE,
+        });
+        assert!(clean.reasons.is_empty());
+        assert_eq!(clean.message, None);
+        assert!(clean.closed_loop);
+        assert_eq!(fault_name(fault::STALL).as_deref(), Some("stall"));
+        assert_eq!(fault_name(200), None);
     }
 
     #[test]

@@ -14,7 +14,8 @@ nusb = ["dep:nusb"]
 # Browser backend over WebUSB; a no-op off wasm32 (its deps are target-gated).
 webusb = ["dep:wasm-bindgen", "dep:wasm-bindgen-futures", "dep:js-sys"]
 # In-process adapter over the DES sim: full-stack tests with no hardware.
-fake-adapter = ["dep:osc-integration"]
+# The servo core comes along for the seeds' stamp and the parity pins.
+fake-adapter = ["dep:osc-integration", "dep:osc-servo-core"]
 # Raw-wire instrument surface (`wire`, the 0x6x records): tools/bench only.
 bench = ["osc-host/bench", "osc-integration?/bench"]
 
@@ -25,6 +26,7 @@ nusb          = { version = "0.1", optional = true }
 osc-host      = { path = "../firmware/lib/host" }
 osc-protocol  = { path = "../firmware/lib/osc-protocol", features = ["software-crc"] }
 osc-integration = { path = "../firmware/lib/integration", optional = true }
+osc-servo-core  = { path = "../firmware/lib/core", optional = true }
 serde         = { version = "1", features = ["derive"] }
 serde_json    = "1"
 
