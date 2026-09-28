@@ -14,12 +14,15 @@
 use std::collections::BTreeSet;
 
 use control_table::RegisterFile;
-use osc_integration::plant::{BIAS, Plant, duty_of, kernel, last_cmd, seed};
+use osc_integration::plant::{BIAS, Plant, duty_of, kernel, last_cmd, lut_live, seed};
 use osc_protocol::crc::osc_crc_continue;
 use osc_servo_core::kernel::DECIM_MED;
 use osc_servo_core::kernel::faults::{BIT_OVER_CURRENT, CODE_NONE, CODE_OVER_CURRENT};
+use osc_servo_core::pot_lut::{GRID_SHIFT, KNOTS, interp_q4};
 use osc_servo_core::regions::{TELEMETRY_BASE_ADDR, TELEMETRY_REGION_SIZE};
 use osc_servo_core::{ControlTable, DecayMode, Mode, MotorCmd, RegionStorage, Shared};
+
+mod support;
 
 const GOLDEN: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/kernel_trace.golden");
 const RECORD_VAR: &str = "KERNEL_TRACE_RECORD";
@@ -49,10 +52,12 @@ fn cmd_code(cmd: MotorCmd) -> u8 {
     }
 }
 
-/// The script, keyed by fast tick. Torque comes on at rest with the goal
-/// already at the pot, so the hold parks; the step, the closed-loop modes
-/// and the open-loop sweep follow; a shorted winding latches over-current,
-/// the torque edge acks it.
+type Script = fn(u32, &Shared, &mut Plant);
+
+/// The golden script, keyed by fast tick. Torque comes on at rest with
+/// the goal already at the pot, so the hold parks; the step, the
+/// closed-loop modes and the open-loop sweep follow; a shorted winding
+/// latches over-current, the torque edge acks it.
 fn script(t: u32, sh: &Shared, plant: &mut Plant) {
     let set = |f: fn(&mut ControlTable)| sh.table.with_mut(f);
     match t {
@@ -191,16 +196,22 @@ impl Row {
     }
 }
 
-fn run_script() -> Vec<Row> {
+/// `script` against the rig for `ticks`, with `lut` LIVE in the kernel's
+/// array (the plant itself stays linear: the table only re-maps what the
+/// kernel believes the pot reads).
+fn run(lut: Option<&[i16; KNOTS]>, ticks: u32, script: Script) -> Vec<Row> {
     let sh = Shared::new();
     seed(&sh);
+    if let Some(k) = lut {
+        lut_live(&sh, k);
+    }
     let mut k = kernel();
     let mut plant = Plant::new(START_POS);
     let mut duty = 0i16;
     let mut rng: u32 = 0xdead_beef;
     let mut crc = 0u16;
-    let mut rows = Vec::with_capacity(TICKS as usize / DECIM_MED as usize + 1);
-    for t in 0..TICKS {
+    let mut rows = Vec::with_capacity(ticks as usize / DECIM_MED as usize + 1);
+    for t in 0..ticks {
         script(t, &sh, &mut plant);
         let mut f = plant.step(duty);
         // +-3 counts of pot noise so the observer corrections are never
@@ -229,11 +240,8 @@ fn row_at(rows: &[Row], tick: u32) -> Row {
     rows[tick as usize / DECIM_MED as usize]
 }
 
-#[test_log::test]
-fn kernel_trace_matches_golden() {
-    let rows = run_script();
-
-    // the script reached every phase it claims to
+/// The script reached every phase it claims to.
+fn assert_script_phases(rows: &[Row]) {
     let modes: BTreeSet<u8> = rows.iter().map(|r| r.mode_active).collect();
     assert_eq!(
         modes,
@@ -244,39 +252,33 @@ fn kernel_trace_matches_golden() {
             Mode::Position as u8
         ])
     );
-    let parked = row_at(&rows, 3_990);
+    let parked = row_at(rows, 3_990);
     assert_eq!(parked.cmd, CMD_COAST, "hold parked: {parked:?}");
-    let stepped = row_at(&rows, 11_990);
+    let stepped = row_at(rows, 11_990);
     assert_eq!(stepped.cmd, CMD_COAST, "step re-parked: {stepped:?}");
     assert!(
         ((stepped.theta_hat_q16 >> 16) - (START_POS as i32 + 400)).abs() <= 16,
         "step landed: {stepped:?}"
     );
     for t in [14_990, 17_990, 19_590, 21_590] {
-        let r = row_at(&rows, t);
+        let r = row_at(rows, t);
         assert_eq!(r.fault_flags, 0, "tick {t}: {r:?}");
         assert_eq!(r.cmd, CMD_DRIVE_SLOW, "tick {t}: {r:?}");
     }
-    let braked = row_at(&rows, 21_990);
+    let braked = row_at(rows, 21_990);
     assert_eq!(braked.cmd, CMD_BRAKE, "zero duty brakes: {braked:?}");
-    let latched = row_at(&rows, 22_990);
+    let latched = row_at(rows, 22_990);
     assert_eq!(latched.fault_flags, BIT_OVER_CURRENT, "{latched:?}");
     assert_eq!(latched.fault_code, CODE_OVER_CURRENT);
     assert_eq!(latched.cmd, CMD_DISABLED);
-    let acked = row_at(&rows, 23_990);
+    let acked = row_at(rows, 23_990);
     assert_eq!(acked.fault_flags, 0, "ack cleared the latch: {acked:?}");
     assert_eq!(acked.fault_code, CODE_NONE);
     assert_eq!(acked.cmd, CMD_DRIVE_SLOW);
-    assert_eq!(row_at(&rows, TICKS - 10).cmd, CMD_DISABLED);
+    assert_eq!(row_at(rows, TICKS - 10).cmd, CMD_DISABLED);
+}
 
-    let mut live = Vec::with_capacity(rows.len() * ROW_LEN);
-    for r in &rows {
-        r.encode(&mut live);
-    }
-    if std::env::var_os(RECORD_VAR).is_some() {
-        std::fs::write(GOLDEN, &live).expect("write golden");
-        return;
-    }
+fn assert_matches_golden(rows: &[Row]) {
     let golden = std::fs::read(GOLDEN)
         .unwrap_or_else(|e| panic!("{GOLDEN}: {e}; record it with {RECORD_VAR}=1"));
     let (whole, tail) = golden.as_chunks::<ROW_LEN>();
@@ -297,6 +299,89 @@ fn kernel_trace_matches_golden() {
         );
     }
     assert_eq!(rows.len(), golden.len(), "row count");
+}
+
+#[test_log::test]
+fn kernel_trace_matches_golden() {
+    let rows = run(None, TICKS, script);
+    assert_script_phases(&rows);
+    if std::env::var_os(RECORD_VAR).is_some() {
+        let mut live = Vec::with_capacity(rows.len() * ROW_LEN);
+        for r in &rows {
+            r.encode(&mut live);
+        }
+        std::fs::write(GOLDEN, &live).expect("write golden");
+        return;
+    }
+    assert_matches_golden(&rows);
+}
+
+/// An all-zero table LIVE is the identity: the same trace, bit for bit.
+#[test_log::test]
+fn kernel_trace_without_lut_matches_golden() {
+    let rows = run(Some(&[0; KNOTS]), TICKS, script);
+    assert_script_phases(&rows);
+    assert_matches_golden(&rows);
+}
+
+/// One position step and a long hold: torque on at rest, the step at
+/// 2000, then 1.4 s to settle (the rig's velocity loop creeps back from an
+/// overshoot below the plant's stiction, slower than the golden script's
+/// window).
+fn step_script(t: u32, sh: &Shared, _plant: &mut Plant) {
+    let set = |f: fn(&mut ControlTable)| sh.table.with_mut(f);
+    match t {
+        1_000 => set(|t| {
+            t.control.lifecycle.goal_position = START_POS as i32;
+            t.control.lifecycle.torque_enable = true;
+        }),
+        2_000 => set(|t| t.control.lifecycle.goal_position = STEP_GOAL),
+        _ => {}
+    }
+}
+
+const STEP_TICKS: u32 = 30_000;
+const STEP_GOAL: i32 = START_POS as i32 + 400;
+
+/// The mg90-a table LIVE: the observer tracks the linearized pot the whole
+/// way, and the position loop settles at the linearized goal, so the raw
+/// pot parks where the table maps the goal from (raw 1881 reads 1900 on
+/// mg90-a), not on the goal count as the identity run does.
+#[test_log::test]
+fn kernel_trace_with_mg90_a_lut_tracks_the_linearized_pot() {
+    let k = support::mg90_a();
+    let rows = run(Some(&k), STEP_TICKS, step_script);
+    for (i, r) in rows.iter().enumerate() {
+        let lin = (interp_q4(r.pos, &k) as i32) << (16 - GRID_SHIFT);
+        // the observer lags a moving pot; +-3 counts of noise parked
+        let tol = if r.omega_hat_cps.unsigned_abs() >> 16 > 100 {
+            64
+        } else {
+            6
+        };
+        assert!(
+            (r.theta_hat_q16 - lin).abs() <= tol << 16,
+            "row {i}: theta_hat off the linearized pot: {r:?}"
+        );
+    }
+    let parked = row_at(&rows, STEP_TICKS - 10);
+    assert_eq!(parked.cmd, CMD_COAST, "hold parked: {parked:?}");
+    assert!(
+        ((parked.theta_hat_q16 >> 16) - STEP_GOAL).abs() <= 8,
+        "settled at the linearized goal: {parked:?}"
+    );
+    assert!(
+        STEP_GOAL - parked.pos as i32 >= 10,
+        "the raw pot parks short of the goal count: {parked:?}"
+    );
+    assert_eq!(interp_q4(1881, &k) >> GRID_SHIFT, STEP_GOAL as u16);
+
+    let identity = row_at(&run(None, STEP_TICKS, step_script), STEP_TICKS - 10);
+    assert_eq!(identity.cmd, CMD_COAST, "{identity:?}");
+    assert!(
+        (STEP_GOAL - identity.pos as i32).abs() <= 8,
+        "identity parks on the goal count: {identity:?}"
+    );
 }
 
 #[test]

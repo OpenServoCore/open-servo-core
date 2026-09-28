@@ -27,6 +27,7 @@ use crate::estimator::{
     VcalLpf, WindingTherm, bemf, window,
 };
 use crate::math::{q_mul, q_mul_u};
+use crate::pot_lut;
 use crate::regions::config::DecaySelect;
 use crate::regions::control::Mode;
 use crate::tel::{TelSample, TelStream};
@@ -66,9 +67,10 @@ pub struct KernelTiming {
 
 /// Runs in the ADC DMA TC ISR (PFIC LOW); one `on_tick` per PWM period.
 /// Single-writer contracts: the transport (PFIC HIGH) owns every
-/// CONTROL/CONFIG/CALIB write and can preempt this ISR mid-read, so the
-/// kernel only ever reads those regions - volatile via `region_ptr`, never
-/// forming `&T`, cross-field tearing accepted (each field is independently
+/// CONTROL/CONFIG/CALIB write and the pot LUT array, and can preempt this
+/// ISR mid-read, so the kernel only ever reads those - volatile via
+/// `region_ptr` (`Shared::pot_lut_q4` for the array), never forming `&T`,
+/// cross-field tearing accepted (each field is independently
 /// sane). The kernel is the sole writer of TELEMETRY sensors/estimates/mode
 /// (`data_flags` excepted: boot and dispatch write it, the kernel reads) and
 /// the `fault_flags` byte.
@@ -182,7 +184,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         // SAFETY: reads of transport-owned regions - raw-pointer volatile
         // block copies, no `&T` formed, aligned repr(C) blocks inside the
         // static table (single-writer contract in the type doc).
-        let (life, loop_cur, lim_cfg, therm_cfg, sense, motor_cal) = unsafe {
+        let (life, loop_cur, lim_cfg, therm_cfg, sense, motor_cal, lut_state) = unsafe {
             (
                 (&raw const (*p).control.lifecycle).read_volatile(),
                 (&raw const (*p).config.loop_current).read_volatile(),
@@ -190,12 +192,23 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                 (&raw const (*p).config.thermal).read_volatile(),
                 (&raw const (*p).calib.sense).read_volatile(),
                 (&raw const (*p).calib.motor).read_volatile(),
+                (&raw const (*p).control.pot_lut.lut_state).read_volatile(),
             )
+        };
+        // The linearized pot (pot_lut module), Q4 counts: the one measurement
+        // behind both seeds and the observer, so theta_hat and everything
+        // that reads it (trajectory, position loop, soft limits, stall
+        // gates) are in linearized counts. The raw pot stays for the sensors
+        // publish, TEL `pos` and the glitch screen.
+        let pos_q4 = if lut_state == pot_lut::state::LIVE {
+            shared.pot_lut_q4(frame.pos)
+        } else {
+            pot_lut::identity_q4(frame.pos)
         };
 
         if !self.booted {
             self.booted = true;
-            self.fusion.seed(frame.pos);
+            self.fusion.seed(pos_q4);
             // SAFETY: same volatile read contract; install stamped the boot
             // rest measurement here before the first tick, and from here on
             // this kernel is the field's sole writer.
@@ -347,7 +360,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             // enable would re-latch STALL via the collision check) and the
             // profile at the fresh estimate - bumpless
             if run {
-                self.fusion.seed(frame.pos);
+                self.fusion.seed(pos_q4);
                 self.traj.reseed(self.fusion.theta_q16());
             }
             self.cur.reset();
@@ -397,8 +410,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                 motor_cal.recip_ke_q,
                 self.timing.recip_arr_q24,
             );
-            self.fusion
-                .step(i_use, frame.pos, self.timing.dt_med_q32, &fg);
+            self.fusion.step(i_use, pos_q4, self.timing.dt_med_q32, &fg);
             let theta_hat = self.fusion.theta_q16();
             // The observer's omega keeps the rest-shaped consumers (stall
             // verdict, thermometer gate): it is always there and reads

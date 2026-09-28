@@ -7,9 +7,15 @@
 //! measured pot position. The third state is the
 //! disturbance torque the model cannot explain, in current counts; it feeds
 //! stall/collision detection and telemetry. Gains are host-synthesized
-//! constants (no runtime matrix math on this chip).
+//! constants (no runtime matrix math on this chip). The measurement is the
+//! linearized pot in Q4 (`pot_lut` module), so theta is in linearized
+//! counts; at identity `(raw << 4) << 12 == raw << 16`, bit-identical.
 
 use crate::math::q_mul;
+use crate::pot_lut::GRID_SHIFT;
+
+/// Q4 linearized counts -> cQ16.
+const Q4_TO_Q16: u32 = 16 - GRID_SHIFT;
 
 /// Predict skips the Coulomb term below 1 c/s: at rest omega dithers around
 /// zero by sub-count amounts, and a sign-chattering sgn(omega)*fric_fc would
@@ -17,8 +23,9 @@ use crate::math::q_mul;
 const FRIC_OMEGA_EPS_CSQ16: i32 = 1 << 16;
 
 /// theta is NOT clamped to the pot span - it must track the measurement
-/// freely so e stays honest past the ends. The bound only guards i32: pot
-/// tops at 4095<<16 < 2^28, so |pos<<16 - theta| <= 2^28 + 2^29 fits i32.
+/// freely so e stays honest past the ends. The bound only guards i32: the
+/// Q4 word tops at 65535 << 12 < 2^28, so |pos - theta| <= 2^28 + 2^29
+/// fits i32.
 const THETA_LIM_CQ16: i32 = 1 << 29;
 
 /// Innovation clamp, 128 counts. The worst correct-step product is a Q8.8
@@ -59,7 +66,7 @@ fn fric_c(omega_q16: i32, fric_fc_counts: u16) -> i32 {
     }
 }
 
-/// States: theta cQ16 (pot counts), omega csQ16, tau_d ccQ16.
+/// States: theta cQ16 (linearized pot counts), omega csQ16, tau_d ccQ16.
 #[derive(Default)]
 pub struct FusionObs {
     theta_q16: i32,
@@ -78,8 +85,8 @@ impl FusionObs {
 
     /// Reset to the measurement. Kernel calls at install and on the
     /// torque-enable edge so stale states never kick a fresh enable.
-    pub fn seed(&mut self, pos_meas: u16) {
-        self.theta_q16 = (pos_meas as i32) << 16;
+    pub fn seed(&mut self, pos_q4: u16) {
+        self.theta_q16 = (pos_q4 as i32) << Q4_TO_Q16;
         self.omega_q16 = 0;
         self.tau_d_q16 = 0;
     }
@@ -89,7 +96,7 @@ impl FusionObs {
     /// i_ref - the observer never sees the validity flag. `dt_med_q32` =
     /// 2^32 / MED_HZ (MED_HZ >= 2 keeps it under 2^31, so the i32 cast is
     /// value-preserving).
-    pub fn step(&mut self, i_counts: i32, pos_meas: u16, dt_med_q32: u32, gains: &FusionGains) {
+    pub fn step(&mut self, i_counts: i32, pos_q4: u16, dt_med_q32: u32, gains: &FusionGains) {
         // Predict. b_i is Q3.13 of B (c/s per ccount per tick), so the
         // shift-0 product lands in csQ13; the << 3 to csQ16 saturates only
         // beyond omega full scale (ACCEL_LIM_CC keeps the product itself
@@ -111,7 +118,7 @@ impl FusionObs {
             .clamp(-THETA_LIM_CQ16, THETA_LIM_CQ16);
 
         // Correct. Plain sub is safe: 2^28 + 2^29 < 2^31 (theta clamp).
-        let e = (((pos_meas as i32) << 16) - self.theta_q16).clamp(-E_LIM_CQ16, E_LIM_CQ16);
+        let e = (((pos_q4 as i32) << Q4_TO_Q16) - self.theta_q16).clamp(-E_LIM_CQ16, E_LIM_CQ16);
         self.theta_q16 = self
             .theta_q16
             .saturating_add(q_mul(gains.l1_q016 as i32, e, 16))
@@ -148,6 +155,11 @@ mod tests {
     // 2 kHz MEDIUM rate, matching the kernel's DT_MED_Q32 derivation.
     const DT: u32 = ((1u64 << 32) / 2000) as u32;
 
+    /// The identity's Q4 word for a raw pot count.
+    const fn q4(raw: u16) -> u16 {
+        raw << GRID_SHIFT
+    }
+
     // Hand-picked stable set for the 2 kHz discrete observer: b_i = 819 =
     // Q3.13 of B = 0.1 c/s per tick per ccount (low rig-physical range;
     // the rig measures ~3.4), l1 = 0.25, l2 = 4.0 c/s per count, l3 = 8.0
@@ -168,10 +180,25 @@ mod tests {
     #[test]
     fn seed_identity() {
         let mut f = FusionObs::new();
-        f.seed(1234);
+        f.seed(q4(1234));
         assert_eq!(f.theta_q16(), 1234 << 16);
         assert_eq!(f.omega_q16(), 0);
         assert_eq!(f.tau_d_counts(), 0);
+    }
+
+    /// The Q4 seed at identity is the old `raw << 16` for every raw count,
+    /// and a fractional Q4 word lands on the fraction.
+    #[test]
+    fn seed_q4_matches_raw_shift() {
+        let mut f = FusionObs::new();
+        for raw in 0..4096u16 {
+            f.seed(q4(raw));
+            assert_eq!(f.theta_q16(), (raw as i32) << 16);
+        }
+        f.seed(q4(2000) + 8);
+        assert_eq!(f.theta_q16(), (2000 << 16) + (1 << 15));
+        f.step(0, q4(2000) + 8, DT, &G);
+        assert_eq!(f.theta_q16(), (2000 << 16) + (1 << 15), "e = 0 holds it");
     }
 
     #[test]
@@ -183,9 +210,9 @@ mod tests {
         // moves theta by 0 per tick: q_mul(omega, DT, 32) truncates
         // omega/2000 to zero), pinned exact.
         let mut f = FusionObs::new();
-        f.seed(1990);
+        f.seed(q4(1990));
         for _ in 0..40000 {
-            f.step(0, 2000, DT, &G);
+            f.step(0, q4(2000), DT, &G);
         }
         assert_eq!(f.theta_q16(), 2000 << 16, "pin");
         assert_eq!(f.omega_q16(), 1964, "pin");
@@ -201,8 +228,8 @@ mod tests {
         // b_i inert). The correct step then subtracts l2*e for the 327-q16
         // theta advance: 655200 - (1024 * 327 >> 8) = 653892.
         let mut f = FusionObs::new();
-        f.seed(2000);
-        f.step(100, 2000, DT, &G);
+        f.seed(q4(2000));
+        f.step(100, q4(2000), DT, &G);
         assert_eq!(f.omega_q16(), 653892, "pin");
     }
 
@@ -211,9 +238,9 @@ mod tests {
         // pos ramps 1 count/tick = 2000 c/s; omega settles onto the ramp
         // rate (measured residual ~0.25%, assert 1%).
         let mut f = FusionObs::new();
-        f.seed(0);
+        f.seed(q4(0));
         for n in 1..=3000u16 {
-            f.step(0, n, DT, &G);
+            f.step(0, q4(n), DT, &G);
         }
         let target = 2000i32 << 16;
         let err = (f.omega_q16() - target).abs();
@@ -227,9 +254,9 @@ mod tests {
         // tau_d ~= i (a load exactly absorbing the drive), while the
         // correct step keeps theta/omega anchored to the measurement.
         let mut f = FusionObs::new();
-        f.seed(2000);
+        f.seed(q4(2000));
         for _ in 0..20000 {
-            f.step(500, 2000, DT, &G);
+            f.step(500, q4(2000), DT, &G);
         }
         // the live bleed path settles tau_d onto the drive exactly
         assert_eq!(f.tau_d_counts(), 500, "pin");
@@ -247,9 +274,9 @@ mod tests {
             ..G
         };
         let mut f = FusionObs::new();
-        f.seed(2048);
+        f.seed(q4(2048));
         for _ in 0..100 {
-            f.step(0, 2048, DT, &g);
+            f.step(0, q4(2048), DT, &g);
             assert_eq!(f.theta_q16(), 2048 << 16);
             assert_eq!(f.omega_q16(), 0);
             assert_eq!(f.tau_d_counts(), 0);
@@ -271,7 +298,7 @@ mod tests {
         for n in 0..2000 {
             let pos = if n & 1 == 0 { 0 } else { 4095 };
             let i = if n & 2 == 0 { i32::MAX } else { i32::MIN };
-            f.step(i, pos, DT, &g);
+            f.step(i, q4(pos), DT, &g);
             assert!(f.theta_q16().abs() <= THETA_LIM_CQ16);
             assert!(f.omega_q16().abs() <= OMEGA_LIM_CSQ16);
             assert!((f.tau_d_q16).abs() <= TAU_D_LIM_CCQ16);

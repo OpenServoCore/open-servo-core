@@ -7,6 +7,7 @@
 //! deterministic qualitative behaviour, not fidelity.
 
 use osc_servo_core::estimator::bemf::RECIP_ARR_SHIFT;
+use osc_servo_core::pot_lut::{self, KNOTS};
 use osc_servo_core::stamp;
 use osc_servo_core::{
     ControlIo, DecaySelect, ImageState, Kernel, KernelTiming, Mode, Motor, MotorCmd, RegionStorage,
@@ -144,6 +145,17 @@ pub fn stamp(shared: &Shared) {
     shared
         .table
         .with_mut(|t| t.calib.stamp.plant_stamp = stamp::compute(t, None));
+}
+
+/// `knots` in the array and LIVE, as a COMMIT lands them, restamped over
+/// the array so the data state stays open. After `seed`.
+pub fn lut_live(shared: &Shared, knots: &[i16; KNOTS]) {
+    shared.with_pot_lut_mut(|k| *k = *knots);
+    shared.table.with_mut(|t| {
+        t.control.pot_lut.lut_state = pot_lut::state::LIVE;
+        t.calib.stamp.plant_stamp = stamp::compute(t, knots.first_chunk());
+    });
+    shared.data_state_checkpoint();
 }
 
 /// Rail-tap counts that scale to exactly `vmotor` terminal counts.
