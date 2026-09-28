@@ -1,13 +1,18 @@
 //! The pot LUT window over the wire (`pot_lut` module): STORE/FETCH/COMMIT
 //! round trips at every baud, every refusal leaving the identity behind,
-//! and the stamp checkpoint a COMMIT runs. The mg90-a table below is the
-//! same 256 knots the core unit tests carry (bringup captures/mg90/
-//! pot-lut-mg90-a-grid.json), pinned to the Python reference by CRC.
+//! the stamp checkpoint a COMMIT runs, and the table's own flash image
+//! through SAVE, reboot, torn saves, rot and FACTORY. The mg90-a table
+//! below is the same 256 knots the core unit tests carry (bringup
+//! captures/mg90/pot-lut-mg90-a-grid.json), pinned to the Python reference
+//! by CRC.
 
-use osc_integration::sim::{RamStore, Sim, Source, WireFrame, assert_valid, instruction, status};
+use osc_integration::sim::{
+    ImageKind, RamStore, Sim, Source, WireFrame, assert_valid, instruction, status,
+};
 use osc_protocol::crc::osc_crc_continue;
 use osc_protocol::wire::{MgmtOp, Opcode, ResultCode};
-use osc_servo_core::data_state::STAMP_MISMATCH;
+use osc_servo_core::data_state::{CALIB_VIRGIN, CONFIG_VIRGIN, PLANT_UNSET, STAMP_MISMATCH};
+use osc_servo_core::persist::{LutImage, Slot};
 use osc_servo_core::pot_lut::{INTERVALS, KNOTS, PAGE_KNOTS, PAGES, cmd, interp_q4, state};
 use osc_servo_core::regions::calib::addr::motor::{KE_VPC_Q, RECIP_KE_Q};
 use osc_servo_core::regions::calib::addr::pot::{RAW_MAX, RAW_MIN};
@@ -295,10 +300,11 @@ fn store_with_torque_on_is_refused(baud_idx: u8) {
     assert_eq!(data_flags(&mut sim), 0);
 }
 
-/// A host that died mid-load: LOADING is the identity, the stamp over the
-/// identity still holds, and the reboot forgets the pages (RAM only).
+/// A host that died mid-load, or left a rejected array behind: neither is
+/// what the kernel applies, so SAVE drops the array to the identity and
+/// persists that, and the reboot is the identity too.
 #[apply(matrix)]
-fn partial_load_without_commit_stays_identity(baud_idx: u8) {
+fn save_while_loading_or_rejected_persists_identity(baud_idx: u8) {
     let flash = RamStore::leak();
     let mut sim = sim(baud_idx);
     let s = mg90_servo(&mut sim, flash);
@@ -313,12 +319,195 @@ fn partial_load_without_commit_stays_identity(baud_idx: u8) {
         0,
         "the checkpoint hashes the identity"
     );
-    assert_eq!(array(&sim, s)[..3 * PAGE_KNOTS], k[..3 * PAGE_KNOTS]);
+    assert_eq!(lut_state(&mut sim), state::IDENTITY);
+    assert_eq!(array(&sim, s), ZERO, "the pages are gone");
+    let img = flash.lut_slot(Slot::B).expect("the second save lands in B");
+    let parsed = LutImage::parse(&img).expect("stored lut image parses");
+    assert!(parsed.knots.iter().all(|&b| b == 0));
     let mut rebooted = support::sim(baud_idx);
     let s = rebooted.add_servo_with_store(ID5, flash);
     assert_eq!(lut_state(&mut rebooted), state::IDENTITY);
     assert_eq!(array(&rebooted, s), ZERO);
     assert_eq!(data_flags(&mut rebooted), 0);
+
+    let mut shape = k;
+    shape[100] = shape[99] - 16;
+    store_all(&mut rebooted, &shape);
+    assert_eq!(commit(&mut rebooted), state::REJECT_SHAPE);
+    assert_eq!(mgmt(&mut rebooted, MgmtOp::Save), ResultCode::Ok);
+    assert_eq!(lut_state(&mut rebooted), state::IDENTITY);
+    assert_eq!(array(&rebooted, s), ZERO);
+    assert_eq!(data_flags(&mut rebooted), 0);
+    let mut again = support::sim(baud_idx);
+    let s = again.add_servo_with_store(ID5, flash);
+    assert_eq!(lut_state(&mut again), state::IDENTITY);
+    assert_eq!(array(&again, s), ZERO);
+}
+
+// The LUT image: SAVE, reboot, torn saves, rot, FACTORY
+
+const FRESH: u8 = CONFIG_VIRGIN | CALIB_VIRGIN | STAMP_MISMATCH | PLANT_UNSET;
+
+/// The mg90-a table loaded, LIVE and stamped on `s`.
+fn go_live(sim: &mut Sim, s: usize) {
+    store_all(sim, &mg90_a());
+    assert_eq!(commit(sim), state::LIVE);
+    stamp(sim, s, Some(&MG90_A));
+    assert_eq!(data_flags(sim), 0);
+}
+
+fn knots_of(img: &[u8]) -> [i16; INTERVALS] {
+    let parsed = LutImage::parse(img).expect("stored lut image parses");
+    let mut k = [0; INTERVALS];
+    for (d, s) in k.iter_mut().zip(parsed.knots.as_chunks::<2>().0) {
+        *d = i16::from_le_bytes(*s);
+    }
+    k
+}
+
+/// The per-servo switch's last step: one SAVE persists CONFIG, CALIB and
+/// the LUT; the reboot loads it LIVE, knot for knot, with every reason
+/// clear; FACTORY wipes it back to the virgin identity.
+#[apply(matrix)]
+fn lut_survives_save_and_reboot_until_factory(baud_idx: u8) {
+    let flash = RamStore::leak();
+    let mut sim = sim(baud_idx);
+    let s = mg90_servo(&mut sim, flash);
+    go_live(&mut sim, s);
+    assert_eq!(mgmt(&mut sim, MgmtOp::Save), ResultCode::Ok);
+    assert_eq!(data_flags(&mut sim), 0);
+    assert_eq!(lut_state(&mut sim), state::LIVE);
+    let img = flash.lut_slot(Slot::B).expect("the second save lands in B");
+    assert_eq!(LutImage::parse(&img).expect("parses").seq, 2);
+    assert_eq!(knots_of(&img), MG90_A);
+
+    let mut rebooted = support::sim(baud_idx);
+    let s = rebooted.add_servo_with_store(ID5, flash);
+    assert_eq!(lut_state(&mut rebooted), state::LIVE);
+    assert_eq!(array(&rebooted, s), mg90_a());
+    assert_eq!(data_flags(&mut rebooted), 0);
+    for page in 0..PAGES {
+        assert_eq!(
+            fetch(&mut rebooted, page),
+            page_bytes(&mg90_a(), page),
+            "page {page}"
+        );
+    }
+
+    assert_eq!(mgmt(&mut rebooted, MgmtOp::Factory), ResultCode::Ok);
+    assert!(rebooted.take_reboot(s).is_some());
+    assert!(flash.lut_slot(Slot::A).is_none() && flash.lut_slot(Slot::B).is_none());
+    let mut fresh = support::sim(baud_idx);
+    let s = fresh.add_servo_with_store(ID5, flash);
+    assert_eq!(lut_state(&mut fresh), state::IDENTITY);
+    assert_eq!(array(&fresh, s), ZERO);
+    assert_eq!(data_flags(&mut fresh), FRESH);
+}
+
+/// A power cut after the CALIB image and before the LUT image, both ways
+/// round: a stamp over the knots beside the old identity image, and a
+/// stamp over the identity beside the old table. Either mix boots the
+/// mismatch; a tear that changed nothing covered is harmless.
+#[apply(matrix)]
+fn torn_save_between_calib_and_lut_boots_stamp_mismatch(baud_idx: u8) {
+    // the new stamp covers the knots, the old image is the identity
+    let flash = RamStore::leak();
+    let mut sim = sim(baud_idx);
+    let s = mg90_servo(&mut sim, flash);
+    go_live(&mut sim, s);
+    flash.fail_after(ImageKind::Calib);
+    assert_eq!(mgmt(&mut sim, MgmtOp::Save), ResultCode::Hardware);
+    assert!(
+        flash.lut_slot(Slot::B).is_none(),
+        "the lut image never landed"
+    );
+    let mut rebooted = support::sim(baud_idx);
+    let s = rebooted.add_servo_with_store(ID5, flash);
+    assert_eq!(lut_state(&mut rebooted), state::IDENTITY);
+    assert_eq!(array(&rebooted, s), ZERO);
+    assert_eq!(data_flags(&mut rebooted), STAMP_MISMATCH);
+
+    // the table SAVEd, then dropped to the identity and restamped: the new
+    // stamp covers the identity, the old image still holds the table
+    let flash = RamStore::leak();
+    let mut sim = support::sim(baud_idx);
+    let s = mg90_servo(&mut sim, flash);
+    go_live(&mut sim, s);
+    assert_eq!(mgmt(&mut sim, MgmtOp::Save), ResultCode::Ok);
+    store_all(&mut sim, &ZERO);
+    assert_eq!(commit(&mut sim), state::LIVE);
+    stamp(&mut sim, s, None);
+    assert_eq!(data_flags(&mut sim), 0);
+    flash.fail_after(ImageKind::Calib);
+    assert_eq!(mgmt(&mut sim, MgmtOp::Save), ResultCode::Hardware);
+    let mut rebooted = support::sim(baud_idx);
+    let s = rebooted.add_servo_with_store(ID5, flash);
+    assert_eq!(lut_state(&mut rebooted), state::LIVE, "the old table loads");
+    assert_eq!(array(&rebooted, s), mg90_a());
+    assert_eq!(data_flags(&mut rebooted), STAMP_MISMATCH);
+
+    // nothing covered moved: the mix is the same set
+    let flash = RamStore::leak();
+    let mut sim = support::sim(baud_idx);
+    let s = mg90_servo(&mut sim, flash);
+    go_live(&mut sim, s);
+    assert_eq!(mgmt(&mut sim, MgmtOp::Save), ResultCode::Ok);
+    flash.fail_after(ImageKind::Calib);
+    assert_eq!(mgmt(&mut sim, MgmtOp::Save), ResultCode::Hardware);
+    let mut rebooted = support::sim(baud_idx);
+    let s = rebooted.add_servo_with_store(ID5, flash);
+    assert_eq!(lut_state(&mut rebooted), state::LIVE);
+    assert_eq!(array(&rebooted, s), mg90_a());
+    assert_eq!(data_flags(&mut rebooted), 0);
+}
+
+/// Flash rot or a table from another grid version: the image does not
+/// load, the identity runs, and the stamp (which covered the knots) is
+/// what says so - the LUT has no reason bit of its own. Losing an identity
+/// image loses nothing.
+#[apply(matrix)]
+fn corrupt_or_stale_lut_image_boots_identity_under_the_stamp(baud_idx: u8) {
+    let rots: [fn(&RamStore); 2] = [
+        |f| f.corrupt_slot(ImageKind::Lut, Slot::A),
+        |f| f.stale_slot(ImageKind::Lut, Slot::A),
+    ];
+    for rot in rots {
+        let flash = RamStore::leak();
+        let mut sim = sim(baud_idx);
+        let s = mg90_servo(&mut sim, flash);
+        go_live(&mut sim, s);
+        assert_eq!(mgmt(&mut sim, MgmtOp::Save), ResultCode::Ok);
+        // the newest image (the table) in B rots; the identity in A is
+        // older and still sound
+        rot(flash);
+        flash.corrupt_slot(ImageKind::Lut, Slot::B);
+        let mut rebooted = support::sim(baud_idx);
+        let s = rebooted.add_servo_with_store(ID5, flash);
+        assert_eq!(lut_state(&mut rebooted), state::IDENTITY);
+        assert_eq!(array(&rebooted, s), ZERO);
+        assert_eq!(data_flags(&mut rebooted), STAMP_MISMATCH);
+        // the sound older slot alone loads the identity the same way
+        flash.erase(ImageKind::Lut);
+        rot(flash);
+        let mut again = support::sim(baud_idx);
+        let s = again.add_servo_with_store(ID5, flash);
+        assert_eq!(lut_state(&mut again), state::IDENTITY);
+        assert_eq!(array(&again, s), ZERO);
+        assert_eq!(data_flags(&mut again), STAMP_MISMATCH);
+    }
+
+    let flash = RamStore::leak();
+    let mut sim = sim(baud_idx);
+    mg90_servo(&mut sim, flash);
+    flash.corrupt_slot(ImageKind::Lut, Slot::A);
+    let mut rebooted = support::sim(baud_idx);
+    rebooted.add_servo_with_store(ID5, flash);
+    assert_eq!(lut_state(&mut rebooted), state::IDENTITY);
+    assert_eq!(
+        data_flags(&mut rebooted),
+        0,
+        "a lost identity image is no loss"
+    );
 }
 
 /// A page past the last or an unknown command is a Validation nack: the

@@ -21,23 +21,36 @@
 //! save/version cadences independent -- identification rewrites calib
 //! without touching config, and a config layout bump does not orphan a
 //! stored calibration.
+//!
+//! The pot LUT (`pot_lut` module) persists as a third image (magic `b'L'`,
+//! own version and A/B seq): body = the 256 host-written knots i16 LE, so
+//! the 520 B image spans three pages per slot. SAVE writes it after CONFIG
+//! and CALIB and only ever holds what the kernel applies: the array while
+//! LIVE, the identity otherwise. Boot validates a loaded table against the
+//! overlaid stops before it goes LIVE; anything else is the identity, and
+//! the plant stamp (which covers the effective knots) is what reports a
+//! lost, rotten, stale or torn table as `STAMP_MISMATCH` - no image state
+//! of its own reaches `data_flags`.
 
 use control_table::RegisterMap;
 use osc_protocol::crc::{osc_crc, osc_crc_continue};
 
-use crate::ControlTableCell;
 use crate::data_state::ImageState;
+use crate::pot_lut::{self, INTERVALS, state};
 use crate::regions::{
     CALIB_BASE_ADDR, CALIB_REGION_SIZE, CONFIG_BASE_ADDR, CONFIG_REGION_SIZE, PROFILE_BASE_ADDR,
     PROFILE_REGION_SIZE, config,
 };
+use crate::{ControlTableCell, RegionStorage, Shared};
 
 pub const CONFIG_LEN: usize = CONFIG_REGION_SIZE as usize;
 pub const PROFILE_LEN: usize = PROFILE_REGION_SIZE as usize;
 pub const CALIB_LEN: usize = CALIB_REGION_SIZE as usize;
+pub const LUT_LEN: usize = 2 * INTERVALS;
 pub const HEADER_LEN: usize = 8;
 pub const IMAGE_LEN: usize = HEADER_LEN + CONFIG_LEN + PROFILE_LEN;
 pub const CALIB_IMAGE_LEN: usize = HEADER_LEN + CALIB_LEN;
+pub const LUT_IMAGE_LEN: usize = HEADER_LEN + LUT_LEN;
 
 pub const IMAGE_MAGIC: u8 = b'C';
 /// Bump on any CONFIG/PROFILE layout change; a mismatched image boots
@@ -49,6 +62,10 @@ pub const CALIB_IMAGE_MAGIC: u8 = b'K';
 /// Bump on any CALIB layout change; independent of [`IMAGE_VERSION`].
 pub const CALIB_IMAGE_VERSION: u8 = 2;
 
+pub const LUT_IMAGE_MAGIC: u8 = b'L';
+/// Bump on any pot LUT grid change; independent of the other two.
+pub const LUT_IMAGE_VERSION: u8 = 1;
+
 /// Store failure (erase/program/verify); dispatch answers `hardware` (sec 5.3).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct StoreError;
@@ -57,13 +74,14 @@ pub struct StoreError;
 /// `save` stalls the caller for the erase + program time (ms-scale) -- the
 /// torque gate in dispatch is what makes that stall safe.
 pub trait ConfigStore: Sync {
-    /// Persist both images (config+profile and calib), each into its own
-    /// A/B slot pair.
+    /// Persist the three images (config+profile, calib, pot LUT) in that
+    /// order, each into its own A/B slot pair.
     fn save(
         &self,
         config: &[u8; CONFIG_LEN],
         profile: &[u8; PROFILE_LEN],
         calib: &[u8; CALIB_LEN],
+        lut: &[i16; INTERVALS],
     ) -> Result<(), StoreError>;
     /// FACTORY (sec 9.5): invalidate every slot -- the erased store IS the
     /// factory state; the follow-up reboot re-seeds board defaults.
@@ -311,6 +329,66 @@ impl<'a> CalibImage<'a> {
     }
 }
 
+/// Build the 8-byte header for a pot LUT image (body = the knots i16 LE).
+pub fn lut_header(seq: u16, knots: &[i16; INTERVALS]) -> [u8; HEADER_LEN] {
+    let mut h = [0u8; HEADER_LEN];
+    h[0] = LUT_IMAGE_MAGIC;
+    h[1] = LUT_IMAGE_VERSION;
+    h[2..4].copy_from_slice(&seq.to_le_bytes());
+    h[4..6].copy_from_slice(&(LUT_LEN as u16).to_le_bytes());
+    let mut crc = osc_crc(&h[..6]);
+    for c in knots {
+        crc = osc_crc_continue(crc, &c.to_le_bytes());
+    }
+    h[6..8].copy_from_slice(&crc.to_le_bytes());
+    h
+}
+
+/// Assemble a whole pot LUT image in RAM -- hosts, fakes, and tests; the
+/// chip provider streams header + array across its three pages instead.
+pub fn lut_assemble(out: &mut [u8; LUT_IMAGE_LEN], seq: u16, knots: &[i16; INTERVALS]) {
+    out[..HEADER_LEN].copy_from_slice(&lut_header(seq, knots));
+    for (d, c) in out[HEADER_LEN..]
+        .as_chunks_mut::<2>()
+        .0
+        .iter_mut()
+        .zip(knots)
+    {
+        *d = c.to_le_bytes();
+    }
+}
+
+/// A validated stored pot LUT image; the knot bytes borrow the slot.
+pub struct LutImage<'a> {
+    pub seq: u16,
+    pub knots: &'a [u8; LUT_LEN],
+}
+
+impl<'a> LutImage<'a> {
+    /// Validate a slot (extra bytes past `LUT_IMAGE_LEN` - the rest of the
+    /// third page - are ignored). Magic, version, len and CRC gate
+    /// integrity; the physics gate (`pot_lut::validate`) runs at load,
+    /// against the stops the calib overlay left.
+    pub fn parse(slot: &'a [u8]) -> Option<LutImage<'a>> {
+        let bytes = slot.get(..LUT_IMAGE_LEN)?;
+        if bytes[0] != LUT_IMAGE_MAGIC || bytes[1] != LUT_IMAGE_VERSION {
+            return None;
+        }
+        let seq = u16::from_le_bytes([bytes[2], bytes[3]]);
+        if u16::from_le_bytes([bytes[4], bytes[5]]) != LUT_LEN as u16 {
+            return None;
+        }
+        let crc = u16::from_le_bytes([bytes[6], bytes[7]]);
+        if osc_crc_continue(osc_crc(&bytes[..6]), &bytes[HEADER_LEN..]) != crc {
+            return None;
+        }
+        Some(LutImage {
+            seq,
+            knots: bytes[HEADER_LEN..].try_into().ok()?,
+        })
+    }
+}
+
 impl ControlTableCell {
     /// Overlay a validated image onto the live table -- raw byte copy,
     /// deliberately bypassing ro masks and field rules (`Image::parse`
@@ -401,6 +479,51 @@ pub fn boot_overlay_calib(table: &ControlTableCell, slot_a: &[u8], slot_b: &[u8]
             CALIB_IMAGE_MAGIC,
             CALIB_IMAGE_VERSION,
             CALIB_LEN,
+        )),
+    }
+}
+
+/// Boot-time pot LUT load: same A/B rule, own slots and seq. The newest
+/// valid image lands in the array and goes LIVE only if it validates
+/// against the stops the calib overlay left and corrects something (an
+/// all-zero image is the identity SAVE persists, and reads IDENTITY);
+/// otherwise the array stays (or returns to) the identity, and the stamp
+/// checkpoint reports the loss. Bringup-only, pre-IRQ, after the calib
+/// overlay.
+pub fn boot_load_pot_lut(shared: &Shared, slot_a: &[u8], slot_b: &[u8]) -> BootPick {
+    let (img, next_slot) = pick_newest(LutImage::parse(slot_a), LutImage::parse(slot_b), |i| i.seq);
+    match img {
+        Some(img) => {
+            let (raw_min, raw_max) = shared
+                .table
+                .with(|t| (t.calib.pot.raw_min, t.calib.pot.raw_max));
+            let live = shared.with_pot_lut_mut(|k| {
+                for (d, s) in k.iter_mut().zip(img.knots.as_chunks::<2>().0) {
+                    *d = i16::from_le_bytes(*s);
+                }
+                match pot_lut::validate(k, raw_min, raw_max) {
+                    Ok(()) => k.iter().any(|&c| c != 0),
+                    Err(_) => {
+                        k.fill(0);
+                        false
+                    }
+                }
+            });
+            shared.table.with_mut(|t| {
+                t.control.pot_lut.lut_state = if live { state::LIVE } else { state::IDENTITY }
+            });
+            BootPick {
+                next_slot,
+                next_seq: img.seq.wrapping_add(1),
+                state: ImageState::Loaded,
+            }
+        }
+        None => BootPick::unloaded(unloaded_state(
+            slot_a,
+            slot_b,
+            LUT_IMAGE_MAGIC,
+            LUT_IMAGE_VERSION,
+            LUT_LEN,
         )),
     }
 }
@@ -801,5 +924,167 @@ mod tests {
             boot_overlay_calib(&seeded_table(), &old_calib, &[0xFF; CALIB_IMAGE_LEN]).state,
             ImageState::Stale
         );
+    }
+
+    use crate::pot_lut::KNOTS;
+
+    const STOPS: (u16, u16) = (209, 3849);
+
+    /// A few knots inside the mg90-a stops, valid against them.
+    fn lut_body() -> [i16; INTERVALS] {
+        let mut k = [0i16; INTERVALS];
+        k[20] = 3;
+        k[21] = 5;
+        k[100] = -7;
+        k
+    }
+
+    fn lut_image_of(seq: u16) -> [u8; LUT_IMAGE_LEN] {
+        let mut img = [0u8; LUT_IMAGE_LEN];
+        lut_assemble(&mut img, seq, &lut_body());
+        img
+    }
+
+    fn lut_servo() -> Shared {
+        let sh = Shared::new();
+        sh.table.with_mut(|t| {
+            t.calib.pot.raw_min = STOPS.0;
+            t.calib.pot.raw_max = STOPS.1;
+        });
+        sh
+    }
+
+    fn array(sh: &Shared) -> [i16; KNOTS] {
+        sh.with_pot_lut(|k| *k)
+    }
+
+    fn lut_state(sh: &Shared) -> u8 {
+        sh.table.with(|t| t.control.pot_lut.lut_state)
+    }
+
+    #[test]
+    fn lut_image_round_trips() {
+        let img = lut_image_of(9);
+        let parsed = LutImage::parse(&img).expect("valid image");
+        assert_eq!(parsed.seq, 9);
+        for (bytes, c) in parsed.knots.as_chunks::<2>().0.iter().zip(&lut_body()) {
+            assert_eq!(i16::from_le_bytes(*bytes), *c);
+        }
+    }
+
+    #[test]
+    fn lut_parse_rejects_each_gate() {
+        let img = lut_image_of(1);
+        assert!(
+            LutImage::parse(&img[..LUT_IMAGE_LEN - 1]).is_none(),
+            "short slot"
+        );
+        for (i, name) in [(0, "magic"), (1, "version"), (4, "len"), (6, "crc")] {
+            let mut bad = img;
+            bad[i] ^= 0x01;
+            assert!(LutImage::parse(&bad).is_none(), "{name} must gate");
+        }
+        let mut torn = img;
+        torn[LUT_IMAGE_LEN - 1] ^= 0x80;
+        assert!(
+            LutImage::parse(&torn).is_none(),
+            "the last knot is under the crc"
+        );
+        assert!(LutImage::parse(&calib_image_of(1)).is_none());
+        assert!(LutImage::parse(&[0xFF; LUT_IMAGE_LEN]).is_none());
+        let mut pages = [0xFF; 768];
+        pages[..LUT_IMAGE_LEN].copy_from_slice(&img);
+        assert!(LutImage::parse(&pages).is_some());
+    }
+
+    #[test]
+    fn lut_boot_load_picks_newest_and_goes_live() {
+        let newer = {
+            let mut k = lut_body();
+            k[100] = -9;
+            let mut img = [0u8; LUT_IMAGE_LEN];
+            lut_assemble(&mut img, 6, &k);
+            (img, k)
+        };
+        let sh = lut_servo();
+        let pick = boot_load_pot_lut(&sh, &lut_image_of(5), &newer.0);
+        assert_eq!(
+            pick,
+            BootPick {
+                next_slot: Slot::A,
+                next_seq: 7,
+                state: ImageState::Loaded
+            }
+        );
+        assert_eq!(lut_state(&sh), state::LIVE);
+        assert_eq!(array(&sh)[..INTERVALS], newer.1);
+        assert_eq!(array(&sh)[INTERVALS], 0, "the fixed last knot");
+        for (a, b, next) in [
+            (&lut_image_of(3)[..], &[0xFF; LUT_IMAGE_LEN][..], Slot::B),
+            (&[0xFF; LUT_IMAGE_LEN][..], &lut_image_of(3)[..], Slot::A),
+        ] {
+            let sh = lut_servo();
+            let pick = boot_load_pot_lut(&sh, a, b);
+            assert_eq!(
+                (pick.next_slot, pick.next_seq, pick.state),
+                (next, 4, ImageState::Loaded)
+            );
+            assert_eq!(lut_state(&sh), state::LIVE);
+        }
+    }
+
+    /// The stops moved under a saved table (a re-cal SAVEd over an old LUT
+    /// image): the image is sound, the table is not, so the identity runs
+    /// and the slot still alternates.
+    #[test]
+    fn lut_boot_load_rejects_against_the_stops_and_stays_identity() {
+        let sh = lut_servo();
+        sh.table.with_mut(|t| t.calib.pot.raw_max = 1000);
+        let pick = boot_load_pot_lut(&sh, &lut_image_of(2), &[0xFF; LUT_IMAGE_LEN]);
+        assert_eq!(
+            pick,
+            BootPick {
+                next_slot: Slot::B,
+                next_seq: 3,
+                state: ImageState::Loaded
+            }
+        );
+        assert_eq!(lut_state(&sh), state::IDENTITY);
+        assert_eq!(array(&sh), [0; KNOTS]);
+        // the identity SAVE persists is an all-zero image: sound, loaded,
+        // and no table to apply
+        let sh = lut_servo();
+        let mut img = [0u8; LUT_IMAGE_LEN];
+        lut_assemble(&mut img, 5, &[0; INTERVALS]);
+        let pick = boot_load_pot_lut(&sh, &[0xFF; LUT_IMAGE_LEN], &img);
+        assert_eq!((pick.next_slot, pick.next_seq), (Slot::A, 6));
+        assert_eq!(lut_state(&sh), state::IDENTITY);
+    }
+
+    #[test]
+    fn lut_boot_classifies_erased_garbage_and_resealed() {
+        let erased = [0xFF; LUT_IMAGE_LEN];
+        let mut torn = lut_image_of(1);
+        torn[HEADER_LEN + 40] ^= 0x01;
+        let mut old = lut_image_of(4);
+        reseal_version(&mut old, LUT_IMAGE_VERSION.wrapping_add(1));
+        for (a, b, want) in [
+            (&erased[..], &erased[..], ImageState::Virgin),
+            (&torn[..], &erased[..], ImageState::Corrupt),
+            (&erased[..], &[0u8; LUT_IMAGE_LEN][..], ImageState::Corrupt),
+            (&old[..], &torn[..], ImageState::Stale),
+        ] {
+            let sh = lut_servo();
+            assert_eq!(boot_load_pot_lut(&sh, a, b), BootPick::unloaded(want));
+            assert_eq!(lut_state(&sh), state::IDENTITY);
+            assert_eq!(array(&sh), [0; KNOTS]);
+        }
+        let sh = lut_servo();
+        assert_eq!(
+            boot_load_pot_lut(&sh, &torn, &lut_image_of(2)).state,
+            ImageState::Loaded,
+            "one valid slot loads whatever sits beside it"
+        );
+        assert_eq!(lut_state(&sh), state::LIVE);
     }
 }
