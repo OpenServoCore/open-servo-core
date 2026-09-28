@@ -232,7 +232,8 @@ SERVOS = {
         # the guards below, expressed through the mapping above
         travel_deg=(15.74, 168.59),
         # 75+ counts inside the soft limits 432/3626 so a seek band never
-        # meets the soft-limit clamp; hand stops at 209/3849
+        # meets the soft-limit clamp; hand stops at 209/3849 (low stop 232
+        # since the 2026-09-28 stall, see measured["low_stop_after_stall_measured"])
         guard_counts=(520, 3540),
         measured={
             # --- gear train, counted not fitted ---
@@ -286,6 +287,19 @@ SERVOS = {
                 "bracket but not carried: it would put a 1.2% scale error on the "
                 "linear angle map. Control table: angle_min_cdeg 0, "
                 "angle_max_cdeg 18422, gear_ratio_centi 30805"),
+            "low_stop_after_stall_measured": Measured(
+                232, 232, 236, "counts",
+                "hand stop, firm push, 2026-09-28, after the stall-24mhz capture-1 "
+                "ladder (mg90-a__2s): the second 24% hold (~0.32 A) at the low stop "
+                "drove the output 20 counts deeper with falling current, and the "
+                "plastic stopper now stops the horn ~23 counts (~1.2 deg) short of "
+                "the 209 it read by hand on 2026-09-25",
+                "the high stop is unchanged at 3849, so the pot coupling did not "
+                "slip. A plastic stopper can grind over under enough stall current; "
+                "no further stalls at this end. The degree frame above keeps 0 deg "
+                "at 209 so earlier datasets keep their angles; the servo's control "
+                "table moved to raw_min / pos_min_phys 232 and angle_max_cdeg 18306 "
+                "(183.06 deg)"),
             "backlash_measured": Measured(
                 1.48, 1.25, 1.50, "ripple cycles",
                 "nb09 sec 4, reversal blocks, commutation steps while the pot "
