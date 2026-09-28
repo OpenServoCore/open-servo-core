@@ -290,6 +290,8 @@ fn print_diag(d: &Diag) {
         record::PHASE_HSE_FAIL => "hse-fail".to_string(),
         other => format!("{other:#04x}"),
     };
+    println!("uptime: {}", fmt_uptime(d.uptime_ms));
+    println!("resets since power-on: {}", d.resets);
     println!(
         "last reset: {} at phase {phase}; hse failures {}",
         causes.join("+"),
@@ -302,6 +304,17 @@ fn print_diag(d: &Diag) {
             "crash record: #{} mcause {:#010x} mepc {:#010x} mtval {:#010x}",
             d.crash_seq, d.mcause, d.mepc, d.mtval
         );
+    }
+}
+
+/// `1h02m13s`, leading zero units dropped (`5s`, `2m05s`).
+fn fmt_uptime(ms: u32) -> String {
+    let s = ms / 1_000;
+    let (h, m, s) = (s / 3_600, s / 60 % 60, s % 60);
+    match (h, m) {
+        (0, 0) => format!("{s}s"),
+        (0, _) => format!("{m}m{s:02}s"),
+        _ => format!("{h}h{m:02}m{s:02}s"),
     }
 }
 
@@ -888,5 +901,19 @@ fn main() -> Result<()> {
         Cmd::CalReplay(a) => cal::replay::run(a),
         Cmd::Sweep(args) => sweep::run(args, cli.baud.clone(), cli.id),
         Cmd::Capture(args) => capture::run(args, cli.baud.clone(), cli.id),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fmt_uptime;
+
+    #[test]
+    fn uptime_drops_leading_zero_units() {
+        assert_eq!(fmt_uptime(999), "0s");
+        assert_eq!(fmt_uptime(5_400), "5s");
+        assert_eq!(fmt_uptime(125_000), "2m05s");
+        assert_eq!(fmt_uptime(3_733_000), "1h02m13s");
+        assert_eq!(fmt_uptime(u32::MAX), "1193h02m47s");
     }
 }

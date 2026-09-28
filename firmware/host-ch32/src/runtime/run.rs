@@ -114,6 +114,7 @@ pub fn run() -> ! {
             && let Some(bytes) = usb.rx()
         {
             crash::phase(PHASE_PIPE);
+            server.set_uptime_ticks(systick::ticks64());
             critical_section::with(|_| {
                 // SAFETY: main-loop bus access under CS (registry doc).
                 let bus = unsafe { Drivers::bus() };

@@ -81,6 +81,11 @@ synchronous exception records itself and resets, and an independent
 watchdog (2 s nominal) resets a hung loop, so either way the dongle
 re-enumerates on its own instead of dropping off the bus.
 
+It also prints the adapter's uptime and its reset count since the last
+power-on (kept in the same block, zeroed by a POR). After a USB drop, an
+uptime shorter than the time since the drop means the adapter restarted;
+one longer means it kept running and the host lost the link.
+
 ## Recovery
 
 The loader is never erased by either direction, so a broken or interrupted

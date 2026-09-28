@@ -15,7 +15,7 @@ use crate::error::LinkError;
 pub struct LinkInfo {
     pub version: u8,
     pub ticks_per_us: u32,
-    /// Adapter diagnostics tail; `None` from a pre-v2 adapter.
+    /// Adapter diagnostics tail; `None` from a pre-v3 adapter.
     pub diag: Option<rec::Diag>,
 }
 
@@ -250,6 +250,8 @@ fn decode(body: &[u8]) -> Result<Record, LinkError> {
                     mepc: word(10),
                     mtval: word(14),
                     hse_fail: word(18),
+                    resets: word(22),
+                    uptime_ms: word(26),
                 }
             }),
         }),
@@ -318,3 +320,32 @@ fn decode(body: &[u8]) -> Result<Record, LinkError> {
 // Re-exported so callers can name the submit vocabulary without a direct
 // osc-host dep.
 pub use osc_host::engine::Command as EngineCommand;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn info_diag_round_trips() {
+        let diag = rec::Diag {
+            reset: rec::RESET_IWDG,
+            phase: rec::PHASE_PUMP,
+            crash_seq: 3,
+            mcause: 5,
+            mepc: 0x2a1c,
+            mtval: 0x2000_4000,
+            hse_fail: 1,
+            resets: 4,
+            uptime_ms: 3_733_000,
+        };
+        let mut buf = [0u8; 64];
+        let mut s = Session::new();
+        s.on_bytes(rec::info(&mut buf, 18, &diag));
+        let Some(Record::Info(info)) = s.next_record().expect("decodes") else {
+            panic!("not an INFO record");
+        };
+        assert_eq!(info.version, rec::LINK_VERSION);
+        assert_eq!(info.ticks_per_us, 18);
+        assert_eq!(info.diag, Some(diag));
+    }
+}

@@ -53,6 +53,8 @@ pub struct Diag {
     pub mepc: u32,
     pub mtval: u32,
     pub hse_fail: u32,
+    pub resets: u32,
+    pub uptime_ms: u32,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Tsify)]
@@ -60,7 +62,7 @@ pub struct Diag {
 pub struct LinkInfo {
     pub version: u8,
     pub ticks_per_us: u32,
-    /// Absent from a pre-v2 adapter.
+    /// Absent from a pre-v3 adapter.
     #[tsify(optional)]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diag: Option<Diag>,
@@ -79,6 +81,8 @@ impl From<osc_client::session::LinkInfo> for LinkInfo {
                 mepc: d.mepc,
                 mtval: d.mtval,
                 hse_fail: d.hse_fail,
+                resets: d.resets,
+                uptime_ms: d.uptime_ms,
             }),
         }
     }

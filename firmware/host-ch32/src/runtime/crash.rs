@@ -12,6 +12,8 @@
 //! Persistence rule: the record lives until the next exception overwrites
 //! it; the host never clears it. `seq` counts exceptions since the record
 //! was born (0 = none), so a changed `seq` is the host's "new crash" signal.
+//! `resets` is the one field a power-on clears: it counts the resets since
+//! then, where the boot's reset flags name only the latest.
 
 use core::sync::atomic::{AtomicU8, Ordering};
 
@@ -32,7 +34,13 @@ struct Record {
     /// Main-loop phase, rewritten at every stage boundary: names where a
     /// watchdog reset caught the loop (the exception fields name a trap).
     phase: u32,
+    resets: u32,
 }
+
+const _: () = assert!(
+    size_of::<Record>() <= 32,
+    "record outgrew the CRASH region osc-crash.x reserves"
+);
 
 const BLANK: Record = Record {
     magic: MAGIC,
@@ -42,6 +50,7 @@ const BLANK: Record = Record {
     mtval: 0,
     hse_fail: 0,
     phase: record::PHASE_NONE as u32,
+    resets: 0,
 };
 
 /// Boot snapshot (`boot`, pre-IRQ, once): the reset flags this boot found,
@@ -88,14 +97,20 @@ fn reset_record() {
 }
 
 /// Adopt the record (a magic mismatch, first boot or loader clobber,
-/// starts it blank), returning the phase the last reset interrupted and
-/// marking bringup.
-fn adopt() -> u8 {
+/// starts it blank), count this reset (a power-on restarts the count),
+/// returning the phase the last reset interrupted and marking bringup.
+fn adopt(por: bool) -> u8 {
     if !valid() {
         reset_record();
     }
     // SAFETY: see `field!`.
     unsafe {
+        let resets = if por {
+            0
+        } else {
+            field!(resets).read_volatile().saturating_add(1)
+        };
+        field!(resets).write_volatile(resets);
         let at = field!(phase).read_volatile() as u8;
         field!(phase).write_volatile(record::PHASE_BRINGUP as u32);
         at
@@ -136,7 +151,7 @@ pub fn boot() {
         }
     }
     BOOT_RESET.store(reset, Ordering::Relaxed);
-    BOOT_PHASE.store(adopt(), Ordering::Relaxed);
+    BOOT_PHASE.store(adopt(reset & record::RESET_POR != 0), Ordering::Relaxed);
 }
 
 /// Mark the main-loop stage (one volatile store).
@@ -174,6 +189,8 @@ pub fn diag() -> Diag {
             mepc: field!(mepc).read_volatile(),
             mtval: field!(mtval).read_volatile(),
             hse_fail: field!(hse_fail).read_volatile(),
+            resets: field!(resets).read_volatile(),
+            uptime_ms: 0,
         }
     }
 }
@@ -199,7 +216,7 @@ mod tests {
         let _g = fresh();
         // SAFETY: host stub record.
         unsafe { field!(seq).write_volatile(77) };
-        assert_eq!(adopt(), record::PHASE_NONE);
+        assert_eq!(adopt(false), record::PHASE_NONE);
         let d = diag();
         assert_eq!((d.crash_seq, d.hse_fail), (0, 0));
     }
@@ -207,9 +224,9 @@ mod tests {
     #[test]
     fn adopt_reports_phase_at_reset_then_marks_bringup() {
         let _g = fresh();
-        adopt();
+        adopt(false);
         phase(record::PHASE_PUMP);
-        assert_eq!(adopt(), record::PHASE_PUMP);
+        assert_eq!(adopt(false), record::PHASE_PUMP);
         // SAFETY: host stub record.
         let now = unsafe { field!(phase).read_volatile() };
         assert_eq!(now, record::PHASE_BRINGUP as u32);
@@ -220,19 +237,31 @@ mod tests {
         let _g = fresh();
         write_exception(5, 0x2a1c, 0x2000_4000);
         write_exception(7, 0x3000, 0x0);
-        assert_eq!(adopt(), record::PHASE_NONE, "record kept, not blanked");
+        assert_eq!(adopt(false), record::PHASE_NONE, "record kept, not blanked");
         let d = diag();
         assert_eq!(d.crash_seq, 2);
         assert_eq!((d.mcause, d.mepc, d.mtval), (7, 0x3000, 0));
     }
 
     #[test]
+    fn resets_count_until_power_on() {
+        let _g = fresh();
+        adopt(true);
+        assert_eq!(diag().resets, 0);
+        adopt(false);
+        adopt(false);
+        assert_eq!(diag().resets, 2);
+        adopt(true);
+        assert_eq!(diag().resets, 0);
+    }
+
+    #[test]
     fn hse_failures_count() {
         let _g = fresh();
-        adopt();
+        adopt(false);
         note_hse_fail();
         note_hse_fail();
         assert_eq!(diag().hse_fail, 2);
-        assert_eq!(adopt(), record::PHASE_HSE_FAIL);
+        assert_eq!(adopt(false), record::PHASE_HSE_FAIL);
     }
 }
