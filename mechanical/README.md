@@ -9,6 +9,8 @@ One folder per project; each project writes its printable outputs
   Measurements go into `sg90/measurements.py` with provenance; geometry
   is derived from them. One part per module; `build()` returns the
   solid.
+- `mg90/` - MG90 clone facts, no geometry yet: `mg90/measurements.py`
+  holds the counted gear train with the same provenance tags.
 - `encbench/` - bench encoder rig for the ITR1204 coupon
   (hardware/boards/encoder-board): base, sled, clamp, discs, shims,
   paper patterns. Parametric over motor dims (imports

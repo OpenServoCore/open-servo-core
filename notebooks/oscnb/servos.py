@@ -220,19 +220,32 @@ SERVOS = {
         key="mg90-a",
         label="Vorpal MG90 clone, unit A",
         model="MG90",
-        # PROVISIONAL. No angle reference yet: 0 deg is put at the low hand
-        # stop (pos 209) and the slope is a round 20 counts per degree, the
-        # same class as sg90-a. Anything in degrees from this servo is a
-        # placeholder until an indexed horn or dial read replaces it; counts
-        # and wiper volts are unaffected.
+        # 0 deg at the low hand stop (pos 209), the same origin as the servo's
+        # angle_min_cdeg = 0 at raw_min. The slope is the counted gear ratio
+        # through the ripple: measured["pot_scale_measured"]. It is exact in
+        # LINEARIZED counts inside the covered band 540..3526; in raw counts it
+        # is only the band average, and the raw pot's local scale runs 13.7 to
+        # 26.5 counts/deg (19.17 over mid travel 1100..3050). The insets outside
+        # the band are extrapolated at this slope, see measured["travel_measured"].
         pos_intercept=209.0,
-        pos_per_deg=20.0,
-        # the guards below, expressed through the provisional mapping
-        travel_deg=(15.55, 166.55),
+        pos_per_deg=19.76,
+        # the guards below, expressed through the mapping above
+        travel_deg=(15.74, 168.59),
         # 75+ counts inside the soft limits 432/3626 so a seek band never
         # meets the soft-limit clamp; hand stops at 209/3849
         guard_counts=(520, 3540),
         measured={
+            # --- gear train, counted not fitted ---
+            "gear_ratio_measured": Measured(
+                23104 / 75, 23104 / 75, 23104 / 75, ":1", "mechanical/mg90/measurements.py",
+                "(48*48*38*38)/(9*12*10*10) = 23104/75, teeth counted from "
+                "teardown photos: pinion 9, gear 1 48:12, gear 2 48:10, gear 3 "
+                "38:10, output 38. Exact if the count is; horn spline 20 teeth "
+                "is not part of it"),
+            "ripple_order_measured": Measured(
+                6, 6, 6, "per motor rev", "teardown, 3-slot brushed motor",
+                "3-segment commutator x 2 brushes, same class as sg90-a - a "
+                "parts count, not an inference"),
             "r_winding_measured": Measured(
                 4.89, 4.49, 4.98, "Ohm",
                 "bringup captures/mg90/plant.py, onset regression over samples "
@@ -248,6 +261,31 @@ SERVOS = {
                 "forward 1.306, reverse 1.284, fitted per direction with a "
                 "free intercept (+11 / +67 mV). The pot never enters. Reads 5 "
                 "to 28% fast from 55 to 100% duty, where it was not fitted"),
+            "pot_scale_measured": Measured(
+                19.76, 19.70, 19.85, "counts/deg",
+                "nb09 sec 10, ripple cycles stitched over the covered band 540..3526 "
+                "(2S session 15-50% + 2S ends, 99 rungs) against the counted gear "
+                "ratio and 6/rev: 5.134 cycles per output degree over 0.2598 cycles "
+                "per count",
+                "LINEARIZED counts: the scale the firmware counts in once the pot "
+                "table is live, the same anywhere in the band. Bracket is the "
+                "capture-to-capture spread over 10 captures; the six datasets "
+                "(USB and the day-old classic set included) span 19.66 to 19.85. "
+                "Raw counts have no single scale: 19.76 averaged over the whole "
+                "band (the table anchors on its raw ends), 19.17 over mid travel "
+                "1100..3050, 13.7 to 26.5 locally in 67-count windows"),
+            "travel_measured": Measured(
+                184.22, 178.67, 189.18, "deg",
+                "nb09 sec 10, phys stop to phys stop 209..3849: 151.12 deg measured "
+                "over 540..3526 plus the 331 + 323 count insets at the band scale "
+                "(osc cal's stitched_motor_revs treatment)",
+                "the bracket is almost all the insets, which no tracked rung "
+                "crosses: the extreme mean scales an inset-wide window sees inside "
+                "the band, 17.3 to 23.3 counts/deg. Carrying the scale of the "
+                "band's outermost stretches instead gives 181.99, inside the "
+                "bracket but not carried: it would put a 1.2% scale error on the "
+                "linear angle map. Control table: angle_min_cdeg 0, "
+                "angle_max_cdeg 18422, gear_ratio_centi 30805"),
             "backlash_measured": Measured(
                 1.48, 1.25, 1.50, "ripple cycles",
                 "nb09 sec 4, reversal blocks, commutation steps while the pot "
@@ -258,9 +296,13 @@ SERVOS = {
         notes=(
             "All-metal four-stage train, ball-bearing output, plastic D-key "
             "coupling to the pot. Hand stops 209/3849 (low counts = left). "
-            "Gear ratio (tooth count) and ripple order (commutator segments) "
-            "are not yet known, so the notebooks that need them cannot run on "
-            "this servo until they are. 2S windows come from its own pilot: "
+            "Gear ratio 308.05:1 counted from teardown photos, 6 ripple cycles "
+            "per motor rev, so 1.1686 output degrees per motor rev. Against "
+            "sg90-a the output back-EMF per degree is 1.34 to 1.36x (nb09 sec 10) "
+            "= gears 1.312x times a motor Ke ratio of about 1.03 [1.00, 1.06]; "
+            "the 1.41x of the raw-count plant fits carries both pots' scales, "
+            "the raw pot's local gain and the >50% duty over-read. 2S windows "
+            "come from its own pilot: "
             "v_ss = 0.2275*d - 0.845 counts/ms over 10-50%, about 0.83x "
             "sg90-a. Speed keeps rising to 100% (about 20 counts/ms at the "
             "end of a 140 ms rung, rail flat at 7.9 V), but spin-up takes "
