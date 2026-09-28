@@ -16,7 +16,11 @@ use osc_client::nusb::NusbPipe;
 use osc_ident::frame::TelFrame;
 use osc_ident::regs::{calib, config};
 
-use super::envelope::{Coast, Dir, Envelope, Fit, Limits, Speed, Verified, civil_date, round_to};
+use super::envelope::{
+    Coast, CoastRun, CoastRung, Dir, Envelope, Fit, Limits, PerDir, Refused, Speed, Verified,
+    civil_date, round_to,
+};
+use super::procs::{CoastBlock, Procedure};
 use super::{REST_MS, RUNG_TRIES, SEEK_CAP_PCT, SEEK_PCT, SETTLE_MS, Supply, TEL_MASK};
 use crate::rig::park::park;
 use crate::rig::pump::{self, read_i32};
@@ -69,7 +73,7 @@ const SETTLED_MIN_SAMPLES: usize = 20;
 /// Longest rung window; the bench hand table's cap.
 const WINDOW_MAX_MS: u32 = 1500;
 /// Share of the runway a campaign rung is sized to cross; the bench hand
-/// table's bar, and the coast derate's.
+/// table's bar.
 const RUNWAY_FRAC: f64 = 0.8;
 /// Duty step to steady speed; the bench hand table's spin-up allowance.
 const SPINUP_MS: u32 = 30;
@@ -83,13 +87,20 @@ const VERIFY_MIN_FRAC: f64 = 0.55;
 const VERIFY_MAX_FRAC: f64 = 0.9;
 /// The 60% rung's travel must land within 10% of the fit's prediction.
 const VERIFY_PRED_TOL: f64 = 0.1;
-/// Coast probe duty, inside the 10..50% the speed rungs measured.
-const COAST_PROBE_PCT: u8 = 40;
-/// Drive before the coast: SPINUP_MS plus 50 ms at speed.
-const COAST_DRIVE_MS: u32 = 80;
-/// Coast capture, long enough to reach rest; a coast still moving at its end
-/// is refused.
-const COAST_MS: u32 = 400;
+/// Highest duty the coast ladder may open on: its first rung runs with no
+/// prediction to hold it back. 30% crosses a quarter of mg90-a's 2S runway.
+const COAST_FIRST_MAX_PCT: u8 = 30;
+/// A coast's entry speed is the pot slope over the drive's last 20 ms; over
+/// 5 ms it reads the pot track's local nonlinearity (9.6 counts/ms at 80% on
+/// mg90-a 2S where 20 ms reads 13.7).
+const ENTRY_MS: u32 = 20;
+/// Share added to a predicted coast travel before it is held against the
+/// room, and to a measured one before its duty can top the coast block. The
+/// worst under-prediction replaying mg90-a's five 2S spindown captures
+/// through the ladder was 2.8%; its 80% travel spread 6% across them, and
+/// the campaign repeats every coast duty.
+const COAST_MARGIN: f64 = 0.1;
+const DIRS: [Dir; 2] = [Dir::Fwd, Dir::Rev];
 
 /// Entry from `osc capture pilot`.
 pub(crate) fn run(a: &Args, baud: String, id: u8) -> Result<()> {
@@ -99,6 +110,9 @@ pub(crate) fn run(a: &Args, baud: String, id: u8) -> Result<()> {
         None => super::default_root()?,
     };
     let dir = super::dataset_dir(&root, &a.servo, a.supply);
+    let (procedure, source) = Procedure::load()?;
+    let block = &procedure.block.coast;
+    let duties = ladder_duties(&block.duties).with_context(|| format!("procedure {source}"))?;
     let mut c = crate::rig::connect(&baud)?;
     let id = Id::new(id);
 
@@ -142,7 +156,7 @@ pub(crate) fn run(a: &Args, baud: String, id: u8) -> Result<()> {
         }
     }
 
-    let r = measure(&mut c, id, &lim, tick_hz as f64 / 1000.0);
+    let r = measure(&mut c, id, &lim, tick_hz as f64 / 1000.0, block, &duties);
     // Parks on failure too; a failed run reports its own error, not the park's.
     let parked = park(&mut c, id, lim.center);
     let (v_ss, windows_ms, coast, verified) = r?;
@@ -170,7 +184,14 @@ pub(crate) fn run(a: &Args, baud: String, id: u8) -> Result<()> {
 type Measured = (Speed, BTreeMap<u8, u32>, Coast, Vec<Verified>);
 
 /// Every motion of the pilot; `run` parks after it whatever it returns.
-fn measure(c: &mut Client<NusbPipe>, id: Id, lim: &Limits, ticks_per_ms: f64) -> Result<Measured> {
+fn measure(
+    c: &mut Client<NusbPipe>,
+    id: Id,
+    lim: &Limits,
+    ticks_per_ms: f64,
+    block: &CoastBlock,
+    duties: &[u8],
+) -> Result<Measured> {
     let fwd = speed_fit(c, id, lim, ticks_per_ms, Dir::Fwd)?;
     let rev = speed_fit(c, id, lim, ticks_per_ms, Dir::Rev)?;
     let used = if fwd.at(100) >= rev.at(100) {
@@ -240,7 +261,7 @@ fn measure(c: &mut Client<NusbPipe>, id: Id, lim: &Limits, ticks_per_ms: f64) ->
         });
     }
 
-    let coast = coast_derate(c, id, lim, ticks_per_ms, &fit)?;
+    let coast = coast_ladder(c, id, lim, ticks_per_ms, block, duties, &v_ss)?;
     Ok((v_ss, wins, coast, verified))
 }
 
@@ -254,7 +275,7 @@ fn speed_fit(
     dir: Dir,
 ) -> Result<Fit> {
     let dirs = sweep_dirs(dir);
-    let sign = if dir == Dir::Fwd { 1.0 } else { -1.0 };
+    let sign = f64::from(sign(dir));
     let mut pts: Vec<(f64, f64)> = Vec::new();
     for d in PILOT_DUTIES {
         let w = next_window(&pts, d, lim.runway);
@@ -285,83 +306,165 @@ fn speed_fit(
     Ok(Fit::rounded(a, b, r2))
 }
 
-/// Measure one coast, derate the coast block's top duty from it, and run
-/// that top duty's chain both ways.
-fn coast_derate(
+/// Climb the coast block's duties, each run both ways only while the travel
+/// predicted from the rungs below fits the room; the top is the last rung
+/// whose measured travel fit too. Every duty up to the top has then run on
+/// the servo, so there is nothing left to verify.
+fn coast_ladder(
     c: &mut Client<NusbPipe>,
     id: Id,
     lim: &Limits,
     ticks_per_ms: f64,
-    fit: &Fit,
+    block: &CoastBlock,
+    duties: &[u8],
+    v_ss: &Speed,
 ) -> Result<Coast> {
-    let chain = |pct| {
-        vec![
-            Step::Drive(pct, Some(COAST_DRIVE_MS)),
-            Step::Coast(COAST_MS),
-        ]
-    };
-    println!("[coast] probe {COAST_PROBE_PCT}% for {COAST_DRIVE_MS} ms, then coast {COAST_MS} ms");
-    let rec = sweep::record(
-        c,
-        id,
-        &cfg(chain(COAST_PROBE_PCT), Dirs::Fwd, COAST_DRIVE_MS, lim),
-        |_| Ok(()),
-    )?;
-    let [drive, coasting] = rec.segments.as_slice() else {
-        bail!(
-            "coast probe committed {} segments, not 2",
-            rec.segments.len()
-        );
-    };
-    let settled = |s: &Segment| {
-        settled_slope(&pos_ticks(&s.frames), SETTLED_FRAC)
-            .map(|v| v * ticks_per_ms)
-            .ok_or_else(|| anyhow!("coast probe: under {SETTLED_MIN_SAMPLES} settled pos samples"))
-    };
-    let entry = round_to(settled(drive)?, 3);
-    if entry <= V_SS_MIN {
-        bail!("coast probe entered at {entry} counts/ms: the shaft never got going");
+    let room = coast_room(lim);
+    println!(
+        "[coast] ladder {duties:?}%: {} ms drive, {} ms coast, room fwd {} rev {}, margin {COAST_MARGIN}",
+        block.drive_ms, block.coast_ms, room.fwd, room.rev
+    );
+    let mut ladder = Vec::new();
+    let mut refused = None;
+    let mut top = None;
+    for &pct in duties {
+        let predicted = match next_rung(&ladder, pct, v_ss, &room) {
+            Next::Run(p) => p,
+            Next::Refuse(p) => {
+                println!(
+                    "  {pct}%: predicted travel fwd {:.0} rev {:.0} does not fit the room, stopping",
+                    p.fwd, p.rev
+                );
+                refused = Some(Refused {
+                    pct,
+                    predicted: PerDir {
+                        fwd: to_counts(p.fwd),
+                        rev: to_counts(p.rev),
+                    },
+                });
+                break;
+            }
+        };
+        let chain = vec![
+            Step::Drive(pct, Some(block.drive_ms)),
+            Step::Coast(block.coast_ms),
+        ];
+        let rec = sweep::record(c, id, &cfg(chain, Dirs::Both, block.drive_ms, lim), |_| {
+            Ok(())
+        })?;
+        let run = |d| {
+            coast_run(
+                &rec.segments,
+                d,
+                lim.soft,
+                ticks_per_ms,
+                predicted.map(|p| *p.get(d)),
+            )
+            .with_context(|| format!("{pct}% coast"))
+        };
+        let rung = CoastRung {
+            pct,
+            fwd: run(Dir::Fwd)?,
+            rev: run(Dir::Rev)?,
+        };
+        for d in DIRS {
+            let r = rung.get(d);
+            let pred = r
+                .predicted
+                .map_or(String::new(), |p| format!(" (predicted {p})"));
+            println!(
+                "  {pct:3}% {d}: entry {} counts/ms, lead {} + coast {} = {}{pred}, {} inside soft",
+                r.entry, r.lead, r.coast, r.travel, r.peak_inside_soft
+            );
+        }
+        let fits = rung_fits(&rung, &room);
+        ladder.push(rung);
+        if !fits {
+            println!("  {pct}% travel does not fit the room, stopping");
+            break;
+        }
+        top = Some(pct);
     }
-    // A coast still rolling at the end of its capture understates the
-    // distance, and k with it.
-    let tail = settled(coasting)?;
-    if tail.abs() >= V_SS_MIN {
-        bail!("coast still moving at {tail:.2} counts/ms after {COAST_MS} ms");
-    }
-    let travel = span(&coasting.frames)?;
-    let k = travel as f64 / (entry * entry);
-    let top = derate_top_pct(fit, k, lim.runway);
-    println!("  entry {entry} counts/ms, coasted {travel} counts: k {k:.3} ms^2/count");
-    let bar = RUNWAY_FRAC * lim.runway as f64;
-    for d in (COAST_PROBE_PCT..=100).step_by(10) {
-        let v = fit.at(d).max(0.0);
-        println!(
-            "  {d:3}%: drive {:5.0} + coast {:5.0} = {:5.0} counts (bar {bar:.0})",
-            v * (COAST_DRIVE_MS - SPINUP_MS) as f64,
-            k * v * v,
-            excursion(fit, k, d)
-        );
-    }
-    println!("  top duty {top}%, verifying both ways");
-
-    let rec = sweep::record(
-        c,
-        id,
-        &cfg(chain(top), Dirs::Both, COAST_DRIVE_MS, lim),
-        |_| Ok(()),
-    )?;
-    let peak = closest_to_soft(&rec.segments, lim.soft)
-        .ok_or_else(|| anyhow!("coast verify: no pos samples"))?;
-    if peak < 0 {
-        bail!("{top}% coast crossed a soft limit by {} counts", -peak);
-    }
-    println!("  closest approach to soft: {peak} counts inside");
+    let top_pct = top.ok_or_else(|| {
+        anyhow!(
+            "the {}% coast already travels too far for the room: no coast duty fits",
+            duties[0]
+        )
+    })?;
+    println!("  top duty {top_pct}%");
     Ok(Coast {
-        probe_pct: COAST_PROBE_PCT,
-        probe_entry: entry,
-        probe_travel: travel,
-        top_pct: top,
-        peak_inside_soft: peak,
+        drive_ms: block.drive_ms,
+        coast_ms: block.coast_ms,
+        margin: COAST_MARGIN,
+        top_pct,
+        room,
+        refused,
+        ladder,
+    })
+}
+
+/// One direction's drive-then-coast chain of a ladder rung, measured. Travel
+/// runs from the drive's first sample to the furthest one; the coast from
+/// the coast's first sample, so the lead also holds the gap between the two
+/// bursts, where the drive duty still applies.
+fn coast_run(
+    segs: &[Segment],
+    dir: Dir,
+    soft: [u16; 2],
+    ticks_per_ms: f64,
+    predicted: Option<f64>,
+) -> Result<CoastRun> {
+    let s = sign(dir);
+    let mine: Vec<&Segment> = segs.iter().filter(|g| g.dir == s).collect();
+    let [drive, coasting] = mine.as_slice() else {
+        bail!("{dir} chain committed {} segments, not 2", mine.len());
+    };
+    let dp = pos_ticks(&drive.frames);
+    let cp = pos_ticks(&coasting.frames);
+    let (Some(&(_, start)), Some(&(t_end, _)), Some(&(_, coast_start))) =
+        (dp.first(), dp.last(), cp.first())
+    else {
+        bail!("{dir} chain has no pos samples");
+    };
+    let entry = slope_from(&dp, t_end as f64 - ENTRY_MS as f64 * ticks_per_ms)
+        .map(|v| f64::from(s) * v * ticks_per_ms)
+        .ok_or_else(|| {
+            anyhow!(
+                "{dir} drive: under {SETTLED_MIN_SAMPLES} pos samples in its last {ENTRY_MS} ms"
+            )
+        })?;
+    if entry <= V_SS_MIN {
+        bail!("{dir} drive entered the coast at {entry:.2} counts/ms: the shaft never got going");
+    }
+    // A coast still rolling at the end of its capture understates its
+    // distance, and every prediction fit to it.
+    let tail = settled_slope(&cp, SETTLED_FRAC)
+        .map(|v| v * ticks_per_ms)
+        .ok_or_else(|| anyhow!("{dir} coast: under {SETTLED_MIN_SAMPLES} settled pos samples"))?;
+    if tail.abs() >= V_SS_MIN {
+        bail!("{dir} coast still moving at {tail:.2} counts/ms at its end: lengthen coast_ms");
+    }
+    let ahead = |p: u16| i32::from(s) * i32::from(p);
+    let peak = dp
+        .iter()
+        .chain(&cp)
+        .map(|&(_, p)| ahead(p))
+        .fold(i32::MIN, i32::max);
+    let limit = if dir == Dir::Fwd { soft[1] } else { soft[0] };
+    let inside = ahead(limit) - peak;
+    if inside < 0 {
+        bail!("{dir} coast crossed the soft limit by {} counts", -inside);
+    }
+    let travel = peak - ahead(start);
+    let coast = (peak - ahead(coast_start)).max(0);
+    let counts = |v: i32| to_counts(v as f64);
+    Ok(CoastRun {
+        predicted: predicted.map(to_counts),
+        entry: round_to(entry, 3),
+        lead: counts(travel - coast),
+        coast: counts(coast),
+        travel: counts(travel),
+        peak_inside_soft: inside,
     })
 }
 
@@ -383,6 +486,13 @@ fn cfg(steps: Vec<Step>, dirs: Dirs, window_ms: u32, lim: &Limits) -> Cfg {
         guard: (lim.guard[0], lim.guard[1]),
         tel_mask: TEL_MASK,
         rung_tries: RUNG_TRIES,
+    }
+}
+
+fn sign(d: Dir) -> i8 {
+    match d {
+        Dir::Fwd => 1,
+        Dir::Rev => -1,
     }
 }
 
@@ -484,7 +594,13 @@ fn affine_fit(pts: &[(f64, f64)]) -> Option<(f64, f64, f64)> {
 /// per tick; None under SETTLED_MIN_SAMPLES.
 fn settled_slope(pts: &[(u64, u16)], frac: f64) -> Option<f64> {
     let (t0, t1) = (pts.first()?.0, pts.last()?.0);
-    let from = t1 as f64 - frac * (t1 - t0) as f64;
+    slope_from(pts, t1 as f64 - frac * (t1 - t0) as f64)
+}
+
+/// Slope of pos over tick from tick `from` on, counts per tick; None under
+/// SETTLED_MIN_SAMPLES.
+fn slope_from(pts: &[(u64, u16)], from: f64) -> Option<f64> {
+    let t0 = pts.first()?.0;
     let tail: Vec<(f64, f64)> = pts
         .iter()
         .filter(|&&(t, _)| t as f64 >= from)
@@ -544,38 +660,152 @@ fn matches_prediction(travel: u16, predicted: u16) -> bool {
     ((1.0 - VERIFY_PRED_TOL) * p..=(1.0 + VERIFY_PRED_TOL) * p).contains(&(travel as f64))
 }
 
-/// Counts from the start guard a `d`% coast chain reaches: the drive at
-/// speed, then a coast of `k v^2` (kinetic energy spent against Coulomb
-/// friction). A viscous `k v` model would extrapolate shorter coasts at
-/// higher speed; v^2 derates harder, the safe side.
-fn excursion(fit: &Fit, k: f64, d: u8) -> f64 {
-    let v = fit.at(d).max(0.0);
-    v * (COAST_DRIVE_MS - SPINUP_MS) as f64 + k * v * v
+fn to_counts(x: f64) -> u16 {
+    x.round().clamp(0.0, u16::MAX as f64) as u16
 }
 
-/// Top duty whose coast chain stays within RUNWAY_FRAC of the runway, never
-/// under the probe's own duty (the probe already ran).
-fn derate_top_pct(fit: &Fit, k: f64, runway: u16) -> u8 {
-    let bar = RUNWAY_FRAC * runway as f64;
-    (COAST_PROBE_PCT..=100)
-        .rev()
-        .find(|&d| excursion(fit, k, d) <= bar)
-        .unwrap_or(COAST_PROBE_PCT)
+/// The coast block's duties in ladder order, refusing a ladder that would
+/// open above COAST_FIRST_MAX_PCT or drive past full scale.
+fn ladder_duties(duties: &[u8]) -> Result<Vec<u8>> {
+    let mut v = duties.to_vec();
+    v.sort_unstable();
+    v.dedup();
+    match (v.first(), v.last()) {
+        (None, _) => bail!("coast block has no duties"),
+        (Some(&lo), _) if lo > COAST_FIRST_MAX_PCT => bail!(
+            "coast block opens at {lo}%: the ladder's first rung runs unpredicted, so it must \
+             open at or under {COAST_FIRST_MAX_PCT}%"
+        ),
+        (_, Some(&hi)) if hi > 100 => bail!("coast duty {hi}% is over full scale"),
+        _ => Ok(v),
+    }
 }
 
-/// Closest any sample came to the soft limit it was heading for, counts
-/// inside soft; negative when one crossed.
-fn closest_to_soft(segs: &[Segment], soft: [u16; 2]) -> Option<i32> {
-    segs.iter()
-        .flat_map(|s| s.frames.iter().filter_map(move |f| Some((s.dir, f.pos?))))
-        .map(|(dir, p)| {
-            if dir > 0 {
-                soft[1] as i32 - p as i32
-            } else {
-                p as i32 - soft[0] as i32
-            }
-        })
-        .min()
+/// Coast travel room per direction: from the far edge of the start band to
+/// the soft limit ahead.
+fn coast_room(lim: &Limits) -> PerDir<u16> {
+    PerDir {
+        fwd: lim.soft[1].saturating_sub(lim.guard[0].saturating_add(BAND_HALF)),
+        rev: lim.guard[1]
+            .saturating_sub(BAND_HALF)
+            .saturating_sub(lim.soft[0]),
+    }
+}
+
+fn fits_room(travel: f64, room: u16) -> bool {
+    (1.0 + COAST_MARGIN) * travel <= room as f64
+}
+
+/// Least-squares `coast = a v + b v^2` over (entry, coast) points; None when
+/// the points cannot separate the terms or either comes out negative, which
+/// no friction law gives.
+fn coast_fit(pts: &[(f64, f64)]) -> Option<(f64, f64)> {
+    let (s2, s3, s4, t1, t2) = pts.iter().fold(
+        (0.0, 0.0, 0.0, 0.0, 0.0),
+        |(s2, s3, s4, t1, t2), &(v, d)| {
+            let v2 = v * v;
+            (s2 + v2, s3 + v2 * v, s4 + v2 * v2, t1 + v * d, t2 + v2 * d)
+        },
+    );
+    let det = s2 * s4 - s3 * s3;
+    if det <= 0.0 {
+        return None;
+    }
+    let a = (t1 * s4 - t2 * s3) / det;
+    let b = (s2 * t2 - s3 * t1) / det;
+    (a >= 0.0 && b >= 0.0).then_some((a, b))
+}
+
+/// Entry speed of a `pct` drive from the (duty, entry) rungs so far: the
+/// least-squares line through them, or with one rung v_ss(pct), which no
+/// drive from rest outruns. Held between the last entry and v_ss(pct).
+fn entry_at(pts: &[(f64, f64)], pct: u8, v_ss: &Fit) -> f64 {
+    let last = pts.last().map_or(0.0, |p| p.1);
+    let ceil = v_ss.at(pct).max(last);
+    affine_fit(pts)
+        .map_or(ceil, |(a, b, _)| a * pct as f64 + b)
+        .clamp(last, ceil)
+}
+
+/// The (duty, travel) rungs so far carried to `pct`: in proportion to duty
+/// from the last rung and along the line through the last two, whichever is
+/// longer.
+fn travel_trend(pts: &[(f64, f64)], pct: u8) -> f64 {
+    let d = pct as f64;
+    let Some(&(d1, t1)) = pts.last() else {
+        return 0.0;
+    };
+    let prop = t1 * d / d1;
+    match pts {
+        [.., (d0, t0), _] => prop.max(t1 + (t1 - t0) / (d1 - d0) * (d - d1)),
+        _ => prop,
+    }
+}
+
+/// Predicted travel of a `pct` coast chain in `dir` after the rungs so far:
+/// the last lead scaled by entry speed, plus the coast the fit over every
+/// run gives at that speed, never under the measured travel's trend. Until
+/// two rungs fit, or when the fit is unphysical, the coast is the last run's
+/// distance/v^2 times v^2, which over-predicts: distance/v^2 falls with
+/// speed.
+fn predict(ladder: &[CoastRung], dir: Dir, pct: u8, v_ss: &Fit) -> f64 {
+    let Some(last) = ladder.last().map(|r| r.get(dir)) else {
+        return 0.0;
+    };
+    let by_duty = |f: fn(&CoastRun) -> f64| -> Vec<(f64, f64)> {
+        ladder
+            .iter()
+            .map(|r| (r.pct as f64, f(r.get(dir))))
+            .collect()
+    };
+    let v = entry_at(&by_duty(|r| r.entry), pct, v_ss);
+    let scale = v / last.entry;
+    let runs: Vec<(f64, f64)> = ladder
+        .iter()
+        .flat_map(|r| DIRS.map(|d| (r.get(d).entry, r.get(d).coast as f64)))
+        .collect();
+    let fit = if ladder.len() >= 2 {
+        coast_fit(&runs)
+    } else {
+        None
+    };
+    let coast = fit.map_or(last.coast as f64 * scale * scale, |(a, b)| {
+        a * v + b * v * v
+    });
+    let trend = travel_trend(&by_duty(|r| r.travel as f64), pct);
+    (last.lead as f64 * scale + coast).max(trend)
+}
+
+/// The ladder's call on its next duty.
+#[derive(Debug, PartialEq)]
+enum Next {
+    /// Run it, with the per-direction predictions (none on the first rung).
+    Run(Option<PerDir<f64>>),
+    /// Stop: a direction's prediction does not fit its room.
+    Refuse(PerDir<f64>),
+}
+
+fn next_rung(ladder: &[CoastRung], pct: u8, v_ss: &Speed, room: &PerDir<u16>) -> Next {
+    if ladder.is_empty() {
+        return Next::Run(None);
+    }
+    let p = PerDir {
+        fwd: predict(ladder, Dir::Fwd, pct, &v_ss.fwd),
+        rev: predict(ladder, Dir::Rev, pct, &v_ss.rev),
+    };
+    if DIRS.iter().all(|&d| fits_room(*p.get(d), *room.get(d))) {
+        Next::Run(Some(p))
+    } else {
+        Next::Refuse(p)
+    }
+}
+
+/// Whether a rung's measured travel, margin included, fits the room both
+/// ways: the campaign repeats the duty, so a run that only just fit is not
+/// a top.
+fn rung_fits(r: &CoastRung, room: &PerDir<u16>) -> bool {
+    DIRS.iter()
+        .all(|&d| fits_room(r.get(d).travel as f64, *room.get(d)))
 }
 
 #[cfg(test)]
@@ -725,16 +955,194 @@ mod tests {
         assert!(!matches_prediction(2663, 2420));
     }
 
+    /// mg90-a 2S spindown (bridge/spindown, five captures) per coast duty:
+    /// entry counts/ms, lead and coast counts, taken alike both ways.
+    const MG90_COAST: [(u8, f64, u16, u16); 5] = [
+        (20, 3.16, 235, 130),
+        (30, 5.62, 377, 316),
+        (40, 7.55, 514, 536),
+        (60, 11.67, 760, 979),
+        (80, 13.15, 938, 1333),
+    ];
+
+    /// The committed mg90-a 2S envelope's v_ss fits.
+    fn mg90_2s_v_ss() -> Speed {
+        Speed {
+            duties: PILOT_DUTIES.to_vec(),
+            used: Dir::Rev,
+            fwd: Fit::rounded(0.2047, -0.721, 0.9968),
+            rev: Fit::rounded(0.2079, -0.831, 0.9983),
+        }
+    }
+
+    fn run(entry: f64, lead: u16, coast: u16) -> CoastRun {
+        CoastRun {
+            predicted: None,
+            entry,
+            lead,
+            coast,
+            travel: lead + coast,
+            peak_inside_soft: 0,
+        }
+    }
+
+    fn rung(pct: u8, fwd: CoastRun, rev: CoastRun) -> CoastRung {
+        CoastRung { pct, fwd, rev }
+    }
+
     #[test]
-    fn derate_tops_out_where_drive_plus_coast_meets_the_bar() {
-        // k = 0: drive alone, 50 ms at v(74) = 15.99 -> 800 of the 800 bar
-        assert_eq!(derate_top_pct(&MG90, 0.0, 1000), 74);
-        let one = derate_top_pct(&MG90, 1.0, 1000);
-        let two = derate_top_pct(&MG90, 2.0, 1000);
-        assert_eq!((one, two), (59, 52));
-        // a coast too long for even the probe still keeps the probe's duty
-        assert_eq!(derate_top_pct(&MG90, 1e6, 1000), COAST_PROBE_PCT);
-        assert_eq!(derate_top_pct(&MG90, 0.0, 30000), 100);
+    fn ladder_duties_climb_from_a_low_rung() {
+        assert_eq!(ladder_duties(&[80, 20, 40, 20]).unwrap(), [20, 40, 80]);
+        assert_eq!(ladder_duties(&[30]).unwrap(), [30]);
+        let err = |d: &[u8]| ladder_duties(d).unwrap_err().to_string();
+        assert!(err(&[]).contains("no duties"));
+        assert!(err(&[40, 60]).contains("opens at 40%"));
+        assert!(err(&[20, 101]).contains("over full scale"));
+    }
+
+    #[test]
+    fn coast_room_runs_from_the_far_band_edge_to_soft() {
+        let lim = limits((432, 3626), (209, 3849)).unwrap();
+        // 3626 - (532 + 75), (3526 - 75) - 432
+        assert_eq!(
+            coast_room(&lim),
+            PerDir {
+                fwd: 3019,
+                rev: 3019
+            }
+        );
+        assert!(fits_room(2744.0, 3019));
+        assert!(!fits_room(2745.0, 3019));
+    }
+
+    #[test]
+    fn coast_fit_recovers_the_mg90_law_and_refuses_unphysical_ones() {
+        let pts: Vec<(f64, f64)> = MG90_COAST
+            .iter()
+            .map(|&(_, v, _, d)| (v, d as f64))
+            .collect();
+        let (a, b) = coast_fit(&pts).unwrap();
+        assert!(
+            (a - 24.94).abs() < 0.01 && (b - 5.557).abs() < 0.001,
+            "{a} {b}"
+        );
+        // 80% from its measured entry: 1289, 3% short of the 1333 it coasted
+        assert_eq!(to_counts(a * 13.15 + b * 13.15 * 13.15), 1289);
+
+        let planted: Vec<(f64, f64)> = [2.0, 5.0, 9.0]
+            .iter()
+            .map(|&v| (v, 3.0 * v + 7.0 * v * v))
+            .collect();
+        let (a, b) = coast_fit(&planted).unwrap();
+        assert!((a - 3.0).abs() < 1e-9 && (b - 7.0).abs() < 1e-9, "{a} {b}");
+        // one speed cannot separate the terms
+        assert_eq!(coast_fit(&[(5.0, 300.0), (5.0, 300.0)]), None);
+        assert_eq!(coast_fit(&[]), None);
+        // coasting shorter than linear in speed: negative v^2 term
+        assert_eq!(coast_fit(&[(2.0, 100.0), (8.0, 200.0)]), None);
+    }
+
+    #[test]
+    fn entry_speed_follows_the_rungs_under_the_v_ss_ceiling() {
+        let v_ss = mg90_2s_v_ss().rev;
+        // one rung: v_ss(30) = 5.406 bounds it
+        assert!((entry_at(&[(20.0, 3.16)], 30, &v_ss) - 5.406).abs() < 1e-9);
+        // two or more: the least-squares line
+        let v = entry_at(&[(10.0, 1.0), (20.0, 3.0), (30.0, 5.0)], 40, &v_ss);
+        assert!((v - 7.0).abs() < 1e-9, "{v}");
+        // never over v_ss(pct) = 7.485, the speed a drive from rest spins up
+        // toward
+        let v = entry_at(&[(20.0, 3.16), (30.0, 5.62)], 40, &v_ss);
+        assert!((v - 7.485).abs() < 1e-9, "{v}");
+        // never under the last entry, even when the line falls
+        assert_eq!(entry_at(&[(20.0, 6.0), (30.0, 5.0)], 40, &v_ss), 5.0);
+    }
+
+    #[test]
+    fn travel_trend_extends_the_measured_travel() {
+        assert_eq!(travel_trend(&[], 40), 0.0);
+        assert_eq!(travel_trend(&[(20.0, 365.0)], 40), 730.0);
+        // the line through the last two, 1050 + 20 x 35.7, beats proportion
+        let t = travel_trend(&[(20.0, 365.0), (30.0, 693.0), (40.0, 1050.0)], 60);
+        assert!((t - 1764.0).abs() < 1e-9, "{t}");
+        // proportion beats a flattening line
+        assert_eq!(
+            travel_trend(&[(40.0, 1000.0), (60.0, 1100.0)], 80),
+            1100.0 * 4.0 / 3.0
+        );
+    }
+
+    #[test]
+    fn mg90_ladder_reaches_80_where_the_one_probe_model_stopped_at_66() {
+        let lim = limits((432, 3626), (209, 3849)).unwrap();
+        let (room, v_ss) = (coast_room(&lim), mg90_2s_v_ss());
+
+        // The one-probe model on this servo: the 40% probe's k = 551 / 7.293^2
+        // put on v_ss, drive 50 ms at speed, capped 80% of the runway.
+        let k = 551.0 / (7.293f64 * 7.293);
+        let old = (40..=100u8)
+            .rev()
+            .find(|&d| {
+                let v = v_ss.rev.at(d);
+                v * 50.0 + k * v * v <= RUNWAY_FRAC * lim.runway as f64
+            })
+            .unwrap();
+        assert_eq!(old, 66);
+
+        let mut ladder = Vec::new();
+        for &(pct, entry, lead, coast) in &MG90_COAST {
+            let Next::Run(predicted) = next_rung(&ladder, pct, &v_ss, &room) else {
+                panic!("{pct}% refused");
+            };
+            let measured = lead + coast;
+            // Every prediction lands within 3% short and 20% long of the
+            // travel it ran; 80% predicts 2649 against 3019 of room.
+            for d in predicted.iter().flat_map(|p| DIRS.map(|d| *p.get(d))) {
+                let r = d / measured as f64;
+                assert!((0.97..1.2).contains(&r), "{pct}%: {d:.0} for {measured}");
+            }
+            let r = run(entry, lead, coast);
+            let next = rung(pct, r, r);
+            assert!(rung_fits(&next, &room), "{pct}%");
+            ladder.push(next);
+        }
+        // a 100% rung would predict 3352, over the room
+        assert!(matches!(
+            next_rung(&ladder, 100, &v_ss, &room),
+            Next::Refuse(p) if to_counts(p.fwd) == 3352
+        ));
+    }
+
+    #[test]
+    fn the_worst_direction_stops_the_ladder() {
+        let v_ss = mg90_2s_v_ss();
+        let (a, b) = (run(3.16, 235, 130), run(5.62, 377, 316));
+        let ladder = [rung(20, a, a), rung(30, b, b)];
+        let room = PerDir {
+            fwd: 3019,
+            rev: 3019,
+        };
+        let Next::Run(Some(p)) = next_rung(&ladder, 40, &v_ss, &room) else {
+            panic!("40% refused");
+        };
+        // just under what rev predicts: rev alone refuses
+        let tight = PerDir {
+            fwd: 3019,
+            rev: (p.rev * (1.0 + COAST_MARGIN)) as u16,
+        };
+        assert_eq!(next_rung(&ladder, 40, &v_ss, &tight), Next::Refuse(p));
+        // a rung whose one direction ran long fails its measured bar
+        let long = rung(40, run(7.55, 514, 536), run(7.55, 514, 2300));
+        assert!(!rung_fits(&long, &room));
+        assert!(rung_fits(
+            &long,
+            &PerDir {
+                fwd: 3019,
+                rev: 3500
+            }
+        ));
+        // no rungs yet: the first runs unpredicted
+        assert_eq!(next_rung(&[], 20, &v_ss, &room), Next::Run(None));
     }
 
     fn seg(dir: i8, pos: &[u16]) -> Segment {
@@ -771,14 +1179,63 @@ mod tests {
         }
     }
 
+    /// A drive at 5 counts/tick from `start` for 60 ticks, 12 counts on in
+    /// the gap, then a coast slowing by 1 count/tick per tick to rest, held
+    /// for 60 ticks.
+    fn coast_chain(dir: i8, start: u16) -> [Segment; 2] {
+        let at = |x: i32| (start as i32 + dir as i32 * x) as u16;
+        let drive: Vec<u16> = (0..60).map(|t| at(5 * t)).collect();
+        let mut x = 5 * 59 + 12;
+        let mut coast = vec![at(x)];
+        for v in (1..=4).rev() {
+            x += v;
+            coast.push(at(x));
+        }
+        coast.extend([at(x); 60]);
+        [seg(dir, &drive), seg(dir, &coast)]
+    }
+
     #[test]
-    fn closest_to_soft_follows_each_segments_direction() {
+    fn coast_run_measures_each_direction() {
         let soft = [432, 3626];
-        let segs = [seg(1, &[532, 2900, 3000]), seg(-1, &[3526, 900, 700])];
-        assert_eq!(closest_to_soft(&segs, soft), Some(268));
-        let crossed = [seg(1, &[532, 3630])];
-        assert_eq!(closest_to_soft(&crossed, soft), Some(-4));
-        assert_eq!(closest_to_soft(&[seg(1, &[])], soft), None);
+        let [fd, fc] = coast_chain(1, 600);
+        let [rd, rc] = coast_chain(-1, 3450);
+        let segs = [fd, fc, rd, rc];
+        // lead 295 of drive + 12 in the gap, coast 10, peak 600 + 317
+        let fwd = coast_run(&segs, Dir::Fwd, soft, 1.0, Some(300.4)).unwrap();
+        assert_eq!(
+            fwd,
+            CoastRun {
+                predicted: Some(300),
+                entry: 5.0,
+                lead: 307,
+                coast: 10,
+                travel: 317,
+                peak_inside_soft: 3626 - 917,
+            }
+        );
+        let rev = coast_run(&segs, Dir::Rev, soft, 1.0, None).unwrap();
+        assert_eq!((rev.entry, rev.lead, rev.coast), (5.0, 307, 10));
+        assert_eq!(rev.peak_inside_soft, 3450 - 317 - 432);
+    }
+
+    #[test]
+    fn coast_run_refuses_a_crossing_or_a_rolling_coast() {
+        let soft = [432, 3626];
+        let err = |segs: &[Segment]| {
+            coast_run(segs, Dir::Fwd, soft, 1.0, None)
+                .unwrap_err()
+                .to_string()
+        };
+        assert!(err(&coast_chain(1, 3400)).contains("crossed the soft limit by 91"));
+        let [d, _] = coast_chain(1, 600);
+        let rolling: Vec<u16> = (0..60).map(|t| 1000 + 2 * t).collect();
+        assert!(err(&[d, seg(1, &rolling)]).contains("still moving"));
+        let [d, _] = coast_chain(1, 600);
+        assert!(err(&[d]).contains("1 segments"));
+        let [_, c] = coast_chain(1, 600);
+        let stalled = seg(1, &[600; 60]);
+        assert!(err(&[stalled, c]).contains("never got going"));
     }
 
     #[test]

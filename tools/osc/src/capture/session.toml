@@ -68,11 +68,12 @@ blocks = ["grid"]
 duties = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100]
 
 # Spin-down: each duty runs d@drive_ms,coast:coast_ms,d@drive_ms,brake:coast_ms.
-# Duties above the envelope's coast top_pct are dropped and top_pct becomes the
-# top rung (the pilot ran it both ways). That derate was measured on the
-# pilot's own 80 ms drive and 400 ms coast: change either and rerun the pilot.
-# A 100% entry does not fit the runway: on mg90-a 2S the 80% coast already
-# peaked 690 counts inside the soft limit.
+# osc capture pilot climbs these duties, each d@drive_ms,coast:coast_ms both
+# ways, while the travel it predicts from the rungs below fits the room to the
+# soft limit; duties above the envelope's top_pct are dropped. Change a duty,
+# drive_ms or coast_ms and rerun the pilot: a plan refuses a coast the pilot
+# never ran. A 100% entry does not fit the runway: on mg90-a 2S the 80% coast
+# already peaked 690 counts inside the soft limit.
 [block.coast]
 duties = [20, 30, 40, 60, 80]
 drive_ms = 80

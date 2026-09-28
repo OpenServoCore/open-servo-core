@@ -16,8 +16,15 @@ const HEADER: &str = "\
 # osc capture pilot envelope. Positions in pot counts, speeds in counts/ms,
 # times in ms. limits: soft/phys read from the servo, guard = soft inset,
 # runway = guard_hi - guard_lo. v_ss: counts/ms = slope x duty_pct + intercept,
-# `used` sizes the windows. windows_ms: duty_pct = window. coast: top_pct is
-# the coast block's top duty; peak_inside_soft its closest approach to soft.
+# `used` sizes the windows. windows_ms: duty_pct = window. coast: the ladder
+# climbed the coast block's duties, each run both ways at drive_ms then
+# coast_ms only while its predicted travel x (1 + margin) fit the room (the
+# far edge of the start band to soft, per direction); top_pct is the coast
+# block's top duty. Per rung and direction: predicted travel (none on the
+# first rung), entry speed (pot slope over the end of the drive), lead (travel
+# to the coast's first sample), coast, travel = lead + coast, and the peak's
+# distance inside soft. A rung above top_pct ran, but its measured travel
+# x (1 + margin) did not fit; `refused` is the duty whose prediction did not.
 ";
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -69,7 +76,11 @@ pub(crate) struct Speed {
 
 impl Speed {
     pub(crate) fn used(&self) -> &Fit {
-        match self.used {
+        self.of(self.used)
+    }
+
+    pub(crate) fn of(&self, d: Dir) -> &Fit {
+        match d {
             Dir::Fwd => &self.fwd,
             Dir::Rev => &self.rev,
         }
@@ -100,13 +111,63 @@ impl Fit {
     }
 }
 
+#[derive(Copy, Clone, Serialize, Deserialize, Debug, PartialEq)]
+pub(crate) struct PerDir<T> {
+    pub(crate) fwd: T,
+    pub(crate) rev: T,
+}
+
+impl<T> PerDir<T> {
+    pub(crate) fn get(&self, d: Dir) -> &T {
+        match d {
+            Dir::Fwd => &self.fwd,
+            Dir::Rev => &self.rev,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub(crate) struct Coast {
-    pub(crate) probe_pct: u8,
-    pub(crate) probe_entry: f64,
-    pub(crate) probe_travel: u16,
+    pub(crate) drive_ms: u32,
+    pub(crate) coast_ms: u32,
+    pub(crate) margin: f64,
     pub(crate) top_pct: u8,
+    pub(crate) room: PerDir<u16>,
+    pub(crate) refused: Option<Refused>,
+    pub(crate) ladder: Vec<CoastRung>,
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+pub(crate) struct CoastRung {
+    pub(crate) pct: u8,
+    pub(crate) fwd: CoastRun,
+    pub(crate) rev: CoastRun,
+}
+
+impl CoastRung {
+    pub(crate) fn get(&self, d: Dir) -> &CoastRun {
+        match d {
+            Dir::Fwd => &self.fwd,
+            Dir::Rev => &self.rev,
+        }
+    }
+}
+
+/// One direction of one ladder rung; distances in counts from the start.
+#[derive(Copy, Clone, Serialize, Deserialize, Debug, PartialEq)]
+pub(crate) struct CoastRun {
+    pub(crate) predicted: Option<u16>,
+    pub(crate) entry: f64,
+    pub(crate) lead: u16,
+    pub(crate) coast: u16,
+    pub(crate) travel: u16,
     pub(crate) peak_inside_soft: i32,
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+pub(crate) struct Refused {
+    pub(crate) pct: u8,
+    pub(crate) predicted: PerDir<u16>,
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -182,11 +243,45 @@ pub(super) fn mg90() -> Envelope {
         },
         windows_ms: [(5, 1500), (10, 1500), (60, 219), (100, 140)].into(),
         coast: Coast {
-            probe_pct: 40,
-            probe_entry: 8.255,
-            probe_travel: 310,
+            drive_ms: 80,
+            coast_ms: 400,
+            margin: 0.1,
             top_pct: 80,
-            peak_inside_soft: 690,
+            room: PerDir {
+                fwd: 3019,
+                rev: 3019,
+            },
+            refused: Some(Refused {
+                pct: 100,
+                predicted: PerDir {
+                    fwd: 3352,
+                    rev: 3350,
+                },
+            }),
+            ladder: [
+                (20, 3.16, 235, 130),
+                (30, 5.62, 377, 316),
+                (40, 7.55, 514, 536),
+                (60, 11.67, 760, 979),
+                (80, 13.15, 938, 1333),
+            ]
+            .into_iter()
+            .map(|(pct, entry, lead, coast)| {
+                let run = CoastRun {
+                    predicted: (pct > 20).then_some(lead + coast + 100),
+                    entry,
+                    lead,
+                    coast,
+                    travel: lead + coast,
+                    peak_inside_soft: 3094 - (lead + coast) as i32,
+                };
+                CoastRung {
+                    pct,
+                    fwd: run,
+                    rev: run,
+                }
+            })
+            .collect(),
         },
         verified: vec![Verified {
             step: "60@219".into(),
@@ -210,6 +305,9 @@ mod tests {
         assert!(text.starts_with("# osc capture pilot envelope."));
         assert!(text.contains("supply = \"2s\""));
         assert!(text.contains("\n[windows_ms]\n5 = 1500\n"));
+        assert!(
+            text.contains("\n[[coast.ladder]]\npct = 20\n\n[coast.ladder.fwd]\nentry = 3.16\n")
+        );
         assert!(text.is_ascii());
         let back = Envelope::load(&dir).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
