@@ -11,6 +11,7 @@ use osc_client::common::{Health, Identity};
 use osc_client::cyclic::{Cycle, Group, Telemetry};
 use osc_client::fake::{FakePipe, seed};
 use osc_client::mgmt::{Found, Uid};
+use osc_client::session::{EngineCommand, Record, Session};
 use osc_client::{
     BaudRate, Error, Id, Inst, LinkError, Opcode, Outcome, RejectReason, ResultCode, StreamReply,
 };
@@ -666,6 +667,64 @@ fn tel_stream_collects_ack_frames_and_last() {
     // The line frees after LAST: an ordinary read still answers.
     let got = c.read(Id::new(5), TEL_MASK, 2).expect("read after burst");
     assert_eq!(got, TEL_LADDER_MASK.to_le_bytes());
+}
+
+#[test]
+fn reopen_mid_burst_orphans_it_and_the_next_session_starts_clean() {
+    let mut c = tel_fleet();
+    write_mask(&mut c);
+    let mut pipe = c.into_pipe();
+
+    // A host arms a burst and vanishes before reading a record.
+    let mut p = [0u8; 8];
+    let n = osc_protocol::build::write(&mut p, TEL_COUNT, &40u16.to_le_bytes()).expect("payload");
+    let arm = EngineCommand::ExchangeStream {
+        id: Id::new(5),
+        inst: Inst::instruction(Opcode::Write, 0),
+        payload: &p[..n],
+        window_us: BURST_WINDOW.as_micros() as u32,
+    };
+    let mut out = Vec::new();
+    Session::new().encode_submit(&mut out, &arm);
+    pipe.sim_mut().link_send(&out);
+    pipe.reopen();
+
+    // The next session starts clean: INFO first, and its seq 0 is refused
+    // busy while the orphan still owns the bus.
+    let mut s = Session::new();
+    let mut out = Vec::new();
+    Session::encode_hello(&mut out);
+    let ping = s.encode_submit(
+        &mut out,
+        &EngineCommand::Exchange {
+            id: Id::new(5),
+            inst: Inst::instruction(Opcode::Ping, 0),
+            payload: &[],
+        },
+    );
+    pipe.sim_mut().link_send(&out);
+    s.on_bytes(&pipe.sim_mut().link_recv());
+    assert!(matches!(s.next_record(), Ok(Some(Record::Info(_)))));
+    assert_eq!(
+        s.next_record(),
+        Ok(Some(Record::Rejected {
+            seq: ping,
+            reason: osc_client::record::REASON_BUSY
+        }))
+    );
+
+    // The orphan plays out on the wire, unrecorded.
+    let frames = pipe.sim_mut().run();
+    let burst = frames
+        .iter()
+        .filter(|f| matches!(f.from, Source::Servo(_)))
+        .filter(|f| status(f).0.result() == Some(ResultCode::Stream))
+        .count();
+    assert_eq!(burst, 3, "40 samples = 16 + 16 + 8");
+    assert!(pipe.sim_mut().link_recv().is_empty());
+
+    let mut c = Client::connect(pipe).expect("connect");
+    c.ping(Id::new(5)).expect("the bus is free");
 }
 
 #[test]

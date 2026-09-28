@@ -54,6 +54,11 @@ impl TxQueue {
         self.len == 0
     }
 
+    fn clear(&mut self) {
+        self.read = 0;
+        self.len = 0;
+    }
+
     /// Dequeue up to `dst.len()` bytes (records are a byte stream; USB
     /// packet boundaries carry no meaning).
     fn pop_into(&mut self, dst: &mut [u8]) -> usize {
@@ -104,6 +109,12 @@ pub fn run() -> ! {
         iwdg::kick();
         crash::phase(PHASE_USB_POLL);
         usb.poll();
+        // Queued bytes belong to a host that is gone; a partly sent record
+        // would lead the new session's stream with a hole.
+        if usb.take_new_session() {
+            txq.clear();
+            server.reset_session();
+        }
         // Keep the edge-capture lap accounting honest (main-loop cadence
         // is the overflow detector's sampling clock).
         Edges::poll_accumulate();
@@ -205,5 +216,36 @@ fn blink_delay(us: u32) {
     let ticks = us.saturating_mul(systick::TICKS_PER_US);
     while systick::ticks().wrapping_sub(start) < ticks {
         core::hint::spin_loop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use std::vec::Vec;
+
+    use super::*;
+
+    fn drain(q: &mut TxQueue) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut pkt = [0u8; 64];
+        while !q.is_empty() {
+            let n = q.pop_into(&mut pkt);
+            out.extend_from_slice(&pkt[..n]);
+        }
+        out
+    }
+
+    #[test]
+    fn a_record_half_sent_before_a_new_session_never_reaches_it() {
+        let mut q = TxQueue::new();
+        q.record(&[0xAA; 100]);
+        let mut pkt = [0u8; 64];
+        q.pop_into(&mut pkt);
+        q.clear();
+        q.record(&[1, 2, 3]);
+        assert_eq!(drain(&mut q), [1, 2, 3]);
+        assert_eq!(q.free(), TXQ_CAP);
     }
 }

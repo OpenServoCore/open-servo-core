@@ -51,6 +51,9 @@ pub struct LinkServer {
     /// The seq owning the engine's outstanding command or wire op: one
     /// wire owner at a time (the engine's Busy rule), so one slot serves.
     active: Option<u16>,
+    /// The engine's outstanding op belongs to a closed session: it runs to
+    /// its own terminal (the bus stays owned until then), unrecorded.
+    orphaned: bool,
     adapter: AdapterState,
     out: [u8; OUT_CAP],
 }
@@ -67,6 +70,7 @@ impl LinkServer {
             rx: [0; RX_CAP],
             rx_len: 0,
             active: None,
+            orphaned: false,
             adapter: AdapterState {
                 req: None,
                 rails: record::RAILS_BOOT_STATE,
@@ -93,6 +97,15 @@ impl LinkServer {
     /// after `on_pipe`; the matching ack record is already in the sink.
     pub fn take_adapter_request(&mut self) -> Option<AdapterRequest> {
         self.adapter.req.take()
+    }
+
+    /// A new host session opened on the pipe: drop the half-parsed inbound
+    /// record and orphan the outstanding op. The carrier drops its own
+    /// unsent bytes. Adapter state (rails, diag, uptime) and the engine's
+    /// fleet-facing state are the bus's, not the session's, and persist.
+    pub fn reset_session(&mut self) {
+        self.rx_len = 0;
+        self.orphaned |= self.active.take().is_some();
     }
 
     /// Feed bytes as the pipe delivered them (any framing); complete
@@ -125,6 +138,10 @@ impl LinkServer {
     pub fn pump<P: Providers>(&mut self, bus: &mut HostBus<P>, sink: &mut impl RecordSink) {
         loop {
             match bus.poll() {
+                Some(Event::Status { .. }) if self.orphaned => {}
+                Some(Event::Done(_) | Event::WireDone { .. }) if self.orphaned => {
+                    self.orphaned = false;
+                }
                 Some(Event::Status {
                     slot,
                     id,
@@ -275,6 +292,7 @@ fn handle<P: Providers>(
 #[cfg(test)]
 mod tests {
     use std::vec;
+    use std::vec::Vec;
 
     use osc_protocol::wire::{Opcode, ResultCode};
 
@@ -541,6 +559,94 @@ mod tests {
         );
         assert_eq!(r.server.take_adapter_request(), None, "drained");
         assert!(r.wire.log().is_empty(), "nothing reaches the bus");
+    }
+
+    #[test]
+    fn new_session_drops_the_half_received_record() {
+        let mut r = rig();
+        let bytes = submit_ping(7, 5);
+        r.server.on_pipe(&bytes[..3], &mut r.bus, &mut r.sink);
+        r.server.reset_session();
+        r.server
+            .on_pipe(&rec(&[REC_HELLO]), &mut r.bus, &mut r.sink);
+        assert_eq!(r.sink.0.len(), 1);
+        assert_eq!(r.sink.0[0][2], REC_INFO, "parser starts clean");
+        assert!(r.wire.log().is_empty(), "the fragment never submitted");
+    }
+
+    #[test]
+    fn orphaned_exchange_runs_out_unrecorded_then_frees_the_bus() {
+        let mut r = rig();
+        r.server
+            .on_pipe(&submit_ping(0x1234, 5), &mut r.bus, &mut r.sink);
+        r.server.reset_session();
+        // The bus stays owned until the old op's own terminal.
+        r.server
+            .on_pipe(&submit_ping(0, 5), &mut r.bus, &mut r.sink);
+        let rej = r.sink.0.last().unwrap();
+        assert_eq!(rej[2], REC_REJECTED);
+        assert_eq!(u16::from_le_bytes([rej[3], rej[4]]), 0);
+        assert_eq!(rej[5], REASON_BUSY);
+
+        r.bus.on_tx_complete();
+        r.ring.feed(&sealed_status(5, ResultCode::Ok, &[7, 0, 1]));
+        r.server.pump(&mut r.bus, &mut r.sink);
+        assert_eq!(r.sink.0.len(), 1, "old STATUS + TERMINAL dropped");
+
+        r.server
+            .on_pipe(&submit_ping(0, 5), &mut r.bus, &mut r.sink);
+        r.clock.advance(1_000);
+        r.bus.on_tx_complete();
+        r.ring.feed(&sealed_status(5, ResultCode::Ok, &[7, 0, 1]));
+        r.server.pump(&mut r.bus, &mut r.sink);
+        let seqs: Vec<(u8, u16)> = r.sink.0[1..]
+            .iter()
+            .map(|x| (x[2], u16::from_le_bytes([x[3], x[4]])))
+            .collect();
+        assert_eq!(seqs, [(REC_STATUS, 0), (REC_TERMINAL, 0)]);
+    }
+
+    #[test]
+    fn orphaned_burst_drains_to_its_last_frame_unrecorded() {
+        let mut r = rig();
+        let mut p = [0u8; 8];
+        let n = osc_protocol::build::write(&mut p, 0x0192, &[2, 0]).unwrap();
+        let inst = Inst::instruction(Opcode::Write, 0);
+        let mut body = vec![REC_SUBMIT, 9, 0, VERB_EXCHANGE_STREAM, 5, inst.0];
+        body.extend_from_slice(&100_000u32.to_le_bytes());
+        body.extend_from_slice(&p[..n]);
+        r.server.on_pipe(&rec(&body), &mut r.bus, &mut r.sink);
+        r.bus.on_tx_complete();
+        r.ring.feed(&sealed_status(5, ResultCode::Ok, &[]));
+        r.server.pump(&mut r.bus, &mut r.sink);
+        assert_eq!(r.sink.0.len(), 1, "the arm's ack reached the old session");
+
+        // Bus reset then SET_CONFIGURATION: two resets, one orphan.
+        r.server.reset_session();
+        r.server.reset_session();
+        r.ring
+            .feed(&sealed_status(5, ResultCode::Stream, &[0, 0, 1, 0, 8, 8]));
+        r.server.pump(&mut r.bus, &mut r.sink);
+        r.ring
+            .feed(&sealed_status(5, ResultCode::Stream, &[1, 1, 1, 0, 9, 9]));
+        r.server.pump(&mut r.bus, &mut r.sink);
+        assert_eq!(r.sink.0.len(), 1, "burst frames + terminal dropped");
+
+        r.server
+            .on_pipe(&submit_ping(0, 5), &mut r.bus, &mut r.sink);
+        assert_eq!(r.sink.0.len(), 1, "accepted: the bus is free");
+    }
+
+    #[test]
+    fn adapter_state_survives_a_new_session() {
+        let mut r = rig();
+        r.server
+            .on_pipe(&rec(&[REC_SET_RAILS, 0b01]), &mut r.bus, &mut r.sink);
+        r.server.take_adapter_request();
+        r.server.reset_session();
+        r.server
+            .on_pipe(&rec(&[REC_SET_RAILS, 0, 0]), &mut r.bus, &mut r.sink);
+        assert_eq!(*r.sink.0.last().unwrap(), vec![2, 0, REC_RAILS_ACK, 0b01]);
     }
 
     #[test]

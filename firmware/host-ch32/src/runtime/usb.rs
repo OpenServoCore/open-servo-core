@@ -164,6 +164,9 @@ pub struct UsbDevice {
     tx_tog: bool,
     rx_tog: bool,
     rx_pending: Option<usize>,
+    /// A bus reset or SET_CONFIGURATION since the last take: every client
+    /// open configures, so either one means a new host session.
+    new_session: bool,
     stage: [u8; 256],
     serial: [u8; 24],
 }
@@ -188,6 +191,7 @@ impl UsbDevice {
             tx_tog: false,
             rx_tog: false,
             rx_pending: None,
+            new_session: false,
             stage: [0; 256],
             serial,
         }
@@ -230,6 +234,10 @@ impl UsbDevice {
                 w.set_mask_uep_r_res(EpRxResponse::ACK);
             });
         }
+    }
+
+    pub fn take_new_session(&mut self) -> bool {
+        core::mem::take(&mut self.new_session)
     }
 
     pub fn tx_ready(&self) -> bool {
@@ -311,6 +319,7 @@ impl UsbDevice {
         self.configured = false;
         self.tx_busy = false;
         self.rx_pending = None;
+        self.new_session = true;
     }
 
     // --- control pipe -------------------------------------------------------
@@ -548,6 +557,7 @@ impl UsbDevice {
         self.tx_tog = false;
         self.tx_busy = false;
         self.rx_pending = None;
+        self.new_session = true;
         self.configured = true;
     }
 
