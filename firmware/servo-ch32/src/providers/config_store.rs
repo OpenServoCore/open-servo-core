@@ -98,8 +98,9 @@ static CONFIG_STORE: ConfigStore = ConfigStore {
 
 impl ConfigStore {
     /// Boot-time load: overlay the newest valid config and calib images onto
-    /// the (already default-seeded) table, prime both A/B states, and seed
-    /// the store into `SHARED`. Bringup-only, pre-IRQ; sole writer (the
+    /// the (already default-seeded) table, prime both A/B states, publish
+    /// the data state the two verdicts make, and seed the store into
+    /// `SHARED`. Bringup-only, pre-IRQ; sole writer (the
     /// `seed_config_defaults` contract). The caller re-seeds RO calib sense
     /// facts AFTER this so board data always wins over a stale image.
     pub fn boot_load() {
@@ -109,6 +110,9 @@ impl ConfigStore {
             calib_slot_bytes(Slot::A),
             calib_slot_bytes(Slot::B),
         );
+        SHARED
+            .table
+            .publish_data_state(pick.state, calib_pick.state);
         // SAFETY: pre-IRQ sole writer, see fn doc.
         unsafe {
             *CONFIG_STORE.state.get() = State {
@@ -119,11 +123,12 @@ impl ConfigStore {
             }
         };
         SHARED.seed_store(&CONFIG_STORE);
+        // image state: 0 loaded, 1 virgin, 2 corrupt, 3 stale (data_state)
         crate::log::debug!(
-            "config store: loaded={} next_seq={} calib loaded={} next_seq={}",
-            pick.loaded,
+            "config store: state={} next_seq={} calib state={} next_seq={}",
+            pick.state as u8,
             pick.next_seq,
-            calib_pick.loaded,
+            calib_pick.state as u8,
             calib_pick.next_seq,
         );
     }

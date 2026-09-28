@@ -5,12 +5,6 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use control_table::RegisterFile;
-use osc_servo_core::persist::{CALIB_LEN, CONFIG_LEN, PROFILE_LEN};
-use osc_servo_core::regions::{
-    CALIB_BASE_ADDR, CALIB_REGION_SIZE, CONFIG_BASE_ADDR, CONFIG_REGION_SIZE, PROFILE_BASE_ADDR,
-    PROFILE_REGION_SIZE,
-};
 use osc_servo_core::tel::{TelSample, TelStream};
 use osc_servo_core::{
     BaudRate, BootMode, CalibSense, CalibSenseExt, ConfigDefaults, ControlTable, CurrentDefaults,
@@ -206,23 +200,10 @@ impl SimServo {
     /// CALIB regions land in the store, so the next boot overlays them back
     /// and FACTORY wipes them.
     pub fn persist(&self) {
-        let store = self.shared.store().expect("servo built with a store");
-        let config: &[u8; CONFIG_LEN] =
-            RegisterFile::read(&self.shared.table, CONFIG_BASE_ADDR, CONFIG_REGION_SIZE)
-                .ok()
-                .and_then(|s| s.try_into().ok())
-                .expect("whole CONFIG region");
-        let profile: &[u8; PROFILE_LEN] =
-            RegisterFile::read(&self.shared.table, PROFILE_BASE_ADDR, PROFILE_REGION_SIZE)
-                .ok()
-                .and_then(|s| s.try_into().ok())
-                .expect("whole PROFILE region");
-        let calib: &[u8; CALIB_LEN] =
-            RegisterFile::read(&self.shared.table, CALIB_BASE_ADDR, CALIB_REGION_SIZE)
-                .ok()
-                .and_then(|s| s.try_into().ok())
-                .expect("whole CALIB region");
-        store.save(config, profile, calib).expect("store save");
+        self.seed
+            .store
+            .expect("servo built with a store")
+            .save_table(&self.shared.table);
     }
 
     /// sec 9.1: the chip main-loop sampler's declaration (thread-level, not a

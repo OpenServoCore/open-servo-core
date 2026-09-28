@@ -7,19 +7,41 @@
 
 use std::sync::Mutex;
 
+use control_table::RegisterFile;
+use osc_protocol::crc::{osc_crc, osc_crc_continue};
 use osc_servo_core::persist::{
-    self, CALIB_IMAGE_LEN, CALIB_LEN, CONFIG_LEN, IMAGE_LEN, PROFILE_LEN, Slot, StoreError,
+    self, CALIB_IMAGE_LEN, CALIB_IMAGE_VERSION, CALIB_LEN, CONFIG_LEN, HEADER_LEN, IMAGE_LEN,
+    IMAGE_VERSION, PROFILE_LEN, Slot, StoreError,
+};
+use osc_servo_core::regions::{
+    CALIB_BASE_ADDR, CALIB_REGION_SIZE, CONFIG_BASE_ADDR, CONFIG_REGION_SIZE, PROFILE_BASE_ADDR,
+    PROFILE_REGION_SIZE,
 };
 use osc_servo_core::{ConfigStore, ControlTableCell};
 
 const ERASED: [u8; IMAGE_LEN] = [0xFF; IMAGE_LEN];
 const CALIB_ERASED: [u8; CALIB_IMAGE_LEN] = [0xFF; CALIB_IMAGE_LEN];
 
+/// Which persisted image an injection targets.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Config,
+    Calib,
+}
+
 fn idx(slot: Slot) -> usize {
     match slot {
         Slot::A => 0,
         Slot::B => 1,
     }
+}
+
+/// Re-seal an assembled image under another layout version: CRC-valid, so
+/// boot classifies it stale rather than corrupt.
+fn reseal_version(img: &mut [u8], version: u8) {
+    img[1] = version;
+    let crc = osc_crc_continue(osc_crc(&img[..6]), &img[HEADER_LEN..]);
+    img[6..8].copy_from_slice(&crc.to_le_bytes());
 }
 
 #[derive(Default)]
@@ -51,9 +73,10 @@ impl RamStore {
     }
 
     /// Boot-time load, mirroring the chip provider: overlay the newest valid
-    /// config and calib images and prime both A/B states. Called by
-    /// `SimServo::build` before the bus reads the table's comms block; the
-    /// caller re-seeds RO calib sense facts after (board data wins).
+    /// config and calib images, prime both A/B states, and publish the
+    /// data state the two verdicts make. Called by `SimServo::build` before
+    /// the bus reads the table's comms block; the caller re-seeds RO calib
+    /// sense facts after (board data wins).
     pub fn boot_load(&self, table: &ControlTableCell) {
         let mut g = self.inner.lock().unwrap();
         let a = g.slots[0].unwrap_or(ERASED);
@@ -63,9 +86,31 @@ impl RamStore {
         g.next_seq = pick.next_seq;
         let a = g.calib_slots[0].unwrap_or(CALIB_ERASED);
         let b = g.calib_slots[1].unwrap_or(CALIB_ERASED);
-        let pick = persist::boot_overlay_calib(table, &a, &b);
-        g.calib_next_slot = idx(pick.next_slot);
-        g.calib_next_seq = pick.next_seq;
+        let calib_pick = persist::boot_overlay_calib(table, &a, &b);
+        g.calib_next_slot = idx(calib_pick.next_slot);
+        g.calib_next_seq = calib_pick.next_seq;
+        table.publish_data_state(pick.state, calib_pick.state);
+    }
+
+    /// A bench SAVE without the wire (sec 9.4): the live CONFIG, PROFILE and
+    /// CALIB regions land in the store, so the next boot overlays them back
+    /// and FACTORY wipes them.
+    pub fn save_table(&self, table: &ControlTableCell) {
+        let config: &[u8; CONFIG_LEN] =
+            RegisterFile::read(table, CONFIG_BASE_ADDR, CONFIG_REGION_SIZE)
+                .ok()
+                .and_then(|s| s.try_into().ok())
+                .expect("whole CONFIG region");
+        let profile: &[u8; PROFILE_LEN] =
+            RegisterFile::read(table, PROFILE_BASE_ADDR, PROFILE_REGION_SIZE)
+                .ok()
+                .and_then(|s| s.try_into().ok())
+                .expect("whole PROFILE region");
+        let calib: &[u8; CALIB_LEN] = RegisterFile::read(table, CALIB_BASE_ADDR, CALIB_REGION_SIZE)
+            .ok()
+            .and_then(|s| s.try_into().ok())
+            .expect("whole CALIB region");
+        self.save(config, profile, calib).expect("store save");
     }
 
     /// Arm every subsequent save/wipe to fail (the chip's readback-verify
@@ -99,6 +144,53 @@ impl RamStore {
         let mut img = [0u8; CALIB_IMAGE_LEN];
         persist::calib_assemble(&mut img, seq, calib);
         self.inner.lock().unwrap().calib_slots[idx(slot)] = Some(img);
+    }
+
+    /// Erase both slots of one image: a servo that lost that image alone.
+    pub fn erase(&self, kind: Kind) {
+        let mut g = self.inner.lock().unwrap();
+        match kind {
+            Kind::Config => g.slots = [None, None],
+            Kind::Calib => g.calib_slots = [None, None],
+        }
+    }
+
+    /// Overwrite the slot with bytes that parse under no version (flash
+    /// rot, a torn program): boot classifies the image corrupt unless the
+    /// other slot still holds a valid save.
+    pub fn corrupt_slot(&self, kind: Kind, slot: Slot) {
+        let mut g = self.inner.lock().unwrap();
+        match kind {
+            Kind::Config => g.slots[idx(slot)] = Some([0x5A; IMAGE_LEN]),
+            Kind::Calib => g.calib_slots[idx(slot)] = Some([0x5A; CALIB_IMAGE_LEN]),
+        }
+    }
+
+    /// Re-seal the slot's image (an erased slot gets a zero body) under the
+    /// next layout version: a save from another firmware, CRC-valid and
+    /// unreadable, so boot classifies the image stale.
+    pub fn stale_slot(&self, kind: Kind, slot: Slot) {
+        let mut g = self.inner.lock().unwrap();
+        match kind {
+            Kind::Config => {
+                let mut img = g.slots[idx(slot)].unwrap_or_else(|| {
+                    let mut img = [0u8; IMAGE_LEN];
+                    persist::assemble(&mut img, 1, &[0; CONFIG_LEN], &[0; PROFILE_LEN]);
+                    img
+                });
+                reseal_version(&mut img, IMAGE_VERSION.wrapping_add(1));
+                g.slots[idx(slot)] = Some(img);
+            }
+            Kind::Calib => {
+                let mut img = g.calib_slots[idx(slot)].unwrap_or_else(|| {
+                    let mut img = [0u8; CALIB_IMAGE_LEN];
+                    persist::calib_assemble(&mut img, 1, &[0; CALIB_LEN]);
+                    img
+                });
+                reseal_version(&mut img, CALIB_IMAGE_VERSION.wrapping_add(1));
+                g.calib_slots[idx(slot)] = Some(img);
+            }
+        }
     }
 }
 

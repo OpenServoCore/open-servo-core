@@ -1,6 +1,7 @@
 #![no_std]
 #![feature(sync_unsafe_cell)]
 
+pub mod data_state;
 pub mod debug;
 pub mod estimator;
 pub mod kernel;
@@ -45,6 +46,7 @@ pub mod traits;
 pub use control_table::{
     Error, Region, RegionStorage, RegionStorageRaw, StagedWrites, ValidationKind,
 };
+pub use data_state::ImageState;
 pub use kernel::{Kernel, KernelTiming};
 pub use persist::{ConfigStore, StoreError};
 pub use regions::config::{BaudRate, ConfigDefaults, CurrentDefaults};

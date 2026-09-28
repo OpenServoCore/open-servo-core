@@ -43,8 +43,12 @@ pub struct TelemetryMode {
     /// observer's omega, 1 = the back-EMF boxcar (estimator::OmegaSource).
     #[ct_field(access = ro)]
     pub omega_hat_src: u8,
-    #[ct_field(skip)]
-    pub _rsvd_align: u8,
+    /// Why closed loop is refused, one bit per reason (`data_state` module
+    /// consts); 0 = the persisted images and the identified set are this
+    /// servo's own. Written by boot and SAVE, read by the kernel's entry
+    /// check - the one TELEMETRY-MODE byte the kernel does not own.
+    #[ct_field(access = ro)]
+    pub data_flags: u8,
 }
 
 /// Estimator outputs, published at the medium boundary (`sample_tick` at
