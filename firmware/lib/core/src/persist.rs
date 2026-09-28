@@ -47,7 +47,7 @@ pub const IMAGE_VERSION: u8 = 5;
 
 pub const CALIB_IMAGE_MAGIC: u8 = b'K';
 /// Bump on any CALIB layout change; independent of [`IMAGE_VERSION`].
-pub const CALIB_IMAGE_VERSION: u8 = 1;
+pub const CALIB_IMAGE_VERSION: u8 = 2;
 
 /// Store failure (erase/program/verify); dispatch answers `hardware` (sec 5.3).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]

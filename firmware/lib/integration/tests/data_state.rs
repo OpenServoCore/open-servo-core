@@ -8,7 +8,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use osc_integration::plant::{
-    FakeIo, FakeMotor, FakeSensors, Plant, TIMING, duty_of, kernel, last_cmd, seed,
+    FakeIo, FakeMotor, FakeSensors, Plant, TIMING, duty_of, kernel, last_cmd, seed, stamp,
 };
 use osc_integration::sim::{
     ImageKind, RamStore, Sim, Source, WireFrame, assert_valid, instruction, status,
@@ -16,13 +16,20 @@ use osc_integration::sim::{
 use osc_protocol::wire::{MgmtOp, Opcode, ResultCode};
 use osc_servo_core::data_state::{
     CALIB_CORRUPT, CALIB_STALE, CALIB_VIRGIN, CONFIG_CORRUPT, CONFIG_STALE, CONFIG_VIRGIN,
-    PLANT_UNSET,
+    PLANT_UNSET, STAMP_MISMATCH, allows,
 };
 use osc_servo_core::kernel::DECIM_MED;
 use osc_servo_core::kernel::faults::{BIT_DATA, CODE_DATA, CODE_NONE};
+use osc_servo_core::persist::HEADER_LEN;
 use osc_servo_core::persist::Slot;
+use osc_servo_core::regions::CALIB_BASE_ADDR;
 use osc_servo_core::regions::calib::addr::motor::{KE_VPC_Q, RECIP_KE_Q};
+use osc_servo_core::regions::calib::addr::stamp::PLANT_STAMP;
+use osc_servo_core::regions::config::addr::limits::STALL_TIME_MS;
+use osc_servo_core::regions::config::addr::loop_velocity::V_KP_Q88;
+use osc_servo_core::regions::control::addr::lifecycle::TORQUE_ENABLE;
 use osc_servo_core::regions::telemetry::addr::mode::DATA_FLAGS;
+use osc_servo_core::stamp::compute;
 use osc_servo_core::tel::{TelSample, TelStream};
 use osc_servo_core::{ControlTable, Kernel, Mode, MotorCmd, RegionStorage, Shared};
 use rstest::rstest;
@@ -33,7 +40,7 @@ use support::{matrix, sim};
 
 const ID5: u8 = 5;
 const START_POS: u16 = 1500;
-const FRESH: u8 = CONFIG_VIRGIN | CALIB_VIRGIN | PLANT_UNSET;
+const FRESH: u8 = CONFIG_VIRGIN | CALIB_VIRGIN | STAMP_MISMATCH | PLANT_UNSET;
 
 /// A store holding one full save of the identified rig.
 fn identified_store() -> &'static RamStore {
@@ -45,14 +52,15 @@ fn identified_store() -> &'static RamStore {
 }
 
 /// Boot the rig off `store`: board defaults first (the rig seed with Ke
-/// unset, as a board that was never identified), then the store's overlay
-/// and the data state it makes.
+/// unset and never stamped, as a board that was never identified), then
+/// the store's overlay and the data state it makes.
 fn boot(store: &RamStore) -> Shared {
     let sh = Shared::new();
     seed(&sh);
     sh.table.with_mut(|t| {
         t.calib.motor.recip_ke_q = 0;
         t.calib.motor.ke_vpc_q = 0;
+        t.calib.stamp.plant_stamp = 0;
     });
     store.boot_load(&sh.table);
     sh
@@ -153,7 +161,9 @@ impl Fixture {
 
 /// Every boot state the store can hand the kernel, times both closed-loop
 /// modes: Velocity and Position emit `Drive` only when no reason is set and
-/// both Ke are nonzero. The clean rig is the positive control.
+/// both Ke are nonzero. The clean rig is the positive control. A CALIB that
+/// did not load leaves the board's never-stamped defaults under the saved
+/// gains, so the stamp mismatches too; a stamped zero-Ke set is consistent.
 #[test_log::test]
 fn no_boot_state_drives_closed_loop_with_zero_recip_ke() {
     const CONFIGS: [Fixture; 4] = [
@@ -177,6 +187,7 @@ fn no_boot_state_drives_closed_loop_with_zero_recip_ke() {
                     let sh = Shared::new();
                     seed(&sh);
                     set(&sh, |t| t.calib.motor.recip_ke_q = 0);
+                    stamp(&sh);
                     store.save_table(&sh.table);
                     store
                 } else {
@@ -186,9 +197,11 @@ fn no_boot_state_drives_closed_loop_with_zero_recip_ke() {
                 calib.apply(store, ImageKind::Calib);
                 let sh = boot(store);
                 let ke_set = calib == Fixture::Loaded;
+                let stamped = matches!(calib, Fixture::Loaded | Fixture::ZeroKe);
                 let want = config.flags(CONFIG_VIRGIN, CONFIG_CORRUPT, CONFIG_STALE)
                     | calib.flags(CALIB_VIRGIN, CALIB_CORRUPT, CALIB_STALE)
-                    | if ke_set { 0 } else { PLANT_UNSET };
+                    | if ke_set { 0 } else { PLANT_UNSET }
+                    | if stamped { 0 } else { STAMP_MISMATCH };
                 let case = format!("config {config:?} calib {calib:?} {mode:?}");
                 assert_eq!(data_flags(&sh), want, "{case}");
 
@@ -213,7 +226,7 @@ fn calib_reset_under_saved_gains_refuses_velocity() {
     let store = identified_store();
     store.erase(ImageKind::Calib);
     let sh = boot(store);
-    assert_eq!(data_flags(&sh), CALIB_VIRGIN | PLANT_UNSET);
+    assert_eq!(data_flags(&sh), CALIB_VIRGIN | STAMP_MISMATCH | PLANT_UNSET);
     // the saved gains did load: this is the live-gains + no-Ke runaway
     assert_eq!(sh.table.with(|t| t.config.loop_velocity.v_kp_q88), 64);
 
@@ -230,7 +243,7 @@ fn calib_version_bump_boots_stale_and_gates_closed_loop() {
     let store = identified_store();
     store.stale_slot(ImageKind::Calib, Slot::A);
     let sh = boot(store);
-    assert_eq!(data_flags(&sh), CALIB_STALE | PLANT_UNSET);
+    assert_eq!(data_flags(&sh), CALIB_STALE | STAMP_MISMATCH | PLANT_UNSET);
 
     let mut rig = Rig::new();
     rig.run(&sh, 200);
@@ -423,29 +436,56 @@ fn write_ke(sim: &mut Sim) {
     write_ok(sim, KE_VPC_Q, &1150u16.to_le_bytes());
 }
 
+/// The host's stamp over the set it intends: what the servo holds now.
+fn write_stamp(sim: &mut Sim, s: usize) {
+    let stamp = sim.servo_table(s, |t| compute(t, None));
+    write_ok(sim, PLANT_STAMP, &stamp.to_le_bytes());
+}
+
+fn set_torque(sim: &mut Sim, on: bool) {
+    write_ok(sim, TORQUE_ENABLE, &[on as u8]);
+}
+
+/// A servo whose store holds one identified, stamped, SAVEd set.
+fn stamped_servo(sim: &mut Sim, store: &'static RamStore) -> usize {
+    let s = sim.add_servo_with_store(ID5, store);
+    write_ke(sim);
+    write_stamp(sim, s);
+    assert_eq!(mgmt(sim, MgmtOp::Save), ResultCode::Ok);
+    assert_eq!(read_byte(sim, DATA_FLAGS), 0);
+    s
+}
+
 #[apply(matrix)]
-fn save_retires_the_fresh_reasons_and_recomputes_plant_unset(baud_idx: u8) {
+fn save_retires_the_fresh_reasons_and_recomputes_the_checkpoint(baud_idx: u8) {
     let store = RamStore::leak();
     let mut sim = sim(baud_idx);
-    sim.add_servo_with_store(ID5, store);
+    let s = sim.add_servo_with_store(ID5, store);
     assert_eq!(read_byte(&mut sim, DATA_FLAGS), FRESH);
-    // a failed program changes nothing but the plant checkpoint
+    // a failed program changes nothing but the checkpoint
     store.set_fail(true);
     assert_eq!(mgmt(&mut sim, MgmtOp::Save), ResultCode::Hardware);
     assert_eq!(read_byte(&mut sim, DATA_FLAGS), FRESH);
     store.set_fail(false);
     // the images are this servo's own now; the plant is still unidentified
+    // and the set never stamped
     assert_eq!(mgmt(&mut sim, MgmtOp::Save), ResultCode::Ok);
-    assert_eq!(read_byte(&mut sim, DATA_FLAGS), PLANT_UNSET);
+    assert_eq!(
+        read_byte(&mut sim, DATA_FLAGS),
+        STAMP_MISMATCH | PLANT_UNSET
+    );
     write_ke(&mut sim);
     assert_eq!(
         read_byte(&mut sim, DATA_FLAGS),
-        PLANT_UNSET,
-        "a committed write is not a checkpoint"
+        STAMP_MISMATCH | PLANT_UNSET,
+        "a covered write is not a checkpoint"
     );
+    // the stamp write is: both verdicts follow the live set
+    write_stamp(&mut sim, s);
+    assert_eq!(read_byte(&mut sim, DATA_FLAGS), 0);
     assert_eq!(mgmt(&mut sim, MgmtOp::Save), ResultCode::Ok);
     assert_eq!(read_byte(&mut sim, DATA_FLAGS), 0);
-    // reboot with flash intact: loaded, identified
+    // reboot with flash intact: loaded, identified, stamped
     let mut rebooted = support::sim(baud_idx);
     rebooted.add_servo_with_store(ID5, store);
     assert_eq!(read_byte(&mut rebooted, DATA_FLAGS), 0);
@@ -457,12 +497,13 @@ fn save_retires_stale_images_like_virgin_ones(baud_idx: u8) {
     store.stale_slot(ImageKind::Config, Slot::A);
     store.stale_slot(ImageKind::Calib, Slot::B);
     let mut sim = sim(baud_idx);
-    sim.add_servo_with_store(ID5, store);
+    let s = sim.add_servo_with_store(ID5, store);
     assert_eq!(
         read_byte(&mut sim, DATA_FLAGS),
-        CONFIG_STALE | CALIB_STALE | PLANT_UNSET
+        CONFIG_STALE | CALIB_STALE | STAMP_MISMATCH | PLANT_UNSET
     );
     write_ke(&mut sim);
+    write_stamp(&mut sim, s);
     assert_eq!(mgmt(&mut sim, MgmtOp::Save), ResultCode::Ok);
     assert_eq!(read_byte(&mut sim, DATA_FLAGS), 0);
 }
@@ -473,12 +514,13 @@ fn save_does_not_clear_corrupt_config(baud_idx: u8) {
     store.corrupt_slot(ImageKind::Config, Slot::A);
     store.corrupt_slot(ImageKind::Calib, Slot::B);
     let mut sim = sim(baud_idx);
-    sim.add_servo_with_store(ID5, store);
+    let s = sim.add_servo_with_store(ID5, store);
     assert_eq!(
         read_byte(&mut sim, DATA_FLAGS),
-        CONFIG_CORRUPT | CALIB_CORRUPT | PLANT_UNSET
+        CONFIG_CORRUPT | CALIB_CORRUPT | STAMP_MISMATCH | PLANT_UNSET
     );
     write_ke(&mut sim);
+    write_stamp(&mut sim, s);
     assert_eq!(mgmt(&mut sim, MgmtOp::Save), ResultCode::Ok);
     assert_eq!(
         read_byte(&mut sim, DATA_FLAGS),
@@ -500,11 +542,170 @@ fn factory_after_corrupt_config_boots_virgin(baud_idx: u8) {
     let s = sim.add_servo_with_store(ID5, store);
     assert_eq!(
         read_byte(&mut sim, DATA_FLAGS),
-        CONFIG_CORRUPT | CALIB_VIRGIN | PLANT_UNSET
+        CONFIG_CORRUPT | CALIB_VIRGIN | STAMP_MISMATCH | PLANT_UNSET
     );
     assert_eq!(mgmt(&mut sim, MgmtOp::Factory), ResultCode::Ok);
     assert!(sim.take_reboot(s).is_some());
     let mut rebooted = support::sim(baud_idx);
     rebooted.add_servo_with_store(ID5, store);
     assert_eq!(read_byte(&mut rebooted, DATA_FLAGS), FRESH);
+}
+
+// The plant stamp over the wire
+
+/// The `osc ident` commit sequence: write the set, stamp it with torque
+/// off, and the stamp write is the checkpoint that opens closed loop.
+#[apply(matrix)]
+fn stamp_write_verifies_and_opens_closed_loop(baud_idx: u8) {
+    let store = RamStore::leak();
+    let mut sim = sim(baud_idx);
+    let s = sim.add_servo_with_store(ID5, store);
+    assert_eq!(read_byte(&mut sim, DATA_FLAGS), FRESH);
+    write_ke(&mut sim);
+    // a wrong stamp is a miss: some intended write did not land
+    let stamp = sim.servo_table(s, |t| compute(t, None));
+    write_ok(&mut sim, PLANT_STAMP, &(stamp ^ 1).to_le_bytes());
+    assert_eq!(
+        read_byte(&mut sim, DATA_FLAGS),
+        CONFIG_VIRGIN | CALIB_VIRGIN | STAMP_MISMATCH
+    );
+    write_stamp(&mut sim, s);
+    assert_eq!(
+        read_byte(&mut sim, DATA_FLAGS),
+        CONFIG_VIRGIN | CALIB_VIRGIN
+    );
+    assert_eq!(mgmt(&mut sim, MgmtOp::Save), ResultCode::Ok);
+    assert_eq!(read_byte(&mut sim, DATA_FLAGS), 0);
+    assert!(allows(Mode::Position, 0));
+}
+
+#[apply(matrix)]
+fn stamp_write_with_torque_on_stays_unverified(baud_idx: u8) {
+    let store = RamStore::leak();
+    let mut sim = sim(baud_idx);
+    let s = stamped_servo(&mut sim, store);
+    set_torque(&mut sim, true);
+    write_ok(&mut sim, V_KP_Q88, &70u16.to_le_bytes());
+    assert_eq!(read_byte(&mut sim, DATA_FLAGS), STAMP_MISMATCH);
+    write_stamp(&mut sim, s);
+    assert_eq!(
+        read_byte(&mut sim, DATA_FLAGS),
+        STAMP_MISMATCH,
+        "landed, not verified"
+    );
+    set_torque(&mut sim, false);
+    assert_eq!(
+        read_byte(&mut sim, DATA_FLAGS),
+        STAMP_MISMATCH,
+        "torque off alone is no checkpoint"
+    );
+    write_stamp(&mut sim, s);
+    assert_eq!(read_byte(&mut sim, DATA_FLAGS), 0);
+}
+
+/// A host that wrote some of the set and died: the servo refuses closed
+/// loop until a stamp over the whole set lands.
+#[apply(matrix)]
+fn partial_covered_write_blocks_next_enable(baud_idx: u8) {
+    let store = RamStore::leak();
+    let mut sim = sim(baud_idx);
+    let s = stamped_servo(&mut sim, store);
+    write_ok(&mut sim, STALL_TIME_MS, &200u16.to_le_bytes());
+    assert_eq!(
+        read_byte(&mut sim, DATA_FLAGS),
+        0,
+        "a user limit is not covered"
+    );
+    write_ok(&mut sim, V_KP_Q88, &70u16.to_le_bytes());
+    assert_eq!(read_byte(&mut sim, DATA_FLAGS), STAMP_MISMATCH);
+    assert!(!allows(Mode::Velocity, STAMP_MISMATCH));
+    // the old stamp is not the answer
+    let old = store.calib_slot(Slot::A).expect("saved");
+    let at = HEADER_LEN + (PLANT_STAMP - CALIB_BASE_ADDR) as usize;
+    write_ok(&mut sim, PLANT_STAMP, &old[at..at + 2]);
+    assert_eq!(read_byte(&mut sim, DATA_FLAGS), STAMP_MISMATCH);
+    write_stamp(&mut sim, s);
+    assert_eq!(read_byte(&mut sim, DATA_FLAGS), 0);
+}
+
+/// A gain edit under torque marks the mismatch but never yanks the loop;
+/// the next enable is what it refuses, until a torque-off restamp.
+#[test_log::test]
+fn live_gain_edit_keeps_the_running_loop_until_reenable() {
+    let sh = Shared::new();
+    seed(&sh);
+    let mut rig = Rig::new();
+    rig.run(&sh, 200);
+    enable(&sh, Mode::Velocity);
+    assert!(drives(&rig.run(&sh, 2000)));
+    // the dispatcher's post-commit hook on a covered write
+    set(&sh, |t| t.config.loop_velocity.v_kp_q88 = 70);
+    sh.table.data_state_after_commit(V_KP_Q88, 2);
+    assert_eq!(data_flags(&sh), STAMP_MISMATCH);
+    let cmds = rig.run(&sh, 3 * DECIM_MED as u32);
+    assert!(cmds.iter().all(|c| matches!(c, MotorCmd::Drive { .. })));
+    assert_eq!(fault(&sh), (0, CODE_NONE));
+
+    set(&sh, |t| t.control.lifecycle.torque_enable = false);
+    rig.run(&sh, 20);
+    set(&sh, |t| t.control.lifecycle.torque_enable = true);
+    assert!(all_disabled(&rig.run(&sh, 500)));
+    assert_eq!(fault(&sh), (BIT_DATA, CODE_DATA));
+
+    set(&sh, |t| t.control.lifecycle.torque_enable = false);
+    rig.run(&sh, 20);
+    stamp(&sh);
+    sh.table.data_state_after_commit(PLANT_STAMP, 2);
+    assert_eq!(data_flags(&sh), 0);
+    set(&sh, |t| t.control.lifecycle.torque_enable = true);
+    assert!(drives(&rig.run(&sh, 2000)));
+    assert_eq!(fault(&sh), (0, CODE_NONE));
+}
+
+/// SAVE persists a stale stamp on purpose (ack == durable); the reboot's
+/// recompute is what keeps closed loop shut.
+#[apply(matrix)]
+fn save_with_stale_stamp_gates_after_reboot(baud_idx: u8) {
+    let store = RamStore::leak();
+    let mut sim = sim(baud_idx);
+    stamped_servo(&mut sim, store);
+    write_ok(&mut sim, V_KP_Q88, &70u16.to_le_bytes());
+    assert_eq!(mgmt(&mut sim, MgmtOp::Save), ResultCode::Ok);
+    assert_eq!(read_byte(&mut sim, DATA_FLAGS), STAMP_MISMATCH);
+    let mut rebooted = support::sim(baud_idx);
+    rebooted.add_servo_with_store(ID5, store);
+    assert_eq!(read_byte(&mut rebooted, DATA_FLAGS), STAMP_MISMATCH);
+}
+
+/// A power cut between the CONFIG and CALIB images boots a new/old mix:
+/// the recompute over the mix differs from the stamp that loaded with the
+/// old CALIB. When nothing covered moved, the mix is harmless and matches.
+#[apply(matrix)]
+fn torn_save_boots_stamp_mismatch(baud_idx: u8) {
+    let store = RamStore::leak();
+    let mut sim = sim(baud_idx);
+    let s = stamped_servo(&mut sim, store);
+    write_ok(&mut sim, V_KP_Q88, &70u16.to_le_bytes());
+    write_stamp(&mut sim, s);
+    assert_eq!(read_byte(&mut sim, DATA_FLAGS), 0);
+    store.fail_after(ImageKind::Config);
+    assert_eq!(mgmt(&mut sim, MgmtOp::Save), ResultCode::Hardware);
+    let mut rebooted = support::sim(baud_idx);
+    let s = rebooted.add_servo_with_store(ID5, store);
+    assert_eq!(
+        rebooted.servo_table(s, |t| t.config.loop_velocity.v_kp_q88),
+        70
+    );
+    assert_eq!(read_byte(&mut rebooted, DATA_FLAGS), STAMP_MISMATCH);
+
+    // the same tear under an uncovered edit
+    let store = RamStore::leak();
+    let mut sim = support::sim(baud_idx);
+    stamped_servo(&mut sim, store);
+    write_ok(&mut sim, STALL_TIME_MS, &200u16.to_le_bytes());
+    store.fail_after(ImageKind::Config);
+    assert_eq!(mgmt(&mut sim, MgmtOp::Save), ResultCode::Hardware);
+    let mut rebooted = support::sim(baud_idx);
+    rebooted.add_servo_with_store(ID5, store);
+    assert_eq!(read_byte(&mut rebooted, DATA_FLAGS), 0);
 }

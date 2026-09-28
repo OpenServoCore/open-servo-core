@@ -43,11 +43,6 @@ pub mod seed {
     // the CONFIG travel limits. FACTORY wipes every one of them.
     pub const RAW_MIN: u16 = 5;
     pub const RAW_MAX: u16 = 4095;
-    pub const LUT_CORR: [i16; 55] = [
-        0, 0, 421, 364, 345, 323, 317, 306, 286, 272, 279, 276, 271, 262, 267, 246, 265, 261, 250,
-        239, 239, 236, 233, 255, 245, 241, 233, 226, 222, 222, 223, 235, 228, 212, 226, 213, 193,
-        209, 206, 194, 192, 196, 164, 157, 153, 172, 148, 123, 119, 122, 101, 95, 91, 46, 0,
-    ];
     pub const ANGLE_MIN_CDEG: i16 = 0;
     pub const ANGLE_MAX_CDEG: i16 = 20200;
     pub const GEAR_RATIO_CENTI: u16 = 25464;
@@ -99,9 +94,8 @@ impl FakePipe {
     pub fn seed_calibrated(&mut self, i: usize) {
         self.sim.set_servo_sense(i, seed::SENSE, seed::SENSE_EXT);
         self.sim.servo_table_mut(i, |t| {
-            t.calib.pot_lut.raw_min = seed::RAW_MIN;
-            t.calib.pot_lut.raw_max = seed::RAW_MAX;
-            t.calib.pot_lut.lut_corr = seed::LUT_CORR;
+            t.calib.pot.raw_min = seed::RAW_MIN;
+            t.calib.pot.raw_max = seed::RAW_MAX;
             t.calib.kinematics.angle_min_cdeg = seed::ANGLE_MIN_CDEG;
             t.calib.kinematics.angle_max_cdeg = seed::ANGLE_MAX_CDEG;
             t.calib.kinematics.gear_ratio_centi = seed::GEAR_RATIO_CENTI;

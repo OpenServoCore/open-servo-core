@@ -1,12 +1,12 @@
 use control_table::{Block, Section};
 
+/// The pot's mechanical stops in raw ADC counts: the ends of the angle map
+/// (`CalibKinematics`) and the domain a pot LUT is validated against.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
-pub struct PotLutBlock {
+pub struct CalibPot {
     pub raw_min: u16,
     pub raw_max: u16,
-    /// Corrections vs the identity ramp raw_min..raw_max; all-zero = identity.
-    pub lut_corr: [i16; 55],
 }
 
 /// Sense-chain primitives the host converts raw counts with (protocol sec
@@ -70,8 +70,8 @@ pub struct CalibMotor {
 }
 
 /// Count<->angle scale and gearing, pure host-facing metadata: firmware never
-/// reads it, the ISR stays in counts. Angles are centi-degrees at the pot LUT
-/// endpoints raw_min/raw_max (which equal pos_min/max_phys); `gear_ratio_centi`
+/// reads it, the ISR stays in counts. Angles are centi-degrees at the pot
+/// stops raw_min/raw_max (which equal pos_min/max_phys); `gear_ratio_centi`
 /// is motor revs per output rev x100. All-zero = unset.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
@@ -84,9 +84,7 @@ pub struct CalibKinematics {
 /// Supply-sense and thermistor board data (protocol sec 5.5): the direct
 /// rail divider legs, the NTC pull-up / R25 / beta, and the nominal
 /// motor-terminal divider bias (the boot-measured value publishes in
-/// telemetry). Lands after `kinematics` in what was the reserved tail so no
-/// persisted CALIB field moves: images saved before this block carry zeros
-/// here, harmless because install re-stamps every RO block after the overlay.
+/// telemetry). RO: install re-stamps every board fact after the overlay.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct CalibSenseExt {
@@ -108,6 +106,17 @@ pub struct CalibSenseExt {
     pub rail_drop_mv: u16,
 }
 
+/// The plant stamp (`stamp` module): the host's CRC over the identified and
+/// calibrated set plus the effective pot LUT, 0 = never stamped. Firmware
+/// recomputes it at every checkpoint; a mismatch is `STAMP_MISMATCH`. Sits
+/// right after the host-written blocks so one WRITE can carry the whole
+/// identified set and its stamp.
+#[repr(C)]
+#[derive(Copy, Clone, Block)]
+pub struct CalibStamp {
+    pub plant_stamp: u16,
+}
+
 /// Calibration section: always writable (normal field validation applies),
 /// volatile until persisted -- persistence is SAVE's job, not a write gate.
 #[repr(C)]
@@ -117,12 +126,13 @@ pub struct CalibSenseExt {
     size = crate::regions::CALIB_REGION_SIZE,
 )]
 pub struct CalibRegs {
-    pub pot_lut: PotLutBlock,
+    pub pot: CalibPot,
     pub sense: CalibSense,
     pub winding: CalibWinding,
     pub motor: CalibMotor,
     pub kinematics: CalibKinematics,
+    pub stamp: CalibStamp,
     pub sense_ext: CalibSenseExt,
     #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 82],
+    pub _rsvd_tail: [u8; 190],
 }

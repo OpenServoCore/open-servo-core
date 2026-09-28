@@ -53,6 +53,8 @@ struct Inner {
     calib_next_slot: usize,
     calib_next_seq: u16,
     fail: bool,
+    /// The next save tears after this image lands.
+    tear_after: Option<Kind>,
     saves: usize,
     wipes: usize,
 }
@@ -117,6 +119,13 @@ impl RamStore {
     /// miss).
     pub fn set_fail(&self, fail: bool) {
         self.inner.lock().unwrap().fail = fail;
+    }
+
+    /// The next save loses power after `kind`'s image lands: a torn save,
+    /// the store left holding a new image of one kind beside the old image
+    /// of the other. One-shot.
+    pub fn fail_after(&self, kind: Kind) {
+        self.inner.lock().unwrap().tear_after = Some(kind);
     }
 
     pub fn saves(&self) -> usize {
@@ -211,12 +220,18 @@ impl ConfigStore for RamStore {
         g.slots[slot] = Some(img);
         g.next_slot ^= 1;
         g.next_seq = g.next_seq.wrapping_add(1);
+        if g.tear_after.take() == Some(Kind::Config) {
+            return Err(StoreError);
+        }
         let mut img = [0u8; CALIB_IMAGE_LEN];
         persist::calib_assemble(&mut img, g.calib_next_seq, calib);
         let slot = g.calib_next_slot;
         g.calib_slots[slot] = Some(img);
         g.calib_next_slot ^= 1;
         g.calib_next_seq = g.calib_next_seq.wrapping_add(1);
+        if g.tear_after.take() == Some(Kind::Calib) {
+            return Err(StoreError);
+        }
         g.saves += 1;
         Ok(())
     }
