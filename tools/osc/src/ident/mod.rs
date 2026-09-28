@@ -266,6 +266,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     }
     let mut c = crate::rig::connect(&cli.baud)?;
     let id = Id::new(id);
+    crate::state::check(&mut c, id)?;
     match &args.cmd {
         Cmd::Run => run_all(&cli, &mut c, id),
         Cmd::Bias => {

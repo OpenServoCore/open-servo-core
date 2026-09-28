@@ -145,7 +145,8 @@ pub(crate) fn run(a: &Args, baud: String, id: u8) -> Result<()> {
     ));
 
     pump::install_ctrlc();
-    let c = crate::rig::connect(&baud)?;
+    let mut c = crate::rig::connect(&baud)?;
+    crate::state::check(&mut c, Id::new(id))?;
     let mut s = Session {
         c: Some(c),
         baud,

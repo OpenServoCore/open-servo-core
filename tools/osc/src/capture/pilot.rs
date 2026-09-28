@@ -115,6 +115,7 @@ pub(crate) fn run(a: &Args, baud: String, id: u8) -> Result<()> {
     let duties = ladder_duties(&block.duties).with_context(|| format!("procedure {source}"))?;
     let mut c = crate::rig::connect(&baud)?;
     let id = Id::new(id);
+    crate::state::check(&mut c, id)?;
 
     let fw = c.identity(id)?.fw;
     let tick_hz = read_u16(&mut c, id, calib::TICK_HZ)?;

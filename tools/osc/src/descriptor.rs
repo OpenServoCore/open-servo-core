@@ -19,13 +19,19 @@ use crate::{hex, parse_hex};
 /// built-in is one more entry.
 const BUILTINS: &[&str] = &[include_str!("../../../descriptors/osc-servo/0.1.json")];
 
-/// The compiled built-ins overlaid by every external descriptor; an
-/// external file sharing a built-in's model and major.minor replaces it.
-pub fn load() -> Result<Registry> {
+/// The compiled built-ins alone.
+pub fn load_builtins() -> Result<Registry> {
     let mut reg = Registry::new();
     for s in BUILTINS {
         reg.push(Descriptor::parse(s).context("built-in descriptor")?);
     }
+    Ok(reg)
+}
+
+/// The compiled built-ins overlaid by every external descriptor; an
+/// external file sharing a built-in's model and major.minor replaces it.
+pub fn load() -> Result<Registry> {
+    let mut reg = load_builtins()?;
     for path in external_paths()? {
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("reading descriptor {}", path.display()))?;
