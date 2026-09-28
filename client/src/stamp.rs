@@ -8,9 +8,9 @@
 //! Bit-identical to the firmware by construction: the recipe comes from
 //! the descriptor's `stamp` block (tag, covered names in table order,
 //! knot count), the bytes are the fields' own table bytes at descriptor
-//! width, and the CRC is the protocol's CRC-16/ARC. No LUT window is in
-//! the table yet, so the effective table is identity and the knots hash
-//! as zeros; the pot LUT band reads the live knots here.
+//! width, and the CRC is the protocol's CRC-16/ARC. The knots are the
+//! table the kernel applies (`pot_lut::effective`): the array while
+//! `lut_state` is LIVE, zeros otherwise.
 
 use std::fmt;
 
@@ -21,6 +21,7 @@ use crate::client::Client;
 use crate::descriptor::{Descriptor, Field};
 use crate::error::{Error, LinkError};
 use crate::pipe::Pipe;
+use crate::pot_lut;
 
 /// A value [`Stamp::compute`] never produces: the servo was never stamped.
 pub const UNSTAMPED: u16 = 0;
@@ -150,13 +151,14 @@ impl Verdict {
     }
 }
 
-/// The stamp of the set the servo holds now.
+/// The stamp of the set the servo holds now, over the knots it applies.
 pub async fn compute<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor) -> Result<u16, Error> {
     let stamp = d.stamp()?;
     let (lo, hi) = stamp.span();
     let bytes = c.read_span(id, lo, hi).await?;
+    let knots = pot_lut::effective(c, id, d).await?;
     stamp
-        .compute(lo, &bytes, None)
+        .compute(lo, &bytes, knots.as_ref().map(|k| &k[..]))
         .map_err(|e| Error::Link(LinkError::Desync(e.to_string())))
 }
 

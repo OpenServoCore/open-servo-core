@@ -18,6 +18,7 @@ pub mod descriptor;
 mod error;
 pub mod mgmt;
 pub mod pipe;
+pub mod pot_lut;
 pub mod session;
 pub mod stamp;
 #[cfg(feature = "bench")]
