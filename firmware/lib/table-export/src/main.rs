@@ -7,7 +7,9 @@
 use control_table::descriptor::FieldKind;
 use osc_protocol::models::{MODEL_OSC_SERVO, class_name, model_class};
 use osc_protocol::version::unpack_version;
+use osc_servo_core::pot_lut::INTERVALS;
 use osc_servo_core::regions::ControlTable;
+use osc_servo_core::stamp::{COVERED_NAMES, TAG};
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -31,6 +33,16 @@ struct Field {
     variants: Option<Vec<Variant>>,
 }
 
+/// The plant stamp a host computes (`osc_servo_core::stamp`): CRC-16/ARC
+/// over `tag` ++ the `covered` fields' bytes in this order ++ `lut_knots`
+/// i16 LE knots (zeros while no table is live), 0 mapped to 1.
+#[derive(Serialize)]
+struct Stamp {
+    tag: &'static str,
+    covered: Vec<&'static str>,
+    lut_knots: usize,
+}
+
 #[derive(Serialize)]
 struct Descriptor {
     format: u32,
@@ -41,6 +53,7 @@ struct Descriptor {
     firmware_minor: u8,
     table_size: usize,
     generator: &'static str,
+    stamp: Stamp,
     fields: Vec<Field>,
 }
 
@@ -88,6 +101,11 @@ fn build_descriptor() -> Descriptor {
         firmware_minor,
         table_size: core::mem::size_of::<ControlTable>(),
         generator: "cargo run -p table-export -- ../../descriptors (firmware/lib)",
+        stamp: Stamp {
+            tag: TAG,
+            covered: COVERED_NAMES.to_vec(),
+            lut_knots: INTERVALS,
+        },
         fields,
     }
 }
@@ -128,5 +146,17 @@ mod tests {
         let id = fields.iter().find(|f| f["name"] == "id").unwrap();
         assert_eq!(id["min"], 1);
         assert_eq!(id["max"], 249);
+
+        // every covered name is a field, so a host stamps from this file alone
+        assert_eq!(value["stamp"]["tag"], "osc-plant-1");
+        assert_eq!(value["stamp"]["lut_knots"], 256);
+        let covered = value["stamp"]["covered"].as_array().unwrap();
+        assert_eq!(covered.len(), 35);
+        for name in covered {
+            assert!(
+                fields.iter().any(|f| f["name"] == *name),
+                "{name} not a field"
+            );
+        }
     }
 }

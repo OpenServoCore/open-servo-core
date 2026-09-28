@@ -41,39 +41,40 @@ pub mod config {
 pub mod calib {
     use super::{Reg, reg};
 
-    // PotLutBlock: the first CALIB block. lut_corr is a 110-byte Bytes field
-    // written as one blob, so it stays out of the scalar ALL cross-check.
-    pub const POT_LUT_RAW_MIN: Reg = reg(0x0080, 2);
-    pub const POT_LUT_RAW_MAX: Reg = reg(0x0082, 2);
-    pub const POT_LUT_CORR: Reg = reg(0x0084, 110);
-
-    pub const SHUNT_R_MOHM: Reg = reg(0x00f2, 2);
-    pub const GAIN_MILLI: Reg = reg(0x00f4, 2);
-    pub const VMOTOR_DIV_TOP: Reg = reg(0x00f6, 2);
-    pub const VMOTOR_DIV_BOT: Reg = reg(0x00f8, 2);
-    pub const VDD_MV: Reg = reg(0x00fa, 2);
-    pub const TICK_HZ: Reg = reg(0x00fc, 2);
-    pub const I_WINDOW_MIN_TICKS: Reg = reg(0x00fe, 2);
-    pub const V_WINDOW_MIN_TICKS: Reg = reg(0x0100, 2);
-    pub const R0_Q12: Reg = reg(0x0102, 2);
-    pub const T0_CC: Reg = reg(0x0104, 2);
-    pub const R_Q12: Reg = reg(0x010c, 2);
-    pub const RECIP_KE_Q: Reg = reg(0x010e, 2);
-    pub const B_I_Q313: Reg = reg(0x0110, 2);
-    pub const FRIC_FC_COUNTS: Reg = reg(0x0112, 2);
-    pub const FRIC_FV_Q016: Reg = reg(0x0114, 2);
-    pub const FRIC_BREAKAWAY_COUNTS: Reg = reg(0x0116, 2);
-    pub const KE_VPC_Q: Reg = reg(0x0118, 2);
-    pub const ANGLE_MIN_CDEG: Reg = reg(0x011a, 2);
-    pub const ANGLE_MAX_CDEG: Reg = reg(0x011c, 2);
-    pub const GEAR_RATIO_CENTI: Reg = reg(0x011e, 2);
-    pub const VBUS_DIV_TOP_OHM: Reg = reg(0x0120, 2);
-    pub const VBUS_DIV_BOT_OHM: Reg = reg(0x0122, 2);
-    pub const NTC_PULLUP_OHM: Reg = reg(0x0124, 2);
-    pub const NTC_R25_OHM: Reg = reg(0x0126, 2);
-    pub const NTC_BETA: Reg = reg(0x0128, 2);
-    pub const VMOTOR_BIAS_NOM_COUNTS: Reg = reg(0x012a, 2);
-    pub const RAIL_DROP_MV: Reg = reg(0x012c, 2);
+    /// The pot stops: the angle-map ends and the pot LUT's validation domain.
+    pub const RAW_MIN: Reg = reg(0x0080, 2);
+    pub const RAW_MAX: Reg = reg(0x0082, 2);
+    pub const SHUNT_R_MOHM: Reg = reg(0x0084, 2);
+    pub const GAIN_MILLI: Reg = reg(0x0086, 2);
+    pub const VMOTOR_DIV_TOP: Reg = reg(0x0088, 2);
+    pub const VMOTOR_DIV_BOT: Reg = reg(0x008a, 2);
+    pub const VDD_MV: Reg = reg(0x008c, 2);
+    pub const TICK_HZ: Reg = reg(0x008e, 2);
+    pub const I_WINDOW_MIN_TICKS: Reg = reg(0x0090, 2);
+    pub const V_WINDOW_MIN_TICKS: Reg = reg(0x0092, 2);
+    pub const R0_Q12: Reg = reg(0x0094, 2);
+    pub const T0_CC: Reg = reg(0x0096, 2);
+    pub const R_Q12: Reg = reg(0x009e, 2);
+    pub const RECIP_KE_Q: Reg = reg(0x00a0, 2);
+    pub const B_I_Q313: Reg = reg(0x00a2, 2);
+    pub const FRIC_FC_COUNTS: Reg = reg(0x00a4, 2);
+    pub const FRIC_FV_Q016: Reg = reg(0x00a6, 2);
+    pub const FRIC_BREAKAWAY_COUNTS: Reg = reg(0x00a8, 2);
+    pub const KE_VPC_Q: Reg = reg(0x00aa, 2);
+    pub const ANGLE_MIN_CDEG: Reg = reg(0x00ac, 2);
+    pub const ANGLE_MAX_CDEG: Reg = reg(0x00ae, 2);
+    pub const GEAR_RATIO_CENTI: Reg = reg(0x00b0, 2);
+    /// The plant stamp over the descriptor's covered list plus the
+    /// effective pot LUT; 0 = never stamped. Firmware verifies a torque-off
+    /// write of it and at boot and SAVE (`data_flags` STAMP_MISMATCH).
+    pub const PLANT_STAMP: Reg = reg(0x00b2, 2);
+    pub const VBUS_DIV_TOP_OHM: Reg = reg(0x00b4, 2);
+    pub const VBUS_DIV_BOT_OHM: Reg = reg(0x00b6, 2);
+    pub const NTC_PULLUP_OHM: Reg = reg(0x00b8, 2);
+    pub const NTC_R25_OHM: Reg = reg(0x00ba, 2);
+    pub const NTC_BETA: Reg = reg(0x00bc, 2);
+    pub const VMOTOR_BIAS_NOM_COUNTS: Reg = reg(0x00be, 2);
+    pub const RAIL_DROP_MV: Reg = reg(0x00c0, 2);
 }
 
 pub mod control {
@@ -105,8 +106,8 @@ pub mod burst {
 
     pub const PAGE_ECHO: Reg = reg(0x02c0, 1);
     pub const STATE: Reg = reg(0x02c1, 1);
-    /// 120 LE u16 raw shunt codes; a Bytes field like `lut_corr`, so it stays
-    /// out of the scalar ALL cross-check.
+    /// 120 LE u16 raw shunt codes; a Bytes field, so it stays out of the
+    /// scalar ALL cross-check.
     pub const SAMPLES: Reg = reg(0x02c2, 240);
     pub const SAMPLES_LEN: Reg = reg(0x03b2, 2);
     pub const STEP_INDEX: Reg = reg(0x03b4, 2);
@@ -129,6 +130,9 @@ pub mod telemetry {
     pub const FAULT_CODE: Reg = reg(0x0221, 1);
     /// 0 = pot observer, 1 = back-EMF boxcar behind `omega_hat_cps`.
     pub const OMEGA_HAT_SRC: Reg = reg(0x0222, 1);
+    /// Why closed loop is refused, one bit per reason (core `data_state`);
+    /// 0 = the images and the identified set are this servo's own.
+    pub const DATA_FLAGS: Reg = reg(0x0223, 1);
     pub const THETA_HAT_Q16: Reg = reg(0x0224, 4);
     pub const OMEGA_HAT_CPS: Reg = reg(0x0228, 4);
     pub const TAU_D_COUNTS: Reg = reg(0x022c, 2);
@@ -179,10 +183,8 @@ pub const ALL: &[(&str, Reg)] = &[
     ("l1_q016", config::L1_Q016),
     ("l2_q88", config::L2_Q88),
     ("l3_q88", config::L3_Q88),
-    // lut_corr omitted: a 110-byte Bytes field, not a scalar reg (write_reg
-    // and reg_by_name assume width <= 4); raw_min/raw_max are plain u16.
-    ("raw_min", calib::POT_LUT_RAW_MIN),
-    ("raw_max", calib::POT_LUT_RAW_MAX),
+    ("raw_min", calib::RAW_MIN),
+    ("raw_max", calib::RAW_MAX),
     ("shunt_r_mohm", calib::SHUNT_R_MOHM),
     ("gain_milli", calib::GAIN_MILLI),
     ("vmotor_div_top", calib::VMOTOR_DIV_TOP),
@@ -203,6 +205,7 @@ pub const ALL: &[(&str, Reg)] = &[
     ("angle_min_cdeg", calib::ANGLE_MIN_CDEG),
     ("angle_max_cdeg", calib::ANGLE_MAX_CDEG),
     ("gear_ratio_centi", calib::GEAR_RATIO_CENTI),
+    ("plant_stamp", calib::PLANT_STAMP),
     ("vbus_div_top_ohm", calib::VBUS_DIV_TOP_OHM),
     ("vbus_div_bot_ohm", calib::VBUS_DIV_BOT_OHM),
     ("ntc_pullup_ohm", calib::NTC_PULLUP_OHM),
@@ -228,6 +231,7 @@ pub const ALL: &[(&str, Reg)] = &[
     ("mode_active", telemetry::MODE_ACTIVE),
     ("fault_code", telemetry::FAULT_CODE),
     ("omega_hat_src", telemetry::OMEGA_HAT_SRC),
+    ("data_flags", telemetry::DATA_FLAGS),
     ("theta_hat_q16", telemetry::THETA_HAT_Q16),
     ("omega_hat_cps", telemetry::OMEGA_HAT_CPS),
     ("tau_d_counts", telemetry::TAU_D_COUNTS),

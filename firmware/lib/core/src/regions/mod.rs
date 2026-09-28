@@ -3,12 +3,12 @@
 //! and skip bytes read as zero). Writes to non-writable bytes fail with
 //! `AccessError`; addresses past the map end fail with `DataRange`.
 //!
-//!   CONFIG    0x000..0x080  (128 B) -- persistent via MGMT SAVE
-//!   CALIB     0x080..0x180  (256 B) -- persistence deferred (unused today)
-//!   CONTROL   0x180..0x200  (128 B) -- RW volatile
-//!   TELEMETRY 0x200..0x280  (128 B) -- RO from host
-//!   PROFILE   0x280..0x2C0  ( 64 B) -- read-profile span words (sec 5.2)
-//!   BURST     0x2C0..0x3C0  (256 B) -- RO paged shunt-capture readback
+//!   CONFIG    0x000..0x080  (128 B) - persistent via MGMT SAVE
+//!   CALIB     0x080..0x180  (256 B) - persistent via MGMT SAVE, own image
+//!   CONTROL   0x180..0x200  (128 B) - RW volatile
+//!   TELEMETRY 0x200..0x280  (128 B) - RO from host
+//!   PROFILE   0x280..0x2C0  ( 64 B) - read-profile span words (sec 5.2)
+//!   BURST     0x2C0..0x3C0  (256 B) - RO paged shunt-capture readback
 //!   (reserved 0x3C0..0x400   64 B)
 //!
 //! Owners go through `RegionStorage::with`/`with_mut` on the storage cell.
@@ -25,7 +25,8 @@ pub mod telemetry;
 
 pub use burst::{BurstRegs, BurstWindow};
 pub use calib::{
-    CalibKinematics, CalibMotor, CalibRegs, CalibSense, CalibSenseExt, CalibWinding, PotLutBlock,
+    CalibKinematics, CalibMotor, CalibPot, CalibRegs, CalibSense, CalibSenseExt, CalibStamp,
+    CalibWinding,
 };
 pub use config::{
     BaudRate, ConfigCommon, ConfigFaultCfg, ConfigFusion, ConfigLimits, ConfigLoopCurrent,
@@ -292,10 +293,6 @@ mod tests {
         assert!(goal.writable);
         assert_eq!((goal.min, goal.max), (None, None));
 
-        let lut = by("lut_corr");
-        assert_eq!(lut.kind, FieldKind::Bytes);
-        assert_eq!(lut.width, 110);
-
         // The burst page is a byte blob, not a scalar: a host reads it as
         // 120 LE u16 codes, and no field rule may be inferred from it.
         let samples = by("samples");
@@ -334,6 +331,34 @@ mod tests {
             (chans.min, chans.max),
             (None, Some(super::burst::chans::ALL as i32))
         );
+    }
+
+    /// Pins the CALIB layout: the pot stops at the region front, the
+    /// host-written blocks contiguous through the stamp, the RO board facts
+    /// behind them.
+    #[test]
+    fn calib_layout_keeps_the_host_written_blocks_contiguous() {
+        use super::calib::addr::{kinematics, motor, pot, sense, sense_ext, stamp, winding};
+        assert_eq!(pot::RAW_MIN, super::CALIB_BASE_ADDR);
+        assert_eq!(pot::RAW_MAX, 0x082);
+        assert_eq!(sense::SHUNT_R_MOHM, 0x084);
+        assert_eq!(winding::R0_Q12, 0x094);
+        assert_eq!(motor::KE_UVS_PER_RAD, 0x09C);
+        assert_eq!(motor::RECIP_KE_Q, 0x0A0);
+        assert_eq!(motor::KE_VPC_Q, 0x0AA);
+        assert_eq!(kinematics::ANGLE_MIN_CDEG, 0x0AC);
+        assert_eq!(kinematics::GEAR_RATIO_CENTI, 0x0B0);
+        assert_eq!(stamp::PLANT_STAMP, 0x0B2);
+        assert_eq!(sense_ext::VBUS_DIV_TOP_OHM, 0x0B4);
+        assert_eq!(sense_ext::RAIL_DROP_MV, 0x0C0);
+        let f = ControlTable::FIELDS;
+        let rw = |lo: u16, hi: u16| {
+            f.iter()
+                .filter(|d| d.addr >= lo && d.addr < hi)
+                .all(|d| d.writable)
+        };
+        assert!(rw(winding::R0_Q12, stamp::PLANT_STAMP + 2));
+        assert!(!rw(sense_ext::VBUS_DIV_TOP_OHM, 0x0C2));
     }
 
     /// `boot_mode` is an ABI pin: the burst block appends after

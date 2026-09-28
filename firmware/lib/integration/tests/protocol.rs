@@ -8,10 +8,10 @@ use osc_integration::sim::{
 };
 use osc_protocol::wire::{Id, Inst, MgmtOp, Opcode, ResultCode};
 use osc_servo_core::BaudRate;
+use osc_servo_core::regions::PROFILE_BASE_ADDR;
 use osc_servo_core::regions::config::addr::common::{BAUD_RATE_IDX, ID};
 use osc_servo_core::regions::control::addr::lifecycle::TORQUE_ENABLE;
 use osc_servo_core::regions::profile::span_word;
-use osc_servo_core::regions::{CALIB_BASE_ADDR, PROFILE_BASE_ADDR};
 use rstest::rstest;
 use rstest_reuse::apply;
 
@@ -211,19 +211,19 @@ fn hold_then_commit_applies_atomically(baud_idx: u8) {
 
 #[apply(matrix)]
 fn large_write_stages_and_applies(baud_idx: u8) {
-    // LEN is the only size limit (sec 5.1): the largest legal write -- the
-    // full 114 B pot-LUT block, the map's widest rule-free writable span --
+    // LEN is the only size limit (sec 5.1): the largest legal write - the
+    // whole 64 B PROFILE region, the map's widest rule-free writable span -
     // stages like any other and commits at its verdict.
     let mut sim = sim(baud_idx);
     let s = sim.add_servo(ID5);
 
-    let mut data = vec![0u8; 114];
-    data[0..2].copy_from_slice(&0x1234u16.to_le_bytes()); // raw_min
-    data[2..4].copy_from_slice(&0x5678u16.to_le_bytes()); // raw_max
-    data[4] = 0xAB; // first LUT byte
-    data[113] = 0x7C; // last LUT byte
+    let mut data = vec![0u8; 64];
+    data[0..2].copy_from_slice(&0x1234u16.to_le_bytes()); // slot 0 word 0
+    data[2..4].copy_from_slice(&0x5678u16.to_le_bytes());
+    data[4] = 0xAB;
+    data[63] = 0x7C; // last byte of the last slot word
 
-    let a = CALIB_BASE_ADDR.to_le_bytes();
+    let a = PROFILE_BASE_ADDR.to_le_bytes();
     let mut payload = vec![a[0], a[1]];
     payload.extend_from_slice(&data);
     sim.host_send(&instruction(ID5, Opcode::Write, 0, &payload));
@@ -232,18 +232,11 @@ fn large_write_stages_and_applies(baud_idx: u8) {
     let (inst, _) = status(sole_reply(&frames));
     assert_eq!(inst.result(), Some(ResultCode::Ok));
     assert_eq!(sim.servo_diag(s).crc_fail_count, 0);
-    let (raw_min, raw_max, lut0, lut54) = sim.servo_table(s, |t| {
-        (
-            t.calib.pot_lut.raw_min,
-            t.calib.pot_lut.raw_max,
-            t.calib.pot_lut.lut_corr[0],
-            t.calib.pot_lut.lut_corr[54],
-        )
-    });
-    assert_eq!(raw_min, 0x1234);
-    assert_eq!(raw_max, 0x5678);
-    assert_eq!((lut0 as u16) & 0xFF, 0xAB);
-    assert_eq!((lut54 as u16) >> 8, 0x7C, "the full 114 B payload landed");
+    let words = sim.servo_table(s, |t| t.profile.slots.words);
+    assert_eq!(words[0], 0x1234);
+    assert_eq!(words[1], 0x5678);
+    assert_eq!(words[2] & 0xFF, 0xAB);
+    assert_eq!(words[31] >> 8, 0x7C, "the full 64 B payload landed");
 }
 
 #[apply(matrix)]

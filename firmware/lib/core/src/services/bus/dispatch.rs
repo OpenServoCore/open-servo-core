@@ -148,7 +148,7 @@ impl Dispatch for Dispatcher<'_> {
             return; // held entries stay staged until a real COMMIT
         }
         self.shared.table.commit_from(self.staged, &pending.snap);
-        self.mark_dirty_if_persistent(pending.addr, pending.len);
+        self.after_commit(pending.addr, pending.len);
         let tel_mask = self.shared.table.with(|t| t.control.lifecycle.tel_mask);
         let mut hooks = ControlTableHooks::new(reply, tel_mask);
         self.shared
@@ -193,6 +193,13 @@ impl Dispatcher<'_> {
                 data: &[],
             },
         );
+    }
+
+    /// The post-commit bookkeeping every committed span gets: the dirty
+    /// bit, then the data-state consequences of a covered or stamp write.
+    fn after_commit(&self, addr: u16, len: u16) {
+        self.mark_dirty_if_persistent(addr, len);
+        self.shared.table.data_state_after_commit(addr, len);
     }
 
     /// sec 9.4 modified-since-save: a committed span landing in CONFIG or
@@ -407,7 +414,7 @@ impl Dispatcher<'_> {
         let tel_mask = self.shared.table.with(|t| t.control.lifecycle.tel_mask);
         let mut hooks = ControlTableHooks::new(reply, tel_mask);
         for (addr, len) in spans {
-            self.mark_dirty_if_persistent(addr, len);
+            self.after_commit(addr, len);
             self.shared
                 .table
                 .with(|t| t.dispatch_events(addr, len, &mut hooks));
@@ -492,7 +499,8 @@ impl Dispatcher<'_> {
     /// ms-scale program stall is the mid-motion hazard, not the data), and
     /// the ack leaves AFTER the store returns: ack == durable, and a failed
     /// program surfaces as `hardware` instead of a lie. A data-state
-    /// checkpoint precedes the program; success retires the fresh-servo
+    /// checkpoint precedes the program (a stale stamp still persists: the
+    /// reboot recomputes it anyway); success retires the fresh-servo
     /// reasons (`data_state::SAVE_CLEARS`).
     fn save<R: Reply>(&mut self, alert: bool, ctx: &RequestCtx, reply: &mut R) {
         if self

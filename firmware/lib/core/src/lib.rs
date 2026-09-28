@@ -40,6 +40,7 @@ pub mod regions;
 pub mod sensor_frame;
 pub mod services;
 pub mod shared;
+pub mod stamp;
 pub mod tel;
 pub mod traits;
 
@@ -51,11 +52,11 @@ pub use kernel::{Kernel, KernelTiming};
 pub use persist::{ConfigStore, StoreError};
 pub use regions::config::{BaudRate, ConfigDefaults, CurrentDefaults};
 pub use regions::{
-    BootMode, CalibKinematics, CalibMotor, CalibRegs, CalibSense, CalibSenseExt, CalibWinding,
-    ConfigCommon, ConfigFaultCfg, ConfigFusion, ConfigLimits, ConfigLoopCurrent,
-    ConfigLoopPosition, ConfigLoopVelocity, ConfigPosLimits, ConfigRegs, ConfigThermal,
-    ControlLifecycle, ControlRegs, ControlSystem, ControlTable, ControlTableCell, DecaySelect,
-    Mode, PotLutBlock, StallResponse, TelemetryCommon, TelemetryEstimates, TelemetryIdent,
+    BootMode, CalibKinematics, CalibMotor, CalibPot, CalibRegs, CalibSense, CalibSenseExt,
+    CalibStamp, CalibWinding, ConfigCommon, ConfigFaultCfg, ConfigFusion, ConfigLimits,
+    ConfigLoopCurrent, ConfigLoopPosition, ConfigLoopVelocity, ConfigPosLimits, ConfigRegs,
+    ConfigThermal, ControlLifecycle, ControlRegs, ControlSystem, ControlTable, ControlTableCell,
+    DecaySelect, Mode, StallResponse, TelemetryCommon, TelemetryEstimates, TelemetryIdent,
     TelemetryMode, TelemetryRegs, TelemetrySensors,
 };
 pub use sensor_frame::SensorFrame;

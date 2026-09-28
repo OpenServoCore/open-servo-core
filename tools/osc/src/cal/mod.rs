@@ -1,14 +1,15 @@
 //! `osc cal` - the calibration orchestrator: find the mechanical end-stops
 //! and the drive polarity (applied at once), confirm the real-world angle
 //! range with the operator, print the count->unit report, then write the
-//! limits + angle endpoints + gear + pot LUT and persist with MGMT SAVE.
+//! limits + pot stops + angle endpoints + gear and persist with MGMT SAVE.
 //! Interactive by default; flags make it headless. The rail-to-rail traverse
 //! streams a TEL current+pos sweep as one bus burst: its commutation ripple
-//! gives a MEASURED gear ratio (the gear prompt's default) and fills the pot
-//! linearization LUT. Both are gear-2-dependent and degrade gracefully
-//! (identity LUT / operator-input gear) when ripple SNR is low. The endstop
-//! state machine and the kinematics/units/lut math live in osc-ident; this
-//! wrapper owns USB, prompts, and files.
+//! gives a MEASURED gear ratio (the gear prompt's default), gear-2-dependent
+//! and degrading gracefully (operator-input gear) when ripple SNR is low.
+//! The pot LUT is not cal's to write: a new table re-defines the domain the
+//! identified constants were fitted in, so it travels with an ident. The
+//! endstop state machine and the kinematics/units math live in osc-ident;
+//! this wrapper owns USB, prompts, and files.
 
 pub mod replay;
 
@@ -26,7 +27,7 @@ use osc_ident::exp::sweep::{Sweep, SweepCfg};
 use osc_ident::exp::{Guarded, RigParams};
 use osc_ident::frame::TelFrame;
 use osc_ident::kinematics::{self, KinematicsResult, angle_endpoints};
-use osc_ident::lut::{self, PotLut, build_multi, stitched_motor_revs};
+use osc_ident::lut::{self, stitched_motor_revs};
 use osc_ident::regs::{calib, config, control};
 use osc_ident::slip;
 use osc_ident::units::{self, SenseParams};
@@ -122,9 +123,9 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     // the physical truth whether or not the rest is accepted.
     write_reg(&mut c, id, config::DRIVE_POLARITY, drive_polarity as i32)?;
 
-    // Dedicated constant-duty traverse = the ripple/LUT source, captured as
-    // one bus burst. A real capture can still fragment on dropped frames
-    // (16-tick holes), so the LUT + anchor stitch ALL chunks
+    // Dedicated constant-duty traverse = the ripple source, captured as one
+    // bus burst. A real capture can still fragment on dropped frames
+    // (16-tick holes), so the anchor stitches ALL chunks
     // (build_sweep_chunks) over the shared pos axis; the single longest run
     // (build_sweep) is kept only for the slip health-check and the
     // moving-run print.
@@ -182,33 +183,6 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     let (angle_min_cdeg, angle_max_cdeg) = angle_endpoints(phys_min, phys_max);
     let dpc = kinematics::deg_per_count(angle_min_cdeg, angle_max_cdeg, pos_min_phys, pos_max_phys);
 
-    // pot LUT stitched from all chunks; identity when the stitched coverage is
-    // too low (or the ripple SNR is too low to clock true angle) - build_multi
-    // decides internally and returns identity in either case. No chunks at all
-    // (an unusable capture) -> None, LUT left untouched below.
-    let lut = (!chunks.is_empty()).then(|| {
-        let l = build_multi(
-            &chunks,
-            fs,
-            RIPPLE_PER_REV,
-            pos_min_phys as u16,
-            pos_max_phys as u16,
-        );
-        let populated = l.corr.iter().any(|&c| c != 0);
-        (l, populated)
-    });
-    match &lut {
-        Some((l, true)) => {
-            let maxc = l.corr.iter().map(|&c| c.unsigned_abs()).max().unwrap_or(0);
-            println!("pot LUT: populated, max |corr| {maxc} counts");
-        }
-        Some((_, false)) => println!(
-            "pot LUT: identity (stitched coverage {:.0}% of travel)",
-            coverage.unwrap_or(0.0) * 100.0
-        ),
-        None => {}
-    }
-
     // gear-mesh slip check on the SAME sweep: pot must advance in fixed
     // proportion to motor rotation; a slipping/stripped tooth spikes or zeros
     // a segment. Advisory - one sweep can miss a localized slip zone.
@@ -260,13 +234,11 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     write_reg(&mut c, id, config::POS_MAX_PHYS_COUNTS, pos_max_phys)?;
     write_reg(&mut c, id, config::POS_MIN_SOFT_COUNTS, soft_min_count)?;
     write_reg(&mut c, id, config::POS_MAX_SOFT_COUNTS, soft_max_count)?;
+    write_reg(&mut c, id, calib::RAW_MIN, pos_min_phys)?;
+    write_reg(&mut c, id, calib::RAW_MAX, pos_max_phys)?;
     write_reg(&mut c, id, calib::ANGLE_MIN_CDEG, angle_min_cdeg as i32)?;
     write_reg(&mut c, id, calib::ANGLE_MAX_CDEG, angle_max_cdeg as i32)?;
     write_reg(&mut c, id, calib::GEAR_RATIO_CENTI, gear_ratio_centi as i32)?;
-
-    if let Some((l, ..)) = &lut {
-        write_pot_lut(&mut c, id, l)?;
-    }
 
     // SAVE needs torque off (protocol sec 9.4); park was already torque-off.
     write_reg(&mut c, id, control::TORQUE_ENABLE, 0)?;
@@ -448,21 +420,6 @@ fn longest_contiguous_run(s: &[(u64, u16, f64)]) -> Option<(usize, usize)> {
         (best_lo, best_hi) = (lo, s.len());
     }
     (best_hi - best_lo >= 2).then_some((best_lo, best_hi))
-}
-
-/// Write the PotLutBlock: raw_min/raw_max as scalars, then the 55 corr knots
-/// as one 110-byte blob (lut_corr is a single Bytes field, so a bulk write
-/// beats 55 round-trips and matches the on-servo layout exactly).
-fn write_pot_lut(c: &mut Client<NusbPipe>, id: Id, lut: &PotLut) -> Result<()> {
-    write_reg(c, id, calib::POT_LUT_RAW_MIN, lut.raw_min as i32)?;
-    write_reg(c, id, calib::POT_LUT_RAW_MAX, lut.raw_max as i32)?;
-    let mut bytes = [0u8; 110];
-    for (i, &k) in lut.corr.iter().enumerate() {
-        bytes[2 * i..2 * i + 2].copy_from_slice(&k.to_le_bytes());
-    }
-    c.write(id, calib::POT_LUT_CORR.addr, &bytes)
-        .context("write pot lut corr")?;
-    Ok(())
 }
 
 fn read_sense(c: &mut Client<NusbPipe>, id: Id) -> Result<SenseParams> {
