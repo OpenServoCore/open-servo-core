@@ -32,6 +32,10 @@ impl<P: Pipe> Client<P> {
         self.0.pipe_mut()
     }
 
+    pub fn into_pipe(self) -> P {
+        self.0.into_pipe()
+    }
+
     pub fn set_guard(&mut self, guard: Duration) {
         self.0.set_guard(guard);
     }

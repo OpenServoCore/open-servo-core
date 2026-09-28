@@ -121,6 +121,12 @@ impl FakePipe {
         self.sim.set_track(i, track);
     }
 
+    /// The host closes and reopens the adapter: every open configures it,
+    /// which starts a fresh link session (see `Sim::link_reopen`).
+    pub fn reopen(&mut self) {
+        self.sim.link_reopen();
+    }
+
     /// Drain the wire frames recorded across every `send`'s sim run --
     /// deterministic timing probes for injection tests.
     pub fn take_frames(&mut self) -> Vec<WireFrame> {
