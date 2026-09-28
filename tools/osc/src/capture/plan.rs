@@ -82,8 +82,25 @@ fn block_steps(b: &Blocks, name: &str, env: &Envelope) -> Result<Vec<Step>> {
             })
             .collect::<Result<_>>()?,
         "coast" => {
-            let c = &b.coast;
-            coast_duties(&c.duties, env.coast.top_pct.max(env.coast.probe_pct))
+            let (c, e) = (&b.coast, &env.coast);
+            if (c.drive_ms, c.coast_ms) != (e.drive_ms, e.coast_ms) {
+                bail!(
+                    "coast block runs {} ms drive, {} ms coast; the envelope's ladder ran {} ms, \
+                     {} ms: rerun osc capture pilot",
+                    c.drive_ms,
+                    c.coast_ms,
+                    e.drive_ms,
+                    e.coast_ms
+                );
+            }
+            let duties = coast_duties(&c.duties, e.top_pct);
+            if let Some(d) = duties
+                .iter()
+                .find(|&&d| !e.ladder.iter().any(|r| r.pct == d))
+            {
+                bail!("coast duty {d}% never ran on the pilot's ladder: rerun osc capture pilot");
+            }
+            duties
                 .into_iter()
                 .flat_map(|d| {
                     [
@@ -189,11 +206,20 @@ mod tests {
             let b = &plan.blocks[1];
             plan.schedule[b.first + b.count - 4]
         };
+        assert_eq!(coast_top(&env), Step::Drive(80, Some(80)));
+        env.coast.top_pct = 60;
+        assert_eq!(coast_top(&env), Step::Drive(60, Some(80)));
+
+        // a duty or a chain the pilot's ladder never ran
+        let err = |env: &Envelope| format!("{:#}", expand(&p, env, 1).unwrap_err());
         env.coast.top_pct = 75;
-        assert_eq!(coast_top(&env), Step::Drive(75, Some(80)));
-        // under the probe's own duty (already run by the pilot) the probe wins
-        env.coast.top_pct = 30;
-        assert_eq!(coast_top(&env), Step::Drive(40, Some(80)));
+        assert!(err(&env).contains("coast duty 75% never ran"));
+        env.coast.top_pct = 80;
+        env.coast.ladder.retain(|r| r.pct != 40);
+        assert!(err(&env).contains("coast duty 40% never ran"));
+        let mut env = mg90();
+        env.coast.coast_ms = 300;
+        assert!(err(&env).contains("envelope's ladder ran 80 ms, 300 ms"));
     }
 
     #[test]
