@@ -79,6 +79,11 @@ impl Decl {
             std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
         toml::from_str(&text).with_context(|| format!("parse {}", path.display()))
     }
+
+    /// `<servo>__<supply>`, the dataset dir's name.
+    pub(crate) fn name(&self) -> String {
+        super::dataset_name(&self.servo, self.supply)
+    }
 }
 
 /// One capture's dir. A warm-up capture's dir is removed on drop, so its

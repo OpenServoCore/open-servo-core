@@ -2,14 +2,14 @@
 //! capture records, with the block map session.py slices them back by.
 
 use anyhow::{Context, Result, anyhow, bail};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use super::envelope::Envelope;
 use super::procs::{Blocks, Procedure};
 use crate::sweep::{Decay, Step};
 
 /// Where one block landed in a recording's schedule.
-#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Block {
     pub(crate) name: String,
     pub(crate) first: usize,

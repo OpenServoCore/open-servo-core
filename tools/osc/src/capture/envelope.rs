@@ -199,6 +199,23 @@ impl Envelope {
     }
 }
 
+impl Limits {
+    /// The limits alone, whatever else the file holds: a dataset's envelope
+    /// keeps naming the stops after the sections around it change shape.
+    pub(crate) fn load(dir: &Path) -> Result<Self> {
+        #[derive(Deserialize)]
+        struct Only {
+            limits: Limits,
+        }
+        let path = dir.join(FILE);
+        let s =
+            std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+        toml::from_str::<Only>(&s)
+            .map(|o| o.limits)
+            .with_context(|| format!("parse {}", path.display()))
+    }
+}
+
 pub(crate) fn round_to(x: f64, places: i32) -> f64 {
     let k = 10f64.powi(places);
     (x * k).round() / k

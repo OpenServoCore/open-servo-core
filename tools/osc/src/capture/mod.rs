@@ -6,12 +6,13 @@
 
 mod battery;
 mod check;
-mod envelope;
+pub(crate) mod envelope;
 mod pilot;
 mod plan;
 mod procs;
 mod run;
-mod store;
+pub(crate) mod rungs;
+pub(crate) mod store;
 mod verdict;
 
 use std::ops::RangeInclusive;
@@ -188,8 +189,12 @@ fn default_root() -> Result<PathBuf> {
         .join("telemetry"))
 }
 
+pub(crate) fn dataset_name(servo: &str, supply: Supply) -> String {
+    format!("{servo}__{}", supply.as_str())
+}
+
 pub(crate) fn dataset_dir(root: &Path, servo: &str, supply: Supply) -> PathBuf {
-    root.join(format!("{servo}__{}", supply.as_str()))
+    root.join(dataset_name(servo, supply))
 }
 
 #[cfg(test)]

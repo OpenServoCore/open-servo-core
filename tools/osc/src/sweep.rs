@@ -162,7 +162,7 @@ pub(crate) fn parse_step(s: &str) -> Result<Step, String> {
 /// Whether step k feeds step k+1 with no settle between them: then/coast/
 /// brake steps chain to their predecessor so momentum carries across the
 /// burst gap.
-fn feeds(steps: &[Step], k: usize) -> bool {
+pub(crate) fn feeds(steps: &[Step], k: usize) -> bool {
     matches!(
         steps.get(k + 1),
         Some(Step::Then(..) | Step::Coast(_) | Step::Brake(_))
