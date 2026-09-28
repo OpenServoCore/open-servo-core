@@ -6,4 +6,5 @@
 //! `osc_servo_core` dispatch against simulated providers -- the same code the chip
 //! band will wire to hardware.
 
+pub mod plant;
 pub mod sim;
