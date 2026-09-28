@@ -198,13 +198,13 @@ impl SimServo {
     }
 
     /// A bench SAVE without the wire (sec 9.4): the live CONFIG, PROFILE and
-    /// CALIB regions land in the store, so the next boot overlays them back
-    /// and FACTORY wipes them.
+    /// CALIB regions and the pot LUT land in the store, so the next boot
+    /// overlays them back and FACTORY wipes them.
     pub fn persist(&self) {
         self.seed
             .store
             .expect("servo built with a store")
-            .save_table(&self.shared.table);
+            .save_table(&self.shared);
     }
 
     /// sec 9.1: the chip main-loop sampler's declaration (thread-level, not a

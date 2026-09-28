@@ -47,7 +47,7 @@ fn identified_store() -> &'static RamStore {
     let store = RamStore::leak();
     let sh = Shared::new();
     seed(&sh);
-    store.save_table(&sh.table);
+    store.save_table(&sh);
     store
 }
 
@@ -188,7 +188,7 @@ fn no_boot_state_drives_closed_loop_with_zero_recip_ke() {
                     seed(&sh);
                     set(&sh, |t| t.calib.motor.recip_ke_q = 0);
                     stamp(&sh);
-                    store.save_table(&sh.table);
+                    store.save_table(&sh);
                     store
                 } else {
                     identified_store()
