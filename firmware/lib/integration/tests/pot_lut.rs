@@ -1,17 +1,20 @@
 //! The pot LUT window over the wire (`pot_lut` module): STORE/FETCH/COMMIT
 //! round trips at every baud, every refusal leaving the identity behind,
-//! the stamp checkpoint a COMMIT runs, and the table's own flash image
-//! through SAVE, reboot, torn saves, rot and FACTORY. The mg90-a table
-//! below is the same 256 knots the core unit tests carry (bringup
+//! the stamp checkpoint a COMMIT runs, the table's own flash image
+//! through SAVE, reboot, torn saves, rot and FACTORY, and the kernel's
+//! endstop against the plant rig with the table LIVE. The mg90-a table
+//! (`support`) is the same 256 knots the core unit tests carry (bringup
 //! captures/mg90/pot-lut-mg90-a-grid.json), pinned to the Python reference
 //! by CRC.
 
+use osc_integration::plant::{Plant, kernel, last_cmd, lut_live, seed};
 use osc_integration::sim::{
     ImageKind, RamStore, Sim, Source, WireFrame, assert_valid, instruction, status,
 };
 use osc_protocol::crc::osc_crc_continue;
 use osc_protocol::wire::{MgmtOp, Opcode, ResultCode};
 use osc_servo_core::data_state::{CALIB_VIRGIN, CONFIG_VIRGIN, PLANT_UNSET, STAMP_MISMATCH};
+use osc_servo_core::kernel::DECIM_MED;
 use osc_servo_core::persist::{LutImage, Slot};
 use osc_servo_core::pot_lut::{INTERVALS, KNOTS, PAGE_KNOTS, PAGES, cmd, interp_q4, state};
 use osc_servo_core::regions::calib::addr::motor::{KE_VPC_Q, RECIP_KE_Q};
@@ -21,41 +24,16 @@ use osc_servo_core::regions::control::addr::lifecycle::TORQUE_ENABLE;
 use osc_servo_core::regions::control::addr::pot_lut::{LUT_CMD, LUT_KNOTS, LUT_PAGE, LUT_STATE};
 use osc_servo_core::regions::telemetry::addr::mode::DATA_FLAGS;
 use osc_servo_core::stamp::compute;
+use osc_servo_core::{Mode, MotorCmd, RegionStorage, Shared};
 use rstest::rstest;
 use rstest_reuse::apply;
 
 mod support;
-use support::{matrix, sim};
+use support::{MG90_A, MG90_A_MAX, MG90_A_MIN, matrix, mg90_a, sim};
 
 const ID5: u8 = 5;
-const MG90_A_MIN: u16 = 209;
-const MG90_A_MAX: u16 = 3849;
-const MG90_A: [i16; INTERVALS] = [
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, //
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, //
-    0, 0, 0, 4, -1, -5, -10, -16, -21, -23, -21, -14, -12, -11, -11, -14, //
-    -22, -25, -28, -28, -25, -27, -28, -29, -31, -30, -22, -23, -24, -20, -18, -20, //
-    -21, -29, -32, -35, -34, -33, -34, -33, -28, -27, -25, -25, -27, -30, -28, -25, //
-    -28, -24, -23, -23, -25, -23, -6, 3, 2, -2, -6, -8, -8, -3, -3, -7, //
-    -12, -14, -16, -17, -17, -12, 2, 15, 19, 16, 15, 17, 22, 25, 28, 30, //
-    28, 29, 29, 28, 25, 21, 19, 16, 14, 13, 12, 11, 6, 10, 20, 31, //
-    33, 38, 42, 42, 39, 35, 30, 26, 23, 22, 23, 24, 22, 26, 27, 30, //
-    34, 38, 41, 44, 42, 42, 42, 41, 43, 44, 45, 44, 43, 44, 45, 44, //
-    42, 42, 45, 47, 53, 59, 66, 71, 70, 70, 69, 65, 60, 56, 51, 47, //
-    44, 45, 43, 43, 42, 40, 39, 38, 39, 37, 35, 34, 33, 30, 27, 23, //
-    20, 18, 14, 9, 7, 8, 13, 16, 17, 18, 16, 13, 7, 6, 5, 6, //
-    3, 2, 7, 10, 10, 8, 13, 12, 9, 6, 2, -1, 0, 0, 0, 0, //
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, //
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, //
-];
 const MG90_A_Q4_CRC: u16 = 0x8F97;
 const ZERO: [i16; KNOTS] = [0; KNOTS];
-
-fn mg90_a() -> [i16; KNOTS] {
-    let mut k = ZERO;
-    k[..INTERVALS].copy_from_slice(&MG90_A);
-    k
-}
 
 fn sole_reply(frames: &[WireFrame]) -> &WireFrame {
     let replies: Vec<&WireFrame> = frames
@@ -508,6 +486,61 @@ fn corrupt_or_stale_lut_image_boots_identity_under_the_stamp(baud_idx: u8) {
         0,
         "a lost identity image is no loss"
     );
+}
+
+// The kernel with the table LIVE, against the plant rig
+
+/// An outward OpenLoop push from rest at raw `pos` against soft limits
+/// `(min, max)`: whether the endstop brakes it.
+fn endstop_blocks(lut: Option<&[i16; KNOTS]>, pos: u16, soft: (i32, i32), duty: i16) -> bool {
+    let sh = Shared::new();
+    seed(&sh);
+    if let Some(k) = lut {
+        lut_live(&sh, k);
+    }
+    sh.table.with_mut(|t| {
+        t.config.pos_limits.pos_min_soft_counts = soft.0;
+        t.config.pos_limits.pos_max_soft_counts = soft.1;
+        t.control.lifecycle.mode = Mode::OpenLoop;
+        t.control.lifecycle.goal_duty = duty;
+        t.control.lifecycle.torque_enable = true;
+    });
+    let mut k = kernel();
+    let f = Plant::new(pos).step(0);
+    for _ in 0..2 * DECIM_MED {
+        k.on_tick(f, &sh);
+    }
+    matches!(last_cmd(&k), MotorCmd::Brake)
+}
+
+/// The soft limits sit inside the identity insets (mg90-a: 432 and 3626
+/// against stops 209/3849, zero knots up to raw 544 and from 3520), so the
+/// endstop brake trips at the same raw count with the table LIVE as
+/// without it; mid-travel the wall is a linearized count, and raw 2048
+/// (2081 linearized) is already past a wall at 2060.
+#[test]
+fn endstop_trips_at_the_same_raw_counts_under_a_live_lut() {
+    let k = mg90_a();
+    let soft = (432, 3626);
+    for lut in [None, Some(&k)] {
+        assert!(endstop_blocks(lut, 3626, soft, 4000), "{:?}", lut.is_some());
+        assert!(
+            !endstop_blocks(lut, 3625, soft, 4000),
+            "{:?}",
+            lut.is_some()
+        );
+        assert!(endstop_blocks(lut, 432, soft, -4000), "{:?}", lut.is_some());
+        assert!(
+            !endstop_blocks(lut, 433, soft, -4000),
+            "{:?}",
+            lut.is_some()
+        );
+    }
+    assert_eq!(interp_q4(3626, &k), 3626 << 4);
+    assert_eq!(interp_q4(432, &k), 432 << 4);
+    assert!(!endstop_blocks(None, 2048, (432, 2060), 4000));
+    assert!(endstop_blocks(Some(&k), 2048, (432, 2060), 4000));
+    assert_eq!(interp_q4(2048, &k) >> 4, 2081);
 }
 
 /// A page past the last or an unknown command is a Validation nack: the

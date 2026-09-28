@@ -45,6 +45,12 @@ impl Shared {
         f(unsafe { &mut *self.pot_lut.get() })
     }
 
+    /// The kernel's volatile-read handle (`Shared::pot_lut_q4`): the writer
+    /// may preempt a read, so the fast tick never forms a `&`.
+    pub(crate) fn pot_lut_ptr(&self) -> *const [i16; KNOTS] {
+        self.pot_lut.get()
+    }
+
     /// Seed the ESIG-derived UID. Bringup-only, pre-IRQ; sole writer (the
     /// `seed_config_defaults` contract).
     pub fn seed_uid(&self, uid: [u8; UID_LEN]) {

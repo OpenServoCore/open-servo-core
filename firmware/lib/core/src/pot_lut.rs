@@ -73,12 +73,23 @@ pub fn index(raw: u16) -> usize {
 /// so both knot loads are provably in range and no bounds check remains.
 #[inline(always)]
 pub fn interp_q4(raw: u16, knots: &[i16; KNOTS]) -> u16 {
+    let i = index(raw);
+    lerp_q4(raw, knots[i], knots[i + 1])
+}
+
+/// The interpolation alone, `c0`/`c1` the knots either side of `raw`'s
+/// interval; the kernel loads them volatile off the raw table pointer.
+#[inline(always)]
+pub fn lerp_q4(raw: u16, c0: i16, c1: i16) -> u16 {
     let raw = raw & ADC_MASK;
-    let i = (raw >> GRID_SHIFT) as usize;
-    let c0 = knots[i] as i32;
-    let c1 = knots[i + 1] as i32;
     let f = (raw & FRAC_MASK) as i32;
-    (((raw as i32 + c0) << GRID_SHIFT) + (c1 - c0) * f) as u16
+    (((raw as i32 + c0 as i32) << GRID_SHIFT) + (c1 as i32 - c0 as i32) * f) as u16
+}
+
+/// What the all-zero table yields: `raw << GRID_SHIFT`.
+#[inline(always)]
+pub fn identity_q4(raw: u16) -> u16 {
+    (raw & ADC_MASK) << GRID_SHIFT
 }
 
 /// Physics sanity only, never quality: zero at and beyond the stops (every
@@ -113,6 +124,21 @@ impl Reject {
 }
 
 impl Shared {
+    /// The kernel's per-tick read while `lut_state` is LIVE: two volatile
+    /// knot loads off the raw pointer, no `&` across the ISR boundary. HIGH
+    /// dispatch (the sole writer) can preempt between the two loads, but
+    /// STORE and COMMIT are torque-gated, so a mixed read only ever reaches
+    /// a disabled servo, whose observer reseeds at the next enable.
+    #[inline(always)]
+    pub fn pot_lut_q4(&self, raw: u16) -> u16 {
+        let i = index(raw);
+        let k = self.pot_lut_ptr().cast::<i16>();
+        // SAFETY: `index` keeps i + 1 <= INTERVALS < KNOTS, both loads stay
+        // inside the static array; single-writer contract in the fn doc.
+        let (c0, c1) = unsafe { (k.add(i).read_volatile(), k.add(i + 1).read_volatile()) };
+        lerp_q4(raw, c0, c1)
+    }
+
     /// Run the command a committed write left in `lut_cmd`, then clear it.
     /// STORE copies the window into the array's page and leaves LOADING;
     /// FETCH copies that page back into the window; COMMIT validates the
@@ -381,6 +407,19 @@ mod tests {
     fn interp_wraps_like_the_u16_cast() {
         assert_eq!(interp_q4(0, &table(&[(0, -1)])), 0xFFF0);
         assert_eq!(interp_q4(4095, &table(&[(255, 1)])), 65521);
+    }
+
+    /// The kernel's volatile read off the array is `interp_q4` for every
+    /// raw count, and the identity is `raw << 4` past the ADC span too.
+    #[test]
+    fn kernel_read_matches_interp_exhaustive() {
+        let sh = Shared::new();
+        let k = mg90_a();
+        sh.with_pot_lut_mut(|a| *a = k);
+        for raw in 0..=u16::MAX {
+            assert_eq!(sh.pot_lut_q4(raw), interp_q4(raw, &k), "raw {raw}");
+            assert_eq!(identity_q4(raw), interp_q4(raw, &ZERO), "raw {raw}");
+        }
     }
 
     // The window: what the dispatcher's post-commit step runs.
