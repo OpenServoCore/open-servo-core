@@ -21,7 +21,9 @@ use osc_host::link::record::{self, Diag};
 
 use crate::hal::{pfic, rcc};
 
-const MAGIC: u32 = 0x5343_4F53;
+// Bump on any `Record` layout change: the record outlives a reflash, and a
+// layout must never adopt fields another layout wrote.
+const MAGIC: u32 = 0x5343_4F54;
 
 #[repr(C)]
 struct Record {
