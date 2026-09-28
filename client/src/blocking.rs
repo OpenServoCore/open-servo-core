@@ -9,10 +9,13 @@ use osc_protocol::wire::{BaudRate, Id, Inst};
 use crate::client::{Chain, Ping, Reply, StreamReply};
 use crate::common::{self, Health, Identity};
 use crate::cyclic::Cycle;
+use crate::data_state::{self, DataState};
+use crate::descriptor::Descriptor;
 use crate::error::Error;
 use crate::mgmt::{self, CalTrace, Found, Uid};
 use crate::pipe::Pipe;
 use crate::session::LinkInfo;
+use crate::stamp::{self, Verdict};
 #[cfg(feature = "bench")]
 use crate::wire::EdgeDrain;
 
@@ -197,6 +200,28 @@ impl<P: Pipe> Client<P> {
 
     pub fn clear_counters(&mut self, id: Id) -> Result<(), Error> {
         block_on(common::clear_counters(&mut self.0, id))
+    }
+
+    pub fn read_span(&mut self, id: Id, lo: u16, hi: u16) -> Result<Vec<u8>, Error> {
+        block_on(self.0.read_span(id, lo, hi))
+    }
+
+    pub fn data_state(&mut self, id: Id, d: &Descriptor) -> Result<DataState, Error> {
+        block_on(data_state::read(&mut self.0, id, d))
+    }
+
+    /// The stamp of the set the servo holds now.
+    pub fn plant_stamp(&mut self, id: Id, d: &Descriptor) -> Result<u16, Error> {
+        block_on(stamp::compute(&mut self.0, id, d))
+    }
+
+    pub fn stamp_verdict(&mut self, id: Id, d: &Descriptor) -> Result<Verdict, Error> {
+        block_on(stamp::verdict(&mut self.0, id, d))
+    }
+
+    /// Stamp the live set; the firmware verifies it only with torque off.
+    pub fn restamp(&mut self, id: Id, d: &Descriptor) -> Result<u16, Error> {
+        block_on(stamp::restamp(&mut self.0, id, d))
     }
 
     pub fn read_profile(&mut self, id: Id, slot: u8) -> Result<Vec<u8>, Error> {

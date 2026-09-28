@@ -5,14 +5,16 @@
 
 use osc_integration::sim::{RamStore, Sim, WireFrame};
 use osc_protocol::wire::BaudRate;
+use osc_servo_core::stamp;
 
 use crate::pipe::{Pipe, PipeError};
 
 pub use osc_integration::sim::TelSample;
 
-/// The dev board's own facts, and one real SG90's calibration dumped off it:
-/// what a simulated servo needs to read back like a servo that left the
-/// bench calibrated, instead of "not calibrated".
+/// The dev board's own facts, one real SG90's calibration dumped off it and
+/// a bench MG90's identified motor: what a simulated servo needs to read
+/// back like a servo that left the bench calibrated, identified and
+/// stamped, instead of "not calibrated".
 pub mod seed {
     use osc_integration::sim::{CalibSense, CalibSenseExt};
 
@@ -51,6 +53,14 @@ pub mod seed {
     pub const POS_MIN_SOFT_COUNTS: i32 = 228;
     pub const POS_MAX_SOFT_COUNTS: i32 = 3872;
     pub const DRIVE_POLARITY: bool = true;
+    // The identified motor (an `osc ident` fit on a 2S rail): nonzero Ke is
+    // what lets the closed loops open once the set is stamped.
+    pub const R_Q12: u16 = 7270;
+    pub const RECIP_KE_Q: u16 = 6957;
+    pub const B_I_Q313: u16 = 2427;
+    pub const FRIC_FC_COUNTS: u16 = 53;
+    pub const FRIC_FV_Q016: u16 = 356;
+    pub const KE_VPC_Q: u16 = 603;
 }
 
 pub struct FakePipe {
@@ -85,27 +95,44 @@ impl FakePipe {
         &mut self.sim
     }
 
-    /// Servo `i` comes up like one off the calibration bench ([`seed`]): the
-    /// board's sense chain goes in as board data, and the dumped CALIB plus
-    /// travel limits are written and SAVEd. So the app reads real units from
-    /// the first scan, a reboot keeps them, and FACTORY wipes them back to
-    /// board defaults - exactly what the hardware does (protocol sec
-    /// 9.4/9.5).
-    pub fn seed_calibrated(&mut self, i: usize) {
+    /// Servo `i` carries the dev board's sense chain as board data
+    /// ([`seed`]): install re-stamps it at every bringup, so FACTORY leaves
+    /// it standing. Alone, the servo is factory-fresh (every `data_flags`
+    /// reason of a never-saved, never-identified servo).
+    pub fn seed_board(&mut self, i: usize) {
         self.sim.set_servo_sense(i, seed::SENSE, seed::SENSE_EXT);
+    }
+
+    /// Servo `i` comes up like one off the calibration bench ([`seed`]): the
+    /// dumped CALIB, the travel limits and the identified motor are
+    /// written, stamped and SAVEd, then the board data goes in. So the app
+    /// reads real units from the first scan with `data_flags` clear, a
+    /// reboot keeps them, and FACTORY wipes them back to board defaults -
+    /// exactly what the hardware does (protocol sec 9.4/9.5).
+    pub fn seed_calibrated(&mut self, i: usize) {
         self.sim.servo_table_mut(i, |t| {
             t.calib.pot.raw_min = seed::RAW_MIN;
             t.calib.pot.raw_max = seed::RAW_MAX;
             t.calib.kinematics.angle_min_cdeg = seed::ANGLE_MIN_CDEG;
             t.calib.kinematics.angle_max_cdeg = seed::ANGLE_MAX_CDEG;
             t.calib.kinematics.gear_ratio_centi = seed::GEAR_RATIO_CENTI;
+            t.calib.motor.r_q12 = seed::R_Q12;
+            t.calib.motor.recip_ke_q = seed::RECIP_KE_Q;
+            t.calib.motor.b_i_q313 = seed::B_I_Q313;
+            t.calib.motor.fric_fc_counts = seed::FRIC_FC_COUNTS;
+            t.calib.motor.fric_fv_q016 = seed::FRIC_FV_Q016;
+            t.calib.motor.ke_vpc_q = seed::KE_VPC_Q;
             t.config.pos_limits.pos_min_phys_counts = seed::POS_MIN_PHYS_COUNTS;
             t.config.pos_limits.pos_max_phys_counts = seed::POS_MAX_PHYS_COUNTS;
             t.config.pos_limits.pos_min_soft_counts = seed::POS_MIN_SOFT_COUNTS;
             t.config.pos_limits.pos_max_soft_counts = seed::POS_MAX_SOFT_COUNTS;
             t.config.limits.drive_polarity = seed::DRIVE_POLARITY;
+            t.calib.stamp.plant_stamp = stamp::compute(t, None);
         });
         self.sim.persist_servo(i);
+        // The sense swap power-cycles the servo onto the images just saved:
+        // the boot verdict is the firmware's own, not a flag set here.
+        self.seed_board(i);
     }
 
     /// Servo `i` (roster index) plays `track` back at the fast-tick rate:

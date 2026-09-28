@@ -11,7 +11,9 @@ use std::time::Duration;
 use osc_client::descriptor as desc;
 use osc_client::pipe::Pipe;
 use osc_client::webusb::{UsbDevice, WebUsbPipe};
-use osc_client::{Client, Error, Id, Inst, Opcode, Outcome, ResultCode, common, mgmt};
+use osc_client::{
+    Client, Error, Id, Inst, Opcode, Outcome, ResultCode, common, data_state, mgmt, stamp,
+};
 use osc_protocol::build;
 use tsify::{Ts, Tsify};
 use wasm_bindgen::prelude::*;
@@ -22,7 +24,10 @@ use osc_client::fake::{FakePipe, TelSample};
 use osc_protocol::wire::UID_LEN;
 
 use crate::descriptor::Descriptor;
-use crate::types::{Alive, BaudRate, Found, Health, Identity, LinkInfo, Ping, Rails, TelBurst};
+use crate::types::{
+    Alive, BaudRate, DataState, Found, Health, Identity, LinkInfo, Ping, Rails, StampVerdict,
+    TelBurst,
+};
 #[cfg(feature = "fake")]
 use crate::types::{FakeServo, Track};
 
@@ -181,6 +186,31 @@ impl OscClient {
         Ok(())
     }
 
+    /// `data_flags` and `fault_code` decoded: the reasons closed loop is
+    /// refused, most urgent first, with the operator line.
+    #[wasm_bindgen(js_name = dataState)]
+    pub async fn data_state(&self, id: u8, d: &Descriptor) -> Result<Ts<DataState>, JsError> {
+        let s = cmd!(self, |c| data_state::read(c, Id::new(id), d.inner())
+            .await?);
+        Ok(DataState::from(s).into_ts()?)
+    }
+
+    /// The stored `plant_stamp` beside the stamp the live covered set
+    /// computes to (the descriptor's `stamp` recipe).
+    #[wasm_bindgen(js_name = plantStamp)]
+    pub async fn plant_stamp(&self, id: u8, d: &Descriptor) -> Result<Ts<StampVerdict>, JsError> {
+        let v = cmd!(self, |c| stamp::verdict(c, Id::new(id), d.inner()).await?);
+        Ok(StampVerdict::from(v).into_ts()?)
+    }
+
+    /// Stamp the set the servo holds now; resolves to the stamp written.
+    /// The servo verifies it only with torque off - under torque it lands
+    /// unverified and STAMP_MISMATCH waits for the next torque-off
+    /// checkpoint.
+    pub async fn restamp(&self, id: u8, d: &Descriptor) -> Result<u16, JsError> {
+        Ok(cmd!(self, |c| stamp::restamp(c, Id::new(id), d.inner()).await?))
+    }
+
     pub async fn read(&self, id: u8, addr: u16, count: u16) -> Result<Vec<u8>, JsError> {
         Ok(cmd!(self, |c| c.read(Id::new(id), addr, count).await?))
     }
@@ -282,40 +312,40 @@ impl OscClient {
 #[wasm_bindgen]
 impl OscClient {
     /// A fleet of `ids` on a simulated bus, already HELLOed. No hardware,
-    /// no user gesture; each servo's UID is derived from its id.
+    /// no user gesture; each servo's UID is derived from its id, and every
+    /// servo boots calibrated, identified and stamped (`dataState` clean).
     pub async fn fake(
         #[wasm_bindgen(unchecked_param_type = "number[]")] ids: Vec<u8>,
     ) -> Result<OscClient, JsError> {
-        Self::fake_fleet(ids, Vec::new()).await
+        let fleet = ids
+            .into_iter()
+            .map(|id| FakeServo {
+                id,
+                track: None,
+                virgin: false,
+            })
+            .collect();
+        Self::fake_fleet(fleet).await
     }
 
-    /// `fake` with an optional recorded track per servo: the sim plays
-    /// each track back at the fast-tick rate, so bursts and the live
+    /// `fake` with per-servo options: an optional recorded track (the sim
+    /// plays it back at the fast-tick rate, so bursts and the live
     /// telemetry registers show captured data instead of the synthetic
-    /// ramp. A track's columns must be non-empty and equal in length.
+    /// ramp; columns must be non-empty and equal in length), and `virgin`
+    /// for a factory-fresh servo that has never been calibrated,
+    /// identified or saved.
     #[wasm_bindgen(js_name = fakeWithTracks)]
     pub async fn fake_with_tracks(
         #[wasm_bindgen(unchecked_param_type = "FakeServo[]")] fleet: JsValue,
     ) -> Result<OscClient, JsError> {
-        let fleet: Vec<FakeServo> = serde_wasm_bindgen::from_value(fleet)?;
-        let mut ids = Vec::with_capacity(fleet.len());
-        let mut tracks = Vec::with_capacity(fleet.len());
-        for s in fleet {
-            ids.push(s.id);
-            tracks.push(s.track.map(track_rows).transpose()?);
-        }
-        Self::fake_fleet(ids, tracks).await
+        Self::fake_fleet(serde_wasm_bindgen::from_value(fleet)?).await
     }
 
-    /// `tracks` pairs with `ids` by index; shorter (or empty) leaves the
-    /// rest on the synthetic samples.
-    async fn fake_fleet(
-        ids: Vec<u8>,
-        tracks: Vec<Option<Vec<TelSample>>>,
-    ) -> Result<OscClient, JsError> {
-        if ids.is_empty() {
+    async fn fake_fleet(fleet: Vec<FakeServo>) -> Result<OscClient, JsError> {
+        if fleet.is_empty() {
             return Err(JsError::new("fake: the fleet needs at least one id"));
         }
+        let ids: Vec<u8> = fleet.iter().map(|s| s.id).collect();
         for (i, id) in ids.iter().enumerate() {
             if ids[..i].contains(id) {
                 return Err(JsError::new(&format!("fake: duplicate id {id}")));
@@ -324,13 +354,15 @@ impl OscClient {
         // The rate a servo leaves the factory at, so the fleet answers
         // before any migration.
         let mut pipe = FakePipe::new(osc_client::BaudRate::B1000000, &ids);
-        for (i, &id) in ids.iter().enumerate() {
-            pipe.sim_mut().seed_servo_uid(i, uid(id));
-            pipe.seed_calibrated(i);
-        }
-        for (i, track) in tracks.into_iter().enumerate() {
-            if let Some(track) = track {
-                pipe.set_track(i, track);
+        for (i, s) in fleet.into_iter().enumerate() {
+            pipe.sim_mut().seed_servo_uid(i, uid(s.id));
+            if s.virgin {
+                pipe.seed_board(i);
+            } else {
+                pipe.seed_calibrated(i);
+            }
+            if let Some(track) = s.track {
+                pipe.set_track(i, track_rows(track)?);
             }
         }
         let c = Client::connect(pipe).await?;

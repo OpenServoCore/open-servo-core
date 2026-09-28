@@ -408,6 +408,7 @@ dependencies = [
  "osc-host",
  "osc-integration",
  "osc-protocol",
+ "osc-servo-core",
  "serde",
  "serde_json",
  "wasm-bindgen",

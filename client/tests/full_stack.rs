@@ -9,6 +9,10 @@ use std::time::Duration;
 use osc_client::blocking::Client;
 use osc_client::common::{Health, Identity};
 use osc_client::cyclic::{Cycle, Group, Telemetry};
+use osc_client::data_state::{
+    self, CALIB_VIRGIN, CONFIG_VIRGIN, PLANT_UNSET, Reason, STAMP_MISMATCH, fault,
+};
+use osc_client::descriptor::{Descriptor, Kind, Value, encode};
 use osc_client::fake::{FakePipe, seed};
 use osc_client::mgmt::{Found, Uid};
 use osc_client::session::{EngineCommand, Record, Session};
@@ -394,6 +398,261 @@ fn clear_counters_zeroes_both_in_one_write() {
     c.clear_counters(Id::new(5)).expect("clear");
     let h = c.health(Id::new(5)).expect("health");
     assert_eq!((h.crc_fail_count, h.framing_drop_count), (0, 0));
+}
+
+// --- data state and the plant stamp ---
+
+/// The checked-in descriptor: the stamp recipe and the register names the
+/// data-state helpers resolve.
+const DESCRIPTOR: &str = include_str!("../../descriptors/osc-servo/0.1.json");
+/// The kernel's latched data fault (`kernel/faults.rs` BIT_DATA).
+const BIT_DATA: u8 = 1 << 6;
+/// A never-saved, never-identified servo.
+const FRESH: u8 = CONFIG_VIRGIN | CALIB_VIRGIN | STAMP_MISMATCH | PLANT_UNSET;
+
+fn descriptor() -> Descriptor {
+    Descriptor::parse(DESCRIPTOR).expect("descriptor parses")
+}
+
+fn write_field(c: &mut Client<FakePipe>, id: Id, d: &Descriptor, name: &str, v: Value) {
+    let f = d
+        .field(name)
+        .unwrap_or_else(|| panic!("{name} in descriptor"));
+    let bytes = encode(f, &v).unwrap_or_else(|e| panic!("{name}: {e}"));
+    c.write(id, f.addr, &bytes)
+        .unwrap_or_else(|e| panic!("{name}: {e}"));
+}
+
+fn firmware_stamp(c: &mut Client<FakePipe>) -> u16 {
+    c.pipe_mut()
+        .sim_mut()
+        .servo_table(0, |t| osc_servo_core::stamp::compute(t, None))
+}
+
+#[test]
+fn seeded_servo_boots_identified_and_stamped() {
+    let d = descriptor();
+    let mut pipe = FakePipe::new(BaudRate::B1000000, &[1]);
+    pipe.seed_calibrated(0);
+    let mut c = Client::connect(pipe).expect("connect");
+    let id = Id::new(1);
+
+    let s = c.data_state(id, &d).expect("data state");
+    assert_eq!((s.flags, s.fault_code), (0, fault::NONE));
+    assert_eq!(s.message(), None);
+    let v = c.stamp_verdict(id, &d).expect("verdict");
+    assert!(v.matches(), "{v:?}");
+    assert_eq!(v.stored, firmware_stamp(&mut c));
+    assert!(data_state::allows(s.flags, true));
+
+    c.reboot(id).expect("reboot");
+    assert_eq!(c.data_state(id, &d).expect("data state").flags, 0);
+
+    c.factory(id).expect("factory");
+    let s = c.data_state(id, &d).expect("data state");
+    assert_eq!(s.flags, FRESH, "a wiped store boots factory-fresh");
+    assert_eq!(s.reasons()[0], Reason::ConfigVirgin);
+    assert_eq!(
+        c.stamp_verdict(id, &d).expect("verdict").stored,
+        osc_client::stamp::UNSTAMPED
+    );
+}
+
+/// Board data alone leaves the servo factory-fresh: the GUI's virgin
+/// variant.
+#[test]
+fn board_seed_alone_is_factory_fresh() {
+    let d = descriptor();
+    let mut pipe = FakePipe::new(BaudRate::B1000000, &[1]);
+    pipe.seed_board(0);
+    let mut c = Client::connect(pipe).expect("connect");
+    let s = c.data_state(Id::new(1), &d).expect("data state");
+    assert_eq!(s.flags, FRESH);
+    assert_eq!(
+        read_u16(&mut c, Id::new(1), SHUNT_R_MOHM),
+        seed::SENSE.shunt_r_mohm
+    );
+}
+
+/// The host stamp is the firmware's, byte for byte: over the seeded set,
+/// over a set written through the wire, and over tables filled with
+/// arbitrary bytes; the firmware's own checkpoint (a torque-off stamp
+/// write) is the second witness each time.
+#[test]
+fn host_stamp_is_the_firmwares_over_the_same_table() {
+    let d = descriptor();
+    let mut pipe = FakePipe::new(BaudRate::B1000000, &[1]);
+    pipe.seed_calibrated(0);
+    let mut c = Client::connect(pipe).expect("connect");
+    let id = Id::new(1);
+    let stamp = d.stamp().expect("recipe");
+    assert_eq!(stamp.covered().len(), 35);
+
+    let check = |c: &mut Client<FakePipe>, case: &str| {
+        let host = c.plant_stamp(id, &d).expect("host stamp");
+        assert_eq!(host, firmware_stamp(c), "{case}");
+        assert_eq!(c.restamp(id, &d).expect("restamp"), host);
+        let s = c.data_state(id, &d).expect("data state");
+        assert_eq!(s.flags & STAMP_MISMATCH, 0, "{case}: the checkpoint agrees");
+        host
+    };
+    let seeded = check(&mut c, "seeded");
+
+    write_field(&mut c, id, &d, "v_kp_q88", Value::Uint(700));
+    write_field(&mut c, id, &d, "recip_ke_q", Value::Uint(4321));
+    write_field(&mut c, id, &d, "drive_polarity", Value::Bool(false));
+    write_field(&mut c, id, &d, "pos_deadband_counts", Value::Uint(9));
+    write_field(&mut c, id, &d, "l1_q016", Value::Uint(12345));
+    assert_eq!(
+        c.data_state(id, &d).expect("data state").flags,
+        STAMP_MISMATCH,
+        "covered writes mark the set stale"
+    );
+    let wired = check(&mut c, "wire-written");
+    assert_ne!(wired, seeded);
+
+    // Arbitrary bytes in every covered field, past any write rule: the
+    // hash must not depend on what the values mean.
+    let mut x = 0x2545_F491u32;
+    for round in 0..4 {
+        c.pipe_mut().sim_mut().servo_table_mut(0, |t| {
+            let bytes = table_bytes(t);
+            for f in stamp.covered() {
+                for b in &mut bytes[f.addr as usize..f.end() as usize] {
+                    x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    *b = (x >> 24) as u8;
+                    if f.kind == Kind::Bool {
+                        *b &= 1;
+                    }
+                }
+            }
+        });
+        let table = c
+            .pipe_mut()
+            .sim_mut()
+            .servo_table_mut(0, |t| table_bytes(t).to_vec());
+        let offline = stamp.compute(0, &table, None).expect("offline");
+        let host = check(&mut c, &format!("fill round {round}"));
+        assert_eq!(host, offline, "the span read and the whole table agree");
+    }
+}
+
+/// The table as the flat byte map the firmware hashes (repr(C), padding-free
+/// by the derive's assert, every byte initialized).
+fn table_bytes(t: &mut osc_servo_core::ControlTable) -> &mut [u8] {
+    // SAFETY: see fn doc; the borrow of `t` bounds the slice, and the
+    // caller writes only int and 0/1 bool bytes.
+    unsafe {
+        std::slice::from_raw_parts_mut(
+            (t as *mut osc_servo_core::ControlTable).cast::<u8>(),
+            std::mem::size_of::<osc_servo_core::ControlTable>(),
+        )
+    }
+}
+
+/// The commit sequence on a factory-fresh servo, as `osc cal` then
+/// `osc ident write` run it: the set, the stamp, SAVE, and only then a
+/// clean data state; a covered edit afterwards shuts closed loop until a
+/// restamp.
+#[test]
+fn virgin_servo_commit_sequence_then_a_covered_edit_refuses_closed_loop() {
+    let d = descriptor();
+    let mut pipe = FakePipe::new(BaudRate::B1000000, &[1]);
+    pipe.seed_board(0);
+    let mut c = Client::connect(pipe).expect("connect");
+    let id = Id::new(1);
+
+    let s = c.data_state(id, &d).expect("data state");
+    assert_eq!(s.flags, FRESH);
+    assert!(
+        data_state::allows(s.flags, false),
+        "OpenLoop and Current run"
+    );
+    assert!(!data_state::allows(s.flags, true));
+
+    // cal: stops, travel, polarity, angles, gear
+    for (name, v) in [
+        ("pos_min_phys_counts", Value::Int(5)),
+        ("pos_max_phys_counts", Value::Int(4095)),
+        ("pos_min_soft_counts", Value::Int(228)),
+        ("pos_max_soft_counts", Value::Int(3872)),
+        ("raw_min", Value::Uint(5)),
+        ("raw_max", Value::Uint(4095)),
+        ("drive_polarity", Value::Bool(true)),
+        ("angle_min_cdeg", Value::Int(0)),
+        ("angle_max_cdeg", Value::Int(20200)),
+        ("gear_ratio_centi", Value::Uint(25464)),
+    ] {
+        write_field(&mut c, id, &d, name, v);
+    }
+    // ident write: the identified set
+    for (name, v) in [
+        ("r_q12", seed::R_Q12),
+        ("recip_ke_q", seed::RECIP_KE_Q),
+        ("b_i_q313", seed::B_I_Q313),
+        ("fric_fc_counts", seed::FRIC_FC_COUNTS),
+        ("fric_fv_q016", seed::FRIC_FV_Q016),
+        ("ke_vpc_q", seed::KE_VPC_Q),
+        ("v_kp_q88", 543),
+        ("p_kp_q88", 40212),
+    ] {
+        write_field(&mut c, id, &d, name, Value::Uint(v as u64));
+    }
+    assert_eq!(c.data_state(id, &d).expect("data state").flags, FRESH);
+
+    // the stamp, with torque off, is the checkpoint
+    let stamp = c.restamp(id, &d).expect("restamp");
+    assert_eq!(stamp, firmware_stamp(&mut c));
+    let s = c.data_state(id, &d).expect("data state");
+    assert_eq!(s.flags, CONFIG_VIRGIN | CALIB_VIRGIN);
+    assert_eq!(s.reasons(), [Reason::ConfigVirgin, Reason::CalibVirgin]);
+    assert!(
+        !data_state::allows(s.flags, true),
+        "VIRGIN clears only on SAVE"
+    );
+
+    c.save(id).expect("save");
+    let s = c.data_state(id, &d).expect("data state");
+    assert_eq!(s.flags, 0);
+    assert!(data_state::allows(s.flags, true));
+    c.reboot(id).expect("reboot");
+    assert_eq!(c.data_state(id, &d).expect("data state").flags, 0);
+    assert!(c.stamp_verdict(id, &d).expect("verdict").matches());
+
+    // a gain edit: the set is no longer the stamped one
+    write_field(&mut c, id, &d, "v_kp_q88", Value::Uint(600));
+    let s = c.data_state(id, &d).expect("data state");
+    assert_eq!(s.flags, STAMP_MISMATCH);
+    assert!(!data_state::allows(s.flags, true));
+    assert!(data_state::allows(s.flags, false));
+    let v = c.stamp_verdict(id, &d).expect("verdict");
+    assert!(!v.matches());
+    assert_eq!(v.stored, stamp);
+
+    // the kernel's refusal of the next closed-loop enable, as the fault
+    // ISR publishes it (the fake adapter runs no kernel)
+    c.pipe_mut().sim_mut().servo_table_mut(0, |t| {
+        t.telemetry.common.fault_flags = BIT_DATA;
+        t.telemetry.mode.fault_code = fault::DATA;
+    });
+    let s = c.data_state(id, &d).expect("data state");
+    assert_eq!(fault::name(s.fault_code), Some("data"));
+    assert_eq!(
+        s.message().unwrap(),
+        format!("closed loop refused: {}", Reason::StampMismatch.text())
+    );
+    assert_eq!(c.health(id).expect("health").fault_flags, BIT_DATA);
+
+    // torque on: the restamp lands unverified until torque drops
+    write_field(&mut c, id, &d, "torque_enable", Value::Bool(true));
+    c.restamp(id, &d).expect("restamp under torque");
+    assert_eq!(
+        c.data_state(id, &d).expect("data state").flags,
+        STAMP_MISMATCH
+    );
+    write_field(&mut c, id, &d, "torque_enable", Value::Bool(false));
+    c.restamp(id, &d).expect("restamp");
+    assert_eq!(c.data_state(id, &d).expect("data state").flags, 0);
 }
 
 /// The park mechanism itself is pinned in osc-integration's `cross_baud`

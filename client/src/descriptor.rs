@@ -21,7 +21,21 @@ pub struct Descriptor {
     pub firmware_major: u8,
     pub firmware_minor: u8,
     pub table_size: u16,
+    /// The plant stamp's recipe (`stamp` module); absent from a model that
+    /// keeps no identified set.
+    #[serde(default)]
+    pub stamp: Option<StampSpec>,
     pub fields: Vec<Field>,
+}
+
+/// What the firmware hashes into `plant_stamp`, exported so no host keeps
+/// a second copy of the covered list: the tag, the covered field names in
+/// table order, and the number of pot LUT knots hashed after them.
+#[derive(Debug, Clone, Deserialize)]
+pub struct StampSpec {
+    pub tag: String,
+    pub covered: Vec<String>,
+    pub lut_knots: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]

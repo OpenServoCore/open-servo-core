@@ -315,6 +315,23 @@ impl<P: Pipe> Client<P> {
         Ok(status.payload)
     }
 
+    /// Read `[lo, hi)` in as many status-frame-sized READs as it takes.
+    pub async fn read_span(&mut self, id: Id, lo: u16, hi: u16) -> Result<Vec<u8>, Error> {
+        const CHUNK: u16 = 252;
+        let mut out = Vec::with_capacity(hi.saturating_sub(lo) as usize);
+        let mut addr = lo;
+        while addr < hi {
+            let len = CHUNK.min(hi - addr);
+            let b = self.read(id, addr, len).await?;
+            if b.len() < len as usize {
+                return Err(desync_msg(format!("short read at {addr:#06x}")));
+            }
+            out.extend_from_slice(&b[..len as usize]);
+            addr += len;
+        }
+        Ok(out)
+    }
+
     /// Single-target PROFILE read (sec 5.2): the payload names a slot the
     /// target pre-configured; the reply streams its gathered spans.
     pub async fn read_profile(&mut self, id: Id, slot: u8) -> Result<Vec<u8>, Error> {
