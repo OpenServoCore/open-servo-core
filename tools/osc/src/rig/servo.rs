@@ -249,6 +249,10 @@ pub(crate) mod bench {
         id: Id,
         pub(crate) servo: FakeServo,
         bus: Bus,
+        /// Ticks past a stream's first sample at its goal that the applied
+        /// duty last comes to it: the limiter takes it back for the 4
+        /// ticks before. 0 never chatters.
+        pub(crate) chatter: u64,
     }
 
     impl Bench {
@@ -268,6 +272,7 @@ pub(crate) mod bench {
                 id,
                 servo,
                 bus: Bus::BENCH,
+                chatter: 0,
             }
         }
 
@@ -321,6 +326,15 @@ pub(crate) mod bench {
             }
             let mut frames = Vec::new();
             self.servo.stream(samples, &mut frames);
+            if let Some((_, goal)) = goal.filter(|_| self.chatter > 0) {
+                let goal = goal as i16;
+                if let Some(k) = frames.iter().position(|f| f.duty_q15 == Some(goal)) {
+                    let last = (k as u64 + self.chatter) as usize;
+                    for f in frames.iter_mut().take(last).skip(last.saturating_sub(4)) {
+                        f.duty_q15 = Some(goal - goal.signum() * 128);
+                    }
+                }
+            }
             let stats = BurstStats {
                 frames: frames.len().div_ceil(16),
                 samples: frames.len(),

@@ -362,10 +362,8 @@ fn grid_rung<S: Servo>(
                 }));
             }
             _ if !retry => {
-                let longer = match climb {
-                    Some(c) => ((c.ms + tail).ceil() as u32 + 1).max(window + 1),
-                    None => 2 * window,
-                };
+                let arrival = runway::arrival_ms(&frames, goal, rig.hz * 1000.0);
+                let longer = retry_window(window, arrival, tail);
                 if let Err(why) = sized(rw, rig, dir, pct, longer) {
                     return Ok(Err(why));
                 }
@@ -401,6 +399,17 @@ fn first_window(rw: &Runway, rig: &Rig, dir: Dir, pct: u8, tail: f64) -> Result<
         None => Err(format!(
             "{dir} {pct}%: no rung under it moved the shaft, so nothing sizes it"
         )),
+    }
+}
+
+/// The window a rung that settled too late in `window` runs once more at:
+/// from where its applied duty last came to the goal, `arrival` ms, 1.25
+/// times over and `tail`, and longer than `window`; twice `window` when
+/// the stream did not end at the goal.
+fn retry_window(window: u32, arrival: Option<f64>, tail: f64) -> u32 {
+    match arrival {
+        Some(ms) => ((CLIMB_MARGIN * ms + tail).ceil() as u32).max(window + 1),
+        None => 2 * window,
     }
 }
 
@@ -1469,6 +1478,60 @@ mod tests {
         assert!(settled_v(&frames(3200, None), goal, 20.0).is_some());
         // a goal lost at the end is no steady speed
         assert_eq!(settled_v(&frames(4000, Some(3999)), goal, 20.0), None);
+    }
+
+    /// A 25% reverse rung at 20 ticks/ms shaped like the bench servo's: at
+    /// the goal from tick 161, taken back over ticks 199..=202 by the
+    /// limiter, held from tick 203. Its 101 ms window settles too late; the
+    /// retry sized from the last arrival, 1.25 x 10.15 + 100 ms, keeps the
+    /// least steady time, where one sized from the first arrival would not.
+    #[test]
+    fn retry_runs_from_where_the_duty_last_came_to_the_goal() {
+        let tail = SETTLE_MS + STEADY_MIN_MS;
+        let goal = -pct_q15(25);
+        let frames = |ms: u32| -> Vec<TelFrame> {
+            (0..ms as u64 * 20)
+                .map(|t| TelFrame {
+                    tick: t,
+                    pos: Some(3000 - (t / 4) as u16),
+                    duty_q15: Some(if t < 161 || (199..=202).contains(&t) {
+                        goal + 128
+                    } else {
+                        goal
+                    }),
+                    ..TelFrame::default()
+                })
+                .collect()
+        };
+        let first = frames(101);
+        assert_eq!(settled_v(&first, goal, 20.0), None);
+        let arrival = runway::arrival_ms(&first, goal, 20_000.0);
+        assert_eq!(arrival, Some(10.15));
+        let longer = retry_window(101, arrival, tail);
+        assert_eq!(longer, 113);
+        let v = settled_v(&frames(longer), goal, 20.0).unwrap();
+        assert!((v - 5.0).abs() < 0.01, "{v}");
+        assert_eq!(settled_v(&frames(109), goal, 20.0), None);
+
+        // never shorter than the window that settled too late
+        assert_eq!(retry_window(150, arrival, tail), 151);
+        // a stream that did not end at the goal doubles
+        assert_eq!(retry_window(101, None, tail), 202);
+    }
+
+    /// A limiter that takes the duty back 35 ms after it first reaches the
+    /// goal: the rungs whose first window leaves too little past that run
+    /// once more from the last arrival, and the ladder climbs past them.
+    #[test]
+    fn ladder_climbs_past_a_limiter_that_chatters_at_the_goal() {
+        let (mut b, front) = bench(Supply::TwoS);
+        let rig = bench_rig(&front);
+        b.chatter = 700;
+        let duties: Vec<u8> = (1..=8).map(|k| k * 5).collect();
+        let ladder = grid_ladder(&mut b, &rig, &duties).unwrap();
+        let kept: Vec<u8> = ladder.rungs.iter().map(|r| r.pct).collect();
+        assert_eq!(kept, duties);
+        assert!(ladder.refused.is_none());
     }
 
     /// The runway after the bench servo's 50 and 55% rungs: 60% fits the
