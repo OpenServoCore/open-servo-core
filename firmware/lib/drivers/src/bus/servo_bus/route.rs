@@ -175,20 +175,21 @@ impl<P: Providers> ServoBus<P> {
         if self.tx.staged() {
             self.tx.abort();
         }
-        // Dispatch inline -- the CRC already passed, so a staged table effect
-        // commits directly and any reply sequences from the packet end. A frame
-        // that decodes as another servo's touches nothing.
+        // Dispatch inline - the CRC already passed, so any reply sequences
+        // from the packet end and a staged table effect commits directly
+        // behind it (the `verify` order). A frame that decodes as another
+        // servo's touches nothing.
         let Some((staged, slot, out)) =
             self.dispatch_decoded(anchor, footprint, |req, ctx, h| d.dispatch(req, ctx, h))
         else {
             return;
         };
+        if staged && self.tx.staged() {
+            self.sequence_reply(slot, packet_end);
+        }
         if matches!(out, Dispatched::Pending) {
             let mut handle = self.reply_handle();
             d.commit(&mut handle);
-        }
-        if staged && self.tx.staged() {
-            self.sequence_reply(slot, packet_end);
         }
     }
 
@@ -213,15 +214,21 @@ impl<P: Providers> ServoBus<P> {
         }
         self.framer.on_frame_verified();
         self.drift_note_verified(p.anchor, p.footprint);
-        if p.table {
-            let mut handle = self.reply_handle();
-            d.commit(&mut handle);
-        }
         // Sequence from the ENGINE's state, not the recorded flag: any path
         // that reclaimed the staged reply between dispatch and here would
         // otherwise arm the chain over an empty engine (ghost trigger).
         if p.staged && self.tx.staged() {
             self.sequence_reply(p.slot, p.packet_end);
+        }
+        // Commit AFTER the reply is sequenced (sec 4): the ack was decided
+        // at dispatch and the commit cannot fail, so the status break leaves
+        // without waiting on the commit body. The host still cannot observe
+        // a complete status before the commit lands: the reply's trailing
+        // CRC arm is streamed from the TC vector, HIGH like this body, so it
+        // pends until this body returns.
+        if p.table {
+            let mut handle = self.reply_handle();
+            d.commit(&mut handle);
         }
     }
 

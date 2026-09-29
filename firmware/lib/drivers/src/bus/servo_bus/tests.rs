@@ -617,6 +617,87 @@ fn s13_frontier_write_stages_at_covered_commits_at_verdict() {
     assert_eq!(bus.diag().crc_fail_count, 0);
 }
 
+/// `Dispatch` wrapper that records the wire state at every commit.
+struct CommitWatch<'a, D> {
+    inner: D,
+    wire: &'a FakeWire,
+    commits: u32,
+    wire_started_at_commit: bool,
+}
+
+impl<D: Dispatch> Dispatch for CommitWatch<'_, D> {
+    fn dispatch<R: osc_servo_core::Reply>(
+        &mut self,
+        req: osc_servo_core::Request<'_>,
+        ctx: osc_servo_core::RequestCtx,
+        reply: &mut R,
+    ) -> osc_servo_core::Dispatched {
+        self.inner.dispatch(req, ctx, reply)
+    }
+
+    fn commit<R: osc_servo_core::Reply>(&mut self, reply: &mut R) {
+        self.commits += 1;
+        self.wire_started_at_commit = self.wire.started();
+        self.inner.commit(reply);
+    }
+
+    fn revert(&mut self) {
+        self.inner.revert();
+    }
+}
+
+/// The verdict releases the status BEFORE the table commit runs (sec 4):
+/// a verdict wake past the reply gap (the silicon case - the covered
+/// dispatch always overruns it) triggers the break inside the verdict
+/// body, and the commit follows in the same body. The status break never
+/// waits on the commit, and the commit still lands before the reply can
+/// complete (the CRC arm's TC pends behind the body).
+#[test]
+fn write_status_starts_before_the_table_commits() {
+    let h = Harness::new();
+    let mut bus = h.build(ID, RATE, 60);
+    let shared = Shared::new();
+    let mut session = Session::new();
+    let mut d = CommitWatch {
+        inner: session.dispatcher(&shared),
+        wire: &h.wire,
+        commits: 0,
+        wire_started_at_commit: false,
+    };
+
+    let addr = CONTROL_BASE_ADDR.to_le_bytes();
+    let frame = instruction(ID, Opcode::Write, 0, &[addr[0], addr[1], 1]);
+    let anchor = 100usize;
+    let fp = frame.len();
+    h.ring.place(anchor, &frame);
+    bus.framer.resync(anchor as u16);
+    h.deadline.set_now(1000);
+    h.ring.set_cursor(((anchor + 1) % RING_LEN) as u16);
+    bus.on_break(&mut d);
+    let a = h.deadline.armed().expect("deadline A");
+    h.deadline.set_now(a);
+    h.ring.set_cursor(((anchor + fp - 2) % RING_LEN) as u16);
+    bus.on_deadline(&mut d);
+    assert_eq!(d.commits, 0, "staged, not committed, at covered");
+
+    // The verdict wake lands a dispatch body past the frame end - beyond
+    // the reply gap, so sequencing triggers inline.
+    let b = h.deadline.armed().expect("deadline B");
+    h.deadline.set_now(b.wrapping_add(REPLY_GAP + 30));
+    h.ring.set_cursor(((anchor + fp) % RING_LEN) as u16);
+    bus.on_deadline(&mut d);
+    assert_eq!(d.commits, 1);
+    assert!(
+        d.wire_started_at_commit,
+        "the status break precedes the commit"
+    );
+    assert!(shared.table.with(|t| t.control.lifecycle.torque_enable));
+    drain_tx(&mut bus, &h);
+    let (_, inst, data) = last_reply(&h.wire);
+    assert_eq!(inst.result(), Some(ResultCode::Ok));
+    assert!(data.is_empty());
+}
+
 #[test]
 fn s14_corrupt_write_leaves_table_and_reverts() {
     // A WRITE whose covered span is intact but whose trailing CRC is corrupted:
