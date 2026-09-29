@@ -34,6 +34,7 @@ impl Ch32ControlIo {
         let drv_en_active = wiring.drv_en.active;
 
         crate::runtime::bringup(&wiring, &calibration, &defaults, model, hw_rev, &pre);
+        burst::install(pre.burst_v_max_counts);
 
         crate::log::info!("Ch32ControlIo::new: complete");
         Self {

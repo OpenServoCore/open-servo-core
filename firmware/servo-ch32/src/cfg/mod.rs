@@ -10,6 +10,7 @@ pub use chip::{AnalogChannel, DigitalPin};
 
 use osc_servo_core::estimator::bemf::RECIP_ARR_SHIFT;
 use osc_servo_core::kernel::DECIM_MED;
+use osc_servo_core::regions::config::{BURST_MAX_MV, vmotor_counts};
 use osc_servo_core::{ConfigDefaults, CurrentDefaults, KernelTiming};
 
 use crate::providers::usart_baud;
@@ -34,6 +35,7 @@ pub struct Precomputed {
     pub usart_brr: u32,
     pub kernel_timing: KernelTiming,
     pub current_defaults: CurrentDefaults,
+    pub burst_v_max_counts: u16,
 }
 
 impl Precomputed {
@@ -64,6 +66,12 @@ impl Precomputed {
             current_defaults: CurrentDefaults::from_sense(
                 cfg.calibration.shunt_r_mohm,
                 cfg.wiring.current_sense.gain_milli,
+                cfg.calibration.vdd_mv,
+            ),
+            burst_v_max_counts: vmotor_counts(
+                BURST_MAX_MV,
+                term.top_ohm,
+                term.bot_ohm,
                 cfg.calibration.vdd_mv,
             ),
         }

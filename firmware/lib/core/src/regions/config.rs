@@ -169,6 +169,12 @@ pub const DEFAULT_STALL_TAU_TRIP_MA: u16 = 300;
 // a 60 mOhm shunt (~3.4 A), so the trip stays measurable on both rig shunts.
 pub const DEFAULT_OC_TRIP_MA: u16 = 3000;
 pub const DEFAULT_OC_TRIP_TICKS: u8 = 8;
+// Applied volts (duty x rail) a shunt-burst step may drive. A burst runs
+// past the current limit on purpose, so what bounds its load on the teeth is
+// the impulse the rotor takes in one half window: class-absolute, not a
+// multiple of the user's limit. Reaches the chip in vcounts through
+// `vmotor_counts`.
+pub const BURST_MAX_MV: u16 = 3200;
 
 /// Thermal derate/cutoff, undervolt floor, winding-R estimator gates.
 #[repr(C)]
@@ -337,9 +343,30 @@ pub const fn current_counts(ma: u16, shunt_r_mohm: u16, gain_milli: u16, vdd_mv:
     }
 }
 
+/// vcounts = mV x 4096 x bot / ((top + bot) x VDD), rounded: the rail as the
+/// motor-terminal tap reads it, the unit `vbus_counts` publishes. 1298 for
+/// the 3200 mV burst cap on the osc-dev-v006 6k8/3k3 taps (2.466 mV/count).
+pub const fn vmotor_counts(mv: u16, div_top_ohm: u32, div_bot_ohm: u32, vdd_mv: u16) -> u16 {
+    let num = mv as u64 * ADC_COUNTS_PER_VDD * div_bot_ohm as u64;
+    let den = (div_top_ohm as u64 + div_bot_ohm as u64) * vdd_mv as u64;
+    let counts = (num + den / 2) / den;
+    if counts > u16::MAX as u64 {
+        u16::MAX
+    } else {
+        counts as u16
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn burst_cap_in_vcounts_follows_the_terminal_divider() {
+        assert_eq!(vmotor_counts(BURST_MAX_MV, 6_800, 3_300, 3300), 1298);
+        assert_eq!(vmotor_counts(0, 6_800, 3_300, 3300), 0);
+        assert_eq!(vmotor_counts(u16::MAX, 0, 1, 1), u16::MAX);
+    }
 
     #[test]
     fn arm_b_rig_reproduces_the_count_seeds() {

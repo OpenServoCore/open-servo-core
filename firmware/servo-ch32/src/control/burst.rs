@@ -21,6 +21,7 @@ use core::sync::atomic::compiler_fence;
 
 use portable_atomic::{AtomicBool, AtomicU8, Ordering};
 
+use osc_servo_core::kernel::limits::flag;
 use osc_servo_core::regions::burst::{
     BURST_LEN, PAGE_MID_COPY, chans, dir, frame_len, page_span, state,
 };
@@ -28,6 +29,7 @@ use osc_servo_core::regions::{ControlTable, DecaySelect, Mode};
 use osc_servo_core::{ControlIo as _, DecayMode, Motor as _, MotorCmd, RegionStorageRaw, Shared};
 use osc_units::Effort;
 
+use crate::cfg::chip;
 use crate::control::sensors::scan;
 use crate::hal::clocks::HCLK_HZ;
 use crate::hal::{adc, delay_cycles, dma, timer};
@@ -39,6 +41,10 @@ const CH: dma::Channel = dma::Channel::CH1;
 /// for the COMMIT ack to drain off the wire and for the pre-step duty to settle
 /// before the window opens.
 const BURST_SETTLE_TICKS: u16 = 16;
+
+/// Kernel ticks from one accepted arm to the next: 100 ms. The kernel does
+/// not tick while a capture runs, so the spacing in time only grows.
+const BURST_SPACING_TICKS: u16 = (chip::MOTOR_PWM_FREQ_HZ / 10) as u16;
 
 /// `delay_cycles` iterations per microsecond. It spins on `spin_loop`, which
 /// costs at least one HCLK cycle per iteration and on this core rather more,
@@ -74,8 +80,13 @@ static STATE: AtomicU8 = AtomicU8::new(state::IDLE);
 /// vector writes and reads it; atomic so the prologue's load stands on its own.
 static WITNESS_DUE: AtomicBool = AtomicBool::new(false);
 
-/// The rest of the FSM: DMA1 CH1 vector (PFIC LOW) only, never the main loop.
+/// The rest of the FSM: DMA1 CH1 vector (PFIC LOW) only, never the main loop;
+/// `install` writes it once, pre-IRQ.
 struct Fsm {
+    lockout: u16,
+    /// Burst volts cap, vcounts. At 0, before `install`, it refuses every
+    /// step but a zero one.
+    v_max_counts: u16,
     settle: u16,
     duty_q15: i16,
     decay: DecayMode,
@@ -83,6 +94,8 @@ struct Fsm {
 }
 
 static FSM: SyncUnsafeCell<Fsm> = SyncUnsafeCell::new(Fsm {
+    lockout: 0,
+    v_max_counts: 0,
     settle: 0,
     duty_q15: 0,
     decay: DecayMode::Slow,
@@ -94,6 +107,12 @@ fn fsm() -> &'static mut Fsm {
     // SAFETY: see the FSM doc -- reached only from the DMA1 CH1 vector, which
     // never preempts itself.
     unsafe { &mut *FSM.get() }
+}
+
+/// Bringup, pre-IRQ: the board's burst volts cap
+/// (`Precomputed::burst_v_max_counts`).
+pub fn install(v_max_counts: u16) {
+    fsm().v_max_counts = v_max_counts;
 }
 
 /// The ISR prologue's whole question: is the scan suspended?
@@ -153,17 +172,37 @@ pub fn poll_arm(shared: &Shared) {
         )
     };
     let f = fsm();
+    f.lockout = f.lockout.saturating_sub(1);
 
     match STATE.load(Ordering::Relaxed) {
         state::IDLE => {
             if req.arm != 1 {
                 return;
             }
+            // SAFETY: as above; `vbus_counts`, `pos` and `limit_flags` are
+            // published by the kernel, which runs in this same context.
+            let (vbus, pos, lo, hi, limit_flags) = unsafe {
+                (
+                    (&raw const (*p).telemetry.estimates.vbus_counts).read_volatile(),
+                    (&raw const (*p).telemetry.sensors.pos).read_volatile() as i32,
+                    (&raw const (*p).config.pos_limits.pos_min_soft_counts).read_volatile(),
+                    (&raw const (*p).config.pos_limits.pos_max_soft_counts).read_volatile(),
+                    (&raw const (*p).telemetry.limits.limit_flags).read_volatile(),
+                )
+            };
+            // A burst runs past the current limit, the kernel limiter is not
+            // ticking under it and a host can re-arm at will: the arm is what
+            // bounds the rotor impulse (volts) and its rate (spacing), and a
+            // seated burst takes the stall permit's grant, not its request.
+            let volts = (req.duty_q15.unsigned_abs() as u32 * vbus as u32) >> 15;
             let armable = life.torque_enable
                 && life.mode == Mode::OpenLoop
                 && life.tel_count == 0
                 && faults == 0
-                && req.chans & !chans::ALL == 0;
+                && req.chans & !chans::ALL == 0
+                && f.lockout == 0
+                && volts <= f.v_max_counts as u32
+                && (limit_flags & flag::PERMIT != 0 || (pos > lo && pos < hi));
             if !armable {
                 publish_state(p, state::REJECTED);
                 return;
@@ -178,6 +217,7 @@ pub fn poll_arm(shared: &Shared) {
             };
             f.chans = req.chans;
             f.settle = BURST_SETTLE_TICKS;
+            f.lockout = BURST_SPACING_TICKS;
             publish_state(p, state::ARMED);
         }
         state::ARMED => {
@@ -359,5 +399,165 @@ pub fn poll_page(shared: &Shared) {
         }
         compiler_fence(Ordering::SeqCst);
         (&raw mut (*w).page_echo).write_volatile(page);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use std::sync::{Mutex, MutexGuard};
+
+    use osc_servo_core::RegionStorage as _;
+    use osc_servo_core::regions::config::{BURST_MAX_MV, vmotor_counts};
+
+    use super::*;
+
+    /// `STATE` and `FSM` are statics: one test drives them at a time.
+    static SERIAL: Mutex<()> = Mutex::new(());
+
+    /// The osc-dev-v006 terminal taps, 6k8/3k3 at VDD 3300 mV.
+    const V_MAX: u16 = vmotor_counts(BURST_MAX_MV, 6_800, 3_300, 3300);
+    const RAIL_2S: u16 = 3204;
+    const RAIL_USB: u16 = 1780;
+    /// The largest step under the cap on each rail: `(d x rail) >> 15` is
+    /// 1298 here and 1299 one count up.
+    const EDGE_2S: i16 = 13_285;
+    const EDGE_USB: i16 = 23_913;
+    const SOFT_MIN: i32 = 300;
+    const SOFT_MAX: i32 = 3800;
+
+    /// An OpenLoop servo mid-travel on the 2S rail, the FSM fresh. No poll
+    /// here holds a live arm through ARMED, so nothing reaches the hal.
+    struct Rig {
+        shared: Shared,
+        _serial: MutexGuard<'static, ()>,
+    }
+
+    fn rig() -> Rig {
+        let serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        STATE.store(state::IDLE, Ordering::Relaxed);
+        *fsm() = Fsm {
+            lockout: 0,
+            v_max_counts: 0,
+            settle: 0,
+            duty_q15: 0,
+            decay: DecayMode::Slow,
+            chans: 0,
+        };
+        install(V_MAX);
+        let shared = Shared::new();
+        shared.table.with_mut(|t| {
+            t.control.lifecycle.torque_enable = true;
+            t.control.lifecycle.mode = Mode::OpenLoop;
+            t.config.loop_current.duty_max_q15 = i16::MAX as u16;
+            t.config.pos_limits.pos_min_soft_counts = SOFT_MIN;
+            t.config.pos_limits.pos_max_soft_counts = SOFT_MAX;
+            t.telemetry.sensors.pos = 2048;
+            t.telemetry.estimates.vbus_counts = RAIL_2S;
+        });
+        Rig {
+            shared,
+            _serial: serial,
+        }
+    }
+
+    impl Rig {
+        fn set(&self, f: impl FnOnce(&mut ControlTable)) {
+            self.shared.table.with_mut(f);
+        }
+
+        /// One arm request at `duty`: the state it publishes.
+        fn arm(&self, duty: i16) -> u8 {
+            self.set(|t| {
+                t.control.burst.duty_q15 = duty;
+                t.control.burst.arm = 1;
+            });
+            poll_arm(&self.shared);
+            self.shared.table.with(|t| t.burst.window.state)
+        }
+
+        /// Drop the arm; one tick returns the FSM to IDLE.
+        fn release(&self) {
+            self.set(|t| t.control.burst.arm = 0);
+            poll_arm(&self.shared);
+            assert_eq!(STATE.load(Ordering::Relaxed), state::IDLE);
+        }
+
+        fn idle(&self, ticks: u16) {
+            for _ in 0..ticks {
+                poll_arm(&self.shared);
+            }
+        }
+    }
+
+    #[test]
+    fn burst_at_the_cap_still_arms() {
+        let r = rig();
+        assert_eq!(r.arm(13_107), state::ARMED, "40% on 2S");
+        drop(r);
+        for (rail, edge) in [(RAIL_2S, EDGE_2S), (RAIL_USB, EDGE_USB)] {
+            for duty in [edge, -edge] {
+                let r = rig();
+                r.set(|t| t.telemetry.estimates.vbus_counts = rail);
+                assert_eq!(r.arm(duty), state::ARMED, "rail {rail} duty {duty}");
+                assert_eq!(fsm().duty_q15, duty);
+            }
+        }
+    }
+
+    #[test]
+    fn burst_over_the_volts_cap_is_rejected() {
+        for (rail, edge) in [(RAIL_2S, EDGE_2S), (RAIL_USB, EDGE_USB)] {
+            for duty in [edge + 1, -(edge + 1), i16::MAX, i16::MIN] {
+                let r = rig();
+                r.set(|t| t.telemetry.estimates.vbus_counts = rail);
+                assert_eq!(r.arm(duty), state::REJECTED, "rail {rail} duty {duty}");
+                // A refused arm starts no spacing.
+                r.release();
+                assert_eq!(r.arm(edge), state::ARMED, "rail {rail} after {duty}");
+            }
+        }
+    }
+
+    #[test]
+    fn burst_inside_the_spacing_is_rejected() {
+        assert_eq!(
+            BURST_SPACING_TICKS as u32 * 1000 / chip::MOTOR_PWM_FREQ_HZ,
+            100,
+            "100 ms of kernel ticks"
+        );
+        // Armed at tick 0, released at tick 1, asked again at tick `at`.
+        let rearm_at = |at: u16| {
+            let r = rig();
+            assert_eq!(r.arm(EDGE_2S), state::ARMED);
+            r.release();
+            r.idle(at - 2);
+            r.arm(EDGE_2S)
+        };
+        assert_eq!(rearm_at(2), state::REJECTED);
+        assert_eq!(rearm_at(BURST_SPACING_TICKS - 1), state::REJECTED);
+        assert_eq!(rearm_at(BURST_SPACING_TICKS), state::ARMED);
+    }
+
+    #[test]
+    fn burst_outside_the_soft_limits_needs_the_permit() {
+        for pos in [0, SOFT_MIN as u16, SOFT_MAX as u16, 4095] {
+            let r = rig();
+            r.set(|t| t.telemetry.sensors.pos = pos);
+            assert_eq!(r.arm(EDGE_2S), state::REJECTED, "pos {pos}");
+            r.release();
+            // The request byte alone is not the grant.
+            r.set(|t| t.control.lifecycle.stall_permit = true);
+            assert_eq!(r.arm(EDGE_2S), state::REJECTED, "pos {pos} requested");
+            r.release();
+            r.set(|t| t.telemetry.limits.limit_flags = flag::PERMIT);
+            assert_eq!(r.arm(EDGE_2S), state::ARMED, "pos {pos} granted");
+        }
+        for pos in [SOFT_MIN as u16 + 1, SOFT_MAX as u16 - 1] {
+            let r = rig();
+            r.set(|t| t.telemetry.sensors.pos = pos);
+            assert_eq!(r.arm(EDGE_2S), state::ARMED, "pos {pos}");
+        }
     }
 }
