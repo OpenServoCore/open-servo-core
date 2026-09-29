@@ -171,7 +171,7 @@ impl FakeServo {
             permit_until: f64::NEG_INFINITY,
             current_limit: None,
             hold_ripple: 0.0,
-            floor_q15: crate::limits::window_floor_q15(160, 1200),
+            floor_q15: 4356,
             ceil0: 0.0,
             t_ceil: 0.0,
             jam: None,
@@ -660,6 +660,7 @@ impl FakeServo {
             duty_applied_q15: duty,
             i_lim_counts: self.limit().unwrap_or(0),
             limit_flags: self.limit_flags(),
+            window_floor_q15: self.floor_q15 as u16,
             agg_seq: (self.t_ms / 0.8) as u64 as u16,
             ..Default::default()
         }

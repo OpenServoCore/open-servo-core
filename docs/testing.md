@@ -149,6 +149,19 @@ The limiter on the plant rig (`integration/tests/torque_limit.rs`):
 - `virgin_blind_band_passes_to_the_window_floor` - with `r_q12` at 0
   the duty never goes under the floor and sits there pinned, at the
   floor's stall current.
+- `window_floor_is_published_as_the_limiter_uses_it` - for 160 and 240
+  ticks the published `window_floor_q15` is `floor_duty` of the board's
+  period, and the duty a virgin stall pins at equals it.
+
+The host reads the floor from the servo (`ident/src/limits.rs`, at the
+repo root):
+
+- `servo_limits_take_the_floor_from_the_servo` - the limits carry the
+  floor a telemetry read publishes, 4356 and 6534 alike, and the stop
+  ladder starts on it.
+- `a_servo_without_a_floor_is_refused_in_plain_words` - a published 0
+  refuses with a message naming the missing sensor floor; no board
+  constant stands in.
 
 A virgin servo (`integration/tests/class_defaults.rs`, boot seed on the
 60 mohm chain):

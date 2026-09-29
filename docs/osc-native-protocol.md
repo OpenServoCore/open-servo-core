@@ -863,10 +863,11 @@ Every drive mode clamps against the same current band (control-theory
 directional endstop. The closed loops clamp their current reference;
 OpenLoop, which has none, holds a duty ceiling against the band from
 the shunt alone, so a host-written `goal_duty` is a request the servo
-may refuse to apply in full. Two registers let a host take part: a
-permit to stall on purpose, and a flag byte that names whatever is
-holding the command back. Like sec 5.7 these are model facts in
-model-specific space, and the descriptor carries the addresses.
+may refuse to apply in full. Three registers let a host take part: a
+permit to stall on purpose, a flag byte that names whatever is holding
+the command back, and the duty under which the shunt reads nothing.
+Like sec 5.7 these are model facts in model-specific space, and the
+descriptor carries the addresses.
 
 **Stall permit.** `stall_permit` (bool, RW, `0x181` in CONTROL) lets
 the motor stall on purpose, which identification and calibration need
@@ -920,6 +921,19 @@ the endstop, so bit 3 never appears with bits 1 or 2 (unit
 `limit_flags_name_the_governor`). The flags are a polled register, not
 a TEL field: the `valid` bitmap of sec 5.6 has no spare bit.
 
+**Window floor.** `window_floor_q15` (u16, RO, `0x268` in TELEMETRY,
+a Q15 duty magnitude) is the smallest duty whose drive window the shunt
+reads: CALIB `i_window_min_ticks` turned into a duty against the board's
+PWM period, 4356 (13.3%) for 160 ticks of 1200 on osc-dev-v006. It is
+the value the OpenLoop limiter uses, where its ceiling restarts and its
+blind band (below) begins, published every slow tick (16 ms) torque on
+or off, so a rewrite of `i_window_min_ticks` shows within one slow tick.
+0 means the servo publishes no floor: the kernel has not ticked yet, or
+the firmware does not carry the field. A host planning a drive against
+the current sensor reads the floor here rather than deriving it from a
+board constant, and `osc` refuses a servo that reports 0 (DES
+`window_floor_is_published_as_the_limiter_uses_it`).
+
 **Governed windows.** In OpenLoop the applied duty equals the goal only
 when nothing governed it, and a host fitting a model to a capture needs
 to know which windows those are. The TEL `duty` field (bit 3) is the
@@ -936,8 +950,8 @@ reaches the goal. Polled, the same test reads `duty_applied_q15` (or
 the ident aggregate `duty_mean_q15`) against the goal written, once the
 slew is over; `limit_flags` then says why.
 
-**Blind band.** Under the window floor (`i_window_min_ticks` as a duty,
-13.3% on osc-dev-v006) the shunt reports nothing and the servo applies
+**Blind band.** Under the window floor (`window_floor_q15`, 13.3% on
+osc-dev-v006) the shunt reports nothing and the servo applies
 a stall-safe base duty instead of trusting its ceiling:
 `min(i_lim x R / Vbus, floor)` from the identified `r_q12`, whose stall
 current is at most the limit. A servo with no identified resistance

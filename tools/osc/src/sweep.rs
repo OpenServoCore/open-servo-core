@@ -1029,7 +1029,7 @@ mod tests {
             raw: (209, 3849),
             r_q12: 7270,
             vbus: 3204,
-            i_floor_ticks: 160,
+            window_floor_q15: 4356,
             amps_per_count: 0.0,
         }
     }

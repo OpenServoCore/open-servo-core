@@ -926,7 +926,7 @@ mod tests {
             raw: (209, 3849),
             r_q12: 0,
             vbus: 1731,
-            i_floor_ticks: 160,
+            window_floor_q15: 4356,
             amps_per_count: 0.0,
         };
         let hold = |i_abort: i16| {

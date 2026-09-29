@@ -164,6 +164,12 @@ pub struct TelemetryLimits {
     pub limit_flags: u8,
     #[ct_field(skip)]
     pub _rsvd_align: u8,
+    /// Smallest duty whose drive window the shunt reads
+    /// (`window::floor_duty`), Q15, published at the slow boundary: where
+    /// the OpenLoop ceiling restarts and its blind band begins. 0 until the
+    /// first pass.
+    #[ct_field(access = ro)]
+    pub window_floor_q15: u16,
 }
 
 #[repr(C)]
@@ -177,5 +183,5 @@ pub struct TelemetryRegs {
     pub ident: TelemetryIdent,
     pub limits: TelemetryLimits,
     #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 24],
+    pub _rsvd_tail: [u8; 22],
 }

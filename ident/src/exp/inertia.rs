@@ -739,7 +739,7 @@ mod tests {
             raw: (200, 4000),
             r_q12: 0,
             vbus: 1731,
-            i_floor_ticks: 160,
+            window_floor_q15: 4356,
             amps_per_count: 0.0,
         };
         DutyPlan::new(&lim, 3.37, None)
