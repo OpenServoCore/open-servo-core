@@ -19,10 +19,17 @@
 //! is the acceleration of the last governed climb. Positions are raw pot
 //! counts, speeds counts/ms, accelerations counts/ms per s, times ms.
 //! Nothing here reads a clock or a file: the envelope arrives as data.
+//!
+//! Under the current limit a rung's climb is measured, never assumed: the
+//! applied duty a TEL stream carries reaches the goal once the limiter lets
+//! go ([`climb`]). A stream's ticks are the servo's own and keep real time,
+//! where polled counters lose ticks to every bus transaction.
 
 use core::fmt;
+use core::ops::RangeInclusive;
 
 use crate::exp::seek::STOP_TOL;
+use crate::frame::TelFrame;
 
 /// Width of the band at the start end a seek comes to rest in, counts: a
 /// rung starts at most this far inside the guard.
@@ -398,6 +405,86 @@ impl Runway {
     }
 }
 
+/// How long the applied duty holds the goal before a sample counts as
+/// settled, ms.
+pub const SETTLE_MS: f64 = 40.0;
+/// The least steady time a rung's window keeps past the settle, ms.
+pub const STEADY_MIN_MS: f64 = 60.0;
+/// The longest window a rung streams, ms.
+pub const WINDOW_MAX_MS: f64 = 1500.0;
+
+/// A governed climb as a stream read it: from the goal write to the first
+/// sample whose applied duty equals the goal.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Climb {
+    pub ms: f64,
+    /// Counts travelled by then along the goal's sign.
+    pub travel: f64,
+    /// The constant acceleration that covers `travel` in `ms`, counts/ms
+    /// per s; infinite when the first sample already holds the goal.
+    pub accel: f64,
+}
+
+/// The climb of a stream the goal write opened (its tick 0), on a servo
+/// ticking at `tick_hz`. None when no sample reaches the goal, or the
+/// stream carries no position.
+pub fn climb(frames: &[TelFrame], goal_q15: i16, tick_hz: f64) -> Option<Climb> {
+    if tick_hz <= 0.0 {
+        return None;
+    }
+    let start = frames.iter().find_map(|f| f.pos)?;
+    let at = frames.iter().find(|f| f.duty_q15 == Some(goal_q15))?;
+    let ms = at.tick as f64 * 1000.0 / tick_hz;
+    let sign = if goal_q15 < 0 { -1.0 } else { 1.0 };
+    let travel = sign * (at.pos? as f64 - start as f64);
+    let accel = if ms > 0.0 {
+        2.0 * travel / (ms * ms) * 1000.0
+    } else {
+        f64::INFINITY
+    };
+    Some(Climb { ms, travel, accel })
+}
+
+/// The ticks a steady fit reads: from [`SETTLE_MS`] after the applied duty
+/// last came to the goal to the stream's end, when it holds the goal to
+/// the end. None when it does not, or not for the settle.
+pub fn settled_ticks(
+    frames: &[TelFrame],
+    goal_q15: i16,
+    tick_hz: f64,
+) -> Option<RangeInclusive<u64>> {
+    let end = frames.last()?.tick;
+    let held = frames
+        .iter()
+        .rev()
+        .take_while(|f| f.duty_q15 == Some(goal_q15))
+        .last()?
+        .tick;
+    let from = held + (SETTLE_MS * tick_hz / 1000.0).ceil() as u64;
+    (from <= end).then_some(from..=end)
+}
+
+/// A rung's window: its climb, then the longer of the settle plus the
+/// least steady time and the time at `v_ss` to cross what the climb left
+/// of `span`; at most [`WINDOW_MAX_MS`].
+pub fn window_ms(climb: &Climb, v_ss: f64, span: f64) -> f64 {
+    let left = (span - climb.travel).max(0.0);
+    let cross = if v_ss > 0.0 {
+        left / v_ss
+    } else {
+        f64::INFINITY
+    };
+    (climb.ms + cross.max(SETTLE_MS + STEADY_MIN_MS)).min(WINDOW_MAX_MS)
+}
+
+/// A rung abandoned by its host runs on at the goal until the firmware
+/// brakes it at the far soft limit: it may run only when that braked
+/// `stop` fits the `margin` between the soft limit and the mechanical stop
+/// beyond it.
+pub fn dead_host_fits(stop: f64, margin: f64) -> bool {
+    stop.is_finite() && stop <= margin
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -564,6 +651,200 @@ mod tests {
             (a - 24.94).abs() < 0.01 && (b - 5.557).abs() < 0.001,
             "{a} {b}"
         );
+    }
+
+    fn pct_q15(pct: u8) -> i16 {
+        (pct as i32 * 32767 / 100) as i16
+    }
+
+    /// The bench servo on 2S driven from rest at `pct` out of the low start
+    /// band, streamed for `ms` from the goal write.
+    fn rung(pct: u8, ms: f64) -> (Vec<TelFrame>, f64) {
+        use crate::exp::testkit::bench_mg90;
+        use crate::frame::TEL_MASK_RAW;
+        use crate::regs::control;
+        let mut s = bench_mg90(3204);
+        s.pos = 607.0;
+        s.write(control::TEL_MASK, TEL_MASK_RAW as i32);
+        s.write(control::TORQUE_ENABLE, 1);
+        s.write(control::GOAL_DUTY, pct_q15(pct) as i32);
+        let hz = s.tick_hz();
+        let mut frames = Vec::new();
+        s.stream((ms * hz / 1000.0) as u16, &mut frames);
+        (frames, hz)
+    }
+
+    /// A 60% rung from rest on the bench servo: the limiter holds the
+    /// applied duty under the goal while the current sits in its band, far
+    /// past the slew, and the climb ends at the first sample at the goal.
+    #[test]
+    fn climb_is_read_off_the_applied_duty() {
+        let (frames, hz) = rung(60, 300.0);
+        let goal = pct_q15(60);
+        let c = climb(&frames, goal, hz).unwrap();
+        let k = frames
+            .iter()
+            .position(|f| f.duty_q15 == Some(goal))
+            .unwrap();
+        assert_eq!(c.ms, frames[k].tick as f64 * 1000.0 / hz);
+        let slew = crate::exp::slew_ticks(goal, 0);
+        assert!(frames[k].tick > 10 * slew as u64, "{} ms", c.ms);
+        let governed = &frames[slew as usize..k];
+        assert!(governed.iter().all(|f| f.duty_q15.unwrap() < goal));
+        assert!(
+            governed
+                .iter()
+                .all(|f| (240..=290).contains(&(f.current_raw.unwrap() - 512))),
+            "the climb rides the limit"
+        );
+        let start = frames[0].pos.unwrap() as f64;
+        assert_eq!(c.travel, frames[k].pos.unwrap() as f64 - start);
+        assert!((c.accel - 2.0 * c.travel / (c.ms * c.ms) * 1000.0).abs() < 1e-9);
+        assert!((150.0..160.0).contains(&c.ms) && (900.0..1000.0).contains(&c.travel));
+
+        // down the pot the travel still counts along the goal
+        let mut down: Vec<TelFrame> = frames
+            .iter()
+            .map(|f| TelFrame {
+                pos: f.pos.map(|p| 4000 - p),
+                duty_q15: f.duty_q15.map(|d| -d),
+                ..*f
+            })
+            .collect();
+        assert_eq!(climb(&down, -goal, hz), Some(c));
+
+        // a goal applied at the first sample climbs no time
+        down[0].duty_q15 = Some(-goal);
+        let at_once = climb(&down, -goal, hz).unwrap();
+        assert_eq!((at_once.ms, at_once.travel), (0.0, 0.0));
+        let mut r = Runway::new(GUARD);
+        r.climbed(at_once.accel);
+        assert_eq!(r.accel(), ACCEL_PRIOR, "no acceleration read from it");
+        r.climbed(c.accel);
+        assert_eq!(r.accel(), c.accel);
+
+        // tick-true: the settled tail runs from the settle past the goal
+        let settled = settled_ticks(&frames, goal, hz).unwrap();
+        assert_eq!(
+            *settled.start(),
+            frames[k].tick + (SETTLE_MS * hz / 1000.0).ceil() as u64
+        );
+        assert_eq!(*settled.end(), frames.last().unwrap().tick);
+    }
+
+    /// A jammed shaft at 30%: its stall draws over the limit, so the limit
+    /// holds the duty under the goal for the whole stream.
+    #[test]
+    fn a_goal_never_reached_has_no_climb() {
+        use crate::exp::testkit::bench_mg90;
+        use crate::frame::TEL_MASK_RAW;
+        use crate::regs::control;
+        let mut s = bench_mg90(3204);
+        s.pos = 607.0;
+        s.jam = Some(607.0);
+        s.write(control::TEL_MASK, TEL_MASK_RAW as i32);
+        s.write(control::TORQUE_ENABLE, 1);
+        let goal = pct_q15(30);
+        s.write(control::GOAL_DUTY, goal as i32);
+        let hz = s.tick_hz();
+        let mut frames = Vec::new();
+        s.stream(4000, &mut frames);
+        assert!(frames.iter().all(|f| f.duty_q15.unwrap() < goal));
+        assert_eq!(climb(&frames, goal, hz), None);
+        assert_eq!(settled_ticks(&frames, goal, hz), None);
+
+        // a stream with no applied duty or no position reads no climb
+        let (mut frames, hz) = rung(30, 100.0);
+        assert!(climb(&frames, goal, hz).is_some());
+        assert_eq!(climb(&frames, goal, 0.0), None);
+        let blind: Vec<TelFrame> = frames
+            .iter()
+            .map(|f| TelFrame { pos: None, ..*f })
+            .collect();
+        assert_eq!(climb(&blind, goal, hz), None);
+        // a goal reached, then lost before the end: no settled tail
+        frames.last_mut().unwrap().duty_q15 = Some(goal - 128);
+        assert!(climb(&frames, goal, hz).is_some());
+        assert_eq!(settled_ticks(&frames, goal, hz), None);
+    }
+
+    /// The window runs the measured climb, then long enough at speed to
+    /// cross what is left of the span, never under the settle and the
+    /// least steady time, never over the cap.
+    #[test]
+    fn window_covers_the_climb_and_the_tail() {
+        let c = Climb {
+            ms: 156.0,
+            travel: 966.0,
+            accel: 79.6,
+        };
+        // 0.8 of the bench runway, 11.6 counts/ms at 60%
+        let span = 0.8 * 2994.0;
+        let w = window_ms(&c, 11.6, span);
+        assert!((w - (156.0 + (span - 966.0) / 11.6)).abs() < 1e-9, "{w}");
+        // a climb that crossed the span keeps the settle and the steady part
+        let far = Climb {
+            travel: 2500.0,
+            ..c
+        };
+        assert_eq!(
+            window_ms(&far, 11.6, span),
+            156.0 + SETTLE_MS + STEADY_MIN_MS
+        );
+        // a slow rung caps
+        assert_eq!(window_ms(&c, 0.5, span), WINDOW_MAX_MS);
+        assert_eq!(window_ms(&c, 0.0, span), WINDOW_MAX_MS);
+        // the measured climbs of the bench servo, each covered by its window
+        for pct in [20, 40, 60] {
+            let (frames, hz) = rung(pct, 300.0);
+            let c = climb(&frames, pct_q15(pct), hz).unwrap();
+            let w = window_ms(&c, 0.2079 * pct as f64 - 0.831, span);
+            assert!(w >= c.ms + SETTLE_MS + STEADY_MIN_MS, "{pct}%: {w} ms");
+        }
+    }
+
+    /// The runway sized by a measured climb: a rung whose climb, run and
+    /// margined stop need more than the room is refused, the rung under it
+    /// is not.
+    #[test]
+    fn a_rung_past_the_runway_is_refused() {
+        let mut r = Runway::new(GUARD);
+        for (pct, ms) in [(20u8, 300.0), (40, 300.0)] {
+            let (frames, hz) = rung(pct, ms);
+            let goal = pct_q15(pct);
+            let c = climb(&frames, goal, hz).unwrap();
+            r.climbed(c.accel);
+            r.ran(pct as f64 / 100.0, 0.2079 * pct as f64 - 0.831);
+        }
+        // a 60% brake as the model stops it: 183 counts from 11.6 counts/ms
+        r.stopped(11.6, 183.0);
+        let room = r.room();
+        let fit = r.plan(1, 0.60, STEADY_MS).unwrap();
+        assert!(fits(&fit, room), "60% needs {:.0} of {room}", fit.total());
+        let over = r.plan(1, 1.0, STEADY_MS).unwrap();
+        assert!(
+            !fits(&over, room),
+            "100% needs {:.0} of {room}",
+            over.total()
+        );
+        // the brake point stays a margined stop inside the guard
+        assert_eq!(
+            r.brake_at(1, fit.stop),
+            GUARD.1 as f64 - STOP_MARGIN * fit.stop
+        );
+    }
+
+    /// The bench servo's soft-to-stop margins, 200 counts low and 223 high:
+    /// a braked stop of 183 fits either end, one of 201 only the high one.
+    #[test]
+    fn a_stop_longer_than_the_soft_margin_is_refused() {
+        let (low, high) = (432.0 - 232.0, 3849.0 - 3626.0);
+        assert!(dead_host_fits(183.0, low) && dead_host_fits(183.0, high));
+        assert!(!dead_host_fits(201.0, low));
+        assert!(dead_host_fits(201.0, high));
+        assert!(dead_host_fits(200.0, low), "a stop that just fits");
+        assert!(!dead_host_fits(f64::INFINITY, high));
+        assert!(!dead_host_fits(f64::NAN, high));
     }
 
     #[test]

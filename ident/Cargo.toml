@@ -8,6 +8,10 @@ edition     = "2024"
 description = "Sans-io servo identification: experiments emit wire commands and consume telemetry; fits and gain synthesis are pure functions. Compiles to wasm for the GUI."
 license     = "MIT OR Apache-2.0"
 
+[features]
+# The test servo and its pump (`exp::testkit`), for the host tools' tests.
+testkit = []
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 

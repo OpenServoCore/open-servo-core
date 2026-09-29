@@ -628,8 +628,8 @@ impl WindowStream {
     }
 }
 
-#[cfg(test)]
-pub(crate) mod testkit;
+#[cfg(any(test, feature = "testkit"))]
+pub mod testkit;
 
 #[cfg(test)]
 mod tests {
