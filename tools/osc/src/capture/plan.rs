@@ -90,7 +90,7 @@ pub(crate) fn expand(p: &Procedure, env: &Envelope, n: u32) -> Result<Vec<Plan>>
 }
 
 /// The grid pass the pilot measured under `decay`.
-fn pass(env: &Envelope, decay: Decay) -> Result<&Grid> {
+pub(super) fn pass(env: &Envelope, decay: Decay) -> Result<&Grid> {
     match decay {
         Decay::Slow => Ok(&env.grid),
         Decay::Fast => env.fast.as_ref().ok_or_else(|| {
