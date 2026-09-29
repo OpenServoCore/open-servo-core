@@ -37,8 +37,6 @@ raw >> 4 and interpolates in integer math to a Q4 word, linearized counts
 times 16:
 
   g = fit_grid(st)                    points on the band >= MIN_RUNG_COVER rungs cross
-  g = fit_grid_bounded(st)            the same, no interval over GAIN_BOUND_Q4 / 16:
-                                      what lut.rs build writes
   g.q4(raw)                           the u16 the firmware computes, bit for bit
   g.counts(raw)                       the same over 16, in counts
   g.validate(raw_min, raw_max)        None, or the firmware's reject reason
@@ -260,7 +258,6 @@ POINTS = INTERVALS + 1                        # point INTERVALS fixed 0
 ADC_MASK = (1 << ADC_BITS) - 1
 FRAC_MASK = GRID - 1
 GAIN_MAX = 16                                 # local gain at or above this is corruption, not a pot
-GAIN_BOUND_Q4 = 20                            # steepest interval the builder writes, 1/16: 1.25x
 MIN_RUNG_COVER = 20
 I16 = (-32768, 32767)
 
@@ -362,45 +359,6 @@ def fit_grid(st, band=None, min_cover=MIN_RUNG_COVER):
     d[inside] = true_counts(st, r[inside], lo, hi) - r[inside]
     corr = np.clip(np.sign(d) * np.floor(np.abs(d) + 0.5), *I16).astype(int)
     return GridLut(tuple(int(c) for c in corr))
-
-
-def _round(v):
-    # Rust f64::round: half away from zero
-    return float(np.sign(v) * np.floor(abs(v) + 0.5))
-
-
-def fit_grid_bounded(st, band=None, gain_q4=GAIN_BOUND_Q4, min_cover=MIN_RUNG_COVER):
-    """lut.rs fit_grid_bounded: the least-squares grid table with no interval gain over
-    gain_q4 / 16, the points either side of the band pinned at zero. With u = gain_q4 - 16
-    the bound is c[k+1] - c[k] <= u, so c[k] - u k must not rise: pool adjacent violators,
-    clip to the pinned ends, round, add u k back. Plain loops in lut.rs's order, so the
-    float sums and the points match it."""
-    if band is None and st is not None:
-        band = well_covered(st, min_cover)
-    if band is None:
-        return GridLut.identity()
-    lo, hi = band
-    first, last = -(-lo // GRID), min(hi >> GRID_SHIFT, INTERVALS)
-    if first > last:
-        return GridLut.identity()
-    u = float(max(gain_q4, GRID) - GRID)
-    top, bot = -u * (first - 1.0), -u * (last + 1.0)
-    r = np.arange(first, last + 1) * GRID
-    t = true_counts(st, r, lo, hi) - r
-    blocks = []
-    for j, k in enumerate(range(first, last + 1)):
-        blocks.append([float(t[j]) - u * k, 1])
-        while len(blocks) > 1 and blocks[-2][0] / blocks[-2][1] < blocks[-1][0] / blocks[-1][1]:
-            s, n = blocks.pop()
-            blocks[-1] = [blocks[-1][0] + s, blocks[-1][1] + n]
-    corr = [0] * POINTS
-    k = first
-    for s, n in blocks:
-        v = _round(min(max(s / n, bot), top))
-        for _ in range(n):
-            corr[k] = int(np.clip(v + u * k, *I16))
-            k += 1
-    return GridLut(tuple(corr))
 
 
 SLIP_COV_MAX = 0.20

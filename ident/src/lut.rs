@@ -22,12 +22,6 @@
 //!    [`MIN_RUNG_COVER`] rungs cross carry the chord through the band ends,
 //!    every other point is zero, so the insets and the stops map to
 //!    themselves.
-//! 4. [`fit_grid_bounded`] is the same fit with no interval steeper than
-//!    [`GAIN_BOUND_Q4`], the least-squares table under that bound. The pot's
-//!    fine texture is real and repeats capture to capture, but a steep
-//!    interval scales the rest noise and the quantisation step by its gain,
-//!    and a position hold resting there hunts. [`build`] writes the bounded
-//!    table and reports what the bound cost.
 //!
 //! The table is the one the firmware applies (core pos_lut.rs): [`INTERVALS`]
 //! intervals of [`GRID`] raw counts over the 12-bit ADC domain, [`POINTS`]
@@ -57,16 +51,6 @@ const ADC_MASK: u16 = (1 << ADC_BITS) - 1;
 const FRAC_MASK: u16 = GRID - 1;
 /// Local gain at or above this is corruption, not a pot.
 pub const GAIN_MAX: i32 = 16;
-/// Steepest interval the builder writes, in 1/GRID: 1.25x. A hold at a
-/// 12-count deadband rests about 5 counts off its goal, and the rest of the
-/// band has to hold 4 sd of the 1.2-count raw rest noise plus one raw count,
-/// all scaled by the local gain: (12 - 5) / 5.8 = 1.24.
-pub const GAIN_BOUND_Q4: i32 = 20;
-
-/// GAIN_BOUND_Q4 as a gain.
-pub const fn gain_bound() -> f64 {
-    GAIN_BOUND_Q4 as f64 / GRID as f64
-}
 
 /// The interval a raw sample falls in.
 pub fn index(raw: u16) -> usize {
@@ -243,13 +227,7 @@ pub enum BuildError {
 /// The table and how it was built.
 #[derive(Clone, Debug)]
 pub struct Build {
-    /// Bounded at GAIN_BOUND_Q4.
     pub lut: GridLut,
-    /// The same fit without the bound.
-    pub unbounded: GridLut,
-    /// Both tables against the stitched curve they were fitted to.
-    pub fit: Fit,
-    pub fit_unbounded: Fit,
     /// The anchor band, the stretch MIN_RUNG_COVER rungs cross.
     pub covered: (u16, u16),
     /// Ripple cycles per raw count, the tracker's seed.
@@ -306,9 +284,9 @@ fn track(r: &Rung, c_prior: f64) -> Option<Track> {
 /// is the median coupling of the PRIOR_PCT rungs; every CORE_PCT rung is
 /// tracked from it and accepted on MIN_ACCEPT and CPC_TOL against the
 /// median of the tracked; the accepted rungs stitch from their first
-/// trusted sample and the table anchors on the MIN_RUNG_COVER band, its
-/// interval gain bounded at GAIN_BOUND_Q4. Float sums follow rung order, so
-/// the same rungs in the same order give the same points.
+/// trusted sample and the table anchors on the MIN_RUNG_COVER band. Float
+/// sums follow rung order, so the same rungs in the same order give the
+/// same points.
 pub fn build(rungs: &[Rung], raw_min: u16, raw_max: u16) -> Result<Build, BuildError> {
     let priors: Vec<f64> = rungs
         .iter()
@@ -348,15 +326,11 @@ pub fn build(rungs: &[Rung], raw_min: u16, raw_max: u16) -> Result<Build, BuildE
     let covered = st
         .well_covered(MIN_RUNG_COVER)
         .ok_or(BuildError::Uncovered)?;
-    let unbounded = fit_grid(&st, covered);
-    let lut = fit_grid_bounded(&st, covered, GAIN_BOUND_Q4);
+    let lut = fit_grid(&st, covered);
     lut.validate(raw_min, raw_max)
         .map_err(BuildError::Rejected)?;
     Ok(Build {
         lut,
-        unbounded,
-        fit: Fit::of(&lut, &st, covered),
-        fit_unbounded: Fit::of(&unbounded, &st, covered),
         covered,
         c_prior,
         verdicts,
@@ -596,100 +570,13 @@ pub fn stitch(chunks: &[(&[u16], &[f64])], raw_min: u16, raw_max: u16) -> Option
 /// zero.
 pub fn fit_grid(st: &Stitch, band: (u16, u16)) -> GridLut {
     let mut points = [0i16; POINTS];
-    for k in inside(band) {
-        points[k] = sat_i16(target(st, band, k).round());
-    }
-    GridLut { points }
-}
-
-/// The points inside `band`.
-fn inside(band: (u16, u16)) -> core::ops::RangeInclusive<usize> {
-    let first = (band.0 as usize).div_ceil(GRID as usize);
-    let last = (band.1 as usize >> GRID_SHIFT).min(INTERVALS);
-    first..=last
-}
-
-/// Point k's correction on the chord through the band ends, unrounded.
-fn target(st: &Stitch, band: (u16, u16), k: usize) -> f64 {
-    let r = (k * GRID as usize) as f64;
-    st.true_counts(r, band.0, band.1) - r
-}
-
-/// The least-squares grid table with no interval gain over `gain_q4` / GRID,
-/// the points either side of the band pinned at zero: [`fit_grid`] wherever
-/// the stitch is no steeper, spread over its neighbours where it is. With
-/// `u = gain_q4 - GRID` the bound is `c[k + 1] - c[k] <= u`, so `c[k] - u k`
-/// must not rise: an antitonic regression (pool adjacent violators), clipped
-/// to the pinned ends, rounded before `u k` is added back so the rounding
-/// cannot break the bound. A bound under GRID reads as GRID, the identity.
-pub fn fit_grid_bounded(st: &Stitch, band: (u16, u16), gain_q4: i32) -> GridLut {
-    let mut points = [0i16; POINTS];
-    let span = inside(band);
-    if span.is_empty() {
-        return GridLut { points };
-    }
-    let u = (gain_q4.max(GRID as i32) - GRID as i32) as f64;
-    let (first, last) = (*span.start(), *span.end());
-    let top = -u * (first as f64 - 1.0);
-    let bot = -u * (last as f64 + 1.0);
-    let mut blocks: Vec<(f64, usize)> = Vec::with_capacity(last - first + 1);
-    for k in span {
-        blocks.push((target(st, band, k) - u * k as f64, 1));
-        while let [.., (s0, n0), (s1, n1)] = blocks[..] {
-            if s0 / n0 as f64 >= s1 / n1 as f64 {
-                break;
-            }
-            blocks.pop();
-            let prev = blocks.last_mut().expect("two blocks");
-            *prev = (s0 + s1, n0 + n1);
-        }
-    }
-    let mut k = first;
-    for (s, n) in blocks {
-        let v = (s / n as f64).clamp(bot, top).round();
-        for _ in 0..n {
-            points[k] = sat_i16(v + u * k as f64);
-            k += 1;
+    for (k, c) in points.iter_mut().enumerate() {
+        let r = (k * GRID as usize) as u16;
+        if band.0 <= r && r <= band.1 {
+            *c = sat_i16((st.true_counts(r as f64, band.0, band.1) - r as f64).round());
         }
     }
     GridLut { points }
-}
-
-/// Window the slope error is judged over, raw counts.
-pub const SLOPE_WINDOW: u16 = 25;
-
-/// A table against the stitched curve over its band, at every raw count:
-/// position error in counts and the local gain over SLOPE_WINDOW windows,
-/// relative, which is the speed a pot derivative reads.
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub struct Fit {
-    pub rms: f64,
-    pub max: f64,
-    pub slope_rms: f64,
-}
-
-impl Fit {
-    pub fn of(lut: &GridLut, st: &Stitch, band: (u16, u16)) -> Fit {
-        let truth = |r: u16| st.true_counts(r as f64, band.0, band.1);
-        let (mut sq, mut max) = (0.0, 0.0f64);
-        for r in band.0..=band.1 {
-            let e = lut.counts(r) - truth(r);
-            sq += e * e;
-            max = max.max(e.abs());
-        }
-        let (mut ssq, mut n) = (0.0, 0usize);
-        for r in band.0..=band.1.saturating_sub(SLOPE_WINDOW) {
-            let w = r + SLOPE_WINDOW;
-            let e = (lut.counts(w) - lut.counts(r)) / (truth(w) - truth(r)) - 1.0;
-            ssq += e * e;
-            n += 1;
-        }
-        Fit {
-            rms: (sq / (band.1 as f64 - band.0 as f64 + 1.0)).sqrt(),
-            max,
-            slope_rms: if n > 0 { (ssq / n as f64).sqrt() } else { 0.0 },
-        }
-    }
 }
 
 fn sat_i16(v: f64) -> i16 {
@@ -1507,81 +1394,40 @@ mod tests {
         }
     }
 
-    /// The mg90-a rungs and their build, made once for every test that
-    /// needs them.
-    struct Mg90a {
-        recorded: Vec<(&'static str, mg90::Recorded)>,
-        reference: serde_json::Value,
-        stops: (u16, u16),
-        build: Build,
-    }
-
-    fn mg90_a() -> &'static Mg90a {
-        static BUILT: std::sync::OnceLock<Mg90a> = std::sync::OnceLock::new();
-        BUILT.get_or_init(|| {
-            let t0 = std::time::Instant::now();
-            let mut recorded: Vec<(&str, mg90::Recorded)> = Vec::new();
-            for cap in 1..=5 {
-                recorded.extend(mg90::session_grid(cap).into_iter().map(|r| ("session", r)));
-            }
-            for cap in 1..=5 {
-                recorded.extend(mg90::ends(cap).into_iter().map(|r| ("ends", r)));
-            }
-            let loaded = t0.elapsed();
-            let reference: serde_json::Value = serde_json::from_str(include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/testdata/lut/mg90-a-rungs.json"
-            )))
-            .expect("reference");
-            let tick_hz = reference["tick_hz"].as_f64().unwrap();
-            let stops = (
-                reference["raw_min"].as_u64().unwrap() as u16,
-                reference["raw_max"].as_u64().unwrap() as u16,
-            );
-            let rungs: Vec<Rung> = recorded
-                .iter()
-                .map(|(_, r)| Rung {
-                    pos: &r.pos,
-                    current: &r.current,
-                    duty_pct: r.duty_pct,
-                    tick_hz,
-                })
-                .collect();
-            let build = build(&rungs, stops.0, stops.1).expect("built");
-            eprintln!(
-                "mg90-a: {} rungs loaded in {loaded:.1?}, built in {:.1?}, prior {:.6}, band {:?}",
-                rungs.len(),
-                t0.elapsed() - loaded,
-                build.c_prior,
-                build.covered
-            );
-            Mg90a {
-                recorded,
-                reference,
-                stops,
-                build,
-            }
-        })
-    }
-
-    fn interval_gains(lut: &GridLut) -> impl Iterator<Item = (usize, i32)> + '_ {
-        lut.points
-            .windows(2)
-            .enumerate()
-            .map(|(k, w)| (k, GRID as i32 + w[1] as i32 - w[0] as i32))
-    }
-
     /// Parity with the notebook build: the same rungs in the same order give
     /// the committed prior, verdicts, band and points.
     #[test]
     fn build_matches_the_notebook_on_mg90_a() {
-        let Mg90a {
-            recorded,
-            reference: r,
-            stops: (raw_min, raw_max),
-            build: b,
-        } = mg90_a();
-        let (raw_min, raw_max) = (*raw_min, *raw_max);
+        let t0 = std::time::Instant::now();
+        let mut recorded: Vec<(&str, mg90::Recorded)> = Vec::new();
+        for cap in 1..=5 {
+            recorded.extend(mg90::session_grid(cap).into_iter().map(|r| ("session", r)));
+        }
+        for cap in 1..=5 {
+            recorded.extend(mg90::ends(cap).into_iter().map(|r| ("ends", r)));
+        }
+        let loaded = t0.elapsed();
+        let r: serde_json::Value = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/lut/mg90-a-rungs.json"
+        )))
+        .expect("reference");
+        let tick_hz = r["tick_hz"].as_f64().unwrap();
+        let (raw_min, raw_max) = (
+            r["raw_min"].as_u64().unwrap() as u16,
+            r["raw_max"].as_u64().unwrap() as u16,
+        );
+        let rungs: Vec<Rung> = recorded
+            .iter()
+            .map(|(_, r)| Rung {
+                pos: &r.pos,
+                current: &r.current,
+                duty_pct: r.duty_pct,
+                tick_hz,
+            })
+            .collect();
+        let b = build(&rungs, raw_min, raw_max).expect("built");
+        let built = t0.elapsed() - loaded;
 
         let c_ref = r["c_prior"].as_f64().unwrap();
         assert!(
@@ -1667,94 +1513,12 @@ mod tests {
         );
         assert_eq!(b.lut.validate(209, 3849), Ok(()));
         assert_eq!(b.lut.validate(232, 3849), Ok(()));
-    }
-
-    #[test]
-    fn built_table_keeps_the_local_gain_inside_the_bound() {
-        let b = &mg90_a().build;
-        let over: Vec<(usize, i32)> = interval_gains(&b.unbounded)
-            .filter(|&(_, g)| g > GAIN_BOUND_Q4)
-            .collect();
-        assert_eq!(over.len(), 20, "{over:?}");
-        assert_eq!(over.iter().map(|o| o.1).max(), Some(33), "2.06x");
-        assert!(interval_gains(&b.lut).all(|(_, g)| (1..=GAIN_BOUND_Q4).contains(&g)));
-        assert_eq!(
-            interval_gains(&b.lut).map(|g| g.1).max(),
-            Some(GAIN_BOUND_Q4)
+        eprintln!(
+            "mg90-a: {} rungs loaded in {loaded:.1?}, built in {built:.1?}, prior {:.6}, band {:?}",
+            rungs.len(),
+            b.c_prior,
+            b.covered
         );
-        // the mid-travel hold spot: 0.69, 1.25, 1.63, 1.69 unbounded
-        let at = |lut: &GridLut, r: u16| {
-            let k = index(r);
-            GRID as i32 + lut.points[k + 1] as i32 - lut.points[k] as i32
-        };
-        assert_eq!(
-            [1968, 1984, 2000, 2016].map(|r| at(&b.unbounded, r)),
-            [11, 20, 26, 27]
-        );
-        assert!([2000, 2016].iter().all(|&r| at(&b.lut, r) == GAIN_BOUND_Q4));
-
-        // a pot swinging 0.53..1.47x: its table wants up to 1.9x
-        let a = 0.15;
-        let chunks = rigid_chunks(a, 24, 6000, 0.05, 0.95);
-        let st = stitch(&refs(&chunks), RAW_MIN, RAW_MAX).expect("stitch");
-        let band = st.well_covered(MIN_RUNG_COVER).expect("band");
-        assert!(interval_gains(&fit_grid(&st, band)).any(|(_, g)| g > 28));
-        for q4 in [17, 20, 24] {
-            let lut = fit_grid_bounded(&st, band, q4);
-            assert_eq!(lut.validate(RAW_MIN, RAW_MAX), Ok(()), "{q4}");
-            assert!(interval_gains(&lut).all(|(_, g)| g <= q4), "{q4}");
-        }
-        // a bound the pot never reaches leaves the fit alone
-        assert_eq!(
-            fit_grid_bounded(&st, band, GAIN_MAX * GRID as i32),
-            fit_grid(&st, band)
-        );
-    }
-
-    /// Against the stitched curve the bounded mg90-a table leaves 2.36
-    /// counts rms and 11.9 at worst (0.74 and 6.7 unbounded), under the 3.7
-    /// and 15.9 a 55-point table leaves, and its 25-count slope is off by
-    /// 10.3% rms (4.2% unbounded).
-    #[test]
-    fn bounded_table_keeps_the_position_error_under_the_budget() {
-        let b = &mg90_a().build;
-        let (f, u) = (b.fit, b.fit_unbounded);
-        assert!(f.rms < 2.5 && f.max < 12.5, "{f:?}");
-        assert!(f.slope_rms < 0.11, "{f:?}");
-        assert!(u.rms < 0.8 && u.max < 7.0 && u.slope_rms < 0.045, "{u:?}");
-    }
-
-    #[test]
-    fn bound_does_not_move_the_identity_insets() {
-        let b = &mg90_a().build;
-        let (lo, hi) = b.covered;
-        for lut in [&b.lut, &b.unbounded] {
-            let outside = lut.points.iter().enumerate().filter(|&(k, _)| {
-                (k * GRID as usize) < lo as usize || (k * GRID as usize) > hi as usize
-            });
-            assert!(outside.clone().all(|(_, &c)| c == 0), "{outside:?}");
-            for stop in [209, 232, 3849] {
-                assert_eq!(lut.counts(stop), stop as f64);
-            }
-            assert_eq!(lut.validate(209, 3849), Ok(()));
-            assert_eq!(lut.validate(232, 3849), Ok(()));
-        }
-        let nonzero = |lut: &GridLut| {
-            let nz: Vec<usize> = (0..POINTS).filter(|&k| lut.points[k] != 0).collect();
-            (nz[0] * GRID as usize, nz[nz.len() - 1] * GRID as usize)
-        };
-        assert_eq!(nonzero(&b.unbounded), (560, 3504));
-        assert_eq!(nonzero(&b.lut), (560, 3504));
-        // a bound tighter than the pot still leaves the insets alone; an
-        // empty band is the identity
-        let a = 0.02;
-        let chunks = rigid_chunks(a, 24, 6000, 0.05, 0.95);
-        let st = stitch(&refs(&chunks), RAW_MIN, RAW_MAX).expect("stitch");
-        let band = st.well_covered(MIN_RUNG_COVER).expect("band");
-        let lut = fit_grid_bounded(&st, band, 17);
-        assert!(lut.points[..index(band.0)].iter().all(|&c| c == 0));
-        assert!(lut.points[index(band.1) + 1..].iter().all(|&c| c == 0));
-        assert_eq!(fit_grid_bounded(&st, (1001, 1007), 20), GridLut::IDENTITY);
     }
 
     // --- the 55-point block ---
