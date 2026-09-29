@@ -1,17 +1,23 @@
 //! `osc capture check`: re-read a landed capture and confirm every recording
 //! holds every segment its own meta promises, without the servo; over a
 //! dataset or experiment dir, every capture under it, and that they were
-//! all made under one position table.
+//! all made under one position table and one drive rule, the one
+//! dataset.toml declares.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
 use flate2::read::GzDecoder;
+use osc_ident::exp::{Applied, judge};
 use serde::Deserialize;
 
+use super::Rule;
+use super::store::{goal_tick, tick_ms};
 use super::verdict::expected_segments;
+use crate::sweep::Step;
 
 /// `osc capture check` args.
 #[derive(clap::Args, Debug)]
@@ -21,15 +27,18 @@ pub struct Args {
     dir: PathBuf,
 }
 
-/// The sweep meta keys the segment count follows from, and the plant
-/// block the captures must agree on.
+/// The sweep meta keys the segment count follows from, and the plant and
+/// drive blocks the captures must agree on.
 #[derive(Deserialize)]
 struct SweepMeta {
-    schedule: Vec<String>,
+    schedule: Vec<Step>,
     dirs: Vec<i8>,
     baseline_ms: u32,
+    tick_hz: Option<f64>,
     #[serde(default)]
     plant: Option<PlantMeta>,
+    #[serde(default)]
+    drive: Option<DriveMeta>,
 }
 
 /// The table a recording was made under, as its meta names it.
@@ -39,11 +48,73 @@ struct PlantMeta {
     lut_crc: String,
 }
 
+/// The drive keys the check reads.
+#[derive(Deserialize)]
+struct DriveMeta {
+    rule: Rule,
+    current_limit_counts: u16,
+    /// Per segment, in order; a bare `osc sweep` writes none.
+    #[serde(default)]
+    t_goal_ms: Option<Vec<Option<f64>>>,
+}
+
+/// The rule and limit a recording was made under, or a dataset declares.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct Drive {
+    rule: Rule,
+    limit: Option<u16>,
+}
+
+impl Drive {
+    /// A meta with no drive block was made before the servo limited
+    /// open-loop current.
+    fn of(m: &SweepMeta) -> Self {
+        match &m.drive {
+            Some(d) => Drive {
+                rule: d.rule,
+                limit: Some(d.current_limit_counts),
+            },
+            None => Drive {
+                rule: Rule::Free,
+                limit: None,
+            },
+        }
+    }
+}
+
+impl fmt::Display for Drive {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.rule.as_str())?;
+        match self.limit {
+            Some(l) => write!(f, " at {l} counts"),
+            None => Ok(()),
+        }
+    }
+}
+
+/// dataset.toml's drive keys; one with no `rule` is `free`.
+#[derive(Deserialize)]
+struct DeclDrive {
+    #[serde(default)]
+    rule: Rule,
+    #[serde(default)]
+    current_limit_counts: Option<u16>,
+}
+
+/// What one recording checked as.
+struct Checked {
+    line: String,
+    plant: Option<PlantMeta>,
+    drive: Drive,
+}
+
 pub(crate) fn run(a: &Args) -> Result<()> {
     let dirs = capture_dirs(&a.dir)?;
+    let declared = declared(&a.dir)?;
     let mut total = 0;
     let mut failed = 0;
     let mut tables: BTreeMap<Option<PlantMeta>, Vec<String>> = BTreeMap::new();
+    let mut drives: BTreeMap<Drive, Vec<String>> = BTreeMap::new();
     for dir in &dirs {
         let names = recordings(dir)?;
         for name in &names {
@@ -53,9 +124,10 @@ pub(crate) fn run(a: &Args) -> Result<()> {
                 _ => name.clone(),
             };
             match check(dir, name) {
-                Ok((line, plant)) => {
-                    println!("{label}: {line}");
-                    tables.entry(plant).or_default().push(label);
+                Ok(c) => {
+                    println!("{label}: {}", c.line);
+                    tables.entry(c.plant).or_default().push(label.clone());
+                    drives.entry(c.drive).or_default().push(label);
                 }
                 Err(e) => {
                     failed += 1;
@@ -67,17 +139,54 @@ pub(crate) fn run(a: &Args) -> Result<()> {
     if total == 0 {
         bail!("no recordings in {}", a.dir.display());
     }
+    let mut problems = Vec::new();
     if tables.len() > 1 {
-        println!("FAIL {}", mixed(&tables));
+        problems.push(mixed(&tables));
+    }
+    if drives.len() > 1 {
+        problems.push(mixed_drives(&drives));
+    }
+    if let (Some(decl), [only]) = (declared, drives.keys().collect::<Vec<_>>().as_slice())
+        && decl != **only
+    {
+        problems.push(format!(
+            "dataset.toml declares {decl}, the recordings were made {only}"
+        ));
+    }
+    for p in &problems {
+        println!("FAIL {p}");
     }
     if failed > 0 {
         bail!("{failed} of {total} recordings failed");
     }
-    if tables.len() > 1 {
-        bail!("{}", mixed(&tables));
+    if !problems.is_empty() {
+        bail!("{}", problems.join("\n"));
     }
-    println!("ok: {total} recordings complete");
+    let drive = drives
+        .keys()
+        .next()
+        .map_or(String::new(), |d| format!(", {d}"));
+    println!("ok: {total} recordings complete{drive}");
     Ok(())
+}
+
+/// The drive dataset.toml declares, from the dataset dir `dir` is or sits
+/// in (a capture dir is two levels down); None where there is none.
+fn declared(dir: &Path) -> Result<Option<Drive>> {
+    for d in dir.ancestors().take(3) {
+        let path = d.join("dataset.toml");
+        if path.is_file() {
+            let text = std::fs::read_to_string(&path)
+                .with_context(|| format!("read {}", path.display()))?;
+            let decl: DeclDrive =
+                toml::from_str(&text).with_context(|| format!("parse {}", path.display()))?;
+            return Ok(Some(Drive {
+                rule: decl.rule,
+                limit: decl.current_limit_counts,
+            }));
+        }
+    }
+    Ok(None)
 }
 
 /// The capture dirs under `dir`: itself when it holds recordings, else
@@ -129,6 +238,19 @@ fn mixed(tables: &BTreeMap<Option<PlantMeta>, Vec<String>>) -> String {
     )
 }
 
+/// The mix, one drive per line with the recordings made under it.
+fn mixed_drives(drives: &BTreeMap<Drive, Vec<String>>) -> String {
+    let groups: Vec<String> = drives
+        .iter()
+        .map(|(d, names)| format!("{d}: {}", names.join(" ")))
+        .collect();
+    format!(
+        "recordings mix {} drive rules; {}",
+        drives.len(),
+        groups.join("; ")
+    )
+}
+
 /// Every recording name with a `.meta.json` or a `.csv.gz`, so a half pair
 /// still gets its own failure line.
 fn recordings(dir: &Path) -> Result<BTreeSet<String>> {
@@ -145,8 +267,12 @@ fn recordings(dir: &Path) -> Result<BTreeSet<String>> {
     Ok(names)
 }
 
-fn check(dir: &Path, name: &str) -> Result<(String, Option<PlantMeta>)> {
-    let meta_path = dir.join(format!("{name}.meta.json"));
+fn check(dir: &Path, name: &str) -> Result<Checked> {
+    let mut meta_path = dir.join(format!("{name}.meta.json"));
+    if !meta_path.is_file() && dir.join("meta.json").is_file() {
+        // a bare `osc sweep` recording: `meta.json` beside `sweep.csv.gz`
+        meta_path = dir.join("meta.json");
+    }
     let text = std::fs::read_to_string(&meta_path)
         .with_context(|| format!("read {}", meta_path.display()))?;
     let m: SweepMeta =
@@ -154,7 +280,7 @@ fn check(dir: &Path, name: &str) -> Result<(String, Option<PlantMeta>)> {
     let csv_path = dir.join(format!("{name}.csv.gz"));
     let f =
         std::fs::File::open(&csv_path).with_context(|| format!("open {}", csv_path.display()))?;
-    let (rows, dirs) = count_rows(BufReader::new(GzDecoder::new(f)))
+    let rows = read_rows(BufReader::new(GzDecoder::new(f)))
         .with_context(|| format!("read {}", csv_path.display()))?;
 
     let baseline = m.baseline_ms > 0;
@@ -162,7 +288,7 @@ fn check(dir: &Path, name: &str) -> Result<(String, Option<PlantMeta>)> {
     let expected: BTreeSet<u32> = (u32::from(!baseline)..).take(want).collect();
     let missing: Vec<u32> = expected
         .iter()
-        .filter(|s| !rows.contains_key(s))
+        .filter(|s| !rows.segs.contains_key(s))
         .copied()
         .collect();
     if !missing.is_empty() {
@@ -172,6 +298,7 @@ fn check(dir: &Path, name: &str) -> Result<(String, Option<PlantMeta>)> {
         );
     }
     let extra: Vec<u32> = rows
+        .segs
         .keys()
         .filter(|s| !expected.contains(s))
         .copied()
@@ -179,22 +306,118 @@ fn check(dir: &Path, name: &str) -> Result<(String, Option<PlantMeta>)> {
     if !extra.is_empty() {
         bail!("seg {extra:?} beyond the {want} the schedule promises");
     }
-    if let Some(d) = m.dirs.iter().find(|d| !dirs.contains(d)) {
+    if let Some(d) = m.dirs.iter().find(|d| !rows.dirs.contains(d)) {
         bail!("no rows drive dir {d:+}");
     }
-    let total: usize = rows.values().sum();
+    let drive = Drive::of(&m);
+    if let Some(t) = m.drive.as_ref().and_then(|d| d.t_goal_ms.as_deref()) {
+        check_goals(&rows, t, m.tick_hz)?;
+    }
+    if drive.rule == Rule::Free {
+        check_free(&rows, &m.schedule, baseline)?;
+    }
+    let total: usize = rows.segs.values().map(|s| s.rows).sum();
     let plant = match &m.plant {
         Some(p) => format!(", lut {} {}", p.lut_state, p.lut_crc),
         None => String::new(),
     };
-    Ok((
-        format!("{want} segments, {total} rows, dirs {:?}{plant}", m.dirs),
-        m.plant,
-    ))
+    let under = match m.drive {
+        Some(_) => format!(", {drive}"),
+        None => String::new(),
+    };
+    Ok(Checked {
+        line: format!(
+            "{want} segments, {total} rows, dirs {:?}{plant}{under}",
+            m.dirs
+        ),
+        plant: m.plant,
+        drive,
+    })
 }
 
-/// Rows per seg, and every dir seen; the header names the columns.
-fn count_rows(r: impl BufRead) -> Result<(BTreeMap<u32, usize>, BTreeSet<i8>)> {
+/// Every segment's `t_goal_ms` is the first tick its rows hold the goal.
+fn check_goals(rows: &Rows, meta: &[Option<f64>], tick_hz: Option<f64>) -> Result<()> {
+    let Some(hz) = tick_hz.filter(|&hz| hz > 0.0) else {
+        bail!("t_goal_ms without a tick_hz");
+    };
+    if meta.len() != rows.segs.len() {
+        bail!(
+            "t_goal_ms names {} segments, the rows hold {}",
+            meta.len(),
+            rows.segs.len()
+        );
+    }
+    for ((seg, s), &have) in rows.segs.iter().zip(meta) {
+        let want =
+            goal_tick(s.duty.iter().map(|&(t, d)| (t, Some(d))), s.cmd).map(|t| tick_ms(t, hz));
+        let same = match (have, want) {
+            (Some(a), Some(b)) => (a - b).abs() < 1e-6,
+            (None, None) => true,
+            _ => false,
+        };
+        if !same {
+            let ms = |v: Option<f64>| v.map_or("null".to_string(), |v| format!("{v} ms"));
+            bail!(
+                "seg {seg}: t_goal_ms {} in the meta, {} by the rows",
+                ms(have),
+                ms(want)
+            );
+        }
+    }
+    Ok(())
+}
+
+/// A recording made before the servo limited open-loop current holds no
+/// sample the limit governed; one that does was made under a limit its
+/// meta does not declare. Each segment is judged as the capture verdict
+/// judges it: a drive slews from rest, a chained one from the duty the
+/// segment before it left applied.
+fn check_free(rows: &Rows, schedule: &[Step], baseline: bool) -> Result<()> {
+    let mut last = 0;
+    for (i, (seg, s)) in rows.segs.iter().enumerate() {
+        let step = i
+            .checked_sub(baseline as usize)
+            .map(|k| schedule[k % schedule.len()]);
+        let start = match step {
+            Some(Step::Drive(..)) | None => 0,
+            Some(_) if i == 0 => 0,
+            Some(_) => last,
+        };
+        last = s.duty.last().map_or(0, |&(_, d)| d);
+        if s.cmd == 0 {
+            continue;
+        }
+        let governed = judge(s.duty.iter().copied(), s.cmd, start)
+            .iter()
+            .filter(|&&a| a == Applied::Governed)
+            .count();
+        if governed > 0 {
+            bail!(
+                "seg {seg}: {governed} samples held under the commanded duty in a free \
+                 recording: it was made under a current limit its meta does not declare"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// One segment's rows: the commanded duty and every applied-duty sample.
+#[derive(Default)]
+struct SegRows {
+    rows: usize,
+    cmd: i16,
+    duty: Vec<(u64, i16)>,
+}
+
+/// A recording's rows by seg, and every dir seen.
+struct Rows {
+    segs: BTreeMap<u32, SegRows>,
+    dirs: BTreeSet<i8>,
+}
+
+/// The header names the columns; an empty duty cell is a sample TEL did
+/// not stream.
+fn read_rows(r: impl BufRead) -> Result<Rows> {
     let mut lines = r.lines();
     let header = lines.next().ok_or_else(|| anyhow!("empty csv"))??;
     let col = |name| {
@@ -204,35 +427,49 @@ fn count_rows(r: impl BufRead) -> Result<(BTreeMap<u32, usize>, BTreeSet<i8>)> {
             .ok_or_else(|| anyhow!("no {name} column"))
     };
     let (seg_col, dir_col) = (col("seg")?, col("dir")?);
-    let mut rows = BTreeMap::new();
+    let (cmd_col, tick_col, duty_col) = (col("cmd_duty_q15")?, col("tick")?, col("duty_q15")?);
+    let mut segs: BTreeMap<u32, SegRows> = BTreeMap::new();
     let mut dirs = BTreeSet::new();
     for (i, line) in lines.enumerate() {
         let line = line?;
         let cells: Vec<&str> = line.split(',').collect();
         let field = |c: usize| cells.get(c).copied().unwrap_or_default();
-        let bad = || anyhow!("row {}: bad seg/dir in {line:?}", i + 2);
-        let seg: u32 = field(seg_col).parse().map_err(|_| bad())?;
-        let dir: i8 = field(dir_col).parse().map_err(|_| bad())?;
-        *rows.entry(seg).or_insert(0) += 1;
+        let bad = |what: &str| anyhow!("row {}: bad {what} in {line:?}", i + 2);
+        let seg: u32 = field(seg_col).parse().map_err(|_| bad("seg"))?;
+        let dir: i8 = field(dir_col).parse().map_err(|_| bad("dir"))?;
+        let cmd: i16 = field(cmd_col).parse().map_err(|_| bad("cmd_duty_q15"))?;
+        let tick: u64 = field(tick_col).parse().map_err(|_| bad("tick"))?;
+        let s = segs.entry(seg).or_insert_with(|| SegRows {
+            cmd,
+            ..SegRows::default()
+        });
+        s.rows += 1;
+        match field(duty_col) {
+            "" => {}
+            d => s.duty.push((tick, d.parse().map_err(|_| bad("duty_q15"))?)),
+        }
         if seg > 0 {
             dirs.insert(dir);
         }
     }
-    Ok((rows, dirs))
+    Ok(Rows { segs, dirs })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::capture::store::Store;
-    use crate::capture::store::fixture::{clean, land, seg, tmp};
+    use crate::capture::store::fixture::{clean, land, land_as, seg, sweep_meta, tmp};
+    use crate::sweep::Segment;
+    use osc_ident::frame::TelFrame;
+    use serde_json::{Value, json};
 
     #[test]
     fn a_landed_capture_checks_clean() {
         let root = tmp("check-clean");
         let dir = land(&Store::new(root.clone()), &clean());
         assert_eq!(
-            check(&dir, "slow").unwrap().0,
+            check(&dir, "slow").unwrap().line,
             "5 segments, 15 rows, dirs [1, -1]"
         );
         assert!(run(&Args { dir: dir.clone() }).is_ok());
@@ -244,25 +481,24 @@ mod tests {
     /// a table rewritten between captures, shows as a mix.
     #[test]
     fn captures_under_different_tables_fail_together() {
-        use crate::capture::store::fixture::{land_as, sweep_meta};
         let root = tmp("check-mix");
         let store = Store::new(root.clone());
         let live = |crc: &str| {
             let mut m = sweep_meta();
-            m["plant"] = serde_json::json!({ "lut_state": "LIVE", "lut_crc": crc });
+            m["plant"] = json!({ "lut_state": "LIVE", "lut_crc": crc });
             m
         };
         land_as(&store, 1, "slow", &live("0x1a2b"), &clean());
         land_as(&store, 1, "fast", &live("0x1a2b"), &clean());
         assert_eq!(
-            check(&root.join("session/capture-1"), "slow").unwrap().0,
+            check(&root.join("session/capture-1"), "slow").unwrap().line,
             "5 segments, 15 rows, dirs [1, -1], lut LIVE 0x1a2b"
         );
         assert!(run(&Args { dir: root.clone() }).is_ok(), "one table");
 
         land_as(&store, 2, "slow", &live("0x1a2b"), &clean());
         let mut identity = sweep_meta();
-        identity["plant"] = serde_json::json!({ "lut_state": "IDENTITY", "lut_crc": "0x0000" });
+        identity["plant"] = json!({ "lut_state": "IDENTITY", "lut_crc": "0x0000" });
         land_as(&store, 2, "fast", &identity, &clean());
         assert!(
             run(&Args {
@@ -312,7 +548,7 @@ mod tests {
         let mut segs = clean();
         segs.pop();
         let dir = land(&Store::new(root.clone()), &segs);
-        let e = check(&dir, "slow").unwrap_err().to_string();
+        let e = check(&dir, "slow").err().unwrap().to_string();
         assert_eq!(e, "4 of 5 segments, missing seg [4]");
         assert!(run(&Args { dir: dir.clone() }).is_err());
 
@@ -325,7 +561,7 @@ mod tests {
             .collect();
         let dir = land(&Store::new(root.clone()), &segs);
         assert_eq!(
-            check(&dir, "slow").unwrap_err().to_string(),
+            check(&dir, "slow").err().unwrap().to_string(),
             "no rows drive dir -1"
         );
 
@@ -335,7 +571,8 @@ mod tests {
         let dir = land(&Store::new(root.clone()), &segs);
         assert!(
             check(&dir, "slow")
-                .unwrap_err()
+                .err()
+                .unwrap()
                 .to_string()
                 .contains("missing seg [2]")
         );
@@ -356,13 +593,210 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
+    /// A bare `osc sweep` recording keeps `meta.json` beside `sweep.csv.gz`.
     #[test]
-    fn rows_count_by_the_header() {
-        let csv = "dir,x,seg\n0,a,0\n1,b,1\n1,c,1\n-1,d,2\n";
-        let (rows, dirs) = count_rows(csv.as_bytes()).unwrap();
-        assert_eq!(rows, [(0, 1), (1, 2), (2, 1)].into());
-        assert_eq!(dirs, [1, -1].into());
-        assert!(count_rows("seg,dir\nx,1\n".as_bytes()).is_err());
-        assert!(count_rows("tick\n1\n".as_bytes()).is_err());
+    fn a_bare_sweep_reads_its_meta_json() {
+        let root = tmp("check-bare");
+        let dir = land(&Store::new(root.clone()), &clean());
+        std::fs::rename(dir.join("slow.meta.json"), dir.join("meta.json")).unwrap();
+        std::fs::rename(dir.join("slow.csv.gz"), dir.join("sweep.csv.gz")).unwrap();
+        assert_eq!(
+            check(&dir, "sweep").unwrap().line,
+            "5 segments, 15 rows, dirs [1, -1]"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn rows_read_by_the_header() {
+        let csv = "dir,tick,x,duty_q15,cmd_duty_q15,seg\n\
+                   0,0,a,0,0,0\n\
+                   1,0,b,,100,1\n\
+                   1,1,c,100,100,1\n\
+                   -1,0,d,-5,-100,2\n";
+        let rows = read_rows(csv.as_bytes()).unwrap();
+        let counts: Vec<(u32, usize)> = rows.segs.iter().map(|(k, s)| (*k, s.rows)).collect();
+        assert_eq!(counts, [(0, 1), (1, 2), (2, 1)]);
+        assert_eq!(rows.dirs, [1, -1].into());
+        assert_eq!(rows.segs[&1].cmd, 100);
+        assert_eq!(rows.segs[&1].duty, [(1, 100)]);
+        assert_eq!(rows.segs[&2].duty, [(0, -5)]);
+        let bad = "seg,dir,tick,cmd_duty_q15,duty_q15\nx,1,0,0,0\n";
+        assert!(read_rows(bad.as_bytes()).is_err());
+        assert!(read_rows("tick\n1\n".as_bytes()).is_err());
+    }
+
+    /// A drive rung of `goal` whose applied duty climbs `rate` per tick
+    /// from 0 and is held at `held`.
+    fn rung(seg_n: u32, dir: i8, goal: i16, held: i16, rate: i16, n: u64) -> Segment {
+        let mut s = seg(seg_n, dir, n as usize);
+        s.cmd_duty_q15 = goal;
+        for (t, f) in s.frames.iter_mut().enumerate() {
+            let climb = (rate as i64 * t as i64).min(held.unsigned_abs() as i64) as i16;
+            f.duty_q15 = Some(climb * held.signum());
+        }
+        s
+    }
+
+    /// Baseline, then the fixture plan's `20@80`, `coast:400` both ways.
+    fn recording(fwd_held: i16) -> Vec<Segment> {
+        let coast = |seg_n: u32, dir: i8| {
+            let mut s = seg(seg_n, dir, 3);
+            for f in &mut s.frames {
+                f.duty_q15 = Some(0);
+            }
+            s
+        };
+        let mut base = seg(0, 0, 3);
+        base.frames.iter_mut().for_each(|f| f.duty_q15 = Some(0));
+        vec![
+            base,
+            rung(1, 1, 6553, fwd_held, 3000, 100),
+            coast(2, 1),
+            rung(3, -1, -6553, -6553, 3000, 100),
+            coast(4, -1),
+        ]
+    }
+
+    fn limit_meta(limit: u16) -> Value {
+        let mut m = sweep_meta();
+        m["drive"] = json!({ "rule": "limit", "current_limit_counts": limit });
+        m
+    }
+
+    fn decl(root: &Path, body: &str) {
+        std::fs::write(root.join("dataset.toml"), body).unwrap();
+    }
+
+    #[test]
+    fn a_recording_without_a_drive_block_is_free() {
+        let root = tmp("check-free");
+        let dir = land(&Store::new(root.clone()), &recording(6553));
+        let c = check(&dir, "slow").unwrap();
+        assert_eq!(
+            c.drive,
+            Drive {
+                rule: Rule::Free,
+                limit: None
+            }
+        );
+        assert_eq!(c.line, "5 segments, 209 rows, dirs [1, -1]");
+        // a dataset.toml with no rule declares free too
+        decl(
+            &root,
+            "servo = \"mg90-a\"\nsupply = \"2s\"\ncaptured = \"x\"\n",
+        );
+        assert_eq!(declared(&dir).unwrap(), Some(c.drive));
+        assert!(run(&Args { dir: root.clone() }).is_ok());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_dataset_never_mixes_drive_rules() {
+        let root = tmp("check-rules");
+        let store = Store::new(root.clone());
+        land_as(&store, 1, "slow", &limit_meta(280), &recording(6553));
+        let c = check(&root.join("session/capture-1"), "slow").unwrap();
+        assert_eq!(
+            c.line,
+            "5 segments, 209 rows, dirs [1, -1], limit at 280 counts"
+        );
+        // the store stamps each segment's goal, and the check reads it back
+        let text = std::fs::read_to_string(root.join("session/capture-1/slow.meta.json")).unwrap();
+        let meta: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(
+            meta["drive"]["t_goal_ms"],
+            json!([0.0, 0.15, 0.0, 0.15, 0.0])
+        );
+        decl(
+            &root,
+            "servo = \"mg90-a\"\nsupply = \"2s\"\nrule = \"limit\"\ncurrent_limit_counts = 280\ncaptured = \"x\"\n",
+        );
+        assert!(run(&Args { dir: root.clone() }).is_ok());
+
+        land_as(&store, 2, "slow", &sweep_meta(), &recording(6553));
+        assert_eq!(
+            run(&Args { dir: root.clone() }).unwrap_err().to_string(),
+            "recordings mix 2 drive rules; free: session/capture-2/slow; limit at 280 counts: \
+             session/capture-1/slow"
+        );
+        std::fs::remove_dir_all(root.join("session/capture-2")).unwrap();
+
+        land_as(&store, 2, "slow", &limit_meta(300), &recording(6553));
+        assert!(
+            run(&Args { dir: root.clone() })
+                .unwrap_err()
+                .to_string()
+                .starts_with("recordings mix 2 drive rules")
+        );
+        std::fs::remove_dir_all(root.join("session/capture-2")).unwrap();
+
+        // one rule across the recordings, another in dataset.toml
+        decl(
+            &root,
+            "servo = \"mg90-a\"\nsupply = \"2s\"\ncaptured = \"x\"\n",
+        );
+        assert_eq!(
+            run(&Args { dir: root.clone() }).unwrap_err().to_string(),
+            "dataset.toml declares free, the recordings were made limit at 280 counts"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn governed_samples_in_a_free_recording_fail_the_check() {
+        let root = tmp("check-governed");
+        let store = Store::new(root.clone());
+        // held at 15% under a 20% goal: the limit governed it
+        let held = recording(4915);
+        let dir = land_as(&store, 1, "slow", &sweep_meta(), &held);
+        let e = check(&dir, "slow").err().unwrap().to_string();
+        assert!(
+            e.starts_with("seg 1: 46 samples held under the commanded duty in a free recording"),
+            "{e}"
+        );
+        assert!(run(&Args { dir: root.clone() }).is_err());
+
+        // the same rows under a declared limit are what the rule predicts
+        let dir = land_as(&store, 1, "slow", &limit_meta(280), &held);
+        assert!(check(&dir, "slow").is_ok());
+        let text = std::fs::read_to_string(dir.join("slow.meta.json")).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&text).unwrap()["drive"]["t_goal_ms"][1],
+            Value::Null
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_t_goal_the_rows_disagree_with_fails() {
+        let root = tmp("check-tgoal");
+        let dir = land_as(
+            &Store::new(root.clone()),
+            1,
+            "slow",
+            &limit_meta(280),
+            &recording(6553),
+        );
+        let path = dir.join("slow.meta.json");
+        let mut meta: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        meta["drive"]["t_goal_ms"][1] = json!(0.5);
+        std::fs::write(&path, meta.to_string()).unwrap();
+        assert_eq!(
+            check(&dir, "slow").err().unwrap().to_string(),
+            "seg 1: t_goal_ms 0.5 ms in the meta, 0.15 ms by the rows"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn goal_tick_skips_a_frame_with_no_duty() {
+        let f = TelFrame {
+            tick: 3,
+            duty_q15: None,
+            ..TelFrame::default()
+        };
+        assert_eq!(goal_tick([(f.tick, f.duty_q15), (4, Some(7))], 7), Some(4));
     }
 }

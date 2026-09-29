@@ -19,8 +19,8 @@ use flate2::write::GzEncoder;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::Supply;
 use super::plan::Plan;
+use super::{Rule, Supply};
 use crate::sweep::{self, CSV_HEADER, Segment};
 
 const DECL: &str = "dataset.toml";
@@ -80,11 +80,16 @@ impl Store {
 }
 
 /// What dataset.toml declares: what the recordings cannot say about
-/// themselves.
+/// themselves, and the drive rule and limit every one of them was made
+/// under. A dataset.toml with no `rule` is `free`.
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub(crate) struct Decl {
     pub(crate) servo: String,
     pub(crate) supply: Supply,
+    #[serde(default)]
+    pub(crate) rule: Rule,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) current_limit_counts: Option<u16>,
     pub(crate) captured: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) notes: Option<String>,
@@ -114,9 +119,9 @@ impl Decl {
         toml::from_str(&text).with_context(|| format!("parse {}", path.display()))
     }
 
-    /// `<servo>__<supply>`, the dataset dir's name.
+    /// The dataset dir's name.
     pub(crate) fn name(&self) -> String {
-        super::dataset_name(&self.servo, self.supply)
+        super::dataset_name(&self.servo, self.supply, self.rule)
     }
 }
 
@@ -184,6 +189,7 @@ impl Capture {
             name: name.to_string(),
             tmp,
             csv,
+            goals: Vec::new(),
         })
     }
 }
@@ -209,22 +215,45 @@ pub(crate) struct Try<'a> {
     name: String,
     tmp: PathBuf,
     csv: BufWriter<File>,
+    /// Per segment, in order, the tick its applied duty first met its goal.
+    goals: Vec<Option<u64>>,
+}
+
+/// The first tick whose applied duty equals the commanded `goal`.
+pub(crate) fn goal_tick(
+    frames: impl IntoIterator<Item = (u64, Option<i16>)>,
+    goal: i16,
+) -> Option<u64> {
+    frames
+        .into_iter()
+        .find_map(|(tick, duty)| (duty == Some(goal)).then_some(tick))
+}
+
+/// `tick` in ms from the segment's start.
+pub(crate) fn tick_ms(tick: u64, tick_hz: f64) -> f64 {
+    tick as f64 * 1000.0 / tick_hz
 }
 
 impl Try<'_> {
     /// `sweep::record`'s per-segment sink.
     pub(crate) fn on_seg(&mut self, s: &Segment) -> Result<()> {
+        self.goals.push(goal_tick(
+            s.frames.iter().map(|f| (f.tick, f.duty_q15)),
+            s.cmd_duty_q15,
+        ));
         sweep::write_rows(&mut self.csv, s)
     }
 
     /// Land the recording: `<name>.csv.gz` and `<name>.meta.json`, the sweep
-    /// meta plus supply, session block map and capture, keys sorted.
+    /// meta plus supply, session block map and capture, and each segment's
+    /// `t_goal_ms` into its `drive` block when it has one, keys sorted.
     pub(crate) fn accept(self, extra: &CaptureMeta) -> Result<()> {
         let Try {
             cap,
             name,
             tmp,
             csv,
+            goals,
         } = self;
         csv.into_inner()
             .map_err(|e| e.into_error())
@@ -239,9 +268,17 @@ impl Try<'_> {
         if meta.get("schedule") != Some(&json!(sched)) {
             bail!("{name}: the sweep's schedule is not the plan's");
         }
+        let tick_hz = meta.get("tick_hz").and_then(Value::as_f64);
         let Some(obj) = meta.as_object_mut() else {
             bail!("{name}: sweep meta is not an object");
         };
+        if let Some(drive) = obj.get_mut("drive").and_then(Value::as_object_mut) {
+            let Some(hz) = tick_hz.filter(|&hz| hz > 0.0) else {
+                bail!("{name}: sweep meta has a drive block and no tick_hz");
+            };
+            let t: Vec<Option<f64>> = goals.iter().map(|g| g.map(|t| tick_ms(t, hz))).collect();
+            drive.insert("t_goal_ms".into(), json!(t));
+        }
         obj.insert("supply".into(), json!(extra.supply.as_str()));
         obj.insert("session".into(), json!({ "blocks": plan.blocks }));
         let order: Vec<&str> = plan.blocks.iter().map(|b| b.name.as_str()).collect();
@@ -407,22 +444,72 @@ mod tests {
     #[test]
     fn decl_is_written_once() {
         let root = tmp("decl");
-        let store = Store::new(root.join("mg90-a__2s"));
+        let store = Store::new(root.join("mg90-a__2s__limit"));
         let decl = Decl {
             servo: "mg90-a".into(),
             supply: Supply::TwoS,
+            rule: Rule::Limit,
+            current_limit_counts: Some(280),
             captured: "2026-09-25".into(),
             notes: None,
         };
         assert!(decl.save(&store).unwrap());
-        let text = std::fs::read_to_string(root.join("mg90-a__2s/dataset.toml")).unwrap();
-        assert!(text.contains("supply = \"2s\"") && !text.contains("notes"));
+        let text = std::fs::read_to_string(root.join("mg90-a__2s__limit/dataset.toml")).unwrap();
+        assert_eq!(
+            text,
+            "servo = \"mg90-a\"\nsupply = \"2s\"\nrule = \"limit\"\n\
+             current_limit_counts = 280\ncaptured = \"2026-09-25\"\n"
+        );
+        assert_eq!(decl.name(), "mg90-a__2s__limit");
         let other = Decl {
             servo: "sg90-a".into(),
             ..decl
         };
         assert!(!other.save(&store).unwrap());
         assert_eq!(Decl::load(&store).unwrap().servo, "mg90-a");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The datasets captured before the servo limited open-loop current
+    /// declare no rule: they read as `free` under their own name.
+    #[test]
+    fn a_decl_without_a_rule_is_free() {
+        let root = tmp("decl-free");
+        let store = Store::new(root.clone());
+        std::fs::write(
+            root.join(DECL),
+            "servo = \"mg90-a\"\nsupply = \"2s\"\ncaptured = \"2026-09-26\"\n",
+        )
+        .unwrap();
+        let d = Decl::load(&store).unwrap();
+        assert_eq!((d.rule, d.current_limit_counts), (Rule::Free, None));
+        assert_eq!(d.name(), "mg90-a__2s");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A meta with a drive block gains each segment's `t_goal_ms`: the
+    /// first tick its applied duty met the goal, null where it never did.
+    #[test]
+    fn accept_stamps_each_segments_goal_into_the_drive_block() {
+        let root = tmp("tgoal");
+        let mut meta = sweep_meta();
+        meta["drive"] = json!({ "rule": "limit", "current_limit_counts": 280 });
+        let duty = |s: &mut Segment, cmd: i16, duty: [i16; 3]| {
+            s.cmd_duty_q15 = cmd;
+            for (f, d) in s.frames.iter_mut().zip(duty) {
+                f.duty_q15 = Some(d);
+            }
+        };
+        let mut segs = clean();
+        duty(&mut segs[0], 0, [0, 0, 0]);
+        duty(&mut segs[1], 6553, [0, 3000, 6553]);
+        duty(&mut segs[2], 0, [6553, 0, 0]);
+        duty(&mut segs[3], -6553, [0, -3000, -4915]);
+        duty(&mut segs[4], 0, [0, 0, 0]);
+        let dir = land_as(&Store::new(root.clone()), 1, "slow", &meta, &segs);
+        let text = std::fs::read_to_string(dir.join("slow.meta.json")).unwrap();
+        let m: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(m["drive"]["t_goal_ms"], json!([0.0, 0.1, 0.05, null, 0.0]));
         std::fs::remove_dir_all(&root).unwrap();
     }
 
