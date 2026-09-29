@@ -28,13 +28,13 @@ pub enum Source {
 impl Source {
     pub fn as_str(self) -> &'static str {
         match self {
-            Source::BurstHeld => "E8 burst, held",
-            Source::Burst => "E8 burst, free",
-            Source::StallFallback => "E2 fallback",
+            Source::BurstHeld => "burst, held",
+            Source::Burst => "burst, free",
+            Source::StallFallback => "resistance fallback",
             Source::Default => "default",
-            Source::Ladder => "E3 ladder",
-            Source::Inertia => "E4 inertia",
-            Source::Bias => "E0 bias",
+            Source::Ladder => "ladder",
+            Source::Inertia => "inertia",
+            Source::Bias => "bias",
         }
     }
 }
