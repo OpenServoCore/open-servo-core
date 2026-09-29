@@ -30,8 +30,12 @@
 //! high source impedance and R reads high with them, while tau is immune.
 //! The gates cannot see the rotor-follow bias, which is why they are not
 //! enough to promote this to the R source.
+//!
+//! Only samples that applied their step's duty enter a fit: a step still
+//! slewing is trimmed, and a step the current limit held under its goal
+//! is declined.
 
-use super::{Cmd, Experiment, RigParams};
+use super::{Applied, Cmd, Experiment, GOVERNED, RigParams, judge};
 use crate::fitmath::{linear_ls, median, origin_ls, quantile};
 use crate::frame::{
     TEL_BIT_CURRENT_RAW, TEL_BIT_DUTY, TEL_BIT_POS, TEL_BIT_VBUS_RAW, TEL_BIT_VMOTOR_A,
@@ -328,10 +332,12 @@ fn probe_model(
         return None;
     };
     let (tail, _) = budget(segs, cfg);
+    let governed = governed(segs);
     let pts: Vec<(&Segment, Option<Settled>)> = segs
         .iter()
-        .filter(|s| s.kind == SegKind::Probe)
-        .map(|s| (s, settled(s, bias, sc, tail)))
+        .zip(&governed)
+        .filter(|(s, g)| s.kind == SegKind::Probe && !**g)
+        .map(|(s, _)| (s, settled(s, bias, sc, tail)))
         .collect();
     let live: Vec<(f64, f64)> = pts
         .iter()
@@ -853,8 +859,36 @@ fn rest_bias(segs: &[Segment]) -> Option<f64> {
     median(&v)
 }
 
+/// Each segment judged against its own duty, from the duty the one before
+/// it in the chain left applied: true where the current limit held it.
+fn governed(segs: &[Segment]) -> Vec<bool> {
+    let mut chain = None;
+    let mut start = 0;
+    segs.iter()
+        .map(|s| {
+            if chain != Some(s.chain) {
+                chain = Some(s.chain);
+                start = 0;
+            }
+            let duty: Vec<(u64, i16)> = s
+                .tel
+                .iter()
+                .filter_map(|f| Some((f.tick, f.duty_q15?)))
+                .collect();
+            let judged = judge(duty.iter().copied(), s.cmd_duty_q15, start);
+            start = duty.last().map_or(start, |d| d.1);
+            judged.contains(&Applied::Governed)
+        })
+        .collect()
+}
+
+/// The step's settled tail: window-valid samples that applied its duty.
 fn settled(seg: &Segment, bias: f64, sc: &Scales, tail: usize) -> Option<Settled> {
-    let live: Vec<&TelFrame> = seg.tel.iter().filter(|f| f.window_valid).collect();
+    let live: Vec<&TelFrame> = seg
+        .tel
+        .iter()
+        .filter(|f| f.window_valid && f.duty_q15 == Some(seg.cmd_duty_q15))
+        .collect();
     if live.len() < tail || tail == 0 {
         return None;
     }
@@ -985,12 +1019,13 @@ fn gate(name: &'static str, pass: bool, detail: String) -> Gate {
 pub fn fit_segments(segs: &[Segment], sc: &Scales, cfg: &RlFitCfg) -> Option<RlResult> {
     let bias = rest_bias(segs)?;
     let (tail, k_fit) = budget(segs, cfg);
+    let governed = governed(segs);
     let mut trs: Vec<Tr> = Vec::new();
     let mut taus: Vec<f64> = Vec::new();
     let mut nulls: Vec<f64> = Vec::new();
-    for w in segs.windows(2) {
+    for (k, w) in segs.windows(2).enumerate() {
         let (a, b) = (&w[0], &w[1]);
-        if a.chain != b.chain || a.kind != b.kind {
+        if a.chain != b.chain || a.kind != b.kind || governed[k] || governed[k + 1] {
             continue;
         }
         let (Some(sa), Some(sb)) = (settled(a, bias, sc, tail), settled(b, bias, sc, tail)) else {
@@ -1047,8 +1082,9 @@ pub fn fit_segments(segs: &[Segment], sc: &Scales, cfg: &RlFitCfg) -> Option<RlR
     // source soft-pedalled.
     let src_pts: Vec<(f64, f64)> = segs
         .iter()
-        .filter(|s| matches!(s.kind, SegKind::Toggle | SegKind::Null))
-        .filter_map(|s| settled(s, bias, sc, tail))
+        .zip(&governed)
+        .filter(|(s, g)| matches!(s.kind, SegKind::Toggle | SegKind::Null) && !**g)
+        .filter_map(|(s, _)| settled(s, bias, sc, tail))
         .map(|s| (s.i * sc.amps_per_count, s.v_rail))
         .collect();
     let src_ohm = linear_ls(&src_pts).map(|f| -f.b).unwrap_or(0.0);
@@ -1141,12 +1177,18 @@ pub fn fit_segments(segs: &[Segment], sc: &Scales, cfg: &RlFitCfg) -> Option<RlR
         transitions: trs.len(),
         gates,
         ok,
-        warnings: if supply_soft {
-            vec![format!(
-                "supply source impedance {src_ohm:.2} ohm: R reads high, bracket widened (tau is immune)"
-            )]
-        } else {
-            Vec::new()
+        warnings: {
+            let mut w = Vec::new();
+            if supply_soft {
+                w.push(format!(
+                    "supply source impedance {src_ohm:.2} ohm: R reads high, bracket widened (tau is immune)"
+                ));
+            }
+            match governed.iter().filter(|g| **g).count() {
+                0 => {}
+                n => w.push(format!("{n} toggle steps {GOVERNED}")),
+            }
+            w
         },
     })
 }
@@ -1394,6 +1436,39 @@ mod tests {
         // the settled delta pair leaves no intercept behind
         assert!(fit.v0_volts.abs() < 0.05, "v0 {}", fit.v0_volts);
         assert!(fit.r_bracket.0 <= fit.r_ohm && fit.r_ohm <= fit.r_bracket.1);
+    }
+
+    /// Toggle steps the limiter held under their duty after reaching it
+    /// are declined, never fitted: R and tau come from the clean ones.
+    #[test]
+    fn a_governed_toggle_step_is_declined() {
+        let p = Plant::default();
+        let sc = scales();
+        let mut segs = synth_run(&p, sc, 0);
+        let clean = fit_segments(&segs, &sc, &RlFitCfg::default()).expect("fit");
+        let mut held = 0;
+        for s in segs
+            .iter_mut()
+            .filter(|s| s.kind == SegKind::Toggle && s.cmd_duty_q15.abs() == pct_q15(30))
+        {
+            let cut = s.cmd_duty_q15 - 400 * s.cmd_duty_q15.signum();
+            for f in &mut s.tel[12..] {
+                f.duty_q15 = Some(cut);
+                f.current_raw = f.current_raw.map(|c| c + 300);
+            }
+            held += 1;
+        }
+        let fit = fit_segments(&segs, &sc, &RlFitCfg::default()).expect("fit");
+        assert!(held > 20);
+        assert!(fit.transitions < clean.transitions);
+        assert!(
+            fit.warnings
+                .contains(&format!("{held} toggle steps {GOVERNED}")),
+            "{:?}",
+            fit.warnings
+        );
+        assert!((fit.r_ohm - p.r).abs() / p.r < 0.02, "R {}", fit.r_ohm);
+        assert!(clean.warnings.is_empty(), "{:?}", clean.warnings);
     }
 
     #[test]

@@ -403,6 +403,82 @@ impl<E: Experiment> Experiment for Permitted<E> {
     }
 }
 
+/// `limit_flags` bit 1: the stall timer folded the limit to the yield. A
+/// drive that sees it is held against something it cannot move.
+pub const LIMIT_YIELD_FOLDED: u8 = 1 << 1;
+
+/// What a rung or step with no clean window reports.
+pub const GOVERNED: &str = "declined: the current limit governed this window";
+
+/// How far the firmware's duty ceiling climbs per fast tick after a goal
+/// change, q15.
+pub const SLEW_Q15_PER_TICK: u32 = 128;
+
+/// Fast ticks one ident aggregate window spans.
+const TICKS_PER_WINDOW: u32 = 16;
+
+/// Ticks the applied duty may take to reach `goal` from `start` before the
+/// limiter, not the slew, is holding it back (protocol sec 5.8). `start` is
+/// the duty applied before the change; pass 0 from rest or across a
+/// reversal, where the firmware starts from the window floor: 0 only
+/// widens the allowance.
+pub fn slew_ticks(goal: i16, start: i16) -> u32 {
+    let start = if start.signum() == goal.signum() {
+        start.unsigned_abs() as u32
+    } else {
+        0
+    };
+    (goal.unsigned_abs() as u32).saturating_sub(start) / SLEW_Q15_PER_TICK + 2
+}
+
+/// One sample's applied duty against the goal it was commanded to.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Applied {
+    /// Still climbing inside the slew the firmware allows: trimmed.
+    Slew,
+    /// The goal, as commanded: fitted.
+    Clean,
+    /// Held under the goal by the current limit: past the slew without
+    /// reaching it, or fallen under it after: never fitted.
+    Governed,
+}
+
+/// Judge a TEL series after a goal change: each sample's tick counted from
+/// the change and its applied duty.
+pub fn judge(samples: impl IntoIterator<Item = (u64, i16)>, goal: i16, start: i16) -> Vec<Applied> {
+    let budget = slew_ticks(goal, start) as u64;
+    let mut reached = false;
+    samples
+        .into_iter()
+        .map(|(tick, duty)| {
+            reached |= duty == goal;
+            match (duty == goal, reached) {
+                (true, _) => Applied::Clean,
+                (false, false) if tick <= budget => Applied::Slew,
+                _ => Applied::Governed,
+            }
+        })
+        .collect()
+}
+
+/// A judged series with no clean sample that the limiter governed.
+pub fn declined(judged: &[Applied]) -> bool {
+    !judged.contains(&Applied::Clean) && judged.contains(&Applied::Governed)
+}
+
+/// The goal a [`WindowStream`] judges windows against since its last mark.
+#[derive(Copy, Clone, Debug)]
+struct Goal {
+    q15: i16,
+    /// Windows from the first one seen that the slew may still cover; the
+    /// first may have opened before the write.
+    slew_windows: u64,
+    first: Option<u64>,
+    reached: bool,
+    clean: usize,
+    governed: usize,
+}
+
 /// One accepted ident aggregate window, timebased on the unwrapped
 /// `agg_seq` (x 0.8 ms) - poll jitter does not touch the fit clock.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -421,12 +497,19 @@ pub struct WindowSample {
 /// None), and the first `settle` windows after every duty transition are
 /// discarded. The driver's re-read/agg_seq-match dance guards torn
 /// aggregates; this stream guards duplicates and settling.
+///
+/// Marked with an OpenLoop goal ([`WindowStream::mark_goal`]) it also
+/// accepts only windows whose `duty_mean_q15` is the goal: the climb is
+/// trimmed, and a window the limiter held under the goal is declined.
 pub struct WindowStream {
     unwrap: SeqUnwrap,
     last: Option<u64>,
     settle: u32,
     settle_windows: u32,
     agg_period_ms: f64,
+    goal: Option<Goal>,
+    /// `duty_mean_q15` of the last window seen.
+    applied: i16,
 }
 
 impl WindowStream {
@@ -437,13 +520,39 @@ impl WindowStream {
             settle: 0,
             settle_windows: params.settle_windows,
             agg_period_ms: params.agg_period_ms,
+            goal: None,
+            applied: 0,
         }
     }
 
-    /// Call on every duty change; the next `settle_windows` accepted
-    /// windows are dropped.
+    /// Call on every duty change whose goal is not an OpenLoop duty; the
+    /// next `settle_windows` accepted windows are dropped.
     pub fn mark_transition(&mut self) {
         self.settle = self.settle_windows;
+        self.goal = None;
+    }
+
+    /// Call on every OpenLoop goal change, with the goal written. A goal
+    /// that follows another slews from the duty last seen applied;
+    /// otherwise from rest.
+    pub fn mark_goal(&mut self, goal_q15: i16) {
+        let start = if self.goal.is_some() { self.applied } else { 0 };
+        let ticks = slew_ticks(goal_q15, start);
+        self.settle = self.settle_windows;
+        self.goal = Some(Goal {
+            q15: goal_q15,
+            slew_windows: ticks.div_ceil(TICKS_PER_WINDOW) as u64 + 1,
+            first: None,
+            reached: false,
+            clean: 0,
+            governed: 0,
+        });
+    }
+
+    /// The goal since the last mark produced no clean window and the
+    /// limiter governed it.
+    pub fn declined(&self) -> bool {
+        self.goal.is_some_and(|g| g.clean == 0 && g.governed > 0)
     }
 
     pub fn push(&mut self, o: &TelemetrySnapshot) -> Option<WindowSample> {
@@ -452,9 +561,29 @@ impl WindowStream {
             return None;
         }
         self.last = Some(seq);
+        self.applied = o.duty_mean_q15;
+        let judged = self.goal.as_mut().map(|g| {
+            let first = *g.first.get_or_insert(seq);
+            g.reached |= o.duty_mean_q15 == g.q15;
+            match (o.duty_mean_q15 == g.q15, g.reached) {
+                (true, _) => Applied::Clean,
+                (false, false) if seq - first < g.slew_windows => Applied::Slew,
+                _ => Applied::Governed,
+            }
+        });
         if self.settle > 0 {
             self.settle -= 1;
             return None;
+        }
+        if let Some(g) = self.goal.as_mut() {
+            match judged {
+                Some(Applied::Clean) => g.clean += 1,
+                Some(Applied::Governed) => {
+                    g.governed += 1;
+                    return None;
+                }
+                _ => return None,
+            }
         }
         Some(WindowSample {
             t_ms: seq as f64 * self.agg_period_ms,
@@ -504,6 +633,138 @@ mod tests {
             }
         }
         assert_eq!(accepted, 3, "5 settle windows dropped from 8");
+    }
+
+    /// Windows at seq 0.. carrying `duties`, through a stream marked with
+    /// `goal`; what it accepted, by seq.
+    fn stream(goal: i16, duties: &[i16]) -> (WindowStream, Vec<u16>) {
+        let params = RigParams {
+            settle_windows: 0,
+            ..crate::exp::testkit::rig()
+        };
+        let mut ws = WindowStream::new(&params);
+        ws.mark_goal(goal);
+        let kept = duties
+            .iter()
+            .enumerate()
+            .filter_map(|(seq, d)| {
+                let o = TelemetrySnapshot {
+                    agg_seq: seq as u16,
+                    duty_mean_q15: *d,
+                    ..Default::default()
+                };
+                ws.push(&o).map(|_| seq as u16)
+            })
+            .collect();
+        (ws, kept)
+    }
+
+    /// A window the limiter held under the goal after the goal was reached
+    /// is never handed to a fit; the windows around it are.
+    #[test]
+    fn governed_window_is_declined_never_fitted() {
+        let (ws, kept) = stream(8000, &[6000, 8000, 8000, 7400, 7900, 8000]);
+        assert_eq!(kept, [1, 2, 5]);
+        assert!(!ws.declined(), "clean windows remain");
+        let (ws, kept) = stream(-8000, &[-6000, -8000, -7999]);
+        assert_eq!(kept, [1]);
+        assert!(!ws.declined());
+    }
+
+    /// 64% from rest climbs for 6.5 ms, nine windows: the climb is
+    /// trimmed, not counted against the goal.
+    #[test]
+    fn slew_samples_are_trimmed_not_declined() {
+        let goal = 20971;
+        assert_eq!(slew_ticks(goal, 0), 165);
+        let climb: Vec<i16> = (1..=9).map(|k| (4369 + 2048 * k).min(20000)).collect();
+        let mut duties = climb.clone();
+        duties.extend([goal; 3]);
+        let (ws, kept) = stream(goal, &duties);
+        assert_eq!(kept, [9, 10, 11]);
+        assert!(!ws.declined());
+        // cut short inside the slew: nothing to fit, nothing declined
+        let (ws, kept) = stream(goal, &climb[..5]);
+        assert!(kept.is_empty() && !ws.declined());
+        // the same rule per TEL sample
+        let tel = judge(
+            [(1, 4497), (100, 17169), (165, 20000), (166, goal)],
+            goal,
+            0,
+        );
+        assert_eq!(
+            tel,
+            [Applied::Slew, Applied::Slew, Applied::Slew, Applied::Clean]
+        );
+        // a goal cut applies at once
+        assert_eq!(slew_ticks(8000, 12000), 2);
+        assert_eq!(slew_ticks(-8000, 12000), 64);
+    }
+
+    /// The limiter holds the climb at the current limit well past the
+    /// slew, then the shaft's speed lets the duty reach the goal: the
+    /// governed climb is trimmed and every settled window fits.
+    #[test]
+    fn governed_climb_is_trimmed_and_the_settled_windows_fit() {
+        let goal = 20971;
+        let mut duties = vec![9000; 20];
+        duties.extend((0..10).map(|k| 9000 + 1100 * k));
+        duties.extend([goal; 6]);
+        let (ws, kept) = stream(goal, &duties);
+        assert_eq!(kept, (30..36).collect::<Vec<u16>>());
+        assert!(!ws.declined());
+        let tel: Vec<(u64, i16)> = duties
+            .iter()
+            .enumerate()
+            .map(|(k, d)| (k as u64 * 16, *d))
+            .collect();
+        let judged = judge(tel, goal, 0);
+        assert!(judged[12..30].iter().all(|a| *a == Applied::Governed));
+        assert!(judged[30..].iter().all(|a| *a == Applied::Clean));
+        assert!(!declined(&judged));
+
+        // never reaching it: nothing fits, and the goal is declined
+        let (ws, kept) = stream(goal, &[9000; 20]);
+        assert!(kept.is_empty() && ws.declined());
+        let judged = judge((0..40).map(|k| (k * 16, 9000)), goal, 0);
+        assert!(declined(&judged));
+    }
+
+    /// The bench servo's 64% ladder rung from rest, polled every 2 ms: the
+    /// windows handed on all carry the goal, and the climb the limiter held
+    /// is trimmed off their front.
+    #[test]
+    fn a_free_running_governed_climb_fits_only_settled_windows() {
+        let mut s = FakeServo::new(7270.0 / 4096.0);
+        s.vbus = 3204.0;
+        s.dynamic = true;
+        s.ke = 0.1472;
+        s.b = 0.296;
+        s.fc = 80.0;
+        s.fv = 0.01;
+        s.pos = 600.0;
+        s.ends = (209.0, 3849.0);
+        s.current_limit = Some(280);
+        s.transient_gain = 1.0;
+        let params = crate::exp::testkit::rig();
+        let mut ws = WindowStream::new(&params);
+        let goal = 20971;
+        s.write(control::TORQUE_ENABLE, 1);
+        s.write(control::GOAL_DUTY, goal as i32);
+        ws.mark_goal(goal);
+        let (mut governed_reads, mut kept) = (0, Vec::new());
+        for _ in 0..150 {
+            s.advance(2);
+            let o = s.read();
+            governed_reads += (o.limit_flags & 1) as usize;
+            if let Some(w) = ws.push(&o) {
+                kept.push(w);
+            }
+        }
+        assert!(governed_reads > 50, "the climb was never governed");
+        assert!(kept.len() > 30, "{} windows", kept.len());
+        assert!(kept.iter().all(|w| w.duty_q15 == goal as f64));
+        assert!(!ws.declined());
     }
 
     #[test]

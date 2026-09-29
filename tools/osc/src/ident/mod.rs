@@ -118,9 +118,9 @@ pub struct Args {
     /// Burst held route: captures per step duty at each stop.
     #[arg(long, global = true, default_value_t = 4)]
     burst_hold_repeats: u32,
-    /// Inertia step length, ms. Sized to the runway: the 150 ms default fits
-    /// a 55% step from the seek band to the far soft wall on a 5 V rail; a 2S
-    /// rail runs ~1.6x faster and wants ~80 ms.
+    /// Inertia step length, ms. Sized to the runway: after the base's 100 ms
+    /// the 150 ms default travels under 1000 of the ~2900 counts from the
+    /// seek band to the far soft wall on the bench servo, either rail.
     #[arg(long, global = true, default_value_t = 150)]
     inertia_ms: u32,
     /// Nominal gear ratio, informational only (printed in the report dir).
@@ -612,6 +612,9 @@ fn run_resistance(
     check_abort("resistance", exp.abort())?;
     let exp = exp.into_inner().into_inner();
     csvio::write_dwell_samples(out, exp.samples())?;
+    for w in exp.warnings() {
+        println!("  warn: {w}");
+    }
     exp.fit().context("resistance fit degenerate")
 }
 
@@ -785,11 +788,12 @@ fn run_inertia(
     id: Id,
     out: &csvio::OutDir,
     cfg: InertiaCfg,
+    plan: DutyPlan,
     priors: &InertiaPriors,
 ) -> Result<InertiaResult> {
     let params = rig(cli)?;
     let mut log = csvio::SnapshotLog::create(out, "inertia_snapshots.csv")?;
-    let mut exp = Guarded::new(Inertia::new(cfg, &params), params);
+    let mut exp = Guarded::new(Inertia::new(cfg, plan, &params), params);
     let all_tel = with_guard(c, id, |c| {
         let mut pump = Pump::new(c, id, Some(&mut log));
         pump.run(&mut exp)?;
@@ -799,7 +803,15 @@ fn run_inertia(
     let exp = exp.into_inner();
     csvio::write_tel_frames(out, "inertia_tel.csv", &all_tel)?;
     csvio::write_step_series(out, &exp.step_series())?;
-    exp.fit(priors).context("inertia fit degenerate")
+    exp.fit(priors).with_context(|| {
+        format!(
+            "no inertia step fitted (notes: {})",
+            match exp.notes().as_slice() {
+                [] => "none".to_string(),
+                n => n.join("; "),
+            }
+        )
+    })
 }
 
 fn run_verify(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
@@ -1126,22 +1138,24 @@ impl Recorded {
                 let cfg = order::ladder_cfg(*seek, rungs);
                 self.ladder = Some(run_ladder(cli, c, id, out, cfg, r_vpc)?);
             }
-            Stage::Inertia { seek, steps } => {
+            Stage::Inertia { seek, base } => {
                 println!(
-                    "[inertia] steps {}, seeks at {}",
-                    steps.iter().map(|s| pct(*s)).collect::<Vec<_>>().join(", "),
+                    "[inertia] steps from a moving base at {}, each sized to what the current \
+                     limit leaves over the base's running current; seeks at {}",
+                    pct(*base),
                     pct(*seek)
                 );
                 let r_vpc = self.w.as_ref().context("no winding R")?.r_vpc;
                 let ladder = self.ladder.as_ref().context("no ladder")?;
                 let priors = priors_of(r_vpc, ladder, &d.sense);
-                let base = InertiaCfg {
+                let cfg = InertiaCfg {
                     tick_hz: priors.tick_hz,
                     capture_ms: cli.inertia_ms,
                     ..InertiaCfg::default()
                 };
-                let cfg = order::inertia_cfg(*seek, steps, base);
-                self.inertia = Some(run_inertia(cli, c, id, out, cfg, &priors)?);
+                let cfg = order::inertia_cfg(*seek, *base, cfg);
+                let plan = run.plan().context("no plan")?;
+                self.inertia = Some(run_inertia(cli, c, id, out, cfg, plan, &priors)?);
             }
         }
         Ok(Ended::Done)
