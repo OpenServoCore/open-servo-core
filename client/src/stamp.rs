@@ -13,11 +13,13 @@
 //! `lut_state` is LIVE, zeros otherwise.
 
 use std::fmt;
+use std::time::Duration;
 
 use osc_protocol::crc::osc_crc_continue;
 use osc_protocol::wire::Id;
 
 use crate::client::Client;
+use crate::data_state::STAMP_MISMATCH;
 use crate::descriptor::{Descriptor, Field};
 use crate::error::{Error, LinkError};
 use crate::pipe::Pipe;
@@ -176,13 +178,33 @@ pub async fn verdict<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor) -> Resu
 
 /// Stamp the set the servo holds now. Verified by the firmware only with
 /// torque off: under torque it lands unverified and `STAMP_MISMATCH` waits
-/// for the next torque-off checkpoint.
+/// for the next torque-off checkpoint. The checkpoint runs in the servo's
+/// main loop after the reply, so this waits for the verdict: it returns
+/// once `STAMP_MISMATCH` clears, or after [`VERDICT_WAIT`] with the flag
+/// standing for the caller to read.
 pub async fn restamp<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor) -> Result<u16, Error> {
     let stamp = compute(c, id, d).await?;
     c.write(id, plant_stamp(d)?.addr, &stamp.to_le_bytes())
         .await?;
+    let flags = d
+        .field("data_flags")
+        .ok_or_else(|| Error::Descriptor(format!("no data_flags in {}", d.model)))?;
+    for _ in 0..VERDICT_TRIES {
+        let b = c.read(id, flags.addr, flags.width).await?;
+        if b.first().is_some_and(|f| f & STAMP_MISMATCH == 0) {
+            break;
+        }
+        c.pause(VERDICT_TICK).await;
+    }
     Ok(stamp)
 }
+
+/// How long a host waits for a verdict the servo's main loop lands after
+/// its reply (a stamp checkpoint, a LUT COMMIT): ~0.6 ms of CRC on the
+/// servo, polled once per [`VERDICT_TICK`].
+pub const VERDICT_WAIT: Duration = Duration::from_millis(20);
+pub const VERDICT_TICK: Duration = Duration::from_millis(1);
+pub(crate) const VERDICT_TRIES: u32 = (VERDICT_WAIT.as_millis() / VERDICT_TICK.as_millis()) as u32;
 
 fn plant_stamp(d: &Descriptor) -> Result<&Field, Error> {
     d.field("plant_stamp")

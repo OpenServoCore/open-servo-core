@@ -23,6 +23,7 @@ mod tests;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use osc_servo_core::data_state::DataJob;
 use osc_servo_core::pot_lut::KNOTS;
 use osc_servo_core::regions::config::DEFAULT_RESPONSE_DEADLINE_US;
 use osc_servo_core::{BaudRate, BootMode, ControlTable};
@@ -101,6 +102,8 @@ pub struct Sim {
     link: Option<LinkRig>,
     /// Run the main loop's reboot poll (see [`Self::set_self_reboot`]).
     self_reboot: bool,
+    /// Run the main loop's data-job poll (see [`Self::set_data_jobs`]).
+    data_jobs: bool,
 }
 
 /// One servo's TEL fast-tick pump: the sim's stand-in for the kernel's 50 us
@@ -167,6 +170,7 @@ impl Sim {
             host: None,
             link: None,
             self_reboot: false,
+            data_jobs: true,
         }
     }
 
@@ -380,6 +384,29 @@ impl Sim {
     /// the staged mode consume it through [`Self::take_reboot`] instead.
     pub fn set_self_reboot(&mut self, on: bool) {
         self.self_reboot = on;
+    }
+
+    /// Model the chip main loop's data-job poll (`data_state` module): the
+    /// checkpoint a stamp write posts and the verdict a LUT COMMIT posts
+    /// land after the reply, once the handler body returns. On by default;
+    /// off, a scenario services servo `i` by hand through
+    /// [`Self::poll_data_job`], or splits the run from its publish with
+    /// [`Self::data_job_run`] and [`Self::data_job_publish`] to land a
+    /// write mid-job.
+    pub fn set_data_jobs(&mut self, on: bool) {
+        self.data_jobs = on;
+    }
+
+    pub fn poll_data_job(&self, i: usize) -> bool {
+        self.servos[i].poll_data_job()
+    }
+
+    pub fn data_job_run(&self, i: usize) -> Option<DataJob> {
+        self.servos[i].data_job_run()
+    }
+
+    pub fn data_job_publish(&self, i: usize, job: DataJob) -> bool {
+        self.servos[i].data_job_publish(job)
     }
 
     /// Replace servo `i`'s factory UID (the chip band seeds it from ESIG at
@@ -648,7 +675,23 @@ impl Sim {
         // every event so its clocks and framer track the wire promptly.
         self.host_pump();
         self.tel_pump();
+        self.job_pump();
         self.reboot_pump();
+    }
+
+    /// The servos' data-job poll after every event, the CPU permitting: on
+    /// the chip the handler's return wakes the loop, so the job runs
+    /// before the next frame can land.
+    fn job_pump(&mut self) {
+        if !self.data_jobs {
+            return;
+        }
+        let now = self.core.borrow().now();
+        for j in 0..self.servos.len() {
+            if !self.cpus[j].busy(now) {
+                self.servos[j].poll_data_job();
+            }
+        }
     }
 
     /// The servos' other main-loop residue: honor any staged reboot. A body

@@ -656,10 +656,67 @@ fn live_gain_edit_keeps_the_running_loop_until_reenable() {
     rig.run(&sh, 20);
     stamp(&sh);
     sh.data_state_after_commit(PLANT_STAMP, 2);
+    assert_eq!(
+        data_flags(&sh),
+        STAMP_MISMATCH,
+        "refused until the job verifies"
+    );
+    assert!(sh.data_job_service());
     assert_eq!(data_flags(&sh), 0);
     set(&sh, |t| t.control.lifecycle.torque_enable = true);
     assert!(drives(&rig.run(&sh, 2000)));
     assert_eq!(fault(&sh), (0, CODE_NONE));
+}
+
+/// The stamp write's reply owes nothing to the ~600 B CRC: the commit site
+/// marks and posts, the reply leaves, and the main loop verifies. With
+/// the loop's poll held off, the wire sees the mark stand behind an `ok`
+/// reply; one poll clears it. A write landing between the job's run and
+/// its publish discards the run: the mark stands, the job stays posted,
+/// and the next run judges the set as it is now.
+#[apply(matrix)]
+fn stamp_write_verifies_in_the_main_loop_after_the_reply(baud_idx: u8) {
+    let store = RamStore::leak();
+    let mut sim = sim(baud_idx);
+    let s = stamped_servo(&mut sim, store);
+    sim.set_data_jobs(false);
+    write_ok(&mut sim, V_KP_Q88, &70u16.to_le_bytes());
+    let v = sim.servo_table(s, |t| compute(t, None));
+    write_ok(&mut sim, PLANT_STAMP, &v.to_le_bytes());
+    assert_eq!(
+        read_byte(&mut sim, DATA_FLAGS),
+        STAMP_MISMATCH,
+        "the reply left before the checkpoint"
+    );
+    assert!(sim.poll_data_job(s));
+    assert_eq!(read_byte(&mut sim, DATA_FLAGS), 0);
+    assert!(!sim.poll_data_job(s), "nothing left posted");
+
+    // a covered write lands mid-job
+    write_ok(&mut sim, PLANT_STAMP, &v.to_le_bytes());
+    let run = sim.data_job_run(s).expect("posted");
+    write_ok(&mut sim, V_KP_Q88, &71u16.to_le_bytes());
+    assert!(!sim.data_job_publish(s, run));
+    assert_eq!(read_byte(&mut sim, DATA_FLAGS), STAMP_MISMATCH);
+    assert!(sim.poll_data_job(s), "still posted");
+    assert_eq!(
+        read_byte(&mut sim, DATA_FLAGS),
+        STAMP_MISMATCH,
+        "the gain moved under the stamp"
+    );
+    let v = sim.servo_table(s, |t| compute(t, None));
+    write_ok(&mut sim, PLANT_STAMP, &v.to_le_bytes());
+    assert!(sim.poll_data_job(s));
+    assert_eq!(read_byte(&mut sim, DATA_FLAGS), 0);
+
+    // SAVE runs a posted job itself before it persists
+    write_ok(&mut sim, V_KP_Q88, &72u16.to_le_bytes());
+    let v = sim.servo_table(s, |t| compute(t, None));
+    write_ok(&mut sim, PLANT_STAMP, &v.to_le_bytes());
+    assert_eq!(read_byte(&mut sim, DATA_FLAGS), STAMP_MISMATCH);
+    assert_eq!(mgmt(&mut sim, MgmtOp::Save), ResultCode::Ok);
+    assert_eq!(read_byte(&mut sim, DATA_FLAGS), 0);
+    assert!(!sim.poll_data_job(s));
 }
 
 /// SAVE persists a stale stamp on purpose (ack == durable); the reboot's

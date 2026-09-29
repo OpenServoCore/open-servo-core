@@ -224,6 +224,61 @@ fn store_commit_goes_live_and_fetch_reads_back(baud_idx: u8) {
     assert_eq!(data_flags(&mut sim), 0);
 }
 
+/// COMMIT's reply owes nothing to the validation or the CRC: the commit
+/// site leaves LOADING (the kernel applies the identity), marks the stamp
+/// and posts; the main loop lands the verdict. With the poll held off the
+/// wire sees LOADING behind an `ok` reply; a STORE behind the posted
+/// COMMIT cancels it (loading again, only the next COMMIT judges); torque
+/// coming on mid-job lands the refusal HIGH would have given; SAVE runs a
+/// posted job before it persists.
+#[apply(matrix)]
+fn commit_lands_its_verdict_in_the_main_loop_after_the_reply(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
+    let s = mg90_servo(&mut sim, RamStore::leak());
+    let k = mg90_a();
+    sim.set_data_jobs(false);
+    store_all(&mut sim, &k);
+    assert_eq!(commit(&mut sim), state::LOADING, "the reply left unjudged");
+    assert_eq!(data_flags(&mut sim), STAMP_MISMATCH, "refused until judged");
+    assert!(sim.poll_data_job(s));
+    assert_eq!(lut_state(&mut sim), state::LIVE);
+    assert_eq!(
+        data_flags(&mut sim),
+        STAMP_MISMATCH,
+        "the hashed knots changed"
+    );
+
+    // a STORE behind a posted COMMIT cancels it
+    assert_eq!(commit(&mut sim), state::LOADING);
+    assert_eq!(store(&mut sim, 0, &k), state::LOADING);
+    assert!(!sim.poll_data_job(s), "nothing posted");
+    assert_eq!(lut_state(&mut sim), state::LOADING);
+    assert_eq!(commit(&mut sim), state::LOADING);
+    assert!(sim.poll_data_job(s));
+    assert_eq!(lut_state(&mut sim), state::LIVE);
+
+    // torque comes on between the run and its publish
+    assert_eq!(commit(&mut sim), state::LOADING);
+    let run = sim.data_job_run(s).expect("posted");
+    set_torque(&mut sim, true);
+    assert!(!sim.data_job_publish(s, run));
+    assert_eq!(lut_state(&mut sim), state::LOADING);
+    assert!(sim.poll_data_job(s));
+    assert_eq!(lut_state(&mut sim), state::REJECT_TORQUE);
+    assert_eq!(array(&sim, s), k, "the array stays for the next COMMIT");
+    set_torque(&mut sim, false);
+    assert_eq!(commit(&mut sim), state::LOADING);
+    assert!(sim.poll_data_job(s));
+    assert_eq!(lut_state(&mut sim), state::LIVE);
+
+    // SAVE judges a posted COMMIT itself: the table persists LIVE
+    assert_eq!(commit(&mut sim), state::LOADING);
+    assert_eq!(mgmt(&mut sim, MgmtOp::Save), ResultCode::Ok);
+    assert_eq!(lut_state(&mut sim), state::LIVE);
+    assert_eq!(array(&sim, s), k);
+    assert!(!sim.poll_data_job(s));
+}
+
 #[apply(matrix)]
 fn commit_rejects_ends_and_shape_and_leaves_identity(baud_idx: u8) {
     let mut sim = sim(baud_idx);

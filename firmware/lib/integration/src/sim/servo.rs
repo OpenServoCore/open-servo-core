@@ -5,6 +5,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use osc_servo_core::data_state::DataJob;
 use osc_servo_core::pot_lut::KNOTS;
 use osc_servo_core::tel::{TelSample, TelStream};
 use osc_servo_core::{
@@ -268,6 +269,22 @@ impl SimServo {
     /// between handler bodies.
     pub fn poll_tel(&mut self) {
         self.bus.poll_tel();
+    }
+
+    /// The chip main loop's data-job poll (`data_state` module): run and
+    /// publish what the last commit posted. The sim calls it between
+    /// handler bodies; tests that split the run from its publish model a
+    /// write landing mid-job.
+    pub fn poll_data_job(&self) -> bool {
+        self.shared.data_job_service()
+    }
+
+    pub fn data_job_run(&self) -> Option<DataJob> {
+        self.shared.data_job_run()
+    }
+
+    pub fn data_job_publish(&self, job: DataJob) -> bool {
+        self.shared.data_job_publish(job)
     }
 
     pub fn with_table<R>(&self, f: impl FnOnce(&ControlTable) -> R) -> R {

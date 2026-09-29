@@ -143,6 +143,17 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
         // ~120 words and has no business inside a 20 kHz ISR.
         crate::control::burst::poll_page(&crate::runtime::statics::SHARED);
 
+        // Data job (core `data_state`): the stamp checkpoint a torque-off
+        // stamp write posts and the verdict a LUT COMMIT posts, ~0.6 ms of
+        // software CRC that outlasts the reply deadline in HIGH. The run is
+        // preemptible; the publish masks ISRs so HIGH cannot land a write
+        // between its generation check and the table stores. The posting
+        // ISR's return is the wfi wake, so the job runs before the next
+        // frame can arrive.
+        if let Some(job) = crate::runtime::statics::SHARED.data_job_run() {
+            critical_section::with(|_| crate::runtime::statics::SHARED.data_job_publish(job));
+        }
+
         // Deferred reboot (protocol sec 9.5), honored after the ack has drained. The
         // critical section is load-bearing: `bus()` is otherwise `&mut`-owned
         // by the HIGH transport ISRs, so masking them is what makes this

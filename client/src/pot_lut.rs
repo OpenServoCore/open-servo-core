@@ -13,6 +13,7 @@ use crate::client::Client;
 use crate::descriptor::{Descriptor, Field};
 use crate::error::{Error, LinkError};
 use crate::pipe::Pipe;
+use crate::stamp::{VERDICT_TICK, VERDICT_TRIES};
 
 /// Host-written knots; the fixed last knot has no page.
 pub const INTERVALS: usize = 256;
@@ -64,6 +65,9 @@ pub enum LutError {
     RejectEnds,
     /// An interval with local gain outside `[1/16, 16)` of nominal.
     RejectShape,
+    /// Still LOADING after [`crate::stamp::VERDICT_WAIT`]: the servo's
+    /// main loop has not judged the COMMIT.
+    Pending,
     /// `lut_state` after COMMIT is none of the above.
     State(u8),
     /// The FETCHed page differs from what was STOREd.
@@ -83,6 +87,7 @@ impl fmt::Display for LutError {
                 f,
                 "servo refused the lut: an interval is not monotone or gains over 16x (REJECT_SHAPE)"
             ),
+            LutError::Pending => write!(f, "servo has not judged the lut (LOADING after COMMIT)"),
             LutError::State(s) => write!(f, "lut_state {s} after COMMIT"),
             LutError::Readback { page } => write!(f, "lut page {page} read back differently"),
         }
@@ -189,10 +194,30 @@ async fn fetch<P: Pipe>(
 
 pub async fn state<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor) -> Result<u8, Error> {
     let w = Window::resolve(d)?;
+    read_state(c, id, &w).await
+}
+
+async fn read_state<P: Pipe>(c: &mut Client<P>, id: Id, w: &Window<'_>) -> Result<u8, Error> {
     let b = c.read(id, w.state.addr, w.state.width).await?;
     b.first()
         .copied()
         .ok_or_else(|| Error::Link(LinkError::Desync("short lut_state".into())))
+}
+
+/// COMMIT, then the verdict: the servo judges the array in its main loop
+/// after the reply, so `lut_state` reads LOADING until it lands. Returns
+/// the first state past LOADING, or LOADING itself after the wait.
+async fn commit<P: Pipe>(c: &mut Client<P>, id: Id, w: &Window<'_>) -> Result<u8, Error> {
+    command(c, id, w, 0, cmd::COMMIT, None).await?;
+    let mut s = state::LOADING;
+    for _ in 0..VERDICT_TRIES {
+        s = read_state(c, id, w).await?;
+        if s != state::LOADING {
+            break;
+        }
+        c.pause(VERDICT_TICK).await;
+    }
+    Ok(s)
 }
 
 /// FETCH every page: the array as the servo holds it, whatever its state.
@@ -254,10 +279,9 @@ pub async fn write<P: Pipe>(
         let k = &knots[page * PAGE_KNOTS..][..PAGE_KNOTS];
         command(c, id, &w, page as u8, cmd::STORE, Some(k)).await?;
     }
-    command(c, id, &w, 0, cmd::COMMIT, None).await?;
-    let s = state(c, id, d).await?;
-    match s {
+    match commit(c, id, &w).await? {
         state::LIVE => {}
+        state::LOADING => return Err(Error::Lut(LutError::Pending)),
         state::REJECT_TORQUE => return Err(Error::Lut(LutError::RejectTorque)),
         state::REJECT_ENDS => return Err(Error::Lut(LutError::RejectEnds)),
         state::REJECT_SHAPE => return Err(Error::Lut(LutError::RejectShape)),
@@ -286,8 +310,7 @@ pub async fn clear<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor) -> Result
 pub async fn recommit<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor) -> Result<u8, Error> {
     let w = Window::resolve(d)?;
     torque_off(c, id, d).await?;
-    command(c, id, &w, 0, cmd::COMMIT, None).await?;
-    state(c, id, d).await
+    commit(c, id, &w).await
 }
 
 #[cfg(test)]
