@@ -1,8 +1,9 @@
 //! Sans-io servo identification. Experiments emit wire commands and consume
 //! telemetry; fits and gain synthesis are pure functions over the collected
 //! samples. No transport, no clock, no filesystem - the CLI wrapper pumps a
-//! USB pipe and the GUI pumps Web Serial into the same code, so the crate
-//! compiles to wasm32-unknown-unknown unchanged (CI gates this).
+//! USB pipe and the GUI pumps Web Serial into the same code, each stamping
+//! every read with its own clock, so the crate compiles to
+//! wasm32-unknown-unknown unchanged (CI gates this).
 //!
 //! Layout facts (register addresses, TEL frame shape) are mirrored from the
 //! firmware, not imported: the descriptor cross-check test in [`regs`] and

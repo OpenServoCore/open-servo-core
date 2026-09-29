@@ -207,6 +207,9 @@ struct Drive {
     sc: Scales,
     /// The winding an earlier identification left on the servo.
     stored: Option<Winding>,
+    /// The servo carries an identified Ke: its back-EMF speed checks the
+    /// ladder's.
+    servo_ke: bool,
 }
 
 impl Ctx {
@@ -375,6 +378,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
             cli.f_ci,
             &sc,
         );
+        let servo_ke = snapshot::read_u16(&mut c, id, calib::KE_VPC_Q)? != 0;
         let ma = lim.ma();
         println!(
             "limits: current limit {}, travel guard {}..{}, a run aborts over {}",
@@ -389,6 +393,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
             sense,
             sc,
             stored,
+            servo_ke,
         });
     }
     let lut = Lut::read(&mut c, id, &d)?;
@@ -949,7 +954,6 @@ fn run_inertia(
 
 fn run_verify(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
     let params = rig(cli)?;
-    let tick_hz = snapshot::read_u16(c, id, calib::TICK_HZ)? as f64;
     let (d, before) = servo_state(c, id)?;
     refuse_closed_loop(&before)?;
     let drv = drive(cli)?;
@@ -986,7 +990,7 @@ fn run_verify(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
         pct(plan.seek)
     );
     let mut e6 = Guarded::new(
-        VerifyVelocity::new(VerifyVelocityCfg::planned(&plan), &params, tick_hz),
+        VerifyVelocity::new(VerifyVelocityCfg::planned(&plan), &params),
         params,
     );
     with_guard(c, id, |c| Pump::new(c, id, None).run(&mut e6))?;
@@ -1415,7 +1419,11 @@ impl Recorded {
                     pct(*seek)
                 );
                 let r_vpc = self.w.as_ref().context("no winding R")?.r_vpc;
-                let cfg = order::ladder_cfg(*seek, rungs);
+                let base = LadderCfg {
+                    servo_ke: d.servo_ke,
+                    ..LadderCfg::new(d.sense.tick_hz as f64)
+                };
+                let cfg = order::ladder_cfg(*seek, rungs, base);
                 let runway = ladder_runway(d, run.rail_mv());
                 let (ladder, runway) = run_ladder(cli, c, id, out, cfg, runway, r_vpc)?;
                 self.runway = Some(runway);
@@ -1438,9 +1446,8 @@ impl Recorded {
                 let ladder = self.ladder.as_ref().context("no ladder")?;
                 let priors = priors_of(r_loop, ladder, &d.sense);
                 let cfg = InertiaCfg {
-                    tick_hz: priors.tick_hz,
                     capture_ms: cli.inertia_ms,
-                    ..InertiaCfg::default()
+                    ..InertiaCfg::new(priors.tick_hz)
                 };
                 let cfg = order::inertia_cfg(*seek, *base, cfg);
                 let plan = run.plan().context("no plan")?;
@@ -1586,6 +1593,7 @@ fn fit_dir(cli: &Ctx, dir: PathBuf) -> Result<()> {
         ke,
         fric_fwd,
         fric_rev,
+        servo: osc_ident::exp::ladder::servo_check(&rungs),
         rungs,
         warnings: Vec::new(),
     };
@@ -1979,6 +1987,7 @@ mod tests {
                     windows: 30,
                     used: true,
                     note: None,
+                    omega_bemf: None,
                 }
             })
             .collect();
@@ -2165,6 +2174,7 @@ mod tests {
                     windows: 30,
                     used: true,
                     note: None,
+                    omega_bemf: None,
                 }
             })
             .collect();

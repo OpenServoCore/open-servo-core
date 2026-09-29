@@ -1,14 +1,16 @@
 //! Sans-io experiment engine. An [`Experiment`] is a state machine: each
 //! `step` consumes at most one observation (the reply to a previous
 //! [`Cmd::Read`]) and emits the next command. The driver - CLI over USB
-//! today, wasm GUI over Web Serial later - owns all IO and time:
+//! today, wasm GUI over Web Serial later - owns all IO and time, and hands
+//! its clock in as data: every snapshot carries the host's time of the read
+//! ([`TelemetrySnapshot::host_ms`]), the clock polled fits time the shaft on.
 //!
 //! ```ignore
 //! let mut pending = None;
 //! loop {
 //!     match exp.step(pending.take().as_ref()) {
 //!         Cmd::Write { reg, value } => client.write(reg, value),
-//!         Cmd::Read => pending = Some(read_telemetry_region()),
+//!         Cmd::Read => pending = Some(read_telemetry_region(now_ms())),
 //!         Cmd::Pause { ms } => sleep_ms(ms),
 //!         Cmd::Stream { samples, goal } => exp.push_tel(&run_burst(samples, goal)),
 //!         Cmd::Burst { duty_q15, pre_q15, chans, seated } => {
@@ -117,8 +119,6 @@ pub struct RigParams {
     /// Ident windows discarded after every duty change (L transient +
     /// window-boundary smear).
     pub settle_windows: u32,
-    /// One ident aggregate window in ms: 16 fast ticks at ~20 kHz.
-    pub agg_period_ms: f64,
     /// End-stop stall detect: a seek read whose pos moved <= `stall_eps`
     /// counts from the prior one counts as still; `stall_polls` consecutive
     /// still reads declare the mechanical rail.
@@ -140,7 +140,6 @@ impl RigParams {
             i_abort,
             slip: None,
             settle_windows: 5,
-            agg_period_ms: 0.8,
             stall_eps: seek::STALL_EPS,
             stall_polls: seek::STALL_POLLS,
             pot: Pot::RAW,
@@ -445,6 +444,11 @@ pub const SLEW_Q15_PER_TICK: u32 = 128;
 /// Fast ticks one ident aggregate window spans.
 const TICKS_PER_WINDOW: u32 = 16;
 
+/// One ident aggregate window, ms, on a servo ticking at `tick_hz`.
+pub fn window_ms(tick_hz: f64) -> f64 {
+    TICKS_PER_WINDOW as f64 * 1000.0 / tick_hz
+}
+
 /// Ticks the applied duty may take to reach `goal` from `start` before the
 /// limiter, not the slew, is holding it back (protocol sec 5.8). `start` is
 /// the duty applied before the change; pass 0 from rest or across a
@@ -507,10 +511,12 @@ struct Goal {
     governed: usize,
 }
 
-/// One accepted ident aggregate window, timebased on the unwrapped
-/// `agg_seq` (x 0.8 ms) - poll jitter does not touch the fit clock.
+/// One accepted ident aggregate window.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct WindowSample {
+    /// When the host read it ([`TelemetrySnapshot::host_ms`]), never the
+    /// window counter: each read stalls the kernel for a few ticks, so
+    /// under polling `agg_seq` runs slow of real time.
     pub t_ms: f64,
     /// Signed bias-subtracted window current mean, counts.
     pub i: f64,
@@ -523,8 +529,10 @@ pub struct WindowSample {
 /// Turns polled snapshots into deduplicated window samples: a sample is
 /// accepted only when `agg_seq` advanced (torn or repeated reads yield
 /// None), and the first `settle` windows after every duty transition are
-/// discarded. The driver's re-read/agg_seq-match dance guards torn
-/// aggregates; this stream guards duplicates and settling.
+/// discarded. `agg_seq` counts windows and judges the slew, both in the
+/// servo's own ticks; the sample's time is the host's. The driver's
+/// re-read/agg_seq-match dance guards torn aggregates; this stream guards
+/// duplicates and settling.
 ///
 /// Marked with an OpenLoop goal ([`WindowStream::mark_goal`]) it also
 /// accepts only windows whose `duty_mean_q15` is the goal: the climb is
@@ -534,7 +542,6 @@ pub struct WindowStream {
     last: Option<u64>,
     settle: u32,
     settle_windows: u32,
-    agg_period_ms: f64,
     goal: Option<Goal>,
     /// `duty_mean_q15` of the last window seen.
     applied: i16,
@@ -547,7 +554,6 @@ impl WindowStream {
             last: None,
             settle: 0,
             settle_windows: params.settle_windows,
-            agg_period_ms: params.agg_period_ms,
             goal: None,
             applied: 0,
         }
@@ -614,7 +620,7 @@ impl WindowStream {
             }
         }
         Some(WindowSample {
-            t_ms: seq as f64 * self.agg_period_ms,
+            t_ms: o.host_ms,
             i: o.i_mean_counts as f64,
             vdiff: o.vdiff_mean as f64,
             duty_q15: o.duty_mean_q15 as f64,
@@ -630,7 +636,7 @@ mod tests {
     use super::centre::Centre;
     use super::endstop::Endstop;
     use super::ladder::{Declined, Ladder, LadderCfg};
-    use super::testkit::{FakeServo, bench_mg90, bench_mg90_saved, pump};
+    use super::testkit::{FakeServo, TICK_HZ, bench_mg90, bench_mg90_saved, pump};
     use super::*;
     use crate::runway::Runway;
 
@@ -1044,7 +1050,7 @@ mod tests {
         let p = bench();
         let cfg = LadderCfg {
             seek_duty_q15: 4915,
-            ..LadderCfg::default()
+            ..LadderCfg::new(TICK_HZ)
         };
         seen(
             Ladder::new(cfg, &p, Runway::new((532, 3526))),
@@ -1070,7 +1076,7 @@ mod tests {
 
     fn span_ms(obs: &[TelemetrySnapshot]) -> f64 {
         let (a, b) = (obs.first().unwrap(), obs.last().unwrap());
-        b.agg_seq.wrapping_sub(a.agg_seq) as f64 * 0.8
+        b.host_ms - a.host_ms
     }
 
     /// The firmware's verdict without the fold: the current limit governing

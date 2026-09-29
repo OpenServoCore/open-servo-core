@@ -8,8 +8,13 @@ use crate::regs::{Reg, telemetry};
 
 /// One decoded read of the telemetry region. `base` is the gread start
 /// address; the slice must cover every field below or parse returns None.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
 pub struct TelemetrySnapshot {
+    /// When the region was read, ms on the host's clock: the driver stamps
+    /// it, parse leaves it 0. Every read stalls the servo's kernel for a
+    /// few ticks, so under polling `sample_tick` and `agg_seq` run slow and
+    /// this is the clock a fit times the shaft on.
+    pub host_ms: f64,
     pub fault_flags: u8,
     pub status_flags: u8,
     pub mode_active: u8,
@@ -50,6 +55,7 @@ impl TelemetrySnapshot {
     pub fn parse(base: u16, bytes: &[u8]) -> Option<Self> {
         use telemetry as t;
         Some(Self {
+            host_ms: 0.0,
             fault_flags: u8::from_le_bytes(get(base, bytes, t::FAULT_FLAGS)?),
             status_flags: u8::from_le_bytes(get(base, bytes, t::STATUS_FLAGS)?),
             mode_active: u8::from_le_bytes(get(base, bytes, t::MODE_ACTIVE)?),

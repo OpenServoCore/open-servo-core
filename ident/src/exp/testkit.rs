@@ -23,9 +23,12 @@
 //! at once shows the verdict for a single MEDIUM tick.
 //!
 //! [`pump`] charges every transaction the time the bench bus takes
-//! ([`Bus::BENCH`]) and the plant moves through it.
+//! ([`Bus::BENCH`]) and the plant moves through it. The kernel loses
+//! [`TICKS_LOST_PER_TRANSACTION`] to each one, as the bench board does, so
+//! `sample_tick` and `agg_seq` run slow under polling while `host_ms` and
+//! a TEL stream's ticks keep real time.
 
-use super::{Cmd, Experiment, RigParams, SLEW_Q15_PER_TICK};
+use super::{Cmd, Experiment, RigParams, SLEW_Q15_PER_TICK, TICKS_PER_WINDOW};
 use crate::burst::{
     ArmSeen, CHAN_VBUS, CHAN_VMOTOR_A, CHAN_VMOTOR_B, Capture, Meta, SAMPLE_HCLK, SAMPLE_US,
     SAMPLES, frame_len, rejected,
@@ -34,6 +37,9 @@ use crate::frame::{TelFrame, TelemetrySnapshot};
 use crate::limits::PermitLease;
 use crate::lut::GridLut;
 use crate::regs::{ALL, Reg, control};
+
+/// The fake's fast tick rate, Hz: ten per MEDIUM tick at its `f_med`.
+pub const TICK_HZ: f64 = 20_100.0;
 
 /// The envelope the tests run in: a guard inside the fake's stops (200,
 /// 4000), those stops as calibrated, and an abort over any current the
@@ -150,6 +156,13 @@ impl ArmRules {
 /// current, and a shaft that moves as the model predicts near zero.
 const TAU_D_OF_HELD: f64 = 0.9;
 
+/// Kernel ticks the servo never runs while one bus transaction is served:
+/// the bus handlers preempt the kernel tick, and scans that complete inside
+/// one collapse into a single pending tick. Measured on the bench MG90's
+/// board: 5.1 ticks per snapshot, a region read and its ident re-read,
+/// regressed against the host's clock over the polls of one identification.
+pub const TICKS_LOST_PER_TRANSACTION: f64 = 2.5;
+
 pub struct FakeServo {
     pub r: f64,
     pub vbus: f64,
@@ -186,6 +199,15 @@ pub struct FakeServo {
     pub drive_polarity: bool,
     pub pos_noise: f64,
     pub fault_at_ms: Option<f64>,
+    /// The Ke the servo carries from an earlier identification, the
+    /// firmware's `omega_bemf_cps` divides by; None reads 0, a virgin
+    /// servo's.
+    pub ke_stored: Option<f64>,
+    /// Kernel ticks one bus transaction costs.
+    pub ticks_lost_per_txn: f64,
+    /// Kernel ticks run since boot: `sample_tick`, and `agg_seq` in
+    /// windows of them.
+    ticks: f64,
     /// Latch a fault once this many [`Cmd::Burst`]s have been captured.
     pub fault_after_bursts: Option<u32>,
     pub bursts: u32,
@@ -265,7 +287,7 @@ impl FakeServo {
             physical_motion: false,
             dynamic: false,
             b: 0.1,
-            f_med: 2010.0,
+            f_med: TICK_HZ / 10.0,
             breakaway_q15: 0,
             glitch_zone: None,
             pot: None,
@@ -274,6 +296,9 @@ impl FakeServo {
             drive_polarity: true,
             pos_noise: 0.0,
             fault_at_ms: None,
+            ke_stored: None,
+            ticks_lost_per_txn: TICKS_LOST_PER_TRANSACTION,
+            ticks: 0.0,
             fault_after_bursts: None,
             bursts: 0,
             soft: None,
@@ -355,6 +380,25 @@ impl FakeServo {
             Some(lut) => lut.q4(raw),
             None => raw << 4,
         }
+    }
+
+    /// Fast ticks a second: ten per MEDIUM tick.
+    pub fn tick_hz(&self) -> f64 {
+        self.f_med * 10.0
+    }
+
+    /// One ident aggregate window, ms.
+    fn window_ms(&self) -> f64 {
+        TICKS_PER_WINDOW as f64 * 1000.0 / self.tick_hz()
+    }
+
+    /// Time a bus transaction holds the kernel off for `lost` of its
+    /// ticks: the plant runs through all `ms`, the tick counter only
+    /// through what is left.
+    pub fn busy_ms(&mut self, ms: f64, lost: f64) {
+        let ran = self.ticks;
+        self.advance_ms(ms);
+        self.ticks -= lost.min(self.ticks - ran);
     }
 
     pub fn permit_live(&self) -> bool {
@@ -777,6 +821,7 @@ impl FakeServo {
     }
 
     fn advance_plant(&mut self, ms: f64) {
+        self.ticks += ms * self.tick_hz() / 1000.0;
         if self.dynamic {
             // tick-sized substeps keep the ~tens-of-ms tau integration exact
             let dt = 1.0 / (self.f_med * 10.0);
@@ -856,6 +901,7 @@ impl FakeServo {
             });
         }
         self.t_ms = t0 + samples as f64 * dt * 1000.0;
+        self.ticks += samples as f64;
         self.stall_timer(t0);
     }
 
@@ -867,7 +913,7 @@ impl FakeServo {
             (self.i_valid, self.vbus * duty.signum() as f64)
         } else if driving {
             let mut i = self.i_at(duty);
-            if (self.t_ms - self.t_duty_change) / 0.8 < self.transient_windows {
+            if (self.t_ms - self.t_duty_change) / self.window_ms() < self.transient_windows {
                 i *= self.transient_gain;
             }
             if self.limit_flags() & 1 != 0 {
@@ -886,7 +932,17 @@ impl FakeServo {
         };
         let noise = self.noise();
         let pos = self.raw_of(self.pos + glitch + noise);
+        let omega_bemf = match self.ke_stored {
+            Some(ke) if driving => {
+                let v = duty as f64 / 32767.0 * self.vbus;
+                (v - self.r * self.i_at(duty)) / ke
+            }
+            _ => 0.0,
+        };
         TelemetrySnapshot {
+            host_ms: self.t_ms,
+            omega_bemf_cps: omega_bemf.round().clamp(-32768.0, 32767.0) as i16,
+            sample_tick: self.ticks as u64 as u32,
             fault_flags: if fault { 32 } else { 0 },
             fault_code: if fault { 6 } else { 0 },
             pos,
@@ -900,7 +956,7 @@ impl FakeServo {
             i_lim_counts: self.limit().unwrap_or(0),
             limit_flags: self.limit_flags(),
             window_floor_q15: self.floor_q15 as u16,
-            agg_seq: (self.t_ms / 0.8) as u64 as u16,
+            agg_seq: (self.ticks as u64 / TICKS_PER_WINDOW as u64) as u16,
             ..Default::default()
         }
     }
@@ -1226,6 +1282,14 @@ impl Bus {
         slow_reads: None,
     };
 
+    /// A snapshot every `ms`: the bench ladder read one every 1.9 ms.
+    pub fn with_read_ms(self, ms: f64) -> Self {
+        Self {
+            read_ms: ms,
+            ..self
+        }
+    }
+
     pub fn with_slow_reads(self, seed: u64) -> Self {
         Self {
             slow_reads: Some(seed),
@@ -1241,10 +1305,11 @@ pub fn pump<E: Experiment>(exp: &mut E, servo: &mut FakeServo, max_steps: u32) -
 }
 
 fn charge_write(servo: &mut FakeServo, lease: &mut PermitLease, bus: &Bus, reg: Reg, value: i32) {
-    servo.advance_ms(bus.write_ms / 2.0);
+    let lost = servo.ticks_lost_per_txn / 2.0;
+    servo.busy_ms(bus.write_ms / 2.0, lost);
     servo.write(reg, value);
     lease.wrote(reg, value, servo.t_ms);
-    servo.advance_ms(bus.write_ms / 2.0);
+    servo.busy_ms(bus.write_ms / 2.0, lost);
 }
 
 /// Drive an experiment against the fake servo over `bus`; returns the
@@ -1289,9 +1354,11 @@ pub fn pump_on<E: Experiment>(
                         ms += SLOW_READ_MS;
                     }
                 }
-                servo.advance_ms(ms / 2.0);
+                // the region read, sampled at its end, then the re-read
+                let lost = servo.ticks_lost_per_txn;
+                servo.busy_ms(ms / 2.0, lost);
                 pending = Some(servo.read());
-                servo.advance_ms(ms / 2.0);
+                servo.busy_ms(ms / 2.0, lost);
             }
             Cmd::Pause { ms } => {
                 let mut left = ms;
@@ -1304,7 +1371,8 @@ pub fn pump_on<E: Experiment>(
             }
             Cmd::Stream { samples, goal } => {
                 // the goal and the arm go out held; the commit starts both
-                servo.advance_ms(2.0 * bus.write_ms);
+                let lost = 3.0 * servo.ticks_lost_per_txn;
+                servo.busy_ms(2.0 * bus.write_ms, lost);
                 match goal {
                     Some((reg, value)) => {
                         servo.write(reg, value);
@@ -1324,7 +1392,8 @@ pub fn pump_on<E: Experiment>(
                 chans,
                 seated,
             } => {
-                servo.advance_ms(BURST_ARM_TXNS * bus.write_ms);
+                let lost = BURST_ARM_TXNS * servo.ticks_lost_per_txn;
+                servo.busy_ms(BURST_ARM_TXNS * bus.write_ms, lost);
                 if servo.arm(duty_q15).is_err() {
                     let seen = servo.arm_seen();
                     log.push(format!("error: {}", rejected(duty_q15, &seen)));
@@ -1354,7 +1423,8 @@ pub fn pump_on<E: Experiment>(
                 exp.push_burst(&cap);
                 servo.bursts += 1;
                 servo.advance(2);
-                servo.advance_ms(BURST_READBACK_TXNS * bus.read_ms / 2.0);
+                let lost = BURST_READBACK_TXNS * servo.ticks_lost_per_txn;
+                servo.busy_ms(BURST_READBACK_TXNS * bus.read_ms / 2.0, lost);
                 keep(&mut lease, servo, &mut log);
             }
             Cmd::Done => return log,
@@ -1600,9 +1670,9 @@ mod tests {
         let mut s = FakeServo::new(3.37);
         pump(&mut exp, &mut s, 100);
         assert!((s.t_ms - (2.0 * 1.7 + 3.0 * 3.5 + 36.0 + 2.4)).abs() < 1e-9);
-        let t: Vec<f64> = exp.seen.iter().map(|o| o.agg_seq as f64 * 0.8).collect();
-        assert!((t[1] - t[0] - 39.5).abs() <= 0.8, "{t:?}");
-        assert!((t[2] - t[1] - 5.9).abs() <= 0.8, "{t:?}");
+        let t: Vec<f64> = exp.seen.iter().map(|o| o.host_ms).collect();
+        assert!((t[1] - t[0] - 39.5).abs() < 1e-9, "{t:?}");
+        assert!((t[2] - t[1] - 5.9).abs() < 1e-9, "{t:?}");
         // 1 count/ms from the goal write's midpoint to the first sample
         assert_eq!(exp.seen[0].pos, 2403);
 
@@ -1623,6 +1693,48 @@ mod tests {
         assert_eq!(slow.fract(), 0.0);
         assert_eq!(reads(7), reads(7));
         assert_ne!(reads(7), reads(8));
+    }
+
+    /// Every read holds the kernel off for the ticks the bench board loses
+    /// to a snapshot. Polled back to back at the bench ladder's 1.9 ms, the
+    /// tick and window counters run at 0.87 of the host's clock; a pause
+    /// loses nothing, and a TEL stream's ticks are the kernel's own.
+    #[test]
+    fn fake_servo_loses_ticks_to_bus_traffic() {
+        let bus = Bus::BENCH.with_read_ms(1.9);
+        let mut exp = Steps::new(vec![Cmd::Read; 501]);
+        let mut s = FakeServo::new(3.37);
+        pump_on(&mut exp, &mut s, 2000, bus);
+        let (a, b) = (exp.seen[0], exp.seen[500]);
+        let host = (b.host_ms - a.host_ms) * s.tick_hz() / 1000.0;
+        let ticks = b.sample_tick.wrapping_sub(a.sample_tick) as f64;
+        let per_read = (host - ticks) / 500.0;
+        assert!(
+            (per_read - 2.0 * TICKS_LOST_PER_TRANSACTION).abs() < 0.05,
+            "{per_read} ticks lost a snapshot"
+        );
+        assert!((ticks / host - 0.869).abs() < 0.002, "{}", ticks / host);
+        let windows = b.agg_seq.wrapping_sub(a.agg_seq) as f64;
+        assert!((windows * TICKS_PER_WINDOW as f64 - ticks).abs() <= 16.0);
+
+        let mut exp = Steps::new(vec![Cmd::Read, Cmd::Pause { ms: 1000 }, Cmd::Read]);
+        let mut s = FakeServo::new(3.37);
+        pump_on(&mut exp, &mut s, 100, bus);
+        let (a, b) = (exp.seen[0], exp.seen[1]);
+        assert_eq!(b.host_ms - a.host_ms, 1000.0 * bus.pause_scale + 1.9);
+        let host = (b.host_ms - a.host_ms) * s.tick_hz() / 1000.0;
+        let lost = host - b.sample_tick.wrapping_sub(a.sample_tick) as f64;
+        assert!(
+            (lost - 2.0 * TICKS_LOST_PER_TRANSACTION).abs() <= 1.0,
+            "{lost} lost across a pause"
+        );
+
+        let before = s.read().sample_tick;
+        s.tel_mask = 1;
+        let mut tel = Vec::new();
+        s.stream(3000, &mut tel);
+        assert_eq!(tel.len(), 3000);
+        assert_eq!(s.read().sample_tick - before, 3000, "a stream is tick-true");
     }
 
     /// The bench fixture runs as fast as the servo: from 20% to 64% its

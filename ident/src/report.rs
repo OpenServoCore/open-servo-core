@@ -10,7 +10,7 @@ use crate::exp::breakaway::BreakawayResult;
 use crate::exp::held::HeldRun;
 use crate::exp::inductance::{BurstRoute, InductanceResult};
 use crate::exp::inertia::InertiaResult;
-use crate::exp::ladder::LadderResult;
+use crate::exp::ladder::{LadderResult, SERVO_SPEED_TOL, ServoCheck};
 use crate::exp::resistance::ResistanceResult;
 use crate::exp::rl::RlResult;
 use crate::gains::{EncodedGains, GainSet, PlantParams};
@@ -217,6 +217,19 @@ pub fn render(r: &ReportInputs<'_>) -> String {
                 "  Ke            {:.5} vcounts per c/s (r2 {:.4}, n={})",
                 x.ke.ke_vpc, x.ke.r2, x.ke.n
             );
+            let _ = match x.servo {
+                ServoCheck::Compared { off } => writeln!(
+                    s,
+                    "  servo check   its back-EMF speed is {:+.1}% off the timed speeds \
+                     (trusted within {:.0}%)",
+                    off * 100.0,
+                    SERVO_SPEED_TOL * 100.0
+                ),
+                ServoCheck::NotAvailable => writeln!(
+                    s,
+                    "  servo check   not available: the servo carries no identified Ke"
+                ),
+            };
             for (name, f) in [("fwd", &x.fric_fwd), ("rev", &x.fric_rev)] {
                 match f {
                     Some(f) => {

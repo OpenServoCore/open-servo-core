@@ -53,11 +53,25 @@ const IDENT_LEN: u16 = telemetry::AGG_SEQ.addr + 2 - IDENT_BASE;
 /// last). Bounded retries - a stubbornly torn read returns the last full
 /// snapshot, which the engine's WindowStream then dedups by seq anyway.
 pub(crate) fn read_snapshot<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<TelemetrySnapshot> {
+    read_stamped(c, id, Instant::now())
+}
+
+/// [`read_snapshot`] stamped with the wall clock since `t0`, ms, at the
+/// middle of the region read it returns: the time an experiment's fits
+/// take, since every read stalls the servo's own tick counter.
+pub(crate) fn read_stamped<P: Pipe>(
+    c: &mut Client<P>,
+    id: Id,
+    t0: Instant,
+) -> Result<TelemetrySnapshot> {
+    let ms = || t0.elapsed().as_secs_f64() * 1000.0;
     let mut last = None;
     for _ in 0..3 {
+        let before = ms();
         let raw = c.read(id, TEL_BASE, TEL_LEN).context("telemetry read")?;
-        let snap =
+        let mut snap =
             TelemetrySnapshot::parse(TEL_BASE, &raw).context("telemetry parse (short read?)")?;
+        snap.host_ms = (before + ms()) / 2.0;
         let ib = c.read(id, IDENT_BASE, IDENT_LEN).context("ident re-read")?;
         let re_seq = u16::from_le_bytes([ib[10], ib[11]]);
         if re_seq == snap.agg_seq {
@@ -381,9 +395,9 @@ impl<'a> Pump<'a> {
                     self.lease.write(self.client, self.id, reg, value)?;
                 }
                 Cmd::Read => {
-                    let snap = read_snapshot(self.client, self.id)?;
+                    let snap = read_stamped(self.client, self.id, t0)?;
                     if let Some(log) = self.log.as_mut() {
-                        log.push(t0.elapsed().as_secs_f64() * 1000.0, &snap)?;
+                        log.push(snap.host_ms, &snap)?;
                     }
                     pending = Some(snap);
                 }

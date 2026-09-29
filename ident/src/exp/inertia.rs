@@ -61,11 +61,13 @@ pub struct InertiaCfg {
     pub stall_eps: u16,
     pub stall_polls: u32,
     pub seek_cap_polls: u32,
+    /// The servo's fast tick rate, Hz, as it reports it: the TEL clock.
     pub tick_hz: f64,
 }
 
-impl Default for InertiaCfg {
-    fn default() -> Self {
+impl InertiaCfg {
+    /// The default steps on a servo ticking at `tick_hz`.
+    pub fn new(tick_hz: f64) -> Self {
         Self {
             step_fracs: vec![0.5, 0.75, 1.0],
             seek_duty_q15: 8520,
@@ -83,12 +85,10 @@ impl Default for InertiaCfg {
             stall_eps: 3,
             stall_polls: 10,
             seek_cap_polls: 400,
-            tick_hz: 20_100.0,
+            tick_hz,
         }
     }
-}
 
-impl InertiaCfg {
     /// The step goals over the base, fractions of full scale, for a base
     /// drawing `i_run` counts.
     pub fn step_duties(&self, plan: &DutyPlan, i_run: f64) -> Vec<f64> {
@@ -151,7 +151,8 @@ pub struct Inertia {
     /// Step index: amplitude = step / 2, direction = +1 then -1.
     step: usize,
     last_pos: Option<u16>,
-    last_seq: Option<u16>,
+    /// When the last seek read was taken, host ms.
+    last_ms: Option<f64>,
     still: u32,
     polls: u32,
     start: Option<u16>,
@@ -186,7 +187,7 @@ impl Inertia {
             phase: Phase::ModeWrite,
             step: 0,
             last_pos: None,
-            last_seq: None,
+            last_ms: None,
             still: 0,
             polls: 0,
             start: None,
@@ -385,13 +386,10 @@ impl Inertia {
     }
 
     /// The seek brakes early by the stop it will take, so it comes to rest
-    /// in the start band.
+    /// in the start band. Its speed is timed on the host's clock.
     fn seek_done(&self, o: &TelemetrySnapshot) -> bool {
-        let v = match (self.last_pos, self.last_seq) {
-            (Some(p), Some(q)) if q != o.agg_seq => {
-                let ms = o.agg_seq.wrapping_sub(q) as f64 * self.params.agg_period_ms;
-                p.abs_diff(o.pos) as f64 / ms
-            }
+        let v = match (self.last_pos, self.last_ms) {
+            (Some(p), Some(t)) if o.host_ms > t => p.abs_diff(o.pos) as f64 / (o.host_ms - t),
             _ => 0.0,
         };
         let stop = self.runway.stop(v).unwrap_or(0.0);
@@ -402,7 +400,7 @@ impl Inertia {
 
     fn reset_motion_track(&mut self) {
         self.last_pos = None;
-        self.last_seq = None;
+        self.last_ms = None;
         self.still = 0;
         self.polls = 0;
         self.start = None;
@@ -557,7 +555,7 @@ impl Experiment for Inertia {
                 if let Some(o) = obs {
                     let arrived = self.seek_done(o);
                     self.track_still(o.pos);
-                    self.last_seq = Some(o.agg_seq);
+                    self.last_ms = Some(o.host_ms);
                     done = arrived || self.still >= self.cfg.stall_polls;
                     let start = self.start.unwrap_or(o.pos);
                     if !arrived
@@ -702,7 +700,7 @@ impl Experiment for Inertia {
 #[cfg(test)]
 mod tests {
     use super::super::ladder::{Ladder, LadderCfg};
-    use super::super::testkit::{Bus, FakeServo, bench_mg90, bent_pot, pump, pump_on};
+    use super::super::testkit::{Bus, FakeServo, TICK_HZ, bench_mg90, bent_pot, pump, pump_on};
     use super::super::{Guarded, RigParams};
     use super::*;
     use crate::pot::Pot;
@@ -724,7 +722,7 @@ mod tests {
             ke_vpc: 0.1731,
             fc: 20.0,
             fv: 0.006,
-            tick_hz: 20_100.0,
+            tick_hz: TICK_HZ,
         }
     }
 
@@ -768,7 +766,7 @@ mod tests {
     fn run() -> (Inertia, Vec<String>) {
         let mut servo = dynamic_servo();
         let params = crate::exp::testkit::rig();
-        let exp = inertia(InertiaCfg::default(), 180, &params);
+        let exp = inertia(InertiaCfg::new(TICK_HZ), 180, &params);
         let mut exp = Guarded::new(exp, params);
         let log = pump(&mut exp, &mut servo, 4_000_000);
         assert!(exp.abort().is_none(), "abort: {:?}", exp.abort());
@@ -860,7 +858,7 @@ mod tests {
                 pos_guard: Some((425, 3675)),
                 ..crate::exp::testkit::rig()
             };
-            let exp = inertia(InertiaCfg::default(), 180, &params);
+            let exp = inertia(InertiaCfg::new(TICK_HZ), 180, &params);
             let mut exp = Guarded::new(exp, params);
             let log = pump(&mut exp, &mut servo, 4_000_000);
             assert!(exp.abort().is_none(), "abort: {:?}", exp.abort());
@@ -904,7 +902,7 @@ mod tests {
         };
         let cfg = InertiaCfg {
             base_polls: 50,
-            ..InertiaCfg::default()
+            ..InertiaCfg::new(TICK_HZ)
         };
         let exp = inertia(cfg, 180, &params);
         let mut exp = Guarded::new(exp, params);
@@ -913,7 +911,7 @@ mod tests {
         let exp = exp.into_inner();
         // the base's running current: friction at its speed
         let w = (0.31 * 1731.0 - 3.37 * 20.0) / (0.1731 + 3.37 * 0.006);
-        let steps = InertiaCfg::default().step_duties(&plan(180), 20.0 + 0.006 * w);
+        let steps = InertiaCfg::new(TICK_HZ).step_duties(&plan(180), 20.0 + 0.006 * w);
         let goals = stream_goals(&log);
         assert_eq!(goals.len(), 6);
         for (k, g) in goals.iter().enumerate() {
@@ -956,7 +954,7 @@ mod tests {
         let params = crate::exp::testkit::rig();
         let cfg = InertiaCfg {
             base_polls: 50,
-            ..InertiaCfg::default()
+            ..InertiaCfg::new(TICK_HZ)
         };
         let exp = inertia(cfg, 180, &params);
         let mut exp = Guarded::new(exp, params);
@@ -988,7 +986,7 @@ mod tests {
         let params = crate::exp::testkit::rig();
         let cfg = InertiaCfg {
             base_polls: 20,
-            ..InertiaCfg::default()
+            ..InertiaCfg::new(TICK_HZ)
         };
         let mut exp = Guarded::new(inertia(cfg, 180, &params), params);
         let log = pump(&mut exp, &mut servo, 4_000_000);
@@ -1023,7 +1021,7 @@ mod tests {
     fn inertia_base_and_steps_fit_the_runway() {
         let mut servo = dynamic_servo();
         let params = crate::exp::testkit::rig();
-        let mut g = Guarded::new(inertia(InertiaCfg::default(), 180, &params), params);
+        let mut g = Guarded::new(inertia(InertiaCfg::new(TICK_HZ), 180, &params), params);
         let log = pump(&mut g, &mut servo, 4_000_000);
         assert_eq!(g.abort(), None);
         let exp = g.into_inner();
@@ -1056,7 +1054,7 @@ mod tests {
             pos_guard: Some((150, 1425)),
             ..crate::exp::testkit::rig()
         };
-        let mut g = Guarded::new(inertia(InertiaCfg::default(), 180, &params), params);
+        let mut g = Guarded::new(inertia(InertiaCfg::new(TICK_HZ), 180, &params), params);
         let log = pump(&mut g, &mut servo, 4_000_000);
         assert_eq!(g.abort(), None);
         let exp = g.into_inner();
@@ -1076,7 +1074,7 @@ mod tests {
     #[test]
     fn frames_outside_a_burst_are_dropped() {
         let params = crate::exp::testkit::rig();
-        let mut exp = inertia(InertiaCfg::default(), 180, &params);
+        let mut exp = inertia(InertiaCfg::new(TICK_HZ), 180, &params);
         exp.push_tel(&[TelFrame {
             tick: 0,
             pos: Some(2000),
@@ -1132,13 +1130,13 @@ mod tests {
         };
         let plan = DutyPlan::new(&lim, 7270.0 / 4096.0, Some(0.145));
         let params = RigParams::new(Some(GUARD), 350).with_stops((209, 3849));
-        let bus = Bus::BENCH.with_slow_reads(4);
+        let bus = Bus::BENCH.with_slow_reads(1);
         let run = |aborts: RigParams| {
             let mut servo = bench_mg90(3204);
             servo.pos = 2029.0;
             let cfg = LadderCfg {
                 seek_duty_q15: q15_floor(plan.seek),
-                ..LadderCfg::default()
+                ..LadderCfg::new(TICK_HZ)
             };
             let ladder = Ladder::new(cfg, &params, Runway::new(GUARD));
             let mut g = Guarded::new(ladder, params.abort_at_soft(lim.soft));
@@ -1146,7 +1144,7 @@ mod tests {
             assert_eq!(g.abort(), None);
             let runway = g.into_inner().runway().clone();
             let base = plan.seek + BASE_OVER_SEEK;
-            let cfg = crate::run::inertia_cfg(plan.seek, base, InertiaCfg::default());
+            let cfg = crate::run::inertia_cfg(plan.seek, base, InertiaCfg::new(TICK_HZ));
             let mut s = Positions {
                 exp: Guarded::new(Inertia::new(cfg, plan, runway, &params), aborts),
                 seen: Vec::new(),

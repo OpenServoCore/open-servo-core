@@ -43,7 +43,7 @@ use crate::exp::centre::CentreCfg;
 use crate::exp::endstop::EndstopCfg;
 use crate::exp::inductance::Cfg as BurstCfg;
 use crate::exp::inertia::{BASE_OVER_SEEK, InertiaCfg};
-use crate::exp::ladder::LadderCfg;
+use crate::exp::ladder::{LadderCfg, RUNGS_Q15};
 use crate::exp::resistance::ResistanceCfg;
 use crate::exp::rl::Scales;
 use crate::exp::sweep::SweepCfg;
@@ -403,7 +403,7 @@ impl Run {
             (Step::Breakaway, Some(p)) => Stage::Breakaway { cap: p.stop_cap },
             (Step::Ladder, Some(p)) => Stage::Ladder {
                 seek: p.seek,
-                rungs: fractions(&LadderCfg::default().rungs_q15),
+                rungs: fractions(&RUNGS_Q15),
             },
             (Step::Inertia, Some(p)) => Stage::Inertia {
                 seek: p.seek,
@@ -572,13 +572,14 @@ pub fn breakaway_cfg(cap: f64) -> BreakawayCfg {
     }
 }
 
-pub fn ladder_cfg(seek: f64, rungs: &[f64]) -> LadderCfg {
+/// `base` with a stage's seek and rungs.
+pub fn ladder_cfg(seek: f64, rungs: &[f64], base: LadderCfg) -> LadderCfg {
     let mut rungs_q15: Vec<i16> = rungs.iter().map(|d| q15_floor(*d)).collect();
     rungs_q15.dedup();
     LadderCfg {
         rungs_q15,
         seek_duty_q15: q15_floor(seek),
-        ..LadderCfg::default()
+        ..base
     }
 }
 
@@ -621,7 +622,7 @@ mod tests {
     use crate::exp::ladder::{Ladder, LadderResult};
     use crate::exp::resistance::Resistance;
     use crate::exp::sweep::{Captured, Sweep};
-    use crate::exp::testkit::{Bus, FakeServo, bench_mg90, pump_on};
+    use crate::exp::testkit::{Bus, FakeServo, TICK_HZ, bench_mg90, pump_on};
     use crate::exp::{Experiment, Guarded, Permitted, RigParams};
     use crate::fits::InertiaPriors;
     use crate::runway::Runway;
@@ -1057,7 +1058,8 @@ mod tests {
                 }
                 Stage::Ladder { seek, rungs } => {
                     let runway = Runway::new(lim.guard().unwrap());
-                    let ladder = Ladder::new(ladder_cfg(*seek, rungs), &params, runway);
+                    let cfg = ladder_cfg(*seek, rungs, LadderCfg::new(TICK_HZ));
+                    let ladder = Ladder::new(cfg, &params, runway);
                     let (exp, how) = self.go(ladder, params.abort_at_soft(lim.soft));
                     self.ladder = exp.fit(R);
                     self.runway = Some(exp.runway().clone());
@@ -1067,7 +1069,7 @@ mod tests {
                     }
                 }
                 Stage::Inertia { seek, base } => {
-                    let cfg = inertia_cfg(*seek, *base, InertiaCfg::default());
+                    let cfg = inertia_cfg(*seek, *base, InertiaCfg::new(TICK_HZ));
                     let plan = run.plan().expect("planned");
                     let runway = self.runway.clone().expect("the ladder's runway");
                     let inertia = Inertia::new(cfg, plan, runway, &params);
@@ -1078,7 +1080,7 @@ mod tests {
                             ke_vpc: l.ke.ke_vpc,
                             fc: l.fric_fwd.map_or(0.0, |f| f.fc),
                             fv: l.fric_fwd.map_or(0.0, |f| f.fv),
-                            tick_hz: 20_100.0,
+                            tick_hz: TICK_HZ,
                         };
                         self.inertia_fit = exp.fit(&priors).is_some();
                     }
@@ -1205,7 +1207,7 @@ mod tests {
     /// twice the fit needs - and the run ends centred with torque off.
     #[test]
     fn ladder_runs_at_bench_bus_timing() {
-        let to_55 = &LadderCfg::default().rungs_q15[..5];
+        let to_55 = &RUNGS_Q15[..5];
         for vbus in [RAIL_2S, 3300] {
             for seed in 1..=8 {
                 let mut servo = bench_servo(vbus);
@@ -1303,7 +1305,7 @@ mod tests {
             }
             let base = base.expect("an inertia stage");
             assert!((base - 0.15).abs() < 1e-12);
-            let cfg = inertia_cfg(0.10, base, InertiaCfg::default());
+            let cfg = inertia_cfg(0.10, base, InertiaCfg::new(TICK_HZ));
             let steps = cfg.step_duties(&run.plan().unwrap(), 80.0);
             for (got, want) in steps.iter().zip(want) {
                 assert!((got - want).abs() < 5e-4, "{vbus}: {steps:?}");

@@ -194,11 +194,14 @@ pub(crate) fn read_dwell_samples(dir: &Path) -> Result<Vec<DwellSample>> {
 
 pub(crate) fn write_rungs(dir: &OutDir, rungs: &[RungSummary]) -> Result<()> {
     let mut w = dir.file("rungs.csv")?;
-    writeln!(w, "duty_q15,omega,omega_r2,i,v,windows,used,note")?;
+    writeln!(
+        w,
+        "duty_q15,omega,omega_r2,i,v,windows,used,omega_bemf,note"
+    )?;
     for r in rungs {
         writeln!(
             w,
-            "{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{}",
             r.duty_q15,
             r.omega,
             r.omega_r2,
@@ -206,6 +209,7 @@ pub(crate) fn write_rungs(dir: &OutDir, rungs: &[RungSummary]) -> Result<()> {
             r.v,
             r.windows,
             r.used as u8,
+            r.omega_bemf.map(|b| b.to_string()).unwrap_or_default(),
             r.note.as_deref().unwrap_or("").replace(',', ";"),
         )?;
     }
@@ -227,7 +231,7 @@ pub(crate) fn read_rung_points(dir: &Path) -> Result<Vec<RungPoint>> {
 
 pub(crate) fn read_rungs(dir: &Path) -> Result<Vec<RungSummary>> {
     let mut out = Vec::new();
-    for parts in rows(&dir.join("rungs.csv"), 8)? {
+    for parts in rows(&dir.join("rungs.csv"), 9)? {
         out.push(RungSummary {
             duty_q15: parts[0].parse()?,
             omega: parts[1].parse()?,
@@ -236,10 +240,14 @@ pub(crate) fn read_rungs(dir: &Path) -> Result<Vec<RungSummary>> {
             v: parts[4].parse()?,
             windows: parts[5].parse()?,
             used: parts[6] == "1",
-            note: if parts[7].is_empty() {
+            omega_bemf: match parts[7].as_str() {
+                "" => None,
+                b => Some(b.parse()?),
+            },
+            note: if parts[8].is_empty() {
                 None
             } else {
-                Some(parts[7].clone())
+                Some(parts[8].clone())
             },
         });
     }
@@ -579,6 +587,7 @@ mod tests {
                 windows: 80,
                 used: true,
                 note: None,
+                omega_bemf: Some(1467.25),
             },
             RungSummary {
                 duty_q15: 20971,
@@ -589,9 +598,17 @@ mod tests {
                 windows: 3,
                 used: false,
                 note: Some("steady segment too short, dropped".into()),
+                omega_bemf: None,
             },
         ];
         write_rungs(&dir, &rungs).unwrap();
+        let back = read_rungs(&dir.0).unwrap();
+        assert_eq!(back[0].omega_bemf, Some(1467.25));
+        assert_eq!(back[1].omega_bemf, None);
+        assert_eq!(
+            back[1].note,
+            rungs[1].note.as_ref().map(|n| n.replace(',', ";"))
+        );
         let pts = read_rung_points(&dir.0).unwrap();
         assert_eq!(pts.len(), 1);
         assert_eq!(pts[0].omega, 1500.5);

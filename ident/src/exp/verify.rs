@@ -480,7 +480,8 @@ enum VPhase {
 
 struct LegCapture {
     goal_cps: i32,
-    /// (t_s from sample_tick, pos) pairs, slip-zone samples excluded.
+    /// (t_s on the host's clock, pos) pairs, slip-zone samples excluded:
+    /// the servo's tick counter runs slow under polling.
     pts: Vec<(f64, f64)>,
 }
 
@@ -488,7 +489,6 @@ pub struct VerifyVelocity {
     cfg: VerifyVelocityCfg,
     params: RigParams,
     band: (u16, u16),
-    tick_hz: f64,
     phase: VPhase,
     leg_idx: usize,
     polls: u32,
@@ -496,20 +496,19 @@ pub struct VerifyVelocity {
     still: u32,
     seek_start: Option<u16>,
     halt: Option<AbortReason>,
-    tick0: Option<u32>,
+    t0: Option<f64>,
     cur: Option<LegCapture>,
     captures: Vec<LegCapture>,
     warnings: Vec<String>,
 }
 
 impl VerifyVelocity {
-    pub fn new(cfg: VerifyVelocityCfg, params: &RigParams, tick_hz: f64) -> Self {
+    pub fn new(cfg: VerifyVelocityCfg, params: &RigParams) -> Self {
         let band = params.pos_guard.unwrap_or((150, 3950));
         Self {
             cfg,
             params: *params,
             band,
-            tick_hz,
             phase: VPhase::ModeOpen,
             leg_idx: 0,
             polls: 0,
@@ -517,7 +516,7 @@ impl VerifyVelocity {
             still: 0,
             seek_start: None,
             halt: None,
-            tick0: None,
+            t0: None,
             cur: None,
             captures: Vec::new(),
             warnings: Vec::new(),
@@ -677,7 +676,7 @@ impl Experiment for VerifyVelocity {
             }
             VPhase::LegSet => {
                 self.polls = 0;
-                self.tick0 = None;
+                self.t0 = None;
                 self.cur = Some(LegCapture {
                     goal_cps: self.goal(),
                     pts: Vec::new(),
@@ -695,11 +694,11 @@ impl Experiment for VerifyVelocity {
             VPhase::LegEval => {
                 let mut done = false;
                 if let Some(o) = obs {
-                    let t0 = *self.tick0.get_or_insert(o.sample_tick);
+                    let t0 = *self.t0.get_or_insert(o.host_ms);
                     if let Some(c) = self.cur.as_mut()
                         && !self.params.in_slip(o.pos)
                     {
-                        let t = o.sample_tick.wrapping_sub(t0) as f64 / self.tick_hz;
+                        let t = (o.host_ms - t0) / 1000.0;
                         c.pts.push((t, self.params.pot.counts(o.pos)));
                     }
                     done = self.leg_done(o.pos);
@@ -847,6 +846,7 @@ mod tests {
                 Cmd::Read => {
                     seq.set(seq.get().wrapping_add(1));
                     pending = Some(TelemetrySnapshot {
+                        host_ms: seq.get() as f64 * 2.0,
                         pos: pos.get(),
                         agg_seq: seq.get(),
                         i_mean_counts: (goal.get() as f64 * 0.95) as i16,
@@ -882,11 +882,10 @@ mod tests {
         let mut exp = VerifyVelocity::new(
             VerifyVelocityCfg::planned(&plan(RAIL_2S)),
             &crate::exp::testkit::rig(),
-            20_100.0,
         );
         let goal = std::cell::Cell::new(0i32);
         let pos = std::cell::Cell::new(2000.0f64);
-        let tick = std::cell::Cell::new(0u32);
+        let t_ms = std::cell::Cell::new(0.0f64);
         let mut pending: Option<TelemetrySnapshot> = None;
         for _ in 0..4_000_000 {
             match exp.step(pending.take().as_ref()) {
@@ -899,13 +898,16 @@ mod tests {
                     }
                 }
                 Cmd::Read => {
-                    // 4 ms of motion at 97% tracking
+                    // 4 ms of motion at 97% tracking, the tick counter
+                    // losing a tenth of it to the bus
                     pos.set((pos.get() + goal.get() as f64 * 0.97 * 0.004).clamp(160.0, 3940.0));
-                    tick.set(tick.get().wrapping_add(80)); // 4 ms of 20.1k ticks
+                    t_ms.set(t_ms.get() + 4.0);
+                    let tick = (t_ms.get() * 20.1 * 0.9) as u32;
                     pending = Some(TelemetrySnapshot {
+                        host_ms: t_ms.get(),
                         pos: pos.get() as u16,
-                        sample_tick: tick.get(),
-                        agg_seq: (tick.get() / 16) as u16,
+                        sample_tick: tick,
+                        agg_seq: (tick / 16) as u16,
                         ..Default::default()
                     });
                 }
@@ -950,7 +952,7 @@ mod tests {
         cfg: VerifyVelocityCfg,
     ) -> (Option<AbortReason>, Vec<String>) {
         let params = bench_rig();
-        let mut g = Guarded::new(VerifyVelocity::new(cfg, &params, 20_100.0), params);
+        let mut g = Guarded::new(VerifyVelocity::new(cfg, &params), params);
         let log = pump(&mut g, servo, 400_000);
         (g.abort(), log)
     }

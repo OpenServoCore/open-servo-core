@@ -24,7 +24,7 @@
 
 use super::seek::{self, STOP_TOL, Watch};
 use super::{AbortReason, Cmd, Experiment, LIMIT_YIELD_FOLDED, RigParams};
-use crate::frame::{SeqUnwrap, TelFrame, TelemetrySnapshot};
+use crate::frame::{TelFrame, TelemetrySnapshot};
 use crate::limits::guards;
 use crate::regs::control;
 use crate::runway::{
@@ -168,8 +168,8 @@ pub struct Sweep {
     params: RigParams,
     runway: Runway,
     phase: Phase,
-    clock: SeqUnwrap,
-    /// (window time ms, raw pos) of every poll of the drive in progress.
+    /// (host time ms, raw pos) of every poll of the drive in progress: the
+    /// servo's window counter runs slow under polling.
     reads: Vec<(f64, u16)>,
     watch: Option<Watch>,
     polls: u32,
@@ -191,7 +191,6 @@ impl Sweep {
             params: *params,
             runway,
             phase: Phase::ModeWrite,
-            clock: SeqUnwrap::default(),
             reads: Vec::new(),
             watch: None,
             polls: 0,
@@ -232,10 +231,6 @@ impl Sweep {
 
     fn duty(&self) -> f64 {
         self.cfg.duty_q15 as f64 / Q15
-    }
-
-    fn time(&mut self, o: &TelemetrySnapshot) -> f64 {
-        self.clock.push(o.agg_seq) as f64 * self.params.agg_period_ms
     }
 
     /// Speed over the last [`SPEED_SPAN_MS`] of polls, counts/ms.
@@ -283,7 +278,7 @@ impl Sweep {
     }
 
     fn seek_eval(&mut self, o: &TelemetrySnapshot) -> Cmd {
-        let t = self.time(o);
+        let t = o.host_ms;
         let target = self.runway.start(1) as f64;
         if !self.seeking && o.pos as f64 <= target {
             self.rest = Some(o.pos);
@@ -403,7 +398,7 @@ impl Sweep {
     }
 
     fn run_eval(&mut self, o: &TelemetrySnapshot) -> Cmd {
-        let t = self.time(o);
+        let t = o.host_ms;
         self.reads.push((t, o.pos));
         let v_read = self.speed();
         let gap = self.gap();
