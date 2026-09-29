@@ -783,7 +783,10 @@ mod tests {
             };
             caps.push(p.capture(sgn * 8520, sgn * 3276));
         }
-        fit_captures(&caps, &scales(), &FitCfg::default()).expect("fit")
+        // the bench servo's 280-count limit: the waveform fit's halves are
+        // read there
+        let at = FitCfg::default().with_limit(280.0 * scales().amps_per_count);
+        fit_captures(&caps, &scales(), &at).expect("fit")
     }
 
     fn rel(got: f64, want: f64) -> f64 {
@@ -826,11 +829,18 @@ mod tests {
                     "{rail} {chans:?} L {}",
                     g.l_h
                 );
-                assert!(
-                    r.promotable(),
-                    "{rail} {chans:?} blocked by {:?}",
-                    r.blocking()
-                );
+                // The verdict is the waveform fit's, which reads the driven
+                // terminal: the tool's own mask promotes, a mask that never
+                // samples the driven terminal has nothing to fit.
+                match chans {
+                    Chans::Driven => assert!(
+                        r.promotable(),
+                        "{rail} {chans:?} blocked by {:?}",
+                        r.blocking()
+                    ),
+                    Chans::Fixed(CHAN_VBUS) => assert_eq!(r.blocking(), vec!["waveform"]),
+                    _ => {}
+                }
             }
         }
     }
@@ -852,9 +862,18 @@ mod tests {
         let (soft_over, soft_run) = over(&soft());
         assert!(stiff_over < 0.05, "stiff over-read {stiff_over}");
         assert!(soft_over > 0.05, "soft over-read {soft_over}");
-        // unmeasured, the supply gate decides: stiff promotes, soft declines
-        assert!(stiff_run.promotable(), "{:?}", stiff_run.blocking());
-        assert_eq!(soft_run.blocking(), vec!["supply"]);
+        // unmeasured, neither promotes: the waveform fit reads the driven
+        // terminal. The supply check still tells the two rails apart.
+        assert_eq!(stiff_run.blocking(), vec!["waveform"]);
+        assert_eq!(soft_run.blocking(), vec!["waveform"]);
+        let supply = |r: &InductanceResult| {
+            r.checks
+                .iter()
+                .find(|g| g.name == "supply")
+                .is_some_and(|g| g.pass)
+        };
+        assert!(supply(&stiff_run));
+        assert!(!supply(&soft_run));
     }
 
     /// Charge balance holds while the island's voltage repeats period to

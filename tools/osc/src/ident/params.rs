@@ -12,6 +12,7 @@ use osc_ident::exp::held::HeldRun;
 use osc_ident::exp::inductance::InductanceResult;
 use osc_ident::exp::resistance::ResistanceResult;
 use osc_ident::exp::rl::{RlResult, Scales};
+use osc_ident::exp::wavefit::WaveRun;
 use osc_ident::exp::winding::VoltRun;
 use osc_ident::gains::{BwTargets, Encoded, EncodedGains, PlantParams};
 use osc_ident::sources::{Source, Winding};
@@ -190,10 +191,12 @@ impl From<&RlResult> for RlJson {
 
 /// The high-rate burst run as recorded. `promoted` is the verdict that
 /// decides whether the gains used it (either route); `gates`, `ok` and
-/// `blocking` are the free shaft's, and `ok` additionally requires `l-duty`.
-/// L_ripple and L_env are different quantities, not two estimates of one -
-/// see osc-ident's `exp::inductance`. Fields after `ok` postdate the
-/// voltage channels and default when an older recording is refitted.
+/// `blocking` are the free shaft's, its trace gates and the waveform fit's
+/// (`wave`). The ON-window, pairs and regression numbers are diagnostics,
+/// checked in `checks` and deciding nothing. L_ripple and L_env are
+/// different quantities, not two estimates of one - see osc-ident's
+/// `exp::inductance`. Fields after `ok` postdate the voltage channels and
+/// default when an older recording is refitted.
 #[derive(Serialize, Deserialize, Clone)]
 pub struct InductanceJson {
     pub l_ripple_h: f64,
@@ -242,6 +245,88 @@ pub struct InductanceJson {
     pub route: Option<String>,
     #[serde(default)]
     pub held: HeldJson,
+    #[serde(default)]
+    pub wave: Option<WaveJson>,
+    #[serde(default)]
+    pub checks: Vec<(String, bool, String)>,
+}
+
+/// The whole-waveform fit of the from-rest captures: the line, where it
+/// was read, and the captures set aside.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct WaveJson {
+    /// Winding R, its formal standard error, L and V0: the fitted line.
+    pub r_ohm: f64,
+    pub r_sd_ohm: f64,
+    pub l_h: f64,
+    pub v0_volts: f64,
+    pub tau_a_us: f64,
+    pub delta_us: f64,
+    pub rms_counts: f64,
+    pub captures: usize,
+    /// The servo's current limit the line was read at, amps; V/I there is
+    /// what r_q12 and the stall-safe duties take, the slope there with the
+    /// bridge what the current loop takes. Duty x rail over current.
+    pub i_lim_a: Option<f64>,
+    pub v_over_i_lim_ohm: Option<f64>,
+    pub slope_lim_ohm: Option<f64>,
+    pub r_median_ohm: f64,
+    pub r_spread: f64,
+    /// (capture index, duty, forward, pos, R ohms) of each capture set
+    /// aside.
+    pub set_aside: Vec<(usize, f64, bool, u16, f64)>,
+    /// The even and the odd captures' slope R, and their V/I at the limit,
+    /// which the split-halves gate compares.
+    pub halves_ohm: Option<(f64, f64)>,
+    pub halves_v_over_i_ohm: Option<(f64, f64)>,
+    /// Captures whose half window has an edge no terminal sample caught.
+    pub half_blind: usize,
+    pub on_loss_us: f64,
+    pub rail_v: f64,
+    pub v_on_open: f64,
+    pub z_on_ohm: f64,
+    pub tau_us: f64,
+    pub emf_end_v: f64,
+    /// Gates with nothing to judge, and why.
+    pub skipped: Vec<(String, String)>,
+}
+
+impl From<&WaveRun> for WaveJson {
+    fn from(w: &WaveRun) -> Self {
+        Self {
+            r_ohm: w.fit.r_ohm,
+            r_sd_ohm: w.fit.r_sd_ohm,
+            l_h: w.fit.l_h,
+            v0_volts: w.fit.v0_volts,
+            tau_a_us: w.fit.tau_a_us,
+            delta_us: w.fit.delta_us,
+            rms_counts: w.fit.rms_counts,
+            captures: w.fit.captures,
+            i_lim_a: w.at_limit.map(|a| a.i_a),
+            v_over_i_lim_ohm: w.at_limit.map(|a| a.v_over_i_ohm),
+            slope_lim_ohm: w.at_limit.map(|a| a.slope_ohm),
+            r_median_ohm: w.r_median_ohm,
+            r_spread: w.r_spread,
+            set_aside: w
+                .set_aside()
+                .map(|c| (c.index, c.duty, c.forward, c.pos, c.r_ohm))
+                .collect(),
+            halves_ohm: w.halves.map(|(a, b)| (a.r_ohm, b.r_ohm)),
+            halves_v_over_i_ohm: w.halves_v_over_i(),
+            half_blind: w.half_blind,
+            on_loss_us: w.on_loss_us,
+            rail_v: w.rail_v,
+            v_on_open: w.v_on_open,
+            z_on_ohm: w.z_on_ohm,
+            tau_us: w.tau_us,
+            emf_end_v: w.emf_end_v,
+            skipped: w
+                .skipped
+                .iter()
+                .map(|(n, why)| (n.to_string(), why.clone()))
+                .collect(),
+        }
+    }
 }
 
 /// The held-at-a-stop route as recorded.
@@ -380,6 +465,12 @@ impl From<&InductanceResult> for InductanceJson {
             volts: VoltsJson::from(&x.volts),
             route: x.route().map(|r| r.as_str().to_string()),
             held: HeldJson::from(&x.held),
+            wave: x.wave.as_ref().ok().map(WaveJson::from),
+            checks: x
+                .checks
+                .iter()
+                .map(|g| (g.name.to_string(), g.pass, g.detail.clone()))
+                .collect(),
         }
     }
 }
@@ -463,7 +554,13 @@ impl SenseJson {
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct PlantJson {
+    /// What r_q12 and every stall-safe duty take.
     pub r_vpc: f64,
+    /// The current loop's plant R, synthesized into i_ki. Zero means
+    /// absent: `ident synth` then closes the loop on `r_vpc`. The fit path
+    /// always writes it.
+    #[serde(default)]
+    pub r_loop_vpc: f64,
     pub ke_vpc: f64,
     pub fc: f64,
     pub fv: f64,
@@ -488,9 +585,14 @@ pub struct PlantJson {
     /// Which experiment each input came from.
     #[serde(default)]
     pub r_source: String,
-    /// The winding R in ohms when the burst supplied it.
+    /// `r_vpc` and `r_loop_vpc` in ohms when the burst supplied them.
     #[serde(default)]
     pub r_ohm: Option<f64>,
+    #[serde(default)]
+    pub r_loop_ohm: Option<f64>,
+    /// Which R went where, in words.
+    #[serde(default)]
+    pub winding_use: String,
     #[serde(default)]
     pub l_source: String,
     #[serde(default)]
@@ -501,8 +603,23 @@ pub struct PlantJson {
 
 impl PlantJson {
     pub fn new(p: &PlantParams, t: &BwTargets, w: &Winding, sigma_from: &str) -> Self {
+        let r_loop_ohm = w
+            .r_ohm
+            .filter(|_| w.r_vpc > 0.0)
+            .map(|r| r * w.r_loop_vpc / w.r_vpc);
+        let winding_use = match (w.r_from, w.r_ohm, r_loop_ohm) {
+            (Source::Burst, Some(r), Some(lo)) => format!(
+                "r_q12 and every stall-safe duty take r_vpc, V/I at the current limit ({r:.3} \
+                 ohm); the current loop's i_ki takes r_loop_vpc, the V-I line's slope with the \
+                 bridge ({lo:.3} ohm); i_kp takes L"
+            ),
+            _ => "r_q12, every stall-safe duty and the current loop's i_ki take r_vpc; i_kp \
+                  takes L"
+                .into(),
+        };
         Self {
             r_vpc: p.r_vpc,
+            r_loop_vpc: p.r_loop_vpc,
             ke_vpc: p.ke_vpc,
             fc: p.fc,
             fv: p.fv,
@@ -517,6 +634,8 @@ impl PlantJson {
             f_o: t.f_o,
             r_source: w.r_from.as_str().into(),
             r_ohm: w.r_ohm,
+            r_loop_ohm,
+            winding_use,
             l_source: w.l_from.as_str().into(),
             l_henries: w.l_h,
             sigma_source: sigma_from.into(),
@@ -527,6 +646,7 @@ impl PlantJson {
 #[derive(Serialize, Deserialize, Clone, Copy)]
 pub struct StoredWindingJson {
     pub r_vpc: f64,
+    pub r_loop_vpc: f64,
     pub r_ohm: Option<f64>,
     pub l_henries: f64,
 }
@@ -535,6 +655,7 @@ impl From<&Winding> for StoredWindingJson {
     fn from(w: &Winding) -> Self {
         Self {
             r_vpc: w.r_vpc,
+            r_loop_vpc: w.r_loop_vpc,
             r_ohm: w.r_ohm,
             l_henries: w.l_h,
         }
@@ -547,6 +668,7 @@ impl StoredWindingJson {
             r_ohm: self.r_ohm,
             r_vpc: self.r_vpc,
             r_from: Source::Stored,
+            r_loop_vpc: self.r_loop_vpc,
             l_h: self.l_henries,
             l_from: Source::Stored,
         }

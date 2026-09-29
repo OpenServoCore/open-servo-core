@@ -37,6 +37,7 @@ pub mod rl;
 pub mod seek;
 pub mod sweep;
 pub mod verify;
+pub mod wavefit;
 pub mod winding;
 
 use crate::burst::Capture;

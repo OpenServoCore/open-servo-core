@@ -280,9 +280,21 @@ pub fn render(r: &ReportInputs<'_>) -> String {
         let _ = writeln!(s, "  plant inputs");
         let _ = writeln!(
             s,
-            "    r_vpc        {:>10.4} vcounts/ccount{}  {}",
+            "    r_vpc        {:>10.4} vcounts/ccount{}  {}  -> r_q12 and every stall-safe duty",
             p.plant.r_vpc,
             w.r_ohm.map_or(String::new(), |r| format!(" ({r:.3} ohm)")),
+            w.r_from.as_str()
+        );
+        let _ = writeln!(
+            s,
+            "    r_loop       {:>10.4} vcounts/ccount{}  {}  -> the current loop's i_ki",
+            p.plant.r_loop_vpc,
+            w.r_ohm
+                .filter(|_| p.plant.r_vpc > 0.0)
+                .map_or(String::new(), |r| format!(
+                    " ({:.3} ohm)",
+                    r * p.plant.r_loop_vpc / p.plant.r_vpc
+                )),
             w.r_from.as_str()
         );
         let _ = writeln!(
@@ -436,8 +448,9 @@ fn render_e8(s: &mut String, x: &InductanceResult, r_from: Option<Source>) {
                     .to_string()
             }
             Some(BurstRoute::Free) => format!(
-                "PROMOTED via the free-shaft route{} - the gains take R and L_env from its \
-                 regression",
+                "PROMOTED via the free-shaft route{} - r_q12 and the stall-safe duties take V/I \
+                 at the current limit, the current loop the slope with the bridge and L, all \
+                 from the waveform fit",
                 match x.held.captures {
                     0 => String::new(),
                     _ => format!(" (held declined: {})", x.held.blocking().join(", ")),
@@ -472,12 +485,121 @@ fn render_e8(s: &mut String, x: &InductanceResult, r_from: Option<Source>) {
     }
 }
 
+fn render_wave(s: &mut String, x: &InductanceResult) {
+    let w = match &x.wave {
+        Ok(w) => w,
+        Err(why) => {
+            let _ = writeln!(s, "  waveform      - ({why})");
+            return;
+        }
+    };
+    let f = &w.fit;
+    let _ = writeln!(
+        s,
+        "  waveform      R {:.3} +/- {:.3} ohm (winding), L {:.3} mH, V0 {:.3} V; {} of {} \
+         captures, rms {:.1} counts",
+        f.r_ohm,
+        f.r_sd_ohm,
+        f.l_h * 1e3,
+        f.v0_volts,
+        f.captures,
+        w.captures.len(),
+        f.rms_counts
+    );
+    let _ = writeln!(
+        s,
+        "                amplifier lag {:.2} us, samples {:.2} us late; back-EMF from the rotor \
+         priors only, {:.0} mV at the end of the top rung",
+        f.tau_a_us,
+        f.delta_us,
+        w.emf_end_v * 1e3
+    );
+    match w.at_limit {
+        Some(a) => {
+            let _ = writeln!(
+                s,
+                "  line          slope {:.3} ohm with the bridge, V/I {:.3} ohm at the {:.3} A \
+                 current limit (duty x rail over current)",
+                a.slope_ohm, a.v_over_i_ohm, a.i_a
+            );
+        }
+        None => {
+            let _ = writeln!(
+                s,
+                "  line          no V/I: the servo's current limit was not given"
+            );
+        }
+    }
+    let _ = writeln!(
+        s,
+        "                ON window {:.2} us short of commanded; driven terminal {:.2} V open, \
+         sagging {:.2} ohm; rail {:.2} V",
+        w.on_loss_us, w.v_on_open, w.z_on_ohm, w.rail_v
+    );
+    let aside: Vec<String> = w
+        .set_aside()
+        .map(|c| {
+            format!(
+                "capture {} ({:.0}% {}, pos {}) {:.3} ohm, {:.2} of the median",
+                c.index,
+                c.duty * 100.0,
+                if c.forward { "forward" } else { "reverse" },
+                c.pos,
+                c.r_ohm,
+                c.r_ohm / w.r_median_ohm
+            )
+        })
+        .collect();
+    let _ = writeln!(
+        s,
+        "  captures      R median {:.3} ohm, robust sd {:.1}%; set aside: {}",
+        w.r_median_ohm,
+        w.r_spread * 100.0,
+        if aside.is_empty() {
+            "none".into()
+        } else {
+            aside.join(", ")
+        }
+    );
+    if let Some((a, b)) = w.halves {
+        let _ = writeln!(
+            s,
+            "  halves        V/I at the limit {}; slope R even captures {:.3} ohm, odd {:.3} ohm",
+            w.halves_v_over_i().map_or("-".into(), |(va, vb)| format!(
+                "even captures {va:.3} ohm, odd {vb:.3} ohm"
+            )),
+            a.r_ohm,
+            b.r_ohm
+        );
+    }
+    if w.half_blind > 0 {
+        let _ = writeln!(
+            s,
+            "  edges         {} of {} captures place a half-window edge at the midpoint between \
+             two terminal samples: no sample caught it",
+            w.half_blind,
+            w.captures.len()
+        );
+    }
+}
+
 fn render_free(s: &mut String, x: &InductanceResult) {
     let v = &x.volts;
     let _ = writeln!(
         s,
         "  free shaft    {} from rest, {} from a hold",
         x.rest_captures, x.hold_captures
+    );
+    render_wave(s, x);
+    let _ = writeln!(s, "  gates         {}", gate_line(&x.gates));
+    if let Ok(w) = &x.wave {
+        for (name, why) in &w.skipped {
+            let _ = writeln!(s, "  skipped       {name} ({why})");
+        }
+    }
+    let _ = writeln!(
+        s,
+        "  diagnostics   the routes below are reported and checked, and decide nothing"
     );
     let _ = writeln!(
         s,
@@ -623,7 +745,7 @@ fn render_free(s: &mut String, x: &InductanceResult) {
          {:.2} us amplifier settling, bias {:.1} counts",
         x.cadence_samples, x.window_samples, x.settle_us, x.bias_counts
     );
-    let _ = writeln!(s, "  gates         {}", gate_line(&x.gates));
+    let _ = writeln!(s, "  checks        {}", gate_line(&x.checks));
 }
 
 #[cfg(test)]
@@ -733,6 +855,49 @@ mod tests {
         assert!(s.contains("verdict       "), "{s}");
     }
 
+    /// The bench run's burst section: the line, what went where, the
+    /// capture set aside, the cross route not available, and the ON-window,
+    /// pairs and regression routes under a diagnostics heading.
+    #[test]
+    fn the_waveform_fit_reports_its_line() {
+        use crate::exp::inductance::{FitCfg, fit_captures};
+        use crate::exp::testkit::{board_d_scales, mg90_2s};
+        let sc = board_d_scales();
+        let cfg = FitCfg::default().with_limit(280.0 * sc.amps_per_count);
+        let r = fit_captures(&mg90_2s(), &sc, &cfg).expect("fit");
+        let s = render(&ReportInputs {
+            inductance: Some(&r),
+            ..Default::default()
+        });
+        for line in [
+            "  waveform      R 4.344 +/- 0.021 ohm (winding), L 0.805 mH, V0 0.087 V; 15 of 16 \
+             captures, rms 9.2 counts",
+            "  line          slope 4.679 ohm with the bridge, V/I 5.316 ohm at the 0.251 A \
+             current limit (duty x rail over current)",
+            "  captures      R median 4.256 ohm, robust sd 2.0%; set aside: capture 11 (40% \
+             forward, pos 1782) 3.161 ohm, 0.74 of the median",
+            "  halves        V/I at the limit even captures 5.362 ohm, odd 5.269 ohm; slope R \
+             even captures 4.315 ohm, odd 4.372 ohm",
+            "  edges         4 of 16 captures place a half-window edge at the midpoint between \
+             two terminal samples: no sample caught it",
+            "  skipped       cross-route (not available: the run has no start from rest in TEL)",
+            "  diagnostics   the routes below are reported and checked, and decide nothing",
+            "  verdict       PROMOTED via the free-shaft route - r_q12 and the stall-safe duties \
+             take V/I at the current limit, the current loop the slope with the bridge and L, \
+             all from the waveform fit",
+        ] {
+            assert!(s.contains(line), "missing {line:?} in\n{s}");
+        }
+        assert!(
+            s.contains(
+                "pass split-halves (V/I at the limit: even captures 5.362, odd 5.269 ohm, 1.8% \
+                 apart (within 4%); slope R 4.315 and 4.372 ohm)"
+            ),
+            "{s}"
+        );
+        assert!(s.contains("  checks        "), "{s}");
+    }
+
     #[test]
     fn the_held_route_renders_its_seat_and_feeds_the_verdict() {
         use crate::burst::from_csv;
@@ -797,6 +962,7 @@ mod tests {
         // once there are gains the line names where R came from
         let p = PlantParams {
             r_vpc: 1.775,
+            r_loop_vpc: 1.775,
             ke_vpc: 0.15,
             fc: 20.0,
             fv: 0.001,
@@ -820,6 +986,7 @@ mod tests {
                 r_ohm: None,
                 r_vpc: 1.775,
                 r_from: from,
+                r_loop_vpc: 1.775,
                 l_h: 0.5e-3,
                 l_from: from,
             };
@@ -841,6 +1008,7 @@ mod tests {
         use crate::sources::{Source, Winding};
         let p = PlantParams {
             r_vpc: 2.87,
+            r_loop_vpc: 2.87,
             ke_vpc: 0.2,
             fc: 20.0,
             fv: 0.001,
@@ -854,6 +1022,7 @@ mod tests {
             r_ohm: Some(4.0),
             r_vpc: 2.87,
             r_from: Source::Burst,
+            r_loop_vpc: 2.87,
             l_h: 0.6e-3,
             l_from: Source::Burst,
         };
@@ -916,6 +1085,7 @@ mod tests {
 
         let p = PlantParams {
             r_vpc: 3.37,
+            r_loop_vpc: 3.37,
             ke_vpc: 0.2,
             fc: 20.0,
             fv: 0.001,

@@ -661,7 +661,9 @@ impl Cal<'_> {
                 drive(c, id, self.out, &mut exp, None)?;
                 check_abort("the burst", exp.abort())?;
                 let caps = exp.into_inner().captures().to_vec();
-                let fit = fit_captures(&caps, &self.sc, &FitCfg::default());
+                let at =
+                    FitCfg::default().with_limit(self.lim.i_lim as f64 * self.sc.amps_per_count);
+                let fit = fit_captures(&caps, &self.sc, &at);
                 let w =
                     sources::winding(fit.as_ref(), None, Some(&self.sc), gains::DEFAULT_L_HENRIES);
                 let Some(w) = w else {
@@ -669,7 +671,7 @@ impl Cal<'_> {
                     return Ok(Ended::Declined);
                 };
                 match w.r_ohm {
-                    Some(r) => println!("  winding R {r:.2} ohm"),
+                    Some(r) => println!("  winding V/I at the current limit {r:.2} ohm"),
                     None => println!("  winding R {:.4} vcounts/ccount", w.r_vpc),
                 }
                 run.measured(w.r_vpc);

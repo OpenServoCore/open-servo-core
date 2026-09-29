@@ -1021,7 +1021,8 @@ mod tests {
                     let cfg = burst_cfg(rungs, *pre, *seek, base);
                     let (exp, how) = self.go(Inductance::new(cfg, &params, scales()), params);
                     self.caps.extend_from_slice(exp.captures());
-                    let fit = fit_captures(&self.caps, &scales(), &FitCfg::default());
+                    let at = FitCfg::default().with_limit(LIM as f64 * scales().amps_per_count);
+                    let fit = fit_captures(&self.caps, &scales(), &at);
                     self.e8 = fit.clone();
                     match sources::winding(fit.as_ref(), None, Some(&scales()), 0.0) {
                         _ if self.decline_burst && how == Ended::Done => Ended::Declined,
@@ -1144,12 +1145,13 @@ mod tests {
     }
 
     /// The bench MG90 with the burst plant on the same winding and rail.
+    /// The fake stalls through R alone, no brush drop and no bridge, so its
+    /// burst plant has neither: V/I at the limit is R on both.
     fn bench_servo(vbus: u16) -> FakeServo {
         let sc = scales();
         let mut s = bench_mg90(vbus);
         s.burst.r = R * sc.v_term_per_count / sc.amps_per_count;
         s.burst.v_rail = vbus as f64 * sc.v_term_per_count;
-        s.burst.v0 = 0.2;
         s
     }
 
@@ -1703,6 +1705,7 @@ mod tests {
             r_ohm: Some(r_vpc * sc.v_term_per_count / sc.amps_per_count),
             r_vpc,
             r_from: sources::Source::Stored,
+            r_loop_vpc: r_vpc,
             l_h: 0.6e-3,
             l_from: sources::Source::Stored,
         }
@@ -1812,9 +1815,9 @@ mod tests {
         }
     }
 
-    /// The declined burst still carries a rough R from its pairs: a stored
-    /// winding it agrees with passes quietly, one more than a quarter away
-    /// either way is called stale.
+    /// The declined burst still carries a rough R, its waveform fit's V/I at
+    /// the current limit: a stored winding it agrees with passes quietly,
+    /// one more than a quarter away either way is called stale.
     #[test]
     fn a_stale_stored_winding_warns() {
         let mut servo = bench_servo(RAIL_2S);
@@ -1831,7 +1834,13 @@ mod tests {
             }
         }
         let e8 = rig.e8.as_ref().expect("the burst fitted");
-        let rough = e8.volts.r_pair_ohm.or(e8.r_pair_ohm).expect("a rough R");
+        let rough = e8
+            .wave
+            .as_ref()
+            .ok()
+            .and_then(|w| w.at_limit)
+            .expect("a rough R")
+            .v_over_i_ohm;
         let r_ohm = stored(R).r_ohm.unwrap();
         assert!(
             (rough / r_ohm - 1.0).abs() < sources::STALE_R,
