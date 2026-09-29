@@ -1,0 +1,5 @@
+servo = "mg90-a"
+supply = "2s"
+rule = "limit"
+current_limit_counts = 280
+captured = "2026-09-29"

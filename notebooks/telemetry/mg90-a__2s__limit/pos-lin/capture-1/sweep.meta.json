@@ -1,0 +1,65 @@
+{
+  "baseline_ms": 200,
+  "decay": "slow",
+  "dirs": [
+    1,
+    -1
+  ],
+  "drive": {
+    "current_limit_counts": 280,
+    "i_abort_counts": 350,
+    "r_q12": 7270,
+    "rule": "limit",
+    "seek_q15": 4915,
+    "stall_release_counts": 84,
+    "stall_response": "yield",
+    "stall_tau_trip_counts": 280,
+    "stall_time_ms": 500,
+    "stall_yield_counts": 168,
+    "window_floor_q15": 4356
+  },
+  "fw": 65,
+  "git_sha": "10c0539f151acbc11c9d93299e34cd0ce8f0b2a3",
+  "guard": [
+    532,
+    3526
+  ],
+  "model": 257,
+  "plant": {
+    "data_flags": [],
+    "lut_band": [
+      560,
+      3504
+    ],
+    "lut_crc": "0x14fb",
+    "lut_nonzero_points": 185,
+    "lut_state": "LIVE",
+    "plant_stamp": "0x23aa",
+    "stamp_computed": "0x23aa",
+    "stamp_verdict": "match"
+  },
+  "post_rung_brake": true,
+  "rest_ms": 500,
+  "rung_tries": 3,
+  "schedule": [
+    "15",
+    "20"
+  ],
+  "seek_cap_pct": 15,
+  "seek_duty_pct": 15,
+  "sense": {
+    "gain_milli": 15000,
+    "shunt_r_mohm": 60,
+    "vdd_mv": 3300,
+    "vmotor_div_bot": 3300,
+    "vmotor_div_top": 6800
+  },
+  "settle_ms": 300,
+  "stall": false,
+  "static_load": false,
+  "supply": "2s",
+  "tel_mask": 2057,
+  "tick_hz": 20000,
+  "vbus_counts": 3122,
+  "window_ms": 500
+}
