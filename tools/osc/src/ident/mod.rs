@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use crate::capture::envelope;
 use crate::rig::plant::Lut;
-use crate::rig::pump::{self, Pump, with_guard, write_reg};
+use crate::rig::pump::{self, Pump, read_i32, with_guard, write_reg};
 use crate::rig::{Aborted, check_abort, csvio, snapshot};
 use anyhow::{Context, Result, bail};
 use clap::{Subcommand, ValueEnum};
@@ -40,10 +40,11 @@ use osc_ident::exp::{Guarded, Permitted, RigParams};
 use osc_ident::fits::{self, InertiaPriors};
 use osc_ident::gains::{self, BwTargets, PlantParams};
 use osc_ident::limits::{
-    BurstAllowance, CLASS_R_MIN, DutyPlan, Envelope, Refusal, ServoLimits, pct_floor,
+    BurstAllowance, CLASS_R_MIN, DutyPlan, Envelope, POT_MAX, Refusal, STOP_LADDER, ServoLimits,
+    guards, pct_floor,
 };
 use osc_ident::pot::Pot;
-use osc_ident::regs::{calib, control};
+use osc_ident::regs::{calib, config, control};
 use osc_ident::report::{self, PlantInputs, ReportInputs};
 use osc_ident::run::{self as order, Ended, Over, Run, Stage};
 use osc_ident::runway::{Runway, Supply};
@@ -234,7 +235,9 @@ enum Cmd {
     /// current limit, stall permit held, then back to mid travel.
     Resistance,
     /// The toggle experiment: free-shaft duty toggles -> winding R and L
-    /// (advisory; the 1 ms step is rotor-followed and biased).
+    /// (advisory; the 1 ms step is rotor-followed and biased). The jam
+    /// check first; the toggles run free under the current limit, and the
+    /// seeks back to mid travel drive at the duty whose stall it holds.
     Rl,
     /// High-rate shunt bursts -> winding R, L and tau: the front of `run`,
     /// then the held route at a stop with --burst-stops.
@@ -250,6 +253,10 @@ enum Cmd {
     /// Closed-loop verification on the written gains: verify current, then
     /// verify velocity. Needs a clean data state: a set written but not
     /// SAVEd on a fresh servo is refused (`ident write --save` first).
+    /// Every seek drives at the duty whose stall the current limit holds;
+    /// verify current holds steps between the lowest current the sensor
+    /// reads and the limit at each stop, stall permit held, and is refused
+    /// on a supply that leaves no room between the two.
     Verify,
     /// Refit offline from a recorded run directory.
     Fit { dir: PathBuf },
@@ -288,8 +295,8 @@ enum Cmd {
     ///   osc status                              the reasons and the stamp
     ///   osc cal --yes --gear-ratio <g>          stops, polarity, angles; stamps + SAVEs
     ///   osc ident write <params.json> --save    the identified set + stamp, SAVE
-    ///   osc ident verify                        closed loop, only now
-    /// VIRGIN and STALE clear only on SAVE, so verify comes after --save.
+    ///   hold and step by hand at mid travel     closed loop, only now
+    /// VIRGIN and STALE clear only on SAVE, so closed loop comes after --save.
     /// Without motion, a saved table does the same: osc recover --from.
     #[command(verbatim_doc_comment)]
     Write {
@@ -387,7 +394,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
             let out = csvio::OutDir::create(&cli.out)?;
             let d = drive(cli)?;
             let plan = d.lim.stall_plan(d.sc.r_vpc(CLASS_R_MIN), None);
-            let rungs = plan.stall_ladder(d.lim.window_floor())?;
+            let rungs = plan.stall_ladder(STOP_LADDER, d.lim.window_floor())?;
             let cfg = order::resistance_cfg(plan.seek, &rungs, ResistanceCfg::default());
             let r =
                 run_resistance(cli, &mut c, id, &out, cfg)?.context("resistance fit degenerate")?;
@@ -468,11 +475,12 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
             snapshot::write_gains(&mut c, id, &p.gains)?;
             let s = crate::state::commit(&mut c, id, &d, *save)?;
             if data_state::allows(s.flags, true) {
-                println!("next: ident verify");
+                println!("next: {}", hold_and_step(&mut c, id)?);
             } else if !*save {
                 println!(
-                    "next: ident write {} --save, then ident verify",
-                    params.display()
+                    "next: ident write {} --save, then {}",
+                    params.display(),
+                    hold_and_step(&mut c, id)?
                 );
             }
             Ok(())
@@ -486,6 +494,27 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
         Cmd::Show => snapshot::show(&mut c, id),
         Cmd::Fit { .. } | Cmd::Synth { .. } => unreachable!("handled above"),
     }
+}
+
+/// The first check new gains get: a hold at mid travel and a few steps
+/// inside the travel guard, by hand, nowhere near a stop.
+fn hold_and_step(c: &mut Client<NusbPipe>, id: Id) -> Result<String> {
+    let soft = (
+        read_i32(c, id, config::POS_MIN_SOFT_COUNTS)?,
+        read_i32(c, id, config::POS_MAX_SOFT_COUNTS)?,
+    );
+    Ok(hold_and_step_hint(soft))
+}
+
+fn hold_and_step_hint(soft: (i32, i32)) -> String {
+    let pot = |v: i32| v.clamp(0, POT_MAX) as u16;
+    let (lo, hi) = guards((pot(soft.0), pot(soft.1)));
+    format!(
+        "hold and step by hand at mid travel: `osc set mode Position`, `osc set goal_position \
+         {}`, `osc set torque_enable on`, a few goal_position steps inside {lo}..{hi}, then \
+         `osc set torque_enable off`",
+        (pot(soft.0) as u32 + pot(soft.1) as u32) / 2
+    )
 }
 
 fn parse_chans(s: &str) -> Result<Chans, String> {
@@ -651,8 +680,23 @@ fn run_rl(
     out: &csvio::OutDir,
     sense: &SenseJson,
 ) -> Result<RlResult> {
-    println!("[toggle] winding R/L (free shaft at mid travel, chained duty toggles)");
-    centre_outside_the_run(cli, c, id)?;
+    let d = drive(cli)?;
+    let front = Run::new(d.lim, &d.sc);
+    println!(
+        "[centring] the jam check: out and back at mid travel from {}, raised up to {} while \
+         the shaft does not move",
+        pct(front.bootstrap()),
+        pct(front.nudge_cap())
+    );
+    let cfg = order::centre_cfg(front.bootstrap(), front.nudge_cap(), true);
+    let moved = centre(cli, c, id, cfg)?
+        .context("the jam check never saw the shaft move, so no toggle may run")?;
+    let plan = d.lim.stall_plan(d.sc.r_vpc(CLASS_R_MIN), Some(moved));
+    println!(
+        "[toggle] winding R/L: chained duty toggles on the free shaft at mid travel, the \
+         current limit governing them; seeks back to mid travel at {}",
+        pct(plan.seek)
+    );
     let params = rig(cli)?;
     let sc = sense
         .scales()
@@ -660,12 +704,14 @@ fn run_rl(
     let cfg = RlCfg {
         step_periods: cli.step_periods,
         fit: rl_fit_cfg(sense),
-        ..RlCfg::default()
+        ..RlCfg::planned(&plan)
     };
     let mut log = csvio::SnapshotLog::create(out, "rl_snapshots.csv")?;
     let mut exp = Guarded::new(Rl::new(cfg, &params, sc), params);
     with_guard(c, id, |c| Pump::new(c, id, Some(&mut log)).run(&mut exp))?;
     check_abort("toggle", exp.abort())?;
+    println!("[centring] to mid travel at {}", pct(plan.seek));
+    centre(cli, c, id, order::centre_cfg(plan.seek, plan.seek, false))?;
     let exp = exp.into_inner();
     csvio::write_rl_segments(out, exp.segments())?;
     // The planner's notes are the only account of a run that captured
@@ -885,13 +931,26 @@ fn run_verify(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
     let tick_hz = snapshot::read_u16(c, id, calib::TICK_HZ)? as f64;
     let (d, before) = servo_state(c, id)?;
     refuse_closed_loop(&before)?;
+    let drv = drive(cli)?;
+    let plan = drv.lim.stall_plan(drv.sc.r_vpc(CLASS_R_MIN), None);
+    let current = VerifyCurrentCfg::planned(&plan, drv.lim.window_floor())?;
     centre_outside_the_run(cli, c, id)?;
-    println!("[verify current] (current steps; end-stop stalls; stall permit held)");
+    let ma = drv.lim.ma();
+    println!(
+        "[verify current] current steps of {} held at each stop, seeks at {}; stall permit held",
+        current
+            .steps_counts
+            .iter()
+            .map(|s| ma.of(*s as f64))
+            .collect::<Vec<_>>()
+            .join(" and "),
+        pct(plan.seek)
+    );
     // deliberate rail stall in Current mode: the directional endstop band
     // would zero i_ref at the soft wall, and the permit opens it, as for
     // resistance
     let mut e5 = Guarded::new(
-        Permitted::new(VerifyCurrent::new(VerifyCurrentCfg::default(), &params)),
+        Permitted::new(VerifyCurrent::new(current, &params)),
         params.without_pos_guard(),
     );
     with_guard(c, id, |c| Pump::new(c, id, None).run(&mut e5))?;
@@ -901,14 +960,18 @@ fn run_verify(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
     // E5 ends stalled against an end-stop; E6 runs with the pos guard on
     // and its first read would abort right there
     centre_outside_the_run(cli, c, id)?;
-    println!("[verify velocity] (velocity legs)");
+    println!(
+        "[verify velocity] velocity legs across the travel, parked at {}",
+        pct(plan.seek)
+    );
     let mut e6 = Guarded::new(
-        VerifyVelocity::new(VerifyVelocityCfg::default(), &params, tick_hz),
+        VerifyVelocity::new(VerifyVelocityCfg::planned(&plan), &params, tick_hz),
         params,
     );
     with_guard(c, id, |c| Pump::new(c, id, None).run(&mut e6))?;
     check_abort("verify velocity", e6.abort())?;
     let vel = e6.into_inner().result();
+    centre_outside_the_run(cli, c, id)?;
     for s in &cur.steps {
         println!(
             "  goal {:+5} -> {:+8.1} ({:.1}% err, settle {})",
@@ -1075,7 +1138,11 @@ fn drive_stages(
         ),
         Some(Over::NoLadderRoom { floor, cap }) => bail!(
             "no winding R: the burst measured none, and {}",
-            Refusal::NoLadderRoom { floor, cap }
+            Refusal::NoLadderRoom {
+                what: STOP_LADDER,
+                floor,
+                cap
+            }
         ),
         Some(Over::ResistanceDeclined) => bail!(
             "no winding R: neither the burst nor the resistance stop ladder fitted one, so the \
@@ -1481,7 +1548,7 @@ fn fit_dir(cli: &Ctx, dir: PathBuf) -> Result<()> {
     p.save(&path)?;
     println!("params: {}", path.display());
     println!(
-        "next: ident write {} [--save], then ident verify",
+        "next: ident write {} --save, then hold and step by hand at mid travel",
         path.display()
     );
     Ok(())
@@ -1609,6 +1676,20 @@ fn render_partial(inputs: ReportInputs<'_>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// After a write the owner is sent to a hold and a few steps at mid
+    /// travel, not to a drive into both stops.
+    #[test]
+    fn write_hints_the_hold_and_step_check() {
+        let hint = hold_and_step_hint((432, 3626));
+        assert_eq!(
+            hint,
+            "hold and step by hand at mid travel: `osc set mode Position`, `osc set \
+             goal_position 2029`, `osc set torque_enable on`, a few goal_position steps inside \
+             532..3526, then `osc set torque_enable off`"
+        );
+        assert!(!hint.contains("verify"));
+    }
 
     /// The `ident synth` path end to end without a servo: a hand-written
     /// plant with no l_cd takes it from l_henries through the file's own

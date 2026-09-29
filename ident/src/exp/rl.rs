@@ -34,13 +34,24 @@
 //! Only samples that applied their step's duty enter a fit: a step still
 //! slewing is trimmed, and a step the current limit held under its goal
 //! is declined.
+//!
+//! A toggle is not a burst: a step lasts a millisecond, twice the burst's
+//! driven half window, and a chain drives tens of them back to back
+//! through the kernel. So the chains run free on the firmware limiter,
+//! like ladder rungs, from mid travel on a shaft the jam check proved
+//! free, never with the stall permit. The seek back to mid travel between
+//! chains points at a stop it can reach, so it drives at the plan's seek
+//! duty ([`RlCfg::planned`]), never raised, and a seek that comes to rest
+//! short of the band ends the run.
 
-use super::{Applied, Cmd, Experiment, GOVERNED, RigParams, judge};
+use super::seek::{self, Watch};
+use super::{AbortReason, Applied, Cmd, Experiment, GOVERNED, RigParams, judge};
 use crate::fitmath::{linear_ls, median, origin_ls, quantile};
 use crate::frame::{
     TEL_BIT_CURRENT_RAW, TEL_BIT_DUTY, TEL_BIT_POS, TEL_BIT_VBUS_RAW, TEL_BIT_VMOTOR_A,
     TEL_BIT_VMOTOR_B, TelFrame, TelemetrySnapshot,
 };
+use crate::limits::{DutyPlan, q15_floor};
 use crate::regs::control;
 use crate::units::{self, SenseParams};
 
@@ -214,6 +225,8 @@ pub struct RlCfg {
     pub duty_pct_limits: (u8, u8),
     /// Half width of the centre band the chains launch from, counts.
     pub centre_margin: u16,
+    /// The seek back to the band; 0 until a plan sets it
+    /// ([`RlCfg::planned`]).
     pub seek_duty_q15: i16,
     pub seek_poll_ms: u32,
     pub seek_cap_polls: u32,
@@ -235,13 +248,23 @@ impl Default for RlCfg {
             step_target_counts: 40.0,
             duty_pct_limits: (4, 60),
             centre_margin: 300,
-            seek_duty_q15: 8520,
+            seek_duty_q15: 0,
             seek_poll_ms: 25,
             seek_cap_polls: 400,
             settle_ms: 200,
             rest_ms: 300,
             baseline_ms: 50,
             fit: RlFitCfg::default(),
+        }
+    }
+}
+
+impl RlCfg {
+    /// The seek at `plan`'s seek duty, whose stall the current limit holds.
+    pub fn planned(plan: &DutyPlan) -> Self {
+        Self {
+            seek_duty_q15: q15_floor(plan.seek),
+            ..Self::default()
         }
     }
 }
@@ -507,6 +530,9 @@ pub struct Rl {
     cfg: RlCfg,
     sc: Scales,
     band: (u16, u16),
+    stall: (u16, u32),
+    watch: Option<Watch>,
+    halt: Option<AbortReason>,
     phase: Phase,
     plan: Vec<Chain>,
     planned: bool,
@@ -547,6 +573,9 @@ impl Rl {
             cfg,
             sc,
             band,
+            stall: (params.stall_eps, params.stall_polls),
+            watch: None,
+            halt: None,
             phase: Phase::ModeWrite,
             plan: vec![probe],
             planned: false,
@@ -636,6 +665,7 @@ impl Experiment for Rl {
             Phase::SeekTorqueOn => {
                 self.phase = Phase::SeekRead;
                 self.polls = 0;
+                self.watch = None;
                 Cmd::Write {
                     reg: control::TORQUE_ENABLE,
                     value: 1,
@@ -654,6 +684,13 @@ impl Experiment for Rl {
                         reg: control::GOAL_DUTY,
                         value: 0,
                     };
+                }
+                let (eps, polls) = self.stall;
+                let watch = self.watch.get_or_insert(Watch::new(pos, eps, polls));
+                if watch.still(pos) {
+                    self.halt = Some(seek::blocked(watch.start(), pos));
+                    self.phase = Phase::FinishDuty;
+                    return Cmd::Pause { ms: 0 };
                 }
                 if self.polls >= self.cfg.seek_cap_polls {
                     self.warnings
@@ -775,6 +812,10 @@ impl Experiment for Rl {
             }
             Phase::Finished => Cmd::Done,
         }
+    }
+
+    fn halted(&self) -> Option<AbortReason> {
+        self.halt
     }
 
     fn push_tel(&mut self, frames: &[TelFrame]) {
@@ -1527,10 +1568,33 @@ mod tests {
         assert!(Scales::from_sense(&REV_2A, 15_000, 0).is_none());
     }
 
+    /// A servo on `vbus` limited to `i_lim`, winding `r`, whose jam check
+    /// moved the shaft at `moved`.
+    fn plan(i_lim: u16, r: f64, vbus: u16, moved: f64) -> DutyPlan {
+        let lim = crate::limits::ServoLimits {
+            i_lim,
+            stall_yield: i_lim / 2,
+            tau_trip: i_lim,
+            soft: (432, 3626),
+            phys: (209, 3849),
+            raw: (209, 3849),
+            r_q12: 0,
+            vbus,
+            window_floor_q15: 4356,
+            amps_per_count: 0.0,
+        };
+        DutyPlan::new(&lim, r, Some(moved))
+    }
+
+    /// The fake rig's plan: a 24% jam check puts the seek at 26%.
+    fn fake_cfg() -> RlCfg {
+        RlCfg::planned(&plan(280, 3.37, 1731, 0.24))
+    }
+
     fn run_e2e(servo: &mut FakeServo) -> (Rl, Vec<String>) {
         let params = crate::exp::testkit::rig();
         let sc = Scales::from_sense(&REV_2A, VBUS_DIV.0, VBUS_DIV.1).unwrap();
-        let mut exp = Guarded::new(Rl::new(RlCfg::default(), &params, sc), params);
+        let mut exp = Guarded::new(Rl::new(fake_cfg(), &params, sc), params);
         let log = pump(&mut exp, servo, 500_000);
         assert!(exp.abort().is_none(), "abort: {:?}", exp.abort());
         (exp.into_inner(), log)
@@ -1696,7 +1760,7 @@ mod tests {
         let sc = Scales::from_sense(&REV_2A, VBUS_DIV.0, VBUS_DIV.1).unwrap();
         let cfg = RlCfg {
             step_periods: 8,
-            ..RlCfg::default()
+            ..fake_cfg()
         };
         let mut exp = Guarded::new(Rl::new(cfg, &params, sc), params);
         let log = pump(&mut exp, &mut servo, 500_000);
@@ -1728,5 +1792,57 @@ mod tests {
             fit.transitions
         );
         assert!(fit.gates.iter().find(|g| g.name == "null").unwrap().pass);
+    }
+
+    /// The bench MG90 on 2S, limit 280 at 4.9 ohm, a shaft the jam check
+    /// moved at 12%: every seek back to mid travel drives at the plan's
+    /// 14%, whose stall draws under the limit where 26% would draw 470
+    /// counts, and a seek that never moves ends the run where it stands,
+    /// its duty never raised.
+    #[test]
+    fn toggle_seek_comes_from_the_plan() {
+        let r = 7270.0 / 4096.0;
+        let p = plan(280, r, 3204, 0.12);
+        let cfg = RlCfg::planned(&p);
+        assert_eq!(cfg.seek_duty_q15, q15_floor(0.14));
+        assert!(p.stall(cfg.seek_duty_q15 as f64 / Q15) <= 280.0);
+        assert!(p.stall(8520.0 / Q15) > 280.0);
+        let params = RigParams::new(Some((532, 3526)), 350).with_stops((209, 3849));
+        let sc = Scales::from_sense(&BOARD_D, VBUS_DIV.0, VBUS_DIV.1).unwrap();
+        let seeks = |log: &[String]| -> Vec<i32> {
+            log.iter()
+                .filter_map(|l| l.strip_prefix("write goal_duty ")?.parse().ok())
+                .filter(|d| *d != 0)
+                .collect()
+        };
+        let q = cfg.seek_duty_q15 as i32;
+
+        let mut servo = crate::exp::testkit::bench_mg90(3204);
+        servo.pos = 2600.0;
+        let mut exp = Guarded::new(Rl::new(RlCfg::planned(&p), &params, sc), params);
+        let log = pump(&mut exp, &mut servo, 500_000);
+        let s = seeks(&log);
+        assert!(!s.is_empty() && s.iter().all(|d| d.abs() == q), "{s:?}");
+        assert!(!servo.torque);
+
+        let mut servo = crate::exp::testkit::bench_mg90(3204);
+        servo.pos = 2600.0;
+        servo.jam = Some(2600.0);
+        let mut exp = Guarded::new(Rl::new(RlCfg::planned(&p), &params, sc), params);
+        let log = pump(&mut exp, &mut servo, 500_000);
+        assert_eq!(
+            exp.abort(),
+            Some(AbortReason::Blocked {
+                pos: 2600,
+                moved: 0
+            })
+        );
+        let s = seeks(&log);
+        assert!(!s.is_empty() && s.iter().all(|d| *d == -q), "{s:?}");
+        assert!(
+            !log.iter().any(|l| l.starts_with("stream")),
+            "no toggle ran"
+        );
+        assert!(!servo.torque);
     }
 }

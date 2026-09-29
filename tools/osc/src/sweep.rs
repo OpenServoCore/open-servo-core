@@ -30,6 +30,12 @@
 //! can sit AT the position rail, which is where both of this servo's are. A
 //! rung window longer than the permit can be held without a rewrite is
 //! refused.
+//!
+//! Seeks drive at the duty whose stall the servo's current limit holds
+//! (osc-ident `DutyPlan`), by its winding R and the rail - by the class's
+//! lowest R before one is identified - and so does every rung `--stall`
+//! presses into a stop: a duty over it is refused before anything moves.
+//! Free-running rungs are not capped: the firmware limiter governs them.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -42,7 +48,7 @@ use osc_client::blocking::Client;
 use osc_client::nusb::NusbPipe;
 use osc_ident::exp::seek::{self, SEEK_STEP_Q15, SEEK_TRAVEL_MIN, STALL_EPS, STALL_POLLS, Watch};
 use osc_ident::frame::TelFrame;
-use osc_ident::limits::{POT_MAX, ServoLimits};
+use osc_ident::limits::{DutyPlan, POT_MAX, ServoLimits, pct_floor};
 use osc_ident::regs::{Reg, calib, control};
 use osc_ident::runway::{BRAKE_DUTY_Q15, BRAKE_POLL_MS, BRAKE_POLLS, BRAKE_REST_EPS};
 
@@ -203,21 +209,22 @@ pub struct Args {
     /// Torque-off noise-floor capture before the grid; 0 skips it.
     #[arg(long, default_value_t = 1000)]
     baseline_ms: u32,
-    /// Seek drive, percent of full scale.
-    #[arg(long, default_value_t = 28)]
-    seek_duty_pct: u8,
-    /// Ceiling for the breakout escalation, percent of full scale. LEAVING a
-    /// stop needs far more torque than holding against one, and the supply
-    /// sets what a given duty buys: 40% frees this servo on 2S (~0.58 A) but
-    /// the same current needs ~63% on USB's 4.5 V rail, so a 45% cap strands
-    /// the shaft there. Raise it only as far as needed - breakout loads the
-    /// teeth like a stall does, and this servo slips above ~0.3 A.
-    #[arg(long, default_value_t = 45)]
-    seek_cap_pct: u8,
+    /// Seek drive, percent of full scale [default: the duty whose stall
+    /// draws the servo's current limit, by its winding R and the rail]; a
+    /// seek whose stall draws more is refused.
+    #[arg(long)]
+    seek_duty_pct: Option<u8>,
+    /// Ceiling for the breakout escalation off a stop, percent of full
+    /// scale [default: the duty whose stall draws the servo's current
+    /// limit]; a ceiling whose stall draws more is refused. Breakout loads
+    /// the teeth like a stall does.
+    #[arg(long)]
+    seek_cap_pct: Option<u8>,
     /// Seek the physical end stop and ladder against it instead of seeking a
     /// start band. Chain the rungs (`20,then:25,...`) to hold the gear train
     /// wound up across the whole ladder: released, it unwinds and the next
-    /// onset measures the re-wind instead of the winding.
+    /// onset measures the re-wind instead of the winding. A rung whose stall
+    /// draws more than the servo's current limit is refused.
     #[arg(long)]
     stall: bool,
     /// The load is a resistor, not a motor: no shaft to seek, brake or
@@ -275,10 +282,12 @@ pub(crate) struct Cfg {
 }
 
 impl Cfg {
-    /// The run as asked, the guard filled in from the servo's soft limits.
-    /// A resistor has no travel, so a static load takes any limits and its
-    /// guard spans the pot.
-    fn new(a: &Args, lim: &ServoLimits) -> Result<Self> {
+    /// The run as asked, the guard filled in from the servo's soft limits
+    /// and the seek from `plan`. A resistor has no travel, so a static load
+    /// takes any limits and its guard spans the pot. Every duty that can
+    /// stall the shaft - the seek, its breakout ceiling, a rung pressed
+    /// into a stop - is refused when its stall draws more than the limit.
+    fn new(a: &Args, lim: &ServoLimits, plan: &DutyPlan) -> Result<Self> {
         let guard = if a.static_load {
             (
                 a.guard_lo.unwrap_or(0),
@@ -287,6 +296,21 @@ impl Cfg {
         } else {
             lim.envelope((a.guard_lo, a.guard_hi), None)?.guard
         };
+        let seek_duty_pct = a.seek_duty_pct.unwrap_or(pct_floor(plan.seek));
+        let seek_cap_pct = a.seek_cap_pct.unwrap_or(pct_floor(plan.stop_cap));
+        if !a.static_load {
+            let stall = |what: &str, pct: u8| lim.check_stall_at(what, pct_q15(pct), plan.r_vpc);
+            stall("the seek", seek_duty_pct)?;
+            stall("a seek raised to its ceiling", seek_cap_pct)?;
+            for s in a.duty_pct.iter().filter(|_| a.stall) {
+                let pct = match s {
+                    Step::Drive(pct, _) => *pct,
+                    Step::Then(pct, _) => pct.unsigned_abs(),
+                    Step::Coast(_) | Step::Brake(_) => continue,
+                };
+                stall("a rung pressed into the stop", pct)?;
+            }
+        }
         Ok(Self {
             steps: a.duty_pct.clone(),
             dirs: a.dirs,
@@ -294,8 +318,8 @@ impl Cfg {
             window_ms: a.window_ms,
             rest_ms: a.rest_ms,
             baseline_ms: a.baseline_ms,
-            seek_duty_pct: a.seek_duty_pct,
-            seek_cap_pct: a.seek_cap_pct,
+            seek_duty_pct,
+            seek_cap_pct,
             settle_ms: a.settle_ms,
             stall: a.stall,
             static_load: a.static_load,
@@ -887,7 +911,8 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     let id = Id::new(id);
     crate::state::check(&mut c, id)?;
     let lim = crate::rig::limits::read(&mut c, id)?;
-    let cfg = Cfg::new(args, &lim)?;
+    let plan = crate::rig::limits::plan(&mut c, id, &lim)?;
+    let cfg = Cfg::new(args, &lim, &plan)?;
 
     std::fs::create_dir_all(&args.out).with_context(|| format!("mkdir {}", args.out.display()))?;
 
@@ -1030,13 +1055,93 @@ mod tests {
             r_q12: 7270,
             vbus: 3204,
             window_floor_q15: 4356,
-            amps_per_count: 0.0,
+            amps_per_count: 3.3 / 4096.0 / (15.0 * 0.060),
         }
+    }
+
+    /// The class's lowest winding, 3.0 ohm, on the bench board's sense
+    /// chain: 60 mohm at G 15, 6k8/3k3 terminal taps.
+    const CLASS_R_VPC: f64 = 3.0 * (3.3 / 4096.0 / 0.9) / (3.3 / 4096.0 * 10_100.0 / 3_300.0);
+
+    fn plan(lim: &ServoLimits) -> DutyPlan {
+        lim.stall_plan(CLASS_R_VPC, None)
+    }
+
+    /// The bench MG90, limit 280 at 4.9 ohm: the seek and its ceiling are
+    /// the duty whose stall draws the limit, 15% on 2S and 27% on USB.
+    /// Before R is identified the class's lowest R plans them: 9% on 2S.
+    #[test]
+    fn sweep_defaults_come_from_the_servo_limits() {
+        for (vbus, want) in [(3204, 15), (1780, 27)] {
+            let lim = ServoLimits { vbus, ..mg90() };
+            let cfg = Cfg::new(&parse(&["sweep"]), &lim, &plan(&lim)).unwrap();
+            assert_eq!(
+                (cfg.seek_duty_pct, cfg.seek_cap_pct),
+                (want, want),
+                "{vbus}"
+            );
+            let p = plan(&lim);
+            assert!(p.stall(pct_q15(want) as f64 / 32767.0) <= 280.0);
+        }
+        let virgin = ServoLimits { r_q12: 0, ..mg90() };
+        let cfg = Cfg::new(&parse(&["sweep"]), &virgin, &plan(&virgin)).unwrap();
+        assert_eq!((cfg.seek_duty_pct, cfg.seek_cap_pct), (9, 9));
+        // asked for, a gentler seek is taken as it stands
+        let a = parse(&["sweep", "--seek-duty-pct", "12", "--seek-cap-pct", "14"]);
+        let cfg = Cfg::new(&a, &mg90(), &plan(&mg90())).unwrap();
+        assert_eq!((cfg.seek_duty_pct, cfg.seek_cap_pct), (12, 14));
+    }
+
+    /// A seek, a breakout ceiling or a rung pressed into a stop whose stall
+    /// draws more than the limit is refused in plain words; free-running
+    /// rungs and a resistor's rungs are not.
+    #[test]
+    fn a_stall_sweep_over_the_limit_is_refused() {
+        let refused = |argv: &[&str]| {
+            let Err(e) = Cfg::new(&parse(argv), &mg90(), &plan(&mg90())) else {
+                panic!("{argv:?} was not refused");
+            };
+            e.to_string()
+        };
+        assert_eq!(
+            refused(&["sweep", "--stall", "--duty-pct", "10,then:15,20"]),
+            "a rung pressed into the stop stalls the motor at 20% duty, which draws about 361 \
+             counts (323 mA), over this servo's current limit of 280 counts (251 mA); on this \
+             supply the limit holds a stall only up to 15% duty"
+        );
+        assert_eq!(
+            refused(&["sweep", "--seek-duty-pct", "28"]),
+            "the seek stalls the motor at 28% duty, which draws about 505 counts (452 mA), \
+             over this servo's current limit of 280 counts (251 mA); on this supply the limit \
+             holds a stall only up to 15% duty"
+        );
+        assert!(
+            refused(&["sweep", "--seek-cap-pct", "45"])
+                .starts_with("a seek raised to its ceiling stalls the motor at 45% duty")
+        );
+        assert!(refused(&["sweep", "--stall", "--duty-pct", "then:-16"]).contains("at 16% duty"));
+
+        let a = parse(&["sweep", "--stall", "--duty-pct", "10,then:15,coast:100"]);
+        let cfg = Cfg::new(&a, &mg90(), &plan(&mg90())).unwrap();
+        assert!(cfg.stall);
+        // free rungs run on the firmware limiter, whatever their duty
+        let a = parse(&["sweep", "--duty-pct", "64,100"]);
+        assert!(Cfg::new(&a, &mg90(), &plan(&mg90())).is_ok());
+        // a resistor has no travel and no stop
+        let a = parse(&[
+            "sweep",
+            "--static-load",
+            "--duty-pct",
+            "64",
+            "--seek-duty-pct",
+            "40",
+        ]);
+        assert!(Cfg::new(&a, &mg90(), &plan(&mg90())).is_ok());
     }
 
     #[test]
     fn cfg_carries_the_cli_defaults() {
-        let cfg = Cfg::new(&parse(&["sweep"]), &mg90()).unwrap();
+        let cfg = Cfg::new(&parse(&["sweep"]), &mg90(), &plan(&mg90())).unwrap();
         let grid: Vec<Step> = (1..=20u8).map(|k| Step::Drive(k * 5, None)).collect();
         assert_eq!(cfg.steps, grid);
         assert_eq!(cfg.dirs, Dirs::Both);
@@ -1044,7 +1149,7 @@ mod tests {
         assert_eq!(cfg.window_ms, 150);
         assert_eq!(cfg.rest_ms, 500);
         assert_eq!(cfg.baseline_ms, 1000);
-        assert_eq!((cfg.seek_duty_pct, cfg.seek_cap_pct), (28, 45));
+        assert_eq!((cfg.seek_duty_pct, cfg.seek_cap_pct), (15, 15));
         assert_eq!(cfg.settle_ms, 300);
         assert!(!cfg.stall && !cfg.static_load);
         assert_eq!(cfg.guard, (532, 3526), "the soft limits, 100 counts in");
@@ -1056,7 +1161,10 @@ mod tests {
     #[test]
     fn guard_flags_override_the_soft_limits() {
         let a = parse(&["sweep", "--guard-lo", "600"]);
-        assert_eq!(Cfg::new(&a, &mg90()).unwrap().guard, (600, 3526));
+        assert_eq!(
+            Cfg::new(&a, &mg90(), &plan(&mg90())).unwrap().guard,
+            (600, 3526)
+        );
     }
 
     #[test]
@@ -1065,13 +1173,16 @@ mod tests {
             soft: (0, 4095),
             ..mg90()
         };
-        let Err(err) = Cfg::new(&parse(&["sweep"]), &virgin) else {
+        let Err(err) = Cfg::new(&parse(&["sweep"]), &virgin, &plan(&virgin)) else {
             panic!("a virgin servo was not refused");
         };
         assert!(err.to_string().ends_with("run `osc cal` first"), "{err}");
         // a resistor has no travel to calibrate
         let a = parse(&["sweep", "--static-load"]);
-        assert_eq!(Cfg::new(&a, &virgin).unwrap().guard, (0, 4095));
+        assert_eq!(
+            Cfg::new(&a, &virgin, &plan(&virgin)).unwrap().guard,
+            (0, 4095)
+        );
     }
 
     #[test]

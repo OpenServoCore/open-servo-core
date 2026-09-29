@@ -3,16 +3,25 @@
 //! goal) and Velocity-mode travel legs (the pot slope must track the
 //! goal). Both report per-step/leg errors and an overall pass verdict -
 //! the check that the synthesized bandwidths hold on the real plant.
+//!
+//! Both are planned like the run plans its drives ([`DutyPlan`]): every
+//! seek drives at the plan's seek duty, whose stall the current limit
+//! holds, and is never raised - a seek that comes to rest anywhere but
+//! where it was going ends the check. The current steps are stall
+//! currents between the current sensor's window floor and the limit, held
+//! with the stall permit; a supply that leaves no room between the two is
+//! refused before anything moves.
 
 use super::{AbortReason, Cmd, Experiment, RigParams, WindowSample, WindowStream, seek};
 use crate::fitmath::linear_ls;
 use crate::frame::TelemetrySnapshot;
+use crate::limits::{DutyPlan, Refusal, q15_floor};
 use crate::regs::control;
 
-/// E5: goal_current steps into a stall. Amplitudes must clear the current
-/// window floor (i valid needs |duty| >= ~20%, so goal >= ~floor/R * vbus
-/// terms - on the rig >= ~110 counts) and stay under the table's
-/// current_limit clamp.
+/// Verify current, as its refusal names it.
+pub const VERIFY_CURRENT: &str = "verify current";
+
+/// E5: goal_current steps into a stall, each direction at its stop.
 pub struct VerifyCurrentCfg {
     /// Seek drive toward each end, q15, OpenLoop.
     pub seek_duty_q15: i16,
@@ -28,11 +37,21 @@ pub struct VerifyCurrentCfg {
     pub tol: f64,
 }
 
-impl Default for VerifyCurrentCfg {
-    fn default() -> Self {
-        Self {
-            seek_duty_q15: 8520,
-            steps_counts: vec![110, 140],
+impl VerifyCurrentCfg {
+    /// Seeks at `plan`'s seek duty; steps to the stall currents of the
+    /// dwells a ladder from the window floor, `floor_q15`, to the
+    /// stall-safe cap takes ([`DutyPlan::stall_ladder`]), its ends
+    /// dropped: at the floor the shunt reads only some windows, at the
+    /// limit the derate may hold the loop under its goal.
+    pub fn planned(plan: &DutyPlan, floor_q15: i16) -> Result<Self, Refusal> {
+        let rungs = plan.stall_ladder(VERIFY_CURRENT, floor_q15)?;
+        let steps_counts = rungs[1..rungs.len() - 1]
+            .iter()
+            .map(|d| plan.stall(*d).floor() as i16)
+            .collect();
+        Ok(Self {
+            seek_duty_q15: q15_floor(plan.seek),
+            steps_counts,
             dwell_polls: 250,
             poll_ms: 2,
             rest_ms: 300,
@@ -40,7 +59,7 @@ impl Default for VerifyCurrentCfg {
             stall_polls: 8,
             seek_poll_ms: 30,
             tol: 0.10,
-        }
+        })
     }
 }
 
@@ -404,10 +423,11 @@ pub struct VerifyVelocityCfg {
     pub leg_cap_polls: u32,
 }
 
-impl Default for VerifyVelocityCfg {
-    fn default() -> Self {
+impl VerifyVelocityCfg {
+    /// Parks for the first leg at `plan`'s seek duty.
+    pub fn planned(plan: &DutyPlan) -> Self {
         Self {
-            seek_duty_q15: 8520,
+            seek_duty_q15: q15_floor(plan.seek),
             legs_cps: vec![600, 1200],
             poll_ms: 4,
             rest_ms: 300,
@@ -771,13 +791,43 @@ impl VerifyResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::exp::testkit::{FakeServo, bench_mg90, pump};
+    use crate::exp::{Guarded, Permitted};
+    use crate::limits::{ServoLimits, stall_counts};
     use crate::regs::control;
+
+    const R: f64 = 7270.0 / 4096.0;
+    const RAIL_2S: u16 = 3204;
+    const RAIL_USB: u16 = 1780;
+    const Q15: f64 = 32767.0;
+
+    /// The bench MG90 on a rail of `vbus`: limit 280, its stops and soft
+    /// limits, the 13.3% window floor.
+    fn limits(vbus: u16) -> ServoLimits {
+        ServoLimits {
+            i_lim: 280,
+            stall_yield: 168,
+            tau_trip: 280,
+            soft: (432, 3626),
+            phys: (209, 3849),
+            raw: (209, 3849),
+            r_q12: 7270,
+            vbus,
+            window_floor_q15: 4356,
+            amps_per_count: 3.3 / 4096.0 / (15.0 * 0.060),
+        }
+    }
+
+    fn plan(vbus: u16) -> DutyPlan {
+        DutyPlan::new(&limits(vbus), R, None)
+    }
 
     /// Scripted E5: the "servo" sits at the stop each seek drives at and
     /// echoes the last goal_current into i_mean with a fixed -5% bias.
     #[test]
     fn current_verify_measures_settle_and_error() {
-        let mut exp = VerifyCurrent::new(VerifyCurrentCfg::default(), &crate::exp::testkit::rig());
+        let cfg = VerifyCurrentCfg::planned(&plan(RAIL_USB), 4356).unwrap();
+        let mut exp = VerifyCurrent::new(cfg, &crate::exp::testkit::rig());
         let goal = std::cell::Cell::new(0i16);
         let seq = std::cell::Cell::new(0u16);
         let pos = std::cell::Cell::new(2000u16);
@@ -830,7 +880,7 @@ mod tests {
     #[test]
     fn velocity_verify_measures_tracking() {
         let mut exp = VerifyVelocity::new(
-            VerifyVelocityCfg::default(),
+            VerifyVelocityCfg::planned(&plan(RAIL_2S)),
             &crate::exp::testkit::rig(),
             20_100.0,
         );
@@ -876,5 +926,150 @@ mod tests {
     #[test]
     fn assemble_requires_at_least_one_section() {
         assert!(!VerifyResult::assemble(None, None).pass);
+    }
+
+    /// The envelope the CLI gives the bench servo: the guard inside its
+    /// soft limits, its stops as calibrated.
+    fn bench_rig() -> RigParams {
+        RigParams::new(Some((532, 3526)), 350).with_stops((209, 3849))
+    }
+
+    fn run_current(
+        servo: &mut FakeServo,
+        cfg: VerifyCurrentCfg,
+    ) -> (Option<AbortReason>, Vec<String>) {
+        let params = bench_rig();
+        let exp = Permitted::new(VerifyCurrent::new(cfg, &params));
+        let mut g = Guarded::new(exp, params.without_pos_guard());
+        let log = pump(&mut g, servo, 400_000);
+        (g.abort(), log)
+    }
+
+    fn run_velocity(
+        servo: &mut FakeServo,
+        cfg: VerifyVelocityCfg,
+    ) -> (Option<AbortReason>, Vec<String>) {
+        let params = bench_rig();
+        let mut g = Guarded::new(VerifyVelocity::new(cfg, &params, 20_100.0), params);
+        let log = pump(&mut g, servo, 400_000);
+        (g.abort(), log)
+    }
+
+    /// Every value a log writes to `reg`.
+    fn writes(log: &[String], reg: &str) -> Vec<i32> {
+        let head = format!("write {reg} ");
+        log.iter()
+            .filter_map(|l| l.strip_prefix(&head)?.parse().ok())
+            .collect()
+    }
+
+    /// The bench servo, limit 280 at 4.9 ohm: every seek of both checks
+    /// drives at the plan's seek duty, whose stall the limit holds, and
+    /// every current step sits between the window floor's stall current
+    /// and the limit, with the permit held. On 2S the band from the 13.3%
+    /// floor to the 15.5% cap has no room for a step: verify current is
+    /// refused before anything moves.
+    #[test]
+    fn verify_seeks_stay_under_the_limit() {
+        let err = VerifyCurrentCfg::planned(&plan(RAIL_2S), 4356)
+            .err()
+            .expect("no room on 2S");
+        assert_eq!(
+            err.to_string(),
+            "verify current has no room on this supply: the current sensor reads from 13.3% \
+             duty and the current limit allows 15.5% at a stop; run it on a lower supply \
+             voltage (USB) or raise the current limit"
+        );
+
+        let p = plan(RAIL_USB);
+        let cfg = VerifyCurrentCfg::planned(&p, 4356).unwrap();
+        assert_eq!(cfg.steps_counts, [182, 231]);
+        let seek = cfg.seek_duty_q15;
+        assert_eq!(seek, q15_floor(p.stop_cap));
+        let floor_i = stall_counts(4356.0 / Q15, R, RAIL_USB as f64);
+        for s in &cfg.steps_counts {
+            assert!(*s as f64 > floor_i && *s < 280, "{s}");
+        }
+        let mut servo = bench_mg90(RAIL_USB);
+        servo.pos = 2600.0;
+        let (abort, log) = run_current(&mut servo, cfg);
+        assert_eq!(abort, None);
+        let duties = writes(&log, "goal_duty");
+        assert!(
+            duties.iter().all(|d| d.abs() == seek as i32 || *d == 0),
+            "{duties:?}"
+        );
+        assert!(duties.contains(&(seek as i32)) && duties.contains(&-(seek as i32)));
+        assert!(p.stall(seek as f64 / Q15) <= 280.0);
+        let goals = writes(&log, "goal_current");
+        assert!(goals.iter().all(|g| g.abs() < 280), "{goals:?}");
+        assert!(goals.contains(&231) && goals.contains(&-231));
+        let permit = log
+            .iter()
+            .position(|l| l == "write stall_permit 1")
+            .unwrap();
+        let first = log
+            .iter()
+            .position(|l| l.starts_with("write goal_"))
+            .unwrap();
+        assert!(permit < first, "the permit comes before the first drive");
+        assert!(servo.pressed_ms > 0.0, "the stops were never reached");
+        assert!(!servo.torque && !servo.permit_live());
+
+        for vbus in [RAIL_2S, RAIL_USB] {
+            let p = plan(vbus);
+            let mut servo = bench_mg90(vbus);
+            servo.pos = 2600.0;
+            let (abort, log) = run_velocity(&mut servo, VerifyVelocityCfg::planned(&p));
+            assert_eq!(abort, None, "{vbus}");
+            let q = q15_floor(p.seek) as i32;
+            assert_eq!(writes(&log, "goal_duty"), [-q, 0], "{vbus}");
+            assert!(p.stall(q as f64 / Q15) <= 280.0);
+            assert!(!log.iter().any(|l| l.starts_with("write stall_permit")));
+            assert!(!servo.torque);
+        }
+    }
+
+    /// A shaft that sticks on the way to a stop: the seek holds its one
+    /// duty, never raises it, and the check ends there, blocked, torque
+    /// off and the permit withdrawn.
+    #[test]
+    fn verify_never_raises_the_duty_toward_a_stop() {
+        let p = plan(RAIL_USB);
+        let cfg = VerifyCurrentCfg::planned(&p, 4356).unwrap();
+        let seek = cfg.seek_duty_q15 as i32;
+        let mut servo = bench_mg90(RAIL_USB);
+        servo.pos = 2600.0;
+        servo.jam = Some(2600.0);
+        let (abort, log) = run_current(&mut servo, cfg);
+        assert_eq!(
+            abort,
+            Some(AbortReason::Blocked {
+                pos: 2600,
+                moved: 0
+            })
+        );
+        assert_eq!(writes(&log, "goal_duty"), [seek, 0]);
+        assert!(
+            writes(&log, "goal_current").is_empty(),
+            "no step on a blocked shaft"
+        );
+        assert_eq!(log.last().map(String::as_str), Some("write stall_permit 0"));
+        assert!(!servo.torque && !servo.permit_live());
+
+        let mut servo = bench_mg90(RAIL_USB);
+        servo.pos = 2600.0;
+        servo.jam = Some(2600.0);
+        let (abort, log) = run_velocity(&mut servo, VerifyVelocityCfg::planned(&p));
+        assert_eq!(
+            abort,
+            Some(AbortReason::Blocked {
+                pos: 2600,
+                moved: 0
+            })
+        );
+        let q = q15_floor(p.seek) as i32;
+        assert_eq!(writes(&log, "goal_duty"), [-q, 0]);
+        assert!(!servo.torque);
     }
 }
