@@ -23,7 +23,6 @@ pub(crate) struct Procedure {
     pub(crate) cooldown_s: u32,
     pub(crate) rest_ms: u32,
     pub(crate) baseline_ms: u32,
-    pub(crate) seek_pct: u8,
     pub(crate) tel_mask: u16,
     pub(crate) rotate: bool,
     #[serde(default)]

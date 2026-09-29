@@ -9,23 +9,26 @@ use anyhow::{Context, Result, bail};
 use osc_ident::runway;
 use serde::{Deserialize, Serialize};
 
-use super::Supply;
+use super::{Rule, Supply};
 
 const FILE: &str = "envelope.toml";
 
 const HEADER: &str = "\
 # osc capture pilot envelope. Positions in pot counts, speeds in counts/ms,
-# times in ms. limits: soft/phys read from the servo, guard = soft inset,
-# runway = guard_hi - guard_lo. v_ss: counts/ms = slope x duty_pct + intercept,
-# `used` sizes the windows. windows_ms: duty_pct = window. coast: the ladder
-# climbed the coast block's duties, each run both ways at drive_ms then
-# coast_ms only while its predicted travel x (1 + margin) fit the room (the
-# far edge of the start band to soft, per direction); top_pct is the coast
-# block's top duty. Per rung and direction: predicted travel (none on the
-# first rung), entry speed (pot slope over the end of the drive), lead (travel
-# to the coast's first sample), coast, travel = lead + coast, and the peak's
-# distance inside soft. A rung above top_pct ran, but its measured travel
-# x (1 + margin) did not fit; `refused` is the duty whose prediction did not.
+# times in ms. rule, current_limit_counts, rail_mv: the drive rule the pilot
+# ran under, the servo's current limit and its rail at rest; a capture
+# refuses the envelope once they differ. limits: soft/phys read from the
+# servo, guard = soft inset, runway = guard_hi - guard_lo. v_ss: counts/ms =
+# slope x duty_pct + intercept, `used` sizes the windows. windows_ms:
+# duty_pct = window. coast: the ladder climbed the coast block's duties, each
+# run both ways at drive_ms then coast_ms only while its predicted travel
+# x (1 + margin) fit the room (the far edge of the start band to soft, per
+# direction); top_pct is the coast block's top duty. Per rung and direction:
+# predicted travel (none on the first rung), entry speed (pot slope over the
+# end of the drive), lead (travel to the coast's first sample), coast, travel
+# = lead + coast, and the peak's distance inside soft. A rung above top_pct
+# ran, but its measured travel x (1 + margin) did not fit; `refused` is the
+# duty whose prediction did not.
 ";
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -35,6 +38,14 @@ pub(crate) struct Envelope {
     pub(crate) git_sha: String,
     pub(crate) measured: String,
     pub(crate) seek_pct: u8,
+    /// Free for an envelope that names none: measured before the servo
+    /// limited open-loop current.
+    #[serde(default)]
+    pub(crate) rule: Rule,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) current_limit_counts: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) rail_mv: Option<u32>,
     pub(crate) limits: Limits,
     pub(crate) v_ss: Speed,
     pub(crate) windows_ms: BTreeMap<u8, u32>,
@@ -209,10 +220,7 @@ impl Envelope {
             intercept: f.intercept,
         };
         runway::Envelope {
-            supply: match self.supply {
-                Supply::Usb => runway::Supply::Usb,
-                Supply::TwoS => runway::Supply::TwoS,
-            },
+            supply: self.supply.runway(),
             phys: (self.limits.phys[0], self.limits.phys[1]),
             fwd: line(&self.v_ss.fwd),
             rev: line(&self.v_ss.rev),
@@ -317,7 +325,10 @@ pub(super) fn mg90() -> Envelope {
         fw: 64,
         git_sha: "5ee25770".into(),
         measured: civil_date(1_758_758_400),
-        seek_pct: super::SEEK_PCT,
+        seek_pct: 15,
+        rule: Rule::Limit,
+        current_limit_counts: Some(280),
+        rail_mv: Some(7900),
         limits: Limits {
             soft: [432, 3626],
             phys: [209, 3849],

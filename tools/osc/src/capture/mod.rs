@@ -7,6 +7,7 @@
 
 mod check;
 pub(crate) mod envelope;
+mod front;
 mod pilot;
 mod plan;
 mod procs;
@@ -85,6 +86,13 @@ impl Supply {
             Supply::TwoS => "2s",
         }
     }
+
+    fn runway(self) -> osc_ident::runway::Supply {
+        match self {
+            Supply::Usb => osc_ident::runway::Supply::Usb,
+            Supply::TwoS => osc_ident::runway::Supply::TwoS,
+        }
+    }
 }
 
 /// How the drive was held while a recording was made. Steady state does not
@@ -115,10 +123,6 @@ impl Rule {
 /// open-loop current to the servo's limit.
 pub(crate) const RULE: Rule = Rule::Limit;
 
-/// Seek drive, percent of full scale; the park's duty, gentle on arrival.
-pub(crate) const SEEK_PCT: u8 = 15;
-/// Breakout escalation ceiling; `osc sweep --seek-cap-pct`'s default.
-pub(crate) const SEEK_CAP_PCT: u8 = 45;
 /// Brake-and-hold before a rung arms; `osc sweep --settle-ms`'s default.
 pub(crate) const SETTLE_MS: u32 = 300;
 /// Torque-off cool-down between rungs; `osc sweep --rest-ms`'s default.
@@ -134,12 +138,7 @@ pub(crate) const WINDOW_MS: u32 = 150;
 /// Entry from the top-level `osc capture` dispatch.
 pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     match &args.cmd {
-        CaptureCmd::Pilot(a) => {
-            let mut c = crate::rig::connect(&baud)?;
-            crate::rig::battery::before_drive(&mut c, osc_client::Id::new(id))?;
-            drop(c);
-            pilot::run(a, baud, id)
-        }
+        CaptureCmd::Pilot(a) => pilot::run(a, baud, id),
         CaptureCmd::Plan(a) => print_plan(a),
         CaptureCmd::Session(a) => run::run(a, baud, id),
         CaptureCmd::Check(a) => check::run(a),
@@ -156,16 +155,9 @@ fn print_plan(a: &PlanArgs) -> Result<()> {
     let (p, source) = procs::Procedure::load()?;
     println!("procedure: {source}");
     println!(
-        "  {} captures, warm-up {}, cooldown {} s, rest {} ms, baseline {} ms, seek {}%, \
-         tel_mask {:#x}, rotate {}",
-        p.captures,
-        p.warmup,
-        p.cooldown_s,
-        p.rest_ms,
-        p.baseline_ms,
-        p.seek_pct,
-        p.tel_mask,
-        p.rotate
+        "  {} captures, warm-up {}, cooldown {} s, rest {} ms, baseline {} ms, tel_mask {:#x}, \
+         rotate {}",
+        p.captures, p.warmup, p.cooldown_s, p.rest_ms, p.baseline_ms, p.tel_mask, p.rotate
     );
     match p.supply.get(&a.supply) {
         Some(g) => println!(

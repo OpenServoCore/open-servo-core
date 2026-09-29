@@ -3,7 +3,7 @@
 //! floor, and say out loud when its stall settings leave the current limit
 //! as the only protection. Every drive tool reads them before it drives.
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use osc_client::Id;
 use osc_client::blocking::Client;
 use osc_client::nusb::NusbPipe;
@@ -53,6 +53,34 @@ pub(crate) fn read<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<ServoLimits> {
         eprintln!("warning: {w}");
     }
     Ok(lim)
+}
+
+/// The stall settings `ServoLimits` leaves out: what the stall timer does
+/// once it trips, and when a fold lets go.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Stall {
+    /// A stall folds the limit to the yield; else it latches a fault.
+    pub(crate) folds: bool,
+    pub(crate) time_ms: u16,
+    pub(crate) release: u16,
+}
+
+impl Stall {
+    pub(crate) fn read<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<Self> {
+        let response = c
+            .read(id, config::STALL_RESPONSE.addr, 1)
+            .context("field read")?[0];
+        Ok(Self {
+            folds: response != 0,
+            time_ms: read_u16(c, id, config::STALL_TIME_MS)?,
+            release: read_u16(c, id, config::STALL_RELEASE_COUNTS)?,
+        })
+    }
+
+    /// The name `stall_response` reads under in the descriptor.
+    pub(crate) fn response(&self) -> &'static str {
+        if self.folds { "yield" } else { "fault" }
+    }
 }
 
 /// The stall-safe plan for a drive outside a run: by the winding R the

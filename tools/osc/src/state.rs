@@ -24,13 +24,13 @@ use crate::descriptor;
 
 /// The servo's descriptor (built-ins plus the operator's overrides, picked
 /// by one identity read), owned so callers keep no registry around.
-pub(crate) fn descriptor(c: &mut Client<NusbPipe>, id: Id) -> Result<Descriptor> {
+pub(crate) fn descriptor<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<Descriptor> {
     let reg = descriptor::load()?;
     Ok(crate::select_descriptor(c, id, &reg)?.clone())
 }
 
 /// Read the data state; a set reason prints the one-line warning.
-pub(crate) fn warn(c: &mut Client<NusbPipe>, id: Id, d: &Descriptor) -> Result<DataState> {
+pub(crate) fn warn<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor) -> Result<DataState> {
     let s = c.data_state(id, d)?;
     if let Some(msg) = s.message() {
         eprintln!("warning: id {}: {} - {msg}", id.as_byte(), s.names());
@@ -39,7 +39,7 @@ pub(crate) fn warn(c: &mut Client<NusbPipe>, id: Id, d: &Descriptor) -> Result<D
 }
 
 /// [`warn`] for the verbs that resolve no descriptor of their own.
-pub(crate) fn check(c: &mut Client<NusbPipe>, id: Id) -> Result<DataState> {
+pub(crate) fn check<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<DataState> {
     let d = descriptor(c, id)?;
     warn(c, id, &d)
 }

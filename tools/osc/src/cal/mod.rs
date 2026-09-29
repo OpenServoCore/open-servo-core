@@ -37,7 +37,6 @@ use osc_client::nusb::NusbPipe;
 use osc_client::pipe::Pipe;
 use osc_client::pos_lut;
 use osc_ident::exp::bias::{Bias, BiasCfg};
-use osc_ident::exp::centre::{Centre, CentreCfg};
 use osc_ident::exp::endstop::{Endstop, EndstopResult};
 use osc_ident::exp::inductance::{Cfg as InductanceCfg, FitCfg, Inductance, fit_captures};
 use osc_ident::exp::rl::Scales;
@@ -56,6 +55,7 @@ use osc_ident::sources;
 use osc_ident::units::{self, SenseParams};
 
 use crate::capture::envelope;
+use crate::rig::centre::centre;
 use crate::rig::csvio::{self, OutDir, SnapshotLog};
 use crate::rig::pump::{Pump, with_guard, write_reg};
 use crate::rig::snapshot::{self, read_u16};
@@ -626,7 +626,7 @@ impl Cal<'_> {
                     pct(*cap)
                 );
                 let cfg = order::centre_cfg(*duty, *cap, true);
-                let moved = centre(c, id, self.out, cfg, self.params(), "the jam check")?;
+                let moved = centre(c, id, cfg, self.params(), "the jam check")?;
                 if let Some(m) = moved {
                     println!("  the shaft moves at {}", pct(m));
                 }
@@ -639,7 +639,7 @@ impl Cal<'_> {
                     None => self.params(),
                 };
                 let cfg = order::centre_cfg(*duty, *cap, false);
-                centre(c, id, self.out, cfg, p, "centring")?;
+                centre(c, id, cfg, p, "centring")?;
             }
             Stage::Burst { rungs, pre, seek } => {
                 let base = InductanceCfg {
@@ -845,30 +845,6 @@ fn drive(
         pump.run(exp)?;
         Ok(std::mem::take(&mut pump.tel))
     })
-}
-
-/// Into the band at mid travel ([`Centre`]); a blocked shaft ends the run.
-/// The duty the shaft first travelled at, when it travelled.
-fn centre(
-    c: &mut Client<NusbPipe>,
-    id: Id,
-    out: &OutDir,
-    cfg: CentreCfg,
-    params: RigParams,
-    what: &'static str,
-) -> Result<Option<f64>> {
-    let nudge = cfg.nudge;
-    let mut exp = Guarded::new(Centre::new(cfg, &params), params.without_pos_guard());
-    drive(c, id, out, &mut exp, None)?;
-    check_abort(what, exp.abort())?;
-    let exp = exp.into_inner();
-    if !exp.arrived() {
-        if nudge {
-            bail!("the jam check did not reach mid travel in 5 s (gear slipping?)");
-        }
-        println!("  did not reach mid travel (gear slip?), left parked");
-    }
-    Ok(exp.moved_at())
 }
 
 /// Phys angle at each rail: from flags under `--yes` (both required), else

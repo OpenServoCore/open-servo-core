@@ -631,8 +631,8 @@ fn profile(c: &mut Client<NusbPipe>, id: Id, cmd: &ProfileCmd) -> Result<()> {
 
 /// Identity read (protocol sec 5.4 front) plus descriptor selection. Prints
 /// any advisory note at the call site so the codec stays print-free.
-pub(crate) fn select_descriptor<'a>(
-    c: &mut Client<NusbPipe>,
+pub(crate) fn select_descriptor<'a, P: osc_client::pipe::Pipe>(
+    c: &mut Client<P>,
     id: Id,
     reg: &'a descriptor::Registry,
 ) -> Result<&'a descriptor::Descriptor> {

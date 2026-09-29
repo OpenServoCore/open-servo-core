@@ -31,8 +31,6 @@ cooldown_s = 150
 rest_ms = 1500
 # Torque-off noise-floor burst before the first rung.
 baseline_ms = 1000
-# Seek drive, percent of full scale: gentle on arrival at the start band.
-seek_pct = 15
 # TEL fields: the raw six (pos, raw current, trough, applied duty, vmotor_a,
 # vmotor_b). Kernel conclusions stay out of raw captures.
 tel_mask = 0x1cd
@@ -40,10 +38,10 @@ tel_mask = 0x1cd
 # testable trend against block position instead of hiding inside one block.
 rotate = true
 
-# Battery gate, read at rest before the warm-up and before every capture:
-# refuse under cells x cell_floor_mv, warn under cells x cell_warn_mv. The pack
-# is the rail read through the board's vbus divider plus its rail_drop_mv (the
-# feed diode). A supply with no table here (usb) is not gated.
+# Battery gate, read at rest before every recording: refuse under cells x
+# cell_floor_mv, warn under cells x cell_warn_mv. The pack is the rail read
+# through the board's vbus divider plus its rail_drop_mv (the feed diode). A
+# supply with no table here (usb) is not gated.
 [supply.2s]
 cells = 2
 # Discharge floor at rest; a capture started under it sags further mid-run.
