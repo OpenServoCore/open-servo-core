@@ -66,7 +66,7 @@ impl PotJson {
     pub fn describe(&self) -> String {
         match self.counts.as_str() {
             "linearized" => format!(
-                "pot counts: linearized (lut LIVE, crc {}, {} nonzero knots)",
+                "pot counts: linearized (lut LIVE, crc {}, {} nonzero calibration points)",
                 self.lut_crc, self.nonzero_points
             ),
             _ => format!("pot counts: raw (lut {})", self.lut_state),

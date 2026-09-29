@@ -250,9 +250,9 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     // blesses it, and the reboot that fails it lands STAMP_MISMATCH.
     if c.pos_lut_state(id, &d)? == pos_lut::state::LIVE {
         match c.recommit_pos_lut(id, &d)? {
-            pos_lut::state::LIVE => println!("pot lut: still fits the new stops, LIVE"),
+            pos_lut::state::LIVE => println!("position table: still fits the new stops, LIVE"),
             s => println!(
-                "pot lut: no longer fits the new stops ({}); the kernel runs the identity - `osc lut build`, `osc lut write` and `osc ident` put a table back",
+                "position table: no longer fits the new stops ({}); the kernel runs the identity - `osc lut build`, `osc lut write` and `osc ident` put a table back",
                 pos_lut::state::name(s).map_or(format!("state {s}"), String::from)
             ),
         }

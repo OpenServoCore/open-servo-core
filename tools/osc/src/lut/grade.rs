@@ -158,11 +158,11 @@ impl Report {
             Some([a, z]) => {
                 let _ = writeln!(
                     s,
-                    "knots: {} nonzero at raw {a}..{z}, |c| up to {}",
+                    "calibration points: {} nonzero at raw {a}..{z}, |c| up to {}",
                     self.nonzero, self.max_abs
                 );
             }
-            None => s.push_str("knots: none nonzero (identity)\n"),
+            None => s.push_str("calibration points: none nonzero (identity)\n"),
         }
         if let (Some(steep), Some(shallow), Some(w), Some(g)) =
             (self.steepest, self.shallowest, self.windows, self.grade)
@@ -247,7 +247,7 @@ mod tests {
         assert_eq!(r.grade, Some(Grade::A));
         let text = r.summary();
         assert!(
-            text.contains("knots: 185 nonzero at raw 560..3504, |c| up to 71"),
+            text.contains("calibration points: 185 nonzero at raw 560..3504, |c| up to 71"),
             "{text}"
         );
         assert!(

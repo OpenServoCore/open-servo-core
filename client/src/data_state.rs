@@ -130,7 +130,7 @@ impl Reason {
                 "Factory-fresh. Open loop only; run osc cal, then osc ident."
             }
             Reason::StampMismatch => {
-                "Pot table and identified values are not one set (edited, rebuilt or partly written). Run osc ident, or re-run the interrupted tool."
+                "Position table and identified values are not one set (edited, rebuilt or partly written). Run osc ident, or re-run the interrupted tool."
             }
             Reason::PlantUnset => "Motor not identified. Run osc ident.",
         }

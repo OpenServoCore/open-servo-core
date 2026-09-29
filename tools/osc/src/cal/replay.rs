@@ -183,7 +183,7 @@ pub fn run(args: &Args) -> Result<()> {
         let populated = l.corr.iter().any(|&c| c != 0);
         if populated {
             let maxc = l.corr.iter().map(|&c| c.unsigned_abs()).max().unwrap_or(0);
-            println!("pot LUT: populated, max |corr| {maxc} counts");
+            println!("position table: populated, max |corr| {maxc} counts");
         } else {
             let all_pos: Vec<u16> = chunks
                 .iter()
@@ -191,7 +191,7 @@ pub fn run(args: &Args) -> Result<()> {
                 .collect();
             let cov = lut::span_coverage(&all_pos, raw_min, raw_max);
             println!(
-                "pot LUT: identity (stitched coverage {:.0}% of travel)",
+                "position table: identity (stitched coverage {:.0}% of travel)",
                 cov * 100.0
             );
         }

@@ -88,7 +88,7 @@ pub(crate) fn build(dataset: &Path, stops: Option<(u16, u16)>) -> Result<Built> 
     let name = decl.name();
     let source = format!(
         "osc {} lut build on {name} (git {}): the grid block of every slow-decay session \
-         recording and the unchained drives of the bare sweeps, both directions, knots on \
+         recording and the unchained drives of the bare sweeps, both directions, calibration points on \
          the stretch >= {} rungs cross",
         env!("CARGO_PKG_VERSION"),
         crate::sweep::git_sha(),
@@ -165,13 +165,13 @@ fn summary(b: &Built, stops_from_envelope: bool) -> String {
             let peak = points.iter().map(|c| c.abs()).max().unwrap_or(0);
             let _ = writeln!(
                 s,
-                "knots: {} nonzero at raw {}..{}, |c| up to {peak}",
+                "calibration points: {} nonzero at raw {}..{}, |c| up to {peak}",
                 nonzero.len(),
                 a * GRID as usize,
                 z * GRID as usize
             );
         }
-        _ => s.push_str("knots: none nonzero (identity)\n"),
+        _ => s.push_str("calibration points: none nonzero (identity)\n"),
     }
     let gains: Vec<(f64, usize)> = points
         .windows(2)

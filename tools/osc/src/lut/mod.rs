@@ -34,9 +34,10 @@ enum LutCmd {
     /// interval and grade it; advisory, the operator decides.
     Grade(GradeArgs),
     /// Write an image to the servo: validated against its stops here
-    /// first, then STORE, COMMIT, knot-for-knot readback. Torque off.
+    /// first, then STORE, COMMIT and a readback of every calibration point.
+    /// Torque off.
     Write(servo::WriteArgs),
-    /// The servo's table: state, band, nonzero knots, grade.
+    /// The servo's table: state, band, nonzero calibration points, grade.
     Show(servo::ShowArgs),
     /// Return the servo to the identity: an all-zero table COMMITted LIVE.
     Clear,
@@ -88,7 +89,7 @@ pub(crate) fn on_grid(img: &Image, path: &Path) -> Result<GridLut> {
     match img.lut() {
         Some(lut) => Ok(lut),
         None => bail!(
-            "{}: not on the firmware grid (grid_shift {}, {} knots; want 4 and 256)",
+            "{}: not on the firmware grid (grid_shift {}, {} calibration points; want 4 and 256)",
             path.display(),
             img.grid_shift,
             img.points.len()
