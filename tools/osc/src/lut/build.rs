@@ -89,11 +89,10 @@ pub(crate) fn build(dataset: &Path, stops: Option<(u16, u16)>) -> Result<Built> 
     let source = format!(
         "osc {} lut build on {name} (git {}): the grid block of every slow-decay session \
          recording and the unchained drives of the bare sweeps, both directions, calibration points on \
-         the stretch >= {} rungs cross, no interval over {:.2}x",
+         the stretch >= {} rungs cross",
         env!("CARGO_PKG_VERSION"),
         crate::sweep::git_sha(),
-        lut::MIN_RUNG_COVER,
-        lut::gain_bound()
+        lut::MIN_RUNG_COVER
     );
     let image = build.lut.image(
         stops.0,
@@ -174,65 +173,6 @@ fn summary(b: &Built, stops_from_envelope: bool) -> String {
         }
         _ => s.push_str("calibration points: none nonzero (identity)\n"),
     }
-    let at = |k: usize| format!("{}..{}", k * GRID as usize, (k + 1) * GRID as usize);
-    if let Some(((max, kmax), (min, kmin))) = gain_range(points) {
-        let _ = writeln!(
-            s,
-            "interval gain: steepest {max:.2}x at raw {}, shallowest {min:.2}x at raw {}",
-            at(kmax),
-            at(kmin)
-        );
-    }
-    let bound = lut::gain_bound();
-    let unbounded = &b.build.unbounded.points;
-    let over = unbounded
-        .windows(2)
-        .filter(|w| GRID as i32 + (w[1] as i32 - w[0] as i32) > lut::GAIN_BOUND_Q4)
-        .count();
-    match gain_range(unbounded) {
-        Some(((max, kmax), (min, _))) if over > 0 => {
-            let _ = writeln!(
-                s,
-                "gain bound {bound:.2}x: unbounded the table would run {min:.2}x .. {max:.2}x \
-                 (steepest at raw {}), {over} intervals held down to the bound",
-                at(kmax)
-            );
-        }
-        _ => {
-            let _ = writeln!(
-                s,
-                "gain bound {bound:.2}x: no interval reaches it, the table is the unbounded fit"
-            );
-        }
-    }
-    let (f, u) = (b.build.fit, b.build.fit_unbounded);
-    let _ = writeln!(
-        s,
-        "what the bound costs, against the capture data it was built from: positions off by \
-         {:.1} counts rms and {:.1} at worst (unbounded {:.1} and {:.1}), speed over {} counts \
-         off by {:.1}% rms (unbounded {:.1}%)",
-        f.rms,
-        f.max,
-        u.rms,
-        u.max,
-        lut::SLOPE_WINDOW,
-        f.slope_rms * 100.0,
-        u.slope_rms * 100.0
-    );
-    let _ = writeln!(
-        s,
-        "validate against {raw_min}..{raw_max}: {}",
-        match b.build.lut.validate(raw_min, raw_max) {
-            Ok(()) => "ok".to_string(),
-            Err(r) => format!("REJECT {r:?}"),
-        }
-    );
-    s
-}
-
-/// `((steepest, interval), (shallowest, interval))` over the intervals the
-/// table touches, gains x nominal.
-fn gain_range(points: &[i16]) -> Option<((f64, usize), (f64, usize))> {
     let gains: Vec<(f64, usize)> = points
         .windows(2)
         .enumerate()
@@ -244,10 +184,29 @@ fn gain_range(points: &[i16]) -> Option<((f64, usize), (f64, usize))> {
             )
         })
         .collect();
-    Some((
-        *gains.iter().max_by(|x, y| x.0.total_cmp(&y.0))?,
-        *gains.iter().min_by(|x, y| x.0.total_cmp(&y.0))?,
-    ))
+    if let (Some(max), Some(min)) = (
+        gains.iter().max_by(|x, y| x.0.total_cmp(&y.0)),
+        gains.iter().min_by(|x, y| x.0.total_cmp(&y.0)),
+    ) {
+        let at = |k: usize| format!("{}..{}", k * GRID as usize, (k + 1) * GRID as usize);
+        let _ = writeln!(
+            s,
+            "interval gain: steepest {:.2}x at raw {}, shallowest {:.2}x at raw {}",
+            max.0,
+            at(max.1),
+            min.0,
+            at(min.1)
+        );
+    }
+    let _ = writeln!(
+        s,
+        "validate against {raw_min}..{raw_max}: {}",
+        match b.build.lut.validate(raw_min, raw_max) {
+            Ok(()) => "ok".to_string(),
+            Err(r) => format!("REJECT {r:?}"),
+        }
+    );
+    s
 }
 
 /// The image as the notebook writes it: pretty, a trailing newline.
@@ -262,7 +221,6 @@ fn write(img: &Image, path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lut::grade::{Grade, Report};
 
     const DATASET: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -314,27 +272,6 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("covered: 542..3520"), "{text}");
-        assert!(
-            text.contains("interval gain: steepest 1.25x at raw 3408..3424, shallowest 0.50x"),
-            "{text}"
-        );
-        assert!(
-            text.contains(
-                "gain bound 1.25x: unbounded the table would run 0.50x .. 2.06x (steepest at raw \
-                 1360..1376), 20 intervals held down to the bound"
-            ),
-            "{text}"
-        );
-        assert!(
-            text.contains(
-                "positions off by 2.4 counts rms and 11.9 at worst (unbounded 0.7 and 6.7), speed \
-                 over 25 counts off by 10.3% rms (unbounded 4.2%)"
-            ),
-            "{text}"
-        );
         assert!(text.contains("validate against 209..3849: ok"), "{text}");
-        let grade = |lut| Report::new(lut, b.stops).grade;
-        assert_eq!(grade(&b.build.lut), Some(Grade::A));
-        assert_eq!(grade(&b.build.unbounded), Some(Grade::B));
     }
 }
