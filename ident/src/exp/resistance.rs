@@ -342,7 +342,7 @@ impl Experiment for Resistance {
 #[cfg(test)]
 mod tests {
     use super::super::Guarded;
-    use super::super::testkit::{Bus, FakeServo, pump, pump_on};
+    use super::super::testkit::{FakeServo, pump};
     use super::*;
 
     fn run_e2(servo: &mut FakeServo) -> (Resistance, Vec<String>) {
@@ -400,22 +400,42 @@ mod tests {
         assert_eq!(*tail[0], "write torque_enable 0");
     }
 
+    /// The first read an experiment was stepped with.
+    struct First<E> {
+        exp: E,
+        pos: Option<u16>,
+    }
+
+    impl<E: Experiment> Experiment for First<E> {
+        fn step(&mut self, obs: Option<&TelemetrySnapshot>) -> Cmd {
+            if let Some(o) = obs {
+                self.pos.get_or_insert(o.pos);
+            }
+            self.exp.step(obs)
+        }
+    }
+
     /// The shaft jams on its way to the stop, as it did on the bench: the
-    /// seek travels, comes to rest short of the stop, and the run ends
-    /// there - no dwell is commanded against the jam.
+    /// seek travels from where it first read the shaft, comes to rest short
+    /// of the stop, and the run ends there - no dwell is commanded against
+    /// the jam.
     #[test]
     fn a_mid_travel_jam_is_not_a_stop() {
         for jam in [3000.0, 2400.0] {
             let mut servo = FakeServo::new(3.37);
             servo.jam = Some(jam);
             let params = crate::exp::testkit::rig().without_pos_guard();
-            let mut exp = Guarded::new(Resistance::new(ResistanceCfg::default(), &params), params);
-            let log = pump_on(&mut exp, &mut servo, 2_000_000, Bus::ZERO_LATENCY);
+            let mut first = First {
+                exp: Guarded::new(Resistance::new(ResistanceCfg::default(), &params), params),
+                pos: None,
+            };
+            let log = pump(&mut first, &mut servo, 2_000_000);
+            let (exp, start) = (first.exp, first.pos.unwrap());
             assert_eq!(
                 exp.abort(),
                 Some(AbortReason::Blocked {
                     pos: jam as u16,
-                    moved: (jam - 2400.0) as u16
+                    moved: jam as u16 - start
                 })
             );
             let seek = ResistanceCfg::default().seek_duty_q15 as i32;

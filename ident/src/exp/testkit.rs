@@ -44,18 +44,25 @@ pub fn rig() -> RigParams {
 
 /// The bench MG90 as the fake models it on a rail of `vbus`: 4.9 ohm, the
 /// firmware limiter at 280 counts above a 13.3% window floor, a 13%
-/// breakaway, 80 counts of running friction and the measured b, between
-/// its stops 209..3849 and soft limits 432..3626. The stall timer runs at
-/// settings that fold: yield 168, released under 84, after 500 ms.
+/// breakaway and the measured b, between its stops 209..3849 and soft
+/// limits 432..3626. The stall timer runs at settings that fold: yield 168,
+/// released under 84, after 500 ms.
+///
+/// Its steady speed is the servo's measured one: 0.2079 x duty% - 0.831
+/// counts/ms at 7.9 V (3204 vcounts) and 0.1299 x duty% - 0.852 at 4.39 V
+/// (1780). The 2S line is slower than the USB one scaled by the rail, so
+/// no single friction meets both: running friction and drag grow with the
+/// rail, met at both, interpolated between them and carried beyond.
 pub fn bench_mg90(vbus: u16) -> FakeServo {
     let mut s = FakeServo::new(7270.0 / 4096.0);
     s.ends = (209.0, 3849.0);
     s.vbus = vbus as f64;
     s.dynamic = true;
-    s.ke = 0.1472;
+    s.ke = 0.1370;
     s.b = 0.296;
-    s.fc = 80.0;
-    s.fv = 0.01;
+    let over_usb = (vbus as f64 - 1780.0).max(0.0);
+    s.fc = 65.78 + 0.004481 * over_usb;
+    s.fv = 6.770e-6 * over_usb;
     s.breakaway_q15 = 4259;
     s.soft = Some((432.0, 3626.0));
     s.lease_ms = Some(1008.0);
@@ -170,6 +177,9 @@ pub struct FakeServo {
     /// A sticky stretch of travel, `(lo, hi, extra)`: the dynamic model's
     /// friction there is `extra` ccounts over `fc`, from rest and moving.
     pub sticky: Option<(f64, f64, f64)>,
+    /// A load that pulls toward low counts whatever the shaft does - a
+    /// weight on the horn - as ccounts of current (dynamic model).
+    pub load: f64,
     /// The stall timer, ms; None never folds.
     pub stall_ms: Option<f64>,
     pub stall_yield: u16,
@@ -240,6 +250,7 @@ impl FakeServo {
             t_ceil: 0.0,
             jam: None,
             sticky: None,
+            load: 0.0,
             stall_ms: None,
             stall_yield: 0,
             stall_release: 0,
@@ -668,7 +679,7 @@ impl FakeServo {
 
     /// One dynamic-model integration substep.
     fn substep(&mut self, dt: f64) {
-        let i = self.i_dyn();
+        let i = self.i_dyn() - self.load;
         let w = self.omega_dyn;
         let fc = match self.sticky {
             Some((lo, hi, extra)) if (lo..=hi).contains(&self.pos) => self.fc + extra,
@@ -1574,6 +1585,33 @@ mod tests {
         assert_eq!(slow.fract(), 0.0);
         assert_eq!(reads(7), reads(7));
         assert_ne!(reads(7), reads(8));
+    }
+
+    /// The bench fixture runs as fast as the servo: from 20% to 64% its
+    /// steady speed is within 3% of the lines measured on the bench MG90 at
+    /// 7.9 V and at 4.39 V, the current limit in force.
+    #[test]
+    fn bench_fixture_follows_the_measured_speed_line() {
+        for (vbus, slope, intercept) in [(3204u16, 0.2079, -0.831), (1780, 0.1299, -0.852)] {
+            for d in (20..=64).step_by(4) {
+                let mut s = bench_mg90(vbus);
+                s.ends = (-1e9, 1e9);
+                s.soft = None;
+                s.pos = 0.0;
+                s.write(control::TORQUE_ENABLE, 1);
+                s.write(control::GOAL_DUTY, pct(d));
+                s.advance(1500);
+                let p0 = s.pos;
+                s.advance(100);
+                let v = (s.pos - p0) / 100.0;
+                let want = slope * d as f64 + intercept;
+                assert!(
+                    (v / want - 1.0).abs() < 0.03,
+                    "{vbus} at {d}%: {v:.2} counts/ms, the line {want:.2}"
+                );
+                assert_eq!(s.limit_flags(), 0, "{vbus} at {d}%: governed at speed");
+            }
+        }
     }
 
     /// A scripted run: one command per step, every snapshot kept.

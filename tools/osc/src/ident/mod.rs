@@ -59,6 +59,9 @@ const DEFAULT_OUT: &str = "./ident-out";
 
 const Q15: f64 = 32767.0;
 
+/// Why the ladder declined, in the run's directory: the fit reads it back.
+const LADDER_DECLINED: &str = "ladder_declined.txt";
+
 /// The `osc ident` arg group: output, rig envelope, and bandwidth targets,
 /// all scoped to the ident subtree. `--baud`/`--id` come from the top-level
 /// osc globals.
@@ -76,10 +79,13 @@ pub struct Args {
     /// limit, 100 counts in].
     #[arg(long, global = true)]
     guard_hi: Option<u16>,
-    #[arg(long, global = true, default_value_t = 1250)]
-    slip_lo: u16,
-    #[arg(long, global = true, default_value_t = 1650)]
-    slip_hi: u16,
+    /// A stretch of travel to leave out of the fit, low end, counts, for a
+    /// servo with a damaged spot; none by default.
+    #[arg(long, global = true, requires = "slip_hi")]
+    slip_lo: Option<u16>,
+    /// The same stretch, high end, counts.
+    #[arg(long, global = true, requires = "slip_lo")]
+    slip_hi: Option<u16>,
     /// Current that aborts a run, counts [default: a quarter over the
     /// servo's current_limit_counts, where the firmware holds a stall];
     /// above that is refused.
@@ -169,8 +175,7 @@ struct Ctx {
     baud: String,
     out: PathBuf,
     guard: (Option<u16>, Option<u16>),
-    slip_lo: u16,
-    slip_hi: u16,
+    slip: Option<(u16, u16)>,
     i_abort: Option<i16>,
     l_henries: f64,
     step_periods: u16,
@@ -319,8 +324,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
         baud,
         out: args.out.clone().unwrap_or_else(|| DEFAULT_OUT.into()),
         guard: (args.guard_lo, args.guard_hi),
-        slip_lo: args.slip_lo,
-        slip_hi: args.slip_hi,
+        slip: args.slip_lo.zip(args.slip_hi),
         i_abort: args.i_abort,
         l_henries: args.l_henries,
         step_periods: args.step_periods,
@@ -547,7 +551,7 @@ fn drive(cli: &Ctx) -> Result<&Drive> {
 fn rig(cli: &Ctx) -> Result<RigParams> {
     let d = drive(cli)?;
     Ok(RigParams {
-        slip: (cli.slip_lo, cli.slip_hi),
+        slip: cli.slip,
         pot: cli.pot(),
         ..RigParams::new(Some(d.env.guard), d.env.i_abort).with_stops(d.lim.raw)
     })
@@ -871,6 +875,7 @@ fn run_ladder(
     }
     let runway = exp.runway().clone();
     if let Some(why) = exp.declined() {
+        std::fs::write(out.0.join(LADDER_DECLINED), format!("{why}\n"))?;
         return Ok((Err(why.to_string()), runway));
     }
     let l = exp.fit(r_vpc).context("ladder fit degenerate")?;
@@ -905,9 +910,9 @@ fn run_inertia(
     exp: Inertia,
     priors: &InertiaPriors,
 ) -> Result<Result<InertiaResult, String>> {
-    let params = rig(cli)?;
+    let aborts = rig(cli)?.abort_at_soft(drive(cli)?.lim.soft);
     let mut log = csvio::SnapshotLog::create(out, "inertia_snapshots.csv")?;
-    let mut exp = Guarded::new(exp, params);
+    let mut exp = Guarded::new(exp, aborts);
     let all_tel = with_guard(c, id, |c| {
         let mut pump = Pump::new(c, id, Some(&mut log));
         pump.run(&mut exp)?;
@@ -1127,7 +1132,7 @@ fn drive_stages(
     }
     match run.over() {
         // the fit keeps what came before it, and says what is missing
-        Some(Over::Declined("inertia")) if until == Until::End => Ok(rec),
+        Some(Over::Declined("inertia" | "ladder")) if until == Until::End => Ok(rec),
         Some(Over::Declined(stage)) if stage != "burst" => bail!(
             "the {stage} declined: {}; the run ended at mid travel with nothing to fit",
             rec.declined.as_deref().unwrap_or("nothing fitted")
@@ -1421,6 +1426,53 @@ fn fit_dir(cli: &Ctx, dir: PathBuf) -> Result<()> {
         cli.l_henries,
     )
     .context("no winding R: burst is missing or declined and no resistance recording exists")?;
+    let bias = p.bias;
+    let bias_res = bias.map(|b| osc_ident::exp::bias::BiasResult {
+        sigma_theta: b.sigma_theta,
+        pos_mean: b.pos_mean,
+        i_noise: b.i_noise,
+        i_bias_delta: b.i_bias_delta,
+        vbus_mean: b.vbus_mean,
+        vbus_sd: b.vbus_sd,
+        n: b.n,
+    });
+    let bk_res = p
+        .breakaway
+        .map(|b| osc_ident::exp::breakaway::BreakawayResult {
+            duty_bk_fwd: b.duty_bk_fwd,
+            duty_bk_rev: b.duty_bk_rev,
+            fric_fwd_counts: b.fric_fwd_counts,
+            fric_rev_counts: b.fric_rev_counts,
+            model_derived: b.model_derived,
+            asymmetry: b.asymmetry,
+        });
+    p.resistance = resistance.as_ref().map(ResistanceJson::from);
+    p.rl = rl.as_ref().map(RlJson::from);
+    p.inductance = inductance.as_ref().map(InductanceJson::from);
+    if !dir.join("rungs.csv").exists() {
+        let why = match std::fs::read_to_string(dir.join(LADDER_DECLINED)) {
+            Ok(why) => format!("the ladder declined ({})", why.trim()),
+            Err(_) => "the run recorded no ladder".into(),
+        };
+        let text = report::render(&ReportInputs {
+            bias: bias_res.as_ref(),
+            resistance: resistance.as_ref(),
+            rl: rl.as_ref(),
+            inductance: inductance.as_ref(),
+            breakaway: bk_res.as_ref(),
+            ..Default::default()
+        });
+        println!("{text}");
+        std::fs::write(dir.join("report.txt"), &text)?;
+        p.save(&path)?;
+        println!("params: {}", path.display());
+        bail!(
+            "no gains: {why}, and the gains are built on its Ke and friction line; report.txt \
+             and params.json in {} keep what did fit - bias, winding and breakaway - but there \
+             is no gain set to write: run `osc ident run` again",
+            dir.display()
+        );
+    }
     let rungs = csvio::read_rungs(&dir)?;
     let pts: Vec<fits::RungPoint> = csvio::read_rung_points(&dir)?;
     let ke = fits::ke_fit(&pts, w.r_vpc).context("ke refit degenerate")?;
@@ -1445,29 +1497,6 @@ fn fit_dir(cli: &Ctx, dir: PathBuf) -> Result<()> {
     let b_direct = fits::b_direct_fit(&series_only(&series), &priors, hw, 5.0);
     let b_exp = fits::b_exp_fit(&series_only(&series), &priors, hw);
 
-    let bias = p.bias;
-    let bias_res = bias.map(|b| osc_ident::exp::bias::BiasResult {
-        sigma_theta: b.sigma_theta,
-        pos_mean: b.pos_mean,
-        i_noise: b.i_noise,
-        i_bias_delta: b.i_bias_delta,
-        vbus_mean: b.vbus_mean,
-        vbus_sd: b.vbus_sd,
-        n: b.n,
-    });
-    let bk_res = p
-        .breakaway
-        .map(|b| osc_ident::exp::breakaway::BreakawayResult {
-            duty_bk_fwd: b.duty_bk_fwd,
-            duty_bk_rev: b.duty_bk_rev,
-            fric_fwd_counts: b.fric_fwd_counts,
-            fric_rev_counts: b.fric_rev_counts,
-            model_derived: b.model_derived,
-            asymmetry: b.asymmetry,
-        });
-    p.resistance = resistance.as_ref().map(ResistanceJson::from);
-    p.rl = rl.as_ref().map(RlJson::from);
-    p.inductance = inductance.as_ref().map(InductanceJson::from);
     p.ladder = Some(LadderJson {
         ke_vpc: ladder.ke.ke_vpc,
         ke_r2: ladder.ke.r2,
@@ -1732,8 +1761,7 @@ mod tests {
             baud: "auto".into(),
             out,
             guard: (None, None),
-            slip_lo: 1250,
-            slip_hi: 1650,
+            slip: None,
             i_abort: None,
             l_henries: gains::DEFAULT_L_HENRIES,
             step_periods: 20,
@@ -1755,18 +1783,13 @@ mod tests {
         }
     }
 
-    /// A run on the bench servo that fitted R, breakaway and the ladder,
-    /// whose inertia steps gave nothing: the fit writes the report and
-    /// params.json with all of it, names what is missing and what that
-    /// means for the gains, and ends in an error only once they are on
-    /// disk.
-    #[test]
-    fn a_failed_inertia_fit_keeps_the_rest_of_the_run() {
+    /// A run's front as it lands on disk: the stop ladder's dwells for the
+    /// winding R, and params.json with the bias, breakaway and sense.
+    fn record_front(tag: &str) -> (PathBuf, csvio::OutDir, f64) {
         use osc_ident::exp::WindowSample;
-        use osc_ident::exp::ladder::RungSummary;
         use osc_ident::exp::resistance::DwellSample;
 
-        let dir = std::env::temp_dir().join(format!("ident-inertia-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("ident-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let out = csvio::OutDir(dir.clone());
@@ -1788,24 +1811,6 @@ mod tests {
             }
         }
         csvio::write_dwell_samples(&out, &dwells).unwrap();
-        let rungs: Vec<RungSummary> = [1500.0, 3000.0, 4500.0, -1500.0, -3000.0, -4500.0]
-            .into_iter()
-            .map(|omega: f64| {
-                let i = omega.signum() * (80.0 + 0.004 * omega.abs());
-                RungSummary {
-                    duty_q15: (omega / 5.0) as i16,
-                    omega,
-                    omega_r2: 0.99,
-                    i,
-                    v: r * i + 0.1472 * omega,
-                    windows: 30,
-                    used: true,
-                    note: None,
-                }
-            })
-            .collect();
-        csvio::write_rungs(&out, &rungs).unwrap();
-        csvio::write_step_series(&out, &[]).unwrap();
         let bias = BiasJson {
             sigma_theta: 1.2,
             pos_mean: 2029.0,
@@ -1841,6 +1846,38 @@ mod tests {
         .save(&dir.join("params.json"))
         .unwrap();
 
+        (dir, out, r)
+    }
+
+    /// A run on the bench servo that fitted R, breakaway and the ladder,
+    /// whose inertia steps gave nothing: the fit writes the report and
+    /// params.json with all of it, names what is missing and what that
+    /// means for the gains, and ends in an error only once they are on
+    /// disk.
+    #[test]
+    fn a_failed_inertia_fit_keeps_the_rest_of_the_run() {
+        use osc_ident::exp::ladder::RungSummary;
+
+        let (dir, out, r) = record_front("inertia");
+        let rungs: Vec<RungSummary> = [1500.0, 3000.0, 4500.0, -1500.0, -3000.0, -4500.0]
+            .into_iter()
+            .map(|omega: f64| {
+                let i = omega.signum() * (80.0 + 0.004 * omega.abs());
+                RungSummary {
+                    duty_q15: (omega / 5.0) as i16,
+                    omega,
+                    omega_r2: 0.99,
+                    i,
+                    v: r * i + 0.1472 * omega,
+                    windows: 30,
+                    used: true,
+                    note: None,
+                }
+            })
+            .collect();
+        csvio::write_rungs(&out, &rungs).unwrap();
+        csvio::write_step_series(&out, &[]).unwrap();
+
         let err = fit_dir(&ctx(dir.clone()), dir.clone()).unwrap_err();
         assert_eq!(
             err.to_string(),
@@ -1860,6 +1897,39 @@ mod tests {
         assert!((ladder.ke_vpc - 0.1472).abs() < 1e-6, "{}", ladder.ke_vpc);
         assert!(p.inertia.is_none() && p.plant.is_none() && p.gains.is_empty());
         assert!(std::fs::read_to_string(dir.join("report.txt")).is_ok_and(|t| !t.is_empty()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A run on the bench servo that fitted R and breakaway, whose ladder
+    /// declined: the fit writes the report and params.json with what did
+    /// fit, says why the ladder gave nothing and that the gains need it,
+    /// and ends in an error only once they are on disk.
+    #[test]
+    fn a_declined_ladder_keeps_the_rest_of_the_run() {
+        use osc_ident::exp::ladder::Declined;
+
+        let (dir, _, r) = record_front("ladder");
+        let why = Declined::Thin { rungs: 2 }.to_string();
+        std::fs::write(dir.join(LADDER_DECLINED), format!("{why}\n")).unwrap();
+        let err = fit_dir(&ctx(dir.clone()), dir.clone()).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "no gains: the ladder declined (2 of the ladder's rungs ran both ways inside the \
+                 travel, and the fit needs 3), and the gains are built on its Ke and friction \
+                 line; report.txt and params.json in {} keep what did fit - bias, winding and \
+                 breakaway - but there is no gain set to write: run `osc ident run` again",
+                dir.display()
+            )
+        );
+        let p = ParamsFile::load(&dir.join("params.json")).unwrap();
+        assert!(p.bias.is_some() && p.breakaway.is_some());
+        let res = p.resistance.expect("the winding R");
+        assert!((res.r_vpc - r).abs() < 1e-6, "{}", res.r_vpc);
+        assert!(p.ladder.is_none() && p.inertia.is_none());
+        assert!(p.plant.is_none() && p.gains.is_empty());
+        let report = std::fs::read_to_string(dir.join("report.txt")).unwrap();
+        assert!(!report.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1896,5 +1966,30 @@ mod tests {
         let expect = gains::l_cd_from_si(0.5e-3, 33, 15_000, 18_200, 10_000).unwrap();
         assert!((plant.l_cd - expect).abs() < 1e-12);
         assert_eq!(t.f_ci, BwTargets::default().f_ci);
+    }
+
+    /// No stretch of travel is left out of the fit unless the owner names
+    /// one: without the flags there is no slip zone, and the rig masks
+    /// nothing. Named, it takes both ends.
+    #[test]
+    fn no_slip_zone_by_default() {
+        use clap::Parser;
+
+        #[derive(Parser)]
+        struct Osc {
+            #[command(flatten)]
+            args: Args,
+        }
+        let parse = |argv: &[&str]| Osc::try_parse_from(argv).map(|o| o.args);
+        let args = parse(&["osc", "show"]).unwrap();
+        assert_eq!(args.slip_lo.zip(args.slip_hi), None);
+        let rig = RigParams::new(Some((532, 3526)), 350);
+        assert_eq!(rig.slip, None);
+        assert!((0..=4095).all(|p| !rig.in_slip(p)));
+
+        let args = parse(&["osc", "--slip-lo", "1250", "--slip-hi", "1650", "show"]).unwrap();
+        assert_eq!(args.slip_lo.zip(args.slip_hi), Some((1250, 1650)));
+        assert!(parse(&["osc", "--slip-lo", "1250", "show"]).is_err());
+        assert!(parse(&["osc", "--slip-hi", "1650", "show"]).is_err());
     }
 }
