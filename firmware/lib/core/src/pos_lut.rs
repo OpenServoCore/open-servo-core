@@ -240,7 +240,7 @@ mod tests {
     const ZERO: [i16; POINTS] = [0; POINTS];
 
     // mg90-a on the 2S session, stops 209/3849, covered 542..3520 (bringup
-    // captures/mg90/pot-lut-mg90-a-grid.json; the fixed last point appended).
+    // captures/mg90/pos-lut-mg90-a-grid.json; the fixed last point appended).
     const MG90_A_MIN: u16 = 209;
     const MG90_A_MAX: u16 = 3849;
     const MG90_A: [i16; INTERVALS] = [

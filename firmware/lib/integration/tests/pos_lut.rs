@@ -4,7 +4,7 @@
 //! the CALIB image through SAVE, reboot, torn saves, rot and FACTORY, and the
 //! kernel's endstop against the plant rig with the table LIVE. The mg90-a
 //! table (`support`) is the same 256 points the core unit tests carry
-//! (bringup captures/mg90/pot-lut-mg90-a-grid.json), pinned to the Python
+//! (bringup captures/mg90/pos-lut-mg90-a-grid.json), pinned to the Python
 //! reference by CRC.
 
 use std::cell::RefCell;
