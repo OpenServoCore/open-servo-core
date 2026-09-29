@@ -123,7 +123,7 @@ fn mixed(tables: &BTreeMap<Option<PlantMeta>, Vec<String>>) -> String {
         })
         .collect();
     format!(
-        "recordings mix {} pot tables; {}",
+        "recordings mix {} position tables; {}",
         tables.len(),
         groups.join("; ")
     )
@@ -277,7 +277,7 @@ mod tests {
         .to_string();
         assert_eq!(
             e,
-            "recordings mix 2 pot tables; lut IDENTITY 0x0000: fast; lut LIVE 0x1a2b: slow"
+            "recordings mix 2 position tables; lut IDENTITY 0x0000: fast; lut LIVE 0x1a2b: slow"
         );
         assert!(
             run(&Args {
@@ -301,7 +301,7 @@ mod tests {
         );
         assert_eq!(
             mixed(&tables),
-            "recordings mix 2 pot tables; no plant record: session/capture-3/slow; lut LIVE 0x1a2b: session/capture-1/slow"
+            "recordings mix 2 position tables; no plant record: session/capture-3/slow; lut LIVE 0x1a2b: session/capture-1/slow"
         );
         std::fs::remove_dir_all(&root).unwrap();
     }

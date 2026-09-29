@@ -125,7 +125,7 @@ fn explain(lut: &GridLut, stops: (u16, u16)) -> Option<String> {
                 .find(|&k| (k <= lo || k >= hi) && lut.points[k] != 0)
                 .unwrap_or(0);
             Some(format!(
-                "REJECT_ENDS: knot {k} (raw {}) is {} inside the identity inset of stops {raw_min}..{raw_max} (knots <= {lo} and >= {hi} must be 0); rebuild against these stops (osc lut build --raw-min {raw_min} --raw-max {raw_max}) or re-run osc cal",
+                "REJECT_ENDS: calibration point {k} (raw {}) is {} inside the identity inset of stops {raw_min}..{raw_max} (calibration points <= {lo} and >= {hi} must be 0); rebuild against these stops (osc lut build --raw-min {raw_min} --raw-max {raw_max}) or re-run osc cal",
                 k * GRID as usize,
                 lut.points[k]
             ))
@@ -175,7 +175,7 @@ pub(crate) fn write(a: &WriteArgs, baud: String, id: u8) -> Result<()> {
     }
     let r = Report::new(&lut, stops);
     println!(
-        "id {}: lut LIVE, read back knot for knot\n{}",
+        "id {}: lut LIVE, every calibration point read back\n{}",
         s.id.as_byte(),
         r.summary()
     );
@@ -255,7 +255,7 @@ pub(crate) fn clear(baud: String, id: u8) -> Result<()> {
         Err(e) => return Err(e.into()),
     }
     println!(
-        "id {}: lut LIVE with every knot 0 (the identity; hashes like no table, so a stamped set stays stamped)",
+        "id {}: lut LIVE with every calibration point 0 (the identity; hashes like no table, so a stamped set stays stamped)",
         s.id.as_byte()
     );
     s.after()?;
@@ -274,10 +274,10 @@ mod tests {
         lut.points[14] = 1;
         let why = explain(&lut, (209, 3849)).unwrap();
         assert!(
-            why.starts_with("REJECT_ENDS: knot 14 (raw 224) is 1 inside"),
+            why.starts_with("REJECT_ENDS: calibration point 14 (raw 224) is 1 inside"),
             "{why}"
         );
-        assert!(why.contains("knots <= 14 and >= 240"), "{why}");
+        assert!(why.contains("calibration points <= 14 and >= 240"), "{why}");
         assert!(why.contains("--raw-min 209 --raw-max 3849"), "{why}");
         lut.points[14] = 0;
         lut.points[100] = 16;

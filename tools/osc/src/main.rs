@@ -233,7 +233,7 @@ enum Cmd {
     /// polarity + angle endpoints, then SAVE.
     Cal(cal::Args),
     /// Replay a saved cal sweep_tel.csv offline: classify capture corruption
-    /// and re-run the pot-LUT / motor-rev pipeline without a servo.
+    /// and re-run the position-table / motor-rev pipeline without a servo.
     CalReplay(cal::replay::Args),
     /// Raw open-loop duty sweep: burst-captured TEL rungs across a duty grid
     /// for empirical plant capture (sweep.csv + meta.json).
@@ -242,11 +242,11 @@ enum Cmd {
     /// servo and writes the dataset's envelope.toml, `plan` shows the session
     /// it sizes, `session` runs it, `check` re-reads a landed capture.
     Capture(capture::Args),
-    /// Pot linearization table: `build` stitches one from a capture
-    /// dataset's settled rungs and writes the image JSON, `grade` graphs
-    /// it, `write` puts it on the servo, `show` reads the servo's back,
-    /// `clear` returns it to the identity. A write never stamps: closed
-    /// loop is refused until `osc ident`.
+    /// Position table: `build` stitches one from a capture dataset's settled
+    /// rungs and writes the image JSON, `grade` graphs it, `write` puts it on
+    /// the servo, `show` reads the servo's back, `clear` returns it to the
+    /// identity. A write never stamps: closed loop is refused until
+    /// `osc ident`.
     Lut(lut::Args),
 }
 

@@ -87,11 +87,11 @@ impl Lut {
         }
         match self.band() {
             Some((lo, hi)) => format!(
-                "LIVE (crc {:#06x}, {} nonzero knots at raw {lo}..{hi})",
+                "LIVE (crc {:#06x}, {} nonzero calibration points at raw {lo}..{hi})",
                 self.crc(),
                 self.nonzero()
             ),
-            None => format!("LIVE (crc {:#06x}, every knot 0)", self.crc()),
+            None => format!("LIVE (crc {:#06x}, every calibration point 0)", self.crc()),
         }
     }
 
@@ -236,7 +236,7 @@ mod tests {
         assert_ne!(crc, id.crc());
         assert_eq!(
             b.describe(),
-            format!("LIVE (crc {crc:#06x}, 185 nonzero knots at raw 560..3504)")
+            format!("LIVE (crc {crc:#06x}, 185 nonzero calibration points at raw 560..3504)")
         );
         let zero = Lut {
             state: state::LIVE,
