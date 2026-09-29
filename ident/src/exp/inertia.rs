@@ -701,7 +701,8 @@ impl Experiment for Inertia {
 
 #[cfg(test)]
 mod tests {
-    use super::super::testkit::{FakeServo, bent_pot, pump};
+    use super::super::ladder::{Ladder, LadderCfg};
+    use super::super::testkit::{Bus, FakeServo, bench_mg90, bent_pot, pump, pump_on};
     use super::super::{Guarded, RigParams};
     use super::*;
     use crate::pot::Pot;
@@ -896,7 +897,7 @@ mod tests {
     fn inertia_steps_from_a_moving_base() {
         let mut servo = dynamic_servo();
         servo.current_limit = Some(180);
-        // a start band at 850: the 500 ms bases step clear of the slip zone
+        // a start band at 850
         let params = RigParams {
             pos_guard: Some((775, 3950)),
             ..crate::exp::testkit::rig()
@@ -1053,7 +1054,6 @@ mod tests {
         servo.pos = 900.0;
         let params = RigParams {
             pos_guard: Some((150, 1425)),
-            slip: (0, 0),
             ..crate::exp::testkit::rig()
         };
         let mut g = Guarded::new(inertia(InertiaCfg::default(), 180, &params), params);
@@ -1085,5 +1085,89 @@ mod tests {
         }]);
         assert!(exp.captures.is_empty());
         assert!(exp.cur.tel.is_empty(), "not capturing: frame dropped");
+    }
+
+    /// Every read and TEL sample's raw position an experiment met.
+    struct Positions<E> {
+        exp: E,
+        seen: Vec<u16>,
+    }
+
+    impl<E: Experiment> Experiment for Positions<E> {
+        fn step(&mut self, obs: Option<&TelemetrySnapshot>) -> Cmd {
+            self.seen.extend(obs.map(|o| o.pos));
+            self.exp.step(obs)
+        }
+
+        fn push_tel(&mut self, frames: &[TelFrame]) {
+            self.seen.extend(frames.iter().filter_map(|f| f.pos));
+            self.exp.push_tel(frames)
+        }
+
+        fn halted(&self) -> Option<AbortReason> {
+            self.exp.halted()
+        }
+    }
+
+    /// Inertia on the bench servo after the ladder that sized its runway,
+    /// at the bench bus's cadence with a seeded slow read: a drive brakes
+    /// late and comes to rest past the inset guard it planned on, inside
+    /// the soft limits. That is no abort - inertia aborts on the soft
+    /// limits, as the ladder does - and every step is captured. Aborting on
+    /// the guard, the same run would have ended there.
+    #[test]
+    fn a_late_inertia_brake_is_not_an_abort() {
+        const GUARD: (u16, u16) = (532, 3526);
+        let lim = crate::limits::ServoLimits {
+            i_lim: 280,
+            stall_yield: 168,
+            tau_trip: 280,
+            soft: (432, 3626),
+            phys: (209, 3849),
+            raw: (209, 3849),
+            r_q12: 7270,
+            vbus: 3204,
+            window_floor_q15: 4356,
+            amps_per_count: 0.0,
+        };
+        let plan = DutyPlan::new(&lim, 7270.0 / 4096.0, Some(0.145));
+        let params = RigParams::new(Some(GUARD), 350).with_stops((209, 3849));
+        let bus = Bus::BENCH.with_slow_reads(4);
+        let run = |aborts: RigParams| {
+            let mut servo = bench_mg90(3204);
+            servo.pos = 2029.0;
+            let cfg = LadderCfg {
+                seek_duty_q15: q15_floor(plan.seek),
+                ..LadderCfg::default()
+            };
+            let ladder = Ladder::new(cfg, &params, Runway::new(GUARD));
+            let mut g = Guarded::new(ladder, params.abort_at_soft(lim.soft));
+            pump_on(&mut g, &mut servo, 4_000_000, bus);
+            assert_eq!(g.abort(), None);
+            let runway = g.into_inner().runway().clone();
+            let base = plan.seek + BASE_OVER_SEEK;
+            let cfg = crate::run::inertia_cfg(plan.seek, base, InertiaCfg::default());
+            let mut s = Positions {
+                exp: Guarded::new(Inertia::new(cfg, plan, runway, &params), aborts),
+                seen: Vec::new(),
+            };
+            pump_on(&mut s, &mut servo, 4_000_000, bus);
+            assert!(!servo.torque);
+            s
+        };
+        let s = run(params.abort_at_soft(lim.soft));
+        assert_eq!(s.exp.abort(), None);
+        let past: Vec<u16> = s
+            .seen
+            .iter()
+            .copied()
+            .filter(|p| !(GUARD.0..=GUARD.1).contains(p))
+            .collect();
+        assert!(!past.is_empty(), "nothing landed past the guard");
+        assert!(past.iter().all(|p| (432..=3626).contains(p)), "{past:?}");
+        assert_eq!(s.exp.into_inner().captures.len(), 6);
+
+        let s = run(params);
+        assert!(matches!(s.exp.abort(), Some(AbortReason::PosGuard { .. })));
     }
 }

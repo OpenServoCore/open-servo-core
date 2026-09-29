@@ -1014,7 +1014,8 @@ mod tests {
                     let cfg = inertia_cfg(*seek, *base, InertiaCfg::default());
                     let plan = run.plan().expect("planned");
                     let runway = self.runway.clone().expect("the ladder's runway");
-                    let (exp, how) = self.go(Inertia::new(cfg, plan, runway, &params), params);
+                    let inertia = Inertia::new(cfg, plan, runway, &params);
+                    let (exp, how) = self.go(inertia, params.abort_at_soft(lim.soft));
                     if let Some(l) = &self.ladder {
                         let priors = InertiaPriors {
                             r_vpc: R,
@@ -1139,10 +1140,12 @@ mod tests {
         }
     }
 
-    /// The whole default run at the bench bus's cadence, its slow reads
-    /// seeded eight ways, on a 7.9 V pack and a fuller one: no drive leaves
-    /// the travel or trips the abort, the ladder fits every rung to 55%
-    /// both ways, and the run ends centred with torque off.
+    /// The whole default run on the bench servo at its measured speed and
+    /// the bench bus's cadence, its slow reads seeded eight ways, on a
+    /// 7.9 V pack and a fuller one, no slip zone: no drive leaves the travel
+    /// or trips the abort, the ladder fits every rung to 55% both ways, its
+    /// top speed over 2.2 times the bottom one's - a tenth of margin on the
+    /// twice the fit needs - and the run ends centred with torque off.
     #[test]
     fn ladder_runs_at_bench_bus_timing() {
         let to_55 = &LadderCfg::default().rungs_q15[..5];
@@ -1166,6 +1169,19 @@ mod tests {
                         );
                     }
                 }
+                let speed = |d: i16| {
+                    ladder
+                        .rungs
+                        .iter()
+                        .filter(|r| r.used && r.duty_q15.abs() == d)
+                        .map(|r| r.omega.abs())
+                        .sum::<f64>()
+                };
+                let (lo, hi) = (speed(to_55[0]), speed(to_55[4]));
+                assert!(
+                    hi > 1.1 * crate::exp::ladder::MIN_SPAN * lo,
+                    "{vbus} seed {seed}: {lo} {hi}"
+                );
                 assert!(!servo.torque && !servo.permit_live());
                 assert!((servo.pos - 2029.0).abs() <= 300.0, "ends at {}", servo.pos);
             }

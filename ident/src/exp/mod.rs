@@ -109,9 +109,10 @@ pub struct RigParams {
     /// only while duty_mean is nonzero: at torque-off the ident block
     /// holds its last driven value and would trip forever.
     pub i_abort: i16,
-    /// Stripped-gear slip zone, masked from motion fits and avoided as a
-    /// dwell region (consumed by the ladder/inertia experiments).
-    pub slip: (u16, u16),
+    /// A stretch of travel left out of the motion fits and avoided as a
+    /// dwell region, for a servo with a damaged spot in its train (consumed
+    /// by the ladder/inertia experiments). None by default.
+    pub slip: Option<(u16, u16)>,
     /// Ident windows discarded after every duty change (L transient +
     /// window-boundary smear).
     pub settle_windows: u32,
@@ -136,7 +137,7 @@ impl RigParams {
         Self {
             pos_guard,
             i_abort,
-            slip: (1250, 1650),
+            slip: None,
             settle_windows: 5,
             agg_period_ms: 0.8,
             stall_eps: seek::STALL_EPS,
@@ -173,7 +174,7 @@ impl RigParams {
     }
 
     pub fn in_slip(&self, pos: u16) -> bool {
-        (self.slip.0..=self.slip.1).contains(&pos)
+        self.slip.is_some_and(|(lo, hi)| (lo..=hi).contains(&pos))
     }
 }
 
