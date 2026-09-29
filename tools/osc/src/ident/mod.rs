@@ -51,7 +51,7 @@ use osc_ident::runway::{Runway, Supply};
 use osc_ident::sources::{self, Source, Winding};
 use params::{
     BiasJson, BreakawayJson, GainJson, InductanceJson, InertiaJson, LadderJson, ParamsFile,
-    PlantJson, PotJson, ResistanceJson, RlJson, SenseJson,
+    PlantJson, PotJson, ResistanceJson, RlJson, SenseJson, StoredWindingJson,
 };
 
 /// Where recorded runs land when `--out` is absent.
@@ -205,6 +205,8 @@ struct Drive {
     env: Envelope,
     sense: SenseJson,
     sc: Scales,
+    /// The winding an earlier identification left on the servo.
+    stored: Option<Winding>,
 }
 
 impl Ctx {
@@ -222,15 +224,18 @@ enum Cmd {
     /// params.json. R and L come from the burst; every drive that could
     /// stall after it is planned from R and the rail so its stall stays
     /// under the current limit, while ladder and inertia rungs run free on
-    /// the firmware limiter. A burst that declines ends the run: nothing
-    /// after it can be planned, unless --stall-ladder asks for R from the
-    /// stops instead. The first stage that aborts ends the run. Nothing
-    /// stalls a stop unless asked. Write-back stays explicit.
+    /// the firmware limiter. When the burst declines, R comes from the
+    /// stops if --stall-ladder asks for it and the supply leaves it room,
+    /// else R and L are the ones the servo carries from an earlier
+    /// identification; with neither the run stops, back at mid travel.
+    /// The first stage that aborts ends the run. Nothing stalls a stop
+    /// unless asked. Write-back stays explicit.
     Run {
         /// When the burst declines, measure winding R from the resistance
-        /// stop ladder instead of stopping: each stop stalled at up to four
-        /// duties between the lowest the current sensor reads and the
-        /// current limit, stall permit held.
+        /// stop ladder before falling back to the winding the servo
+        /// carries: each stop stalled at up to four duties between the
+        /// lowest the current sensor reads and the current limit, stall
+        /// permit held.
         #[arg(long)]
         stall_ladder: bool,
     },
@@ -362,6 +367,13 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
         let sc = sense
             .scales()
             .context("CalibSense scales degenerate (shunt/gain/dividers/vdd)")?;
+        let stored = sources::stored(
+            lim.r_q12,
+            snapshot::read_u16(&mut c, id, config::I_KP_Q88)?,
+            snapshot::read_u16(&mut c, id, config::I_KI_Q412)?,
+            sense.tick_hz,
+            &sc,
+        );
         let ma = lim.ma();
         println!(
             "limits: current limit {}, travel guard {}..{}, a run aborts over {}",
@@ -375,6 +387,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
             env,
             sense,
             sc,
+            stored,
         });
     }
     let lut = Lut::read(&mut c, id, &d)?;
@@ -1049,6 +1062,11 @@ fn run_all(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id, stall_ladder: bool) -> R
         bias: Some(BiasJson::from(bias)),
         inductance: rec.e8.as_ref().map(InductanceJson::from),
         breakaway: Some(BreakawayJson::from(breakaway)),
+        stored_winding: rec
+            .w
+            .filter(|w| w.r_from == Source::Stored)
+            .as_ref()
+            .map(StoredWindingJson::from),
         sense: Some(drive(cli)?.sense),
         pot: cli.lut.as_ref().map(PotJson::from),
         ..Default::default()
@@ -1085,9 +1103,10 @@ impl Until {
 }
 
 /// The run's stages in the order osc-ident's [`Run`] names them, through
-/// `until` and the closing centring. The first abort ends it; so does a
-/// burst that declines, since nothing after it can be planned, unless
-/// `stall_ladder` hands over to the resistance stop ladder.
+/// `until` and the closing centring. The first abort ends it. A burst that
+/// declines hands over to the resistance stop ladder when `stall_ladder`
+/// asks and it has room, else to the winding the servo carries; with
+/// neither the run ends after its closing centring.
 fn drive_stages(
     cli: &Ctx,
     c: &mut Client<NusbPipe>,
@@ -1098,7 +1117,7 @@ fn drive_stages(
     let out = csvio::OutDir::create(&cli.out)?;
     println!("recording to {}", out.0.display());
     let d = drive(cli)?;
-    let mut run = Run::new(d.lim, &d.sc);
+    let mut run = Run::new(d.lim, &d.sc).with_stored_winding(d.stored);
     if stall_ladder {
         run = run.with_stall_ladder();
     }
@@ -1117,6 +1136,18 @@ fn drive_stages(
         runway: None,
     };
     while let Some(stage) = run.next_stage() {
+        if rec.w.is_none()
+            && let (Some((w, why)), Some(plan)) = (run.reused(), run.plan())
+        {
+            if until != Until::Burst {
+                let e8 = rec.e8.as_ref();
+                for line in reuse_note(&w, why, &gates(e8), sources::stale(e8, &w)) {
+                    println!("{line}");
+                }
+                say_plan(&plan, &d.lim);
+            }
+            rec.w = Some(w);
+        }
         match rec.stage(&stage, &mut run, cli, c, id, until) {
             Ok(how) => run.ended(how),
             Err(e) => {
@@ -1138,15 +1169,18 @@ fn drive_stages(
             rec.declined.as_deref().unwrap_or("nothing fitted")
         ),
         Some(Over::Declined("burst")) if until != Until::Burst => bail!(
-            "no winding R: the burst declined ({}), and nothing after it can be planned, so the \
-             run stops here; `osc ident run --stall-ladder` measures R from stop stalls held \
+            "no winding R: the burst declined ({}) and this servo carries no winding from an \
+             earlier identification, so nothing after it can be planned and the run stops here, \
+             back at mid travel; `osc ident run --stall-ladder` measures R from stop stalls held \
              under the current limit instead",
-            rec.e8
-                .as_ref()
-                .map_or("no fit".into(), |r| r.blocking().join(", "))
+            gates(rec.e8.as_ref())
         ),
         Some(Over::NoLadderRoom { floor, cap }) => bail!(
-            "no winding R: the burst measured none, and {}",
+            "no winding R: the burst measured none{}, and {}",
+            match d.stored {
+                Some(_) => "",
+                None => ", this servo carries no winding from an earlier identification",
+            },
             Refusal::NoLadderRoom {
                 what: STOP_LADDER,
                 floor,
@@ -1154,8 +1188,9 @@ fn drive_stages(
             }
         ),
         Some(Over::ResistanceDeclined) => bail!(
-            "no winding R: neither the burst nor the resistance stop ladder fitted one, so the \
-             run stops here"
+            "no winding R: neither the burst nor the resistance stop ladder fitted one and this \
+             servo carries no winding from an earlier identification, so the run stops here, \
+             back at mid travel"
         ),
         Some(Over::Unproven) => {
             bail!("the jam check never saw the shaft move, so no burst may run")
@@ -1168,6 +1203,59 @@ fn drive_stages(
         ),
         _ => Ok(rec),
     }
+}
+
+/// The burst's failed gates, as the messages name them.
+fn gates(e8: Option<&InductanceResult>) -> String {
+    e8.map_or("no fit".into(), |r| r.blocking().join(", "))
+}
+
+/// Why the run plans from the winding the servo carries, in plain words,
+/// and a warning when the burst's own rough R, `stale`, disagrees with it.
+fn reuse_note(w: &Winding, why: Over, gates: &str, stale: Option<f64>) -> Vec<String> {
+    let ladder = match why {
+        Over::NoLadderRoom { floor, cap } => format!(
+            " and the resistance stop ladder has no room on this supply (the current sensor \
+             reads from {:.1}% duty, the current limit allows {:.1}% at a stop)",
+            floor * 100.0,
+            cap * 100.0
+        ),
+        Over::ResistanceDeclined => " and the resistance stop ladder fitted none".into(),
+        _ => String::new(),
+    };
+    let r = w.r_ohm.unwrap_or_default();
+    let mut lines = vec![
+        format!(
+            "[winding] the burst measured no winding R ({gates}){ladder}, so the run uses the R \
+             and L this servo already carries from an earlier identification: R {r:.2} ohm, L \
+             {:.3} mH",
+            w.l_h * 1e3
+        ),
+        "  they still hold: the winding belongs to the motor and does not change with the \
+         position table or the gear train"
+            .into(),
+    ];
+    if let Some(rough) = stale {
+        lines.push(format!(
+            "warning: the burst's rough R, {rough:.2} ohm, is {:.0}% away from the stored \
+             {r:.2} ohm, so the stored winding may be stale; `osc ident run --stall-ladder` \
+             measures it again from stop stalls, on a lower supply (USB) when this one leaves \
+             the stop ladder no room",
+            (rough / r - 1.0).abs() * 100.0
+        ));
+    }
+    lines
+}
+
+/// The stall-safe duties every drive from here plans with.
+fn say_plan(plan: &DutyPlan, lim: &ServoLimits) {
+    println!(
+        "[plan] every drive that could stall from here stays under the current limit of {}: \
+         seeks at {}, stop drives up to {}",
+        lim.ma().of(lim.i_lim as f64),
+        pct(plan.seek),
+        pct(plan.stop_cap)
+    );
 }
 
 /// What the stages record and hand each other.
@@ -1202,14 +1290,7 @@ impl Recorded {
             w.l_h * 1e3,
             w.l_from.as_str()
         );
-        let ma = lim.ma();
-        println!(
-            "[plan] every drive that could stall from here stays under the current limit of {}: \
-             seeks at {}, stop drives up to {}",
-            ma.of(lim.i_lim as f64),
-            pct(plan.seek),
-            pct(plan.stop_cap)
-        );
+        say_plan(&plan, lim);
         self.w = Some(w);
         Ok(())
     }
@@ -1411,12 +1492,13 @@ fn fit_dir(cli: &Ctx, dir: PathBuf) -> Result<()> {
         (caps, Some(sc)) => osc_ident::exp::inductance::fit_captures(caps, &sc, &FitCfg::default()),
     };
     // E2 is refitted whenever the run recorded it, but the winding takes it
-    // only behind a declined E8.
+    // only behind a declined E8. A ladder that fitted nothing is why a run
+    // took the stored winding.
     let resistance = match dir.join("resistance.csv").exists() {
-        true => Some(
-            Resistance::fit_samples(&csvio::read_dwell_samples(&dir)?)
-                .context("resistance refit degenerate")?,
-        ),
+        true => match Resistance::fit_samples(&csvio::read_dwell_samples(&dir)?) {
+            None if p.stored_winding.is_some() => None,
+            r => Some(r.context("resistance refit degenerate")?),
+        },
         false => None,
     };
     let w = sources::winding(
@@ -1425,7 +1507,11 @@ fn fit_dir(cli: &Ctx, dir: PathBuf) -> Result<()> {
         sc.as_ref(),
         cli.l_henries,
     )
-    .context("no winding R: burst is missing or declined and no resistance recording exists")?;
+    .or_else(|| p.stored_winding.map(|s| s.winding()))
+    .context(
+        "no winding R: burst is missing or declined, no resistance recording exists and the \
+         run took no stored winding",
+    )?;
     let bias = p.bias;
     let bias_res = bias.map(|b| osc_ident::exp::bias::BiasResult {
         sigma_theta: b.sigma_theta,
@@ -1991,5 +2077,135 @@ mod tests {
         assert_eq!(args.slip_lo.zip(args.slip_hi), Some((1250, 1650)));
         assert!(parse(&["osc", "--slip-lo", "1250", "show"]).is_err());
         assert!(parse(&["osc", "--slip-hi", "1650", "show"]).is_err());
+    }
+
+    /// The note a run prints once when it falls back to the winding the
+    /// servo carries: what the burst failed, the stored R and L in ohm and
+    /// mH, why they hold, and a warning only when the burst's rough R is
+    /// far from them.
+    #[test]
+    fn the_reuse_note_says_why_the_stored_winding_holds() {
+        let w = Winding {
+            r_ohm: Some(4.9),
+            r_vpc: 7270.0 / 4096.0,
+            r_from: Source::Stored,
+            l_h: 0.62e-3,
+            l_from: Source::Stored,
+        };
+        let why = Over::Declined("burst");
+        let quiet = reuse_note(&w, why, "r-consistency, l-env-spread", None);
+        assert_eq!(
+            quiet,
+            [
+                "[winding] the burst measured no winding R (r-consistency, l-env-spread), so the \
+                 run uses the R and L this servo already carries from an earlier identification: \
+                 R 4.90 ohm, L 0.620 mH",
+                "  they still hold: the winding belongs to the motor and does not change with \
+                 the position table or the gear train",
+            ]
+        );
+        let stale = reuse_note(&w, why, "r-consistency", Some(3.5));
+        assert_eq!(stale.len(), 3);
+        assert_eq!(
+            stale[2],
+            "warning: the burst's rough R, 3.50 ohm, is 29% away from the stored 4.90 ohm, so \
+             the stored winding may be stale; `osc ident run --stall-ladder` measures it again \
+             from stop stalls, on a lower supply (USB) when this one leaves the stop ladder no \
+             room"
+        );
+        let room = Over::NoLadderRoom {
+            floor: 0.133,
+            cap: 0.155,
+        };
+        assert!(reuse_note(&w, room, "r-consistency", None)[0].starts_with(
+            "[winding] the burst measured no winding R (r-consistency) and the resistance \
+                 stop ladder has no room on this supply (the current sensor reads from 13.3% \
+                 duty, the current limit allows 15.5% at a stop), so the run uses"
+        ));
+    }
+
+    /// A run whose burst declined and that took the winding the servo
+    /// carries: the fit synthesizes from it as from any other winding,
+    /// params.json and the report name it "stored on the servo", and the
+    /// gains write R and L back as they were read.
+    #[test]
+    fn params_name_the_stored_winding_as_their_source() {
+        use osc_ident::exp::ladder::RungSummary;
+        use osc_ident::fits::StepSeries;
+
+        let (dir, out, r) = record_front("stored");
+        std::fs::remove_file(dir.join("resistance.csv")).unwrap();
+        let path = dir.join("params.json");
+        let mut p = ParamsFile::load(&path).unwrap();
+        let sc = p.sense.unwrap().scales().unwrap();
+        // what an earlier identification wrote: R 7270, L 0.6 mH at 1 kHz
+        let w_ci = std::f64::consts::TAU * 1000.0;
+        let l_cd = gains::l_cd_from_si(0.6e-3, 60, 15_000, 6_800, 3_300).unwrap();
+        let i_kp = (w_ci * l_cd * 256.0).round() as u16;
+        let i_ki = (w_ci * r / 20_100.0 * 4096.0).round() as u16;
+        let w = sources::stored(7270, i_kp, i_ki, 20_100, &sc).expect("a stored winding");
+        p.stored_winding = Some(StoredWindingJson::from(&w));
+        p.save(&path).unwrap();
+
+        let rungs: Vec<RungSummary> = [1500.0, 3000.0, 4500.0, -1500.0, -3000.0, -4500.0]
+            .into_iter()
+            .map(|omega: f64| {
+                let i = omega.signum() * (80.0 + 0.004 * omega.abs());
+                RungSummary {
+                    duty_q15: (omega / 5.0) as i16,
+                    omega,
+                    omega_r2: 0.99,
+                    i,
+                    v: r * i + 0.1472 * omega,
+                    windows: 30,
+                    used: true,
+                    note: None,
+                }
+            })
+            .collect();
+        csvio::write_rungs(&out, &rungs).unwrap();
+        let series: Vec<(StepSeries, bool)> = [6000.0, -6000.0, 8000.0, -8000.0]
+            .into_iter()
+            .map(|duty: f64| {
+                let (sgn, omega_ss, tau) = (duty.signum(), duty.abs() / 2.0, 0.04);
+                let t: Vec<f64> = (0..60).map(|k| k as f64 * 0.005).collect();
+                let pos = t
+                    .iter()
+                    .map(|t| 2029.0 + sgn * omega_ss * (t - tau * (1.0 - (-t / tau).exp())))
+                    .collect();
+                let i = t
+                    .iter()
+                    .map(|t| sgn * (80.0 + 200.0 * (-t / tau).exp()))
+                    .collect();
+                let series = StepSeries {
+                    mask: vec![true; t.len()],
+                    t,
+                    pos,
+                    i,
+                    duty_q15: duty,
+                };
+                (series, false)
+            })
+            .collect();
+        csvio::write_step_series(&out, &series).unwrap();
+
+        fit_dir(&ctx(dir.clone()), dir.clone()).unwrap();
+        let p = ParamsFile::load(&path).unwrap();
+        let plant = p.plant.expect("a plant");
+        assert_eq!(plant.r_source, "stored on the servo");
+        assert_eq!(plant.l_source, "stored on the servo");
+        assert_eq!((plant.r_vpc, plant.l_henries), (w.r_vpc, w.l_h));
+        assert!(p.resistance.is_none() && p.inductance.is_none());
+        let raw = |name: &str| p.gains.iter().find(|g| g.name == name).unwrap().raw;
+        assert_eq!(raw("r_q12"), 7270);
+        assert_eq!(raw("i_kp_q88"), i_kp);
+        assert_eq!(raw("i_ki_q412"), i_ki);
+        let report = std::fs::read_to_string(dir.join("report.txt")).unwrap();
+        assert!(
+            report.contains("not run: R stored on the servo"),
+            "{report}"
+        );
+        assert!(report.contains("ohm)  stored on the servo"), "{report}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

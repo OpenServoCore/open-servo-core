@@ -14,7 +14,7 @@ use osc_ident::exp::resistance::ResistanceResult;
 use osc_ident::exp::rl::{RlResult, Scales};
 use osc_ident::exp::winding::VoltRun;
 use osc_ident::gains::{BwTargets, Encoded, EncodedGains, PlantParams};
-use osc_ident::sources::Winding;
+use osc_ident::sources::{Source, Winding};
 use osc_ident::units::SenseParams;
 use serde::{Deserialize, Serialize};
 
@@ -25,6 +25,9 @@ pub struct ParamsFile {
     pub rl: Option<RlJson>,
     pub inductance: Option<InductanceJson>,
     pub breakaway: Option<BreakawayJson>,
+    /// The winding the run took off the servo because nothing in it
+    /// measured R: the fit's R and L, as they were stored.
+    pub stored_winding: Option<StoredWindingJson>,
     pub ladder: Option<LadderJson>,
     pub inertia: Option<InertiaJson>,
     /// CalibSense scales read off the table - the offline fit's l_cd input.
@@ -517,6 +520,35 @@ impl PlantJson {
             l_source: w.l_from.as_str().into(),
             l_henries: w.l_h,
             sigma_source: sigma_from.into(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy)]
+pub struct StoredWindingJson {
+    pub r_vpc: f64,
+    pub r_ohm: Option<f64>,
+    pub l_henries: f64,
+}
+
+impl From<&Winding> for StoredWindingJson {
+    fn from(w: &Winding) -> Self {
+        Self {
+            r_vpc: w.r_vpc,
+            r_ohm: w.r_ohm,
+            l_henries: w.l_h,
+        }
+    }
+}
+
+impl StoredWindingJson {
+    pub fn winding(&self) -> Winding {
+        Winding {
+            r_ohm: self.r_ohm,
+            r_vpc: self.r_vpc,
+            r_from: Source::Stored,
+            l_h: self.l_henries,
+            l_from: Source::Stored,
         }
     }
 }

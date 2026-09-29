@@ -1,7 +1,9 @@
 //! Where every plant input gain synthesis uses came from. The winding's R
 //! and L come from the E8 burst when one of its routes promotes
 //! ([`InductanceResult::route`]); otherwise R falls back to the E2 end-stop
-//! stall and L to the configured default. The rest have one source each.
+//! stall and L to the configured default, and without a stall to the
+//! winding the servo carries from an earlier identification ([`stored`]).
+//! The rest have one source each.
 
 use crate::exp::inductance::{BurstRoute, InductanceResult};
 use crate::exp::resistance::ResistanceResult;
@@ -15,6 +17,8 @@ pub enum Source {
     Burst,
     /// E2, the end-stop stall, run because E8 declined.
     StallFallback,
+    /// Read off the servo: an earlier identification measured it.
+    Stored,
     /// The configured default: nothing measured it.
     Default,
     /// E3, the steady-state ladder.
@@ -31,6 +35,7 @@ impl Source {
             Source::BurstHeld => "burst, held",
             Source::Burst => "burst, free",
             Source::StallFallback => "resistance fallback",
+            Source::Stored => "stored on the servo",
             Source::Default => "default",
             Source::Ladder => "ladder",
             Source::Inertia => "inertia",
@@ -86,6 +91,45 @@ pub fn winding(
             l_from: Source::Default,
         }),
     }
+}
+
+/// The winding the servo carries: R is `r_q12`, vcounts per ccount in
+/// Q12. L has no field of its own; it rides in the current PI, whose kp
+/// is w_ci L and whose ki is w_ci R per fast tick, so kp over ki is L/R
+/// in fast ticks whatever crossover set them. None unless all four are
+/// set.
+pub fn stored(
+    r_q12: u16,
+    i_kp_q88: u16,
+    i_ki_q412: u16,
+    tick_hz: u16,
+    sc: &Scales,
+) -> Option<Winding> {
+    if r_q12 == 0 || i_kp_q88 == 0 || i_ki_q412 == 0 || tick_hz == 0 {
+        return None;
+    }
+    let r_vpc = r_q12 as f64 / 4096.0;
+    let r_ohm = r_vpc * sc.v_term_per_count / sc.amps_per_count;
+    let tau_s = (i_kp_q88 as f64 / 256.0) / (i_ki_q412 as f64 / 4096.0 * tick_hz as f64);
+    Some(Winding {
+        r_ohm: Some(r_ohm),
+        r_vpc,
+        r_from: Source::Stored,
+        l_h: tau_s * r_ohm,
+        l_from: Source::Stored,
+    })
+}
+
+/// How far, as a fraction of the stored R, the burst's rough R may sit
+/// before the stored winding is called into question.
+pub const STALE_R: f64 = 0.25;
+
+/// The burst's rough R, ohms - its pairs estimate - when it is more than
+/// [`STALE_R`] away from the stored winding's R.
+pub fn stale(e8: Option<&InductanceResult>, stored: &Winding) -> Option<f64> {
+    let rough = e8.and_then(|x| x.volts.r_pair_ohm.or(x.r_pair_ohm))?;
+    let r = stored.r_ohm?;
+    ((rough - r).abs() > STALE_R * r).then_some(rough)
 }
 
 #[cfg(test)]
@@ -237,6 +281,49 @@ mod tests {
         let alone = fit(seated(&[30]));
         assert_eq!(alone.route(), None);
         assert!(needs_stall(Some(&alone)));
+    }
+
+    /// A winding identified once, synthesized and encoded, then read back
+    /// off the table: R and L come back as they went in, and synthesized
+    /// again at the same crossover they encode to the same fields.
+    #[test]
+    fn stored_winding_writes_back_unchanged() {
+        use crate::gains::{self, BwTargets, PlantParams};
+        let sc = scales();
+        let (r_ohm, l_h) = (4.9, 0.6e-3);
+        let l_cd = |l: f64| gains::l_cd_from_si(l, 60, 15_000, 6_800, 3_300).unwrap();
+        let plant = |r_vpc: f64, l: f64| PlantParams {
+            r_vpc,
+            ke_vpc: 0.15,
+            fc: 20.0,
+            fv: 0.001,
+            b: 0.1,
+            sigma_theta: 1.0,
+            l_cd: l_cd(l),
+            tick_hz: 20_100.0,
+            f_med: 2_010.0,
+        };
+        let t = BwTargets::default();
+        let first = gains::encode(&gains::synthesize(&plant(sc.r_vpc(r_ohm), l_h), &t));
+        let w = stored(
+            first.r_q12.raw,
+            first.i_kp_q88.raw,
+            first.i_ki_q412.raw,
+            20_100,
+            &sc,
+        )
+        .expect("a stored winding");
+        assert_eq!((w.r_from, w.l_from), (Source::Stored, Source::Stored));
+        assert!((w.r_ohm.unwrap() - r_ohm).abs() / r_ohm < 1e-3, "{w:?}");
+        assert!((w.l_h - l_h).abs() / l_h < 5e-3, "{w:?}");
+        let again = gains::encode(&gains::synthesize(&plant(w.r_vpc, w.l_h), &t));
+        assert_eq!(again.r_q12.raw, first.r_q12.raw);
+        assert_eq!(again.i_ki_q412.raw, first.i_ki_q412.raw);
+        assert_eq!(again.i_kp_q88.raw, first.i_kp_q88.raw);
+
+        assert!(stored(0, first.i_kp_q88.raw, first.i_ki_q412.raw, 20_100, &sc).is_none());
+        assert!(stored(first.r_q12.raw, 0, first.i_ki_q412.raw, 20_100, &sc).is_none());
+        assert!(stored(first.r_q12.raw, first.i_kp_q88.raw, 0, 20_100, &sc).is_none());
     }
 
     #[test]
