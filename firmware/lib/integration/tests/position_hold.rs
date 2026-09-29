@@ -71,19 +71,36 @@ impl Rng {
 
 /// Local gain 1.25 over raw 1600..2592, easing back to the identity by 3600.
 fn table() -> [i16; POINTS] {
-    let (a, b, c) = (100i32, 162i32, 225i32);
-    let peak = 4 * (b - a);
+    ramp(100, 162, 225, 4)
+}
+
+/// Identity to point `a`, local gain `(16 + rise) / 16` from `a` to `b`,
+/// easing back to the identity by point `c`.
+fn ramp(a: i32, b: i32, c: i32, rise: i32) -> [i16; POINTS] {
+    let peak = rise * (b - a);
     let mut k = [0i16; POINTS];
     for (n, p) in (0i32..).zip(k.iter_mut()) {
         *p = if n <= a || n >= c {
             0
         } else if n <= b {
-            (4 * (n - a)) as i16
+            (rise * (n - a)) as i16
         } else {
             (peak - peak * (n - b) / (c - b)) as i16
         };
     }
     k
+}
+
+/// Local gain 1.625 over raw 1600..2160, the whole travel: the bench
+/// MG90's gain at its rest spot.
+fn steep() -> [i16; POINTS] {
+    ramp(100, 135, 179, 10)
+}
+
+/// Local gain 4 over raw 1696..1888, the whole travel: the most the hold
+/// band scales by.
+fn steepest() -> [i16; POINTS] {
+    ramp(106, 118, 190, 48)
 }
 
 /// The table's inverse: the raw count it maps onto `lin`.
@@ -254,6 +271,8 @@ fn goals(seed: u64, n: usize) -> Vec<i32> {
 struct Hold {
     /// Shaft speed when the kernel first parks.
     entry_cps: f64,
+    /// Parks left after the first, the whole hold: the loop re-engaging.
+    redrives: u32,
     /// Over the judged tail: pot shaft travel, parks left, mean supply
     /// current, peak winding current, ticks braked.
     spread: f64,
@@ -280,8 +299,12 @@ struct Session {
 
 impl Session {
     /// Torque on at rest at `start`, parked.
-    fn new(seed_n: u64, start: i32, cfg: impl FnOnce(&mut ControlTable)) -> Self {
-        let lut = table();
+    fn new(
+        seed_n: u64,
+        start: i32,
+        lut: [i16; POINTS],
+        cfg: impl FnOnce(&mut ControlTable),
+    ) -> Self {
         let sh = rig(&lut, cfg);
         let mut s = Self {
             sh,
@@ -316,6 +339,7 @@ impl Session {
             .with_mut(|t| t.control.lifecycle.goal_position = goal);
         let mut h = Hold {
             entry_cps: f64::NAN,
+            redrives: 0,
             spread: 0.0,
             wakes: 0,
             supply: 0.0,
@@ -335,6 +359,7 @@ impl Session {
             if parked && h.entry_cps.is_nan() {
                 h.entry_cps = self.p.omega.abs();
             }
+            h.redrives += (was_parked && !parked && !h.entry_cps.is_nan()) as u32;
             if t >= ticks - TAIL_TICKS {
                 lo = lo.min(self.p.out);
                 hi = hi.max(self.p.out);
@@ -353,8 +378,12 @@ impl Session {
 }
 
 fn holds(seed_n: u64, n: usize) -> Vec<Hold> {
+    holds_on(table(), seed_n, n)
+}
+
+fn holds_on(lut: [i16; POINTS], seed_n: u64, n: usize) -> Vec<Hold> {
     let g = goals(seed_n, n);
-    let mut s = Session::new(seed_n, g[0], |_| {});
+    let mut s = Session::new(seed_n, g[0], lut, |_| {});
     g[1..].iter().map(|&g| s.hold(g, HOLD_TICKS)).collect()
 }
 
@@ -395,8 +424,9 @@ fn hold_never_cycles_over_many_arrivals() {
         all.len()
     );
     for h in &all {
+        // 12 raw counts at the table's gain
         assert!(
-            h.err.abs() <= DEADBAND as f64,
+            h.err.abs() <= DEADBAND as f64 * 1.25,
             "rest outside the band: {h:?}"
         );
         assert_eq!(h.faults, 0, "{h:?}");
@@ -420,7 +450,7 @@ fn hold_draws_no_supply_current_at_rest() {
 #[test]
 fn hold_never_trips_the_stall_detector() {
     let g = goals(7, 1);
-    let mut s = Session::new(7, g[0], |t| {
+    let mut s = Session::new(7, g[0], table(), |t| {
         t.config.limits.stall_response = StallResponse::Fault;
         t.config.limits.stall_tau_trip_counts = 335;
     });
@@ -438,4 +468,64 @@ fn hold_never_trips_the_stall_detector() {
         assert_eq!(flags & flag::CEILING, 0, "pinned in the hold");
     }
     assert!((s.p.sensed() - goal as f64).abs() <= DEADBAND as f64);
+}
+
+fn sweep(lut: [i16; POINTS]) -> Vec<Hold> {
+    std::thread::scope(|s| {
+        let runs: Vec<_> = (1..=12u64)
+            .map(|n| s.spawn(move || holds_on(lut, n, 8)))
+            .collect();
+        runs.into_iter()
+            .flat_map(|r| r.join().expect("session"))
+            .collect()
+    })
+}
+
+fn redriven(all: &[Hold]) -> Vec<&Hold> {
+    all.iter().filter(|h| h.redrives != 0).collect()
+}
+
+/// Where a raw count spans `gain` linearized counts the band is still 12
+/// raw counts, so pot noise wakes the park no more often than on the
+/// identity, and every rest lies inside those 12 raw counts.
+#[test]
+fn hold_rests_on_a_steep_table() {
+    let base = redriven(&sweep([0; POINTS])).len();
+    for (lut, gain) in [(steep(), 1.625), (steepest(), 4.0)] {
+        let all = sweep(lut);
+        let again = redriven(&all);
+        assert!(
+            again.len() <= base,
+            "gain {gain}: {} of {} holds drove again, {base} on the identity: {again:?}",
+            again.len(),
+            all.len()
+        );
+        for h in &all {
+            assert!(
+                h.err.abs() <= DEADBAND as f64 * gain,
+                "gain {gain}: rest outside the band: {h:?}"
+            );
+            assert_eq!(h.faults, 0, "gain {gain}: {h:?}");
+        }
+    }
+}
+
+/// The same sweep: no hold on a steep table relays into a limit cycle.
+#[test]
+fn hold_never_cycles_on_a_steep_table() {
+    for (lut, gain) in [(steep(), 1.625), (steepest(), 4.0)] {
+        let all = sweep(lut);
+        let fast = all
+            .iter()
+            .filter(|h| h.entry_cps > coast_stop_cps())
+            .count();
+        assert!(fast >= 5, "gain {gain}: {fast} fast arrivals");
+        let cycling: Vec<&Hold> = all.iter().filter(|h| h.cycles()).collect();
+        assert!(
+            cycling.is_empty(),
+            "gain {gain}: {} limit cycles in {} holds: {cycling:?}",
+            cycling.len(),
+            all.len()
+        );
+    }
 }

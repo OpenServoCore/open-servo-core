@@ -577,12 +577,14 @@ servos.
 Linearization keeps the unit. The osc-servo corrects its pot through a
 per-unit table (sec 5.7), and the output is still ADC counts on the same
 scale: the identity outside the stops, each stop mapping to itself, so
-every count-denominated field (position limits, deadband, velocities in
-counts/s, the gains fitted against them) means the same thing before and
-after a table goes live. Only the raw sensor screen and the published
-raw sample stay raw. The table itself is calibration data like the
-primitives above: stored on the servo, exported to the host, never
-converted on the way.
+every count-denominated field (position limits, velocities in counts/s,
+the gains fitted against them) means the same thing before and after a
+table goes live. Only the raw sensor screen, the published raw sample
+and the hold deadband stay raw: `pos_deadband_counts` is raw counts of
+the position sensor, where its noise and quantisation live, and the
+servo scales it by the table's local gain at the present position. The
+table itself is calibration data like the primitives above: stored on
+the servo, exported to the host, never converted on the way.
 
 ### 5.6 Telemetry stream (TEL bursts)
 

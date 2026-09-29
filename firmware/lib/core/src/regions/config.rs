@@ -108,7 +108,9 @@ pub struct ConfigLoopVelocity {
 #[derive(Copy, Clone, Block)]
 pub struct ConfigLoopPosition {
     pub p_kp_q88: u16,
-    /// 0 = hold disabled. Hold brakes on position rest alone (position.rs).
+    /// Raw counts of the position sensor, scaled by the position table's
+    /// local gain into the linearized error. 0 = hold disabled. Hold brakes
+    /// on position rest alone (position.rs).
     pub pos_deadband_counts: u16,
     pub velocity_limit_cps: u16,
     /// c/s per medium tick.
