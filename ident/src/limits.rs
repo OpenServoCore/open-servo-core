@@ -97,8 +97,9 @@ pub struct ServoLimits {
     pub r_q12: u16,
     /// The rail, vcounts.
     pub vbus: u16,
-    /// `i_window_min_ticks`: the shortest drive window the shunt reads.
-    pub i_floor_ticks: u16,
+    /// `window_floor_q15`: the smallest duty whose drive window the shunt
+    /// reads, as the servo publishes it; 0 when it publishes none.
+    pub window_floor_q15: u16,
     /// Shunt scale; 0 when the sense constants are unset.
     pub amps_per_count: f64,
 }
@@ -133,6 +134,8 @@ pub enum Refusal {
     },
     /// A TEL stream too long to hold the stall permit through.
     StreamOverLease { ms: u32 },
+    /// The servo publishes no window floor.
+    NoWindowFloor,
     /// The stop ladder's band, from the window floor to the stall-safe
     /// cap, holds too few readable rungs or too little current span.
     NoLadderRoom { floor: f64, cap: f64 },
@@ -198,6 +201,12 @@ impl fmt::Display for Refusal {
                 "a {ms} ms capture with the stall permit held is longer than the \
                  {PERMIT_STREAM_MAX_MS} ms the permit can be held without a rewrite: shorten \
                  the capture"
+            ),
+            Refusal::NoWindowFloor => write!(
+                f,
+                "the servo did not report its current sensor floor, the smallest duty whose \
+                 current it can read (window_floor_q15 reads 0): no drive is planned without \
+                 it; update the servo's firmware"
             ),
             Refusal::NoLadderRoom { floor, cap } => write!(
                 f,
@@ -354,9 +363,18 @@ impl ServoLimits {
         })
     }
 
-    /// The window floor as a duty, q15, on the board's PWM period.
+    /// The window floor as a duty, q15, as the servo publishes it.
     pub fn window_floor(&self) -> i16 {
-        window_floor_q15(self.i_floor_ticks, BOARD_PWM_ARR)
+        self.window_floor_q15.min(i16::MAX as u16) as i16
+    }
+
+    /// Refuse a servo that publishes no window floor: no board constant
+    /// stands in for it.
+    pub fn check_floor(&self) -> Result<(), Refusal> {
+        if self.window_floor_q15 == 0 {
+            return Err(Refusal::NoWindowFloor);
+        }
+        Ok(())
     }
 
     /// The stall-safe plan for a drive at a stop before anything in this
@@ -549,21 +567,11 @@ pub const STALL_LADDER_STEP_Q15: i32 = 164;
 /// cover for a slope.
 pub const STALL_LADDER_SPAN: f64 = 0.15;
 
-/// The osc-dev-v006 PWM period, timer ticks. No standing field publishes
-/// it: the burst readback carries it only once a capture has run.
-pub const BOARD_PWM_ARR: u16 = 1200;
-
-/// The smallest duty, q15, whose drive window spans `ticks` of a PWM
-/// period of `arr` ticks: the firmware's own window floor, 4356 for 160 of
-/// 1200.
-pub fn window_floor_q15(ticks: u16, arr: u16) -> i16 {
-    let need = ((ticks.max(1) as u32) << 15) - (1 << 14);
-    need.div_ceil(arr.max(1) as u32).min(i16::MAX as u32) as i16
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::frame::TelemetrySnapshot;
+    use crate::regs::telemetry;
 
     /// The bench MG90 as SAVEd: limit 280 with the SG90-era stall settings,
     /// R 4.9 ohm, a 7.9 V rail, 60 mohm at G 15.
@@ -577,7 +585,7 @@ mod tests {
             raw: (209, 3849),
             r_q12: 7270,
             vbus: 3204,
-            i_floor_ticks: 160,
+            window_floor_q15: 4356,
             amps_per_count: 3.3 / 4096.0 / (15.0 * 0.060),
         }
     }
@@ -664,13 +672,61 @@ mod tests {
         assert!((plan.step_run(80.0) - 0.0910).abs() < 1e-3);
     }
 
+    /// A telemetry read as the servo serves it, from `fault_flags` through
+    /// `window_floor_q15`, publishing `floor` and a 4.39 V USB rail.
+    fn published(floor: u16) -> TelemetrySnapshot {
+        let (base, f, v) = (
+            telemetry::FAULT_FLAGS.addr,
+            telemetry::WINDOW_FLOOR_Q15,
+            telemetry::VBUS_COUNTS,
+        );
+        let mut region = vec![0u8; (f.addr + f.width as u16 - base) as usize];
+        let mut put = |r: Reg, b: [u8; 2]| {
+            let at = (r.addr - base) as usize;
+            region[at..at + 2].copy_from_slice(&b);
+        };
+        put(f, floor.to_le_bytes());
+        put(v, 1780u16.to_le_bytes());
+        TelemetrySnapshot::parse(base, &region).unwrap()
+    }
+
+    /// Two boards' floors, 160 and 240 ticks of a 1200 period: the limits
+    /// carry the number the servo publishes, and the stop ladder starts on
+    /// it.
     #[test]
-    fn the_window_floor_is_the_firmwares() {
-        assert_eq!(window_floor_q15(160, 1200), 4356);
-        assert_eq!(mg90().window_floor(), 4356);
-        // the next duty down reads one tick short, as the firmware rounds
-        let ticks = |d: u32| (d * 1200 + (1 << 14)) >> 15;
-        assert_eq!((ticks(4355), ticks(4356)), (159, 160));
+    fn servo_limits_take_the_floor_from_the_servo() {
+        let r = 7270.0 / 4096.0;
+        for floor in [4356, 6534] {
+            let tel = published(floor);
+            let lim = ServoLimits {
+                vbus: tel.vbus_counts,
+                window_floor_q15: tel.window_floor_q15,
+                ..mg90()
+            };
+            assert_eq!(lim.check_floor(), Ok(()));
+            assert_eq!(lim.window_floor(), floor as i16);
+            let rungs = DutyPlan::new(&lim, r, None)
+                .stall_ladder(lim.window_floor())
+                .unwrap();
+            assert_eq!(q15_floor(rungs[0]), floor as i16, "{rungs:?}");
+        }
+    }
+
+    #[test]
+    fn a_servo_without_a_floor_is_refused_in_plain_words() {
+        let tel = published(0);
+        let lim = ServoLimits {
+            window_floor_q15: tel.window_floor_q15,
+            ..mg90()
+        };
+        let err = lim.check_floor().unwrap_err();
+        assert_eq!(err, Refusal::NoWindowFloor);
+        assert_eq!(
+            err.to_string(),
+            "the servo did not report its current sensor floor, the smallest duty whose current \
+             it can read (window_floor_q15 reads 0): no drive is planned without it; update \
+             the servo's firmware"
+        );
     }
 
     /// Every dwell of the stop ladder sits at or over the window floor and

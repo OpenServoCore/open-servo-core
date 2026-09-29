@@ -1,6 +1,7 @@
 //! Read the servo's limits for a drive to plan against (osc-ident
-//! `limits`), and say out loud when its stall settings leave the current
-//! limit as the only protection.
+//! `limits`), refuse a servo that publishes no window floor, and say out
+//! loud when its stall settings leave the current limit as the only
+//! protection.
 
 use anyhow::Result;
 use osc_client::Id;
@@ -22,6 +23,7 @@ pub(crate) fn read(c: &mut Client<NusbPipe>, id: Id) -> Result<ServoLimits> {
         vdd_mv: read_u16(c, id, calib::VDD_MV)?,
         tick_hz: 0,
     };
+    let tel = read_snapshot(c, id)?;
     let lim = ServoLimits {
         i_lim: read_u16(c, id, config::CURRENT_LIMIT_COUNTS)?,
         stall_yield: read_u16(c, id, config::STALL_YIELD_COUNTS)?,
@@ -39,10 +41,11 @@ pub(crate) fn read(c: &mut Client<NusbPipe>, id: Id) -> Result<ServoLimits> {
             read_u16(c, id, calib::RAW_MAX)?,
         ),
         r_q12: read_u16(c, id, calib::R_Q12)?,
-        vbus: read_snapshot(c, id)?.vbus_counts,
-        i_floor_ticks: read_u16(c, id, calib::I_WINDOW_MIN_TICKS)?,
+        vbus: tel.vbus_counts,
+        window_floor_q15: tel.window_floor_q15,
         amps_per_count: units::amps_per_count(&sense),
     };
+    lim.check_floor()?;
     for w in lim.warnings() {
         eprintln!("warning: {w}");
     }

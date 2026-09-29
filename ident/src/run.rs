@@ -482,7 +482,7 @@ mod tests {
             raw: (209, 3849),
             r_q12: 0,
             vbus,
-            i_floor_ticks: 160,
+            window_floor_q15: 4356,
             amps_per_count: scales().amps_per_count,
         }
     }

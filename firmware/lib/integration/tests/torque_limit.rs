@@ -449,3 +449,32 @@ fn virgin_blind_band_passes_to_the_window_floor() {
         assert!(peak(&r) <= stall_counts(floor()) + 1, "{what}");
     }
 }
+
+#[test]
+fn window_floor_is_published_as_the_limiter_uses_it() {
+    for ticks in [I_FLOOR_TICKS, 240] {
+        let sh = rig(BLIND_LIM);
+        sh.table.with_mut(|t| {
+            t.calib.sense.i_window_min_ticks = ticks;
+            t.calib.motor.r_q12 = 0;
+        });
+        stamp(&sh);
+        let mut p = RlPlant::new(MID);
+        p.locked = true;
+        let mut k = start(&sh, &mut p, GOAL_64);
+        let r = run(&mut k, &sh, &mut p, 4_000);
+        let published = sh.table.with(|t| t.telemetry.limits.window_floor_q15);
+        let what = format!("{ticks} ticks");
+        assert_eq!(
+            published,
+            floor_duty(ticks, TIMING.pwm_arr, TIMING.recip_arr_q24),
+            "{what}"
+        );
+        // with no R the base is the floor, and a stall over the limit pins
+        // the applied duty on it
+        assert!(
+            r[2_000..].iter().all(|&(d, _)| d as u16 == published),
+            "{what}"
+        );
+    }
+}

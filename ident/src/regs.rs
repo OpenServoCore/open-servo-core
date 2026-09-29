@@ -165,6 +165,10 @@ pub mod telemetry {
     /// the stall yield fold, bit 2 an endstop, bit 3 the stall permit lease
     /// is live (core `kernel::limits::flag`).
     pub const LIMIT_FLAGS: Reg = reg(0x0266, 1);
+    /// Smallest duty whose drive window the shunt reads, Q15: where the
+    /// OpenLoop ceiling restarts and its blind band begins; 0 = not
+    /// published.
+    pub const WINDOW_FLOOR_Q15: Reg = reg(0x0268, 2);
 }
 
 /// Every const above with its descriptor field name - the cross-check
@@ -266,6 +270,7 @@ pub const ALL: &[(&str, Reg)] = &[
     ("duty_mean_q15", telemetry::DUTY_MEAN_Q15),
     ("agg_seq", telemetry::AGG_SEQ),
     ("limit_flags", telemetry::LIMIT_FLAGS),
+    ("window_floor_q15", telemetry::WINDOW_FLOOR_Q15),
     ("page_echo", burst::PAGE_ECHO),
     ("state", burst::STATE),
     ("samples_len", burst::SAMPLES_LEN),

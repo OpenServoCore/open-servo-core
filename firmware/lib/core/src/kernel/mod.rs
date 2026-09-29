@@ -626,6 +626,12 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                     self.timing.pwm_arr,
                     self.timing.recip_arr_q24,
                 );
+                // SAFETY: sole-telemetry-writer contract (type doc); volatile
+                // store, slow-boundary publish.
+                unsafe {
+                    (&raw mut (*p).telemetry.limits.window_floor_q15)
+                        .write_volatile(self.ol_floor_q15);
+                }
 
                 // thermometer seed tracks the calib anchor: install writes
                 // and host rewrites both land here
