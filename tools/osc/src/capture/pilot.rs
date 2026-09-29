@@ -64,9 +64,13 @@ const PILOT_W0: u32 = 150;
 /// Highest duty a rung, or the coast ladder, may open on with nothing
 /// measured to size it by.
 const FIRST_MAX_PCT: u8 = 30;
-/// A rung's window runs its predicted climb this many times over, then its
-/// tail.
+/// A rung's window runs its predicted climb this many times over, then
+/// LET_GO_MS, then its tail.
 const CLIMB_MARGIN: f64 = 1.25;
+/// After the applied duty first touches the goal the limiter takes it back
+/// and lets go again for up to about 5 ms, and the last arrival differs by
+/// about 3 ms between identical rungs.
+const LET_GO_MS: f64 = 10.0;
 /// Share added to a campaign rung's travel before it is held against the
 /// room.
 const WINDOW_MARGIN: f64 = 0.1;
@@ -418,9 +422,9 @@ fn grid_rung<S: Servo>(
     unreachable!("the second try always returns")
 }
 
-/// The window a rung first runs at: its predicted climb 1.25 times over and
-/// `tail`, when the runway can size it; a short one when nothing has moved
-/// the shaft yet.
+/// The window a rung first runs at: its predicted climb 1.25 times over,
+/// LET_GO_MS and `tail`, when the runway can size it; a short one when
+/// nothing has moved the shaft yet.
 fn first_window(
     rw: &Runway,
     rig: &Rig,
@@ -432,18 +436,18 @@ fn first_window(
     let w = rw
         .plan(sign(dir), pct as f64 / 100.0, 0.0)
         .map_or(PILOT_W0, |n| {
-            (CLIMB_MARGIN * n.climb_ms + tail).ceil() as u32
+            (CLIMB_MARGIN * n.climb_ms + LET_GO_MS + tail).ceil() as u32
         });
     sized(rw, rig, dir, pct, w, still).map(|()| w)
 }
 
 /// The window a rung that settled too late in `window` runs once more at:
 /// from where its applied duty last came to the goal, `arrival` ms, 1.25
-/// times over and `tail`, and longer than `window`; twice `window` when
-/// the stream did not end at the goal.
+/// times over, LET_GO_MS and `tail`, and longer than `window`; twice
+/// `window` when the stream did not end at the goal.
 fn retry_window(window: u32, arrival: Option<f64>, tail: f64) -> u32 {
     match arrival {
-        Some(ms) => ((CLIMB_MARGIN * ms + tail).ceil() as u32).max(window + 1),
+        Some(ms) => ((CLIMB_MARGIN * ms + LET_GO_MS + tail).ceil() as u32).max(window + 1),
         None => 2 * window,
     }
 }
@@ -1537,8 +1541,8 @@ mod tests {
     /// A 25% reverse rung at 20 ticks/ms shaped like the bench servo's: at
     /// the goal from tick 161, taken back over ticks 199..=202 by the
     /// limiter, held from tick 203. Its 101 ms window settles too late; the
-    /// retry sized from the last arrival, 1.25 x 10.15 + 100 ms, keeps the
-    /// least steady time, where one sized from the first arrival would not.
+    /// retry sized from the last arrival, 1.25 x 10.15 + 10 + 100 ms, keeps
+    /// the least steady time, where 109 ms would not.
     #[test]
     fn retry_runs_from_where_the_duty_last_came_to_the_goal() {
         let tail = SETTLE_MS + STEADY_MIN_MS;
@@ -1562,7 +1566,7 @@ mod tests {
         let arrival = runway::arrival_ms(&first, goal, 20_000.0);
         assert_eq!(arrival, Some(10.15));
         let longer = retry_window(101, arrival, tail);
-        assert_eq!(longer, 113);
+        assert_eq!(longer, 123);
         let v = settled_v(&frames(longer), goal, 20.0).unwrap();
         assert!((v - 5.0).abs() < 0.01, "{v}");
         assert_eq!(settled_v(&frames(109), goal, 20.0), None);
@@ -1573,14 +1577,51 @@ mod tests {
         assert_eq!(retry_window(101, None, tail), 202);
     }
 
-    /// A limiter that takes the duty back 35 ms after it first reaches the
+    /// The bench servo's 25% fwd rung: its first run last came to the goal
+    /// at 8.4 ms and settled too late, and the retry last came to it at
+    /// 11.2 ms. The let-go allowance keeps the retry's least steady time,
+    /// where 1.25 x 8.4 + 100 ms, 111, would not.
+    #[test]
+    fn retry_allows_for_the_limiter_letting_go_later() {
+        let tail = SETTLE_MS + STEADY_MIN_MS;
+        let goal = pct_q15(25);
+        let frames = |ms: u32, last: u64| -> Vec<TelFrame> {
+            (0..ms as u64 * 20)
+                .map(|t| TelFrame {
+                    tick: t,
+                    pos: Some(1000 + (t / 4) as u16),
+                    duty_q15: Some(if t < 168 || (last - 4..last).contains(&t) {
+                        goal - 128
+                    } else {
+                        goal
+                    }),
+                    ..TelFrame::default()
+                })
+                .collect()
+        };
+        let first = frames(101, 168);
+        assert_eq!(settled_v(&first, goal, 20.0), None);
+        let arrival = runway::arrival_ms(&first, goal, 20_000.0);
+        assert_eq!(arrival, Some(8.4));
+        let longer = retry_window(101, arrival, tail);
+        assert_eq!(longer, 121);
+        let retry = frames(longer, 224);
+        assert_eq!(runway::arrival_ms(&retry, goal, 20_000.0), Some(11.2));
+        let range = runway::settled_ticks(&retry, goal, 20_000.0).unwrap();
+        let steady_ms = (range.end() - range.start()) as f64 / 20.0;
+        assert!(steady_ms >= STEADY_MIN_MS, "{steady_ms}");
+        assert!(settled_v(&retry, goal, 20.0).is_some());
+        assert_eq!(settled_v(&frames(111, 224), goal, 20.0), None);
+    }
+
+    /// A limiter that takes the duty back 45 ms after it first reaches the
     /// goal: the rungs whose first window leaves too little past that run
     /// once more from the last arrival, and the ladder climbs past them.
     #[test]
     fn ladder_climbs_past_a_limiter_that_chatters_at_the_goal() {
         let (mut b, front) = bench(Supply::TwoS);
         let rig = bench_rig(&front);
-        b.chatter = 700;
+        b.chatter = 900;
         let duties: Vec<u8> = (1..=8).map(|k| k * 5).collect();
         let ladder = grid_ladder(&mut b, &rig, &duties).unwrap();
         let kept: Vec<u8> = ladder.rungs.iter().map(|r| r.pct).collect();
@@ -1603,7 +1644,7 @@ mod tests {
         rw.climbed(80.0);
         rw.stopped(10.58, 171.0);
         let w = first_window(&rw, &rig, Dir::Fwd, 60, SETTLE_MS + STEADY_MIN_MS, false).unwrap();
-        assert_eq!(w, 282);
+        assert_eq!(w, 292);
         assert_eq!(
             first_window(&rw, &rig, Dir::Rev, 60, SETTLE_MS + STEADY_MIN_MS, false),
             Err(
@@ -1618,8 +1659,8 @@ mod tests {
         short.ran(0.55, 10.58);
         short.climbed(80.0);
         short.stopped(10.58, 171.0);
-        let why = sized(&short, &rig, Dir::Fwd, 60, 282, false).unwrap_err();
-        assert!(why.starts_with("fwd 60% in 282 ms needs "), "{why}");
+        let why = sized(&short, &rig, Dir::Fwd, 60, 292, false).unwrap_err();
+        assert!(why.starts_with("fwd 60% in 292 ms needs "), "{why}");
         assert!(
             why.ends_with("counts of runway, over the 1593 there is"),
             "{why}"
