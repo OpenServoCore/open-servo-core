@@ -1,5 +1,7 @@
 //! `osc capture check`: re-read a landed capture and confirm every recording
-//! holds every segment its own meta promises, without the servo.
+//! holds every segment its own meta promises, without the servo; over a
+//! dataset or experiment dir, every capture under it, and that they were
+//! all made under one pot table.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader};
@@ -14,38 +16,117 @@ use super::verdict::expected_segments;
 /// `osc capture check` args.
 #[derive(clap::Args, Debug)]
 pub struct Args {
-    /// A capture dir: `<dataset>/<experiment>/capture-N`.
+    /// A capture dir `<dataset>/<experiment>/capture-N`, or a dataset or
+    /// experiment dir holding captures.
     dir: PathBuf,
 }
 
-/// The sweep meta keys the segment count follows from.
+/// The sweep meta keys the segment count follows from, and the plant
+/// block the captures must agree on.
 #[derive(Deserialize)]
 struct SweepMeta {
     schedule: Vec<String>,
     dirs: Vec<i8>,
     baseline_ms: u32,
+    #[serde(default)]
+    plant: Option<PlantMeta>,
+}
+
+/// The table a recording was made under, as its meta names it.
+#[derive(Deserialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct PlantMeta {
+    lut_state: String,
+    lut_crc: String,
 }
 
 pub(crate) fn run(a: &Args) -> Result<()> {
-    let names = recordings(&a.dir)?;
-    if names.is_empty() {
-        bail!("no recordings in {}", a.dir.display());
-    }
+    let dirs = capture_dirs(&a.dir)?;
+    let mut total = 0;
     let mut failed = 0;
-    for name in &names {
-        match check(&a.dir, name) {
-            Ok(line) => println!("{name}: {line}"),
-            Err(e) => {
-                failed += 1;
-                println!("{name}: FAIL {e:#}");
+    let mut tables: BTreeMap<Option<PlantMeta>, Vec<String>> = BTreeMap::new();
+    for dir in &dirs {
+        let names = recordings(dir)?;
+        for name in &names {
+            total += 1;
+            let label = match dir.strip_prefix(&a.dir) {
+                Ok(rel) if !rel.as_os_str().is_empty() => format!("{}/{name}", rel.display()),
+                _ => name.clone(),
+            };
+            match check(dir, name) {
+                Ok((line, plant)) => {
+                    println!("{label}: {line}");
+                    tables.entry(plant).or_default().push(label);
+                }
+                Err(e) => {
+                    failed += 1;
+                    println!("{label}: FAIL {e:#}");
+                }
             }
         }
     }
-    if failed > 0 {
-        bail!("{failed} of {} recordings failed", names.len());
+    if total == 0 {
+        bail!("no recordings in {}", a.dir.display());
     }
-    println!("ok: {} recordings complete", names.len());
+    if tables.len() > 1 {
+        println!("FAIL {}", mixed(&tables));
+    }
+    if failed > 0 {
+        bail!("{failed} of {total} recordings failed");
+    }
+    if tables.len() > 1 {
+        bail!("{}", mixed(&tables));
+    }
+    println!("ok: {total} recordings complete");
     Ok(())
+}
+
+/// The capture dirs under `dir`: itself when it holds recordings, else
+/// every `capture-N` one or two levels down (an experiment or a dataset).
+fn capture_dirs(dir: &Path) -> Result<Vec<PathBuf>> {
+    if !recordings(dir)?.is_empty() {
+        return Ok(vec![dir.to_path_buf()]);
+    }
+    let is_capture = |p: &Path| {
+        p.is_dir()
+            && p.file_name()
+                .and_then(|f| f.to_str())
+                .is_some_and(|f| f.starts_with("capture-"))
+    };
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(dir).with_context(|| format!("read {}", dir.display()))? {
+        let p = e?.path();
+        if is_capture(&p) {
+            out.push(p);
+        } else if p.is_dir() {
+            for e in std::fs::read_dir(&p).with_context(|| format!("read {}", p.display()))? {
+                let p = e?.path();
+                if is_capture(&p) {
+                    out.push(p);
+                }
+            }
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// The mix, one table per line with the recordings made under it.
+fn mixed(tables: &BTreeMap<Option<PlantMeta>, Vec<String>>) -> String {
+    let groups: Vec<String> = tables
+        .iter()
+        .map(|(t, names)| {
+            let table = match t {
+                Some(p) => format!("lut {} {}", p.lut_state, p.lut_crc),
+                None => "no plant record".to_string(),
+            };
+            format!("{table}: {}", names.join(" "))
+        })
+        .collect();
+    format!(
+        "recordings mix {} pot tables; {}",
+        tables.len(),
+        groups.join("; ")
+    )
 }
 
 /// Every recording name with a `.meta.json` or a `.csv.gz`, so a half pair
@@ -64,7 +145,7 @@ fn recordings(dir: &Path) -> Result<BTreeSet<String>> {
     Ok(names)
 }
 
-fn check(dir: &Path, name: &str) -> Result<String> {
+fn check(dir: &Path, name: &str) -> Result<(String, Option<PlantMeta>)> {
     let meta_path = dir.join(format!("{name}.meta.json"));
     let text = std::fs::read_to_string(&meta_path)
         .with_context(|| format!("read {}", meta_path.display()))?;
@@ -102,7 +183,14 @@ fn check(dir: &Path, name: &str) -> Result<String> {
         bail!("no rows drive dir {d:+}");
     }
     let total: usize = rows.values().sum();
-    Ok(format!("{want} segments, {total} rows, dirs {:?}", m.dirs))
+    let plant = match &m.plant {
+        Some(p) => format!(", lut {} {}", p.lut_state, p.lut_crc),
+        None => String::new(),
+    };
+    Ok((
+        format!("{want} segments, {total} rows, dirs {:?}{plant}", m.dirs),
+        m.plant,
+    ))
 }
 
 /// Rows per seg, and every dir seen; the header names the columns.
@@ -144,10 +232,77 @@ mod tests {
         let root = tmp("check-clean");
         let dir = land(&Store::new(root.clone()), &clean());
         assert_eq!(
-            check(&dir, "slow").unwrap(),
+            check(&dir, "slow").unwrap().0,
             "5 segments, 15 rows, dirs [1, -1]"
         );
         assert!(run(&Args { dir: dir.clone() }).is_ok());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A capture dir's recordings, or every capture under a dataset dir,
+    /// must all name one table: a reboot that dropped an unsaved table, or
+    /// a table rewritten between captures, shows as a mix.
+    #[test]
+    fn captures_under_different_tables_fail_together() {
+        use crate::capture::store::fixture::{land_as, sweep_meta};
+        let root = tmp("check-mix");
+        let store = Store::new(root.clone());
+        let live = |crc: &str| {
+            let mut m = sweep_meta();
+            m["plant"] = serde_json::json!({ "lut_state": "LIVE", "lut_crc": crc });
+            m
+        };
+        land_as(&store, 1, "slow", &live("0x1a2b"), &clean());
+        land_as(&store, 1, "fast", &live("0x1a2b"), &clean());
+        assert_eq!(
+            check(&root.join("session/capture-1"), "slow").unwrap().0,
+            "5 segments, 15 rows, dirs [1, -1], lut LIVE 0x1a2b"
+        );
+        assert!(run(&Args { dir: root.clone() }).is_ok(), "one table");
+
+        land_as(&store, 2, "slow", &live("0x1a2b"), &clean());
+        let mut identity = sweep_meta();
+        identity["plant"] = serde_json::json!({ "lut_state": "IDENTITY", "lut_crc": "0x0000" });
+        land_as(&store, 2, "fast", &identity, &clean());
+        assert!(
+            run(&Args {
+                dir: root.join("session/capture-1")
+            })
+            .is_ok()
+        );
+        let e = run(&Args {
+            dir: root.join("session/capture-2"),
+        })
+        .unwrap_err()
+        .to_string();
+        assert_eq!(
+            e,
+            "recordings mix 2 pot tables; lut IDENTITY 0x0000: fast; lut LIVE 0x1a2b: slow"
+        );
+        assert!(
+            run(&Args {
+                dir: root.join("session")
+            })
+            .is_err()
+        );
+        assert!(run(&Args { dir: root.clone() }).is_err(), "the dataset dir");
+        assert_eq!(capture_dirs(&root).unwrap().len(), 2);
+
+        // a recording from before the plant record counts as its own kind
+        land_as(&store, 3, "slow", &sweep_meta(), &clean());
+        let mut tables = BTreeMap::new();
+        tables.insert(None, vec!["session/capture-3/slow".to_string()]);
+        tables.insert(
+            Some(PlantMeta {
+                lut_state: "LIVE".into(),
+                lut_crc: "0x1a2b".into(),
+            }),
+            vec!["session/capture-1/slow".to_string()],
+        );
+        assert_eq!(
+            mixed(&tables),
+            "recordings mix 2 pot tables; no plant record: session/capture-3/slow; lut LIVE 0x1a2b: session/capture-1/slow"
+        );
         std::fs::remove_dir_all(&root).unwrap();
     }
 

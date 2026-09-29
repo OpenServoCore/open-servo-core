@@ -23,10 +23,11 @@ use super::battery::{self, read_pack_mv};
 use super::envelope::{Envelope, civil_date};
 use super::plan::{self, Plan};
 use super::procs::Procedure;
-use super::store::{Capture, CaptureMeta, Decl, Store};
+use super::store::{Capture, CaptureMeta, Decl, PotLutFile, Store};
 use super::verdict::verdict;
 use super::{RUNG_TRIES, SEEK_CAP_PCT, SETTLE_MS, Supply, WINDOW_MS};
 use crate::rig::park;
+use crate::rig::plant::{self, Snapshot};
 use crate::rig::pump::{self, STOP, read_snapshot};
 use crate::sweep::{self, Cfg, Dirs};
 
@@ -123,6 +124,7 @@ pub(crate) fn run(a: &Args, baud: String, id: u8) -> Result<()> {
         || dir.display().to_string(),
         |f| f.to_string_lossy().into_owned(),
     );
+    let dataset_name = tag.clone();
     let mut log = Log::open(tag);
     log.line(format_args!("procedure: {source}"));
     if wrote {
@@ -156,8 +158,11 @@ pub(crate) fn run(a: &Args, baud: String, id: u8) -> Result<()> {
         store: &store,
         supply: a.supply,
         log: &mut log,
+        dataset: dataset_name,
+        plant: None,
     };
     let r = s.campaign(warmup.as_ref(), &jobs, a.redo);
+    s.recheck_plant();
     s.finish();
     match r {
         Ok(()) => {
@@ -447,6 +452,10 @@ struct Session<'a> {
     store: &'a Store,
     supply: Supply,
     log: &'a mut Log,
+    /// `<servo>__<supply>`, what the dataset's table image is named for.
+    dataset: String,
+    /// The plant as read at the start, for the end-of-run recheck.
+    plant: Option<Snapshot>,
 }
 
 impl Session<'_> {
@@ -468,6 +477,7 @@ impl Session<'_> {
                 self.env.fw
             ));
         }
+        self.record_plant(fw)?;
         if let Some((n, plans)) = warmup {
             self.gate()?;
             self.log
@@ -617,6 +627,70 @@ impl Session<'_> {
                 t.reject().map_err(Stop::Error)?;
                 Ok(outcome_of(&e))
             }
+        }
+    }
+
+    /// The plant the captures are made under, logged, and its table kept
+    /// with the dataset while one is LIVE. Every recording's meta names
+    /// the table by crc; the dataset holds the knots once.
+    fn record_plant(&mut self, fw: u16) -> Result<(), Stop> {
+        let (dataset, source) = (
+            self.dataset.clone(),
+            format!(
+                "servo id {} fw {fw}, read at session start",
+                self.id.as_byte()
+            ),
+        );
+        let (snap, image) = self.on_servo(|c, id| {
+            let d = crate::state::descriptor(c, id)?;
+            let snap = Snapshot::read(c, id, &d)?;
+            let image = snap
+                .lut
+                .live()
+                .then(|| plant::stops(c, id, &d).map(|s| snap.lut.image(s, &dataset, &source)))
+                .transpose()?;
+            Ok((snap, image))
+        })?;
+        self.log.line(format_args!("plant: {}", snap.line()));
+        if let Some(image) = image {
+            match self.store.save_pot_lut(&image).map_err(Stop::Error)? {
+                PotLutFile::Written => self.log.line("wrote pot-lut.json"),
+                PotLutFile::Same => {}
+                PotLutFile::Differs(crc) => self.log.line(format_args!(
+                    "warning: pot-lut.json holds table {crc}, the servo runs {}: the dataset \
+                     will mix tables (osc capture check flags it)",
+                    image["lut_crc"].as_str().unwrap_or_default()
+                )),
+            }
+        }
+        self.plant = Some(snap);
+        Ok(())
+    }
+
+    /// The plant read again after the run: a table lost to a reboot, a
+    /// restamp or a data-state change mid-session means the captures do
+    /// not all describe the same servo.
+    fn recheck_plant(&mut self) {
+        let Some(before) = self.plant.take() else {
+            return;
+        };
+        let Some(c) = self.c.as_mut() else {
+            self.log
+                .line("no adapter: the plant was not re-read at the end");
+            return;
+        };
+        let id = self.id;
+        let after = crate::state::descriptor(c, id).and_then(|d| Snapshot::read(c, id, &d));
+        match after {
+            Ok(after) if before.same(&after) => {}
+            Ok(after) => self.log.line(format_args!(
+                "warning: plant changed during the session: was {}, now {}",
+                before.line(),
+                after.line()
+            )),
+            Err(e) => self
+                .log
+                .line(format_args!("plant not re-read at the end: {e:#}")),
         }
     }
 
