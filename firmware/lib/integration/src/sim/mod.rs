@@ -37,7 +37,7 @@ use self::servo::SimServo;
 
 pub use self::cpu::HandlerCost;
 pub use self::host::HostEvent;
-pub use self::store::{Kind as ImageKind, RamStore};
+pub use self::store::{Kind as ImageKind, RamStore, Tear};
 
 pub use self::support::{
     assert_valid, expect_tel_payload, expect_tel_payload_rows, frame_crc_ok, instruction, status,

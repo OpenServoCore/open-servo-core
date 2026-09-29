@@ -95,7 +95,7 @@ pub struct ControlBurst {
 /// `lut_cmd` STOREs the window into that page, FETCHes it back, or
 /// COMMITs the whole array; `lut_state` reports what the kernel applies.
 /// Page, command and knots are contiguous so one WRITE carries a page.
-/// Volatile: a reboot is the identity until the LUT image loads.
+/// Volatile: a reboot is the identity until the CALIB image loads.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct ControlPotLut {

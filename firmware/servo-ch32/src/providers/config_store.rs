@@ -1,6 +1,6 @@
 //! ConfigStore provider (protocol sec 9.4): the two CONFIG flash slots with
-//! A/B alternation, the two CALIB slots and the two pot LUT slots (each its
-//! own image, own seq), plus the boot-time overlays. Both `save` and `wipe`
+//! A/B alternation, the two CALIB slots (calibration plus its tables, own
+//! image, own seq), plus the boot-time overlays. Both `save` and `wipe`
 //! are blocking - the CPU fetch-stalls for every erase/program while code
 //! runs from flash - which is exactly the protocol sec 9.4 contract
 //! (dispatch's torque gate makes the stall safe, the post-completion ack
@@ -10,8 +10,8 @@ use core::cell::SyncUnsafeCell;
 
 use osc_servo_core::RegionStorage;
 use osc_servo_core::persist::{
-    self, BootPick, CALIB_IMAGE_LEN, CALIB_LEN, CONFIG_LEN, IMAGE_LEN, LUT_IMAGE_LEN, LUT_LEN,
-    PROFILE_LEN, Slot, StoreError,
+    self, BootPick, CALIB_IMAGE_LEN, CALIB_LEN, CONFIG_LEN, IMAGE_LEN, LUT_LEN, PROFILE_LEN, Slot,
+    StoreError,
 };
 use osc_servo_core::pot_lut::INTERVALS;
 
@@ -50,18 +50,6 @@ fn calib_slot_addr(slot: Slot) -> u32 {
     }
 }
 
-#[cfg(target_arch = "riscv32")]
-fn lut_slot_addr(slot: Slot) -> u32 {
-    unsafe extern "C" {
-        static _lut_a: u8;
-        static _lut_b: u8;
-    }
-    match slot {
-        Slot::A => (&raw const _lut_a) as u32,
-        Slot::B => (&raw const _lut_b) as u32,
-    }
-}
-
 #[cfg(not(target_arch = "riscv32"))]
 fn slot_addr(_slot: Slot) -> u32 {
     unimplemented!("host builds never touch the flash store")
@@ -69,11 +57,6 @@ fn slot_addr(_slot: Slot) -> u32 {
 
 #[cfg(not(target_arch = "riscv32"))]
 fn calib_slot_addr(_slot: Slot) -> u32 {
-    unimplemented!("host builds never touch the flash store")
-}
-
-#[cfg(not(target_arch = "riscv32"))]
-fn lut_slot_addr(_slot: Slot) -> u32 {
     unimplemented!("host builds never touch the flash store")
 }
 
@@ -92,7 +75,7 @@ fn lut_bytes(lut: &[i16; INTERVALS]) -> &[u8; LUT_LEN] {
     unsafe { &*(lut as *const [i16; INTERVALS] as *const [u8; LUT_LEN]) }
 }
 
-/// Most segments one image streams (header, config, profile).
+/// Most segments one image streams (header, region, tables).
 const SEGS_MAX: usize = 3;
 
 /// Erase the slot's pages, stream the image's segments (header first)
@@ -161,14 +144,12 @@ impl Cursor {
 struct State {
     config: Cursor,
     calib: Cursor,
-    lut: Cursor,
 }
 
 impl State {
     const FRESH: State = State {
         config: Cursor::FRESH,
         calib: Cursor::FRESH,
-        lut: Cursor::FRESH,
     };
 }
 
@@ -184,8 +165,8 @@ static CONFIG_STORE: ConfigStore = ConfigStore {
 
 impl ConfigStore {
     /// Boot-time load: overlay the newest valid config and calib images onto
-    /// the (already default-seeded) table, load the pot LUT against the
-    /// stops they left, prime every A/B state, publish the data state the
+    /// the (already default-seeded) table, the calib image's tables into
+    /// `SHARED` beside it, prime both A/B states, publish the data state the
     /// verdicts make, and seed the store into `SHARED`. Bringup-only,
     /// pre-IRQ; sole writer (the `seed_config_defaults` contract). The
     /// caller re-seeds RO calib sense facts AFTER this so board data always
@@ -197,14 +178,9 @@ impl ConfigStore {
             stored(slot_addr(Slot::B), IMAGE_LEN),
         );
         let calib_pick = persist::boot_overlay_calib(
-            &SHARED.table,
+            &SHARED,
             stored(calib_slot_addr(Slot::A), CALIB_IMAGE_LEN),
             stored(calib_slot_addr(Slot::B), CALIB_IMAGE_LEN),
-        );
-        let lut_pick = persist::boot_load_pot_lut(
-            &SHARED,
-            stored(lut_slot_addr(Slot::A), LUT_IMAGE_LEN),
-            stored(lut_slot_addr(Slot::B), LUT_IMAGE_LEN),
         );
         SHARED.publish_data_state(pick.state, calib_pick.state);
         // SAFETY: pre-IRQ sole writer, see fn doc.
@@ -212,29 +188,26 @@ impl ConfigStore {
             *CONFIG_STORE.state.get() = State {
                 config: Cursor::from_pick(&pick),
                 calib: Cursor::from_pick(&calib_pick),
-                lut: Cursor::from_pick(&lut_pick),
             }
         };
         SHARED.seed_store(&CONFIG_STORE);
         // image state: 0 loaded, 1 virgin, 2 corrupt, 3 stale (data_state)
         crate::log::debug!(
-            "config store: state={} next_seq={} calib state={} next_seq={} lut state={} next_seq={} lut_state={}",
+            "config store: state={} next_seq={} calib state={} next_seq={} lut_state={}",
             pick.state as u8,
             pick.next_seq,
             calib_pick.state as u8,
             calib_pick.next_seq,
-            lut_pick.state as u8,
-            lut_pick.next_seq,
             SHARED.table.with(|t| t.control.pot_lut.lut_state),
         );
     }
 }
 
 impl osc_servo_core::ConfigStore for ConfigStore {
-    /// Program each image's older slot in turn (config, calib, pot LUT),
-    /// each readback-verified. An image advances its A/B state only on its
-    /// own verify, so a later failure leaves the earlier images durable and
-    /// the ack honest (`hardware`).
+    /// Program each image's older slot in turn (config, then calib with its
+    /// tables), each readback-verified. An image advances its A/B state
+    /// only on its own verify, so a later failure leaves the earlier image
+    /// durable and the ack honest (`hardware`).
     fn save(
         &self,
         config: &[u8; CONFIG_LEN],
@@ -250,24 +223,16 @@ impl osc_servo_core::ConfigStore for ConfigStore {
         state.config.advance();
 
         let addr = calib_slot_addr(state.calib.next_slot);
-        let header = persist::calib_header(state.calib.next_seq, calib);
-        program(addr, &[&header, calib])?;
+        let header = persist::calib_header(state.calib.next_seq, calib, lut);
+        program(addr, &[&header, calib, lut_bytes(lut)])?;
         state.calib.advance();
-
-        let addr = lut_slot_addr(state.lut.next_slot);
-        let header = persist::lut_header(state.lut.next_seq, lut);
-        program(addr, &[&header, lut_bytes(lut)])?;
-        state.lut.advance();
         Ok(())
     }
 
     fn wipe(&self) -> Result<(), StoreError> {
         type SlotAddr = fn(Slot) -> u32;
-        const IMAGES: [(SlotAddr, usize); 3] = [
-            (slot_addr, IMAGE_LEN),
-            (calib_slot_addr, CALIB_IMAGE_LEN),
-            (lut_slot_addr, LUT_IMAGE_LEN),
-        ];
+        const IMAGES: [(SlotAddr, usize); 2] =
+            [(slot_addr, IMAGE_LEN), (calib_slot_addr, CALIB_IMAGE_LEN)];
         for (base, len) in IMAGES {
             for slot in [Slot::A, Slot::B] {
                 for p in 0..len.div_ceil(PAGE_SIZE) {
