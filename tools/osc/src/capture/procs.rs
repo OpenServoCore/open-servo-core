@@ -52,7 +52,7 @@ pub(crate) struct Blocks {
 }
 
 impl Blocks {
-    pub(crate) const NAMES: [&str; 5] = ["grid", "coast", "step", "reversal", "breakaway"];
+    pub(crate) const NAMES: [&str; 6] = ["grid", "coast", "step", "reversal", "breakaway", "ends"];
 }
 
 /// One rung per duty at the envelope's window for it.

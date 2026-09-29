@@ -1,8 +1,8 @@
 # osc capture session: one capture = two recordings that between them hold
 # every free-shaft procedure the notebooks read.
 #
-#   slow  one sweep: grid + coast + step + reversal + breakaway blocks
-#   fast  the grid again under fast decay
+#   slow  one sweep: grid + coast + step + reversal + breakaway + ends blocks
+#   fast  the grid again under fast decay, sized by its own pilot pass
 #
 # Every procedure of a capture runs within minutes of the others, on the same
 # rail and the same gear temperature. notebooks/oscnb/session.py slices a
@@ -53,7 +53,7 @@ cell_warn_mv = 3700
 [[recording]]
 name = "slow"
 decay = "slow"
-blocks = ["grid", "coast", "step", "reversal", "breakaway"]
+blocks = ["grid", "coast", "step", "reversal", "breakaway", "ends"]
 
 [[recording]]
 name = "fast"
@@ -61,7 +61,7 @@ decay = "fast"
 blocks = ["grid"]
 
 # Duty ladder, every rung from a still shaft, each at the envelope's window
-# for its duty.
+# for its duty; the duties over the highest one the pilot kept are dropped.
 [block.grid]
 duties = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100]
 
@@ -81,10 +81,12 @@ coast_ms = 400
 steps = ["30@20", "coast:400", "30@40", "coast:400", "30@60", "coast:400", "30@80", "coast:400", "30@120", "coast:400"]
 
 # Gear play: drive, reverse, re-reverse with no reposition between, then brake.
-# A 60 ms leg at 40% crosses ~500 counts on mg90-a 2S, so the chain nets one
-# leg of travel.
+# A reversed leg draws the base duty's volts plus the back-EMF it reverses
+# against, over the current limit for its first milliseconds: on 2S about 483
+# counts for 12 ms at 20%, 702 for 19 ms at 40%. The default runs 20%; a 40%
+# chain is an operator's edit, and the pilot must run it first.
 [block.reversal]
-steps = ["20@60", "then:-20@60", "then:20@60", "brake:200", "40@60", "then:-40@60", "then:40@60", "brake:200"]
+steps = ["20@60", "then:-20@60", "then:20@60", "brake:200"]
 
 # Onset ladder, from rest at every duty: chaining it would change what every
 # rung above onset measures. Top duty at least 2x the expected onset. 18% in

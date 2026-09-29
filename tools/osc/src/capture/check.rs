@@ -925,6 +925,7 @@ mod tests {
             decay: Decay::Slow,
             schedule: vec![step],
             blocks: bench::one_block("grid", &c),
+            dropped: Vec::new(),
         };
         t.accept(&CaptureMeta {
             supply: crate::capture::Supply::TwoS,

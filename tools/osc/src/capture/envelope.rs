@@ -35,7 +35,8 @@ const HEADER: &str = "\
 # (travel to the coast's first sample), coast, travel = lead + coast, and the
 # peak's distance inside soft. chains: every other chain the session drives,
 # run both ways, its excursion from the start and the peak's distance inside
-# soft; refused_chains did not fit.
+# soft; refused_chains did not fit. fast: the grid ladder again under fast
+# decay, for a recording that drives under it.
 ";
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -60,6 +61,10 @@ pub(crate) struct Envelope {
     pub(crate) coast: Coast,
     pub(crate) chains: Vec<ChainRun>,
     pub(crate) refused_chains: Vec<ChainRefused>,
+    /// The grid ladder again under fast decay, for a recording that drives
+    /// under it; none when the procedure has no such recording.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) fast: Option<Grid>,
 }
 
 #[derive(Copy, Clone, Serialize, Deserialize, Debug, PartialEq)]
@@ -143,7 +148,7 @@ impl<T> PerDir<T> {
 }
 
 /// The grid ladder: every duty it kept, and the first it did not.
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 pub(crate) struct Grid {
     /// The highest duty kept both ways; 0 when none was.
     pub(crate) top_pct: u8,
@@ -151,7 +156,7 @@ pub(crate) struct Grid {
     pub(crate) refused: Option<LadderRefused>,
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 pub(crate) struct GridRung {
     pub(crate) pct: u8,
     pub(crate) window_ms: u32,
@@ -178,7 +183,7 @@ pub(crate) struct RungRun {
     pub(crate) stop: u16,
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 pub(crate) struct LadderRefused {
     pub(crate) pct: u8,
     pub(crate) dir: Dir,
@@ -291,6 +296,15 @@ impl Envelope {
                 path.display()
             )
         })
+    }
+}
+
+impl Envelope {
+    /// The chain `chain` of `block`, when the pilot ran it.
+    pub(crate) fn chain(&self, block: &str, chain: &str) -> Option<&ChainRun> {
+        self.chains
+            .iter()
+            .find(|c| c.block == block && c.chain == chain)
     }
 }
 
@@ -450,6 +464,17 @@ pub(super) fn mg90() -> Envelope {
             }
         })
         .collect();
+    let grid = Grid {
+        top_pct: 55,
+        rungs,
+        refused: Some(LadderRefused {
+            pct: 60,
+            dir: Dir::Rev,
+            why: "rev 60% would stop in about 206 counts, over the 200 between the soft limit \
+                  and the stop: a rung its host abandoned would hit the stop"
+                .into(),
+        }),
+    };
     let chain = |block: &str, chain: &str, predicted: u16, travel: u16, inside: i32| ChainRun {
         block: block.into(),
         chain: chain.into(),
@@ -485,17 +510,7 @@ pub(super) fn mg90() -> Envelope {
             rev: Fit::rounded(0.2081, -0.867, 1.0),
         },
         windows_ms: GRID.iter().map(|g| (g.0, g.6)).collect(),
-        grid: Grid {
-            top_pct: 55,
-            rungs,
-            refused: Some(LadderRefused {
-                pct: 60,
-                dir: Dir::Rev,
-                why: "rev 60% would stop in about 206 counts, over the 200 between the soft \
-                      limit and the stop: a rung its host abandoned would hit the stop"
-                    .into(),
-            }),
-        },
+        grid: grid.clone(),
         coast: Coast {
             coast_ms: 400,
             margin: 0.1,
@@ -556,22 +571,8 @@ pub(super) fn mg90() -> Envelope {
             chain("ends", "20@897", 3044, 2910, 157),
         ],
         refused_chains: Vec::new(),
+        fast: Some(grid),
     }
-}
-
-/// [`mg90`] with a window at every grid duty of the session procedure, as
-/// a plan that expands the whole grid needs them.
-#[cfg(test)]
-pub(super) fn mg90_every_window() -> Envelope {
-    let mut env = mg90();
-    let v = env.v_ss.fwd;
-    for d in (1..=20u8).map(|k| k * 5) {
-        env.windows_ms.entry(d).or_insert_with(|| {
-            let w = 0.8 * env.limits.runway as f64 / v.at(d);
-            (w.round() as u32).min(1500)
-        });
-    }
-    env
 }
 
 #[cfg(test)]
