@@ -2080,8 +2080,8 @@ pub fn render_capture(f: &CaptureFit) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::super::Guarded;
     use super::super::testkit::{FakeServo, SynthBurst, pump};
-    use super::super::{Guarded, RigParams};
     use super::*;
     use crate::burst::from_csv;
     use crate::units::SenseParams;
@@ -2473,7 +2473,7 @@ mod tests {
 
     #[test]
     fn drives_the_rig_safely_end_to_end() {
-        let params = RigParams::default();
+        let params = crate::exp::testkit::rig();
         let cfg = Cfg {
             repeats: 1,
             step_pct: vec![20, 40],
@@ -2507,7 +2507,7 @@ mod tests {
 
     #[test]
     fn a_rung_over_the_current_envelope_is_dropped() {
-        let params = RigParams::default();
+        let params = crate::exp::testkit::rig();
         let cfg = Cfg {
             repeats: 1,
             step_pct: vec![20, 40],

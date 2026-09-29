@@ -740,7 +740,7 @@ mod tests {
     /// last goal_current into i_mean with a fixed -5% bias.
     #[test]
     fn current_verify_measures_settle_and_error() {
-        let mut exp = VerifyCurrent::new(VerifyCurrentCfg::default(), &RigParams::default());
+        let mut exp = VerifyCurrent::new(VerifyCurrentCfg::default(), &crate::exp::testkit::rig());
         let goal = std::cell::Cell::new(0i16);
         let seq = std::cell::Cell::new(0u16);
         let mut log = Vec::new();
@@ -790,7 +790,7 @@ mod tests {
     fn velocity_verify_measures_tracking() {
         let mut exp = VerifyVelocity::new(
             VerifyVelocityCfg::default(),
-            &RigParams::default(),
+            &crate::exp::testkit::rig(),
             20_100.0,
         );
         let goal = std::cell::Cell::new(0i32);

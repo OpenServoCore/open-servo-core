@@ -38,7 +38,8 @@ use osc_client::Id;
 use osc_client::blocking::Client;
 use osc_client::nusb::NusbPipe;
 use osc_ident::frame::TelFrame;
-use osc_ident::regs::{Reg, calib, config, control};
+use osc_ident::limits::{POT_MAX, ServoLimits};
+use osc_ident::regs::{Reg, calib, control};
 
 use crate::descriptor;
 use crate::rig::park::park;
@@ -226,11 +227,14 @@ pub struct Args {
     /// Settled-window analysis does not care; onset R and L do.
     #[arg(long, default_value_t = 300)]
     settle_ms: u32,
-    /// Seek envelope only - the captures themselves run unpolled.
-    #[arg(long, default_value_t = 150)]
-    guard_lo: u16,
-    #[arg(long, default_value_t = 3950)]
-    guard_hi: u16,
+    /// Seek envelope only - the captures themselves run unpolled. Low end,
+    /// counts [default: the servo's low soft limit, 100 counts in].
+    #[arg(long)]
+    guard_lo: Option<u16>,
+    /// High end, counts [default: the servo's high soft limit, 100 counts
+    /// in].
+    #[arg(long)]
+    guard_hi: Option<u16>,
     /// TEL field mask (hex ok). Default = the raw six: pos, raw current,
     /// trough, applied duty, vmotor_a, vmotor_b - measurements only, kernel
     /// conclusions (vdiff/vbus/i_meas) stay out of raw captures.
@@ -262,10 +266,19 @@ pub(crate) struct Cfg {
     pub(crate) rung_tries: u32,
 }
 
-impl TryFrom<&Args> for Cfg {
-    type Error = anyhow::Error;
-
-    fn try_from(a: &Args) -> Result<Self> {
+impl Cfg {
+    /// The run as asked, the guard filled in from the servo's soft limits.
+    /// A resistor has no travel, so a static load takes any limits and its
+    /// guard spans the pot.
+    fn new(a: &Args, lim: &ServoLimits) -> Result<Self> {
+        let guard = if a.static_load {
+            (
+                a.guard_lo.unwrap_or(0),
+                a.guard_hi.unwrap_or(POT_MAX as u16),
+            )
+        } else {
+            lim.envelope((a.guard_lo, a.guard_hi), None)?.guard
+        };
         Ok(Self {
             steps: a.duty_pct.clone(),
             dirs: a.dirs,
@@ -278,7 +291,7 @@ impl TryFrom<&Args> for Cfg {
             settle_ms: a.settle_ms,
             stall: a.stall,
             static_load: a.static_load,
-            guard: (a.guard_lo, a.guard_hi),
+            guard,
             tel_mask: crate::parse_u16(&a.tel_mask).context("--tel-mask")?,
             rung_tries: a.rung_tries,
         })
@@ -859,10 +872,11 @@ fn chains(
 /// Entry from the top-level `osc sweep` dispatch.
 pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     pump::install_ctrlc();
-    let cfg = Cfg::try_from(args)?;
     let mut c = crate::rig::connect(&baud)?;
     let id = Id::new(id);
     crate::state::check(&mut c, id)?;
+    let lim = crate::rig::limits::read(&mut c, id)?;
+    let cfg = Cfg::new(args, &lim)?;
 
     std::fs::create_dir_all(&args.out).with_context(|| format!("mkdir {}", args.out.display()))?;
 
@@ -882,8 +896,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     let center = if cfg.static_load {
         None
     } else {
-        let lo = pump::read_i32(&mut c, id, config::POS_MIN_SOFT_COUNTS)?;
-        let hi = pump::read_i32(&mut c, id, config::POS_MAX_SOFT_COUNTS)?;
+        let (lo, hi) = lim.soft;
         Some(((lo + hi) / 2).clamp(0, u16::MAX as i32) as u16)
     };
 
@@ -980,15 +993,34 @@ mod tests {
         })
     }
 
+    #[derive(clap::Parser)]
+    struct Cli {
+        #[command(flatten)]
+        args: Args,
+    }
+
+    fn parse(argv: &[&str]) -> Args {
+        <Cli as clap::Parser>::try_parse_from(argv).unwrap().args
+    }
+
+    fn mg90() -> ServoLimits {
+        ServoLimits {
+            i_lim: 280,
+            stall_yield: 168,
+            tau_trip: 280,
+            soft: (432, 3626),
+            phys: (209, 3849),
+            raw: (209, 3849),
+            r_q12: 7270,
+            vbus: 3204,
+            i_floor_ticks: 160,
+            amps_per_count: 0.0,
+        }
+    }
+
     #[test]
     fn cfg_carries_the_cli_defaults() {
-        #[derive(clap::Parser)]
-        struct Cli {
-            #[command(flatten)]
-            args: Args,
-        }
-        let cli = <Cli as clap::Parser>::try_parse_from(["sweep"]).unwrap();
-        let cfg = Cfg::try_from(&cli.args).unwrap();
+        let cfg = Cfg::new(&parse(&["sweep"]), &mg90()).unwrap();
         let grid: Vec<Step> = (1..=20u8).map(|k| Step::Drive(k * 5, None)).collect();
         assert_eq!(cfg.steps, grid);
         assert_eq!(cfg.dirs, Dirs::Both);
@@ -999,9 +1031,30 @@ mod tests {
         assert_eq!((cfg.seek_duty_pct, cfg.seek_cap_pct), (28, 45));
         assert_eq!(cfg.settle_ms, 300);
         assert!(!cfg.stall && !cfg.static_load);
-        assert_eq!(cfg.guard, (150, 3950));
+        assert_eq!(cfg.guard, (532, 3526), "the soft limits, 100 counts in");
         assert_eq!(cfg.tel_mask, 0x1cd);
         assert_eq!(cfg.rung_tries, 3);
+    }
+
+    #[test]
+    fn guard_flags_override_the_soft_limits() {
+        let a = parse(&["sweep", "--guard-lo", "600"]);
+        assert_eq!(Cfg::new(&a, &mg90()).unwrap().guard, (600, 3526));
+    }
+
+    #[test]
+    fn a_servo_without_calibrated_limits_is_refused() {
+        let virgin = ServoLimits {
+            soft: (0, 4095),
+            ..mg90()
+        };
+        let Err(err) = Cfg::new(&parse(&["sweep"]), &virgin) else {
+            panic!("a virgin servo was not refused");
+        };
+        assert!(err.to_string().ends_with("run `osc cal` first"), "{err}");
+        // a resistor has no travel to calibrate
+        let a = parse(&["sweep", "--static-load"]);
+        assert_eq!(Cfg::new(&a, &virgin).unwrap().guard, (0, 4095));
     }
 
     #[test]

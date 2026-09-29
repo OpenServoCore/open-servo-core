@@ -1153,8 +1153,8 @@ pub fn fit_segments(segs: &[Segment], sc: &Scales, cfg: &RlFitCfg) -> Option<RlR
 
 #[cfg(test)]
 mod tests {
+    use super::super::Guarded;
     use super::super::testkit::{FakeServo, pump};
-    use super::super::{Guarded, RigParams};
     use super::*;
     use std::collections::BTreeSet;
 
@@ -1453,7 +1453,7 @@ mod tests {
     }
 
     fn run_e2e(servo: &mut FakeServo) -> (Rl, Vec<String>) {
-        let params = RigParams::default();
+        let params = crate::exp::testkit::rig();
         let sc = Scales::from_sense(&REV_2A, VBUS_DIV.0, VBUS_DIV.1).unwrap();
         let mut exp = Guarded::new(Rl::new(RlCfg::default(), &params, sc), params);
         let log = pump(&mut exp, servo, 500_000);
@@ -1617,7 +1617,7 @@ mod tests {
     fn step_periods_sizes_the_burst_and_the_fit_budget() {
         let mut servo = FakeServo::new(3.37);
         servo.dynamic = true;
-        let params = RigParams::default();
+        let params = crate::exp::testkit::rig();
         let sc = Scales::from_sense(&REV_2A, VBUS_DIV.0, VBUS_DIV.1).unwrap();
         let cfg = RlCfg {
             step_periods: 8,

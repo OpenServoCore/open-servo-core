@@ -92,10 +92,10 @@ pub fn winding(
 mod tests {
     use super::*;
     use crate::burst::{Capture, Chans};
+    use crate::exp::Guarded;
     use crate::exp::inductance::{Cfg as InductanceCfg, Inductance};
     use crate::exp::resistance::{Resistance, ResistanceCfg};
     use crate::exp::testkit::{FakeServo, SynthBurst, pump};
-    use crate::exp::{Guarded, RigParams};
     use crate::gains::DEFAULT_L_HENRIES;
     use crate::units::SenseParams;
 
@@ -117,7 +117,7 @@ mod tests {
         servo: &mut FakeServo,
         chans: Chans,
     ) -> (InductanceResult, Option<ResistanceResult>, Winding) {
-        let params = RigParams::default();
+        let params = crate::exp::testkit::rig();
         let cfg = InductanceCfg {
             repeats: 1,
             i_max_a: 1.0,

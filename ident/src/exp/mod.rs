@@ -87,8 +87,10 @@ pub trait Experiment {
     fn push_burst(&mut self, _cap: &Capture) {}
 }
 
-/// Rig constants with bench defaults - the single home. Experiments take
-/// what they need; the CLI overrides via flags.
+/// Rig constants - the single home. The travel guard and the current abort
+/// come from the servo's own limits ([`crate::limits::ServoLimits`]); the
+/// rest are bench defaults. Experiments take what they need; the CLI
+/// overrides via flags.
 #[derive(Copy, Clone, Debug)]
 pub struct RigParams {
     /// Soft travel guard; `None` disables (end-stop experiments stall at
@@ -117,11 +119,11 @@ pub struct RigParams {
     pub pot: Pot,
 }
 
-impl Default for RigParams {
-    fn default() -> Self {
+impl RigParams {
+    pub fn new(pos_guard: Option<(u16, u16)>, i_abort: i16) -> Self {
         Self {
-            pos_guard: Some((150, 3950)),
-            i_abort: 1100,
+            pos_guard,
+            i_abort,
             slip: (1250, 1650),
             settle_windows: 5,
             agg_period_ms: 0.8,
@@ -130,9 +132,7 @@ impl Default for RigParams {
             pot: Pot::RAW,
         }
     }
-}
 
-impl RigParams {
     pub fn without_pos_guard(self) -> Self {
         Self {
             pos_guard: None,
@@ -349,7 +349,7 @@ mod tests {
 
     #[test]
     fn torn_agg_seq_no_duplicate_sample() {
-        let params = RigParams::default();
+        let params = crate::exp::testkit::rig();
         let mut ws = WindowStream::new(&params);
         let mut o = TelemetrySnapshot {
             agg_seq: 7,
@@ -364,7 +364,7 @@ mod tests {
 
     #[test]
     fn settle_windows_discarded_after_transition() {
-        let params = RigParams::default();
+        let params = crate::exp::testkit::rig();
         let mut ws = WindowStream::new(&params);
         ws.mark_transition();
         let mut accepted = 0;
@@ -395,7 +395,7 @@ mod tests {
             }
         }
         let mut servo = FakeServo::new(3.37);
-        let mut exp = Guarded::new(Forever(false), RigParams::default());
+        let mut exp = Guarded::new(Forever(false), crate::exp::testkit::rig());
         servo.fault_at_ms = Some(50.0);
         let log = pump(&mut exp, &mut servo, 10_000);
         assert!(matches!(exp.abort(), Some(AbortReason::Fault { .. })));
@@ -431,7 +431,7 @@ mod tests {
         }
         let mut servo = FakeServo::new(3.37);
         servo.pos = 3800.0;
-        let mut exp = Guarded::new(Drive(0), RigParams::default());
+        let mut exp = Guarded::new(Drive(0), crate::exp::testkit::rig());
         let log = pump(&mut exp, &mut servo, 10_000);
         assert!(matches!(exp.abort(), Some(AbortReason::PosGuard { pos } ) if pos > 3950));
         assert_eq!(*log.last().unwrap(), "write torque_enable 0");
