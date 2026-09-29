@@ -7,7 +7,7 @@
 //! deterministic qualitative behaviour, not fidelity.
 
 use osc_servo_core::estimator::bemf::RECIP_ARR_SHIFT;
-use osc_servo_core::pot_lut::{self, KNOTS};
+use osc_servo_core::pos_lut::{self, POINTS};
 use osc_servo_core::stamp;
 use osc_servo_core::{
     ControlIo, DecaySelect, ImageState, Kernel, KernelTiming, Mode, Motor, MotorCmd, RegionStorage,
@@ -147,13 +147,13 @@ pub fn stamp(shared: &Shared) {
         .with_mut(|t| t.calib.stamp.plant_stamp = stamp::compute(t, None));
 }
 
-/// `knots` in the array and LIVE, as a COMMIT lands them, restamped over
+/// `points` in the array and LIVE, as a COMMIT lands them, restamped over
 /// the array so the data state stays open. After `seed`.
-pub fn lut_live(shared: &Shared, knots: &[i16; KNOTS]) {
-    shared.with_pot_lut_mut(|k| *k = *knots);
+pub fn lut_live(shared: &Shared, points: &[i16; POINTS]) {
+    shared.with_pos_lut_mut(|k| *k = *points);
     shared.table.with_mut(|t| {
-        t.control.pot_lut.lut_state = pot_lut::state::LIVE;
-        t.calib.stamp.plant_stamp = stamp::compute(t, knots.first_chunk());
+        t.control.pos_lut.pos_lut_state = pos_lut::state::LIVE;
+        t.calib.stamp.plant_stamp = stamp::compute(t, points.first_chunk());
     });
     shared.data_state_checkpoint();
 }

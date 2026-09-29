@@ -1,4 +1,4 @@
-//! Ripple-referenced pot linearization on the firmware's grid.
+//! Ripple-referenced position linearization on the firmware's grid.
 //!
 //! The pot's local gain varies along its travel, so a straight line between
 //! the stops mis-reports position and, worse, speed. The commutation ripple
@@ -18,20 +18,20 @@
 //!    Backlash is a constant offset between the two directions and has no
 //!    density, so it cannot leak into the table.
 //! 3. [`fit_grid`] anchors on rung coverage, never on the extreme sample (one
-//!    stray rung would move every knot): knots inside the stretch at least
+//!    stray rung would move every point): points inside the stretch at least
 //!    [`MIN_RUNG_COVER`] rungs cross carry the chord through the band ends,
-//!    every other knot is zero, so the insets and the stops map to
+//!    every other point is zero, so the insets and the stops map to
 //!    themselves.
 //!
-//! The table is the one the firmware applies (core pot_lut.rs): [`INTERVALS`]
-//! intervals of [`GRID`] raw counts over the 12-bit ADC domain, [`KNOTS`]
-//! i16 corrections against the identity ramp, knot k at raw k * GRID, the
+//! The table is the one the firmware applies (core pos_lut.rs): [`INTERVALS`]
+//! intervals of [`GRID`] raw counts over the 12-bit ADC domain, [`POINTS`]
+//! i16 corrections against the identity ramp, point k at raw k * GRID, the
 //! last fixed 0. Per sample the firmware indexes with raw >> GRID_SHIFT and
 //! interpolates in integer math to a Q4 word, linearized counts times 16.
 //! [`interp_q4`] and [`validate`] mirror it bit for bit; [`Image`] is the
 //! JSON `osc lut write` consumes.
 //!
-//! The tail of this module is the 55-knot [`PotLut`] the servo still stores
+//! The tail of this module is the 55-point [`PosLut`] the servo still stores
 //! and `osc cal` still writes, clocked by the autocorrelation tachometer
 //! ([`cumulative_phase`]); it goes when the grid lands on the servo.
 
@@ -44,8 +44,8 @@ pub const GRID_SHIFT: u32 = 4;
 /// Raw counts per interval.
 pub const GRID: u16 = 1 << GRID_SHIFT;
 pub const INTERVALS: usize = 1 << (ADC_BITS - GRID_SHIFT);
-/// Knot INTERVALS is fixed 0.
-pub const KNOTS: usize = INTERVALS + 1;
+/// Point INTERVALS is fixed 0.
+pub const POINTS: usize = INTERVALS + 1;
 const ADC_MASK: u16 = (1 << ADC_BITS) - 1;
 const FRAC_MASK: u16 = GRID - 1;
 /// Local gain at or above this is corruption, not a pot.
@@ -57,7 +57,7 @@ pub fn index(raw: u16) -> usize {
 }
 
 /// Linearized counts in Q4 as the u16 the firmware computes from a sample
-/// and the two knots around it: one multiply, no divide, the same wrap as
+/// and the two points around it: one multiply, no divide, the same wrap as
 /// the u16 cast (a table that passes [`validate`] never reaches it).
 pub fn interp_q4(raw: u16, c0: i16, c1: i16) -> u16 {
     let raw = raw & ADC_MASK;
@@ -68,21 +68,21 @@ pub fn interp_q4(raw: u16, c0: i16, c1: i16) -> u16 {
 /// Why the firmware refuses a table.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Reject {
-    /// A nonzero knot at or beyond a stop.
+    /// A nonzero point at or beyond a stop.
     Ends,
     /// An interval's gain outside 1/GRID .. GAIN_MAX.
     Shape,
 }
 
 /// The firmware's check: identity at and beyond the stops, so raw_min and
-/// raw_max map to themselves whether or not they sit on a knot and knots 0,
+/// raw_max map to themselves whether or not they sit on a point and points 0,
 /// INTERVALS - 1 and INTERVALS are zero; then every interval's Q4 gain
 /// `d = GRID + c[k + 1] - c[k]` in `1 <= d < GAIN_MAX * GRID`, so the
 /// output is monotone and stays a u16.
-pub fn validate(knots: &[i16; KNOTS], raw_min: u16, raw_max: u16) -> Result<(), Reject> {
+pub fn validate(points: &[i16; POINTS], raw_min: u16, raw_max: u16) -> Result<(), Reject> {
     let lo = (raw_min as usize + GRID as usize - 1) >> GRID_SHIFT;
     let hi = raw_max as usize >> GRID_SHIFT;
-    if knots
+    if points
         .iter()
         .enumerate()
         .any(|(k, &c)| (k <= lo || k >= hi) && c != 0)
@@ -90,7 +90,7 @@ pub fn validate(knots: &[i16; KNOTS], raw_min: u16, raw_max: u16) -> Result<(), 
         return Err(Reject::Ends);
     }
     let gain = |w: &[i16]| GRID as i32 + w[1] as i32 - w[0] as i32;
-    if knots
+    if points
         .windows(2)
         .any(|w| !(1..GAIN_MAX * GRID as i32).contains(&gain(w)))
     {
@@ -99,21 +99,23 @@ pub fn validate(knots: &[i16; KNOTS], raw_min: u16, raw_max: u16) -> Result<(), 
     Ok(())
 }
 
-/// The firmware's table: KNOTS corrections against the identity ramp, knot
+/// The firmware's table: POINTS corrections against the identity ramp, point
 /// k at raw k * GRID, the last fixed 0. All-zero is the identity, raw << 4
 /// everywhere.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct GridLut {
-    pub knots: [i16; KNOTS],
+    pub points: [i16; POINTS],
 }
 
 impl GridLut {
-    pub const IDENTITY: GridLut = GridLut { knots: [0; KNOTS] };
+    pub const IDENTITY: GridLut = GridLut {
+        points: [0; POINTS],
+    };
 
     /// The Q4 word the firmware computes for a raw sample.
     pub fn q4(&self, raw: u16) -> u16 {
         let i = index(raw);
-        interp_q4(raw, self.knots[i], self.knots[i + 1])
+        interp_q4(raw, self.points[i], self.points[i + 1])
     }
 
     /// Linearized counts as the firmware sees them, the Q4 word over GRID.
@@ -122,7 +124,7 @@ impl GridLut {
     }
 
     pub fn validate(&self, raw_min: u16, raw_max: u16) -> Result<(), Reject> {
-        validate(&self.knots, raw_min, raw_max)
+        validate(&self.points, raw_min, raw_max)
     }
 
     /// The image body with the stops the table was built against.
@@ -139,7 +141,7 @@ impl GridLut {
             raw_min,
             raw_max,
             grid_shift: GRID_SHIFT,
-            knots: self.knots[..INTERVALS].to_vec(),
+            points: self.points[..INTERVALS].to_vec(),
             dataset: dataset.to_owned(),
             rungs,
             covered: [covered.0, covered.1],
@@ -148,15 +150,15 @@ impl GridLut {
     }
 }
 
-/// The image `osc lut write` takes: knots 0..INTERVALS - 1 (the fixed last
-/// knot left out), the stops the table was built against, and where it came
+/// The image `osc lut write` takes: points 0..INTERVALS - 1 (the fixed last
+/// point left out), the stops the table was built against, and where it came
 /// from. `covered` is the anchor band, `rungs` how many rungs stitched it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Image {
     pub raw_min: u16,
     pub raw_max: u16,
     pub grid_shift: u32,
-    pub knots: Vec<i16>,
+    pub points: Vec<i16>,
     pub dataset: String,
     pub rungs: usize,
     pub covered: [u16; 2],
@@ -166,12 +168,12 @@ pub struct Image {
 impl Image {
     /// The table, or None unless the image is on the firmware grid.
     pub fn lut(&self) -> Option<GridLut> {
-        if self.grid_shift != GRID_SHIFT || self.knots.len() != INTERVALS {
+        if self.grid_shift != GRID_SHIFT || self.points.len() != INTERVALS {
             return None;
         }
-        let mut knots = [0i16; KNOTS];
-        knots[..INTERVALS].copy_from_slice(&self.knots);
-        Some(GridLut { knots })
+        let mut points = [0i16; POINTS];
+        points[..INTERVALS].copy_from_slice(&self.points);
+        Some(GridLut { points })
     }
 }
 
@@ -183,7 +185,7 @@ pub const PRIOR_PCT: (i32, i32) = (20, 40);
 pub const MIN_ACCEPT: f64 = 0.90;
 /// And its whole-rung coupling sits within this of the median.
 pub const CPC_TOL: f64 = 0.03;
-/// Knots anchor on the stretch at least this many rungs cross.
+/// Points anchor on the stretch at least this many rungs cross.
 pub const MIN_RUNG_COVER: u32 = 20;
 
 /// One constant-duty drive rung: the raw pot and the bias-removed current at
@@ -283,7 +285,7 @@ fn track(r: &Rung, c_prior: f64) -> Option<Track> {
 /// median of the tracked; the accepted rungs stitch from their first
 /// trusted sample and the table anchors on the MIN_RUNG_COVER band. Float
 /// sums follow rung order, so the same rungs in the same order give the
-/// same knots.
+/// same points.
 pub fn build(rungs: &[Rung], raw_min: u16, raw_max: u16) -> Result<Build, BuildError> {
     let priors: Vec<f64> = rungs
         .iter()
@@ -403,7 +405,7 @@ impl Stitch {
         (a < b).then(|| (self.raw_min + a as u16, self.raw_min + b as u16))
     }
 
-    /// Linearized counts straight from the stitch, no knots: the curve a
+    /// Linearized counts straight from the stitch, no points: the curve a
     /// finer table converges to, the chord through `lo` and `hi` mapping to
     /// themselves.
     pub fn true_counts(&self, raw: f64, lo: u16, hi: u16) -> f64 {
@@ -562,18 +564,18 @@ pub fn stitch(chunks: &[(&[u16], &[f64])], raw_min: u16, raw_max: u16) -> Option
     })
 }
 
-/// The grid table from a stitch: knots inside `band` carry the chord
-/// through the band ends, rounded half away from zero; every other knot is
+/// The grid table from a stitch: points inside `band` carry the chord
+/// through the band ends, rounded half away from zero; every other point is
 /// zero.
 pub fn fit_grid(st: &Stitch, band: (u16, u16)) -> GridLut {
-    let mut knots = [0i16; KNOTS];
-    for (k, c) in knots.iter_mut().enumerate() {
+    let mut points = [0i16; POINTS];
+    for (k, c) in points.iter_mut().enumerate() {
         let r = (k * GRID as usize) as u16;
         if band.0 <= r && r <= band.1 {
             *c = sat_i16((st.true_counts(r as f64, band.0, band.1) - r as f64).round());
         }
     }
-    GridLut { knots }
+    GridLut { points }
 }
 
 fn sat_i16(v: f64) -> i16 {
@@ -583,45 +585,45 @@ fn sat_i16(v: f64) -> i16 {
     v.clamp(i16::MIN as f64, i16::MAX as f64) as i16
 }
 
-// --- the 55-knot block the servo still stores ---
+// --- the 55-point block the servo still stores ---
 
-/// Knot count = the firmware PotLutBlock's lut_corr length.
-const N_KNOTS: usize = 55;
-const N_INTERVALS: usize = N_KNOTS - 1;
+/// Point count = the firmware PotLutBlock's lut_corr length.
+const N_POINTS: usize = 55;
+const N_INTERVALS: usize = N_POINTS - 1;
 /// cumulative_phase needs a majority of windows to find ripple, else the
 /// sweep SNR is too low to trust as an angle clock.
 const MIN_GOOD_FRAC: f64 = 0.5;
 
 /// A sweep covering less than this fraction of the rail span leaves too much
-/// of travel for `fit_knots`' affine anchoring to extrapolate through: the
+/// of travel for `fit_points`' affine anchoring to extrapolate through: the
 /// anchoring assumes local linearity over the uncovered insets, which fails
 /// once whole rail regions are uncovered. Below this coverage `build_multi`
 /// returns identity.
 pub const MIN_SPAN_COVER: f64 = 0.7;
 
 /// Host mirror of the firmware PotLutBlock (raw_min/raw_max/lut_corr): 55
-/// knots evenly spaced in raw counts, `raw_i = raw_min + i * span / 54`,
-/// `corrected(raw_i) = raw_i + corr[i]`, linear between knots, raw outside
+/// points evenly spaced in raw counts, `raw_i = raw_min + i * span / 54`,
+/// `corrected(raw_i) = raw_i + corr[i]`, linear between points, raw outside
 /// the rails clamped; all-zero corr is the 2-point-linear baseline.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct PotLut {
+pub struct PosLut {
     pub raw_min: u16,
     pub raw_max: u16,
-    pub corr: [i16; N_KNOTS],
+    pub corr: [i16; N_POINTS],
 }
 
-impl PotLut {
+impl PosLut {
     /// All-zero corr: linearize reduces to the plain linear fraction.
-    pub fn identity(raw_min: u16, raw_max: u16) -> PotLut {
-        PotLut {
+    pub fn identity(raw_min: u16, raw_max: u16) -> PosLut {
+        PosLut {
             raw_min,
             raw_max,
-            corr: [0; N_KNOTS],
+            corr: [0; N_POINTS],
         }
     }
 
-    /// Corrected raw value at knot i: on-line position plus its correction.
-    fn corrected_knot(&self, i: usize) -> f64 {
+    /// Corrected raw value at point i: on-line position plus its correction.
+    fn corrected_point(&self, i: usize) -> f64 {
         let span = self.raw_max as f64 - self.raw_min as f64;
         self.raw_min as f64 + i as f64 * span / N_INTERVALS as f64 + self.corr[i] as f64
     }
@@ -638,11 +640,11 @@ impl PotLut {
         let pos = ((r - lo) / span * N_INTERVALS as f64).clamp(0.0, N_INTERVALS as f64);
         let i0 = pos.floor() as usize;
         let corrected = if i0 >= N_INTERVALS {
-            self.corrected_knot(N_INTERVALS)
+            self.corrected_point(N_INTERVALS)
         } else {
             let frac = pos - i0 as f64;
-            let c0 = self.corrected_knot(i0);
-            let c1 = self.corrected_knot(i0 + 1);
+            let c0 = self.corrected_point(i0);
+            let c1 = self.corrected_point(i0 + 1);
             c0 + frac * (c1 - c0)
         };
         ((corrected - lo) / span).clamp(0.0, 1.0)
@@ -726,13 +728,13 @@ pub fn span_coverage(raw_pot: &[u16], raw_min: u16, raw_max: u16) -> f64 {
     ((hi - lo) / denom).clamp(0.0, 1.0)
 }
 
-/// Fit the 55-knot correction table from `pts` = (raw, rel), where rel is in
+/// Fit the 55-point correction table from `pts` = (raw, rel), where rel is in
 /// [0,1] and ALREADY oriented to increase with raw. Anchors the covered pot
 /// endpoints affinely into full-rail true-fraction space, pins the rails to
-/// frac 0/1, forms a monotone raw->fraction curve, and sets each knot's corr
+/// frac 0/1, forms a monotone raw->fraction curve, and sets each point's corr
 /// to the count offset landing its corrected value on the curve. Degenerate
 /// input (single raw value, <2 curve points) -> identity.
-fn fit_knots(mut pts: Vec<(f64, f64)>, raw_min: u16, raw_max: u16) -> PotLut {
+fn fit_points(mut pts: Vec<(f64, f64)>, raw_min: u16, raw_max: u16) -> PosLut {
     pts.sort_by(|a, b| a.0.total_cmp(&b.0));
     let span_f = raw_max as f64 - raw_min as f64;
     // Anchor rel into full-rail true-fraction space. rel spans 0..1 over only
@@ -745,7 +747,7 @@ fn fit_knots(mut pts: Vec<(f64, f64)>, raw_min: u16, raw_max: u16) -> PotLut {
     let tf_lo = (rp_lo - raw_min as f64) / span_f;
     let tf_hi = (rp_hi - raw_min as f64) / span_f;
     if tf_hi == tf_lo {
-        return PotLut::identity(raw_min, raw_max);
+        return PosLut::identity(raw_min, raw_max);
     }
     for p in pts.iter_mut() {
         p.1 = tf_lo + p.1 * (tf_hi - tf_lo);
@@ -773,7 +775,7 @@ fn fit_knots(mut pts: Vec<(f64, f64)>, raw_min: u16, raw_max: u16) -> PotLut {
         curve.push((r, s / c));
     }
     if curve.len() < 2 {
-        return PotLut::identity(raw_min, raw_max);
+        return PosLut::identity(raw_min, raw_max);
     }
     // enforce non-decreasing frac (noise guard)
     for j in 1..curve.len() {
@@ -781,10 +783,10 @@ fn fit_knots(mut pts: Vec<(f64, f64)>, raw_min: u16, raw_max: u16) -> PotLut {
             curve[j].1 = curve[j - 1].1;
         }
     }
-    let mut corr = [0i16; N_KNOTS];
+    let mut corr = [0i16; N_POINTS];
     for (k, c) in corr.iter_mut().enumerate() {
         let raw_i = raw_min as f64 + k as f64 * span_f / N_INTERVALS as f64;
-        // uncovered-inset knots lie on the interp segment from the rail anchor
+        // uncovered-inset points lie on the interp segment from the rail anchor
         // (frac 0/1) to the nearest covered endpoint, so their corr tapers to 0
         // at the rail; the span_coverage gate above rejects sweeps whose
         // uncovered regions would grow that taper large.
@@ -792,7 +794,7 @@ fn fit_knots(mut pts: Vec<(f64, f64)>, raw_min: u16, raw_max: u16) -> PotLut {
         let corrected = raw_min as f64 + frac * span_f;
         *c = sat_i16((corrected - raw_i).round());
     }
-    PotLut {
+    PosLut {
         raw_min,
         raw_max,
         corr,
@@ -825,22 +827,23 @@ fn stitch_tach(
     stitch(&refs, raw_min, raw_max)
 }
 
-/// Build the pot LUT from MULTIPLE clean sweep chunks (each (pos, current)),
-/// stitched over the shared pos axis. Chunks may cover overlapping or disjoint
-/// pos ranges with gaps between them; the per-count slope integration bridges
-/// the gaps. Identity when coverage < MIN_SPAN_COVER or the stitch is degenerate.
+/// Build the position table from MULTIPLE clean sweep chunks (each (pos,
+/// current)), stitched over the shared pos axis. Chunks may cover overlapping
+/// or disjoint pos ranges with gaps between them; the per-count slope
+/// integration bridges the gaps. Identity when coverage < MIN_SPAN_COVER or
+/// the stitch is degenerate.
 pub fn build_multi(
     chunks: &[(Vec<u16>, Vec<f64>)],
     fs: f64,
     ripple_per_rev: f64,
     raw_min: u16,
     raw_max: u16,
-) -> PotLut {
+) -> PosLut {
     let Some(st) = stitch_tach(chunks, fs, ripple_per_rev, raw_min, raw_max) else {
-        return PotLut::identity(raw_min, raw_max);
+        return PosLut::identity(raw_min, raw_max);
     };
     if st.coverage() < MIN_SPAN_COVER {
-        return PotLut::identity(raw_min, raw_max);
+        return PosLut::identity(raw_min, raw_max);
     }
     let total = st.cum[st.lc] - st.cum[st.fc];
     // (pos, rel), rel in [0,1] ascending with pos (no flip needed)
@@ -852,7 +855,7 @@ pub fn build_multi(
             )
         })
         .collect();
-    fit_knots(pts, raw_min, raw_max)
+    fit_points(pts, raw_min, raw_max)
 }
 
 /// Full-travel motor revs + coverage from the stitched chunks, for the gear/
@@ -938,7 +941,7 @@ mod tests {
         lo as f64 + (frac_at(raw as f64, a) - f0) / (f1 - f0) * (hi - lo) as f64
     }
 
-    /// Largest `(error, raw)` of the table against the pot `a` over the knots
+    /// Largest `(error, raw)` of the table against the pot `a` over the points
     /// inside `band`, the stretch the table models.
     fn worst_error(lut: &GridLut, a: f64, band: (u16, u16)) -> (f64, u16) {
         let first = band.0.div_ceil(GRID) * GRID;
@@ -951,7 +954,7 @@ mod tests {
                 )
             })
             .max_by(|x, y| x.0.total_cmp(&y.0))
-            .expect("knots in band")
+            .expect("points in band")
     }
 
     #[test]
@@ -964,9 +967,9 @@ mod tests {
     }
 
     #[test]
-    fn knots_land_on_raw_plus_correction() {
+    fn points_land_on_raw_plus_correction() {
         let mut lut = GridLut::IDENTITY;
-        for (k, c) in lut.knots.iter_mut().enumerate().take(200).skip(40) {
+        for (k, c) in lut.points.iter_mut().enumerate().take(200).skip(40) {
             *c = ((k as f64 * 0.37).sin() * 20.0) as i16;
         }
         assert_eq!(lut.validate(300, 3800), Ok(()));
@@ -974,11 +977,11 @@ mod tests {
             let raw = (k * GRID as usize) as u16;
             assert_eq!(
                 lut.q4(raw),
-                ((raw as i32 + lut.knots[k] as i32) << GRID_SHIFT) as u16
+                ((raw as i32 + lut.points[k] as i32) << GRID_SHIFT) as u16
             );
         }
-        // between knots the Q4 word walks the chord, one interval gain per count
-        let (c0, c1) = (lut.knots[100] as i32, lut.knots[101] as i32);
+        // between points the Q4 word walks the chord, one interval gain per count
+        let (c0, c1) = (lut.points[100] as i32, lut.points[101] as i32);
         for f in 0..=GRID {
             let want = lut.q4(1600) as i32 + (GRID as i32 + c1 - c0) * f as i32;
             assert_eq!(lut.q4(1600 + f) as i32, want, "raw {}", 1600 + f);
@@ -990,21 +993,21 @@ mod tests {
         assert_eq!(GridLut::IDENTITY.validate(209, 3849), Ok(()));
         assert_eq!(GridLut::IDENTITY.validate(0, 0), Ok(()));
         let mut lut = GridLut::IDENTITY;
-        lut.knots[14] = 1;
-        // knot 14 at raw 224 is inside the low inset of stop 209 (14 <= (209 + 15) >> 4)
+        lut.points[14] = 1;
+        // point 14 at raw 224 is inside the low inset of stop 209 (14 <= (209 + 15) >> 4)
         assert_eq!(lut.validate(209, 3849), Err(Reject::Ends));
         assert_eq!(lut.validate(200, 3849), Ok(()));
         assert_eq!(lut.validate(0, 0), Err(Reject::Ends));
         let mut lut = GridLut::IDENTITY;
-        lut.knots[100] = -16;
+        lut.points[100] = -16;
         assert_eq!(lut.validate(209, 3849), Err(Reject::Shape), "gain 0");
-        lut.knots[100] = -15;
+        lut.points[100] = -15;
         assert_eq!(lut.validate(209, 3849), Ok(()), "gain 1/16");
-        // a step up to `top` then down 15 per knot: only the step's gain moves
+        // a step up to `top` then down 15 per point: only the step's gain moves
         let ramp = |top: i16| {
             let mut lut = GridLut::IDENTITY;
             for j in 0..=16 {
-                lut.knots[100 + j] = (top - 15 * j as i16).max(0);
+                lut.points[100 + j] = (top - 15 * j as i16).max(0);
             }
             lut
         };
@@ -1012,23 +1015,23 @@ mod tests {
         assert_eq!(ramp(240).validate(209, 3849), Err(Reject::Shape), "gain 16");
         // the last interval before the top stop
         let mut lut = GridLut::IDENTITY;
-        lut.knots[240] = 3;
+        lut.points[240] = 3;
         assert_eq!(
             lut.validate(209, 3849),
             Err(Reject::Ends),
             "240 >= 3849 >> 4"
         );
-        lut.knots[240] = 0;
-        lut.knots[239] = 3;
+        lut.points[240] = 0;
+        lut.points[239] = 3;
         assert_eq!(lut.validate(209, 3849), Ok(()));
     }
 
     #[test]
     fn image_round_trips_and_needs_the_grid() {
         let mut lut = GridLut::IDENTITY;
-        lut.knots[80] = -7;
+        lut.points[80] = -7;
         let img = lut.image(209, 3849, "mg90-a__2s", 99, (542, 3520), "a test");
-        assert_eq!(img.knots.len(), INTERVALS);
+        assert_eq!(img.points.len(), INTERVALS);
         let text = serde_json::to_string(&img).expect("json");
         let back: Image = serde_json::from_str(&text).expect("image");
         assert_eq!(back, img);
@@ -1037,10 +1040,10 @@ mod tests {
         off.grid_shift = 5;
         assert_eq!(off.lut(), None);
         let mut short = img.clone();
-        short.knots.pop();
+        short.points.pop();
         assert_eq!(short.lut(), None);
         // the field order osc lut write reads
-        assert!(text.starts_with(r#"{"raw_min":209,"raw_max":3849,"grid_shift":4,"knots":["#));
+        assert!(text.starts_with(r#"{"raw_min":209,"raw_max":3849,"grid_shift":4,"points":["#));
         assert!(text.ends_with(
             r#"],"dataset":"mg90-a__2s","rungs":99,"covered":[542,3520],"source":"a test"}"#
         ));
@@ -1095,19 +1098,19 @@ mod tests {
         );
         let lut = fit_grid(&st, band);
         assert_eq!(lut.validate(RAW_MIN, RAW_MAX), Ok(()));
-        // the pot is off by up to a*sin*span ~ 500 counts; over the knots the
-        // grid leaves the knot rounding plus the half-count bin convention
+        // the pot is off by up to a*sin*span ~ 500 counts; over the points the
+        // grid leaves the point rounding plus the half-count bin convention
         // times the 0.5..1.5x gain swing
         let worst = worst_error(&lut, a, band);
         assert!(worst.0 < 2.5, "worst {} counts at {}", worst.0, worst.1);
         assert!(
-            lut.knots.iter().any(|&c| c.abs() > 400),
+            lut.points.iter().any(|&c| c.abs() > 400),
             "{:?}",
-            &lut.knots[..]
+            &lut.points[..]
         );
         // the chord gauge: the insets are identity up to the band
-        assert!(lut.knots[..index(band.0)].iter().all(|&c| c == 0));
-        assert!(lut.knots[index(band.1) + 1..].iter().all(|&c| c == 0));
+        assert!(lut.points[..index(band.0)].iter().all(|&c| c == 0));
+        assert!(lut.points[index(band.1) + 1..].iter().all(|&c| c == 0));
     }
 
     #[test]
@@ -1221,9 +1224,9 @@ mod tests {
         let worst = worst_error(&b.lut, a, b.covered);
         assert!(worst.0 < 2.0, "worst {} counts at {}", worst.0, worst.1);
         assert!(
-            b.lut.knots.iter().any(|&c| c.abs() > 40),
+            b.lut.points.iter().any(|&c| c.abs() > 40),
             "{:?}",
-            &b.lut.knots[..]
+            &b.lut.points[..]
         );
         let img = b
             .lut
@@ -1392,7 +1395,7 @@ mod tests {
     }
 
     /// Parity with the notebook build: the same rungs in the same order give
-    /// the committed prior, verdicts, band and knots.
+    /// the committed prior, verdicts, band and points.
     #[test]
     fn build_matches_the_notebook_on_mg90_a() {
         let t0 = std::time::Instant::now();
@@ -1479,7 +1482,7 @@ mod tests {
 
         let committed = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/testdata/lut/pot-lut-mg90-a-grid.json"
+            "/testdata/lut/pos-lut-mg90-a-grid.json"
         ));
         let want: Image = serde_json::from_str(committed).expect("committed image");
         let img = b.lut.image(
@@ -1491,16 +1494,16 @@ mod tests {
             &want.source,
         );
         let off: Vec<(usize, i16, i16)> = img
-            .knots
+            .points
             .iter()
-            .zip(&want.knots)
+            .zip(&want.points)
             .enumerate()
             .filter(|(_, (a, b))| a != b)
             .map(|(k, (a, b))| (k, *a, *b))
             .collect();
         assert!(
             off.is_empty(),
-            "{} knots differ (knot, built, notebook): {off:?}",
+            "{} points differ (point, built, notebook): {off:?}",
             off.len()
         );
         assert_eq!(img, want);
@@ -1518,7 +1521,7 @@ mod tests {
         );
     }
 
-    // --- the 55-knot block ---
+    // --- the 55-point block ---
 
     fn sweep(a: f64, m: usize) -> (Vec<u16>, Vec<f64>) {
         let mut raw = Vec::with_capacity(m);
@@ -1533,7 +1536,7 @@ mod tests {
 
     #[test]
     fn identity_linearize_is_linear_fraction() {
-        let lut = PotLut::identity(RAW_MIN, RAW_MAX);
+        let lut = PosLut::identity(RAW_MIN, RAW_MAX);
         for raw in [RAW_MIN, 1000, 2048, 3000, RAW_MAX] {
             let expect = (raw as f64 - RAW_MIN as f64) / SPAN;
             assert!((lut.linearize(raw) - expect).abs() < 1e-12, "raw {raw}");
@@ -1542,11 +1545,11 @@ mod tests {
         assert!((lut.angle_cdeg(RAW_MAX, 0, 19000) - 19000.0).abs() < 1e-9);
         assert_eq!(lut.linearize(0), 0.0);
         assert_eq!(lut.linearize(u16::MAX), 1.0);
-        assert_eq!(PotLut::identity(500, 500).linearize(500), 0.0);
+        assert_eq!(PosLut::identity(500, 500).linearize(500), 0.0);
     }
 
     #[test]
-    fn fit_knots_recovers_a_nonlinear_pot() {
+    fn fit_points_recovers_a_nonlinear_pot() {
         let a = 0.15;
         let (raw, phase) = sweep(a, 400);
         let pts: Vec<(f64, f64)> = raw
@@ -1554,8 +1557,8 @@ mod tests {
             .zip(&phase)
             .map(|(&r, &p)| (r as f64, p / 3.0))
             .collect();
-        let lut = fit_knots(pts, RAW_MIN, RAW_MAX);
-        let ident = PotLut::identity(RAW_MIN, RAW_MAX);
+        let lut = fit_points(pts, RAW_MIN, RAW_MAX);
+        let ident = PosLut::identity(RAW_MIN, RAW_MAX);
         let mut lut_max = 0.0f64;
         let mut ident_max = 0.0f64;
         for (k, &r) in raw.iter().enumerate() {
@@ -1569,7 +1572,7 @@ mod tests {
             "lut {lut_max} ident {ident_max}"
         );
         assert_eq!(
-            fit_knots(vec![(1000.0, 0.0), (1000.0, 1.0)], RAW_MIN, RAW_MAX),
+            fit_points(vec![(1000.0, 0.0), (1000.0, 1.0)], RAW_MIN, RAW_MAX),
             ident
         );
     }
@@ -1654,7 +1657,7 @@ mod tests {
         let (pos, cur) = ripple_sweep(a, 1800.0, n);
         let chunks = chunkify(&pos, &cur, &RANGES);
         let lut = build_multi(&chunks, FS, 6.0, RAW_MIN, RAW_MAX);
-        let ident = PotLut::identity(RAW_MIN, RAW_MAX);
+        let ident = PosLut::identity(RAW_MIN, RAW_MAX);
         assert!(
             lut.corr.iter().any(|&c| c != 0),
             "corr all zero {:?}",

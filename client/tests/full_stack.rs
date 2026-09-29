@@ -15,7 +15,7 @@ use osc_client::data_state::{
 use osc_client::descriptor::{Descriptor, Kind, Value, encode};
 use osc_client::fake::{FakePipe, seed};
 use osc_client::mgmt::{Found, Uid};
-use osc_client::pot_lut::{self, INTERVALS, LutError, PotLut};
+use osc_client::pos_lut::{self, INTERVALS, LutError, PosLut};
 use osc_client::session::{EngineCommand, Record, Session};
 use osc_client::{
     BaudRate, Error, Id, Inst, LinkError, Opcode, Outcome, RejectReason, ResultCode, StreamReply,
@@ -656,20 +656,20 @@ fn virgin_servo_commit_sequence_then_a_covered_edit_refuses_closed_loop() {
     assert_eq!(c.data_state(id, &d).expect("data state").flags, 0);
 }
 
-// --- pot lut ---
+// --- position table ---
 
 /// The mg90-a table on the 2S session, built against stops 209/3849.
-const MG90_A_IMAGE: &str = include_str!("../../ident/testdata/lut/pot-lut-mg90-a-grid.json");
+const MG90_A_IMAGE: &str = include_str!("../../ident/testdata/lut/pos-lut-mg90-a-grid.json");
 
 fn mg90_a() -> [i16; INTERVALS] {
     let img: serde_json::Value = serde_json::from_str(MG90_A_IMAGE).expect("image parses");
-    let knots: Vec<i16> = img["knots"]
+    let points: Vec<i16> = img["points"]
         .as_array()
-        .expect("knots")
+        .expect("points")
         .iter()
-        .map(|v| v.as_i64().expect("knot") as i16)
+        .map(|v| v.as_i64().expect("point") as i16)
         .collect();
-    knots.try_into().expect("256 knots")
+    points.try_into().expect("256 points")
 }
 
 /// A stamped servo with the mg90-a stops in place of the seeded SG90's.
@@ -690,46 +690,49 @@ fn servo_lut(c: &mut Client<FakePipe>) -> (u8, [i16; INTERVALS]) {
     let state = c
         .pipe_mut()
         .sim_mut()
-        .servo_table(0, |t| t.control.pot_lut.lut_state);
-    let knots = c.pipe_mut().sim_mut().servo_pot_lut(0, |k| {
+        .servo_table(0, |t| t.control.pos_lut.pos_lut_state);
+    let points = c.pipe_mut().sim_mut().servo_pos_lut(0, |k| {
         let mut out = [0i16; INTERVALS];
         out.copy_from_slice(&k[..INTERVALS]);
         out
     });
-    (state, knots)
+    (state, points)
 }
 
-/// The per-servo switch: the table goes LIVE and reads back knot for knot,
+/// The per-servo switch: the table goes LIVE and reads back point for point,
 /// the COMMIT checkpoint marks the set stale, and the host stamp hashes the
-/// live knots exactly as the firmware does, so a restamp clears it.
+/// live points exactly as the firmware does, so a restamp clears it.
 #[test]
-fn lut_write_goes_live_and_the_stamp_hashes_the_live_knots() {
+fn lut_write_goes_live_and_the_stamp_hashes_the_live_points() {
     let (d, mut c, id) = mg90_servo();
-    let knots = mg90_a();
+    let points = mg90_a();
     assert_eq!(
-        c.pot_lut(id, &d).expect("read"),
-        PotLut {
-            state: pot_lut::state::IDENTITY,
-            knots: [0; INTERVALS],
+        c.pos_lut(id, &d).expect("read"),
+        PosLut {
+            state: pos_lut::state::IDENTITY,
+            points: [0; INTERVALS],
         }
     );
 
-    c.write_pot_lut(id, &d, &knots).expect("write");
-    let lut = c.pot_lut(id, &d).expect("read");
-    assert_eq!(lut.state, pot_lut::state::LIVE);
-    assert_eq!(lut.knots, knots);
-    assert_eq!(servo_lut(&mut c), (pot_lut::state::LIVE, knots));
-    assert_eq!(c.lut_state(id, &d).expect("state"), pot_lut::state::LIVE);
+    c.write_pos_lut(id, &d, &points).expect("write");
+    let lut = c.pos_lut(id, &d).expect("read");
+    assert_eq!(lut.state, pos_lut::state::LIVE);
+    assert_eq!(lut.points, points);
+    assert_eq!(servo_lut(&mut c), (pos_lut::state::LIVE, points));
+    assert_eq!(
+        c.pos_lut_state(id, &d).expect("state"),
+        pos_lut::state::LIVE
+    );
 
     let s = c.data_state(id, &d).expect("data state");
-    assert_eq!(s.flags, STAMP_MISMATCH, "the hashed knots changed");
+    assert_eq!(s.flags, STAMP_MISMATCH, "the hashed points changed");
     assert!(!data_state::allows(s.flags, true));
     let v = c.stamp_verdict(id, &d).expect("verdict");
     assert!(!v.matches());
     let firmware = c
         .pipe_mut()
         .sim_mut()
-        .servo_table(0, |t| osc_servo_core::stamp::compute(t, Some(&knots)));
+        .servo_table(0, |t| osc_servo_core::stamp::compute(t, Some(&points)));
     assert_eq!(v.computed, firmware, "the host hashes the live array");
     assert_ne!(v.computed, firmware_stamp(&mut c), "not the identity");
 
@@ -741,15 +744,15 @@ fn lut_write_goes_live_and_the_stamp_hashes_the_live_knots() {
 
     // the same table again: STORE marks the set stale, COMMIT lands the
     // same hash, so the checkpoint matches with no restamp
-    c.write_pot_lut(id, &d, &knots).expect("rewrite");
+    c.write_pos_lut(id, &d, &points).expect("rewrite");
     assert_eq!(c.data_state(id, &d).expect("data state").flags, 0);
 
     // the identity as a LIVE table hashes like no table
-    c.clear_pot_lut(id, &d).expect("clear");
-    let lut = c.pot_lut(id, &d).expect("read");
+    c.clear_pos_lut(id, &d).expect("clear");
+    let lut = c.pos_lut(id, &d).expect("read");
     assert_eq!(
-        (lut.state, lut.knots),
-        (pot_lut::state::LIVE, [0; INTERVALS])
+        (lut.state, lut.points),
+        (pos_lut::state::LIVE, [0; INTERVALS])
     );
     assert_eq!(
         c.data_state(id, &d).expect("data state").flags,
@@ -764,16 +767,16 @@ fn lut_write_reports_the_servos_rejects_and_refuses_under_torque() {
     let (d, mut c, id) = mg90_servo();
     let good = mg90_a();
 
-    // a nonzero knot inside the low inset of stop 209
+    // a nonzero point inside the low inset of stop 209
     let mut ends = good;
     ends[14] = 1;
     assert_eq!(
-        c.write_pot_lut(id, &d, &ends),
+        c.write_pos_lut(id, &d, &ends),
         Err(Error::Lut(LutError::RejectEnds))
     );
     assert_eq!(
-        c.lut_state(id, &d).expect("state"),
-        pot_lut::state::REJECT_ENDS
+        c.pos_lut_state(id, &d).expect("state"),
+        pos_lut::state::REJECT_ENDS
     );
     assert_eq!(
         c.data_state(id, &d).expect("data state").flags,
@@ -783,25 +786,28 @@ fn lut_write_reports_the_servos_rejects_and_refuses_under_torque() {
     let mut shape = good;
     shape[100] = shape[99] - 16;
     assert_eq!(
-        c.write_pot_lut(id, &d, &shape),
+        c.write_pos_lut(id, &d, &shape),
         Err(Error::Lut(LutError::RejectShape))
     );
     assert_eq!(
-        c.lut_state(id, &d).expect("state"),
-        pot_lut::state::REJECT_SHAPE
+        c.pos_lut_state(id, &d).expect("state"),
+        pos_lut::state::REJECT_SHAPE
     );
     // the rejected array is still there, and readable
-    assert_eq!(c.pot_lut(id, &d).expect("read").knots, shape);
+    assert_eq!(c.pos_lut(id, &d).expect("read").points, shape);
 
-    c.write_pot_lut(id, &d, &good).expect("write");
-    assert_eq!(c.lut_state(id, &d).expect("state"), pot_lut::state::LIVE);
+    c.write_pos_lut(id, &d, &good).expect("write");
+    assert_eq!(
+        c.pos_lut_state(id, &d).expect("state"),
+        pos_lut::state::LIVE
+    );
 
     // torque on: refused host-side after the one torque read, the live
     // table stands
     write_field(&mut c, id, &d, "torque_enable", Value::Bool(true));
     c.pipe_mut().take_frames();
     assert_eq!(
-        c.write_pot_lut(id, &d, &ends),
+        c.write_pos_lut(id, &d, &ends),
         Err(Error::Lut(LutError::TorqueOn))
     );
     let frames = c.pipe_mut().take_frames();
@@ -813,11 +819,11 @@ fn lut_write_reports_the_servos_rejects_and_refuses_under_torque() {
         1,
         "one instruction on the wire"
     );
-    assert_eq!(servo_lut(&mut c), (pot_lut::state::LIVE, good));
-    assert_eq!(c.clear_pot_lut(id, &d), Err(Error::Lut(LutError::TorqueOn)));
+    assert_eq!(servo_lut(&mut c), (pos_lut::state::LIVE, good));
+    assert_eq!(c.clear_pos_lut(id, &d), Err(Error::Lut(LutError::TorqueOn)));
     write_field(&mut c, id, &d, "torque_enable", Value::Bool(false));
-    c.clear_pot_lut(id, &d).expect("clear");
-    assert_eq!(servo_lut(&mut c), (pot_lut::state::LIVE, [0; INTERVALS]));
+    c.clear_pos_lut(id, &d).expect("clear");
+    assert_eq!(servo_lut(&mut c), (pos_lut::state::LIVE, [0; INTERVALS]));
 }
 
 /// Cal moving the stops under a LIVE table: the servo validates a table
@@ -827,8 +833,8 @@ fn lut_write_reports_the_servos_rejects_and_refuses_under_torque() {
 #[test]
 fn lut_recommit_judges_the_live_table_against_the_new_stops() {
     let (d, mut c, id) = mg90_servo();
-    let knots = mg90_a();
-    c.write_pot_lut(id, &d, &knots).expect("write");
+    let points = mg90_a();
+    c.write_pos_lut(id, &d, &points).expect("write");
     c.restamp(id, &d).expect("restamp");
     assert_eq!(c.data_state(id, &d).expect("data state").flags, 0);
 
@@ -839,22 +845,22 @@ fn lut_recommit_judges_the_live_table_against_the_new_stops() {
         STAMP_MISMATCH,
         "a covered write"
     );
-    assert_eq!(c.recommit_pot_lut(id, &d), Ok(pot_lut::state::LIVE));
-    assert_eq!(servo_lut(&mut c), (pot_lut::state::LIVE, knots));
+    assert_eq!(c.recommit_pos_lut(id, &d), Ok(pos_lut::state::LIVE));
+    assert_eq!(servo_lut(&mut c), (pos_lut::state::LIVE, points));
     let live = c
         .pipe_mut()
         .sim_mut()
-        .servo_table(0, |t| osc_servo_core::stamp::compute(t, Some(&knots)));
+        .servo_table(0, |t| osc_servo_core::stamp::compute(t, Some(&points)));
     assert_eq!(c.restamp(id, &d).expect("restamp"), live);
     assert_eq!(c.data_state(id, &d).expect("data state").flags, 0);
 
-    // a stop into the covered span: a nonzero knot lands in the low inset,
+    // a stop into the covered span: a nonzero point lands in the low inset,
     // the kernel runs the identity, the array stays for a rebuild to
     // overwrite, and the stamp hashes the identity
     write_field(&mut c, id, &d, "raw_min", Value::Uint(600));
-    assert_eq!(c.recommit_pot_lut(id, &d), Ok(pot_lut::state::REJECT_ENDS));
-    assert_eq!(servo_lut(&mut c).0, pot_lut::state::REJECT_ENDS);
-    assert_eq!(c.pot_lut(id, &d).expect("read").knots, knots);
+    assert_eq!(c.recommit_pos_lut(id, &d), Ok(pos_lut::state::REJECT_ENDS));
+    assert_eq!(servo_lut(&mut c).0, pos_lut::state::REJECT_ENDS);
+    assert_eq!(c.pos_lut(id, &d).expect("read").points, points);
     assert_eq!(
         c.data_state(id, &d).expect("data state").flags,
         STAMP_MISMATCH
@@ -865,10 +871,10 @@ fn lut_recommit_judges_the_live_table_against_the_new_stops() {
     // torque on: refused before the wire, the state stands
     write_field(&mut c, id, &d, "torque_enable", Value::Bool(true));
     assert_eq!(
-        c.recommit_pot_lut(id, &d),
+        c.recommit_pos_lut(id, &d),
         Err(Error::Lut(LutError::TorqueOn))
     );
-    assert_eq!(servo_lut(&mut c).0, pot_lut::state::REJECT_ENDS);
+    assert_eq!(servo_lut(&mut c).0, pos_lut::state::REJECT_ENDS);
 }
 
 /// The park mechanism itself is pinned in osc-integration's `cross_baud`

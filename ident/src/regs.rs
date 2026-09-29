@@ -41,7 +41,8 @@ pub mod config {
 pub mod calib {
     use super::{Reg, reg};
 
-    /// The pot stops: the angle-map ends and the pot LUT's validation domain.
+    /// The pot stops: the angle-map ends and the position table's validation
+    /// domain.
     pub const RAW_MIN: Reg = reg(0x0080, 2);
     pub const RAW_MAX: Reg = reg(0x0082, 2);
     pub const SHUNT_R_MOHM: Reg = reg(0x0084, 2);
@@ -64,8 +65,8 @@ pub mod calib {
     pub const ANGLE_MIN_CDEG: Reg = reg(0x00ac, 2);
     pub const ANGLE_MAX_CDEG: Reg = reg(0x00ae, 2);
     pub const GEAR_RATIO_CENTI: Reg = reg(0x00b0, 2);
-    /// The plant stamp over the descriptor's covered list plus the
-    /// effective pot LUT; 0 = never stamped. Firmware verifies a torque-off
+    /// The plant stamp over the descriptor's covered list plus the effective
+    /// position table; 0 = never stamped. Firmware verifies a torque-off
     /// write of it and at boot and SAVE (`data_flags` STAMP_MISMATCH).
     pub const PLANT_STAMP: Reg = reg(0x00b2, 2);
     pub const VBUS_DIV_TOP_OHM: Reg = reg(0x00b4, 2);

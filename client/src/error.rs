@@ -8,7 +8,7 @@ use std::fmt;
 use osc_protocol::wire::ResultCode;
 
 use crate::pipe::PipeError;
-use crate::pot_lut::LutError;
+use crate::pos_lut::LutError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
@@ -24,7 +24,7 @@ pub enum Error {
     /// The descriptor cannot name what the call needs (a field, the stamp
     /// recipe): the servo was never asked.
     Descriptor(String),
-    /// A pot LUT write that did not go live.
+    /// A position table write that did not go live.
     Lut(LutError),
 }
 

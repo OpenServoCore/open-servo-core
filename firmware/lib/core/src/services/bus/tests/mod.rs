@@ -607,7 +607,7 @@ fn mgmt_wrapped_enum_assign_reply_instruction() {
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 use crate::persist::{CALIB_LEN, CONFIG_LEN, ConfigStore, PROFILE_LEN, StoreError};
-use crate::pot_lut::INTERVALS;
+use crate::pos_lut::INTERVALS;
 
 /// Atomics-only recording store (these tests are no_std): counts calls,
 /// fingerprints the saved bytes by CRC, arms failure via `fail`.
@@ -689,7 +689,7 @@ fn table_crc(shared: &Shared) -> u32 {
         osc_protocol::crc::osc_crc_continue(osc_protocol::crc::osc_crc(config), profile),
         calib,
     );
-    shared.with_pot_lut(|k| {
+    shared.with_pos_lut(|k| {
         for c in &k[..INTERVALS] {
             crc = osc_protocol::crc::osc_crc_continue(crc, &c.to_le_bytes());
         }

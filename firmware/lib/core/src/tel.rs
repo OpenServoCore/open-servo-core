@@ -15,7 +15,7 @@
 /// Bits 0..6 predate the raw set; 6..11 are the per-tick ADC frame raw
 /// values (`current` at bit 1 is the kernel's bias-subtracted held window
 /// sample - a conclusion, streamable for validating against host math);
-/// bit 11 is the linearized pot the kernel controls on (`pot_lut`
+/// bit 11 is the linearized pot the kernel controls on (`pos_lut`
 /// module), the Q4 word itself so a host can pin it against its own
 /// `interp_q4(pos)` exactly.
 pub const BIT_POS: u16 = 1 << 0;

@@ -12,7 +12,7 @@ use osc_client::descriptor as desc;
 use osc_client::pipe::Pipe;
 use osc_client::webusb::{UsbDevice, WebUsbPipe};
 use osc_client::{
-    Client, Error, Id, Inst, Opcode, Outcome, ResultCode, common, data_state, mgmt, pot_lut, stamp,
+    Client, Error, Id, Inst, Opcode, Outcome, ResultCode, common, data_state, mgmt, pos_lut, stamp,
 };
 use osc_protocol::build;
 use tsify::{Ts, Tsify};
@@ -25,7 +25,7 @@ use osc_protocol::wire::UID_LEN;
 
 use crate::descriptor::Descriptor;
 use crate::types::{
-    Alive, BaudRate, DataState, Found, Health, Identity, LinkInfo, Ping, PotLut, Rails,
+    Alive, BaudRate, DataState, Found, Health, Identity, LinkInfo, Ping, PosLut, Rails,
     StampVerdict, TelBurst,
 };
 #[cfg(feature = "fake")]
@@ -196,8 +196,8 @@ impl OscClient {
     }
 
     /// The stored `plant_stamp` beside the stamp the live covered set
-    /// computes to (the descriptor's `stamp` recipe), over the pot LUT
-    /// knots the kernel applies.
+    /// computes to (the descriptor's `stamp` recipe), over the position table
+    /// points the kernel applies.
     #[wasm_bindgen(js_name = plantStamp)]
     pub async fn plant_stamp(&self, id: u8, d: &Descriptor) -> Result<Ts<StampVerdict>, JsError> {
         let v = cmd!(self, |c| stamp::verdict(c, Id::new(id), d.inner()).await?);
@@ -212,47 +212,47 @@ impl OscClient {
         Ok(cmd!(self, |c| stamp::restamp(c, Id::new(id), d.inner()).await?))
     }
 
-    /// The pot LUT as the servo holds it: every page FETCHed, with
-    /// `lut_state`.
-    #[wasm_bindgen(js_name = readPotLut)]
-    pub async fn read_pot_lut(&self, id: u8, d: &Descriptor) -> Result<Ts<PotLut>, JsError> {
-        let l = cmd!(self, |c| pot_lut::read(c, Id::new(id), d.inner()).await?);
-        Ok(PotLut::from(l).into_ts()?)
+    /// The position table as the servo holds it: every page FETCHed, with
+    /// `pos_lut_state`.
+    #[wasm_bindgen(js_name = readPosLut)]
+    pub async fn read_pos_lut(&self, id: u8, d: &Descriptor) -> Result<Ts<PosLut>, JsError> {
+        let l = cmd!(self, |c| pos_lut::read(c, Id::new(id), d.inner()).await?);
+        Ok(PosLut::from(l).into_ts()?)
     }
 
-    /// `lut_state` alone.
-    #[wasm_bindgen(js_name = lutState)]
-    pub async fn lut_state(&self, id: u8, d: &Descriptor) -> Result<u8, JsError> {
-        Ok(cmd!(self, |c| pot_lut::state(c, Id::new(id), d.inner()).await?))
+    /// `pos_lut_state` alone.
+    #[wasm_bindgen(js_name = posLutState)]
+    pub async fn pos_lut_state(&self, id: u8, d: &Descriptor) -> Result<u8, JsError> {
+        Ok(cmd!(self, |c| pos_lut::state(c, Id::new(id), d.inner()).await?))
     }
 
-    /// STORE the 256 knots, COMMIT and read them back: resolves once the
-    /// table is LIVE knot for knot, rejects with the servo's reason (ends,
+    /// STORE the 256 points, COMMIT and read them back: resolves once the
+    /// table is LIVE point for point, rejects with the servo's reason (ends,
     /// shape, torque). Torque must be off. Never stamps: the COMMIT
     /// checkpoint leaves STAMP_MISMATCH until the set is re-identified.
-    #[wasm_bindgen(js_name = writePotLut)]
-    pub async fn write_pot_lut(
+    #[wasm_bindgen(js_name = writePosLut)]
+    pub async fn write_pos_lut(
         &self,
         id: u8,
         d: &Descriptor,
-        #[wasm_bindgen(unchecked_param_type = "number[]")] knots: Vec<i16>,
+        #[wasm_bindgen(unchecked_param_type = "number[]")] points: Vec<i16>,
     ) -> Result<(), JsError> {
-        let knots: [i16; pot_lut::INTERVALS] = knots.try_into().map_err(|k: Vec<i16>| {
+        let points: [i16; pos_lut::INTERVALS] = points.try_into().map_err(|k: Vec<i16>| {
             JsError::new(&format!(
-                "writePotLut: {} knots expected, got {}",
-                pot_lut::INTERVALS,
+                "writePosLut: {} points expected, got {}",
+                pos_lut::INTERVALS,
                 k.len()
             ))
         })?;
-        cmd!(self, |c| pot_lut::write(c, Id::new(id), d.inner(), &knots)
+        cmd!(self, |c| pos_lut::write(c, Id::new(id), d.inner(), &points)
             .await?);
         Ok(())
     }
 
     /// The identity as a LIVE all-zero table.
-    #[wasm_bindgen(js_name = clearPotLut)]
-    pub async fn clear_pot_lut(&self, id: u8, d: &Descriptor) -> Result<(), JsError> {
-        cmd!(self, |c| pot_lut::clear(c, Id::new(id), d.inner()).await?);
+    #[wasm_bindgen(js_name = clearPosLut)]
+    pub async fn clear_pos_lut(&self, id: u8, d: &Descriptor) -> Result<(), JsError> {
+        cmd!(self, |c| pos_lut::clear(c, Id::new(id), d.inner()).await?);
         Ok(())
     }
 

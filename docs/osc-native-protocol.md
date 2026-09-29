@@ -647,15 +647,16 @@ window is the servo's own - current limit, soft-position clamps, and
 fault latches run in firmware regardless of the bus - and the host's
 supervisory reads resume between bursts.
 
-### 5.7 Data state, plant stamp and pot linearization (osc-servo)
+### 5.7 Data state, plant stamp and position table (osc-servo)
 
 Three osc-servo conventions that ride the same registers: a data state
 that says whether the persisted images and the identified set behind the
 closed loops are this servo's own, a plant stamp that makes the
-identified values and the pot table one transaction, and the pot table
-itself. They are model facts, not protocol, and live in model-specific
-space; the descriptor (sec 5.4) carries the field addresses and the
-stamp recipe, so a host needs no second copy of any of it.
+identified values and the position table one transaction, and the
+position table itself. They are model facts, not protocol, and live in
+model-specific space; the descriptor (sec 5.4) carries the field
+addresses and the stamp recipe, so a host needs no second copy of any
+of it.
 
 **Data state.** `data_flags` (u8, RO, `0x223` in TELEMETRY-MODE) names
 every reason closed loop is refused, one bit per reason; 0 means the
@@ -715,14 +716,14 @@ only acknowledgement, and a still-present condition re-latches at once.
 
 **Plant stamp.** `plant_stamp` (u16, RW, `0x0B2` in CALIB, persisted)
 is the host's CRC over the set it *intended* to write: the identified
-and calibrated fields plus the effective pot table. Firmware recomputes
-it over what actually landed at every checkpoint and reports a
-difference as `STAMP_MISMATCH`, so a write that never landed, a torn
+and calibrated fields plus the effective position table. Firmware
+recomputes it over what actually landed at every checkpoint and reports
+a difference as `STAMP_MISMATCH`, so a write that never landed, a torn
 save, a hand edit and a table rebuilt under old constants all read the
 same way.
 
 ```
-stamp = max(1, CRC-16/ARC("osc-plant-1" ++ covered bytes ++ knots))
+stamp = max(1, CRC-16/ARC("osc-plant-1" ++ covered bytes ++ points))
 ```
 
 The covered bytes are the 35 covered fields' own table bytes in table
@@ -730,16 +731,16 @@ order (77 B): the position limits, the loop gains, the deadband,
 velocity and acceleration limits, drive polarity, the stall and
 thermometer speed gates, the observer gains and the position-error
 threshold in CONFIG; the pot stops, the motor constants, the friction
-model and the angle map in CALIB. The knots are the 256 host-written
-corrections i16 LE (sec below) while `lut_state` is LIVE, 256 zeros
-otherwise, so a table falling back to the identity changes the stamp by
+model and the angle map in CALIB. The points are the position table's
+256 host-written calibration points i16 LE (sec below) while
+`pos_lut_state` is LIVE, 256 zeros otherwise, so a table falling back to the identity changes the stamp by
 itself. Not covered: identity and comms, the user-owned safety limits
 (current, thermal, undervolt, `duty_max_q15`), the raw sensor screen,
 the winding anchor, and the RO board facts install re-seeds. `0` is
 reserved for *never stamped* and the recipe never produces it. The list
 is exported once, in the descriptor's `stamp` block (`tag`, `covered`,
-`lut_knots`); the CRC is the sec 3.2 checksum in software, ~600 B and
-~0.6 ms on the servo, on torque-off paths only (the SPI engine belongs
+`pos_lut_points`); the CRC is the sec 3.2 checksum in software, ~600 B
+and ~0.6 ms on the servo, on torque-off paths only (the SPI engine belongs
 to the transport).
 
 Checkpoints, the only places the verdict recomputes: boot after both
@@ -775,12 +776,13 @@ blesses a hand-tuned set explicitly. Nothing restamps as a side effect:
 write` never stamps, because a new table redefines the domain the
 constants were fitted in - the way out is `osc ident`.
 
-**Pot linearization.** The kernel corrects each raw pot sample through
-a per-unit table on a fixed grid over the 12-bit ADC domain: 256
-intervals of 16 raw counts, 257 i16 corrections against the identity
-ramp (knot `k` at raw `16 k`; knot 256 sits at 4096, is fixed at 0 and
-is never written). The all-zero table is the identity. The output is
-linearized counts in Q4:
+**Position table.** The kernel corrects each raw pot sample through a
+per-unit position linearization table on a fixed grid over the 12-bit
+ADC domain: 256 intervals of 16 raw counts and 257 calibration points,
+each an i16 correction `c[k]` against the identity ramp. A calibration
+point, called a knot in the math below, sits at raw `16 k`; knot 256
+sits at 4096, is fixed at 0 and is never written. The all-zero table is
+the identity. The output is linearized counts in Q4:
 
 ```
 i     = raw >> 4
@@ -788,9 +790,9 @@ f     = raw & 15
 lin   = ((raw + c[i]) << 4) + (c[i + 1] - c[i]) * f      (u16, Q4)
 ```
 
-so the identity is `raw << 4` exactly and a knot lands at `raw + c[k]`.
-Once per fast tick, while `lut_state` reads LIVE, this value seeds and
-innovates the position observer; `theta_hat_q16` and everything that
+so the identity is `raw << 4` exactly and knot `k` lands at
+`raw + c[k]`. Once per fast tick, while `pos_lut_state` reads LIVE, this
+value seeds and innovates the position observer; `theta_hat_q16` and everything that
 reads it (trajectory, position loop, soft limits, the stall and
 thermometer speed gates) are in linearized counts. The raw sample stays
 raw for the published `pos`, the TEL `pos` field and the sensor-delta
@@ -800,24 +802,24 @@ counts as before, because the table is the identity outside the stops
 
 The table lives in RAM behind a paged window in CONTROL:
 
-| addr  | name        | width | access | notes                                                                    |
-| ----- | ----------- | ----- | ------ | ------------------------------------------------------------------------ |
-| 0x19C | `lut_page`  | u8    | RW     | 0..7, 32 knots per page                                                  |
-| 0x19D | `lut_cmd`   | u8    | RW     | 0 none, 1 STORE, 2 FETCH, 3 COMMIT; runs on commit, reads back 0         |
-| 0x19E | `lut_knots` | 64 B  | RW     | `[i16; 32]` LE, the window                                               |
-| 0x1DE | `lut_state` | u8    | RO     | 0 IDENTITY, 1 LOADING, 2 LIVE, 3 REJECT_TORQUE, 4 REJECT_ENDS, 5 REJECT_SHAPE |
+| addr  | name             | width | access | notes                                                                         |
+| ----- | ---------------- | ----- | ------ | ----------------------------------------------------------------------------- |
+| 0x19C | `pos_lut_page`   | u8    | RW     | 0..7, 32 calibration points per page                                          |
+| 0x19D | `pos_lut_cmd`    | u8    | RW     | 0 none, 1 STORE, 2 FETCH, 3 COMMIT; runs on commit, reads back 0              |
+| 0x19E | `pos_lut_points` | 64 B  | RW     | `[i16; 32]` LE, the window                                                    |
+| 0x1DE | `pos_lut_state`  | u8    | RO     | 0 IDENTITY, 1 LOADING, 2 LIVE, 3 REJECT_TORQUE, 4 REJECT_ENDS, 5 REJECT_SHAPE |
 
-Page, command and knots are contiguous, so one 66 B WRITE at `0x19C`
+Page, command and points are contiguous, so one 66 B WRITE at `0x19C`
 carries a page; an out-of-range page or command is a `validation` nack,
-and only a committed span that covers `lut_cmd` runs a command. STORE
+and only a committed span that covers `pos_lut_cmd` runs a command. STORE
 copies the window into its page of the array and leaves LOADING (the
 kernel applies the identity until a COMMIT); FETCH copies that page
 back into the window; COMMIT validates the whole array against
 `raw_min`/`raw_max` and lands LIVE or a REJECT, then runs the stamp
 checkpoint. The reply leaves first: COMMIT reads back LOADING with
 `STAMP_MISMATCH` marked until the servo's main loop lands the verdict
-(~0.6 ms), so a host polls `lut_state` past LOADING. A STORE behind an
-unjudged COMMIT cancels it (the array is loading again; only the next
+(~0.6 ms), so a host polls `pos_lut_state` past LOADING. A STORE behind
+an unjudged COMMIT cancels it (the array is loading again; only the next
 COMMIT judges it), and torque coming on before the verdict lands reads
 REJECT_TORQUE (DES
 `commit_lands_its_verdict_in_the_main_loop_after_the_reply`). STORE and
@@ -826,11 +828,11 @@ state is what the kernel applies, and a refusal must not move it under
 a running loop); from any other state they read REJECT_TORQUE. FETCH is
 never gated. A rejected array stays in RAM to be fixed page by page,
 and a STORE out of LIVE marks `STAMP_MISMATCH` the way a covered write
-does. Firmware validation is
-physics sanity, never quality: every knot at or beyond a stop is zero
-(`k <= (raw_min + 15) >> 4` and `k >= raw_max >> 4`, so both stops map
-to themselves whether or not they sit on a knot; stops unset admit only
-the identity), and every interval's Q4 gain `16 + c[k+1] - c[k]` lies in
+does. Firmware validation is physics sanity, never quality: every
+calibration point at or beyond a stop is zero (knot
+`k <= (raw_min + 15) >> 4` and `k >= raw_max >> 4`, so both stops map
+to themselves whether or not they sit on a calibration point; stops
+unset admit only the identity), and every interval's Q4 gain `16 + c[k+1] - c[k]` lies in
 `1..=255`, local gain in `[1/16, 16)`: strictly monotone, and the u16
 word cannot overflow. Ends are judged before shape. Grading a table is
 the host's job (`osc lut grade`).
@@ -839,8 +841,9 @@ TEL `pos_lin` (bit 11) streams the Q4 word the kernel used that tick,
 so a host can pin its own interpolation of `pos` against it exactly
 (DES `tel_pos_lin_is_interp_q4_of_pos_on_every_sample`). SAVE persists
 the table beside the calibration in the CALIB image (sec 9.4); boot
-re-validates the loaded knots against the stops loaded with them and
-goes LIVE only when they validate and correct something, otherwise the
+re-validates the loaded calibration points against the stops loaded
+with them and goes LIVE only when they validate and correct something,
+otherwise the
 identity runs and the stamp reports the loss as `STAMP_MISMATCH` (DES
 `lut_survives_save_and_reboot_until_factory`,
 `corrupt_or_stale_calib_image_boots_identity_under_its_reason`).
@@ -1110,8 +1113,8 @@ Two images, each with its own A/B slot pair and sequence number, one
 CRC-16/ARC u16 over the header and the body. The CONFIG image (magic
 `C`, version 5) is the CONFIG region ++ the PROFILE region, 200 B in one
 256 B page per slot. The CALIB image (magic `K`, version 3) is the
-CALIB region ++ the pot table's 256 host-written knots i16 LE (the fixed
-last knot is not stored): 776 B, four pages per slot, one CRC, so the
+CALIB region ++ the position table's 256 host-written calibration
+points i16 LE (the fixed last one is not stored): 776 B, four pages per slot, one CRC, so the
 calibration and the table it validates save and load as one unit and a
 save cannot tear between them; tables to come join this image (a layout
 change bumps its version). A CRC-valid image of another version boots
@@ -1119,7 +1122,7 @@ change bumps its version). A CRC-valid image of another version boots
 sit at the front of the 4 KB CALIB flash region, 1 KB apart, with 2 KB
 spare behind them.
 
-What SAVE does, in order: settle the pot table to what the kernel
+What SAVE does, in order: settle the position table to what the kernel
 applies (a load in progress or a rejected array becomes the identity,
 so a reboot never applies a table the kernel did not); run the
 data-state checkpoint (a mismatched stamp still persists); program the
@@ -1150,8 +1153,8 @@ payload details live with the implementation. FACTORY erases every slot
 of both saved images (config and calib with its tables, sec 9.4), not
 just the live table, then stages the reboot: the erased store is the
 factory state, and the servo comes back *virgin* (sec 5.7) on board
-defaults, the pot table at the identity. It shares SAVE's torque gate,
-and a failed wipe nacks `hardware` without rebooting. It is the only
+defaults, the position table at the identity. It shares SAVE's torque
+gate, and a failed wipe nacks `hardware` without rebooting. It is the only
 exit from `CONFIG_CORRUPT`.
 
 ## 10. V006 resource map

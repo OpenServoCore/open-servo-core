@@ -1,4 +1,4 @@
-//! The plant data the servo holds beside its recordings: the pot table as
+//! The plant data the servo holds beside its recordings: the position table as
 //! the kernel applies it (read for the experiments as osc-ident's `Pot`
 //! and for the records that say which counts a run was fitted in), the
 //! plant stamp against the live set, and the data state. A capture is only
@@ -10,10 +10,10 @@ use osc_client::blocking::Client;
 use osc_client::data_state::DataState;
 use osc_client::descriptor::Descriptor;
 use osc_client::nusb::NusbPipe;
-use osc_client::pot_lut::{INTERVALS, state};
+use osc_client::pos_lut::{INTERVALS, state};
 use osc_client::stamp::{UNSTAMPED, Verdict};
 use osc_client::{Error, Id};
-use osc_ident::lut::{GRID, GridLut, KNOTS};
+use osc_ident::lut::{GRID, GridLut, POINTS};
 use osc_ident::pot::Pot;
 use osc_protocol::crc::osc_crc;
 use serde_json::{Value, json};
@@ -23,18 +23,18 @@ use crate::descriptor;
 /// The effective table: the array while LIVE, the identity otherwise.
 pub(crate) struct Lut {
     pub(crate) state: u8,
-    pub(crate) knots: [i16; INTERVALS],
+    pub(crate) points: [i16; INTERVALS],
 }
 
 impl Lut {
     pub(crate) fn read(c: &mut Client<NusbPipe>, id: Id, d: &Descriptor) -> Result<Self> {
-        let s = c.lut_state(id, d)?;
-        let knots = if s == state::LIVE {
-            c.pot_lut(id, d)?.knots
+        let s = c.pos_lut_state(id, d)?;
+        let points = if s == state::LIVE {
+            c.pos_lut(id, d)?.points
         } else {
             [0; INTERVALS]
         };
-        Ok(Self { state: s, knots })
+        Ok(Self { state: s, points })
     }
 
     pub(crate) fn live(&self) -> bool {
@@ -49,9 +49,9 @@ impl Lut {
     }
 
     pub(crate) fn grid(&self) -> GridLut {
-        let mut knots = [0i16; KNOTS];
-        knots[..INTERVALS].copy_from_slice(&self.knots);
-        GridLut { knots }
+        let mut points = [0i16; POINTS];
+        points[..INTERVALS].copy_from_slice(&self.points);
+        GridLut { points }
     }
 
     /// What the experiments fit through.
@@ -63,21 +63,21 @@ impl Lut {
         }
     }
 
-    /// CRC-16/ARC over the effective knots LE, the bytes as the stamp
+    /// CRC-16/ARC over the effective points LE, the bytes as the stamp
     /// hashes them; the identity has its own value.
     pub(crate) fn crc(&self) -> u16 {
-        let bytes: Vec<u8> = self.knots.iter().flat_map(|k| k.to_le_bytes()).collect();
+        let bytes: Vec<u8> = self.points.iter().flat_map(|k| k.to_le_bytes()).collect();
         osc_crc(&bytes)
     }
 
     pub(crate) fn nonzero(&self) -> usize {
-        self.knots.iter().filter(|&&k| k != 0).count()
+        self.points.iter().filter(|&&k| k != 0).count()
     }
 
-    /// Raw counts of the first and last nonzero knot.
+    /// Raw counts of the first and last nonzero point.
     pub(crate) fn band(&self) -> Option<(u16, u16)> {
-        let first = self.knots.iter().position(|&k| k != 0)?;
-        let last = self.knots.iter().rposition(|&k| k != 0)?;
+        let first = self.points.iter().position(|&k| k != 0)?;
+        let last = self.points.iter().rposition(|&k| k != 0)?;
         Some((first as u16 * GRID, last as u16 * GRID))
     }
 
@@ -100,7 +100,7 @@ impl Lut {
         json!({
             "lut_state": self.state_name(),
             "lut_crc": format!("{:#06x}", self.crc()),
-            "lut_nonzero_knots": self.nonzero(),
+            "lut_nonzero_points": self.nonzero(),
             "lut_band": self.band().map(|(lo, hi)| [lo, hi]),
         })
     }
@@ -189,7 +189,7 @@ impl Snapshot {
     /// the same stamp verdict, the same data reasons.
     pub(crate) fn same(&self, later: &Self) -> bool {
         self.lut.state == later.lut.state
-            && self.lut.knots == later.lut.knots
+            && self.lut.points == later.lut.points
             && self.stamp_verdict() == later.stamp_verdict()
             && self.data.flags == later.data.flags
     }
@@ -201,13 +201,13 @@ mod tests {
     use osc_client::data_state::STAMP_MISMATCH;
 
     fn bent() -> Lut {
-        let mut knots = [0i16; INTERVALS];
-        for (k, c) in knots.iter_mut().enumerate().take(220).skip(35) {
+        let mut points = [0i16; INTERVALS];
+        for (k, c) in points.iter_mut().enumerate().take(220).skip(35) {
             *c = (k as i16 - 35) % 7 + 1;
         }
         Lut {
             state: state::LIVE,
-            knots,
+            points,
         }
     }
 
@@ -215,7 +215,7 @@ mod tests {
     fn identity_and_a_table_describe_themselves() {
         let id = Lut {
             state: state::IDENTITY,
-            knots: [0; INTERVALS],
+            points: [0; INTERVALS],
         };
         assert_eq!(id.describe(), "IDENTITY (the kernel applies the identity)");
         assert_eq!(id.pot(), Pot::RAW);
@@ -240,7 +240,7 @@ mod tests {
         );
         let zero = Lut {
             state: state::LIVE,
-            knots: [0; INTERVALS],
+            points: [0; INTERVALS],
         };
         assert_eq!(
             zero.crc(),
@@ -265,7 +265,7 @@ mod tests {
         };
         let j = a.json();
         assert_eq!(j["lut_state"], "LIVE");
-        assert_eq!(j["lut_nonzero_knots"], 185);
+        assert_eq!(j["lut_nonzero_points"], 185);
         assert_eq!(j["lut_band"], json!([560, 3504]));
         assert_eq!(j["lut_crc"], format!("{:#06x}", bent().crc()));
         assert_eq!(j["plant_stamp"], "0x1234");
@@ -297,7 +297,7 @@ mod tests {
         let rebooted = Snapshot {
             lut: Lut {
                 state: state::IDENTITY,
-                knots: [0; INTERVALS],
+                points: [0; INTERVALS],
             },
             stamp: Some(Verdict {
                 stored: 0x1234,
@@ -332,7 +332,7 @@ mod tests {
         assert_eq!(v["raw_min"], 209);
         assert_eq!(v["raw_max"], 3849);
         assert_eq!(v["grid_shift"], 4);
-        assert_eq!(v["knots"].as_array().unwrap().len(), INTERVALS);
+        assert_eq!(v["points"].as_array().unwrap().len(), INTERVALS);
         assert_eq!(v["covered"], json!([560, 3504]));
         assert_eq!(v["dataset"], "mg90-a__2s");
         assert_eq!(v["lut_state"], "LIVE");

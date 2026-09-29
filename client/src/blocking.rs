@@ -14,7 +14,7 @@ use crate::descriptor::Descriptor;
 use crate::error::Error;
 use crate::mgmt::{self, CalTrace, Found, Uid};
 use crate::pipe::Pipe;
-use crate::pot_lut::{self, PotLut};
+use crate::pos_lut::{self, PosLut};
 use crate::session::LinkInfo;
 use crate::stamp::{self, Verdict};
 #[cfg(feature = "bench")]
@@ -225,34 +225,36 @@ impl<P: Pipe> Client<P> {
         block_on(stamp::restamp(&mut self.0, id, d))
     }
 
-    /// The pot LUT as the servo holds it (every page FETCHed) and its state.
-    pub fn pot_lut(&mut self, id: Id, d: &Descriptor) -> Result<PotLut, Error> {
-        block_on(pot_lut::read(&mut self.0, id, d))
+    /// The position table as the servo holds it (every page FETCHed) and its
+    /// state.
+    pub fn pos_lut(&mut self, id: Id, d: &Descriptor) -> Result<PosLut, Error> {
+        block_on(pos_lut::read(&mut self.0, id, d))
     }
 
-    pub fn lut_state(&mut self, id: Id, d: &Descriptor) -> Result<u8, Error> {
-        block_on(pot_lut::state(&mut self.0, id, d))
+    pub fn pos_lut_state(&mut self, id: Id, d: &Descriptor) -> Result<u8, Error> {
+        block_on(pos_lut::state(&mut self.0, id, d))
     }
 
-    /// STORE, COMMIT and verify a pot LUT; torque must be off. Never stamps.
-    pub fn write_pot_lut(
+    /// STORE, COMMIT and verify a position table; torque must be off. Never
+    /// stamps.
+    pub fn write_pos_lut(
         &mut self,
         id: Id,
         d: &Descriptor,
-        knots: &[i16; pot_lut::INTERVALS],
+        points: &[i16; pos_lut::INTERVALS],
     ) -> Result<(), Error> {
-        block_on(pot_lut::write(&mut self.0, id, d, knots))
+        block_on(pos_lut::write(&mut self.0, id, d, points))
     }
 
     /// The identity as a LIVE all-zero table.
-    pub fn clear_pot_lut(&mut self, id: Id, d: &Descriptor) -> Result<(), Error> {
-        block_on(pot_lut::clear(&mut self.0, id, d))
+    pub fn clear_pos_lut(&mut self, id: Id, d: &Descriptor) -> Result<(), Error> {
+        block_on(pos_lut::clear(&mut self.0, id, d))
     }
 
     /// COMMIT the table the servo holds against the stops as they are now;
-    /// the `lut_state` after. Torque must be off.
-    pub fn recommit_pot_lut(&mut self, id: Id, d: &Descriptor) -> Result<u8, Error> {
-        block_on(pot_lut::recommit(&mut self.0, id, d))
+    /// the `pos_lut_state` after. Torque must be off.
+    pub fn recommit_pos_lut(&mut self, id: Id, d: &Descriptor) -> Result<u8, Error> {
+        block_on(pos_lut::recommit(&mut self.0, id, d))
     }
 
     pub fn read_profile(&mut self, id: Id, slot: u8) -> Result<Vec<u8>, Error> {

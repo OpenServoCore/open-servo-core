@@ -9,12 +9,12 @@
 
 use osc_integration::sim::Sim;
 use osc_servo_core::BaudRate;
-use osc_servo_core::pot_lut::{INTERVALS, KNOTS};
+use osc_servo_core::pos_lut::{INTERVALS, POINTS};
 use rstest_reuse::template;
 
 /// mg90-a on the 2S session, stops 209/3849, covered 542..3520 (bringup
-/// captures/mg90/pot-lut-mg90-a-grid.json), the same 256 knots the core
-/// unit tests carry, pinned to the Python reference by CRC in `pot_lut.rs`.
+/// captures/mg90/pot-lut-mg90-a-grid.json), the same 256 points the core
+/// unit tests carry, pinned to the Python reference by CRC in `pos_lut.rs`.
 #[allow(dead_code)]
 pub const MG90_A_MIN: u16 = 209;
 #[allow(dead_code)]
@@ -39,10 +39,10 @@ pub const MG90_A: [i16; INTERVALS] = [
     0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, //
 ];
 
-/// The mg90-a table with the fixed last knot appended.
+/// The mg90-a table with the fixed last point appended.
 #[allow(dead_code)]
-pub fn mg90_a() -> [i16; KNOTS] {
-    let mut k = [0; KNOTS];
+pub fn mg90_a() -> [i16; POINTS] {
+    let mut k = [0; POINTS];
     k[..INTERVALS].copy_from_slice(&MG90_A);
     k
 }

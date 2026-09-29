@@ -90,22 +90,22 @@ pub struct ControlBurst {
     pub _rsvd_align: u8,
 }
 
-/// Paged window onto the pot LUT in RAM (`pot_lut` module). `lut_page`
-/// selects `PAGE_KNOTS` knots of the array; a committed write carrying
-/// `lut_cmd` STOREs the window into that page, FETCHes it back, or
-/// COMMITs the whole array; `lut_state` reports what the kernel applies.
-/// Page, command and knots are contiguous so one WRITE carries a page.
-/// Volatile: a reboot is the identity until the CALIB image loads.
+/// Paged window onto the position table in RAM (`pos_lut` module).
+/// `pos_lut_page` selects `PAGE_POINTS` points of the array; a committed
+/// write carrying `pos_lut_cmd` STOREs the window into that page, FETCHes it
+/// back, or COMMITs the whole array; `pos_lut_state` reports what the kernel
+/// applies. Page, command and points are contiguous so one WRITE carries a
+/// page. Volatile: a reboot is the identity until the CALIB image loads.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
-pub struct ControlPotLut {
-    #[ct_field(le = crate::pot_lut::PAGES as u8 - 1)]
-    pub lut_page: u8,
-    #[ct_field(le = crate::pot_lut::cmd::MAX)]
-    pub lut_cmd: u8,
-    pub lut_knots: [i16; crate::pot_lut::PAGE_KNOTS],
+pub struct ControlPosLut {
+    #[ct_field(le = crate::pos_lut::PAGES as u8 - 1)]
+    pub pos_lut_page: u8,
+    #[ct_field(le = crate::pos_lut::cmd::MAX)]
+    pub pos_lut_cmd: u8,
+    pub pos_lut_points: [i16; crate::pos_lut::PAGE_POINTS],
     #[ct_field(access = ro)]
-    pub lut_state: u8,
+    pub pos_lut_state: u8,
     #[ct_field(skip)]
     pub _rsvd_align: u8,
 }
@@ -121,7 +121,7 @@ pub struct ControlRegs {
     pub lifecycle: ControlLifecycle,
     pub system: ControlSystem,
     pub burst: ControlBurst,
-    pub pot_lut: ControlPotLut,
+    pub pos_lut: ControlPosLut,
     #[ct_section(skip)]
     pub _rsvd_tail: [u8; 32],
 }

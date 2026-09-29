@@ -125,7 +125,7 @@ fn opt(v: Option<f64>) -> String {
 
 /// Render the `[units]` report section: each factor with its real unit, plus a
 /// caveat that output torque is a lossless upper bound and that angle/torque
-/// accuracy ride on the pot LUT and the measured gear ratio.
+/// accuracy ride on the position table and the measured gear ratio.
 pub fn render(f: &UnitFactors) -> String {
     let mut s = String::new();
     render_into(&mut s, f);

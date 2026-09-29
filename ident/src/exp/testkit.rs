@@ -646,7 +646,7 @@ impl SynthBurst {
 pub fn bent_pot() -> GridLut {
     let mut lut = GridLut::IDENTITY;
     let (lo, hi) = (13usize, 250usize);
-    for (k, c) in lut.knots.iter_mut().enumerate().take(hi).skip(lo + 1) {
+    for (k, c) in lut.points.iter_mut().enumerate().take(hi).skip(lo + 1) {
         let x = (k - lo) as f64 / (hi - lo) as f64;
         *c = (120.0 * (core::f64::consts::TAU * x).sin()).round() as i16;
     }

@@ -46,7 +46,7 @@
       "angle_max_cdeg",
       "gear_ratio_centi"
     ],
-    "lut_knots": 256
+    "pos_lut_points": 256
   },
   "fields": [
     {
@@ -768,7 +768,7 @@
       "max": 7
     },
     {
-      "name": "lut_page",
+      "name": "pos_lut_page",
       "addr": 412,
       "width": 1,
       "access": "rw",
@@ -776,7 +776,7 @@
       "max": 7
     },
     {
-      "name": "lut_cmd",
+      "name": "pos_lut_cmd",
       "addr": 413,
       "width": 1,
       "access": "rw",
@@ -784,14 +784,14 @@
       "max": 3
     },
     {
-      "name": "lut_knots",
+      "name": "pos_lut_points",
       "addr": 414,
       "width": 64,
       "access": "rw",
       "kind": "bytes"
     },
     {
-      "name": "lut_state",
+      "name": "pos_lut_state",
       "addr": 478,
       "width": 1,
       "access": "ro",

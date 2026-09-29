@@ -23,7 +23,7 @@ use super::battery::{self, read_pack_mv};
 use super::envelope::{Envelope, civil_date};
 use super::plan::{self, Plan};
 use super::procs::Procedure;
-use super::store::{Capture, CaptureMeta, Decl, PotLutFile, Store};
+use super::store::{Capture, CaptureMeta, Decl, PosLutFile, Store};
 use super::verdict::verdict;
 use super::{RUNG_TRIES, SEEK_CAP_PCT, SETTLE_MS, Supply, WINDOW_MS};
 use crate::rig::park;
@@ -632,7 +632,7 @@ impl Session<'_> {
 
     /// The plant the captures are made under, logged, and its table kept
     /// with the dataset while one is LIVE. Every recording's meta names
-    /// the table by crc; the dataset holds the knots once.
+    /// the table by crc; the dataset holds the points once.
     fn record_plant(&mut self, fw: u16) -> Result<(), Stop> {
         let (dataset, source) = (
             self.dataset.clone(),
@@ -653,11 +653,11 @@ impl Session<'_> {
         })?;
         self.log.line(format_args!("plant: {}", snap.line()));
         if let Some(image) = image {
-            match self.store.save_pot_lut(&image).map_err(Stop::Error)? {
-                PotLutFile::Written => self.log.line("wrote pot-lut.json"),
-                PotLutFile::Same => {}
-                PotLutFile::Differs(crc) => self.log.line(format_args!(
-                    "warning: pot-lut.json holds table {crc}, the servo runs {}: the dataset \
+            match self.store.save_pos_lut(&image).map_err(Stop::Error)? {
+                PosLutFile::Written => self.log.line("wrote pos-lut.json"),
+                PosLutFile::Same => {}
+                PosLutFile::Differs(crc) => self.log.line(format_args!(
+                    "warning: pos-lut.json holds table {crc}, the servo runs {}: the dataset \
                      will mix tables (osc capture check flags it)",
                     image["lut_crc"].as_str().unwrap_or_default()
                 )),

@@ -1,8 +1,8 @@
-"""Pot linearization LUT, with the semantics of ident/src/lut.rs.
+"""Position linearization table, with the semantics of ident/src/lut.rs.
 
 The pot's local gain varies along its travel, so a straight line between the
 rails mis-reports position and, worse, speed. A motor-side angle clock (the
-commutation ripple, nb06 sec 5) turns that into a table: 55 knots evenly
+commutation ripple, nb06 sec 5) turns that into a table: 55 points evenly
 spaced in raw counts between raw_min and raw_max, each an i16 correction
 against the identity ramp.
 
@@ -24,26 +24,26 @@ the clock (lut.rs stitch_slope). Chunks share the count axis and average per
 count, and interior gaps are bridged from the median density of up to 8
 covered counts either side.
 
-fit_knots anchors the covered pot endpoints affinely onto their identity
+fit_points anchors the covered pot endpoints affinely onto their identity
 fractions and pins the rails to 0 and 1: corrections are against the chord
 through the covered ends and taper to zero across uncovered insets. That
 anchoring is a gauge choice, so two builds over different covered ends differ
 by a tilt that is not a disagreement: compare shapes with chord_residual.
 
-The grid table is the one the firmware applies (core pot_lut.rs): 256 intervals
-of 16 raw counts over the 12-bit ADC domain, 257 i16 knots at raw k * 16, the
+The grid table is the one the firmware applies (core pos_lut.rs): 256 intervals
+of 16 raw counts over the 12-bit ADC domain, 257 i16 points at raw k * 16, the
 last fixed 0, all-zero the identity. Per sample the firmware indexes with
 raw >> 4 and interpolates in integer math to a Q4 word, linearized counts
 times 16:
 
-  g = fit_grid(st)                    knots on the band >= MIN_RUNG_COVER rungs cross
+  g = fit_grid(st)                    points on the band >= MIN_RUNG_COVER rungs cross
   g.q4(raw)                           the u16 the firmware computes, bit for bit
   g.counts(raw)                       the same over 16, in counts
   g.validate(raw_min, raw_max)        None, or the firmware's reject reason
 
 fit_grid anchors on rung coverage, never on the extreme sample (one stray rung
-moves every knot): knots inside the band carry the chord through the band
-ends, every other knot is zero, so the insets and the stops map to themselves.
+moves every point): points inside the band carry the chord through the band
+ends, every other point is zero, so the insets and the stops map to themselves.
 interp_q4 and validate mirror the firmware and are what a capture of TEL
 pos_lin is checked against.
 
@@ -55,33 +55,33 @@ from dataclasses import dataclass
 
 import numpy as np
 
-N_KNOTS = 55
+N_POINTS = 55
 MIN_SPAN_COVER = 0.7
 GAP_ANCHOR = 8
 
 
 @dataclass(frozen=True)
-class PotLut:
+class PosLut:
     raw_min: int
     raw_max: int
     corr: tuple
 
     @classmethod
-    def identity(cls, raw_min, raw_max, n_knots=N_KNOTS):
-        return cls(int(raw_min), int(raw_max), (0,) * n_knots)
+    def identity(cls, raw_min, raw_max, n_points=N_POINTS):
+        return cls(int(raw_min), int(raw_max), (0,) * n_points)
 
     @property
     def span(self):
         return self.raw_max - self.raw_min
 
     @property
-    def knots(self):
+    def points(self):
         n = len(self.corr)
         return self.raw_min + np.arange(n) * self.span / (n - 1)
 
     def corrected(self, raw):
         r = np.clip(np.asarray(raw, float), self.raw_min, self.raw_max)
-        return np.interp(r, self.knots, self.knots + np.asarray(self.corr, float))
+        return np.interp(r, self.points, self.points + np.asarray(self.corr, float))
 
     def linearize(self, raw):
         if self.span <= 0:
@@ -198,44 +198,44 @@ def stitch(chunks, raw_min, raw_max):
     return Stitch(raw_min, cum, avg, cov, fc, lc)
 
 
-def fit_knots(raw, frac, raw_min, raw_max, n_knots=N_KNOTS):
-    """Corrections from (raw, rel) with rel in [0, 1] rising with raw (lut.rs fit_knots).
-    n_knots other than 55 is for studying table size; the firmware block holds 55."""
+def fit_points(raw, frac, raw_min, raw_max, n_points=N_POINTS):
+    """Corrections from (raw, rel) with rel in [0, 1] rising with raw (lut.rs fit_points).
+    n_points other than 55 is for studying table size; the firmware block holds 55."""
     o = np.argsort(raw, kind="stable")
     raw, frac = np.asarray(raw, float)[o], np.asarray(frac, float)[o]
     span = raw_max - raw_min
     tf_lo, tf_hi = (raw[0] - raw_min) / span, (raw[-1] - raw_min) / span
     if tf_hi == tf_lo:
-        return PotLut.identity(raw_min, raw_max, n_knots)
+        return PosLut.identity(raw_min, raw_max, n_points)
     frac = tf_lo + frac * (tf_hi - tf_lo)
     raw = np.concatenate([raw, [raw_min, raw_max]])
     frac = np.concatenate([frac, [0.0, 1.0]])
     u, inv = np.unique(raw, return_inverse=True)
     f = np.bincount(inv, weights=frac) / np.bincount(inv)
     f = np.maximum.accumulate(f)
-    knots = raw_min + np.arange(n_knots) * span / (n_knots - 1)
-    corrected = raw_min + np.interp(knots, u, f) * span
-    d = corrected - knots
+    points = raw_min + np.arange(n_points) * span / (n_points - 1)
+    corrected = raw_min + np.interp(points, u, f) * span
+    d = corrected - points
     # Rust f64::round: half away from zero, not numpy's half to even
     corr = np.clip(np.sign(d) * np.floor(np.abs(d) + 0.5), -32768, 32767).astype(int)
-    return PotLut(int(raw_min), int(raw_max), tuple(int(c) for c in corr))
+    return PosLut(int(raw_min), int(raw_max), tuple(int(c) for c in corr))
 
 
-def build(chunks, raw_min, raw_max, min_cover=MIN_SPAN_COVER, n_knots=N_KNOTS):
+def build(chunks, raw_min, raw_max, min_cover=MIN_SPAN_COVER, n_points=N_POINTS):
     """The LUT from several chunks (lut.rs build_multi); identity when coverage is short."""
-    return from_stitch(stitch(chunks, raw_min, raw_max), raw_min, raw_max, min_cover, n_knots)
+    return from_stitch(stitch(chunks, raw_min, raw_max), raw_min, raw_max, min_cover, n_points)
 
 
-def from_stitch(st, raw_min, raw_max, min_cover=MIN_SPAN_COVER, n_knots=N_KNOTS):
+def from_stitch(st, raw_min, raw_max, min_cover=MIN_SPAN_COVER, n_points=N_POINTS):
     if st is None or st.coverage < min_cover:
-        return PotLut.identity(raw_min, raw_max, n_knots)
+        return PosLut.identity(raw_min, raw_max, n_points)
     b = np.arange(st.fc, st.lc + 1)
     total = st.cum[st.lc] - st.cum[st.fc]
-    return fit_knots(raw_min + b, (st.cum[b] - st.cum[st.fc]) / total, raw_min, raw_max, n_knots)
+    return fit_points(raw_min + b, (st.cum[b] - st.cum[st.fc]) / total, raw_min, raw_max, n_points)
 
 
 def true_counts(st, raw, lo=None, hi=None):
-    """Linearized counts straight from a stitch, no knots: the curve a finer table converges
+    """Linearized counts straight from a stitch, no points: the curve a finer table converges
     to, the chord through lo and hi (the covered ends unless given) mapping to themselves."""
     lo, hi = st.lo if lo is None else lo, st.hi if hi is None else hi
     rel = (st.angle(raw) - st.angle(lo)) / (st.angle(hi) - st.angle(lo))
@@ -254,7 +254,7 @@ ADC_BITS = 12
 GRID_SHIFT = 4
 GRID = 1 << GRID_SHIFT                        # raw counts per interval
 INTERVALS = 1 << (ADC_BITS - GRID_SHIFT)      # 256
-KNOTS = INTERVALS + 1                         # knot INTERVALS fixed 0
+POINTS = INTERVALS + 1                        # point INTERVALS fixed 0
 ADC_MASK = (1 << ADC_BITS) - 1
 FRAC_MASK = GRID - 1
 GAIN_MAX = 16                                 # local gain at or above this is corruption, not a pot
@@ -263,28 +263,28 @@ I16 = (-32768, 32767)
 
 
 def index(raw):
-    """pot_lut.rs index: the interval a raw sample falls in."""
+    """pos_lut.rs index: the interval a raw sample falls in."""
     return (np.asarray(raw, np.int64) & ADC_MASK) >> GRID_SHIFT
 
 
 def interp_q4(raw, c0, c1):
-    """pot_lut.rs interp_q4, bit for bit: linearized counts in Q4 as the u16 the firmware
-    computes from a sample and the two knots around it. One multiply, no divide, and the
+    """pos_lut.rs interp_q4, bit for bit: linearized counts in Q4 as the u16 the firmware
+    computes from a sample and the two points around it. One multiply, no divide, and the
     same wrap as the u16 cast (a table that passes validate never reaches it)."""
     raw = np.asarray(raw, np.int64) & ADC_MASK
     c0, c1 = np.asarray(c0, np.int64), np.asarray(c1, np.int64)
     return (((raw + c0) << GRID_SHIFT) + (c1 - c0) * (raw & FRAC_MASK)) & 0xFFFF
 
 
-def validate(knots, raw_min, raw_max):
-    """pot_lut.rs validate: None when the table passes, else the reject reason. Identity
-    at and beyond the stops ("ends"), so raw_min and raw_max map to themselves and knots
+def validate(points, raw_min, raw_max):
+    """pos_lut.rs validate: None when the table passes, else the reject reason. Identity
+    at and beyond the stops ("ends"), so raw_min and raw_max map to themselves and points
     0, 255 and 256 are zero; then every interval's Q4 gain d = GRID + c[k+1] - c[k] in
     1 <= d < GAIN_MAX * GRID ("shape"), so the output is monotone and stays a u16."""
-    c = np.asarray(knots, np.int64)
-    if len(c) != KNOTS or (c < I16[0]).any() or (c > I16[1]).any():
+    c = np.asarray(points, np.int64)
+    if len(c) != POINTS or (c < I16[0]).any() or (c > I16[1]).any():
         return "shape"
-    k = np.arange(KNOTS)
+    k = np.arange(POINTS)
     outside = (k <= (raw_min + GRID - 1) >> GRID_SHIFT) | (k >= raw_max >> GRID_SHIFT)
     if c[outside].any():
         return "ends"
@@ -296,21 +296,21 @@ def validate(knots, raw_min, raw_max):
 
 @dataclass(frozen=True)
 class GridLut:
-    """The firmware's table: KNOTS corrections against the identity ramp, knot k at raw
+    """The firmware's table: POINTS corrections against the identity ramp, point k at raw
     k * GRID, the last fixed 0. All-zero is the identity, raw << 4 everywhere."""
-    knots: tuple
+    points: tuple
 
     @classmethod
     def identity(cls):
-        return cls((0,) * KNOTS)
+        return cls((0,) * POINTS)
 
     @property
     def raw(self):
-        return np.arange(KNOTS) * GRID
+        return np.arange(POINTS) * GRID
 
     @property
     def corr(self):
-        return np.asarray(self.knots, np.int64)
+        return np.asarray(self.points, np.int64)
 
     def q4(self, raw):
         """The Q4 word the firmware computes for each raw sample."""
@@ -322,20 +322,20 @@ class GridLut:
         return self.q4(raw) / GRID
 
     def validate(self, raw_min, raw_max):
-        return validate(self.knots, raw_min, raw_max)
+        return validate(self.points, raw_min, raw_max)
 
     def to_json(self, raw_min, raw_max, **extra):
-        """The image body osc lut write takes: knots 0..INTERVALS-1, the fixed last knot
+        """The image body osc lut write takes: points 0..INTERVALS-1, the fixed last point
         left out, with the stops the table was built against."""
         return json.dumps({"raw_min": int(raw_min), "raw_max": int(raw_max), "grid_shift": GRID_SHIFT,
-                           "knots": [int(c) for c in self.knots[:INTERVALS]], **extra}, indent=2)
+                           "points": [int(c) for c in self.points[:INTERVALS]], **extra}, indent=2)
 
     @classmethod
     def from_json(cls, text):
         d = json.loads(text)
-        if d.get("grid_shift", GRID_SHIFT) != GRID_SHIFT or len(d["knots"]) != INTERVALS:
+        if d.get("grid_shift", GRID_SHIFT) != GRID_SHIFT or len(d["points"]) != INTERVALS:
             raise ValueError("not a table on the firmware grid")
-        return cls(tuple(int(c) for c in d["knots"]) + (0,))
+        return cls(tuple(int(c) for c in d["points"]) + (0,))
 
 
 def well_covered(st, min_cover=MIN_RUNG_COVER):
@@ -345,17 +345,17 @@ def well_covered(st, min_cover=MIN_RUNG_COVER):
 
 
 def fit_grid(st, band=None, min_cover=MIN_RUNG_COVER):
-    """The grid table from a stitch. Knots inside the band (the well-covered stretch unless
+    """The grid table from a stitch. Points inside the band (the well-covered stretch unless
     given) carry the chord through the band ends, rounded half away from zero as the Rust
-    builder does; every other knot is zero. Identity when nothing is covered well enough."""
+    builder does; every other point is zero. Identity when nothing is covered well enough."""
     if band is None and st is not None:
         band = well_covered(st, min_cover)
     if band is None:
         return GridLut.identity()
     lo, hi = band
-    r = np.arange(KNOTS) * GRID
+    r = np.arange(POINTS) * GRID
     inside = (r >= lo) & (r <= hi)
-    d = np.zeros(KNOTS)
+    d = np.zeros(POINTS)
     d[inside] = true_counts(st, r[inside], lo, hi) - r[inside]
     corr = np.clip(np.sign(d) * np.floor(np.abs(d) + 0.5), *I16).astype(int)
     return GridLut(tuple(int(c) for c in corr))

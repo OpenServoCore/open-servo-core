@@ -24,7 +24,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use osc_servo_core::data_state::DataJob;
-use osc_servo_core::pot_lut::KNOTS;
+use osc_servo_core::pos_lut::POINTS;
 use osc_servo_core::regions::config::DEFAULT_RESPONSE_DEADLINE_US;
 use osc_servo_core::{BaudRate, BootMode, ControlTable};
 use osc_servo_drivers::bus::LinkDiag;
@@ -345,9 +345,9 @@ impl Sim {
         self.servos[i].with_table_mut(f)
     }
 
-    /// Inspect a servo's pot LUT array behind the CONTROL window.
-    pub fn servo_pot_lut<R>(&self, i: usize, f: impl FnOnce(&[i16; KNOTS]) -> R) -> R {
-        self.servos[i].with_pot_lut(f)
+    /// Inspect a servo's position table array behind the CONTROL window.
+    pub fn servo_pos_lut<R>(&self, i: usize, f: impl FnOnce(&[i16; POINTS]) -> R) -> R {
+        self.servos[i].with_pos_lut(f)
     }
 
     /// Give servo `i` another board's sense chain: install re-stamps these

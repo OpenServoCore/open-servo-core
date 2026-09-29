@@ -18,7 +18,7 @@ use osc_integration::plant::{BIAS, Plant, duty_of, kernel, last_cmd, lut_live, s
 use osc_protocol::crc::osc_crc_continue;
 use osc_servo_core::kernel::DECIM_MED;
 use osc_servo_core::kernel::faults::{BIT_OVER_CURRENT, CODE_NONE, CODE_OVER_CURRENT};
-use osc_servo_core::pot_lut::{GRID_SHIFT, KNOTS, interp_q4};
+use osc_servo_core::pos_lut::{GRID_SHIFT, POINTS, interp_q4};
 use osc_servo_core::regions::{TELEMETRY_BASE_ADDR, TELEMETRY_REGION_SIZE};
 use osc_servo_core::{ControlTable, DecayMode, Mode, MotorCmd, RegionStorage, Shared};
 
@@ -199,7 +199,7 @@ impl Row {
 /// `script` against the rig for `ticks`, with `lut` LIVE in the kernel's
 /// array (the plant itself stays linear: the table only re-maps what the
 /// kernel believes the pot reads).
-fn run(lut: Option<&[i16; KNOTS]>, ticks: u32, script: Script) -> Vec<Row> {
+fn run(lut: Option<&[i16; POINTS]>, ticks: u32, script: Script) -> Vec<Row> {
     let sh = Shared::new();
     seed(&sh);
     if let Some(k) = lut {
@@ -319,7 +319,7 @@ fn kernel_trace_matches_golden() {
 /// An all-zero table LIVE is the identity: the same trace, bit for bit.
 #[test_log::test]
 fn kernel_trace_without_lut_matches_golden() {
-    let rows = run(Some(&[0; KNOTS]), TICKS, script);
+    let rows = run(Some(&[0; POINTS]), TICKS, script);
     assert_script_phases(&rows);
     assert_matches_golden(&rows);
 }

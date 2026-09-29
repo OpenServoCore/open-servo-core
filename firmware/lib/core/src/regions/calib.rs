@@ -1,7 +1,7 @@
 use control_table::{Block, Section};
 
 /// The pot's mechanical stops in raw ADC counts: the ends of the angle map
-/// (`CalibKinematics`) and the domain a pot LUT is validated against.
+/// (`CalibKinematics`) and the domain a position table is validated against.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct CalibPot {
@@ -107,10 +107,10 @@ pub struct CalibSenseExt {
 }
 
 /// The plant stamp (`stamp` module): the host's CRC over the identified and
-/// calibrated set plus the effective pot LUT, 0 = never stamped. Firmware
-/// recomputes it at every checkpoint; a mismatch is `STAMP_MISMATCH`. Sits
-/// right after the host-written blocks so one WRITE can carry the whole
-/// identified set and its stamp.
+/// calibrated set plus the effective position table, 0 = never stamped.
+/// Firmware recomputes it at every checkpoint; a mismatch is
+/// `STAMP_MISMATCH`. Sits right after the host-written blocks so one WRITE
+/// can carry the whole identified set and its stamp.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct CalibStamp {

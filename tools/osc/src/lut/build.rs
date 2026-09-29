@@ -15,7 +15,7 @@ use crate::capture::store::{Decl, Store};
 pub struct Args {
     /// A dataset dir, `<root>/<servo>__<supply>`, with its dataset.toml.
     dataset: PathBuf,
-    /// Where the image lands [default: <dataset>/pot-lut.json].
+    /// Where the image lands [default: <dataset>/pos-lut.json].
     #[arg(long)]
     out: Option<PathBuf>,
     /// Pot count at the low stop; with --raw-max, overrides the envelope's
@@ -34,7 +34,7 @@ pub(crate) fn run(a: &Args) -> Result<()> {
     let out = a
         .out
         .clone()
-        .unwrap_or_else(|| a.dataset.join("pot-lut.json"));
+        .unwrap_or_else(|| a.dataset.join("pos-lut.json"));
     write(&built.image, &out)?;
     println!("wrote {}", out.display());
     Ok(())
@@ -158,11 +158,11 @@ fn summary(b: &Built, stops_from_envelope: bool) -> String {
         hi - lo,
         lut::MIN_RUNG_COVER
     );
-    let knots = &b.build.lut.knots;
-    let nonzero: Vec<usize> = (0..knots.len()).filter(|&k| knots[k] != 0).collect();
+    let points = &b.build.lut.points;
+    let nonzero: Vec<usize> = (0..points.len()).filter(|&k| points[k] != 0).collect();
     match (nonzero.first(), nonzero.last()) {
         (Some(&a), Some(&z)) => {
-            let peak = knots.iter().map(|c| c.abs()).max().unwrap_or(0);
+            let peak = points.iter().map(|c| c.abs()).max().unwrap_or(0);
             let _ = writeln!(
                 s,
                 "knots: {} nonzero at raw {}..{}, |c| up to {peak}",
@@ -173,7 +173,7 @@ fn summary(b: &Built, stops_from_envelope: bool) -> String {
         }
         _ => s.push_str("knots: none nonzero (identity)\n"),
     }
-    let gains: Vec<(f64, usize)> = knots
+    let gains: Vec<(f64, usize)> = points
         .windows(2)
         .enumerate()
         .filter(|(_, w)| w[0] != 0 || w[1] != 0)
@@ -228,7 +228,7 @@ mod tests {
     );
     const COMMITTED: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../ident/testdata/lut/pot-lut-mg90-a-grid.json"
+        "/../../ident/testdata/lut/pos-lut-mg90-a-grid.json"
     ));
 
     /// The dataset's rungs through the builder give the notebook's image

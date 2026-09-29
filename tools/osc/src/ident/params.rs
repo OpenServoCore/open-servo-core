@@ -30,7 +30,8 @@ pub struct ParamsFile {
     /// CalibSense scales read off the table - the offline fit's l_cd input.
     pub sense: Option<SenseJson>,
     pub plant: Option<PlantJson>,
-    /// The pot table the run fitted through: which counts the plant is in.
+    /// The position table the run fitted through: which counts the plant is
+    /// in.
     pub pot: Option<PotJson>,
     #[serde(default)]
     pub gains: Vec<GainJson>,
@@ -41,10 +42,10 @@ pub struct PotJson {
     pub lut_state: String,
     /// `linearized` while the table was LIVE, else `raw`.
     pub counts: String,
-    /// CRC-16/ARC over the effective knots, hex.
+    /// CRC-16/ARC over the effective points, hex.
     pub lut_crc: String,
-    pub nonzero_knots: usize,
-    /// Raw counts of the first and last nonzero knot.
+    pub nonzero_points: usize,
+    /// Raw counts of the first and last nonzero point.
     pub band: Option<[u16; 2]>,
 }
 
@@ -54,7 +55,7 @@ impl From<&Lut> for PotJson {
             lut_state: l.state_name(),
             counts: l.pot().label().into(),
             lut_crc: format!("{:#06x}", l.crc()),
-            nonzero_knots: l.nonzero(),
+            nonzero_points: l.nonzero(),
             band: l.band().map(|(lo, hi)| [lo, hi]),
         }
     }
@@ -66,7 +67,7 @@ impl PotJson {
         match self.counts.as_str() {
             "linearized" => format!(
                 "pot counts: linearized (lut LIVE, crc {}, {} nonzero knots)",
-                self.lut_crc, self.nonzero_knots
+                self.lut_crc, self.nonzero_points
             ),
             _ => format!("pot counts: raw (lut {})", self.lut_state),
         }
