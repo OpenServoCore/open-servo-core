@@ -229,11 +229,11 @@ fn enable_edge_reseeds_without_transient() {
     for _ in 0..50 {
         k.on_tick(frame(2000, BIAS), &sh);
         match last_cmd(&k) {
-            MotorCmd::Coast | MotorCmd::Disabled => {}
+            MotorCmd::Brake | MotorCmd::Disabled => {}
             MotorCmd::Drive { duty, .. } => {
                 assert!(duty.0.unsigned_abs() < 2000, "duty={}", duty.0)
             }
-            MotorCmd::Brake => panic!("brake is never commanded"),
+            MotorCmd::Coast => panic!("coast is never commanded"),
         }
     }
     assert_eq!(k.traj.theta_star_q16(), 2000 << 16);
@@ -1380,19 +1380,19 @@ fn position_step_settles_without_limit_cycle() {
         plant.pos()
     );
     assert_eq!(k.traj.theta_star_q16(), 3000 << 16, "profile landed");
-    // trailing window: position parked, motor overwhelmingly coasting
-    let (mut lo, mut hi, mut coast) = (i32::MAX, i32::MIN, 0u32);
+    // trailing window: position parked, motor overwhelmingly braked
+    let (mut lo, mut hi, mut parked) = (i32::MAX, i32::MIN, 0u32);
     for _ in 0..2000 {
         let f = plant.step(k.duty_q15);
         k.on_tick(f, &sh);
         lo = lo.min(plant.pos());
         hi = hi.max(plant.pos());
-        if matches!(last_cmd(&k), MotorCmd::Coast) {
-            coast += 1;
+        if matches!(last_cmd(&k), MotorCmd::Brake) {
+            parked += 1;
         }
     }
     assert!(hi - lo <= 2, "limit cycle: spread {}", hi - lo);
-    assert!(coast >= 1500, "coast ticks {coast}");
+    assert!(parked >= 1500, "parked ticks {parked}");
 }
 
 #[test]
@@ -1493,10 +1493,10 @@ fn hold_parks_releases_and_reparks() {
     let mut k = kernel();
     let mut plant = Plant::new(1990);
     run_plant(&mut k, &sh, &mut plant, 20_000);
-    assert!(matches!(last_cmd(&k), MotorCmd::Coast), "never parked");
+    assert!(matches!(last_cmd(&k), MotorCmd::Brake), "never parked");
     assert_eq!(k.faults.mask(), 0);
     // a goal write releases the park (omega_star != 0 drops hold); the whole
-    // commanded move must run without a single Coast, then it re-parks once
+    // commanded move must run without a single park, then it re-parks once
     // the profile lands inside the deadband
     sh.table
         .with_mut(|t| t.control.lifecycle.goal_position = 2100);
@@ -1507,9 +1507,9 @@ fn hold_parks_releases_and_reparks() {
         let moving = k.traj.omega_star_q16() != 0;
         if moving {
             saw_move = true;
-            assert!(!matches!(last_cmd(&k), MotorCmd::Coast), "coast mid-move");
+            assert!(!matches!(last_cmd(&k), MotorCmd::Brake), "park mid-move");
         }
-        if saw_move && !moving && matches!(last_cmd(&k), MotorCmd::Coast) {
+        if saw_move && !moving && matches!(last_cmd(&k), MotorCmd::Brake) {
             reparked = true;
         }
     }
@@ -1521,19 +1521,19 @@ fn hold_parks_releases_and_reparks() {
     let mut woke = false;
     for _ in 0..2000 {
         run_plant(&mut k, &sh, &mut plant, 1);
-        woke |= !matches!(last_cmd(&k), MotorCmd::Coast);
+        woke |= !matches!(last_cmd(&k), MotorCmd::Brake);
     }
     assert!(woke, "push never woke the hold");
-    let mut coast = 0u32;
+    let mut parked = 0u32;
     for _ in 0..30_000 {
         run_plant(&mut k, &sh, &mut plant, 1);
-        if matches!(last_cmd(&k), MotorCmd::Coast) {
-            coast += 1;
+        if matches!(last_cmd(&k), MotorCmd::Brake) {
+            parked += 1;
         }
     }
     assert!(
-        coast > 15_000,
-        "never re-parked after the push: coast {coast}"
+        parked > 15_000,
+        "never re-parked after the push: parked {parked}"
     );
     assert_eq!(k.faults.mask(), 0);
     assert!((plant.pos() - 2100).abs() <= 16, "rest {}", plant.pos());
@@ -1553,27 +1553,89 @@ fn hold_stays_parked_under_pot_noise() {
     let mut k = kernel();
     let mut plant = Plant::new(1990);
     run_plant(&mut k, &sh, &mut plant, 20_000);
-    assert!(matches!(last_cmd(&k), MotorCmd::Coast), "never parked");
+    assert!(matches!(last_cmd(&k), MotorCmd::Brake), "never parked");
     // parked hold under +-3 counts of pot noise: gating on position rest
     // (not the noisy omega_hat) keeps the park engaged - a wake per blip is
     // the shake fix2 removes
     let mut rng: u32 = 0xdead_beef;
-    let (mut coast, mut lo, mut hi) = (0u32, i32::MAX, i32::MIN);
+    let (mut parked, mut lo, mut hi) = (0u32, i32::MAX, i32::MIN);
     for _ in 0..40_000 {
         let mut f = plant.step(k.duty_q15);
         rng = rng.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
         let n = ((rng >> 24) as i32 % 7) - 3;
         f.pos = (f.pos as i32 + n).clamp(0, 4095) as u16;
         k.on_tick(f, &sh);
-        if matches!(last_cmd(&k), MotorCmd::Coast) {
-            coast += 1;
+        if matches!(last_cmd(&k), MotorCmd::Brake) {
+            parked += 1;
         }
         lo = lo.min(plant.pos());
         hi = hi.max(plant.pos());
     }
     assert_eq!(k.faults.mask(), 0);
     assert!(hi - lo <= 4, "hold limit cycle: spread {}", hi - lo);
-    assert!(coast >= 36_000, "coast ticks {coast} of 40000");
+    assert!(parked >= 36_000, "parked ticks {parked} of 40000");
+}
+
+#[test]
+fn hold_freezes_and_drains_the_velocity_loop() {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.goal_position = 2000;
+        t.config.fault_cfg.pos_error_counts = u16::MAX;
+        t.config.fusion.l3_q88 = 256;
+        t.config.loop_position.p_kp_q88 = 1024;
+    });
+    let mut k = kernel();
+    let mut plant = Plant::new(1990);
+    run_plant(&mut k, &sh, &mut plant, 20_000);
+    assert!(k.hold, "never parked");
+    let mut rng: u32 = 0xdead_beef;
+    for _ in 0..20_000 {
+        let mut f = plant.step(k.duty_q15);
+        rng = rng.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        f.pos = (f.pos as i32 + ((rng >> 24) as i32 % 7) - 3).clamp(0, 4095) as u16;
+        k.on_tick(f, &sh);
+        if k.hold {
+            assert_eq!(k.i_ref_cc, 0, "parked with a current command");
+        }
+    }
+    // pushed out of the band: the first velocity step after the park is a
+    // fresh loop's on the same inputs, so no charge survived the hold
+    plant.theta_q16 -= 60i64 << 16;
+    for _ in 0..2000 {
+        run_plant(&mut k, &sh, &mut plant, 1);
+        if k.decim_med == 0 && !k.hold {
+            let (vg, omega_hat) = sh.table.with(|t| {
+                let v = &t.config.loop_velocity;
+                let m = &t.calib.motor;
+                (
+                    VelocityGains {
+                        kp_q88: v.v_kp_q88,
+                        ki_q412: v.v_ki_q412,
+                        kaw_q412: v.v_kaw_q412,
+                        j_ff_q88: v.j_ff_q88,
+                        fric_fc_counts: m.fric_fc_counts,
+                        fric_fv_q016: m.fric_fv_q016,
+                    },
+                    t.telemetry.estimates.omega_hat_cps,
+                )
+            });
+            let fresh = VelocityLoop::new().step(
+                k.omega_ref_q16,
+                omega_hat,
+                k.traj.alpha_star_q16(),
+                k.traj.omega_star_q16(),
+                k.i_band,
+                &vg,
+            );
+            assert_ne!(fresh, 0, "the wake must command something");
+            assert_eq!(k.i_ref_cc, fresh, "the hold left integrator charge");
+            return;
+        }
+    }
+    panic!("push never woke the hold");
 }
 
 #[test]
