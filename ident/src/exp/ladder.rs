@@ -14,11 +14,20 @@
 //! ladder. A rung climbs on the current limit - its windows governed, the
 //! applied duty under the goal - then settles and runs, and brakes at its
 //! end position with the brake idiom, never a coast. What each rung
-//! measured - speed, climb acceleration, stop - sizes the next. A rung still
-//! governed after twice its predicted climb ends the run when the shaft is
-//! still (blocked), and declines the ladder when it is moving: the load is
-//! more than the limit drives. A ladder of fewer than [`MIN_RUNGS`] rungs,
-//! or whose top speed is under [`MIN_SPAN`] times its bottom one, declines.
+//! measured - speed, climb acceleration, stop, and how fast it was polled -
+//! sizes the next: a poll yields at most one window, so the steady windows
+//! take the poll cadence, not the window period, and a stretch of them in
+//! the slip zone is travel the fit never sees. The brake points are planned
+//! on the inset guard; the run aborts only on the soft limits, so a brake a
+//! slow read made late is no abort.
+//!
+//! The limit governing a still shaft is the firmware's verdict that it is
+//! blocked ([`limit_holds`]), as the stall fold is, and ends the run. A rung
+//! still governed after twice its predicted climb ends the run when the
+//! shaft is still (blocked), and declines the ladder when it is moving: the
+//! load is more than the limit drives. A ladder of fewer than [`MIN_RUNGS`]
+//! rungs, or whose top speed is under [`MIN_SPAN`] times its bottom one,
+//! declines.
 //!
 //! Rungs alternate +duty then -duty at each level so the pot ends near the
 //! next sweep's start and seeks stay short. A seek that comes to rest short
@@ -27,17 +36,17 @@
 
 use core::fmt;
 
-use super::seek::{self, Watch};
+use super::seek;
 use super::{
     AbortReason, Cmd, Experiment, GOVERNED, LIMIT_YIELD_FOLDED, RigParams, WindowSample,
-    WindowStream,
+    WindowStream, limit_holds,
 };
 use crate::fitmath::{linear_ls, mean};
 use crate::fits::{FrictionFit, KeFit, RungPoint, friction_line, ke_fit};
 use crate::frame::{SeqUnwrap, TelemetrySnapshot};
 use crate::regs::control;
 use crate::runway::{
-    BRAKE_DUTY_Q15, BRAKE_POLL_MS, BRAKE_POLLS, BRAKE_REST_EPS, Need, Runway, fits,
+    BRAKE_DUTY_Q15, BRAKE_POLL_MS, BRAKE_POLLS, BRAKE_REST_EPS, Need, Runway, STOP_MARGIN, fits,
 };
 
 const Q15: f64 = 32767.0;
@@ -50,12 +59,27 @@ pub const MIN_SPAN: f64 = 2.0;
 /// a count of pot noise is a large share of the travel.
 const SPEED_SPAN_MS: f64 = 10.0;
 
+/// A rung's settle and steady windows are sized this much over the time
+/// the last rung's cadence gives them.
+const STEADY_MARGIN: f64 = 1.25;
+
+/// A rung is still when its reads over this long span no more than the
+/// seek's drift: from rest a governed climb travels several times that in
+/// this time even at [`crate::runway::ACCEL_PRIOR`], however fast it is
+/// polled.
+const STILL_MS: f64 = 100.0;
+
 pub struct LadderCfg {
     /// Rung duties, q15, run bottom up as +d then -d each (26/33/40/47/55/64%).
     pub rungs_q15: Vec<i16>,
     /// Seek drive toward the start end, q15.
     pub seek_duty_q15: i16,
+    /// Pause between a rung's reads: a poll yields at most one window, so
+    /// a pause only spends travel.
     pub poll_ms: u32,
+    /// One telemetry snapshot on the bus, ms: a rung polls at this plus
+    /// `poll_ms` until a rung has timed its own polls.
+    pub snapshot_ms: f64,
     pub seek_poll_ms: u32,
     /// Rest after every seek and every sweep.
     pub rest_ms: u32,
@@ -76,7 +100,9 @@ impl Default for LadderCfg {
             // 26/33/40/47/55/64% of 32767
             rungs_q15: vec![8520, 10813, 13107, 15400, 18022, 20971],
             seek_duty_q15: 8520,
-            poll_ms: 2,
+            poll_ms: 0,
+            // the bench bus: two reads
+            snapshot_ms: 3.5,
             seek_poll_ms: 30,
             rest_ms: 300,
             stall_eps: 3,
@@ -190,9 +216,6 @@ struct Rung {
     from: u16,
     t0: Option<f64>,
     climbing: bool,
-    watch: Watch,
-    watched: u32,
-    still: bool,
 }
 
 /// A brake in progress, from `from` at speed `v`.
@@ -229,7 +252,7 @@ pub struct Ladder {
     rest_pos: Option<u16>,
     /// A rung measured its speed: from then on the seek sizes nothing.
     rung_measured: bool,
-    /// Time between accepted windows of the last rung, ms.
+    /// Time between the last rung's polls, ms.
     cadence: Option<f64>,
     sized: Vec<(i16, Need)>,
     declined: Option<Declined>,
@@ -319,6 +342,24 @@ impl Ladder {
         Some((back, last))
     }
 
+    /// The reads of the drive in progress over its last `ms` span no more
+    /// than the seek's drift; false until it has run that long.
+    fn still_over(&self, ms: f64) -> bool {
+        let Some(&(t1, _)) = self.reads.last() else {
+            return false;
+        };
+        if self.reads.first().is_none_or(|r| t1 - r.0 < ms) {
+            return false;
+        }
+        let (lo, hi) = self
+            .reads
+            .iter()
+            .rev()
+            .take_while(|r| r.0 >= t1 - ms)
+            .fold((u16::MAX, 0), |(lo, hi), r| (lo.min(r.1), hi.max(r.1)));
+        hi - lo <= self.params.stall_eps * self.params.stall_polls as u16
+    }
+
     /// A drive read every few ms moves a few counts a poll even when
     /// cruising slowly: stillness is judged over [`SPEED_SPAN_MS`].
     fn track_still_over_span(&mut self) {
@@ -336,11 +377,16 @@ impl Ladder {
         }
     }
 
-    /// Settle and steady windows at the cadence the last rung was read at.
+    /// Settle and steady windows at the cadence the last rung was polled
+    /// at: a poll yields at most one window, however short the window.
+    /// [`STEADY_MARGIN`] over that leaves room for a slow read or two.
     fn steady_ms(&self) -> f64 {
         let windows = self.params.settle_windows as f64
             + self.cfg.min_steady as f64 / (1.0 - 2.0 * self.cfg.trim_frac);
-        windows * self.params.agg_period_ms.max(self.cadence.unwrap_or(0.0))
+        let poll = self
+            .cadence
+            .unwrap_or(self.cfg.snapshot_ms + self.cfg.poll_ms as f64);
+        STEADY_MARGIN * windows * self.params.agg_period_ms.max(poll)
     }
 
     fn reset_motion_track(&mut self) {
@@ -406,14 +452,33 @@ impl Ladder {
         }
     }
 
+    /// The slip zone's share of the stretch a rung sized `n` collects its
+    /// steady windows over: windows there never reach the fit.
+    fn masked(&self, n: &Need) -> f64 {
+        let (lo, hi) = self.runway.guard();
+        let (lo, hi) = (lo as f64, hi as f64);
+        let stop = STOP_MARGIN * n.stop;
+        let (from, to) = if self.dir() > 0 {
+            (self.runway.start(1) as f64 + n.climb, hi - stop)
+        } else {
+            (lo + stop, self.runway.start(-1) as f64 - n.climb)
+        };
+        let (s0, s1) = (self.params.slip.0 as f64, self.params.slip.1 as f64);
+        (s1.min(to) - s0.max(from)).max(0.0)
+    }
+
     /// Size the next rung; None ends the ladder below it.
     fn size(&mut self) -> Option<Need> {
         let duty = self.duty();
         let room = self.runway.room();
-        let why = match self
+        let plan = self
             .runway
             .plan(self.dir(), duty as f64 / Q15, self.steady_ms())
-        {
+            .map(|n| Need {
+                run: n.run + self.masked(&n),
+                ..n
+            });
+        let why = match plan {
             Some(n) if fits(&n, room) => return Some(n),
             Some(n) => format!(
                 "the {} rung needs {:.0} counts of travel and {room:.0} are free: the ladder \
@@ -501,23 +566,23 @@ impl Ladder {
         self.reads.push((t, o.pos));
         let window = self.windows.push(o);
         let (dir, duty) = (self.dir(), self.duty());
-        let stall_polls = self.params.stall_polls.max(1);
+        let v_now = self.speed().unwrap_or(0.0);
         let Some(r) = self.rung.as_mut() else {
             return self.off();
         };
         let governed = o.duty_mean_q15 != r.goal;
         let t0 = *r.t0.get_or_insert(t);
-        let (need, from, climbing) = (r.need, r.from, r.climbing);
+        let (need, from, climbing, goal) = (r.need, r.from, r.climbing, r.goal);
         if climbing {
-            r.watched += 1;
-            let still = r.watch.still(o.pos);
-            if r.watched.is_multiple_of(stall_polls) {
-                r.still = still;
-            }
             r.climbing = governed;
         }
-        let still = r.still;
-        if o.limit_flags & LIMIT_YIELD_FOLDED != 0 {
+        let still = if climbing {
+            self.still_over(STILL_MS)
+        } else {
+            self.track_still_over_span();
+            self.still >= self.cfg.stall_polls
+        };
+        if limit_holds(o, still) {
             self.block(seek::blocked(from, o.pos));
             return self.off();
         }
@@ -530,13 +595,15 @@ impl Ladder {
         }
         let mut done = false;
         if climbing && !governed {
-            // from rest at a steady acceleration: d = a t^2 / 2
-            let (d, dt) = (o.pos.abs_diff(from) as f64, t - t0);
-            if dt >= SPEED_SPAN_MS && d > 0.0 {
-                self.runway.climbed(2.0 * d / (dt * dt) * 1000.0);
+            // v^2 = 2 a d from rest: the start time never enters, and with
+            // the acceleration falling as the shaft speeds up it reads the
+            // lowest of the averages
+            let d = o.pos.abs_diff(from) as f64;
+            if t - t0 >= SPEED_SPAN_MS && d > 0.0 {
+                self.runway.climbed(v_now * v_now / (2.0 * d) * 1000.0);
             }
             // the speed still settles after the limit lets go
-            self.windows.mark_goal(r.goal);
+            self.windows.mark_goal(goal);
         } else if climbing && t - t0 > 2.0 * need.climb_ms {
             if still {
                 self.block(seek::blocked(from, o.pos));
@@ -544,16 +611,11 @@ impl Ladder {
             }
             self.declined = Some(Declined::Heavy { duty_q15: duty });
             self.close_rung();
-            let v = self.speed().unwrap_or(0.0);
-            return self.brake(dir, o.pos, v, false, After::Finish);
-        } else if !climbing {
-            self.track_still_over_span();
-            if self.still >= self.cfg.stall_polls {
-                self.stalled_note = true;
-                done = true;
-            }
+            return self.brake(dir, o.pos, v_now, false, After::Finish);
+        } else if !climbing && still {
+            self.stalled_note = true;
+            done = true;
         }
-        let v_now = self.speed().unwrap_or(0.0);
         let stop = self.runway.stop(need.v.max(v_now)).unwrap_or(need.stop);
         let end = self.runway.brake_at(dir, stop);
         let ahead = o.pos as f64 + dir as f64 * self.lead(v_now);
@@ -573,8 +635,8 @@ impl Ladder {
     fn close_rung(&mut self) {
         let duty = self.duty();
         let n_raw = self.sweep_samples.len();
-        if let [first, .., last] = self.sweep_samples.as_slice() {
-            self.cadence = Some((last.w.t_ms - first.w.t_ms) / (n_raw - 1) as f64);
+        if let [first, .., last] = self.reads.as_slice() {
+            self.cadence = Some((last.0 - first.0) / (self.reads.len() - 1) as f64);
         }
         let trim = (n_raw as f64 * self.cfg.trim_frac) as usize;
         let steady: Vec<&SweepSample> = self.sweep_samples[trim..n_raw.saturating_sub(trim)]
@@ -770,9 +832,6 @@ impl Experiment for Ladder {
                     from,
                     t0: None,
                     climbing: true,
-                    watch: Watch::new(from, self.params.stall_eps, self.params.stall_polls),
-                    watched: 0,
-                    still: false,
                 });
                 self.windows.mark_goal(goal);
                 self.phase = Phase::RungRead;
@@ -818,7 +877,7 @@ mod tests {
     use super::super::testkit::{Bus, FakeServo, bench_mg90, bent_pot, pump, pump_on};
     use super::super::{Guarded, RigParams};
     use super::*;
-    use crate::limits::duty_for;
+    use crate::limits::{GUARD_INSET, duty_for};
     use crate::pot::Pot;
     use crate::runway::{Envelope, Line, Supply};
 
@@ -835,22 +894,22 @@ mod tests {
         s
     }
 
+    /// Aborts on the soft limits the guard in `params` was inset from, as
+    /// the CLI's ladder does.
+    fn guarded(exp: Ladder, params: RigParams) -> Guarded<Ladder> {
+        let (lo, hi) = params.pos_guard.unwrap();
+        let inset = GUARD_INSET as i32;
+        let soft = (lo as i32 - inset, hi as i32 + inset);
+        Guarded::new(exp, params.abort_at_soft(soft))
+    }
+
     fn ladder(cfg: LadderCfg, params: &RigParams) -> Ladder {
         Ladder::new(cfg, params, Runway::new(params.pos_guard.unwrap()))
     }
 
     fn run_cfg(servo: &mut FakeServo, cfg: LadderCfg, params: RigParams) -> (Ladder, Vec<String>) {
-        run_on(servo, cfg, params, Bus::BENCH)
-    }
-
-    fn run_on(
-        servo: &mut FakeServo,
-        cfg: LadderCfg,
-        params: RigParams,
-        bus: Bus,
-    ) -> (Ladder, Vec<String>) {
-        let mut exp = Guarded::new(ladder(cfg, &params), params);
-        let log = pump_on(&mut exp, servo, 2_000_000, bus);
+        let mut exp = guarded(ladder(cfg, &params), params);
+        let log = pump(&mut exp, servo, 2_000_000);
         assert!(exp.abort().is_none(), "abort: {:?}", exp.abort());
         (exp.into_inner(), log)
     }
@@ -862,7 +921,7 @@ mod tests {
     #[test]
     fn recovers_planted_ke_and_friction_line() {
         let mut servo = physical_servo();
-        let (exp, log) = run_on(&mut servo, LadderCfg::default(), rig(), Bus::ZERO_LATENCY);
+        let (exp, log) = run_e3(&mut servo, rig());
         assert!(!log.contains(&"OVERRUN".to_string()));
         assert_eq!(exp.declined(), None);
         let fit = exp.fit(3.37).expect("usable rungs");
@@ -902,17 +961,12 @@ mod tests {
     #[test]
     fn slip_zone_samples_are_masked() {
         let mut clean = physical_servo();
-        let (exp_clean, _) = run_on(&mut clean, LadderCfg::default(), rig(), Bus::ZERO_LATENCY);
+        let (exp_clean, _) = run_e3(&mut clean, rig());
         let mut glitched = physical_servo();
         // +80-count pot artifact strictly inside the masked slip zone, low
         // enough that the +80 readings also stay inside the mask
         glitched.glitch_zone = Some((1460.0, 1560.0));
-        let (exp_glitch, _) = run_on(
-            &mut glitched,
-            LadderCfg::default(),
-            rig(),
-            Bus::ZERO_LATENCY,
-        );
+        let (exp_glitch, _) = run_e3(&mut glitched, rig());
         let a = exp_clean.fit(3.37).unwrap();
         let b = exp_glitch.fit(3.37).unwrap();
         assert!(
@@ -923,10 +977,11 @@ mod tests {
         );
     }
 
-    /// A 900-count travel: the first rung sizes its steady windows at the
-    /// window period and runs, but read every 2 ms it collects too few and
-    /// is dropped with a warning; sized at the cadence it was read at, the
-    /// next rung does not fit, and the ladder declines.
+    /// A 900-count travel, the ladder told a snapshot costs no time: the
+    /// first rung sizes its steady windows at the window period and runs,
+    /// but read at the bus's 3.5 ms it collects too few and is dropped with
+    /// a warning; sized at the cadence it was read at, the next rung does
+    /// not fit, and the ladder declines.
     #[test]
     fn short_travel_rung_drops_with_warning() {
         let mut servo = physical_servo();
@@ -939,6 +994,7 @@ mod tests {
         };
         let cfg = LadderCfg {
             min_steady: 150,
+            snapshot_ms: 0.0,
             ..LadderCfg::default()
         };
         let (exp, _) = run_cfg(&mut servo, cfg, params);
@@ -958,6 +1014,7 @@ mod tests {
 
     const R_MG90: f64 = 7270.0 / 4096.0;
     const GUARD: (u16, u16) = (532, 3526);
+    const SOFT: (i32, i32) = (432, 3626);
 
     /// The bench guard, stops and abort: soft 432..3626 inset, a quarter
     /// over the 280-count limit.
@@ -1029,7 +1086,7 @@ mod tests {
 
     fn spy(servo: &mut FakeServo, exp: Ladder, params: RigParams) -> Spy<Guarded<Ladder>> {
         let mut s = Spy {
-            exp: Guarded::new(exp, params),
+            exp: guarded(exp, params),
             seen: Vec::new(),
         };
         let log = pump(&mut s, servo, 4_000_000);
@@ -1048,18 +1105,39 @@ mod tests {
     }
 
     /// The bench servo on both rails, sizing itself from its seek and its
-    /// own rungs: every rung, both ways, is sized inside the room, runs up
-    /// to its brake point inside the guard and brakes there, and the top
-    /// rungs run far above the duty whose stall the limit holds.
+    /// own rungs at the bench bus's cadence: every rung, both ways, is sized
+    /// inside the room, runs up to its brake point inside the guard and
+    /// brakes there, and the top rungs run far above the duty whose stall
+    /// the limit holds. The slip zone's windows never reach the fit, so a
+    /// rung that runs across it needs that much more travel: on 2S the
+    /// -64% rung then does not fit, and every rung that ran is used.
     #[test]
     fn free_running_rungs_fit_the_runway() {
+        let mut servo = bench_mg90(3204);
+        servo.pos = 2029.0;
+        let exp = Ladder::new(bench_cfg(), &bench(), Runway::new(GUARD));
+        let mut g = guarded(exp, bench());
+        pump(&mut g, &mut servo, 4_000_000);
+        assert_eq!(g.abort(), None);
+        let exp = g.into_inner();
+        assert_eq!(exp.sized().len(), 11);
+        let w = exp.warnings();
+        assert!(
+            w.len() == 1 && w[0].starts_with("the -64% rung needs"),
+            "{w:?}"
+        );
+        assert!(exp.rungs.iter().all(|r| r.used));
+
         for vbus in [3204u16, 1780] {
             let mut servo = bench_mg90(vbus);
             servo.pos = 2029.0;
-            let params = bench();
+            let params = RigParams {
+                slip: (0, 0),
+                ..bench()
+            };
             let exp = Ladder::new(bench_cfg(), &params, Runway::new(GUARD));
-            let mut g = Guarded::new(exp, params);
-            let log = pump_on(&mut g, &mut servo, 4_000_000, Bus::ZERO_LATENCY);
+            let mut g = guarded(exp, params);
+            let log = pump(&mut g, &mut servo, 4_000_000);
             assert_eq!(g.abort(), None, "{vbus}");
             let exp = g.into_inner();
             assert_eq!(exp.declined(), None, "{vbus}: {:?}", exp.warnings());
@@ -1099,8 +1177,8 @@ mod tests {
             rungs_q15: [100.0, 26.0, 80.0, 40.0, 55.0].map(q15).to_vec(),
             ..bench_cfg()
         };
-        let mut g = Guarded::new(Ladder::new(cfg, &params, sized_by_envelope(GUARD)), params);
-        let log = pump_on(&mut g, &mut servo, 4_000_000, Bus::ZERO_LATENCY);
+        let mut g = guarded(Ladder::new(cfg, &params, sized_by_envelope(GUARD)), params);
+        let log = pump(&mut g, &mut servo, 4_000_000);
         assert_eq!(g.abort(), None);
         let exp = g.into_inner();
         let ran: Vec<String> = exp.sized().iter().map(|(d, _)| pct(*d)).collect();
@@ -1132,7 +1210,7 @@ mod tests {
         let mut jammed = bench_mg90(3204);
         jammed.pos = 600.0;
         jammed.jam = Some(610.0);
-        let mut g = Guarded::new(
+        let mut g = guarded(
             Ladder::new(bench_cfg(), &params, sized_by_envelope(GUARD)),
             params,
         );
@@ -1151,7 +1229,7 @@ mod tests {
         let mut heavy = bench_mg90(3204);
         heavy.pos = 2029.0;
         heavy.fv = 0.1;
-        let mut g = Guarded::new(
+        let mut g = guarded(
             Ladder::new(bench_cfg(), &params, sized_by_envelope(GUARD)),
             params,
         );
@@ -1174,11 +1252,14 @@ mod tests {
     /// A load the limit holds for the whole of a short rung: the rung
     /// reaches its brake point still governed, inside its climb budget, so
     /// it has no clean window. It is declined in the shared words and does
-    /// not count; the ladder goes on to the next rung, since only a climb
-    /// past its budget says the load is too heavy for every rung above.
+    /// not count; the ladder goes on to size the next rung, since only a
+    /// climb past its budget says the load is too heavy for every rung
+    /// above. Told a snapshot costs no time, the ladder sizes the first rung
+    /// short enough for the travel; the next is sized at the cadence the
+    /// first was read at, and does not fit.
     #[test]
     fn a_governed_rung_is_declined_and_the_ladder_goes_on() {
-        let guard = (1000, 1735);
+        let guard = (1000, 1650);
         let params = RigParams {
             slip: (0, 0),
             ..RigParams::new(Some(guard), 350).with_stops((209, 3849))
@@ -1187,19 +1268,23 @@ mod tests {
         servo.pos = 1400.0;
         // viscous load: the friction current reaches the limit at 2 counts/ms
         servo.fv = 0.1;
-        let mut g = Guarded::new(
-            Ladder::new(bench_cfg(), &params, sized_by_envelope(guard)),
-            params,
-        );
+        let cfg = LadderCfg {
+            snapshot_ms: 0.0,
+            ..bench_cfg()
+        };
+        let mut g = guarded(Ladder::new(cfg, &params, sized_by_envelope(guard)), params);
         pump(&mut g, &mut servo, 4_000_000);
         assert_eq!(g.abort(), None);
         let exp = g.into_inner();
         let w = exp.warnings();
         let governed = format!("rung 8520: {GOVERNED}");
         assert_eq!(w[0], governed, "{w:?}");
-        assert_eq!(exp.sized().len(), 2, "the ladder went on: {w:?}");
+        assert_eq!(exp.sized().len(), 1);
         assert!(exp.rungs.iter().all(|r| !r.used));
-        assert!(w[1].starts_with("rung -8520: "), "{w:?}");
+        assert!(
+            w[1].starts_with("the -26% rung needs") && w[1].ends_with("the ladder ends below it"),
+            "the ladder went on: {w:?}"
+        );
         assert_eq!(exp.declined(), Some(&Declined::Thin { rungs: 0 }));
         assert!(!servo.torque);
     }
@@ -1248,11 +1333,11 @@ mod tests {
         };
         let mut servo = bench_mg90(3204);
         servo.pos = 1600.0;
-        let mut g = Guarded::new(
+        let mut g = guarded(
             Ladder::new(bench_cfg(), &params, sized_by_envelope(guard)),
             params,
         );
-        pump_on(&mut g, &mut servo, 4_000_000, Bus::ZERO_LATENCY);
+        pump(&mut g, &mut servo, 4_000_000);
         assert_eq!(g.abort(), None);
         let exp = g.into_inner();
         assert_eq!(exp.sized().len(), 4, "{:?}", exp.warnings());
@@ -1271,7 +1356,7 @@ mod tests {
             rungs_q15: [40.0, 47.0, 55.0].map(q15).to_vec(),
             ..bench_cfg()
         };
-        let mut g = Guarded::new(Ladder::new(cfg, &params, Runway::new(GUARD)), params);
+        let mut g = guarded(Ladder::new(cfg, &params, Runway::new(GUARD)), params);
         pump(&mut g, &mut servo, 4_000_000);
         assert_eq!(g.abort(), None);
         let exp = g.into_inner();
@@ -1329,5 +1414,96 @@ mod tests {
             "{:?}",
             s.exp.abort()
         );
+    }
+
+    /// A rung that brakes a poll late - a slow read at its brake point -
+    /// comes to rest past the inset guard it planned on, inside the soft
+    /// limits. That is no abort: the run aborts on the soft limits, where
+    /// the firmware brakes anyway, and the rung counts. Aborting on the
+    /// guard, the same run would have ended there.
+    #[test]
+    fn a_late_brake_is_not_an_abort() {
+        let run = |params: RigParams| {
+            let mut servo = bench_mg90(3204);
+            servo.pos = 2029.0;
+            let mut s = Spy {
+                exp: Guarded::new(
+                    Ladder::new(bench_cfg(), &bench(), Runway::new(GUARD)),
+                    params,
+                ),
+                seen: Vec::new(),
+            };
+            pump_on(
+                &mut s,
+                &mut servo,
+                4_000_000,
+                Bus::BENCH.with_slow_reads(11),
+            );
+            assert!(!servo.torque);
+            s
+        };
+        let s = run(bench().abort_at_soft(SOFT));
+        assert_eq!(s.exp.abort(), None);
+        let past: Vec<u16> = s
+            .seen
+            .iter()
+            .map(|o| o.pos)
+            .filter(|p| !(GUARD.0..=GUARD.1).contains(p))
+            .collect();
+        assert!(!past.is_empty(), "no brake landed past the guard");
+        let soft = (SOFT.0 as u16, SOFT.1 as u16);
+        assert!(
+            past.iter().all(|p| (soft.0..=soft.1).contains(p)),
+            "{past:?}"
+        );
+        let exp = s.exp.into_inner();
+        assert_eq!(exp.declined(), None);
+        assert!(exp.rungs.iter().all(|r| r.used), "{:?}", exp.warnings());
+
+        let s = run(bench());
+        assert_eq!(s.exp.abort(), Some(AbortReason::PosGuard { pos: past[0] }));
+    }
+
+    /// Sized by the pilot envelope at the bench bus's cadence: the envelope
+    /// gives the speed, but a braked stop is not its coast - three to five
+    /// times shorter - so each rung is sized by the stops the run braked.
+    /// Every rung to 55% fits and runs both ways, the top one at over twice
+    /// the bottom one's speed: the ladder is not narrow.
+    #[test]
+    fn envelope_sized_ladder_is_not_narrow() {
+        for (vbus, seed) in [(3204, 1), (3204, 2), (3300, 3), (3300, 4)] {
+            let mut servo = bench_mg90(vbus);
+            servo.pos = 2029.0;
+            let params = bench();
+            let exp = Ladder::new(bench_cfg(), &params, sized_by_envelope(GUARD));
+            let mut g = guarded(exp, params);
+            pump_on(
+                &mut g,
+                &mut servo,
+                4_000_000,
+                Bus::BENCH.with_slow_reads(seed),
+            );
+            assert_eq!(g.abort(), None, "{vbus}");
+            let exp = g.into_inner();
+            assert_eq!(exp.declined(), None, "{vbus}: {:?}", exp.warnings());
+            let env = mg90_2s();
+            for (duty, n) in exp.sized() {
+                assert!(
+                    n.stop < env.coast(n.v) / 2.0,
+                    "{vbus} {duty}: sized on a stop of {:.0}, coast {:.0}",
+                    n.stop,
+                    env.coast(n.v)
+                );
+            }
+            for d in &bench_cfg().rungs_q15[..5] {
+                for d in [*d, -d] {
+                    assert!(
+                        exp.rungs.iter().any(|r| r.duty_q15 == d && r.used),
+                        "{vbus}: {d} not fitted: {:?}",
+                        exp.warnings()
+                    );
+                }
+            }
+        }
     }
 }

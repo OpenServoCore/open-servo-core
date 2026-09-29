@@ -160,6 +160,18 @@ impl RigParams {
         }
     }
 
+    /// Abort on the servo's soft limits, `soft`, rather than the guard: a
+    /// free-running drive plans its brake points on the guard, and one that
+    /// brakes a poll late lands between the two. The firmware brakes at
+    /// the soft limits anyway.
+    pub fn abort_at_soft(self, soft: (i32, i32)) -> Self {
+        let clamp = |p: i32| p.clamp(0, u16::MAX as i32) as u16;
+        Self {
+            pos_guard: Some((clamp(soft.0), clamp(soft.1))),
+            ..self
+        }
+    }
+
     pub fn in_slip(&self, pos: u16) -> bool {
         (self.slip.0..=self.slip.1).contains(&pos)
     }
@@ -403,9 +415,23 @@ impl<E: Experiment> Experiment for Permitted<E> {
     }
 }
 
+/// `limit_flags` bit 0: the current limit holds the applied duty under the
+/// goal.
+pub const LIMIT_GOVERNING: u8 = 1 << 0;
+
 /// `limit_flags` bit 1: the stall timer folded the limit to the yield. A
 /// drive that sees it is held against something it cannot move.
 pub const LIMIT_YIELD_FOLDED: u8 = 1 << 1;
+
+/// The firmware says the drive is held against something it cannot move:
+/// the stall fold, or the current limit governing a shaft that a whole
+/// watch window found `still`. The fold alone can go unseen - with a
+/// release over what a held stall reads it shows for one MEDIUM tick per
+/// trip - and a raised goal adds no current the limit holds back. A
+/// governed shaft that moves is climbing, never held.
+pub fn limit_holds(o: &TelemetrySnapshot, still: bool) -> bool {
+    o.limit_flags & LIMIT_YIELD_FOLDED != 0 || (still && o.limit_flags & LIMIT_GOVERNING != 0)
+}
 
 /// What a rung or step with no clean window reports.
 pub const GOVERNED: &str = "declined: the current limit governed this window";
@@ -599,8 +625,12 @@ pub(crate) mod testkit;
 
 #[cfg(test)]
 mod tests {
-    use super::testkit::{FakeServo, pump};
+    use super::centre::Centre;
+    use super::endstop::Endstop;
+    use super::ladder::{Declined, Ladder, LadderCfg};
+    use super::testkit::{FakeServo, bench_mg90, bench_mg90_saved, pump};
     use super::*;
+    use crate::runway::Runway;
 
     #[test]
     fn torn_agg_seq_no_duplicate_sample() {
@@ -959,5 +989,294 @@ mod tests {
             hold(lim.i_lim as i16).0,
             Some(AbortReason::Overcurrent { .. })
         ));
+    }
+
+    /// Every observation an experiment was stepped with.
+    struct Seen<E> {
+        exp: E,
+        obs: Vec<TelemetrySnapshot>,
+        log: Vec<String>,
+    }
+
+    impl<E: Experiment> Experiment for Seen<E> {
+        fn step(&mut self, obs: Option<&TelemetrySnapshot>) -> Cmd {
+            self.obs.extend(obs.copied());
+            self.exp.step(obs)
+        }
+
+        fn halted(&self) -> Option<AbortReason> {
+            self.exp.halted()
+        }
+    }
+
+    fn seen<E: Experiment>(exp: E, params: RigParams, servo: &mut FakeServo) -> Seen<Guarded<E>> {
+        let mut s = Seen {
+            exp: Guarded::new(exp, params),
+            obs: Vec::new(),
+            log: Vec::new(),
+        };
+        s.log = pump(&mut s, servo, 4_000_000);
+        assert!(!s.log.contains(&"OVERRUN".to_string()));
+        s
+    }
+
+    /// The bench servo's guard, soft limits, stops and abort.
+    fn bench() -> RigParams {
+        RigParams::new(Some((532, 3526)), 350).with_stops((209, 3849))
+    }
+
+    const SOFT: (i32, i32) = (432, 3626);
+
+    /// The jam check as the run starts it on the bench servo's 2S rail:
+    /// from the bootstrap duty, capped at 2 V.
+    fn jam_check(servo: &mut FakeServo) -> Seen<Guarded<Centre>> {
+        let p = bench();
+        seen(
+            Centre::new(crate::run::centre_cfg(0.0952, 0.253, true), &p),
+            p.without_pos_guard(),
+            servo,
+        )
+    }
+
+    fn bench_ladder(servo: &mut FakeServo) -> Seen<Guarded<Ladder>> {
+        let p = bench();
+        let cfg = LadderCfg {
+            seek_duty_q15: 4915,
+            ..LadderCfg::default()
+        };
+        seen(
+            Ladder::new(cfg, &p, Runway::new((532, 3526))),
+            p.abort_at_soft(SOFT),
+            servo,
+        )
+    }
+
+    /// The largest goal duty a log wrote.
+    fn top_goal(log: &[String]) -> i32 {
+        log.iter()
+            .filter_map(|l| l.strip_prefix("write goal_duty ")?.parse::<i32>().ok())
+            .map(i32::abs)
+            .max()
+            .unwrap()
+    }
+
+    /// Reads of a ladder's rungs, from its first read at a rung's goal.
+    fn rung_reads(obs: &[TelemetrySnapshot]) -> &[TelemetrySnapshot] {
+        let first = obs.iter().position(|o| o.duty_mean_q15 > 5000).unwrap();
+        &obs[first..]
+    }
+
+    fn span_ms(obs: &[TelemetrySnapshot]) -> f64 {
+        let (a, b) = (obs.first().unwrap(), obs.last().unwrap());
+        b.agg_seq.wrapping_sub(a.agg_seq) as f64 * 0.8
+    }
+
+    /// The firmware's verdict without the fold: the current limit governing
+    /// a shaft that a whole watch window found still. The jam check, a
+    /// ladder rung and the stop finder each take it as blocked at once, no
+    /// raise tried and no fold ever shown; the limit governing a moving
+    /// shaft, or a still shaft the limit does not govern, is no verdict.
+    #[test]
+    fn a_governing_limit_on_a_still_shaft_is_blocked() {
+        let o = |flags| TelemetrySnapshot {
+            limit_flags: flags,
+            ..Default::default()
+        };
+        assert!(limit_holds(&o(LIMIT_GOVERNING), true));
+        assert!(!limit_holds(&o(LIMIT_GOVERNING), false));
+        assert!(!limit_holds(&o(0), true));
+        assert!(limit_holds(&o(LIMIT_YIELD_FOLDED), false));
+
+        let locked = |pos: f64, jam: f64| {
+            let mut s = bench_mg90(3204);
+            s.stall_ms = None;
+            s.pos = pos;
+            s.jam = Some(jam);
+            s
+        };
+        // 9.5 and 12% sit under the window floor, 14.5% stalls at 262
+        // counts inside the limit: all raised. 17% is the first the limit
+        // governs, and the last; the cap is 25.3%.
+        let mut s = locked(2029.0, 2029.0);
+        let run = jam_check(&mut s);
+        assert_eq!(
+            run.exp.abort(),
+            Some(AbortReason::Blocked {
+                pos: 2029,
+                moved: 0
+            })
+        );
+        assert_eq!(top_goal(&run.log), 3119 + 3 * 819);
+        assert!(
+            run.obs
+                .iter()
+                .all(|o| o.limit_flags & LIMIT_YIELD_FOLDED == 0)
+        );
+        assert!(!s.torque);
+
+        // a rung into a jam at 1000: blocked on its first still window,
+        // well inside twice its predicted climb
+        let mut s = locked(900.0, 1000.0);
+        let run = bench_ladder(&mut s);
+        assert!(matches!(
+            run.exp.abort(),
+            Some(AbortReason::Blocked { pos: 1000, .. })
+        ));
+        let climb_ms = run.exp.into_inner().sized()[0].1.climb_ms;
+        let reads = rung_reads(&run.obs);
+        assert!(
+            span_ms(reads) < 2.0 * climb_ms,
+            "{} of {climb_ms}",
+            span_ms(reads)
+        );
+        assert_ne!(reads.last().unwrap().limit_flags & LIMIT_GOVERNING, 0);
+        assert!(!s.torque);
+
+        // the stop finder on a winding lower than planned, the shaft locked
+        // where it stands: 12% sits under the floor and rises; 14.5% stalls
+        // over the limit, which governs it, and the approach rises no
+        // further
+        let mut s = locked(2029.0, 2029.0);
+        s.r = 1.5;
+        let p = bench().without_pos_guard();
+        let cfg = crate::run::endstop_cfg(0.12, 0.06, 0.20);
+        let run = seen(Permitted::new(Endstop::new(cfg, &p)), p, &mut s);
+        assert_eq!(
+            run.exp.abort(),
+            Some(AbortReason::Blocked {
+                pos: 2029,
+                moved: 0
+            })
+        );
+        assert_eq!(top_goal(&run.log), 3932 + 819);
+        assert!(!s.torque && !s.permit_live());
+    }
+
+    /// A governed climb moves. Every rung of the bench ladder climbs on the
+    /// limit, dozens of reads governed, and none is taken for a blocked
+    /// shaft, at either stall setting; nor is a jam check whose shaft the
+    /// limit governs as it moves, nor a climb a heavy load holds on the
+    /// limit for good, which declines the ladder instead.
+    #[test]
+    fn a_governed_climb_is_never_blocked() {
+        for mut s in [bench_mg90(3204), bench_mg90_saved(3204)] {
+            s.pos = 2029.0;
+            let run = bench_ladder(&mut s);
+            assert_eq!(run.exp.abort(), None);
+            let governed = run
+                .obs
+                .iter()
+                .filter(|o| o.duty_mean_q15 != 0 && o.limit_flags & LIMIT_GOVERNING != 0)
+                .count();
+            assert!(governed > 100, "{governed} governed reads");
+            let exp = run.exp.into_inner();
+            assert_eq!(exp.declined(), None);
+            assert!(exp.sized().len() >= 10);
+        }
+
+        // a 15% breakaway and a load that holds the moving shaft on the
+        // limit: 14.5% stays put, 17% moves half a count a ms, governed
+        let mut s = bench_mg90(3204);
+        s.pos = 2029.0;
+        s.breakaway_q15 = 4915;
+        s.fv = 0.3;
+        let run = jam_check(&mut s);
+        assert_eq!(run.exp.abort(), None);
+        assert!(run.exp.into_inner().arrived());
+        assert_eq!(top_goal(&run.log), 3119 + 3 * 819);
+        assert!(run.obs.iter().any(|o| o.limit_flags & LIMIT_GOVERNING != 0));
+
+        let mut s = bench_mg90(3204);
+        s.pos = 2029.0;
+        s.fv = 0.1;
+        let run = bench_ladder(&mut s);
+        assert_eq!(run.exp.abort(), None);
+        assert!(matches!(
+            run.exp.into_inner().declined(),
+            Some(Declined::Heavy { .. })
+        ));
+    }
+
+    /// The bench servo's saved stall settings fold nothing, and the verdict
+    /// shows for a MEDIUM tick per trip, which no poll catches. A blocked
+    /// drive still ends, on the limit governing a still shaft: the jam check
+    /// at the first duty the limit governs, a ladder rung on its first still
+    /// window - never waiting for the fold.
+    #[test]
+    fn inert_stall_settings_still_end_a_blocked_drive() {
+        let mut s = bench_mg90_saved(3204);
+        s.pos = 2029.0;
+        s.jam = Some(2029.0);
+        let run = jam_check(&mut s);
+        assert!(matches!(run.exp.abort(), Some(AbortReason::Blocked { .. })));
+        assert_eq!(top_goal(&run.log), 3119 + 3 * 819);
+        assert!(
+            run.obs
+                .iter()
+                .all(|o| o.limit_flags & LIMIT_YIELD_FOLDED == 0)
+        );
+        assert!(!s.torque);
+
+        let mut s = bench_mg90_saved(3204);
+        s.pos = 900.0;
+        s.jam = Some(1000.0);
+        let run = bench_ladder(&mut s);
+        assert!(matches!(
+            run.exp.abort(),
+            Some(AbortReason::Blocked { pos: 1000, .. })
+        ));
+        assert!(
+            run.obs
+                .iter()
+                .all(|o| o.limit_flags & LIMIT_YIELD_FOLDED == 0)
+        );
+        let climb_ms = run.exp.into_inner().sized()[0].1.climb_ms;
+        assert!(span_ms(rung_reads(&run.obs)) < 2.0 * climb_ms);
+        assert!(!s.torque);
+    }
+
+    /// The governed rule compares the applied duty, never the current: a
+    /// window whose duty mean is the goal is clean however far a tick of
+    /// commutation ripple took its current over the limit, and whatever
+    /// the limit flags say of it. Only a duty the limiter held under the
+    /// goal declines a window.
+    #[test]
+    fn current_ripple_does_not_decline_a_clean_window() {
+        let goal = 20971;
+        let params = RigParams {
+            settle_windows: 0,
+            ..crate::exp::testkit::rig()
+        };
+        let mut ws = WindowStream::new(&params);
+        ws.mark_goal(goal);
+        let kept: Vec<WindowSample> = [(goal, 250, 0), (goal, 330, 1), (goal, 300, 1)]
+            .iter()
+            .enumerate()
+            .filter_map(|(seq, &(duty, i, flags))| {
+                ws.push(&TelemetrySnapshot {
+                    agg_seq: seq as u16,
+                    duty_mean_q15: duty,
+                    i_mean_counts: i,
+                    limit_flags: flags,
+                    ..Default::default()
+                })
+            })
+            .collect();
+        assert_eq!(kept.len(), 3);
+        assert_eq!(kept[1].i, 330.0);
+        assert!(!ws.declined());
+        let held = ws.push(&TelemetrySnapshot {
+            agg_seq: 3,
+            duty_mean_q15: goal - 40,
+            i_mean_counts: 270,
+            ..Default::default()
+        });
+        assert!(held.is_none(), "a duty held under the goal is declined");
+        assert!(!ws.declined(), "the clean windows remain");
+        // the same rule per TEL sample
+        assert_eq!(
+            judge([(200, goal), (201, goal)], goal, 0),
+            [Applied::Clean, Applied::Clean]
+        );
     }
 }

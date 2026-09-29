@@ -2,6 +2,9 @@
 //! torque off. With `nudge` the shaft is also driven [`SEEK_TRAVEL_MIN`]
 //! out and back once it is in the band: the jam check, the cheapest proof,
 //! before anything else drives, that the shaft moves and the pot reads it.
+//! The out leg brakes to rest before the back leg drives: reversed at
+//! speed, the limiter cannot go under its base and the winding draws the
+//! base's volts plus the back-EMF.
 //!
 //! A still window raises the duty instead of ending the run - by
 //! [`NUDGE_STEP_Q15`] while the shaft is clear of both stops
@@ -9,14 +12,15 @@
 //! to `cap_q15`. The first travel holds the duty: it is the run's estimate
 //! of what moves the shaft ([`Centre::moved_at`]). A shaft still at the cap,
 //! still after it travelled, still anywhere a raise is not allowed, or held
-//! by the firmware's stall fold, is blocked and ends the run. With the stops
-//! unknown the nudge tries the other direction once before that. Run it
-//! with the pos guard off: the shaft may start outside it.
+//! by the firmware ([`limit_holds`]), is blocked and ends the run. With the
+//! stops unknown the nudge tries the other direction once before that. Run
+//! it with the pos guard off: the shaft may start outside it.
 
 use super::seek::{self, SEEK_STEP_Q15, SEEK_TRAVEL_MIN, Watch};
-use super::{AbortReason, Cmd, Experiment, LIMIT_YIELD_FOLDED, RigParams};
+use super::{AbortReason, Cmd, Experiment, RigParams, limit_holds};
 use crate::frame::TelemetrySnapshot;
 use crate::regs::control;
+use crate::runway::{BRAKE_DUTY_Q15, BRAKE_POLLS, BRAKE_REST_EPS};
 
 /// Mid travel with no soft guard configured: the pot's own midpoint.
 const POT_MID: u16 = 2048;
@@ -57,6 +61,13 @@ enum Leg {
     Out {
         from: u16,
         dir: i8,
+    },
+    /// The out leg braking to rest from `last`, before the back leg.
+    Brake {
+        from: u16,
+        dir: i8,
+        last: u16,
+        polls: u32,
     },
     Back {
         from: u16,
@@ -191,11 +202,41 @@ impl Centre {
             }
             Leg::Out { from, dir } if pos.abs_diff(from) >= SEEK_TRAVEL_MIN => {
                 self.moved();
+                self.leg = Leg::Brake {
+                    from,
+                    dir,
+                    last: pos,
+                    polls: 0,
+                };
+                self.phase = Phase::Wait;
+                return Cmd::Write {
+                    reg: control::GOAL_DUTY,
+                    value: -(dir as i32) * BRAKE_DUTY_Q15 as i32,
+                };
+            }
+            Leg::Out { dir, .. } => dir,
+            Leg::Brake {
+                from,
+                dir,
+                last,
+                polls,
+            } => {
+                if pos.abs_diff(last) >= BRAKE_REST_EPS && polls + 1 < BRAKE_POLLS {
+                    self.leg = Leg::Brake {
+                        from,
+                        dir,
+                        last: pos,
+                        polls: polls + 1,
+                    };
+                    self.phase = Phase::Read;
+                    return Cmd::Pause {
+                        ms: self.cfg.poll_ms,
+                    };
+                }
                 self.leg = Leg::Back { from, dir: -dir };
                 self.watch = None;
                 -dir
             }
-            Leg::Out { dir, .. } => dir,
             Leg::Back { from, dir } if (pos as i32 - from as i32) * dir as i32 >= 0 => {
                 self.moved();
                 self.nudged = true;
@@ -214,7 +255,7 @@ impl Centre {
         if travelled {
             self.moved();
         }
-        if o.limit_flags & LIMIT_YIELD_FOLDED != 0 {
+        if limit_holds(o, still) {
             return self.blocked(start, pos);
         }
         if still {
@@ -318,8 +359,8 @@ impl Experiment for Centre {
 
 #[cfg(test)]
 mod tests {
-    use super::super::Guarded;
-    use super::super::testkit::{FakeServo, pump, rig};
+    use super::super::testkit::{FakeServo, bench_mg90, pump, rig};
+    use super::super::{Guarded, LIMIT_YIELD_FOLDED};
     use super::*;
 
     const CAP: i16 = 8192;
@@ -501,5 +542,91 @@ mod tests {
         let d = duties(&log);
         assert!(d.iter().any(|d| *d > 0));
         assert!(d.iter().any(|d| *d < 0), "never tried the other way: {d:?}");
+    }
+
+    /// What the jam check saw and did, command by command.
+    struct Spy {
+        exp: Guarded<Centre>,
+        seen: Vec<(Option<TelemetrySnapshot>, Cmd)>,
+    }
+
+    impl Experiment for Spy {
+        fn step(&mut self, obs: Option<&TelemetrySnapshot>) -> Cmd {
+            let cmd = self.exp.step(obs);
+            self.seen.push((obs.copied(), cmd.clone()));
+            cmd
+        }
+    }
+
+    /// The jam check's out leg brakes to rest before the back leg drives.
+    /// Reversed at speed, the limiter cannot apply less than its base and
+    /// the bench servo would draw the base's volts plus the back-EMF, over
+    /// the abort; braked first, the back leg starts from rest, and the
+    /// abort never trips on a free shaft, whether 14.5% moved it or 17% on
+    /// the limit did.
+    #[test]
+    fn jam_check_brakes_before_it_reverses() {
+        for (breakaway, out) in [(4259, 3119 + 2 * 819), (4800, 3119 + 3 * 819)] {
+            let mut s = bench_mg90(3204);
+            s.pos = 2029.0;
+            s.breakaway_q15 = breakaway;
+            let params = RigParams::new(Some((532, 3526)), 350).with_stops((209, 3849));
+            let cfg = CentreCfg {
+                duty_q15: 3119,
+                cap_q15: 8290,
+                nudge: true,
+                ..CentreCfg::default()
+            };
+            let mut spy = Spy {
+                exp: Guarded::new(Centre::new(cfg, &params), params.without_pos_guard()),
+                seen: Vec::new(),
+            };
+            pump(&mut spy, &mut s, 100_000);
+            assert_eq!(spy.exp.abort(), None, "{breakaway}");
+            // the goal as it changes: each drive rewrites it every poll
+            let mut goals: Vec<(usize, i32)> = spy
+                .seen
+                .iter()
+                .enumerate()
+                .filter_map(|(k, (_, c))| match c {
+                    Cmd::Write { reg, value } if *reg == control::GOAL_DUTY => Some((k, *value)),
+                    _ => None,
+                })
+                .collect();
+            goals.dedup_by_key(|g| g.1);
+            let values: Vec<i32> = goals.iter().map(|g| g.1).collect();
+            let at = values.iter().position(|v| v.abs() == out).unwrap();
+            let dir = values[at].signum();
+            assert_eq!(
+                values[at..],
+                [dir * out, -dir * BRAKE_DUTY_Q15 as i32, -dir * out, 0],
+                "{breakaway}: {values:?}"
+            );
+            // the last two reads before the back leg: at rest
+            let back = goals[at + 2].0;
+            let reads: Vec<&TelemetrySnapshot> = spy.seen[..=back]
+                .iter()
+                .filter_map(|(o, _)| o.as_ref())
+                .collect();
+            let [.., a, b] = reads.as_slice() else {
+                panic!("no reads");
+            };
+            assert!(
+                a.pos.abs_diff(b.pos) < BRAKE_REST_EPS,
+                "{} {}",
+                a.pos,
+                b.pos
+            );
+            let peak = spy
+                .seen
+                .iter()
+                .filter_map(|(o, _)| o.as_ref())
+                .map(|o| o.i_mean_counts.unsigned_abs())
+                .max()
+                .unwrap();
+            assert!(peak < 350, "{breakaway}: {peak}");
+            assert!(spy.exp.into_inner().arrived());
+            assert!(!s.torque);
+        }
     }
 }
