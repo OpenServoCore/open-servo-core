@@ -16,6 +16,7 @@ use osc_client::nusb::NusbPipe;
 use osc_ident::frame::TelFrame;
 use osc_ident::limits::{POT_MAX, guards, is_board_default};
 use osc_ident::regs::{calib, config};
+use osc_ident::runway::coast_fit;
 
 use super::envelope::{
     Coast, CoastRun, CoastRung, Dir, Envelope, Fit, Limits, PerDir, Refused, Speed, Verified,
@@ -683,26 +684,6 @@ fn coast_room(lim: &Limits) -> PerDir<u16> {
 
 fn fits_room(travel: f64, room: u16) -> bool {
     (1.0 + COAST_MARGIN) * travel <= room as f64
-}
-
-/// Least-squares `coast = a v + b v^2` over (entry, coast) points; None when
-/// the points cannot separate the terms or either comes out negative, which
-/// no friction law gives.
-fn coast_fit(pts: &[(f64, f64)]) -> Option<(f64, f64)> {
-    let (s2, s3, s4, t1, t2) = pts.iter().fold(
-        (0.0, 0.0, 0.0, 0.0, 0.0),
-        |(s2, s3, s4, t1, t2), &(v, d)| {
-            let v2 = v * v;
-            (s2 + v2, s3 + v2 * v, s4 + v2 * v2, t1 + v * d, t2 + v2 * d)
-        },
-    );
-    let det = s2 * s4 - s3 * s3;
-    if det <= 0.0 {
-        return None;
-    }
-    let a = (t1 * s4 - t2 * s3) / det;
-    let b = (s2 * t2 - s3 * t1) / det;
-    (a >= 0.0 && b >= 0.0).then_some((a, b))
 }
 
 /// Entry speed of a `pct` drive from the (duty, entry) rungs so far: the

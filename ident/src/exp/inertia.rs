@@ -11,11 +11,14 @@
 //! input is the applied duty the burst reports, never the step as
 //! commanded: samples still slewing are trimmed, and a step the limiter
 //! held under its goal is declined. Seek and base polling stay ordinary
-//! Read/Pause. The firmware's soft-limit duty clamp bounds the traverse
-//! during the silent capture window. A seek that comes to rest short of
-//! both its target and a stop ends the run ([`super::seek::at_stop`]); so
-//! does a base that does not travel, or that the firmware's stall timer
-//! folds.
+//! Read/Pause. The base and every step run inside the [`Runway`]: a base or
+//! step whose need does not fit is noted and skipped, and each drive -
+//! seek, base, step - ends with the brake idiom, the seek at the start
+//! band, the base at its brake point if it gets there, a step at the end
+//! of its capture, which the fit check keeps short of the brake point. A
+//! seek that comes to rest short of both its target and a stop ends the
+//! run ([`super::seek::at_stop`]); so does a base that does not travel, or
+//! that the firmware's stall timer folds.
 //!
 //! Fit inputs and estimators (direct-alpha and exponential-rise) live in
 //! [`crate::fits`]; [`Inertia::fit`] assembles per-step series and picks
@@ -29,6 +32,9 @@ use crate::fits::{BDirect, BExp, InertiaPriors, StepSeries, b_direct_fit, b_exp_
 use crate::frame::{TelFrame, TelemetrySnapshot};
 use crate::limits::{DutyPlan, q15_floor};
 use crate::regs::control;
+use crate::runway::{
+    BRAKE_DUTY_Q15, BRAKE_POLL_MS, BRAKE_POLLS, BRAKE_REST_EPS, Need, Runway, fits,
+};
 
 /// TEL frame layout the choreography arms: pos + current + duty + vdiff,
 /// plus pos_lin while the rig's position table is live ([`crate::pot::Pot`]).
@@ -48,9 +54,6 @@ pub struct InertiaCfg {
     /// the second half.
     pub base_polls: u32,
     pub base_poll_ms: u32,
-    /// Seek target distance from the band edge: wide enough that the
-    /// coast-down after the seek duty drops stays inside the guard.
-    pub seek_margin: u16,
     pub seek_poll_ms: u32,
     pub rest_ms: u32,
     /// Step burst duration; with `tick_hz` this sizes the TEL arm.
@@ -71,7 +74,6 @@ impl Default for InertiaCfg {
             // 100 ms: five motor time constants of the class
             base_polls: 10,
             base_poll_ms: 10,
-            seek_margin: 700,
             seek_poll_ms: 30,
             rest_ms: 300,
             // Sized to the runway, not the transient: after the base's 100 ms
@@ -124,7 +126,6 @@ enum Phase {
     SeekSet,
     SeekRead,
     SeekEval,
-    SeekOff,
     SeekRest,
     BaseSet,
     BaseWait,
@@ -132,6 +133,9 @@ enum Phase {
     BaseEval,
     StepStream,
     StepOff,
+    BrakeWait,
+    BrakeRead,
+    BrakeEval,
     StepRest,
     TelMaskOff,
     FinishTorque,
@@ -141,12 +145,13 @@ enum Phase {
 pub struct Inertia {
     cfg: InertiaCfg,
     plan: DutyPlan,
+    runway: Runway,
     params: RigParams,
-    band: (u16, u16),
     phase: Phase,
     /// Step index: amplitude = step / 2, direction = +1 then -1.
     step: usize,
     last_pos: Option<u16>,
+    last_seq: Option<u16>,
     still: u32,
     polls: u32,
     start: Option<u16>,
@@ -158,6 +163,11 @@ pub struct Inertia {
     /// The limiter held the base under its goal over that half.
     base_governed: bool,
     goal_q15: i16,
+    /// Where the base brakes if it gets there.
+    base_brake: f64,
+    /// The brake in progress: the last position read, polls so far, and
+    /// the phase after it.
+    brake: Option<(u16, u32, Phase)>,
     capturing: bool,
     cur: StepCapture,
     captures: Vec<StepCapture>,
@@ -165,17 +175,18 @@ pub struct Inertia {
 }
 
 impl Inertia {
-    /// `plan` sizes the steps from the servo's limit, R and rail.
-    pub fn new(cfg: InertiaCfg, plan: DutyPlan, params: &RigParams) -> Self {
-        let band = params.pos_guard.unwrap_or((150, 3950));
+    /// `plan` sizes the steps from the servo's limit, R and rail; `runway`
+    /// holds them inside the travel.
+    pub fn new(cfg: InertiaCfg, plan: DutyPlan, runway: Runway, params: &RigParams) -> Self {
         Self {
             cfg,
             plan,
+            runway,
             params: *params,
-            band,
             phase: Phase::ModeWrite,
             step: 0,
             last_pos: None,
+            last_seq: None,
             still: 0,
             polls: 0,
             start: None,
@@ -184,6 +195,8 @@ impl Inertia {
             i_run: (0.0, 0),
             base_governed: false,
             goal_q15: 0,
+            base_brake: 0.0,
+            brake: None,
             capturing: false,
             cur: StepCapture::default(),
             captures: Vec::new(),
@@ -204,10 +217,90 @@ impl Inertia {
     }
 
     /// The step's goal once the base's running current is known: the one
-    /// place a step is sized, with the shaft moving at the base.
-    fn plan_step(&self, i_run: f64) -> i16 {
+    /// place a step is sized, with the shaft moving at the base. Err, in
+    /// plain words, when the base and the step together do not fit the
+    /// runway.
+    fn plan_step(&self, i_run: f64) -> Result<i16, String> {
         let duty = self.cfg.step_duties(&self.plan, i_run)[self.step / 2];
-        self.dir() as i16 * q15_floor(duty)
+        let goal = self.dir() as i16 * q15_floor(duty);
+        let base = self.base_need().map(|n| n.v * self.base_ms());
+        self.fit_drive(goal, self.cfg.capture_ms as f64, base)
+            .map(|()| goal)
+    }
+
+    fn base_ms(&self) -> f64 {
+        (self.cfg.base_polls * self.cfg.base_poll_ms) as f64
+    }
+
+    fn base_need(&self) -> Option<Need> {
+        let duty = self.cfg.base_q15 as f64 / 32767.0;
+        self.runway.plan(self.dir(), duty, self.base_ms())
+    }
+
+    /// A drive from the start band reaching `duty_q15`'s speed and running
+    /// `ms` at it, after `before` counts of other travel, fits the runway.
+    /// A step is charged its whole climb from rest on top of the base's
+    /// travel: an over-count, never an under-count.
+    fn fit_drive(&self, duty_q15: i16, ms: f64, before: Option<f64>) -> Result<(), String> {
+        let what = if duty_q15 == self.base() {
+            "base"
+        } else {
+            "step to"
+        };
+        let pct = format!("{:+.1}%", duty_q15 as f64 * 100.0 / 32767.0);
+        let room = self.runway.room();
+        let need = self
+            .runway
+            .plan(self.dir(), duty_q15 as f64 / 32767.0, ms)
+            .zip(before)
+            .map(|(n, d)| Need {
+                run: n.run + d,
+                ..n
+            });
+        match need {
+            Some(n) if fits(&n, room) => Ok(()),
+            Some(n) => Err(format!(
+                "the {what} {pct} needs {:.0} counts of travel and {room:.0} are free: skipped",
+                n.total()
+            )),
+            None => Err(format!(
+                "the {what} {pct} has no measured speed or stop to size it by: skipped"
+            )),
+        }
+    }
+
+    /// Brake a drive moving `motion`, then go on to `after`.
+    fn brake(&mut self, motion: i8, pos: Option<u16>, after: Phase) -> Cmd {
+        self.brake = Some((pos.unwrap_or(0), 0, after));
+        self.phase = Phase::BrakeWait;
+        Cmd::Write {
+            reg: control::GOAL_DUTY,
+            value: -(motion as i32) * BRAKE_DUTY_Q15 as i32,
+        }
+    }
+
+    fn brake_eval(&mut self, o: &TelemetrySnapshot) -> Cmd {
+        let Some((last, polls, after)) = self.brake.take() else {
+            self.phase = Phase::StepRest;
+            return Cmd::Pause { ms: 0 };
+        };
+        if o.pos.abs_diff(last) >= BRAKE_REST_EPS && polls + 1 < BRAKE_POLLS {
+            self.brake = Some((o.pos, polls + 1, after));
+            self.phase = Phase::BrakeWait;
+            return Cmd::Pause { ms: 0 };
+        }
+        self.phase = after;
+        Cmd::Write {
+            reg: control::GOAL_DUTY,
+            value: 0,
+        }
+    }
+
+    /// `pos` plus one more poll of travel has reached `at` driving `motion`.
+    fn reached(&self, pos: u16, motion: i8, at: f64) -> bool {
+        let lead = self.last_pos.map_or(0, |l| pos.abs_diff(l)) as f64;
+        let ahead = pos as f64 + motion as f64 * lead;
+        if motion > 0 { ahead >= at } else { ahead <= at }
     }
 
     /// What the run noted, and every step the fit leaves out and why.
@@ -245,6 +338,14 @@ impl Inertia {
         if o.limit_flags & LIMIT_YIELD_FOLDED != 0 || watch.still(o.pos) {
             return self.halt_on(seek::blocked(start, o.pos));
         }
+        if self.reached(o.pos, self.dir(), self.base_brake) {
+            self.warnings.push(format!(
+                "base {:+.1}%: reached its brake point before its step, skipped",
+                self.base() as f64 * 100.0 / 32767.0
+            ));
+            return self.brake(self.dir(), Some(o.pos), Phase::StepRest);
+        }
+        self.last_pos = Some(o.pos);
         self.polls += 1;
         if self.polls > self.cfg.base_polls / 2 {
             self.i_run.0 += o.i_mean_counts as f64 * self.dir() as f64;
@@ -265,8 +366,16 @@ impl Inertia {
             self.phase = Phase::StepOff;
             return Cmd::Pause { ms: 0 };
         }
-        self.goal_q15 = self.plan_step(self.i_run.0 / self.i_run.1.max(1) as f64);
-        self.phase = Phase::StepStream;
+        match self.plan_step(self.i_run.0 / self.i_run.1.max(1) as f64) {
+            Ok(goal) => {
+                self.goal_q15 = goal;
+                self.phase = Phase::StepStream;
+            }
+            Err(why) => {
+                self.warnings.push(why);
+                self.phase = Phase::StepOff;
+            }
+        }
         Cmd::Pause { ms: 0 }
     }
 
@@ -275,16 +384,25 @@ impl Inertia {
         n.min(u16::MAX as f64) as u16
     }
 
-    fn seek_done(&self, pos: u16) -> bool {
-        if self.dir() > 0 {
-            pos <= self.band.0 + self.cfg.seek_margin
-        } else {
-            pos >= self.band.1 - self.cfg.seek_margin
-        }
+    /// The seek brakes early by the stop it will take, so it comes to rest
+    /// in the start band.
+    fn seek_done(&self, o: &TelemetrySnapshot) -> bool {
+        let v = match (self.last_pos, self.last_seq) {
+            (Some(p), Some(q)) if q != o.agg_seq => {
+                let ms = o.agg_seq.wrapping_sub(q) as f64 * self.params.agg_period_ms;
+                p.abs_diff(o.pos) as f64 / ms
+            }
+            _ => 0.0,
+        };
+        let stop = self.runway.stop(v).unwrap_or(0.0);
+        let motion = -self.dir();
+        let target = self.runway.start(self.dir()) as f64;
+        self.reached(o.pos, motion, target - motion as f64 * stop)
     }
 
     fn reset_motion_track(&mut self) {
         self.last_pos = None;
+        self.last_seq = None;
         self.still = 0;
         self.polls = 0;
         self.start = None;
@@ -437,10 +555,12 @@ impl Experiment for Inertia {
             Phase::SeekEval => {
                 let mut done = false;
                 if let Some(o) = obs {
+                    let arrived = self.seek_done(o);
                     self.track_still(o.pos);
-                    done = self.seek_done(o.pos) || self.still >= self.cfg.stall_polls;
+                    self.last_seq = Some(o.agg_seq);
+                    done = arrived || self.still >= self.cfg.stall_polls;
                     let start = self.start.unwrap_or(o.pos);
-                    if !self.seek_done(o.pos)
+                    if !arrived
                         && self.still >= self.cfg.stall_polls
                         && let Err(reason) =
                             seek::at_stop(start, o.pos, -self.dir(), self.params.stops)
@@ -455,20 +575,12 @@ impl Experiment for Inertia {
                     done = true;
                 }
                 if done {
-                    self.phase = Phase::SeekOff;
-                    Cmd::Pause { ms: 0 }
+                    self.brake(-self.dir(), obs.map(|o| o.pos), Phase::SeekRest)
                 } else {
                     self.phase = Phase::SeekRead;
                     Cmd::Pause {
                         ms: self.cfg.seek_poll_ms,
                     }
-                }
-            }
-            Phase::SeekOff => {
-                self.phase = Phase::SeekRest;
-                Cmd::Write {
-                    reg: control::GOAL_DUTY,
-                    value: 0,
                 }
             }
             Phase::SeekRest => {
@@ -482,6 +594,13 @@ impl Experiment for Inertia {
                 self.watch = None;
                 self.i_run = (0.0, 0);
                 self.base_governed = false;
+                if let Err(why) = self.fit_drive(self.base(), self.base_ms(), Some(0.0)) {
+                    self.warnings.push(why);
+                    self.phase = Phase::StepOff;
+                    return Cmd::Pause { ms: 0 };
+                }
+                let stop = self.base_need().map_or(0.0, |n| n.stop);
+                self.base_brake = self.runway.brake_at(self.dir(), stop);
                 self.phase = Phase::BaseWait;
                 Cmd::Write {
                     reg: control::GOAL_DUTY,
@@ -522,12 +641,23 @@ impl Experiment for Inertia {
                 if self.capturing {
                     self.close_step();
                 }
-                self.phase = Phase::StepRest;
-                Cmd::Write {
-                    reg: control::GOAL_DUTY,
-                    value: 0,
-                }
+                self.brake(self.dir(), self.last_pos, Phase::StepRest)
             }
+            Phase::BrakeWait => {
+                self.phase = Phase::BrakeRead;
+                Cmd::Pause { ms: BRAKE_POLL_MS }
+            }
+            Phase::BrakeRead => {
+                self.phase = Phase::BrakeEval;
+                Cmd::Read
+            }
+            Phase::BrakeEval => match obs {
+                Some(o) => self.brake_eval(o),
+                None => {
+                    self.phase = Phase::BrakeRead;
+                    Cmd::Pause { ms: 0 }
+                }
+            },
             Phase::StepRest => {
                 self.step += 1;
                 self.phase = if self.step < self.steps() {
@@ -615,10 +745,29 @@ mod tests {
         DutyPlan::new(&lim, 3.37, None)
     }
 
+    /// The fake's steady speed at `duty`, counts/ms.
+    fn v_fake(duty: f64) -> f64 {
+        (duty * 1731.0 - 3.37 * 20.0) / (0.1731 + 3.37 * 0.006) / 1000.0
+    }
+
+    /// The runway the ladder leaves the fake: its speeds at 26 and 64%,
+    /// a braked stop of 500 counts from 64%, a climb of 60.
+    fn runway(params: &RigParams) -> Runway {
+        let mut r = Runway::new(params.pos_guard.unwrap()).with_accel(60.0);
+        r.ran(0.26, v_fake(0.26));
+        r.ran(0.64, v_fake(0.64));
+        r.stopped(v_fake(0.64), 500.0);
+        r
+    }
+
+    fn inertia(cfg: InertiaCfg, i_lim: u16, params: &RigParams) -> Inertia {
+        Inertia::new(cfg, plan(i_lim), runway(params), params)
+    }
+
     fn run() -> (Inertia, Vec<String>) {
         let mut servo = dynamic_servo();
         let params = crate::exp::testkit::rig();
-        let exp = Inertia::new(InertiaCfg::default(), plan(180), &params);
+        let exp = inertia(InertiaCfg::default(), 180, &params);
         let mut exp = Guarded::new(exp, params);
         let log = pump(&mut exp, &mut servo, 4_000_000);
         assert!(exp.abort().is_none(), "abort: {:?}", exp.abort());
@@ -704,11 +853,13 @@ mod tests {
         let run = |pot: Pot| {
             let mut servo = dynamic_servo();
             servo.pot = Some(table);
+            // start bands at 500 and 3600, where the bent pot is bent
             let params = RigParams {
                 pot,
+                pos_guard: Some((425, 3675)),
                 ..crate::exp::testkit::rig()
             };
-            let exp = Inertia::new(InertiaCfg::default(), plan(180), &params);
+            let exp = inertia(InertiaCfg::default(), 180, &params);
             let mut exp = Guarded::new(exp, params);
             let log = pump(&mut exp, &mut servo, 4_000_000);
             assert!(exp.abort().is_none(), "abort: {:?}", exp.abort());
@@ -726,7 +877,7 @@ mod tests {
             "linearized b {b_lin}"
         );
         assert_eq!(lin.len(), 6);
-        // the seek coasts to rest near raw 500, which the bent pot reads
+        // the seek brakes to rest near raw 500, which the bent pot reads
         // ~60 counts under the true position the live series starts from
         let (r0, l0) = (raw[0].0.pos[0], lin[0].0.pos[0]);
         assert!(l0 - r0 > 40.0, "raw {r0} vs linearized {l0}");
@@ -745,12 +896,16 @@ mod tests {
     fn inertia_steps_from_a_moving_base() {
         let mut servo = dynamic_servo();
         servo.current_limit = Some(180);
-        let params = crate::exp::testkit::rig();
+        // a start band at 850: the 500 ms bases step clear of the slip zone
+        let params = RigParams {
+            pos_guard: Some((775, 3950)),
+            ..crate::exp::testkit::rig()
+        };
         let cfg = InertiaCfg {
             base_polls: 50,
             ..InertiaCfg::default()
         };
-        let exp = Inertia::new(cfg, plan(180), &params);
+        let exp = inertia(cfg, 180, &params);
         let mut exp = Guarded::new(exp, params);
         let log = pump(&mut exp, &mut servo, 4_000_000);
         assert!(exp.abort().is_none(), "abort: {:?}", exp.abort());
@@ -802,7 +957,7 @@ mod tests {
             base_polls: 50,
             ..InertiaCfg::default()
         };
-        let exp = Inertia::new(cfg, plan(180), &params);
+        let exp = inertia(cfg, 180, &params);
         let mut exp = Guarded::new(exp, params);
         pump(&mut exp, &mut servo, 4_000_000);
         assert!(exp.abort().is_none(), "abort: {:?}", exp.abort());
@@ -824,8 +979,8 @@ mod tests {
     #[test]
     fn a_yield_fold_on_the_base_ends_the_run_blocked() {
         let mut servo = dynamic_servo();
-        servo.pos = 500.0;
-        servo.jam = Some(600.0);
+        servo.pos = 250.0;
+        servo.jam = Some(350.0);
         servo.current_limit = Some(120);
         servo.stall_ms = Some(20.0);
         servo.stall_yield = 60;
@@ -834,10 +989,11 @@ mod tests {
             base_polls: 20,
             ..InertiaCfg::default()
         };
-        let mut exp = Guarded::new(Inertia::new(cfg, plan(180), &params), params);
+        let mut exp = Guarded::new(inertia(cfg, 180, &params), params);
         let log = pump(&mut exp, &mut servo, 4_000_000);
         assert!(
-            matches!(exp.abort(), Some(AbortReason::Blocked { pos: 600, moved }) if moved > 90),
+            matches!(exp.abort(), Some(AbortReason::Blocked { pos, moved })
+                if pos.abs_diff(350) <= 2 && moved > 90),
             "{:?}",
             exp.abort()
         );
@@ -849,10 +1005,78 @@ mod tests {
         assert!(!servo.torque);
     }
 
+    fn brakes(log: &[String]) -> usize {
+        log.iter()
+            .filter(|l| {
+                l.strip_prefix("write goal_duty ")
+                    .and_then(|v| v.parse::<i32>().ok())
+                    .is_some_and(|v| v.unsigned_abs() == BRAKE_DUTY_Q15 as u32)
+            })
+            .count()
+    }
+
+    /// Every base and step is sized inside the runway before it runs, and
+    /// every drive ends braked: each seek at the start band, each step at
+    /// the end of its capture, short of the step's brake point.
+    #[test]
+    fn inertia_base_and_steps_fit_the_runway() {
+        let mut servo = dynamic_servo();
+        let params = crate::exp::testkit::rig();
+        let mut g = Guarded::new(inertia(InertiaCfg::default(), 180, &params), params);
+        let log = pump(&mut g, &mut servo, 4_000_000);
+        assert_eq!(g.abort(), None);
+        let exp = g.into_inner();
+        assert!(exp.warnings.is_empty(), "{:?}", exp.warnings);
+        assert_eq!(stream_goals(&log).len(), 6);
+        assert_eq!(brakes(&log), 12, "six seeks and six steps");
+        for c in &exp.captures {
+            let d = c.goal_q15.signum() as i8;
+            let v = exp.runway.speed(d, c.goal_q15 as f64 / 32767.0).unwrap();
+            let end = exp.runway.brake_at(d, exp.runway.stop(v).unwrap());
+            let far = c
+                .tel
+                .iter()
+                .filter_map(|f| f.pos)
+                .map(|p| d as f64 * p as f64)
+                .fold(f64::MIN, f64::max);
+            assert!(far <= d as f64 * end, "{}: to {far} past {end}", c.goal_q15);
+        }
+        assert!(!servo.torque);
+    }
+
+    /// On a short travel the base and the smallest step fit and the two
+    /// larger steps do not: those are noted in plain words and skipped,
+    /// the base braked, and the run goes on.
+    #[test]
+    fn an_inertia_step_that_does_not_fit_is_skipped() {
+        let mut servo = dynamic_servo();
+        servo.pos = 900.0;
+        let params = RigParams {
+            pos_guard: Some((150, 1425)),
+            slip: (0, 0),
+            ..crate::exp::testkit::rig()
+        };
+        let mut g = Guarded::new(inertia(InertiaCfg::default(), 180, &params), params);
+        let log = pump(&mut g, &mut servo, 4_000_000);
+        assert_eq!(g.abort(), None);
+        let exp = g.into_inner();
+        let goals = stream_goals(&log);
+        assert_eq!(goals.len(), 2, "{:?}", exp.warnings);
+        assert_eq!(exp.warnings.len(), 4, "{:?}", exp.warnings);
+        for w in &exp.warnings {
+            assert!(
+                w.starts_with("the step to ") && w.ends_with("and 1200 are free: skipped"),
+                "{w}"
+            );
+        }
+        assert_eq!(brakes(&log), 12, "a skipped step's base brakes too");
+        assert!(!servo.torque);
+    }
+
     #[test]
     fn frames_outside_a_burst_are_dropped() {
         let params = crate::exp::testkit::rig();
-        let mut exp = Inertia::new(InertiaCfg::default(), plan(180), &params);
+        let mut exp = inertia(InertiaCfg::default(), 180, &params);
         exp.push_tel(&[TelFrame {
             tick: 0,
             pos: Some(2000),

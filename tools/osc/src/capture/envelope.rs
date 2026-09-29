@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use osc_ident::runway;
 use serde::{Deserialize, Serialize};
 
 use super::Supply;
@@ -199,6 +200,53 @@ impl Envelope {
     }
 }
 
+impl Envelope {
+    /// What the ladder's runway reads of it: the v_ss lines and every coast
+    /// the pilot measured, both ways.
+    pub(crate) fn runway(&self) -> runway::Envelope {
+        let line = |f: &Fit| runway::Line {
+            slope: f.slope,
+            intercept: f.intercept,
+        };
+        runway::Envelope {
+            supply: match self.supply {
+                Supply::Usb => runway::Supply::Usb,
+                Supply::TwoS => runway::Supply::TwoS,
+            },
+            phys: (self.limits.phys[0], self.limits.phys[1]),
+            fwd: line(&self.v_ss.fwd),
+            rev: line(&self.v_ss.rev),
+            coast: self
+                .coast
+                .ladder
+                .iter()
+                .flat_map(|r| [r.fwd, r.rev])
+                .map(|c| (c.entry, c.coast as f64))
+                .collect(),
+        }
+    }
+}
+
+/// Every dataset under `root` holding an envelope, in name order, each as
+/// read: an envelope from an older pilot does not parse.
+pub(crate) fn every(root: &Path) -> Vec<(PathBuf, Result<Envelope>)> {
+    let Ok(dirs) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut found: Vec<PathBuf> = dirs
+        .filter_map(|e| Some(e.ok()?.path()))
+        .filter(|d| d.join(FILE).is_file())
+        .collect();
+    found.sort();
+    found
+        .into_iter()
+        .map(|d| {
+            let env = Envelope::load(&d);
+            (d.join(FILE), env)
+        })
+        .collect()
+}
+
 impl Limits {
     /// The limits alone, whatever else the file holds: a dataset's envelope
     /// keeps naming the stops after the sections around it change shape.
@@ -329,6 +377,40 @@ mod tests {
         let back = Envelope::load(&dir).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(back, env);
+    }
+
+    /// The runway reads the v_ss lines and every coast both ways, and takes
+    /// the envelope only for its supply and stops; the pilot's older file,
+    /// with a single coast probe, does not parse and sizes nothing.
+    #[test]
+    fn envelope_sizes_the_ladder_runway() {
+        let r = mg90().runway();
+        assert_eq!(r.supply, runway::Supply::TwoS);
+        assert_eq!(r.phys, (209, 3849));
+        assert_eq!(r.fwd.at(60.0), mg90().v_ss.fwd.at(60));
+        assert_eq!(r.coast.len(), 10);
+        assert_eq!(r.coast[9], (13.15, 1333.0));
+        assert!(r.check(Some(runway::Supply::TwoS), (232, 3849)).is_ok());
+        assert!(r.check(Some(runway::Supply::Usb), (232, 3849)).is_err());
+
+        let dir = std::env::temp_dir().join(format!("osc-envelopes-{}", std::process::id()));
+        let (fresh, old) = (dir.join("a__2s"), dir.join("b__2s"));
+        std::fs::create_dir_all(&fresh).unwrap();
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::create_dir_all(dir.join("c__usb")).unwrap();
+        mg90().save(&fresh).unwrap();
+        let text = std::fs::read_to_string(fresh.join(FILE)).unwrap();
+        let probe =
+            "[coast]\nprobe_pct = 40\nprobe_entry = 7.293\nprobe_travel = 551\ntop_pct = 66\n";
+        let head = text.split("[coast]").next().unwrap();
+        std::fs::write(old.join(FILE), format!("{head}{probe}")).unwrap();
+        let found = every(&dir);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(found.len(), 2, "a dir without an envelope is skipped");
+        assert_eq!(found[0].0, fresh.join(FILE));
+        assert_eq!(found[0].1.as_ref().unwrap(), &mg90());
+        assert!(found[1].1.is_err());
+        assert!(every(&dir).is_empty());
     }
 
     #[test]

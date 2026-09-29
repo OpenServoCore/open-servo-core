@@ -6,7 +6,10 @@
 //!
 //! With `current_limit` set the fake governs OpenLoop duty the way the
 //! kernel's limiter does: a goal above the window floor slews up from the
-//! floor, and the applied duty never draws more than the limit. With
+//! floor, and the applied duty never draws more than the limit; a goal
+//! under the floor passes raw up to the stall-safe duty, the shunt blind to
+//! it - its ident window is invalid and the aggregate holds the last valid
+//! current, so a token brake at speed reads nothing. With
 //! `lease_ms` set the stall permit is a lease: granted by a write of true
 //! with torque on, extended by a rewrite, dropped by torque off, false, or
 //! the lease running out. With `stall_ms` set the stall timer runs too: a
@@ -28,6 +31,27 @@ use crate::regs::{ALL, Reg, control};
 /// fake draws unless a test asks.
 pub fn rig() -> RigParams {
     RigParams::new(Some((150, 3950)), 1100).with_stops((200, 4000))
+}
+
+/// The bench MG90 as the fake models it on a rail of `vbus`: 4.9 ohm, the
+/// firmware limiter at 280 counts above a 13.3% window floor, a 13%
+/// breakaway, 80 counts of running friction and the measured b, between
+/// its stops 209..3849 and soft limits 432..3626.
+pub fn bench_mg90(vbus: u16) -> FakeServo {
+    let mut s = FakeServo::new(7270.0 / 4096.0);
+    s.ends = (209.0, 3849.0);
+    s.vbus = vbus as f64;
+    s.dynamic = true;
+    s.ke = 0.1472;
+    s.b = 0.296;
+    s.fc = 80.0;
+    s.fv = 0.01;
+    s.breakaway_q15 = 4259;
+    s.soft = Some((432.0, 3626.0));
+    s.lease_ms = Some(1008.0);
+    s.current_limit = Some(280);
+    s.transient_gain = 1.0;
+    s
 }
 
 pub struct FakeServo {
@@ -84,7 +108,8 @@ pub struct FakeServo {
     /// How far over the limit the governed current reads, a fraction: the
     /// kernel holds a stall with window peaks up to 1.1 of the limit.
     pub hold_ripple: f64,
-    /// Duty at the current window floor, q15: 160 ticks of ARR 1200.
+    /// Duty at the current window floor, q15: the least whose drive window
+    /// spans 160 ticks of ARR 1200.
     pub floor_q15: i16,
     /// The duty ceiling's last reset: its value and when.
     ceil0: f64,
@@ -100,6 +125,8 @@ pub struct FakeServo {
     /// Time the applied duty spent pushing the shaft into the end it sits
     /// at, ms.
     pub pressed_ms: f64,
+    /// The ident aggregate's last window-valid current.
+    i_valid: f64,
     pub torque: bool,
     pub duty: i16,
     pub tel_mask: u16,
@@ -144,7 +171,7 @@ impl FakeServo {
             permit_until: f64::NEG_INFINITY,
             current_limit: None,
             hold_ripple: 0.0,
-            floor_q15: 4369,
+            floor_q15: crate::limits::window_floor_q15(160, 1200),
             ceil0: 0.0,
             t_ceil: 0.0,
             jam: None,
@@ -153,6 +180,7 @@ impl FakeServo {
             pinned_at: None,
             folded: false,
             pressed_ms: 0.0,
+            i_valid: 0.0,
             torque: false,
             duty: 0,
             tel_mask: 0,
@@ -263,6 +291,10 @@ impl FakeServo {
             return self.duty;
         };
         let sign = self.duty.signum() as i32;
+        if self.duty.unsigned_abs() < self.floor_q15 as u16 {
+            let base = (lim as f64 * self.r / self.vbus * 32767.0).min(self.floor_q15 as f64);
+            return (sign * (self.duty.unsigned_abs() as i32).min(base as i32)) as i16;
+        }
         let slewed = (self.duty.unsigned_abs() as f64).min(self.ceiling()) as i32;
         // the low-side shunt sees drive current only, never the brake
         // current a low duty draws from a fast shaft
@@ -591,7 +623,10 @@ impl FakeServo {
     pub fn read(&mut self) -> TelemetrySnapshot {
         let duty = self.applied();
         let driving = duty != 0;
-        let (i, vdiff) = if driving {
+        let blind = self.current_limit.is_some() && duty.unsigned_abs() < self.floor_q15 as u16;
+        let (i, vdiff) = if driving && blind {
+            (self.i_valid, self.vbus * duty.signum() as f64)
+        } else if driving {
             let mut i = self.i_at(duty);
             if (self.t_ms - self.t_duty_change) / 0.8 < self.transient_windows {
                 i *= self.transient_gain;
@@ -599,6 +634,7 @@ impl FakeServo {
             if self.limit_flags() & 1 != 0 {
                 i *= 1.0 + self.hold_ripple;
             }
+            self.i_valid = i;
             (i, self.vbus * duty.signum() as f64)
         } else {
             (0.0, 0.0)

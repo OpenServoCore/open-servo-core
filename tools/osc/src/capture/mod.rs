@@ -183,7 +183,7 @@ fn parse_captures(s: &str) -> Result<RangeInclusive<u32>, String> {
     Ok(a..=b)
 }
 
-fn default_root() -> Result<PathBuf> {
+pub(crate) fn default_root() -> Result<PathBuf> {
     Ok(crate::sweep::git_toplevel()?
         .join("notebooks")
         .join("telemetry"))

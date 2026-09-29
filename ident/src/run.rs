@@ -13,14 +13,15 @@
 //! centring, the breakaway ramp - is planned from R and the rail so its
 //! stall stays at or under the current limit ([`DutyPlan`]); the ladder and
 //! inertia rungs run free on the firmware limiter, the stall timer and the
-//! travel guard, inertia stepping from a moving base by what the limit
-//! leaves over the base's running current. Nothing in the default run
-//! stalls a stop: a burst that declines ends it. Asked for
-//! ([`Run::with_stall_ladder`]), the resistance stop ladder measures R
-//! instead, its dwells stalling between the current sensor's window floor
-//! and the limit ([`DutyPlan::stall_ladder`]) with the permit held; a
-//! supply that leaves no room between the two ends the run before it
-//! moves.
+//! travel guard and the [`crate::runway`], inertia stepping from a moving
+//! base by what the limit leaves over the base's running current. A stage
+//! that declines once there is a plan still ends with the closing
+//! centring. Nothing in the default run stalls a stop: a burst that
+//! declines ends it. Asked for ([`Run::with_stall_ladder`]), the resistance
+//! stop ladder measures R instead, its dwells stalling between the current
+//! sensor's window floor and the limit ([`DutyPlan::stall_ladder`]) with
+//! the permit held; a supply that leaves no room between the two ends the
+//! run before it moves.
 
 use crate::exp::AbortReason;
 use crate::exp::breakaway::BreakawayCfg;
@@ -96,8 +97,9 @@ impl Stage {
 pub enum Ended {
     Done,
     /// Ran, but its result does not feed the gains: the burst's routes
-    /// declined, or it produced nothing to fit. Nothing after it can be
-    /// planned.
+    /// declined, the ladder fitted too few rungs, or it produced nothing to
+    /// fit. Nothing after it can be planned; a run with a plan still ends
+    /// with its closing centring.
     Declined,
     Aborted(AbortReason),
 }
@@ -106,8 +108,9 @@ pub enum Ended {
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Over {
     Aborted(&'static str, AbortReason),
-    /// The burst measured no winding R: nothing after it can be planned.
-    Declined,
+    /// The named stage gave nothing to fit: nothing after it can be
+    /// planned. The burst's decline leaves no winding R.
+    Declined(&'static str),
     /// The resistance stop ladder, asked for, fitted no R either.
     ResistanceDeclined,
     /// The resistance stop ladder, asked for, has no room between the
@@ -167,6 +170,8 @@ pub struct Run {
     plan: Option<DutyPlan>,
     at: Option<&'static str>,
     over: Option<Over>,
+    /// Why the run ends once its closing centring is done.
+    cut: Option<Over>,
 }
 
 impl Run {
@@ -185,6 +190,7 @@ impl Run {
             plan: None,
             at: None,
             over: None,
+            cut: None,
         }
     }
 
@@ -219,7 +225,10 @@ impl Run {
         let step = match self.pending.take() {
             Some(s) => s,
             None => {
-                let s = *ORDER.get(self.next)?;
+                let Some(&s) = ORDER.get(self.next) else {
+                    self.over = self.cut.take();
+                    return None;
+                };
                 self.next += 1;
                 s
             }
@@ -250,7 +259,7 @@ impl Run {
                 }
             }
             (Step::Resistance, _) => return self.stop_ladder(),
-            (_, None) => return self.end(Over::Declined),
+            (_, None) => return self.end(Over::Declined("burst")),
             (Step::Breakaway, Some(p)) => Stage::Breakaway { cap: p.stop_cap },
             (Step::Ladder, Some(p)) => Stage::Ladder {
                 seek: p.seek,
@@ -301,7 +310,11 @@ impl Run {
             Ended::Declined => match self.at {
                 Some("burst") if self.stall_ladder => self.pending = Some(Step::Resistance),
                 Some("resistance") => self.over = Some(Over::ResistanceDeclined),
-                _ => self.over = Some(Over::Declined),
+                Some(stage) if self.plan.is_some() && stage != "burst" => {
+                    self.cut = Some(Over::Declined(stage));
+                    self.finish();
+                }
+                at => self.over = Some(Over::Declined(at.unwrap_or("run"))),
             },
             Ended::Aborted(reason) => {
                 self.over = Some(Over::Aborted(self.at.unwrap_or("run"), reason))
@@ -432,9 +445,10 @@ mod tests {
     use crate::exp::inertia::Inertia;
     use crate::exp::ladder::{Ladder, LadderResult};
     use crate::exp::resistance::Resistance;
-    use crate::exp::testkit::{FakeServo, pump};
+    use crate::exp::testkit::{FakeServo, bench_mg90, pump};
     use crate::exp::{Experiment, Guarded, Permitted, RigParams};
     use crate::fits::InertiaPriors;
+    use crate::runway::Runway;
     use crate::sources;
     use crate::units::SenseParams;
 
@@ -536,7 +550,16 @@ mod tests {
             _ => Ended::Done,
         });
         assert_eq!(seen, full[..3]);
-        assert_eq!(r.over(), Some(Over::Declined));
+        assert_eq!(r.over(), Some(Over::Declined("burst")));
+        // a declined ladder still ends with the closing centring
+        let mut r = run(RAIL_2S);
+        let seen = stages(&mut r, |s| match s {
+            Stage::Ladder { .. } => Ended::Declined,
+            _ => Ended::Done,
+        });
+        assert_eq!(seen, [&full[..7], &full[9..]].concat());
+        assert_eq!(r.over(), Some(Over::Declined("ladder")));
+        assert_eq!(r.next_stage(), None);
     }
 
     /// A declined burst ends the run unless the stop ladder was asked for;
@@ -552,7 +575,7 @@ mod tests {
         };
         let mut r = run(RAIL_2S);
         assert_eq!(stages(&mut r, declined), ORDER_NAMES[..3]);
-        assert_eq!(r.over(), Some(Over::Declined));
+        assert_eq!(r.over(), Some(Over::Declined("burst")));
 
         let mut r = run(RAIL_2S).with_stall_ladder();
         assert_eq!(stages(&mut r, declined), ORDER_NAMES[..3]);
@@ -734,6 +757,8 @@ mod tests {
         caps: Vec<Capture>,
         r_ohm: Option<f64>,
         ladder: Option<LadderResult>,
+        /// What the ladder measured, handed on to inertia.
+        runway: Option<Runway>,
         inertia_fit: bool,
         /// The burst measures but its result is taken as declined.
         decline_burst: bool,
@@ -749,6 +774,7 @@ mod tests {
                 caps: Vec::new(),
                 r_ohm: None,
                 ladder: None,
+                runway: None,
                 inertia_fit: false,
                 decline_burst: false,
             }
@@ -827,15 +853,21 @@ mod tests {
                     how
                 }
                 Stage::Ladder { seek, rungs } => {
-                    let (exp, how) =
-                        self.go(Ladder::new(ladder_cfg(*seek, rungs), &params), params);
+                    let runway = Runway::new(lim.guard().unwrap());
+                    let ladder = Ladder::new(ladder_cfg(*seek, rungs), &params, runway);
+                    let (exp, how) = self.go(ladder, params);
                     self.ladder = exp.fit(R);
-                    how
+                    self.runway = Some(exp.runway().clone());
+                    match exp.declined() {
+                        Some(_) if how == Ended::Done => Ended::Declined,
+                        _ => how,
+                    }
                 }
                 Stage::Inertia { seek, base } => {
                     let cfg = inertia_cfg(*seek, *base, InertiaCfg::default());
                     let plan = run.plan().expect("planned");
-                    let (exp, how) = self.go(Inertia::new(cfg, plan, &params), params);
+                    let runway = self.runway.clone().expect("the ladder's runway");
+                    let (exp, how) = self.go(Inertia::new(cfg, plan, runway, &params), params);
                     if let Some(l) = &self.ladder {
                         let priors = InertiaPriors {
                             r_vpc: R,
@@ -877,25 +909,10 @@ mod tests {
             .collect()
     }
 
-    /// The bench MG90 as the fake models it: 4.9 ohm, the firmware limiter
-    /// at 280 counts above a 13.3% window floor, a 13% breakaway, 80 counts
-    /// of running friction, the measured b, and the burst plant on the same
-    /// winding and rail.
+    /// The bench MG90 with the burst plant on the same winding and rail.
     fn bench_servo(vbus: u16) -> FakeServo {
         let sc = scales();
-        let mut s = FakeServo::new(R);
-        s.ends = (209.0, 3849.0);
-        s.vbus = vbus as f64;
-        s.dynamic = true;
-        s.ke = 0.1472;
-        s.b = 0.296;
-        s.fc = 80.0;
-        s.fv = 0.01;
-        s.breakaway_q15 = 4259;
-        s.soft = Some((432.0, 3626.0));
-        s.lease_ms = Some(1008.0);
-        s.current_limit = Some(LIM);
-        s.transient_gain = 1.0;
+        let mut s = bench_mg90(vbus);
         s.burst.r = R * sc.v_term_per_count / sc.amps_per_count;
         s.burst.v_rail = vbus as f64 * sc.v_term_per_count;
         s.burst.v0 = 0.2;
