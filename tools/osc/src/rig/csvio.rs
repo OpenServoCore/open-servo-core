@@ -14,7 +14,7 @@ use osc_ident::exp::WindowSample;
 use osc_ident::exp::ladder::RungSummary;
 use osc_ident::exp::resistance::DwellSample;
 use osc_ident::exp::rl::{SegKind, Segment};
-use osc_ident::fits::{RungPoint, StepSeries};
+use osc_ident::fits::{Climb, RungPoint, StepSeries};
 use osc_ident::frame::{TelFrame, TelemetrySnapshot};
 
 pub(crate) struct OutDir(pub(crate) PathBuf);
@@ -295,6 +295,43 @@ pub(crate) fn read_step_series(dir: &Path) -> Result<Vec<(StepSeries, bool)>> {
         s.pos.push(parts[4].parse()?);
         s.i.push(parts[5].parse()?);
         s.mask.push(parts[6] == "1");
+    }
+    Ok(out)
+}
+
+/// The ladder's governed climbs, one row per read, `climb` numbering them.
+pub(crate) fn write_climbs(dir: &OutDir, climbs: &[Climb]) -> Result<()> {
+    let mut w = dir.file("ladder_climbs.csv")?;
+    writeln!(w, "climb,dir,t,pos,i")?;
+    for (k, c) in climbs.iter().enumerate() {
+        for j in 0..c.t.len() {
+            writeln!(w, "{k},{},{},{},{}", c.dir, c.t[j], c.pos[j], c.i[j])?;
+        }
+    }
+    Ok(())
+}
+
+/// The climbs back; a run whose ladder never ran recorded none.
+pub(crate) fn read_climbs(dir: &Path) -> Result<Vec<Climb>> {
+    let path = dir.join("ladder_climbs.csv");
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let mut out: Vec<Climb> = Vec::new();
+    let mut cur: Option<usize> = None;
+    for parts in rows(&path, 5)? {
+        let k: usize = parts[0].parse()?;
+        if cur != Some(k) {
+            cur = Some(k);
+            out.push(Climb {
+                dir: parts[1].parse()?,
+                ..Climb::default()
+            });
+        }
+        let c = out.last_mut().expect("pushed");
+        c.t.push(parts[2].parse()?);
+        c.pos.push(parts[3].parse()?);
+        c.i.push(parts[4].parse()?);
     }
     Ok(out)
 }
@@ -656,6 +693,27 @@ mod tests {
         write_rl_segments(&dir, &segs).unwrap();
         let back = read_rl_segments(&dir.0).unwrap();
         assert_eq!(back, segs);
+    }
+
+    #[test]
+    fn climbs_round_trip() {
+        let dir = tmp();
+        let climbs = vec![
+            Climb {
+                dir: 1,
+                t: vec![0.5, 0.502],
+                pos: vec![640.25, 648.5],
+                i: vec![244.0, 250.0],
+            },
+            Climb {
+                dir: -1,
+                t: vec![1.5],
+                pos: vec![3400.0],
+                i: vec![-241.0],
+            },
+        ];
+        write_climbs(&dir, &climbs).unwrap();
+        assert_eq!(read_climbs(&dir.0).unwrap(), climbs);
     }
 
     #[test]

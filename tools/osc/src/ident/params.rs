@@ -10,6 +10,7 @@ use osc_ident::exp::bias::BiasResult;
 use osc_ident::exp::breakaway::BreakawayResult;
 use osc_ident::exp::held::HeldRun;
 use osc_ident::exp::inductance::InductanceResult;
+use osc_ident::exp::inertia::{InertiaResult, StoredMotion};
 use osc_ident::exp::resistance::ResistanceResult;
 use osc_ident::exp::rl::{RlResult, Scales};
 use osc_ident::exp::wavefit::WaveRun;
@@ -29,6 +30,9 @@ pub struct ParamsFile {
     /// The winding the run took off the servo because nothing in it
     /// measured R: the fit's R and L, as they were stored.
     pub stored_winding: Option<StoredWindingJson>,
+    /// The Ke and friction line the servo carried into the run: what
+    /// inertia reads B against when the ladder declines.
+    pub stored_motion: Option<StoredMotionJson>,
     pub ladder: Option<LadderJson>,
     pub inertia: Option<InertiaJson>,
     /// CalibSense scales read off the table - the offline fit's l_cd input.
@@ -78,27 +82,56 @@ impl PotJson {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Copy)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct BiasJson {
     pub sigma_theta: f64,
+    pub sigma_raw: f64,
+    pub gain: f64,
+    pub rest: f64,
+    pub tel_n: usize,
     pub pos_mean: f64,
     pub i_noise: f64,
     pub i_bias_delta: f64,
     pub vbus_mean: f64,
     pub vbus_sd: f64,
     pub n: usize,
+    pub warnings: Vec<String>,
 }
 
 impl From<&BiasResult> for BiasJson {
     fn from(b: &BiasResult) -> Self {
         Self {
             sigma_theta: b.sigma_theta,
+            sigma_raw: b.sigma_raw,
+            gain: b.gain,
+            rest: b.rest,
+            tel_n: b.tel_n,
             pos_mean: b.pos_mean,
             i_noise: b.i_noise,
             i_bias_delta: b.i_bias_delta,
             vbus_mean: b.vbus_mean,
             vbus_sd: b.vbus_sd,
             n: b.n,
+            warnings: b.warnings.clone(),
+        }
+    }
+}
+
+impl BiasJson {
+    pub fn result(&self) -> BiasResult {
+        BiasResult {
+            sigma_theta: self.sigma_theta,
+            sigma_raw: self.sigma_raw,
+            gain: self.gain,
+            rest: self.rest,
+            tel_n: self.tel_n,
+            pos_mean: self.pos_mean,
+            i_noise: self.i_noise,
+            i_bias_delta: self.i_bias_delta,
+            vbus_mean: self.vbus_mean,
+            vbus_sd: self.vbus_sd,
+            n: self.n,
+            warnings: self.warnings.clone(),
         }
     }
 }
@@ -509,13 +542,35 @@ pub struct LadderJson {
     pub rungs_used: usize,
 }
 
-#[derive(Serialize, Deserialize, Clone, Copy)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct InertiaJson {
+    /// The current decay's B, what the gains take.
     pub b_best: f64,
+    pub b_decay_spread: f64,
+    pub b_decay_steps: usize,
+    pub b_climb: Option<f64>,
+    /// Where its Ke and friction came from.
+    pub priors: String,
     pub b_direct: Option<f64>,
     pub b_exp: Option<f64>,
     pub j_ff: f64,
     pub tel_steps: usize,
+}
+
+impl InertiaJson {
+    pub fn new(r: &InertiaResult, priors: &str) -> Self {
+        Self {
+            b_best: r.b_best,
+            b_decay_spread: r.b_decay.spread,
+            b_decay_steps: r.b_decay.steps.len(),
+            b_climb: r.b_climb.map(|c| c.b),
+            priors: priors.into(),
+            b_direct: r.b_direct.as_ref().map(|d| d.b),
+            b_exp: r.b_exp.as_ref().map(|e| e.b),
+            j_ff: r.j_ff,
+            tel_steps: r.tel_steps,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy)]
@@ -639,6 +694,33 @@ impl PlantJson {
             l_source: w.l_from.as_str().into(),
             l_henries: w.l_h,
             sigma_source: sigma_from.into(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy)]
+pub struct StoredMotionJson {
+    pub ke_vpc: f64,
+    pub fc: f64,
+    pub fv: f64,
+}
+
+impl From<&StoredMotion> for StoredMotionJson {
+    fn from(m: &StoredMotion) -> Self {
+        Self {
+            ke_vpc: m.ke_vpc,
+            fc: m.fc,
+            fv: m.fv,
+        }
+    }
+}
+
+impl StoredMotionJson {
+    pub fn motion(&self) -> StoredMotion {
+        StoredMotion {
+            ke_vpc: self.ke_vpc,
+            fc: self.fc,
+            fv: self.fv,
         }
     }
 }

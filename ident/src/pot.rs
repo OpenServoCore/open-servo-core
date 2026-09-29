@@ -39,6 +39,19 @@ impl Pot {
         }
     }
 
+    /// The table's gain across the travel between the stops, kernel counts
+    /// per raw count: what a raw-count noise scales by, where one
+    /// interval's gain would read it through that interval's slope. 1 with
+    /// no table or no stops.
+    pub fn travel_gain(&self, stops: Option<(u16, u16)>) -> f64 {
+        match (&self.lut, stops) {
+            (Some(lut), Some((lo, hi))) if hi > lo => {
+                (lut.counts(hi) - lut.counts(lo)) / (hi - lo) as f64
+            }
+            _ => 1.0,
+        }
+    }
+
     /// `mask` plus the linearized field while a table is live, so a stream
     /// carries the kernel's own word instead of a host recomputation.
     pub fn tel_mask(&self, mask: u16) -> u16 {

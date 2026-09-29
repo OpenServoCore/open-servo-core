@@ -197,6 +197,7 @@ pub struct FakeServo {
     /// Wiring convention: false inverts duty's effect on motion, so the
     /// endstop experiment must infer the flipped drive_polarity.
     pub drive_polarity: bool,
+    /// Width of the uniform noise the pot's converter adds, raw counts.
     pub pos_noise: f64,
     pub fault_at_ms: Option<f64>,
     /// The Ke the servo carries from an earlier identification, the
@@ -352,9 +353,17 @@ impl FakeServo {
         ((self.lcg >> 11) as f64 / (1u64 << 53) as f64 - 0.5) * self.pos_noise
     }
 
-    /// The raw count the pot reads at a true position: the count whose
-    /// linearization lands nearest it, found by bisection over the
-    /// monotone table.
+    /// The raw count the pot reads at a true position, `noise` raw counts
+    /// of the converter's own on top: the count whose linearization lands
+    /// nearest it, found by bisection over the monotone table.
+    fn read_pot(&self, counts: f64, noise: f64) -> u16 {
+        let raw = match &self.pot {
+            None => counts,
+            Some(_) => self.raw_of(counts) as f64,
+        };
+        (raw + noise).round().clamp(0.0, 4095.0) as u16
+    }
+
     fn raw_of(&self, counts: f64) -> u16 {
         let Some(lut) = &self.pot else {
             return counts.round().clamp(0.0, 4095.0) as u16;
@@ -871,7 +880,7 @@ impl FakeServo {
                     0.0
                 }
             };
-            let raw = self.raw_of(self.pos + noise);
+            let raw = self.read_pot(self.pos, noise);
             sink.push(TelFrame {
                 tick: k as u64,
                 window_valid: driving,
@@ -931,7 +940,7 @@ impl FakeServo {
             _ => 0.0,
         };
         let noise = self.noise();
-        let pos = self.raw_of(self.pos + glitch + noise);
+        let pos = self.read_pot(self.pos + glitch, noise);
         let omega_bemf = match self.ke_stored {
             Some(ke) if driving => {
                 let v = duty as f64 / 32767.0 * self.vbus;
