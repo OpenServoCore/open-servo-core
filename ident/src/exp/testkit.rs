@@ -261,7 +261,8 @@ pub struct FakeServo {
     /// Time the applied duty spent pushing the shaft into the end it sits
     /// at, ms.
     pub pressed_ms: f64,
-    /// The ident aggregate's last window-valid current.
+    /// The ident aggregate's last window-valid current, which it repeats
+    /// at rest and, under the limiter, under the floor.
     i_valid: f64,
     pub torque: bool,
     pub duty: i16,
@@ -932,7 +933,7 @@ impl FakeServo {
             self.i_valid = i;
             (i, self.vbus * duty.signum() as f64)
         } else {
-            (0.0, 0.0)
+            (self.i_valid, 0.0)
         };
         let fault = matches!(self.fault_at_ms, Some(at) if self.t_ms >= at)
             || matches!(self.fault_after_bursts, Some(n) if self.bursts >= n);
@@ -956,7 +957,7 @@ impl FakeServo {
             fault_flags: if fault { 32 } else { 0 },
             fault_code: if fault { 6 } else { 0 },
             pos,
-            current: (512.0 + i).round() as u16,
+            current: (512.0 + if driving { i } else { 0.0 }).round() as u16,
             current_bias_counts: 512,
             vbus_counts: self.vbus as u16,
             i_mean_counts: i.round() as i16,
