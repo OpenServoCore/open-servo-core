@@ -15,7 +15,7 @@
 //! measured: the line through the last two measured speeds (one point
 //! scales in proportion to duty). The stop is always the run's own: the
 //! last braked stop scaled by speed squared (in proportion below it) - an
-//! envelope's coasts only stand in until the run has braked once. The climb
+//! envelope's stops only stand in until the run has braked once. The climb
 //! is the acceleration of the last governed climb. Positions are raw pot
 //! counts, speeds counts/ms, accelerations counts/ms per s, times ms.
 //! Nothing here reads a clock or a file: the envelope arrives as data.
@@ -109,7 +109,8 @@ pub struct Envelope {
     /// Steady speed driving up and down the pot.
     pub fwd: Line,
     pub rev: Line,
-    /// Every coast the pilot measured: (entry speed, coast distance).
+    /// Every stop the pilot measured, (speed, distance): braked stops, by
+    /// the same `a v + b v^2` law a coast follows.
     pub coast: Vec<(f64, f64)>,
 }
 
@@ -366,8 +367,9 @@ impl Runway {
     /// proportion under the speed it was braked from. A braked stop grows
     /// faster than speed but slower than its square (the winding's brake is
     /// viscous, friction a constant), so each scaling over-predicts on its
-    /// side. Before the run has braked, the envelope's coast: three to five
-    /// times the braked stop, so it only brakes early.
+    /// side. Before the run has braked, the envelope's stops from the speed.
+    /// Envelopes that carry coasts - three to five times a braked stop -
+    /// only brake early.
     pub fn stop(&self, v: f64) -> Option<f64> {
         let Some((v0, d0)) = self.stop else {
             return self.envelope.as_ref().map(|env| env.coast(v));

@@ -21,6 +21,7 @@ use osc_ident::units::{self, SenseParams};
 use osc_protocol::build;
 
 use super::csvio::SnapshotLog;
+use super::servo::{SAFE, Servo, Wire};
 
 pub(crate) static STOP: AtomicBool = AtomicBool::new(false);
 
@@ -93,27 +94,18 @@ pub(crate) fn with_guard<P: Pipe, T>(
     f: impl FnOnce(&mut Client<P>) -> Result<T>,
 ) -> Result<T> {
     let r = f(c);
-    for (reg, v) in [
-        (control::GOAL_DUTY, 0),
-        (control::GOAL_CURRENT, 0),
-        (control::GOAL_VELOCITY, 0),
-        (control::TORQUE_ENABLE, 0),
-        (control::STALL_PERMIT, 0),
-        (control::TEL_COUNT, 0),
-        (control::TEL_MASK, 0),
-    ] {
+    for (reg, v) in SAFE {
         let _ = write_reg(c, id, reg, v);
     }
     r
 }
 
-/// The stall permit lease on the wall clock ([`PermitLease`]): writes go
+/// The stall permit lease on the servo's clock ([`PermitLease`]): writes go
 /// out through it so it sees torque and permit, and `keep` rewrites a held
 /// permit when a refresh is due. With `hold` set, every torque enable is
 /// followed by the permit.
 pub(crate) struct Lease {
     state: PermitLease,
-    t0: Instant,
     hold: bool,
 }
 
@@ -121,39 +113,28 @@ impl Lease {
     pub(crate) fn new(hold: bool) -> Self {
         Self {
             state: PermitLease::default(),
-            t0: Instant::now(),
             hold,
         }
     }
 
-    fn now_ms(&self) -> f64 {
-        self.t0.elapsed().as_secs_f64() * 1000.0
-    }
-
-    pub(crate) fn write<P: Pipe>(
-        &mut self,
-        c: &mut Client<P>,
-        id: Id,
-        reg: Reg,
-        value: i32,
-    ) -> Result<()> {
-        write_reg(c, id, reg, value)?;
-        self.state.wrote(reg, value, self.now_ms());
+    pub(crate) fn write<S: Servo>(&mut self, s: &mut S, reg: Reg, value: i32) -> Result<()> {
+        s.write(reg, value)?;
+        self.state.wrote(reg, value, s.now_ms());
         Ok(())
     }
 
     /// Torque on, then the permit when this run holds one.
-    pub(crate) fn torque_on<P: Pipe>(&mut self, c: &mut Client<P>, id: Id) -> Result<()> {
-        self.write(c, id, control::TORQUE_ENABLE, 1)?;
+    pub(crate) fn torque_on<S: Servo>(&mut self, s: &mut S) -> Result<()> {
+        self.write(s, control::TORQUE_ENABLE, 1)?;
         if self.hold {
-            self.write(c, id, control::STALL_PERMIT, 1)?;
+            self.write(s, control::STALL_PERMIT, 1)?;
         }
         Ok(())
     }
 
-    pub(crate) fn keep<P: Pipe>(&mut self, c: &mut Client<P>, id: Id) -> Result<()> {
-        if self.state.due(self.now_ms()) {
-            self.write(c, id, control::STALL_PERMIT, 1)?;
+    pub(crate) fn keep<S: Servo>(&mut self, s: &mut S) -> Result<()> {
+        if self.state.due(s.now_ms()) {
+            self.write(s, control::STALL_PERMIT, 1)?;
         }
         Ok(())
     }
@@ -255,12 +236,12 @@ pub(crate) fn exchange_tel_burst<P: Pipe>(
 /// duty, mask and arm go out under HOLD and one broadcast COMMIT applies
 /// all three. The mask is its own one-byte write: the byte after it is a
 /// reserved alignment byte that refuses writes.
-struct WireBurstIo<'a> {
-    c: &'a mut Client<NusbPipe>,
+struct WireBurstIo<'a, P: Pipe> {
+    c: &'a mut Client<P>,
     id: Id,
 }
 
-impl BurstIo for WireBurstIo<'_> {
+impl<P: Pipe> BurstIo for WireBurstIo<'_, P> {
     type Error = anyhow::Error;
 
     fn arm(&mut self, duty_q15: i16, chans: u8) -> Result<()> {
@@ -299,8 +280,8 @@ impl BurstIo for WireBurstIo<'_> {
 /// One high-rate capture. The rail, the current-sense zero, the terminal
 /// divider bias and the position are read BEFORE the arm: the burst
 /// suspends the scan.
-pub(crate) fn capture_burst(
-    c: &mut Client<NusbPipe>,
+pub(crate) fn capture_burst<P: Pipe>(
+    c: &mut Client<P>,
     id: Id,
     duty_q15: i16,
     pre_q15: i16,
@@ -325,7 +306,7 @@ pub(crate) fn capture_burst(
 
 /// What the servo judged a refused arm by: the rail, the position against
 /// the soft limits, the permit, a fault.
-fn arm_seen(c: &mut Client<NusbPipe>, id: Id) -> Result<ArmSeen> {
+fn arm_seen<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<ArmSeen> {
     let tel = read_snapshot(c, id)?;
     let sense = SenseParams {
         shunt_r_mohm: 0,
@@ -348,9 +329,8 @@ fn arm_seen(c: &mut Client<NusbPipe>, id: Id) -> Result<ArmSeen> {
     })
 }
 
-pub(crate) struct Pump<'a> {
-    client: &'a mut Client<NusbPipe>,
-    id: Id,
+pub(crate) struct Pump<'a, S: Servo = Wire<&'a mut Client<NusbPipe>>> {
+    servo: S,
     log: Option<&'a mut SnapshotLog>,
     /// Mirror of the sticky TEL_MASK register, tracked off the experiment's
     /// own writes; the stream decoder keys on it.
@@ -368,9 +348,14 @@ impl<'a> Pump<'a> {
         id: Id,
         log: Option<&'a mut SnapshotLog>,
     ) -> Self {
+        Pump::on(Wire::new(client, id), log)
+    }
+}
+
+impl<'a, S: Servo> Pump<'a, S> {
+    pub(crate) fn on(servo: S, log: Option<&'a mut SnapshotLog>) -> Self {
         Self {
-            client,
-            id,
+            servo,
             log,
             mask: 0,
             tel: Vec::new(),
@@ -381,21 +366,21 @@ impl<'a> Pump<'a> {
     /// Run one experiment to completion.
     pub(crate) fn run(&mut self, exp: &mut dyn Experiment) -> Result<()> {
         let mut pending: Option<TelemetrySnapshot> = None;
-        let t0 = Instant::now();
+        let s = &mut self.servo;
         loop {
             if STOP.load(Ordering::SeqCst) {
                 bail!("interrupted");
             }
-            self.lease.keep(self.client, self.id)?;
+            self.lease.keep(s)?;
             match exp.step(pending.take().as_ref()) {
                 Cmd::Write { reg, value } => {
                     if reg == control::TEL_MASK {
                         self.mask = value as u16;
                     }
-                    self.lease.write(self.client, self.id, reg, value)?;
+                    self.lease.write(s, reg, value)?;
                 }
                 Cmd::Read => {
-                    let snap = read_stamped(self.client, self.id, t0)?;
+                    let snap = s.snapshot()?;
                     if let Some(log) = self.log.as_mut() {
                         log.push(snap.host_ms, &snap)?;
                     }
@@ -409,15 +394,14 @@ impl<'a> Pump<'a> {
                             bail!("interrupted");
                         }
                         let slice = left.min(5);
-                        std::thread::sleep(Duration::from_millis(slice as u64));
+                        s.sleep(slice);
                         left -= slice;
-                        self.lease.keep(self.client, self.id)?;
+                        self.lease.keep(s)?;
                     }
                 }
                 Cmd::Stream { samples, goal } => {
                     self.lease.check_stream(samples)?;
-                    let (frames, st) =
-                        exchange_tel_burst(self.client, self.id, samples, goal, self.mask)?;
+                    let (frames, st) = s.stream(samples, goal, self.mask)?;
                     eprintln!(
                         "tel: {} frames, {} samples, {} seq holes, {} garble bytes",
                         st.frames, st.samples, st.holes, st.garble
@@ -431,8 +415,8 @@ impl<'a> Pump<'a> {
                     chans,
                     seated,
                 } => {
-                    let cap =
-                        capture_burst(self.client, self.id, duty_q15, pre_q15, chans, seated)?;
+                    let id = s.id();
+                    let cap = capture_burst(s.client(), id, duty_q15, pre_q15, chans, seated)?;
                     eprintln!(
                         "burst: {} samples, step at {}, duty {} (pre {}), chans {} frame_len {}, \
                          pos {}{}",

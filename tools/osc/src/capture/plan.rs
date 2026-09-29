@@ -83,33 +83,33 @@ fn block_steps(b: &Blocks, name: &str, env: &Envelope) -> Result<Vec<Step>> {
             .collect::<Result<_>>()?,
         "coast" => {
             let (c, e) = (&b.coast, &env.coast);
-            if (c.drive_ms, c.coast_ms) != (e.drive_ms, e.coast_ms) {
+            if c.coast_ms != e.coast_ms {
                 bail!(
-                    "coast block runs {} ms drive, {} ms coast; the envelope's ladder ran {} ms, \
-                     {} ms: rerun osc capture pilot",
-                    c.drive_ms,
+                    "coast block coasts {} ms; the envelope's ladder coasted {} ms: rerun osc \
+                     capture pilot",
                     c.coast_ms,
-                    e.drive_ms,
                     e.coast_ms
                 );
             }
-            let duties = coast_duties(&c.duties, e.top_pct);
-            if let Some(d) = duties
-                .iter()
-                .find(|&&d| !e.ladder.iter().any(|r| r.pct == d))
-            {
-                bail!("coast duty {d}% never ran on the pilot's ladder: rerun osc capture pilot");
-            }
-            duties
+            coast_duties(&c.duties, e.top_pct)
                 .into_iter()
-                .flat_map(|d| {
-                    [
-                        Step::Drive(d, Some(c.drive_ms)),
+                .map(|d| {
+                    let r = e.ladder.iter().find(|r| r.pct == d).ok_or_else(|| {
+                        anyhow!(
+                            "coast duty {d}% never ran on the pilot's ladder: rerun osc capture \
+                             pilot"
+                        )
+                    })?;
+                    Ok([
+                        Step::Drive(d, Some(r.drive_ms)),
                         Step::Coast(c.coast_ms),
-                        Step::Drive(d, Some(c.drive_ms)),
+                        Step::Drive(d, Some(r.drive_ms)),
                         Step::Brake(c.coast_ms),
-                    ]
+                    ])
                 })
+                .collect::<Result<Vec<_>>>()?
+                .into_iter()
+                .flatten()
                 .collect()
         }
         "step" => b.step.steps.clone(),
@@ -136,13 +136,11 @@ fn coast_duties(duties: &[u8], top: u8) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capture::{envelope, pilot};
+    use crate::capture::envelope;
 
     /// The pinned mg90 envelope with windows for every grid duty.
     fn mg90() -> Envelope {
-        let mut env = envelope::mg90();
-        env.windows_ms = pilot::windows(env.v_ss.used(), env.limits.runway);
-        env
+        envelope::mg90_every_window()
     }
 
     fn default() -> Procedure {
@@ -189,7 +187,7 @@ mod tests {
         }
         let slow = &expand(&p, &env, 1).unwrap()[0];
         let counts: Vec<usize> = slow.blocks.iter().map(|b| b.count).collect();
-        assert_eq!(counts, [20, 20, 8, 8, 18]);
+        assert_eq!(counts, [20, 12, 10, 8, 18]);
     }
 
     #[test]
@@ -199,27 +197,35 @@ mod tests {
         assert_eq!(coast_duties(&d, 80), d);
         assert_eq!(coast_duties(&d, 100), [20, 30, 40, 60, 80, 100]);
 
+        // each duty drives for its own drive_ms: to its goal and 20 ms on
         let p = default();
         let mut env = mg90();
-        let coast_top = |env: &Envelope| {
+        let coast = |env: &Envelope| {
             let plan = &expand(&p, env, 1).unwrap()[0];
             let b = &plan.blocks[1];
-            plan.schedule[b.first + b.count - 4]
+            plan.schedule[b.first..b.first + b.count].to_vec()
         };
-        assert_eq!(coast_top(&env), Step::Drive(80, Some(80)));
-        env.coast.top_pct = 60;
-        assert_eq!(coast_top(&env), Step::Drive(60, Some(80)));
+        assert_eq!(
+            coast(&env)
+                .iter()
+                .filter(|s| matches!(s, Step::Drive(..)))
+                .map(Step::to_string)
+                .collect::<Vec<_>>(),
+            ["20@35", "20@35", "30@61", "30@61", "40@92", "40@92"]
+        );
+        env.coast.top_pct = 30;
+        assert_eq!(coast(&env).len(), 8);
 
         // a duty or a chain the pilot's ladder never ran
         let err = |env: &Envelope| format!("{:#}", expand(&p, env, 1).unwrap_err());
-        env.coast.top_pct = 75;
-        assert!(err(&env).contains("coast duty 75% never ran"));
-        env.coast.top_pct = 80;
-        env.coast.ladder.retain(|r| r.pct != 40);
-        assert!(err(&env).contains("coast duty 40% never ran"));
+        env.coast.top_pct = 60;
+        assert!(err(&env).contains("coast duty 60% never ran"));
+        env.coast.top_pct = 40;
+        env.coast.ladder.retain(|r| r.pct != 30);
+        assert!(err(&env).contains("coast duty 30% never ran"));
         let mut env = mg90();
         env.coast.coast_ms = 300;
-        assert!(err(&env).contains("envelope's ladder ran 80 ms, 300 ms"));
+        assert!(err(&env).contains("coast block coasts 400 ms; the envelope's ladder coasted 300"));
     }
 
     #[test]

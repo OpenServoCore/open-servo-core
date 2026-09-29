@@ -306,8 +306,8 @@ pub(super) fn bench() -> Front {
             stall_yield: 168,
             tau_trip: 280,
             soft: (432, 3626),
-            phys: (209, 3849),
-            raw: (209, 3849),
+            phys: (232, 3849),
+            raw: (232, 3849),
             r_q12: 7270,
             vbus: 3204,
             window_floor_q15: 4356,
@@ -325,79 +325,14 @@ pub(super) fn bench() -> Front {
         fault_code: 0,
         rail_mv: 7900,
         pack_mv: Some(8150),
-        tick_hz: 20_100,
-    }
-}
-
-#[cfg(test)]
-pub(super) mod fake {
-    use osc_client::BaudRate;
-    use osc_client::Id;
-    use osc_client::blocking::Client;
-    use osc_client::fake::{FakePipe, TelSample};
-    use osc_ident::regs::{Reg, config, control};
-
-    use crate::rig::pump::write_reg;
-
-    /// The in-process servo, calibrated and identified like the bench one:
-    /// limit 280, stall yield 168 released under 84, at rest at mid travel
-    /// with its rail ADC reading `vbus_raw` (3922 is 7.9 V).
-    pub(crate) fn servo(vbus_raw: u16) -> (Client<FakePipe>, Id) {
-        let mut pipe = FakePipe::new(BaudRate::B1000000, &[1]);
-        pipe.seed_calibrated(0);
-        let (mut c, id) = (Client::connect(pipe).unwrap(), Id::new(1));
-        rail(&mut c, vbus_raw);
-        for (reg, v) in [
-            (config::CURRENT_LIMIT_COUNTS, 280),
-            (config::STALL_RESPONSE, 1),
-            (config::STALL_YIELD_COUNTS, 168),
-            (config::STALL_RELEASE_COUNTS, 84),
-        ] {
-            set(&mut c, id, reg, v);
-        }
-        // the sim runs no kernel to publish it
-        c.pipe_mut().sim_mut().servo_table_mut(0, |t| {
-            t.telemetry.limits.window_floor_q15 = 4356;
-        });
-        (c, id)
-    }
-
-    /// Every later read of the rail ADC sees `vbus_raw`.
-    pub(crate) fn rail(c: &mut Client<FakePipe>, vbus_raw: u16) {
-        c.pipe_mut().set_track(
-            0,
-            vec![TelSample {
-                pos: 2029,
-                current: 0,
-                current_trough: 0,
-                duty_q15: 0,
-                vdiff: 0,
-                vbus: 3204,
-                current_raw: 0,
-                vmotor_a: 0,
-                vmotor_b: 0,
-                vbus_raw,
-                ntc_raw: 0,
-                pos_lin_q4: 0,
-                window_valid: false,
-                fault: false,
-            }],
-        );
-    }
-
-    pub(crate) fn torque(c: &mut Client<FakePipe>, id: Id) -> u8 {
-        c.read(id, control::TORQUE_ENABLE.addr, 1).unwrap()[0]
-    }
-
-    pub(crate) fn set(c: &mut Client<FakePipe>, id: Id, reg: Reg, v: i32) {
-        write_reg(c, id, reg, v).unwrap();
+        tick_hz: 20_000,
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::fake::{servo, set, torque};
     use super::*;
+    use crate::rig::servo::bench::{set, table as servo, torque};
     use osc_client::fake::FakePipe;
     use osc_ident::regs::config;
 
@@ -526,8 +461,8 @@ mod tests {
                  280 counts (251 mA)"
             )
         );
-        // 5% of the envelope's 7900 mV is 395
-        for (rail, ok) in [(7505, true), (8295, true), (7504, false), (8296, false)] {
+        // 5% of the envelope's 7899 mV is 395
+        for (rail, ok) in [(7505, true), (8293, true), (7504, false), (8294, false)] {
             let r = Front {
                 rail_mv: rail,
                 ..bench()
@@ -543,7 +478,7 @@ mod tests {
             .check_envelope(&env, path)
             .unwrap_err()
             .to_string(),
-            again("was measured on a 7900 mV rail and this one reads 7000 mV, more than 5% away")
+            again("was measured on a 7899 mV rail and this one reads 7000 mV, more than 5% away")
         );
         let bare = Envelope {
             rail_mv: None,
