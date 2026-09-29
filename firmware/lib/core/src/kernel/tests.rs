@@ -455,6 +455,78 @@ fn permit_written_with_torque_off_never_grants() {
     }
 }
 
+fn limit_flags(sh: &Shared) -> u8 {
+    sh.table.with(|t| t.telemetry.limits.limit_flags)
+}
+
+#[test]
+fn limit_flags_name_the_governor() {
+    use limits::flag;
+
+    // ceiling: OpenLoop over the limit at the window floor (R unset keeps
+    // the base there, so every window reads the overage)
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.mode = Mode::OpenLoop;
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.goal_duty = 8000;
+        t.config.limits.current_limit_counts = 280;
+        t.calib.motor.r_q12 = 0;
+    });
+    let mut k = kernel();
+    for _ in 0..2 * DECIM_MED {
+        k.on_tick(frame(2000, BIAS + 290), &sh);
+    }
+    for _ in 0..4 {
+        to_medium_boundary(&mut k, &sh, frame(2000, BIAS + 290));
+        assert_eq!(limit_flags(&sh), flag::CEILING);
+        k.on_tick(frame(2000, BIAS + 290), &sh);
+    }
+    assert!(k.duty_q15 < 8000, "governed");
+
+    // yield: Current mode pinned at the limit on a still shaft folds, then
+    // a goal under the fold leaves only the fold standing
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.mode = Mode::Current;
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.goal_current = 1200;
+        t.config.limits.stall_release_counts = 0;
+    });
+    let mut k = kernel();
+    for _ in 0..2_000 {
+        k.on_tick(frame(2000, BIAS), &sh);
+    }
+    assert_eq!(limit_flags(&sh), flag::CEILING | flag::YIELD);
+    sh.table
+        .with_mut(|t| t.control.lifecycle.goal_current = 100);
+    for _ in 0..2 * DECIM_MED {
+        k.on_tick(frame(2000, BIAS), &sh);
+    }
+    assert_eq!(limit_flags(&sh), flag::YIELD);
+    assert_eq!(k.faults.mask(), 0);
+
+    // endstop: at rest past the top soft wall
+    let sh = Shared::new();
+    let mut k = permit_rig(&sh);
+    assert_eq!(limit_flags(&sh), flag::ENDSTOP);
+
+    // permit: the lease drops the endstop, so it stands alone
+    write_permit(&sh);
+    for _ in 0..DECIM_MED {
+        k.on_tick(frame(PAST_WALL, BIAS), &sh);
+    }
+    assert_eq!(limit_flags(&sh), flag::PERMIT);
+    sh.table
+        .with_mut(|t| t.control.lifecycle.torque_enable = false);
+    for _ in 0..DECIM_MED {
+        k.on_tick(frame(PAST_WALL, BIAS), &sh);
+    }
+    assert_eq!(limit_flags(&sh), flag::ENDSTOP, "torque off ends the lease");
+}
+
 #[test]
 fn undervolt_follows_the_rail_tap_through_bridge_off() {
     let sh = Shared::new();

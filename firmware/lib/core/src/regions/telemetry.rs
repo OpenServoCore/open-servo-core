@@ -155,6 +155,17 @@ pub struct TelemetryIdent {
     pub agg_seq: u16,
 }
 
+/// Which limit governs the command, published at the medium boundary: one
+/// bit per reason (`kernel::limits::flag`), 0 = nothing holds it back.
+#[repr(C)]
+#[derive(Copy, Clone, Block)]
+pub struct TelemetryLimits {
+    #[ct_field(access = ro)]
+    pub limit_flags: u8,
+    #[ct_field(skip)]
+    pub _rsvd_align: u8,
+}
+
 #[repr(C)]
 #[derive(Section)]
 #[ct_section(base = crate::regions::TELEMETRY_BASE_ADDR, size = crate::regions::TELEMETRY_REGION_SIZE)]
@@ -164,6 +175,7 @@ pub struct TelemetryRegs {
     pub estimates: TelemetryEstimates,
     pub sensors: TelemetrySensors,
     pub ident: TelemetryIdent,
+    pub limits: TelemetryLimits,
     #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 26],
+    pub _rsvd_tail: [u8; 24],
 }

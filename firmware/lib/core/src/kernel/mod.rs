@@ -74,7 +74,7 @@ pub struct KernelTiming {
 /// this ISR mid-read, so the kernel only ever reads those - volatile via
 /// `region_ptr` (`Shared::pos_lut_q4` for the array), never forming `&T`,
 /// cross-field tearing accepted (each field is independently sane). The
-/// kernel is the sole writer of TELEMETRY sensors/estimates/mode
+/// kernel is the sole writer of TELEMETRY sensors/estimates/mode/limits
 /// (`data_flags` excepted: boot and dispatch write it, the kernel reads) and
 /// the `fault_flags` byte.
 pub struct Kernel<I: ControlIo, T: TelStream = ()> {
@@ -664,6 +664,13 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                 }
             }
 
+            // one closed side makes the band asymmetric; a zero limit closes
+            // both and is no endstop
+            let limit_flags = (pinned as u8 * limits::flag::CEILING)
+                | (self.limits.stalled() as u8 * limits::flag::YIELD)
+                | ((band.lo + band.hi != 0) as u8 * limits::flag::ENDSTOP)
+                | (lcfg.stall_permit as u8 * limits::flag::PERMIT);
+
             // SAFETY: sole-telemetry-writer contract (type doc); volatile
             // per-field stores, medium-boundary publish.
             unsafe {
@@ -684,6 +691,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                 (&raw mut (*m).fault_code).write_volatile(self.faults.code());
                 (&raw mut (*m).omega_hat_src).write_volatile(self.omega_sw.source() as u8);
                 (&raw mut (*p).telemetry.common.fault_flags).write_volatile(self.faults.mask());
+                (&raw mut (*p).telemetry.limits.limit_flags).write_volatile(limit_flags);
             }
         }
 

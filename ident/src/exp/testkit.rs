@@ -534,6 +534,7 @@ impl FakeServo {
             duty_mean_q15: duty,
             duty_applied_q15: duty,
             i_lim_counts: self.current_limit.unwrap_or(0),
+            limit_flags: self.limit_flags(),
             agg_seq: (self.t_ms / 0.8) as u64 as u16,
             ..Default::default()
         }

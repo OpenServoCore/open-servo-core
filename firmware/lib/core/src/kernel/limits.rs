@@ -8,6 +8,19 @@
 use crate::math::recip_div;
 use crate::regions::config::StallResponse;
 
+/// `limit_flags` bits: which limit holds the command back.
+pub mod flag {
+    /// The command sat at the current ceiling: OpenLoop's duty ceiling held
+    /// under the goal, or a closed loop's current reference at the band.
+    pub const CEILING: u8 = 1 << 0;
+    /// The stall verdict folded the limit to `stall_yield_counts`.
+    pub const YIELD: u8 = 1 << 1;
+    /// A soft limit closed one side of the band.
+    pub const ENDSTOP: u8 = 1 << 2;
+    /// The stall permit lease is live.
+    pub const PERMIT: u8 = 1 << 3;
+}
+
 /// CONFIG limits + thermal + pos-limits fields the block consumes, loaded
 /// fresh by the kernel each step (`CurrentGains` convention).
 #[derive(Copy, Clone)]
