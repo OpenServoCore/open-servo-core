@@ -161,6 +161,10 @@ pub mod telemetry {
     pub const VDIFF_MEAN: Reg = reg(0x0260, 2);
     pub const DUTY_MEAN_Q15: Reg = reg(0x0262, 2);
     pub const AGG_SEQ: Reg = reg(0x0264, 2);
+    /// Which limit holds the command back: bit 0 the current ceiling, bit 1
+    /// the stall yield fold, bit 2 an endstop, bit 3 the stall permit lease
+    /// is live (core `kernel::limits::flag`).
+    pub const LIMIT_FLAGS: Reg = reg(0x0266, 1);
 }
 
 /// Every const above with its descriptor field name - the cross-check
@@ -261,6 +265,7 @@ pub const ALL: &[(&str, Reg)] = &[
     ("vdiff_mean", telemetry::VDIFF_MEAN),
     ("duty_mean_q15", telemetry::DUTY_MEAN_Q15),
     ("agg_seq", telemetry::AGG_SEQ),
+    ("limit_flags", telemetry::LIMIT_FLAGS),
     ("page_echo", burst::PAGE_ECHO),
     ("state", burst::STATE),
     ("samples_len", burst::SAMPLES_LEN),

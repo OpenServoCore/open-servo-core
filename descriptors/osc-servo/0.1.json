@@ -1071,6 +1071,13 @@
       "kind": "uint"
     },
     {
+      "name": "limit_flags",
+      "addr": 614,
+      "width": 1,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
       "name": "words",
       "addr": 640,
       "width": 64,
