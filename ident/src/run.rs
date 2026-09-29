@@ -572,7 +572,7 @@ mod tests {
     use crate::exp::ladder::{Ladder, LadderResult};
     use crate::exp::resistance::Resistance;
     use crate::exp::sweep::{Captured, Sweep};
-    use crate::exp::testkit::{FakeServo, bench_mg90, pump};
+    use crate::exp::testkit::{Bus, FakeServo, bench_mg90, pump_on};
     use crate::exp::{Experiment, Guarded, Permitted, RigParams};
     use crate::fits::InertiaPriors;
     use crate::runway::Runway;
@@ -881,6 +881,7 @@ mod tests {
     struct Rig<'a> {
         servo: &'a mut FakeServo,
         vbus: u16,
+        bus: Bus,
         log: Vec<String>,
         /// Log length when each stage ended.
         marks: Vec<(&'static str, usize)>,
@@ -905,6 +906,7 @@ mod tests {
             Rig {
                 servo,
                 vbus,
+                bus: Bus::BENCH,
                 log: Vec::new(),
                 marks: Vec::new(),
                 caps: Vec::new(),
@@ -922,7 +924,8 @@ mod tests {
 
         fn go<E: Experiment>(&mut self, exp: E, params: RigParams) -> (E, Ended) {
             let mut g = Guarded::new(exp, params);
-            self.log.extend(pump(&mut g, self.servo, 4_000_000));
+            self.log
+                .extend(pump_on(&mut g, self.servo, 4_000_000, self.bus));
             let how = g.abort().map_or(Ended::Done, Ended::Aborted);
             (g.into_inner(), how)
         }
@@ -999,7 +1002,7 @@ mod tests {
                 Stage::Ladder { seek, rungs } => {
                     let runway = Runway::new(lim.guard().unwrap());
                     let ladder = Ladder::new(ladder_cfg(*seek, rungs), &params, runway);
-                    let (exp, how) = self.go(ladder, params);
+                    let (exp, how) = self.go(ladder, params.abort_at_soft(lim.soft));
                     self.ladder = exp.fit(R);
                     self.runway = Some(exp.runway().clone());
                     match exp.declined() {
@@ -1133,6 +1136,39 @@ mod tests {
             assert!(rig.inertia_fit, "{vbus}: inertia did not fit");
             assert!(!servo.torque);
             assert!((servo.pos - 2029.0).abs() <= 300.0, "ends at {}", servo.pos);
+        }
+    }
+
+    /// The whole default run at the bench bus's cadence, its slow reads
+    /// seeded eight ways, on a 7.9 V pack and a fuller one: no drive leaves
+    /// the travel or trips the abort, the ladder fits every rung to 55%
+    /// both ways, and the run ends centred with torque off.
+    #[test]
+    fn ladder_runs_at_bench_bus_timing() {
+        let to_55 = &LadderCfg::default().rungs_q15[..5];
+        for vbus in [RAIL_2S, 3300] {
+            for seed in 1..=8 {
+                let mut servo = bench_servo(vbus);
+                servo.pos = 2600.0;
+                let mut run = run(vbus);
+                let mut rig = Rig::new(&mut servo, vbus);
+                rig.bus = Bus::BENCH.with_slow_reads(seed);
+                rig.run(&mut run);
+                assert_eq!(run.aborted(), None, "{vbus} seed {seed}");
+                assert_eq!(run.over(), None, "{vbus} seed {seed}");
+                let ladder = rig.ladder.as_ref().expect("the ladder fits");
+                for d in to_55 {
+                    for d in [*d, -d] {
+                        assert!(
+                            ladder.rungs.iter().any(|r| r.duty_q15 == d && r.used),
+                            "{vbus} seed {seed}: {d} not fitted: {:?}",
+                            ladder.warnings
+                        );
+                    }
+                }
+                assert!(!servo.torque && !servo.permit_live());
+                assert!((servo.pos - 2029.0).abs() <= 300.0, "ends at {}", servo.pos);
+            }
         }
     }
 

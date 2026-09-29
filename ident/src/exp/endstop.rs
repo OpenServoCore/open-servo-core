@@ -19,8 +19,8 @@
 //! of the travel. Clear of the stops ([`seek::clear_of_stops`]) the jam
 //! check's rule applies there: the duty rises by [`NUDGE_STEP_Q15`] per
 //! still window up to the cap, and the approach resumes at the raised duty.
-//! Anywhere else, at the cap, or held by the stall fold, the shaft is
-//! blocked and the run ends.
+//! Anywhere else, at the cap, or held by the firmware ([`limit_holds`]),
+//! the shaft is blocked and the run ends.
 //!
 //! Run it with the pos guard off and the stall permit held
 //! ([`super::Permitted`]): a stop can sit past the soft limits. The two
@@ -29,7 +29,7 @@
 
 use super::centre::NUDGE_STEP_Q15;
 use super::seek::{self, SEEK_STEP_Q15, SEEK_TRAVEL_MIN, STOP_TOL, Watch};
-use super::{AbortReason, Cmd, Experiment, LIMIT_YIELD_FOLDED, RigParams};
+use super::{AbortReason, Cmd, Experiment, LIMIT_YIELD_FOLDED, RigParams, limit_holds};
 use crate::frame::TelemetrySnapshot;
 use crate::regs::control;
 
@@ -254,8 +254,10 @@ impl Endstop {
             return self.drive(dir as i32 * self.cfg.seat_q15 as i32);
         }
         let next = self.approach.saturating_add(NUDGE_STEP_Q15);
-        let folded = o.limit_flags & LIMIT_YIELD_FOLDED != 0;
-        if !folded && seek::clear_of_stops(pos, self.stops) && next <= self.cfg.cap_q15 {
+        if !limit_holds(o, true)
+            && seek::clear_of_stops(pos, self.stops)
+            && next <= self.cfg.cap_q15
+        {
             self.approach = next;
             self.enter(Leg::Approach { dir, from: pos });
             return self.drive(dir as i32 * next as i32);

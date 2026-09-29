@@ -848,7 +848,8 @@ fn run_ladder(
 ) -> Result<(Result<LadderResult, String>, Runway)> {
     let params = rig(cli)?;
     let mut log = csvio::SnapshotLog::create(out, "ladder_snapshots.csv")?;
-    let mut exp = Guarded::new(Ladder::new(cfg, &params, runway), params);
+    let aborts = params.abort_at_soft(drive(cli)?.lim.soft);
+    let mut exp = Guarded::new(Ladder::new(cfg, &params, runway), aborts);
     with_guard(c, id, |c| Pump::new(c, id, Some(&mut log)).run(&mut exp))?;
     check_abort("ladder", exp.abort())?;
     let exp = exp.into_inner();

@@ -10,13 +10,14 @@
 //! climb   = v^2 / 2a            settle + steady = v x the windows' time
 //! ```
 //!
-//! Speed and stop come from a pilot envelope when it describes this servo on
-//! this supply ([`Envelope::check`]); otherwise the run sizes itself from
-//! what it measured: the line through the last two measured speeds (one
-//! point scales in proportion to duty), the last braked stop scaled by speed
-//! squared (in proportion below it), and the acceleration of the last
-//! governed climb. Positions are
-//! raw pot counts, speeds counts/ms, accelerations counts/ms per s, times ms.
+//! Speed comes from a pilot envelope when it describes this servo on this
+//! supply ([`Envelope::check`]); otherwise the run sizes itself from what it
+//! measured: the line through the last two measured speeds (one point
+//! scales in proportion to duty). The stop is always the run's own: the
+//! last braked stop scaled by speed squared (in proportion below it) - an
+//! envelope's coasts only stand in until the run has braked once. The climb
+//! is the acceleration of the last governed climb. Positions are raw pot
+//! counts, speeds counts/ms, accelerations counts/ms per s, times ms.
 //! Nothing here reads a clock or a file: the envelope arrives as data.
 
 use core::fmt;
@@ -220,7 +221,8 @@ pub struct Need {
     pub v: f64,
     pub climb: f64,
     pub climb_ms: f64,
-    /// Settle and steady windows at speed.
+    /// Settle and steady windows at speed, and any stretch of that run
+    /// whose windows the fit masks.
     pub run: f64,
     pub stop: f64,
 }
@@ -302,6 +304,10 @@ impl Runway {
         self.accel
     }
 
+    pub fn guard(&self) -> (u16, u16) {
+        self.guard
+    }
+
     pub fn room(&self) -> f64 {
         self.guard
             .1
@@ -349,16 +355,16 @@ impl Runway {
         Some(line.max(floor))
     }
 
-    /// The stop from `v`: the envelope's coast, else the last braked stop
-    /// scaled by speed squared - in proportion under the speed it was
-    /// braked from. A braked stop grows faster than speed but slower than
-    /// its square (the winding's brake is viscous, friction a constant), so
-    /// each scaling over-predicts on its side.
+    /// The stop from `v`: the last braked stop scaled by speed squared - in
+    /// proportion under the speed it was braked from. A braked stop grows
+    /// faster than speed but slower than its square (the winding's brake is
+    /// viscous, friction a constant), so each scaling over-predicts on its
+    /// side. Before the run has braked, the envelope's coast: three to five
+    /// times the braked stop, so it only brakes early.
     pub fn stop(&self, v: f64) -> Option<f64> {
-        if let Some(env) = &self.envelope {
-            return Some(env.coast(v));
-        }
-        let (v0, d0) = self.stop?;
+        let Some((v0, d0)) = self.stop else {
+            return self.envelope.as_ref().map(|env| env.coast(v));
+        };
         let k = if v0 > 0.0 { v / v0 } else { 1.0 };
         Some(d0 * k * k.max(1.0))
     }
