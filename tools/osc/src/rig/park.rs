@@ -1,7 +1,8 @@
-//! Park: drive the horn back to a centre count open-loop, then torque off,
-//! so the next run starts from mid travel instead of a stop. It drives at
-//! the caller's seek duty and never raises it: a shaft that comes to rest on
-//! the way is blocked, and the park gives up, torque off.
+//! Park: drive the horn back to a centre count open-loop, brake it to rest,
+//! then torque off, so the next run starts from a still shaft at mid travel
+//! instead of a stop. It drives at the caller's seek duty and never raises
+//! it: a shaft that comes to rest on the way is blocked, and the park gives
+//! up, torque off.
 
 use std::sync::atomic::Ordering;
 
@@ -11,8 +12,9 @@ use osc_ident::exp::seek::{self, STALL_EPS, STALL_POLLS, Watch};
 use osc_ident::regs::control;
 
 use super::Aborted;
-use super::pump::STOP;
+use super::pump::{Lease, STOP};
 use super::servo::Servo;
+use crate::sweep::brake_to_rest;
 
 /// Counts either side of the centre that count as parked; the bench
 /// centring script's band.
@@ -73,7 +75,9 @@ pub(crate) fn park<S: Servo>(s: &mut S, center: u16, duty_q15: i16) -> Result<()
                 bail!("interrupted");
             }
             match poll(&mut watch, s.snapshot()?.pos, center, duty) {
-                Ok(true) => break,
+                // braked, not left to coast: the jam check that may follow
+                // judges a shaft that moves as one its duty moved
+                Ok(true) => return brake_to_rest(s, &mut Lease::new(false), duty.signum() as i8),
                 Ok(false) => {}
                 Err(reason) => {
                     return Err(Aborted {

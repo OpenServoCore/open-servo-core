@@ -11,13 +11,11 @@ use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::ops::RangeInclusive;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Result, anyhow, bail};
-use osc_client::blocking::Client;
-use osc_client::nusb::NusbPipe;
 use osc_client::pipe::PipeError;
 use osc_client::{Id, LinkError};
 
@@ -30,8 +28,8 @@ use super::verdict::{Verdict, verdict};
 use super::{RULE, RUNG_TRIES, SETTLE_MS, Supply, WINDOW_MS};
 use crate::rig::battery::{self, read_pack_mv};
 use crate::rig::plant::{self, Snapshot};
-use crate::rig::pump::{self, STOP, read_snapshot};
-use crate::rig::servo::{Wire, guard};
+use crate::rig::pump::{self, STOP};
+use crate::rig::servo::{Servo, Wire, guard};
 use crate::rig::{blocked, centre, park};
 use crate::sweep::{self, Cfg, Dirs};
 
@@ -140,46 +138,34 @@ pub(crate) fn run(a: &Args, baud: String, id: u8) -> Result<()> {
     ));
 
     pump::install_ctrlc();
-    let mut c = crate::rig::connect(&baud)?;
-    let env_path = dir.join("envelope.toml");
-    let front = front::read(&mut c, Id::new(id), a.supply)?;
-    front.check_envelope(&env, &env_path)?;
-    let decl = Decl {
-        servo: a.servo.clone(),
-        supply: a.supply,
-        rule: RULE,
-        current_limit_counts: Some(front.lim.i_lim),
-        captured: civil_date(now()),
-        notes: None,
-    };
-    if declare(&store, &decl)? {
-        log.line(format_args!("wrote {}", dir.join("dataset.toml").display()));
-    }
-    let mut s = Session {
-        c: Some(c),
-        baud,
-        id: Id::new(id),
+    let id = Id::new(id);
+    let s = Wire::new(crate::rig::connect(&baud)?, id);
+    let mut connect = || crate::rig::connect(&baud).map(|c| Wire::new(c, id));
+    let ctx = Ctx {
+        servo: &a.servo,
         p: &p,
         env: &env,
+        env_path: dir.join("envelope.toml"),
         store: &store,
         supply: a.supply,
-        log: &mut log,
         dataset: dataset_name,
-        plant: None,
-        env_path,
-        front,
-        proved: None,
     };
-    let r = s.campaign(warmup.as_ref(), &jobs, a.redo);
-    s.recheck_plant();
-    s.finish(r.as_ref().err());
+    let r = session(
+        s,
+        &mut connect,
+        &ctx,
+        &mut log,
+        warmup.as_ref(),
+        &jobs,
+        a.redo,
+    )?;
     match r {
         Ok(()) => {
-            s.log.line("session DONE");
+            log.line("session DONE");
             Ok(())
         }
         Err(stop) => {
-            s.log.line(format_args!("session STOPPED: {stop}"));
+            log.line(format_args!("session STOPPED: {stop}"));
             std::process::exit(stop.code())
         }
     }
@@ -414,8 +400,9 @@ fn cfg(p: &Procedure, env: &Envelope, plan: &Plan, proved: &Proved) -> Cfg {
     }
 }
 
-/// Sleep in slices that honour ctrl-c.
-fn pause(d: Duration) -> Result<(), Stop> {
+/// Sleep on the wall clock in slices that honour ctrl-c, with no servo to
+/// wait on.
+fn wait(d: Duration) -> Result<(), Stop> {
     let end = Instant::now() + d;
     loop {
         if stopped() {
@@ -492,21 +479,29 @@ impl Log {
     }
 }
 
-struct Session<'a> {
-    /// None once a lost link failed to come back.
-    c: Option<Client<NusbPipe>>,
-    baud: String,
-    id: Id,
+/// What a session reads and writes besides the servo.
+struct Ctx<'a> {
+    /// The servo's key, as dataset.toml names it.
+    servo: &'a str,
     p: &'a Procedure,
     env: &'a Envelope,
+    env_path: PathBuf,
     store: &'a Store,
     supply: Supply,
-    log: &'a mut Log,
     /// `<servo>__<supply>`, what the dataset's table image is named for.
     dataset: String,
+}
+
+struct Session<'a, S: Servo> {
+    /// None once a lost link failed to come back.
+    c: Option<S>,
+    /// Opens the link again after it was lost.
+    connect: &'a mut dyn FnMut() -> Result<S>,
+    id: Id,
+    ctx: &'a Ctx<'a>,
+    log: &'a mut Log,
     /// The plant as read at the start, for the end-of-run recheck.
     plant: Option<Snapshot>,
-    env_path: PathBuf,
     /// The servo as the front last read it.
     front: Front,
     /// What the last jam check proved; None until one did, and while the
@@ -514,8 +509,53 @@ struct Session<'a> {
     proved: Option<Proved>,
 }
 
-impl Session<'_> {
-    fn client(&mut self) -> Result<&mut Client<NusbPipe>, Stop> {
+/// Read the servo `s` before anything moves, declare the dataset and run the
+/// campaign, the servo left safe at the end: Err when the servo was refused
+/// before anything moved; the campaign's own stop inside.
+fn session<'a, S: Servo>(
+    mut s: S,
+    connect: &'a mut dyn FnMut() -> Result<S>,
+    ctx: &'a Ctx<'a>,
+    log: &'a mut Log,
+    warmup: Option<&(u32, Vec<Plan>)>,
+    jobs: &[(u32, Vec<Plan>)],
+    redo: bool,
+) -> Result<Result<(), Stop>> {
+    let id = s.id();
+    let front = front::read(s.client(), id, ctx.supply)?;
+    front.check_envelope(ctx.env, &ctx.env_path)?;
+    let decl = Decl {
+        servo: ctx.servo.to_string(),
+        supply: ctx.supply,
+        rule: RULE,
+        current_limit_counts: Some(front.lim.i_lim),
+        captured: civil_date(now()),
+        notes: None,
+    };
+    if declare(ctx.store, &decl)? {
+        log.line(format_args!(
+            "wrote {}",
+            ctx.env_path.with_file_name("dataset.toml").display()
+        ));
+    }
+    let mut run = Session {
+        c: Some(s),
+        connect,
+        id,
+        ctx,
+        log,
+        plant: None,
+        front,
+        proved: None,
+    };
+    let r = run.campaign(warmup, jobs, redo);
+    run.recheck_plant();
+    run.finish(r.as_ref().err());
+    Ok(r)
+}
+
+impl<S: Servo> Session<'_, S> {
+    fn servo(&mut self) -> Result<&mut S, Stop> {
         self.c.as_mut().ok_or(Stop::AdapterLost)
     }
 
@@ -525,12 +565,15 @@ impl Session<'_> {
         jobs: &[(u32, Vec<Plan>)],
         redo: bool,
     ) -> Result<(), Stop> {
-        let fw = self.on_servo(|c, id| Ok(c.identity(id)?.fw))?;
-        if fw != self.env.fw {
+        let fw = self.on_servo(|s| {
+            let id = s.id();
+            Ok(s.client().identity(id)?.fw)
+        })?;
+        if fw != self.ctx.env.fw {
             self.log.line(format_args!(
                 "warning: envelope measured on fw {}, servo runs fw {fw}: rerun osc capture \
                  pilot if the drive changed",
-                self.env.fw
+                self.ctx.env.fw
             ));
         }
         self.record_plant(fw)?;
@@ -538,7 +581,7 @@ impl Session<'_> {
             self.prove()?;
             self.log
                 .line(format_args!("warm-up: capture-{n}'s plan, discarded"));
-            let cap = Capture::warmup(self.store, EXPERIMENT, *n).map_err(Stop::Error)?;
+            let cap = Capture::warmup(self.ctx.store, EXPERIMENT, *n).map_err(Stop::Error)?;
             for plan in plans {
                 self.recording(&cap, plan, "warm-up")?;
                 self.park()?;
@@ -557,7 +600,12 @@ impl Session<'_> {
                 .collect();
             self.log
                 .line(format_args!("capture-{n}: {}", order.join(", ")));
-            let cap = Capture::open(self.store, EXPERIMENT, *n).map_err(Stop::Error)?;
+            for pl in plans {
+                for d in &pl.dropped {
+                    self.log.line(format_args!("  {}: {d}", pl.recording));
+                }
+            }
+            let cap = Capture::open(self.ctx.store, EXPERIMENT, *n).map_err(Stop::Error)?;
             let r = self.capture(&cap, plans, redo, &format!("capture-{n}"));
             if r.is_err() {
                 // Only succeeds when nothing landed: an empty capture dir
@@ -603,7 +651,7 @@ impl Session<'_> {
             }
             self.gate()?;
             let proved = self.proved()?;
-            let cfg = cfg(self.p, self.env, plan, &proved);
+            let cfg = cfg(self.ctx.p, self.ctx.env, plan, &proved);
             let attempt = tries.attempt();
             let outcome = self.attempt(cap, plan, &cfg, &proved, attempt)?;
             match &outcome {
@@ -630,7 +678,7 @@ impl Session<'_> {
                 Next::Done => return Ok(()),
                 Next::Retry => {
                     self.park()?;
-                    pause(RETRY_REST)?;
+                    self.pause(RETRY_REST)?;
                 }
                 Next::Reconnect => self.reconnect()?,
                 Next::Failed => {
@@ -655,24 +703,24 @@ impl Session<'_> {
         proved: &Proved,
         attempt: u32,
     ) -> Result<Outcome, Stop> {
-        let (id, supply) = (self.id, self.supply);
+        let (id, supply) = (self.id, self.ctx.supply);
         let drive = self.front.drive(proved);
         let abort = self.front.abort(cfg.decay);
-        let env = self.env;
-        let c = self.client()?;
-        let meta = match sweep::meta(c, id, cfg, drive) {
+        let env = self.ctx.env;
+        let s = self.servo()?;
+        let meta = match sweep::meta(s.client(), id, cfg, drive) {
             Ok(m) => m,
             Err(e) => return Ok(outcome_of(&e)),
         };
         let mut t = cap.begin(&plan.recording, &meta).map_err(Stop::Error)?;
         let judged = (|| -> Result<Verdict> {
-            let rec = sweep::record(&mut Wire::new(&mut *c, id), cfg, |g| t.on_seg(g))?;
+            let rec = sweep::record(s, cfg, |g| t.on_seg(g))?;
             let v = verdict(&rec, cfg, &plan.blocks, env, &abort);
-            let s = read_snapshot(c, id)?;
-            Ok(match (v, s.fault_flags) {
+            let o = s.snapshot()?;
+            Ok(match (v, o.fault_flags) {
                 (Verdict::Accepted { .. }, f) if f != 0 => Verdict::Rejected(format!(
                     "servo faulted: flags {f:#04x} code {}",
-                    s.fault_code
+                    o.fault_code
                 )),
                 (v, _) => v,
             })
@@ -703,13 +751,15 @@ impl Session<'_> {
     /// the table by crc; the dataset holds the points once.
     fn record_plant(&mut self, fw: u16) -> Result<(), Stop> {
         let (dataset, source) = (
-            self.dataset.clone(),
+            self.ctx.dataset.clone(),
             format!(
                 "servo id {} fw {fw}, read at session start",
                 self.id.as_byte()
             ),
         );
-        let (snap, image) = self.on_servo(|c, id| {
+        let (snap, image) = self.on_servo(|s| {
+            let id = s.id();
+            let c = s.client();
             let d = crate::state::descriptor(c, id)?;
             let snap = Snapshot::read(c, id, &d)?;
             let image = snap
@@ -721,7 +771,7 @@ impl Session<'_> {
         })?;
         self.log.line(format_args!("plant: {}", snap.line()));
         if let Some(image) = image {
-            match self.store.save_pos_lut(&image).map_err(Stop::Error)? {
+            match self.ctx.store.save_pos_lut(&image).map_err(Stop::Error)? {
                 PosLutFile::Written => self.log.line("wrote pos-lut.json"),
                 PosLutFile::Same => {}
                 PosLutFile::Differs(crc) => self.log.line(format_args!(
@@ -742,12 +792,13 @@ impl Session<'_> {
         let Some(before) = self.plant.take() else {
             return;
         };
-        let Some(c) = self.c.as_mut() else {
+        let id = self.id;
+        let Some(s) = self.c.as_mut() else {
             self.log
                 .line("no adapter: the plant was not re-read at the end");
             return;
         };
-        let id = self.id;
+        let c = s.client();
         let after = crate::state::descriptor(c, id).and_then(|d| Snapshot::read(c, id, &d));
         match after {
             Ok(after) if before.same(&after) => {}
@@ -765,11 +816,14 @@ impl Session<'_> {
     /// Refuse a pack near empty, read at rest; a supply with no gate
     /// configured is not read.
     fn gate(&mut self) -> Result<(), Stop> {
-        let p = self.p;
-        let Some(g) = p.supply.get(&self.supply) else {
+        let p = self.ctx.p;
+        let Some(g) = p.supply.get(&self.ctx.supply) else {
             return Ok(());
         };
-        let pack = self.on_servo(read_pack_mv)?;
+        let pack = self.on_servo(|s| {
+            let id = s.id();
+            read_pack_mv(s.client(), id)
+        })?;
         match battery::gate(Some(g), pack) {
             battery::Verdict::Ok => {
                 self.log
@@ -785,11 +839,28 @@ impl Session<'_> {
     }
 
     fn cooldown(&mut self) -> Result<(), Stop> {
-        let s = self.p.cooldown_s;
+        let s = self.ctx.p.cooldown_s;
         self.log.line(format_args!("cooldown {s} s, then reboot"));
-        pause(Duration::from_secs(s.into()))?;
-        self.on_servo(|c, id| Ok(c.reboot(id)?))?;
-        pause(REBOOT_WAIT)
+        self.pause(Duration::from_secs(s.into()))?;
+        self.on_servo(|s| {
+            let id = s.id();
+            Ok(s.client().reboot(id)?)
+        })?;
+        self.pause(REBOOT_WAIT)
+    }
+
+    /// Wait on the servo's clock in slices that honour ctrl-c.
+    fn pause(&mut self, d: Duration) -> Result<(), Stop> {
+        let mut left = d.as_millis() as u32;
+        while left > 0 {
+            if stopped() {
+                return Err(Stop::Interrupted);
+            }
+            let slice = left.min(100);
+            self.servo()?.sleep(slice);
+            left -= slice;
+        }
+        Ok(())
     }
 
     /// Park at the jam check's duty; a shaft not proven free stays put.
@@ -797,8 +868,8 @@ impl Session<'_> {
         let Some(p) = self.proved else {
             return Ok(());
         };
-        let (center, duty) = (self.env.limits.center, p.seek_q15());
-        self.on_servo(|c, id| guard(&mut Wire::new(c, id), |s| park::park(s, center, duty)))
+        let (center, duty) = (self.ctx.env.limits.center, p.seek_q15());
+        self.on_servo(|s| guard(s, |s| park::park(s, center, duty)))
     }
 
     fn proved(&self) -> Result<Proved, Stop> {
@@ -810,8 +881,8 @@ impl Session<'_> {
     /// link may have rebooted: its RAM settings are the saved ones again.
     fn prove(&mut self) -> Result<(), Stop> {
         self.proved = None;
-        let (supply, env, path) = (self.supply, self.env, self.env_path.clone());
-        let (front, proved) = self.on_servo(|c, id| prove(c, id, supply, env, &path))?;
+        let ctx = self.ctx;
+        let (front, proved) = self.on_servo(|s| prove(s, ctx))?;
         self.proved_by(front, proved);
         Ok(())
     }
@@ -828,13 +899,9 @@ impl Session<'_> {
     }
 
     /// `f` on the servo; an adapter loss reconnects and runs it again.
-    fn on_servo<T>(
-        &mut self,
-        mut f: impl FnMut(&mut Client<NusbPipe>, Id) -> Result<T>,
-    ) -> Result<T, Stop> {
-        let id = self.id;
+    fn on_servo<T>(&mut self, mut f: impl FnMut(&mut S) -> Result<T>) -> Result<T, Stop> {
         for _ in 0..=RECORDING_LOSSES {
-            let e = match f(self.client()?, id) {
+            let e = match f(self.servo()?) {
                 Ok(v) => return Ok(v),
                 Err(e) => e,
             };
@@ -864,17 +931,17 @@ impl Session<'_> {
             RECONNECT.as_secs()
         ));
         let t0 = Instant::now();
-        let c = loop {
-            match crate::rig::connect(&self.baud) {
-                Ok(c) => break c,
+        let s = loop {
+            match (self.connect)() {
+                Ok(s) => break s,
                 Err(e) if t0.elapsed() >= RECONNECT => {
                     self.log.line(format_args!("  no adapter: {e:#}"));
                     return Err(Stop::AdapterLost);
                 }
-                Err(_) => pause(RECONNECT_POLL)?,
+                Err(_) => wait(RECONNECT_POLL)?,
             }
         };
-        self.c = Some(c);
+        self.c = Some(s);
         self.log.line(format_args!(
             "  adapter back after {} s: reboot, jam check, redo",
             t0.elapsed().as_secs()
@@ -885,12 +952,12 @@ impl Session<'_> {
             Kind::Blocked => Stop::Blocked(format!("{e:#}")),
             Kind::Other => Stop::Error(e),
         };
-        let (id, supply, env) = (self.id, self.supply, self.env);
-        let r = self.client()?.reboot(id);
+        let id = self.id;
+        let r = self.servo()?.client().reboot(id);
         r.map_err(|e| lost(e.into()))?;
-        pause(REBOOT_WAIT)?;
-        let path = self.env_path.clone();
-        let (front, proved) = prove(self.client()?, id, supply, env, &path).map_err(lost)?;
+        self.pause(REBOOT_WAIT)?;
+        let ctx = self.ctx;
+        let (front, proved) = prove(self.servo()?, ctx).map_err(lost)?;
         self.proved_by(front, proved);
         Ok(())
     }
@@ -900,14 +967,14 @@ impl Session<'_> {
     /// short and still torques off.
     fn finish(&mut self, stop: Option<&Stop>) {
         STOP.store(false, Ordering::SeqCst);
-        let (id, center) = (self.id, self.env.limits.center);
+        let center = self.ctx.env.limits.center;
         let duty = end_park(stop, self.proved.as_ref());
-        let Some(c) = self.c.as_mut() else {
+        let Some(s) = self.c.as_mut() else {
             self.log
                 .line("no adapter: the servo was left where it stopped");
             return;
         };
-        let r = guard(&mut Wire::new(c, id), |s| match duty {
+        let r = guard(s, |s| match duty {
             Some(duty) => park::park(s, center, duty),
             None => Ok(()),
         });
@@ -932,16 +999,11 @@ fn end_park(stop: Option<&Stop>, proved: Option<&Proved>) -> Option<i16> {
 }
 
 /// The front, the envelope it must match and the jam check, on the servo.
-fn prove(
-    c: &mut Client<NusbPipe>,
-    id: Id,
-    supply: Supply,
-    env: &Envelope,
-    env_path: &Path,
-) -> Result<(Front, Proved)> {
-    let front = front::read(c, id, supply)?;
-    front.check_envelope(env, env_path)?;
-    let proved = front.jam_check(|exp| centre::drive(&mut Wire::new(c, id), exp))?;
+fn prove<S: Servo>(s: &mut S, ctx: &Ctx) -> Result<(Front, Proved)> {
+    let id = s.id();
+    let front = front::read(s.client(), id, ctx.supply)?;
+    front.check_envelope(ctx.env, &ctx.env_path)?;
+    let proved = front.jam_check(|exp| centre::drive(s, exp))?;
     Ok((front, proved))
 }
 
@@ -1169,7 +1231,7 @@ mod tests {
     #[test]
     fn cfg_runs_the_plan_both_ways_between_the_envelope_guards() {
         let p = Procedure::parse(include_str!("session.toml")).unwrap();
-        let env = envelope::mg90_every_window();
+        let env = envelope::mg90();
         let plans = plan::expand(&p, &env, 2).unwrap();
         let c = cfg(&p, &env, &plans[1], &proved(0.13));
         assert_eq!(c.steps, plans[1].schedule);
@@ -1182,7 +1244,7 @@ mod tests {
         assert!(!c.stall && !c.static_load);
         assert_eq!(
             expected_segments(c.baseline_ms > 0, c.dirs.signs().len(), c.steps.len()),
-            41
+            23
         );
     }
 
@@ -1232,7 +1294,7 @@ mod tests {
         assert_eq!((p.seek_pct(), p.cap_pct()), (15, 15));
 
         let session = Procedure::parse(include_str!("session.toml")).unwrap();
-        let env = envelope::mg90_every_window();
+        let env = envelope::mg90();
         for plan in plan::expand(&session, &env, 1).unwrap() {
             let c = cfg(&session, &env, &plan, &p);
             assert_eq!((c.seek_duty_pct, c.seek_cap_pct), (15, 15));
@@ -1315,6 +1377,71 @@ mod tests {
         let stop = Stop::Overcurrent(why.clone());
         assert_eq!((stop.code(), stop.to_string()), (5, why));
         assert_eq!(end_park(Some(&stop), Some(&proved(0.13))), None);
+    }
+
+    /// One capture of the default procedure on the bench servo on 2S, sized
+    /// by the envelope the pilot writes on the same servo: the front, the
+    /// jam check, every recording accepted on its first try and landed, the
+    /// dataset declared, the servo parked at mid travel with torque off and
+    /// the permit clear.
+    #[test]
+    fn session_completes_a_capture_on_the_bench_fixture() {
+        use crate::capture::{front, pilot};
+        use crate::rig::servo::bench::Bench;
+        let mut b = Bench::mg90(Supply::TwoS);
+        let id = b.id();
+        let fw = b.c.identity(id).unwrap().fw;
+        let p = Procedure::parse(include_str!("session.toml")).unwrap();
+        let f = front::read(&mut b.c, id, Supply::TwoS).unwrap();
+        let (env, parked) = pilot::pilot(&mut b, &f, Supply::TwoS, &p, fw);
+        let env = env.unwrap();
+        parked.unwrap();
+
+        let root = tmp("session-bench");
+        let dir = root.join("mg90-a__2s__limit");
+        std::fs::create_dir_all(&dir).unwrap();
+        env.save(&dir).unwrap();
+        let store = Store::new(dir.clone());
+        let jobs = vec![(1, plan::expand(&p, &env, 1).unwrap())];
+        let ctx = Ctx {
+            servo: "mg90-a",
+            p: &p,
+            env: &env,
+            env_path: dir.join("envelope.toml"),
+            store: &store,
+            supply: Supply::TwoS,
+            dataset: "mg90-a__2s__limit".into(),
+        };
+        let mut log = Log {
+            tag: "mg90-a__2s__limit".into(),
+            file: None,
+        };
+        let mut connect = || -> Result<&mut Bench> { bail!("the bench servo never drops") };
+        let r = session(&mut b, &mut connect, &ctx, &mut log, None, &jobs, false).unwrap();
+        r.unwrap();
+
+        for plan in &jobs[0].1 {
+            assert!(
+                store.landed(EXPERIMENT, 1, &plan.recording),
+                "{}",
+                plan.recording
+            );
+            let meta = std::fs::read_to_string(
+                dir.join(format!("session/capture-1/{}.meta.json", plan.recording)),
+            )
+            .unwrap();
+            let meta: serde_json::Value = serde_json::from_str(&meta).unwrap();
+            assert_eq!(meta["capture"]["try"], 1, "{}", plan.recording);
+            let drive = &meta["drive"];
+            assert_eq!(drive["rule"], "limit");
+            assert_eq!(drive["seek_q15"], 4915);
+            let segs = 1 + 2 * plan.schedule.len();
+            assert_eq!(drive["governed"].as_array().unwrap().len(), segs);
+        }
+        assert_eq!(Decl::load(&store).unwrap().current_limit_counts, Some(280));
+        assert!(!b.servo.torque && !b.servo.permit_live());
+        assert!((b.servo.pos - 2029.0).abs() <= 60.0, "{}", b.servo.pos);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     /// A shaft locked at mid travel: the jam check raises until the limit

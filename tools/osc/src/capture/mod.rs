@@ -37,7 +37,8 @@ enum CaptureCmd {
     /// Measure the servo under its current limit and write the dataset's
     /// envelope.toml: per grid duty its climb, speed, braked stop and window,
     /// the coast ladder and every chain the session drives, each run on the
-    /// servo only while it fits the runway.
+    /// servo only while it fits the runway; the grid again under fast decay
+    /// for a recording that drives under it.
     Pilot(pilot::Args),
     /// Print the session procedure and, per capture, the block order, block
     /// map and each recording's schedule, expanded against the dataset's
@@ -170,9 +171,14 @@ fn print_plan(a: &PlanArgs) -> Result<()> {
         ),
         None => println!("  battery: {} is not gated", a.supply.as_str()),
     }
+    let fast = env
+        .fast
+        .as_ref()
+        .map_or("none".to_string(), |g| format!("{}%", g.top_pct));
     println!(
-        "envelope: {} (coast top {}%)",
+        "envelope: {} (grid top {}%, under fast decay {fast}, coast top {}%)",
         dir.join("envelope.toml").display(),
+        env.grid.top_pct,
         env.coast.top_pct
     );
     for n in a.captures.clone().unwrap_or(1..=p.captures) {
@@ -180,18 +186,33 @@ fn print_plan(a: &PlanArgs) -> Result<()> {
         for r in plan::expand(&p, &env, n)? {
             let order: Vec<&str> = r.blocks.iter().map(|b| b.name.as_str()).collect();
             println!(
-                "  {} ({} decay, {} steps): {}",
+                "  {} ({} decay, {} steps, {:.1} s streamed each way): {}",
                 r.recording,
                 r.decay.as_str(),
                 r.schedule.len(),
+                streamed_ms(&r.schedule) as f64 / 1000.0,
                 order.join(" ")
             );
+            for d in &r.dropped {
+                println!("    {d}");
+            }
             println!("    blocks: {}", serde_json::to_string(&r.blocks)?);
             let sched: Vec<String> = r.schedule.iter().map(Step::to_string).collect();
             println!("    schedule: {}", sched.join(","));
         }
     }
     Ok(())
+}
+
+/// The TEL time a schedule streams in one direction, ms: every step's window.
+fn streamed_ms(schedule: &[Step]) -> u32 {
+    schedule
+        .iter()
+        .map(|s| match *s {
+            Step::Drive(_, ms) | Step::Then(_, ms) => ms.unwrap_or(WINDOW_MS),
+            Step::Coast(ms) | Step::Brake(ms) => ms,
+        })
+        .sum()
 }
 
 /// `n` or `a..b`, inclusive, counting from 1.

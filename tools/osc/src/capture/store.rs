@@ -355,6 +355,7 @@ pub(super) mod fixture {
                 first: 0,
                 count: 2,
             }],
+            dropped: Vec::new(),
         }
     }
 

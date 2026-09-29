@@ -166,20 +166,25 @@ pub(crate) fn block_of(blocks: &[Block], k: usize) -> Option<&str> {
         .map(|b| b.name.as_str())
 }
 
-/// Ms into the segment where its applied duty first fell under its goal
-/// after reaching it; None when it never did.
+/// Ms into the segment where its applied duty fell under its goal after
+/// holding it for SETTLE_MS; None when it never did. The limiter chatters
+/// on and off the goal for a few ms as the duty first reaches it, and
+/// that is the climb ending, not the load changing.
 fn fell(s: &Segment, tick_hz: f64) -> Option<f64> {
     let goal = s.cmd_duty_q15;
-    let mut reached = false;
+    let hold = (SETTLE_MS * tick_hz / 1000.0).ceil() as u64;
+    let mut since = None;
     for f in &s.frames {
         let Some(d) = f.duty_q15 else {
             continue;
         };
         if d == goal {
-            reached = true;
-        } else if reached && (d.signum() != goal.signum() || d.unsigned_abs() < goal.unsigned_abs())
-        {
-            return Some(f.tick as f64 * 1000.0 / tick_hz);
+            since.get_or_insert(f.tick);
+        } else if d.signum() != goal.signum() || d.unsigned_abs() < goal.unsigned_abs() {
+            if since.is_some_and(|t0| f.tick - t0 >= hold) {
+                return Some(f.tick as f64 * 1000.0 / tick_hz);
+            }
+            since = None;
         }
     }
     None
@@ -620,6 +625,42 @@ mod tests {
             landed["drive"]["governed"],
             serde_json::json!([false, true, false])
         );
+    }
+
+    /// The bench servo's limiter as it lets go: the applied duty touches the
+    /// goal and drops back for 2 to 4 ms before it holds. That ends the
+    /// climb; it is no fall. A duty that held the goal for the settle and
+    /// then fell is one.
+    #[test]
+    fn the_limiter_chatter_at_the_goal_is_not_a_fall() {
+        let goal = 6553;
+        let rung = |duty: &dyn Fn(u64) -> i16| {
+            let mut s = seg(1, 1, 0);
+            s.cmd_duty_q15 = goal;
+            s.frames = (0..6000)
+                .map(|t| TelFrame {
+                    tick: t,
+                    duty_q15: Some(duty(t)),
+                    ..TelFrame::default()
+                })
+                .collect();
+            s
+        };
+        // touches at 5 ms, chatters on and off every 20 ticks to 8 ms
+        let chatter = rung(&|t| match t {
+            0..100 => 4484 + t as i16 * 20,
+            100..160 if (t / 20) % 2 == 1 => goal - 128,
+            _ => goal,
+        });
+        assert_eq!(fell(&chatter, 20_000.0), None);
+        assert!(settled(&chatter, 20_000.0).is_ok());
+        // held from 5 ms, then falls at 100 ms
+        let lost = rung(&|t| match t {
+            0..100 => 4484 + t as i16 * 20,
+            2000..2400 => goal - 1000,
+            _ => goal,
+        });
+        assert_eq!(fell(&lost, 20_000.0), Some(100.0));
     }
 
     /// A rung that reached its goal and then lost it, the load changed under

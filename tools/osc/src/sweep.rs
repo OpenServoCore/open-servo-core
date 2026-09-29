@@ -537,7 +537,7 @@ fn seek_stop<S: Servo>(
 /// runway and slams the physical stop. Retreat sign so the firmware
 /// soft-limit clamp can never zero the brake near a wall. Leaves duty 0,
 /// torque ON (the caller torques off).
-fn brake_to_rest<S: Servo>(s: &mut S, lease: &mut Lease, dir: i8) -> Result<()> {
+pub(crate) fn brake_to_rest<S: Servo>(s: &mut S, lease: &mut Lease, dir: i8) -> Result<()> {
     s.write(control::GOAL_DUTY, -(dir as i32) * BRAKE_DUTY_Q15 as i32)?;
     let mut last = check_fault(s)?;
     for _ in 0..BRAKE_POLLS {

@@ -10,7 +10,8 @@
 //! samples at the goal past the settle, its stop off where the brake left
 //! it, and the next rung is sized by them. The coast ladder and every other
 //! chain the session drives then run the same way, each excursion recorded
-//! so a plan refuses a chain the pilot never ran. The capture front runs
+//! so a plan refuses a chain the pilot never ran, and for a recording under
+//! fast decay the grid ladder runs again under it. The capture front runs
 //! first, and the pack is read at rest before every recording.
 
 use std::collections::BTreeMap;
@@ -155,7 +156,7 @@ fn measure_all<S: Servo>(
     if front.tick_hz == 0 {
         bail!("tick_hz reads 0: TEL sample rate unknown");
     }
-    let grid = ladder_duties(&p.block.grid.duties, None).context("the grid block")?;
+    let grid_duties = ladder_duties(&p.block.grid.duties, None).context("the grid block")?;
     let coast_duties =
         ladder_duties(&p.block.coast.duties, Some(FIRST_MAX_PCT)).context("the coast block")?;
     let lim = limits(front.lim.soft, front.lim.phys)?;
@@ -183,9 +184,10 @@ fn measure_all<S: Servo>(
         lim,
         proved: p_ok,
         hz: front.tick_hz as f64 / 1000.0,
+        decay: Decay::Slow,
     };
 
-    let ladder = grid_ladder(s, &rig, &grid)?;
+    let ladder = grid_ladder(s, &rig, &grid_duties)?;
     let v_ss = speed(&ladder.rungs)?;
     for d in DIRS {
         let f = v_ss.of(d);
@@ -206,6 +208,27 @@ fn measure_all<S: Servo>(
 
     let coast = coast_ladder(s, &rig, &p.block.coast, &coast_duties, &grid, &v_ss)?;
     let (chains, refused_chains) = chains(s, &rig, p, &v_ss, &coast, &ladder.runways)?;
+    let fast = if p
+        .recording
+        .iter()
+        .any(|r| r.decay == Decay::Fast && r.blocks.iter().any(|b| b == "grid"))
+    {
+        println!(
+            "[fast] the grid ladder again under fast decay, for the recording that drives under it"
+        );
+        let fast = Rig {
+            decay: Decay::Fast,
+            ..rig
+        };
+        let l = grid_ladder(s, &fast, &grid_duties)?;
+        Some(Grid {
+            top_pct: l.rungs.last().map_or(0, |r| r.pct),
+            rungs: l.rungs,
+            refused: l.refused,
+        })
+    } else {
+        None
+    };
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
@@ -225,15 +248,18 @@ fn measure_all<S: Servo>(
         coast,
         chains,
         refused_chains,
+        fast,
     })
 }
 
 /// The servo the pilot drives: its limits, the seek its jam check proved,
-/// and its fast ticks per ms.
+/// its fast ticks per ms, and the decay its rungs drive under.
+#[derive(Copy, Clone)]
 struct Rig {
     lim: Limits,
     proved: Proved,
     hz: f64,
+    decay: Decay,
 }
 
 /// Counts between the soft limit a drive of `dir` runs at and the stop
@@ -989,7 +1015,7 @@ fn cfg(steps: Vec<Step>, dirs: Dirs, window_ms: u32, rig: &Rig) -> Cfg {
     Cfg {
         steps,
         dirs,
-        decay: Decay::Slow,
+        decay: rig.decay,
         window_ms,
         rest_ms: REST_MS,
         baseline_ms: 0,
@@ -1260,6 +1286,7 @@ mod tests {
                     .stall_plan(front.sc.r_vpc(CLASS_R_MIN), Some(0.13)),
             },
             hz: front.tick_hz as f64 / 1000.0,
+            decay: Decay::Slow,
         }
     }
 
@@ -1334,7 +1361,13 @@ mod tests {
                 assert_eq!(r.drive_ms, coast_drive_ms(grid));
             }
             assert!(env.refused_chains.is_empty(), "{:?}", env.refused_chains);
-            assert_eq!(env.chains.len(), 9);
+            assert_eq!(env.chains.len(), 8);
+            // the fast recording's own pass climbs the same way; the decay
+            // write back after each rung lands before the brake, so its
+            // stops run longer and it may stop a duty lower
+            let fast = env.fast.as_ref().unwrap();
+            assert!((top - 5..=top).contains(&fast.top_pct), "{}", fast.top_pct);
+            assert!(fast.refused.is_some());
             for c in &env.chains {
                 for d in DIRS {
                     let e = c.get(d);
@@ -1929,13 +1962,7 @@ mod tests {
             .iter()
             .map(|c| chain_name(c))
             .collect();
-        assert_eq!(
-            names,
-            [
-                "20@60,then:-20@60,then:20@60,brake:200",
-                "40@60,then:-40@60,then:40@60,brake:200"
-            ]
-        );
+        assert_eq!(names, ["20@60,then:-20@60,then:20@60,brake:200"]);
         assert_eq!(chains_of(&p.block.step.steps).len(), 5);
         assert_eq!(chains_of(&p.block.ends.steps).len(), 2);
 
