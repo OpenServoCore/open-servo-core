@@ -292,11 +292,15 @@ fn grid_ladder<S: Servo>(s: &mut S, rig: &Rig, duties: &[u8]) -> Result<Ladder> 
         "[grid] {duties:?}% from the bottom, both ways, while each fits {:.0} counts of runway",
         ladder.runways[0].room()
     );
+    let mut still = [false; 2];
     for &pct in duties {
         let mut runs = Vec::new();
         for (k, dir) in DIRS.into_iter().enumerate() {
-            match grid_rung(s, rig, &mut ladder.runways[k], dir, pct)? {
-                Ok(r) => runs.push(r),
+            match grid_rung(s, rig, &mut ladder.runways[k], dir, pct, still[k])? {
+                Ok(r) => {
+                    still[k] = r.v_ss <= V_SS_MIN;
+                    runs.push(r);
+                }
                 Err(why) => {
                     println!("  {why}: the ladder ends here");
                     ladder.refused = Some(LadderRefused { pct, dir, why });
@@ -347,17 +351,19 @@ impl Ran {
 
 /// One grid rung of `dir`: sized, run, measured, and fed to the runway. A
 /// rung that did not reach its goal or hold it past the settle runs once
-/// more at a window that would, when that still fits. Err in the Ok is why
-/// the rung does not run.
+/// more at a window that would, when that still fits. `still`: the rung
+/// before it in the ladder left the shaft still this way. Err in the Ok is
+/// why the rung does not run.
 fn grid_rung<S: Servo>(
     s: &mut S,
     rig: &Rig,
     rw: &mut Runway,
     dir: Dir,
     pct: u8,
+    still: bool,
 ) -> Result<Result<Ran, String>> {
     let tail = SETTLE_MS + STEADY_MIN_MS;
-    let mut window = match first_window(rw, rig, dir, pct, tail) {
+    let mut window = match first_window(rw, rig, dir, pct, tail, still) {
         Ok(w) => w,
         Err(why) => return Ok(Err(why)),
     };
@@ -390,7 +396,7 @@ fn grid_rung<S: Servo>(
             _ if !retry => {
                 let arrival = runway::arrival_ms(&frames, goal, rig.hz * 1000.0);
                 let longer = retry_window(window, arrival, tail);
-                if let Err(why) = sized(rw, rig, dir, pct, longer) {
+                if let Err(why) = sized(rw, rig, dir, pct, longer, still) {
                     return Ok(Err(why));
                 }
                 println!("  {dir} {pct}@{window} settled too late: once more at {longer} ms");
@@ -415,17 +421,20 @@ fn grid_rung<S: Servo>(
 /// The window a rung first runs at: its predicted climb 1.25 times over and
 /// `tail`, when the runway can size it; a short one when nothing has moved
 /// the shaft yet.
-fn first_window(rw: &Runway, rig: &Rig, dir: Dir, pct: u8, tail: f64) -> Result<u32, String> {
-    match rw.plan(sign(dir), pct as f64 / 100.0, 0.0) {
-        Some(n) => {
-            let w = (CLIMB_MARGIN * n.climb_ms + tail).ceil() as u32;
-            sized(rw, rig, dir, pct, w).map(|()| w)
-        }
-        None if pct <= FIRST_MAX_PCT => Ok(PILOT_W0),
-        None => Err(format!(
-            "{dir} {pct}%: no rung under it moved the shaft, so nothing sizes it"
-        )),
-    }
+fn first_window(
+    rw: &Runway,
+    rig: &Rig,
+    dir: Dir,
+    pct: u8,
+    tail: f64,
+    still: bool,
+) -> Result<u32, String> {
+    let w = rw
+        .plan(sign(dir), pct as f64 / 100.0, 0.0)
+        .map_or(PILOT_W0, |n| {
+            (CLIMB_MARGIN * n.climb_ms + tail).ceil() as u32
+        });
+    sized(rw, rig, dir, pct, w, still).map(|()| w)
 }
 
 /// The window a rung that settled too late in `window` runs once more at:
@@ -441,11 +450,23 @@ fn retry_window(window: u32, arrival: Option<f64>, tail: f64) -> u32 {
 
 /// A rung of `window` ms fits: its climb, its run at speed for what the
 /// window leaves and its margined braked stop fit the runway, and that stop
-/// fits between the soft limit and the stop beyond it.
-fn sized(rw: &Runway, rig: &Rig, dir: Dir, pct: u8, window: u32) -> Result<(), String> {
+/// fits between the soft limit and the stop beyond it. A rung nothing sizes
+/// runs short, PILOT_W0 and one retry up to twice that, at or under
+/// FIRST_MAX_PCT or when `still`: the rung before it in the ladder's own
+/// order, whatever duty that was, ran this way and left the shaft still.
+/// One ladder step above a duty that leaves the shaft still, the shaft
+/// runs slowly, so the short window bounds its travel.
+fn sized(
+    rw: &Runway,
+    rig: &Rig,
+    dir: Dir,
+    pct: u8,
+    window: u32,
+    still: bool,
+) -> Result<(), String> {
     let d = pct as f64 / 100.0;
     let Some(n0) = rw.plan(sign(dir), d, 0.0) else {
-        return if pct <= FIRST_MAX_PCT && window <= 2 * PILOT_W0 {
+        return if (pct <= FIRST_MAX_PCT || still) && window <= 2 * PILOT_W0 {
             Ok(())
         } else {
             Err(format!(
@@ -1581,10 +1602,10 @@ mod tests {
         rw.ran(0.55, 10.58);
         rw.climbed(80.0);
         rw.stopped(10.58, 171.0);
-        let w = first_window(&rw, &rig, Dir::Fwd, 60, SETTLE_MS + STEADY_MIN_MS).unwrap();
+        let w = first_window(&rw, &rig, Dir::Fwd, 60, SETTLE_MS + STEADY_MIN_MS, false).unwrap();
         assert_eq!(w, 282);
         assert_eq!(
-            first_window(&rw, &rig, Dir::Rev, 60, SETTLE_MS + STEADY_MIN_MS),
+            first_window(&rw, &rig, Dir::Rev, 60, SETTLE_MS + STEADY_MIN_MS, false),
             Err(
                 "rev 60% would stop in about 206 counts, over the 200 between the soft limit and \
                  the stop: a rung its host abandoned would hit the stop"
@@ -1597,7 +1618,7 @@ mod tests {
         short.ran(0.55, 10.58);
         short.climbed(80.0);
         short.stopped(10.58, 171.0);
-        let why = sized(&short, &rig, Dir::Fwd, 60, 282).unwrap_err();
+        let why = sized(&short, &rig, Dir::Fwd, 60, 282, false).unwrap_err();
         assert!(why.starts_with("fwd 60% in 282 ms needs "), "{why}");
         assert!(
             why.ends_with("counts of runway, over the 1593 there is"),
@@ -1606,11 +1627,11 @@ mod tests {
         // nothing measured: a first rung opens short, and only low
         let empty = Runway::new((532, 3526));
         assert_eq!(
-            first_window(&empty, &rig, Dir::Fwd, 30, 100.0),
+            first_window(&empty, &rig, Dir::Fwd, 30, 100.0, false),
             Ok(PILOT_W0)
         );
         assert_eq!(
-            first_window(&empty, &rig, Dir::Fwd, 35, 100.0),
+            first_window(&empty, &rig, Dir::Fwd, 35, 100.0, false),
             Err("fwd 35%: no rung under it moved the shaft, so nothing sizes it".into())
         );
 
@@ -1622,6 +1643,82 @@ mod tests {
         let refused = ladder.refused.unwrap();
         assert_eq!((refused.pct, refused.dir), (60, Dir::Rev));
         assert!(!b.servo.torque);
+    }
+
+    /// The bench MG90 under fast decay: still through 30%, running from
+    /// 35%. Nothing sizes 35%, but the rung before it left the shaft still,
+    /// so it runs short and sizes the rest; the still rungs read about 0.
+    #[test]
+    fn ladder_climbs_past_rungs_that_leave_the_shaft_still() {
+        let (mut b, front) = bench(Supply::TwoS);
+        b.fast_breakaway_q15 = Some(pct_q15(35));
+        let rig = Rig {
+            decay: Decay::Fast,
+            ..bench_rig(&front)
+        };
+        let duties = ladder_duties(&procedure().block.grid.duties, None).unwrap();
+        let ladder = grid_ladder(&mut b, &rig, &duties).unwrap();
+        let kept: Vec<u8> = ladder.rungs.iter().map(|r| r.pct).collect();
+        assert!(
+            kept.starts_with(&[5, 10, 15, 20, 25, 30, 35, 40, 45]),
+            "{kept:?}"
+        );
+        for r in &ladder.rungs {
+            for d in DIRS {
+                let v = r.get(d).v_ss;
+                if r.pct <= 30 {
+                    assert!(v.abs() < 0.05, "{}% {d} v_ss {v}", r.pct);
+                } else {
+                    assert!(v > V_SS_MIN, "{}% {d} v_ss {v}", r.pct);
+                }
+            }
+        }
+        assert!(!b.servo.torque);
+
+        // the fast recording drives every kept rung, still ones included,
+        // at its window
+        let schedule: Vec<Step> = ladder
+            .rungs
+            .iter()
+            .map(|r| Step::Drive(r.pct, Some(r.window_ms)))
+            .collect();
+        let mut env = crate::capture::envelope::mg90();
+        env.fast = Some(Grid {
+            top_pct: *kept.last().unwrap(),
+            rungs: ladder.rungs,
+            refused: ladder.refused,
+        });
+        let plans = crate::capture::plan::expand(&procedure(), &env, 1).unwrap();
+        let fast = plans.iter().find(|p| p.decay == Decay::Fast).unwrap();
+        assert_eq!(fast.schedule, schedule);
+    }
+
+    /// A rung nothing sizes, over FIRST_MAX_PCT, with no rung run under it
+    /// is refused: a ladder that opens at 40% never drives.
+    #[test]
+    fn an_unsized_rung_over_the_first_max_is_refused() {
+        let (mut b, front) = bench(Supply::TwoS);
+        let rig = bench_rig(&front);
+        let t = b.servo.t_ms;
+        let ladder = grid_ladder(&mut b, &rig, &[40, 45]).unwrap();
+        assert!(ladder.rungs.is_empty());
+        let refused = ladder.refused.unwrap();
+        assert_eq!((refused.pct, refused.dir), (40, Dir::Fwd));
+        assert_eq!(
+            refused.why,
+            "fwd 40%: no rung under it moved the shaft, so nothing sizes it"
+        );
+        assert_eq!(b.servo.t_ms, t, "nothing moved");
+
+        // one step over a still rung runs short, its retry at most twice
+        // that
+        let rw = Runway::new((532, 3526));
+        assert_eq!(
+            first_window(&rw, &rig, Dir::Fwd, 40, 100.0, true),
+            Ok(PILOT_W0)
+        );
+        assert!(sized(&rw, &rig, Dir::Fwd, 40, 2 * PILOT_W0, true).is_ok());
+        assert!(sized(&rw, &rig, Dir::Fwd, 40, 2 * PILOT_W0 + 1, true).is_err());
     }
 
     /// A coast drives to its grid rung's later goal, whole ms, and 20 ms
