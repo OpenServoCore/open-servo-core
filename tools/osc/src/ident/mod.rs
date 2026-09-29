@@ -834,22 +834,13 @@ fn run_ladder(
 /// describes this servo on this supply, else by the run's own rungs.
 fn ladder_runway(d: &Drive, rail_mv: f64) -> Runway {
     let mut runway = Runway::new(d.env.guard);
-    let supply = Supply::of_rail(rail_mv);
-    let found = crate::capture::default_root()
-        .map(|root| envelope::every(&root))
-        .unwrap_or_default();
-    for (path, env) in found {
-        let why = match env {
-            Ok(env) => match runway.size_by(env.runway(), supply, d.lim.phys) {
-                Ok(()) => {
-                    println!("  rungs sized by the pilot envelope {}", path.display());
-                    return runway;
-                }
-                Err(stale) => stale.to_string(),
-            },
-            Err(_) => "an older pilot wrote it (run osc capture pilot again)".into(),
-        };
+    let (left, sized) = envelope::size_runway(&mut runway, Supply::of_rail(rail_mv), d.lim.phys);
+    for (path, why) in left {
         println!("  left out {}: {why}", path.display());
+    }
+    if let Some(path) = sized {
+        println!("  rungs sized by the pilot envelope {}", path.display());
+        return runway;
     }
     println!(
         "  no pilot envelope describes this servo on this supply: each rung is sized from the \
@@ -1290,6 +1281,9 @@ impl Recorded {
                 let runway = self.runway.clone().context("no ladder runway")?;
                 let exp = Inertia::new(cfg, plan, runway, &rig(cli)?);
                 self.inertia = Some(run_inertia(cli, c, id, out, exp, &priors)?);
+            }
+            Stage::Stops { .. } | Stage::Traverse { .. } => {
+                bail!("osc ident has no {} stage: it is osc cal's", stage.name())
             }
         }
         Ok(Ended::Done)

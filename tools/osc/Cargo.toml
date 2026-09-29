@@ -21,6 +21,10 @@ serde        = { version = "1", features = ["derive"] }
 serde_json   = "1"
 toml         = "1"
 
+# cal's write phase runs against the in-process servo stack.
+[dev-dependencies]
+osc-client = { path = "../../client", features = ["fake-adapter"] }
+
 # The mg90-a lut build tracks 100 rungs of 20 kHz current: minutes
 # unoptimized, seconds optimized. Overflow checks and debug assertions stay.
 [profile.test]

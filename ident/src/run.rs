@@ -22,15 +22,28 @@
 //! sensor's window floor and the limit ([`DutyPlan::stall_ladder`]) with
 //! the permit held; a supply that leaves no room between the two ends the
 //! run before it moves.
+//!
+//! `osc cal` takes the same front ([`Run::for_cal`]) - bias, the jam check,
+//! the burst - then finds the stops: each approached at the one duty the
+//! jam check moved the shaft at plus the seek margin, capped where its
+//! stall draws the limit, and seated at half the limit
+//! ([`crate::exp::endstop`]). A shaft whose breakaway alone stalls over
+//! the limit is refused before anything drives at a stop. A burst that
+//! declines leaves R unknown and cal goes on without it: the stops are
+//! approached at the duty that moved the shaft and seated at half the
+//! class-safe duty. The ripple traverse follows, free-running on the
+//! runway ([`crate::exp::sweep`]), and the run ends at mid travel.
 
 use crate::exp::AbortReason;
 use crate::exp::breakaway::BreakawayCfg;
 use crate::exp::centre::CentreCfg;
+use crate::exp::endstop::EndstopCfg;
 use crate::exp::inductance::Cfg as BurstCfg;
 use crate::exp::inertia::{BASE_OVER_SEEK, InertiaCfg};
 use crate::exp::ladder::LadderCfg;
 use crate::exp::resistance::ResistanceCfg;
 use crate::exp::rl::Scales;
+use crate::exp::sweep::SweepCfg;
 use crate::limits::{
     BurstAllowance, CLASS_R_MIN, DutyPlan, NUDGE_MAX_MV, Refusal, ServoLimits, duty_of_mv,
     pct_floor, q15_floor,
@@ -76,6 +89,18 @@ pub enum Stage {
         seek: f64,
         base: f64,
     },
+    /// Cal: each stop approached at `approach`, seated at `seat`; a sticky
+    /// spot or a leave may raise the duty up to `cap`.
+    Stops {
+        approach: f64,
+        seat: f64,
+        cap: f64,
+    },
+    /// Cal: the ripple traverse, its first pass to the start band at
+    /// `seek`.
+    Traverse {
+        seek: f64,
+    },
 }
 
 impl Stage {
@@ -88,6 +113,8 @@ impl Stage {
             Stage::Breakaway { .. } => "breakaway",
             Stage::Ladder { .. } => "ladder",
             Stage::Inertia { .. } => "inertia",
+            Stage::Stops { .. } => "stops",
+            Stage::Traverse { .. } => "traverse",
         }
     }
 }
@@ -127,6 +154,11 @@ pub enum Over {
     RailTooHigh {
         rail_mv: f64,
     },
+    /// Cal: the duty that first moved the shaft stalls over the limit,
+    /// drawing `need` counts ([`Refusal::BreakawayOverLimit`]).
+    BreakawayOverLimit {
+        need: f64,
+    },
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -138,6 +170,8 @@ enum Step {
     Breakaway,
     Ladder,
     Inertia,
+    Stops,
+    Traverse,
     Park,
 }
 
@@ -156,6 +190,17 @@ const ORDER: [Step; 10] = [
     Step::Park,
 ];
 
+/// Cal: the jam check and the burst at mid travel, the stops, the traverse
+/// from the low end, and back to mid travel.
+const CAL_ORDER: [Step; 6] = [
+    Step::Bias,
+    Step::Nudge,
+    Step::Burst,
+    Step::Stops,
+    Step::Traverse,
+    Step::Park,
+];
+
 #[derive(Clone, Debug)]
 pub struct Run {
     lim: ServoLimits,
@@ -163,6 +208,7 @@ pub struct Run {
     bootstrap: f64,
     class_r_vpc: f64,
     stall_ladder: bool,
+    cal: bool,
     /// A step the run inserted ahead of the order.
     pending: Option<Step>,
     next: usize,
@@ -183,6 +229,7 @@ impl Run {
             rail_mv: lim.vbus as f64 * sc.v_term_per_count * 1000.0,
             class_r_vpc: sc.r_vpc(CLASS_R_MIN),
             stall_ladder: false,
+            cal: false,
             pending: None,
             lim,
             next: 0,
@@ -201,6 +248,31 @@ impl Run {
             stall_ladder: true,
             ..self
         }
+    }
+
+    /// The run `osc cal` takes: the front of the default run, then the
+    /// stops, the traverse and the closing centring. A burst that declines
+    /// leaves R unknown and the run goes on.
+    pub fn for_cal(lim: ServoLimits, sc: &Scales) -> Self {
+        Self {
+            cal: true,
+            ..Self::new(lim, sc)
+        }
+    }
+
+    fn order(&self) -> &'static [Step] {
+        if self.cal { &CAL_ORDER } else { &ORDER }
+    }
+
+    /// Cal's approach, seat and cap: by the plan once R is measured, else
+    /// the duty that moved the shaft, half the class-safe duty and the jam
+    /// check's cap. None before the jam check moved the shaft.
+    pub fn stop_duties(&self) -> Option<(f64, f64, f64)> {
+        let moved = self.free?;
+        Some(match self.plan {
+            Some(p) => (p.seek, p.hold, p.stop_cap),
+            None => (moved, self.bootstrap / 2.0, self.nudge_cap()),
+        })
     }
 
     /// The class-safe duty every drive starts from until R is measured.
@@ -225,7 +297,7 @@ impl Run {
         let step = match self.pending.take() {
             Some(s) => s,
             None => {
-                let Some(&s) = ORDER.get(self.next) else {
+                let Some(&s) = self.order().get(self.next) else {
                     self.over = self.cut.take();
                     return None;
                 };
@@ -251,6 +323,7 @@ impl Run {
                         pre: boot,
                         seek: moved,
                     },
+                    None if self.cal => return self.next_stage(),
                     None if self.stall_ladder => return self.stop_ladder(),
                     None => {
                         let rail_mv = self.rail_mv;
@@ -259,6 +332,35 @@ impl Run {
                 }
             }
             (Step::Resistance, _) => return self.stop_ladder(),
+            (Step::Stops, plan) => {
+                let (Some(moved), Some((approach, seat, cap))) = (self.free, self.stop_duties())
+                else {
+                    return self.end(Over::Unproven);
+                };
+                if let Some(p) = plan
+                    && let Err(Refusal::BreakawayOverLimit { need, .. }) =
+                        self.lim.check_breakaway(moved, p.r_vpc)
+                {
+                    return self.end(Over::BreakawayOverLimit { need });
+                }
+                Stage::Stops {
+                    approach,
+                    seat,
+                    cap,
+                }
+            }
+            (Step::Traverse, _) => match self.stop_duties() {
+                Some((approach, _, _)) => Stage::Traverse { seek: approach },
+                None => return self.end(Over::Unproven),
+            },
+            (Step::Park, _) if self.cal => match self.stop_duties() {
+                Some((approach, _, cap)) => Stage::Centre {
+                    duty: approach,
+                    cap,
+                    nudge: false,
+                },
+                None => return self.end(Over::Unproven),
+            },
             (_, None) => return self.end(Over::Declined("burst")),
             (Step::Breakaway, Some(p)) => Stage::Breakaway { cap: p.stop_cap },
             (Step::Ladder, Some(p)) => Stage::Ladder {
@@ -308,6 +410,11 @@ impl Run {
         match how {
             Ended::Done => {}
             Ended::Declined => match self.at {
+                Some("burst" | "traverse") if self.cal => {}
+                Some(stage) if self.cal => {
+                    self.cut = Some(Over::Declined(stage));
+                    self.finish();
+                }
                 Some("burst") if self.stall_ladder => self.pending = Some(Step::Resistance),
                 Some("resistance") => self.over = Some(Over::ResistanceDeclined),
                 Some(stage) if self.plan.is_some() && stage != "burst" => {
@@ -344,7 +451,7 @@ impl Run {
     /// Skip what is left to the closing centring: a run cut short by
     /// request still ends at mid travel.
     pub fn finish(&mut self) {
-        self.next = self.next.max(ORDER.len() - 1);
+        self.next = self.next.max(self.order().len() - 1);
         self.pending = None;
     }
 
@@ -426,6 +533,24 @@ pub fn ladder_cfg(seek: f64, rungs: &[f64]) -> LadderCfg {
     }
 }
 
+/// Cal's stop finder at a stage's duties.
+pub fn endstop_cfg(approach: f64, seat: f64, cap: f64) -> EndstopCfg {
+    EndstopCfg {
+        approach_q15: q15_floor(approach),
+        seat_q15: q15_floor(seat),
+        cap_q15: q15_floor(cap),
+        ..EndstopCfg::default()
+    }
+}
+
+/// `base` with the traverse's first pass at a stage's seek.
+pub fn sweep_cfg(seek: f64, base: SweepCfg) -> SweepCfg {
+    SweepCfg {
+        seek_duty_q15: q15_floor(seek),
+        ..base
+    }
+}
+
 pub fn inertia_cfg(seek: f64, base: f64, cfg: InertiaCfg) -> InertiaCfg {
     InertiaCfg {
         seek_duty_q15: q15_floor(seek),
@@ -441,10 +566,12 @@ mod tests {
     use crate::exp::bias::{Bias, BiasCfg};
     use crate::exp::breakaway::Breakaway;
     use crate::exp::centre::Centre;
+    use crate::exp::endstop::{Endstop, EndstopResult};
     use crate::exp::inductance::{FitCfg, Inductance, fit_captures};
     use crate::exp::inertia::Inertia;
     use crate::exp::ladder::{Ladder, LadderResult};
     use crate::exp::resistance::Resistance;
+    use crate::exp::sweep::{Captured, Sweep};
     use crate::exp::testkit::{FakeServo, bench_mg90, pump};
     use crate::exp::{Experiment, Guarded, Permitted, RigParams};
     use crate::fits::InertiaPriors;
@@ -762,6 +889,12 @@ mod tests {
         inertia_fit: bool,
         /// The burst measures but its result is taken as declined.
         decline_burst: bool,
+        /// What the jam check first moved the shaft at.
+        moved: Option<f64>,
+        stops: Option<EndstopResult>,
+        captured: Option<Captured>,
+        /// A servo never calibrated: no soft limits, no stops known.
+        virgin: bool,
     }
 
     impl Rig<'_> {
@@ -777,6 +910,10 @@ mod tests {
                 runway: None,
                 inertia_fit: false,
                 decline_burst: false,
+                moved: None,
+                stops: None,
+                captured: None,
+                virgin: false,
             }
         }
 
@@ -796,8 +933,11 @@ mod tests {
 
         fn execute(&mut self, run: &mut Run, stage: &Stage) -> Ended {
             let lim = limits(self.vbus);
-            let params =
-                RigParams::new(Some(lim.guard().unwrap()), lim.abort_default()).with_stops(lim.raw);
+            let params = if self.virgin {
+                RigParams::new(None, lim.abort_default())
+            } else {
+                RigParams::new(Some(lim.guard().unwrap()), lim.abort_default()).with_stops(lim.raw)
+            };
             let base = BurstCfg {
                 repeats: 5,
                 i_max_a: BurstAllowance::i_max_a(),
@@ -812,6 +952,7 @@ mod tests {
                     let exp = Centre::new(centre_cfg(*duty, *cap, *nudge), &params);
                     let (exp, how) = self.go(exp, params.without_pos_guard());
                     if *nudge {
+                        self.moved = exp.moved_at();
                         run.nudged(exp.moved_at());
                     }
                     how
@@ -879,6 +1020,37 @@ mod tests {
                         self.inertia_fit = exp.fit(&priors).is_some();
                     }
                     how
+                }
+                Stage::Stops {
+                    approach,
+                    seat,
+                    cap,
+                } => {
+                    let p = params.without_pos_guard();
+                    let exp = Endstop::new(endstop_cfg(*approach, *seat, *cap), &p);
+                    let (exp, how) = self.go(Permitted::new(exp), p);
+                    match exp.into_inner().result() {
+                        Some(r) if how == Ended::Done && r.refusal().is_none() => {
+                            self.stops = Some(r);
+                            how
+                        }
+                        _ if how == Ended::Done => Ended::Declined,
+                        _ => how,
+                    }
+                }
+                Stage::Traverse { seek } => {
+                    let r = self.stops.expect("the stops");
+                    let stops = (r.pos_min_phys as u16, r.pos_max_phys as u16);
+                    let soft = (!self.virgin).then_some((lim.soft.0 as u16, lim.soft.1 as u16));
+                    let runway = Runway::new(crate::exp::sweep::guard(stops, soft));
+                    let p = RigParams::new(None, lim.abort_default()).with_stops(stops);
+                    let cfg = sweep_cfg(*seek, SweepCfg::default());
+                    let (exp, how) = self.go(Sweep::new(cfg, &p, runway), p);
+                    self.captured = exp.captured();
+                    match exp.declined() {
+                        Some(_) if how == Ended::Done => Ended::Declined,
+                        _ => how,
+                    }
                 }
             };
             self.marks.push((stage.name(), self.log.len()));
@@ -1085,6 +1257,322 @@ mod tests {
             log.last().map(String::as_str),
             Some("write torque_enable 0")
         );
+        assert!(!servo.torque && !servo.permit_live());
+    }
+
+    const CAL_NAMES: [&str; 6] = ["bias", "centring", "burst", "stops", "traverse", "centring"];
+
+    fn cal(vbus: u16) -> Run {
+        Run::for_cal(limits(vbus), &scales())
+    }
+
+    /// The goal duties a log span writes, q15.
+    fn goals(log: &[String]) -> Vec<i32> {
+        log.iter()
+            .filter_map(|l| l.strip_prefix("write goal_duty ")?.parse().ok())
+            .collect()
+    }
+
+    /// Drive cal's sequencer, the jam check moving the shaft at 12%,
+    /// answering each stage with `how`; the burst measures R only when it
+    /// ends Done.
+    fn cal_stages(run: &mut Run, mut how: impl FnMut(&Stage) -> Ended) -> Vec<&'static str> {
+        let mut seen = Vec::new();
+        while let Some(s) = run.next_stage() {
+            seen.push(s.name());
+            let h = how(&s);
+            match s {
+                Stage::Centre { nudge: true, .. } => run.nudged(Some(0.12)),
+                Stage::Burst { .. } if h == Ended::Done => run.measured(R),
+                _ => {}
+            }
+            run.ended(h);
+        }
+        seen
+    }
+
+    /// Cal's order and how it ends: a burst that declines, or a rail too
+    /// high for one, goes on without R; stops that are no stops and a
+    /// traverse that declines still end at mid travel; an abort ends where
+    /// it stands.
+    #[test]
+    fn cal_order_and_its_ends() {
+        let done = |_: &Stage| Ended::Done;
+        let mut r = cal(RAIL_2S);
+        assert_eq!(cal_stages(&mut r, done), CAL_NAMES);
+        assert_eq!(r.over(), None);
+        assert!(r.plan().is_some());
+
+        let mut r = cal(RAIL_2S);
+        let seen = cal_stages(&mut r, |s| match s {
+            Stage::Burst { .. } => Ended::Declined,
+            _ => Ended::Done,
+        });
+        assert_eq!(seen, CAL_NAMES);
+        assert_eq!((r.over(), r.plan()), (None, None));
+
+        let mut r = cal(3800);
+        assert_eq!(
+            cal_stages(&mut r, done),
+            ["bias", "centring", "stops", "traverse", "centring"]
+        );
+        assert_eq!((r.over(), r.plan()), (None, None));
+
+        let mut r = cal(RAIL_2S);
+        let seen = cal_stages(&mut r, |s| match s {
+            Stage::Stops { .. } => Ended::Declined,
+            _ => Ended::Done,
+        });
+        assert_eq!(seen, ["bias", "centring", "burst", "stops", "centring"]);
+        assert_eq!(r.over(), Some(Over::Declined("stops")));
+
+        let mut r = cal(RAIL_2S);
+        let seen = cal_stages(&mut r, |s| match s {
+            Stage::Traverse { .. } => Ended::Declined,
+            _ => Ended::Done,
+        });
+        assert_eq!(seen, CAL_NAMES);
+        assert_eq!(r.over(), None);
+
+        let blocked = AbortReason::Blocked {
+            pos: 1300,
+            moved: 0,
+        };
+        let mut r = cal(RAIL_2S);
+        let seen = cal_stages(&mut r, |s| match s {
+            Stage::Stops { .. } => Ended::Aborted(blocked),
+            _ => Ended::Done,
+        });
+        assert_eq!(seen, CAL_NAMES[..4]);
+        assert_eq!(r.aborted(), Some(("stops", blocked)));
+    }
+
+    /// The bench numbers: limit 280, r 1.775 vcounts per ccount, a shaft
+    /// that first moved at 13%. On 2S the approach is 15%, under the 15.5%
+    /// cap, and the seat 7.76%; on USB the approach is 15% too, under the
+    /// 27.9% cap, and the seat 14.0%.
+    #[test]
+    fn cal_duties_on_the_bench_servo() {
+        for (vbus, want_seat, want_cap) in [(RAIL_2S, 0.0776, 0.1551), (RAIL_USB, 0.1396, 0.2792)] {
+            let mut r = cal(vbus);
+            let mut stops = None;
+            while let Some(s) = r.next_stage() {
+                match s {
+                    Stage::Centre { nudge: true, .. } => r.nudged(Some(0.13)),
+                    Stage::Burst { .. } => r.measured(R),
+                    Stage::Stops {
+                        approach,
+                        seat,
+                        cap,
+                    } => stops = Some((approach, seat, cap)),
+                    _ => {}
+                }
+                r.ended(Ended::Done);
+            }
+            let (approach, seat, cap) = stops.expect("a stops stage");
+            assert!((approach - 0.15).abs() < 1e-9, "{vbus}: {approach}");
+            assert!((seat - want_seat).abs() < 1e-4, "{vbus}: {seat}");
+            assert!((cap - want_cap).abs() < 1e-4, "{vbus}: {cap}");
+            let stall = |d: f64| crate::limits::stall_counts(d, R, vbus as f64);
+            assert!(stall(approach) <= LIM as f64);
+            assert!((stall(seat) - LIM as f64 / 2.0).abs() < 1e-9);
+        }
+    }
+
+    /// A normal cal on the bench servo, both rails, re-calibrating a servo
+    /// whose stops are known: the jam check moves the shaft, the burst
+    /// measures R, and each stop is approached at the duty that moved it
+    /// plus the seek margin, capped at the stall-safe duty: on 2S the jam
+    /// check's 14.5% plus 2% is over the cap the measured R allows, on USB
+    /// 17.1% plus 2% is under it. The stall permit is held only while the
+    /// stops are found; the run captures the ripple and ends at mid travel
+    /// with torque off.
+    #[test]
+    fn cal_approaches_at_the_duty_that_moved() {
+        for (vbus, moved, capped) in [(RAIL_2S, 0.1452, true), (RAIL_USB, 0.1713, false)] {
+            let mut servo = bench_servo(vbus);
+            servo.pos = 2600.0;
+            let mut run = cal(vbus);
+            let mut rig = Rig::new(&mut servo, vbus);
+            rig.run(&mut run);
+            assert_eq!(run.over(), None, "{vbus}: {:?}", run.over());
+            let names: Vec<&str> = rig.marks.iter().map(|m| m.0).collect();
+            assert_eq!(names, CAL_NAMES);
+            let m = rig.moved.expect("the jam check moved the shaft");
+            assert!((m - moved).abs() < 5e-4, "{vbus}: moved at {m}");
+            let plan = run.plan().expect("R from the burst");
+            let want = (m + DutyPlan::SEEK_MARGIN).min(plan.stop_cap);
+            assert_eq!(want == plan.stop_cap, capped, "{vbus}: {want}");
+            assert_eq!(
+                goals(rig.span(3, 4))[0],
+                -(q15_floor(want) as i32),
+                "{vbus}"
+            );
+            let r = rig.stops.expect("the stops");
+            assert_eq!((r.pos_min_phys, r.pos_max_phys), (209, 3849));
+            assert!(r.drive_polarity);
+            assert!(rig.captured.is_some(), "{vbus}: no ripple captured");
+            let permit = |l: &String| l.starts_with("write stall_permit");
+            assert!(rig.span(3, 4).iter().any(permit));
+            assert!(!rig.span(0, 3).iter().any(permit) && !rig.span(4, 6).iter().any(permit));
+            assert!(!servo.torque && !servo.permit_live());
+            assert!((servo.pos - 2029.0).abs() <= 310.0, "ends at {}", servo.pos);
+        }
+    }
+
+    /// A servo never calibrated: no stops known, no soft limits. The same
+    /// run finds them, captures the ripple, and ends at mid travel.
+    #[test]
+    fn cal_finds_the_stops_on_a_virgin_servo() {
+        let mut servo = bench_servo(RAIL_2S);
+        servo.soft = None;
+        servo.pos = 2600.0;
+        let mut run = cal(RAIL_2S);
+        let mut rig = Rig::new(&mut servo, RAIL_2S);
+        rig.virgin = true;
+        rig.run(&mut run);
+        assert_eq!(run.over(), None, "{:?}", run.over());
+        let r = rig.stops.expect("the stops");
+        assert_eq!((r.pos_min_phys, r.pos_max_phys), (209, 3849));
+        assert_eq!(r.refusal(), None);
+        assert!(rig.captured.is_some());
+        assert!(!servo.torque && !servo.permit_live());
+        assert!((servo.pos - 2048.0).abs() <= 310.0, "ends at {}", servo.pos);
+    }
+
+    /// Replayed on the bench servo: toward a stop the only duty ever
+    /// commanded is the one approach duty. The stop finder writes it, the
+    /// lower seat duty and nothing else; the traverse's first pass to the
+    /// low end runs at it, and so does the closing centring.
+    #[test]
+    fn cal_never_escalates_toward_a_stop() {
+        for vbus in [RAIL_2S, RAIL_USB] {
+            let mut servo = bench_servo(vbus);
+            servo.pos = 2600.0;
+            let mut run = cal(vbus);
+            let mut rig = Rig::new(&mut servo, vbus);
+            rig.run(&mut run);
+            assert_eq!(run.over(), None, "{vbus}");
+            let (approach, seat, _) = run.stop_duties().unwrap();
+            let (a, s) = (q15_floor(approach) as i32, q15_floor(seat) as i32);
+            let mut stops: Vec<i32> = goals(rig.span(3, 4)).iter().map(|d| d.abs()).collect();
+            stops.sort_unstable();
+            stops.dedup();
+            assert_eq!(stops, [0, s, a], "{vbus}");
+            let traverse = goals(rig.span(4, 5));
+            assert_eq!(traverse[0], -a, "{vbus}: the first pass");
+            let brake = crate::runway::BRAKE_DUTY_Q15 as i32;
+            let run_q15 = SweepCfg::default().duty_q15 as i32;
+            for d in &traverse {
+                assert!([0, -a, brake, -brake, run_q15].contains(d), "{vbus}: {d}");
+            }
+            assert!(
+                goals(rig.span(5, 6))
+                    .iter()
+                    .all(|d| d.abs() == a || *d == 0),
+                "{vbus}: the closing centring"
+            );
+        }
+    }
+
+    /// A shaft that sticks until 15% on 2S: the jam check's raise past
+    /// 14.5% moves it at 17%, whose stall draws 307 counts, over the
+    /// 280-count limit. Once R is known cal refuses, before anything drives
+    /// at a stop, and nothing holds the permit.
+    #[test]
+    fn cal_refuses_when_breakaway_is_over_the_limit() {
+        let mut servo = bench_servo(RAIL_2S);
+        servo.pos = 2600.0;
+        servo.breakaway_q15 = 4915;
+        let mut run = cal(RAIL_2S);
+        let mut rig = Rig::new(&mut servo, RAIL_2S);
+        rig.run(&mut run);
+        let names: Vec<&str> = rig.marks.iter().map(|m| m.0).collect();
+        assert_eq!(names, CAL_NAMES[..3]);
+        let Some(Over::BreakawayOverLimit { need }) = run.over() else {
+            panic!("{:?}", run.over());
+        };
+        let m = rig.moved.unwrap();
+        let r = run.plan().expect("R from the burst").r_vpc;
+        assert!((m - 0.1702).abs() < 5e-4, "moved at {m}");
+        let stall = crate::limits::stall_counts(m, r, RAIL_2S as f64);
+        assert!((need - stall).abs() < 1e-9 && need > LIM as f64, "{need}");
+        // by the true 4.9 ohm: 307 counts
+        let lim = limits(RAIL_2S);
+        let why = Refusal::BreakawayOverLimit {
+            need: crate::limits::stall_counts(m, R, RAIL_2S as f64),
+            i_lim: lim.i_lim,
+            ma: lim.ma(),
+        };
+        assert_eq!(
+            why.to_string(),
+            "this servo needs about 275 mA to start moving, over its current limit of 251 mA: \
+             raise the limit or free the mechanism"
+        );
+        assert!(!rig.log.iter().any(|l| l.starts_with("write stall_permit")));
+        assert_eq!(servo.pressed_ms, 0.0);
+        assert!(!servo.torque);
+        assert!((servo.pos - 2029.0).abs() <= 310.0, "ends at {}", servo.pos);
+    }
+
+    /// The burst declines, so R is unknown: cal takes the stops without it,
+    /// approached at the duty that moved the shaft and seated at half the
+    /// class-safe duty, 4.76% on 2S, and still ends at mid travel.
+    #[test]
+    fn cal_without_r_seats_at_the_class_half_duty() {
+        let mut servo = bench_servo(RAIL_2S);
+        servo.pos = 2600.0;
+        let mut run = cal(RAIL_2S);
+        let boot = run.bootstrap();
+        let mut rig = Rig::new(&mut servo, RAIL_2S);
+        rig.decline_burst = true;
+        rig.run(&mut run);
+        assert_eq!((run.over(), run.plan()), (None, None));
+        let names: Vec<&str> = rig.marks.iter().map(|m| m.0).collect();
+        assert_eq!(names, CAL_NAMES);
+        let m = rig.moved.unwrap();
+        assert!((boot / 2.0 - 0.0476).abs() < 1e-3);
+        assert_eq!(
+            goals(rig.span(3, 4))[..2],
+            [-(q15_floor(m) as i32), -(q15_floor(boot / 2.0) as i32)]
+        );
+        let r = rig.stops.expect("the stops");
+        assert_eq!((r.pos_min_phys, r.pos_max_phys), (209, 3849));
+        assert!(!servo.torque && !servo.permit_live());
+        assert!((servo.pos - 2029.0).abs() <= 310.0, "ends at {}", servo.pos);
+    }
+
+    /// A shaft locked at mid travel: the jam check raises to its cap and
+    /// gives up, and cal ends there with the blocked message and torque
+    /// off. Nothing but the drive's own control fields was ever written:
+    /// no config, no calib, no position table, no permit.
+    #[test]
+    fn cal_on_a_jammed_shaft_writes_nothing() {
+        let mut servo = bench_servo(RAIL_2S);
+        servo.pos = 2048.0;
+        servo.jam = Some(2048.0);
+        let mut run = cal(RAIL_2S);
+        let mut rig = Rig::new(&mut servo, RAIL_2S);
+        rig.run(&mut run);
+        let names: Vec<&str> = rig.marks.iter().map(|m| m.0).collect();
+        assert_eq!(names, ["bias", "centring"]);
+        let (stage, reason) = run.aborted().expect("aborted");
+        assert_eq!(stage, "centring");
+        assert_eq!(
+            reason.to_string(),
+            "the shaft is blocked or the position sensor is not reading (pos 2048, moved 0 \
+             counts)"
+        );
+        let controls =
+            crate::regs::control::TORQUE_ENABLE.addr..=crate::regs::control::BURST_CHANS.addr;
+        for l in &rig.log {
+            let Some(name) = l.strip_prefix("write ").and_then(|w| w.split(' ').next()) else {
+                panic!("not a write: {l}");
+            };
+            let reg = crate::regs::ALL.iter().find(|r| r.0 == name).unwrap().1;
+            assert!(controls.contains(&reg.addr), "{l}");
+            assert_ne!(name, "stall_permit");
+        }
         assert!(!servo.torque && !servo.permit_live());
     }
 }

@@ -3,42 +3,61 @@
 //! range with the operator, print the count->unit report, then write the
 //! limits + pot stops + angle endpoints + gear, stamp the set and persist
 //! with MGMT SAVE.
+//!
+//! The stops are found gently, in the order osc-ident's `Run::for_cal`
+//! names: the jam check and a burst for winding R at mid travel, then each
+//! stop approached at one duty whose stall the current limit holds and
+//! read seated at half the limit. A servo that needs more than its limit to
+//! start moving is refused before anything drives at a stop; a burst that
+//! measures no R leaves the stops to the duty that moved the shaft. A
+//! refusal or an abort writes nothing to config, calib or the position
+//! table.
+//!
 //! Interactive by default; flags make it headless. The rail-to-rail traverse
-//! streams a TEL current+pos sweep as one bus burst: its commutation ripple
+//! streams a TEL current+pos sweep in bus bursts: its commutation ripple
 //! gives a MEASURED gear ratio (the gear prompt's default), gear-2-dependent
 //! and degrading gracefully (operator-input gear) when ripple SNR is low.
-//! The position table is not cal's to write: a new table re-defines the
-//! domain the identified constants were fitted in, so it travels with an
-//! ident; cal only re-COMMITs a LIVE one against the stops it just moved.
-//! The endstop state machine and the kinematics/units math live in
+//! The traverse runs free inside the stops and brakes short of them by the
+//! runway rule. The position table is not cal's to write: a new table
+//! re-defines the domain the identified constants were fitted in, so it
+//! travels with an ident; cal only re-COMMITs a LIVE one against the stops
+//! it just moved. The experiments and the kinematics/units math live in
 //! osc-ident; this wrapper owns USB, prompts, and files.
 
 pub mod replay;
 
 use std::path::Path;
-use std::sync::atomic::Ordering;
-use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use dialoguer::{Confirm, Input};
 use osc_client::Id;
 use osc_client::blocking::Client;
+use osc_client::descriptor::Descriptor;
 use osc_client::nusb::NusbPipe;
+use osc_client::pipe::Pipe;
 use osc_client::pos_lut;
-use osc_ident::exp::endstop::{Endstop, EndstopCfg, EndstopResult};
-use osc_ident::exp::seek::{self, Watch};
-use osc_ident::exp::sweep::{Sweep, SweepCfg};
-use osc_ident::exp::{Guarded, Permitted, RigParams};
+use osc_ident::exp::bias::{Bias, BiasCfg};
+use osc_ident::exp::centre::{Centre, CentreCfg};
+use osc_ident::exp::endstop::{Endstop, EndstopResult};
+use osc_ident::exp::inductance::{Cfg as InductanceCfg, FitCfg, Inductance, fit_captures};
+use osc_ident::exp::rl::Scales;
+use osc_ident::exp::sweep::{self as traverse, Sweep, SweepCfg};
+use osc_ident::exp::{Experiment, Guarded, Permitted, RigParams};
 use osc_ident::frame::TelFrame;
+use osc_ident::gains;
 use osc_ident::kinematics::{self, KinematicsResult, angle_endpoints};
-use osc_ident::limits::ServoLimits;
+use osc_ident::limits::{BurstAllowance, Refusal, ServoLimits};
 use osc_ident::lut::{self, stitched_motor_revs};
-use osc_ident::regs::{calib, config, control};
+use osc_ident::regs::{Reg, calib, config};
+use osc_ident::run::{self as order, Ended, Over, Run, Stage};
+use osc_ident::runway::{Runway, Supply};
 use osc_ident::slip;
+use osc_ident::sources;
 use osc_ident::units::{self, SenseParams};
 
+use crate::capture::envelope;
 use crate::rig::csvio::{self, OutDir, SnapshotLog};
-use crate::rig::pump::{self, Pump, read_snapshot, with_guard, write_reg};
+use crate::rig::pump::{Pump, with_guard, write_reg};
 use crate::rig::snapshot::{self, read_u16};
 use crate::rig::{Aborted, check_abort};
 
@@ -90,15 +109,20 @@ pub struct Args {
 
 /// Entry from the top-level `osc cal` dispatch.
 pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
-    pump::install_ctrlc();
+    crate::rig::pump::install_ctrlc();
     let mut c = crate::rig::connect(&baud)?;
     let id = Id::new(id);
     let d = crate::state::descriptor(&mut c, id)?;
     crate::state::warn(&mut c, id, &d)?;
     let lim = crate::rig::limits::read(&mut c, id)?;
-    lim.check_stall("the stop seek", EndstopCfg::default().seek_duty_q15)?;
 
     let sense = read_sense(&mut c, id)?;
+    let sc = Scales::from_sense(
+        &sense,
+        read_u16(&mut c, id, calib::VBUS_DIV_TOP_OHM)?,
+        read_u16(&mut c, id, calib::VBUS_DIV_BOT_OHM)?,
+    )
+    .context("CalibSense scales degenerate (shunt/gain/dividers/vdd)")?;
     // TEL frames arrive one per fast tick, so tick_hz is the sweep sample rate.
     let fs = sense.tick_hz as f64;
     let ke_vpc_q = read_u16(&mut c, id, calib::KE_VPC_Q)?;
@@ -116,31 +140,17 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     }
 
     let out = OutDir::create(args.out.as_deref().unwrap_or(Path::new("./cal-out")))?;
-    let r = run_endstop(&mut c, id, &out, &lim)?;
+    let Found { stops: r, tel } = find_stops(&mut c, id, &out, lim, sc, fs)?;
     let EndstopResult {
         pos_min_phys,
         pos_max_phys,
-        drive_polarity,
-        i_stall_counts,
         ..
     } = r;
-    let span = pos_max_phys - pos_min_phys;
-    println!(
-        "rails: min {pos_min_phys} max {pos_max_phys} span {span} counts, polarity {}, stall {i_stall_counts} counts",
-        if drive_polarity { "normal" } else { "reversed" },
-    );
-    // Written before the operator confirms so the sweep and recenter below
-    // drive in the logical convention; RAM only until SAVE, and the value is
-    // the physical truth whether or not the rest is accepted.
-    write_reg(&mut c, id, config::DRIVE_POLARITY, drive_polarity as i32)?;
 
-    // Dedicated constant-duty traverse = the ripple source, captured as one
-    // bus burst. A real capture can still fragment on dropped frames
-    // (16-tick holes), so the anchor stitches ALL chunks
-    // (build_sweep_chunks) over the shared pos axis; the single longest run
-    // (build_sweep) is kept only for the slip health-check and the
-    // moving-run print.
-    let tel = run_sweep(&mut c, id, pos_min_phys, pos_max_phys, &out)?;
+    // The traverse's bursts can still fragment on dropped frames (16-tick
+    // holes), so the anchor stitches ALL chunks (build_sweep_chunks) over
+    // the shared pos axis; the single longest run (build_sweep) is kept only
+    // for the slip health-check and the moving-run print.
     let sweep = build_sweep(&tel);
     let chunks = build_sweep_chunks(&tel);
     match &sweep {
@@ -151,8 +161,6 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
         ),
         None => println!("[sweep] {} tel frames, no usable moving run", tel.len()),
     }
-
-    recenter(&mut c, id, pos_min_phys, pos_max_phys)?;
 
     // Full-traverse motor revs from the ripple sweep: anchor-free geometry,
     // stitched over all chunks and extrapolated from the covered phase span to
@@ -240,22 +248,52 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
 
     // snapshot the calib + gain block before any write (rollback safety)
     snapshot::take_snapshot(&mut c, id, &out.0.join("snapshot.json"))?;
+    let set = Calibration {
+        phys: (pos_min_phys, pos_max_phys),
+        soft: (soft_min_count, soft_max_count),
+        angle_cdeg: (angle_min_cdeg as i32, angle_max_cdeg as i32),
+        gear_ratio_centi,
+    };
+    write_calibration(&mut c, id, &d, &set)
+}
 
-    write_reg(&mut c, id, config::POS_MIN_PHYS_COUNTS, pos_min_phys)?;
-    write_reg(&mut c, id, config::POS_MAX_PHYS_COUNTS, pos_max_phys)?;
-    write_reg(&mut c, id, config::POS_MIN_SOFT_COUNTS, soft_min_count)?;
-    write_reg(&mut c, id, config::POS_MAX_SOFT_COUNTS, soft_max_count)?;
-    write_reg(&mut c, id, calib::RAW_MIN, pos_min_phys)?;
-    write_reg(&mut c, id, calib::RAW_MAX, pos_max_phys)?;
-    write_reg(&mut c, id, calib::ANGLE_MIN_CDEG, angle_min_cdeg as i32)?;
-    write_reg(&mut c, id, calib::ANGLE_MAX_CDEG, angle_max_cdeg as i32)?;
-    write_reg(&mut c, id, calib::GEAR_RATIO_CENTI, gear_ratio_centi as i32)?;
+/// What cal writes once the operator accepts it.
+struct Calibration {
+    /// The stops, counts: CONFIG's phys limits and CALIB's pot stops.
+    phys: (i32, i32),
+    soft: (i32, i32),
+    angle_cdeg: (i32, i32),
+    gear_ratio_centi: u16,
+}
+
+/// Write the calibration, re-COMMIT a LIVE position table against the stops
+/// it moved, stamp the set and SAVE.
+fn write_calibration<P: Pipe>(
+    c: &mut Client<P>,
+    id: Id,
+    d: &Descriptor,
+    set: &Calibration,
+) -> Result<()> {
+    let writes: [(Reg, i32); 9] = [
+        (config::POS_MIN_PHYS_COUNTS, set.phys.0),
+        (config::POS_MAX_PHYS_COUNTS, set.phys.1),
+        (config::POS_MIN_SOFT_COUNTS, set.soft.0),
+        (config::POS_MAX_SOFT_COUNTS, set.soft.1),
+        (calib::RAW_MIN, set.phys.0),
+        (calib::RAW_MAX, set.phys.1),
+        (calib::ANGLE_MIN_CDEG, set.angle_cdeg.0),
+        (calib::ANGLE_MAX_CDEG, set.angle_cdeg.1),
+        (calib::GEAR_RATIO_CENTI, set.gear_ratio_centi as i32),
+    ];
+    for (reg, value) in writes {
+        write_reg(c, id, reg, value)?;
+    }
 
     // The servo validates a table only at COMMIT and at boot: without this
     // a LIVE table keeps running against the old stops, the stamp below
     // blesses it, and the reboot that fails it lands STAMP_MISMATCH.
-    if c.pos_lut_state(id, &d)? == pos_lut::state::LIVE {
-        match c.recommit_pos_lut(id, &d)? {
+    if c.pos_lut_state(id, d)? == pos_lut::state::LIVE {
+        match c.recommit_pos_lut(id, d)? {
             pos_lut::state::LIVE => println!("position table: still fits the new stops, LIVE"),
             s => println!(
                 "position table: no longer fits the new stops ({}); the kernel runs the identity - `osc lut build`, `osc lut write` and `osc ident` put a table back",
@@ -263,7 +301,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
             ),
         }
     }
-    crate::state::commit(&mut c, id, &d, true)?;
+    crate::state::commit(c, id, d, true)?;
     Ok(())
 }
 
@@ -453,243 +491,382 @@ fn read_sense(c: &mut Client<NusbPipe>, id: Id) -> Result<SenseParams> {
     })
 }
 
-/// Polarity forced normal for the seek: the probe must see the raw wiring,
-/// or a stale reversed flag makes a reversed servo read as normal and cal
-/// flips it back. Any failure restores the old flag, since a reversed servo
-/// left at 1 drives the wrong way and clamps the wrong endstop side.
-fn run_endstop(
+fn pct(duty: f64) -> String {
+    format!("{:.1}%", duty * 100.0)
+}
+
+/// What cal's run found: the stops, and the traverse's frames.
+struct Found {
+    stops: EndstopResult,
+    tel: Vec<TelFrame>,
+}
+
+/// Cal's run, in the order osc-ident's [`Run::for_cal`] names: bias, the
+/// jam check and the burst for R at mid travel, the stops, the ripple
+/// traverse, and back to mid travel. The first abort ends it, torque off;
+/// a refusal ends it before anything drives at a stop. Of config, calib
+/// and the position table only the drive polarity is written here, and
+/// only once both stops are found.
+fn find_stops(
     c: &mut Client<NusbPipe>,
     id: Id,
     out: &OutDir,
-    lim: &ServoLimits,
-) -> Result<EndstopResult> {
+    lim: ServoLimits,
+    sc: Scales,
+    tick_hz: f64,
+) -> Result<Found> {
     let polarity = c
         .read(id, config::DRIVE_POLARITY.addr, 1)
-        .context("field read")?[0];
-    write_reg(c, id, config::DRIVE_POLARITY, 1)?;
-    let r = seek_rails(c, id, out, lim);
-    if r.is_err() {
-        let _ = write_reg(c, id, config::DRIVE_POLARITY, polarity as i32);
-    }
-    r
-}
-
-fn seek_rails(
-    c: &mut Client<NusbPipe>,
-    id: Id,
-    out: &OutDir,
-    lim: &ServoLimits,
-) -> Result<EndstopResult> {
-    println!("[endstop] seeking both rails (pos guard off, stall permit held)");
-    // pos guard off: driving into the physical ends IS the method. The
-    // firmware zeroes outbound OpenLoop duty at the soft limits, and a
-    // recalibrated servo's stops sit past them: the permit opens them.
-    let params = RigParams::new(None, lim.abort_default());
-    let mut log = SnapshotLog::create(out, "endstop_snapshots.csv")?;
-    let mut exp = Guarded::new(
-        Permitted::new(Endstop::new(EndstopCfg::default(), &params)),
-        params,
-    );
-    // parks safe whether the run finished, errored, or was ctrl-c'd
-    with_guard(c, id, |c| Pump::new(c, id, Some(&mut log)).run(&mut exp))?;
-    check_abort("the stop seek", exp.abort())?;
-    let r = exp
-        .into_inner()
-        .into_inner()
-        .result()
-        .context("endstop did not reach both rails - no writes")?;
-    if let Some(why) = r.refusal() {
-        bail!("{why}; no writes");
-    }
-    Ok(r)
-}
-
-/// One dedicated constant-duty ripple capture: goal + TEL arm in one COMMIT
-/// (the Sweep experiment's burst), so the whole traverse lands as one
-/// tick-contiguous run. The motion stays strictly between count-insets from
-/// both rails, so the clone's end-jam is never reached: positioning + a
-/// speed probe run first (polling is free before the arm), then the burst
-/// is sized from the probed speed. The ~3% inset clears the rail jam yet
-/// leaves ~94% of travel captured (still passes the LUT coverage gate).
-/// The decoded frames land in sweep_tel.csv - cal-replay's input.
-fn run_sweep(
-    c: &mut Client<NusbPipe>,
-    id: Id,
-    pos_min_phys: i32,
-    pos_max_phys: i32,
-    out: &OutDir,
-) -> Result<Vec<TelFrame>> {
-    const DUTY: i16 = 8520;
-    let span = (pos_max_phys - pos_min_phys) as f64;
-    let inset = (span * 0.03).max(80.0) as i32;
-    let mut start = pos_min_phys + inset;
-    let mut end = pos_max_phys - inset;
-    if end <= start {
-        // travel too short for an inset capture: fall back to the rails rather
-        // than crossing over (capture_ms still clamps the duration).
-        start = pos_min_phys;
-        end = pos_max_phys;
-    }
-    // speed probe: drive AWAY from the nearer rail (toward the interior)
-    // for a short window so the probe itself never reaches a stop.
-    let mid = (pos_min_phys + pos_max_phys) / 2;
-    let here = read_snapshot(c, id)?.pos as i32;
-    let probe_sign = if here < mid { 1 } else { -1 };
-    let speed = probe_speed(c, id, DUTY, probe_sign, 150)?;
-
-    // position to the capture start rail-inset (polling free before the arm)
-    drive_to(c, id, start, DUTY)?;
-
-    let ms = capture_ms(end as f64 - start as f64, speed, 0.95);
-    // 20 fast ticks per ms; TEL_COUNT is u16, so the arm caps at ~3.2 s
-    let samples = ms.saturating_mul(20).min(u16::MAX as u32) as u16;
-    println!(
-        "[sweep] capture {ms} ms ({samples} samples) over counts {start}..{end} (speed {speed:.0} cps)"
-    );
-
-    let mut exp = Sweep::new(
-        SweepCfg {
-            duty_q15: DUTY,
-            samples,
-            // 0x1B = pos|current|duty|vdiff (same TEL mask as ident inertia)
-            mask: 0x1B,
-        },
-        1,
-    );
-    let mut pump = Pump::new(c, id, None);
-    let ran = pump.run(&mut exp);
-    let tel = std::mem::take(&mut pump.tel);
-    // park safe whether the run finished, errored, or was ctrl-c'd
-    let _ = write_reg(c, id, control::GOAL_DUTY, 0);
-    let _ = write_reg(c, id, control::TORQUE_ENABLE, 0);
-    ran?;
-    csvio::write_tel_frames(out, "sweep_tel.csv", &tel)?;
-    println!(
-        "[sweep] decoded frames -> {}",
-        out.0.join("sweep_tel.csv").display()
-    );
-    Ok(tel)
-}
-
-/// Drive to the rail midpoint so the servo does not rest on a hard stop.
-/// Best-effort: drives the duty sign toward the midpoint, parks torque-off on
-/// arrival, and gives up quietly after the loop - except on a shaft that
-/// comes to rest short of the midpoint, which is blocked.
-fn recenter(c: &mut Client<NusbPipe>, id: Id, pos_min: i32, pos_max: i32) -> Result<()> {
-    const DUTY: i32 = 9000;
-    let mid = (pos_min + pos_max) / 2;
-    let margin = ((pos_max - pos_min) / 10).max(1);
-    let lo = (mid - margin).clamp(0, u16::MAX as i32) as u16;
-    let hi = (mid + margin).clamp(0, u16::MAX as i32) as u16;
-    let park = |c: &mut Client<NusbPipe>| {
-        let _ = write_reg(c, id, control::GOAL_DUTY, 0);
-        let _ = write_reg(c, id, control::TORQUE_ENABLE, 0);
+        .context("field read")?[0]
+        != 0;
+    let mut cal = Cal {
+        lim,
+        sc,
+        tick_hz,
+        out,
+        known: (lim.calibrated() && lim.raw.0 < lim.raw.1).then_some(lim.raw),
+        polarity,
+        stops: None,
+        refused: None,
+        tel: Vec::new(),
     };
-    write_reg(c, id, control::MODE, 0)?;
-    write_reg(c, id, control::TORQUE_ENABLE, 1)?;
-    let mut watch = None;
-    for _ in 0..200 {
-        if pump::STOP.load(Ordering::SeqCst) {
-            park(c);
-            bail!("interrupted");
-        }
-        let pos = read_snapshot(c, id)?.pos;
-        if (lo..=hi).contains(&pos) {
-            park(c);
-            return Ok(());
-        }
-        let w = watch.get_or_insert_with(|| Watch::new(pos, seek::STALL_EPS, seek::STALL_POLLS));
-        if w.still(pos) {
-            park(c);
-            return Err(Aborted {
-                what: "the recentre",
-                reason: seek::blocked(w.start(), pos),
+    let mut run = Run::for_cal(lim, &sc);
+    while let Some(stage) = run.next_stage() {
+        match cal.stage(&stage, &mut run, c, id) {
+            Ok(how) => run.ended(how),
+            Err(e) => {
+                if let Some(a) = e.downcast_ref::<Aborted>() {
+                    run.ended(Ended::Aborted(a.reason));
+                }
+                return Err(e);
             }
-            .into());
         }
-        let duty = if (pos as i32) < mid { DUTY } else { -DUTY };
-        write_reg(c, id, control::GOAL_DUTY, duty)?;
-        std::thread::sleep(Duration::from_millis(25));
     }
-    park(c);
-    println!("[recenter] did not reach mid-travel (gear slip?), left parked");
-    Ok(())
+    match run.over() {
+        None => {}
+        Some(Over::BreakawayOverLimit { need }) => bail!(
+            "{}",
+            Refusal::BreakawayOverLimit {
+                need,
+                i_lim: lim.i_lim,
+                ma: lim.ma(),
+            }
+        ),
+        Some(Over::Declined(_)) => bail!(
+            "{}; no writes",
+            cal.refused.as_deref().unwrap_or("the stops were not found")
+        ),
+        Some(Over::Unproven) => {
+            bail!("the jam check never saw the shaft move, so cal cannot look for the stops")
+        }
+        Some(other) => bail!("cal ended early ({other:?}); no writes"),
+    }
+    let stops = cal.stops.context("cal found no stops; no writes")?;
+    Ok(Found {
+        stops,
+        tel: cal.tel,
+    })
 }
 
-/// Measure traverse speed (counts/s) at the capture duty over a short window
-/// (no burst armed, so pos polling is free). Drives one fixed duty for `ms` and divides
-/// the pos delta by the elapsed time. Leaves duty 0 + torque ON (the caller
-/// positions next); ctrl-c parks duty 0 + torque off and bails.
-fn probe_speed(c: &mut Client<NusbPipe>, id: Id, duty_q15: i16, sign: i8, ms: u32) -> Result<f64> {
-    let park = |c: &mut Client<NusbPipe>| {
-        let _ = write_reg(c, id, control::GOAL_DUTY, 0);
-        let _ = write_reg(c, id, control::TORQUE_ENABLE, 0);
-    };
-    if pump::STOP.load(Ordering::SeqCst) {
-        park(c);
-        bail!("interrupted");
-    }
-    write_reg(c, id, control::MODE, 0)?;
-    write_reg(c, id, control::TORQUE_ENABLE, 1)?;
-    let p0 = read_snapshot(c, id)?.pos as f64;
-    write_reg(c, id, control::GOAL_DUTY, sign as i32 * duty_q15 as i32)?;
-    std::thread::sleep(Duration::from_millis(ms as u64));
-    if pump::STOP.load(Ordering::SeqCst) {
-        park(c);
-        bail!("interrupted");
-    }
-    let p1 = read_snapshot(c, id)?.pos as f64;
-    write_reg(c, id, control::GOAL_DUTY, 0)?;
-    Ok((p1 - p0).abs() / (ms as f64 / 1000.0))
+struct Cal<'a> {
+    lim: ServoLimits,
+    sc: Scales,
+    tick_hz: f64,
+    out: &'a OutDir,
+    /// The stops an earlier cal found; None on a servo never calibrated.
+    known: Option<(u16, u16)>,
+    /// The drive polarity in force.
+    polarity: bool,
+    stops: Option<EndstopResult>,
+    /// Why the stops found are no stops.
+    refused: Option<String>,
+    tel: Vec<TelFrame>,
 }
 
-/// Closed-loop drive toward a target count. Polls pos, picks the duty
-/// sign toward target, and stops within a small band.
-/// Leaves duty 0 + torque ON (holds position for the capture that follows);
-/// ctrl-c parks duty 0 + torque off and bails.
-fn drive_to(c: &mut Client<NusbPipe>, id: Id, target: i32, duty_q15: i16) -> Result<()> {
-    // fixed band, well inside the >=80 count rail inset so we never settle on
-    // (or overshoot into) a stop.
-    const BAND: i32 = 40;
-    let duty = duty_q15 as i32;
-    let park = |c: &mut Client<NusbPipe>| {
-        let _ = write_reg(c, id, control::GOAL_DUTY, 0);
-        let _ = write_reg(c, id, control::TORQUE_ENABLE, 0);
-    };
-    write_reg(c, id, control::MODE, 0)?;
-    write_reg(c, id, control::TORQUE_ENABLE, 1)?;
-    for _ in 0..200 {
-        if pump::STOP.load(Ordering::SeqCst) {
-            park(c);
-            bail!("interrupted");
+impl Cal<'_> {
+    /// The rig before this run found the stops: the soft limits' guard and
+    /// the stops of an earlier cal, when there was one.
+    fn params(&self) -> RigParams {
+        let p = RigParams::new(self.lim.guard().ok(), self.lim.abort_default());
+        match self.known {
+            Some(s) => p.with_stops(s),
+            None => p,
         }
-        let pos = read_snapshot(c, id)?.pos as i32;
-        if (pos - target).abs() <= BAND {
-            write_reg(c, id, control::GOAL_DUTY, 0)?;
-            return Ok(());
-        }
-        let d = if pos < target { duty } else { -duty };
-        write_reg(c, id, control::GOAL_DUTY, d)?;
-        std::thread::sleep(Duration::from_millis(25));
     }
-    write_reg(c, id, control::GOAL_DUTY, 0)?;
-    println!("[sweep] drive_to did not reach start inset (gear slip?), capturing from here");
-    Ok(())
+
+    fn found(&self) -> Option<(u16, u16)> {
+        self.stops
+            .map(|r| (r.pos_min_phys as u16, r.pos_max_phys as u16))
+    }
+
+    fn stage(
+        &mut self,
+        stage: &Stage,
+        run: &mut Run,
+        c: &mut Client<NusbPipe>,
+        id: Id,
+    ) -> Result<Ended> {
+        match stage {
+            Stage::Bias => {
+                println!("[bias] torque off: the current zero and the position noise");
+                let p = self.params().without_pos_guard();
+                let mut exp = Guarded::new(Bias::new(BiasCfg::default(), &p), p);
+                drive(c, id, self.out, &mut exp, None)?;
+                check_abort("bias", exp.abort())?;
+            }
+            Stage::Centre {
+                duty,
+                cap,
+                nudge: true,
+            } => {
+                println!(
+                    "[jam check] out and back at mid travel from {}, raised up to {} while the \
+                     shaft does not move",
+                    pct(*duty),
+                    pct(*cap)
+                );
+                let cfg = order::centre_cfg(*duty, *cap, true);
+                let moved = centre(c, id, self.out, cfg, self.params(), "the jam check")?;
+                if let Some(m) = moved {
+                    println!("  the shaft moves at {}", pct(m));
+                }
+                run.nudged(moved);
+            }
+            Stage::Centre { duty, cap, .. } => {
+                println!("[centring] back to mid travel at {}", pct(*duty));
+                let p = match self.found() {
+                    Some(s) => RigParams::new(Some(s), self.lim.abort_default()).with_stops(s),
+                    None => self.params(),
+                };
+                let cfg = order::centre_cfg(*duty, *cap, false);
+                centre(c, id, self.out, cfg, p, "centring")?;
+            }
+            Stage::Burst { rungs, pre, seek } => {
+                let base = InductanceCfg {
+                    repeats: 5,
+                    i_max_a: BurstAllowance::i_max_a(),
+                    ..InductanceCfg::default()
+                };
+                let cfg = order::burst_cfg(rungs, *pre, *seek, base);
+                println!(
+                    "[burst] winding R from short bursts at mid travel at {}",
+                    cfg.step_pct
+                        .iter()
+                        .map(|p| format!("{p}%"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                let p = self.params();
+                let mut exp = Guarded::new(Inductance::new(cfg, &p, self.sc), p);
+                drive(c, id, self.out, &mut exp, None)?;
+                check_abort("the burst", exp.abort())?;
+                let caps = exp.into_inner().captures().to_vec();
+                let fit = fit_captures(&caps, &self.sc, &FitCfg::default());
+                let w =
+                    sources::winding(fit.as_ref(), None, Some(&self.sc), gains::DEFAULT_L_HENRIES);
+                let Some(w) = w else {
+                    println!("  the burst measured no winding R: the stops are taken without it");
+                    return Ok(Ended::Declined);
+                };
+                match w.r_ohm {
+                    Some(r) => println!("  winding R {r:.2} ohm"),
+                    None => println!("  winding R {:.4} vcounts/ccount", w.r_vpc),
+                }
+                run.measured(w.r_vpc);
+            }
+            Stage::Stops {
+                approach,
+                seat,
+                cap,
+            } => return self.stops(run, c, id, (*approach, *seat, *cap)),
+            Stage::Traverse { seek } => return self.traverse(run, c, id, *seek),
+            Stage::Resistance { .. }
+            | Stage::Breakaway { .. }
+            | Stage::Ladder { .. }
+            | Stage::Inertia { .. } => bail!("osc cal has no {} stage", stage.name()),
+        }
+        Ok(Ended::Done)
+    }
+
+    /// Both stops, approached at one duty and read seated at half the
+    /// limit, stall permit held; then the polarity they show.
+    fn stops(
+        &mut self,
+        run: &Run,
+        c: &mut Client<NusbPipe>,
+        id: Id,
+        (approach, seat, cap): (f64, f64, f64),
+    ) -> Result<Ended> {
+        let ma = self.lim.ma();
+        match run.plan() {
+            Some(_) => println!(
+                "[stops] each stop approached at {}, then held at {} while it is read: half the \
+                 current limit of {}; stall permit held",
+                pct(approach),
+                pct(seat),
+                ma.of(self.lim.i_lim as f64)
+            ),
+            None => println!(
+                "[stops] taken without winding R: each stop approached at {}, the duty that \
+                 moved the shaft, then held at {} while it is read: half the class-safe duty; \
+                 stall permit held",
+                pct(approach),
+                pct(seat)
+            ),
+        }
+        let p = self.params().without_pos_guard();
+        let exp = Endstop::new(order::endstop_cfg(approach, seat, cap), &p);
+        let mut exp = Guarded::new(Permitted::new(exp), p);
+        drive(c, id, self.out, &mut exp, Some("endstop_snapshots.csv"))?;
+        check_abort("the stop approach", exp.abort())?;
+        let exp = exp.into_inner().into_inner();
+        if exp.approach() > approach + 1e-4 {
+            println!(
+                "  a sticky spot on the way raised the approach to {}",
+                pct(exp.approach())
+            );
+        }
+        let Some(r) = exp.result() else {
+            self.refused = Some("the stop approach did not read both stops".into());
+            return Ok(Ended::Declined);
+        };
+        if let Some(why) = r.refusal() {
+            self.refused = Some(why);
+            return Ok(Ended::Declined);
+        }
+        // The run drove under the polarity in force: a positive duty that
+        // raised the counts confirms it.
+        let polarity = r.drive_polarity == self.polarity;
+        println!(
+            "rails: min {} max {} span {} counts, polarity {}, stall {}",
+            r.pos_min_phys,
+            r.pos_max_phys,
+            r.pos_max_phys - r.pos_min_phys,
+            if polarity { "normal" } else { "reversed" },
+            ma.of(r.i_stall_counts as f64)
+        );
+        // Written before the operator confirms so the traverse and the
+        // centring drive in the logical convention; RAM only until SAVE,
+        // and the value is the physical truth whether or not the rest is
+        // accepted.
+        if polarity != self.polarity {
+            write_reg(c, id, config::DRIVE_POLARITY, polarity as i32)?;
+            self.polarity = polarity;
+        }
+        self.stops = Some(r);
+        Ok(Ended::Done)
+    }
+
+    /// The ripple traverse inside the stops just found, on the runway rule.
+    /// The decoded frames land in sweep_tel.csv - cal-replay's input.
+    fn traverse(
+        &mut self,
+        run: &Run,
+        c: &mut Client<NusbPipe>,
+        id: Id,
+        seek: f64,
+    ) -> Result<Ended> {
+        let Some(stops) = self.found() else {
+            return Ok(Ended::Declined);
+        };
+        let soft = self
+            .lim
+            .calibrated()
+            .then_some((self.lim.soft.0 as u16, self.lim.soft.1 as u16));
+        let mut runway = Runway::new(traverse::guard(stops, soft));
+        let cfg = order::sweep_cfg(
+            seek,
+            SweepCfg {
+                tick_hz: self.tick_hz,
+                ..SweepCfg::default()
+            },
+        );
+        println!(
+            "[traverse] the ripple capture at {} from the low end to the high end, braking \
+             inside the stops; first a pass to the low end at {}",
+            pct(cfg.duty_q15 as f64 / 32767.0),
+            pct(seek)
+        );
+        let phys = (stops.0 as i32, stops.1 as i32);
+        let (left, sized) =
+            envelope::size_runway(&mut runway, Supply::of_rail(run.rail_mv()), phys);
+        for (path, why) in left {
+            println!("  left out {}: {why}", path.display());
+        }
+        match sized {
+            Some(path) => println!("  sized by the pilot envelope {}", path.display()),
+            None => println!(
+                "  no pilot envelope describes this servo on this supply: sized from the first \
+                 pass"
+            ),
+        }
+        let p = RigParams::new(None, self.lim.abort_default()).with_stops(stops);
+        let mut exp = Guarded::new(Sweep::new(cfg, &p, runway), p);
+        let tel = drive(c, id, self.out, &mut exp, None)?;
+        check_abort("the traverse", exp.abort())?;
+        let exp = exp.into_inner();
+        csvio::write_tel_frames(self.out, "sweep_tel.csv", &tel)?;
+        println!(
+            "[sweep] decoded frames -> {}",
+            self.out.0.join("sweep_tel.csv").display()
+        );
+        self.tel = tel;
+        if let Some(why) = exp.declined() {
+            println!("  no ripple captured: {why}");
+            return Ok(Ended::Declined);
+        }
+        if let (Some(cap), Some(rest)) = (exp.captured(), exp.rest()) {
+            println!(
+                "  captured {} samples in {} bursts over counts {}..{}, braked to rest at {rest}",
+                cap.samples,
+                cap.bursts,
+                cap.from,
+                cap.to.unwrap_or(cap.from)
+            );
+        }
+        Ok(Ended::Done)
+    }
 }
 
-/// Capture duration (ms) to traverse `span_counts` at `speed_cps`, scaled by a
-/// `safety` factor and clamped to [200, 4000] ms so a bad speed reading can
-/// never drive for minutes. A non-positive or non-finite speed returns the
-/// 4000 ms max (defensive - the clamp still bounds it).
-fn capture_ms(span_counts: f64, speed_cps: f64, safety: f64) -> u32 {
-    if !speed_cps.is_finite() || speed_cps <= 0.0 {
-        return 4000;
+/// Pump `exp` to its end and park the servo safe however it ends: the TEL
+/// frames it streamed. `log` names a snapshot CSV in `out`.
+fn drive(
+    c: &mut Client<NusbPipe>,
+    id: Id,
+    out: &OutDir,
+    exp: &mut dyn Experiment,
+    log: Option<&str>,
+) -> Result<Vec<TelFrame>> {
+    let mut log = log.map(|n| SnapshotLog::create(out, n)).transpose()?;
+    with_guard(c, id, |c| {
+        let mut pump = Pump::new(c, id, log.as_mut());
+        pump.run(exp)?;
+        Ok(std::mem::take(&mut pump.tel))
+    })
+}
+
+/// Into the band at mid travel ([`Centre`]); a blocked shaft ends the run.
+/// The duty the shaft first travelled at, when it travelled.
+fn centre(
+    c: &mut Client<NusbPipe>,
+    id: Id,
+    out: &OutDir,
+    cfg: CentreCfg,
+    params: RigParams,
+    what: &'static str,
+) -> Result<Option<f64>> {
+    let nudge = cfg.nudge;
+    let mut exp = Guarded::new(Centre::new(cfg, &params), params.without_pos_guard());
+    drive(c, id, out, &mut exp, None)?;
+    check_abort(what, exp.abort())?;
+    let exp = exp.into_inner();
+    if !exp.arrived() {
+        if nudge {
+            bail!("the jam check did not reach mid travel in 5 s (gear slipping?)");
+        }
+        println!("  did not reach mid travel (gear slip?), left parked");
     }
-    let ms = span_counts / speed_cps * 1000.0 * safety;
-    if !ms.is_finite() {
-        return 4000;
-    }
-    ms.clamp(200.0, 4000.0).round() as u32
+    Ok(exp.moved_at())
 }
 
 /// Phys angle at each rail: from flags under `--yes` (both required), else
@@ -1115,21 +1292,6 @@ mod tests {
     }
 
     #[test]
-    fn capture_ms_scales_clamps_and_defends() {
-        // 3400 counts at 3400 cps * 0.95 safety = 950 ms
-        assert_eq!(capture_ms(3400.0, 3400.0, 0.95), 950);
-        // fast motor -> below the 200 ms floor -> clamped up
-        assert_eq!(capture_ms(100.0, 20000.0, 0.95), 200);
-        // slow motor -> above the 4000 ms ceiling -> clamped down
-        assert_eq!(capture_ms(4000.0, 200.0, 0.95), 4000);
-        // bad speed readings -> defensive 4000 ms max
-        assert_eq!(capture_ms(3400.0, 0.0, 0.95), 4000);
-        assert_eq!(capture_ms(3400.0, -50.0, 0.95), 4000);
-        assert_eq!(capture_ms(3400.0, f64::NAN, 0.95), 4000);
-        assert_eq!(capture_ms(3400.0, f64::INFINITY, 0.95), 4000);
-    }
-
-    #[test]
     fn ratio_centi_encoding_and_sentinel() {
         assert_eq!(ratio_to_centi(Some(150.0)), 15000);
         assert_eq!(ratio_to_centi(Some(1.5)), 150);
@@ -1138,5 +1300,80 @@ mod tests {
         assert_eq!(ratio_to_centi(Some(-3.0)), 0);
         assert_eq!(ratio_to_centi(Some(f64::NAN)), 0);
         assert_eq!(ratio_to_centi(Some(1e9)), u16::MAX);
+    }
+
+    const DESCRIPTOR: &str = include_str!("../../../../descriptors/osc-servo/0.1.json");
+    const MG90_A: &str = include_str!("../../../../ident/testdata/lut/pos-lut-mg90-a-grid.json");
+
+    fn mg90_a() -> [i16; pos_lut::INTERVALS] {
+        let img: serde_json::Value = serde_json::from_str(MG90_A).unwrap();
+        let points: Vec<i16> = img["points"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_i64().unwrap() as i16)
+            .collect();
+        points.try_into().unwrap()
+    }
+
+    fn read<P: Pipe>(c: &mut Client<P>, id: Id, reg: Reg) -> i32 {
+        let raw = c.read(id, reg.addr, reg.width as u16).unwrap();
+        match raw.as_slice() {
+            [a] => *a as i32,
+            [a, b] => i16::from_le_bytes([*a, *b]) as i32,
+            [a, b, c, d] => i32::from_le_bytes([*a, *b, *c, *d]),
+            r => panic!("{r:?}"),
+        }
+    }
+
+    /// Re-cal moving the stops under a LIVE position table, on the
+    /// in-process servo: the write re-COMMITs the table against the new
+    /// stops, then stamps and SAVEs, so the servo reboots clean with the
+    /// set as written. Stops inside the table's insets keep it LIVE; a stop
+    /// into its covered span rejects it, the saved servo runs the identity,
+    /// and the stamp hashes what the kernel applies.
+    #[test]
+    fn recal_recommits_a_live_position_table_and_restamps() {
+        use osc_client::BaudRate;
+        use osc_client::fake::FakePipe;
+
+        let d = Descriptor::parse(DESCRIPTOR).unwrap();
+        let mut pipe = FakePipe::new(BaudRate::B1000000, &[1]);
+        pipe.seed_calibrated(0);
+        let mut c = Client::connect(pipe).unwrap();
+        let id = Id::new(1);
+        write_reg(&mut c, id, calib::RAW_MIN, 209).unwrap();
+        write_reg(&mut c, id, calib::RAW_MAX, 3849).unwrap();
+        c.write_pos_lut(id, &d, &mg90_a()).unwrap();
+        c.restamp(id, &d).unwrap();
+        assert_eq!(c.data_state(id, &d).unwrap().flags, 0);
+
+        for (lo, state) in [(232, pos_lut::state::LIVE), (600, pos_lut::state::IDENTITY)] {
+            let set = Calibration {
+                phys: (lo, 3849),
+                soft: (lo + 223, 3626),
+                angle_cdeg: (0, 18420),
+                gear_ratio_centi: 30805,
+            };
+            write_calibration(&mut c, id, &d, &set).unwrap();
+            assert_eq!(c.pos_lut_state(id, &d).unwrap(), state, "{lo}");
+            assert_eq!(c.data_state(id, &d).unwrap().flags, 0, "{lo}");
+            c.reboot(id).unwrap();
+            assert_eq!(c.data_state(id, &d).unwrap().flags, 0, "{lo}: saved");
+            assert_eq!(c.pos_lut_state(id, &d).unwrap(), state, "{lo}: saved");
+            for (reg, want) in [
+                (config::POS_MIN_PHYS_COUNTS, lo),
+                (config::POS_MAX_PHYS_COUNTS, 3849),
+                (config::POS_MIN_SOFT_COUNTS, lo + 223),
+                (config::POS_MAX_SOFT_COUNTS, 3626),
+                (calib::RAW_MIN, lo),
+                (calib::RAW_MAX, 3849),
+                (calib::ANGLE_MIN_CDEG, 0),
+                (calib::ANGLE_MAX_CDEG, 18420),
+                (calib::GEAR_RATIO_CENTI, 30805),
+            ] {
+                assert_eq!(read(&mut c, id, reg), want, "{lo}: {reg:?}");
+            }
+        }
     }
 }
