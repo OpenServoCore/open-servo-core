@@ -3,9 +3,10 @@ use core::cell::SyncUnsafeCell;
 use osc_protocol::wire::UID_LEN;
 use portable_atomic::{AtomicU8, AtomicU16, Ordering};
 
-use crate::ControlTableCell;
 use crate::persist::ConfigStore;
 use crate::pos_lut::POINTS;
+use crate::regions::control::addr::lifecycle::STALL_PERMIT;
+use crate::{ControlTableCell, RegionStorage};
 
 #[repr(C)]
 pub struct Shared {
@@ -18,6 +19,10 @@ pub struct Shared {
     /// stamp, LUT array, torque). A job whose generation moved discards
     /// its result. HIGH is the sole writer, so plain load/store suffice.
     data_gen: AtomicU16,
+    /// Bumped by HIGH on every committed grant of the stall permit; the
+    /// kernel renews its lease when it moves (`permit_after_commit`). HIGH
+    /// is the sole writer.
+    permit_gen: AtomicU8,
     /// The factory UID, silicon ID zero-padded to the 16-byte wire field
     /// (osc-native sec 9.2) -- internal identity, not a table register; MGMT ENUM
     /// is its only wire reader.
@@ -38,6 +43,7 @@ impl Shared {
             table: ControlTableCell::new(),
             data_job: AtomicU8::new(0),
             data_gen: AtomicU16::new(0),
+            permit_gen: AtomicU8::new(0),
             uid: SyncUnsafeCell::new([0; UID_LEN]),
             store: SyncUnsafeCell::new(None),
             pos_lut: SyncUnsafeCell::new([0; POINTS]),
@@ -54,6 +60,32 @@ impl Shared {
         let job = self.data_job.load(Ordering::Relaxed);
         self.data_job
             .store((job | post) & !cancel, Ordering::Relaxed);
+    }
+
+    /// A committed write `[addr, addr + len)` covering `stall_permit` that
+    /// leaves it true with torque on is a grant. The table byte stays the
+    /// host's request: the kernel only reads CONTROL, so the lease it grants
+    /// lives in the kernel and a torque-off request never becomes one. HIGH
+    /// dispatch only; one copy behind both commit sites, O(1).
+    #[inline(never)]
+    pub fn permit_after_commit(&self, addr: u16, len: u16) {
+        if addr > STALL_PERMIT || addr.saturating_add(len) <= STALL_PERMIT {
+            return;
+        }
+        let (permit, torque) = self.table.with(|t| {
+            let l = &t.control.lifecycle;
+            (l.stall_permit, l.torque_enable)
+        });
+        if permit && torque {
+            self.permit_gen.store(
+                self.permit_gen.load(Ordering::Relaxed).wrapping_add(1),
+                Ordering::Relaxed,
+            );
+        }
+    }
+
+    pub(crate) fn permit_gen(&self) -> u8 {
+        self.permit_gen.load(Ordering::Relaxed)
     }
 
     pub(crate) fn data_gen(&self) -> u16 {

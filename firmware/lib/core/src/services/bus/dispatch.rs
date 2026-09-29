@@ -196,11 +196,12 @@ impl Dispatcher<'_> {
     }
 
     /// The post-commit bookkeeping every committed span gets: the dirty
-    /// bit, a position table command, then the data-state consequences of a
-    /// covered or stamp write.
+    /// bit, a position table command, a stall permit grant, then the
+    /// data-state consequences of a covered or stamp write.
     fn after_commit(&self, addr: u16, len: u16) {
         self.mark_dirty_if_persistent(addr, len);
         self.shared.pos_lut_after_commit(addr, len);
+        self.shared.permit_after_commit(addr, len);
         self.shared.data_state_after_commit(addr, len);
     }
 

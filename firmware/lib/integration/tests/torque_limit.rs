@@ -9,6 +9,7 @@ use osc_integration::plant::{
 use osc_servo_core::estimator::window::floor_duty;
 use osc_servo_core::kernel::duty_limit::UP_Q15;
 use osc_servo_core::kernel::faults::{BIT_STALL, CODE_STALL};
+use osc_servo_core::regions::control::addr::lifecycle::STALL_PERMIT;
 use osc_servo_core::{Kernel, Mode, MotorCmd, RegionStorage, Shared, StallResponse};
 
 const LIM: u16 = 280;
@@ -137,6 +138,13 @@ fn assert_blind_band_caps(r: &[(i16, i32)], lim: u16, what: &str) {
             "{what}: duty {d} stalls at {i}"
         );
     }
+}
+
+/// A committed `stall_permit = 1`, as the dispatcher applies it.
+fn write_permit(sh: &Shared) {
+    sh.table
+        .with_mut(|t| t.control.lifecycle.stall_permit = true);
+    sh.permit_after_commit(STALL_PERMIT, 1);
 }
 
 fn i_lim(sh: &Shared) -> u16 {
@@ -351,14 +359,43 @@ fn openloop_slew_never_counts_as_a_stall() {
 fn openloop_stall_under_permit_never_trips() {
     for goal in [GOAL_64, -GOAL_64] {
         let sh = stall_rig(StallResponse::Fault);
-        sh.table
-            .with_mut(|t| t.control.lifecycle.stall_permit = true);
         let mut p = RlPlant::new(MID);
         p.locked = true;
         let mut k = start(&sh, &mut p, goal);
-        let r = run(&mut k, &sh, &mut p, 40_000);
+        // a live host renews the lease every 250 ms
+        let mut r = Vec::new();
+        for _ in 0..8 {
+            write_permit(&sh);
+            r.extend(run(&mut k, &sh, &mut p, 250 * MS));
+        }
         assert_holds_at_the_limit(&sh, &r, &format!("goal {goal}"));
         assert_eq!(i_lim(&sh), LIM, "goal {goal}");
+    }
+}
+
+#[test]
+fn dead_host_stall_trips_within_the_lease() {
+    for goal in [GOAL_64, -GOAL_64] {
+        let sh = stall_rig(StallResponse::Fault);
+        let mut p = RlPlant::new(MID);
+        p.locked = true;
+        let mut k = start(&sh, &mut p, goal);
+        write_permit(&sh);
+        let at = (0..2_000 * MS)
+            .find(|_| {
+                run(&mut k, &sh, &mut p, 1);
+                faults(&sh) != 0
+            })
+            .unwrap_or_else(|| panic!("goal {goal}: never tripped"));
+        // the lease holds the timer off for its second, then the timer
+        // runs its stall_time_ms on the settled observer
+        assert!(
+            (1_000 + STALL_MS as u32) * MS <= at && at <= 1_600 * MS,
+            "goal {goal}: tripped {} ms in",
+            at / MS
+        );
+        assert_eq!(faults(&sh), BIT_STALL, "goal {goal}");
+        assert!(matches!(last_cmd(&k), MotorCmd::Disabled), "goal {goal}");
     }
 }
 
