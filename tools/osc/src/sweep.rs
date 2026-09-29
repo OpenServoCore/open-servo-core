@@ -44,6 +44,7 @@ use osc_ident::exp::seek::{self, SEEK_STEP_Q15, SEEK_TRAVEL_MIN, STALL_EPS, STAL
 use osc_ident::frame::TelFrame;
 use osc_ident::limits::{POT_MAX, ServoLimits};
 use osc_ident::regs::{Reg, calib, control};
+use osc_ident::runway::{BRAKE_DUTY_Q15, BRAKE_POLL_MS, BRAKE_POLLS, BRAKE_REST_EPS};
 
 use crate::descriptor;
 use crate::rig::park::park;
@@ -507,10 +508,6 @@ fn seek_stop(
     bail!("no end stop in 10 s driving {dir:+} at {duty} q15")
 }
 
-/// 3 PWM ticks at ARR 1200 (0.25% drive) - enough to dodge motor.rs's
-/// ticks==0 coast mapping, small enough that the slow-decay brake dominates.
-const BRAKE_DUTY_Q15: i32 = 82;
-
 /// Dynamic brake after a rung: with openloop_decay Slow, a token duty holds
 /// the idle H-bridge leg HIGH for the rest of each PWM period - the winding
 /// shorts through the driver and momentum dies in a few hundred counts.
@@ -520,14 +517,19 @@ const BRAKE_DUTY_Q15: i32 = 82;
 /// soft-limit clamp can never zero the brake near a wall. Leaves duty 0,
 /// torque ON (the caller torques off).
 fn brake_to_rest(c: &mut Client<NusbPipe>, id: Id, lease: &mut Lease, dir: i8) -> Result<()> {
-    write_reg(c, id, control::GOAL_DUTY, -(dir as i32) * BRAKE_DUTY_Q15)?;
+    write_reg(
+        c,
+        id,
+        control::GOAL_DUTY,
+        -(dir as i32) * BRAKE_DUTY_Q15 as i32,
+    )?;
     let mut last = check_fault(c, id)?;
-    for _ in 0..50 {
+    for _ in 0..BRAKE_POLLS {
         check_stop()?;
         lease.keep(c, id)?;
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(Duration::from_millis(BRAKE_POLL_MS as u64));
         let pos = check_fault(c, id)?;
-        if pos.abs_diff(last) < 4 {
+        if pos.abs_diff(last) < BRAKE_REST_EPS {
             break;
         }
         last = pos;

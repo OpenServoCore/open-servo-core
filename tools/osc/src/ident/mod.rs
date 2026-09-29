@@ -10,6 +10,7 @@ pub(crate) mod params;
 
 use std::path::{Path, PathBuf};
 
+use crate::capture::envelope;
 use crate::rig::plant::Lut;
 use crate::rig::pump::{self, Pump, with_guard, write_reg};
 use crate::rig::{Aborted, check_abort, csvio, snapshot};
@@ -45,6 +46,7 @@ use osc_ident::pot::Pot;
 use osc_ident::regs::{calib, control};
 use osc_ident::report::{self, PlantInputs, ReportInputs};
 use osc_ident::run::{self as order, Ended, Over, Run, Stage};
+use osc_ident::runway::{Runway, Supply};
 use osc_ident::sources::{self, Source, Winding};
 use params::{
     BiasJson, BreakawayJson, GainJson, InductanceJson, InertiaJson, LadderJson, ParamsFile,
@@ -785,25 +787,75 @@ fn run_breakaway(
     Ok(exp.into_inner().fit(r_vpc, vbus_mean))
 }
 
+/// The ladder's rungs inside `runway`, and the runway as the rungs left it;
+/// Err with the reason, in plain words, when the ladder gives the fit
+/// nothing.
 fn run_ladder(
     cli: &Ctx,
     c: &mut Client<NusbPipe>,
     id: Id,
     out: &csvio::OutDir,
     cfg: LadderCfg,
+    runway: Runway,
     r_vpc: f64,
-) -> Result<LadderResult> {
+) -> Result<(Result<LadderResult, String>, Runway)> {
     let params = rig(cli)?;
     let mut log = csvio::SnapshotLog::create(out, "ladder_snapshots.csv")?;
-    let mut exp = Guarded::new(Ladder::new(cfg, &params), params);
+    let mut exp = Guarded::new(Ladder::new(cfg, &params, runway), params);
     with_guard(c, id, |c| Pump::new(c, id, Some(&mut log)).run(&mut exp))?;
     check_abort("ladder", exp.abort())?;
-    let l = exp
-        .into_inner()
-        .fit(r_vpc)
-        .context("ladder fit degenerate")?;
+    let exp = exp.into_inner();
+    let room = exp.runway().room();
+    for (duty, n) in exp.sized() {
+        println!(
+            "  {:+.0}%: needs {:.0} of {room:.0} counts of travel (climb {:.0}, run {:.0}, stop \
+             {:.0} at {:.1} counts/ms)",
+            *duty as f64 / Q15 * 100.0,
+            n.total(),
+            n.climb,
+            n.run,
+            n.stop,
+            n.v
+        );
+    }
+    for w in exp.warnings() {
+        println!("  {w}");
+    }
+    let runway = exp.runway().clone();
+    if let Some(why) = exp.declined() {
+        return Ok((Err(why.to_string()), runway));
+    }
+    let l = exp.fit(r_vpc).context("ladder fit degenerate")?;
     csvio::write_rungs(out, &l.rungs)?;
-    Ok(l)
+    Ok((Ok(l), runway))
+}
+
+/// The ladder's runway: sized by the pilot envelope of the dataset that
+/// describes this servo on this supply, else by the run's own rungs.
+fn ladder_runway(d: &Drive, rail_mv: f64) -> Runway {
+    let mut runway = Runway::new(d.env.guard);
+    let supply = Supply::of_rail(rail_mv);
+    let found = crate::capture::default_root()
+        .map(|root| envelope::every(&root))
+        .unwrap_or_default();
+    for (path, env) in found {
+        let why = match env {
+            Ok(env) => match runway.size_by(env.runway(), supply, d.lim.phys) {
+                Ok(()) => {
+                    println!("  rungs sized by the pilot envelope {}", path.display());
+                    return runway;
+                }
+                Err(stale) => stale.to_string(),
+            },
+            Err(_) => "an older pilot wrote it (run osc capture pilot again)".into(),
+        };
+        println!("  left out {}: {why}", path.display());
+    }
+    println!(
+        "  no pilot envelope describes this servo on this supply: each rung is sized from the \
+         seek and the rungs before it"
+    );
+    runway
 }
 
 fn run_inertia(
@@ -811,13 +863,12 @@ fn run_inertia(
     c: &mut Client<NusbPipe>,
     id: Id,
     out: &csvio::OutDir,
-    cfg: InertiaCfg,
-    plan: DutyPlan,
+    exp: Inertia,
     priors: &InertiaPriors,
 ) -> Result<InertiaResult> {
     let params = rig(cli)?;
     let mut log = csvio::SnapshotLog::create(out, "inertia_snapshots.csv")?;
-    let mut exp = Guarded::new(Inertia::new(cfg, plan, &params), params);
+    let mut exp = Guarded::new(exp, params);
     let all_tel = with_guard(c, id, |c| {
         let mut pump = Pump::new(c, id, Some(&mut log));
         pump.run(&mut exp)?;
@@ -1001,6 +1052,8 @@ fn drive_stages(
         breakaway: None,
         ladder: None,
         inertia: None,
+        declined: None,
+        runway: None,
     };
     while let Some(stage) = run.next_stage() {
         match rec.stage(&stage, &mut run, cli, c, id, until) {
@@ -1017,7 +1070,11 @@ fn drive_stages(
         }
     }
     match run.over() {
-        Some(Over::Declined) if until != Until::Burst => bail!(
+        Some(Over::Declined(stage)) if stage != "burst" => bail!(
+            "the {stage} declined: {}; the run ended at mid travel with nothing to fit",
+            rec.declined.as_deref().unwrap_or("nothing fitted")
+        ),
+        Some(Over::Declined("burst")) if until != Until::Burst => bail!(
             "no winding R: the burst declined ({}), and nothing after it can be planned, so the \
              run stops here; `osc ident run --stall-ladder` measures R from stop stalls held \
              under the current limit instead",
@@ -1060,6 +1117,10 @@ struct Recorded {
     breakaway: Option<BreakawayResult>,
     ladder: Option<LadderResult>,
     inertia: Option<InertiaResult>,
+    /// Why a stage gave the fit nothing, in plain words.
+    declined: Option<String>,
+    /// What the ladder measured: inertia runs inside the same runway.
+    runway: Option<Runway>,
 }
 
 impl Recorded {
@@ -1198,7 +1259,16 @@ impl Recorded {
                 );
                 let r_vpc = self.w.as_ref().context("no winding R")?.r_vpc;
                 let cfg = order::ladder_cfg(*seek, rungs);
-                self.ladder = Some(run_ladder(cli, c, id, out, cfg, r_vpc)?);
+                let runway = ladder_runway(d, run.rail_mv());
+                let (ladder, runway) = run_ladder(cli, c, id, out, cfg, runway, r_vpc)?;
+                self.runway = Some(runway);
+                match ladder {
+                    Ok(l) => self.ladder = Some(l),
+                    Err(why) => {
+                        self.declined = Some(why);
+                        return Ok(Ended::Declined);
+                    }
+                }
             }
             Stage::Inertia { seek, base } => {
                 println!(
@@ -1217,7 +1287,9 @@ impl Recorded {
                 };
                 let cfg = order::inertia_cfg(*seek, *base, cfg);
                 let plan = run.plan().context("no plan")?;
-                self.inertia = Some(run_inertia(cli, c, id, out, cfg, plan, &priors)?);
+                let runway = self.runway.clone().context("no ladder runway")?;
+                let exp = Inertia::new(cfg, plan, runway, &rig(cli)?);
+                self.inertia = Some(run_inertia(cli, c, id, out, exp, &priors)?);
             }
         }
         Ok(Ended::Done)
