@@ -369,6 +369,8 @@ fn oc_latch_forces_disabled_despite_torque_enable() {
         t.control.lifecycle.torque_enable = true;
         t.control.lifecycle.mode = Mode::OpenLoop;
         t.control.lifecycle.goal_duty = 16000;
+        // over the limit on purpose: the OpenLoop ceiling stays out of it
+        t.config.limits.current_limit_counts = u16::MAX;
     });
     let mut k = kernel();
     // tick 1 drives (windows still invalid: previous duty was 0)
@@ -402,6 +404,8 @@ fn ack_clears_then_relatches_while_condition_persists() {
         t.control.lifecycle.torque_enable = true;
         t.control.lifecycle.mode = Mode::OpenLoop;
         t.control.lifecycle.goal_duty = 16000;
+        // over the limit on purpose: the OpenLoop ceiling stays out of it
+        t.config.limits.current_limit_counts = u16::MAX;
     });
     let mut k = kernel();
     for _ in 0..8 {
@@ -433,6 +437,8 @@ fn oc_gap_rearms_the_window() {
         t.control.lifecycle.torque_enable = true;
         t.control.lifecycle.mode = Mode::OpenLoop;
         t.control.lifecycle.goal_duty = 16000;
+        // over the limit on purpose: the OpenLoop ceiling stays out of it
+        t.config.limits.current_limit_counts = u16::MAX;
     });
     let mut k = kernel();
     k.on_tick(frame(2000, BIAS + 3000), &sh); // warmup: invalid window
