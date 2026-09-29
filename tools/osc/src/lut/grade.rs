@@ -1,18 +1,20 @@
 //! The graph and the grade: what a table does to the pot's local gain,
-//! interval by interval, and an advisory letter from nb09's numbers. The
+//! interval by interval, and an advisory letter on the interval gains. The
 //! firmware judges physics only (identity at the stops, monotone, under
 //! 16x); quality is the operator's call, and this is what they look at.
 
 use std::fmt::Write;
 
-use osc_ident::lut::{GRID, GridLut, INTERVALS};
+use osc_ident::lut::{self, GRID, GridLut, INTERVALS};
 use serde::Serialize;
 
-/// Local gain is judged over this many raw counts, as nb09 did.
+/// The window summary's width, raw counts, as nb09 judged local gain.
 pub(crate) const WINDOW: u16 = 25;
-/// Grade A: every window within this band of nominal (the mg90-a grid
-/// table: 0.61..1.88x; nb09's dense curve 0.53..1.53x).
-pub(crate) const SMOOTH: (f64, f64) = (0.5, 2.0);
+/// Grade A: every interval within this band of nominal, the top the gain
+/// bound `osc lut build` writes: a steeper interval scales a hold's rest
+/// noise and quantisation step past what a 12-count deadband holds
+/// (lut::GAIN_BOUND_Q4). The unbounded mg90-a table peaks at 2.06x.
+pub(crate) const SMOOTH: (f64, f64) = (0.5, lut::gain_bound());
 /// Grade B: within this band (the SG90 class swings ~6x across 20 mV bins).
 pub(crate) const COARSE: (f64, f64) = (0.25, 4.0);
 
@@ -129,7 +131,7 @@ impl Report {
             min,
             max,
         });
-        r.grade = Some(Grade::of(min, max));
+        r.grade = Some(Grade::of(shallow.gain, steep.gain));
         r
     }
 
@@ -188,7 +190,7 @@ impl Report {
             );
             let _ = writeln!(
                 s,
-                "grade {g:?} ({}): every window within {}..{}x is A, within {}..{}x is B, beyond is C; advisory only, the firmware accepts anything under 16x and the graph decides",
+                "grade {g:?} ({}): every interval within {}..{}x is A, within {}..{}x is B, beyond is C; advisory only, the firmware accepts anything under 16x and the graph decides",
                 g.text(),
                 SMOOTH.0,
                 SMOOTH.1,
@@ -231,42 +233,47 @@ mod tests {
     }
 
     #[test]
-    fn mg90_a_grades_a_with_the_notebooks_numbers() {
+    fn mg90_a_grades_a_inside_the_gain_bound() {
         let (lut, stops) = mg90_a();
         let r = Report::new(&lut, stops);
         assert_eq!(r.stops, [209, 3849]);
         assert_eq!((r.nonzero, r.span), (185, Some([560, 3504])));
-        assert_eq!(r.max_abs, 71);
+        assert_eq!(r.max_abs, 70);
         let steep = r.steepest.unwrap();
-        assert_eq!(steep.raw, 1360);
-        assert!((steep.gain - 2.0625).abs() < 1e-9, "{}", steep.gain);
+        assert_eq!(steep.raw, 544);
+        assert_eq!(steep.gain, 1.25);
         let w = r.windows.unwrap();
         assert_eq!(w.counts, 25);
         assert!((w.min - 0.6125).abs() < 1e-9, "{}", w.min);
-        assert!((w.max - 1.8825).abs() < 1e-9, "{}", w.max);
+        assert!((w.max - 1.25).abs() < 1e-9, "{}", w.max);
         assert_eq!(r.grade, Some(Grade::A));
         let text = r.summary();
         assert!(
-            text.contains("calibration points: 185 nonzero at raw 560..3504, |c| up to 71"),
+            text.contains("calibration points: 185 nonzero at raw 560..3504, |c| up to 70"),
             "{text}"
         );
         assert!(
-            text.contains("steepest 2.06x at raw 1360..1376, shallowest 0.50x at raw 752..768"),
+            text.contains("steepest 1.25x at raw 544..560, shallowest 0.50x at raw 752..768"),
             "{text}"
         );
         assert!(
-            text.contains("25-count windows over raw 544..3520: 0.61x .. 1.88x"),
+            text.contains("25-count windows over raw 544..3520: 0.61x .. 1.25x"),
             "{text}"
         );
-        assert!(text.contains("grade A (smooth)"), "{text}");
+        assert!(
+            text.contains("grade A (smooth): every interval within 0.5..1.25x is A"),
+            "{text}"
+        );
         let chart = r.chart();
         assert_eq!(chart.lines().count(), 5);
         assert!(chart.lines().nth(1).unwrap().starts_with("    0 |"));
         assert!(chart.lines().nth(4).unwrap().starts_with(" 3072 |"));
         assert!(chart.is_ascii());
-        // the steepest interval, 1360 = row 1 column 21, reads as 2-4x
+        // the unbounded table's 2.06x interval at 1360 = row 1 column 21
+        // reads 1.1-1.4x, and nothing reads steeper
         let row1 = chart.lines().nth(2).unwrap();
-        assert_eq!(row1.as_bytes()[7 + 21], b'*', "{row1}");
+        assert_eq!(row1.as_bytes()[7 + 21], b'=', "{row1}");
+        assert!(!chart.lines().skip(1).any(|l| l.contains(['+', '*', '#'])));
         let json = serde_json::to_value(&r).unwrap();
         assert_eq!(json["grade"], "A");
         assert_eq!(json["windows"]["counts"], 25);
@@ -283,8 +290,9 @@ mod tests {
 
     #[test]
     fn grade_thresholds_and_levels() {
-        assert_eq!(Grade::of(0.5, 2.0), Grade::A);
-        assert_eq!(Grade::of(0.49, 2.0), Grade::B);
+        assert_eq!(Grade::of(0.5, 1.25), Grade::A);
+        assert_eq!(Grade::of(0.5, 1.3125), Grade::B);
+        assert_eq!(Grade::of(0.49, 1.25), Grade::B);
         assert_eq!(Grade::of(0.5, 4.0), Grade::B);
         assert_eq!(Grade::of(0.24, 1.0), Grade::C);
         assert_eq!(Grade::of(1.0, 4.01), Grade::C);
