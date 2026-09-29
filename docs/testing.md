@@ -153,16 +153,6 @@ The limiter on the plant rig (`integration/tests/torque_limit.rs`):
   ticks the published `window_floor_q15` is `floor_duty` of the board's
   period, and the duty a virgin stall pins at equals it.
 
-The host reads the floor from the servo (`ident/src/limits.rs`, at the
-repo root):
-
-- `servo_limits_take_the_floor_from_the_servo` - the limits carry the
-  floor a telemetry read publishes, 4356 and 6534 alike, and the stop
-  ladder starts on it.
-- `a_servo_without_a_floor_is_refused_in_plain_words` - a published 0
-  refuses with a message naming the missing sensor floor; no board
-  constant stands in.
-
 A virgin servo (`integration/tests/class_defaults.rs`, boot seed on the
 60 mohm chain):
 
@@ -171,6 +161,256 @@ A virgin servo (`integration/tests/class_defaults.rs`, boot seed on the
 - `virgin_servo_stalls_at_the_class_limit` - locked at 64%, it holds at
   the 335-count class limit: peak within 1.1x, mean 0.85x to 1.0x, no
   fault inside the stall time.
+
+## Identification and calibration pins
+
+How `osc ident` and `osc cal` plan their drives under the current limit
+(control-theory "Open Loop Under the Same Band" and "Calibration",
+protocol sec 5.8) is pinned in the host crates' own unit tests: `ident`
+and `tools/osc` at the repo root, each `cargo test` in its directory
+and in CI. The drives run against a fake servo that models the limiter,
+the stall timer and fold, the permit lease and the burst; the bench
+MG90 on it is a 4.9 ohm winding, a 280-count limit, the 13.3% window
+floor, stops at 209 and 3849 and soft limits at 432 and 3626, on a 2S
+rail of 3204 vcounts or a USB rail of 1780. Paths below are under
+`ident/src` unless they say otherwise.
+
+The servo's limits and the stall-safe plan (`limits.rs`):
+
+- `servo_limits_take_the_floor_from_the_servo` - the limits carry the
+  floor a telemetry read publishes, 4356 and 6534 alike, and the stop
+  ladder starts on it.
+- `a_servo_without_a_floor_is_refused_in_plain_words` - a published 0
+  refuses with a message naming the missing sensor floor; no board
+  constant stands in.
+- `board_default_limits_are_refused` - soft limits that span the pot, or
+  are out of order, refuse with "run `osc cal` first".
+- `guards_come_from_the_soft_limits` - the travel guard sits 100 counts
+  inside each soft limit, each end overridable alone.
+- `i_abort_defaults_a_quarter_over_the_current_limit` - 350 at a limit
+  of 280; lower is taken, higher is refused in plain words.
+- `every_stall_safe_duty_stalls_under_the_limit` - seek, hold and stop
+  cap stall at or under the limit however they are rounded, over five
+  limit and rail pairs; on 2S the cap is 15.5%, the hold 7.76% and a
+  step over an 80-count base 9.1%.
+- `bootstrap_duty_is_class_safe` - the class-safe duty is 9.5% at the
+  bench limit on 2S and stalls at the limit on a 3.0 ohm winding; on
+  USB it applies the same volts.
+- `plan_over_the_limit_is_refused_in_plain_words` - a deliberate stall
+  over the limit names the duty, the current and the highest duty the
+  limit holds.
+- `stall_ladder_rungs_stay_under_the_limit` - every stop-ladder dwell
+  sits between the window floor and the stall-safe cap, 0.5% apart.
+- `the_stop_ladder_needs_room_over_the_window_floor` - on 2S at 280 the
+  band from 13.3% to 15.5% is refused; on USB it dwells at 13.3, 18.2,
+  23.0 and 27.9%.
+- `burst_rungs_fit_the_fit_and_the_allowance` - 25/40% at 7.9 and
+  4.39 V, 25/38% at 8.4 V, 25/35% at 9.1 V, none above it; every top
+  rung at most 3.2 V.
+- `burst_count_is_bounded` - repeats are cut so a run arms at most 24.
+- `the_lease_is_held_only_behind_torque_on` - a permit written with
+  torque off is not held, a held one is due every 250 ms, torque off
+  drops it, and a stream over 750 ms with it held is refused.
+- `stall_settings_above_the_limit_are_warned` - a yield not under the
+  limit and a collision trip over twice it are warned in plain words.
+
+The run order and cal's sequence (`run.rs`):
+
+- `run_all_stops_at_the_first_abort` - an abort at any stage ends the
+  run there; a declined burst ends it, a declined ladder still ends
+  with the closing centring.
+- `default_run_never_stalls_a_stop` - the whole default run on both
+  rails, and on a rail too high for the burst, never presses a stop and
+  never writes the permit.
+- `burst_waits_for_the_nudge` - no burst before the jam check moved the
+  shaft, and none at 9.4 V.
+- `nudge_cap_is_two_volts_on_the_rail` - class-safe start 9.5% and cap
+  25.3% on 2S, 17.1% and 45.6% on USB.
+- `burst_cfg_is_the_allowance` - 25/40% from rest, the from-a-hold
+  control from the class-safe duty, repeats cut to the arm count.
+- `bench_mg90_run_reaches_the_fit_on_2s_and_usb` - R and L from the
+  burst, a ladder of three or more rungs, an inertia fit, at most 24
+  arms, ending near mid travel with torque off.
+- `r_and_l_are_measured_before_any_planned_drive` - before the burst
+  nothing exceeds the jam check's cap or the 3.2 V allowance; after
+  it, every stall-safe drive stays at or under the stop cap.
+- `bench_inertia_base_and_steps` - seek 10%, base 15%, steps to 19.5,
+  21.8 and 24.1% on 2S and 23.2, 27.3 and 31.5% on USB.
+- `virgin_run_escalates_the_nudge_and_measures_r` - a shaft that needs
+  more than the class-safe duty is raised until it moves, then the
+  burst measures R.
+- `a_mid_travel_jam_ends_the_run_at_the_first_seek` - a locked shaft
+  ends the run in the jam check, at or under its cap, with no burst and
+  no stream.
+- `the_stop_ladder_runs_only_on_request` - a declined burst ends the
+  run unless asked; asked, on 2S at 280 it refuses for want of room,
+  on USB it runs in the burst's place.
+- `the_stop_ladder_measures_r_when_asked` - on USB, both stops stalled
+  over the floor and under the limit with the permit held, R within
+  2%, the run planned from it to the end.
+- `cal_order_and_its_ends` - bias, jam check, burst, stops, traverse,
+  centring; a declined burst or a high rail goes on without R, an
+  abort ends where it stands.
+- `cal_duties_on_the_bench_servo` - a shaft that moved at 13%
+  approaches at 15% on both rails and seats at 7.76% on 2S and 14.0%
+  on USB, half the limit.
+- `cal_approaches_at_the_duty_that_moved` - moved at 14.5% on 2S, the
+  approach is capped at the stop cap; at 17.1% on USB it is 19.1%; the
+  permit is held only while the stops are found.
+- `cal_finds_the_stops_on_a_virgin_servo` - no stops or soft limits
+  known: the same run finds 209 and 3849 and ends at mid travel.
+- `cal_never_escalates_toward_a_stop` - toward a stop only the approach
+  duty, the seat duty and 0 are ever written; the traverse's first pass
+  and the closing centring run at the approach duty.
+- `cal_refuses_when_breakaway_is_over_the_limit` - moved at 17% on 2S,
+  307 counts over 280: refused before any stop drive, no permit
+  written.
+- `cal_without_r_seats_at_the_class_half_duty` - the burst declined:
+  approach at the moving duty, seat at 4.76% on 2S.
+- `cal_on_a_jammed_shaft_writes_nothing` - a locked shaft ends cal in
+  the jam check; only drive fields in CONTROL were ever written.
+
+The runway (`runway.rs`):
+
+- `room_is_the_guard_less_the_start_band` - 2919 counts on the bench
+  guard, start band edges and brake points as the rule places them.
+- `bench_mg90_runway_fits_the_rungs_to_64_and_not_100` - with the 2S
+  pilot envelope, 26% needs 457, 40% 992, 64% 2350 and fit; 80% 3564
+  and 100% 5431 do not.
+- `stale_envelope_is_ignored` - an envelope of another supply, with a
+  stop more than 150 counts off, or without a coast sizes nothing.
+- `self_sizing_follows_the_measured_rungs` - one speed scales in
+  proportion, two make a line, a stop scales by speed squared above
+  and in proportion below.
+- `coast_falls_back_to_the_measured_runs` - the coast law fits the
+  bench coasts; one coast scales by speed squared.
+- `need_adds_climb_run_and_a_margined_stop` - need is the climb, the
+  run and 1.25 stops, and a zero acceleration never fits.
+
+Stops and stillness (`exp/seek.rs`):
+
+- `a_mid_travel_rest_is_not_a_stop` - a rest is a stop only within 150
+  counts of the stop driven at; with the stops unknown, only after 100
+  counts of travel.
+- `clear_of_the_stops_is_300_counts_from_both` - the raise zone starts
+  300 counts in from each stop.
+- `only_a_drive_off_a_stop_leaves_it` - within 150 counts of a stop and
+  pointing away; never with the stops unknown.
+- `stillness_is_net_travel_over_a_window` - jitter is not travel, and a
+  turn inside a window is not a rest.
+
+The jam check (`exp/centre.rs`):
+
+- `a_centred_shaft_is_left_alone_unless_nudged` - a centred shaft gets
+  no write; with the check asked for it goes out and back at the start
+  duty.
+- `nudge_raises_the_duty_only_clear_of_the_stops` - raised 2.5% per
+  still window at mid travel and held at first travel; 250 counts from
+  a stop it is blocked, never raised.
+- `nudge_gives_up_at_the_cap` - a locked shaft is raised to the cap,
+  never over, and ends blocked.
+- `a_yield_fold_ends_the_nudge_blocked` - the firmware's stall fold is
+  the verdict at once.
+- `slow_seek_is_raised_not_blocked` - a shaft creeping under the
+  stillness speed gets a raise, not a verdict.
+- `unknown_stops_try_the_other_direction` - with no stops known, a
+  still check tries the other way once.
+
+Cal's stop finder (`exp/endstop.rs`):
+
+- `cal_seats_at_half_the_limit_after_backing_down` - approach, seat,
+  hold 300 ms, the stop is the mean of the last 8 polls, then leave;
+  the permit held throughout and withdrawn at the end.
+- `recal_rides_a_sticky_spot_under_the_cap` - a mid-travel sticky spot
+  raises the approach under the cap, and it carries on to the stop.
+- `a_sticky_spot_over_the_cap_is_blocked` - the same spot at the cap
+  ends blocked.
+- `a_blocked_shaft_finds_no_stops` - an approach that never travels
+  ends the run, and rests that do not bracket the start 1500 counts
+  apart are no stops.
+
+The ladder (`exp/ladder.rs`):
+
+- `free_running_rungs_fit_the_runway` - every rung on both rails sized
+  inside the room and braked at its end, the top rung over twice the
+  stall-safe duty.
+- `ladder_stops_climbing_at_the_first_rung_that_does_not_fit` - with
+  the 2S envelope, rungs to 55% run, 80% ends the ladder, and nothing
+  at or over it is driven.
+- `a_climb_that_never_ends_is_blocked_or_declined` - still governed
+  after twice its predicted climb: blocked when still, declined as too
+  heavy when moving.
+- `a_governed_rung_is_declined_and_the_ladder_goes_on` - a rung with no
+  clean window is declined and does not count; the next rung runs.
+- `a_yield_fold_on_a_rung_ends_the_run_blocked` - the stall fold ends
+  the run inside the climb budget.
+- `thin_ladder_is_declined` - two rungs both ways, or a top speed under
+  twice the bottom one, declines.
+- `abort_threshold_rides_over_a_governed_climb` - a governed climb never
+  reaches the abort a quarter over the limit.
+
+Inertia (`exp/inertia.rs`):
+
+- `inertia_steps_from_a_moving_base` - each step leaves the moving base
+  and is sized from its running current; none reaches the limit.
+- `a_governed_step_is_declined` - a step the limiter holds under its
+  goal is declined, never fitted.
+- `a_yield_fold_on_the_base_ends_the_run_blocked` - a base held into a
+  jam ends the run before any step.
+- `inertia_base_and_steps_fit_the_runway` - every base and step sized
+  inside the runway, every drive braked.
+- `an_inertia_step_that_does_not_fit_is_skipped` - on a short travel
+  the larger steps are skipped in plain words and the run goes on.
+
+Cal's traverse (`exp/sweep.rs`):
+
+- `the_guard_sits_inside_the_stops_and_the_soft_guard` - 150 counts in
+  from each stop, and inside the soft limits' guard.
+- `cal_traverse_brakes_inside_the_stops` - the 26% run is captured and
+  brakes inside the guard on both rails, never touching a stop.
+- `an_unsized_traverse_does_not_run` - nothing measured and no envelope:
+  no run.
+- `a_jam_mid_run_is_blocked` - a shaft that locks during the capture
+  ends the traverse where it stopped, torque off.
+- `a_jam_on_the_way_to_the_start_is_blocked` - so does one locked on
+  the way to the start band: blocked, not a start.
+
+Governed windows, the envelope and the permit (`exp/mod.rs`):
+
+- `governed_window_is_declined_never_fitted` - a window held under the
+  goal after it was reached never reaches a fit.
+- `slew_samples_are_trimmed_not_declined` - a 64% climb from rest is
+  trimmed, not counted against the goal.
+- `governed_climb_is_trimmed_and_the_settled_windows_fit` - a climb held
+  at the limit is trimmed and every settled window fits.
+- `a_free_running_governed_climb_fits_only_settled_windows` - the bench
+  64% rung hands on only windows at the goal.
+- `abort_default_clears_a_held_stall` - a locked shaft held at the limit
+  trips an abort at the limit and never the default.
+- `permit_follows_torque_on` - the permit is written after every torque
+  enable and withdrawn at the end.
+- `long_pause_is_sliced_under_the_lease` - a 3 s pause rewrites the
+  permit every 250 ms.
+
+The stop routes asked for (`exp/resistance.rs`, `exp/held.rs`):
+
+- `a_mid_travel_jam_is_not_a_stop` - a seek that rests short of the stop
+  ends the run before any dwell.
+- `rung_with_no_clean_window_reports_declined` - dwells the limit holds
+  under their duty are declined.
+- `pump_refreshes_a_held_permit` - a held run outlasting the lease keeps
+  the stop open, every rewrite with torque on.
+- `an_abort_mid_burst_still_withdraws_the_permit` - a fault mid run ends
+  with duty 0, torque off, permit off.
+- `escalation_only_leaves_a_stop` - the duty rises leaving a stop; a
+  seek from mid travel stays at the hold duty and aborts.
+
+The burst handshake and the driver (`burst.rs`, `tools/osc/src/rig/pump.rs`):
+
+- `a_rejected_arm_reports_and_releases` - a `REJECTED` arm is an error
+  and the arm is released.
+- `a_held_permit_refuses_a_stream_it_would_lapse_inside` - 750 ms
+  passes, 751 does not, and torque off holds nothing.
 
 ## Gear 3 in detail
 

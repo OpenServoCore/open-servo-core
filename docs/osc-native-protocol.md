@@ -648,7 +648,8 @@ mode, OpenLoop included, sec 5.8), soft-position clamps, the stall
 timer and fault latches run in firmware regardless of the bus - and the
 host's supervisory reads resume between bursts. The one thing a silent
 host cannot do is renew a stall permit: a burst that needs one has to
-end inside the lease (sec 5.8).
+end inside the lease (sec 5.8), and `osc` refuses a burst longer than
+750 ms while it holds a permit.
 
 ### 5.7 Data state, plant stamp and position table (osc-servo)
 
@@ -779,7 +780,12 @@ poll `data_flags` until `STAMP_MISMATCH` clears (20 ms is ample) - a
 the virgin and stale reasons clear only on SAVE; only then verify closed
 loop. `osc ident` (write, rollback), `osc cal` and
 `osc recover --from` all commit this way, and `osc stamp [--save]`
-blesses a hand-tuned set explicitly. Nothing restamps as a side effect:
+blesses a hand-tuned set explicitly. The drives that measure a set
+come before this sequence and write only the CONTROL fields a drive
+uses (sec 5.8, around a drive): `osc ident run` writes none of the
+set, write-back is its own command, and an `osc cal` that is refused
+or ends early writes none of it either, the drive polarity aside once
+both stops are read. Nothing restamps as a side effect:
 `osc set` of a covered field leaves the mismatch standing, and `osc lut
 write` never stamps, because a new table redefines the domain the
 constants were fitted in - the way out is `osc ident`.
@@ -870,9 +876,10 @@ Like sec 5.7 these are model facts in model-specific space, and the
 descriptor carries the addresses.
 
 **Stall permit.** `stall_permit` (bool, RW, `0x181` in CONTROL) lets
-the motor stall on purpose, which identification and calibration need
-to seat a hard stop or measure the winding. It drops the stall trip
-(timer and collision check) and the endstop, and nothing else: the
+the motor stall on purpose, which calibration needs to seat a hard
+stop and identification's stop routes, when asked for, need to measure
+the winding. It drops the stall trip (timer and collision check) and
+the endstop, and nothing else: the
 current limit and the thermal derate still compose. The byte is the
 host's *request*; the *grant* is a lease the servo keeps:
 
@@ -995,6 +1002,38 @@ Loop Under the Same Band"; unit `burst_over_the_volts_cap_is_rejected`,
 `burst_inside_the_spacing_is_rejected`,
 `burst_outside_the_soft_limits_needs_the_permit`,
 `burst_at_the_cap_still_arms`).
+
+**Around a drive.** What `osc` does with these registers, the
+reference for any host that drives OpenLoop (control-theory "Open Loop
+Under the Same Band" has the planning behind it):
+
+- Before any drive it reads what it plans against:
+  `current_limit_counts`, `stall_yield_counts`,
+  `stall_tau_trip_counts`, the soft and physical position limits,
+  `raw_min` and `raw_max`, `r_q12`, the shunt and amplifier constants
+  that turn counts into amps, and one telemetry read for `vbus_counts`
+  and `window_floor_q15`. A floor of 0 refuses every drive; a stall
+  yield not under the limit, or a collision trip over twice it, is
+  warned about. Identification also refuses soft limits that span the
+  whole pot (a servo `osc cal` never ran on) and an abort threshold
+  more than a quarter over the limit.
+- Each drive writes its `mode`, then `torque_enable` 1, then, only
+  for a drive that stalls on purpose (cal's stop approach, the
+  resistance stop ladder, the held burst route, the current verify's
+  stop stalls), `stall_permit` 1. A held permit is rewritten every
+  250 ms, between commands and inside every pause.
+- Every exit of a drive - done, aborted, interrupted or failed on the
+  wire - writes `goal_duty` 0, `torque_enable` 0 and, when it held
+  one, `stall_permit` 0, in that order, and a guard around the drive
+  writes them again with the other goals, `tel_count` and `tel_mask`
+  zeroed. A killed host skips that; the lease then runs out inside the
+  second and the servo's own protections carry the rest.
+- A shunt burst stages `duty_q15`, `chans` and `arm` 1 under HOLD and
+  fires one COMMIT, then polls BURST `state`: 3 `DONE` walks the
+  pages, 4 `REJECTED` is a refused arm. `REJECTED` does not say which
+  rule refused it. `osc` plans every arm inside the rules above, so it
+  treats a rejection as a failure: it writes `arm` 0 to release the
+  section, and the run ends (unit `a_rejected_arm_reports_and_releases`).
 
 ## 6. Coordinated reads (status chains)
 
