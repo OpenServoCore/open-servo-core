@@ -815,7 +815,7 @@ impl Experiment for Ladder {
 
 #[cfg(test)]
 mod tests {
-    use super::super::testkit::{FakeServo, bench_mg90, bent_pot, pump};
+    use super::super::testkit::{Bus, FakeServo, bench_mg90, bent_pot, pump, pump_on};
     use super::super::{Guarded, RigParams};
     use super::*;
     use crate::limits::duty_for;
@@ -840,8 +840,17 @@ mod tests {
     }
 
     fn run_cfg(servo: &mut FakeServo, cfg: LadderCfg, params: RigParams) -> (Ladder, Vec<String>) {
+        run_on(servo, cfg, params, Bus::BENCH)
+    }
+
+    fn run_on(
+        servo: &mut FakeServo,
+        cfg: LadderCfg,
+        params: RigParams,
+        bus: Bus,
+    ) -> (Ladder, Vec<String>) {
         let mut exp = Guarded::new(ladder(cfg, &params), params);
-        let log = pump(&mut exp, servo, 2_000_000);
+        let log = pump_on(&mut exp, servo, 2_000_000, bus);
         assert!(exp.abort().is_none(), "abort: {:?}", exp.abort());
         (exp.into_inner(), log)
     }
@@ -853,7 +862,7 @@ mod tests {
     #[test]
     fn recovers_planted_ke_and_friction_line() {
         let mut servo = physical_servo();
-        let (exp, log) = run_e3(&mut servo, rig());
+        let (exp, log) = run_on(&mut servo, LadderCfg::default(), rig(), Bus::ZERO_LATENCY);
         assert!(!log.contains(&"OVERRUN".to_string()));
         assert_eq!(exp.declined(), None);
         let fit = exp.fit(3.37).expect("usable rungs");
@@ -893,12 +902,17 @@ mod tests {
     #[test]
     fn slip_zone_samples_are_masked() {
         let mut clean = physical_servo();
-        let (exp_clean, _) = run_e3(&mut clean, rig());
+        let (exp_clean, _) = run_on(&mut clean, LadderCfg::default(), rig(), Bus::ZERO_LATENCY);
         let mut glitched = physical_servo();
         // +80-count pot artifact strictly inside the masked slip zone, low
         // enough that the +80 readings also stay inside the mask
         glitched.glitch_zone = Some((1460.0, 1560.0));
-        let (exp_glitch, _) = run_e3(&mut glitched, rig());
+        let (exp_glitch, _) = run_on(
+            &mut glitched,
+            LadderCfg::default(),
+            rig(),
+            Bus::ZERO_LATENCY,
+        );
         let a = exp_clean.fit(3.37).unwrap();
         let b = exp_glitch.fit(3.37).unwrap();
         assert!(
@@ -1045,7 +1059,7 @@ mod tests {
             let params = bench();
             let exp = Ladder::new(bench_cfg(), &params, Runway::new(GUARD));
             let mut g = Guarded::new(exp, params);
-            let log = pump(&mut g, &mut servo, 4_000_000);
+            let log = pump_on(&mut g, &mut servo, 4_000_000, Bus::ZERO_LATENCY);
             assert_eq!(g.abort(), None, "{vbus}");
             let exp = g.into_inner();
             assert_eq!(exp.declined(), None, "{vbus}: {:?}", exp.warnings());
@@ -1086,7 +1100,7 @@ mod tests {
             ..bench_cfg()
         };
         let mut g = Guarded::new(Ladder::new(cfg, &params, sized_by_envelope(GUARD)), params);
-        let log = pump(&mut g, &mut servo, 4_000_000);
+        let log = pump_on(&mut g, &mut servo, 4_000_000, Bus::ZERO_LATENCY);
         assert_eq!(g.abort(), None);
         let exp = g.into_inner();
         let ran: Vec<String> = exp.sized().iter().map(|(d, _)| pct(*d)).collect();
@@ -1127,7 +1141,7 @@ mod tests {
             g.abort(),
             Some(AbortReason::Blocked {
                 pos: 610,
-                moved: 10
+                moved: 13
             })
         );
         assert_eq!(log.last().unwrap(), "write torque_enable 0");
@@ -1210,7 +1224,7 @@ mod tests {
             s.exp.abort(),
             Some(AbortReason::Blocked {
                 pos: 610,
-                moved: 10
+                moved: 13
             })
         );
         let last = s.seen.last().unwrap();
@@ -1238,7 +1252,7 @@ mod tests {
             Ladder::new(bench_cfg(), &params, sized_by_envelope(guard)),
             params,
         );
-        pump(&mut g, &mut servo, 4_000_000);
+        pump_on(&mut g, &mut servo, 4_000_000, Bus::ZERO_LATENCY);
         assert_eq!(g.abort(), None);
         let exp = g.into_inner();
         assert_eq!(exp.sized().len(), 4, "{:?}", exp.warnings());
@@ -1275,15 +1289,16 @@ mod tests {
     }
 
     /// The abort threshold, a quarter over the limit, is judged on the
-    /// ident window mean. A governed climb holds its windows at up to 1.1 of
-    /// the limit and never reaches it; without a limiter holding the climb
-    /// the first rung trips it.
+    /// ident window mean. A governed climb holds the band's bottom, 0.875 of
+    /// the limit; window peaks 15% over that reach past the limit and never
+    /// reach the abort. Without a limiter holding the climb the first rung
+    /// trips it.
     #[test]
     fn abort_threshold_rides_over_a_governed_climb() {
         let params = bench();
         let mut servo = bench_mg90(3204);
         servo.pos = 2029.0;
-        servo.hold_ripple = 0.1;
+        servo.hold_ripple = 0.15;
         let s = spy(
             &mut servo,
             Ladder::new(bench_cfg(), &params, Runway::new(GUARD)),
