@@ -6,8 +6,13 @@
 //! driving into the physical ends is the method. The current abort stays
 //! live so a stalled winding is not cooked; the seek duty mirrors
 //! resistance.rs's stall duty so the stall current stays well under it.
+//!
+//! The stops are what this finds, so a seek is judged by travel alone: one
+//! that comes to rest without travelling ends the run, and the two rests
+//! must bracket where the shaft started with a real span between them
+//! ([`EndstopResult::refusal`]).
 
-use super::{Cmd, Experiment, RigParams};
+use super::{AbortReason, Cmd, Experiment, RigParams, seek};
 use crate::frame::TelemetrySnapshot;
 use crate::regs::control;
 
@@ -29,8 +34,13 @@ impl Default for EndstopCfg {
     }
 }
 
+/// The least span two stops can be apart and still be the stops, counts.
+pub const SPAN_MIN: i32 = 1500;
+
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct EndstopResult {
+    /// Where the shaft stood before the first seek.
+    pub start: i32,
     pub pos_min_phys: i32,
     pub pos_max_phys: i32,
     /// true = positive duty increased position counts (matches the firmware
@@ -39,6 +49,22 @@ pub struct EndstopResult {
     /// Larger of the two stall currents, counts - confirms the motor
     /// actually loaded against a hard stop rather than settling idle.
     pub i_stall_counts: i16,
+}
+
+impl EndstopResult {
+    /// Why these rests cannot be the stops: they must lie either side of
+    /// the start, at least [`SPAN_MIN`] apart.
+    pub fn refusal(&self) -> Option<String> {
+        let (lo, hi, start) = (self.pos_min_phys, self.pos_max_phys, self.start);
+        let span = hi - lo;
+        (!(lo < start && start < hi && span >= SPAN_MIN)).then(|| {
+            format!(
+                "the stops found at {lo} and {hi} ({span} counts apart) do not lie either side \
+                 of the start at {start} at least {SPAN_MIN} counts apart: the shaft is blocked \
+                 or the position sensor is not reading"
+            )
+        })
+    }
 }
 
 enum Phase {
@@ -62,6 +88,9 @@ pub struct Endstop {
     dir_idx: u8,
     last_pos: Option<u16>,
     still: u32,
+    start: Option<u16>,
+    seek_start: Option<u16>,
+    halt: Option<AbortReason>,
     /// Settled pos + stall current recorded per seek direction: index 0 is
     /// the positive-duty rail, index 1 the negative-duty rail.
     rail: [Option<(u16, i16)>; 2],
@@ -77,6 +106,9 @@ impl Endstop {
             dir_idx: 0,
             last_pos: None,
             still: 0,
+            start: None,
+            seek_start: None,
+            halt: None,
             rail: [None; 2],
         }
     }
@@ -92,6 +124,7 @@ impl Endstop {
         let (p_neg, i_neg) = self.rail[1]?;
         let (p_pos, p_neg) = (p_pos as i32, p_neg as i32);
         Some(EndstopResult {
+            start: self.start? as i32,
             pos_min_phys: p_pos.min(p_neg),
             pos_max_phys: p_pos.max(p_neg),
             drive_polarity: p_pos > p_neg,
@@ -120,6 +153,7 @@ impl Experiment for Endstop {
             Phase::SeekSet => {
                 self.phase = Phase::SeekRead;
                 self.last_pos = None;
+                self.seek_start = None;
                 self.still = 0;
                 Cmd::Write {
                     reg: control::GOAL_DUTY,
@@ -140,7 +174,14 @@ impl Experiment for Endstop {
                         self.still = 0;
                     }
                     self.last_pos = Some(o.pos);
+                    let start = *self.seek_start.get_or_insert(o.pos);
+                    self.start.get_or_insert(start);
                     if self.still >= self.stall_polls {
+                        if let Err(reason) = seek::at_stop(start, o.pos, self.dir(), None) {
+                            self.halt = Some(reason);
+                            self.phase = Phase::FinishDuty;
+                            return Cmd::Pause { ms: 0 };
+                        }
                         self.rail[self.dir_idx as usize] = Some((o.pos, o.i_mean_counts));
                         self.phase = Phase::RestOff;
                         return Cmd::Pause { ms: 0 };
@@ -186,6 +227,10 @@ impl Experiment for Endstop {
             Phase::Finished => Cmd::Done,
         }
     }
+
+    fn halted(&self) -> Option<AbortReason> {
+        self.halt
+    }
 }
 
 #[cfg(test)]
@@ -214,6 +259,56 @@ mod tests {
         assert!((r.pos_max_phys - 3702).abs() <= 3, "max {}", r.pos_max_phys);
         assert!(r.drive_polarity, "positive duty should raise counts");
         assert!(r.i_stall_counts > 0, "stall current {}", r.i_stall_counts);
+        assert_eq!(r.start, 2000);
+        assert_eq!(r.refusal(), None);
+    }
+
+    /// Stops unknown: a seek that never travels ends the run, and rests
+    /// that do not bracket the start with a real span are no stops.
+    #[test]
+    fn a_blocked_shaft_finds_no_stops() {
+        let mut servo = FakeServo::new(3.37);
+        servo.pos = 2048.0;
+        servo.jam = Some(2048.0);
+        let params = crate::exp::testkit::rig().without_pos_guard();
+        let mut exp = Guarded::new(Endstop::new(EndstopCfg::default(), &params), params);
+        pump(&mut exp, &mut servo, 2_000_000);
+        assert_eq!(
+            exp.abort(),
+            Some(AbortReason::Blocked {
+                pos: 2048,
+                moved: 0
+            })
+        );
+        assert_eq!(exp.into_inner().result(), None);
+
+        let r = EndstopResult {
+            start: 2048,
+            pos_min_phys: 1200,
+            pos_max_phys: 2600,
+            drive_polarity: true,
+            i_stall_counts: 200,
+        };
+        assert_eq!(
+            r.refusal().as_deref(),
+            Some(
+                "the stops found at 1200 and 2600 (1400 counts apart) do not lie either side of \
+                 the start at 2048 at least 1500 counts apart: the shaft is blocked or the \
+                 position sensor is not reading"
+            )
+        );
+        let beside = EndstopResult {
+            pos_min_phys: 2100,
+            pos_max_phys: 3849,
+            ..r
+        };
+        assert!(beside.refusal().is_some(), "the start is outside the stops");
+        let good = EndstopResult {
+            pos_min_phys: 209,
+            pos_max_phys: 3849,
+            ..r
+        };
+        assert_eq!(good.refusal(), None);
     }
 
     #[test]

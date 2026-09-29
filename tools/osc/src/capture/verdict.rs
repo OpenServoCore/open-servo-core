@@ -61,6 +61,7 @@ mod tests {
             stall: false,
             static_load: false,
             guard: (532, 3526),
+            stops: Some((209, 3849)),
             tel_mask: 0x1cd,
             rung_tries: 3,
         }

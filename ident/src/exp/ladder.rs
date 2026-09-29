@@ -8,9 +8,11 @@
 //! mid-sweep are dropped with a warning, not silently.
 //!
 //! Rungs alternate +duty then -duty at each level so the pot ends near the
-//! next sweep's start and seeks stay short.
+//! next sweep's start and seeks stay short. A seek that comes to rest short
+//! of both its target and a stop ends the run ([`super::seek::at_stop`]):
+//! the shaft is blocked.
 
-use super::{Cmd, Experiment, RigParams, WindowSample, WindowStream};
+use super::{AbortReason, Cmd, Experiment, RigParams, WindowSample, WindowStream, seek};
 use crate::fitmath::{linear_ls, mean};
 use crate::fits::{FrictionFit, KeFit, RungPoint, friction_line, ke_fit};
 use crate::frame::TelemetrySnapshot;
@@ -118,6 +120,8 @@ pub struct Ladder {
     last_pos: Option<u16>,
     still: u32,
     polls: u32,
+    start: Option<u16>,
+    halt: Option<AbortReason>,
     windows: WindowStream,
     sweep_samples: Vec<SweepSample>,
     stalled_note: bool,
@@ -139,6 +143,8 @@ impl Ladder {
             last_pos: None,
             still: 0,
             polls: 0,
+            start: None,
+            halt: None,
             windows: WindowStream::new(params),
             sweep_samples: Vec::new(),
             stalled_note: false,
@@ -185,9 +191,25 @@ impl Ladder {
         self.last_pos = None;
         self.still = 0;
         self.polls = 0;
+        self.start = None;
+    }
+
+    /// The shaft came to rest driving `dir`: fine at a stop, the end of
+    /// the run anywhere else.
+    fn rested(&mut self, pos: u16, dir: i8) -> bool {
+        let start = self.start.unwrap_or(pos);
+        match seek::at_stop(start, pos, dir, self.params.stops) {
+            Ok(()) => true,
+            Err(reason) => {
+                self.halt = Some(reason);
+                self.phase = Phase::FinishTorque;
+                false
+            }
+        }
     }
 
     fn track_still(&mut self, pos: u16) {
+        self.start.get_or_insert(pos);
         if let Some(last) = self.last_pos
             && pos.abs_diff(last) <= self.cfg.stall_eps
         {
@@ -316,6 +338,15 @@ impl Experiment for Ladder {
                     self.track_still(o.pos);
                     // still = the physical end sits inside the band
                     done = self.seek_done(o.pos) || self.still >= self.cfg.stall_polls;
+                    if !self.seek_done(o.pos)
+                        && self.still >= self.cfg.stall_polls
+                        && !self.rested(o.pos, -self.dir())
+                    {
+                        return Cmd::Write {
+                            reg: control::GOAL_DUTY,
+                            value: 0,
+                        };
+                    }
                 }
                 self.polls += 1;
                 if !done && self.polls >= self.cfg.seek_cap_polls {
@@ -416,6 +447,10 @@ impl Experiment for Ladder {
             }
             Phase::Finished => Cmd::Done,
         }
+    }
+
+    fn halted(&self) -> Option<AbortReason> {
+        self.halt
     }
 }
 

@@ -22,9 +22,10 @@ use crate::lut::GridLut;
 use crate::regs::{ALL, Reg, control};
 
 /// The envelope the tests run in: a guard inside the fake's stops (200,
-/// 4000) and an abort over any current the fake draws unless a test asks.
+/// 4000), those stops as calibrated, and an abort over any current the
+/// fake draws unless a test asks.
 pub fn rig() -> RigParams {
-    RigParams::new(Some((150, 3950)), 1100)
+    RigParams::new(Some((150, 3950)), 1100).with_stops((200, 4000))
 }
 
 pub struct FakeServo {

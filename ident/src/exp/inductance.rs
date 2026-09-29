@@ -68,8 +68,9 @@ use core::fmt::Write as _;
 
 use super::held::{HeldRun, held_run};
 use super::rl::{Gate, Scales};
+use super::seek::{self, Watch};
 use super::winding::{TapZeros, VoltRun, capture_volts, volt_run};
-use super::{Cmd, Experiment, RigParams};
+use super::{AbortReason, Cmd, Experiment, RigParams};
 use crate::burst::{Capture, Chans, SAMPLE_US, nominal_cadence};
 use crate::fitmath::{lag_ls, linear_ls, median, quantile, stddev, theil_sen};
 use crate::frame::TelemetrySnapshot;
@@ -1812,6 +1813,9 @@ pub struct Inductance {
     cfg: Cfg,
     sc: Scales,
     band: (u16, u16),
+    params: RigParams,
+    watch: Option<Watch>,
+    halt: Option<AbortReason>,
     phase: Phase,
     plan: Vec<Arm>,
     at: usize,
@@ -1832,6 +1836,9 @@ impl Inductance {
             cfg,
             sc,
             band,
+            params: *params,
+            watch: None,
+            halt: None,
             phase: Phase::ModeWrite,
             plan,
             at: 0,
@@ -1913,6 +1920,7 @@ impl Experiment for Inductance {
             Phase::SeekTorqueOn => {
                 self.phase = Phase::SeekRead;
                 self.polls = 0;
+                self.watch = None;
                 Cmd::Write {
                     reg: control::TORQUE_ENABLE,
                     value: 1,
@@ -1935,6 +1943,17 @@ impl Experiment for Inductance {
                 if self.polls >= self.cfg.seek_cap_polls {
                     self.warnings
                         .push(format!("seek stuck at pos {pos}; run cut short"));
+                    self.phase = Phase::FinishDuty;
+                    return Cmd::Pause { ms: 0 };
+                }
+                let watch = self.watch.get_or_insert(Watch::new(
+                    pos,
+                    self.params.stall_eps,
+                    self.params.stall_polls,
+                ));
+                let start = watch.start();
+                if watch.still(pos) {
+                    self.halt = Some(seek::blocked(start, pos));
                     self.phase = Phase::FinishDuty;
                     return Cmd::Pause { ms: 0 };
                 }
@@ -2030,6 +2049,10 @@ impl Experiment for Inductance {
             self.prune(&f);
         }
         self.caps.push(cap.clone());
+    }
+
+    fn halted(&self) -> Option<AbortReason> {
+        self.halt
     }
 }
 

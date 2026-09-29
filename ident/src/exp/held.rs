@@ -8,11 +8,12 @@
 //! before the first drive, rewritten by the driver while it is held, and
 //! cleared on every way out (the [`super::Guarded`] envelope clears it on an
 //! abort): centre, take a zero-duty rest reference burst while the shaft is
-//! still, seek the stop at the hold duty, require real travel before
-//! believing a stop, confirm it by stillness plus a non-zero applied duty,
-//! keep holding, then burst from the hold to each step duty in the SAME
-//! direction - never away from the stop while seated. Release (duty 0,
-//! torque off, permit off) at the end.
+//! still, seek the stop at the hold duty, believe a stop only where the
+//! stop is ([`super::seek`]; a shaft at rest anywhere else ends the run),
+//! confirm it by stillness plus a non-zero applied duty, keep holding, then
+//! burst from the hold to each step duty in the SAME direction - never away
+//! from the stop while seated. Release (duty 0, torque off, permit off) at
+//! the end.
 //!
 //! Analysis: the per-period regression of [`super::winding`] does not care
 //! where the current starts, so the seated captures pool into one
@@ -23,26 +24,15 @@
 
 use super::inductance::{CaptureFit, FitCfg, duty_cap, fit_capture, fold, gate, worst_spread};
 use super::rl::{Gate, Scales};
+use super::seek::{self, SEEK_STEP_Q15, SEEK_TRAVEL_MIN, Watch};
 use super::winding::{CaptureVolts, Period, PeriodFit, Route, TapZeros, capture_volts, period_fit};
-use super::{Cmd, Experiment, RigParams};
+use super::{AbortReason, Cmd, Experiment, RigParams};
 use crate::burst::{Capture, Chans};
 use crate::fitmath::median;
 use crate::frame::TelemetrySnapshot;
 use crate::regs::control;
 
 const Q15: f64 = 32767.0;
-
-/// Counts of travel before a seek believes it has gone somewhere, and of
-/// progress per stall window before it believes it is still going. A few
-/// counts of elastic wind-up at a stop pass any stillness threshold, and a
-/// seek that mistakes wind-up for travel declares the stop it is leaning
-/// on to be the one it was sent to find (bench: a ladder ran eleven rungs
-/// against the wrong stop that way).
-pub const SEEK_TRAVEL_MIN: u16 = 100;
-
-/// Breakout escalation per stalled window while the shaft has not moved:
-/// leaving rest costs more than holding against a stop. 5% of full scale.
-pub const SEEK_STEP_Q15: i16 = 1638;
 
 /// Mid travel with no soft guard configured: the pot's own midpoint.
 const POT_MID: u16 = 2048;
@@ -274,13 +264,13 @@ pub struct HeldCfg {
     /// Settled winding current the plan stays under, amps.
     pub i_max_a: f64,
     pub chans: Chans,
-    /// Escalation ceiling while the shaft has not moved, percent of full
-    /// scale. Under the top rung, so a seek never loads a stop harder than
-    /// the bursts do.
+    /// Escalation ceiling for a seek that starts at the other stop, percent
+    /// of full scale. Under the top rung, so a seek never loads a stop
+    /// harder than the bursts do.
     pub seek_cap_pct: u8,
-    /// The same for the centring leg, which drives away from any stop and
-    /// has nothing to hit. Leaving a stop costs far more than holding one:
-    /// ~40% frees this servo on 2S, ~63% on USB.
+    /// The same for the centring leg when it starts at a stop. Leaving a
+    /// stop costs far more than holding one: ~40% frees this servo on 2S,
+    /// ~63% on USB.
     pub centre_cap_pct: u8,
     pub seek_poll_ms: u32,
     /// Poll budget per seek: 500 x 20 ms is 10 s of travel.
@@ -366,17 +356,15 @@ pub struct Held {
     cfg: HeldCfg,
     sc: Scales,
     band: (u16, u16),
+    params: RigParams,
+    watch: Option<Watch>,
+    halt: Option<AbortReason>,
     phase: Phase,
     stop: usize,
     rungs: Vec<i16>,
     at: usize,
     polls: u32,
     mag: i16,
-    start: u16,
-    last: u16,
-    moved: bool,
-    window: u32,
-    stall_polls: u32,
     drift_max: u16,
     seat: Option<Seated>,
     seats: Vec<Seated>,
@@ -410,17 +398,15 @@ impl Held {
             cfg,
             sc,
             band,
+            params: *params,
+            watch: None,
+            halt: None,
             phase: Phase::ModeWrite,
             stop: 0,
             rungs,
             at: 0,
             polls: 0,
             mag: 0,
-            start: 0,
-            last: 0,
-            moved: false,
-            window: 0,
-            stall_polls: params.stall_polls,
             drift_max: params.stall_eps.saturating_mul(params.stall_polls as u16),
             seat: None,
             seats: Vec::new(),
@@ -459,6 +445,13 @@ impl Held {
     /// Straight to the exit, which clears the permit.
     fn fail(&mut self, why: String) -> Cmd {
         self.warnings.push(why);
+        self.phase = Phase::FinishDuty;
+        Cmd::Pause { ms: 0 }
+    }
+
+    /// The same exit, and the whole run ends with it.
+    fn blocked(&mut self, start: u16, pos: u16) -> Cmd {
+        self.halt = Some(seek::blocked(start, pos));
         self.phase = Phase::FinishDuty;
         Cmd::Pause { ms: 0 }
     }
@@ -531,31 +524,34 @@ impl Experiment for Held {
                     return self.fail("centring read returned nothing".into());
                 };
                 if (self.band.0..=self.band.1).contains(&o.pos) {
+                    self.watch = None;
                     self.phase = Phase::RestDuty;
                     return Cmd::Pause { ms: 0 };
                 }
-                if self.polls == 0 {
-                    self.last = o.pos;
-                }
+                let dir: i8 = if o.pos < self.band.0 { 1 } else { -1 };
+                let watch = self.watch.get_or_insert(Watch::new(
+                    o.pos,
+                    self.params.stall_eps,
+                    self.params.stall_polls,
+                ));
+                let start = watch.start();
+                let still = watch.still(o.pos);
                 self.polls += 1;
                 if self.polls > self.cfg.seek_polls_max {
                     return self.fail(format!("centring stuck at pos {}", o.pos));
                 }
-                if self.polls.is_multiple_of(self.stall_polls) {
-                    if o.pos.abs_diff(self.last) < SEEK_TRAVEL_MIN {
-                        self.mag = self
-                            .mag
-                            .saturating_add(SEEK_STEP_Q15)
-                            .min(pct_q15(self.cfg.centre_cap_pct));
+                if still {
+                    let next = self.mag.saturating_add(SEEK_STEP_Q15);
+                    if o.pos.abs_diff(start) >= SEEK_TRAVEL_MIN
+                        || !seek::leaves_stop(start, dir, self.params.stops)
+                        || next > pct_q15(self.cfg.centre_cap_pct)
+                    {
+                        return self.blocked(start, o.pos);
                     }
-                    self.last = o.pos;
+                    self.mag = next;
                 }
                 self.phase = Phase::CentreWait;
-                self.duty(if o.pos < self.band.0 {
-                    self.mag
-                } else {
-                    -self.mag
-                })
+                self.duty(dir as i16 * self.mag)
             }
             Phase::CentreWait => {
                 self.phase = Phase::CentreRead;
@@ -587,8 +583,6 @@ impl Experiment for Held {
             Phase::SeekStart => {
                 self.phase = Phase::SeekDrive;
                 self.polls = 0;
-                self.window = 0;
-                self.moved = false;
                 self.mag = pct_q15(self.cfg.hold_pct);
                 Cmd::Read
             }
@@ -596,8 +590,11 @@ impl Experiment for Held {
                 let Some(o) = obs else {
                     return self.fail("seek read returned nothing".into());
                 };
-                self.start = o.pos;
-                self.last = o.pos;
+                self.watch = Some(Watch::new(
+                    o.pos,
+                    self.params.stall_eps,
+                    self.params.stall_polls,
+                ));
                 self.phase = Phase::SeekWait;
                 self.duty(self.dir() as i16 * self.mag)
             }
@@ -611,56 +608,46 @@ impl Experiment for Held {
                 self.phase = Phase::SeekEval;
                 Cmd::Read
             }
-            // Progress over a window, not stillness poll to poll: a couple
-            // of counts of ADC jitter at the rail resets a consecutive count
-            // and the escalation never fires.
             Phase::SeekEval => {
-                let Some(o) = obs else {
+                let (Some(o), Some(mut watch)) = (obs, self.watch) else {
                     return self.fail("seek read returned nothing".into());
                 };
+                let start = watch.start();
                 self.polls += 1;
-                self.moved |= o.pos.abs_diff(self.start) >= SEEK_TRAVEL_MIN;
                 if self.polls > self.cfg.seek_polls_max {
                     return self.fail(format!(
-                        "no stop within {} polls driving {:+} from pos {}",
+                        "no stop within {} polls driving {:+} from pos {start}",
                         self.cfg.seek_polls_max,
                         self.dir(),
-                        self.start
                     ));
                 }
-                self.window += 1;
+                let still = watch.still(o.pos);
+                self.watch = Some(watch);
                 self.phase = Phase::SeekWait;
-                if self.window < self.stall_polls {
+                if !still {
                     return Cmd::Pause { ms: 0 };
                 }
-                self.window = 0;
-                let progress = o.pos.abs_diff(self.last) >= SEEK_TRAVEL_MIN;
-                self.last = o.pos;
-                match (progress, self.moved) {
-                    (true, _) => Cmd::Pause { ms: 0 },
-                    (false, true) => {
-                        self.seat = Some(Seated {
-                            dir: self.dir(),
-                            pos: o.pos,
-                            duty_applied_q15: o.duty_applied_q15,
-                            arrived_q15: self.dir() as i16 * self.mag,
-                        });
-                        self.phase = Phase::SeatSettle;
-                        self.duty(self.hold_q15())
-                    }
-                    (false, false) => {
-                        let next = self.mag.saturating_add(SEEK_STEP_Q15);
-                        if next > pct_q15(self.cfg.seek_cap_pct) {
-                            return self.fail(format!(
-                                "the shaft never moved from pos {} up to {} q15: jammed, or the \
-                                 kernel is zeroing the duty",
-                                o.pos, self.mag
-                            ));
-                        }
-                        self.mag = next;
-                        self.duty(self.dir() as i16 * self.mag)
-                    }
+                let dir = self.dir();
+                let stops = self.params.stops;
+                if seek::at_stop(start, o.pos, dir, stops).is_ok() {
+                    self.seat = Some(Seated {
+                        dir,
+                        pos: o.pos,
+                        duty_applied_q15: o.duty_applied_q15,
+                        arrived_q15: dir as i16 * self.mag,
+                    });
+                    self.phase = Phase::SeatSettle;
+                    return self.duty(self.hold_q15());
                 }
+                let next = self.mag.saturating_add(SEEK_STEP_Q15);
+                if o.pos.abs_diff(start) >= SEEK_TRAVEL_MIN
+                    || !seek::leaves_stop(start, dir, stops)
+                    || next > pct_q15(self.cfg.seek_cap_pct)
+                {
+                    return self.blocked(start, o.pos);
+                }
+                self.mag = next;
+                self.duty(dir as i16 * self.mag)
             }
             Phase::SeatSettle => {
                 self.phase = Phase::SeatRead;
@@ -731,6 +718,7 @@ impl Experiment for Held {
                 self.stop += 1;
                 self.phase = if self.stop < self.cfg.stops.dirs().len() {
                     self.polls = 0;
+                    self.watch = None;
                     self.mag = pct_q15(self.cfg.hold_pct);
                     Phase::CentreRead
                 } else {
@@ -758,6 +746,10 @@ impl Experiment for Held {
             }
             Phase::Finished => Cmd::Done,
         }
+    }
+
+    fn halted(&self) -> Option<AbortReason> {
+        self.halt
     }
 
     fn push_burst(&mut self, cap: &Capture) {
@@ -1167,25 +1159,72 @@ mod tests {
         );
     }
 
+    fn duties(log: &[String]) -> Vec<i32> {
+        log.iter()
+            .filter_map(|l| l.strip_prefix("write goal_duty "))
+            .map(|v| v.parse().unwrap())
+            .collect()
+    }
+
+    /// The shaft locked at mid travel, as on the bench: the seek at the hold
+    /// duty never travels, is never escalated, and ends the run - nothing
+    /// is seated and nothing bursts against the jam.
     #[test]
-    fn a_jammed_shaft_escalates_to_the_cap_and_gives_up() {
+    fn a_seek_that_never_moves_aborts_the_run() {
         let mut s = servo();
-        s.fc = 1e6;
-        s.pos = 2000.0;
+        s.pos = 2048.0;
+        s.jam = Some(2048.0);
         let (exp, log) = run(&mut s);
+        let reason = exp.abort().expect("the run aborts");
+        assert_eq!(
+            reason,
+            AbortReason::Blocked {
+                pos: 2048,
+                moved: 0
+            }
+        );
+        assert_eq!(
+            reason.to_string(),
+            "the shaft is blocked or the position sensor is not reading (pos 2048, moved 0 \
+             counts)"
+        );
         permit_brackets(&log);
-        let cap = pct_q15(HeldCfg::default().seek_cap_pct) as i32;
+        let hold = pct_q15(HeldCfg::default().hold_pct) as i32;
+        assert!(duties(&log).iter().all(|d| d.abs() <= hold), "{log:?}");
+        assert!(log.iter().all(|l| !l.ends_with(" seated")));
+        assert!(exp.into_inner().seats().is_empty());
+    }
+
+    /// Escalation is for leaving a stop. Parked on the low stop with a
+    /// breakaway over the hold duty, the centring leg steps up until the
+    /// shaft leaves; the seek back from mid travel stays at the hold duty
+    /// and aborts instead of loading the train harder.
+    #[test]
+    fn escalation_only_leaves_a_stop() {
+        let mut s = servo();
+        s.dynamic = false;
+        s.pos = 200.0;
+        s.breakaway_q15 = pct_q15(20);
+        let (exp, log) = run(&mut s);
+        let rest = log
+            .iter()
+            .position(|l| l.starts_with("burst 0 pre 0 "))
+            .expect("the rest reference");
+        let hold = pct_q15(HeldCfg::default().hold_pct) as i32;
+        let centring = duties(&log[..rest]);
+        assert_eq!(centring.first(), Some(&hold));
         assert!(
-            log.iter()
-                .filter_map(|l| l.strip_prefix("write goal_duty "))
-                .all(|v| v.parse::<i32>().unwrap().abs() <= cap)
+            centring.iter().any(|d| *d >= pct_q15(20) as i32),
+            "the centring leg never escalated: {centring:?}"
         );
-        let exp = exp.into_inner();
-        assert!(exp.captures().iter().all(|c| !c.meta.seated));
         assert!(
-            exp.warnings().iter().any(|w| w.contains("never moved")),
-            "{:?}",
-            exp.warnings()
+            duties(&log[rest..]).iter().all(|d| d.abs() <= hold),
+            "the seek from mid travel escalated"
         );
+        assert!(matches!(
+            exp.abort(),
+            Some(AbortReason::Blocked { moved: 0, .. })
+        ));
+        permit_brackets(&log);
     }
 }

@@ -33,6 +33,7 @@ pub mod inertia;
 pub mod ladder;
 pub mod resistance;
 pub mod rl;
+pub mod seek;
 pub mod sweep;
 pub mod verify;
 pub mod winding;
@@ -87,6 +88,11 @@ pub trait Experiment {
     fn push_tel(&mut self, _frames: &[TelFrame]) {}
     /// The capture from the last [`Cmd::Burst`].
     fn push_burst(&mut self, _cap: &Capture) {}
+    /// Set once the experiment stopped on something that ends the whole
+    /// run, not just itself: [`Guarded`] preempts it on the next step.
+    fn halted(&self) -> Option<AbortReason> {
+        None
+    }
 }
 
 /// Rig constants - the single home. The travel guard and the current abort
@@ -119,6 +125,9 @@ pub struct RigParams {
     /// Fits against pot motion read through it; seeks, stall detects and
     /// the guard stay on the raw count (identity at and beyond the stops).
     pub pot: Pot,
+    /// The pot stops, `raw_min` and `raw_max`: where a seek toward a stop
+    /// must come to rest. None until `osc cal` found them.
+    pub stops: Option<(u16, u16)>,
 }
 
 impl RigParams {
@@ -129,9 +138,17 @@ impl RigParams {
             slip: (1250, 1650),
             settle_windows: 5,
             agg_period_ms: 0.8,
-            stall_eps: 3,
-            stall_polls: 8,
+            stall_eps: seek::STALL_EPS,
+            stall_polls: seek::STALL_POLLS,
             pot: Pot::RAW,
+            stops: None,
+        }
+    }
+
+    pub fn with_stops(self, stops: (u16, u16)) -> Self {
+        Self {
+            stops: Some(stops),
+            ..self
         }
     }
 
@@ -156,7 +173,38 @@ pub enum AbortReason {
     PosGuard { pos: u16 },
     /// Ident-window current mean exceeded the abort threshold mid-drive.
     Overcurrent { i_mean: i16 },
+    /// A seek came to rest short of anywhere it could stop: jammed, or the
+    /// pot is not reading. `moved` is the travel since the seek started.
+    Blocked { pos: u16, moved: u16 },
 }
+
+impl core::fmt::Display for AbortReason {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            AbortReason::Fault { flags, code } => {
+                write!(
+                    f,
+                    "the servo latched a fault (flags {flags:#04x}, code {code})"
+                )
+            }
+            AbortReason::PosGuard { pos } => {
+                write!(f, "the shaft left the travel guard at pos {pos}")
+            }
+            AbortReason::Overcurrent { i_mean } => write!(
+                f,
+                "the current reached {} counts, over the abort threshold",
+                i_mean.unsigned_abs()
+            ),
+            AbortReason::Blocked { pos, moved } => write!(
+                f,
+                "the shaft is blocked or the position sensor is not reading (pos {pos}, moved \
+                 {moved} counts)"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for AbortReason {}
 
 enum GuardState {
     Run,
@@ -224,8 +272,10 @@ impl<E: Experiment> Guarded<E> {
 impl<E: Experiment> Experiment for Guarded<E> {
     fn step(&mut self, obs: Option<&TelemetrySnapshot>) -> Cmd {
         if matches!(self.state, GuardState::Run)
-            && let Some(o) = obs
-            && let Some(reason) = self.violation(o)
+            && let Some(reason) = self
+                .exp
+                .halted()
+                .or_else(|| obs.and_then(|o| self.violation(o)))
         {
             self.abort = Some(reason);
             self.state = GuardState::DutyOff;
@@ -276,6 +326,10 @@ impl<E: Experiment> Experiment for Guarded<E> {
 
     fn push_burst(&mut self, cap: &Capture) {
         self.exp.push_burst(cap);
+    }
+
+    fn halted(&self) -> Option<AbortReason> {
+        self.abort
     }
 }
 
@@ -341,6 +395,10 @@ impl<E: Experiment> Experiment for Permitted<E> {
 
     fn push_burst(&mut self, cap: &Capture) {
         self.exp.push_burst(cap);
+    }
+
+    fn halted(&self) -> Option<AbortReason> {
+        self.exp.halted()
     }
 }
 

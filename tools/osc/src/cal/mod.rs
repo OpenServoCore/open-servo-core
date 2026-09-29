@@ -26,6 +26,7 @@ use osc_client::blocking::Client;
 use osc_client::nusb::NusbPipe;
 use osc_client::pos_lut;
 use osc_ident::exp::endstop::{Endstop, EndstopCfg, EndstopResult};
+use osc_ident::exp::seek::{self, Watch};
 use osc_ident::exp::sweep::{Sweep, SweepCfg};
 use osc_ident::exp::{Guarded, Permitted, RigParams};
 use osc_ident::frame::TelFrame;
@@ -39,6 +40,7 @@ use osc_ident::units::{self, SenseParams};
 use crate::rig::csvio::{self, OutDir, SnapshotLog};
 use crate::rig::pump::{self, Pump, read_snapshot, with_guard, write_reg};
 use crate::rig::snapshot::{self, read_u16};
+use crate::rig::{Aborted, check_abort};
 
 /// Commutation events per rotor rev for the brushed 3-slot motor: the ripple
 /// tach and the LUT angle clock both count 6 per revolution.
@@ -120,6 +122,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
         pos_max_phys,
         drive_polarity,
         i_stall_counts,
+        ..
     } = r;
     let span = pos_max_phys - pos_min_phys;
     println!(
@@ -489,13 +492,16 @@ fn seek_rails(
     );
     // parks safe whether the run finished, errored, or was ctrl-c'd
     with_guard(c, id, |c| Pump::new(c, id, Some(&mut log)).run(&mut exp))?;
-    if let Some(reason) = exp.abort() {
-        bail!("endstop aborted by the safety envelope: {reason:?}");
-    }
-    exp.into_inner()
+    check_abort("the stop seek", exp.abort())?;
+    let r = exp
+        .into_inner()
         .into_inner()
         .result()
-        .context("endstop did not reach both rails - no writes")
+        .context("endstop did not reach both rails - no writes")?;
+    if let Some(why) = r.refusal() {
+        bail!("{why}; no writes");
+    }
+    Ok(r)
 }
 
 /// One dedicated constant-duty ripple capture: goal + TEL arm in one COMMIT
@@ -567,7 +573,8 @@ fn run_sweep(
 
 /// Drive to the rail midpoint so the servo does not rest on a hard stop.
 /// Best-effort: drives the duty sign toward the midpoint, parks torque-off on
-/// arrival, and gives up quietly after the loop.
+/// arrival, and gives up quietly after the loop - except on a shaft that
+/// comes to rest short of the midpoint, which is blocked.
 fn recenter(c: &mut Client<NusbPipe>, id: Id, pos_min: i32, pos_max: i32) -> Result<()> {
     const DUTY: i32 = 9000;
     let mid = (pos_min + pos_max) / 2;
@@ -580,6 +587,7 @@ fn recenter(c: &mut Client<NusbPipe>, id: Id, pos_min: i32, pos_max: i32) -> Res
     };
     write_reg(c, id, control::MODE, 0)?;
     write_reg(c, id, control::TORQUE_ENABLE, 1)?;
+    let mut watch = None;
     for _ in 0..200 {
         if pump::STOP.load(Ordering::SeqCst) {
             park(c);
@@ -589,6 +597,15 @@ fn recenter(c: &mut Client<NusbPipe>, id: Id, pos_min: i32, pos_max: i32) -> Res
         if (lo..=hi).contains(&pos) {
             park(c);
             return Ok(());
+        }
+        let w = watch.get_or_insert_with(|| Watch::new(pos, seek::STALL_EPS, seek::STALL_POLLS));
+        if w.still(pos) {
+            park(c);
+            return Err(Aborted {
+                what: "the recentre",
+                reason: seek::blocked(w.start(), pos),
+            }
+            .into());
         }
         let duty = if (pos as i32) < mid { DUTY } else { -DUTY };
         write_reg(c, id, control::GOAL_DUTY, duty)?;

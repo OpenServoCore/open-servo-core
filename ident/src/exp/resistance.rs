@@ -8,9 +8,11 @@
 //! Run with the pos guard disabled ([`super::RigParams::without_pos_guard`]):
 //! stalling at the physical ends is the method. The rig's stall detector
 //! must be non-latching (stall_response Yield) or tripped above the ladder
-//! currents; a latched STALL aborts the run via the fault check.
+//! currents; a latched STALL aborts the run via the fault check. A seek
+//! that comes to rest anywhere but the stop it drove at ends the run before
+//! any dwell ([`super::seek::at_stop`]).
 
-use super::{Cmd, Experiment, RigParams, WindowSample, WindowStream};
+use super::{AbortReason, Cmd, Experiment, RigParams, WindowSample, WindowStream, seek};
 use crate::fitmath::{linear_ls, origin_ls};
 use crate::frame::TelemetrySnapshot;
 use crate::regs::control;
@@ -89,6 +91,9 @@ enum Phase {
 
 pub struct Resistance {
     cfg: ResistanceCfg,
+    stops: Option<(u16, u16)>,
+    seek_start: Option<u16>,
+    halt: Option<AbortReason>,
     phase: Phase,
     dir_idx: u8,
     ladder_idx: usize,
@@ -104,6 +109,9 @@ impl Resistance {
     pub fn new(cfg: ResistanceCfg, params: &RigParams) -> Self {
         Self {
             cfg,
+            stops: params.stops,
+            seek_start: None,
+            halt: None,
             phase: Phase::ModeWrite,
             dir_idx: 0,
             ladder_idx: 0,
@@ -191,6 +199,7 @@ impl Experiment for Resistance {
             Phase::SeekSet => {
                 self.phase = Phase::SeekRead;
                 self.last_pos = None;
+                self.seek_start = None;
                 self.still = 0;
                 self.windows.mark_transition();
                 Cmd::Write {
@@ -212,6 +221,14 @@ impl Experiment for Resistance {
                         self.still = 0;
                     }
                     self.last_pos = Some(o.pos);
+                    let start = *self.seek_start.get_or_insert(o.pos);
+                    if self.still >= self.cfg.stall_polls
+                        && let Err(reason) = seek::at_stop(start, o.pos, self.dir(), self.stops)
+                    {
+                        self.halt = Some(reason);
+                        self.phase = Phase::FinishDuty;
+                        return Cmd::Pause { ms: 0 };
+                    }
                 }
                 if self.still >= self.cfg.stall_polls {
                     self.ladder_idx = 0;
@@ -298,6 +315,10 @@ impl Experiment for Resistance {
             Phase::Finished => Cmd::Done,
         }
     }
+
+    fn halted(&self) -> Option<AbortReason> {
+        self.halt
+    }
 }
 
 #[cfg(test)]
@@ -359,6 +380,38 @@ mod tests {
         let tail: Vec<&String> = log.iter().rev().take(2).collect();
         assert_eq!(*tail[1], "write goal_duty 0");
         assert_eq!(*tail[0], "write torque_enable 0");
+    }
+
+    /// The shaft jams on its way to the stop, as it did on the bench: the
+    /// seek travels, comes to rest short of the stop, and the run ends
+    /// there - no dwell is commanded against the jam.
+    #[test]
+    fn a_mid_travel_jam_is_not_a_stop() {
+        for jam in [3000.0, 2400.0] {
+            let mut servo = FakeServo::new(3.37);
+            servo.jam = Some(jam);
+            let params = crate::exp::testkit::rig().without_pos_guard();
+            let mut exp = Guarded::new(Resistance::new(ResistanceCfg::default(), &params), params);
+            let log = pump(&mut exp, &mut servo, 2_000_000);
+            assert_eq!(
+                exp.abort(),
+                Some(AbortReason::Blocked {
+                    pos: jam as u16,
+                    moved: (jam - 2400.0) as u16
+                })
+            );
+            let seek = ResistanceCfg::default().seek_duty_q15 as i32;
+            assert!(
+                log.iter()
+                    .filter_map(|l| l.strip_prefix("write goal_duty "))
+                    .all(|v| v.parse::<i32>().unwrap().abs() <= seek),
+                "a dwell was commanded: {log:?}"
+            );
+            assert!(exp.into_inner().samples().is_empty());
+            let tail: Vec<&String> = log.iter().rev().take(2).collect();
+            assert_eq!(*tail[1], "write goal_duty 0");
+            assert_eq!(*tail[0], "write torque_enable 0");
+        }
     }
 
     #[test]

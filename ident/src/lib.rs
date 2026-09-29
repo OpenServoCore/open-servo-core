@@ -21,6 +21,7 @@ pub mod pot;
 pub mod regs;
 pub mod report;
 pub mod ripple;
+pub mod run;
 pub mod slip;
 pub mod sources;
 pub mod units;
