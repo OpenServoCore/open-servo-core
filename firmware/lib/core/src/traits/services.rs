@@ -141,7 +141,9 @@ pub trait Dispatch {
 
     /// Verdict pass: promote the staged table effect -- a plain write applies
     /// into the live table and fires its hooks; a held write keeps its
-    /// entries for a later COMMIT.
+    /// entries for a later COMMIT. The bus sequences the staged reply
+    /// first, so this runs with the status already on the wire and must
+    /// stay in the same handler body (the reply's CRC arm pends behind it).
     fn commit<R: Reply>(&mut self, reply: &mut R);
 
     /// Verdict fail (or frame died): discard the staged table effect.
