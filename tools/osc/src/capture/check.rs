@@ -3,8 +3,9 @@
 //! dataset or experiment dir, every capture under it, and that they were
 //! all made under one position table and one drive rule, the one
 //! dataset.toml declares. A recording made under the limit is judged as the
-//! capture verdict judged it: settled grid and ends tails, no current window
-//! over its abort.
+//! capture verdict judged it: settled grid and ends tails, an ends rung's up
+//! to the endstop at the soft limits its meta names, no current window over
+//! its abort.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -22,7 +23,7 @@ use osc_ident::limits::Ma;
 use super::Rule;
 use super::plan::Block;
 use super::store::{goal_tick, tick_ms};
-use super::verdict::{Abort, block_of, expected_segments, over_abort, settled};
+use super::verdict::{Abort, block_of, expected_segments, over_abort, settled, to_endstop};
 use crate::rig::pump::BurstStats;
 use crate::sweep::{Decay, Segment, Step};
 
@@ -81,6 +82,10 @@ struct DriveMeta {
     window_floor_q15: Option<u16>,
     #[serde(default)]
     r_q12: Option<u16>,
+    /// The soft limits the servo held; without them an ends rung is judged
+    /// to the end of its window.
+    #[serde(default)]
+    soft: Option<[u16; 2]>,
 }
 
 /// The rule and limit a recording was made under, or a dataset declares.
@@ -441,11 +446,17 @@ fn check_limit(rows: &Rows, m: &SweepMeta, d: &DriveMeta) -> Result<()> {
             continue;
         };
         let k = k % m.schedule.len();
+        let block = block_of(&session.blocks, k);
         if g.cmd_duty_q15 != 0
-            && matches!(block_of(&session.blocks, k), Some("grid" | "ends"))
+            && matches!(block, Some("grid" | "ends"))
             && matches!(m.schedule[k], Step::Drive(..))
         {
-            settled(g, hz).map_err(|e| anyhow!("seg {}: {e}", g.seg))?;
+            let n = match (block, d.soft) {
+                (Some("ends"), Some(soft)) => to_endstop(g, soft, hz),
+                _ => Ok(g.frames.len()),
+            };
+            n.and_then(|n| settled(g, n, hz))
+                .map_err(|e| anyhow!("seg {}: {e}", g.seg))?;
         }
     }
     Ok(())
@@ -897,9 +908,15 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
     }
 
-    /// A grid rung recorded on the bench servo, landed as a limit recording
-    /// with the settings its meta names.
-    fn land_grid(root: &Path, n: u32, step: Step, set: impl FnOnce(&mut Bench)) -> PathBuf {
+    /// A rung of `block` recorded on the bench servo, landed as a limit
+    /// recording with the settings its meta names.
+    fn land_rung(
+        root: &Path,
+        n: u32,
+        block: &str,
+        step: Step,
+        set: impl FnOnce(&mut Bench),
+    ) -> PathBuf {
         let c = bench::cfg(vec![step], Dirs::Both);
         let segs = bench::record(&c, set);
         let mut meta = sweep_meta();
@@ -913,6 +930,7 @@ mod tests {
             "i_abort_counts": 350,
             "window_floor_q15": 4356,
             "r_q12": 7270,
+            "soft": [432, 3626],
         });
         let store = Store::new(root.to_path_buf());
         let cap = Capture::open(&store, "session", n).unwrap();
@@ -924,7 +942,7 @@ mod tests {
             recording: "slow".into(),
             decay: Decay::Slow,
             schedule: vec![step],
-            blocks: bench::one_block("grid", &c),
+            blocks: bench::one_block(block, &c),
             dropped: Vec::new(),
         };
         t.accept(&CaptureMeta {
@@ -944,18 +962,18 @@ mod tests {
     #[test]
     fn a_limit_recording_checks_its_tails_and_its_current() {
         let root = tmp("check-limit");
-        let dir = land_grid(&root, 1, Step::Drive(40, Some(361)), |_| {});
+        let dir = land_rung(&root, 1, "grid", Step::Drive(40, Some(361)), |_| {});
         let c = check(&dir, "slow").unwrap();
         assert!(c.line.ends_with(", limit at 280 counts"), "{}", c.line);
 
-        let dir = land_grid(&root, 2, Step::Drive(40, Some(120)), |_| {});
+        let dir = land_rung(&root, 2, "grid", Step::Drive(40, Some(120)), |_| {});
         let e = check(&dir, "slow").err().unwrap().to_string();
         assert!(
             e.starts_with("seg 1: the applied duty held its goal for the last 4"),
             "{e}"
         );
 
-        let dir = land_grid(&root, 3, Step::Drive(60, Some(272)), |b| {
+        let dir = land_rung(&root, 3, "grid", Step::Drive(60, Some(272)), |b| {
             b.servo.current_limit = None
         });
         let e = check(&dir, "slow").err().unwrap().to_string();
@@ -966,6 +984,30 @@ mod tests {
             "{e}"
         );
         assert!(e.ends_with("over the abort of 350 counts"), "{e}");
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The bench servo's 20% ends rung in 1277 ms, braked by the endstop at
+    /// the soft limit and held at 0 to the end of the window: checked up to
+    /// the endstop at the soft limits its meta names, it passes; a meta
+    /// without them judges it to the end of the window, and it fails.
+    #[test]
+    fn an_ends_rung_braked_at_the_soft_limit_checks_clean() {
+        let root = tmp("check-ends");
+        let dir = land_rung(&root, 1, "ends", Step::Drive(20, Some(1277)), |_| {});
+        let c = check(&dir, "slow").unwrap();
+        assert!(c.line.ends_with(", limit at 280 counts"), "{}", c.line);
+
+        let path = dir.join("slow.meta.json");
+        let mut meta: Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        meta["drive"].as_object_mut().unwrap().remove("soft");
+        std::fs::write(&path, meta.to_string()).unwrap();
+        assert_eq!(
+            check(&dir, "slow").err().unwrap().to_string(),
+            "seg 1: the applied duty held its goal for the last 0 ms of the window, under the \
+             100 ms a settled tail needs"
+        );
         std::fs::remove_dir_all(&root).unwrap();
     }
 
