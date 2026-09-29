@@ -118,10 +118,10 @@ pub struct Kernel<I: ControlIo, T: TelStream = ()> {
     i_ref_cc: i32,
     /// Position loop output, held for the velocity step (MEDIUM-internal).
     omega_ref_q16: i32,
-    /// Anti-hunt hold from the position loop; FAST maps it to Coast.
+    /// Anti-hunt hold from the position loop; FAST maps it to Brake.
     hold: bool,
     /// The duty actually commanded this tick, post-clamp post-gate: 0 while
-    /// Coast/Disabled. Feeds next tick's window select AND the
+    /// Brake/Disabled. Feeds next tick's window select AND the
     /// `duty_applied_q15` publish - `CurrentLoop::last_duty` is not used for
     /// telemetry because the gate can override the loop's output.
     duty_q15: i16,
@@ -531,7 +531,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
 
             if run {
                 match life.mode {
-                    // Parked: the drive coasts, so the velocity loop must stop
+                    // Parked: nothing drives, so the velocity loop must stop
                     // too. omega_hat is the pot observer at rest (no window,
                     // +-hundreds c/s of noise); left running, the PI
                     // integrates that phantom error until i_ref pins at the
@@ -774,9 +774,14 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                     }
                     if self.hold {
                         // anti-hunt: park instead of dithering on friction;
-                        // the frozen loop resumes bumplessly on exit
+                        // the frozen loop resumes bumplessly on exit. The
+                        // winding short brakes a shaft that enters the band
+                        // at speed (Ke x omega / R, zero at rest, nothing
+                        // from the rail). On friction alone a fast arrival
+                        // leaves the far edge, and the wake kicks it back
+                        // through at the current limit: a limit cycle.
                         self.duty_q15 = 0;
-                        MotorCmd::Coast
+                        MotorCmd::Brake
                     } else if self.i_ref_cc == 0
                         && i_meas.is_none()
                         && (self.i_band.hi == 0 || self.i_band.lo == 0)

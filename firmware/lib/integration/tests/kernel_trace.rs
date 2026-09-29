@@ -253,9 +253,9 @@ fn assert_script_phases(rows: &[Row]) {
         ])
     );
     let parked = row_at(rows, 3_990);
-    assert_eq!(parked.cmd, CMD_COAST, "hold parked: {parked:?}");
+    assert_eq!(parked.cmd, CMD_BRAKE, "hold parked: {parked:?}");
     let stepped = row_at(rows, 11_990);
-    assert_eq!(stepped.cmd, CMD_COAST, "step re-parked: {stepped:?}");
+    assert_eq!(stepped.cmd, CMD_BRAKE, "step re-parked: {stepped:?}");
     assert!(
         ((stepped.theta_hat_q16 >> 16) - (START_POS as i32 + 400)).abs() <= 16,
         "step landed: {stepped:?}"
@@ -365,7 +365,7 @@ fn kernel_trace_with_mg90_a_lut_tracks_the_linearized_pot() {
         );
     }
     let parked = row_at(&rows, STEP_TICKS - 10);
-    assert_eq!(parked.cmd, CMD_COAST, "hold parked: {parked:?}");
+    assert_eq!(parked.cmd, CMD_BRAKE, "hold parked: {parked:?}");
     assert!(
         ((parked.theta_hat_q16 >> 16) - STEP_GOAL).abs() <= 8,
         "settled at the linearized goal: {parked:?}"
@@ -377,7 +377,7 @@ fn kernel_trace_with_mg90_a_lut_tracks_the_linearized_pot() {
     assert_eq!(interp_q4(1881, &k) >> GRID_SHIFT, STEP_GOAL as u16);
 
     let identity = row_at(&run(None, STEP_TICKS, step_script), STEP_TICKS - 10);
-    assert_eq!(identity.cmd, CMD_COAST, "{identity:?}");
+    assert_eq!(identity.cmd, CMD_BRAKE, "{identity:?}");
     assert!(
         (STEP_GOAL - identity.pos as i32).abs() <= 8,
         "identity parks on the goal count: {identity:?}"

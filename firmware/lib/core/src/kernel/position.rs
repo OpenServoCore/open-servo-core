@@ -2,16 +2,17 @@
 //! error times kp gives a velocity command, add the omega* feedforward,
 //! clamp to vel_limit. NO integrator ever (one integrator per band; a
 //! position integrator over Coulomb friction limit-cycles). The anti-hunt
-//! hold predicate tells the kernel to Coast inside the deadband instead of
-//! dithering against friction.
+//! hold predicate tells the kernel to park (Brake) inside the deadband
+//! instead of dithering against friction.
 //!
 //! Hold gates on POSITION rest alone (profile stopped, error inside the
 //! deadband) - never on omega_hat. The fused omega is pot-noise driven at
 //! rest and the velocity loop amplifies it (bench + integer-sim: a ~3x
-//! blow-up when driving), so an omega gate that clears the coasting noise
+//! blow-up when driving), so an omega gate that clears the parked noise
 //! floor sits below the driving floor: hold latches from rest but can never
 //! re-catch once the loop is shaking. Position is the clean rest signal;
-//! friction and the deadband absorb any residual velocity at the crossing.
+//! the braked winding and friction absorb the residual velocity inside the
+//! band.
 
 use super::trajectory::VEL_CAP_CPS;
 use crate::math::q_mul;
@@ -34,7 +35,7 @@ pub struct PositionCfg {
 }
 
 /// omega_ref for the velocity loop plus the anti-hunt flag (kernel maps
-/// hold -> Coast).
+/// hold -> Brake).
 #[derive(Copy, Clone)]
 pub struct PosOut {
     pub omega_ref_q16: i32,
