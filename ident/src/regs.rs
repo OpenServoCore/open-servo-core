@@ -85,6 +85,8 @@ pub mod control {
     pub const TORQUE_ENABLE: Reg = reg(0x0180, 1);
     /// Deliberate stall: drops the stall trip and the endstop band, keeps the
     /// current limit and the thermal derate. RAM only, cleared by a reboot.
+    /// Firmware that leases it grants about a second per write of true with
+    /// torque on, and drops it on torque off ([`crate::limits::PermitLease`]).
     pub const STALL_PERMIT: Reg = reg(0x0181, 1);
     pub const TEL_MASK: Reg = reg(0x0182, 2);
     pub const MODE: Reg = reg(0x0184, 1);

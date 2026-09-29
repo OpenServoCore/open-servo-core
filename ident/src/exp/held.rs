@@ -4,8 +4,9 @@
 //! against a mechanical stop with the gear train wound by a steady hold,
 //! the rotor cannot follow the step and the winding is all it sees.
 //!
-//! Choreography, with `stall_permit` set before the first drive and cleared
-//! on every way out (the [`super::Guarded`] envelope clears it on an
+//! Choreography, with `stall_permit` set right after the torque enable,
+//! before the first drive, rewritten by the driver while it is held, and
+//! cleared on every way out (the [`super::Guarded`] envelope clears it on an
 //! abort): centre, take a zero-duty rest reference burst while the shaft is
 //! still, seek the stop at the hold duty, require real travel before
 //! believing a stop, confirm it by stillness plus a non-zero applied duty,
@@ -323,8 +324,8 @@ fn pct_q15(pct: u8) -> i16 {
 enum Phase {
     ModeWrite,
     TelOff,
-    PermitOn,
     TorqueOn,
+    PermitOn,
     CentreRead,
     CentreEval,
     CentreWait,
@@ -494,25 +495,27 @@ impl Experiment for Held {
             }
             // The servo refuses an arm while TEL is still streaming.
             Phase::TelOff => {
-                self.phase = Phase::PermitOn;
+                self.phase = Phase::TorqueOn;
                 Cmd::Write {
                     reg: control::TEL_COUNT,
                     value: 0,
                 }
             }
-            Phase::PermitOn => {
-                self.phase = Phase::TorqueOn;
+            Phase::TorqueOn => {
+                self.phase = Phase::PermitOn;
                 Cmd::Write {
-                    reg: control::STALL_PERMIT,
+                    reg: control::TORQUE_ENABLE,
                     value: 1,
                 }
             }
-            Phase::TorqueOn => {
+            // After the enable: a permit written with torque off grants
+            // nothing.
+            Phase::PermitOn => {
                 self.phase = Phase::CentreRead;
                 self.polls = 0;
                 self.mag = pct_q15(self.cfg.hold_pct);
                 Cmd::Write {
-                    reg: control::TORQUE_ENABLE,
+                    reg: control::STALL_PERMIT,
                     value: 1,
                 }
             }
@@ -794,6 +797,7 @@ mod tests {
     use super::super::{AbortReason, Guarded};
     use super::*;
     use crate::burst::{CHAN_VBUS, CHAN_VMOTOR_A, CHAN_VMOTOR_B, from_csv};
+    use crate::limits::PERMIT_REFRESH_MS;
     use crate::units::SenseParams;
 
     fn scales() -> Scales {
@@ -983,12 +987,17 @@ mod tests {
 
     const CHANS_ALL: u8 = CHAN_VMOTOR_A | CHAN_VMOTOR_B | CHAN_VBUS;
 
+    /// The firmware's lease: 63 SLOW ticks.
+    const LEASE_MS: f64 = 1008.0;
+
     /// Soft limits just inside the mechanical ends, as a calibrated servo
-    /// has them: only the permit lets the seek reach the stop.
+    /// has them: only the permit lets the seek reach the stop, and the
+    /// permit is a lease.
     fn servo() -> FakeServo {
         let mut s = FakeServo::new(3.37);
         s.dynamic = true;
         s.soft = Some((230.0, 3970.0));
+        s.lease_ms = Some(LEASE_MS);
         s
     }
 
@@ -1010,8 +1019,8 @@ mod tests {
             .unwrap_or_else(|| panic!("no `{what}` in the log"))
     }
 
-    /// The permit precedes the first drive and is the last write, whatever
-    /// ended the run.
+    /// The permit follows the torque enable, precedes the first drive, and
+    /// is the last write, whatever ended the run.
     fn permit_brackets(log: &[String]) {
         let first_drive = log
             .iter()
@@ -1019,6 +1028,7 @@ mod tests {
                 l.starts_with("burst") || (l.starts_with("write goal_duty") && !l.ends_with(" 0"))
             })
             .expect("a drive");
+        assert!(at(log, "write torque_enable 1") < at(log, "write stall_permit 1"));
         assert!(at(log, "write stall_permit 1") < first_drive);
         assert_eq!(log.last().map(String::as_str), Some("write stall_permit 0"));
         assert!(log.contains(&"write torque_enable 0".to_string()));
@@ -1066,6 +1076,34 @@ mod tests {
 
     fn exp_fit(exp: &Held) -> crate::exp::inductance::InductanceResult {
         fit_captures(exp.captures(), &scales(), &FitCfg::default()).expect("fit")
+    }
+
+    /// The run outlasts the lease many times over, and the stop stays open
+    /// the whole way: the pump rewrites the permit, and every rewrite lands
+    /// while torque is on.
+    #[test]
+    fn pump_refreshes_a_held_permit() {
+        let mut s = servo();
+        let (exp, log) = run(&mut s);
+        assert!(exp.abort().is_none(), "{:?}", exp.abort());
+        assert!(s.t_ms > 3.0 * LEASE_MS, "run {} ms", s.t_ms);
+        let grants = log.iter().filter(|l| *l == "write stall_permit 1").count();
+        assert!(
+            grants as f64 > s.t_ms / (2.0 * PERMIT_REFRESH_MS as f64),
+            "{grants} grants over {} ms",
+            s.t_ms
+        );
+        let torque_off = at(&log, "write torque_enable 0");
+        assert!(
+            log[torque_off..]
+                .iter()
+                .all(|l| l != "write stall_permit 1"),
+            "a rewrite after torque off"
+        );
+        let exp = exp.into_inner();
+        assert!(exp.warnings().is_empty(), "{:?}", exp.warnings());
+        assert_eq!(exp.seats().len(), 1);
+        assert_eq!(exp.captures().iter().filter(|c| c.meta.seated).count(), 6);
     }
 
     #[test]

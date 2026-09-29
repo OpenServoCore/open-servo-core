@@ -20,7 +20,9 @@
 //! ```
 //!
 //! [`Guarded`] wraps any experiment with the safety envelope; rig limits
-//! live in [`RigParams`], the one home for bench constants.
+//! live in [`RigParams`], the one home for bench constants. [`Permitted`]
+//! holds the stall permit for one that stalls on purpose, and the driver
+//! keeps a held permit alive with [`crate::limits::PermitLease`].
 
 pub mod bias;
 pub mod breakaway;
@@ -277,6 +279,71 @@ impl<E: Experiment> Experiment for Guarded<E> {
     }
 }
 
+/// Holds the stall permit for an experiment that stalls on purpose: the
+/// permit follows every torque enable the experiment writes (written with
+/// torque off it grants nothing) and is withdrawn once the experiment is
+/// done. Wrap it in [`Guarded`], which withdraws it on an abort.
+pub struct Permitted<E> {
+    exp: E,
+    grant: bool,
+    granted: bool,
+    done: bool,
+}
+
+impl<E: Experiment> Permitted<E> {
+    pub fn new(exp: E) -> Self {
+        Self {
+            exp,
+            grant: false,
+            granted: false,
+            done: false,
+        }
+    }
+
+    pub fn into_inner(self) -> E {
+        self.exp
+    }
+}
+
+impl<E: Experiment> Experiment for Permitted<E> {
+    fn step(&mut self, obs: Option<&TelemetrySnapshot>) -> Cmd {
+        if self.grant {
+            self.grant = false;
+            self.granted = true;
+            return Cmd::Write {
+                reg: control::STALL_PERMIT,
+                value: 1,
+            };
+        }
+        if self.done {
+            return Cmd::Done;
+        }
+        let cmd = self.exp.step(obs);
+        match cmd {
+            Cmd::Write { reg, value } if reg == control::TORQUE_ENABLE && value != 0 => {
+                self.grant = true;
+            }
+            Cmd::Done if self.granted => {
+                self.done = true;
+                return Cmd::Write {
+                    reg: control::STALL_PERMIT,
+                    value: 0,
+                };
+            }
+            _ => {}
+        }
+        cmd
+    }
+
+    fn push_tel(&mut self, frames: &[TelFrame]) {
+        self.exp.push_tel(frames);
+    }
+
+    fn push_burst(&mut self, cap: &Capture) {
+        self.exp.push_burst(cap);
+    }
+}
+
 /// One accepted ident aggregate window, timebased on the unwrapped
 /// `agg_seq` (x 0.8 ms) - poll jitter does not touch the fit clock.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -435,5 +502,93 @@ mod tests {
         let log = pump(&mut exp, &mut servo, 10_000);
         assert!(matches!(exp.abort(), Some(AbortReason::PosGuard { pos } ) if pos > 3950));
         assert_eq!(*log.last().unwrap(), "write torque_enable 0");
+    }
+
+    /// A scripted run: each entry is one command, a `Read` result kept.
+    struct Script(Vec<Cmd>, Option<TelemetrySnapshot>);
+
+    impl Experiment for Script {
+        fn step(&mut self, obs: Option<&TelemetrySnapshot>) -> Cmd {
+            if let Some(o) = obs {
+                self.1 = Some(*o);
+            }
+            if self.0.is_empty() {
+                Cmd::Done
+            } else {
+                self.0.remove(0)
+            }
+        }
+    }
+
+    fn write(reg: Reg, value: i32) -> Cmd {
+        Cmd::Write { reg, value }
+    }
+
+    /// Pushed against the low soft limit at a stop: only a live permit
+    /// lets the outbound duty through.
+    fn at_the_low_limit() -> FakeServo {
+        let mut s = FakeServo::new(3.37);
+        s.ends = (230.0, 4000.0);
+        s.soft = Some((230.0, 3970.0));
+        s.pos = 230.0;
+        s.lease_ms = Some(1008.0);
+        s
+    }
+
+    #[test]
+    fn permit_follows_torque_on() {
+        let mut exp = Permitted::new(Script(
+            vec![
+                write(control::TORQUE_ENABLE, 1),
+                write(control::GOAL_DUTY, -3000),
+                write(control::TORQUE_ENABLE, 0),
+                write(control::TORQUE_ENABLE, 1),
+                Cmd::Read,
+                write(control::TORQUE_ENABLE, 0),
+            ],
+            None,
+        ));
+        let mut servo = at_the_low_limit();
+        let log = pump(&mut exp, &mut servo, 100);
+        assert_eq!(
+            log,
+            [
+                "write torque_enable 1",
+                "write stall_permit 1",
+                "write goal_duty -3000",
+                "write torque_enable 0",
+                "write torque_enable 1",
+                "write stall_permit 1",
+                "write torque_enable 0",
+                "write stall_permit 0",
+            ]
+        );
+        let o = exp.into_inner().1.expect("the read");
+        assert_eq!(o.duty_applied_q15, -3000, "re-granted after the re-enable");
+    }
+
+    #[test]
+    fn long_pause_is_sliced_under_the_lease() {
+        let mut exp = Permitted::new(Script(
+            vec![
+                write(control::TORQUE_ENABLE, 1),
+                write(control::GOAL_DUTY, -3000),
+                Cmd::Pause { ms: 3000 },
+                Cmd::Read,
+                write(control::GOAL_DUTY, 0),
+                write(control::TORQUE_ENABLE, 0),
+            ],
+            None,
+        ));
+        let mut servo = at_the_low_limit();
+        let log = pump(&mut exp, &mut servo, 100);
+        let grants = log.iter().filter(|l| *l == "write stall_permit 1").count();
+        assert_eq!(grants, 1 + 3000 / crate::limits::PERMIT_REFRESH_MS as usize);
+        let o = exp.into_inner().1.expect("the read");
+        assert_eq!(
+            o.duty_applied_q15, -3000,
+            "the lease lapsed inside the pause"
+        );
+        assert_eq!(log.last().map(String::as_str), Some("write stall_permit 0"));
     }
 }
