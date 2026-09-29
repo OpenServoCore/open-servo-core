@@ -4,7 +4,6 @@
 //! windows by, `plan` expands the session procedure against it, `session`
 //! runs it on the servo, and `check` re-reads a landed capture.
 
-mod battery;
 mod check;
 pub(crate) mod envelope;
 mod pilot;
@@ -105,7 +104,12 @@ pub(crate) const WINDOW_MS: u32 = 150;
 /// Entry from the top-level `osc capture` dispatch.
 pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     match &args.cmd {
-        CaptureCmd::Pilot(a) => pilot::run(a, baud, id),
+        CaptureCmd::Pilot(a) => {
+            let mut c = crate::rig::connect(&baud)?;
+            crate::rig::battery::before_drive(&mut c, osc_client::Id::new(id))?;
+            drop(c);
+            pilot::run(a, baud, id)
+        }
         CaptureCmd::Plan(a) => print_plan(a),
         CaptureCmd::Session(a) => run::run(a, baud, id),
         CaptureCmd::Check(a) => check::run(a),

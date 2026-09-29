@@ -5,9 +5,15 @@
 //! like a stop to a seek that judges by stillness alone.
 //!
 //! Escalation - raising the duty while the shaft has not moved - exists
-//! for one case: leaving a stop costs more than holding one. It is allowed
-//! only when the drive starts at a stop and points away from it; toward a
-//! stop, or from mid travel, the duty is fixed.
+//! for two cases. Leaving a stop costs more than holding one: a drive that
+//! starts at a stop and points away from it ([`leaves_stop`]) may raise by
+//! [`SEEK_STEP_Q15`]. And a sticky spot in the train can hold a shaft the
+//! same duty moves everywhere else: a still shaft [`STOP_CLEAR`] or more
+//! from both stops ([`clear_of_stops`]) meets nothing but friction, so the
+//! jam check and the stop finder raise there too, by their own smaller
+//! step, up to their own cap, whichever way they drive. Near a stop,
+//! unless leaving it, the duty is fixed: a raise there would meet the
+//! stop.
 
 use super::AbortReason;
 

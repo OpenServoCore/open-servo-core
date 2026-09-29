@@ -1,20 +1,23 @@
 //! Read the servo's limits for a drive to plan against (osc-ident
-//! `limits`), refuse a servo that publishes no window floor, and say out
-//! loud when its stall settings leave the current limit as the only
-//! protection.
+//! `limits`), refuse a flat pack and a servo that publishes no window
+//! floor, and say out loud when its stall settings leave the current limit
+//! as the only protection. Every drive tool reads them before it drives.
 
 use anyhow::{Result, bail};
 use osc_client::Id;
 use osc_client::blocking::Client;
 use osc_client::nusb::NusbPipe;
+use osc_client::pipe::Pipe;
 use osc_ident::limits::{CLASS_R_MIN, DutyPlan, ServoLimits};
 use osc_ident::regs::{calib, config};
 use osc_ident::units::{self, SenseParams};
 
+use super::battery;
 use super::pump::{read_i32, read_snapshot};
 use super::snapshot::read_u16;
 
-pub(crate) fn read(c: &mut Client<NusbPipe>, id: Id) -> Result<ServoLimits> {
+pub(crate) fn read<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<ServoLimits> {
+    battery::before_drive(c, id)?;
     let sense = SenseParams {
         shunt_r_mohm: read_u16(c, id, calib::SHUNT_R_MOHM)?,
         gain_milli: read_u16(c, id, calib::GAIN_MILLI)?,
@@ -46,7 +49,7 @@ pub(crate) fn read(c: &mut Client<NusbPipe>, id: Id) -> Result<ServoLimits> {
         amps_per_count: units::amps_per_count(&sense),
     };
     lim.check_floor()?;
-    for w in lim.warnings() {
+    for w in lim.warnings(read_u16(c, id, config::RTHERM_I_MIN_COUNTS)?) {
         eprintln!("warning: {w}");
     }
     Ok(lim)

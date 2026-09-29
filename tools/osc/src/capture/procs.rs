@@ -10,6 +10,7 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 use super::Supply;
+use crate::rig::battery::SupplyCfg;
 use crate::sweep::{Decay, Step};
 
 const DEFAULT: &str = include_str!("session.toml");
@@ -29,14 +30,6 @@ pub(crate) struct Procedure {
     pub(crate) supply: BTreeMap<Supply, SupplyCfg>,
     pub(crate) recording: Vec<RecordingCfg>,
     pub(crate) block: Blocks,
-}
-
-#[derive(Deserialize, Debug)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct SupplyCfg {
-    pub(crate) cells: u32,
-    pub(crate) cell_floor_mv: u32,
-    pub(crate) cell_warn_mv: u32,
 }
 
 #[derive(Deserialize, Debug)]
@@ -187,6 +180,11 @@ mod tests {
         );
         let two_s = &p.supply[&Supply::TwoS];
         assert_eq!((two_s.cells, two_s.cell_floor_mv), (2, 3500));
+        assert_eq!(
+            *two_s,
+            crate::rig::battery::TWO_S,
+            "the drive tools gate a pack alike"
+        );
         assert!(!p.supply.contains_key(&Supply::Usb));
         assert_eq!(p.block.step.steps[0], Step::Drive(30, Some(20)));
         assert!(DEFAULT.is_ascii());

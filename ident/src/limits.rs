@@ -431,8 +431,9 @@ impl ServoLimits {
     }
 
     /// Settings that leave the current limit the only protection a stall
-    /// meets, in plain words.
-    pub fn warnings(&self) -> Vec<String> {
+    /// meets, in plain words. `rtherm_i_min` is `rtherm_i_min_counts`: the
+    /// winding thermometer samples only over it.
+    pub fn warnings(&self, rtherm_i_min: u16) -> Vec<String> {
         let ma = self.ma();
         let lim = ma.of(self.i_lim as f64);
         let mut w = Vec::new();
@@ -448,6 +449,14 @@ impl ServoLimits {
                 "the collision trip, {}, is over twice the current limit of {lim}: a collision \
                  never reaches it (set stall_tau_trip_counts near the limit)",
                 ma.of(self.tau_trip as f64)
+            ));
+        }
+        if rtherm_i_min >= self.i_lim {
+            w.push(format!(
+                "the winding thermometer's current floor, {}, is not below the current limit \
+                 of {lim}: the thermometer never samples, so the thermal derate never moves \
+                 (set rtherm_i_min_counts under the limit)",
+                ma.of(rtherm_i_min as f64)
             ));
         }
         w
@@ -480,8 +489,16 @@ pub fn duty_of_mv(mv: f64, rail_mv: f64) -> f64 {
 pub struct BurstAllowance;
 
 impl BurstAllowance {
-    /// Applied volts, duty x rail: 40% at 7.9 V, 38% at 8.4 V.
+    /// Applied volts, duty x rail, as the firmware caps an arm.
     pub const MAX_MV: f64 = 3200.0;
+    /// The share of the volts cap a rung is sized under. The rail is read
+    /// once, before the burst stage, and the firmware judges each arm on
+    /// the rail of that instant in whole vcounts, so a rung sized to the
+    /// cap exactly is rejected by a rise of one count, 2.5 mV. 1% leaves
+    /// the rail 79 mV to rise at 7.9 V and 44 mV at 4.39 V (32 and 18
+    /// vcounts) - a pack recovering from the drive before, and the rail
+    /// read's own noise - and keeps 40% at 7.9 V.
+    pub const ARM_MARGIN: f64 = 0.01;
     /// The low rung: the shortest ON window the fit reads a slope from.
     pub const LO: f64 = 0.25;
     pub const HI: f64 = 0.40;
@@ -489,11 +506,18 @@ impl BurstAllowance {
     pub const PAIR_MIN_PCT: u8 = 10;
     pub const MAX_ARMS: u32 = 24;
 
-    /// The two rungs on a rail of `rail_mv`, whole percent. None when the
-    /// volts cap leaves them under the pair span apart: rails over 9.1 V.
+    /// The most a burst drives on a rail of `rail_mv`: the volts cap less
+    /// [`Self::ARM_MARGIN`].
+    pub fn top(rail_mv: f64) -> f64 {
+        duty_of_mv(Self::MAX_MV * (1.0 - Self::ARM_MARGIN), rail_mv)
+    }
+
+    /// The two rungs on a rail of `rail_mv`, whole percent: 25 and 40% at
+    /// 7.9 V, 25 and 37% at 8.4 V. None when the volts cap leaves them
+    /// under the pair span apart: rails over 9.05 V.
     pub fn rungs(rail_mv: f64) -> Option<[f64; 2]> {
         let lo = pct_floor(Self::LO);
-        let hi = pct_floor(Self::HI.min(duty_of_mv(Self::MAX_MV, rail_mv)));
+        let hi = pct_floor(Self::HI.min(Self::top(rail_mv)));
         (hi >= lo + Self::PAIR_MIN_PCT).then(|| [lo as f64 / 100.0, hi as f64 / 100.0])
     }
 
@@ -855,17 +879,49 @@ mod tests {
     #[test]
     fn burst_rungs_fit_the_fit_and_the_allowance() {
         assert_eq!(BurstAllowance::rungs(7900.0), Some([0.25, 0.40]));
-        assert_eq!(BurstAllowance::rungs(8400.0), Some([0.25, 0.38]));
+        assert_eq!(BurstAllowance::rungs(8400.0), Some([0.25, 0.37]));
         assert_eq!(BurstAllowance::rungs(4390.0), Some([0.25, 0.40]));
         assert_eq!(BurstAllowance::rungs(12600.0), None);
         // the last rail the pair still spans
-        assert_eq!(BurstAllowance::rungs(9100.0), Some([0.25, 0.35]));
-        assert_eq!(BurstAllowance::rungs(9200.0), None);
-        for rail in [4390.0, 7900.0, 8400.0, 9100.0] {
+        assert_eq!(BurstAllowance::rungs(9050.0), Some([0.25, 0.35]));
+        assert_eq!(BurstAllowance::rungs(9100.0), None);
+        for rail in [4390.0, 7900.0, 8400.0, 9050.0] {
             let [_, hi] = BurstAllowance::rungs(rail).unwrap();
             assert!(hi * rail <= BurstAllowance::MAX_MV + 1e-9);
         }
         assert!((BurstAllowance::i_max_a() - 1.0667).abs() < 1e-3);
+    }
+
+    /// The firmware's arm check on the osc-dev-v006 taps: `(|duty| x
+    /// vbus_counts) >> 15` against the 3.2 V cap in vcounts, 1298 at
+    /// 2.466 mV a count.
+    fn arms(duty_q15: i16, vbus: u32) -> bool {
+        (duty_q15.unsigned_abs() as u32 * vbus) >> 15 <= 1298
+    }
+
+    /// Every rail from USB to a full 2S pack, a vcount at a time: the top
+    /// rung sized from the rail as read still arms when the rail has risen
+    /// by 1% before the arm. Sized to the cap exactly, the 40% rung on a
+    /// rail read at 8.00 V is rejected by a rise of 10 mV.
+    #[test]
+    fn top_burst_rung_clears_the_cap_on_a_rising_rail() {
+        let mv = 3.3 / 4096.0 * (6_800.0 + 3_300.0) / 3_300.0 * 1000.0;
+        let q = |pct: f64| (pct_floor(pct) as i32 * 32767 / 100) as i16;
+        let mut sized = 0;
+        for vbus in 1600u32..=3500 {
+            let Some([_, hi]) = BurstAllowance::rungs(vbus as f64 * mv) else {
+                continue;
+            };
+            sized += 1;
+            let rise = vbus / 100;
+            for up in 0..=rise {
+                assert!(arms(q(hi), vbus + up), "{vbus} + {up}: {hi}");
+            }
+        }
+        assert!(sized > 1800, "{sized} rails sized a pair");
+        let at_cap = pct_floor(duty_of_mv(BurstAllowance::MAX_MV, 3244.0 * mv));
+        assert_eq!(at_cap, 40);
+        assert!(arms(q(0.40), 3244) && !arms(q(0.40), 3248));
     }
 
     #[test]
@@ -971,7 +1027,7 @@ mod tests {
     /// The bench MG90's SG90-era yield and trip: both warned about.
     #[test]
     fn stall_settings_above_the_limit_are_warned() {
-        let w = mg90().warnings();
+        let w = mg90().warnings(150);
         assert_eq!(w.len(), 2, "{w:?}");
         assert_eq!(
             w[0],
@@ -985,6 +1041,33 @@ mod tests {
             tau_trip: 280,
             ..mg90()
         };
-        assert!(tidy.warnings().is_empty());
+        assert!(tidy.warnings(150).is_empty());
+    }
+
+    /// The bench MG90's SAVEd thermometer floor, 545 counts, over its 280
+    /// limit: the current never crosses it, so the derate never moves.
+    #[test]
+    fn thermometer_floor_over_the_limit_warns() {
+        let tidy = ServoLimits {
+            stall_yield: 168,
+            tau_trip: 280,
+            ..mg90()
+        };
+        let w = tidy.warnings(545);
+        assert_eq!(
+            w,
+            [
+                "the winding thermometer's current floor, 545 counts (488 mA), is not below the \
+              current limit of 280 counts (251 mA): the thermometer never samples, so the \
+              thermal derate never moves (set rtherm_i_min_counts under the limit)"
+            ]
+        );
+        assert_eq!(
+            tidy.warnings(280).len(),
+            1,
+            "at the limit it never samples either"
+        );
+        assert!(tidy.warnings(279).is_empty());
+        assert_eq!(mg90().warnings(545).len(), 3);
     }
 }

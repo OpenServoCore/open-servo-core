@@ -21,6 +21,7 @@
 
 use core::fmt;
 
+use crate::limits::BurstAllowance;
 use crate::regs::{burst as reg, control};
 
 /// Samples one capture holds; 8 pages of 120.
@@ -236,11 +237,69 @@ pub trait BurstIo {
     fn pause_ms(&mut self, ms: u32);
 }
 
+/// Every rule the firmware arms a burst by, in plain words.
+const EVERY_RULE: &str = "it arms only with torque on, in OpenLoop, with no fault latched, with \
+                          no telemetry capture running, at most 3.2 V applied (duty times the \
+                          rail), 100 ms or more after the burst before, and with the shaft \
+                          inside the soft limits unless the stall permit is held";
+
+/// `limit_flags` bit 3: the stall permit's grant is live.
+pub const LIMIT_PERMIT_LIVE: u8 = 1 << 3;
+
+/// What the host reads once an arm is refused, to name the rule that
+/// refused it.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct ArmSeen {
+    /// `vbus_counts`: the rail as the firmware judged the arm by.
+    pub vbus_counts: u16,
+    /// Millivolts a vcount of the terminal taps.
+    pub mv_per_count: f64,
+    /// Raw `pos`, and the soft limits it must sit strictly inside.
+    pub pos: u16,
+    pub soft: (i32, i32),
+    pub limit_flags: u8,
+    pub fault_flags: u8,
+}
+
+/// Why the servo refused an arm at `duty_q15`: the rules `seen` shows
+/// broken, else every rule, the ones the host cannot see included.
+pub fn rejected(duty_q15: i16, seen: &ArmSeen) -> String {
+    let mut why = Vec::new();
+    if seen.fault_flags != 0 {
+        why.push(format!(
+            "it has a fault latched (flags {:#04x})",
+            seen.fault_flags
+        ));
+    }
+    let cap = (BurstAllowance::MAX_MV / seen.mv_per_count).round() as u32;
+    let volts = (duty_q15.unsigned_abs() as u32 * seen.vbus_counts as u32) >> 15;
+    if seen.mv_per_count > 0.0 && volts > cap {
+        let rail = seen.vbus_counts as f64 * seen.mv_per_count / 1000.0;
+        why.push(format!(
+            "{:.1}% of its {rail:.2} V rail applies {:.3} V, over the 3.2 V a burst may",
+            duty_q15.unsigned_abs() as f64 / 32767.0 * 100.0,
+            volts as f64 * seen.mv_per_count / 1000.0
+        ));
+    }
+    let (lo, hi) = seen.soft;
+    let inside = (seen.pos as i32) > lo && (seen.pos as i32) < hi;
+    if !inside && seen.limit_flags & LIMIT_PERMIT_LIVE == 0 {
+        why.push(format!(
+            "the shaft at {} is outside the soft limits {lo}..{hi} and the stall permit is not \
+             held",
+            seen.pos
+        ));
+    }
+    if why.is_empty() {
+        return format!("the servo refused the burst: {EVERY_RULE}");
+    }
+    format!("the servo refused the burst: {}", why.join(", and "))
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error<E> {
     Io(E),
-    /// The servo refused the arm: torque off, wrong mode, a latched fault,
-    /// or TEL still streaming.
+    /// The servo refused the arm ([`rejected`] names the rule).
     Rejected,
     /// State never reached Done.
     Timeout {
@@ -277,10 +336,7 @@ impl<E: fmt::Display> fmt::Display for Error<E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Error::Io(e) => write!(f, "{e}"),
-            Error::Rejected => write!(
-                f,
-                "servo rejected the arm (needs torque on, OpenLoop, no fault, TEL idle)"
-            ),
+            Error::Rejected => write!(f, "the servo refused the burst: {EVERY_RULE}"),
             Error::Timeout { state, polls } => {
                 write!(f, "burst stuck in state {state} after {polls} polls")
             }
@@ -861,6 +917,72 @@ mod tests {
         let e = capture(&mut r, 8520, 0, Pre::default(), &CaptureCfg::default()).unwrap_err();
         assert_eq!(e, Error::Rejected);
         assert!(r.0.released);
+    }
+
+    /// The bench servo's taps, 2.466 mV a vcount, where 3.2 V is 1298
+    /// vcounts: the refusal names the rule the host can see broken - the
+    /// volts from the rail and the duty, the position from the soft limits
+    /// and the permit, a latched fault - and every rule when it sees none.
+    #[test]
+    fn a_rejected_arm_names_its_reason() {
+        let seen = ArmSeen {
+            vbus_counts: 3204,
+            mv_per_count: 3.3 / 4096.0 * 10_100.0 / 3_300.0 * 1000.0,
+            pos: 2029,
+            soft: (432, 3626),
+            limit_flags: 0,
+            fault_flags: 0,
+        };
+        let every = rejected(13106, &seen);
+        assert_eq!(every, Error::<&str>::Rejected.to_string());
+        assert_eq!(
+            every,
+            "the servo refused the burst: it arms only with torque on, in OpenLoop, with no \
+             fault latched, with no telemetry capture running, at most 3.2 V applied (duty \
+             times the rail), 100 ms or more after the burst before, and with the shaft inside \
+             the soft limits unless the stall permit is held"
+        );
+        // 40% on a rail risen to 8.01 V: 1299 vcounts, one over the cap
+        let risen = ArmSeen {
+            vbus_counts: 3248,
+            ..seen
+        };
+        assert_eq!(
+            rejected(13106, &risen),
+            "the servo refused the burst: 40.0% of its 8.01 V rail applies 3.203 V, over the 3.2 \
+             V a burst may"
+        );
+        assert_eq!(rejected(-13106, &risen), rejected(13106, &risen));
+        assert_eq!(
+            rejected(
+                13106,
+                &ArmSeen {
+                    vbus_counts: 3247,
+                    ..seen
+                }
+            ),
+            every
+        );
+        let outside = ArmSeen { pos: 3626, ..seen };
+        assert_eq!(
+            rejected(8192, &outside),
+            "the servo refused the burst: the shaft at 3626 is outside the soft limits \
+             432..3626 and the stall permit is not held"
+        );
+        let permitted = ArmSeen {
+            limit_flags: LIMIT_PERMIT_LIVE,
+            ..outside
+        };
+        assert_eq!(rejected(8192, &permitted), every);
+        let both = ArmSeen {
+            fault_flags: 0x04,
+            ..risen
+        };
+        assert_eq!(
+            rejected(13106, &both),
+            "the servo refused the burst: it has a fault latched (flags 0x04), and 40.0% of its \
+             8.01 V rail applies 3.203 V, over the 3.2 V a burst may"
+        );
     }
 
     #[test]
