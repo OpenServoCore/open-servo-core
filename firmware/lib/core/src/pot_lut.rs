@@ -14,7 +14,7 @@
 //! at SAVE drops to the identity first, so a reboot never applies a table
 //! the kernel did not.
 
-use crate::data_state::STAMP_MISMATCH;
+use crate::data_state::{STAMP_MISMATCH, job};
 use crate::regions::control::addr::pot_lut::LUT_CMD;
 use crate::{RegionStorage, Shared};
 
@@ -123,6 +123,14 @@ impl Reject {
     }
 }
 
+/// [`validate`] as the `lut_state` a COMMIT lands.
+pub fn verdict(knots: &[i16; KNOTS], raw_min: u16, raw_max: u16) -> u8 {
+    match validate(knots, raw_min, raw_max) {
+        Ok(()) => state::LIVE,
+        Err(r) => r.state(),
+    }
+}
+
 impl Shared {
     /// The kernel's per-tick read while `lut_state` is LIVE: two volatile
     /// knot loads off the raw pointer, no `&` across the ISR boundary. HIGH
@@ -141,23 +149,25 @@ impl Shared {
 
     /// Run the command a committed write left in `lut_cmd`, then clear it.
     /// STORE copies the window into the array's page and leaves LOADING;
-    /// FETCH copies that page back into the window; COMMIT validates the
-    /// array against the stops and lands LIVE or a REJECT, then runs the
-    /// stamp checkpoint (the effective table changed). STORE and COMMIT are
-    /// torque-gated: from LIVE a refusal leaves LIVE standing, since the
-    /// state is what the kernel applies and a refusal must not move it
-    /// under a running loop; from any other state it reads REJECT_TORQUE.
-    /// Leaving LIVE by STORE marks the stamp stale the way a covered write
-    /// does. HIGH dispatch only; one copy behind both commit sites.
+    /// FETCH copies that page back into the window; COMMIT leaves LOADING
+    /// (the kernel applies the identity) and posts the main-loop job that
+    /// validates the array against the stops, lands LIVE or a REJECT and
+    /// runs the stamp checkpoint - validation plus the CRC outlast the
+    /// reply deadline. STORE and COMMIT are torque-gated: from LIVE a
+    /// refusal leaves LIVE standing, since the state is what the kernel
+    /// applies and a refusal must not move it under a running loop; from
+    /// any other state it reads REJECT_TORQUE. Leaving LIVE by STORE marks
+    /// the stamp stale the way a covered write does, and a STORE cancels a
+    /// posted COMMIT: the array is loading again, and only the next COMMIT
+    /// judges it. HIGH dispatch only; one copy behind both commit sites.
     #[inline(never)]
     pub fn pot_lut_after_commit(&self, addr: u16, len: u16) {
         if addr > LUT_CMD || addr.saturating_add(len) <= LUT_CMD {
             return;
         }
-        let (checkpoint, stale) = self.with_pot_lut_mut(|k| {
+        let (ran, stale) = self.with_pot_lut_mut(|k| {
             self.table.with_mut(|t| {
                 let torque = t.control.lifecycle.torque_enable;
-                let (raw_min, raw_max) = (t.calib.pot.raw_min, t.calib.pot.raw_max);
                 let w = &mut t.control.pot_lut;
                 let at = w.lut_page as usize * PAGE_KNOTS;
                 let refused = if w.lut_state == state::LIVE {
@@ -165,9 +175,9 @@ impl Shared {
                 } else {
                     state::REJECT_TORQUE
                 };
-                let mut checkpoint = false;
+                let ran = w.lut_cmd;
                 let mut stale = false;
-                match w.lut_cmd {
+                match ran {
                     cmd::STORE if torque => w.lut_state = refused,
                     cmd::STORE => {
                         stale = w.lut_state == state::LIVE;
@@ -187,21 +197,21 @@ impl Shared {
                     }
                     cmd::COMMIT if torque => w.lut_state = refused,
                     cmd::COMMIT => {
-                        w.lut_state = match validate(k, raw_min, raw_max) {
-                            Ok(()) => state::LIVE,
-                            Err(r) => r.state(),
-                        };
-                        checkpoint = true;
+                        stale = true;
+                        w.lut_state = state::LOADING;
                     }
                     _ => {}
                 }
                 w.lut_cmd = cmd::NONE;
-                (checkpoint, stale)
+                (if torque { cmd::NONE } else { ran }, stale)
             })
         });
-        if checkpoint {
-            self.data_state_checkpoint();
-        } else if stale {
+        match ran {
+            cmd::STORE => self.data_touch(0, job::LUT_COMMIT),
+            cmd::COMMIT => self.data_touch(job::LUT_COMMIT, 0),
+            _ => {}
+        }
+        if stale {
             self.table
                 .with_mut(|t| t.telemetry.mode.data_flags |= STAMP_MISMATCH);
         }
@@ -463,6 +473,7 @@ mod tests {
         });
         sh.pot_lut_after_commit(LUT_PAGE, 2 + 2 * PAGE_KNOTS as u16);
         assert_eq!(sh.table.with(|t| t.control.pot_lut.lut_cmd), cmd::NONE);
+        sh.data_job_service();
     }
 
     fn store_all(sh: &Shared, k: &[i16; KNOTS]) {
@@ -493,6 +504,7 @@ mod tests {
             t.calib.stamp.plant_stamp = stamp::compute(t, Some(&MG90_A));
         });
         sh.data_state_after_commit(crate::regions::calib::addr::stamp::PLANT_STAMP, 2);
+        sh.data_job_service();
         assert_eq!(flags(&sh), 0);
         for page in 0..PAGES {
             command(&sh, page as u8, cmd::FETCH, &[0; PAGE_KNOTS]);
@@ -616,5 +628,88 @@ mod tests {
         sh.pot_lut_after_commit(LUT_CMD, 1);
         assert_eq!(lut_state(&sh), state::LOADING);
         sh.with_pot_lut(|a| assert_eq!(a[0], 5));
+    }
+
+    /// The commit site only marks and posts: the verdict and the
+    /// checkpoint land when the main loop services the job.
+    #[test]
+    fn commit_posts_the_verdict_for_the_main_loop() {
+        let sh = servo();
+        let k = mg90_a();
+        store_all(&sh, &k);
+        assert!(!sh.data_job_pending(), "a store posts nothing");
+        sh.table
+            .with_mut(|t| t.control.pot_lut.lut_cmd = cmd::COMMIT);
+        sh.pot_lut_after_commit(LUT_CMD, 1);
+        assert!(sh.data_job_pending());
+        assert_eq!(lut_state(&sh), state::LOADING, "identity until judged");
+        assert_eq!(flags(&sh), STAMP_MISMATCH, "refused until verified");
+        assert!(sh.data_job_service());
+        assert!(!sh.data_job_pending());
+        assert_eq!(lut_state(&sh), state::LIVE);
+        assert_eq!(flags(&sh), STAMP_MISMATCH, "the hashed knots changed");
+        assert!(!sh.data_job_service(), "nothing left");
+
+        // a STORE behind a posted COMMIT cancels it: loading again, and
+        // only the next COMMIT judges the array
+        sh.table
+            .with_mut(|t| t.control.pot_lut.lut_cmd = cmd::COMMIT);
+        sh.pot_lut_after_commit(LUT_CMD, 1);
+        let mut w = [0; PAGE_KNOTS];
+        w.copy_from_slice(&k[..PAGE_KNOTS]);
+        sh.table.with_mut(|t| {
+            t.control.pot_lut.lut_page = 0;
+            t.control.pot_lut.lut_cmd = cmd::STORE;
+            t.control.pot_lut.lut_knots = w;
+        });
+        sh.pot_lut_after_commit(LUT_PAGE, 2 + 2 * PAGE_KNOTS as u16);
+        assert!(!sh.data_job_pending());
+        assert!(!sh.data_job_service());
+        assert_eq!(lut_state(&sh), state::LOADING);
+        assert_eq!(commit(&sh), state::LIVE);
+    }
+
+    /// A write landing between the run and its publish moves the
+    /// generation: the run is discarded, the marks stand, the job stays
+    /// posted and the next run judges the new set.
+    #[test]
+    fn a_write_mid_job_discards_the_run() {
+        let sh = servo();
+        let k = mg90_a();
+        store_all(&sh, &k);
+        sh.table
+            .with_mut(|t| t.control.pot_lut.lut_cmd = cmd::COMMIT);
+        sh.pot_lut_after_commit(LUT_CMD, 1);
+        let run = sh.data_job_run().expect("posted");
+        // torque comes on under the run: what HIGH would have refused
+        sh.table
+            .with_mut(|t| t.control.lifecycle.torque_enable = true);
+        sh.data_state_after_commit(crate::regions::control::addr::lifecycle::TORQUE_ENABLE, 1);
+        assert!(!sh.data_job_publish(run));
+        assert_eq!(lut_state(&sh), state::LOADING);
+        assert_eq!(flags(&sh), STAMP_MISMATCH);
+        assert!(sh.data_job_pending());
+        assert!(sh.data_job_service());
+        assert_eq!(lut_state(&sh), state::REJECT_TORQUE);
+        assert_eq!(flags(&sh), 0, "the identity is what the stamp covers");
+
+        // the same race on a stamp write, against a covered write
+        sh.table
+            .with_mut(|t| t.control.lifecycle.torque_enable = false);
+        sh.data_state_after_commit(crate::regions::control::addr::lifecycle::TORQUE_ENABLE, 1);
+        assert!(!sh.data_job_pending(), "a torque write posts nothing");
+        sh.data_state_after_commit(crate::regions::calib::addr::stamp::PLANT_STAMP, 2);
+        let run = sh.data_job_run().expect("posted");
+        sh.table.with_mut(|t| t.calib.pot.raw_max = 3000);
+        sh.data_state_after_commit(crate::regions::calib::addr::pot::RAW_MAX, 2);
+        assert!(!sh.data_job_publish(run));
+        assert_eq!(flags(&sh), STAMP_MISMATCH);
+        assert!(sh.data_job_service());
+        assert_eq!(flags(&sh), STAMP_MISMATCH, "the stop moved under the stamp");
+        sh.table
+            .with_mut(|t| t.calib.stamp.plant_stamp = stamp::compute(t, None));
+        sh.data_state_after_commit(crate::regions::calib::addr::stamp::PLANT_STAMP, 2);
+        assert!(sh.data_job_service());
+        assert_eq!(flags(&sh), 0);
     }
 }

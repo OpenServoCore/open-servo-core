@@ -2,12 +2,22 @@
 //! the closed loops are this servo's own. `data_flags` (TELEMETRY-MODE)
 //! names every reason they are not; the kernel refuses closed loop while
 //! one holds and latches `CODE_DATA` on the attempt (kernel/faults.rs), so
-//! a virgin servo in OpenLoop shows no ALERT. Writers: boot (pre-IRQ), then
-//! the HIGH dispatcher only (commits, SAVE); the kernel reads.
+//! a virgin servo in OpenLoop shows no ALERT.
+//!
+//! Writers: boot (pre-IRQ); the HIGH dispatcher (a covered write, a stamp
+//! write and a LUT command mark, SAVE checkpoints and retires); and the
+//! main loop's job (`Shared::data_job_run` + `data_job_publish`), which
+//! runs the recompute a stamp write or a LUT COMMIT posted. The recompute
+//! is ~600 B of software CRC, longer than the reply deadline, so HIGH
+//! only marks `STAMP_MISMATCH` (the refused direction) and posts; the
+//! job clears it once the set verifies. The publish runs with ISRs
+//! masked and under a generation check, so a write landing mid-job
+//! leaves the mark standing and the job posted. The kernel reads.
 
 use crate::regions::calib::CalibMotor;
 use crate::regions::calib::addr::stamp::PLANT_STAMP;
 use crate::regions::control::Mode;
+use crate::regions::control::addr::lifecycle::TORQUE_ENABLE;
 use crate::{RegionStorage, Shared, pot_lut, stamp};
 
 /// Boot found both CONFIG slots erased.
@@ -37,6 +47,24 @@ pub const SAVE_CLEARS: u8 =
 
 /// The reasons a checkpoint recomputes from the live set.
 const CHECKPOINT: u8 = STAMP_MISMATCH | PLANT_UNSET;
+
+/// What a commit posts for the main loop (`Shared::data_job_run`).
+pub mod job {
+    /// A torque-off stamp write: recompute the checkpoint.
+    pub const CHECKPOINT: u8 = 1 << 0;
+    /// A LUT COMMIT: validate the array, land its state, then checkpoint.
+    pub const LUT_COMMIT: u8 = 1 << 1;
+}
+
+/// One run of the posted job, computed unmasked and published masked
+/// (`Shared::data_job_publish`).
+#[derive(Copy, Clone, Debug)]
+pub struct DataJob {
+    generation: u16,
+    done: u8,
+    lut_state: Option<u8>,
+    flags: u8,
+}
 
 /// What boot made of one persisted image's A/B slots.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -79,12 +107,11 @@ fn plant_flag(motor: &CalibMotor) -> u8 {
 
 impl Shared {
     /// The checkpoint verdict over the live set: the stamp covers the pot
-    /// LUT the kernel applies, the array while LIVE and the identity
+    /// LUT the kernel applies, the array while `live` and the identity
     /// otherwise.
-    fn checkpoint_flags(&self) -> u8 {
+    fn checkpoint_flags(&self, live: bool) -> u8 {
         self.with_pot_lut(|k| {
             self.table.with(|t| {
-                let live = t.control.pot_lut.lut_state == pot_lut::state::LIVE;
                 let knots = if live { k.first_chunk() } else { None };
                 let stamp = if stamp::compute(t, knots) == t.calib.stamp.plant_stamp {
                     0
@@ -96,10 +123,15 @@ impl Shared {
         })
     }
 
+    fn lut_live(&self) -> bool {
+        self.table
+            .with(|t| t.control.pot_lut.lut_state == pot_lut::state::LIVE)
+    }
+
     /// Boot publish, after both overlays: the image verdicts plus the
     /// checkpoint over the overlaid set. Pre-IRQ; sole writer.
     pub fn publish_data_state(&self, config: ImageState, calib: ImageState) {
-        let flags = self.checkpoint_flags();
+        let flags = self.checkpoint_flags(self.lut_live());
         self.table.with_mut(|t| {
             t.telemetry.mode.data_flags = config.flags(CONFIG_VIRGIN, CONFIG_CORRUPT, CONFIG_STALE)
                 | calib.flags(CALIB_VIRGIN, CALIB_CORRUPT, CALIB_STALE)
@@ -107,10 +139,11 @@ impl Shared {
         });
     }
 
-    /// Checkpoint: STAMP_MISMATCH and PLANT_UNSET follow the live set. A
-    /// torque-off stamp write, a LUT COMMIT and SAVE; HIGH dispatch only.
+    /// Synchronous checkpoint: STAMP_MISMATCH and PLANT_UNSET follow the
+    /// live set. SAVE (HIGH, a slow op anyway) and boot fixtures only;
+    /// the wire-time checkpoints go through the job.
     pub fn data_state_checkpoint(&self) {
-        let flags = self.checkpoint_flags();
+        let flags = self.checkpoint_flags(self.lut_live());
         self.table.with_mut(|t| {
             t.telemetry.mode.data_flags = (t.telemetry.mode.data_flags & !CHECKPOINT) | flags;
         });
@@ -118,25 +151,97 @@ impl Shared {
 
     /// A committed write `[addr, addr + len)`: a covered field marks the
     /// stamp stale at once (a host that dies mid-sequence leaves the
-    /// mismatch behind), and a stamp write is verified only with torque
-    /// off - under torque it lands unverified and the mismatch waits for
-    /// the next torque-off checkpoint. Never stops a running loop; the
+    /// mismatch behind), and a stamp write marks it too and posts the
+    /// checkpoint that clears it - with torque off only; under torque it
+    /// lands unverified and the mismatch waits for the next torque-off
+    /// checkpoint. A torque write moves the generation so a job in flight
+    /// re-judges under the new torque. Never stops a running loop; the
     /// kernel reads the flags at its next entry. HIGH dispatch only; one
-    /// copy behind both commit sites.
+    /// copy behind both commit sites, O(1).
     #[inline(never)]
     pub fn data_state_after_commit(&self, addr: u16, len: u16) {
         let end = addr.saturating_add(len);
+        if addr <= TORQUE_ENABLE && end > TORQUE_ENABLE {
+            self.data_touch(0, 0);
+        }
         let stamp_hit = addr < PLANT_STAMP + 2 && end > PLANT_STAMP;
         if !stamp_hit && !stamp::covers(addr, len) {
             return;
         }
         let torque = self.table.with(|t| t.control.lifecycle.torque_enable);
-        if stamp_hit && !torque {
-            self.data_state_checkpoint();
+        let post = if stamp_hit && !torque {
+            job::CHECKPOINT
         } else {
-            self.table
-                .with_mut(|t| t.telemetry.mode.data_flags |= STAMP_MISMATCH);
+            0
+        };
+        self.data_touch(post, 0);
+        self.table
+            .with_mut(|t| t.telemetry.mode.data_flags |= STAMP_MISMATCH);
+    }
+
+    pub fn data_job_pending(&self) -> bool {
+        self.data_job() != 0
+    }
+
+    /// Main loop: run what HIGH posted, unmasked and preemptible. A LUT
+    /// COMMIT validates the array against the stops (REJECT_TORQUE if
+    /// torque came on since the command, the refusal HIGH would have
+    /// given), then the checkpoint runs over the knots that verdict makes
+    /// effective. `None` while nothing is posted.
+    pub fn data_job_run(&self) -> Option<DataJob> {
+        // generation before job: a post between the two reads moves it
+        // and the publish discards this run.
+        let generation = self.data_gen();
+        let done = self.data_job();
+        if done == 0 {
+            return None;
         }
+        let (torque, raw_min, raw_max, state) = self.table.with(|t| {
+            (
+                t.control.lifecycle.torque_enable,
+                t.calib.pot.raw_min,
+                t.calib.pot.raw_max,
+                t.control.pot_lut.lut_state,
+            )
+        });
+        let lut_state = (done & job::LUT_COMMIT != 0).then(|| {
+            if torque {
+                pot_lut::state::REJECT_TORQUE
+            } else {
+                self.with_pot_lut(|k| pot_lut::verdict(k, raw_min, raw_max))
+            }
+        });
+        let live = lut_state.unwrap_or(state) == pot_lut::state::LIVE;
+        Some(DataJob {
+            generation,
+            done,
+            lut_state,
+            flags: self.checkpoint_flags(live),
+        })
+    }
+
+    /// Publish a run, ISRs masked on the chip. A generation that moved
+    /// since the run leaves the marks standing and the job posted (`false`);
+    /// the next poll runs it again.
+    pub fn data_job_publish(&self, job: DataJob) -> bool {
+        if self.data_gen() != job.generation {
+            return false;
+        }
+        self.table.with_mut(|t| {
+            if let Some(s) = job.lut_state {
+                t.control.pot_lut.lut_state = s;
+            }
+            t.telemetry.mode.data_flags = (t.telemetry.mode.data_flags & !CHECKPOINT) | job.flags;
+        });
+        self.data_job_done(job.done);
+        true
+    }
+
+    /// Run and publish in one context that nothing preempts: SAVE (HIGH),
+    /// the sim's main loop, tests.
+    pub fn data_job_service(&self) -> bool {
+        self.data_job_run()
+            .is_some_and(|j| self.data_job_publish(j))
     }
 
     /// A successful SAVE retires [`SAVE_CLEARS`]. HIGH dispatch only.
@@ -296,17 +401,24 @@ mod tests {
         // a covered write marks at once, whatever the value did
         sh.data_state_after_commit(V_KP_Q88, 2);
         assert_eq!(flags(&sh), STAMP_MISMATCH);
-        // the stamp write verifies: the set still matches the stamp
+        // the stamp write marks and posts; the job verifies: the set still
+        // matches the stamp
         sh.data_state_after_commit(PLANT_STAMP, 2);
+        assert_eq!(flags(&sh), STAMP_MISMATCH, "refused until verified");
+        assert!(sh.data_job_pending());
+        assert!(sh.data_job_service());
         assert_eq!(flags(&sh), 0);
+        assert!(!sh.data_job_pending());
 
         // the value moved, the stamp did not
         sh.table.with_mut(|t| t.config.limits.drive_polarity = true);
         sh.data_state_after_commit(DRIVE_POLARITY, 1);
         sh.data_state_after_commit(PLANT_STAMP, 2);
+        sh.data_job_service();
         assert_eq!(flags(&sh), STAMP_MISMATCH, "an end-to-end miss");
         stamp(&sh);
         sh.data_state_after_commit(PLANT_STAMP, 2);
+        sh.data_job_service();
         assert_eq!(flags(&sh), 0);
 
         // under torque a stamp write lands unverified
@@ -317,10 +429,12 @@ mod tests {
         assert_eq!(flags(&sh), STAMP_MISMATCH, "no checkpoint under torque");
         stamp(&sh);
         sh.data_state_after_commit(PLANT_STAMP, 2);
+        assert!(!sh.data_job_pending(), "no checkpoint under torque");
         assert_eq!(flags(&sh), STAMP_MISMATCH, "unverified");
         sh.table
             .with_mut(|t| t.control.lifecycle.torque_enable = false);
         sh.data_state_after_commit(PLANT_STAMP, 2);
+        sh.data_job_service();
         assert_eq!(
             flags(&sh),
             PLANT_UNSET,
@@ -331,6 +445,7 @@ mod tests {
         sh.table.with_mut(|t| t.calib.motor.recip_ke_q = 3700);
         stamp(&sh);
         sh.data_state_after_commit(RECIP_KE_Q, PLANT_STAMP + 2 - RECIP_KE_Q);
+        sh.data_job_service();
         assert_eq!(flags(&sh), 0);
     }
 }

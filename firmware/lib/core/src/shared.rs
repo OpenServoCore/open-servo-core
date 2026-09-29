@@ -1,6 +1,7 @@
 use core::cell::SyncUnsafeCell;
 
 use osc_protocol::wire::UID_LEN;
+use portable_atomic::{AtomicU8, AtomicU16, Ordering};
 
 use crate::ControlTableCell;
 use crate::persist::ConfigStore;
@@ -9,6 +10,14 @@ use crate::pot_lut::KNOTS;
 #[repr(C)]
 pub struct Shared {
     pub table: ControlTableCell,
+    /// Work a commit left for the main loop (`data_state::job` bits). HIGH
+    /// dispatch posts and cancels; the main loop's publish clears what it
+    /// ran, under a generation check.
+    data_job: AtomicU8,
+    /// Bumped by HIGH on every write the job hashes or validates (covered,
+    /// stamp, LUT array, torque). A job whose generation moved discards
+    /// its result. HIGH is the sole writer, so plain load/store suffice.
+    data_gen: AtomicU16,
     /// The factory UID, silicon ID zero-padded to the 16-byte wire field
     /// (osc-native sec 9.2) -- internal identity, not a table register; MGMT ENUM
     /// is its only wire reader.
@@ -27,10 +36,38 @@ impl Shared {
     pub const fn new() -> Self {
         Self {
             table: ControlTableCell::new(),
+            data_job: AtomicU8::new(0),
+            data_gen: AtomicU16::new(0),
             uid: SyncUnsafeCell::new([0; UID_LEN]),
             store: SyncUnsafeCell::new(None),
             pot_lut: SyncUnsafeCell::new([0; KNOTS]),
         }
+    }
+
+    /// HIGH: a write the job hashes or validates landed; `post` what it
+    /// leaves for the main loop, `cancel` what it retires.
+    pub(crate) fn data_touch(&self, post: u8, cancel: u8) {
+        self.data_gen.store(
+            self.data_gen.load(Ordering::Relaxed).wrapping_add(1),
+            Ordering::Relaxed,
+        );
+        let job = self.data_job.load(Ordering::Relaxed);
+        self.data_job
+            .store((job | post) & !cancel, Ordering::Relaxed);
+    }
+
+    pub(crate) fn data_gen(&self) -> u16 {
+        self.data_gen.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn data_job(&self) -> u8 {
+        self.data_job.load(Ordering::Relaxed)
+    }
+
+    /// Main loop, ISRs masked: retire the bits a published run serviced.
+    pub(crate) fn data_job_done(&self, done: u8) {
+        let job = self.data_job.load(Ordering::Relaxed);
+        self.data_job.store(job & !done, Ordering::Relaxed);
     }
 
     /// Borrow the pot LUT; the caller upholds the single-writer contract.

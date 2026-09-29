@@ -500,11 +500,12 @@ impl Dispatcher<'_> {
     /// sec 9.4 SAVE -- the only flash-touching operation. Torque gates it (the
     /// ms-scale program stall is the mid-motion hazard, not the data), and
     /// the ack leaves AFTER the store returns: ack == durable, and a failed
-    /// program surfaces as `hardware` instead of a lie. The pot LUT settles
-    /// to what the kernel applies and a data-state checkpoint precedes the
-    /// program (a stale stamp still persists: the reboot recomputes it
-    /// anyway); success retires the fresh-servo reasons
-    /// (`data_state::SAVE_CLEARS`).
+    /// program surfaces as `hardware` instead of a lie. A posted data job
+    /// runs here first (a COMMIT the main loop has not judged yet must not
+    /// persist as the identity), the pot LUT settles to what the kernel
+    /// applies and a data-state checkpoint precedes the program (a stale
+    /// stamp still persists: the reboot recomputes it anyway); success
+    /// retires the fresh-servo reasons (`data_state::SAVE_CLEARS`).
     fn save<R: Reply>(&mut self, alert: bool, ctx: &RequestCtx, reply: &mut R) {
         if self
             .shared
@@ -513,6 +514,7 @@ impl Dispatcher<'_> {
         {
             return Self::ack(alert, ctx, Err(Error::AccessError), reply);
         }
+        self.shared.data_job_service();
         self.shared.pot_lut_settle();
         self.shared.data_state_checkpoint();
         let saved = self.persist_table();

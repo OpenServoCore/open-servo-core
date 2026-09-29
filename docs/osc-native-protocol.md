@@ -752,12 +752,23 @@ under torque lands unverified: the mismatch stands until the next
 checkpoint. SAVE checkpoints before it programs and still persists a
 mismatched set (the reboot recomputes anyway; flash is never refused).
 
+The recompute outlasts the reply deadline, so the stamp write and the
+COMMIT checkpoints run in the servo's main loop after the reply: the
+commit marks `STAMP_MISMATCH` (the refused direction) and posts the
+job; the job clears the mark once the set verifies, ~0.6 ms later. A
+write that lands while the job runs discards that run and it runs again
+over the set as it is then, so the mark never clears against a set the
+stamp did not cover (DES
+`stamp_write_verifies_in_the_main_loop_after_the_reply`). SAVE runs a
+posted job itself before it checkpoints and programs.
+
 The host sequence that closes an identification or a calibration: torque
 off; write the set, each write read-back verified; compute the stamp
 over the intended set, not over a read-back, and write `plant_stamp`;
-read `data_flags` - a standing `STAMP_MISMATCH` means a write did not
-land; SAVE, since the virgin and stale reasons clear only on SAVE; only
-then verify closed loop. `osc ident` (write, rollback), `osc cal` and
+poll `data_flags` until `STAMP_MISMATCH` clears (20 ms is ample) - a
+`STAMP_MISMATCH` still standing means a write did not land; SAVE, since
+the virgin and stale reasons clear only on SAVE; only then verify closed
+loop. `osc ident` (write, rollback), `osc cal` and
 `osc recover --from` all commit this way, and `osc stamp [--save]`
 blesses a hand-tuned set explicitly. Nothing restamps as a side effect:
 `osc set` of a covered field leaves the mismatch standing, and `osc lut
@@ -803,12 +814,19 @@ copies the window into its page of the array and leaves LOADING (the
 kernel applies the identity until a COMMIT); FETCH copies that page
 back into the window; COMMIT validates the whole array against
 `raw_min`/`raw_max` and lands LIVE or a REJECT, then runs the stamp
-checkpoint. STORE and COMMIT are torque-gated: from LIVE a refusal
-leaves LIVE standing (the state is what the kernel applies, and a
-refusal must not move it under a running loop); from any other state
-they read REJECT_TORQUE. FETCH is never gated. A rejected array stays in
-RAM to be fixed page by page, and a STORE out of LIVE marks
-`STAMP_MISMATCH` the way a covered write does. Firmware validation is
+checkpoint. The reply leaves first: COMMIT reads back LOADING with
+`STAMP_MISMATCH` marked until the servo's main loop lands the verdict
+(~0.6 ms), so a host polls `lut_state` past LOADING. A STORE behind an
+unjudged COMMIT cancels it (the array is loading again; only the next
+COMMIT judges it), and torque coming on before the verdict lands reads
+REJECT_TORQUE (DES
+`commit_lands_its_verdict_in_the_main_loop_after_the_reply`). STORE and
+COMMIT are torque-gated: from LIVE a refusal leaves LIVE standing (the
+state is what the kernel applies, and a refusal must not move it under
+a running loop); from any other state they read REJECT_TORQUE. FETCH is
+never gated. A rejected array stays in RAM to be fixed page by page,
+and a STORE out of LIVE marks `STAMP_MISMATCH` the way a covered write
+does. Firmware validation is
 physics sanity, never quality: every knot at or beyond a stop is zero
 (`k <= (raw_min + 15) >> 4` and `k >= raw_max >> 4`, so both stops map
 to themselves whether or not they sit on a knot; stops unset admit only
