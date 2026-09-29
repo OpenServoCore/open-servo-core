@@ -224,6 +224,19 @@ pub async fn effective<P: Pipe>(
     Ok(lut.effective().copied())
 }
 
+/// STORE and COMMIT are refused under torque, and from LIVE the refusal
+/// leaves the state standing, so a readback would say nothing: check first.
+async fn torque_off<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor) -> Result<(), Error> {
+    let torque = d
+        .field("torque_enable")
+        .ok_or_else(|| Error::Descriptor(format!("no torque_enable in {}", d.model)))?;
+    let b = c.read(id, torque.addr, torque.width).await?;
+    if b.first().is_some_and(|&on| on != 0) {
+        return Err(Error::Lut(LutError::TorqueOn));
+    }
+    Ok(())
+}
+
 /// STORE every page, COMMIT, then FETCH every page back: the table is LIVE
 /// and knot for knot what was sent, or the error says why not. Torque must
 /// be off, checked here before anything is sent. Never stamps: a new
@@ -236,13 +249,7 @@ pub async fn write<P: Pipe>(
     knots: &[i16; INTERVALS],
 ) -> Result<(), Error> {
     let w = Window::resolve(d)?;
-    let torque = d
-        .field("torque_enable")
-        .ok_or_else(|| Error::Descriptor(format!("no torque_enable in {}", d.model)))?;
-    let b = c.read(id, torque.addr, torque.width).await?;
-    if b.first().is_some_and(|&on| on != 0) {
-        return Err(Error::Lut(LutError::TorqueOn));
-    }
+    torque_off(c, id, d).await?;
     for page in 0..PAGES {
         let k = &knots[page * PAGE_KNOTS..][..PAGE_KNOTS];
         command(c, id, &w, page as u8, cmd::STORE, Some(k)).await?;
@@ -269,6 +276,18 @@ pub async fn write<P: Pipe>(
 /// stamped servo stays stamped.
 pub async fn clear<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor) -> Result<(), Error> {
     write(c, id, d, &[0; INTERVALS]).await
+}
+
+/// COMMIT the array the servo already holds and return `lut_state` after
+/// it: LIVE, or the REJECT that names why the kernel now runs the
+/// identity. The servo validates a table only at COMMIT and at boot, so
+/// after the stops move under a LIVE table (cal) this is what judges it
+/// against the new stops now instead of the next boot. Torque must be off.
+pub async fn recommit<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor) -> Result<u8, Error> {
+    let w = Window::resolve(d)?;
+    torque_off(c, id, d).await?;
+    command(c, id, &w, 0, cmd::COMMIT, None).await?;
+    state(c, id, d).await
 }
 
 #[cfg(test)]

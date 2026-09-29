@@ -820,6 +820,57 @@ fn lut_write_reports_the_servos_rejects_and_refuses_under_torque() {
     assert_eq!(servo_lut(&mut c), (pot_lut::state::LIVE, [0; INTERVALS]));
 }
 
+/// Cal moving the stops under a LIVE table: the servo validates a table
+/// only at COMMIT and at boot, so the host re-COMMITs the array in RAM and
+/// the state says whether it still fits the new stops. Either way the
+/// stamp that follows hashes what the kernel applies.
+#[test]
+fn lut_recommit_judges_the_live_table_against_the_new_stops() {
+    let (d, mut c, id) = mg90_servo();
+    let knots = mg90_a();
+    c.write_pot_lut(id, &d, &knots).expect("write");
+    c.restamp(id, &d).expect("restamp");
+    assert_eq!(c.data_state(id, &d).expect("data state").flags, 0);
+
+    // the stops move inside the insets: the table still fits
+    write_field(&mut c, id, &d, "raw_min", Value::Uint(232));
+    assert_eq!(
+        c.data_state(id, &d).expect("data state").flags,
+        STAMP_MISMATCH,
+        "a covered write"
+    );
+    assert_eq!(c.recommit_pot_lut(id, &d), Ok(pot_lut::state::LIVE));
+    assert_eq!(servo_lut(&mut c), (pot_lut::state::LIVE, knots));
+    let live = c
+        .pipe_mut()
+        .sim_mut()
+        .servo_table(0, |t| osc_servo_core::stamp::compute(t, Some(&knots)));
+    assert_eq!(c.restamp(id, &d).expect("restamp"), live);
+    assert_eq!(c.data_state(id, &d).expect("data state").flags, 0);
+
+    // a stop into the covered span: a nonzero knot lands in the low inset,
+    // the kernel runs the identity, the array stays for a rebuild to
+    // overwrite, and the stamp hashes the identity
+    write_field(&mut c, id, &d, "raw_min", Value::Uint(600));
+    assert_eq!(c.recommit_pot_lut(id, &d), Ok(pot_lut::state::REJECT_ENDS));
+    assert_eq!(servo_lut(&mut c).0, pot_lut::state::REJECT_ENDS);
+    assert_eq!(c.pot_lut(id, &d).expect("read").knots, knots);
+    assert_eq!(
+        c.data_state(id, &d).expect("data state").flags,
+        STAMP_MISMATCH
+    );
+    assert_eq!(c.restamp(id, &d).expect("restamp"), firmware_stamp(&mut c));
+    assert_eq!(c.data_state(id, &d).expect("data state").flags, 0);
+
+    // torque on: refused before the wire, the state stands
+    write_field(&mut c, id, &d, "torque_enable", Value::Bool(true));
+    assert_eq!(
+        c.recommit_pot_lut(id, &d),
+        Err(Error::Lut(LutError::TorqueOn))
+    );
+    assert_eq!(servo_lut(&mut c).0, pot_lut::state::REJECT_ENDS);
+}
+
 /// The park mechanism itself is pinned in osc-integration's `cross_baud`
 /// suite -- the link-mode rig cannot hold a parked resolver across
 /// commands (every exchange drains the sim queue = unbounded quiet), so
