@@ -342,7 +342,7 @@ impl Experiment for Resistance {
 #[cfg(test)]
 mod tests {
     use super::super::Guarded;
-    use super::super::testkit::{FakeServo, pump};
+    use super::super::testkit::{Bus, FakeServo, pump, pump_on};
     use super::*;
 
     fn run_e2(servo: &mut FakeServo) -> (Resistance, Vec<String>) {
@@ -410,7 +410,7 @@ mod tests {
             servo.jam = Some(jam);
             let params = crate::exp::testkit::rig().without_pos_guard();
             let mut exp = Guarded::new(Resistance::new(ResistanceCfg::default(), &params), params);
-            let log = pump(&mut exp, &mut servo, 2_000_000);
+            let log = pump_on(&mut exp, &mut servo, 2_000_000, Bus::ZERO_LATENCY);
             assert_eq!(
                 exp.abort(),
                 Some(AbortReason::Blocked {

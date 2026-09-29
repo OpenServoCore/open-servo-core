@@ -6,20 +6,29 @@
 //!
 //! With `current_limit` set the fake governs OpenLoop duty the way the
 //! kernel's limiter does: a goal above the window floor slews up from the
-//! floor, and the applied duty never draws more than the limit; a goal
-//! under the floor passes raw up to the stall-safe duty, the shunt blind to
-//! it - its ident window is invalid and the aggregate holds the last valid
-//! current, so a token brake at speed reads nothing. With
-//! `lease_ms` set the stall permit is a lease: granted by a write of true
-//! with torque on, extended by a rewrite, dropped by torque off, false, or
-//! the lease running out. With `stall_ms` set the stall timer runs too: a
-//! limiter that holds the goal back on a still shaft that long folds the
-//! limit to `stall_yield`.
+//! floor in steps of the ceiling, the ceiling stops rising once the current
+//! reaches the band `[lim - lim/8, lim]` and drops when it is over, and it
+//! never applies less than the base duty, so a reversal at speed draws
+//! (base x rail + back-EMF) / R. A moving shaft holds the band's bottom
+//! (back-EMF keeps pulling the current under it), a still one the step
+//! nearest its top. A goal under the floor passes raw up to the stall-safe
+//! duty, the shunt blind to it - its ident window is invalid and the
+//! aggregate holds the last valid current, so a token brake at speed reads
+//! nothing. With `lease_ms` set the stall permit is a lease: granted by a
+//! write of true with torque on, extended by a rewrite, dropped by torque
+//! off, false, or the lease running out. With `stall_ms` set the stall
+//! timer runs too: a limiter that holds the goal back on a still shaft that
+//! long folds the limit to `stall_yield`, and the fold releases once the
+//! disturbance estimate falls under `stall_release`; one that would release
+//! at once shows the verdict for a single MEDIUM tick.
+//!
+//! [`pump`] charges every transaction the time the bench bus takes
+//! ([`Bus::BENCH`]) and the plant moves through it.
 
-use super::{Cmd, Experiment, RigParams};
+use super::{Cmd, Experiment, RigParams, SLEW_Q15_PER_TICK};
 use crate::burst::{
-    CHAN_VBUS, CHAN_VMOTOR_A, CHAN_VMOTOR_B, Capture, Meta, SAMPLE_HCLK, SAMPLE_US, SAMPLES,
-    frame_len,
+    ArmSeen, CHAN_VBUS, CHAN_VMOTOR_A, CHAN_VMOTOR_B, Capture, Meta, SAMPLE_HCLK, SAMPLE_US,
+    SAMPLES, frame_len, rejected,
 };
 use crate::frame::{TelFrame, TelemetrySnapshot};
 use crate::limits::PermitLease;
@@ -36,7 +45,8 @@ pub fn rig() -> RigParams {
 /// The bench MG90 as the fake models it on a rail of `vbus`: 4.9 ohm, the
 /// firmware limiter at 280 counts above a 13.3% window floor, a 13%
 /// breakaway, 80 counts of running friction and the measured b, between
-/// its stops 209..3849 and soft limits 432..3626.
+/// its stops 209..3849 and soft limits 432..3626. The stall timer runs at
+/// settings that fold: yield 168, released under 84, after 500 ms.
 pub fn bench_mg90(vbus: u16) -> FakeServo {
     let mut s = FakeServo::new(7270.0 / 4096.0);
     s.ends = (209.0, 3849.0);
@@ -51,8 +61,49 @@ pub fn bench_mg90(vbus: u16) -> FakeServo {
     s.lease_ms = Some(1008.0);
     s.current_limit = Some(280);
     s.transient_gain = 1.0;
+    s.stall_ms = Some(500.0);
+    s.stall_yield = 168;
+    s.stall_release = 84;
     s
 }
+
+/// [`bench_mg90`] with the stall settings the bench servo has saved: yield
+/// 545 and release 273, both over its 280 limit. The fold changes nothing
+/// and a held stall reads under the release, so the verdict shows for one
+/// MEDIUM tick per trip; a locked rotor at these settings trips every
+/// 570 ms.
+pub fn bench_mg90_saved(vbus: u16) -> FakeServo {
+    let mut s = bench_mg90(vbus);
+    s.stall_ms = Some(570.0);
+    s.stall_yield = 545;
+    s.stall_release = 273;
+    s
+}
+
+/// What the firmware checks before it arms a burst: the volts it applies
+/// against a cap, the time since the last arm, and a position strictly
+/// inside the soft limits unless the permit is live.
+#[derive(Copy, Clone, Debug)]
+pub struct ArmRules {
+    /// vcounts: 3200 mV behind the terminal dividers.
+    pub v_max: u16,
+    pub spacing_ms: f64,
+    /// Millivolts a vcount, as the host reads the dividers.
+    pub mv_per_count: f64,
+}
+
+impl ArmRules {
+    /// 6k8 over 3k3 taps on a 3.3 V ADC.
+    pub const FIRMWARE: ArmRules = ArmRules {
+        v_max: 1298,
+        spacing_ms: 100.0,
+        mv_per_count: 10_100.0 / 3_300.0 * 3_300.0 / 4096.0,
+    };
+}
+
+/// The observer reads a held stall's disturbance about a tenth under its
+/// current, and a shaft that moves as the model predicts near zero.
+const TAU_D_OF_HELD: f64 = 0.9;
 
 pub struct FakeServo {
     pub r: f64,
@@ -105,8 +156,8 @@ pub struct FakeServo {
     permit_until: f64,
     /// OpenLoop current limit, counts; None is firmware without a limiter.
     pub current_limit: Option<u16>,
-    /// How far over the limit the governed current reads, a fraction: the
-    /// kernel holds a stall with window peaks up to 1.1 of the limit.
+    /// How far over the held current a governed read lands, a fraction:
+    /// window peaks over the band.
     pub hold_ripple: f64,
     /// Duty at the current window floor, q15: the least whose drive window
     /// spans 160 ticks of ARR 1200.
@@ -122,9 +173,19 @@ pub struct FakeServo {
     /// The stall timer, ms; None never folds.
     pub stall_ms: Option<f64>,
     pub stall_yield: u16,
+    /// The fold holds while the disturbance estimate reads this or more;
+    /// 0 holds it until torque off.
+    pub stall_release: u16,
     pinned_at: Option<f64>,
-    /// The limit folded to the yield, until torque off or a zero goal.
+    /// The limit folded to the yield.
     folded: bool,
+    /// When the stall timer last tripped.
+    tripped_at: f64,
+    /// None arms every burst; set, the firmware's arm rules apply.
+    pub arm_rules: Option<ArmRules>,
+    last_arm: f64,
+    /// Dynamic-model substeps owed to the clock, a fraction of one.
+    sub_carry: f64,
     /// Time the applied duty spent pushing the shaft into the end it sits
     /// at, ms.
     pub pressed_ms: f64,
@@ -181,8 +242,13 @@ impl FakeServo {
             sticky: None,
             stall_ms: None,
             stall_yield: 0,
+            stall_release: 0,
             pinned_at: None,
             folded: false,
+            tripped_at: f64::NEG_INFINITY,
+            arm_rules: None,
+            last_arm: f64::NEG_INFINITY,
+            sub_carry: 0.0,
             pressed_ms: 0.0,
             i_valid: 0.0,
             torque: false,
@@ -263,7 +329,7 @@ impl FakeServo {
         if !self.torque || self.endstop_blocks() {
             0
         } else {
-            self.govern()
+            self.govern().0
         }
     }
 
@@ -288,54 +354,96 @@ impl FakeServo {
         })
     }
 
-    /// The goal slewed by the ceiling, then cut to the largest duty whose
-    /// current stays at the limit.
-    fn govern(&self) -> i16 {
+    /// The duty the limiter applies for the goal, and whether the current,
+    /// not the slew, holds it under the goal (`limit_flags` bit 0).
+    fn govern(&self) -> (i16, bool) {
         let Some(lim) = self.limit() else {
-            return self.duty;
+            return (self.duty, false);
         };
         let sign = self.duty.signum() as i32;
-        if self.duty.unsigned_abs() < self.floor_q15 as u16 {
-            let base = (lim as f64 * self.r / self.vbus * 32767.0).min(self.floor_q15 as f64);
-            return (sign * (self.duty.unsigned_abs() as i32).min(base as i32)) as i16;
+        let goal = self.duty.unsigned_abs() as i32;
+        let floor = self.floor_q15 as i32;
+        let base = ((lim as f64 * self.r / self.vbus * 32767.0) as i32).min(floor);
+        if goal < floor {
+            return ((sign * goal.min(base)) as i16, false);
         }
-        let slewed = (self.duty.unsigned_abs() as f64).min(self.ceiling()) as i32;
+        let slewed = goal.min(self.ceiling() as i32);
         // the low-side shunt sees drive current only, never the brake
         // current a low duty draws from a fast shaft
-        let holds = |mag: i32| self.i_at((sign * mag) as i16) * sign as f64 <= lim as f64;
-        if holds(slewed) {
-            return (sign * slewed) as i16;
+        let cur = |mag: i32| self.i_at((sign * mag) as i16) * sign as f64;
+        let band = (lim - (lim >> 3)) as f64;
+        if cur(slewed) < band {
+            return ((sign * slewed) as i16, false);
         }
-        let (mut ok, mut over) = (0, slewed);
-        while over - ok > 1 {
-            let mid = (ok + over) / 2;
-            if holds(mid) {
-                ok = mid;
-            } else {
-                over = mid;
+        // the largest duty under `slewed` whose current passes `ok`
+        let largest = |ok: &dyn Fn(f64) -> bool| {
+            let (mut lo, mut hi) = (0, slewed);
+            while hi - lo > 1 {
+                let mid = (lo + hi) / 2;
+                if ok(cur(mid)) {
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
             }
-        }
-        (sign * ok) as i16
+            lo
+        };
+        let lim = lim as f64;
+        let top = if cur(slewed) <= lim {
+            slewed
+        } else {
+            largest(&|i| i <= lim)
+        };
+        // the ceiling's steps from where it last reset
+        let step = SLEW_Q15_PER_TICK as i32;
+        let from = (self.ceil0 as i32).max(floor);
+        let on_grid = |d: i32| from + (d - from).div_euclid(step) * step;
+        let held = if top < from {
+            top
+        } else if self.moving_at((sign * top) as i16) {
+            let first = (on_grid(largest(&|i| i < band)) + step).max(from);
+            first.min(top)
+        } else if top == slewed || cur(on_grid(top)) < band {
+            top
+        } else {
+            on_grid(top)
+        };
+        let applied = if held < floor { base.min(goal) } else { held };
+        ((sign * applied) as i16, applied < goal)
     }
 
-    /// The firmware's `limit_flags`: bit 0 the limiter governs, bit 1 the
-    /// stall timer folded the limit, bit 2 the endstop blocks, bit 3 the
-    /// permit is live.
+    /// The firmware's `limit_flags`: bit 0 the current holds the duty under
+    /// the goal, bit 1 the stall timer folded the limit (or tripped within
+    /// the last MEDIUM tick), bit 2 the endstop blocks, bit 3 the permit is
+    /// live.
     pub fn limit_flags(&self) -> u8 {
         let driving = self.torque && self.duty != 0;
         let mut f = 0;
         if driving && self.endstop_blocks() {
             f |= 4;
-        } else if driving && self.applied() != self.duty {
+        } else if driving && self.govern().1 {
             f |= 1;
         }
-        if self.folded {
+        if self.folded || self.t_ms - self.tripped_at < self.medium_ms() {
             f |= 2;
         }
         if self.permit_live() {
             f |= 8;
         }
         f
+    }
+
+    fn medium_ms(&self) -> f64 {
+        1000.0 / self.f_med
+    }
+
+    /// The shaft moves with `duty` applied.
+    fn moving_at(&self, duty: i16) -> bool {
+        if self.dynamic {
+            self.omega_dyn != 0.0
+        } else {
+            self.omega_at(duty) != 0.0
+        }
     }
 
     fn pressing(&self) -> bool {
@@ -348,22 +456,91 @@ impl FakeServo {
         if !self.torque || self.duty == 0 || self.endstop_blocks() || self.omega() != 0.0 {
             return false;
         }
-        let slewed = (self.duty.unsigned_abs() as f64).min(self.ceiling()) as u16;
-        self.govern().unsigned_abs() < slewed
+        self.govern().1
     }
 
-    /// Run the stall timer over time that began at `from_ms`.
+    /// The observer's disturbance estimate: a held stall's current, a tenth
+    /// under; nothing on a shaft that moves or is not driven.
+    fn tau_d(&self) -> f64 {
+        let duty = self.applied();
+        if duty == 0 || self.omega() != 0.0 {
+            return 0.0;
+        }
+        TAU_D_OF_HELD * self.i_at(duty).abs()
+    }
+
+    /// Run the stall timer over time that began at `from_ms`. A live permit
+    /// clears it; a fold releases once the disturbance falls under the
+    /// release, and a trip that would release at once re-arms a full window
+    /// a MEDIUM tick later.
     fn stall_timer(&mut self, from_ms: f64) {
         let Some(ms) = self.stall_ms else {
             return;
         };
-        if !self.pinned() {
+        if self.permit_live() && self.honors_permit {
+            self.folded = false;
             self.pinned_at = None;
             return;
         }
-        let at = *self.pinned_at.get_or_insert(from_ms);
-        if self.t_ms - at >= ms {
+        if self.folded && self.tau_d() < self.stall_release as f64 {
+            self.folded = false;
+            self.pinned_at = None;
+        }
+        if self.folded || !self.pinned() {
+            self.pinned_at = None;
+            return;
+        }
+        let mut at = *self.pinned_at.get_or_insert(from_ms);
+        while self.t_ms - at >= ms {
+            let trip = at + ms;
             self.folded = true;
+            if self.tau_d() >= self.stall_release as f64 {
+                break;
+            }
+            self.folded = false;
+            self.tripped_at = trip;
+            at = trip + self.medium_ms();
+        }
+        self.pinned_at = (!self.folded).then_some(at);
+    }
+
+    /// What the host reads back to explain a refused arm.
+    fn arm_seen(&mut self) -> ArmSeen {
+        let o = self.read();
+        let soft = self.soft.map_or((i32::MIN, i32::MAX), |(lo, hi)| {
+            (lo.round() as i32, hi.round() as i32)
+        });
+        ArmSeen {
+            vbus_counts: o.vbus_counts,
+            mv_per_count: self.arm_rules.map_or(0.0, |r| r.mv_per_count),
+            pos: o.pos,
+            soft,
+            limit_flags: o.limit_flags,
+            fault_flags: o.fault_flags,
+        }
+    }
+
+    /// The firmware's answer to a burst arm at `duty_q15`: Err names the
+    /// rule that refused it. A refused arm starts no spacing.
+    pub fn arm(&mut self, duty_q15: i16) -> Result<(), &'static str> {
+        let Some(rules) = self.arm_rules else {
+            return Ok(());
+        };
+        let volts = (duty_q15.unsigned_abs() as u32 * self.vbus as u32) >> 15;
+        let inside = self
+            .soft
+            .is_none_or(|(lo, hi)| self.pos > lo && self.pos < hi);
+        if !self.torque {
+            Err("torque off")
+        } else if volts > rules.v_max as u32 {
+            Err("over the burst volts cap")
+        } else if self.t_ms - self.last_arm < rules.spacing_ms {
+            Err("inside the burst spacing")
+        } else if !inside && !self.permit_live() {
+            Err("outside the soft limits without the permit")
+        } else {
+            self.last_arm = self.t_ms;
+            Ok(())
         }
     }
 
@@ -465,10 +642,6 @@ impl FakeServo {
                 self.floor_q15 as f64
             };
             self.reset_ceiling(from);
-            if goal == 0 {
-                self.folded = false;
-                self.pinned_at = None;
-            }
             self.duty = goal;
             self.t_duty_change = self.t_ms;
         } else if reg == control::TEL_MASK {
@@ -539,6 +712,13 @@ impl FakeServo {
     }
 
     pub fn advance(&mut self, ms: u32) {
+        self.advance_ms(ms as f64);
+    }
+
+    pub fn advance_ms(&mut self, ms: f64) {
+        if ms <= 0.0 {
+            return;
+        }
         let from = self.t_ms;
         self.advance_plant(ms);
         if self.pressing() {
@@ -547,22 +727,24 @@ impl FakeServo {
         self.stall_timer(from);
     }
 
-    fn advance_plant(&mut self, ms: u32) {
+    fn advance_plant(&mut self, ms: f64) {
         if self.dynamic {
             // tick-sized substeps keep the ~tens-of-ms tau integration exact
             let dt = 1.0 / (self.f_med * 10.0);
-            let n = (ms as f64 / 1000.0 / dt).round() as u64;
+            let owed = self.sub_carry + ms / 1000.0 / dt;
+            let n = owed.floor();
+            self.sub_carry = owed - n;
             let t0 = self.t_ms;
-            for k in 0..n {
+            for k in 0..n as u64 {
                 self.substep(dt);
                 self.t_ms = t0 + (k + 1) as f64 * dt * 1000.0;
             }
             self.t_ms = t0;
         } else {
-            let dt = ms as f64 / 1000.0;
+            let dt = ms / 1000.0;
             self.pos = self.travel(self.pos + self.omega() * dt);
         }
-        self.t_ms += ms as f64;
+        self.t_ms += ms;
     }
 
     /// One armed TEL burst: `samples` fast ticks integrated from t0 (the
@@ -952,43 +1134,128 @@ fn reg_name(reg: Reg) -> &'static str {
         .unwrap_or("?")
 }
 
-/// Drive an experiment against the fake servo; returns the command log
-/// ("write <field> <value>" entries, "stream <samples> [<field> <value>]"
-/// per burst, plus a trailing marker on overrun). A Stream arm applies its
-/// goal at t0, synthesizes the burst's per-tick frames from the plant, and
-/// hands them back through `push_tel` - the driver contract. A held stall
-/// permit is rewritten on the fake clock the way the CLI's pump rewrites it
-/// on the wall clock, pauses sliced so none outlasts a refresh.
+/// What the pump charges each transaction, ms, the fake servo moving
+/// through it. A snapshot is sampled halfway through its read and a write
+/// applies halfway through its own.
+#[derive(Copy, Clone, Debug)]
+pub struct Bus {
+    /// One telemetry snapshot: the region read and the ident re-read.
+    pub read_ms: f64,
+    pub write_ms: f64,
+    /// A requested pause takes this many times as long.
+    pub pause_scale: f64,
+    /// Seeds which reads are slow: [`SLOW_READS_PCT`] in a hundred take
+    /// [`SLOW_READ_MS`] more.
+    pub slow_reads: Option<u64>,
+}
+
+pub const SLOW_READS_PCT: u64 = 3;
+pub const SLOW_READ_MS: f64 = 8.0;
+
+/// Transactions a burst capture makes before its samples start (four
+/// field reads, three held writes and the commit) and after (the done
+/// poll, the tail, the page walk and the release).
+const BURST_ARM_TXNS: f64 = 8.0;
+const BURST_READBACK_TXNS: f64 = 6.0;
+
+impl Bus {
+    /// The bench bus, from a recorded run: a snapshot 3.5 ms, a write
+    /// 1.7 ms, a 30 ms pause 39.5 ms from one read to the next.
+    pub const BENCH: Bus = Bus {
+        read_ms: 3.5,
+        write_ms: 1.7,
+        pause_scale: 1.2,
+        slow_reads: None,
+    };
+
+    /// Every transaction instant: only for a pin about the experiment's
+    /// logic, not its timing.
+    pub const ZERO_LATENCY: Bus = Bus {
+        read_ms: 0.0,
+        write_ms: 0.0,
+        pause_scale: 1.0,
+        slow_reads: None,
+    };
+
+    pub fn with_slow_reads(self, seed: u64) -> Self {
+        Self {
+            slow_reads: Some(seed),
+            ..self
+        }
+    }
+}
+
+/// Drive an experiment against the fake servo on the bench bus
+/// ([`pump_on`]).
 pub fn pump<E: Experiment>(exp: &mut E, servo: &mut FakeServo, max_steps: u32) -> Vec<String> {
+    pump_on(exp, servo, max_steps, Bus::BENCH)
+}
+
+fn charge_write(servo: &mut FakeServo, lease: &mut PermitLease, bus: &Bus, reg: Reg, value: i32) {
+    servo.advance_ms(bus.write_ms / 2.0);
+    servo.write(reg, value);
+    lease.wrote(reg, value, servo.t_ms);
+    servo.advance_ms(bus.write_ms / 2.0);
+}
+
+/// Drive an experiment against the fake servo over `bus`; returns the
+/// command log ("write <field> <value>" entries, "stream <samples> [<field>
+/// <value>]" per burst, plus a trailing marker on overrun). A Stream arm
+/// applies its goal at t0, synthesizes the burst's per-tick frames from the
+/// plant, and hands them back through `push_tel` - the driver contract. A
+/// held stall permit is rewritten on the fake clock the way the CLI's pump
+/// rewrites it on the wall clock, pauses sliced so none outlasts a refresh.
+/// A burst arm the servo refuses ends the run the way the CLI's does: the
+/// error, then its guard's writes.
+pub fn pump_on<E: Experiment>(
+    exp: &mut E,
+    servo: &mut FakeServo,
+    max_steps: u32,
+    bus: Bus,
+) -> Vec<String> {
     let mut log = Vec::new();
     let mut pending: Option<TelemetrySnapshot> = None;
     let mut frames = Vec::new();
     let mut lease = PermitLease::default();
+    let mut lcg = bus.slow_reads.unwrap_or(0);
     let keep = |lease: &mut PermitLease, servo: &mut FakeServo, log: &mut Vec<String>| {
         if lease.due(servo.t_ms) {
-            servo.write(control::STALL_PERMIT, 1);
-            lease.wrote(control::STALL_PERMIT, 1, servo.t_ms);
+            charge_write(servo, lease, &bus, control::STALL_PERMIT, 1);
             log.push("write stall_permit 1".into());
         }
     };
     for _ in 0..max_steps {
         match exp.step(pending.take().as_ref()) {
             Cmd::Write { reg, value } => {
-                servo.write(reg, value);
-                lease.wrote(reg, value, servo.t_ms);
+                charge_write(servo, &mut lease, &bus, reg, value);
                 log.push(format!("write {} {}", reg_name(reg), value));
             }
-            Cmd::Read => pending = Some(servo.read()),
+            Cmd::Read => {
+                let mut ms = bus.read_ms;
+                if bus.slow_reads.is_some() {
+                    lcg = lcg
+                        .wrapping_mul(6364136223846793005)
+                        .wrapping_add(1442695040888963407);
+                    if (lcg >> 33) % 100 < SLOW_READS_PCT {
+                        ms += SLOW_READ_MS;
+                    }
+                }
+                servo.advance_ms(ms / 2.0);
+                pending = Some(servo.read());
+                servo.advance_ms(ms / 2.0);
+            }
             Cmd::Pause { ms } => {
                 let mut left = ms;
                 while left > 0 {
                     let slice = lease.slice(left);
-                    servo.advance(slice);
+                    servo.advance_ms(slice as f64 * bus.pause_scale);
                     left -= slice;
                     keep(&mut lease, servo, &mut log);
                 }
             }
             Cmd::Stream { samples, goal } => {
+                // the goal and the arm go out held; the commit starts both
+                servo.advance_ms(2.0 * bus.write_ms);
                 match goal {
                     Some((reg, value)) => {
                         servo.write(reg, value);
@@ -1008,6 +1275,21 @@ pub fn pump<E: Experiment>(exp: &mut E, servo: &mut FakeServo, max_steps: u32) -
                 chans,
                 seated,
             } => {
+                servo.advance_ms(BURST_ARM_TXNS * bus.write_ms);
+                if servo.arm(duty_q15).is_err() {
+                    let seen = servo.arm_seen();
+                    log.push(format!("error: {}", rejected(duty_q15, &seen)));
+                    for reg in [
+                        control::GOAL_DUTY,
+                        control::TORQUE_ENABLE,
+                        control::STALL_PERMIT,
+                        control::TEL_MASK,
+                    ] {
+                        charge_write(servo, &mut lease, &bus, reg, 0);
+                        log.push(format!("write {} 0", reg_name(reg)));
+                    }
+                    return log;
+                }
                 let pos = servo.pos.round() as u16;
                 log.push(format!(
                     "burst {duty_q15} pre {pre_q15} chans {chans} pos {pos}{}",
@@ -1023,6 +1305,7 @@ pub fn pump<E: Experiment>(exp: &mut E, servo: &mut FakeServo, max_steps: u32) -
                 exp.push_burst(&cap);
                 servo.bursts += 1;
                 servo.advance(2);
+                servo.advance_ms(BURST_READBACK_TXNS * bus.read_ms / 2.0);
                 keep(&mut lease, servo, &mut log);
             }
             Cmd::Done => return log,
@@ -1037,11 +1320,15 @@ mod tests {
     use super::*;
 
     /// The shaft locked at mid travel and at a stop, 64% asked both ways:
-    /// the duty climbs from the floor at the kernel's slew and settles
-    /// where the stall current meets the limit.
+    /// the duty climbs from the floor at the kernel's slew, stops rising
+    /// once the current reaches the band under the limit, and the still
+    /// shaft holds on the ceiling's step nearest the limit - inside the
+    /// band, never exactly at it. A shaft that moves holds the band's
+    /// bottom.
     #[test]
-    fn fake_stall_holds_at_the_limit() {
+    fn fake_stall_holds_inside_the_band() {
         const LIM: u16 = 150;
+        let band = (LIM - LIM / 8) as f64;
         for (jam, pos, sign) in [
             (Some(2400.0), 2400.0, 1),
             (Some(2400.0), 2400.0, -1),
@@ -1055,6 +1342,7 @@ mod tests {
             s.tel_mask = (1 << 1) | (1 << 3);
             s.write(control::TORQUE_ENABLE, 1);
             s.write(control::GOAL_DUTY, sign * pct(64));
+            assert_eq!(s.limit_flags(), 0, "a plain slew is not governed");
             let mut tel = Vec::new();
             s.stream(400, &mut tel);
             let duty: Vec<i16> = tel.iter().map(|f| f.duty_q15.unwrap()).collect();
@@ -1066,16 +1354,247 @@ mod tests {
             );
             s.advance(50);
             let o = s.read();
-            let held = (LIM as f64 * s.r / s.vbus * 32767.0) as i16;
+            let exact = (LIM as f64 * s.r / s.vbus * 32767.0) as i16;
+            let under = exact - o.duty_applied_q15 * sign as i16;
             assert!(
-                (o.duty_applied_q15 - sign as i16 * held).abs() <= 1,
-                "{jam:?} {sign}: applied {}",
+                (1..=128).contains(&under),
+                "{jam:?} {sign}: applied {} for {exact}",
                 o.duty_applied_q15
             );
-            assert!((0.85 * LIM as f64..=LIM as f64).contains(&(o.i_mean_counts.abs() as f64)));
+            let i = o.i_mean_counts.abs() as f64;
+            assert!(i >= band && i < LIM as f64, "{jam:?} {sign}: {i}");
             assert_eq!(o.i_lim_counts, LIM);
             assert_eq!(o.pos, pos as u16);
             assert_eq!(s.limit_flags(), 1);
+        }
+
+        // the bench servo from rest at 64%: the climb draws the band's
+        // bottom, within one step of the ceiling over it
+        let mut s = bench_mg90(3204);
+        s.pos = 1000.0;
+        s.write(control::TORQUE_ENABLE, 1);
+        s.write(control::GOAL_DUTY, pct(64));
+        let step = 128.0 / 32767.0 * s.vbus / s.r;
+        for _ in 0..8 {
+            s.advance(5);
+            let o = s.read();
+            assert_eq!(o.limit_flags & 1, 1, "governed");
+            let i = o.i_mean_counts as f64;
+            assert!(i >= 245.0 && i < 245.0 + step, "climb at {i}");
+        }
+        assert!(s.pos > 1010.0, "the shaft climbs");
+    }
+
+    /// The bench fixture's stall settings fold: a locked shaft pinned for
+    /// the stall time folds to the yield, and the fold holds while the
+    /// disturbance reads over the release - a freed shaft the yield cannot
+    /// start included - and releases once the drive stops, torque still on.
+    /// The saved settings fold nothing: the verdict shows for one MEDIUM
+    /// tick per trip, and the limit never moves.
+    #[test]
+    fn fake_fold_releases_like_the_kernel() {
+        let mut s = bench_mg90(3204);
+        s.pos = 2000.0;
+        s.jam = Some(2000.0);
+        s.write(control::TORQUE_ENABLE, 1);
+        s.write(control::GOAL_DUTY, pct(64));
+        s.advance(480);
+        assert_eq!(s.limit_flags(), 1, "not yet");
+        s.advance(40);
+        assert_eq!(s.limit_flags(), 3);
+        let o = s.read();
+        assert_eq!(o.i_lim_counts, 168);
+        assert!(o.i_mean_counts <= 168);
+        s.advance(2000);
+        assert_eq!(s.limit_flags() & 2, 2, "held while the stall holds");
+        // freed, the shaft cannot break away on the yield: still held
+        s.jam = None;
+        s.advance(100);
+        assert_eq!(s.limit_flags() & 2, 2);
+        s.write(control::GOAL_DUTY, 0);
+        s.advance(1);
+        assert_eq!(s.limit_flags() & 2, 0, "released with the drive off");
+        assert_eq!(s.read().i_lim_counts, 280);
+        assert!(s.torque);
+        s.write(control::GOAL_DUTY, pct(64));
+        s.advance(100);
+        assert_eq!(s.limit_flags() & 2, 0, "the free shaft runs, unfolded");
+        assert!(s.pos > 2100.0);
+
+        let mut s = bench_mg90_saved(3204);
+        s.pos = 2000.0;
+        s.jam = Some(2000.0);
+        s.write(control::TORQUE_ENABLE, 1);
+        s.write(control::GOAL_DUTY, pct(64));
+        let (mut shown, mut trips, mut last) = (0, 0, false);
+        for _ in 0..12_000 {
+            s.advance_ms(0.25);
+            let o = s.read();
+            assert_eq!(o.i_lim_counts, 280);
+            assert_eq!(o.limit_flags & 1, 1, "governed throughout");
+            let now = o.limit_flags & 2 != 0;
+            shown += now as u32;
+            trips += (now && !last) as u32;
+            last = now;
+        }
+        assert_eq!(trips, 5, "3 s at a trip every 570 ms");
+        assert!(shown <= 2 * trips, "{shown} reads of 12000 saw it");
+    }
+
+    /// Reversed at speed, the limiter cannot apply less than its base -
+    /// the window floor on the bench servo - so the winding draws the
+    /// floor's volts plus the back-EMF, well over the limit.
+    #[test]
+    fn fake_reversal_cannot_go_under_the_base() {
+        let mut s = bench_mg90(3204);
+        s.pos = 1000.0;
+        s.write(control::TORQUE_ENABLE, 1);
+        s.write(control::GOAL_DUTY, pct(30));
+        s.advance(150);
+        let w = s.omega_dyn;
+        assert!(w > 3000.0, "{w}");
+        s.write(control::GOAL_DUTY, -pct(30));
+        let o = s.read();
+        assert_eq!(o.duty_applied_q15, -s.floor_q15);
+        let want = (s.floor_q15 as f64 / 32767.0 * s.vbus + s.ke * w) / s.r;
+        assert!(
+            (o.i_mean_counts as f64 + want).abs() < 1.0,
+            "{} for {want}",
+            o.i_mean_counts
+        );
+        assert!(o.i_mean_counts < -350);
+        assert_eq!(o.limit_flags & 1, 1);
+    }
+
+    /// Asked to, the fake refuses a burst arm the firmware would: over the
+    /// volts cap, inside the spacing, or outside the soft limits without
+    /// the permit. The pump then ends the run as the CLI does: the reason
+    /// the host reads back, then the guard's writes.
+    #[test]
+    fn fake_arm_can_be_rejected() {
+        let mut s = bench_mg90(3204);
+        s.arm_rules = Some(ArmRules::FIRMWARE);
+        s.pos = 2000.0;
+        assert_eq!(s.arm(q15(25)), Err("torque off"));
+        s.write(control::TORQUE_ENABLE, 1);
+        assert_eq!(s.arm(q15(45)), Err("over the burst volts cap"));
+        assert_eq!(s.arm(-q15(40)), Ok(()));
+        s.advance(99);
+        assert_eq!(s.arm(q15(25)), Err("inside the burst spacing"));
+        s.advance(1);
+        assert_eq!(s.arm(q15(25)), Ok(()));
+        s.advance(100);
+        s.pos = 3626.0;
+        assert_eq!(
+            s.arm(q15(25)),
+            Err("outside the soft limits without the permit")
+        );
+        s.write(control::STALL_PERMIT, 1);
+        assert_eq!(s.arm(q15(25)), Ok(()));
+
+        let mut exp = Steps::new(vec![
+            Cmd::Write {
+                reg: control::TORQUE_ENABLE,
+                value: 1,
+            },
+            Cmd::Burst {
+                duty_q15: pct(45) as i16,
+                pre_q15: 0,
+                chans: 0,
+                seated: false,
+            },
+            Cmd::Read,
+        ]);
+        let mut s = bench_mg90(3204);
+        s.arm_rules = Some(ArmRules::FIRMWARE);
+        let log = pump(&mut exp, &mut s, 100);
+        assert_eq!(
+            log,
+            [
+                "write torque_enable 1",
+                "error: the servo refused the burst: 45.0% of its 7.90 V rail applies 3.553 V, \
+                 over the 3.2 V a burst may",
+                "write goal_duty 0",
+                "write torque_enable 0",
+                "write stall_permit 0",
+                "write tel_mask 0",
+            ]
+        );
+        assert!(exp.seen.is_empty(), "the run went no further");
+        assert!(!s.torque);
+    }
+
+    /// Every transaction costs the bench bus's time and the plant moves
+    /// through it: a 30 ms pause lands 39.5 ms from one read to the next, a
+    /// rung's 2 ms poll 5.9 ms, and seeded slow reads add 8 ms to about 3
+    /// in 100 - the same ones every time.
+    #[test]
+    fn fake_pump_charges_the_bus_time() {
+        let script = || {
+            Steps::new(vec![
+                Cmd::Write {
+                    reg: control::TORQUE_ENABLE,
+                    value: 1,
+                },
+                Cmd::Write {
+                    reg: control::GOAL_DUTY,
+                    value: pct(10),
+                },
+                Cmd::Read,
+                Cmd::Pause { ms: 30 },
+                Cmd::Read,
+                Cmd::Pause { ms: 2 },
+                Cmd::Read,
+            ])
+        };
+        let mut exp = script();
+        let mut s = FakeServo::new(3.37);
+        pump(&mut exp, &mut s, 100);
+        assert!((s.t_ms - (2.0 * 1.7 + 3.0 * 3.5 + 36.0 + 2.4)).abs() < 1e-9);
+        let t: Vec<f64> = exp.seen.iter().map(|o| o.agg_seq as f64 * 0.8).collect();
+        assert!((t[1] - t[0] - 39.5).abs() <= 0.8, "{t:?}");
+        assert!((t[2] - t[1] - 5.9).abs() <= 0.8, "{t:?}");
+        // 1 count/ms from the goal write's midpoint to the first sample
+        assert_eq!(exp.seen[0].pos, 2403);
+
+        let mut exp = script();
+        let mut s = FakeServo::new(3.37);
+        pump_on(&mut exp, &mut s, 100, Bus::ZERO_LATENCY);
+        assert_eq!(s.t_ms, 32.0);
+        assert_eq!(exp.seen[0].pos, 2400);
+
+        let reads = |seed| {
+            let mut exp = Steps::new(vec![Cmd::Read; 1000]);
+            let mut s = FakeServo::new(3.37);
+            pump_on(&mut exp, &mut s, 2000, Bus::BENCH.with_slow_reads(seed));
+            s.t_ms
+        };
+        let slow = (reads(7) - 3500.0) / SLOW_READ_MS;
+        assert!((10.0..=60.0).contains(&slow), "{slow} slow reads");
+        assert_eq!(slow.fract(), 0.0);
+        assert_eq!(reads(7), reads(7));
+        assert_ne!(reads(7), reads(8));
+    }
+
+    /// A scripted run: one command per step, every snapshot kept.
+    struct Steps {
+        cmds: std::collections::VecDeque<Cmd>,
+        seen: Vec<TelemetrySnapshot>,
+    }
+
+    impl Steps {
+        fn new(cmds: Vec<Cmd>) -> Self {
+            Self {
+                cmds: cmds.into(),
+                seen: Vec::new(),
+            }
+        }
+    }
+
+    impl Experiment for Steps {
+        fn step(&mut self, obs: Option<&TelemetrySnapshot>) -> Cmd {
+            self.seen.extend(obs.copied());
+            self.cmds.pop_front().unwrap_or(Cmd::Done)
         }
     }
 
@@ -1180,5 +1699,9 @@ mod tests {
 
     fn pct(p: i32) -> i32 {
         p * 32767 / 100
+    }
+
+    fn q15(p: i32) -> i16 {
+        pct(p) as i16
     }
 }
