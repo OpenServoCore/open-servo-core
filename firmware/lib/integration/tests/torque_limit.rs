@@ -1,0 +1,212 @@
+//! OpenLoop duty against the current band (`kernel::duty_limit`): the
+//! kernel drives the MG90-scale R-L plant rig, so every pin reads the
+//! winding current the limiter never sees directly, only through the shunt
+//! window one tick late.
+
+use osc_integration::plant::{
+    FakeIo, RL_R_Q12, RlPlant, TIMING, duty_of, kernel, last_cmd, seed, stamp,
+};
+use osc_servo_core::estimator::window::floor_duty;
+use osc_servo_core::kernel::duty_limit::UP_Q15;
+use osc_servo_core::{Kernel, Mode, RegionStorage, Shared};
+
+const LIM: u16 = 280;
+/// 160 of ARR 1200: the window floor is 13.3% duty.
+const I_FLOOR_TICKS: u16 = 160;
+const GOAL_64: i16 = 20971;
+const GOAL_FULL: i16 = i16::MAX;
+const MID: u16 = 2050;
+
+fn rig(lim: u16) -> Shared {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.calib.sense.i_window_min_ticks = I_FLOOR_TICKS;
+        t.calib.sense.v_window_min_ticks = I_FLOOR_TICKS;
+        t.calib.motor.r_q12 = RL_R_Q12;
+        t.config.limits.current_limit_counts = lim;
+        // the collision trip folds the limit on its own: not under test here
+        t.config.limits.stall_tau_trip_counts = u16::MAX;
+        t.config.limits.openloop_zero_brake = false;
+        t.control.lifecycle.mode = Mode::OpenLoop;
+    });
+    stamp(&sh);
+    sh
+}
+
+fn floor() -> i16 {
+    floor_duty(I_FLOOR_TICKS, TIMING.pwm_arr, TIMING.recip_arr_q24) as i16
+}
+
+/// Per tick: the plant steps under the kernel's last write, the kernel
+/// ticks on the frame. Returns (applied duty, winding current) per tick.
+fn run(k: &mut Kernel<FakeIo>, sh: &Shared, p: &mut RlPlant, ticks: u32) -> Vec<(i16, i32)> {
+    (0..ticks)
+        .map(|_| {
+            let duty = k.io.motor.last.map_or(0, duty_of);
+            k.on_tick(p.step(duty), sh);
+            (duty_of(last_cmd(k)), p.current())
+        })
+        .collect()
+}
+
+/// Torque-off rest, then torque on at `goal`.
+fn start(sh: &Shared, p: &mut RlPlant, goal: i16) -> Kernel<FakeIo> {
+    let mut k = kernel();
+    run(&mut k, sh, p, 400);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.goal_duty = goal;
+        t.control.lifecycle.torque_enable = true;
+    });
+    k
+}
+
+fn peak(r: &[(i16, i32)]) -> i32 {
+    r.iter().map(|&(_, i)| i.abs()).max().unwrap_or(0)
+}
+
+fn mean(r: &[(i16, i32)]) -> i32 {
+    (r.iter().map(|&(_, i)| i.abs() as i64).sum::<i64>() / r.len() as i64) as i32
+}
+
+fn faults(sh: &Shared) -> u8 {
+    sh.table.with(|t| t.telemetry.common.fault_flags)
+}
+
+/// 2 s against the rotor, 100 ms of edge skipped for the mean.
+fn assert_holds_at_the_limit(sh: &Shared, r: &[(i16, i32)], what: &str) {
+    let lim = LIM as i32;
+    let (pk, mn) = (peak(r), mean(&r[2_000..]));
+    assert!(pk <= lim * 11 / 10, "{what}: peak {pk}");
+    assert!((lim * 85 / 100..=lim).contains(&mn), "{what}: mean {mn}");
+    assert_eq!(faults(sh), 0, "{what}");
+}
+
+#[test]
+fn openloop_locked_rotor_mid_travel_holds_at_i_lim() {
+    for goal in [GOAL_64, -GOAL_64] {
+        let sh = rig(LIM);
+        let mut p = RlPlant::new(MID);
+        p.locked = true;
+        let mut k = start(&sh, &mut p, goal);
+        let r = run(&mut k, &sh, &mut p, 40_000);
+        assert_holds_at_the_limit(&sh, &r, &format!("goal {goal}"));
+    }
+}
+
+#[test]
+fn openloop_stall_holds_at_i_lim() {
+    // seated on a hard stop inside the soft limits: nothing but the
+    // limiter stands between the goal and the stall current
+    for (goal, stop) in [(GOAL_64, 3000), (-GOAL_64, 1000)] {
+        let sh = rig(LIM);
+        let mut p = RlPlant::new(stop as u16);
+        (p.stop_lo, p.stop_hi) = (1000, 3000);
+        let mut k = start(&sh, &mut p, goal);
+        let r = run(&mut k, &sh, &mut p, 40_000);
+        assert_eq!(p.pos(), stop, "seated");
+        assert_holds_at_the_limit(&sh, &r, &format!("stop {stop}"));
+    }
+}
+
+#[test]
+fn openloop_first_edge_stays_under_i_lim() {
+    for goal in [GOAL_FULL, -GOAL_FULL] {
+        let sh = rig(LIM);
+        let mut p = RlPlant::new(MID);
+        p.locked = true;
+        let mut k = start(&sh, &mut p, goal);
+        let r = run(&mut k, &sh, &mut p, 400);
+        // the ceiling stops one measured tick late: the few counts over
+        // that the hold shows too, never the step's stall current
+        assert!(
+            peak(&r) <= LIM as i32 * 105 / 100,
+            "goal {goal}: peak {}",
+            peak(&r)
+        );
+    }
+}
+
+#[test]
+fn openloop_ceiling_releases_when_the_shaft_frees() {
+    let goal = 13107;
+    let sh = rig(LIM);
+    let mut p = RlPlant::new(1000);
+    p.locked = true;
+    let mut k = start(&sh, &mut p, goal);
+    let r = run(&mut k, &sh, &mut p, 4_000);
+    assert!(r[2_000..].iter().all(|&(d, _)| d < goal), "governed");
+    p.locked = false;
+    let r = run(&mut k, &sh, &mut p, 4_000);
+    let at = r
+        .iter()
+        .position(|&(d, _)| d == goal)
+        .expect("the goal duty returns");
+    assert!(at <= 2_000, "goal duty after {at} ticks");
+    assert!(peak(&r) <= LIM as i32 * 11 / 10, "peak {}", peak(&r));
+    assert!(r[at..].iter().all(|&(d, _)| d == goal), "stays at the goal");
+}
+
+#[test]
+fn openloop_blind_goal_is_untouched() {
+    let goal = 3932;
+    assert!(goal < floor());
+    let sh = rig(LIM);
+    let mut p = RlPlant::new(MID);
+    p.locked = true;
+    let mut k = start(&sh, &mut p, goal);
+    let r = run(&mut k, &sh, &mut p, 2_000);
+    assert!(r.iter().all(|&(d, _)| d == goal));
+}
+
+#[test]
+fn openloop_reversal_restarts_from_the_floor() {
+    let sh = rig(LIM);
+    let mut p = RlPlant::new(MID);
+    p.locked = true;
+    let mut k = start(&sh, &mut p, GOAL_64);
+    run(&mut k, &sh, &mut p, 2_000);
+    sh.table
+        .with_mut(|t| t.control.lifecycle.goal_duty = -GOAL_64);
+    let r = run(&mut k, &sh, &mut p, 400);
+    let first = -r[0].0;
+    assert!(
+        (floor()..=floor() + UP_Q15 as i16).contains(&first),
+        "first reversed duty {first}"
+    );
+    for (n, &(d, _)) in r.iter().enumerate() {
+        let slew = floor() as i32 + (n as i32 + 1) * UP_Q15 as i32;
+        assert!(d < 0 && -(d as i32) <= slew, "tick {n}: {d}");
+    }
+    assert!(peak(&r) <= LIM as i32 * 11 / 10, "peak {}", peak(&r));
+}
+
+#[test]
+fn openloop_wall_hit_at_speed_recovers_inside_1ms() {
+    for (goal, stop) in [(GOAL_64, 2500), (-GOAL_64, 1500)] {
+        let sh = rig(LIM);
+        let mut p = RlPlant::new(MID);
+        (p.stop_lo, p.stop_hi) = (1500, 2500);
+        let mut k = start(&sh, &mut p, goal);
+        let mut speed = 0;
+        let mut hit = None;
+        let mut r = Vec::new();
+        for n in 0..20_000 {
+            let w = p.omega_cps();
+            r.extend(run(&mut k, &sh, &mut p, 1));
+            if hit.is_none() && p.pos() == stop && p.omega_cps() == 0 {
+                (hit, speed) = (Some(n), w);
+            }
+        }
+        let hit = hit.expect("the shaft reaches the stop");
+        let over: Vec<usize> = (hit..r.len())
+            .filter(|&n| r[n].1.abs() > LIM as i32 * 11 / 10)
+            .collect();
+        assert!(speed.abs() > 1_000, "at speed: {speed} c/s");
+        assert!(
+            over.iter().all(|&n| n < hit + 20),
+            "over after 1 ms: {over:?}"
+        );
+        assert_eq!(faults(&sh), 0);
+    }
+}

@@ -6,6 +6,8 @@
 //! current takes its sign from the commanded duty.
 
 use crate::SensorFrame;
+use crate::estimator::bemf::RECIP_ARR_SHIFT;
+use crate::math::q_mul_u;
 use crate::traits::DecayMode;
 
 /// Which scan half carries the drive window and whether it is wide enough
@@ -97,6 +99,20 @@ pub fn trough_is_brake(decay: DecayMode, drive_ticks: u32, pwm_arr: u16, i_floor
 pub fn drive_ticks(duty: i16, pwm_arr: u16) -> u32 {
     let mag = duty.unsigned_abs().min(i16::MAX as u16) as u32;
     (mag * pwm_arr as u32 + (1 << 14)) >> 15
+}
+
+/// Inverse of `drive_ticks`: the smallest duty magnitude whose window
+/// `select` accepts against the `min_ticks` floor; full duty when none does.
+/// `recip_arr_q24` per `bemf::RECIP_ARR_SHIFT`. The floored reciprocal reads
+/// the quotient low by under two while `min_ticks <= 512`; the remainder
+/// closes the gap, so no divide.
+pub fn floor_duty(min_ticks: u16, pwm_arr: u16, recip_arr_q24: u32) -> u16 {
+    // drive_ticks(d) >= t  <=>  d * arr >= (t << 15) - (1 << 14)
+    let need = ((min_ticks.max(1) as u32) << 15) - (1 << 14);
+    let est = q_mul_u(need, recip_arr_q24, RECIP_ARR_SHIFT);
+    let short = need.saturating_sub(est * pwm_arr as u32);
+    let d = est + (short != 0) as u32 + (short > pwm_arr as u32) as u32;
+    d.min(i16::MAX as u32) as u16
 }
 
 #[cfg(test)]
@@ -240,5 +256,44 @@ mod tests {
             assert!(t >= last, "non-monotonic at duty={duty}: {last} -> {t}");
             last = t;
         }
+    }
+
+    fn recip(arr: u16) -> u32 {
+        (1 << RECIP_ARR_SHIFT) / arr as u32
+    }
+
+    fn is_floor(d: u16, floor: u16, arr: u16) -> bool {
+        let valid = |d: u16| select(DecayMode::Slow, drive_ticks(d as i16, arr), floor, 0).i_valid;
+        valid(d) && (d == 0 || !valid(d - 1))
+    }
+
+    #[test]
+    fn floor_duty_is_window_valid() {
+        for floor in [100, 160, 240] {
+            let d = floor_duty(floor, 1200, recip(1200));
+            assert!(drive_ticks(d as i16, 1200) >= floor as u32);
+            assert!(is_floor(d, floor, 1200), "floor {floor}: duty {d}");
+        }
+        assert_eq!(floor_duty(160, 1200, recip(1200)), 4356);
+    }
+
+    #[test]
+    fn floor_duty_is_the_smallest_valid_duty() {
+        for floor in 0..=1200 {
+            let d = floor_duty(floor, 1200, recip(1200));
+            assert!(is_floor(d, floor, 1200), "floor {floor}: duty {d}");
+        }
+        for arr in [600, 1000, 1199, 2400, 4800] {
+            for floor in 0..=512.min(arr) {
+                let d = floor_duty(floor, arr, recip(arr));
+                assert!(is_floor(d, floor, arr), "arr {arr} floor {floor}: duty {d}");
+            }
+        }
+    }
+
+    #[test]
+    fn floor_duty_saturates_past_full_duty() {
+        assert_eq!(floor_duty(1201, 1200, recip(1200)), i16::MAX as u16);
+        assert_eq!(floor_duty(u16::MAX, 1200, recip(1200)), i16::MAX as u16);
     }
 }
