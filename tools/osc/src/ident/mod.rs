@@ -94,7 +94,8 @@ pub struct Args {
     #[arg(long, global = true, default_value_t = 20)]
     step_periods: u16,
     /// Burst step duties, percent of full scale [default: 25 and 40, or
-    /// what 3.2 V allows on this rail]; a rung over 3.2 V is refused.
+    /// what 3.2 V less a 1% margin allows on this rail]; a rung over that
+    /// is refused.
     #[arg(long, global = true, value_delimiter = ',')]
     burst_pct: Option<Vec<u8>>,
     /// Burst captures per step duty and sign.
@@ -902,7 +903,7 @@ fn run_inertia(
     out: &csvio::OutDir,
     exp: Inertia,
     priors: &InertiaPriors,
-) -> Result<InertiaResult> {
+) -> Result<Result<InertiaResult, String>> {
     let params = rig(cli)?;
     let mut log = csvio::SnapshotLog::create(out, "inertia_snapshots.csv")?;
     let mut exp = Guarded::new(exp, params);
@@ -915,7 +916,7 @@ fn run_inertia(
     let exp = exp.into_inner();
     csvio::write_tel_frames(out, "inertia_tel.csv", &all_tel)?;
     csvio::write_step_series(out, &exp.step_series())?;
-    exp.fit(priors).with_context(|| {
+    Ok(exp.fit(priors).ok_or_else(|| {
         format!(
             "no inertia step fitted (notes: {})",
             match exp.notes().as_slice() {
@@ -923,7 +924,7 @@ fn run_inertia(
                 n => n.join("; "),
             }
         )
-    })
+    }))
 }
 
 fn run_verify(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
@@ -1124,6 +1125,8 @@ fn drive_stages(
         }
     }
     match run.over() {
+        // the fit keeps what came before it, and says what is missing
+        Some(Over::Declined("inertia")) if until == Until::End => Ok(rec),
         Some(Over::Declined(stage)) if stage != "burst" => bail!(
             "the {stage} declined: {}; the run ended at mid travel with nothing to fit",
             rec.declined.as_deref().unwrap_or("nothing fitted")
@@ -1236,7 +1239,7 @@ impl Recorded {
                 centre(cli, c, id, order::centre_cfg(*duty, *cap, *nudge))?;
             }
             Stage::Burst { rungs, pre, seek } => {
-                let most = BurstAllowance::MAX_MV / run.rail_mv();
+                let most = BurstAllowance::top(run.rail_mv());
                 let explicit: Option<Vec<f64>> = cli
                     .burst_pct
                     .as_ref()
@@ -1245,11 +1248,12 @@ impl Recorded {
                     && hi > most
                 {
                     bail!(
-                        "a burst rung of {:.0}% applies more than the 3.2 V a burst may on this \
-                         {:.1} V rail ({} at most): leave --burst-pct out",
+                        "a burst rung of {:.0}% is over the {} a burst may drive on this {:.1} V \
+                         rail: 3.2 V applied, less 1% in case the rail rises before the arm \
+                         (leave --burst-pct out)",
                         hi * 100.0,
-                        run.rail_mv() / 1000.0,
-                        pct(most)
+                        pct(most),
+                        run.rail_mv() / 1000.0
                     );
                 }
                 let cfg = order::burst_cfg(
@@ -1347,7 +1351,14 @@ impl Recorded {
                 let plan = run.plan().context("no plan")?;
                 let runway = self.runway.clone().context("no ladder runway")?;
                 let exp = Inertia::new(cfg, plan, runway, &rig(cli)?);
-                self.inertia = Some(run_inertia(cli, c, id, out, exp, &priors)?);
+                match run_inertia(cli, c, id, out, exp, &priors)? {
+                    Ok(r) => self.inertia = Some(r),
+                    Err(why) => {
+                        println!("  {why}");
+                        self.declined = Some(why);
+                        return Ok(Ended::Declined);
+                    }
+                }
             }
             Stage::Stops { .. } | Stage::Traverse { .. } => {
                 bail!("osc ident has no {} stage: it is osc cal's", stage.name())
@@ -1432,6 +1443,40 @@ fn fit_dir(cli: &Ctx, dir: PathBuf) -> Result<()> {
     };
     let b_direct = fits::b_direct_fit(&series_only(&series), &priors, hw, 5.0);
     let b_exp = fits::b_exp_fit(&series_only(&series), &priors, hw);
+
+    let bias = p.bias;
+    let bias_res = bias.map(|b| osc_ident::exp::bias::BiasResult {
+        sigma_theta: b.sigma_theta,
+        pos_mean: b.pos_mean,
+        i_noise: b.i_noise,
+        i_bias_delta: b.i_bias_delta,
+        vbus_mean: b.vbus_mean,
+        vbus_sd: b.vbus_sd,
+        n: b.n,
+    });
+    let bk_res = p
+        .breakaway
+        .map(|b| osc_ident::exp::breakaway::BreakawayResult {
+            duty_bk_fwd: b.duty_bk_fwd,
+            duty_bk_rev: b.duty_bk_rev,
+            fric_fwd_counts: b.fric_fwd_counts,
+            fric_rev_counts: b.fric_rev_counts,
+            model_derived: b.model_derived,
+            asymmetry: b.asymmetry,
+        });
+    p.resistance = resistance.as_ref().map(ResistanceJson::from);
+    p.rl = rl.as_ref().map(RlJson::from);
+    p.inductance = inductance.as_ref().map(InductanceJson::from);
+    p.ladder = Some(LadderJson {
+        ke_vpc: ladder.ke.ke_vpc,
+        ke_r2: ladder.ke.r2,
+        fc_fwd: ladder.fric_fwd.map(|f| f.fc),
+        fv_fwd: ladder.fric_fwd.map(|f| f.fv),
+        fc_rev: ladder.fric_rev.map(|f| f.fc),
+        fv_rev: ladder.fric_rev.map(|f| f.fv),
+        rungs_used: ladder.rungs.iter().filter(|r| r.used).count(),
+    });
+
     let b_best = match (&b_exp, &b_direct) {
         (Some(e), Some(d)) => {
             if d.r2 > 0.98 && d.r2 > 1.0 - e.spread {
@@ -1442,7 +1487,29 @@ fn fit_dir(cli: &Ctx, dir: PathBuf) -> Result<()> {
         }
         (Some(e), None) => e.b,
         (None, Some(d)) => d.b,
-        (None, None) => bail!("no inertia estimate from either estimator"),
+        (None, None) => {
+            let text = report::render(&ReportInputs {
+                bias: bias_res.as_ref(),
+                resistance: resistance.as_ref(),
+                rl: rl.as_ref(),
+                inductance: inductance.as_ref(),
+                breakaway: bk_res.as_ref(),
+                ladder: Some(&ladder),
+                ..Default::default()
+            });
+            println!("{text}");
+            std::fs::write(dir.join("report.txt"), &text)?;
+            p.save(&path)?;
+            println!("params: {}", path.display());
+            bail!(
+                "no gains: the inertia steps gave nothing to fit ({} recorded), and the gains \
+                 are built on the inertia; report.txt and params.json in {} keep what did fit - \
+                 bias, winding, breakaway and ladder - but there is no gain set to write: run \
+                 `osc ident run` again",
+                series.len(),
+                dir.display()
+            );
+        }
     };
     let inertia = osc_ident::exp::inertia::InertiaResult {
         b_direct,
@@ -1453,7 +1520,6 @@ fn fit_dir(cli: &Ctx, dir: PathBuf) -> Result<()> {
         warnings: Vec::new(),
     };
 
-    let bias = p.bias;
     let sigma_theta = bias.map(|b| b.sigma_theta).unwrap_or(1.0);
     let sigma_from = match bias {
         Some(_) => Source::Bias,
@@ -1487,25 +1553,6 @@ fn fit_dir(cli: &Ctx, dir: PathBuf) -> Result<()> {
     let gains_set = gains::synthesize(&plant, &t);
     let encoded = gains::encode(&gains_set);
 
-    let bias_res = bias.map(|b| osc_ident::exp::bias::BiasResult {
-        sigma_theta: b.sigma_theta,
-        pos_mean: b.pos_mean,
-        i_noise: b.i_noise,
-        i_bias_delta: b.i_bias_delta,
-        vbus_mean: b.vbus_mean,
-        vbus_sd: b.vbus_sd,
-        n: b.n,
-    });
-    let bk_res = p
-        .breakaway
-        .map(|b| osc_ident::exp::breakaway::BreakawayResult {
-            duty_bk_fwd: b.duty_bk_fwd,
-            duty_bk_rev: b.duty_bk_rev,
-            fric_fwd_counts: b.fric_fwd_counts,
-            fric_rev_counts: b.fric_rev_counts,
-            model_derived: b.model_derived,
-            asymmetry: b.asymmetry,
-        });
     let text = report::render(&ReportInputs {
         bias: bias_res.as_ref(),
         resistance: resistance.as_ref(),
@@ -1524,18 +1571,6 @@ fn fit_dir(cli: &Ctx, dir: PathBuf) -> Result<()> {
     println!("{text}");
     std::fs::write(dir.join("report.txt"), &text)?;
 
-    p.resistance = resistance.as_ref().map(ResistanceJson::from);
-    p.rl = rl.as_ref().map(RlJson::from);
-    p.inductance = inductance.as_ref().map(InductanceJson::from);
-    p.ladder = Some(LadderJson {
-        ke_vpc: ladder.ke.ke_vpc,
-        ke_r2: ladder.ke.r2,
-        fc_fwd: ladder.fric_fwd.map(|f| f.fc),
-        fv_fwd: ladder.fric_fwd.map(|f| f.fv),
-        fc_rev: ladder.fric_rev.map(|f| f.fc),
-        fv_rev: ladder.fric_rev.map(|f| f.fv),
-        rungs_used: ladder.rungs.iter().filter(|r| r.used).count(),
-    });
     p.inertia = Some(InertiaJson {
         b_best: inertia.b_best,
         b_direct: inertia.b_direct.as_ref().map(|d| d.b),
@@ -1689,6 +1724,142 @@ mod tests {
              532..3526, then `osc set torque_enable off`"
         );
         assert!(!hint.contains("verify"));
+    }
+
+    fn ctx(out: PathBuf) -> Ctx {
+        Ctx {
+            baud: "auto".into(),
+            out,
+            guard: (None, None),
+            slip_lo: 1250,
+            slip_hi: 1650,
+            i_abort: None,
+            l_henries: gains::DEFAULT_L_HENRIES,
+            step_periods: 20,
+            burst_pct: None,
+            burst_repeats: 5,
+            burst_i_max: None,
+            burst_chans: Chans::Driven,
+            burst_hold_pct: None,
+            burst_stops: None,
+            burst_hold_repeats: 4,
+            inertia_ms: 150,
+            gear_ratio: None,
+            f_ci: 1000.0,
+            f_cv: 200.0,
+            f_cp: 25.0,
+            f_o: 15.0,
+            lut: None,
+            drive: None,
+        }
+    }
+
+    /// A run on the bench servo that fitted R, breakaway and the ladder,
+    /// whose inertia steps gave nothing: the fit writes the report and
+    /// params.json with all of it, names what is missing and what that
+    /// means for the gains, and ends in an error only once they are on
+    /// disk.
+    #[test]
+    fn a_failed_inertia_fit_keeps_the_rest_of_the_run() {
+        use osc_ident::exp::WindowSample;
+        use osc_ident::exp::ladder::RungSummary;
+        use osc_ident::exp::resistance::DwellSample;
+
+        let dir = std::env::temp_dir().join(format!("ident-inertia-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = csvio::OutDir(dir.clone());
+        let r = 7270.0 / 4096.0;
+        let mut dwells = Vec::new();
+        for (k, duty) in [(0u32, 16_000.0), (1, -16_000.0)] {
+            for i in [100.0, 150.0, 200.0] {
+                let i = i * f64::signum(duty);
+                dwells.push(DwellSample {
+                    dwell: k,
+                    dir: f64::signum(duty) as i8,
+                    w: WindowSample {
+                        t_ms: k as f64 * 100.0 + i.abs(),
+                        i,
+                        vdiff: r * i.abs() * 32767.0 / duty,
+                        duty_q15: duty,
+                    },
+                });
+            }
+        }
+        csvio::write_dwell_samples(&out, &dwells).unwrap();
+        let rungs: Vec<RungSummary> = [1500.0, 3000.0, 4500.0, -1500.0, -3000.0, -4500.0]
+            .into_iter()
+            .map(|omega: f64| {
+                let i = omega.signum() * (80.0 + 0.004 * omega.abs());
+                RungSummary {
+                    duty_q15: (omega / 5.0) as i16,
+                    omega,
+                    omega_r2: 0.99,
+                    i,
+                    v: r * i + 0.1472 * omega,
+                    windows: 30,
+                    used: true,
+                    note: None,
+                }
+            })
+            .collect();
+        csvio::write_rungs(&out, &rungs).unwrap();
+        csvio::write_step_series(&out, &[]).unwrap();
+        let bias = BiasJson {
+            sigma_theta: 1.2,
+            pos_mean: 2029.0,
+            i_noise: 1.5,
+            i_bias_delta: 0.0,
+            vbus_mean: 3204.0,
+            vbus_sd: 2.0,
+            n: 200,
+        };
+        let breakaway = BreakawayJson {
+            duty_bk_fwd: Some(2621),
+            duty_bk_rev: Some(2800),
+            fric_fwd_counts: Some(80.0),
+            fric_rev_counts: Some(85.0),
+            model_derived: false,
+            asymmetry: Some(0.06),
+        };
+        ParamsFile {
+            bias: Some(bias),
+            breakaway: Some(breakaway),
+            sense: Some(SenseJson {
+                shunt_r_mohm: 60,
+                gain_milli: 15_000,
+                vmotor_div_top: 6_800,
+                vmotor_div_bot: 3_300,
+                tick_hz: 20_100,
+                vdd_mv: 3_300,
+                vbus_div_top_ohm: 15_000,
+                vbus_div_bot_ohm: 10_000,
+            }),
+            ..Default::default()
+        }
+        .save(&dir.join("params.json"))
+        .unwrap();
+
+        let err = fit_dir(&ctx(dir.clone()), dir.clone()).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "no gains: the inertia steps gave nothing to fit (0 recorded), and the gains are \
+                 built on the inertia; report.txt and params.json in {} keep what did fit - \
+                 bias, winding, breakaway and ladder - but there is no gain set to write: run \
+                 `osc ident run` again",
+                dir.display()
+            )
+        );
+        let p = ParamsFile::load(&dir.join("params.json")).unwrap();
+        assert!(p.bias.is_some() && p.breakaway.is_some());
+        let res = p.resistance.expect("the winding R");
+        assert!((res.r_vpc - r).abs() < 1e-6, "{}", res.r_vpc);
+        let ladder = p.ladder.expect("the ladder");
+        assert!((ladder.ke_vpc - 0.1472).abs() < 1e-6, "{}", ladder.ke_vpc);
+        assert!(p.inertia.is_none() && p.plant.is_none() && p.gains.is_empty());
+        assert!(std::fs::read_to_string(dir.join("report.txt")).is_ok_and(|t| !t.is_empty()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The `ident synth` path end to end without a servo: a hand-written

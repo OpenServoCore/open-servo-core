@@ -34,6 +34,7 @@ pub mod config {
     pub const STALL_YIELD_COUNTS: Reg = reg(0x0050, 2);
     pub const STALL_TAU_TRIP_COUNTS: Reg = reg(0x0054, 2);
     pub const V_UNDERVOLT_COUNTS: Reg = reg(0x0062, 2);
+    pub const RTHERM_I_MIN_COUNTS: Reg = reg(0x0064, 2);
     pub const L1_Q016: Reg = reg(0x0068, 2);
     pub const L2_Q88: Reg = reg(0x006a, 2);
     pub const L3_Q88: Reg = reg(0x006c, 2);
@@ -193,6 +194,7 @@ pub const ALL: &[(&str, Reg)] = &[
     ("stall_yield_counts", config::STALL_YIELD_COUNTS),
     ("stall_tau_trip_counts", config::STALL_TAU_TRIP_COUNTS),
     ("v_undervolt_counts", config::V_UNDERVOLT_COUNTS),
+    ("rtherm_i_min_counts", config::RTHERM_I_MIN_COUNTS),
     ("l1_q016", config::L1_Q016),
     ("l2_q88", config::L2_Q88),
     ("l3_q88", config::L3_Q88),

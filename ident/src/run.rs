@@ -841,7 +841,7 @@ mod tests {
         assert_eq!(rungs, [0.25, 0.40]);
         assert_eq!((pre, seek), (r.bootstrap(), 0.145));
 
-        // 3800 vcounts is 9.4 V: 3.2 V caps the top rung at 34%
+        // 3800 vcounts is 9.4 V: 3.2 V less the margin caps the top rung at 33%
         let mut r = run(3800);
         r.next_stage();
         r.next_stage();

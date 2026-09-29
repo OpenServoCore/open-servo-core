@@ -10,6 +10,7 @@ use anyhow::{Context, Result, bail};
 use osc_client::Id;
 use osc_client::blocking::Client;
 use osc_client::nusb::NusbPipe;
+use osc_client::pipe::Pipe;
 use osc_ident::regs::{ALL, Reg, calib, config};
 
 use super::pump::write_reg;
@@ -46,7 +47,7 @@ pub(crate) const SNAPSHOT_FIELDS: &[(&str, Reg)] = &[
     ("plant_stamp", calib::PLANT_STAMP),
 ];
 
-pub(crate) fn read_u16(c: &mut Client<NusbPipe>, id: Id, reg: Reg) -> Result<u16> {
+pub(crate) fn read_u16<P: Pipe>(c: &mut Client<P>, id: Id, reg: Reg) -> Result<u16> {
     let raw = c.read(id, reg.addr, 2).context("field read")?;
     Ok(u16::from_le_bytes([raw[0], raw[1]]))
 }

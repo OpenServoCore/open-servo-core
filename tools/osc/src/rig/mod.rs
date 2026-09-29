@@ -3,6 +3,7 @@
 //! snapshot/rollback, CSV record/replay, and the horn park. `ident` drives
 //! these; `cal` and `sweep` reach the same set.
 
+pub(crate) mod battery;
 pub(crate) mod csvio;
 pub(crate) mod limits;
 pub(crate) mod park;

@@ -12,11 +12,12 @@ use osc_client::blocking::Client;
 use osc_client::nusb::NusbPipe;
 use osc_client::pipe::Pipe;
 use osc_client::{Id, Inst, Opcode, Outcome, ResultCode};
-use osc_ident::burst::{self, BurstIo, Capture, CaptureCfg, Pre};
+use osc_ident::burst::{self, ArmSeen, BurstIo, Capture, CaptureCfg, Pre};
 use osc_ident::exp::{Cmd, Experiment};
 use osc_ident::frame::{StreamAssembler, TelFrame, TelemetrySnapshot};
 use osc_ident::limits::PermitLease;
-use osc_ident::regs::{Reg, control, telemetry};
+use osc_ident::regs::{Reg, calib, config, control, telemetry};
+use osc_ident::units::{self, SenseParams};
 use osc_protocol::build;
 
 use super::csvio::SnapshotLog;
@@ -36,7 +37,7 @@ pub(crate) fn write_reg<P: Pipe>(c: &mut Client<P>, id: Id, reg: Reg, value: i32
     Ok(())
 }
 
-pub(crate) fn read_i32(c: &mut Client<NusbPipe>, id: Id, reg: Reg) -> Result<i32> {
+pub(crate) fn read_i32<P: Pipe>(c: &mut Client<P>, id: Id, reg: Reg) -> Result<i32> {
     let raw = c.read(id, reg.addr, 4).context("field read")?;
     Ok(i32::from_le_bytes([raw[0], raw[1], raw[2], raw[3]]))
 }
@@ -51,7 +52,7 @@ const IDENT_LEN: u16 = telemetry::AGG_SEQ.addr + 2 - IDENT_BASE;
 /// agg_seq agrees is returned (the block is written mid-tick; agg_seq lands
 /// last). Bounded retries - a stubbornly torn read returns the last full
 /// snapshot, which the engine's WindowStream then dedups by seq anyway.
-pub(crate) fn read_snapshot(c: &mut Client<NusbPipe>, id: Id) -> Result<TelemetrySnapshot> {
+pub(crate) fn read_snapshot<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<TelemetrySnapshot> {
     let mut last = None;
     for _ in 0..3 {
         let raw = c.read(id, TEL_BASE, TEL_LEN).context("telemetry read")?;
@@ -301,8 +302,36 @@ pub(crate) fn capture_burst(
         seated,
     };
     let mut io = WireBurstIo { c, id };
-    burst::capture(&mut io, duty_q15, chans, pre, &CaptureCfg::default())
-        .map_err(|e| anyhow::anyhow!("burst capture: {e}"))
+    match burst::capture(&mut io, duty_q15, chans, pre, &CaptureCfg::default()) {
+        Ok(cap) => Ok(cap),
+        Err(burst::Error::Rejected) => bail!("{}", burst::rejected(duty_q15, &arm_seen(c, id)?)),
+        Err(e) => bail!("burst capture: {e}"),
+    }
+}
+
+/// What the servo judged a refused arm by: the rail, the position against
+/// the soft limits, the permit, a fault.
+fn arm_seen(c: &mut Client<NusbPipe>, id: Id) -> Result<ArmSeen> {
+    let tel = read_snapshot(c, id)?;
+    let sense = SenseParams {
+        shunt_r_mohm: 0,
+        gain_milli: 0,
+        vmotor_div_top: super::snapshot::read_u16(c, id, calib::VMOTOR_DIV_TOP)?,
+        vmotor_div_bot: super::snapshot::read_u16(c, id, calib::VMOTOR_DIV_BOT)?,
+        vdd_mv: super::snapshot::read_u16(c, id, calib::VDD_MV)?,
+        tick_hz: 0,
+    };
+    Ok(ArmSeen {
+        vbus_counts: tel.vbus_counts,
+        mv_per_count: units::volts_per_count(&sense) * 1000.0,
+        pos: tel.pos,
+        soft: (
+            read_i32(c, id, config::POS_MIN_SOFT_COUNTS)?,
+            read_i32(c, id, config::POS_MAX_SOFT_COUNTS)?,
+        ),
+        limit_flags: tel.limit_flags,
+        fault_flags: tel.fault_flags,
+    })
 }
 
 pub(crate) struct Pump<'a> {
