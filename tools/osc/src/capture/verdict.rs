@@ -5,9 +5,11 @@
 //! and the tail must hold the goal; a breakaway, a step, a reversal and a
 //! drive that feeds a coast or a brake measure the climb itself, so they are
 //! never declined for it, only marked governed. A duty that falls under its
-//! goal after reaching it means the load changed mid rung. Current over the
-//! abort means the servo is not holding its limit, and nothing drives it
-//! again.
+//! goal after reaching it means the load changed mid rung, except on an ends
+//! rung that falls to 0 for good at the soft limit it drives into: that is
+//! the firmware's endstop braking it, and the rung is judged up to there.
+//! Current over the abort means the servo is not holding its limit, and
+//! nothing drives it again.
 
 use osc_ident::exp::{Applied, judge};
 use osc_ident::limits::Ma;
@@ -30,6 +32,15 @@ const WINDOW: usize = 16;
 const REVERSAL_MS: f64 = 30.0;
 /// Over what a reversal draws by that sum, the residual's margin.
 const REVERSAL_MARGIN: f64 = 1.25;
+/// How far short of the soft limit ahead, counts, the position may read
+/// where the endstop takes an ends rung's duty. The firmware judges its
+/// filtered position once per MEDIUM tick, not the raw position a recording
+/// holds: on the MG90 on 2S the raw position at the fall read from 3 counts
+/// short of the soft limit to 18 past it, the shaft covering 3 to 4 counts
+/// per ms. An ends rung covers up to about 5 counts per ms, where the same
+/// offset is about 25 counts, and a MEDIUM tick or two before the firmware
+/// acts adds a few more.
+const ENDSTOP_TOL: i32 = 32;
 
 /// What a recording's drives are held against: the abort a quarter over the
 /// current limit, and what sizes a reversal's residual.
@@ -86,6 +97,16 @@ pub(crate) fn verdict(
         }
         let k = (i - baseline as usize) % cfg.steps.len();
         let step = cfg.steps[k];
+        let block = block_of(blocks, k);
+        let n = match (block, step) {
+            (Some("ends"), Step::Drive(..)) => {
+                match to_endstop(s, env.limits.soft, abort.tick_hz) {
+                    Ok(n) => n,
+                    Err(why) => return Verdict::Rejected(format!("seg {}: {why}", s.seg)),
+                }
+            }
+            _ => s.frames.len(),
+        };
         let start = match (step, i.checked_sub(1)) {
             (Step::Drive(..), _) | (_, None) => 0,
             (_, Some(prev)) => segs[prev]
@@ -95,10 +116,11 @@ pub(crate) fn verdict(
                 .find_map(|f| f.duty_q15)
                 .unwrap_or(0),
         };
-        let duty = s.frames.iter().filter_map(|f| Some((f.tick, f.duty_q15?)));
+        let duty = s.frames[..n]
+            .iter()
+            .filter_map(|f| Some((f.tick, f.duty_q15?)));
         governed[i] = judge(duty, s.cmd_duty_q15, start).contains(&Applied::Governed);
-        let block = block_of(blocks, k);
-        if let Some(ms) = fell(s, abort.tick_hz) {
+        if let Some(ms) = fell(s, n, abort.tick_hz) {
             let why = format!(
                 "seg {}: the applied duty fell under its goal {ms:.1} ms into the window, after \
                  reaching it: the load changed mid rung",
@@ -118,7 +140,7 @@ pub(crate) fn verdict(
         }
         if matches!(block, Some("grid" | "ends"))
             && matches!(step, Step::Drive(..))
-            && let Err(why) = settled(s, abort.tick_hz)
+            && let Err(why) = settled(s, n, abort.tick_hz)
         {
             return Verdict::Rejected(format!("seg {}: {why}", s.seg));
         }
@@ -168,14 +190,14 @@ pub(crate) fn block_of(blocks: &[Block], k: usize) -> Option<&str> {
 }
 
 /// Ms into the segment where its applied duty fell under its goal after
-/// holding it for SETTLE_MS; None when it never did. The limiter chatters
-/// on and off the goal for a few ms as the duty first reaches it, and
-/// that is the climb ending, not the load changing.
-fn fell(s: &Segment, tick_hz: f64) -> Option<f64> {
+/// holding it for SETTLE_MS, over its first `n` samples; None when it never
+/// did. The limiter chatters on and off the goal for a few ms as the duty
+/// first reaches it, and that is the climb ending, not the load changing.
+fn fell(s: &Segment, n: usize, tick_hz: f64) -> Option<f64> {
     let goal = s.cmd_duty_q15;
     let hold = (SETTLE_MS * tick_hz / 1000.0).ceil() as u64;
     let mut since = None;
-    for f in &s.frames {
+    for f in &s.frames[..n] {
         let Some(d) = f.duty_q15 else {
             continue;
         };
@@ -208,14 +230,15 @@ fn short(s: &Segment, grid: &Grid, pct: u8, tick_hz: f64) -> Option<(u16, f64)> 
 }
 
 /// A grid or ends rung's tail: the applied duty holds its goal over the
-/// last SETTLE_MS + STEADY_MIN_MS of the window, unbroken.
-pub(crate) fn settled(s: &Segment, tick_hz: f64) -> Result<(), String> {
+/// last SETTLE_MS + STEADY_MIN_MS of its first `n` samples, unbroken: the
+/// window, or an ends rung up to its endstop.
+pub(crate) fn settled(s: &Segment, n: usize, tick_hz: f64) -> Result<(), String> {
     let goal = s.cmd_duty_q15;
-    let Some(last) = s.frames.last() else {
+    let frames = &s.frames[..n];
+    let Some(last) = frames.last() else {
         return Err("no samples".into());
     };
-    let held = s
-        .frames
+    let held = frames
         .iter()
         .rev()
         .take_while(|f| f.duty_q15 == Some(goal))
@@ -223,12 +246,56 @@ pub(crate) fn settled(s: &Segment, tick_hz: f64) -> Result<(), String> {
         .map_or(0.0, |f| (last.tick - f.tick + 1) as f64 * 1000.0 / tick_hz);
     let need = SETTLE_MS + STEADY_MIN_MS;
     if held < need {
+        let upto = if n < s.frames.len() {
+            format!("for {held:.0} ms up to the endstop at the soft limit")
+        } else {
+            format!("for the last {held:.0} ms of the window")
+        };
         return Err(format!(
-            "the applied duty held its goal for the last {held:.0} ms of the window, under the \
-             {need:.0} ms a settled tail needs"
+            "the applied duty held its goal {upto}, under the {need:.0} ms a settled tail needs"
         ));
     }
     Ok(())
+}
+
+/// How many of an ends rung's samples are judged: those before its applied
+/// duty fell to 0 for good within ENDSTOP_TOL of the soft limit ahead in
+/// `soft`, or past it, where the firmware's endstop brakes the drive; all of
+/// them when it never fell to 0 for good. A fall to 0 for good short of
+/// there is Err: the endstop does not act there.
+pub(crate) fn to_endstop(s: &Segment, soft: [u16; 2], tick_hz: f64) -> Result<usize, String> {
+    let n = s.frames.len();
+    let Some(last) = s
+        .frames
+        .iter()
+        .rposition(|f| f.duty_q15.is_some_and(|d| d != 0))
+    else {
+        return Ok(n);
+    };
+    let Some(fall) = s.frames[last..]
+        .iter()
+        .position(|f| f.duty_q15 == Some(0))
+        .map(|j| last + j)
+    else {
+        return Ok(n);
+    };
+    let Some(pos) = s.frames[..=fall].iter().rev().find_map(|f| f.pos) else {
+        return Ok(n);
+    };
+    let (limit, short) = if s.dir > 0 {
+        (soft[1], soft[1] as i32 - pos as i32)
+    } else {
+        (soft[0], pos as i32 - soft[0] as i32)
+    };
+    if short <= ENDSTOP_TOL {
+        return Ok(fall);
+    }
+    Err(format!(
+        "the applied duty fell to 0 {:.1} ms into the window at position {pos}, {short} counts \
+         short of the soft limit {limit} it drives toward, and stayed there: the endstop acts \
+         only at the soft limit, so a fault, the stall yield or a load took the duty",
+        s.frames[fall].tick as f64 * 1000.0 / tick_hz
+    ))
 }
 
 /// The driven half's current, raw: the crest under slow decay, the trough
@@ -546,7 +613,7 @@ mod tests {
                 governed: vec![false, true, true]
             }
         );
-        assert!(settled(&r.segments[1], 20_000.0).is_ok());
+        assert!(settled(&r.segments[1], r.segments[1].frames.len(), 20_000.0).is_ok());
     }
 
     /// The same rung in 120 ms reaches its goal at 72 ms and holds it for
@@ -654,15 +721,15 @@ mod tests {
             100..160 if (t / 20) % 2 == 1 => goal - 128,
             _ => goal,
         });
-        assert_eq!(fell(&chatter, 20_000.0), None);
-        assert!(settled(&chatter, 20_000.0).is_ok());
+        assert_eq!(fell(&chatter, 6000, 20_000.0), None);
+        assert!(settled(&chatter, 6000, 20_000.0).is_ok());
         // held from 5 ms, then falls at 100 ms
         let lost = rung(&|t| match t {
             0..100 => 4484 + t as i16 * 20,
             2000..2400 => goal - 1000,
             _ => goal,
         });
-        assert_eq!(fell(&lost, 20_000.0), Some(100.0));
+        assert_eq!(fell(&lost, 6000, 20_000.0), Some(100.0));
     }
 
     /// A rung that reached its goal and then lost it, the load changed under
@@ -743,6 +810,184 @@ mod tests {
             v => panic!("{v:?}"),
         };
         assert!(why.ends_with("after reaching it: the load changed mid rung"));
+    }
+
+    /// An ends rung in a 1277 ms window at 20 kHz as the MG90 on 2S drove
+    /// it: from the guard, the applied duty at its goal from `goal_ms`, then
+    /// 0 from `fall_ms` at position `at` to the end of the window, the shaft
+    /// carrying on to `end`. The brake draws over the abort after the fall.
+    fn braked(seg_n: u32, pct: i16, goal_ms: f64, fall_ms: f64, at: u16, end: u16) -> Segment {
+        let dir = pct.signum() as i8;
+        let goal = (pct as i32 * 32767 / 100) as i16;
+        let from = if dir > 0 { 532.0 } else { 3526.0 };
+        let tick = |ms: f64| (ms * 20.0).round() as u64;
+        let (t_goal, t_fall, n) = (tick(goal_ms), tick(fall_ms), tick(1277.0));
+        let mut s = seg(seg_n, dir, 0);
+        s.cmd_duty_q15 = goal;
+        s.frames = (0..n)
+            .map(|t| {
+                let (duty, pos, raw) = if t < t_fall {
+                    let duty = (goal as i64 * t.min(t_goal) as i64 / t_goal as i64) as i16;
+                    let pos = from + (at as f64 - from) * t as f64 / t_fall as f64;
+                    (duty, pos, 512 + 100)
+                } else {
+                    let run = (t - t_fall) as f64 / (n - t_fall) as f64;
+                    (0, at as f64 + (end as f64 - at as f64) * run, 512 + 400)
+                };
+                TelFrame {
+                    tick: t,
+                    duty_q15: Some(duty),
+                    pos: Some(pos.round() as u16),
+                    current_raw: Some(raw),
+                    ..TelFrame::default()
+                }
+            })
+            .collect();
+        s
+    }
+
+    /// A torque-off baseline, then `fwd` and `rev` as `pct`@1277 rungs.
+    fn ends(pct: u8, fwd: Segment, rev: Segment) -> (Recording, Cfg) {
+        let mut base = seg(0, 0, 0);
+        base.frames = (0..20)
+            .map(|t| TelFrame {
+                tick: t,
+                duty_q15: Some(0),
+                current_raw: Some(512),
+                ..TelFrame::default()
+            })
+            .collect();
+        let c = bench_cfg(vec![Step::Drive(pct, Some(1277))], Dirs::Both);
+        let segments = vec![base, fwd, rev];
+        (Recording { segments }, c)
+    }
+
+    fn ends_verdict(r: &Recording, c: &Cfg) -> Verdict {
+        verdict(r, c, &one_block("ends", c), &envelope::mg90(), &abort())
+    }
+
+    fn rejected_ends(r: &Recording, c: &Cfg) -> String {
+        match ends_verdict(r, c) {
+            Verdict::Rejected(why) => why,
+            v => panic!("{v:?}"),
+        }
+    }
+
+    /// The MG90 on 2S driving its ends rungs, each alone in a 1277 ms
+    /// window: the endstop took the duty to 0 from 3 counts short of the
+    /// soft limit to 18 past it and held it there to the end of the window,
+    /// the brake drawing over the abort. Each is accepted, judged up to the
+    /// endstop; the 15% climb reached its goal inside the slew, so the
+    /// braked samples do not mark it governed. As grid rungs the same falls
+    /// reject.
+    #[test]
+    fn an_ends_rung_braked_at_the_soft_limit_is_accepted() {
+        for (pct, fwd, rev) in [
+            (
+                15,
+                braked(1, 15, 0.25, 1186.75, 3623, 3638),
+                braked(2, -15, 0.25, 1114.2, 419, 382),
+            ),
+            (
+                20,
+                braked(1, 20, 3.9, 803.7, 3623, 3660),
+                braked(2, -20, 2.7, 755.25, 414, 355),
+            ),
+        ] {
+            let (r, c) = ends(pct, fwd, rev);
+            let v = ends_verdict(&r, &c);
+            let Verdict::Accepted { governed } = v else {
+                panic!("{pct}%: {v:?}");
+            };
+            if pct == 15 {
+                assert_eq!(governed, [false, false, false]);
+            }
+            let why = rejected_grid(&r, &c);
+            assert!(
+                why.starts_with("seg 1: the applied duty fell under its goal"),
+                "{why}"
+            );
+            assert!(why.ends_with("the load changed mid rung"), "{why}");
+        }
+    }
+
+    /// A fall to 0 for good further than ENDSTOP_TOL short of the soft limit
+    /// ahead is not the endstop: rejected, and the message says where.
+    #[test]
+    fn an_ends_rung_stopped_short_of_the_soft_limit_is_rejected() {
+        let rev = || braked(2, -15, 0.25, 1114.2, 419, 382);
+        let (r, c) = ends(15, braked(1, 15, 0.25, 600.0, 2000, 2050), rev());
+        assert_eq!(
+            rejected_ends(&r, &c),
+            "seg 1: the applied duty fell to 0 600.0 ms into the window at position 2000, 1626 \
+             counts short of the soft limit 3626 it drives toward, and stayed there: the \
+             endstop acts only at the soft limit, so a fault, the stall yield or a load took \
+             the duty"
+        );
+        let fwd = || braked(1, 15, 0.25, 1186.75, 3623, 3638);
+        let (r, c) = ends(15, fwd(), braked(2, -15, 0.25, 1114.2, 465, 450));
+        assert!(rejected_ends(&r, &c).starts_with(
+            "seg 2: the applied duty fell to 0 1114.2 ms into the window at position 465, 33 \
+                 counts short of the soft limit 432"
+        ));
+        for (fwd, rev) in [
+            (braked(1, 15, 0.25, 1186.75, 3594, 3610), rev()),
+            (fwd(), braked(2, -15, 0.25, 1114.2, 464, 450)),
+        ] {
+            let (r, c) = ends(15, fwd, rev);
+            let v = ends_verdict(&r, &c);
+            assert!(matches!(v, Verdict::Accepted { .. }), "{v:?}");
+        }
+    }
+
+    /// An ends rung braked at the soft limit is judged up to the endstop:
+    /// held at its goal for only 50 ms before it, its tail never settled.
+    #[test]
+    fn an_ends_rung_braked_before_it_settles_is_rejected() {
+        let mut fwd = braked(1, 15, 0.25, 1186.75, 3623, 3638);
+        for f in &mut fwd.frames[..22735] {
+            f.duty_q15 = Some(4315);
+        }
+        let (r, c) = ends(15, fwd, braked(2, -15, 0.25, 1114.2, 419, 382));
+        assert_eq!(
+            rejected_ends(&r, &c),
+            "seg 1: the applied duty held its goal for 50 ms up to the endstop at the soft \
+             limit, under the 100 ms a settled tail needs"
+        );
+    }
+
+    /// The endstop holds the duty at 0 to the end of the window: a fall to 0
+    /// at the soft limit that drives again is judged as any fall.
+    #[test]
+    fn an_ends_rung_that_drives_again_after_a_fall_to_0_is_rejected() {
+        let mut fwd = braked(1, 15, 0.25, 1186.75, 3623, 3638);
+        for f in &mut fwd.frames[23755..] {
+            (f.duty_q15, f.current_raw) = (Some(4915), Some(512 + 100));
+        }
+        let (r, c) = ends(15, fwd, braked(2, -15, 0.25, 1114.2, 419, 382));
+        let why = rejected_ends(&r, &c);
+        assert!(
+            why.starts_with("seg 1: the applied duty fell under its goal 1186."),
+            "{why}"
+        );
+        assert!(why.ends_with("the load changed mid rung"), "{why}");
+    }
+
+    /// The bench servo's ends rungs both ways in 1277 ms: at 15% the shaft
+    /// never reaches the soft limit; at 20% it does, and the endstop holds
+    /// the duty at 0 to the end of the window. Both are accepted.
+    #[test]
+    fn the_bench_servo_braked_at_the_soft_limit_is_accepted() {
+        for pct in [15, 20] {
+            let c = bench_cfg(vec![Step::Drive(pct, Some(1277))], Dirs::Both);
+            let r = record(&c, |_| {});
+            let stopped = r.segments[1..]
+                .iter()
+                .all(|s| s.frames.last().unwrap().duty_q15 == Some(0));
+            assert_eq!(stopped, pct == 20, "{pct}%");
+            let v = ends_verdict(&r, &c);
+            assert!(matches!(v, Verdict::Accepted { .. }), "{pct}%: {v:?}");
+        }
     }
 
     /// The reversal block's 20% legs on the bench servo: each reversed leg
