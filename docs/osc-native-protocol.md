@@ -643,9 +643,12 @@ the wire inside that window or the producer drops whole batches
 (drop-not-block, surfaced as seq holes). At 3 M every mask fits; below
 2 M a full-rate burst outruns the wire by design - run captures at 3 M,
 or accept the decimation the holes record. Safety through the silent
-window is the servo's own - current limit, soft-position clamps, and
-fault latches run in firmware regardless of the bus - and the host's
-supervisory reads resume between bursts.
+window is the servo's own - the current limit (held in every drive
+mode, OpenLoop included, sec 5.8), soft-position clamps, the stall
+timer and fault latches run in firmware regardless of the bus - and the
+host's supervisory reads resume between bursts. The one thing a silent
+host cannot do is renew a stall permit: a burst that needs one has to
+end inside the lease (sec 5.8).
 
 ### 5.7 Data state, plant stamp and position table (osc-servo)
 
@@ -713,6 +716,11 @@ newly-latched kind (`fault_code`, `0x221`):
 
 Any set bit forces the drive off; the `torque_enable` 0 to 1 edge is the
 only acknowledgement, and a still-present condition re-latches at once.
+`stall` latches in OpenLoop as it does in the closed loops: there the
+stall timer runs off the duty ceiling (sec 5.8), so with
+`stall_response` at its boot value of Fault, an OpenLoop drive held
+against a stop or a jam for longer than `stall_time_ms` latches it
+unless a stall permit is live.
 
 **Plant stamp.** `plant_stamp` (u16, RW, `0x0B2` in CALIB, persisted)
 is the host's CRC over the set it *intended* to write: the identified
@@ -847,6 +855,100 @@ otherwise the
 identity runs and the stamp reports the loss as `STAMP_MISMATCH` (DES
 `lut_survives_save_and_reboot_until_factory`,
 `corrupt_or_stale_calib_image_boots_identity_under_its_reason`).
+
+### 5.8 Limits and the stall permit (osc-servo)
+
+Every drive mode clamps against the same current band (control-theory
+"Limits"): the current limit, the thermal derate, the stall fold and the
+directional endstop. The closed loops clamp their current reference;
+OpenLoop, which has none, holds a duty ceiling against the band from
+the shunt alone, so a host-written `goal_duty` is a request the servo
+may refuse to apply in full. Two registers let a host take part: a
+permit to stall on purpose, and a flag byte that names whatever is
+holding the command back. Like sec 5.7 these are model facts in
+model-specific space, and the descriptor carries the addresses.
+
+**Stall permit.** `stall_permit` (bool, RW, `0x181` in CONTROL) lets
+the motor stall on purpose, which identification and calibration need
+to seat a hard stop or measure the winding. It drops the stall trip
+(timer and collision check) and the endstop, and nothing else: the
+current limit and the thermal derate still compose. The byte is the
+host's *request*; the *grant* is a lease the servo keeps:
+
+- A committed write whose span covers the byte, leaving it true while
+  `torque_enable` reads 1 at the moment the write commits, grants a
+  lease of about one second: 63 slow ticks of 16 ms, counted from the
+  medium tick that sees the write, so 0.99 to 1.01 s. One span over
+  `torque_enable` and `stall_permit` is judged as committed, so a
+  single WRITE of `[1, 1]` at `0x180` enables and grants; a HOLD write
+  grants at its COMMIT.
+- Each rewrite of true under torque restarts the lease from the
+  rewrite. A host holding the permit rewrites it well inside the second
+  (`osc` does it every 250 ms).
+- A write of false revokes within one medium tick (0.5 ms). Torque off
+  revokes, and turning torque back on does not revive the lease: only a
+  fresh write does.
+- A write with torque off grants nothing, even when torque comes on
+  before the servo looks: the host writes the permit after the enable.
+- The byte reads back the last request, never the grant; `limit_flags`
+  bit 3 (below) is the grant. CONTROL is RAM, so a reboot clears both.
+
+The lease is what bounds a host that dies mid-run: the servo is
+unguarded for at most what is left of the second, then the stall timer
+runs again. A permit written once against a locked rotor, with a
+500 ms `stall_time_ms` and the boot Fault response, latches `stall`
+between 1.5 and 1.6 s after the write (DES
+`dead_host_stall_trips_within_the_lease`). A TEL burst is a silent host
+too (sec 5.6).
+
+**What governs.** `limit_flags` (u8, RO, `0x266` in TELEMETRY; `0x267`
+is reserved) names what shaped the command at the last medium tick,
+one bit per reason; 0 means nothing held it back and no permit is
+live. It is published
+every medium tick (2 kHz), torque on or off.
+
+| bit | name      | set while                                                                                                                                                            |
+| --- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 0   | `CEILING` | the command sat at the current ceiling: in OpenLoop the duty ceiling held under the goal by the current, in the closed loops the current reference at `i_lim_counts` |
+| 1   | `YIELD`   | the stall verdict folded the limit to `stall_yield_counts`                                                                                                           |
+| 2   | `ENDSTOP` | exactly one side of the band is closed: a soft limit forbids current in one direction (a zero limit closes both and does not set it)                                 |
+| 3   | `PERMIT`  | the stall permit lease is live                                                                                                                                       |
+
+Bit 0 is the same pin the stall timer counts, so a bit 0 that stays set
+on a still shaft is a stall in progress. The permit drops the fold and
+the endstop, so bit 3 never appears with bits 1 or 2 (unit
+`limit_flags_name_the_governor`). The flags are a polled register, not
+a TEL field: the `valid` bitmap of sec 5.6 has no spare bit.
+
+**Governed windows.** In OpenLoop the applied duty equals the goal only
+when nothing governed it, and a host fitting a model to a capture needs
+to know which windows those are. The TEL `duty` field (bit 3) is the
+applied duty, the command whose window the sample measured. After a
+goal change to a magnitude above the window floor the applied duty
+climbs 128 (Q15) per tick from its start: the previous applied duty,
+or the window floor when the change starts from zero duty or reverses
+the sign. A window is *governed* when `duty` reaches the goal later
+than `(|goal| - start) / 128 + 2` ticks after the change (the two
+ticks cover the sample alignment and the rounding), or falls under the
+goal after reaching it. A goal at or under the floor applies from the
+first tick unless the stall-safe base cuts it, and a cut one never
+reaches the goal. Polled, the same test reads `duty_applied_q15` (or
+the ident aggregate `duty_mean_q15`) against the goal written, once the
+slew is over; `limit_flags` then says why.
+
+**Blind band.** Under the window floor (`i_window_min_ticks` as a duty,
+13.3% on osc-dev-v006) the shunt reports nothing and the servo applies
+a stall-safe base duty instead of trusting its ceiling:
+`min(i_lim x R / Vbus, floor)` from the identified `r_q12`, whose stall
+current is at most the limit. A servo with no identified resistance
+(`r_q12` 0) has the floor as its base, so the lowest duty it applies to
+a goal above the floor is the floor itself, and stall current in the
+blind band is bounded by `floor x Vbus / R` of the actual winding:
+0.214 A for a 4.9 ohm winding on 7.9 V, and under the 300 mA class
+limit for any winding above 3.72 ohm on 8.4 V. If the floor
+already draws more than the limit, the applied duty stays pinned at
+the floor and the stall timer decides (DES
+`virgin_blind_band_passes_to_the_window_floor`).
 
 ## 6. Coordinated reads (status chains)
 
