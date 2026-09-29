@@ -950,6 +950,38 @@ already draws more than the limit, the applied duty stays pinned at
 the floor and the stall timer decides (DES
 `virgin_blind_band_passes_to_the_window_floor`).
 
+**Shunt burst.** The high-rate shunt capture (`arm` at `0x198` in
+CONTROL, with `duty_q15` at `0x196` and `chans` at `0x19A`; read back
+from the BURST section) steps the bridge to `duty_q15` halfway through
+a window of about 1.04 ms in which the kernel does not tick: no
+limiter, stall timer or endstop acts on the step. The step drives for
+the half window, about 0.52 ms, and the first kernel tick after the
+window replaces it. What bounds a burst is its arm. `arm` 1 is refused
+unless all of these hold at the kernel tick that sees it:
+
+- torque on, mode OpenLoop, no TEL burst running (`tel_count` 0), no
+  fault latched, and `chans` naming only defined extras;
+- the applied volts are at most 3.2 V: `(|duty_q15| x vbus_counts) >>
+  15` at most the board's cap in vcounts, 1298 on osc-dev-v006. That
+  is a step of at most 13285 (40.5%) on a 7.9 V rail (`vbus_counts`
+  3204) and 23913 (73.0%) on a 4.39 V USB rail (1780);
+- at least 100 ms have passed since the previous accepted arm: 2000
+  kernel ticks, and the kernel does not tick during a capture, so the
+  gap in time is never shorter;
+- the raw `pos` lies strictly between `pos_min_soft_counts` and
+  `pos_max_soft_counts`, or the stall permit is granted (`limit_flags`
+  bit 3; the `stall_permit` request byte alone does not count).
+
+A refused arm drives nothing and publishes BURST `state` (`0x2C1`) 4,
+`REJECTED` (0 idle, 1 armed, 2 capturing, 3 done); it stays there until
+the host writes `arm` 0, and it starts no spacing. The most a host can
+cause, dead or buggy, is one pulse of at most 3.2 V for about half a
+millisecond every 100 ms inside the soft limits (control-theory "Open
+Loop Under the Same Band"; unit `burst_over_the_volts_cap_is_rejected`,
+`burst_inside_the_spacing_is_rejected`,
+`burst_outside_the_soft_limits_needs_the_permit`,
+`burst_at_the_cap_still_arms`).
+
 ## 6. Coordinated reads (status chains)
 
 GREAD replies arrive as a chain of ordinary status frames, one per listed
