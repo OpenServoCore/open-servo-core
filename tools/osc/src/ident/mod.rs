@@ -71,40 +71,41 @@ pub struct Args {
     /// Motor inductance, henries (not identifiable from this telemetry).
     #[arg(long, global = true, default_value_t = gains::DEFAULT_L_HENRIES)]
     l_henries: f64,
-    /// E7 toggle step, PWM periods. The default 20 (1 ms) is long enough
-    /// for the rotor to follow, which biases R and L - see osc-ident's
-    /// `exp::rl`.
+    /// Toggle step (`ident rl`), PWM periods. The default 20 (1 ms) is long
+    /// enough for the rotor to follow, which biases R and L - see
+    /// osc-ident's `exp::rl`.
     #[arg(long, global = true, default_value_t = 20)]
     step_periods: u16,
-    /// E8 step duties, percent of full scale.
+    /// Burst step duties, percent of full scale.
     #[arg(long, global = true, value_delimiter = ',', default_values_t = [20u8, 30, 40])]
     burst_pct: Vec<u8>,
-    /// E8 captures per step duty and sign.
+    /// Burst captures per step duty and sign.
     #[arg(long, global = true, default_value_t = 5)]
     burst_repeats: u32,
-    /// Settled winding current the E8 duty ladder stays under, amps.
+    /// Settled winding current the burst duty ladder stays under, amps.
     #[arg(long, global = true, default_value_t = 0.4)]
     burst_i_max: f64,
-    /// E8 voltage channels: a mask (bit 0 vmotor_a, bit 1 vmotor_b, bit 2
+    /// Burst voltage channels: a mask (bit 0 vmotor_a, bit 1 vmotor_b, bit 2
     /// vbus) or `driven`, the tap of the terminal each step drives. One
     /// channel keeps frame_len at 2 and sees the chopping leg through ON and
     /// OFF on both signs; the unbuffered rail tap reads ~1% low in-burst.
     #[arg(long, global = true, default_value = "driven", value_parser = parse_chans)]
     burst_chans: Chans,
-    /// E8 held route: the duty the seek arrives at and the bursts step
+    /// Burst held route: the duty the seek arrives at and the bursts step
     /// from, percent of full scale.
     #[arg(long, global = true, default_value_t = 12)]
     burst_hold_pct: u8,
-    /// E8 held route: the mechanical stops to seat against. Low by default:
-    /// this unit's high-count end has slipped at ~0.17 A of steady torque.
+    /// Burst held route: the mechanical stops to seat against. Low by
+    /// default: this unit's high-count end has slipped at ~0.17 A of steady
+    /// torque.
     #[arg(long, global = true, value_enum, default_value_t = BurstStops::Low)]
     burst_stops: BurstStops,
-    /// E8 held route: captures per step duty at each stop.
+    /// Burst held route: captures per step duty at each stop.
     #[arg(long, global = true, default_value_t = 4)]
     burst_hold_repeats: u32,
-    /// E4 step length, ms. Sized to the runway: the 150 ms default fits a
-    /// 55% step from the seek band to the far soft wall on a 5 V rail; a
-    /// 2S rail runs ~1.6x faster and wants ~80 ms.
+    /// Inertia step length, ms. Sized to the runway: the 150 ms default fits
+    /// a 55% step from the seek band to the far soft wall on a 5 V rail; a 2S
+    /// rail runs ~1.6x faster and wants ~80 ms.
     #[arg(long, global = true, default_value_t = 150)]
     inertia_ms: u32,
     /// Nominal gear ratio, informational only (printed in the report dir).
@@ -184,26 +185,26 @@ enum Cmd {
     /// params.json. R and L come from the burst when it promotes, else R
     /// from resistance and L from --l-henries. Write-back stays explicit.
     Run,
-    /// E0: torque-off noise and bias floor.
+    /// Torque-off noise and bias floor.
     Bias,
-    /// E2: end-stop stall duty ladder -> winding R (the fallback R).
+    /// End-stop stall duty ladder -> winding R (the fallback R).
     Resistance,
-    /// E7: free-shaft duty toggles -> winding R and L (advisory; the
-    /// 1 ms step is rotor-followed and biased).
+    /// The toggle experiment: free-shaft duty toggles -> winding R and L
+    /// (advisory; the 1 ms step is rotor-followed and biased).
     Rl,
-    /// E8: high-rate shunt bursts -> winding R, L and tau (the gain
+    /// High-rate shunt bursts -> winding R, L and tau (the gain
     /// source when it promotes): held at a stop first, the free shaft from
     /// rest only if the held route declines.
     Burst,
-    /// E1: breakaway duty ramp (needs R; runs its own bias first).
+    /// Breakaway duty ramp (needs R; runs its own bias first).
     Breakaway,
-    /// E3: steady-state duty ladder -> Ke + friction line (needs R).
+    /// Steady-state duty ladder -> Ke + friction line (needs R).
     Ladder,
-    /// E4: duty-step transients -> B (TEL when wired).
+    /// Duty-step transients -> B (TEL when wired).
     Inertia,
-    /// E5/E6: closed-loop verification on the written gains. Needs a clean
-    /// data state: a set written but not SAVEd on a fresh servo is refused
-    /// (`ident write --save` first).
+    /// Closed-loop verification on the written gains: verify current, then
+    /// verify velocity. Needs a clean data state: a set written but not
+    /// SAVEd on a fresh servo is refused (`ident write --save` first).
     Verify,
     /// Refit offline from a recorded run directory.
     Fit { dir: PathBuf },
@@ -506,7 +507,7 @@ fn run_bias(
     id: Id,
     out: &csvio::OutDir,
 ) -> Result<(osc_ident::exp::bias::BiasResult, f64)> {
-    println!("[E0 bias]");
+    println!("[bias]");
     // a rail-parked pot clips the noise measurement (and trips the guard)
     recenter(c, id)?;
     let mut log = csvio::SnapshotLog::create(out, "bias_snapshots.csv")?;
@@ -527,7 +528,7 @@ fn run_resistance(
     id: Id,
     out: &csvio::OutDir,
 ) -> Result<osc_ident::exp::resistance::ResistanceResult> {
-    println!("[E2 resistance] (end-stop stalls; pos guard off, soft limits widened)");
+    println!("[resistance] (end-stop stalls; pos guard off, soft limits widened)");
     let params = rig(cli).without_pos_guard();
     let mut log = csvio::SnapshotLog::create(out, "resistance_snapshots.csv")?;
     let mut exp = Guarded::new(Resistance::new(ResistanceCfg::default(), &params), params);
@@ -554,7 +555,7 @@ fn run_rl(
     out: &csvio::OutDir,
     sense: &SenseJson,
 ) -> Result<RlResult> {
-    println!("[E7 winding R/L] (free shaft at mid travel, chained duty toggles)");
+    println!("[toggle] winding R/L (free shaft at mid travel, chained duty toggles)");
     recenter(c, id)?;
     let params = rig(cli);
     let sc = sense
@@ -600,7 +601,7 @@ fn run_inductance(
         .context("CalibSense scales degenerate (shunt/gain/dividers/vdd)")?;
     let params = rig(cli);
     println!(
-        "[E8 held] (seat at the {:?} stop at {}%, burst toward it; stall_permit for the run)",
+        "[burst, held] (seat at the {:?} stop at {}%, burst toward it; stall_permit for the run)",
         cli.burst_stops, cli.burst_hold_pct
     );
     let cfg = HeldCfg {
@@ -631,7 +632,7 @@ fn run_inductance(
     let first = fit_captures(&caps, &sc, &FitCfg::default());
     if !first.as_ref().is_some_and(|r| r.held.promotable()) {
         println!(
-            "[E8 free] held route declined ({}): free shaft from rest at mid travel",
+            "[burst, free] held route declined ({}): free shaft from rest at mid travel",
             first
                 .as_ref()
                 .map_or("no fit".into(), |r| r.held.blocking().join(", "))
@@ -675,7 +676,7 @@ fn run_breakaway(
     r_vpc: f64,
     vbus_mean: f64,
 ) -> Result<osc_ident::exp::breakaway::BreakawayResult> {
-    println!("[E1 breakaway]");
+    println!("[breakaway]");
     recenter(c, id)?;
     let mut log = csvio::SnapshotLog::create(out, "breakaway_snapshots.csv")?;
     let mut exp = Guarded::new(Breakaway::new(BreakawayCfg::default()), rig(cli));
@@ -691,7 +692,7 @@ fn run_ladder(
     out: &csvio::OutDir,
     r_vpc: f64,
 ) -> Result<LadderResult> {
-    println!("[E3 ladder]");
+    println!("[ladder]");
     recenter(c, id)?;
     let params = rig(cli);
     let mut log = csvio::SnapshotLog::create(out, "ladder_snapshots.csv")?;
@@ -713,7 +714,7 @@ fn run_inertia(
     out: &csvio::OutDir,
     priors: &InertiaPriors,
 ) -> Result<osc_ident::exp::inertia::InertiaResult> {
-    println!("[E4 inertia]");
+    println!("[inertia]");
     recenter(c, id)?;
     let params = rig(cli);
     let cfg = InertiaCfg {
@@ -741,7 +742,7 @@ fn run_verify(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
     let (d, before) = servo_state(c, id)?;
     refuse_closed_loop(&before)?;
     recenter(c, id)?;
-    println!("[E5 current steps] (end-stop stalls; pos limits widened)");
+    println!("[verify current] (current steps; end-stop stalls; pos limits widened)");
     let mut e5 = Guarded::new(
         VerifyCurrent::new(VerifyCurrentCfg::default(), &params),
         params.without_pos_guard(),
@@ -761,7 +762,7 @@ fn run_verify(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
     // E5 ends stalled against an end-stop; E6 runs with the pos guard on
     // and its first read would abort right there
     recenter(c, id)?;
-    println!("[E6 velocity legs]");
+    println!("[verify velocity] (velocity legs)");
     let mut e6 = Guarded::new(
         VerifyVelocity::new(VerifyVelocityCfg::default(), &params, tick_hz),
         params,
@@ -862,7 +863,7 @@ fn run_all(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
     let e8 = match run_inductance(cli, c, id, &out, &sense) {
         Ok(r) => Some(r),
         Err(e) => {
-            println!("[E8] no result: {e:#}");
+            println!("[burst] no result: {e:#}");
             None
         }
     };
@@ -870,7 +871,7 @@ fn run_all(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
         true => {
             if let Some(r) = &e8 {
                 println!(
-                    "[E8] declined (held: {}; free: {}): E2 supplies R",
+                    "[burst] declined (held: {}; free: {}): resistance supplies R",
                     r.held.blocking().join(", "),
                     r.blocking().join(", ")
                 );
@@ -880,7 +881,7 @@ fn run_all(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
         false => None,
     };
     let w = sources::winding(e8.as_ref(), e2.as_ref(), Some(&sc), cli.l_henries)
-        .context("no winding R: E8 declined and E2 did not run")?;
+        .context("no winding R: burst declined and resistance did not run")?;
     println!(
         "[winding] R {:.4} vcounts/ccount from {}, L {:.4} mH from {}",
         w.r_vpc,
@@ -963,7 +964,7 @@ fn fit_dir(cli: &Ctx, dir: PathBuf) -> Result<()> {
         sc.as_ref(),
         cli.l_henries,
     )
-    .context("no winding R: E8 is missing or declined and no E2 recording exists")?;
+    .context("no winding R: burst is missing or declined and no resistance recording exists")?;
     let rungs = csvio::read_rungs(&dir)?;
     let pts: Vec<fits::RungPoint> = csvio::read_rung_points(&dir)?;
     let ke = fits::ke_fit(&pts, w.r_vpc).context("ke refit degenerate")?;

@@ -66,7 +66,7 @@ pub fn render(r: &ReportInputs<'_>) -> String {
     let _ = writeln!(s, "identification report");
     let _ = writeln!(s, "=====================");
 
-    let _ = writeln!(s, "\n[E0 bias]");
+    let _ = writeln!(s, "\n[bias]");
     match r.bias {
         Some(b) => {
             let _ = writeln!(s, "  sigma_theta   {:.3} counts (n={})", b.sigma_theta, b.n);
@@ -79,7 +79,7 @@ pub fn render(r: &ReportInputs<'_>) -> String {
         }
     }
 
-    let _ = writeln!(s, "\n[E2 resistance]");
+    let _ = writeln!(s, "\n[resistance]");
     match r.resistance {
         Some(x) => {
             let _ = writeln!(
@@ -94,7 +94,7 @@ pub fn render(r: &ReportInputs<'_>) -> String {
             .plant
             .is_some_and(|p| matches!(p.winding.r_from, Source::Burst | Source::BurstHeld)) =>
         {
-            let _ = writeln!(s, "  not run: E8 supplied R");
+            let _ = writeln!(s, "  not run: burst supplied R");
         }
         None => {
             let _ = writeln!(s, "  skipped");
@@ -103,7 +103,7 @@ pub fn render(r: &ReportInputs<'_>) -> String {
 
     let _ = writeln!(
         s,
-        "\n[E7 winding R/L] (free shaft, duty toggles; NOT the table's R)"
+        "\n[toggle] winding R/L (free shaft, duty toggles; NOT the table's R)"
     );
     match r.rl {
         Some(x) => {
@@ -162,7 +162,7 @@ pub fn render(r: &ReportInputs<'_>) -> String {
                 s,
                 "  verdict       {}",
                 if x.ok {
-                    "gates pass; advisory only - E2 is the table's R"
+                    "gates pass; advisory only - resistance is the table's R"
                 } else {
                     "GATES FAILED - numbers unusable"
                 }
@@ -176,7 +176,7 @@ pub fn render(r: &ReportInputs<'_>) -> String {
         }
     }
 
-    let _ = writeln!(s, "\n[E8 winding R/L] (high-rate shunt burst)");
+    let _ = writeln!(s, "\n[burst] winding R/L (high-rate shunt burst)");
     match r.inductance {
         Some(x) => render_e8(&mut s, x),
         None => {
@@ -184,7 +184,7 @@ pub fn render(r: &ReportInputs<'_>) -> String {
         }
     }
 
-    let _ = writeln!(s, "\n[E1 breakaway] (model-derived from R and vbus)");
+    let _ = writeln!(s, "\n[breakaway] (model-derived from R and vbus)");
     match r.breakaway {
         Some(x) => {
             let _ = writeln!(
@@ -206,7 +206,7 @@ pub fn render(r: &ReportInputs<'_>) -> String {
         }
     }
 
-    let _ = writeln!(s, "\n[E3 ladder]");
+    let _ = writeln!(s, "\n[ladder]");
     match r.ladder {
         Some(x) => {
             let _ = writeln!(
@@ -242,7 +242,7 @@ pub fn render(r: &ReportInputs<'_>) -> String {
         }
     }
 
-    let _ = writeln!(s, "\n[E4 inertia]");
+    let _ = writeln!(s, "\n[inertia]");
     match r.inertia {
         Some(x) => {
             if let Some(d) = &x.b_direct {
@@ -440,7 +440,7 @@ fn render_e8(s: &mut String, x: &InductanceResult) {
                 }
             ),
             None => format!(
-                "declined (held: {}; free: {}) - E2 supplies R, L stays at the default",
+                "declined (held: {}; free: {}) - resistance supplies R, L stays at the default",
                 match x.held.captures {
                     0 => "no seated captures".to_string(),
                     _ => x.held.blocking().join(", "),
@@ -702,7 +702,7 @@ mod tests {
             inductance: Some(&r),
             ..Default::default()
         });
-        assert!(s.contains("[E8 winding R/L]"), "{s}");
+        assert!(s.contains("[burst] winding R/L"), "{s}");
         assert!(s.contains("L by duty     20%"), "{s}");
         assert!(s.contains("L ripple"), "{s}");
         assert!(s.contains("R regression"), "{s}");
@@ -800,10 +800,10 @@ mod tests {
             }),
             ..Default::default()
         });
-        assert!(s.contains("not run: E8 supplied R"), "{s}");
-        assert!(s.contains("(4.000 ohm)  E8 burst"), "{s}");
-        assert!(s.contains("0.6000 mH                E8 burst"), "{s}");
-        assert!(s.contains("E0 bias"), "{s}");
+        assert!(s.contains("not run: burst supplied R"), "{s}");
+        assert!(s.contains("(4.000 ohm)  burst"), "{s}");
+        assert!(s.contains("0.6000 mH                burst"), "{s}");
+        assert!(s.contains("counts            bias"), "{s}");
         let stall = Winding {
             r_ohm: None,
             r_from: Source::StallFallback,
@@ -819,7 +819,7 @@ mod tests {
             }),
             ..Default::default()
         });
-        assert!(s.contains("E2 fallback"), "{s}");
+        assert!(s.contains("resistance fallback"), "{s}");
         assert!(s.contains("0.5000 mH                default"), "{s}");
     }
 
