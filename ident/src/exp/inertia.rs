@@ -16,7 +16,8 @@ use crate::fits::{BDirect, BExp, InertiaPriors, StepSeries, b_direct_fit, b_exp_
 use crate::frame::{TelFrame, TelemetrySnapshot};
 use crate::regs::control;
 
-/// TEL frame layout the choreography arms: pos + current + duty + vdiff.
+/// TEL frame layout the choreography arms: pos + current + duty + vdiff,
+/// plus pos_lin while the rig's pot table is live ([`crate::pot::Pot`]).
 pub const TEL_LADDER_MASK: u16 = 0x1B;
 
 pub struct InertiaCfg {
@@ -184,13 +185,14 @@ impl Inertia {
         let mut i = Vec::new();
         let mut mask = Vec::new();
         for f in &c.tel {
-            let (Some(p), Some(cur)) = (f.pos, f.current) else {
+            let (Some(p), Some(cur)) = (f.counts(), f.current) else {
                 continue;
             };
+            let raw = f.pos.unwrap_or(p.round() as u16);
             t.push(f.tick as f64 * tick_s);
-            pos.push(p as f64);
+            pos.push(p);
             i.push(cur as f64);
-            mask.push(f.window_valid && !self.params.in_slip(p));
+            mask.push(f.window_valid && !self.params.in_slip(raw));
         }
         (t.len() >= 32).then_some(StepSeries {
             t,
@@ -274,7 +276,7 @@ impl Experiment for Inertia {
                 self.phase = Phase::SeekSet;
                 Cmd::Write {
                     reg: control::TEL_MASK,
-                    value: TEL_LADDER_MASK as i32,
+                    value: self.params.pot.tel_mask(TEL_LADDER_MASK) as i32,
                 }
             }
             Phase::SeekSet => {
@@ -383,9 +385,10 @@ impl Experiment for Inertia {
 
 #[cfg(test)]
 mod tests {
-    use super::super::testkit::{FakeServo, pump};
+    use super::super::testkit::{FakeServo, bent_pot, pump};
     use super::super::{Guarded, RigParams};
     use super::*;
+    use crate::pot::Pot;
 
     const B_PLANT: f64 = 0.1;
 
@@ -464,6 +467,46 @@ mod tests {
             .find(|l| l.starts_with("write goal_duty"))
             .unwrap();
         assert_eq!(last_duty, "write goal_duty 0");
+    }
+
+    /// With a table live the arm carries pos_lin and the series is the
+    /// kernel's word, not the bent raw count: B comes back planted where
+    /// the raw fit, its friction priors in the wrong counts, reads low.
+    #[test]
+    fn live_table_arms_pos_lin_and_fits_the_kernels_counts() {
+        let table = bent_pot();
+        let run = |pot: Pot| {
+            let mut servo = dynamic_servo();
+            servo.pot = Some(table);
+            let params = RigParams {
+                pot,
+                ..RigParams::default()
+            };
+            let mut exp = Guarded::new(Inertia::new(InertiaCfg::default(), &params), params);
+            let log = pump(&mut exp, &mut servo, 4_000_000);
+            assert!(exp.abort().is_none(), "abort: {:?}", exp.abort());
+            let exp = exp.into_inner();
+            let b = exp.fit(&priors()).expect("fit").b_best;
+            (log, exp.step_series(), b)
+        };
+        let (raw_log, raw, b_raw) = run(Pot::RAW);
+        let (lin_log, lin, b_lin) = run(Pot::live(table));
+        assert!(raw_log.contains(&"write tel_mask 27".to_string()));
+        assert!(lin_log.contains(&"write tel_mask 2075".to_string()));
+        assert!((b_raw - B_PLANT) / B_PLANT < -0.05, "raw b {b_raw}");
+        assert!(
+            (b_lin - B_PLANT).abs() / B_PLANT < 0.05,
+            "linearized b {b_lin}"
+        );
+        assert_eq!(lin.len(), 6);
+        // the seek coasts to rest near raw 500, which the bent pot reads
+        // ~60 counts under the true position the live series starts from
+        let (r0, l0) = (raw[0].0.pos[0], lin[0].0.pos[0]);
+        assert!(l0 - r0 > 40.0, "raw {r0} vs linearized {l0}");
+        assert!(
+            (l0 - table.counts(r0 as u16)).abs() <= 0.5,
+            "raw {r0} vs linearized {l0}"
+        );
     }
 
     #[test]

@@ -16,6 +16,7 @@ pub mod frame;
 pub mod gains;
 pub mod kinematics;
 pub mod lut;
+pub mod pot;
 pub mod regs;
 pub mod report;
 pub mod ripple;

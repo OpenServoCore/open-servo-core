@@ -102,7 +102,7 @@ pub fn validate(knots: &[i16; KNOTS], raw_min: u16, raw_max: u16) -> Result<(), 
 /// The firmware's table: KNOTS corrections against the identity ramp, knot
 /// k at raw k * GRID, the last fixed 0. All-zero is the identity, raw << 4
 /// everywhere.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct GridLut {
     pub knots: [i16; KNOTS],
 }
@@ -965,7 +965,7 @@ mod tests {
 
     #[test]
     fn knots_land_on_raw_plus_correction() {
-        let mut lut = GridLut::IDENTITY.clone();
+        let mut lut = GridLut::IDENTITY;
         for (k, c) in lut.knots.iter_mut().enumerate().take(200).skip(40) {
             *c = ((k as f64 * 0.37).sin() * 20.0) as i16;
         }
@@ -989,20 +989,20 @@ mod tests {
     fn validate_rejects_ends_and_shape() {
         assert_eq!(GridLut::IDENTITY.validate(209, 3849), Ok(()));
         assert_eq!(GridLut::IDENTITY.validate(0, 0), Ok(()));
-        let mut lut = GridLut::IDENTITY.clone();
+        let mut lut = GridLut::IDENTITY;
         lut.knots[14] = 1;
         // knot 14 at raw 224 is inside the low inset of stop 209 (14 <= (209 + 15) >> 4)
         assert_eq!(lut.validate(209, 3849), Err(Reject::Ends));
         assert_eq!(lut.validate(200, 3849), Ok(()));
         assert_eq!(lut.validate(0, 0), Err(Reject::Ends));
-        let mut lut = GridLut::IDENTITY.clone();
+        let mut lut = GridLut::IDENTITY;
         lut.knots[100] = -16;
         assert_eq!(lut.validate(209, 3849), Err(Reject::Shape), "gain 0");
         lut.knots[100] = -15;
         assert_eq!(lut.validate(209, 3849), Ok(()), "gain 1/16");
         // a step up to `top` then down 15 per knot: only the step's gain moves
         let ramp = |top: i16| {
-            let mut lut = GridLut::IDENTITY.clone();
+            let mut lut = GridLut::IDENTITY;
             for j in 0..=16 {
                 lut.knots[100 + j] = (top - 15 * j as i16).max(0);
             }
@@ -1011,7 +1011,7 @@ mod tests {
         assert_eq!(ramp(239).validate(209, 3849), Ok(()), "gain 255/16");
         assert_eq!(ramp(240).validate(209, 3849), Err(Reject::Shape), "gain 16");
         // the last interval before the top stop
-        let mut lut = GridLut::IDENTITY.clone();
+        let mut lut = GridLut::IDENTITY;
         lut.knots[240] = 3;
         assert_eq!(
             lut.validate(209, 3849),
@@ -1025,7 +1025,7 @@ mod tests {
 
     #[test]
     fn image_round_trips_and_needs_the_grid() {
-        let mut lut = GridLut::IDENTITY.clone();
+        let mut lut = GridLut::IDENTITY;
         lut.knots[80] = -7;
         let img = lut.image(209, 3849, "mg90-a__2s", 99, (542, 3520), "a test");
         assert_eq!(img.knots.len(), INTERVALS);
@@ -1229,7 +1229,7 @@ mod tests {
             .lut
             .image(RAW_MIN, RAW_MAX, "synthetic", used, b.covered, "test");
         assert_eq!(img.covered, [lo, hi]);
-        assert_eq!(img.lut(), Some(b.lut.clone()));
+        assert_eq!(img.lut(), Some(b.lut));
 
         // fewer than MIN_RUNG_COVER accepted rungs anchor nothing
         assert_eq!(

@@ -3,9 +3,10 @@
 //! snapshot fields instead: current bias sanity, pot noise sigma (feeds
 //! fusion gain synthesis), vbus sanity.
 
-use super::{Cmd, Experiment};
+use super::{Cmd, Experiment, RigParams};
 use crate::fitmath::{mean, stddev};
 use crate::frame::TelemetrySnapshot;
+use crate::pot::Pot;
 use crate::regs::control;
 
 pub struct BiasCfg {
@@ -49,6 +50,7 @@ enum Phase {
 
 pub struct Bias {
     cfg: BiasCfg,
+    pot: Pot,
     phase: Phase,
     pos: Vec<f64>,
     current: Vec<f64>,
@@ -57,9 +59,10 @@ pub struct Bias {
 }
 
 impl Bias {
-    pub fn new(cfg: BiasCfg) -> Self {
+    pub fn new(cfg: BiasCfg, params: &RigParams) -> Self {
         Self {
             cfg,
+            pot: params.pot,
             phase: Phase::TorqueOff,
             pos: Vec::new(),
             current: Vec::new(),
@@ -108,7 +111,7 @@ impl Experiment for Bias {
             }
             Phase::Collect => {
                 if let Some(o) = obs {
-                    self.pos.push(o.pos as f64);
+                    self.pos.push(self.pot.counts(o.pos));
                     self.current.push(o.current as f64);
                     self.bias.push(o.current_bias_counts as f64);
                     self.vbus.push(o.vbus_counts as f64);
@@ -138,7 +141,7 @@ mod tests {
         let mut servo = FakeServo::new(3.37);
         // uniform width 5 counts -> sigma = 5/sqrt(12) ~ 1.44
         servo.pos_noise = 5.0;
-        let mut exp = Bias::new(BiasCfg::default());
+        let mut exp = Bias::new(BiasCfg::default(), &RigParams::default());
         let log = pump(&mut exp, &mut servo, 10_000);
         assert!(!log.contains(&"OVERRUN".to_string()));
         let r = exp.result().expect("enough polls");

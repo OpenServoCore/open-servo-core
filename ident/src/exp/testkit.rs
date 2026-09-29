@@ -10,6 +10,7 @@ use crate::burst::{
     frame_len,
 };
 use crate::frame::{TelFrame, TelemetrySnapshot};
+use crate::lut::GridLut;
 use crate::regs::{ALL, Reg, control};
 
 pub struct FakeServo {
@@ -36,6 +37,11 @@ pub struct FakeServo {
     pub breakaway_q15: i16,
     /// Reported pos gains +80 counts inside this zone (slip artifact).
     pub glitch_zone: Option<(f64, f64)>,
+    /// A nonlinear pot: `pos` is the true position, the raw reading is the
+    /// count this table linearizes back to it, and `pos_lin` streams the
+    /// table's own Q4 word as the firmware would. None = a linear pot.
+    pub pot: Option<GridLut>,
+    /// True position, counts.
     pub pos: f64,
     pub ends: (f64, f64),
     /// Wiring convention: false inverts duty's effect on motion, so the
@@ -80,6 +86,7 @@ impl FakeServo {
             f_med: 2010.0,
             breakaway_q15: 0,
             glitch_zone: None,
+            pot: None,
             pos: 2400.0,
             ends: (200.0, 4000.0),
             drive_polarity: true,
@@ -115,6 +122,36 @@ impl FakeServo {
             .wrapping_add(1442695040888963407);
         // uniform in [-0.5, 0.5) scaled by pos_noise
         ((self.lcg >> 11) as f64 / (1u64 << 53) as f64 - 0.5) * self.pos_noise
+    }
+
+    /// The raw count the pot reads at a true position: the count whose
+    /// linearization lands nearest it, found by bisection over the
+    /// monotone table.
+    fn raw_of(&self, counts: f64) -> u16 {
+        let Some(lut) = &self.pot else {
+            return counts.round().clamp(0.0, 4095.0) as u16;
+        };
+        let (mut lo, mut hi) = (0u16, 4095u16);
+        while lo < hi {
+            let mid = (lo + hi) / 2;
+            if lut.counts(mid) < counts {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        if lo > 0 && (lut.counts(lo - 1) - counts).abs() < (lut.counts(lo) - counts).abs() {
+            lo - 1
+        } else {
+            lo
+        }
+    }
+
+    fn q4_of(&self, raw: u16) -> u16 {
+        match &self.pot {
+            Some(lut) => lut.q4(raw),
+            None => raw << 4,
+        }
     }
 
     /// The duty the bridge actually sees: zero with torque off, and zero
@@ -259,7 +296,7 @@ impl FakeServo {
                     0.0
                 }
             };
-            let raw = (self.pos + noise).round().clamp(0.0, 4095.0) as u16;
+            let raw = self.raw_of(self.pos + noise);
             sink.push(TelFrame {
                 tick: k as u64,
                 window_valid: driving,
@@ -293,8 +330,7 @@ impl FakeServo {
                 }),
                 vbus_raw: sel(1 << 9).then_some(self.vbus as u16),
                 ntc_raw: sel(1 << 10).then_some(2048),
-                // the fake pot is linear: the identity Q4 word
-                pos_lin: sel(1 << 11).then_some(raw << 4),
+                pos_lin: sel(1 << 11).then(|| self.q4_of(raw)),
             });
         }
         self.t_ms += samples as f64 * dt * 1000.0;
@@ -328,9 +364,8 @@ impl FakeServo {
             Some((lo, hi)) if (lo..=hi).contains(&self.pos) => 80.0,
             _ => 0.0,
         };
-        let pos = (self.pos + glitch + self.noise())
-            .round()
-            .clamp(0.0, 4095.0) as u16;
+        let noise = self.noise();
+        let pos = self.raw_of(self.pos + glitch + noise);
         TelemetrySnapshot {
             fault_flags: if fault { 32 } else { 0 },
             fault_code: if fault { 6 } else { 0 },
@@ -603,6 +638,19 @@ impl SynthBurst {
             },
         }
     }
+}
+
+/// A pot bent by one full sine over its travel, +/-120 counts, identity
+/// at and beyond the fake's stops (200, 4000): local gain 0.8x..1.2x, so a
+/// raw-count fit over part of the travel is biased by the gain there.
+pub fn bent_pot() -> GridLut {
+    let mut lut = GridLut::IDENTITY;
+    let (lo, hi) = (13usize, 250usize);
+    for (k, c) in lut.knots.iter_mut().enumerate().take(hi).skip(lo + 1) {
+        let x = (k - lo) as f64 / (hi - lo) as f64;
+        *c = (120.0 * (core::f64::consts::TAU * x).sin()).round() as i16;
+    }
+    lut
 }
 
 fn reg_name(reg: Reg) -> &'static str {
