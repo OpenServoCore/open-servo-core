@@ -1384,3 +1384,40 @@ fn held_mask_and_count_arm_together_at_commit() {
         "arm sees the mask from the same COMMIT"
     );
 }
+
+#[test]
+fn permit_write_bumps_the_generation_only_when_set() {
+    use crate::regions::control::addr::lifecycle::{GOAL_DUTY, STALL_PERMIT, TORQUE_ENABLE};
+    let shared = Shared::new();
+    let mut staged = StagedWrites::new();
+    let mut pending = None;
+    let mut reply = FakeReply::new();
+    let mut go = |req| pass(&shared, &mut staged, &mut pending, &mut reply, req);
+
+    go(write(STALL_PERMIT, &[1], false));
+    assert_eq!(shared.permit_gen(), 0, "a request under torque off");
+
+    go(write(TORQUE_ENABLE, &[1], false));
+    assert_eq!(shared.permit_gen(), 0, "torque on alone grants nothing");
+    go(write(STALL_PERMIT, &[1], false));
+    assert_eq!(shared.permit_gen(), 1);
+    go(write(STALL_PERMIT, &[1], false));
+    assert_eq!(shared.permit_gen(), 2, "every rewrite of true renews");
+    go(write(STALL_PERMIT, &[0], false));
+    assert_eq!(shared.permit_gen(), 2, "false is no grant");
+    go(write(GOAL_DUTY, &[0, 0], false));
+    assert_eq!(shared.permit_gen(), 2, "a span that misses the byte");
+
+    // one span over torque and permit judges the committed pair
+    go(write(TORQUE_ENABLE, &[1, 1], false));
+    assert_eq!(shared.permit_gen(), 3);
+    go(write(TORQUE_ENABLE, &[0, 1], false));
+    assert_eq!(shared.permit_gen(), 3, "torque off in the same span");
+
+    // a held permit grants at its COMMIT, not at the staging
+    go(write(TORQUE_ENABLE, &[1], false));
+    go(write(STALL_PERMIT, &[1], true));
+    assert_eq!(shared.permit_gen(), 3, "staged, not committed");
+    go(Request::Commit);
+    assert_eq!(shared.permit_gen(), 4);
+}

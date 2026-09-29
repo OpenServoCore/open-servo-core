@@ -313,6 +313,148 @@ fn endstop_allows_retreat_from_the_wall() {
     assert_eq!(k.faults.mask(), 0);
 }
 
+// --- Stall permit lease ----------------------------------------------------
+
+/// FAST ticks per second at the 20 kHz rig rate.
+const SEC: u32 = 20_000;
+/// Past the top soft wall, at rest: the endstop closes the band's top side
+/// unless the permit lease is live.
+const PAST_WALL: u16 = 3500;
+
+fn permit_rig(sh: &Shared) -> Kernel<FakeIo> {
+    seed(sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.mode = Mode::OpenLoop;
+        t.control.lifecycle.torque_enable = true;
+        t.config.pos_limits.pos_max_soft_counts = 3000;
+    });
+    let mut k = kernel();
+    for _ in 0..400 {
+        k.on_tick(frame(PAST_WALL, BIAS), sh);
+    }
+    assert_eq!(k.i_band.hi, 0, "the endstop is closed before any permit");
+    k
+}
+
+/// What the dispatcher does for a committed write of `stall_permit = 1`.
+fn write_permit(sh: &Shared) {
+    use crate::regions::control::addr::lifecycle::STALL_PERMIT;
+    sh.table
+        .with_mut(|t| t.control.lifecycle.stall_permit = true);
+    sh.permit_after_commit(STALL_PERMIT, 1);
+}
+
+fn permit_live(k: &Kernel<FakeIo>) -> bool {
+    k.i_band.hi != 0
+}
+
+/// Ticks at the wall until the lease lapses; the ticks it took.
+fn ticks_to_lapse(k: &mut Kernel<FakeIo>, sh: &Shared, max: u32) -> u32 {
+    (1..=max)
+        .find(|_| {
+            k.on_tick(frame(PAST_WALL, BIAS), sh);
+            !permit_live(k)
+        })
+        .unwrap_or(max + 1)
+}
+
+#[test]
+fn permit_lease_expires_without_a_host() {
+    let sh = Shared::new();
+    let mut k = permit_rig(&sh);
+    write_permit(&sh);
+    let lapse = ticks_to_lapse(&mut k, &sh, 2 * SEC);
+    assert!(
+        (SEC * 99 / 100..=SEC * 101 / 100).contains(&lapse),
+        "lease lasted {lapse} ticks"
+    );
+    assert!(
+        sh.table.with(|t| t.control.lifecycle.stall_permit),
+        "the request byte is the host's: the kernel never clears it"
+    );
+    for _ in 0..SEC {
+        k.on_tick(frame(PAST_WALL, BIAS), &sh);
+        assert!(!permit_live(&k), "a lapsed lease stays lapsed");
+    }
+}
+
+#[test]
+fn permit_rewrite_extends_the_lease() {
+    let sh = Shared::new();
+    let mut k = permit_rig(&sh);
+    write_permit(&sh);
+    for _ in 0..SEC * 8 / 10 {
+        k.on_tick(frame(PAST_WALL, BIAS), &sh);
+    }
+    assert!(permit_live(&k));
+    write_permit(&sh);
+    for _ in 0..SEC * 8 / 10 {
+        k.on_tick(frame(PAST_WALL, BIAS), &sh);
+        assert!(permit_live(&k), "the rewrite renewed the lease");
+    }
+    let lapse = ticks_to_lapse(&mut k, &sh, SEC);
+    assert!(
+        (SEC * 19 / 100..=SEC * 21 / 100).contains(&lapse),
+        "a second from the rewrite, not the first write: {lapse} ticks more"
+    );
+    // a write of false revokes at the next MEDIUM pass
+    write_permit(&sh);
+    for _ in 0..DECIM_MED {
+        k.on_tick(frame(PAST_WALL, BIAS), &sh);
+    }
+    assert!(permit_live(&k));
+    sh.table
+        .with_mut(|t| t.control.lifecycle.stall_permit = false);
+    for _ in 0..DECIM_MED {
+        k.on_tick(frame(PAST_WALL, BIAS), &sh);
+    }
+    assert!(!permit_live(&k), "false revokes inside a MEDIUM tick");
+}
+
+#[test]
+fn torque_off_drops_the_permit() {
+    let sh = Shared::new();
+    let mut k = permit_rig(&sh);
+    write_permit(&sh);
+    for _ in 0..SEC / 10 {
+        k.on_tick(frame(PAST_WALL, BIAS), &sh);
+    }
+    assert!(permit_live(&k));
+    sh.table
+        .with_mut(|t| t.control.lifecycle.torque_enable = false);
+    for _ in 0..2 * DECIM_MED {
+        k.on_tick(frame(PAST_WALL, BIAS), &sh);
+    }
+    // re-enabled well inside the second the grant had left
+    sh.table
+        .with_mut(|t| t.control.lifecycle.torque_enable = true);
+    for _ in 0..SEC {
+        k.on_tick(frame(PAST_WALL, BIAS), &sh);
+        assert!(!permit_live(&k), "the lease outlived torque off");
+    }
+    assert!(sh.table.with(|t| t.control.lifecycle.stall_permit));
+}
+
+#[test]
+fn permit_written_with_torque_off_never_grants() {
+    let sh = Shared::new();
+    let mut k = permit_rig(&sh);
+    sh.table
+        .with_mut(|t| t.control.lifecycle.torque_enable = false);
+    for _ in 0..2 * DECIM_MED {
+        k.on_tick(frame(PAST_WALL, BIAS), &sh);
+    }
+    write_permit(&sh);
+    // torque back on before the next MEDIUM pass: the request alone, never
+    // rewritten under torque, is no grant
+    sh.table
+        .with_mut(|t| t.control.lifecycle.torque_enable = true);
+    for _ in 0..2 * SEC {
+        k.on_tick(frame(PAST_WALL, BIAS), &sh);
+        assert!(!permit_live(&k), "a torque-off request granted a lease");
+    }
+}
+
 #[test]
 fn undervolt_follows_the_rail_tap_through_bridge_off() {
     let sh = Shared::new();

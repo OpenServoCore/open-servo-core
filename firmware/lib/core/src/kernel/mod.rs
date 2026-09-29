@@ -40,6 +40,8 @@ use osc_units::Effort;
 pub const DECIM_MED: u8 = 10;
 /// MEDIUM -> SLOW decimation: SLOW_HZ = MED_HZ / DECIM_SLOW (62.5 Hz).
 pub const DECIM_SLOW: u8 = 32;
+/// Stall permit lease in SLOW ticks: 63 x 16 ms = 1.008 s from the grant.
+pub const PERMIT_LEASE_TICKS: u8 = 63;
 
 /// Finished constants the chip const-evals from `MOTOR_PWM_FREQ_HZ`, the
 /// TIM1 ARR and the board's dividers, so core never divides at runtime or
@@ -102,6 +104,10 @@ pub struct Kernel<I: ControlIo, T: TelStream = ()> {
     /// applies while its ceiling sits under that floor.
     ol_floor_q15: u16,
     ol_base_q15: u16,
+    /// SLOW ticks left on the stall permit lease, renewed when HIGH moves
+    /// `Shared::permit_gen` past `permit_gen`.
+    permit_ticks: u8,
+    permit_gen: u8,
     faults: faults::FaultLatch,
     det: faults::Detectors,
     booted: bool,
@@ -167,6 +173,8 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             ol: duty_limit::DutyLimiter::new(),
             ol_floor_q15: 0,
             ol_base_q15: 0,
+            permit_ticks: 0,
+            permit_gen: 0,
             faults: faults::FaultLatch::new(),
             det: faults::Detectors::new(),
             booted: false,
@@ -473,6 +481,14 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             } else {
                 prev_lim != 0 && self.i_ref_cc.unsigned_abs() >= prev_lim as u32
             };
+            let permit_gen = shared.permit_gen();
+            if permit_gen != self.permit_gen {
+                self.permit_gen = permit_gen;
+                self.permit_ticks = PERMIT_LEASE_TICKS;
+            }
+            if !life.torque_enable {
+                self.permit_ticks = 0;
+            }
             let lcfg = LimitCfg {
                 current_limit_counts: lim_cfg.current_limit_counts,
                 stall_response: lim_cfg.stall_response,
@@ -485,7 +501,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                 cutoff_cc: therm_cfg.cutoff_cc,
                 pos_min_soft_counts: pos_lim.pos_min_soft_counts,
                 pos_max_soft_counts: pos_lim.pos_max_soft_counts,
-                stall_permit: life.stall_permit,
+                stall_permit: life.stall_permit && self.permit_ticks != 0,
             };
             let omega_abs_cps = omega_pot.unsigned_abs() >> 16;
             let band = self.limits.fold(
@@ -604,6 +620,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                     self.timing.med_ticks_per_ms_q16,
                     16,
                 );
+                self.permit_ticks = self.permit_ticks.saturating_sub(1);
                 self.ol_floor_q15 = window::floor_duty(
                     sense.i_window_min_ticks,
                     self.timing.pwm_arr,
