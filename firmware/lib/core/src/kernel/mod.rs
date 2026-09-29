@@ -465,9 +465,14 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                 }
             }
 
-            // limits fold; pinned = last command sat at a nonzero ceiling
+            // limits fold; pinned = last command sat at a nonzero ceiling,
+            // in OpenLoop the duty ceiling held under the goal
             let prev_lim = self.limits.i_lim_counts();
-            let pinned = prev_lim != 0 && self.i_ref_cc.unsigned_abs() >= prev_lim as u32;
+            let pinned = if life.mode == Mode::OpenLoop {
+                self.ol.take_pinned()
+            } else {
+                prev_lim != 0 && self.i_ref_cc.unsigned_abs() >= prev_lim as u32
+            };
             let lcfg = LimitCfg {
                 current_limit_counts: lim_cfg.current_limit_counts,
                 stall_response: lim_cfg.stall_response,
