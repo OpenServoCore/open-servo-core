@@ -1576,6 +1576,49 @@ fn hold_stays_parked_under_pot_noise() {
     assert!(parked >= 36_000, "parked ticks {parked} of 40000");
 }
 
+/// A still pot at `raw` under a goal of `goal`: whether the loop parks.
+fn parks(sh: &Shared, raw: u16, goal: i32) -> bool {
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.goal_position = goal;
+        t.config.loop_position.pos_deadband_counts = 12;
+    });
+    let mut k = kernel();
+    for _ in 0..10_000 {
+        k.on_tick(frame(raw, BIAS), sh);
+    }
+    assert_eq!(k.faults.mask(), 0);
+    assert_eq!(k.traj.theta_star_q16(), goal << 16, "profile landed");
+    k.hold
+}
+
+/// Local gain 26/16 over raw 1600..2240: raw 1924 linearizes to 2126.5,
+/// where 12 raw counts are 19.5 linearized ones.
+#[test]
+fn hold_band_is_judged_in_raw_counts() {
+    let sh = Shared::new();
+    seed(&sh);
+    let mut k = [0i16; pos_lut::POINTS];
+    for (n, c) in k.iter_mut().enumerate().take(141).skip(100) {
+        *c = 10 * (n as i16 - 100);
+    }
+    sh.with_pos_lut_mut(|a| *a = k);
+    sh.table
+        .with_mut(|t| t.control.pos_lut.pos_lut_state = pos_lut::state::LIVE);
+    assert_eq!(sh.pos_lut_q4(1924), 34024);
+    assert!(parks(&sh, 1924, 2146));
+    assert!(!parks(&sh, 1924, 2147));
+    assert!(parks(&sh, 1924, 2107));
+    assert!(!parks(&sh, 1924, 2106));
+    // the identity: the band is the deadband
+    sh.table
+        .with_mut(|t| t.control.pos_lut.pos_lut_state = pos_lut::state::IDENTITY);
+    assert!(parks(&sh, 1924, 1936));
+    assert!(!parks(&sh, 1924, 1937));
+    assert!(parks(&sh, 1924, 1912));
+    assert!(!parks(&sh, 1924, 1911));
+}
+
 #[test]
 fn hold_freezes_and_drains_the_velocity_loop() {
     let sh = Shared::new();

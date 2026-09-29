@@ -30,6 +30,13 @@ pub const PAGES: usize = INTERVALS / PAGE_POINTS;
 const ADC_MASK: u16 = (1 << ADC_BITS) - 1;
 const FRAC_MASK: u16 = GRID as u16 - 1;
 const GAIN_MAX: i32 = 16;
+/// Clamp on the local gain the hold band scales by, Q4: 1/2 to 4. Pots
+/// measure 0.5 to 2.06 and scale in full; past the clamp the interval is a
+/// defect or a track jump. The floor keeps the band at least half the
+/// deadband in shaft angle, where the gear lash lives; the ceiling caps the
+/// park's position slack at four deadbands.
+pub const BAND_GAIN_MIN_Q4: u16 = GRID as u16 / 2;
+pub const BAND_GAIN_MAX_Q4: u16 = 4 * GRID as u16;
 
 /// `pos_lut_state` values. Plain consts, not an `Enum` derive: the field is
 /// RO, so no discriminant validation ever runs on it.
@@ -86,6 +93,14 @@ pub fn lerp_q4(raw: u16, c0: i16, c1: i16) -> u16 {
     (((raw as i32 + c0 as i32) << GRID_SHIFT) + (c1 as i32 - c0 as i32) * f) as u16
 }
 
+/// The interval's local gain `16 + c1 - c0` (Q4, the `d` [`validate`]
+/// bounds), clamped for the hold band.
+#[inline(always)]
+pub fn band_gain_q4(c0: i16, c1: i16) -> u16 {
+    (GRID as i32 + c1 as i32 - c0 as i32).clamp(BAND_GAIN_MIN_Q4 as i32, BAND_GAIN_MAX_Q4 as i32)
+        as u16
+}
+
 /// What the all-zero table yields: `raw << GRID_SHIFT`.
 #[inline(always)]
 pub fn identity_q4(raw: u16) -> u16 {
@@ -139,12 +154,26 @@ impl Shared {
     /// a disabled servo, whose observer reseeds at the next enable.
     #[inline(always)]
     pub fn pos_lut_q4(&self, raw: u16) -> u16 {
+        let (c0, c1) = self.pos_lut_points(raw);
+        lerp_q4(raw, c0, c1)
+    }
+
+    /// [`band_gain_q4`] of the interval `raw` falls in: the same two loads
+    /// under the same contract as [`Self::pos_lut_q4`].
+    #[inline(always)]
+    pub fn pos_lut_band_gain_q4(&self, raw: u16) -> u16 {
+        let (c0, c1) = self.pos_lut_points(raw);
+        band_gain_q4(c0, c1)
+    }
+
+    #[inline(always)]
+    fn pos_lut_points(&self, raw: u16) -> (i16, i16) {
         let i = index(raw);
         let k = self.pos_lut_ptr().cast::<i16>();
         // SAFETY: `index` keeps i + 1 <= INTERVALS < POINTS, both loads stay
-        // inside the static array; single-writer contract in the fn doc.
-        let (c0, c1) = unsafe { (k.add(i).read_volatile(), k.add(i + 1).read_volatile()) };
-        lerp_q4(raw, c0, c1)
+        // inside the static array; single-writer contract in the
+        // `pos_lut_q4` doc.
+        unsafe { (k.add(i).read_volatile(), k.add(i + 1).read_volatile()) }
     }
 
     /// Run the command a committed write left in `pos_lut_cmd`, then clear it.
@@ -402,6 +431,45 @@ mod tests {
     #[test]
     fn validate_accepts_sg90_class_6x_interval() {
         assert_eq!(validate(&step(80), 209, 3849), Ok(()));
+    }
+
+    /// Intervals at the validation extremes, d = 1 and d = 255, land on the
+    /// clamp; inside it the gain is the interval's own.
+    #[test]
+    fn deadband_scale_is_clamped() {
+        let sh = Shared::new();
+        let k = table(&[(100, 15)]);
+        assert_eq!(validate(&k, 209, 3849), Ok(()));
+        sh.with_pos_lut_mut(|a| *a = k);
+        assert_eq!(sh.pos_lut_band_gain_q4(99 * 16 + 5), 31);
+        assert_eq!(
+            sh.pos_lut_band_gain_q4(100 * 16 + 5),
+            BAND_GAIN_MIN_Q4,
+            "d 1"
+        );
+        let k = step(239);
+        assert_eq!(validate(&k, 209, 3849), Ok(()));
+        sh.with_pos_lut_mut(|a| *a = k);
+        assert_eq!(sh.pos_lut_band_gain_q4(99 * 16 + 5), GRID as u16);
+        assert_eq!(
+            sh.pos_lut_band_gain_q4(100 * 16 + 5),
+            BAND_GAIN_MAX_Q4,
+            "d 255"
+        );
+        assert_eq!(
+            sh.pos_lut_band_gain_q4(101 * 16 + 5),
+            BAND_GAIN_MIN_Q4,
+            "d 1"
+        );
+        for (c0, c1, g) in [
+            (0, -8, 8),
+            (0, -9, 8),
+            (0, 48, 64),
+            (0, 49, 64),
+            (3, 13, 26),
+        ] {
+            assert_eq!(band_gain_q4(c0, c1), g, "{c0} {c1}");
+        }
     }
 
     #[test]

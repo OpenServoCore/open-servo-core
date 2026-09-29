@@ -450,9 +450,17 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                 match life.mode {
                     Mode::Position => {
                         self.traj.step_position(life.goal_position, &tc);
+                        // the interval this tick linearized in: same raw
+                        // sample, same torque-gated table as the FAST read
+                        let band_gain_q4 = if pos_lut_state == pos_lut::state::LIVE {
+                            shared.pos_lut_band_gain_q4(frame.pos)
+                        } else {
+                            pos_lut::GRID as u16
+                        };
                         let pc = PositionCfg {
                             kp_q88: loop_pos.p_kp_q88,
                             pos_deadband_counts: loop_pos.pos_deadband_counts,
+                            band_gain_q4,
                             vel_limit_cps: loop_pos.velocity_limit_cps,
                         };
                         let out = position::step(

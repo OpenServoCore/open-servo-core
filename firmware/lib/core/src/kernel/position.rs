@@ -5,6 +5,10 @@
 //! hold predicate tells the kernel to park (Brake) inside the deadband
 //! instead of dithering against friction.
 //!
+//! The deadband is raw counts of the position sensor, where its noise and
+//! quantisation live, while the error is linearized: the band is the
+//! deadband times the table's local gain at the present position.
+//!
 //! Hold gates on POSITION rest alone (profile stopped, error inside the
 //! deadband) - never on omega_hat. The fused omega is pot-noise driven at
 //! rest and the velocity loop amplifies it (bench + integer-sim: a ~3x
@@ -23,14 +27,21 @@ use crate::math::q_mul;
 /// beyond vel_limit, so the flat region costs nothing; the hold predicate
 /// compares the RAW error, never this clamp.
 const E_LIM_CQ16: i32 = 1 << 23;
+/// Band ceiling in Q4 counts: shifted to cQ16 it is 2^32 - 2^12, past any
+/// |error| (2^31), so the product saturates instead of wrapping. The
+/// identity's largest band, 65535 x 16, sits under it.
+const BAND_SAT_Q4: u32 = (1 << 20) - 1;
 
 /// CONFIG loop_position gain + hold fields, loaded fresh each step by the
 /// kernel (`CurrentGains` convention).
 #[derive(Copy, Clone)]
 pub struct PositionCfg {
     pub kp_q88: u16,
-    /// 0 disables the hold predicate entirely.
+    /// Raw sensor counts; 0 disables the hold predicate entirely.
     pub pos_deadband_counts: u16,
+    /// Linearized counts per raw count at the present position, Q4 (16 at
+    /// the identity), clamped (`pos_lut::band_gain_q4`).
+    pub band_gain_q4: u16,
     pub vel_limit_cps: u16,
 }
 
@@ -57,11 +68,9 @@ pub fn step(
     let omega_ref = q_mul(cfg.kp_q88 as i32, e, 8)
         .saturating_add(omega_star_q16)
         .clamp(-v_lim, v_lim);
-    // raw-magnitude compares as u32: deadband << 16 can reach 2^32 - 2^16,
-    // past i32
-    let hold = cfg.pos_deadband_counts != 0
-        && e_raw.unsigned_abs() <= (cfg.pos_deadband_counts as u32) << 16
-        && omega_star_q16 == 0;
+    // raw-magnitude compares as u32: the band reaches 2^32 - 2^12, past i32
+    let band = (cfg.pos_deadband_counts as u32 * cfg.band_gain_q4 as u32).min(BAND_SAT_Q4) << 12;
+    let hold = cfg.pos_deadband_counts != 0 && e_raw.unsigned_abs() <= band && omega_star_q16 == 0;
     PosOut {
         omega_ref_q16: omega_ref,
         hold,
@@ -76,8 +85,29 @@ mod tests {
         PositionCfg {
             kp_q88: kp,
             pos_deadband_counts: db,
+            band_gain_q4: 16,
             vel_limit_cps: vl,
         }
+    }
+
+    #[test]
+    fn hold_band_scales_by_the_local_gain() {
+        // gain 26/16: 12 raw counts span 19.5 linearized
+        let cfg = PositionCfg {
+            band_gain_q4: 26,
+            ..c(1 << 8, 12, 32767)
+        };
+        assert!(step(39 << 15, 0, 0, &cfg).hold);
+        assert!(step(0, 0, 39 << 15, &cfg).hold);
+        assert!(!step((39 << 15) + 1, 0, 0, &cfg).hold);
+        assert!(!step(0, 0, (39 << 15) + 1, &cfg).hold);
+        // the largest deadband at the ceiling saturates past any error
+        let cfg = PositionCfg {
+            band_gain_q4: 64,
+            ..c(1 << 8, 65535, 32767)
+        };
+        assert!(step(i32::MAX, 0, i32::MIN, &cfg).hold);
+        assert!(step(i32::MIN, 0, i32::MAX, &cfg).hold);
     }
 
     #[test]
