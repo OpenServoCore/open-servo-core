@@ -1,6 +1,7 @@
 //! Park: drive the horn back to a centre count open-loop, then torque off,
-//! so the next run starts from mid travel instead of a stop. A shaft that
-//! comes to rest on the way is blocked: the park gives up, torque off.
+//! so the next run starts from mid travel instead of a stop. It drives at
+//! the caller's seek duty and never raises it: a shaft that comes to rest on
+//! the way is blocked, and the park gives up, torque off.
 
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -15,24 +16,21 @@ use osc_ident::regs::control;
 
 use super::Aborted;
 use super::pump::{STOP, read_snapshot, write_reg};
-use crate::sweep::pct_q15;
 
 /// Counts either side of the centre that count as parked; the bench
 /// centring script's band.
 const PARK_TOL: u16 = 60;
-/// Park drive, percent of full scale; the same script's duty.
-const PARK_DUTY_PCT: u8 = 15;
 /// Poll budget: 300 x `PARK_POLL` bounds the drive at 6 s.
 const PARK_POLLS: u32 = 300;
 const PARK_POLL: Duration = Duration::from_millis(20);
 
-/// Signed drive toward `center`, or None when `pos` is already within
-/// `PARK_TOL` of it.
-fn park_duty(pos: u16, center: u16) -> Option<i32> {
+/// Signed drive of `duty_q15` toward `center`, or None when `pos` is
+/// already within `PARK_TOL` of it.
+fn park_duty(pos: u16, center: u16, duty_q15: i16) -> Option<i32> {
     if pos.abs_diff(center) <= PARK_TOL {
         return None;
     }
-    let mag = pct_q15(PARK_DUTY_PCT) as i32;
+    let mag = duty_q15 as i32;
     Some(if pos < center { mag } else { -mag })
 }
 
@@ -57,12 +55,12 @@ fn poll(watch: &mut Watch, pos: u16, center: u16, duty: i32) -> Result<bool, Abo
 /// Re-centre the horn, then zero the duty and torque off whatever happened.
 /// Reaching the poll budget short of the band is not an error: the shaft is
 /// left where it got to.
-pub(crate) fn park(c: &mut Client<NusbPipe>, id: Id, center: u16) -> Result<()> {
+pub(crate) fn park(c: &mut Client<NusbPipe>, id: Id, center: u16, duty_q15: i16) -> Result<()> {
     let start = read_snapshot(c, id)?.pos;
     println!("park: pos {start} -> centre {center}");
     let stopped = || STOP.load(Ordering::SeqCst);
     let drove = (|| -> Result<()> {
-        let Some(duty) = park_duty(start, center) else {
+        let Some(duty) = park_duty(start, center, duty_q15) else {
             return Ok(());
         };
         if stopped() {
@@ -102,27 +100,30 @@ pub(crate) fn park(c: &mut Client<NusbPipe>, id: Id, center: u16) -> Result<()> 
 mod tests {
     use super::*;
 
+    /// The bench servo's seek by its stored R: 15% of 32767.
+    const SEEK: i16 = 4915;
+
     #[test]
     fn inside_the_band_does_not_drive() {
-        assert_eq!(park_duty(2029, 2029), None);
-        assert_eq!(park_duty(2029 - PARK_TOL, 2029), None);
-        assert_eq!(park_duty(2029 + PARK_TOL, 2029), None);
+        assert_eq!(park_duty(2029, 2029, SEEK), None);
+        assert_eq!(park_duty(2029 - PARK_TOL, 2029, SEEK), None);
+        assert_eq!(park_duty(2029 + PARK_TOL, 2029, SEEK), None);
     }
 
     #[test]
     fn outside_the_band_drives_toward_the_centre() {
-        // 15% of 32767, the value the bench script wrote
-        assert_eq!(park_duty(209, 2029), Some(4915));
-        assert_eq!(park_duty(2029 - PARK_TOL - 1, 2029), Some(4915));
-        assert_eq!(park_duty(3849, 2029), Some(-4915));
-        assert_eq!(park_duty(2029 + PARK_TOL + 1, 2029), Some(-4915));
+        assert_eq!(park_duty(209, 2029, SEEK), Some(4915));
+        assert_eq!(park_duty(2029 - PARK_TOL - 1, 2029, SEEK), Some(4915));
+        assert_eq!(park_duty(3849, 2029, SEEK), Some(-4915));
+        assert_eq!(park_duty(2029 + PARK_TOL + 1, 2029, SEEK), Some(-4915));
+        assert_eq!(park_duty(3849, 2029, 5242), Some(-5242), "the duty given");
     }
 
     /// A shaft that does not move - jammed, or a pot that is not reading -
     /// ends the park within one stillness window; a moving one never does.
     #[test]
     fn park_gives_up_on_a_blocked_shaft() {
-        let duty = park_duty(2600, 2029).unwrap();
+        let duty = park_duty(2600, 2029, SEEK).unwrap();
         let mut watch = Watch::new(2600, STALL_EPS, STALL_POLLS);
         let polls: Vec<_> = (0..STALL_POLLS)
             .map(|k| poll(&mut watch, 2600 + (k % 2) as u16, 2029, duty))

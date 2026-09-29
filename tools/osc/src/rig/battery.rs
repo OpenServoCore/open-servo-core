@@ -102,7 +102,7 @@ pub(crate) fn drive_gate(rail_mv: u32, pack_mv: Option<u32>) -> Verdict {
 }
 
 /// The rail and the pack, mV, as read now.
-fn read<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<(u32, Option<u32>)> {
+pub(crate) fn read<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<(u32, Option<u32>)> {
     let rail = rail_mv(
         read_u16(c, id, telemetry::VBUS_RAW)?,
         read_u16(c, id, calib::VDD_MV)?,

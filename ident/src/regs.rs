@@ -30,8 +30,13 @@ pub mod config {
     pub const P_KP_Q88: Reg = reg(0x0040, 2);
     pub const POS_DEADBAND_COUNTS: Reg = reg(0x0042, 2);
     pub const CURRENT_LIMIT_COUNTS: Reg = reg(0x0048, 2);
+    /// 0 = a stall latches a fault, 1 = it folds the limit to the yield.
+    pub const STALL_RESPONSE: Reg = reg(0x004a, 1);
     pub const DRIVE_POLARITY: Reg = reg(0x004b, 1);
+    pub const STALL_TIME_MS: Reg = reg(0x004e, 2);
     pub const STALL_YIELD_COUNTS: Reg = reg(0x0050, 2);
+    /// The fold holds while the disturbance estimate reads this or more.
+    pub const STALL_RELEASE_COUNTS: Reg = reg(0x0052, 2);
     pub const STALL_TAU_TRIP_COUNTS: Reg = reg(0x0054, 2);
     pub const V_UNDERVOLT_COUNTS: Reg = reg(0x0062, 2);
     pub const RTHERM_I_MIN_COUNTS: Reg = reg(0x0064, 2);
@@ -190,8 +195,11 @@ pub const ALL: &[(&str, Reg)] = &[
     ("p_kp_q88", config::P_KP_Q88),
     ("pos_deadband_counts", config::POS_DEADBAND_COUNTS),
     ("current_limit_counts", config::CURRENT_LIMIT_COUNTS),
+    ("stall_response", config::STALL_RESPONSE),
     ("drive_polarity", config::DRIVE_POLARITY),
+    ("stall_time_ms", config::STALL_TIME_MS),
     ("stall_yield_counts", config::STALL_YIELD_COUNTS),
+    ("stall_release_counts", config::STALL_RELEASE_COUNTS),
     ("stall_tau_trip_counts", config::STALL_TAU_TRIP_COUNTS),
     ("v_undervolt_counts", config::V_UNDERVOLT_COUNTS),
     ("rtherm_i_min_counts", config::RTHERM_I_MIN_COUNTS),

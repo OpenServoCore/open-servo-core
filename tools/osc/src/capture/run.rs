@@ -1,36 +1,37 @@
-//! `osc capture session`: the campaign. Battery gate, a discarded warm-up,
-//! then per capture each recording up to RECORDING_TRIES times, the horn
-//! parked at centre and torqued off between recordings and at the end of
-//! every run. Only a landed `.csv.gz` marks a recording done, so a rerun
-//! resumes where the last one stopped.
+//! `osc capture session`: the campaign. The capture front, a discarded
+//! warm-up, then per capture the front and the jam check again and each
+//! recording up to RECORDING_TRIES times, the pack read at rest before every
+//! try, the horn parked at centre and torqued off between recordings and at
+//! the end of every run. A blocked shaft ends the run where it stopped, with
+//! no retry and no park. Only a landed `.csv.gz` marks a recording done, so a
+//! rerun resumes where the last one stopped.
 
 use std::ffi::OsString;
 use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::ops::RangeInclusive;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 use osc_client::blocking::Client;
 use osc_client::nusb::NusbPipe;
 use osc_client::pipe::PipeError;
 use osc_client::{Id, LinkError};
-use osc_ident::regs::config;
 
 use super::envelope::{Envelope, civil_date};
+use super::front::{self, Front, Proved};
 use super::plan::{self, Plan};
 use super::procs::Procedure;
 use super::store::{Capture, CaptureMeta, Decl, PosLutFile, Store};
 use super::verdict::verdict;
-use super::{RULE, RUNG_TRIES, SEEK_CAP_PCT, SETTLE_MS, Supply, WINDOW_MS};
+use super::{RULE, RUNG_TRIES, SETTLE_MS, Supply, WINDOW_MS};
 use crate::rig::battery::{self, read_pack_mv};
-use crate::rig::park;
 use crate::rig::plant::{self, Snapshot};
-use crate::rig::pump::{self, STOP, read_snapshot};
-use crate::rig::snapshot::read_u16;
+use crate::rig::pump::{self, STOP, read_snapshot, with_guard};
+use crate::rig::{blocked, centre, park};
 use crate::sweep::{self, Cfg, Dirs};
 
 /// `osc capture session` args.
@@ -137,13 +138,14 @@ pub(crate) fn run(a: &Args, baud: String, id: u8) -> Result<()> {
 
     pump::install_ctrlc();
     let mut c = crate::rig::connect(&baud)?;
-    crate::state::check(&mut c, Id::new(id))?;
-    let limit = read_u16(&mut c, Id::new(id), config::CURRENT_LIMIT_COUNTS)?;
+    let env_path = dir.join("envelope.toml");
+    let front = front::read(&mut c, Id::new(id), a.supply)?;
+    front.check_envelope(&env, &env_path)?;
     let decl = Decl {
         servo: a.servo.clone(),
         supply: a.supply,
         rule: RULE,
-        current_limit_counts: Some(limit),
+        current_limit_counts: Some(front.lim.i_lim),
         captured: civil_date(now()),
         notes: None,
     };
@@ -161,10 +163,13 @@ pub(crate) fn run(a: &Args, baud: String, id: u8) -> Result<()> {
         log: &mut log,
         dataset: dataset_name,
         plant: None,
+        env_path,
+        front,
+        proved: None,
     };
     let r = s.campaign(warmup.as_ref(), &jobs, a.redo);
     s.recheck_plant();
-    s.finish();
+    s.finish(r.as_ref().err());
     match r {
         Ok(()) => {
             s.log.line("session DONE");
@@ -184,6 +189,8 @@ enum Stop {
     Failed(String),
     AdapterLost,
     Battery(String),
+    /// Nothing may drive the shaft again, not even to park it.
+    Blocked(String),
     Interrupted,
     Error(anyhow::Error),
 }
@@ -196,6 +203,7 @@ impl Stop {
             Stop::Failed(_) | Stop::Error(_) => 1,
             Stop::AdapterLost => 2,
             Stop::Battery(_) => 3,
+            Stop::Blocked(_) => front::BLOCKED_EXIT,
             Stop::Interrupted => 130,
         }
     }
@@ -207,6 +215,7 @@ impl fmt::Display for Stop {
             Stop::Failed(m) => write!(f, "{m}"),
             Stop::AdapterLost => f.write_str("adapter lost - replug and rerun"),
             Stop::Battery(m) => write!(f, "battery: {m}"),
+            Stop::Blocked(m) => write!(f, "{m}"),
             Stop::Interrupted => f.write_str("interrupted"),
             Stop::Error(e) => write!(f, "{e:#}"),
         }
@@ -219,6 +228,8 @@ enum Kind {
     Interrupted,
     /// The link is gone or poisoned: reconnect.
     Lost,
+    /// A drive found the shaft blocked: nothing drives it again.
+    Blocked,
     /// The servo side: a reject, a timeout, a seek that gave up.
     Other,
 }
@@ -234,7 +245,13 @@ fn kind(e: &anyhow::Error, stopped: bool) -> Kind {
                 Some(osc_client::Error::Pipe(_) | osc_client::Error::Link(LinkError::Desync(_)))
             )
     });
-    if lost { Kind::Lost } else { Kind::Other }
+    if lost {
+        Kind::Lost
+    } else if blocked(e) {
+        Kind::Blocked
+    } else {
+        Kind::Other
+    }
 }
 
 fn stopped() -> bool {
@@ -246,6 +263,7 @@ enum Outcome {
     Accepted { segs: usize },
     Rejected(String),
     Lost(String),
+    Blocked(String),
     Interrupted,
 }
 
@@ -253,6 +271,7 @@ fn outcome_of(e: &anyhow::Error) -> Outcome {
     match kind(e, stopped()) {
         Kind::Interrupted => Outcome::Interrupted,
         Kind::Lost => Outcome::Lost(format!("{e:#}")),
+        Kind::Blocked => Outcome::Blocked(format!("{e:#}")),
         Kind::Other => Outcome::Rejected(format!("{e:#}")),
     }
 }
@@ -264,11 +283,12 @@ enum Next {
     Reconnect,
     Failed,
     AdapterLost,
+    Blocked(String),
     Interrupted,
 }
 
 /// One recording's try accounting: a reject spends a try, an adapter loss
-/// redoes the try without spending it.
+/// redoes the try without spending it, a blocked shaft ends the run.
 #[derive(Default)]
 struct Tries {
     rejected: u32,
@@ -285,6 +305,7 @@ impl Tries {
         match o {
             Outcome::Accepted { .. } => Next::Done,
             Outcome::Interrupted => Next::Interrupted,
+            Outcome::Blocked(why) => Next::Blocked(why.clone()),
             Outcome::Rejected(_) => {
                 self.rejected += 1;
                 if self.rejected < RECORDING_TRIES {
@@ -363,8 +384,8 @@ fn declare(store: &Store, decl: &Decl) -> Result<bool> {
 }
 
 /// A session recording: the plan's schedule both ways at the procedure's
-/// pacing, between the envelope's guards.
-fn cfg(p: &Procedure, env: &Envelope, plan: &Plan) -> Cfg {
+/// pacing, between the envelope's guards, the seeks at the jam check's duty.
+fn cfg(p: &Procedure, env: &Envelope, plan: &Plan, proved: &Proved) -> Cfg {
     Cfg {
         steps: plan.schedule.clone(),
         dirs: Dirs::Both,
@@ -372,8 +393,8 @@ fn cfg(p: &Procedure, env: &Envelope, plan: &Plan) -> Cfg {
         window_ms: WINDOW_MS,
         rest_ms: p.rest_ms,
         baseline_ms: p.baseline_ms,
-        seek_duty_pct: p.seek_pct,
-        seek_cap_pct: SEEK_CAP_PCT,
+        seek_duty_pct: proved.seek_pct(),
+        seek_cap_pct: proved.cap_pct(),
         settle_ms: SETTLE_MS,
         stall: false,
         static_load: false,
@@ -476,6 +497,12 @@ struct Session<'a> {
     dataset: String,
     /// The plant as read at the start, for the end-of-run recheck.
     plant: Option<Snapshot>,
+    env_path: PathBuf,
+    /// The servo as the front last read it.
+    front: Front,
+    /// What the last jam check proved; None until one did, and while the
+    /// next one runs.
+    proved: Option<Proved>,
 }
 
 impl Session<'_> {
@@ -499,7 +526,7 @@ impl Session<'_> {
         }
         self.record_plant(fw)?;
         if let Some((n, plans)) = warmup {
-            self.gate()?;
+            self.prove()?;
             self.log
                 .line(format_args!("warm-up: capture-{n}'s plan, discarded"));
             let cap = Capture::warmup(self.store, EXPERIMENT, *n).map_err(Stop::Error)?;
@@ -511,7 +538,7 @@ impl Session<'_> {
             self.cooldown()?;
         }
         for (i, (n, plans)) in jobs.iter().enumerate() {
-            self.gate()?;
+            self.prove()?;
             let order: Vec<String> = plans
                 .iter()
                 .map(|pl| {
@@ -559,15 +586,17 @@ impl Session<'_> {
     }
 
     fn recording(&mut self, cap: &Capture, plan: &Plan, label: &str) -> Result<(), Stop> {
-        let cfg = cfg(self.p, self.env, plan);
         let name = &plan.recording;
         let mut tries = Tries::default();
         loop {
             if stopped() {
                 return Err(Stop::Interrupted);
             }
+            self.gate()?;
+            let proved = self.proved()?;
+            let cfg = cfg(self.p, self.env, plan, &proved);
             let attempt = tries.attempt();
-            let outcome = self.attempt(cap, plan, &cfg, attempt)?;
+            let outcome = self.attempt(cap, plan, &cfg, &proved, attempt)?;
             match &outcome {
                 Outcome::Accepted { segs } => self.log.line(format_args!(
                     "  {label}/{name}: {segs} segs clean (try {attempt})"
@@ -578,6 +607,9 @@ impl Session<'_> {
                 Outcome::Lost(why) => self
                     .log
                     .line(format_args!("  ADAPTER GONE during {label}/{name}: {why}")),
+                Outcome::Blocked(why) => self
+                    .log
+                    .line(format_args!("  BLOCKED {label}/{name}: {why}")),
                 Outcome::Interrupted => {
                     self.log.line(format_args!("  {label}/{name}: interrupted"))
                 }
@@ -595,6 +627,7 @@ impl Session<'_> {
                     )));
                 }
                 Next::AdapterLost => return Err(Stop::AdapterLost),
+                Next::Blocked(why) => return Err(Stop::Blocked(why)),
                 Next::Interrupted => return Err(Stop::Interrupted),
             }
         }
@@ -606,11 +639,13 @@ impl Session<'_> {
         cap: &Capture,
         plan: &Plan,
         cfg: &Cfg,
+        proved: &Proved,
         attempt: u32,
     ) -> Result<Outcome, Stop> {
         let (id, supply) = (self.id, self.supply);
+        let drive = self.front.drive(proved);
         let c = self.client()?;
-        let meta = match sweep::meta(c, id, cfg) {
+        let meta = match sweep::meta(c, id, cfg, drive) {
             Ok(m) => m,
             Err(e) => return Ok(outcome_of(&e)),
         };
@@ -744,9 +779,39 @@ impl Session<'_> {
         pause(REBOOT_WAIT)
     }
 
+    /// Park at the jam check's duty; a shaft not proven free stays put.
     fn park(&mut self) -> Result<(), Stop> {
-        let center = self.env.limits.center;
-        self.on_servo(|c, id| park::park(c, id, center))
+        let Some(p) = self.proved else {
+            return Ok(());
+        };
+        let (center, duty) = (self.env.limits.center, p.seek_q15());
+        self.on_servo(|c, id| with_guard(c, id, |c| park::park(c, id, center, duty)))
+    }
+
+    fn proved(&self) -> Result<Proved, Stop> {
+        self.proved
+            .ok_or_else(|| Stop::Error(anyhow!("no jam check proved the shaft free")))
+    }
+
+    /// The front and the jam check again, on a servo a cooldown or a lost
+    /// link may have rebooted: its RAM settings are the saved ones again.
+    fn prove(&mut self) -> Result<(), Stop> {
+        self.proved = None;
+        let (supply, env, path) = (self.supply, self.env, self.env_path.clone());
+        let (front, proved) = self.on_servo(|c, id| prove(c, id, supply, env, &path))?;
+        self.proved_by(front, proved);
+        Ok(())
+    }
+
+    fn proved_by(&mut self, front: Front, proved: Proved) {
+        self.log.line(format_args!(
+            "jam check: the shaft moves at {:.1}%, seeks at {}%, raised off a stop up to {}%",
+            proved.moved * 100.0,
+            proved.seek_pct(),
+            proved.cap_pct()
+        ));
+        self.front = front;
+        self.proved = Some(proved);
     }
 
     /// `f` on the servo; an adapter loss reconnects and runs it again.
@@ -762,6 +827,7 @@ impl Session<'_> {
             };
             match kind(&e, stopped()) {
                 Kind::Interrupted => return Err(Stop::Interrupted),
+                Kind::Blocked => return Err(Stop::Blocked(format!("{e:#}"))),
                 Kind::Other => return Err(Stop::Error(e)),
                 Kind::Lost => {
                     self.log.line(format_args!("  ADAPTER GONE: {e:#}"));
@@ -773,9 +839,11 @@ impl Session<'_> {
     }
 
     /// Drop the dead link and reopen it within RECONNECT, then reboot the
-    /// servo and park. A servo whose host vanished mid-rung may have driven
-    /// on to the soft limit; the reboot and park start the redo clean.
+    /// servo, read it again and prove the shaft free. A servo whose host
+    /// vanished mid-rung may have driven on to the soft limit; the reboot and
+    /// the jam check, which ends at mid travel, start the redo clean.
     fn reconnect(&mut self) -> Result<(), Stop> {
+        self.proved = None;
         // The old handle holds the interface claim; the new open needs it.
         self.c = None;
         self.log.line(format_args!(
@@ -795,38 +863,72 @@ impl Session<'_> {
         };
         self.c = Some(c);
         self.log.line(format_args!(
-            "  adapter back after {} s: reboot, park, redo",
+            "  adapter back after {} s: reboot, jam check, redo",
             t0.elapsed().as_secs()
         ));
         let lost = |e: anyhow::Error| match kind(&e, stopped()) {
             Kind::Interrupted => Stop::Interrupted,
             Kind::Lost => Stop::AdapterLost,
+            Kind::Blocked => Stop::Blocked(format!("{e:#}")),
             Kind::Other => Stop::Error(e),
         };
-        let (id, center) = (self.id, self.env.limits.center);
+        let (id, supply, env) = (self.id, self.supply, self.env);
         let r = self.client()?.reboot(id);
         r.map_err(|e| lost(e.into()))?;
         pause(REBOOT_WAIT)?;
-        park::park(self.client()?, id, center).map_err(lost)
+        let path = self.env_path.clone();
+        let (front, proved) = prove(self.client()?, id, supply, env, &path).map_err(lost)?;
+        self.proved_by(front, proved);
+        Ok(())
     }
 
-    /// Every run ends at centre, torque off. Ctrl-c is cleared first so the
-    /// park drives; a second ctrl-c cuts the drive short and still torques
-    /// off.
-    fn finish(&mut self) {
+    /// Every run ends at centre, torque off and the permit clear. Ctrl-c is
+    /// cleared first so the park drives; a second ctrl-c cuts the drive
+    /// short and still torques off.
+    fn finish(&mut self, stop: Option<&Stop>) {
         STOP.store(false, Ordering::SeqCst);
         let (id, center) = (self.id, self.env.limits.center);
-        match self.c.as_mut() {
-            Some(c) => {
-                if let Err(e) = park::park(c, id, center) {
-                    self.log.line(format_args!("park failed: {e:#}"));
-                }
-            }
-            None => self
-                .log
-                .line("no adapter: the servo was left where it stopped"),
+        let duty = end_park(stop, self.proved.as_ref());
+        let Some(c) = self.c.as_mut() else {
+            self.log
+                .line("no adapter: the servo was left where it stopped");
+            return;
+        };
+        let r = with_guard(c, id, |c| match duty {
+            Some(duty) => park::park(c, id, center, duty),
+            None => Ok(()),
+        });
+        if let Err(e) = r {
+            self.log.line(format_args!("park failed: {e:#}"));
+        }
+        if duty.is_none() {
+            self.log
+                .line("the shaft was left where it stopped, torque off");
         }
     }
+}
+
+/// The duty the run's last park drives at: none after a blocked shaft,
+/// which nothing may drive again, or before a jam check proved it free.
+fn end_park(stop: Option<&Stop>, proved: Option<&Proved>) -> Option<i16> {
+    match stop {
+        Some(Stop::Blocked(_)) => None,
+        _ => proved.map(Proved::seek_q15),
+    }
+}
+
+/// The front, the envelope it must match and the jam check, on the servo.
+fn prove(
+    c: &mut Client<NusbPipe>,
+    id: Id,
+    supply: Supply,
+    env: &Envelope,
+    env_path: &Path,
+) -> Result<(Front, Proved)> {
+    let front = front::read(c, id, supply)?;
+    front.check_envelope(env, env_path)?;
+    let proved = front.jam_check(|exp| centre::drive(c, id, exp))?;
+    Ok((front, proved))
 }
 
 #[cfg(test)]
@@ -837,6 +939,10 @@ mod tests {
     use crate::capture::verdict::expected_segments;
     use crate::sweep::Decay;
     use osc_client::ResultCode;
+    use osc_ident::exp::AbortReason;
+    use osc_ident::exp::testkit::{FakeServo, bench_mg90, pump};
+    use osc_ident::limits::{CLASS_R_MIN, ServoLimits, q15_floor};
+    use osc_ident::regs::control;
 
     #[test]
     fn todo_skips_landed_and_resumes_half_done() {
@@ -1050,20 +1156,153 @@ mod tests {
         let mut env = envelope::mg90();
         env.windows_ms = crate::capture::pilot::windows(env.v_ss.used(), env.limits.runway);
         let plans = plan::expand(&p, &env, 2).unwrap();
-        let c = cfg(&p, &env, &plans[1]);
+        let c = cfg(&p, &env, &plans[1], &proved(0.13));
         assert_eq!(c.steps, plans[1].schedule);
         assert_eq!(c.decay, Decay::Fast);
         assert_eq!(c.dirs, Dirs::Both);
         assert_eq!(c.guard, (532, 3526));
         // the bench session's pacing
-        assert_eq!(
-            (c.rest_ms, c.baseline_ms, c.seek_duty_pct, c.tel_mask),
-            (1500, 1000, 15, 0x1cd)
-        );
+        assert_eq!((c.rest_ms, c.baseline_ms, c.tel_mask), (1500, 1000, 0x1cd));
+        assert_eq!((c.seek_duty_pct, c.seek_cap_pct), (15, 15));
         assert!(!c.stall && !c.static_load);
         assert_eq!(
             expected_segments(c.baseline_ms > 0, c.dirs.signs().len(), c.steps.len()),
             41
         );
+    }
+
+    /// The bench servo's plan once a jam check moved the shaft at `moved`.
+    fn proved(moved: f64) -> Proved {
+        let f = front::bench();
+        Proved {
+            moved,
+            plan: f.lim.stall_plan(f.sc.r_vpc(CLASS_R_MIN), Some(moved)),
+        }
+    }
+
+    /// The test servo at mid travel, at rest: the bench MG90 on 2S.
+    fn mg90() -> FakeServo {
+        let mut s = bench_mg90(3204);
+        s.pos = 2029.0;
+        s
+    }
+
+    fn jam_check(front: &Front, s: &mut FakeServo) -> Result<Proved> {
+        front.jam_check(|exp| {
+            pump(exp, s, 100_000);
+            Ok(())
+        })
+    }
+
+    /// The jam check on the bench servo starts at the class-safe 9.5% and
+    /// raises by 2.5% while the shaft stays still: its breakaway, 13%, gives
+    /// at 14.5%. Every seek, its breakout ceiling and the park drive by that:
+    /// 2% over it, capped at the 15.5% whose stall draws the limit - 15%
+    /// in whole percent - by the stored 7270; under the cap by a winding
+    /// of 9065, 16% with a ceiling of 19%.
+    #[test]
+    fn seeks_drive_at_the_duty_that_moved_the_shaft() {
+        let front = front::bench();
+        let mut s = mg90();
+        let breakaway = s.breakaway_q15 as f64 / 32767.0;
+        let p = jam_check(&front, &mut s).unwrap();
+        assert!(!s.torque, "the jam check ends torque off");
+        let step = osc_ident::exp::centre::NUDGE_STEP_Q15 as f64 / 32767.0;
+        assert!(
+            p.moved >= breakaway && p.moved - step < breakaway,
+            "moved at {}",
+            p.moved
+        );
+        assert!((p.plan.seek - (p.moved + 0.02).min(p.plan.stop_cap)).abs() < 1e-12);
+        assert_eq!((p.seek_pct(), p.cap_pct()), (15, 15));
+
+        let session = Procedure::parse(include_str!("session.toml")).unwrap();
+        let mut env = envelope::mg90();
+        env.windows_ms = crate::capture::pilot::windows(env.v_ss.used(), env.limits.runway);
+        for plan in plan::expand(&session, &env, 1).unwrap() {
+            let c = cfg(&session, &env, &plan, &p);
+            assert_eq!((c.seek_duty_pct, c.seek_cap_pct), (15, 15));
+        }
+        assert_eq!(end_park(None, Some(&p)), Some(4915));
+        let drive = front.drive(&p);
+        assert_eq!(drive["seek_q15"], 4915);
+        assert_eq!(drive["moved_q15"], q15_floor(p.moved));
+        assert_eq!(drive["stop_cap_q15"], 4915);
+
+        // the seek moves the shaft from rest where the duty under the one
+        // that moved it did not
+        for (q15, moves) in [(p.seek_q15(), true), (q15_floor(p.moved - step), false)] {
+            let mut s = mg90();
+            s.write(control::TORQUE_ENABLE, 1);
+            s.write(control::GOAL_DUTY, q15 as i32);
+            s.advance(200);
+            assert_eq!((s.pos - 2029.0).abs() > 100.0, moves, "{q15} q15");
+        }
+
+        let wound = Front {
+            lim: ServoLimits {
+                r_q12: 9065,
+                ..front.lim
+            },
+            ..front
+        };
+        let p = jam_check(&wound, &mut mg90()).unwrap();
+        assert!(p.plan.seek < p.plan.stop_cap);
+        assert_eq!((p.seek_pct(), p.cap_pct()), (16, 19));
+        let c = cfg(
+            &session,
+            &env,
+            &plan::expand(&session, &env, 1).unwrap()[0],
+            &p,
+        );
+        assert_eq!((c.seek_duty_pct, c.seek_cap_pct), (16, 19));
+        assert_eq!(end_park(None, Some(&p)), Some(5242));
+    }
+
+    /// A shaft locked at mid travel: the jam check raises until the limit
+    /// holds a still shaft and calls it blocked, torque off. Nothing retries
+    /// it, nothing parks it, and the run exits 4; a seek that finds it
+    /// blocked mid capture ends the run the same way.
+    #[test]
+    fn a_blocked_shaft_ends_the_session_unparked() {
+        let mut s = mg90();
+        s.jam = Some(2029.0);
+        let e = jam_check(&front::bench(), &mut s).unwrap_err();
+        assert!(blocked(&e), "{e:#}");
+        assert!(!s.torque && !s.permit_live());
+        assert_eq!(s.pos, 2029.0);
+
+        let o = outcome_of(&e);
+        let Outcome::Blocked(why) = &o else {
+            panic!("{o:?}");
+        };
+        assert!(
+            why.starts_with("the jam check aborted: the shaft is blocked"),
+            "{why}"
+        );
+        let mut t = Tries::default();
+        assert_eq!(t.after(&o), Next::Blocked(why.clone()));
+        assert_eq!(t.attempt(), 1, "no try spent, none left to retry");
+
+        let stop = Stop::Blocked(why.clone());
+        assert_eq!(stop.code(), 4);
+        assert_eq!(stop.to_string(), *why);
+        let p = proved(0.13);
+        assert_eq!(end_park(Some(&stop), Some(&p)), None);
+        assert_eq!(
+            end_park(Some(&Stop::Failed("x".into())), Some(&p)),
+            Some(p.seek_q15())
+        );
+        assert_eq!(end_park(Some(&Stop::Interrupted), None), None);
+
+        let seek: anyhow::Error = crate::rig::Aborted {
+            what: "the seek",
+            reason: AbortReason::Blocked {
+                pos: 1900,
+                moved: 2,
+            },
+        }
+        .into();
+        assert_eq!(kind(&seek.context("slow"), false), Kind::Blocked);
     }
 }

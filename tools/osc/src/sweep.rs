@@ -46,13 +46,15 @@ use clap::ValueEnum;
 use osc_client::Id;
 use osc_client::blocking::Client;
 use osc_client::nusb::NusbPipe;
+use osc_client::pipe::Pipe;
 use osc_ident::exp::seek::{self, SEEK_STEP_Q15, SEEK_TRAVEL_MIN, STALL_EPS, STALL_POLLS, Watch};
 use osc_ident::frame::TelFrame;
 use osc_ident::limits::{DutyPlan, POT_MAX, ServoLimits, pct_floor};
-use osc_ident::regs::{Reg, calib, config, control};
+use osc_ident::regs::{Reg, calib, control};
 use osc_ident::runway::{BRAKE_DUTY_Q15, BRAKE_POLL_MS, BRAKE_POLLS, BRAKE_REST_EPS};
 
 use crate::descriptor;
+use crate::rig::limits::Stall;
 use crate::rig::park::park;
 use crate::rig::plant::Snapshot;
 use crate::rig::pump::{
@@ -391,7 +393,7 @@ fn check_stop() -> Result<()> {
     Ok(())
 }
 
-fn check_fault(c: &mut Client<NusbPipe>, id: Id) -> Result<u16> {
+fn check_fault<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<u16> {
     let s = read_snapshot(c, id)?;
     if s.fault_flags != 0 {
         bail!(
@@ -407,8 +409,8 @@ fn check_fault(c: &mut Client<NusbPipe>, id: Id) -> Result<u16> {
 /// Bails on a fault or on the band distance growing (reversed polarity);
 /// aborts on a shaft that comes to rest short of the band; leaves duty 0
 /// and torque ON (the rung drives next).
-fn seek_band(
-    c: &mut Client<NusbPipe>,
+fn seek_band<P: Pipe>(
+    c: &mut Client<P>,
     id: Id,
     lease: &mut Lease,
     (lo, hi): (u16, u16),
@@ -483,8 +485,8 @@ fn seek_band(
 /// standing still is what "arrived", "stuck against the far stop" and
 /// "jammed mid travel" all look like, and reading either of the last two
 /// as the first runs the whole ladder against the wrong thing.
-fn seek_stop(
-    c: &mut Client<NusbPipe>,
+fn seek_stop<P: Pipe>(
+    c: &mut Client<P>,
     id: Id,
     lease: &mut Lease,
     dir: i8,
@@ -540,7 +542,7 @@ fn seek_stop(
 /// runway and slams the physical stop. Retreat sign so the firmware
 /// soft-limit clamp can never zero the brake near a wall. Leaves duty 0,
 /// torque ON (the caller torques off).
-fn brake_to_rest(c: &mut Client<NusbPipe>, id: Id, lease: &mut Lease, dir: i8) -> Result<()> {
+fn brake_to_rest<P: Pipe>(c: &mut Client<P>, id: Id, lease: &mut Lease, dir: i8) -> Result<()> {
     write_reg(
         c,
         id,
@@ -625,39 +627,19 @@ pub(crate) fn git_toplevel() -> Result<PathBuf> {
 
 /// The run's constants, written as meta.json before the first burst. The
 /// `plant` block names the table the servo streamed `pos_lin` through,
-/// its stamp verdict and its data state at that moment; the `drive` block
-/// the rule the drive ran under and the servo settings that held it.
-pub(crate) fn meta(c: &mut Client<NusbPipe>, id: Id, cfg: &Cfg) -> Result<serde_json::Value> {
+/// its stamp verdict and its data state at that moment; `drive` is the
+/// rule the drive ran under and the servo settings that held it.
+pub(crate) fn meta(
+    c: &mut Client<NusbPipe>,
+    id: Id,
+    cfg: &Cfg,
+    drive: serde_json::Value,
+) -> Result<serde_json::Value> {
     let identity = c.identity(id)?;
     let tick_hz = read_u16(c, id, calib::TICK_HZ)?;
     let tel = read_snapshot(c, id)?;
     let d = crate::state::descriptor(c, id)?;
     let plant = Snapshot::read(c, id, &d)?.json();
-    let lim = ServoLimits {
-        i_lim: read_u16(c, id, config::CURRENT_LIMIT_COUNTS)?,
-        stall_yield: read_u16(c, id, config::STALL_YIELD_COUNTS)?,
-        r_q12: read_u16(c, id, calib::R_Q12)?,
-        vbus: tel.vbus_counts,
-        window_floor_q15: tel.window_floor_q15,
-        // not read: the abort below follows from the limit alone
-        tau_trip: 0,
-        soft: (0, 0),
-        phys: (0, 0),
-        raw: (0, 0),
-        amps_per_count: 0.0,
-    };
-    let drive = serde_json::json!({
-        "rule": crate::capture::RULE.as_str(),
-        "current_limit_counts": lim.i_lim,
-        "window_floor_q15": lim.window_floor_q15,
-        "stall_yield_counts": lim.stall_yield,
-        "stall_release_counts": read_field(c, id, &d, "stall_release_counts")?,
-        "stall_time_ms": read_field(c, id, &d, "stall_time_ms")?,
-        "stall_response": read_field(c, id, &d, "stall_response")?,
-        "r_q12": lim.r_q12,
-        "i_abort_counts": lim.abort_default(),
-        "seek_q15": pct_q15(cfg.seek_duty_pct),
-    });
     let vbus_counts = tel.vbus_counts;
     Ok(serde_json::json!({
         "model": identity.model,
@@ -692,29 +674,27 @@ pub(crate) fn meta(c: &mut Client<NusbPipe>, id: Id, cfg: &Cfg) -> Result<serde_
     }))
 }
 
-/// A descriptor-placed field as meta.json carries it: a number, or an
-/// enum's variant name in lowercase.
-fn read_field(
-    c: &mut Client<NusbPipe>,
-    id: Id,
-    d: &descriptor::Descriptor,
-    name: &str,
-) -> Result<serde_json::Value> {
-    use osc_client::descriptor::{Value, decode};
-    let f = descriptor::field(d, name)?;
-    let raw = c.read(id, f.addr, f.width).context("field read")?;
-    Ok(
-        match decode(f, &raw).with_context(|| format!("field {name}"))? {
-            Value::Uint(n) => n.into(),
-            Value::Int(n) => n.into(),
-            Value::Bool(b) => b.into(),
-            Value::Enum(n) => match f.variant(n) {
-                Some(v) => v.name.to_lowercase().into(),
-                None => n.into(),
-            },
-            Value::Bytes(b) => b.into(),
-        },
-    )
+/// The `drive` block's servo settings: the limit and the stall settings
+/// that held the drive, the winding R, the abort a quarter over the limit,
+/// and the seek.
+pub(crate) fn drive(
+    lim: &ServoLimits,
+    stall: &Stall,
+    seek_q15: i16,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut m = serde_json::Map::new();
+    m.insert("rule".into(), crate::capture::RULE.as_str().into());
+    m.insert("current_limit_counts".into(), lim.i_lim.into());
+    m.insert("window_floor_q15".into(), lim.window_floor_q15.into());
+    m.insert("stall_yield_counts".into(), lim.stall_yield.into());
+    m.insert("stall_release_counts".into(), stall.release.into());
+    m.insert("stall_time_ms".into(), stall.time_ms.into());
+    m.insert("stall_response".into(), stall.response().into());
+    m.insert("stall_tau_trip_counts".into(), lim.tau_trip.into());
+    m.insert("r_q12".into(), lim.r_q12.into());
+    m.insert("i_abort_counts".into(), lim.abort_default().into());
+    m.insert("seek_q15".into(), seek_q15.into());
+    m
 }
 
 /// The descriptor-placed open-loop registers the run toggles.
@@ -723,7 +703,7 @@ struct Regs {
     zero_brake: Reg,
 }
 
-fn resolve_regs(c: &mut Client<NusbPipe>, id: Id) -> Result<Regs> {
+fn resolve_regs<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<Regs> {
     let identity = c.identity(id)?;
     let registry = descriptor::load()?;
     let (d, note) = descriptor::select(&registry, identity.model, identity.fw)?;
@@ -746,8 +726,8 @@ fn resolve_regs(c: &mut Client<NusbPipe>, id: Id) -> Result<Regs> {
 /// Baseline, then every chain of every direction. Each committed segment
 /// reaches `on_seg` as it lands, so a caller keeps what was captured before
 /// a later chain gives up. Leaves the servo guarded and torqued off.
-pub(crate) fn record(
-    c: &mut Client<NusbPipe>,
+pub(crate) fn record<P: Pipe>(
+    c: &mut Client<P>,
     id: Id,
     cfg: &Cfg,
     mut on_seg: impl FnMut(&Segment) -> Result<()>,
@@ -763,8 +743,8 @@ pub(crate) fn record(
     r
 }
 
-fn chains(
-    c: &mut Client<NusbPipe>,
+fn chains<P: Pipe>(
+    c: &mut Client<P>,
     id: Id,
     cfg: &Cfg,
     regs: &Regs,
@@ -969,7 +949,9 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
 
     std::fs::create_dir_all(&args.out).with_context(|| format!("mkdir {}", args.out.display()))?;
 
-    let meta = meta(&mut c, id, &cfg)?;
+    let stall = Stall::read(&mut c, id)?;
+    let drive = drive(&lim, &stall, pct_q15(cfg.seek_duty_pct));
+    let meta = meta(&mut c, id, &cfg, serde_json::Value::Object(drive))?;
     let meta_path = args.out.join("meta.json");
     std::fs::write(&meta_path, serde_json::to_string_pretty(&meta)?)
         .with_context(|| format!("write {}", meta_path.display()))?;
@@ -994,7 +976,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     // a blocked shaft is left where it stopped
     let parked = match (&r, center) {
         (Err(e), _) if blocked(e) => Ok(()),
-        (_, Some(at)) => park(&mut c, id, at),
+        (_, Some(at)) => park(&mut c, id, at, pct_q15(cfg.seek_duty_pct)),
         (_, None) => Ok(()),
     };
     flushed?;

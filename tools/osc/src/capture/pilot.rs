@@ -3,7 +3,8 @@
 //! unpolled TEL burst, so its window is the only bound on how far the shaft
 //! travels. Every bound here comes from the servo's own soft/phys limits
 //! (written by `osc cal`); the derived windows and coast duty are run on the
-//! servo before the envelope is saved.
+//! servo before the envelope is saved. The capture front runs first, and
+//! the pack is read at rest again before every recording.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -13,21 +14,22 @@ use anyhow::{Context, Result, anyhow, bail};
 use osc_client::Id;
 use osc_client::blocking::Client;
 use osc_client::nusb::NusbPipe;
+use osc_client::pipe::Pipe;
 use osc_ident::frame::TelFrame;
 use osc_ident::limits::{POT_MAX, guards, is_board_default};
-use osc_ident::regs::{calib, config};
 use osc_ident::runway::coast_fit;
 
 use super::envelope::{
     Coast, CoastRun, CoastRung, Dir, Envelope, Fit, Limits, PerDir, Refused, Speed, Verified,
     civil_date, round_to,
 };
+use super::front::{self, Proved};
 use super::procs::{CoastBlock, Procedure};
-use super::{REST_MS, RUNG_TRIES, SEEK_CAP_PCT, SEEK_PCT, SETTLE_MS, Supply, TEL_MASK};
+use super::{REST_MS, RULE, RUNG_TRIES, SETTLE_MS, Supply, TEL_MASK};
 use crate::rig::park::park;
-use crate::rig::pump::{self, read_i32};
-use crate::rig::snapshot::read_u16;
-use crate::sweep::{self, BAND_HALF, Cfg, Decay, Dirs, Segment, Step};
+use crate::rig::pump::{self, with_guard};
+use crate::rig::{battery, blocked, centre};
+use crate::sweep::{self, BAND_HALF, Cfg, Decay, Dirs, Recording, Segment, Step};
 
 /// `osc capture pilot` args.
 #[derive(clap::Args, Debug)]
@@ -109,23 +111,14 @@ pub(crate) fn run(a: &Args, baud: String, id: u8) -> Result<()> {
     let duties = ladder_duties(&block.duties).with_context(|| format!("procedure {source}"))?;
     let mut c = crate::rig::connect(&baud)?;
     let id = Id::new(id);
-    crate::state::check(&mut c, id)?;
-
+    // Nothing has moved yet, so a refusal here leaves the horn where it is.
+    let front = front::read(&mut c, id, a.supply)?;
     let fw = c.identity(id)?.fw;
-    let tick_hz = read_u16(&mut c, id, calib::TICK_HZ)?;
+    let tick_hz = front.tick_hz;
     if tick_hz == 0 {
         bail!("tick_hz reads 0: TEL sample rate unknown");
     }
-    let soft = (
-        read_i32(&mut c, id, config::POS_MIN_SOFT_COUNTS)?,
-        read_i32(&mut c, id, config::POS_MAX_SOFT_COUNTS)?,
-    );
-    let phys = (
-        read_i32(&mut c, id, config::POS_MIN_PHYS_COUNTS)?,
-        read_i32(&mut c, id, config::POS_MAX_PHYS_COUNTS)?,
-    );
-    // Nothing has moved yet, so a refusal here leaves the horn where it is.
-    let lim = limits(soft, phys)?;
+    let lim = limits(front.lim.soft, front.lim.phys)?;
     println!(
         "[limits] soft {}..{} phys {}..{} guard {}..{} runway {} centre {}",
         lim.soft[0],
@@ -151,9 +144,22 @@ pub(crate) fn run(a: &Args, baud: String, id: u8) -> Result<()> {
         }
     }
 
-    let r = measure(&mut c, id, &lim, tick_hz as f64 / 1000.0, block, &duties);
+    let proved = front
+        .jam_check(|exp| centre::drive(&mut c, id, exp))
+        .inspect_err(|e| {
+            if blocked(e) {
+                front::exit_blocked(e)
+            }
+        })?;
+    let rig = Rig { lim, proved };
+    let r = measure(&mut c, id, &rig, tick_hz as f64 / 1000.0, block, &duties);
+    if let Err(e) = &r
+        && blocked(e)
+    {
+        front::exit_blocked(e)
+    }
     // Parks on failure too; a failed run reports its own error, not the park's.
-    let parked = park(&mut c, id, lim.center);
+    let parked = with_guard(&mut c, id, |c| park(c, id, lim.center, proved.seek_q15()));
     let (v_ss, windows_ms, coast, verified) = r?;
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -163,7 +169,10 @@ pub(crate) fn run(a: &Args, baud: String, id: u8) -> Result<()> {
         fw,
         git_sha: sweep::git_sha(),
         measured: civil_date(secs),
-        seek_pct: SEEK_PCT,
+        seek_pct: proved.seek_pct(),
+        rule: RULE,
+        current_limit_counts: Some(front.lim.i_lim),
+        rail_mv: Some(front.rail_mv),
         limits: lim,
         v_ss,
         windows_ms,
@@ -182,13 +191,14 @@ type Measured = (Speed, BTreeMap<u8, u32>, Coast, Vec<Verified>);
 fn measure(
     c: &mut Client<NusbPipe>,
     id: Id,
-    lim: &Limits,
+    rig: &Rig,
     ticks_per_ms: f64,
     block: &CoastBlock,
     duties: &[u8],
 ) -> Result<Measured> {
-    let fwd = speed_fit(c, id, lim, ticks_per_ms, Dir::Fwd)?;
-    let rev = speed_fit(c, id, lim, ticks_per_ms, Dir::Rev)?;
+    let lim = &rig.lim;
+    let fwd = speed_fit(c, id, rig, ticks_per_ms, Dir::Fwd)?;
+    let rev = speed_fit(c, id, rig, ticks_per_ms, Dir::Rev)?;
     let used = if fwd.at(100) >= rev.at(100) {
         Dir::Fwd
     } else {
@@ -228,12 +238,7 @@ fn measure(
     for (d, check_pred) in [(60, true), (100, false)] {
         let w = window_ms(fit.at(d), lim.runway);
         let step = Step::Drive(d, Some(w));
-        let rec = sweep::record(
-            c,
-            id,
-            &cfg(vec![step], sweep_dirs(used), w, lim),
-            |_| Ok(()),
-        )?;
+        let rec = record(c, id, &cfg(vec![step], sweep_dirs(used), w, rig))?;
         let travel = span(&one(&rec.segments)?.frames)?;
         let predicted = predicted_travel(fit.at(d), w);
         println!(
@@ -256,7 +261,7 @@ fn measure(
         });
     }
 
-    let coast = coast_ladder(c, id, lim, ticks_per_ms, block, duties, &v_ss)?;
+    let coast = coast_ladder(c, id, rig, ticks_per_ms, block, duties, &v_ss)?;
     Ok((v_ss, wins, coast, verified))
 }
 
@@ -265,17 +270,18 @@ fn measure(
 fn speed_fit(
     c: &mut Client<NusbPipe>,
     id: Id,
-    lim: &Limits,
+    rig: &Rig,
     ticks_per_ms: f64,
     dir: Dir,
 ) -> Result<Fit> {
+    let lim = &rig.lim;
     let dirs = sweep_dirs(dir);
     let sign = f64::from(sign(dir));
     let mut pts: Vec<(f64, f64)> = Vec::new();
     for d in PILOT_DUTIES {
         let w = next_window(&pts, d, lim.runway);
         let step = Step::Drive(d, Some(w));
-        let rec = sweep::record(c, id, &cfg(vec![step], dirs, w, lim), |_| Ok(()))?;
+        let rec = record(c, id, &cfg(vec![step], dirs, w, rig))?;
         let frames = &one(&rec.segments)?.frames;
         let travel = span(frames)?;
         if travel as f64 > PILOT_ABORT_FRAC * lim.runway as f64 {
@@ -308,12 +314,13 @@ fn speed_fit(
 fn coast_ladder(
     c: &mut Client<NusbPipe>,
     id: Id,
-    lim: &Limits,
+    rig: &Rig,
     ticks_per_ms: f64,
     block: &CoastBlock,
     duties: &[u8],
     v_ss: &Speed,
 ) -> Result<Coast> {
+    let lim = &rig.lim;
     let room = coast_room(lim);
     println!(
         "[coast] ladder {duties:?}%: {} ms drive, {} ms coast, room fwd {} rev {}, margin {COAST_MARGIN}",
@@ -344,9 +351,7 @@ fn coast_ladder(
             Step::Drive(pct, Some(block.drive_ms)),
             Step::Coast(block.coast_ms),
         ];
-        let rec = sweep::record(c, id, &cfg(chain, Dirs::Both, block.drive_ms, lim), |_| {
-            Ok(())
-        })?;
+        let rec = record(c, id, &cfg(chain, Dirs::Both, block.drive_ms, rig))?;
         let run = |d| {
             coast_run(
                 &rec.segments,
@@ -463,9 +468,22 @@ fn coast_run(
     })
 }
 
+/// The servo the pilot drives: its limits, and the seek its jam check proved.
+struct Rig {
+    lim: Limits,
+    proved: Proved,
+}
+
+/// One pilot recording, the pack read at rest before it.
+fn record<P: Pipe>(c: &mut Client<P>, id: Id, cfg: &Cfg) -> Result<Recording> {
+    battery::before_drive(c, id)?;
+    sweep::record(c, id, cfg, |_| Ok(()))
+}
+
 /// A pilot recording at the session defaults: no baseline, every step with
-/// its own window.
-fn cfg(steps: Vec<Step>, dirs: Dirs, window_ms: u32, lim: &Limits) -> Cfg {
+/// its own window, the seeks at the jam check's duty.
+fn cfg(steps: Vec<Step>, dirs: Dirs, window_ms: u32, rig: &Rig) -> Cfg {
+    let lim = &rig.lim;
     Cfg {
         steps,
         dirs,
@@ -473,8 +491,8 @@ fn cfg(steps: Vec<Step>, dirs: Dirs, window_ms: u32, lim: &Limits) -> Cfg {
         window_ms,
         rest_ms: REST_MS,
         baseline_ms: 0,
-        seek_duty_pct: SEEK_PCT,
-        seek_cap_pct: SEEK_CAP_PCT,
+        seek_duty_pct: rig.proved.seek_pct(),
+        seek_cap_pct: rig.proved.cap_pct(),
         settle_ms: SETTLE_MS,
         stall: false,
         static_load: false,
@@ -781,7 +799,42 @@ fn rung_fits(r: &CoastRung, room: &PerDir<u16>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capture::front::fake::{rail, servo, torque};
     use crate::rig::pump::BurstStats;
+    use osc_ident::limits::CLASS_R_MIN;
+    use osc_ident::regs::control;
+
+    /// The pilot reads the pack at rest before anything moves, in its front,
+    /// and again before every recording: a pack that sags under its floor
+    /// between two rungs stops the pilot before the next one arms.
+    #[test]
+    fn pilot_gates_the_battery() {
+        let flat = "the pack reads 6.99 V at rest, under its floor of 7.00 V (3.50 V a cell): \
+                    charge it before anything drives";
+        let (mut c, id) = servo(3351);
+        let e = front::read(&mut c, id, Supply::TwoS).unwrap_err();
+        assert_eq!(e.to_string(), flat);
+        assert_eq!(torque(&mut c, id), 0);
+
+        let (mut c, id) = servo(3922);
+        let f = front::read(&mut c, id, Supply::TwoS).unwrap();
+        let rig = Rig {
+            lim: limits(f.lim.soft, f.lim.phys).unwrap(),
+            proved: Proved {
+                moved: 0.13,
+                plan: f.lim.stall_plan(f.sc.r_vpc(CLASS_R_MIN), Some(0.13)),
+            },
+        };
+        rail(&mut c, 3351);
+        let step = Step::Drive(20, Some(150));
+        let e = record(&mut c, id, &cfg(vec![step], Dirs::Fwd, 150, &rig))
+            .err()
+            .unwrap();
+        assert_eq!(e.to_string(), flat);
+        assert_eq!(torque(&mut c, id), 0);
+        let armed = c.read(id, control::TEL_COUNT.addr, 2).unwrap();
+        assert_eq!(armed, [0, 0], "no burst armed");
+    }
 
     const MG90: Fit = Fit {
         slope: 0.2275,

@@ -87,10 +87,10 @@ pub(crate) fn read_stamped<P: Pipe>(
 /// A hard kill skips this - a leased permit then runs out within a second
 /// (a plain-level one stays until a reboot), and the servo's own
 /// protections are the backstop.
-pub(crate) fn with_guard<T>(
-    c: &mut Client<NusbPipe>,
+pub(crate) fn with_guard<P: Pipe, T>(
+    c: &mut Client<P>,
     id: Id,
-    f: impl FnOnce(&mut Client<NusbPipe>) -> Result<T>,
+    f: impl FnOnce(&mut Client<P>) -> Result<T>,
 ) -> Result<T> {
     let r = f(c);
     for (reg, v) in [
@@ -130,9 +130,9 @@ impl Lease {
         self.t0.elapsed().as_secs_f64() * 1000.0
     }
 
-    pub(crate) fn write(
+    pub(crate) fn write<P: Pipe>(
         &mut self,
-        c: &mut Client<NusbPipe>,
+        c: &mut Client<P>,
         id: Id,
         reg: Reg,
         value: i32,
@@ -143,7 +143,7 @@ impl Lease {
     }
 
     /// Torque on, then the permit when this run holds one.
-    pub(crate) fn torque_on(&mut self, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
+    pub(crate) fn torque_on<P: Pipe>(&mut self, c: &mut Client<P>, id: Id) -> Result<()> {
         self.write(c, id, control::TORQUE_ENABLE, 1)?;
         if self.hold {
             self.write(c, id, control::STALL_PERMIT, 1)?;
@@ -151,7 +151,7 @@ impl Lease {
         Ok(())
     }
 
-    pub(crate) fn keep(&mut self, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
+    pub(crate) fn keep<P: Pipe>(&mut self, c: &mut Client<P>, id: Id) -> Result<()> {
         if self.state.due(self.now_ms()) {
             self.write(c, id, control::STALL_PERMIT, 1)?;
         }
@@ -191,8 +191,8 @@ pub(crate) struct BurstStats {
 /// TEL_COUNT write itself carries the stream. Frames decode through
 /// [`StreamAssembler`] under `mask`; corrupt frames never appear (the
 /// adapter drops them into garble + a seq hole).
-pub(crate) fn exchange_tel_burst(
-    c: &mut Client<NusbPipe>,
+pub(crate) fn exchange_tel_burst<P: Pipe>(
+    c: &mut Client<P>,
     id: Id,
     samples: u16,
     goal: Option<(Reg, i32)>,
