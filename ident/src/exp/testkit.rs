@@ -1,4 +1,5 @@
-//! Test-only fake servo + driver pump: a scripted plant that answers the
+//! The test servo + driver pump, for this crate's tests and, behind the
+//! `testkit` feature, the host tools': a scripted plant that answers the
 //! engine's commands the way the rig would, so experiments run end to end
 //! in-process. Electrical model: stalled i = v/R; free-running i = fc; the
 //! first windows after a duty change are inflated to imitate the L
