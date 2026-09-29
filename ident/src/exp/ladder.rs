@@ -60,11 +60,13 @@ impl Default for LadderCfg {
     }
 }
 
-/// One accepted sweep window with the pot position it was read with.
+/// One accepted sweep window with the pot position it was read with: raw
+/// for the slip mask, the kernel's counts for the slope.
 #[derive(Copy, Clone, Debug)]
 struct SweepSample {
     w: WindowSample,
     pos: u16,
+    counts: f64,
 }
 
 /// One rung reduced; `used` = false rungs carry their reason in `note`.
@@ -225,7 +227,7 @@ impl Ladder {
         if used {
             let pos_t: Vec<(f64, f64)> = steady
                 .iter()
-                .map(|s| (s.w.t_ms / 1000.0, s.pos as f64))
+                .map(|s| (s.w.t_ms / 1000.0, s.counts))
                 .collect();
             let iv: Vec<f64> = steady.iter().map(|s| s.w.i).collect();
             // duty * vdiff / 32767 is |v|; re-sign by the drive direction
@@ -362,7 +364,11 @@ impl Experiment for Ladder {
                 let mut done = false;
                 if let Some(o) = obs {
                     if let Some(w) = self.windows.push(o) {
-                        self.sweep_samples.push(SweepSample { w, pos: o.pos });
+                        self.sweep_samples.push(SweepSample {
+                            w,
+                            pos: o.pos,
+                            counts: self.params.pot.counts(o.pos),
+                        });
                     }
                     self.track_still(o.pos);
                     if self.still >= self.cfg.stall_polls {
@@ -415,9 +421,10 @@ impl Experiment for Ladder {
 
 #[cfg(test)]
 mod tests {
-    use super::super::testkit::{FakeServo, pump};
+    use super::super::testkit::{FakeServo, bent_pot, pump};
     use super::super::{Guarded, RigParams};
     use super::*;
+    use crate::pot::Pot;
 
     fn physical_servo() -> FakeServo {
         let mut s = FakeServo::new(3.37);
@@ -454,6 +461,29 @@ mod tests {
             assert!((fr.fc - 20.0).abs() < 2.0, "fc {}", fr.fc);
             assert!((fr.fv - 0.006).abs() / 0.006 < 0.1, "fv {}", fr.fv);
         }
+    }
+
+    /// The sweeps cover raw 1450..2650, where the bent pot reads 1.2x
+    /// wide: the raw slope over-reads omega and Ke lands ~17% low. Fitted
+    /// in the table's counts, the kernel's domain, Ke is the planted one.
+    #[test]
+    fn nonlinear_pot_biases_raw_ke_and_the_live_table_recovers_it() {
+        let table = bent_pot();
+        assert_eq!(table.validate(200, 4000), Ok(()));
+        let ke = |pot: Pot| {
+            let mut servo = physical_servo();
+            servo.pot = Some(table);
+            let params = RigParams {
+                pot,
+                ..RigParams::default()
+            };
+            let (exp, _) = run_e3(&mut servo, params);
+            exp.fit(3.37).expect("usable rungs").ke.ke_vpc
+        };
+        let raw = ke(Pot::RAW);
+        let lin = ke(Pot::live(table));
+        assert!((raw - 0.1731) / 0.1731 < -0.10, "raw ke {raw}");
+        assert!((lin - 0.1731).abs() / 0.1731 < 0.01, "linearized ke {lin}");
     }
 
     #[test]

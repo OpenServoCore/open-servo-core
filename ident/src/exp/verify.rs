@@ -647,7 +647,7 @@ impl Experiment for VerifyVelocity {
                         && !self.params.in_slip(o.pos)
                     {
                         let t = o.sample_tick.wrapping_sub(t0) as f64 / self.tick_hz;
-                        c.pts.push((t, o.pos as f64));
+                        c.pts.push((t, self.params.pot.counts(o.pos)));
                     }
                     done = self.leg_done(o.pos);
                 }

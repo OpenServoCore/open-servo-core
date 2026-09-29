@@ -37,6 +37,7 @@ pub mod winding;
 
 use crate::burst::Capture;
 use crate::frame::{SeqUnwrap, TelFrame, TelemetrySnapshot};
+use crate::pot::Pot;
 use crate::regs::{Reg, control};
 
 /// One driver action. `Write` is a single-field wire write (the value is
@@ -110,6 +111,10 @@ pub struct RigParams {
     /// still reads declare the mechanical rail.
     pub stall_eps: u16,
     pub stall_polls: u32,
+    /// The counts the kernel controls on: raw, or the servo's LIVE table.
+    /// Fits against pot motion read through it; seeks, stall detects and
+    /// the guard stay on the raw count (identity at and beyond the stops).
+    pub pot: Pot,
 }
 
 impl Default for RigParams {
@@ -122,6 +127,7 @@ impl Default for RigParams {
             agg_period_ms: 0.8,
             stall_eps: 3,
             stall_polls: 8,
+            pot: Pot::RAW,
         }
     }
 }

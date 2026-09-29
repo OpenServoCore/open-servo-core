@@ -5,6 +5,7 @@
 
 pub(crate) mod csvio;
 pub(crate) mod park;
+pub(crate) mod plant;
 pub(crate) mod pump;
 pub(crate) mod snapshot;
 

@@ -9,6 +9,7 @@ pub(crate) mod params;
 
 use std::path::{Path, PathBuf};
 
+use crate::rig::plant::Lut;
 use crate::rig::pump::{self, Pump, with_guard, write_reg};
 use crate::rig::{csvio, snapshot};
 use anyhow::{Context, Result, bail};
@@ -35,12 +36,13 @@ use osc_ident::exp::verify::{
 use osc_ident::exp::{Guarded, RigParams};
 use osc_ident::fits::{self, InertiaPriors};
 use osc_ident::gains::{self, BwTargets, PlantParams};
+use osc_ident::pot::Pot;
 use osc_ident::regs::{calib, control};
 use osc_ident::report::{self, PlantInputs, ReportInputs};
 use osc_ident::sources::{self, Source, Winding};
 use params::{
     BiasJson, BreakawayJson, GainJson, InductanceJson, InertiaJson, LadderJson, ParamsFile,
-    PlantJson, ResistanceJson, RlJson, SenseJson,
+    PlantJson, PotJson, ResistanceJson, RlJson, SenseJson,
 };
 
 /// Where recorded runs land when `--out` is absent.
@@ -164,6 +166,15 @@ struct Ctx {
     f_cv: f64,
     f_cp: f64,
     f_o: f64,
+    /// The servo's pot table, read once the bus is up: the experiments fit
+    /// in the counts the kernel controls on.
+    lut: Option<Lut>,
+}
+
+impl Ctx {
+    fn pot(&self) -> Pot {
+        self.lut.as_ref().map_or(Pot::RAW, Lut::pot)
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -250,7 +261,7 @@ enum Cmd {
 /// Entry from the top-level `osc ident` dispatch. `baud`/`id` are the osc
 /// globals; `args` carries the ident-scoped flags and subcommand.
 pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
-    let cli = Ctx {
+    let mut cli = Ctx {
         baud,
         out: args.out.clone().unwrap_or_else(|| DEFAULT_OUT.into()),
         guard_lo: args.guard_lo,
@@ -273,6 +284,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
         f_cv: args.f_cv,
         f_cp: args.f_cp,
         f_o: args.f_o,
+        lut: None,
     };
     pump::install_ctrlc();
     if let Cmd::Fit { dir } = &args.cmd {
@@ -283,12 +295,17 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     }
     let mut c = crate::rig::connect(&cli.baud)?;
     let id = Id::new(id);
-    crate::state::check(&mut c, id)?;
+    let d = crate::state::descriptor(&mut c, id)?;
+    crate::state::warn(&mut c, id, &d)?;
+    let lut = Lut::read(&mut c, id, &d)?;
+    println!("pot: {} counts, lut {}", lut.pot().label(), lut.describe());
+    cli.lut = Some(lut);
+    let cli = &cli;
     match &args.cmd {
-        Cmd::Run => run_all(&cli, &mut c, id),
+        Cmd::Run => run_all(cli, &mut c, id),
         Cmd::Bias => {
             let out = csvio::OutDir::create(&cli.out)?;
-            let (b, _) = run_bias(&cli, &mut c, id, &out)?;
+            let (b, _) = run_bias(cli, &mut c, id, &out)?;
             println!(
                 "{}",
                 render_partial(ReportInputs {
@@ -300,7 +317,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
         }
         Cmd::Resistance => {
             let out = csvio::OutDir::create(&cli.out)?;
-            let r = run_resistance(&cli, &mut c, id, &out)?;
+            let r = run_resistance(cli, &mut c, id, &out)?;
             println!(
                 "R = {:.4} vcounts/ccount (r2 {:.4}, n {}, drift {:+.5}/s)",
                 r.r_vpc, r.r2, r.n, r.drift_vpc_per_s
@@ -310,7 +327,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
         Cmd::Rl => {
             let out = csvio::OutDir::create(&cli.out)?;
             let sense = read_sense(&mut c, id)?;
-            let r = run_rl(&cli, &mut c, id, &out, &sense)?;
+            let r = run_rl(cli, &mut c, id, &out, &sense)?;
             println!(
                 "{}",
                 render_partial(ReportInputs {
@@ -324,7 +341,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
             let out = csvio::OutDir::create(&cli.out)?;
             println!("recording to {}", out.0.display());
             let sense = read_sense(&mut c, id)?;
-            let r = run_inductance(&cli, &mut c, id, &out, &sense)?;
+            let r = run_inductance(cli, &mut c, id, &out, &sense)?;
             println!(
                 "{}",
                 render_partial(ReportInputs {
@@ -336,17 +353,17 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
         }
         Cmd::Breakaway => {
             let out = csvio::OutDir::create(&cli.out)?;
-            let (bias, vbus) = run_bias(&cli, &mut c, id, &out)?;
+            let (bias, vbus) = run_bias(cli, &mut c, id, &out)?;
             let _ = bias;
-            let r = run_resistance(&cli, &mut c, id, &out)?;
-            let bk = run_breakaway(&cli, &mut c, id, &out, r.r_vpc, vbus)?;
+            let r = run_resistance(cli, &mut c, id, &out)?;
+            let bk = run_breakaway(cli, &mut c, id, &out, r.r_vpc, vbus)?;
             println!("{bk:#?}");
             Ok(())
         }
         Cmd::Ladder => {
             let out = csvio::OutDir::create(&cli.out)?;
-            let r = run_resistance(&cli, &mut c, id, &out)?;
-            let l = run_ladder(&cli, &mut c, id, &out, r.r_vpc)?;
+            let r = run_resistance(cli, &mut c, id, &out)?;
+            let l = run_ladder(cli, &mut c, id, &out, r.r_vpc)?;
             println!(
                 "{}",
                 render_partial(ReportInputs {
@@ -358,11 +375,11 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
         }
         Cmd::Inertia => {
             let out = csvio::OutDir::create(&cli.out)?;
-            let r = run_resistance(&cli, &mut c, id, &out)?;
-            let l = run_ladder(&cli, &mut c, id, &out, r.r_vpc)?;
+            let r = run_resistance(cli, &mut c, id, &out)?;
+            let l = run_ladder(cli, &mut c, id, &out, r.r_vpc)?;
             let sense = read_sense(&mut c, id)?;
             let priors = priors_of(r.r_vpc, &l, &sense);
-            let i = run_inertia(&cli, &mut c, id, &out, &priors)?;
+            let i = run_inertia(cli, &mut c, id, &out, &priors)?;
             println!(
                 "{}",
                 render_partial(ReportInputs {
@@ -372,7 +389,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
             );
             Ok(())
         }
-        Cmd::Verify => run_verify(&cli, &mut c, id),
+        Cmd::Verify => run_verify(cli, &mut c, id),
         Cmd::Write { params, save } => {
             let p = ParamsFile::load(params)?;
             if p.gains.is_empty() {
@@ -381,7 +398,6 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
                     params.display()
                 );
             }
-            let d = crate::state::descriptor(&mut c, id)?;
             write_reg(&mut c, id, control::TORQUE_ENABLE, 0)?;
             let snap = params
                 .parent()
@@ -401,7 +417,6 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
             Ok(())
         }
         Cmd::Rollback { snapshot } => {
-            let d = crate::state::descriptor(&mut c, id)?;
             write_reg(&mut c, id, control::TORQUE_ENABLE, 0)?;
             snapshot::rollback(&mut c, id, snapshot)?;
             crate::state::commit(&mut c, id, &d, false)?;
@@ -421,6 +436,7 @@ fn rig(cli: &Ctx) -> RigParams {
         pos_guard: Some((cli.guard_lo, cli.guard_hi)),
         i_abort: cli.i_abort,
         slip: (cli.slip_lo, cli.slip_hi),
+        pot: cli.pot(),
         ..RigParams::default()
     }
 }
@@ -494,7 +510,7 @@ fn run_bias(
     // a rail-parked pot clips the noise measurement (and trips the guard)
     recenter(c, id)?;
     let mut log = csvio::SnapshotLog::create(out, "bias_snapshots.csv")?;
-    let mut exp = Guarded::new(Bias::new(BiasCfg::default()), rig(cli));
+    let mut exp = Guarded::new(Bias::new(BiasCfg::default(), &rig(cli)), rig(cli));
     with_guard(c, id, |c| Pump::new(c, id, Some(&mut log)).run(&mut exp))?;
     check_abort("bias", exp.abort())?;
     let b = exp
@@ -885,6 +901,7 @@ fn run_all(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
         inductance: e8.as_ref().map(InductanceJson::from),
         breakaway: Some(BreakawayJson::from(&breakaway)),
         sense: Some(sense),
+        pot: cli.lut.as_ref().map(PotJson::from),
         ..Default::default()
     };
     p.save(&out.0.join("params.json"))?;
@@ -903,6 +920,13 @@ fn fit_dir(cli: &Ctx, dir: PathBuf) -> Result<()> {
     let mut p = ParamsFile::load(&path)?;
     let sense = p.sense.context("params.json has no sense block")?;
     let tick_hz = sense.tick_hz as f64;
+    println!(
+        "{}",
+        p.pot.as_ref().map_or_else(
+            || "pot counts: raw (the run recorded no lut)".into(),
+            PotJson::describe
+        )
+    );
 
     // Refitted and reported when the run captured one, consumed by nothing:
     // the 1 ms toggle step is rotor-followed (osc-ident `exp::rl`).

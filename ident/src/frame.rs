@@ -164,6 +164,17 @@ pub struct TelFrame {
     pub pos_lin: Option<u16>,
 }
 
+impl TelFrame {
+    /// The counts the kernel controls on: `pos_lin` over the grid when the
+    /// stream carried it, else raw `pos`; the two agree at the identity.
+    pub fn counts(&self) -> Option<f64> {
+        match self.pos_lin {
+            Some(q4) => Some(q4 as f64 / crate::lut::GRID as f64),
+            None => self.pos.map(f64::from),
+        }
+    }
+}
+
 /// Decode one stream payload into per-tick frames; sample i lands at
 /// `tick_base + i`. None when the payload cannot be a `mask` stream frame
 /// (short header, non-integral sample remainder, over 16 samples).
