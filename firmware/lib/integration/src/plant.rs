@@ -222,6 +222,113 @@ impl Plant {
     }
 }
 
+/// `RlPlant` rail: 7.9 V (2S) in vmotor-tap counts.
+pub const RL_VBUS: u16 = 3204;
+/// `RlPlant` winding R, vcounts per ccount Q4.12: the mg90-a `r_q12`
+/// (1.775 vcounts per count, 4.9 ohm on the 60 mohm chain).
+pub const RL_R_Q12: u16 = 7270;
+/// Back-EMF `omega >> RL_KE_SHIFT` vcounts, omega in c/s.
+const RL_KE_SHIFT: u32 = 3;
+/// Coulomb friction as a current, counts.
+const RL_FRIC_COUNTS: i32 = 53;
+/// Rotor acceleration per count of net current: 7.58 c/s Q8 per tick.
+const RL_ACCEL_Q8_X100: i32 = 758;
+
+/// MG90-scale R-L-back-EMF plant at the FAST tick for the current-limit
+/// pins: the winding current closes 1/4 of its gap to `(v - e) / R` each
+/// tick (tau_e ~ 3.5 ticks) and the shunt reads it at the crest. Coulomb
+/// friction as a current, no load. `locked` holds the rotor anywhere; the
+/// hard stops stop it dead while the current pushes into them.
+pub struct RlPlant {
+    theta_q16: i64,
+    omega_q8: i32,
+    i: i32,
+    pub locked: bool,
+    pub stop_lo: i32,
+    pub stop_hi: i32,
+}
+
+impl RlPlant {
+    pub fn new(pos: u16) -> Self {
+        Self {
+            theta_q16: (pos as i64) << 16,
+            omega_q8: 0,
+            i: 0,
+            locked: false,
+            stop_lo: 0,
+            stop_hi: 4095,
+        }
+    }
+
+    /// One FAST tick under the duty the kernel last wrote. Zero duty is a
+    /// shorted winding: the back-EMF alone drives the current.
+    pub fn step(&mut self, duty: i16) -> SensorFrame {
+        let v = (duty as i32 * RL_VBUS as i32) >> 15;
+        let e = (self.omega_q8 >> 8) >> RL_KE_SHIFT;
+        let i_ss = (((v - e) as i64) << 12) / RL_R_Q12 as i64;
+        self.i += (i_ss as i32 - self.i) >> 2;
+
+        let pos = self.pos();
+        let into_stop = (pos >= self.stop_hi && self.i > 0) || (pos <= self.stop_lo && self.i < 0);
+        if self.locked || into_stop {
+            self.omega_q8 = 0;
+        } else {
+            let net = if self.omega_q8 > 0 || (self.omega_q8 == 0 && self.i > RL_FRIC_COUNTS) {
+                self.i - RL_FRIC_COUNTS
+            } else if self.omega_q8 < 0 || self.i < -RL_FRIC_COUNTS {
+                self.i + RL_FRIC_COUNTS
+            } else {
+                0
+            };
+            let next = self.omega_q8 + net * RL_ACCEL_Q8_X100 / 100;
+            // friction stops a coasting rotor, it never reverses it
+            let reversed = self.omega_q8 != 0 && (next > 0) != (self.omega_q8 > 0);
+            self.omega_q8 = if reversed { 0 } else { next };
+            self.theta_q16 += (((self.omega_q8 >> 8) as i64) << 16) / 20_000;
+            let (lo, hi) = ((self.stop_lo as i64) << 16, (self.stop_hi as i64) << 16);
+            if self.theta_q16 > hi || self.theta_q16 < lo {
+                self.theta_q16 = self.theta_q16.clamp(lo, hi);
+                self.omega_q8 = 0;
+            }
+        }
+
+        let mag = if duty >= 0 { self.i } else { -self.i };
+        let (va, vb) = if duty >= 0 {
+            (RL_VBUS, 40)
+        } else {
+            (40, RL_VBUS)
+        };
+        SensorFrame {
+            pos: self.pos().clamp(0, 4095) as u16,
+            current: (BIAS as i32 + mag).clamp(0, 4095) as u16,
+            current_trough: BIAS,
+            vmotor_a: va,
+            vmotor_a_trough: va,
+            vmotor_b: vb,
+            vmotor_b_trough: vb,
+            vcal: 1200,
+            vbus_raw: vbus_raw(RL_VBUS),
+            ntc_raw: 2048,
+            tick: 0,
+        }
+    }
+
+    /// Signed winding current, counts: what the shunt would read in the
+    /// drive window.
+    pub fn current(&self) -> i32 {
+        self.i
+    }
+
+    pub fn pos(&self) -> i32 {
+        (self.theta_q16 >> 16) as i32
+    }
+
+    /// Rotor speed, whole c/s.
+    pub fn omega_cps(&self) -> i32 {
+        self.omega_q8 >> 8
+    }
+}
+
 /// The duty the bridge sees for `cmd`: Drive's, 0 for everything else.
 pub fn duty_of(cmd: MotorCmd) -> i16 {
     match cmd {

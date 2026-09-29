@@ -96,6 +96,12 @@ pub struct Kernel<I: ControlIo, T: TelStream = ()> {
     bemf: BemfObs,
     /// Velocity-loop feedback pick: back-EMF boxcar or the observer's omega.
     omega_sw: OmegaSwitch,
+    /// OpenLoop's duty ceiling against `i_band`.
+    ol: duty_limit::DutyLimiter,
+    /// Smallest duty with a valid shunt window (SLOW), and the duty OpenLoop
+    /// applies while its ceiling sits under that floor.
+    ol_floor_q15: u16,
+    ol_base_q15: u16,
     faults: faults::FaultLatch,
     det: faults::Detectors,
     booted: bool,
@@ -158,6 +164,9 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             thermal: WindingTherm::new(),
             bemf: BemfObs::new(),
             omega_sw: OmegaSwitch::new(),
+            ol: duty_limit::DutyLimiter::new(),
+            ol_floor_q15: 0,
+            ol_base_q15: 0,
             faults: faults::FaultLatch::new(),
             det: faults::Detectors::new(),
             booted: false,
@@ -367,6 +376,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             }
             self.cur.reset();
             self.vel.reset();
+            self.ol.reset(self.ol_floor_q15);
             self.i_ref_cc = 0;
             self.omega_ref_q16 = 0;
             self.hold = false;
@@ -375,6 +385,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         if run && life.mode != self.mode_prev {
             // mode change mid-run: reference = estimate, at rest
             self.traj.reseed(self.fusion.theta_q16());
+            self.ol.reset(self.ol_floor_q15);
             self.hold = false;
         }
         self.mode_prev = life.mode;
@@ -575,6 +586,12 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                     self.timing.med_ticks_per_ms_q16,
                     16,
                 );
+                self.ol_floor_q15 = window::floor_duty(
+                    sense.i_window_min_ticks,
+                    self.timing.pwm_arr,
+                    self.timing.recip_arr_q24,
+                );
+                self.ol_base_q15 = self.ol_floor_q15;
 
                 // thermometer seed tracks the calib anchor: install writes
                 // and host rewrites both land here
@@ -645,10 +662,33 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         } else {
             match life.mode {
                 Mode::OpenLoop => {
-                    // raw passthrough, duty_max-clamped; NO vbus comp -
-                    // identification wants unconfounded actuation
+                    // duty_max-clamped, ceilinged against the current band
+                    // above the window floor, raw at or under it; NO vbus
+                    // comp - identification wants unconfounded actuation
                     let max = loop_cur.duty_max_q15.min(i16::MAX as u16) as i32;
-                    let mut duty = (life.goal_duty as i32).clamp(-max, max) as i16;
+                    let goal = (life.goal_duty as i32).clamp(-max, max);
+                    // a start from zero duty is a reversal too: it restarts
+                    // from the floor like the run edge does
+                    if goal.signum() != (self.duty_q15 as i32).signum() {
+                        self.ol.reset(self.ol_floor_q15);
+                    }
+                    let lim = if goal >= 0 {
+                        self.i_band.hi
+                    } else {
+                        self.i_band.lo
+                    };
+                    let i_abs = match i_meas {
+                        Some(i) => i.unsigned_abs(),
+                        None => 0,
+                    };
+                    let mag = self.ol.step(
+                        goal.unsigned_abs() as u16,
+                        i_abs,
+                        lim.unsigned_abs(),
+                        self.ol_floor_q15,
+                        self.ol_base_q15,
+                    ) as i16;
+                    let mut duty = if goal < 0 { -mag } else { mag };
                     // endstop: a collapsed band side forbids that sign of
                     // current, and duty of the same sign is what drives it -
                     // zero the outbound push, retreat passes (bench: an

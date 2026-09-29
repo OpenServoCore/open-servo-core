@@ -150,6 +150,40 @@ fn frame(pos: u16, current: u16) -> SensorFrame {
     }
 }
 
+/// Ticks `f` until the applied duty equals `goal_duty`: OpenLoop duty above
+/// the window floor slews there at `duty_limit::UP_Q15` per tick.
+fn settle<T: TelStream>(k: &mut Kernel<FakeIo, T>, sh: &Shared, f: SensorFrame) {
+    let goal = sh.table.with(|t| t.control.lifecycle.goal_duty);
+    for _ in 0..1000 {
+        if k.duty_q15 == goal {
+            return;
+        }
+        k.on_tick(f, sh);
+    }
+    panic!("duty {} never reached the goal {goal}", k.duty_q15);
+}
+
+/// Ticks `f` until a MEDIUM pass has just run: the next tick opens a boxcar
+/// half.
+fn to_medium_boundary(k: &mut Kernel<FakeIo>, sh: &Shared, f: SensorFrame) {
+    while k.decim_med != 0 {
+        k.on_tick(f, sh);
+    }
+}
+
+/// Ticks `f` until an ident window publishes; returns its `agg_seq`. The
+/// next tick opens a fresh window.
+fn to_ident_boundary(k: &mut Kernel<FakeIo>, sh: &Shared, f: SensorFrame) -> u16 {
+    let seq = sh.table.with(|t| t.telemetry.ident.agg_seq);
+    loop {
+        k.on_tick(f, sh);
+        let now = sh.table.with(|t| t.telemetry.ident.agg_seq);
+        if now != seq {
+            return now;
+        }
+    }
+}
+
 // --- Gate / ack / dispatch ------------------------------------------------
 
 #[test]
@@ -427,7 +461,7 @@ fn openloop_duty_passthrough_clamped_with_decay() {
         t.config.limits.openloop_decay = DecaySelect::Fast;
     });
     let mut k = kernel();
-    k.on_tick(frame(2000, BIAS), &sh);
+    settle(&mut k, &sh, frame(2000, BIAS));
     match last_cmd(&k) {
         MotorCmd::Drive { duty, decay } => {
             assert_eq!(duty.0, 8000);
@@ -435,7 +469,7 @@ fn openloop_duty_passthrough_clamped_with_decay() {
         }
         other => panic!("expected Drive, got {other:?}"),
     }
-    // duty_max clamps the passthrough
+    // duty_max clamps the passthrough, at once
     sh.table.with_mut(|t| {
         t.config.loop_current.duty_max_q15 = 5000;
         t.control.lifecycle.goal_duty = 8000;
@@ -505,9 +539,11 @@ fn openloop_endstop_brakes_instead_of_coasting() {
     sh.table.with_mut(|t| t.control.lifecycle.goal_duty = -8000);
     k.on_tick(frame(4095, BIAS), &sh);
     match last_cmd(&k) {
-        MotorCmd::Drive { duty, .. } => assert_eq!(duty.0, -8000),
+        MotorCmd::Drive { duty, .. } => assert!(duty.0 < 0, "duty {}", duty.0),
         other => panic!("expected retreat Drive, got {other:?}"),
     }
+    settle(&mut k, &sh, frame(4095, BIAS));
+    assert_eq!(written_duty(&k), -8000);
 }
 
 #[test]
@@ -521,7 +557,7 @@ fn openloop_nonzero_duty_drives_despite_brake_flag() {
         t.config.limits.openloop_zero_brake = true;
     });
     let mut k = kernel();
-    k.on_tick(frame(2000, BIAS), &sh);
+    settle(&mut k, &sh, frame(2000, BIAS));
     match last_cmd(&k) {
         MotorCmd::Drive { duty, .. } => assert_eq!(duty.0, 8000),
         other => panic!("expected Drive, got {other:?}"),
@@ -572,6 +608,7 @@ fn reversed_polarity_negates_the_openloop_write() {
     reversed(&sh, Mode::OpenLoop);
     sh.table.with_mut(|t| t.control.lifecycle.goal_duty = 8000);
     let mut k = kernel();
+    settle(&mut k, &sh, frame(2000, BIAS));
     // past the next medium publish, which reports the previous tick's duty
     for _ in 0..=DECIM_MED {
         k.on_tick(frame(2000, BIAS), &sh);
@@ -726,11 +763,14 @@ fn trough_bias_tracks_only_inside_slow_drive_windows() {
         }
     ));
     assert_eq!(published_bias(&sh), BIAS);
-    // full-scale Slow: idle leg never leaves CCR 0, no off phase
-    sh.table.with_mut(|t| {
-        t.control.lifecycle.goal_duty = i16::MAX;
-        t.config.limits.openloop_decay = DecaySelect::Slow;
-    });
+    // full-scale Slow: idle leg never leaves CCR 0, no off phase. Reached
+    // under Fast: a Slow slew up to it passes through brake troughs.
+    sh.table
+        .with_mut(|t| t.control.lifecycle.goal_duty = i16::MAX);
+    settle(&mut k, &sh, shifted());
+    assert_eq!(published_bias(&sh), BIAS);
+    sh.table
+        .with_mut(|t| t.config.limits.openloop_decay = DecaySelect::Slow);
     for _ in 0..300 {
         k.on_tick(shifted(), &sh);
     }
@@ -801,8 +841,9 @@ fn ident_setup(sh: &Shared) {
     sh.table.with_mut(|t| {
         t.control.lifecycle.torque_enable = true;
         t.control.lifecycle.mode = Mode::OpenLoop;
-        // drive_ticks(8000) = 293 >= the 100-tick floors: windows valid
-        // from tick 2 on (tick 1 measures the boot duty of 0)
+        // drive_ticks(8000) = 293 >= the 100-tick floors; the slew there
+        // starts at the floor, so windows are valid from tick 2 on (tick 1
+        // measures the boot duty of 0)
         t.control.lifecycle.goal_duty = 8000;
     });
 }
@@ -812,17 +853,16 @@ fn ident_window_pins_aggregates() {
     let sh = Shared::new();
     ident_setup(&sh);
     let mut k = kernel();
-    // window 1 (ticks 1-16) is boot-mixed; spend it
-    for _ in 0..16 {
-        k.on_tick(frame(2000, BIAS + 100), &sh);
-    }
-    sh.table.with(|t| assert_eq!(t.telemetry.ident.agg_seq, 1));
-    // window 2: 8 ticks at +100, 4 at +300, 4 at -60, all windows valid
+    // the windows up to the goal duty are slew-mixed; spend them
+    settle(&mut k, &sh, frame(2000, BIAS + 100));
+    let seq = to_ident_boundary(&mut k, &sh, frame(2000, BIAS + 100));
+    // next window: 8 ticks at +100, 4 at +300, 4 at -60, all windows valid
     for _ in 0..8 {
         k.on_tick(frame(2000, BIAS + 100), &sh);
     }
     // seq holds mid-window: publish only at the /16 boundary
-    sh.table.with(|t| assert_eq!(t.telemetry.ident.agg_seq, 1));
+    sh.table
+        .with(|t| assert_eq!(t.telemetry.ident.agg_seq, seq));
     for _ in 0..4 {
         k.on_tick(frame(2000, BIAS + 300), &sh);
     }
@@ -837,7 +877,7 @@ fn ident_window_pins_aggregates() {
         assert_eq!(d.i_max_counts, 300);
         assert_eq!(d.vdiff_mean, 2960); // va 3000 - vb 40, every tick
         assert_eq!(d.duty_mean_q15, 8000);
-        assert_eq!(d.agg_seq, 2);
+        assert_eq!(d.agg_seq, seq + 1);
     });
 }
 
@@ -846,11 +886,10 @@ fn ident_invalid_ticks_hold_last_valid() {
     let sh = Shared::new();
     ident_setup(&sh);
     let mut k = kernel();
-    for _ in 0..32 {
-        k.on_tick(frame(2000, BIAS + 200), &sh);
-    }
-    // disable: windows go invalid one tick later (tick 33 still measures
-    // the period tick 32's command drove)
+    settle(&mut k, &sh, frame(2000, BIAS + 200));
+    let seq = to_ident_boundary(&mut k, &sh, frame(2000, BIAS + 200));
+    // disable: windows go invalid one tick later (the first tick still
+    // measures the period the last drive command drove)
     sh.table
         .with_mut(|t| t.control.lifecycle.torque_enable = false);
     for _ in 0..16 {
@@ -863,9 +902,9 @@ fn ident_invalid_ticks_hold_last_valid() {
         assert_eq!(d.i_min_counts, 200);
         assert_eq!(d.i_max_counts, 200);
         assert_eq!(d.vdiff_mean, 2960);
-        // duty is per-tick truth: 8000 on tick 33 only -> 8000>>4 = 500
+        // duty is per-tick truth: 8000 on the first tick only -> 8000>>4 = 500
         assert_eq!(d.duty_mean_q15, 500);
-        assert_eq!(d.agg_seq, 3);
+        assert_eq!(d.agg_seq, seq + 1);
     });
 }
 
@@ -902,15 +941,14 @@ fn bemf_boxcar_lands_on_the_closed_form_after_20_ticks() {
     let sh = Shared::new();
     ident_setup(&sh);
     let mut k = kernel();
-    // tick 0 drives the boot duty of 0 (sub-floor); ticks 1.. measure duty
-    // 8000: drive_ticks 293, vdiff 2960, i 100. The half closed at tick 10
-    // is the first clean one, tick 20 pairs it with a second.
+    // from the medium boundary after the slew every tick measures duty
+    // 8000: drive_ticks 293, vdiff 2960, i 100. The half closed 10 ticks
+    // later is the first clean one, 20 ticks pairs it with a second.
+    settle(&mut k, &sh, frame(2000, BIAS + 100));
+    to_medium_boundary(&mut k, &sh, frame(2000, BIAS + 100));
     for _ in 0..20 {
         k.on_tick(frame(2000, BIAS + 100), &sh);
-        sh.table
-            .with(|t| assert_eq!(t.telemetry.estimates.omega_bemf_cps, 0));
     }
-    k.on_tick(frame(2000, BIAS + 100), &sh);
     // closed form: (293 * 2960 / 1200 - 2.0 * 100) * 16 c/s per vcount
     let ticks = window::drive_ticks(8000, ARR) as i64;
     let v_sum = (bemf::BOXCAR_TICKS as i64 * ticks * 2960 * TIMING.recip_arr_q24 as i64) >> 24;
@@ -919,9 +957,9 @@ fn bemf_boxcar_lands_on_the_closed_form_after_20_ticks() {
     let got = sh.table.with(|t| t.telemetry.estimates.omega_bemf_cps) as i64;
     assert!((got - expect).abs() <= 1, "got {got} expect {expect}");
     assert_eq!(got, 8363, "pin");
-    // torque off: tick 21 still measures the last drive, tick 22 on are
-    // sub-floor, so the half closed at tick 30 voids and the publish drops
-    // to 0 with it
+    // torque off: the first tick still measures the last drive, the rest
+    // are sub-floor, so the next half closed voids and the publish drops to
+    // 0 with it
     sh.table
         .with_mut(|t| t.control.lifecycle.torque_enable = false);
     for _ in 0..9 {
@@ -948,14 +986,17 @@ fn velocity_feedback_switches_to_the_bemf_and_back() {
             )
         })
     };
-    // valid boxcars close at ticks 20, 30, 40, 50: the fourth flips the
-    // source; until then omega_hat is the observer's omega
+    // the slew starts at the window floor, so valid boxcars close at ticks
+    // 20, 30, 40, 50: the fourth flips the source; until then omega_hat is
+    // the observer's omega
     for _ in 0..50 {
         k.on_tick(frame(2000, BIAS + 100), &sh);
         assert_eq!(published(&sh), (k.fusion.omega_q16(), 0));
     }
     k.on_tick(frame(2000, BIAS + 100), &sh);
-    assert_eq!(published(&sh), (8363 << 16, 1));
+    let bemf = sh.table.with(|t| t.telemetry.estimates.omega_bemf_cps) as i32;
+    assert!(bemf > 0);
+    assert_eq!(published(&sh), (bemf << 16, 1));
     assert_eq!(k.omega_sw.source(), OmegaSource::Bemf);
     // torque off: tick 51 still measures the last drive; the half closed
     // at tick 60 voids and the source rides the held boxcar through that
@@ -965,7 +1006,7 @@ fn velocity_feedback_switches_to_the_bemf_and_back() {
     for _ in 0..10 {
         k.on_tick(frame(2000, BIAS + 100), &sh);
     }
-    assert_eq!(published(&sh), (8363 << 16, 1));
+    assert_eq!(published(&sh), (bemf << 16, 1));
     for _ in 0..10 {
         k.on_tick(frame(2000, BIAS + 100), &sh);
     }
@@ -1512,19 +1553,20 @@ fn tel_stream_gated_by_sink_active() {
         RecTel::default(),
         TIMING,
     );
-    // sink inactive: no emission
+    // sink inactive: no emission, torque off or driving
     for _ in 0..10 {
         k.on_tick(frame(2000, BIAS), &sh);
     }
-    assert!(k.tel.samples.is_empty());
-
-    // sink active: one sample per tick
-    k.tel.active = true;
     sh.table.with_mut(|t| {
         t.control.lifecycle.torque_enable = true;
         t.control.lifecycle.mode = Mode::OpenLoop;
         t.control.lifecycle.goal_duty = 8000;
     });
+    settle(&mut k, &sh, frame(2100, BIAS + 40));
+    assert!(k.tel.samples.is_empty());
+
+    // sink active: one sample per tick
+    k.tel.active = true;
     for _ in 0..20 {
         k.on_tick(frame(2100, BIAS + 40), &sh);
     }
