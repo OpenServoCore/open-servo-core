@@ -7,7 +7,8 @@
 //! described here; the gains then take R and L_env from that route's
 //! per-period regression of [`super::winding`], over charge-balance currents
 //! and the volt-seconds the burst's voltage channels measured. When both
-//! decline, [`super::resistance`] runs and supplies R.
+//! decline, [`super::resistance`] supplies R when asked, else the winding
+//! the servo carries ([`crate::sources::stored`]).
 //!
 //! The winding current is the shunt's mean over a whole PWM period over the
 //! duty (charge balance), not the ON-window level: decoupling inside the
@@ -1215,7 +1216,8 @@ impl BurstRoute {
 ///      burst, or the pre-arm source resistance is under
 ///      `stiff_supply_ohm`). `l-duty` is left out: L_ripple feeds no gain.
 ///
-/// When both decline, E2 supplies R and L stays at the default.
+/// When both decline, E2 supplies R and L stays at the default, else the
+/// servo's stored winding supplies both.
 pub const PROMOTION_GATES: [&str; 9] = [
     "captures",
     "cadence",

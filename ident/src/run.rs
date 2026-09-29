@@ -16,12 +16,15 @@
 //! travel guard and the [`crate::runway`], inertia stepping from a moving
 //! base by what the limit leaves over the base's running current. A stage
 //! that declines once there is a plan still ends with the closing
-//! centring. Nothing in the default run stalls a stop: a burst that
-//! declines ends it. Asked for ([`Run::with_stall_ladder`]), the resistance
-//! stop ladder measures R instead, its dwells stalling between the current
-//! sensor's window floor and the limit ([`DutyPlan::stall_ladder`]) with
-//! the permit held; a supply that leaves no room between the two ends the
-//! run before it moves.
+//! centring. Nothing in the default run stalls a stop. Asked for
+//! ([`Run::with_stall_ladder`]), the resistance stop ladder measures R when
+//! the burst declines, its dwells stalling between the current sensor's
+//! window floor and the limit ([`DutyPlan::stall_ladder`]) with the permit
+//! held. When neither measures R the run plans from the winding the servo
+//! carries from an earlier identification ([`Run::with_stored_winding`]):
+//! R and L belong to the motor, not to the position table or the gear
+//! train. Without one the run ends, after a closing centring that starts
+//! at the class-safe duty.
 //!
 //! `osc cal` takes the same front ([`Run::for_cal`]) - bias, the jam check,
 //! the burst - then finds the stops: each approached at the one duty the
@@ -48,6 +51,7 @@ use crate::limits::{
     BurstAllowance, CLASS_R_MIN, DutyPlan, NUDGE_MAX_MV, Refusal, STOP_LADDER, ServoLimits,
     duty_of_mv, pct_floor, q15_floor,
 };
+use crate::sources::Winding;
 
 const Q15: f64 = 32767.0;
 
@@ -125,8 +129,8 @@ pub enum Ended {
     Done,
     /// Ran, but its result does not feed the gains: the burst's routes
     /// declined, the ladder fitted too few rungs, or it produced nothing to
-    /// fit. Nothing after it can be planned; a run with a plan still ends
-    /// with its closing centring.
+    /// fit. Nothing after it can be planned unless a stored winding stands
+    /// in for the burst; the run still ends with its closing centring.
     Declined,
     Aborted(AbortReason),
 }
@@ -136,7 +140,8 @@ pub enum Ended {
 pub enum Over {
     Aborted(&'static str, AbortReason),
     /// The named stage gave nothing to fit: nothing after it can be
-    /// planned. The burst's decline leaves no winding R.
+    /// planned. The burst's decline, with no stored winding, leaves no
+    /// winding R.
     Declined(&'static str),
     /// The resistance stop ladder, asked for, fitted no R either.
     ResistanceDeclined,
@@ -209,6 +214,10 @@ pub struct Run {
     class_r_vpc: f64,
     stall_ladder: bool,
     cal: bool,
+    /// What an earlier identification left on the servo.
+    stored: Option<Winding>,
+    /// The ending the stored winding stood in for, once it did.
+    reused: Option<Over>,
     /// A step the run inserted ahead of the order.
     pending: Option<Step>,
     next: usize,
@@ -230,6 +239,8 @@ impl Run {
             class_r_vpc: sc.r_vpc(CLASS_R_MIN),
             stall_ladder: false,
             cal: false,
+            stored: None,
+            reused: None,
             pending: None,
             lim,
             next: 0,
@@ -248,6 +259,18 @@ impl Run {
             stall_ladder: true,
             ..self
         }
+    }
+
+    /// The winding the servo carries, read before the run: when neither the
+    /// burst nor the stop ladder measures R, the run plans from it.
+    pub fn with_stored_winding(self, stored: Option<Winding>) -> Self {
+        Self { stored, ..self }
+    }
+
+    /// The stored winding, and the ending it stood in for, once the run
+    /// plans from it.
+    pub fn reused(&self) -> Option<(Winding, Over)> {
+        self.stored.zip(self.reused)
     }
 
     /// The run `osc cal` takes: the front of the default run, then the
@@ -324,14 +347,23 @@ impl Run {
                         seek: moved,
                     },
                     None if self.cal => return self.next_stage(),
-                    None if self.stall_ladder => return self.stop_ladder(),
+                    None if self.stall_ladder => match self.stop_ladder() {
+                        Ok(stage) => stage,
+                        Err(why) => return self.end(why),
+                    },
                     None => {
                         let rail_mv = self.rail_mv;
                         return self.end(Over::RailTooHigh { rail_mv });
                     }
                 }
             }
-            (Step::Resistance, _) => return self.stop_ladder(),
+            (Step::Resistance, _) => match self.stop_ladder() {
+                Ok(stage) => stage,
+                Err(why) => {
+                    self.no_r(why);
+                    return self.next_stage();
+                }
+            },
             (Step::Stops, plan) => {
                 let (Some(moved), Some((approach, seat, cap))) = (self.free, self.stop_duties())
                 else {
@@ -361,6 +393,12 @@ impl Run {
                 },
                 None => return self.end(Over::Unproven),
             },
+            // the jam check's own start and cap: nothing measured R
+            (Step::Park, None) => Stage::Centre {
+                duty: boot,
+                cap: self.nudge_cap(),
+                nudge: false,
+            },
             (_, None) => return self.end(Over::Declined("burst")),
             (Step::Breakaway, Some(p)) => Stage::Breakaway { cap: p.stop_cap },
             (Step::Ladder, Some(p)) => Stage::Ladder {
@@ -383,20 +421,30 @@ impl Run {
 
     /// The stop ladder, planned from what R the servo carries, else the
     /// class's lowest: the burst in this run measured none.
-    fn stop_ladder(&mut self) -> Option<Stage> {
+    fn stop_ladder(&self) -> Result<Stage, Over> {
         let plan = self.lim.stall_plan(self.class_r_vpc, self.free);
         match plan.stall_ladder(STOP_LADDER, self.lim.window_floor()) {
-            Ok(rungs) => {
-                self.at = Some("resistance");
-                Some(Stage::Resistance {
-                    seek: plan.seek,
-                    rungs,
-                })
+            Ok(rungs) => Ok(Stage::Resistance {
+                seek: plan.seek,
+                rungs,
+            }),
+            Err(Refusal::NoLadderRoom { floor, cap, .. }) => Err(Over::NoLadderRoom { floor, cap }),
+            Err(_) => Err(Over::ResistanceDeclined),
+        }
+    }
+
+    /// Nothing in this run measured R: plan from the stored winding and go
+    /// on, else end with `why` after the closing centring.
+    fn no_r(&mut self, why: Over) {
+        match self.stored {
+            Some(w) => {
+                self.plan = Some(DutyPlan::new(&self.lim, w.r_vpc, self.free));
+                self.reused = Some(why);
             }
-            Err(Refusal::NoLadderRoom { floor, cap, .. }) => {
-                self.end(Over::NoLadderRoom { floor, cap })
+            None => {
+                self.cut = Some(why);
+                self.finish();
             }
-            Err(_) => self.end(Over::ResistanceDeclined),
         }
     }
 
@@ -416,8 +464,9 @@ impl Run {
                     self.finish();
                 }
                 Some("burst") if self.stall_ladder => self.pending = Some(Step::Resistance),
-                Some("resistance") => self.over = Some(Over::ResistanceDeclined),
-                Some(stage) if self.plan.is_some() && stage != "burst" => {
+                Some("burst") => self.no_r(Over::Declined("burst")),
+                Some("resistance") => self.no_r(Over::ResistanceDeclined),
+                Some(stage) if self.plan.is_some() => {
                     self.cut = Some(Over::Declined(stage));
                     self.finish();
                 }
@@ -670,13 +719,14 @@ mod tests {
             assert_eq!(r.aborted(), Some((full[k], blocked)));
             assert_eq!(r.next_stage(), None, "the run stays over");
         }
-        // a declined burst leaves nothing to plan from
+        // a declined burst leaves nothing to plan from: the closing
+        // centring, then the end
         let mut r = run(RAIL_2S);
         let seen = stages(&mut r, |s| match s {
             Stage::Burst { .. } => Ended::Declined,
             _ => Ended::Done,
         });
-        assert_eq!(seen, full[..3]);
+        assert_eq!(seen, [&full[..3], &full[9..]].concat());
         assert_eq!(r.over(), Some(Over::Declined("burst")));
         // a declined ladder still ends with the closing centring
         let mut r = run(RAIL_2S);
@@ -693,25 +743,26 @@ mod tests {
     /// asked for, it runs once, in the burst's place, and a stop ladder
     /// that fits nothing ends the run too. On 2S, with R unknown, the cap
     /// the class's lowest R allows sits under the window floor: the ladder
-    /// has no room and the run ends before it moves.
+    /// has no room and never moves. Each ends with the closing centring.
     #[test]
     fn the_stop_ladder_runs_only_on_request() {
         let declined = |s: &Stage| match s {
             Stage::Burst { .. } | Stage::Resistance { .. } => Ended::Declined,
             _ => Ended::Done,
         };
+        let closed = ["bias", "centring", "burst", "centring"];
         let mut r = run(RAIL_2S);
-        assert_eq!(stages(&mut r, declined), ORDER_NAMES[..3]);
+        assert_eq!(stages(&mut r, declined), closed);
         assert_eq!(r.over(), Some(Over::Declined("burst")));
 
         let mut r = run(RAIL_2S).with_stall_ladder();
-        assert_eq!(stages(&mut r, declined), ORDER_NAMES[..3]);
+        assert_eq!(stages(&mut r, declined), closed);
         assert!(matches!(r.over(), Some(Over::NoLadderRoom { floor, cap }) if cap < floor));
 
         let mut r = run(RAIL_USB).with_stall_ladder();
         assert_eq!(
             stages(&mut r, declined),
-            ["bias", "centring", "burst", "resistance"]
+            ["bias", "centring", "burst", "resistance", "centring"]
         );
         assert_eq!(r.over(), Some(Over::ResistanceDeclined));
 
@@ -893,6 +944,8 @@ mod tests {
         inertia_fit: bool,
         /// The burst measures but its result is taken as declined.
         decline_burst: bool,
+        /// What the burst's captures fitted, declined or not.
+        e8: Option<crate::exp::inductance::InductanceResult>,
         /// What the jam check first moved the shaft at.
         moved: Option<f64>,
         stops: Option<EndstopResult>,
@@ -915,6 +968,7 @@ mod tests {
                 runway: None,
                 inertia_fit: false,
                 decline_burst: false,
+                e8: None,
                 moved: None,
                 stops: None,
                 captured: None,
@@ -968,6 +1022,7 @@ mod tests {
                     let (exp, how) = self.go(Inductance::new(cfg, &params, scales()), params);
                     self.caps.extend_from_slice(exp.captures());
                     let fit = fit_captures(&self.caps, &scales(), &FitCfg::default());
+                    self.e8 = fit.clone();
                     match sources::winding(fit.as_ref(), None, Some(&scales()), 0.0) {
                         _ if self.decline_burst && how == Ended::Done => Ended::Declined,
                         Some(w) if how == Ended::Done => {
@@ -1629,5 +1684,219 @@ mod tests {
             assert_ne!(name, "stall_permit");
         }
         assert!(!servo.torque && !servo.permit_live());
+    }
+
+    /// The bench servo as the CLI reads it once identified: R 7270 in its
+    /// table.
+    fn identified(vbus: u16) -> ServoLimits {
+        ServoLimits {
+            r_q12: 7270,
+            ..limits(vbus)
+        }
+    }
+
+    /// The winding an earlier identification left on the bench servo: R
+    /// `r_vpc`, L 0.6 mH.
+    fn stored(r_vpc: f64) -> Winding {
+        let sc = scales();
+        Winding {
+            r_ohm: Some(r_vpc * sc.v_term_per_count / sc.amps_per_count),
+            r_vpc,
+            r_from: sources::Source::Stored,
+            l_h: 0.6e-3,
+            l_from: sources::Source::Stored,
+        }
+    }
+
+    fn reusing(vbus: u16, w: Winding) -> Run {
+        Run::new(identified(vbus), &scales()).with_stored_winding(Some(w))
+    }
+
+    fn names(rig: &Rig) -> Vec<&'static str> {
+        rig.marks.iter().map(|m| m.0).collect()
+    }
+
+    /// The bench MG90 on 2S, identified before, its burst declined: the run
+    /// plans from the winding it carries and goes on to the fit - the
+    /// breakaway, a ladder that fits Ke, inertia steps that fit b - and
+    /// ends centred with torque off. Nothing stalls a stop.
+    #[test]
+    fn a_declined_burst_uses_the_stored_winding() {
+        let mut servo = bench_servo(RAIL_2S);
+        servo.pos = 2600.0;
+        let mut run = reusing(RAIL_2S, stored(R));
+        let mut rig = Rig::new(&mut servo, RAIL_2S);
+        rig.decline_burst = true;
+        rig.run(&mut run);
+        assert_eq!(run.over(), None, "{:?}", run.over());
+        assert_eq!(run.reused(), Some((stored(R), Over::Declined("burst"))));
+        assert_eq!(names(&rig), ORDER_NAMES);
+        assert_eq!(run.plan().expect("planned").r_vpc, R);
+        assert_eq!(rig.r_ohm, None, "the burst supplied R");
+        let ladder = rig.ladder.as_ref().expect("the ladder fits");
+        assert!(ladder.rungs.iter().filter(|r| r.used).count() >= 3);
+        assert!(rig.inertia_fit, "inertia did not fit");
+        assert!(!rig.log.iter().any(|l| l.starts_with("write stall_permit")));
+        assert_eq!(servo.pressed_ms, 0.0);
+        assert!(!servo.torque && !servo.permit_live());
+        assert!((servo.pos - 2029.0).abs() <= 300.0, "ends at {}", servo.pos);
+    }
+
+    /// Asked for, the stop ladder comes before the stored winding: on USB
+    /// it has room and measures R from the stops, and the stored winding,
+    /// a third off here, is never taken. On 2S the stored R leaves the
+    /// ladder no room between the window floor and the stall-safe cap, so
+    /// the run takes the stored winding instead, stalls nothing and goes on.
+    #[test]
+    fn stall_ladder_comes_before_the_stored_winding() {
+        let mut servo = bench_servo(RAIL_USB);
+        servo.pos = 2600.0;
+        let mut run = reusing(RAIL_USB, stored(R * 1.3)).with_stall_ladder();
+        let mut rig = Rig::new(&mut servo, RAIL_USB);
+        rig.decline_burst = true;
+        rig.run(&mut run);
+        assert_eq!(run.over(), None, "{:?}", run.over());
+        assert_eq!(run.reused(), None);
+        assert_eq!(
+            &names(&rig)[..4],
+            ["bias", "centring", "burst", "resistance"]
+        );
+        let r = run.plan().expect("planned").r_vpc;
+        assert!((r / R - 1.0).abs() < 0.02, "R {r}");
+        assert!(rig.log.iter().any(|l| l.starts_with("write stall_permit")));
+        assert!(!servo.torque && !servo.permit_live());
+
+        let mut servo = bench_servo(RAIL_2S);
+        servo.pos = 2600.0;
+        let mut run = reusing(RAIL_2S, stored(R)).with_stall_ladder();
+        let mut rig = Rig::new(&mut servo, RAIL_2S);
+        rig.decline_burst = true;
+        rig.run(&mut run);
+        assert_eq!(run.over(), None, "{:?}", run.over());
+        assert!(matches!(
+            run.reused(),
+            Some((w, Over::NoLadderRoom { .. })) if w == stored(R)
+        ));
+        assert_eq!(names(&rig), ORDER_NAMES);
+        assert_eq!(run.plan().expect("planned").r_vpc, R);
+        assert!(!rig.log.iter().any(|l| l.starts_with("write stall_permit")));
+        assert_eq!(servo.pressed_ms, 0.0);
+        assert!(!servo.torque && !servo.permit_live());
+    }
+
+    /// A servo that carries no winding: a declined burst ends the run
+    /// after its closing centring with nothing planned, the stop ladder
+    /// asked for or not - 2S leaves it no room.
+    #[test]
+    fn no_stored_winding_stops_the_run() {
+        for ladder in [false, true] {
+            let mut servo = bench_servo(RAIL_2S);
+            servo.pos = 2600.0;
+            let mut run = Run::new(identified(RAIL_2S), &scales()).with_stored_winding(None);
+            if ladder {
+                run = run.with_stall_ladder();
+            }
+            let mut rig = Rig::new(&mut servo, RAIL_2S);
+            rig.decline_burst = true;
+            rig.run(&mut run);
+            assert_eq!(names(&rig), ["bias", "centring", "burst", "centring"]);
+            if ladder {
+                assert!(matches!(run.over(), Some(Over::NoLadderRoom { .. })));
+            } else {
+                assert_eq!(run.over(), Some(Over::Declined("burst")));
+            }
+            assert_eq!((run.plan(), run.reused()), (None, None));
+            assert_eq!(run.next_stage(), None, "the run stays over");
+            assert!(!rig.log.iter().any(|l| l.starts_with("write stall_permit")));
+            assert!(!servo.torque && !servo.permit_live());
+        }
+    }
+
+    /// The declined burst still carries a rough R from its pairs: a stored
+    /// winding it agrees with passes quietly, one more than a quarter away
+    /// either way is called stale.
+    #[test]
+    fn a_stale_stored_winding_warns() {
+        let mut servo = bench_servo(RAIL_2S);
+        servo.pos = 2600.0;
+        let mut run = reusing(RAIL_2S, stored(R));
+        let mut rig = Rig::new(&mut servo, RAIL_2S);
+        rig.decline_burst = true;
+        while let Some(stage) = run.next_stage() {
+            let burst = matches!(stage, Stage::Burst { .. });
+            let how = rig.execute(&mut run, &stage);
+            run.ended(how);
+            if burst {
+                break;
+            }
+        }
+        let e8 = rig.e8.as_ref().expect("the burst fitted");
+        let rough = e8.volts.r_pair_ohm.or(e8.r_pair_ohm).expect("a rough R");
+        let r_ohm = stored(R).r_ohm.unwrap();
+        assert!(
+            (rough / r_ohm - 1.0).abs() < sources::STALE_R,
+            "{rough} of {r_ohm}"
+        );
+        assert_eq!(sources::stale(Some(e8), &stored(R)), None);
+        assert_eq!(sources::stale(Some(e8), &stored(R * 1.4)), Some(rough));
+        assert_eq!(sources::stale(Some(e8), &stored(R / 1.4)), Some(rough));
+        assert_eq!(sources::stale(None, &stored(R * 1.4)), None);
+    }
+
+    /// A declined burst that leaves the shaft off mid travel, as on the
+    /// bench at 1457. With no stored winding the closing centring starts at
+    /// the class-safe duty and raises no higher than the jam check's cap;
+    /// with one it drives at the plan's seek, under its stop cap. Either
+    /// way the run ends centred with torque off.
+    #[test]
+    fn a_declined_burst_still_ends_centred() {
+        for w in [None, Some(stored(R))] {
+            let mut servo = bench_servo(RAIL_2S);
+            servo.pos = 2600.0;
+            let mut run = Run::new(identified(RAIL_2S), &scales()).with_stored_winding(w);
+            let (boot, cap) = (run.bootstrap(), run.nudge_cap());
+            let mut rig = Rig::new(&mut servo, RAIL_2S);
+            rig.decline_burst = true;
+            let mut closing = None;
+            while let Some(stage) = run.next_stage() {
+                if names(&rig).last() == Some(&"burst") {
+                    closing = Some(stage.clone());
+                }
+                let burst = matches!(stage, Stage::Burst { .. });
+                let how = rig.execute(&mut run, &stage);
+                run.ended(how);
+                if burst {
+                    rig.servo.pos = 1457.0;
+                    run.finish();
+                }
+            }
+            assert_eq!(names(&rig), ["bias", "centring", "burst", "centring"]);
+            let top = drives(rig.span(3, 4)).into_iter().fold(0.0, f64::max);
+            match (w, run.plan()) {
+                (None, None) => {
+                    let want = Stage::Centre {
+                        duty: boot,
+                        cap,
+                        nudge: false,
+                    };
+                    assert_eq!(closing, Some(want));
+                    assert!(top <= cap + 1e-9, "{top} over {cap}");
+                    assert_eq!(run.over(), Some(Over::Declined("burst")));
+                }
+                (Some(_), Some(p)) => {
+                    let want = Stage::Centre {
+                        duty: p.seek,
+                        cap: p.stop_cap,
+                        nudge: false,
+                    };
+                    assert_eq!(closing, Some(want));
+                    assert!(top <= p.stop_cap + 1e-9, "{top} over {}", p.stop_cap);
+                    assert_eq!(run.over(), None);
+                }
+                other => panic!("{other:?}"),
+            }
+            assert!(!servo.torque && !servo.permit_live());
+            assert!((servo.pos - 2029.0).abs() <= 300.0, "ends at {}", servo.pos);
+        }
     }
 }

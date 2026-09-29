@@ -96,6 +96,9 @@ pub fn render(r: &ReportInputs<'_>) -> String {
         {
             let _ = writeln!(s, "  not run: burst supplied R");
         }
+        None if r.plant.is_some_and(|p| p.winding.r_from == Source::Stored) => {
+            let _ = writeln!(s, "  not run: R stored on the servo");
+        }
         None => {
             let _ = writeln!(s, "  skipped");
         }
@@ -178,7 +181,7 @@ pub fn render(r: &ReportInputs<'_>) -> String {
 
     let _ = writeln!(s, "\n[burst] winding R/L (high-rate shunt burst)");
     match r.inductance {
-        Some(x) => render_e8(&mut s, x),
+        Some(x) => render_e8(&mut s, x, r.plant.map(|p| p.winding.r_from)),
         None => {
             let _ = writeln!(s, "  skipped");
         }
@@ -416,7 +419,8 @@ fn render_held(s: &mut String, h: &HeldRun) {
     let _ = writeln!(s, "  held gates    {}", gate_line(&h.gates));
 }
 
-fn render_e8(s: &mut String, x: &InductanceResult) {
+/// `r_from`: where the gains took R from, once there are gains.
+fn render_e8(s: &mut String, x: &InductanceResult, r_from: Option<Source>) {
     if x.held.captures > 0 {
         render_held(s, &x.held);
     }
@@ -440,12 +444,26 @@ fn render_e8(s: &mut String, x: &InductanceResult) {
                 }
             ),
             None => format!(
-                "declined (held: {}; free: {}) - resistance supplies R, L stays at the default",
+                "declined (held: {}; free: {}) - {}",
                 match x.held.captures {
                     0 => "no seated captures".to_string(),
                     _ => x.held.blocking().join(", "),
                 },
-                x.blocking().join(", ")
+                x.blocking().join(", "),
+                match r_from {
+                    Some(Source::StallFallback) => {
+                        "the resistance stop ladder supplies R, L stays at the default"
+                    }
+                    Some(Source::Stored) => {
+                        "the gains take the R and L stored on the servo by an earlier \
+                         identification"
+                    }
+                    _ => {
+                        "no R from the burst: the resistance stop ladder measures it when asked \
+                         and it has room, else the run takes the R and L stored on the servo, \
+                         else it stops"
+                    }
+                }
             ),
         }
     );
@@ -769,6 +787,53 @@ mod tests {
             s.contains("verdict       declined (held: l-spread; free: captures"),
             "{s}"
         );
+        assert!(
+            s.contains(
+                "- no R from the burst: the resistance stop ladder measures it when asked and \
+                 it has room, else the run takes the R and L stored on the servo, else it stops"
+            ),
+            "{s}"
+        );
+        // once there are gains the line names where R came from
+        let p = PlantParams {
+            r_vpc: 1.775,
+            ke_vpc: 0.15,
+            fc: 20.0,
+            fv: 0.001,
+            b: 0.1,
+            sigma_theta: 1.0,
+            l_cd: 3.58e-4,
+            tick_hz: 20_100.0,
+            f_med: 2_010.0,
+        };
+        for (from, tail) in [
+            (
+                Source::Stored,
+                "- the gains take the R and L stored on the servo by an earlier identification",
+            ),
+            (
+                Source::StallFallback,
+                "- the resistance stop ladder supplies R, L stays at the default",
+            ),
+        ] {
+            let w = Winding {
+                r_ohm: None,
+                r_vpc: 1.775,
+                r_from: from,
+                l_h: 0.5e-3,
+                l_from: from,
+            };
+            let s = render(&ReportInputs {
+                inductance: Some(&r),
+                plant: Some(PlantInputs {
+                    plant: &p,
+                    winding: &w,
+                    sigma_from: Source::Bias,
+                }),
+                ..Default::default()
+            });
+            assert!(s.contains(tail), "{s}");
+        }
     }
 
     #[test]
@@ -821,6 +886,27 @@ mod tests {
         });
         assert!(s.contains("resistance fallback"), "{s}");
         assert!(s.contains("0.5000 mH                default"), "{s}");
+        let stored = Winding {
+            r_ohm: Some(4.9),
+            r_from: Source::Stored,
+            l_h: 0.62e-3,
+            l_from: Source::Stored,
+            ..burst
+        };
+        let s = render(&ReportInputs {
+            plant: Some(PlantInputs {
+                plant: &p,
+                winding: &stored,
+                sigma_from: Source::Bias,
+            }),
+            ..Default::default()
+        });
+        assert!(s.contains("not run: R stored on the servo"), "{s}");
+        assert!(s.contains("(4.900 ohm)  stored on the servo"), "{s}");
+        assert!(
+            s.contains("0.6200 mH                stored on the servo"),
+            "{s}"
+        );
     }
 
     #[test]
