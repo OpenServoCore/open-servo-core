@@ -22,13 +22,14 @@ use osc_ident::units::SenseParams;
 use serde_json::{Value, json};
 
 use super::envelope::Envelope;
+use super::verdict::Abort;
 use super::{Rule, Supply};
 use crate::rig::battery;
 use crate::rig::centre::centre_on;
 use crate::rig::limits::{self, Stall};
 use crate::rig::pump::read_snapshot;
 use crate::rig::snapshot::read_u16;
-use crate::sweep::{self, pct_q15};
+use crate::sweep::{self, Decay, pct_q15};
 
 /// The exit code of a run a blocked shaft ended.
 pub(crate) const BLOCKED_EXIT: i32 = 4;
@@ -257,6 +258,21 @@ impl Front {
             self.lim.ma().of(self.lim.i_lim as f64)
         );
         Ok(proved)
+    }
+
+    /// What a recording under `decay` is held against: the abort a quarter
+    /// over the limit, and what sizes a reversal's residual.
+    pub(crate) fn abort(&self, decay: Decay) -> Abort {
+        let lim = &self.lim;
+        Abort {
+            i_abort: lim.abort_default() as f64,
+            floor_q15: lim.window_floor_q15,
+            rail: lim.vbus as f64,
+            r_vpc: lim.r_q12 as f64 / 4096.0,
+            fast: decay == Decay::Fast,
+            tick_hz: self.tick_hz as f64,
+            ma: lim.ma(),
+        }
     }
 
     /// meta.json's `drive` block: the rule, what the front read and what

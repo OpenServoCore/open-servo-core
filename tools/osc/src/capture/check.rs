@@ -2,7 +2,9 @@
 //! holds every segment its own meta promises, without the servo; over a
 //! dataset or experiment dir, every capture under it, and that they were
 //! all made under one position table and one drive rule, the one
-//! dataset.toml declares.
+//! dataset.toml declares. A recording made under the limit is judged as the
+//! capture verdict judged it: settled grid and ends tails, no current window
+//! over its abort.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -14,10 +16,15 @@ use flate2::read::GzDecoder;
 use osc_ident::exp::{Applied, judge};
 use serde::Deserialize;
 
+use osc_ident::frame::TelFrame;
+use osc_ident::limits::Ma;
+
 use super::Rule;
+use super::plan::Block;
 use super::store::{goal_tick, tick_ms};
-use super::verdict::expected_segments;
-use crate::sweep::Step;
+use super::verdict::{Abort, block_of, expected_segments, over_abort, settled};
+use crate::rig::pump::BurstStats;
+use crate::sweep::{Decay, Segment, Step};
 
 /// `osc capture check` args.
 #[derive(clap::Args, Debug)]
@@ -39,6 +46,18 @@ struct SweepMeta {
     plant: Option<PlantMeta>,
     #[serde(default)]
     drive: Option<DriveMeta>,
+    #[serde(default)]
+    vbus_counts: Option<f64>,
+    #[serde(default)]
+    decay: Option<Decay>,
+    #[serde(default)]
+    session: Option<SessionMeta>,
+}
+
+/// The block map a session recording carries.
+#[derive(Deserialize)]
+struct SessionMeta {
+    blocks: Vec<Block>,
 }
 
 /// The table a recording was made under, as its meta names it.
@@ -56,6 +75,12 @@ struct DriveMeta {
     /// Per segment, in order; a bare `osc sweep` writes none.
     #[serde(default)]
     t_goal_ms: Option<Vec<Option<f64>>>,
+    #[serde(default)]
+    i_abort_counts: Option<f64>,
+    #[serde(default)]
+    window_floor_q15: Option<u16>,
+    #[serde(default)]
+    r_q12: Option<u16>,
 }
 
 /// The rule and limit a recording was made under, or a dataset declares.
@@ -313,6 +338,9 @@ fn check(dir: &Path, name: &str) -> Result<Checked> {
     if let Some(t) = m.drive.as_ref().and_then(|d| d.t_goal_ms.as_deref()) {
         check_goals(&rows, t, m.tick_hz)?;
     }
+    if let Some(d) = m.drive.as_ref().filter(|_| drive.rule == Rule::Limit) {
+        check_limit(&rows, &m, d)?;
+    }
     if drive.rule == Rule::Free {
         check_free(&rows, &m.schedule, baseline)?;
     }
@@ -367,6 +395,62 @@ fn check_goals(rows: &Rows, meta: &[Option<f64>], tick_hz: Option<f64>) -> Resul
     Ok(())
 }
 
+/// A recording made under the limit, judged as the capture verdict judged
+/// it: no window of current over the abort its meta names, and every grid
+/// and ends rung's tail settled at its goal.
+fn check_limit(rows: &Rows, m: &SweepMeta, d: &DriveMeta) -> Result<()> {
+    let Some(hz) = m.tick_hz.filter(|&hz| hz > 0.0) else {
+        bail!("a limit recording without a tick_hz");
+    };
+    let segs: Vec<Segment> = rows
+        .segs
+        .iter()
+        .map(|(&seg, s)| Segment {
+            seg,
+            dir: s.dir,
+            cmd_duty_q15: s.cmd,
+            frames: s.frames.clone(),
+            stats: BurstStats {
+                frames: 0,
+                samples: s.rows,
+                holes: 0,
+                garble: 0,
+            },
+        })
+        .collect();
+    let baseline = m.baseline_ms > 0;
+    if let (Some(i_abort), Some(floor_q15), Some(r_q12), Some(rail)) =
+        (d.i_abort_counts, d.window_floor_q15, d.r_q12, m.vbus_counts)
+    {
+        let abort = Abort {
+            i_abort,
+            floor_q15,
+            rail,
+            r_vpc: r_q12 as f64 / 4096.0,
+            fast: m.decay == Some(Decay::Fast),
+            tick_hz: hz,
+            ma: Ma(0.0),
+        };
+        over_abort(&segs, &m.schedule, baseline, &abort).map_err(|e| anyhow!(e))?;
+    }
+    let Some(session) = &m.session else {
+        return Ok(());
+    };
+    for (i, g) in segs.iter().enumerate() {
+        let Some(k) = i.checked_sub(baseline as usize) else {
+            continue;
+        };
+        let k = k % m.schedule.len();
+        if g.cmd_duty_q15 != 0
+            && matches!(block_of(&session.blocks, k), Some("grid" | "ends"))
+            && matches!(m.schedule[k], Step::Drive(..))
+        {
+            settled(g, hz).map_err(|e| anyhow!("seg {}: {e}", g.seg))?;
+        }
+    }
+    Ok(())
+}
+
 /// A recording made before the servo limited open-loop current holds no
 /// sample the limit governed; one that does was made under a limit its
 /// meta does not declare. Each segment is judged as the capture verdict
@@ -401,12 +485,15 @@ fn check_free(rows: &Rows, schedule: &[Step], baseline: bool) -> Result<()> {
     Ok(())
 }
 
-/// One segment's rows: the commanded duty and every applied-duty sample.
+/// One segment's rows: the commanded duty, every applied-duty sample, and
+/// the samples a limit recording is judged by.
 #[derive(Default)]
 struct SegRows {
     rows: usize,
     cmd: i16,
+    dir: i8,
     duty: Vec<(u64, i16)>,
+    frames: Vec<TelFrame>,
 }
 
 /// A recording's rows by seg, and every dir seen.
@@ -428,6 +515,11 @@ fn read_rows(r: impl BufRead) -> Result<Rows> {
     };
     let (seg_col, dir_col) = (col("seg")?, col("dir")?);
     let (cmd_col, tick_col, duty_col) = (col("cmd_duty_q15")?, col("tick")?, col("duty_q15")?);
+    let (pos_col, raw_col, trough_col) = (
+        col("pos").ok(),
+        col("current_raw").ok(),
+        col("current_trough").ok(),
+    );
     let mut segs: BTreeMap<u32, SegRows> = BTreeMap::new();
     let mut dirs = BTreeSet::new();
     for (i, line) in lines.enumerate() {
@@ -441,13 +533,26 @@ fn read_rows(r: impl BufRead) -> Result<Rows> {
         let tick: u64 = field(tick_col).parse().map_err(|_| bad("tick"))?;
         let s = segs.entry(seg).or_insert_with(|| SegRows {
             cmd,
+            dir,
             ..SegRows::default()
         });
         s.rows += 1;
-        match field(duty_col) {
-            "" => {}
-            d => s.duty.push((tick, d.parse().map_err(|_| bad("duty_q15"))?)),
+        let duty = match field(duty_col) {
+            "" => None,
+            d => Some(d.parse().map_err(|_| bad("duty_q15"))?),
+        };
+        if let Some(d) = duty {
+            s.duty.push((tick, d));
         }
+        let cell = |c: Option<usize>| c.and_then(|c| field(c).parse::<u16>().ok());
+        s.frames.push(TelFrame {
+            tick,
+            duty_q15: duty,
+            pos: cell(pos_col),
+            current_raw: cell(raw_col),
+            current_trough: cell(trough_col),
+            ..TelFrame::default()
+        });
         if seg > 0 {
             dirs.insert(dir);
         }
@@ -458,10 +563,12 @@ fn read_rows(r: impl BufRead) -> Result<Rows> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capture::store::Store;
+    use crate::capture::plan::Plan;
     use crate::capture::store::fixture::{clean, land, land_as, seg, sweep_meta, tmp};
-    use crate::sweep::Segment;
-    use osc_ident::frame::TelFrame;
+    use crate::capture::store::{Capture, CaptureMeta, Store};
+    use crate::capture::verdict::bench;
+    use crate::rig::servo::bench::Bench;
+    use crate::sweep::Dirs;
     use serde_json::{Value, json};
 
     #[test]
@@ -787,6 +894,77 @@ mod tests {
             check(&dir, "slow").err().unwrap().to_string(),
             "seg 1: t_goal_ms 0.5 ms in the meta, 0.15 ms by the rows"
         );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A grid rung recorded on the bench servo, landed as a limit recording
+    /// with the settings its meta names.
+    fn land_grid(root: &Path, n: u32, step: Step, set: impl FnOnce(&mut Bench)) -> PathBuf {
+        let c = bench::cfg(vec![step], Dirs::Both);
+        let segs = bench::record(&c, set);
+        let mut meta = sweep_meta();
+        meta["schedule"] = json!([step.to_string()]);
+        meta["baseline_ms"] = json!(c.baseline_ms);
+        meta["decay"] = json!("slow");
+        meta["vbus_counts"] = json!(3204);
+        meta["drive"] = json!({
+            "rule": "limit",
+            "current_limit_counts": 280,
+            "i_abort_counts": 350,
+            "window_floor_q15": 4356,
+            "r_q12": 7270,
+        });
+        let store = Store::new(root.to_path_buf());
+        let cap = Capture::open(&store, "session", n).unwrap();
+        let mut t = cap.begin("slow", &meta).unwrap();
+        for s in &segs.segments {
+            t.on_seg(s).unwrap();
+        }
+        let plan = Plan {
+            recording: "slow".into(),
+            decay: Decay::Slow,
+            schedule: vec![step],
+            blocks: bench::one_block("grid", &c),
+        };
+        t.accept(&CaptureMeta {
+            supply: crate::capture::Supply::TwoS,
+            plan: &plan,
+            attempt: 1,
+            governed: &[],
+        })
+        .unwrap();
+        cap.dir().to_path_buf()
+    }
+
+    /// A limit recording read back is judged as the capture verdict judged
+    /// it: a grid rung whose tail held its goal checks clean; one whose
+    /// window ended 48 ms past its goal, or whose servo held no limit,
+    /// fails on the rows alone.
+    #[test]
+    fn a_limit_recording_checks_its_tails_and_its_current() {
+        let root = tmp("check-limit");
+        let dir = land_grid(&root, 1, Step::Drive(40, Some(361)), |_| {});
+        let c = check(&dir, "slow").unwrap();
+        assert!(c.line.ends_with(", limit at 280 counts"), "{}", c.line);
+
+        let dir = land_grid(&root, 2, Step::Drive(40, Some(120)), |_| {});
+        let e = check(&dir, "slow").err().unwrap().to_string();
+        assert!(
+            e.starts_with("seg 1: the applied duty held its goal for the last 4"),
+            "{e}"
+        );
+
+        let dir = land_grid(&root, 3, Step::Drive(60, Some(272)), |b| {
+            b.servo.current_limit = None
+        });
+        let e = check(&dir, "slow").err().unwrap().to_string();
+        assert!(
+            e.starts_with(
+                "the servo is not holding its current limit: seg 1 drew a 16-sample mean of"
+            ),
+            "{e}"
+        );
+        assert!(e.ends_with("over the abort of 350 counts"), "{e}");
         std::fs::remove_dir_all(&root).unwrap();
     }
 

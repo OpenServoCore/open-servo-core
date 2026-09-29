@@ -26,7 +26,7 @@ use super::front::{self, Front, Proved};
 use super::plan::{self, Plan};
 use super::procs::Procedure;
 use super::store::{Capture, CaptureMeta, Decl, PosLutFile, Store};
-use super::verdict::verdict;
+use super::verdict::{Verdict, verdict};
 use super::{RULE, RUNG_TRIES, SETTLE_MS, Supply, WINDOW_MS};
 use crate::rig::battery::{self, read_pack_mv};
 use crate::rig::plant::{self, Snapshot};
@@ -60,6 +60,8 @@ pub struct Args {
 }
 
 const EXPERIMENT: &str = "session";
+/// The exit code of a run the current abort ended.
+const OVERCURRENT_EXIT: i32 = 5;
 /// Tries per recording; an adapter loss does not spend one.
 const RECORDING_TRIES: u32 = 5;
 /// Adapter losses one recording survives, each redoing it from the start; a
@@ -192,6 +194,8 @@ enum Stop {
     Battery(String),
     /// Nothing may drive the shaft again, not even to park it.
     Blocked(String),
+    /// The servo is not holding its current limit: nothing drives it again.
+    Overcurrent(String),
     Interrupted,
     Error(anyhow::Error),
 }
@@ -205,6 +209,7 @@ impl Stop {
             Stop::AdapterLost => 2,
             Stop::Battery(_) => 3,
             Stop::Blocked(_) => front::BLOCKED_EXIT,
+            Stop::Overcurrent(_) => OVERCURRENT_EXIT,
             Stop::Interrupted => 130,
         }
     }
@@ -216,7 +221,7 @@ impl fmt::Display for Stop {
             Stop::Failed(m) => write!(f, "{m}"),
             Stop::AdapterLost => f.write_str("adapter lost - replug and rerun"),
             Stop::Battery(m) => write!(f, "battery: {m}"),
-            Stop::Blocked(m) => write!(f, "{m}"),
+            Stop::Blocked(m) | Stop::Overcurrent(m) => write!(f, "{m}"),
             Stop::Interrupted => f.write_str("interrupted"),
             Stop::Error(e) => write!(f, "{e:#}"),
         }
@@ -265,6 +270,7 @@ enum Outcome {
     Rejected(String),
     Lost(String),
     Blocked(String),
+    Overcurrent(String),
     Interrupted,
 }
 
@@ -285,6 +291,7 @@ enum Next {
     Failed,
     AdapterLost,
     Blocked(String),
+    Overcurrent(String),
     Interrupted,
 }
 
@@ -307,6 +314,7 @@ impl Tries {
             Outcome::Accepted { .. } => Next::Done,
             Outcome::Interrupted => Next::Interrupted,
             Outcome::Blocked(why) => Next::Blocked(why.clone()),
+            Outcome::Overcurrent(why) => Next::Overcurrent(why.clone()),
             Outcome::Rejected(_) => {
                 self.rejected += 1;
                 if self.rejected < RECORDING_TRIES {
@@ -611,6 +619,9 @@ impl Session<'_> {
                 Outcome::Blocked(why) => self
                     .log
                     .line(format_args!("  BLOCKED {label}/{name}: {why}")),
+                Outcome::Overcurrent(why) => self
+                    .log
+                    .line(format_args!("  OVERCURRENT {label}/{name}: {why}")),
                 Outcome::Interrupted => {
                     self.log.line(format_args!("  {label}/{name}: interrupted"))
                 }
@@ -629,6 +640,7 @@ impl Session<'_> {
                 }
                 Next::AdapterLost => return Err(Stop::AdapterLost),
                 Next::Blocked(why) => return Err(Stop::Blocked(why)),
+                Next::Overcurrent(why) => return Err(Stop::Overcurrent(why)),
                 Next::Interrupted => return Err(Stop::Interrupted),
             }
         }
@@ -645,45 +657,45 @@ impl Session<'_> {
     ) -> Result<Outcome, Stop> {
         let (id, supply) = (self.id, self.supply);
         let drive = self.front.drive(proved);
+        let abort = self.front.abort(cfg.decay);
+        let env = self.env;
         let c = self.client()?;
         let meta = match sweep::meta(c, id, cfg, drive) {
             Ok(m) => m,
             Err(e) => return Ok(outcome_of(&e)),
         };
         let mut t = cap.begin(&plan.recording, &meta).map_err(Stop::Error)?;
-        let judged = (|| -> Result<Result<usize, String>> {
+        let judged = (|| -> Result<Verdict> {
             let rec = sweep::record(&mut Wire::new(&mut *c, id), cfg, |g| t.on_seg(g))?;
-            if let Err(why) = verdict(&rec, cfg) {
-                return Ok(Err(why));
-            }
+            let v = verdict(&rec, cfg, &plan.blocks, env, &abort);
             let s = read_snapshot(c, id)?;
-            Ok(match s.fault_flags {
-                0 => Ok(rec.segments.len()),
-                f => Err(format!(
+            Ok(match (v, s.fault_flags) {
+                (Verdict::Accepted { .. }, f) if f != 0 => Verdict::Rejected(format!(
                     "servo faulted: flags {f:#04x} code {}",
                     s.fault_code
                 )),
+                (v, _) => v,
             })
         })();
-        match judged {
-            Ok(Ok(segs)) => {
+        let outcome = match judged {
+            Ok(Verdict::Accepted { governed }) => {
+                let segs = governed.len();
                 t.accept(&CaptureMeta {
                     supply,
                     plan,
                     attempt,
+                    governed: &governed,
                 })
                 .map_err(Stop::Error)?;
-                Ok(Outcome::Accepted { segs })
+                return Ok(Outcome::Accepted { segs });
             }
-            Ok(Err(why)) => {
-                t.reject().map_err(Stop::Error)?;
-                Ok(Outcome::Rejected(why))
-            }
-            Err(e) => {
-                t.reject().map_err(Stop::Error)?;
-                Ok(outcome_of(&e))
-            }
-        }
+            Ok(Verdict::Rejected(why)) => Outcome::Rejected(why),
+            Ok(Verdict::Blocked(why)) => Outcome::Blocked(why),
+            Ok(Verdict::Overcurrent(why)) => Outcome::Overcurrent(why),
+            Err(e) => outcome_of(&e),
+        };
+        t.reject().map_err(Stop::Error)?;
+        Ok(outcome)
     }
 
     /// The plant the captures are made under, logged, and its table kept
@@ -909,11 +921,12 @@ impl Session<'_> {
     }
 }
 
-/// The duty the run's last park drives at: none after a blocked shaft,
-/// which nothing may drive again, or before a jam check proved it free.
+/// The duty the run's last park drives at: none after a blocked shaft or a
+/// servo not holding its limit, which nothing may drive again, or before a
+/// jam check proved it free.
 fn end_park(stop: Option<&Stop>, proved: Option<&Proved>) -> Option<i16> {
     match stop {
-        Some(Stop::Blocked(_)) => None,
+        Some(Stop::Blocked(_) | Stop::Overcurrent(_)) => None,
         _ => proved.map(Proved::seek_q15),
     }
 }
@@ -938,7 +951,7 @@ mod tests {
     use crate::capture::envelope;
     use crate::capture::store::fixture::tmp;
     use crate::capture::verdict::expected_segments;
-    use crate::sweep::Decay;
+    use crate::sweep::{Decay, Step};
     use osc_client::ResultCode;
     use osc_ident::exp::AbortReason;
     use osc_ident::exp::testkit::{FakeServo, bench_mg90, pump};
@@ -1020,12 +1033,14 @@ mod tests {
             Stop::Error(anyhow::anyhow!("x")),
             Stop::AdapterLost,
             Stop::Battery("low".into()),
+            Stop::Blocked("x".into()),
+            Stop::Overcurrent("x".into()),
             Stop::Interrupted,
         ]
         .iter()
         .map(Stop::code)
         .collect();
-        assert_eq!(codes, [1, 1, 2, 3, 130]);
+        assert_eq!(codes, [1, 1, 2, 3, 4, 5, 130]);
         assert_eq!(
             Stop::AdapterLost.to_string(),
             "adapter lost - replug and rerun"
@@ -1256,6 +1271,50 @@ mod tests {
         );
         assert_eq!((c.seek_duty_pct, c.seek_cap_pct), (16, 19));
         assert_eq!(end_park(None, Some(&p)), Some(5242));
+    }
+
+    /// The 60% grid rung at its window: under the limit it is what the pilot
+    /// measured; on firmware that holds no limit it draws its climb's current
+    /// over the abort. That stops the session: no retry, no park, exit 5.
+    #[test]
+    fn current_over_the_abort_stops_the_session() {
+        use crate::capture::verdict::bench;
+        let c = bench::cfg(vec![Step::Drive(60, Some(272))], Dirs::Fwd);
+        let judged = |r: &sweep::Recording| {
+            verdict(
+                r,
+                &c,
+                &bench::one_block("grid", &c),
+                &envelope::mg90(),
+                &bench::abort(),
+            )
+        };
+        // under the limit the rung is what the pilot measured
+        let held = bench::record(&c, |_| {});
+        assert!(matches!(judged(&held), Verdict::Accepted { .. }));
+
+        // firmware that holds no limit draws the rung's stall current
+        let free = bench::record(&c, |b| b.servo.current_limit = None);
+        let Verdict::Overcurrent(why) = judged(&free) else {
+            panic!("{:?}", judged(&free));
+        };
+        assert!(
+            why.starts_with(
+                "the servo is not holding its current limit: seg 1 drew a 16-sample mean of"
+            ),
+            "{why}"
+        );
+        assert!(
+            why.ends_with("over the abort of 350 counts (313 mA)"),
+            "{why}"
+        );
+        let o = Outcome::Overcurrent(why.clone());
+        let mut t = Tries::default();
+        assert_eq!(t.after(&o), Next::Overcurrent(why.clone()));
+        assert_eq!(t.attempt(), 1, "no try spent, none left to retry");
+        let stop = Stop::Overcurrent(why.clone());
+        assert_eq!((stop.code(), stop.to_string()), (5, why));
+        assert_eq!(end_park(Some(&stop), Some(&proved(0.13))), None);
     }
 
     /// A shaft locked at mid travel: the jam check raises until the limit

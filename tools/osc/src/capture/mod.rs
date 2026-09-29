@@ -49,7 +49,9 @@ enum CaptureCmd {
     Session(run::Args),
     /// Re-read a landed capture dir: every recording must hold every segment
     /// its meta promises, every direction driven, none empty, all under the
-    /// drive rule and current limit dataset.toml declares. No servo needed.
+    /// drive rule and current limit dataset.toml declares; under the limit,
+    /// every grid and ends rung settled and no current window over the
+    /// abort. No servo needed.
     Check(check::Args),
 }
 
