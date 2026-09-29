@@ -4,7 +4,7 @@
 //! window one tick late.
 
 use osc_integration::plant::{
-    FakeIo, RL_R_Q12, RlPlant, TIMING, duty_of, kernel, last_cmd, seed, stamp,
+    FakeIo, RL_R_Q12, RL_VBUS, RlPlant, TIMING, duty_of, kernel, last_cmd, seed, stamp,
 };
 use osc_servo_core::estimator::window::floor_duty;
 use osc_servo_core::kernel::duty_limit::UP_Q15;
@@ -25,6 +25,9 @@ const MS: u32 = 20;
 /// Bound on the observer's settle past `stall_time_ms` before omega reads
 /// slow and the timer runs out.
 const SETTLE_MS: u32 = 100;
+/// Under the rig's stall current at the window floor (239 counts): only a
+/// duty under the floor can hold it.
+const BLIND_LIM: u16 = 200;
 
 fn rig(lim: u16) -> Shared {
     let sh = Shared::new();
@@ -105,6 +108,35 @@ fn mean(r: &[(i16, i32)]) -> i32 {
 
 fn faults(sh: &Shared) -> u8 {
     sh.table.with(|t| t.telemetry.common.fault_flags)
+}
+
+/// The rig's steady winding current at `duty` with the rotor held.
+fn stall_counts(duty: i16) -> i32 {
+    let v = (duty.unsigned_abs() as i32 * RL_VBUS as i32) >> 15;
+    (v << 12) / RL_R_Q12 as i32
+}
+
+/// The blind band carried the hold: most ticks sat under the floor, every
+/// one of them at a duty whose stall current is `lim` or just under it.
+fn assert_blind_band_caps(r: &[(i16, i32)], lim: u16, what: &str) {
+    let blind: Vec<i16> = r
+        .iter()
+        .map(|&(d, _)| d)
+        .filter(|&d| d.abs() < floor())
+        .collect();
+    assert!(
+        blind.len() > r.len() / 2,
+        "{what}: {} blind ticks",
+        blind.len()
+    );
+    for d in blind {
+        let i = stall_counts(d);
+        let lim = lim as i32;
+        assert!(
+            (lim * 95 / 100..=lim).contains(&i),
+            "{what}: duty {d} stalls at {i}"
+        );
+    }
 }
 
 fn i_lim(sh: &Shared) -> u16 {
@@ -327,5 +359,56 @@ fn openloop_stall_under_permit_never_trips() {
         let r = run(&mut k, &sh, &mut p, 40_000);
         assert_holds_at_the_limit(&sh, &r, &format!("goal {goal}"));
         assert_eq!(i_lim(&sh), LIM, "goal {goal}");
+    }
+}
+
+#[test]
+fn blind_band_caps_at_i_lim_when_r_is_known() {
+    for goal in [GOAL_64, -GOAL_64] {
+        let sh = rig(BLIND_LIM);
+        let mut p = RlPlant::new(MID);
+        p.locked = true;
+        let mut k = start(&sh, &mut p, goal);
+        let r = run(&mut k, &sh, &mut p, 40_000);
+        let what = format!("goal {goal}");
+        assert_blind_band_caps(&r[2_000..], BLIND_LIM, &what);
+        let mn = mean(&r[2_000..]);
+        assert!(mn <= BLIND_LIM as i32 * 11 / 10, "{what}: mean {mn}");
+        assert_eq!(faults(&sh), 0, "{what}");
+    }
+}
+
+#[test]
+fn yield_fold_reaches_the_blind_band() {
+    for goal in [GOAL_64, -GOAL_64] {
+        let sh = stall_rig(StallResponse::Yield);
+        let (mut k, mut p) = locked_stall(&sh, goal, |sh| i_lim(sh) != LIM);
+        let r = run(&mut k, &sh, &mut p, 20_000);
+        let what = format!("goal {goal}");
+        assert_eq!(i_lim(&sh), YIELD, "{what}");
+        assert_blind_band_caps(&r, YIELD, &what);
+        let mn = mean(&r);
+        assert!(mn <= YIELD as i32 * 12 / 10, "{what}: mean {mn}");
+    }
+}
+
+#[test]
+fn virgin_blind_band_passes_to_the_window_floor() {
+    for goal in [GOAL_64, -GOAL_64] {
+        let sh = rig(BLIND_LIM);
+        sh.table.with_mut(|t| t.calib.motor.r_q12 = 0);
+        stamp(&sh);
+        let mut p = RlPlant::new(MID);
+        p.locked = true;
+        let mut k = start(&sh, &mut p, goal);
+        let r = run(&mut k, &sh, &mut p, 40_000);
+        let what = format!("goal {goal}");
+        assert!(r.iter().all(|&(d, _)| d.abs() >= floor()), "{what}");
+        // over the limit at the floor, the ceiling stays pinned there
+        assert!(
+            r[2_000..].iter().all(|&(d, _)| d.abs() == floor()),
+            "{what}"
+        );
+        assert!(peak(&r) <= stall_counts(floor()) + 1, "{what}");
     }
 }

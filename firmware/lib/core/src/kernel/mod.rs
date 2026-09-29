@@ -496,6 +496,19 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                 &lcfg,
             );
             self.i_band = band;
+            // the stall-safe duty lim x R / vbus: winding R alone, so it errs
+            // low by the bridge and shunt; unset R keeps it at the floor
+            self.ol_base_q15 = if motor_cal.r_q12 == 0 {
+                self.ol_floor_q15
+            } else {
+                let lim = if life.goal_duty >= 0 {
+                    band.hi
+                } else {
+                    band.lo
+                };
+                let v = q_mul_u(lim.unsigned_abs(), motor_cal.r_q12 as u32, 12);
+                q_mul_u(v, self.vbus.recip_q15(), 15).min(self.ol_floor_q15 as u32) as u16
+            };
             if run && self.limits.stall_fault_pending() {
                 self.faults.raise(faults::BIT_STALL, faults::CODE_STALL);
             }
@@ -596,7 +609,6 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                     self.timing.pwm_arr,
                     self.timing.recip_arr_q24,
                 );
-                self.ol_base_q15 = self.ol_floor_q15;
 
                 // thermometer seed tracks the calib anchor: install writes
                 // and host rewrites both land here
