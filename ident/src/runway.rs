@@ -447,21 +447,35 @@ pub fn climb(frames: &[TelFrame], goal_q15: i16, tick_hz: f64) -> Option<Climb> 
     Some(Climb { ms, travel, accel })
 }
 
+/// The tick from which the applied duty holds the goal to the stream's end.
+/// None when the stream does not end at the goal.
+fn held_tick(frames: &[TelFrame], goal_q15: i16) -> Option<u64> {
+    let held = frames
+        .iter()
+        .rev()
+        .take_while(|f| f.duty_q15 == Some(goal_q15))
+        .last()?;
+    Some(held.tick)
+}
+
+/// When the applied duty last came to the goal and held it to the stream's
+/// end, ms from the goal write (its tick 0). The limiter can chatter for a
+/// few ms after the duty first touches the goal, so this may land past the
+/// [`climb`]. None when the stream does not end at the goal.
+pub fn arrival_ms(frames: &[TelFrame], goal_q15: i16, tick_hz: f64) -> Option<f64> {
+    held_tick(frames, goal_q15).map(|t| t as f64 * 1000.0 / tick_hz)
+}
+
 /// The ticks a steady fit reads: from [`SETTLE_MS`] after the applied duty
-/// last came to the goal to the stream's end, when it holds the goal to
-/// the end. None when it does not, or not for the settle.
+/// last came to the goal ([`arrival_ms`]) to the stream's end, when it
+/// holds the goal to the end. None when it does not, or not for the settle.
 pub fn settled_ticks(
     frames: &[TelFrame],
     goal_q15: i16,
     tick_hz: f64,
 ) -> Option<RangeInclusive<u64>> {
     let end = frames.last()?.tick;
-    let held = frames
-        .iter()
-        .rev()
-        .take_while(|f| f.duty_q15 == Some(goal_q15))
-        .last()?
-        .tick;
+    let held = held_tick(frames, goal_q15)?;
     let from = held + (SETTLE_MS * tick_hz / 1000.0).ceil() as u64;
     (from <= end).then_some(from..=end)
 }
@@ -767,6 +781,37 @@ mod tests {
         // a goal reached, then lost before the end: no settled tail
         frames.last_mut().unwrap().duty_q15 = Some(goal - 128);
         assert!(climb(&frames, goal, hz).is_some());
+        assert_eq!(settled_ticks(&frames, goal, hz), None);
+        assert_eq!(arrival_ms(&frames, goal, hz), None);
+    }
+
+    /// A 25% reverse rung as the bench servo streamed it at 20 kHz: at the
+    /// goal from tick 161, the limiter takes it back over ticks 199..=202,
+    /// and from tick 203 it holds to the end. The arrival and the settle
+    /// run from tick 203, the climb from tick 161.
+    #[test]
+    fn arrival_is_where_the_duty_last_came_to_the_goal() {
+        let hz = 20_000.0;
+        let goal = -pct_q15(25);
+        let mut frames: Vec<TelFrame> = (0..2020u64)
+            .map(|t| TelFrame {
+                tick: t,
+                pos: Some(3000 - (t / 4) as u16),
+                duty_q15: Some(if t < 161 || (199..=202).contains(&t) {
+                    goal + 128
+                } else {
+                    goal
+                }),
+                ..Default::default()
+            })
+            .collect();
+        assert_eq!(climb(&frames, goal, hz).unwrap().ms, 161.0 * 1000.0 / hz);
+        assert_eq!(arrival_ms(&frames, goal, hz), Some(203.0 * 1000.0 / hz));
+        let settled = settled_ticks(&frames, goal, hz).unwrap();
+        assert_eq!(settled, 203 + 800..=2019);
+
+        frames.last_mut().unwrap().duty_q15 = Some(goal + 128);
+        assert_eq!(arrival_ms(&frames, goal, hz), None);
         assert_eq!(settled_ticks(&frames, goal, hz), None);
     }
 
