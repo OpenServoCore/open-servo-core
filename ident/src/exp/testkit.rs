@@ -116,6 +116,9 @@ pub struct FakeServo {
     t_ceil: f64,
     /// A locked shaft: travel stops at this position and never leaves it.
     pub jam: Option<f64>,
+    /// A sticky stretch of travel, `(lo, hi, extra)`: the dynamic model's
+    /// friction there is `extra` ccounts over `fc`, from rest and moving.
+    pub sticky: Option<(f64, f64, f64)>,
     /// The stall timer, ms; None never folds.
     pub stall_ms: Option<f64>,
     pub stall_yield: u16,
@@ -175,6 +178,7 @@ impl FakeServo {
             ceil0: 0.0,
             t_ceil: 0.0,
             jam: None,
+            sticky: None,
             stall_ms: None,
             stall_yield: 0,
             pinned_at: None,
@@ -493,10 +497,14 @@ impl FakeServo {
     fn substep(&mut self, dt: f64) {
         let i = self.i_dyn();
         let w = self.omega_dyn;
+        let fc = match self.sticky {
+            Some((lo, hi, extra)) if (lo..=hi).contains(&self.pos) => self.fc + extra,
+            _ => self.fc,
+        };
         let fric = if w != 0.0 {
-            self.fc * w.signum() + self.fv * w
-        } else if i.abs() > self.fc && self.applied().unsigned_abs() >= self.breakaway_q15 as u16 {
-            self.fc * i.signum()
+            fc * w.signum() + self.fv * w
+        } else if i.abs() > fc && self.applied().unsigned_abs() >= self.breakaway_q15 as u16 {
+            fc * i.signum()
         } else {
             i // no net torque below stiction: alpha = 0
         };

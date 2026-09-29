@@ -247,6 +247,31 @@ pub(crate) fn every(root: &Path) -> Vec<(PathBuf, Result<Envelope>)> {
         .collect()
 }
 
+/// Size `runway` by the first envelope under the dataset root that
+/// describes the servo on `supply` with its stops at `phys`: every
+/// envelope left out before it with why, and the one that sized it.
+pub(crate) fn size_runway(
+    runway: &mut runway::Runway,
+    supply: Option<runway::Supply>,
+    phys: (i32, i32),
+) -> (Vec<(PathBuf, String)>, Option<PathBuf>) {
+    let found = super::default_root()
+        .map(|root| every(&root))
+        .unwrap_or_default();
+    let mut left = Vec::new();
+    for (path, env) in found {
+        let why = match env {
+            Ok(env) => match runway.size_by(env.runway(), supply, phys) {
+                Ok(()) => return (left, Some(path)),
+                Err(stale) => stale.to_string(),
+            },
+            Err(_) => "an older pilot wrote it (run osc capture pilot again)".into(),
+        };
+        left.push((path, why));
+    }
+    (left, None)
+}
+
 impl Limits {
     /// The limits alone, whatever else the file holds: a dataset's envelope
     /// keeps naming the stops after the sections around it change shape.

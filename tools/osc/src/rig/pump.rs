@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use osc_client::blocking::Client;
 use osc_client::nusb::NusbPipe;
+use osc_client::pipe::Pipe;
 use osc_client::{Id, Inst, Opcode, Outcome, ResultCode};
 use osc_ident::burst::{self, BurstIo, Capture, CaptureCfg, Pre};
 use osc_ident::exp::{Cmd, Experiment};
@@ -28,7 +29,7 @@ pub(crate) fn install_ctrlc() {
 
 /// Write one register, value LE-truncated to the field width (negative
 /// i32 -> correct two's complement for 2/4-byte fields).
-pub(crate) fn write_reg(c: &mut Client<NusbPipe>, id: Id, reg: Reg, value: i32) -> Result<()> {
+pub(crate) fn write_reg<P: Pipe>(c: &mut Client<P>, id: Id, reg: Reg, value: i32) -> Result<()> {
     let bytes = value.to_le_bytes();
     c.write(id, reg.addr, &bytes[..reg.width as usize])
         .with_context(|| format!("write addr {:#06x}", reg.addr))?;

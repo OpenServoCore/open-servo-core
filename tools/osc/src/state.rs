@@ -14,6 +14,7 @@ use osc_client::blocking::Client;
 use osc_client::data_state::{CONFIG_CORRUPT, DataState, SAVE_CLEARS, STAMP_MISMATCH, fault};
 use osc_client::descriptor::{Access, Descriptor, Field};
 use osc_client::nusb::NusbPipe;
+use osc_client::pipe::Pipe;
 use osc_client::stamp::UNSTAMPED;
 use osc_client::{Error, Id, ResultCode};
 use osc_ident::regs::control;
@@ -122,8 +123,8 @@ pub(crate) fn covered_note(d: &Descriptor, f: &Field) {
 /// firmware's checkpoint as the witness, then SAVE when asked. VIRGIN and
 /// STALE clear only on SAVE, so a fresh servo opens closed loop after the
 /// save, never before. The state after is printed and returned.
-pub(crate) fn commit(
-    c: &mut Client<NusbPipe>,
+pub(crate) fn commit<P: Pipe>(
+    c: &mut Client<P>,
     id: Id,
     d: &Descriptor,
     save: bool,

@@ -139,6 +139,9 @@ pub enum Refusal {
     /// The stop ladder's band, from the window floor to the stall-safe
     /// cap, holds too few readable rungs or too little current span.
     NoLadderRoom { floor: f64, cap: f64 },
+    /// The duty that first moved the shaft stalls over the current limit:
+    /// `need` is that stall current, counts.
+    BreakawayOverLimit { need: f64, i_lim: u16, ma: Ma },
 }
 
 /// Counts to milliamps for a message; says nothing when the scale is
@@ -216,6 +219,22 @@ impl fmt::Display for Refusal {
                 floor * 100.0,
                 cap * 100.0
             ),
+            Refusal::BreakawayOverLimit { need, i_lim, ma } => {
+                let say = |c: f64| {
+                    if ma.0 > 0.0 {
+                        format!("{:.0} mA", c * ma.0 * 1000.0)
+                    } else {
+                        format!("{c:.0} counts")
+                    }
+                };
+                write!(
+                    f,
+                    "this servo needs about {} to start moving, over its current limit of {}: \
+                     raise the limit or free the mechanism",
+                    say(*need),
+                    say(*i_lim as f64)
+                )
+            }
         }
     }
 }
@@ -359,6 +378,21 @@ impl ServoLimits {
             stall,
             i_lim: self.i_lim,
             allowed: duty_for(self.i_lim as f64, r, vbus),
+            ma: self.ma(),
+        })
+    }
+
+    /// Refuse a shaft whose breakaway, `moved`, a fraction of full scale,
+    /// stalls over the limit by a winding R of `r`: nothing the limit
+    /// allows starts it.
+    pub fn check_breakaway(&self, moved: f64, r: f64) -> Result<(), Refusal> {
+        let need = stall_counts(moved, r, self.vbus as f64);
+        if need <= self.i_lim as f64 {
+            return Ok(());
+        }
+        Err(Refusal::BreakawayOverLimit {
+            need,
+            i_lim: self.i_lim,
             ma: self.ma(),
         })
     }
