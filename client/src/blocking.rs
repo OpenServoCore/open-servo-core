@@ -249,6 +249,12 @@ impl<P: Pipe> Client<P> {
         block_on(pot_lut::clear(&mut self.0, id, d))
     }
 
+    /// COMMIT the table the servo holds against the stops as they are now;
+    /// the `lut_state` after. Torque must be off.
+    pub fn recommit_pot_lut(&mut self, id: Id, d: &Descriptor) -> Result<u8, Error> {
+        block_on(pot_lut::recommit(&mut self.0, id, d))
+    }
+
     pub fn read_profile(&mut self, id: Id, slot: u8) -> Result<Vec<u8>, Error> {
         block_on(self.0.read_profile(id, slot))
     }

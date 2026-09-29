@@ -8,9 +8,10 @@
 //! gives a MEASURED gear ratio (the gear prompt's default), gear-2-dependent
 //! and degrading gracefully (operator-input gear) when ripple SNR is low.
 //! The pot LUT is not cal's to write: a new table re-defines the domain the
-//! identified constants were fitted in, so it travels with an ident. The
-//! endstop state machine and the kinematics/units math live in osc-ident;
-//! this wrapper owns USB, prompts, and files.
+//! identified constants were fitted in, so it travels with an ident; cal only
+//! re-COMMITs a LIVE one against the stops it just moved. The endstop state
+//! machine and the kinematics/units math live in osc-ident; this wrapper owns
+//! USB, prompts, and files.
 
 pub mod replay;
 
@@ -23,6 +24,7 @@ use dialoguer::{Confirm, Input};
 use osc_client::Id;
 use osc_client::blocking::Client;
 use osc_client::nusb::NusbPipe;
+use osc_client::pot_lut;
 use osc_ident::exp::endstop::{Endstop, EndstopCfg, EndstopResult};
 use osc_ident::exp::sweep::{Sweep, SweepCfg};
 use osc_ident::exp::{Guarded, RigParams};
@@ -243,11 +245,18 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     write_reg(&mut c, id, calib::ANGLE_MAX_CDEG, angle_max_cdeg as i32)?;
     write_reg(&mut c, id, calib::GEAR_RATIO_CENTI, gear_ratio_centi as i32)?;
 
-    // Cal stamps only while its run leaves the effective pot LUT
-    // unchanged. No LUT window is in the table yet, so every servo runs
-    // identity and that always holds; the LUT band adds the LIVE
-    // re-COMMIT check here, and a table that falls to REJECT_ENDS gets
-    // "rebuild the LUT, then run osc ident" instead of a stamp.
+    // The servo validates a table only at COMMIT and at boot: without this
+    // a LIVE table keeps running against the old stops, the stamp below
+    // blesses it, and the reboot that fails it lands STAMP_MISMATCH.
+    if c.lut_state(id, &d)? == pot_lut::state::LIVE {
+        match c.recommit_pot_lut(id, &d)? {
+            pot_lut::state::LIVE => println!("pot lut: still fits the new stops, LIVE"),
+            s => println!(
+                "pot lut: no longer fits the new stops ({}); the kernel runs the identity - `osc lut build`, `osc lut write` and `osc ident` put a table back",
+                pot_lut::state::name(s).map_or(format!("state {s}"), String::from)
+            ),
+        }
+    }
     crate::state::commit(&mut c, id, &d, true)?;
     Ok(())
 }
