@@ -18,23 +18,25 @@ use osc_client::blocking::Client;
 use osc_client::nusb::NusbPipe;
 use osc_client::pipe::PipeError;
 use osc_client::{Id, LinkError};
+use osc_ident::regs::config;
 
 use super::envelope::{Envelope, civil_date};
 use super::plan::{self, Plan};
 use super::procs::Procedure;
 use super::store::{Capture, CaptureMeta, Decl, PosLutFile, Store};
 use super::verdict::verdict;
-use super::{RUNG_TRIES, SEEK_CAP_PCT, SETTLE_MS, Supply, WINDOW_MS};
+use super::{RULE, RUNG_TRIES, SEEK_CAP_PCT, SETTLE_MS, Supply, WINDOW_MS};
 use crate::rig::battery::{self, read_pack_mv};
 use crate::rig::park;
 use crate::rig::plant::{self, Snapshot};
 use crate::rig::pump::{self, STOP, read_snapshot};
+use crate::rig::snapshot::read_u16;
 use crate::sweep::{self, Cfg, Dirs};
 
 /// `osc capture session` args.
 #[derive(clap::Args, Debug)]
 pub struct Args {
-    /// Servo key; the dataset dir is `<root>/<servo>__<supply>`.
+    /// Servo key; the dataset dir is `<root>/<servo>__<supply>__limit`.
     #[arg(long)]
     servo: String,
     /// Supply the servo runs on.
@@ -110,16 +112,6 @@ pub(crate) fn run(a: &Args, baud: String, id: u8) -> Result<()> {
         }
         _ => None,
     };
-    let wrote = declare(
-        &store,
-        &Decl {
-            servo: a.servo.clone(),
-            supply: a.supply,
-            captured: civil_date(now()),
-            notes: None,
-        },
-    )?;
-
     let tag = dir.file_name().map_or_else(
         || dir.display().to_string(),
         |f| f.to_string_lossy().into_owned(),
@@ -127,9 +119,6 @@ pub(crate) fn run(a: &Args, baud: String, id: u8) -> Result<()> {
     let dataset_name = tag.clone();
     let mut log = Log::open(tag);
     log.line(format_args!("procedure: {source}"));
-    if wrote {
-        log.line(format_args!("wrote {}", dir.join("dataset.toml").display()));
-    }
     if jobs.is_empty() {
         log.line(format_args!(
             "captures {}..{} all landed; --redo re-records them",
@@ -149,6 +138,18 @@ pub(crate) fn run(a: &Args, baud: String, id: u8) -> Result<()> {
     pump::install_ctrlc();
     let mut c = crate::rig::connect(&baud)?;
     crate::state::check(&mut c, Id::new(id))?;
+    let limit = read_u16(&mut c, Id::new(id), config::CURRENT_LIMIT_COUNTS)?;
+    let decl = Decl {
+        servo: a.servo.clone(),
+        supply: a.supply,
+        rule: RULE,
+        current_limit_counts: Some(limit),
+        captured: civil_date(now()),
+        notes: None,
+    };
+    if declare(&store, &decl)? {
+        log.line(format_args!("wrote {}", dir.join("dataset.toml").display()));
+    }
     let mut s = Session {
         c: Some(c),
         baud,
@@ -325,7 +326,8 @@ fn todo<'a>(
 }
 
 /// Writes dataset.toml on the first run; a later run must name the same
-/// servo and supply. True when written.
+/// servo and supply, under the same drive rule and current limit. True when
+/// written.
 fn declare(store: &Store, decl: &Decl) -> Result<bool> {
     if decl.save(store)? {
         return Ok(true);
@@ -338,6 +340,23 @@ fn declare(store: &Store, decl: &Decl) -> Result<bool> {
             have.supply.as_str(),
             decl.servo,
             decl.supply.as_str()
+        );
+    }
+    if have.rule != decl.rule {
+        bail!(
+            "dataset.toml declares rule {}, this capture runs under {}: a dataset never mixes \
+             drive rules",
+            have.rule.as_str(),
+            decl.rule.as_str()
+        );
+    }
+    if have.current_limit_counts != decl.current_limit_counts {
+        let counts = |l: Option<u16>| l.map_or("no".to_string(), |l| l.to_string());
+        bail!(
+            "dataset.toml declares a current limit of {} counts, the servo holds {}: a dataset \
+             never mixes current limits",
+            counts(have.current_limit_counts),
+            counts(decl.current_limit_counts)
         );
     }
     Ok(false)
@@ -963,10 +982,12 @@ mod tests {
     #[test]
     fn declare_writes_once_and_refuses_another_servo() {
         let root = tmp("declare");
-        let store = Store::new(root.join("mg90-a__2s"));
+        let store = Store::new(root.join("mg90-a__2s__limit"));
         let decl = |servo: &str, supply| Decl {
             servo: servo.into(),
             supply,
+            rule: RULE,
+            current_limit_counts: Some(280),
             captured: "2026-09-25".into(),
             notes: None,
         };
@@ -984,6 +1005,42 @@ mod tests {
             "{e}"
         );
         assert!(declare(&store, &decl("mg90-a", Supply::Usb)).is_err());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn declare_refuses_another_rule() {
+        let root = tmp("declare-rule");
+        // a dataset captured before the servo limited open-loop current
+        let free = Store::new(root.join("mg90-a__2s"));
+        std::fs::create_dir_all(root.join("mg90-a__2s")).unwrap();
+        std::fs::write(
+            root.join("mg90-a__2s/dataset.toml"),
+            "servo = \"mg90-a\"\nsupply = \"2s\"\ncaptured = \"2026-09-26\"\n",
+        )
+        .unwrap();
+        let limit = |counts| Decl {
+            servo: "mg90-a".into(),
+            supply: Supply::TwoS,
+            rule: RULE,
+            current_limit_counts: Some(counts),
+            captured: "2026-09-29".into(),
+            notes: None,
+        };
+        assert_eq!(
+            declare(&free, &limit(280)).unwrap_err().to_string(),
+            "dataset.toml declares rule free, this capture runs under limit: a dataset never \
+             mixes drive rules"
+        );
+
+        let store = Store::new(root.join("mg90-a__2s__limit"));
+        assert!(declare(&store, &limit(280)).unwrap());
+        assert!(!declare(&store, &limit(280)).unwrap());
+        assert_eq!(
+            declare(&store, &limit(300)).unwrap_err().to_string(),
+            "dataset.toml declares a current limit of 280 counts, the servo holds 300: a \
+             dataset never mixes current limits"
+        );
         std::fs::remove_dir_all(&root).unwrap();
     }
 

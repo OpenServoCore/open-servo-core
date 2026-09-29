@@ -1,12 +1,13 @@
 """Datasets: captures grouped by the hardware that produced them.
 
-A dataset is one servo on one supply, recorded through one board. Its
-dataset.toml declares what the recordings cannot say about themselves: which
-servo was bolted on, which supply fed it, when it was captured. The board is
-not declared. Every recording's meta.json carries a `sense` block read from the
-control table at capture time, and the board is identified from that.
+A dataset is one servo on one supply, recorded through one board under one
+drive rule. Its dataset.toml declares what the recordings cannot say about
+themselves: which servo was bolted on, which supply fed it, when it was
+captured, and the drive rule and current limit every recording ran under. The
+board is not declared. Every recording's meta.json carries a `sense` block read
+from the control table at capture time, and the board is identified from that.
 
-  telemetry/<dataset>/dataset.toml       {servo, supply, captured, notes, ...}
+  telemetry/<dataset>/dataset.toml       {servo, supply, rule, current_limit_counts, captured, notes, ...}
   telemetry/<dataset>/pos-lut.json       the position table the servo ran, once per dataset
   telemetry/<dataset>/<experiment>/capture-N/<recording>.csv.gz
                                             /<recording>.meta.json
@@ -23,6 +24,14 @@ The board comes from the dataset's first recording, and reading any recording
 checks its own `sense` block against that board, so a dataset that mixes
 captures from two boards fails at load rather than silently producing numbers
 that are off by the ratio of two shunts.
+
+The drive rule says how the drive was held. `free` datasets were captured
+before the servo limited open-loop current: every rung steps straight to its
+duty. `limit` datasets were captured under the servo's current limit, where a
+rung climbs to its duty over tens of ms. Steady state does not know which rule
+reached it, transients do. A meta.json with no `drive` block and a dataset.toml
+with no `rule` are `free`, and reading a recording checks its rule against its
+dataset's the same way it checks `sense`.
 """
 
 from dataclasses import dataclass
@@ -54,10 +63,20 @@ class Recording:
             p = self.path.parent / "meta.json"
         return json.loads(p.read_text())
 
+    @property
+    def rule(self):
+        """The drive rule the meta's `drive` block names; none is `free`."""
+        return self.meta.get("drive", {}).get("rule", "free")
+
     def frame(self, check=True):
         import pandas as pd
         if check:
             self.dataset.board.check_meta(self.meta, str(self))
+            if self.rule != self.dataset.rule:
+                raise ValueError(
+                    f"{self}: captured under drive rule {self.rule!r}, its dataset "
+                    f"declares {self.dataset.rule!r}. A dataset holds one rule."
+                )
         with gzip.open(self.path, "rt") as fh:
             return pd.read_csv(fh)
 
@@ -70,11 +89,17 @@ class Dataset:
     key: str
     path: Path
     decl: dict
-    """What dataset.toml declares: servo, supply, captured, notes, retired."""
+    """What dataset.toml declares: servo, supply, rule, current_limit_counts,
+    captured, notes, retired."""
 
     @property
     def supply(self):
         return self.decl["supply"]
+
+    @property
+    def rule(self):
+        """`free` or `limit`; a dataset.toml with no `rule` is `free`."""
+        return self.decl.get("rule", "free")
 
     @property
     def retired(self):

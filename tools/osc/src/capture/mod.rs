@@ -1,5 +1,6 @@
 //! `osc capture` - the plant-capture campaign around `osc sweep`'s recorder.
-//! A dataset is one servo on one supply, `<root>/<servo>__<supply>`; `pilot`
+//! A dataset is one servo on one supply under one drive rule,
+//! `<root>/<servo>__<supply>__limit` for what this tool captures; `pilot`
 //! measures the servo and writes the envelope the campaign sizes its rung
 //! windows by, `plan` expands the session procedure against it, `session`
 //! runs it on the servo, and `check` re-reads a landed capture.
@@ -45,14 +46,15 @@ enum CaptureCmd {
     /// complete and clean. A rerun resumes at the first capture not landed.
     Session(run::Args),
     /// Re-read a landed capture dir: every recording must hold every segment
-    /// its meta promises, every direction driven, none empty. No servo needed.
+    /// its meta promises, every direction driven, none empty, all under the
+    /// drive rule and current limit dataset.toml declares. No servo needed.
     Check(check::Args),
 }
 
 /// `osc capture plan` args.
 #[derive(clap::Args, Debug)]
 pub struct PlanArgs {
-    /// Servo key; the dataset dir is `<root>/<servo>__<supply>`.
+    /// Servo key; the dataset dir is `<root>/<servo>__<supply>__limit`.
     #[arg(long)]
     servo: String,
     /// Supply the servo runs on.
@@ -84,6 +86,34 @@ impl Supply {
         }
     }
 }
+
+/// How the drive was held while a recording was made. Steady state does not
+/// know which rule reached it; transients do, so a dataset holds one.
+/// `lease`, a ceiling over the limit leased from the host, is specified and
+/// not built.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Rule {
+    /// Captured before the servo limited open-loop current: a meta with no
+    /// `drive` block.
+    #[default]
+    Free,
+    /// Captured under the servo's own `current_limit_counts`.
+    Limit,
+}
+
+impl Rule {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Rule::Free => "free",
+            Rule::Limit => "limit",
+        }
+    }
+}
+
+/// What every capture this tool makes runs under: the firmware holds
+/// open-loop current to the servo's limit.
+pub(crate) const RULE: Rule = Rule::Limit;
 
 /// Seek drive, percent of full scale; the park's duty, gentle on arrival.
 pub(crate) const SEEK_PCT: u8 = 15;
@@ -193,12 +223,18 @@ pub(crate) fn default_root() -> Result<PathBuf> {
         .join("telemetry"))
 }
 
-pub(crate) fn dataset_name(servo: &str, supply: Supply) -> String {
-    format!("{servo}__{}", supply.as_str())
+/// `<servo>__<supply>` for a `free` dataset, `<servo>__<supply>__<rule>`
+/// for any other.
+pub(crate) fn dataset_name(servo: &str, supply: Supply, rule: Rule) -> String {
+    match rule {
+        Rule::Free => format!("{servo}__{}", supply.as_str()),
+        r => format!("{servo}__{}__{}", supply.as_str(), r.as_str()),
+    }
 }
 
+/// The dataset this tool captures into: [`RULE`]'s.
 pub(crate) fn dataset_dir(root: &Path, servo: &str, supply: Supply) -> PathBuf {
-    root.join(dataset_name(servo, supply))
+    root.join(dataset_name(servo, supply, RULE))
 }
 
 #[cfg(test)]
@@ -216,15 +252,19 @@ mod tests {
     }
 
     #[test]
-    fn dataset_dir_names_servo_and_supply() {
+    fn dataset_dir_names_servo_supply_and_rule() {
         let root = Path::new("/r");
         assert_eq!(
             dataset_dir(root, "mg90-a", Supply::TwoS),
-            Path::new("/r/mg90-a__2s")
+            Path::new("/r/mg90-a__2s__limit")
         );
         assert_eq!(
             dataset_dir(root, "mg90-a", Supply::Usb),
-            Path::new("/r/mg90-a__usb")
+            Path::new("/r/mg90-a__usb__limit")
+        );
+        assert_eq!(
+            dataset_name("mg90-a", Supply::TwoS, Rule::Free),
+            "mg90-a__2s"
         );
     }
 }

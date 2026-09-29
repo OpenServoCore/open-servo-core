@@ -49,7 +49,7 @@ use osc_client::nusb::NusbPipe;
 use osc_ident::exp::seek::{self, SEEK_STEP_Q15, SEEK_TRAVEL_MIN, STALL_EPS, STALL_POLLS, Watch};
 use osc_ident::frame::TelFrame;
 use osc_ident::limits::{DutyPlan, POT_MAX, ServoLimits, pct_floor};
-use osc_ident::regs::{Reg, calib, control};
+use osc_ident::regs::{Reg, calib, config, control};
 use osc_ident::runway::{BRAKE_DUTY_Q15, BRAKE_POLL_MS, BRAKE_POLLS, BRAKE_REST_EPS};
 
 use crate::descriptor;
@@ -625,13 +625,40 @@ pub(crate) fn git_toplevel() -> Result<PathBuf> {
 
 /// The run's constants, written as meta.json before the first burst. The
 /// `plant` block names the table the servo streamed `pos_lin` through,
-/// its stamp verdict and its data state at that moment.
+/// its stamp verdict and its data state at that moment; the `drive` block
+/// the rule the drive ran under and the servo settings that held it.
 pub(crate) fn meta(c: &mut Client<NusbPipe>, id: Id, cfg: &Cfg) -> Result<serde_json::Value> {
     let identity = c.identity(id)?;
     let tick_hz = read_u16(c, id, calib::TICK_HZ)?;
-    let vbus_counts = read_snapshot(c, id)?.vbus_counts;
+    let tel = read_snapshot(c, id)?;
     let d = crate::state::descriptor(c, id)?;
     let plant = Snapshot::read(c, id, &d)?.json();
+    let lim = ServoLimits {
+        i_lim: read_u16(c, id, config::CURRENT_LIMIT_COUNTS)?,
+        stall_yield: read_u16(c, id, config::STALL_YIELD_COUNTS)?,
+        r_q12: read_u16(c, id, calib::R_Q12)?,
+        vbus: tel.vbus_counts,
+        window_floor_q15: tel.window_floor_q15,
+        // not read: the abort below follows from the limit alone
+        tau_trip: 0,
+        soft: (0, 0),
+        phys: (0, 0),
+        raw: (0, 0),
+        amps_per_count: 0.0,
+    };
+    let drive = serde_json::json!({
+        "rule": crate::capture::RULE.as_str(),
+        "current_limit_counts": lim.i_lim,
+        "window_floor_q15": lim.window_floor_q15,
+        "stall_yield_counts": lim.stall_yield,
+        "stall_release_counts": read_field(c, id, &d, "stall_release_counts")?,
+        "stall_time_ms": read_field(c, id, &d, "stall_time_ms")?,
+        "stall_response": read_field(c, id, &d, "stall_response")?,
+        "r_q12": lim.r_q12,
+        "i_abort_counts": lim.abort_default(),
+        "seek_q15": pct_q15(cfg.seek_duty_pct),
+    });
+    let vbus_counts = tel.vbus_counts;
     Ok(serde_json::json!({
         "model": identity.model,
         "fw": identity.fw,
@@ -660,8 +687,34 @@ pub(crate) fn meta(c: &mut Client<NusbPipe>, id: Id, cfg: &Cfg) -> Result<serde_
         "guard": [cfg.guard.0, cfg.guard.1],
         "tel_mask": cfg.tel_mask,
         "post_rung_brake": true,
+        "drive": drive,
         "git_sha": git_sha(),
     }))
+}
+
+/// A descriptor-placed field as meta.json carries it: a number, or an
+/// enum's variant name in lowercase.
+fn read_field(
+    c: &mut Client<NusbPipe>,
+    id: Id,
+    d: &descriptor::Descriptor,
+    name: &str,
+) -> Result<serde_json::Value> {
+    use osc_client::descriptor::{Value, decode};
+    let f = descriptor::field(d, name)?;
+    let raw = c.read(id, f.addr, f.width).context("field read")?;
+    Ok(
+        match decode(f, &raw).with_context(|| format!("field {name}"))? {
+            Value::Uint(n) => n.into(),
+            Value::Int(n) => n.into(),
+            Value::Bool(b) => b.into(),
+            Value::Enum(n) => match f.variant(n) {
+                Some(v) => v.name.to_lowercase().into(),
+                None => n.into(),
+            },
+            Value::Bytes(b) => b.into(),
+        },
+    )
 }
 
 /// The descriptor-placed open-loop registers the run toggles.
