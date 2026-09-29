@@ -97,6 +97,9 @@ pub struct FakeServo {
     pinned_at: Option<f64>,
     /// The limit folded to the yield, until torque off or a zero goal.
     folded: bool,
+    /// Time the applied duty spent pushing the shaft into the end it sits
+    /// at, ms.
+    pub pressed_ms: f64,
     pub torque: bool,
     pub duty: i16,
     pub tel_mask: u16,
@@ -149,6 +152,7 @@ impl FakeServo {
             stall_yield: 0,
             pinned_at: None,
             folded: false,
+            pressed_ms: 0.0,
             torque: false,
             duty: 0,
             tel_mask: 0,
@@ -296,6 +300,11 @@ impl FakeServo {
             f |= 8;
         }
         f
+    }
+
+    fn pressing(&self) -> bool {
+        let out = self.applied() as f64 * if self.drive_polarity { 1.0 } else { -1.0 };
+        (self.pos <= self.ends.0 && out < 0.0) || (self.pos >= self.ends.1 && out > 0.0)
     }
 
     /// The current, not the slew, holds the goal back on a still shaft.
@@ -492,6 +501,9 @@ impl FakeServo {
     pub fn advance(&mut self, ms: u32) {
         let from = self.t_ms;
         self.advance_plant(ms);
+        if self.pressing() {
+            self.pressed_ms += self.t_ms - from;
+        }
         self.stall_timer(from);
     }
 
@@ -523,6 +535,9 @@ impl FakeServo {
         for k in 0..samples {
             self.tick(dt);
             self.t_ms = t0 + (k + 1) as f64 * dt * 1000.0;
+            if self.pressing() {
+                self.pressed_ms += dt * 1000.0;
+            }
             if self.tel_mask == 0 {
                 continue;
             }

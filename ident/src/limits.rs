@@ -133,6 +133,9 @@ pub enum Refusal {
     },
     /// A TEL stream too long to hold the stall permit through.
     StreamOverLease { ms: u32 },
+    /// The stop ladder's band, from the window floor to the stall-safe
+    /// cap, holds too few readable rungs or too little current span.
+    NoLadderRoom { floor: f64, cap: f64 },
 }
 
 /// Counts to milliamps for a message; says nothing when the scale is
@@ -195,6 +198,14 @@ impl fmt::Display for Refusal {
                 "a {ms} ms capture with the stall permit held is longer than the \
                  {PERMIT_STREAM_MAX_MS} ms the permit can be held without a rewrite: shorten \
                  the capture"
+            ),
+            Refusal::NoLadderRoom { floor, cap } => write!(
+                f,
+                "the resistance stop ladder has no room on this supply: the current sensor \
+                 reads from {:.1}% duty and the current limit allows {:.1}% at a stop; run it \
+                 on a lower supply voltage (USB) or raise the current limit",
+                floor * 100.0,
+                cap * 100.0
             ),
         }
     }
@@ -343,6 +354,18 @@ impl ServoLimits {
         })
     }
 
+    /// The window floor as a duty, q15, on the board's PWM period.
+    pub fn window_floor(&self) -> i16 {
+        window_floor_q15(self.i_floor_ticks, BOARD_PWM_ARR)
+    }
+
+    /// The stall-safe plan for a drive at a stop before anything in this
+    /// run measured R: from the R the servo carries, else from the class's
+    /// lowest, `class_r_vpc`, which errs safe on any winding of the class.
+    pub fn stall_plan(&self, class_r_vpc: f64, moved_at: Option<f64>) -> DutyPlan {
+        DutyPlan::new(self, self.r_vpc().unwrap_or(class_r_vpc), moved_at)
+    }
+
     /// The class-safe duty: a stall at it draws at most the limit on any
     /// winding of [`CLASS_R_MIN`] or more. `class_r_vpc` is that R in the
     /// servo's own units.
@@ -489,6 +512,53 @@ impl DutyPlan {
     pub fn duties(&self) -> [f64; 3] {
         [self.seek, self.hold, self.stop_cap]
     }
+
+    /// The resistance stop ladder's dwells: spread from the window floor,
+    /// `floor_q15`, to the stall-safe cap, at most
+    /// [`STALL_LADDER_RUNGS`] of them and [`STALL_LADDER_STEP_Q15`] or
+    /// more apart. Under the floor the shunt reads nothing and the window
+    /// holds the last current it read, so no dwell goes there; a band
+    /// with fewer than three rungs, or whose stall currents span under
+    /// [`STALL_LADDER_SPAN`] of the limit, leaves nothing to fit a slope
+    /// to.
+    pub fn stall_ladder(&self, floor_q15: i16) -> Result<Vec<f64>, Refusal> {
+        let (lo, hi) = (floor_q15 as i32, q15_floor(self.stop_cap) as i32);
+        let room = Refusal::NoLadderRoom {
+            floor: lo as f64 / Q15,
+            cap: self.stop_cap,
+        };
+        if hi < lo {
+            return Err(room);
+        }
+        let n = STALL_LADDER_RUNGS.min((hi - lo) / STALL_LADDER_STEP_Q15 + 1);
+        let at = |q: i32| stall_counts(q as f64 / Q15, self.r_vpc, self.vbus);
+        if n < 3 || at(hi) - at(lo) < STALL_LADDER_SPAN * self.i_lim {
+            return Err(room);
+        }
+        Ok((0..n)
+            .map(|k| (lo + k * (hi - lo) / (n - 1)) as f64 / Q15)
+            .collect())
+    }
+}
+
+/// The most dwells the resistance stop ladder takes.
+pub const STALL_LADDER_RUNGS: i32 = 4;
+/// The closest two dwells may sit, q15: 0.5% of full scale, rounded up.
+pub const STALL_LADDER_STEP_Q15: i32 = 164;
+/// The least stall-current span, a fraction of the limit, the dwells must
+/// cover for a slope.
+pub const STALL_LADDER_SPAN: f64 = 0.15;
+
+/// The osc-dev-v006 PWM period, timer ticks. No standing field publishes
+/// it: the burst readback carries it only once a capture has run.
+pub const BOARD_PWM_ARR: u16 = 1200;
+
+/// The smallest duty, q15, whose drive window spans `ticks` of a PWM
+/// period of `arr` ticks: the firmware's own window floor, 4356 for 160 of
+/// 1200.
+pub fn window_floor_q15(ticks: u16, arr: u16) -> i16 {
+    let need = ((ticks.max(1) as u32) << 15) - (1 << 14);
+    need.div_ceil(arr.max(1) as u32).min(i16::MAX as u32) as i16
 }
 
 #[cfg(test)]
@@ -592,6 +662,90 @@ mod tests {
         assert!((plan.hold - 0.0776).abs() < 1e-3);
         // a step over a base drawing 80 counts: 9.1%
         assert!((plan.step_run(80.0) - 0.0910).abs() < 1e-3);
+    }
+
+    #[test]
+    fn the_window_floor_is_the_firmwares() {
+        assert_eq!(window_floor_q15(160, 1200), 4356);
+        assert_eq!(mg90().window_floor(), 4356);
+        // the next duty down reads one tick short, as the firmware rounds
+        let ticks = |d: u32| (d * 1200 + (1 << 14)) >> 15;
+        assert_eq!((ticks(4355), ticks(4356)), (159, 160));
+    }
+
+    /// Every dwell of the stop ladder sits at or over the window floor and
+    /// at or under the stall-safe cap, however it is rounded, and so does
+    /// the seek that takes it to the stop.
+    #[test]
+    fn stall_ladder_rungs_stay_under_the_limit() {
+        let floor = mg90().window_floor();
+        for r in [7270.0 / 4096.0, class_r_vpc(), 1.2] {
+            for (i_lim, vbus) in [(280, 1780), (335, 1780), (600, 3400), (150, 1200)] {
+                let lim = ServoLimits {
+                    i_lim,
+                    vbus,
+                    ..mg90()
+                };
+                for moved in [None, Some(0.05), Some(0.30)] {
+                    let plan = DutyPlan::new(&lim, r, moved);
+                    let seek = q15_floor(plan.seek) as f64 / Q15;
+                    assert!(stall_counts(seek, r, vbus as f64) <= i_lim as f64);
+                    let Ok(rungs) = plan.stall_ladder(floor) else {
+                        continue;
+                    };
+                    assert!((3..=4).contains(&rungs.len()), "{rungs:?}");
+                    assert!(rungs.windows(2).all(|w| w[1] - w[0] >= 0.005), "{rungs:?}");
+                    for d in &rungs {
+                        let q = q15_floor(*d);
+                        assert!(q >= floor, "{d} under the floor");
+                        let stall = stall_counts(q as f64 / Q15, r, vbus as f64);
+                        assert!(stall <= i_lim as f64 + 1e-9, "{d}: {stall}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// 4.9 ohm on osc-dev-v006, the bench MG90 at limit 280 and an SG90-like
+    /// servo at 335 and 3.9 ohm. On 2S the band from the 13.3% floor to
+    /// the cap spans 14% of the MG90's limit and 10% of the SG90's: no
+    /// room. On USB both ladders run over most of the limit.
+    #[test]
+    fn the_stop_ladder_needs_room_over_the_window_floor() {
+        let mg = 7270.0 / 4096.0;
+        let sg = class_r_vpc() * 3.9 / CLASS_R_MIN;
+        let ladder = |i_lim: u16, r: f64, vbus: u16| {
+            let lim = ServoLimits {
+                i_lim,
+                vbus,
+                ..mg90()
+            };
+            DutyPlan::new(&lim, r, None).stall_ladder(lim.window_floor())
+        };
+        let err = ladder(280, mg, 3204).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "the resistance stop ladder has no room on this supply: the current sensor reads \
+             from 13.3% duty and the current limit allows 15.5% at a stop; run it on a lower \
+             supply voltage (USB) or raise the current limit"
+        );
+        assert!(matches!(
+            ladder(335, sg, 3204),
+            Err(Refusal::NoLadderRoom { .. })
+        ));
+        for (i_lim, r, want) in [
+            (280, mg, [0.1329, 0.1817, 0.2304, 0.2792]),
+            (335, sg, [0.1329, 0.1775, 0.2220, 0.2665]),
+        ] {
+            let rungs = ladder(i_lim, r, 1780).unwrap();
+            for (got, want) in rungs.iter().zip(want) {
+                assert!((got - want).abs() < 5e-4, "{i_lim}: {rungs:?}");
+            }
+        }
+        // the class's lowest R, R unknown: the cap falls under the floor on
+        // 2S, and on USB the band still holds four rungs
+        assert!(ladder(280, class_r_vpc(), 3204).is_err());
+        assert_eq!(ladder(280, class_r_vpc(), 1780).unwrap().len(), 4);
     }
 
     #[test]

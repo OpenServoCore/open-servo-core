@@ -38,7 +38,9 @@ use osc_ident::exp::verify::{
 use osc_ident::exp::{Guarded, Permitted, RigParams};
 use osc_ident::fits::{self, InertiaPriors};
 use osc_ident::gains::{self, BwTargets, PlantParams};
-use osc_ident::limits::{BurstAllowance, CLASS_R_MIN, DutyPlan, Envelope, ServoLimits, pct_floor};
+use osc_ident::limits::{
+    BurstAllowance, CLASS_R_MIN, DutyPlan, Envelope, Refusal, ServoLimits, pct_floor,
+};
 use osc_ident::pot::Pot;
 use osc_ident::regs::{calib, control};
 use osc_ident::report::{self, PlantInputs, ReportInputs};
@@ -212,12 +214,22 @@ enum Cmd {
     /// stall after it is planned from R and the rail so its stall stays
     /// under the current limit, while ladder and inertia rungs run free on
     /// the firmware limiter. A burst that declines ends the run: nothing
-    /// after it can be planned. The first stage that aborts ends the run.
-    /// Nothing stalls a stop. Write-back stays explicit.
-    Run,
+    /// after it can be planned, unless --stall-ladder asks for R from the
+    /// stops instead. The first stage that aborts ends the run. Nothing
+    /// stalls a stop unless asked. Write-back stays explicit.
+    Run {
+        /// When the burst declines, measure winding R from the resistance
+        /// stop ladder instead of stopping: each stop stalled at up to four
+        /// duties between the lowest the current sensor reads and the
+        /// current limit, stall permit held.
+        #[arg(long)]
+        stall_ladder: bool,
+    },
     /// Torque-off noise and bias floor.
     Bias,
-    /// End-stop stall duty ladder -> winding R.
+    /// The resistance stop ladder -> winding R: each stop stalled at up to
+    /// four duties between the lowest the current sensor reads and the
+    /// current limit, stall permit held, then back to mid travel.
     Resistance,
     /// The toggle experiment: free-shaft duty toggles -> winding R and L
     /// (advisory; the 1 ms step is rotor-followed and biased).
@@ -356,7 +368,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     cli.lut = Some(lut);
     let cli = &cli;
     match &args.cmd {
-        Cmd::Run => run_all(cli, &mut c, id),
+        Cmd::Run { stall_ladder } => run_all(cli, &mut c, id, *stall_ladder),
         Cmd::Bias => {
             let out = csvio::OutDir::create(&cli.out)?;
             let (b, _) = run_bias(cli, &mut c, id, &out)?;
@@ -371,7 +383,12 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
         }
         Cmd::Resistance => {
             let out = csvio::OutDir::create(&cli.out)?;
-            let r = run_resistance(cli, &mut c, id, &out)?;
+            let d = drive(cli)?;
+            let plan = d.lim.stall_plan(d.sc.r_vpc(CLASS_R_MIN), None);
+            let rungs = plan.stall_ladder(d.lim.window_floor())?;
+            let cfg = order::resistance_cfg(plan.seek, &rungs, ResistanceCfg::default());
+            let r =
+                run_resistance(cli, &mut c, id, &out, cfg)?.context("resistance fit degenerate")?;
             println!(
                 "R = {:.4} vcounts/ccount (r2 {:.4}, n {}, drift {:+.5}/s)",
                 r.r_vpc, r.r2, r.n, r.drift_vpc_per_s
@@ -392,7 +409,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
             Ok(())
         }
         Cmd::Burst => {
-            let rec = drive_stages(cli, &mut c, id, Until::Burst)?;
+            let rec = drive_stages(cli, &mut c, id, Until::Burst, false)?;
             println!(
                 "{}",
                 render_partial(ReportInputs {
@@ -403,14 +420,14 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
             Ok(())
         }
         Cmd::Breakaway => {
-            let rec = drive_stages(cli, &mut c, id, Until::Breakaway)?;
+            let rec = drive_stages(cli, &mut c, id, Until::Breakaway, false)?;
             if let Some(bk) = rec.breakaway {
                 println!("{bk:#?}");
             }
             Ok(())
         }
         Cmd::Ladder => {
-            let rec = drive_stages(cli, &mut c, id, Until::Ladder)?;
+            let rec = drive_stages(cli, &mut c, id, Until::Ladder, false)?;
             println!(
                 "{}",
                 render_partial(ReportInputs {
@@ -421,7 +438,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
             Ok(())
         }
         Cmd::Inertia => {
-            let rec = drive_stages(cli, &mut c, id, Until::Inertia)?;
+            let rec = drive_stages(cli, &mut c, id, Until::Inertia, false)?;
             println!(
                 "{}",
                 render_partial(ReportInputs {
@@ -477,7 +494,7 @@ fn parse_chans(s: &str) -> Result<Chans, String> {
 fn drives(cmd: &Cmd) -> bool {
     matches!(
         cmd,
-        Cmd::Run
+        Cmd::Run { .. }
             | Cmd::Bias
             | Cmd::Resistance
             | Cmd::Rl
@@ -591,31 +608,38 @@ fn run_bias(
     Ok((b, vbus))
 }
 
+/// The resistance stop ladder at `cfg`'s stall-safe duties, then back to
+/// mid travel; None when no dwell fitted.
 fn run_resistance(
     cli: &Ctx,
     c: &mut Client<NusbPipe>,
     id: Id,
     out: &csvio::OutDir,
-) -> Result<ResistanceResult> {
-    println!("[resistance] (end-stop stalls; pos guard off, stall permit held)");
-    let cfg = ResistanceCfg::default();
-    let hardest = cfg
-        .ladder_q15
-        .iter()
-        .fold(cfg.seek_duty_q15, |m, d| m.max(*d));
-    drive(cli)?.lim.check_stall("resistance", hardest)?;
+    cfg: ResistanceCfg,
+) -> Result<Option<ResistanceResult>> {
+    let q = |d: i16| pct(d as f64 / Q15);
+    println!(
+        "[resistance] each stop stalled at {}, seeks at {}; pos guard off, stall permit held",
+        cfg.ladder_q15
+            .iter()
+            .map(|d| q(*d))
+            .collect::<Vec<_>>()
+            .join(", "),
+        q(cfg.seek_duty_q15)
+    );
     let params = rig(cli)?.without_pos_guard();
     let mut log = csvio::SnapshotLog::create(out, "resistance_snapshots.csv")?;
     // stalling at the mechanical rails IS the method
     let mut exp = Guarded::new(Permitted::new(Resistance::new(cfg, &params)), params);
     with_guard(c, id, |c| Pump::new(c, id, Some(&mut log)).run(&mut exp))?;
     check_abort("resistance", exp.abort())?;
+    centre_outside_the_run(cli, c, id)?;
     let exp = exp.into_inner().into_inner();
     csvio::write_dwell_samples(out, exp.samples())?;
     for w in exp.warnings() {
         println!("  warn: {w}");
     }
-    exp.fit().context("resistance fit degenerate")
+    Ok(exp.fit())
 }
 
 fn run_rl(
@@ -904,8 +928,8 @@ fn priors_of(r_vpc: f64, l: &LadderResult, sense: &SenseJson) -> InertiaPriors {
     }
 }
 
-fn run_all(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
-    let rec = drive_stages(cli, c, id, Until::End)?;
+fn run_all(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id, stall_ladder: bool) -> Result<()> {
+    let rec = drive_stages(cli, c, id, Until::End, stall_ladder)?;
     let (Some((bias, _)), Some(breakaway)) = (&rec.bias, &rec.breakaway) else {
         bail!("the run ended without its bias or breakaway");
     };
@@ -950,18 +974,29 @@ impl Until {
 
 /// The run's stages in the order osc-ident's [`Run`] names them, through
 /// `until` and the closing centring. The first abort ends it; so does a
-/// burst that declines, since nothing after it can be planned.
-fn drive_stages(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id, until: Until) -> Result<Recorded> {
+/// burst that declines, since nothing after it can be planned, unless
+/// `stall_ladder` hands over to the resistance stop ladder.
+fn drive_stages(
+    cli: &Ctx,
+    c: &mut Client<NusbPipe>,
+    id: Id,
+    until: Until,
+    stall_ladder: bool,
+) -> Result<Recorded> {
     let out = csvio::OutDir::create(&cli.out)?;
     println!("recording to {}", out.0.display());
     let d = drive(cli)?;
     let mut run = Run::new(d.lim, &d.sc);
+    if stall_ladder {
+        run = run.with_stall_ladder();
+    }
     let mut rec = Recorded {
         out,
         caps: Vec::new(),
         notes: Vec::new(),
         bias: None,
         e8: None,
+        resistance: None,
         w: None,
         breakaway: None,
         ladder: None,
@@ -984,18 +1019,27 @@ fn drive_stages(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id, until: Until) -> Re
     match run.over() {
         Some(Over::Declined) if until != Until::Burst => bail!(
             "no winding R: the burst declined ({}), and nothing after it can be planned, so the \
-             run stops here; `osc ident resistance` measures R from stop stalls on request",
+             run stops here; `osc ident run --stall-ladder` measures R from stop stalls held \
+             under the current limit instead",
             rec.e8
                 .as_ref()
                 .map_or("no fit".into(), |r| r.blocking().join(", "))
+        ),
+        Some(Over::NoLadderRoom { floor, cap }) => bail!(
+            "no winding R: the burst measured none, and {}",
+            Refusal::NoLadderRoom { floor, cap }
+        ),
+        Some(Over::ResistanceDeclined) => bail!(
+            "no winding R: neither the burst nor the resistance stop ladder fitted one, so the \
+             run stops here"
         ),
         Some(Over::Unproven) => {
             bail!("the jam check never saw the shaft move, so no burst may run")
         }
         Some(Over::RailTooHigh { rail_mv }) => bail!(
             "no winding R: on a {:.1} V rail the 3.2 V burst allowance leaves its two rungs \
-             under the 10% apart the fit needs, so the run stops here; `osc ident resistance` \
-             measures R from stop stalls on request",
+             under the 10% apart the fit needs, so the run stops here; `osc ident run \
+             --stall-ladder` measures R from stop stalls held under the current limit instead",
             rail_mv / 1000.0
         ),
         _ => Ok(rec),
@@ -1011,6 +1055,7 @@ struct Recorded {
     notes: Vec<String>,
     bias: Option<(BiasResult, f64)>,
     e8: Option<InductanceResult>,
+    resistance: Option<ResistanceResult>,
     w: Option<Winding>,
     breakaway: Option<BreakawayResult>,
     ladder: Option<LadderResult>,
@@ -1018,6 +1063,29 @@ struct Recorded {
 }
 
 impl Recorded {
+    /// The winding the run plans from, from here on.
+    fn planned(&mut self, w: Winding, run: &mut Run, lim: &ServoLimits) -> Result<()> {
+        run.measured(w.r_vpc);
+        let plan = run.plan().context("no plan")?;
+        println!(
+            "[winding] R {:.4} vcounts/ccount from {}, L {:.4} mH from {}",
+            w.r_vpc,
+            w.r_from.as_str(),
+            w.l_h * 1e3,
+            w.l_from.as_str()
+        );
+        let ma = lim.ma();
+        println!(
+            "[plan] every drive that could stall from here stays under the current limit of {}: \
+             seeks at {}, stop drives up to {}",
+            ma.of(lim.i_lim as f64),
+            pct(plan.seek),
+            pct(plan.stop_cap)
+        );
+        self.w = Some(w);
+        Ok(())
+    }
+
     fn stage(
         &mut self,
         stage: &Stage,
@@ -1100,24 +1168,18 @@ impl Recorded {
                 else {
                     return Ok(Ended::Declined);
                 };
-                run.measured(w.r_vpc);
-                let plan = run.plan().context("no plan")?;
-                println!(
-                    "[winding] R {:.4} vcounts/ccount from {}, L {:.4} mH from {}",
-                    w.r_vpc,
-                    w.r_from.as_str(),
-                    w.l_h * 1e3,
-                    w.l_from.as_str()
-                );
-                let ma = d.lim.ma();
-                println!(
-                    "[plan] every drive that could stall from here stays under the current limit \
-                     of {}: seeks at {}, stop drives up to {}",
-                    ma.of(d.lim.i_lim as f64),
-                    pct(plan.seek),
-                    pct(plan.stop_cap)
-                );
-                self.w = Some(w);
+                self.planned(w, run, &d.lim)?;
+            }
+            Stage::Resistance { seek, rungs } => {
+                println!("[resistance] the burst measured no R: the stop ladder, as asked");
+                let cfg = order::resistance_cfg(*seek, rungs, ResistanceCfg::default());
+                let Some(r) = run_resistance(cli, c, id, out, cfg)? else {
+                    return Ok(Ended::Declined);
+                };
+                let w = sources::winding(self.e8.as_ref(), Some(&r), Some(&d.sc), cli.l_henries)
+                    .context("no winding R")?;
+                self.resistance = Some(r);
+                self.planned(w, run, &d.lim)?;
             }
             Stage::Breakaway { cap } => {
                 println!("[breakaway] ramp up to {}", pct(*cap));
