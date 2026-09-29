@@ -3,3 +3,4 @@ supply = "2s"
 rule = "limit"
 current_limit_counts = 280
 captured = "2026-09-29"
+notes = "TEL rows are missing at every 16-row frame boundary while the bridge drives: a row is on average 1.14 PWM periods forward and 1.26 in reverse, not 1. Coasts, brakes and the torque-off baseline are whole. Position against ripple angle stands; every rate taken per row (speed, Ke, friction, inertia, v_ss) reads fast and is not usable as recorded."
