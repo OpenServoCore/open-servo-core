@@ -2,11 +2,18 @@
 //! directions, for the Ke fit and the kinetic friction line. Each rung
 //! seeks the start band at one end of the guard, brakes, rests, then runs
 //! free toward the other end collecting ident windows paired with pot
-//! position; the steady segment (settle windows dropped, ends trimmed, slip
-//! zone masked) gives omega as the pos-slope LS, plus the segment's mean
-//! current and winding volts. Fits live in [`crate::fits`]; rungs whose
-//! segment is too short or that stall mid-sweep are dropped with a warning,
-//! not silently.
+//! position; the steady segment (settle windows dropped, from where the
+//! current is flat to the end trim, slip zone masked) gives omega as the
+//! pos-slope LS, plus the segment's mean current and winding volts. Fits
+//! live in [`crate::fits`]; rungs whose segment is too short or that stall
+//! mid-sweep are dropped with a warning, not silently.
+//!
+//! Every speed is timed on the host's clock ([`TelemetrySnapshot::host_ms`]):
+//! each read stalls the servo's kernel for a few ticks, so under polling its
+//! window counter runs slow and would read every speed fast. On a servo
+//! that carries an identified Ke the firmware's back-EMF speed, which has no
+//! clock in it, checks the timed ones ([`servo_check`]): a ladder they
+//! disagree with by more than [`SERVO_SPEED_TOL`] declines, whatever its r2.
 //!
 //! Rungs run free: above the stall-safe duty, on the firmware limiter, the
 //! stall timer, the travel guard and the [`Runway`]. They climb from the
@@ -39,11 +46,11 @@ use core::fmt;
 use super::seek;
 use super::{
     AbortReason, Cmd, Experiment, GOVERNED, LIMIT_YIELD_FOLDED, RigParams, WindowSample,
-    WindowStream, limit_holds,
+    WindowStream, limit_holds, window_ms,
 };
-use crate::fitmath::{linear_ls, mean};
+use crate::fitmath::{linear_ls, mean, stddev};
 use crate::fits::{FrictionFit, KeFit, RungPoint, friction_line, ke_fit};
-use crate::frame::{SeqUnwrap, TelemetrySnapshot};
+use crate::frame::TelemetrySnapshot;
 use crate::regs::control;
 use crate::runway::{
     BRAKE_DUTY_Q15, BRAKE_POLL_MS, BRAKE_POLLS, BRAKE_REST_EPS, Need, Runway, STOP_MARGIN, fits,
@@ -63,6 +70,18 @@ const SPEED_SPAN_MS: f64 = 10.0;
 /// the last rung's cadence gives them.
 const STEADY_MARGIN: f64 = 1.25;
 
+/// Rung duties, q15, run bottom up as +d then -d each: 26/33/40/47/55/64%
+/// of full scale.
+pub const RUNGS_Q15: [i16; 6] = [8520, 10813, 13107, 15400, 18022, 20971];
+
+/// How far the servo's back-EMF speed may read off the speed the ladder
+/// timed, a fraction, before the fit is not trusted.
+pub const SERVO_SPEED_TOL: f64 = 0.08;
+
+/// A steady segment's current is flat within this share of its settled
+/// value.
+const FLAT_FRAC: f64 = 0.02;
+
 /// A rung is still when its reads over this long span no more than the
 /// seek's drift: from rest a governed climb travels several times that in
 /// this time even at [`crate::runway::ACCEL_PRIOR`], however fast it is
@@ -70,7 +89,7 @@ const STEADY_MARGIN: f64 = 1.25;
 const STILL_MS: f64 = 100.0;
 
 pub struct LadderCfg {
-    /// Rung duties, q15, run bottom up as +d then -d each (26/33/40/47/55/64%).
+    /// Rung duties, q15, run bottom up as +d then -d each.
     pub rungs_q15: Vec<i16>,
     /// Seek drive toward the start end, q15.
     pub seek_duty_q15: i16,
@@ -88,17 +107,23 @@ pub struct LadderCfg {
     pub stall_polls: u32,
     /// Seek gives up (with a warning) after this many polls.
     pub seek_cap_polls: u32,
-    /// Fraction trimmed off each end of a sweep's accepted windows.
+    /// Fraction trimmed off the end of a sweep's accepted windows; the
+    /// front ends where the current is flat. Sizing reserves it at both.
     pub trim_frac: f64,
     /// Minimum steady windows for a rung to enter the fits.
     pub min_steady: usize,
+    /// The servo's fast tick rate, Hz, as it reports it.
+    pub tick_hz: f64,
+    /// The servo carries an identified Ke (a non-zero `ke_vpc_q`), so its
+    /// `omega_bemf_cps` is a speed to check the timed ones against.
+    pub servo_ke: bool,
 }
 
-impl Default for LadderCfg {
-    fn default() -> Self {
+impl LadderCfg {
+    /// The default ladder on a servo ticking at `tick_hz`.
+    pub fn new(tick_hz: f64) -> Self {
         Self {
-            // 26/33/40/47/55/64% of 32767
-            rungs_q15: vec![8520, 10813, 13107, 15400, 18022, 20971],
+            rungs_q15: RUNGS_Q15.to_vec(),
             seek_duty_q15: 8520,
             poll_ms: 0,
             // the bench bus: two reads
@@ -110,6 +135,8 @@ impl Default for LadderCfg {
             seek_cap_polls: 400,
             trim_frac: 0.15,
             min_steady: 12,
+            tick_hz,
+            servo_ke: false,
         }
     }
 }
@@ -124,6 +151,9 @@ pub enum Declined {
     Thin { rungs: usize },
     /// Bottom and top rung speeds, counts/ms: under [`MIN_SPAN`] apart.
     Narrow { lo: f64, hi: f64 },
+    /// The servo's back-EMF speed over the timed one, less one: more than
+    /// [`SERVO_SPEED_TOL`] either way.
+    Disagrees { off: f64 },
 }
 
 impl fmt::Display for Declined {
@@ -145,6 +175,12 @@ impl fmt::Display for Declined {
                 "the top rung ran at {hi:.1} counts/ms, under twice the bottom rung's \
                  {lo:.1}: the rungs span too little speed to fit"
             ),
+            Declined::Disagrees { off } => write!(
+                f,
+                "the speed the tool timed and the speed the servo measured from its back-EMF \
+                 disagree by {:.0}%: the fit is not trusted",
+                off.abs() * 100.0
+            ),
         }
     }
 }
@@ -154,12 +190,14 @@ fn pct(duty_q15: i16) -> String {
 }
 
 /// One accepted sweep window with the pot position it was read with: raw
-/// for the slip mask and the runway, the kernel's counts for the slope.
+/// for the slip mask and the runway, the kernel's counts for the slope,
+/// and the servo's back-EMF speed from the same read.
 #[derive(Copy, Clone, Debug)]
 struct SweepSample {
     w: WindowSample,
     pos: u16,
     counts: f64,
+    bemf: f64,
 }
 
 /// One rung reduced; `used` = false rungs carry their reason in `note`.
@@ -173,6 +211,33 @@ pub struct RungSummary {
     pub windows: usize,
     pub used: bool,
     pub note: Option<String>,
+    /// The servo's back-EMF speed over the steady segment, c/s; None on a
+    /// servo that carries no identified Ke.
+    pub omega_bemf: Option<f64>,
+}
+
+/// The timed speeds against the servo's back-EMF speed.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum ServoCheck {
+    /// The servo carries no identified Ke to measure a speed with.
+    NotAvailable,
+    /// The servo's speed over the timed one, less one, averaged over the
+    /// used rungs.
+    Compared { off: f64 },
+}
+
+/// The ladder's speeds checked against the servo's own: its back-EMF speed
+/// has no clock in it, so it sees a timebase error no r2 can.
+pub fn servo_check(rungs: &[RungSummary]) -> ServoCheck {
+    let ratios: Vec<f64> = rungs
+        .iter()
+        .filter(|r| r.used)
+        .filter_map(|r| Some(r.omega_bemf? / r.omega))
+        .collect();
+    match mean(&ratios) {
+        Some(m) => ServoCheck::Compared { off: m - 1.0 },
+        None => ServoCheck::NotAvailable,
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -181,7 +246,88 @@ pub struct LadderResult {
     pub fric_fwd: Option<FrictionFit>,
     pub fric_rev: Option<FrictionFit>,
     pub rungs: Vec<RungSummary>,
+    pub servo: ServoCheck,
     pub warnings: Vec<String>,
+}
+
+/// A rung's steady segment reduced to its operating point.
+struct Steady {
+    omega: f64,
+    omega_r2: f64,
+    i: f64,
+    v: f64,
+    windows: usize,
+    omega_bemf: Option<f64>,
+    /// Raw-count speed, counts/ms: what the runway sizes by.
+    raw_v: Option<f64>,
+}
+
+/// Where a sweep's shaft stopped accelerating: the first window from which
+/// the current over the next [`SPEED_SPAN_MS`] averages within
+/// [`FLAT_FRAC`] of the settled current, the mean over the sweep's second
+/// half, or within twice that average's noise when it is wider. At a
+/// constant duty the current falls as the speed climbs, so a flat current
+/// is a shaft at its steady speed.
+fn settled_from(w: &[WindowSample]) -> Option<usize> {
+    let tail: Vec<f64> = w.get(w.len() / 2..)?.iter().map(|s| s.i).collect();
+    let settled = mean(&tail)?;
+    let sd = stddev(&tail).unwrap_or(0.0);
+    (0..w.len()).find(|&k| {
+        let end = w[k].t_ms + SPEED_SPAN_MS;
+        let span: Vec<f64> = w[k..]
+            .iter()
+            .take_while(|s| s.t_ms <= end)
+            .map(|s| s.i)
+            .collect();
+        let tol = (FLAT_FRAC * settled.abs()).max(2.0 * sd / (span.len() as f64).sqrt());
+        mean(&span).is_some_and(|m| (m - settled).abs() <= tol)
+    })
+}
+
+/// A finished sweep driven `dir`: its steady segment runs from where the
+/// current went flat to `trim_frac` short of the end, the slip zone masked.
+/// Err names why it cannot enter the fits, with the windows it kept.
+fn steady(
+    samples: &[SweepSample],
+    dir: i8,
+    cfg: &LadderCfg,
+    params: &RigParams,
+) -> Result<Steady, (String, usize)> {
+    let n = samples.len();
+    let end = n - (n as f64 * cfg.trim_frac) as usize;
+    let windows: Vec<WindowSample> = samples[..end].iter().map(|s| s.w).collect();
+    let from = settled_from(&windows).unwrap_or(end);
+    let seg: Vec<&SweepSample> = samples[from..end]
+        .iter()
+        .filter(|s| !params.in_slip(s.pos))
+        .collect();
+    if seg.len() < cfg.min_steady {
+        return Err((
+            format!("steady segment too short ({})", seg.len()),
+            seg.len(),
+        ));
+    }
+    let pos_t: Vec<(f64, f64)> = seg.iter().map(|s| (s.w.t_ms / 1000.0, s.counts)).collect();
+    let raw_t: Vec<(f64, f64)> = seg.iter().map(|s| (s.w.t_ms, s.pos as f64)).collect();
+    let iv: Vec<f64> = seg.iter().map(|s| s.w.i).collect();
+    // duty * vdiff / 32767 is |v|; re-sign by the drive direction
+    let vv: Vec<f64> = seg
+        .iter()
+        .map(|s| s.w.duty_q15 * s.w.vdiff / Q15 * dir as f64)
+        .collect();
+    let bemf: Vec<f64> = seg.iter().map(|s| s.bemf).collect();
+    match (linear_ls(&pos_t), mean(&iv), mean(&vv)) {
+        (Some(slope), Some(i), Some(v)) => Ok(Steady {
+            omega: slope.b,
+            omega_r2: slope.r2,
+            i,
+            v,
+            windows: seg.len(),
+            omega_bemf: if cfg.servo_ke { mean(&bemf) } else { None },
+            raw_v: linear_ls(&raw_t).map(|f| f.b.abs()),
+        }),
+        _ => Err(("degenerate steady segment".into(), seg.len())),
+    }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -235,8 +381,7 @@ pub struct Ladder {
     phase: Phase,
     /// Sweep index: rung level = sweep / 2, direction = +1 then -1.
     sweep: usize,
-    clock: SeqUnwrap,
-    /// (window time ms, raw pos) of every read of the drive in progress.
+    /// (host time ms, raw pos) of every read of the drive in progress.
     reads: Vec<(f64, u16)>,
     last_pos: Option<u16>,
     still: u32,
@@ -270,7 +415,6 @@ impl Ladder {
             runway,
             phase: Phase::ModeWrite,
             sweep: 0,
-            clock: SeqUnwrap::default(),
             reads: Vec::new(),
             last_pos: None,
             still: 0,
@@ -317,10 +461,6 @@ impl Ladder {
     fn duty(&self) -> i16 {
         let d = self.cfg.rungs_q15[self.sweep / 2];
         if self.dir() > 0 { d } else { -d }
-    }
-
-    fn time(&mut self, o: &TelemetrySnapshot) -> f64 {
-        self.clock.push(o.agg_seq) as f64 * self.params.agg_period_ms
     }
 
     /// Speed over the last [`SPEED_SPAN_MS`] of reads, counts/ms.
@@ -386,7 +526,7 @@ impl Ladder {
         let poll = self
             .cadence
             .unwrap_or(self.cfg.snapshot_ms + self.cfg.poll_ms as f64);
-        STEADY_MARGIN * windows * self.params.agg_period_ms.max(poll)
+        STEADY_MARGIN * windows * window_ms(self.cfg.tick_hz).max(poll)
     }
 
     fn reset_motion_track(&mut self) {
@@ -499,8 +639,7 @@ impl Ladder {
     }
 
     fn seek_eval(&mut self, o: &TelemetrySnapshot) -> Cmd {
-        let t = self.time(o);
-        self.reads.push((t, o.pos));
+        self.reads.push((o.host_ms, o.pos));
         self.track_still(o.pos);
         let motion = -self.dir();
         if o.limit_flags & LIMIT_YIELD_FOLDED != 0 {
@@ -564,7 +703,7 @@ impl Ladder {
     }
 
     fn rung_eval(&mut self, o: &TelemetrySnapshot) -> Cmd {
-        let t = self.time(o);
+        let t = o.host_ms;
         self.reads.push((t, o.pos));
         let window = self.windows.push(o);
         let (dir, duty) = (self.dir(), self.duty());
@@ -593,6 +732,7 @@ impl Ladder {
                 w,
                 pos: o.pos,
                 counts: self.params.pot.counts(o.pos),
+                bemf: o.omega_bemf_cps as f64,
             });
         }
         let mut done = false;
@@ -636,60 +776,45 @@ impl Ladder {
     /// sizes the next.
     fn close_rung(&mut self) {
         let duty = self.duty();
-        let n_raw = self.sweep_samples.len();
         if let [first, .., last] = self.reads.as_slice() {
             self.cadence = Some((last.0 - first.0) / (self.reads.len() - 1) as f64);
         }
-        let trim = (n_raw as f64 * self.cfg.trim_frac) as usize;
-        let steady: Vec<&SweepSample> = self.sweep_samples[trim..n_raw.saturating_sub(trim)]
-            .iter()
-            .filter(|s| !self.params.in_slip(s.pos))
-            .collect();
-        let mut note = None;
-        if self.stalled_note {
-            note = Some("stalled mid-sweep".into());
-        } else if self.windows.declined() {
-            note = Some(GOVERNED.into());
-        } else if steady.len() < self.cfg.min_steady {
-            note = Some(format!("steady segment too short ({})", steady.len()));
-        }
-        let used = note.is_none();
         let mut rung = RungSummary {
             duty_q15: duty,
             omega: 0.0,
             omega_r2: 0.0,
             i: 0.0,
             v: 0.0,
-            windows: steady.len(),
-            used,
-            note,
+            windows: 0,
+            used: false,
+            note: None,
+            omega_bemf: None,
         };
-        if used {
-            let pos_t: Vec<(f64, f64)> = steady
-                .iter()
-                .map(|s| (s.w.t_ms / 1000.0, s.counts))
-                .collect();
-            let raw_t: Vec<(f64, f64)> = steady.iter().map(|s| (s.w.t_ms, s.pos as f64)).collect();
-            let iv: Vec<f64> = steady.iter().map(|s| s.w.i).collect();
-            // duty * vdiff / 32767 is |v|; re-sign by the drive direction
-            let vv: Vec<f64> = steady
-                .iter()
-                .map(|s| s.w.duty_q15 * s.w.vdiff / Q15 * self.dir() as f64)
-                .collect();
-            match (linear_ls(&pos_t), mean(&iv), mean(&vv)) {
-                (Some(slope), Some(i), Some(v)) => {
-                    rung.omega = slope.b;
-                    rung.omega_r2 = slope.r2;
-                    rung.i = i;
-                    rung.v = v;
-                    if let Some(raw) = linear_ls(&raw_t) {
-                        self.runway.ran(duty as f64 / Q15, raw.b.abs());
+        if self.stalled_note {
+            rung.note = Some("stalled mid-sweep".into());
+        } else if self.windows.declined() {
+            rung.note = Some(GOVERNED.into());
+        } else {
+            match steady(&self.sweep_samples, self.dir(), &self.cfg, &self.params) {
+                Ok(st) => {
+                    rung = RungSummary {
+                        omega: st.omega,
+                        omega_r2: st.omega_r2,
+                        i: st.i,
+                        v: st.v,
+                        windows: st.windows,
+                        used: true,
+                        omega_bemf: st.omega_bemf,
+                        ..rung
+                    };
+                    if let Some(v) = st.raw_v {
+                        self.runway.ran(duty as f64 / Q15, v);
                         self.rung_measured = true;
                     }
                 }
-                _ => {
-                    rung.used = false;
-                    rung.note = Some("degenerate steady segment".into());
+                Err((why, windows)) => {
+                    rung.note = Some(why);
+                    rung.windows = windows;
                 }
             }
         }
@@ -720,7 +845,12 @@ impl Ladder {
         match speeds.as_slice() {
             s if s.len() < MIN_RUNGS => Some(Declined::Thin { rungs: s.len() }),
             [lo, .., hi] if *hi < MIN_SPAN * lo => Some(Declined::Narrow { lo: *lo, hi: *hi }),
-            _ => None,
+            _ => match servo_check(&self.rungs) {
+                ServoCheck::Compared { off } if off.abs() > SERVO_SPEED_TOL => {
+                    Some(Declined::Disagrees { off })
+                }
+                _ => None,
+            },
         }
     }
 
@@ -743,6 +873,7 @@ impl Ladder {
             fric_fwd: friction_line(&pts, 1),
             fric_rev: friction_line(&pts, -1),
             rungs: self.rungs.clone(),
+            servo: servo_check(&self.rungs),
             warnings: self.warnings.clone(),
         })
     }
@@ -876,7 +1007,7 @@ impl Experiment for Ladder {
 
 #[cfg(test)]
 mod tests {
-    use super::super::testkit::{Bus, FakeServo, bench_mg90, bent_pot, pump, pump_on};
+    use super::super::testkit::{Bus, FakeServo, TICK_HZ, bench_mg90, bent_pot, pump, pump_on};
     use super::super::{Guarded, RigParams};
     use super::*;
     use crate::limits::{GUARD_INSET, duty_for};
@@ -917,7 +1048,7 @@ mod tests {
     }
 
     fn run_e3(servo: &mut FakeServo, params: RigParams) -> (Ladder, Vec<String>) {
-        run_cfg(servo, LadderCfg::default(), params)
+        run_cfg(servo, LadderCfg::new(TICK_HZ), params)
     }
 
     #[test]
@@ -940,9 +1071,275 @@ mod tests {
         }
     }
 
-    /// The sweeps cover raw 1450..2650, where the bent pot reads 1.2x
-    /// wide: the raw slope over-reads omega and Ke lands ~17% low. Fitted
-    /// in the table's counts, the kernel's domain, Ke is the planted one.
+    /// The fake loses kernel ticks to every read, as the bench board does,
+    /// so its window counter runs slow the faster it is polled. Read back
+    /// to back, a snapshot every 1.9 ms as the bench ladder reads, and
+    /// paused to a 10 ms cadence, the ladder fits the planted Ke within 1%
+    /// both ways, and the two agree to 1%.
+    #[test]
+    fn polling_does_not_change_the_fitted_ke() {
+        let ke = |poll_ms: u32| {
+            let mut servo = physical_servo();
+            let cfg = LadderCfg {
+                poll_ms,
+                ..LadderCfg::new(TICK_HZ)
+            };
+            let mut exp = guarded(ladder(cfg, &rig()), rig());
+            let log = pump_on(
+                &mut exp,
+                &mut servo,
+                2_000_000,
+                Bus::BENCH.with_read_ms(1.9),
+            );
+            assert!(exp.abort().is_none() && !log.contains(&"OVERRUN".to_string()));
+            let exp = exp.into_inner();
+            assert_eq!(exp.declined(), None, "{:?}", exp.warnings());
+            exp.fit(3.37).expect("usable rungs").ke.ke_vpc
+        };
+        let (fast, slow) = (ke(0), ke(7));
+        println!("Ke polled every 1.9 ms {fast:.5}, every 10 ms {slow:.5}, planted 0.1731");
+        for k in [fast, slow] {
+            assert!((k / 0.1731 - 1.0).abs() < 0.01, "ke {k}, planted 0.1731");
+        }
+        assert!((fast / slow - 1.0).abs() < 0.01, "{fast} against {slow}");
+    }
+
+    /// A servo whose stored Ke sits 15% over the one it runs with reads its
+    /// back-EMF speed 13% under the speeds the ladder timed: the fit's r2
+    /// is over 0.999 and the ladder still declines, in plain words, torque
+    /// off. Stored 3% over, the two agree within the tolerance and the
+    /// ladder fits.
+    #[test]
+    fn ke_that_disagrees_with_the_servo_is_declined() {
+        let run = |stored: f64| {
+            let mut servo = physical_servo();
+            servo.ke_stored = Some(stored);
+            let cfg = LadderCfg {
+                servo_ke: true,
+                ..LadderCfg::new(TICK_HZ)
+            };
+            let (exp, _) = run_cfg(&mut servo, cfg, rig());
+            assert!(!servo.torque);
+            exp
+        };
+        let exp = run(0.1731 * 1.15);
+        let Some(Declined::Disagrees { off }) = exp.declined().cloned() else {
+            panic!("{:?}", exp.declined());
+        };
+        assert!((off - (1.0 / 1.15 - 1.0)).abs() < 0.005, "{off}");
+        assert_eq!(
+            exp.declined().unwrap().to_string(),
+            "the speed the tool timed and the speed the servo measured from its back-EMF \
+             disagree by 13%: the fit is not trusted"
+        );
+        assert!(exp.fit(3.37).unwrap().ke.r2 > 0.999);
+
+        let exp = run(0.1731 * 1.03);
+        assert_eq!(exp.declined(), None);
+        let ServoCheck::Compared { off } = exp.fit(3.37).unwrap().servo else {
+            panic!("not compared");
+        };
+        assert!((off - (1.0 / 1.03 - 1.0)).abs() < 0.005, "{off}");
+    }
+
+    /// A servo that carries no identified Ke has no back-EMF speed to
+    /// check against: the ladder says so and fits on the timed speeds.
+    #[test]
+    fn ke_gate_is_not_available_on_a_virgin_servo() {
+        let mut servo = physical_servo();
+        let (exp, _) = run_cfg(&mut servo, LadderCfg::new(TICK_HZ), rig());
+        assert_eq!(exp.declined(), None);
+        let fit = exp.fit(3.37).expect("usable rungs");
+        assert_eq!(fit.servo, ServoCheck::NotAvailable);
+        assert!(fit.rungs.iter().all(|r| r.omega_bemf.is_none()));
+        let text = crate::report::render(&crate::report::ReportInputs {
+            ladder: Some(&fit),
+            ..Default::default()
+        });
+        assert!(
+            text.contains("servo check   not available: the servo carries no identified Ke"),
+            "{text}"
+        );
+    }
+
+    /// A top rung's 70 windows, one every 2 ms, the current falling as the
+    /// shaft climbs to speed: 30% over the settled current with a 20 ms
+    /// time constant. The steady segment starts once the next 10 ms average
+    /// within 2% of it, near 50 ms; a fixed trim of 5 settle windows and 15%
+    /// of the rung would start at 30 ms, still 7% over.
+    #[test]
+    fn steady_segment_starts_after_the_climb() {
+        let w: Vec<WindowSample> = (0..70)
+            .map(|k| {
+                let t = 2.0 * k as f64;
+                WindowSample {
+                    t_ms: t,
+                    i: 100.0 * (1.0 + 0.3 * (-t / 20.0).exp()),
+                    vdiff: 0.0,
+                    duty_q15: 0.0,
+                }
+            })
+            .collect();
+        let k = settled_from(&w).unwrap();
+        assert!(
+            (46.0..=56.0).contains(&w[k].t_ms),
+            "starts at {} ms",
+            w[k].t_ms
+        );
+        let over = |from: usize| w[from..from + 6].iter().map(|s| s.i).sum::<f64>() / 600.0 - 1.0;
+        assert!(over(k) < 0.025, "{}", over(k));
+        let trimmed = 5 + (70.0 * 0.15) as usize;
+        assert!(over(trimmed) > 0.05, "{}", over(trimmed));
+
+        // the bench servo's rungs climb on the limit and accelerate on for
+        // a time constant of 19 ms; its top rungs never quite settle inside
+        // the travel, where a fixed front trim of 15% reads fc 3.6% low and
+        // fv 4.3% high
+        let mut servo = bench_mg90(3204);
+        servo.pos = 2029.0;
+        let params = bench();
+        let exp = Ladder::new(bench_cfg(), &params, Runway::new(GUARD));
+        let mut g = guarded(exp, params);
+        pump(&mut g, &mut servo, 4_000_000);
+        assert_eq!(g.abort(), None);
+        let exp = g.into_inner();
+        let fit = exp.fit(R_MG90).expect("the ladder fits");
+        let fc = 65.78 + 0.004481 * (3204.0 - 1780.0);
+        let fv = 6.770e-6 * (3204.0 - 1780.0);
+        for f in [fit.fric_fwd.unwrap(), fit.fric_rev.unwrap()] {
+            assert!((f.fc / fc - 1.0).abs() < 0.03, "fc {} for {fc}", f.fc);
+            assert!((f.fv / fv - 1.0).abs() < 0.03, "fv {} for {fv}", f.fv);
+        }
+        assert!(
+            (fit.ke.ke_vpc / 0.1370 - 1.0).abs() < 0.01,
+            "{}",
+            fit.ke.ke_vpc
+        );
+    }
+
+    /// Nothing in the ladder assumes a tick rate: on a servo ticking at
+    /// 16 kHz, told so, it fits the planted Ke, and its window is 1 ms.
+    #[test]
+    fn tick_rates_come_from_the_servo() {
+        let mut servo = physical_servo();
+        servo.f_med = 1600.0;
+        let cfg = LadderCfg::new(servo.tick_hz());
+        let (exp, _) = run_cfg(&mut servo, cfg, rig());
+        let ke = exp.fit(3.37).expect("usable rungs").ke.ke_vpc;
+        assert!((ke / 0.1731 - 1.0).abs() < 0.01, "{ke}");
+        assert_eq!(window_ms(16_000.0), 1.0);
+    }
+
+    /// The bench run whose ladder read Ke 0.1236, replayed from its
+    /// recorded snapshots through the ladder's own reduction and the table
+    /// it ran with. On the host's clock Ke is the bench value, 0.1444 in
+    /// the table's counts, and the servo's back-EMF speed agrees with the
+    /// timed ones; on the window counter at 0.8 ms a window, as the ladder
+    /// timed it then, Ke reads 0.1236 and the check declines it.
+    #[test]
+    fn the_recorded_ladder_reads_the_bench_ke_on_the_host_clock() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/testdata/ident-mg90");
+        let image: crate::lut::Image =
+            serde_json::from_str(&std::fs::read_to_string(format!("{dir}/pos-lut.json")).unwrap())
+                .unwrap();
+        let params = RigParams {
+            pot: Pot::live(image.lut().expect("the table")),
+            ..RigParams::new(None, 350)
+        };
+        let cfg = LadderCfg {
+            servo_ke: true,
+            ..LadderCfg::new(20_000.0)
+        };
+        let text = std::fs::read_to_string(format!("{dir}/ladder_snapshots.csv")).unwrap();
+        let reads: Vec<TelemetrySnapshot> = text
+            .lines()
+            .skip(1)
+            .map(|l| {
+                let v: Vec<f64> = l.split(',').map(|x| x.parse().unwrap()).collect();
+                TelemetrySnapshot {
+                    host_ms: v[0],
+                    pos: v[1] as u16,
+                    i_mean_counts: v[2] as i16,
+                    vdiff_mean: v[3] as i16,
+                    duty_mean_q15: v[4] as i16,
+                    agg_seq: v[5] as u16,
+                    omega_bemf_cps: v[6] as i16,
+                    ..Default::default()
+                }
+            })
+            .collect();
+        let rungs = |window_clock: bool| {
+            let mut out = Vec::new();
+            for seg in reads.chunk_by(|a, b| a.duty_mean_q15 == b.duty_mean_q15) {
+                let goal = seg[0].duty_mean_q15;
+                let mut ws = WindowStream::new(&params);
+                ws.mark_goal(goal);
+                let mut seq = crate::frame::SeqUnwrap::default();
+                let samples: Vec<SweepSample> = seg
+                    .iter()
+                    .filter_map(|o| {
+                        let t = seq.push(o.agg_seq) as f64 * 0.8;
+                        let mut w = ws.push(o)?;
+                        if window_clock {
+                            w.t_ms = t;
+                        }
+                        Some(SweepSample {
+                            w,
+                            pos: o.pos,
+                            counts: params.pot.counts(o.pos),
+                            bemf: o.omega_bemf_cps as f64,
+                        })
+                    })
+                    .collect();
+                let st = steady(&samples, goal.signum() as i8, &cfg, &params).unwrap();
+                out.push(RungSummary {
+                    duty_q15: goal,
+                    omega: st.omega,
+                    omega_r2: st.omega_r2,
+                    i: st.i,
+                    v: st.v,
+                    windows: st.windows,
+                    used: true,
+                    note: None,
+                    omega_bemf: st.omega_bemf,
+                });
+            }
+            assert_eq!(out.len(), 12);
+            let pts: Vec<RungPoint> = out
+                .iter()
+                .map(|r| RungPoint {
+                    omega: r.omega,
+                    i: r.i,
+                    v: r.v,
+                })
+                .collect();
+            let ke = ke_fit(&pts, 1.774_902_343_75).unwrap().ke_vpc;
+            (ke, servo_check(&out))
+        };
+        let (ke, check) = rungs(false);
+        let (old, old_check) = rungs(true);
+        println!(
+            "Ke on the host clock {ke:.5} ({check:?}), on the window counter {old:.5} ({old_check:?})"
+        );
+        assert!((ke / 0.1444 - 1.0).abs() < 0.02, "Ke {ke}");
+        assert!(
+            (old / 0.1236 - 1.0).abs() < 0.02,
+            "Ke on the window counter {old}"
+        );
+        let ServoCheck::Compared { off } = check else {
+            panic!("{check:?}");
+        };
+        assert!(off.abs() < SERVO_SPEED_TOL, "{off}");
+        let ServoCheck::Compared { off } = old_check else {
+            panic!("{old_check:?}");
+        };
+        assert!(off < -SERVO_SPEED_TOL, "{off}");
+    }
+
+    /// The sweeps' steady stretches lie mostly across the middle of the
+    /// travel, where the bent pot reads up to 1.2x wide: the raw slope
+    /// over-reads omega and Ke lands ~8% low. Fitted in the table's counts,
+    /// the kernel's domain, Ke is the planted one.
     #[test]
     fn nonlinear_pot_biases_raw_ke_and_the_live_table_recovers_it() {
         let table = bent_pot();
@@ -956,7 +1353,7 @@ mod tests {
         };
         let raw = ke(Pot::RAW);
         let lin = ke(Pot::live(table));
-        assert!((raw - 0.1731) / 0.1731 < -0.10, "raw ke {raw}");
+        assert!((raw - 0.1731) / 0.1731 < -0.05, "raw ke {raw}");
         assert!((lin - 0.1731).abs() / 0.1731 < 0.01, "linearized ke {lin}");
     }
 
@@ -1000,7 +1397,7 @@ mod tests {
         let cfg = LadderCfg {
             min_steady: 150,
             snapshot_ms: 0.0,
-            ..LadderCfg::default()
+            ..LadderCfg::new(TICK_HZ)
         };
         let (exp, _) = run_cfg(&mut servo, cfg, params);
         let w = exp.warnings();
@@ -1031,7 +1428,7 @@ mod tests {
     fn bench_cfg() -> LadderCfg {
         LadderCfg {
             seek_duty_q15: 4915,
-            ..LadderCfg::default()
+            ..LadderCfg::new(TICK_HZ)
         }
     }
 
