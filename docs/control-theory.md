@@ -100,10 +100,65 @@ The current clamp is the one choke point every command passes through, so it is 
 
 - **`torque_limit`** protects the gear train. This is the tooth saver on a plastic-geared servo, and the yield behavior comes for free. Push the output harder than the limit and the servo cannot fight back harder than $K_t \cdot i_\text{lim}$, so it gives way while the position error grows. Let go and the error is still standing there, so it pulls right back. No special mode needed, that is just what a saturated cascade does. A stock servo strips teeth exactly because it has no current loop, a stall there means maximum current for as long as the fight lasts.
 - **`derate(T̂wind)`** protects the copper. It is a foldback curve. Below a threshold temperature it does nothing, above it the ceiling ramps down, reaching zero at the absolute max. The nice part is that this self-regulates. Less allowed current means less heating, so the servo settles at a thermal equilibrium of "weaker but still holding" instead of banging on and off. A hard cutoff plus an alert flag sits at the absolute max as a last resort, and the ramp should keep it from ever being reached.
-- **stall policy** covers the losing fight. Current pinned at the limit with the pot observer's $\hat\omega \approx 0$ (equivalently, a large steady $\hat\tau_d$) means the servo is stalled against something. The pot observer is the right source here for the reason the estimator section gives: it is the one that still means something at rest. After a timeout the limit folds to a lower yield torque so it stops cooking itself, and restores when $\hat\tau_d$ relaxes. A $\hat\tau_d$ spike counts too: a collision detected by the observer can drop the limit within one control cycle, which is what protects the teeth from shock loads rather than static ones.
+- **stall policy** covers the losing fight. Current pinned at the limit with the pot observer's $\hat\omega \approx 0$ (equivalently, a large steady $\hat\tau_d$) means the servo is stalled against something. The pot observer is the right source here for the reason the estimator section gives: it is the one that still means something at rest. After a timeout the limit folds to a lower yield torque so it stops cooking itself, and restores when $\hat\tau_d$ relaxes. (Set `stall_response` to Fault, which is also the boot value, and the timeout latches a stall fault instead of folding.) A $\hat\tau_d$ spike counts too: a collision detected by the observer can drop the limit within one control cycle, which is what protects the teeth from shock loads rather than static ones. That spike needs a motor model to mean anything: while the model is unset, predict explains none of the motion, so $\hat\tau_d$ would just integrate plain position error, and the observer holds it at zero instead. On an unidentified servo the collision check is therefore off and the stall timer carries the protection alone.
 - **`endstop(θ̂)`** enforces position limits, the other half of the goal clamp in the trajectory generator. It is directional: when $\hat\theta$ sits at or past a limit, current pushing further in gets clamped toward zero while current pulling back out stays allowed. The servo can always retreat from a wall and never gets stuck fighting itself, and the protection holds even when overshoot or an external force carried it past the limit with a perfectly legal reference.
 
 Whatever clips here back-propagates to the velocity integrator as described above.
+
+### Open Loop Under the Same Band
+
+Everything above clamps a current command, and open-loop mode has none. The host writes a duty and the bridge applies it, which is exactly what calibration and identification want, and exactly what a stalled rotor turns into its full stall current, $d\cdot V_\text{bus}/R$. For an MG90 winding of 4.9 ohm on a 7.9 V pack, 64% duty stalls at $0.64\cdot 7.9/4.9 = 1.03$ A, over three times the 0.30 A of static stall at which micro-class teeth and end stops show damage (class defaults, below). So open loop gets the same band enforced a different way: a duty ceiling, driven by the shunt alone. No gains, no identified constant, no multiply, so it works from the first boot of an unconfigured servo.
+
+The numbers in this section come from the kernel pins that drive an MG90-scale motor model: that 4.9 ohm winding, the 7.9 V rail, the development board's 60 mohm shunt chain at 1117 counts per amp, and a limit of 280 counts (0.25 A) unless stated otherwise.
+
+Once per fast tick the limiter compares the measured current $i$ against $i_\text{lim}$, the side of the band the goal points into (so the derate, the stall fold, the endstop and the stall permit all reach open loop through it), and moves the ceiling $c$ by one of three rules:
+
+- **Below the band**, $i \lt i_\text{lim} - i_\text{lim}/8$: the ceiling rises by 128 in Q15, 0.39% of full duty per tick, which is 7.8% per millisecond at 20 kHz.
+- **Inside the band**, from $i_\text{lim} - i_\text{lim}/8$ up to $i_\text{lim}$: the ceiling holds.
+- **Over the limit**: the ceiling drops by eight Q15 steps per count of overage, $c \leftarrow c - 8\cdot (i - i_\text{lim})$.
+
+Then $c \leftarrow \min(c, d_\text{goal})$, so a goal cut applies at once, and the applied duty is $c$ with the goal's sign.
+
+The hold band is what makes a stall quiet. Without it the ceiling rises and drops in turn around the limit forever, a limit cycle, and the band gives it somewhere to stand. The proportional drop sizes each correction to the overage, so a sudden stall comes down in steps as big as the problem rather than a fixed step at a time. It is also gentle enough not to overshoot on its own: a duty change $\Delta d$ moves the stall current by $\Delta d\cdot V_\text{bus}/R$, which on the rig is $3204/32768/1.775 = 0.055$ counts per Q15 step (a 3204-count rail over a winding of 1.775 voltage counts per current count), so a drop of 8 per count removes 0.44 of the overage it saw, under one.
+
+Rising at a fixed rate is the first-edge protection. The shunt reports a window one tick late, so no loop, fast or slow, can catch a duty step before the current has already followed it. The answer is to never let the step exist: every rise above the window floor is a slew, and every start to a goal above the floor climbs from the floor. The ceiling restarts at the floor whenever the drive starts or stops (torque on, torque off, a fault latching), on a mode change while torque is on, and whenever the goal's sign differs from the applied duty's, which covers a reversal and a start from zero duty alike.
+
+#### The Blind Band Under the Floor
+
+Below the window floor of the next section the shunt reports nothing, and the limiter reads the missing sample as zero current, the same honest zero the current loop uses. A ceiling down there would rise forever on a current it cannot see, so under the floor the limiter stops trusting its ceiling and applies a stall-safe base duty instead:
+
+$$d_\text{base} = \min\left(\frac{i_\text{lim}\cdot R}{V_\text{bus}},\ d_\text{floor}\right)$$
+
+This is the duty whose stall current is exactly the limit. $R$ is the identified winding resistance and nothing else, so the bridge and the shunt add resistance the formula leaves out and the real stall current at $d_\text{base}$ sits a little under $i_\text{lim}$. The applied duty is $\min(d_\text{base}, d_\text{goal})$ whenever the ceiling is under the floor, which also means a goal at or under the floor passes through untouched as long as it is not above $d_\text{base}$: small seeks and breakaway ramps are not governed at all.
+
+At a stall where even the floor draws more than the limit, the ceiling drops under the floor, the base carries the hold, and the ceiling climbing back past the floor at the slew rate is the re-probe: one measurement, and back down if the stall is still there. On the rig, with a limit of 200 counts under the floor's 239-count stall current, more than half the ticks sit in the blind band, every one of them at a duty whose stall current is 95 to 100% of the limit, and the mean current stays within 10% of it.
+
+With no identified $R$ the base is the floor itself, so the limiter never drives itself blind. The blind band is then bounded by physics rather than by the limiter: the lowest duty the limiter applies for a goal above the floor is the floor, so stall current there is at most $d_\text{floor}\cdot V_\text{bus}/R$. With the floor at 13.3% that is 0.214 A for the 4.9 ohm MG90 winding on a 7.9 V rail, and it stays under the 300 mA class limit for any winding above $0.1329\cdot 8.4/0.3 = 3.72$ ohm on a full 2S pack. If the floor still draws more than the limit, the applied duty sits pinned at the floor and the stall timer decides.
+
+#### How the Stall Timer Sees It
+
+The stall verdict wants to know that the command sat at the limit. In the closed loops that is the current reference at $i_\text{lim}$. In open loop it is the ceiling being held under the goal by the current: the limiter records a pin on any fast tick where a measured current sits at or above the band's lower edge while the ceiling is below the goal, and the medium pass takes that pin as its own. A slew never pins (the current is below the band), and a hold at the goal is not a pin either, because nothing is being refused. From there the verdict is the same as in closed loop: pinned, with the pot observer's $|\hat\omega|$ under `stall_omega_max`, for `stall_time_ms`, then the yield fold or a stall fault. The timer runs out after `stall_time_ms` plus however long the observer takes to settle on a still shaft, under 100 ms past a 500 ms timer on the MG90 gain set.
+
+#### What It Costs an Identification Experiment
+
+A step is clean, meaning the limiter never touches it, only if the current stays under the band's lower edge the whole time. From rest there is no back-EMF, so the current right after the step is about $d\cdot V_\text{bus}/R$ and the largest clean step is
+
+$$d_\text{clean} = \frac{7}{8}\cdot \frac{i_\text{lim}\cdot R}{V_\text{bus}}$$
+
+On the rig that is $0.875\cdot 280\cdot 1.775/3204 = 0.136$, a 13.6% step, barely above the floor. On a shaft running at $i_\text{run}$ the headroom is what the running current leaves, $(\frac{7}{8} i_\text{lim} - i_\text{run})\cdot R/V_\text{bus}$, which is 9.1% for a shaft drawing 80 counts. Anything bigger is governed: the duty climbs at whatever rate the current allows and reaches the goal only if the load lets it. A clean step is still a slew, 9.1% takes 24 ticks or 1.2 ms, so a fit takes the applied duty from the TEL `duty` field as its input, never an ideal step. The rule a host uses to tell a governed window from a clean one is in the protocol doc, sec 5.8.
+
+#### What It Does Not Cover
+
+- **Brake and regen current.** Under slow decay, cutting the duty on a spinning motor makes $(d\cdot V_\text{bus} - e)/R$ negative. The low-side shunt does not read that current and no duty ceiling reduces it. It is the same current the endstop brake already produces.
+- **The first moments after a dead stop at speed.** The shaft stops in one tick, the current rises at the electrical rate, and the limiter hears about it a tick late. On the rig, hitting a stop above 1000 counts/s, the current is over 1.1 times the limit only within the first millisecond. A host should not arrive at a stop fast.
+- **The burst capture.** The high-rate shunt capture steps the bridge halfway through a window of about 1.04 ms in which the kernel receives no ticks, so the second half runs at the host's step duty, clamped only by `duty_max`. Keeping that duty stall-safe is the host's job.
+- **Shunt accuracy near the floor.** The limiter trusts every window-valid sample. Between the firmware's floor and the measured honest floor of the next section, about 15% on 2S and around 30% on a USB rail, the number the ceiling holds against can be off, and on a soft rail the real current can sit above it.
+
+### Class Defaults
+
+A servo with no saved configuration of its own (erased, from another firmware layout, unreadable, or wiped by FACTORY) boots on limits for the weakest plausible servo of the micro class, whose teeth and plastic end stops show damage near 0.30 A of static stall. The current limit and the collision trip sit at 300 mA, the stall fold at 180 mA and its release at 90 mA. The winding thermometer's minimum current drops to 150 mA with them, because under a 300 mA ceiling a higher gate would never let it sample and the thermal derate would go blind. The stall response boots as Fault with a 500 ms timer. The overcurrent trip stays at 3.0 A: it is a copper and shunt guard, not a gear limit, above any micro-class stall on 2S (2.1 A). All of these are physical currents converted through the board's own sense chain at build time, so 300 mA is 335 counts on the 60 mohm development board and 184 counts on a 33 mohm one.
+
+These are floors to start from, not tuning: every limit is a user-owned field, a saved configuration keeps its own values, and a servo that can take more gets them raised by its host. The collision trip at 300 mA is also why the observer holds $\hat\tau_d$ at zero while the motor model is unset (the stall policy bullet above): without the hold, the disturbance state of a virgin servo integrates position error during a plain free run and crosses the trip.
 
 ## The Current Loop
 
@@ -126,6 +181,8 @@ That window has a floor, and it is a stated limit of the design rather than a de
 Two mechanisms, and they are worth separating because only one of them is a rail problem. The first is the sense amplifier's own edge, about 3 microseconds of settling in the network around it, and it shows on both supplies because it belongs to the amplifier. The second is charge sharing on a soft rail: when the supply cannot hold up, the decoupling and bulk capacitors near the bridge dump into the load through the shunt at every on edge, so the shunt reads capacitor current mixed in with winding current. The first is a component-value fix, the second is a layout fix, returning every driver and bulk capacitor to ground on the far side of the shunt.
 
 What the firmware does about it is refuse. Each sense path carries its own per-board minimum drive width, the window select compares the commanded width against it, and a sample that misses is not reported at all. On that board the voltage path's floor is 160 timer ticks, which is 13% duty. The flag is the contract: anything consuming the estimate needs the flag, not a filter. Below the floor the estimates do not degrade into noise, they are confidently wrong, and no amount of averaging recovers that.
+
+The open-loop duty limiter in the limits section is a consumer of the same floor. The firmware turns the current path's minimum width into the smallest duty that clears it, exactly, 4356 in Q15 or 13.3% for 160 ticks against a full-scale 1200, and that duty is where the limiter's ceiling restarts and where its blind band begins. Under it the limiter sees no current at all and falls back to the stall-safe base duty rather than to a sample it cannot trust.
 
 ## The Estimator Layer
 
