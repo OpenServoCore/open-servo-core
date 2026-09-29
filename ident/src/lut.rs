@@ -31,9 +31,10 @@
 //! [`interp_q4`] and [`validate`] mirror it bit for bit; [`Image`] is the
 //! JSON `osc lut write` consumes.
 //!
-//! The tail of this module is the 55-point [`PosLut`] the servo still stores
-//! and `osc cal` still writes, clocked by the autocorrelation tachometer
-//! ([`cumulative_phase`]); it goes when the grid lands on the servo.
+//! The tail of this module is the older 55-point [`PosLut`], clocked by the
+//! autocorrelation tachometer ([`cumulative_phase`]). The servo stores only
+//! the grid; `osc cal-replay` still builds the 55-point table to report on a
+//! recorded sweep.
 
 use serde::{Deserialize, Serialize};
 
@@ -585,9 +586,8 @@ fn sat_i16(v: f64) -> i16 {
     v.clamp(i16::MIN as f64, i16::MAX as f64) as i16
 }
 
-// --- the 55-point block the servo still stores ---
+// --- the 55-point table cal-replay reports ---
 
-/// Point count = the firmware PotLutBlock's lut_corr length.
 const N_POINTS: usize = 55;
 const N_INTERVALS: usize = N_POINTS - 1;
 /// cumulative_phase needs a majority of windows to find ripple, else the
@@ -601,8 +601,8 @@ const MIN_GOOD_FRAC: f64 = 0.5;
 /// returns identity.
 pub const MIN_SPAN_COVER: f64 = 0.7;
 
-/// Host mirror of the firmware PotLutBlock (raw_min/raw_max/lut_corr): 55
-/// points evenly spaced in raw counts, `raw_i = raw_min + i * span / 54`,
+/// The 55-point table (raw_min/raw_max/corr), host side only: 55 points
+/// evenly spaced in raw counts, `raw_i = raw_min + i * span / 54`,
 /// `corrected(raw_i) = raw_i + corr[i]`, linear between points, raw outside
 /// the rails clamped; all-zero corr is the 2-point-linear baseline.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]

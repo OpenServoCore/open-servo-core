@@ -13,7 +13,7 @@ use osc_servo_core::pos_lut::{INTERVALS, POINTS};
 use rstest_reuse::template;
 
 /// mg90-a on the 2S session, stops 209/3849, covered 542..3520 (bringup
-/// captures/mg90/pot-lut-mg90-a-grid.json), the same 256 points the core
+/// captures/mg90/pos-lut-mg90-a-grid.json), the same 256 points the core
 /// unit tests carry, pinned to the Python reference by CRC in `pos_lut.rs`.
 #[allow(dead_code)]
 pub const MG90_A_MIN: u16 = 209;
