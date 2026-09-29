@@ -10,6 +10,7 @@ pub(crate) mod limits;
 pub(crate) mod park;
 pub(crate) mod plant;
 pub(crate) mod pump;
+pub(crate) mod servo;
 pub(crate) mod snapshot;
 
 use anyhow::{Context, Result, bail};

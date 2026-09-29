@@ -4,25 +4,22 @@
 //! the way is blocked, and the park gives up, torque off.
 
 use std::sync::atomic::Ordering;
-use std::time::Duration;
 
 use anyhow::{Result, bail};
-use osc_client::Id;
-use osc_client::blocking::Client;
-use osc_client::nusb::NusbPipe;
 use osc_ident::exp::AbortReason;
 use osc_ident::exp::seek::{self, STALL_EPS, STALL_POLLS, Watch};
 use osc_ident::regs::control;
 
 use super::Aborted;
-use super::pump::{STOP, read_snapshot, write_reg};
+use super::pump::STOP;
+use super::servo::Servo;
 
 /// Counts either side of the centre that count as parked; the bench
 /// centring script's band.
 const PARK_TOL: u16 = 60;
-/// Poll budget: 300 x `PARK_POLL` bounds the drive at 6 s.
+/// Poll budget: 300 x `PARK_POLL_MS` bounds the drive at 6 s.
 const PARK_POLLS: u32 = 300;
-const PARK_POLL: Duration = Duration::from_millis(20);
+const PARK_POLL_MS: u32 = 20;
 
 /// Signed drive of `duty_q15` toward `center`, or None when `pos` is
 /// already within `PARK_TOL` of it.
@@ -55,8 +52,8 @@ fn poll(watch: &mut Watch, pos: u16, center: u16, duty: i32) -> Result<bool, Abo
 /// Re-centre the horn, then zero the duty and torque off whatever happened.
 /// Reaching the poll budget short of the band is not an error: the shaft is
 /// left where it got to.
-pub(crate) fn park(c: &mut Client<NusbPipe>, id: Id, center: u16, duty_q15: i16) -> Result<()> {
-    let start = read_snapshot(c, id)?.pos;
+pub(crate) fn park<S: Servo>(s: &mut S, center: u16, duty_q15: i16) -> Result<()> {
+    let start = s.snapshot()?.pos;
     println!("park: pos {start} -> centre {center}");
     let stopped = || STOP.load(Ordering::SeqCst);
     let drove = (|| -> Result<()> {
@@ -66,16 +63,16 @@ pub(crate) fn park(c: &mut Client<NusbPipe>, id: Id, center: u16, duty_q15: i16)
         if stopped() {
             bail!("interrupted");
         }
-        write_reg(c, id, control::MODE, 0)?;
-        write_reg(c, id, control::TORQUE_ENABLE, 1)?;
-        write_reg(c, id, control::GOAL_DUTY, duty)?;
+        s.write(control::MODE, 0)?;
+        s.write(control::TORQUE_ENABLE, 1)?;
+        s.write(control::GOAL_DUTY, duty)?;
         let mut watch = Watch::new(start, STALL_EPS, STALL_POLLS);
         for _ in 0..PARK_POLLS {
-            std::thread::sleep(PARK_POLL);
+            s.sleep(PARK_POLL_MS);
             if stopped() {
                 bail!("interrupted");
             }
-            match poll(&mut watch, read_snapshot(c, id)?.pos, center, duty) {
+            match poll(&mut watch, s.snapshot()?.pos, center, duty) {
                 Ok(true) => break,
                 Ok(false) => {}
                 Err(reason) => {
@@ -89,8 +86,8 @@ pub(crate) fn park(c: &mut Client<NusbPipe>, id: Id, center: u16, duty_q15: i16)
         }
         Ok(())
     })();
-    let zeroed = write_reg(c, id, control::GOAL_DUTY, 0);
-    let off = write_reg(c, id, control::TORQUE_ENABLE, 0);
+    let zeroed = s.write(control::GOAL_DUTY, 0);
+    let off = s.write(control::TORQUE_ENABLE, 0);
     drove?;
     zeroed?;
     off

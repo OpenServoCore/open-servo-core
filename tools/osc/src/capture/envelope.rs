@@ -18,17 +18,24 @@ const HEADER: &str = "\
 # times in ms. rule, current_limit_counts, rail_mv: the drive rule the pilot
 # ran under, the servo's current limit and its rail at rest; a capture
 # refuses the envelope once they differ. limits: soft/phys read from the
-# servo, guard = soft inset, runway = guard_hi - guard_lo. v_ss: counts/ms =
-# slope x duty_pct + intercept, `used` sizes the windows. windows_ms:
-# duty_pct = window. coast: the ladder climbed the coast block's duties, each
-# run both ways at drive_ms then coast_ms only while its predicted travel
-# x (1 + margin) fit the room (the far edge of the start band to soft, per
-# direction); top_pct is the coast block's top duty. Per rung and direction:
-# predicted travel (none on the first rung), entry speed (pot slope over the
-# end of the drive), lead (travel to the coast's first sample), coast, travel
-# = lead + coast, and the peak's distance inside soft. A rung above top_pct
-# ran, but its measured travel x (1 + margin) did not fit; `refused` is the
-# duty whose prediction did not.
+# servo, guard = soft inset, runway = guard_hi - guard_lo. grid: the ladder
+# climbed the grid block's duties from the bottom, both ways, each rung run
+# only while its predicted travel fit the runway and its braked stop fit
+# between the soft limit and the stop beyond it. Per rung and direction:
+# the window it ran, t_goal_ms (the first sample whose applied duty was the
+# goal), travel by then, v_ss (fit over the samples at the goal past the
+# settle), and the braked stop after it. windows_ms: the window a campaign
+# rung drives at each duty kept, its climb and a tail crossing 0.8 of the
+# runway, cut to what still fits it. v_ss: counts/ms = slope x duty_pct +
+# intercept over the rungs that moved. coast: the ladder climbed the coast
+# block's duties, each driven to its goal and 20 ms on (drive_ms), then
+# coast_ms, both ways, while its predicted travel x (1 + margin) fit the room
+# (the far edge of the start band to soft); top_pct is its top duty. Per rung
+# and direction: predicted travel (none on the first rung), entry speed, lead
+# (travel to the coast's first sample), coast, travel = lead + coast, and the
+# peak's distance inside soft. chains: every other chain the session drives,
+# run both ways, its excursion from the start and the peak's distance inside
+# soft; refused_chains did not fit.
 ";
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -49,8 +56,10 @@ pub(crate) struct Envelope {
     pub(crate) limits: Limits,
     pub(crate) v_ss: Speed,
     pub(crate) windows_ms: BTreeMap<u8, u32>,
+    pub(crate) grid: Grid,
     pub(crate) coast: Coast,
-    pub(crate) verified: Vec<Verified>,
+    pub(crate) chains: Vec<ChainRun>,
+    pub(crate) refused_chains: Vec<ChainRefused>,
 }
 
 #[derive(Copy, Clone, Serialize, Deserialize, Debug, PartialEq)]
@@ -81,16 +90,11 @@ impl std::fmt::Display for Dir {
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub(crate) struct Speed {
     pub(crate) duties: Vec<u8>,
-    pub(crate) used: Dir,
     pub(crate) fwd: Fit,
     pub(crate) rev: Fit,
 }
 
 impl Speed {
-    pub(crate) fn used(&self) -> &Fit {
-        self.of(self.used)
-    }
-
     pub(crate) fn of(&self, d: Dir) -> &Fit {
         match d {
             Dir::Fwd => &self.fwd,
@@ -138,9 +142,51 @@ impl<T> PerDir<T> {
     }
 }
 
+/// The grid ladder: every duty it kept, and the first it did not.
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+pub(crate) struct Grid {
+    /// The highest duty kept both ways; 0 when none was.
+    pub(crate) top_pct: u8,
+    pub(crate) rungs: Vec<GridRung>,
+    pub(crate) refused: Option<LadderRefused>,
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+pub(crate) struct GridRung {
+    pub(crate) pct: u8,
+    pub(crate) window_ms: u32,
+    pub(crate) fwd: RungRun,
+    pub(crate) rev: RungRun,
+}
+
+impl GridRung {
+    pub(crate) fn get(&self, d: Dir) -> &RungRun {
+        match d {
+            Dir::Fwd => &self.fwd,
+            Dir::Rev => &self.rev,
+        }
+    }
+}
+
+/// One direction of one grid rung as it ran.
+#[derive(Copy, Clone, Serialize, Deserialize, Debug, PartialEq)]
+pub(crate) struct RungRun {
+    pub(crate) ran_ms: u32,
+    pub(crate) t_goal_ms: f64,
+    pub(crate) travel: u16,
+    pub(crate) v_ss: f64,
+    pub(crate) stop: u16,
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+pub(crate) struct LadderRefused {
+    pub(crate) pct: u8,
+    pub(crate) dir: Dir,
+    pub(crate) why: String,
+}
+
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub(crate) struct Coast {
-    pub(crate) drive_ms: u32,
     pub(crate) coast_ms: u32,
     pub(crate) margin: f64,
     pub(crate) top_pct: u8,
@@ -152,6 +198,7 @@ pub(crate) struct Coast {
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub(crate) struct CoastRung {
     pub(crate) pct: u8,
+    pub(crate) drive_ms: u32,
     pub(crate) fwd: CoastRun,
     pub(crate) rev: CoastRun,
 }
@@ -179,14 +226,45 @@ pub(crate) struct CoastRun {
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub(crate) struct Refused {
     pub(crate) pct: u8,
-    pub(crate) predicted: PerDir<u16>,
+    pub(crate) why: String,
+}
+
+/// A chain the pilot ran both ways: `chain` is its steps as a schedule
+/// names them.
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+pub(crate) struct ChainRun {
+    pub(crate) block: String,
+    pub(crate) chain: String,
+    pub(crate) predicted: u16,
+    pub(crate) fwd: Excursion,
+    pub(crate) rev: Excursion,
+}
+
+#[cfg(test)]
+impl ChainRun {
+    pub(crate) fn get(&self, d: Dir) -> &Excursion {
+        match d {
+            Dir::Fwd => &self.fwd,
+            Dir::Rev => &self.rev,
+        }
+    }
+}
+
+/// How far a chain carried the shaft from where it started, and how far
+/// inside the soft limit ahead its furthest sample stayed (negative past
+/// it).
+#[derive(Copy, Clone, Serialize, Deserialize, Debug, PartialEq)]
+pub(crate) struct Excursion {
+    pub(crate) travel: u16,
+    pub(crate) peak_inside_soft: i32,
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
-pub(crate) struct Verified {
-    pub(crate) step: String,
-    pub(crate) travel: u16,
+pub(crate) struct ChainRefused {
+    pub(crate) block: String,
+    pub(crate) chain: String,
     pub(crate) predicted: u16,
+    pub(crate) why: String,
 }
 
 impl Envelope {
@@ -207,13 +285,18 @@ impl Envelope {
             }
             Err(e) => return Err(e).with_context(|| format!("read {}", path.display())),
         };
-        toml::from_str(&s).with_context(|| format!("parse {}", path.display()))
+        toml::from_str(&s).with_context(|| {
+            format!(
+                "parse {}: an older pilot wrote it, run osc capture pilot again",
+                path.display()
+            )
+        })
     }
 }
 
 impl Envelope {
-    /// What the ladder's runway reads of it: the v_ss lines and every coast
-    /// the pilot measured, both ways.
+    /// What a runway reads of it: the v_ss lines and every braked stop the
+    /// grid ladder measured, both ways, from the speed it braked at.
     pub(crate) fn runway(&self) -> runway::Envelope {
         let line = |f: &Fit| runway::Line {
             slope: f.slope,
@@ -225,11 +308,12 @@ impl Envelope {
             fwd: line(&self.v_ss.fwd),
             rev: line(&self.v_ss.rev),
             coast: self
-                .coast
-                .ladder
+                .grid
+                .rungs
                 .iter()
                 .flat_map(|r| [r.fwd, r.rev])
-                .map(|c| (c.entry, c.coast as f64))
+                .filter(|r| r.v_ss > 0.0)
+                .map(|r| (r.v_ss, r.stop as f64))
                 .collect(),
         }
     }
@@ -266,9 +350,23 @@ pub(crate) fn size_runway(
     let found = super::default_root()
         .map(|root| every(&root))
         .unwrap_or_default();
+    size_by(runway, supply, phys, found)
+}
+
+fn size_by(
+    runway: &mut runway::Runway,
+    supply: Option<runway::Supply>,
+    phys: (i32, i32),
+    found: Vec<(PathBuf, Result<Envelope>)>,
+) -> (Vec<(PathBuf, String)>, Option<PathBuf>) {
     let mut left = Vec::new();
     for (path, env) in found {
         let why = match env {
+            Ok(env) if env.rule == Rule::Free => {
+                "it was measured before the servo limited open-loop current (run osc capture \
+                 pilot again)"
+                    .into()
+            }
             Ok(env) => match runway.size_by(env.runway(), supply, phys) {
                 Ok(()) => return (left, Some(path)),
                 Err(stale) => stale.to_string(),
@@ -316,10 +414,55 @@ pub(crate) fn civil_date(secs: u64) -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
-/// The pinned mg90 numbers, as the pilot would save them.
+/// The bench MG90 on 2S under its 280-count limit as the pilot measures it
+/// on the test servo: per grid duty the climb (t_goal ms, travel), v_ss, the
+/// braked stop and the window, the coast ladder and every chain.
 #[cfg(test)]
 pub(super) fn mg90() -> Envelope {
-    let fwd = Fit::rounded(0.2275, -0.845, 0.998);
+    const GRID: [(u8, u32, f64, u16, f64, u16, u32); 11] = [
+        (5, 150, 0.0, 0, 0.0, 0, 1500),
+        (10, 150, 0.0, 0, 0.0, 0, 1500),
+        (15, 150, 2.9, 0, 2.255, 25, 1064),
+        (20, 194, 14.85, 11, 3.307, 41, 735),
+        (25, 155, 26.65, 35, 4.328, 58, 571),
+        (30, 168, 40.45, 80, 5.371, 76, 471),
+        (35, 182, 55.4, 145, 6.413, 94, 406),
+        (40, 199, 71.75, 236, 7.456, 113, 361),
+        (45, 216, 89.8, 358, 8.498, 132, 329),
+        (50, 235, 108.25, 504, 9.539, 151, 305),
+        (55, 254, 130.75, 707, 10.58, 170, 286),
+    ];
+    let rungs: Vec<GridRung> = GRID
+        .iter()
+        .map(|&(pct, ran_ms, t_goal_ms, travel, v_ss, stop, window_ms)| {
+            let run = RungRun {
+                ran_ms,
+                t_goal_ms,
+                travel,
+                v_ss,
+                stop,
+            };
+            GridRung {
+                pct,
+                window_ms,
+                fwd: run,
+                rev: run,
+            }
+        })
+        .collect();
+    let chain = |block: &str, chain: &str, predicted: u16, travel: u16, inside: i32| ChainRun {
+        block: block.into(),
+        chain: chain.into(),
+        predicted,
+        fwd: Excursion {
+            travel,
+            peak_inside_soft: inside,
+        },
+        rev: Excursion {
+            travel,
+            peak_inside_soft: inside,
+        },
+    };
     Envelope {
         supply: Supply::TwoS,
         fw: 64,
@@ -328,68 +471,107 @@ pub(super) fn mg90() -> Envelope {
         seek_pct: 15,
         rule: Rule::Limit,
         current_limit_counts: Some(280),
-        rail_mv: Some(7900),
+        rail_mv: Some(7899),
         limits: Limits {
             soft: [432, 3626],
-            phys: [209, 3849],
+            phys: [232, 3849],
             guard: [532, 3526],
             center: 2029,
             runway: 2994,
         },
         v_ss: Speed {
-            duties: vec![10, 20, 30, 40, 50],
-            used: Dir::Fwd,
-            fwd,
-            rev: Fit::rounded(0.2141, -0.712, 0.997),
+            duties: GRID.iter().filter(|g| g.4 > 0.0).map(|g| g.0).collect(),
+            fwd: Fit::rounded(0.2081, -0.866, 1.0),
+            rev: Fit::rounded(0.2081, -0.867, 1.0),
         },
-        windows_ms: [(5, 1500), (10, 1500), (60, 219), (100, 140)].into(),
+        windows_ms: GRID.iter().map(|g| (g.0, g.6)).collect(),
+        grid: Grid {
+            top_pct: 55,
+            rungs,
+            refused: Some(LadderRefused {
+                pct: 60,
+                dir: Dir::Rev,
+                why: "rev 60% would stop in about 206 counts, over the 200 between the soft \
+                      limit and the stop: a rung its host abandoned would hit the stop"
+                    .into(),
+            }),
+        },
         coast: Coast {
-            drive_ms: 80,
             coast_ms: 400,
             margin: 0.1,
-            top_pct: 80,
+            top_pct: 40,
             room: PerDir {
                 fwd: 3019,
                 rev: 3019,
             },
             refused: Some(Refused {
-                pct: 100,
-                predicted: PerDir {
-                    fwd: 3352,
-                    rev: 3350,
-                },
+                pct: 60,
+                why: "the grid ladder never kept 60%, so it has no climb to drive by".into(),
             }),
             ladder: [
-                (20, 3.16, 235, 130),
-                (30, 5.62, 377, 316),
-                (40, 7.55, 514, 536),
-                (60, 11.67, 760, 979),
-                (80, 13.15, 938, 1333),
+                (20, 35, 2.206, 65, 73, None),
+                (30, 61, 4.432, 187, 200, Some(592)),
+                (40, 92, 6.675, 395, 368, Some(663)),
             ]
             .into_iter()
-            .map(|(pct, entry, lead, coast)| {
+            .map(|(pct, drive_ms, entry, lead, coast, predicted)| {
                 let run = CoastRun {
-                    predicted: (pct > 20).then_some(lead + coast + 100),
+                    predicted,
                     entry,
                     lead,
                     coast,
                     travel: lead + coast,
-                    peak_inside_soft: 3094 - (lead + coast) as i32,
+                    peak_inside_soft: 3019 - (lead + coast) as i32,
                 };
                 CoastRung {
                     pct,
+                    drive_ms,
                     fwd: run,
                     rev: run,
                 }
             })
             .collect(),
         },
-        verified: vec![Verified {
-            step: "60@219".into(),
-            travel: 2310,
-            predicted: 2395,
-        }],
+        chains: vec![
+            chain("step", "30@20,coast:400", 425, 79, 2988),
+            chain("step", "30@40,coast:400", 533, 230, 2837),
+            chain("step", "30@60,coast:400", 640, 380, 2687),
+            chain("step", "30@80,coast:400", 748, 505, 2562),
+            chain("step", "30@120,coast:400", 963, 729, 2338),
+            chain(
+                "reversal",
+                "20@60,then:-20@60,then:20@60,brake:200",
+                746,
+                235,
+                2832,
+            ),
+            chain(
+                "reversal",
+                "40@60,then:-40@60,then:40@60,brake:200",
+                1689,
+                398,
+                2669,
+            ),
+            chain("ends", "15@1277", 2940, 2877, 152),
+            chain("ends", "20@897", 3044, 2910, 157),
+        ],
+        refused_chains: Vec::new(),
     }
+}
+
+/// [`mg90`] with a window at every grid duty of the session procedure, as
+/// a plan that expands the whole grid needs them.
+#[cfg(test)]
+pub(super) fn mg90_every_window() -> Envelope {
+    let mut env = mg90();
+    let v = env.v_ss.fwd;
+    for d in (1..=20u8).map(|k| k * 5) {
+        env.windows_ms.entry(d).or_insert_with(|| {
+            let w = 0.8 * env.limits.runway as f64 / v.at(d);
+            (w.round() as u32).min(1500)
+        });
+    }
+    env
 }
 
 #[cfg(test)]
@@ -405,27 +587,30 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.starts_with("# osc capture pilot envelope."));
         assert!(text.contains("supply = \"2s\""));
+        assert!(text.contains("rule = \"limit\"\ncurrent_limit_counts = 280\nrail_mv = 7899\n"));
         assert!(text.contains("\n[windows_ms]\n5 = 1500\n"));
-        assert!(
-            text.contains("\n[[coast.ladder]]\npct = 20\n\n[coast.ladder.fwd]\nentry = 3.16\n")
-        );
+        assert!(text.contains("\n[[grid.rungs]]\npct = 5\nwindow_ms = 1500\n"));
+        assert!(text.contains(
+            "\n[[coast.ladder]]\npct = 20\ndrive_ms = 35\n\n[coast.ladder.fwd]\nentry = 2.206\n"
+        ));
+        assert!(text.contains("\n[[chains]]\nblock = \"step\"\nchain = \"30@20,coast:400\"\n"));
         assert!(text.is_ascii());
         let back = Envelope::load(&dir).unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(back, env);
     }
 
-    /// The runway reads the v_ss lines and every coast both ways, and takes
-    /// the envelope only for its supply and stops; the pilot's older file,
-    /// with a single coast probe, does not parse and sizes nothing.
+    /// The runway reads the v_ss lines and the braked stops both ways, and
+    /// takes the envelope only for its supply and stops; the pilot's older
+    /// file does not parse and sizes nothing.
     #[test]
     fn envelope_sizes_the_ladder_runway() {
         let r = mg90().runway();
         assert_eq!(r.supply, runway::Supply::TwoS);
-        assert_eq!(r.phys, (209, 3849));
+        assert_eq!(r.phys, (232, 3849));
         assert_eq!(r.fwd.at(60.0), mg90().v_ss.fwd.at(60));
-        assert_eq!(r.coast.len(), 10);
-        assert_eq!(r.coast[9], (13.15, 1333.0));
+        assert_eq!(r.coast.len(), 18, "9 moving rungs both ways");
+        assert_eq!(r.coast[17], (10.58, 170.0));
         assert!(r.check(Some(runway::Supply::TwoS), (232, 3849)).is_ok());
         assert!(r.check(Some(runway::Supply::Usb), (232, 3849)).is_err());
 
@@ -445,8 +630,81 @@ mod tests {
         assert_eq!(found.len(), 2, "a dir without an envelope is skipped");
         assert_eq!(found[0].0, fresh.join(FILE));
         assert_eq!(found[0].1.as_ref().unwrap(), &mg90());
-        assert!(found[1].1.is_err());
+        let e = format!("{:#}", found[1].1.as_ref().unwrap_err());
+        assert!(e.contains("an older pilot wrote it"), "{e}");
         assert!(every(&dir).is_empty());
+    }
+
+    /// The braked stops the runway predicts by are over three times shorter
+    /// than a coast from the same speed: sized by them, a rung brakes where
+    /// it must, not a coast early.
+    #[test]
+    fn a_runway_brakes_by_the_braked_stops() {
+        let mut rw = runway::Runway::new((532, 3526));
+        rw.size_by(mg90().runway(), Some(runway::Supply::TwoS), (232, 3849))
+            .unwrap();
+        let stop = rw.stop(10.58).unwrap();
+        assert!((160.0..180.0).contains(&stop), "{stop}");
+        let c = mg90().coast.ladder[2].fwd;
+        let stop = rw.stop(c.entry).unwrap();
+        assert!(c.coast as f64 > 3.0 * stop, "{} against {stop}", c.coast);
+    }
+
+    /// An envelope with no rule was measured before the servo limited
+    /// open-loop current: nothing sizes a runway by it, and the front
+    /// refuses it. A file with no grid ladder does not parse at all: it
+    /// is sent back to the pilot.
+    #[test]
+    fn an_envelope_from_before_the_limiter_is_refused() {
+        let dir = std::env::temp_dir().join(format!("osc-envelope-free-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let free = Envelope {
+            rule: Rule::Free,
+            current_limit_counts: None,
+            rail_mv: None,
+            ..mg90()
+        };
+        free.save(&dir).unwrap();
+        let text = std::fs::read_to_string(dir.join(FILE)).unwrap();
+        // one that names no rule reads as free
+        std::fs::write(dir.join(FILE), text.replace("rule = \"free\"\n", "")).unwrap();
+        let back = Envelope::load(&dir).unwrap();
+        assert_eq!(back.rule, Rule::Free);
+        let mut rw = runway::Runway::new((532, 3526));
+        let (left, sized) = size_by(
+            &mut rw,
+            Some(runway::Supply::TwoS),
+            (232, 3849),
+            vec![(dir.join(FILE), Ok(back))],
+        );
+        assert_eq!(sized, None);
+        assert_eq!(
+            left[0].1,
+            "it was measured before the servo limited open-loop current (run osc capture pilot \
+             again)"
+        );
+        assert!(rw.envelope().is_none());
+
+        let (_, sized) = size_by(
+            &mut rw,
+            Some(runway::Supply::TwoS),
+            (232, 3849),
+            vec![(dir.join(FILE), Ok(mg90()))],
+        );
+        assert_eq!(sized, Some(dir.join(FILE)));
+
+        let head = text.split("[grid]").next().unwrap();
+        std::fs::write(
+            dir.join(FILE),
+            format!("{head}[[verified]]\nstep = \"60@219\"\n"),
+        )
+        .unwrap();
+        let e = format!("{:#}", Envelope::load(&dir).unwrap_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(
+            e.contains("an older pilot wrote it, run osc capture pilot again"),
+            "{e}"
+        );
     }
 
     #[test]

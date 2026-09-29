@@ -65,23 +65,20 @@ blocks = ["grid"]
 [block.grid]
 duties = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100]
 
-# Spin-down: each duty runs d@drive_ms,coast:coast_ms,d@drive_ms,brake:coast_ms.
-# osc capture pilot climbs these duties, each d@drive_ms,coast:coast_ms both
-# ways, while the travel it predicts from the rungs below fits the room to the
-# soft limit; duties above the envelope's top_pct are dropped. Change a duty,
-# drive_ms or coast_ms and rerun the pilot: a plan refuses a coast the pilot
-# never ran. A 100% entry does not fit the runway: on mg90-a 2S the 80% coast
-# already peaked 690 counts inside the soft limit.
+# Spin-down: each duty runs d@D,coast:coast_ms,d@D,brake:coast_ms, where D
+# drives to the duty's goal, as the pilot's grid rung reached it, and 20 ms
+# on. osc capture pilot climbs these duties, each d@D,coast:coast_ms both ways,
+# while the travel it predicts from the rungs below fits the room to the soft
+# limit; duties above the envelope's top_pct are dropped. Change a duty or
+# coast_ms and rerun the pilot: a plan refuses a coast the pilot never ran.
 [block.coast]
 duties = [20, 30, 40, 60, 80]
-drive_ms = 80
 coast_ms = 400
 
 # Step response: 30% for each drive length, then a coast. session.py's step:W
-# view needs 30@W followed by a coast exactly once in the recording; the coast
-# block's 30@80,coast:400 is the 80 ms step, so it is not repeated here.
+# view needs 30@W followed by a coast exactly once in the recording.
 [block.step]
-steps = ["30@20", "coast:400", "30@40", "coast:400", "30@60", "coast:400", "30@120", "coast:400"]
+steps = ["30@20", "coast:400", "30@40", "coast:400", "30@60", "coast:400", "30@80", "coast:400", "30@120", "coast:400"]
 
 # Gear play: drive, reverse, re-reverse with no reposition between, then brake.
 # A 60 ms leg at 40% crosses ~500 counts on mg90-a 2S, so the chain nets one
@@ -95,3 +92,9 @@ steps = ["20@60", "then:-20@60", "then:20@60", "brake:200", "40@60", "then:-40@6
 [block.breakaway]
 duties = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
 window_ms = 200
+
+# End to end: one drive from the start band into the far soft limit, where the
+# firmware brakes it. The pilot runs each only when its braked stop from the
+# duty's speed fits between the soft limit and the stop beyond it.
+[block.ends]
+steps = ["15@1277", "20@897"]

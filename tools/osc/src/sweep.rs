@@ -39,13 +39,11 @@
 
 use std::io::Write;
 use std::path::PathBuf;
-use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use clap::ValueEnum;
 use osc_client::Id;
 use osc_client::blocking::Client;
-use osc_client::nusb::NusbPipe;
 use osc_client::pipe::Pipe;
 use osc_ident::exp::seek::{self, SEEK_STEP_Q15, SEEK_TRAVEL_MIN, STALL_EPS, STALL_POLLS, Watch};
 use osc_ident::frame::TelFrame;
@@ -57,9 +55,8 @@ use crate::descriptor;
 use crate::rig::limits::Stall;
 use crate::rig::park::park;
 use crate::rig::plant::Snapshot;
-use crate::rig::pump::{
-    self, BurstStats, Lease, STOP, exchange_tel_burst, read_snapshot, with_guard, write_reg,
-};
+use crate::rig::pump::{self, BurstStats, Lease, STOP, read_snapshot};
+use crate::rig::servo::{Servo, Wire, guard};
 use crate::rig::snapshot::read_u16;
 use crate::rig::{Aborted, blocked};
 
@@ -393,33 +390,32 @@ fn check_stop() -> Result<()> {
     Ok(())
 }
 
-fn check_fault<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<u16> {
-    let s = read_snapshot(c, id)?;
-    if s.fault_flags != 0 {
+fn check_fault<S: Servo>(s: &mut S) -> Result<u16> {
+    let o = s.snapshot()?;
+    if o.fault_flags != 0 {
         bail!(
             "servo faulted: flags {:#04x} code {}",
-            s.fault_flags,
-            s.fault_code
+            o.fault_flags,
+            o.fault_code
         );
     }
-    Ok(s.pos)
+    Ok(o.pos)
 }
 
 /// Open-loop bang-bang seek into [lo, hi], 20 ms cadence, ctrl-c aware.
 /// Bails on a fault or on the band distance growing (reversed polarity);
 /// aborts on a shaft that comes to rest short of the band; leaves duty 0
 /// and torque ON (the rung drives next).
-fn seek_band<P: Pipe>(
-    c: &mut Client<P>,
-    id: Id,
+fn seek_band<S: Servo>(
+    s: &mut S,
     lease: &mut Lease,
     (lo, hi): (u16, u16),
     duty_q15: i16,
     cap: i32,
     stops: Option<(u16, u16)>,
 ) -> Result<()> {
-    write_reg(c, id, control::MODE, 0)?;
-    lease.torque_on(c, id)?;
+    s.write(control::MODE, 0)?;
+    lease.torque_on(s)?;
     // Distance to the band, not envelope membership: a seek may legally
     // START at a rail (that is what it is for); reversed polarity shows as
     // the distance GROWING while driving.
@@ -433,16 +429,16 @@ fn seek_band<P: Pipe>(
     let mut watch: Option<Watch> = None;
     for _ in 0..500 {
         check_stop()?;
-        lease.keep(c, id)?;
-        let pos = check_fault(c, id)?;
+        lease.keep(s)?;
+        let pos = check_fault(s)?;
         if (lo..=hi).contains(&pos) {
-            write_reg(c, id, control::GOAL_DUTY, 0)?;
+            s.write(control::GOAL_DUTY, 0)?;
             return Ok(());
         }
         let d = dist(pos);
         best = best.min(d);
         if d > best + 200 {
-            write_reg(c, id, control::GOAL_DUTY, 0)?;
+            s.write(control::GOAL_DUTY, 0)?;
             bail!("seek moving away from {lo}..{hi} at pos {pos} (reversed polarity?)");
         }
         let dir: i8 = if pos < lo { 1 } else { -1 };
@@ -454,7 +450,7 @@ fn seek_band<P: Pipe>(
                 || !seek::leaves_stop(start, dir, stops)
                 || next > cap
             {
-                write_reg(c, id, control::GOAL_DUTY, 0)?;
+                s.write(control::GOAL_DUTY, 0)?;
                 return Err(Aborted {
                     what: "the seek",
                     reason: seek::blocked(start, pos),
@@ -463,10 +459,10 @@ fn seek_band<P: Pipe>(
             }
             mag = next;
         }
-        write_reg(c, id, control::GOAL_DUTY, dir as i32 * mag)?;
-        std::thread::sleep(Duration::from_millis(20));
+        s.write(control::GOAL_DUTY, dir as i32 * mag)?;
+        s.sleep(20);
     }
-    write_reg(c, id, control::GOAL_DUTY, 0)?;
+    s.write(control::GOAL_DUTY, 0)?;
     bail!("seek did not reach {lo}..{hi} in 10 s (gear slipping?)")
 }
 
@@ -485,26 +481,25 @@ fn seek_band<P: Pipe>(
 /// standing still is what "arrived", "stuck against the far stop" and
 /// "jammed mid travel" all look like, and reading either of the last two
 /// as the first runs the whole ladder against the wrong thing.
-fn seek_stop<P: Pipe>(
-    c: &mut Client<P>,
-    id: Id,
+fn seek_stop<S: Servo>(
+    s: &mut S,
     lease: &mut Lease,
     dir: i8,
     duty_q15: i16,
     cap: i32,
     stops: Option<(u16, u16)>,
 ) -> Result<()> {
-    write_reg(c, id, control::MODE, 0)?;
-    lease.torque_on(c, id)?;
+    s.write(control::MODE, 0)?;
+    lease.torque_on(s)?;
     let mut duty = duty_q15 as i32;
-    let start = check_fault(c, id)?;
+    let start = check_fault(s)?;
     let mut watch = Watch::new(start, STALL_EPS, STALL_POLLS);
     for _ in 0..500 {
         check_stop()?;
-        lease.keep(c, id)?;
-        write_reg(c, id, control::GOAL_DUTY, dir as i32 * duty)?;
-        std::thread::sleep(Duration::from_millis(20));
-        let pos = check_fault(c, id)?;
+        lease.keep(s)?;
+        s.write(control::GOAL_DUTY, dir as i32 * duty)?;
+        s.sleep(20);
+        let pos = check_fault(s)?;
         if !watch.still(pos) {
             continue;
         }
@@ -521,7 +516,7 @@ fn seek_stop<P: Pipe>(
             || !seek::leaves_stop(start, dir, stops)
             || next > cap
         {
-            write_reg(c, id, control::GOAL_DUTY, 0)?;
+            s.write(control::GOAL_DUTY, 0)?;
             return Err(Aborted {
                 what: "the stop seek",
                 reason: seek::blocked(start, pos),
@@ -530,7 +525,7 @@ fn seek_stop<P: Pipe>(
         }
         duty = next;
     }
-    write_reg(c, id, control::GOAL_DUTY, 0)?;
+    s.write(control::GOAL_DUTY, 0)?;
     bail!("no end stop in 10 s driving {dir:+} at {duty} q15")
 }
 
@@ -542,34 +537,29 @@ fn seek_stop<P: Pipe>(
 /// runway and slams the physical stop. Retreat sign so the firmware
 /// soft-limit clamp can never zero the brake near a wall. Leaves duty 0,
 /// torque ON (the caller torques off).
-fn brake_to_rest<P: Pipe>(c: &mut Client<P>, id: Id, lease: &mut Lease, dir: i8) -> Result<()> {
-    write_reg(
-        c,
-        id,
-        control::GOAL_DUTY,
-        -(dir as i32) * BRAKE_DUTY_Q15 as i32,
-    )?;
-    let mut last = check_fault(c, id)?;
+fn brake_to_rest<S: Servo>(s: &mut S, lease: &mut Lease, dir: i8) -> Result<()> {
+    s.write(control::GOAL_DUTY, -(dir as i32) * BRAKE_DUTY_Q15 as i32)?;
+    let mut last = check_fault(s)?;
     for _ in 0..BRAKE_POLLS {
         check_stop()?;
-        lease.keep(c, id)?;
-        std::thread::sleep(Duration::from_millis(BRAKE_POLL_MS as u64));
-        let pos = check_fault(c, id)?;
+        lease.keep(s)?;
+        s.sleep(BRAKE_POLL_MS);
+        let pos = check_fault(s)?;
         if pos.abs_diff(last) < BRAKE_REST_EPS {
             break;
         }
         last = pos;
     }
-    write_reg(c, id, control::GOAL_DUTY, 0)?;
+    s.write(control::GOAL_DUTY, 0)?;
     Ok(())
 }
 
-fn rest(ms: u32) -> Result<()> {
+fn rest<S: Servo>(s: &mut S, ms: u32) -> Result<()> {
     let mut left = ms;
     while left > 0 {
         check_stop()?;
         let slice = left.min(20);
-        std::thread::sleep(Duration::from_millis(slice as u64));
+        s.sleep(slice);
         left -= slice;
     }
     Ok(())
@@ -629,8 +619,8 @@ pub(crate) fn git_toplevel() -> Result<PathBuf> {
 /// `plant` block names the table the servo streamed `pos_lin` through,
 /// its stamp verdict and its data state at that moment; `drive` is the
 /// rule the drive ran under and the servo settings that held it.
-pub(crate) fn meta(
-    c: &mut Client<NusbPipe>,
+pub(crate) fn meta<P: Pipe>(
+    c: &mut Client<P>,
     id: Id,
     cfg: &Cfg,
     drive: serde_json::Value,
@@ -726,26 +716,25 @@ fn resolve_regs<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<Regs> {
 /// Baseline, then every chain of every direction. Each committed segment
 /// reaches `on_seg` as it lands, so a caller keeps what was captured before
 /// a later chain gives up. Leaves the servo guarded and torqued off.
-pub(crate) fn record<P: Pipe>(
-    c: &mut Client<P>,
-    id: Id,
+pub(crate) fn record<S: Servo>(
+    s: &mut S,
     cfg: &Cfg,
     mut on_seg: impl FnMut(&Segment) -> Result<()>,
 ) -> Result<Recording> {
-    let regs = resolve_regs(c, id)?;
-    let r = with_guard(c, id, |c| chains(c, id, cfg, &regs, &mut on_seg));
+    let id = s.id();
+    let regs = resolve_regs(s.client(), id)?;
+    let r = guard(s, |s| chains(s, cfg, &regs, &mut on_seg));
     // Belt for a run cut mid-burst: brake flag clear, decay back to slow,
     // guards back on. The permit is RAM-only so a power cycle clears it
     // anyway, but a servo left unguarded until someone reboots it is a trap.
-    let _ = write_reg(c, id, regs.zero_brake, 0);
-    let _ = write_reg(c, id, regs.decay, Decay::Slow as i32);
-    let _ = write_reg(c, id, control::STALL_PERMIT, 0);
+    let _ = s.write(regs.zero_brake, 0);
+    let _ = s.write(regs.decay, Decay::Slow as i32);
+    let _ = s.write(control::STALL_PERMIT, 0);
     r
 }
 
-fn chains<P: Pipe>(
-    c: &mut Client<P>,
-    id: Id,
+fn chains<S: Servo>(
+    s: &mut S,
     cfg: &Cfg,
     regs: &Regs,
     on_seg: &mut impl FnMut(&Segment) -> Result<()>,
@@ -754,33 +743,25 @@ fn chains<P: Pipe>(
     let seek_duty = pct_q15(cfg.seek_duty_pct);
     let seek_cap = pct_q15(cfg.seek_cap_pct) as i32;
     let mut segments = Vec::new();
-    let mut commit = |s: Segment| -> Result<()> {
-        on_seg(&s)?;
-        segments.push(s);
+    let mut commit = |g: Segment| -> Result<()> {
+        on_seg(&g)?;
+        segments.push(g);
         Ok(())
     };
 
-    write_reg(c, id, regs.decay, Decay::Slow as i32)?;
-    write_reg(c, id, regs.zero_brake, 0)?;
-    write_reg(c, id, control::TEL_MASK, mask as i32)?;
+    s.write(regs.decay, Decay::Slow as i32)?;
+    s.write(regs.zero_brake, 0)?;
+    s.write(control::TEL_MASK, mask as i32)?;
     let mut lease = Lease::new(cfg.stall || cfg.static_load);
 
     // baseline: mid-travel, torque off, noise floor at full tick rate
     if cfg.baseline_ms > 0 {
         println!("[baseline] {} ms torque-off", cfg.baseline_ms);
         if !cfg.static_load {
-            seek_band(
-                c,
-                id,
-                &mut lease,
-                (1750, 2350),
-                seek_duty,
-                seek_cap,
-                cfg.stops,
-            )?;
+            seek_band(s, &mut lease, (1750, 2350), seek_duty, seek_cap, cfg.stops)?;
         }
-        lease.write(c, id, control::TORQUE_ENABLE, 0)?;
-        let (frames, st) = exchange_tel_burst(c, id, samples_of_ms(cfg.baseline_ms), None, mask)?;
+        lease.write(s, control::TORQUE_ENABLE, 0)?;
+        let (frames, st) = s.stream(samples_of_ms(cfg.baseline_ms), None, mask)?;
         println!(
             "  seg 0: {} frames, {} samples, {} seq holes, {} garble bytes",
             st.frames, st.samples, st.holes, st.garble
@@ -823,17 +804,16 @@ fn chains<P: Pipe>(
                     // Drive is never chained, so it always arrives with live
                     // false: the seek is the only difference in its prep.
                     if let Step::Drive(..) = step {
-                        check_fault(c, id)?;
+                        check_fault(s)?;
                         if cfg.static_load {
                             // nothing to seek
                         } else if cfg.stall {
                             // Already stopped, and still pressed into the stop:
                             // nothing to brake and nothing to let settle.
-                            seek_stop(c, id, &mut lease, dir, seek_duty, seek_cap, cfg.stops)?;
+                            seek_stop(s, &mut lease, dir, seek_duty, seek_cap, cfg.stops)?;
                         } else {
                             seek_band(
-                                c,
-                                id,
+                                s,
                                 &mut lease,
                                 start_band(dir, cfg.guard.0, cfg.guard.1),
                                 seek_duty,
@@ -845,15 +825,15 @@ fn chains<P: Pipe>(
                             // call: the seek parks NEAR its start-band wall, so
                             // the token brake duty has to point away from that
                             // one instead.
-                            brake_to_rest(c, id, &mut lease, -dir)?;
-                            rest(cfg.settle_ms)?;
+                            brake_to_rest(s, &mut lease, -dir)?;
+                            rest(s, cfg.settle_ms)?;
                         }
                     } else if !live {
-                        check_fault(c, id)?;
+                        check_fault(s)?;
                     }
                     if !live {
-                        write_reg(c, id, control::MODE, 0)?;
-                        lease.torque_on(c, id)?;
+                        s.write(control::MODE, 0)?;
+                        lease.torque_on(s)?;
                     }
                     let (ms, duty) = match step {
                         Step::Drive(pct, ms) => (
@@ -867,23 +847,22 @@ fn chains<P: Pipe>(
                         Step::Coast(ms) | Step::Brake(ms) => (ms, 0),
                     };
                     if matches!(step, Step::Brake(_)) {
-                        write_reg(c, id, regs.zero_brake, 1)?;
+                        s.write(regs.zero_brake, 1)?;
                     }
                     // Fast decay only inside the burst: the seek and the post-step
                     // brake need slow decay to move and to stop.
                     if cfg.decay == Decay::Fast {
-                        write_reg(c, id, regs.decay, Decay::Fast as i32)?;
+                        s.write(regs.decay, Decay::Fast as i32)?;
                     }
                     let samples = samples_of_ms(ms);
-                    lease.keep(c, id)?;
+                    lease.keep(s)?;
                     lease.check_stream(samples)?;
-                    let (frames, st) =
-                        exchange_tel_burst(c, id, samples, Some((control::GOAL_DUTY, duty)), mask)?;
+                    let (frames, st) = s.stream(samples, Some((control::GOAL_DUTY, duty)), mask)?;
                     if cfg.decay == Decay::Fast {
-                        write_reg(c, id, regs.decay, Decay::Slow as i32)?;
+                        s.write(regs.decay, Decay::Slow as i32)?;
                     }
                     if matches!(step, Step::Brake(_)) {
-                        write_reg(c, id, regs.zero_brake, 0)?;
+                        s.write(regs.zero_brake, 0)?;
                     }
                     let what = match step {
                         Step::Drive(pct, _) => format!("duty {:+}%", dir as i32 * pct as i32),
@@ -894,20 +873,20 @@ fn chains<P: Pipe>(
                     if st.holes > 0 || st.garble > 0 {
                         dirty = Some(retry_note(seg, &what, st.holes, st.garble));
                     }
-                    let s = Segment {
+                    let g = Segment {
                         seg,
                         dir,
                         cmd_duty_q15: duty as i16,
                         frames,
                         stats: st,
                     };
-                    pending.push((s, what));
+                    pending.push((g, what));
                     if feeds(steps, k) {
                         live = true;
                     } else {
-                        brake_to_rest(c, id, &mut lease, dir)?;
-                        lease.write(c, id, control::TORQUE_ENABLE, 0)?;
-                        rest(cfg.rest_ms)?;
+                        brake_to_rest(s, &mut lease, dir)?;
+                        lease.write(s, control::TORQUE_ENABLE, 0)?;
+                        rest(s, cfg.rest_ms)?;
                         live = false;
                     }
                     seg += 1;
@@ -924,13 +903,13 @@ fn chains<P: Pipe>(
                     ),
                 }
             }
-            for (s, what) in pending.drain(..) {
-                let st = &s.stats;
+            for (g, what) in pending.drain(..) {
+                let st = &g.stats;
                 println!(
                     "  seg {} ({what}): {} frames, {} samples, {} seq holes, {} garble bytes",
-                    s.seg, st.frames, st.samples, st.holes, st.garble
+                    g.seg, st.frames, st.samples, st.holes, st.garble
                 );
-                commit(s)?;
+                commit(g)?;
             }
         }
     }
@@ -971,12 +950,13 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
         Some(((lo + hi) / 2).clamp(0, u16::MAX as i32) as u16)
     };
 
-    let r = record(&mut c, id, &cfg, |s| write_rows(&mut w, s));
+    let mut s = Wire::new(c, id);
+    let r = record(&mut s, &cfg, |g| write_rows(&mut w, g));
     let flushed = w.flush();
     // a blocked shaft is left where it stopped
     let parked = match (&r, center) {
         (Err(e), _) if blocked(e) => Ok(()),
-        (_, Some(at)) => park(&mut c, id, at, pct_q15(cfg.seek_duty_pct)),
+        (_, Some(at)) => park(&mut s, at, pct_q15(cfg.seek_duty_pct)),
         (_, None) => Ok(()),
     };
     flushed?;

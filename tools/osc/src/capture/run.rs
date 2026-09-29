@@ -30,7 +30,8 @@ use super::verdict::verdict;
 use super::{RULE, RUNG_TRIES, SETTLE_MS, Supply, WINDOW_MS};
 use crate::rig::battery::{self, read_pack_mv};
 use crate::rig::plant::{self, Snapshot};
-use crate::rig::pump::{self, STOP, read_snapshot, with_guard};
+use crate::rig::pump::{self, STOP, read_snapshot};
+use crate::rig::servo::{Wire, guard};
 use crate::rig::{blocked, centre, park};
 use crate::sweep::{self, Cfg, Dirs};
 
@@ -651,7 +652,7 @@ impl Session<'_> {
         };
         let mut t = cap.begin(&plan.recording, &meta).map_err(Stop::Error)?;
         let judged = (|| -> Result<Result<usize, String>> {
-            let rec = sweep::record(c, id, cfg, |s| t.on_seg(s))?;
+            let rec = sweep::record(&mut Wire::new(&mut *c, id), cfg, |g| t.on_seg(g))?;
             if let Err(why) = verdict(&rec, cfg) {
                 return Ok(Err(why));
             }
@@ -785,7 +786,7 @@ impl Session<'_> {
             return Ok(());
         };
         let (center, duty) = (self.env.limits.center, p.seek_q15());
-        self.on_servo(|c, id| with_guard(c, id, |c| park::park(c, id, center, duty)))
+        self.on_servo(|c, id| guard(&mut Wire::new(c, id), |s| park::park(s, center, duty)))
     }
 
     fn proved(&self) -> Result<Proved, Stop> {
@@ -894,8 +895,8 @@ impl Session<'_> {
                 .line("no adapter: the servo was left where it stopped");
             return;
         };
-        let r = with_guard(c, id, |c| match duty {
-            Some(duty) => park::park(c, id, center, duty),
+        let r = guard(&mut Wire::new(c, id), |s| match duty {
+            Some(duty) => park::park(s, center, duty),
             None => Ok(()),
         });
         if let Err(e) = r {
@@ -927,7 +928,7 @@ fn prove(
 ) -> Result<(Front, Proved)> {
     let front = front::read(c, id, supply)?;
     front.check_envelope(env, env_path)?;
-    let proved = front.jam_check(|exp| centre::drive(c, id, exp))?;
+    let proved = front.jam_check(|exp| centre::drive(&mut Wire::new(c, id), exp))?;
     Ok((front, proved))
 }
 
@@ -1153,8 +1154,7 @@ mod tests {
     #[test]
     fn cfg_runs_the_plan_both_ways_between_the_envelope_guards() {
         let p = Procedure::parse(include_str!("session.toml")).unwrap();
-        let mut env = envelope::mg90();
-        env.windows_ms = crate::capture::pilot::windows(env.v_ss.used(), env.limits.runway);
+        let env = envelope::mg90_every_window();
         let plans = plan::expand(&p, &env, 2).unwrap();
         let c = cfg(&p, &env, &plans[1], &proved(0.13));
         assert_eq!(c.steps, plans[1].schedule);
@@ -1217,8 +1217,7 @@ mod tests {
         assert_eq!((p.seek_pct(), p.cap_pct()), (15, 15));
 
         let session = Procedure::parse(include_str!("session.toml")).unwrap();
-        let mut env = envelope::mg90();
-        env.windows_ms = crate::capture::pilot::windows(env.v_ss.used(), env.limits.runway);
+        let env = envelope::mg90_every_window();
         for plan in plan::expand(&session, &env, 1).unwrap() {
             let c = cfg(&session, &env, &plan, &p);
             assert_eq!((c.seek_duty_pct, c.seek_cap_pct), (15, 15));

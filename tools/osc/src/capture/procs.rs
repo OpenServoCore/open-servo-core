@@ -48,6 +48,7 @@ pub(crate) struct Blocks {
     pub(crate) step: Steps,
     pub(crate) reversal: Steps,
     pub(crate) breakaway: Ladder,
+    pub(crate) ends: Steps,
 }
 
 impl Blocks {
@@ -65,7 +66,6 @@ pub(crate) struct Grid {
 #[serde(deny_unknown_fields)]
 pub(crate) struct CoastBlock {
     pub(crate) duties: Vec<u8>,
-    pub(crate) drive_ms: u32,
     pub(crate) coast_ms: u32,
 }
 

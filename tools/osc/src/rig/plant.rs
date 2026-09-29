@@ -9,7 +9,7 @@ use anyhow::Result;
 use osc_client::blocking::Client;
 use osc_client::data_state::DataState;
 use osc_client::descriptor::Descriptor;
-use osc_client::nusb::NusbPipe;
+use osc_client::pipe::Pipe;
 use osc_client::pos_lut::{INTERVALS, state};
 use osc_client::stamp::{UNSTAMPED, Verdict};
 use osc_client::{Error, Id};
@@ -27,7 +27,7 @@ pub(crate) struct Lut {
 }
 
 impl Lut {
-    pub(crate) fn read(c: &mut Client<NusbPipe>, id: Id, d: &Descriptor) -> Result<Self> {
+    pub(crate) fn read<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor) -> Result<Self> {
         let s = c.pos_lut_state(id, d)?;
         let points = if s == state::LIVE {
             c.pos_lut(id, d)?.points
@@ -120,7 +120,7 @@ impl Lut {
 }
 
 /// The pot stops the table is validated against.
-pub(crate) fn stops(c: &mut Client<NusbPipe>, id: Id, d: &Descriptor) -> Result<(u16, u16)> {
+pub(crate) fn stops<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor) -> Result<(u16, u16)> {
     let mut read = |name: &str| -> Result<u16> {
         let f = descriptor::field(d, name)?;
         let b = c.read(id, f.addr, f.width)?;
@@ -138,7 +138,7 @@ pub(crate) struct Snapshot {
 }
 
 impl Snapshot {
-    pub(crate) fn read(c: &mut Client<NusbPipe>, id: Id, d: &Descriptor) -> Result<Self> {
+    pub(crate) fn read<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor) -> Result<Self> {
         let lut = Lut::read(c, id, d)?;
         let stamp = match c.stamp_verdict(id, d) {
             Ok(v) => Some(v),

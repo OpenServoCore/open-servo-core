@@ -10,11 +10,12 @@ use osc_ident::exp::centre::{Centre, CentreCfg};
 use osc_ident::exp::{Experiment, Guarded, RigParams};
 
 use super::check_abort;
-use super::pump::{Pump, with_guard};
+use super::pump::Pump;
+use super::servo::{Servo, Wire, guard};
 
 /// Pump `exp` to its end on the servo, parked safe however it ends.
-pub(crate) fn drive(c: &mut Client<NusbPipe>, id: Id, exp: &mut dyn Experiment) -> Result<()> {
-    with_guard(c, id, |c| Pump::new(c, id, None).run(exp))
+pub(crate) fn drive<S: Servo>(s: &mut S, exp: &mut dyn Experiment) -> Result<()> {
+    guard(s, |s| Pump::on(s, None).run(exp))
 }
 
 /// [`centre_on`] on the servo.
@@ -25,7 +26,8 @@ pub(crate) fn centre(
     params: RigParams,
     what: &'static str,
 ) -> Result<Option<f64>> {
-    centre_on(|exp| drive(c, id, exp), cfg, params, what)
+    let mut s = Wire::new(c, id);
+    centre_on(|exp| drive(&mut s, exp), cfg, params, what)
 }
 
 /// The centring pumped by `pump`: the duty the shaft first travelled at,

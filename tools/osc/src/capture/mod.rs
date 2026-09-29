@@ -34,9 +34,10 @@ pub struct Args {
 
 #[derive(Subcommand, Debug)]
 enum CaptureCmd {
-    /// Measure steady-state speed per duty on this servo and write the
-    /// dataset's envelope.toml: guard limits, v_ss fits, per-duty windows,
-    /// and the coast block's top duty, each run on the servo.
+    /// Measure the servo under its current limit and write the dataset's
+    /// envelope.toml: per grid duty its climb, speed, braked stop and window,
+    /// the coast ladder and every chain the session drives, each run on the
+    /// servo only while it fits the runway.
     Pilot(pilot::Args),
     /// Print the session procedure and, per capture, the block order, block
     /// map and each recording's schedule, expanded against the dataset's

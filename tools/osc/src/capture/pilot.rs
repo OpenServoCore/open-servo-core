@@ -1,10 +1,17 @@
-//! `osc capture pilot`: measure the servo's steady-state speed per duty and
-//! write the envelope the campaign sizes its windows by. A sweep rung is one
-//! unpolled TEL burst, so its window is the only bound on how far the shaft
-//! travels. Every bound here comes from the servo's own soft/phys limits
-//! (written by `osc cal`); the derived windows and coast duty are run on the
-//! servo before the envelope is saved. The capture front runs first, and
-//! the pack is read at rest again before every recording.
+//! `osc capture pilot`: measure the servo under its current limit and write
+//! the envelope the campaign sizes its windows by. A rung is one unpolled
+//! TEL burst, so its window is the only bound on how far the shaft travels.
+//! The pilot climbs the grid block's duties from the bottom, both ways, one
+//! runway (osc-ident `runway`) per direction, and runs a rung only while its
+//! predicted climb, tail and braked stop fit the runway and that stop fits
+//! between the soft limit and the stop beyond it: a rung its host abandons
+//! is braked at the soft limit by the firmware and must stop short of the
+//! stop. Each rung's climb is read off the applied duty, its speed off the
+//! samples at the goal past the settle, its stop off where the brake left
+//! it, and the next rung is sized by them. The coast ladder and every other
+//! chain the session drives then run the same way, each excursion recorded
+//! so a plan refuses a chain the pilot never ran. The capture front runs
+//! first, and the pack is read at rest before every recording.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -13,28 +20,30 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, anyhow, bail};
 use osc_client::Id;
 use osc_client::blocking::Client;
-use osc_client::nusb::NusbPipe;
 use osc_client::pipe::Pipe;
 use osc_ident::frame::TelFrame;
 use osc_ident::limits::{POT_MAX, guards, is_board_default};
-use osc_ident::runway::coast_fit;
+use osc_ident::runway::{
+    self, Climb, Runway, SETTLE_MS, STEADY_MIN_MS, WINDOW_MAX_MS, coast_fit, dead_host_fits, fits,
+};
 
 use super::envelope::{
-    Coast, CoastRun, CoastRung, Dir, Envelope, Fit, Limits, PerDir, Refused, Speed, Verified,
-    civil_date, round_to,
+    ChainRefused, ChainRun, Coast, CoastRun, CoastRung, Dir, Envelope, Excursion, Fit, Grid,
+    GridRung, LadderRefused, Limits, PerDir, Refused, RungRun, Speed, civil_date, round_to,
 };
-use super::front::{self, Proved};
+use super::front::{self, Front, Proved};
 use super::procs::{CoastBlock, Procedure};
-use super::{REST_MS, RULE, RUNG_TRIES, SETTLE_MS, Supply, TEL_MASK};
+use super::{REST_MS, RULE, RUNG_TRIES, SETTLE_MS as SEEK_SETTLE_MS, Supply, TEL_MASK, WINDOW_MS};
 use crate::rig::park::park;
-use crate::rig::pump::{self, with_guard};
+use crate::rig::pump;
+use crate::rig::servo::{Servo, Wire, guard};
 use crate::rig::{battery, blocked, centre};
-use crate::sweep::{self, BAND_HALF, Cfg, Decay, Dirs, Recording, Segment, Step};
+use crate::sweep::{self, BAND_HALF, Cfg, Decay, Dirs, Recording, Segment, Step, feeds, pct_q15};
 
 /// `osc capture pilot` args.
 #[derive(clap::Args, Debug)]
 pub struct Args {
-    /// Servo key; the dataset dir is `<root>/<servo>__<supply>`.
+    /// Servo key; the dataset dir is `<root>/<servo>__<supply>__limit`.
     #[arg(long)]
     servo: String,
     /// Supply the servo runs on.
@@ -45,56 +54,41 @@ pub struct Args {
     root: Option<PathBuf>,
 }
 
-/// Shortest guard-to-guard runway worth sizing windows against: PILOT_W0 at
-/// the fastest 10% seen already crosses 255 counts of it.
+/// Shortest guard-to-guard runway worth sizing windows against.
 const PILOT_MIN_RUNWAY: u16 = 1500;
-/// Soft-to-phys distance below which a runaway can still reach the stop: the
-/// firmware brakes at the soft limit and stops a few hundred counts past it.
-const BRAKE_MARGIN_MIN: i32 = 300;
-/// Speed rungs, per direction.
-const PILOT_DUTIES: [u8; 5] = [10, 20, 30, 40, 50];
-/// First rung's window: 1.7 counts/ms, the fastest 10% seen (2S), crosses
-/// 255 counts of a ~3000 runway in it.
+/// The window of a rung nothing below it sizes: the shaft has not moved in
+/// any rung yet. At the most such a rung may run at, it crosses under a
+/// third of the bench runway.
 const PILOT_W0: u32 = 150;
-/// Share of the runway each later speed rung is sized to cross; half of
-/// PILOT_ABORT_FRAC, the headroom a one-point prediction runs into.
-const PILOT_TRAVEL_FRAC: f64 = 0.4;
-/// A speed rung crossing more of the runway than this means the prediction
-/// is badly off: stop before a faster rung gets a window that long.
-const PILOT_ABORT_FRAC: f64 = 0.8;
-/// v_ss is fit over the last 40% of a window, plant.py's settled tail.
+/// Highest duty a rung, or the coast ladder, may open on with nothing
+/// measured to size it by.
+const FIRST_MAX_PCT: u8 = 30;
+/// A rung's window runs its predicted climb this many times over, then its
+/// tail.
+const CLIMB_MARGIN: f64 = 1.25;
+/// Share added to a campaign rung's travel before it is held against the
+/// room.
+const WINDOW_MARGIN: f64 = 0.1;
+/// The brake write after a stream's last frame, ms: the shaft runs on at
+/// speed until it lands (a write takes 1.7 ms on the bench bus).
+const GAP_MS: f64 = 10.0;
+/// v_ss is fit over the last 40% of a coast, to judge whether it stopped.
 const SETTLED_FRAC: f64 = 0.4;
-/// Fewest settled pos samples (1 ms of ticks) a v_ss slope is fit from.
+/// Fewest pos samples (1 ms of ticks) a slope is fit from.
 const SETTLED_MIN_SAMPLES: usize = 20;
-/// Longest rung window; the bench hand table's cap.
-const WINDOW_MAX_MS: u32 = 1500;
 /// Share of the runway a campaign rung is sized to cross; the bench hand
 /// table's bar.
 const RUNWAY_FRAC: f64 = 0.8;
-/// Duty step to steady speed; the bench hand table's spin-up allowance.
-const SPINUP_MS: u32 = 30;
-/// Below this many counts/ms the shaft is breaking away, not cruising: the
-/// window caps, and a speed rung stays out of the fit.
+/// Below this many counts/ms the shaft is breaking away, not cruising: its
+/// rung sizes nothing, and stays out of the speed fit.
 const V_SS_MIN: f64 = 0.3;
-/// A verified rung must cross this share of the runway: the windows aim at
-/// RUNWAY_FRAC, so less means v_ss over-predicts and the rungs waste runway.
-const VERIFY_MIN_FRAC: f64 = 0.55;
-/// And at most this share, 10% of runway short of the guard.
-const VERIFY_MAX_FRAC: f64 = 0.9;
-/// The 60% rung's travel must land within 10% of the fit's prediction.
-const VERIFY_PRED_TOL: f64 = 0.1;
-/// Highest duty the coast ladder may open on: its first rung runs with no
-/// prediction to hold it back. 30% crosses a quarter of mg90-a's 2S runway.
-const COAST_FIRST_MAX_PCT: u8 = 30;
-/// A coast's entry speed is the pot slope over the drive's last 20 ms; over
-/// 5 ms it reads the pot track's local nonlinearity (9.6 counts/ms at 80% on
-/// mg90-a 2S where 20 ms reads 13.7).
+/// A coast's drive runs on this long past its goal: its entry speed is the
+/// pot slope over those samples.
 const ENTRY_MS: u32 = 20;
-/// Share added to a predicted coast travel before it is held against the
-/// room, and to a measured one before its duty can top the coast block. The
-/// worst under-prediction replaying mg90-a's five 2S spindown captures
-/// through the ladder was 2.8%; its 80% travel spread 6% across them, and
-/// the campaign repeats every coast duty.
+/// Share added to a predicted coast or chain excursion before it is held
+/// against the room, and to a measured one before its duty can top the
+/// coast block. The worst under-prediction replaying mg90-a's five 2S
+/// spindown captures through the coast ladder was 2.8%.
 const COAST_MARGIN: f64 = 0.1;
 const DIRS: [Dir; 2] = [Dir::Fwd, Dir::Rev];
 
@@ -106,18 +100,64 @@ pub(crate) fn run(a: &Args, baud: String, id: u8) -> Result<()> {
         None => super::default_root()?,
     };
     let dir = super::dataset_dir(&root, &a.servo, a.supply);
-    let (procedure, source) = Procedure::load()?;
-    let block = &procedure.block.coast;
-    let duties = ladder_duties(&block.duties).with_context(|| format!("procedure {source}"))?;
+    let (procedure, _) = Procedure::load()?;
     let mut c = crate::rig::connect(&baud)?;
     let id = Id::new(id);
     // Nothing has moved yet, so a refusal here leaves the horn where it is.
     let front = front::read(&mut c, id, a.supply)?;
     let fw = c.identity(id)?.fw;
-    let tick_hz = front.tick_hz;
-    if tick_hz == 0 {
+    let mut s = Wire::new(c, id);
+    let (env, parked) = pilot(&mut s, &front, a.supply, &procedure, fw);
+    let env = match env {
+        Err(e) if blocked(&e) => front::exit_blocked(&e),
+        r => r?,
+    };
+    std::fs::create_dir_all(&dir).with_context(|| format!("mkdir {}", dir.display()))?;
+    let path = env.save(&dir)?;
+    println!("envelope: {}", path.display());
+    parked
+}
+
+/// The jam check, every measurement and the park at mid travel: the
+/// envelope, and how the park went. A blocked shaft is left where it
+/// stopped.
+pub(super) fn pilot<S: Servo>(
+    s: &mut S,
+    front: &Front,
+    supply: Supply,
+    p: &Procedure,
+    fw: u16,
+) -> (Result<Envelope>, Result<()>) {
+    let mut proved = None;
+    let env = measure_all(s, front, supply, p, fw, &mut proved);
+    let parked = match (&env, proved) {
+        (Err(e), _) if blocked(e) => Ok(()),
+        (_, Some(p)) => {
+            let center = limits(front.lim.soft, front.lim.phys).map(|l| l.center);
+            match center {
+                Ok(center) => guard(s, |s| park(s, center, p.seek_q15())),
+                Err(e) => Err(e),
+            }
+        }
+        (_, None) => Ok(()),
+    };
+    (env, parked)
+}
+
+fn measure_all<S: Servo>(
+    s: &mut S,
+    front: &Front,
+    supply: Supply,
+    p: &Procedure,
+    fw: u16,
+    proved: &mut Option<Proved>,
+) -> Result<Envelope> {
+    if front.tick_hz == 0 {
         bail!("tick_hz reads 0: TEL sample rate unknown");
     }
+    let grid = ladder_duties(&p.block.grid.duties, None).context("the grid block")?;
+    let coast_duties =
+        ladder_duties(&p.block.coast.duties, Some(FIRST_MAX_PCT)).context("the coast block")?;
     let lim = limits(front.lim.soft, front.lim.phys)?;
     println!(
         "[limits] soft {}..{} phys {}..{} guard {}..{} runway {} centre {}",
@@ -130,240 +170,459 @@ pub(crate) fn run(a: &Args, baud: String, id: u8) -> Result<()> {
         lim.runway,
         lim.center
     );
-    for (end, m) in [
-        ("low", lim.soft[0] as i32 - lim.phys[0] as i32),
-        ("high", lim.phys[1] as i32 - lim.soft[1] as i32),
-    ] {
-        println!("  soft-to-phys margin {end}: {m} counts");
-        if m < BRAKE_MARGIN_MIN {
-            eprintln!(
-                "warning: {end} soft limit sits {m} counts from the stop, under \
-                 {BRAKE_MARGIN_MIN}: the firmware brake stops past soft, so a runaway can \
-                 still hit the stop"
-            );
-        }
+    for d in DIRS {
+        println!(
+            "  {d}: {:.0} counts from the soft limit to the stop beyond it, where a rung's braked \
+             stop must fit",
+            margin(&lim, d)
+        );
     }
+    let p_ok = front.jam_check(|exp| centre::drive(s, exp))?;
+    *proved = Some(p_ok);
+    let rig = Rig {
+        lim,
+        proved: p_ok,
+        hz: front.tick_hz as f64 / 1000.0,
+    };
 
-    let proved = front
-        .jam_check(|exp| centre::drive(&mut c, id, exp))
-        .inspect_err(|e| {
-            if blocked(e) {
-                front::exit_blocked(e)
-            }
-        })?;
-    let rig = Rig { lim, proved };
-    let r = measure(&mut c, id, &rig, tick_hz as f64 / 1000.0, block, &duties);
-    if let Err(e) = &r
-        && blocked(e)
-    {
-        front::exit_blocked(e)
+    let ladder = grid_ladder(s, &rig, &grid)?;
+    let v_ss = speed(&ladder.rungs)?;
+    for d in DIRS {
+        let f = v_ss.of(d);
+        println!(
+            "[fit] {d}: v_ss = {} x duty {:+} counts/ms, r2 {}",
+            f.slope, f.intercept, f.r2
+        );
     }
-    // Parks on failure too; a failed run reports its own error, not the park's.
-    let parked = with_guard(&mut c, id, |c| park(c, id, lim.center, proved.seek_q15()));
-    let (v_ss, windows_ms, coast, verified) = r?;
+    let windows_ms: BTreeMap<u8, u32> = ladder.rungs.iter().map(|r| (r.pct, r.window_ms)).collect();
+    let row: Vec<String> = windows_ms.iter().map(|(d, w)| format!("{d}:{w}")).collect();
+    println!("[windows] {}", row.join(" "));
+    let top_pct = ladder.rungs.last().map_or(0, |r| r.pct);
+    let grid = Grid {
+        top_pct,
+        rungs: ladder.rungs,
+        refused: ladder.refused,
+    };
+
+    let coast = coast_ladder(s, &rig, &p.block.coast, &coast_duties, &grid, &v_ss)?;
+    let (chains, refused_chains) = chains(s, &rig, p, &v_ss, &coast, &ladder.runways)?;
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
-    let env = Envelope {
-        supply: a.supply,
+    Ok(Envelope {
+        supply,
         fw,
         git_sha: sweep::git_sha(),
         measured: civil_date(secs),
-        seek_pct: proved.seek_pct(),
+        seek_pct: p_ok.seek_pct(),
         rule: RULE,
         current_limit_counts: Some(front.lim.i_lim),
         rail_mv: Some(front.rail_mv),
         limits: lim,
         v_ss,
         windows_ms,
+        grid,
         coast,
-        verified,
-    };
-    std::fs::create_dir_all(&dir).with_context(|| format!("mkdir {}", dir.display()))?;
-    let path = env.save(&dir)?;
-    println!("envelope: {}", path.display());
-    parked
+        chains,
+        refused_chains,
+    })
 }
 
-type Measured = (Speed, BTreeMap<u8, u32>, Coast, Vec<Verified>);
+/// The servo the pilot drives: its limits, the seek its jam check proved,
+/// and its fast ticks per ms.
+struct Rig {
+    lim: Limits,
+    proved: Proved,
+    hz: f64,
+}
 
-/// Every motion of the pilot; `run` parks after it whatever it returns.
-fn measure(
-    c: &mut Client<NusbPipe>,
-    id: Id,
-    rig: &Rig,
-    ticks_per_ms: f64,
-    block: &CoastBlock,
-    duties: &[u8],
-) -> Result<Measured> {
-    let lim = &rig.lim;
-    let fwd = speed_fit(c, id, rig, ticks_per_ms, Dir::Fwd)?;
-    let rev = speed_fit(c, id, rig, ticks_per_ms, Dir::Rev)?;
-    let used = if fwd.at(100) >= rev.at(100) {
-        Dir::Fwd
-    } else {
-        Dir::Rev
-    };
-    for (d, f) in [(Dir::Fwd, &fwd), (Dir::Rev, &rev)] {
-        let mark = if d == used {
-            "  <- sizes the windows"
-        } else {
-            ""
-        };
-        println!(
-            "[fit] {d}: v_ss = {} x duty {:+} counts/ms, r2 {}, v(100) {:.2}{mark}",
-            f.slope,
-            f.intercept,
-            f.r2,
-            f.at(100)
-        );
+/// Counts between the soft limit a drive of `dir` runs at and the stop
+/// beyond it.
+fn margin(lim: &Limits, dir: Dir) -> f64 {
+    match dir {
+        Dir::Fwd => lim.phys[1] as f64 - lim.soft[1] as f64,
+        Dir::Rev => lim.soft[0] as f64 - lim.phys[0] as f64,
     }
-    let v_ss = Speed {
-        duties: PILOT_DUTIES.to_vec(),
-        used,
+}
+
+/// What the grid ladder kept, the first duty it did not, and the runway
+/// each direction ended with.
+struct Ladder {
+    rungs: Vec<GridRung>,
+    refused: Option<LadderRefused>,
+    runways: [Runway; 2],
+}
+
+/// Climb `duties` from the bottom, each both ways; the first rung that does
+/// not fit, or does not keep a window, ends the ladder.
+fn grid_ladder<S: Servo>(s: &mut S, rig: &Rig, duties: &[u8]) -> Result<Ladder> {
+    let g = (rig.lim.guard[0], rig.lim.guard[1]);
+    let mut ladder = Ladder {
+        rungs: Vec::new(),
+        refused: None,
+        runways: [Runway::new(g), Runway::new(g)],
+    };
+    println!(
+        "[grid] {duties:?}% from the bottom, both ways, while each fits {:.0} counts of runway",
+        ladder.runways[0].room()
+    );
+    for &pct in duties {
+        let mut runs = Vec::new();
+        for (k, dir) in DIRS.into_iter().enumerate() {
+            match grid_rung(s, rig, &mut ladder.runways[k], dir, pct)? {
+                Ok(r) => runs.push(r),
+                Err(why) => {
+                    println!("  {why}: the ladder ends here");
+                    ladder.refused = Some(LadderRefused { pct, dir, why });
+                    return Ok(ladder);
+                }
+            }
+        }
+        let room = ladder.runways[0].room();
+        match keep(rig, pct, &runs, room) {
+            Ok(window_ms) => {
+                println!("  {pct}%: window {window_ms} ms");
+                ladder.rungs.push(GridRung {
+                    pct,
+                    window_ms,
+                    fwd: runs[0].record(),
+                    rev: runs[1].record(),
+                });
+            }
+            Err((dir, why)) => {
+                println!("  {why}: the ladder ends here");
+                ladder.refused = Some(LadderRefused { pct, dir, why });
+                return Ok(ladder);
+            }
+        }
+    }
+    Ok(ladder)
+}
+
+/// A rung that ran.
+struct Ran {
+    ms: u32,
+    climb: Climb,
+    v_ss: f64,
+    stop: f64,
+}
+
+impl Ran {
+    fn record(&self) -> RungRun {
+        RungRun {
+            ran_ms: self.ms,
+            t_goal_ms: round_to(self.climb.ms, 2),
+            travel: to_counts(self.climb.travel),
+            v_ss: round_to(self.v_ss, 3) + 0.0,
+            stop: to_counts(self.stop),
+        }
+    }
+}
+
+/// One grid rung of `dir`: sized, run, measured, and fed to the runway. A
+/// rung that did not reach its goal or hold it past the settle runs once
+/// more at a window that would, when that still fits. Err in the Ok is why
+/// the rung does not run.
+fn grid_rung<S: Servo>(
+    s: &mut S,
+    rig: &Rig,
+    rw: &mut Runway,
+    dir: Dir,
+    pct: u8,
+) -> Result<Result<Ran, String>> {
+    let tail = SETTLE_MS + STEADY_MIN_MS;
+    let mut window = match first_window(rw, rig, dir, pct, tail) {
+        Ok(w) => w,
+        Err(why) => return Ok(Err(why)),
+    };
+    let sign = sign(dir);
+    let goal = (sign as i32 * pct_q15(pct) as i32) as i16;
+    for retry in [false, true] {
+        let (frames, stop) = run_rung(s, rig, dir, pct, window)?;
+        let climb = runway::climb(&frames, goal, rig.hz * 1000.0);
+        let v = climb.and_then(|_| settled_v(&frames, goal, rig.hz));
+        match (climb, v) {
+            (Some(climb), Some(v_ss)) => {
+                println!(
+                    "[rung] {dir} {pct}@{window}: goal after {:.1} ms and {:.0} counts, v_ss \
+                     {v_ss:.2} counts/ms, braked in {stop:.0}",
+                    climb.ms,
+                    climb.travel + 0.0
+                );
+                if v_ss > V_SS_MIN {
+                    rw.climbed(climb.accel);
+                    rw.ran(pct as f64 / 100.0, v_ss);
+                    rw.stopped(v_ss, stop);
+                }
+                return Ok(Ok(Ran {
+                    ms: window,
+                    climb,
+                    v_ss,
+                    stop,
+                }));
+            }
+            _ if !retry => {
+                let longer = match climb {
+                    Some(c) => ((c.ms + tail).ceil() as u32 + 1).max(window + 1),
+                    None => 2 * window,
+                };
+                if let Err(why) = sized(rw, rig, dir, pct, longer) {
+                    return Ok(Err(why));
+                }
+                println!("  {dir} {pct}@{window} settled too late: once more at {longer} ms");
+                window = longer;
+            }
+            (None, _) => {
+                return Ok(Err(format!(
+                    "{dir} {pct}% never reached its goal duty in {window} ms"
+                )));
+            }
+            (Some(_), None) => {
+                return Ok(Err(format!(
+                    "{dir} {pct}% did not hold its goal duty for {STEADY_MIN_MS:.0} ms past the \
+                     settle in {window} ms"
+                )));
+            }
+        }
+    }
+    unreachable!("the second try always returns")
+}
+
+/// The window a rung first runs at: its predicted climb 1.25 times over and
+/// `tail`, when the runway can size it; a short one when nothing has moved
+/// the shaft yet.
+fn first_window(rw: &Runway, rig: &Rig, dir: Dir, pct: u8, tail: f64) -> Result<u32, String> {
+    match rw.plan(sign(dir), pct as f64 / 100.0, 0.0) {
+        Some(n) => {
+            let w = (CLIMB_MARGIN * n.climb_ms + tail).ceil() as u32;
+            sized(rw, rig, dir, pct, w).map(|()| w)
+        }
+        None if pct <= FIRST_MAX_PCT => Ok(PILOT_W0),
+        None => Err(format!(
+            "{dir} {pct}%: no rung under it moved the shaft, so nothing sizes it"
+        )),
+    }
+}
+
+/// A rung of `window` ms fits: its climb, its run at speed for what the
+/// window leaves and its margined braked stop fit the runway, and that stop
+/// fits between the soft limit and the stop beyond it.
+fn sized(rw: &Runway, rig: &Rig, dir: Dir, pct: u8, window: u32) -> Result<(), String> {
+    let d = pct as f64 / 100.0;
+    let Some(n0) = rw.plan(sign(dir), d, 0.0) else {
+        return if pct <= FIRST_MAX_PCT && window <= 2 * PILOT_W0 {
+            Ok(())
+        } else {
+            Err(format!(
+                "{dir} {pct}%: no rung under it moved the shaft, so nothing sizes it"
+            ))
+        };
+    };
+    let steady = (window as f64 - n0.climb_ms).max(0.0);
+    let need = rw
+        .plan(sign(dir), d, steady)
+        .ok_or_else(|| format!("{dir} {pct}%: nothing sizes it"))?;
+    if !fits(&need, rw.room()) {
+        return Err(format!(
+            "{dir} {pct}% in {window} ms needs {:.0} counts of runway, over the {:.0} there is",
+            need.total(),
+            rw.room()
+        ));
+    }
+    let m = margin(&rig.lim, dir);
+    if !dead_host_fits(need.stop, m) {
+        return Err(format!(
+            "{dir} {pct}% would stop in about {:.0} counts, over the {m:.0} between the soft \
+             limit and the stop: a rung its host abandoned would hit the stop",
+            need.stop
+        ));
+    }
+    Ok(())
+}
+
+/// One rung, the pack gated before it: its frames, and how far the brake
+/// let the shaft run on past the last of them.
+fn run_rung<S: Servo>(
+    s: &mut S,
+    rig: &Rig,
+    dir: Dir,
+    pct: u8,
+    window: u32,
+) -> Result<(Vec<TelFrame>, f64)> {
+    let step = Step::Drive(pct, Some(window));
+    let rec = record(s, &cfg(vec![step], sweep_dirs(dir), window, rig))?;
+    let seg = one(&rec.segments)?;
+    let last = seg
+        .frames
+        .iter()
+        .rev()
+        .find_map(|f| f.pos)
+        .ok_or_else(|| anyhow!("{dir} {step} streamed no position"))?;
+    let rest = s.snapshot()?.pos;
+    let stop = (f64::from(sign(dir)) * (rest as f64 - last as f64)).max(0.0);
+    Ok((seg.frames.clone(), stop))
+}
+
+/// Steady speed along the goal's sign, counts/ms, over the samples the
+/// applied duty held the goal past the settle (`runway::settled_ticks`):
+/// the climb and anything the limit governed stay out. None when those
+/// samples span under the least steady time.
+fn settled_v(frames: &[TelFrame], goal_q15: i16, ticks_per_ms: f64) -> Option<f64> {
+    let range = runway::settled_ticks(frames, goal_q15, ticks_per_ms * 1000.0)?;
+    if ((range.end() - range.start()) as f64) < STEADY_MIN_MS * ticks_per_ms {
+        return None;
+    }
+    let pts: Vec<(u64, u16)> = frames
+        .iter()
+        .filter(|f| range.contains(&f.tick))
+        .filter_map(|f| f.pos.map(|p| (f.tick, p)))
+        .collect();
+    let slope = slope_from(&pts, *range.start() as f64)?;
+    let sign = if goal_q15 < 0 { -1.0 } else { 1.0 };
+    Some(sign * slope * ticks_per_ms)
+}
+
+/// The window a campaign rung drives at `pct`, both ways: each direction's
+/// climb and a tail crossing RUNWAY_FRAC of the runway (`runway::window_ms`),
+/// cut to where its travel over the window and the brake write after it,
+/// WINDOW_MARGIN added, and its braked stop, STOP_MARGIN times, still fit
+/// the room. Err names the direction that keeps no window that settles.
+fn keep(rig: &Rig, pct: u8, runs: &[Ran], room: f64) -> Result<u32, (Dir, String)> {
+    let tail = SETTLE_MS + STEADY_MIN_MS;
+    let span = RUNWAY_FRAC * rig.lim.runway as f64;
+    let mut window = f64::INFINITY;
+    let mut least: f64 = 0.0;
+    for (dir, r) in DIRS.into_iter().zip(runs) {
+        let m = margin(&rig.lim, dir);
+        if !dead_host_fits(r.stop, m) {
+            return Err((
+                dir,
+                format!(
+                    "{dir} {pct}% stopped in {:.0} counts, over the {m:.0} between the soft \
+                     limit and the stop: a rung its host abandoned would hit the stop",
+                    r.stop
+                ),
+            ));
+        }
+        let v = r.v_ss.max(0.0);
+        let mut w = runway::window_ms(&r.climb, v, span);
+        if v > 0.0 {
+            let travel = (room - runway::STOP_MARGIN * r.stop) / (1.0 + WINDOW_MARGIN);
+            w = w.min(r.climb.ms - GAP_MS + (travel - r.climb.travel) / v);
+        }
+        let settles = r.climb.ms + tail;
+        if w < settles {
+            return Err((
+                dir,
+                format!(
+                    "{dir} {pct}% needs {:.0} ms to settle and the runway leaves it {:.0}",
+                    settles, w
+                ),
+            ));
+        }
+        window = window.min(w);
+        least = least.max(settles);
+    }
+    if window < least {
+        return Err((
+            Dir::Fwd,
+            format!("{pct}%: no one window settles both ways inside the runway"),
+        ));
+    }
+    Ok(window.floor().min(WINDOW_MAX_MS) as u32)
+}
+
+/// Steady speed per direction: the affine fit over the kept rungs that
+/// moved.
+fn speed(rungs: &[GridRung]) -> Result<Speed> {
+    let fit = |d: Dir| -> Result<Fit> {
+        let pts: Vec<(f64, f64)> = rungs
+            .iter()
+            .filter(|r| r.get(d).v_ss > V_SS_MIN)
+            .map(|r| (r.pct as f64, r.get(d).v_ss))
+            .collect();
+        let (a, b, r2) =
+            affine_fit(&pts).ok_or_else(|| anyhow!("{d}: under 2 rungs moved, no v_ss fit"))?;
+        Ok(Fit::rounded(a, b, r2))
+    };
+    let (fwd, rev) = (fit(Dir::Fwd)?, fit(Dir::Rev)?);
+    Ok(Speed {
+        duties: rungs
+            .iter()
+            .filter(|r| DIRS.iter().all(|&d| r.get(d).v_ss > V_SS_MIN))
+            .map(|r| r.pct)
+            .collect(),
         fwd,
         rev,
-    };
-    let fit = *v_ss.used();
-    let wins = windows(&fit, lim.runway);
-    let row = wins
-        .iter()
-        .map(|(d, w)| format!("{d}:{w}"))
-        .collect::<Vec<_>>()
-        .join(" ");
-    println!("[windows] {row}");
-
-    // In the direction that sized the windows: it travels furthest.
-    let mut verified = Vec::new();
-    for (d, check_pred) in [(60, true), (100, false)] {
-        let w = window_ms(fit.at(d), lim.runway);
-        let step = Step::Drive(d, Some(w));
-        let rec = record(c, id, &cfg(vec![step], sweep_dirs(used), w, rig))?;
-        let travel = span(&one(&rec.segments)?.frames)?;
-        let predicted = predicted_travel(fit.at(d), w);
-        println!(
-            "[verify] {used} {step}: travel {travel} ({:.0}% of runway), predicted {predicted}",
-            100.0 * travel as f64 / lim.runway as f64
-        );
-        if !runway_frac_ok(travel, lim.runway) {
-            bail!(
-                "{step} crossed {travel} of {} runway, outside {VERIFY_MIN_FRAC}..{VERIFY_MAX_FRAC}",
-                lim.runway
-            );
-        }
-        if check_pred && !matches_prediction(travel, predicted) {
-            bail!("{step} crossed {travel}, not within {VERIFY_PRED_TOL} of {predicted}");
-        }
-        verified.push(Verified {
-            step: step.to_string(),
-            travel,
-            predicted,
-        });
-    }
-
-    let coast = coast_ladder(c, id, rig, ticks_per_ms, block, duties, &v_ss)?;
-    Ok((v_ss, wins, coast, verified))
+    })
 }
 
-/// One direction's five speed rungs, each window sized off the rungs before
-/// it, then the affine fit over the ones that moved.
-fn speed_fit(
-    c: &mut Client<NusbPipe>,
-    id: Id,
-    rig: &Rig,
-    ticks_per_ms: f64,
-    dir: Dir,
-) -> Result<Fit> {
-    let lim = &rig.lim;
-    let dirs = sweep_dirs(dir);
-    let sign = f64::from(sign(dir));
-    let mut pts: Vec<(f64, f64)> = Vec::new();
-    for d in PILOT_DUTIES {
-        let w = next_window(&pts, d, lim.runway);
-        let step = Step::Drive(d, Some(w));
-        let rec = record(c, id, &cfg(vec![step], dirs, w, rig))?;
-        let frames = &one(&rec.segments)?.frames;
-        let travel = span(frames)?;
-        if travel as f64 > PILOT_ABORT_FRAC * lim.runway as f64 {
-            bail!(
-                "{dir} {step} crossed {travel} of {} runway, over {PILOT_ABORT_FRAC}: \
-                 the window prediction is off, stopping",
-                lim.runway
-            );
-        }
-        let slope = settled_slope(&pos_ticks(frames), SETTLED_FRAC).ok_or_else(|| {
-            anyhow!("{dir} {step}: under {SETTLED_MIN_SAMPLES} settled pos samples")
-        })?;
-        let v = sign * slope * ticks_per_ms;
-        println!("[rung] {dir} {step}: v_ss {v:.3} counts/ms, travel {travel}");
-        if v > V_SS_MIN {
-            pts.push((d as f64, v));
-        } else {
-            println!("  under {V_SS_MIN} counts/ms: breaking away, left out of the fit");
-        }
-    }
-    let (a, b, r2) =
-        affine_fit(&pts).ok_or_else(|| anyhow!("{dir}: under 2 moving rungs, no v_ss fit"))?;
-    Ok(Fit::rounded(a, b, r2))
+/// A coast's drive: to the later of its grid rung's two goals, whole ms,
+/// then ENTRY_MS on.
+fn coast_drive_ms(r: &GridRung) -> u32 {
+    r.fwd.t_goal_ms.max(r.rev.t_goal_ms).ceil() as u32 + ENTRY_MS
 }
 
-/// Climb the coast block's duties, each run both ways only while the travel
-/// predicted from the rungs below fits the room; the top is the last rung
-/// whose measured travel fit too. Every duty up to the top has then run on
-/// the servo, so there is nothing left to verify.
-fn coast_ladder(
-    c: &mut Client<NusbPipe>,
-    id: Id,
+/// Climb the coast block's duties, each driven to its goal and on for
+/// ENTRY_MS, then coasting, both ways, only while the travel predicted
+/// from the rungs below fits the room; the top is the last rung whose
+/// measured travel fit too. A duty the grid ladder did not keep has no
+/// climb to drive by and ends the ladder.
+fn coast_ladder<S: Servo>(
+    s: &mut S,
     rig: &Rig,
-    ticks_per_ms: f64,
     block: &CoastBlock,
     duties: &[u8],
+    grid: &Grid,
     v_ss: &Speed,
 ) -> Result<Coast> {
-    let lim = &rig.lim;
-    let room = coast_room(lim);
+    let room = coast_room(&rig.lim);
     println!(
-        "[coast] ladder {duties:?}%: {} ms drive, {} ms coast, room fwd {} rev {}, margin {COAST_MARGIN}",
-        block.drive_ms, block.coast_ms, room.fwd, room.rev
+        "[coast] ladder {duties:?}%: each driven to its goal and {ENTRY_MS} ms on, then {} ms \
+         coast, room fwd {} rev {}, margin {COAST_MARGIN}",
+        block.coast_ms, room.fwd, room.rev
     );
     let mut ladder = Vec::new();
     let mut refused = None;
     let mut top = None;
     for &pct in duties {
+        let Some(rung) = grid.rungs.iter().find(|r| r.pct == pct) else {
+            let why = format!("the grid ladder never kept {pct}%, so it has no climb to drive by");
+            println!("  {pct}%: {why}, stopping");
+            refused = Some(Refused { pct, why });
+            break;
+        };
+        let drive_ms = coast_drive_ms(rung);
         let predicted = match next_rung(&ladder, pct, v_ss, &room) {
             Next::Run(p) => p,
             Next::Refuse(p) => {
-                println!(
-                    "  {pct}%: predicted travel fwd {:.0} rev {:.0} does not fit the room, stopping",
+                let why = format!(
+                    "predicted travel fwd {:.0} rev {:.0} does not fit the room",
                     p.fwd, p.rev
                 );
-                refused = Some(Refused {
-                    pct,
-                    predicted: PerDir {
-                        fwd: to_counts(p.fwd),
-                        rev: to_counts(p.rev),
-                    },
-                });
+                println!("  {pct}%: {why}, stopping");
+                refused = Some(Refused { pct, why });
                 break;
             }
         };
         let chain = vec![
-            Step::Drive(pct, Some(block.drive_ms)),
+            Step::Drive(pct, Some(drive_ms)),
             Step::Coast(block.coast_ms),
         ];
-        let rec = record(c, id, &cfg(chain, Dirs::Both, block.drive_ms, rig))?;
+        let rec = record(s, &cfg(chain, Dirs::Both, drive_ms, rig))?;
         let run = |d| {
             coast_run(
                 &rec.segments,
                 d,
-                lim.soft,
-                ticks_per_ms,
+                rig.lim.soft,
+                rig.hz,
                 predicted.map(|p| *p.get(d)),
             )
             .with_context(|| format!("{pct}% coast"))
         };
         let rung = CoastRung {
             pct,
+            drive_ms,
             fwd: run(Dir::Fwd)?,
             rev: run(Dir::Rev)?,
         };
@@ -373,27 +632,30 @@ fn coast_ladder(
                 .predicted
                 .map_or(String::new(), |p| format!(" (predicted {p})"));
             println!(
-                "  {pct:3}% {d}: entry {} counts/ms, lead {} + coast {} = {}{pred}, {} inside soft",
+                "  {pct:3}@{drive_ms} {d}: entry {} counts/ms, lead {} + coast {} = {}{pred}, {} \
+                 inside soft",
                 r.entry, r.lead, r.coast, r.travel, r.peak_inside_soft
             );
         }
         let fits = rung_fits(&rung, &room);
         ladder.push(rung);
         if !fits {
-            println!("  {pct}% travel does not fit the room, stopping");
+            let why =
+                format!("its measured travel does not fit the room with {COAST_MARGIN} to spare");
+            println!("  {pct}%: {why}, stopping");
+            refused = Some(Refused { pct, why });
             break;
         }
         top = Some(pct);
     }
     let top_pct = top.ok_or_else(|| {
         anyhow!(
-            "the {}% coast already travels too far for the room: no coast duty fits",
+            "the {}% coast already travels too far for the room, or never ran: no coast duty fits",
             duties[0]
         )
     })?;
     println!("  top duty {top_pct}%");
     Ok(Coast {
-        drive_ms: block.drive_ms,
         coast_ms: block.coast_ms,
         margin: COAST_MARGIN,
         top_pct,
@@ -406,7 +668,8 @@ fn coast_ladder(
 /// One direction's drive-then-coast chain of a ladder rung, measured. Travel
 /// runs from the drive's first sample to the furthest one; the coast from
 /// the coast's first sample, so the lead also holds the gap between the two
-/// bursts, where the drive duty still applies.
+/// bursts, where the drive duty still applies. A drive that never reached
+/// its goal entered the coast from a climb, not a speed.
 fn coast_run(
     segs: &[Segment],
     dir: Dir,
@@ -419,6 +682,13 @@ fn coast_run(
     let [drive, coasting] = mine.as_slice() else {
         bail!("{dir} chain committed {} segments, not 2", mine.len());
     };
+    if !drive
+        .frames
+        .iter()
+        .any(|f| f.duty_q15 == Some(drive.cmd_duty_q15))
+    {
+        bail!("{dir} drive never reached its goal duty before the coast");
+    }
     let dp = pos_ticks(&drive.frames);
     let cp = pos_ticks(&coasting.frames);
     let (Some(&(_, start)), Some(&(t_end, _)), Some(&(_, coast_start))) =
@@ -468,16 +738,239 @@ fn coast_run(
     })
 }
 
-/// The servo the pilot drives: its limits, and the seek its jam check proved.
-struct Rig {
-    lim: Limits,
-    proved: Proved,
+/// The chains of `steps`: each drive with the steps it feeds.
+pub(super) fn chains_of(steps: &[Step]) -> Vec<Vec<Step>> {
+    let mut out: Vec<Vec<Step>> = Vec::new();
+    for (k, &step) in steps.iter().enumerate() {
+        if k > 0
+            && feeds(steps, k - 1)
+            && let Some(c) = out.last_mut()
+        {
+            c.push(step);
+            continue;
+        }
+        out.push(vec![step]);
+    }
+    out
+}
+
+/// A chain as a schedule names it.
+pub(super) fn chain_name(chain: &[Step]) -> String {
+    chain
+        .iter()
+        .map(Step::to_string)
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Every chain of the session's step, reversal and ends blocks, both ways,
+/// each only when its predicted excursion fits: the room to the soft limit
+/// with COAST_MARGIN to spare, or for an ends chain, which drives into the
+/// soft limit on purpose, a braked stop that fits beyond it.
+fn chains<S: Servo>(
+    s: &mut S,
+    rig: &Rig,
+    p: &Procedure,
+    v_ss: &Speed,
+    coast: &Coast,
+    runways: &[Runway; 2],
+) -> Result<(Vec<ChainRun>, Vec<ChainRefused>)> {
+    let room = coast_room(&rig.lim);
+    let blocks = [
+        ("step", &p.block.step.steps),
+        ("reversal", &p.block.reversal.steps),
+        ("ends", &p.block.ends.steps),
+    ];
+    let coasts = runway::Envelope {
+        supply: runway::Supply::TwoS,
+        phys: (0, 0),
+        fwd: runway::Line {
+            slope: 0.0,
+            intercept: 0.0,
+        },
+        rev: runway::Line {
+            slope: 0.0,
+            intercept: 0.0,
+        },
+        coast: coast
+            .ladder
+            .iter()
+            .flat_map(|r| [r.fwd, r.rev])
+            .map(|c| (c.entry, c.coast as f64))
+            .collect(),
+    };
+    let (mut ran, mut refused) = (Vec::new(), Vec::new());
+    for (block, steps) in blocks {
+        for chain in chains_of(steps) {
+            let name = chain_name(&chain);
+            if ran
+                .iter()
+                .any(|c: &ChainRun| c.block == block && c.chain == name)
+            {
+                continue;
+            }
+            let predicted = DIRS
+                .into_iter()
+                .zip(runways)
+                .map(|(d, rw)| excursion(&chain, v_ss.of(d), &coasts, rw))
+                .collect::<Option<Vec<f64>>>();
+            let why = match &predicted {
+                None => Some("nothing the pilot measured predicts it".to_string()),
+                Some(e) => judge_chain(block, &chain, e, &room, rig, v_ss, runways),
+            };
+            let predicted =
+                predicted.map_or(0, |e| to_counts(e.iter().copied().fold(0.0, f64::max)));
+            if let Some(why) = why {
+                println!("[chain] {block} {name}: predicted {predicted}, {why}: refused");
+                refused.push(ChainRefused {
+                    block: block.into(),
+                    chain: name,
+                    predicted,
+                    why,
+                });
+                continue;
+            }
+            let window = chain
+                .iter()
+                .find_map(|s| match s {
+                    Step::Drive(_, Some(ms)) => Some(*ms),
+                    _ => None,
+                })
+                .unwrap_or(WINDOW_MS);
+            let rec = record(s, &cfg(chain.clone(), Dirs::Both, window, rig))?;
+            let run = |d| chain_excursion(&rec.segments, d, &rig.lim);
+            let (fwd, rev) = (run(Dir::Fwd)?, run(Dir::Rev)?);
+            println!(
+                "[chain] {block} {name}: predicted {predicted}, ran fwd {} ({} inside soft) rev {} \
+                 ({} inside soft)",
+                fwd.travel, fwd.peak_inside_soft, rev.travel, rev.peak_inside_soft
+            );
+            ran.push(ChainRun {
+                block: block.into(),
+                chain: name,
+                predicted,
+                fwd,
+                rev,
+            });
+        }
+    }
+    Ok((ran, refused))
+}
+
+/// Why a chain predicted to carry the shaft `excursions` (fwd, rev) does
+/// not run; None when it does.
+fn judge_chain(
+    block: &str,
+    chain: &[Step],
+    excursions: &[f64],
+    room: &PerDir<u16>,
+    rig: &Rig,
+    v_ss: &Speed,
+    runways: &[Runway; 2],
+) -> Option<String> {
+    let inside = DIRS
+        .iter()
+        .zip(excursions)
+        .all(|(&d, &e)| fits_room(e, *room.get(d)));
+    if inside {
+        return None;
+    }
+    if block != "ends" {
+        return Some("its excursion does not fit the room to the soft limit".into());
+    }
+    for (k, d) in DIRS.into_iter().enumerate() {
+        let v = top_speed(chain, v_ss.of(d));
+        let m = margin(&rig.lim, d);
+        match runways[k].stop(v) {
+            Some(stop) if dead_host_fits(stop, m) => {}
+            Some(stop) => {
+                return Some(format!(
+                    "{d} it would stop in about {stop:.0} counts past the soft limit, over the \
+                     {m:.0} to the stop"
+                ));
+            }
+            None => return Some("no braked stop measured to judge it by".into()),
+        }
+    }
+    None
+}
+
+/// The fastest steady speed a chain's drives reach, by the fit.
+fn top_speed(chain: &[Step], fit: &Fit) -> f64 {
+    chain
+        .iter()
+        .filter_map(|s| match s {
+            Step::Drive(pct, _) => Some(*pct),
+            Step::Then(pct, _) => Some(pct.unsigned_abs()),
+            _ => None,
+        })
+        .map(|pct| fit.at(pct).max(0.0))
+        .fold(0.0, f64::max)
+}
+
+/// A chain's predicted excursion, counts: every drive at its steady speed
+/// for its window and the brake write after it, whichever way it points,
+/// then how it ends - a coast by the coasts measured, a brake by the braked
+/// stops - from the fastest speed it reached. None when nothing measured
+/// predicts the end.
+fn excursion(chain: &[Step], fit: &Fit, coasts: &runway::Envelope, rw: &Runway) -> Option<f64> {
+    let mut travel = 0.0;
+    for step in chain {
+        let (pct, ms) = match *step {
+            Step::Drive(pct, ms) => (pct, ms),
+            Step::Then(pct, ms) => (pct.unsigned_abs(), ms),
+            Step::Coast(_) | Step::Brake(_) => continue,
+        };
+        let ms = ms.unwrap_or(WINDOW_MS) as f64 + GAP_MS;
+        travel += fit.at(pct).max(0.0) * ms;
+    }
+    let v = top_speed(chain, fit);
+    let end = match chain.last() {
+        Some(Step::Coast(_)) if !coasts.coast.is_empty() => coasts.coast(v),
+        Some(Step::Coast(_)) => return None,
+        _ => rw.stop(v)?,
+    };
+    Some(travel + end)
+}
+
+/// How far one direction of a chain carried the shaft from its first
+/// sample, and how far inside the soft limit ahead the furthest sample
+/// stayed. A chain that reached the stop beyond the soft limit ends the
+/// pilot.
+fn chain_excursion(segs: &[Segment], dir: Dir, lim: &Limits) -> Result<Excursion> {
+    let s = sign(dir);
+    let pos: Vec<u16> = segs
+        .iter()
+        .filter(|g| g.dir == s)
+        .flat_map(|g| g.frames.iter().filter_map(|f| f.pos))
+        .collect();
+    let Some(&start) = pos.first() else {
+        bail!("{dir} chain has no pos samples");
+    };
+    let ahead = |p: u16| i32::from(s) * i32::from(p);
+    let peak = pos.iter().map(|&p| ahead(p)).fold(i32::MIN, i32::max);
+    let (soft, stop) = match dir {
+        Dir::Fwd => (lim.soft[1], lim.phys[1]),
+        Dir::Rev => (lim.soft[0], lim.phys[0]),
+    };
+    if peak >= ahead(stop) {
+        bail!("{dir} chain reached the stop at {stop}");
+    }
+    Ok(Excursion {
+        travel: to_counts((peak - ahead(start)) as f64),
+        peak_inside_soft: ahead(soft) - peak,
+    })
 }
 
 /// One pilot recording, the pack read at rest before it.
-fn record<P: Pipe>(c: &mut Client<P>, id: Id, cfg: &Cfg) -> Result<Recording> {
-    battery::before_drive(c, id)?;
-    sweep::record(c, id, cfg, |_| Ok(()))
+fn record<S: Servo>(s: &mut S, cfg: &Cfg) -> Result<Recording> {
+    let id = s.id();
+    gate(s.client(), id)?;
+    sweep::record(s, cfg, |_| Ok(()))
+}
+
+fn gate<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<()> {
+    battery::before_drive(c, id)
 }
 
 /// A pilot recording at the session defaults: no baseline, every step with
@@ -493,7 +986,7 @@ fn cfg(steps: Vec<Step>, dirs: Dirs, window_ms: u32, rig: &Rig) -> Cfg {
         baseline_ms: 0,
         seek_duty_pct: rig.proved.seek_pct(),
         seek_cap_pct: rig.proved.cap_pct(),
-        settle_ms: SETTLE_MS,
+        settle_ms: SEEK_SETTLE_MS,
         stall: false,
         static_load: false,
         guard: (lim.guard[0], lim.guard[1]),
@@ -529,15 +1022,6 @@ fn pos_ticks(frames: &[TelFrame]) -> Vec<(u64, u16)> {
         .iter()
         .filter_map(|f| f.pos.map(|p| (f.tick, p)))
         .collect()
-}
-
-fn span(frames: &[TelFrame]) -> Result<u16> {
-    let pos = frames.iter().filter_map(|f| f.pos);
-    let (lo, hi) = pos.fold((u16::MAX, 0), |(lo, hi), p| (lo.min(p), hi.max(p)));
-    if lo > hi {
-        bail!("segment has no pos samples");
-    }
-    Ok(hi - lo)
 }
 
 /// Soft, guard, centre and runway from the servo's soft and phys limits,
@@ -620,71 +1104,24 @@ fn slope_from(pts: &[(u64, u16)], from: f64) -> Option<f64> {
     affine_fit(&tail).map(|(a, _, _)| a)
 }
 
-/// Window for speed rung `d` from the moving rungs so far (duty, counts/ms).
-/// One point cannot see the intercept, so it predicts through the origin,
-/// which under-predicts an affine law with a negative intercept: the second
-/// rung runs long by v_true / v_pred (1.3x at 10 -> 20% on the mg90 fit,
-/// 0.52 of runway), the headroom PILOT_TRAVEL_FRAC leaves under
-/// PILOT_ABORT_FRAC. Speed never falls with duty, so no prediction goes
-/// below the fastest rung measured.
-fn next_window(pts: &[(f64, f64)], d: u8, runway: u16) -> u32 {
-    let d = d as f64;
-    let pred = match pts {
-        [] => return PILOT_W0,
-        [(d1, v1)] => v1 * d / d1,
-        _ => affine_fit(pts).map_or(0.0, |(a, b, _)| a * d + b),
-    };
-    let v = pts.iter().fold(pred, |m, p| m.max(p.1));
-    ((PILOT_TRAVEL_FRAC * runway as f64 / v).round() as u32).min(WINDOW_MAX_MS)
-}
-
-/// Campaign window for a rung cruising at `v` counts/ms.
-fn window_ms(v: f64, runway: u16) -> u32 {
-    if v <= V_SS_MIN {
-        return WINDOW_MAX_MS;
-    }
-    ((RUNWAY_FRAC * runway as f64 / v).round() as u32 + SPINUP_MS).min(WINDOW_MAX_MS)
-}
-
-pub(super) fn windows(fit: &Fit, runway: u16) -> BTreeMap<u8, u32> {
-    (1..=20u8)
-        .map(|k| k * 5)
-        .map(|d| (d, window_ms(fit.at(d), runway)))
-        .collect()
-}
-
-fn predicted_travel(v: f64, w: u32) -> u16 {
-    (v * w.saturating_sub(SPINUP_MS) as f64)
-        .round()
-        .clamp(0.0, u16::MAX as f64) as u16
-}
-
-fn runway_frac_ok(travel: u16, runway: u16) -> bool {
-    (VERIFY_MIN_FRAC..=VERIFY_MAX_FRAC).contains(&(travel as f64 / runway as f64))
-}
-
-fn matches_prediction(travel: u16, predicted: u16) -> bool {
-    let p = predicted as f64;
-    ((1.0 - VERIFY_PRED_TOL) * p..=(1.0 + VERIFY_PRED_TOL) * p).contains(&(travel as f64))
-}
-
 fn to_counts(x: f64) -> u16 {
     x.round().clamp(0.0, u16::MAX as f64) as u16
 }
 
-/// The coast block's duties in ladder order, refusing a ladder that would
-/// open above COAST_FIRST_MAX_PCT or drive past full scale.
-fn ladder_duties(duties: &[u8]) -> Result<Vec<u8>> {
+/// A block's duties in ladder order, refusing one that would drive past
+/// full scale or, with `first_max`, open above it.
+fn ladder_duties(duties: &[u8], first_max: Option<u8>) -> Result<Vec<u8>> {
     let mut v = duties.to_vec();
     v.sort_unstable();
     v.dedup();
     match (v.first(), v.last()) {
-        (None, _) => bail!("coast block has no duties"),
-        (Some(&lo), _) if lo > COAST_FIRST_MAX_PCT => bail!(
-            "coast block opens at {lo}%: the ladder's first rung runs unpredicted, so it must \
-             open at or under {COAST_FIRST_MAX_PCT}%"
+        (None, _) => bail!("no duties"),
+        (Some(&lo), _) if first_max.is_some_and(|m| lo > m) => bail!(
+            "opens at {lo}%: the ladder's first rung runs unpredicted, so it must open at or \
+             under {}%",
+            first_max.unwrap_or(0)
         ),
-        (_, Some(&hi)) if hi > 100 => bail!("coast duty {hi}% is over full scale"),
+        (_, Some(&hi)) if hi > 100 => bail!("duty {hi}% is over full scale"),
         _ => Ok(v),
     }
 }
@@ -799,92 +1236,364 @@ fn rung_fits(r: &CoastRung, room: &PerDir<u16>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::capture::front::fake::{rail, servo, torque};
     use crate::rig::pump::BurstStats;
+    use crate::rig::servo::bench::{Bench, rail, torque};
     use osc_ident::limits::CLASS_R_MIN;
     use osc_ident::regs::control;
 
-    /// The pilot reads the pack at rest before anything moves, in its front,
-    /// and again before every recording: a pack that sags under its floor
-    /// between two rungs stops the pilot before the next one arms.
+    fn bench_rig(front: &Front) -> Rig {
+        Rig {
+            lim: limits(front.lim.soft, front.lim.phys).unwrap(),
+            proved: Proved {
+                moved: 0.13,
+                plan: front
+                    .lim
+                    .stall_plan(front.sc.r_vpc(CLASS_R_MIN), Some(0.13)),
+            },
+            hz: front.tick_hz as f64 / 1000.0,
+        }
+    }
+
+    fn procedure() -> Procedure {
+        Procedure::parse(include_str!("session.toml")).unwrap()
+    }
+
+    fn bench(supply: Supply) -> (Bench, Front) {
+        let mut b = Bench::mg90(supply);
+        let id = b.id();
+        let front = front::read(&mut b.c, id, supply).unwrap();
+        (b, front)
+    }
+
+    /// The whole pilot on the bench servo at the bench bus's timing, on 2S
+    /// and on USB: the jam check, the grid ladder climbing both ways until
+    /// the dead-host rule refuses the next duty, the coast ladder to the
+    /// highest duty the grid kept, every chain of the procedure, the park,
+    /// torque off and the permit clear; the envelope it writes reads back.
+    #[test]
+    fn pilot_completes_on_the_bench_fixture() {
+        for (supply, top, coast_top) in [(Supply::TwoS, 55, 40), (Supply::Usb, 85, 80)] {
+            let (mut b, front) = bench(supply);
+            let (env, parked) = pilot(&mut b, &front, supply, &procedure(), 64);
+            let env = env.unwrap();
+            parked.unwrap();
+            assert!(!b.servo.torque && !b.servo.permit_live(), "{supply:?}");
+            assert!(
+                (b.servo.pos - 2029.0).abs() <= 60.0,
+                "parked at {}",
+                b.servo.pos
+            );
+
+            let lim = &env.limits;
+            assert_eq!(env.grid.top_pct, top, "{supply:?}");
+            let kept: Vec<u8> = env.grid.rungs.iter().map(|r| r.pct).collect();
+            let want: Vec<u8> = (1..=top / 5).map(|k| k * 5).collect();
+            assert_eq!(kept, want);
+            assert_eq!(env.windows_ms.keys().copied().collect::<Vec<_>>(), want);
+            let refused = env.grid.refused.as_ref().unwrap();
+            assert_eq!(refused.pct, top + 5);
+            assert!(refused.why.contains("between the soft limit and the stop"));
+            for r in &env.grid.rungs {
+                for d in DIRS {
+                    let run = r.get(d);
+                    assert!(
+                        (run.stop as f64) <= margin(lim, d),
+                        "{}% {d} stop {}",
+                        r.pct,
+                        run.stop
+                    );
+                    assert!(r.window_ms as f64 >= run.t_goal_ms + SETTLE_MS + STEADY_MIN_MS);
+                    // the window's travel, the brake write after it and
+                    // the margined stop fit the room
+                    let travel = run.travel as f64
+                        + run.v_ss.max(0.0) * (r.window_ms as f64 + GAP_MS - run.t_goal_ms);
+                    let room = (lim.runway - runway::START_BAND) as f64;
+                    assert!(
+                        1.1 * travel + runway::STOP_MARGIN * run.stop as f64 <= room + 1.0,
+                        "{}% {d}",
+                        r.pct
+                    );
+                }
+            }
+            // governed from 20% on 2S: the goal comes later as the duty rises
+            let goals: Vec<f64> = env.grid.rungs.iter().map(|r| r.fwd.t_goal_ms).collect();
+            assert!(goals.windows(2).all(|w| w[1] >= w[0]), "{goals:?}");
+
+            assert_eq!(env.coast.top_pct, coast_top);
+            for r in &env.coast.ladder {
+                let grid = env.grid.rungs.iter().find(|g| g.pct == r.pct).unwrap();
+                assert_eq!(r.drive_ms, coast_drive_ms(grid));
+            }
+            assert!(env.refused_chains.is_empty(), "{:?}", env.refused_chains);
+            assert_eq!(env.chains.len(), 9);
+            for c in &env.chains {
+                for d in DIRS {
+                    let e = c.get(d);
+                    assert!(
+                        e.travel as f64 <= c.predicted as f64 + 1.0,
+                        "{} {d}",
+                        c.chain
+                    );
+                    assert!(e.peak_inside_soft > 0, "{} {d}", c.chain);
+                }
+            }
+            assert!(env.v_ss.fwd.r2 > 0.99 && env.v_ss.rev.r2 > 0.99);
+
+            let dir = std::env::temp_dir().join(format!(
+                "osc-pilot-{}-{}",
+                supply.as_str(),
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            env.save(&dir).unwrap();
+            let back = Envelope::load(&dir).unwrap();
+            std::fs::remove_dir_all(&dir).unwrap();
+            assert_eq!(back, env);
+        }
+    }
+
+    /// The window a campaign rung keeps: its measured climb, then the time
+    /// at v_ss to cross what the climb left of 0.8 of the runway; cut where
+    /// its travel, the brake write and the margined stop would not fit the
+    /// room; never under the settle and the least steady time.
+    #[test]
+    fn window_is_the_climb_plus_the_tail() {
+        let (_, front) = bench(Supply::TwoS);
+        let rig = bench_rig(&front);
+        let ran = |t_goal: f64, travel: f64, v_ss: f64, stop: f64| Ran {
+            ms: 200,
+            climb: Climb {
+                ms: t_goal,
+                travel,
+                accel: 2.0 * travel / (t_goal * t_goal) * 1000.0,
+            },
+            v_ss,
+            stop,
+        };
+        let room = 2919.0;
+        // 40% on the bench servo: 71.8 + (0.8 x 2994 - 236) / 7.46
+        let r40 = ran(71.8, 236.0, 7.46, 113.0);
+        assert_eq!(
+            keep(&rig, 40, &[r40, ran(71.8, 236.0, 7.46, 113.0)], room),
+            Ok(361)
+        );
+        // 55%: the tail to 0.8 of the runway, 290 ms, would not fit the room
+        // with its stop; the fit cuts it to 286
+        let r55 = || ran(130.8, 707.0, 10.58, 171.0);
+        let w0 = runway::window_ms(&r55().climb, 10.58, 0.8 * 2994.0);
+        assert_eq!(w0.floor(), 290.0);
+        assert_eq!(keep(&rig, 55, &[r55(), r55()], room), Ok(286));
+        // the shorter direction sets it
+        let slow = ran(130.8, 707.0, 10.0, 171.0);
+        assert_eq!(keep(&rig, 55, &[r55(), slow], room), Ok(286));
+        // a duty that does not move the shaft takes the longest window
+        assert_eq!(
+            keep(
+                &rig,
+                5,
+                &[ran(0.0, 0.0, 0.0, 0.0), ran(0.0, 0.0, 0.0, 0.0)],
+                room
+            ),
+            Ok(1500)
+        );
+        // a climb that runs past what the room allows keeps no window
+        let long = ran(400.0, 2200.0, 12.0, 150.0);
+        let (dir, why) = keep(&rig, 70, &[long, r55()], room).unwrap_err();
+        assert_eq!(dir, Dir::Fwd);
+        assert_eq!(
+            why,
+            "fwd 70% needs 500 ms to settle and the runway leaves it 414"
+        );
+        // and a measured stop over the margin keeps none either
+        let (dir, why) =
+            keep(&rig, 60, &[r55(), ran(156.6, 971.0, 11.62, 206.0)], room).unwrap_err();
+        assert_eq!(dir, Dir::Rev);
+        assert_eq!(
+            why,
+            "rev 60% stopped in 206 counts, over the 200 between the soft limit and the stop: a \
+             rung its host abandoned would hit the stop"
+        );
+    }
+
+    /// Frames at 20 ticks/ms: the climb under the goal at one speed, the
+    /// first 40 ms at the goal still speeding up, then steady at 0.3
+    /// counts/tick. The fit reads only the steady samples.
+    #[test]
+    fn v_ss_is_fit_over_samples_at_the_goal_only() {
+        let goal = 9830;
+        let frames = |n: u64, dip: Option<u64>| -> Vec<TelFrame> {
+            let mut pos = 600.0;
+            (0..n)
+                .map(|t| {
+                    let (duty, v) = match t {
+                        _ if dip == Some(t) => (goal - 128, 0.3),
+                        0..400 => (4484 + (t as i16 % 40), 0.1),
+                        400..1200 => (goal, 0.2 + 0.1 * (t - 400) as f64 / 800.0),
+                        _ => (goal, 0.3),
+                    };
+                    pos += v;
+                    TelFrame {
+                        tick: t,
+                        pos: Some(pos.round() as u16),
+                        duty_q15: Some(duty),
+                        ..TelFrame::default()
+                    }
+                })
+                .collect()
+        };
+        let v = settled_v(&frames(4000, None), goal, 20.0).unwrap();
+        assert!((v - 6.0).abs() < 0.01, "{v}");
+        // down the pot the speed counts along the goal
+        let down: Vec<TelFrame> = frames(4000, None)
+            .into_iter()
+            .map(|f| TelFrame {
+                pos: f.pos.map(|p| 4000 - p),
+                duty_q15: f.duty_q15.map(|d| -d),
+                ..f
+            })
+            .collect();
+        let v = settled_v(&down, -goal, 20.0).unwrap();
+        assert!((v - 6.0).abs() < 0.01, "{v}");
+        // the whole stream would read the climb and the spin-up in
+        let all = pos_ticks(&frames(4000, None));
+        let whole = slope_from(&all, 0.0).unwrap() * 20.0;
+        assert!((whole - 6.0).abs() > 0.2, "{whole}");
+        // a dip under the goal restarts the settle from after it
+        let dipped = frames(4000, Some(1500));
+        let range = runway::settled_ticks(&dipped, goal, 20_000.0).unwrap();
+        assert_eq!(*range.start(), 1501 + 800);
+        let v = settled_v(&dipped, goal, 20.0).unwrap();
+        assert!((v - 6.0).abs() < 0.02, "{v}");
+        // under 60 ms at the goal past the settle measures nothing
+        assert_eq!(settled_v(&frames(2400, None), goal, 20.0), None);
+        assert!(settled_v(&frames(3200, None), goal, 20.0).is_some());
+        // a goal lost at the end is no steady speed
+        assert_eq!(settled_v(&frames(4000, Some(3999)), goal, 20.0), None);
+    }
+
+    /// The runway after the bench servo's 50 and 55% rungs: 60% fits the
+    /// room both ways, but its braked stop from 11.6 counts/ms, 206 by the
+    /// 55% stop scaled by speed squared, fits the 223 counts beyond the
+    /// high soft limit and not the 200 beyond the low one: the reverse rung
+    /// never runs. On the bench fixture the ladder ends there.
+    #[test]
+    fn ladder_ends_at_the_first_rung_that_does_not_fit() {
+        let (mut b, front) = bench(Supply::TwoS);
+        let rig = bench_rig(&front);
+        let mut rw = Runway::new((532, 3526));
+        rw.ran(0.50, 9.54);
+        rw.ran(0.55, 10.58);
+        rw.climbed(80.0);
+        rw.stopped(10.58, 171.0);
+        let w = first_window(&rw, &rig, Dir::Fwd, 60, SETTLE_MS + STEADY_MIN_MS).unwrap();
+        assert_eq!(w, 282);
+        assert_eq!(
+            first_window(&rw, &rig, Dir::Rev, 60, SETTLE_MS + STEADY_MIN_MS),
+            Err(
+                "rev 60% would stop in about 206 counts, over the 200 between the soft limit and \
+                 the stop: a rung its host abandoned would hit the stop"
+                    .into()
+            )
+        );
+        // a runway too short for the rung
+        let mut short = Runway::new((532, 2200));
+        short.ran(0.50, 9.54);
+        short.ran(0.55, 10.58);
+        short.climbed(80.0);
+        short.stopped(10.58, 171.0);
+        let why = sized(&short, &rig, Dir::Fwd, 60, 282).unwrap_err();
+        assert!(why.starts_with("fwd 60% in 282 ms needs "), "{why}");
+        assert!(
+            why.ends_with("counts of runway, over the 1593 there is"),
+            "{why}"
+        );
+        // nothing measured: a first rung opens short, and only low
+        let empty = Runway::new((532, 3526));
+        assert_eq!(
+            first_window(&empty, &rig, Dir::Fwd, 30, 100.0),
+            Ok(PILOT_W0)
+        );
+        assert_eq!(
+            first_window(&empty, &rig, Dir::Fwd, 35, 100.0),
+            Err("fwd 35%: no rung under it moved the shaft, so nothing sizes it".into())
+        );
+
+        let p = procedure();
+        let duties = ladder_duties(&p.block.grid.duties, None).unwrap();
+        let ladder = grid_ladder(&mut b, &rig, &duties).unwrap();
+        let kept: Vec<u8> = ladder.rungs.iter().map(|r| r.pct).collect();
+        assert_eq!(kept, (1..=11u8).map(|k| k * 5).collect::<Vec<_>>());
+        let refused = ladder.refused.unwrap();
+        assert_eq!((refused.pct, refused.dir), (60, Dir::Rev));
+        assert!(!b.servo.torque);
+    }
+
+    /// A coast drives to its grid rung's later goal, whole ms, and 20 ms
+    /// on; a drive that never reached its goal entered the coast from a
+    /// climb and is refused.
+    #[test]
+    fn a_coast_drive_runs_to_its_goal() {
+        let run = |t_goal_ms| RungRun {
+            ran_ms: 170,
+            t_goal_ms,
+            travel: 80,
+            v_ss: 5.37,
+            stop: 76,
+        };
+        let rung = GridRung {
+            pct: 30,
+            window_ms: 471,
+            fwd: run(40.5),
+            rev: run(40.2),
+        };
+        assert_eq!(coast_drive_ms(&rung), 61);
+
+        let soft = [432, 3626];
+        let [mut d, c] = coast_chain(1, 600);
+        d.cmd_duty_q15 = 9830;
+        let err = coast_run(&[d, c], Dir::Fwd, soft, 1.0, None)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            err,
+            "fwd drive never reached its goal duty before the coast"
+        );
+        let [mut d, c] = coast_chain(1, 600);
+        d.cmd_duty_q15 = 9830;
+        for f in &mut d.frames[40..] {
+            f.duty_q15 = Some(9830);
+        }
+        assert!(coast_run(&[d, c], Dir::Fwd, soft, 1.0, None).is_ok());
+    }
+
+    /// The pilot reads the pack at rest before anything moves, in its
+    /// front, and again before every recording: a pack that sags under its
+    /// floor between two rungs stops the pilot before the next one drives.
     #[test]
     fn pilot_gates_the_battery() {
         let flat = "the pack reads 6.99 V at rest, under its floor of 7.00 V (3.50 V a cell): \
                     charge it before anything drives";
-        let (mut c, id) = servo(3351);
-        let e = front::read(&mut c, id, Supply::TwoS).unwrap_err();
+        let mut b = Bench::mg90(Supply::TwoS);
+        let id = b.id();
+        rail(&mut b.c, 3351);
+        let e = front::read(&mut b.c, id, Supply::TwoS).unwrap_err();
         assert_eq!(e.to_string(), flat);
-        assert_eq!(torque(&mut c, id), 0);
+        assert_eq!(torque(&mut b.c, id), 0);
 
-        let (mut c, id) = servo(3922);
-        let f = front::read(&mut c, id, Supply::TwoS).unwrap();
-        let rig = Rig {
-            lim: limits(f.lim.soft, f.lim.phys).unwrap(),
-            proved: Proved {
-                moved: 0.13,
-                plan: f.lim.stall_plan(f.sc.r_vpc(CLASS_R_MIN), Some(0.13)),
-            },
-        };
-        rail(&mut c, 3351);
+        let (mut b, front) = bench(Supply::TwoS);
+        let rig = bench_rig(&front);
+        rail(&mut b.c, 3351);
+        let t = b.servo.t_ms;
         let step = Step::Drive(20, Some(150));
-        let e = record(&mut c, id, &cfg(vec![step], Dirs::Fwd, 150, &rig))
+        let e = record(&mut b, &cfg(vec![step], Dirs::Fwd, 150, &rig))
             .err()
             .unwrap();
         assert_eq!(e.to_string(), flat);
-        assert_eq!(torque(&mut c, id), 0);
-        let armed = c.read(id, control::TEL_COUNT.addr, 2).unwrap();
+        assert!(!b.servo.torque);
+        assert_eq!((b.servo.t_ms, b.servo.tel_mask), (t, 0), "nothing moved");
+        let id = b.id();
+        let armed = b.c.read(id, control::TEL_COUNT.addr, 2).unwrap();
         assert_eq!(armed, [0, 0], "no burst armed");
-    }
-
-    const MG90: Fit = Fit {
-        slope: 0.2275,
-        intercept: -0.845,
-        r2: 0.998,
-    };
-
-    #[test]
-    fn mg90_windows_match_the_bench_hand_table() {
-        let want: BTreeMap<u8, u32> = [
-            (5, 1500),
-            (10, 1500),
-            (15, 971),
-            (20, 682),
-            (25, 529),
-            (30, 434),
-            (35, 369),
-            (40, 323),
-            (45, 287),
-            (50, 259),
-            (55, 237),
-            (60, 219),
-            (65, 203),
-            (70, 190),
-            (75, 179),
-            (80, 169),
-            (85, 161),
-            (90, 153),
-            (95, 146),
-            (100, 140),
-        ]
-        .into();
-        assert_eq!(windows(&MG90, 3020), want);
-    }
-
-    #[test]
-    fn slow_or_stalled_duties_cap_the_window() {
-        // 5%: v 0.29 is under V_SS_MIN; 10%: v 1.43 needs 1719 ms
-        assert!(MG90.at(5) <= V_SS_MIN);
-        assert_eq!(window_ms(MG90.at(5), 3020), WINDOW_MAX_MS);
-        assert_eq!(window_ms(MG90.at(10), 3020), WINDOW_MAX_MS);
-        assert_eq!(window_ms(-1.0, 3020), WINDOW_MAX_MS);
-        assert_eq!(window_ms(V_SS_MIN, 3020), WINDOW_MAX_MS);
-    }
-
-    #[test]
-    fn predicted_travel_excludes_the_spinup() {
-        // 60%: 12.805 counts/ms over 219 - 30 ms
-        assert_eq!(predicted_travel(MG90.at(60), 219), 2420);
-        assert_eq!(predicted_travel(5.0, 10), 0);
     }
 
     #[test]
@@ -894,12 +1603,16 @@ mod tests {
 
     #[test]
     fn limits_from_a_calibrated_servo() {
-        let lim = limits((432, 3626), (209, 3849)).unwrap();
+        let lim = limits((432, 3626), (232, 3849)).unwrap();
         assert_eq!(lim.soft, [432, 3626]);
-        assert_eq!(lim.phys, [209, 3849]);
+        assert_eq!(lim.phys, [232, 3849]);
         assert_eq!(lim.guard, [532, 3526]);
         assert_eq!(lim.center, 2029);
         assert_eq!(lim.runway, 2994);
+        assert_eq!(
+            (margin(&lim, Dir::Fwd), margin(&lim, Dir::Rev)),
+            (223.0, 200.0)
+        );
     }
 
     #[test]
@@ -914,9 +1627,15 @@ mod tests {
         assert!(limits((1000, 2700), (0, 4095)).is_ok());
     }
 
+    const MG90: Fit = Fit {
+        slope: 0.2275,
+        intercept: -0.845,
+        r2: 0.998,
+    };
+
     #[test]
     fn affine_fit_recovers_a_planted_line() {
-        let pts: Vec<(f64, f64)> = PILOT_DUTIES
+        let pts: Vec<(f64, f64)> = [10u8, 20, 30, 40, 50]
             .iter()
             .map(|&d| (d as f64, MG90.at(d)))
             .collect();
@@ -951,32 +1670,6 @@ mod tests {
         assert!(settled_slope(&[], SETTLED_FRAC).is_none());
     }
 
-    #[test]
-    fn next_window_opens_short_then_predicts() {
-        assert_eq!(next_window(&[], 10, 3000), PILOT_W0);
-        // one point: through the origin, 1.43 -> 2.86 at 20%
-        assert_eq!(next_window(&[(10.0, 1.43)], 20, 3000), 420);
-        // two or more: affine, exact on the mg90 line at 30%
-        let pts = [(10.0, MG90.at(10)), (20.0, MG90.at(20))];
-        assert_eq!(next_window(&pts, 30, 3000), 201);
-        // a falling prediction never beats the fastest rung measured
-        assert_eq!(next_window(&[(10.0, 4.0), (20.0, 2.0)], 30, 3000), 300);
-        // and a slow servo caps
-        assert_eq!(next_window(&[(10.0, 0.35)], 20, 3000), WINDOW_MAX_MS);
-    }
-
-    #[test]
-    fn verification_bands() {
-        assert!(runway_frac_ok(1647, 2994));
-        assert!(!runway_frac_ok(1640, 2994));
-        assert!(runway_frac_ok(2694, 2994));
-        assert!(!runway_frac_ok(2700, 2994));
-        assert!(matches_prediction(2179, 2420));
-        assert!(matches_prediction(2661, 2420));
-        assert!(!matches_prediction(2177, 2420));
-        assert!(!matches_prediction(2663, 2420));
-    }
-
     /// mg90-a 2S spindown (bridge/spindown, five captures) per coast duty:
     /// entry counts/ms, lead and coast counts, taken alike both ways.
     const MG90_COAST: [(u8, f64, u16, u16); 5] = [
@@ -990,8 +1683,7 @@ mod tests {
     /// The committed mg90-a 2S envelope's v_ss fits.
     fn mg90_2s_v_ss() -> Speed {
         Speed {
-            duties: PILOT_DUTIES.to_vec(),
-            used: Dir::Rev,
+            duties: vec![10, 20, 30, 40, 50],
             fwd: Fit::rounded(0.2047, -0.721, 0.9968),
             rev: Fit::rounded(0.2079, -0.831, 0.9983),
         }
@@ -1009,14 +1701,24 @@ mod tests {
     }
 
     fn rung(pct: u8, fwd: CoastRun, rev: CoastRun) -> CoastRung {
-        CoastRung { pct, fwd, rev }
+        CoastRung {
+            pct,
+            drive_ms: 80,
+            fwd,
+            rev,
+        }
     }
 
     #[test]
     fn ladder_duties_climb_from_a_low_rung() {
-        assert_eq!(ladder_duties(&[80, 20, 40, 20]).unwrap(), [20, 40, 80]);
-        assert_eq!(ladder_duties(&[30]).unwrap(), [30]);
-        let err = |d: &[u8]| ladder_duties(d).unwrap_err().to_string();
+        let first = Some(FIRST_MAX_PCT);
+        assert_eq!(
+            ladder_duties(&[80, 20, 40, 20], first).unwrap(),
+            [20, 40, 80]
+        );
+        assert_eq!(ladder_duties(&[30], first).unwrap(), [30]);
+        assert_eq!(ladder_duties(&[60, 40], None).unwrap(), [40, 60]);
+        let err = |d: &[u8]| ladder_duties(d, first).unwrap_err().to_string();
         assert!(err(&[]).contains("no duties"));
         assert!(err(&[40, 60]).contains("opens at 40%"));
         assert!(err(&[20, 101]).contains("over full scale"));
@@ -1024,7 +1726,7 @@ mod tests {
 
     #[test]
     fn coast_room_runs_from_the_far_band_edge_to_soft() {
-        let lim = limits((432, 3626), (209, 3849)).unwrap();
+        let lim = limits((432, 3626), (232, 3849)).unwrap();
         // 3626 - (532 + 75), (3526 - 75) - 432
         assert_eq!(
             coast_room(&lim),
@@ -1095,22 +1797,9 @@ mod tests {
     }
 
     #[test]
-    fn mg90_ladder_reaches_80_where_the_one_probe_model_stopped_at_66() {
-        let lim = limits((432, 3626), (209, 3849)).unwrap();
+    fn mg90_ladder_reaches_80_on_the_measured_coasts() {
+        let lim = limits((432, 3626), (232, 3849)).unwrap();
         let (room, v_ss) = (coast_room(&lim), mg90_2s_v_ss());
-
-        // The one-probe model on this servo: the 40% probe's k = 551 / 7.293^2
-        // put on v_ss, drive 50 ms at speed, capped 80% of the runway.
-        let k = 551.0 / (7.293f64 * 7.293);
-        let old = (40..=100u8)
-            .rev()
-            .find(|&d| {
-                let v = v_ss.rev.at(d);
-                v * 50.0 + k * v * v <= RUNWAY_FRAC * lim.runway as f64
-            })
-            .unwrap();
-        assert_eq!(old, 66);
-
         let mut ladder = Vec::new();
         for &(pct, entry, lead, coast) in &MG90_COAST {
             let Next::Run(predicted) = next_rung(&ladder, pct, &v_ss, &room) else {
@@ -1167,6 +1856,67 @@ mod tests {
         assert_eq!(next_rung(&[], 20, &v_ss, &room), Next::Run(None));
     }
 
+    /// Chains split where a drive starts: the steps a drive feeds stay with
+    /// it; a chain's excursion adds every leg at its steady speed and the
+    /// way it ends.
+    #[test]
+    fn chains_split_at_every_drive_and_predict_their_excursion() {
+        let p = procedure();
+        let names: Vec<String> = chains_of(&p.block.reversal.steps)
+            .iter()
+            .map(|c| chain_name(c))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "20@60,then:-20@60,then:20@60,brake:200",
+                "40@60,then:-40@60,then:40@60,brake:200"
+            ]
+        );
+        assert_eq!(chains_of(&p.block.step.steps).len(), 5);
+        assert_eq!(chains_of(&p.block.ends.steps).len(), 2);
+
+        let fit = mg90_2s_v_ss().fwd;
+        let mut rw = Runway::new((532, 3526));
+        rw.ran(0.2, 3.3);
+        rw.stopped(3.3, 40.0);
+        let none = runway::Envelope {
+            coast: Vec::new(),
+            ..envelope_with_coasts()
+        };
+        let chain = &chains_of(&p.block.reversal.steps)[0];
+        // three 60 ms legs at v(20) = 3.373, each with the 10 ms gap, then
+        // the braked stop from that speed
+        let e = excursion(chain, &fit, &none, &rw).unwrap();
+        let v = fit.at(20);
+        let stop = rw.stop(v).unwrap();
+        assert!((e - (3.0 * v * 70.0 + stop)).abs() < 1e-9, "{e}");
+        // a coast ending needs a measured coast
+        let step = &chains_of(&p.block.step.steps)[0];
+        assert_eq!(excursion(step, &fit, &none, &rw), None);
+        let coasts = envelope_with_coasts();
+        let e = excursion(step, &fit, &coasts, &rw).unwrap();
+        let v = fit.at(30);
+        assert!((e - (v * 30.0 + coasts.coast(v))).abs() < 1e-9, "{e}");
+    }
+
+    fn envelope_with_coasts() -> runway::Envelope {
+        let line = runway::Line {
+            slope: 0.0,
+            intercept: 0.0,
+        };
+        runway::Envelope {
+            supply: runway::Supply::TwoS,
+            phys: (232, 3849),
+            fwd: line,
+            rev: line,
+            coast: MG90_COAST
+                .iter()
+                .map(|&(_, v, _, d)| (v, d as f64))
+                .collect(),
+        }
+    }
+
     fn seg(dir: i8, pos: &[u16]) -> Segment {
         let frames = pos
             .iter()
@@ -1175,17 +1925,8 @@ mod tests {
                 tick: i as u64,
                 window_valid: true,
                 pos: Some(p),
-                current: None,
-                current_trough: None,
-                duty_q15: None,
-                vdiff: None,
-                vbus: None,
-                current_raw: None,
-                vmotor_a: None,
-                vmotor_b: None,
-                vbus_raw: None,
-                ntc_raw: None,
-                pos_lin: None,
+                duty_q15: Some(0),
+                ..TelFrame::default()
             })
             .collect();
         Segment {
@@ -1261,9 +2002,26 @@ mod tests {
         assert!(err(&[stalled, c]).contains("never got going"));
     }
 
+    /// A chain's excursion from its first sample, the peak's distance
+    /// inside the soft limit ahead; reaching the stop ends the pilot.
     #[test]
-    fn span_is_pos_max_minus_min() {
-        assert_eq!(span(&seg(1, &[900, 532, 1200, 1100]).frames).unwrap(), 668);
-        assert!(span(&seg(1, &[]).frames).is_err());
+    fn chain_excursion_is_the_peak_from_the_start() {
+        let lim = limits((432, 3626), (232, 3849)).unwrap();
+        let [d, c] = coast_chain(1, 600);
+        let [rd, rc] = coast_chain(-1, 3450);
+        let segs = [d, c, rd, rc];
+        let e = chain_excursion(&segs, Dir::Fwd, &lim).unwrap();
+        assert_eq!(
+            e,
+            Excursion {
+                travel: 317,
+                peak_inside_soft: 3626 - 917,
+            }
+        );
+        let e = chain_excursion(&segs, Dir::Rev, &lim).unwrap();
+        assert_eq!(e.travel, 317);
+        let [d, c] = coast_chain(1, 3600);
+        let err = chain_excursion(&[d, c], Dir::Fwd, &lim).unwrap_err();
+        assert_eq!(err.to_string(), "fwd chain reached the stop at 3849");
     }
 }
