@@ -48,7 +48,7 @@ pub struct FakeServo {
     pub b: f64,
     /// Medium rate, tick_hz / 10.
     pub f_med: f64,
-    /// Static friction: no motion below this |duty| (0 = none).
+    /// Static friction: no motion from rest below this |duty| (0 = none).
     pub breakaway_q15: i16,
     /// Reported pos gains +80 counts inside this zone (slip artifact).
     pub glitch_zone: Option<(f64, f64)>,
@@ -79,6 +79,9 @@ pub struct FakeServo {
     permit_until: f64,
     /// OpenLoop current limit, counts; None is firmware without a limiter.
     pub current_limit: Option<u16>,
+    /// How far over the limit the governed current reads, a fraction: the
+    /// kernel holds a stall with window peaks up to 1.1 of the limit.
+    pub hold_ripple: f64,
     /// Duty at the current window floor, q15: 160 ticks of ARR 1200.
     pub floor_q15: i16,
     /// The duty ceiling's last reset: its value and when.
@@ -129,6 +132,7 @@ impl FakeServo {
             lease_ms: None,
             permit_until: f64::NEG_INFINITY,
             current_limit: None,
+            hold_ripple: 0.0,
             floor_q15: 4369,
             ceil0: 0.0,
             t_ceil: 0.0,
@@ -390,7 +394,7 @@ impl FakeServo {
         let w = self.omega_dyn;
         let fric = if w != 0.0 {
             self.fc * w.signum() + self.fv * w
-        } else if i.abs() > self.fc {
+        } else if i.abs() > self.fc && self.applied().unsigned_abs() >= self.breakaway_q15 as u16 {
             self.fc * i.signum()
         } else {
             i // no net torque below stiction: alpha = 0
@@ -509,6 +513,9 @@ impl FakeServo {
             let mut i = self.i_at(duty);
             if (self.t_ms - self.t_duty_change) / 0.8 < self.transient_windows {
                 i *= self.transient_gain;
+            }
+            if self.limit_flags() & 1 != 0 {
+                i *= 1.0 + self.hold_ripple;
             }
             (i, self.vbus * duty.signum() as f64)
         } else {

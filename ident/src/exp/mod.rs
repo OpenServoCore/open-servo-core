@@ -26,6 +26,7 @@
 
 pub mod bias;
 pub mod breakaway;
+pub mod centre;
 pub mod endstop;
 pub mod held;
 pub mod inductance;
@@ -648,5 +649,54 @@ mod tests {
             "the lease lapsed inside the pause"
         );
         assert_eq!(log.last().map(String::as_str), Some("write stall_permit 0"));
+    }
+
+    /// A locked shaft asked for 64% for two seconds: the firmware limiter
+    /// holds it at the limit, window peaks a tenth over. An abort at the
+    /// limit trips on that; the default, a quarter over, never does.
+    #[test]
+    fn abort_default_clears_a_held_stall() {
+        let lim = crate::limits::ServoLimits {
+            i_lim: 280,
+            stall_yield: 168,
+            tau_trip: 280,
+            soft: (432, 3626),
+            phys: (209, 3849),
+            raw: (209, 3849),
+            r_q12: 0,
+            vbus: 1731,
+            i_floor_ticks: 160,
+            amps_per_count: 0.0,
+        };
+        let hold = |i_abort: i16| {
+            let mut s = FakeServo::new(3.37);
+            s.current_limit = Some(lim.i_lim);
+            s.hold_ripple = 0.10;
+            s.transient_gain = 1.0;
+            s.jam = Some(s.pos);
+            let mut drive = vec![
+                write(control::TORQUE_ENABLE, 1),
+                write(control::GOAL_DUTY, 20971),
+            ];
+            for _ in 0..200 {
+                drive.extend([Cmd::Pause { ms: 10 }, Cmd::Read]);
+            }
+            let mut exp = Guarded::new(Script(drive, None), RigParams::new(None, i_abort));
+            pump(&mut exp, &mut s, 10_000);
+            (exp.abort(), exp.into_inner().1)
+        };
+        let env = lim.envelope((None, None), None).unwrap();
+        let (abort, last) = hold(env.i_abort);
+        assert_eq!(abort, None);
+        let o = last.expect("the hold was read");
+        assert!(
+            o.i_mean_counts > lim.i_lim as i16,
+            "the hold reads over the limit"
+        );
+        assert!(o.duty_applied_q15 < 20971, "and is governed");
+        assert!(matches!(
+            hold(lim.i_lim as i16).0,
+            Some(AbortReason::Overcurrent { .. })
+        ));
     }
 }
