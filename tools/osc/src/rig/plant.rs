@@ -1,16 +1,24 @@
-//! The pot table as the kernel applies it, read off the servo for the
-//! experiments (osc-ident's `Pot`) and for the records that say which
-//! counts a run was fitted in.
+//! The plant data the servo holds beside its recordings: the pot table as
+//! the kernel applies it (read for the experiments as osc-ident's `Pot`
+//! and for the records that say which counts a run was fitted in), the
+//! plant stamp against the live set, and the data state. A capture is only
+//! as interpretable as this record: the same raw pot streams as different
+//! `pos_lin` under different tables.
 
 use anyhow::Result;
-use osc_client::Id;
 use osc_client::blocking::Client;
+use osc_client::data_state::DataState;
 use osc_client::descriptor::Descriptor;
 use osc_client::nusb::NusbPipe;
 use osc_client::pot_lut::{INTERVALS, state};
+use osc_client::stamp::{UNSTAMPED, Verdict};
+use osc_client::{Error, Id};
 use osc_ident::lut::{GRID, GridLut, KNOTS};
 use osc_ident::pot::Pot;
 use osc_protocol::crc::osc_crc;
+use serde_json::{Value, json};
+
+use crate::descriptor;
 
 /// The effective table: the array while LIVE, the identity otherwise.
 pub(crate) struct Lut {
@@ -86,11 +94,111 @@ impl Lut {
             None => format!("LIVE (crc {:#06x}, every knot 0)", self.crc()),
         }
     }
+
+    /// The compact record a recording's meta carries.
+    pub(crate) fn json(&self) -> Value {
+        json!({
+            "lut_state": self.state_name(),
+            "lut_crc": format!("{:#06x}", self.crc()),
+            "lut_nonzero_knots": self.nonzero(),
+            "lut_band": self.band().map(|(lo, hi)| [lo, hi]),
+        })
+    }
+
+    /// The whole table as the image `osc lut write` and `osc lut grade`
+    /// take, tagged with the state and crc the recordings name it by.
+    pub(crate) fn image(&self, stops: (u16, u16), dataset: &str, source: &str) -> Value {
+        let covered = self.band().unwrap_or((0, 0));
+        let img = self
+            .grid()
+            .image(stops.0, stops.1, dataset, 0, covered, source);
+        let mut v = serde_json::to_value(img).expect("image serializes");
+        v["lut_state"] = json!(self.state_name());
+        v["lut_crc"] = json!(format!("{:#06x}", self.crc()));
+        v
+    }
+}
+
+/// The pot stops the table is validated against.
+pub(crate) fn stops(c: &mut Client<NusbPipe>, id: Id, d: &Descriptor) -> Result<(u16, u16)> {
+    let mut read = |name: &str| -> Result<u16> {
+        let f = descriptor::field(d, name)?;
+        let b = c.read(id, f.addr, f.width)?;
+        Ok(u16::from_le_bytes([b[0], b[1]]))
+    };
+    Ok((read("raw_min")?, read("raw_max")?))
+}
+
+/// The table, the stamp verdict and the data state as one reading.
+pub(crate) struct Snapshot {
+    pub(crate) lut: Lut,
+    /// None when the descriptor carries no stamp recipe.
+    pub(crate) stamp: Option<Verdict>,
+    pub(crate) data: DataState,
+}
+
+impl Snapshot {
+    pub(crate) fn read(c: &mut Client<NusbPipe>, id: Id, d: &Descriptor) -> Result<Self> {
+        let lut = Lut::read(c, id, d)?;
+        let stamp = match c.stamp_verdict(id, d) {
+            Ok(v) => Some(v),
+            Err(Error::Descriptor(_)) => None,
+            Err(e) => return Err(e.into()),
+        };
+        let data = c.data_state(id, d)?;
+        Ok(Self { lut, stamp, data })
+    }
+
+    pub(crate) fn stamp_verdict(&self) -> &'static str {
+        match self.stamp {
+            None => "none",
+            Some(v) if v.stored == UNSTAMPED => "unstamped",
+            Some(v) if v.matches() => "match",
+            Some(_) => "mismatch",
+        }
+    }
+
+    pub(crate) fn data_names(&self) -> Vec<&'static str> {
+        self.data.reasons().iter().map(|r| r.name()).collect()
+    }
+
+    /// The `plant` block of a recording's meta.
+    pub(crate) fn json(&self) -> Value {
+        let mut v = self.lut.json();
+        v["plant_stamp"] = json!(self.stamp.map(|s| format!("{:#06x}", s.stored)));
+        v["stamp_computed"] = json!(self.stamp.map(|s| format!("{:#06x}", s.computed)));
+        v["stamp_verdict"] = json!(self.stamp_verdict());
+        v["data_flags"] = json!(self.data_names());
+        v
+    }
+
+    /// One log line.
+    pub(crate) fn line(&self) -> String {
+        let data = match self.data.flags {
+            0 => "clean".to_string(),
+            _ => self.data_names().join(" | "),
+        };
+        format!(
+            "lut {}, stamp {}, data {data}",
+            self.lut.describe(),
+            self.stamp_verdict()
+        )
+    }
+
+    /// Whether a later reading describes the same plant: the same table,
+    /// the same stamp verdict, the same data reasons.
+    pub(crate) fn same(&self, later: &Self) -> bool {
+        self.lut.state == later.lut.state
+            && self.lut.knots == later.lut.knots
+            && self.stamp_verdict() == later.stamp_verdict()
+            && self.data.flags == later.data.flags
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use osc_client::data_state::STAMP_MISMATCH;
 
     fn bent() -> Lut {
         let mut knots = [0i16; INTERVALS];
@@ -140,5 +248,96 @@ mod tests {
             "an all-zero LIVE table hashes like the identity"
         );
         assert!(zero.pot().is_live());
+    }
+
+    #[test]
+    fn snapshot_records_table_stamp_and_data_and_notices_a_change() {
+        let a = Snapshot {
+            lut: bent(),
+            stamp: Some(Verdict {
+                stored: 0x1234,
+                computed: 0x1234,
+            }),
+            data: DataState {
+                flags: 0,
+                fault_code: 0,
+            },
+        };
+        let j = a.json();
+        assert_eq!(j["lut_state"], "LIVE");
+        assert_eq!(j["lut_nonzero_knots"], 185);
+        assert_eq!(j["lut_band"], json!([560, 3504]));
+        assert_eq!(j["lut_crc"], format!("{:#06x}", bent().crc()));
+        assert_eq!(j["plant_stamp"], "0x1234");
+        assert_eq!(j["stamp_verdict"], "match");
+        assert_eq!(j["data_flags"], json!([]));
+        assert!(
+            a.line().ends_with("stamp match, data clean"),
+            "{}",
+            a.line()
+        );
+
+        let b = Snapshot {
+            lut: bent(),
+            stamp: Some(Verdict {
+                stored: 0x1234,
+                computed: 0x5678,
+            }),
+            data: DataState {
+                flags: STAMP_MISMATCH,
+                fault_code: 0,
+            },
+        };
+        assert_eq!(b.json()["stamp_verdict"], "mismatch");
+        assert_eq!(b.json()["data_flags"], json!(["STAMP_MISMATCH"]));
+        assert!(b.line().ends_with("stamp mismatch, data STAMP_MISMATCH"));
+        assert!(a.same(&a));
+        assert!(!a.same(&b));
+
+        let rebooted = Snapshot {
+            lut: Lut {
+                state: state::IDENTITY,
+                knots: [0; INTERVALS],
+            },
+            stamp: Some(Verdict {
+                stored: 0x1234,
+                computed: 0x1234,
+            }),
+            data: a.data,
+        };
+        assert!(!a.same(&rebooted), "a table lost to a reboot is a change");
+        let j = rebooted.json();
+        assert_eq!(j["lut_state"], "IDENTITY");
+        assert_eq!(j["lut_band"], Value::Null);
+        let unstamped = Snapshot {
+            stamp: Some(Verdict {
+                stored: UNSTAMPED,
+                computed: 7,
+            }),
+            ..rebooted
+        };
+        assert_eq!(unstamped.stamp_verdict(), "unstamped");
+        let no_recipe = Snapshot {
+            stamp: None,
+            ..unstamped
+        };
+        assert_eq!(no_recipe.json()["plant_stamp"], Value::Null);
+        assert_eq!(no_recipe.stamp_verdict(), "none");
+    }
+
+    #[test]
+    fn image_is_the_lut_write_format_tagged_with_state_and_crc() {
+        let b = bent();
+        let v = b.image((209, 3849), "mg90-a__2s", "session start");
+        assert_eq!(v["raw_min"], 209);
+        assert_eq!(v["raw_max"], 3849);
+        assert_eq!(v["grid_shift"], 4);
+        assert_eq!(v["knots"].as_array().unwrap().len(), INTERVALS);
+        assert_eq!(v["covered"], json!([560, 3504]));
+        assert_eq!(v["dataset"], "mg90-a__2s");
+        assert_eq!(v["lut_state"], "LIVE");
+        assert_eq!(v["lut_crc"], format!("{:#06x}", b.crc()));
+        let img: osc_ident::lut::Image = serde_json::from_value(v).unwrap();
+        assert_eq!(img.lut(), Some(b.grid()));
     }
 }

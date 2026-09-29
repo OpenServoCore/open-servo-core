@@ -42,6 +42,7 @@ use osc_ident::regs::{Reg, calib, config, control};
 
 use crate::descriptor;
 use crate::rig::park::park;
+use crate::rig::plant::Snapshot;
 use crate::rig::pump::{
     self, BurstStats, STOP, exchange_tel_burst, read_snapshot, with_guard, write_reg,
 };
@@ -580,16 +581,21 @@ pub(crate) fn git_toplevel() -> Result<PathBuf> {
         .context("not inside a git checkout: pass --root")
 }
 
-/// The run's constants, written as meta.json before the first burst.
+/// The run's constants, written as meta.json before the first burst. The
+/// `plant` block names the table the servo streamed `pos_lin` through,
+/// its stamp verdict and its data state at that moment.
 pub(crate) fn meta(c: &mut Client<NusbPipe>, id: Id, cfg: &Cfg) -> Result<serde_json::Value> {
     let identity = c.identity(id)?;
     let tick_hz = read_u16(c, id, calib::TICK_HZ)?;
     let vbus_counts = read_snapshot(c, id)?.vbus_counts;
+    let d = crate::state::descriptor(c, id)?;
+    let plant = Snapshot::read(c, id, &d)?.json();
     Ok(serde_json::json!({
         "model": identity.model,
         "fw": identity.fw,
         "tick_hz": tick_hz,
         "vbus_counts": vbus_counts,
+        "plant": plant,
         "sense": {
             "shunt_r_mohm": read_u16(c, id, calib::SHUNT_R_MOHM)?,
             "gain_milli": read_u16(c, id, calib::GAIN_MILLI)?,
