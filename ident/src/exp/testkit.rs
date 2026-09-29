@@ -3,6 +3,13 @@
 //! in-process. Electrical model: stalled i = v/R; free-running i = fc; the
 //! first windows after a duty change are inflated to imitate the L
 //! transient the settle discard exists for.
+//!
+//! With `current_limit` set the fake governs OpenLoop duty the way the
+//! kernel's limiter does: a goal above the window floor slews up from the
+//! floor, and the applied duty never draws more than the limit. With
+//! `lease_ms` set the stall permit is a lease: granted by a write of true
+//! with torque on, extended by a rewrite, dropped by torque off, false, or
+//! the lease running out.
 
 use super::{Cmd, Experiment};
 use crate::burst::{
@@ -53,10 +60,24 @@ pub struct FakeServo {
     pub fault_after_bursts: Option<u32>,
     pub bursts: u32,
     /// The kernel's soft endstop: outbound duty at or past a limit is zeroed
-    /// unless the stall permit is set (and honored).
+    /// unless the stall permit is live (and honored).
     pub soft: Option<(f64, f64)>,
+    /// The permit as last written; [`FakeServo::permit_live`] says whether
+    /// it is granted.
     pub permit: bool,
     pub honors_permit: bool,
+    /// None: the permit is a level, live while written true.
+    pub lease_ms: Option<f64>,
+    permit_until: f64,
+    /// OpenLoop current limit, counts; None is firmware without a limiter.
+    pub current_limit: Option<u16>,
+    /// Duty at the current window floor, q15: 160 ticks of ARR 1200.
+    pub floor_q15: i16,
+    /// The duty ceiling's last reset: its value and when.
+    ceil0: f64,
+    t_ceil: f64,
+    /// A locked shaft: travel stops at this position and never leaves it.
+    pub jam: Option<f64>,
     pub torque: bool,
     pub duty: i16,
     pub tel_mask: u16,
@@ -97,6 +118,13 @@ impl FakeServo {
             soft: None,
             permit: false,
             honors_permit: true,
+            lease_ms: None,
+            permit_until: f64::NEG_INFINITY,
+            current_limit: None,
+            floor_q15: 4369,
+            ceil0: 0.0,
+            t_ceil: 0.0,
+            jam: None,
             torque: false,
             duty: 0,
             tel_mask: 0,
@@ -154,18 +182,93 @@ impl FakeServo {
         }
     }
 
-    /// The duty the bridge actually sees: zero with torque off, and zero
-    /// driving outward at a soft limit the permit does not open.
-    fn applied(&self) -> i16 {
+    pub fn permit_live(&self) -> bool {
+        match self.lease_ms {
+            None => self.permit,
+            Some(_) => self.permit && self.torque && self.t_ms < self.permit_until,
+        }
+    }
+
+    fn endstop_blocks(&self) -> bool {
         let out = self.duty as f64 * if self.drive_polarity { 1.0 } else { -1.0 };
-        let clamped = self
-            .soft
+        self.soft
             .is_some_and(|(lo, hi)| (self.pos <= lo && out < 0.0) || (self.pos >= hi && out > 0.0))
-            && !(self.permit && self.honors_permit);
-        if !self.torque || clamped {
+            && !(self.permit_live() && self.honors_permit)
+    }
+
+    /// The duty the bridge actually sees: zero with torque off, zero driving
+    /// outward at a soft limit the permit does not open, and the governed
+    /// duty under the limiter.
+    fn applied(&self) -> i16 {
+        if !self.torque || self.endstop_blocks() {
             0
         } else {
-            self.duty
+            self.govern()
+        }
+    }
+
+    /// The kernel's duty ceiling now: up 128 q15 per fast tick from its
+    /// last reset, never under the floor.
+    fn ceiling(&self) -> f64 {
+        // whole ticks only; the epsilon keeps a tick boundary from rounding down
+        let ticks = ((self.t_ms - self.t_ceil) * self.f_med / 100.0 + 1e-6)
+            .floor()
+            .max(0.0);
+        (self.ceil0 + 128.0 * ticks).clamp(self.floor_q15 as f64, 32767.0)
+    }
+
+    /// The goal slewed by the ceiling, then cut to the largest duty whose
+    /// current stays at the limit.
+    fn govern(&self) -> i16 {
+        let Some(lim) = self.current_limit else {
+            return self.duty;
+        };
+        let sign = self.duty.signum() as i32;
+        let slewed = (self.duty.unsigned_abs() as f64).min(self.ceiling()) as i32;
+        let holds = |mag: i32| self.i_at((sign * mag) as i16).abs() <= lim as f64;
+        if holds(slewed) {
+            return (sign * slewed) as i16;
+        }
+        let (mut ok, mut over) = (0, slewed);
+        while over - ok > 1 {
+            let mid = (ok + over) / 2;
+            if holds(mid) {
+                ok = mid;
+            } else {
+                over = mid;
+            }
+        }
+        (sign * ok) as i16
+    }
+
+    /// The firmware's `limit_flags`: bit 0 the limiter governs, bit 2 the
+    /// endstop blocks, bit 3 the permit is live. Yield (bit 1) is not
+    /// modelled.
+    pub fn limit_flags(&self) -> u8 {
+        let driving = self.torque && self.duty != 0;
+        let mut f = 0;
+        if driving && self.endstop_blocks() {
+            f |= 4;
+        } else if driving && self.applied() != self.duty {
+            f |= 1;
+        }
+        if self.permit_live() {
+            f |= 8;
+        }
+        f
+    }
+
+    fn at_jam(&self) -> bool {
+        self.jam == Some(self.pos)
+    }
+
+    /// Where travel toward `to` ends: at the stops, or at the jam when it
+    /// lies on the way.
+    fn travel(&self, to: f64) -> f64 {
+        let to = to.clamp(self.ends.0, self.ends.1);
+        match self.jam {
+            Some(j) if (self.pos - j) * (to - j) <= 0.0 => j,
+            _ => to,
         }
     }
 
@@ -173,13 +276,18 @@ impl FakeServo {
         if self.dynamic {
             return self.omega_dyn;
         }
-        let duty = self.applied();
+        self.omega_at(self.applied())
+    }
+
+    /// Steady speed at an applied duty, for the models without dynamics.
+    fn omega_at(&self, duty: i16) -> f64 {
         if duty == 0 || duty.unsigned_abs() < self.breakaway_q15 as u16 {
             return 0.0;
         }
         let vsign = duty.signum() as f64 * if self.drive_polarity { 1.0 } else { -1.0 };
-        let stalled =
-            (self.pos <= self.ends.0 && vsign < 0.0) || (self.pos >= self.ends.1 && vsign > 0.0);
+        let stalled = (self.pos <= self.ends.0 && vsign < 0.0)
+            || (self.pos >= self.ends.1 && vsign > 0.0)
+            || self.at_jam();
         if stalled {
             return 0.0;
         }
@@ -204,17 +312,68 @@ impl FakeServo {
         (v - self.ke * self.omega_dyn) / self.r
     }
 
+    /// The settled current an applied duty draws right now, before the L
+    /// transient. Friction current only while the free-speed shortcut
+    /// moves: stalled current is ohmic, and the physical and dynamic models
+    /// need no extra term - their (v - ke*omega)/r IS the winding current
+    /// at every instant.
+    fn i_at(&self, duty: i16) -> f64 {
+        if duty == 0 {
+            return 0.0;
+        }
+        let v = duty as f64 / 32767.0 * self.vbus;
+        let omega = if self.dynamic {
+            self.omega_dyn
+        } else {
+            self.omega_at(duty)
+        };
+        let fric = if omega != 0.0 && !self.physical_motion && !self.dynamic {
+            self.fc * duty.signum() as f64
+        } else {
+            0.0
+        };
+        (v - self.ke * omega) / self.r + fric
+    }
+
     pub fn write(&mut self, reg: Reg, value: i32) {
         if reg == control::TORQUE_ENABLE {
-            self.torque = value != 0;
+            let on = value != 0;
+            if on && !self.torque {
+                self.reset_ceiling(self.floor_q15 as f64);
+            }
+            self.torque = on;
         } else if reg == control::GOAL_DUTY {
-            self.duty = value as i16;
+            let goal = value as i16;
+            // the ceiling carries through a goal change in the same direction
+            // and restarts from the floor on a reversal or a start from rest
+            let from = if self.duty != 0 && goal.signum() == self.duty.signum() {
+                self.ceiling().min(self.duty.unsigned_abs() as f64)
+            } else {
+                self.floor_q15 as f64
+            };
+            self.reset_ceiling(from);
+            self.duty = goal;
             self.t_duty_change = self.t_ms;
         } else if reg == control::TEL_MASK {
             self.tel_mask = value as u16;
         } else if reg == control::STALL_PERMIT {
             self.permit = value != 0;
+            if let Some(lease) = self.lease_ms {
+                self.permit_until = if self.permit && self.torque {
+                    self.t_ms + lease
+                } else {
+                    f64::NEG_INFINITY
+                };
+            }
         }
+        if !self.torque {
+            self.permit_until = f64::NEG_INFINITY;
+        }
+    }
+
+    fn reset_ceiling(&mut self, from: f64) {
+        self.ceil0 = from;
+        self.t_ceil = self.t_ms;
     }
 
     /// One dynamic-model integration substep.
@@ -240,9 +399,10 @@ impl FakeServo {
         } else {
             w2
         };
-        self.pos = (self.pos + self.omega_dyn * dt).clamp(self.ends.0, self.ends.1);
+        self.pos = self.travel(self.pos + self.omega_dyn * dt);
         if (self.pos <= self.ends.0 && self.omega_dyn < 0.0)
             || (self.pos >= self.ends.1 && self.omega_dyn > 0.0)
+            || self.at_jam()
         {
             self.omega_dyn = 0.0;
         }
@@ -253,7 +413,7 @@ impl FakeServo {
         if self.dynamic {
             self.substep(dt);
         } else {
-            self.pos = (self.pos + self.omega() * dt).clamp(self.ends.0, self.ends.1);
+            self.pos = self.travel(self.pos + self.omega() * dt);
         }
     }
 
@@ -262,12 +422,15 @@ impl FakeServo {
             // tick-sized substeps keep the ~tens-of-ms tau integration exact
             let dt = 1.0 / (self.f_med * 10.0);
             let n = (ms as f64 / 1000.0 / dt).round() as u64;
-            for _ in 0..n {
+            let t0 = self.t_ms;
+            for k in 0..n {
                 self.substep(dt);
+                self.t_ms = t0 + (k + 1) as f64 * dt * 1000.0;
             }
+            self.t_ms = t0;
         } else {
             let dt = ms as f64 / 1000.0;
-            self.pos = (self.pos + self.omega() * dt).clamp(self.ends.0, self.ends.1);
+            self.pos = self.travel(self.pos + self.omega() * dt);
         }
         self.t_ms += ms as f64;
     }
@@ -278,18 +441,21 @@ impl FakeServo {
     /// firmware's disarmed producer.
     pub fn stream(&mut self, samples: u16, sink: &mut Vec<TelFrame>) {
         let dt = 1.0 / (self.f_med * 10.0);
+        let t0 = self.t_ms;
         for k in 0..samples {
             self.tick(dt);
+            self.t_ms = t0 + (k + 1) as f64 * dt * 1000.0;
             if self.tel_mask == 0 {
                 continue;
             }
             let noise = self.noise();
-            let driving = self.torque && self.duty != 0;
+            let duty = self.applied();
+            let driving = duty != 0;
             let sel = |bit: u16| self.tel_mask & bit != 0;
             let i = if self.dynamic {
                 self.i_dyn()
             } else {
-                let v = self.duty as f64 / 32767.0 * self.vbus;
+                let v = duty as f64 / 32767.0 * self.vbus;
                 if driving {
                     (v - self.ke * self.omega()) / self.r
                 } else {
@@ -303,10 +469,10 @@ impl FakeServo {
                 pos: sel(1 << 0).then_some(raw),
                 current: sel(1 << 1).then(|| i.round() as i16),
                 current_trough: sel(1 << 2).then_some(512),
-                duty_q15: sel(1 << 3).then_some(if driving { self.duty } else { 0 }),
+                duty_q15: sel(1 << 3).then_some(duty),
                 vdiff: sel(1 << 4).then(|| {
                     if driving {
-                        (self.vbus * self.duty.signum() as f64) as i16
+                        (self.vbus * duty.signum() as f64) as i16
                     } else {
                         0
                     }
@@ -318,39 +484,21 @@ impl FakeServo {
                 // the same way whichever way the bridge is pointed
                 // (window.rs applies the direction sign downstream)
                 current_raw: sel(1 << 6).then(|| (512.0 + i.abs()).round() as u16),
-                vmotor_a: sel(1 << 7).then_some(if driving && self.duty > 0 {
-                    self.vbus as u16
-                } else {
-                    0
-                }),
-                vmotor_b: sel(1 << 8).then_some(if driving && self.duty < 0 {
-                    self.vbus as u16
-                } else {
-                    0
-                }),
+                vmotor_a: sel(1 << 7).then_some(if duty > 0 { self.vbus as u16 } else { 0 }),
+                vmotor_b: sel(1 << 8).then_some(if duty < 0 { self.vbus as u16 } else { 0 }),
                 vbus_raw: sel(1 << 9).then_some(self.vbus as u16),
                 ntc_raw: sel(1 << 10).then_some(2048),
                 pos_lin: sel(1 << 11).then(|| self.q4_of(raw)),
             });
         }
-        self.t_ms += samples as f64 * dt * 1000.0;
+        self.t_ms = t0 + samples as f64 * dt * 1000.0;
     }
 
     pub fn read(&mut self) -> TelemetrySnapshot {
         let duty = self.applied();
         let driving = duty != 0;
         let (i, vdiff) = if driving {
-            let v = duty as f64 / 32767.0 * self.vbus;
-            let omega = self.omega();
-            // friction current only while moving: stalled current is ohmic.
-            // The physical and dynamic models need no extra term - their
-            // (v - ke*omega)/r IS the winding current at every instant.
-            let fric = if omega != 0.0 && !self.physical_motion && !self.dynamic {
-                self.fc * duty.signum() as f64
-            } else {
-                0.0
-            };
-            let mut i = (v - self.ke * omega) / self.r + fric;
+            let mut i = self.i_at(duty);
             if (self.t_ms - self.t_duty_change) / 0.8 < self.transient_windows {
                 i *= self.transient_gain;
             }
@@ -377,6 +525,7 @@ impl FakeServo {
             vdiff_mean: vdiff.round() as i16,
             duty_mean_q15: duty,
             duty_applied_q15: duty,
+            i_lim_counts: self.current_limit.unwrap_or(0),
             agg_seq: (self.t_ms / 0.8) as u64 as u16,
             ..Default::default()
         }
@@ -716,4 +865,124 @@ pub fn pump<E: Experiment>(exp: &mut E, servo: &mut FakeServo, max_steps: u32) -
     }
     log.push("OVERRUN".into());
     log
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The shaft locked at mid travel and at a stop, 64% asked both ways:
+    /// the duty climbs from the floor at the kernel's slew and settles
+    /// where the stall current meets the limit.
+    #[test]
+    fn fake_stall_holds_at_the_limit() {
+        const LIM: u16 = 150;
+        for (jam, pos, sign) in [
+            (Some(2400.0), 2400.0, 1),
+            (Some(2400.0), 2400.0, -1),
+            (None, 4000.0, 1),
+            (None, 200.0, -1),
+        ] {
+            let mut s = FakeServo::new(3.37);
+            s.current_limit = Some(LIM);
+            s.jam = jam;
+            s.pos = pos;
+            s.tel_mask = (1 << 1) | (1 << 3);
+            s.write(control::TORQUE_ENABLE, 1);
+            s.write(control::GOAL_DUTY, sign * pct(64));
+            let mut tel = Vec::new();
+            s.stream(400, &mut tel);
+            let duty: Vec<i16> = tel.iter().map(|f| f.duty_q15.unwrap()).collect();
+            assert_eq!(duty[0], sign as i16 * (s.floor_q15 + 128), "first tick");
+            assert!(duty.windows(2).all(|w| (w[1] - w[0]).abs() <= 128));
+            assert!(
+                tel.iter().all(|f| f.current.unwrap().unsigned_abs() <= LIM),
+                "current over the limit"
+            );
+            s.advance(50);
+            let o = s.read();
+            let held = (LIM as f64 * s.r / s.vbus * 32767.0) as i16;
+            assert!(
+                (o.duty_applied_q15 - sign as i16 * held).abs() <= 1,
+                "{jam:?} {sign}: applied {}",
+                o.duty_applied_q15
+            );
+            assert!((0.85 * LIM as f64..=LIM as f64).contains(&(o.i_mean_counts.abs() as f64)));
+            assert_eq!(o.i_lim_counts, LIM);
+            assert_eq!(o.pos, pos as u16);
+            assert_eq!(s.limit_flags(), 1);
+        }
+    }
+
+    /// A goal the limit can hold passes, and without a limit nothing is
+    /// governed.
+    #[test]
+    fn fake_passes_what_the_limit_holds() {
+        let mut s = FakeServo::new(3.37);
+        s.current_limit = Some(150);
+        s.jam = Some(s.pos);
+        s.write(control::TORQUE_ENABLE, 1);
+        s.write(control::GOAL_DUTY, pct(10));
+        s.advance(50);
+        assert_eq!(s.read().duty_applied_q15, pct(10) as i16);
+        assert_eq!(s.limit_flags(), 0);
+        s.current_limit = None;
+        s.write(control::GOAL_DUTY, pct(64));
+        assert_eq!(s.read().duty_applied_q15, pct(64) as i16);
+    }
+
+    /// The lease: a write of true with torque on grants it, a rewrite
+    /// extends it, and the grant lapses a lease after the last write, on
+    /// torque off, or never starts with torque off.
+    #[test]
+    fn fake_permit_expires() {
+        let mut s = FakeServo::new(3.37);
+        s.lease_ms = Some(1000.0);
+        s.ends = (230.0, 4000.0);
+        s.soft = Some((230.0, 3970.0));
+        s.pos = 230.0;
+        let outward = -pct(10);
+        s.write(control::TORQUE_ENABLE, 1);
+        s.write(control::GOAL_DUTY, outward);
+        assert_eq!(
+            s.read().duty_applied_q15,
+            0,
+            "no permit: the endstop blocks"
+        );
+        assert_eq!(s.limit_flags(), 4);
+
+        s.write(control::STALL_PERMIT, 1);
+        assert_eq!(s.read().duty_applied_q15, outward as i16);
+        assert_eq!(s.limit_flags(), 8);
+        s.advance(900);
+        s.write(control::STALL_PERMIT, 1);
+        s.advance(900);
+        assert!(s.permit_live(), "a rewrite extends the lease");
+        s.advance(200);
+        assert!(!s.permit_live());
+        assert_eq!(s.read().duty_applied_q15, 0, "the lease ran out");
+        assert_eq!(s.limit_flags(), 4);
+        assert!(s.permit, "the request byte still reads true");
+
+        s.write(control::STALL_PERMIT, 1);
+        assert!(s.permit_live());
+        s.write(control::TORQUE_ENABLE, 0);
+        s.write(control::TORQUE_ENABLE, 1);
+        assert!(!s.permit_live(), "torque off drops the grant");
+        s.write(control::TORQUE_ENABLE, 0);
+        s.write(control::STALL_PERMIT, 1);
+        s.write(control::TORQUE_ENABLE, 1);
+        assert!(
+            !s.permit_live(),
+            "a permit written with torque off never grants"
+        );
+
+        s.lease_ms = None;
+        s.advance(5000);
+        assert!(s.permit_live(), "the level permit holds while written true");
+    }
+
+    fn pct(p: i32) -> i32 {
+        p * 32767 / 100
+    }
 }
