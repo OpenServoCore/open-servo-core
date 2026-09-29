@@ -9,6 +9,7 @@
 //! reads a wall clock.
 
 pub mod current;
+pub mod duty_limit;
 pub mod faults;
 pub mod ident;
 pub mod limits;
