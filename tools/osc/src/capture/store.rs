@@ -207,6 +207,8 @@ pub(crate) struct CaptureMeta<'a> {
     pub(crate) supply: Supply,
     pub(crate) plan: &'a Plan,
     pub(crate) attempt: u32,
+    /// Per segment, whether the current limit held its duty under the goal.
+    pub(crate) governed: &'a [bool],
 }
 
 /// One attempt at a recording, in its tmp dir until accepted or rejected.
@@ -246,7 +248,8 @@ impl Try<'_> {
 
     /// Land the recording: `<name>.csv.gz` and `<name>.meta.json`, the sweep
     /// meta plus supply, session block map and capture, and each segment's
-    /// `t_goal_ms` into its `drive` block when it has one, keys sorted.
+    /// `t_goal_ms` and whether the limit governed it into its `drive` block
+    /// when it has one, keys sorted.
     pub(crate) fn accept(self, extra: &CaptureMeta) -> Result<()> {
         let Try {
             cap,
@@ -278,6 +281,7 @@ impl Try<'_> {
             };
             let t: Vec<Option<f64>> = goals.iter().map(|g| g.map(|t| tick_ms(t, hz))).collect();
             drive.insert("t_goal_ms".into(), json!(t));
+            drive.insert("governed".into(), json!(extra.governed));
         }
         obj.insert("supply".into(), json!(extra.supply.as_str()));
         obj.insert("session".into(), json!({ "blocks": plan.blocks }));
@@ -417,10 +421,12 @@ pub(super) mod fixture {
             t.on_seg(s).unwrap();
         }
         let plan = plan();
+        let governed = vec![false; segs.len()];
         let extra = CaptureMeta {
             supply: Supply::TwoS,
             plan: &plan,
             attempt: 2,
+            governed: &governed,
         };
         t.accept(&extra).unwrap();
         cap.dir().to_path_buf()
@@ -549,6 +555,7 @@ mod tests {
             supply: Supply::TwoS,
             plan: &plan,
             attempt: 2,
+            governed: &[],
         };
         t.accept(&extra).unwrap();
         assert_eq!(listing(cap.dir()), ["slow.csv.gz", "slow.meta.json"]);
@@ -600,6 +607,7 @@ mod tests {
             supply: Supply::Usb,
             plan: &plan,
             attempt: 1,
+            governed: &[],
         };
         assert!(t.accept(&extra).is_err());
         assert!(!store.landed("session", 1, "slow"));
@@ -631,6 +639,7 @@ mod tests {
                 supply: Supply::TwoS,
                 plan: &plan,
                 attempt: 1,
+                governed: &[],
             };
             t.accept(&extra).unwrap();
             let meta = std::fs::read_to_string(cap.dir().join("slow.meta.json")).unwrap();
