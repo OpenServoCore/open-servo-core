@@ -75,6 +75,7 @@ pub struct Span {
 }
 
 impl Span {
+    #[cfg(test)]
     fn overlaps(&self, addr: u16, end: u16) -> bool {
         self.addr < end && self.addr + self.width > addr
     }
@@ -163,10 +164,52 @@ pub fn compute(t: &ControlTable, knots: Option<&[i16; INTERVALS]>) -> u16 {
     if crc == UNSTAMPED { 1 } else { crc }
 }
 
-/// Whether a committed write `[addr, addr + len)` touched a covered field.
+const TABLE_WORDS: usize = core::mem::size_of::<ControlTable>() / 32;
+
+/// [`COVERED`] as one bit per table byte: `covers` runs on every commit
+/// under the reply deadline, and a scan of the spans costs ~25 us on the
+/// chip (35 spans, two taken branches each, from flash).
+const COVERED_BITS: [u32; TABLE_WORDS] = {
+    let mut bits = [0u32; TABLE_WORDS];
+    let mut i = 0;
+    while i < COVERED.len() {
+        let mut a = COVERED[i].addr as usize;
+        let end = a + COVERED[i].width as usize;
+        while a < end {
+            bits[a / 32] |= 1 << (a % 32);
+            a += 1;
+        }
+        i += 1;
+    }
+    bits
+};
+
+/// Whether a committed write `[addr, addr + len)` touched a covered field:
+/// a word at a time, the edge words masked to the span (the map's writable
+/// check idiom, u32 shifts only).
 pub fn covers(addr: u16, len: u16) -> bool {
-    let end = addr.saturating_add(len);
-    COVERED.iter().any(|s| s.overlaps(addr, end))
+    let lo = addr as usize;
+    let hi = lo.saturating_add(len as usize).min(TABLE_WORDS * 32);
+    if lo >= hi {
+        return false;
+    }
+    let mut wi = lo / 32;
+    while wi <= (hi - 1) / 32 {
+        let word_lo = wi * 32;
+        let start_bit = lo.saturating_sub(word_lo);
+        let end_bit = (hi - word_lo).min(32);
+        let covered = if end_bit == 32 {
+            !0u32
+        } else {
+            (1u32 << end_bit) - 1
+        };
+        let mask = covered & !((1u32 << start_bit) - 1);
+        if COVERED_BITS.get(wi).is_some_and(|w| w & mask != 0) {
+            return true;
+        }
+        wi += 1;
+    }
+    false
 }
 
 #[cfg(test)]
@@ -230,5 +273,23 @@ mod tests {
         assert!(!covers(COVERED[0].addr.wrapping_sub(1), 1));
         assert!(covers(0, 1024), "a whole-table write");
         assert!(!covers(0x200, 0x100), "telemetry");
+    }
+
+    /// The bitmap answers exactly as the span scan would, for every start
+    /// address and the write sizes that reach the edge-word masks.
+    #[test]
+    fn covers_matches_the_span_scan() {
+        let size = core::mem::size_of::<ControlTable>() as u16;
+        for addr in 0..=size {
+            for len in [1u16, 2, 3, 4, 31, 32, 33, 64, 66, 128, 250, 1024] {
+                let end = addr.saturating_add(len);
+                let scan = COVERED.iter().any(|s| s.overlaps(addr, end));
+                assert_eq!(covers(addr, len), scan, "addr {addr:#05x} len {len}");
+            }
+            assert!(!covers(addr, 0), "an empty write covers nothing");
+        }
+        assert!(!covers(u16::MAX, 1));
+        assert!(!covers(size, u16::MAX));
+        assert!(covers(0, u16::MAX));
     }
 }
