@@ -1,5 +1,6 @@
 //! Park: drive the horn back to a centre count open-loop, then torque off,
-//! so the next run starts from mid travel instead of a stop.
+//! so the next run starts from mid travel instead of a stop. A shaft that
+//! comes to rest on the way is blocked: the park gives up, torque off.
 
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -8,8 +9,11 @@ use anyhow::{Result, bail};
 use osc_client::Id;
 use osc_client::blocking::Client;
 use osc_client::nusb::NusbPipe;
+use osc_ident::exp::AbortReason;
+use osc_ident::exp::seek::{self, STALL_EPS, STALL_POLLS, Watch};
 use osc_ident::regs::control;
 
+use super::Aborted;
 use super::pump::{STOP, read_snapshot, write_reg};
 use crate::sweep::pct_q15;
 
@@ -38,6 +42,18 @@ fn arrived(pos: u16, center: u16, duty: i32) -> bool {
     (pos as i32 - center as i32) * duty.signum() >= -(PARK_TOL as i32)
 }
 
+/// One poll of the drive: Ok(true) arrived, Ok(false) still going, Err on a
+/// shaft at rest short of the centre.
+fn poll(watch: &mut Watch, pos: u16, center: u16, duty: i32) -> Result<bool, AbortReason> {
+    if arrived(pos, center, duty) {
+        return Ok(true);
+    }
+    if watch.still(pos) {
+        return Err(seek::blocked(watch.start(), pos));
+    }
+    Ok(false)
+}
+
 /// Re-centre the horn, then zero the duty and torque off whatever happened.
 /// Reaching the poll budget short of the band is not an error: the shaft is
 /// left where it got to.
@@ -55,13 +71,22 @@ pub(crate) fn park(c: &mut Client<NusbPipe>, id: Id, center: u16) -> Result<()> 
         write_reg(c, id, control::MODE, 0)?;
         write_reg(c, id, control::TORQUE_ENABLE, 1)?;
         write_reg(c, id, control::GOAL_DUTY, duty)?;
+        let mut watch = Watch::new(start, STALL_EPS, STALL_POLLS);
         for _ in 0..PARK_POLLS {
             std::thread::sleep(PARK_POLL);
             if stopped() {
                 bail!("interrupted");
             }
-            if arrived(read_snapshot(c, id)?.pos, center, duty) {
-                break;
+            match poll(&mut watch, read_snapshot(c, id)?.pos, center, duty) {
+                Ok(true) => break,
+                Ok(false) => {}
+                Err(reason) => {
+                    return Err(Aborted {
+                        what: "park",
+                        reason,
+                    }
+                    .into());
+                }
             }
         }
         Ok(())
@@ -91,6 +116,59 @@ mod tests {
         assert_eq!(park_duty(2029 - PARK_TOL - 1, 2029), Some(4915));
         assert_eq!(park_duty(3849, 2029), Some(-4915));
         assert_eq!(park_duty(2029 + PARK_TOL + 1, 2029), Some(-4915));
+    }
+
+    /// A shaft that does not move - jammed, or a pot that is not reading -
+    /// ends the park within one stillness window; a moving one never does.
+    #[test]
+    fn park_gives_up_on_a_blocked_shaft() {
+        let duty = park_duty(2600, 2029).unwrap();
+        let mut watch = Watch::new(2600, STALL_EPS, STALL_POLLS);
+        let polls: Vec<_> = (0..STALL_POLLS)
+            .map(|k| poll(&mut watch, 2600 + (k % 2) as u16, 2029, duty))
+            .collect();
+        assert!(
+            polls[..STALL_POLLS as usize - 1]
+                .iter()
+                .all(|p| *p == Ok(false))
+        );
+        assert_eq!(
+            polls.last(),
+            Some(&Err(AbortReason::Blocked {
+                pos: 2601,
+                moved: 1
+            }))
+        );
+        let msg = Aborted {
+            what: "park",
+            reason: AbortReason::Blocked {
+                pos: 2601,
+                moved: 1,
+            },
+        }
+        .to_string();
+        assert_eq!(
+            msg,
+            "park aborted: the shaft is blocked or the position sensor is not reading (pos 2601, \
+             moved 1 counts); a blocked shaft cannot be centred, so torque is off and the shaft \
+             stays where it stopped"
+        );
+
+        let mut watch = Watch::new(2600, STALL_EPS, STALL_POLLS);
+        let mut pos = 2600;
+        let mut done = false;
+        for _ in 0..100 {
+            pos -= 15;
+            match poll(&mut watch, pos, 2029, duty) {
+                Ok(true) => {
+                    done = true;
+                    break;
+                }
+                Ok(false) => {}
+                Err(e) => panic!("a moving shaft read as blocked: {e}"),
+            }
+        }
+        assert!(done && pos.abs_diff(2029) <= PARK_TOL);
     }
 
     #[test]

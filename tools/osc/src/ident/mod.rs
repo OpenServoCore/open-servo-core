@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use crate::rig::plant::Lut;
 use crate::rig::pump::{self, Pump, with_guard, write_reg};
-use crate::rig::{csvio, snapshot};
+use crate::rig::{Aborted, check_abort, csvio, snapshot};
 use anyhow::{Context, Result, bail};
 use clap::{Subcommand, ValueEnum};
 use osc_client::Id;
@@ -20,16 +20,17 @@ use osc_client::data_state::{self, DataState};
 use osc_client::descriptor::Descriptor;
 use osc_client::nusb::NusbPipe;
 use osc_ident::burst::Chans;
-use osc_ident::exp::bias::{Bias, BiasCfg};
-use osc_ident::exp::breakaway::{Breakaway, BreakawayCfg};
+use osc_ident::exp::bias::{Bias, BiasCfg, BiasResult};
+use osc_ident::exp::breakaway::{Breakaway, BreakawayCfg, BreakawayResult};
 use osc_ident::exp::held::{Held, HeldCfg, Stops};
 use osc_ident::exp::inductance::{
     Cfg as InductanceCfg, FitCfg, Inductance, InductanceResult, fit_captures,
 };
 use osc_ident::exp::inertia::{Inertia, InertiaCfg};
 use osc_ident::exp::ladder::{Ladder, LadderCfg, LadderResult};
-use osc_ident::exp::resistance::{Resistance, ResistanceCfg};
-use osc_ident::exp::rl::{Rl, RlCfg, RlFitCfg, RlResult};
+use osc_ident::exp::resistance::{Resistance, ResistanceCfg, ResistanceResult};
+use osc_ident::exp::rl::{Rl, RlCfg, RlFitCfg, RlResult, Scales};
+use osc_ident::exp::seek::{self, Watch};
 use osc_ident::exp::verify::{
     VerifyCurrent, VerifyCurrentCfg, VerifyResult, VerifyVelocity, VerifyVelocityCfg,
 };
@@ -40,6 +41,7 @@ use osc_ident::limits::{Envelope, ServoLimits};
 use osc_ident::pot::Pot;
 use osc_ident::regs::{calib, control};
 use osc_ident::report::{self, PlantInputs, ReportInputs};
+use osc_ident::run::{Ended, Run, Stage};
 use osc_ident::sources::{self, Source, Winding};
 use params::{
     BiasJson, BreakawayJson, GainJson, InductanceJson, InertiaJson, LadderJson, ParamsFile,
@@ -196,7 +198,8 @@ enum Cmd {
     /// The full pipeline: bias -> burst -> resistance only if the burst
     /// declines -> breakaway -> ladder -> inertia -> fit -> report +
     /// params.json. R and L come from the burst when it promotes, else R
-    /// from resistance and L from --l-henries. Write-back stays explicit.
+    /// from resistance and L from --l-henries. The first stage that aborts
+    /// ends the run. Write-back stays explicit.
     Run,
     /// Torque-off noise and bias floor.
     Bias,
@@ -481,11 +484,11 @@ fn drive(cli: &Ctx) -> Result<&Drive> {
 }
 
 fn rig(cli: &Ctx) -> Result<RigParams> {
-    let env = drive(cli)?.env;
+    let d = drive(cli)?;
     Ok(RigParams {
         slip: (cli.slip_lo, cli.slip_hi),
         pot: cli.pot(),
-        ..RigParams::new(Some(env.guard), env.i_abort)
+        ..RigParams::new(Some(d.env.guard), d.env.i_abort).with_stops(d.lim.raw)
     })
 }
 
@@ -500,15 +503,18 @@ fn targets(cli: &Ctx) -> BwTargets {
 
 /// OpenLoop nudge to mid-travel. End-stop work (E2) parks the pot on a
 /// rail where the next experiment's pos guard would abort before it can
-/// move; every in-band experiment recenters first.
-fn recenter(c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
+/// move; every in-band experiment recenters first. A shaft that comes to
+/// rest short of the band is blocked, and the run ends.
+fn recenter(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
     const LO: u16 = 1750;
     const HI: u16 = 2350;
+    let params = rig(cli)?;
     let pos0 = pump::read_snapshot(c, id)?.pos;
     if (LO..=HI).contains(&pos0) {
         return Ok(());
     }
     println!("[recenter] pos {pos0} -> mid-travel");
+    let mut watch = Watch::new(pos0, params.stall_eps, params.stall_polls);
     with_guard(c, id, |c| {
         pump::write_reg(c, id, control::MODE, 0)?;
         pump::write_reg(c, id, control::TORQUE_ENABLE, 1)?;
@@ -516,6 +522,13 @@ fn recenter(c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
             let pos = pump::read_snapshot(c, id)?.pos;
             if (LO..=HI).contains(&pos) {
                 return Ok(());
+            }
+            if watch.still(pos) {
+                return Err(Aborted {
+                    what: "the recentre",
+                    reason: seek::blocked(pos0, pos),
+                }
+                .into());
             }
             let duty = if pos < LO { 9000 } else { -9000 };
             pump::write_reg(c, id, control::GOAL_DUTY, duty)?;
@@ -556,7 +569,7 @@ fn run_bias(
 ) -> Result<(osc_ident::exp::bias::BiasResult, f64)> {
     println!("[bias]");
     // a rail-parked pot clips the noise measurement (and trips the guard)
-    recenter(c, id)?;
+    recenter(cli, c, id)?;
     let mut log = csvio::SnapshotLog::create(out, "bias_snapshots.csv")?;
     let mut exp = Guarded::new(Bias::new(BiasCfg::default(), &rig(cli)?), rig(cli)?);
     with_guard(c, id, |c| Pump::new(c, id, Some(&mut log)).run(&mut exp))?;
@@ -601,7 +614,7 @@ fn run_rl(
     sense: &SenseJson,
 ) -> Result<RlResult> {
     println!("[toggle] winding R/L (free shaft at mid travel, chained duty toggles)");
-    recenter(c, id)?;
+    recenter(cli, c, id)?;
     let params = rig(cli)?;
     let sc = sense
         .scales()
@@ -614,7 +627,7 @@ fn run_rl(
     let mut log = csvio::SnapshotLog::create(out, "rl_snapshots.csv")?;
     let mut exp = Guarded::new(Rl::new(cfg, &params, sc), params);
     with_guard(c, id, |c| Pump::new(c, id, Some(&mut log)).run(&mut exp))?;
-    check_abort("rl", exp.abort())?;
+    check_abort("toggle", exp.abort())?;
     let exp = exp.into_inner();
     csvio::write_rl_segments(out, exp.segments())?;
     // The planner's notes are the only account of a run that captured
@@ -665,7 +678,7 @@ fn run_inductance(
     let mut log = csvio::SnapshotLog::create(out, "held_snapshots.csv")?;
     let mut held = Guarded::new(Held::new(cfg, &params, sc), params.without_pos_guard());
     with_guard(c, id, |c| Pump::new(c, id, Some(&mut log)).run(&mut held))?;
-    check_abort("held burst", held.abort())?;
+    check_abort("burst", held.abort())?;
     let held = held.into_inner();
     for s in held.seats() {
         println!(
@@ -686,7 +699,7 @@ fn run_inductance(
                 .as_ref()
                 .map_or("no fit".into(), |r| r.held.blocking().join(", "))
         );
-        recenter(c, id)?;
+        recenter(cli, c, id)?;
         let cfg = InductanceCfg {
             step_pct: cli.burst_pct.clone(),
             repeats: cli.burst_repeats,
@@ -697,7 +710,7 @@ fn run_inductance(
         let mut log = csvio::SnapshotLog::create(out, "inductance_snapshots.csv")?;
         let mut exp = Guarded::new(Inductance::new(cfg, &params, sc), params);
         with_guard(c, id, |c| Pump::new(c, id, Some(&mut log)).run(&mut exp))?;
-        check_abort("inductance", exp.abort())?;
+        check_abort("burst", exp.abort())?;
         let exp = exp.into_inner();
         caps.extend_from_slice(exp.captures());
         warnings.extend_from_slice(exp.warnings());
@@ -726,7 +739,7 @@ fn run_breakaway(
     vbus_mean: f64,
 ) -> Result<osc_ident::exp::breakaway::BreakawayResult> {
     println!("[breakaway]");
-    recenter(c, id)?;
+    recenter(cli, c, id)?;
     let mut log = csvio::SnapshotLog::create(out, "breakaway_snapshots.csv")?;
     let mut exp = Guarded::new(Breakaway::new(BreakawayCfg::default()), rig(cli)?);
     with_guard(c, id, |c| Pump::new(c, id, Some(&mut log)).run(&mut exp))?;
@@ -742,7 +755,7 @@ fn run_ladder(
     r_vpc: f64,
 ) -> Result<LadderResult> {
     println!("[ladder]");
-    recenter(c, id)?;
+    recenter(cli, c, id)?;
     let params = rig(cli)?;
     let mut log = csvio::SnapshotLog::create(out, "ladder_snapshots.csv")?;
     let mut exp = Guarded::new(Ladder::new(LadderCfg::default(), &params), params);
@@ -764,7 +777,7 @@ fn run_inertia(
     priors: &InertiaPriors,
 ) -> Result<osc_ident::exp::inertia::InertiaResult> {
     println!("[inertia]");
-    recenter(c, id)?;
+    recenter(cli, c, id)?;
     let params = rig(cli)?;
     let cfg = InertiaCfg {
         tick_hz: priors.tick_hz,
@@ -790,7 +803,7 @@ fn run_verify(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
     let tick_hz = snapshot::read_u16(c, id, calib::TICK_HZ)? as f64;
     let (d, before) = servo_state(c, id)?;
     refuse_closed_loop(&before)?;
-    recenter(c, id)?;
+    recenter(cli, c, id)?;
     println!("[verify current] (current steps; end-stop stalls; stall permit held)");
     // deliberate rail stall in Current mode: the directional endstop band
     // would zero i_ref at the soft wall, and the permit opens it, as for
@@ -800,19 +813,19 @@ fn run_verify(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
         params.without_pos_guard(),
     );
     with_guard(c, id, |c| Pump::new(c, id, None).run(&mut e5))?;
-    check_abort("verify-current", e5.abort())?;
+    check_abort("verify current", e5.abort())?;
     let cur = e5.into_inner().into_inner().result();
     refuse_closed_loop(&c.data_state(id, &d)?)?;
     // E5 ends stalled against an end-stop; E6 runs with the pos guard on
     // and its first read would abort right there
-    recenter(c, id)?;
+    recenter(cli, c, id)?;
     println!("[verify velocity] (velocity legs)");
     let mut e6 = Guarded::new(
         VerifyVelocity::new(VerifyVelocityCfg::default(), &params, tick_hz),
         params,
     );
     with_guard(c, id, |c| Pump::new(c, id, None).run(&mut e6))?;
-    check_abort("verify-velocity", e6.abort())?;
+    check_abort("verify velocity", e6.abort())?;
     let vel = e6.into_inner().result();
     for s in &cur.steps {
         println!(
@@ -837,13 +850,6 @@ fn run_verify(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
         std::process::exit(1);
     }
     Ok(())
-}
-
-fn check_abort(name: &str, abort: Option<osc_ident::exp::AbortReason>) -> Result<()> {
-    match abort {
-        None => Ok(()),
-        Some(r) => bail!("{name} aborted by the safety envelope: {r:?}"),
-    }
 }
 
 fn servo_state(c: &mut Client<NusbPipe>, id: Id) -> Result<(Descriptor, DataState)> {
@@ -889,59 +895,133 @@ fn run_all(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
     let sc = sense
         .scales()
         .context("CalibSense scales degenerate (shunt/gain/dividers/vdd)")?;
-    let (bias, vbus) = run_bias(cli, c, id, &out)?;
-    // A burst that cannot run or fit declines like one that fails its gates.
-    let e8 = match run_inductance(cli, c, id, &out, &sense) {
-        Ok(r) => Some(r),
-        Err(e) => {
-            println!("[burst] no result: {e:#}");
-            None
-        }
+    let mut rec = Recorded {
+        out,
+        sense,
+        sc,
+        bias: None,
+        e8: None,
+        e2: None,
+        w: None,
+        breakaway: None,
+        ladder: None,
     };
-    let e2 = match sources::needs_stall(e8.as_ref()) {
-        true => {
-            if let Some(r) = &e8 {
-                println!(
-                    "[burst] declined (held: {}; free: {}): resistance supplies R",
-                    r.held.blocking().join(", "),
-                    r.blocking().join(", ")
-                );
+    let mut run = Run::new();
+    while let Some(stage) = run.next_stage() {
+        match rec.stage(stage, cli, c, id) {
+            Ok(how) => run.ended(how),
+            Err(e) => {
+                if let Some(a) = e.downcast_ref::<Aborted>() {
+                    run.ended(Ended::Aborted(a.reason));
+                }
+                return Err(e);
             }
-            Some(run_resistance(cli, c, id, &out)?)
         }
-        false => None,
+    }
+    let (Some((bias, _)), Some(breakaway)) = (&rec.bias, &rec.breakaway) else {
+        bail!("the run ended without its bias or breakaway");
     };
-    let w = sources::winding(e8.as_ref(), e2.as_ref(), Some(&sc), cli.l_henries)
-        .context("no winding R: burst declined and resistance did not run")?;
-    println!(
-        "[winding] R {:.4} vcounts/ccount from {}, L {:.4} mH from {}",
-        w.r_vpc,
-        w.r_from.as_str(),
-        w.l_h * 1e3,
-        w.l_from.as_str()
-    );
-    let breakaway = run_breakaway(cli, c, id, &out, w.r_vpc, vbus)?;
-    let ladder = run_ladder(cli, c, id, &out, w.r_vpc)?;
-    let priors = priors_of(w.r_vpc, &ladder, &sense);
-    // the live fit is discarded on purpose: run only records, fit_dir below
-    // recomputes everything from the files so run and refit cannot diverge
-    let _ = run_inertia(cli, c, id, &out, &priors)?;
-
     let p = ParamsFile {
-        bias: Some(BiasJson::from(&bias)),
-        resistance: e2.as_ref().map(ResistanceJson::from),
-        inductance: e8.as_ref().map(InductanceJson::from),
-        breakaway: Some(BreakawayJson::from(&breakaway)),
-        sense: Some(sense),
+        bias: Some(BiasJson::from(bias)),
+        resistance: rec.e2.as_ref().map(ResistanceJson::from),
+        inductance: rec.e8.as_ref().map(InductanceJson::from),
+        breakaway: Some(BreakawayJson::from(breakaway)),
+        sense: Some(rec.sense),
         pot: cli.lut.as_ref().map(PotJson::from),
         ..Default::default()
     };
-    p.save(&out.0.join("params.json"))?;
+    let dir = rec.out.0;
+    p.save(&dir.join("params.json"))?;
     if let Some(g) = cli.gear_ratio {
-        std::fs::write(out.0.join("gear_ratio.txt"), format!("{g}\n"))?;
+        std::fs::write(dir.join("gear_ratio.txt"), format!("{g}\n"))?;
     }
     // the offline path is THE fit path - run records, fit computes
-    fit_dir(cli, out.0.clone())
+    fit_dir(cli, dir)
+}
+
+/// What the stages of `run` record and hand each other.
+struct Recorded {
+    out: csvio::OutDir,
+    sense: SenseJson,
+    sc: Scales,
+    bias: Option<(BiasResult, f64)>,
+    e8: Option<InductanceResult>,
+    e2: Option<ResistanceResult>,
+    w: Option<Winding>,
+    breakaway: Option<BreakawayResult>,
+    ladder: Option<LadderResult>,
+}
+
+impl Recorded {
+    /// One stage of `run`. An abort is an error and ends the run; a burst
+    /// that cannot run or fit for any other reason declines like one that
+    /// fails its gates.
+    fn stage(
+        &mut self,
+        stage: Stage,
+        cli: &Ctx,
+        c: &mut Client<NusbPipe>,
+        id: Id,
+    ) -> Result<Ended> {
+        let out = &self.out;
+        match stage {
+            Stage::Bias => self.bias = Some(run_bias(cli, c, id, out)?),
+            Stage::Burst => {
+                self.e8 = match run_inductance(cli, c, id, out, &self.sense) {
+                    Ok(r) => Some(r),
+                    Err(e) if e.downcast_ref::<Aborted>().is_some() => return Err(e),
+                    Err(e) => {
+                        println!("[burst] no result: {e:#}");
+                        None
+                    }
+                };
+                if sources::needs_stall(self.e8.as_ref()) {
+                    if let Some(r) = &self.e8 {
+                        println!(
+                            "[burst] declined (held: {}; free: {}): resistance supplies R",
+                            r.held.blocking().join(", "),
+                            r.blocking().join(", ")
+                        );
+                    }
+                    return Ok(Ended::Declined);
+                }
+            }
+            Stage::Resistance => self.e2 = Some(run_resistance(cli, c, id, out)?),
+            Stage::Breakaway => {
+                let w = sources::winding(
+                    self.e8.as_ref(),
+                    self.e2.as_ref(),
+                    Some(&self.sc),
+                    cli.l_henries,
+                )
+                .context("no winding R: burst declined and resistance did not run")?;
+                println!(
+                    "[winding] R {:.4} vcounts/ccount from {}, L {:.4} mH from {}",
+                    w.r_vpc,
+                    w.r_from.as_str(),
+                    w.l_h * 1e3,
+                    w.l_from.as_str()
+                );
+                let vbus = self.bias.as_ref().map_or(0.0, |b| b.1);
+                self.breakaway = Some(run_breakaway(cli, c, id, out, w.r_vpc, vbus)?);
+                self.w = Some(w);
+            }
+            Stage::Ladder => {
+                let r_vpc = self.w.as_ref().context("no winding R")?.r_vpc;
+                self.ladder = Some(run_ladder(cli, c, id, out, r_vpc)?);
+            }
+            Stage::Inertia => {
+                let r_vpc = self.w.as_ref().context("no winding R")?.r_vpc;
+                let ladder = self.ladder.as_ref().context("no ladder")?;
+                let priors = priors_of(r_vpc, ladder, &self.sense);
+                // the live fit is discarded on purpose: run only records,
+                // fit_dir recomputes everything from the files so run and
+                // refit cannot diverge
+                let _ = run_inertia(cli, c, id, out, &priors)?;
+            }
+        }
+        Ok(Ended::Done)
+    }
 }
 
 /// Refit from a recorded directory: reads params.json (bias, breakaway,

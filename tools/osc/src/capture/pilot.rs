@@ -478,6 +478,7 @@ fn cfg(steps: Vec<Step>, dirs: Dirs, window_ms: u32, lim: &Limits) -> Cfg {
         stall: false,
         static_load: false,
         guard: (lim.guard[0], lim.guard[1]),
+        stops: Some((lim.phys[0], lim.phys[1])),
         tel_mask: TEL_MASK,
         rung_tries: RUNG_TRIES,
     }

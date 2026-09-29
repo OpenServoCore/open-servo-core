@@ -359,6 +359,7 @@ fn cfg(p: &Procedure, env: &Envelope, plan: &Plan) -> Cfg {
         stall: false,
         static_load: false,
         guard: (env.limits.guard[0], env.limits.guard[1]),
+        stops: Some((env.limits.phys[0], env.limits.phys[1])),
         tel_mask: p.tel_mask,
         rung_tries: RUNG_TRIES,
     }

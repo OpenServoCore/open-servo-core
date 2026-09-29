@@ -4,7 +4,7 @@
 //! goal). Both report per-step/leg errors and an overall pass verdict -
 //! the check that the synthesized bandwidths hold on the real plant.
 
-use super::{Cmd, Experiment, RigParams, WindowSample, WindowStream};
+use super::{AbortReason, Cmd, Experiment, RigParams, WindowSample, WindowStream, seek};
 use crate::fitmath::linear_ls;
 use crate::frame::TelemetrySnapshot;
 use crate::regs::control;
@@ -96,6 +96,9 @@ struct StepCapture {
 
 pub struct VerifyCurrent {
     cfg: VerifyCurrentCfg,
+    stops: Option<(u16, u16)>,
+    seek_start: Option<u16>,
+    halt: Option<AbortReason>,
     settle_windows: u32,
     phase: CPhase,
     dir_idx: u8,
@@ -117,6 +120,9 @@ impl VerifyCurrent {
         raw.settle_windows = 0;
         Self {
             cfg,
+            stops: params.stops,
+            seek_start: None,
+            halt: None,
             settle_windows: params.settle_windows,
             phase: CPhase::ModeOpen,
             dir_idx: 0,
@@ -201,6 +207,7 @@ impl Experiment for VerifyCurrent {
             CPhase::SeekSet => {
                 self.phase = CPhase::SeekRead;
                 self.last_pos = None;
+                self.seek_start = None;
                 self.still = 0;
                 Cmd::Write {
                     reg: control::GOAL_DUTY,
@@ -221,6 +228,14 @@ impl Experiment for VerifyCurrent {
                         self.still = 0;
                     }
                     self.last_pos = Some(o.pos);
+                    let start = *self.seek_start.get_or_insert(o.pos);
+                    if self.still >= self.cfg.stall_polls
+                        && let Err(reason) = seek::at_stop(start, o.pos, self.dir(), self.stops)
+                    {
+                        self.halt = Some(reason);
+                        self.phase = CPhase::FinishGoal;
+                        return Cmd::Pause { ms: 0 };
+                    }
                 }
                 if self.still >= self.cfg.stall_polls {
                     self.phase = CPhase::SeekOff;
@@ -356,6 +371,10 @@ impl Experiment for VerifyCurrent {
             CPhase::Finished => Cmd::Done,
         }
     }
+
+    fn halted(&self) -> Option<AbortReason> {
+        self.halt
+    }
 }
 
 /// E6: Velocity-mode legs across the travel; the pot slope vs goal is the
@@ -455,6 +474,8 @@ pub struct VerifyVelocity {
     polls: u32,
     last_pos: Option<u16>,
     still: u32,
+    seek_start: Option<u16>,
+    halt: Option<AbortReason>,
     tick0: Option<u32>,
     cur: Option<LegCapture>,
     captures: Vec<LegCapture>,
@@ -474,6 +495,8 @@ impl VerifyVelocity {
             polls: 0,
             last_pos: None,
             still: 0,
+            seek_start: None,
+            halt: None,
             tick0: None,
             cur: None,
             captures: Vec::new(),
@@ -561,6 +584,7 @@ impl Experiment for VerifyVelocity {
             VPhase::SeekSet => {
                 self.phase = VPhase::SeekRead;
                 self.last_pos = None;
+                self.seek_start = None;
                 self.still = 0;
                 Cmd::Write {
                     reg: control::GOAL_DUTY,
@@ -583,6 +607,15 @@ impl Experiment for VerifyVelocity {
                         self.still = 0;
                     }
                     self.last_pos = Some(o.pos);
+                    let start = *self.seek_start.get_or_insert(o.pos);
+                    if !parked
+                        && self.still >= 8
+                        && let Err(reason) = seek::at_stop(start, o.pos, -1, self.params.stops)
+                    {
+                        self.halt = Some(reason);
+                        self.phase = VPhase::FinishGoal;
+                        return Cmd::Pause { ms: 0 };
+                    }
                 }
                 if parked || self.still >= 8 {
                     self.phase = VPhase::SeekOff;
@@ -705,6 +738,10 @@ impl Experiment for VerifyVelocity {
             VPhase::Finished => Cmd::Done,
         }
     }
+
+    fn halted(&self) -> Option<AbortReason> {
+        self.halt
+    }
 }
 
 /// Combined E5+E6 verdict the CLI assembles.
@@ -736,13 +773,14 @@ mod tests {
     use super::*;
     use crate::regs::control;
 
-    /// Scripted E5: the "servo" holds pos still during seeks and echoes the
-    /// last goal_current into i_mean with a fixed -5% bias.
+    /// Scripted E5: the "servo" sits at the stop each seek drives at and
+    /// echoes the last goal_current into i_mean with a fixed -5% bias.
     #[test]
     fn current_verify_measures_settle_and_error() {
         let mut exp = VerifyCurrent::new(VerifyCurrentCfg::default(), &crate::exp::testkit::rig());
         let goal = std::cell::Cell::new(0i16);
         let seq = std::cell::Cell::new(0u16);
+        let pos = std::cell::Cell::new(2000u16);
         let mut log = Vec::new();
         let mut pending: Option<TelemetrySnapshot> = None;
         for _ in 0..2_000_000 {
@@ -751,12 +789,15 @@ mod tests {
                     if reg == control::GOAL_CURRENT {
                         goal.set(value as i16);
                     }
+                    if reg == control::GOAL_DUTY && value != 0 {
+                        pos.set(if value > 0 { 3990 } else { 210 });
+                    }
                     log.push((reg, value));
                 }
                 Cmd::Read => {
                     seq.set(seq.get().wrapping_add(1));
                     pending = Some(TelemetrySnapshot {
-                        pos: 2000,
+                        pos: pos.get(),
                         agg_seq: seq.get(),
                         i_mean_counts: (goal.get() as f64 * 0.95) as i16,
                         duty_mean_q15: if goal.get() != 0 { 6000 } else { 0 },

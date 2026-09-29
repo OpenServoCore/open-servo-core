@@ -5,13 +5,14 @@
 //! per-tick pos/current/duty/vdiff series (20 kHz, ladder mask) covers the
 //! whole transient. Seek polling between bursts stays ordinary Read/Pause.
 //! The firmware's soft-limit duty clamp bounds the traverse during the
-//! silent capture window.
+//! silent capture window. A seek that comes to rest short of both its
+//! target and a stop ends the run ([`super::seek::at_stop`]).
 //!
 //! Fit inputs and estimators (direct-alpha and exponential-rise) live in
 //! [`crate::fits`]; [`Inertia::fit`] assembles per-step series and picks
 //! `b_best` by fit quality.
 
-use super::{Cmd, Experiment, RigParams};
+use super::{AbortReason, Cmd, Experiment, RigParams, seek};
 use crate::fits::{BDirect, BExp, InertiaPriors, StepSeries, b_direct_fit, b_exp_fit};
 use crate::frame::{TelFrame, TelemetrySnapshot};
 use crate::regs::control;
@@ -105,6 +106,8 @@ pub struct Inertia {
     last_pos: Option<u16>,
     still: u32,
     polls: u32,
+    start: Option<u16>,
+    halt: Option<AbortReason>,
     capturing: bool,
     cur: StepCapture,
     captures: Vec<StepCapture>,
@@ -123,6 +126,8 @@ impl Inertia {
             last_pos: None,
             still: 0,
             polls: 0,
+            start: None,
+            halt: None,
             capturing: false,
             cur: StepCapture::default(),
             captures: Vec::new(),
@@ -156,9 +161,11 @@ impl Inertia {
         self.last_pos = None;
         self.still = 0;
         self.polls = 0;
+        self.start = None;
     }
 
     fn track_still(&mut self, pos: u16) {
+        self.start.get_or_insert(pos);
         if let Some(last) = self.last_pos
             && pos.abs_diff(last) <= self.cfg.stall_eps
         {
@@ -296,6 +303,19 @@ impl Experiment for Inertia {
                 if let Some(o) = obs {
                     self.track_still(o.pos);
                     done = self.seek_done(o.pos) || self.still >= self.cfg.stall_polls;
+                    let start = self.start.unwrap_or(o.pos);
+                    if !self.seek_done(o.pos)
+                        && self.still >= self.cfg.stall_polls
+                        && let Err(reason) =
+                            seek::at_stop(start, o.pos, -self.dir(), self.params.stops)
+                    {
+                        self.halt = Some(reason);
+                        self.phase = Phase::TelMaskOff;
+                        return Cmd::Write {
+                            reg: control::GOAL_DUTY,
+                            value: 0,
+                        };
+                    }
                 }
                 self.polls += 1;
                 if !done && self.polls >= self.cfg.seek_cap_polls {
@@ -373,6 +393,10 @@ impl Experiment for Inertia {
             }
             Phase::Finished => Cmd::Done,
         }
+    }
+
+    fn halted(&self) -> Option<AbortReason> {
+        self.halt
     }
 
     /// Frames arriving outside a step burst are dropped.
