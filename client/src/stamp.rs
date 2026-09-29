@@ -1,5 +1,5 @@
 //! Plant stamp, the host half of the firmware's `stamp` module: the
-//! identified and calibrated values and the effective pot LUT as one
+//! identified and calibrated values and the effective position table as one
 //! transaction. A host writes the set, computes the stamp over it and
 //! stores it in `plant_stamp`; the firmware recomputes at every torque-off
 //! checkpoint and reads `STAMP_MISMATCH` (`data_state`) when the two
@@ -7,10 +7,10 @@
 //!
 //! Bit-identical to the firmware by construction: the recipe comes from
 //! the descriptor's `stamp` block (tag, covered names in table order,
-//! knot count), the bytes are the fields' own table bytes at descriptor
-//! width, and the CRC is the protocol's CRC-16/ARC. The knots are the
-//! table the kernel applies (`pot_lut::effective`): the array while
-//! `lut_state` is LIVE, zeros otherwise.
+//! point count), the bytes are the fields' own table bytes at descriptor
+//! width, and the CRC is the protocol's CRC-16/ARC. The points are the
+//! table the kernel applies (`pos_lut::effective`): the array while
+//! `pos_lut_state` is LIVE, zeros otherwise.
 
 use std::fmt;
 use std::time::Duration;
@@ -23,7 +23,7 @@ use crate::data_state::STAMP_MISMATCH;
 use crate::descriptor::{Descriptor, Field};
 use crate::error::{Error, LinkError};
 use crate::pipe::Pipe;
-use crate::pot_lut;
+use crate::pos_lut;
 
 /// A value [`Stamp::compute`] never produces: the servo was never stamped.
 pub const UNSTAMPED: u16 = 0;
@@ -32,14 +32,14 @@ pub const UNSTAMPED: u16 = 0;
 pub struct Stamp<'a> {
     tag: &'a str,
     covered: Vec<&'a Field>,
-    lut_knots: usize,
+    pos_lut_points: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StampError {
     /// `bytes` does not reach the named field.
     Short(String),
-    Knots {
+    LutPoints {
         want: usize,
         got: usize,
     },
@@ -49,7 +49,9 @@ impl fmt::Display for StampError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             StampError::Short(name) => write!(f, "table bytes stop before {name}"),
-            StampError::Knots { want, got } => write!(f, "{want} lut knots expected, got {got}"),
+            StampError::LutPoints { want, got } => {
+                write!(f, "{want} lut points expected, got {got}")
+            }
         }
     }
 }
@@ -74,7 +76,7 @@ impl Descriptor {
         Ok(Stamp {
             tag: &spec.tag,
             covered,
-            lut_knots: spec.lut_knots,
+            pos_lut_points: spec.pos_lut_points,
         })
     }
 }
@@ -99,20 +101,20 @@ impl<'a> Stamp<'a> {
         (lo, hi)
     }
 
-    /// `max(1, crc16_arc(tag ++ covered bytes in table order ++ knots LE))`
-    /// over `bytes`, the table from address `base`. `None` knots are the
-    /// identity table (all zero).
+    /// `max(1, crc16_arc(tag ++ covered bytes in table order ++ lut_points
+    /// LE))` over `bytes`, the table from address `base`. `None` points are
+    /// the identity table (all zero).
     pub fn compute(
         &self,
         base: u16,
         bytes: &[u8],
-        knots: Option<&[i16]>,
+        lut_points: Option<&[i16]>,
     ) -> Result<u16, StampError> {
-        if let Some(k) = knots
-            && k.len() != self.lut_knots
+        if let Some(k) = lut_points
+            && k.len() != self.pos_lut_points
         {
-            return Err(StampError::Knots {
-                want: self.lut_knots,
+            return Err(StampError::LutPoints {
+                want: self.pos_lut_points,
                 got: k.len(),
             });
         }
@@ -124,14 +126,14 @@ impl<'a> Stamp<'a> {
                 .ok_or_else(|| StampError::Short(f.name.clone()))?;
             crc = osc_crc_continue(crc, b);
         }
-        match knots {
+        match lut_points {
             Some(k) => {
                 for c in k {
                     crc = osc_crc_continue(crc, &c.to_le_bytes());
                 }
             }
             None => {
-                for _ in 0..self.lut_knots {
+                for _ in 0..self.pos_lut_points {
                     crc = osc_crc_continue(crc, &[0, 0]);
                 }
             }
@@ -153,14 +155,14 @@ impl Verdict {
     }
 }
 
-/// The stamp of the set the servo holds now, over the knots it applies.
+/// The stamp of the set the servo holds now, over the points it applies.
 pub async fn compute<P: Pipe>(c: &mut Client<P>, id: Id, d: &Descriptor) -> Result<u16, Error> {
     let stamp = d.stamp()?;
     let (lo, hi) = stamp.span();
     let bytes = c.read_span(id, lo, hi).await?;
-    let knots = pot_lut::effective(c, id, d).await?;
+    let lut_points = pos_lut::effective(c, id, d).await?;
     stamp
-        .compute(lo, &bytes, knots.as_ref().map(|k| &k[..]))
+        .compute(lo, &bytes, lut_points.as_ref().map(|k| &k[..]))
         .map_err(|e| Error::Link(LinkError::Desync(e.to_string())))
 }
 
@@ -219,7 +221,7 @@ mod tests {
         "format": 2, "model": "osc-servo", "class": "servo", "model_number": 257,
         "firmware_major": 0, "firmware_minor": 1, "table_size": 1024,
         "generator": "test",
-        "stamp": {"tag": "osc-plant-1", "covered": ["a", "b", "c"], "lut_knots": 4},
+        "stamp": {"tag": "osc-plant-1", "covered": ["a", "b", "c"], "pos_lut_points": 4},
         "fields": [
             {"name": "a", "addr": 32, "width": 4, "access": "rw", "kind": "int"},
             {"name": "x", "addr": 36, "width": 2, "access": "rw", "kind": "uint"},
@@ -248,7 +250,7 @@ mod tests {
     }
 
     #[test]
-    fn compute_hashes_tag_bytes_and_knots_from_the_span_base() {
+    fn compute_hashes_tag_bytes_and_points_from_the_span_base() {
         let d = spec();
         let s = d.stamp().unwrap();
         let mut table = vec![0u8; 256];
@@ -281,7 +283,7 @@ mod tests {
     }
 
     #[test]
-    fn compute_refuses_short_input_and_wrong_knot_counts() {
+    fn compute_refuses_short_input_and_wrong_point_counts() {
         let d = spec();
         let s = d.stamp().unwrap();
         let table = vec![0u8; 100];
@@ -291,7 +293,7 @@ mod tests {
         );
         assert_eq!(
             s.compute(0, &[0u8; 256], Some(&[0; 3])),
-            Err(StampError::Knots { want: 4, got: 3 })
+            Err(StampError::LutPoints { want: 4, got: 3 })
         );
         assert_eq!(
             s.compute(40, &[0u8; 256], None),
@@ -306,7 +308,7 @@ mod tests {
         let d = Descriptor::parse(&json).unwrap();
         assert!(matches!(d.stamp(), Err(Error::Descriptor(m)) if m.contains("nope")));
         let json = SPEC.replacen(
-            "\"stamp\": {\"tag\": \"osc-plant-1\", \"covered\": [\"a\", \"b\", \"c\"], \"lut_knots\": 4},",
+            "\"stamp\": {\"tag\": \"osc-plant-1\", \"covered\": [\"a\", \"b\", \"c\"], \"pos_lut_points\": 4},",
             "",
             1,
         );

@@ -6,7 +6,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use osc_servo_core::data_state::DataJob;
-use osc_servo_core::pot_lut::KNOTS;
+use osc_servo_core::pos_lut::POINTS;
 use osc_servo_core::tel::{TelSample, TelStream};
 use osc_servo_core::{
     BaudRate, BootMode, CalibSense, CalibSenseExt, ConfigDefaults, ControlTable, CurrentDefaults,
@@ -199,8 +199,8 @@ impl SimServo {
     }
 
     /// A bench SAVE without the wire (sec 9.4): the live CONFIG, PROFILE and
-    /// CALIB regions and the pot LUT land in the store, so the next boot
-    /// overlays them back and FACTORY wipes them.
+    /// CALIB regions and the position table land in the store, so the next
+    /// boot overlays them back and FACTORY wipes them.
     pub fn persist(&self) {
         self.seed
             .store
@@ -297,7 +297,7 @@ impl SimServo {
         self.shared.table.with_mut(f)
     }
 
-    pub fn with_pot_lut<R>(&self, f: impl FnOnce(&[i16; KNOTS]) -> R) -> R {
-        self.shared.with_pot_lut(f)
+    pub fn with_pos_lut<R>(&self, f: impl FnOnce(&[i16; POINTS]) -> R) -> R {
+        self.shared.with_pos_lut(f)
     }
 }

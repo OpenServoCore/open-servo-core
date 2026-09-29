@@ -9,9 +9,9 @@ use osc_client::blocking::Client;
 use osc_client::data_state::{CONFIG_CORRUPT, DataState, STAMP_MISMATCH};
 use osc_client::descriptor::Descriptor;
 use osc_client::nusb::NusbPipe;
-use osc_client::pot_lut::{self, PotLut};
+use osc_client::pos_lut::{self, PosLut};
 use osc_client::{Error, Id, ResultCode};
-use osc_ident::lut::{GAIN_MAX, GRID, GridLut, KNOTS, Reject};
+use osc_ident::lut::{GAIN_MAX, GRID, GridLut, POINTS, Reject};
 use serde::Serialize;
 
 use super::grade::Report;
@@ -59,8 +59,8 @@ impl Servo {
         Ok((read("raw_min")?, read("raw_max")?))
     }
 
-    fn lut(&mut self) -> Result<PotLut> {
-        Ok(self.c.pot_lut(self.id, &self.d)?)
+    fn lut(&mut self) -> Result<PosLut> {
+        Ok(self.c.pos_lut(self.id, &self.d)?)
     }
 
     /// The state line after a write: what the data state says about the
@@ -100,14 +100,14 @@ impl Servo {
     }
 }
 
-fn grid(lut: &PotLut) -> GridLut {
-    let mut knots = [0i16; KNOTS];
-    knots[..pot_lut::INTERVALS].copy_from_slice(&lut.knots);
-    GridLut { knots }
+fn grid(lut: &PosLut) -> GridLut {
+    let mut points = [0i16; POINTS];
+    points[..pos_lut::INTERVALS].copy_from_slice(&lut.points);
+    GridLut { points }
 }
 
 fn state_name(state: u8) -> String {
-    match pot_lut::state::name(state) {
+    match pos_lut::state::name(state) {
         Some(n) => n.to_string(),
         None => format!("state {state}"),
     }
@@ -121,25 +121,25 @@ fn explain(lut: &GridLut, stops: (u16, u16)) -> Option<String> {
         Err(Reject::Ends) => {
             let lo = (raw_min as usize + GRID as usize - 1) >> 4;
             let hi = raw_max as usize >> 4;
-            let k = (0..KNOTS)
-                .find(|&k| (k <= lo || k >= hi) && lut.knots[k] != 0)
+            let k = (0..POINTS)
+                .find(|&k| (k <= lo || k >= hi) && lut.points[k] != 0)
                 .unwrap_or(0);
             Some(format!(
                 "REJECT_ENDS: knot {k} (raw {}) is {} inside the identity inset of stops {raw_min}..{raw_max} (knots <= {lo} and >= {hi} must be 0); rebuild against these stops (osc lut build --raw-min {raw_min} --raw-max {raw_max}) or re-run osc cal",
                 k * GRID as usize,
-                lut.knots[k]
+                lut.points[k]
             ))
         }
         Err(Reject::Shape) => {
             let k = lut
-                .knots
+                .points
                 .windows(2)
                 .position(|w| {
                     let d = GRID as i32 + w[1] as i32 - w[0] as i32;
                     !(1..GAIN_MAX * GRID as i32).contains(&d)
                 })
                 .unwrap_or(0);
-            let d = GRID as i32 + lut.knots[k + 1] as i32 - lut.knots[k] as i32;
+            let d = GRID as i32 + lut.points[k + 1] as i32 - lut.points[k] as i32;
             Some(format!(
                 "REJECT_SHAPE: interval at raw {}..{} has gain {:.2}x nominal (must be within 1/{GRID}..{GAIN_MAX}x); not a pot, rebuild from a fresh capture",
                 k * GRID as usize,
@@ -167,8 +167,8 @@ pub(crate) fn write(a: &WriteArgs, baud: String, id: u8) -> Result<()> {
         bail!("{why}");
     }
     println!("validate against servo stops: ok");
-    let knots: [i16; pot_lut::INTERVALS] = lut.knots[..pot_lut::INTERVALS].try_into()?;
-    match s.c.write_pot_lut(s.id, &s.d, &knots) {
+    let points: [i16; pos_lut::INTERVALS] = lut.points[..pos_lut::INTERVALS].try_into()?;
+    match s.c.write_pos_lut(s.id, &s.d, &points) {
         Ok(()) => {}
         Err(Error::Lut(e)) => bail!("id {}: {e}", s.id.as_byte()),
         Err(e) => return Err(e.into()),
@@ -197,7 +197,7 @@ struct Shown {
     live: bool,
     #[serde(flatten)]
     report: Report,
-    knots: Vec<i16>,
+    points: Vec<i16>,
 }
 
 pub(crate) fn show(a: &ShowArgs, baud: String, id: u8) -> Result<()> {
@@ -211,7 +211,7 @@ pub(crate) fn show(a: &ShowArgs, baud: String, id: u8) -> Result<()> {
             state_name: lut.state_name(),
             live: lut.live(),
             report,
-            knots: lut.knots.to_vec(),
+            points: lut.points.to_vec(),
         };
         println!("{}", serde_json::to_string_pretty(&shown)?);
         return Ok(());
@@ -249,7 +249,7 @@ pub(crate) fn grade(baud: String, id: u8, json: bool) -> Result<()> {
 
 pub(crate) fn clear(baud: String, id: u8) -> Result<()> {
     let mut s = open(baud, id)?;
-    match s.c.clear_pot_lut(s.id, &s.d) {
+    match s.c.clear_pos_lut(s.id, &s.d) {
         Ok(()) => {}
         Err(Error::Lut(e)) => bail!("id {}: {e}", s.id.as_byte()),
         Err(e) => return Err(e.into()),
@@ -268,10 +268,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn explain_names_the_offending_knot_or_interval() {
+    fn explain_names_the_offending_point_or_interval() {
         let mut lut = GridLut::IDENTITY;
         assert_eq!(explain(&lut, (209, 3849)), None);
-        lut.knots[14] = 1;
+        lut.points[14] = 1;
         let why = explain(&lut, (209, 3849)).unwrap();
         assert!(
             why.starts_with("REJECT_ENDS: knot 14 (raw 224) is 1 inside"),
@@ -279,14 +279,14 @@ mod tests {
         );
         assert!(why.contains("knots <= 14 and >= 240"), "{why}");
         assert!(why.contains("--raw-min 209 --raw-max 3849"), "{why}");
-        lut.knots[14] = 0;
-        lut.knots[100] = 16;
+        lut.points[14] = 0;
+        lut.points[100] = 16;
         let why = explain(&lut, (209, 3849)).unwrap();
         assert!(
             why.starts_with("REJECT_SHAPE: interval at raw 1600..1616 has gain 0.00x"),
             "{why}"
         );
-        lut.knots[100] = 15;
+        lut.points[100] = 15;
         assert_eq!(explain(&lut, (209, 3849)), None);
     }
 }

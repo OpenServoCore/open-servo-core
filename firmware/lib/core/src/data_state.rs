@@ -18,7 +18,7 @@ use crate::regions::calib::CalibMotor;
 use crate::regions::calib::addr::stamp::PLANT_STAMP;
 use crate::regions::control::Mode;
 use crate::regions::control::addr::lifecycle::TORQUE_ENABLE;
-use crate::{RegionStorage, Shared, pot_lut, stamp};
+use crate::{RegionStorage, Shared, pos_lut, stamp};
 
 /// Boot found both CONFIG slots erased.
 pub const CONFIG_VIRGIN: u8 = 1 << 0;
@@ -62,7 +62,7 @@ pub mod job {
 pub struct DataJob {
     generation: u16,
     done: u8,
-    lut_state: Option<u8>,
+    pos_lut_state: Option<u8>,
     flags: u8,
 }
 
@@ -110,10 +110,10 @@ impl Shared {
     /// LUT the kernel applies, the array while `live` and the identity
     /// otherwise.
     fn checkpoint_flags(&self, live: bool) -> u8 {
-        self.with_pot_lut(|k| {
+        self.with_pos_lut(|k| {
             self.table.with(|t| {
-                let knots = if live { k.first_chunk() } else { None };
-                let stamp = if stamp::compute(t, knots) == t.calib.stamp.plant_stamp {
+                let lut_points = if live { k.first_chunk() } else { None };
+                let stamp = if stamp::compute(t, lut_points) == t.calib.stamp.plant_stamp {
                     0
                 } else {
                     STAMP_MISMATCH
@@ -125,7 +125,7 @@ impl Shared {
 
     fn lut_live(&self) -> bool {
         self.table
-            .with(|t| t.control.pot_lut.lut_state == pot_lut::state::LIVE)
+            .with(|t| t.control.pos_lut.pos_lut_state == pos_lut::state::LIVE)
     }
 
     /// Boot publish, after both overlays: the image verdicts plus the
@@ -186,7 +186,7 @@ impl Shared {
     /// Main loop: run what HIGH posted, unmasked and preemptible. A LUT
     /// COMMIT validates the array against the stops (REJECT_TORQUE if
     /// torque came on since the command, the refusal HIGH would have
-    /// given), then the checkpoint runs over the knots that verdict makes
+    /// given), then the checkpoint runs over the points that verdict makes
     /// effective. `None` while nothing is posted.
     pub fn data_job_run(&self) -> Option<DataJob> {
         // generation before job: a post between the two reads moves it
@@ -201,21 +201,21 @@ impl Shared {
                 t.control.lifecycle.torque_enable,
                 t.calib.pot.raw_min,
                 t.calib.pot.raw_max,
-                t.control.pot_lut.lut_state,
+                t.control.pos_lut.pos_lut_state,
             )
         });
-        let lut_state = (done & job::LUT_COMMIT != 0).then(|| {
+        let pos_lut_state = (done & job::LUT_COMMIT != 0).then(|| {
             if torque {
-                pot_lut::state::REJECT_TORQUE
+                pos_lut::state::REJECT_TORQUE
             } else {
-                self.with_pot_lut(|k| pot_lut::verdict(k, raw_min, raw_max))
+                self.with_pos_lut(|k| pos_lut::verdict(k, raw_min, raw_max))
             }
         });
-        let live = lut_state.unwrap_or(state) == pot_lut::state::LIVE;
+        let live = pos_lut_state.unwrap_or(state) == pos_lut::state::LIVE;
         Some(DataJob {
             generation,
             done,
-            lut_state,
+            pos_lut_state,
             flags: self.checkpoint_flags(live),
         })
     }
@@ -228,8 +228,8 @@ impl Shared {
             return false;
         }
         self.table.with_mut(|t| {
-            if let Some(s) = job.lut_state {
-                t.control.pot_lut.lut_state = s;
+            if let Some(s) = job.pos_lut_state {
+                t.control.pos_lut.pos_lut_state = s;
             }
             t.telemetry.mode.data_flags = (t.telemetry.mode.data_flags & !CHECKPOINT) | job.flags;
         });

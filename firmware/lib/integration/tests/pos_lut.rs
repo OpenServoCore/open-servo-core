@@ -1,11 +1,11 @@
-//! The pot LUT window over the wire (`pot_lut` module): STORE/FETCH/COMMIT
-//! round trips at every baud, every refusal leaving the identity behind,
-//! the stamp checkpoint a COMMIT runs, the table's place in the CALIB
-//! image through SAVE, reboot, torn saves, rot and FACTORY, and the
+//! The position table window over the wire (`pos_lut` module):
+//! STORE/FETCH/COMMIT round trips at every baud, every refusal leaving the
+//! identity behind, the stamp checkpoint a COMMIT runs, the table's place in
+//! the CALIB image through SAVE, reboot, torn saves, rot and FACTORY, and the
 //! kernel's endstop against the plant rig with the table LIVE. The mg90-a
-//! table (`support`) is the same 256 knots the core unit tests carry (bringup
-//! captures/mg90/pot-lut-mg90-a-grid.json), pinned to the Python reference
-//! by CRC.
+//! table (`support`) is the same 256 points the core unit tests carry
+//! (bringup captures/mg90/pot-lut-mg90-a-grid.json), pinned to the Python
+//! reference by CRC.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -23,13 +23,15 @@ use osc_servo_core::data_state::{
 };
 use osc_servo_core::kernel::DECIM_MED;
 use osc_servo_core::persist::{CalibImage, Slot};
-use osc_servo_core::pot_lut::{INTERVALS, KNOTS, PAGE_KNOTS, PAGES, cmd, interp_q4, state};
+use osc_servo_core::pos_lut::{INTERVALS, PAGE_POINTS, PAGES, POINTS, cmd, interp_q4, state};
 use osc_servo_core::regions::CALIB_BASE_ADDR;
 use osc_servo_core::regions::calib::addr::motor::{KE_VPC_Q, RECIP_KE_Q};
 use osc_servo_core::regions::calib::addr::pot::{RAW_MAX, RAW_MIN};
 use osc_servo_core::regions::calib::addr::stamp::PLANT_STAMP;
 use osc_servo_core::regions::control::addr::lifecycle::TORQUE_ENABLE;
-use osc_servo_core::regions::control::addr::pot_lut::{LUT_CMD, LUT_KNOTS, LUT_PAGE, LUT_STATE};
+use osc_servo_core::regions::control::addr::pos_lut::{
+    POS_LUT_CMD, POS_LUT_PAGE, POS_LUT_POINTS, POS_LUT_STATE,
+};
 use osc_servo_core::regions::telemetry::addr::mode::DATA_FLAGS;
 use osc_servo_core::stamp::compute;
 use osc_servo_core::tel::{TelSample, TelStream};
@@ -42,7 +44,7 @@ use support::{MG90_A, MG90_A_MAX, MG90_A_MIN, matrix, mg90_a, sim};
 
 const ID5: u8 = 5;
 const MG90_A_Q4_CRC: u16 = 0x8F97;
-const ZERO: [i16; KNOTS] = [0; KNOTS];
+const ZERO: [i16; POINTS] = [0; POINTS];
 
 fn sole_reply(frames: &[WireFrame]) -> &WireFrame {
     let replies: Vec<&WireFrame> = frames
@@ -92,8 +94,8 @@ fn mgmt(sim: &mut Sim, op: MgmtOp) -> ResultCode {
     status(sole_reply(&frames)).0.result().expect("result code")
 }
 
-fn lut_state(sim: &mut Sim) -> u8 {
-    read_byte(sim, LUT_STATE)
+fn pos_lut_state(sim: &mut Sim) -> u8 {
+    read_byte(sim, POS_LUT_STATE)
 }
 
 fn data_flags(sim: &mut Sim) -> u8 {
@@ -105,45 +107,45 @@ fn set_torque(sim: &mut Sim, on: bool) {
 }
 
 /// The host's stamp over the set it intends: what the servo holds now,
-/// under the knots it expects the kernel to apply.
-fn stamp(sim: &mut Sim, s: usize, knots: Option<&[i16; INTERVALS]>) {
-    let v = sim.servo_table(s, |t| compute(t, knots));
+/// under the points it expects the kernel to apply.
+fn stamp(sim: &mut Sim, s: usize, points: Option<&[i16; INTERVALS]>) {
+    let v = sim.servo_table(s, |t| compute(t, points));
     write_ok(sim, PLANT_STAMP, &v.to_le_bytes());
 }
 
-fn page_bytes(k: &[i16; KNOTS], page: usize) -> Vec<u8> {
-    k[page * PAGE_KNOTS..][..PAGE_KNOTS]
+fn page_bytes(k: &[i16; POINTS], page: usize) -> Vec<u8> {
+    k[page * PAGE_POINTS..][..PAGE_POINTS]
         .iter()
         .flat_map(|c| c.to_le_bytes())
         .collect()
 }
 
-/// One 66 B WRITE: page, STORE and the page's knots; the state it left.
-fn store(sim: &mut Sim, page: usize, k: &[i16; KNOTS]) -> u8 {
+/// One 66 B WRITE: page, STORE and the page's points; the state it left.
+fn store(sim: &mut Sim, page: usize, k: &[i16; POINTS]) -> u8 {
     let mut w = vec![page as u8, cmd::STORE];
     w.extend(page_bytes(k, page));
-    write_ok(sim, LUT_PAGE, &w);
-    lut_state(sim)
+    write_ok(sim, POS_LUT_PAGE, &w);
+    pos_lut_state(sim)
 }
 
-fn store_all(sim: &mut Sim, k: &[i16; KNOTS]) {
+fn store_all(sim: &mut Sim, k: &[i16; POINTS]) {
     for page in 0..PAGES {
         assert_eq!(store(sim, page, k), state::LOADING, "page {page}");
     }
 }
 
 fn commit(sim: &mut Sim) -> u8 {
-    write_ok(sim, LUT_CMD, &[cmd::COMMIT]);
-    lut_state(sim)
+    write_ok(sim, POS_LUT_CMD, &[cmd::COMMIT]);
+    pos_lut_state(sim)
 }
 
 fn fetch(sim: &mut Sim, page: usize) -> Vec<u8> {
-    write_ok(sim, LUT_PAGE, &[page as u8, cmd::FETCH]);
-    read(sim, LUT_KNOTS, 2 * PAGE_KNOTS as u16)
+    write_ok(sim, POS_LUT_PAGE, &[page as u8, cmd::FETCH]);
+    read(sim, POS_LUT_POINTS, 2 * PAGE_POINTS as u16)
 }
 
-fn array(sim: &Sim, s: usize) -> [i16; KNOTS] {
-    sim.servo_pot_lut(s, |k| *k)
+fn array(sim: &Sim, s: usize) -> [i16; POINTS] {
+    sim.servo_pos_lut(s, |k| *k)
 }
 
 /// A servo identified, stamped and SAVEd with the mg90-a stops: every
@@ -157,7 +159,7 @@ fn mg90_servo(sim: &mut Sim, store: &'static RamStore) -> usize {
     stamp(sim, s, None);
     assert_eq!(mgmt(sim, MgmtOp::Save), ResultCode::Ok);
     assert_eq!(data_flags(sim), 0);
-    assert_eq!(lut_state(sim), state::IDENTITY);
+    assert_eq!(pos_lut_state(sim), state::IDENTITY);
     s
 }
 
@@ -175,16 +177,16 @@ fn mg90_a_copy_matches_the_python_reference() {
 fn fresh_servo_reports_identity(baud_idx: u8) {
     let mut sim = sim(baud_idx);
     let s = sim.add_servo_with_store(ID5, RamStore::leak());
-    let window = read(&mut sim, LUT_PAGE, 2 + 2 * PAGE_KNOTS as u16 + 1);
+    let window = read(&mut sim, POS_LUT_PAGE, 2 + 2 * PAGE_POINTS as u16 + 1);
     assert!(window.iter().all(|&b| b == 0), "{window:02x?}");
-    assert_eq!(lut_state(&mut sim), state::IDENTITY);
-    assert_eq!(fetch(&mut sim, PAGES - 1), vec![0; 2 * PAGE_KNOTS]);
+    assert_eq!(pos_lut_state(&mut sim), state::IDENTITY);
+    assert_eq!(fetch(&mut sim, PAGES - 1), vec![0; 2 * PAGE_POINTS]);
     assert_eq!(array(&sim, s), ZERO);
 }
 
 /// The `osc lut write` sequence: eight STOREs, a COMMIT, LIVE, the stamp
 /// checkpoint refusing closed loop until a restamp over the live array,
-/// and a knot-for-knot FETCH readback.
+/// and a point-for-point FETCH readback.
 #[apply(matrix)]
 fn store_commit_goes_live_and_fetch_reads_back(baud_idx: u8) {
     let mut sim = sim(baud_idx);
@@ -195,21 +197,21 @@ fn store_commit_goes_live_and_fetch_reads_back(baud_idx: u8) {
     assert_eq!(commit(&mut sim), state::LIVE);
     assert_eq!(array(&sim, s), k);
     assert_eq!(
-        read_byte(&mut sim, LUT_CMD),
+        read_byte(&mut sim, POS_LUT_CMD),
         cmd::NONE,
         "the command cleared"
     );
     assert_eq!(
         data_flags(&mut sim),
         STAMP_MISMATCH,
-        "the hashed knots changed: run osc ident"
+        "the hashed points changed: run osc ident"
     );
     stamp(&mut sim, s, Some(&MG90_A));
     assert_eq!(data_flags(&mut sim), 0);
     for page in 0..PAGES {
         assert_eq!(fetch(&mut sim, page), page_bytes(&k, page), "page {page}");
     }
-    assert_eq!(lut_state(&mut sim), state::LIVE, "fetch moves nothing");
+    assert_eq!(pos_lut_state(&mut sim), state::LIVE, "fetch moves nothing");
     // an all-zero table LIVE hashes like the identity
     store_all(&mut sim, &ZERO);
     assert_eq!(data_flags(&mut sim), STAMP_MISMATCH, "left LIVE");
@@ -218,7 +220,7 @@ fn store_commit_goes_live_and_fetch_reads_back(baud_idx: u8) {
     assert_eq!(
         data_flags(&mut sim),
         STAMP_MISMATCH,
-        "the stamp covered the mg90-a knots"
+        "the stamp covered the mg90-a points"
     );
     stamp(&mut sim, s, None);
     assert_eq!(data_flags(&mut sim), 0);
@@ -241,40 +243,40 @@ fn commit_lands_its_verdict_in_the_main_loop_after_the_reply(baud_idx: u8) {
     assert_eq!(commit(&mut sim), state::LOADING, "the reply left unjudged");
     assert_eq!(data_flags(&mut sim), STAMP_MISMATCH, "refused until judged");
     assert!(sim.poll_data_job(s));
-    assert_eq!(lut_state(&mut sim), state::LIVE);
+    assert_eq!(pos_lut_state(&mut sim), state::LIVE);
     assert_eq!(
         data_flags(&mut sim),
         STAMP_MISMATCH,
-        "the hashed knots changed"
+        "the hashed points changed"
     );
 
     // a STORE behind a posted COMMIT cancels it
     assert_eq!(commit(&mut sim), state::LOADING);
     assert_eq!(store(&mut sim, 0, &k), state::LOADING);
     assert!(!sim.poll_data_job(s), "nothing posted");
-    assert_eq!(lut_state(&mut sim), state::LOADING);
+    assert_eq!(pos_lut_state(&mut sim), state::LOADING);
     assert_eq!(commit(&mut sim), state::LOADING);
     assert!(sim.poll_data_job(s));
-    assert_eq!(lut_state(&mut sim), state::LIVE);
+    assert_eq!(pos_lut_state(&mut sim), state::LIVE);
 
     // torque comes on between the run and its publish
     assert_eq!(commit(&mut sim), state::LOADING);
     let run = sim.data_job_run(s).expect("posted");
     set_torque(&mut sim, true);
     assert!(!sim.data_job_publish(s, run));
-    assert_eq!(lut_state(&mut sim), state::LOADING);
+    assert_eq!(pos_lut_state(&mut sim), state::LOADING);
     assert!(sim.poll_data_job(s));
-    assert_eq!(lut_state(&mut sim), state::REJECT_TORQUE);
+    assert_eq!(pos_lut_state(&mut sim), state::REJECT_TORQUE);
     assert_eq!(array(&sim, s), k, "the array stays for the next COMMIT");
     set_torque(&mut sim, false);
     assert_eq!(commit(&mut sim), state::LOADING);
     assert!(sim.poll_data_job(s));
-    assert_eq!(lut_state(&mut sim), state::LIVE);
+    assert_eq!(pos_lut_state(&mut sim), state::LIVE);
 
     // SAVE judges a posted COMMIT itself: the table persists LIVE
     assert_eq!(commit(&mut sim), state::LOADING);
     assert_eq!(mgmt(&mut sim, MgmtOp::Save), ResultCode::Ok);
-    assert_eq!(lut_state(&mut sim), state::LIVE);
+    assert_eq!(pos_lut_state(&mut sim), state::LIVE);
     assert_eq!(array(&sim, s), k);
     assert!(!sim.poll_data_job(s));
 }
@@ -283,7 +285,7 @@ fn commit_lands_its_verdict_in_the_main_loop_after_the_reply(baud_idx: u8) {
 fn commit_rejects_ends_and_shape_and_leaves_identity(baud_idx: u8) {
     let mut sim = sim(baud_idx);
     let s = mg90_servo(&mut sim, RamStore::leak());
-    // a nonzero knot inside the low inset of stop 209
+    // a nonzero point inside the low inset of stop 209
     let mut ends = mg90_a();
     ends[14] = 1;
     store_all(&mut sim, &ends);
@@ -325,7 +327,7 @@ fn store_with_torque_on_is_refused(baud_idx: u8) {
     assert_eq!(data_flags(&mut sim), 0);
     assert_eq!(
         fetch(&mut sim, 2),
-        vec![0; 2 * PAGE_KNOTS],
+        vec![0; 2 * PAGE_POINTS],
         "fetch is not gated"
     );
     set_torque(&mut sim, false);
@@ -361,15 +363,15 @@ fn save_while_loading_or_rejected_persists_identity(baud_idx: u8) {
         0,
         "the checkpoint hashes the identity"
     );
-    assert_eq!(lut_state(&mut sim), state::IDENTITY);
+    assert_eq!(pos_lut_state(&mut sim), state::IDENTITY);
     assert_eq!(array(&sim, s), ZERO, "the pages are gone");
     let img = flash
         .calib_slot(Slot::B)
         .expect("the second save lands in B");
-    assert_eq!(knots_of(&img), [0; INTERVALS]);
+    assert_eq!(points_of(&img), [0; INTERVALS]);
     let mut rebooted = support::sim(baud_idx);
     let s = rebooted.add_servo_with_store(ID5, flash);
-    assert_eq!(lut_state(&mut rebooted), state::IDENTITY);
+    assert_eq!(pos_lut_state(&mut rebooted), state::IDENTITY);
     assert_eq!(array(&rebooted, s), ZERO);
     assert_eq!(data_flags(&mut rebooted), 0);
 
@@ -378,12 +380,12 @@ fn save_while_loading_or_rejected_persists_identity(baud_idx: u8) {
     store_all(&mut rebooted, &shape);
     assert_eq!(commit(&mut rebooted), state::REJECT_SHAPE);
     assert_eq!(mgmt(&mut rebooted, MgmtOp::Save), ResultCode::Ok);
-    assert_eq!(lut_state(&mut rebooted), state::IDENTITY);
+    assert_eq!(pos_lut_state(&mut rebooted), state::IDENTITY);
     assert_eq!(array(&rebooted, s), ZERO);
     assert_eq!(data_flags(&mut rebooted), 0);
     let mut again = support::sim(baud_idx);
     let s = again.add_servo_with_store(ID5, flash);
-    assert_eq!(lut_state(&mut again), state::IDENTITY);
+    assert_eq!(pos_lut_state(&mut again), state::IDENTITY);
     assert_eq!(array(&again, s), ZERO);
 }
 
@@ -399,17 +401,17 @@ fn go_live(sim: &mut Sim, s: usize) {
     assert_eq!(data_flags(sim), 0);
 }
 
-fn knots_of(img: &[u8]) -> [i16; INTERVALS] {
+fn points_of(img: &[u8]) -> [i16; INTERVALS] {
     let parsed = CalibImage::parse(img).expect("stored calib image parses");
     let mut k = [0; INTERVALS];
-    for (d, s) in k.iter_mut().zip(parsed.knots.as_chunks::<2>().0) {
+    for (d, s) in k.iter_mut().zip(parsed.lut_points.as_chunks::<2>().0) {
         *d = i16::from_le_bytes(*s);
     }
     k
 }
 
 /// The per-servo switch's last step: one SAVE persists CONFIG and CALIB
-/// with the LUT inside it; the reboot loads it LIVE, knot for knot, with
+/// with the LUT inside it; the reboot loads it LIVE, point for point, with
 /// every reason clear; FACTORY wipes it back to the virgin identity.
 #[apply(matrix)]
 fn lut_survives_save_and_reboot_until_factory(baud_idx: u8) {
@@ -419,7 +421,7 @@ fn lut_survives_save_and_reboot_until_factory(baud_idx: u8) {
     go_live(&mut sim, s);
     assert_eq!(mgmt(&mut sim, MgmtOp::Save), ResultCode::Ok);
     assert_eq!(data_flags(&mut sim), 0);
-    assert_eq!(lut_state(&mut sim), state::LIVE);
+    assert_eq!(pos_lut_state(&mut sim), state::LIVE);
     let img = flash
         .calib_slot(Slot::B)
         .expect("the second save lands in B");
@@ -430,11 +432,11 @@ fn lut_survives_save_and_reboot_until_factory(baud_idx: u8) {
         MG90_A_MAX.to_le_bytes(),
         "the stops ride beside their table"
     );
-    assert_eq!(knots_of(&img), MG90_A);
+    assert_eq!(points_of(&img), MG90_A);
 
     let mut rebooted = support::sim(baud_idx);
     let s = rebooted.add_servo_with_store(ID5, flash);
-    assert_eq!(lut_state(&mut rebooted), state::LIVE);
+    assert_eq!(pos_lut_state(&mut rebooted), state::LIVE);
     assert_eq!(array(&rebooted, s), mg90_a());
     assert_eq!(data_flags(&mut rebooted), 0);
     for page in 0..PAGES {
@@ -450,7 +452,7 @@ fn lut_survives_save_and_reboot_until_factory(baud_idx: u8) {
     assert!(flash.calib_slot(Slot::A).is_none() && flash.calib_slot(Slot::B).is_none());
     let mut fresh = support::sim(baud_idx);
     let s = fresh.add_servo_with_store(ID5, flash);
-    assert_eq!(lut_state(&mut fresh), state::IDENTITY);
+    assert_eq!(pos_lut_state(&mut fresh), state::IDENTITY);
     assert_eq!(array(&fresh, s), ZERO);
     assert_eq!(data_flags(&mut fresh), FRESH);
 }
@@ -474,7 +476,7 @@ fn torn_calib_save_boots_the_previous_calibration_with_its_tables(baud_idx: u8) 
     assert!(CalibImage::parse(&torn).is_none());
     let mut rebooted = support::sim(baud_idx);
     let s = rebooted.add_servo_with_store(ID5, flash);
-    assert_eq!(lut_state(&mut rebooted), state::IDENTITY);
+    assert_eq!(pos_lut_state(&mut rebooted), state::IDENTITY);
     assert_eq!(array(&rebooted, s), ZERO);
     assert_eq!(
         data_flags(&mut rebooted),
@@ -497,7 +499,11 @@ fn torn_calib_save_boots_the_previous_calibration_with_its_tables(baud_idx: u8) 
     assert_eq!(mgmt(&mut sim, MgmtOp::Save), ResultCode::Hardware);
     let mut rebooted = support::sim(baud_idx);
     let s = rebooted.add_servo_with_store(ID5, flash);
-    assert_eq!(lut_state(&mut rebooted), state::LIVE, "the old table loads");
+    assert_eq!(
+        pos_lut_state(&mut rebooted),
+        state::LIVE,
+        "the old table loads"
+    );
     assert_eq!(array(&rebooted, s), mg90_a());
     assert_eq!(data_flags(&mut rebooted), 0);
 }
@@ -524,13 +530,13 @@ fn corrupt_or_stale_calib_image_boots_identity_under_its_reason(baud_idx: u8) {
         rot(flash, Slot::B);
         let mut rebooted = support::sim(baud_idx);
         let s = rebooted.add_servo_with_store(ID5, flash);
-        assert_eq!(lut_state(&mut rebooted), state::IDENTITY);
+        assert_eq!(pos_lut_state(&mut rebooted), state::IDENTITY);
         assert_eq!(array(&rebooted, s), ZERO);
         assert_eq!(data_flags(&mut rebooted), 0, "the older save, whole");
         rot(flash, Slot::A);
         let mut again = support::sim(baud_idx);
         let s = again.add_servo_with_store(ID5, flash);
-        assert_eq!(lut_state(&mut again), state::IDENTITY);
+        assert_eq!(pos_lut_state(&mut again), state::IDENTITY);
         assert_eq!(array(&again, s), ZERO);
         assert_eq!(
             data_flags(&mut again),
@@ -543,7 +549,7 @@ fn corrupt_or_stale_calib_image_boots_identity_under_its_reason(baud_idx: u8) {
 
 /// An outward OpenLoop push from rest at raw `pos` against soft limits
 /// `(min, max)`: whether the endstop brakes it.
-fn endstop_blocks(lut: Option<&[i16; KNOTS]>, pos: u16, soft: (i32, i32), duty: i16) -> bool {
+fn endstop_blocks(lut: Option<&[i16; POINTS]>, pos: u16, soft: (i32, i32), duty: i16) -> bool {
     let sh = Shared::new();
     seed(&sh);
     if let Some(k) = lut {
@@ -565,7 +571,7 @@ fn endstop_blocks(lut: Option<&[i16; KNOTS]>, pos: u16, soft: (i32, i32), duty: 
 }
 
 /// The soft limits sit inside the identity insets (mg90-a: 432 and 3626
-/// against stops 209/3849, zero knots up to raw 544 and from 3520), so the
+/// against stops 209/3849, zero points up to raw 544 and from 3520), so the
 /// endstop brake trips at the same raw count with the table LIVE as
 /// without it; mid-travel the wall is a linearized count, and raw 2048
 /// (2081 linearized) is already past a wall at 2060.
@@ -657,9 +663,9 @@ fn tel_pos_lin_is_interp_q4_of_pos_on_every_sample() {
         "the table moved something"
     );
 
-    sh.with_pot_lut_mut(|a| a.fill(0));
+    sh.with_pos_lut_mut(|a| a.fill(0));
     sh.table
-        .with_mut(|t| t.control.pot_lut.lut_state = state::IDENTITY);
+        .with_mut(|t| t.control.pos_lut.pos_lut_state = state::IDENTITY);
     for _ in 0..DECIM_MED {
         kn.on_tick(plant.step(0), &sh);
     }
@@ -677,16 +683,16 @@ fn out_of_range_page_or_command_is_refused(baud_idx: u8) {
     let k = mg90_a();
     let mut w = vec![PAGES as u8, cmd::STORE];
     w.extend(page_bytes(&k, 0));
-    assert_eq!(write(&mut sim, LUT_PAGE, &w), ResultCode::Validation);
+    assert_eq!(write(&mut sim, POS_LUT_PAGE, &w), ResultCode::Validation);
     assert_eq!(
-        write(&mut sim, LUT_CMD, &[cmd::MAX + 1]),
+        write(&mut sim, POS_LUT_CMD, &[cmd::MAX + 1]),
         ResultCode::Validation
     );
-    assert_eq!(lut_state(&mut sim), state::IDENTITY);
+    assert_eq!(pos_lut_state(&mut sim), state::IDENTITY);
     assert_eq!(array(&sim, s), ZERO);
     assert_eq!(
-        write(&mut sim, LUT_STATE, &[state::LIVE]),
+        write(&mut sim, POS_LUT_STATE, &[state::LIVE]),
         ResultCode::Access
     );
-    assert_eq!(lut_state(&mut sim), state::IDENTITY);
+    assert_eq!(pos_lut_state(&mut sim), state::IDENTITY);
 }

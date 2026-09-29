@@ -1,5 +1,5 @@
 //! The pot as the kernel reads it. With a table LIVE the kernel controls on
-//! linearized counts (core pot_lut.rs): theta_hat, the loops, the limits
+//! linearized counts (core pos_lut.rs): theta_hat, the loops, the limits
 //! and every plant constant fitted against pot motion (Ke, friction, B,
 //! sigma_theta) live in those counts, so the experiments fit in them too:
 //! the same table applied host-side to a polled `pos`, and the kernel's own
@@ -58,11 +58,11 @@ impl Pot {
 mod tests {
     use super::*;
     use crate::frame::TelFrame;
-    use crate::lut::{GRID, KNOTS};
+    use crate::lut::{GRID, POINTS};
 
     fn bent() -> GridLut {
         let mut lut = GridLut::IDENTITY;
-        for (k, c) in lut.knots.iter_mut().enumerate().take(240).skip(20) {
+        for (k, c) in lut.points.iter_mut().enumerate().take(240).skip(20) {
             *c = ((k as i32 - 20) * 2).min(100) as i16;
         }
         lut
@@ -74,15 +74,15 @@ mod tests {
         assert!(!Pot::RAW.is_live());
         let pot = Pot::live(bent());
         assert!(pot.is_live());
-        assert_eq!(pot.counts(100), 100.0, "identity below the first knot");
-        // raw 496 = knot 31 exactly: raw + c[31] = 496 + 22
+        assert_eq!(pot.counts(100), 100.0, "identity below the first point");
+        // raw 496 = point 31 exactly: raw + c[31] = 496 + 22
         assert_eq!(pot.counts(496), 518.0);
         // mid-interval keeps the Q4 fraction: raw 500 sits 4/16 into
         // interval 31 whose gain is 18/16
         assert_eq!(pot.counts(500), 518.0 + 4.0 * 18.0 / 16.0);
         assert_eq!(pot.counts(500), bent().q4(500) as f64 / GRID as f64);
         assert_eq!(Pot::live(GridLut::IDENTITY).counts(2421), 2421.0);
-        assert_eq!(KNOTS, 257);
+        assert_eq!(POINTS, 257);
     }
 
     #[test]

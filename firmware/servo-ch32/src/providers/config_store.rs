@@ -13,7 +13,7 @@ use osc_servo_core::persist::{
     self, BootPick, CALIB_IMAGE_LEN, CALIB_LEN, CONFIG_LEN, IMAGE_LEN, LUT_LEN, PROFILE_LEN, Slot,
     StoreError,
 };
-use osc_servo_core::pot_lut::INTERVALS;
+use osc_servo_core::pos_lut::INTERVALS;
 
 use crate::hal::flash::{self, PAGE_SIZE};
 use crate::runtime::statics::SHARED;
@@ -67,7 +67,7 @@ fn stored(addr: u32, len: usize) -> &'static [u8] {
     unsafe { core::slice::from_raw_parts(addr as *const u8, len) }
 }
 
-/// The pot LUT array as the LE byte stream the image body is: the
+/// The position table array as the LE byte stream the image body is: the
 /// in-memory i16 layout on this little-endian target.
 fn lut_bytes(lut: &[i16; INTERVALS]) -> &[u8; LUT_LEN] {
     // SAFETY: i16 has no padding, the array is exactly LUT_LEN bytes, and
@@ -193,12 +193,12 @@ impl ConfigStore {
         SHARED.seed_store(&CONFIG_STORE);
         // image state: 0 loaded, 1 virgin, 2 corrupt, 3 stale (data_state)
         crate::log::debug!(
-            "config store: state={} next_seq={} calib state={} next_seq={} lut_state={}",
+            "config store: state={} next_seq={} calib state={} next_seq={} pos_lut_state={}",
             pick.state as u8,
             pick.next_seq,
             calib_pick.state as u8,
             calib_pick.next_seq,
-            SHARED.table.with(|t| t.control.pot_lut.lut_state),
+            SHARED.table.with(|t| t.control.pos_lut.pos_lut_state),
         );
     }
 }

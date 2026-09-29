@@ -8,11 +8,11 @@
 //! disturbance torque the model cannot explain, in current counts; it feeds
 //! stall/collision detection and telemetry. Gains are host-synthesized
 //! constants (no runtime matrix math on this chip). The measurement is the
-//! linearized pot in Q4 (`pot_lut` module), so theta is in linearized
+//! linearized pot in Q4 (`pos_lut` module), so theta is in linearized
 //! counts; at identity `(raw << 4) << 12 == raw << 16`, bit-identical.
 
 use crate::math::q_mul;
-use crate::pot_lut::GRID_SHIFT;
+use crate::pos_lut::GRID_SHIFT;
 
 /// Q4 linearized counts -> cQ16.
 const Q4_TO_Q16: u32 = 16 - GRID_SHIFT;

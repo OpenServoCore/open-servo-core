@@ -30,12 +30,12 @@ pub struct Descriptor {
 
 /// What the firmware hashes into `plant_stamp`, exported so no host keeps
 /// a second copy of the covered list: the tag, the covered field names in
-/// table order, and the number of pot LUT knots hashed after them.
+/// table order, and the number of position table points hashed after them.
 #[derive(Debug, Clone, Deserialize)]
 pub struct StampSpec {
     pub tag: String,
     pub covered: Vec<String>,
-    pub lut_knots: usize,
+    pub pos_lut_points: usize,
 }
 
 #[derive(Debug, Clone, Deserialize)]

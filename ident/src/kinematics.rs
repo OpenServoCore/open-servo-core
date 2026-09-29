@@ -1,5 +1,5 @@
 //! Count <-> real-world-unit resolution for the calibration band. Turns the
-//! endstop sweep (pos_min/max_phys, which equal the pot LUT endpoints
+//! endstop sweep (pos_min/max_phys, which equal the position table endpoints
 //! raw_min/raw_max) plus the human-supplied travel angles into the on-servo
 //! `CalibKinematics` values: angle endpoints in centi-degrees and the
 //! physical gear ratio. Pure math; the caller writes the encoded values to

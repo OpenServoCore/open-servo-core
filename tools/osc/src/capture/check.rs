@@ -1,7 +1,7 @@
 //! `osc capture check`: re-read a landed capture and confirm every recording
 //! holds every segment its own meta promises, without the servo; over a
 //! dataset or experiment dir, every capture under it, and that they were
-//! all made under one pot table.
+//! all made under one position table.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead, BufReader};

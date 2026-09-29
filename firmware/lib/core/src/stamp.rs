@@ -12,7 +12,7 @@
 //! limits (current, thermal, undervolt, `duty_max_q15`), the raw sensor
 //! screen, the winding anchor, and the RO board facts install re-seeds.
 //!
-//! The LUT hashes as its 256 knots LE, zeros while no table is live: a LUT
+//! The LUT hashes as its 256 points LE, zeros while no table is live: a LUT
 //! that falls back to identity changes the stamp by itself.
 //!
 //! Software CRC, not the SPI engine: SPI1 is the transport's frame-CRC
@@ -21,7 +21,7 @@
 
 use osc_protocol::crc::osc_crc_continue;
 
-use crate::pot_lut::INTERVALS;
+use crate::pos_lut::INTERVALS;
 use crate::regions::ControlTable;
 
 pub const TAG: &str = "osc-plant-1";
@@ -137,11 +137,11 @@ fn bytes(t: &ControlTable) -> &[u8] {
     }
 }
 
-/// `max(1, crc16_arc(TAG ++ covered bytes ++ knots LE))`. `knots` is the
-/// table the kernel applies, `None` while it applies none (identity). Cold
-/// path with three callers: one copy, not one per checkpoint.
+/// `max(1, crc16_arc(TAG ++ covered bytes ++ lut_points LE))`. `lut_points`
+/// is the table the kernel applies, `None` while it applies none (identity).
+/// Cold path with three callers: one copy, not one per checkpoint.
 #[inline(never)]
-pub fn compute(t: &ControlTable, knots: Option<&[i16; INTERVALS]>) -> u16 {
+pub fn compute(t: &ControlTable, lut_points: Option<&[i16; INTERVALS]>) -> u16 {
     let bytes = bytes(t);
     let mut crc = osc_crc_continue(0, TAG.as_bytes());
     for s in &COVERED {
@@ -149,7 +149,7 @@ pub fn compute(t: &ControlTable, knots: Option<&[i16; INTERVALS]>) -> u16 {
             crc = osc_crc_continue(crc, b);
         }
     }
-    match knots {
+    match lut_points {
         Some(k) => {
             for c in k {
                 crc = osc_crc_continue(crc, &c.to_le_bytes());

@@ -1,10 +1,10 @@
-//! `osc lut` - the pot linearization table the firmware applies per sample
-//! (osc-ident's `lut`): `build` stitches one from a capture dataset and
-//! writes the image JSON, `grade` graphs an image or the servo's table,
-//! `write` puts an image on the servo, `show` reads the servo's back,
-//! `clear` returns it to the identity. Nothing here stamps: a new table
-//! re-defines the domain the identified set was fitted in, so every write
-//! leaves STAMP_MISMATCH for `osc ident` to clear.
+//! `osc lut` - the position linearization table the firmware applies per
+//! sample (osc-ident's `lut`): `build` stitches one from a capture dataset
+//! and writes the image JSON, `grade` graphs an image or the servo's table,
+//! `write` puts an image on the servo, `show` reads the servo's back, `clear`
+//! returns it to the identity. Nothing here stamps: a new table re-defines
+//! the domain the identified set was fitted in, so every write leaves
+//! STAMP_MISMATCH for `osc ident` to clear.
 
 mod build;
 mod grade;
@@ -91,7 +91,7 @@ pub(crate) fn on_grid(img: &Image, path: &Path) -> Result<GridLut> {
             "{}: not on the firmware grid (grid_shift {}, {} knots; want 4 and 256)",
             path.display(),
             img.grid_shift,
-            img.knots.len()
+            img.points.len()
         ),
     }
 }

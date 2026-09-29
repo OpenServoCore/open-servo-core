@@ -17,8 +17,8 @@
 //!
 //! The CALIB region persists as its own image (same header layout, magic
 //! `b'K'`, own version and A/B seq) together with its tables: body = the
-//! raw 256 B region ++ the pot LUT's 256 host-written knots i16 LE
-//! (`pot_lut` module; the fixed last knot is not stored), so the 776 B
+//! raw 256 B region ++ the position table's 256 host-written points i16 LE
+//! (`pos_lut` module; the fixed last point is not stored), so the 776 B
 //! image spans four pages per slot. One image, one CRC: calibration and
 //! the tables it validates are written and loaded as one unit, so a save
 //! never tears between them. Separate from the config image so that
@@ -26,18 +26,18 @@
 //! layout bump does not orphan a stored calibration.
 //!
 //! SAVE stores what the kernel applies: the array while LIVE, the identity
-//! otherwise. Boot loads the knots beside the calibration and validates
+//! otherwise. Boot loads the points beside the calibration and validates
 //! them against the stops it just overlaid: a table that fails, or is all
 //! zero, is the identity. An image that does not load leaves the identity
 //! too, under the CALIB_* reason; the plant stamp (which covers the
-//! effective knots) is what reports a lost or stale table as
+//! effective points) is what reports a lost or stale table as
 //! `STAMP_MISMATCH`.
 
 use control_table::RegisterMap;
 use osc_protocol::crc::{osc_crc, osc_crc_continue};
 
 use crate::data_state::ImageState;
-use crate::pot_lut::{self, INTERVALS, state};
+use crate::pos_lut::{self, INTERVALS, state};
 use crate::regions::{
     CALIB_BASE_ADDR, CALIB_REGION_SIZE, CONFIG_BASE_ADDR, CONFIG_REGION_SIZE, PROFILE_BASE_ADDR,
     PROFILE_REGION_SIZE, config,
@@ -265,11 +265,11 @@ impl<'a> Image<'a> {
 }
 
 /// Build the 8-byte header for a calib image (body = the raw CALIB region
-/// ++ the pot LUT knots i16 LE).
+/// ++ the position table points i16 LE).
 pub fn calib_header(
     seq: u16,
     calib: &[u8; CALIB_LEN],
-    knots: &[i16; INTERVALS],
+    lut_points: &[i16; INTERVALS],
 ) -> [u8; HEADER_LEN] {
     let mut h = [0u8; HEADER_LEN];
     h[0] = CALIB_IMAGE_MAGIC;
@@ -277,7 +277,7 @@ pub fn calib_header(
     h[2..4].copy_from_slice(&seq.to_le_bytes());
     h[4..6].copy_from_slice(&((CALIB_LEN + LUT_LEN) as u16).to_le_bytes());
     let mut crc = osc_crc_continue(osc_crc(&h[..6]), calib);
-    for c in knots {
+    for c in lut_points {
         crc = osc_crc_continue(crc, &c.to_le_bytes());
     }
     h[6..8].copy_from_slice(&crc.to_le_bytes());
@@ -290,26 +290,26 @@ pub fn calib_assemble(
     out: &mut [u8; CALIB_IMAGE_LEN],
     seq: u16,
     calib: &[u8; CALIB_LEN],
-    knots: &[i16; INTERVALS],
+    lut_points: &[i16; INTERVALS],
 ) {
-    out[..HEADER_LEN].copy_from_slice(&calib_header(seq, calib, knots));
+    out[..HEADER_LEN].copy_from_slice(&calib_header(seq, calib, lut_points));
     out[HEADER_LEN..HEADER_LEN + CALIB_LEN].copy_from_slice(calib);
     for (d, c) in out[HEADER_LEN + CALIB_LEN..]
         .as_chunks_mut::<2>()
         .0
         .iter_mut()
-        .zip(knots)
+        .zip(lut_points)
     {
         *d = c.to_le_bytes();
     }
 }
 
-/// A validated stored calib image; the region and knot refs borrow the
+/// A validated stored calib image; the region and point refs borrow the
 /// slot bytes.
 pub struct CalibImage<'a> {
     pub seq: u16,
     pub calib: &'a [u8; CALIB_LEN],
-    pub knots: &'a [u8; LUT_LEN],
+    pub lut_points: &'a [u8; LUT_LEN],
 }
 
 impl<'a> CalibImage<'a> {
@@ -317,7 +317,7 @@ impl<'a> CalibImage<'a> {
     /// fourth page - are ignored). Same gates as [`Image::parse`]; the
     /// allowed-rules pass covers CALIB enum/bool fields if any are ever
     /// added (today the region carries none, so it is vacuously true). The
-    /// physics gate on the knots (`pot_lut::validate`) runs at load,
+    /// physics gate on the points (`pos_lut::validate`) runs at load,
     /// against the stops this same image carries.
     pub fn parse(slot: &'a [u8]) -> Option<CalibImage<'a>> {
         let bytes = slot.get(..CALIB_IMAGE_LEN)?;
@@ -335,7 +335,7 @@ impl<'a> CalibImage<'a> {
         let img = CalibImage {
             seq,
             calib: bytes[HEADER_LEN..HEADER_LEN + CALIB_LEN].try_into().ok()?,
-            knots: bytes[HEADER_LEN + CALIB_LEN..].try_into().ok()?,
+            lut_points: bytes[HEADER_LEN + CALIB_LEN..].try_into().ok()?,
         };
         img.fields_allowed().then_some(img)
     }
@@ -426,7 +426,7 @@ pub fn boot_overlay(table: &ControlTableCell, slot_a: &[u8], slot_b: &[u8]) -> B
 }
 
 /// Boot-time calib load: same A/B rule as [`boot_overlay`], own slots and
-/// seq. The image's knots land in the array beside its calibration and go
+/// seq. The image's points land in the array beside its calibration and go
 /// LIVE only if they validate against the stops just overlaid and correct
 /// something (the all-zero image SAVE persists for the identity reads
 /// IDENTITY); otherwise the array returns to the identity, and the stamp
@@ -442,11 +442,11 @@ pub fn boot_overlay_calib(shared: &Shared, slot_a: &[u8], slot_b: &[u8]) -> Boot
             let (raw_min, raw_max) = shared
                 .table
                 .with(|t| (t.calib.pot.raw_min, t.calib.pot.raw_max));
-            let live = shared.with_pot_lut_mut(|k| {
-                for (d, s) in k.iter_mut().zip(img.knots.as_chunks::<2>().0) {
+            let live = shared.with_pos_lut_mut(|k| {
+                for (d, s) in k.iter_mut().zip(img.lut_points.as_chunks::<2>().0) {
                     *d = i16::from_le_bytes(*s);
                 }
-                match pot_lut::validate(k, raw_min, raw_max) {
+                match pos_lut::validate(k, raw_min, raw_max) {
                     Ok(()) => k.iter().any(|&c| c != 0),
                     Err(_) => {
                         k.fill(0);
@@ -455,7 +455,7 @@ pub fn boot_overlay_calib(shared: &Shared, slot_a: &[u8], slot_b: &[u8]) -> Boot
                 }
             });
             shared.table.with_mut(|t| {
-                t.control.pot_lut.lut_state = if live { state::LIVE } else { state::IDENTITY }
+                t.control.pos_lut.pos_lut_state = if live { state::LIVE } else { state::IDENTITY }
             });
             BootPick {
                 next_slot,
@@ -633,7 +633,7 @@ mod tests {
         assert_eq!(table.with(|t| t.config.common.id), 7, "comms overlaid");
     }
 
-    use crate::pot_lut::KNOTS;
+    use crate::pos_lut::POINTS;
 
     const STOPS: (u16, u16) = (209, 3849);
 
@@ -652,7 +652,7 @@ mod tests {
         calib
     }
 
-    /// A few knots inside the stops, valid against them.
+    /// A few points inside the stops, valid against them.
     fn lut_body() -> [i16; INTERVALS] {
         let mut k = [0i16; INTERVALS];
         k[20] = 3;
@@ -667,12 +667,12 @@ mod tests {
         img
     }
 
-    fn array(sh: &Shared) -> [i16; KNOTS] {
-        sh.with_pot_lut(|k| *k)
+    fn array(sh: &Shared) -> [i16; POINTS] {
+        sh.with_pos_lut(|k| *k)
     }
 
-    fn lut_state(sh: &Shared) -> u8 {
-        sh.table.with(|t| t.control.pot_lut.lut_state)
+    fn pos_lut_state(sh: &Shared) -> u8 {
+        sh.table.with(|t| t.control.pos_lut.pos_lut_state)
     }
 
     #[test]
@@ -681,7 +681,7 @@ mod tests {
         let parsed = CalibImage::parse(&img).expect("valid image");
         assert_eq!(parsed.seq, 9);
         assert_eq!(parsed.calib, &calib_body());
-        for (bytes, c) in parsed.knots.as_chunks::<2>().0.iter().zip(&lut_body()) {
+        for (bytes, c) in parsed.lut_points.as_chunks::<2>().0.iter().zip(&lut_body()) {
             assert_eq!(i16::from_le_bytes(*bytes), *c);
         }
     }
@@ -702,7 +702,7 @@ mod tests {
         torn[CALIB_IMAGE_LEN - 1] ^= 0x80;
         assert!(
             CalibImage::parse(&torn).is_none(),
-            "the last knot is under the crc"
+            "the last point is under the crc"
         );
         // A config image in a calib slot fails on magic, not by accident.
         assert!(CalibImage::parse(&image_of(1)).is_none());
@@ -714,7 +714,7 @@ mod tests {
     }
 
     #[test]
-    fn calib_boot_overlay_picks_newest_and_lands_fields_and_knots() {
+    fn calib_boot_overlay_picks_newest_and_lands_fields_and_points() {
         let sh = seeded_servo();
         let newer = {
             let mut calib = calib_body();
@@ -737,9 +737,9 @@ mod tests {
         );
         assert_eq!(sh.table.with(|t| t.calib.motor.r_q12), 14000);
         assert_eq!(sh.table.with(|t| t.calib.sense.tick_hz), 0x20);
-        assert_eq!(lut_state(&sh), state::LIVE);
+        assert_eq!(pos_lut_state(&sh), state::LIVE);
         assert_eq!(array(&sh)[..INTERVALS], newer.1);
-        assert_eq!(array(&sh)[INTERVALS], 0, "the fixed last knot");
+        assert_eq!(array(&sh)[INTERVALS], 0, "the fixed last point");
     }
 
     #[test]
@@ -771,16 +771,16 @@ mod tests {
                 (next, 4, ImageState::Loaded)
             );
             assert_eq!(sh.table.with(|t| t.calib.motor.r_q12), 13800);
-            assert_eq!(lut_state(&sh), state::LIVE);
+            assert_eq!(pos_lut_state(&sh), state::LIVE);
         }
     }
 
-    /// The stops in the image reject its own knots (a table left beside a
+    /// The stops in the image reject its own points (a table left beside a
     /// re-cal): the calibration lands, the identity runs, and the slot
     /// still alternates. The all-zero table SAVE persists for the identity
     /// is sound, loaded, and nothing to apply.
     #[test]
-    fn calib_boot_overlay_rejects_knots_against_its_stops_and_stays_identity() {
+    fn calib_boot_overlay_rejects_points_against_its_stops_and_stays_identity() {
         use crate::regions::calib::addr::pot::RAW_MAX;
         let sh = seeded_servo();
         let mut calib = calib_body();
@@ -797,8 +797,8 @@ mod tests {
             }
         );
         assert_eq!(sh.table.with(|t| t.calib.pot.raw_max), 1000);
-        assert_eq!(lut_state(&sh), state::IDENTITY);
-        assert_eq!(array(&sh), [0; KNOTS]);
+        assert_eq!(pos_lut_state(&sh), state::IDENTITY);
+        assert_eq!(array(&sh), [0; POINTS]);
 
         let sh = seeded_servo();
         let mut img = [0u8; CALIB_IMAGE_LEN];
@@ -806,7 +806,7 @@ mod tests {
         let pick = boot_overlay_calib(&sh, &[0xFF; CALIB_IMAGE_LEN], &img);
         assert_eq!((pick.next_slot, pick.next_seq), (Slot::A, 6));
         assert_eq!(sh.table.with(|t| t.calib.motor.r_q12), 13800);
-        assert_eq!(lut_state(&sh), state::IDENTITY);
+        assert_eq!(pos_lut_state(&sh), state::IDENTITY);
     }
 
     #[test]
@@ -844,8 +844,8 @@ mod tests {
             }
         );
         assert_eq!(table.with(|t| t.calib.sense.tick_hz), 20000);
-        assert_eq!(lut_state(&sh), state::IDENTITY);
-        assert_eq!(array(&sh), [0; KNOTS]);
+        assert_eq!(pos_lut_state(&sh), state::IDENTITY);
+        assert_eq!(array(&sh), [0; POINTS]);
     }
 
     #[test]
@@ -895,30 +895,30 @@ mod tests {
             boot_overlay(&table, &torn, &image_of(2)).state,
             ImageState::Loaded
         );
-        // The same verdicts for the calib image, a tear in the knots
+        // The same verdicts for the calib image, a tear in the points
         // included; the identity stands under each.
         let calib_erased = [0xFF; CALIB_IMAGE_LEN];
         let mut calib_torn = calib_image_of(1);
         calib_torn[HEADER_LEN] ^= 0x01;
-        let mut knots_torn = calib_image_of(1);
-        knots_torn[HEADER_LEN + CALIB_LEN + 40] ^= 0x01;
+        let mut lut_torn = calib_image_of(1);
+        lut_torn[HEADER_LEN + CALIB_LEN + 40] ^= 0x01;
         for (a, b, want) in [
             (&calib_erased[..], &calib_erased[..], ImageState::Virgin),
             (&calib_torn[..], &calib_erased[..], ImageState::Corrupt),
-            (&knots_torn[..], &calib_erased[..], ImageState::Corrupt),
+            (&lut_torn[..], &calib_erased[..], ImageState::Corrupt),
         ] {
             let sh = seeded_servo();
             assert_eq!(boot_overlay_calib(&sh, a, b), BootPick::unloaded(want));
-            assert_eq!(lut_state(&sh), state::IDENTITY);
-            assert_eq!(array(&sh), [0; KNOTS]);
+            assert_eq!(pos_lut_state(&sh), state::IDENTITY);
+            assert_eq!(array(&sh), [0; POINTS]);
         }
         let sh = seeded_servo();
         assert_eq!(
-            boot_overlay_calib(&sh, &knots_torn, &calib_image_of(2)).state,
+            boot_overlay_calib(&sh, &lut_torn, &calib_image_of(2)).state,
             ImageState::Loaded,
             "one valid slot loads whatever sits beside it"
         );
-        assert_eq!(lut_state(&sh), state::LIVE);
+        assert_eq!(pos_lut_state(&sh), state::LIVE);
     }
 
     #[test]
@@ -968,7 +968,7 @@ mod tests {
             boot_overlay_calib(&sh, &old_calib, &[0xFF; CALIB_IMAGE_LEN]).state,
             ImageState::Stale
         );
-        assert_eq!(lut_state(&sh), state::IDENTITY);
+        assert_eq!(pos_lut_state(&sh), state::IDENTITY);
     }
 
     /// The layout before the tables joined the image: the region alone as
@@ -990,7 +990,7 @@ mod tests {
             BootPick::unloaded(ImageState::Stale)
         );
         assert_eq!(sh.table.with(|t| t.calib.motor.r_q12), 0, "seeds stand");
-        assert_eq!(lut_state(&sh), state::IDENTITY);
+        assert_eq!(pos_lut_state(&sh), state::IDENTITY);
         // the body length is under the crc: a length claim alone is corrupt
         old[4] ^= 0x01;
         assert_eq!(

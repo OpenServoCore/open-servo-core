@@ -13,7 +13,7 @@ use osc_servo_core::persist::{
     self, CALIB_IMAGE_LEN, CALIB_IMAGE_VERSION, CALIB_LEN, CONFIG_LEN, HEADER_LEN, IMAGE_LEN,
     IMAGE_VERSION, PROFILE_LEN, Slot, StoreError,
 };
-use osc_servo_core::pot_lut::INTERVALS;
+use osc_servo_core::pos_lut::INTERVALS;
 use osc_servo_core::regions::{
     CALIB_BASE_ADDR, CALIB_REGION_SIZE, CONFIG_BASE_ADDR, CONFIG_REGION_SIZE, PROFILE_BASE_ADDR,
     PROFILE_REGION_SIZE,
@@ -88,9 +88,9 @@ impl RamStore {
     }
 
     /// Boot-time load, mirroring the chip provider: overlay the newest valid
-    /// config and calib images (the pot LUT beside the calib), prime both
-    /// A/B states, and publish the data state the verdicts make. Called by
-    /// `SimServo::build` before the bus reads the table's comms block; the
+    /// config and calib images (the position table beside the calib), prime
+    /// both A/B states, and publish the data state the verdicts make. Called
+    /// by `SimServo::build` before the bus reads the table's comms block; the
     /// caller re-seeds RO calib sense facts after (board data wins).
     pub fn boot_load(&self, shared: &Shared) {
         let mut g = self.inner.lock().unwrap();
@@ -108,8 +108,8 @@ impl RamStore {
     }
 
     /// A bench SAVE without the wire (sec 9.4): the live CONFIG, PROFILE and
-    /// CALIB regions and the pot LUT array land in the store, so the next
-    /// boot overlays them back and FACTORY wipes them.
+    /// CALIB regions and the position table array land in the store, so the
+    /// next boot overlays them back and FACTORY wipes them.
     pub fn save_table(&self, shared: &Shared) {
         let table = &shared.table;
         let config: &[u8; CONFIG_LEN] =
@@ -126,8 +126,8 @@ impl RamStore {
             .ok()
             .and_then(|s| s.try_into().ok())
             .expect("whole CALIB region");
-        shared.with_pot_lut(|k| {
-            let lut = k.first_chunk().expect("the host-written knots");
+        shared.with_pos_lut(|k| {
+            let lut = k.first_chunk().expect("the host-written points");
             self.save(config, profile, calib, lut).expect("store save");
         });
     }

@@ -17,7 +17,7 @@ use crate::frame::{TelFrame, TelemetrySnapshot};
 use crate::regs::control;
 
 /// TEL frame layout the choreography arms: pos + current + duty + vdiff,
-/// plus pos_lin while the rig's pot table is live ([`crate::pot::Pot`]).
+/// plus pos_lin while the rig's position table is live ([`crate::pot::Pot`]).
 pub const TEL_LADDER_MASK: u16 = 0x1B;
 
 pub struct InertiaCfg {

@@ -166,8 +166,8 @@ struct Ctx {
     f_cv: f64,
     f_cp: f64,
     f_o: f64,
-    /// The servo's pot table, read once the bus is up: the experiments fit
-    /// in the counts the kernel controls on.
+    /// The servo's position table, read once the bus is up: the experiments
+    /// fit in the counts the kernel controls on.
     lut: Option<Lut>,
 }
 

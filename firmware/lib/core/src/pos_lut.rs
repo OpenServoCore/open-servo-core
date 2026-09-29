@@ -1,37 +1,37 @@
-//! Pot linearization on a fixed grid over the 12-bit ADC domain: 256
+//! Position linearization on a fixed grid over the 12-bit ADC domain: 256
 //! intervals of 16 raw counts, 257 i16 corrections against the identity
-//! ramp (knot k at raw k * 16, the last fixed 0). All-zero is the identity.
+//! ramp (point k at raw k * 16, the last fixed 0). All-zero is the identity.
 //! The output is linearized counts in Q4 (`raw << 4` at identity, `raw +
-//! c[k]` at a knot), so counts stay counts downstream. `notebooks/oscnb/
-//! potlut.py` mirrors `index`, `interp_q4` and `validate` bit for bit; the
+//! c[k]` at a point), so counts stay counts downstream. `notebooks/oscnb/
+//! poslut.py` mirrors `index`, `interp_q4` and `validate` bit for bit; the
 //! mg90-a test below pins the two against each other.
 //!
 //! The table lives in `Shared` RAM behind a paged window in CONTROL
-//! (`ControlPotLut`): the host STOREs it `PAGE_KNOTS` at a time, COMMITs,
-//! and the kernel applies it only while `lut_state` reads LIVE. SAVE
+//! (`ControlPosLut`): the host STOREs it `PAGE_POINTS` at a time, COMMITs,
+//! and the kernel applies it only while `pos_lut_state` reads LIVE. SAVE
 //! persists the effective table beside the calibration in the CALIB image
 //! (`persist` module) and boot loads it back LIVE; anything short of LIVE
 //! at SAVE drops to the identity first, so a reboot never applies a table
 //! the kernel did not.
 
 use crate::data_state::{STAMP_MISMATCH, job};
-use crate::regions::control::addr::pot_lut::LUT_CMD;
+use crate::regions::control::addr::pos_lut::POS_LUT_CMD;
 use crate::{RegionStorage, Shared};
 
 pub const ADC_BITS: u32 = 12;
 pub const GRID_SHIFT: u32 = 4;
 pub const GRID: usize = 1 << GRID_SHIFT;
 pub const INTERVALS: usize = 1 << (ADC_BITS - GRID_SHIFT);
-pub const KNOTS: usize = INTERVALS + 1;
-/// Knots per window page: 64 B, so page, command and knots ride one WRITE.
-pub const PAGE_KNOTS: usize = 32;
-/// Pages covering the host-written knots; the fixed last knot has none.
-pub const PAGES: usize = INTERVALS / PAGE_KNOTS;
+pub const POINTS: usize = INTERVALS + 1;
+/// Points per window page: 64 B, so page, command and points ride one WRITE.
+pub const PAGE_POINTS: usize = 32;
+/// Pages covering the host-written points; the fixed last point has none.
+pub const PAGES: usize = INTERVALS / PAGE_POINTS;
 const ADC_MASK: u16 = (1 << ADC_BITS) - 1;
 const FRAC_MASK: u16 = GRID as u16 - 1;
 const GAIN_MAX: i32 = 16;
 
-/// `lut_state` values. Plain consts, not an `Enum` derive: the field is
+/// `pos_lut_state` values. Plain consts, not an `Enum` derive: the field is
 /// RO, so no discriminant validation ever runs on it.
 pub mod state {
     pub const IDENTITY: u8 = 0;
@@ -43,7 +43,7 @@ pub mod state {
     pub const REJECT_SHAPE: u8 = 5;
 }
 
-/// `lut_cmd` values; the field's `le` rule admits nothing above `MAX`.
+/// `pos_lut_cmd` values; the field's `le` rule admits nothing above `MAX`.
 /// A committed write carrying one runs it and reads back `NONE`.
 pub mod cmd {
     pub const NONE: u8 = 0;
@@ -56,7 +56,7 @@ pub mod cmd {
 /// Why a table cannot be applied.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Reject {
-    /// A nonzero knot at or beyond a stop: the stops must map to themselves.
+    /// A nonzero point at or beyond a stop: the stops must map to themselves.
     Ends,
     /// An interval with local gain outside `[1/16, 16)` of nominal: not
     /// monotone, or garbage that would overflow the Q4 word.
@@ -70,14 +70,14 @@ pub fn index(raw: u16) -> usize {
 }
 
 /// Linearized counts in Q4. The ADC mask keeps `index + 1 <= INTERVALS`,
-/// so both knot loads are provably in range and no bounds check remains.
+/// so both point loads are provably in range and no bounds check remains.
 #[inline(always)]
-pub fn interp_q4(raw: u16, knots: &[i16; KNOTS]) -> u16 {
+pub fn interp_q4(raw: u16, points: &[i16; POINTS]) -> u16 {
     let i = index(raw);
-    lerp_q4(raw, knots[i], knots[i + 1])
+    lerp_q4(raw, points[i], points[i + 1])
 }
 
-/// The interpolation alone, `c0`/`c1` the knots either side of `raw`'s
+/// The interpolation alone, `c0`/`c1` the points either side of `raw`'s
 /// interval; the kernel loads them volatile off the raw table pointer.
 #[inline(always)]
 pub fn lerp_q4(raw: u16, c0: i16, c1: i16) -> u16 {
@@ -93,21 +93,21 @@ pub fn identity_q4(raw: u16) -> u16 {
 }
 
 /// Physics sanity only, never quality: zero at and beyond the stops (every
-/// knot `k <= (raw_min + 15) >> 4` and `k >= raw_max >> 4`, so both stops
-/// map to themselves whether or not they sit on a knot; stops unset admits
+/// point `k <= (raw_min + 15) >> 4` and `k >= raw_max >> 4`, so both stops
+/// map to themselves whether or not they sit on a point; stops unset admits
 /// only the identity), then every interval's Q4 gain `16 + c[k+1] - c[k]`
 /// in `1..16 * 16`. Ends are judged before shape, as the host mirror does.
-pub fn validate(knots: &[i16; KNOTS], raw_min: u16, raw_max: u16) -> Result<(), Reject> {
+pub fn validate(points: &[i16; POINTS], raw_min: u16, raw_max: u16) -> Result<(), Reject> {
     let lo = (raw_min as usize + GRID - 1) >> GRID_SHIFT;
     let hi = raw_max as usize >> GRID_SHIFT;
-    if knots
+    if points
         .iter()
         .enumerate()
         .any(|(k, &c)| (k <= lo || k >= hi) && c != 0)
     {
         return Err(Reject::Ends);
     }
-    let shape = knots.iter().zip(&knots[1..]).all(|(&c0, &c1)| {
+    let shape = points.iter().zip(&points[1..]).all(|(&c0, &c1)| {
         let d = GRID as i32 + c1 as i32 - c0 as i32;
         (1..GAIN_MAX * GRID as i32).contains(&d)
     });
@@ -123,31 +123,31 @@ impl Reject {
     }
 }
 
-/// [`validate`] as the `lut_state` a COMMIT lands.
-pub fn verdict(knots: &[i16; KNOTS], raw_min: u16, raw_max: u16) -> u8 {
-    match validate(knots, raw_min, raw_max) {
+/// [`validate`] as the `pos_lut_state` a COMMIT lands.
+pub fn verdict(points: &[i16; POINTS], raw_min: u16, raw_max: u16) -> u8 {
+    match validate(points, raw_min, raw_max) {
         Ok(()) => state::LIVE,
         Err(r) => r.state(),
     }
 }
 
 impl Shared {
-    /// The kernel's per-tick read while `lut_state` is LIVE: two volatile
-    /// knot loads off the raw pointer, no `&` across the ISR boundary. HIGH
+    /// The kernel's per-tick read while `pos_lut_state` is LIVE: two volatile
+    /// point loads off the raw pointer, no `&` across the ISR boundary. HIGH
     /// dispatch (the sole writer) can preempt between the two loads, but
     /// STORE and COMMIT are torque-gated, so a mixed read only ever reaches
     /// a disabled servo, whose observer reseeds at the next enable.
     #[inline(always)]
-    pub fn pot_lut_q4(&self, raw: u16) -> u16 {
+    pub fn pos_lut_q4(&self, raw: u16) -> u16 {
         let i = index(raw);
-        let k = self.pot_lut_ptr().cast::<i16>();
-        // SAFETY: `index` keeps i + 1 <= INTERVALS < KNOTS, both loads stay
+        let k = self.pos_lut_ptr().cast::<i16>();
+        // SAFETY: `index` keeps i + 1 <= INTERVALS < POINTS, both loads stay
         // inside the static array; single-writer contract in the fn doc.
         let (c0, c1) = unsafe { (k.add(i).read_volatile(), k.add(i + 1).read_volatile()) };
         lerp_q4(raw, c0, c1)
     }
 
-    /// Run the command a committed write left in `lut_cmd`, then clear it.
+    /// Run the command a committed write left in `pos_lut_cmd`, then clear it.
     /// STORE copies the window into the array's page and leaves LOADING;
     /// FETCH copies that page back into the window; COMMIT leaves LOADING
     /// (the kernel applies the identity) and posts the main-loop job that
@@ -161,48 +161,48 @@ impl Shared {
     /// posted COMMIT: the array is loading again, and only the next COMMIT
     /// judges it. HIGH dispatch only; one copy behind both commit sites.
     #[inline(never)]
-    pub fn pot_lut_after_commit(&self, addr: u16, len: u16) {
-        if addr > LUT_CMD || addr.saturating_add(len) <= LUT_CMD {
+    pub fn pos_lut_after_commit(&self, addr: u16, len: u16) {
+        if addr > POS_LUT_CMD || addr.saturating_add(len) <= POS_LUT_CMD {
             return;
         }
-        let (ran, stale) = self.with_pot_lut_mut(|k| {
+        let (ran, stale) = self.with_pos_lut_mut(|k| {
             self.table.with_mut(|t| {
                 let torque = t.control.lifecycle.torque_enable;
-                let w = &mut t.control.pot_lut;
-                let at = w.lut_page as usize * PAGE_KNOTS;
-                let refused = if w.lut_state == state::LIVE {
+                let w = &mut t.control.pos_lut;
+                let at = w.pos_lut_page as usize * PAGE_POINTS;
+                let refused = if w.pos_lut_state == state::LIVE {
                     state::LIVE
                 } else {
                     state::REJECT_TORQUE
                 };
-                let ran = w.lut_cmd;
+                let ran = w.pos_lut_cmd;
                 let mut stale = false;
                 match ran {
-                    cmd::STORE if torque => w.lut_state = refused,
+                    cmd::STORE if torque => w.pos_lut_state = refused,
                     cmd::STORE => {
-                        stale = w.lut_state == state::LIVE;
-                        w.lut_state = state::LOADING;
+                        stale = w.pos_lut_state == state::LIVE;
+                        w.pos_lut_state = state::LOADING;
                         if let Some(dst) = k.get_mut(at..) {
-                            for (d, s) in dst.iter_mut().zip(&w.lut_knots) {
+                            for (d, s) in dst.iter_mut().zip(&w.pos_lut_points) {
                                 *d = *s;
                             }
                         }
                     }
                     cmd::FETCH => {
                         if let Some(src) = k.get(at..) {
-                            for (d, s) in w.lut_knots.iter_mut().zip(src) {
+                            for (d, s) in w.pos_lut_points.iter_mut().zip(src) {
                                 *d = *s;
                             }
                         }
                     }
-                    cmd::COMMIT if torque => w.lut_state = refused,
+                    cmd::COMMIT if torque => w.pos_lut_state = refused,
                     cmd::COMMIT => {
                         stale = true;
-                        w.lut_state = state::LOADING;
+                        w.pos_lut_state = state::LOADING;
                     }
                     _ => {}
                 }
-                w.lut_cmd = cmd::NONE;
+                w.pos_lut_cmd = cmd::NONE;
                 (if torque { cmd::NONE } else { ran }, stale)
             })
         });
@@ -220,14 +220,14 @@ impl Shared {
     /// Settle the array to what the kernel applies before SAVE persists
     /// it: a load in progress or a rejected array is the identity, so it
     /// becomes one. HIGH dispatch only, torque off.
-    pub fn pot_lut_settle(&self) {
+    pub fn pos_lut_settle(&self) {
         let live = self
             .table
-            .with(|t| t.control.pot_lut.lut_state == state::LIVE);
+            .with(|t| t.control.pos_lut.pos_lut_state == state::LIVE);
         if !live {
-            self.with_pot_lut_mut(|k| k.fill(0));
+            self.with_pos_lut_mut(|k| k.fill(0));
             self.table
-                .with_mut(|t| t.control.pot_lut.lut_state = state::IDENTITY);
+                .with_mut(|t| t.control.pos_lut.pos_lut_state = state::IDENTITY);
         }
     }
 }
@@ -237,10 +237,10 @@ mod tests {
     use super::*;
     use osc_protocol::crc::osc_crc_continue;
 
-    const ZERO: [i16; KNOTS] = [0; KNOTS];
+    const ZERO: [i16; POINTS] = [0; POINTS];
 
     // mg90-a on the 2S session, stops 209/3849, covered 542..3520 (bringup
-    // captures/mg90/pot-lut-mg90-a-grid.json; the fixed last knot appended).
+    // captures/mg90/pot-lut-mg90-a-grid.json; the fixed last point appended).
     const MG90_A_MIN: u16 = 209;
     const MG90_A_MAX: u16 = 3849;
     const MG90_A: [i16; INTERVALS] = [
@@ -261,7 +261,7 @@ mod tests {
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, //
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, //
     ];
-    // osc-CRC-16 over the 4096 Q4 words LE, from potlut.GridLut.q4 in Python.
+    // osc-CRC-16 over the 4096 Q4 words LE, from poslut.GridLut.q4 in Python.
     const MG90_A_Q4_CRC: u16 = 0x8F97;
     const MG90_A_Q4_SAMPLES: [(u16, u16); 9] = [
         (209, 3344),
@@ -275,13 +275,13 @@ mod tests {
         (4095, 65520),
     ];
 
-    fn mg90_a() -> [i16; KNOTS] {
+    fn mg90_a() -> [i16; POINTS] {
         let mut k = ZERO;
         k[..INTERVALS].copy_from_slice(&MG90_A);
         k
     }
 
-    fn table(edits: &[(usize, i16)]) -> [i16; KNOTS] {
+    fn table(edits: &[(usize, i16)]) -> [i16; POINTS] {
         let mut k = ZERO;
         for &(i, c) in edits {
             k[i] = c;
@@ -289,9 +289,9 @@ mod tests {
         k
     }
 
-    /// A step of `rise` at knot 101 tapering back to zero one Q4 count under
+    /// A step of `rise` at point 101 tapering back to zero one Q4 count under
     /// nominal per interval, so only the step's interval is off nominal.
-    fn step(rise: i16) -> [i16; KNOTS] {
+    fn step(rise: i16) -> [i16; POINTS] {
         let mut k = ZERO;
         let mut c = rise;
         let mut i = 101;
@@ -311,7 +311,7 @@ mod tests {
     }
 
     #[test]
-    fn knots_land_exactly() {
+    fn points_land_exactly() {
         let k = mg90_a();
         for i in 0..INTERVALS {
             let raw = (i * GRID) as u16;
@@ -360,14 +360,14 @@ mod tests {
 
     #[test]
     fn validate_rejects_ends() {
-        // stops off a knot: 209 -> knots 0..=14 are the low inset, 3849 -> 240..
+        // stops off a point: 209 -> points 0..=14 are the low inset, 3849 -> 240..
         for k in [13, 14, 240, 255, 256] {
             assert_eq!(validate(&table(&[(k, 1)]), 209, 3849), Err(Reject::Ends));
         }
         for k in [15, 239] {
             assert_eq!(validate(&table(&[(k, 1)]), 209, 3849), Ok(()));
         }
-        // stops on a knot: the knot itself is inset on both sides
+        // stops on a point: the point itself is inset on both sides
         for k in [15, 16, 240] {
             assert_eq!(validate(&table(&[(k, 1)]), 256, 3840), Err(Reject::Ends));
         }
@@ -405,7 +405,7 @@ mod tests {
     }
 
     #[test]
-    fn interp_never_indexes_past_the_last_knot() {
+    fn interp_never_indexes_past_the_last_point() {
         let k = table(&[(255, -3), (256, 1)]);
         assert_eq!(interp_q4(4095, &k), ((4095 - 3) << 4) + 4 * 15);
         for raw in [0x1234, 0xF234, 0xFFFF] {
@@ -425,9 +425,9 @@ mod tests {
     fn kernel_read_matches_interp_exhaustive() {
         let sh = Shared::new();
         let k = mg90_a();
-        sh.with_pot_lut_mut(|a| *a = k);
+        sh.with_pos_lut_mut(|a| *a = k);
         for raw in 0..=u16::MAX {
-            assert_eq!(sh.pot_lut_q4(raw), interp_q4(raw, &k), "raw {raw}");
+            assert_eq!(sh.pos_lut_q4(raw), interp_q4(raw, &k), "raw {raw}");
             assert_eq!(identity_q4(raw), interp_q4(raw, &ZERO), "raw {raw}");
         }
     }
@@ -435,7 +435,7 @@ mod tests {
     // The window: what the dispatcher's post-commit step runs.
 
     use crate::data_state::STAMP_MISMATCH;
-    use crate::regions::control::addr::pot_lut::{LUT_KNOTS, LUT_PAGE, LUT_STATE};
+    use crate::regions::control::addr::pos_lut::{POS_LUT_PAGE, POS_LUT_POINTS, POS_LUT_STATE};
     use crate::stamp;
 
     fn servo() -> Shared {
@@ -456,50 +456,50 @@ mod tests {
         sh.table.with(|t| t.telemetry.mode.data_flags)
     }
 
-    fn lut_state(sh: &Shared) -> u8 {
-        sh.table.with(|t| t.control.pot_lut.lut_state)
+    fn pos_lut_state(sh: &Shared) -> u8 {
+        sh.table.with(|t| t.control.pos_lut.pos_lut_state)
     }
 
-    fn window(sh: &Shared) -> [i16; PAGE_KNOTS] {
-        sh.table.with(|t| t.control.pot_lut.lut_knots)
+    fn window(sh: &Shared) -> [i16; PAGE_POINTS] {
+        sh.table.with(|t| t.control.pos_lut.pos_lut_points)
     }
 
-    /// One committed window write: page, command and knots as one span.
-    fn command(sh: &Shared, page: u8, c: u8, knots: &[i16; PAGE_KNOTS]) {
+    /// One committed window write: page, command and points as one span.
+    fn command(sh: &Shared, page: u8, c: u8, points: &[i16; PAGE_POINTS]) {
         sh.table.with_mut(|t| {
-            t.control.pot_lut.lut_page = page;
-            t.control.pot_lut.lut_cmd = c;
-            t.control.pot_lut.lut_knots = *knots;
+            t.control.pos_lut.pos_lut_page = page;
+            t.control.pos_lut.pos_lut_cmd = c;
+            t.control.pos_lut.pos_lut_points = *points;
         });
-        sh.pot_lut_after_commit(LUT_PAGE, 2 + 2 * PAGE_KNOTS as u16);
-        assert_eq!(sh.table.with(|t| t.control.pot_lut.lut_cmd), cmd::NONE);
+        sh.pos_lut_after_commit(POS_LUT_PAGE, 2 + 2 * PAGE_POINTS as u16);
+        assert_eq!(sh.table.with(|t| t.control.pos_lut.pos_lut_cmd), cmd::NONE);
         sh.data_job_service();
     }
 
-    fn store_all(sh: &Shared, k: &[i16; KNOTS]) {
+    fn store_all(sh: &Shared, k: &[i16; POINTS]) {
         for page in 0..PAGES {
-            let mut w = [0; PAGE_KNOTS];
-            w.copy_from_slice(&k[page * PAGE_KNOTS..][..PAGE_KNOTS]);
+            let mut w = [0; PAGE_POINTS];
+            w.copy_from_slice(&k[page * PAGE_POINTS..][..PAGE_POINTS]);
             command(sh, page as u8, cmd::STORE, &w);
-            assert_eq!(lut_state(sh), state::LOADING);
+            assert_eq!(pos_lut_state(sh), state::LOADING);
         }
     }
 
     fn commit(sh: &Shared) -> u8 {
-        command(sh, 0, cmd::COMMIT, &[0; PAGE_KNOTS]);
-        lut_state(sh)
+        command(sh, 0, cmd::COMMIT, &[0; PAGE_POINTS]);
+        pos_lut_state(sh)
     }
 
     #[test]
     fn store_commit_goes_live_and_fetch_reads_back() {
         let sh = servo();
         let k = mg90_a();
-        assert_eq!(lut_state(&sh), state::IDENTITY);
+        assert_eq!(pos_lut_state(&sh), state::IDENTITY);
         store_all(&sh, &k);
         assert_eq!(flags(&sh), 0, "loading applies the identity");
         assert_eq!(commit(&sh), state::LIVE);
-        sh.with_pot_lut(|live| assert_eq!(live, &k));
-        assert_eq!(flags(&sh), STAMP_MISMATCH, "the hashed knots changed");
+        sh.with_pos_lut(|live| assert_eq!(live, &k));
+        assert_eq!(flags(&sh), STAMP_MISMATCH, "the hashed points changed");
         sh.table.with_mut(|t| {
             t.calib.stamp.plant_stamp = stamp::compute(t, Some(&MG90_A));
         });
@@ -507,10 +507,10 @@ mod tests {
         sh.data_job_service();
         assert_eq!(flags(&sh), 0);
         for page in 0..PAGES {
-            command(&sh, page as u8, cmd::FETCH, &[0; PAGE_KNOTS]);
-            assert_eq!(window(&sh), k[page * PAGE_KNOTS..][..PAGE_KNOTS]);
+            command(&sh, page as u8, cmd::FETCH, &[0; PAGE_POINTS]);
+            assert_eq!(window(&sh), k[page * PAGE_POINTS..][..PAGE_POINTS]);
         }
-        assert_eq!(lut_state(&sh), state::LIVE, "fetch moves nothing");
+        assert_eq!(pos_lut_state(&sh), state::LIVE, "fetch moves nothing");
     }
 
     #[test]
@@ -524,7 +524,7 @@ mod tests {
     #[test]
     fn commit_rejects_and_the_kernel_stays_identity() {
         let sh = servo();
-        // a nonzero knot inside the low inset of stop 209
+        // a nonzero point inside the low inset of stop 209
         let mut ends = mg90_a();
         ends[14] = 1;
         store_all(&sh, &ends);
@@ -557,15 +557,15 @@ mod tests {
         let k = mg90_a();
         sh.table
             .with_mut(|t| t.control.lifecycle.torque_enable = true);
-        let mut w = [0; PAGE_KNOTS];
+        let mut w = [0; PAGE_POINTS];
         w.copy_from_slice(&k[64..96]);
         command(&sh, 2, cmd::STORE, &w);
-        assert_eq!(lut_state(&sh), state::REJECT_TORQUE);
-        sh.with_pot_lut(|a| assert_eq!(a, &ZERO));
+        assert_eq!(pos_lut_state(&sh), state::REJECT_TORQUE);
+        sh.with_pos_lut(|a| assert_eq!(a, &ZERO));
         assert_eq!(commit(&sh), state::REJECT_TORQUE);
         assert_eq!(flags(&sh), 0);
-        command(&sh, 2, cmd::FETCH, &[0; PAGE_KNOTS]);
-        assert_eq!(window(&sh), [0; PAGE_KNOTS], "fetch is not gated");
+        command(&sh, 2, cmd::FETCH, &[0; PAGE_POINTS]);
+        assert_eq!(window(&sh), [0; PAGE_POINTS], "fetch is not gated");
 
         sh.table
             .with_mut(|t| t.control.lifecycle.torque_enable = false);
@@ -575,9 +575,9 @@ mod tests {
         // kernel applies
         sh.table
             .with_mut(|t| t.control.lifecycle.torque_enable = true);
-        command(&sh, 2, cmd::STORE, &[7; PAGE_KNOTS]);
-        assert_eq!(lut_state(&sh), state::LIVE);
-        sh.with_pot_lut(|a| assert_eq!(a, &k));
+        command(&sh, 2, cmd::STORE, &[7; PAGE_POINTS]);
+        assert_eq!(pos_lut_state(&sh), state::LIVE);
+        sh.with_pos_lut(|a| assert_eq!(a, &k));
         assert_eq!(commit(&sh), state::LIVE);
         assert_eq!(flags(&sh), STAMP_MISMATCH, "unchanged since the commit");
     }
@@ -593,10 +593,10 @@ mod tests {
         });
         sh.data_state_checkpoint();
         assert_eq!(flags(&sh), 0);
-        let mut w = [0; PAGE_KNOTS];
-        w.copy_from_slice(&k[..PAGE_KNOTS]);
+        let mut w = [0; PAGE_POINTS];
+        w.copy_from_slice(&k[..PAGE_POINTS]);
         command(&sh, 0, cmd::STORE, &w);
-        assert_eq!(lut_state(&sh), state::LOADING);
+        assert_eq!(pos_lut_state(&sh), state::LOADING);
         assert_eq!(flags(&sh), STAMP_MISMATCH);
         // the same table back: the checkpoint matches again
         assert_eq!(commit(&sh), state::LIVE);
@@ -618,16 +618,16 @@ mod tests {
     fn only_a_write_covering_the_command_runs_it() {
         let sh = servo();
         sh.table.with_mut(|t| {
-            t.control.pot_lut.lut_cmd = cmd::STORE;
-            t.control.pot_lut.lut_knots[0] = 5;
+            t.control.pos_lut.pos_lut_cmd = cmd::STORE;
+            t.control.pos_lut.pos_lut_points[0] = 5;
         });
-        sh.pot_lut_after_commit(LUT_PAGE, 1);
-        sh.pot_lut_after_commit(LUT_KNOTS, 64);
-        sh.pot_lut_after_commit(LUT_STATE, 1);
-        assert_eq!(lut_state(&sh), state::IDENTITY);
-        sh.pot_lut_after_commit(LUT_CMD, 1);
-        assert_eq!(lut_state(&sh), state::LOADING);
-        sh.with_pot_lut(|a| assert_eq!(a[0], 5));
+        sh.pos_lut_after_commit(POS_LUT_PAGE, 1);
+        sh.pos_lut_after_commit(POS_LUT_POINTS, 64);
+        sh.pos_lut_after_commit(POS_LUT_STATE, 1);
+        assert_eq!(pos_lut_state(&sh), state::IDENTITY);
+        sh.pos_lut_after_commit(POS_LUT_CMD, 1);
+        assert_eq!(pos_lut_state(&sh), state::LOADING);
+        sh.with_pos_lut(|a| assert_eq!(a[0], 5));
     }
 
     /// The commit site only marks and posts: the verdict and the
@@ -639,33 +639,33 @@ mod tests {
         store_all(&sh, &k);
         assert!(!sh.data_job_pending(), "a store posts nothing");
         sh.table
-            .with_mut(|t| t.control.pot_lut.lut_cmd = cmd::COMMIT);
-        sh.pot_lut_after_commit(LUT_CMD, 1);
+            .with_mut(|t| t.control.pos_lut.pos_lut_cmd = cmd::COMMIT);
+        sh.pos_lut_after_commit(POS_LUT_CMD, 1);
         assert!(sh.data_job_pending());
-        assert_eq!(lut_state(&sh), state::LOADING, "identity until judged");
+        assert_eq!(pos_lut_state(&sh), state::LOADING, "identity until judged");
         assert_eq!(flags(&sh), STAMP_MISMATCH, "refused until verified");
         assert!(sh.data_job_service());
         assert!(!sh.data_job_pending());
-        assert_eq!(lut_state(&sh), state::LIVE);
-        assert_eq!(flags(&sh), STAMP_MISMATCH, "the hashed knots changed");
+        assert_eq!(pos_lut_state(&sh), state::LIVE);
+        assert_eq!(flags(&sh), STAMP_MISMATCH, "the hashed points changed");
         assert!(!sh.data_job_service(), "nothing left");
 
         // a STORE behind a posted COMMIT cancels it: loading again, and
         // only the next COMMIT judges the array
         sh.table
-            .with_mut(|t| t.control.pot_lut.lut_cmd = cmd::COMMIT);
-        sh.pot_lut_after_commit(LUT_CMD, 1);
-        let mut w = [0; PAGE_KNOTS];
-        w.copy_from_slice(&k[..PAGE_KNOTS]);
+            .with_mut(|t| t.control.pos_lut.pos_lut_cmd = cmd::COMMIT);
+        sh.pos_lut_after_commit(POS_LUT_CMD, 1);
+        let mut w = [0; PAGE_POINTS];
+        w.copy_from_slice(&k[..PAGE_POINTS]);
         sh.table.with_mut(|t| {
-            t.control.pot_lut.lut_page = 0;
-            t.control.pot_lut.lut_cmd = cmd::STORE;
-            t.control.pot_lut.lut_knots = w;
+            t.control.pos_lut.pos_lut_page = 0;
+            t.control.pos_lut.pos_lut_cmd = cmd::STORE;
+            t.control.pos_lut.pos_lut_points = w;
         });
-        sh.pot_lut_after_commit(LUT_PAGE, 2 + 2 * PAGE_KNOTS as u16);
+        sh.pos_lut_after_commit(POS_LUT_PAGE, 2 + 2 * PAGE_POINTS as u16);
         assert!(!sh.data_job_pending());
         assert!(!sh.data_job_service());
-        assert_eq!(lut_state(&sh), state::LOADING);
+        assert_eq!(pos_lut_state(&sh), state::LOADING);
         assert_eq!(commit(&sh), state::LIVE);
     }
 
@@ -678,19 +678,19 @@ mod tests {
         let k = mg90_a();
         store_all(&sh, &k);
         sh.table
-            .with_mut(|t| t.control.pot_lut.lut_cmd = cmd::COMMIT);
-        sh.pot_lut_after_commit(LUT_CMD, 1);
+            .with_mut(|t| t.control.pos_lut.pos_lut_cmd = cmd::COMMIT);
+        sh.pos_lut_after_commit(POS_LUT_CMD, 1);
         let run = sh.data_job_run().expect("posted");
         // torque comes on under the run: what HIGH would have refused
         sh.table
             .with_mut(|t| t.control.lifecycle.torque_enable = true);
         sh.data_state_after_commit(crate::regions::control::addr::lifecycle::TORQUE_ENABLE, 1);
         assert!(!sh.data_job_publish(run));
-        assert_eq!(lut_state(&sh), state::LOADING);
+        assert_eq!(pos_lut_state(&sh), state::LOADING);
         assert_eq!(flags(&sh), STAMP_MISMATCH);
         assert!(sh.data_job_pending());
         assert!(sh.data_job_service());
-        assert_eq!(lut_state(&sh), state::REJECT_TORQUE);
+        assert_eq!(pos_lut_state(&sh), state::REJECT_TORQUE);
         assert_eq!(flags(&sh), 0, "the identity is what the stamp covers");
 
         // the same race on a stamp write, against a covered write

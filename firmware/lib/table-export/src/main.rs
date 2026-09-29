@@ -7,7 +7,7 @@
 use control_table::descriptor::FieldKind;
 use osc_protocol::models::{MODEL_OSC_SERVO, class_name, model_class};
 use osc_protocol::version::unpack_version;
-use osc_servo_core::pot_lut::INTERVALS;
+use osc_servo_core::pos_lut::INTERVALS;
 use osc_servo_core::regions::ControlTable;
 use osc_servo_core::stamp::{COVERED_NAMES, TAG};
 use serde::Serialize;
@@ -34,13 +34,13 @@ struct Field {
 }
 
 /// The plant stamp a host computes (`osc_servo_core::stamp`): CRC-16/ARC
-/// over `tag` ++ the `covered` fields' bytes in this order ++ `lut_knots`
-/// i16 LE knots (zeros while no table is live), 0 mapped to 1.
+/// over `tag` ++ the `covered` fields' bytes in this order ++ `pos_lut_points`
+/// i16 LE points (zeros while no table is live), 0 mapped to 1.
 #[derive(Serialize)]
 struct Stamp {
     tag: &'static str,
     covered: Vec<&'static str>,
-    lut_knots: usize,
+    pos_lut_points: usize,
 }
 
 #[derive(Serialize)]
@@ -104,7 +104,7 @@ fn build_descriptor() -> Descriptor {
         stamp: Stamp {
             tag: TAG,
             covered: COVERED_NAMES.to_vec(),
-            lut_knots: INTERVALS,
+            pos_lut_points: INTERVALS,
         },
         fields,
     }
@@ -149,7 +149,7 @@ mod tests {
 
         // every covered name is a field, so a host stamps from this file alone
         assert_eq!(value["stamp"]["tag"], "osc-plant-1");
-        assert_eq!(value["stamp"]["lut_knots"], 256);
+        assert_eq!(value["stamp"]["pos_lut_points"], 256);
         let covered = value["stamp"]["covered"].as_array().unwrap();
         assert_eq!(covered.len(), 35);
         for name in covered {

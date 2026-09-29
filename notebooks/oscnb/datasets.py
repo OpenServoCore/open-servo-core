@@ -7,13 +7,13 @@ not declared. Every recording's meta.json carries a `sense` block read from the
 control table at capture time, and the board is identified from that.
 
   telemetry/<dataset>/dataset.toml       {servo, supply, captured, notes, ...}
-  telemetry/<dataset>/pot-lut.json       the pot table the servo ran, once per dataset
+  telemetry/<dataset>/pos-lut.json       the position table the servo ran, once per dataset
   telemetry/<dataset>/<experiment>/capture-N/<recording>.csv.gz
                                             /<recording>.meta.json
 
-A recording's meta.json `plant` block names the pot table the servo streamed
+A recording's meta.json `plant` block names the position table the servo streamed
 `pos_lin` through (`lut_state`, `lut_crc`), its plant stamp verdict and its
-`data_flags`; `Dataset.pot_lut` is the table itself when one was LIVE.
+`data_flags`; `Dataset.pos_lut` is the table itself when one was LIVE.
 
 An experiment is a named measurement procedure - grid, bridge, breakaway,
 stepcoast, ripple, reversal. A capture is one repeat of it. Some experiments
@@ -81,10 +81,10 @@ class Dataset:
         return bool(self.decl.get("retired"))
 
     @cached_property
-    def pot_lut(self):
-        """pot-lut.json: the table the servo ran, in the image form `osc lut
+    def pos_lut(self):
+        """pos-lut.json: the table the servo ran, in the image form `osc lut
         write` takes, tagged `lut_state` and `lut_crc`; None at the identity."""
-        p = self.path / "pot-lut.json"
+        p = self.path / "pos-lut.json"
         return json.loads(p.read_text()) if p.exists() else None
 
     def first_recording(self):

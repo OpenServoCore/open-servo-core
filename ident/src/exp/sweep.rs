@@ -1,6 +1,6 @@
 //! Dedicated constant-duty ripple capture: one clean constant-duty traverse
 //! whose per-tick TEL current carries an uninterrupted commutation-ripple
-//! signal for the tachometer and pot LUT.
+//! signal for the tachometer and position table.
 //!
 //! The whole traverse is ONE burst ([`Cmd::Stream`]): the constant duty and
 //! the capture arm commit in the same instant, and the bus carries nothing

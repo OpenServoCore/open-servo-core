@@ -2,7 +2,7 @@
 //! sweep_tel.csv. `osc cal` streams the ripple sweep as a TEL burst and
 //! writes the decoded frames; this command reads them back without a servo,
 //! classifies which corruption mode (if any) the capture carries, and
-//! re-runs the same pot-LUT / motor-rev pipeline so the analysis can be
+//! re-runs the same position-table / motor-rev pipeline so the analysis can be
 //! iterated offline. It NEVER connects to the servo (no baud/id).
 //!
 //! Two corruption modes are distinguished: dropped frames (CRC-failed on

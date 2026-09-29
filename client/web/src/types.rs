@@ -261,13 +261,13 @@ impl From<osc_client::stamp::Verdict> for StampVerdict {
     }
 }
 
-/// The pot LUT as the servo holds it: `lut_state` by value and name, and
-/// the 256 knots behind the CONTROL window (i16 corrections against the
-/// identity ramp, knot k at raw k * 16). The kernel applies them only
-/// while `live`.
+/// The position table as the servo holds it: `pos_lut_state` by value and
+/// name, and the 256 points behind the CONTROL window (i16 corrections
+/// against the identity ramp, point k at raw k * 16). The kernel applies them
+/// only while `live`.
 #[derive(Debug, Clone, Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]
-pub struct PotLut {
+pub struct PosLut {
     pub state: u8,
     /// `state` by name; absent for a value this build does not know.
     #[tsify(optional)]
@@ -275,16 +275,16 @@ pub struct PotLut {
     pub state_name: Option<String>,
     pub live: bool,
     #[tsify(type = "number[]")]
-    pub knots: Vec<i16>,
+    pub points: Vec<i16>,
 }
 
-impl From<osc_client::pot_lut::PotLut> for PotLut {
-    fn from(l: osc_client::pot_lut::PotLut) -> Self {
-        PotLut {
+impl From<osc_client::pos_lut::PosLut> for PosLut {
+    fn from(l: osc_client::pos_lut::PosLut) -> Self {
+        PosLut {
             state: l.state,
             state_name: l.state_name().map(String::from),
             live: l.live(),
-            knots: l.knots.to_vec(),
+            points: l.points.to_vec(),
         }
     }
 }

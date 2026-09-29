@@ -61,7 +61,7 @@ pub(crate) struct Windows {
 pub(crate) struct Report {
     pub stops: [u16; 2],
     pub nonzero: usize,
-    /// Raw counts from the first nonzero knot to the last.
+    /// Raw counts from the first nonzero point to the last.
     pub span: Option<[u16; 2]>,
     pub max_abs: i16,
     pub steepest: Option<Interval>,
@@ -70,14 +70,14 @@ pub(crate) struct Report {
     pub grade: Option<Grade>,
     #[serde(skip)]
     gains: [f64; INTERVALS],
-    /// The intervals the table touches: first nonzero knot - 1 ..= last.
+    /// The intervals the table touches: first nonzero point - 1 ..= last.
     #[serde(skip)]
     band: Option<(usize, usize)>,
 }
 
 impl Report {
     pub(crate) fn new(lut: &GridLut, stops: (u16, u16)) -> Report {
-        let k = &lut.knots;
+        let k = &lut.points;
         let mut gains = [1.0; INTERVALS];
         for (i, g) in gains.iter_mut().enumerate() {
             *g = (GRID as i32 + k[i + 1] as i32 - k[i] as i32) as f64 / GRID as f64;
@@ -222,7 +222,7 @@ mod tests {
 
     const COMMITTED: &str = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../ident/testdata/lut/pot-lut-mg90-a-grid.json"
+        "/../../ident/testdata/lut/pos-lut-mg90-a-grid.json"
     ));
 
     fn mg90_a() -> (GridLut, (u16, u16)) {
@@ -294,9 +294,9 @@ mod tests {
         assert_eq!(level(16.0), '#');
         // a coarse SG90-class step: one 6x interval
         let mut lut = GridLut::IDENTITY;
-        lut.knots[100] = 80;
+        lut.points[100] = 80;
         for (i, k) in (101..).zip((1..=5).rev()) {
-            lut.knots[i] = k * 15;
+            lut.points[i] = k * 15;
         }
         let r = Report::new(&lut, (5, 4095));
         assert_eq!(r.steepest.unwrap().raw, 1584);

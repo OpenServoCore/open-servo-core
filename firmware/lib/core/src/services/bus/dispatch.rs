@@ -196,11 +196,11 @@ impl Dispatcher<'_> {
     }
 
     /// The post-commit bookkeeping every committed span gets: the dirty
-    /// bit, a pot LUT command, then the data-state consequences of a
+    /// bit, a position table command, then the data-state consequences of a
     /// covered or stamp write.
     fn after_commit(&self, addr: u16, len: u16) {
         self.mark_dirty_if_persistent(addr, len);
-        self.shared.pot_lut_after_commit(addr, len);
+        self.shared.pos_lut_after_commit(addr, len);
         self.shared.data_state_after_commit(addr, len);
     }
 
@@ -502,7 +502,7 @@ impl Dispatcher<'_> {
     /// the ack leaves AFTER the store returns: ack == durable, and a failed
     /// program surfaces as `hardware` instead of a lie. A posted data job
     /// runs here first (a COMMIT the main loop has not judged yet must not
-    /// persist as the identity), the pot LUT settles to what the kernel
+    /// persist as the identity), the position table settles to what the kernel
     /// applies and a data-state checkpoint precedes the program (a stale
     /// stamp still persists: the reboot recomputes it anyway); success
     /// retires the fresh-servo reasons (`data_state::SAVE_CLEARS`).
@@ -515,7 +515,7 @@ impl Dispatcher<'_> {
             return Self::ack(alert, ctx, Err(Error::AccessError), reply);
         }
         self.shared.data_job_service();
-        self.shared.pot_lut_settle();
+        self.shared.pos_lut_settle();
         self.shared.data_state_checkpoint();
         let saved = self.persist_table();
         let code = match saved {
@@ -553,7 +553,7 @@ impl Dispatcher<'_> {
                 .ok()
                 .and_then(|s| s.try_into().ok())
                 .ok_or(StoreError)?;
-        self.shared.with_pot_lut(|k| {
+        self.shared.with_pos_lut(|k| {
             let lut = k.first_chunk().ok_or(StoreError)?;
             store.save(config, profile, calib, lut)
         })

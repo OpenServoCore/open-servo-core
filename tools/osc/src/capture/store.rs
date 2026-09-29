@@ -1,7 +1,7 @@
 //! A dataset on disk, the layout notebooks/oscnb/datasets.py reads:
 //!
 //!   <dataset>/dataset.toml
-//!   <dataset>/pot-lut.json                       the table the servo ran, once
+//!   <dataset>/pos-lut.json                       the table the servo ran, once
 //!   <dataset>/<experiment>/capture-N/<recording>.csv.gz
 //!                                   /<recording>.meta.json
 //!
@@ -24,11 +24,11 @@ use super::plan::Plan;
 use crate::sweep::{self, CSV_HEADER, Segment};
 
 const DECL: &str = "dataset.toml";
-const POT_LUT: &str = "pot-lut.json";
+const POS_LUT: &str = "pos-lut.json";
 
-/// What [`Store::save_pot_lut`] found.
+/// What [`Store::save_pos_lut`] found.
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum PotLutFile {
+pub(crate) enum PosLutFile {
     Written,
     Same,
     /// The file holds another table (its `lut_crc`); it is left as is.
@@ -49,9 +49,9 @@ impl Store {
     }
 
     /// The dataset's copy of the table the servo ran, written once: the
-    /// recordings name it by `lut_crc`, this holds the knots.
-    pub(crate) fn save_pot_lut(&self, image: &Value) -> Result<PotLutFile> {
-        let path = self.dir.join(POT_LUT);
+    /// recordings name it by `lut_crc`, this holds the points.
+    pub(crate) fn save_pos_lut(&self, image: &Value) -> Result<PosLutFile> {
+        let path = self.dir.join(POS_LUT);
         let crc = |v: &Value| v["lut_crc"].as_str().unwrap_or_default().to_string();
         if path.is_file() {
             let text = std::fs::read_to_string(&path)
@@ -59,16 +59,16 @@ impl Store {
             let have: Value =
                 serde_json::from_str(&text).with_context(|| format!("parse {}", path.display()))?;
             return Ok(if crc(&have) == crc(image) {
-                PotLutFile::Same
+                PosLutFile::Same
             } else {
-                PotLutFile::Differs(crc(&have))
+                PosLutFile::Differs(crc(&have))
             });
         }
         std::fs::create_dir_all(&self.dir)
             .with_context(|| format!("mkdir {}", self.dir.display()))?;
         std::fs::write(&path, serde_json::to_string_pretty(image)?)
             .with_context(|| format!("write {}", path.display()))?;
-        Ok(PotLutFile::Written)
+        Ok(PosLutFile::Written)
     }
 
     /// Recording `name` of capture `n` landed; creates nothing.
@@ -427,18 +427,18 @@ mod tests {
     }
 
     #[test]
-    fn pot_lut_is_written_once_and_another_table_is_reported() {
-        let root = tmp("potlut");
+    fn pos_lut_is_written_once_and_another_table_is_reported() {
+        let root = tmp("poslut");
         let store = Store::new(root.join("mg90-a__2s"));
-        let a = json!({ "lut_crc": "0x1a2b", "knots": [0, 1] });
-        assert_eq!(store.save_pot_lut(&a).unwrap(), PotLutFile::Written);
-        assert_eq!(store.save_pot_lut(&a).unwrap(), PotLutFile::Same);
-        let b = json!({ "lut_crc": "0x9999", "knots": [0, 2] });
+        let a = json!({ "lut_crc": "0x1a2b", "points": [0, 1] });
+        assert_eq!(store.save_pos_lut(&a).unwrap(), PosLutFile::Written);
+        assert_eq!(store.save_pos_lut(&a).unwrap(), PosLutFile::Same);
+        let b = json!({ "lut_crc": "0x9999", "points": [0, 2] });
         assert_eq!(
-            store.save_pot_lut(&b).unwrap(),
-            PotLutFile::Differs("0x1a2b".into())
+            store.save_pos_lut(&b).unwrap(),
+            PosLutFile::Differs("0x1a2b".into())
         );
-        let text = std::fs::read_to_string(root.join("mg90-a__2s/pot-lut.json")).unwrap();
+        let text = std::fs::read_to_string(root.join("mg90-a__2s/pos-lut.json")).unwrap();
         assert!(text.contains("0x1a2b"));
         std::fs::remove_dir_all(&root).unwrap();
     }
