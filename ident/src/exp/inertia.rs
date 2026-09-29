@@ -20,15 +20,25 @@
 //! run ([`super::seek::at_stop`]); so does a base that does not travel, or
 //! that the firmware's stall timer folds.
 //!
-//! Fit inputs and estimators (direct-alpha and exponential-rise) live in
-//! [`crate::fits`]; [`Inertia::fit`] assembles per-step series and picks
-//! `b_best` by fit quality.
+//! B comes from the current each step captures ([`fit_steps`]): after the
+//! step the current falls as the back-EMF rises, a clean exponential whose
+//! time constant is the rotor's, with the ladder's governed climbs as a
+//! cross-check. The pot-speed estimators (direct-alpha and exponential-rise)
+//! stay as diagnostics and decide nothing: the steps' speed sits on pot
+//! noise of the same size. Too few decays, or a spread over
+//! [`DECAY_SPREAD_MAX`], declines the fit in plain words. Its Ke and
+//! friction come from the ladder, never from one that declined
+//! ([`priors`]). The estimators live in [`crate::fits`].
 
+use super::ladder::LadderResult;
 use super::seek::Watch;
 use super::{
     AbortReason, Applied, Cmd, Experiment, GOVERNED, LIMIT_YIELD_FOLDED, RigParams, judge, seek,
 };
-use crate::fits::{BDirect, BExp, InertiaPriors, StepSeries, b_direct_fit, b_exp_fit};
+use crate::fits::{
+    BClimb, BDecay, BDirect, BExp, Climb, InertiaPriors, StepSeries, b_climb_fit, b_decay_pool,
+    b_decay_step, b_direct_fit, b_exp_fit,
+};
 use crate::frame::{TelFrame, TelemetrySnapshot};
 use crate::limits::{DutyPlan, q15_floor};
 use crate::regs::control;
@@ -42,6 +52,175 @@ pub const TEL_LADDER_MASK: u16 = 0x1B;
 
 /// The base over the seek duty, a fraction of full scale.
 pub const BASE_OVER_SEEK: f64 = 0.05;
+
+/// Steps with a current decay B needs.
+pub const MIN_DECAY_STEPS: usize = 3;
+
+/// Most the steps' B may spread, sd over mean, before the fit is not
+/// trusted: on the bench servo they spread 4%.
+pub const DECAY_SPREAD_MAX: f64 = 0.10;
+
+/// How far the governed climbs' B may sit off the decay's before the run
+/// says so: the bench servo's climbs spread 10%.
+pub const CLIMB_AGREE: f64 = 0.15;
+
+/// Ke and friction the servo carries from an earlier identification.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct StoredMotion {
+    pub ke_vpc: f64,
+    pub fc: f64,
+    pub fv: f64,
+}
+
+impl StoredMotion {
+    /// From the calib fields as gain synthesis encodes them; None unless
+    /// the servo carries a Ke.
+    pub fn read(ke_vpc_q: u16, fric_fc_counts: u16, fric_fv_q016: u16) -> Option<Self> {
+        (ke_vpc_q != 0).then(|| Self {
+            ke_vpc: ke_vpc_q as f64 / 4096.0,
+            fc: fric_fc_counts as f64,
+            fv: fric_fv_q016 as f64 / 65536.0,
+        })
+    }
+}
+
+/// Where the inertia fit's Ke and friction came from.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum PriorsFrom {
+    Ladder,
+    Stored,
+}
+
+impl PriorsFrom {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PriorsFrom::Ladder => "the ladder",
+            PriorsFrom::Stored => "the servo's stored Ke and friction",
+        }
+    }
+}
+
+/// The inertia fit's Ke and friction: the ladder's, when it fitted. A
+/// ladder that declined hands on nothing, so then the ones the servo
+/// carries from an earlier identification, else none, in plain words.
+/// `r_loop_vpc` is the current loop's R: the back-EMF damping a step sees
+/// is Ke over the incremental R.
+pub fn priors(
+    ladder: Option<&LadderResult>,
+    stored: Option<StoredMotion>,
+    r_loop_vpc: f64,
+    tick_hz: f64,
+) -> Result<(InertiaPriors, PriorsFrom), String> {
+    let mean = |a: Option<f64>, b: Option<f64>| match (a, b) {
+        (Some(a), Some(b)) => (a + b) / 2.0,
+        (Some(a), None) | (None, Some(a)) => a,
+        (None, None) => 0.0,
+    };
+    let (m, from) = match (ladder, stored) {
+        (Some(l), _) => (
+            StoredMotion {
+                ke_vpc: l.ke.ke_vpc,
+                fc: mean(l.fric_fwd.map(|f| f.fc), l.fric_rev.map(|f| f.fc)),
+                fv: mean(l.fric_fwd.map(|f| f.fv), l.fric_rev.map(|f| f.fv)),
+            },
+            PriorsFrom::Ladder,
+        ),
+        (None, Some(s)) => (s, PriorsFrom::Stored),
+        (None, None) => {
+            return Err(
+                "the ladder gave no Ke and friction line and the servo carries none from an \
+                 earlier identification: B has nothing to be read against"
+                    .into(),
+            );
+        }
+    };
+    Ok((
+        InertiaPriors {
+            r_vpc: r_loop_vpc,
+            ke_vpc: m.ke_vpc,
+            fc: m.fc,
+            fv: m.fv,
+            tick_hz,
+        },
+        from,
+    ))
+}
+
+/// B from the steps' current decays, checked against the ladder's governed
+/// `climbs`; the pot-speed estimators ride along as diagnostics. `series`
+/// are the steps as [`Inertia::step_series`] tags them, TEL or aggregate.
+/// Err, in plain words, when too few steps decay or their B spreads.
+pub fn fit_steps(
+    series: &[(StepSeries, bool)],
+    climbs: &[Climb],
+    priors: &InertiaPriors,
+) -> Result<InertiaResult, String> {
+    if series.is_empty() {
+        return Err("no inertia step was captured to fit".into());
+    }
+    let tel_steps = series.iter().filter(|(_, tel)| *tel).count();
+    let mut warnings = Vec::new();
+    let mut decays = Vec::new();
+    for (s, _) in series {
+        match b_decay_step(s, priors) {
+            Ok(d) => decays.push(d),
+            Err(why) => warnings.push(format!(
+                "step to {:+.1}%: {why}",
+                s.duty_q15 * 100.0 / 32767.0
+            )),
+        }
+    }
+    if decays.len() < MIN_DECAY_STEPS {
+        return Err(format!(
+            "{} of the {} inertia steps show a current decay to fit, and B needs \
+             {MIN_DECAY_STEPS}{}",
+            decays.len(),
+            series.len(),
+            match warnings.as_slice() {
+                [] => String::new(),
+                w => format!(" ({})", w.join("; ")),
+            }
+        ));
+    }
+    let n = decays.len();
+    let b_decay: BDecay = b_decay_pool(decays).ok_or("no step decay to pool")?;
+    if b_decay.spread > DECAY_SPREAD_MAX {
+        return Err(format!(
+            "B spreads {:.0}% across the {n} inertia steps, over the {:.0}% one fit may: the fit is \
+             not trusted",
+            b_decay.spread * 100.0,
+            DECAY_SPREAD_MAX * 100.0
+        ));
+    }
+    let b_climb = b_climb_fit(climbs, priors);
+    if let Some(c) = b_climb
+        && (c.b / b_decay.b - 1.0).abs() > CLIMB_AGREE
+    {
+        warnings.push(format!(
+            "the ladder's governed climbs read B {:.3}, {:.0}% off the current decay's {:.3}",
+            c.b,
+            (c.b / b_decay.b - 1.0).abs() * 100.0,
+            b_decay.b
+        ));
+    }
+    // the same smoothing window the pot-speed estimators always took
+    let hw = if tel_steps > 0 {
+        (0.010 * priors.tick_hz) as usize
+    } else {
+        12
+    };
+    let steps: Vec<StepSeries> = series.iter().map(|(s, _)| s.clone()).collect();
+    Ok(InertiaResult {
+        b_best: b_decay.b,
+        j_ff: 1.0 / b_decay.b,
+        b_decay,
+        b_climb,
+        b_direct: b_direct_fit(&steps, priors, hw, 5.0),
+        b_exp: b_exp_fit(&steps, priors, hw),
+        tel_steps,
+        warnings,
+    })
+}
 
 pub struct InertiaCfg {
     /// Step sizes, fractions of [`DutyPlan::step_run`] at the base's
@@ -109,9 +288,15 @@ struct StepCapture {
 
 #[derive(Clone, Debug)]
 pub struct InertiaResult {
+    /// B from the current decay after each step.
+    pub b_decay: BDecay,
+    /// B from the ladder's governed climbs, when the run has them: the
+    /// cross-check.
+    pub b_climb: Option<BClimb>,
+    /// The pot-speed estimators: diagnostics that decide nothing.
     pub b_direct: Option<BDirect>,
     pub b_exp: Option<BExp>,
-    /// The chosen estimate: exp-rise unless the direct fit's r2 beats it.
+    /// What the gains take: the decay's B.
     pub b_best: f64,
     /// 1 / b_best - the velocity feed-forward the table wants.
     pub j_ff: f64,
@@ -474,43 +659,18 @@ impl Inertia {
             .collect()
     }
 
-    /// Assemble series and run both estimators; the smoothing half-window
-    /// spans ~10 ms of ticks.
-    pub fn fit(&self, priors: &InertiaPriors) -> Option<InertiaResult> {
-        let series: Vec<StepSeries> = self
-            .captures
-            .iter()
-            .filter_map(|c| self.series_of(c).ok())
-            .collect();
-        let warnings = self.notes();
-        if series.is_empty() {
-            return None;
-        }
-        let tel_steps = series.len();
-        let hw = (0.010 * self.cfg.tick_hz) as usize;
-        let b_direct = b_direct_fit(&series, priors, hw, 5.0);
-        let b_exp = b_exp_fit(&series, priors, hw);
-        let b_best = match (&b_exp, &b_direct) {
-            (Some(e), Some(d)) => {
-                // exp-rise wins unless the direct pool is decisively cleaner
-                if d.r2 > 0.98 && d.r2 > 1.0 - e.spread {
-                    d.b
-                } else {
-                    e.b
-                }
+    /// B from the captured steps ([`fit_steps`]), the run's notes among its
+    /// warnings; Err names why it declines, the notes with it.
+    pub fn fit(&self, priors: &InertiaPriors, climbs: &[Climb]) -> Result<InertiaResult, String> {
+        let notes = self.notes();
+        match fit_steps(&self.step_series(), climbs, priors) {
+            Ok(mut r) => {
+                r.warnings.splice(0..0, notes);
+                Ok(r)
             }
-            (Some(e), None) => e.b,
-            (None, Some(d)) => d.b,
-            (None, None) => return None,
-        };
-        Some(InertiaResult {
-            b_direct,
-            b_exp,
-            b_best,
-            j_ff: 1.0 / b_best,
-            tel_steps,
-            warnings,
-        })
+            Err(why) if notes.is_empty() => Err(why),
+            Err(why) => Err(format!("{why} (notes: {})", notes.join("; "))),
+        }
     }
 }
 
@@ -785,8 +945,10 @@ mod tests {
     fn recovers_planted_b_from_burst_captures() {
         let (exp, log) = run();
         assert!(!log.contains(&"OVERRUN".to_string()));
-        let fit = exp.fit(&priors()).expect("fit");
+        let fit = exp.fit(&priors(), &[]).expect("fit");
         assert_eq!(fit.tel_steps, 6, "every step captures one burst");
+        assert_eq!(fit.b_decay.steps.len(), 6);
+        assert_eq!(fit.b_best, fit.b_decay.b, "the decay decides");
         let e = fit.b_exp.as_ref().expect("exp-rise fit");
         assert!(
             (e.b - B_PLANT).abs() / B_PLANT < 0.05,
@@ -798,6 +960,244 @@ mod tests {
         assert!((d.b - B_PLANT).abs() / B_PLANT < 0.10, "b_direct {}", d.b);
         assert!((fit.b_best - B_PLANT).abs() / B_PLANT < 0.05);
         assert!((fit.j_ff - 1.0 / fit.b_best).abs() < 1e-12);
+    }
+
+    /// The honest fake, its pot read through 1.2 counts of noise, the
+    /// steps' speed as noisy as the bench's: B comes from the current and
+    /// lands within 3% of the planted one. On the bench servo after its
+    /// ladder, the ladder's governed climbs read it to 10%.
+    #[test]
+    fn inertia_fits_the_current_decay() {
+        let mut servo = dynamic_servo();
+        servo.pos_noise = 1.2 * 12f64.sqrt();
+        let params = crate::exp::testkit::rig();
+        let mut exp = Guarded::new(inertia(InertiaCfg::new(TICK_HZ), 180, &params), params);
+        pump(&mut exp, &mut servo, 4_000_000);
+        assert!(exp.abort().is_none(), "abort: {:?}", exp.abort());
+        let fit = exp.into_inner().fit(&priors(), &[]).expect("fit");
+        assert_eq!(fit.b_decay.steps.len(), 6);
+        assert!(
+            (fit.b_best / B_PLANT - 1.0).abs() < 0.03,
+            "b {} planted {B_PLANT}",
+            fit.b_best
+        );
+        assert!(fit.b_decay.spread < 0.03, "{}", fit.b_decay.spread);
+
+        let mut servo = bench_mg90(3204);
+        servo.pos = 2029.0;
+        let guard = (532, 3526);
+        let params = RigParams::new(Some(guard), 350).with_stops((209, 3849));
+        let cfg = LadderCfg {
+            seek_duty_q15: 4915,
+            ..LadderCfg::new(TICK_HZ)
+        };
+        let mut g = Guarded::new(
+            Ladder::new(cfg, &params, Runway::new(guard)),
+            params.abort_at_soft((432, 3626)),
+        );
+        pump(&mut g, &mut servo, 4_000_000);
+        let ladder = g.into_inner();
+        assert!(
+            ladder.climbs().len() >= 4,
+            "{} climbs",
+            ladder.climbs().len()
+        );
+        let bench = InertiaPriors {
+            r_vpc: servo.r,
+            ke_vpc: servo.ke,
+            fc: servo.fc,
+            fv: servo.fv,
+            tick_hz: TICK_HZ,
+        };
+        let c = crate::fits::b_climb_fit(ladder.climbs(), &bench).expect("a climb");
+        assert!(
+            (c.b / servo.b - 1.0).abs() < 0.10,
+            "climbs read {c:?}, planted {}",
+            servo.b
+        );
+    }
+
+    /// A recorded bench run whose pot-speed fit reads B 0.406: its six step
+    /// captures read through the current decay against the plant the bench
+    /// servo carries. B is the bench value, 0.335 to 5%,
+    /// the six steps within 10% of each other.
+    #[test]
+    fn inertia_on_the_recorded_run_reads_the_bench_value() {
+        use std::io::BufRead;
+        let file = std::fs::File::open(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/ident-mg90/inertia_tel.csv.gz"
+        ))
+        .unwrap();
+        let mut bursts: Vec<Vec<TelFrame>> = Vec::new();
+        for line in std::io::BufReader::new(flate2::read::GzDecoder::new(file))
+            .lines()
+            .skip(1)
+        {
+            let line = line.unwrap();
+            let v: Vec<i64> = line.split(',').map(|x| x.parse().unwrap()).collect();
+            let f = TelFrame {
+                tick: v[0] as u64,
+                window_valid: v[1] != 0,
+                pos: Some(v[2] as u16),
+                current: Some(v[3] as i16),
+                duty_q15: Some(v[4] as i16),
+                pos_lin: Some(v[5] as u16),
+                ..Default::default()
+            };
+            if f.tick == 0 {
+                bursts.push(Vec::new());
+            }
+            bursts.last_mut().unwrap().push(f);
+        }
+        assert_eq!(bursts.len(), 6);
+        let lim = crate::limits::ServoLimits {
+            i_lim: 280,
+            stall_yield: 168,
+            tau_trip: 280,
+            soft: (432, 3626),
+            phys: (209, 3849),
+            raw: (209, 3849),
+            r_q12: 7270,
+            vbus: 2917,
+            window_floor_q15: 4356,
+            amps_per_count: 0.0,
+        };
+        let r = 7270.0 / 4096.0;
+        let params = RigParams::new(Some((532, 3526)), 350).with_stops((209, 3849));
+        let mut exp = Inertia::new(
+            InertiaCfg::new(20_000.0),
+            DutyPlan::new(&lim, r, None),
+            Runway::new((532, 3526)),
+            &params,
+        );
+        for tel in bursts {
+            let duty = |f: &TelFrame| f.duty_q15.unwrap();
+            exp.captures.push(StepCapture {
+                goal_q15: duty(tel.last().unwrap()),
+                base_q15: duty(&tel[0]),
+                tel,
+            });
+        }
+        let bench = InertiaPriors {
+            r_vpc: r,
+            ke_vpc: 0.14168,
+            fc: 53.26,
+            fv: 0.005130,
+            tick_hz: 20_000.0,
+        };
+        let fit = exp.fit(&bench, &[]).expect("fit");
+        println!(
+            "B {:.4} spread {:.3} over {} steps; pot-speed exp-rise {:?}",
+            fit.b_best,
+            fit.b_decay.spread,
+            fit.b_decay.steps.len(),
+            fit.b_exp.as_ref().map(|e| (e.b, e.spread))
+        );
+        assert_eq!(fit.b_decay.steps.len(), 6);
+        assert!((fit.b_best / 0.335 - 1.0).abs() < 0.05, "B {}", fit.b_best);
+        assert!(fit.b_decay.spread < DECAY_SPREAD_MAX);
+    }
+
+    /// Steps whose decays read B 0.08 to 0.13: the spread is the fit's
+    /// verdict on itself, and it declines in plain words rather than
+    /// promote a mean. Two decays are too few whatever they read, and a
+    /// step whose current rises is not one.
+    #[test]
+    fn a_scattered_inertia_is_declined_not_promoted() {
+        let p = priors();
+        let step = |duty: f64, b: f64| {
+            let tau = 1.0 / (b * p.f_med() * (p.fv + p.ke_vpc / p.r_vpc));
+            let t: Vec<f64> = (0..3000).map(|k| k as f64 / TICK_HZ).collect();
+            let i = t
+                .iter()
+                .map(|t| duty.signum() * (60.0 + 90.0 * (-t / tau).exp()))
+                .collect();
+            let s = StepSeries {
+                mask: vec![true; t.len()],
+                pos: vec![2000.0; t.len()],
+                t,
+                i,
+                duty_q15: duty,
+            };
+            (s, true)
+        };
+        let scattered: Vec<(StepSeries, bool)> = [0.08, 0.13, 0.10, 0.12, 0.09, 0.11]
+            .iter()
+            .enumerate()
+            .map(|(k, b)| step(if k % 2 == 0 { 9000.0 } else { -9000.0 }, *b))
+            .collect();
+        let why = fit_steps(&scattered, &[], &p).unwrap_err();
+        assert_eq!(
+            why,
+            "B spreads 18% across the 6 inertia steps, over the 10% one fit may: the fit is not \
+             trusted"
+        );
+        let tight: Vec<(StepSeries, bool)> = [0.100, 0.102, 0.098]
+            .iter()
+            .map(|b| step(9000.0, *b))
+            .collect();
+        let fit = fit_steps(&tight, &[], &p).expect("a tight set");
+        assert!((fit.b_best / 0.1 - 1.0).abs() < 0.01, "{}", fit.b_best);
+
+        let mut rising = step(9000.0, 0.1);
+        for i in rising.0.i.iter_mut() {
+            *i = 210.0 - *i;
+        }
+        let why = fit_steps(&[step(9000.0, 0.1), step(-9000.0, 0.1), rising], &[], &p).unwrap_err();
+        assert_eq!(
+            why,
+            "2 of the 3 inertia steps show a current decay to fit, and B needs 3 (step to \
+             +27.5%: its current does not fall after the step)"
+        );
+    }
+
+    /// A ladder its servo's back-EMF speed disagrees with declines, and
+    /// inertia takes none of it: its B reads against the Ke and friction
+    /// the servo carries, and without them it has nothing to read against.
+    #[test]
+    fn inertia_never_inherits_a_declined_ladder() {
+        let mut servo = FakeServo::new(3.37);
+        servo.physical_motion = true;
+        servo.fv = 0.006;
+        servo.ke_stored = Some(0.1731 * 1.15);
+        let params = RigParams::new(Some((250, 3950)), 1100).with_stops((200, 4000));
+        let cfg = LadderCfg {
+            servo_ke: true,
+            ..LadderCfg::new(TICK_HZ)
+        };
+        let mut g = Guarded::new(
+            Ladder::new(cfg, &params, Runway::new((250, 3950))),
+            params.abort_at_soft((150, 4050)),
+        );
+        pump(&mut g, &mut servo, 2_000_000);
+        let ladder = g.into_inner();
+        assert!(ladder.declined().is_some());
+        let accepted = ladder
+            .declined()
+            .is_none()
+            .then(|| ladder.fit(3.37))
+            .flatten();
+        let stored = StoredMotion::read(810, 58, 336);
+        let (p, from) = super::priors(accepted.as_ref(), stored, 3.37, TICK_HZ).unwrap();
+        assert_eq!(from, PriorsFrom::Stored);
+        assert_eq!(
+            (p.ke_vpc, p.fc, p.fv),
+            (810.0 / 4096.0, 58.0, 336.0 / 65536.0)
+        );
+        let fitted = ladder.fit(3.37).unwrap();
+        assert!(
+            (fitted.ke.ke_vpc - p.ke_vpc).abs() > 0.01,
+            "it would have fitted"
+        );
+        assert_eq!(
+            super::priors(accepted.as_ref(), None, 3.37, TICK_HZ).unwrap_err(),
+            "the ladder gave no Ke and friction line and the servo carries none from an earlier \
+             identification: B has nothing to be read against"
+        );
+        let (p, from) = super::priors(Some(&fitted), stored, 3.37, TICK_HZ).unwrap();
+        assert_eq!((from, p.ke_vpc), (PriorsFrom::Ladder, fitted.ke.ke_vpc));
+        assert_eq!(StoredMotion::read(0, 58, 336), None);
     }
 
     #[test]
@@ -844,8 +1244,10 @@ mod tests {
     }
 
     /// With a table live the arm carries pos_lin and the series is the
-    /// kernel's word, not the bent raw count: B comes back planted where
-    /// the raw fit, its friction priors in the wrong counts, reads low.
+    /// kernel's word, not the bent raw count.
+    /// The current decay never sees the pot: it reads B planted either
+    /// way. The pot-speed diagnostic, its friction priors in the wrong
+    /// counts, reads low on the raw count.
     #[test]
     fn live_table_arms_pos_lin_and_fits_the_kernels_counts() {
         let table = bent_pot();
@@ -863,17 +1265,24 @@ mod tests {
             let log = pump(&mut exp, &mut servo, 4_000_000);
             assert!(exp.abort().is_none(), "abort: {:?}", exp.abort());
             let exp = exp.into_inner();
-            let b = exp.fit(&priors()).expect("fit").b_best;
+            let fit = exp.fit(&priors(), &[]).expect("fit");
+            let b = (fit.b_best, fit.b_exp.expect("exp-rise").b);
             (log, exp.step_series(), b)
         };
-        let (raw_log, raw, b_raw) = run(Pot::RAW);
-        let (lin_log, lin, b_lin) = run(Pot::live(table));
+        let (raw_log, raw, (b_raw, exp_raw)) = run(Pot::RAW);
+        let (lin_log, lin, (b_lin, exp_lin)) = run(Pot::live(table));
         assert!(raw_log.contains(&"write tel_mask 27".to_string()));
         assert!(lin_log.contains(&"write tel_mask 2075".to_string()));
-        assert!((b_raw - B_PLANT) / B_PLANT < -0.05, "raw b {b_raw}");
+        for b in [b_raw, b_lin] {
+            assert!((b - B_PLANT).abs() / B_PLANT < 0.03, "decay b {b}");
+        }
         assert!(
-            (b_lin - B_PLANT).abs() / B_PLANT < 0.05,
-            "linearized b {b_lin}"
+            (exp_raw - B_PLANT) / B_PLANT < -0.05,
+            "raw exp-rise b {exp_raw}"
+        );
+        assert!(
+            (exp_lin - B_PLANT).abs() / B_PLANT < 0.05,
+            "linearized exp-rise b {exp_lin}"
         );
         assert_eq!(lin.len(), 6);
         // the seek brakes to rest near raw 500, which the bent pot reads
@@ -934,7 +1343,7 @@ mod tests {
             assert!(moved > 8.0, "the shaft was not moving at the edge: {moved}");
             assert!(c.tel.iter().any(|f| f.duty_q15 == Some(*g as i16)));
         }
-        let fit = exp.fit(&priors()).expect("fit");
+        let fit = exp.fit(&priors(), &[]).expect("fit");
         assert_eq!(fit.tel_steps, 6, "{:?}", fit.warnings);
         assert!(
             (fit.b_best - B_PLANT).abs() / B_PLANT < 0.05,
@@ -945,8 +1354,8 @@ mod tests {
 
     /// A step the limiter holds under its goal is declined, never fitted.
     /// Planned under 180 counts but run under 120, the steps' first edges
-    /// draw about 96, 127 and 158: the smallest pair fits, the rest are
-    /// governed.
+    /// draw about 96, 127 and 158: the smallest pair is clean, the rest are
+    /// governed, and two steps are too few for B: inertia declines.
     #[test]
     fn a_governed_step_is_declined() {
         let mut servo = dynamic_servo();
@@ -962,13 +1371,17 @@ mod tests {
         assert!(exp.abort().is_none(), "abort: {:?}", exp.abort());
         let exp = exp.into_inner();
         assert_eq!(exp.step_series().len(), 2);
-        let fit = exp.fit(&priors()).expect("the clean pair fits");
-        let declined: Vec<&String> = fit
-            .warnings
-            .iter()
-            .filter(|w| w.ends_with(GOVERNED))
-            .collect();
-        assert_eq!(declined.len(), 4, "{:?}", fit.warnings);
+        let why = exp.fit(&priors(), &[]).unwrap_err();
+        assert!(
+            why.starts_with(
+                "2 of the 2 inertia steps show a current decay to fit, and B needs 3 (notes: step \
+                 to 48."
+            ),
+            "{why}"
+        );
+        let notes = exp.notes();
+        let declined: Vec<&String> = notes.iter().filter(|w| w.ends_with(GOVERNED)).collect();
+        assert_eq!(declined.len(), 4, "{notes:?}");
         assert!(declined[0].starts_with("step to 48."), "{declined:?}");
     }
 

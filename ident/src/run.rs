@@ -36,6 +36,12 @@
 //! approached at the duty that moved the shaft and seated at half the
 //! class-safe duty. The ripple traverse follows, free-running on the
 //! runway ([`crate::exp::sweep`]), and the run ends at mid travel.
+//!
+//! A ladder that declines gives inertia no Ke or friction line. On a servo
+//! that carries them from an earlier identification
+//! ([`Run::with_stored_motion`]) inertia still runs, against those, and the
+//! run ends as the ladder's decline; on one that does not the run goes to
+//! its closing centring.
 
 use crate::exp::AbortReason;
 use crate::exp::breakaway::BreakawayCfg;
@@ -216,6 +222,8 @@ pub struct Run {
     cal: bool,
     /// What an earlier identification left on the servo.
     stored: Option<Winding>,
+    /// The servo carries a Ke and friction line.
+    stored_motion: bool,
     /// The ending the stored winding stood in for, once it did.
     reused: Option<Over>,
     /// A step the run inserted ahead of the order.
@@ -240,6 +248,7 @@ impl Run {
             stall_ladder: false,
             cal: false,
             stored: None,
+            stored_motion: false,
             reused: None,
             pending: None,
             lim,
@@ -265,6 +274,15 @@ impl Run {
     /// burst nor the stop ladder measures R, the run plans from it.
     pub fn with_stored_winding(self, stored: Option<Winding>) -> Self {
         Self { stored, ..self }
+    }
+
+    /// The servo carries a Ke and friction line from an earlier
+    /// identification: a declined ladder goes on to inertia.
+    pub fn with_stored_motion(self, carried: bool) -> Self {
+        Self {
+            stored_motion: carried,
+            ..self
+        }
     }
 
     /// The stored winding, and the ending it stood in for, once the run
@@ -301,6 +319,15 @@ impl Run {
     /// The class-safe duty every drive starts from until R is measured.
     pub fn bootstrap(&self) -> f64 {
         self.bootstrap
+    }
+
+    /// The duty the bias jogs a rest off the position sensor's carry at:
+    /// the stop cap by the winding the servo carries, else the class-safe
+    /// duty. Either one's stall the current limit holds.
+    pub fn jog(&self) -> f64 {
+        self.stored.map_or(self.bootstrap, |w| {
+            DutyPlan::new(&self.lim, w.r_vpc, None).stop_cap
+        })
     }
 
     /// The most the jam check raises to: [`NUDGE_MAX_MV`] on this rail.
@@ -466,8 +493,11 @@ impl Run {
                 Some("burst") if self.stall_ladder => self.pending = Some(Step::Resistance),
                 Some("burst") => self.no_r(Over::Declined("burst")),
                 Some("resistance") => self.no_r(Over::ResistanceDeclined),
+                Some("ladder") if self.stored_motion && self.plan.is_some() => {
+                    self.cut.get_or_insert(Over::Declined("ladder"));
+                }
                 Some(stage) if self.plan.is_some() => {
-                    self.cut = Some(Over::Declined(stage));
+                    self.cut.get_or_insert(Over::Declined(stage));
                     self.finish();
                 }
                 at => self.over = Some(Over::Declined(at.unwrap_or("run"))),
@@ -740,6 +770,38 @@ mod tests {
         assert_eq!(r.next_stage(), None);
     }
 
+    /// A declined ladder hands inertia nothing: on a servo that carries a
+    /// Ke and friction line inertia still runs, against those, and the run
+    /// ends as the ladder's decline; without them the run goes straight to
+    /// its closing centring.
+    #[test]
+    fn a_declined_ladder_goes_on_to_inertia_only_on_the_stored_motion() {
+        let declined = |s: &Stage| match s {
+            Stage::Ladder { .. } => Ended::Declined,
+            _ => Ended::Done,
+        };
+        let mut r = run(RAIL_2S).with_stored_motion(true);
+        assert_eq!(stages(&mut r, declined), ORDER_NAMES);
+        assert_eq!(r.over(), Some(Over::Declined("ladder")));
+
+        let mut r = run(RAIL_2S).with_stored_motion(true);
+        let seen = stages(&mut r, |s| match s {
+            Stage::Ladder { .. } | Stage::Inertia { .. } => Ended::Declined,
+            _ => Ended::Done,
+        });
+        assert_eq!(seen, ORDER_NAMES);
+        assert_eq!(
+            r.over(),
+            Some(Over::Declined("ladder")),
+            "the first decline"
+        );
+
+        let mut r = run(RAIL_2S);
+        let seen = stages(&mut r, declined);
+        assert_eq!(seen, [&ORDER_NAMES[..7], &ORDER_NAMES[9..]].concat());
+        assert_eq!(r.over(), Some(Over::Declined("ladder")));
+    }
+
     /// A declined burst ends the run unless the stop ladder was asked for;
     /// asked for, it runs once, in the burst's place, and a stop ladder
     /// that fits nothing ends the run too. On 2S, with R unknown, the cap
@@ -1006,7 +1068,11 @@ mod tests {
             };
             let how = match stage {
                 Stage::Bias => {
-                    let exp = Bias::new(BiasCfg::default(), &params);
+                    let cfg = BiasCfg {
+                        jog_q15: q15_floor(run.jog()),
+                        ..BiasCfg::default()
+                    };
+                    let exp = Bias::new(cfg, &params);
                     self.go(exp, params.without_pos_guard()).1
                 }
                 Stage::Centre { duty, cap, nudge } => {
@@ -1082,7 +1148,7 @@ mod tests {
                             fv: l.fric_fwd.map_or(0.0, |f| f.fv),
                             tick_hz: TICK_HZ,
                         };
-                        self.inertia_fit = exp.fit(&priors).is_some();
+                        self.inertia_fit = exp.fit(&priors, &[]).is_ok();
                     }
                     how
                 }
@@ -1136,9 +1202,10 @@ mod tests {
                 let q: i32 = if let Some(v) = l.strip_prefix("burst ") {
                     v.split(' ').next()?.parse().ok()?
                 } else {
-                    let v = l
-                        .strip_prefix("write goal_duty ")
-                        .or_else(|| l.strip_prefix("stream "))?;
+                    let v = l.strip_prefix("write goal_duty ").or_else(|| {
+                        l.strip_prefix("stream ")
+                            .filter(|v| v.contains("goal_duty"))
+                    })?;
                     v.split(' ').next_back()?.parse().ok()?
                 };
                 Some((q as f64 / Q15).abs())
@@ -1364,8 +1431,8 @@ mod tests {
         let log = rig.log;
         assert!(drives(&log).iter().all(|d| *d <= cap));
         assert!(
-            log.iter()
-                .all(|l| !l.starts_with("burst") && !l.starts_with("stream"))
+            log.iter().all(|l| !l.starts_with("burst")
+                && !(l.starts_with("stream") && l.contains("goal_duty")))
         );
         assert_eq!(
             log.last().map(String::as_str),
@@ -1658,8 +1725,9 @@ mod tests {
 
     /// A shaft locked at mid travel: the jam check raises to its cap and
     /// gives up, and cal ends there with the blocked message and torque
-    /// off. Nothing but the drive's own control fields was ever written:
-    /// no config, no calib, no position table, no permit.
+    /// off. Nothing but the drive's own control fields was ever written,
+    /// the bias's TEL stream an arm of one: no config, no calib, no
+    /// position table, no permit.
     #[test]
     fn cal_on_a_jammed_shaft_writes_nothing() {
         let mut servo = bench_servo(RAIL_2S);
@@ -1680,6 +1748,11 @@ mod tests {
         let controls =
             crate::regs::control::TORQUE_ENABLE.addr..=crate::regs::control::BURST_CHANS.addr;
         for l in &rig.log {
+            let l = if l.starts_with("stream ") {
+                "write tel_count"
+            } else {
+                l
+            };
             let Some(name) = l.strip_prefix("write ").and_then(|w| w.split(' ').next()) else {
                 panic!("not a write: {l}");
             };

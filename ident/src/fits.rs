@@ -1,9 +1,13 @@
 //! Experiment samples -> physical motor parameters, count domain
 //! throughout (vcounts, ccounts, c/s). Encoding to table Q formats is gain
 //! synthesis' job. Started by the ladder (Ke + friction line); the inertia
-//! step fits (direct-alpha and exponential-rise B estimators) live here too.
+//! fits live here too: B from the current decay after a step, the one the
+//! gains take, the ladder's governed climbs as its cross-check, and the
+//! pot-speed estimators (direct-alpha and exponential-rise), diagnostics.
 
-use crate::fitmath::{linear_ls, origin_ls, sliding_quadratic_deriv};
+use crate::fitmath::{
+    LinearFit, linear_ls, lstsq, mean, origin_ls, sliding_quadratic_deriv, stddev,
+};
 
 /// One steady-state ladder rung reduced to its operating point. Signs are
 /// as driven: rev rungs carry negative omega, i and v.
@@ -100,6 +104,59 @@ impl InertiaPriors {
     pub fn f_med(&self) -> f64 {
         self.tick_hz / 10.0
     }
+
+    /// The damping a constant duty adds to friction: fv + Ke/R, ccounts
+    /// per c/s. Its time constant is 1 / (B f_med this).
+    fn damping(&self) -> f64 {
+        self.fv + self.ke_vpc / self.r_vpc
+    }
+}
+
+/// y = a + c exp(-(t - t0) / tau) over `tw`, t0 the first t: for a fixed
+/// tau it is linear in exp(-(t - t0)/tau), so tau is a 1-D search (log grid
+/// over 1 ms .. 2 s, then golden section) on the residual rms. None without
+/// an interior optimum: not an exponential.
+fn exp_fit(tw: &[(f64, f64)]) -> Option<(f64, LinearFit)> {
+    const LO: f64 = 1e-3;
+    const HI: f64 = 2.0;
+    let t0 = tw.first()?.0;
+    let rms_at = |tau: f64| -> Option<(f64, LinearFit)> {
+        let xy: Vec<(f64, f64)> = tw
+            .iter()
+            .map(|&(t, w)| ((-(t - t0) / tau).exp(), w))
+            .collect();
+        linear_ls(&xy).map(|f| (f.rms, f))
+    };
+    let mut best = (f64::INFINITY, LO);
+    for k in 0..=40 {
+        let tau = LO * (HI / LO).powf(k as f64 / 40.0);
+        if let Some((rms, _)) = rms_at(tau)
+            && rms < best.0
+        {
+            best = (rms, tau);
+        }
+    }
+    if !best.0.is_finite() || best.1 <= LO * 1.01 || best.1 >= HI * 0.99 {
+        return None;
+    }
+    let phi = (5f64.sqrt() - 1.0) / 2.0;
+    let (mut a, mut b) = (
+        best.1 / (HI / LO).powf(0.025),
+        best.1 * (HI / LO).powf(0.025),
+    );
+    for _ in 0..40 {
+        let x1 = b - phi * (b - a);
+        let x2 = a + phi * (b - a);
+        let r1 = rms_at(x1).map(|r| r.0).unwrap_or(f64::INFINITY);
+        let r2 = rms_at(x2).map(|r| r.0).unwrap_or(f64::INFINITY);
+        if r1 < r2 {
+            b = x2;
+        } else {
+            a = x1;
+        }
+    }
+    let tau = (a + b) / 2.0;
+    rms_at(tau).map(|(_, f)| (tau, f))
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -195,47 +252,9 @@ pub fn b_exp_fit(steps: &[StepSeries], p: &InertiaPriors, half_window: usize) ->
         if tw.len() < 16 {
             continue;
         }
-        let t0 = tw[0].0;
-        let rms_at = |tau: f64| -> Option<(f64, crate::fitmath::LinearFit)> {
-            let xy: Vec<(f64, f64)> = tw
-                .iter()
-                .map(|&(t, w)| ((-(t - t0) / tau).exp(), w))
-                .collect();
-            linear_ls(&xy).map(|f| (f.rms, f))
+        let Some((tau, f)) = exp_fit(&tw) else {
+            continue;
         };
-        // log grid seed over 1 ms .. 2 s, then golden-section refine
-        const LO: f64 = 1e-3;
-        const HI: f64 = 2.0;
-        let mut best = (f64::INFINITY, LO);
-        for k in 0..=40 {
-            let tau = LO * (HI / LO).powf(k as f64 / 40.0);
-            if let Some((rms, _)) = rms_at(tau)
-                && rms < best.0
-            {
-                best = (rms, tau);
-            }
-        }
-        if !best.0.is_finite() || best.1 <= LO * 1.01 || best.1 >= HI * 0.99 {
-            continue; // no interior optimum: not an exponential rise
-        }
-        let phi = (5f64.sqrt() - 1.0) / 2.0;
-        let (mut a, mut b) = (
-            best.1 / (HI / LO).powf(0.025),
-            best.1 * (HI / LO).powf(0.025),
-        );
-        for _ in 0..40 {
-            let x1 = b - phi * (b - a);
-            let x2 = a + phi * (b - a);
-            let r1 = rms_at(x1).map(|r| r.0).unwrap_or(f64::INFINITY);
-            let r2 = rms_at(x2).map(|r| r.0).unwrap_or(f64::INFINITY);
-            if r1 < r2 {
-                b = x2;
-            } else {
-                a = x1;
-            }
-        }
-        let tau = (a + b) / 2.0;
-        let Some((_, f)) = rms_at(tau) else { continue };
         // omega(inf) = intercept; c must be negative (a rise, not a decay)
         if f.b >= 0.0 || f.a <= 0.0 {
             continue;
@@ -261,5 +280,131 @@ pub fn b_exp_fit(steps: &[StepSeries], p: &InertiaPriors, half_window: usize) ->
         b,
         spread: var.sqrt() / b,
         steps: out,
+    })
+}
+
+/// Skipped after a step's goal is applied before its current decay is
+/// fitted, s: the winding's electrical rise and the first windows.
+pub const DECAY_SKIP_S: f64 = 0.002;
+
+/// A decay's amplitude over the fit's residual rms, the least that
+/// stands out of the current's commutation ripple: the bench servo's
+/// steps read 3.7 to 7.8.
+pub const DECAY_SNR_MIN: f64 = 2.0;
+
+#[derive(Clone, Debug)]
+pub struct BDecayStep {
+    pub duty_q15: f64,
+    /// Mechanical time constant, s.
+    pub tau_s: f64,
+    /// Settled current and the decay's amplitude at the fit's start,
+    /// ccounts, folded by the drive's sign.
+    pub i_ss: f64,
+    pub amp: f64,
+    pub r2: f64,
+    pub b: f64,
+}
+
+#[derive(Clone, Debug)]
+pub struct BDecay {
+    /// Mean of the per-step B.
+    pub b: f64,
+    /// Sample sd over the mean across steps.
+    pub spread: f64,
+    pub steps: Vec<BDecayStep>,
+}
+
+/// Current-decay estimator, one step. After a duty step the current jumps
+/// and falls as the back-EMF rises with the speed: at constant duty
+/// i = i_ss + A exp(-t/tau), with the tau the exp-rise estimator reads off
+/// the speed, 1 / (B f_med (fv + Ke/R)). The current carries it without
+/// the pot's noise and without a derivative. Err says, in plain words, why
+/// the step's current is not such a decay.
+pub fn b_decay_step(s: &StepSeries, p: &InertiaPriors) -> Result<BDecayStep, &'static str> {
+    let sgn = if s.duty_q15 >= 0.0 { 1.0 } else { -1.0 };
+    let t0 = (0..s.t.len())
+        .find(|&k| s.mask[k])
+        .map(|k| s.t[k])
+        .ok_or("no sample applied the step")?;
+    let tw: Vec<(f64, f64)> = (0..s.t.len())
+        .filter(|&k| s.mask[k] && s.t[k] >= t0 + DECAY_SKIP_S)
+        .map(|k| (s.t[k], s.i[k] * sgn))
+        .collect();
+    if tw.len() < 16 {
+        return Err("too few samples after the step to fit its current");
+    }
+    let (tau, f) = exp_fit(&tw).ok_or("its current does not decay exponentially")?;
+    if f.b <= 0.0 || f.a <= 0.0 {
+        return Err("its current does not fall after the step");
+    }
+    if f.b < DECAY_SNR_MIN * f.rms {
+        return Err("its current shows no decay above its ripple");
+    }
+    Ok(BDecayStep {
+        duty_q15: s.duty_q15,
+        tau_s: tau,
+        i_ss: f.a,
+        amp: f.b,
+        r2: f.r2,
+        b: 1.0 / (tau * p.f_med() * p.damping()),
+    })
+}
+
+/// The steps' B pooled: their mean and spread. None without a step.
+pub fn b_decay_pool(steps: Vec<BDecayStep>) -> Option<BDecay> {
+    let bs: Vec<f64> = steps.iter().map(|s| s.b).collect();
+    let b = mean(&bs)?;
+    Some(BDecay {
+        b,
+        spread: stddev(&bs).unwrap_or(0.0) / b,
+        steps,
+    })
+}
+
+/// One governed climb off the ladder: the limiter holds the current while
+/// the shaft accelerates. Host time, s; the kernel's counts; window
+/// current, ccounts; both as driven, `dir` their sign.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Climb {
+    pub dir: i8,
+    pub t: Vec<f64>,
+    pub pos: Vec<f64>,
+    pub i: Vec<f64>,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct BClimb {
+    pub b: f64,
+    pub sd: f64,
+    pub n: usize,
+}
+
+/// Climb estimator: each climb's acceleration, pos = c0 + c1 t + alpha t^2
+/// / 2, against the torque its held current leaves over friction at its
+/// mean speed, alpha = B f_med (i - fc - fv w). None without a climb that
+/// accelerates on a positive torque.
+pub fn b_climb_fit(climbs: &[Climb], p: &InertiaPriors) -> Option<BClimb> {
+    let bs: Vec<f64> = climbs
+        .iter()
+        .filter_map(|c| {
+            let s = c.dir as f64;
+            let t0 = *c.t.first()?;
+            let x: Vec<Vec<f64>> =
+                c.t.iter()
+                    .map(|t| vec![1.0, t - t0, (t - t0) * (t - t0)])
+                    .collect();
+            let y: Vec<f64> = c.pos.iter().map(|q| q * s).collect();
+            let (coef, _) = lstsq(&x, &y)?;
+            let alpha = 2.0 * coef[2];
+            let w = coef[1] + alpha * (mean(&c.t)? - t0);
+            let torque = mean(&c.i)? * s - p.fc - p.fv * w;
+            (alpha > 0.0 && torque > 0.0).then(|| alpha / (p.f_med() * torque))
+        })
+        .collect();
+    let b = mean(&bs)?;
+    Some(BClimb {
+        b,
+        sd: stddev(&bs).unwrap_or(0.0),
+        n: bs.len(),
     })
 }

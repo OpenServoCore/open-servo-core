@@ -29,7 +29,9 @@ use osc_ident::exp::held::{Held, HeldCfg, Stops};
 use osc_ident::exp::inductance::{
     Cfg as InductanceCfg, FitCfg, Inductance, InductanceResult, fit_captures,
 };
-use osc_ident::exp::inertia::{Inertia, InertiaCfg, InertiaResult};
+use osc_ident::exp::inertia::{
+    Inertia, InertiaCfg, InertiaResult, PriorsFrom, StoredMotion, fit_steps,
+};
 use osc_ident::exp::ladder::{Ladder, LadderCfg, LadderResult};
 use osc_ident::exp::resistance::{Resistance, ResistanceCfg, ResistanceResult};
 use osc_ident::exp::rl::{Rl, RlCfg, RlFitCfg, RlResult, Scales};
@@ -37,11 +39,11 @@ use osc_ident::exp::verify::{
     VerifyCurrent, VerifyCurrentCfg, VerifyResult, VerifyVelocity, VerifyVelocityCfg,
 };
 use osc_ident::exp::{Guarded, Permitted, RigParams};
-use osc_ident::fits::{self, InertiaPriors};
+use osc_ident::fits::{self, Climb, InertiaPriors};
 use osc_ident::gains::{self, BwTargets, PlantParams};
 use osc_ident::limits::{
     BurstAllowance, CLASS_R_MIN, DutyPlan, Envelope, POT_MAX, Refusal, STOP_LADDER, ServoLimits,
-    guards, pct_floor,
+    guards, pct_floor, q15_floor,
 };
 use osc_ident::pot::Pot;
 use osc_ident::regs::{calib, config, control};
@@ -51,7 +53,7 @@ use osc_ident::runway::{Runway, Supply};
 use osc_ident::sources::{self, Source, Winding};
 use params::{
     BiasJson, BreakawayJson, GainJson, InductanceJson, InertiaJson, LadderJson, ParamsFile,
-    PlantJson, PotJson, ResistanceJson, RlJson, SenseJson, StoredWindingJson,
+    PlantJson, PotJson, ResistanceJson, RlJson, SenseJson, StoredMotionJson, StoredWindingJson,
 };
 
 /// Where recorded runs land when `--out` is absent.
@@ -207,9 +209,10 @@ struct Drive {
     sc: Scales,
     /// The winding an earlier identification left on the servo.
     stored: Option<Winding>,
-    /// The servo carries an identified Ke: its back-EMF speed checks the
-    /// ladder's.
-    servo_ke: bool,
+    /// The Ke and friction line an earlier identification left on the
+    /// servo: its back-EMF speed checks the ladder's, and inertia reads B
+    /// against them when the ladder declines.
+    stored_motion: Option<StoredMotion>,
 }
 
 impl Ctx {
@@ -378,7 +381,11 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
             cli.f_ci,
             &sc,
         );
-        let servo_ke = snapshot::read_u16(&mut c, id, calib::KE_VPC_Q)? != 0;
+        let stored_motion = StoredMotion::read(
+            snapshot::read_u16(&mut c, id, calib::KE_VPC_Q)?,
+            snapshot::read_u16(&mut c, id, calib::FRIC_FC_COUNTS)?,
+            snapshot::read_u16(&mut c, id, calib::FRIC_FV_Q016)?,
+        );
         let ma = lim.ma();
         println!(
             "limits: current limit {}, travel guard {}..{}, a run aborts over {}",
@@ -393,7 +400,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
             sense,
             sc,
             stored,
-            servo_ke,
+            stored_motion,
         });
     }
     let lut = Lut::read(&mut c, id, &d)?;
@@ -404,7 +411,9 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
         Cmd::Run { stall_ladder } => run_all(cli, &mut c, id, *stall_ladder),
         Cmd::Bias => {
             let out = csvio::OutDir::create(&cli.out)?;
-            let (b, _) = run_bias(cli, &mut c, id, &out)?;
+            let d = drive(cli)?;
+            let jog = Run::new(d.lim, &d.sc).with_stored_winding(d.stored).jog();
+            let (b, _) = run_bias(cli, &mut c, id, &out, jog)?;
             println!(
                 "{}",
                 render_partial(ReportInputs {
@@ -642,23 +651,42 @@ fn rl_fit_cfg(sense: &SenseJson) -> RlFitCfg {
 
 // --- experiment runners -----------------------------------------------------
 
+/// Torque off at rest, the rest noise from a TEL stream; a rest on the
+/// position sensor's carry is jogged off at `jog` first.
 fn run_bias(
     cli: &Ctx,
     c: &mut Client<NusbPipe>,
     id: Id,
     out: &csvio::OutDir,
+    jog: f64,
 ) -> Result<(BiasResult, f64)> {
-    println!("[bias]");
-    // torque off throughout: the travel guard has nothing to guard
+    println!(
+        "[bias] torque off: the current zero, the rail and the position noise; a rest on the \
+         position sensor's carry is jogged off at {}",
+        pct(jog)
+    );
+    // at rest, or a jog of a few counts: the travel guard has nothing to guard
     let params = rig(cli)?.without_pos_guard();
     let mut log = csvio::SnapshotLog::create(out, "bias_snapshots.csv")?;
-    let mut exp = Guarded::new(Bias::new(BiasCfg::default(), &params), params);
-    with_guard(c, id, |c| Pump::new(c, id, Some(&mut log)).run(&mut exp))?;
+    let cfg = BiasCfg {
+        jog_q15: q15_floor(jog),
+        ..BiasCfg::default()
+    };
+    let mut exp = Guarded::new(Bias::new(cfg, &params), params);
+    let tel = with_guard(c, id, |c| {
+        let mut pump = Pump::new(c, id, Some(&mut log));
+        pump.run(&mut exp)?;
+        Ok(std::mem::take(&mut pump.tel))
+    })?;
     check_abort("bias", exp.abort())?;
+    csvio::write_tel_frames(out, "bias_tel.csv", &tel)?;
     let b = exp
         .into_inner()
         .result()
         .context("bias collected no samples")?;
+    for w in &b.warnings {
+        println!("  warn: {w}");
+    }
     let vbus = b.vbus_mean;
     Ok((b, vbus))
 }
@@ -868,7 +896,7 @@ fn run_ladder(
     cfg: LadderCfg,
     runway: Runway,
     r_vpc: f64,
-) -> Result<(Result<LadderResult, String>, Runway)> {
+) -> Result<(Result<LadderResult, String>, Runway, Vec<Climb>)> {
     let params = rig(cli)?;
     let mut log = csvio::SnapshotLog::create(out, "ladder_snapshots.csv")?;
     let aborts = params.abort_at_soft(drive(cli)?.lim.soft);
@@ -893,13 +921,15 @@ fn run_ladder(
         println!("  {w}");
     }
     let runway = exp.runway().clone();
+    let climbs = exp.climbs().to_vec();
+    csvio::write_climbs(out, &climbs)?;
     if let Some(why) = exp.declined() {
         std::fs::write(out.0.join(LADDER_DECLINED), format!("{why}\n"))?;
-        return Ok((Err(why.to_string()), runway));
+        return Ok((Err(why.to_string()), runway, climbs));
     }
     let l = exp.fit(r_vpc).context("ladder fit degenerate")?;
     csvio::write_rungs(out, &l.rungs)?;
-    Ok((Ok(l), runway))
+    Ok((Ok(l), runway, climbs))
 }
 
 /// The ladder's runway: sized by the pilot envelope of the dataset that
@@ -928,6 +958,7 @@ fn run_inertia(
     out: &csvio::OutDir,
     exp: Inertia,
     priors: &InertiaPriors,
+    climbs: &[Climb],
 ) -> Result<Result<InertiaResult, String>> {
     let aborts = rig(cli)?.abort_at_soft(drive(cli)?.lim.soft);
     let mut log = csvio::SnapshotLog::create(out, "inertia_snapshots.csv")?;
@@ -941,15 +972,7 @@ fn run_inertia(
     let exp = exp.into_inner();
     csvio::write_tel_frames(out, "inertia_tel.csv", &all_tel)?;
     csvio::write_step_series(out, &exp.step_series())?;
-    Ok(exp.fit(priors).ok_or_else(|| {
-        format!(
-            "no inertia step fitted (notes: {})",
-            match exp.notes().as_slice() {
-                [] => "none".to_string(),
-                n => n.join("; "),
-            }
-        )
-    }))
+    Ok(exp.fit(priors, climbs))
 }
 
 fn run_verify(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
@@ -1043,24 +1066,6 @@ fn refuse_closed_loop(s: &DataState) -> Result<()> {
 
 // --- fitting ----------------------------------------------------------------
 
-/// The inertia fit's priors. `r_loop_vpc` is the winding's slope with the
-/// bridge, the current loop's R: the back-EMF damping a step sees is Ke
-/// over the incremental R, not over V/I at the limit.
-fn priors_of(r_loop_vpc: f64, l: &LadderResult, sense: &SenseJson) -> InertiaPriors {
-    let mean_opt = |a: Option<f64>, b: Option<f64>| match (a, b) {
-        (Some(a), Some(b)) => (a + b) / 2.0,
-        (Some(a), None) | (None, Some(a)) => a,
-        (None, None) => 0.0,
-    };
-    InertiaPriors {
-        r_vpc: r_loop_vpc,
-        ke_vpc: l.ke.ke_vpc,
-        fc: mean_opt(l.fric_fwd.map(|f| f.fc), l.fric_rev.map(|f| f.fc)),
-        fv: mean_opt(l.fric_fwd.map(|f| f.fv), l.fric_rev.map(|f| f.fv)),
-        tick_hz: sense.tick_hz as f64,
-    }
-}
-
 fn run_all(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id, stall_ladder: bool) -> Result<()> {
     let rec = drive_stages(cli, c, id, Until::End, stall_ladder)?;
     let (Some((bias, _)), Some(breakaway)) = (&rec.bias, &rec.breakaway) else {
@@ -1075,6 +1080,10 @@ fn run_all(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id, stall_ladder: bool) -> R
             .filter(|w| w.r_from == Source::Stored)
             .as_ref()
             .map(StoredWindingJson::from),
+        stored_motion: drive(cli)?
+            .stored_motion
+            .as_ref()
+            .map(StoredMotionJson::from),
         sense: Some(drive(cli)?.sense),
         pot: cli.lut.as_ref().map(PotJson::from),
         ..Default::default()
@@ -1125,7 +1134,9 @@ fn drive_stages(
     let out = csvio::OutDir::create(&cli.out)?;
     println!("recording to {}", out.0.display());
     let d = drive(cli)?;
-    let mut run = Run::new(d.lim, &d.sc).with_stored_winding(d.stored);
+    let mut run = Run::new(d.lim, &d.sc)
+        .with_stored_winding(d.stored)
+        .with_stored_motion(d.stored_motion.is_some());
     if stall_ladder {
         run = run.with_stall_ladder();
     }
@@ -1142,6 +1153,7 @@ fn drive_stages(
         inertia: None,
         declined: None,
         runway: None,
+        climbs: Vec::new(),
     };
     while let Some(stage) = run.next_stage() {
         if rec.w.is_none()
@@ -1285,6 +1297,8 @@ struct Recorded {
     declined: Option<String>,
     /// What the ladder measured: inertia runs inside the same runway.
     runway: Option<Runway>,
+    /// The ladder's governed climbs: inertia's cross-check.
+    climbs: Vec<Climb>,
 }
 
 impl Recorded {
@@ -1318,7 +1332,7 @@ impl Recorded {
         let d = drive(cli)?;
         let out = &self.out;
         match stage {
-            Stage::Bias => self.bias = Some(run_bias(cli, c, id, out)?),
+            Stage::Bias => self.bias = Some(run_bias(cli, c, id, out, run.jog())?),
             Stage::Centre { duty, cap, nudge } if *nudge => {
                 println!(
                     "[centring] the jam check: out and back at mid travel from {}, raised up to \
@@ -1420,13 +1434,14 @@ impl Recorded {
                 );
                 let r_vpc = self.w.as_ref().context("no winding R")?.r_vpc;
                 let base = LadderCfg {
-                    servo_ke: d.servo_ke,
+                    servo_ke: d.stored_motion.is_some(),
                     ..LadderCfg::new(d.sense.tick_hz as f64)
                 };
                 let cfg = order::ladder_cfg(*seek, rungs, base);
                 let runway = ladder_runway(d, run.rail_mv());
-                let (ladder, runway) = run_ladder(cli, c, id, out, cfg, runway, r_vpc)?;
+                let (ladder, runway, climbs) = run_ladder(cli, c, id, out, cfg, runway, r_vpc)?;
                 self.runway = Some(runway);
+                self.climbs = climbs;
                 match ladder {
                     Ok(l) => self.ladder = Some(l),
                     Err(why) => {
@@ -1443,21 +1458,36 @@ impl Recorded {
                     pct(*seek)
                 );
                 let r_loop = self.w.as_ref().context("no winding R")?.r_loop_vpc;
-                let ladder = self.ladder.as_ref().context("no ladder")?;
-                let priors = priors_of(r_loop, ladder, &d.sense);
+                let tick_hz = d.sense.tick_hz as f64;
+                let (priors, from) = match osc_ident::exp::inertia::priors(
+                    self.ladder.as_ref(),
+                    d.stored_motion,
+                    r_loop,
+                    tick_hz,
+                ) {
+                    Ok(p) => p,
+                    Err(why) => {
+                        println!("  {why}");
+                        self.declined.get_or_insert(why);
+                        return Ok(Ended::Declined);
+                    }
+                };
+                if from == PriorsFrom::Stored {
+                    println!("  B is read against {}: the ladder declined", from.as_str());
+                }
                 let cfg = InertiaCfg {
                     capture_ms: cli.inertia_ms,
-                    ..InertiaCfg::new(priors.tick_hz)
+                    ..InertiaCfg::new(tick_hz)
                 };
                 let cfg = order::inertia_cfg(*seek, *base, cfg);
                 let plan = run.plan().context("no plan")?;
                 let runway = self.runway.clone().context("no ladder runway")?;
                 let exp = Inertia::new(cfg, plan, runway, &rig(cli)?);
-                match run_inertia(cli, c, id, out, exp, &priors)? {
+                match run_inertia(cli, c, id, out, exp, &priors, &self.climbs)? {
                     Ok(r) => self.inertia = Some(r),
                     Err(why) => {
                         println!("  {why}");
-                        self.declined = Some(why);
+                        self.declined.get_or_insert(why);
                         return Ok(Ended::Declined);
                     }
                 }
@@ -1537,16 +1567,7 @@ fn fit_dir(cli: &Ctx, dir: PathBuf) -> Result<()> {
         "no winding R: burst is missing or declined, no resistance recording exists and the \
          run took no stored winding",
     )?;
-    let bias = p.bias;
-    let bias_res = bias.map(|b| osc_ident::exp::bias::BiasResult {
-        sigma_theta: b.sigma_theta,
-        pos_mean: b.pos_mean,
-        i_noise: b.i_noise,
-        i_bias_delta: b.i_bias_delta,
-        vbus_mean: b.vbus_mean,
-        vbus_sd: b.vbus_sd,
-        n: b.n,
-    });
+    let bias_res = p.bias.as_ref().map(BiasJson::result);
     let bk_res = p
         .breakaway
         .map(|b| osc_ident::exp::breakaway::BreakawayResult {
@@ -1560,10 +1581,32 @@ fn fit_dir(cli: &Ctx, dir: PathBuf) -> Result<()> {
     p.resistance = resistance.as_ref().map(ResistanceJson::from);
     p.rl = rl.as_ref().map(RlJson::from);
     p.inductance = inductance.as_ref().map(InductanceJson::from);
+    let climbs = csvio::read_climbs(&dir)?;
+    let series = match dir.join("inertia_steps.csv").exists() {
+        true => csvio::read_step_series(&dir)?,
+        false => Vec::new(),
+    };
     if !dir.join("rungs.csv").exists() {
         let why = match std::fs::read_to_string(dir.join(LADDER_DECLINED)) {
             Ok(why) => format!("the ladder declined ({})", why.trim()),
             Err(_) => "the run recorded no ladder".into(),
+        };
+        // a declined ladder hands inertia nothing: B, for the report, reads
+        // against the Ke and friction the servo carried, when it did
+        let stored = p.stored_motion.map(|m| m.motion());
+        let inertia = match (series.is_empty(), stored) {
+            (false, Some(_)) => {
+                let (priors, from) =
+                    osc_ident::exp::inertia::priors(None, stored, w.r_loop_vpc, tick_hz)
+                        .map_err(anyhow::Error::msg)?;
+                fit_steps(&series, &climbs, &priors).ok().map(|mut r| {
+                    r.warnings
+                        .insert(0, format!("B read against {}", from.as_str()));
+                    p.inertia = Some(InertiaJson::new(&r, from.as_str()));
+                    r
+                })
+            }
+            _ => None,
         };
         let text = report::render(&ReportInputs {
             bias: bias_res.as_ref(),
@@ -1571,6 +1614,7 @@ fn fit_dir(cli: &Ctx, dir: PathBuf) -> Result<()> {
             rl: rl.as_ref(),
             inductance: inductance.as_ref(),
             breakaway: bk_res.as_ref(),
+            inertia: inertia.as_ref(),
             ..Default::default()
         });
         println!("{text}");
@@ -1597,17 +1641,9 @@ fn fit_dir(cli: &Ctx, dir: PathBuf) -> Result<()> {
         rungs,
         warnings: Vec::new(),
     };
-    let priors = priors_of(w.r_loop_vpc, &ladder, &sense);
-    let series = csvio::read_step_series(&dir)?;
-    let tel_steps = series.iter().filter(|(_, tel)| *tel).count();
-    // same smoothing-window rule as Inertia::fit
-    let hw = if tel_steps > 0 {
-        (0.010 * tick_hz) as usize
-    } else {
-        12
-    };
-    let b_direct = fits::b_direct_fit(&series_only(&series), &priors, hw, 5.0);
-    let b_exp = fits::b_exp_fit(&series_only(&series), &priors, hw);
+    let (priors, from) =
+        osc_ident::exp::inertia::priors(Some(&ladder), None, w.r_loop_vpc, tick_hz)
+            .map_err(anyhow::Error::msg)?;
 
     p.ladder = Some(LadderJson {
         ke_vpc: ladder.ke.ke_vpc,
@@ -1619,17 +1655,9 @@ fn fit_dir(cli: &Ctx, dir: PathBuf) -> Result<()> {
         rungs_used: ladder.rungs.iter().filter(|r| r.used).count(),
     });
 
-    let b_best = match (&b_exp, &b_direct) {
-        (Some(e), Some(d)) => {
-            if d.r2 > 0.98 && d.r2 > 1.0 - e.spread {
-                d.b
-            } else {
-                e.b
-            }
-        }
-        (Some(e), None) => e.b,
-        (None, Some(d)) => d.b,
-        (None, None) => {
+    let inertia = match fit_steps(&series, &climbs, &priors) {
+        Ok(r) => r,
+        Err(why) => {
             let text = report::render(&ReportInputs {
                 bias: bias_res.as_ref(),
                 resistance: resistance.as_ref(),
@@ -1644,26 +1672,16 @@ fn fit_dir(cli: &Ctx, dir: PathBuf) -> Result<()> {
             p.save(&path)?;
             println!("params: {}", path.display());
             bail!(
-                "no gains: the inertia steps gave nothing to fit ({} recorded), and the gains \
-                 are built on the inertia; report.txt and params.json in {} keep what did fit - \
-                 bias, winding, breakaway and ladder - but there is no gain set to write: run \
-                 `osc ident run` again",
-                series.len(),
+                "no gains: the inertia declined ({why}), and the gains are built on its B; \
+                 report.txt and params.json in {} keep what did fit - bias, winding, breakaway \
+                 and ladder - but there is no gain set to write: run `osc ident run` again",
                 dir.display()
             );
         }
     };
-    let inertia = osc_ident::exp::inertia::InertiaResult {
-        b_direct,
-        b_exp,
-        b_best,
-        j_ff: 1.0 / b_best,
-        tel_steps,
-        warnings: Vec::new(),
-    };
 
-    let sigma_theta = bias.map(|b| b.sigma_theta).unwrap_or(1.0);
-    let sigma_from = match bias {
+    let sigma_theta = bias_res.as_ref().map_or(1.0, |b| b.sigma_theta);
+    let sigma_from = match bias_res {
         Some(_) => Source::Bias,
         None => Source::Default,
     };
@@ -1714,13 +1732,7 @@ fn fit_dir(cli: &Ctx, dir: PathBuf) -> Result<()> {
     println!("{text}");
     std::fs::write(dir.join("report.txt"), &text)?;
 
-    p.inertia = Some(InertiaJson {
-        b_best: inertia.b_best,
-        b_direct: inertia.b_direct.as_ref().map(|d| d.b),
-        b_exp: inertia.b_exp.as_ref().map(|e| e.b),
-        j_ff: inertia.j_ff,
-        tel_steps: inertia.tel_steps,
-    });
+    p.inertia = Some(InertiaJson::new(&inertia, from.as_str()));
     p.plant = Some(PlantJson::new(&plant, &t, &w, sigma_from.as_str()));
     p.gains = GainJson::set(&encoded);
     p.save(&path)?;
@@ -1845,10 +1857,6 @@ fn synth_file(cli: &Ctx, id: u8, file: &Path, out: Option<&Path>) -> Result<()> 
     Ok(())
 }
 
-fn series_only(s: &[(fits::StepSeries, bool)]) -> Vec<fits::StepSeries> {
-    s.iter().map(|(s, _)| s.clone()).collect()
-}
-
 fn render_partial(inputs: ReportInputs<'_>) -> String {
     report::render(&inputs)
 }
@@ -1928,12 +1936,17 @@ mod tests {
         csvio::write_dwell_samples(&out, &dwells).unwrap();
         let bias = BiasJson {
             sigma_theta: 1.2,
+            sigma_raw: 1.2,
+            gain: 1.0,
+            rest: 2029.0,
+            tel_n: 10_000,
             pos_mean: 2029.0,
             i_noise: 1.5,
             i_bias_delta: 0.0,
             vbus_mean: 3204.0,
             vbus_sd: 2.0,
             n: 200,
+            warnings: Vec::new(),
         };
         let breakaway = BreakawayJson {
             duty_bk_fwd: Some(2621),
@@ -1998,8 +2011,8 @@ mod tests {
         assert_eq!(
             err.to_string(),
             format!(
-                "no gains: the inertia steps gave nothing to fit (0 recorded), and the gains are \
-                 built on the inertia; report.txt and params.json in {} keep what did fit - \
+                "no gains: the inertia declined (no inertia step was captured to fit), and the \
+                 gains are built on its B; report.txt and params.json in {} keep what did fit - \
                  bias, winding, breakaway and ladder - but there is no gain set to write: run \
                  `osc ident run` again",
                 dir.display()
@@ -2013,6 +2026,42 @@ mod tests {
         assert!((ladder.ke_vpc - 0.1472).abs() < 1e-6, "{}", ladder.ke_vpc);
         assert!(p.inertia.is_none() && p.plant.is_none() && p.gains.is_empty());
         assert!(std::fs::read_to_string(dir.join("report.txt")).is_ok_and(|t| !t.is_empty()));
+
+        // steps whose current decays read B from 0.08 to 0.13: declined, and
+        // the rest of the run kept the same way
+        use osc_ident::fits::StepSeries;
+        let scattered: Vec<(StepSeries, bool)> = [0.08, 0.13, 0.10, 0.12, 0.09, 0.11]
+            .iter()
+            .enumerate()
+            .map(|(k, b)| {
+                let sgn = if k % 2 == 0 { 1.0 } else { -1.0 };
+                let tau = 1.0 / (b * 2010.0 * (0.004 + 0.1472 / r));
+                let t: Vec<f64> = (0..3000).map(|k| k as f64 / 20_100.0).collect();
+                let i = t
+                    .iter()
+                    .map(|t| sgn * (80.0 + 90.0 * (-t / tau).exp()))
+                    .collect();
+                let s = StepSeries {
+                    mask: vec![true; t.len()],
+                    pos: vec![2029.0; t.len()],
+                    t,
+                    i,
+                    duty_q15: sgn * 9000.0,
+                };
+                (s, true)
+            })
+            .collect();
+        csvio::write_step_series(&out, &scattered).unwrap();
+        let err = fit_dir(&ctx(dir.clone()), dir.clone()).unwrap_err();
+        assert!(
+            err.to_string().starts_with(
+                "no gains: the inertia declined (B spreads 18% across the 6 inertia steps, over \
+                 the 10% one fit may: the fit is not trusted)"
+            ),
+            "{err}"
+        );
+        let p = ParamsFile::load(&dir.join("params.json")).unwrap();
+        assert!(p.ladder.is_some() && p.inertia.is_none() && p.gains.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2046,6 +2095,69 @@ mod tests {
         assert!(p.plant.is_none() && p.gains.is_empty());
         let report = std::fs::read_to_string(dir.join("report.txt")).unwrap();
         assert!(!report.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A run whose ladder declined on a servo that carries a Ke and
+    /// friction line: inertia never takes the ladder's, the report and
+    /// params.json give B read against the stored ones, and the gains still
+    /// wait on a ladder.
+    #[test]
+    fn a_declined_ladder_reads_inertia_against_the_stored_motion() {
+        use osc_ident::exp::ladder::Declined;
+        use osc_ident::fits::StepSeries;
+
+        let (dir, out, r) = record_front("stored-motion");
+        let why = Declined::Disagrees { off: -0.16 }.to_string();
+        std::fs::write(dir.join(LADDER_DECLINED), format!("{why}\n")).unwrap();
+        let mut p = ParamsFile::load(&dir.join("params.json")).unwrap();
+        p.stored_motion = Some(StoredMotionJson {
+            ke_vpc: 0.1417,
+            fc: 53.0,
+            fv: 0.0051,
+        });
+        p.save(&dir.join("params.json")).unwrap();
+        let b = 0.335;
+        let tau = 1.0 / (b * 2010.0 * (0.0051 + 0.1417 / r));
+        let steps: Vec<(StepSeries, bool)> = [9000.0, -9000.0, 11000.0, -11000.0]
+            .into_iter()
+            .map(|duty: f64| {
+                let t: Vec<f64> = (0..3000).map(|k| k as f64 / 20_100.0).collect();
+                let i = t
+                    .iter()
+                    .map(|t| duty.signum() * (80.0 + 90.0 * (-t / tau).exp()))
+                    .collect();
+                let s = StepSeries {
+                    mask: vec![true; t.len()],
+                    pos: vec![2029.0; t.len()],
+                    t,
+                    i,
+                    duty_q15: duty,
+                };
+                (s, true)
+            })
+            .collect();
+        csvio::write_step_series(&out, &steps).unwrap();
+        let err = fit_dir(&ctx(dir.clone()), dir.clone()).unwrap_err();
+        assert!(
+            err.to_string()
+                .starts_with(&format!("no gains: the ladder declined ({why})")),
+            "{err}"
+        );
+        let p = ParamsFile::load(&dir.join("params.json")).unwrap();
+        let inertia = p.inertia.expect("B for the report");
+        assert_eq!(inertia.priors, "the servo's stored Ke and friction");
+        assert!(
+            (inertia.b_best / b - 1.0).abs() < 0.01,
+            "{}",
+            inertia.b_best
+        );
+        assert!(p.ladder.is_none() && p.plant.is_none() && p.gains.is_empty());
+        let report = std::fs::read_to_string(dir.join("report.txt")).unwrap();
+        assert!(
+            report.contains("warn: B read against the servo's stored Ke and friction"),
+            "{report}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2278,11 +2390,15 @@ mod tests {
             fv: (l.fv_fwd.unwrap() + l.fv_rev.unwrap()) / 2.0,
             tick_hz: 20_100.0,
         };
-        let series = series_only(&csvio::read_step_series(&dir).unwrap());
-        let b = |r_vpc: f64| fits::b_exp_fit(&series, &priors(r_vpc), 12).unwrap().b;
-        let got = p.inertia.expect("inertia").b_exp.unwrap();
-        assert_eq!(got, b(plant.r_loop_vpc));
-        assert_ne!(got, b(plant.r_vpc));
+        let tagged = csvio::read_step_series(&dir).unwrap();
+        let series: Vec<fits::StepSeries> = tagged.iter().map(|(s, _)| s.clone()).collect();
+        let b = |r_vpc: f64| fit_steps(&tagged, &[], &priors(r_vpc)).unwrap().b_best;
+        let exp_rise = |r_vpc: f64| fits::b_exp_fit(&series, &priors(r_vpc), 12).unwrap().b;
+        let inertia = p.inertia.expect("inertia");
+        assert_eq!(inertia.b_best, b(plant.r_loop_vpc));
+        assert_ne!(inertia.b_best, b(plant.r_vpc));
+        assert_eq!(inertia.b_exp.unwrap(), exp_rise(plant.r_loop_vpc));
+        assert_eq!(inertia.priors, "the ladder");
         let raw = |name: &str| p.gains.iter().find(|g| g.name == name).unwrap().raw;
         let w_ci = std::f64::consts::TAU * 1000.0;
         assert_eq!(raw("r_q12"), (plant.r_vpc * 4096.0).round() as u16);

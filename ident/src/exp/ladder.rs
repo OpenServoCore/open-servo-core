@@ -36,6 +36,10 @@
 //! rungs, or whose top speed is under [`MIN_SPAN`] times its bottom one,
 //! declines.
 //!
+//! A rung's governed climb is kept too ([`Ladder::climbs`]): the limiter
+//! holds its current while the shaft accelerates, a second reading of B
+//! that inertia checks its own against.
+//!
 //! Rungs alternate +duty then -duty at each level so the pot ends near the
 //! next sweep's start and seeks stay short. A seek that comes to rest short
 //! of both its target and a stop ends the run ([`super::seek::at_stop`]):
@@ -49,7 +53,7 @@ use super::{
     WindowStream, limit_holds, window_ms,
 };
 use crate::fitmath::{linear_ls, mean, stddev};
-use crate::fits::{FrictionFit, KeFit, RungPoint, friction_line, ke_fit};
+use crate::fits::{Climb, FrictionFit, KeFit, RungPoint, friction_line, ke_fit};
 use crate::frame::TelemetrySnapshot;
 use crate::regs::control;
 use crate::runway::{
@@ -81,6 +85,14 @@ pub const SERVO_SPEED_TOL: f64 = 0.08;
 /// A steady segment's current is flat within this share of its settled
 /// value.
 const FLAT_FRAC: f64 = 0.02;
+
+/// A climb is read from this far off its start, counts: the train's
+/// backlash is taken up by then.
+const CLIMB_BACKLASH: u16 = 20;
+
+/// A climb shorter than this, ms, carries too little of the acceleration
+/// to read: only the top rungs climb that long.
+const CLIMB_MIN_MS: f64 = 40.0;
 
 /// A rung is still when its reads over this long span no more than the
 /// seek's drift: from rest a governed climb travels several times that in
@@ -402,6 +414,9 @@ pub struct Ladder {
     sized: Vec<(i16, Need)>,
     declined: Option<Declined>,
     rungs: Vec<RungSummary>,
+    /// The rung in flight's governed climb, and every one long enough.
+    climb: Climb,
+    climbs: Vec<Climb>,
     warnings: Vec<String>,
 }
 
@@ -432,6 +447,8 @@ impl Ladder {
             sized: Vec::new(),
             declined: None,
             rungs: Vec::new(),
+            climb: Climb::default(),
+            climbs: Vec::new(),
             warnings: Vec::new(),
         }
     }
@@ -452,6 +469,11 @@ impl Ladder {
 
     pub fn warnings(&self) -> &[String] {
         &self.warnings
+    }
+
+    /// The rungs' governed climbs that ran [`CLIMB_MIN_MS`] or more.
+    pub fn climbs(&self) -> &[Climb] {
+        &self.climbs
     }
 
     fn dir(&self) -> i8 {
@@ -723,6 +745,15 @@ impl Ladder {
             self.track_still_over_span();
             self.still >= self.cfg.stall_polls
         };
+        if climbing
+            && governed
+            && o.pos.abs_diff(from) > CLIMB_BACKLASH
+            && !self.params.in_slip(o.pos)
+        {
+            self.climb.t.push(t / 1000.0);
+            self.climb.pos.push(self.params.pot.counts(o.pos));
+            self.climb.i.push(o.i_mean_counts as f64);
+        }
         if limit_holds(o, still) {
             self.block(seek::blocked(from, o.pos));
             return self.off();
@@ -776,6 +807,15 @@ impl Ladder {
     /// sizes the next.
     fn close_rung(&mut self) {
         let duty = self.duty();
+        let climb = core::mem::take(&mut self.climb);
+        if let [first, .., last] = climb.t.as_slice()
+            && (last - first) * 1000.0 >= CLIMB_MIN_MS
+        {
+            self.climbs.push(Climb {
+                dir: self.dir(),
+                ..climb
+            });
+        }
         if let [first, .., last] = self.reads.as_slice() {
             self.cadence = Some((last.0 - first.0) / (self.reads.len() - 1) as f64);
         }

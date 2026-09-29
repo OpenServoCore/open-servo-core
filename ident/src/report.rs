@@ -69,10 +69,18 @@ pub fn render(r: &ReportInputs<'_>) -> String {
     let _ = writeln!(s, "\n[bias]");
     match r.bias {
         Some(b) => {
-            let _ = writeln!(s, "  sigma_theta   {:.3} counts (n={})", b.sigma_theta, b.n);
-            let _ = writeln!(s, "  i_noise       {:.3} counts", b.i_noise);
+            let _ = writeln!(
+                s,
+                "  sigma_theta   {:.3} counts ({:.3} raw x {:.3} across the travel; TEL n={}, at \
+                 rest at {:.0})",
+                b.sigma_theta, b.sigma_raw, b.gain, b.tel_n, b.rest
+            );
+            let _ = writeln!(s, "  i_noise       {:.3} counts (n={})", b.i_noise, b.n);
             let _ = writeln!(s, "  i_bias_delta  {:.3} counts", b.i_bias_delta);
             let _ = writeln!(s, "  vbus          {:.1} +/- {:.1}", b.vbus_mean, b.vbus_sd);
+            for w in &b.warnings {
+                let _ = writeln!(s, "  warn: {w}");
+            }
         }
         None => {
             let _ = writeln!(s, "  skipped");
@@ -261,6 +269,27 @@ pub fn render(r: &ReportInputs<'_>) -> String {
     let _ = writeln!(s, "\n[inertia]");
     match r.inertia {
         Some(x) => {
+            let _ = writeln!(
+                s,
+                "  B decay       {:.5} (spread {:.3}, steps={}) from the current",
+                x.b_decay.b,
+                x.b_decay.spread,
+                x.b_decay.steps.len()
+            );
+            match &x.b_climb {
+                Some(c) => {
+                    let _ = writeln!(
+                        s,
+                        "  B climbs      {:.5} (sd {:.3}, climbs={}) the ladder's governed \
+                         climbs, a cross-check",
+                        c.b, c.sd, c.n
+                    );
+                }
+                None => {
+                    let _ = writeln!(s, "  B climbs      - no governed climb long enough");
+                }
+            }
+            let _ = writeln!(s, "  pot-speed fits, diagnostics that decide nothing:");
             if let Some(d) = &x.b_direct {
                 let _ = writeln!(s, "  B direct      {:.5} (r2 {:.4}, n={})", d.b, d.r2, d.n);
             }
@@ -275,7 +304,7 @@ pub fn render(r: &ReportInputs<'_>) -> String {
             }
             let _ = writeln!(
                 s,
-                "  B best        {:.5} -> j_ff {:.2} (tel steps {})",
+                "  B             {:.5} -> j_ff {:.2} (the decay's; tel steps {})",
                 x.b_best, x.j_ff, x.tel_steps
             );
             for w in &x.warnings {
