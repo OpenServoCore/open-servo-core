@@ -127,10 +127,16 @@ impl FusionObs {
             .omega_q16
             .saturating_add(q_mul(gains.l2_q88 as i32, e, 8))
             .clamp(-OMEGA_LIM_CSQ16, OMEGA_LIM_CSQ16);
-        self.tau_d_q16 = self
-            .tau_d_q16
-            .saturating_sub(q_mul(gains.l3_q88 as i32, e, 8))
-            .clamp(-TAU_D_LIM_CCQ16, TAU_D_LIM_CCQ16);
+        // No model, no disturbance: with b_i unset predict explains nothing,
+        // so tau_d would integrate plain position error and trip the
+        // collision check in a free run.
+        self.tau_d_q16 = if gains.b_i_q313 == 0 {
+            0
+        } else {
+            self.tau_d_q16
+                .saturating_sub(q_mul(gains.l3_q88 as i32, e, 8))
+                .clamp(-TAU_D_LIM_CCQ16, TAU_D_LIM_CCQ16)
+        };
     }
 
     pub fn theta_q16(&self) -> i32 {
@@ -263,6 +269,21 @@ mod tests {
         let theta_err = (f.theta_q16() - (2000 << 16)).abs();
         assert!(theta_err < 1 << 16, "theta={}", f.theta_q16());
         assert!(f.omega_q16().abs() < 1 << 16, "omega={}", f.omega_q16());
+    }
+
+    #[test]
+    fn unset_model_holds_tau_d_at_zero() {
+        // b_i unset, shaft ramping under drive: the innovation still
+        // corrects theta and omega, tau_d never leaves zero.
+        let g = FusionGains { b_i_q313: 0, ..G };
+        let mut f = FusionObs::new();
+        f.seed(q4(2000));
+        for n in 0..20000u16 {
+            f.step(500, q4(2000 + n / 16), DT, &g);
+            assert_eq!(f.tau_d_counts(), 0, "step {n}");
+        }
+        let theta_err = (f.theta_q16() - ((2000 + 19999 / 16) << 16)).abs();
+        assert!(theta_err < 4 << 16, "theta={}", f.theta_q16());
     }
 
     #[test]

@@ -151,19 +151,22 @@ pub struct ConfigLimits {
     pub _rsvd_align: u8,
 }
 
-// Permissive-safe SG90-class limits: core-owned policy seeded at boot,
-// host-tunable per rig. Current thresholds are physical (mA) and reach the
-// table in counts through `CurrentDefaults::from_sense`.
-pub const DEFAULT_CURRENT_LIMIT_MA: u16 = 1953;
+// Class limits: an unconfigured servo boots protected as the weakest
+// plausible servo of the micro class, whose teeth and plastic end stops
+// show damage near 0.30 A of static stall. The limit and the collision trip
+// sit there, the stall fold and its release below it; host-tunable per
+// servo. Current thresholds are physical (mA) and reach the table in counts
+// through `CurrentDefaults::from_sense`.
+pub const DEFAULT_CURRENT_LIMIT_MA: u16 = 300;
 pub const DEFAULT_DRIVE_POLARITY: bool = true;
 pub const DEFAULT_STALL_OMEGA_MAX_CPS: u16 = 500;
 pub const DEFAULT_STALL_TIME_MS: u16 = 500;
-pub const DEFAULT_STALL_YIELD_MA: u16 = 488;
-pub const DEFAULT_STALL_RELEASE_MA: u16 = 244;
-pub const DEFAULT_STALL_TAU_TRIP_MA: u16 = 1953;
-// 3.0 A sits above any SG90-class stall on 2S (2.1 A) and below the
-// arm-B chain's saturation on a 60 mOhm shunt (~3.4 A), so the trip stays
-// measurable on both rig shunts.
+pub const DEFAULT_STALL_YIELD_MA: u16 = 180;
+pub const DEFAULT_STALL_RELEASE_MA: u16 = 90;
+pub const DEFAULT_STALL_TAU_TRIP_MA: u16 = 300;
+// Copper and shunt guard, not a gear-train limit: 3.0 A sits above any
+// micro-class stall on 2S (2.1 A) and below the arm-B chain's saturation on
+// a 60 mOhm shunt (~3.4 A), so the trip stays measurable on both rig shunts.
 pub const DEFAULT_OC_TRIP_MA: u16 = 3000;
 pub const DEFAULT_OC_TRIP_TICKS: u8 = 8;
 
@@ -191,7 +194,8 @@ pub const DEFAULT_RECOVER_CC: i16 = 9000;
 // move on a factory-fresh board. Pack-health thresholds are per-product
 // tuning, written by the host.
 pub const DEFAULT_V_UNDERVOLT_COUNTS: u16 = 1200;
-pub const DEFAULT_RTHERM_I_MIN_MA: u16 = 488;
+// Under the class current limit, or the winding thermometer never samples.
+pub const DEFAULT_RTHERM_I_MIN_MA: u16 = 150;
 pub const DEFAULT_RTHERM_OMEGA_MAX_CPS: u16 = 400;
 
 /// Fusion observer correction gains.
@@ -319,10 +323,9 @@ impl CurrentDefaults {
 const ADC_COUNTS_PER_VDD: u64 = 4096;
 
 /// counts = mA x gain x R_shunt x 4096 / VDD, rounded: the chain puts
-/// gain x R_shunt volts per amp onto a VDD-referenced 12-bit ADC. The arm-B
-/// rig (33 mOhm, G 15.000, 3300 mV) is 614.4 counts/A, where the mA defaults
-/// round back onto the seeds they replaced: 1953 -> 1200, 488 -> 300,
-/// 244 -> 150; the OC trip was lowered from 2400 counts (3.9 A) to 3.0 A.
+/// gain x R_shunt volts per amp onto a VDD-referenced 12-bit ADC: 614.4
+/// counts/A on the arm-B rig (33 mOhm, G 15.000, 3300 mV), 1117.1 on the
+/// osc-dev-v006 board (60 mOhm), where the 300 mA class limit is 335.
 pub const fn current_counts(ma: u16, shunt_r_mohm: u16, gain_milli: u16, vdd_mv: u16) -> u16 {
     let num = ma as u64 * gain_milli as u64 * shunt_r_mohm as u64 * ADC_COUNTS_PER_VDD;
     let den = vdd_mv as u64 * 1_000_000;
@@ -341,17 +344,17 @@ mod tests {
     #[test]
     fn arm_b_rig_reproduces_the_count_seeds() {
         let d = CurrentDefaults::from_sense(33, 15_000, 3300);
-        assert_eq!(d.current_limit_counts, 1200);
-        assert_eq!(d.stall_yield_counts, 300);
-        assert_eq!(d.stall_release_counts, 150);
-        assert_eq!(d.stall_tau_trip_counts, 1200);
+        assert_eq!(d.current_limit_counts, 184);
+        assert_eq!(d.stall_yield_counts, 111);
+        assert_eq!(d.stall_release_counts, 55);
+        assert_eq!(d.stall_tau_trip_counts, 184);
         assert_eq!(d.oc_trip_counts, 1843);
-        assert_eq!(d.rtherm_i_min_counts, 300);
+        assert_eq!(d.rtherm_i_min_counts, 92);
     }
 
     #[test]
     fn current_counts_scales_with_the_shunt_and_saturates() {
-        assert_eq!(current_counts(1953, 60, 15_000, 3300), 2182);
+        assert_eq!(current_counts(300, 60, 15_000, 3300), 335);
         assert_eq!(current_counts(0, 60, 15_000, 3300), 0);
         assert_eq!(current_counts(u16::MAX, u16::MAX, u16::MAX, 1), u16::MAX);
     }
