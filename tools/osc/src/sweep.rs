@@ -22,11 +22,14 @@
 //!
 //! `--stall` seeks the physical end stop instead of a start band and leaves
 //! the shaft there, so the rungs push into it: a locked-output ladder for
-//! resistance and inductance, with no back-EMF in the onset. It sets the
-//! control table's `stall_permit` for the run and clears it after. Without
-//! that the kernel zeroes the outbound duty at the wall and trips the stall
-//! timer, and no soft-limit value avoids it - a stop can sit AT the position
-//! rail, which is where both of this servo's are.
+//! resistance and inductance, with no back-EMF in the onset. It writes the
+//! control table's `stall_permit` after every torque enable, rewrites it
+//! while it drives (the firmware grants it as a one-second lease), and
+//! clears it after. Without that the kernel zeroes the outbound duty at the
+//! wall and trips the stall timer, and no soft-limit value avoids it - a stop
+//! can sit AT the position rail, which is where both of this servo's are. A
+//! rung window longer than the permit can be held without a rewrite is
+//! refused.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -45,7 +48,7 @@ use crate::descriptor;
 use crate::rig::park::park;
 use crate::rig::plant::Snapshot;
 use crate::rig::pump::{
-    self, BurstStats, STOP, exchange_tel_burst, read_snapshot, with_guard, write_reg,
+    self, BurstStats, Lease, STOP, exchange_tel_burst, read_snapshot, with_guard, write_reg,
 };
 use crate::rig::snapshot::read_u16;
 
@@ -376,12 +379,13 @@ fn check_fault(c: &mut Client<NusbPipe>, id: Id) -> Result<u16> {
 fn seek_band(
     c: &mut Client<NusbPipe>,
     id: Id,
+    lease: &mut Lease,
     (lo, hi): (u16, u16),
     duty_q15: i16,
     cap: i32,
 ) -> Result<()> {
     write_reg(c, id, control::MODE, 0)?;
-    write_reg(c, id, control::TORQUE_ENABLE, 1)?;
+    lease.torque_on(c, id)?;
     // Distance to the band, not envelope membership: a seek may legally
     // START at a rail (that is what it is for); reversed polarity shows as
     // the distance GROWING while driving.
@@ -396,6 +400,7 @@ fn seek_band(
     let mut last = u16::MAX;
     for _ in 0..500 {
         check_stop()?;
+        lease.keep(c, id)?;
         let pos = check_fault(c, id)?;
         if (lo..=hi).contains(&pos) {
             write_reg(c, id, control::GOAL_DUTY, 0)?;
@@ -451,9 +456,16 @@ const SEEK_TRAVEL_MIN: u16 = 100;
 /// tells them apart: it holds at a real stop and reads zero at a soft limit.
 /// Without that check a run would ladder against a clamped duty and record a
 /// grid of zero-current rungs.
-fn seek_stop(c: &mut Client<NusbPipe>, id: Id, dir: i8, duty_q15: i16, cap: i32) -> Result<()> {
+fn seek_stop(
+    c: &mut Client<NusbPipe>,
+    id: Id,
+    lease: &mut Lease,
+    dir: i8,
+    duty_q15: i16,
+    cap: i32,
+) -> Result<()> {
     write_reg(c, id, control::MODE, 0)?;
-    write_reg(c, id, control::TORQUE_ENABLE, 1)?;
+    lease.torque_on(c, id)?;
     let mut duty = duty_q15 as i32;
     let start = check_fault(c, id)?;
     let mut last = start;
@@ -465,6 +477,7 @@ fn seek_stop(c: &mut Client<NusbPipe>, id: Id, dir: i8, duty_q15: i16, cap: i32)
     let mut moved = false;
     for _ in 0..500 {
         check_stop()?;
+        lease.keep(c, id)?;
         write_reg(c, id, control::GOAL_DUTY, dir as i32 * duty)?;
         std::thread::sleep(Duration::from_millis(20));
         let pos = check_fault(c, id)?;
@@ -517,11 +530,12 @@ const BRAKE_DUTY_Q15: i32 = 82;
 /// runway and slams the physical stop. Retreat sign so the firmware
 /// soft-limit clamp can never zero the brake near a wall. Leaves duty 0,
 /// torque ON (the caller torques off).
-fn brake_to_rest(c: &mut Client<NusbPipe>, id: Id, dir: i8) -> Result<()> {
+fn brake_to_rest(c: &mut Client<NusbPipe>, id: Id, lease: &mut Lease, dir: i8) -> Result<()> {
     write_reg(c, id, control::GOAL_DUTY, -(dir as i32) * BRAKE_DUTY_Q15)?;
     let mut last = check_fault(c, id)?;
     for _ in 0..50 {
         check_stop()?;
+        lease.keep(c, id)?;
         std::thread::sleep(Duration::from_millis(20));
         let pos = check_fault(c, id)?;
         if pos.abs_diff(last) < 4 {
@@ -701,17 +715,15 @@ fn chains(
     write_reg(c, id, regs.decay, Decay::Slow as i32)?;
     write_reg(c, id, regs.zero_brake, 0)?;
     write_reg(c, id, control::TEL_MASK, mask as i32)?;
-    if cfg.stall || cfg.static_load {
-        write_reg(c, id, control::STALL_PERMIT, 1)?;
-    }
+    let mut lease = Lease::new(cfg.stall || cfg.static_load);
 
     // baseline: mid-travel, torque off, noise floor at full tick rate
     if cfg.baseline_ms > 0 {
         println!("[baseline] {} ms torque-off", cfg.baseline_ms);
         if !cfg.static_load {
-            seek_band(c, id, (1750, 2350), seek_duty, seek_cap)?;
+            seek_band(c, id, &mut lease, (1750, 2350), seek_duty, seek_cap)?;
         }
-        write_reg(c, id, control::TORQUE_ENABLE, 0)?;
+        lease.write(c, id, control::TORQUE_ENABLE, 0)?;
         let (frames, st) = exchange_tel_burst(c, id, samples_of_ms(cfg.baseline_ms), None, mask)?;
         println!(
             "  seg 0: {} frames, {} samples, {} seq holes, {} garble bytes",
@@ -761,11 +773,12 @@ fn chains(
                         } else if cfg.stall {
                             // Already stopped, and still pressed into the stop:
                             // nothing to brake and nothing to let settle.
-                            seek_stop(c, id, dir, seek_duty, seek_cap)?;
+                            seek_stop(c, id, &mut lease, dir, seek_duty, seek_cap)?;
                         } else {
                             seek_band(
                                 c,
                                 id,
+                                &mut lease,
                                 start_band(dir, cfg.guard.0, cfg.guard.1),
                                 seek_duty,
                                 seek_cap,
@@ -775,7 +788,7 @@ fn chains(
                             // call: the seek parks NEAR its start-band wall, so
                             // the token brake duty has to point away from that
                             // one instead.
-                            brake_to_rest(c, id, -dir)?;
+                            brake_to_rest(c, id, &mut lease, -dir)?;
                             rest(cfg.settle_ms)?;
                         }
                     } else if !live {
@@ -783,7 +796,7 @@ fn chains(
                     }
                     if !live {
                         write_reg(c, id, control::MODE, 0)?;
-                        write_reg(c, id, control::TORQUE_ENABLE, 1)?;
+                        lease.torque_on(c, id)?;
                     }
                     let (ms, duty) = match step {
                         Step::Drive(pct, ms) => (
@@ -804,13 +817,11 @@ fn chains(
                     if cfg.decay == Decay::Fast {
                         write_reg(c, id, regs.decay, Decay::Fast as i32)?;
                     }
-                    let (frames, st) = exchange_tel_burst(
-                        c,
-                        id,
-                        samples_of_ms(ms),
-                        Some((control::GOAL_DUTY, duty)),
-                        mask,
-                    )?;
+                    let samples = samples_of_ms(ms);
+                    lease.keep(c, id)?;
+                    lease.check_stream(samples)?;
+                    let (frames, st) =
+                        exchange_tel_burst(c, id, samples, Some((control::GOAL_DUTY, duty)), mask)?;
                     if cfg.decay == Decay::Fast {
                         write_reg(c, id, regs.decay, Decay::Slow as i32)?;
                     }
@@ -837,8 +848,8 @@ fn chains(
                     if feeds(steps, k) {
                         live = true;
                     } else {
-                        brake_to_rest(c, id, dir)?;
-                        write_reg(c, id, control::TORQUE_ENABLE, 0)?;
+                        brake_to_rest(c, id, &mut lease, dir)?;
+                        lease.write(c, id, control::TORQUE_ENABLE, 0)?;
                         rest(cfg.rest_ms)?;
                         live = false;
                     }

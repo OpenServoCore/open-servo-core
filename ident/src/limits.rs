@@ -6,6 +6,17 @@
 
 use core::fmt;
 
+use crate::regs::{Reg, control};
+
+/// How often a pump rewrites a held stall permit, ms. The firmware grants
+/// about a second per write, so a missed rewrite or two still leaves the
+/// permit standing.
+pub const PERMIT_REFRESH_MS: u32 = 250;
+
+/// The longest TEL stream a held permit may ride, ms: nothing is rewritten
+/// while a stream runs, and the refresh before it may already be due.
+pub const PERMIT_STREAM_MAX_MS: u32 = 750;
+
 /// Full scale of the 12-bit pot ADC; soft limits spanning it are the board
 /// default, not a calibration.
 pub const POT_MAX: i32 = 4095;
@@ -97,6 +108,8 @@ pub enum Refusal {
         allowed: f64,
         ma: Ma,
     },
+    /// A TEL stream too long to hold the stall permit through.
+    StreamOverLease { ms: u32 },
 }
 
 /// Counts to milliamps for a message; says nothing when the scale is
@@ -148,11 +161,71 @@ impl fmt::Display for Refusal {
                 ma.of(*i_lim as f64),
                 (allowed * 100.0).floor()
             ),
+            Refusal::StreamOverLease { ms } => write!(
+                f,
+                "a {ms} ms capture with the stall permit held is longer than the \
+                 {PERMIT_STREAM_MAX_MS} ms the permit can be held without a rewrite: shorten \
+                 the capture"
+            ),
         }
     }
 }
 
 impl std::error::Error for Refusal {}
+
+/// The host half of the stall permit lease. The firmware grants a permit
+/// written true with torque on for about a second, a rewrite extends it,
+/// and torque off drops it; firmware whose permit is a plain level takes
+/// the rewrites as no-ops. A pump mirrors every write it sends through
+/// [`PermitLease::wrote`] and rewrites the permit whenever it is `due`. The
+/// clock is the caller's: pass milliseconds on any monotone timebase.
+#[derive(Copy, Clone, Debug, Default)]
+pub struct PermitLease {
+    torque: bool,
+    held: bool,
+    last_ms: f64,
+}
+
+impl PermitLease {
+    /// Mirror one write sent at `now_ms`.
+    pub fn wrote(&mut self, reg: Reg, value: i32, now_ms: f64) {
+        if reg == control::TORQUE_ENABLE {
+            self.torque = value != 0;
+            self.held &= self.torque;
+        } else if reg == control::STALL_PERMIT {
+            // written with torque off it grants nothing
+            self.held = value != 0 && self.torque;
+            self.last_ms = now_ms;
+        }
+    }
+
+    pub fn held(&self) -> bool {
+        self.held
+    }
+
+    /// A rewrite of the held permit is due.
+    pub fn due(&self, now_ms: f64) -> bool {
+        self.held && now_ms - self.last_ms >= PERMIT_REFRESH_MS as f64
+    }
+
+    /// The longest slice of a pause to sleep before looking again: a held
+    /// permit is rewritten between slices.
+    pub fn slice(&self, ms: u32) -> u32 {
+        if self.held {
+            ms.min(PERMIT_REFRESH_MS)
+        } else {
+            ms
+        }
+    }
+
+    /// Refuse a stream of `ms` the held permit would lapse inside.
+    pub fn check_stream(&self, ms: u32) -> Result<(), Refusal> {
+        if self.held && ms > PERMIT_STREAM_MAX_MS {
+            return Err(Refusal::StreamOverLease { ms });
+        }
+        Ok(())
+    }
+}
 
 impl ServoLimits {
     pub fn ma(&self) -> Ma {
@@ -334,6 +407,30 @@ mod tests {
         assert!((stall_counts(d, r, 3204.0) - 280.0).abs() < 1e-9);
         assert_eq!(stall_counts(0.5, 0.0, 3204.0), f64::INFINITY);
         assert_eq!(duty_for(280.0, r, 0.0), 0.0);
+    }
+
+    #[test]
+    fn the_lease_is_held_only_behind_torque_on() {
+        let mut l = PermitLease::default();
+        l.wrote(control::STALL_PERMIT, 1, 0.0);
+        assert!(!l.held(), "a permit written with torque off grants nothing");
+        l.wrote(control::TORQUE_ENABLE, 1, 10.0);
+        assert!(!l.held());
+        l.wrote(control::STALL_PERMIT, 1, 20.0);
+        assert!(l.held());
+        assert!(!l.due(269.0));
+        assert!(l.due(270.0));
+        assert_eq!(l.slice(3000), PERMIT_REFRESH_MS);
+        assert_eq!(l.check_stream(750), Ok(()));
+        assert_eq!(
+            l.check_stream(800).unwrap_err().to_string(),
+            "a 800 ms capture with the stall permit held is longer than the 750 ms the permit \
+             can be held without a rewrite: shorten the capture"
+        );
+        l.wrote(control::TORQUE_ENABLE, 0, 30.0);
+        assert!(!l.held() && !l.due(1000.0), "torque off drops it");
+        assert_eq!(l.slice(3000), 3000);
+        assert_eq!(l.check_stream(3000), Ok(()));
     }
 
     /// The bench MG90's SG90-era yield and trip: both warned about.

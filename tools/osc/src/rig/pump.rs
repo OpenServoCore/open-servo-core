@@ -1,7 +1,8 @@
 //! The driver loop from osc-ident's exp module doc: Write -> wire write,
 //! Read -> telemetry gread + parse, Pause -> sleep in slices that honor
 //! ctrl-c, Stream -> one TEL burst on the main bus (HOLD+COMMIT when it
-//! carries a goal), Done -> break.
+//! carries a goal), Done -> break. A stall permit the experiment holds is
+//! rewritten between commands and pause slices while the lease runs.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -13,7 +14,8 @@ use osc_client::{Id, Inst, Opcode, Outcome, ResultCode};
 use osc_ident::burst::{self, BurstIo, Capture, CaptureCfg, Pre};
 use osc_ident::exp::{Cmd, Experiment};
 use osc_ident::frame::{StreamAssembler, TelFrame, TelemetrySnapshot};
-use osc_ident::regs::{Reg, config, control, telemetry};
+use osc_ident::limits::PermitLease;
+use osc_ident::regs::{Reg, control, telemetry};
 use osc_protocol::build;
 
 use super::csvio::SnapshotLog;
@@ -66,7 +68,8 @@ pub(crate) fn read_snapshot(c: &mut Client<NusbPipe>, id: Id) -> Result<Telemetr
 
 /// Run the closure, then force the servo safe (duty/goals zero, torque,
 /// stall permit and TEL off) whether it succeeded, failed, or was ctrl-c'd.
-/// A hard kill skips this - the permit is RAM only and the servo's own
+/// A hard kill skips this - a leased permit then runs out within a second
+/// (a plain-level one stays until a reboot), and the servo's own
 /// protections are the backstop.
 pub(crate) fn with_guard<T>(
     c: &mut Client<NusbPipe>,
@@ -88,60 +91,74 @@ pub(crate) fn with_guard<T>(
     r
 }
 
-/// Saved rail-gate set for [`restore_pos_limits`]: (phys_lo, phys_hi,
-/// soft_lo, soft_hi, stall_tau_trip).
-pub(crate) type SavedLimits = (i32, i32, i32, i32, u16);
-
-/// Sentinels comfortably beyond any theta_hat (the pot saturates at 4095):
-/// the firmware duty clamp compares theta_hat against the soft limits, so
-/// "widened" must mean unreachable, not merely at-the-rail - cal records
-/// the phys limits AS the settled stall positions, so a soft limit parked
-/// at phys still fires the instant the horn touches the stop (bench: E2
-/// measured pure noise, r2 negative).
-const WIDE_LO: i32 = -4096;
-const WIDE_HI: i32 = 8191;
-
-/// Open both position-limit gates so an experiment can stall at the
-/// mechanical rails. Soft limits are rule-bound inside phys, so phys widens
-/// too; write order satisfies the cross-field rules at every step. Returns
-/// the originals for the restore.
-pub(crate) fn widen_pos_limits(c: &mut Client<NusbPipe>, id: Id) -> Result<SavedLimits> {
-    let saved = (
-        read_i32(c, id, config::POS_MIN_PHYS_COUNTS)?,
-        read_i32(c, id, config::POS_MAX_PHYS_COUNTS)?,
-        read_i32(c, id, config::POS_MIN_SOFT_COUNTS)?,
-        read_i32(c, id, config::POS_MAX_SOFT_COUNTS)?,
-        super::snapshot::read_u16(c, id, config::STALL_TAU_TRIP_COUNTS)?,
-    );
-    write_reg(c, id, config::POS_MAX_PHYS_COUNTS, WIDE_HI)?;
-    write_reg(c, id, config::POS_MAX_SOFT_COUNTS, WIDE_HI)?;
-    write_reg(c, id, config::POS_MIN_PHYS_COUNTS, WIDE_LO)?;
-    write_reg(c, id, config::POS_MIN_SOFT_COUNTS, WIDE_LO)?;
-    // A deliberate rail stall on an uncalibrated servo rails tau_d (the
-    // fusion model runs on zeroed constants), latching the collision fault
-    // mid-seek; the trip is parked while the gates are open. OpenLoop never
-    // pins i_ref, so the tau trip is the only stall path in play.
-    write_reg(c, id, config::STALL_TAU_TRIP_COUNTS, u16::MAX as i32)?;
-    Ok(saved)
+/// The stall permit lease on the wall clock ([`PermitLease`]): writes go
+/// out through it so it sees torque and permit, and `keep` rewrites a held
+/// permit when a refresh is due. With `hold` set, every torque enable is
+/// followed by the permit.
+pub(crate) struct Lease {
+    state: PermitLease,
+    t0: Instant,
+    hold: bool,
 }
 
-pub(crate) fn restore_pos_limits(
-    c: &mut Client<NusbPipe>,
-    id: Id,
-    (phys_lo, phys_hi, soft_lo, soft_hi, tau_trip): SavedLimits,
-) -> Result<()> {
-    write_reg(c, id, config::POS_MIN_SOFT_COUNTS, soft_lo)?;
-    write_reg(c, id, config::POS_MIN_PHYS_COUNTS, phys_lo)?;
-    write_reg(c, id, config::POS_MAX_SOFT_COUNTS, soft_hi)?;
-    write_reg(c, id, config::POS_MAX_PHYS_COUNTS, phys_hi)?;
-    write_reg(c, id, config::STALL_TAU_TRIP_COUNTS, tau_trip as i32)?;
-    Ok(())
+impl Lease {
+    pub(crate) fn new(hold: bool) -> Self {
+        Self {
+            state: PermitLease::default(),
+            t0: Instant::now(),
+            hold,
+        }
+    }
+
+    fn now_ms(&self) -> f64 {
+        self.t0.elapsed().as_secs_f64() * 1000.0
+    }
+
+    pub(crate) fn write(
+        &mut self,
+        c: &mut Client<NusbPipe>,
+        id: Id,
+        reg: Reg,
+        value: i32,
+    ) -> Result<()> {
+        write_reg(c, id, reg, value)?;
+        self.state.wrote(reg, value, self.now_ms());
+        Ok(())
+    }
+
+    /// Torque on, then the permit when this run holds one.
+    pub(crate) fn torque_on(&mut self, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
+        self.write(c, id, control::TORQUE_ENABLE, 1)?;
+        if self.hold {
+            self.write(c, id, control::STALL_PERMIT, 1)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn keep(&mut self, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
+        if self.state.due(self.now_ms()) {
+            self.write(c, id, control::STALL_PERMIT, 1)?;
+        }
+        Ok(())
+    }
+
+    /// Refuse a TEL burst the held permit would lapse inside.
+    pub(crate) fn check_stream(&self, samples: u16) -> Result<()> {
+        self.state
+            .check_stream(stream_span(samples).as_millis() as u32)?;
+        Ok(())
+    }
+}
+
+/// The sampled span of a TEL burst: one sample per 50 us fast tick.
+fn stream_span(samples: u16) -> Duration {
+    Duration::from_micros(samples as u64 * 50)
 }
 
 /// Whole-burst window: the sampled span plus wire/turnaround margin. The
 /// client pipe guard must sit above it (see exchange_stream).
 fn stream_window(samples: u16) -> Duration {
-    Duration::from_micros(samples as u64 * 50 * 5 / 4 + 250_000)
+    stream_span(samples) * 5 / 4 + Duration::from_millis(250)
 }
 
 /// Per-burst evidence for the diag line.
@@ -297,6 +314,8 @@ pub(crate) struct Pump<'a> {
     /// Every decoded frame across the run's bursts, in order - the CSV log
     /// source (the experiment gets the same frames via push_tel).
     pub(crate) tel: Vec<TelFrame>,
+    /// The experiment writes its own permit; this only keeps it alive.
+    lease: Lease,
 }
 
 impl<'a> Pump<'a> {
@@ -311,6 +330,7 @@ impl<'a> Pump<'a> {
             log,
             mask: 0,
             tel: Vec::new(),
+            lease: Lease::new(false),
         }
     }
 
@@ -322,12 +342,13 @@ impl<'a> Pump<'a> {
             if STOP.load(Ordering::SeqCst) {
                 bail!("interrupted");
             }
+            self.lease.keep(self.client, self.id)?;
             match exp.step(pending.take().as_ref()) {
                 Cmd::Write { reg, value } => {
                     if reg == control::TEL_MASK {
                         self.mask = value as u16;
                     }
-                    write_reg(self.client, self.id, reg, value)?;
+                    self.lease.write(self.client, self.id, reg, value)?;
                 }
                 Cmd::Read => {
                     let snap = read_snapshot(self.client, self.id)?;
@@ -337,7 +358,7 @@ impl<'a> Pump<'a> {
                     pending = Some(snap);
                 }
                 Cmd::Pause { ms } => {
-                    // 5 ms slices keep ctrl-c prompt
+                    // 5 ms slices keep ctrl-c prompt and the lease fresh
                     let mut left = ms;
                     while left > 0 {
                         if STOP.load(Ordering::SeqCst) {
@@ -346,9 +367,11 @@ impl<'a> Pump<'a> {
                         let slice = left.min(5);
                         std::thread::sleep(Duration::from_millis(slice as u64));
                         left -= slice;
+                        self.lease.keep(self.client, self.id)?;
                     }
                 }
                 Cmd::Stream { samples, goal } => {
+                    self.lease.check_stream(samples)?;
                     let (frames, st) =
                         exchange_tel_burst(self.client, self.id, samples, goal, self.mask)?;
                     eprintln!(
@@ -415,6 +438,17 @@ mod tests {
         assert_eq!(TEL_LEN, 0x66);
         assert_eq!(IDENT_BASE, 0x25a);
         assert_eq!(IDENT_LEN, 12);
+    }
+
+    #[test]
+    fn a_held_permit_refuses_a_stream_it_would_lapse_inside() {
+        let mut l = Lease::new(false);
+        l.state.wrote(control::TORQUE_ENABLE, 1, 0.0);
+        l.state.wrote(control::STALL_PERMIT, 1, 0.0);
+        assert!(l.check_stream(15_000).is_ok(), "750 ms");
+        assert!(l.check_stream(15_020).is_err());
+        l.state.wrote(control::TORQUE_ENABLE, 0, 0.0);
+        assert!(l.check_stream(u16::MAX).is_ok(), "torque off holds nothing");
     }
 
     #[test]

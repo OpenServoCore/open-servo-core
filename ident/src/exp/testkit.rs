@@ -17,6 +17,7 @@ use crate::burst::{
     frame_len,
 };
 use crate::frame::{TelFrame, TelemetrySnapshot};
+use crate::limits::PermitLease;
 use crate::lut::GridLut;
 use crate::regs::{ALL, Reg, control};
 
@@ -819,23 +820,43 @@ fn reg_name(reg: Reg) -> &'static str {
 /// ("write <field> <value>" entries, "stream <samples> [<field> <value>]"
 /// per burst, plus a trailing marker on overrun). A Stream arm applies its
 /// goal at t0, synthesizes the burst's per-tick frames from the plant, and
-/// hands them back through `push_tel` - the driver contract.
+/// hands them back through `push_tel` - the driver contract. A held stall
+/// permit is rewritten on the fake clock the way the CLI's pump rewrites it
+/// on the wall clock, pauses sliced so none outlasts a refresh.
 pub fn pump<E: Experiment>(exp: &mut E, servo: &mut FakeServo, max_steps: u32) -> Vec<String> {
     let mut log = Vec::new();
     let mut pending: Option<TelemetrySnapshot> = None;
     let mut frames = Vec::new();
+    let mut lease = PermitLease::default();
+    let keep = |lease: &mut PermitLease, servo: &mut FakeServo, log: &mut Vec<String>| {
+        if lease.due(servo.t_ms) {
+            servo.write(control::STALL_PERMIT, 1);
+            lease.wrote(control::STALL_PERMIT, 1, servo.t_ms);
+            log.push("write stall_permit 1".into());
+        }
+    };
     for _ in 0..max_steps {
         match exp.step(pending.take().as_ref()) {
             Cmd::Write { reg, value } => {
                 servo.write(reg, value);
+                lease.wrote(reg, value, servo.t_ms);
                 log.push(format!("write {} {}", reg_name(reg), value));
             }
             Cmd::Read => pending = Some(servo.read()),
-            Cmd::Pause { ms } => servo.advance(ms),
+            Cmd::Pause { ms } => {
+                let mut left = ms;
+                while left > 0 {
+                    let slice = lease.slice(left);
+                    servo.advance(slice);
+                    left -= slice;
+                    keep(&mut lease, servo, &mut log);
+                }
+            }
             Cmd::Stream { samples, goal } => {
                 match goal {
                     Some((reg, value)) => {
                         servo.write(reg, value);
+                        lease.wrote(reg, value, servo.t_ms);
                         log.push(format!("stream {} {} {}", samples, reg_name(reg), value));
                     }
                     None => log.push(format!("stream {samples}")),
@@ -843,6 +864,7 @@ pub fn pump<E: Experiment>(exp: &mut E, servo: &mut FakeServo, max_steps: u32) -
                 frames.clear();
                 servo.stream(samples, &mut frames);
                 exp.push_tel(&frames);
+                keep(&mut lease, servo, &mut log);
             }
             Cmd::Burst {
                 duty_q15,
@@ -865,6 +887,7 @@ pub fn pump<E: Experiment>(exp: &mut E, servo: &mut FakeServo, max_steps: u32) -
                 exp.push_burst(&cap);
                 servo.bursts += 1;
                 servo.advance(2);
+                keep(&mut lease, servo, &mut log);
             }
             Cmd::Done => return log,
         }

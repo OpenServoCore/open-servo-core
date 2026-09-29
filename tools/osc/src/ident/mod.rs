@@ -16,7 +16,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Subcommand, ValueEnum};
 use osc_client::Id;
 use osc_client::blocking::Client;
-use osc_client::data_state::{self, DataState, STAMP_MISMATCH};
+use osc_client::data_state::{self, DataState};
 use osc_client::descriptor::Descriptor;
 use osc_client::nusb::NusbPipe;
 use osc_ident::burst::Chans;
@@ -33,7 +33,7 @@ use osc_ident::exp::rl::{Rl, RlCfg, RlFitCfg, RlResult};
 use osc_ident::exp::verify::{
     VerifyCurrent, VerifyCurrentCfg, VerifyResult, VerifyVelocity, VerifyVelocityCfg,
 };
-use osc_ident::exp::{Guarded, RigParams};
+use osc_ident::exp::{Guarded, Permitted, RigParams};
 use osc_ident::fits::{self, InertiaPriors};
 use osc_ident::gains::{self, BwTargets, PlantParams};
 use osc_ident::limits::{Envelope, ServoLimits};
@@ -575,7 +575,7 @@ fn run_resistance(
     id: Id,
     out: &csvio::OutDir,
 ) -> Result<osc_ident::exp::resistance::ResistanceResult> {
-    println!("[resistance] (end-stop stalls; pos guard off, soft limits widened)");
+    println!("[resistance] (end-stop stalls; pos guard off, stall permit held)");
     let cfg = ResistanceCfg::default();
     let hardest = cfg
         .ladder_q15
@@ -584,19 +584,11 @@ fn run_resistance(
     drive(cli)?.lim.check_stall("resistance", hardest)?;
     let params = rig(cli)?.without_pos_guard();
     let mut log = csvio::SnapshotLog::create(out, "resistance_snapshots.csv")?;
-    let mut exp = Guarded::new(Resistance::new(cfg, &params), params);
-    let (d, before) = servo_state(c, id)?;
-    with_guard(c, id, |c| {
-        // stalling at the mechanical rails IS the method; restore inside
-        // the guard so an abort still restores
-        let saved = pump::widen_pos_limits(c, id)?;
-        let ran = Pump::new(c, id, Some(&mut log)).run(&mut exp);
-        let restored = pump::restore_pos_limits(c, id, saved);
-        ran.and(restored)
-    })?;
-    keep_stamp(c, id, &d, before)?;
+    // stalling at the mechanical rails IS the method
+    let mut exp = Guarded::new(Permitted::new(Resistance::new(cfg, &params)), params);
+    with_guard(c, id, |c| Pump::new(c, id, Some(&mut log)).run(&mut exp))?;
     check_abort("resistance", exp.abort())?;
-    let exp = exp.into_inner();
+    let exp = exp.into_inner().into_inner();
     csvio::write_dwell_samples(out, exp.samples())?;
     exp.fit().context("resistance fit degenerate")
 }
@@ -799,22 +791,17 @@ fn run_verify(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
     let (d, before) = servo_state(c, id)?;
     refuse_closed_loop(&before)?;
     recenter(c, id)?;
-    println!("[verify current] (current steps; end-stop stalls; pos limits widened)");
+    println!("[verify current] (current steps; end-stop stalls; stall permit held)");
+    // deliberate rail stall in Current mode: the directional endstop band
+    // would zero i_ref at the soft wall, and the permit opens it, as for
+    // resistance
     let mut e5 = Guarded::new(
-        VerifyCurrent::new(VerifyCurrentCfg::default(), &params),
+        Permitted::new(VerifyCurrent::new(VerifyCurrentCfg::default(), &params)),
         params.without_pos_guard(),
     );
-    with_guard(c, id, |c| {
-        // deliberate rail stall in Current mode: the directional endstop
-        // band would zero i_ref at the soft wall - open the gates, as E2
-        let saved = pump::widen_pos_limits(c, id)?;
-        let ran = Pump::new(c, id, None).run(&mut e5);
-        let restored = pump::restore_pos_limits(c, id, saved);
-        ran.and(restored)
-    })?;
-    keep_stamp(c, id, &d, before)?;
+    with_guard(c, id, |c| Pump::new(c, id, None).run(&mut e5))?;
     check_abort("verify-current", e5.abort())?;
-    let cur = e5.into_inner().result();
+    let cur = e5.into_inner().into_inner().result();
     refuse_closed_loop(&c.data_state(id, &d)?)?;
     // E5 ends stalled against an end-stop; E6 runs with the pos guard on
     // and its first read would abort right there
@@ -863,19 +850,6 @@ fn servo_state(c: &mut Client<NusbPipe>, id: Id) -> Result<(Descriptor, DataStat
     let d = crate::state::descriptor(c, id)?;
     let s = c.data_state(id, &d)?;
     Ok((d, s))
-}
-
-/// A rail-stall experiment opens the pos gates (stamp-covered fields) and
-/// puts them back: the set is unchanged, so a stamp that verified before
-/// is written again with torque off (the guard left it off) and verifies
-/// again. A set that already mismatched stays that way: the tool that
-/// changed it commits it, never a side effect of an experiment.
-fn keep_stamp(c: &mut Client<NusbPipe>, id: Id, d: &Descriptor, before: DataState) -> Result<()> {
-    if before.flags & STAMP_MISMATCH != 0 {
-        return Ok(());
-    }
-    c.restamp(id, d)?;
-    Ok(())
 }
 
 /// The servo refuses closed loop under any reason; verify says so before

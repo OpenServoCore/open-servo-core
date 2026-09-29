@@ -27,7 +27,7 @@ use osc_client::nusb::NusbPipe;
 use osc_client::pos_lut;
 use osc_ident::exp::endstop::{Endstop, EndstopCfg, EndstopResult};
 use osc_ident::exp::sweep::{Sweep, SweepCfg};
-use osc_ident::exp::{Guarded, RigParams};
+use osc_ident::exp::{Guarded, Permitted, RigParams};
 use osc_ident::frame::TelFrame;
 use osc_ident::kinematics::{self, KinematicsResult, angle_endpoints};
 use osc_ident::limits::ServoLimits;
@@ -37,7 +37,7 @@ use osc_ident::slip;
 use osc_ident::units::{self, SenseParams};
 
 use crate::rig::csvio::{self, OutDir, SnapshotLog};
-use crate::rig::pump::{self, Pump, read_snapshot, write_reg};
+use crate::rig::pump::{self, Pump, read_snapshot, with_guard, write_reg};
 use crate::rig::snapshot::{self, read_u16};
 
 /// Commutation events per rotor rev for the brushed 3-slot motor: the ripple
@@ -477,26 +477,23 @@ fn seek_rails(
     out: &OutDir,
     lim: &ServoLimits,
 ) -> Result<EndstopResult> {
-    println!("[endstop] seeking both rails (pos guard off, soft limits widened)");
+    println!("[endstop] seeking both rails (pos guard off, stall permit held)");
     // pos guard off: driving into the physical ends IS the method. The
-    // firmware clamps OpenLoop duty at the soft limits, so a recalibration
-    // on an already-calibrated servo parks them at the phys limits for the
-    // seek and restores them before the park (an abort still restores).
-    let saved = pump::widen_pos_limits(c, id)?;
+    // firmware zeroes outbound OpenLoop duty at the soft limits, and a
+    // recalibrated servo's stops sit past them: the permit opens them.
     let params = RigParams::new(None, lim.i_lim.min(i16::MAX as u16) as i16);
     let mut log = SnapshotLog::create(out, "endstop_snapshots.csv")?;
-    let mut exp = Guarded::new(Endstop::new(EndstopCfg::default(), &params), params);
-    let ran = Pump::new(c, id, Some(&mut log)).run(&mut exp);
-    let restored = pump::restore_pos_limits(c, id, saved);
-    // park safe whether the run finished, errored, or was ctrl-c'd
-    let _ = write_reg(c, id, control::GOAL_DUTY, 0);
-    let _ = write_reg(c, id, control::TORQUE_ENABLE, 0);
-    ran?;
-    restored?;
+    let mut exp = Guarded::new(
+        Permitted::new(Endstop::new(EndstopCfg::default(), &params)),
+        params,
+    );
+    // parks safe whether the run finished, errored, or was ctrl-c'd
+    with_guard(c, id, |c| Pump::new(c, id, Some(&mut log)).run(&mut exp))?;
     if let Some(reason) = exp.abort() {
         bail!("endstop aborted by the safety envelope: {reason:?}");
     }
     exp.into_inner()
+        .into_inner()
         .result()
         .context("endstop did not reach both rails - no writes")
 }
