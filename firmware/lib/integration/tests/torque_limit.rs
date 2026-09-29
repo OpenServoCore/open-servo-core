@@ -8,7 +8,8 @@ use osc_integration::plant::{
 };
 use osc_servo_core::estimator::window::floor_duty;
 use osc_servo_core::kernel::duty_limit::UP_Q15;
-use osc_servo_core::{Kernel, Mode, RegionStorage, Shared};
+use osc_servo_core::kernel::faults::{BIT_STALL, CODE_STALL};
+use osc_servo_core::{Kernel, Mode, MotorCmd, RegionStorage, Shared, StallResponse};
 
 const LIM: u16 = 280;
 /// 160 of ARR 1200: the window floor is 13.3% duty.
@@ -16,6 +17,14 @@ const I_FLOOR_TICKS: u16 = 160;
 const GOAL_64: i16 = 20971;
 const GOAL_FULL: i16 = i16::MAX;
 const MID: u16 = 2050;
+const STALL_MS: u16 = 500;
+const YIELD: u16 = 168;
+const RELEASE: u16 = 84;
+/// FAST ticks per ms.
+const MS: u32 = 20;
+/// Bound on the observer's settle past `stall_time_ms` before omega reads
+/// slow and the timer runs out.
+const SETTLE_MS: u32 = 100;
 
 fn rig(lim: u16) -> Shared {
     let sh = Shared::new();
@@ -29,6 +38,31 @@ fn rig(lim: u16) -> Shared {
         t.config.limits.stall_tau_trip_counts = u16::MAX;
         t.config.limits.openloop_zero_brake = false;
         t.control.lifecycle.mode = Mode::OpenLoop;
+        // the mg90-a observer and motor model: `seed`'s gains ring for over
+        // a second after a current step, landing the stall trip near 2 s
+        // instead of at stall_time_ms plus the observer's settle
+        t.config.fusion.l1_q016 = 8640;
+        t.config.fusion.l2_q88 = 3180;
+        t.config.fusion.l3_q88 = 84;
+        t.calib.motor.b_i_q313 = 2427;
+        t.calib.motor.fric_fc_counts = 53;
+        t.calib.motor.ke_vpc_q = 603;
+        t.calib.motor.recip_ke_q = 6957;
+    });
+    stamp(&sh);
+    sh
+}
+
+/// The bench stall settings: mg90-a's stall time, the yield and release
+/// folded under the 280 limit.
+fn stall_rig(response: StallResponse) -> Shared {
+    let sh = rig(LIM);
+    sh.table.with_mut(|t| {
+        let l = &mut t.config.limits;
+        l.stall_response = response;
+        l.stall_time_ms = STALL_MS;
+        l.stall_yield_counts = YIELD;
+        l.stall_release_counts = RELEASE;
     });
     stamp(&sh);
     sh
@@ -71,6 +105,30 @@ fn mean(r: &[(i16, i32)]) -> i32 {
 
 fn faults(sh: &Shared) -> u8 {
     sh.table.with(|t| t.telemetry.common.fault_flags)
+}
+
+fn i_lim(sh: &Shared) -> u16 {
+    sh.table.with(|t| t.telemetry.estimates.i_lim_counts)
+}
+
+/// Mid-travel locked rotor at `goal` until the stall timer `acted`, which
+/// must hold off for the whole `stall_time_ms` and act inside the settle.
+fn locked_stall(sh: &Shared, goal: i16, acted: fn(&Shared) -> bool) -> (Kernel<FakeIo>, RlPlant) {
+    let mut p = RlPlant::new(MID);
+    p.locked = true;
+    let mut k = start(sh, &mut p, goal);
+    let at = (0..(STALL_MS as u32 + SETTLE_MS) * MS)
+        .find(|_| {
+            run(&mut k, sh, &mut p, 1);
+            acted(sh)
+        })
+        .unwrap_or_else(|| panic!("goal {goal}: the stall timer never acted"));
+    assert!(
+        at >= STALL_MS as u32 * MS,
+        "goal {goal}: acted {} ms in",
+        at / MS
+    );
+    (k, p)
 }
 
 /// 2 s against the rotor, 100 ms of edge skipped for the mean.
@@ -208,5 +266,66 @@ fn openloop_wall_hit_at_speed_recovers_inside_1ms() {
             "over after 1 ms: {over:?}"
         );
         assert_eq!(faults(&sh), 0);
+    }
+}
+
+#[test]
+fn openloop_stall_yields_like_closed_loop() {
+    for goal in [GOAL_64, -GOAL_64] {
+        let sh = stall_rig(StallResponse::Yield);
+        let (mut k, mut p) = locked_stall(&sh, goal, |sh| i_lim(sh) != LIM);
+        assert_eq!(i_lim(&sh), YIELD, "goal {goal}");
+        let r = run(&mut k, &sh, &mut p, 20_000);
+        assert_eq!(i_lim(&sh), YIELD, "goal {goal}: still folded");
+        assert!(peak(&r) <= LIM as i32, "goal {goal}: peak {}", peak(&r));
+        assert_eq!(faults(&sh), 0, "goal {goal}");
+    }
+}
+
+#[test]
+fn openloop_stall_faults_on_the_boot_response() {
+    for goal in [GOAL_64, -GOAL_64] {
+        let sh = stall_rig(StallResponse::Fault);
+        let (k, _) = locked_stall(&sh, goal, |sh| faults(sh) != 0);
+        assert_eq!(faults(&sh), BIT_STALL, "goal {goal}");
+        assert_eq!(sh.table.with(|t| t.telemetry.mode.fault_code), CODE_STALL);
+        assert!(matches!(last_cmd(&k), MotorCmd::Disabled), "goal {goal}");
+    }
+}
+
+#[test]
+fn openloop_slew_never_counts_as_a_stall() {
+    // the shortest timer the table holds, two MEDIUM ticks: a blind start
+    // from rest, then the slew from the floor to the goal at speed
+    for (cruise, goal, from) in [(3932, GOAL_64, 300), (-3932, -GOAL_64, 3800)] {
+        let sh = stall_rig(StallResponse::Fault);
+        sh.table.with_mut(|t| t.config.limits.stall_time_ms = 1);
+        stamp(&sh);
+        let mut p = RlPlant::new(from);
+        let mut k = start(&sh, &mut p, cruise);
+        run(&mut k, &sh, &mut p, 2_000);
+        sh.table.with_mut(|t| t.control.lifecycle.goal_duty = goal);
+        let mut r = Vec::new();
+        while (300..=3800).contains(&p.pos()) && r.len() < 40_000 {
+            r.extend(run(&mut k, &sh, &mut p, 1));
+        }
+        assert!(r.iter().any(|&(d, _)| d == goal), "goal {goal}: reached");
+        assert_eq!(faults(&sh), 0, "goal {goal}");
+        assert_eq!(i_lim(&sh), LIM, "goal {goal}");
+    }
+}
+
+#[test]
+fn openloop_stall_under_permit_never_trips() {
+    for goal in [GOAL_64, -GOAL_64] {
+        let sh = stall_rig(StallResponse::Fault);
+        sh.table
+            .with_mut(|t| t.control.lifecycle.stall_permit = true);
+        let mut p = RlPlant::new(MID);
+        p.locked = true;
+        let mut k = start(&sh, &mut p, goal);
+        let r = run(&mut k, &sh, &mut p, 40_000);
+        assert_holds_at_the_limit(&sh, &r, &format!("goal {goal}"));
+        assert_eq!(i_lim(&sh), LIM, "goal {goal}");
     }
 }
