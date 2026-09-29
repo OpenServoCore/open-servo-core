@@ -45,8 +45,10 @@ pub struct TelemetryMode {
     pub omega_hat_src: u8,
     /// Why closed loop is refused, one bit per reason (`data_state` module
     /// consts); 0 = the persisted images and the identified set are this
-    /// servo's own. Written by boot and SAVE, read by the kernel's entry
-    /// check - the one TELEMETRY-MODE byte the kernel does not own.
+    /// servo's own. Written by boot, SAVE and the HIGH dispatcher's commits
+    /// (a covered write marks STAMP_MISMATCH, a stamp write and a LUT COMMIT
+    /// checkpoint), read by the kernel's entry check - the one
+    /// TELEMETRY-MODE byte the kernel does not own.
     #[ct_field(access = ro)]
     pub data_flags: u8,
 }
