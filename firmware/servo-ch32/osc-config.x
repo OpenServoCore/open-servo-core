@@ -5,10 +5,8 @@
    Consumed by providers/config_store.rs. */
 _config_a = ORIGIN(CONFIG_A);
 _config_b = ORIGIN(CONFIG_B);
-/* Calib slots (own A/B image, two 256 B pages each) at the CALIB region
-   front, then the pot LUT slots (own A/B image, three pages each); the
-   last 1280 B of the 4K region stay spare. */
+/* Calib slots (one A/B image: the calibration plus its tables, four 256 B
+   pages each) at the CALIB region front; the last 2048 B of the 4K region
+   stay spare for tables to come. */
 _calib_a = ORIGIN(CALIB);
-_calib_b = ORIGIN(CALIB) + 512;
-_lut_a = ORIGIN(CALIB) + 1024;
-_lut_b = ORIGIN(CALIB) + 2048;
+_calib_b = ORIGIN(CALIB) + 1024;

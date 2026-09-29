@@ -9,10 +9,10 @@
 //! The table lives in `Shared` RAM behind a paged window in CONTROL
 //! (`ControlPotLut`): the host STOREs it `PAGE_KNOTS` at a time, COMMITs,
 //! and the kernel applies it only while `lut_state` reads LIVE. SAVE
-//! persists the effective table in its own flash image (`persist`
-//! module) and boot loads it back LIVE; anything short of LIVE at SAVE
-//! drops to the identity first, so a reboot never applies a table the
-//! kernel did not.
+//! persists the effective table beside the calibration in the CALIB image
+//! (`persist` module) and boot loads it back LIVE; anything short of LIVE
+//! at SAVE drops to the identity first, so a reboot never applies a table
+//! the kernel did not.
 
 use crate::data_state::STAMP_MISMATCH;
 use crate::regions::control::addr::pot_lut::LUT_CMD;

@@ -11,7 +11,7 @@ use osc_integration::plant::{
     FakeIo, FakeMotor, FakeSensors, Plant, TIMING, duty_of, kernel, last_cmd, seed, stamp,
 };
 use osc_integration::sim::{
-    ImageKind, RamStore, Sim, Source, WireFrame, assert_valid, instruction, status,
+    ImageKind, RamStore, Sim, Source, Tear, WireFrame, assert_valid, instruction, status,
 };
 use osc_protocol::wire::{MgmtOp, Opcode, ResultCode};
 use osc_servo_core::data_state::{
@@ -688,7 +688,7 @@ fn torn_save_boots_stamp_mismatch(baud_idx: u8) {
     write_ok(&mut sim, V_KP_Q88, &70u16.to_le_bytes());
     write_stamp(&mut sim, s);
     assert_eq!(read_byte(&mut sim, DATA_FLAGS), 0);
-    store.fail_after(ImageKind::Config);
+    store.tear(Tear::AfterConfig);
     assert_eq!(mgmt(&mut sim, MgmtOp::Save), ResultCode::Hardware);
     let mut rebooted = support::sim(baud_idx);
     let s = rebooted.add_servo_with_store(ID5, store);
@@ -703,7 +703,7 @@ fn torn_save_boots_stamp_mismatch(baud_idx: u8) {
     let mut sim = support::sim(baud_idx);
     stamped_servo(&mut sim, store);
     write_ok(&mut sim, STALL_TIME_MS, &200u16.to_le_bytes());
-    store.fail_after(ImageKind::Config);
+    store.tear(Tear::AfterConfig);
     assert_eq!(mgmt(&mut sim, MgmtOp::Save), ResultCode::Hardware);
     let mut rebooted = support::sim(baud_idx);
     rebooted.add_servo_with_store(ID5, store);
