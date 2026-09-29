@@ -45,8 +45,8 @@ use crate::exp::resistance::ResistanceCfg;
 use crate::exp::rl::Scales;
 use crate::exp::sweep::SweepCfg;
 use crate::limits::{
-    BurstAllowance, CLASS_R_MIN, DutyPlan, NUDGE_MAX_MV, Refusal, ServoLimits, duty_of_mv,
-    pct_floor, q15_floor,
+    BurstAllowance, CLASS_R_MIN, DutyPlan, NUDGE_MAX_MV, Refusal, STOP_LADDER, ServoLimits,
+    duty_of_mv, pct_floor, q15_floor,
 };
 
 const Q15: f64 = 32767.0;
@@ -385,7 +385,7 @@ impl Run {
     /// class's lowest: the burst in this run measured none.
     fn stop_ladder(&mut self) -> Option<Stage> {
         let plan = self.lim.stall_plan(self.class_r_vpc, self.free);
-        match plan.stall_ladder(self.lim.window_floor()) {
+        match plan.stall_ladder(STOP_LADDER, self.lim.window_floor()) {
             Ok(rungs) => {
                 self.at = Some("resistance");
                 Some(Stage::Resistance {
@@ -393,7 +393,7 @@ impl Run {
                     rungs,
                 })
             }
-            Err(Refusal::NoLadderRoom { floor, cap }) => {
+            Err(Refusal::NoLadderRoom { floor, cap, .. }) => {
                 self.end(Over::NoLadderRoom { floor, cap })
             }
             Err(_) => self.end(Over::ResistanceDeclined),
@@ -736,7 +736,10 @@ mod tests {
         let lim = limits(RAIL_USB);
         let class = lim.stall_plan(scales().r_vpc(CLASS_R_MIN), Some(0.12));
         assert_eq!(seek, class.seek);
-        assert_eq!(rungs, class.stall_ladder(lim.window_floor()).unwrap());
+        assert_eq!(
+            rungs,
+            class.stall_ladder(STOP_LADDER, lim.window_floor()).unwrap()
+        );
         assert_eq!(rungs.len(), 4);
         assert!(q15_floor(rungs[0]) >= lim.window_floor());
         for d in &rungs {

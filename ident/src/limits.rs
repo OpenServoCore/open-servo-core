@@ -136,9 +136,14 @@ pub enum Refusal {
     StreamOverLease { ms: u32 },
     /// The servo publishes no window floor.
     NoWindowFloor,
-    /// The stop ladder's band, from the window floor to the stall-safe
-    /// cap, holds too few readable rungs or too little current span.
-    NoLadderRoom { floor: f64, cap: f64 },
+    /// A ladder of stall dwells, `what`, finds too few readable rungs or
+    /// too little current span between the window floor and the
+    /// stall-safe cap.
+    NoLadderRoom {
+        what: &'static str,
+        floor: f64,
+        cap: f64,
+    },
     /// The duty that first moved the shaft stalls over the current limit:
     /// `need` is that stall current, counts.
     BreakawayOverLimit { need: f64, i_lim: u16, ma: Ma },
@@ -211,11 +216,11 @@ impl fmt::Display for Refusal {
                  current it can read (window_floor_q15 reads 0): no drive is planned without \
                  it; update the servo's firmware"
             ),
-            Refusal::NoLadderRoom { floor, cap } => write!(
+            Refusal::NoLadderRoom { what, floor, cap } => write!(
                 f,
-                "the resistance stop ladder has no room on this supply: the current sensor \
-                 reads from {:.1}% duty and the current limit allows {:.1}% at a stop; run it \
-                 on a lower supply voltage (USB) or raise the current limit",
+                "{what} has no room on this supply: the current sensor reads from {:.1}% duty \
+                 and the current limit allows {:.1}% at a stop; run it on a lower supply \
+                 voltage (USB) or raise the current limit",
                 floor * 100.0,
                 cap * 100.0
             ),
@@ -565,7 +570,12 @@ impl DutyPlan {
         [self.seek, self.hold, self.stop_cap]
     }
 
-    /// The resistance stop ladder's dwells: spread from the window floor,
+    /// The current, counts, `duty` draws stalled by this plan's R and rail.
+    pub fn stall(&self, duty: f64) -> f64 {
+        stall_counts(duty, self.r_vpc, self.vbus)
+    }
+
+    /// The dwells of a ladder of stalls, `what`: spread from the window floor,
     /// `floor_q15`, to the stall-safe cap, at most
     /// [`STALL_LADDER_RUNGS`] of them and [`STALL_LADDER_STEP_Q15`] or
     /// more apart. Under the floor the shunt reads nothing and the window
@@ -573,9 +583,10 @@ impl DutyPlan {
     /// with fewer than three rungs, or whose stall currents span under
     /// [`STALL_LADDER_SPAN`] of the limit, leaves nothing to fit a slope
     /// to.
-    pub fn stall_ladder(&self, floor_q15: i16) -> Result<Vec<f64>, Refusal> {
+    pub fn stall_ladder(&self, what: &'static str, floor_q15: i16) -> Result<Vec<f64>, Refusal> {
         let (lo, hi) = (floor_q15 as i32, q15_floor(self.stop_cap) as i32);
         let room = Refusal::NoLadderRoom {
+            what,
             floor: lo as f64 / Q15,
             cap: self.stop_cap,
         };
@@ -592,6 +603,9 @@ impl DutyPlan {
             .collect())
     }
 }
+
+/// The resistance stop ladder, as its refusal names it.
+pub const STOP_LADDER: &str = "the resistance stop ladder";
 
 /// The most dwells the resistance stop ladder takes.
 pub const STALL_LADDER_RUNGS: i32 = 4;
@@ -740,7 +754,7 @@ mod tests {
             assert_eq!(lim.check_floor(), Ok(()));
             assert_eq!(lim.window_floor(), floor as i16);
             let rungs = DutyPlan::new(&lim, r, None)
-                .stall_ladder(lim.window_floor())
+                .stall_ladder(STOP_LADDER, lim.window_floor())
                 .unwrap();
             assert_eq!(q15_floor(rungs[0]), floor as i16, "{rungs:?}");
         }
@@ -780,7 +794,7 @@ mod tests {
                     let plan = DutyPlan::new(&lim, r, moved);
                     let seek = q15_floor(plan.seek) as f64 / Q15;
                     assert!(stall_counts(seek, r, vbus as f64) <= i_lim as f64);
-                    let Ok(rungs) = plan.stall_ladder(floor) else {
+                    let Ok(rungs) = plan.stall_ladder(STOP_LADDER, floor) else {
                         continue;
                     };
                     assert!((3..=4).contains(&rungs.len()), "{rungs:?}");
@@ -810,7 +824,7 @@ mod tests {
                 vbus,
                 ..mg90()
             };
-            DutyPlan::new(&lim, r, None).stall_ladder(lim.window_floor())
+            DutyPlan::new(&lim, r, None).stall_ladder(STOP_LADDER, lim.window_floor())
         };
         let err = ladder(280, mg, 3204).unwrap_err();
         assert_eq!(
