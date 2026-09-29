@@ -99,19 +99,24 @@ pub trait Experiment {
     }
 }
 
-/// Rig constants - the single home. The travel guard and the current abort
-/// come from the servo's own limits ([`crate::limits::ServoLimits`]); the
-/// rest are bench defaults. Experiments take what they need; the CLI
-/// overrides via flags.
+/// Rig constants - the single home. The travel guard, the current abort
+/// and the window floor come from the servo's own limits
+/// ([`crate::limits::ServoLimits`]); the rest are bench defaults.
+/// Experiments take what they need; the CLI overrides via flags.
 #[derive(Copy, Clone, Debug)]
 pub struct RigParams {
     /// Soft travel guard; `None` disables (end-stop experiments stall at
     /// the physical ends on purpose - see [`RigParams::without_pos_guard`]).
     pub pos_guard: Option<(u16, u16)>,
-    /// Abort threshold on the ident-window current mean, counts. Checked
-    /// only while duty_mean is nonzero: at torque-off the ident block
-    /// holds its last driven value and would trip forever.
+    /// Abort threshold on the ident-window current mean, counts.
     pub i_abort: i16,
+    /// The servo's window floor, q15. The abort judges the current mean
+    /// only while `|duty_mean|` is at or over it: under it, and at torque
+    /// off, the servo repeats the last current it measured. A drive under
+    /// the floor is stall-safe anyway: the firmware's limiter is as blind
+    /// there and holds the duty to the one a stall draws the limit at. 0, a
+    /// servo that publishes none, judges every nonzero duty.
+    pub window_floor_q15: u16,
     /// A stretch of travel left out of the motion fits and avoided as a
     /// dwell region, for a servo with a damaged spot in its train (consumed
     /// by the ladder/inertia experiments). None by default.
@@ -138,6 +143,7 @@ impl RigParams {
         Self {
             pos_guard,
             i_abort,
+            window_floor_q15: 0,
             slip: None,
             settle_windows: 5,
             stall_eps: seek::STALL_EPS,
@@ -150,6 +156,13 @@ impl RigParams {
     pub fn with_stops(self, stops: (u16, u16)) -> Self {
         Self {
             stops: Some(stops),
+            ..self
+        }
+    }
+
+    pub fn with_floor(self, window_floor_q15: u16) -> Self {
+        Self {
+            window_floor_q15,
             ..self
         }
     }
@@ -273,6 +286,7 @@ impl<E: Experiment> Guarded<E> {
             return Some(AbortReason::PosGuard { pos: o.pos });
         }
         if o.duty_mean_q15 != 0
+            && o.duty_mean_q15.unsigned_abs() >= self.params.window_floor_q15
             && o.i_mean_counts.unsigned_abs() > self.params.i_abort.unsigned_abs()
         {
             return Some(AbortReason::Overcurrent {
@@ -997,6 +1011,92 @@ mod tests {
             hold(lim.i_lim as i16).0,
             Some(AbortReason::Overcurrent { .. })
         ));
+    }
+
+    /// The current mean measures only over the window floor: under it the
+    /// servo repeats the last current it measured, which the guard leaves
+    /// unjudged. A servo that publishes no floor has every nonzero duty
+    /// judged.
+    #[test]
+    fn the_guard_judges_the_current_only_over_the_floor() {
+        let judged = |floor: u16, duty: i16| {
+            let o = TelemetrySnapshot {
+                duty_mean_q15: duty,
+                i_mean_counts: 351,
+                ..Default::default()
+            };
+            Guarded::new(
+                Script(Vec::new(), None),
+                RigParams::new(None, 350).with_floor(floor),
+            )
+            .violation(&o)
+        };
+        let over = Some(AbortReason::Overcurrent { i_mean: 351 });
+        for duty in [0, 3211, -3211, 4355] {
+            assert_eq!(judged(4356, duty), None, "{duty}");
+        }
+        for duty in [4356, -4356, 20971] {
+            assert_eq!(judged(4356, duty), over, "{duty}");
+        }
+        assert_eq!(judged(0, 0), None);
+        for duty in [1, 3211, -3211] {
+            assert_eq!(judged(0, duty), over, "{duty}");
+        }
+    }
+
+    /// A rung that ends over the abort leaves the servo's current reading
+    /// there: torque off it repeats it, and so does the jam check's first
+    /// drive, 9.5% under the window floor. Judged over the floor, the jam
+    /// check frees the shaft and reaches mid travel; judged at every
+    /// nonzero duty, it aborts the free shaft on the stale reading.
+    #[test]
+    fn a_stale_current_under_the_floor_is_no_abort() {
+        let after_a_rung = || {
+            let mut s = bench_mg90(3204);
+            s.pos = 2029.0;
+            s.current_limit = None;
+            s.jam = Some(s.pos);
+            let mut rung = Script(
+                vec![
+                    write(control::TORQUE_ENABLE, 1),
+                    write(control::GOAL_DUTY, 6500),
+                    Cmd::Pause { ms: 100 },
+                    Cmd::Read,
+                    write(control::GOAL_DUTY, 0),
+                    write(control::TORQUE_ENABLE, 0),
+                    Cmd::Pause { ms: 100 },
+                    Cmd::Read,
+                ],
+                None,
+            );
+            pump(&mut rung, &mut s, 100);
+            s.current_limit = Some(280);
+            s.jam = None;
+            let o = rung.1.expect("the rest read");
+            assert_eq!(o.duty_mean_q15, 0);
+            assert!(o.i_mean_counts > 350, "held {}", o.i_mean_counts);
+            s
+        };
+
+        let mut s = after_a_rung();
+        let p = bench().with_floor(s.floor_q15 as u16);
+        let run = seen(
+            Centre::new(crate::run::centre_cfg(0.0952, 0.253, true), &p),
+            p.without_pos_guard(),
+            &mut s,
+        );
+        assert_eq!(run.exp.abort(), None);
+        assert!(run.obs.iter().any(|o| o.duty_mean_q15 != 0
+            && o.duty_mean_q15 < s.floor_q15
+            && o.i_mean_counts > 350));
+        assert!(run.exp.into_inner().arrived());
+
+        let run = jam_check(&mut after_a_rung());
+        assert!(
+            matches!(run.exp.abort(), Some(AbortReason::Overcurrent { i_mean }) if i_mean > 350),
+            "{:?}",
+            run.exp.abort()
+        );
     }
 
     /// Every observation an experiment was stepped with.

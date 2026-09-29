@@ -217,7 +217,8 @@ impl Front {
     /// The rig the jam check runs in: the guard inside the soft limits, the
     /// abort a quarter over the current limit, the stops `osc cal` found.
     pub(crate) fn params(&self) -> RigParams {
-        let p = RigParams::new(self.lim.guard().ok(), self.lim.abort_default());
+        let p = RigParams::new(self.lim.guard().ok(), self.lim.abort_default())
+            .with_floor(self.lim.window_floor_q15);
         if self.lim.raw.0 < self.lim.raw.1 {
             p.with_stops(self.lim.raw)
         } else {

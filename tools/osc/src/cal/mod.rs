@@ -587,7 +587,8 @@ impl Cal<'_> {
     /// The rig before this run found the stops: the soft limits' guard and
     /// the stops of an earlier cal, when there was one.
     fn params(&self) -> RigParams {
-        let p = RigParams::new(self.lim.guard().ok(), self.lim.abort_default());
+        let p = RigParams::new(self.lim.guard().ok(), self.lim.abort_default())
+            .with_floor(self.lim.window_floor_q15);
         match self.known {
             Some(s) => p.with_stops(s),
             None => p,
@@ -635,7 +636,9 @@ impl Cal<'_> {
             Stage::Centre { duty, cap, .. } => {
                 println!("[centring] back to mid travel at {}", pct(*duty));
                 let p = match self.found() {
-                    Some(s) => RigParams::new(Some(s), self.lim.abort_default()).with_stops(s),
+                    Some(s) => RigParams::new(Some(s), self.lim.abort_default())
+                        .with_floor(self.lim.window_floor_q15)
+                        .with_stops(s),
                     None => self.params(),
                 };
                 let cfg = order::centre_cfg(*duty, *cap, false);
@@ -802,7 +805,9 @@ impl Cal<'_> {
                  pass"
             ),
         }
-        let p = RigParams::new(None, self.lim.abort_default()).with_stops(stops);
+        let p = RigParams::new(None, self.lim.abort_default())
+            .with_floor(self.lim.window_floor_q15)
+            .with_stops(stops);
         let mut exp = Guarded::new(Sweep::new(cfg, &p, runway), p);
         let tel = drive(c, id, self.out, &mut exp, None)?;
         check_abort("the traverse", exp.abort())?;

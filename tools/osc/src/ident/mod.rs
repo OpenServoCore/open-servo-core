@@ -581,7 +581,9 @@ fn rig(cli: &Ctx) -> Result<RigParams> {
     Ok(RigParams {
         slip: cli.slip,
         pot: cli.pot(),
-        ..RigParams::new(Some(d.env.guard), d.env.i_abort).with_stops(d.lim.raw)
+        ..RigParams::new(Some(d.env.guard), d.env.i_abort)
+            .with_floor(d.lim.window_floor_q15)
+            .with_stops(d.lim.raw)
     })
 }
 
