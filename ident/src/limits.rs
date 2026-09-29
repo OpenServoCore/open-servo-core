@@ -29,6 +29,24 @@ pub const GUARD_INSET: u16 = 100;
 
 const Q15: f64 = 32767.0;
 
+/// The lowest winding R the servo class carries, ohms. A stall at
+/// `i_lim x CLASS_R_MIN / vbus` draws at most the limit on any servo of the
+/// class, so a drive at that duty is safe before anything measured R - and,
+/// for the class on 2S, it sits under the shunt's window floor, where the
+/// firmware limiter is blind.
+pub const CLASS_R_MIN: f64 = 3.0;
+
+/// A duty fraction as q15, rounded down: a planned duty never stalls over
+/// what it was planned for.
+pub fn q15_floor(duty: f64) -> i16 {
+    (duty.clamp(0.0, 1.0) * Q15 + 1e-6).floor() as i16
+}
+
+/// The same as whole percent, rounded down.
+pub fn pct_floor(duty: f64) -> u8 {
+    (duty.clamp(0.0, 1.0) * 100.0 + 1e-9).floor() as u8
+}
+
 /// The travel guard for a servo's soft limits: each end `GUARD_INSET`
 /// counts inside.
 pub fn guards(soft: (u16, u16)) -> (u16, u16) {
@@ -97,8 +115,13 @@ pub struct Envelope {
 pub enum Refusal {
     /// The soft limits are not a calibrated range.
     Uncalibrated { soft: (i32, i32) },
-    /// An abort threshold above the current limit.
-    AbortOverLimit { i_abort: i16, i_lim: u16, ma: Ma },
+    /// An abort threshold above the default, a quarter over the limit.
+    AbortOverLimit {
+        i_abort: i16,
+        max: i16,
+        i_lim: u16,
+        ma: Ma,
+    },
     /// A deliberate stall that would draw more than the current limit.
     StallOverLimit {
         what: String,
@@ -136,12 +159,18 @@ impl fmt::Display for Refusal {
                  `osc cal` first",
                 soft.0, soft.1
             ),
-            Refusal::AbortOverLimit { i_abort, i_lim, ma } => write!(
+            Refusal::AbortOverLimit {
+                i_abort,
+                max,
+                i_lim,
+                ma,
+            } => write!(
                 f,
-                "an abort threshold of {} is above this servo's current limit of {}: the run \
-                 could draw more current than the servo is set to allow (leave --i-abort out to \
-                 abort at the limit)",
+                "an abort threshold of {} is over {}, a quarter above this servo's current limit \
+                 of {}: the run could draw more current than the servo is set to allow (leave \
+                 --i-abort out to abort there)",
                 ma.of(*i_abort as f64),
+                ma.of(*max as f64),
                 ma.of(*i_lim as f64)
             ),
             Refusal::StallOverLimit {
@@ -251,25 +280,35 @@ impl ServoLimits {
         Ok(guards((self.soft.0 as u16, self.soft.1 as u16)))
     }
 
+    /// The abort threshold a run takes by default: a quarter over the
+    /// limit. The firmware holds a stall AT the limit - window means 0.85
+    /// to 1.0 of it, peaks to 1.1 - so an abort at the limit trips on the
+    /// hold's own noise.
+    pub fn abort_default(&self) -> i16 {
+        let lim = self.i_lim as u32;
+        (lim + lim / 4).min(i16::MAX as u32) as i16
+    }
+
     /// The envelope for a drive: each end of `guard` and `i_abort` as given,
-    /// else the servo's soft limits inset and its current limit.
+    /// else the servo's soft limits inset and [`Self::abort_default`].
     pub fn envelope(
         &self,
         guard: (Option<u16>, Option<u16>),
         i_abort: Option<i16>,
     ) -> Result<Envelope, Refusal> {
         let inset = self.guard()?;
-        let i_lim = self.i_lim.min(i16::MAX as u16) as i16;
+        let max = self.abort_default();
         let i_abort = match i_abort {
-            Some(i) if i.unsigned_abs() > self.i_lim => {
+            Some(i) if i.unsigned_abs() > max.unsigned_abs() => {
                 return Err(Refusal::AbortOverLimit {
                     i_abort: i,
+                    max,
                     i_lim: self.i_lim,
                     ma: self.ma(),
                 });
             }
             Some(i) => i,
-            None => i_lim,
+            None => max,
         };
         Ok(Envelope {
             guard: (guard.0.unwrap_or(inset.0), guard.1.unwrap_or(inset.1)),
@@ -280,9 +319,14 @@ impl ServoLimits {
     /// Refuse a deliberate stall at `duty_q15` whose current the limit
     /// cannot hold. Passes when R is not identified yet: nothing to judge by.
     pub fn check_stall(&self, what: &str, duty_q15: i16) -> Result<(), Refusal> {
-        let Some(r) = self.r_vpc() else {
-            return Ok(());
-        };
+        match self.r_vpc() {
+            Some(r) => self.check_stall_at(what, duty_q15, r),
+            None => Ok(()),
+        }
+    }
+
+    /// The same by a winding R the run measured, vcounts per ccount.
+    pub fn check_stall_at(&self, what: &str, duty_q15: i16, r: f64) -> Result<(), Refusal> {
         let duty = duty_q15.unsigned_abs() as f64 / Q15;
         let vbus = self.vbus as f64;
         let stall = stall_counts(duty, r, vbus);
@@ -297,6 +341,13 @@ impl ServoLimits {
             allowed: duty_for(self.i_lim as f64, r, vbus),
             ma: self.ma(),
         })
+    }
+
+    /// The class-safe duty: a stall at it draws at most the limit on any
+    /// winding of [`CLASS_R_MIN`] or more. `class_r_vpc` is that R in the
+    /// servo's own units.
+    pub fn bootstrap_duty(&self, class_r_vpc: f64) -> f64 {
+        duty_for(self.i_lim as f64, class_r_vpc, self.vbus as f64)
     }
 
     /// Settings that leave the current limit the only protection a stall
@@ -320,6 +371,123 @@ impl ServoLimits {
             ));
         }
         w
+    }
+}
+
+/// The most the jam check applies while the shaft has not moved, mV: 25%
+/// at 7.9 V, 45% at 4.39 V. Under the window floor a stall draws floor x
+/// rail / R; from the floor up the firmware limiter holds the limit and
+/// its stall timer ends a blocked check.
+pub const NUDGE_MAX_MV: f64 = 2000.0;
+
+/// The duty a rail of `rail_mv` turns `mv` into.
+pub fn duty_of_mv(mv: f64, rail_mv: f64) -> f64 {
+    if rail_mv <= 0.0 {
+        return 0.0;
+    }
+    (mv / rail_mv).clamp(0.0, 1.0)
+}
+
+/// What a burst may do past the static limit. A burst drives the winding
+/// for the capture's 0.52 ms and the kernel limiter does not tick through
+/// it, so it is bounded instead by the volts it applies - a class bound,
+/// not a multiple of the user's limit: the load it bounds is the rotor's
+/// momentum, not a held torque. The rest of the allowance: the shaft was
+/// proven free in this run, the burst arms inside the centre band from
+/// rest or from a duty the run already drives, never seated, never with
+/// the permit, at most [`BurstAllowance::MAX_ARMS`] a run, 100 ms apart.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct BurstAllowance;
+
+impl BurstAllowance {
+    /// Applied volts, duty x rail: 40% at 7.9 V, 38% at 8.4 V.
+    pub const MAX_MV: f64 = 3200.0;
+    /// The low rung: the shortest ON window the fit reads a slope from.
+    pub const LO: f64 = 0.25;
+    pub const HI: f64 = 0.40;
+    /// The fit's pair span: two rungs closer than this give no R.
+    pub const PAIR_MIN_PCT: u8 = 10;
+    pub const MAX_ARMS: u32 = 24;
+
+    /// The two rungs on a rail of `rail_mv`, whole percent. None when the
+    /// volts cap leaves them under the pair span apart: rails over 9.1 V.
+    pub fn rungs(rail_mv: f64) -> Option<[f64; 2]> {
+        let lo = pct_floor(Self::LO);
+        let hi = pct_floor(Self::HI.min(duty_of_mv(Self::MAX_MV, rail_mv)));
+        (hi >= lo + Self::PAIR_MIN_PCT).then(|| [lo as f64 / 100.0, hi as f64 / 100.0])
+    }
+
+    /// Repeats of a plan whose every repeat arms `arms` bursts, the asked
+    /// count cut so the run stays at [`Self::MAX_ARMS`].
+    pub fn repeats(asked: u32, arms: u32) -> u32 {
+        asked.min(Self::MAX_ARMS / arms.max(1))
+    }
+
+    /// The settled current of the worst winding of the class at the volts
+    /// cap, amps: what a burst's own planner may let a rung reach.
+    pub fn i_max_a() -> f64 {
+        Self::MAX_MV / 1000.0 / CLASS_R_MIN
+    }
+}
+
+/// The stall-safe duties a run plans once the winding R is measured,
+/// fractions of full scale: each stalls at or under the current limit on
+/// the supply in use. They serve every drive that points at a stop and can
+/// reach it, runs with the permit, or starts outside the guards. Free
+/// rungs - the ladder, inertia - are not capped by stall current: the
+/// firmware limiter, the stall timer, the travel guard and the runway
+/// bound them.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct DutyPlan {
+    /// The lowest duty that moves the shaft: what moved it + 2%, never
+    /// above `stop_cap`. Seeks, centring.
+    pub seek: f64,
+    /// Seated against a stop: half the limit.
+    pub hold: f64,
+    /// The highest stall-safe duty: its stall draws the limit. Stop seeks,
+    /// the breakaway ramp, bursts against a stop.
+    pub stop_cap: f64,
+    pub r_vpc: f64,
+    i_lim: f64,
+    vbus: f64,
+}
+
+impl DutyPlan {
+    /// Over the duty that moved the shaft, the margin a seek drives with.
+    pub const SEEK_MARGIN: f64 = 0.02;
+
+    /// `moved_at`: the duty the jam check first travelled at; without it
+    /// seeks start at the cap.
+    pub fn new(lim: &ServoLimits, r_vpc: f64, moved_at: Option<f64>) -> Self {
+        let (i, v) = (lim.i_lim as f64, lim.vbus as f64);
+        let stop_cap = duty_for(i, r_vpc, v);
+        Self {
+            seek: moved_at.map_or(stop_cap, |m| (m + Self::SEEK_MARGIN).min(stop_cap)),
+            hold: duty_for(i / 2.0, r_vpc, v),
+            stop_cap,
+            r_vpc,
+            i_lim: i,
+            vbus: v,
+        }
+    }
+
+    /// `breakaway`: the larger of the two directions' breakaway duties.
+    pub fn with_breakaway(self, breakaway: f64) -> Self {
+        Self {
+            seek: (breakaway + Self::SEEK_MARGIN).min(self.stop_cap),
+            ..self
+        }
+    }
+
+    /// The largest step over a moving base drawing `i_run` counts whose
+    /// first edge stays under the band the limiter holds, `lim - lim/8`.
+    pub fn step_run(&self, i_run: f64) -> f64 {
+        duty_for(self.i_lim - self.i_lim / 8.0 - i_run, self.r_vpc, self.vbus)
+    }
+
+    /// The stall-safe duties.
+    pub fn duties(&self) -> [f64; 3] {
+        [self.seek, self.hold, self.stop_cap]
     }
 }
 
@@ -354,22 +522,131 @@ mod tests {
     }
 
     #[test]
-    fn i_abort_defaults_to_the_current_limit() {
-        assert_eq!(mg90().envelope((None, None), None).unwrap().i_abort, 280);
+    fn i_abort_defaults_a_quarter_over_the_current_limit() {
+        assert_eq!(mg90().envelope((None, None), None).unwrap().i_abort, 350);
         assert_eq!(
             mg90().envelope((None, None), Some(200)).unwrap().i_abort,
             200
         );
+        assert_eq!(
+            mg90().envelope((None, None), Some(350)).unwrap().i_abort,
+            350
+        );
         let err = mg90()
-            .envelope((None, None), Some(1100))
+            .envelope((None, None), Some(351))
             .unwrap_err()
             .to_string();
         assert_eq!(
             err,
-            "an abort threshold of 1100 counts (985 mA) is above this servo's current limit of \
-             280 counts (251 mA): the run could draw more current than the servo is set to allow \
-             (leave --i-abort out to abort at the limit)"
+            "an abort threshold of 351 counts (314 mA) is over 350 counts (313 mA), a quarter \
+             above this servo's current limit of 280 counts (251 mA): the run could draw more \
+             current than the servo is set to allow (leave --i-abort out to abort there)"
         );
+    }
+
+    /// 3.0 ohm in the bench board's units: 1117 counts/A, 2.466 mV/vcount.
+    fn class_r_vpc() -> f64 {
+        let v_per_vcount = 3.3 / 4096.0 * (6_800.0 + 3_300.0) / 3_300.0;
+        CLASS_R_MIN * mg90().amps_per_count / v_per_vcount
+    }
+
+    #[test]
+    fn every_stall_safe_duty_stalls_under_the_limit() {
+        let r = 7270.0 / 4096.0;
+        for (i_lim, vbus) in [
+            (280, 3204),
+            (280, 1780),
+            (335, 3204),
+            (150, 2400),
+            (600, 3400),
+        ] {
+            let lim = ServoLimits {
+                i_lim,
+                vbus,
+                ..mg90()
+            };
+            for plan in [
+                DutyPlan::new(&lim, r, None),
+                DutyPlan::new(&lim, r, Some(0.25)),
+                DutyPlan::new(&lim, r, Some(0.10)).with_breakaway(0.08),
+                DutyPlan::new(&lim, r, None).with_breakaway(0.9),
+            ] {
+                for d in plan.duties() {
+                    for q in [d, q15_floor(d) as f64 / Q15, pct_floor(d) as f64 / 100.0] {
+                        let stall = stall_counts(q, r, vbus as f64);
+                        assert!(
+                            stall <= i_lim as f64 + 1e-9,
+                            "{plan:?}: {q} stalls at {stall}"
+                        );
+                    }
+                }
+                assert!(plan.seek <= plan.stop_cap && plan.hold < plan.stop_cap);
+            }
+        }
+        // the bench servo on 2S, a shaft the jam check moved at 12%
+        let plan = DutyPlan::new(&mg90(), r, Some(0.12));
+        assert!((plan.seek - 0.14).abs() < 1e-12);
+        let plan = plan.with_breakaway(0.08);
+        assert!((plan.seek - 0.10).abs() < 1e-12);
+        assert!((plan.stop_cap - 0.1551).abs() < 1e-3);
+        assert!((plan.hold - 0.0776).abs() < 1e-3);
+        // a step over a base drawing 80 counts: 9.1%
+        assert!((plan.step_run(80.0) - 0.0910).abs() < 1e-3);
+    }
+
+    #[test]
+    fn burst_rungs_fit_the_fit_and_the_allowance() {
+        assert_eq!(BurstAllowance::rungs(7900.0), Some([0.25, 0.40]));
+        assert_eq!(BurstAllowance::rungs(8400.0), Some([0.25, 0.38]));
+        assert_eq!(BurstAllowance::rungs(4390.0), Some([0.25, 0.40]));
+        assert_eq!(BurstAllowance::rungs(12600.0), None);
+        // the last rail the pair still spans
+        assert_eq!(BurstAllowance::rungs(9100.0), Some([0.25, 0.35]));
+        assert_eq!(BurstAllowance::rungs(9200.0), None);
+        for rail in [4390.0, 7900.0, 8400.0, 9100.0] {
+            let [_, hi] = BurstAllowance::rungs(rail).unwrap();
+            assert!(hi * rail <= BurstAllowance::MAX_MV + 1e-9);
+        }
+        assert!((BurstAllowance::i_max_a() - 1.0667).abs() < 1e-3);
+    }
+
+    #[test]
+    fn burst_count_is_bounded() {
+        // two rungs and the from-a-hold control, both signs: six a repeat
+        assert_eq!(BurstAllowance::repeats(5, 6), 4);
+        assert_eq!(BurstAllowance::repeats(2, 6), 2);
+        assert_eq!(BurstAllowance::repeats(9, 4), 6);
+        for asked in 0..20 {
+            assert!(BurstAllowance::repeats(asked, 6) * 6 <= BurstAllowance::MAX_ARMS);
+        }
+    }
+
+    #[test]
+    fn bootstrap_duty_is_class_safe() {
+        // the plan's figure: 300 mA (335 counts) on 2S is 11.4%, under the
+        // 13.3% window floor where the limiter cannot see current
+        let lim = ServoLimits {
+            i_lim: 335,
+            ..mg90()
+        };
+        let d = lim.bootstrap_duty(class_r_vpc());
+        assert!((d - 0.114).abs() < 0.001, "{d}");
+        assert!(d < 160.0 / 1200.0);
+        // the bench limit: 9.5%, stalling at the limit on a 3 ohm winding
+        // and under it on the real 4.9 ohm one
+        let lim = mg90();
+        let d = lim.bootstrap_duty(class_r_vpc());
+        assert!((d - 0.095).abs() < 0.001, "{d}");
+        let q = q15_floor(d) as f64 / Q15;
+        assert!(stall_counts(q, class_r_vpc(), 3204.0) <= 280.0);
+        assert!(stall_counts(q, 7270.0 / 4096.0, 3204.0) < 200.0);
+        // on USB the same current takes more duty; the volts are the same
+        let usb = ServoLimits {
+            vbus: 1780,
+            ..mg90()
+        };
+        let du = usb.bootstrap_duty(class_r_vpc());
+        assert!((du * 1780.0 - d * 3204.0).abs() < 1e-6);
     }
 
     #[test]

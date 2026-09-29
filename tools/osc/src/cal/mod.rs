@@ -484,7 +484,7 @@ fn seek_rails(
     // pos guard off: driving into the physical ends IS the method. The
     // firmware zeroes outbound OpenLoop duty at the soft limits, and a
     // recalibrated servo's stops sit past them: the permit opens them.
-    let params = RigParams::new(None, lim.i_lim.min(i16::MAX as u16) as i16);
+    let params = RigParams::new(None, lim.abort_default());
     let mut log = SnapshotLog::create(out, "endstop_snapshots.csv")?;
     let mut exp = Guarded::new(
         Permitted::new(Endstop::new(EndstopCfg::default(), &params)),

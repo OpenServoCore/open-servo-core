@@ -42,6 +42,18 @@ pub fn leaves_stop(pos: u16, dir: i8, stops: Option<(u16, u16)>) -> bool {
     stops.is_some_and(|s| pos.abs_diff(stop_for(-dir, s)) <= STOP_TOL)
 }
 
+/// How far from both stops a still shaft must be for a raised duty to meet
+/// nothing but the mechanism's own friction, counts.
+pub const STOP_CLEAR: u16 = 300;
+
+/// `pos` is [`STOP_CLEAR`] or more from both stops. With the stops unknown
+/// nothing says otherwise.
+pub fn clear_of_stops(pos: u16, stops: Option<(u16, u16)>) -> bool {
+    stops.is_none_or(|(lo, hi)| {
+        pos >= lo.saturating_add(STOP_CLEAR) && pos.saturating_add(STOP_CLEAR) <= hi
+    })
+}
+
 /// A seek of sign `dir` that started at `start` has come to rest at `pos`.
 /// With the stops known it must rest within [`STOP_TOL`] of the one it was
 /// driving at (already being there counts); with them unknown it must have
@@ -140,6 +152,14 @@ mod tests {
         // unknown stops: travel is all there is to judge by
         assert!(at_stop(2051, 2048, 1, None).is_err());
         assert_eq!(at_stop(2051, 3000, 1, None), Ok(()));
+    }
+
+    #[test]
+    fn clear_of_the_stops_is_300_counts_from_both() {
+        assert!(clear_of_stops(2048, STOPS));
+        assert!(clear_of_stops(509, STOPS) && clear_of_stops(3549, STOPS));
+        assert!(!clear_of_stops(508, STOPS) && !clear_of_stops(3550, STOPS));
+        assert!(clear_of_stops(100, None));
     }
 
     #[test]

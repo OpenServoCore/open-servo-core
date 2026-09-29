@@ -3,7 +3,8 @@
 //! plant, synthesizes and encodes gains, and writes them back with
 //! snapshot/rollback safety. The sans-io engine lives in osc-ident; this
 //! wrapper owns USB, wall time, and files. TEL captures ride the main bus
-//! as bursts (the pump's Stream arm) - no side channel.
+//! as bursts (the pump's Stream arm) - no side channel. The run's order and
+//! every duty it drives at come from osc-ident's `run`.
 
 pub(crate) mod params;
 
@@ -19,29 +20,29 @@ use osc_client::blocking::Client;
 use osc_client::data_state::{self, DataState};
 use osc_client::descriptor::Descriptor;
 use osc_client::nusb::NusbPipe;
-use osc_ident::burst::Chans;
+use osc_ident::burst::{Capture, Chans};
 use osc_ident::exp::bias::{Bias, BiasCfg, BiasResult};
 use osc_ident::exp::breakaway::{Breakaway, BreakawayCfg, BreakawayResult};
+use osc_ident::exp::centre::{Centre, CentreCfg};
 use osc_ident::exp::held::{Held, HeldCfg, Stops};
 use osc_ident::exp::inductance::{
     Cfg as InductanceCfg, FitCfg, Inductance, InductanceResult, fit_captures,
 };
-use osc_ident::exp::inertia::{Inertia, InertiaCfg};
+use osc_ident::exp::inertia::{Inertia, InertiaCfg, InertiaResult};
 use osc_ident::exp::ladder::{Ladder, LadderCfg, LadderResult};
 use osc_ident::exp::resistance::{Resistance, ResistanceCfg, ResistanceResult};
 use osc_ident::exp::rl::{Rl, RlCfg, RlFitCfg, RlResult, Scales};
-use osc_ident::exp::seek::{self, Watch};
 use osc_ident::exp::verify::{
     VerifyCurrent, VerifyCurrentCfg, VerifyResult, VerifyVelocity, VerifyVelocityCfg,
 };
 use osc_ident::exp::{Guarded, Permitted, RigParams};
 use osc_ident::fits::{self, InertiaPriors};
 use osc_ident::gains::{self, BwTargets, PlantParams};
-use osc_ident::limits::{Envelope, ServoLimits};
+use osc_ident::limits::{BurstAllowance, CLASS_R_MIN, DutyPlan, Envelope, ServoLimits, pct_floor};
 use osc_ident::pot::Pot;
 use osc_ident::regs::{calib, control};
 use osc_ident::report::{self, PlantInputs, ReportInputs};
-use osc_ident::run::{Ended, Run, Stage};
+use osc_ident::run::{self as order, Ended, Over, Run, Stage};
 use osc_ident::sources::{self, Source, Winding};
 use params::{
     BiasJson, BreakawayJson, GainJson, InductanceJson, InertiaJson, LadderJson, ParamsFile,
@@ -50,6 +51,8 @@ use params::{
 
 /// Where recorded runs land when `--out` is absent.
 const DEFAULT_OUT: &str = "./ident-out";
+
+const Q15: f64 = 32767.0;
 
 /// The `osc ident` arg group: output, rig envelope, and bandwidth targets,
 /// all scoped to the ident subtree. `--baud`/`--id` come from the top-level
@@ -72,8 +75,9 @@ pub struct Args {
     slip_lo: u16,
     #[arg(long, global = true, default_value_t = 1650)]
     slip_hi: u16,
-    /// Current that aborts a run, counts [default: the servo's
-    /// current_limit_counts]; above the limit is refused.
+    /// Current that aborts a run, counts [default: a quarter over the
+    /// servo's current_limit_counts, where the firmware holds a stall];
+    /// above that is refused.
     #[arg(long, global = true)]
     i_abort: Option<i16>,
     /// Motor inductance, henries (not identifiable from this telemetry).
@@ -84,15 +88,17 @@ pub struct Args {
     /// osc-ident's `exp::rl`.
     #[arg(long, global = true, default_value_t = 20)]
     step_periods: u16,
-    /// Burst step duties, percent of full scale.
-    #[arg(long, global = true, value_delimiter = ',', default_values_t = [20u8, 30, 40])]
-    burst_pct: Vec<u8>,
+    /// Burst step duties, percent of full scale [default: 25 and 40, or
+    /// what 3.2 V allows on this rail]; a rung over 3.2 V is refused.
+    #[arg(long, global = true, value_delimiter = ',')]
+    burst_pct: Option<Vec<u8>>,
     /// Burst captures per step duty and sign.
     #[arg(long, global = true, default_value_t = 5)]
     burst_repeats: u32,
-    /// Settled winding current the burst duty ladder stays under, amps.
-    #[arg(long, global = true, default_value_t = 0.4)]
-    burst_i_max: f64,
+    /// Settled winding current the burst duty ladder stays under, amps
+    /// [default: 3.2 V over the class's lowest winding R, 3.0 ohm: 1.07 A].
+    #[arg(long, global = true)]
+    burst_i_max: Option<f64>,
     /// Burst voltage channels: a mask (bit 0 vmotor_a, bit 1 vmotor_b, bit 2
     /// vbus) or `driven`, the tap of the terminal each step drives. One
     /// channel keeps frame_len at 2 and sees the chopping leg through ON and
@@ -100,14 +106,15 @@ pub struct Args {
     #[arg(long, global = true, default_value = "driven", value_parser = parse_chans)]
     burst_chans: Chans,
     /// Burst held route: the duty the seek arrives at and the bursts step
-    /// from, percent of full scale.
-    #[arg(long, global = true, default_value_t = 12)]
-    burst_hold_pct: u8,
-    /// Burst held route: the mechanical stops to seat against. Low by
-    /// default: this unit's high-count end has slipped at ~0.17 A of steady
-    /// torque.
-    #[arg(long, global = true, value_enum, default_value_t = BurstStops::Low)]
-    burst_stops: BurstStops,
+    /// from, percent of full scale [default: the duty whose stall draws
+    /// half the current limit].
+    #[arg(long, global = true)]
+    burst_hold_pct: Option<u8>,
+    /// `ident burst` only: after the free shaft, seat against these
+    /// mechanical stops and burst there too (the held route). Without it
+    /// nothing stalls a stop.
+    #[arg(long, global = true, value_enum)]
+    burst_stops: Option<BurstStops>,
     /// Burst held route: captures per step duty at each stop.
     #[arg(long, global = true, default_value_t = 4)]
     burst_hold_repeats: u32,
@@ -161,12 +168,12 @@ struct Ctx {
     i_abort: Option<i16>,
     l_henries: f64,
     step_periods: u16,
-    burst_pct: Vec<u8>,
+    burst_pct: Option<Vec<u8>>,
     burst_repeats: u32,
-    burst_i_max: f64,
+    burst_i_max: Option<f64>,
     burst_chans: Chans,
-    burst_hold_pct: u8,
-    burst_stops: BurstStops,
+    burst_hold_pct: Option<u8>,
+    burst_stops: Option<BurstStops>,
     burst_hold_repeats: u32,
     inertia_ms: u32,
     gear_ratio: Option<f64>,
@@ -185,6 +192,8 @@ struct Ctx {
 struct Drive {
     lim: ServoLimits,
     env: Envelope,
+    sense: SenseJson,
+    sc: Scales,
 }
 
 impl Ctx {
@@ -195,28 +204,34 @@ impl Ctx {
 
 #[derive(Subcommand, Debug)]
 enum Cmd {
-    /// The full pipeline: bias -> burst -> resistance only if the burst
-    /// declines -> breakaway -> ladder -> inertia -> fit -> report +
-    /// params.json. R and L come from the burst when it promotes, else R
-    /// from resistance and L from --l-henries. The first stage that aborts
-    /// ends the run. Write-back stays explicit.
+    /// The full pipeline: bias -> centring and the jam check (out and back
+    /// at mid travel, raising the duty up to 2 V while the shaft does not
+    /// move) -> burst at 25% and 40% (at most 3.2 V) -> breakaway -> ladder
+    /// -> inertia, each from mid travel -> centring -> fit -> report +
+    /// params.json. R and L come from the burst; every drive that could
+    /// stall after it is planned from R and the rail so its stall stays
+    /// under the current limit, while ladder and inertia rungs run free on
+    /// the firmware limiter. A burst that declines ends the run: nothing
+    /// after it can be planned. The first stage that aborts ends the run.
+    /// Nothing stalls a stop. Write-back stays explicit.
     Run,
     /// Torque-off noise and bias floor.
     Bias,
-    /// End-stop stall duty ladder -> winding R (the fallback R).
+    /// End-stop stall duty ladder -> winding R.
     Resistance,
     /// The toggle experiment: free-shaft duty toggles -> winding R and L
     /// (advisory; the 1 ms step is rotor-followed and biased).
     Rl,
-    /// High-rate shunt bursts -> winding R, L and tau (the gain
-    /// source when it promotes): held at a stop first, the free shaft from
-    /// rest only if the held route declines.
+    /// High-rate shunt bursts -> winding R, L and tau: the front of `run`,
+    /// then the held route at a stop with --burst-stops.
     Burst,
-    /// Breakaway duty ramp (needs R; runs its own bias first).
+    /// Breakaway duty ramp: the front of `run`, then breakaway.
     Breakaway,
-    /// Steady-state duty ladder -> Ke + friction line (needs R).
+    /// Steady-state duty ladder -> Ke + friction line: the front of `run`
+    /// through breakaway, then the ladder.
     Ladder,
-    /// Duty-step transients -> B (TEL when wired).
+    /// Duty-step transients -> B (TEL when wired): the front of `run`
+    /// through the ladder, then inertia.
     Inertia,
     /// Closed-loop verification on the written gains: verify current, then
     /// verify velocity. Needs a clean data state: a set written but not
@@ -317,6 +332,10 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     if drives(&args.cmd) {
         let lim = crate::rig::limits::read(&mut c, id)?;
         let env = lim.envelope(cli.guard, cli.i_abort)?;
+        let sense = read_sense(&mut c, id)?;
+        let sc = sense
+            .scales()
+            .context("CalibSense scales degenerate (shunt/gain/dividers/vdd)")?;
         let ma = lim.ma();
         println!(
             "limits: current limit {}, travel guard {}..{}, a run aborts over {}",
@@ -325,7 +344,12 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
             env.guard.1,
             ma.of(env.i_abort as f64)
         );
-        cli.drive = Some(Drive { lim, env });
+        cli.drive = Some(Drive {
+            lim,
+            env,
+            sense,
+            sc,
+        });
     }
     let lut = Lut::read(&mut c, id, &d)?;
     println!("pot: {} counts, lut {}", lut.pot().label(), lut.describe());
@@ -368,52 +392,40 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
             Ok(())
         }
         Cmd::Burst => {
-            let out = csvio::OutDir::create(&cli.out)?;
-            println!("recording to {}", out.0.display());
-            let sense = read_sense(&mut c, id)?;
-            let r = run_inductance(cli, &mut c, id, &out, &sense)?;
+            let rec = drive_stages(cli, &mut c, id, Until::Burst)?;
             println!(
                 "{}",
                 render_partial(ReportInputs {
-                    inductance: Some(&r),
+                    inductance: rec.e8.as_ref(),
                     ..Default::default()
                 })
             );
             Ok(())
         }
         Cmd::Breakaway => {
-            let out = csvio::OutDir::create(&cli.out)?;
-            let (bias, vbus) = run_bias(cli, &mut c, id, &out)?;
-            let _ = bias;
-            let r = run_resistance(cli, &mut c, id, &out)?;
-            let bk = run_breakaway(cli, &mut c, id, &out, r.r_vpc, vbus)?;
-            println!("{bk:#?}");
+            let rec = drive_stages(cli, &mut c, id, Until::Breakaway)?;
+            if let Some(bk) = rec.breakaway {
+                println!("{bk:#?}");
+            }
             Ok(())
         }
         Cmd::Ladder => {
-            let out = csvio::OutDir::create(&cli.out)?;
-            let r = run_resistance(cli, &mut c, id, &out)?;
-            let l = run_ladder(cli, &mut c, id, &out, r.r_vpc)?;
+            let rec = drive_stages(cli, &mut c, id, Until::Ladder)?;
             println!(
                 "{}",
                 render_partial(ReportInputs {
-                    ladder: Some(&l),
+                    ladder: rec.ladder.as_ref(),
                     ..Default::default()
                 })
             );
             Ok(())
         }
         Cmd::Inertia => {
-            let out = csvio::OutDir::create(&cli.out)?;
-            let r = run_resistance(cli, &mut c, id, &out)?;
-            let l = run_ladder(cli, &mut c, id, &out, r.r_vpc)?;
-            let sense = read_sense(&mut c, id)?;
-            let priors = priors_of(r.r_vpc, &l, &sense);
-            let i = run_inertia(cli, &mut c, id, &out, &priors)?;
+            let rec = drive_stages(cli, &mut c, id, Until::Inertia)?;
             println!(
                 "{}",
                 render_partial(ReportInputs {
-                    inertia: Some(&i),
+                    inertia: rec.inertia.as_ref(),
                     ..Default::default()
                 })
             );
@@ -501,41 +513,38 @@ fn targets(cli: &Ctx) -> BwTargets {
     }
 }
 
-/// OpenLoop nudge to mid-travel. End-stop work (E2) parks the pot on a
-/// rail where the next experiment's pos guard would abort before it can
-/// move; every in-band experiment recenters first. A shaft that comes to
-/// rest short of the band is blocked, and the run ends.
-fn recenter(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
-    const LO: u16 = 1750;
-    const HI: u16 = 2350;
+fn pct(duty: f64) -> String {
+    format!("{:.1}%", duty * 100.0)
+}
+
+/// Into the band at mid travel ([`Centre`]); a blocked shaft ends the run.
+/// The duty the shaft first travelled at, when it travelled.
+fn centre(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id, cfg: CentreCfg) -> Result<Option<f64>> {
+    let what = if cfg.nudge {
+        "the jam check"
+    } else {
+        "centring"
+    };
     let params = rig(cli)?;
-    let pos0 = pump::read_snapshot(c, id)?.pos;
-    if (LO..=HI).contains(&pos0) {
-        return Ok(());
+    let mut exp = Guarded::new(Centre::new(cfg, &params), params.without_pos_guard());
+    with_guard(c, id, |c| Pump::new(c, id, None).run(&mut exp))?;
+    check_abort(what, exp.abort())?;
+    let exp = exp.into_inner();
+    if !exp.arrived() {
+        bail!("centring did not reach mid travel in 5 s (gear slipping?)");
     }
-    println!("[recenter] pos {pos0} -> mid-travel");
-    let mut watch = Watch::new(pos0, params.stall_eps, params.stall_polls);
-    with_guard(c, id, |c| {
-        pump::write_reg(c, id, control::MODE, 0)?;
-        pump::write_reg(c, id, control::TORQUE_ENABLE, 1)?;
-        for _ in 0..200 {
-            let pos = pump::read_snapshot(c, id)?.pos;
-            if (LO..=HI).contains(&pos) {
-                return Ok(());
-            }
-            if watch.still(pos) {
-                return Err(Aborted {
-                    what: "the recentre",
-                    reason: seek::blocked(pos0, pos),
-                }
-                .into());
-            }
-            let duty = if pos < LO { 9000 } else { -9000 };
-            pump::write_reg(c, id, control::GOAL_DUTY, duty)?;
-            std::thread::sleep(std::time::Duration::from_millis(25));
-        }
-        anyhow::bail!("recenter: not in band after 5 s (gear slipping?)")
-    })
+    Ok(exp.moved_at())
+}
+
+/// Centring outside the run: at the duty whose stall the limit holds by
+/// the table's R when the servo carries one, else at the class-safe duty.
+fn centre_outside_the_run(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
+    let d = drive(cli)?;
+    let duty = match d.lim.r_vpc() {
+        Some(r) => DutyPlan::new(&d.lim, r, None).seek,
+        None => d.lim.bootstrap_duty(d.sc.r_vpc(CLASS_R_MIN)),
+    };
+    centre(cli, c, id, order::centre_cfg(duty, duty, false)).map(|_| ())
 }
 
 fn read_sense(c: &mut Client<NusbPipe>, id: Id) -> Result<SenseJson> {
@@ -566,12 +575,12 @@ fn run_bias(
     c: &mut Client<NusbPipe>,
     id: Id,
     out: &csvio::OutDir,
-) -> Result<(osc_ident::exp::bias::BiasResult, f64)> {
+) -> Result<(BiasResult, f64)> {
     println!("[bias]");
-    // a rail-parked pot clips the noise measurement (and trips the guard)
-    recenter(cli, c, id)?;
+    // torque off throughout: the travel guard has nothing to guard
+    let params = rig(cli)?.without_pos_guard();
     let mut log = csvio::SnapshotLog::create(out, "bias_snapshots.csv")?;
-    let mut exp = Guarded::new(Bias::new(BiasCfg::default(), &rig(cli)?), rig(cli)?);
+    let mut exp = Guarded::new(Bias::new(BiasCfg::default(), &params), params);
     with_guard(c, id, |c| Pump::new(c, id, Some(&mut log)).run(&mut exp))?;
     check_abort("bias", exp.abort())?;
     let b = exp
@@ -587,7 +596,7 @@ fn run_resistance(
     c: &mut Client<NusbPipe>,
     id: Id,
     out: &csvio::OutDir,
-) -> Result<osc_ident::exp::resistance::ResistanceResult> {
+) -> Result<ResistanceResult> {
     println!("[resistance] (end-stop stalls; pos guard off, stall permit held)");
     let cfg = ResistanceCfg::default();
     let hardest = cfg
@@ -614,7 +623,7 @@ fn run_rl(
     sense: &SenseJson,
 ) -> Result<RlResult> {
     println!("[toggle] winding R/L (free shaft at mid travel, chained duty toggles)");
-    recenter(cli, c, id)?;
+    centre_outside_the_run(cli, c, id)?;
     let params = rig(cli)?;
     let sc = sense
         .scales()
@@ -644,39 +653,80 @@ fn run_rl(
     })
 }
 
-/// E8: the held route, then the free shaft only if the held route
-/// declines. Both land in one burst family; the fit sorts them by their
-/// `seated` flag.
-fn run_inductance(
+/// Free-shaft bursts from rest at mid travel ([`Inductance`]): their
+/// captures and the planner's notes.
+fn run_bursts(
     cli: &Ctx,
     c: &mut Client<NusbPipe>,
     id: Id,
     out: &csvio::OutDir,
-    sense: &SenseJson,
-) -> Result<InductanceResult> {
-    let sc = sense
-        .scales()
-        .context("CalibSense scales degenerate (shunt/gain/dividers/vdd)")?;
-    drive(cli)?.lim.check_stall(
-        "the burst's hold against the stop",
-        crate::sweep::pct_q15(cli.burst_hold_pct),
-    )?;
+    cfg: InductanceCfg,
+    log_name: &str,
+) -> Result<(Vec<Capture>, Vec<String>)> {
     let params = rig(cli)?;
-    println!(
-        "[burst, held] (seat at the {:?} stop at {}%, burst toward it; stall_permit for the run)",
-        cli.burst_stops, cli.burst_hold_pct
-    );
-    let cfg = HeldCfg {
-        stops: cli.burst_stops.into(),
-        hold_pct: cli.burst_hold_pct,
-        step_pct: cli.burst_pct.clone(),
-        repeats: cli.burst_hold_repeats,
-        i_max_a: cli.burst_i_max,
+    let sc = drive(cli)?.sc;
+    let mut log = csvio::SnapshotLog::create(out, log_name)?;
+    let mut exp = Guarded::new(Inductance::new(cfg, &params, sc), params);
+    with_guard(c, id, |c| Pump::new(c, id, Some(&mut log)).run(&mut exp))?;
+    check_abort("burst", exp.abort())?;
+    let exp = exp.into_inner();
+    Ok((exp.captures().to_vec(), exp.warnings().to_vec()))
+}
+
+/// The burst knobs the flags set; the stage sets the duties.
+fn burst_base(cli: &Ctx) -> InductanceCfg {
+    InductanceCfg {
+        repeats: cli.burst_repeats,
+        i_max_a: cli.burst_i_max.unwrap_or(BurstAllowance::i_max_a()),
         chans: cli.burst_chans,
+        ..InductanceCfg::default()
+    }
+}
+
+/// The held route at the stops --burst-stops names, at the plan's hold and
+/// under its stop cap. Stalling a stop is the method, so it never runs
+/// unless asked.
+fn run_held(
+    cli: &Ctx,
+    c: &mut Client<NusbPipe>,
+    id: Id,
+    out: &csvio::OutDir,
+    stops: BurstStops,
+    plan: &DutyPlan,
+    r_vpc: f64,
+) -> Result<(Vec<Capture>, Vec<String>)> {
+    let d = drive(cli)?;
+    let hold = cli.burst_hold_pct.unwrap_or(pct_floor(plan.hold));
+    let steps = cli
+        .burst_pct
+        .clone()
+        .unwrap_or_else(|| vec![pct_floor(plan.stop_cap)]);
+    let q = |p: u8| (p as i32 * Q15 as i32 / 100) as i16;
+    d.lim
+        .check_stall_at("the burst's hold against the stop", q(hold), r_vpc)?;
+    for s in &steps {
+        d.lim
+            .check_stall_at("a burst against the stop", q(*s), r_vpc)?;
+    }
+    println!(
+        "[burst, held] (seat at the {stops:?} stop at {hold}%, burst toward it; stall_permit for \
+         the run)"
+    );
+    let cap = pct_floor(plan.stop_cap);
+    let cfg = HeldCfg {
+        stops: stops.into(),
+        hold_pct: hold,
+        step_pct: steps,
+        repeats: cli.burst_hold_repeats,
+        i_max_a: burst_base(cli).i_max_a,
+        chans: cli.burst_chans,
+        seek_cap_pct: cap,
+        centre_cap_pct: cap,
         ..HeldCfg::default()
     };
+    let params = rig(cli)?;
     let mut log = csvio::SnapshotLog::create(out, "held_snapshots.csv")?;
-    let mut held = Guarded::new(Held::new(cfg, &params, sc), params.without_pos_guard());
+    let mut held = Guarded::new(Held::new(cfg, &params, d.sc), params.without_pos_guard());
     with_guard(c, id, |c| Pump::new(c, id, Some(&mut log)).run(&mut held))?;
     check_abort("burst", held.abort())?;
     let held = held.into_inner();
@@ -689,45 +739,7 @@ fn run_inductance(
     for w in held.warnings() {
         println!("  warn: {w}");
     }
-    let mut caps = held.captures().to_vec();
-    let mut warnings = held.warnings().to_vec();
-    let first = fit_captures(&caps, &sc, &FitCfg::default());
-    if !first.as_ref().is_some_and(|r| r.held.promotable()) {
-        println!(
-            "[burst, free] held route declined ({}): free shaft from rest at mid travel",
-            first
-                .as_ref()
-                .map_or("no fit".into(), |r| r.held.blocking().join(", "))
-        );
-        recenter(cli, c, id)?;
-        let cfg = InductanceCfg {
-            step_pct: cli.burst_pct.clone(),
-            repeats: cli.burst_repeats,
-            i_max_a: cli.burst_i_max,
-            chans: cli.burst_chans,
-            ..InductanceCfg::default()
-        };
-        let mut log = csvio::SnapshotLog::create(out, "inductance_snapshots.csv")?;
-        let mut exp = Guarded::new(Inductance::new(cfg, &params, sc), params);
-        with_guard(c, id, |c| Pump::new(c, id, Some(&mut log)).run(&mut exp))?;
-        check_abort("burst", exp.abort())?;
-        let exp = exp.into_inner();
-        caps.extend_from_slice(exp.captures());
-        warnings.extend_from_slice(exp.warnings());
-    }
-    csvio::write_bursts(out, &caps)?;
-    let mut r = fit_captures(&caps, &sc, &FitCfg::default()).with_context(|| {
-        format!(
-            "inductance fit degenerate ({} captures; notes: {})",
-            caps.len(),
-            match warnings.as_slice() {
-                [] => "none".to_string(),
-                w => w.join("; "),
-            }
-        )
-    })?;
-    r.warnings.splice(0..0, warnings);
-    Ok(r)
+    Ok((held.captures().to_vec(), held.warnings().to_vec()))
 }
 
 fn run_breakaway(
@@ -735,13 +747,12 @@ fn run_breakaway(
     c: &mut Client<NusbPipe>,
     id: Id,
     out: &csvio::OutDir,
+    cfg: BreakawayCfg,
     r_vpc: f64,
     vbus_mean: f64,
-) -> Result<osc_ident::exp::breakaway::BreakawayResult> {
-    println!("[breakaway]");
-    recenter(cli, c, id)?;
+) -> Result<BreakawayResult> {
     let mut log = csvio::SnapshotLog::create(out, "breakaway_snapshots.csv")?;
-    let mut exp = Guarded::new(Breakaway::new(BreakawayCfg::default()), rig(cli)?);
+    let mut exp = Guarded::new(Breakaway::new(cfg), rig(cli)?);
     with_guard(c, id, |c| Pump::new(c, id, Some(&mut log)).run(&mut exp))?;
     check_abort("breakaway", exp.abort())?;
     Ok(exp.into_inner().fit(r_vpc, vbus_mean))
@@ -752,13 +763,12 @@ fn run_ladder(
     c: &mut Client<NusbPipe>,
     id: Id,
     out: &csvio::OutDir,
+    cfg: LadderCfg,
     r_vpc: f64,
 ) -> Result<LadderResult> {
-    println!("[ladder]");
-    recenter(cli, c, id)?;
     let params = rig(cli)?;
     let mut log = csvio::SnapshotLog::create(out, "ladder_snapshots.csv")?;
-    let mut exp = Guarded::new(Ladder::new(LadderCfg::default(), &params), params);
+    let mut exp = Guarded::new(Ladder::new(cfg, &params), params);
     with_guard(c, id, |c| Pump::new(c, id, Some(&mut log)).run(&mut exp))?;
     check_abort("ladder", exp.abort())?;
     let l = exp
@@ -774,16 +784,10 @@ fn run_inertia(
     c: &mut Client<NusbPipe>,
     id: Id,
     out: &csvio::OutDir,
+    cfg: InertiaCfg,
     priors: &InertiaPriors,
-) -> Result<osc_ident::exp::inertia::InertiaResult> {
-    println!("[inertia]");
-    recenter(cli, c, id)?;
+) -> Result<InertiaResult> {
     let params = rig(cli)?;
-    let cfg = InertiaCfg {
-        tick_hz: priors.tick_hz,
-        capture_ms: cli.inertia_ms,
-        ..InertiaCfg::default()
-    };
     let mut log = csvio::SnapshotLog::create(out, "inertia_snapshots.csv")?;
     let mut exp = Guarded::new(Inertia::new(cfg, &params), params);
     let all_tel = with_guard(c, id, |c| {
@@ -803,7 +807,7 @@ fn run_verify(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
     let tick_hz = snapshot::read_u16(c, id, calib::TICK_HZ)? as f64;
     let (d, before) = servo_state(c, id)?;
     refuse_closed_loop(&before)?;
-    recenter(cli, c, id)?;
+    centre_outside_the_run(cli, c, id)?;
     println!("[verify current] (current steps; end-stop stalls; stall permit held)");
     // deliberate rail stall in Current mode: the directional endstop band
     // would zero i_ref at the soft wall, and the permit opens it, as for
@@ -818,7 +822,7 @@ fn run_verify(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
     refuse_closed_loop(&c.data_state(id, &d)?)?;
     // E5 ends stalled against an end-stop; E6 runs with the pos guard on
     // and its first read would abort right there
-    recenter(cli, c, id)?;
+    centre_outside_the_run(cli, c, id)?;
     println!("[verify velocity] (velocity legs)");
     let mut e6 = Guarded::new(
         VerifyVelocity::new(VerifyVelocityCfg::default(), &params, tick_hz),
@@ -889,44 +893,15 @@ fn priors_of(r_vpc: f64, l: &LadderResult, sense: &SenseJson) -> InertiaPriors {
 }
 
 fn run_all(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
-    let out = csvio::OutDir::create(&cli.out)?;
-    println!("recording to {}", out.0.display());
-    let sense = read_sense(c, id)?;
-    let sc = sense
-        .scales()
-        .context("CalibSense scales degenerate (shunt/gain/dividers/vdd)")?;
-    let mut rec = Recorded {
-        out,
-        sense,
-        sc,
-        bias: None,
-        e8: None,
-        e2: None,
-        w: None,
-        breakaway: None,
-        ladder: None,
-    };
-    let mut run = Run::new();
-    while let Some(stage) = run.next_stage() {
-        match rec.stage(stage, cli, c, id) {
-            Ok(how) => run.ended(how),
-            Err(e) => {
-                if let Some(a) = e.downcast_ref::<Aborted>() {
-                    run.ended(Ended::Aborted(a.reason));
-                }
-                return Err(e);
-            }
-        }
-    }
+    let rec = drive_stages(cli, c, id, Until::End)?;
     let (Some((bias, _)), Some(breakaway)) = (&rec.bias, &rec.breakaway) else {
         bail!("the run ended without its bias or breakaway");
     };
     let p = ParamsFile {
         bias: Some(BiasJson::from(bias)),
-        resistance: rec.e2.as_ref().map(ResistanceJson::from),
         inductance: rec.e8.as_ref().map(InductanceJson::from),
         breakaway: Some(BreakawayJson::from(breakaway)),
-        sense: Some(rec.sense),
+        sense: Some(drive(cli)?.sense),
         pot: cli.lut.as_ref().map(PotJson::from),
         ..Default::default()
     };
@@ -939,62 +914,182 @@ fn run_all(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
     fit_dir(cli, dir)
 }
 
-/// What the stages of `run` record and hand each other.
+/// How far a subcommand takes the run before its closing centring.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Until {
+    Burst,
+    Breakaway,
+    Ladder,
+    Inertia,
+    End,
+}
+
+impl Until {
+    fn reached(self, stage: &Stage) -> bool {
+        matches!(
+            (self, stage),
+            (Until::Burst, Stage::Burst { .. })
+                | (Until::Breakaway, Stage::Breakaway { .. })
+                | (Until::Ladder, Stage::Ladder { .. })
+                | (Until::Inertia, Stage::Inertia { .. })
+        )
+    }
+}
+
+/// The run's stages in the order osc-ident's [`Run`] names them, through
+/// `until` and the closing centring. The first abort ends it; so does a
+/// burst that declines, since nothing after it can be planned.
+fn drive_stages(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id, until: Until) -> Result<Recorded> {
+    let out = csvio::OutDir::create(&cli.out)?;
+    println!("recording to {}", out.0.display());
+    let d = drive(cli)?;
+    let mut run = Run::new(d.lim, &d.sc);
+    let mut rec = Recorded {
+        out,
+        caps: Vec::new(),
+        notes: Vec::new(),
+        bias: None,
+        e8: None,
+        w: None,
+        breakaway: None,
+        ladder: None,
+        inertia: None,
+    };
+    while let Some(stage) = run.next_stage() {
+        match rec.stage(&stage, &mut run, cli, c, id, until) {
+            Ok(how) => run.ended(how),
+            Err(e) => {
+                if let Some(a) = e.downcast_ref::<Aborted>() {
+                    run.ended(Ended::Aborted(a.reason));
+                }
+                return Err(e);
+            }
+        }
+        if until.reached(&stage) {
+            run.finish();
+        }
+    }
+    match run.over() {
+        Some(Over::Declined) if until != Until::Burst => bail!(
+            "no winding R: the burst declined ({}), and nothing after it can be planned, so the \
+             run stops here; `osc ident resistance` measures R from stop stalls on request",
+            rec.e8
+                .as_ref()
+                .map_or("no fit".into(), |r| r.blocking().join(", "))
+        ),
+        Some(Over::Unproven) => {
+            bail!("the jam check never saw the shaft move, so no burst may run")
+        }
+        Some(Over::RailTooHigh { rail_mv }) => bail!(
+            "no winding R: on a {:.1} V rail the 3.2 V burst allowance leaves its two rungs \
+             under the 10% apart the fit needs, so the run stops here; `osc ident resistance` \
+             measures R from stop stalls on request",
+            rail_mv / 1000.0
+        ),
+        _ => Ok(rec),
+    }
+}
+
+/// What the stages record and hand each other.
 struct Recorded {
     out: csvio::OutDir,
-    sense: SenseJson,
-    sc: Scales,
+    /// Every burst capture so far, free and held routes alike: one
+    /// family, one fit.
+    caps: Vec<Capture>,
+    notes: Vec<String>,
     bias: Option<(BiasResult, f64)>,
     e8: Option<InductanceResult>,
-    e2: Option<ResistanceResult>,
     w: Option<Winding>,
     breakaway: Option<BreakawayResult>,
     ladder: Option<LadderResult>,
+    inertia: Option<InertiaResult>,
 }
 
 impl Recorded {
-    /// One stage of `run`. An abort is an error and ends the run; a burst
-    /// that cannot run or fit for any other reason declines like one that
-    /// fails its gates.
     fn stage(
         &mut self,
-        stage: Stage,
+        stage: &Stage,
+        run: &mut Run,
         cli: &Ctx,
         c: &mut Client<NusbPipe>,
         id: Id,
+        until: Until,
     ) -> Result<Ended> {
+        let d = drive(cli)?;
         let out = &self.out;
         match stage {
             Stage::Bias => self.bias = Some(run_bias(cli, c, id, out)?),
-            Stage::Burst => {
-                self.e8 = match run_inductance(cli, c, id, out, &self.sense) {
-                    Ok(r) => Some(r),
-                    Err(e) if e.downcast_ref::<Aborted>().is_some() => return Err(e),
-                    Err(e) => {
-                        println!("[burst] no result: {e:#}");
-                        None
-                    }
-                };
-                if sources::needs_stall(self.e8.as_ref()) {
-                    if let Some(r) = &self.e8 {
-                        println!(
-                            "[burst] declined (held: {}; free: {}): resistance supplies R",
-                            r.held.blocking().join(", "),
-                            r.blocking().join(", ")
-                        );
-                    }
-                    return Ok(Ended::Declined);
+            Stage::Centre { duty, cap, nudge } if *nudge => {
+                println!(
+                    "[centring] the jam check: out and back at mid travel from {}, raised up to \
+                     {} while the shaft does not move",
+                    pct(*duty),
+                    pct(*cap)
+                );
+                let moved = centre(cli, c, id, order::centre_cfg(*duty, *cap, *nudge))?;
+                if let Some(m) = moved {
+                    println!("  the shaft moves at {}", pct(m));
                 }
+                run.nudged(moved);
             }
-            Stage::Resistance => self.e2 = Some(run_resistance(cli, c, id, out)?),
-            Stage::Breakaway => {
-                let w = sources::winding(
-                    self.e8.as_ref(),
-                    self.e2.as_ref(),
-                    Some(&self.sc),
-                    cli.l_henries,
-                )
-                .context("no winding R: burst declined and resistance did not run")?;
+            Stage::Centre { duty, cap, nudge } => {
+                println!("[centring] to mid travel at {}", pct(*duty));
+                centre(cli, c, id, order::centre_cfg(*duty, *cap, *nudge))?;
+            }
+            Stage::Burst { rungs, pre, seek } => {
+                let most = BurstAllowance::MAX_MV / run.rail_mv();
+                let explicit: Option<Vec<f64>> = cli
+                    .burst_pct
+                    .as_ref()
+                    .map(|p| p.iter().map(|p| *p as f64 / 100.0).collect());
+                if let Some(hi) = explicit.iter().flatten().copied().reduce(f64::max)
+                    && hi > most
+                {
+                    bail!(
+                        "a burst rung of {:.0}% applies more than the 3.2 V a burst may on this \
+                         {:.1} V rail ({} at most): leave --burst-pct out",
+                        hi * 100.0,
+                        run.rail_mv() / 1000.0,
+                        pct(most)
+                    );
+                }
+                let cfg = order::burst_cfg(
+                    explicit.as_deref().unwrap_or(rungs),
+                    *pre,
+                    *seek,
+                    burst_base(cli),
+                );
+                println!(
+                    "[burst, free] from rest at mid travel at {}",
+                    cfg.step_pct
+                        .iter()
+                        .map(|p| format!("{p}%"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                let (caps, notes) = run_bursts(cli, c, id, out, cfg, "inductance_snapshots.csv")?;
+                self.caps.extend(caps);
+                self.notes.extend(notes);
+                let fitted = fit_captures(&self.caps, &d.sc, &FitCfg::default());
+                let w = sources::winding(fitted.as_ref(), None, Some(&d.sc), cli.l_henries);
+                if let (Some(w), Some(stops), Until::Burst) = (w, cli.burst_stops, until) {
+                    let plan = DutyPlan::new(&d.lim, w.r_vpc, None);
+                    let (caps, notes) = run_held(cli, c, id, out, stops, &plan, w.r_vpc)?;
+                    self.caps.extend(caps);
+                    self.notes.extend(notes);
+                }
+                csvio::write_bursts(out, &self.caps)?;
+                let mut fitted = fit_captures(&self.caps, &d.sc, &FitCfg::default());
+                if let Some(r) = fitted.as_mut() {
+                    r.warnings.splice(0..0, self.notes.iter().cloned());
+                }
+                self.e8 = fitted;
+                let Some(w) = sources::winding(self.e8.as_ref(), None, Some(&d.sc), cli.l_henries)
+                else {
+                    return Ok(Ended::Declined);
+                };
+                run.measured(w.r_vpc);
+                let plan = run.plan().context("no plan")?;
                 println!(
                     "[winding] R {:.4} vcounts/ccount from {}, L {:.4} mH from {}",
                     w.r_vpc,
@@ -1002,22 +1097,51 @@ impl Recorded {
                     w.l_h * 1e3,
                     w.l_from.as_str()
                 );
-                let vbus = self.bias.as_ref().map_or(0.0, |b| b.1);
-                self.breakaway = Some(run_breakaway(cli, c, id, out, w.r_vpc, vbus)?);
+                let ma = d.lim.ma();
+                println!(
+                    "[plan] every drive that could stall from here stays under the current limit \
+                     of {}: seeks at {}, stop drives up to {}",
+                    ma.of(d.lim.i_lim as f64),
+                    pct(plan.seek),
+                    pct(plan.stop_cap)
+                );
                 self.w = Some(w);
             }
-            Stage::Ladder => {
+            Stage::Breakaway { cap } => {
+                println!("[breakaway] ramp up to {}", pct(*cap));
                 let r_vpc = self.w.as_ref().context("no winding R")?.r_vpc;
-                self.ladder = Some(run_ladder(cli, c, id, out, r_vpc)?);
+                let vbus = self.bias.as_ref().map_or(d.lim.vbus as f64, |b| b.1);
+                let bk = run_breakaway(cli, c, id, out, order::breakaway_cfg(*cap), r_vpc, vbus)?;
+                let top = bk.duty_bk_fwd.into_iter().chain(bk.duty_bk_rev).max();
+                run.broke_away(top.map(|q| q as f64 / Q15));
+                self.breakaway = Some(bk);
             }
-            Stage::Inertia => {
+            Stage::Ladder { seek, rungs } => {
+                println!(
+                    "[ladder] rungs {}, seeks at {}",
+                    rungs.iter().map(|r| pct(*r)).collect::<Vec<_>>().join(", "),
+                    pct(*seek)
+                );
+                let r_vpc = self.w.as_ref().context("no winding R")?.r_vpc;
+                let cfg = order::ladder_cfg(*seek, rungs);
+                self.ladder = Some(run_ladder(cli, c, id, out, cfg, r_vpc)?);
+            }
+            Stage::Inertia { seek, steps } => {
+                println!(
+                    "[inertia] steps {}, seeks at {}",
+                    steps.iter().map(|s| pct(*s)).collect::<Vec<_>>().join(", "),
+                    pct(*seek)
+                );
                 let r_vpc = self.w.as_ref().context("no winding R")?.r_vpc;
                 let ladder = self.ladder.as_ref().context("no ladder")?;
-                let priors = priors_of(r_vpc, ladder, &self.sense);
-                // the live fit is discarded on purpose: run only records,
-                // fit_dir recomputes everything from the files so run and
-                // refit cannot diverge
-                let _ = run_inertia(cli, c, id, out, &priors)?;
+                let priors = priors_of(r_vpc, ladder, &d.sense);
+                let base = InertiaCfg {
+                    tick_hz: priors.tick_hz,
+                    capture_ms: cli.inertia_ms,
+                    ..InertiaCfg::default()
+                };
+                let cfg = order::inertia_cfg(*seek, steps, base);
+                self.inertia = Some(run_inertia(cli, c, id, out, cfg, &priors)?);
             }
         }
         Ok(Ended::Done)
