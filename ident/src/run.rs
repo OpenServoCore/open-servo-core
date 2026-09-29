@@ -13,13 +13,15 @@
 //! centring, the breakaway ramp - is planned from R and the rail so its
 //! stall stays at or under the current limit ([`DutyPlan`]); the ladder and
 //! inertia rungs run free on the firmware limiter, the stall timer and the
-//! travel guard. Nothing in the default run stalls a stop.
+//! travel guard, inertia stepping from a moving base by what the limit
+//! leaves over the base's running current. Nothing in the default run
+//! stalls a stop.
 
 use crate::exp::AbortReason;
 use crate::exp::breakaway::BreakawayCfg;
 use crate::exp::centre::CentreCfg;
 use crate::exp::inductance::Cfg as BurstCfg;
-use crate::exp::inertia::InertiaCfg;
+use crate::exp::inertia::{BASE_OVER_SEEK, InertiaCfg};
 use crate::exp::ladder::LadderCfg;
 use crate::exp::rl::Scales;
 use crate::limits::{
@@ -55,9 +57,11 @@ pub enum Stage {
         seek: f64,
         rungs: Vec<f64>,
     },
+    /// Steps from a moving `base`, sized once its running current is
+    /// read ([`InertiaCfg::step_duties`]).
     Inertia {
         seek: f64,
-        steps: Vec<f64>,
+        base: f64,
     },
 }
 
@@ -205,7 +209,7 @@ impl Run {
             },
             (Step::Inertia, Some(p)) => Stage::Inertia {
                 seek: p.seek,
-                steps: fractions(&InertiaCfg::default().steps_q15),
+                base: p.seek + BASE_OVER_SEEK,
             },
             (Step::Park, Some(p)) => Stage::Centre {
                 duty: p.seek,
@@ -327,13 +331,11 @@ pub fn ladder_cfg(seek: f64, rungs: &[f64]) -> LadderCfg {
     }
 }
 
-pub fn inertia_cfg(seek: f64, steps: &[f64], base: InertiaCfg) -> InertiaCfg {
-    let mut steps_q15: Vec<i16> = steps.iter().map(|d| q15_floor(*d)).collect();
-    steps_q15.dedup();
+pub fn inertia_cfg(seek: f64, base: f64, cfg: InertiaCfg) -> InertiaCfg {
     InertiaCfg {
-        steps_q15,
         seek_duty_q15: q15_floor(seek),
-        ..base
+        base_q15: q15_floor(base),
+        ..cfg
     }
 }
 
@@ -606,9 +608,10 @@ mod tests {
                     self.ladder = exp.fit(R);
                     how
                 }
-                Stage::Inertia { seek, steps } => {
-                    let cfg = inertia_cfg(*seek, steps, InertiaCfg::default());
-                    let (exp, how) = self.go(Inertia::new(cfg, &params), params);
+                Stage::Inertia { seek, base } => {
+                    let cfg = inertia_cfg(*seek, *base, InertiaCfg::default());
+                    let plan = run.plan().expect("planned");
+                    let (exp, how) = self.go(Inertia::new(cfg, plan, &params), params);
                     if let Some(l) = &self.ladder {
                         let priors = InertiaPriors {
                             r_vpc: R,
@@ -746,6 +749,41 @@ mod tests {
         }
         let stall = plan.stop_cap * RAIL_2S as f64 / plan.r_vpc;
         assert!(stall <= LIM as f64 + 1e-6);
+    }
+
+    /// The bench MG90's inertia steps as planned: limit 280, 4.9 ohm, a
+    /// shaft that breaks away at 8%. Seeks at 10%, the base at 15%, and a
+    /// base drawing 80 counts leaves 9.1% of room on 2S: steps to 19.5,
+    /// 21.8 and 24.1%. On USB the same room is 16.4%.
+    #[test]
+    fn bench_inertia_base_and_steps() {
+        for (vbus, want) in [
+            (RAIL_2S, [0.1955, 0.2183, 0.2410]),
+            (RAIL_USB, [0.2322, 0.2733, 0.3145]),
+        ] {
+            let mut run = run(vbus);
+            let mut base = None;
+            while let Some(s) = run.next_stage() {
+                match s {
+                    Stage::Centre { nudge: true, .. } => run.nudged(Some(0.12)),
+                    Stage::Burst { .. } => run.measured(R),
+                    Stage::Breakaway { .. } => run.broke_away(Some(0.08)),
+                    Stage::Inertia { seek, base: b } => {
+                        assert!((seek - 0.10).abs() < 1e-12);
+                        base = Some(b);
+                    }
+                    _ => {}
+                }
+                run.ended(Ended::Done);
+            }
+            let base = base.expect("an inertia stage");
+            assert!((base - 0.15).abs() < 1e-12);
+            let cfg = inertia_cfg(0.10, base, InertiaCfg::default());
+            let steps = cfg.step_duties(&run.plan().unwrap(), 80.0);
+            for (got, want) in steps.iter().zip(want) {
+                assert!((got - want).abs() < 5e-4, "{vbus}: {steps:?}");
+            }
+        }
     }
 
     /// A virgin servo whose shaft needs more than the class-safe duty: the

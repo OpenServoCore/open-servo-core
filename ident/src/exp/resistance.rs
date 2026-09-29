@@ -10,9 +10,11 @@
 //! must be non-latching (stall_response Yield) or tripped above the ladder
 //! currents; a latched STALL aborts the run via the fault check. A seek
 //! that comes to rest anywhere but the stop it drove at ends the run before
-//! any dwell ([`super::seek::at_stop`]).
+//! any dwell ([`super::seek::at_stop`]). A dwell window is fitted only when
+//! its applied duty is the dwell's: a dwell the current limit held under
+//! it is declined, never fitted.
 
-use super::{AbortReason, Cmd, Experiment, RigParams, WindowSample, WindowStream, seek};
+use super::{AbortReason, Cmd, Experiment, GOVERNED, RigParams, WindowSample, WindowStream, seek};
 use crate::fitmath::{linear_ls, origin_ls};
 use crate::frame::TelemetrySnapshot;
 use crate::regs::control;
@@ -103,6 +105,7 @@ pub struct Resistance {
     still: u32,
     windows: WindowStream,
     samples: Vec<DwellSample>,
+    warnings: Vec<String>,
 }
 
 impl Resistance {
@@ -121,6 +124,7 @@ impl Resistance {
             still: 0,
             windows: WindowStream::new(params),
             samples: Vec::new(),
+            warnings: Vec::new(),
         }
     }
 
@@ -130,6 +134,14 @@ impl Resistance {
 
     pub fn samples(&self) -> &[DwellSample] {
         &self.samples
+    }
+
+    pub fn warnings(&self) -> &[String] {
+        &self.warnings
+    }
+
+    fn dwell_duty(&self) -> i16 {
+        self.dir() as i16 * self.cfg.ladder_q15[self.ladder_idx]
     }
 
     pub fn fit(&self) -> Option<ResistanceResult> {
@@ -244,10 +256,10 @@ impl Experiment for Resistance {
             Phase::DwellSet => {
                 self.phase = Phase::DwellRead;
                 self.polls_left = self.cfg.dwell_polls;
-                self.windows.mark_transition();
+                self.windows.mark_goal(self.dwell_duty());
                 Cmd::Write {
                     reg: control::GOAL_DUTY,
-                    value: self.dir() as i32 * self.cfg.ladder_q15[self.ladder_idx] as i32,
+                    value: self.dwell_duty() as i32,
                 }
             }
             Phase::DwellRead => {
@@ -276,6 +288,12 @@ impl Experiment for Resistance {
                 }
             }
             Phase::RestOff => {
+                if self.windows.declined() {
+                    self.warnings.push(format!(
+                        "rung {:.0}%: {GOVERNED}",
+                        self.dwell_duty() as f64 * 100.0 / 32767.0
+                    ));
+                }
                 self.phase = Phase::RestPause;
                 self.dwell += 1;
                 self.windows.mark_transition();
@@ -412,6 +430,31 @@ mod tests {
             assert_eq!(*tail[1], "write goal_duty 0");
             assert_eq!(*tail[0], "write torque_enable 0");
         }
+    }
+
+    /// Every rung stalls over a limit of 100 counts (26% draws 133): the
+    /// limiter holds each under its goal, so each is declined and nothing
+    /// reaches the fit.
+    #[test]
+    fn rung_with_no_clean_window_reports_declined() {
+        let mut servo = FakeServo::new(3.37);
+        servo.current_limit = Some(100);
+        let (exp, _) = run_e2(&mut servo);
+        assert!(exp.samples().is_empty(), "a governed window was fitted");
+        assert!(exp.fit().is_none());
+        let w = exp.warnings();
+        assert_eq!(w.len(), 8, "{w:?}");
+        assert_eq!(
+            w[0],
+            "rung 26%: declined: the current limit governed this window"
+        );
+        assert!(w.iter().all(|l| l.ends_with(GOVERNED)));
+        // a limit the rungs stall under: every rung fits, none declined
+        let mut servo = FakeServo::new(3.37);
+        servo.current_limit = Some(200);
+        let (exp, _) = run_e2(&mut servo);
+        assert!(exp.warnings().is_empty());
+        assert!((exp.fit().unwrap().r_vpc - 3.37).abs() < 0.02);
     }
 
     #[test]

@@ -9,7 +9,9 @@
 //! floor, and the applied duty never draws more than the limit. With
 //! `lease_ms` set the stall permit is a lease: granted by a write of true
 //! with torque on, extended by a rewrite, dropped by torque off, false, or
-//! the lease running out.
+//! the lease running out. With `stall_ms` set the stall timer runs too: a
+//! limiter that holds the goal back on a still shaft that long folds the
+//! limit to `stall_yield`.
 
 use super::{Cmd, Experiment, RigParams};
 use crate::burst::{
@@ -89,6 +91,12 @@ pub struct FakeServo {
     t_ceil: f64,
     /// A locked shaft: travel stops at this position and never leaves it.
     pub jam: Option<f64>,
+    /// The stall timer, ms; None never folds.
+    pub stall_ms: Option<f64>,
+    pub stall_yield: u16,
+    pinned_at: Option<f64>,
+    /// The limit folded to the yield, until torque off or a zero goal.
+    folded: bool,
     pub torque: bool,
     pub duty: i16,
     pub tel_mask: u16,
@@ -137,6 +145,10 @@ impl FakeServo {
             ceil0: 0.0,
             t_ceil: 0.0,
             jam: None,
+            stall_ms: None,
+            stall_yield: 0,
+            pinned_at: None,
+            folded: false,
             torque: false,
             duty: 0,
             tel_mask: 0,
@@ -229,15 +241,28 @@ impl FakeServo {
         (self.ceil0 + 128.0 * ticks).clamp(self.floor_q15 as f64, 32767.0)
     }
 
+    /// The limit in force: the current limit, or the yield once folded.
+    fn limit(&self) -> Option<u16> {
+        self.current_limit.map(|l| {
+            if self.folded {
+                l.min(self.stall_yield)
+            } else {
+                l
+            }
+        })
+    }
+
     /// The goal slewed by the ceiling, then cut to the largest duty whose
     /// current stays at the limit.
     fn govern(&self) -> i16 {
-        let Some(lim) = self.current_limit else {
+        let Some(lim) = self.limit() else {
             return self.duty;
         };
         let sign = self.duty.signum() as i32;
         let slewed = (self.duty.unsigned_abs() as f64).min(self.ceiling()) as i32;
-        let holds = |mag: i32| self.i_at((sign * mag) as i16).abs() <= lim as f64;
+        // the low-side shunt sees drive current only, never the brake
+        // current a low duty draws from a fast shaft
+        let holds = |mag: i32| self.i_at((sign * mag) as i16) * sign as f64 <= lim as f64;
         if holds(slewed) {
             return (sign * slewed) as i16;
         }
@@ -253,9 +278,9 @@ impl FakeServo {
         (sign * ok) as i16
     }
 
-    /// The firmware's `limit_flags`: bit 0 the limiter governs, bit 2 the
-    /// endstop blocks, bit 3 the permit is live. Yield (bit 1) is not
-    /// modelled.
+    /// The firmware's `limit_flags`: bit 0 the limiter governs, bit 1 the
+    /// stall timer folded the limit, bit 2 the endstop blocks, bit 3 the
+    /// permit is live.
     pub fn limit_flags(&self) -> u8 {
         let driving = self.torque && self.duty != 0;
         let mut f = 0;
@@ -264,10 +289,37 @@ impl FakeServo {
         } else if driving && self.applied() != self.duty {
             f |= 1;
         }
+        if self.folded {
+            f |= 2;
+        }
         if self.permit_live() {
             f |= 8;
         }
         f
+    }
+
+    /// The current, not the slew, holds the goal back on a still shaft.
+    fn pinned(&self) -> bool {
+        if !self.torque || self.duty == 0 || self.endstop_blocks() || self.omega() != 0.0 {
+            return false;
+        }
+        let slewed = (self.duty.unsigned_abs() as f64).min(self.ceiling()) as u16;
+        self.govern().unsigned_abs() < slewed
+    }
+
+    /// Run the stall timer over time that began at `from_ms`.
+    fn stall_timer(&mut self, from_ms: f64) {
+        let Some(ms) = self.stall_ms else {
+            return;
+        };
+        if !self.pinned() {
+            self.pinned_at = None;
+            return;
+        }
+        let at = *self.pinned_at.get_or_insert(from_ms);
+        if self.t_ms - at >= ms {
+            self.folded = true;
+        }
     }
 
     fn at_jam(&self) -> bool {
@@ -353,6 +405,10 @@ impl FakeServo {
             if on && !self.torque {
                 self.reset_ceiling(self.floor_q15 as f64);
             }
+            if !on {
+                self.folded = false;
+                self.pinned_at = None;
+            }
             self.torque = on;
         } else if reg == control::GOAL_DUTY {
             let goal = value as i16;
@@ -364,6 +420,10 @@ impl FakeServo {
                 self.floor_q15 as f64
             };
             self.reset_ceiling(from);
+            if goal == 0 {
+                self.folded = false;
+                self.pinned_at = None;
+            }
             self.duty = goal;
             self.t_duty_change = self.t_ms;
         } else if reg == control::TEL_MASK {
@@ -430,6 +490,12 @@ impl FakeServo {
     }
 
     pub fn advance(&mut self, ms: u32) {
+        let from = self.t_ms;
+        self.advance_plant(ms);
+        self.stall_timer(from);
+    }
+
+    fn advance_plant(&mut self, ms: u32) {
         if self.dynamic {
             // tick-sized substeps keep the ~tens-of-ms tau integration exact
             let dt = 1.0 / (self.f_med * 10.0);
@@ -504,6 +570,7 @@ impl FakeServo {
             });
         }
         self.t_ms = t0 + samples as f64 * dt * 1000.0;
+        self.stall_timer(t0);
     }
 
     pub fn read(&mut self) -> TelemetrySnapshot {
@@ -540,7 +607,7 @@ impl FakeServo {
             vdiff_mean: vdiff.round() as i16,
             duty_mean_q15: duty,
             duty_applied_q15: duty,
-            i_lim_counts: self.current_limit.unwrap_or(0),
+            i_lim_counts: self.limit().unwrap_or(0),
             limit_flags: self.limit_flags(),
             agg_seq: (self.t_ms / 0.8) as u64 as u16,
             ..Default::default()
@@ -950,6 +1017,37 @@ mod tests {
             assert_eq!(o.pos, pos as u16);
             assert_eq!(s.limit_flags(), 1);
         }
+    }
+
+    /// A locked shaft held at the limit for the stall time folds to the
+    /// yield and says so; torque off clears it. A free shaft never folds.
+    #[test]
+    fn fake_stall_folds_to_the_yield() {
+        let mut s = FakeServo::new(3.37);
+        s.current_limit = Some(150);
+        s.stall_ms = Some(500.0);
+        s.stall_yield = 90;
+        s.jam = Some(s.pos);
+        s.write(control::TORQUE_ENABLE, 1);
+        s.write(control::GOAL_DUTY, pct(64));
+        s.advance(20);
+        s.advance(460);
+        assert_eq!(s.limit_flags(), 1, "not yet");
+        s.advance(40);
+        assert_eq!(s.limit_flags(), 3);
+        let o = s.read();
+        assert_eq!(o.i_lim_counts, 90);
+        assert!(o.i_mean_counts.abs() <= 90);
+        s.write(control::TORQUE_ENABLE, 0);
+        assert_eq!(s.limit_flags() & 2, 0);
+
+        let mut s = FakeServo::new(3.37);
+        s.current_limit = Some(150);
+        s.stall_ms = Some(500.0);
+        s.write(control::TORQUE_ENABLE, 1);
+        s.write(control::GOAL_DUTY, pct(10));
+        s.advance(1000);
+        assert_eq!(s.limit_flags(), 0);
     }
 
     /// A goal the limit can hold passes, and without a limit nothing is

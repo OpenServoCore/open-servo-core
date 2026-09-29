@@ -14,7 +14,7 @@
 //! with the pos guard off: the shaft may start outside it.
 
 use super::seek::{self, SEEK_STEP_Q15, SEEK_TRAVEL_MIN, Watch};
-use super::{AbortReason, Cmd, Experiment, RigParams};
+use super::{AbortReason, Cmd, Experiment, LIMIT_YIELD_FOLDED, RigParams};
 use crate::frame::TelemetrySnapshot;
 use crate::regs::control;
 
@@ -23,9 +23,6 @@ const POT_MID: u16 = 2048;
 
 /// Raise per still window while clear of the stops: 2.5% of full scale.
 pub const NUDGE_STEP_Q15: i16 = 819;
-
-/// `limit_flags` bit 1: the stall timer folded the limit to the yield.
-const LIMIT_YIELD_FOLDED: u8 = 1 << 1;
 
 #[derive(Clone, Debug)]
 pub struct CentreCfg {
@@ -443,6 +440,35 @@ mod tests {
         );
         assert!(!s.torque);
         assert_eq!(exp.into_inner().moved_at(), None);
+    }
+
+    /// A jam the limiter holds at the current limit: the stall timer folds
+    /// it to the yield before the raises reach the cap, and the jam check
+    /// takes the fold as its verdict at once.
+    #[test]
+    fn a_yield_fold_ends_the_nudge_blocked() {
+        let mut s = FakeServo::new(3.37);
+        s.pos = 2048.0;
+        s.jam = Some(2048.0);
+        // 3932 stalls at 62 counts, the first raise at 75
+        s.current_limit = Some(70);
+        s.stall_ms = Some(100.0);
+        s.stall_yield = 40;
+        let (exp, log) = run(&mut s, true);
+        assert_eq!(
+            exp.abort(),
+            Some(AbortReason::Blocked {
+                pos: 2048,
+                moved: 0
+            })
+        );
+        let top = duties(&log).iter().map(|d| d.abs()).max().unwrap();
+        assert_eq!(top, 3932 + NUDGE_STEP_Q15 as i32, "ended by the fold");
+        assert_eq!(
+            &log[log.len() - 2..],
+            ["write goal_duty 0", "write torque_enable 0"]
+        );
+        assert!(!s.torque && s.limit_flags() & LIMIT_YIELD_FOLDED == 0);
     }
 
     /// A shaft creeping under the stillness speed at the start duty (USB at
