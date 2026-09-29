@@ -1164,6 +1164,7 @@ mod tests {
                 vmotor_b: None,
                 vbus_raw: None,
                 ntc_raw: None,
+                pos_lin: None,
             })
             .collect();
         Segment {

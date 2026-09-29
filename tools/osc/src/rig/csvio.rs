@@ -95,13 +95,13 @@ pub(crate) fn write_tel_frames(dir: &OutDir, name: &str, frames: &[TelFrame]) ->
     let mut w = dir.file(name)?;
     writeln!(
         w,
-        "tick,window_valid,pos,current,current_trough,duty_q15,vdiff,vbus,current_raw,vmotor_a,vmotor_b,vbus_raw,ntc_raw"
+        "tick,window_valid,pos,current,current_trough,duty_q15,vdiff,vbus,current_raw,vmotor_a,vmotor_b,vbus_raw,ntc_raw,pos_lin"
     )?;
     let opt = |v: Option<i32>| v.map(|v| v.to_string()).unwrap_or_default();
     for f in frames {
         writeln!(
             w,
-            "{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
             f.tick,
             f.window_valid as u8,
             opt(f.pos.map(|v| v as i32)),
@@ -115,13 +115,15 @@ pub(crate) fn write_tel_frames(dir: &OutDir, name: &str, frames: &[TelFrame]) ->
             opt(f.vmotor_b.map(|v| v as i32)),
             opt(f.vbus_raw.map(|v| v as i32)),
             opt(f.ntc_raw.map(|v| v as i32)),
+            opt(f.pos_lin.map(|v| v as i32)),
         )?;
     }
     Ok(())
 }
 
 /// Decoded frames back from a `write_tel_frames` CSV (cal-replay's input);
-/// empty cells are unselected fields.
+/// empty cells are unselected fields, and a CSV from before the `pos_lin`
+/// column reads as unselected.
 pub(crate) fn read_tel_frames(path: &Path) -> Result<Vec<TelFrame>> {
     fn opt<T: std::str::FromStr>(s: &str) -> Result<Option<T>>
     where
@@ -149,6 +151,10 @@ pub(crate) fn read_tel_frames(path: &Path) -> Result<Vec<TelFrame>> {
             vmotor_b: opt(&parts[10])?,
             vbus_raw: opt(&parts[11])?,
             ntc_raw: opt(&parts[12])?,
+            pos_lin: match parts.get(13) {
+                Some(s) => opt(s)?,
+                None => None,
+            },
         });
     }
     Ok(out)
@@ -466,6 +472,7 @@ mod tests {
                 vmotor_b: Some(12),
                 vbus_raw: Some(2290),
                 ntc_raw: None,
+                pos_lin: Some(2048 << 4),
             },
             TelFrame {
                 tick: 17,
@@ -481,6 +488,7 @@ mod tests {
                 vmotor_b: Some(3),
                 vbus_raw: None,
                 ntc_raw: Some(2050),
+                pos_lin: None,
             },
         ];
         write_tel_frames(&dir, "tel.csv", &frames).unwrap();

@@ -7,7 +7,12 @@
 //! captures/mg90/pot-lut-mg90-a-grid.json), pinned to the Python reference
 //! by CRC.
 
-use osc_integration::plant::{Plant, kernel, last_cmd, lut_live, seed};
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use osc_integration::plant::{
+    FakeIo, FakeMotor, FakeSensors, Plant, TIMING, duty_of, kernel, last_cmd, lut_live, seed,
+};
 use osc_integration::sim::{
     ImageKind, RamStore, Sim, Source, WireFrame, assert_valid, instruction, status,
 };
@@ -24,7 +29,8 @@ use osc_servo_core::regions::control::addr::lifecycle::TORQUE_ENABLE;
 use osc_servo_core::regions::control::addr::pot_lut::{LUT_CMD, LUT_KNOTS, LUT_PAGE, LUT_STATE};
 use osc_servo_core::regions::telemetry::addr::mode::DATA_FLAGS;
 use osc_servo_core::stamp::compute;
-use osc_servo_core::{Mode, MotorCmd, RegionStorage, Shared};
+use osc_servo_core::tel::{TelSample, TelStream};
+use osc_servo_core::{Kernel, Mode, MotorCmd, RegionStorage, Shared};
 use rstest::rstest;
 use rstest_reuse::apply;
 
@@ -541,6 +547,80 @@ fn endstop_trips_at_the_same_raw_counts_under_a_live_lut() {
     assert!(!endstop_blocks(None, 2048, (432, 2060), 4000));
     assert!(endstop_blocks(Some(&k), 2048, (432, 2060), 4000));
     assert_eq!(interp_q4(2048, &k) >> 4, 2081);
+}
+
+/// An always-armed sink; the kernel owns it, so the recording is shared.
+struct RecTel(Rc<RefCell<Vec<TelSample>>>);
+impl TelStream for RecTel {
+    fn active(&self) -> bool {
+        true
+    }
+    fn on_tick(&mut self, sample: &TelSample) {
+        self.0.borrow_mut().push(*sample);
+    }
+}
+
+/// TEL `pos_lin` is the Q4 word the kernel controls on: `interp_q4(pos)`
+/// over the live table on every sample, at rest and across an OpenLoop
+/// traverse both ways, `pos << 4` beside it once the table is gone.
+#[test]
+fn tel_pos_lin_is_interp_q4_of_pos_on_every_sample() {
+    let k = mg90_a();
+    let sh = Shared::new();
+    seed(&sh);
+    lut_live(&sh, &k);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.mode = Mode::OpenLoop;
+        t.control.lifecycle.torque_enable = true;
+    });
+    let rec = Rc::new(RefCell::new(Vec::new()));
+    let mut kn = Kernel::with_tel(
+        FakeIo {
+            sensors: FakeSensors,
+            motor: FakeMotor { last: None },
+        },
+        RecTel(rec.clone()),
+        TIMING,
+    );
+    let mut plant = Plant::new(1200);
+    let mut duty = 0i16;
+    for t in 0..12_000u32 {
+        match t {
+            2_000 => sh.table.with_mut(|t| t.control.lifecycle.goal_duty = 6000),
+            7_000 => sh.table.with_mut(|t| t.control.lifecycle.goal_duty = -6000),
+            11_000 => sh.table.with_mut(|t| t.control.lifecycle.goal_duty = 0),
+            _ => {}
+        }
+        kn.on_tick(plant.step(duty), &sh);
+        duty = duty_of(kn.io.motor.last.expect("a motor write happened"));
+    }
+    let samples = std::mem::take(&mut *rec.borrow_mut());
+    assert_eq!(samples.len(), 12_000);
+    let (lo, hi) = samples
+        .iter()
+        .fold((u16::MAX, 0), |(lo, hi), s| (lo.min(s.pos), hi.max(s.pos)));
+    let back = samples.last().expect("samples").pos;
+    assert!(
+        hi >= lo + 300 && back + 100 < hi,
+        "traversed {lo}..{hi} and back to {back}"
+    );
+    for (i, s) in samples.iter().enumerate() {
+        assert_eq!(s.pos_lin_q4, interp_q4(s.pos, &k), "sample {i}: {s:?}");
+    }
+    assert!(
+        samples.iter().any(|s| s.pos_lin_q4 != s.pos << 4),
+        "the table moved something"
+    );
+
+    sh.with_pot_lut_mut(|a| a.fill(0));
+    sh.table
+        .with_mut(|t| t.control.pot_lut.lut_state = state::IDENTITY);
+    for _ in 0..DECIM_MED {
+        kn.on_tick(plant.step(0), &sh);
+    }
+    for s in rec.borrow().iter() {
+        assert_eq!(s.pos_lin_q4, s.pos << 4, "{s:?}");
+    }
 }
 
 /// A page past the last or an unknown command is a Validation nack: the

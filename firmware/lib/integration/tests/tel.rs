@@ -19,13 +19,13 @@
 
 use osc_integration::sim::{
     Sim, Source, TelSample, WireFrame, assert_valid, expect_tel_payload, expect_tel_payload_rows,
-    frame_crc_ok, instruction, status,
+    frame_crc_ok, instruction, status, tel_sample,
 };
 use osc_protocol::wire::{Inst, Opcode, ResultCode};
 use osc_servo_core::BaudRate;
 use osc_servo_core::regions::control::addr::lifecycle::{GOAL_DUTY, TEL_COUNT, TEL_MASK};
 use osc_servo_core::regions::telemetry::addr::sensors::POS;
-use osc_servo_core::tel::FLAG_LAST;
+use osc_servo_core::tel::{BIT_POS, BIT_POS_LIN, FLAG_LAST};
 
 mod support;
 
@@ -125,6 +125,36 @@ fn burst_end_to_end() {
         "bus must stay quiet after LAST: {frames:#?}"
     );
     assert_eq!(status(servo[0]).0.result(), Some(ResultCode::Ok));
+}
+
+/// `pos | pos_lin`: the linearized word rides the wire beside the raw pot,
+/// in bit order, through the same encoder the golden pins.
+#[test_log::test]
+fn pos_lin_streams_beside_pos() {
+    let mask = BIT_POS | BIT_POS_LIN;
+    let mut sim = sim3m();
+    sim.add_servo(ID5);
+    sim.host_send(&write_u16(ID5, 0, TEL_MASK, mask));
+    let frames = sim.run();
+    assert_eq!(
+        status(&frames[frames.len() - 1]).0.result(),
+        Some(ResultCode::Ok)
+    );
+    sim.host_send(&write_u16(ID5, 0, TEL_COUNT, 16));
+    let frames = sim.run();
+    let stream = stream_frames(&frames);
+    assert_eq!(stream.len(), 1, "{frames:#?}");
+    let (_, payload) = status(stream[0]);
+    assert_eq!(payload, expect_tel_payload(mask, 16, 0));
+    for (i, s) in payload[4..].chunks(4).enumerate() {
+        let want = tel_sample(i as u32);
+        assert_eq!(u16::from_le_bytes([s[0], s[1]]), want.pos, "sample {i}");
+        assert_eq!(
+            u16::from_le_bytes([s[2], s[3]]),
+            want.pos_lin_q4,
+            "sample {i}"
+        );
+    }
 }
 
 #[test_log::test]
@@ -354,6 +384,7 @@ fn track(len: u16) -> Vec<TelSample> {
             vmotor_b: 600 - i,
             vbus_raw: 2000 + i,
             ntc_raw: 1500 + i,
+            pos_lin_q4: (1000 + i * 7) << 4,
             window_valid: !i.is_multiple_of(3),
             fault: false,
         })

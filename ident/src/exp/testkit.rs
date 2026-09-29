@@ -259,10 +259,11 @@ impl FakeServo {
                     0.0
                 }
             };
+            let raw = (self.pos + noise).round().clamp(0.0, 4095.0) as u16;
             sink.push(TelFrame {
                 tick: k as u64,
                 window_valid: driving,
-                pos: sel(1 << 0).then(|| (self.pos + noise).round().clamp(0.0, 4095.0) as u16),
+                pos: sel(1 << 0).then_some(raw),
                 current: sel(1 << 1).then(|| i.round() as i16),
                 current_trough: sel(1 << 2).then_some(512),
                 duty_q15: sel(1 << 3).then_some(if driving { self.duty } else { 0 }),
@@ -292,6 +293,8 @@ impl FakeServo {
                 }),
                 vbus_raw: sel(1 << 9).then_some(self.vbus as u16),
                 ntc_raw: sel(1 << 10).then_some(2048),
+                // the fake pot is linear: the identity Q4 word
+                pos_lin: sel(1 << 11).then_some(raw << 4),
             });
         }
         self.t_ms += samples as f64 * dt * 1000.0;

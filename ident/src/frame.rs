@@ -117,7 +117,9 @@ pub const TEL_BIT_VMOTOR_A: u16 = 1 << 7;
 pub const TEL_BIT_VMOTOR_B: u16 = 1 << 8;
 pub const TEL_BIT_VBUS_RAW: u16 = 1 << 9;
 pub const TEL_BIT_NTC_RAW: u16 = 1 << 10;
-pub const TEL_MASK_ALL: u16 = 0x7FF;
+/// The linearized pot the kernel controls on, the Q4 word itself.
+pub const TEL_BIT_POS_LIN: u16 = 1 << 11;
+pub const TEL_MASK_ALL: u16 = 0xFFF;
 
 /// Wire budget mirror: at most 6 selected fields sustain 20 kHz at 3 Mbaud.
 pub const TEL_FIELDS_MAX: u32 = 6;
@@ -157,6 +159,9 @@ pub struct TelFrame {
     pub vmotor_b: Option<u16>,
     pub vbus_raw: Option<u16>,
     pub ntc_raw: Option<u16>,
+    /// Linearized pot, Q4 (counts x 16): `interp_q4(pos)` over the live
+    /// table, `pos << 4` at the identity.
+    pub pos_lin: Option<u16>,
 }
 
 /// Decode one stream payload into per-tick frames; sample i lands at
@@ -201,6 +206,7 @@ pub fn decode_stream_payload(mask: u16, payload: &[u8], tick_base: u64) -> Optio
             vmotor_b: take(TEL_BIT_VMOTOR_B).map(u16::from_le_bytes),
             vbus_raw: take(TEL_BIT_VBUS_RAW).map(u16::from_le_bytes),
             ntc_raw: take(TEL_BIT_NTC_RAW).map(u16::from_le_bytes),
+            pos_lin: take(TEL_BIT_POS_LIN).map(u16::from_le_bytes),
         });
     }
     Some(out)
@@ -280,7 +286,7 @@ mod tests {
     /// Mirror of the core tel.rs test vector generator: sample(i) with every
     /// field, window_valid on even i.
     fn sample_bytes(mask: u16, i: u16) -> Vec<u8> {
-        let fields: [(u16, u16); 11] = [
+        let fields: [(u16, u16); 12] = [
             (TEL_BIT_POS, 0x1000 + i),
             (TEL_BIT_CURRENT, (-(i as i16) - 1) as u16),
             (TEL_BIT_CURRENT_TROUGH, 0xB000 + i),
@@ -292,6 +298,7 @@ mod tests {
             (TEL_BIT_VMOTOR_B, 0x0B00 + i),
             (TEL_BIT_VBUS_RAW, 0x0C00 + i),
             (TEL_BIT_NTC_RAW, 0x0D00 + i),
+            (TEL_BIT_POS_LIN, 0x0E00 + i),
         ];
         let mut out = Vec::new();
         for (bit, v) in fields {
@@ -430,6 +437,16 @@ mod tests {
     }
 
     #[test]
+    fn stream_pos_lin_decodes_beside_pos() {
+        let mask = TEL_BIT_POS | TEL_BIT_POS_LIN;
+        let p = stream_payload(mask, 0, true, 2);
+        let frames = decode_stream_payload(mask, &p, 0).expect("decodes");
+        assert_eq!(frames[1].pos, Some(0x1001));
+        assert_eq!(frames[1].pos_lin, Some(0x0E01));
+        assert_eq!(frames[1].ntc_raw, None);
+    }
+
+    #[test]
     fn stream_raw_mask_decodes_the_adc_frame_set() {
         let p = stream_payload(TEL_MASK_RAW, 0, true, 2);
         let frames = decode_stream_payload(TEL_MASK_RAW, &p, 0).expect("decodes");
@@ -446,7 +463,8 @@ mod tests {
     #[test]
     fn assembler_rejects_bad_masks() {
         assert!(StreamAssembler::new(0).is_none());
-        assert!(StreamAssembler::new(1 << 11).is_none());
+        assert!(StreamAssembler::new(1 << 12).is_none());
+        assert!(StreamAssembler::new(TEL_BIT_POS | TEL_BIT_POS_LIN).is_some());
         // every field blows the wire budget; six is the cap
         assert!(StreamAssembler::new(TEL_MASK_ALL).is_none());
         assert!(StreamAssembler::new(TEL_BIT_VBUS_RAW | TEL_BIT_NTC_RAW).is_some());

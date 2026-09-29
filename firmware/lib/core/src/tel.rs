@@ -14,7 +14,10 @@
 /// `tel_mask` bits, in canonical sample order. All v1 fields are 2 bytes.
 /// Bits 0..6 predate the raw set; 6..11 are the per-tick ADC frame raw
 /// values (`current` at bit 1 is the kernel's bias-subtracted held window
-/// sample - a conclusion, streamable for validating against host math).
+/// sample - a conclusion, streamable for validating against host math);
+/// bit 11 is the linearized pot the kernel controls on (`pot_lut`
+/// module), the Q4 word itself so a host can pin it against its own
+/// `interp_q4(pos)` exactly.
 pub const BIT_POS: u16 = 1 << 0;
 pub const BIT_CURRENT: u16 = 1 << 1;
 pub const BIT_CURRENT_TROUGH: u16 = 1 << 2;
@@ -26,7 +29,8 @@ pub const BIT_VMOTOR_A: u16 = 1 << 7;
 pub const BIT_VMOTOR_B: u16 = 1 << 8;
 pub const BIT_VBUS_RAW: u16 = 1 << 9;
 pub const BIT_NTC_RAW: u16 = 1 << 10;
-pub const MASK_ALL: u16 = 0x7FF;
+pub const BIT_POS_LIN: u16 = 1 << 11;
+pub const MASK_ALL: u16 = 0xFFF;
 
 /// Wire budget: a 16-sample batch must fit its own tick window at 3 Mbaud,
 /// which caps a sample at 6 fields (12 bytes). `tel_mask`'s table rule and
@@ -58,8 +62,9 @@ pub const fn mask_valid(mask: u16) -> bool {
 /// One fast tick's streamable primitives, in device counts. `pos`,
 /// `current_raw`, `current_trough`, `vmotor_a`, `vmotor_b`, `vbus_raw`,
 /// `ntc_raw` are the tick's raw ADC frame; `current` (signed, bias-subtracted, held - the fitter's
-/// domain, matching `i_hat_counts`), `vdiff`, and `vbus` are kernel
-/// conclusions, streamable to validate them against host re-derivations.
+/// domain, matching `i_hat_counts`), `vdiff`, `vbus` and `pos_lin_q4` (the
+/// linearized pot, Q4) are kernel conclusions, streamable to validate them
+/// against host re-derivations.
 /// `window_valid` (this tick's drive window met the sampling floors)
 /// travels in the frame's `valid` bitmap, not per sample.
 #[derive(Copy, Clone, Debug, Default)]
@@ -75,6 +80,7 @@ pub struct TelSample {
     pub vmotor_b: u16,
     pub vbus_raw: u16,
     pub ntc_raw: u16,
+    pub pos_lin_q4: u16,
     pub window_valid: bool,
     /// Kernel fault mask nonzero this tick. Travels in the frame's INST
     /// ALERT bit (the fault contract), never in the payload.
@@ -153,6 +159,7 @@ pub fn encode_sample(
     put(BIT_VMOTOR_B, s.vmotor_b.to_le_bytes());
     put(BIT_VBUS_RAW, s.vbus_raw.to_le_bytes());
     put(BIT_NTC_RAW, s.ntc_raw.to_le_bytes());
+    put(BIT_POS_LIN, s.pos_lin_q4.to_le_bytes());
     n
 }
 
@@ -190,7 +197,7 @@ mod tests {
     use super::*;
 
     /// The pre-raw six fields: the byte-golden mask below pins that adding
-    /// bits 6..11 moved nothing.
+    /// bits 6..12 moved nothing.
     const MASK_SIX: u16 = 0x3F;
     /// The raw-capture default: the ADC frame set plus applied duty.
     const MASK_RAW: u16 =
@@ -203,7 +210,7 @@ mod tests {
         assert_eq!(sample_len(BIT_POS | BIT_DUTY | BIT_VDIFF), 6);
         assert_eq!(sample_len(MASK_SIX), 12);
         assert_eq!(sample_len(MASK_RAW), 12);
-        assert_eq!(sample_len(MASK_ALL), 22);
+        assert_eq!(sample_len(MASK_ALL), 24);
         assert_eq!(STREAM_PAYLOAD_MAX, STREAM_HDR + 16 * SAMPLE_LEN_MAX);
     }
 
@@ -229,7 +236,8 @@ mod tests {
         assert!(mask_valid(
             BIT_VMOTOR_A | BIT_VMOTOR_B | BIT_VDIFF | BIT_VBUS
         ));
-        assert!(!mask_valid(1 << 11));
+        assert!(mask_valid(BIT_POS | BIT_POS_LIN));
+        assert!(!mask_valid(1 << 12));
         assert!(!mask_valid(1 << 15));
         // 7+ fields outruns the batch's tick window at 3 Mbaud
         assert!(!mask_valid(MASK_SIX | BIT_CURRENT_RAW));
@@ -258,6 +266,7 @@ mod tests {
             vmotor_b: 0x0B00 + i as u16,
             vbus_raw: 0x0C00 + i as u16,
             ntc_raw: 0x0D00 + i as u16,
+            pos_lin_q4: 0x0E00 + i as u16,
             window_valid: i.is_multiple_of(2),
             // varies across samples; the goldens below pin that it never
             // reaches the payload
@@ -299,6 +308,7 @@ mod tests {
             s.vmotor_b = take(BIT_VMOTOR_B);
             s.vbus_raw = take(BIT_VBUS_RAW);
             s.ntc_raw = take(BIT_NTC_RAW);
+            s.pos_lin_q4 = take(BIT_POS_LIN);
             out.push(s).unwrap();
         }
         (seq, flags, valid, out)
@@ -394,6 +404,7 @@ mod tests {
             0x1B,
             BIT_VBUS | BIT_VMOTOR_A,
             BIT_VBUS_RAW | BIT_NTC_RAW | BIT_POS,
+            BIT_POS | BIT_POS_LIN,
         ] {
             let samples: heapless::Vec<TelSample, 16> = (0..5).map(sample).collect();
             let mut buf = [0u8; STREAM_PAYLOAD_MAX];
@@ -421,6 +432,7 @@ mod tests {
                 assert_eq!(g.vmotor_b as i32, m(BIT_VMOTOR_B, w.vmotor_b as i32));
                 assert_eq!(g.vbus_raw as i32, m(BIT_VBUS_RAW, w.vbus_raw as i32));
                 assert_eq!(g.ntc_raw as i32, m(BIT_NTC_RAW, w.ntc_raw as i32));
+                assert_eq!(g.pos_lin_q4 as i32, m(BIT_POS_LIN, w.pos_lin_q4 as i32));
             }
         }
     }
