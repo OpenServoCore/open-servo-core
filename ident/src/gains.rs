@@ -73,10 +73,14 @@ impl Default for BwTargets {
 /// Identified plant, count domain: R and Ke as fitted (vcounts/ccount,
 /// vcounts per c/s), friction line, B ((c/s per medium tick) per ccount),
 /// pot noise sigma (counts), inductance via [`l_cd_from_si`], and the
-/// tick rates the encodings are anchored to.
+/// tick rates the encodings are anchored to. `r_vpc` is what `r_q12`
+/// carries - duty x rail over current at the current limit, when the burst
+/// measured the line - and `r_loop_vpc` the current loop's plant R, the
+/// line's slope with the bridge ([`crate::sources::Winding`]).
 #[derive(Copy, Clone, Debug)]
 pub struct PlantParams {
     pub r_vpc: f64,
+    pub r_loop_vpc: f64,
     pub ke_vpc: f64,
     pub fc: f64,
     pub fv: f64,
@@ -119,7 +123,7 @@ pub struct GainSet {
 /// Pole placement.
 ///
 /// Current PI, pole-zero cancel on the R + L*s plant (current.rs): kp =
-/// w_ci * L_cd cancels the electrical pole, ki = w_ci * R / tick_hz per
+/// w_ci * L_cd cancels the electrical pole, ki = w_ci * R_loop / tick_hz per
 /// fast tick sets the crossover, kaw = 2 * ki (current.rs back-calc
 /// convention, matching the bench-proven kaw/ki = 2 ratio of the tests).
 ///
@@ -149,7 +153,7 @@ pub struct GainSet {
 pub fn synthesize(p: &PlantParams, t: &BwTargets) -> GainSet {
     let w_ci = core::f64::consts::TAU * t.f_ci;
     let w_cv = core::f64::consts::TAU * t.f_cv;
-    let i_ki = w_ci * p.r_vpc / p.tick_hz;
+    let i_ki = w_ci * p.r_loop_vpc / p.tick_hz;
     let k_vel = p.b * p.f_med;
     let v_kp = w_cv / k_vel;
     let v_ki = v_kp * w_cv / (4.0 * p.f_med);
@@ -306,6 +310,7 @@ mod tests {
     fn rig_plant() -> PlantParams {
         PlantParams {
             r_vpc: 3.37,
+            r_loop_vpc: 3.37,
             ke_vpc: 0.2,
             fc: 20.0,
             fv: 0.001,
@@ -606,7 +611,7 @@ mod tests {
                 32767,
             );
             let v = duty as f64 * vbus as f64 / 32767.0;
-            i += a * (v - p.r_vpc * i);
+            i += a * (v - p.r_loop_vpc * i);
             peak = peak.max(i);
             if k > 100 {
                 assert!((i - 500.0).abs() < 15.0, "tick {k}: i={i}");
@@ -628,7 +633,7 @@ mod tests {
                 e.i_kaw_q412.raw,
                 32767,
             );
-            i += a * (duty as f64 * vbus as f64 / 32767.0 - p.r_vpc * i);
+            i += a * (duty as f64 * vbus as f64 / 32767.0 - p.r_loop_vpc * i);
         }
         assert!(i > 480.0, "saturated plateau i={i}");
         let mut settled = None;
@@ -643,7 +648,7 @@ mod tests {
                 e.i_kaw_q412.raw,
                 32767,
             );
-            i += a * (duty as f64 * vbus as f64 / 32767.0 - p.r_vpc * i);
+            i += a * (duty as f64 * vbus as f64 / 32767.0 - p.r_loop_vpc * i);
             if settled.is_none() && (i - 200.0).abs() < 20.0 {
                 settled = Some(k);
             }

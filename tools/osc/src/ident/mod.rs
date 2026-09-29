@@ -372,6 +372,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
             snapshot::read_u16(&mut c, id, config::I_KP_Q88)?,
             snapshot::read_u16(&mut c, id, config::I_KI_Q412)?,
             sense.tick_hz,
+            cli.f_ci,
             &sc,
         );
         let ma = lim.ma();
@@ -1038,14 +1039,17 @@ fn refuse_closed_loop(s: &DataState) -> Result<()> {
 
 // --- fitting ----------------------------------------------------------------
 
-fn priors_of(r_vpc: f64, l: &LadderResult, sense: &SenseJson) -> InertiaPriors {
+/// The inertia fit's priors. `r_loop_vpc` is the winding's slope with the
+/// bridge, the current loop's R: the back-EMF damping a step sees is Ke
+/// over the incremental R, not over V/I at the limit.
+fn priors_of(r_loop_vpc: f64, l: &LadderResult, sense: &SenseJson) -> InertiaPriors {
     let mean_opt = |a: Option<f64>, b: Option<f64>| match (a, b) {
         (Some(a), Some(b)) => (a + b) / 2.0,
         (Some(a), None) | (None, Some(a)) => a,
         (None, None) => 0.0,
     };
     InertiaPriors {
-        r_vpc,
+        r_vpc: r_loop_vpc,
         ke_vpc: l.ke.ke_vpc,
         fc: mean_opt(l.fric_fwd.map(|f| f.fc), l.fric_rev.map(|f| f.fc)),
         fv: mean_opt(l.fric_fwd.map(|f| f.fv), l.fric_rev.map(|f| f.fv)),
@@ -1169,11 +1173,12 @@ fn drive_stages(
             rec.declined.as_deref().unwrap_or("nothing fitted")
         ),
         Some(Over::Declined("burst")) if until != Until::Burst => bail!(
-            "no winding R: the burst declined ({}) and this servo carries no winding from an \
-             earlier identification, so nothing after it can be planned and the run stops here, \
-             back at mid travel; `osc ident run --stall-ladder` measures R from stop stalls held \
-             under the current limit instead",
-            gates(rec.e8.as_ref())
+            "{}",
+            sources::unmeasured(
+                &rec.e8
+                    .as_ref()
+                    .map_or("the bursts gave nothing to fit".into(), |r| r.reason())
+            )
         ),
         Some(Over::NoLadderRoom { floor, cap }) => bail!(
             "no winding R: the burst measured none{}, and {}",
@@ -1284,9 +1289,11 @@ impl Recorded {
         run.measured(w.r_vpc);
         let plan = run.plan().context("no plan")?;
         println!(
-            "[winding] R {:.4} vcounts/ccount from {}, L {:.4} mH from {}",
+            "[winding] R {:.4} vcounts/ccount from {} (the plan and r_q12), current loop R {:.4}, \
+             L {:.4} mH from {}",
             w.r_vpc,
             w.r_from.as_str(),
+            w.r_loop_vpc,
             w.l_h * 1e3,
             w.l_from.as_str()
         );
@@ -1360,7 +1367,8 @@ impl Recorded {
                 let (caps, notes) = run_bursts(cli, c, id, out, cfg, "inductance_snapshots.csv")?;
                 self.caps.extend(caps);
                 self.notes.extend(notes);
-                let fitted = fit_captures(&self.caps, &d.sc, &FitCfg::default());
+                let at = FitCfg::default().with_limit(d.lim.i_lim as f64 * d.sc.amps_per_count);
+                let fitted = fit_captures(&self.caps, &d.sc, &at);
                 let w = sources::winding(fitted.as_ref(), None, Some(&d.sc), cli.l_henries);
                 if let (Some(w), Some(stops), Until::Burst) = (w, cli.burst_stops, until) {
                     let plan = DutyPlan::new(&d.lim, w.r_vpc, None);
@@ -1369,7 +1377,7 @@ impl Recorded {
                     self.notes.extend(notes);
                 }
                 csvio::write_bursts(out, &self.caps)?;
-                let mut fitted = fit_captures(&self.caps, &d.sc, &FitCfg::default());
+                let mut fitted = fit_captures(&self.caps, &d.sc, &at);
                 if let Some(r) = fitted.as_mut() {
                     r.warnings.splice(0..0, self.notes.iter().cloned());
                 }
@@ -1426,9 +1434,9 @@ impl Recorded {
                     pct(*base),
                     pct(*seek)
                 );
-                let r_vpc = self.w.as_ref().context("no winding R")?.r_vpc;
+                let r_loop = self.w.as_ref().context("no winding R")?.r_loop_vpc;
                 let ladder = self.ladder.as_ref().context("no ladder")?;
-                let priors = priors_of(r_vpc, ladder, &d.sense);
+                let priors = priors_of(r_loop, ladder, &d.sense);
                 let cfg = InertiaCfg {
                     tick_hz: priors.tick_hz,
                     capture_ms: cli.inertia_ms,
@@ -1489,7 +1497,17 @@ fn fit_dir(cli: &Ctx, dir: PathBuf) -> Result<()> {
     let sc = sense.scales();
     let inductance = match (csvio::read_bursts(&dir)?.as_slice(), sc) {
         ([], _) | (_, None) => None,
-        (caps, Some(sc)) => osc_ident::exp::inductance::fit_captures(caps, &sc, &FitCfg::default()),
+        (caps, Some(sc)) => {
+            let log = dir.join("inductance_snapshots.csv");
+            let i_lim = csvio::read_current_limit(&log)?.with_context(|| {
+                format!(
+                    "{} holds no current limit: the burst's line is read at the servo's limit",
+                    log.display()
+                )
+            })?;
+            let at = FitCfg::default().with_limit(i_lim as f64 * sc.amps_per_count);
+            osc_ident::exp::inductance::fit_captures(caps, &sc, &at)
+        }
     };
     // E2 is refitted whenever the run recorded it, but the winding takes it
     // only behind a declined E8. A ladder that fitted nothing is why a run
@@ -1571,7 +1589,7 @@ fn fit_dir(cli: &Ctx, dir: PathBuf) -> Result<()> {
         rungs,
         warnings: Vec::new(),
     };
-    let priors = priors_of(w.r_vpc, &ladder, &sense);
+    let priors = priors_of(w.r_loop_vpc, &ladder, &sense);
     let series = csvio::read_step_series(&dir)?;
     let tel_steps = series.iter().filter(|(_, tel)| *tel).count();
     // same smoothing-window rule as Inertia::fit
@@ -1656,6 +1674,7 @@ fn fit_dir(cli: &Ctx, dir: PathBuf) -> Result<()> {
     };
     let plant = PlantParams {
         r_vpc: w.r_vpc,
+        r_loop_vpc: w.r_loop_vpc,
         ke_vpc: ladder.ke.ke_vpc,
         fc: mean_opt(ladder.fric_fwd.map(|f| f.fc), ladder.fric_rev.map(|f| f.fc)),
         fv: mean_opt(ladder.fric_fwd.map(|f| f.fv), ladder.fric_rev.map(|f| f.fv)),
@@ -1740,6 +1759,7 @@ fn synth_plant(
     };
     let plant = PlantParams {
         r_vpc: p.r_vpc,
+        r_loop_vpc: pick(p.r_loop_vpc, p.r_vpc),
         ke_vpc: p.ke_vpc,
         fc: p.fc,
         fv: p.fv,
@@ -1782,6 +1802,7 @@ fn synth_file(cli: &Ctx, id: u8, file: &Path, out: Option<&Path>) -> Result<()> 
         r_ohm: pj.r_ohm,
         r_vpc: plant.r_vpc,
         r_from: Source::Default,
+        r_loop_vpc: plant.r_loop_vpc,
         l_h: pj.l_henries,
         l_from: Source::Default,
     };
@@ -2089,22 +2110,23 @@ mod tests {
             r_ohm: Some(4.9),
             r_vpc: 7270.0 / 4096.0,
             r_from: Source::Stored,
+            r_loop_vpc: 7270.0 / 4096.0,
             l_h: 0.62e-3,
             l_from: Source::Stored,
         };
         let why = Over::Declined("burst");
-        let quiet = reuse_note(&w, why, "r-consistency, l-env-spread", None);
+        let quiet = reuse_note(&w, why, "capture-agreement, split-halves", None);
         assert_eq!(
             quiet,
             [
-                "[winding] the burst measured no winding R (r-consistency, l-env-spread), so the \
+                "[winding] the burst measured no winding R (capture-agreement, split-halves), so the \
                  run uses the R and L this servo already carries from an earlier identification: \
                  R 4.90 ohm, L 0.620 mH",
                 "  they still hold: the winding belongs to the motor and does not change with \
                  the position table or the gear train",
             ]
         );
-        let stale = reuse_note(&w, why, "r-consistency", Some(3.5));
+        let stale = reuse_note(&w, why, "split-halves", Some(3.5));
         assert_eq!(stale.len(), 3);
         assert_eq!(
             stale[2],
@@ -2117,35 +2139,18 @@ mod tests {
             floor: 0.133,
             cap: 0.155,
         };
-        assert!(reuse_note(&w, room, "r-consistency", None)[0].starts_with(
-            "[winding] the burst measured no winding R (r-consistency) and the resistance \
+        assert!(reuse_note(&w, room, "split-halves", None)[0].starts_with(
+            "[winding] the burst measured no winding R (split-halves) and the resistance \
                  stop ladder has no room on this supply (the current sensor reads from 13.3% \
                  duty, the current limit allows 15.5% at a stop), so the run uses"
         ));
     }
 
-    /// A run whose burst declined and that took the winding the servo
-    /// carries: the fit synthesizes from it as from any other winding,
-    /// params.json and the report name it "stored on the servo", and the
-    /// gains write R and L back as they were read.
-    #[test]
-    fn params_name_the_stored_winding_as_their_source() {
+    /// The rest of a run as it lands on disk: ladder rungs on a winding of
+    /// `r` vcounts per ccount and the inertia steps.
+    fn record_ladder_and_steps(out: &csvio::OutDir, r: f64) {
         use osc_ident::exp::ladder::RungSummary;
         use osc_ident::fits::StepSeries;
-
-        let (dir, out, r) = record_front("stored");
-        std::fs::remove_file(dir.join("resistance.csv")).unwrap();
-        let path = dir.join("params.json");
-        let mut p = ParamsFile::load(&path).unwrap();
-        let sc = p.sense.unwrap().scales().unwrap();
-        // what an earlier identification wrote: R 7270, L 0.6 mH at 1 kHz
-        let w_ci = std::f64::consts::TAU * 1000.0;
-        let l_cd = gains::l_cd_from_si(0.6e-3, 60, 15_000, 6_800, 3_300).unwrap();
-        let i_kp = (w_ci * l_cd * 256.0).round() as u16;
-        let i_ki = (w_ci * r / 20_100.0 * 4096.0).round() as u16;
-        let w = sources::stored(7270, i_kp, i_ki, 20_100, &sc).expect("a stored winding");
-        p.stored_winding = Some(StoredWindingJson::from(&w));
-        p.save(&path).unwrap();
 
         let rungs: Vec<RungSummary> = [1500.0, 3000.0, 4500.0, -1500.0, -3000.0, -4500.0]
             .into_iter()
@@ -2163,7 +2168,7 @@ mod tests {
                 }
             })
             .collect();
-        csvio::write_rungs(&out, &rungs).unwrap();
+        csvio::write_rungs(out, &rungs).unwrap();
         let series: Vec<(StepSeries, bool)> = [6000.0, -6000.0, 8000.0, -8000.0]
             .into_iter()
             .map(|duty: f64| {
@@ -2187,7 +2192,129 @@ mod tests {
                 (series, false)
             })
             .collect();
-        csvio::write_step_series(&out, &series).unwrap();
+        csvio::write_step_series(out, &series).unwrap();
+    }
+
+    macro_rules! mg90_2s {
+        ($($n:literal),*) => {
+            [$(include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../ident/testdata/burst/mg90-2s/burst-",
+                $n,
+                ".csv"
+            ))),*]
+        };
+    }
+
+    /// The bench MG90's bursts refitted from disk: the burst promotes its
+    /// line, params.json says which number went where, and the gains carry
+    /// it - r_q12 is V/I at the current limit the run's telemetry recorded,
+    /// i_ki the slope with the bridge, i_kp the L - and the inertia fit
+    /// takes the slope too.
+    #[test]
+    fn a_promoted_burst_writes_v_over_i_to_r_q12_and_the_slope_to_i_ki() {
+        use osc_ident::frame::TelemetrySnapshot;
+
+        let (dir, out, r) = record_front("burst");
+        std::fs::remove_file(dir.join("resistance.csv")).unwrap();
+        let caps: Vec<Capture> = mg90_2s!(
+            "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15"
+        )
+        .iter()
+        .map(|t| osc_ident::burst::from_csv(t).unwrap())
+        .collect();
+        csvio::write_bursts(&out, &caps).unwrap();
+        {
+            let mut log = csvio::SnapshotLog::create(&out, "inductance_snapshots.csv").unwrap();
+            let s = TelemetrySnapshot {
+                i_lim_counts: 280,
+                ..TelemetrySnapshot::default()
+            };
+            log.push(4.5, &s).unwrap();
+        }
+        record_ladder_and_steps(&out, r);
+
+        fit_dir(&ctx(dir.clone()), dir.clone()).unwrap();
+        let p = ParamsFile::load(&dir.join("params.json")).unwrap();
+        let sc = p.sense.unwrap().scales().unwrap();
+        let e8 = p.inductance.as_ref().expect("the burst");
+        assert!(e8.promoted, "{:?}", e8.blocking);
+        let wave = e8.wave.clone().expect("the waveform fit");
+        assert_eq!(wave.set_aside.len(), 1);
+        assert_eq!(wave.set_aside[0].0, 11);
+        assert!((wave.i_lim_a.unwrap() - 280.0 * sc.amps_per_count).abs() < 1e-12);
+        let (v_over_i, slope) = (wave.v_over_i_lim_ohm.unwrap(), wave.slope_lim_ohm.unwrap());
+        let plant = p.plant.expect("a plant");
+        assert_eq!(plant.r_source, "burst, free");
+        assert_eq!(plant.r_ohm, Some(v_over_i));
+        assert!((plant.r_vpc - sc.r_vpc(v_over_i)).abs() < 1e-12);
+        assert!((plant.r_loop_vpc - sc.r_vpc(slope)).abs() < 1e-12);
+        assert_eq!(plant.l_henries, wave.l_h);
+        assert!(
+            plant.winding_use.starts_with(&format!(
+                "r_q12 and every stall-safe duty take r_vpc, V/I at the current limit \
+                 ({v_over_i:.3} ohm); the current loop's i_ki takes r_loop_vpc, the V-I line's \
+                 slope with the bridge ({slope:.3} ohm)"
+            )),
+            "{}",
+            plant.winding_use
+        );
+        // the inertia fit's back-EMF damping is Ke over the loop's R
+        let l = p.ladder.expect("a ladder");
+        let priors = |r_vpc: f64| InertiaPriors {
+            r_vpc,
+            ke_vpc: l.ke_vpc,
+            fc: (l.fc_fwd.unwrap() + l.fc_rev.unwrap()) / 2.0,
+            fv: (l.fv_fwd.unwrap() + l.fv_rev.unwrap()) / 2.0,
+            tick_hz: 20_100.0,
+        };
+        let series = series_only(&csvio::read_step_series(&dir).unwrap());
+        let b = |r_vpc: f64| fits::b_exp_fit(&series, &priors(r_vpc), 12).unwrap().b;
+        let got = p.inertia.expect("inertia").b_exp.unwrap();
+        assert_eq!(got, b(plant.r_loop_vpc));
+        assert_ne!(got, b(plant.r_vpc));
+        let raw = |name: &str| p.gains.iter().find(|g| g.name == name).unwrap().raw;
+        let w_ci = std::f64::consts::TAU * 1000.0;
+        assert_eq!(raw("r_q12"), (plant.r_vpc * 4096.0).round() as u16);
+        assert_eq!(
+            raw("i_ki_q412"),
+            (w_ci * plant.r_loop_vpc / 20_100.0 * 4096.0).round() as u16
+        );
+        assert_eq!(raw("i_kp_q88"), (w_ci * plant.l_cd * 256.0).round() as u16);
+        let report = std::fs::read_to_string(dir.join("report.txt")).unwrap();
+        assert!(
+            report.contains(&format!("  waveform      R {:.3}", wave.r_ohm)),
+            "{report}"
+        );
+        assert!(
+            report.contains("-> r_q12 and every stall-safe duty"),
+            "{report}"
+        );
+        assert!(report.contains("-> the current loop's i_ki"), "{report}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A run whose burst declined and that took the winding the servo
+    /// carries: the fit synthesizes from it as from any other winding,
+    /// params.json and the report name it "stored on the servo", and the
+    /// gains write R and L back as they were read.
+    #[test]
+    fn params_name_the_stored_winding_as_their_source() {
+        let (dir, out, r) = record_front("stored");
+        std::fs::remove_file(dir.join("resistance.csv")).unwrap();
+        let path = dir.join("params.json");
+        let mut p = ParamsFile::load(&path).unwrap();
+        let sc = p.sense.unwrap().scales().unwrap();
+        // what an earlier identification wrote: R 7270, L 0.6 mH at 1 kHz
+        let w_ci = std::f64::consts::TAU * 1000.0;
+        let l_cd = gains::l_cd_from_si(0.6e-3, 60, 15_000, 6_800, 3_300).unwrap();
+        let i_kp = (w_ci * l_cd * 256.0).round() as u16;
+        let i_ki = (w_ci * r / 20_100.0 * 4096.0).round() as u16;
+        let w = sources::stored(7270, i_kp, i_ki, 20_100, 1000.0, &sc).expect("a stored winding");
+        p.stored_winding = Some(StoredWindingJson::from(&w));
+        p.save(&path).unwrap();
+
+        record_ladder_and_steps(&out, r);
 
         fit_dir(&ctx(dir.clone()), dir.clone()).unwrap();
         let p = ParamsFile::load(&path).unwrap();

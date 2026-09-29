@@ -784,7 +784,7 @@ impl Experiment for Held {
 
 #[cfg(test)]
 mod tests {
-    use super::super::inductance::{BurstRoute, fit_captures};
+    use super::super::inductance::{BurstRoute, WindingTerms, fit_captures};
     use super::super::testkit::{FakeServo, SynthBurst, pump, rig};
     use super::super::{AbortReason, Guarded};
     use super::*;
@@ -855,7 +855,14 @@ mod tests {
         assert_eq!((h.seats[0].dir, h.seats[0].pos), (-1, 122));
         assert!(h.promotable(), "{:?}", h.blocking());
         assert_eq!(r.route(), Some(BurstRoute::Held));
-        assert_eq!(r.gain_r_l(), Some((g.r_ohm, g.l_h)));
+        assert_eq!(
+            r.winding_terms(),
+            Some(WindingTerms {
+                r_plan_ohm: g.r_ohm,
+                r_loop_ohm: g.r_ohm,
+                l_h: g.l_h
+            })
+        );
     }
 
     /// A 4 ohm, 0.6 mH winding with a 0.2 V brush drop behind board D's

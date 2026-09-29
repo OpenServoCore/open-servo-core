@@ -393,6 +393,21 @@ pub(crate) fn read_rl_segments(dir: &Path) -> Result<Vec<Segment>> {
     Ok(out)
 }
 
+/// The current limit a snapshot log held, counts: the largest
+/// `i_lim_counts` it read, since the stall fold only ever lowers it. None
+/// when the log is missing or read no limit.
+pub(crate) fn read_current_limit(path: &Path) -> Result<Option<u16>> {
+    const I_LIM_COL: usize = 8;
+    if !path.exists() {
+        return Ok(None);
+    }
+    Ok(rows(path, I_LIM_COL + 1)?
+        .iter()
+        .filter_map(|r| r[I_LIM_COL].parse::<u16>().ok())
+        .filter(|i| *i > 0)
+        .max())
+}
+
 fn rows(path: &Path, cols: usize) -> Result<Vec<Vec<String>>> {
     let f = File::open(path).with_context(|| format!("open {}", path.display()))?;
     let mut out = Vec::new();
@@ -422,6 +437,26 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ident-csv-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         OutDir(dir)
+    }
+
+    /// The limit a burst stage's telemetry held: the largest it read, a
+    /// fold under it not the limit; nothing without a log.
+    #[test]
+    fn the_current_limit_reads_back_from_its_snapshot_log() {
+        let dir = tmp();
+        let name = "limit_snapshots.csv";
+        {
+            let mut log = SnapshotLog::create(&dir, name).unwrap();
+            for (t, i) in [(0.0, 280), (50.0, 168), (100.0, 280)] {
+                let s = TelemetrySnapshot {
+                    i_lim_counts: i,
+                    ..TelemetrySnapshot::default()
+                };
+                log.push(t, &s).unwrap();
+            }
+        }
+        assert_eq!(read_current_limit(&dir.0.join(name)).unwrap(), Some(280));
+        assert_eq!(read_current_limit(&dir.0.join("absent.csv")).unwrap(), None);
     }
 
     #[test]

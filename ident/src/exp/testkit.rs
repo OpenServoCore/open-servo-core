@@ -42,6 +42,44 @@ pub fn rig() -> RigParams {
     RigParams::new(Some((150, 3950)), 1100).with_stops((200, 4000))
 }
 
+macro_rules! mg90_2s {
+    ($($n:literal),*) => {
+        [$(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/burst/mg90-2s/burst-",
+            $n,
+            ".csv"
+        ))),*]
+    };
+}
+
+/// A burst run on the bench MG90 on 2S, the from-rest captures in run
+/// order: 25% forward, 25% reverse, 40% forward, 40% reverse, four each,
+/// the driven terminal sampled behind the shunt. Capture 11 reads its
+/// winding low.
+pub fn mg90_2s() -> Vec<Capture> {
+    mg90_2s!(
+        "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15"
+    )
+    .iter()
+    .map(|t| crate::burst::from_csv(t).expect("fixture"))
+    .collect()
+}
+
+/// Board D as fitted: 60 mohm shunt at G 15, 6k8/3k3 terminal taps, the
+/// 15k/10k rail tap.
+pub fn board_d_scales() -> crate::exp::rl::Scales {
+    let s = crate::units::SenseParams {
+        shunt_r_mohm: 60,
+        gain_milli: 15_000,
+        vmotor_div_top: 6_800,
+        vmotor_div_bot: 3_300,
+        vdd_mv: 3_300,
+        tick_hz: 20_100,
+    };
+    crate::exp::rl::Scales::from_sense(&s, 15_000, 10_000).expect("board D scales")
+}
+
 /// The bench MG90 as the fake models it on a rail of `vbus`: 4.9 ohm, the
 /// firmware limiter at 280 counts above a 13.3% window floor, a 13%
 /// breakaway and the measured b, between its stops 209..3849 and soft

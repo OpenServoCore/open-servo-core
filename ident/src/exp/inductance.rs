@@ -3,12 +3,16 @@
 //! rotor cannot follow it, which is the bias [`super::rl`] could not shed.
 //!
 //! The run feeds gain synthesis through the first route [`PROMOTION_GATES`]
-//! passes - held at a stop ([`super::held`]), else the free shaft from rest
-//! described here; the gains then take R and L_env from that route's
-//! per-period regression of [`super::winding`], over charge-balance currents
-//! and the volt-seconds the burst's voltage channels measured. When both
-//! decline, [`super::resistance`] supplies R when asked, else the winding
-//! the servo carries ([`crate::sources::stored`]).
+//! passes - held at a stop ([`super::held`]), else the free shaft from
+//! rest. The free shaft's numbers and verdict are the whole-waveform fit of
+//! [`super::wavefit`]: a line whose V/I at the current limit plans the
+//! stall-safe duties and whose slope and L close the current loop. When
+//! both decline, [`super::resistance`] supplies R when asked, else the
+//! winding the servo carries ([`crate::sources::stored`]).
+//!
+//! Everything below this paragraph - the ON-window slopes, the envelope,
+//! the pairs and the per-period regression of [`super::winding`] - is
+//! DIAGNOSTICS: reported, checked, and deciding nothing.
 //!
 //! The winding current is the shunt's mean over a whole PWM period over the
 //! duty (charge balance), not the ON-window level: decoupling inside the
@@ -42,11 +46,11 @@
 //!
 //! An iron-core motor reads LOWER at the PWM timescale - eddy currents in
 //! the laminations oppose fast flux change - so L_ripple under L_env is
-//! the expected sign and not a fault. The gates are a consistency check on
-//! R (the pairs route against the asymptote route) and a spread check on
-//! each L across the repeats of one duty.
+//! the expected sign and not a fault. The diagnostic checks compare R by
+//! the pairs route against the asymptote route and spread each L across
+//! the repeats of one duty.
 //!
-//! R itself comes from PAIRS of from-rest captures at two step duties:
+//! The pairs R comes from PAIRS of from-rest captures at two step duties:
 //! delta(asymptote) / delta(D x V), where the fixed bridge and brush drop
 //! cancels in the difference.
 //!
@@ -70,6 +74,7 @@ use core::fmt::Write as _;
 use super::held::{HeldRun, held_run};
 use super::rl::{Gate, Scales};
 use super::seek::{self, Watch};
+use super::wavefit::{WaveCfg, WaveRun, fit_run};
 use super::winding::{TapZeros, VoltRun, capture_volts, volt_run};
 use super::{AbortReason, Cmd, Experiment, RigParams};
 use crate::burst::{Capture, Chans, SAMPLE_US, nominal_cadence};
@@ -178,6 +183,22 @@ pub struct FitCfg {
     /// full scale. Under it the asymptote extrapolation error swamps
     /// delta(asymptote): the bench 20-vs-26% pair reads R 4x high.
     pub pair_min_duty_span: f64,
+    /// The whole-waveform fit that decides the free shaft's verdict.
+    pub wave: WaveCfg,
+}
+
+impl FitCfg {
+    /// The servo's current limit, amps: the line is read there for the
+    /// stall-safe duties and `r_q12`.
+    pub fn with_limit(self, i_lim_a: f64) -> Self {
+        Self {
+            wave: WaveCfg {
+                i_lim_a: Some(i_lim_a),
+                ..self.wave
+            },
+            ..self
+        }
+    }
 }
 
 impl Default for FitCfg {
@@ -201,6 +222,7 @@ impl Default for FitCfg {
             r_agree_tol: 0.10,
             stiff_supply_ohm: 0.5,
             pair_min_duty_span: 0.10,
+            wave: WaveCfg::default(),
         }
     }
 }
@@ -1178,9 +1200,17 @@ pub struct InductanceResult {
     /// pulse this over-reads, so it can only err toward declining. None
     /// without a usable control.
     pub src_prearm_ohm: Option<f64>,
+    /// The free shaft's verdict: the trace gates and the whole-waveform
+    /// fit's.
     pub gates: Vec<Gate>,
-    /// Every gate passed, `l-duty` included. [`Self::promotable`] is the
-    /// verdict that decides whether the gains use this run.
+    /// The ON-window, pairs and regression routes' checks: diagnostics,
+    /// deciding nothing.
+    pub checks: Vec<Gate>,
+    /// The whole-waveform fit over the from-rest captures, or why there is
+    /// none.
+    pub wave: Result<WaveRun, String>,
+    /// Every gate passed. [`Self::promotable`] is the verdict that decides
+    /// whether the gains use this run.
     pub ok: bool,
     /// The seated captures' route, with its own gates.
     pub held: HeldRun,
@@ -1208,27 +1238,39 @@ impl BurstRoute {
 ///
 ///   1. held at a stop, when every [`super::held::HELD_GATES`] gate passes;
 ///   2. free shaft from rest, when every gate below passes - the trace
-///      gates (captures, cadence, step-index, pre-bias, windows),
-///      r-consistency (from-rest pairs against the per-period regression on
-///      the run's voltage source, within `r_agree_tol`), the per-route
-///      spreads across repeats (l-ripple-spread, l-env-spread, within
-///      `l_agree_tol`), and supply (the voltage was measured inside the
-///      burst, or the pre-arm source resistance is under
-///      `stiff_supply_ohm`). `l-duty` is left out: L_ripple feeds no gain.
+///      gates (captures, cadence, step-index, pre-bias, windows), then the
+///      whole-waveform fit's: waveform (there is one: the captures sampled
+///      the driven terminal), residual, capture-agreement, physical-bounds,
+///      split-halves, and cross-route when the run has a start from rest in
+///      TEL to compare with (reported not available otherwise, never
+///      passed in its absence).
 ///
 /// When both decline, E2 supplies R and L stays at the default, else the
 /// servo's stored winding supplies both.
-pub const PROMOTION_GATES: [&str; 9] = [
+pub const PROMOTION_GATES: [&str; 11] = [
     "captures",
     "cadence",
     "step-index",
     "pre-bias",
     "windows",
-    "r-consistency",
-    "l-ripple-spread",
-    "l-env-spread",
-    "supply",
+    "waveform",
+    "residual",
+    "capture-agreement",
+    "physical-bounds",
+    "split-halves",
+    "cross-route",
 ];
+
+/// What the promoted route hands gain synthesis and the plan, SI.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct WindingTerms {
+    /// Duty x rail over current at the current limit: the stall-safe duties
+    /// and `r_q12`.
+    pub r_plan_ohm: f64,
+    /// The current loop's plant R.
+    pub r_loop_ohm: f64,
+    pub l_h: f64,
+}
 
 impl InductanceResult {
     /// The route [`PROMOTION_GATES`] picks, None when both decline.
@@ -1253,17 +1295,57 @@ impl InductanceResult {
             .collect()
     }
 
-    /// Winding R (ohms) and L (henries) for gain synthesis, both from the
-    /// promoted route's per-period regression so they share one tau. L is
-    /// L_env, not L_ripple: the current loop closes at ~1 kHz, a ~160 us
-    /// time constant on the envelope timescale, while L_ripple is the
-    /// eddy-shunted inductance of one 25 us ON window.
-    pub fn gain_r_l(&self) -> Option<(f64, f64)> {
-        let g = match self.route()? {
-            BurstRoute::Held => self.held.reg?,
-            BurstRoute::Free => self.volts.reg?,
+    /// The winding as the promoted route gives it. The free shaft reads its
+    /// line at the current limit: V/I there plans, the slope with the
+    /// bridge closes the current loop, both with the fit's L. The held route
+    /// has one R, its per-period regression's, for both.
+    pub fn winding_terms(&self) -> Option<WindingTerms> {
+        let t = match self.route()? {
+            BurstRoute::Held => {
+                let g = self.held.reg?;
+                WindingTerms {
+                    r_plan_ohm: g.r_ohm,
+                    r_loop_ohm: g.r_ohm,
+                    l_h: g.l_h,
+                }
+            }
+            BurstRoute::Free => {
+                let w = self.wave.as_ref().ok()?;
+                let at = w.at_limit?;
+                WindingTerms {
+                    r_plan_ohm: at.v_over_i_ohm,
+                    r_loop_ohm: at.slope_ohm,
+                    l_h: w.fit.l_h,
+                }
+            }
         };
-        (g.r_ohm > 0.0 && g.l_h > 0.0).then_some((g.r_ohm, g.l_h))
+        (t.r_plan_ohm > 0.0 && t.r_loop_ohm > 0.0 && t.l_h > 0.0).then_some(t)
+    }
+
+    /// Why the free shaft declined, in plain words, from its first blocking
+    /// gate.
+    pub fn reason(&self) -> String {
+        let aside = self.wave.as_ref().map_or(0, |w| w.set_aside().count());
+        match self.blocking().first().copied() {
+            None => "nothing blocked it".into(),
+            Some("captures") => "too few bursts from rest".into(),
+            Some("cadence" | "step-index" | "pre-bias" | "windows") => {
+                "the bursts did not come back clean".into()
+            }
+            Some("waveform") => match &self.wave {
+                Err(why) => why.clone(),
+                Ok(_) => "the bursts could not be fitted".into(),
+            },
+            Some("residual") => "the current did not follow the motor's model".into(),
+            Some("capture-agreement") if aside > 0 => {
+                format!("{aside} of its bursts read the winding low")
+            }
+            Some("capture-agreement") => "its bursts disagreed with each other".into(),
+            Some("physical-bounds") => "the result is not one a motor can have".into(),
+            Some("split-halves") => "two halves of its bursts disagreed".into(),
+            Some("cross-route") => "the bursts and the start from rest disagreed".into(),
+            Some(other) => format!("the {other} check failed"),
+        }
     }
 }
 
@@ -1294,8 +1376,18 @@ pub(super) fn worst_spread(groups: &[Vec<f64>]) -> f64 {
 ///
 /// Three passes, because the slope route needs numbers only the whole run
 /// has: fit every capture, solve R from the pairs and V0 from the control,
-/// then read L out of the per-capture geometry with both in hand.
+/// then read L out of the per-capture geometry with both in hand. The
+/// whole-waveform fit that decides the free shaft runs apart from them,
+/// over the from-rest captures.
 pub fn fit_captures(caps: &[Capture], sc: &Scales, cfg: &FitCfg) -> Option<InductanceResult> {
+    let wave = {
+        let rest: Vec<(usize, &Capture)> = caps
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.meta.step_q15 != 0 && c.meta.pre_q15 == 0 && !c.meta.seated)
+            .collect();
+        fit_run(&rest, sc, &cfg.wave)
+    };
     // A zero-duty capture is a rest reference: it only zeroes the taps.
     let refs: Vec<&Capture> = caps.iter().filter(|c| c.meta.step_q15 == 0).collect();
     let (seated, caps): (Vec<Capture>, Vec<Capture>) = caps
@@ -1560,6 +1652,15 @@ pub fn fit_captures(caps: &[Capture], sc: &Scales, cfg: &FitCfg) -> Option<Induc
         fold("step-index", &every),
         fold("pre-bias", &every),
         fold("windows", &rest),
+    ];
+    match &wave {
+        Ok(w) => {
+            gates.extend(w.gates.iter().cloned());
+            warnings.extend(w.notes.iter().cloned());
+        }
+        Err(why) => gates.push(gate("waveform", false, why.clone())),
+    }
+    let checks = vec![
         gate(
             "r-consistency",
             v_gap <= cfg.r_agree_tol,
@@ -1675,6 +1776,8 @@ pub fn fit_captures(caps: &[Capture], sc: &Scales, cfg: &FitCfg) -> Option<Induc
                 .collect::<Vec<_>>(),
         )
         .unwrap_or(0.0),
+        checks,
+        wave,
         tau_cb_us: tau_cb,
         tau_cb_bracket: bracket(&taus_cb, tau_cb),
         shunt_on_share: on_share,
@@ -2449,7 +2552,10 @@ mod tests {
             r.l_env_h * 1e3
         );
         assert!((pair - plant.r).abs() / plant.r < 0.10, "R {pair}");
-        assert!(r.ok, "gates {:?}", r.gates);
+        // the diagnostic checks all pass; a shunt-only recording carries no
+        // driven terminal, so the verdict has no waveform to fit
+        assert!(r.checks.iter().all(|g| g.pass), "checks {:?}", r.checks);
+        assert_eq!(r.blocking(), vec!["waveform"]);
         // L is duty independent by construction: the ON-phase voltage is
         // the rail whatever the duty
         for (d, l) in &r.l_by_duty {
