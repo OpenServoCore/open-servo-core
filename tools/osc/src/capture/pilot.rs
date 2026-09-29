@@ -14,6 +14,7 @@ use osc_client::Id;
 use osc_client::blocking::Client;
 use osc_client::nusb::NusbPipe;
 use osc_ident::frame::TelFrame;
+use osc_ident::limits::{POT_MAX, guards, is_board_default};
 use osc_ident::regs::{calib, config};
 
 use super::envelope::{
@@ -41,14 +42,6 @@ pub struct Args {
     root: Option<PathBuf>,
 }
 
-/// Full scale of the 12-bit pot ADC; soft limits spanning it are the board
-/// default, not a calibration.
-const POT_MAX: i32 = 4095;
-/// Soft-to-guard inset. The seek band spans BAND_HALF either side of the
-/// guard, so the guard must sit more than BAND_HALF inside soft or the band
-/// reaches the firmware soft-limit clamp and the seek fights it; 25 counts
-/// clear of it.
-const GUARD_INSET: u16 = BAND_HALF + 25;
 /// Shortest guard-to-guard runway worth sizing windows against: PILOT_W0 at
 /// the fastest 10% seen already crosses 255 counts of it.
 const PILOT_MIN_RUNWAY: u16 = 1500;
@@ -530,7 +523,7 @@ fn span(frames: &[TelFrame]) -> Result<u16> {
 /// Soft, guard, centre and runway from the servo's soft and phys limits,
 /// refusing a servo `osc cal` never set up or one too short to pilot.
 fn limits(soft: (i32, i32), phys: (i32, i32)) -> Result<Limits> {
-    if soft == (0, POT_MAX) || soft.1 - soft.0 >= POT_MAX {
+    if is_board_default(soft) {
         bail!(
             "soft limits {}..{} are the board default: run osc cal first",
             soft.0,
@@ -548,7 +541,8 @@ fn limits(soft: (i32, i32), phys: (i32, i32)) -> Result<Limits> {
     if soft[0] >= soft[1] {
         bail!("soft limits {}..{} are inverted", soft[0], soft[1]);
     }
-    let guard = guards(soft);
+    let (lo, hi) = guards((soft[0], soft[1]));
+    let guard = [lo, hi];
     let runway = guard[1] as i32 - guard[0] as i32;
     if runway < PILOT_MIN_RUNWAY as i32 {
         bail!("guard runway {runway} counts is under {PILOT_MIN_RUNWAY}: too short to pilot");
@@ -560,13 +554,6 @@ fn limits(soft: (i32, i32), phys: (i32, i32)) -> Result<Limits> {
         center: soft[0] + (soft[1] - soft[0]) / 2,
         runway: runway as u16,
     })
-}
-
-fn guards(soft: [u16; 2]) -> [u16; 2] {
-    [
-        soft[0].saturating_add(GUARD_INSET),
-        soft[1].saturating_sub(GUARD_INSET),
-    ]
 }
 
 /// Least-squares `y = a x + b` with r2; None under two distinct x.
@@ -867,8 +854,7 @@ mod tests {
 
     #[test]
     fn guard_band_clears_the_soft_clamp() {
-        const { assert!(GUARD_INSET > BAND_HALF) };
-        assert_eq!(guards([432, 3626]), [532, 3526]);
+        const { assert!(osc_ident::limits::GUARD_INSET > BAND_HALF) };
     }
 
     #[test]

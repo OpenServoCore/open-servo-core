@@ -790,7 +790,7 @@ impl Experiment for Held {
 #[cfg(test)]
 mod tests {
     use super::super::inductance::{BurstRoute, fit_captures};
-    use super::super::testkit::{FakeServo, SynthBurst, pump};
+    use super::super::testkit::{FakeServo, SynthBurst, pump, rig};
     use super::super::{AbortReason, Guarded};
     use super::*;
     use crate::burst::{CHAN_VBUS, CHAN_VMOTOR_A, CHAN_VMOTOR_B, from_csv};
@@ -982,10 +982,6 @@ mod tests {
     }
 
     const CHANS_ALL: u8 = CHAN_VMOTOR_A | CHAN_VMOTOR_B | CHAN_VBUS;
-
-    fn rig() -> RigParams {
-        RigParams::default()
-    }
 
     /// Soft limits just inside the mechanical ends, as a calibrated servo
     /// has them: only the permit lets the seek reach the stop.

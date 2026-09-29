@@ -141,7 +141,7 @@ mod tests {
         let mut servo = FakeServo::new(3.37);
         // uniform width 5 counts -> sigma = 5/sqrt(12) ~ 1.44
         servo.pos_noise = 5.0;
-        let mut exp = Bias::new(BiasCfg::default(), &RigParams::default());
+        let mut exp = Bias::new(BiasCfg::default(), &crate::exp::testkit::rig());
         let log = pump(&mut exp, &mut servo, 10_000);
         assert!(!log.contains(&"OVERRUN".to_string()));
         let r = exp.result().expect("enough polls");

@@ -413,7 +413,7 @@ mod tests {
 
     fn run() -> (Inertia, Vec<String>) {
         let mut servo = dynamic_servo();
-        let params = RigParams::default();
+        let params = crate::exp::testkit::rig();
         let mut exp = Guarded::new(Inertia::new(InertiaCfg::default(), &params), params);
         let log = pump(&mut exp, &mut servo, 4_000_000);
         assert!(exp.abort().is_none(), "abort: {:?}", exp.abort());
@@ -480,7 +480,7 @@ mod tests {
             servo.pot = Some(table);
             let params = RigParams {
                 pot,
-                ..RigParams::default()
+                ..crate::exp::testkit::rig()
             };
             let mut exp = Guarded::new(Inertia::new(InertiaCfg::default(), &params), params);
             let log = pump(&mut exp, &mut servo, 4_000_000);
@@ -511,7 +511,7 @@ mod tests {
 
     #[test]
     fn frames_outside_a_burst_are_dropped() {
-        let params = RigParams::default();
+        let params = crate::exp::testkit::rig();
         let mut exp = Inertia::new(InertiaCfg::default(), &params);
         exp.push_tel(&[TelFrame {
             tick: 0,

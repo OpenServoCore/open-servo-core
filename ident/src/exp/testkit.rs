@@ -11,7 +11,7 @@
 //! with torque on, extended by a rewrite, dropped by torque off, false, or
 //! the lease running out.
 
-use super::{Cmd, Experiment};
+use super::{Cmd, Experiment, RigParams};
 use crate::burst::{
     CHAN_VBUS, CHAN_VMOTOR_A, CHAN_VMOTOR_B, Capture, Meta, SAMPLE_HCLK, SAMPLE_US, SAMPLES,
     frame_len,
@@ -19,6 +19,12 @@ use crate::burst::{
 use crate::frame::{TelFrame, TelemetrySnapshot};
 use crate::lut::GridLut;
 use crate::regs::{ALL, Reg, control};
+
+/// The envelope the tests run in: a guard inside the fake's stops (200,
+/// 4000) and an abort over any current the fake draws unless a test asks.
+pub fn rig() -> RigParams {
+    RigParams::new(Some((150, 3950)), 1100)
+}
 
 pub struct FakeServo {
     pub r: f64,

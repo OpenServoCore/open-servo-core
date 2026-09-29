@@ -30,6 +30,7 @@ use osc_ident::exp::sweep::{Sweep, SweepCfg};
 use osc_ident::exp::{Guarded, RigParams};
 use osc_ident::frame::TelFrame;
 use osc_ident::kinematics::{self, KinematicsResult, angle_endpoints};
+use osc_ident::limits::ServoLimits;
 use osc_ident::lut::{self, stitched_motor_revs};
 use osc_ident::regs::{calib, config, control};
 use osc_ident::slip;
@@ -92,6 +93,8 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     let id = Id::new(id);
     let d = crate::state::descriptor(&mut c, id)?;
     crate::state::warn(&mut c, id, &d)?;
+    let lim = crate::rig::limits::read(&mut c, id)?;
+    lim.check_stall("the stop seek", EndstopCfg::default().seek_duty_q15)?;
 
     let sense = read_sense(&mut c, id)?;
     // TEL frames arrive one per fast tick, so tick_hz is the sweep sample rate.
@@ -111,7 +114,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     }
 
     let out = OutDir::create(args.out.as_deref().unwrap_or(Path::new("./cal-out")))?;
-    let r = run_endstop(&mut c, id, &out)?;
+    let r = run_endstop(&mut c, id, &out, &lim)?;
     let EndstopResult {
         pos_min_phys,
         pos_max_phys,
@@ -451,26 +454,36 @@ fn read_sense(c: &mut Client<NusbPipe>, id: Id) -> Result<SenseParams> {
 /// or a stale reversed flag makes a reversed servo read as normal and cal
 /// flips it back. Any failure restores the old flag, since a reversed servo
 /// left at 1 drives the wrong way and clamps the wrong endstop side.
-fn run_endstop(c: &mut Client<NusbPipe>, id: Id, out: &OutDir) -> Result<EndstopResult> {
+fn run_endstop(
+    c: &mut Client<NusbPipe>,
+    id: Id,
+    out: &OutDir,
+    lim: &ServoLimits,
+) -> Result<EndstopResult> {
     let polarity = c
         .read(id, config::DRIVE_POLARITY.addr, 1)
         .context("field read")?[0];
     write_reg(c, id, config::DRIVE_POLARITY, 1)?;
-    let r = seek_rails(c, id, out);
+    let r = seek_rails(c, id, out, lim);
     if r.is_err() {
         let _ = write_reg(c, id, config::DRIVE_POLARITY, polarity as i32);
     }
     r
 }
 
-fn seek_rails(c: &mut Client<NusbPipe>, id: Id, out: &OutDir) -> Result<EndstopResult> {
+fn seek_rails(
+    c: &mut Client<NusbPipe>,
+    id: Id,
+    out: &OutDir,
+    lim: &ServoLimits,
+) -> Result<EndstopResult> {
     println!("[endstop] seeking both rails (pos guard off, soft limits widened)");
     // pos guard off: driving into the physical ends IS the method. The
     // firmware clamps OpenLoop duty at the soft limits, so a recalibration
     // on an already-calibrated servo parks them at the phys limits for the
     // seek and restores them before the park (an abort still restores).
     let saved = pump::widen_pos_limits(c, id)?;
-    let params = RigParams::default().without_pos_guard();
+    let params = RigParams::new(None, lim.i_lim.min(i16::MAX as u16) as i16);
     let mut log = SnapshotLog::create(out, "endstop_snapshots.csv")?;
     let mut exp = Guarded::new(Endstop::new(EndstopCfg::default(), &params), params);
     let ran = Pump::new(c, id, Some(&mut log)).run(&mut exp);

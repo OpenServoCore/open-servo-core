@@ -36,6 +36,7 @@ use osc_ident::exp::verify::{
 use osc_ident::exp::{Guarded, RigParams};
 use osc_ident::fits::{self, InertiaPriors};
 use osc_ident::gains::{self, BwTargets, PlantParams};
+use osc_ident::limits::{Envelope, ServoLimits};
 use osc_ident::pot::Pot;
 use osc_ident::regs::{calib, control};
 use osc_ident::report::{self, PlantInputs, ReportInputs};
@@ -57,17 +58,22 @@ pub struct Args {
     /// ./ident-out]. `synth` takes it as the params.json path instead.
     #[arg(long, global = true)]
     out: Option<PathBuf>,
-    // rig envelope
-    #[arg(long, global = true, default_value_t = 150)]
-    guard_lo: u16,
-    #[arg(long, global = true, default_value_t = 3950)]
-    guard_hi: u16,
+    /// Travel guard, low end, counts [default: the servo's low soft limit,
+    /// 100 counts in].
+    #[arg(long, global = true)]
+    guard_lo: Option<u16>,
+    /// Travel guard, high end, counts [default: the servo's high soft
+    /// limit, 100 counts in].
+    #[arg(long, global = true)]
+    guard_hi: Option<u16>,
     #[arg(long, global = true, default_value_t = 1250)]
     slip_lo: u16,
     #[arg(long, global = true, default_value_t = 1650)]
     slip_hi: u16,
-    #[arg(long, global = true, default_value_t = 1100)]
-    i_abort: i16,
+    /// Current that aborts a run, counts [default: the servo's
+    /// current_limit_counts]; above the limit is refused.
+    #[arg(long, global = true)]
+    i_abort: Option<i16>,
     /// Motor inductance, henries (not identifiable from this telemetry).
     #[arg(long, global = true, default_value_t = gains::DEFAULT_L_HENRIES)]
     l_henries: f64,
@@ -147,11 +153,10 @@ impl From<BurstStops> for Stops {
 struct Ctx {
     baud: String,
     out: PathBuf,
-    guard_lo: u16,
-    guard_hi: u16,
+    guard: (Option<u16>, Option<u16>),
     slip_lo: u16,
     slip_hi: u16,
-    i_abort: i16,
+    i_abort: Option<i16>,
     l_henries: f64,
     step_periods: u16,
     burst_pct: Vec<u8>,
@@ -170,6 +175,14 @@ struct Ctx {
     /// The servo's position table, read once the bus is up: the experiments
     /// fit in the counts the kernel controls on.
     lut: Option<Lut>,
+    /// The servo's limits and the envelope resolved from them, read before
+    /// any drive.
+    drive: Option<Drive>,
+}
+
+struct Drive {
+    lim: ServoLimits,
+    env: Envelope,
 }
 
 impl Ctx {
@@ -265,8 +278,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     let mut cli = Ctx {
         baud,
         out: args.out.clone().unwrap_or_else(|| DEFAULT_OUT.into()),
-        guard_lo: args.guard_lo,
-        guard_hi: args.guard_hi,
+        guard: (args.guard_lo, args.guard_hi),
         slip_lo: args.slip_lo,
         slip_hi: args.slip_hi,
         i_abort: args.i_abort,
@@ -286,6 +298,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
         f_cp: args.f_cp,
         f_o: args.f_o,
         lut: None,
+        drive: None,
     };
     pump::install_ctrlc();
     if let Cmd::Fit { dir } = &args.cmd {
@@ -298,6 +311,19 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
     let id = Id::new(id);
     let d = crate::state::descriptor(&mut c, id)?;
     crate::state::warn(&mut c, id, &d)?;
+    if drives(&args.cmd) {
+        let lim = crate::rig::limits::read(&mut c, id)?;
+        let env = lim.envelope(cli.guard, cli.i_abort)?;
+        let ma = lim.ma();
+        println!(
+            "limits: current limit {}, travel guard {}..{}, a run aborts over {}",
+            ma.of(lim.i_lim as f64),
+            env.guard.0,
+            env.guard.1,
+            ma.of(env.i_abort as f64)
+        );
+        cli.drive = Some(Drive { lim, env });
+    }
     let lut = Lut::read(&mut c, id, &d)?;
     println!("pot: {} counts, lut {}", lut.pot().label(), lut.describe());
     cli.lut = Some(lut);
@@ -432,14 +458,35 @@ fn parse_chans(s: &str) -> Result<Chans, String> {
     Chans::parse(s).ok_or_else(|| format!("`{s}` is neither `driven` nor a mask 0..=7"))
 }
 
-fn rig(cli: &Ctx) -> RigParams {
-    RigParams {
-        pos_guard: Some((cli.guard_lo, cli.guard_hi)),
-        i_abort: cli.i_abort,
+/// The subcommands that move the shaft.
+fn drives(cmd: &Cmd) -> bool {
+    matches!(
+        cmd,
+        Cmd::Run
+            | Cmd::Bias
+            | Cmd::Resistance
+            | Cmd::Rl
+            | Cmd::Burst
+            | Cmd::Breakaway
+            | Cmd::Ladder
+            | Cmd::Inertia
+            | Cmd::Verify
+    )
+}
+
+fn drive(cli: &Ctx) -> Result<&Drive> {
+    cli.drive
+        .as_ref()
+        .context("the servo's limits were not read before a drive")
+}
+
+fn rig(cli: &Ctx) -> Result<RigParams> {
+    let env = drive(cli)?.env;
+    Ok(RigParams {
         slip: (cli.slip_lo, cli.slip_hi),
         pot: cli.pot(),
-        ..RigParams::default()
-    }
+        ..RigParams::new(Some(env.guard), env.i_abort)
+    })
 }
 
 fn targets(cli: &Ctx) -> BwTargets {
@@ -511,7 +558,7 @@ fn run_bias(
     // a rail-parked pot clips the noise measurement (and trips the guard)
     recenter(c, id)?;
     let mut log = csvio::SnapshotLog::create(out, "bias_snapshots.csv")?;
-    let mut exp = Guarded::new(Bias::new(BiasCfg::default(), &rig(cli)), rig(cli));
+    let mut exp = Guarded::new(Bias::new(BiasCfg::default(), &rig(cli)?), rig(cli)?);
     with_guard(c, id, |c| Pump::new(c, id, Some(&mut log)).run(&mut exp))?;
     check_abort("bias", exp.abort())?;
     let b = exp
@@ -529,9 +576,15 @@ fn run_resistance(
     out: &csvio::OutDir,
 ) -> Result<osc_ident::exp::resistance::ResistanceResult> {
     println!("[resistance] (end-stop stalls; pos guard off, soft limits widened)");
-    let params = rig(cli).without_pos_guard();
+    let cfg = ResistanceCfg::default();
+    let hardest = cfg
+        .ladder_q15
+        .iter()
+        .fold(cfg.seek_duty_q15, |m, d| m.max(*d));
+    drive(cli)?.lim.check_stall("resistance", hardest)?;
+    let params = rig(cli)?.without_pos_guard();
     let mut log = csvio::SnapshotLog::create(out, "resistance_snapshots.csv")?;
-    let mut exp = Guarded::new(Resistance::new(ResistanceCfg::default(), &params), params);
+    let mut exp = Guarded::new(Resistance::new(cfg, &params), params);
     let (d, before) = servo_state(c, id)?;
     with_guard(c, id, |c| {
         // stalling at the mechanical rails IS the method; restore inside
@@ -557,7 +610,7 @@ fn run_rl(
 ) -> Result<RlResult> {
     println!("[toggle] winding R/L (free shaft at mid travel, chained duty toggles)");
     recenter(c, id)?;
-    let params = rig(cli);
+    let params = rig(cli)?;
     let sc = sense
         .scales()
         .context("CalibSense scales degenerate (shunt/gain/dividers/vdd)")?;
@@ -599,7 +652,11 @@ fn run_inductance(
     let sc = sense
         .scales()
         .context("CalibSense scales degenerate (shunt/gain/dividers/vdd)")?;
-    let params = rig(cli);
+    drive(cli)?.lim.check_stall(
+        "the burst's hold against the stop",
+        crate::sweep::pct_q15(cli.burst_hold_pct),
+    )?;
+    let params = rig(cli)?;
     println!(
         "[burst, held] (seat at the {:?} stop at {}%, burst toward it; stall_permit for the run)",
         cli.burst_stops, cli.burst_hold_pct
@@ -679,7 +736,7 @@ fn run_breakaway(
     println!("[breakaway]");
     recenter(c, id)?;
     let mut log = csvio::SnapshotLog::create(out, "breakaway_snapshots.csv")?;
-    let mut exp = Guarded::new(Breakaway::new(BreakawayCfg::default()), rig(cli));
+    let mut exp = Guarded::new(Breakaway::new(BreakawayCfg::default()), rig(cli)?);
     with_guard(c, id, |c| Pump::new(c, id, Some(&mut log)).run(&mut exp))?;
     check_abort("breakaway", exp.abort())?;
     Ok(exp.into_inner().fit(r_vpc, vbus_mean))
@@ -694,7 +751,7 @@ fn run_ladder(
 ) -> Result<LadderResult> {
     println!("[ladder]");
     recenter(c, id)?;
-    let params = rig(cli);
+    let params = rig(cli)?;
     let mut log = csvio::SnapshotLog::create(out, "ladder_snapshots.csv")?;
     let mut exp = Guarded::new(Ladder::new(LadderCfg::default(), &params), params);
     with_guard(c, id, |c| Pump::new(c, id, Some(&mut log)).run(&mut exp))?;
@@ -716,7 +773,7 @@ fn run_inertia(
 ) -> Result<osc_ident::exp::inertia::InertiaResult> {
     println!("[inertia]");
     recenter(c, id)?;
-    let params = rig(cli);
+    let params = rig(cli)?;
     let cfg = InertiaCfg {
         tick_hz: priors.tick_hz,
         capture_ms: cli.inertia_ms,
@@ -737,7 +794,7 @@ fn run_inertia(
 }
 
 fn run_verify(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
-    let params = rig(cli);
+    let params = rig(cli)?;
     let tick_hz = snapshot::read_u16(c, id, calib::TICK_HZ)? as f64;
     let (d, before) = servo_state(c, id)?;
     refuse_closed_loop(&before)?;

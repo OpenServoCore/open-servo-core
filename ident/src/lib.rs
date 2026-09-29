@@ -15,6 +15,7 @@ pub mod fits;
 pub mod frame;
 pub mod gains;
 pub mod kinematics;
+pub mod limits;
 pub mod lut;
 pub mod pot;
 pub mod regs;

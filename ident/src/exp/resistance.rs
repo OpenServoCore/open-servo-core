@@ -302,12 +302,12 @@ impl Experiment for Resistance {
 
 #[cfg(test)]
 mod tests {
+    use super::super::Guarded;
     use super::super::testkit::{FakeServo, pump};
-    use super::super::{Guarded, RigParams};
     use super::*;
 
     fn run_e2(servo: &mut FakeServo) -> (Resistance, Vec<String>) {
-        let params = RigParams::default().without_pos_guard();
+        let params = crate::exp::testkit::rig().without_pos_guard();
         let mut exp = Guarded::new(Resistance::new(ResistanceCfg::default(), &params), params);
         let log = pump(&mut exp, servo, 2_000_000);
         assert!(exp.abort().is_none(), "abort: {:?}", exp.abort());

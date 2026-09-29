@@ -447,7 +447,7 @@ mod tests {
     #[test]
     fn recovers_planted_ke_and_friction_line() {
         let mut servo = physical_servo();
-        let (exp, log) = run_e3(&mut servo, RigParams::default());
+        let (exp, log) = run_e3(&mut servo, crate::exp::testkit::rig());
         assert!(!log.contains(&"OVERRUN".to_string()));
         let fit = exp.fit(3.37).expect("usable rungs");
         assert_eq!(fit.rungs.iter().filter(|r| r.used).count(), 12);
@@ -475,7 +475,7 @@ mod tests {
             servo.pot = Some(table);
             let params = RigParams {
                 pot,
-                ..RigParams::default()
+                ..crate::exp::testkit::rig()
             };
             let (exp, _) = run_e3(&mut servo, params);
             exp.fit(3.37).expect("usable rungs").ke.ke_vpc
@@ -489,14 +489,14 @@ mod tests {
     #[test]
     fn slip_zone_samples_are_masked() {
         let mut clean = physical_servo();
-        let (exp_clean, _) = run_e3(&mut clean, RigParams::default());
+        let (exp_clean, _) = run_e3(&mut clean, crate::exp::testkit::rig());
         let mut glitched = physical_servo();
         // +80-count pot artifact strictly inside the masked slip zone:
         // above the sweep-start threshold (band lo + stop_margin) so the
         // seek geometry matches the clean run, and low enough that the
         // +80 readings also stay inside the mask
         glitched.glitch_zone = Some((1460.0, 1560.0));
-        let (exp_glitch, _) = run_e3(&mut glitched, RigParams::default());
+        let (exp_glitch, _) = run_e3(&mut glitched, crate::exp::testkit::rig());
         let a = exp_clean.fit(3.37).unwrap();
         let b = exp_glitch.fit(3.37).unwrap();
         assert!(
@@ -517,7 +517,7 @@ mod tests {
         let params = RigParams {
             pos_guard: Some((1600, 2500)),
             slip: (0, 0),
-            ..RigParams::default()
+            ..crate::exp::testkit::rig()
         };
         let cfg = LadderCfg {
             min_steady: 40,
