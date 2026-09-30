@@ -25,6 +25,10 @@ impl VcalLpf {
         } else {
             self.state_q6 += (x - self.state_q6) >> 7;
         }
+        self.counts()
+    }
+
+    pub fn counts(&self) -> u16 {
         (self.state_q6 >> 6) as u16
     }
 }

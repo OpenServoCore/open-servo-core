@@ -597,7 +597,10 @@ nonzero write to `tel_count` starts a burst of that many control-tick
 samples. Both compose with HOLD/COMMIT, so a goal write and the arm
 commit together: the capture starts at the commit and the step edge
 lands inside it, at the first medium tick after the commit (sec 5.7). A
-committed `tel_count` of 0 disarms.
+committed `tel_count` of 0 disarms. The stream carries every control
+tick; polled, the TELEMETRY sensor registers (the raw samples,
+`vcal_lpf`, `current_bias_counts`) refresh once per medium tick (2 kHz),
+like the estimates.
 
 Burst frames are ordinary status frames with result code `stream` - the
 one result code that marks a frame no instruction directly owes.

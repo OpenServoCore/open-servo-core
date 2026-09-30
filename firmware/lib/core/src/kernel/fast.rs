@@ -58,8 +58,8 @@ pub struct Measured {
 pub struct Fast {
     pwm_arr: u16,
     vcal_lpf: VcalLpf,
-    /// Shunt zero-current offset in use; its value is republished to
-    /// `current_bias_counts` every tick.
+    /// Shunt zero-current offset in use; the medium step publishes it to
+    /// `current_bias_counts`.
     bias: BiasTracker,
     oc: OcDetector,
     bemf: BemfObs,
@@ -138,6 +138,14 @@ impl Fast {
         self.i_meas_last
     }
 
+    pub fn bias_counts(&self) -> u16 {
+        self.bias.counts()
+    }
+
+    pub fn vcal_lpf_counts(&self) -> u16 {
+        self.vcal_lpf.counts()
+    }
+
     /// One tick's measurement against the window the PREVIOUS tick's
     /// command drove: this frame's scan sampled the period that command
     /// drove, so terminal and sign attribution stay correct across sign
@@ -151,23 +159,7 @@ impl Fast {
         tel: &mut T,
         shared: &Shared,
     ) -> Measured {
-        let p = shared.table.region_ptr();
-        let vcal_lpf = self.vcal_lpf.update(frame.vcal);
-        // SAFETY: ISR context is the region's sole writer (the `sample_tick`
-        // contract); volatile per field so the stores survive optimization.
-        unsafe {
-            let s = &raw mut (*p).telemetry.sensors;
-            (&raw mut (*s).pos).write_volatile(frame.pos);
-            (&raw mut (*s).current).write_volatile(frame.current);
-            (&raw mut (*s).vcal).write_volatile(frame.vcal);
-            (&raw mut (*s).vcal_lpf).write_volatile(vcal_lpf);
-            (&raw mut (*s).vmotor_a).write_volatile(frame.vmotor_a);
-            (&raw mut (*s).vmotor_b).write_volatile(frame.vmotor_b);
-            (&raw mut (*s).current_trough).write_volatile(frame.current_trough);
-            (&raw mut (*s).vbus_raw).write_volatile(frame.vbus_raw);
-            (&raw mut (*s).ntc_raw).write_volatile(frame.ntc_raw);
-        }
-
+        self.vcal_lpf.update(frame.vcal);
         let ticks = window::drive_ticks(self.duty_q15, self.pwm_arr);
         let fwd = self.duty_q15 >= 0;
         let sel = window::select(
@@ -182,11 +174,6 @@ impl Fast {
             } else {
                 self.bias.counts()
             };
-        // SAFETY: sole-telemetry-writer contract (`Kernel` doc); volatile
-        // store.
-        unsafe {
-            (&raw mut (*p).telemetry.sensors.current_bias_counts).write_volatile(bias);
-        }
         let i_meas = window::i_from_frame(frame, sel, fwd, bias);
         if let Some(i) = i_meas {
             self.i_meas_last = i.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
@@ -240,6 +227,7 @@ impl Fast {
             .ident
             .sample(self.i_meas_last, self.vdiff_last, self.duty_q15)
         {
+            let p = shared.table.region_ptr();
             // SAFETY: sole-telemetry-writer contract (`Kernel` doc);
             // volatile per-field stores at the ident window boundary.
             unsafe {

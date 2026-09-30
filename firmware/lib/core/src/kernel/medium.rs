@@ -436,6 +436,17 @@ impl Medium {
         // SAFETY: sole-telemetry-writer contract (`Kernel` doc); volatile
         // per-field stores, medium-boundary publish.
         unsafe {
+            let s = &raw mut (*p).telemetry.sensors;
+            (&raw mut (*s).pos).write_volatile(frame.pos);
+            (&raw mut (*s).current).write_volatile(frame.current);
+            (&raw mut (*s).vcal).write_volatile(frame.vcal);
+            (&raw mut (*s).vcal_lpf).write_volatile(fast.vcal_lpf_counts());
+            (&raw mut (*s).vmotor_a).write_volatile(frame.vmotor_a);
+            (&raw mut (*s).vmotor_b).write_volatile(frame.vmotor_b);
+            (&raw mut (*s).current_trough).write_volatile(frame.current_trough);
+            (&raw mut (*s).vbus_raw).write_volatile(frame.vbus_raw);
+            (&raw mut (*s).ntc_raw).write_volatile(frame.ntc_raw);
+            (&raw mut (*s).current_bias_counts).write_volatile(fast.bias_counts());
             let e = &raw mut (*p).telemetry.estimates;
             (&raw mut (*e).theta_hat_q16).write_volatile(theta_hat);
             (&raw mut (*e).omega_hat_cps).write_volatile(omega_hat);
