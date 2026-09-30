@@ -460,13 +460,13 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                         let pc = PositionCfg {
                             kp_q88: loop_pos.p_kp_q88,
                             pos_deadband_counts: loop_pos.pos_deadband_counts,
-                            band_gain_q4,
                             vel_limit_cps: loop_pos.velocity_limit_cps,
                         };
                         let out = position::step(
                             self.traj.theta_star_q16(),
                             self.traj.omega_star_q16(),
                             theta_hat,
+                            band_gain_q4,
                             &pc,
                         );
                         self.omega_ref_q16 = out.omega_ref_q16;
@@ -509,14 +509,15 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                 cutoff_cc: therm_cfg.cutoff_cc,
                 pos_min_soft_counts: pos_lim.pos_min_soft_counts,
                 pos_max_soft_counts: pos_lim.pos_max_soft_counts,
-                stall_permit: life.stall_permit && self.permit_ticks != 0,
             };
+            let permit = life.stall_permit && self.permit_ticks != 0;
             let omega_abs_cps = omega_pot.unsigned_abs() >> 16;
             let band = self.limits.fold(
                 pinned,
                 omega_abs_cps,
                 self.fusion.tau_d_counts().unsigned_abs(),
                 theta_hat >> 16,
+                permit,
                 &lcfg,
             );
             self.i_band = band;
@@ -683,7 +684,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             let limit_flags = (pinned as u8 * limits::flag::CEILING)
                 | (self.limits.stalled() as u8 * limits::flag::YIELD)
                 | ((band.lo + band.hi != 0) as u8 * limits::flag::ENDSTOP)
-                | (lcfg.stall_permit as u8 * limits::flag::PERMIT);
+                | (permit as u8 * limits::flag::PERMIT);
 
             // SAFETY: sole-telemetry-writer contract (type doc); volatile
             // per-field stores, medium-boundary publish.
