@@ -193,14 +193,18 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             shared,
         );
         if medium {
-            self.cmd = self.medium.step(
-                &frame,
-                &meas,
-                &self.cfg,
-                shared,
-                &mut self.faults,
-                &mut self.fast,
-            );
+            for k in 0..medium::phase::COUNT {
+                self.medium.step(
+                    k,
+                    &frame,
+                    &meas,
+                    &self.cfg,
+                    shared,
+                    &mut self.faults,
+                    &mut self.fast,
+                    &mut self.cmd,
+                );
+            }
         }
         let out = self
             .fast
