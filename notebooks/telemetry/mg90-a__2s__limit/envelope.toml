@@ -23,12 +23,12 @@
 # decay, for a recording that drives under it.
 supply = "2s"
 fw = 65
-git_sha = "707df040a337dda00a81a46692c400d54b270778"
-measured = "2026-09-29"
+git_sha = "66271cfccb9344df4857ac928c6016c80a59a239"
+measured = "2026-09-30"
 seek_pct = 11
 rule = "limit"
 current_limit_counts = 280
-rail_mv = 7653
+rail_mv = 7935
 refused_chains = []
 
 [limits]
@@ -39,32 +39,31 @@ center = 2029
 runway = 2994
 
 [v_ss]
-duties = [10, 15, 20, 25, 30, 35, 40, 45, 50]
+duties = [5, 10, 15, 20, 25, 30, 35, 40, 45]
 
 [v_ss.fwd]
-slope = 0.2071
-intercept = -0.454
-r2 = 0.9932
+slope = 0.1932
+intercept = -0.392
+r2 = 0.9962
 
 [v_ss.rev]
-slope = 0.247
-intercept = -0.767
-r2 = 0.9867
+slope = 0.2182
+intercept = -0.822
+r2 = 0.9872
 
 [windows_ms]
 5 = 1500
 10 = 1500
-15 = 817
-20 = 533
-25 = 439
-30 = 371
-35 = 294
-40 = 273
-45 = 256
-50 = 240
+15 = 972
+20 = 690
+25 = 502
+30 = 427
+35 = 337
+40 = 327
+45 = 308
 
 [grid]
-top_pct = 50
+top_pct = 45
 
 [[grid.rungs]]
 pct = 5
@@ -72,184 +71,166 @@ window_ms = 1500
 
 [grid.rungs.fwd]
 ran_ms = 150
-t_goal_ms = 0.05
-travel = 1
-v_ss = 0.455
-stop = 0
+t_goal_ms = 0.4
+travel = 0
+v_ss = 0.501
+stop = 3
 
 [grid.rungs.rev]
 ran_ms = 150
-t_goal_ms = 0.05
-travel = 1
-v_ss = 0.0
-stop = 3
+t_goal_ms = 0.3
+travel = 2
+v_ss = 0.35
+stop = 0
 
 [[grid.rungs]]
 pct = 10
 window_ms = 1500
 
 [grid.rungs.fwd]
-ran_ms = 111
-t_goal_ms = 0.05
+ran_ms = 142
+t_goal_ms = 0.5
 travel = 0
-v_ss = 1.228
-stop = 9
+v_ss = 1.481
+stop = 14
 
 [grid.rungs.rev]
-ran_ms = 150
-t_goal_ms = 0.05
+ran_ms = 111
+t_goal_ms = 0.1
 travel = 0
-v_ss = 1.117
-stop = 25
+v_ss = 1.266
+stop = 10
 
 [[grid.rungs]]
 pct = 15
-window_ms = 817
+window_ms = 972
 
 [grid.rungs.fwd]
-ran_ms = 111
-t_goal_ms = 0.25
+ran_ms = 187
+t_goal_ms = 0.6
 travel = 0
-v_ss = 2.788
+v_ss = 2.465
 stop = 31
 
 [grid.rungs.rev]
-ran_ms = 163
-t_goal_ms = 0.25
-travel = 0
-v_ss = 2.932
-stop = 49
+ran_ms = 111
+t_goal_ms = 0.65
+travel = 2
+v_ss = 2.102
+stop = 50
 
 [[grid.rungs]]
 pct = 20
-window_ms = 533
+window_ms = 690
 
 [grid.rungs.fwd]
-ran_ms = 111
-t_goal_ms = 4.0
-travel = 0
-v_ss = 3.951
-stop = 40
+ran_ms = 218
+t_goal_ms = 6.3
+travel = 5
+v_ss = 3.492
+stop = 55
 
 [grid.rungs.rev]
-ran_ms = 259
-t_goal_ms = 3.2
-travel = 0
-v_ss = 4.532
-stop = 57
+ran_ms = 111
+t_goal_ms = 4.15
+travel = 4
+v_ss = 3.479
+stop = 61
 
 [[grid.rungs]]
 pct = 25
-window_ms = 439
+window_ms = 502
 
 [grid.rungs.fwd]
-ran_ms = 111
-t_goal_ms = 7.8
-travel = 15
-v_ss = 4.668
-stop = 72
+ran_ms = 133
+t_goal_ms = 11.0
+travel = 18
+v_ss = 4.5
+stop = 69
 
 [grid.rungs.rev]
-ran_ms = 302
-t_goal_ms = 7.45
-travel = 1
-v_ss = 5.543
-stop = 98
+ran_ms = 124
+t_goal_ms = 12.4
+travel = 4
+v_ss = 4.877
+stop = 88
 
 [[grid.rungs]]
 pct = 30
-window_ms = 371
+window_ms = 427
 
 [grid.rungs.fwd]
-ran_ms = 124
-t_goal_ms = 14.65
-travel = 39
-v_ss = 5.975
-stop = 85
+ran_ms = 134
+t_goal_ms = 20.3
+travel = 44
+v_ss = 5.492
+stop = 105
 
 [grid.rungs.rev]
-ran_ms = 338
-t_goal_ms = 11.9
-travel = 28
-v_ss = 6.578
-stop = 90
+ran_ms = 261
+t_goal_ms = 18.4
+travel = 42
+v_ss = 5.749
+stop = 112
 
 [[grid.rungs]]
 pct = 35
-window_ms = 294
+window_ms = 337
 
 [grid.rungs.fwd]
-ran_ms = 136
-t_goal_ms = 21.6
-travel = 67
-v_ss = 7.133
-stop = 114
+ran_ms = 148
+t_goal_ms = 30.5
+travel = 85
+v_ss = 6.668
+stop = 112
 
 [grid.rungs.rev]
-ran_ms = 135
-t_goal_ms = 19.25
-travel = 54
-v_ss = 8.519
-stop = 128
+ran_ms = 144
+t_goal_ms = 26.65
+travel = 70
+v_ss = 7.483
+stop = 103
 
 [[grid.rungs]]
 pct = 40
-window_ms = 273
+window_ms = 327
 
 [grid.rungs.fwd]
-ran_ms = 147
-t_goal_ms = 30.2
-travel = 121
-v_ss = 7.975
-stop = 113
+ran_ms = 164
+t_goal_ms = 40.1
+travel = 145
+v_ss = 7.349
+stop = 119
 
 [grid.rungs.rev]
-ran_ms = 155
-t_goal_ms = 29.1
-travel = 96
-v_ss = 9.314
-stop = 164
+ran_ms = 169
+t_goal_ms = 40.1
+travel = 117
+v_ss = 7.919
+stop = 151
 
 [[grid.rungs]]
 pct = 45
-window_ms = 256
+window_ms = 308
 
 [grid.rungs.fwd]
-ran_ms = 152
-t_goal_ms = 37.3
-travel = 170
-v_ss = 8.728
-stop = 153
-
-[grid.rungs.rev]
 ran_ms = 166
-t_goal_ms = 35.9
-travel = 130
-v_ss = 10.18
-stop = 152
-
-[[grid.rungs]]
-pct = 50
-window_ms = 240
-
-[grid.rungs.fwd]
-ran_ms = 159
-t_goal_ms = 47.5
-travel = 257
-v_ss = 9.52
-stop = 155
+t_goal_ms = 50.4
+travel = 195
+v_ss = 7.985
+stop = 157
 
 [grid.rungs.rev]
-ran_ms = 179
-t_goal_ms = 44.8
-travel = 197
-v_ss = 11.071
-stop = 161
+ran_ms = 182
+t_goal_ms = 48.35
+travel = 160
+v_ss = 8.467
+stop = 178
 
 [grid.refused]
-pct = 55
+pct = 50
 dir = "rev"
-why = "rev 55% stopped in 224 counts, over the 200 between the soft limit and the stop: a rung its host abandoned would hit the stop"
+why = "rev 50% would stop in about 202 counts, over the 200 between the soft limit and the stop: a rung its host abandoned would hit the stop"
 
 [coast]
 coast_ms = 400
@@ -266,168 +247,168 @@ why = "the grid ladder never kept 60%, so it has no climb to drive by"
 
 [[coast.ladder]]
 pct = 20
-drive_ms = 24
+drive_ms = 27
 
 [coast.ladder.fwd]
-entry = 3.442
-lead = 81
-coast = 80
-travel = 161
-peak_inside_soft = 2901
+entry = 2.666
+lead = 72
+coast = 93
+travel = 165
+peak_inside_soft = 2910
 
 [coast.ladder.rev]
-entry = 2.632
-lead = 52
-coast = 82
-travel = 134
-peak_inside_soft = 2952
+entry = 2.898
+lead = 54
+coast = 83
+travel = 137
+peak_inside_soft = 2911
 
 [[coast.ladder]]
 pct = 30
-drive_ms = 35
+drive_ms = 41
 
 [coast.ladder.fwd]
-predicted = 359
-entry = 5.169
-lead = 155
-coast = 214
-travel = 369
-peak_inside_soft = 2716
+predicted = 528
+entry = 4.669
+lead = 148
+coast = 230
+travel = 378
+peak_inside_soft = 2712
 
 [coast.ladder.rev]
-predicted = 654
-entry = 4.64
-lead = 131
-coast = 244
-travel = 375
-peak_inside_soft = 2706
+predicted = 430
+entry = 3.985
+lead = 122
+coast = 261
+travel = 383
+peak_inside_soft = 2707
 
 [[coast.ladder]]
 pct = 40
-drive_ms = 51
+drive_ms = 61
 
 [coast.ladder.fwd]
-predicted = 622
-entry = 7.698
-lead = 285
-coast = 426
-travel = 711
-peak_inside_soft = 2375
+predicted = 721
+entry = 7.241
+lead = 299
+coast = 451
+travel = 750
+peak_inside_soft = 2333
 
 [coast.ladder.rev]
-predicted = 616
-entry = 6.874
-lead = 252
-coast = 534
-travel = 786
-peak_inside_soft = 2291
+predicted = 629
+entry = 6.156
+lead = 263
+coast = 543
+travel = 806
+peak_inside_soft = 2253
 
 [[chains]]
 block = "step"
 chain = "30@20,coast:400"
-predicted = 589
+predicted = 539
 
 [chains.fwd]
-travel = 203
-peak_inside_soft = 2876
+travel = 174
+peak_inside_soft = 2917
 
 [chains.rev]
-travel = 197
-peak_inside_soft = 2850
+travel = 158
+peak_inside_soft = 2920
 
 [[chains]]
 block = "step"
 chain = "30@40,coast:400"
-predicted = 722
+predicted = 654
 
 [chains.fwd]
-travel = 394
-peak_inside_soft = 2687
+travel = 362
+peak_inside_soft = 2708
 
 [chains.rev]
-travel = 434
-peak_inside_soft = 2640
+travel = 380
+peak_inside_soft = 2705
 
 [[chains]]
 block = "step"
 chain = "30@60,coast:400"
-predicted = 855
+predicted = 768
 
 [chains.fwd]
-travel = 569
-peak_inside_soft = 2502
+travel = 544
+peak_inside_soft = 2542
 
 [chains.rev]
-travel = 660
-peak_inside_soft = 2422
+travel = 569
+peak_inside_soft = 2491
 
 [[chains]]
 block = "step"
 chain = "30@80,coast:400"
-predicted = 988
+predicted = 883
 
 [chains.fwd]
-travel = 709
-peak_inside_soft = 2380
+travel = 677
+peak_inside_soft = 2384
 
 [chains.rev]
-travel = 797
-peak_inside_soft = 2271
+travel = 723
+peak_inside_soft = 2357
 
 [[chains]]
 block = "step"
 chain = "30@120,coast:400"
-predicted = 1254
+predicted = 1112
 
 [chains.fwd]
-travel = 963
-peak_inside_soft = 2126
+travel = 910
+peak_inside_soft = 2178
 
 [chains.rev]
-travel = 1048
-peak_inside_soft = 2028
+travel = 939
+peak_inside_soft = 2108
 
 [[chains]]
 block = "reversal"
 chain = "20@60,then:-20@60,then:20@60,brake:200"
-predicted = 953
+predicted = 818
 
 [chains.fwd]
-travel = 243
-peak_inside_soft = 2831
+travel = 237
+peak_inside_soft = 2817
 
 [chains.rev]
-travel = 267
-peak_inside_soft = 2785
+travel = 208
+peak_inside_soft = 2872
 
 [[chains]]
 block = "ends"
 chain = "15@1277"
-predicted = 3835
+predicted = 3272
 
 [chains.fwd]
 travel = 3074
-peak_inside_soft = -14
+peak_inside_soft = -18
 
 [chains.rev]
-travel = 3211
-peak_inside_soft = -53
+travel = 3073
+peak_inside_soft = 50
 
 [[chains]]
 block = "ends"
 chain = "20@897"
-predicted = 3862
+predicted = 3287
 
 [chains.fwd]
-travel = 3184
-peak_inside_soft = -34
+travel = 3096
+peak_inside_soft = 61
 
 [chains.rev]
-travel = 3200
-peak_inside_soft = -79
+travel = 3088
+peak_inside_soft = 41
 
 [fast]
-top_pct = 60
+top_pct = 35
 
 [[fast.rungs]]
 pct = 5
@@ -435,17 +416,17 @@ window_ms = 1500
 
 [fast.rungs.fwd]
 ran_ms = 150
-t_goal_ms = 0.05
-travel = 1
-v_ss = 0.0
+t_goal_ms = 0.5
+travel = 0
+v_ss = -0.001
 stop = 0
 
 [fast.rungs.rev]
 ran_ms = 150
-t_goal_ms = 0.05
-travel = 0
-v_ss = 0.0
-stop = 6
+t_goal_ms = 0.15
+travel = 10
+v_ss = -0.001
+stop = 9
 
 [[fast.rungs]]
 pct = 10
@@ -453,17 +434,17 @@ window_ms = 1500
 
 [fast.rungs.fwd]
 ran_ms = 150
-t_goal_ms = 0.05
-travel = 1
-v_ss = -0.001
-stop = 0
+t_goal_ms = 0.2
+travel = 0
+v_ss = 0.0
+stop = 1
 
 [fast.rungs.rev]
 ran_ms = 150
-t_goal_ms = 0.05
-travel = 0
-v_ss = 0.0
-stop = 0
+t_goal_ms = 0.15
+travel = 14
+v_ss = 0.001
+stop = 4
 
 [[fast.rungs]]
 pct = 15
@@ -471,17 +452,17 @@ window_ms = 1500
 
 [fast.rungs.fwd]
 ran_ms = 150
-t_goal_ms = 0.25
+t_goal_ms = 0.35
 travel = 0
-v_ss = -0.002
+v_ss = 0.0
 stop = 0
 
 [fast.rungs.rev]
 ran_ms = 150
 t_goal_ms = 0.25
-travel = 2
-v_ss = 0.001
-stop = 8
+travel = 11
+v_ss = -0.001
+stop = 5
 
 [[fast.rungs]]
 pct = 20
@@ -489,17 +470,17 @@ window_ms = 1500
 
 [fast.rungs.fwd]
 ran_ms = 150
-t_goal_ms = 0.9
-travel = 2
-v_ss = -0.002
+t_goal_ms = 1.1
+travel = 0
+v_ss = 0.0
 stop = 0
 
 [fast.rungs.rev]
 ran_ms = 150
-t_goal_ms = 0.95
-travel = 0
-v_ss = 0.006
-stop = 8
+t_goal_ms = 1.05
+travel = 7
+v_ss = 0.0
+stop = 0
 
 [[fast.rungs]]
 pct = 25
@@ -507,17 +488,17 @@ window_ms = 1500
 
 [fast.rungs.fwd]
 ran_ms = 150
-t_goal_ms = 1.55
-travel = 0
-v_ss = -0.002
+t_goal_ms = 1.95
+travel = 1
+v_ss = 0.0
 stop = 0
 
 [fast.rungs.rev]
 ran_ms = 150
-t_goal_ms = 1.5
-travel = 2
-v_ss = 0.0
-stop = 13
+t_goal_ms = 1.6
+travel = 7
+v_ss = -0.001
+stop = 3
 
 [[fast.rungs]]
 pct = 30
@@ -525,17 +506,17 @@ window_ms = 1500
 
 [fast.rungs.fwd]
 ran_ms = 150
-t_goal_ms = 2.15
+t_goal_ms = 2.4
 travel = 0
-v_ss = 0.001
-stop = 0
+v_ss = 0.0
+stop = 1
 
 [fast.rungs.rev]
 ran_ms = 150
-t_goal_ms = 2.15
-travel = 5
-v_ss = 0.001
-stop = 13
+t_goal_ms = 2.2
+travel = 6
+v_ss = 0.43
+stop = 11
 
 [[fast.rungs]]
 pct = 35
@@ -543,109 +524,127 @@ window_ms = 1500
 
 [fast.rungs.fwd]
 ran_ms = 150
-t_goal_ms = 2.75
+t_goal_ms = 3.0
 travel = 0
-v_ss = 0.0
-stop = 0
+v_ss = 1.329
+stop = 11
 
 [fast.rungs.rev]
-ran_ms = 150
-t_goal_ms = 2.6
-travel = 1
-v_ss = 0.0
-stop = 13
+ran_ms = 111
+t_goal_ms = 3.05
+travel = 0
+v_ss = 0.768
+stop = 22
 
 [[fast.rungs]]
 pct = 40
-window_ms = 1097
+window_ms = 1251
 
 [fast.rungs.fwd]
-ran_ms = 150
-t_goal_ms = 3.25
+ran_ms = 158
+t_goal_ms = 3.5
 travel = 0
-v_ss = 2.19
-stop = 22
+v_ss = 1.921
+stop = 31
 
 [fast.rungs.rev]
-ran_ms = 150
-t_goal_ms = 3.15
-travel = 0
-v_ss = 1.513
-stop = 39
+ran_ms = 111
+t_goal_ms = 3.7
+travel = 1
+v_ss = 1.412
+stop = 27
 
 [[fast.rungs]]
 pct = 45
-window_ms = 817
+window_ms = 862
 
 [fast.rungs.fwd]
-ran_ms = 188
-t_goal_ms = 3.85
+ran_ms = 189
+t_goal_ms = 4.3
 travel = 0
-v_ss = 2.916
-stop = 49
+v_ss = 2.79
+stop = 108
 
 [fast.rungs.rev]
-ran_ms = 164
-t_goal_ms = 3.85
-travel = 2
-v_ss = 2.94
-stop = 87
+ran_ms = 128
+t_goal_ms = 4.4
+travel = 3
+v_ss = 2.105
+stop = 52
 
 [[fast.rungs]]
 pct = 50
-window_ms = 575
+window_ms = 643
 
 [fast.rungs.fwd]
-ran_ms = 224
-t_goal_ms = 4.45
+ran_ms = 225
+t_goal_ms = 4.85
 travel = 0
-v_ss = 4.191
-stop = 57
+v_ss = 3.753
+stop = 69
 
 [fast.rungs.rev]
-ran_ms = 131
-t_goal_ms = 4.45
-travel = 2
-v_ss = 3.485
-stop = 95
+ran_ms = 122
+t_goal_ms = 4.7
+travel = 0
+v_ss = 2.754
+stop = 80
 
 [[fast.rungs]]
 pct = 55
-window_ms = 448
+window_ms = 502
 
 [fast.rungs.fwd]
-ran_ms = 281
-t_goal_ms = 5.15
-travel = 1
-v_ss = 5.401
-stop = 102
+ran_ms = 258
+t_goal_ms = 5.4
+travel = 2
+v_ss = 4.817
+stop = 107
 
 [fast.rungs.rev]
-ran_ms = 135
-t_goal_ms = 4.8
-travel = 0
-v_ss = 4.734
-stop = 98
+ran_ms = 124
+t_goal_ms = 5.5
+travel = 7
+v_ss = 3.641
+stop = 103
 
 [[fast.rungs]]
 pct = 60
-window_ms = 391
+window_ms = 477
 
 [fast.rungs.fwd]
-ran_ms = 220
-t_goal_ms = 5.65
-travel = 2
-v_ss = 6.11
-stop = 117
+ran_ms = 164
+t_goal_ms = 6.45
+travel = 4
+v_ss = 5.081
+stop = 114
 
 [fast.rungs.rev]
-ran_ms = 148
-t_goal_ms = 5.35
-travel = 1
-v_ss = 6.205
-stop = 136
+ran_ms = 123
+t_goal_ms = 6.25
+travel = 8
+v_ss = 4.675
+stop = 123
+
+[[fast.rungs]]
+pct = 65
+window_ms = 356
+
+[fast.rungs.fwd]
+ran_ms = 145
+t_goal_ms = 20.05
+travel = 36
+v_ss = 6.24
+stop = 115
+
+[fast.rungs.rev]
+ran_ms = 128
+t_goal_ms = 15.55
+travel = 11
+v_ss = 6.996
+stop = 165
 
 [fast.refused]
-pct = 65
+pct = 70
 dir = "rev"
-why = "rev 65% would stop in about 208 counts, over the 200 between the soft limit and the stop: a rung its host abandoned would hit the stop"
+why = "rev 70% would stop in about 293 counts, over the 200 between the soft limit and the stop: a rung its host abandoned would hit the stop"
