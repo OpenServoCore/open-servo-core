@@ -76,7 +76,7 @@ pub struct KernelTiming {
 /// cross-field tearing accepted (each field is independently sane). The
 /// kernel is the sole writer of TELEMETRY sensors/estimates/mode/limits
 /// (`data_flags` excepted: boot and dispatch write it, the kernel reads) and
-/// the `fault_flags` byte.
+/// the `fault_flags` byte; TELEMETRY `health` belongs to the chip side.
 pub struct Kernel<I: ControlIo, T: TelStream = ()> {
     pub io: I,
     tel: T,

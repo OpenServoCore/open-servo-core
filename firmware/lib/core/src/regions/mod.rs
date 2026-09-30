@@ -400,6 +400,34 @@ mod tests {
         assert!(!by("pos_lut_state").writable);
     }
 
+    /// The health block appends after `limits` out of the reserved tail, so
+    /// every earlier address and the region size stay put; the counters a
+    /// host clears are the writable ones.
+    #[test]
+    fn telemetry_health_appends_after_limits() {
+        use super::telemetry::addr::{health, limits};
+        assert_eq!(limits::LIMIT_FLAGS, 0x266);
+        assert_eq!(limits::WINDOW_FLOOR_Q15, 0x268);
+        assert_eq!(health::TICK_LOAD_MEAN_Q15, 0x26A);
+        assert_eq!(health::TICK_OVER_COUNT, 0x26C);
+        assert_eq!(health::TICK_LOST_COUNT, 0x26E);
+        assert_eq!(health::TEL_DROP_COUNT, 0x270);
+        assert_eq!(health::STACK_FREE_MIN, 0x272);
+        assert_eq!(
+            core::mem::size_of::<super::TelemetryRegs>(),
+            super::TELEMETRY_REGION_SIZE as usize
+        );
+        let f = ControlTable::FIELDS;
+        let by = |n: &str| f.iter().find(|d| d.name == n).unwrap();
+        for name in ["tick_over_count", "tick_lost_count", "tel_drop_count"] {
+            assert!(by(name).writable, "{name} is host-clearable");
+        }
+        for name in ["tick_load_mean_q15", "stack_free_min"] {
+            assert!(!by(name).writable, "{name} must stay RO");
+        }
+        assert!(f.iter().all(|d| d.addr < 0x274 || d.addr >= 0x280));
+    }
+
     /// Pins the BURST section to its base and its one-READ geometry.
     #[test]
     fn burst_region_is_one_read_wide() {
