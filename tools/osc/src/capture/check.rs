@@ -876,7 +876,7 @@ mod tests {
         let dir = land_as(&store, 1, "slow", &sweep_meta(), &held);
         let e = check(&dir, "slow").err().unwrap().to_string();
         assert!(
-            e.starts_with("seg 1: 46 samples held under the commanded duty in a free recording"),
+            e.starts_with("seg 1: 36 samples held under the commanded duty in a free recording"),
             "{e}"
         );
         assert!(run(&Args { dir: root.clone() }).is_err());

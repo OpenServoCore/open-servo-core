@@ -960,16 +960,18 @@ board constant, and `osc` refuses a servo that reports 0 (DES
 **Governed windows.** In OpenLoop the applied duty equals the goal only
 when nothing governed it, and a host fitting a model to a capture needs
 to know which windows those are. The TEL `duty` field (bit 3) is the
-applied duty, the command whose window the sample measured. After a
-goal change to a magnitude above the window floor the applied duty
-climbs 128 (Q15) per tick from its start: the previous applied duty,
-or the window floor when the change starts from zero duty or reverses
-the sign. A window is *governed* when `duty` reaches the goal later
-than `(|goal| - start) / 128 + 2` ticks after the change (the two
-ticks cover the sample alignment and the rounding), or falls under the
-goal after reaching it. A goal at or under the floor applies from the
-first tick unless the stall-safe base cuts it, and a cut one never
-reaches the goal. Polled, the same test reads `duty_applied_q15` (or
+applied duty, the command whose window the sample measured. A goal
+lands at the first medium tick after its commit (sec 5.7), within one
+medium period (10 ticks). From there, to a magnitude above the window
+floor, the applied duty climbs 128 (Q15) per tick from its start: the
+previous applied duty, or the window floor when the change starts from
+zero duty or reverses the sign. A window is *governed* when `duty`
+reaches the goal later than `(|goal| - start) / 128 + 2 + 10` ticks
+after the commit (the two ticks cover the sample alignment and the
+rounding, the ten the medium period the goal may wait for), or falls
+under the goal after reaching it. A goal at or under the floor applies
+from the tick it lands unless the stall-safe base cuts it, and a cut
+one never reaches the goal. Polled, the same test reads `duty_applied_q15` (or
 the ident aggregate `duty_mean_q15`) against the goal written, once the
 slew is over; `limit_flags` then says why.
 

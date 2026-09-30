@@ -42,6 +42,8 @@ pub mod verify;
 pub mod wavefit;
 pub mod winding;
 
+use osc_servo_core::kernel::DECIM_MED;
+
 use crate::burst::Capture;
 use crate::frame::{SeqUnwrap, TelFrame, TelemetrySnapshot};
 use crate::pot::Pot;
@@ -464,17 +466,19 @@ pub fn window_ms(tick_hz: f64) -> f64 {
 }
 
 /// Ticks the applied duty may take to reach `goal` from `start` before the
-/// limiter, not the slew, is holding it back (protocol sec 5.8). `start` is
-/// the duty applied before the change; pass 0 from rest or across a
-/// reversal, where the firmware starts from the window floor: 0 only
-/// widens the allowance.
+/// limiter, not the slew, is holding it back (protocol sec 5.8), counted
+/// from the goal's commit: the slew, two ticks of sample alignment and
+/// rounding, and one medium period, since a goal lands at the first medium
+/// tick after its commit. `start` is the duty applied before the change;
+/// pass 0 from rest or across a reversal, where the firmware starts from
+/// the window floor: 0 only widens the allowance.
 pub fn slew_ticks(goal: i16, start: i16) -> u32 {
     let start = if start.signum() == goal.signum() {
         start.unsigned_abs() as u32
     } else {
         0
     };
-    (goal.unsigned_abs() as u32).saturating_sub(start) / SLEW_Q15_PER_TICK + 2
+    (goal.unsigned_abs() as u32).saturating_sub(start) / SLEW_Q15_PER_TICK + 2 + DECIM_MED as u32
 }
 
 /// One sample's applied duty against the goal it was commanded to.
@@ -728,7 +732,7 @@ mod tests {
     #[test]
     fn slew_samples_are_trimmed_not_declined() {
         let goal = 20971;
-        assert_eq!(slew_ticks(goal, 0), 165);
+        assert_eq!(slew_ticks(goal, 0), 175);
         let climb: Vec<i16> = (1..=9).map(|k| (4369 + 2048 * k).min(20000)).collect();
         let mut duties = climb.clone();
         duties.extend([goal; 3]);
@@ -748,9 +752,9 @@ mod tests {
             tel,
             [Applied::Slew, Applied::Slew, Applied::Slew, Applied::Clean]
         );
-        // a goal cut applies at once
-        assert_eq!(slew_ticks(8000, 12000), 2);
-        assert_eq!(slew_ticks(-8000, 12000), 64);
+        // a goal cut applies at once, once it lands
+        assert_eq!(slew_ticks(8000, 12000), 12);
+        assert_eq!(slew_ticks(-8000, 12000), 74);
     }
 
     /// The limiter holds the climb at the current limit well past the

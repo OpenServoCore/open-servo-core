@@ -733,6 +733,7 @@ dependencies = [
 name = "osc-ident"
 version = "0.1.0"
 dependencies = [
+ "osc-servo-core",
  "serde",
 ]
 
