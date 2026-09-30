@@ -262,6 +262,9 @@ pub(crate) mod bench {
         /// The breakaway and current limit a fast decay write set aside.
         slow: Option<(i16, Option<u16>)>,
         decay: u16,
+        /// TEL rows the servo drops in each stream, counted into its
+        /// `tel_drop_count`.
+        pub(crate) rows_dropped: u16,
     }
 
     impl Bench {
@@ -287,6 +290,7 @@ pub(crate) mod bench {
                 fast_breakaway_q15: None,
                 slow: None,
                 decay,
+                rows_dropped: 0,
             }
         }
 
@@ -351,6 +355,11 @@ pub(crate) mod bench {
             }
             let mut frames = Vec::new();
             self.servo.stream(samples, &mut frames);
+            let dropped = self.rows_dropped;
+            self.c.pipe_mut().sim_mut().servo_table_mut(0, |t| {
+                let h = &mut t.telemetry.health;
+                h.tel_drop_count = h.tel_drop_count.wrapping_add(dropped);
+            });
             if let Some((_, goal)) = goal.filter(|_| self.chatter > 0) {
                 let goal = goal as i16;
                 if let Some(k) = frames.iter().position(|f| f.duty_q15 == Some(goal)) {

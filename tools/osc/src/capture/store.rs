@@ -209,6 +209,8 @@ pub(crate) struct CaptureMeta<'a> {
     pub(crate) attempt: u32,
     /// Per segment, whether the current limit held its duty under the goal.
     pub(crate) governed: &'a [bool],
+    /// TEL rows the servo dropped while the recording streamed.
+    pub(crate) rows_dropped: u16,
 }
 
 /// One attempt at a recording, in its tmp dir until accepted or rejected.
@@ -247,7 +249,8 @@ impl Try<'_> {
     }
 
     /// Land the recording: `<name>.csv.gz` and `<name>.meta.json`, the sweep
-    /// meta plus supply, session block map and capture, and each segment's
+    /// meta plus supply, session block map, capture and rows dropped, and
+    /// each segment's
     /// `t_goal_ms` and whether the limit governed it into its `drive` block
     /// when it has one, keys sorted.
     pub(crate) fn accept(self, extra: &CaptureMeta) -> Result<()> {
@@ -284,6 +287,7 @@ impl Try<'_> {
             drive.insert("governed".into(), json!(extra.governed));
         }
         obj.insert("supply".into(), json!(extra.supply.as_str()));
+        obj.insert("rows_dropped".into(), json!(extra.rows_dropped));
         obj.insert("session".into(), json!({ "blocks": plan.blocks }));
         let order: Vec<&str> = plan.blocks.iter().map(|b| b.name.as_str()).collect();
         obj.insert(
@@ -428,6 +432,7 @@ pub(super) mod fixture {
             plan: &plan,
             attempt: 2,
             governed: &governed,
+            rows_dropped: 0,
         };
         t.accept(&extra).unwrap();
         cap.dir().to_path_buf()
@@ -557,6 +562,7 @@ mod tests {
             plan: &plan,
             attempt: 2,
             governed: &[],
+            rows_dropped: 0,
         };
         t.accept(&extra).unwrap();
         assert_eq!(listing(cap.dir()), ["slow.csv.gz", "slow.meta.json"]);
@@ -564,7 +570,7 @@ mod tests {
     }
 
     #[test]
-    fn accepted_meta_keeps_the_sweep_keys_and_adds_three() {
+    fn accepted_meta_keeps_the_sweep_keys_and_adds_four() {
         let root = tmp("meta");
         let dir = land(&Store::new(root.clone()), &clean());
         let text = std::fs::read_to_string(dir.join("slow.meta.json")).unwrap();
@@ -574,6 +580,7 @@ mod tests {
             assert_eq!(&meta[k], v, "{k}");
         }
         assert_eq!(meta["supply"], "2s");
+        assert_eq!(meta["rows_dropped"], 0);
         assert_eq!(
             meta["session"],
             json!({ "blocks": [{ "name": "coast", "first": 0, "count": 2 }] })
@@ -584,7 +591,7 @@ mod tests {
         );
         assert_eq!(
             meta.as_object().unwrap().len(),
-            sweep.as_object().unwrap().len() + 3
+            sweep.as_object().unwrap().len() + 4
         );
         // sorted keys, as the notebooks' own writers left them
         let keys: Vec<usize> = ["\"baseline_ms\"", "\"capture\"", "\"dirs\"", "\"supply\""]
@@ -609,6 +616,7 @@ mod tests {
             plan: &plan,
             attempt: 1,
             governed: &[],
+            rows_dropped: 0,
         };
         assert!(t.accept(&extra).is_err());
         assert!(!store.landed("session", 1, "slow"));
@@ -641,6 +649,7 @@ mod tests {
                 plan: &plan,
                 attempt: 1,
                 governed: &[],
+                rows_dropped: 0,
             };
             t.accept(&extra).unwrap();
             let meta = std::fs::read_to_string(cap.dir().join("slow.meta.json")).unwrap();

@@ -148,9 +148,10 @@ pub(crate) fn verdict(
     Verdict::Accepted { governed }
 }
 
-/// Every segment present, numbered in order, clean, and every direction
-/// driven.
+/// No row dropped, every segment present, numbered in order, clean, and
+/// every direction driven.
 fn shape(rec: &Recording, cfg: &Cfg) -> Result<(), String> {
+    dropped(rec.rows_dropped)?;
     let segs = &rec.segments;
     let baseline = cfg.baseline_ms > 0;
     let want = expected_segments(baseline, cfg.dirs.signs().len(), cfg.steps.len());
@@ -179,6 +180,16 @@ fn shape(rec: &Recording, cfg: &Cfg) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// A recording the servo dropped TEL rows from is missing them.
+pub(crate) fn dropped(rows: u16) -> Result<(), String> {
+    if rows == 0 {
+        return Ok(());
+    }
+    Err(format!(
+        "the servo dropped {rows} TEL rows: both stream buffers were waiting for the wire"
+    ))
 }
 
 /// The block that holds step `k` of the schedule.
@@ -513,7 +524,10 @@ mod tests {
                 segments.push(seg(1 + d as u32 * n + k, dir, 0));
             }
         }
-        Recording { segments }
+        Recording {
+            segments,
+            rows_dropped: 0,
+        }
     }
 
     fn judged(r: &Recording, c: &Cfg) -> Verdict {
@@ -592,6 +606,26 @@ mod tests {
 
     fn grid_verdict(r: &Recording, c: &Cfg) -> Verdict {
         verdict(r, c, &one_block("grid", c), &envelope::mg90(), &abort())
+    }
+
+    /// The bench servo's 40% rung checks clean as it streams; the same rung
+    /// from a servo that drops 3 rows per stream is rejected, and the
+    /// recording counts every stream's drops.
+    #[test]
+    fn a_recording_the_servo_dropped_rows_from_is_rejected() {
+        let (r, c) = grid(361);
+        assert_eq!(r.rows_dropped, 0);
+        assert!(matches!(grid_verdict(&r, &c), Verdict::Accepted { .. }));
+
+        let r = record(&c, |b| b.rows_dropped = 3);
+        assert_eq!(r.rows_dropped, 3 * r.segments.len() as u16);
+        assert_eq!(
+            grid_verdict(&r, &c),
+            Verdict::Rejected(format!(
+                "the servo dropped {} TEL rows: both stream buffers were waiting for the wire",
+                r.rows_dropped
+            ))
+        );
     }
 
     /// The bench servo's 40% rung at the pilot's 361 ms window: the limit
@@ -685,6 +719,7 @@ mod tests {
             plan: &p,
             attempt: 1,
             governed: &governed,
+            rows_dropped: 0,
         })
         .unwrap();
         let text = std::fs::read_to_string(cap.dir().join("slow.meta.json")).unwrap();
@@ -859,7 +894,13 @@ mod tests {
             .collect();
         let c = bench_cfg(vec![Step::Drive(pct, Some(1277))], Dirs::Both);
         let segments = vec![base, fwd, rev];
-        (Recording { segments }, c)
+        (
+            Recording {
+                segments,
+                rows_dropped: 0,
+            },
+            c,
+        )
     }
 
     fn ends_verdict(r: &Recording, c: &Cfg) -> Verdict {
