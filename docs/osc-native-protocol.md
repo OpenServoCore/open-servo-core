@@ -697,9 +697,13 @@ current loop, and calibration and identification drive only those); 0
 opens all. A refusal latches the `data` fault (below) and the servo
 stays disabled for that run. A reason that appears mid-run - a live
 edit of a covered field - waits for the next entry; the one thing that
-stops a running loop is the physics belt: every tick a Velocity or
-Position loop runs with `recip_ke_q == 0` or `ke_vpc_q == 0` latches the
-same fault, so a live write of a zero Ke can never run a loop open.
+stops a running loop is the physics belt. A CONFIG or CALIB write
+reaches the kernel at the next medium tick boundary, within 0.5 ms of
+the commit. If that write leaves `recip_ke_q == 0` or `ke_vpc_q == 0`
+under a running Velocity or Position loop, the same fault latches at
+that boundary and the drive stops. Until then the loop keeps running
+on the Ke it had, so a live write of a zero Ke can never run a loop
+open.
 A virgin servo jogging in OpenLoop therefore shows no ALERT and its
 captures stay clean (DES `virgin_servo_drives_openloop_and_current_without_alert`,
 `live_zero_ke_write_stops_a_running_closed_loop`).
