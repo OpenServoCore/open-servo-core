@@ -729,8 +729,10 @@ Any set bit forces the drive off; the `torque_enable` 0 to 1 edge is the
 only acknowledgement, and a still-present condition re-latches at once.
 The kernel reads `torque_enable`, `mode` and the goals once per medium
 tick (2 kHz), so an enable, a disable, an acknowledgement, a mode change
-and a new `goal_duty` or `goal_current` take effect at the first medium
-tick after the commit, within 0.5 ms.
+and a new `goal_duty` take effect at the first medium tick after the
+commit, within 0.5 ms; a `goal_current` or a closed-loop reference
+follows three ticks after that, and the TELEMETRY registers show the
+result later in the same medium period.
 `stall` latches in OpenLoop as it does in the closed loops: there the
 stall timer runs off the duty ceiling (sec 5.8), so with
 `stall_response` at its boot value of Fault, an OpenLoop drive held

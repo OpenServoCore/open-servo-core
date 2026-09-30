@@ -205,6 +205,12 @@ impl Mg90 {
 }
 
 /// The bench MG90's saved set, identified in linearized counts, then `cfg`.
+/// One departure: the profile asks for 20 counts/s per medium tick where
+/// the bench saved 15. Under the 280-count limit the shaft cannot follow
+/// that, so it trails into the deceleration, which is the fast arrival
+/// these tests exist for. At the saved 15, with the current command three
+/// ticks behind its sample, the sweep holds 3 fast arrivals, too few to
+/// cover the case.
 fn rig(lut: &[i16; POINTS], cfg: impl FnOnce(&mut ControlTable)) -> Shared {
     let sh = Shared::new();
     seed(&sh);
@@ -220,7 +226,7 @@ fn rig(lut: &[i16; POINTS], cfg: impl FnOnce(&mut ControlTable)) -> Shared {
         c.loop_position.p_kp_q88 = 40212;
         c.loop_position.pos_deadband_counts = DEADBAND;
         c.loop_position.velocity_limit_cps = 1500;
-        c.loop_position.accel_limit_q88 = 3840;
+        c.loop_position.accel_limit_q88 = 5120;
         c.limits.current_limit_counts = 280;
         c.limits.stall_response = StallResponse::Yield;
         c.limits.stall_time_ms = 500;
@@ -350,13 +356,17 @@ impl Session {
         };
         let (mut lo, mut hi) = (f64::MAX, f64::MIN);
         let mut was_parked = false;
+        // the park of the previous goal stands until the goal lands; the
+        // entry is the first park after the drive leaves it
+        let mut left = false;
         for t in 0..ticks {
             let applied = self.tick();
             let parked = matches!(
                 self.k.io.motor.last,
                 Some(MotorCmd::Coast | MotorCmd::Brake)
             );
-            if parked && h.entry_cps.is_nan() {
+            left |= !parked;
+            if parked && left && h.entry_cps.is_nan() {
                 h.entry_cps = self.p.omega.abs();
             }
             h.redrives += (was_parked && !parked && !h.entry_cps.is_nan()) as u32;
@@ -388,7 +398,7 @@ fn holds_on(lut: [i16; POINTS], seed_n: u64, n: usize) -> Vec<Hold> {
 }
 
 /// Seed 28's first step: the shaft trails the profile into the
-/// deceleration and enters the band at about 1880 counts/s, faster than
+/// deceleration and enters the band at about 1670 counts/s, faster than
 /// friction can stop it there.
 #[test]
 fn hold_rests_after_a_fast_arrival() {

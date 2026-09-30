@@ -11,6 +11,7 @@ use crate::regions::config::{DecaySelect, StallResponse};
 use crate::regions::control::Mode;
 use crate::traits::{DecayMode, MotorCmd, Sensors};
 use crate::{ControlTable, RegionStorage, Shared};
+use medium::phase;
 
 const BIAS: u16 = 2048;
 const ARR: u16 = 1200;
@@ -173,10 +174,18 @@ fn settle<T: TelStream>(k: &mut Kernel<FakeIo, T>, sh: &Shared, f: SensorFrame) 
     panic!("duty {} never reached the goal {goal}", k.fast.duty_q15);
 }
 
-/// Ticks `f` until a MEDIUM pass has just run: the next tick opens a boxcar
-/// half.
-fn to_medium_boundary(k: &mut Kernel<FakeIo>, sh: &Shared, f: SensorFrame) {
-    while k.decim_med != 0 {
+/// Ticks `f` until the next tick runs medium phase `p`.
+fn run_to(k: &mut Kernel<FakeIo>, sh: &Shared, f: SensorFrame, p: u8) {
+    while k.phase != p {
+        k.on_tick(f, sh);
+    }
+}
+
+/// Ticks `f` through the first period's VELOCITY phase, where the band and
+/// the current reference first land: a servo enabled from boot drives from
+/// the last of these ticks on.
+fn to_first_command(k: &mut Kernel<FakeIo>, sh: &Shared, f: SensorFrame) {
+    for _ in 0..=phase::VELOCITY {
         k.on_tick(f, sh);
     }
 }
@@ -345,6 +354,9 @@ fn permit_rig(sh: &Shared) -> Kernel<FakeIo> {
     for _ in 0..400 {
         k.on_tick(frame(PAST_WALL, BIAS), sh);
     }
+    // stopped just ahead of the CONTROL phase, which reads a grant for the
+    // LIMITS phase after it
+    run_to(&mut k, sh, frame(PAST_WALL, BIAS), phase::CONTROL);
     assert_eq!(
         k.medium.i_band.hi, 0,
         "the endstop is closed before any permit"
@@ -364,12 +376,14 @@ fn permit_live(k: &Kernel<FakeIo>) -> bool {
     k.medium.i_band.hi != 0
 }
 
-/// Ticks at the wall until the lease lapses; the ticks it took.
+/// Ticks at the wall until the lease, once live, lapses; the ticks it took.
 fn ticks_to_lapse(k: &mut Kernel<FakeIo>, sh: &Shared, max: u32) -> u32 {
+    let mut live = false;
     (1..=max)
         .find(|_| {
             k.on_tick(frame(PAST_WALL, BIAS), sh);
-            !permit_live(k)
+            live |= permit_live(k);
+            live && !permit_live(k)
         })
         .unwrap_or(max + 1)
 }
@@ -495,7 +509,7 @@ fn limit_flags_name_the_governor() {
         k.on_tick(frame(2000, BIAS + 290), &sh);
     }
     for _ in 0..4 {
-        to_medium_boundary(&mut k, &sh, frame(2000, BIAS + 290));
+        run_to(&mut k, &sh, frame(2000, BIAS + 290), phase::PUBLISH + 1);
         assert_eq!(limit_flags(&sh), flag::CEILING);
         k.on_tick(frame(2000, BIAS + 290), &sh);
     }
@@ -603,8 +617,8 @@ fn oc_latch_forces_disabled_despite_torque_enable() {
         t.config.limits.current_limit_counts = u16::MAX;
     });
     let mut k = kernel();
-    // tick 1 drives (windows still invalid: previous duty was 0)
-    k.on_tick(frame(2000, BIAS + 3000), &sh);
+    // the first command drives (windows still invalid: previous duty was 0)
+    to_first_command(&mut k, &sh, frame(2000, BIAS + 3000));
     assert!(matches!(last_cmd(&k), MotorCmd::Drive { .. }));
     // 4 consecutive valid over-trip samples latch on the 4th
     for _ in 0..3 {
@@ -638,12 +652,13 @@ fn ack_clears_then_relatches_while_condition_persists() {
         t.config.limits.current_limit_counts = u16::MAX;
     });
     let mut k = kernel();
+    to_first_command(&mut k, &sh, frame(2000, BIAS + 3000));
     for _ in 0..8 {
         k.on_tick(frame(2000, BIAS + 3000), &sh);
     }
     assert_eq!(k.faults.mask(), faults::BIT_OVER_CURRENT);
-    // ack: drop then raise torque_enable, each seen at a medium boundary;
-    // the ack lands at the boundary after the raise, not before
+    // ack: drop then raise torque_enable, each seen at a CONTROL phase; the
+    // ack lands at the CONTROL phase after the raise, not before
     sh.table
         .with_mut(|t| t.control.lifecycle.torque_enable = false);
     for _ in 0..DECIM_MED {
@@ -651,7 +666,7 @@ fn ack_clears_then_relatches_while_condition_persists() {
     }
     sh.table
         .with_mut(|t| t.control.lifecycle.torque_enable = true);
-    while k.decim_med != DECIM_MED - 1 {
+    while k.phase != 0 {
         k.on_tick(frame(2000, BIAS + 3000), &sh);
         assert_eq!(k.faults.mask(), faults::BIT_OVER_CURRENT);
     }
@@ -714,7 +729,7 @@ fn openloop_duty_passthrough_clamped_with_decay() {
     }
     // duty_max clamps the passthrough at the next medium boundary, at once
     write_config(&sh, |t| t.config.loop_current.duty_max_q15 = 5000);
-    while k.decim_med != DECIM_MED - 1 {
+    while k.phase != 0 {
         k.on_tick(frame(2000, BIAS), &sh);
         assert_eq!(written_duty(&k), 8000);
     }
@@ -882,13 +897,13 @@ fn reversed_polarity_negates_vdiff() {
     reversed(&sh, Mode::OpenLoop);
     sh.table.with_mut(|t| t.control.lifecycle.goal_duty = 8000);
     let mut k = kernel();
-    // the second tick samples the window the first tick's duty drove
-    k.on_tick(frame(2000, BIAS), &sh);
+    // the tick after the first command samples the window it drove
+    to_first_command(&mut k, &sh, frame(2000, BIAS));
     k.on_tick(frame(2000, BIAS), &sh);
     assert_eq!(k.fast.vdiff_last, -(3000 - 40));
-    // the rewire lands at the next medium boundary
+    // the rewire lands at the next CONTROL phase
     write_config(&sh, |t| t.config.limits.drive_polarity = true);
-    while k.decim_med != DECIM_MED - 1 {
+    while k.phase != 0 {
         k.on_tick(frame(2000, BIAS), &sh);
         assert_eq!(k.fast.vdiff_last, -(3000 - 40));
     }
@@ -906,7 +921,7 @@ fn current_mode_clamps_goal_to_i_lim() {
         t.control.lifecycle.goal_current = 5000;
     });
     let mut k = kernel();
-    k.on_tick(frame(2000, BIAS), &sh);
+    to_first_command(&mut k, &sh, frame(2000, BIAS));
     assert_eq!(k.medium.i_ref_cc, 1200);
     assert!(matches!(
         last_cmd(&k),
@@ -915,13 +930,13 @@ fn current_mode_clamps_goal_to_i_lim() {
             ..
         }
     ));
-    // the goal lands at the next medium boundary
+    // the goal is read at the next CONTROL phase and clamped at the VELOCITY
+    // phase after it
     sh.table
         .with_mut(|t| t.control.lifecycle.goal_current = -5000);
-    while k.decim_med != DECIM_MED - 1 {
-        k.on_tick(frame(2000, BIAS), &sh);
-        assert_eq!(k.medium.i_ref_cc, 1200);
-    }
+    run_to(&mut k, &sh, frame(2000, BIAS), phase::CONTROL);
+    run_to(&mut k, &sh, frame(2000, BIAS), phase::VELOCITY);
+    assert_eq!(k.medium.i_ref_cc, 1200);
     k.on_tick(frame(2000, BIAS), &sh);
     assert_eq!(k.medium.i_ref_cc, -1200);
 }
@@ -1151,7 +1166,7 @@ fn ident_invalid_ticks_hold_last_valid() {
     // lands
     let seq = loop {
         let seq = to_ident_boundary(&mut k, &sh, frame(2000, BIAS + 200));
-        if k.decim_med == DECIM_MED - 1 {
+        if k.phase == 0 {
             break seq;
         }
     };
@@ -1208,14 +1223,16 @@ fn bemf_boxcar_lands_on_the_closed_form_after_20_ticks() {
     let sh = Shared::new();
     ident_setup(&sh);
     let mut k = kernel();
-    // from the medium boundary after the slew every tick measures duty
+    // from the OBSERVER phase after the slew every tick measures duty
     // 8000: drive_ticks 293, vdiff 2960, i 100. The half closed 10 ticks
-    // later is the first clean one, 20 ticks pairs it with a second.
+    // later is the first clean one, 20 ticks pairs it with a second, and the
+    // PUBLISH phase after it lands the boxcar.
     settle(&mut k, &sh, frame(2000, BIAS + 100));
-    to_medium_boundary(&mut k, &sh, frame(2000, BIAS + 100));
+    run_to(&mut k, &sh, frame(2000, BIAS + 100), phase::OBSERVER + 1);
     for _ in 0..20 {
         k.on_tick(frame(2000, BIAS + 100), &sh);
     }
+    run_to(&mut k, &sh, frame(2000, BIAS + 100), phase::PUBLISH + 1);
     // closed form: (293 * 2960 / 1200 - 2.0 * 100) * 16 c/s per vcount
     let ticks = window::drive_ticks(8000, ARR) as i64;
     let v_sum = (bemf::BOXCAR_TICKS as i64 * ticks * 2960 * TIMING.recip_arr_q24 as i64) >> 24;
@@ -1224,13 +1241,12 @@ fn bemf_boxcar_lands_on_the_closed_form_after_20_ticks() {
     let got = sh.table.with(|t| t.telemetry.estimates.omega_bemf_cps) as i64;
     assert!((got - expect).abs() <= 1, "got {got} expect {expect}");
     assert_eq!(got, 8363, "pin");
-    // torque off lands at the next medium boundary, ten ticks on: that
-    // tick still drives and its half closes clean; the ten after it measure
-    // sub-floor, so the half closed at the boundary after voids and the
-    // publish drops to 0 with it
+    // torque off lands at the next CONTROL phase, which still measures the
+    // last drive; the OBSERVER tick after it measures sub-floor, so the half
+    // it closes voids, and the PUBLISH phase after that drops to 0
     sh.table
         .with_mut(|t| t.control.lifecycle.torque_enable = false);
-    for _ in 0..2 * DECIM_MED - 1 {
+    for _ in 0..DECIM_MED - 1 {
         k.on_tick(frame(2000, BIAS + 100), &sh);
     }
     assert_eq!(
@@ -1254,36 +1270,30 @@ fn velocity_feedback_switches_to_the_bemf_and_back() {
             )
         })
     };
-    // the slew starts at the window floor, so valid boxcars close at ticks
-    // 20, 30, 40, 50: the fourth flips the source; until then omega_hat is
-    // the observer's omega
-    for _ in 0..50 {
+    // the fourth clean boxcar flips the source; until then the published
+    // source is the observer
+    let mut n = 0;
+    while k.medium.omega_sw.source() != OmegaSource::Bemf {
         k.on_tick(frame(2000, BIAS + 100), &sh);
-        assert_eq!(published(&sh), (k.medium.fusion.omega_q16(), 0));
+        assert_eq!(published(&sh).1, 0);
+        n += 1;
+        assert!(n < 100, "the source never flipped");
     }
-    k.on_tick(frame(2000, BIAS + 100), &sh);
+    // the PUBLISH phase lands it
+    run_to(&mut k, &sh, frame(2000, BIAS + 100), phase::PUBLISH + 1);
     let bemf = sh.table.with(|t| t.telemetry.estimates.omega_bemf_cps) as i32;
     assert!(bemf > 0);
     assert_eq!(published(&sh), (bemf << 16, 1));
-    assert_eq!(k.medium.omega_sw.source(), OmegaSource::Bemf);
-    // torque off lands at the medium boundary at tick 61, which still
-    // drives and closes one more clean boxcar; the half closed at tick 71
-    // voids and the source rides that held boxcar through the one result,
-    // then falls back at tick 81
+    // torque off lands at the next CONTROL phase; the half the OBSERVER
+    // phase after it closes voids, and the source rides the held boxcar
+    // through that one result, then falls back at the next period's void
     sh.table
         .with_mut(|t| t.control.lifecycle.torque_enable = false);
-    for _ in 0..10 {
-        k.on_tick(frame(2000, BIAS + 100), &sh);
-    }
-    let held = published(&sh);
-    assert_eq!(held.1, 1);
-    for _ in 0..10 {
-        k.on_tick(frame(2000, BIAS + 100), &sh);
-    }
-    assert_eq!(published(&sh), held);
-    for _ in 0..10 {
-        k.on_tick(frame(2000, BIAS + 100), &sh);
-    }
+    k.on_tick(frame(2000, BIAS + 100), &sh);
+    run_to(&mut k, &sh, frame(2000, BIAS + 100), phase::PUBLISH + 1);
+    assert_eq!(published(&sh), (bemf << 16, 1));
+    k.on_tick(frame(2000, BIAS + 100), &sh);
+    run_to(&mut k, &sh, frame(2000, BIAS + 100), phase::PUBLISH + 1);
     assert_eq!(published(&sh), (k.medium.fusion.omega_q16(), 0));
 }
 
@@ -1694,7 +1704,7 @@ fn hold_freezes_and_drains_the_velocity_loop() {
         rng = rng.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
         f.pos = (f.pos as i32 + ((rng >> 24) as i32 % 7) - 3).clamp(0, 4095) as u16;
         k.on_tick(f, &sh);
-        if k.medium.hold {
+        if k.medium.hold && k.phase == phase::VELOCITY + 1 {
             assert_eq!(k.medium.i_ref_cc, 0, "parked with a current command");
         }
     }
@@ -1703,25 +1713,22 @@ fn hold_freezes_and_drains_the_velocity_loop() {
     plant.theta_q16 -= 60i64 << 16;
     for _ in 0..2000 {
         run_plant(&mut k, &sh, &mut plant, 1);
-        if k.decim_med == 0 && !k.medium.hold {
-            let (vg, omega_hat) = sh.table.with(|t| {
+        if k.phase == phase::VELOCITY + 1 && !k.medium.hold {
+            let vg = sh.table.with(|t| {
                 let v = &t.config.loop_velocity;
                 let m = &t.calib.motor;
-                (
-                    VelocityGains {
-                        kp_q88: v.v_kp_q88,
-                        ki_q412: v.v_ki_q412,
-                        kaw_q412: v.v_kaw_q412,
-                        j_ff_q88: v.j_ff_q88,
-                        fric_fc_counts: m.fric_fc_counts,
-                        fric_fv_q016: m.fric_fv_q016,
-                    },
-                    t.telemetry.estimates.omega_hat_cps,
-                )
+                VelocityGains {
+                    kp_q88: v.v_kp_q88,
+                    ki_q412: v.v_ki_q412,
+                    kaw_q412: v.v_kaw_q412,
+                    j_ff_q88: v.j_ff_q88,
+                    fric_fc_counts: m.fric_fc_counts,
+                    fric_fv_q016: m.fric_fv_q016,
+                }
             });
             let fresh = VelocityLoop::new().step(
                 k.medium.omega_ref_q16,
-                omega_hat,
+                k.medium.omega_hat,
                 k.medium.traj.alpha_star_q16(),
                 k.medium.traj.omega_star_q16(),
                 k.medium.i_band,
@@ -1999,7 +2006,7 @@ fn dispatched_config_write_lands_at_the_next_medium_boundary() {
     assert_eq!(ol_max(&k), 32767);
     crate::services::bus::tests::write_committed(&sh, DUTY_MAX_Q15, &5000u16.to_le_bytes());
     assert_eq!(sh.table.with(|t| t.config.loop_current.duty_max_q15), 5000);
-    while k.decim_med != DECIM_MED - 1 {
+    while k.phase != 0 {
         k.on_tick(frame(2000, BIAS), &sh);
         assert_eq!(ol_max(&k), 32767, "before the boundary");
     }
@@ -2045,7 +2052,7 @@ fn a_write_during_the_refresh_refreshes_again() {
     assert_eq!(k.config_gen, sh.config_gen());
 }
 
-// --- Host writes land at the medium boundary ------------------------------
+// --- Host writes land at the CONTROL phase ---------------------------------
 
 /// Ticks ahead of every phased write: a whole number of medium periods.
 const PHASED_LEAD: u32 = 40 * DECIM_MED as u32;
@@ -2067,7 +2074,7 @@ struct Phased {
     k: Kernel<FakeIo>,
     cmds: [(u8, i16); PHASED_TICKS],
     twin: [(u8, i16); PHASED_TICKS],
-    /// Ticks run before the first medium tick after the write.
+    /// Ticks run before the first CONTROL phase after the write.
     boundary: usize,
 }
 
@@ -2133,7 +2140,7 @@ fn restarts_from_the_floor(r: &Phased, n: usize) -> bool {
 }
 
 #[test]
-fn torque_off_lands_at_the_medium_boundary() {
+fn torque_off_lands_at_the_control_phase() {
     assert_lands_at_the_boundary(
         openloop_8000,
         |t| t.control.lifecycle.torque_enable = false,
@@ -2142,7 +2149,7 @@ fn torque_off_lands_at_the_medium_boundary() {
 }
 
 #[test]
-fn torque_on_lands_at_the_medium_boundary() {
+fn torque_on_lands_at_the_control_phase() {
     assert_lands_at_the_boundary(
         |t| {
             openloop_8000(t);
@@ -2154,7 +2161,7 @@ fn torque_on_lands_at_the_medium_boundary() {
 }
 
 #[test]
-fn mode_change_lands_at_the_medium_boundary() {
+fn mode_change_lands_at_the_control_phase() {
     assert_lands_at_the_boundary(
         |t| {
             t.control.lifecycle.torque_enable = true;
@@ -2168,11 +2175,120 @@ fn mode_change_lands_at_the_medium_boundary() {
 }
 
 #[test]
-fn goal_duty_lands_at_the_medium_boundary() {
+fn goal_duty_lands_at_the_control_phase() {
     assert_lands_at_the_boundary(
         openloop_8000,
         |t| t.control.lifecycle.goal_duty = 4000,
         // a goal cut applies at once
         |r, n| r.cmds[n] == (3, 4000),
     );
+}
+
+// --- Medium phases ----------------------------------------------------------
+
+/// The first period after boot, one phase per tick: each stage's output
+/// shows up at its own phase and feeds the next, and the command's parts
+/// land where the phase table says.
+#[test]
+fn the_chain_runs_in_phase_order() {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::Velocity;
+        t.control.lifecycle.goal_velocity = 1000;
+    });
+    let mut k = kernel();
+    let f = frame(2000, BIAS);
+    let published = |sh: &Shared| {
+        sh.table.with(|t| {
+            (
+                t.telemetry.estimates.vbus_counts,
+                t.telemetry.mode.mode_active,
+            )
+        })
+    };
+    // CONTROL: the drive kind is set, nothing downstream has run
+    k.on_tick(f, &sh);
+    assert!(matches!(k.cmd.drive, fast::Drive::Closed { .. }));
+    assert_eq!(k.medium.traj.omega_star_q16(), 0);
+    // OBSERVER, then TRAJECTORY: the profile steps on the observer's
+    // estimate
+    k.on_tick(f, &sh);
+    assert_eq!(k.medium.traj.omega_star_q16(), 0);
+    k.on_tick(f, &sh);
+    let omega_star = k.medium.traj.omega_star_q16();
+    assert!(omega_star > 0);
+    // LIMITS: the band exists but has not reached the command
+    assert_eq!(k.medium.i_band, IBand { lo: 0, hi: 0 });
+    k.on_tick(f, &sh);
+    assert_eq!(
+        k.medium.i_band,
+        IBand {
+            lo: -1200,
+            hi: 1200
+        }
+    );
+    assert_eq!(k.cmd.band, IBand { lo: 0, hi: 0 });
+    assert_eq!(k.cmd.i_ref_cc, 0);
+    // VELOCITY: the reference the profile asks for lands with the band
+    k.on_tick(f, &sh);
+    assert_eq!(
+        k.cmd.band,
+        IBand {
+            lo: -1200,
+            hi: 1200
+        }
+    );
+    assert!(k.cmd.i_ref_cc > 0);
+    assert_eq!(k.cmd.i_ref_cc, k.medium.i_ref_cc);
+    // RAIL: the rail estimate reaches the command
+    assert_eq!(k.cmd.vbus_counts, 0);
+    k.on_tick(f, &sh);
+    assert_eq!(k.cmd.vbus_counts, 3000);
+    // SLOW, then PUBLISH
+    k.on_tick(f, &sh);
+    assert_eq!(published(&sh), (0, 0));
+    k.on_tick(f, &sh);
+    assert_eq!(published(&sh), (3000, Mode::Velocity as u8));
+    // and once per period: the profile moves only at TRAJECTORY, by one
+    // step each period
+    let mut last = omega_star;
+    for tick in 0..3 * DECIM_MED as u32 {
+        let next = k.phase;
+        k.on_tick(f, &sh);
+        let now = k.medium.traj.omega_star_q16();
+        if next == phase::TRAJECTORY {
+            assert_eq!(now - last, omega_star, "tick {tick}");
+            last = now;
+        } else {
+            assert_eq!(now, last, "tick {tick}");
+        }
+    }
+}
+
+/// The slow block keeps its cadence: once every DECIM_SLOW periods, at the
+/// SLOW phase.
+#[test]
+fn the_slow_block_runs_every_32_periods() {
+    let sh = Shared::new();
+    seed(&sh);
+    let mut k = kernel();
+    let f = frame(2000, BIAS);
+    let mut runs = [0u32; 4];
+    let mut n = 0;
+    for tick in 0..4 * DECIM_SLOW as u32 * DECIM_MED as u32 {
+        let next = k.phase;
+        let before = k.medium.decim_slow;
+        k.on_tick(f, &sh);
+        if k.medium.decim_slow != before && k.medium.decim_slow == 0 {
+            assert_eq!(next, phase::SLOW, "tick {tick}");
+            runs[n] = tick;
+            n += 1;
+        }
+    }
+    assert_eq!(n, 4);
+    for w in runs.windows(2) {
+        assert_eq!(w[1] - w[0], DECIM_SLOW as u32 * DECIM_MED as u32);
+    }
 }

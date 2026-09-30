@@ -46,6 +46,8 @@ The cascade splits the job into nested loops, fastest on the inside:
 - The **velocity loop** runs about ten times slower and commands current.
 - The **position loop** runs at a similar or slower rate and commands velocity.
 
+On the servo the slower rate is a 2 kHz period of ten PWM ticks, and its work is spread over those ticks in the order the data flows: the host's commands and the edges first, then the observer on that tick's sample, the trajectory and the position loop, the limits, the velocity loop, the rail estimate and the detectors, and the publishes last. The current command lands three ticks (150 µs) after the sample it was computed from.
+
 Each loop only has to handle one kind of physics, and each loop makes the plant look simpler to the loop outside it. By the time the position loop is involved, "apply a torque" is just a number it writes, and all the electrical mess is somebody else's problem.
 
 The cascade also gives you limits for free. Clamp the command between two loops and you have a real physical limit. Clamp the current command and you have a torque limit. Clamp the velocity command and you have a speed limit. No special cases inside the loops.

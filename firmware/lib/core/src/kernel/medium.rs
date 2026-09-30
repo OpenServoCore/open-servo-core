@@ -85,7 +85,7 @@ pub struct Medium {
     dt_med_q32: u32,
     /// `KernelTiming::recip_arr_q24`.
     recip_arr_q24: u32,
-    decim_slow: u8,
+    pub(super) decim_slow: u8,
     /// CONTROL as the CONTROL phase read it.
     ctl: Control,
     /// Torque on and no fault at the CONTROL phase: the loops run.
@@ -93,7 +93,7 @@ pub struct Medium {
     pub(super) traj: TrajGen,
     pub(super) fusion: FusionObs,
     /// The observer phase's picks, for the later phases.
-    omega_hat: i32,
+    pub(super) omega_hat: i32,
     omega_bemf: Option<i32>,
     /// Linearized counts per raw count at the observer's sample.
     band_gain_q4: u16,

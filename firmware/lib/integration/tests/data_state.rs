@@ -18,8 +18,8 @@ use osc_servo_core::data_state::{
     CALIB_CORRUPT, CALIB_STALE, CALIB_VIRGIN, CONFIG_CORRUPT, CONFIG_STALE, CONFIG_VIRGIN,
     PLANT_UNSET, STAMP_MISMATCH, allows,
 };
-use osc_servo_core::kernel::DECIM_MED;
 use osc_servo_core::kernel::faults::{BIT_DATA, CODE_DATA, CODE_NONE};
+use osc_servo_core::kernel::{DECIM_MED, phase as kernel_phase};
 use osc_servo_core::persist::HEADER_LEN;
 use osc_servo_core::persist::Slot;
 use osc_servo_core::regions::CALIB_BASE_ADDR;
@@ -292,11 +292,12 @@ fn corrupt_config_refuses_every_mode() {
 }
 
 /// The physics belt: a zero Ke written into a running closed loop reaches
-/// the kernel at the first medium boundary after the commit, where the
-/// fault latches and the drive stops. The loops read the same snapshot, so
-/// every tick before that boundary runs on the old Ke, command for command
-/// what a servo without the write drives, and no tick drives on a zero Ke.
-/// Pinned for a write at each phase of the medium period.
+/// the kernel at the first CONTROL phase after the commit, where the fault
+/// latches and the drive stops; the PUBLISH phase of that period shows it.
+/// The loops read the same snapshot, so every tick before that boundary
+/// runs on the old Ke, command for command what a servo without the write
+/// drives, and no tick drives on a zero Ke. Pinned for a write at each
+/// phase of the medium period.
 #[rstest]
 #[case(Mode::Velocity, RECIP_KE_Q)]
 #[case(Mode::Velocity, KE_VPC_Q)]
@@ -329,11 +330,12 @@ fn live_zero_ke_write_stops_a_running_closed_loop(#[case] mode: Mode, #[case] re
             }
         });
         sh.config_touch();
-        // medium ticks are fast ticks 1, 1 + DECIM_MED, ... counted from the
-        // first; this many ticks run ahead of the next one
+        // CONTROL phases are fast ticks 1, 1 + DECIM_MED, ... counted from
+        // the first; this many ticks run ahead of the next one
         let ticks = 200 + RUN + phase;
         let boundary = ((DECIM_MED as u32 - ticks % DECIM_MED as u32) % DECIM_MED as u32) as usize;
-        for n in 0..DECIM_MED as usize {
+        let published = boundary + kernel_phase::PUBLISH as usize;
+        for n in 0..2 * DECIM_MED as usize {
             let cmd = rig.run(&sh, 1)[0];
             let old = twin_rig.run(&twin, 1)[0];
             if n < boundary {
@@ -352,7 +354,12 @@ fn live_zero_ke_write_stops_a_running_closed_loop(#[case] mode: Mode, #[case] re
                     matches!(cmd, MotorCmd::Disabled),
                     "phase {phase} tick {n}: {cmd:?}"
                 );
-                assert_eq!(fault(&sh), (BIT_DATA, CODE_DATA), "phase {phase} tick {n}");
+                let want = if n < published {
+                    (0, CODE_NONE)
+                } else {
+                    (BIT_DATA, CODE_DATA)
+                };
+                assert_eq!(fault(&sh), want, "phase {phase} tick {n}");
             }
         }
         assert!(
