@@ -32,16 +32,12 @@ const E_LIM_CQ16: i32 = 1 << 23;
 /// identity's largest band, 65535 x 16, sits under it.
 const BAND_SAT_Q4: u32 = (1 << 20) - 1;
 
-/// CONFIG loop_position gain + hold fields, loaded fresh each step by the
-/// kernel (`CurrentGains` convention).
-#[derive(Copy, Clone)]
+/// CONFIG loop_position gain + hold fields (`CurrentGains` convention).
+#[derive(Copy, Clone, Default)]
 pub struct PositionCfg {
     pub kp_q88: u16,
     /// Raw sensor counts; 0 disables the hold predicate entirely.
     pub pos_deadband_counts: u16,
-    /// Linearized counts per raw count at the present position, Q4 (16 at
-    /// the identity), clamped (`pos_lut::band_gain_q4`).
-    pub band_gain_q4: u16,
     pub vel_limit_cps: u16,
 }
 
@@ -54,11 +50,14 @@ pub struct PosOut {
 }
 
 /// One MEDIUM-tick update; stateless. theta*/omega* come from the
-/// trajectory generator, theta_hat/omega_hat from fusion.
+/// trajectory generator, theta_hat/omega_hat from fusion. `band_gain_q4` is
+/// linearized counts per raw count at the present position, Q4 (16 at the
+/// identity), clamped (`pos_lut::band_gain_q4`).
 pub fn step(
     theta_star_q16: i32,
     omega_star_q16: i32,
     theta_hat_q16: i32,
+    band_gain_q4: u16,
     cfg: &PositionCfg,
 ) -> PosOut {
     let e_raw = theta_star_q16.saturating_sub(theta_hat_q16);
@@ -69,7 +68,7 @@ pub fn step(
         .saturating_add(omega_star_q16)
         .clamp(-v_lim, v_lim);
     // raw-magnitude compares as u32: the band reaches 2^32 - 2^12, past i32
-    let band = (cfg.pos_deadband_counts as u32 * cfg.band_gain_q4 as u32).min(BAND_SAT_Q4) << 12;
+    let band = (cfg.pos_deadband_counts as u32 * band_gain_q4 as u32).min(BAND_SAT_Q4) << 12;
     let hold = cfg.pos_deadband_counts != 0 && e_raw.unsigned_abs() <= band && omega_star_q16 == 0;
     PosOut {
         omega_ref_q16: omega_ref,
@@ -81,11 +80,13 @@ pub fn step(
 mod tests {
     use super::*;
 
+    /// The identity's band gain.
+    const ID: u16 = crate::pos_lut::GRID as u16;
+
     fn c(kp: u16, db: u16, vl: u16) -> PositionCfg {
         PositionCfg {
             kp_q88: kp,
             pos_deadband_counts: db,
-            band_gain_q4: 16,
             vel_limit_cps: vl,
         }
     }
@@ -93,69 +94,69 @@ mod tests {
     #[test]
     fn hold_band_scales_by_the_local_gain() {
         // gain 26/16: 12 raw counts span 19.5 linearized
-        let cfg = PositionCfg {
-            band_gain_q4: 26,
-            ..c(1 << 8, 12, 32767)
-        };
-        assert!(step(39 << 15, 0, 0, &cfg).hold);
-        assert!(step(0, 0, 39 << 15, &cfg).hold);
-        assert!(!step((39 << 15) + 1, 0, 0, &cfg).hold);
-        assert!(!step(0, 0, (39 << 15) + 1, &cfg).hold);
+        let cfg = c(1 << 8, 12, 32767);
+        assert!(step(39 << 15, 0, 0, 26, &cfg).hold);
+        assert!(step(0, 0, 39 << 15, 26, &cfg).hold);
+        assert!(!step((39 << 15) + 1, 0, 0, 26, &cfg).hold);
+        assert!(!step(0, 0, (39 << 15) + 1, 26, &cfg).hold);
         // the largest deadband at the ceiling saturates past any error
-        let cfg = PositionCfg {
-            band_gain_q4: 64,
-            ..c(1 << 8, 65535, 32767)
-        };
-        assert!(step(i32::MAX, 0, i32::MIN, &cfg).hold);
-        assert!(step(i32::MIN, 0, i32::MAX, &cfg).hold);
+        let cfg = c(1 << 8, 65535, 32767);
+        assert!(step(i32::MAX, 0, i32::MIN, 64, &cfg).hold);
+        assert!(step(i32::MIN, 0, i32::MAX, 64, &cfg).hold);
     }
 
     #[test]
     fn p_term_sign_and_scale() {
         // kp 1.0 c/s per count: 100 counts of error -> 100 c/s
         let cfg = c(1 << 8, 0, 32767);
-        assert_eq!(step(100 << 16, 0, 0, &cfg).omega_ref_q16, 100 << 16);
-        assert_eq!(step(0, 0, 100 << 16, &cfg).omega_ref_q16, -(100 << 16));
+        assert_eq!(step(100 << 16, 0, 0, ID, &cfg).omega_ref_q16, 100 << 16);
+        assert_eq!(step(0, 0, 100 << 16, ID, &cfg).omega_ref_q16, -(100 << 16));
         // kp 1/256: 100 counts -> 100/256 c/s = 100 << 8 in csQ16
         let cfg = c(1, 0, 32767);
-        assert_eq!(step(100 << 16, 0, 0, &cfg).omega_ref_q16, 100 << 8);
-        assert_eq!(step(0, 0, 100 << 16, &cfg).omega_ref_q16, -(100 << 8));
+        assert_eq!(step(100 << 16, 0, 0, ID, &cfg).omega_ref_q16, 100 << 8);
+        assert_eq!(step(0, 0, 100 << 16, ID, &cfg).omega_ref_q16, -(100 << 8));
     }
 
     #[test]
     fn feedforward_adds() {
         // kp 0: pure passthrough of omega*
         let cfg = c(0, 0, 32767);
-        assert_eq!(step(100 << 16, 200 << 16, 0, &cfg).omega_ref_q16, 200 << 16);
+        assert_eq!(
+            step(100 << 16, 200 << 16, 0, ID, &cfg).omega_ref_q16,
+            200 << 16
+        );
         // kp term and omega* sum
         let cfg = c(1 << 8, 0, 32767);
-        assert_eq!(step(10 << 16, 200 << 16, 0, &cfg).omega_ref_q16, 210 << 16);
+        assert_eq!(
+            step(10 << 16, 200 << 16, 0, ID, &cfg).omega_ref_q16,
+            210 << 16
+        );
     }
 
     #[test]
     fn vel_limit_and_error_clamp() {
         // 1000 counts of error clamps to E_LIM's 128 first: kp 1.0 -> 128 c/s
         let cfg = c(1 << 8, 0, 32767);
-        assert_eq!(step(1000 << 16, 0, 0, &cfg).omega_ref_q16, 128 << 16);
+        assert_eq!(step(1000 << 16, 0, 0, ID, &cfg).omega_ref_q16, 128 << 16);
         // vel_limit clamps the sum, both signs
         let cfg = c(1 << 8, 0, 100);
-        assert_eq!(step(1000 << 16, 0, 0, &cfg).omega_ref_q16, 100 << 16);
-        assert_eq!(step(0, 0, 1000 << 16, &cfg).omega_ref_q16, -(100 << 16));
+        assert_eq!(step(1000 << 16, 0, 0, ID, &cfg).omega_ref_q16, 100 << 16);
+        assert_eq!(step(0, 0, 1000 << 16, ID, &cfg).omega_ref_q16, -(100 << 16));
         // feedforward alone also cannot escape the limit
-        assert_eq!(step(0, 500 << 16, 0, &cfg).omega_ref_q16, 100 << 16);
+        assert_eq!(step(0, 500 << 16, 0, ID, &cfg).omega_ref_q16, 100 << 16);
     }
 
     #[test]
     fn hold_predicate_each_condition() {
         let cfg = c(1 << 8, 5, 32767);
         // both hold conditions true: within deadband and profile at rest
-        assert!(step(5 << 16, 0, 0, &cfg).hold);
+        assert!(step(5 << 16, 0, 0, ID, &cfg).hold);
         // deadband 0 disables hold outright, even at perfect rest
-        assert!(!step(0, 0, 0, &c(1 << 8, 0, 32767)).hold);
+        assert!(!step(0, 0, 0, ID, &c(1 << 8, 0, 32767)).hold);
         // error one cQ16 past the deadband
-        assert!(!step((5 << 16) + 1, 0, 0, &cfg).hold);
+        assert!(!step((5 << 16) + 1, 0, 0, ID, &cfg).hold);
         // omega* nonzero: profile still moving
-        assert!(!step(5 << 16, 1, 0, &cfg).hold);
+        assert!(!step(5 << 16, 1, 0, ID, &cfg).hold);
     }
 
     #[test]
@@ -163,11 +164,11 @@ mod tests {
         // 6000 counts of error is far past E_LIM's 128 but inside a 65535
         // deadband: the predicate must see the raw magnitude and hold
         let cfg = c(1 << 8, 65535, 32767);
-        let out = step(3000 << 16, 0, -(3000 << 16), &cfg);
+        let out = step(3000 << 16, 0, -(3000 << 16), ID, &cfg);
         assert!(out.hold);
         // while the drive command stays E_LIM/vel_limit-clamped
         assert_eq!(out.omega_ref_q16, 128 << 16);
         // and a small deadband rejects the same error
-        assert!(!step(3000 << 16, 0, -(3000 << 16), &c(1 << 8, 5, 32767)).hold);
+        assert!(!step(3000 << 16, 0, -(3000 << 16), ID, &c(1 << 8, 5, 32767)).hold);
     }
 }

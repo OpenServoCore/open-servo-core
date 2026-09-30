@@ -165,9 +165,10 @@ pub struct TelemetryLimits {
     #[ct_field(skip)]
     pub _rsvd_align: u8,
     /// Smallest duty whose drive window the shunt reads
-    /// (`window::floor_duty`), Q15, published at the slow boundary: where
-    /// the OpenLoop ceiling restarts and its blind band begins. 0 until the
-    /// first pass.
+    /// (`window::floor_duty`), Q15: where the OpenLoop ceiling restarts and
+    /// its blind band begins. Published at the kernel's first tick, then
+    /// whenever a CONFIG or CALIB write reaches the kernel. 0 until the first
+    /// tick.
     #[ct_field(access = ro)]
     pub window_floor_q15: u16,
 }

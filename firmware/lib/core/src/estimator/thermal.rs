@@ -12,7 +12,7 @@ use crate::math::q_mul;
 /// the estimator, not the kernel: R only shows in `v_mean` when real current
 /// flows and the back-EMF term is negligible, so refusing bad samples is part
 /// of the estimate itself.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Default)]
 pub struct ThermGates {
     pub i_min_counts: u16,
     pub omega_max_cps: u16,
@@ -21,7 +21,7 @@ pub struct ThermGates {
 /// CALIB winding anchor: cold resistance `r0_q12` (Q4.12 vcounts/ccount),
 /// its ambient `t0_cc` (centi-degC), R-to-T slope `k_r2t_q88` (centi-degC per
 /// Q4.12 LSB, Q8.8), LMS step `mu_q016` (Q0.16).
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Default)]
 pub struct ThermAnchor {
     pub r0_q12: u16,
     pub t0_cc: i16,

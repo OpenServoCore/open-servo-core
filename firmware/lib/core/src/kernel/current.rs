@@ -19,10 +19,10 @@ const E_LIM_CC: i32 = 8192;
 /// matches E_LIM_CC: kaw * 2^13 <= 2^29.
 const AW_LIM_VC: i32 = 8192;
 
-/// CONFIG loop_current gains plus the CALIB forward Ke, loaded fresh each
-/// step by the kernel. `ke_q412` is `CalibMotor.ke_vpc_q`: vcounts per c/s,
+/// CONFIG loop_current gains plus the CALIB forward Ke, prebuilt by the
+/// kernel's configuration refresh (`kernel::config`). `ke_q412` is `CalibMotor.ke_vpc_q`: vcounts per c/s,
 /// the decoupling feedforward (NOT `recip_ke_q`, which points the other way).
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Default)]
 pub struct CurrentGains {
     pub kp_q88: u16,
     pub ki_q412: u16,

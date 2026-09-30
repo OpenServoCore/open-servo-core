@@ -33,12 +33,12 @@ const SNAP_D_CQ16: u32 = 1 << 16;
 /// the ramp through the accel slew.
 const WALL_RAMP_SHIFT: u32 = 4;
 
-/// CONFIG loop_position profile fields + soft limits, loaded fresh each
-/// step by the kernel (`CurrentGains` convention). `dt_med_q32` =
+/// CONFIG loop_position profile fields + soft limits (`CurrentGains`
+/// convention). `dt_med_q32` =
 /// 2^32 / MED_HZ, the kernel's compile-time constant; MED_HZ > 2 keeps it
 /// under 2^31 so the i32 cast in q_mul is value-preserving (fusion
 /// convention).
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Default)]
 pub struct TrajCfg {
     pub vel_limit_cps: u16,
     /// c/s of omega change per MEDIUM tick, Q8.8.

@@ -6,8 +6,11 @@
 //! derate, undervolt/overtemp). Identification aggregates ride their own
 //! /16 fast-tick window (`ident`), independent of DECIM_MED. Tick-indexed
 //! by design: a missed tick dilates time, nothing compensates and nothing
-//! reads a wall clock.
+//! reads a wall clock. CONFIG and CALIB reach the tick through the kernel's
+//! own snapshot (`config`), rebuilt at a medium boundary after a write, so
+//! a configuration write takes effect within one medium tick.
 
+mod config;
 pub mod current;
 pub mod duty_limit;
 pub mod faults;
@@ -23,13 +26,14 @@ pub use position::{PosOut, PositionCfg};
 pub use trajectory::{TrajCfg, TrajGen};
 pub use velocity::{VelocityGains, VelocityLoop};
 
+use core::sync::atomic::{Ordering, compiler_fence};
+
+use self::config::KernelConfig;
 use crate::estimator::{
-    BemfObs, BiasTracker, FusionGains, FusionObs, OmegaSwitch, ThermAnchor, ThermGates, VbusEst,
-    VcalLpf, WindingTherm, bemf, window,
+    BemfObs, BiasTracker, FusionObs, OmegaSwitch, VbusEst, VcalLpf, WindingTherm, bemf, window,
 };
 use crate::math::{q_mul, q_mul_u};
 use crate::pos_lut;
-use crate::regions::config::DecaySelect;
 use crate::regions::control::Mode;
 use crate::tel::{TelSample, TelStream};
 use crate::traits::{ControlIo, DecayMode, Motor, MotorCmd};
@@ -73,14 +77,19 @@ pub struct KernelTiming {
 /// CONTROL/CONFIG/CALIB write and the position table array, and can preempt
 /// this ISR mid-read, so the kernel only ever reads those - volatile via
 /// `region_ptr` (`Shared::pos_lut_q4` for the array), never forming `&T`,
-/// cross-field tearing accepted (each field is independently sane). The
-/// kernel is the sole writer of TELEMETRY sensors/estimates/mode/limits
-/// (`data_flags` excepted: boot and dispatch write it, the kernel reads) and
-/// the `fault_flags` byte; TELEMETRY `health` belongs to the chip side.
+/// cross-field tearing accepted (each field is independently sane). CONTROL
+/// is read every tick; CONFIG and CALIB only into `cfg`, when
+/// `Shared::config_gen` moved. The kernel is the sole writer of TELEMETRY
+/// sensors/estimates/mode/limits (`data_flags` excepted: boot and dispatch
+/// write it, the kernel reads) and the `fault_flags` byte; TELEMETRY
+/// `health` belongs to the chip side.
 pub struct Kernel<I: ControlIo, T: TelStream = ()> {
     pub io: I,
     tel: T,
     timing: KernelTiming,
+    cfg: KernelConfig,
+    /// The `Shared::config_gen` value `cfg` was built at.
+    config_gen: u8,
     decim_med: u8,
     decim_slow: u8,
     vcal_lpf: VcalLpf,
@@ -100,9 +109,8 @@ pub struct Kernel<I: ControlIo, T: TelStream = ()> {
     omega_sw: OmegaSwitch,
     /// OpenLoop's duty ceiling against `i_band`.
     ol: duty_limit::DutyLimiter,
-    /// Smallest duty with a valid shunt window (SLOW), and the duty OpenLoop
-    /// applies while its ceiling sits under that floor.
-    ol_floor_q15: u16,
+    /// The duty OpenLoop applies while its ceiling sits under the window
+    /// floor.
     ol_base_q15: u16,
     /// SLOW ticks left on the stall permit lease, renewed when HIGH moves
     /// `Shared::permit_gen` past `permit_gen`.
@@ -133,12 +141,6 @@ pub struct Kernel<I: ControlIo, T: TelStream = ()> {
     /// Last v-valid drive-window differential (va - vb), for the ident
     /// accumulation - same hold-last-valid pattern as `i_meas_last`.
     vdiff_last: i16,
-    /// ms -> medium-tick conversions, recomputed each SLOW pass; primed
-    /// never-trip so no detector fires before the first pass computes them.
-    stall_time_ticks: u32,
-    pos_error_time_ticks: u32,
-    /// Last `r0_q12` seeded into the thermometer; a calib rewrite re-seeds.
-    therm_r0: u16,
 }
 
 impl<I: ControlIo> Kernel<I> {
@@ -153,8 +155,10 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             io,
             tel,
             timing,
+            cfg: KernelConfig::default(),
+            config_gen: 0,
             // primed so the FIRST tick runs the full medium+slow chain: the
-            // ms->tick conversions and the vbus reciprocal exist before any
+            // configuration and the vbus reciprocal exist before any
             // consumer sees them
             decim_med: DECIM_MED - 1,
             decim_slow: DECIM_SLOW - 1,
@@ -171,7 +175,6 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             bemf: BemfObs::new(),
             omega_sw: OmegaSwitch::new(),
             ol: duty_limit::DutyLimiter::new(),
-            ol_floor_q15: 0,
             ol_base_q15: 0,
             permit_ticks: 0,
             permit_gen: 0,
@@ -189,27 +192,53 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             i_meas_last: 0,
             ident: ident::IdentAgg::new(),
             vdiff_last: 0,
-            stall_time_ticks: u32::MAX,
-            pos_error_time_ticks: u32::MAX,
-            therm_r0: 0,
+        }
+    }
+
+    /// Rebuild `cfg` from the table. `config_gen` is the generation read
+    /// before the copy: a write landing during it leaves the counter ahead
+    /// of what `cfg` records, so the next medium boundary rebuilds again.
+    #[inline(never)]
+    fn refresh(&mut self, shared: &Shared, config_gen: u8) {
+        // the generation load stays ahead of the block copies
+        compiler_fence(Ordering::Acquire);
+        let cfg = KernelConfig::load(shared, &self.timing);
+        // thermometer seed tracks the calib anchor: install writes and host
+        // rewrites both land here
+        let r0 = cfg.medium.therm_anchor.r0_q12;
+        if r0 != self.cfg.medium.therm_anchor.r0_q12 {
+            self.thermal.seed(r0);
+        }
+        self.cfg = cfg;
+        self.config_gen = config_gen;
+        let p = shared.table.region_ptr();
+        // SAFETY: sole-telemetry-writer contract (type doc); volatile store.
+        unsafe {
+            (&raw mut (*p).telemetry.limits.window_floor_q15).write_volatile(cfg.fast.ol_floor_q15);
         }
     }
 
     /// Must complete well inside the kernel period (~50 us at 20 kHz).
     pub fn on_tick(&mut self, frame: SensorFrame, shared: &Shared) {
+        self.decim_med += 1;
+        let medium = self.decim_med >= DECIM_MED;
+        if medium {
+            self.decim_med = 0;
+            let config_gen = shared.config_gen();
+            if config_gen != self.config_gen || !self.booted {
+                self.refresh(shared, config_gen);
+            }
+        }
+        let fc = &self.cfg.fast;
+        let mc = &self.cfg.medium;
         let p = shared.table.region_ptr();
 
         // SAFETY: reads of transport-owned regions - raw-pointer volatile
         // block copies, no `&T` formed, aligned repr(C) blocks inside the
         // static table (single-writer contract in the type doc).
-        let (life, loop_cur, lim_cfg, therm_cfg, sense, motor_cal, pos_lut_state) = unsafe {
+        let (life, pos_lut_state) = unsafe {
             (
                 (&raw const (*p).control.lifecycle).read_volatile(),
-                (&raw const (*p).config.loop_current).read_volatile(),
-                (&raw const (*p).config.limits).read_volatile(),
-                (&raw const (*p).config.thermal).read_volatile(),
-                (&raw const (*p).calib.sense).read_volatile(),
-                (&raw const (*p).calib.motor).read_volatile(),
                 (&raw const (*p).control.pos_lut.pos_lut_state).read_volatile(),
             )
         };
@@ -277,9 +306,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         // Physics belt: a closed loop on a zero Ke runs open (the boxcar
         // yields nothing, the current loop decouples nothing), whatever the
         // flags say - a live write of 0 into a running loop stops it here.
-        if life.torque_enable
-            && matches!(life.mode, Mode::Velocity | Mode::Position)
-            && (motor_cal.recip_ke_q == 0 || motor_cal.ke_vpc_q == 0)
+        if life.torque_enable && matches!(life.mode, Mode::Velocity | Mode::Position) && fc.ke_unset
         {
             self.faults.raise(faults::BIT_DATA, faults::CODE_DATA);
         }
@@ -292,14 +319,14 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         let sel = window::select(
             self.decay,
             ticks,
-            sense.i_window_min_ticks,
-            sense.v_window_min_ticks,
+            fc.i_window_min_ticks,
+            fc.v_window_min_ticks,
         );
         let bias = if window::trough_is_brake(
             self.decay,
             ticks,
             self.timing.pwm_arr,
-            sense.i_window_min_ticks,
+            fc.i_window_min_ticks,
         ) {
             self.bias.update(frame.current_trough)
         } else {
@@ -313,8 +340,8 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         if let Some(i) = i_meas {
             self.i_meas_last = i.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
         }
-        let oc_over = i_meas.map(|i| i.unsigned_abs() > lim_cfg.oc_trip_counts as u32);
-        if self.det.oc_sample(oc_over, lim_cfg.oc_trip_ticks) {
+        let oc_over = i_meas.map(|i| i.unsigned_abs() > fc.oc_trip_counts as u32);
+        if self.det.oc_sample(oc_over, fc.oc_trip_ticks) {
             self.faults
                 .raise(faults::BIT_OVER_CURRENT, faults::CODE_OVER_CURRENT);
         }
@@ -324,8 +351,8 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         // last-valid through invalid windows (ident module doc).
         // the taps read physical va - vb; a reversed motor makes that the
         // negative of the logical drive direction every consumer expects
-        let vdiff = window::vdiff_from_frame(&frame, sel)
-            .map(|v| if lim_cfg.drive_polarity { v } else { -v });
+        let vdiff =
+            window::vdiff_from_frame(&frame, sel).map(|v| if fc.drive_polarity { v } else { -v });
         if let Some(vdiff) = vdiff {
             self.vdiff_last = vdiff.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
         }
@@ -384,7 +411,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             }
             self.cur.reset();
             self.vel.reset();
-            self.ol.reset(self.ol_floor_q15);
+            self.ol.reset(fc.ol_floor_q15);
             self.i_ref_cc = 0;
             self.omega_ref_q16 = 0;
             self.hold = false;
@@ -393,45 +420,22 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         if run && life.mode != self.mode_prev {
             // mode change mid-run: reference = estimate, at rest
             self.traj.reseed(self.fusion.theta_q16());
-            self.ol.reset(self.ol_floor_q15);
+            self.ol.reset(fc.ol_floor_q15);
             self.hold = false;
         }
         self.mode_prev = life.mode;
 
-        self.decim_med += 1;
-        if self.decim_med >= DECIM_MED {
-            self.decim_med = 0;
-
-            // SAFETY: same volatile single-writer read contract as above.
-            let (loop_vel, loop_pos, fus_cfg, fault_cfg, pos_lim, winding) = unsafe {
-                (
-                    (&raw const (*p).config.loop_velocity).read_volatile(),
-                    (&raw const (*p).config.loop_position).read_volatile(),
-                    (&raw const (*p).config.fusion).read_volatile(),
-                    (&raw const (*p).config.fault_cfg).read_volatile(),
-                    (&raw const (*p).config.pos_limits).read_volatile(),
-                    (&raw const (*p).calib.winding).read_volatile(),
-                )
-            };
-
+        if medium {
             // i_use: window-valid measurement, else the cached command - the
             // observer never sees the validity flag (fusion contract). While
             // disabled or in OpenLoop the cache is 0, so an invalid window
             // predicts torque-free.
             let i_use = i_meas.unwrap_or(self.i_ref_cc);
-            let fg = FusionGains {
-                b_i_q313: motor_cal.b_i_q313,
-                l1_q016: fus_cfg.l1_q016,
-                l2_q88: fus_cfg.l2_q88,
-                l3_q88: fus_cfg.l3_q88,
-                fric_fc_counts: motor_cal.fric_fc_counts,
-            };
-            let omega_bemf = self.bemf.close_half(
-                motor_cal.r_q12,
-                motor_cal.recip_ke_q,
-                self.timing.recip_arr_q24,
-            );
-            self.fusion.step(i_use, pos_q4, self.timing.dt_med_q32, &fg);
+            let omega_bemf =
+                self.bemf
+                    .close_half(mc.r_q12, mc.recip_ke_q, self.timing.recip_arr_q24);
+            self.fusion
+                .step(i_use, pos_q4, self.timing.dt_med_q32, &mc.fusion);
             let theta_hat = self.fusion.theta_q16();
             // The observer's omega keeps the rest-shaped consumers (stall
             // verdict, thermometer gate): it is always there and reads
@@ -439,17 +443,10 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             let omega_pot = self.fusion.omega_q16();
             let omega_hat = self.omega_sw.step(omega_bemf, omega_pot);
 
-            let tc = TrajCfg {
-                vel_limit_cps: loop_pos.velocity_limit_cps,
-                accel_limit_q88: loop_pos.accel_limit_q88,
-                pos_min_soft_counts: pos_lim.pos_min_soft_counts,
-                pos_max_soft_counts: pos_lim.pos_max_soft_counts,
-                dt_med_q32: self.timing.dt_med_q32,
-            };
             if run {
                 match life.mode {
                     Mode::Position => {
-                        self.traj.step_position(life.goal_position, &tc);
+                        self.traj.step_position(life.goal_position, &mc.traj);
                         // the interval this tick linearized in: same raw
                         // sample, same torque-gated table as the FAST read
                         let band_gain_q4 = if pos_lut_state == pos_lut::state::LIVE {
@@ -457,23 +454,19 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                         } else {
                             pos_lut::GRID as u16
                         };
-                        let pc = PositionCfg {
-                            kp_q88: loop_pos.p_kp_q88,
-                            pos_deadband_counts: loop_pos.pos_deadband_counts,
-                            band_gain_q4,
-                            vel_limit_cps: loop_pos.velocity_limit_cps,
-                        };
                         let out = position::step(
                             self.traj.theta_star_q16(),
                             self.traj.omega_star_q16(),
                             theta_hat,
-                            &pc,
+                            band_gain_q4,
+                            &mc.position,
                         );
                         self.omega_ref_q16 = out.omega_ref_q16;
                         self.hold = out.hold;
                     }
                     Mode::Velocity => {
-                        self.traj.step_velocity(life.goal_velocity, theta_hat, &tc);
+                        self.traj
+                            .step_velocity(life.goal_velocity, theta_hat, &mc.traj);
                         self.omega_ref_q16 = self.traj.omega_star_q16();
                         self.hold = false;
                     }
@@ -497,41 +490,29 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             if !life.torque_enable {
                 self.permit_ticks = 0;
             }
-            let lcfg = LimitCfg {
-                current_limit_counts: lim_cfg.current_limit_counts,
-                stall_response: lim_cfg.stall_response,
-                stall_omega_max_cps: lim_cfg.stall_omega_max_cps,
-                stall_time_ticks: self.stall_time_ticks,
-                stall_yield_counts: lim_cfg.stall_yield_counts,
-                stall_release_counts: lim_cfg.stall_release_counts,
-                stall_tau_trip_counts: lim_cfg.stall_tau_trip_counts,
-                derate_start_cc: therm_cfg.derate_start_cc,
-                cutoff_cc: therm_cfg.cutoff_cc,
-                pos_min_soft_counts: pos_lim.pos_min_soft_counts,
-                pos_max_soft_counts: pos_lim.pos_max_soft_counts,
-                stall_permit: life.stall_permit && self.permit_ticks != 0,
-            };
+            let permit = life.stall_permit && self.permit_ticks != 0;
             let omega_abs_cps = omega_pot.unsigned_abs() >> 16;
             let band = self.limits.fold(
                 pinned,
                 omega_abs_cps,
                 self.fusion.tau_d_counts().unsigned_abs(),
                 theta_hat >> 16,
-                &lcfg,
+                permit,
+                &mc.limits,
             );
             self.i_band = band;
             // the stall-safe duty lim x R / vbus: winding R alone, so it errs
             // low by the bridge and shunt; unset R keeps it at the floor
-            self.ol_base_q15 = if motor_cal.r_q12 == 0 {
-                self.ol_floor_q15
+            self.ol_base_q15 = if mc.r_q12 == 0 {
+                fc.ol_floor_q15
             } else {
                 let lim = if life.goal_duty >= 0 {
                     band.hi
                 } else {
                     band.lo
                 };
-                let v = q_mul_u(lim.unsigned_abs(), motor_cal.r_q12 as u32, 12);
-                q_mul_u(v, self.vbus.recip_q15(), 15).min(self.ol_floor_q15 as u32) as u16
+                let v = q_mul_u(lim.unsigned_abs(), mc.r_q12 as u32, 12);
+                q_mul_u(v, self.vbus.recip_q15(), 15).min(fc.ol_floor_q15 as u32) as u16
             };
             if run && self.limits.stall_fault_pending() {
                 self.faults.raise(faults::BIT_STALL, faults::CODE_STALL);
@@ -552,21 +533,13 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                         self.vel.reset();
                     }
                     Mode::Velocity | Mode::Position => {
-                        let vg = VelocityGains {
-                            kp_q88: loop_vel.v_kp_q88,
-                            ki_q412: loop_vel.v_ki_q412,
-                            kaw_q412: loop_vel.v_kaw_q412,
-                            j_ff_q88: loop_vel.j_ff_q88,
-                            fric_fc_counts: motor_cal.fric_fc_counts,
-                            fric_fv_q016: motor_cal.fric_fv_q016,
-                        };
                         self.i_ref_cc = self.vel.step(
                             self.omega_ref_q16,
                             omega_hat,
                             self.traj.alpha_star_q16(),
                             self.traj.omega_star_q16(),
                             band,
-                            &vg,
+                            &mc.velocity,
                         );
                     }
                     // clamped fresh at the FAST rate below
@@ -575,7 +548,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                 }
             }
 
-            self.vbus.step(frame.vbus_raw, therm_cfg.v_undervolt_counts);
+            self.vbus.step(frame.vbus_raw, fc.v_undervolt_counts);
             // this tick's v_mean for the thermometer at SLOW (bemf
             // RECIP_ARR contract)
             let v_mean = vdiff.map(|vdiff| {
@@ -587,11 +560,10 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             });
 
             // raw-pot sanity screen runs in every mode, torque-off included
-            if self.det.sensor_sample(
-                frame.pos,
-                fault_cfg.sensor_delta_max,
-                fault_cfg.sensor_bad_count,
-            ) {
+            if self
+                .det
+                .sensor_sample(frame.pos, mc.sensor_delta_max, mc.sensor_bad_count)
+            {
                 self.faults.raise(faults::BIT_SENSOR, faults::CODE_SENSOR);
             }
             // tracking-error persistence: only meaningful with a live profile
@@ -602,10 +574,10 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                     .theta_star_q16()
                     .saturating_sub(theta_hat)
                     .unsigned_abs()
-                    > (fault_cfg.pos_error_counts as u32) << 16;
+                    > (mc.pos_error_counts as u32) << 16;
             if self
                 .det
-                .pos_err_sample(pos_err_over, self.pos_error_time_ticks)
+                .pos_err_sample(pos_err_over, mc.pos_error_time_ticks)
             {
                 self.faults
                     .raise(faults::BIT_POSITION_ERROR, faults::CODE_POSITION_ERROR);
@@ -614,65 +586,27 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             self.decim_slow += 1;
             if self.decim_slow >= DECIM_SLOW {
                 self.decim_slow = 0;
-                // ms -> medium ticks each SLOW pass, straight off the live
-                // table values: at 62.5 Hz two q16 multiplies are cheaper and
-                // simpler than write hooks, and a rewrite lands within one
-                // SLOW period (deliberate).
-                self.stall_time_ticks = q_mul_u(
-                    lim_cfg.stall_time_ms as u32,
-                    self.timing.med_ticks_per_ms_q16,
-                    16,
-                );
-                self.pos_error_time_ticks = q_mul_u(
-                    fault_cfg.pos_error_time_ms as u32,
-                    self.timing.med_ticks_per_ms_q16,
-                    16,
-                );
                 self.permit_ticks = self.permit_ticks.saturating_sub(1);
-                self.ol_floor_q15 = window::floor_duty(
-                    sense.i_window_min_ticks,
-                    self.timing.pwm_arr,
-                    self.timing.recip_arr_q24,
-                );
-                // SAFETY: sole-telemetry-writer contract (type doc); volatile
-                // store, slow-boundary publish.
-                unsafe {
-                    (&raw mut (*p).telemetry.limits.window_floor_q15)
-                        .write_volatile(self.ol_floor_q15);
-                }
-
-                // thermometer seed tracks the calib anchor: install writes
-                // and host rewrites both land here
-                if winding.r0_q12 != self.therm_r0 {
-                    self.thermal.seed(winding.r0_q12);
-                    self.therm_r0 = winding.r0_q12;
-                }
-                let gates = ThermGates {
-                    i_min_counts: therm_cfg.rtherm_i_min_counts,
-                    omega_max_cps: therm_cfg.rtherm_omega_max_cps,
-                };
-                let anchor = ThermAnchor {
-                    r0_q12: winding.r0_q12,
-                    t0_cc: winding.t0_cc,
-                    k_r2t_q88: winding.k_r2t_q88,
-                    mu_q016: winding.mu_q016,
-                };
                 // the LMS sample needs BOTH window paths valid
                 let (vm, therm_i) = match (v_mean, i_meas) {
                     (Some(v), Some(i)) => (v, Some(i)),
                     _ => (0, None),
                 };
-                let t_cc = self
-                    .thermal
-                    .step(vm, therm_i, omega_abs_cps, &gates, &anchor);
-                self.limits.update_derate(t_cc, &lcfg);
-                if t_cc >= therm_cfg.cutoff_cc {
+                let t_cc = self.thermal.step(
+                    vm,
+                    therm_i,
+                    omega_abs_cps,
+                    &mc.therm_gates,
+                    &mc.therm_anchor,
+                );
+                self.limits.update_derate(t_cc, &mc.limits);
+                if t_cc >= mc.limits.cutoff_cc {
                     self.faults
                         .raise(faults::BIT_OVER_TEMP, faults::CODE_OVER_TEMP);
                 }
                 // the rail tap samples drive or not, so a held sag never
                 // outlives the sag itself: ack clears once the rail is back
-                if self.vbus.vbus_counts() < therm_cfg.v_undervolt_counts {
+                if self.vbus.vbus_counts() < fc.v_undervolt_counts {
                     self.faults
                         .raise(faults::BIT_UNDER_VOLT, faults::CODE_UNDER_VOLT);
                 }
@@ -683,7 +617,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             let limit_flags = (pinned as u8 * limits::flag::CEILING)
                 | (self.limits.stalled() as u8 * limits::flag::YIELD)
                 | ((band.lo + band.hi != 0) as u8 * limits::flag::ENDSTOP)
-                | (lcfg.stall_permit as u8 * limits::flag::PERMIT);
+                | (permit as u8 * limits::flag::PERMIT);
 
             // SAFETY: sole-telemetry-writer contract (type doc); volatile
             // per-field stores, medium-boundary publish.
@@ -721,12 +655,12 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                     // duty_max-clamped, ceilinged against the current band
                     // above the window floor, raw at or under it; NO vbus
                     // comp - identification wants unconfounded actuation
-                    let max = loop_cur.duty_max_q15.min(i16::MAX as u16) as i32;
+                    let max = fc.ol_duty_max_q15 as i32;
                     let goal = (life.goal_duty as i32).clamp(-max, max);
                     // a start from zero duty is a reversal too: it restarts
                     // from the floor like the run edge does
                     if goal.signum() != (self.duty_q15 as i32).signum() {
-                        self.ol.reset(self.ol_floor_q15);
+                        self.ol.reset(fc.ol_floor_q15);
                     }
                     let lim = if goal >= 0 {
                         self.i_band.hi
@@ -741,7 +675,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                         goal.unsigned_abs() as u16,
                         i_abs,
                         lim.unsigned_abs(),
-                        self.ol_floor_q15,
+                        fc.ol_floor_q15,
                         self.ol_base_q15,
                     ) as i16;
                     let mut duty = if goal < 0 { -mag } else { mag };
@@ -757,20 +691,16 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                     self.duty_q15 = duty;
                     // a zeroed push still coasts on its momentum into the
                     // physical stop, so the wall brakes whatever the flag says
-                    if blocked || (duty == 0 && lim_cfg.openloop_zero_brake) {
+                    if blocked || (duty == 0 && fc.ol_zero_brake) {
                         // chip-side Drive{0, Slow} maps to coast; a winding
                         // short must be commanded explicitly
                         self.decay = DecayMode::Slow;
                         MotorCmd::Brake
                     } else {
-                        let decay = match lim_cfg.openloop_decay {
-                            DecaySelect::Slow => DecayMode::Slow,
-                            DecaySelect::Fast => DecayMode::Fast,
-                        };
-                        self.decay = decay;
+                        self.decay = fc.ol_decay;
                         MotorCmd::Drive {
                             duty: Effort(duty),
-                            decay,
+                            decay: fc.ol_decay,
                         }
                     }
                 }
@@ -810,17 +740,10 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                         self.decay = DecayMode::Slow;
                         MotorCmd::Brake
                     } else {
-                        let gains = CurrentGains {
-                            kp_q88: loop_cur.i_kp_q88,
-                            ki_q412: loop_cur.i_ki_q412,
-                            kaw_q412: loop_cur.i_kaw_q412,
-                            ke_q412: motor_cal.ke_vpc_q,
-                            duty_max_q15: loop_cur.duty_max_q15,
-                        };
                         // undervolt-floored vbus: the same floor `vbus.step`
                         // applied to the reciprocal, so (vbus, recip) stay
                         // the contract pair even before the first seed
-                        let vbus_eff = self.vbus.vbus_counts().max(therm_cfg.v_undervolt_counts);
+                        let vbus_eff = self.vbus.vbus_counts().max(fc.v_undervolt_counts);
                         // An invalid window only happens below the sampling
                         // floor, where the duty is too small to push real
                         // current: 0 is the honest estimate THERE, and it
@@ -841,7 +764,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                             omega_ff_q16,
                             vbus_eff,
                             self.vbus.recip_q15(),
-                            &gains,
+                            &fc.current,
                         );
                         self.duty_q15 = duty;
                         // closed-loop decay is fixed Slow (spec: config enum
@@ -858,7 +781,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         // logical (+duty moves counts up) -> wiring, on the output only:
         // duty_q15 and the published duty stay logical
         let cmd = match cmd {
-            MotorCmd::Drive { duty, decay } if !lim_cfg.drive_polarity => MotorCmd::Drive {
+            MotorCmd::Drive { duty, decay } if !fc.drive_polarity => MotorCmd::Drive {
                 duty: Effort(duty.0.saturating_neg()),
                 decay,
             },

@@ -23,6 +23,10 @@ pub struct Shared {
     /// kernel renews its lease when it moves (`permit_after_commit`). HIGH
     /// is the sole writer.
     permit_gen: AtomicU8,
+    /// Bumped by HIGH on every committed write into CONFIG or CALIB (and
+    /// ASSIGN's id); the kernel rebuilds its configuration from the table
+    /// when it moves. HIGH is the sole writer.
+    config_gen: AtomicU8,
     /// The factory UID, silicon ID zero-padded to the 16-byte wire field
     /// (osc-native sec 9.2) -- internal identity, not a table register; MGMT ENUM
     /// is its only wire reader.
@@ -44,6 +48,7 @@ impl Shared {
             data_job: AtomicU8::new(0),
             data_gen: AtomicU16::new(0),
             permit_gen: AtomicU8::new(0),
+            config_gen: AtomicU8::new(0),
             uid: SyncUnsafeCell::new([0; UID_LEN]),
             store: SyncUnsafeCell::new(None),
             pos_lut: SyncUnsafeCell::new([0; POINTS]),
@@ -86,6 +91,18 @@ impl Shared {
 
     pub(crate) fn permit_gen(&self) -> u8 {
         self.permit_gen.load(Ordering::Relaxed)
+    }
+
+    /// HIGH: CONFIG or CALIB changed under the kernel.
+    pub fn config_touch(&self) {
+        self.config_gen.store(
+            self.config_gen.load(Ordering::Relaxed).wrapping_add(1),
+            Ordering::Relaxed,
+        );
+    }
+
+    pub(crate) fn config_gen(&self) -> u8 {
+        self.config_gen.load(Ordering::Relaxed)
     }
 
     pub(crate) fn data_gen(&self) -> u16 {

@@ -959,6 +959,7 @@ fn assign_matching_uid_sets_id_before_ack() {
     // also marks modified-since-save (sec 9.4).
     assert_eq!(shared.table.with(|t| t.config.common.id), 42);
     assert_eq!(dirty(&shared), 1);
+    assert_eq!(shared.config_gen(), 1, "a CONFIG write");
 }
 
 #[test]
@@ -1420,4 +1421,36 @@ fn permit_write_bumps_the_generation_only_when_set() {
     assert_eq!(shared.permit_gen(), 3, "staged, not committed");
     go(Request::Commit);
     assert_eq!(shared.permit_gen(), 4);
+}
+
+/// One committed plain write, as the bus lands it after a clean CRC.
+pub(crate) fn write_committed(shared: &Shared, addr: u16, data: &[u8]) {
+    let mut staged = StagedWrites::new();
+    let reply = go(shared, &mut staged, write(addr, data, false), true);
+    assert_eq!(reply.last().result, ResultCode::Ok);
+}
+
+#[test]
+fn config_and_calib_writes_move_the_config_generation() {
+    use crate::regions::calib::addr::motor::R_Q12;
+    use crate::regions::config::addr::loop_current::DUTY_MAX_Q15;
+    use crate::regions::control::addr::lifecycle::GOAL_DUTY;
+    let shared = Shared::new();
+    let mut staged = StagedWrites::new();
+    let mut pending = None;
+    let mut reply = FakeReply::new();
+    let mut go = |req| pass(&shared, &mut staged, &mut pending, &mut reply, req);
+
+    go(write(GOAL_DUTY, &[0, 1], false));
+    assert_eq!(shared.config_gen(), 0, "CONTROL is not configuration");
+    go(write(DUTY_MAX_Q15, &[0, 1], false));
+    assert_eq!(shared.config_gen(), 1);
+    go(write(R_Q12, &[0, 1], false));
+    assert_eq!(shared.config_gen(), 2, "CALIB is");
+
+    // a held write moves it at its COMMIT, not at the staging
+    go(write(DUTY_MAX_Q15, &[0, 2], true));
+    assert_eq!(shared.config_gen(), 2, "staged, not committed");
+    go(Request::Commit);
+    assert_eq!(shared.config_gen(), 3);
 }

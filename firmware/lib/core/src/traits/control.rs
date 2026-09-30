@@ -38,11 +38,12 @@ pub enum MotorCmd {
     Drive { duty: Effort, decay: DecayMode },
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Default)]
 pub enum DecayMode {
     /// Off-window = COAST (idle leg LOW). Low EMI, near-zero avg current on DRV8212P.
     Fast,
     /// Off-window = BRAKE (idle leg HIGH). DRV8212P-correct for usable torque.
+    #[default]
     Slow,
 }
 

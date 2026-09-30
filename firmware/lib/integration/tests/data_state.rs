@@ -291,8 +291,12 @@ fn corrupt_config_refuses_every_mode() {
     }
 }
 
-/// The physics belt: a zero Ke written into a running closed loop stops it
-/// on the next fast tick, and the publish lands within the medium tick.
+/// The physics belt: a zero Ke written into a running closed loop reaches
+/// the kernel at the first medium boundary after the commit, where the
+/// fault latches and the drive stops. The loops read the same snapshot, so
+/// every tick before that boundary runs on the old Ke, command for command
+/// what a servo without the write drives, and no tick drives on a zero Ke.
+/// Pinned for a write at each phase of the medium period.
 #[rstest]
 #[case(Mode::Velocity, RECIP_KE_Q)]
 #[case(Mode::Velocity, KE_VPC_Q)]
@@ -300,35 +304,71 @@ fn corrupt_config_refuses_every_mode() {
 #[case(Mode::Position, KE_VPC_Q)]
 #[test_log::test]
 fn live_zero_ke_write_stops_a_running_closed_loop(#[case] mode: Mode, #[case] reg: u16) {
-    let sh = Shared::new();
-    seed(&sh);
-    assert_eq!(data_flags(&sh), 0);
-    let mut rig = Rig::new();
-    rig.run(&sh, 200);
-    enable(&sh, mode);
-    let cmds = rig.run(&sh, 3000);
-    assert!(drives(&cmds));
-    assert!(
-        matches!(cmds[cmds.len() - 1], MotorCmd::Drive { .. }),
-        "still driving: {:?}",
-        cmds[cmds.len() - 1]
-    );
-    set(&sh, |t| {
-        if reg == RECIP_KE_Q {
-            t.calib.motor.recip_ke_q = 0;
-        } else {
-            t.calib.motor.ke_vpc_q = 0;
+    const RUN: u32 = 3000;
+    for phase in 0..DECIM_MED as u32 {
+        let (sh, twin) = (Shared::new(), Shared::new());
+        seed(&sh);
+        seed(&twin);
+        assert_eq!(data_flags(&sh), 0);
+        let (mut rig, mut twin_rig) = (Rig::new(), Rig::new());
+        for (sh, rig) in [(&sh, &mut rig), (&twin, &mut twin_rig)] {
+            rig.run(sh, 200);
+            enable(sh, mode);
+            let cmds = rig.run(sh, RUN + phase);
+            assert!(
+                matches!(cmds[cmds.len() - 1], MotorCmd::Drive { .. }),
+                "phase {phase}: still driving: {:?}",
+                cmds[cmds.len() - 1]
+            );
         }
-    });
-    let cmds = rig.run(&sh, DECIM_MED as u32);
-    assert!(all_disabled(&cmds), "{cmds:?}");
-    assert_eq!(fault(&sh), (BIT_DATA, CODE_DATA));
-    // the ack re-latches while the reason holds
-    set(&sh, |t| t.control.lifecycle.torque_enable = false);
-    rig.run(&sh, 20);
-    set(&sh, |t| t.control.lifecycle.torque_enable = true);
-    assert!(all_disabled(&rig.run(&sh, 3 * DECIM_MED as u32)));
-    assert_eq!(fault(&sh), (BIT_DATA, CODE_DATA));
+        set(&sh, |t| {
+            if reg == RECIP_KE_Q {
+                t.calib.motor.recip_ke_q = 0;
+            } else {
+                t.calib.motor.ke_vpc_q = 0;
+            }
+        });
+        sh.config_touch();
+        // medium ticks are fast ticks 1, 1 + DECIM_MED, ... counted from the
+        // first; this many ticks run ahead of the next one
+        let ticks = 200 + RUN + phase;
+        let boundary = ((DECIM_MED as u32 - ticks % DECIM_MED as u32) % DECIM_MED as u32) as usize;
+        for n in 0..DECIM_MED as usize {
+            let cmd = rig.run(&sh, 1)[0];
+            let old = twin_rig.run(&twin, 1)[0];
+            if n < boundary {
+                assert!(
+                    matches!(cmd, MotorCmd::Drive { .. }),
+                    "phase {phase} tick {n}: {cmd:?}"
+                );
+                assert_eq!(
+                    duty_of(cmd),
+                    duty_of(old),
+                    "phase {phase} tick {n}: off the old Ke"
+                );
+                assert_eq!(fault(&sh), (0, CODE_NONE), "phase {phase} tick {n}");
+            } else {
+                assert!(
+                    matches!(cmd, MotorCmd::Disabled),
+                    "phase {phase} tick {n}: {cmd:?}"
+                );
+                assert_eq!(fault(&sh), (BIT_DATA, CODE_DATA), "phase {phase} tick {n}");
+            }
+        }
+        assert!(
+            all_disabled(&rig.run(&sh, 3 * DECIM_MED as u32)),
+            "phase {phase}"
+        );
+        // the ack re-latches while the reason holds
+        set(&sh, |t| t.control.lifecycle.torque_enable = false);
+        rig.run(&sh, 20);
+        set(&sh, |t| t.control.lifecycle.torque_enable = true);
+        assert!(
+            all_disabled(&rig.run(&sh, 3 * DECIM_MED as u32)),
+            "phase {phase}"
+        );
+        assert_eq!(fault(&sh), (BIT_DATA, CODE_DATA), "phase {phase}");
+    }
 }
 
 /// Records every TEL sample the kernel emits; the handle outlives the kernel.
