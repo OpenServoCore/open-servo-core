@@ -1085,6 +1085,41 @@
       "kind": "uint"
     },
     {
+      "name": "tick_load_mean_q15",
+      "addr": 618,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "tick_over_count",
+      "addr": 620,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "tick_lost_count",
+      "addr": 622,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "tel_drop_count",
+      "addr": 624,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "stack_free_min",
+      "addr": 626,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
       "name": "words",
       "addr": 640,
       "width": 64,

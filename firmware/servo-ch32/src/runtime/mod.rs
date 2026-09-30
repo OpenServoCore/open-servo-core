@@ -4,7 +4,9 @@ pub mod init;
 pub mod isr;
 pub mod registry;
 pub mod run;
+pub mod stack;
 pub mod statics;
+pub(crate) mod tick_load;
 
 pub use init::bringup;
 pub use registry::Drivers;

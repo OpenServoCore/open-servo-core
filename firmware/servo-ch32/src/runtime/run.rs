@@ -37,6 +37,8 @@ macro_rules! run {
 
 #[doc(hidden)]
 pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
+    #[cfg(target_arch = "riscv32")]
+    let mut stack = crate::runtime::stack::paint();
     let io = Ch32ControlIo::new(cfg, pre);
     crate::runtime::statics::install(io, pre.kernel_timing);
     crate::runtime::isr::install_irqs();
@@ -47,6 +49,7 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
         crc_fail_count: 0,
         framing_drop_count: 0,
     };
+    let mut tel_published: u16 = 0;
     let talk_hold_ticks = TALK_HOLD_US * Monotonic::TICKS_PER_US;
     let mut last_talk = Monotonic.ticks().wrapping_sub(talk_hold_ticks);
     let rescue_low_ticks = RESCUE_LOW_US * Monotonic::TICKS_PER_US;
@@ -76,19 +79,26 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
         led.poll();
 
         // Publish transport health into the telemetry region (protocol sec 5.3 layer 1:
-        // dropped frames are counted, never answered). The critical section
-        // makes the `bus()` reach-in non-aliasing (HIGH owns it otherwise)
-        // and folds the read-modify-write against a concurrent host clear
-        // committing from HIGH.
+        // dropped frames are counted, never answered), and the TEL rows the
+        // kernel dropped. The critical section makes the `bus()` reach-in
+        // non-aliasing (HIGH owns it otherwise) and folds the
+        // read-modify-write against a concurrent host clear committing from
+        // HIGH.
         critical_section::with(|_| {
             // SAFETY: bus installed in bringup; ISRs masked by the CS.
             let diag = unsafe { crate::runtime::Drivers::bus() }.diag();
+            let tel_drops = crate::runtime::statics::TEL_CHANNEL.drops();
             // SAFETY: table storage is 'static; field access is volatile and
             // ISR-masked, mirroring the sample_tick idiom in `isr.rs`.
             unsafe {
-                let common = &raw mut (*crate::runtime::statics::SHARED.table.region_ptr())
-                    .telemetry
-                    .common;
+                let telemetry =
+                    &raw mut (*crate::runtime::statics::SHARED.table.region_ptr()).telemetry;
+                let common = &raw mut (*telemetry).common;
+                let tel = &raw mut (*telemetry).health.tel_drop_count;
+                tel.write_volatile(
+                    tel.read_volatile()
+                        .wrapping_add(tel_drops.wrapping_sub(tel_published)),
+                );
                 let crc = &raw mut (*common).crc_fail_count;
                 crc.write_volatile(
                     crc.read_volatile()
@@ -103,7 +113,21 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
                 );
             }
             published = diag;
+            tel_published = tel_drops;
         });
+
+        #[cfg(target_arch = "riscv32")]
+        if let Some(free) = stack.step() {
+            // SAFETY: table storage is 'static; the main loop is the only
+            // writer of this read-only field.
+            unsafe {
+                (&raw mut (*crate::runtime::statics::SHARED.table.region_ptr())
+                    .telemetry
+                    .health
+                    .stack_free_min)
+                    .write_volatile(free);
+            }
+        }
 
         // Clock-trim loop (protocol sec 9.3): the transport measures
         // host-instruction byte cadence ISR-side; the correction lands here,

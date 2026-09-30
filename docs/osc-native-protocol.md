@@ -1037,6 +1037,40 @@ Under the Same Band" has the planning behind it):
   treats a rejection as a failure: it writes `arm` 0 to release the
   section, and the run ends (unit `a_rejected_arm_reports_and_releases`).
 
+### 5.9 Health (osc-servo)
+
+Five u16 registers in TELEMETRY, after `window_floor_q15`, say how the
+servo itself is keeping up. Every build carries them; the chip side
+writes them, not the kernel.
+
+| addr  | name                 | access | meaning                                                                                              |
+| ----- | -------------------- | ------ | ---------------------------------------------------------------------------------------------------- |
+| 0x26A | `tick_load_mean_q15` | RO     | mean share of the kernel period the tick interrupt took over the last 4096 ticks (0.2 s), Q15       |
+| 0x26C | `tick_over_count`    | RW     | kernel ticks whose interrupt took longer than one period, transport preemption included; wraps      |
+| 0x26E | `tick_lost_count`    | RW     | kernel ticks that never ran: the previous tick was still running or interrupts were held off; wraps |
+| 0x270 | `tel_drop_count`     | RW     | TEL rows dropped because both stream buffers were waiting for the wire (sec 5.6); wraps              |
+| 0x272 | `stack_free_min`     | RO     | smallest free stack seen since boot, bytes                                                           |
+
+The RW registers follow the TELEMETRY-COMMON clear contract (sec 5.4):
+a host writes 0 and the servo counts on from there. The mean load
+reads as a percentage of the period (50 us at 20 kHz) as
+`q15 x 100 / 32768`, 16384 is 50%, and covers 0.2 s so a single read
+does not catch one medium tick. Each tick is timed from the first to
+the last statement of the tick interrupt, so it counts any transport
+interrupt that preempts the tick and leaves out interrupt entry and
+exit. A bus transaction preempts a tick for longer than a period, the
+read of these registers included, so a few `tick_over_count` counts per
+transaction are normal; a kernel that overruns by itself shows hundreds
+per second. A tick counts as lost when the interrupt runs a whole
+period or more behind schedule, judged once per 16 ticks: a late window
+that the next one catches up costs nothing, and one window counts at
+most 16. Both counters update every 16 ticks (0.8 ms), the mean every
+4096. No kernel tick runs during a shunt burst (sec 5.8); the ticks
+before it that did not fill a 16-tick window count toward neither
+counter, and the first window after it counts no lost ticks.
+`stack_free_min` reads 0 until the first stack scan completes, about
+10 ms after boot.
+
 ## 6. Coordinated reads (status chains)
 
 GREAD replies arrive as a chain of ordinary status frames, one per listed

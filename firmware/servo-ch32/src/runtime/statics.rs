@@ -10,8 +10,9 @@ pub static SHARED: Shared = Shared::new();
 /// TEL burst seam, split once in `install`: the kernel keeps the `TelFeed`
 /// half (its `TelStream` sink) -- fed from the PFIC LOW kernel tick, so
 /// kernel ownership keeps the `&mut` single-context -- and the `TelDrain`
-/// half rides in the HIGH-side bus composite (`attach_tel`).
-static TEL_CHANNEL: TelChannel = TelChannel::new();
+/// half rides in the HIGH-side bus composite (`attach_tel`). The main loop
+/// reads only `drops`.
+pub(crate) static TEL_CHANNEL: TelChannel = TelChannel::new();
 
 type Ch32Kernel = Kernel<Ch32ControlIo, TelFeed>;
 

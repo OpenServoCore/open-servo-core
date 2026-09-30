@@ -1,10 +1,16 @@
+use core::cell::SyncUnsafeCell;
+
 use ch32_metapac::{DMA1, USART1};
 use osc_servo_core::traits::{Dispatch, Dispatched, Reply, Request, RequestCtx};
 use osc_servo_core::{ControlIo, RegionStorageRaw, Sensors};
 
-use crate::hal::{pfic, usart};
+use crate::hal::{pfic, systick, usart};
 use crate::runtime::Drivers;
 use crate::runtime::statics::{KERNEL, SESSION, SHARED};
+use crate::runtime::tick_load::TickLoad;
+
+/// Touched only from the DMA1 CH1 vector, which never preempts itself.
+static TICK_LOAD: SyncUnsafeCell<TickLoad> = SyncUnsafeCell::new(TickLoad::new());
 
 /// Configures PFIC priorities and unmasks the transport + ADC IRQs. Called
 /// once during bringup, after the drivers and statics are installed.
@@ -65,10 +71,14 @@ impl Dispatch for HighDispatcher {
 
 /// ADC DMA TC handler body -- wire into the vector table via [`crate::install_isrs!`].
 pub fn on_adc_dma_tc() {
+    let entry = systick::ticks();
+    // SAFETY: see TICK_LOAD.
+    let load = unsafe { &mut *TICK_LOAD.get() };
     // A shunt burst time-shares DMA1 CH1, so its HT and TC arrive on this
     // vector; the buffer then holds raw shunt codes, not a 7-slot scan, and
     // nothing below may run against it.
     if crate::control::burst::capturing() {
+        load.skip();
         crate::control::burst::on_dma_event(&SHARED);
         return;
     }
@@ -95,6 +105,27 @@ pub fn on_adc_dma_tc() {
     // Trailing on purpose: the burst handshake must never displace a kernel
     // tick, and a launch wants the scan TC's slack ahead of the next trigger.
     crate::control::burst::poll_arm(&SHARED);
+
+    if let Some(w) = load.tick(entry, systick::ticks()) {
+        // SAFETY: table storage is 'static; the health block's tick fields
+        // have this vector as their only chip-side writer. The counters are
+        // stored only on a change, so a host clear races a store only when
+        // one is due.
+        unsafe {
+            let h = &raw mut (*SHARED.table.region_ptr()).telemetry.health;
+            if let Some(mean) = w.mean_q15 {
+                (&raw mut (*h).tick_load_mean_q15).write_volatile(mean);
+            }
+            if w.over != 0 {
+                let over = &raw mut (*h).tick_over_count;
+                over.write_volatile(over.read_volatile().wrapping_add(w.over));
+            }
+            if w.lost != 0 {
+                let lost = &raw mut (*h).tick_lost_count;
+                lost.write_volatile(lost.read_volatile().wrapping_add(w.lost));
+            }
+        }
+    }
 }
 
 /// USART1 vector -- break detection (LBD) and TX arm completion.
