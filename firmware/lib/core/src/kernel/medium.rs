@@ -46,6 +46,7 @@ pub struct Control {
     pub life: ControlLifecycle,
     /// `pos_lut_state` reads LIVE: the position table applies.
     pub lut_live: bool,
+    pub ident_agg: bool,
 }
 
 impl Control {
@@ -54,15 +55,17 @@ impl Control {
         // SAFETY: reads of transport-owned regions - raw-pointer volatile
         // block copies, no `&T` formed, aligned repr(C) blocks inside the
         // static table (single-writer contract on `Kernel`).
-        let (life, pos_lut_state) = unsafe {
+        let (life, pos_lut_state, ident_agg) = unsafe {
             (
                 (&raw const (*p).control.lifecycle).read_volatile(),
                 (&raw const (*p).control.pos_lut.pos_lut_state).read_volatile(),
+                (&raw const (*p).control.ident.ident_agg).read_volatile(),
             )
         };
         Self {
             life,
             lut_live: pos_lut_state == pos_lut::state::LIVE,
+            ident_agg,
         }
     }
 }
@@ -213,6 +216,10 @@ impl Medium {
         // change
         cmd.i_ref_cc = self.i_ref_cc;
         cmd.lut_live = self.ctl.lut_live;
+        if cmd.ident_agg && !self.ctl.ident_agg {
+            fast.restart_ident();
+        }
+        cmd.ident_agg = self.ctl.ident_agg;
     }
 
     /// The torque enable edge, the data-state entry check and the Ke belt.

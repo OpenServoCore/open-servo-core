@@ -784,11 +784,12 @@ mod tests {
             assert_eq!(servo.pressed_ms, 0.0, "{what}: driven into a stop");
             assert!(!servo.torque, "{what}");
             assert_eq!(
-                &log[log.len() - 3..],
+                &log[log.len() - 4..],
                 [
                     "write goal_duty 0",
                     "write torque_enable 0",
-                    "write tel_mask 0"
+                    "write tel_mask 0",
+                    "write ident_agg 0"
                 ],
                 "{what}"
             );

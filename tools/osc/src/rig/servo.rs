@@ -148,7 +148,8 @@ impl<C: AsClient> Servo for Wire<C> {
 }
 
 /// Run `f`, then force the servo safe (duty and goals zero, torque, stall
-/// permit and TEL off) whether it succeeded, failed, or was ctrl-c'd.
+/// permit, TEL and the ident aggregate off) whether it succeeded, failed,
+/// or was ctrl-c'd.
 pub(crate) fn guard<S: Servo, T>(s: &mut S, f: impl FnOnce(&mut S) -> Result<T>) -> Result<T> {
     let r = f(s);
     for (reg, v) in SAFE {
@@ -158,7 +159,7 @@ pub(crate) fn guard<S: Servo, T>(s: &mut S, f: impl FnOnce(&mut S) -> Result<T>)
 }
 
 /// What leaves a servo safe, in the order it is written.
-pub(crate) const SAFE: [(Reg, i32); 7] = [
+pub(crate) const SAFE: [(Reg, i32); 8] = [
     (control::GOAL_DUTY, 0),
     (control::GOAL_CURRENT, 0),
     (control::GOAL_VELOCITY, 0),
@@ -166,6 +167,7 @@ pub(crate) const SAFE: [(Reg, i32); 7] = [
     (control::STALL_PERMIT, 0),
     (control::TEL_COUNT, 0),
     (control::TEL_MASK, 0),
+    (control::IDENT_AGG, 0),
 ];
 
 /// The bench servo in-process: its table is the in-process servo stack's,

@@ -1411,8 +1411,8 @@ mod tests {
         );
         assert!(!log.iter().any(|l| l.starts_with("stream")), "{log:?}");
         assert_eq!(
-            log.last().map(String::as_str),
-            Some("write torque_enable 0")
+            log[log.len() - 2..],
+            ["write torque_enable 0", "write ident_agg 0"]
         );
         assert!(!servo.torque);
     }

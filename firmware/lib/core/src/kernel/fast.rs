@@ -44,6 +44,8 @@ pub struct Command {
     pub vbus_recip_q15: u32,
     /// The position table applies (`pos_lut_state` LIVE), for the stream.
     pub lut_live: bool,
+    /// CONTROL `ident_agg`: the identification aggregate folds.
+    pub ident_agg: bool,
 }
 
 /// Fast -> medium, this tick's measurement.
@@ -106,6 +108,10 @@ impl Fast {
     /// Fault ack: the overcurrent window re-arms.
     pub fn ack(&mut self) {
         self.oc.reset();
+    }
+
+    pub fn restart_ident(&mut self) {
+        self.ident.restart();
     }
 
     pub fn reset_current_loop(&mut self) {
@@ -223,9 +229,10 @@ impl Fast {
             tel.on_tick(&s);
         }
 
-        if let Some(agg) = self
-            .ident
-            .sample(self.i_meas_last, self.vdiff_last, self.duty_q15)
+        if cmd.ident_agg
+            && let Some(agg) = self
+                .ident
+                .sample(self.i_meas_last, self.vdiff_last, self.duty_q15)
         {
             let p = shared.table.region_ptr();
             // SAFETY: sole-telemetry-writer contract (`Kernel` doc);

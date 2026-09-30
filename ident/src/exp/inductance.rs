@@ -2627,9 +2627,10 @@ mod tests {
             })
             .unwrap();
         assert!(torque_on < first_drive, "torque on before any drive");
-        let tail: Vec<&String> = log.iter().rev().take(2).collect();
-        assert_eq!(*tail[1], "write goal_duty 0");
-        assert_eq!(*tail[0], "write torque_enable 0");
+        let tail: Vec<&String> = log.iter().rev().take(3).collect();
+        assert_eq!(*tail[2], "write goal_duty 0");
+        assert_eq!(*tail[1], "write torque_enable 0");
+        assert_eq!(*tail[0], "write ident_agg 0");
         let exp = exp.into_inner();
         // 2 duties x 2 signs plus the from-a-hold control x 2 signs
         assert_eq!(exp.captures().len(), 6);

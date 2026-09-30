@@ -1037,16 +1037,17 @@ Under the Same Band" has the planning behind it):
   warned about. Identification also refuses soft limits that span the
   whole pot (a servo `osc cal` never ran on) and an abort threshold
   more than a quarter over the limit.
-- Each drive writes its `mode`, then `torque_enable` 1, then, only
+- Each drive writes `ident_agg` 1 (sec 5.10) before its first read,
+  its `mode`, then `torque_enable` 1, then, only
   for a drive that stalls on purpose (cal's stop approach, the
   resistance stop ladder, the held burst route, the current verify's
   stop stalls), `stall_permit` 1. A held permit is rewritten every
   250 ms, between commands and inside every pause.
 - Every exit of a drive - done, aborted, interrupted or failed on the
-  wire - writes `goal_duty` 0, `torque_enable` 0 and, when it held
-  one, `stall_permit` 0, in that order, and a guard around the drive
-  writes them again with the other goals, `tel_count` and `tel_mask`
-  zeroed. A killed host skips that; the lease then runs out inside the
+  wire - writes `goal_duty` 0, `torque_enable` 0, when it held one,
+  `stall_permit` 0, and `ident_agg` 0, in that order, and a guard
+  around the drive writes them again with the other goals, `tel_count`
+  and `tel_mask` zeroed. A killed host skips that; the lease then runs out inside the
   second and the servo's own protections carry the rest.
 - A shunt burst stages `duty_q15`, `chans` and `arm` 1 under HOLD and
   fires one COMMIT, then polls BURST `state`: 3 `DONE` walks the
@@ -1088,6 +1089,35 @@ before it that did not fill a 16-tick window count toward neither
 counter, and the first window after it counts no lost ticks.
 `stack_free_min` reads 0 until the first stack scan completes, about
 10 ms after boot.
+
+### 5.10 Identification aggregate (osc-servo)
+
+Six RO registers in TELEMETRY, after `vmotor_bias_counts`, fold the
+per-tick current, drive-window differential and applied duty over
+16-tick windows (0.8 ms at 20 kHz), so a polling host reads
+decimation-free means without a TEL burst. One RW byte in CONTROL,
+after the position table window, switches the fold:
+
+| addr  | name            | width | access | meaning                                                              |
+| ----- | --------------- | ----- | ------ | -------------------------------------------------------------------- |
+| 0x1E0 | `ident_agg`     | bool  | RW     | 1 runs the aggregate; 0, the default, costs the kernel nothing      |
+| 0x25A | `i_mean_counts` | i16   | RO     | window mean of the bias-subtracted current, counts                   |
+| 0x25C | `i_min_counts`  | i16   | RO     | window minimum of the same                                           |
+| 0x25E | `i_max_counts`  | i16   | RO     | window maximum of the same                                           |
+| 0x260 | `vdiff_mean`    | i16   | RO     | window mean of the drive-window `va - vb`, counts                    |
+| 0x262 | `duty_mean_q15` | i16   | RO     | window mean of the applied duty, Q15                                 |
+| 0x264 | `agg_seq`       | u16   | RO     | windows published; wraps                                             |
+
+`ident_agg` is RAM, off at boot, and a write lands at the next medium
+period's CONTROL read like every CONTROL field. While it is off the six
+registers hold their last window and `agg_seq` stops. Turning it off
+drops the window in progress, so the first window after the next enable
+spans 16 fresh ticks and `agg_seq` counts on from where it stopped. The
+servo writes the block mid-tick with `agg_seq` last: a host that reads
+the block, re-reads `agg_seq` and finds it unchanged holds one window.
+A tick whose window the shunt cannot read contributes the last valid
+current and differential. A host that reads the aggregate turns it on
+for its session and off when the session ends (sec 5.8).
 
 ## 6. Coordinated reads (status chains)
 

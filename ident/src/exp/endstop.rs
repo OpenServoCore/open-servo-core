@@ -505,9 +505,10 @@ mod tests {
             .expect("a drive command");
         assert!(torque_on < first_duty);
         // final safety pair
-        let tail: Vec<&String> = log.iter().rev().take(2).collect();
-        assert_eq!(*tail[1], "write goal_duty 0");
-        assert_eq!(*tail[0], "write torque_enable 0");
+        let tail: Vec<&String> = log.iter().rev().take(3).collect();
+        assert_eq!(*tail[2], "write goal_duty 0");
+        assert_eq!(*tail[1], "write torque_enable 0");
+        assert_eq!(*tail[0], "write ident_agg 0");
     }
 
     /// What the experiment saw and did, command by command.

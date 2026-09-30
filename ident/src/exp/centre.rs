@@ -402,8 +402,12 @@ mod tests {
             assert!(band.arrived());
             assert!((band.band().0 as f64..=band.band().1 as f64).contains(&s.pos));
             assert_eq!(
-                &log[log.len() - 2..],
-                ["write goal_duty 0", "write torque_enable 0"]
+                &log[log.len() - 3..],
+                [
+                    "write goal_duty 0",
+                    "write torque_enable 0",
+                    "write ident_agg 0"
+                ]
             );
             assert!(!s.torque);
         }
@@ -415,7 +419,7 @@ mod tests {
         s.pos = 2050.0;
         let (exp, log) = run(&mut s, false);
         assert!(exp.into_inner().arrived());
-        assert!(log.is_empty(), "{log:?}");
+        assert_eq!(log, ["write ident_agg 1", "write ident_agg 0"]);
 
         let (exp, log) = run(&mut s, true);
         assert!(exp.abort().is_none());
@@ -506,8 +510,12 @@ mod tests {
         let top = duties(&log).iter().map(|d| d.abs()).max().unwrap();
         assert_eq!(top, 3932 + NUDGE_STEP_Q15 as i32, "ended by the fold");
         assert_eq!(
-            &log[log.len() - 2..],
-            ["write goal_duty 0", "write torque_enable 0"]
+            &log[log.len() - 3..],
+            [
+                "write goal_duty 0",
+                "write torque_enable 0",
+                "write ident_agg 0"
+            ]
         );
         assert!(!s.torque && s.limit_flags() & LIMIT_YIELD_FOLDED == 0);
     }

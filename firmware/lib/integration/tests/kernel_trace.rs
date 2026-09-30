@@ -202,6 +202,8 @@ impl Row {
 fn run(lut: Option<&[i16; POINTS]>, ticks: u32, script: Script) -> Vec<Row> {
     let sh = Shared::new();
     seed(&sh);
+    // the CRC folds the IDENT registers: the aggregate runs from boot
+    sh.table.with_mut(|t| t.control.ident.ident_agg = true);
     if let Some(k) = lut {
         lut_live(&sh, k);
     }

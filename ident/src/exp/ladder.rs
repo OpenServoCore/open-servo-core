@@ -1605,9 +1605,15 @@ mod tests {
                 );
                 assert!(fits(n, room));
             }
+            // a rung too long for the room is refused after its seek
+            let refused = exp
+                .warnings()
+                .iter()
+                .filter(|w| w.contains("rung needs"))
+                .count();
             assert_eq!(
                 brakes(&log),
-                2 * sized.len(),
+                2 * sized.len() + refused,
                 "every seek and every rung brakes"
             );
             let fit = exp.fit(R_MG90).expect("the ladder fits");
@@ -1677,7 +1683,10 @@ mod tests {
                 moved: 610 - rest
             })
         );
-        assert_eq!(log.last().unwrap(), "write torque_enable 0");
+        assert_eq!(
+            log[log.len() - 2..],
+            ["write torque_enable 0", "write ident_agg 0"]
+        );
         assert!(!jammed.torque);
 
         // viscous load: the friction current reaches the limit at 2 counts/ms
@@ -1700,7 +1709,10 @@ mod tests {
         );
         assert_eq!(exp.sized().len(), 1);
         assert_eq!(brakes(&log), 2, "the rung brakes before the ladder ends");
-        assert_eq!(log.last().unwrap(), "write torque_enable 0");
+        assert_eq!(
+            log[log.len() - 2..],
+            ["write torque_enable 0", "write ident_agg 0"]
+        );
         assert!(!heavy.torque);
     }
 

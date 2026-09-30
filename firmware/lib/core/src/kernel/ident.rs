@@ -7,7 +7,9 @@
 //! fit). The kernel feeds LAST-VALID current/vdiff through invalid windows
 //! rather than zeros: zeros would drag the means toward 0, last-valid keeps
 //! them unbiased at steady state, and identification runs at healthy duties
-//! where the windows are valid anyway.
+//! where the windows are valid anyway. The fold runs only while CONTROL
+//! `ident_agg` is set; turning it off drops the open window, so the first
+//! window after the next enable spans 16 fresh ticks.
 
 /// Window length as a shift: 16 fast ticks, mean = sum >> IDENT_SHIFT.
 pub const IDENT_SHIFT: u32 = 4;
@@ -76,13 +78,18 @@ impl IdentAgg {
             duty_mean_q15: mean_i16(self.duty_sum),
             agg_seq: self.seq,
         };
+        self.restart();
+        Some(out)
+    }
+
+    /// Drop the open window; `seq` carries on from the last one published.
+    pub fn restart(&mut self) {
         self.ctr = 0;
         self.i_sum = 0;
         self.i_min = i16::MAX;
         self.i_max = i16::MIN;
         self.vdiff_sum = 0;
         self.duty_sum = 0;
-        Some(out)
     }
 }
 

@@ -84,7 +84,8 @@ pub(crate) fn read_stamped<P: Pipe>(
 }
 
 /// Run the closure, then force the servo safe (duty/goals zero, torque,
-/// stall permit and TEL off) whether it succeeded, failed, or was ctrl-c'd.
+/// stall permit, TEL and the ident aggregate off) whether it succeeded,
+/// failed, or was ctrl-c'd.
 /// A hard kill skips this - a leased permit then runs out within a second
 /// (a plain-level one stays until a reboot), and the servo's own
 /// protections are the backstop.

@@ -112,6 +112,17 @@ pub struct ControlPosLut {
     pub _rsvd_align: u8,
 }
 
+/// The identification aggregate (`TelemetryIdent`) runs while `ident_agg`
+/// is true; off, the kernel spends nothing on it and the IDENT registers
+/// hold their last window.
+#[repr(C)]
+#[derive(Copy, Clone, Block)]
+pub struct ControlIdent {
+    pub ident_agg: bool,
+    #[ct_field(skip)]
+    pub _rsvd_align: u8,
+}
+
 #[repr(C)]
 #[derive(Section)]
 #[ct_section(
@@ -124,8 +135,9 @@ pub struct ControlRegs {
     pub system: ControlSystem,
     pub burst: ControlBurst,
     pub pos_lut: ControlPosLut,
+    pub ident: ControlIdent,
     #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 32],
+    pub _rsvd_tail: [u8; 30],
 }
 
 #[cfg(test)]

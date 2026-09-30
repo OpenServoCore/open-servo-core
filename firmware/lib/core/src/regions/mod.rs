@@ -400,6 +400,27 @@ mod tests {
         assert!(!by("pos_lut_state").writable);
     }
 
+    /// The ident switch appends after the position table window out of the
+    /// reserved tail, so every earlier address and the region size stay put.
+    #[test]
+    fn control_ident_appends_after_pos_lut() {
+        use super::control::addr::{ident, pos_lut};
+        assert_eq!(pos_lut::POS_LUT_STATE, 0x1DE);
+        assert_eq!(ident::IDENT_AGG, 0x1E0);
+        assert_eq!(
+            core::mem::size_of::<super::ControlRegs>(),
+            super::CONTROL_REGION_SIZE as usize
+        );
+        let f = ControlTable::FIELDS;
+        let agg = f.iter().find(|d| d.name == "ident_agg").unwrap();
+        assert!(agg.writable);
+        assert_eq!(agg.kind, FieldKind::Bool);
+        assert!(
+            f.iter()
+                .all(|d| d.addr <= ident::IDENT_AGG || d.addr >= 0x200)
+        );
+    }
+
     /// The health block appends after `limits` out of the reserved tail, so
     /// every earlier address and the region size stay put; the counters a
     /// host clears are the writable ones.
