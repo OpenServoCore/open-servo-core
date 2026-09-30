@@ -1,9 +1,14 @@
 //! The assembled kernel (spec "on_tick skeleton"): one `on_tick` per PWM
-//! period carries all three rates - FAST every tick (sensor publish, window
-//! select, OC trip, current PI, motor write), MEDIUM every DECIM_MED ticks
-//! (fusion, trajectory, position/velocity, limits, vbus/bemf, detectors,
-//! estimates publish), SLOW every DECIM_SLOW medium ticks (thermometer,
-//! derate, undervolt/overtemp). Identification aggregates ride their own
+//! period carries all three rates - FAST every tick (`fast`: sensor
+//! publish, window select, OC trip, back-EMF sums, TEL, ident, current PI,
+//! motor write), MEDIUM every DECIM_MED ticks (`medium`: CONTROL, the
+//! edges, fusion, trajectory, position/velocity, limits, vbus/bemf,
+//! detectors, estimates publish), SLOW every DECIM_SLOW medium ticks inside
+//! `medium` (thermometer, derate, undervolt/overtemp). The medium half
+//! leaves the fast half a `fast::Command`; the fast measurement reaches the
+//! medium step of the same tick as `fast::Measured`. Only the medium half
+//! reads CONTROL, so a host write (torque, mode, goals) takes effect at the
+//! next medium boundary. Identification aggregates ride their own
 //! /16 fast-tick window (`ident`), independent of DECIM_MED. Tick-indexed
 //! by design: a missed tick dilates time, nothing compensates and nothing
 //! reads a wall clock. CONFIG and CALIB reach the tick through the kernel's
@@ -75,7 +80,7 @@ pub struct KernelTiming {
 /// this ISR mid-read, so the kernel only ever reads those - volatile via
 /// `region_ptr` (`Shared::pos_lut_q4` for the array), never forming `&T`,
 /// cross-field tearing accepted (each field is independently sane). CONTROL
-/// is read every tick; CONFIG and CALIB only into `cfg`, when
+/// is read once per medium tick; CONFIG and CALIB only into `cfg`, when
 /// `Shared::config_gen` moved. The kernel is the sole writer of TELEMETRY
 /// sensors/estimates/mode/limits (`data_flags` excepted: boot and dispatch
 /// write it, the kernel reads) and the `fault_flags` byte; TELEMETRY
@@ -119,7 +124,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             booted: false,
             faults: faults::FaultLatch::new(),
             fast: Fast::new(timing.pwm_arr),
-            medium: Medium::new(timing.vbus_scale_q15),
+            medium: Medium::new(&timing),
             cmd: Command::default(),
         }
     }
@@ -154,6 +159,8 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         let ctl = Control::read(shared);
         self.medium
             .seed(medium::pos_q4(shared, ctl.lut_live, frame.pos));
+        // the stream's first row linearizes like the rest
+        self.cmd.lut_live = ctl.lut_live;
         let p = shared.table.region_ptr();
         // SAFETY: same volatile read contract; install stamped the boot rest
         // measurement here before the first tick, and from here on this
@@ -177,37 +184,27 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
                 self.refresh(shared, config_gen);
             }
         }
-        let fc = &self.cfg.fast;
-        let ctl = Control::read(shared);
-        self.medium
-            .admit(&ctl.life, fc, shared, &mut self.faults, &mut self.fast);
-        self.cmd.lut_live = ctl.lut_live;
         let meas = self.fast.measure(
             &frame,
-            fc,
+            &self.cfg.fast,
             &self.cmd,
             &mut self.faults,
             &mut self.tel,
             shared,
         );
-        let run = self
-            .medium
-            .edges(&ctl, frame.pos, fc, shared, &self.faults, &mut self.fast);
         if medium {
-            self.medium.chain(
+            self.cmd = self.medium.step(
                 &frame,
                 &meas,
-                run,
-                &ctl,
                 &self.cfg,
-                &self.timing,
                 shared,
                 &mut self.faults,
                 &mut self.fast,
             );
         }
-        self.cmd = self.medium.command(&ctl, fc, &self.faults);
-        let out = self.fast.drive(&meas, fc, &self.cmd, &self.faults);
+        let out = self
+            .fast
+            .drive(&meas, &self.cfg.fast, &self.cmd, &self.faults);
         let (_sensors, motor) = self.io.parts();
         motor.write(out);
     }

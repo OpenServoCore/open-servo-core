@@ -55,6 +55,10 @@ pub fn pos_q4(shared: &Shared, lut_live: bool, raw: u16) -> u16 {
 }
 
 pub struct Medium {
+    /// `KernelTiming::dt_med_q32`.
+    dt_med_q32: u32,
+    /// `KernelTiming::recip_arr_q24`.
+    recip_arr_q24: u32,
     decim_slow: u8,
     pub(super) traj: TrajGen,
     pub(super) fusion: FusionObs,
@@ -85,8 +89,10 @@ pub struct Medium {
 }
 
 impl Medium {
-    pub fn new(vbus_scale_q15: u32) -> Self {
+    pub fn new(timing: &KernelTiming) -> Self {
         Self {
+            dt_med_q32: timing.dt_med_q32,
+            recip_arr_q24: timing.recip_arr_q24,
             // primed so the FIRST medium step runs the slow block: the
             // thermometer and the derate exist before any consumer sees them
             decim_slow: DECIM_SLOW - 1,
@@ -95,7 +101,7 @@ impl Medium {
             vel: VelocityLoop::new(),
             limits: LimitState::new(),
             i_band: IBand { lo: 0, hi: 0 },
-            vbus: VbusEst::new(vbus_scale_q15),
+            vbus: VbusEst::new(timing.vbus_scale_q15),
             thermal: WindingTherm::new(),
             omega_sw: OmegaSwitch::new(),
             ol_base_q15: 0,
@@ -121,8 +127,26 @@ impl Medium {
         self.thermal.seed(r0_q12);
     }
 
+    /// One medium tick: CONTROL, the edges, the chain; returns the command
+    /// the fast half drives until the next one.
+    pub fn step(
+        &mut self,
+        frame: &SensorFrame,
+        m: &Measured,
+        cfg: &KernelConfig,
+        shared: &Shared,
+        faults: &mut FaultLatch,
+        fast: &mut Fast,
+    ) -> Command {
+        let ctl = Control::read(shared);
+        self.admit(&ctl.life, &cfg.fast, shared, faults, fast);
+        let run = self.edges(&ctl, frame.pos, &cfg.fast, shared, faults, fast);
+        self.chain(frame, m, run, &ctl, cfg, shared, faults, fast);
+        self.command(&ctl, &cfg.fast, faults)
+    }
+
     /// The torque enable edge, the data-state entry check and the Ke belt.
-    pub fn admit(
+    fn admit(
         &mut self,
         life: &ControlLifecycle,
         fc: &FastConfig,
@@ -165,7 +189,7 @@ impl Medium {
     }
 
     /// The run and mode edges; returns whether the loops run.
-    pub fn edges(
+    fn edges(
         &mut self,
         ctl: &Control,
         raw_pos: u16,
@@ -207,14 +231,13 @@ impl Medium {
     /// The medium chain: estimators, outer loops, limits, detectors, the
     /// slow block and the estimates publish.
     #[allow(clippy::too_many_arguments)]
-    pub fn chain(
+    fn chain(
         &mut self,
         frame: &SensorFrame,
         m: &Measured,
         run: bool,
         ctl: &Control,
         cfg: &KernelConfig,
-        timing: &KernelTiming,
         shared: &Shared,
         faults: &mut FaultLatch,
         fast: &mut Fast,
@@ -227,9 +250,8 @@ impl Medium {
         // disabled or in OpenLoop the cache is 0, so an invalid window
         // predicts torque-free.
         let i_use = m.i_meas.unwrap_or(self.i_ref_cc);
-        let omega_bemf = fast.close_bemf_half(mc.r_q12, mc.recip_ke_q, timing.recip_arr_q24);
-        self.fusion
-            .step(i_use, pos_q4, timing.dt_med_q32, &mc.fusion);
+        let omega_bemf = fast.close_bemf_half(mc.r_q12, mc.recip_ke_q, self.recip_arr_q24);
+        self.fusion.step(i_use, pos_q4, self.dt_med_q32, &mc.fusion);
         let theta_hat = self.fusion.theta_q16();
         // The observer's omega keeps the rest-shaped consumers (stall
         // verdict, thermometer gate): it is always there and reads small at
@@ -348,7 +370,7 @@ impl Medium {
         let v_mean = m.vdiff.map(|vdiff| {
             q_mul(
                 m.ticks as i32 * vdiff,
-                timing.recip_arr_q24 as i32,
+                self.recip_arr_q24 as i32,
                 bemf::RECIP_ARR_SHIFT,
             )
         });
@@ -436,7 +458,7 @@ impl Medium {
     }
 
     /// The command the fast half drives until the next one.
-    pub fn command(&mut self, ctl: &Control, fc: &FastConfig, faults: &FaultLatch) -> Command {
+    fn command(&mut self, ctl: &Control, fc: &FastConfig, faults: &FaultLatch) -> Command {
         let life = &ctl.life;
         let drive = if !life.torque_enable || faults.mask() != 0 {
             Drive::Off

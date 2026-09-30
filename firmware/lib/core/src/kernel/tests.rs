@@ -642,12 +642,19 @@ fn ack_clears_then_relatches_while_condition_persists() {
         k.on_tick(frame(2000, BIAS + 3000), &sh);
     }
     assert_eq!(k.faults.mask(), faults::BIT_OVER_CURRENT);
-    // ack: drop then raise torque_enable
+    // ack: drop then raise torque_enable, each seen at a medium boundary;
+    // the ack lands at the boundary after the raise, not before
     sh.table
         .with_mut(|t| t.control.lifecycle.torque_enable = false);
-    k.on_tick(frame(2000, BIAS + 3000), &sh);
+    for _ in 0..DECIM_MED {
+        k.on_tick(frame(2000, BIAS + 3000), &sh);
+    }
     sh.table
         .with_mut(|t| t.control.lifecycle.torque_enable = true);
+    while k.decim_med != DECIM_MED - 1 {
+        k.on_tick(frame(2000, BIAS + 3000), &sh);
+        assert_eq!(k.faults.mask(), faults::BIT_OVER_CURRENT);
+    }
     k.on_tick(frame(2000, BIAS + 3000), &sh);
     assert_eq!(k.faults.mask(), 0);
     assert!(matches!(last_cmd(&k), MotorCmd::Drive { .. }));
@@ -908,8 +915,13 @@ fn current_mode_clamps_goal_to_i_lim() {
             ..
         }
     ));
+    // the goal lands at the next medium boundary
     sh.table
         .with_mut(|t| t.control.lifecycle.goal_current = -5000);
+    while k.decim_med != DECIM_MED - 1 {
+        k.on_tick(frame(2000, BIAS), &sh);
+        assert_eq!(k.medium.i_ref_cc, 1200);
+    }
     k.on_tick(frame(2000, BIAS), &sh);
     assert_eq!(k.medium.i_ref_cc, -1200);
 }
@@ -1135,7 +1147,14 @@ fn ident_invalid_ticks_hold_last_valid() {
     ident_setup(&sh);
     let mut k = kernel();
     settle(&mut k, &sh, frame(2000, BIAS + 200));
-    let seq = to_ident_boundary(&mut k, &sh, frame(2000, BIAS + 200));
+    // an ident window that opens on a medium tick, where the torque write
+    // lands
+    let seq = loop {
+        let seq = to_ident_boundary(&mut k, &sh, frame(2000, BIAS + 200));
+        if k.decim_med == DECIM_MED - 1 {
+            break seq;
+        }
+    };
     // disable: windows go invalid one tick later (the first tick still
     // measures the period the last drive command drove)
     sh.table
@@ -1205,12 +1224,13 @@ fn bemf_boxcar_lands_on_the_closed_form_after_20_ticks() {
     let got = sh.table.with(|t| t.telemetry.estimates.omega_bemf_cps) as i64;
     assert!((got - expect).abs() <= 1, "got {got} expect {expect}");
     assert_eq!(got, 8363, "pin");
-    // torque off: the first tick still measures the last drive, the rest
-    // are sub-floor, so the next half closed voids and the publish drops to
-    // 0 with it
+    // torque off lands at the next medium boundary, ten ticks on: that
+    // tick still drives and its half closes clean; the ten after it measure
+    // sub-floor, so the half closed at the boundary after voids and the
+    // publish drops to 0 with it
     sh.table
         .with_mut(|t| t.control.lifecycle.torque_enable = false);
-    for _ in 0..9 {
+    for _ in 0..2 * DECIM_MED - 1 {
         k.on_tick(frame(2000, BIAS + 100), &sh);
     }
     assert_eq!(
@@ -1246,15 +1266,21 @@ fn velocity_feedback_switches_to_the_bemf_and_back() {
     assert!(bemf > 0);
     assert_eq!(published(&sh), (bemf << 16, 1));
     assert_eq!(k.medium.omega_sw.source(), OmegaSource::Bemf);
-    // torque off: tick 51 still measures the last drive; the half closed
-    // at tick 60 voids and the source rides the held boxcar through that
-    // one result, then falls back at tick 70
+    // torque off lands at the medium boundary at tick 61, which still
+    // drives and closes one more clean boxcar; the half closed at tick 71
+    // voids and the source rides that held boxcar through the one result,
+    // then falls back at tick 81
     sh.table
         .with_mut(|t| t.control.lifecycle.torque_enable = false);
     for _ in 0..10 {
         k.on_tick(frame(2000, BIAS + 100), &sh);
     }
-    assert_eq!(published(&sh), (bemf << 16, 1));
+    let held = published(&sh);
+    assert_eq!(held.1, 1);
+    for _ in 0..10 {
+        k.on_tick(frame(2000, BIAS + 100), &sh);
+    }
+    assert_eq!(published(&sh), held);
     for _ in 0..10 {
         k.on_tick(frame(2000, BIAS + 100), &sh);
     }
@@ -2017,4 +2043,136 @@ fn a_write_during_the_refresh_refreshes_again() {
     }
     assert_eq!(ol_max(&k), 5000);
     assert_eq!(k.config_gen, sh.config_gen());
+}
+
+// --- Host writes land at the medium boundary ------------------------------
+
+/// Ticks ahead of every phased write: a whole number of medium periods.
+const PHASED_LEAD: u32 = 40 * DECIM_MED as u32;
+/// Ticks recorded after it: two medium periods.
+const PHASED_TICKS: usize = 2 * DECIM_MED as usize;
+
+fn cmd_key(c: MotorCmd) -> (u8, i16) {
+    match c {
+        MotorCmd::Disabled => (0, 0),
+        MotorCmd::Coast => (1, 0),
+        MotorCmd::Brake => (2, 0),
+        MotorCmd::Drive { duty, .. } => (3, duty.0),
+    }
+}
+
+/// Two medium periods after a write landing `phase` ticks into the
+/// medium period, beside a twin that never sees it.
+struct Phased {
+    k: Kernel<FakeIo>,
+    cmds: [(u8, i16); PHASED_TICKS],
+    twin: [(u8, i16); PHASED_TICKS],
+    /// Ticks run before the first medium tick after the write.
+    boundary: usize,
+}
+
+fn phased(setup: fn(&mut ControlTable), write: fn(&mut ControlTable), phase: u8) -> Phased {
+    let f = frame(2000, BIAS);
+    let (sh, twin_sh) = (Shared::new(), Shared::new());
+    for s in [&sh, &twin_sh] {
+        seed(s);
+        s.table.with_mut(setup);
+    }
+    let (mut k, mut twin) = (kernel(), kernel());
+    for _ in 0..PHASED_LEAD + phase as u32 {
+        k.on_tick(f, &sh);
+        twin.on_tick(f, &twin_sh);
+    }
+    sh.table.with_mut(write);
+    let (mut cmds, mut twin_cmds) = ([(0, 0); PHASED_TICKS], [(0, 0); PHASED_TICKS]);
+    for n in 0..PHASED_TICKS {
+        k.on_tick(f, &sh);
+        twin.on_tick(f, &twin_sh);
+        cmds[n] = cmd_key(last_cmd(&k));
+        twin_cmds[n] = cmd_key(last_cmd(&twin));
+    }
+    Phased {
+        k,
+        cmds,
+        twin: twin_cmds,
+        boundary: ((DECIM_MED - phase) % DECIM_MED) as usize,
+    }
+}
+
+/// Every phase: the ticks ahead of the boundary run as if nothing was
+/// written; `after` holds from the boundary on.
+fn assert_lands_at_the_boundary(
+    setup: fn(&mut ControlTable),
+    write: fn(&mut ControlTable),
+    after: impl Fn(&Phased, usize) -> bool,
+) {
+    for phase in 0..DECIM_MED {
+        let r = phased(setup, write, phase);
+        assert_eq!(
+            r.cmds[..r.boundary],
+            r.twin[..r.boundary],
+            "phase {phase}: before the boundary"
+        );
+        for n in r.boundary..PHASED_TICKS {
+            assert!(after(&r, n), "phase {phase} tick {n}: {:?}", r.cmds[n]);
+        }
+    }
+}
+
+fn openloop_8000(t: &mut ControlTable) {
+    t.control.lifecycle.torque_enable = true;
+    t.control.lifecycle.mode = Mode::OpenLoop;
+    t.control.lifecycle.goal_duty = 8000;
+}
+
+/// The OpenLoop restart: from the window floor, one slew step per tick.
+fn restarts_from_the_floor(r: &Phased, n: usize) -> bool {
+    let floor = r.k.cfg.fast.ol_floor_q15 as i16;
+    let slew = (n - r.boundary + 1) as i16 * duty_limit::UP_Q15 as i16;
+    r.cmds[n] == (3, (floor + slew).min(8000))
+}
+
+#[test]
+fn torque_off_lands_at_the_medium_boundary() {
+    assert_lands_at_the_boundary(
+        openloop_8000,
+        |t| t.control.lifecycle.torque_enable = false,
+        |r, n| r.cmds[n] == (0, 0),
+    );
+}
+
+#[test]
+fn torque_on_lands_at_the_medium_boundary() {
+    assert_lands_at_the_boundary(
+        |t| {
+            openloop_8000(t);
+            t.control.lifecycle.torque_enable = false;
+        },
+        |t| t.control.lifecycle.torque_enable = true,
+        restarts_from_the_floor,
+    );
+}
+
+#[test]
+fn mode_change_lands_at_the_medium_boundary() {
+    assert_lands_at_the_boundary(
+        |t| {
+            t.control.lifecycle.torque_enable = true;
+            t.control.lifecycle.mode = Mode::Current;
+            t.control.lifecycle.goal_current = 300;
+            t.control.lifecycle.goal_duty = 8000;
+        },
+        |t| t.control.lifecycle.mode = Mode::OpenLoop,
+        restarts_from_the_floor,
+    );
+}
+
+#[test]
+fn goal_duty_lands_at_the_medium_boundary() {
+    assert_lands_at_the_boundary(
+        openloop_8000,
+        |t| t.control.lifecycle.goal_duty = 4000,
+        // a goal cut applies at once
+        |r, n| r.cmds[n] == (3, 4000),
+    );
 }

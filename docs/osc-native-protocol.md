@@ -595,7 +595,8 @@ control registers arm it: `tel_mask` selects the per-sample fields (one
 bit per field, canonical order; reserved bits reject), and a committed
 nonzero write to `tel_count` starts a burst of that many control-tick
 samples. Both compose with HOLD/COMMIT, so a goal write and the arm
-apply in the same instant - the step edge lands inside the capture. A
+commit together: the capture starts at the commit and the step edge
+lands inside it, at the first medium tick after the commit (sec 5.7). A
 committed `tel_count` of 0 disarms.
 
 Burst frames are ordinary status frames with result code `stream` - the
@@ -723,6 +724,10 @@ newly-latched kind (`fault_code`, `0x221`):
 
 Any set bit forces the drive off; the `torque_enable` 0 to 1 edge is the
 only acknowledgement, and a still-present condition re-latches at once.
+The kernel reads `torque_enable`, `mode` and the goals once per medium
+tick (2 kHz), so an enable, a disable, an acknowledgement, a mode change
+and a new `goal_duty` or `goal_current` take effect at the first medium
+tick after the commit, within 0.5 ms.
 `stall` latches in OpenLoop as it does in the closed loops: there the
 stall timer runs off the duty ceiling (sec 5.8), so with
 `stall_response` at its boot value of Fault, an OpenLoop drive held
@@ -811,7 +816,7 @@ lin   = ((raw + c[i]) << 4) + (c[i + 1] - c[i]) * f      (u16, Q4)
 ```
 
 so the identity is `raw << 4` exactly and knot `k` lands at
-`raw + c[k]`. Once per fast tick, while `pos_lut_state` reads LIVE, this
+`raw + c[k]`. Once per medium tick, while `pos_lut_state` reads LIVE, this
 value seeds and innovates the position observer; `theta_hat_q16` and everything that
 reads it (trajectory, position loop, soft limits, the stall and
 thermometer speed gates) are in linearized counts. The raw sample stays
