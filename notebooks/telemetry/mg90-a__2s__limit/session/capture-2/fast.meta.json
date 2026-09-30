@@ -1,0 +1,137 @@
+{
+  "baseline_ms": 1000,
+  "capture": {
+    "n": 2,
+    "order": [
+      "grid"
+    ],
+    "try": 2,
+    "warmup": false
+  },
+  "decay": "fast",
+  "dirs": [
+    1,
+    -1
+  ],
+  "drive": {
+    "current_limit_counts": 280,
+    "data_flags": 0,
+    "fault_flags": 0,
+    "governed": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ],
+    "i_abort_counts": 350,
+    "limit_flags": 0,
+    "moved_q15": 3135,
+    "pack_mv": 8109,
+    "phys": [
+      232,
+      3849
+    ],
+    "r_q12": 7270,
+    "rail_mv": 7859,
+    "rule": "limit",
+    "seek_q15": 3604,
+    "soft": [
+      432,
+      3626
+    ],
+    "stall_release_counts": 84,
+    "stall_response": "yield",
+    "stall_tau_trip_counts": 280,
+    "stall_time_ms": 500,
+    "stall_yield_counts": 168,
+    "stop_cap_q15": 4915,
+    "t_goal_ms": [
+      0.0,
+      0.0,
+      0.5,
+      0.65,
+      1.3,
+      1.65,
+      2.2,
+      2.85,
+      0.45,
+      0.35,
+      0.7,
+      1.25,
+      1.95,
+      2.55,
+      3.15
+    ],
+    "window_floor_q15": 4356
+  },
+  "fw": 65,
+  "git_sha": "66271cfccb9344df4857ac928c6016c80a59a239",
+  "guard": [
+    532,
+    3526
+  ],
+  "model": 257,
+  "plant": {
+    "data_flags": [],
+    "lut_band": [
+      560,
+      3504
+    ],
+    "lut_crc": "0x14fb",
+    "lut_nonzero_points": 185,
+    "lut_state": "LIVE",
+    "plant_stamp": "0x23aa",
+    "stamp_computed": "0x23aa",
+    "stamp_verdict": "match"
+  },
+  "post_rung_brake": true,
+  "rest_ms": 1500,
+  "rows_dropped": 0,
+  "rung_tries": 3,
+  "schedule": [
+    "5@1500",
+    "10@1500",
+    "15@1500",
+    "20@1500",
+    "25@1500",
+    "30@1500",
+    "35@1500"
+  ],
+  "seek_cap_pct": 15,
+  "seek_duty_pct": 11,
+  "sense": {
+    "gain_milli": 15000,
+    "shunt_r_mohm": 60,
+    "vdd_mv": 3300,
+    "vmotor_div_bot": 3300,
+    "vmotor_div_top": 6800
+  },
+  "session": {
+    "blocks": [
+      {
+        "count": 7,
+        "first": 0,
+        "name": "grid"
+      }
+    ]
+  },
+  "settle_ms": 300,
+  "stall": false,
+  "static_load": false,
+  "supply": "2s",
+  "tel_mask": 461,
+  "tick_hz": 20000,
+  "vbus_counts": 3180,
+  "window_ms": 150
+}
