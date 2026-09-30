@@ -758,6 +758,28 @@ fn openloop_zero_duty_drives_zero_when_brake_flag_clear() {
 }
 
 #[test]
+fn openloop_zero_goal_drops_the_held_current() {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::OpenLoop;
+        t.control.lifecycle.goal_duty = 8000;
+    });
+    let mut k = kernel();
+    settle(&mut k, &sh, frame(2000, BIAS + 200));
+    k.on_tick(frame(2000, BIAS + 200), &sh);
+    assert_eq!(k.fast.i_meas_last, 200);
+    // the coast drives nothing: the held current reads 0 from the tick
+    // the zero goal lands, not the last driven sample
+    sh.table.with_mut(|t| t.control.lifecycle.goal_duty = 0);
+    run_to(&mut k, &sh, frame(2000, BIAS + 200), 0);
+    k.on_tick(frame(2000, BIAS + 200), &sh);
+    assert!(matches!(last_cmd(&k), MotorCmd::Drive { duty, .. } if duty.0 == 0));
+    assert_eq!(k.fast.i_meas_last, 0);
+}
+
+#[test]
 fn openloop_zero_duty_brakes_when_flag_set() {
     let sh = Shared::new();
     seed(&sh);
@@ -1222,7 +1244,7 @@ fn ident_invalid_ticks_hold_last_valid() {
     ident_setup(&sh);
     let mut k = kernel();
     settle(&mut k, &sh, frame(2000, BIAS + 200));
-    // an ident window that opens on a medium tick, where the torque write
+    // an ident window that opens on a medium tick, where the goal write
     // lands
     let seq = loop {
         let seq = to_ident_boundary(&mut k, &sh, frame(2000, BIAS + 200));
@@ -1230,10 +1252,10 @@ fn ident_invalid_ticks_hold_last_valid() {
             break seq;
         }
     };
-    // disable: windows go invalid one tick later (the first tick still
-    // measures the period the last drive command drove)
-    sh.table
-        .with_mut(|t| t.control.lifecycle.torque_enable = false);
+    // drive_ticks(1000) = 37, under the 100-tick floors: windows go
+    // invalid one tick later (the first tick still measures the period the
+    // last valid command drove) while the drive still pushes
+    sh.table.with_mut(|t| t.control.lifecycle.goal_duty = 1000);
     for _ in 0..16 {
         k.on_tick(frame(2000, BIAS + 200), &sh);
     }
@@ -1244,10 +1266,42 @@ fn ident_invalid_ticks_hold_last_valid() {
         assert_eq!(d.i_min_counts, 200);
         assert_eq!(d.i_max_counts, 200);
         assert_eq!(d.vdiff_mean, 2960);
-        // duty is per-tick truth: 8000 on the first tick only -> 8000>>4 = 500
+        // duty is per-tick truth: (8000 + 15 x 1000) >> 4 = 1437
+        assert_eq!(d.duty_mean_q15, 1437);
+        assert_eq!(d.agg_seq, seq + 1);
+    });
+}
+
+#[test]
+fn ident_current_reads_zero_once_nothing_drives() {
+    let sh = Shared::new();
+    ident_setup(&sh);
+    let mut k = kernel();
+    settle(&mut k, &sh, frame(2000, BIAS + 200));
+    let seq = loop {
+        let seq = to_ident_boundary(&mut k, &sh, frame(2000, BIAS + 200));
+        if k.phase == 0 {
+            break seq;
+        }
+    };
+    // disable: the first tick measures the period the last drive command
+    // drove, the 15 after it read no current; vdiff keeps its hold
+    sh.table
+        .with_mut(|t| t.control.lifecycle.torque_enable = false);
+    for _ in 0..16 {
+        k.on_tick(frame(2000, BIAS + 200), &sh);
+    }
+    sh.table.with(|t| {
+        let d = &t.telemetry.ident;
+        // 200 >> 4 = 12
+        assert_eq!(d.i_mean_counts, 12);
+        assert_eq!(d.i_min_counts, 0);
+        assert_eq!(d.i_max_counts, 200);
+        assert_eq!(d.vdiff_mean, 2960);
         assert_eq!(d.duty_mean_q15, 500);
         assert_eq!(d.agg_seq, seq + 1);
     });
+    assert_eq!(k.fast.i_meas_last, 0);
 }
 
 #[test]

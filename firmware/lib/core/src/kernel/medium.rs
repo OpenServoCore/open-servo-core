@@ -187,7 +187,7 @@ impl Medium {
     ) {
         match k {
             phase::CONTROL => self.control(frame.pos, &cfg.fast, shared, faults, fast, cmd),
-            phase::OBSERVER => self.observe(frame.pos, m, cfg, shared, fast),
+            phase::OBSERVER => self.observe(frame.pos, cfg, shared, fast),
             phase::TRAJECTORY => self.trajectory(cfg, faults, cmd),
             phase::LIMITS => self.limit(cfg, shared, faults, fast),
             phase::VELOCITY => self.velocity(cfg, cmd),
@@ -279,7 +279,7 @@ impl Medium {
         if run != self.run_prev {
             // both edges zero the loop chain; the enable edge additionally
             // reseeds fusion at the measurement (torque-off tau_d is built
-            // from i_use = 0 fiction - a hand-moved shaft rails it and every
+            // on a zero current - a hand-moved shaft rails it and every
             // enable would re-latch STALL via the collision check) and the
             // profile at the fresh estimate - bumpless
             if run {
@@ -329,24 +329,12 @@ impl Medium {
     }
 
     /// OBSERVER, on this tick's sample.
-    fn observe(
-        &mut self,
-        raw_pos: u16,
-        m: &Measured,
-        cfg: &KernelConfig,
-        shared: &Shared,
-        fast: &mut Fast,
-    ) {
+    fn observe(&mut self, raw_pos: u16, cfg: &KernelConfig, shared: &Shared, fast: &mut Fast) {
         let mc = &cfg.medium;
         let lut_live = self.ctl.lut_live;
-        // i_use: window-valid measurement, else the cached command - the
-        // observer never sees the validity flag (fusion contract). While
-        // disabled or in OpenLoop the cache is 0, so an invalid window
-        // predicts torque-free.
-        let i_use = m.i_meas.unwrap_or(self.i_ref_cc);
         self.omega_bemf = fast.close_bemf_half(mc.r_q12, mc.recip_ke_q, self.recip_arr_q24);
         self.fusion.step(
-            i_use,
+            fast.i_meas_last() as i32,
             pos_q4(shared, lut_live, raw_pos),
             self.dt_med_q32,
             &mc.fusion,

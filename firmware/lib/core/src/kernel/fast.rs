@@ -76,7 +76,12 @@ pub struct Fast {
     /// telemetry because the gate can override the loop's output.
     pub(super) duty_q15: i16,
     decay: DecayMode,
-    /// Last window-valid measurement, for the `i_hat_counts` publish.
+    /// Last window-valid measurement, 0 from the first tick nothing drives:
+    /// the current the observer, the stream, the ident aggregate and the
+    /// `i_hat_counts` publish read. A window under the floor holds it, as
+    /// the drive still pushes there; with no drive the winding current is
+    /// gone within a period, and every window under a zero duty is
+    /// invalid, so the 0 holds until the drive resumes.
     pub(super) i_meas_last: i16,
     /// Last v-valid drive-window differential (va - vb), for the ident
     /// accumulation - same hold-last-valid pattern as `i_meas_last`.
@@ -290,9 +295,11 @@ impl Fast {
             // unconfounded actuation
             Drive::OpenLoop { goal_q15: goal } => {
                 // a start from zero duty is a reversal too: it restarts from
-                // the floor like the run edge does
+                // the floor like the run edge does. So is a zero goal, which
+                // drives nothing: the held current restarts from 0 with it
                 if goal.signum() != (self.duty_q15 as i32).signum() {
                     self.ol.reset(fc.ol_floor_q15);
+                    self.i_meas_last = 0;
                 }
                 let lim = if goal >= 0 { cmd.band.hi } else { cmd.band.lo };
                 let i_abs = match m.i_meas {
@@ -380,13 +387,18 @@ impl Fast {
             }
         };
         // logical (+duty moves counts up) -> wiring, on the output only:
-        // duty_q15 and the published duty stay logical
+        // duty_q15 and the published duty stay logical. Off and the brake
+        // drive nothing: the held current drops (`i_meas_last`)
         match out {
             MotorCmd::Drive { duty, decay } if !fc.drive_polarity => MotorCmd::Drive {
                 duty: Effort(duty.0.saturating_neg()),
                 decay,
             },
-            out => out,
+            MotorCmd::Drive { .. } => out,
+            _ => {
+                self.i_meas_last = 0;
+                out
+            }
         }
     }
 }

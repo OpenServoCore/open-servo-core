@@ -91,10 +91,10 @@ impl FusionObs {
         self.tau_d_q16 = 0;
     }
 
-    /// One MEDIUM-tick predict+correct. `i_counts` is i_use, already
-    /// resolved by the caller: i_meas when the shunt window is valid, else
-    /// i_ref - the observer never sees the validity flag. `dt_med_q32` =
-    /// 2^32 / MED_HZ (MED_HZ >= 2 keeps it under 2^31, so the i32 cast is
+    /// One MEDIUM-tick predict+correct. `i_counts` is the caller's held
+    /// current: the last window-valid measurement, 0 once nothing drives -
+    /// the observer never sees the validity flag. `dt_med_q32` = 2^32 /
+    /// MED_HZ (MED_HZ >= 2 keeps it under 2^31, so the i32 cast is
     /// value-preserving).
     pub fn step(&mut self, i_counts: i32, pos_q4: u16, dt_med_q32: u32, gains: &FusionGains) {
         // Predict. b_i is Q3.13 of B (c/s per ccount per tick), so the

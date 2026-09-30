@@ -7,9 +7,11 @@
 //! fit). The kernel feeds LAST-VALID current/vdiff through invalid windows
 //! rather than zeros: zeros would drag the means toward 0, last-valid keeps
 //! them unbiased at steady state, and identification runs at healthy duties
-//! where the windows are valid anyway. The fold runs only while CONTROL
-//! `ident_agg` is set; turning it off drops the open window, so the first
-//! window after the next enable spans 16 fresh ticks.
+//! where the windows are valid anyway. With nothing driving the current is
+//! gone, so it reads 0 there, the truth rather than a stand-in. The fold
+//! runs only while CONTROL `ident_agg` is set; turning it off drops the
+//! open window, so the first window after the next enable spans 16 fresh
+//! ticks.
 
 /// Window length as a shift: 16 fast ticks, mean = sum >> IDENT_SHIFT.
 pub const IDENT_SHIFT: u32 = 4;

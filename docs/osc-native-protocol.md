@@ -614,13 +614,15 @@ Payload, all LE:
 ```
 
 `tel_mask` bits, in sample order (osc-servo): 0 `pos` (raw pot), 1
-`current` (bias-subtracted held window sample), 2 `current_trough`, 3
-`duty`, 4 `vdiff`, 5 `vbus`, 6 `current_raw`, 7 `vmotor_a`, 8
-`vmotor_b`, 9 `vbus_raw`, 10 `ntc_raw`, 11 `pos_lin` (the linearized pot
-the kernel controls on, the Q4 word itself, sec 5.7); bits 12-15 are
-reserved and reject. A sample carries at most 6 fields (12 B): a mask
-selecting more rejects at write time, since a 16-sample batch of it
-could not clear the wire inside its own tick window at 3 M.
+`current` (bias-subtracted window sample, held through windows the shunt
+cannot read, 0 from the first tick nothing drives: torque off, a fault,
+a brake, an OpenLoop zero goal), 2 `current_trough`, 3 `duty`, 4
+`vdiff`, 5 `vbus`, 6 `current_raw`, 7 `vmotor_a`, 8 `vmotor_b`, 9
+`vbus_raw`, 10 `ntc_raw`, 11 `pos_lin` (the linearized pot the kernel
+controls on, the Q4 word itself, sec 5.7); bits 12-15 are reserved and
+reject. A sample carries at most 6 fields (12 B): a mask selecting more
+rejects at write time, since a 16-sample batch of it could not clear the
+wire inside its own tick window at 3 M.
 
 Samples batch up to 16 per frame (the burst's final frame may carry
 fewer); the count is implicit in `LEN`. Batching is what makes the CRC
@@ -1116,8 +1118,10 @@ spans 16 fresh ticks and `agg_seq` counts on from where it stopped. The
 servo writes the block mid-tick with `agg_seq` last: a host that reads
 the block, re-reads `agg_seq` and finds it unchanged holds one window.
 A tick whose window the shunt cannot read contributes the last valid
-current and differential. A host that reads the aggregate turns it on
-for its session and off when the session ends (sec 5.8).
+current and differential, except that the current reads 0 from the first
+tick nothing drives, as the stream's `current` does (sec 5.6). A host
+that reads the aggregate turns it on for its session and off when the
+session ends (sec 5.8).
 
 ## 6. Coordinated reads (status chains)
 

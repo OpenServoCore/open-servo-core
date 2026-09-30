@@ -131,7 +131,7 @@ The limiter on the plant rig (`integration/tests/torque_limit.rs`):
   millisecond, no fault.
 - `openloop_stall_yields_like_closed_loop` - Yield response: the limit
   folds to the yield value no sooner than `stall_time_ms` and within
-  100 ms after it, and stays folded.
+  100 ms after it, and stays folded on every tick of the next second.
 - `openloop_stall_faults_on_the_boot_response` - Fault response: STALL
   latches in the same window and the drive disables.
 - `openloop_slew_never_counts_as_a_stall` - with a 1 ms stall timer, a
@@ -145,7 +145,8 @@ The limiter on the plant rig (`integration/tests/torque_limit.rs`):
   floor's 239-count stall current: most ticks sit under the floor, each
   at a duty stalling at 95 to 100% of the limit, mean within 1.1x.
 - `yield_fold_reaches_the_blind_band` - after a fold to a yield of 168
-  the blind band holds the yield the same way, mean within 1.2x.
+  the blind band holds the yield the same way for the whole second
+  after it, mean within 1.2x.
 - `virgin_blind_band_passes_to_the_window_floor` - with `r_q12` at 0
   the duty never goes under the floor and sits there pinned, at the
   floor's stall current.
