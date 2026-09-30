@@ -197,8 +197,7 @@ impl<P: Providers> ServoBus<P> {
     /// staged table effect (COMMIT) and sequence a staged reply (SEND); fail
     /// (or spin miss) -> revert the write (REVERT), drop the reply
     /// (DON'T-SEND), count, and rewind the ladder (sec 5.3 L1).
-    #[cfg_attr(target_os = "none", unsafe(link_section = ".highcode"))]
-    #[cfg_attr(target_os = "none", inline(never))]
+    #[cfg_attr(target_arch = "riscv32", inline(never))]
     fn verify<D: Dispatch>(&mut self, p: Pending, d: &mut D) {
         if !self.crc_verify(p.anchor, p.footprint) {
             if p.table {
