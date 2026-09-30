@@ -10,3 +10,4 @@ _config_b = ORIGIN(CONFIG_B);
    stay spare for tables to come. */
 _calib_a = ORIGIN(CALIB);
 _calib_b = ORIGIN(CALIB) + 1024;
+ASSERT(ORIGIN(RAM) + LENGTH(RAM) - _ebss >= 1536, "stack reserve: under 1536 B of RAM left above .bss for the stack, which the measured worst case needs");

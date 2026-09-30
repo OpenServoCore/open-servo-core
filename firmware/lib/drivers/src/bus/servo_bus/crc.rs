@@ -15,8 +15,7 @@ impl<P: Providers> ServoBus<P> {
     /// verify. Direct feed is safe against the live circular ring: the engine
     /// runs ~8x wire speed, so it drains the covered span long before the write
     /// cursor could lap the ring back onto it.
-    #[cfg_attr(target_os = "none", unsafe(link_section = ".highcode"))]
-    #[cfg_attr(target_os = "none", inline(never))]
+    #[cfg_attr(target_arch = "riscv32", inline(never))]
     pub(super) fn crc_feed(&mut self, anchor: u16, footprint: u16) {
         let ring = self.ring.bytes();
         let len = ring.len();

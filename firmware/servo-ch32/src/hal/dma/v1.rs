@@ -100,9 +100,8 @@ pub fn set_count(ch: Channel, count: u16) {
 // >= 2 priority contexts (the CH4 TX channel today, touched from MAIN and
 // HIGH ISRs) need the CS to keep EN/TCIE RMW atomic. Single-context channels
 // pay the CS cost but stay correct.
-// `inline(always)` folds this into the TIM2 CC3 hot path so the wire-driver
-// activate sequence stays inside the `.highcode` body -- no standalone flash
-// fetch per call.
+// `inline(always)` keeps this inside its caller's body, so a caller placed in
+// RAM (`.data.ram_code`) makes no flash fetch for it.
 #[inline(always)]
 pub fn enable(ch: Channel) {
     let n = (ch as u8 - 1) as usize;

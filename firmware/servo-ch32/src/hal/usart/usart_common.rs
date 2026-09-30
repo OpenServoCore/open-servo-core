@@ -90,9 +90,8 @@ pub fn set_baud(r: Regs, brr: u32) {
 
 // SAFETY: see hal/SAFETY.md. CTLR3 is written from MAIN and the USART1 TC
 // ISR; CS keeps RMW atomic against future different-bit additions.
-// `inline(always)` folds this into the TIM2 CC3 hot path so the wire-driver
-// activate sequence stays inside the `.highcode` body -- no standalone flash
-// fetch per call.
+// `inline(always)` keeps this inside its caller's body, so a caller placed in
+// RAM (`.data.ram_code`) makes no flash fetch for it.
 #[inline(always)]
 pub fn set_dma_tx(r: Regs, enable: bool) {
     critical_section::with(|_| {
@@ -107,9 +106,8 @@ pub fn data_addr(r: Regs) -> u32 {
 
 // SAFETY: see hal/SAFETY.md. CTLR1 is written from MAIN and the USART1 TC
 // ISR (here, and the UE toggle in set_baud).
-// `inline(always)` folds this into the TIM2 CC3 hot path so the wire-driver
-// activate sequence stays inside the `.highcode` body -- no standalone flash
-// fetch per call.
+// `inline(always)` keeps this inside its caller's body, so a caller placed in
+// RAM (`.data.ram_code`) makes no flash fetch for it.
 #[inline(always)]
 pub fn set_tc_irq(r: Regs, enable: bool) {
     critical_section::with(|_| {
@@ -119,9 +117,8 @@ pub fn set_tc_irq(r: Regs, enable: bool) {
 
 // SAFETY: see hal/SAFETY.md. STATR.modify is the only write-0-to-clear bit
 // path on this register today; CS guards against future write-clear additions.
-// `inline(always)` folds this into the TIM2 CC3 hot path so the wire-driver
-// activate sequence stays inside the `.highcode` body -- no standalone flash
-// fetch per call.
+// `inline(always)` keeps this inside its caller's body, so a caller placed in
+// RAM (`.data.ram_code`) makes no flash fetch for it.
 #[inline(always)]
 pub fn clear_tc(r: Regs) {
     critical_section::with(|_| {
