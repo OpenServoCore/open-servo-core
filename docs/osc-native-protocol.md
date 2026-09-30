@@ -935,8 +935,10 @@ a Q15 duty magnitude) is the smallest duty whose drive window the shunt
 reads: CALIB `i_window_min_ticks` turned into a duty against the board's
 PWM period, 4356 (13.3%) for 160 ticks of 1200 on osc-dev-v006. It is
 the value the OpenLoop limiter uses, where its ceiling restarts and its
-blind band (below) begins, published every slow tick (16 ms) torque on
-or off, so a rewrite of `i_window_min_ticks` shows within one slow tick.
+blind band (below) begins, published at the kernel's first tick and
+again whenever a CONFIG or CALIB write reaches the kernel, torque on or
+off, so a rewrite of `i_window_min_ticks` shows within one medium tick
+(0.5 ms).
 0 means the servo publishes no floor: the kernel has not ticked yet, or
 the firmware does not carry the field. A host planning a drive against
 the current sensor reads the floor here rather than deriving it from a

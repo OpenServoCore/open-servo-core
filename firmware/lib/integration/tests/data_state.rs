@@ -320,6 +320,7 @@ fn live_zero_ke_write_stops_a_running_closed_loop(#[case] mode: Mode, #[case] re
             t.calib.motor.ke_vpc_q = 0;
         }
     });
+    sh.config_touch();
     let cmds = rig.run(&sh, DECIM_MED as u32);
     assert!(all_disabled(&cmds), "{cmds:?}");
     assert_eq!(fault(&sh), (BIT_DATA, CODE_DATA));

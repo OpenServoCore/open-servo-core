@@ -7,8 +7,8 @@
 //! /16 fast-tick window (`ident`), independent of DECIM_MED. Tick-indexed
 //! by design: a missed tick dilates time, nothing compensates and nothing
 //! reads a wall clock. CONFIG and CALIB reach the tick through the kernel's
-//! own snapshot (`config`), rebuilt at every medium boundary, so a
-//! configuration write takes effect within one medium tick.
+//! own snapshot (`config`), rebuilt at a medium boundary after a write, so
+//! a configuration write takes effect within one medium tick.
 
 mod config;
 pub mod current;
@@ -25,6 +25,8 @@ pub use limits::{IBand, LimitCfg, LimitState};
 pub use position::{PosOut, PositionCfg};
 pub use trajectory::{TrajCfg, TrajGen};
 pub use velocity::{VelocityGains, VelocityLoop};
+
+use core::sync::atomic::{Ordering, compiler_fence};
 
 use self::config::KernelConfig;
 use crate::estimator::{
@@ -76,8 +78,8 @@ pub struct KernelTiming {
 /// this ISR mid-read, so the kernel only ever reads those - volatile via
 /// `region_ptr` (`Shared::pos_lut_q4` for the array), never forming `&T`,
 /// cross-field tearing accepted (each field is independently sane). CONTROL
-/// is read every tick; CONFIG and CALIB only into `cfg`, at a medium
-/// boundary. The kernel is the sole writer of TELEMETRY
+/// is read every tick; CONFIG and CALIB only into `cfg`, when
+/// `Shared::config_gen` moved. The kernel is the sole writer of TELEMETRY
 /// sensors/estimates/mode/limits (`data_flags` excepted: boot and dispatch
 /// write it, the kernel reads) and the `fault_flags` byte; TELEMETRY
 /// `health` belongs to the chip side.
@@ -86,6 +88,8 @@ pub struct Kernel<I: ControlIo, T: TelStream = ()> {
     tel: T,
     timing: KernelTiming,
     cfg: KernelConfig,
+    /// The `Shared::config_gen` value `cfg` was built at.
+    config_gen: u8,
     decim_med: u8,
     decim_slow: u8,
     vcal_lpf: VcalLpf,
@@ -152,6 +156,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             tel,
             timing,
             cfg: KernelConfig::default(),
+            config_gen: 0,
             // primed so the FIRST tick runs the full medium+slow chain: the
             // configuration and the vbus reciprocal exist before any
             // consumer sees them
@@ -190,9 +195,13 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         }
     }
 
-    /// Rebuild `cfg` from the table.
+    /// Rebuild `cfg` from the table. `config_gen` is the generation read
+    /// before the copy: a write landing during it leaves the counter ahead
+    /// of what `cfg` records, so the next medium boundary rebuilds again.
     #[inline(never)]
-    fn refresh(&mut self, shared: &Shared) {
+    fn refresh(&mut self, shared: &Shared, config_gen: u8) {
+        // the generation load stays ahead of the block copies
+        compiler_fence(Ordering::Acquire);
         let cfg = KernelConfig::load(shared, &self.timing);
         // thermometer seed tracks the calib anchor: install writes and host
         // rewrites both land here
@@ -201,6 +210,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             self.thermal.seed(r0);
         }
         self.cfg = cfg;
+        self.config_gen = config_gen;
         let p = shared.table.region_ptr();
         // SAFETY: sole-telemetry-writer contract (type doc); volatile store.
         unsafe {
@@ -214,7 +224,10 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         let medium = self.decim_med >= DECIM_MED;
         if medium {
             self.decim_med = 0;
-            self.refresh(shared);
+            let config_gen = shared.config_gen();
+            if config_gen != self.config_gen || !self.booted {
+                self.refresh(shared, config_gen);
+            }
         }
         let fc = &self.cfg.fast;
         let mc = &self.cfg.medium;

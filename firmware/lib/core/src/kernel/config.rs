@@ -1,6 +1,7 @@
 //! The kernel's own copy of CONFIG and CALIB, prebuilt into the shapes its
-//! consumers take, rebuilt at a medium boundary rather than copied block by
-//! block on every tick.
+//! consumers take. Configuration changes only on a host write, so the kernel
+//! rebuilds this at a medium boundary when `Shared::config_gen` has moved,
+//! and on its first tick; no tick copies a table block.
 
 use super::{CurrentGains, KernelTiming, LimitCfg, PositionCfg, TrajCfg, VelocityGains};
 use crate::estimator::{FusionGains, ThermAnchor, ThermGates, window};

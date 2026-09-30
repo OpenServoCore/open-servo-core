@@ -7,7 +7,7 @@ use super::*;
 use crate::estimator::OmegaSource;
 use crate::regions::config::{DecaySelect, StallResponse};
 use crate::traits::Sensors;
-use crate::{RegionStorage, Shared};
+use crate::{ControlTable, RegionStorage, Shared};
 
 const BIAS: u16 = 2048;
 const ARR: u16 = 1200;
@@ -125,6 +125,13 @@ fn seed(shared: &Shared) {
         t.control.lifecycle.torque_enable = false;
         t.control.lifecycle.mode = Mode::Position;
     });
+}
+
+/// A committed CONFIG or CALIB write, as the dispatcher lands it: the table
+/// changes and the configuration generation moves.
+fn write_config(sh: &Shared, f: impl FnOnce(&mut ControlTable)) {
+    sh.table.with_mut(f);
+    sh.config_touch();
 }
 
 /// Rail-tap counts that scale to exactly `vmotor` terminal counts.
@@ -690,8 +697,7 @@ fn openloop_duty_passthrough_clamped_with_decay() {
         other => panic!("expected Drive, got {other:?}"),
     }
     // duty_max clamps the passthrough at the next medium boundary, at once
-    sh.table
-        .with_mut(|t| t.config.loop_current.duty_max_q15 = 5000);
+    write_config(&sh, |t| t.config.loop_current.duty_max_q15 = 5000);
     while k.decim_med != DECIM_MED - 1 {
         k.on_tick(frame(2000, BIAS), &sh);
         assert_eq!(written_duty(&k), 8000);
@@ -865,7 +871,7 @@ fn reversed_polarity_negates_vdiff() {
     k.on_tick(frame(2000, BIAS), &sh);
     assert_eq!(k.vdiff_last, -(3000 - 40));
     // the rewire lands at the next medium boundary
-    sh.table.with_mut(|t| t.config.limits.drive_polarity = true);
+    write_config(&sh, |t| t.config.limits.drive_polarity = true);
     while k.decim_med != DECIM_MED - 1 {
         k.on_tick(frame(2000, BIAS), &sh);
         assert_eq!(k.vdiff_last, -(3000 - 40));
@@ -971,8 +977,7 @@ fn trough_bias_tracks_only_inside_slow_drive_windows() {
     assert_eq!(published_bias(&sh), BIAS);
     // Fast decay: the trough IS the drive window. The decay lands at a
     // medium boundary, so it goes in ahead of the drive.
-    sh.table
-        .with_mut(|t| t.config.limits.openloop_decay = DecaySelect::Fast);
+    write_config(&sh, |t| t.config.limits.openloop_decay = DecaySelect::Fast);
     for _ in 0..DECIM_MED {
         k.on_tick(shifted(), &sh);
     }
@@ -998,15 +1003,14 @@ fn trough_bias_tracks_only_inside_slow_drive_windows() {
         .with_mut(|t| t.control.lifecycle.goal_duty = i16::MAX);
     settle(&mut k, &sh, shifted());
     assert_eq!(published_bias(&sh), BIAS);
-    sh.table
-        .with_mut(|t| t.config.limits.openloop_decay = DecaySelect::Slow);
+    write_config(&sh, |t| t.config.limits.openloop_decay = DecaySelect::Slow);
     for _ in 0..300 {
         k.on_tick(shifted(), &sh);
     }
     assert!(matches!(last_cmd(&k), MotorCmd::Drive { duty, .. } if duty.0 == i16::MAX));
     assert_eq!(published_bias(&sh), BIAS);
     // Brake as a command
-    sh.table.with_mut(|t| {
+    write_config(&sh, |t| {
         t.control.lifecycle.goal_duty = 0;
         t.config.limits.openloop_zero_brake = true;
     });
@@ -1803,8 +1807,7 @@ fn openloop_endstop_zeroes_outbound_duty() {
     run_plant(&mut k, &sh, &mut plant, 2_000);
     assert_eq!(k.duty_q15, -8000, "retreat from the wall blocked");
     // mirrored at the min wall, crossed in free flight like the top one
-    sh.table
-        .with_mut(|t| t.config.pos_limits.pos_min_soft_counts = 500);
+    write_config(&sh, |t| t.config.pos_limits.pos_min_soft_counts = 500);
     run_plant(&mut k, &sh, &mut plant, 25_000);
     assert!(
         plant.pos() >= 450 && plant.pos() <= 500,
@@ -1916,4 +1919,84 @@ fn tel_stream_gated_by_sink_active() {
     assert!(s.window_valid);
     assert_eq!(s.current, 40);
     assert!(!s.fault);
+}
+
+// --- Configuration snapshot -----------------------------------------------
+
+/// The OpenLoop duty clamp the kernel holds.
+fn ol_max(k: &Kernel<FakeIo>) -> u16 {
+    k.cfg.fast.ol_duty_max_q15
+}
+
+#[test]
+fn first_tick_takes_the_configuration_without_a_write() {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table
+        .with_mut(|t| t.config.loop_current.duty_max_q15 = 5000);
+    let mut k = kernel();
+    assert_eq!(sh.config_gen(), k.config_gen, "nothing moved the counter");
+    k.on_tick(frame(2000, BIAS), &sh);
+    assert_eq!(ol_max(&k), 5000);
+    assert_eq!(k.cfg.medium.limits.stall_time_ticks, 100, "50 ms");
+    assert_eq!(
+        sh.table.with(|t| t.telemetry.limits.window_floor_q15),
+        k.cfg.fast.ol_floor_q15
+    );
+}
+
+#[test]
+fn dispatched_config_write_lands_at_the_next_medium_boundary() {
+    use crate::regions::config::addr::loop_current::DUTY_MAX_Q15;
+    let sh = Shared::new();
+    seed(&sh);
+    let mut k = kernel();
+    k.on_tick(frame(2000, BIAS), &sh);
+    assert_eq!(ol_max(&k), 32767);
+    crate::services::bus::tests::write_committed(&sh, DUTY_MAX_Q15, &5000u16.to_le_bytes());
+    assert_eq!(sh.table.with(|t| t.config.loop_current.duty_max_q15), 5000);
+    while k.decim_med != DECIM_MED - 1 {
+        k.on_tick(frame(2000, BIAS), &sh);
+        assert_eq!(ol_max(&k), 32767, "before the boundary");
+    }
+    k.on_tick(frame(2000, BIAS), &sh);
+    assert_eq!(ol_max(&k), 5000);
+}
+
+#[test]
+fn unmoved_generation_keeps_the_snapshot() {
+    let sh = Shared::new();
+    seed(&sh);
+    let mut k = kernel();
+    k.on_tick(frame(2000, BIAS), &sh);
+    // a table edit no commit announced never reaches the kernel
+    sh.table
+        .with_mut(|t| t.config.loop_current.duty_max_q15 = 5000);
+    for _ in 0..4 * DECIM_MED {
+        k.on_tick(frame(2000, BIAS), &sh);
+    }
+    assert_eq!(ol_max(&k), 32767);
+}
+
+#[test]
+fn a_write_during_the_refresh_refreshes_again() {
+    let sh = Shared::new();
+    seed(&sh);
+    let mut k = kernel();
+    k.on_tick(frame(2000, BIAS), &sh);
+    // the generation the next boundary reads, then a commit lands before
+    // its copy finishes
+    let config_gen = sh.config_gen();
+    write_config(&sh, |t| t.config.loop_current.duty_max_q15 = 6000);
+    k.refresh(&sh, config_gen);
+    assert_eq!(ol_max(&k), 6000);
+    // an edit the counter does not announce shows only if the kernel
+    // rebuilds again at the next boundary
+    sh.table
+        .with_mut(|t| t.config.loop_current.duty_max_q15 = 5000);
+    for _ in 0..DECIM_MED {
+        k.on_tick(frame(2000, BIAS), &sh);
+    }
+    assert_eq!(ol_max(&k), 5000);
+    assert_eq!(k.config_gen, sh.config_gen());
 }

@@ -8,8 +8,8 @@ use osc_protocol::wire::{Id, MAX_PAYLOAD, MgmtOp, ResultCode, UID_LEN};
 use crate::persist::{CALIB_LEN, CONFIG_LEN, PROFILE_LEN, StoreError};
 use crate::regions::hooks::ControlTableHooks;
 use crate::regions::{
-    CALIB_BASE_ADDR, CALIB_REGION_SIZE, CONFIG_BASE_ADDR, CONFIG_REGION_SIZE, PROFILE_BASE_ADDR,
-    PROFILE_REGION_SIZE,
+    CALIB_BASE_ADDR, CALIB_REGION_SIZE, CONFIG_BASE_ADDR, CONFIG_REGION_SIZE, CONTROL_BASE_ADDR,
+    PROFILE_BASE_ADDR, PROFILE_REGION_SIZE,
 };
 use crate::traits::{Dispatch, Dispatched, GATHER_MAX, Reply, Request, RequestCtx, Status};
 use crate::{Error, RegionStorage, Shared, StagedWrites};
@@ -196,10 +196,16 @@ impl Dispatcher<'_> {
     }
 
     /// The post-commit bookkeeping every committed span gets: the dirty
-    /// bit, a position table command, a stall permit grant, then the
-    /// data-state consequences of a covered or stamp write.
+    /// bit, the configuration generation, a position table command, a stall
+    /// permit grant, then the data-state consequences of a covered or stamp
+    /// write.
     fn after_commit(&self, addr: u16, len: u16) {
         self.mark_dirty_if_persistent(addr, len);
+        // CONFIG and CALIB sit below CONTROL, so a span starting there
+        // reaches one of them
+        if addr < CONTROL_BASE_ADDR {
+            self.shared.config_touch();
+        }
         self.shared.pos_lut_after_commit(addr, len);
         self.shared.permit_after_commit(addr, len);
         self.shared.data_state_after_commit(addr, len);
@@ -477,6 +483,7 @@ impl Dispatcher<'_> {
             t.config.common.id = new_id;
             t.telemetry.common.status_flags |= STATUS_FLAG_CONFIG_DIRTY;
         });
+        self.shared.config_touch();
         reply.set_id(new_id);
         Self::ack(alert, ctx, Ok(()), reply);
     }
