@@ -44,7 +44,7 @@ pub struct LimitCfg {
 /// The signed current band every command clamps into: `lo <= i_ref <= hi`.
 /// Symmetric `+-i_lim` away from the walls; a soft-limit wall collapses its
 /// inward side to 0 while the outward side keeps the composed limit.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct IBand {
     pub lo: i32,
     pub hi: i32,

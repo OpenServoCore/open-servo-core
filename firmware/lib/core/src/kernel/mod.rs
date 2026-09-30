@@ -13,9 +13,11 @@
 mod config;
 pub mod current;
 pub mod duty_limit;
+mod fast;
 pub mod faults;
 pub mod ident;
 pub mod limits;
+mod medium;
 pub mod position;
 pub mod trajectory;
 pub mod velocity;
@@ -29,16 +31,11 @@ pub use velocity::{VelocityGains, VelocityLoop};
 use core::sync::atomic::{Ordering, compiler_fence};
 
 use self::config::KernelConfig;
-use crate::estimator::{
-    BemfObs, BiasTracker, FusionObs, OmegaSwitch, VbusEst, VcalLpf, WindingTherm, bemf, window,
-};
-use crate::math::{q_mul, q_mul_u};
-use crate::pos_lut;
-use crate::regions::control::Mode;
-use crate::tel::{TelSample, TelStream};
-use crate::traits::{ControlIo, DecayMode, Motor, MotorCmd};
+use self::fast::{Command, Fast};
+use self::medium::{Control, Medium};
+use crate::tel::TelStream;
+use crate::traits::{ControlIo, Motor};
 use crate::{RegionStorageRaw, SensorFrame, Shared};
-use osc_units::Effort;
 
 /// FAST -> MEDIUM decimation: MED_HZ = tick_hz / DECIM_MED (2 kHz at 20 kHz).
 pub const DECIM_MED: u8 = 10;
@@ -91,56 +88,14 @@ pub struct Kernel<I: ControlIo, T: TelStream = ()> {
     /// The `Shared::config_gen` value `cfg` was built at.
     config_gen: u8,
     decim_med: u8,
-    decim_slow: u8,
-    vcal_lpf: VcalLpf,
-    /// Shunt zero-current offset in use; its value is republished to
-    /// `current_bias_counts` every tick.
-    bias: BiasTracker,
-    traj: TrajGen,
-    fusion: FusionObs,
-    cur: CurrentLoop,
-    vel: VelocityLoop,
-    limits: LimitState,
-    i_band: IBand,
-    vbus: VbusEst,
-    thermal: WindingTherm,
-    bemf: BemfObs,
-    /// Velocity-loop feedback pick: back-EMF boxcar or the observer's omega.
-    omega_sw: OmegaSwitch,
-    /// OpenLoop's duty ceiling against `i_band`.
-    ol: duty_limit::DutyLimiter,
-    /// The duty OpenLoop applies while its ceiling sits under the window
-    /// floor.
-    ol_base_q15: u16,
-    /// SLOW ticks left on the stall permit lease, renewed when HIGH moves
-    /// `Shared::permit_gen` past `permit_gen`.
-    permit_ticks: u8,
-    permit_gen: u8,
-    faults: faults::FaultLatch,
-    det: faults::Detectors,
     booted: bool,
-    te_prev: bool,
-    run_prev: bool,
-    mode_prev: Mode,
-    /// MEDIUM's current command, consumed by the FAST current loop.
-    i_ref_cc: i32,
-    /// Position loop output, held for the velocity step (MEDIUM-internal).
-    omega_ref_q16: i32,
-    /// Anti-hunt hold from the position loop; FAST maps it to Brake.
-    hold: bool,
-    /// The duty actually commanded this tick, post-clamp post-gate: 0 while
-    /// Brake/Disabled. Feeds next tick's window select AND the
-    /// `duty_applied_q15` publish - `CurrentLoop::last_duty` is not used for
-    /// telemetry because the gate can override the loop's output.
-    duty_q15: i16,
-    decay: DecayMode,
-    /// Last window-valid measurement, for the `i_hat_counts` publish.
-    i_meas_last: i16,
-    /// Identification aggregator, own /16 fast-tick window.
-    ident: ident::IdentAgg,
-    /// Last v-valid drive-window differential (va - vb), for the ident
-    /// accumulation - same hold-last-valid pattern as `i_meas_last`.
-    vdiff_last: i16,
+    /// Shared by both halves: a raise on either disables the same tick's
+    /// drive.
+    faults: faults::FaultLatch,
+    fast: Fast,
+    medium: Medium,
+    /// Medium -> fast hand-off.
+    cmd: Command,
 }
 
 impl<I: ControlIo> Kernel<I> {
@@ -161,37 +116,11 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             // configuration and the vbus reciprocal exist before any
             // consumer sees them
             decim_med: DECIM_MED - 1,
-            decim_slow: DECIM_SLOW - 1,
-            vcal_lpf: VcalLpf::new(),
-            bias: BiasTracker::new(),
-            traj: TrajGen::new(),
-            fusion: FusionObs::new(),
-            cur: CurrentLoop::new(),
-            vel: VelocityLoop::new(),
-            limits: LimitState::new(),
-            i_band: IBand { lo: 0, hi: 0 },
-            vbus: VbusEst::new(timing.vbus_scale_q15),
-            thermal: WindingTherm::new(),
-            bemf: BemfObs::new(),
-            omega_sw: OmegaSwitch::new(),
-            ol: duty_limit::DutyLimiter::new(),
-            ol_base_q15: 0,
-            permit_ticks: 0,
-            permit_gen: 0,
-            faults: faults::FaultLatch::new(),
-            det: faults::Detectors::new(),
             booted: false,
-            te_prev: false,
-            run_prev: false,
-            mode_prev: Mode::OpenLoop,
-            i_ref_cc: 0,
-            omega_ref_q16: 0,
-            hold: false,
-            duty_q15: 0,
-            decay: DecayMode::Slow,
-            i_meas_last: 0,
-            ident: ident::IdentAgg::new(),
-            vdiff_last: 0,
+            faults: faults::FaultLatch::new(),
+            fast: Fast::new(timing.pwm_arr),
+            medium: Medium::new(timing.vbus_scale_q15),
+            cmd: Command::default(),
         }
     }
 
@@ -207,7 +136,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         // rewrites both land here
         let r0 = cfg.medium.therm_anchor.r0_q12;
         if r0 != self.cfg.medium.therm_anchor.r0_q12 {
-            self.thermal.seed(r0);
+            self.medium.seed_thermal(r0);
         }
         self.cfg = cfg;
         self.config_gen = config_gen;
@@ -218,6 +147,23 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         }
     }
 
+    /// First tick: the configuration, then the observer and the bias
+    /// tracker seeded at the boot measurement.
+    fn boot(&mut self, frame: &SensorFrame, shared: &Shared, config_gen: u8) {
+        self.refresh(shared, config_gen);
+        let ctl = Control::read(shared);
+        self.medium
+            .seed(medium::pos_q4(shared, ctl.lut_live, frame.pos));
+        let p = shared.table.region_ptr();
+        // SAFETY: same volatile read contract; install stamped the boot rest
+        // measurement here before the first tick, and from here on this
+        // kernel is the field's sole writer.
+        self.fast.seed_bias(unsafe {
+            (&raw const (*p).telemetry.sensors.current_bias_counts).read_volatile()
+        });
+        self.booted = true;
+    }
+
     /// Must complete well inside the kernel period (~50 us at 20 kHz).
     pub fn on_tick(&mut self, frame: SensorFrame, shared: &Shared) {
         self.decim_med += 1;
@@ -225,570 +171,45 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         if medium {
             self.decim_med = 0;
             let config_gen = shared.config_gen();
-            if config_gen != self.config_gen || !self.booted {
+            if !self.booted {
+                self.boot(&frame, shared, config_gen);
+            } else if config_gen != self.config_gen {
                 self.refresh(shared, config_gen);
             }
         }
         let fc = &self.cfg.fast;
-        let mc = &self.cfg.medium;
-        let p = shared.table.region_ptr();
-
-        // SAFETY: reads of transport-owned regions - raw-pointer volatile
-        // block copies, no `&T` formed, aligned repr(C) blocks inside the
-        // static table (single-writer contract in the type doc).
-        let (life, pos_lut_state) = unsafe {
-            (
-                (&raw const (*p).control.lifecycle).read_volatile(),
-                (&raw const (*p).control.pos_lut.pos_lut_state).read_volatile(),
-            )
-        };
-        // The linearized pot (pos_lut module), Q4 counts: the one measurement
-        // behind both seeds and the observer, so theta_hat and everything
-        // that reads it (trajectory, position loop, soft limits, stall
-        // gates) are in linearized counts. The raw pot stays for the sensors
-        // publish, TEL `pos` and the glitch screen.
-        let pos_q4 = if pos_lut_state == pos_lut::state::LIVE {
-            shared.pos_lut_q4(frame.pos)
-        } else {
-            pos_lut::identity_q4(frame.pos)
-        };
-
-        if !self.booted {
-            self.booted = true;
-            self.fusion.seed(pos_q4);
-            // SAFETY: same volatile read contract; install stamped the boot
-            // rest measurement here before the first tick, and from here on
-            // this kernel is the field's sole writer.
-            self.bias.seed(unsafe {
-                (&raw const (*p).telemetry.sensors.current_bias_counts).read_volatile()
-            });
-        }
-        let vcal_lpf = self.vcal_lpf.update(frame.vcal);
-
-        // SAFETY: ISR context is the region's sole writer (the `sample_tick`
-        // contract); volatile per field so the stores survive optimization.
-        unsafe {
-            let s = &raw mut (*p).telemetry.sensors;
-            (&raw mut (*s).pos).write_volatile(frame.pos);
-            (&raw mut (*s).current).write_volatile(frame.current);
-            (&raw mut (*s).vcal).write_volatile(frame.vcal);
-            (&raw mut (*s).vcal_lpf).write_volatile(vcal_lpf);
-            (&raw mut (*s).vmotor_a).write_volatile(frame.vmotor_a);
-            (&raw mut (*s).vmotor_b).write_volatile(frame.vmotor_b);
-            (&raw mut (*s).current_trough).write_volatile(frame.current_trough);
-            (&raw mut (*s).vbus_raw).write_volatile(frame.vbus_raw);
-            (&raw mut (*s).ntc_raw).write_volatile(frame.ntc_raw);
-        }
-
-        // torque_enable 0->1 is the fault ack: latch, detectors, and the
-        // limits pend all clear; a still-present condition re-latches
-        // through the normal detectors.
-        let enable_edge = life.torque_enable && !self.te_prev;
-        if enable_edge {
-            self.faults.clear();
-            self.det.reset();
-            self.limits.ack();
-        }
-        self.te_prev = life.torque_enable;
-
-        // Data-state entry check (data_state module): at the enable edge and
-        // at a mode change under torque, a named reason refuses closed loop
-        // for this run. A reason that appears mid-run (a live edit) waits
-        // for the next entry; only the Ke belt below stops a running loop.
-        if life.torque_enable && (enable_edge || life.mode != self.mode_prev) {
-            // SAFETY: same volatile read contract; boot and the dispatcher
-            // own this byte, the kernel only reads it.
-            let data = unsafe { (&raw const (*p).telemetry.mode.data_flags).read_volatile() };
-            if !crate::data_state::allows(life.mode, data) {
-                self.faults.raise(faults::BIT_DATA, faults::CODE_DATA);
-            }
-        }
-        // Physics belt: a closed loop on a zero Ke runs open (the boxcar
-        // yields nothing, the current loop decouples nothing), whatever the
-        // flags say - a live write of 0 into a running loop stops it here.
-        if life.torque_enable && matches!(life.mode, Mode::Velocity | Mode::Position) && fc.ke_unset
-        {
-            self.faults.raise(faults::BIT_DATA, faults::CODE_DATA);
-        }
-
-        // Window from the PREVIOUS tick's command: this frame's scan sampled
-        // the period that command drove, so terminal and sign attribution
-        // stay correct across sign flips (bang-bang bench test pins this).
-        let ticks = window::drive_ticks(self.duty_q15, self.timing.pwm_arr);
-        let fwd = self.duty_q15 >= 0;
-        let sel = window::select(
-            self.decay,
-            ticks,
-            fc.i_window_min_ticks,
-            fc.v_window_min_ticks,
+        let ctl = Control::read(shared);
+        self.medium
+            .admit(&ctl.life, fc, shared, &mut self.faults, &mut self.fast);
+        self.cmd.lut_live = ctl.lut_live;
+        let meas = self.fast.measure(
+            &frame,
+            fc,
+            &self.cmd,
+            &mut self.faults,
+            &mut self.tel,
+            shared,
         );
-        let bias = if window::trough_is_brake(
-            self.decay,
-            ticks,
-            self.timing.pwm_arr,
-            fc.i_window_min_ticks,
-        ) {
-            self.bias.update(frame.current_trough)
-        } else {
-            self.bias.counts()
-        };
-        // SAFETY: sole-telemetry-writer contract (type doc); volatile store.
-        unsafe {
-            (&raw mut (*p).telemetry.sensors.current_bias_counts).write_volatile(bias);
-        }
-        let i_meas = window::i_from_frame(&frame, sel, fwd, bias);
-        if let Some(i) = i_meas {
-            self.i_meas_last = i.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
-        }
-        let oc_over = i_meas.map(|i| i.unsigned_abs() > fc.oc_trip_counts as u32);
-        if self.det.oc_sample(oc_over, fc.oc_trip_ticks) {
-            self.faults
-                .raise(faults::BIT_OVER_CURRENT, faults::CODE_OVER_CURRENT);
-        }
-
-        // IDENT: per-tick sample aligned to the window the PREVIOUS command
-        // drove - duty_q15 still holds that command here; i/vdiff hold
-        // last-valid through invalid windows (ident module doc).
-        // the taps read physical va - vb; a reversed motor makes that the
-        // negative of the logical drive direction every consumer expects
-        let vdiff =
-            window::vdiff_from_frame(&frame, sel).map(|v| if fc.drive_polarity { v } else { -v });
-        if let Some(vdiff) = vdiff {
-            self.vdiff_last = vdiff.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
-        }
-        self.bemf.sample(ticks, vdiff, i_meas);
-        // TEL emits HERE, on the fast path before the medium/slow branches:
-        // duty_q15 still holds the command whose window this frame's samples
-        // measured (the same previous-tick alignment the ident aggregate
-        // uses), and the sample lands at a near-constant tick offset.
-        if self.tel.active() {
-            let s = TelSample {
-                pos: frame.pos,
-                current: self.i_meas_last,
-                current_trough: frame.current_trough,
-                duty_q15: self.duty_q15,
-                vdiff: self.vdiff_last,
-                vbus: self.vbus.vbus_counts(),
-                current_raw: frame.current,
-                vmotor_a: frame.vmotor_a,
-                vmotor_b: frame.vmotor_b,
-                vbus_raw: frame.vbus_raw,
-                ntc_raw: frame.ntc_raw,
-                pos_lin_q4: pos_q4,
-                window_valid: i_meas.is_some(),
-                fault: self.faults.mask() != 0,
-            };
-            self.tel.on_tick(&s);
-        }
-
-        if let Some(agg) = self
-            .ident
-            .sample(self.i_meas_last, self.vdiff_last, self.duty_q15)
-        {
-            // SAFETY: sole-telemetry-writer contract (type doc); volatile
-            // per-field stores at the ident window boundary.
-            unsafe {
-                let d = &raw mut (*p).telemetry.ident;
-                (&raw mut (*d).i_mean_counts).write_volatile(agg.i_mean_counts);
-                (&raw mut (*d).i_min_counts).write_volatile(agg.i_min_counts);
-                (&raw mut (*d).i_max_counts).write_volatile(agg.i_max_counts);
-                (&raw mut (*d).vdiff_mean).write_volatile(agg.vdiff_mean);
-                (&raw mut (*d).duty_mean_q15).write_volatile(agg.duty_mean_q15);
-                (&raw mut (*d).agg_seq).write_volatile(agg.agg_seq);
-            }
-        }
-
-        let run = life.torque_enable && self.faults.mask() == 0;
-        if run != self.run_prev {
-            // both edges zero the loop chain; the enable edge additionally
-            // reseeds fusion at the measurement (torque-off tau_d is built
-            // from i_use = 0 fiction - a hand-moved shaft rails it and every
-            // enable would re-latch STALL via the collision check) and the
-            // profile at the fresh estimate - bumpless
-            if run {
-                self.fusion.seed(pos_q4);
-                self.traj.reseed(self.fusion.theta_q16());
-            }
-            self.cur.reset();
-            self.vel.reset();
-            self.ol.reset(fc.ol_floor_q15);
-            self.i_ref_cc = 0;
-            self.omega_ref_q16 = 0;
-            self.hold = false;
-            self.run_prev = run;
-        }
-        if run && life.mode != self.mode_prev {
-            // mode change mid-run: reference = estimate, at rest
-            self.traj.reseed(self.fusion.theta_q16());
-            self.ol.reset(fc.ol_floor_q15);
-            self.hold = false;
-        }
-        self.mode_prev = life.mode;
-
+        let run = self
+            .medium
+            .edges(&ctl, frame.pos, fc, shared, &self.faults, &mut self.fast);
         if medium {
-            // i_use: window-valid measurement, else the cached command - the
-            // observer never sees the validity flag (fusion contract). While
-            // disabled or in OpenLoop the cache is 0, so an invalid window
-            // predicts torque-free.
-            let i_use = i_meas.unwrap_or(self.i_ref_cc);
-            let omega_bemf =
-                self.bemf
-                    .close_half(mc.r_q12, mc.recip_ke_q, self.timing.recip_arr_q24);
-            self.fusion
-                .step(i_use, pos_q4, self.timing.dt_med_q32, &mc.fusion);
-            let theta_hat = self.fusion.theta_q16();
-            // The observer's omega keeps the rest-shaped consumers (stall
-            // verdict, thermometer gate): it is always there and reads
-            // small at rest, where the boxcar has no window at all.
-            let omega_pot = self.fusion.omega_q16();
-            let omega_hat = self.omega_sw.step(omega_bemf, omega_pot);
-
-            if run {
-                match life.mode {
-                    Mode::Position => {
-                        self.traj.step_position(life.goal_position, &mc.traj);
-                        // the interval this tick linearized in: same raw
-                        // sample, same torque-gated table as the FAST read
-                        let band_gain_q4 = if pos_lut_state == pos_lut::state::LIVE {
-                            shared.pos_lut_band_gain_q4(frame.pos)
-                        } else {
-                            pos_lut::GRID as u16
-                        };
-                        let out = position::step(
-                            self.traj.theta_star_q16(),
-                            self.traj.omega_star_q16(),
-                            theta_hat,
-                            band_gain_q4,
-                            &mc.position,
-                        );
-                        self.omega_ref_q16 = out.omega_ref_q16;
-                        self.hold = out.hold;
-                    }
-                    Mode::Velocity => {
-                        self.traj
-                            .step_velocity(life.goal_velocity, theta_hat, &mc.traj);
-                        self.omega_ref_q16 = self.traj.omega_star_q16();
-                        self.hold = false;
-                    }
-                    Mode::Current | Mode::OpenLoop => self.hold = false,
-                }
-            }
-
-            // limits fold; pinned = last command sat at a nonzero ceiling,
-            // in OpenLoop the duty ceiling held under the goal
-            let prev_lim = self.limits.i_lim_counts();
-            let pinned = if life.mode == Mode::OpenLoop {
-                self.ol.take_pinned()
-            } else {
-                prev_lim != 0 && self.i_ref_cc.unsigned_abs() >= prev_lim as u32
-            };
-            let permit_gen = shared.permit_gen();
-            if permit_gen != self.permit_gen {
-                self.permit_gen = permit_gen;
-                self.permit_ticks = PERMIT_LEASE_TICKS;
-            }
-            if !life.torque_enable {
-                self.permit_ticks = 0;
-            }
-            let permit = life.stall_permit && self.permit_ticks != 0;
-            let omega_abs_cps = omega_pot.unsigned_abs() >> 16;
-            let band = self.limits.fold(
-                pinned,
-                omega_abs_cps,
-                self.fusion.tau_d_counts().unsigned_abs(),
-                theta_hat >> 16,
-                permit,
-                &mc.limits,
+            self.medium.chain(
+                &frame,
+                &meas,
+                run,
+                &ctl,
+                &self.cfg,
+                &self.timing,
+                shared,
+                &mut self.faults,
+                &mut self.fast,
             );
-            self.i_band = band;
-            // the stall-safe duty lim x R / vbus: winding R alone, so it errs
-            // low by the bridge and shunt; unset R keeps it at the floor
-            self.ol_base_q15 = if mc.r_q12 == 0 {
-                fc.ol_floor_q15
-            } else {
-                let lim = if life.goal_duty >= 0 {
-                    band.hi
-                } else {
-                    band.lo
-                };
-                let v = q_mul_u(lim.unsigned_abs(), mc.r_q12 as u32, 12);
-                q_mul_u(v, self.vbus.recip_q15(), 15).min(fc.ol_floor_q15 as u32) as u16
-            };
-            if run && self.limits.stall_fault_pending() {
-                self.faults.raise(faults::BIT_STALL, faults::CODE_STALL);
-            }
-
-            if run {
-                match life.mode {
-                    // Parked: nothing drives, so the velocity loop must stop
-                    // too. omega_hat is the pot observer at rest (no window,
-                    // +-hundreds c/s of noise); left running, the PI
-                    // integrates that phantom error until i_ref pins at the
-                    // current limit, and pinned + slow
-                    // false-trips the stall detector (bench: CODE_STALL a few
-                    // seconds into a clean hold). Zero the command and drain
-                    // the integrator so it never winds and resumes bumplessly.
-                    Mode::Position if self.hold => {
-                        self.i_ref_cc = 0;
-                        self.vel.reset();
-                    }
-                    Mode::Velocity | Mode::Position => {
-                        self.i_ref_cc = self.vel.step(
-                            self.omega_ref_q16,
-                            omega_hat,
-                            self.traj.alpha_star_q16(),
-                            self.traj.omega_star_q16(),
-                            band,
-                            &mc.velocity,
-                        );
-                    }
-                    // clamped fresh at the FAST rate below
-                    Mode::Current => {}
-                    Mode::OpenLoop => self.i_ref_cc = 0,
-                }
-            }
-
-            self.vbus.step(frame.vbus_raw, fc.v_undervolt_counts);
-            // this tick's v_mean for the thermometer at SLOW (bemf
-            // RECIP_ARR contract)
-            let v_mean = vdiff.map(|vdiff| {
-                q_mul(
-                    ticks as i32 * vdiff,
-                    self.timing.recip_arr_q24 as i32,
-                    bemf::RECIP_ARR_SHIFT,
-                )
-            });
-
-            // raw-pot sanity screen runs in every mode, torque-off included
-            if self
-                .det
-                .sensor_sample(frame.pos, mc.sensor_delta_max, mc.sensor_bad_count)
-            {
-                self.faults.raise(faults::BIT_SENSOR, faults::CODE_SENSOR);
-            }
-            // tracking-error persistence: only meaningful with a live profile
-            let pos_err_over = run
-                && life.mode == Mode::Position
-                && self
-                    .traj
-                    .theta_star_q16()
-                    .saturating_sub(theta_hat)
-                    .unsigned_abs()
-                    > (mc.pos_error_counts as u32) << 16;
-            if self
-                .det
-                .pos_err_sample(pos_err_over, mc.pos_error_time_ticks)
-            {
-                self.faults
-                    .raise(faults::BIT_POSITION_ERROR, faults::CODE_POSITION_ERROR);
-            }
-
-            self.decim_slow += 1;
-            if self.decim_slow >= DECIM_SLOW {
-                self.decim_slow = 0;
-                self.permit_ticks = self.permit_ticks.saturating_sub(1);
-                // the LMS sample needs BOTH window paths valid
-                let (vm, therm_i) = match (v_mean, i_meas) {
-                    (Some(v), Some(i)) => (v, Some(i)),
-                    _ => (0, None),
-                };
-                let t_cc = self.thermal.step(
-                    vm,
-                    therm_i,
-                    omega_abs_cps,
-                    &mc.therm_gates,
-                    &mc.therm_anchor,
-                );
-                self.limits.update_derate(t_cc, &mc.limits);
-                if t_cc >= mc.limits.cutoff_cc {
-                    self.faults
-                        .raise(faults::BIT_OVER_TEMP, faults::CODE_OVER_TEMP);
-                }
-                // the rail tap samples drive or not, so a held sag never
-                // outlives the sag itself: ack clears once the rail is back
-                if self.vbus.vbus_counts() < fc.v_undervolt_counts {
-                    self.faults
-                        .raise(faults::BIT_UNDER_VOLT, faults::CODE_UNDER_VOLT);
-                }
-            }
-
-            // one closed side makes the band asymmetric; a zero limit closes
-            // both and is no endstop
-            let limit_flags = (pinned as u8 * limits::flag::CEILING)
-                | (self.limits.stalled() as u8 * limits::flag::YIELD)
-                | ((band.lo + band.hi != 0) as u8 * limits::flag::ENDSTOP)
-                | (permit as u8 * limits::flag::PERMIT);
-
-            // SAFETY: sole-telemetry-writer contract (type doc); volatile
-            // per-field stores, medium-boundary publish.
-            unsafe {
-                let e = &raw mut (*p).telemetry.estimates;
-                (&raw mut (*e).theta_hat_q16).write_volatile(theta_hat);
-                (&raw mut (*e).omega_hat_cps).write_volatile(omega_hat);
-                (&raw mut (*e).tau_d_counts).write_volatile(self.fusion.tau_d_counts());
-                (&raw mut (*e).i_lim_counts).write_volatile(self.limits.i_lim_counts());
-                (&raw mut (*e).t_winding_cc).write_volatile(self.thermal.t_cc());
-                (&raw mut (*e).vbus_counts).write_volatile(self.vbus.vbus_counts());
-                (&raw mut (*e).duty_applied_q15).write_volatile(self.duty_q15);
-                (&raw mut (*e).omega_bemf_cps)
-                    .write_volatile(bemf::omega_cps_i16(omega_bemf.unwrap_or(0)));
-                (&raw mut (*e).r_hat_q12).write_volatile(self.thermal.r_q12());
-                (&raw mut (*e).i_hat_counts).write_volatile(self.i_meas_last);
-                let m = &raw mut (*p).telemetry.mode;
-                (&raw mut (*m).mode_active).write_volatile(life.mode as u8);
-                (&raw mut (*m).fault_code).write_volatile(self.faults.code());
-                (&raw mut (*m).omega_hat_src).write_volatile(self.omega_sw.source() as u8);
-                (&raw mut (*p).telemetry.common.fault_flags).write_volatile(self.faults.mask());
-                (&raw mut (*p).telemetry.limits.limit_flags).write_volatile(limit_flags);
-            }
         }
-
-        // Re-gate after the medium chain: a fault raised above disables THIS
-        // tick's drive (the loop-reset bookkeeping catches up next tick).
-        let run = run && self.faults.mask() == 0;
-        let cmd = if !run {
-            self.duty_q15 = 0;
-            MotorCmd::Disabled
-        } else {
-            match life.mode {
-                Mode::OpenLoop => {
-                    // duty_max-clamped, ceilinged against the current band
-                    // above the window floor, raw at or under it; NO vbus
-                    // comp - identification wants unconfounded actuation
-                    let max = fc.ol_duty_max_q15 as i32;
-                    let goal = (life.goal_duty as i32).clamp(-max, max);
-                    // a start from zero duty is a reversal too: it restarts
-                    // from the floor like the run edge does
-                    if goal.signum() != (self.duty_q15 as i32).signum() {
-                        self.ol.reset(fc.ol_floor_q15);
-                    }
-                    let lim = if goal >= 0 {
-                        self.i_band.hi
-                    } else {
-                        self.i_band.lo
-                    };
-                    let i_abs = match i_meas {
-                        Some(i) => i.unsigned_abs(),
-                        None => 0,
-                    };
-                    let mag = self.ol.step(
-                        goal.unsigned_abs() as u16,
-                        i_abs,
-                        lim.unsigned_abs(),
-                        fc.ol_floor_q15,
-                        self.ol_base_q15,
-                    ) as i16;
-                    let mut duty = if goal < 0 { -mag } else { mag };
-                    // endstop: a collapsed band side forbids that sign of
-                    // current, and duty of the same sign is what drives it -
-                    // zero the outbound push, retreat passes (bench: an
-                    // open-loop sweep crashed the horn into the rail)
-                    let blocked =
-                        (self.i_band.hi == 0 && duty > 0) || (self.i_band.lo == 0 && duty < 0);
-                    if blocked {
-                        duty = 0;
-                    }
-                    self.duty_q15 = duty;
-                    // a zeroed push still coasts on its momentum into the
-                    // physical stop, so the wall brakes whatever the flag says
-                    if blocked || (duty == 0 && fc.ol_zero_brake) {
-                        // chip-side Drive{0, Slow} maps to coast; a winding
-                        // short must be commanded explicitly
-                        self.decay = DecayMode::Slow;
-                        MotorCmd::Brake
-                    } else {
-                        self.decay = fc.ol_decay;
-                        MotorCmd::Drive {
-                            duty: Effort(duty),
-                            decay: fc.ol_decay,
-                        }
-                    }
-                }
-                mode => {
-                    if mode == Mode::Current {
-                        // directional band: an endstop blocks only inward
-                        // goals; retreat clamps against the composed limit
-                        self.i_ref_cc = self.i_band.clamp(life.goal_current as i32);
-                    }
-                    if self.hold {
-                        // anti-hunt: park instead of dithering on friction;
-                        // the frozen loop resumes bumplessly on exit. The
-                        // winding short brakes a shaft that enters the band
-                        // at speed (Ke x omega / R, zero at rest, nothing
-                        // from the rail). On friction alone a fast arrival
-                        // leaves the far edge, and the wake kicks it back
-                        // through at the current limit: a limit cycle.
-                        self.duty_q15 = 0;
-                        MotorCmd::Brake
-                    } else if self.i_ref_cc == 0
-                        && i_meas.is_none()
-                        && (self.i_band.hi == 0 || self.i_band.lo == 0)
-                    {
-                        // endstop-clamped ref with no window: the
-                        // honest-zero feed below makes e = 0, freezing the
-                        // PI at whatever sub-floor duty it unwound to -
-                        // stalled at an endstop that grinds the gears
-                        // forever (bench: 18% duty held into the rail).
-                        // Brake shorts the winding, passively holding
-                        // against whatever momentum remains; it must be
-                        // commanded explicitly - chip-side Drive{0, Slow}
-                        // maps to coast. Scoped to a collapsed band so a
-                        // transient i_ref zero crossing in normal travel
-                        // can never reset the loop mid-reversal.
-                        self.cur.reset();
-                        self.duty_q15 = 0;
-                        self.decay = DecayMode::Slow;
-                        MotorCmd::Brake
-                    } else {
-                        // undervolt-floored vbus: the same floor `vbus.step`
-                        // applied to the reciprocal, so (vbus, recip) stay
-                        // the contract pair even before the first seed
-                        let vbus_eff = self.vbus.vbus_counts().max(fc.v_undervolt_counts);
-                        // An invalid window only happens below the sampling
-                        // floor, where the duty is too small to push real
-                        // current: 0 is the honest estimate THERE, and it
-                        // lets the PI lift off zero duty - a strict freeze
-                        // would deadlock (no duty -> no window -> e = 0 ->
-                        // no duty). OC and the estimators keep the strict
-                        // validity view.
-                        let i_loop = Some(i_meas.unwrap_or(0));
-                        // Ke decoupling rides the profile, not an estimate
-                        // (current.rs step doc); Current mode has no profile
-                        let omega_ff_q16 = match mode {
-                            Mode::Velocity | Mode::Position => self.traj.omega_star_q16(),
-                            Mode::Current | Mode::OpenLoop => 0,
-                        };
-                        let duty = self.cur.step(
-                            self.i_ref_cc,
-                            i_loop,
-                            omega_ff_q16,
-                            vbus_eff,
-                            self.vbus.recip_q15(),
-                            &fc.current,
-                        );
-                        self.duty_q15 = duty;
-                        // closed-loop decay is fixed Slow (spec: config enum
-                        // exists for OpenLoop identification only)
-                        self.decay = DecayMode::Slow;
-                        MotorCmd::Drive {
-                            duty: Effort(duty),
-                            decay: DecayMode::Slow,
-                        }
-                    }
-                }
-            }
-        };
-        // logical (+duty moves counts up) -> wiring, on the output only:
-        // duty_q15 and the published duty stay logical
-        let cmd = match cmd {
-            MotorCmd::Drive { duty, decay } if !fc.drive_polarity => MotorCmd::Drive {
-                duty: Effort(duty.0.saturating_neg()),
-                decay,
-            },
-            cmd => cmd,
-        };
+        self.cmd = self.medium.command(&ctl, fc, &self.faults);
+        let out = self.fast.drive(&meas, fc, &self.cmd, &self.faults);
         let (_sensors, motor) = self.io.parts();
-        motor.write(cmd);
+        motor.write(out);
     }
 }
 

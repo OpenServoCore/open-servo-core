@@ -4,9 +4,12 @@
 //! behavior against a crude integer plant.
 
 use super::*;
-use crate::estimator::OmegaSource;
+use crate::estimator::{OmegaSource, bemf, window};
+use crate::math::q_mul;
+use crate::pos_lut;
 use crate::regions::config::{DecaySelect, StallResponse};
-use crate::traits::Sensors;
+use crate::regions::control::Mode;
+use crate::traits::{DecayMode, MotorCmd, Sensors};
 use crate::{ControlTable, RegionStorage, Shared};
 
 const BIAS: u16 = 2048;
@@ -162,12 +165,12 @@ fn frame(pos: u16, current: u16) -> SensorFrame {
 fn settle<T: TelStream>(k: &mut Kernel<FakeIo, T>, sh: &Shared, f: SensorFrame) {
     let goal = sh.table.with(|t| t.control.lifecycle.goal_duty);
     for _ in 0..1000 {
-        if k.duty_q15 == goal {
+        if k.fast.duty_q15 == goal {
             return;
         }
         k.on_tick(f, sh);
     }
-    panic!("duty {} never reached the goal {goal}", k.duty_q15);
+    panic!("duty {} never reached the goal {goal}", k.fast.duty_q15);
 }
 
 /// Ticks `f` until a MEDIUM pass has just run: the next tick opens a boxcar
@@ -203,7 +206,7 @@ fn torque_off_disables_and_estimators_still_track() {
     }
     assert!(matches!(last_cmd(&k), MotorCmd::Disabled));
     // boot seeded the fusion at the first measurement
-    assert_eq!(k.fusion.theta_q16(), 2500 << 16);
+    assert_eq!(k.medium.fusion.theta_q16(), 2500 << 16);
     // the pot moves while disabled: the observer follows it anyway (the
     // live b_i bleed at the plant's saturated B settles the 1500-count
     // step in ~920 medium ticks, integer-sim verified)
@@ -211,11 +214,14 @@ fn torque_off_disables_and_estimators_still_track() {
         k.on_tick(frame(1000, BIAS), &sh);
     }
     assert!(matches!(last_cmd(&k), MotorCmd::Disabled));
-    let err = (k.fusion.theta_q16() - (1000 << 16)).abs();
-    assert!(err < 5 << 16, "theta_hat={}", k.fusion.theta_q16());
+    let err = (k.medium.fusion.theta_q16() - (1000 << 16)).abs();
+    assert!(err < 5 << 16, "theta_hat={}", k.medium.fusion.theta_q16());
     // published while disabled
     sh.table.with(|t| {
-        assert_eq!(t.telemetry.estimates.theta_hat_q16, k.fusion.theta_q16());
+        assert_eq!(
+            t.telemetry.estimates.theta_hat_q16,
+            k.medium.fusion.theta_q16()
+        );
     });
 }
 
@@ -243,7 +249,7 @@ fn enable_edge_reseeds_without_transient() {
             MotorCmd::Coast => panic!("coast is never commanded"),
         }
     }
-    assert_eq!(k.traj.theta_star_q16(), 2000 << 16);
+    assert_eq!(k.medium.traj.theta_star_q16(), 2000 << 16);
 }
 
 #[test]
@@ -262,9 +268,9 @@ fn enable_edge_clears_hand_era_tau_d() {
         k.on_tick(frame(1000, BIAS), &sh);
     }
     assert!(
-        k.fusion.tau_d_counts().unsigned_abs() > 200,
+        k.medium.fusion.tau_d_counts().unsigned_abs() > 200,
         "precondition: hand motion railed tau_d, got {}",
-        k.fusion.tau_d_counts()
+        k.medium.fusion.tau_d_counts()
     );
     // enable at rest: fusion reseeds, so the collision check never sees the
     // stale disturbance and STALL must not latch
@@ -277,7 +283,7 @@ fn enable_edge_clears_hand_era_tau_d() {
         k.on_tick(frame(1500, BIAS), &sh);
     }
     assert_eq!(k.faults.mask(), 0, "stale tau_d re-latched STALL");
-    assert!(k.fusion.tau_d_counts().unsigned_abs() < 50);
+    assert!(k.medium.fusion.tau_d_counts().unsigned_abs() < 50);
 }
 
 #[test]
@@ -339,7 +345,10 @@ fn permit_rig(sh: &Shared) -> Kernel<FakeIo> {
     for _ in 0..400 {
         k.on_tick(frame(PAST_WALL, BIAS), sh);
     }
-    assert_eq!(k.i_band.hi, 0, "the endstop is closed before any permit");
+    assert_eq!(
+        k.medium.i_band.hi, 0,
+        "the endstop is closed before any permit"
+    );
     k
 }
 
@@ -352,7 +361,7 @@ fn write_permit(sh: &Shared) {
 }
 
 fn permit_live(k: &Kernel<FakeIo>) -> bool {
-    k.i_band.hi != 0
+    k.medium.i_band.hi != 0
 }
 
 /// Ticks at the wall until the lease lapses; the ticks it took.
@@ -490,7 +499,7 @@ fn limit_flags_name_the_governor() {
         assert_eq!(limit_flags(&sh), flag::CEILING);
         k.on_tick(frame(2000, BIAS + 290), &sh);
     }
-    assert!(k.duty_q15 < 8000, "governed");
+    assert!(k.fast.duty_q15 < 8000, "governed");
 
     // yield: Current mode pinned at the limit on a still shaft folds, then
     // a goal under the fold leaves only the fold standing
@@ -739,7 +748,7 @@ fn openloop_zero_duty_brakes_when_flag_set() {
     let mut k = kernel();
     k.on_tick(frame(2000, BIAS), &sh);
     assert!(matches!(last_cmd(&k), MotorCmd::Brake));
-    assert_eq!(k.duty_q15, 0);
+    assert_eq!(k.fast.duty_q15, 0);
 }
 
 #[test]
@@ -760,7 +769,7 @@ fn openloop_endstop_brakes_instead_of_coasting() {
         "expected brake at the wall, got {:?}",
         last_cmd(&k)
     );
-    assert_eq!(k.duty_q15, 0);
+    assert_eq!(k.fast.duty_q15, 0);
     sh.table.with_mut(|t| t.control.lifecycle.goal_duty = -8000);
     k.on_tick(frame(4095, BIAS), &sh);
     match last_cmd(&k) {
@@ -816,12 +825,12 @@ fn reversed_polarity_endstop_stays_positional() {
         k.on_tick(frame(4095, BIAS), &sh);
     }
     assert!(matches!(last_cmd(&k), MotorCmd::Brake));
-    assert_eq!(k.duty_q15, 0);
+    assert_eq!(k.fast.duty_q15, 0);
     sh.table.with_mut(|t| t.control.lifecycle.goal_duty = -8000);
     for _ in 0..400 {
         k.on_tick(frame(4095, BIAS), &sh);
     }
-    assert_eq!(k.duty_q15, -8000);
+    assert_eq!(k.fast.duty_q15, -8000);
     assert_eq!(written_duty(&k), 8000);
     assert_eq!(k.faults.mask(), 0);
 }
@@ -839,7 +848,7 @@ fn reversed_polarity_negates_the_openloop_write() {
         k.on_tick(frame(2000, BIAS), &sh);
     }
     assert_eq!(written_duty(&k), -8000);
-    assert_eq!(k.duty_q15, 8000);
+    assert_eq!(k.fast.duty_q15, 8000);
     sh.table
         .with(|t| assert_eq!(t.telemetry.estimates.duty_applied_q15, 8000));
 }
@@ -855,8 +864,8 @@ fn reversed_polarity_negates_the_closed_loop_write() {
     for _ in 0..20 {
         k.on_tick(frame(2000, BIAS), &sh);
     }
-    assert!(k.duty_q15 > 0, "logical duty={}", k.duty_q15);
-    assert_eq!(written_duty(&k), -k.duty_q15);
+    assert!(k.fast.duty_q15 > 0, "logical duty={}", k.fast.duty_q15);
+    assert_eq!(written_duty(&k), -k.fast.duty_q15);
 }
 
 #[test]
@@ -869,15 +878,15 @@ fn reversed_polarity_negates_vdiff() {
     // the second tick samples the window the first tick's duty drove
     k.on_tick(frame(2000, BIAS), &sh);
     k.on_tick(frame(2000, BIAS), &sh);
-    assert_eq!(k.vdiff_last, -(3000 - 40));
+    assert_eq!(k.fast.vdiff_last, -(3000 - 40));
     // the rewire lands at the next medium boundary
     write_config(&sh, |t| t.config.limits.drive_polarity = true);
     while k.decim_med != DECIM_MED - 1 {
         k.on_tick(frame(2000, BIAS), &sh);
-        assert_eq!(k.vdiff_last, -(3000 - 40));
+        assert_eq!(k.fast.vdiff_last, -(3000 - 40));
     }
     k.on_tick(frame(2000, BIAS), &sh);
-    assert_eq!(k.vdiff_last, 3000 - 40);
+    assert_eq!(k.fast.vdiff_last, 3000 - 40);
 }
 
 #[test]
@@ -891,7 +900,7 @@ fn current_mode_clamps_goal_to_i_lim() {
     });
     let mut k = kernel();
     k.on_tick(frame(2000, BIAS), &sh);
-    assert_eq!(k.i_ref_cc, 1200);
+    assert_eq!(k.medium.i_ref_cc, 1200);
     assert!(matches!(
         last_cmd(&k),
         MotorCmd::Drive {
@@ -902,7 +911,7 @@ fn current_mode_clamps_goal_to_i_lim() {
     sh.table
         .with_mut(|t| t.control.lifecycle.goal_current = -5000);
     k.on_tick(frame(2000, BIAS), &sh);
-    assert_eq!(k.i_ref_cc, -1200);
+    assert_eq!(k.medium.i_ref_cc, -1200);
 }
 
 #[test]
@@ -941,8 +950,14 @@ fn publishes_land_in_the_table() {
         assert_eq!(t.telemetry.sensors.pos, 1234);
         assert_eq!(t.telemetry.sensors.current, 2100);
         assert_eq!(t.telemetry.sensors.vmotor_a, 3000);
-        assert_eq!(t.telemetry.estimates.theta_hat_q16, k.fusion.theta_q16());
-        assert_eq!(t.telemetry.estimates.omega_hat_cps, k.fusion.omega_q16());
+        assert_eq!(
+            t.telemetry.estimates.theta_hat_q16,
+            k.medium.fusion.theta_q16()
+        );
+        assert_eq!(
+            t.telemetry.estimates.omega_hat_cps,
+            k.medium.fusion.omega_q16()
+        );
         assert_eq!(t.telemetry.estimates.i_lim_counts, 1200);
         assert_eq!(t.telemetry.estimates.duty_applied_q15, 0);
         assert_eq!(t.telemetry.estimates.vbus_counts, 3000);
@@ -1054,7 +1069,7 @@ fn drifting_trough_bias_leaves_i_meas_flat() {
         f.current_trough = b;
         k.on_tick(f, &sh);
         if n >= 300 {
-            let i = k.i_meas_last as i32;
+            let i = k.fast.i_meas_last as i32;
             assert!((i - 300).abs() <= 5, "tick {n}: i_meas {i}, bias {b}");
         }
     }
@@ -1224,13 +1239,13 @@ fn velocity_feedback_switches_to_the_bemf_and_back() {
     // the observer's omega
     for _ in 0..50 {
         k.on_tick(frame(2000, BIAS + 100), &sh);
-        assert_eq!(published(&sh), (k.fusion.omega_q16(), 0));
+        assert_eq!(published(&sh), (k.medium.fusion.omega_q16(), 0));
     }
     k.on_tick(frame(2000, BIAS + 100), &sh);
     let bemf = sh.table.with(|t| t.telemetry.estimates.omega_bemf_cps) as i32;
     assert!(bemf > 0);
     assert_eq!(published(&sh), (bemf << 16, 1));
-    assert_eq!(k.omega_sw.source(), OmegaSource::Bemf);
+    assert_eq!(k.medium.omega_sw.source(), OmegaSource::Bemf);
     // torque off: tick 51 still measures the last drive; the half closed
     // at tick 60 voids and the source rides the held boxcar through that
     // one result, then falls back at tick 70
@@ -1243,7 +1258,7 @@ fn velocity_feedback_switches_to_the_bemf_and_back() {
     for _ in 0..10 {
         k.on_tick(frame(2000, BIAS + 100), &sh);
     }
-    assert_eq!(published(&sh), (k.fusion.omega_q16(), 0));
+    assert_eq!(published(&sh), (k.medium.fusion.omega_q16(), 0));
 }
 
 // --- Current-loop feedforward ---------------------------------------------
@@ -1267,12 +1282,12 @@ fn ke_feedforward_rides_the_profile_never_an_estimate() {
     for _ in 0..1000 {
         k.on_tick(frame(2000, BIAS), &sh);
     }
-    assert_eq!(k.traj.omega_star_q16(), 1600 << 16);
+    assert_eq!(k.medium.traj.omega_star_q16(), 1600 << 16);
     // ke 0.0625 vcounts per c/s * 1600 c/s = 100 vcounts on a 3000 rail
     let u_ff = q_mul(1600 << 16, 256, 28);
     assert_eq!(u_ff, 100);
-    let expect = q_mul(u_ff, k.vbus.recip_q15() as i32, 15) as i16;
-    assert_eq!(k.duty_q15, expect);
+    let expect = q_mul(u_ff, k.medium.vbus.recip_q15() as i32, 15) as i16;
+    assert_eq!(k.fast.duty_q15, expect);
     assert!((expect as i32 - 1092).abs() <= 1, "duty={expect}");
     // Current mode: no profile, no feed - even with the shaft spinning
     // (the pot observer would read ~2000 c/s here)
@@ -1284,11 +1299,11 @@ fn ke_feedforward_rides_the_profile_never_an_estimate() {
         k.on_tick(frame(1000 + n / 10, BIAS), &sh);
     }
     assert!(
-        k.fusion.omega_q16() > 1000 << 16,
+        k.medium.fusion.omega_q16() > 1000 << 16,
         "pot omega {}",
-        k.fusion.omega_q16() >> 16
+        k.medium.fusion.omega_q16() >> 16
     );
-    assert_eq!(k.duty_q15, 0);
+    assert_eq!(k.fast.duty_q15, 0);
 }
 
 // --- Closed-loop plant ----------------------------------------------------
@@ -1361,7 +1376,7 @@ impl Plant {
 
 fn run_plant(k: &mut Kernel<FakeIo>, sh: &Shared, plant: &mut Plant, ticks: u32) {
     for _ in 0..ticks {
-        let f = plant.step(k.duty_q15);
+        let f = plant.step(k.fast.duty_q15);
         k.on_tick(f, sh);
     }
 }
@@ -1392,11 +1407,11 @@ fn position_step_settles_without_limit_cycle() {
         "settled at {}",
         plant.pos()
     );
-    assert_eq!(k.traj.theta_star_q16(), 3000 << 16, "profile landed");
+    assert_eq!(k.medium.traj.theta_star_q16(), 3000 << 16, "profile landed");
     // trailing window: position parked, motor overwhelmingly braked
     let (mut lo, mut hi, mut parked) = (i32::MAX, i32::MIN, 0u32);
     for _ in 0..2000 {
-        let f = plant.step(k.duty_q15);
+        let f = plant.step(k.fast.duty_q15);
         k.on_tick(f, &sh);
         lo = lo.min(plant.pos());
         hi = hi.max(plant.pos());
@@ -1426,7 +1441,7 @@ fn velocity_mode_tracks_a_ramp() {
         run_plant(&mut k, &sh, &mut plant, 4000); // 200 ms per segment
     }
     assert_eq!(k.faults.mask(), 0);
-    let omega_hat = k.fusion.omega_q16() >> 16;
+    let omega_hat = k.medium.fusion.omega_q16() >> 16;
     assert!((omega_hat - 2000).abs() <= 300, "omega_hat={omega_hat}");
     assert!(
         (plant.omega_cps - 2000).abs() <= 300,
@@ -1458,7 +1473,7 @@ fn hard_wall_stall_yields() {
     let mut saw_fold = false;
     for _ in 0..24_000 {
         run_plant(&mut k, &sh, &mut plant, 1);
-        if k.i_ref_cc == 1200 {
+        if k.medium.i_ref_cc == 1200 {
             saw_full = true;
         }
         let mut lim = 0u16;
@@ -1517,7 +1532,7 @@ fn hold_parks_releases_and_reparks() {
     let mut reparked = false;
     for _ in 0..20_000u32 {
         run_plant(&mut k, &sh, &mut plant, 1);
-        let moving = k.traj.omega_star_q16() != 0;
+        let moving = k.medium.traj.omega_star_q16() != 0;
         if moving {
             saw_move = true;
             assert!(!matches!(last_cmd(&k), MotorCmd::Brake), "park mid-move");
@@ -1573,7 +1588,7 @@ fn hold_stays_parked_under_pot_noise() {
     let mut rng: u32 = 0xdead_beef;
     let (mut parked, mut lo, mut hi) = (0u32, i32::MAX, i32::MIN);
     for _ in 0..40_000 {
-        let mut f = plant.step(k.duty_q15);
+        let mut f = plant.step(k.fast.duty_q15);
         rng = rng.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
         let n = ((rng >> 24) as i32 % 7) - 3;
         f.pos = (f.pos as i32 + n).clamp(0, 4095) as u16;
@@ -1601,8 +1616,8 @@ fn parks(sh: &Shared, raw: u16, goal: i32) -> bool {
         k.on_tick(frame(raw, BIAS), sh);
     }
     assert_eq!(k.faults.mask(), 0);
-    assert_eq!(k.traj.theta_star_q16(), goal << 16, "profile landed");
-    k.hold
+    assert_eq!(k.medium.traj.theta_star_q16(), goal << 16, "profile landed");
+    k.medium.hold
 }
 
 /// Local gain 26/16 over raw 1600..2240: raw 1924 linearizes to 2126.5,
@@ -1646,15 +1661,15 @@ fn hold_freezes_and_drains_the_velocity_loop() {
     let mut k = kernel();
     let mut plant = Plant::new(1990);
     run_plant(&mut k, &sh, &mut plant, 20_000);
-    assert!(k.hold, "never parked");
+    assert!(k.medium.hold, "never parked");
     let mut rng: u32 = 0xdead_beef;
     for _ in 0..20_000 {
-        let mut f = plant.step(k.duty_q15);
+        let mut f = plant.step(k.fast.duty_q15);
         rng = rng.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
         f.pos = (f.pos as i32 + ((rng >> 24) as i32 % 7) - 3).clamp(0, 4095) as u16;
         k.on_tick(f, &sh);
-        if k.hold {
-            assert_eq!(k.i_ref_cc, 0, "parked with a current command");
+        if k.medium.hold {
+            assert_eq!(k.medium.i_ref_cc, 0, "parked with a current command");
         }
     }
     // pushed out of the band: the first velocity step after the park is a
@@ -1662,7 +1677,7 @@ fn hold_freezes_and_drains_the_velocity_loop() {
     plant.theta_q16 -= 60i64 << 16;
     for _ in 0..2000 {
         run_plant(&mut k, &sh, &mut plant, 1);
-        if k.decim_med == 0 && !k.hold {
+        if k.decim_med == 0 && !k.medium.hold {
             let (vg, omega_hat) = sh.table.with(|t| {
                 let v = &t.config.loop_velocity;
                 let m = &t.calib.motor;
@@ -1679,15 +1694,15 @@ fn hold_freezes_and_drains_the_velocity_loop() {
                 )
             });
             let fresh = VelocityLoop::new().step(
-                k.omega_ref_q16,
+                k.medium.omega_ref_q16,
                 omega_hat,
-                k.traj.alpha_star_q16(),
-                k.traj.omega_star_q16(),
-                k.i_band,
+                k.medium.traj.alpha_star_q16(),
+                k.medium.traj.omega_star_q16(),
+                k.medium.i_band,
                 &vg,
             );
             assert_ne!(fresh, 0, "the wake must command something");
-            assert_eq!(k.i_ref_cc, fresh, "the hold left integrator charge");
+            assert_eq!(k.medium.i_ref_cc, fresh, "the hold left integrator charge");
             return;
         }
     }
@@ -1719,11 +1734,11 @@ fn current_mode_endstop_unwinds_duty_to_zero() {
     // past the wall the endstop zeroes i_ref; the loop must unwind ALL the
     // way to zero, not freeze at the sub-floor duty the honest-zero feed
     // leaves behind (bench: 18% duty held grinding into the rail)
-    assert_eq!(k.duty_q15, 0, "duty froze above zero at the wall");
+    assert_eq!(k.fast.duty_q15, 0, "duty froze above zero at the wall");
     let mut zero = 0u32;
     for _ in 0..2000 {
         run_plant(&mut k, &sh, &mut plant, 1);
-        if k.duty_q15 == 0 {
+        if k.fast.duty_q15 == 0 {
             zero += 1;
         }
     }
@@ -1760,7 +1775,7 @@ fn velocity_mode_brakes_at_the_soft_wall() {
         run_plant(&mut k, &sh, &mut plant, 1);
         lo = lo.min(plant.pos());
         hi = hi.max(plant.pos());
-        star_max = star_max.max(k.traj.omega_star_q16());
+        star_max = star_max.max(k.medium.traj.omega_star_q16());
     }
     assert!(hi - lo <= 4, "limit cycle at the wall: spread {}", hi - lo);
     assert!(
@@ -1801,11 +1816,11 @@ fn openloop_endstop_zeroes_outbound_duty() {
         "wall not respected: {}",
         plant.pos()
     );
-    assert_eq!(k.duty_q15, 0, "outbound duty still firing at the wall");
+    assert_eq!(k.fast.duty_q15, 0, "outbound duty still firing at the wall");
     // retreat duty applies untouched and drives back off the wall
     sh.table.with_mut(|t| t.control.lifecycle.goal_duty = -8000);
     run_plant(&mut k, &sh, &mut plant, 2_000);
-    assert_eq!(k.duty_q15, -8000, "retreat from the wall blocked");
+    assert_eq!(k.fast.duty_q15, -8000, "retreat from the wall blocked");
     // mirrored at the min wall, crossed in free flight like the top one
     write_config(&sh, |t| t.config.pos_limits.pos_min_soft_counts = 500);
     run_plant(&mut k, &sh, &mut plant, 25_000);
@@ -1814,10 +1829,13 @@ fn openloop_endstop_zeroes_outbound_duty() {
         "min wall not respected: {}",
         plant.pos()
     );
-    assert_eq!(k.duty_q15, 0, "outbound duty still firing at the min wall");
+    assert_eq!(
+        k.fast.duty_q15, 0,
+        "outbound duty still firing at the min wall"
+    );
     sh.table.with_mut(|t| t.control.lifecycle.goal_duty = 8000);
     run_plant(&mut k, &sh, &mut plant, 5_000);
-    assert_eq!(k.duty_q15, 8000, "retreat from the min wall blocked");
+    assert_eq!(k.fast.duty_q15, 8000, "retreat from the min wall blocked");
     assert!(plant.pos() > 600, "never drove off the min wall");
     assert_eq!(k.faults.mask(), 0);
 }
@@ -1839,7 +1857,7 @@ fn position_step_survives_tick_deletion() {
     // duty (tick-indexed contract: dilation, never compensation)
     let mut rng: u32 = 0x1357_9bdf;
     for _ in 0..40_000 {
-        let f = plant.step(k.duty_q15);
+        let f = plant.step(k.fast.duty_q15);
         rng = rng.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
         if !rng.is_multiple_of(10) {
             k.on_tick(f, &sh);
@@ -1854,7 +1872,7 @@ fn position_step_survives_tick_deletion() {
     // still parks: trailing spread stays flat
     let (mut lo, mut hi) = (i32::MAX, i32::MIN);
     for _ in 0..2000 {
-        let f = plant.step(k.duty_q15);
+        let f = plant.step(k.fast.duty_q15);
         k.on_tick(f, &sh);
         lo = lo.min(plant.pos());
         hi = hi.max(plant.pos());
