@@ -1,14 +1,15 @@
 //! The assembled kernel (spec "on_tick skeleton"): one `on_tick` per PWM
 //! period carries all three rates - FAST every tick (`fast`: sensor
 //! publish, window select, OC trip, back-EMF sums, TEL, ident, current PI,
-//! motor write), MEDIUM every DECIM_MED ticks (`medium`: CONTROL, the
-//! edges, fusion, trajectory, position/velocity, limits, vbus/bemf,
-//! detectors, estimates publish), SLOW every DECIM_SLOW medium ticks inside
-//! `medium` (thermometer, derate, undervolt/overtemp). The medium half
-//! leaves the fast half a `fast::Command`; the fast measurement reaches the
-//! medium step of the same tick as `fast::Measured`. Only the medium half
-//! reads CONTROL, so a host write (torque, mode, goals) takes effect at the
-//! next medium boundary. Identification aggregates ride their own
+//! motor write), MEDIUM once per DECIM_MED-tick period, spread over its
+//! ticks one phase each (`medium`, `phase`: CONTROL and the edges, fusion,
+//! trajectory and position, limits, velocity, vbus and detectors, slow,
+//! publishes), SLOW every DECIM_SLOW periods inside `medium` (thermometer,
+//! derate, undervolt/overtemp). The medium half leaves the fast half a
+//! `fast::Command`; the fast measurement reaches the medium phase of the
+//! same tick as `fast::Measured`. Only the CONTROL phase reads CONTROL, so
+//! a host write (torque, mode, goals) takes effect at the next period's
+//! CONTROL phase. Identification aggregates ride their own
 //! /16 fast-tick window (`ident`), independent of DECIM_MED. Tick-indexed
 //! by design: a missed tick dilates time, nothing compensates and nothing
 //! reads a wall clock. CONFIG and CALIB reach the tick through the kernel's
@@ -29,6 +30,7 @@ pub mod velocity;
 
 pub use current::{CurrentGains, CurrentLoop};
 pub use limits::{IBand, LimitCfg, LimitState};
+pub use medium::phase;
 pub use position::{PosOut, PositionCfg};
 pub use trajectory::{TrajCfg, TrajGen};
 pub use velocity::{VelocityGains, VelocityLoop};
@@ -80,7 +82,7 @@ pub struct KernelTiming {
 /// this ISR mid-read, so the kernel only ever reads those - volatile via
 /// `region_ptr` (`Shared::pos_lut_q4` for the array), never forming `&T`,
 /// cross-field tearing accepted (each field is independently sane). CONTROL
-/// is read once per medium tick; CONFIG and CALIB only into `cfg`, when
+/// is read once per period; CONFIG and CALIB only into `cfg`, when
 /// `Shared::config_gen` moved. The kernel is the sole writer of TELEMETRY
 /// sensors/estimates/mode/limits (`data_flags` excepted: boot and dispatch
 /// write it, the kernel reads) and the `fault_flags` byte; TELEMETRY
@@ -92,7 +94,8 @@ pub struct Kernel<I: ControlIo, T: TelStream = ()> {
     cfg: KernelConfig,
     /// The `Shared::config_gen` value `cfg` was built at.
     config_gen: u8,
-    decim_med: u8,
+    /// The medium phase the next tick runs (`medium::phase`).
+    phase: u8,
     booted: bool,
     /// Shared by both halves: a raise on either disables the same tick's
     /// drive.
@@ -117,10 +120,9 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             timing,
             cfg: KernelConfig::default(),
             config_gen: 0,
-            // primed so the FIRST tick runs the full medium+slow chain: the
-            // configuration and the vbus reciprocal exist before any
-            // consumer sees them
-            decim_med: DECIM_MED - 1,
+            // the FIRST tick runs the CONTROL phase: the configuration and
+            // the seeds exist before any other phase sees them
+            phase: medium::phase::CONTROL,
             booted: false,
             faults: faults::FaultLatch::new(),
             fast: Fast::new(timing.pwm_arr),
@@ -173,10 +175,10 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
 
     /// Must complete well inside the kernel period (~50 us at 20 kHz).
     pub fn on_tick(&mut self, frame: SensorFrame, shared: &Shared) {
-        self.decim_med += 1;
-        let medium = self.decim_med >= DECIM_MED;
-        if medium {
-            self.decim_med = 0;
+        let phase = self.phase;
+        self.phase = if phase + 1 < DECIM_MED { phase + 1 } else { 0 };
+        // the configuration the CONTROL phase's tick measures and drives with
+        if phase == medium::phase::CONTROL {
             let config_gen = shared.config_gen();
             if !self.booted {
                 self.boot(&frame, shared, config_gen);
@@ -192,16 +194,16 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             &mut self.tel,
             shared,
         );
-        if medium {
-            self.cmd = self.medium.step(
-                &frame,
-                &meas,
-                &self.cfg,
-                shared,
-                &mut self.faults,
-                &mut self.fast,
-            );
-        }
+        self.medium.step(
+            phase,
+            &frame,
+            &meas,
+            &self.cfg,
+            shared,
+            &mut self.faults,
+            &mut self.fast,
+            &mut self.cmd,
+        );
         let out = self
             .fast
             .drive(&meas, &self.cfg.fast, &self.cmd, &self.faults);

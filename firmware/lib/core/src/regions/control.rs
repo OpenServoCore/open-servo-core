@@ -23,7 +23,7 @@ pub enum BootMode {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Block)]
+#[derive(Copy, Clone, Default, Block)]
 #[ct_block(hooks = crate::regions::hooks::ControlTableHookEvents)]
 pub struct ControlLifecycle {
     pub torque_enable: bool,
