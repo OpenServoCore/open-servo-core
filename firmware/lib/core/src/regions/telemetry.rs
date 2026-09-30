@@ -135,8 +135,9 @@ pub struct TelemetrySensors {
 /// sum>>4, arithmetic); `agg_seq` increments per window so the host pairs a
 /// consistent set. Current fields are SIGNED bias-subtracted counts - the
 /// fitter's domain. Ticks with an invalid window contribute the last valid
-/// current/vdiff sample, not zero (kernel/ident.rs doc). Published only
-/// while CONTROL `ident_agg` is set; off, the block holds its last window.
+/// current/vdiff sample, not zero, while the drive pushes; with nothing
+/// driving the current reads 0 (kernel/ident.rs doc). Published only while
+/// CONTROL `ident_agg` is set; off, the block holds its last window.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct TelemetryIdent {
