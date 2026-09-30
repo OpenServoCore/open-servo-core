@@ -149,7 +149,8 @@ enum Cmd {
     /// One ping: model, firmware, the ALERT bit.
     Ping,
     /// Identity + health from the common register block (protocol sec 5.4),
-    /// then the data state and the plant stamp verdict.
+    /// then the data state, the plant stamp verdict and the servo's own
+    /// health (protocol sec 5.9).
     Status,
     /// Zero the telemetry transport counters (rw-clear).
     Clear {
@@ -579,7 +580,34 @@ fn status(c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
         h.fault_flags, h.config_dirty, h.trim_steps, h.crc_fail_count, h.framing_drop_count,
     );
     let d = state::descriptor(c, id)?;
-    state::report(c, id, &d)
+    state::report(c, id, &d)?;
+    println!("{}", health_line(c, id, &d)?);
+    Ok(())
+}
+
+/// The health block (protocol sec 5.9) in one line. Firmware without it
+/// reads 0 there: the block sits in bytes that were reserved.
+fn health_line<P: osc_client::pipe::Pipe>(
+    c: &mut Client<P>,
+    id: Id,
+    d: &descriptor::Descriptor,
+) -> Result<String> {
+    let mut read = |name: &str| -> Result<u16> {
+        let f = descriptor::field(d, name)?;
+        let b = c.read(id, f.addr, 2)?;
+        match b.as_slice() {
+            [lo, hi, ..] => Ok(u16::from_le_bytes([*lo, *hi])),
+            _ => bail!("{name} read returned {} B, expected 2", b.len()),
+        }
+    };
+    let load = read("tick_load_mean_q15")? as f64 * 100.0 / 32768.0;
+    Ok(format!(
+        "      load  {load:.1}%  over_period {}  lost {}  rows_dropped {}  stack_free {} B",
+        read("tick_over_count")?,
+        read("tick_lost_count")?,
+        read("tel_drop_count")?,
+        read("stack_free_min")?,
+    ))
 }
 
 fn profile(c: &mut Client<NusbPipe>, id: Id, cmd: &ProfileCmd) -> Result<()> {
@@ -974,7 +1002,7 @@ fn main() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::fmt_uptime;
+    use super::{fmt_uptime, health_line};
 
     #[test]
     fn uptime_drops_leading_zero_units() {
@@ -983,5 +1011,28 @@ mod tests {
         assert_eq!(fmt_uptime(125_000), "2m05s");
         assert_eq!(fmt_uptime(3_733_000), "1h02m13s");
         assert_eq!(fmt_uptime(u32::MAX), "1193h02m47s");
+    }
+
+    #[test]
+    fn status_prints_the_health_block() {
+        let (mut c, id) = crate::rig::servo::bench::table(3922);
+        let d = crate::state::descriptor(&mut c, id).unwrap();
+        assert_eq!(
+            health_line(&mut c, id, &d).unwrap(),
+            "      load  0.0%  over_period 0  lost 0  rows_dropped 0  stack_free 0 B",
+            "a fresh table reads zeros"
+        );
+        c.pipe_mut().sim_mut().servo_table_mut(0, |t| {
+            let h = &mut t.telemetry.health;
+            h.tick_load_mean_q15 = 11928;
+            h.tick_over_count = 12;
+            h.tick_lost_count = 3;
+            h.tel_drop_count = 27;
+            h.stack_free_min = 1516;
+        });
+        assert_eq!(
+            health_line(&mut c, id, &d).unwrap(),
+            "      load  36.4%  over_period 12  lost 3  rows_dropped 27  stack_free 1516 B"
+        );
     }
 }

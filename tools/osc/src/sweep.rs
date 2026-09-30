@@ -38,7 +38,7 @@
 //! Free-running rungs are not capped: the firmware limiter governs them.
 
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use clap::ValueEnum;
@@ -343,6 +343,9 @@ pub(crate) struct Segment {
 /// A run that completed every chain, segments in commit order.
 pub(crate) struct Recording {
     pub(crate) segments: Vec<Segment>,
+    /// TEL rows the servo dropped while the run streamed: `tel_drop_count`
+    /// after the run less before it. The segments are missing them.
+    pub(crate) rows_dropped: u16,
 }
 
 /// One rung's start band: a narrow window CENTRED on the launch guard, so a
@@ -687,10 +690,12 @@ pub(crate) fn drive(
     m
 }
 
-/// The descriptor-placed open-loop registers the run toggles.
+/// The descriptor-placed registers the run toggles, and the dropped-row
+/// counter it reads around the run.
 struct Regs {
     decay: Reg,
     zero_brake: Reg,
+    tel_drops: Reg,
 }
 
 fn resolve_regs<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<Regs> {
@@ -710,12 +715,15 @@ fn resolve_regs<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<Regs> {
     Ok(Regs {
         decay: field_reg("openloop_decay")?,
         zero_brake: field_reg("openloop_zero_brake")?,
+        tel_drops: field_reg("tel_drop_count")?,
     })
 }
 
 /// Baseline, then every chain of every direction. Each committed segment
 /// reaches `on_seg` as it lands, so a caller keeps what was captured before
 /// a later chain gives up. Leaves the servo guarded and torqued off.
+/// Firmware without the health block reads `tel_drop_count` as 0, so it
+/// records no dropped rows.
 pub(crate) fn record<S: Servo>(
     s: &mut S,
     cfg: &Cfg,
@@ -723,6 +731,7 @@ pub(crate) fn record<S: Servo>(
 ) -> Result<Recording> {
     let id = s.id();
     let regs = resolve_regs(s.client(), id)?;
+    let drops_before = read_u16(s.client(), id, regs.tel_drops)?;
     let r = guard(s, |s| chains(s, cfg, &regs, &mut on_seg));
     // Belt for a run cut mid-burst: brake flag clear, decay back to slow,
     // guards back on. The permit is RAM-only so a power cycle clears it
@@ -730,7 +739,12 @@ pub(crate) fn record<S: Servo>(
     let _ = s.write(regs.zero_brake, 0);
     let _ = s.write(regs.decay, Decay::Slow as i32);
     let _ = s.write(control::STALL_PERMIT, 0);
-    r
+    let segments = r?;
+    let rows_dropped = read_u16(s.client(), id, regs.tel_drops)?.wrapping_sub(drops_before);
+    Ok(Recording {
+        segments,
+        rows_dropped,
+    })
 }
 
 fn chains<S: Servo>(
@@ -738,7 +752,7 @@ fn chains<S: Servo>(
     cfg: &Cfg,
     regs: &Regs,
     on_seg: &mut impl FnMut(&Segment) -> Result<()>,
-) -> Result<Recording> {
+) -> Result<Vec<Segment>> {
     let mask = cfg.tel_mask;
     let seek_duty = pct_q15(cfg.seek_duty_pct);
     let seek_cap = pct_q15(cfg.seek_cap_pct) as i32;
@@ -913,7 +927,25 @@ fn chains<S: Servo>(
             }
         }
     }
-    Ok(Recording { segments })
+    Ok(segments)
+}
+
+/// Rewrite the run's meta with the rows the servo dropped. A sweep is a raw
+/// tool and keeps what it captured: dropped rows only warn.
+fn land_rows_dropped(
+    meta_path: &Path,
+    mut meta: serde_json::Value,
+    rows_dropped: u16,
+) -> Result<Option<String>> {
+    meta["rows_dropped"] = rows_dropped.into();
+    std::fs::write(meta_path, serde_json::to_string_pretty(&meta)?)
+        .with_context(|| format!("write {}", meta_path.display()))?;
+    Ok((rows_dropped > 0).then(|| {
+        format!(
+            "warning: the servo dropped {rows_dropped} TEL rows (both stream buffers were \
+             waiting for the wire); the files are saved with those rows missing"
+        )
+    }))
 }
 
 /// Entry from the top-level `osc sweep` dispatch.
@@ -960,8 +992,11 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
         (_, None) => Ok(()),
     };
     flushed?;
-    r?;
+    let rec = r?;
     parked?;
+    if let Some(warning) = land_rows_dropped(&meta_path, meta, rec.rows_dropped)? {
+        println!("{warning}");
+    }
     println!("sweep: {}", csv_path.display());
     println!("meta:  {}", meta_path.display());
     Ok(())
@@ -1221,5 +1256,65 @@ mod tests {
         // centred on the guard, so approach direction cannot shift the start
         assert_eq!(start_band(1, 400, 3700), (325, 475));
         assert_eq!(start_band(-1, 400, 3700), (3625, 3775));
+    }
+
+    /// A sweep whose servo dropped rows saves its rows and a meta that
+    /// names the count, and warns; a clean one writes 0 and says nothing.
+    #[test]
+    fn a_sweep_with_dropped_rows_warns_and_saves() {
+        use crate::capture::Supply;
+        use crate::rig::servo::bench::Bench;
+
+        let cfg = Cfg {
+            steps: vec![Step::Drive(40, Some(361))],
+            dirs: Dirs::Fwd,
+            decay: Decay::Slow,
+            window_ms: 150,
+            rest_ms: 500,
+            baseline_ms: 200,
+            seek_duty_pct: 15,
+            seek_cap_pct: 15,
+            settle_ms: 300,
+            stall: false,
+            static_load: false,
+            guard: (532, 3526),
+            stops: Some((232, 3849)),
+            tel_mask: 0x1cd,
+            rung_tries: 3,
+        };
+        for (drops, warns) in [(0, false), (3, true)] {
+            let out = std::env::temp_dir()
+                .join(format!("osc-sweep-{}-dropped-{drops}", std::process::id()));
+            std::fs::create_dir_all(&out).unwrap();
+            let mut b = Bench::mg90(Supply::TwoS);
+            b.rows_dropped = drops;
+            let rec = record(&mut b, &cfg, |_| Ok(())).unwrap();
+            let csv_path = out.join("sweep.csv");
+            let mut w = std::fs::File::create(&csv_path).unwrap();
+            writeln!(w, "{CSV_HEADER}").unwrap();
+            for g in &rec.segments {
+                write_rows(&mut w, g).unwrap();
+            }
+            let meta_path = out.join("meta.json");
+            let meta = serde_json::json!({ "window_ms": 150 });
+            let warning = land_rows_dropped(&meta_path, meta, rec.rows_dropped).unwrap();
+
+            let meta: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&meta_path).unwrap()).unwrap();
+            assert_eq!(meta["rows_dropped"], rec.rows_dropped);
+            assert_eq!(meta["window_ms"], 150, "the rest of the meta is kept");
+            let rows = std::fs::read_to_string(&csv_path).unwrap().lines().count();
+            assert_eq!(
+                rows,
+                1 + rec.segments.iter().map(|g| g.frames.len()).sum::<usize>()
+            );
+            assert_eq!(warning.is_some(), warns);
+            if let Some(w) = warning {
+                let n = rec.rows_dropped;
+                assert!(n > 0);
+                assert!(w.contains(&format!("dropped {n} TEL rows")), "{w}");
+            }
+            std::fs::remove_dir_all(&out).unwrap();
+        }
     }
 }

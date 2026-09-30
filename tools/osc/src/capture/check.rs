@@ -23,7 +23,9 @@ use osc_ident::limits::Ma;
 use super::Rule;
 use super::plan::Block;
 use super::store::{goal_tick, tick_ms};
-use super::verdict::{Abort, block_of, expected_segments, over_abort, settled, to_endstop};
+use super::verdict::{
+    Abort, block_of, dropped, expected_segments, over_abort, settled, to_endstop,
+};
 use crate::rig::pump::BurstStats;
 use crate::sweep::{Decay, Segment, Step};
 
@@ -53,6 +55,9 @@ struct SweepMeta {
     decay: Option<Decay>,
     #[serde(default)]
     session: Option<SessionMeta>,
+    /// Absent in a recording made before tools read the counter.
+    #[serde(default)]
+    rows_dropped: Option<u16>,
 }
 
 /// The block map a session recording carries.
@@ -307,6 +312,7 @@ fn check(dir: &Path, name: &str) -> Result<Checked> {
         .with_context(|| format!("read {}", meta_path.display()))?;
     let m: SweepMeta =
         serde_json::from_str(&text).with_context(|| format!("parse {}", meta_path.display()))?;
+    dropped(m.rows_dropped.unwrap_or(0)).map_err(|e| anyhow!(e))?;
     let csv_path = dir.join(format!("{name}.csv.gz"));
     let f =
         std::fs::File::open(&csv_path).with_context(|| format!("open {}", csv_path.display()))?;
@@ -950,6 +956,7 @@ mod tests {
             plan: &plan,
             attempt: 1,
             governed: &[],
+            rows_dropped: segs.rows_dropped,
         })
         .unwrap();
         cap.dir().to_path_buf()
@@ -1007,6 +1014,33 @@ mod tests {
             check(&dir, "slow").err().unwrap().to_string(),
             "seg 1: the applied duty held its goal for the last 0 ms of the window, under the \
              100 ms a settled tail needs"
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// The rows the servo dropped land in the meta and read back: none
+    /// checks clean, some fail as the capture verdict rejects them.
+    #[test]
+    fn a_recording_with_dropped_rows_fails_as_the_verdict_rejects_it() {
+        let root = tmp("check-dropped");
+        let dir = land_rung(&root, 1, "grid", Step::Drive(40, Some(361)), |_| {});
+        let meta = |dir: &Path| -> Value {
+            serde_json::from_str(&std::fs::read_to_string(dir.join("slow.meta.json")).unwrap())
+                .unwrap()
+        };
+        assert_eq!(meta(&dir)["rows_dropped"], 0);
+        assert!(check(&dir, "slow").is_ok());
+
+        let dir = land_rung(&root, 2, "grid", Step::Drive(40, Some(361)), |b| {
+            b.rows_dropped = 3
+        });
+        let n = meta(&dir)["rows_dropped"].as_u64().unwrap();
+        assert!(n > 0);
+        assert_eq!(
+            check(&dir, "slow").err().unwrap().to_string(),
+            format!(
+                "the servo dropped {n} TEL rows: both stream buffers were waiting for the wire"
+            )
         );
         std::fs::remove_dir_all(&root).unwrap();
     }

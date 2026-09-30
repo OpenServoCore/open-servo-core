@@ -713,33 +713,35 @@ impl<S: Servo> Session<'_, S> {
             Err(e) => return Ok(outcome_of(&e)),
         };
         let mut t = cap.begin(&plan.recording, &meta).map_err(Stop::Error)?;
-        let judged = (|| -> Result<Verdict> {
+        let judged = (|| -> Result<(Verdict, u16)> {
             let rec = sweep::record(s, cfg, |g| t.on_seg(g))?;
             let v = verdict(&rec, cfg, &plan.blocks, env, &abort);
             let o = s.snapshot()?;
-            Ok(match (v, o.fault_flags) {
+            let v = match (v, o.fault_flags) {
                 (Verdict::Accepted { .. }, f) if f != 0 => Verdict::Rejected(format!(
                     "servo faulted: flags {f:#04x} code {}",
                     o.fault_code
                 )),
                 (v, _) => v,
-            })
+            };
+            Ok((v, rec.rows_dropped))
         })();
         let outcome = match judged {
-            Ok(Verdict::Accepted { governed }) => {
+            Ok((Verdict::Accepted { governed }, rows_dropped)) => {
                 let segs = governed.len();
                 t.accept(&CaptureMeta {
                     supply,
                     plan,
                     attempt,
                     governed: &governed,
+                    rows_dropped,
                 })
                 .map_err(Stop::Error)?;
                 return Ok(Outcome::Accepted { segs });
             }
-            Ok(Verdict::Rejected(why)) => Outcome::Rejected(why),
-            Ok(Verdict::Blocked(why)) => Outcome::Blocked(why),
-            Ok(Verdict::Overcurrent(why)) => Outcome::Overcurrent(why),
+            Ok((Verdict::Rejected(why), _)) => Outcome::Rejected(why),
+            Ok((Verdict::Blocked(why), _)) => Outcome::Blocked(why),
+            Ok((Verdict::Overcurrent(why), _)) => Outcome::Overcurrent(why),
             Err(e) => outcome_of(&e),
         };
         t.reject().map_err(Stop::Error)?;
