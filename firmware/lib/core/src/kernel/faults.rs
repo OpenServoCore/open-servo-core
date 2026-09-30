@@ -68,11 +68,49 @@ impl Default for FaultLatch {
     }
 }
 
-/// Detector counters, kept together so `kernel/mod.rs` stays orchestration:
-/// OC consecutive-sample count (FAST), position-error persistence timer
-/// (MEDIUM), sensor-delta screen with its last raw sample (MEDIUM).
+/// The overcurrent consecutive-sample count (FAST).
+pub struct OcDetector {
+    ticks: u8,
+}
+
+impl OcDetector {
+    pub const fn new() -> Self {
+        Self { ticks: 0 }
+    }
+
+    /// Ack: the window re-arms.
+    pub fn reset(&mut self) {
+        self.ticks = 0;
+    }
+
+    /// `over` = Some(|i_meas| > oc_trip_counts) for a VALID window, None
+    /// when the window is invalid. Invalid samples hold the count - a masked
+    /// window must not launder a live overcurrent - and a valid below-trip
+    /// sample re-arms. Returns true when the window fills.
+    pub fn sample(&mut self, over: Option<bool>, trip_ticks: u8) -> bool {
+        match over {
+            Some(true) => {
+                self.ticks = self.ticks.saturating_add(1);
+                self.ticks >= trip_ticks
+            }
+            Some(false) => {
+                self.ticks = 0;
+                false
+            }
+            None => false,
+        }
+    }
+}
+
+impl Default for OcDetector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// MEDIUM detector counters: position-error persistence timer,
+/// sensor-delta screen with its last raw sample.
 pub struct Detectors {
-    oc_ticks: u8,
     pos_err_ticks: u32,
     sensor_bad: u8,
     sensor_last_pos: u16,
@@ -82,7 +120,6 @@ pub struct Detectors {
 impl Detectors {
     pub const fn new() -> Self {
         Self {
-            oc_ticks: 0,
             pos_err_ticks: 0,
             sensor_bad: 0,
             sensor_last_pos: 0,
@@ -93,28 +130,9 @@ impl Detectors {
     /// Ack: every counter re-arms; the sensor screen re-primes off the next
     /// sample instead of comparing across the disabled gap.
     pub fn reset(&mut self) {
-        self.oc_ticks = 0;
         self.pos_err_ticks = 0;
         self.sensor_bad = 0;
         self.sensor_seen = false;
-    }
-
-    /// FAST: `over` = Some(|i_meas| > oc_trip_counts) for a VALID window,
-    /// None when the window is invalid. Invalid samples hold the count - a
-    /// masked window must not launder a live overcurrent - and a valid
-    /// below-trip sample re-arms. Returns true when the window fills.
-    pub fn oc_sample(&mut self, over: Option<bool>, trip_ticks: u8) -> bool {
-        match over {
-            Some(true) => {
-                self.oc_ticks = self.oc_ticks.saturating_add(1);
-                self.oc_ticks >= trip_ticks
-            }
-            Some(false) => {
-                self.oc_ticks = 0;
-                false
-            }
-            None => false,
-        }
     }
 
     /// MEDIUM: raw pot delta screen; `bad_count` consecutive jumps trip.
@@ -175,23 +193,23 @@ mod tests {
 
     #[test]
     fn oc_consecutive_valid_only() {
-        let mut d = Detectors::new();
+        let mut d = OcDetector::new();
         for _ in 0..3 {
-            assert!(!d.oc_sample(Some(true), 4));
+            assert!(!d.sample(Some(true), 4));
         }
         // invalid holds the count, does not reset
-        assert!(!d.oc_sample(None, 4));
-        assert!(d.oc_sample(Some(true), 4));
+        assert!(!d.sample(None, 4));
+        assert!(d.sample(Some(true), 4));
         // valid below-trip re-arms
-        let mut d = Detectors::new();
+        let mut d = OcDetector::new();
         for _ in 0..3 {
-            d.oc_sample(Some(true), 4);
+            d.sample(Some(true), 4);
         }
-        assert!(!d.oc_sample(Some(false), 4));
+        assert!(!d.sample(Some(false), 4));
         for _ in 0..3 {
-            assert!(!d.oc_sample(Some(true), 4));
+            assert!(!d.sample(Some(true), 4));
         }
-        assert!(d.oc_sample(Some(true), 4));
+        assert!(d.sample(Some(true), 4));
     }
 
     #[test]

@@ -595,8 +595,12 @@ control registers arm it: `tel_mask` selects the per-sample fields (one
 bit per field, canonical order; reserved bits reject), and a committed
 nonzero write to `tel_count` starts a burst of that many control-tick
 samples. Both compose with HOLD/COMMIT, so a goal write and the arm
-apply in the same instant - the step edge lands inside the capture. A
-committed `tel_count` of 0 disarms.
+commit together: the capture starts at the commit and the step edge
+lands inside it, at the first medium tick after the commit (sec 5.7). A
+committed `tel_count` of 0 disarms. The stream carries every control
+tick; polled, the TELEMETRY sensor registers (the raw samples,
+`vcal_lpf`, `current_bias_counts`) refresh once per medium tick (2 kHz),
+like the estimates.
 
 Burst frames are ordinary status frames with result code `stream` - the
 one result code that marks a frame no instruction directly owes.
@@ -723,6 +727,10 @@ newly-latched kind (`fault_code`, `0x221`):
 
 Any set bit forces the drive off; the `torque_enable` 0 to 1 edge is the
 only acknowledgement, and a still-present condition re-latches at once.
+The kernel reads `torque_enable`, `mode` and the goals once per medium
+tick (2 kHz), so an enable, a disable, an acknowledgement, a mode change
+and a new `goal_duty` or `goal_current` take effect at the first medium
+tick after the commit, within 0.5 ms.
 `stall` latches in OpenLoop as it does in the closed loops: there the
 stall timer runs off the duty ceiling (sec 5.8), so with
 `stall_response` at its boot value of Fault, an OpenLoop drive held
@@ -811,7 +819,7 @@ lin   = ((raw + c[i]) << 4) + (c[i + 1] - c[i]) * f      (u16, Q4)
 ```
 
 so the identity is `raw << 4` exactly and knot `k` lands at
-`raw + c[k]`. Once per fast tick, while `pos_lut_state` reads LIVE, this
+`raw + c[k]`. Once per medium tick, while `pos_lut_state` reads LIVE, this
 value seeds and innovates the position observer; `theta_hat_q16` and everything that
 reads it (trajectory, position loop, soft limits, the stall and
 thermometer speed gates) are in linearized counts. The raw sample stays
@@ -952,16 +960,18 @@ board constant, and `osc` refuses a servo that reports 0 (DES
 **Governed windows.** In OpenLoop the applied duty equals the goal only
 when nothing governed it, and a host fitting a model to a capture needs
 to know which windows those are. The TEL `duty` field (bit 3) is the
-applied duty, the command whose window the sample measured. After a
-goal change to a magnitude above the window floor the applied duty
-climbs 128 (Q15) per tick from its start: the previous applied duty,
-or the window floor when the change starts from zero duty or reverses
-the sign. A window is *governed* when `duty` reaches the goal later
-than `(|goal| - start) / 128 + 2` ticks after the change (the two
-ticks cover the sample alignment and the rounding), or falls under the
-goal after reaching it. A goal at or under the floor applies from the
-first tick unless the stall-safe base cuts it, and a cut one never
-reaches the goal. Polled, the same test reads `duty_applied_q15` (or
+applied duty, the command whose window the sample measured. A goal
+lands at the first medium tick after its commit (sec 5.7), within one
+medium period (10 ticks). From there, to a magnitude above the window
+floor, the applied duty climbs 128 (Q15) per tick from its start: the
+previous applied duty, or the window floor when the change starts from
+zero duty or reverses the sign. A window is *governed* when `duty`
+reaches the goal later than `(|goal| - start) / 128 + 2 + 10` ticks
+after the commit (the two ticks cover the sample alignment and the
+rounding, the ten the medium period the goal may wait for), or falls
+under the goal after reaching it. A goal at or under the floor applies
+from the tick it lands unless the stall-safe base cuts it, and a cut
+one never reaches the goal. Polled, the same test reads `duty_applied_q15` (or
 the ident aggregate `duty_mean_q15`) against the goal written, once the
 slew is over; `limit_flags` then says why.
 
