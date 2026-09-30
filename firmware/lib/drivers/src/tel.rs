@@ -76,6 +76,13 @@ impl TelChannel {
         }
     }
 
+    /// Rows dropped against full buffers, monotonic wrapping. Any context:
+    /// the kernel side is the counter's only writer.
+    pub fn drops(&self) -> u16 {
+        // SAFETY: single-word volatile read of a kernel-written counter.
+        unsafe { self.drops.get().read_volatile() }
+    }
+
     /// Split into the two halves. Call once at bringup: a second feed or
     /// drain breaks the single-writer discipline.
     pub fn split(&'static self) -> (TelFeed, TelDrain) {
@@ -147,12 +154,6 @@ impl TelFeed {
             self.valid = 0;
             self.alert = false;
         }
-    }
-
-    /// Samples dropped against full buffers, monotonic wrapping.
-    pub fn drops(&self) -> u16 {
-        // SAFETY: own counter, volatile read.
-        unsafe { self.ch.drops.get().read_volatile() }
     }
 }
 
@@ -291,8 +292,12 @@ mod tests {
     use osc_servo_core::tel::{FLAG_LAST, encode_stream};
     const MASK_SIX: u16 = 0x3F;
 
+    fn leaked() -> &'static TelChannel {
+        std::boxed::Box::leak(std::boxed::Box::new(TelChannel::new()))
+    }
+
     fn channel() -> (TelFeed, TelDrain) {
-        std::boxed::Box::leak(std::boxed::Box::new(TelChannel::new())).split()
+        leaked().split()
     }
 
     fn sample(i: u16) -> TelSample {
@@ -345,20 +350,21 @@ mod tests {
 
     #[test]
     fn stalled_consumer_drops_and_counts() {
-        let (mut feed, mut drain) = channel();
+        let ch = leaked();
+        let (mut feed, mut drain) = ch.split();
         let epoch = arm(&mut drain, MASK_SIX, 200);
         for i in 0..37 {
             feed.on_tick(&sample(i));
         }
         // both buffers ready, 5 samples dropped against them
-        assert_eq!(feed.drops(), 5);
+        assert_eq!(ch.drops(), 5);
         // release one: production resumes into it
         assert!(drain.ready(0, epoch).is_some());
         drain.release(0);
         for i in 0..16 {
             feed.on_tick(&sample(100 + i));
         }
-        assert_eq!(feed.drops(), 5);
+        assert_eq!(ch.drops(), 5);
         let m = drain.ready(0, epoch).expect("refilled batch");
         assert!(!m.last);
     }
@@ -386,7 +392,8 @@ mod tests {
 
     #[test]
     fn count_zero_arm_parks_the_encoder() {
-        let (mut feed, mut drain) = channel();
+        let ch = leaked();
+        let (mut feed, mut drain) = ch.split();
         arm(&mut drain, MASK_SIX, 32);
         for i in 0..4 {
             feed.on_tick(&sample(i));
@@ -399,6 +406,6 @@ mod tests {
         }
         assert!(drain.ready(0, e).is_none());
         assert!(drain.ready(1, e).is_none());
-        assert_eq!(feed.drops(), 0);
+        assert_eq!(ch.drops(), 0);
     }
 }
