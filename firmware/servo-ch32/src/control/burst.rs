@@ -46,6 +46,10 @@ const BURST_SETTLE_TICKS: u16 = 16;
 /// not tick while a capture runs, so the spacing in time only grows.
 const BURST_SPACING_TICKS: u16 = (chip::MOTOR_PWM_FREQ_HZ / 10) as u16;
 
+/// `Fsm::armed_at` at boot: a full spacing before tick 0, so the first arm
+/// is never refused by the spacing rule.
+const ARMED_AT_BOOT: u32 = 0u32.wrapping_sub(BURST_SPACING_TICKS as u32);
+
 /// `delay_cycles` iterations per microsecond. It spins on `spin_loop`, which
 /// costs at least one HCLK cycle per iteration and on this core rather more,
 /// so sizing a drain in HCLK cycles is a floor on the wait, never a ceiling.
@@ -83,7 +87,8 @@ static WITNESS_DUE: AtomicBool = AtomicBool::new(false);
 /// The rest of the FSM: DMA1 CH1 vector (PFIC LOW) only, never the main loop;
 /// `install` writes it once, pre-IRQ.
 struct Fsm {
-    lockout: u16,
+    /// `sample_tick` at the last accepted arm.
+    armed_at: u32,
     /// Burst volts cap, vcounts. At 0, before `install`, it refuses every
     /// step but a zero one.
     v_max_counts: u16,
@@ -94,7 +99,7 @@ struct Fsm {
 }
 
 static FSM: SyncUnsafeCell<Fsm> = SyncUnsafeCell::new(Fsm {
-    lockout: 0,
+    armed_at: ARMED_AT_BOOT,
     v_max_counts: 0,
     settle: 0,
     duty_q15: 0,
@@ -156,29 +161,46 @@ fn publish_state(p: *mut ControlTable, s: u8) {
     unsafe { (&raw mut (*p).burst.window.state).write_volatile(s) };
 }
 
+/// At least the spacing has passed between the arm at `armed_at` and `now`,
+/// both `sample_tick` values.
+#[inline]
+fn spaced(now: u32, armed_at: u32) -> bool {
+    now.wrapping_sub(armed_at) >= BURST_SPACING_TICKS as u32
+}
+
 /// Tail of the kernel tick: runs the arm/settle/release half of the handshake.
-/// The capture half runs on the DMA events, in [`on_dma_event`].
+/// The capture half runs on the DMA events, in [`on_dma_event`]. The idle
+/// tick reads only the state and the `arm` byte.
+#[inline(always)]
 pub fn poll_arm(shared: &Shared) {
     let p = shared.table.region_ptr();
-    // SAFETY: transport-owned (PFIC HIGH) fields, read raw-volatile without
+    let s = STATE.load(Ordering::Relaxed);
+    // SAFETY: transport-owned (PFIC HIGH) field, read raw-volatile without
     // forming `&T` -- the kernel's own contract for CONTROL/CONFIG reads.
-    let (req, life, lim_cfg, loop_cur, faults) = unsafe {
-        (
-            (&raw const (*p).control.burst).read_volatile(),
-            (&raw const (*p).control.lifecycle).read_volatile(),
-            (&raw const (*p).config.limits).read_volatile(),
-            (&raw const (*p).config.loop_current).read_volatile(),
-            (&raw const (*p).telemetry.common.fault_flags).read_volatile(),
-        )
-    };
-    let f = fsm();
-    f.lockout = f.lockout.saturating_sub(1);
+    let arm = unsafe { (&raw const (*p).control.burst.arm).read_volatile() };
+    if s == state::IDLE && arm != 1 {
+        return;
+    }
+    handshake(p, s, arm);
+}
 
-    match STATE.load(Ordering::Relaxed) {
+#[inline(never)]
+fn handshake(p: *mut ControlTable, s: u8, arm: u8) {
+    let f = fsm();
+    match s {
         state::IDLE => {
-            if req.arm != 1 {
-                return;
-            }
+            // SAFETY: as in `poll_arm`; `sample_tick` is published by the
+            // tick ISR, which is this same context.
+            let (req, life, lim_cfg, loop_cur, faults, now) = unsafe {
+                (
+                    (&raw const (*p).control.burst).read_volatile(),
+                    (&raw const (*p).control.lifecycle).read_volatile(),
+                    (&raw const (*p).config.limits).read_volatile(),
+                    (&raw const (*p).config.loop_current).read_volatile(),
+                    (&raw const (*p).telemetry.common.fault_flags).read_volatile(),
+                    (&raw const (*p).telemetry.estimates.sample_tick).read_volatile(),
+                )
+            };
             // SAFETY: as above; `vbus_counts`, `pos` and `limit_flags` are
             // published by the kernel, which runs in this same context.
             let (vbus, pos, lo, hi, limit_flags) = unsafe {
@@ -200,7 +222,7 @@ pub fn poll_arm(shared: &Shared) {
                 && life.tel_count == 0
                 && faults == 0
                 && req.chans & !chans::ALL == 0
-                && f.lockout == 0
+                && spaced(now, f.armed_at)
                 && volts <= f.v_max_counts as u32
                 && (limit_flags & flag::PERMIT != 0 || (pos > lo && pos < hi));
             if !armable {
@@ -217,11 +239,11 @@ pub fn poll_arm(shared: &Shared) {
             };
             f.chans = req.chans;
             f.settle = BURST_SETTLE_TICKS;
-            f.lockout = BURST_SPACING_TICKS;
+            f.armed_at = now;
             publish_state(p, state::ARMED);
         }
         state::ARMED => {
-            if req.arm != 1 {
+            if arm != 1 {
                 publish_state(p, state::IDLE);
                 return;
             }
@@ -231,7 +253,7 @@ pub fn poll_arm(shared: &Shared) {
             }
         }
         state::DONE | state::REJECTED => {
-            if req.arm == 0 {
+            if arm == 0 {
                 publish_state(p, state::IDLE);
             }
         }
@@ -438,7 +460,7 @@ mod tests {
         let serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         STATE.store(state::IDLE, Ordering::Relaxed);
         *fsm() = Fsm {
-            lockout: 0,
+            armed_at: ARMED_AT_BOOT,
             v_max_counts: 0,
             settle: 0,
             duty_q15: 0,
@@ -467,26 +489,36 @@ mod tests {
             self.shared.table.with_mut(f);
         }
 
+        /// One kernel tick as the ISR runs it: `sample_tick` advances, then
+        /// the handshake polls.
+        fn tick(&self) {
+            self.set(|t| {
+                let e = &mut t.telemetry.estimates;
+                e.sample_tick = e.sample_tick.wrapping_add(1);
+            });
+            poll_arm(&self.shared);
+        }
+
         /// One arm request at `duty`: the state it publishes.
         fn arm(&self, duty: i16) -> u8 {
             self.set(|t| {
                 t.control.burst.duty_q15 = duty;
                 t.control.burst.arm = 1;
             });
-            poll_arm(&self.shared);
+            self.tick();
             self.shared.table.with(|t| t.burst.window.state)
         }
 
         /// Drop the arm; one tick returns the FSM to IDLE.
         fn release(&self) {
             self.set(|t| t.control.burst.arm = 0);
-            poll_arm(&self.shared);
+            self.tick();
             assert_eq!(STATE.load(Ordering::Relaxed), state::IDLE);
         }
 
         fn idle(&self, ticks: u16) {
             for _ in 0..ticks {
-                poll_arm(&self.shared);
+                self.tick();
             }
         }
     }
@@ -538,6 +570,22 @@ mod tests {
         assert_eq!(rearm_at(2), state::REJECTED);
         assert_eq!(rearm_at(BURST_SPACING_TICKS - 1), state::REJECTED);
         assert_eq!(rearm_at(BURST_SPACING_TICKS), state::ARMED);
+    }
+
+    #[test]
+    fn spacing_counts_kernel_ticks_since_the_last_arm() {
+        let spacing = BURST_SPACING_TICKS as u32;
+        for now in [0, 1, 72_000_000] {
+            assert!(spaced(now, ARMED_AT_BOOT), "first arm after boot at {now}");
+        }
+        assert!(!spaced(1000 + spacing - 1, 1000), "inside the spacing");
+        assert!(spaced(1000 + spacing, 1000), "exactly at the spacing");
+        let armed_at = u32::MAX - 10;
+        assert!(!spaced(armed_at.wrapping_add(spacing - 1), armed_at));
+        assert!(
+            spaced(armed_at.wrapping_add(spacing), armed_at),
+            "across the wrap"
+        );
     }
 
     #[test]
