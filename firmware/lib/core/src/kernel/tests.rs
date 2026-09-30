@@ -1120,6 +1120,66 @@ fn ident_setup(sh: &Shared) {
         // starts at the floor, so windows are valid from tick 2 on (tick 1
         // measures the boot duty of 0)
         t.control.lifecycle.goal_duty = 8000;
+        t.control.ident.ident_agg = true;
+    });
+}
+
+fn agg_seq(sh: &Shared) -> u16 {
+    sh.table.with(|t| t.telemetry.ident.agg_seq)
+}
+
+#[test]
+fn ident_aggregate_runs_only_on_request() {
+    let sh = Shared::new();
+    ident_setup(&sh);
+    sh.table.with_mut(|t| t.control.ident.ident_agg = false);
+    let mut k = kernel();
+    let f = frame(2000, BIAS + 100);
+    for _ in 0..200 {
+        k.on_tick(f, &sh);
+    }
+    assert_eq!(agg_seq(&sh), 0, "off at boot");
+
+    // on: lands at the CONTROL phase, then a window every 16 ticks
+    sh.table.with_mut(|t| t.control.ident.ident_agg = true);
+    run_to(&mut k, &sh, f, phase::CONTROL);
+    k.on_tick(f, &sh);
+    for n in 1..=3 {
+        for _ in 0..15 {
+            k.on_tick(f, &sh);
+        }
+        assert_eq!(agg_seq(&sh), n - 1);
+        k.on_tick(f, &sh);
+        assert_eq!(agg_seq(&sh), n);
+    }
+
+    // off mid-window: the registers hold, the open window drops
+    for _ in 0..5 {
+        k.on_tick(f, &sh);
+    }
+    sh.table.with_mut(|t| t.control.ident.ident_agg = false);
+    run_to(&mut k, &sh, f, phase::CONTROL);
+    k.on_tick(f, &sh);
+    for _ in 0..100 {
+        k.on_tick(f, &sh);
+    }
+    assert_eq!(agg_seq(&sh), 3, "held while off");
+
+    // on again: the first window spans 16 fresh ticks at the new current
+    sh.table.with_mut(|t| t.control.ident.ident_agg = true);
+    let f = frame(2000, BIAS + 300);
+    run_to(&mut k, &sh, f, phase::CONTROL);
+    k.on_tick(f, &sh);
+    for _ in 0..15 {
+        k.on_tick(f, &sh);
+    }
+    assert_eq!(agg_seq(&sh), 3);
+    k.on_tick(f, &sh);
+    sh.table.with(|t| {
+        let d = &t.telemetry.ident;
+        assert_eq!(d.agg_seq, 4);
+        assert_eq!(d.i_mean_counts, 300);
+        assert_eq!(d.i_min_counts, 300);
     });
 }
 

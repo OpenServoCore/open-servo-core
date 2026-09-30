@@ -10,7 +10,8 @@
 //! same tick as `fast::Measured`. Only the CONTROL phase reads CONTROL, so
 //! a host write (torque, mode, goals) takes effect at the next period's
 //! CONTROL phase. Identification aggregates ride their own
-//! /16 fast-tick window (`ident`), independent of DECIM_MED. Tick-indexed
+//! /16 fast-tick window (`ident`), independent of DECIM_MED, and fold only
+//! while CONTROL `ident_agg` asks for them. Tick-indexed
 //! by design: a missed tick dilates time, nothing compensates and nothing
 //! reads a wall clock. CONFIG and CALIB reach the tick through the kernel's
 //! own snapshot (`config`), rebuilt at a medium boundary after a write, so
@@ -161,8 +162,10 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         let ctl = Control::read(shared);
         self.medium
             .seed(medium::pos_q4(shared, ctl.lut_live, frame.pos));
-        // the stream's first row linearizes like the rest
+        // the stream's first row linearizes like the rest, and the
+        // aggregate's first window opens at the first tick
         self.cmd.lut_live = ctl.lut_live;
+        self.cmd.ident_agg = ctl.ident_agg;
         let p = shared.table.region_ptr();
         // SAFETY: same volatile read contract; install stamped the boot rest
         // measurement here before the first tick, and from here on this

@@ -798,6 +798,13 @@
       "kind": "uint"
     },
     {
+      "name": "ident_agg",
+      "addr": 480,
+      "width": 1,
+      "access": "rw",
+      "kind": "bool"
+    },
+    {
       "name": "fault_flags",
       "addr": 512,
       "width": 1,
