@@ -39,7 +39,7 @@ use crate::fits::{
     BClimb, BDecay, BDirect, BExp, Climb, InertiaPriors, StepSeries, b_climb_fit, b_decay_pool,
     b_decay_step, b_direct_fit, b_exp_fit,
 };
-use crate::frame::{TelFrame, TelemetrySnapshot};
+use crate::frame::{TelBurst, TelFrame, TelemetrySnapshot};
 use crate::limits::{DutyPlan, q15_floor};
 use crate::regs::control;
 use crate::runway::{
@@ -850,9 +850,9 @@ impl Experiment for Inertia {
     }
 
     /// Frames arriving outside a step burst are dropped.
-    fn push_tel(&mut self, frames: &[TelFrame]) {
+    fn push_tel(&mut self, burst: &TelBurst) {
         if self.capturing {
-            self.cur.tel.extend_from_slice(frames);
+            self.cur.tel.extend_from_slice(&burst.frames);
         }
     }
 }
@@ -1488,12 +1488,15 @@ mod tests {
     fn frames_outside_a_burst_are_dropped() {
         let params = crate::exp::testkit::rig();
         let mut exp = inertia(InertiaCfg::new(TICK_HZ), 180, &params);
-        exp.push_tel(&[TelFrame {
-            tick: 0,
-            pos: Some(2000),
-            current: Some(10),
-            ..Default::default()
-        }]);
+        exp.push_tel(&TelBurst {
+            frames: vec![TelFrame {
+                tick: 0,
+                pos: Some(2000),
+                current: Some(10),
+                ..Default::default()
+            }],
+            rows_dropped: 0,
+        });
         assert!(exp.captures.is_empty());
         assert!(exp.cur.tel.is_empty(), "not capturing: frame dropped");
     }
@@ -1510,9 +1513,9 @@ mod tests {
             self.exp.step(obs)
         }
 
-        fn push_tel(&mut self, frames: &[TelFrame]) {
-            self.seen.extend(frames.iter().filter_map(|f| f.pos));
-            self.exp.push_tel(frames)
+        fn push_tel(&mut self, burst: &TelBurst) {
+            self.seen.extend(burst.frames.iter().filter_map(|f| f.pos));
+            self.exp.push_tel(burst)
         }
 
         fn halted(&self) -> Option<AbortReason> {

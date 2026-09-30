@@ -21,10 +21,11 @@
 //! }
 //! ```
 //!
-//! [`Guarded`] wraps any experiment with the safety envelope; rig limits
-//! live in [`RigParams`], the one home for bench constants. [`Permitted`]
-//! holds the stall permit for one that stalls on purpose, and the driver
-//! keeps a held permit alive with [`crate::limits::PermitLease`].
+//! [`Guarded`] wraps any experiment with the safety envelope, and ends one
+//! whose burst the servo dropped rows from: such a burst is not evidence.
+//! Rig limits live in [`RigParams`], the one home for bench constants.
+//! [`Permitted`] holds the stall permit for one that stalls on purpose, and
+//! the driver keeps a held permit alive with [`crate::limits::PermitLease`].
 
 pub mod bias;
 pub mod breakaway;
@@ -45,7 +46,7 @@ pub mod winding;
 use osc_servo_core::kernel::DECIM_MED;
 
 use crate::burst::Capture;
-use crate::frame::{SeqUnwrap, TelFrame, TelemetrySnapshot};
+use crate::frame::{SeqUnwrap, TelBurst, TelemetrySnapshot};
 use crate::pot::Pot;
 use crate::regs::{Reg, control};
 
@@ -54,8 +55,9 @@ use crate::regs::{Reg, control};
 /// telemetry region whose parsed snapshot feeds the NEXT `step`; `Stream`
 /// arms a TEL burst of `samples` fast ticks - with `goal` Some the driver
 /// stages that write and the arm under HOLD and fires one broadcast COMMIT,
-/// so the write applies in the same instant the capture starts. Decoded
-/// frames return through [`Experiment::push_tel`] before the next `step`.
+/// so the write applies in the same instant the capture starts. The decoded
+/// burst, with the rows the servo dropped from it, returns through
+/// [`Experiment::push_tel`] before the next `step`.
 /// The mask is sticky: write TEL_MASK with an ordinary `Write` first.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Cmd {
@@ -89,9 +91,9 @@ pub enum Cmd {
 /// A pumpable experiment. `step` with `Some` only in reply to [`Cmd::Read`].
 pub trait Experiment {
     fn step(&mut self, obs: Option<&TelemetrySnapshot>) -> Cmd;
-    /// Decoded TEL frames from the last [`Cmd::Stream`] burst; experiments
-    /// that never stream keep the drop default.
-    fn push_tel(&mut self, _frames: &[TelFrame]) {}
+    /// The last [`Cmd::Stream`] burst; experiments that never stream keep
+    /// the drop default.
+    fn push_tel(&mut self, _tel: &TelBurst) {}
     /// The capture from the last [`Cmd::Burst`].
     fn push_burst(&mut self, _cap: &Capture) {}
     /// Set once the experiment stopped on something that ends the whole
@@ -205,6 +207,8 @@ pub enum AbortReason {
     /// A seek came to rest short of anywhere it could stop: jammed, or the
     /// pot is not reading. `moved` is the travel since the seek started.
     Blocked { pos: u16, moved: u16 },
+    /// The servo dropped `rows` TEL rows from a burst.
+    RowsDropped { rows: u16 },
 }
 
 impl core::fmt::Display for AbortReason {
@@ -228,6 +232,10 @@ impl core::fmt::Display for AbortReason {
                 f,
                 "the shaft is blocked or the position sensor is not reading (pos {pos}, moved \
                  {moved} counts)"
+            ),
+            AbortReason::RowsDropped { rows } => write!(
+                f,
+                "the servo dropped {rows} TEL rows: both stream buffers were waiting for the wire"
             ),
         }
     }
@@ -308,8 +316,8 @@ impl<E: Experiment> Experiment for Guarded<E> {
     fn step(&mut self, obs: Option<&TelemetrySnapshot>) -> Cmd {
         if matches!(self.state, GuardState::Run)
             && let Some(reason) = self
-                .exp
-                .halted()
+                .abort
+                .or_else(|| self.exp.halted())
                 .or_else(|| obs.and_then(|o| self.violation(o)))
         {
             self.abort = Some(reason);
@@ -377,8 +385,12 @@ impl<E: Experiment> Experiment for Guarded<E> {
         }
     }
 
-    fn push_tel(&mut self, frames: &[TelFrame]) {
-        self.exp.push_tel(frames);
+    /// A burst with dropped rows ends the run, its frames withheld.
+    fn push_tel(&mut self, tel: &TelBurst) {
+        match tel.rows_dropped {
+            0 => self.exp.push_tel(tel),
+            rows => self.abort = Some(AbortReason::RowsDropped { rows }),
+        }
     }
 
     fn push_burst(&mut self, cap: &Capture) {
@@ -446,8 +458,8 @@ impl<E: Experiment> Experiment for Permitted<E> {
         cmd
     }
 
-    fn push_tel(&mut self, frames: &[TelFrame]) {
-        self.exp.push_tel(frames);
+    fn push_tel(&mut self, tel: &TelBurst) {
+        self.exp.push_tel(tel);
     }
 
     fn push_burst(&mut self, cap: &Capture) {
@@ -678,6 +690,7 @@ pub mod testkit;
 
 #[cfg(test)]
 mod tests {
+    use super::bias::{Bias, BiasCfg};
     use super::centre::Centre;
     use super::endstop::Endstop;
     use super::ladder::{Declined, Ladder, LadderCfg};
@@ -874,6 +887,42 @@ mod tests {
         assert_eq!(*tail[2], "write goal_duty 0");
         assert_eq!(*tail[1], "write torque_enable 0");
         assert_eq!(*tail[0], "write ident_agg 0");
+    }
+
+    /// A burst the servo dropped rows from is not evidence: the run ends on
+    /// it in capture's words, torque off, and its frames never reach the
+    /// fit. A whole burst runs to its result.
+    #[test]
+    fn a_burst_with_dropped_rows_ends_the_run() {
+        let run = |rows_dropped| {
+            let mut servo = FakeServo::new(3.37);
+            servo.rows_dropped = rows_dropped;
+            let params = crate::exp::testkit::rig();
+            let mut exp = Guarded::new(Bias::new(BiasCfg::default(), &params), params);
+            let log = pump(&mut exp, &mut servo, 10_000);
+            assert!(!servo.torque);
+            (exp.abort(), exp.into_inner().result(), log)
+        };
+        let (abort, r, _) = run(0);
+        assert_eq!(abort, None);
+        assert_eq!(r.expect("a result").tel_n, 10_000);
+
+        let (abort, r, log) = run(3);
+        assert_eq!(abort, Some(AbortReason::RowsDropped { rows: 3 }));
+        assert_eq!(
+            abort.unwrap().to_string(),
+            "the servo dropped 3 TEL rows: both stream buffers were waiting for the wire"
+        );
+        assert!(r.is_none(), "the frames reached the fit");
+        let at = log.iter().position(|l| l.starts_with("stream")).unwrap();
+        assert_eq!(
+            log[at + 1..],
+            [
+                "write goal_duty 0",
+                "write torque_enable 0",
+                "write ident_agg 0"
+            ]
+        );
     }
 
     #[test]

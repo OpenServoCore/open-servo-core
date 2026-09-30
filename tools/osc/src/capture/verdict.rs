@@ -11,7 +11,7 @@
 //! Current over the abort means the servo is not holding its limit, and
 //! nothing drives it again.
 
-use osc_ident::exp::{Applied, judge};
+use osc_ident::exp::{AbortReason, Applied, judge};
 use osc_ident::limits::Ma;
 use osc_ident::runway::{SETTLE_MS, STEADY_MIN_MS};
 
@@ -182,14 +182,13 @@ fn shape(rec: &Recording, cfg: &Cfg) -> Result<(), String> {
     Ok(())
 }
 
-/// A recording the servo dropped TEL rows from is missing them.
+/// A recording the servo dropped TEL rows from is missing them, in the
+/// words an experiment's abort on them uses.
 pub(crate) fn dropped(rows: u16) -> Result<(), String> {
-    if rows == 0 {
-        return Ok(());
+    match rows {
+        0 => Ok(()),
+        rows => Err(AbortReason::RowsDropped { rows }.to_string()),
     }
-    Err(format!(
-        "the servo dropped {rows} TEL rows: both stream buffers were waiting for the wire"
-    ))
 }
 
 /// The block that holds step `k` of the schedule.
@@ -508,6 +507,7 @@ mod tests {
                 samples: 16,
                 holes,
                 garble: 0,
+                rows_dropped: 0,
             },
         }
     }
@@ -617,7 +617,7 @@ mod tests {
         assert_eq!(r.rows_dropped, 0);
         assert!(matches!(grid_verdict(&r, &c), Verdict::Accepted { .. }));
 
-        let r = record(&c, |b| b.rows_dropped = 3);
+        let r = record(&c, |b| b.servo.rows_dropped = 3);
         assert_eq!(r.rows_dropped, 3 * r.segments.len() as u16);
         assert_eq!(
             grid_verdict(&r, &c),

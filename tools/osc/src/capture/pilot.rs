@@ -2167,6 +2167,7 @@ mod tests {
                 samples: 0,
                 holes: 0,
                 garble: 0,
+                rows_dropped: 0,
             },
         }
     }

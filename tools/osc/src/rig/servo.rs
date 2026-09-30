@@ -1,7 +1,8 @@
 //! The servo a drive talks to: its table over the bus for everything that
 //! moves nothing, and the four moves a drive makes - a write, a telemetry
 //! read, a TEL burst, a wait - on the one clock the servo moves on. On the
-//! bus that clock is the wall; a test servo keeps its own.
+//! bus that clock is the wall; a test servo keeps its own. Every TEL burst
+//! carries the rows the servo dropped from it, read off its table.
 
 use std::time::{Duration, Instant};
 
@@ -10,9 +11,10 @@ use osc_client::Id;
 use osc_client::blocking::Client;
 use osc_client::pipe::Pipe;
 use osc_ident::frame::{TelFrame, TelemetrySnapshot};
-use osc_ident::regs::{Reg, control};
+use osc_ident::regs::{Reg, control, telemetry};
 
 use super::pump::{BurstStats, exchange_tel_burst, read_stamped, write_reg};
+use super::snapshot::read_u16;
 
 pub(crate) trait Servo {
     type P: Pipe;
@@ -26,14 +28,31 @@ pub(crate) trait Servo {
     /// One telemetry snapshot, stamped `now_ms` at its read.
     fn snapshot(&mut self) -> Result<TelemetrySnapshot>;
     /// One TEL burst of `samples` fast ticks under `mask`, the `goal` write
-    /// applied in the instant the burst starts.
-    fn stream(
+    /// applied in the instant the burst starts. Drives call [`Servo::stream`].
+    fn burst(
         &mut self,
         samples: u16,
         goal: Option<(Reg, i32)>,
         mask: u16,
     ) -> Result<(Vec<TelFrame>, BurstStats)>;
     fn sleep(&mut self, ms: u32);
+
+    /// [`Servo::burst`], its stats carrying the rows the servo dropped from
+    /// it: `tel_drop_count` after it less before it. Firmware without the
+    /// health block reads 0 there, so it drops none.
+    fn stream(
+        &mut self,
+        samples: u16,
+        goal: Option<(Reg, i32)>,
+        mask: u16,
+    ) -> Result<(Vec<TelFrame>, BurstStats)> {
+        let id = self.id();
+        let before = read_u16(self.client(), id, telemetry::TEL_DROP_COUNT)?;
+        let (frames, mut stats) = self.burst(samples, goal, mask)?;
+        let after = read_u16(self.client(), id, telemetry::TEL_DROP_COUNT)?;
+        stats.rows_dropped = after.wrapping_sub(before);
+        Ok((frames, stats))
+    }
 }
 
 impl<S: Servo + ?Sized> Servo for &mut S {
@@ -59,13 +78,13 @@ impl<S: Servo + ?Sized> Servo for &mut S {
         (**self).snapshot()
     }
 
-    fn stream(
+    fn burst(
         &mut self,
         samples: u16,
         goal: Option<(Reg, i32)>,
         mask: u16,
     ) -> Result<(Vec<TelFrame>, BurstStats)> {
-        (**self).stream(samples, goal, mask)
+        (**self).burst(samples, goal, mask)
     }
 
     fn sleep(&mut self, ms: u32) {
@@ -133,7 +152,7 @@ impl<C: AsClient> Servo for Wire<C> {
         read_stamped(self.c.get(), self.id, self.t0)
     }
 
-    fn stream(
+    fn burst(
         &mut self,
         samples: u16,
         goal: Option<(Reg, i32)>,
@@ -264,9 +283,6 @@ pub(crate) mod bench {
         /// The breakaway and current limit a fast decay write set aside.
         slow: Option<(i16, Option<u16>)>,
         decay: u16,
-        /// TEL rows the servo drops in each stream, counted into its
-        /// `tel_drop_count`.
-        pub(crate) rows_dropped: u16,
     }
 
     impl Bench {
@@ -292,7 +308,6 @@ pub(crate) mod bench {
                 fast_breakaway_q15: None,
                 slow: None,
                 decay,
-                rows_dropped: 0,
             }
         }
 
@@ -345,7 +360,9 @@ pub(crate) mod bench {
             Ok(snap)
         }
 
-        fn stream(
+        /// The rows the test servo drops land in the table's
+        /// `tel_drop_count`, where [`Servo::stream`] reads them.
+        fn burst(
             &mut self,
             samples: u16,
             goal: Option<(Reg, i32)>,
@@ -357,7 +374,7 @@ pub(crate) mod bench {
             }
             let mut frames = Vec::new();
             self.servo.stream(samples, &mut frames);
-            let dropped = self.rows_dropped;
+            let dropped = self.servo.rows_dropped;
             self.c.pipe_mut().sim_mut().servo_table_mut(0, |t| {
                 let h = &mut t.telemetry.health;
                 h.tel_drop_count = h.tel_drop_count.wrapping_add(dropped);
@@ -376,6 +393,7 @@ pub(crate) mod bench {
                 samples: frames.len(),
                 holes: 0,
                 garble: 0,
+                rows_dropped: 0,
             };
             Ok((frames, stats))
         }
@@ -383,5 +401,32 @@ pub(crate) mod bench {
         fn sleep(&mut self, ms: u32) {
             self.servo.advance_ms(ms as f64 * self.bus.pause_scale);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bench::Bench;
+    use super::*;
+    use crate::capture::Supply;
+
+    /// A stream reads the rows the servo dropped from it off the table: the
+    /// counter's change across it, through its wrap.
+    #[test]
+    fn a_stream_carries_the_rows_the_servo_dropped_from_it() {
+        let mut b = Bench::mg90(Supply::TwoS);
+        let (_, st) = b.stream(200, None, 0x1cd).unwrap();
+        assert_eq!(st.rows_dropped, 0);
+        b.c.pipe_mut().sim_mut().servo_table_mut(0, |t| {
+            t.telemetry.health.tel_drop_count = u16::MAX - 1;
+        });
+        b.servo.rows_dropped = 3;
+        let (_, st) = b.stream(200, None, 0x1cd).unwrap();
+        assert_eq!(st.rows_dropped, 3);
+        let id = b.id();
+        assert_eq!(
+            read_u16(&mut b.c, id, telemetry::TEL_DROP_COUNT).unwrap(),
+            1
+        );
     }
 }

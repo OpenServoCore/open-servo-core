@@ -15,7 +15,7 @@
 
 use super::{Cmd, Experiment, RigParams};
 use crate::fitmath::{mean, stddev};
-use crate::frame::{TEL_BIT_POS, TelFrame, TelemetrySnapshot};
+use crate::frame::{TEL_BIT_POS, TelBurst, TelemetrySnapshot};
 use crate::pot::Pot;
 use crate::regs::control;
 
@@ -334,9 +334,9 @@ impl Experiment for Bias {
         }
     }
 
-    fn push_tel(&mut self, frames: &[TelFrame]) {
+    fn push_tel(&mut self, burst: &TelBurst) {
         self.tel
-            .extend(frames.iter().filter_map(|f| f.pos.map(f64::from)));
+            .extend(burst.frames.iter().filter_map(|f| f.pos.map(f64::from)));
     }
 }
 

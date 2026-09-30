@@ -178,6 +178,9 @@ pub mod telemetry {
     /// OpenLoop ceiling restarts and its blind band begins; 0 = not
     /// published.
     pub const WINDOW_FLOOR_Q15: Reg = reg(0x0268, 2);
+    /// TEL rows the servo dropped because both stream buffers were waiting
+    /// for the wire; wraps. Firmware without the health block reads 0.
+    pub const TEL_DROP_COUNT: Reg = reg(0x0270, 2);
 }
 
 /// Every const above with its descriptor field name - the cross-check
@@ -285,6 +288,7 @@ pub const ALL: &[(&str, Reg)] = &[
     ("agg_seq", telemetry::AGG_SEQ),
     ("limit_flags", telemetry::LIMIT_FLAGS),
     ("window_floor_q15", telemetry::WINDOW_FLOOR_Q15),
+    ("tel_drop_count", telemetry::TEL_DROP_COUNT),
     ("page_echo", burst::PAGE_ECHO),
     ("state", burst::STATE),
     ("samples_len", burst::SAMPLES_LEN),

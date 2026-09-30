@@ -24,7 +24,7 @@
 
 use super::seek::{self, STOP_TOL, Watch};
 use super::{AbortReason, Cmd, Experiment, LIMIT_YIELD_FOLDED, RigParams};
-use crate::frame::{TelFrame, TelemetrySnapshot};
+use crate::frame::{TelBurst, TelemetrySnapshot};
 use crate::limits::guards;
 use crate::regs::control;
 use crate::runway::{
@@ -641,8 +641,9 @@ impl Experiment for Sweep {
 
     /// The capture's own frames give the speed it ended at: the polls
     /// after it have none to read over yet.
-    fn push_tel(&mut self, frames: &[TelFrame]) {
-        let pos: Vec<(u64, u16)> = frames
+    fn push_tel(&mut self, burst: &TelBurst) {
+        let pos: Vec<(u64, u16)> = burst
+            .frames
             .iter()
             .filter_map(|f| Some((f.tick, f.pos?)))
             .collect();

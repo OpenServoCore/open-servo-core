@@ -1359,4 +1359,32 @@ mod tests {
             }
         }
     }
+
+    /// The traverse on the bench servo the way cal drives it: a servo that
+    /// drops rows from its bursts ends it in capture's words, torque off,
+    /// with no ripple counted from them.
+    #[test]
+    fn a_traverse_with_dropped_rows_is_refused() {
+        use crate::rig::servo::bench::{Bench, torque};
+        use crate::rig::servo::{Servo, guard};
+
+        let mut b = Bench::mg90(crate::capture::Supply::TwoS);
+        b.servo.rows_dropped = 3;
+        let stops = (232, 3849);
+        let runway = Runway::new(traverse::guard(stops, Some((432, 3626))));
+        let p = RigParams::new(None, 350).with_floor(4356).with_stops(stops);
+        let cfg = order::sweep_cfg(0.1551, SweepCfg::default());
+        let mut exp = Guarded::new(Sweep::new(cfg, &p, runway), p);
+        guard(&mut b, |s| Pump::on(s, None).run(&mut exp)).unwrap();
+        assert_eq!(
+            check_abort("the traverse", exp.abort())
+                .unwrap_err()
+                .to_string(),
+            "the traverse aborted: the servo dropped 3 TEL rows: both stream buffers were \
+             waiting for the wire"
+        );
+        assert_eq!(exp.into_inner().captured().map(|c| c.to), Some(None));
+        let id = b.id();
+        assert_eq!(torque(&mut b.c, id), 0);
+    }
 }

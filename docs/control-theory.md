@@ -164,6 +164,8 @@ The current abort sits a quarter over the limit, judged on the 0.8 ms ident wind
 
 Governed is not a fault, it is a window the fit cannot use. Every fit reads the applied duty of each window (`duty_mean_q15`, or the TEL `duty` field) against the goal. A window still inside the slew the firmware allows is trimmed. A window the limiter held under the goal after that is governed and never fitted. A ladder rung, an inertia step or a stall dwell with no clean window at all is declined in plain words ("the current limit governed this window"), never fitted thin. A ladder rung that climbs on the limit is the normal case: its governed climb is trimmed and the settled windows fit.
 
+A TEL burst the servo dropped rows from (`tel_drop_count`, protocol sec 5.9) is missing them, so a rate fitted over it reads fast: it is not evidence, and the run ends on it the way `osc capture` refuses such a recording.
+
 #### The Jam Check and the Blocked Shaft
 
 Every run starts with the cheapest proof that the shaft moves and the pot reads it. The host drives into a band 300 counts either side of mid travel, then 100 counts out and back again. It starts at the class-safe duty, and each time a whole window of polls (8 polls of 20 ms) passes with the shaft still, it raises the duty by 2.5% of full scale, up to 2 V applied: 25.3% on 2S, 45.6% on USB. The first 100 counts of travel freeze the duty. That duty is the run's estimate of what moves this shaft. Once $R$ is known the seeks drive at it plus 2%, never over the stall-safe cap, and after the breakaway ramp at the measured breakaway plus 2%.

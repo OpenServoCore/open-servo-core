@@ -392,6 +392,7 @@ pub(super) mod fixture {
                 samples: rows,
                 holes: 0,
                 garble: 0,
+                rows_dropped: 0,
             },
         }
     }

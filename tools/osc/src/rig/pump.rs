@@ -14,7 +14,7 @@ use osc_client::pipe::Pipe;
 use osc_client::{Id, Inst, Opcode, Outcome, ResultCode};
 use osc_ident::burst::{self, ArmSeen, BurstIo, Capture, CaptureCfg, Pre};
 use osc_ident::exp::{Cmd, Experiment};
-use osc_ident::frame::{StreamAssembler, TelFrame, TelemetrySnapshot};
+use osc_ident::frame::{StreamAssembler, TelBurst, TelFrame, TelemetrySnapshot};
 use osc_ident::limits::PermitLease;
 use osc_ident::regs::{Reg, calib, config, control, telemetry};
 use osc_ident::units::{self, SenseParams};
@@ -165,6 +165,9 @@ pub(crate) struct BurstStats {
     pub(crate) samples: usize,
     pub(crate) holes: u64,
     pub(crate) garble: u16,
+    /// TEL rows the servo dropped from the burst: [`Servo::stream`] reads
+    /// them off the table, a bare burst leaves 0.
+    pub(crate) rows_dropped: u16,
 }
 
 /// One TEL burst on the main bus. With `goal` Some the goal write and the
@@ -221,6 +224,7 @@ pub(crate) fn exchange_tel_burst<P: Pipe>(
         samples: frames.len(),
         holes: asm.holes() + asm.skipped(),
         garble: reply.garble,
+        rows_dropped: 0,
     };
     if matches!(reply.outcome, Outcome::Timeout { .. }) {
         bail!(
@@ -407,8 +411,12 @@ impl<'a, S: Servo> Pump<'a, S> {
                         "tel: {} frames, {} samples, {} seq holes, {} garble bytes",
                         st.frames, st.samples, st.holes, st.garble
                     );
-                    exp.push_tel(&frames);
-                    self.tel.extend_from_slice(&frames);
+                    let tel = TelBurst {
+                        frames,
+                        rows_dropped: st.rows_dropped,
+                    };
+                    exp.push_tel(&tel);
+                    self.tel.extend_from_slice(&tel.frames);
                 }
                 Cmd::Burst {
                     duty_q15,
