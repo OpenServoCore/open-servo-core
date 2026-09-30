@@ -34,6 +34,7 @@ use super::envelope::{
 };
 use super::front::{self, Front, Proved};
 use super::procs::{CoastBlock, Procedure};
+use super::verdict::dropped;
 use super::{REST_MS, RULE, RUNG_TRIES, SETTLE_MS as SEEK_SETTLE_MS, Supply, TEL_MASK, WINDOW_MS};
 use crate::rig::park::park;
 use crate::rig::pump;
@@ -1022,11 +1023,14 @@ fn chain_excursion(segs: &[Segment], dir: Dir, lim: &Limits) -> Result<Excursion
     })
 }
 
-/// One pilot recording, the pack read at rest before it.
+/// One pilot recording, the pack read at rest before it. One the servo
+/// dropped rows from measures nothing: the pilot stops on it.
 fn record<S: Servo>(s: &mut S, cfg: &Cfg) -> Result<Recording> {
     let id = s.id();
     gate(s.client(), id)?;
-    sweep::record(s, cfg, |_| Ok(()))
+    let rec = sweep::record(s, cfg, |_| Ok(()))?;
+    dropped(rec.rows_dropped).map_err(|e| anyhow!(e))?;
+    Ok(rec)
 }
 
 fn gate<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<()> {
@@ -1828,6 +1832,22 @@ mod tests {
         let id = b.id();
         let armed = b.c.read(id, control::TEL_COUNT.addr, 2).unwrap();
         assert_eq!(armed, [0, 0], "no burst armed");
+    }
+
+    /// A rung the servo dropped rows from measures nothing: the pilot stops
+    /// on its first one in capture's words, and parks torque off.
+    #[test]
+    fn a_rung_with_dropped_rows_stops_the_pilot() {
+        let (mut b, front) = bench(Supply::TwoS);
+        b.servo.rows_dropped = 3;
+        let (env, parked) = pilot(&mut b, &front, Supply::TwoS, &procedure(), 64);
+        assert_eq!(
+            env.err().unwrap().to_string(),
+            "the servo dropped 3 TEL rows: both stream buffers were waiting for the wire"
+        );
+        parked.unwrap();
+        let id = b.id();
+        assert_eq!(torque(&mut b.c, id), 0);
     }
 
     #[test]
