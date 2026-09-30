@@ -34,7 +34,7 @@ use crate::burst::{
     ArmSeen, CHAN_VBUS, CHAN_VMOTOR_A, CHAN_VMOTOR_B, Capture, Meta, SAMPLE_HCLK, SAMPLE_US,
     SAMPLES, frame_len, rejected,
 };
-use crate::frame::{TelFrame, TelemetrySnapshot};
+use crate::frame::{TelBurst, TelFrame, TelemetrySnapshot};
 use crate::limits::PermitLease;
 use crate::lut::GridLut;
 use crate::regs::{ALL, Reg, control};
@@ -283,6 +283,9 @@ pub struct FakeServo {
     /// The plant a [`Cmd::Burst`] captures from; the burst's own mask
     /// replaces `chans`.
     pub burst: SynthBurst,
+    /// TEL rows the servo counts dropped from each stream; the frames stay
+    /// whole.
+    pub rows_dropped: u16,
     lcg: u64,
 }
 
@@ -348,6 +351,7 @@ impl FakeServo {
             t_duty_change: -1e9,
             transient_windows: 3.0,
             transient_gain: 1.5,
+            rows_dropped: 0,
             // r 8 ohm keeps the whole default duty ladder inside the 0.4 A
             // envelope, so the plan is not pruned by accident
             burst: SynthBurst {
@@ -1361,7 +1365,8 @@ fn charge_write(servo: &mut FakeServo, lease: &mut PermitLease, bus: &Bus, reg: 
 /// command log ("write <field> <value>" entries, "stream <samples> [<field>
 /// <value>]" per burst, plus a trailing marker on overrun). A Stream arm
 /// applies its goal at t0, synthesizes the burst's per-tick frames from the
-/// plant, and hands them back through `push_tel` - the driver contract. A
+/// plant, and hands them back through `push_tel` with the rows the servo
+/// counts dropped from it - the driver contract. A
 /// held stall permit is rewritten on the fake clock the way the CLI's pump
 /// rewrites it on the wall clock, pauses sliced so none outlasts a refresh.
 /// A burst arm the servo refuses ends the run the way the CLI's does: the
@@ -1374,7 +1379,6 @@ pub fn pump_on<E: Experiment>(
 ) -> Vec<String> {
     let mut log = Vec::new();
     let mut pending: Option<TelemetrySnapshot> = None;
-    let mut frames = Vec::new();
     let mut lease = PermitLease::default();
     let mut lcg = bus.slow_reads.unwrap_or(0);
     let keep = |lease: &mut PermitLease, servo: &mut FakeServo, log: &mut Vec<String>| {
@@ -1426,9 +1430,12 @@ pub fn pump_on<E: Experiment>(
                     }
                     None => log.push(format!("stream {samples}")),
                 }
-                frames.clear();
-                servo.stream(samples, &mut frames);
-                exp.push_tel(&frames);
+                let mut tel = TelBurst {
+                    frames: Vec::new(),
+                    rows_dropped: servo.rows_dropped,
+                };
+                servo.stream(samples, &mut tel.frames);
+                exp.push_tel(&tel);
                 keep(&mut lease, servo, &mut log);
             }
             Cmd::Burst {

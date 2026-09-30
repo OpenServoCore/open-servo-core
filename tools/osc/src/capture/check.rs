@@ -426,6 +426,7 @@ fn check_limit(rows: &Rows, m: &SweepMeta, d: &DriveMeta) -> Result<()> {
                 samples: s.rows,
                 holes: 0,
                 garble: 0,
+                rows_dropped: 0,
             },
         })
         .collect();
@@ -1032,7 +1033,7 @@ mod tests {
         assert!(check(&dir, "slow").is_ok());
 
         let dir = land_rung(&root, 2, "grid", Step::Drive(40, Some(361)), |b| {
-            b.rows_dropped = 3
+            b.servo.rows_dropped = 3
         });
         let n = meta(&dir)["rows_dropped"].as_u64().unwrap();
         assert!(n > 0);

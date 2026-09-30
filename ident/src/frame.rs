@@ -185,6 +185,14 @@ impl TelFrame {
     }
 }
 
+/// One TEL burst as decoded: its frames, and the rows the servo dropped
+/// from it, which the frames are missing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TelBurst {
+    pub frames: Vec<TelFrame>,
+    pub rows_dropped: u16,
+}
+
 /// Decode one stream payload into per-tick frames; sample i lands at
 /// `tick_base + i`. None when the payload cannot be a `mask` stream frame
 /// (short header, non-integral sample remainder, over 16 samples).

@@ -392,6 +392,9 @@ Governed windows, the envelope and the permit (`exp/mod.rs`):
   enable and withdrawn at the end.
 - `long_pause_is_sliced_under_the_lease` - a 3 s pause rewrites the
   permit every 250 ms.
+- `a_burst_with_dropped_rows_ends_the_run` - a burst the servo dropped
+  rows from ends the run torque off before its frames reach the fit; a
+  whole one runs to its result.
 
 The stop routes asked for (`exp/resistance.rs`, `exp/held.rs`):
 
@@ -412,6 +415,11 @@ The burst handshake and the driver (`burst.rs`, `tools/osc/src/rig/pump.rs`):
   and the arm is released.
 - `a_held_permit_refuses_a_stream_it_would_lapse_inside` - 750 ms
   passes, 751 does not, and torque off holds nothing.
+- `a_stream_carries_the_rows_the_servo_dropped_from_it`
+  (`rig/servo.rs`) - every stream reads `tel_drop_count` across itself,
+  through the wrap.
+- `a_traverse_with_dropped_rows_is_refused` (`cal/mod.rs`) - cal's
+  traverse through the driver ends in capture's words, torque off.
 
 ## Gear 3 in detail
 

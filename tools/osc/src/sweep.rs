@@ -343,8 +343,8 @@ pub(crate) struct Segment {
 /// A run that completed every chain, segments in commit order.
 pub(crate) struct Recording {
     pub(crate) segments: Vec<Segment>,
-    /// TEL rows the servo dropped while the run streamed: `tel_drop_count`
-    /// after the run less before it. The segments are missing them.
+    /// TEL rows the servo dropped from the segments' bursts, which the
+    /// segments are missing.
     pub(crate) rows_dropped: u16,
 }
 
@@ -690,12 +690,10 @@ pub(crate) fn drive(
     m
 }
 
-/// The descriptor-placed registers the run toggles, and the dropped-row
-/// counter it reads around the run.
+/// The descriptor-placed registers the run toggles.
 struct Regs {
     decay: Reg,
     zero_brake: Reg,
-    tel_drops: Reg,
 }
 
 fn resolve_regs<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<Regs> {
@@ -715,15 +713,12 @@ fn resolve_regs<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<Regs> {
     Ok(Regs {
         decay: field_reg("openloop_decay")?,
         zero_brake: field_reg("openloop_zero_brake")?,
-        tel_drops: field_reg("tel_drop_count")?,
     })
 }
 
 /// Baseline, then every chain of every direction. Each committed segment
 /// reaches `on_seg` as it lands, so a caller keeps what was captured before
 /// a later chain gives up. Leaves the servo guarded and torqued off.
-/// Firmware without the health block reads `tel_drop_count` as 0, so it
-/// records no dropped rows.
 pub(crate) fn record<S: Servo>(
     s: &mut S,
     cfg: &Cfg,
@@ -731,7 +726,6 @@ pub(crate) fn record<S: Servo>(
 ) -> Result<Recording> {
     let id = s.id();
     let regs = resolve_regs(s.client(), id)?;
-    let drops_before = read_u16(s.client(), id, regs.tel_drops)?;
     let r = guard(s, |s| chains(s, cfg, &regs, &mut on_seg));
     // Belt for a run cut mid-burst: brake flag clear, decay back to slow,
     // guards back on. The permit is RAM-only so a power cycle clears it
@@ -740,7 +734,9 @@ pub(crate) fn record<S: Servo>(
     let _ = s.write(regs.decay, Decay::Slow as i32);
     let _ = s.write(control::STALL_PERMIT, 0);
     let segments = r?;
-    let rows_dropped = read_u16(s.client(), id, regs.tel_drops)?.wrapping_sub(drops_before);
+    let rows_dropped = segments
+        .iter()
+        .fold(0, |n: u16, g| n.saturating_add(g.stats.rows_dropped));
     Ok(Recording {
         segments,
         rows_dropped,
@@ -1287,7 +1283,7 @@ mod tests {
                 .join(format!("osc-sweep-{}-dropped-{drops}", std::process::id()));
             std::fs::create_dir_all(&out).unwrap();
             let mut b = Bench::mg90(Supply::TwoS);
-            b.rows_dropped = drops;
+            b.servo.rows_dropped = drops;
             let rec = record(&mut b, &cfg, |_| Ok(())).unwrap();
             let csv_path = out.join("sweep.csv");
             let mut w = std::fs::File::create(&csv_path).unwrap();

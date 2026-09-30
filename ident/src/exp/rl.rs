@@ -49,7 +49,7 @@ use super::{AbortReason, Applied, Cmd, Experiment, GOVERNED, RigParams, judge};
 use crate::fitmath::{linear_ls, median, origin_ls, quantile};
 use crate::frame::{
     TEL_BIT_CURRENT_RAW, TEL_BIT_DUTY, TEL_BIT_POS, TEL_BIT_VBUS_RAW, TEL_BIT_VMOTOR_A,
-    TEL_BIT_VMOTOR_B, TelFrame, TelemetrySnapshot,
+    TEL_BIT_VMOTOR_B, TelBurst, TelFrame, TelemetrySnapshot,
 };
 use crate::limits::{DutyPlan, q15_floor};
 use crate::regs::control;
@@ -818,7 +818,7 @@ impl Experiment for Rl {
         self.halt
     }
 
-    fn push_tel(&mut self, frames: &[TelFrame]) {
+    fn push_tel(&mut self, burst: &TelBurst) {
         if let Some((kind, dir, bias, cmd_duty_q15)) = self.armed.take() {
             self.segs.push(Segment {
                 chain: self.chain_id,
@@ -826,7 +826,7 @@ impl Experiment for Rl {
                 dir,
                 bias,
                 cmd_duty_q15,
-                tel: frames.to_vec(),
+                tel: burst.frames.clone(),
             });
         }
     }
