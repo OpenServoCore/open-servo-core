@@ -7,7 +7,6 @@ use osc_integration::plant::{
     FakeIo, RL_R_Q12, RL_VBUS, RlPlant, TIMING, duty_of, kernel, last_cmd, seed, stamp,
 };
 use osc_servo_core::estimator::window::floor_duty;
-use osc_servo_core::kernel::DECIM_MED;
 use osc_servo_core::kernel::duty_limit::UP_Q15;
 use osc_servo_core::kernel::faults::{BIT_STALL, CODE_STALL};
 use osc_servo_core::regions::control::addr::lifecycle::STALL_PERMIT;
@@ -310,18 +309,22 @@ fn openloop_wall_hit_at_speed_recovers_inside_1ms() {
     }
 }
 
-/// The stall timer folds the limit to the yield, and nothing afterwards
-/// runs past the limit or faults. The fold's release margin is thin: in
-/// OpenLoop the observer sees zero current on every invalid window, so its
-/// disturbance estimate settles near `stall_release_counts` and a fold can
-/// let go and re-probe the stop on its own.
+/// The stall timer folds the limit to the yield, and the fold holds for
+/// the rest of the stall: under the window floor the observer reads the
+/// last measured current, the ceiling's re-probe at the floor, which stalls
+/// over the yield, so its disturbance estimate stays over
+/// `stall_release_counts`. Nothing runs past the limit or faults.
 #[test]
 fn openloop_stall_yields_like_closed_loop() {
     for goal in [GOAL_64, -GOAL_64] {
         let sh = stall_rig(StallResponse::Yield);
         let (mut k, mut p) = locked_stall(&sh, goal, |sh| i_lim(sh) != LIM);
         assert_eq!(i_lim(&sh), YIELD, "goal {goal}");
-        let r = run(&mut k, &sh, &mut p, 20_000);
+        let mut r = Vec::new();
+        for n in 0..20_000 {
+            r.extend(run(&mut k, &sh, &mut p, 1));
+            assert_eq!(i_lim(&sh), YIELD, "goal {goal}: released at tick {n}");
+        }
         assert!(peak(&r) <= LIM as i32, "goal {goal}: peak {}", peak(&r));
         assert_eq!(faults(&sh), 0, "goal {goal}");
     }
@@ -420,29 +423,18 @@ fn blind_band_caps_at_i_lim_when_r_is_known() {
     }
 }
 
-/// While folded, the blind band caps the current at the yield. The fold
-/// can let go on its own (the release margin is thin, see
-/// `openloop_stall_yields_like_closed_loop`), so the caps are judged over
-/// the folded stretch, which must last at least 100 ms.
+/// Folded, the blind band caps the current at the yield for the whole
+/// stall (the fold holds, see `openloop_stall_yields_like_closed_loop`).
 #[test]
 fn yield_fold_reaches_the_blind_band() {
     for goal in [GOAL_64, -GOAL_64] {
         let sh = stall_rig(StallResponse::Yield);
         let (mut k, mut p) = locked_stall(&sh, goal, |sh| i_lim(sh) != LIM);
-        let mut r = Vec::new();
-        while r.len() < 20_000 && i_lim(&sh) == YIELD {
-            r.extend(run(&mut k, &sh, &mut p, 1));
-        }
+        let r = run(&mut k, &sh, &mut p, 20_000);
         let what = format!("goal {goal}");
-        assert!(
-            r.len() >= 100 * MS as usize,
-            "{what}: folded {} ticks",
-            r.len()
-        );
-        // the published limit trails the fold's release by up to a period
-        let r = &r[..r.len() - DECIM_MED as usize];
-        assert_blind_band_caps(r, YIELD, &what);
-        let mn = mean(r);
+        assert_eq!(i_lim(&sh), YIELD, "{what}");
+        assert_blind_band_caps(&r, YIELD, &what);
+        let mn = mean(&r);
         assert!(mn <= YIELD as i32 * 12 / 10, "{what}: mean {mn}");
         assert_eq!(faults(&sh), 0, "{what}");
     }
