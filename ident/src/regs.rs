@@ -107,6 +107,9 @@ pub mod control {
     /// Extras behind the shunt: bit 0 vmotor_a, bit 1 vmotor_b, bit 2 vbus.
     /// Latched at the arm; values above 7 reject with Validation.
     pub const BURST_CHANS: Reg = reg(0x019a, 1);
+    /// The ident aggregate (`I_MEAN_COUNTS..=AGG_SEQ`) runs while true; off,
+    /// its registers hold their last window. RAM only, off at boot.
+    pub const IDENT_AGG: Reg = reg(0x01e0, 1);
 }
 
 /// BURST readback section, all RO. One READ of `PAGE_ECHO..=RESTORE_DIR` is
@@ -249,6 +252,7 @@ pub const ALL: &[(&str, Reg)] = &[
     ("arm", control::BURST_ARM),
     ("page", control::BURST_PAGE),
     ("chans", control::BURST_CHANS),
+    ("ident_agg", control::IDENT_AGG),
     ("fault_flags", telemetry::FAULT_FLAGS),
     ("status_flags", telemetry::STATUS_FLAGS),
     ("mode_active", telemetry::MODE_ACTIVE),

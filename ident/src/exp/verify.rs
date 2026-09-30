@@ -1056,7 +1056,10 @@ mod tests {
             writes(&log, "goal_current").is_empty(),
             "no step on a blocked shaft"
         );
-        assert_eq!(log.last().map(String::as_str), Some("write stall_permit 0"));
+        assert_eq!(
+            log[log.len() - 2..],
+            ["write stall_permit 0", "write ident_agg 0"]
+        );
         assert!(!servo.torque && !servo.permit_live());
 
         let mut servo = bench_mg90(RAIL_USB);

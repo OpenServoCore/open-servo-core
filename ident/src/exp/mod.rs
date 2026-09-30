@@ -236,10 +236,12 @@ impl core::fmt::Display for AbortReason {
 impl std::error::Error for AbortReason {}
 
 enum GuardState {
+    AggOn,
     Run,
     DutyOff,
     TorqueOff,
     PermitOff,
+    AggOff,
     Finished,
 }
 
@@ -247,6 +249,9 @@ enum GuardState {
 /// the inner experiment with duty-0 + torque-off before reporting Done.
 /// The inner experiment is left unstepped from that point on, so a stall
 /// permit it granted is withdrawn here: the envelope watches the writes.
+/// The current abort and every experiment read the ident aggregate, which
+/// the servo runs only on request: the envelope turns it on before the
+/// first step and off once the run is over, aborted or not.
 pub struct Guarded<E> {
     exp: E,
     params: RigParams,
@@ -260,7 +265,7 @@ impl<E: Experiment> Guarded<E> {
         Self {
             exp,
             params,
-            state: GuardState::Run,
+            state: GuardState::AggOn,
             abort: None,
             permit: false,
         }
@@ -311,15 +316,30 @@ impl<E: Experiment> Experiment for Guarded<E> {
             self.state = GuardState::DutyOff;
         }
         match self.state {
-            GuardState::Run => {
-                let cmd = self.exp.step(obs);
-                if let Cmd::Write { reg, value } = cmd
-                    && reg == control::STALL_PERMIT
-                {
-                    self.permit = value != 0;
+            GuardState::AggOn => {
+                self.state = GuardState::Run;
+                Cmd::Write {
+                    reg: control::IDENT_AGG,
+                    value: 1,
                 }
-                cmd
             }
+            GuardState::Run => match self.exp.step(obs) {
+                Cmd::Done => {
+                    self.state = GuardState::Finished;
+                    Cmd::Write {
+                        reg: control::IDENT_AGG,
+                        value: 0,
+                    }
+                }
+                cmd => {
+                    if let Cmd::Write { reg, value } = cmd
+                        && reg == control::STALL_PERMIT
+                    {
+                        self.permit = value != 0;
+                    }
+                    cmd
+                }
+            },
             GuardState::DutyOff => {
                 self.state = GuardState::TorqueOff;
                 Cmd::Write {
@@ -331,7 +351,7 @@ impl<E: Experiment> Experiment for Guarded<E> {
                 self.state = if self.permit {
                     GuardState::PermitOff
                 } else {
-                    GuardState::Finished
+                    GuardState::AggOff
                 };
                 Cmd::Write {
                     reg: control::TORQUE_ENABLE,
@@ -339,10 +359,17 @@ impl<E: Experiment> Experiment for Guarded<E> {
                 }
             }
             GuardState::PermitOff => {
-                self.state = GuardState::Finished;
+                self.state = GuardState::AggOff;
                 self.permit = false;
                 Cmd::Write {
                     reg: control::STALL_PERMIT,
+                    value: 0,
+                }
+            }
+            GuardState::AggOff => {
+                self.state = GuardState::Finished;
+                Cmd::Write {
+                    reg: control::IDENT_AGG,
                     value: 0,
                 }
             }
@@ -805,6 +832,7 @@ mod tests {
         let params = crate::exp::testkit::rig();
         let mut ws = WindowStream::new(&params);
         let goal = 20971;
+        s.write(control::IDENT_AGG, 1);
         s.write(control::TORQUE_ENABLE, 1);
         s.write(control::GOAL_DUTY, goal as i32);
         ws.mark_goal(goal);
@@ -842,9 +870,10 @@ mod tests {
         servo.fault_at_ms = Some(50.0);
         let log = pump(&mut exp, &mut servo, 10_000);
         assert!(matches!(exp.abort(), Some(AbortReason::Fault { .. })));
-        let tail: Vec<&String> = log.iter().rev().take(2).collect();
-        assert_eq!(*tail[1], "write goal_duty 0");
-        assert_eq!(*tail[0], "write torque_enable 0");
+        let tail: Vec<&String> = log.iter().rev().take(3).collect();
+        assert_eq!(*tail[2], "write goal_duty 0");
+        assert_eq!(*tail[1], "write torque_enable 0");
+        assert_eq!(*tail[0], "write ident_agg 0");
     }
 
     #[test]
@@ -877,7 +906,10 @@ mod tests {
         let mut exp = Guarded::new(Drive(0), crate::exp::testkit::rig());
         let log = pump(&mut exp, &mut servo, 10_000);
         assert!(matches!(exp.abort(), Some(AbortReason::PosGuard { pos } ) if pos > 3950));
-        assert_eq!(*log.last().unwrap(), "write torque_enable 0");
+        assert_eq!(
+            log[log.len() - 2..],
+            ["write torque_enable 0", "write ident_agg 0"]
+        );
     }
 
     /// A scripted run: each entry is one command, a `Read` result kept.
@@ -898,6 +930,39 @@ mod tests {
 
     fn write(reg: Reg, value: i32) -> Cmd {
         Cmd::Write { reg, value }
+    }
+
+    /// The envelope runs the aggregate for exactly its run; a drive that
+    /// runs outside one reads windows that never move.
+    #[test]
+    fn the_envelope_brackets_the_ident_aggregate() {
+        let script = || {
+            Script(
+                vec![
+                    Cmd::Read,
+                    write(control::TORQUE_ENABLE, 1),
+                    write(control::GOAL_DUTY, 6000),
+                    Cmd::Pause { ms: 50 },
+                    Cmd::Read,
+                    write(control::GOAL_DUTY, 0),
+                    write(control::TORQUE_ENABLE, 0),
+                ],
+                None,
+            )
+        };
+        let mut servo = FakeServo::new(3.37);
+        let mut bare = script();
+        pump(&mut bare, &mut servo, 100);
+        let o = bare.1.expect("the read");
+        assert_eq!((o.agg_seq, o.i_mean_counts, o.duty_mean_q15), (0, 0, 0));
+
+        let mut exp = Guarded::new(script(), testkit::rig());
+        let log = pump(&mut exp, &mut servo, 100);
+        assert_eq!(log.first().map(String::as_str), Some("write ident_agg 1"));
+        assert_eq!(log.last().map(String::as_str), Some("write ident_agg 0"));
+        let o = exp.into_inner().1.expect("the read");
+        assert!(o.agg_seq > 0 && o.duty_mean_q15 == 6000, "{o:?}");
+        assert!(!servo.ident_agg);
     }
 
     /// Pushed against the low soft limit at a stop: only a live permit
@@ -1062,6 +1127,7 @@ mod tests {
             s.jam = Some(s.pos);
             let mut rung = Script(
                 vec![
+                    write(control::IDENT_AGG, 1),
                     write(control::TORQUE_ENABLE, 1),
                     write(control::GOAL_DUTY, 6500),
                     Cmd::Pause { ms: 100 },

@@ -208,8 +208,16 @@ pub struct FakeServo {
     /// Kernel ticks one bus transaction costs.
     pub ticks_lost_per_txn: f64,
     /// Kernel ticks run since boot: `sample_tick`, and `agg_seq` in
-    /// windows of them.
+    /// windows of them while the aggregate runs.
     ticks: f64,
+    /// CONTROL `ident_agg`: off, a read repeats the aggregate the last read
+    /// with it on saw, and `agg_seq` stops.
+    pub ident_agg: bool,
+    /// The tick the aggregate last turned on at, and `agg_seq` then.
+    agg_from: f64,
+    agg_seq0: u16,
+    /// `i_mean_counts`, `vdiff_mean`, `duty_mean_q15` as last read.
+    agg_held: (i16, i16, i16),
     /// Latch a fault once this many [`Cmd::Burst`]s have been captured.
     pub fault_after_bursts: Option<u32>,
     pub bursts: u32,
@@ -302,6 +310,10 @@ impl FakeServo {
             ke_stored: None,
             ticks_lost_per_txn: TICKS_LOST_PER_TRANSACTION,
             ticks: 0.0,
+            ident_agg: false,
+            agg_from: 0.0,
+            agg_seq0: 0,
+            agg_held: (0, 0, 0),
             fault_after_bursts: None,
             bursts: 0,
             soft: None,
@@ -750,6 +762,14 @@ impl FakeServo {
             self.t_duty_change = self.t_ms;
         } else if reg == control::TEL_MASK {
             self.tel_mask = value as u16;
+        } else if reg == control::IDENT_AGG {
+            let on = value != 0;
+            if on && !self.ident_agg {
+                self.agg_from = self.ticks;
+            } else if !on && self.ident_agg {
+                self.agg_seq0 = self.agg_seq();
+            }
+            self.ident_agg = on;
         } else if reg == control::STALL_PERMIT {
             self.permit = value != 0;
             if let Some(lease) = self.lease_ms {
@@ -763,6 +783,13 @@ impl FakeServo {
         if !self.torque {
             self.permit_until = f64::NEG_INFINITY;
         }
+    }
+
+    /// Whole windows since the aggregate turned on, counted on from the
+    /// `agg_seq` it held.
+    fn agg_seq(&self) -> u16 {
+        let windows = (self.ticks - self.agg_from) as u64 / TICKS_PER_WINDOW as u64;
+        self.agg_seq0.wrapping_add(windows as u16)
     }
 
     fn reset_ceiling(&mut self, from: f64) {
@@ -943,6 +970,13 @@ impl FakeServo {
         };
         let noise = self.noise();
         let pos = self.read_pot(self.pos + glitch, noise);
+        let agg_seq = if self.ident_agg {
+            self.agg_held = (i.round() as i16, vdiff.round() as i16, duty);
+            self.agg_seq()
+        } else {
+            self.agg_seq0
+        };
+        let (i_mean, vdiff_mean, duty_mean) = self.agg_held;
         let omega_bemf = match self.ke_stored {
             Some(ke) if driving => {
                 let v = duty as f64 / 32767.0 * self.vbus;
@@ -960,14 +994,14 @@ impl FakeServo {
             current: (512.0 + if driving { i } else { 0.0 }).round() as u16,
             current_bias_counts: 512,
             vbus_counts: self.vbus as u16,
-            i_mean_counts: i.round() as i16,
-            vdiff_mean: vdiff.round() as i16,
-            duty_mean_q15: duty,
+            i_mean_counts: i_mean,
+            vdiff_mean,
+            duty_mean_q15: duty_mean,
             duty_applied_q15: duty,
             i_lim_counts: self.limit().unwrap_or(0),
             limit_flags: self.limit_flags(),
             window_floor_q15: self.floor_q15 as u16,
-            agg_seq: (self.ticks as u64 / TICKS_PER_WINDOW as u64) as u16,
+            agg_seq,
             ..Default::default()
         }
     }
@@ -1470,6 +1504,7 @@ mod tests {
             s.jam = jam;
             s.pos = pos;
             s.tel_mask = (1 << 1) | (1 << 3);
+            s.write(control::IDENT_AGG, 1);
             s.write(control::TORQUE_ENABLE, 1);
             s.write(control::GOAL_DUTY, sign * pct(64));
             assert_eq!(s.limit_flags(), 0, "a plain slew is not governed");
@@ -1502,6 +1537,7 @@ mod tests {
         // bottom, within one step of the ceiling over it
         let mut s = bench_mg90(3204);
         s.pos = 1000.0;
+        s.write(control::IDENT_AGG, 1);
         s.write(control::TORQUE_ENABLE, 1);
         s.write(control::GOAL_DUTY, pct(64));
         let step = 128.0 / 32767.0 * s.vbus / s.r;
@@ -1578,6 +1614,7 @@ mod tests {
     fn fake_reversal_cannot_go_under_the_base() {
         let mut s = bench_mg90(3204);
         s.pos = 1000.0;
+        s.write(control::IDENT_AGG, 1);
         s.write(control::TORQUE_ENABLE, 1);
         s.write(control::GOAL_DUTY, pct(30));
         s.advance(150);
@@ -1715,6 +1752,7 @@ mod tests {
         let bus = Bus::BENCH.with_read_ms(1.9);
         let mut exp = Steps::new(vec![Cmd::Read; 501]);
         let mut s = FakeServo::new(3.37);
+        s.write(control::IDENT_AGG, 1);
         pump_on(&mut exp, &mut s, 2000, bus);
         let (a, b) = (exp.seen[0], exp.seen[500]);
         let host = (b.host_ms - a.host_ms) * s.tick_hz() / 1000.0;

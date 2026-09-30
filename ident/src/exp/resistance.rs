@@ -395,9 +395,10 @@ mod tests {
         let zeros = log.iter().filter(|l| *l == "write goal_duty 0").count();
         assert!(zeros >= 8, "one rest per dwell, got {zeros}");
         // final safety pair
-        let tail: Vec<&String> = log.iter().rev().take(2).collect();
-        assert_eq!(*tail[1], "write goal_duty 0");
-        assert_eq!(*tail[0], "write torque_enable 0");
+        let tail: Vec<&String> = log.iter().rev().take(3).collect();
+        assert_eq!(*tail[2], "write goal_duty 0");
+        assert_eq!(*tail[1], "write torque_enable 0");
+        assert_eq!(*tail[0], "write ident_agg 0");
     }
 
     /// The first read an experiment was stepped with.
@@ -446,9 +447,10 @@ mod tests {
                 "a dwell was commanded: {log:?}"
             );
             assert!(exp.into_inner().samples().is_empty());
-            let tail: Vec<&String> = log.iter().rev().take(2).collect();
-            assert_eq!(*tail[1], "write goal_duty 0");
-            assert_eq!(*tail[0], "write torque_enable 0");
+            let tail: Vec<&String> = log.iter().rev().take(3).collect();
+            assert_eq!(*tail[2], "write goal_duty 0");
+            assert_eq!(*tail[1], "write torque_enable 0");
+            assert_eq!(*tail[0], "write ident_agg 0");
         }
     }
 

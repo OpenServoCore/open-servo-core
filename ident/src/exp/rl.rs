@@ -1619,10 +1619,11 @@ mod tests {
             })
             .unwrap();
         assert!(torque_on < first_drive, "torque on before any drive");
-        let tail: Vec<&String> = log.iter().rev().take(3).collect();
-        assert_eq!(*tail[2], "write goal_duty 0");
-        assert_eq!(*tail[1], "write tel_mask 0");
-        assert_eq!(*tail[0], "write torque_enable 0");
+        let tail: Vec<&String> = log.iter().rev().take(4).collect();
+        assert_eq!(*tail[3], "write goal_duty 0");
+        assert_eq!(*tail[2], "write tel_mask 0");
+        assert_eq!(*tail[1], "write torque_enable 0");
+        assert_eq!(*tail[0], "write ident_agg 0");
         // a rest baseline, a probe chain, both directions at two biases,
         // and the null control
         let kinds: Vec<SegKind> = [
