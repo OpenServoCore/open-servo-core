@@ -5,7 +5,7 @@
 
 use super::*;
 use crate::estimator::OmegaSource;
-use crate::regions::config::StallResponse;
+use crate::regions::config::{DecaySelect, StallResponse};
 use crate::traits::Sensors;
 use crate::{RegionStorage, Shared};
 
@@ -689,16 +689,15 @@ fn openloop_duty_passthrough_clamped_with_decay() {
         }
         other => panic!("expected Drive, got {other:?}"),
     }
-    // duty_max clamps the passthrough, at once
-    sh.table.with_mut(|t| {
-        t.config.loop_current.duty_max_q15 = 5000;
-        t.control.lifecycle.goal_duty = 8000;
-    });
-    k.on_tick(frame(2000, BIAS), &sh);
-    match last_cmd(&k) {
-        MotorCmd::Drive { duty, .. } => assert_eq!(duty.0, 5000),
-        other => panic!("expected Drive, got {other:?}"),
+    // duty_max clamps the passthrough at the next medium boundary, at once
+    sh.table
+        .with_mut(|t| t.config.loop_current.duty_max_q15 = 5000);
+    while k.decim_med != DECIM_MED - 1 {
+        k.on_tick(frame(2000, BIAS), &sh);
+        assert_eq!(written_duty(&k), 8000);
     }
+    k.on_tick(frame(2000, BIAS), &sh);
+    assert_eq!(written_duty(&k), 5000);
 }
 
 #[test]
@@ -865,7 +864,12 @@ fn reversed_polarity_negates_vdiff() {
     k.on_tick(frame(2000, BIAS), &sh);
     k.on_tick(frame(2000, BIAS), &sh);
     assert_eq!(k.vdiff_last, -(3000 - 40));
+    // the rewire lands at the next medium boundary
     sh.table.with_mut(|t| t.config.limits.drive_polarity = true);
+    while k.decim_med != DECIM_MED - 1 {
+        k.on_tick(frame(2000, BIAS), &sh);
+        assert_eq!(k.vdiff_last, -(3000 - 40));
+    }
     k.on_tick(frame(2000, BIAS), &sh);
     assert_eq!(k.vdiff_last, 3000 - 40);
 }
@@ -965,12 +969,17 @@ fn trough_bias_tracks_only_inside_slow_drive_windows() {
     }
     assert!(matches!(last_cmd(&k), MotorCmd::Disabled));
     assert_eq!(published_bias(&sh), BIAS);
-    // Fast decay: the trough IS the drive window
+    // Fast decay: the trough IS the drive window. The decay lands at a
+    // medium boundary, so it goes in ahead of the drive.
+    sh.table
+        .with_mut(|t| t.config.limits.openloop_decay = DecaySelect::Fast);
+    for _ in 0..DECIM_MED {
+        k.on_tick(shifted(), &sh);
+    }
     sh.table.with_mut(|t| {
         t.control.lifecycle.torque_enable = true;
         t.control.lifecycle.mode = Mode::OpenLoop;
         t.control.lifecycle.goal_duty = 8000;
-        t.config.limits.openloop_decay = DecaySelect::Fast;
     });
     for _ in 0..300 {
         k.on_tick(shifted(), &sh);

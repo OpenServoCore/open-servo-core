@@ -26,9 +26,9 @@ const AW_LIM_CC: i32 = 8192;
 /// dithering around zero must not chatter +-fric_fc into i_ref.
 const FRIC_OMEGA_EPS_CSQ16: i32 = 1 << 16;
 
-/// CONFIG loop_velocity gains plus the CALIB friction model, loaded fresh
-/// each step by the kernel (`CurrentGains` convention).
-#[derive(Copy, Clone)]
+/// CONFIG loop_velocity gains plus the CALIB friction model
+/// (`CurrentGains` convention).
+#[derive(Copy, Clone, Default)]
 pub struct VelocityGains {
     pub kp_q88: u16,
     pub ki_q412: u16,

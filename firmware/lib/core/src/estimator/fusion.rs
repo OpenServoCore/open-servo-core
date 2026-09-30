@@ -45,9 +45,9 @@ const TAU_D_LIM_CCQ16: i32 = 4095 << 16;
 /// csQ16 saturates (velocity.rs shift discipline).
 const ACCEL_LIM_CC: i32 = 8192;
 
-/// CALIB motor (b_i, fric_fc) + CONFIG fusion correction gains, loaded fresh
-/// each step by the kernel.
-#[derive(Copy, Clone)]
+/// CALIB motor (b_i, fric_fc) + CONFIG fusion correction gains, prebuilt by
+/// the kernel's configuration refresh.
+#[derive(Copy, Clone, Default)]
 pub struct FusionGains {
     pub b_i_q313: u16,
     pub l1_q016: u16,

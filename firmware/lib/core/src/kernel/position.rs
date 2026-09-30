@@ -32,9 +32,8 @@ const E_LIM_CQ16: i32 = 1 << 23;
 /// identity's largest band, 65535 x 16, sits under it.
 const BAND_SAT_Q4: u32 = (1 << 20) - 1;
 
-/// CONFIG loop_position gain + hold fields, loaded fresh each step by the
-/// kernel (`CurrentGains` convention).
-#[derive(Copy, Clone)]
+/// CONFIG loop_position gain + hold fields (`CurrentGains` convention).
+#[derive(Copy, Clone, Default)]
 pub struct PositionCfg {
     pub kp_q88: u16,
     /// Raw sensor counts; 0 disables the hold predicate entirely.

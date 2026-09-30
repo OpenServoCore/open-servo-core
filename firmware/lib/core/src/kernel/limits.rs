@@ -21,9 +21,9 @@ pub mod flag {
     pub const PERMIT: u8 = 1 << 3;
 }
 
-/// CONFIG limits + thermal + pos-limits fields the block consumes, loaded
-/// fresh by the kernel each step (`CurrentGains` convention).
-#[derive(Copy, Clone)]
+/// CONFIG limits + thermal + pos-limits fields the block consumes
+/// (`CurrentGains` convention).
+#[derive(Copy, Clone, Default)]
 pub struct LimitCfg {
     pub current_limit_counts: u16,
     pub stall_response: StallResponse,
