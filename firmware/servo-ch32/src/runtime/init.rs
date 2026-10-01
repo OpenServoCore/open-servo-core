@@ -7,6 +7,7 @@ use crate::hal::{
     gpio::{self, PinMode},
     opa, rcc, systick, timer, usart,
 };
+use crate::providers::break_wake::BreakWake;
 use crate::providers::config_store;
 use crate::providers::crc::Crc;
 use crate::providers::ring::RxRing;
@@ -88,11 +89,12 @@ pub fn bringup(
         ADC_DMA_BUF_LEN,
     );
 
-    bring_up_bus(pre.usart_brr);
-    crate::log::debug!("bus usart + rx ring + crc engine armed");
+    bring_up_bus(pre.usart_brr, pre.break_reload);
+    crate::log::debug!("bus usart + rx ring + break wake + crc engine armed");
 
     // Drivers::install runs after the bus peripherals are live: `ServoBus
-    // ::new` applies the table's effective baud to the already-configured BRR.
+    // ::new` applies the table's effective baud to the already-configured
+    // BRR and break-wake reload.
     // SAFETY: bringup-only, pre-IRQ; sole writer.
     unsafe { Drivers::install(wiring) };
     crate::log::debug!("drivers installed");
@@ -291,9 +293,10 @@ fn configure_adc_dma_scan(w: &BoardWiring) {
 }
 
 /// osc-native transport bring-up: USART1 (single-wire HDSEL), the circular
-/// RX ring on DMA1_CH5 (armed once), and the SPI-CRC engine. TX arms
-/// (DMA1_CH4) are configured per-arm by `TxWire`, so no channel init here.
-fn bring_up_bus(brr: u32) {
+/// RX ring on DMA1_CH5 (armed once), the TIM2 break wake on the bus pin,
+/// and the SPI-CRC engine. TX arms (DMA1_CH4) are configured per-arm by
+/// `TxWire`, so no channel init here.
+fn bring_up_bus(brr: u32, break_reload: u16) {
     let regs = chip::BUS_USART_MAPPING.regs();
 
     // Arm the RX ring before UE/DMAR come up so the channel is live the
@@ -306,9 +309,9 @@ fn bring_up_bus(brr: u32) {
         size: dma::Size::BITS8,
         htie: false,
         tcie: false,
-        // VERYHIGH, alone at the top of the ladder (see `hal::dma`): an inbound
-        // byte's drain preempts every other channel per-beat, so it always
-        // lands in the ring before the break IRQ reads the cursor.
+        // VERYHIGH, at the top of the ladder (see `hal::dma`): an inbound
+        // byte's drain waits at most one beat, so it lands in the ring
+        // before any transport ISR reads the cursor.
         pl: dma::Pl::VERYHIGH,
     };
     dma::configure(
@@ -320,8 +323,11 @@ fn bring_up_bus(brr: u32) {
     );
     dma::enable(dma::Channel::CH5);
 
-    // Wire mode, TE/RE, BRR, UE, then RX-DMA + error IRQ. No IDLE IRQ.
+    // Wire mode, TE/RE, BRR, UE, then RX-DMA. No receive IRQ.
     usart::init_bus(regs, brr);
+
+    // The only receive wake (protocol sec 3.4).
+    BreakWake::init(break_reload);
 
     // One-shot SPI-CRC engine setup (clock-gate + config; held live).
     Crc::init();

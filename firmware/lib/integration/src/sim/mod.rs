@@ -933,7 +933,7 @@ impl Sim {
         self.core.borrow_mut().begin_frame(break_start, talker);
         for j in 0..self.servos.len() {
             if talker == Talker::Servo(j) {
-                continue; // no own-TX echo (F9)
+                continue; // no own-TX echo (F9), the break wake muted for it
             }
             self.deliver_break_to(j, baud, break_start);
         }

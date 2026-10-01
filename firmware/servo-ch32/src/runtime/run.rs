@@ -56,12 +56,12 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
     let mut rescue_low_since: Option<u32> = None;
     let mut rescue_ndtr: u16 = dma::remaining(dma::Channel::CH5);
     loop {
-        // Transport RX/TX/deadlines are ISR-driven (USART1 + SysTick, PFIC
-        // HIGH). Main loop owns LED housekeeping, the link-diagnostics
+        // Transport RX/TX/deadlines are ISR-driven (TIM2 + USART1 + SysTick,
+        // PFIC HIGH). Main loop owns LED housekeeping, the link-diagnostics
         // publish, the TEL burst poll, the deferred-reboot poll, and sleep.
         //
-        // STAT LED: dark when idle, lit while the bus talks -- any USART1
-        // wire event latches `BUS_ACTIVITY`, and the light holds past the
+        // STAT LED: dark when idle, lit while the bus talks -- any wire
+        // vector latches `BUS_ACTIVITY`, and the light holds past the
         // last event so an exchange reads as one episode. The `wfi` wake
         // cadence is the poll cadence: wire IRQs while talking, the 20 kHz
         // kernel tick otherwise.
@@ -190,10 +190,10 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
             pfic::software_reset();
         }
 
-        // Rescue sampler (protocol sec 9.1). The break detector latches only at a
-        // dominant span's END, so no transport wake can
-        // observe a rescue pulse in progress -- the slow loop measures it
-        // instead, which is where a 300 us-scale signal belongs. One sample
+        // Rescue sampler (protocol sec 9.1). The break detector wakes once
+        // per dominant span, a break-length in, so no transport wake can
+        // measure a rescue pulse -- the slow loop measures it instead,
+        // which is where a 300 us-scale signal belongs. One sample
         // per wfi wake; the 20 kHz ADC tick is the idle metronome, so the
         // worst-case cadence is ~50 us against a >= 300 us window. The window
         // requires every sample low AND the RX ring frozen: any completed

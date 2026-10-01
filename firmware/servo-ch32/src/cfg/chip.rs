@@ -2,11 +2,18 @@
 //! board-tunable; anything here is determined by the chip + this board's
 //! schematic and lives in one place.
 
-use crate::hal::{Pin, Tim1Mapping, UsartMapping, adc, timer};
+use crate::hal::{Pin, Tim1Mapping, Tim2Mapping, UsartMapping, adc, timer};
 
 // === osc-native bus (USART1 HDSEL single wire on PC0, see providers/tx_wire) ===
 
 pub const BUS_USART_MAPPING: UsartMapping = UsartMapping::Usart1Remap3;
+
+// The break wake (providers/break_wake) is TIM2's CH1 input on the bus pin.
+// Remap4 also places CH2 on PC1, CH3 on PC3 and CH4 on PB6; those channels
+// stay inputs, and PC3 (DRV_EN) is a plain GPIO output that takes no AF
+// signal, so no TIM2 function ever drives a pin.
+pub const BREAK_TIM2_MAPPING: Tim2Mapping = Tim2Mapping::Remap4;
+const _: () = assert!(BREAK_TIM2_MAPPING.ch1_pin() as u8 == BUS_USART_MAPPING.tx_pin() as u8);
 
 // === Motor + STAT (TIM1 Remap8) ===
 //

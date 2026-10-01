@@ -11,7 +11,7 @@ use osc_servo_core::kernel::DECIM_MED;
 use osc_servo_core::regions::config::{BURST_MAX_MV, DEFAULT_V_UNDERVOLT_MV, vmotor_counts};
 use osc_servo_core::{ConfigDefaults, CurrentDefaults, KernelTiming};
 
-use crate::providers::usart_baud;
+use crate::providers::{break_wake, usart_baud};
 
 #[derive(Copy, Clone)]
 pub struct BoardConfig {
@@ -31,6 +31,7 @@ pub struct Precomputed {
     pub pwm_psc: u16,
     pub pwm_arr: u16,
     pub usart_brr: u32,
+    pub break_reload: u16,
     pub kernel_timing: KernelTiming,
     pub current_defaults: CurrentDefaults,
     pub burst_v_max_counts: u16,
@@ -54,6 +55,7 @@ impl Precomputed {
             pwm_psc,
             pwm_arr,
             usart_brr: usart_baud::brr_for(cfg.defaults.baud),
+            break_reload: break_wake::reload_for(cfg.defaults.baud),
             kernel_timing: KernelTiming {
                 pwm_arr,
                 recip_arr_q24: (1u32 << RECIP_ARR_SHIFT) / pwm_arr as u32,

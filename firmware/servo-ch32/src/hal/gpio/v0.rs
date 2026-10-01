@@ -53,8 +53,19 @@ pub fn configure(pin: Pin, mode: PinMode) {
 /// Raw input level of a pin (INDR read); `true` iff the pin reads low.
 #[inline]
 pub fn is_low(pin: Pin) -> bool {
-    let mask = 1u32 << pin.pin_number();
-    pin.gpio_regs().indr().read().0 & mask == 0
+    is_low_in(pin.gpio_regs().indr().read().0, pin)
+}
+
+/// `true` iff `pin` reads low in an INDR image of its port.
+#[inline(always)]
+pub fn is_low_in(indr: u32, pin: Pin) -> bool {
+    indr & (1u32 << pin.pin_number()) == 0
+}
+
+/// INDR's address: a DMA source that latches the port's input levels.
+#[inline]
+pub fn input_addr(pin: Pin) -> u32 {
+    pin.gpio_regs().indr().as_ptr() as u32
 }
 
 #[inline]
