@@ -3,27 +3,24 @@ use ch32_metapac::DMA1;
 pub use ch32_metapac::dma::vals::{Dir, Pl, Size};
 
 /// DMA1 priority ladder (arbiter: higher `Pl` wins; equal `Pl` breaks by
-/// lowest channel number). The one hard invariant is that an inbound RX byte's
-/// drain must never be deferred past the FE-IRQ entry -- a deferred drain lets
-/// the break IRQ read a cursor that hasn't counted the byte (no-reply) or a
-/// `DATAR` clear steal it (ring loss). A bringup spike (`rx_dma_drain_latency`)
-/// proved the arbiter preempts per-beat, so RX alone at the top bounds its
-/// drain wait to one in-flight transfer (much less than IRQ latency) regardless
-/// of any competitor's burst length:
+/// lowest channel number, RM sec 8.2.1). The one hard invariant is that an
+/// inbound RX byte's drain is never deferred past a transport ISR's cursor
+/// read -- a deferred drain hands the service a cursor that hasn't counted
+/// the byte. A bringup spike (`rx_dma_drain_latency`) proved the arbiter
+/// preempts per-beat, so RX at the top bounds its drain wait to one
+/// in-flight transfer regardless of any competitor's burst length:
 ///
 ///   VERYHIGH  CH5 RX ring          -- inbound bytes, never deferred
 ///   HIGH      CH1 ADC              -- motor kernel; wins HIGH ties (lowest #)
 ///             CH4 TX               -- reply wire arms
-///             CH7 M2M -> snapshot  -- copies the reply payload for CRC + wire
-///   MEDIUM    CH3 SPI-CRC feed     -- must run BEHIND CH7 so the copy it reads
+///             CH6 M2M -> snapshot  -- copies the reply payload for CRC + wire
+///   MEDIUM    CH3 SPI-CRC feed     -- must run BEHIND CH6 so the copy it reads
 ///                                    is written first (producer -> consumer)
-///   LOW       CH6 TEL TX           -- USART2's fixed request channel (the
-///                                    reason the snapshot M2M, which can run
-///                                    anywhere, sits on CH7); a deferred TEL
-///                                    beat only delays a background frame
+///   free      CH2
+///             CH7                  -- I2C1_RX's fixed request channel
 ///
 /// RX CRC feeds the SPI engine straight from the ring (no M2M staging), so
-/// CH7 serves only the reply snapshot.
+/// CH6 serves only the reply snapshot.
 #[derive(Copy, Clone)]
 #[repr(u8)]
 pub enum Channel {
