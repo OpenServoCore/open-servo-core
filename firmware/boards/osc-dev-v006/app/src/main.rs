@@ -22,6 +22,7 @@ fn main() -> ! {
                 pin: DigitalPin::PD0,
                 active: Level::High,
             },
+            stat_led_active: Level::Low,
             // Rev B arm-B bodge: bare OPA closed by an external 1k/15k
             // network (G = 15.0) off a 60 mohm 1206 shunt: 0.9 V/A, 0.9 mA
             // per count.

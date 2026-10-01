@@ -14,7 +14,6 @@
 use core::cell::SyncUnsafeCell;
 
 use osc_servo_core::{BaudRate, RegionStorage};
-use osc_servo_drivers::Level;
 use osc_servo_drivers::bus::ServoBus;
 use osc_servo_drivers::led::Led;
 use osc_servo_drivers::traits::bus::Providers;
@@ -82,13 +81,14 @@ impl Drivers {
     /// CH5 ring, and the SPI-CRC engine, and after the table's comms block is
     /// final (defaults seeded + saved image overlaid) -- `ServoBus::new`
     /// applies the effective baud to the live BRR.
-    pub unsafe fn install(_w: &BoardWiring) {
+    pub unsafe fn install(w: &BoardWiring) {
         // SAFETY: see fn doc.
         let stat_led = unsafe { &mut *CELLS.stat_led.get() };
         debug_assert!(stat_led.is_none(), "Drivers: stat_led already installed");
         *stat_led = Some(Led::new(
-            DigitalOut::new(crate::cfg::chip::STAT_LED_PIN, Level::High),
+            DigitalOut::new(crate::cfg::chip::STAT_LED_PIN, w.stat_led_active.inverted()),
             Monotonic,
+            w.stat_led_active,
         ));
 
         // The table is the comms authority here -- a saved image's id/baud

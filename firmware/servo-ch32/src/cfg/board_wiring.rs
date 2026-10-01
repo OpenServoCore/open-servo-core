@@ -17,10 +17,7 @@ pub struct DrvEn {
 
 impl DrvEn {
     pub const fn inactive(&self) -> Level {
-        match self.active {
-            Level::High => Level::Low,
-            Level::Low => Level::High,
-        }
+        self.active.inverted()
     }
 }
 
@@ -100,6 +97,8 @@ pub struct Calibration {
 #[derive(Copy, Clone)]
 pub struct BoardWiring {
     pub drv_en: DrvEn,
+    /// Level that lights the STAT LED on `chip::STAT_LED_PIN`.
+    pub stat_led_active: Level,
     pub current_sense: CurrentSenseConfig,
     pub sensors: AdcPins,
 }
