@@ -149,7 +149,6 @@ fn enable_clocks_and_remaps(w: &BoardWiring) {
     rcc::init_pll();
     rcc::enable_afio();
     rcc::enable_gpio(chip::STAT_LED_PIN.port_index());
-    rcc::enable_gpio(w.dbg.pin().port_index());
     rcc::enable_gpio(chip::MOTOR_IN1_PIN.port_index());
     rcc::enable_gpio(chip::MOTOR_IN2_PIN.port_index());
     rcc::enable_gpio(w.drv_en.pin.pin().port_index());

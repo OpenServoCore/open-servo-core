@@ -61,13 +61,11 @@ struct BusCell(SyncUnsafeCell<Option<Bus>>);
 unsafe impl Sync for BusCell {}
 
 struct Cells {
-    dbg: SyncUnsafeCell<Option<DigitalOut>>,
     stat_led: SyncUnsafeCell<Option<StatLed>>,
     bus: BusCell,
 }
 
 static CELLS: Cells = Cells {
-    dbg: SyncUnsafeCell::new(None),
     stat_led: SyncUnsafeCell::new(None),
     bus: BusCell(SyncUnsafeCell::new(None)),
 };
@@ -84,12 +82,7 @@ impl Drivers {
     /// CH5 ring, and the SPI-CRC engine, and after the table's comms block is
     /// final (defaults seeded + saved image overlaid) -- `ServoBus::new`
     /// applies the effective baud to the live BRR.
-    pub unsafe fn install(w: &BoardWiring) {
-        // SAFETY: see fn doc.
-        let dbg = unsafe { &mut *CELLS.dbg.get() };
-        debug_assert!(dbg.is_none(), "Drivers: dbg already installed");
-        *dbg = Some(DigitalOut::new(w.dbg.pin(), Level::Low));
-
+    pub unsafe fn install(_w: &BoardWiring) {
         // SAFETY: see fn doc.
         let stat_led = unsafe { &mut *CELLS.stat_led.get() };
         debug_assert!(stat_led.is_none(), "Drivers: stat_led already installed");
@@ -124,21 +117,6 @@ impl Drivers {
             baud,
             deadline_us,
         ));
-    }
-
-    /// SAFETY: bringup installs `dbg` before any ISR runs; runtime access is
-    /// from the ADC ISR at PFIC LOW or main-loop with IRQs masked.
-    ///
-    /// Only used under `--features bench`; kept always-available so the API
-    /// doesn't change with the feature.
-    #[inline(always)]
-    #[allow(dead_code)]
-    pub unsafe fn dbg() -> &'static mut DigitalOut {
-        // SAFETY: see fn doc.
-        let cell = unsafe { &mut *CELLS.dbg.get() };
-        debug_assert!(cell.is_some(), "Drivers::dbg() before install");
-        // SAFETY: bringup ensures Some before any ISR fires.
-        unsafe { cell.as_mut().unwrap_unchecked() }
     }
 
     /// SAFETY: bringup installs `stat_led` before main loop runs; runtime

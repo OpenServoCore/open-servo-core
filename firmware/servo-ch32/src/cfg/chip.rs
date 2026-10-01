@@ -107,7 +107,7 @@ impl AnalogChannel {
     }
 }
 
-/// Free GPIOs on this board available as scratch outputs (DBG, motor DRV_EN).
+/// GPIOs this board offers as digital outputs (motor DRV_EN).
 #[derive(Copy, Clone)]
 #[repr(u8)]
 pub enum DigitalPin {

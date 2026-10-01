@@ -18,7 +18,6 @@ fn main() -> ! {
     osc_servo_ch32::log::info!("osc-dev-v006: boot");
     osc_servo_ch32::run!(BoardConfig {
         wiring: BoardWiring {
-            dbg: DigitalPin::PC3,
             drv_en: DrvEn {
                 pin: DigitalPin::PD0,
                 active: Level::High,

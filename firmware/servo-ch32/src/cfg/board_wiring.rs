@@ -99,8 +99,6 @@ pub struct Calibration {
 /// Board-tunable wiring; consumed during `Ch32ControlIo::new` and not retained.
 #[derive(Copy, Clone)]
 pub struct BoardWiring {
-    /// Scope/probe pad; toggled once per DMA-TC ISR.
-    pub dbg: DigitalPin,
     pub drv_en: DrvEn,
     pub current_sense: CurrentSenseConfig,
     pub sensors: AdcPins,
@@ -109,7 +107,6 @@ pub struct BoardWiring {
 impl BoardWiring {
     /// Compile-time call site: `const _: () = WIRING.assert_valid();`
     pub const fn assert_valid(&self) {
-        self.assert_scratch_distinct();
         self.assert_current_output_readable();
         self.assert_sensors_distinct();
         self.assert_sensors_clear_of_opa_inputs();
@@ -118,12 +115,6 @@ impl BoardWiring {
     const fn assert_current_output_readable(&self) {
         if matches!(self.current_sense.opa.out, opa::Output::PA5) {
             panic!("BoardWiring: OPA output PA5 has no ADC channel on this package");
-        }
-    }
-
-    const fn assert_scratch_distinct(&self) {
-        if (self.dbg as u8) == (self.drv_en.pin as u8) {
-            panic!("BoardWiring: dbg and drv_en.pin must not share a DigitalPin");
         }
     }
 
