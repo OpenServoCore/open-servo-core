@@ -28,7 +28,6 @@ use osc_servo_core::pos_lut::POINTS;
 use osc_servo_core::regions::config::DEFAULT_RESPONSE_DEADLINE_US;
 use osc_servo_core::{BaudRate, BootMode, ControlTable};
 use osc_servo_drivers::bus::LinkDiag;
-use osc_servo_drivers::bus::RESCUE_LOW_US;
 
 use self::core::{Core, Event, TICKS_PER_US, Talker, bit_ticks, break_ticks, byte_ticks};
 use self::cpu::{Cpu, Vector};
@@ -583,27 +582,31 @@ impl Sim {
     }
 
     /// Rescue pulse: line dominant for `us` (sec 9.1). Two modeled effects:
-    /// each servo's main-loop sampler declares once >= RESCUE_LOW_US of
-    /// frozen-ring low has elapsed (measured from the pulse's ringed 0x00,
-    /// ~a byte-time in), and one ordinary break wake. Under
-    /// [`BreakWake::AfterByte`] it latches at the pulse's END; otherwise it
-    /// fires a break-length into the pulse and the rising edge only re-arms
-    /// the detector.
+    /// each servo's main-loop sampler reads it low on the sample cadence
+    /// (declaring once >= RESCUE_LOW_US of frozen-ring low has elapsed), and
+    /// one ordinary break wake. Under [`BreakWake::AfterByte`] it latches at
+    /// the pulse's END; otherwise it fires a break-length into the pulse and
+    /// the rising edge only re-arms the detector.
     /// A pulse too short to cross the threshold delivers only the wake.
     pub fn hold_line_low_at(&mut self, at_us: u64, us: u64) {
         let start = self.clamp_at(at_us);
         let dur = us * TICKS_PER_US;
         let baud = self.rate;
         let mut c = self.core.borrow_mut();
-        let declare = start + byte_ticks(baud) + RESCUE_LOW_US as u64 * TICKS_PER_US;
-        if declare < start + dur {
-            c.schedule(Event::RescueDeclare, declare);
-        }
+        c.hold_low(start, start + dur);
         if self.break_wake == BreakWake::AfterByte {
             c.schedule(Event::StrayBreak { baud }, start + dur);
         } else if dur >= break_ticks(baud) {
             c.schedule(Event::PulseWake, start + break_ticks(baud));
         }
+    }
+
+    /// One main-loop line sample at every servo at `at_us` (sec 9.1).
+    pub fn sample_line_at(&mut self, at_us: u64) {
+        let at = self.clamp_at(at_us);
+        self.core
+            .borrow_mut()
+            .schedule(Event::LineSample { pump: false }, at);
     }
 
     pub fn set_host_baud(&mut self, rate: BaudRate) {
@@ -673,7 +676,7 @@ impl Sim {
             Event::WireData { talker, byte, baud } => self.deliver_data(talker, byte, baud),
             Event::WireGarble { byte } => self.deliver_garble(byte),
             Event::StrayBreak { baud } => self.deliver_stray_break(baud),
-            Event::RescueDeclare => self.deliver_rescue_declare(),
+            Event::LineSample { pump } => self.sample_line(pump),
             Event::SkewChange { servo, ppm } => {
                 let now = self.core.borrow().now();
                 self.handles[servo].deadline.set_skew(now, ppm);
@@ -1127,18 +1130,17 @@ impl Sim {
         }
     }
 
-    fn deliver_rescue_declare(&mut self) {
-        // Every servo's sampler crosses the threshold together (the low is
-        // baud-agnostic); the declaration is thread-level -- no vector, no
-        // CPU pend, mirroring the chip's main-loop + critical-section path.
-        // The pulse's own 0x00 rang a byte-time in: folded into the
-        // declaration instant here under `AfterByte`, beside the early wake
-        // otherwise.
+    /// The samplers are thread-level - no vector, no CPU pend - mirroring the
+    /// chip's main-loop critical section.
+    fn sample_line(&mut self, pump: bool) {
         for j in 0..self.servos.len() {
-            if self.break_wake == BreakWake::AfterByte {
-                self.handles[j].ring.push(0x00);
-            }
-            self.servos[j].on_rescue();
+            let low = self.core.borrow().line_low(j);
+            self.servos[j].sample_rescue(low);
+        }
+        let mut c = self.core.borrow_mut();
+        if pump && c.held_now() {
+            let at = c.now() + TEL_TICK;
+            c.schedule(Event::LineSample { pump }, at);
         }
     }
 }

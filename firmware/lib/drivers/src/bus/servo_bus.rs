@@ -484,7 +484,7 @@ impl<P: Providers> ServoBus<P> {
 
     /// sec 9.1 rescue declaration, reached through [`Self::sample_rescue`]:
     /// the pulse is still holding the line, so the cursor is provably still.
-    pub fn on_rescue_break(&mut self) {
+    fn on_rescue_break(&mut self) {
         // sec 9.1: volatile rate switch -- the config register is untouched.
         self.baud.apply(BaudRate::B500000);
         self.rate = BaudRate::B500000;
