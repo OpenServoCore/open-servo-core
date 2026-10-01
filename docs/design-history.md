@@ -57,6 +57,25 @@ met its tolerance from plain clock reads. Lesson: RX jitter does not
 propagate to the wire — only TX jitter does. Spend hardware where error
 reaches the wire; software is fine everywhere else.
 
+### The USART's LIN break detector as the wake
+
+The length-qualified wake first lived on the USART's LIN break detector
+(LBD, enabled without the LIN engine), measured clean on the rev B board's
+buffered wire, where RX had its own pin: law breaks 2000/2000 with its
+flag-selective write-0 clear running mid-traffic, and zero entries across
+framing-error injection and high-baud garble. Rev 2A runs the bus on one
+pin under HDSEL, and there the V006 never sets LBD, in any configuration
+tried; the same die sets it with HDSEL off. The servo received every frame
+into the ring and never woke to resolve one. The wake moved to TIM2 on the
+bus pin: an edge-reset counter whose overflow at 9.25 bit-times latches
+the pin level by DMA. That detector fires a break-length in, not at the
+span's end, so it can beat the break's own `0x00` into the ring; the
+ring-dependent service moved behind a one-byte-time re-inspection, and the
+reply's own break, which the pin sees though the receiver does not, is
+sent with the detector muted. Lesson: a peripheral feature measured in one
+wiring is not measured in another - bring up the production wiring before
+building on it.
+
 ## Transmit timing the break made obsolete
 
 ### Hardware-timed TX kickoff + RDT

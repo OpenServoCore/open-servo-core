@@ -4,7 +4,7 @@ The normative specification of the osc-native servo-bus protocol:
 break-framed, 5 overhead bytes per frame, hardware-CRC-friendly, designed
 to run whole on sub-$0.20 MCUs. Every physical-layer behavior the design
 leans on was measured on real silicon (V006 servo, V203 HSE host); the
-measured facts are collected in §11 and cited inline as [F1]..[F15].
+measured facts are collected in §11 and cited inline as [F1]..[F17].
 
 ## 1. Goals and non-goals
 
@@ -82,10 +82,12 @@ chain-pair gates count the break as one byte slot, so an over-long
 break is a constant error tax on every span — and the law shape is
 precisely the LIN break definition (LBDL=0), so any LIN-capable
 receiver gets hardware break detection with a deterministic 10-bit
-anchor. Every node on the bus uses it: bridge-class hosts
-and the servo itself (LBD-sans-LINEN break wake, §3.4 — the detector
-runs with the LIN engine off on the target silicon [F15]). Hardware
-`SBK` is off-law (~14 bit-times measured, F5).
+anchor. Bridge-class hosts use exactly that. The servo cannot: its bus is
+one pin under HDSEL, which disables the USART's LIN break detector on the
+target silicon [F16], so it times the low on the pin instead - a
+detector that qualifies at 9.25 bit-times, past the longest data low (9)
+and inside the law break (10), §3.4 [F17]. Hardware `SBK` is off-law
+(~14 bit-times measured, F5).
 
 **Receivers stay length-tolerant**: any ≥10-bit dominant span is one
 break (rescue pulses, garble, and F3 all require this). Both ends
@@ -95,15 +97,15 @@ path sends the bracketed-M `0x00` character rather than hardware `SBK`
 
 Measured break behavior that the framer relies on:
 
-- The break detector (LBD, LINEN off) fires 1:1 per law break and the
-  break rings as exactly one `0x00` byte via DMA [F15][F1][F2].
-- A break of _any_ length is exactly one event — the detector re-arms only
-  on a fresh falling edge, so long breaks cannot spam [F3][F15].
+- The break detector fires 1:1 per law break [F17], and the break rings
+  as exactly one `0x00` byte via DMA [F1][F2].
+- A break of _any_ length is exactly one event - the detector re-arms only
+  on a fresh edge, so long breaks cannot spam [F3][F17].
 - A mid-frame framing error does not halt reception: the garbled byte
-  rings and the stream continues [F4] — and it raises nothing at all
-  (sub-10-bit lows are invisible to the detector, and no interrupt is
-  enabled on the error flags, §3.4 [F15]). Ring + NDTR are the only
-  ground truth.
+  rings and the stream continues [F4] - and it raises nothing at all
+  (lows under 9.25 bit-times are invisible to the detector, and no
+  interrupt is enabled on the error flags, §3.4 [F17]). Ring + NDTR are
+  the only ground truth.
 - Hardware `SBK` sends ~14-bit breaks (4.7 µs at 3 M, zero variance,
   both chip families) [F5] — which is why the law shape is a 9-bit
   `0x00` character, not `SBK`; receivers accept both (≥10 = break).
@@ -209,16 +211,21 @@ normative — see §3.4.
 
 ### 3.4 Fault contract (normative)
 
-The target silicon exposes two distinct receive-side signals, and the
-protocol binds them to two distinct roles [F15]:
+The receive side has two distinct signals, and the protocol binds them
+to two distinct roles:
 
-- **The break detector (LBD) is the wake.** It is length-qualified —
-  only a genuine ≥10-dominant-bit span sets it, the exact §3 law shape —
-  it runs with the LIN engine off, it clears by a safe flag-selective
-  write (no data-register access), and any-length span raises exactly
-  one event, **latched at the span's END** (the rising edge; for the
-  10-bit law break that IS bit 10) [F15]. It is the ONLY receive
-  interrupt an implementation enables.
+- **The break detector is the wake.** It is length-qualified - only a
+  dominant span held past 9.25 bit-times fires it, a length valid data
+  never reaches (9 at most) and the §3 law break always does (10) - and
+  any-length span raises exactly one event, **fired a break-length into
+  the span**. That can be before the stop-bit sample rings the break's
+  `0x00`: a wake may beat its own byte into the ring, so its
+  ring-dependent service waits on the ring, never on the wake. On the
+  target silicon HDSEL disables the USART's LIN break detector [F16], so
+  the detector is a timer on the bus pin: every wire edge zeroes it, and
+  its overflow latches the pin level by DMA, low = break, high = idle
+  [F17]. It is the ONLY receive interrupt an implementation enables, and
+  it is deaf to the implementation's own break.
 - **The per-character error flags (FE/ORE/NE) are not events at all.**
   They are latched, positionless, coalescing, and unsafe to retire
   mid-stream — so no interrupt is ever enabled on them. They latch
@@ -255,10 +262,10 @@ garble that forms a plausible frame header parks the resolver until data
 kills it — footprint-fill CRC (≤ 258 bytes) or the starve horizon (64
 byte-times of ring silence), whichever comes first, per plausible junk
 anchor. The length qualification shrinks that surface: only garble
-containing a genuine ≥10-bit dominant span (slower-baud traffic heard at
-a faster-configured servo) can wake the resolver into junk at all —
+containing a dominant span past 9.25 bit-times (slower-baud traffic heard
+at a faster-configured servo) can wake the resolver into junk at all -
 noise and faster-baud garble ring silently and cost nothing until the
-next real break [F15]. **Host pacing rule:** after traffic a servo may
+next real break [F17]. **Host pacing rule:** after traffic a servo may
 have received as garble (wrong-baud probing, bus glitches), allow one
 starve horizon of bus silence before expecting crisp turnarounds; under
 continuous zero-gap retries, replies can lag by up to the parked span
@@ -273,8 +280,8 @@ cursor, never reloaded (reloading a circular DMA channel drops or
 latches in-flight requests; and since anchors may sit at any parity,
 §3.2, nothing ever needs a reload). Two states:
 
-- **HUNT** — on the break wake (LBD): record the anchor = current ring
-  position (the `0x00` just ringed). Enter LOCKED.
+- **HUNT** - on the break wake: record the anchor = the ring position of
+  the break's `0x00` (it may ring just after the wake). Enter LOCKED.
 - **LOCKED** — deadline A at anchor + 3 byte-times + a half-byte-time of
   wake slack: the full header (ID, LEN, INST) is in the ring — read it,
   compute frame end, prime the dispatcher from INST, set deadline B at
@@ -1197,8 +1204,8 @@ untouched, nothing persisted. A reboot exits rescue back to the configured
 baud. The signal itself is baud-agnostic (raw GPIO low suffices at the
 host), so it reaches a servo whose rate is unknown, and it unifies a
 mixed-rate bus onto one channel in a single pulse. Detection is the slow
-loop's job, not the transport's: the break detector latches only at a
-span's END [F15], so no receive wake can observe a pulse in progress —
+loop's job, not the transport's: the break detector fires once per
+span, a break-length in [F17], so no receive wake can measure a pulse -
 the servo's main loop samples the line pin and the RX ring's DMA counter
 once per idle wake (~50 µs cadence off the ADC tick metronome) and
 declares rescue after ≥300 µs of continuous low with the ring frozen. The
@@ -1430,10 +1437,12 @@ exit from `CONFIG_CORRUPT`.
 | DMA1 CH5            | RX ring (circular, armed once)                    |
 | DMA1 CH4            | TX stream (enable-when-ready)                     |
 | DMA1 CH3 + SPI1     | CRC engine (no pins) [F6]                         |
-| DMA1 CH1 / CH2      | ADC / free                                        |
+| DMA1 CH1            | ADC                                               |
+| DMA1 CH2            | TIM2_UP latch of the bus pin's level (§3.4)       |
 | DMA1 CH6            | copy-once snapshot buffer (§4.2); CH7 free        |
 | SysTick             | framer deadlines A/B, reply gap, reclaim             |
-| TIM1/TIM2           | motor control, freed from transport duty          |
+| TIM2, CH1 on PC0    | the break detector (§3.4)                         |
+| TIM1                | motor control                                     |
 | EXTI                | unused — no transport consumer at all (§9.3)      |
 
 Notably absent (vs a DXL-style transport): input-capture edge timing,
@@ -1459,4 +1468,6 @@ and a direction buffer with its TX_EN pin.
 | F12 | DMA rounds odd MAR down; no unaligned 16-bit reads                                         | bringup measurement, V006 |
 | F13 | EXTI edge ISRs storm during traffic (own TX stretched 3×)                                  | HSITRIM sweep, V006   |
 | F14 | data decodes clean at ±3.4 % in both TX and RX directions                                  | HSITRIM sweep, V006   |
-| F15 | LBD runs sans LINEN, both chip families: length-qualified (≥10-bit spans only — 0 fires on framing-error injection and high-baud garble), safe flag-selective write-0 clear mid-traffic, one event per any-length span, **latched at the span's END** (== bit 10 for the 10-bit law break; a rescue pulse's wake arrives after the line rises), entry stamps 4 ticks p-p on a 400 µs grid; latched FE/NE/ORE with no interrupt enabled are harmless through marination | bringup measurement, V006 + V203 |
+| F15 | LBD runs sans LINEN, both chip families: length-qualified (≥10-bit spans only — 0 fires on framing-error injection and high-baud garble), safe flag-selective write-0 clear mid-traffic, one event per any-length span, **latched at the span's END** (== bit 10 for the 10-bit law break; a rescue pulse's wake arrives after the line rises), entry stamps 4 ticks p-p on a 400 µs grid; latched FE/NE/ORE with no interrupt enabled are harmless through marination. Measured with RX on its own pin (HDSEL=0); see F16 | bringup measurement, V006 + V203 |
+| F16 | V006 never sets LBD while HDSEL=1, in any configuration tried (LINEN, LBDL, pin mode, RE alone, arm order); the same die sets it with HDSEL=0 | bringup measurement, V006 |
+| F17 | TIM2 break detector on the HDSEL pin (edge reset, overflow at 9.25 bit-times, DMA-latched level): 50/50 law breaks at 0.5M/1M/3M, zero ISR entries on an idle line, zero false breaks from faster-baud garble, frames intact; the live pin at ISR entry reads 0/50 breaks at 1M and above, hence the latch | bringup measurement, V006 |
