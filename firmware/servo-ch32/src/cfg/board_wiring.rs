@@ -57,7 +57,10 @@ impl AdcPins {
     }
 }
 
-/// `V_adc = V_in * bot_ohm / (top_ohm + bot_ohm)`.
+/// `V_adc = V_in * bot_ohm / (top_ohm + bot_ohm)` plus, for a bottom leg
+/// returned to a bias node instead of GND, `V_bias * top_ohm / (top_ohm +
+/// bot_ohm)`. Firmware math uses only the gain: terminal taps enter as
+/// `va - vb`, where the bias cancels.
 #[derive(Copy, Clone)]
 pub struct Divider {
     pub top_ohm: u32,
