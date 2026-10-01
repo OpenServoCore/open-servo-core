@@ -11,6 +11,12 @@
 //! over at 1M and above (bringup `tim2_up_break` read the pin low on 0 of
 //! 50 breaks). One wake per quiet span: a fire parks the update until the
 //! next edge re-arms it, so an idle line raises nothing.
+//!
+//! The latch is one-shot, re-armed with the update: one transfer per fire,
+//! whatever the update request does while the service waits behind another
+//! HIGH body. A circular channel at VERYHIGH would repeat for as long as a
+//! level request stayed raised and hold the DMA bus (ADC scan, CRC feed,
+//! TX) for that whole body.
 
 use core::cell::SyncUnsafeCell;
 
@@ -39,7 +45,7 @@ impl BreakWake {
         afio::set_tim_remap(2, chip::BREAK_TIM2_MAPPING.remap_value());
         let latch = dma::Config {
             dir: dma::Dir::FROMPERIPHERAL,
-            circ: true,
+            circ: false,
             pinc: false,
             minc: false,
             size: dma::Size::BITS32,
@@ -74,14 +80,23 @@ impl BreakWake {
             // SAFETY: a word read of a static only the latch channel writes.
             let low = gpio::is_low_in(unsafe { LEVEL.get().read_volatile() }, pin);
             if gpio::is_low(pin) != low {
-                tim2::rearm();
+                Self::listen();
             }
             return low;
         }
         if f.tif() {
-            tim2::rearm();
+            Self::listen();
         }
         false
+    }
+
+    /// Re-arm the one-shot latch, then the update that requests it.
+    #[cfg_attr(target_arch = "riscv32", inline(never))]
+    fn listen() {
+        dma::disable(dma::Channel::CH2);
+        dma::set_count(dma::Channel::CH2, 1);
+        dma::enable(dma::Channel::CH2);
+        tim2::rearm();
     }
 
     /// Retune the overflow point to a new rate; rides every BRR write.
@@ -99,7 +114,7 @@ impl BreakWake {
     pub fn muted(send_break: impl FnOnce()) {
         tim2::mute();
         send_break();
-        tim2::rearm();
+        Self::listen();
     }
 }
 
