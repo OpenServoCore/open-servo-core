@@ -42,7 +42,7 @@ Every hardware resource the transport touches, and its duty cycle:
 | DMA1 CH6        | snapshot copy → the 256 B snapshot buffer (reply payloads only — RX CRC feeds the ring directly); HIGH, above CH3 | ~0.125 µs/B, zero CPU |
 | DMA1 CH1        | ADC sample set → buffer; DMA HIGH (wins HIGH ties by channel number); TC vector = motor kernel tick at PFIC LOW | ~10 µs body |
 | PC0 CNF         | drive discipline: open-drain listening / push-pull TX window | flipped at trigger/release |
-| main loop       | deferred reboot poll + rescue line sampler (protocol §9.1: line pin + CH5 NDTR once per wfi wake - the break detector fires once per span, a break-length in, so the slow loop is the only observer of a pulse's length) | cold path; sampler ~0.3 µs/wake |
+| main loop       | deferred reboot poll + rescue line sampler (protocol sec 9.1: line pin + CH5 NDTR + own-TX state in one critical section per wfi wake, the window restarting while the servo transmits - the break detector fires once per span, a break-length in, so the slow loop is the only observer of a pulse's length) | cold path; sampler ~0.3 µs/wake |
 
 PFIC preemption is two-level (IPRIOR bit 7). TIM2 + USART1 + SysTick
 share HIGH and therefore serialize against each other; LOW holds only the

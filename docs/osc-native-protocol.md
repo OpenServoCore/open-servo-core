@@ -1214,6 +1214,14 @@ host baud: data cannot hold the line low a whole byte-time without
 completing a character, and a completed character rings and moves the
 counter — the pulse's own ringed `0x00` (it chars ~a byte-time in)
 re-anchors the window and everything after it is provably byte-less. The
+servo's own TX is the one low the counter cannot see: HDSEL keeps own
+bytes out of the ring [F9], so a sample landing on a low bit of an own
+byte finds the ring frozen. A sample taken while the servo transmits
+therefore restarts the window, and the pin, the TX state and the
+declaration share one critical section, so a TX ending between sample
+and declaration cannot slip through. Sample spacing needs no bound:
+every new fall of the line rings a character within a byte-time, so
+ring progress, not sample density, proves the low continuous. The
 declaration lands while the pulse still holds the line, so the transport
 resyncs at a provably-still ring position. No EXTI storm, no edge
 capture, no wake-path branches. Hosts should send pulses of ~1 ms (the
