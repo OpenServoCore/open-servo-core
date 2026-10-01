@@ -413,10 +413,9 @@ impl<P: Providers> ServoBus<P> {
     ///
     /// [`RESCUE_LOW_US`]: super::RESCUE_LOW_US
     pub fn on_rescue_break(&mut self) {
-        // Own-TX guard: unreachable by physics on both wire configs (own
-        // data always carries stop-bit highs; the buffered wire's sense pin
-        // reads forced mark during TX), kept because an abort of a draining
-        // ack is the one real damage a spurious call could do.
+        // Own-TX guard: unreachable by physics (own data always carries
+        // stop-bit highs), kept because an abort of a draining ack is the
+        // one real damage a spurious call could do.
         if self.tx.streaming() {
             return;
         }

@@ -38,7 +38,3 @@ rt           = ["ch32-metapac/rt"]
 # Forward the drivers' probe counters (crate::bench pattern).
 bench        = ["osc-servo-drivers/bench"]
 defmt        = ["dep:defmt", "osc-servo-core/defmt", "osc-servo-drivers/defmt", "osc-log/defmt"]
-# Direct single wire (rev C HDSEL, or rev B with the buffer bypassed) --
-# tinyboot's flag. Default (absent) = rev B 74LVC2G241 buffer + TX_EN,
-# full duplex behind it. Reshapes `cfg::BusWiring` to match.
-half-duplex = []

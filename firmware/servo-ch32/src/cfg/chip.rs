@@ -4,19 +4,9 @@
 
 use crate::hal::{Pin, Tim1Mapping, UsartMapping, adc, timer};
 
-// === osc-native bus (USART1 on PC0/PC1; direct HDSEL single-wire, or the
-// rev B 74LVC2G241 buffered wire by default (`half-duplex` = direct) -- see
-// providers/tx_wire; the TX_EN pin is board wiring, `BusWiring`) ===
+// === osc-native bus (USART1 HDSEL single wire on PC0, see providers/tx_wire) ===
 
 pub const BUS_USART_MAPPING: UsartMapping = UsartMapping::Usart1Remap3;
-
-/// Pin whose input level tracks the bus wire (rescue-break sensing, protocol sec 9.1):
-/// the single-wire pin itself on the direct wire; the buffer's receive
-/// output (the USART RX pin) on the buffered wire.
-#[cfg(feature = "half-duplex")]
-pub const BUS_LINE_PIN: Pin = BUS_USART_MAPPING.tx_pin();
-#[cfg(not(feature = "half-duplex"))]
-pub const BUS_LINE_PIN: Pin = BUS_USART_MAPPING.rx_pin();
 
 // === Motor + STAT (TIM1 Remap8) ===
 //
@@ -57,13 +47,11 @@ const fn tim1_channel_pin(m: Tim1Mapping, c: timer::Channel) -> Pin {
 // wide margin (RAIN table: 3.5 cycles already holds under 1.5 kOhm, 7.5
 // under 3 kOhm), which is free once the rate ceiling sets the aperture.
 //
-// Widening the aperture used to triple rest current noise, because the
-// telemetry bus couples into the amplifier output and a longer window
-// catches more of it (a board-level defect, fixed in rev 2A by an RC at the
-// ADC pin). That was an artefact of running at 48 MHz: measured at 24 MHz a
-// 562 ns aperture holds the phase-locked part to 0.76 counts against 0.68
-// for 146 ns, where at 48 MHz going from 73 to 865 ns took it from 0.42 to
-// 5.11.
+// The aperture width does not trade against rest current noise at 24 MHz:
+// a 562 ns aperture holds the phase-locked part to 0.76 counts against 0.68
+// for 146 ns. At 48 MHz the same widening (73 to 865 ns) took it from 0.42
+// to 5.11, bus activity coupling into the amplifier output. No RC sits at
+// the amplifier output pin to absorb that coupling.
 
 /// OPA output, low-Z.
 pub const ADC_SHUNT_SAMPLE_TIME: adc::SampleTime = adc::SampleTime::CYCLES15;
@@ -117,19 +105,17 @@ impl AnalogChannel {
     }
 }
 
-/// Free GPIOs on this board available as scratch outputs (DBG, motor DRV_EN).
+/// GPIOs this board offers as digital outputs (motor DRV_EN).
 #[derive(Copy, Clone)]
 #[repr(u8)]
 pub enum DigitalPin {
     PC3,
-    PD0,
 }
 
 impl DigitalPin {
     pub const fn pin(self) -> Pin {
         match self {
             Self::PC3 => Pin::PC3,
-            Self::PD0 => Pin::PD0,
         }
     }
 }

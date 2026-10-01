@@ -6,23 +6,7 @@
 use osc_servo_drivers::Level;
 
 use crate::cfg::chip::{AnalogChannel, DigitalPin};
-#[cfg(not(feature = "half-duplex"))]
-use crate::hal::Pin;
 use crate::hal::opa;
-
-/// Bus wire wiring -- exists only on the buffered default wire (the
-/// wire mode is a compile-time board choice; see `providers/tx_wire`). The
-/// direct wire needs no bus wiring at all: PC0 carries everything, and on a
-/// buffer-populated board running the direct wire, the board's TX_EN
-/// pull-down is what keeps the buffer released -- no firmware involved.
-#[cfg(not(feature = "half-duplex"))]
-#[derive(Copy, Clone)]
-pub struct BusWiring {
-    /// 74LVC2G241 direction pin: high = the buffer drives TX onto the data
-    /// line and mutes the receive path (inverted enable, same signal);
-    /// low = wire released, the data line feeds RX.
-    pub tx_en: Pin,
-}
 
 #[derive(Copy, Clone)]
 pub struct DrvEn {
@@ -33,10 +17,7 @@ pub struct DrvEn {
 
 impl DrvEn {
     pub const fn inactive(&self) -> Level {
-        match self.active {
-            Level::High => Level::Low,
-            Level::Low => Level::High,
-        }
+        self.active.inverted()
     }
 }
 
@@ -76,7 +57,10 @@ impl AdcPins {
     }
 }
 
-/// `V_adc = V_in * bot_ohm / (top_ohm + bot_ohm)`.
+/// `V_adc = V_in * bot_ohm / (top_ohm + bot_ohm)` plus, for a bottom leg
+/// returned to a bias node instead of GND, `V_bias * top_ohm / (top_ohm +
+/// bot_ohm)`. Firmware math uses only the gain: terminal taps enter as
+/// `va - vb`, where the bias cancels.
 #[derive(Copy, Clone)]
 pub struct Divider {
     pub top_ohm: u32,
@@ -115,11 +99,9 @@ pub struct Calibration {
 /// Board-tunable wiring; consumed during `Ch32ControlIo::new` and not retained.
 #[derive(Copy, Clone)]
 pub struct BoardWiring {
-    /// Scope/probe pad; toggled once per DMA-TC ISR.
-    pub dbg: DigitalPin,
     pub drv_en: DrvEn,
-    #[cfg(not(feature = "half-duplex"))]
-    pub bus: BusWiring,
+    /// Level that lights the STAT LED on `chip::STAT_LED_PIN`.
+    pub stat_led_active: Level,
     pub current_sense: CurrentSenseConfig,
     pub sensors: AdcPins,
 }
@@ -127,9 +109,6 @@ pub struct BoardWiring {
 impl BoardWiring {
     /// Compile-time call site: `const _: () = WIRING.assert_valid();`
     pub const fn assert_valid(&self) {
-        self.assert_scratch_distinct();
-        #[cfg(not(feature = "half-duplex"))]
-        self.assert_bus_distinct();
         self.assert_current_output_readable();
         self.assert_sensors_distinct();
         self.assert_sensors_clear_of_opa_inputs();
@@ -138,21 +117,6 @@ impl BoardWiring {
     const fn assert_current_output_readable(&self) {
         if matches!(self.current_sense.opa.out, opa::Output::PA5) {
             panic!("BoardWiring: OPA output PA5 has no ADC channel on this package");
-        }
-    }
-
-    const fn assert_scratch_distinct(&self) {
-        if (self.dbg as u8) == (self.drv_en.pin as u8) {
-            panic!("BoardWiring: dbg and drv_en.pin must not share a DigitalPin");
-        }
-    }
-
-    #[cfg(not(feature = "half-duplex"))]
-    const fn assert_bus_distinct(&self) {
-        let tx_en = self.bus.tx_en;
-        if (tx_en as u8) == (self.dbg.pin() as u8) || (tx_en as u8) == (self.drv_en.pin.pin() as u8)
-        {
-            panic!("BoardWiring: bus TX_EN must not share a pin with dbg or drv_en");
         }
     }
 

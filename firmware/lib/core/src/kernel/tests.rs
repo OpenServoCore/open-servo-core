@@ -15,7 +15,8 @@ use medium::phase;
 
 const BIAS: u16 = 2048;
 const ARR: u16 = 1200;
-/// osc-dev-v006 board D rail scale (22k/10k tap over 20k/10k terminals).
+/// A non-unity rail scale (22k/10k tap over 20k/10k terminals), so the rig
+/// exercises the rescale.
 const VBUS_SCALE_Q15: u32 = 34952;
 
 // The chip-side const-eval for a 20 kHz FAST rate (MED 2 kHz).

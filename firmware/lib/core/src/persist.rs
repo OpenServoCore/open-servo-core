@@ -544,6 +544,7 @@ mod tests {
                 ..Default::default()
             },
             &CurrentDefaults::from_sense(33, 15_000, 3300),
+            1200,
         );
     }
 

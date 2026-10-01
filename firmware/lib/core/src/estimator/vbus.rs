@@ -74,10 +74,11 @@ mod tests {
     use super::*;
     use crate::math::q_mul;
 
+    /// Equal rail and terminal divider ratios (osc-dev-v006: 6K4/1K6 both).
     const UNITY: u32 = 1 << 15;
-    /// osc-dev-v006 board D: 22k/10k rail divider over the 20k/10k terminal
-    /// dividers, 32000 x 10000 / (10000 x 30000) = 1.0667.
-    const BOARD_D: u32 = 34952;
+    /// A 22k/10k rail divider over 20k/10k terminal dividers,
+    /// 32000 x 10000 / (10000 x 30000) = 1.0667.
+    const RAIL_22K_TERM_20K: u32 = 34952;
 
     /// Contract residual: 0 means q_mul(vbus, recip, 15) hit 32767 exactly.
     fn recip_err(vbus: u16, recip: u32) -> i32 {
@@ -101,10 +102,10 @@ mod tests {
     #[test]
     fn scale_maps_rail_tap_onto_terminal_counts() {
         // 2S at 7.4 V: 2313 on the 22k/10k tap reads as 2467 on a 20k/10k tap
-        let mut est = VbusEst::new(BOARD_D);
+        let mut est = VbusEst::new(RAIL_22K_TERM_20K);
         est.step(2313, 1);
         assert_eq!(est.vbus_counts(), 2467);
-        // a 20k/10k rail tap (rev-2A) is the identity
+        // equal ratios are the identity
         let mut est = VbusEst::new(UNITY);
         est.step(2313, 1);
         assert_eq!(est.vbus_counts(), 2313);

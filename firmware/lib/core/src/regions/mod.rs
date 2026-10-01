@@ -74,7 +74,14 @@ pub struct ControlTable {
 impl ControlTableCell {
     /// Soft limits init to physical limits per control-table doc.
     /// Caller must be sole writer (install-time, pre-IRQ).
-    pub fn seed_config_defaults(&self, defaults: &ConfigDefaults, current: &CurrentDefaults) {
+    /// `v_undervolt_counts` is `config::DEFAULT_V_UNDERVOLT_MV` through the
+    /// board's terminal divider (`config::vmotor_counts`).
+    pub fn seed_config_defaults(
+        &self,
+        defaults: &ConfigDefaults,
+        current: &CurrentDefaults,
+        v_undervolt_counts: u16,
+    ) {
         crate::log::debug!(
             "seed CONFIG: phys=[{}, {}] counts  id={}  baud_idx={}",
             defaults.pos_min_phys_counts,
@@ -115,7 +122,7 @@ impl ControlTableCell {
             cfg.thermal.derate_start_cc = config::DEFAULT_DERATE_START_CC;
             cfg.thermal.cutoff_cc = config::DEFAULT_CUTOFF_CC;
             cfg.thermal.recover_cc = config::DEFAULT_RECOVER_CC;
-            cfg.thermal.v_undervolt_counts = config::DEFAULT_V_UNDERVOLT_COUNTS;
+            cfg.thermal.v_undervolt_counts = v_undervolt_counts;
             cfg.thermal.rtherm_i_min_counts = current.rtherm_i_min_counts;
             cfg.thermal.rtherm_omega_max_cps = config::DEFAULT_RTHERM_OMEGA_MAX_CPS;
             cfg.fault_cfg.pos_error_counts = config::DEFAULT_POS_ERROR_COUNTS;

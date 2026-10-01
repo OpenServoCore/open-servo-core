@@ -1,13 +1,12 @@
 pub use ch32_metapac::usart::Usart as Regs;
 
 /// osc-native bus bring-up, in the break-framing spike's exact order:
-/// wire mode (`hdsel` = true for the direct single-wire, false for plain
-/// full duplex behind the rev B buffer), break detector, TE/RE, BRR, UE --
-/// and only then DMAR in a second CTLR3 write. The sequencing is
-/// load-bearing for the released idle level on the direct wire: deviations
-/// (TE before HDSEL, or DMAR folded into the HDSEL write) leave the HDSEL
-/// TX signal latched LOW -- through the AF_OD listening pin that clamps the
-/// whole bus (wire stuck low at idle, rose the moment PC0 left AF mode).
+/// HDSEL single wire, break detector, TE/RE, BRR, UE, and only then DMAR in
+/// a second CTLR3 write. The sequencing is load-bearing for the released
+/// idle level on the wire: deviations (TE before HDSEL, or DMAR folded into
+/// the HDSEL write) leave the HDSEL TX signal latched LOW, and through the
+/// AF_OD listening pin that clamps the whole bus (wire stuck low at idle,
+/// rose the moment PC0 left AF mode).
 /// No IDLE interrupt -- the framer sources all timing from the ring cursor
 /// and SysTick, never from IDLE.
 ///
@@ -16,8 +15,8 @@ pub use ch32_metapac::usart::Usart as Regs;
 /// stays reset-0 -- F15, both chip families), and EIE is never set --
 /// FE/NE/ORE latch silently and nothing services them.
 #[inline]
-pub fn init_bus(r: Regs, brr: u32, hdsel: bool) {
-    r.ctlr3().modify(|w| w.set_hdsel(hdsel));
+pub fn init_bus(r: Regs, brr: u32) {
+    r.ctlr3().modify(|w| w.set_hdsel(true));
     r.ctlr2().modify(|w| {
         w.set_lbdl(false); // 10-bit detection: the protocol sec 3 law break is exactly 10
         w.set_lbdie(true);

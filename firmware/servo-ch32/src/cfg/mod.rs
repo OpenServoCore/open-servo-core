@@ -1,8 +1,6 @@
 pub mod board_wiring;
 pub mod chip;
 
-#[cfg(not(feature = "half-duplex"))]
-pub use board_wiring::BusWiring;
 pub use board_wiring::{
     AdcPins, BoardWiring, Calibration, CurrentSenseConfig, Divider, DrvEn, Ntc,
 };
@@ -10,7 +8,7 @@ pub use chip::{AnalogChannel, DigitalPin};
 
 use osc_servo_core::estimator::bemf::RECIP_ARR_SHIFT;
 use osc_servo_core::kernel::DECIM_MED;
-use osc_servo_core::regions::config::{BURST_MAX_MV, vmotor_counts};
+use osc_servo_core::regions::config::{BURST_MAX_MV, DEFAULT_V_UNDERVOLT_MV, vmotor_counts};
 use osc_servo_core::{ConfigDefaults, CurrentDefaults, KernelTiming};
 
 use crate::providers::usart_baud;
@@ -36,6 +34,7 @@ pub struct Precomputed {
     pub kernel_timing: KernelTiming,
     pub current_defaults: CurrentDefaults,
     pub burst_v_max_counts: u16,
+    pub v_undervolt_counts: u16,
 }
 
 impl Precomputed {
@@ -70,6 +69,12 @@ impl Precomputed {
             ),
             burst_v_max_counts: vmotor_counts(
                 BURST_MAX_MV,
+                term.top_ohm,
+                term.bot_ohm,
+                cfg.calibration.vdd_mv,
+            ),
+            v_undervolt_counts: vmotor_counts(
+                DEFAULT_V_UNDERVOLT_MV,
                 term.top_ohm,
                 term.bot_ohm,
                 cfg.calibration.vdd_mv,

@@ -438,14 +438,15 @@ mod tests {
     /// `STATE` and `FSM` are statics: one test drives them at a time.
     static SERIAL: Mutex<()> = Mutex::new(());
 
-    /// The osc-dev-v006 terminal taps, 6k8/3k3 at VDD 3300 mV.
-    const V_MAX: u16 = vmotor_counts(BURST_MAX_MV, 6_800, 3_300, 3300);
-    const RAIL_2S: u16 = 3204;
-    const RAIL_USB: u16 = 1780;
+    /// The osc-dev-v006 terminal taps, 6K4/1K6 at VDD 3300 mV.
+    const V_MAX: u16 = vmotor_counts(BURST_MAX_MV, 6_400, 1_600, 3300);
+    /// 7.9 V and 4.4 V.
+    const RAIL_2S: u16 = 1961;
+    const RAIL_USB: u16 = 1090;
     /// The largest step under the cap on each rail: `(d x rail) >> 15` is
-    /// 1298 here and 1299 one count up.
-    const EDGE_2S: i16 = 13_285;
-    const EDGE_USB: i16 = 23_913;
+    /// 794 here and 795 one count up.
+    const EDGE_2S: i16 = 13_284;
+    const EDGE_USB: i16 = 23_899;
     const SOFT_MIN: i32 = 300;
     const SOFT_MAX: i32 = 3800;
 

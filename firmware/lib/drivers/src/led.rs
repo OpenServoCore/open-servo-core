@@ -24,16 +24,20 @@ pub struct Led<P: DigitalOut, M: Monotonic> {
     pattern: Pattern,
     phase_tick: u32,
     on: bool,
+    active: Level,
 }
 
 impl<P: DigitalOut, M: Monotonic> Led<P, M> {
-    pub fn new(pin: P, clock: M) -> Self {
+    /// `active` is the level that lights the LED; `pin` must already sit at
+    /// the other one, since the driver starts dark and writes only on change.
+    pub fn new(pin: P, clock: M, active: Level) -> Self {
         Self {
             pin,
             clock,
-            pattern: Pattern::SolidOn,
+            pattern: Pattern::SolidOff,
             phase_tick: 0,
-            on: true,
+            on: false,
+            active,
         }
     }
 
@@ -64,8 +68,11 @@ impl<P: DigitalOut, M: Monotonic> Led<P, M> {
             }
         };
         if target_on != self.on {
-            self.pin
-                .set(if target_on { Level::High } else { Level::Low });
+            self.pin.set(if target_on {
+                self.active
+            } else {
+                self.active.inverted()
+            });
             self.on = target_on;
         }
     }
@@ -129,43 +136,48 @@ mod tests {
         (m, state)
     }
 
-    fn led_with(pattern: Pattern) -> (Led<MockDigitalOut, MockMonotonic>, PinState, ClockState) {
+    fn led_with(
+        pattern: Pattern,
+        active: Level,
+    ) -> (Led<MockDigitalOut, MockMonotonic>, PinState, ClockState) {
         let (pin, pin_state) = mk_pin();
         let (clock, clock_state) = mk_clock();
-        let mut led = Led::new(pin, clock);
+        let mut led = Led::new(pin, clock, active);
         led.set_pattern(pattern);
         (led, pin_state, clock_state)
     }
 
     #[test]
-    fn solid_off_drives_pin_low_on_first_poll() {
-        let (mut led, pin, _clock) = led_with(Pattern::SolidOff);
+    fn solid_off_leaves_the_parked_pin_alone() {
+        let (mut led, pin, _clock) = led_with(Pattern::SolidOff, Level::High);
         led.poll();
-        assert_eq!(pin.log(), [Level::Low]);
+        assert!(pin.log().is_empty());
     }
 
     #[test]
-    fn solid_on_holds_pin_high_no_writes() {
-        let (mut led, pin, _clock) = led_with(Pattern::SolidOn);
+    fn solid_on_drives_the_active_level() {
+        let (mut led, pin, _clock) = led_with(Pattern::SolidOn, Level::High);
         led.poll();
-        // Constructor initial state is `on = true`; no transition expected.
-        assert!(pin.log().is_empty());
+        assert_eq!(pin.log(), [Level::High]);
+        let (mut led, pin, _clock) = led_with(Pattern::SolidOn, Level::Low);
+        led.poll();
+        assert_eq!(pin.log(), [Level::Low]);
     }
 
     #[test]
     fn blink_toggles_after_half_period() {
         let period_us = 100;
         let half = period_us / 2;
-        let (mut led, pin, clock) = led_with(Pattern::Blink { period_us });
+        let (mut led, pin, clock) = led_with(Pattern::Blink { period_us }, Level::Low);
         // Just before half period: no toggle yet.
         clock.set_now(half - 1);
         led.poll();
         assert!(pin.log().is_empty());
-        // At the boundary: toggle Low.
+        // At the boundary: lit, at the active-low level.
         clock.set_now(half);
         led.poll();
         assert_eq!(pin.log(), [Level::Low]);
-        // Second half later: toggle back High.
+        // Second half later: dark again.
         clock.set_now(2 * half);
         led.poll();
         assert_eq!(pin.log(), [Level::Low, Level::High]);
@@ -173,7 +185,7 @@ mod tests {
 
     #[test]
     fn set_pattern_same_value_is_noop() {
-        let (mut led, _pin, clock) = led_with(Pattern::SolidOn);
+        let (mut led, _pin, clock) = led_with(Pattern::SolidOn, Level::High);
         clock.set_now(12345);
         let phase_before = led.phase_tick_for_test();
         led.set_pattern(Pattern::SolidOn);

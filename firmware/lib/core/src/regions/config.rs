@@ -167,8 +167,9 @@ pub const DEFAULT_STALL_YIELD_MA: u16 = 180;
 pub const DEFAULT_STALL_RELEASE_MA: u16 = 90;
 pub const DEFAULT_STALL_TAU_TRIP_MA: u16 = 300;
 // Copper and shunt guard, not a gear-train limit: 3.0 A sits above any
-// micro-class stall on 2S (2.1 A) and below the arm-B chain's saturation on
-// a 60 mOhm shunt (~3.4 A), so the trip stays measurable on both rig shunts.
+// micro-class stall on 2S (2.1 A) and below where the osc-dev-v006 chain
+// saturates (~3.1 A over its 0.52 V bias on 60 mOhm), so the trip stays
+// measurable.
 pub const DEFAULT_OC_TRIP_MA: u16 = 3000;
 pub const DEFAULT_OC_TRIP_TICKS: u8 = 8;
 // Applied volts (duty x rail) a shunt-burst step may drive. A burst runs
@@ -196,12 +197,11 @@ pub struct ConfigThermal {
 pub const DEFAULT_DERATE_START_CC: i16 = 8000;
 pub const DEFAULT_CUTOFF_CC: i16 = 10000;
 pub const DEFAULT_RECOVER_CC: i16 = 9000;
-// True brown-out floor (~2.9 V), not a battery-health line: the default
-// must sit below every legal supply - a USB-fed 5 V bench bus idles at
-// ~1760 counts (~4.3 V), so the old 2S-floor 2200 faulted every loaded
-// move on a factory-fresh board. Pack-health thresholds are per-product
-// tuning, written by the host.
-pub const DEFAULT_V_UNDERVOLT_COUNTS: u16 = 1200;
+// True brown-out floor, not a battery-health line: the default must sit
+// below every legal supply, and a USB-fed 5 V bench bus idles at ~4.3 V.
+// Pack-health thresholds are per-product tuning, written by the host.
+// Reaches the chip in vcounts through `vmotor_counts`.
+pub const DEFAULT_V_UNDERVOLT_MV: u16 = 2900;
 // Under the class current limit, or the winding thermometer never samples.
 pub const DEFAULT_RTHERM_I_MIN_MA: u16 = 150;
 pub const DEFAULT_RTHERM_OMEGA_MAX_CPS: u16 = 400;
@@ -332,8 +332,9 @@ const ADC_COUNTS_PER_VDD: u64 = 4096;
 
 /// counts = mA x gain x R_shunt x 4096 / VDD, rounded: the chain puts
 /// gain x R_shunt volts per amp onto a VDD-referenced 12-bit ADC: 614.4
-/// counts/A on the arm-B rig (33 mOhm, G 15.000, 3300 mV), 1117.1 on the
-/// osc-dev-v006 board (60 mOhm), where the 300 mA class limit is 335.
+/// counts/A on the arm-B rig (33 mOhm, G 15.000, 3300 mV), 1108.5 on the
+/// osc-dev-v006 board (60 mOhm, G 14.884), where the 300 mA class limit is
+/// 333.
 pub const fn current_counts(ma: u16, shunt_r_mohm: u16, gain_milli: u16, vdd_mv: u16) -> u16 {
     let num = ma as u64 * gain_milli as u64 * shunt_r_mohm as u64 * ADC_COUNTS_PER_VDD;
     let den = vdd_mv as u64 * 1_000_000;
@@ -346,8 +347,8 @@ pub const fn current_counts(ma: u16, shunt_r_mohm: u16, gain_milli: u16, vdd_mv:
 }
 
 /// vcounts = mV x 4096 x bot / ((top + bot) x VDD), rounded: the rail as the
-/// motor-terminal tap reads it, the unit `vbus_counts` publishes. 1298 for
-/// the 3200 mV burst cap on the osc-dev-v006 6k8/3k3 taps (2.466 mV/count).
+/// motor-terminal tap reads it, the unit `vbus_counts` publishes. 794 for
+/// the 3200 mV burst cap on the osc-dev-v006 6K4/1K6 taps (4.028 mV/count).
 pub const fn vmotor_counts(mv: u16, div_top_ohm: u32, div_bot_ohm: u32, vdd_mv: u16) -> u16 {
     let num = mv as u64 * ADC_COUNTS_PER_VDD * div_bot_ohm as u64;
     let den = (div_top_ohm as u64 + div_bot_ohm as u64) * vdd_mv as u64;
@@ -365,9 +366,21 @@ mod tests {
 
     #[test]
     fn burst_cap_in_vcounts_follows_the_terminal_divider() {
-        assert_eq!(vmotor_counts(BURST_MAX_MV, 6_800, 3_300, 3300), 1298);
-        assert_eq!(vmotor_counts(0, 6_800, 3_300, 3300), 0);
+        assert_eq!(vmotor_counts(BURST_MAX_MV, 6_400, 1_600, 3300), 794);
+        assert_eq!(vmotor_counts(0, 6_400, 1_600, 3300), 0);
         assert_eq!(vmotor_counts(u16::MAX, 0, 1, 1), u16::MAX);
+    }
+
+    #[test]
+    fn undervolt_floor_in_vcounts_follows_the_terminal_divider() {
+        assert_eq!(
+            vmotor_counts(DEFAULT_V_UNDERVOLT_MV, 6_400, 1_600, 3300),
+            720
+        );
+        assert_eq!(
+            vmotor_counts(DEFAULT_V_UNDERVOLT_MV, 20_000, 10_000, 3300),
+            1200
+        );
     }
 
     #[test]
@@ -383,8 +396,8 @@ mod tests {
 
     #[test]
     fn current_counts_scales_with_the_shunt_and_saturates() {
-        assert_eq!(current_counts(300, 60, 15_000, 3300), 335);
-        assert_eq!(current_counts(0, 60, 15_000, 3300), 0);
+        assert_eq!(current_counts(300, 60, 14_884, 3300), 333);
+        assert_eq!(current_counts(0, 60, 14_884, 3300), 0);
         assert_eq!(current_counts(u16::MAX, u16::MAX, u16::MAX, 1), u16::MAX);
     }
 }

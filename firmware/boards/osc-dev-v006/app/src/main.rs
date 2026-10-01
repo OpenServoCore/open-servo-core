@@ -18,71 +18,58 @@ fn main() -> ! {
     osc_servo_ch32::log::info!("osc-dev-v006: boot");
     osc_servo_ch32::run!(BoardConfig {
         wiring: BoardWiring {
-            dbg: DigitalPin::PC3,
+            // DRV8212P nSLEEP; the Rh1 pull-down holds it asleep through reset.
             drv_en: DrvEn {
-                pin: DigitalPin::PD0,
+                pin: DigitalPin::PC3,
                 active: Level::High,
             },
-            // Rev B TTL bus subsystem (the default): the 74LVC2G241 is in
-            // play, TX_EN = PC2 gating direction. `--features half-duplex`
-            // drops the bus wiring -- the direct HDSEL wire carries none,
-            // and on a buffer-populated board the TX_EN pull-down (R16)
-            // keeps the buffer released.
-            #[cfg(not(feature = "half-duplex"))]
-            bus: BusWiring { tx_en: Pin::PC2 },
-            // Rev B arm-B bodge: bare OPA closed by an external 1k/15k
-            // network (G = 15.0) off a 60 mohm 1206 shunt: 0.9 V/A, 0.9 mA
-            // per count.
+            stat_led_active: Level::Low,
+            // Bare OPA (PD7 needs RST_MODE=11 and JP1 closed) behind the
+            // external Rf 6K4 / Rg 430 difference network: G = 14.884.
             current_sense: CurrentSenseConfig {
                 opa: opa::Config {
-                    pos: opa::PositiveInput::PD3,
-                    neg: opa::NegativeInput::PA1,
+                    pos: opa::PositiveInput::PD7,
+                    neg: opa::NegativeInput::PD0,
                     out: opa::Output::PD4,
                 },
-                gain_milli: 15_000,
+                gain_milli: 14_884,
             },
+            // A0 is the NTC with JP2 on NTC-IN.
             sensors: AdcPins {
-                pos: AnalogChannel::A3,
+                pos: AnalogChannel::A1,
                 vmotor: (AnalogChannel::A5, AnalogChannel::A6),
-                vbus: AnalogChannel::A0,
-                ntc: AnalogChannel::A2,
+                vbus: AnalogChannel::A2,
+                ntc: AnalogChannel::A0,
             },
         },
         calibration: Calibration {
             shunt_r_mohm: 60,
-            // Hacked board D: 6k8 0805 top / 3k3 THT bottom returned to VB,
-            // ~150 pF reservoir at each tap (2.2 kohm source, fast aperture).
+            // Bottom legs return to VB: a tap reads 0.2 x terminal + 0.8 x VB.
             vmotor_divider: Divider {
-                top_ohm: 6_800,
-                bot_ohm: 3_300,
+                top_ohm: 6_400,
+                bot_ohm: 1_600,
             },
-            // Board D bodge as fitted (15k/10k); rev-2A lands 20_000/10_000.
+            // Returned to GND.
             vbus_divider: Divider {
-                top_ohm: 15_000,
-                bot_ohm: 10_000,
+                top_ohm: 6_400,
+                bot_ohm: 1_600,
             },
             ntc: Ntc {
                 pullup_ohm: 10_000,
                 r25_ohm: 10_000,
                 beta: 3950,
             },
-            // Terminal-divider bias VB from 3V3 through 200/47: 4095 x 47 / 247.
-            vmotor_bias_nom_counts: 779,
-            // SS54 input Schottky: VSYS measured ~0.25 V under the pack.
+            // VB from 3V3 through 430 / 100: 4095 x 100 / 530.
+            vmotor_bias_nom_counts: 773,
+            // SS54 OR-ing Schottkys (Dp1, Dp2) between the supply inputs and
+            // VSYS.
             rail_drop_mv: 250,
             vdd_mv: 3300,
-            // Scan order is [shunt, vmA, vmB, pos, vcal, vbus, ntc]. The i floor is
-            // amp-settling-bound: arm-B network measured true from duty 13%
-            // (bringup docs/armb-comp-sizing.md); the shunt S/H closes 27
-            // ticks after the trigger, far inside it. The v floor covers
-            // vmotor_b's S/H close, 131 ticks (2.73 us) after the crest
-            // trigger at ADCCLK 24 MHz with 13.5-cycle apertures (vmotor_a's
-            // at 79 ticks, 1.65 us), 29 ticks margin. Divider settling is no
-            // longer the binding term - on the 6k8/3k3 + 150 pF taps both
-            // terminals read the rail within 1% from 96 ticks (duty 8%, edge
-            // grid both directions), and the slower scan now samples them
-            // well past that. A v floor below the true edge lets off-phase
-            // samples seed the vbus EWMA and latch a false undervolt.
+            // Scan order is [shunt, vmA, vmB, pos, vcal, vbus, ntc]. The i
+            // floor covers the amplifier settling after the bridge edge; the
+            // v floor covers both terminal taps settling to the rail and
+            // vmotor_b's S/H close, 131 ticks after the crest trigger at
+            // ADCCLK 24 MHz with 13.5-cycle apertures.
             i_window_min_ticks: 160,
             v_window_min_ticks: 160,
         },
@@ -94,6 +81,6 @@ fn main() -> ! {
             response_deadline_us: DEFAULT_RESPONSE_DEADLINE_US,
         },
         model: MODEL_OSC_SERVO,
-        hw_rev: 1,
+        hw_rev: 2,
     })
 }
