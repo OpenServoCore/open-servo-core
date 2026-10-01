@@ -251,7 +251,7 @@ The philosophy across the board is cheap sensor, big per-unit calibration table.
 
 The `atan2` runs as a CORDIC, which is an iterative shift-and-add algorithm that computes angles with no multiply or divide. Handy on small chips.
 
-One detail worth pointing out. There is no separate supply divider. When the bridge drives a motor terminal high, that terminal is sitting at the bus rail, so sampling the terminal sense at the right PWM phase measures the supply. $\hat V_\text{bus}$ comes out of the same two dividers as $\hat v_\text{diff}$.
+One detail worth pointing out. The supply has its own divider, sampled every tick whether the bridge drives or not, and $\hat V_\text{bus}$ is a filtered reading of it rescaled into the units the terminal taps read. The terminal dividers return to a bias node rather than to ground, so both terminals stay readable while the bridge coasts. The bias cancels in $\hat v_\text{diff}$, which is the only way the terminal taps enter the loops.
 
 ### Back-EMF, a Velocity Sensor for Free
 

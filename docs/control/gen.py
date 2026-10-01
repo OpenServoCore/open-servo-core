@@ -239,8 +239,7 @@ for src, boxes, out, tier, y in rows:
     d += elm.Label(label=out, color=C_EST).at((d.here[0] + 0.35, d.here[1]))
     if tier:
         d += elm.Label(label=tier, fontsize=FSS).at((d.here[0] + 0.55, d.here[1] + 0.42))
-# terminal chain: v-diff plus the V̂bus branch (no separate supply divider -
-# a driven-high terminal sits at the bus rail)
+# terminal chain: v-diff
 d.here = (0, -1.9)
 d += elm.Arrow().right(2.4).label('terminal ADC ×2', loc='top').color(C_HW)
 d += (pa := dsp.Box(w=2.6, h=1.1).anchor('W').label('PWM average').color(C_EST))
@@ -250,16 +249,14 @@ d += elm.Arrow().at(df.E).right(1.0).color(C_EST)
 d += (gc := dsp.Box(w=2.2, h=1.1).anchor('W').label('× gain_cal').color(C_EST))
 d += elm.Arrow().at(gc.E).right(1.0).color(C_EST)
 d += elm.Label(label='v̂_diff', color=C_EST).at((d.here[0] + 0.35, d.here[1]))
-bx = pa.absanchors['E'][0] + 0.5
-d += elm.Dot(radius=0.06).at((bx, -1.9)).color(C_EST)
-d += elm.Line().at((bx, -1.9)).down(1.4).color(C_EST)
-d += elm.Arrow().at((bx, -3.3)).right(0.9).color(C_EST)
-d += (og := dsp.Box(w=3.0, h=1.1).anchor('W').label('on-phase gate').color(C_EST))
-d += elm.Arrow().at(og.E).right(1.0).color(C_EST)
+# supply chain: the rail's own divider, rescaled into terminal-tap counts
+d.here = (0, -3.3)
+d += elm.Arrow().right(2.4).label('rail ADC', loc='top').color(C_HW)
+d += (sc := dsp.Box(w=3.0, h=1.1).anchor('W').label('× rail scale').color(C_EST))
+d += elm.Arrow().at(sc.E).right(1.0).color(C_EST)
 d += (lpf := dsp.Box(w=1.4, h=1.1).anchor('W').label('LPF').color(C_EST))
 d += elm.Arrow().at(lpf.E).right(1.0).color(C_EST)
 d += elm.Label(label='V̂bus', color=C_EST).at((d.here[0] + 0.4, d.here[1]))
-d += elm.Label(label='(driven-high terminal = bus rail)', fontsize=FSS).at((lpf.absanchors['E'][0] + 2.3, -4.35))
 save(d, 'sensor-frontends.svg')
 
 # --------------------------------------------------- bemf + thermometry
@@ -438,7 +435,7 @@ d += elm.Line().at(pS).down(pS[1] - FEED).label('raw signals', loc='bottom', ofs
 d += (posfe := dsp.Box(w=3.0, h=1.1).at((posx, FE_C)).anchor('center').label(
     'position FE\npot / mag / IR + LUT', fontsize=FSS).color(C_EST))
 d += (shfe := dsp.Box(w=2.0, h=1.1).at((shx, FE_C)).anchor('center').label('shunt FE', fontsize=FSS).color(C_EST))
-d += (tvfe := dsp.Box(w=2.6, h=1.1).at((tvx, FE_C)).anchor('center').label('terminal V FE\n(v̂_diff, V̂bus)', fontsize=FSS).color(C_EST))
+d += (tvfe := dsp.Box(w=2.6, h=1.1).at((tvx, FE_C)).anchor('center').label('voltage FE\n(v̂_diff, V̂bus)', fontsize=FSS).color(C_EST))
 d += elm.Line().at((pS[0], FEED)).left(pS[0] - posx).color(C_HW)
 for xdrop in (shx - 0.75, tvx):
     d += elm.Dot(radius=0.06).at((xdrop, FEED)).color(C_HW)

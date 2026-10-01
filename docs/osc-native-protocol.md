@@ -995,9 +995,9 @@ unless all of these hold at the kernel tick that sees it:
 - torque on, mode OpenLoop, no TEL burst running (`tel_count` 0), no
   fault latched, and `chans` naming only defined extras;
 - the applied volts are at most 3.2 V: `(|duty_q15| x vbus_counts) >>
-  15` at most the board's cap in vcounts, 1298 on osc-dev-v006. That
-  is a step of at most 13285 (40.5%) on a 7.9 V rail (`vbus_counts`
-  3204) and 23913 (73.0%) on a 4.39 V USB rail (1780);
+  15` at most the board's cap in vcounts, 794 on osc-dev-v006. That
+  is a step of at most 13284 (40.5%) on a 7.9 V rail (`vbus_counts`
+  1961) and 23899 (72.9%) on a 4.39 V USB rail (1090);
 - at least 100 ms have passed since the previous accepted arm: 2000
   kernel ticks, and the kernel does not tick during a capture, so the
   gap in time is never shorter;
