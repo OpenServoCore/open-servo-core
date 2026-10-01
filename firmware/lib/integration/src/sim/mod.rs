@@ -36,7 +36,7 @@ use self::providers::Handles;
 use self::resample::{CrossRx, RxOut};
 use self::servo::SimServo;
 
-pub use self::cpu::HandlerCost;
+pub use self::cpu::{Entries, HandlerCost};
 pub use self::host::HostEvent;
 pub use self::store::{Kind as ImageKind, RamStore, Tear};
 
@@ -357,6 +357,11 @@ impl Sim {
 
     /// `on_break` invocations delivered to servo `i` -- wire break events
     /// minus this counts pends that coalesced.
+    /// Handler bodies servo `i` has run, per vector (PFIC HIGH entries).
+    pub fn entries(&self, i: usize) -> Entries {
+        self.cpus[i].entries()
+    }
+
     pub fn delivered_breaks(&self, i: usize) -> u64 {
         self.cpus[i].delivered_breaks()
     }

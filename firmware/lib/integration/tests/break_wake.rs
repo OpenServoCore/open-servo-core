@@ -171,3 +171,35 @@ fn chain_answers_and_reclaims(
         r[1].at
     );
 }
+
+/// PFIC HIGH entries per exchange, pinned (a ping, then a 32-byte read):
+/// the break-after-byte budget is one break wake, three TX arm completions
+/// and three deadline wakes for a ping (header, frame end, trigger; a read
+/// adds its covered checkpoint); a wake ahead of its byte adds exactly the
+/// one re-inspection deadline. Any other count is a change in HIGH load on
+/// the motor kernel's time.
+#[rstest]
+#[test_log::test]
+fn high_entries_per_exchange_are_pinned(
+    #[values(BaudRate::B500000, BaudRate::B1000000, BaudRate::B3000000)] rate: BaudRate,
+    #[values(BreakWake::BeforeByte, BreakWake::AfterByte)] wake: BreakWake,
+) {
+    const N: u64 = 20;
+    let reinspect = u64::from(wake == BreakWake::BeforeByte);
+    for (frame, deadlines) in [
+        (instruction(ID, Opcode::Ping, 0, &[]), 3),
+        (instruction(ID, Opcode::Read, 0, &[0, 0, 32, 0]), 4),
+    ] {
+        let mut sim = Sim::new(rate);
+        sim.set_break_wake(wake);
+        let s = sim.add_servo(ID);
+        for _ in 0..N {
+            sim.host_send(&frame);
+            assert_eq!(replies(&sim.run()).len(), 1);
+        }
+        let e = sim.entries(s);
+        assert_eq!(e.compare, N * (deadlines + reinspect), "deadline wakes");
+        assert_eq!(e.break_wake, N, "break wakes");
+        assert_eq!(e.tx_done, N * 3, "TX arm completions");
+    }
+}

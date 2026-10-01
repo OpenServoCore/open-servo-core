@@ -38,6 +38,21 @@ pub struct Cpu {
     /// A `CpuFree` wake is in flight; at most one outstanding per servo.
     pub free_scheduled: bool,
     delivered_breaks: u64,
+    entries: Entries,
+}
+
+/// Handler bodies run, per vector.
+#[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
+pub struct Entries {
+    pub compare: u64,
+    pub break_wake: u64,
+    pub tx_done: u64,
+}
+
+impl Entries {
+    pub fn total(&self) -> u64 {
+        self.compare + self.break_wake + self.tx_done
+    }
 }
 
 impl Cpu {
@@ -80,12 +95,19 @@ impl Cpu {
     /// Occupy the CPU with `v`'s body starting at `now`.
     pub fn charge(&mut self, now: u64, v: Vector) {
         let us = match v {
-            Vector::Compare => self.cost.on_deadline_us,
+            Vector::Compare => {
+                self.entries.compare += 1;
+                self.cost.on_deadline_us
+            }
             Vector::Break => {
                 self.delivered_breaks += 1;
+                self.entries.break_wake += 1;
                 self.cost.on_break_us
             }
-            Vector::TxDone => self.cost.on_tx_complete_us,
+            Vector::TxDone => {
+                self.entries.tx_done += 1;
+                self.cost.on_tx_complete_us
+            }
         };
         self.busy_until = now + us as u64 * TICKS_PER_US;
     }
@@ -94,5 +116,9 @@ impl Cpu {
     /// (wire FE events minus this = pends that merged).
     pub fn delivered_breaks(&self) -> u64 {
         self.delivered_breaks
+    }
+
+    pub fn entries(&self) -> Entries {
+        self.entries
     }
 }
