@@ -26,6 +26,7 @@ use crate::cfg::chip;
 use crate::hal::clocks::TIM_CLK_HZ;
 use crate::hal::timer::tim2;
 use crate::hal::{afio, dma, gpio, rcc};
+use crate::probe::high_probe;
 
 /// The overflow point in quarter bit-times: 37 = 9.25, between the longest
 /// data low (9) and the law break's end (10).
@@ -77,14 +78,22 @@ impl BreakWake {
         let f = tim2::flags();
         if f.uif() && tim2::update_armed() {
             tim2::park();
+            high_probe(|p| {
+                if dma::remaining(dma::Channel::CH2) != 0 {
+                    p.latch_missed += 1;
+                }
+            });
             // SAFETY: a word read of a static only the latch channel writes.
             let low = gpio::is_low_in(unsafe { LEVEL.get().read_volatile() }, pin);
+            high_probe(|p| if low { p.breaks += 1 } else { p.idles += 1 });
             if gpio::is_low(pin) != low {
+                high_probe(|p| p.pin_rearms += 1);
                 Self::listen();
             }
             return low;
         }
         if f.tif() {
+            high_probe(|p| p.edge_rearms += 1);
             Self::listen();
         }
         false

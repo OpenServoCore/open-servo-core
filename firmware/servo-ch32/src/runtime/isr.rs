@@ -141,6 +141,7 @@ pub fn on_adc_dma_tc() {
 /// the composite is possible.
 pub fn on_tim2() {
     crate::log::trace!("tim2 isr");
+    let entry = crate::probe::stamp();
     if BreakWake::service() {
         // The break handler resolves complete frames from ring data in
         // place (transport sec 5), so it carries the (lazy) HIGH dispatcher
@@ -152,6 +153,7 @@ pub fn on_tim2() {
     // Trailing on purpose: any wire event marks the bus as talking for the
     // main loop's LED policy.
     crate::runtime::registry::BUS_ACTIVITY.store(true, portable_atomic::Ordering::Relaxed);
+    crate::probe::high_probe(|p| p.tim2.exit(entry));
 }
 
 /// USART1 vector -- TX arm completion. TCIE is the one enabled source.
@@ -161,6 +163,7 @@ pub fn on_tim2() {
 /// composite is possible.
 pub fn on_usart1() {
     crate::log::trace!("usart1 isr");
+    let entry = crate::probe::stamp();
     // This path never reads DATAR: a CPU DATAR read while a byte is
     // mid-reception kills the byte in the shifter -- no flags, no ring
     // entry, every later anchor shifts (measured; the DMA ladder only
@@ -181,6 +184,7 @@ pub fn on_usart1() {
     // Trailing on purpose (statement order above is jitter-tuned): any
     // wire event marks the bus as talking for the main loop's LED policy.
     crate::runtime::registry::BUS_ACTIVITY.store(true, portable_atomic::Ordering::Relaxed);
+    crate::probe::high_probe(|p| p.usart1.exit(entry));
 }
 
 /// SysTick compare -- one or more framer/chain/rescue deadlines are due, or a
@@ -193,10 +197,12 @@ pub fn on_usart1() {
 /// [`HighDispatcher`] under its exclusivity invariant.
 pub fn on_deadline_irq() {
     crate::log::trace!("deadline isr");
+    let entry = crate::probe::stamp();
     crate::hal::systick::clear_match();
     let mut dispatcher = HighDispatcher;
     // SAFETY: see fn doc.
     unsafe { Drivers::bus() }.on_deadline(&mut dispatcher);
+    crate::probe::high_probe(|p| p.systick.exit(entry));
 }
 
 /// Wires osc-servo-ch32 ISR bodies into the vector table via the stock
