@@ -17,10 +17,9 @@ pub const TICKS_PER_US: u64 = 48;
 /// 10 bit-times per UART character (8N1) -- the byte and break unit (sec 2).
 const BITS_PER_BYTE: u64 = 10;
 
-/// SBK break length; measured ~14 bit-times, zero variance [F5]. The ring
-/// byte and `on_break` are delivered at the break's *end* -- where the
-/// detector latches (silicon: LBD sets at the rising edge that ends the span;
-/// == bit 10 for the 10-bit law break).
+/// SBK break length; measured ~14 bit-times, zero variance [F5]. `on_break`
+/// is delivered at the break's *end*, its ring byte beside it or 0.75
+/// bit-times after it (see [`super::BreakWake`]).
 const BREAK_BITS: u64 = 14;
 
 /// Runaway guards: a wedged scenario must fail loudly, not spin forever.
@@ -56,7 +55,7 @@ pub enum Event {
     /// receivers whose rate qualifies the span (sec 3.4: the detector is
     /// length-qualified -- >=10 of the RECEIVER's bit-times -- so a break
     /// wakes only servos at or above `baud`). `break_start` is the
-    /// recorded frame's `at`; delivery is at break end.
+    /// recorded frame's `at`; the wake is delivered at break end.
     WireBreak {
         talker: Talker,
         baud: BaudRate,
@@ -81,9 +80,13 @@ pub enum Event {
     /// A rescue pulse crossed the sampler threshold (sec 9.1): every servo's
     /// main-loop sampler has seen >= RESCUE_LOW_US of continuous low with the
     /// ring frozen -- deliver `on_rescue_break` (a thread-level event, not a
-    /// vector; the pulse still holds the line). The pulse's END additionally
-    /// fires an ordinary break wake ([`Event::StrayBreak`]).
+    /// vector; the pulse still holds the line). The pulse additionally fires
+    /// one ordinary break wake ([`Event::PulseWake`] or, at its end,
+    /// [`Event::StrayBreak`]).
     RescueDeclare,
+    /// A rescue pulse has held the line a break's length: every receiver
+    /// rings one 0x00 and wakes at its own rate.
+    PulseWake,
     /// The host's frame drained -- finalize the recorded frame.
     HostFrameEnd,
     /// Scheduled quiet: nothing happens, sim time passes (the paced-client
@@ -100,6 +103,9 @@ pub enum Event {
     /// wire byte (a coalesced or lagged break service -- sec 3.4's reason to
     /// demand idempotence).
     WakeRefire { servo: usize },
+    /// A break's 0x00 lands in servo `servo`'s ring after its wake
+    /// ([`super::BreakWake::BeforeByte`]).
+    BreakByte { servo: usize },
     /// A servo TX DMA arm completed -- drive `on_tx_complete`.
     TxArmDone { servo: usize },
     /// A servo's TEL fast-tick pump fired (kernel 50 us grid): synthesize one

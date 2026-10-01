@@ -175,8 +175,9 @@ impl TxWire for HostWire {
             // declares only if the frozen-ring threshold tick fell inside
             // the held span. The wire stays host-claimed to the rise, so
             // declare-at-release observes like the mid-pulse declaration
-            // (FIFO tie: declare lands before the rise's break wake, as on
-            // silicon). Then the rising edge is where break detectors latch.
+            // (FIFO tie: declare lands before the pulse's break wake). The
+            // pulse's one break wake is modeled at the rise, its 0x00 in the
+            // sim's wake order.
             let declare = start + byte_ticks(baud) + RESCUE_LOW_US as u64 * TICKS_PER_US;
             if declare < now {
                 c.schedule(Event::RescueDeclare, now);
