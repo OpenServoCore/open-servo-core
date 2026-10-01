@@ -3,7 +3,7 @@ use serial_test::serial;
 
 use crate::support::bench;
 
-/// PING -> status carries model(2) + fw(1), from the responder's id (protocol sec 5).
+/// PING -> status carries model(2) + fw(2), from the responder's id (protocol sec 5).
 #[serial]
 #[test]
 fn ping_returns_model_and_fw() {
@@ -11,5 +11,5 @@ fn ping_returns_model_and_fw() {
     let id = b.id();
     let st = b.status_ok(&build_ping(id));
     assert_eq!(st.id, id, "status carries the responder id");
-    assert_eq!(st.payload.len(), 3, "ping payload = model(2) + fw(1)");
+    assert_eq!(st.payload.len(), 4, "ping payload = model(2) + fw(2)");
 }
