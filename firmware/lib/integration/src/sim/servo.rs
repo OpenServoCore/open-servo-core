@@ -7,6 +7,7 @@ use std::rc::Rc;
 
 use osc_servo_core::data_state::DataJob;
 use osc_servo_core::pos_lut::POINTS;
+use osc_servo_core::regions::config::{DEFAULT_V_UNDERVOLT_MV, vmotor_counts};
 use osc_servo_core::tel::{TelSample, TelStream};
 use osc_servo_core::{
     BaudRate, BootMode, CalibSense, CalibSenseExt, ConfigDefaults, ControlTable, CurrentDefaults,
@@ -125,6 +126,12 @@ impl SimServo {
             &CurrentDefaults::from_sense(
                 seed.sense.shunt_r_mohm,
                 seed.sense.gain_milli,
+                seed.sense.vdd_mv,
+            ),
+            vmotor_counts(
+                DEFAULT_V_UNDERVOLT_MV,
+                seed.sense.vmotor_div_top as u32,
+                seed.sense.vmotor_div_bot as u32,
                 seed.sense.vdd_mv,
             ),
         );

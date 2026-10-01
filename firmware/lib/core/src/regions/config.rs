@@ -196,12 +196,11 @@ pub struct ConfigThermal {
 pub const DEFAULT_DERATE_START_CC: i16 = 8000;
 pub const DEFAULT_CUTOFF_CC: i16 = 10000;
 pub const DEFAULT_RECOVER_CC: i16 = 9000;
-// True brown-out floor (~2.9 V), not a battery-health line: the default
-// must sit below every legal supply - a USB-fed 5 V bench bus idles at
-// ~1760 counts (~4.3 V), so the old 2S-floor 2200 faulted every loaded
-// move on a factory-fresh board. Pack-health thresholds are per-product
-// tuning, written by the host.
-pub const DEFAULT_V_UNDERVOLT_COUNTS: u16 = 1200;
+// True brown-out floor, not a battery-health line: the default must sit
+// below every legal supply, and a USB-fed 5 V bench bus idles at ~4.3 V.
+// Pack-health thresholds are per-product tuning, written by the host.
+// Reaches the chip in vcounts through `vmotor_counts`.
+pub const DEFAULT_V_UNDERVOLT_MV: u16 = 2900;
 // Under the class current limit, or the winding thermometer never samples.
 pub const DEFAULT_RTHERM_I_MIN_MA: u16 = 150;
 pub const DEFAULT_RTHERM_OMEGA_MAX_CPS: u16 = 400;
@@ -368,6 +367,18 @@ mod tests {
         assert_eq!(vmotor_counts(BURST_MAX_MV, 6_800, 3_300, 3300), 1298);
         assert_eq!(vmotor_counts(0, 6_800, 3_300, 3300), 0);
         assert_eq!(vmotor_counts(u16::MAX, 0, 1, 1), u16::MAX);
+    }
+
+    #[test]
+    fn undervolt_floor_in_vcounts_follows_the_terminal_divider() {
+        assert_eq!(
+            vmotor_counts(DEFAULT_V_UNDERVOLT_MV, 6_400, 1_600, 3300),
+            720
+        );
+        assert_eq!(
+            vmotor_counts(DEFAULT_V_UNDERVOLT_MV, 20_000, 10_000, 3300),
+            1200
+        );
     }
 
     #[test]

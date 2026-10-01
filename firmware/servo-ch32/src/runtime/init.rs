@@ -48,7 +48,7 @@ pub fn bringup(
     // reads the effective comms block from the table.
     SHARED
         .table
-        .seed_config_defaults(defaults, &pre.current_defaults);
+        .seed_config_defaults(defaults, &pre.current_defaults, pre.v_undervolt_counts);
     SHARED.table.seed_identity(model, hw_rev);
     config_store::ConfigStore::boot_load();
     // After boot_load: the calib overlay copies the whole region, so the RO

@@ -3,6 +3,7 @@
 //! plant rig on the osc-dev-v006 sense chain (60 mohm, G 15.0).
 
 use osc_integration::plant::{BIAS, FakeIo, RlPlant, duty_of, kernel, last_cmd};
+use osc_servo_core::regions::config::{DEFAULT_V_UNDERVOLT_MV, vmotor_counts};
 use osc_servo_core::{
     BaudRate, CalibSense, CalibSenseExt, ConfigDefaults, CurrentDefaults, ImageState, Kernel, Mode,
     RegionStorage, Shared,
@@ -46,6 +47,12 @@ fn virgin() -> Shared {
             response_deadline_us: 500,
         },
         &CurrentDefaults::from_sense(SENSE.shunt_r_mohm, SENSE.gain_milli, SENSE.vdd_mv),
+        vmotor_counts(
+            DEFAULT_V_UNDERVOLT_MV,
+            SENSE.vmotor_div_top as u32,
+            SENSE.vmotor_div_bot as u32,
+            SENSE.vdd_mv,
+        ),
     );
     sh.table.seed_calib_sense(&SENSE, &SENSE_EXT);
     sh.table.seed_current_bias(BIAS);
