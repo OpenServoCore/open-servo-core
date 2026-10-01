@@ -93,6 +93,10 @@ pub struct ServoBus<P: Providers> {
     clock: ClockTracker,
     // TEL burst stager (sec 5.3): armed by tel_count, fed by `poll_tel`.
     burst: TelBurst,
+    // Rescue sampler window (sec 9.1): the first low sample's tick and the
+    // cursor the ring must hold until the declaration.
+    rescue_since: Option<u32>,
+    rescue_cursor: u16,
 }
 
 /// Ticks per byte-time at `rate` on the transport clock. Each arm folds to a
@@ -152,6 +156,8 @@ impl<P: Providers> ServoBus<P> {
             unringed: None,
             clock: ClockTracker::new(<P::Deadline as Deadline>::CLOCK_TRIM_STEP_PPM),
             burst: TelBurst::new(),
+            rescue_since: None,
+            rescue_cursor: 0,
         }
     }
 
@@ -448,20 +454,37 @@ impl<P: Providers> ServoBus<P> {
         }
     }
 
-    /// sec 9.1 rescue: the chip's line sampler measured a >=[`RESCUE_LOW_US`]
-    /// dominant low with zero ring progress -- a length no transport wake can
-    /// measure (the break detector wakes once per span). Called from
-    /// the main loop under a critical section; the pulse is still holding the
-    /// line when the sampler declares, so the cursor is provably still.
+    /// sec 9.1 rescue sampler: one call per main-loop wake under a critical
+    /// section, with `low` read inside it. Declares after >= [`RESCUE_LOW_US`]
+    /// of low samples with zero ring progress - a length no transport wake
+    /// can measure (the break detector wakes once per span). A sample taken
+    /// while the servo's own TX holds the wire restarts the window: HDSEL
+    /// keeps own bytes out of the ring, so their low bits would otherwise
+    /// pass for a host's pulse. The TX state is read in the pin's critical
+    /// section, so no TX release can fall between sample and declaration.
     ///
     /// [`RESCUE_LOW_US`]: super::RESCUE_LOW_US
-    pub fn on_rescue_break(&mut self) {
-        // Own-TX guard: unreachable by physics (own data always carries
-        // stop-bit highs), kept because an abort of a draining ack is the
-        // one real damage a spurious call could do.
-        if self.tx.streaming() {
-            return;
+    pub fn sample_rescue(&mut self, low: bool) {
+        let cursor = self.ring.cursor();
+        let now = self.deadline.now();
+        if !low || self.tx.streaming() || cursor != self.rescue_cursor {
+            self.rescue_since = None;
+            self.rescue_cursor = cursor;
+        } else if let Some(t0) = self.rescue_since {
+            if now.wrapping_sub(t0)
+                >= super::RESCUE_LOW_US * <P::Deadline as Deadline>::TICKS_PER_US
+            {
+                self.rescue_since = None;
+                self.on_rescue_break();
+            }
+        } else {
+            self.rescue_since = Some(now);
         }
+    }
+
+    /// sec 9.1 rescue declaration, reached through [`Self::sample_rescue`]:
+    /// the pulse is still holding the line, so the cursor is provably still.
+    pub fn on_rescue_break(&mut self) {
         // sec 9.1: volatile rate switch -- the config register is untouched.
         self.baud.apply(BaudRate::B500000);
         self.rate = BaudRate::B500000;

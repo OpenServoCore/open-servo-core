@@ -9,6 +9,7 @@ use osc_servo_core::regions::CONTROL_BASE_ADDR;
 use osc_servo_core::regions::config::addr::common::ID as ID_ADDR;
 use osc_servo_core::{BaudRate, Dispatch, RegionStorage, Session, Shared};
 
+use crate::bus::RESCUE_LOW_US;
 use crate::mocks::bus::{FakeWire, Harness, RING_LEN, WireEvent};
 
 const ID: u8 = 7;
@@ -376,25 +377,91 @@ fn s12_write_wrapping_ring_boundary_mutates_and_acks() {
     assert!(shared.table.with(|t| t.control.lifecycle.torque_enable));
 }
 
-/// sec 9.1 rescue is a chip-side declaration (the main-loop line sampler --
-/// the break detector wakes once per span, so no wake can measure a pulse's
-/// length; the sampler's NDTR-frozen window is the phantom-alias
-/// veto the old two-sample confirm provided). The driver's part is the
-/// event: switch to the rescue rate and resync at the provably-still cursor.
+/// Main-loop line samples every `step` ticks over `[from, to]`, all low.
+fn sample_low(
+    bus: &mut crate::bus::ServoBus<crate::mocks::bus::TestProviders>,
+    h: &Harness,
+    from: u32,
+    to: u32,
+    step: usize,
+) {
+    for t in (from..=to).step_by(step) {
+        h.deadline.set_now(t);
+        bus.sample_rescue(true);
+    }
+}
+
+fn rescued(h: &Harness) -> bool {
+    h.baud.applied().last() == Some(&BaudRate::B500000)
+}
+
+/// sec 9.1 rescue is the main-loop line sampler's declaration (the break
+/// detector wakes once per span, so no wake can measure a pulse's length):
+/// low samples spanning `RESCUE_LOW_US` with the ring frozen switch to the
+/// rescue rate and resync at the provably-still cursor.
 #[test]
 fn s10_rescue_break_switches_to_500k_and_resyncs() {
     let h = Harness::new();
     let mut bus = h.build(ID, RATE, 60);
 
-    h.deadline.set_now(1000);
-    h.ring.set_cursor(1); // the pulse's ringed 0x00 at index 0
-    bus.on_rescue_break();
+    // The pulse's ringed 0x00 at index 0 restarts the window, which opens
+    // at the next frozen sample.
+    h.ring.set_cursor(1);
+    sample_low(&mut bus, &h, 950, 950, 1);
+    sample_low(&mut bus, &h, 1000, 1000 + RESCUE_LOW_US - 1, 50);
+    assert!(!rescued(&h), "declared short of the window");
+    sample_low(&mut bus, &h, 1000 + RESCUE_LOW_US, 1000 + RESCUE_LOW_US, 1);
 
     let applied = h.baud.applied();
     assert_eq!(applied.first(), Some(&RATE)); // new() applied the configured rate
-    assert_eq!(applied.last(), Some(&BaudRate::B500000));
+    assert!(rescued(&h));
     // Every transport slot cleared: nothing armed until the host talks.
     assert_eq!(h.deadline.armed(), None);
+}
+
+/// sec 9.1: traffic moves the ring, so a line that reads low at every sample
+/// while bytes keep arriving is never a pulse.
+#[test]
+fn s10_ring_progress_restarts_the_rescue_window() {
+    let h = Harness::new();
+    let mut bus = h.build(ID, RATE, 60);
+
+    for k in 0..20u32 {
+        h.ring.set_cursor(k as u16);
+        h.deadline.set_now(1000 + k * 50);
+        bus.sample_rescue(true);
+    }
+    assert!(!rescued(&h));
+}
+
+/// sec 9.1 own TX: HDSEL keeps the servo's own bytes out of the ring, so
+/// samples landing on their low bits find the ring frozen. A sample taken
+/// while the reply streams restarts the window, so a TX release between
+/// two low samples leaves no window to inherit; a real hold after the TX
+/// still declares a full window later.
+#[test]
+fn s10_own_tx_never_reads_as_a_rescue_pulse() {
+    let h = Harness::new();
+    let mut bus = h.build(ID, RATE, 60);
+    let shared = shared_seeded();
+    let mut session = Session::new();
+    let mut d = session.dispatcher(&shared);
+
+    let frame = instruction(ID, Opcode::Ping, 0, &[]);
+    deliver(&mut bus, &h, 100, &frame, 1000, &mut d);
+    fire(&mut bus, &h, &mut d);
+    assert!(h.wire.started());
+
+    let t0 = 5_000;
+    sample_low(&mut bus, &h, t0, t0 + 4 * RESCUE_LOW_US, 50);
+    assert!(!rescued(&h), "own TX read as a pulse");
+
+    drain_tx(&mut bus, &h);
+    let t1 = t0 + 4 * RESCUE_LOW_US + 1;
+    sample_low(&mut bus, &h, t1, t1 + RESCUE_LOW_US - 1, 50);
+    assert!(!rescued(&h), "the window outlived the TX release");
+    sample_low(&mut bus, &h, t1 + RESCUE_LOW_US, t1 + RESCUE_LOW_US, 1);
+    assert!(rescued(&h));
 }
 
 #[test]

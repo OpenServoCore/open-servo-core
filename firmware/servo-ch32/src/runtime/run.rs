@@ -7,11 +7,9 @@ use osc_servo_drivers::led::Pattern;
 use osc_servo_drivers::traits::Monotonic as _;
 use portable_atomic::Ordering;
 
-use osc_servo_drivers::bus::RESCUE_LOW_US;
-
 use crate::cfg::{BoardConfig, Precomputed, chip};
 use crate::control::Ch32ControlIo;
-use crate::hal::{dma, flash, gpio, pfic, rcc};
+use crate::hal::{flash, gpio, pfic, rcc};
 use crate::providers::monotonic::Monotonic;
 
 /// STAT LED activity hold: how long "talking" outlives the last wire IRQ,
@@ -52,9 +50,6 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
     let mut tel_published: u16 = 0;
     let talk_hold_ticks = TALK_HOLD_US * Monotonic::TICKS_PER_US;
     let mut last_talk = Monotonic.ticks().wrapping_sub(talk_hold_ticks);
-    let rescue_low_ticks = RESCUE_LOW_US * Monotonic::TICKS_PER_US;
-    let mut rescue_low_since: Option<u32> = None;
-    let mut rescue_ndtr: u16 = dma::remaining(dma::Channel::CH5);
     loop {
         // Transport RX/TX/deadlines are ISR-driven (TIM2 + USART1 + SysTick,
         // PFIC HIGH). Main loop owns LED housekeeping, the link-diagnostics
@@ -192,34 +187,15 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
 
         // Rescue sampler (protocol sec 9.1). The break detector wakes once
         // per dominant span, a break-length in, so no transport wake can
-        // measure a rescue pulse -- the slow loop measures it instead,
-        // which is where a 300 us-scale signal belongs. One sample
-        // per wfi wake; the 20 kHz ADC tick is the idle metronome, so the
-        // worst-case cadence is ~50 us against a >= 300 us window. The window
-        // requires every sample low AND the RX ring frozen: any completed
-        // character moves NDTR (a real dominant low delivers no start
-        // edges), so UART traffic at any baud -- including the pulse's own
-        // ringed 0x00, which re-anchors the window ~a byte-time in -- can
-        // never impersonate a pulse. Declaration runs under a critical
-        // section (the bus is otherwise HIGH-ISR-owned) while the pulse
-        // still holds the line, so the driver resyncs at a provably-still
-        // cursor; the window restart afterwards makes a continuing low
-        // redeclare idempotently rather than repeat-fire.
-        let ndtr = dma::remaining(dma::Channel::CH5);
-        if !gpio::is_low(chip::BUS_USART_MAPPING.tx_pin()) || ndtr != rescue_ndtr {
-            rescue_low_since = None;
-            rescue_ndtr = ndtr;
-        } else if let Some(t0) = rescue_low_since {
-            if Monotonic.ticks().wrapping_sub(t0) >= rescue_low_ticks {
-                rescue_low_since = None;
-                critical_section::with(|_| {
-                    // SAFETY: bus installed in bringup; ISRs masked by the CS.
-                    unsafe { crate::runtime::Drivers::bus() }.on_rescue_break()
-                });
-            }
-        } else {
-            rescue_low_since = Some(Monotonic.ticks());
-        }
+        // measure a rescue pulse; the slow loop measures it instead, one
+        // sample per wfi wake. The pin is read inside the critical section
+        // that also reads the TX state and declares, so a TX release cannot
+        // land between them.
+        critical_section::with(|_| {
+            let low = gpio::is_low(chip::BUS_USART_MAPPING.tx_pin());
+            // SAFETY: bus installed in bringup; ISRs masked by the CS.
+            unsafe { crate::runtime::Drivers::bus() }.sample_rescue(low)
+        });
 
         riscv::asm::wfi();
     }
