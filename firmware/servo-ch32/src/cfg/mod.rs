@@ -1,8 +1,6 @@
 pub mod board_wiring;
 pub mod chip;
 
-#[cfg(not(feature = "half-duplex"))]
-pub use board_wiring::BusWiring;
 pub use board_wiring::{
     AdcPins, BoardWiring, Calibration, CurrentSenseConfig, Divider, DrvEn, Ntc,
 };

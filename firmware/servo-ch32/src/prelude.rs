@@ -1,7 +1,5 @@
 pub use osc_servo_drivers::Level;
 
-#[cfg(not(feature = "half-duplex"))]
-pub use crate::cfg::BusWiring;
 pub use crate::cfg::{
     AdcPins, AnalogChannel, BoardConfig, BoardWiring, Calibration, CurrentSenseConfig, DigitalPin,
     Divider, DrvEn, Ntc,

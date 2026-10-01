@@ -206,7 +206,7 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
         // cursor; the window restart afterwards makes a continuing low
         // redeclare idempotently rather than repeat-fire.
         let ndtr = dma::remaining(dma::Channel::CH5);
-        if !gpio::is_low(chip::BUS_LINE_PIN) || ndtr != rescue_ndtr {
+        if !gpio::is_low(chip::BUS_USART_MAPPING.tx_pin()) || ndtr != rescue_ndtr {
             rescue_low_since = None;
             rescue_ndtr = ndtr;
         } else if let Some(t0) = rescue_low_since {

@@ -43,19 +43,9 @@ a motor (a sensor node or a downstream gateway speaks the servo role
 unchanged).
 
 - **Servo pin**: the USART TX pin with `HDSEL` (single-wire mode). RX is
-  internally tied to the pin; the direct wire needs no dedicated RX pin and
-  no direction buffer [F7] — rev C omits both. Bus side: series R +
-  pull-up (+ optional TVS); the buffer's roles collapse into the drive
-  discipline below.
-- **Buffered boards (rev B)**: the default board config (`half-duplex`
-  selects the direct wire — tinyboot's flag, same convention).
-  The USART runs plain full duplex behind the 74LVC2G241: TX drives only
-  the buffer input (push-pull, never released), and TX_EN gates the wire —
-  high drives TX onto the data line and hardware-mutes the receive path
-  (inverted enable, same signal), low releases it to the board pull-up.
-  Same observables as HDSEL: no own-TX echo, RX held at mark through the
-  TX window. The drive discipline below applies to the wire side of the
-  buffer — TX_EN assert is the claim, TX_EN release the handback.
+  internally tied to the pin; the wire needs no dedicated RX pin and no
+  direction buffer [F7]. Bus side: series R + pull-up (+ optional TVS); a
+  buffer's roles collapse into the drive discipline below.
 - **Drive discipline (all nodes, host included)**: idle/listening = AF
   open-drain (wire released, pull-up holds mark); transmitting = AF
   push-pull for the duration of the frame, then release. One GPIO CNF write
@@ -1436,7 +1426,7 @@ exit from `CONFIG_CORRUPT`.
 
 | resource            | use                                               |
 | ------------------- | ------------------------------------------------- |
-| USART1 + HDSEL, PC0 | the bus (rev B default config: full duplex, PC1 RX + PC2 TX_EN; the `half-duplex` feature frees both pins on rev-c) |
+| USART1 + HDSEL, PC0 | the bus                                           |
 | DMA1 CH5            | RX ring (circular, armed once)                    |
 | DMA1 CH4            | TX stream (enable-when-ready)                     |
 | DMA1 CH3 + SPI1     | CRC engine (no pins) [F6]                         |
@@ -1448,9 +1438,8 @@ exit from `CONFIG_CORRUPT`.
 
 Notably absent (vs a DXL-style transport): input-capture edge timing,
 TIM-compare TX kickoff, an RDT register and its tuning surface,
-byte-stuffing encode/unstuff, the FF-FF-FD hunter, software fold-CRC —
-and, on the direct wire, the 74LVC2G241 buffer + TX_EN pin (the rev B
-default board config keeps them).
+byte-stuffing encode/unstuff, the FF-FF-FD hunter, software fold-CRC,
+and a direction buffer with its TX_EN pin.
 
 ## 11. Measured foundation
 

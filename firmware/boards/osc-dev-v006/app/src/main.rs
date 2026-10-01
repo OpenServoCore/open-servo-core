@@ -23,13 +23,6 @@ fn main() -> ! {
                 pin: DigitalPin::PD0,
                 active: Level::High,
             },
-            // Rev B TTL bus subsystem (the default): the 74LVC2G241 is in
-            // play, TX_EN = PC2 gating direction. `--features half-duplex`
-            // drops the bus wiring -- the direct HDSEL wire carries none,
-            // and on a buffer-populated board the TX_EN pull-down (R16)
-            // keeps the buffer released.
-            #[cfg(not(feature = "half-duplex"))]
-            bus: BusWiring { tx_en: Pin::PC2 },
             // Rev B arm-B bodge: bare OPA closed by an external 1k/15k
             // network (G = 15.0) off a 60 mohm 1206 shunt: 0.9 V/A, 0.9 mA
             // per count.

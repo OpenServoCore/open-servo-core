@@ -3,75 +3,35 @@
 //! USART1 TC ISR (shifter empty), never a CH4 TC -- so the final release's
 //! wire handback and any deferred config can never garble in-flight bits.
 //!
-//! Two wire modes, selected by the board via the `half-duplex` feature;
-//! `claim_wire`/`release_wire` are the only lines that differ:
-//!
-//! - **Direct** (rev C, and rev B with the buffer bypassed): PC0 under
-//!   HDSEL carries the bus. Drive discipline is purely PC0's CNF (spike
-//!   `pc0_drive`, break_framing): AF open-drain while listening -- released,
-//!   the external bus pull-up holds mark -- and AF push-pull for the servo's
-//!   own TX window, so both wire edges are driven at 3M instead of riding
-//!   the pull-up's RC rise. HDSEL and RE stay on throughout: V006 HDSEL
-//!   does not echo own TX [F9], and with RE on the USART hands the released
-//!   line back cleanly at transmission end.
-//! - **Buffered** (rev B as designed): TX drives only the 74LVC2G241's
-//!   buffer input, so its pin idles AF push-pull and the buffer's tri-state
-//!   is the drive discipline -- TX_EN high drives TX onto the wire and mutes
-//!   the receive path (inverted enable, same signal), low releases the wire
-//!   to the board pull-up. The mute reproduces both HDSEL observables: no
-//!   own-TX echo, and an RX input held at mark (the RX pull-up) through the
-//!   whole TX window.
+//! PC0 under HDSEL carries the bus. Drive discipline is purely PC0's CNF
+//! (spike `pc0_drive`, break_framing): AF open-drain while listening
+//! (released, the external bus pull-up holds mark) and AF push-pull for the
+//! servo's own TX window, so both wire edges are driven at 3M instead of
+//! riding the pull-up's RC rise. HDSEL and RE stay on throughout: V006 HDSEL
+//! does not echo own TX [F9], and with RE on the USART hands the released
+//! line back cleanly at transmission end.
 
 use ch32_metapac::USART1;
 use osc_servo_drivers::traits::bus;
 
+use crate::cfg::chip;
+use crate::hal::gpio::{self, PinMode};
 use crate::hal::{dma, usart};
 
-#[cfg(not(feature = "half-duplex"))]
-use crate::cfg::BusWiring;
-#[cfg(feature = "half-duplex")]
-use crate::cfg::chip;
-#[cfg(feature = "half-duplex")]
-use crate::hal::gpio::{self, PinMode};
-#[cfg(not(feature = "half-duplex"))]
-use crate::hal::{Pin, gpio};
-#[cfg(not(feature = "half-duplex"))]
-use osc_servo_drivers::Level;
-
 /// Production binding to the wire claim/release + USART1 SBK/TCIE + DMA1_CH4.
-#[cfg(feature = "half-duplex")]
 pub struct TxWire;
 
-/// Production binding to the wire claim/release + USART1 SBK/TCIE + DMA1_CH4.
-#[cfg(not(feature = "half-duplex"))]
-pub struct TxWire {
-    tx_en: Pin,
-}
-
 impl TxWire {
-    #[cfg(not(feature = "half-duplex"))]
-    pub fn new(bus: &BusWiring) -> Self {
-        Self { tx_en: bus.tx_en }
-    }
-
-    /// Claim the wire for the TX window.
+    /// Claim the wire for the TX window: PC0 -> AF push-pull, both wire
+    /// edges driven.
     fn claim_wire(&self) {
-        #[cfg(feature = "half-duplex")]
-        // PC0 -> AF push-pull: drive both wire edges ourselves.
         gpio::configure(chip::BUS_USART_MAPPING.tx_pin(), PinMode::AF_PUSH_PULL);
-        #[cfg(not(feature = "half-duplex"))]
-        // TX_EN high: the buffer drives TX onto the wire and mutes RX.
-        gpio::set_level(self.tx_en, Level::High);
     }
 
-    /// Hand the wire back: released, the bus pull-up holds mark.
+    /// Hand the wire back: PC0 -> AF open-drain, the bus pull-up holds mark
+    /// and HDSEL RX keeps hearing through the pin.
     fn release_wire(&self) {
-        #[cfg(feature = "half-duplex")]
-        // PC0 -> AF open-drain; HDSEL RX keeps hearing through the pin.
         gpio::configure(chip::BUS_USART_MAPPING.tx_pin(), PinMode::AF_OPEN_DRAIN);
-        #[cfg(not(feature = "half-duplex"))]
-        // TX_EN low: the buffer releases the wire and resumes feeding it to RX.
-        gpio::set_level(self.tx_en, Level::Low);
     }
 }
 

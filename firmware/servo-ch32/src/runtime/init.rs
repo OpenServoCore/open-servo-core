@@ -1,7 +1,5 @@
 use ch32_metapac::{adc::vals::Extsel, dma::vals::Dir};
 use osc_servo_core::{CalibSense, CalibSenseExt, ConfigDefaults};
-#[cfg(not(feature = "half-duplex"))]
-use osc_servo_drivers::Level;
 
 use crate::control::sensors::scan::{self, ADC_DMA_BUF_LEN, ADC_SCAN_LEN, ADC_SENSOR_COUNT};
 use crate::hal::{
@@ -162,9 +160,6 @@ fn enable_clocks_and_remaps(w: &BoardWiring) {
         rcc::enable_gpio(ch.pin().port_index());
     }
     rcc::enable_gpio(chip::BUS_USART_MAPPING.tx_pin().port_index());
-    rcc::enable_gpio(chip::BUS_LINE_PIN.port_index());
-    #[cfg(not(feature = "half-duplex"))]
-    rcc::enable_gpio(w.bus.tx_en.port_index());
     rcc::enable_tim1();
     rcc::enable_adc1();
     rcc::enable_dma1();
@@ -196,37 +191,12 @@ fn configure_pins(w: &BoardWiring) {
         gpio::configure(ch.pin(), PinMode::ANALOG);
     }
 
-    configure_bus_pins(w);
-}
-
-#[cfg(feature = "half-duplex")]
-fn configure_bus_pins(_w: &BoardWiring) {
     // PC0 idle: AF open-drain -- released, the external bus pull-up holds
     // mark (spike break_framing `pc0_drive`; a bare wire with no pull-up
     // floats low and trips rescue). TxWire flips to AF push-pull for the
     // TX window so data edges never ride the pull-up (transport sec 2, F8).
+    // PC1 is not the bus's: HDSEL ties RX to the TX pin internally.
     gpio::configure(chip::BUS_USART_MAPPING.tx_pin(), PinMode::AF_OPEN_DRAIN);
-    // The dedicated RX pin (PC1) is left unconfigured -- HDSEL ties RX to
-    // the TX pin internally and ignores it. On a buffer-populated board
-    // running this direct wire (bypassed rev B), the board's TX_EN
-    // pull-down is what holds the buffer released -- no firmware involved.
-}
-
-#[cfg(not(feature = "half-duplex"))]
-fn configure_bus_pins(w: &BoardWiring) {
-    // TX drives only the 74LVC2G241's buffer input, never the shared
-    // wire, so it stays AF push-pull for good -- the buffer's tri-state
-    // (TX_EN) is the drive discipline (transport sec 2; F8 applies to the wire side
-    // of the buffer).
-    gpio::configure(chip::BUS_USART_MAPPING.tx_pin(), PinMode::AF_PUSH_PULL);
-    // RX listens through the receive buffer; the internal pull-up idles
-    // it at mark alongside the board pull-up and covers an open RX
-    // jumper.
-    gpio::configure(chip::BUS_USART_MAPPING.rx_pin(), PinMode::INPUT_PULL_UP);
-    // TX_EN low = listening (matches the board pull-down's boot state);
-    // TxWire raises it for the TX window.
-    gpio::configure(w.bus.tx_en, PinMode::OUTPUT_PUSH_PULL);
-    gpio::set_level(w.bus.tx_en, Level::Low);
 }
 
 fn bring_up_analog_chain(cs: &CurrentSenseConfig) {
@@ -321,9 +291,8 @@ fn configure_adc_dma_scan(w: &BoardWiring) {
     scan::arm_dma();
 }
 
-/// osc-native transport bring-up: USART1 (single-wire HDSEL on the direct
-/// wire, plain full duplex behind the 74LVC2G241 on the buffered wire), the
-/// circular RX ring on DMA1_CH5 (armed once), and the SPI-CRC engine. TX arms
+/// osc-native transport bring-up: USART1 (single-wire HDSEL), the circular
+/// RX ring on DMA1_CH5 (armed once), and the SPI-CRC engine. TX arms
 /// (DMA1_CH4) are configured per-arm by `TxWire`, so no channel init here.
 fn bring_up_bus(brr: u32) {
     let regs = chip::BUS_USART_MAPPING.regs();
@@ -353,7 +322,7 @@ fn bring_up_bus(brr: u32) {
     dma::enable(dma::Channel::CH5);
 
     // Wire mode, TE/RE, BRR, UE, then RX-DMA + error IRQ. No IDLE IRQ.
-    usart::init_bus(regs, brr, cfg!(feature = "half-duplex"));
+    usart::init_bus(regs, brr);
 
     // One-shot SPI-CRC engine setup (clock-gate + config; held live).
     Crc::init();

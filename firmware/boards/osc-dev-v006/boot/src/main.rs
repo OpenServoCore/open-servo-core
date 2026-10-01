@@ -31,24 +31,10 @@ fn init_48mhz_hsi_pll() {
 fn main() -> ! {
     init_48mhz_hsi_pll();
 
-    // Wire modes mirror the app's `half-duplex` feature: default = rev B's
-    // 74LVC2G241 buffer + TX_EN (full duplex behind it); the feature =
-    // direct single wire (tinyboot's `half-duplex`). Direct is only safe
-    // on the shared wire with the HDSEL-before-TE + open-drain park order;
-    // the older tinyboot latched the TX output LOW and idled
-    // push-pull -- a hard-low bus jam for every boot window.
-    #[cfg(not(feature = "half-duplex"))]
-    let transport = Usart::new(&UsartConfig {
-        baud: BaudRate::B3000000,
-        pclk: 48_000_000,
-        mapping: UsartMapping::Usart1Remap3,
-        rx_pull: Pull::None,
-        tx_en: Some(TxEnConfig {
-            pin: Pin::PC2,
-            tx_level: Level::High,
-        }),
-    });
-    #[cfg(feature = "half-duplex")]
+    // HDSEL single wire on PC0 (tinyboot's `half-duplex`). Safe on the
+    // shared wire only with tinyboot's HDSEL-before-TE + open-drain park
+    // order; anything else latches the TX output LOW and idles push-pull, a
+    // hard-low bus jam for every boot window.
     let transport = Usart::new(&UsartConfig {
         baud: BaudRate::B3000000,
         pclk: 48_000_000,
