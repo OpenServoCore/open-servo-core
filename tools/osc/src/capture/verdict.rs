@@ -120,12 +120,8 @@ pub(crate) fn verdict(
             .iter()
             .filter_map(|f| Some((f.tick, f.duty_q15?)));
         governed[i] = judge(duty, s.cmd_duty_q15, start).contains(&Applied::Governed);
-        if let Some(ms) = fell(s, n, abort.tick_hz) {
-            let why = format!(
-                "seg {}: the applied duty fell under its goal {ms:.1} ms into the window, after \
-                 reaching it: the load changed mid rung",
-                s.seg
-            );
+        if let Err(fall) = load_held(s, n, abort.tick_hz) {
+            let why = format!("seg {}: {fall}", s.seg);
             if block == Some("grid")
                 && let Step::Drive(pct, _) = step
                 && let Ok(grid) = pass(env, cfg.decay)
@@ -197,6 +193,18 @@ pub(crate) fn block_of(blocks: &[Block], k: usize) -> Option<&str> {
         .iter()
         .find(|b| (b.first..b.first + b.count).contains(&k))
         .map(|b| b.name.as_str())
+}
+
+/// Err when a drive's applied duty, over its first `n` samples, fell under
+/// its goal after reaching it: the load changed mid rung.
+pub(crate) fn load_held(s: &Segment, n: usize, tick_hz: f64) -> Result<(), String> {
+    match fell(s, n, tick_hz) {
+        Some(ms) => Err(format!(
+            "the applied duty fell under its goal {ms:.1} ms into the window, after reaching \
+             it: the load changed mid rung"
+        )),
+        None => Ok(()),
+    }
 }
 
 /// Ms into the segment where its applied duty fell under its goal after

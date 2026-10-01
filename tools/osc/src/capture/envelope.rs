@@ -26,8 +26,11 @@ const HEADER: &str = "\
 # goal), travel by then, v_ss (fit over the samples at the goal past the
 # settle), and the braked stop after it. windows_ms: the window a campaign
 # rung drives at each duty kept, its climb and a tail crossing 0.8 of the
-# runway, cut to what still fits it. v_ss: counts/ms = slope x duty_pct +
-# intercept over the rungs that moved. coast: the ladder climbed the coast
+# runway, cut to what still fits it. A duty is kept once it also ran both
+# ways at that window, judged as a session judges a grid rung, and its
+# braked stop fit as above; grid.refused is the first duty that was not,
+# and why. v_ss: counts/ms = slope x duty_pct + intercept over the rungs
+# that moved. coast: the ladder climbed the coast
 # block's duties, each driven to its goal and 20 ms on (drive_ms), then
 # coast_ms, both ways, while its predicted travel x (1 + margin) fit the room
 # (the far edge of the start band to soft); top_pct is its top duty. Per rung

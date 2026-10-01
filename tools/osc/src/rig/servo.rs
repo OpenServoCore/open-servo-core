@@ -275,6 +275,10 @@ pub(crate) mod bench {
         /// duty last comes to it: the limiter takes it back for the 4
         /// ticks before. 0 never chatters.
         pub(crate) chatter: u64,
+        /// A load that comes on late in a long rung: from this goal up,
+        /// the limiter holds the applied duty 1000 under the goal from this
+        /// many ticks into a stream on. None never does.
+        pub(crate) late_load: Option<(i16, usize)>,
         /// Under fast decay the shaft stays still under this duty and the
         /// limiter never holds it: while the decay is fast the breakaway
         /// rises to it and the current limit is lifted. None drives as
@@ -305,6 +309,7 @@ pub(crate) mod bench {
                 servo,
                 bus: Bus::BENCH,
                 chatter: 0,
+                late_load: None,
                 fast_breakaway_q15: None,
                 slow: None,
                 decay,
@@ -386,6 +391,15 @@ pub(crate) mod bench {
                     for f in frames.iter_mut().take(last).skip(last.saturating_sub(4)) {
                         f.duty_q15 = Some(goal - goal.signum() * 128);
                     }
+                }
+            }
+            if let Some((from, at)) = self.late_load
+                && let Some((_, goal)) = goal
+                && goal.unsigned_abs() >= from.unsigned_abs() as u32
+            {
+                let held = (goal - goal.signum() * 1000) as i16;
+                for f in frames.iter_mut().skip(at) {
+                    f.duty_q15 = Some(held);
                 }
             }
             let stats = BurstStats {
