@@ -47,13 +47,11 @@ const fn tim1_channel_pin(m: Tim1Mapping, c: timer::Channel) -> Pin {
 // wide margin (RAIN table: 3.5 cycles already holds under 1.5 kOhm, 7.5
 // under 3 kOhm), which is free once the rate ceiling sets the aperture.
 //
-// Widening the aperture used to triple rest current noise, because the
-// telemetry bus couples into the amplifier output and a longer window
-// catches more of it (a board-level defect, fixed in rev 2A by an RC at the
-// ADC pin). That was an artefact of running at 48 MHz: measured at 24 MHz a
-// 562 ns aperture holds the phase-locked part to 0.76 counts against 0.68
-// for 146 ns, where at 48 MHz going from 73 to 865 ns took it from 0.42 to
-// 5.11.
+// The aperture width does not trade against rest current noise at 24 MHz:
+// a 562 ns aperture holds the phase-locked part to 0.76 counts against 0.68
+// for 146 ns. At 48 MHz the same widening (73 to 865 ns) took it from 0.42
+// to 5.11, bus activity coupling into the amplifier output. No RC sits at
+// the amplifier output pin to absorb that coupling.
 
 /// OPA output, low-Z.
 pub const ADC_SHUNT_SAMPLE_TIME: adc::SampleTime = adc::SampleTime::CYCLES15;
@@ -112,14 +110,12 @@ impl AnalogChannel {
 #[repr(u8)]
 pub enum DigitalPin {
     PC3,
-    PD0,
 }
 
 impl DigitalPin {
     pub const fn pin(self) -> Pin {
         match self {
             Self::PC3 => Pin::PC3,
-            Self::PD0 => Pin::PD0,
         }
     }
 }

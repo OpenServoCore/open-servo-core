@@ -20,22 +20,22 @@ use super::core::Core;
 use super::providers::{Handles, SimBaud, SimCrc, SimDeadline, SimProviders, SimRing, SimWire};
 use super::store::RamStore;
 
-/// The v006 arm-B sense chain the sim mirrors; per-servo board facts
+/// The osc-dev-v006 sense chain the sim mirrors; per-servo board facts
 /// override it through [`SimServo::set_sense`].
 const SENSE: CalibSense = CalibSense {
-    shunt_r_mohm: 33,
-    gain_milli: 15000,
-    vmotor_div_top: 10000,
-    vmotor_div_bot: 10000,
+    shunt_r_mohm: 60,
+    gain_milli: 14884,
+    vmotor_div_top: 6400,
+    vmotor_div_bot: 1600,
     vdd_mv: 3300,
     tick_hz: 20000,
-    i_window_min_ticks: 240,
-    v_window_min_ticks: 300,
+    i_window_min_ticks: 160,
+    v_window_min_ticks: 160,
 };
 
 const SENSE_EXT: CalibSenseExt = CalibSenseExt {
-    vbus_div_top_ohm: 20000,
-    vbus_div_bot_ohm: 10000,
+    vbus_div_top_ohm: 6400,
+    vbus_div_bot_ohm: 1600,
     ntc_pullup_ohm: 10000,
     ntc_r25_ohm: 10000,
     ntc_beta: 3950,
