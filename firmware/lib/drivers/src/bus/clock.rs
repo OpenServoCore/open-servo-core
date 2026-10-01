@@ -37,7 +37,7 @@ const DRIFT_WINDOW_PAIRS: u8 = 128;
 const DRIFT_SANITY_PPM: u32 = 8_000;
 
 /// A live MGMT CAL break train (sec 9.3): the host's crystal spaces the breaks,
-/// and break-FE entry stamps measure that ruler with the local clock. Both
+/// and break-wake stamps measure that ruler with the local clock. Both
 /// stamps of every gap are the SAME ISR flavor, so entry latency cancels in
 /// the difference; what survives is clock skew plus sub-us jitter the
 /// per-gap gate and the gap sum average out.
@@ -48,16 +48,11 @@ struct CalRun {
     total: u8,
     valid: u8,
     last_break: u32,
-    /// Ring cursor at the last counted break: a real break rings its 0x00
-    /// byte, a latched-flag re-fire does not -- cursor progress is what
-    /// distinguishes a ruler mark from a storm re-entry (the fault
-    /// contract's freshness idiom, cal-local).
-    cursor: u16,
     err: i32,
     span: u32,
 }
 
-/// What the wire delivered between two break-FE stamps (sec 9.3): the drift
+/// What the wire delivered between two break-wake stamps (sec 9.3): the drift
 /// tracker pairs the stamps only around exactly ONE CRC-verified SILENT
 /// instruction -- the one frame shape whose break-to-break span is
 /// host-clocked end to end. Anything solicited puts a responder's
@@ -76,7 +71,7 @@ pub struct ClockTracker {
     pub(super) pending_cal: Option<(u16, u8)>,
     cal: Option<CalRun>,
     cal_ready: bool,
-    // Differential drift tracker (sec 9.3): the last break-FE stamp + ring
+    // Differential drift tracker (sec 9.3): the last break-wake stamp + ring
     // cursor, the one silent instruction verified since it, the seam
     // baseline, and the current drift window.
     drift_prev: Option<(u32, u16)>,
@@ -121,12 +116,14 @@ impl ClockTracker {
         self.cal.is_some() || self.pending_cal.is_some()
     }
 
-    /// One CAL ruler mark (sec 9.3). The stamp is the CALLER's `now`, read at
-    /// service entry before any other work -- every gap's two ends then carry
-    /// the same entry path, and its latency cancels in the difference.
-    /// Returns the framer deadline to arm: the train's watchdog while it
-    /// runs, the pend-on-past hunt at its end, nothing on a non-mark entry.
-    pub fn on_cal_break(&mut self, now: u32, cursor: u16, ticks_per_us: u32) -> Option<u32> {
+    /// One CAL ruler mark (sec 9.3): a break the composite classified from
+    /// ring data (its 0x00 rang fresh), so a wake that rang nothing never
+    /// gets here. The stamp is the CALLER's `now`, read at service entry
+    /// before any other work -- every gap's two ends then carry the same
+    /// entry path, and its latency cancels in the difference. Returns the
+    /// framer deadline to arm: the train's watchdog while it runs, the
+    /// pend-on-past hunt at its end.
+    pub fn on_cal_break(&mut self, now: u32, ticks_per_us: u32) -> Option<u32> {
         if let Some((gap_us, gaps)) = self.pending_cal.take() {
             self.restart();
             // Train start: the first break after the announce opens gap 1.
@@ -137,7 +134,6 @@ impl ClockTracker {
                 total: gaps,
                 valid: 0,
                 last_break: now,
-                cursor,
                 err: 0,
                 span: 0,
             });
@@ -147,10 +143,6 @@ impl ClockTracker {
             let Some(cal) = &mut self.cal else {
                 return None; // SAFETY: caller guards; a bare entry changes nothing
             };
-            if cursor == cal.cursor {
-                return None; // latched-flag re-fire: no byte ringed, not a mark
-            }
-            cal.cursor = cursor;
             let delta = now.wrapping_sub(cal.last_break);
             cal.last_break = now;
             let err = delta.wrapping_sub(cal.gap_ticks) as i32;
@@ -185,7 +177,7 @@ impl ClockTracker {
         self.pending_cal = None;
     }
 
-    /// Drift chain-pair (sec 9.3): adjacent break-FE stamps bracketing one
+    /// Drift chain-pair (sec 9.3): adjacent break-wake stamps bracketing one
     /// silent verified instruction measure `seam + drift*span` -- the host's
     /// queuing seam is unknown but stationary, so the mean pair error right
     /// after a trim decision IS the seam (baseline), and every later window

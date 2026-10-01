@@ -376,9 +376,9 @@ fn s12_write_wrapping_ring_boundary_mutates_and_acks() {
     assert!(shared.table.with(|t| t.control.lifecycle.torque_enable));
 }
 
-/// sec 9.1 rescue is a chip-side declaration now (the main-loop line sampler --
-/// the break detector latches only at a span's END, so no wake can see a
-/// pulse in progress; the sampler's NDTR-frozen window is the phantom-alias
+/// sec 9.1 rescue is a chip-side declaration (the main-loop line sampler --
+/// the break detector wakes once per span, so no wake can measure a pulse's
+/// length; the sampler's NDTR-frozen window is the phantom-alias
 /// veto the old two-sample confirm provided). The driver's part is the
 /// event: switch to the rescue rate and resync at the provably-still cursor.
 #[test]
@@ -786,6 +786,9 @@ fn complete_read_dispatches_inline() {
         .set_cursor(((anchor + frame.len()) % RING_LEN) as u16);
     bus.on_break(&mut d);
 
+    // The newest ringed byte is the CRC tail, not a break's 0x00, so the
+    // wake's re-inspection is armed ahead of the reply trigger.
+    fire(&mut bus, &h, &mut d);
     fire(&mut bus, &h, &mut d);
     drain_tx(&mut bus, &h);
     let (id, inst, data) = last_reply(&h.wire);
@@ -831,6 +834,9 @@ fn backlog_write_then_read_processes_in_order() {
         "the backlog write committed before the read dispatched"
     );
     assert!(!h.wire.started());
+    // Re-inspection first (the newest ringed byte is the read's CRC tail),
+    // then the reply trigger.
+    fire(&mut bus, &h, &mut d);
     fire(&mut bus, &h, &mut d);
     drain_tx(&mut bus, &h);
     let (id, inst, data) = last_reply(&h.wire);
@@ -921,7 +927,8 @@ fn spurious_wake_arms_recheck_and_resolves_by_data() {
 /// The quiet twin: a spurious wake on a genuinely idle wire costs exactly
 /// one empty recheck -- after it, no deadline is armed at all (the next
 /// break wakes the driver; there is no wake to mute and no poll to keep
-/// alive -- errors never interrupt, the wake is LBD-only, transport sec 7).
+/// alive -- errors never interrupt, the break detector is the only wake,
+/// transport sec 7).
 #[test]
 fn spurious_wake_on_quiet_wire_costs_one_recheck() {
     let h = Harness::new();
