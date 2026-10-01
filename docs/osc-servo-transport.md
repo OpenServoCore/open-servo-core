@@ -30,12 +30,12 @@ Every hardware resource the transport touches, and its duty cycle:
 | resource        | role                                             | budget/event |
 |-----------------|--------------------------------------------------|--------------|
 | USART1          | half-duplex wire; HDSEL, no self-echo (F9)       | —            |
-| TIM2 vector     | PFIC HIGH. The break wake: CH1 on PC0 (remap 4), counter zeroed by every wire edge, overflow at 9.25 bit-times; the level latched by DMA1 CH2 at the overflow classifies it, low = break, high = idle (§7) | unmeasured |
+| TIM2 vector     | PFIC HIGH. The break wake: TI1 on PC0 (remap 4), counter gated to run only while the line is low and zeroed by DMA1 CH7 at every rising edge, so its overflow at 9.25 bit-times is a break (§7) | one entry per break; ~16.5 µs with the framer's break body (ping, bench probe) |
 | USART1 vector   | PFIC HIGH. TC = TX arm drained, the one enabled source (never a DATAR read; FE/NE/ORE have no interrupt enable - they latch silently, §7) | TC body ~2-4 µs/arm |
 | SysTick CNT/CMP | the transport clock (48 MHz, 32-bit) + the ONE comparator | — |
 | SysTick vector  | PFIC HIGH. Deadline mux: framer A/B, covered, chain trigger — and dispatch, inline (every class except verdict-first runs at the covered checkpoint or the fast path, §6) | arithmetic slots ~1–5 µs; dispatch bodies ~10–70 µs |
 | DMA1 CH5        | USART1 RX → 512 B ring, circular, silent (no IRQ); **VERYHIGH, atop the ladder** (§7) | zero CPU |
-| DMA1 CH2        | TIM2_UP → one RAM word, GPIOC INDR at the overflow; VERYHIGH, one beat per quiet span (§7) | zero CPU |
+| DMA1 CH7        | TIM2_CH2 (IC2, rising edge) → a RAM zero into TIM2 CNT, circular, one halfword per rising edge; VERYHIGH, below CH5 (§7) | zero CPU |
 | DMA1 CH4        | TX arms → USART1 DR (header, snapshot payload, CRC tail); HIGH | zero CPU; TC surfaces as USART TC |
 | DMA1 CH3        | CRC feeds → SPI1 DR, 16-bit halfwords (RX span straight from the ring); MEDIUM, below CH6 | zero CPU, ~0.36 µs/B engine time |
 | SPI1            | CRC-16/ARC coprocessor (16-bit LSB-first, bitrev16 at the register), accumulates across feeds | runs ~8× wire speed (F6) |
@@ -48,7 +48,8 @@ PFIC preemption is two-level (IPRIOR bit 7). TIM2 + USART1 + SysTick
 share HIGH and therefore serialize against each other; LOW holds only the
 motor kernel (DMA1_CH1 = 22), which HIGH preempts and which runs in the
 wire gaps between frames. Free and reserved: TIM1 (motor PWM), SW (14),
-I2C1_EV (30), I2C1_ER (31), DMA1 CH7 (I2C1_RX's request channel).
+I2C1_EV (30), I2C1_ER (31), DMA1 CH2. The break detector holds DMA1
+CH7, I2C1_RX's request channel.
 
 **Kernel ticks under load — measured and accepted.** Everything-at-HIGH
 means transport work preempts the kernel, and a kernel tick that pends
@@ -318,14 +319,17 @@ competitor's burst length.
 
 So the guarantee is the priority ladder, not a software mitigation:
 
-- **VERYHIGH:** CH2 level latch and CH5 RX. The latch is one beat per
-  quiet span; it wins the tie on channel number, so RX waits at most
-  that beat.
+- **VERYHIGH:** CH5 RX and CH7 detector zero. The zero is one halfword
+  per rising bus edge and must land before the next low has counted the
+  detector's last quarter bit-time on top of a 9-bit data low, about one
+  bit-time (16 HCLK at 3M); RX wins the tie on channel number, so each
+  waits at most one beat of the other. At HIGH it would lose every beat
+  of a snapshot copy.
 - **HIGH:** CH1 ADC, CH4 TX, CH6 snapshot (ADC wins the HIGH ties by
   channel number, keeping its interleave ahead of the copy).
 - **MEDIUM:** CH3 CRC feed - below CH6 so a reply copy is written before
   the feed reads it.
-- **free:** CH7, I2C1_RX's request channel.
+- **free:** CH2.
 
 With RX on top no ringed byte is ever missing from a cursor read. The
 ladder cannot put the break's own `0x00` ahead of its wake, though - the
@@ -344,18 +348,27 @@ read, versus 44/12k with one present.
 
 **The break detector is the only receive interrupt.** HDSEL disables
 the USART's LIN break detector on this silicon (protocol F16), so the
-detector is TIM2 on the bus pin: remap 4 puts CH1 on PC0, slave reset
-mode on TI1F_ED zeroes the counter at every wire edge, URS=1 keeps those
-resets silent, and the overflow at 9.25 bit-times (ARR 888/444/222/148
-at 0.5M/1M/2M/3M, rewritten with every BRR write) raises the update,
-whose DMA request copies GPIOC INDR into one RAM word at that instant.
-The ISR classifies on the latched level - low is a break, high is idle -
-never the live pin, which a service entered ~30 ticks later finds past
-the break's end at 1M and above. One wake per quiet span: a fire masks
-the update and waits for the next edge (TIF) to re-arm it, so an idle
-line raises nothing; an edge between the overflow and the TIF clear
-shows as the pin off the latched level and re-arms on the spot. The
-servo's own break is sent with the detector muted: the receiver hears
+detector is TIM2 on the bus pin, and the hardware does all of the
+qualifying. Remap 4 puts TI1 on PC0. Slave gated mode on TI1FP1 with
+CC1P inverting it runs the counter only while the line is low. IC2,
+mapped onto the same TI1, captures each rising edge, and its DMA request
+(DMA1 CH7, circular) copies a RAM zero into the counter. The overflow
+at 9.25 bit-times of continuous low (ARR 888/444/222/148 at
+0.5M/1M/2M/3M, rewritten with every BRR write) raises the update, the
+one enabled interrupt: an idle line and frame data never reach it.
+
+A low that is still held when the service runs (often the break's own
+tail, a rescue pulse, a stuck line) would
+overflow again every 9.25 bit-times, so the service parks the counter
+at ARR + 1: it must wrap through 0xFFFF, 65536 ticks of low, before it
+can overflow again, and the rising edge's zero un-parks it with no CPU.
+CC2IF, set by every rising edge and cleared only by the park, tells a
+parked low's re-fire from a fresh break, so a low of any length is one
+wake; nothing reads CH2CVR, whose read would clear it. A rising edge
+between the pin read and the park, whose zero the park overwrote, shows
+as the pin high on a re-read and is replayed by a software capture
+(CC2G), which sets CC2IF and requests the zero as the edge did. The
+servo's own break is sent with the update masked: the receiver hears
 nothing of its own TX (F9), but the pin does. The per-character error
 flags (FE/NE/ORE) are never serviced: EIE stays 0 from boot, so a latched
 error flag pends nothing, storms nothing, and needs no retire protocol.
@@ -373,8 +386,9 @@ liability. A wake that never needs muting deletes the problem: the
 detector is length-qualified (only a dominant span past 9.25 bit-times
 fires it), so real errors never interrupt at all, and their consequences
 surface exactly where data-driven handling already looks (§5.3).
-Silicon: law breaks 50/50 at 0.5M, 1M and 3M; zero entries on an idle
-line; zero false breaks from faster-baud garble (protocol F17).
+Silicon: law breaks 100/100 at every rate, one entry each; zero entries
+on an idle line; zero false breaks from frame data or faster-baud garble
+(protocol F17).
 
 ## 8. Clock discipline
 

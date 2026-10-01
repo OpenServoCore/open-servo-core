@@ -76,6 +76,22 @@ sent with the detector muted. Lesson: a peripheral feature measured in one
 wiring is not measured in another - bring up the production wiring before
 building on it.
 
+### The edge-reset TIM2 detector
+
+The first TIM2 wake zeroed its counter on every wire edge (slave reset
+mode on TI1F_ED) and overflowed after 9.25 bit-times of either level, so
+it timed every quiet span, high or low. A DMA latch of the pin at the
+overflow told a break from idle, the service parked the update, and the
+next edge's trigger interrupt re-armed it. Each ping cost about five
+TIM2 entries (a break, an idle, three re-arms), and the idle entry landed
+inside the turnaround window, where it could hold off the reply-start
+deadline at the same PFIC level; turnaround and kernel ticks lost per ping
+both measured worse than under LBD. Gating the counter on the low level
+and zeroing it by DMA on each rising edge put the whole qualification in
+hardware: an overflow can only be a break, and a ping costs one entry.
+Lesson: qualify in the peripheral, so the interrupt carries only the
+event.
+
 ## Transmit timing the break made obsolete
 
 ### Hardware-timed TX kickoff + RDT

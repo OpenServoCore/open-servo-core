@@ -100,7 +100,7 @@ Measured break behavior that the framer relies on:
 - The break detector fires 1:1 per law break [F17], and the break rings
   as exactly one `0x00` byte via DMA [F1][F2].
 - A break of _any_ length is exactly one event - the detector re-arms only
-  on a fresh edge, so long breaks cannot spam [F3][F17].
+  on the rising edge that ends it, so long breaks cannot spam [F3][F17].
 - A mid-frame framing error does not halt reception: the garbled byte
   rings and the stream continues [F4] - and it raises nothing at all
   (lows under 9.25 bit-times are invisible to the detector, and no
@@ -222,10 +222,10 @@ to two distinct roles:
   `0x00`: a wake may beat its own byte into the ring, so its
   ring-dependent service waits on the ring, never on the wake. On the
   target silicon HDSEL disables the USART's LIN break detector [F16], so
-  the detector is a timer on the bus pin: every wire edge zeroes it, and
-  its overflow latches the pin level by DMA, low = break, high = idle
-  [F17]. It is the ONLY receive interrupt an implementation enables, and
-  it is deaf to the implementation's own break.
+  the detector is a timer on the bus pin that counts only while the line
+  is low and is zeroed by every rising edge, so its overflow can only be
+  a break [F17]. It is the ONLY receive interrupt an implementation
+  enables, and it is deaf to the implementation's own break.
 - **The per-character error flags (FE/ORE/NE) are not events at all.**
   They are latched, positionless, coalescing, and unsafe to retire
   mid-stream — so no interrupt is ever enabled on them. They latch
@@ -1438,8 +1438,8 @@ exit from `CONFIG_CORRUPT`.
 | DMA1 CH4            | TX stream (enable-when-ready)                     |
 | DMA1 CH3 + SPI1     | CRC engine (no pins) [F6]                         |
 | DMA1 CH1            | ADC                                               |
-| DMA1 CH2            | TIM2_UP latch of the bus pin's level (§3.4)       |
-| DMA1 CH6            | copy-once snapshot buffer (§4.2); CH7 free        |
+| DMA1 CH7            | TIM2_CH2: zeroes the break detector per rising edge (§3.4) |
+| DMA1 CH6            | copy-once snapshot buffer (§4.2); CH2 free        |
 | SysTick             | framer deadlines A/B, reply gap, reclaim             |
 | TIM2, CH1 on PC0    | the break detector (§3.4)                         |
 | TIM1                | motor control                                     |
@@ -1470,4 +1470,4 @@ and a direction buffer with its TX_EN pin.
 | F14 | data decodes clean at ±3.4 % in both TX and RX directions                                  | HSITRIM sweep, V006   |
 | F15 | LBD runs sans LINEN, both chip families: length-qualified (≥10-bit spans only — 0 fires on framing-error injection and high-baud garble), safe flag-selective write-0 clear mid-traffic, one event per any-length span, **latched at the span's END** (== bit 10 for the 10-bit law break; a rescue pulse's wake arrives after the line rises), entry stamps 4 ticks p-p on a 400 µs grid; latched FE/NE/ORE with no interrupt enabled are harmless through marination. Measured with RX on its own pin (HDSEL=0); see F16 | bringup measurement, V006 + V203 |
 | F16 | V006 never sets LBD while HDSEL=1, in any configuration tried (LINEN, LBDL, pin mode, RE alone, arm order); the same die sets it with HDSEL=0 | bringup measurement, V006 |
-| F17 | TIM2 break detector on the HDSEL pin (edge reset, overflow at 9.25 bit-times, DMA-latched level): 50/50 law breaks at 0.5M/1M/3M, zero ISR entries on an idle line, zero false breaks from faster-baud garble, frames intact; the live pin at ISR entry reads 0/50 breaks at 1M and above, hence the latch | bringup measurement, V006 |
+| F17 | TIM2 break detector on the HDSEL pin (gated to count only while the pin is low, zeroed by DMA on every rising edge, overflow at 9.25 bit-times): 100/100 law breaks at 0.5M/1M/2M/3M at one ISR entry each, zero entries on an idle line, zero false breaks from frame data (`0x00` bytes included) or faster-baud garble, frames intact; a swept low wakes exactly when its gated count passes the reload, monotone at 4-tick resolution; a 1 ms low is one entry, a 5 ms low one wake plus one silent re-fire per 65536 ticks | bringup measurement, V006 |
