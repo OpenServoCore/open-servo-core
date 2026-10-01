@@ -21,7 +21,7 @@ static TICK_LOAD: SyncUnsafeCell<TickLoad> = SyncUnsafeCell::new(TickLoad::new()
 /// `ServoBus` composite serializes -- dispatch runs inline on these vectors.
 /// LOW holds only the motor kernel (DMA1_CH1 = 22), which HIGH preempts and
 /// which runs in the wire gaps between frames. DMA1_CH5 (RX ring) runs
-/// silent circular -- no HT/TC IRQ -- and CH2/CH3/CH4/CH6 raise none either.
+/// silent circular -- no HT/TC IRQ -- and CH3/CH4/CH6/CH7 raise none either.
 pub fn install_irqs() {
     pfic::set_priority(pfic::Interrupt::TIM2, pfic::Priority::High);
     pfic::set_priority(pfic::Interrupt::USART1, pfic::Priority::High);
@@ -133,8 +133,8 @@ pub fn on_adc_dma_tc() {
 }
 
 /// TIM2 vector -- the break wake (`providers::break_wake`): an overflow
-/// that latched the bus low is a break; every other entry is the detector
-/// re-arming itself.
+/// after 9.25 bit-times of continuous low is a break, unless it is the
+/// same low again after a park.
 ///
 /// SAFETY: the bus driver is installed before this vector unmasks, and TIM2
 /// shares PFIC HIGH with USART1 and SysTick, so no concurrent `&mut` into

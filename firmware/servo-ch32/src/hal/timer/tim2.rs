@@ -1,37 +1,56 @@
-//! TIM2 as an edge-reset quiet timer on its CH1 pin: slave reset mode on
-//! TI1F_ED zeroes the counter at every edge, so the update fires only once
-//! the pin has held one level for the whole reload.
+//! TIM2 as a low-time counter on its CH1 pin: gated mode on the inverted
+//! pin counts only while the pin is low, and every rising edge's IC2 DMA
+//! request (DMA1 CH7) zeroes the counter, so the update fires only once the
+//! pin has held low for the whole reload.
+//!
+//! CH2CVR is never read: the read clears CC2IF, which the break wake keeps
+//! as its rising-edge history.
 
 use ch32_metapac::TIM2;
-use ch32_metapac::timer::regs::{ChctlrInput, Dmaintenr, Intfr};
-use ch32_metapac::timer::vals::Urs;
+use ch32_metapac::timer::regs::{ChctlrInput, Intfr};
 
-/// SMCFGR TS = 100: TI1F_ED, the both-edges detector on TI1.
-const TS_TI1F_ED: u8 = 0b100;
-/// SMCFGR SMS = 100: reset mode, the trigger zeroes the counter.
-const SMS_RESET: u8 = 0b100;
-/// CHCTLR1 CC1S = 01: CH1 is an input on TI1, IC1F = 0 (a filter only
-/// delays the reset).
-const CC1S_TI1: u32 = 0b01;
+/// SMCFGR TS = 101: TI1FP1, the filtered and polarity-selected TI1.
+const TS_TI1FP1: u8 = 0b101;
+/// SMCFGR SMS = 101: gated mode, the counter runs while TRGI is high.
+const SMS_GATED: u8 = 0b101;
+/// CHCTLR1 CC1S = 01 (IC1 on TI1, the gate) and CC2S = 10 (IC2 on TI1,
+/// the edge that zeroes the counter). IC1F = IC2F = 0: a filter only
+/// delays both.
+const IC1_IC2_ON_TI1: u32 = 0b01 | (0b10 << 8);
+/// IC2's channel in the indexed CC accessors.
+const IC2: usize = 1;
 
-/// Count the timer clock (PSC 0) up to `reload`, with the update interrupt
-/// and its DMA request armed. URS = 1: the update a reset-mode trigger
-/// causes raises neither UIF nor a DMA request, so only an overflow does.
-/// CH2..CH4 stay at reset (inputs, CCxE = 0): no TIM2 output reaches a pin.
-pub fn init_quiet_timer(reload: u16) {
+/// The counter's address, the destination of the rising-edge zero.
+#[inline]
+pub fn counter_addr() -> u32 {
+    TIM2.cnt().as_ptr() as u32
+}
+
+/// Count the timer clock (PSC 0) up to `reload` while the pin is low: CC1P
+/// inverts TI1FP1, so TRGI is high while the pin is low. IC2 captures on
+/// the rising edge (CC2P = 0) and raises its DMA request; the update
+/// interrupt is armed. No channel drives a pin: CH1 and CH2 are inputs,
+/// CH3 and CH4 stay at reset with CCxE = 0. A closing CC2G seeds the edge
+/// history and zeroes the counter as an edge would.
+pub fn init_low_timer(reload: u16) {
     TIM2.psc().write_value(0);
     TIM2.atrlr().write_value(reload);
-    TIM2.chctlr_input(0).write_value(ChctlrInput(CC1S_TI1));
+    TIM2.chctlr_input(0)
+        .write_value(ChctlrInput(IC1_IC2_ON_TI1));
+    TIM2.ccer().write(|w| {
+        w.set_ccp(0, true);
+        w.set_cce(IC2, true);
+    });
+    // TS is writable only while SMS = 0.
+    TIM2.smcfgr().write(|w| w.set_ts(TS_TI1FP1));
     TIM2.smcfgr().write(|w| {
-        w.set_ts(TS_TI1F_ED);
-        w.set_sms(SMS_RESET);
+        w.set_ts(TS_TI1FP1);
+        w.set_sms(SMS_GATED);
     });
     TIM2.intfr().write_value(Intfr(0));
-    arm_update();
-    TIM2.ctlr1().write(|w| {
-        w.set_urs(Urs::COUNTERONLY);
-        w.set_cen(true);
-    });
+    listen();
+    rise();
+    TIM2.ctlr1().write(|w| w.set_cen(true));
 }
 
 #[inline(always)]
@@ -45,53 +64,53 @@ pub fn flags() -> Intfr {
     TIM2.intfr().read()
 }
 
+/// `true` when a rising edge (or [`rise`]) came since the last [`park`].
 #[inline(always)]
-pub fn update_armed() -> bool {
-    TIM2.dmaintenr().read().uie()
-}
-
-/// After an overflow: mask the update and its DMA request and wake on the
-/// next edge (TIE) instead.
-#[inline(always)]
-pub fn park() {
-    TIM2.dmaintenr().write_value(Dmaintenr(0));
-    clear_update_and_edge();
-    TIM2.dmaintenr().write(|w| w.set_tie(true));
-}
-
-/// Deaf until the next `rearm`: no update, no edge wake, no DMA request,
-/// and no stale flag for a pended entry to act on.
-#[inline(always)]
-pub fn mute() {
-    TIM2.dmaintenr().write_value(Dmaintenr(0));
-    clear_update_and_edge();
-}
-
-/// On the first edge after a park: the counter is already counting from
-/// it, so arm the update again.
-#[inline(always)]
-pub fn rearm() {
-    TIM2.dmaintenr().write_value(Dmaintenr(0));
-    clear_update_and_edge();
-    arm_update();
-}
-
-/// The DMA request source rides the same, last write as the interrupt.
-#[inline(always)]
-fn arm_update() {
-    TIM2.dmaintenr().write(|w| {
-        w.set_uie(true);
-        w.set_ude(true);
-    });
+pub fn rose(f: Intfr) -> bool {
+    f.ccif(IC2)
 }
 
 /// INTFR flags are rc_w0: a constant write, every other bit 1, clears
-/// exactly UIF and TIF.
+/// exactly UIF.
 #[inline(always)]
-fn clear_update_and_edge() {
+pub fn clear_update() {
     TIM2.intfr().write(|w| {
         w.0 = 0xFFFF;
         w.set_uif(false);
-        w.set_tif(false);
+    });
+}
+
+/// Hold off the next update while the pin stays low: the counter restarts
+/// past the reload, so it must wrap through 0xFFFF (65536 ticks) before it
+/// can overflow again, unless the rising edge zeroes it first. The edge
+/// history is cleared with it.
+#[inline(always)]
+pub fn park() {
+    TIM2.intfr().write(|w| {
+        w.0 = 0xFFFF;
+        w.set_ccif(IC2, false);
+    });
+    TIM2.cnt().write_value(TIM2.atrlr().read().wrapping_add(1));
+}
+
+/// What a rising edge does, by software (CC2G): CC2IF and the DMA zero.
+#[inline(always)]
+pub fn rise() {
+    TIM2.swevgr().write(|w| w.set_ccg(IC2, true));
+}
+
+/// Deaf: no update interrupt. The rising-edge zero keeps running.
+#[inline(always)]
+pub fn mute() {
+    TIM2.dmaintenr().write(|w| w.set_ccde(IC2, true));
+}
+
+/// Drop any update taken while deaf, then arm the update interrupt.
+#[inline(always)]
+pub fn listen() {
+    clear_update();
+    TIM2.dmaintenr().write(|w| {
+        w.set_uie(true);
+        w.set_ccde(IC2, true);
     });
 }

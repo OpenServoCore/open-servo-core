@@ -36,15 +36,13 @@ pub struct HighProbe {
     pub tim2: VectorLoad,
     pub usart1: VectorLoad,
     pub systick: VectorLoad,
-    /// Break-wake fires that latched the line low (breaks) and high (idle).
+    /// Break-wake overflows: breaks, and a parked low's re-fires.
     pub breaks: u32,
-    pub idles: u32,
-    /// Re-arms on the edge after a park, and on a pin already off the
-    /// latched level at the fire.
-    pub edge_rearms: u32,
-    pub pin_rearms: u32,
-    /// Fires whose level latch had not run: classified on a stale level.
-    pub latch_missed: u32,
+    pub refires: u32,
+    /// Overflows that found the line still low, and of those, the ones whose
+    /// rising edge landed between the pin read and the park.
+    pub parks: u32,
+    pub rises: u32,
 }
 
 impl HighProbe {
@@ -53,10 +51,9 @@ impl HighProbe {
         usart1: VectorLoad::ZERO,
         systick: VectorLoad::ZERO,
         breaks: 0,
-        idles: 0,
-        edge_rearms: 0,
-        pin_rearms: 0,
-        latch_missed: 0,
+        refires: 0,
+        parks: 0,
+        rises: 0,
     };
 }
 

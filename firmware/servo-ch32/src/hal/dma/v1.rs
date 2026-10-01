@@ -10,17 +10,23 @@ pub use ch32_metapac::dma::vals::{Dir, Pl, Size};
 /// preempts per-beat, so RX at the top bounds its drain wait to one
 /// in-flight transfer regardless of any competitor's burst length:
 ///
-///   VERYHIGH  CH2 TIM2_UP latch    -- one beat per quiet span, the bus
-///                                    level at the break detector's overflow;
-///                                    wins the tie on channel number, so RX
-///                                    waits at most that one beat
-///             CH5 RX ring          -- inbound bytes, never deferred
+///   VERYHIGH  CH5 RX ring          -- inbound bytes, never deferred
+///             CH7 TIM2_CH2 zero    -- one halfword into the break detector's
+///                                    counter per rising bus edge (TIM2_CH2
+///                                    has no other channel; I2C1_RX shares
+///                                    it). It must land before the next low
+///                                    has counted the detector's last 0.25
+///                                    bit-time on top of a 9-bit data low:
+///                                    about one bit, 16 HCLK at 3M. RX wins
+///                                    the tie, so each waits at most one beat
+///                                    of the other; at HIGH it would lose
+///                                    every beat of a snapshot copy
 ///   HIGH      CH1 ADC              -- motor kernel; wins HIGH ties (lowest #)
 ///             CH4 TX               -- reply wire arms
 ///             CH6 M2M -> snapshot  -- copies the reply payload for CRC + wire
 ///   MEDIUM    CH3 SPI-CRC feed     -- must run BEHIND CH6 so the copy it reads
 ///                                    is written first (producer -> consumer)
-///   free      CH7                  -- I2C1_RX's fixed request channel
+///   free      CH2
 ///
 /// RX CRC feeds the SPI engine straight from the ring (no M2M staging), so
 /// CH6 serves only the reply snapshot.
