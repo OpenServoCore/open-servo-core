@@ -8,11 +8,14 @@
 //! is braked at the soft limit by the firmware and must stop short of the
 //! stop. Each rung's climb is read off the applied duty, its speed off the
 //! samples at the goal past the settle, its stop off where the brake left
-//! it, and the next rung is sized by them. The coast ladder and every other
-//! chain the session drives then run the same way, each excursion recorded
-//! so a plan refuses a chain the pilot never ran, and for a recording under
-//! fast decay the grid ladder runs again under it. The capture front runs
-//! first, and the pack is read at rest before every recording.
+//! it, and the next rung is sized by them. A duty is kept once it also ran
+//! both ways at the window a session drives it, judged as the session
+//! judges a grid rung, its braked stop fitting as before. The coast ladder
+//! and every other chain the session drives then run the same way, each
+//! excursion recorded so a plan refuses a chain the pilot never ran, and
+//! for a recording under fast decay the grid ladder runs again under it.
+//! The capture front runs first, and the pack is read at rest before every
+//! recording.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -34,7 +37,7 @@ use super::envelope::{
 };
 use super::front::{self, Front, Proved};
 use super::procs::{CoastBlock, Procedure};
-use super::verdict::dropped;
+use super::verdict::{dropped, load_held, settled};
 use super::{REST_MS, RULE, RUNG_TRIES, SETTLE_MS as SEEK_SETTLE_MS, Supply, TEL_MASK, WINDOW_MS};
 use crate::rig::park::park;
 use crate::rig::pump;
@@ -314,7 +317,11 @@ fn grid_ladder<S: Servo>(s: &mut S, rig: &Rig, duties: &[u8]) -> Result<Ladder> 
             }
         }
         let room = ladder.runways[0].room();
-        match keep(rig, pct, &runs, room) {
+        let kept = match keep(rig, pct, &runs, room) {
+            Ok(w) => at_window(s, rig, pct, w)?.map(|()| w),
+            Err(e) => Err(e),
+        };
+        match kept {
             Ok(window_ms) => {
                 println!("  {pct}%: window {window_ms} ms");
                 ladder.rungs.push(GridRung {
@@ -375,7 +382,8 @@ fn grid_rung<S: Servo>(
     let sign = sign(dir);
     let goal = (sign as i32 * pct_q15(pct) as i32) as i16;
     for retry in [false, true] {
-        let (frames, stop) = run_rung(s, rig, dir, pct, window)?;
+        let (seg, stop) = run_rung(s, rig, dir, pct, window)?;
+        let frames = seg.frames;
         let climb = runway::climb(&frames, goal, rig.hz * 1000.0);
         let v = climb.and_then(|_| settled_v(&frames, goal, rig.hz));
         match (climb, v) {
@@ -501,18 +509,19 @@ fn sized(
     Ok(())
 }
 
-/// One rung, the pack gated before it: its frames, and how far the brake
-/// let the shaft run on past the last of them.
+/// One rung, the pack gated before it: its segment, and how far the brake
+/// let the shaft run on past its last frame.
 fn run_rung<S: Servo>(
     s: &mut S,
     rig: &Rig,
     dir: Dir,
     pct: u8,
     window: u32,
-) -> Result<(Vec<TelFrame>, f64)> {
+) -> Result<(Segment, f64)> {
     let step = Step::Drive(pct, Some(window));
     let rec = record(s, &cfg(vec![step], sweep_dirs(dir), window, rig))?;
-    let seg = one(&rec.segments)?;
+    let [seg] = <[Segment; 1]>::try_from(rec.segments)
+        .map_err(|v| anyhow!("expected one segment, recorded {}", v.len()))?;
     let last = seg
         .frames
         .iter()
@@ -521,7 +530,42 @@ fn run_rung<S: Servo>(
         .ok_or_else(|| anyhow!("{dir} {step} streamed no position"))?;
     let rest = s.snapshot()?.pos;
     let stop = (f64::from(sign(dir)) * (rest as f64 - last as f64)).max(0.0);
-    Ok((seg.frames.clone(), stop))
+    Ok((seg, stop))
+}
+
+/// `pct` run both ways at the `window` a session drives it: each rung
+/// judged as the session judges a grid rung, its applied duty never falling
+/// under its goal after reaching it and its tail settled, and its braked
+/// stop fitting between the soft limit and the stop beyond it. Err in the
+/// Ok names the direction that does not, and why.
+fn at_window<S: Servo>(
+    s: &mut S,
+    rig: &Rig,
+    pct: u8,
+    window: u32,
+) -> Result<Result<(), (Dir, String)>> {
+    let tick_hz = rig.hz * 1000.0;
+    for dir in DIRS {
+        let (seg, stop) = run_rung(s, rig, dir, pct, window)?;
+        let n = seg.frames.len();
+        let judged = load_held(&seg, n, tick_hz).and_then(|()| settled(&seg, n, tick_hz));
+        if let Err(why) = judged {
+            return Ok(Err((dir, format!("{dir} {pct}% in {window} ms: {why}"))));
+        }
+        let m = margin(&rig.lim, dir);
+        if !dead_host_fits(stop, m) {
+            return Ok(Err((
+                dir,
+                format!(
+                    "{dir} {pct}% in {window} ms stopped in {stop:.0} counts, over the {m:.0} \
+                     between the soft limit and the stop: a rung its host abandoned would hit \
+                     the stop"
+                ),
+            )));
+        }
+        println!("[window] {dir} {pct}@{window}: held its goal, braked in {stop:.0}");
+    }
+    Ok(Ok(()))
 }
 
 /// Steady speed along the goal's sign, counts/ms, over the samples the
@@ -1074,13 +1118,6 @@ fn sweep_dirs(d: Dir) -> Dirs {
     }
 }
 
-fn one(segs: &[Segment]) -> Result<&Segment> {
-    match segs {
-        [s] => Ok(s),
-        _ => bail!("expected one segment, recorded {}", segs.len()),
-    }
-}
-
 fn pos_ticks(frames: &[TelFrame]) -> Vec<(u64, u16)> {
     frames
         .iter()
@@ -1618,19 +1655,85 @@ mod tests {
         assert_eq!(settled_v(&frames(111, 224), goal, 20.0), None);
     }
 
-    /// A limiter that takes the duty back 45 ms after it first reaches the
-    /// goal: the rungs whose first window leaves too little past that run
-    /// once more from the last arrival, and the ladder climbs past them.
+    /// A limiter that takes the duty back 40 ms after it first reaches the
+    /// goal, inside the settle a session reads no fall in: the rungs whose
+    /// first window leaves too little past that run once more from the last
+    /// arrival, and the ladder climbs past them.
     #[test]
     fn ladder_climbs_past_a_limiter_that_chatters_at_the_goal() {
         let (mut b, front) = bench(Supply::TwoS);
         let rig = bench_rig(&front);
-        b.chatter = 900;
+        b.chatter = 800;
         let duties: Vec<u8> = (1..=8).map(|k| k * 5).collect();
         let ladder = grid_ladder(&mut b, &rig, &duties).unwrap();
         let kept: Vec<u8> = ladder.rungs.iter().map(|r| r.pct).collect();
         assert_eq!(kept, duties);
         assert!(ladder.refused.is_none());
+
+        // 5 ms later the session reads a fall, and the pilot keeps nothing
+        let (mut b, _) = bench(Supply::TwoS);
+        b.chatter = 900;
+        let ladder = grid_ladder(&mut b, &rig, &duties).unwrap();
+        assert!(ladder.rungs.is_empty());
+        let refused = ladder.refused.unwrap();
+        assert_eq!((refused.pct, refused.dir), (5, Dir::Fwd));
+        assert!(
+            refused
+                .why
+                .ends_with("ms into the window, after reaching it: the load changed mid rung"),
+            "{}",
+            refused.why
+        );
+    }
+
+    /// A load that takes the applied duty under its goal 300 ms into a
+    /// rung, from 40% up: the rungs that size 40% run shorter and hold
+    /// their goal, the window a session drives it does not. Both passes keep
+    /// 35% and refuse 40% in the session's words, and no plan built from
+    /// the envelope schedules a grid rung at 40% or over.
+    #[test]
+    fn the_ladder_ends_at_a_duty_the_session_would_reject() {
+        let (mut b, front) = bench(Supply::TwoS);
+        b.late_load = Some((pct_q15(40), 6000));
+        let (env, parked) = pilot(&mut b, &front, Supply::TwoS, &procedure(), 64);
+        let env = env.unwrap();
+        parked.unwrap();
+        let fast = env.fast.as_ref().unwrap();
+        for pass in [&env.grid, fast] {
+            let kept: Vec<u8> = pass.rungs.iter().map(|r| r.pct).collect();
+            assert_eq!(kept, [5, 10, 15, 20, 25, 30, 35]);
+            assert_eq!(pass.top_pct, 35);
+            let refused = pass.refused.as_ref().unwrap();
+            assert_eq!((refused.pct, refused.dir), (40, Dir::Fwd));
+            assert!(refused.why.starts_with("fwd 40% in "), "{}", refused.why);
+            assert!(
+                refused.why.ends_with(
+                    " ms: the applied duty fell under its goal 300.0 ms into the window, after \
+                     reaching it: the load changed mid rung"
+                ),
+                "{}",
+                refused.why
+            );
+        }
+
+        let plans = crate::capture::plan::expand(&procedure(), &env, 1).unwrap();
+        for p in &plans {
+            let grid = p.blocks.iter().find(|b| b.name == "grid").unwrap();
+            let duties: Vec<u8> = p.schedule[grid.first..grid.first + grid.count]
+                .iter()
+                .map(|s| match *s {
+                    Step::Drive(pct, _) => pct,
+                    s => panic!("{s}"),
+                })
+                .collect();
+            assert_eq!(duties, [5, 10, 15, 20, 25, 30, 35], "{}", p.recording);
+            assert!(
+                p.dropped[0].starts_with("grid: 40, 45, ")
+                    && p.dropped[0].ends_with("the load changed mid rung"),
+                "{}",
+                p.dropped[0]
+            );
+        }
     }
 
     /// The runway after the bench servo's 50 and 55% rungs: 60% fits the
