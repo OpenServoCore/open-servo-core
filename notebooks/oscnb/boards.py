@@ -217,6 +217,35 @@ BOARDS = {
             "flashed build before trusting floor_v_pct."
         ),
     ),
+    "dev-v006-2A": Board(
+        key="dev-v006-2A",
+        label="osc-dev-v006 rev 2A, board #1",
+        shunt_mohm=60,
+        gain_milli=14_884,
+        vmotor_div_top=6_400,
+        vmotor_div_bot=1_600,
+        bias_top=430,
+        bias_bot=100,
+        vbus_div_top=6_400,
+        vbus_div_bot=1_600,
+        floor_i_ticks=160,
+        floor_v_ticks=160,
+        floors_verified=False,
+        notes=(
+            "Rs1 60 mOhm; bare OPA with Rf 6k4 / Rg 430 (G 14.884), Cc 22 pF, "
+            "Co1 DNP. Terminal taps Rv1/Rv3 6k4 over Rv2/Rv4 1k6 with "
+            "Cv1/Cv2 100 pF, bottoms and caps returned to VB from Rb1 430 / "
+            "Rb2 100 (773 counts nominal, about 81 ohm source, so VB rises "
+            "with the leg current under drive). VSNS 6k4/1k6 to GND, unbiased, "
+            "Cv3 100 pF. A 2A capture's sense block differs from board D's in "
+            "gain_milli and both divider legs. Nothing in the block carries "
+            "the bias or VSNS parts, or which 2A unit took the capture, so "
+            "every 2A board shares this entry. Board #1 has Rv3 open: tap B "
+            "reads the VB node instead of terminal B, so only tap A, the rail "
+            "and the current are graded on it. FLOORS UNVERIFIED: the 2A build "
+            "ships 160/160 ticks, not yet checked on this board."
+        ),
+    ),
 }
 
 DEFAULT_BOARD = "dev-v006-D"
