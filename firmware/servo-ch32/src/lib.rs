@@ -10,5 +10,6 @@ pub mod control;
 pub mod hal;
 pub mod log;
 pub mod prelude;
+pub mod probe;
 pub(crate) mod providers;
 pub mod runtime;

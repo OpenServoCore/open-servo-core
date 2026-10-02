@@ -16,7 +16,6 @@ use std::vec::Vec;
 use osc_host::engine::{HostBus, Terminal};
 use osc_host::traits::{Deadline, Providers, RxRing, TxWire, UsartBaud};
 use osc_protocol::wire::BaudRate;
-use osc_servo_drivers::bus::RESCUE_LOW_US;
 
 use super::core::{Core, Event, TICKS_PER_US, Talker, break_ticks, byte_ticks};
 use super::providers::{BaudState, DeadlineState, RingState};
@@ -155,9 +154,11 @@ impl TxWire for HostWire {
     }
 
     fn hold_low(&mut self) {
-        let now = self.core.borrow().now();
-        // Width is unknowable here (instrument pulses are arbitrary); the
-        // sampler verdict waits for release.
+        let mut c = self.core.borrow_mut();
+        let now = c.now();
+        // Width is unknowable here (instrument pulses are arbitrary): the
+        // hold stays open, the samplers pumping, until release.
+        c.hold_low(now, u64::MAX);
         self.low_since.set(Some(now));
     }
 
@@ -170,17 +171,10 @@ impl TxWire for HostWire {
         }
         if let Some(start) = self.low_since.take() {
             c.claim(Talker::Host, start, now);
+            c.release_low(now);
+            // The pulse's one break wake is modeled at the rise, its 0x00 in
+            // the sim's wake order.
             let baud = self.baud.current();
-            // Sampler model, mirroring `hold_line_low_at`: the fleet
-            // declares only if the frozen-ring threshold tick fell inside
-            // the held span. The wire stays host-claimed to the rise, so
-            // declare-at-release observes like the mid-pulse declaration
-            // (FIFO tie: declare lands before the rise's break wake, as on
-            // silicon). Then the rising edge is where break detectors latch.
-            let declare = start + byte_ticks(baud) + RESCUE_LOW_US as u64 * TICKS_PER_US;
-            if declare < now {
-                c.schedule(Event::RescueDeclare, now);
-            }
             c.schedule(Event::StrayBreak { baud }, now);
         }
     }

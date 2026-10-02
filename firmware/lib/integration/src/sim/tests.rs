@@ -100,8 +100,8 @@ fn handler_cost_defers_delivery_without_loss() {
 /// Break wakes landing while a body runs pend as ONE flag, not a queue:
 /// three wire breaks against a 500 us body deliver exactly two `on_break`
 /// invocations (the live one, then one coalesced pend) -- the silicon
-/// behavior behind the zero-gap frame loss, unchanged by the LBD wake
-/// (the flag is still one bit).
+/// behavior behind the zero-gap frame loss, whatever the detector (the
+/// pend flag is one bit).
 #[test]
 fn pended_breaks_coalesce_like_pfic() {
     let mut sim = Sim::new(BaudRate::B1000000);

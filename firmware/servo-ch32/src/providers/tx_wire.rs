@@ -17,6 +17,7 @@ use osc_servo_drivers::traits::bus;
 use crate::cfg::chip;
 use crate::hal::gpio::{self, PinMode};
 use crate::hal::{dma, usart};
+use crate::providers::break_wake::BreakWake;
 
 /// Production binding to the wire claim/release + USART1 SBK/TCIE + DMA1_CH4.
 pub struct TxWire;
@@ -46,7 +47,7 @@ impl bus::TxWire for TxWire {
         // latches, reads as arm-drained on ISR return, and release() tears
         // the reply down mid-byte-0 (bench signature: break, one garbled
         // byte, silence). TCIE is armed per-arm in `send`.
-        usart::send_break(USART1);
+        BreakWake::muted(|| usart::send_break(USART1));
     }
 
     fn send(&mut self, span: &[u8]) {

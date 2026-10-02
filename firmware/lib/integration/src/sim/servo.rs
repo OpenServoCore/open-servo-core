@@ -215,10 +215,9 @@ impl SimServo {
             .save_table(&self.shared);
     }
 
-    /// sec 9.1: the chip main-loop sampler's declaration (thread-level, not a
-    /// vector -- the sim delivers it directly at the modeled threshold tick).
-    pub fn on_rescue(&mut self) {
-        self.bus.on_rescue_break();
+    /// sec 9.1: one chip main-loop line sample (thread-level, not a vector).
+    pub fn sample_rescue(&mut self, low: bool) {
+        self.bus.sample_rescue(low);
     }
 
     pub fn on_break(&mut self) {

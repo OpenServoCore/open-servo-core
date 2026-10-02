@@ -1,6 +1,6 @@
 //! USART-baud provider (transport sec 2 / protocol sec 9.1) -- binds `UsartBaud` to USART1's
-//! BRR register. Owns the `BaudRate` -> BRR map; the driver hands a rate and
-//! stays unaware of the divisor.
+//! BRR register and the break wake's reload. Owns the `BaudRate` -> BRR map;
+//! the driver hands a rate and stays unaware of the divisor.
 
 use ch32_metapac::USART1;
 use osc_servo_core::BaudRate;
@@ -8,6 +8,7 @@ use osc_servo_drivers::traits::bus;
 
 use crate::hal::clocks::PCLK_HZ;
 use crate::hal::usart;
+use crate::providers::break_wake::BreakWake;
 
 /// Production binding to USART1's BRR register.
 pub struct UsartBaud;
@@ -16,6 +17,7 @@ impl bus::UsartBaud for UsartBaud {
     #[inline(always)]
     fn apply(&mut self, baud: BaudRate) {
         usart::set_baud(USART1, brr_for(baud));
+        BreakWake::retune(baud);
     }
 }
 

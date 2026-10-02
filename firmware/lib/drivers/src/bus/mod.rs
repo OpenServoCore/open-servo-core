@@ -21,8 +21,8 @@ pub const REPLY_GAP_US: u32 = 12;
 
 /// sec 9.1: a dominant low at least this long commands the rescue-rate switch.
 /// Measured chip-side (the main-loop line sampler), not by the transport --
-/// the break detector latches only at a span's END, so no wake can observe
-/// a pulse in progress.
+/// the break detector wakes once per low span, a break-length in, so no
+/// wake can measure how long a pulse holds.
 pub const RESCUE_LOW_US: u32 = 300;
 
 /// Ring-index wrap. The RX ring length is a power of two by contract

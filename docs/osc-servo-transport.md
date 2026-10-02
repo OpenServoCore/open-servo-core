@@ -16,12 +16,12 @@ byte: DMA writes every received byte into a circular ring, DMA streams
 every reply out of buffers and the control table, and a DMA-fed SPI
 engine computes every CRC. Software is pure state machines — `Framer`,
 `Chain`, `TxEngine`, and the clock tracker — composed by `ServoBus`,
-driven by exactly two interrupt vectors at one priority, whose only jobs
-are to compute two kinds of numbers — *where* frames sit in the ring, and
-*when* something is due — and to react to two kinds of events: "a break
-happened" (the USART's length-qualified LIN break detector) and "it is
-time now" (one tick comparator, multiplexed over every deadline the
-transport has).
+driven by interrupt vectors at one priority, whose only jobs are to
+compute two kinds of numbers - *where* frames sit in the ring, and *when*
+something is due - and to react to two kinds of events: "a break
+happened" (a timer on the bus pin, length-qualified at 9.25 bit-times)
+and "it is time now" (one tick comparator, multiplexed over every
+deadline the transport has).
 
 ## 2. Hardware ledger
 
@@ -30,23 +30,26 @@ Every hardware resource the transport touches, and its duty cycle:
 | resource        | role                                             | budget/event |
 |-----------------|--------------------------------------------------|--------------|
 | USART1          | half-duplex wire; HDSEL, no self-echo (F9)       | —            |
-| USART1 vector   | PFIC HIGH. (a) LBD = break wake (length-qualified ≥10-bit low; flag-selective write-0 clear at entry, never a DATAR read; FE/NE/ORE have no interrupt enable — they latch silently, §7); (b) TC = TX arm drained | break body ~1 µs; TC body ~2–4 µs/arm |
+| TIM2 vector     | PFIC HIGH. The break wake: TI1 on PC0 (remap 4), counter gated to run only while the line is low and zeroed by DMA1 CH7 at every rising edge, so its overflow at 9.25 bit-times is a break (§7) | one entry per break; ~16.5 µs with the framer's break body (ping, bench probe) |
+| USART1 vector   | PFIC HIGH. TC = TX arm drained, the one enabled source (never a DATAR read; FE/NE/ORE have no interrupt enable - they latch silently, §7) | TC body ~2-4 µs/arm |
 | SysTick CNT/CMP | the transport clock (48 MHz, 32-bit) + the ONE comparator | — |
 | SysTick vector  | PFIC HIGH. Deadline mux: framer A/B, covered, chain trigger — and dispatch, inline (every class except verdict-first runs at the covered checkpoint or the fast path, §6) | arithmetic slots ~1–5 µs; dispatch bodies ~10–70 µs |
-| DMA1 CH5        | USART1 RX → 512 B ring, circular, silent (no IRQ); **VERYHIGH, alone atop the ladder** (§7) | zero CPU |
+| DMA1 CH5        | USART1 RX → 512 B ring, circular, silent (no IRQ); **VERYHIGH, atop the ladder** (§7) | zero CPU |
+| DMA1 CH7        | TIM2_CH2 (IC2, rising edge) → a RAM zero into TIM2 CNT, circular, one halfword per rising edge; VERYHIGH, below CH5 (§7) | zero CPU |
 | DMA1 CH4        | TX arms → USART1 DR (header, snapshot payload, CRC tail); HIGH | zero CPU; TC surfaces as USART TC |
 | DMA1 CH3        | CRC feeds → SPI1 DR, 16-bit halfwords (RX span straight from the ring); MEDIUM, below CH6 | zero CPU, ~0.36 µs/B engine time |
 | SPI1            | CRC-16/ARC coprocessor (16-bit LSB-first, bitrev16 at the register), accumulates across feeds | runs ~8× wire speed (F6) |
 | DMA1 CH6        | snapshot copy → the 256 B snapshot buffer (reply payloads only — RX CRC feeds the ring directly); HIGH, above CH3 | ~0.125 µs/B, zero CPU |
 | DMA1 CH1        | ADC sample set → buffer; DMA HIGH (wins HIGH ties by channel number); TC vector = motor kernel tick at PFIC LOW | ~10 µs body |
 | PC0 CNF         | drive discipline: open-drain listening / push-pull TX window | flipped at trigger/release |
-| main loop       | deferred reboot poll + rescue line sampler (protocol §9.1: line pin + CH5 NDTR once per wfi wake — the break detector latches only at a span's END, so the slow loop is the only observer of a pulse in progress) | cold path; sampler ~0.3 µs/wake |
+| main loop       | deferred reboot poll + rescue line sampler (protocol sec 9.1: line pin + CH5 NDTR + own-TX state in one critical section per wfi wake, the window restarting while the servo transmits - the break detector fires once per span, a break-length in, so the slow loop is the only observer of a pulse's length) | cold path; sampler ~0.3 µs/wake |
 
-PFIC preemption is two-level (IPRIOR bit 7). USART1 + SysTick share HIGH
-and therefore serialize against each other; LOW holds only the motor
-kernel (DMA1_CH1 = 22), which HIGH preempts and which runs in the wire
-gaps between frames. Free and reserved: TIM2 (reserved: future encoders),
-TIM1 (motor PWM), SW (14), I2C1_EV (30), I2C1_ER (31).
+PFIC preemption is two-level (IPRIOR bit 7). TIM2 + USART1 + SysTick
+share HIGH and therefore serialize against each other; LOW holds only the
+motor kernel (DMA1_CH1 = 22), which HIGH preempts and which runs in the
+wire gaps between frames. Free and reserved: TIM1 (motor PWM), SW (14),
+I2C1_EV (30), I2C1_ER (31), DMA1 CH2. The break detector holds DMA1
+CH7, I2C1_RX's request channel.
 
 **Kernel ticks under load — measured and accepted.** Everything-at-HIGH
 means transport work preempts the kernel, and a kernel tick that pends
@@ -65,10 +68,12 @@ to revisit (hardware-counted ticks, or an isolation lane).
 ## 3. One exchange, tick by tick (ping at 1M; byte-time = 10 µs)
 
 ```
-t=0    break's wire end. DMA has already ringed the 0x00. LBD ISR (~2 µs) —
-       a pure wake: the framer resolves from ring data and projects deadline
-       A = now + 3 byte-times at wire pace + ½ byte for the break tail
-       [F5]. No timestamp is recorded.
+t=0    break detector overflow, 9.25 bit-times into the break; the 0x00
+       rings at its stop-bit sample. TIM2 ISR - a pure wake: the
+       framer resolves from ring data and projects deadline A = now + 3
+       byte-times at wire pace + ½ byte for the break tail [F5]. A wake
+       that beat its 0x00 waits one byte-time for it first (§5.1). No
+       timestamp is recorded.
 t=10/20/30  ID, LEN, INST land in the ring by DMA. CPU idle.
 t=35   deadline A (SysTick): header parse + validate → footprint 6, frame
        end computable. A ping's CRC-covered span IS its header, so the
@@ -204,6 +209,18 @@ authority. One epsilon survives, on header aims only: the break rings at
 its wake point ~4 bit-times before the line rises [F5], so the first data
 byte sits that far outside the byte cadence.
 
+The wake can beat its own byte. The detector fires 9.25 bit-times into
+the break, ahead of the stop-bit sample that rings the `0x00`, so a wake
+whose break byte is not yet the newest ringed byte gets its
+ring-dependent service - the CAL ruler mark or drift stamp, the
+resolver, the staged-reply kill - one byte-time later, at a third
+deadline slot. The first byte ringed since the wake decides: a `0x00` is
+the break, served at the wake's stamp (§8 pairs stamps, so they stay
+the wake's); anything else, or nothing, only re-drives the resolver. No
+position comes from the wake; the cursor it saw only says where to look.
+DES: `tests/break_wake.rs` runs its pins with the wake ahead of its
+byte, behind it, and alternating between the two.
+
 ### 5.2 The ring is the queue
 
 Frames are contiguous: `next anchor = anchor + footprint` (stream
@@ -295,23 +312,30 @@ byte-still-undrained entries observed across soaks at 1M and 3M); the
 window opens ONLY under DMA1-arbiter contention, where a competitor
 delays the CH5 drain — 22% of frames at a moderate competing burst, 94%
 at a heavy one. The arbiter preempts **per-beat** (RX stays clean even
-against a 256-transfer competitor once it outranks it), so RX alone at
-the top bounds its drain wait to a single in-flight transfer — a couple
-of cycles, far under interrupt entry latency — regardless of the
+against a 256-transfer competitor once it outranks it), so RX at the top
+bounds its drain wait to a single in-flight transfer - a couple of
+cycles, far under interrupt entry latency - regardless of the
 competitor's burst length.
 
 So the guarantee is the priority ladder, not a software mitigation:
 
-- **VERYHIGH:** CH5 RX — alone at the top.
+- **VERYHIGH:** CH5 RX and CH7 detector zero. The zero is one halfword
+  per rising bus edge and must land before the next low has counted the
+  detector's last quarter bit-time on top of a 9-bit data low, about one
+  bit-time (16 HCLK at 3M); RX wins the tie on channel number, so each
+  waits at most one beat of the other. At HIGH it would lose every beat
+  of a snapshot copy.
 - **HIGH:** CH1 ADC, CH4 TX, CH6 snapshot (ADC wins the HIGH ties by
   channel number, keeping its interleave ahead of the copy).
-- **MEDIUM:** CH3 CRC feed — below CH6 so a reply copy is written before
+- **MEDIUM:** CH3 CRC feed - below CH6 so a reply copy is written before
   the feed reads it.
+- **free:** CH2.
 
-With RX on top the break byte is always ringed before `on_break` reads
-ring state, so the framer needs no promise machinery from the wake.
-Silicon: 25k/25k zero-gap hot loops at 2M and 3M with zero
-no-reply/stale.
+With RX on top no ringed byte is ever missing from a cursor read. The
+ladder cannot put the break's own `0x00` ahead of its wake, though - the
+detector fires before that byte exists - and that case is the one-byte
+re-inspection's (§5.1). Silicon: 25k/25k zero-gap hot loops at 2M and 3M
+with zero no-reply/stale.
 
 **The no-DATAR rule.** The ladder protects only the byte already in RDR.
 A CPU DATAR read while a byte is mid-reception additionally kills the
@@ -322,10 +346,30 @@ at 1M under one alignment. So nothing on the receive side ever touches
 DATAR. Silicon: 12k/12k plain floods at 1M and 0.5M with no RX-path DATAR
 read, versus 44/12k with one present.
 
-**LBD is the only receive interrupt.** Its clear at entry is a
-flag-selective STATR write — all bits 1 except LBD's 0, a constant write,
-never a read-modify-write (an RMW races concurrently-setting rc_w0 bits
-and arms the SR half of the error-clear pair). The per-character error
+**The break detector is the only receive interrupt.** HDSEL disables
+the USART's LIN break detector on this silicon (protocol F16), so the
+detector is TIM2 on the bus pin, and the hardware does all of the
+qualifying. Remap 4 puts TI1 on PC0. Slave gated mode on TI1FP1 with
+CC1P inverting it runs the counter only while the line is low. IC2,
+mapped onto the same TI1, captures each rising edge, and its DMA request
+(DMA1 CH7, circular) copies a RAM zero into the counter. The overflow
+at 9.25 bit-times of continuous low (ARR 888/444/222/148 at
+0.5M/1M/2M/3M, rewritten with every BRR write) raises the update, the
+one enabled interrupt: an idle line and frame data never reach it.
+
+A low that is still held when the service runs (often the break's own
+tail, a rescue pulse, a stuck line) would
+overflow again every 9.25 bit-times, so the service parks the counter
+at ARR + 1: it must wrap through 0xFFFF, 65536 ticks of low, before it
+can overflow again, and the rising edge's zero un-parks it with no CPU.
+CC2IF, set by every rising edge and cleared only by the park, tells a
+parked low's re-fire from a fresh break, so a low of any length is one
+wake; nothing reads CH2CVR, whose read would clear it. A rising edge
+between the pin read and the park, whose zero the park overwrote, shows
+as the pin high on a re-read and is replayed by a software capture
+(CC2G), which sets CC2IF and requests the zero as the edge did. The
+servo's own break is sent with the update masked: the receiver hears
+nothing of its own TX (F9), but the pin does. The per-character error
 flags (FE/NE/ORE) are never serviced: EIE stays 0 from boot, so a latched
 error flag pends nothing, storms nothing, and needs no retire protocol.
 The flags self-clear incidentally when ordinary traffic pairs a STATR
@@ -333,18 +377,18 @@ read with the drain's DATAR access, but nothing observes or depends on
 it; at most they may be polled from a cold path as line-noise telemetry
 (protocol §3.4).
 
-The rationale for waking on LBD rather than the error flags is
-first-principles: the error flags are latched, positionless, and
+The rationale for waking on a length-qualified break detector rather
+than the error flags is first-principles: the error flags are latched, positionless, and
 coalescing, so a wake built on them must be throttled against garble
 storms (wrong-baud traffic heard as continuous framing errors), and any
 mute needs a restore path that itself cannot be starved — a structural
-liability. A wake that never needs muting deletes the problem: LBD is
-length-qualified (only a genuine ≥10-bit dominant span sets it), so real
-errors never interrupt at all, and their consequences surface exactly
-where data-driven handling already looks (§5.3). Silicon: law breaks
-2000/2000 intact with the write-0 clear running mid-traffic; zero vector
-entries across framing-error injection and high-baud garble; reception
-perfect with FE latched throughout, entries == breaks for the whole run.
+liability. A wake that never needs muting deletes the problem: the
+detector is length-qualified (only a dominant span past 9.25 bit-times
+fires it), so real errors never interrupt at all, and their consequences
+surface exactly where data-driven handling already looks (§5.3).
+Silicon: law breaks 100/100 at every rate, one entry each; zero entries
+on an idle line; zero false breaks from frame data or faster-baud garble
+(protocol F17).
 
 ## 8. Clock discipline
 
@@ -445,14 +489,15 @@ fires — so the pipeline serializes after the frame end.
 ## 11. Glossary
 
 - **break** — line held low ≥ a byte-time; the out-of-band frame
-  delimiter. Rings as one 0x00 byte, sets LBD — the transport's only
-  receive wake (FE latches too, unserviced). Break framing is the strong
+  delimiter. Rings as one 0x00 byte and fires the break detector - the
+  transport's only receive wake (FE latches too, unserviced). Break framing is the strong
   form of sync: DXL 2.0's `FF FF FD` hunting + byte stuffing is the
   workaround for not having an out-of-band delimiter at all.
 - **garble** — line damage that is not a break: a corrupted byte (slot
   occupied, CRC will fail) or a phantom byte (noise-invented byte between
-  frames). Raises no wake at all (sub-10-bit lows are invisible to the
-  detector, errors never interrupt); dies by data (§5.3).
+  frames). Raises no wake at all (lows under 9.25 bit-times are
+  invisible to the detector, errors never interrupt); dies by data
+  (§5.3).
 - **anchor / footprint** — a frame's start index in the ring / its total
   ring length including the break byte.
 - **covered span** — everything the CRC protects: the frame minus its two

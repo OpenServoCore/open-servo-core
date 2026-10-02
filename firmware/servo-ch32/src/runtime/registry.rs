@@ -31,8 +31,8 @@ use crate::providers::usart_baud::UsartBaud;
 type StatLed = Led<DigitalOut, Monotonic>;
 
 /// Cross-cell wire-activity latch (driver-pattern sec 9.3 channel, not a
-/// driver cell): the USART1 vector's tail stores, the main-loop LED
-/// policy swaps. One relaxed store per wire IRQ.
+/// driver cell): the wire vectors' tails store, the main-loop LED policy
+/// swaps. One relaxed store per wire IRQ.
 pub static BUS_ACTIVITY: AtomicBool = AtomicBool::new(false);
 
 /// Bundle of the chip-side providers the `ServoBus` composite consumes
@@ -78,9 +78,10 @@ pub struct Drivers;
 impl Drivers {
     /// SAFETY: bringup-only, pre-IRQ; sole writer. Must be called exactly
     /// once, after `runtime::init::bring_up_bus` has configured USART1, the
-    /// CH5 ring, and the SPI-CRC engine, and after the table's comms block is
-    /// final (defaults seeded + saved image overlaid) -- `ServoBus::new`
-    /// applies the effective baud to the live BRR.
+    /// CH5 ring, the break wake, and the SPI-CRC engine, and after the
+    /// table's comms block is final (defaults seeded + saved image
+    /// overlaid) -- `ServoBus::new` applies the effective baud to the live
+    /// BRR and break-wake reload.
     pub unsafe fn install(w: &BoardWiring) {
         // SAFETY: see fn doc.
         let stat_led = unsafe { &mut *CELLS.stat_led.get() };
@@ -131,8 +132,8 @@ impl Drivers {
     }
 
     /// SAFETY: bringup installs `bus` before any IRQ runs; runtime `&mut`
-    /// access is from the USART1 and SysTick ISRs, both at PFIC HIGH, so
-    /// same-priority no-preemption serializes the composite's interior
+    /// access is from the TIM2, USART1 and SysTick ISRs, all at PFIC HIGH,
+    /// so same-priority no-preemption serializes the composite's interior
     /// state. The main loop reaches in only for `take_reboot`, and does so
     /// inside a critical section (see `runtime::run`).
     #[inline(always)]

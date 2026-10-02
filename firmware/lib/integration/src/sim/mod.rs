@@ -28,15 +28,14 @@ use osc_servo_core::pos_lut::POINTS;
 use osc_servo_core::regions::config::DEFAULT_RESPONSE_DEADLINE_US;
 use osc_servo_core::{BaudRate, BootMode, ControlTable};
 use osc_servo_drivers::bus::LinkDiag;
-use osc_servo_drivers::bus::RESCUE_LOW_US;
 
-use self::core::{Core, Event, TICKS_PER_US, Talker, break_ticks, byte_ticks};
+use self::core::{Core, Event, TICKS_PER_US, Talker, bit_ticks, break_ticks, byte_ticks};
 use self::cpu::{Cpu, Vector};
 use self::providers::Handles;
 use self::resample::{CrossRx, RxOut};
 use self::servo::SimServo;
 
-pub use self::cpu::HandlerCost;
+pub use self::cpu::{Entries, HandlerCost};
 pub use self::host::HostEvent;
 pub use self::store::{Kind as ImageKind, RamStore, Tear};
 
@@ -50,6 +49,21 @@ pub use osc_servo_core::{CalibSense, CalibSenseExt};
 /// TEL fast-tick period: the kernel's 20 kHz control tick.
 const TEL_TICK_US: u64 = 50;
 const TEL_TICK: u64 = TEL_TICK_US * TICKS_PER_US;
+
+/// When a break's wake reaches a servo, relative to its ringed 0x00.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum BreakWake {
+    /// The wake leads the byte by 0.75 bit-times: the chip's TIM2 detector
+    /// overflows at 9.25 bit-times of low, ahead of the stop-bit sample
+    /// that rings the 0x00.
+    BeforeByte,
+    /// The 0x00 has rung when the wake is serviced: a detector that latches
+    /// at the span's end, or a TIM2 wake serviced late.
+    AfterByte,
+    /// Each wake flips between the two: service latency straddling the
+    /// byte's landing.
+    Alternating,
+}
 
 /// Who put a frame on the wire, as recorded.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -104,6 +118,10 @@ pub struct Sim {
     self_reboot: bool,
     /// Run the main loop's data-job poll (see [`Self::set_data_jobs`]).
     data_jobs: bool,
+    /// Wake order of every break (see [`Self::set_break_wake`]).
+    break_wake: BreakWake,
+    /// The next [`BreakWake::Alternating`] wake trails its byte.
+    alternate_after: bool,
 }
 
 /// One servo's TEL fast-tick pump: the sim's stand-in for the kernel's 50 us
@@ -171,7 +189,15 @@ impl Sim {
             link: None,
             self_reboot: false,
             data_jobs: true,
+            break_wake: BreakWake::BeforeByte,
+            alternate_after: false,
         }
+    }
+
+    /// Order every later break wake against its ringed 0x00
+    /// ([`BreakWake::BeforeByte`] by default).
+    pub fn set_break_wake(&mut self, w: BreakWake) {
+        self.break_wake = w;
     }
 
     /// Attach the production host engine at the sim's wire rate. Submit
@@ -330,6 +356,11 @@ impl Sim {
 
     /// `on_break` invocations delivered to servo `i` -- wire break events
     /// minus this counts pends that coalesced.
+    /// Handler bodies servo `i` has run, per vector (PFIC HIGH entries).
+    pub fn entries(&self, i: usize) -> Entries {
+        self.cpus[i].entries()
+    }
+
     pub fn delivered_breaks(&self, i: usize) -> u64 {
         self.cpus[i].delivered_breaks()
     }
@@ -551,21 +582,31 @@ impl Sim {
     }
 
     /// Rescue pulse: line dominant for `us` (sec 9.1). Two modeled effects:
-    /// each servo's main-loop sampler declares once >= RESCUE_LOW_US of
-    /// frozen-ring low has elapsed (measured from the pulse's ringed 0x00,
-    /// ~a byte-time in), and the pulse's END fires an ordinary break wake --
-    /// the detector latches only at the rising edge (silicon).
-    /// A pulse too short to cross the threshold delivers only the end wake.
+    /// each servo's main-loop sampler reads it low on the sample cadence
+    /// (declaring once >= RESCUE_LOW_US of frozen-ring low has elapsed), and
+    /// one ordinary break wake. Under [`BreakWake::AfterByte`] it latches at
+    /// the pulse's END; otherwise it fires a break-length into the pulse and
+    /// the rising edge only re-arms the detector.
+    /// A pulse too short to cross the threshold delivers only the wake.
     pub fn hold_line_low_at(&mut self, at_us: u64, us: u64) {
         let start = self.clamp_at(at_us);
         let dur = us * TICKS_PER_US;
         let baud = self.rate;
         let mut c = self.core.borrow_mut();
-        let declare = start + byte_ticks(baud) + RESCUE_LOW_US as u64 * TICKS_PER_US;
-        if declare < start + dur {
-            c.schedule(Event::RescueDeclare, declare);
+        c.hold_low(start, start + dur);
+        if self.break_wake == BreakWake::AfterByte {
+            c.schedule(Event::StrayBreak { baud }, start + dur);
+        } else if dur >= break_ticks(baud) {
+            c.schedule(Event::PulseWake, start + break_ticks(baud));
         }
-        c.schedule(Event::StrayBreak { baud }, start + dur);
+    }
+
+    /// One main-loop line sample at every servo at `at_us` (sec 9.1).
+    pub fn sample_line_at(&mut self, at_us: u64) {
+        let at = self.clamp_at(at_us);
+        self.core
+            .borrow_mut()
+            .schedule(Event::LineSample { pump: false }, at);
     }
 
     pub fn set_host_baud(&mut self, rate: BaudRate) {
@@ -635,7 +676,7 @@ impl Sim {
             Event::WireData { talker, byte, baud } => self.deliver_data(talker, byte, baud),
             Event::WireGarble { byte } => self.deliver_garble(byte),
             Event::StrayBreak { baud } => self.deliver_stray_break(baud),
-            Event::RescueDeclare => self.deliver_rescue_declare(),
+            Event::LineSample { pump } => self.sample_line(pump),
             Event::SkewChange { servo, ppm } => {
                 let now = self.core.borrow().now();
                 self.handles[servo].deadline.set_skew(now, ppm);
@@ -658,6 +699,8 @@ impl Sim {
             Event::TelTick { servo, epoch } => self.tel_tick(servo, epoch),
             Event::CpuFree { servo } => self.cpu_free(servo),
             Event::WakeRefire { servo } => self.deliver(servo, Vector::Break),
+            Event::BreakByte { servo } => self.handles[servo].ring.push(0x00),
+            Event::PulseWake => self.deliver_pulse_wake(),
             Event::HostCompare { generation } => {
                 if let Some(h) = self.host.as_mut()
                     && h.deadline.generation() == generation
@@ -898,7 +941,7 @@ impl Sim {
         self.core.borrow_mut().begin_frame(break_start, talker);
         for j in 0..self.servos.len() {
             if talker == Talker::Servo(j) {
-                continue; // no own-TX echo (F9)
+                continue; // no own-TX echo (F9), the break wake muted for it
             }
             self.deliver_break_to(j, baud, break_start);
         }
@@ -927,8 +970,7 @@ impl Sim {
     fn deliver_break_to(&mut self, j: usize, baud: BaudRate, break_start: u64) {
         let rx = self.handles[j].baud.current();
         if rx == baud {
-            self.handles[j].ring.push(0x00);
-            self.deliver(j, Vector::Break);
+            self.wake_on_break(j, bit_ticks(rx) * 3 / 4);
         } else {
             let mut out = Vec::new();
             self.cross[j].retune(rx);
@@ -980,11 +1022,37 @@ impl Sim {
         for o in out {
             match o {
                 RxOut::Byte(b) => self.handles[j].ring.push(b),
-                RxOut::Break => {
-                    self.handles[j].ring.push(0x00);
-                    self.deliver(j, Vector::Break);
-                }
+                // A resampled batch rings in order, so its break byte lands
+                // at the wake's own tick, still after the wake.
+                RxOut::Break => self.wake_on_break(j, 0),
             }
+        }
+    }
+
+    /// A qualified break at servo `j`: ring its 0x00 and wake, in the
+    /// configured [`BreakWake`] order, the byte `lead` ticks behind the wake
+    /// under [`BreakWake::BeforeByte`].
+    fn wake_on_break(&mut self, j: usize, lead: u64) {
+        let after = match self.break_wake {
+            BreakWake::BeforeByte => false,
+            BreakWake::AfterByte => true,
+            BreakWake::Alternating => {
+                self.alternate_after = !self.alternate_after;
+                !self.alternate_after
+            }
+        };
+        if after {
+            self.handles[j].ring.push(0x00);
+            self.deliver(j, Vector::Break);
+            return;
+        }
+        self.deliver(j, Vector::Break);
+        if lead == 0 {
+            self.handles[j].ring.push(0x00);
+        } else {
+            let mut c = self.core.borrow_mut();
+            let at = c.now() + lead;
+            c.schedule(Event::BreakByte { servo: j }, at);
         }
     }
 
@@ -1050,15 +1118,29 @@ impl Sim {
         }
     }
 
-    fn deliver_rescue_declare(&mut self) {
-        // Every servo's sampler crosses the threshold together (the low is
-        // baud-agnostic); the declaration is thread-level -- no vector, no
-        // CPU pend, mirroring the chip's main-loop + critical-section path.
-        // The pulse's own ringed 0x00 lands here (it rang a byte-time in;
-        // the model folds it into the declaration instant).
+    /// A dominant low held a break's length: a break at every receiver's own
+    /// rate (the low is baud-agnostic, nothing to resample).
+    fn deliver_pulse_wake(&mut self) {
         for j in 0..self.servos.len() {
-            self.handles[j].ring.push(0x00);
-            self.servos[j].on_rescue();
+            let rx = self.handles[j].baud.current();
+            self.wake_on_break(j, bit_ticks(rx) * 3 / 4);
+        }
+        if let Some(h) = &self.host {
+            h.ring.push(0x00);
+        }
+    }
+
+    /// The samplers are thread-level - no vector, no CPU pend - mirroring the
+    /// chip's main-loop critical section.
+    fn sample_line(&mut self, pump: bool) {
+        for j in 0..self.servos.len() {
+            let low = self.core.borrow().line_low(j);
+            self.servos[j].sample_rescue(low);
+        }
+        let mut c = self.core.borrow_mut();
+        if pump && c.held_now() {
+            let at = c.now() + TEL_TICK;
+            c.schedule(Event::LineSample { pump }, at);
         }
     }
 }

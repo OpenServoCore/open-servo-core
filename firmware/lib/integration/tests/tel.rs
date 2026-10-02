@@ -21,7 +21,7 @@ use osc_integration::sim::{
     Sim, Source, TelSample, WireFrame, assert_valid, expect_tel_payload, expect_tel_payload_rows,
     frame_crc_ok, instruction, status, tel_sample,
 };
-use osc_protocol::wire::{Inst, Opcode, ResultCode};
+use osc_protocol::wire::{Inst, Opcode, RESCUE_PULSE_MIN_US, ResultCode};
 use osc_servo_core::BaudRate;
 use osc_servo_core::regions::control::addr::lifecycle::{GOAL_DUTY, TEL_COUNT, TEL_MASK};
 use osc_servo_core::regions::telemetry::addr::sensors::POS;
@@ -362,6 +362,52 @@ fn multi_servo_silence() {
     let servo = servo_frames(&frames);
     assert_eq!(servo.len(), 1);
     assert_eq!(servo[0].from, Source::Servo(ID6));
+    assert_valid(servo[0]);
+    assert_eq!(status(servo[0]).0.result(), Some(ResultCode::Ok));
+}
+
+/// sec 9.1 own TX: HDSEL keeps the servo's own bytes out of its ring, so a
+/// main-loop line sample landing on a low bit of a burst frame finds the
+/// ring frozen. The sim reads every sample during own TX low (the worst
+/// case, samples phase-locked onto low bits): burst frames longer than the
+/// rescue window still never declare, and a real pulse afterwards does.
+#[test_log::test]
+fn burst_never_reads_as_a_rescue_pulse() {
+    let mut sim = sim3m();
+    sim.add_servo(ID5);
+
+    prime_mask(&mut sim);
+    let t0 = sim.now_us();
+    for k in 0..200 {
+        sim.sample_line_at(t0 + k * 50);
+    }
+    sim.host_send(&write_u16(ID5, 0, TEL_COUNT, 40));
+    let frames = sim.run();
+    let burst = stream_frames(&frames);
+    assert_eq!(burst.len(), 3, "{frames:#?}");
+    // The two full frames outlast the window plus a sample period.
+    for f in &burst[..2] {
+        assert!(f.end - f.at > (RESCUE_PULSE_MIN_US as u64 + 50) * 48);
+    }
+
+    // Still at 3M: a ping answers at the operational rate.
+    let at = sim.now_us() + 1_000;
+    sim.host_send_at(at, &instruction(ID5, Opcode::Ping, 0, &[]));
+    let frames = sim.run();
+    assert_eq!(
+        status(servo_frames(&frames)[0]).0.result(),
+        Some(ResultCode::Ok)
+    );
+
+    // A real pulse still declares: the servo answers at the rescue rate.
+    let at = sim.now_us() + 1_000;
+    sim.hold_line_low_at(at, 400);
+    sim.run();
+    sim.set_host_baud(BaudRate::B500000);
+    sim.host_send_at(at + 2_000, &instruction(ID5, Opcode::Ping, 0, &[]));
+    let frames = sim.run();
+    let servo = servo_frames(&frames);
+    assert_eq!(servo.len(), 1, "{frames:#?}");
     assert_valid(servo[0]);
     assert_eq!(status(servo[0]).0.result(), Some(ResultCode::Ok));
 }

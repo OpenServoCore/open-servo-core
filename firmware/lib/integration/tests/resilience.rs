@@ -489,7 +489,8 @@ fn short_break_is_not_rescue(baud_idx: u8) {
 /// The wrong-baud wedge, replayed: wrong-baud garble marination alone once
 /// made a fleet servo permanently deaf under the FE-era storm throttle (the
 /// mute's restore chain died through a stolen poll link). The surviving
-/// design (errors never interrupt; the wake is LBD-only -- transport sec 7)
+/// design (errors never interrupt; the break detector is the only wake --
+/// transport sec 7)
 /// has no mute and nothing to wedge: faster-baud garble rings silently (zero
 /// wakes, sec 3.4), slower-baud garble wakes into junk that dies by data, and
 /// after one starve horizon of silence the servo answers at its configured

@@ -17,10 +17,9 @@ pub const TICKS_PER_US: u64 = 48;
 /// 10 bit-times per UART character (8N1) -- the byte and break unit (sec 2).
 const BITS_PER_BYTE: u64 = 10;
 
-/// SBK break length; measured ~14 bit-times, zero variance [F5]. The ring
-/// byte and `on_break` are delivered at the break's *end* -- where the
-/// detector latches (silicon: LBD sets at the rising edge that ends the span;
-/// == bit 10 for the 10-bit law break).
+/// SBK break length; measured ~14 bit-times, zero variance [F5]. `on_break`
+/// is delivered at the break's *end*, its ring byte beside it or 0.75
+/// bit-times after it (see [`super::BreakWake`]).
 const BREAK_BITS: u64 = 14;
 
 /// Runaway guards: a wedged scenario must fail loudly, not spin forever.
@@ -56,7 +55,7 @@ pub enum Event {
     /// receivers whose rate qualifies the span (sec 3.4: the detector is
     /// length-qualified -- >=10 of the RECEIVER's bit-times -- so a break
     /// wakes only servos at or above `baud`). `break_start` is the
-    /// recorded frame's `at`; delivery is at break end.
+    /// recorded frame's `at`; the wake is delivered at break end.
     WireBreak {
         talker: Talker,
         baud: BaudRate,
@@ -78,12 +77,14 @@ pub enum Event {
     /// rings a 0x00 and wakes qualified receivers, invisible to the frame
     /// recorder (noise, not traffic).
     StrayBreak { baud: BaudRate },
-    /// A rescue pulse crossed the sampler threshold (sec 9.1): every servo's
-    /// main-loop sampler has seen >= RESCUE_LOW_US of continuous low with the
-    /// ring frozen -- deliver `on_rescue_break` (a thread-level event, not a
-    /// vector; the pulse still holds the line). The pulse's END additionally
-    /// fires an ordinary break wake ([`Event::StrayBreak`]).
-    RescueDeclare,
+    /// Every servo's main-loop line sampler reads the wire once (sec 9.1,
+    /// `sample_rescue`, thread-level, not a vector) at [`Core::line_low`]'s
+    /// level. A `pump` sample re-arms one sample period on while a held
+    /// pulse lasts: the chip's idle wake cadence.
+    LineSample { pump: bool },
+    /// A rescue pulse has held the line a break's length: every receiver
+    /// rings one 0x00 and wakes at its own rate.
+    PulseWake,
     /// The host's frame drained -- finalize the recorded frame.
     HostFrameEnd,
     /// Scheduled quiet: nothing happens, sim time passes (the paced-client
@@ -100,6 +101,9 @@ pub enum Event {
     /// wire byte (a coalesced or lagged break service -- sec 3.4's reason to
     /// demand idempotence).
     WakeRefire { servo: usize },
+    /// A break's 0x00 lands in servo `servo`'s ring after its wake
+    /// ([`super::BreakWake::BeforeByte`]).
+    BreakByte { servo: usize },
     /// A servo TX DMA arm completed -- drive `on_tx_complete`.
     TxArmDone { servo: usize },
     /// A servo's TEL fast-tick pump fired (kernel 50 us grid): synthesize one
@@ -157,6 +161,8 @@ pub struct Core {
     processed: u64,
     // Drive discipline: the current owner and how far its claim reaches.
     busy: Option<(Talker, u64)>,
+    // A rescue pulse holding the line dominant over `[start, end)`.
+    held: Option<(u64, u64)>,
     pending: Option<PendingFrame>,
     recorded: Vec<WireFrame>,
 }
@@ -169,6 +175,7 @@ impl Core {
             now: 0,
             processed: 0,
             busy: None,
+            held: None,
             pending: None,
             recorded: Vec::new(),
         }
@@ -235,6 +242,36 @@ impl Core {
             _ => end,
         };
         self.busy = Some((talker, reach));
+    }
+
+    // --- line level (sec 9.1 sampler) -------------------------------------
+
+    /// A rescue pulse holds the line over `[start, end)` (`u64::MAX` while
+    /// its width is open): start the sampler pump once the pulse's own 0x00
+    /// has rung at every receiver rate (a break and a bit at the slowest).
+    pub fn hold_low(&mut self, start: u64, end: u64) {
+        self.held = Some((start, end));
+        let first = start + break_ticks(BaudRate::B500000) + bit_ticks(BaudRate::B500000);
+        self.schedule(Event::LineSample { pump: true }, first);
+    }
+
+    /// Close an open hold at `at`.
+    pub fn release_low(&mut self, at: u64) {
+        if let Some((start, _)) = self.held {
+            self.held = Some((start, at));
+        }
+    }
+
+    pub fn held_now(&self) -> bool {
+        matches!(self.held, Some((start, end)) if start <= self.now && self.now < end)
+    }
+
+    /// The level servo `servo`'s sampler reads now: low under a held pulse,
+    /// and low throughout its own TX - the worst case, every sample landing
+    /// on a low bit of an own byte, which HDSEL keeps out of the ring.
+    pub fn line_low(&self, servo: usize) -> bool {
+        self.held_now()
+            || matches!(self.busy, Some((Talker::Servo(j), end)) if j == servo && self.now < end)
     }
 
     // --- wire recorder ----------------------------------------------------

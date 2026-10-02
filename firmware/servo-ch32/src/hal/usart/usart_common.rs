@@ -1,26 +1,21 @@
 pub use ch32_metapac::usart::Usart as Regs;
 
 /// osc-native bus bring-up, in the break-framing spike's exact order:
-/// HDSEL single wire, break detector, TE/RE, BRR, UE, and only then DMAR in
-/// a second CTLR3 write. The sequencing is load-bearing for the released
-/// idle level on the wire: deviations (TE before HDSEL, or DMAR folded into
-/// the HDSEL write) leave the HDSEL TX signal latched LOW, and through the
-/// AF_OD listening pin that clamps the whole bus (wire stuck low at idle,
-/// rose the moment PC0 left AF mode).
+/// HDSEL single wire, TE/RE, BRR, UE, and only then DMAR in a second CTLR3
+/// write. The sequencing is load-bearing for the released idle level on the
+/// wire: deviations (TE before HDSEL, or DMAR folded into the HDSEL write)
+/// leave the HDSEL TX signal latched LOW, and through the AF_OD listening
+/// pin that clamps the whole bus (wire stuck low at idle, rose the moment
+/// PC0 left AF mode).
 /// No IDLE interrupt -- the framer sources all timing from the ring cursor
 /// and SysTick, never from IDLE.
 ///
-/// LBDIE is the ONLY receive interrupt (protocol sec 3.4): the
-/// length-qualified break detector runs with the LIN engine off (LINEN
-/// stays reset-0 -- F15, both chip families), and EIE is never set --
-/// FE/NE/ORE latch silently and nothing services them.
+/// No receive interrupt at all (protocol sec 3.4): the break wake is TIM2 on
+/// the bus pin (`providers::break_wake`), and EIE is never set -- FE/NE/ORE
+/// latch silently and nothing services them.
 #[inline]
 pub fn init_bus(r: Regs, brr: u32) {
     r.ctlr3().modify(|w| w.set_hdsel(true));
-    r.ctlr2().modify(|w| {
-        w.set_lbdl(false); // 10-bit detection: the protocol sec 3 law break is exactly 10
-        w.set_lbdie(true);
-    });
     r.ctlr1().modify(|w| {
         w.set_te(true);
         w.set_re(true);
@@ -125,31 +120,10 @@ pub fn clear_tc(r: Regs) {
     });
 }
 
-/// One STATR image per ISR entry -- the vector branches off this single
-/// read. The read is side-effect-free for the transport: it arms the SR
+/// The STATR read is side-effect-free for the transport: it arms the SR
 /// half of the hardware's SR-then-DR pair, but nothing on the receive side
 /// ever performs the DR half (no DATAR reads, transport sec 7), so no flag
 /// state changes hang off it.
-#[inline(always)]
-pub fn statr(r: Regs) -> ch32_metapac::usart::regs::Statr {
-    r.statr().read()
-}
-
-/// Retire the serviced break flag: a flag-selective constant write -- every
-/// bit 1 (a no-op on rc_w0 bits), LBD's bit 0. NEVER an RMW: a
-/// read-modify-write races rc_w0 bits setting between the read and the
-/// write-back, and never a DATAR read: that kills a
-/// mid-reception byte in the shifter. LBD is the one
-/// STATR flag with a documented write-0 clear (RM: RW0); FE/NE/ORE are RO
-/// and are never cleared -- with EIE off they latch silently (transport sec 7).
-#[inline(always)]
-pub fn clear_lbd(r: Regs) {
-    r.statr().write(|w| {
-        w.0 = u32::MAX;
-        w.set_lbd(false);
-    });
-}
-
 #[inline]
 pub fn is_tc(r: Regs) -> bool {
     r.statr().read().tc()
