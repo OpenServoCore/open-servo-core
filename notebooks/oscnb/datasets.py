@@ -9,6 +9,7 @@ from the control table at capture time, and the board is identified from that.
 
   telemetry/<dataset>/dataset.toml       {servo, supply, rule, current_limit_counts, captured, notes, [load], ...}
   telemetry/<dataset>/pos-lut.json       the position table the servo ran, once per dataset
+  telemetry/<dataset>/pos-lut-built.json the table `osc lut build` made from the dataset
   telemetry/<dataset>/<experiment>/capture-N/<recording>.csv.gz
                                             /<recording>.meta.json
 

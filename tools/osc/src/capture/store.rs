@@ -2,6 +2,7 @@
 //!
 //!   <dataset>/dataset.toml
 //!   <dataset>/pos-lut.json                       the table the servo ran, once
+//!   <dataset>/pos-lut-built.json                 the table `osc lut build` made from the dataset
 //!   <dataset>/<experiment>/capture-N/<recording>.csv.gz
 //!                                   /<recording>.meta.json
 //!
@@ -24,7 +25,7 @@ use super::{Rule, Supply};
 use crate::sweep::{self, CSV_HEADER, Segment};
 
 const DECL: &str = "dataset.toml";
-const POS_LUT: &str = "pos-lut.json";
+pub(crate) const POS_LUT: &str = "pos-lut.json";
 
 /// What [`Store::save_pos_lut`] found.
 #[derive(Debug, PartialEq, Eq)]

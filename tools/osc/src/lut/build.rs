@@ -10,12 +10,17 @@ use crate::capture::envelope::Limits;
 use crate::capture::rungs::{self, Rung};
 use crate::capture::store::{Decl, Store};
 
+/// Beside the dataset's `pos-lut.json`, the table the session ran, which a
+/// build must not overwrite.
+const BUILT: &str = "pos-lut-built.json";
+
 /// `osc lut build` args.
 #[derive(clap::Args, Debug)]
 pub struct Args {
     /// A dataset dir, `<root>/<servo>__<supply>`, with its dataset.toml.
     dataset: PathBuf,
-    /// Where the image lands [default: <dataset>/pos-lut.json].
+    /// Where the image lands [default: <dataset>/pos-lut-built.json; the
+    /// dataset's pos-lut.json is the table its session ran].
     #[arg(long)]
     out: Option<PathBuf>,
     /// Pot count at the low stop; with --raw-max, overrides the envelope's
@@ -31,13 +36,16 @@ pub(crate) fn run(a: &Args) -> Result<()> {
     let stops = a.raw_min.zip(a.raw_max);
     let built = build(&a.dataset, stops)?;
     print!("{}", summary(&built, stops.is_none()));
-    let out = a
-        .out
-        .clone()
-        .unwrap_or_else(|| a.dataset.join("pos-lut.json"));
+    let out = a.out();
     write(&built.image, &out)?;
     println!("wrote {}", out.display());
     Ok(())
+}
+
+impl Args {
+    fn out(&self) -> PathBuf {
+        self.out.clone().unwrap_or_else(|| self.dataset.join(BUILT))
+    }
 }
 
 pub(crate) struct Built {
@@ -230,6 +238,19 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/../../ident/testdata/lut/pos-lut-mg90-a-grid.json"
     ));
+
+    /// With no --out the image lands beside the session's table, never on it.
+    #[test]
+    fn default_out_keeps_the_session_table() {
+        let a = Args {
+            dataset: PathBuf::from("d"),
+            out: None,
+            raw_min: None,
+            raw_max: None,
+        };
+        assert_eq!(a.out(), Path::new("d/pos-lut-built.json"));
+        assert_ne!(a.out(), Path::new("d").join(crate::capture::store::POS_LUT));
+    }
 
     /// The dataset's rungs through the builder give the notebook's image
     /// byte for byte, once the source line is its own.
