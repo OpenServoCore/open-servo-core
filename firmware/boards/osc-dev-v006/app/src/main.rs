@@ -69,9 +69,13 @@ fn main() -> ! {
             // floor trades the amplifier's settle after the bridge edge for
             // reach: the shunt approaches its plateau from below, inside 3%
             // from 57 ticks and 1% from 125, and a reading a known few
-            // percent low beats none. The v floor covers both terminal taps
-            // settling to the rail and vmotor_b's S/H close, 131 ticks after
-            // the crest trigger at ADCCLK 24 MHz with 13.5-cycle apertures.
+            // percent low beats none. On a motor the edge also charges the
+            // winding's terminal capacitance (~10 nF on the MG90) through the
+            // shunt, which reads HIGH by a fixed few counts under ~72 ticks,
+            // 10-15% of a 30-count current at the floor. The v floor covers
+            // both terminal taps settling to the rail and vmotor_b's S/H
+            // close, 131 ticks after the crest trigger at ADCCLK 24 MHz with
+            // 13.5-cycle apertures.
             i_window_min_ticks: 64,
             v_window_min_ticks: 160,
             // The amplifier tail after a drive pulse, measured on board D
