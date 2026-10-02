@@ -231,6 +231,32 @@ BOARDS = {
         floor_i_ticks=160,
         floor_v_ticks=160,
         floors_verified=False,
+        measured={
+            "rest_current_noise_measured": Measured(
+                1.28, 1.22, 1.33, "counts RMS", "nb10 sec 3, grid 2S ladder rest baselines",
+                "the whole chain at rest with the bridge off, one value per capture; "
+                "board D's grid baseline reads 1.7 the same way. Not the "
+                "amplifier-alone floor board D's opa_noise_floor_measured quotes"),
+            "crest_floor_measured": Measured(
+                7, 7, 10, "% duty on 2S", "nb10 sec 5 and 8, static-load ladder + bursts",
+                "honest to 3% from 7%, and the 7% edge is tap A's sample, not the "
+                "current: the current alone reads 97% of the 100% rung at 5% and "
+                "is inside 1% from about 10%"),
+            "shunt_settle_measured": Measured(
+                156, 150, 156, "ticks from the ON compare to 1% of the 100% rung",
+                "nb10 sec 8, 2S grid bursts folded at 4 ticks, registered on the ladder",
+                "3.25 us. The current is half way 44 ticks after the compare and "
+                "closes the last 3% on a slow tail, always from below, so an early "
+                "sample reads low. The ladder's own 1% crossings (119 and 123 "
+                "ticks of window, plus the 31 to the sample) give the low end"),
+            "current_chain_scale_measured": Measured(
+                0.5, -0.7, 2.3, "% high vs Rs1 pads", "Rs1 pads mV during a 4.2 s 100% grid lap",
+                "meter 93-94 mV across Rs1 against 93.3-95.1 mV (median 94.0) "
+                "from the chip's current times the nominal 60 mOhm, so the "
+                "amplifier and ADC are inside ~1%; the shunt's own tolerance is "
+                "not graded. The load route's +5.0% in nb10 sec 5.1 is the "
+                "meter's ohms range at J4 reading the load low"),
+        },
         notes=(
             "Rs1 60 mOhm; bare OPA with Rf 6k4 / Rg 430 (G 14.884), Cc 22 pF, "
             "Co1 DNP. Terminal taps Rv1/Rv3 6k4 over Rv2/Rv4 1k6 with "
@@ -240,10 +266,13 @@ BOARDS = {
             "Cv3 100 pF. A 2A capture's sense block differs from board D's in "
             "gain_milli and both divider legs. Nothing in the block carries "
             "the bias or VSNS parts, or which 2A unit took the capture, so "
-            "every 2A board shares this entry. Board #1 has Rv3 open: tap B "
-            "reads the VB node instead of terminal B, so only tap A, the rail "
-            "and the current are graded on it. FLOORS UNVERIFIED: the 2A build "
-            "ships 160/160 ticks, not yet checked on this board."
+            "every 2A board shares this entry. Board #1 had Rv3 open for the "
+            "grid-3r7 2S session: in that dataset tap B reads the VB node "
+            "instead of terminal B, so only tap A, the rail and the current "
+            "are graded there. Rv3 is repaired, and a dataset captured with it "
+            "fitted reads both taps. FLOORS UNVERIFIED: the 2A build ships "
+            "160/160 ticks. nb10 sec 8 derives 132 for the current at 1% and "
+            "keeps 160 for the terminals, pending a ladder through the floor."
         ),
     ),
 }
