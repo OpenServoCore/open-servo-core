@@ -67,6 +67,12 @@ const P_LO: [f64; 5] = [1.0, 0.2, -1.0, 0.3, -3.0];
 const P_HI: [f64; 5] = [12.0, 3.0, 2.0, 6.0, 3.0];
 const P_SCALE: [f64; 5] = [1.0, 0.2, 0.2, 0.5, 0.5];
 
+/// L floor on a static load, mH: a resistor's L is its leads'. The model's
+/// explicit step stays stable while (R + bridge) x DT_US / L is under 2;
+/// this floor holds it under 1 up to the 12 ohm ceiling. The fit starts at
+/// ten times it.
+const STATIC_L_MH: f64 = 0.003;
+
 #[derive(Clone, Debug)]
 pub struct WaveCfg {
     /// Rotor priors, see [`KE_PRIOR`]. Zero `ke` leaves the rotor out.
@@ -98,6 +104,10 @@ pub struct WaveCfg {
     /// run, ohms, duty x rail over current. None when the run has none: the
     /// cross route is then reported not available.
     pub tel_v_over_i_ohm: Option<f64>,
+    /// The load is a resistor: no rotor, L down to [`STATIC_L_MH`], and V0
+    /// pinned at zero - a resistor draws the same ON current at every duty,
+    /// so the line has one point and its slope and V0 do not separate.
+    pub static_load: bool,
 }
 
 impl Default for WaveCfg {
@@ -116,6 +126,19 @@ impl Default for WaveCfg {
             cross_tol: 0.08,
             i_lim_a: None,
             tel_v_over_i_ohm: None,
+            static_load: false,
+        }
+    }
+}
+
+impl WaveCfg {
+    /// A resistor in place of the motor.
+    pub fn static_load(self) -> Self {
+        Self {
+            ke_v_s_per_rad: 0.0,
+            j_kg_m2: 0.0,
+            static_load: true,
+            ..self
         }
     }
 }
@@ -512,6 +535,27 @@ struct Model {
     j: f64,
     /// Shunt counts per amp.
     g: f64,
+    /// See [`WaveCfg::static_load`].
+    static_load: bool,
+}
+
+impl Model {
+    fn lo(&self) -> [f64; 5] {
+        let mut lo = P_LO;
+        if self.static_load {
+            lo[1] = STATIC_L_MH;
+        }
+        lo
+    }
+
+    /// The parameters the fit moves.
+    fn free(&self) -> &'static [usize] {
+        if self.static_load {
+            &[0, 1, 3, 4]
+        } else {
+            &[0, 1, 2, 3, 4]
+        }
+    }
 }
 
 /// The shunt as the amplifier shows it at every grid step into `ys`, the
@@ -739,22 +783,38 @@ fn robust_lm(
 }
 
 fn pooled(caps: &[&Prepared], m: &Model, start: &[f64; 5]) -> Option<WaveFit> {
+    let free = m.free();
+    let pick = |a: &[f64; 5]| -> Vec<f64> { free.iter().map(|&j| a[j]).collect() };
+    let put = |q: &[f64]| {
+        let mut p = *start;
+        for (&j, x) in free.iter().zip(q) {
+            p[j] = *x;
+        }
+        p
+    };
     let mut ys = Vec::new();
     let mut f = |q: &[f64], out: &mut Vec<f64>| {
         out.clear();
-        let p = [q[0], q[1], q[2], q[3], q[4]];
+        let p = put(q);
         for c in caps {
             residuals(c, m, &p, &mut ys, out);
         }
     };
-    let s = robust_lm(start, &P_LO, &P_HI, &P_SCALE, &mut f)?;
+    let s = robust_lm(
+        &pick(start),
+        &pick(&m.lo()),
+        &pick(&P_HI),
+        &pick(&P_SCALE),
+        &mut f,
+    )?;
+    let p = put(&s.p);
     Some(WaveFit {
-        r_ohm: s.p[0],
+        r_ohm: p[0],
         r_sd_ohm: s.sd[0],
-        l_h: s.p[1] * 1e-3,
-        v0_volts: s.p[2],
-        tau_a_us: s.p[3],
-        delta_us: s.p[4],
+        l_h: p[1] * 1e-3,
+        v0_volts: p[2],
+        tau_a_us: p[3],
+        delta_us: p[4],
         rms_counts: s.rms,
         captures: caps.len(),
     })
@@ -772,7 +832,7 @@ fn alone(c: &Prepared, m: &Model, with: &WaveFit) -> Option<(f64, f64, f64)> {
         out.clear();
         residuals(c, m, &[q[0], q[1], base[2], base[3], base[4]], &mut ys, out);
     };
-    let s = robust_lm(&base[..2], &P_LO[..2], &P_HI[..2], &P_SCALE[..2], &mut f)?;
+    let s = robust_lm(&base[..2], &m.lo()[..2], &P_HI[..2], &P_SCALE[..2], &mut f)?;
     Some((s.p[0], s.p[1] * 1e-3, s.rms))
 }
 
@@ -898,9 +958,15 @@ pub fn fit_run(rest: &[(usize, &Capture)], sc: &Scales, cfg: &WaveCfg) -> Result
         ke: cfg.ke_v_s_per_rad,
         j: cfg.j_kg_m2,
         g: 1.0 / sc.amps_per_count,
+        static_load: cfg.static_load,
+    };
+    let start = if cfg.static_load {
+        [P0[0], 10.0 * STATIC_L_MH, 0.0, P0[3], P0[4]]
+    } else {
+        P0
     };
     let all: Vec<&Prepared> = prepared.iter().collect();
-    let first = pooled(&all, &model, &P0).ok_or("the pooled fit is degenerate")?;
+    let first = pooled(&all, &model, &start).ok_or("the pooled fit is degenerate")?;
 
     let mut captures = Vec::new();
     for (c, raw) in prepared.iter().zip(&raws) {
@@ -1159,6 +1225,7 @@ mod tests {
             ke: KE_PRIOR,
             j: J_PRIOR,
             g: 1.0 / sc.amps_per_count,
+            static_load: false,
         };
         let mut lcg = 0x2545_F491_4F6C_DD1Du64;
         let mut uniform = || {
