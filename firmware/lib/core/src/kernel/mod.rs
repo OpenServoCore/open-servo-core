@@ -41,6 +41,7 @@ use core::sync::atomic::{Ordering, compiler_fence};
 use self::config::KernelConfig;
 use self::fast::{Command, Fast};
 use self::medium::{Control, Medium};
+use crate::estimator::window;
 use crate::tel::TelStream;
 use crate::traits::{ControlIo, Motor};
 use crate::{RegionStorageRaw, SensorFrame, Shared};
@@ -151,10 +152,16 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         }
         self.cfg = cfg;
         self.config_gen = config_gen;
+        let v_floor = window::floor_duty(
+            cfg.fast.v_window_min_ticks,
+            self.timing.pwm_arr,
+            self.timing.recip_arr_q24,
+        );
         let p = shared.table.region_ptr();
-        // SAFETY: sole-telemetry-writer contract (type doc); volatile store.
+        // SAFETY: sole-telemetry-writer contract (type doc); volatile stores.
         unsafe {
             (&raw mut (*p).telemetry.limits.window_floor_q15).write_volatile(cfg.fast.ol_floor_q15);
+            (&raw mut (*p).telemetry.limits_ext.window_v_floor_q15).write_volatile(v_floor);
         }
     }
 

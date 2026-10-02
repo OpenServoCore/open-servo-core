@@ -958,12 +958,21 @@ the firmware does not carry the field. A host planning a drive against
 the current sensor reads the floor here rather than deriving it from a
 board constant, and `osc` refuses a servo that reports 0 (DES
 `window_floor_is_published_as_the_limiter_uses_it`).
-The terminal taps have a floor of their own, CALIB `v_window_min_ticks`,
-which may sit above this one: 160 ticks (13.3%) on osc-dev-v006, where
-the third scan slot, tap B, closes its sample. A window between the two
+
+The terminal taps have a floor of their own: `window_v_floor_q15` (u16,
+RO, `0x274` in TELEMETRY, Q15) is CALIB `v_window_min_ticks` turned into
+a duty the same way, 4356 (13.3%) for 160 ticks on osc-dev-v006, where
+the third scan slot, tap B, closes its sample. It is published with
+`window_floor_q15`, at the same moments. A window between the two floors
 reads current but no `va - vb`, so the stream's `vdiff` and the ident
-aggregate's `vdiff_mean` hold the last differential read there, and a
-host fitting anything to the differential drives above the higher floor.
+aggregate's `vdiff_mean` hold the last differential read there. Which
+floor a host plans against follows what its fit reads: a drive judged
+on current alone (the limiter's slew, an overcurrent abort, a current
+step) takes `window_floor_q15`; a drive whose fit takes the differential
+(`osc`'s resistance stop ladder) takes the higher of the two. Firmware
+that predates the register reads 0 there, and a host then takes
+`window_floor_q15` for both (DES
+`window_v_floor_is_published_beside_the_current_floor`).
 
 **Governed windows.** In OpenLoop the applied duty equals the goal only
 when nothing governed it, and a host fitting a model to a capture needs
@@ -1037,8 +1046,9 @@ Under the Same Band" has the planning behind it):
   `current_limit_counts`, `stall_yield_counts`,
   `stall_tau_trip_counts`, the soft and physical position limits,
   `raw_min` and `raw_max`, `r_q12`, the shunt and amplifier constants
-  that turn counts into amps, and one telemetry read for `vbus_counts`
-  and `window_floor_q15`. A floor of 0 refuses every drive; a stall
+  that turn counts into amps, one telemetry read for `vbus_counts`
+  and `window_floor_q15`, and `window_v_floor_q15`. A current floor of
+  0 refuses every drive; a stall
   yield not under the limit, or a collision trip over twice it, is
   warned about. Identification also refuses soft limits that span the
   whole pot (a servo `osc cal` never ran on) and an abort threshold

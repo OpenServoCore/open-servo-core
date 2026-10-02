@@ -1127,6 +1127,13 @@
       "kind": "uint"
     },
     {
+      "name": "window_v_floor_q15",
+      "addr": 628,
+      "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
       "name": "words",
       "addr": 640,
       "width": 64,

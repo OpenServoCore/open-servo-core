@@ -153,6 +153,9 @@ The limiter on the plant rig (`integration/tests/torque_limit.rs`):
 - `window_floor_is_published_as_the_limiter_uses_it` - for 160 and 240
   ticks the published `window_floor_q15` is `floor_duty` of the board's
   period, and the duty a virgin stall pins at equals it.
+- `window_v_floor_is_published_beside_the_current_floor` - at 64 and
+  160 ticks the two published floors read 1734 and 4356, and a
+  `v_window_min_ticks` rewrite shows within one medium tick, torque off.
 
 A virgin servo (`integration/tests/class_defaults.rs`, boot seed on the
 60 mohm chain):
