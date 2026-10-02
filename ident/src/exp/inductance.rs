@@ -1348,6 +1348,9 @@ impl InductanceResult {
             }
             Some("capture-agreement") => "its bursts disagreed with each other".into(),
             Some("physical-bounds") => "the result is not one a motor can have".into(),
+            Some("split-halves") if self.wave.as_ref().is_ok_and(|w| w.halves.is_none()) => {
+                "too few bursts to split into two halves".into()
+            }
             Some("split-halves") => "two halves of its bursts disagreed".into(),
             Some("cross-route") => "the bursts and the start from rest disagreed".into(),
             Some(other) => format!("the {other} check failed"),
@@ -2813,6 +2816,17 @@ mod tests {
         }
         assert_eq!(exp.plan.len(), arms, "{:?}", exp.warnings());
         assert!(exp.warnings().is_empty(), "{:?}", exp.warnings());
+    }
+
+    /// Three captures at one duty pass every gate but the halves, which
+    /// needs four, and the reason says so rather than that they disagreed.
+    #[test]
+    fn three_2a_bursts_lack_only_the_halves() {
+        let sc = rev2a_scales();
+        let at = FitCfg::default().with_limit(280.0 * sc.amps_per_count);
+        let r = fit_captures(&rev2a_bursts(), &sc, &at).expect("a fit");
+        assert_eq!(r.blocking(), vec!["split-halves"]);
+        assert_eq!(r.reason(), "too few bursts to split into two halves");
     }
 
     /// The whole plan `osc cal` arms, through a rev 2A front end on a stiff
