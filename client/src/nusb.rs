@@ -1,7 +1,7 @@
 //! USB bulk backend over nusb (pure rust, no libusb): the osc-adapter's
 //! vendor device, IF0, 1209:0001.
 
-use nusb::transfer::{Queue, RequestBuffer};
+use nusb::transfer::{Queue, RequestBuffer, TransferError};
 
 use crate::pipe::{PID, Pipe, PipeError, VID};
 
@@ -49,13 +49,53 @@ impl Pipe for NusbPipe {
             .bulk_out(EP_OUT, bytes.to_vec())
             .await
             .into_result()
-            .map_err(|e| PipeError::Io(e.to_string()))?;
+            .map_err(|e| transfer_error(EP_OUT, e))?;
         Ok(())
     }
 
     async fn recv(&mut self) -> Result<Vec<u8>, PipeError> {
         let done = self.rx.next_complete().await;
         self.rx.submit(RequestBuffer::new(IN_CAP));
-        done.into_result().map_err(|e| PipeError::Io(e.to_string()))
+        done.into_result().map_err(|e| transfer_error(EP_IN, e))
+    }
+}
+
+/// nusb folds every OS status it has no variant for into a bare "unknown
+/// error"; on macOS that includes the transaction error a dropping USB link
+/// produces (kIOReturnNotResponding), which Linux reports as a fault.
+fn transfer_error(ep: u8, e: TransferError) -> PipeError {
+    let dir = if ep & 0x80 != 0 { "IN" } else { "OUT" };
+    let what = match e {
+        TransferError::Unknown => {
+            "transfer failed with an OS status nusb does not name (a USB link fault such \
+             as a transaction error; macOS logs the status under subsystem com.apple.usb)"
+                .to_string()
+        }
+        e => e.to_string(),
+    };
+    PipeError::Io(format!("usb {dir} endpoint {ep:#04x}: {what}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_unnamed_transfer_status_names_the_endpoint_and_the_link() {
+        let PipeError::Io(m) = transfer_error(EP_IN, TransferError::Unknown) else {
+            panic!("io error expected");
+        };
+        assert!(m.starts_with("usb IN endpoint 0x81: "), "{m}");
+        assert!(m.contains("USB link fault"), "{m}");
+        assert!(!m.contains("unknown error"), "{m}");
+    }
+
+    #[test]
+    fn a_named_transfer_status_keeps_its_name() {
+        let e = transfer_error(EP_OUT, TransferError::Disconnected);
+        assert_eq!(
+            e,
+            PipeError::Io("usb OUT endpoint 0x01: device disconnected".into())
+        );
     }
 }

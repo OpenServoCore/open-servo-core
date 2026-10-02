@@ -206,6 +206,38 @@ fn discover_walks_out_every_uid_with_its_id() {
     assert_eq!(found, want);
 }
 
+/// `osc discover`'s sweep: a walk that found the fleet leaves nothing behind
+/// that the next rate's baud switch or walk trips over.
+#[test]
+fn discover_sweeps_every_rate_past_the_one_that_answers() {
+    let mut c = fleet(&[1]);
+    let uid = [0x5Au8; UID_LEN];
+    c.pipe_mut().sim_mut().seed_servo_uid(0, uid);
+    let mut seen = Vec::new();
+    for rate in [
+        BaudRate::B500000,
+        BaudRate::B1000000,
+        BaudRate::B2000000,
+        BaudRate::B3000000,
+    ] {
+        c.host_baud(rate).expect("host baud");
+        seen.push((rate, c.discover().expect("discover")));
+    }
+    let found = Found {
+        uid: Uid(uid),
+        id: Id::new(1),
+    };
+    assert_eq!(
+        seen,
+        vec![
+            (BaudRate::B500000, vec![]),
+            (BaudRate::B1000000, vec![found]),
+            (BaudRate::B2000000, vec![]),
+            (BaudRate::B3000000, vec![]),
+        ]
+    );
+}
+
 #[test]
 fn find_bus_baud_follows_the_fleet() {
     let mut c = fleet(&[1, 2]);
