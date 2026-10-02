@@ -88,7 +88,8 @@ pub struct Args {
     /// Real angle (deg) at the min-count rail.
     #[arg(long)]
     phys_angle_min: Option<f64>,
-    /// Real angle (deg) at the max-count rail.
+    /// Real angle (deg) at the max-count rail. With --gear-ratio, a check on
+    /// the travel the gear derives: cal writes nothing past 10% apart.
     #[arg(long)]
     phys_angle_max: Option<f64>,
     /// App-facing working-range min (deg); defaults to the low edge of a
@@ -192,7 +193,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
             args.phys_angle_min,
             args.phys_angle_max,
         );
-        report_yes_anchor(args, mrf, coverage, lo, hi, gear);
+        report_yes_anchor(args, mrf, coverage, lo, hi, gear)?;
         (lo, hi, gear)
     } else {
         resolve_anchor_interactive(args, mrf, coverage)?
@@ -929,10 +930,9 @@ fn resolve_anchor(
     (0.0, 0.0, 0)
 }
 
-/// Print the headless anchor outcome. Gear anchor -> the derived travel (and,
-/// when an explicit travel is also given, a divergence warning; gear still wins
-/// for storage). Travel anchor with a ripple-derived gear -> the ripple info
-/// line. Divergence flags a wrong travel angle, gear slip, or wrong ripple-per-rev.
+/// Print the headless anchor outcome. Gear anchor -> the derived travel,
+/// checked against the travel flags when they are given. Travel anchor with a
+/// ripple-derived gear -> the ripple info line.
 fn report_yes_anchor(
     args: &Args,
     mrf: Option<f64>,
@@ -940,26 +940,42 @@ fn report_yes_anchor(
     angle_min: f64,
     angle_max: f64,
     gear_centi: u16,
-) {
+) -> Result<()> {
     let gear_flag = args.gear_ratio.filter(|&g| g > 0.0);
-    if let (Some(_), Some(m)) = (gear_flag, mrf) {
+    if gear_flag.is_some() && mrf.is_some() {
+        let travel = angle_max - angle_min;
         println!(
-            "derived travel {:.1} deg from gear {:.2}",
-            angle_max - angle_min,
+            "derived travel {travel:.1} deg from gear {:.2}",
             gear_centi as f64 / 100.0,
         );
-        if let (Some(lo), Some(hi)) = (args.phys_angle_min, args.phys_angle_max) {
-            let ripple_centi = ratio_to_centi(travel_to_gear(m, hi - lo));
-            if gear_divergent(gear_centi, ripple_centi, 0.1) {
-                eprintln!(
-                    "warning: entered gear ratio {:.2} diverges from ripple-measured {:.2} by >10% - can indicate a wrong travel angle, gear slip, or wrong ripple-per-rev",
-                    gear_centi as f64 / 100.0,
-                    ripple_centi as f64 / 100.0,
-                );
-            }
-        }
+        check_travel(args, travel)?;
     } else if gear_flag.is_none() && gear_centi != 0 {
         print_ripple_gear(gear_centi, coverage.unwrap_or(0.0));
+    }
+    Ok(())
+}
+
+/// Relative disagreement between the derived travel and the operator's over
+/// which cal writes nothing.
+const TRAVEL_TOL: f64 = 0.1;
+
+/// `--phys-angle-min/max` given beside a gear anchor cross-check the travel
+/// it derives: when they disagree, the gear, the flags or the ripple count is
+/// wrong (a mistyped flag, a slipping gear, a miscounted ripple line), and
+/// none of them can be written.
+fn check_travel(args: &Args, derived: f64) -> Result<()> {
+    let (Some(lo), Some(hi)) = (args.phys_angle_min, args.phys_angle_max) else {
+        return Ok(());
+    };
+    let given = hi - lo;
+    match (derived / given - 1.0).abs() {
+        off if off <= TRAVEL_TOL => Ok(()),
+        _ => bail!(
+            "the derived travel {derived:.1} deg disagrees with --phys-angle-min/max ({given:.1} \
+             deg) by more than {:.0}%: a wrong flag, a slipping gear or a miscounted ripple; no \
+             writes",
+            TRAVEL_TOL * 100.0
+        ),
     }
 }
 
@@ -986,6 +1002,7 @@ fn resolve_anchor_interactive(
             args.phys_angle_min.unwrap_or(0.0),
         )?;
         println!("derived travel {travel:.1} deg from gear {gear:.2}");
+        check_travel(args, travel)?;
         return Ok((angle_min, angle_min + travel, ratio_to_centi(Some(gear))));
     }
     let (lo, hi) = phys_angles(args)?;
@@ -1023,16 +1040,6 @@ fn print_ripple_gear(gear_centi: u16, coverage: f64) {
         gear_centi as f64 / 100.0,
         coverage * 100.0,
     );
-}
-
-/// True when the ripple-`measured_centi` gear ratio diverges from the operator-
-/// entered `entered_centi` by more than `frac` (relative). entered_centi==0
-/// (flag unset or invalid) can never diverge.
-fn gear_divergent(entered_centi: u16, measured_centi: u16, frac: f64) -> bool {
-    if entered_centi == 0 {
-        return false;
-    }
-    ((measured_centi as f64 / entered_centi as f64) - 1.0).abs() > frac
 }
 
 fn ratio_to_centi(ratio: Option<f64>) -> u16 {
@@ -1204,16 +1211,37 @@ mod tests {
         assert!(build_sweep_chunks(&[]).is_empty());
     }
 
+    fn travel_flags(lo: Option<f64>, hi: Option<f64>) -> Args {
+        Args {
+            out: None,
+            phys_angle_min: lo,
+            phys_angle_max: hi,
+            soft_angle_min: None,
+            soft_angle_max: None,
+            gear_ratio: Some(308.05),
+            yes: true,
+        }
+    }
+
+    /// The rev-2A cal: --gear-ratio 308.05 with --phys-angle 0..184.22, and
+    /// the ripple read at half its line, deriving 91.1 deg. The flags refuse
+    /// it; the travel the line itself derives passes.
     #[test]
-    fn gear_divergent_relative_threshold_and_zero_safe() {
-        // 234.73 counted vs a >10% off ripple value -> divergent
-        assert!(gear_divergent(23473, 30000, 0.1));
-        // within 10% -> not divergent
-        assert!(!gear_divergent(23473, 24000, 0.1));
-        assert!(!gear_divergent(10000, 10500, 0.1));
-        assert!(gear_divergent(10000, 11500, 0.1));
-        // entered unset -> never diverges (no divide by zero)
-        assert!(!gear_divergent(0, 30000, 0.1));
+    fn travel_flags_refuse_a_derived_travel_they_disagree_with() {
+        let args = travel_flags(Some(0.0), Some(184.22));
+        let err = check_travel(&args, 91.1).unwrap_err().to_string();
+        assert!(
+            err.contains("91.1 deg") && err.contains("184.2 deg"),
+            "{err}"
+        );
+        assert!(check_travel(&args, 182.2).is_ok());
+        assert!(check_travel(&args, 184.22 * 1.11).is_err());
+        assert!(check_travel(&args, 184.22 * 0.91).is_ok());
+        // a degenerate travel flag never passes; without both flags there is
+        // nothing to check
+        assert!(check_travel(&travel_flags(Some(90.0), Some(90.0)), 182.2).is_err());
+        assert!(check_travel(&travel_flags(Some(0.0), None), 91.1).is_ok());
+        assert!(check_travel(&travel_flags(None, None), 91.1).is_ok());
     }
 
     #[test]
