@@ -86,7 +86,8 @@ pub struct TelemetryEstimates {
     /// Winding-R LMS estimate, vcounts/ccount Q4.12.
     #[ct_field(access = ro)]
     pub r_hat_q12: u16,
-    /// Window-selected, bias-subtracted, signed current sample.
+    /// Window-selected, bias-subtracted, settle-gained, signed current
+    /// sample (`window::i_from_frame`).
     #[ct_field(access = ro)]
     pub i_hat_counts: i16,
     #[ct_field(access = ro)]

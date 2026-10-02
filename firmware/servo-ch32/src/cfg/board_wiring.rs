@@ -3,6 +3,7 @@
 //! tunable per board (within the analog/digital pin buckets the chip + this
 //! board's free-pin set allow) lives here.
 
+use osc_servo_core::estimator::window::SettleGain;
 use osc_servo_drivers::Level;
 
 use crate::cfg::chip::{AnalogChannel, DigitalPin};
@@ -98,6 +99,9 @@ pub struct Calibration {
     /// has settled to the amplifier's rest offset: the bias tracker learns
     /// from no narrower one.
     pub bias_brake_min_ticks: u16,
+    /// The shunt amplifier's settle gain by drive width; `SettleGain::UNITY`
+    /// for an amplifier that settles inside the current floor.
+    pub i_settle_gain: SettleGain,
 }
 
 /// Board-tunable wiring; consumed during `Ch32ControlIo::new` and not retained.

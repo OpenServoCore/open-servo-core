@@ -79,6 +79,9 @@ pub struct KernelTiming {
     /// Board data: the shortest Slow-decay brake half whose trough shunt
     /// sample feeds the bias tracker (`window::trough_is_brake`).
     pub bias_brake_min_ticks: u16,
+    /// Board data: the shunt amplifier's settle gain by drive width
+    /// (`window::i_from_frame`).
+    pub i_settle_gain: window::SettleGain,
 }
 
 /// Runs in the ADC DMA TC ISR (PFIC LOW); one `on_tick` per PWM period.

@@ -7,7 +7,7 @@
 
 use crate::SensorFrame;
 use crate::estimator::bemf::RECIP_ARR_SHIFT;
-use crate::math::q_mul_u;
+use crate::math::{q_mul, q_mul_u};
 use crate::traits::DecayMode;
 
 /// Which scan half carries the drive window and whether it is wide enough
@@ -31,13 +31,44 @@ pub fn select(decay: DecayMode, drive_ticks: u32, i_floor: u16, v_floor: u16) ->
     }
 }
 
-/// Signed bias-subtracted shunt current from the drive-window scan, or `None`
-/// when the window is too narrow for a settled sample.
+/// Band width of `SettleGain`, 8 ticks.
+const SETTLE_BAND_SHIFT: u32 = 3;
+
+/// Board data: the inverse of the shunt amplifier's step response at the
+/// sample instant, by drive width. A window shorter than the amplifier
+/// takes to settle samples the shunt short of its plateau by a fraction
+/// the width alone fixes; the gain restores it.
+#[derive(Copy, Clone)]
+pub struct SettleGain {
+    /// Drive width (TIM1 ticks) the first band starts at; narrower windows
+    /// take the first band.
+    pub start_ticks: u16,
+    /// Q15 gain (1.0 = 32768) per 8-tick band from `start_ticks`; windows
+    /// past the last band read at unity.
+    pub q15: &'static [u16],
+}
+
+impl SettleGain {
+    pub const UNITY: Self = Self {
+        start_ticks: 0,
+        q15: &[],
+    };
+
+    pub fn q15_at(&self, drive_ticks: u32) -> u32 {
+        let band = drive_ticks.saturating_sub(self.start_ticks as u32) >> SETTLE_BAND_SHIFT;
+        self.q15.get(band as usize).map_or(1 << 15, |&g| g as u32)
+    }
+}
+
+/// Signed bias-subtracted shunt current from the drive-window scan, scaled
+/// by the window's settle gain (`SettleGain::q15_at`), or `None` when the
+/// window is too narrow for a settled sample.
 pub fn i_from_frame(
     frame: &SensorFrame,
     sel: WindowSel,
     duty_sign_positive: bool,
     bias: u16,
+    gain_q15: u32,
 ) -> Option<i32> {
     if !sel.i_valid {
         return None;
@@ -47,7 +78,8 @@ pub fn i_from_frame(
     } else {
         frame.current
     };
-    let mag = sample as i32 - bias as i32;
+    // round half up: floor((floor(2x) + 1) / 2) == floor(x + 1/2)
+    let mag = (q_mul(sample as i32 - bias as i32, gain_q15 as i32, 14) + 1) >> 1;
     Some(if duty_sign_positive { mag } else { -mag })
 }
 
@@ -131,6 +163,8 @@ mod tests {
         }
     }
 
+    const UNITY: u32 = 1 << 15;
+
     fn valid(use_trough: bool) -> WindowSel {
         WindowSel {
             i_valid: true,
@@ -168,17 +202,88 @@ mod tests {
     #[test]
     fn current_peak_vs_trough_pick() {
         let f = frame();
-        assert_eq!(i_from_frame(&f, valid(false), true, 0), Some(2500));
-        assert_eq!(i_from_frame(&f, valid(true), true, 0), Some(1500));
+        assert_eq!(i_from_frame(&f, valid(false), true, 0, UNITY), Some(2500));
+        assert_eq!(i_from_frame(&f, valid(true), true, 0, UNITY), Some(1500));
     }
 
     #[test]
     fn current_bias_and_sign() {
         let f = frame();
-        assert_eq!(i_from_frame(&f, valid(false), true, 2048), Some(452));
-        assert_eq!(i_from_frame(&f, valid(false), false, 2048), Some(-452));
+        assert_eq!(i_from_frame(&f, valid(false), true, 2048, UNITY), Some(452));
+        assert_eq!(
+            i_from_frame(&f, valid(false), false, 2048, UNITY),
+            Some(-452)
+        );
         // sample below bias with positive duty reads negative
-        assert_eq!(i_from_frame(&f, valid(true), true, 2048), Some(-548));
+        assert_eq!(i_from_frame(&f, valid(true), true, 2048, UNITY), Some(-548));
+    }
+
+    const GAIN: SettleGain = SettleGain {
+        start_ticks: 40,
+        q15: &[35143, 34194, 33734],
+    };
+
+    #[test]
+    fn settle_gain_bands_start_at_their_edge() {
+        assert_eq!(GAIN.q15_at(40), 35143);
+        assert_eq!(GAIN.q15_at(47), 35143);
+        assert_eq!(GAIN.q15_at(48), 34194);
+        assert_eq!(GAIN.q15_at(55), 34194);
+        assert_eq!(GAIN.q15_at(56), 33734);
+        assert_eq!(GAIN.q15_at(63), 33734);
+    }
+
+    #[test]
+    fn settle_gain_clamps_below_and_is_unity_above() {
+        // narrower than the first band: the first band, never an index
+        // under the table
+        assert_eq!(GAIN.q15_at(39), 35143);
+        assert_eq!(GAIN.q15_at(0), 35143);
+        assert_eq!(GAIN.q15_at(64), UNITY);
+        assert_eq!(GAIN.q15_at(u32::MAX), UNITY);
+        for t in [0, 1, 40, 1200, u32::MAX] {
+            assert_eq!(SettleGain::UNITY.q15_at(t), UNITY);
+        }
+    }
+
+    #[test]
+    fn current_gain_rounds_and_keeps_the_sign_symmetric() {
+        let f = SensorFrame {
+            current: 2348,
+            ..Default::default()
+        };
+        // 300 x 33259 / 32768 = 304.49
+        assert_eq!(i_from_frame(&f, valid(false), true, 2048, 33259), Some(304));
+        assert_eq!(
+            i_from_frame(&f, valid(false), false, 2048, 33259),
+            Some(-304)
+        );
+        // 300 x 33300 / 32768 = 304.87
+        assert_eq!(i_from_frame(&f, valid(false), true, 2048, 33300), Some(305));
+        // under the bias: -300 x 33259 / 32768 = -304.49
+        assert_eq!(
+            i_from_frame(&f, valid(false), true, 2648, 33259),
+            Some(-304)
+        );
+    }
+
+    #[test]
+    fn current_unity_gain_is_exact() {
+        for sample in [0, 1, 2047, 2048, 2049, 4095, u16::MAX] {
+            let f = SensorFrame {
+                current: sample,
+                ..Default::default()
+            };
+            let want = sample as i32 - 2048;
+            assert_eq!(
+                i_from_frame(&f, valid(false), true, 2048, UNITY),
+                Some(want)
+            );
+            assert_eq!(
+                i_from_frame(&f, valid(false), false, 2048, UNITY),
+                Some(-want)
+            );
+        }
     }
 
     #[test]
@@ -189,7 +294,7 @@ mod tests {
             v_valid: true,
             use_trough: false,
         };
-        assert_eq!(i_from_frame(&f, sel, true, 0), None);
+        assert_eq!(i_from_frame(&f, sel, true, 0, UNITY), None);
     }
 
     #[test]
