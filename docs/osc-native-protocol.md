@@ -614,7 +614,8 @@ Payload, all LE:
 `current` (bias-subtracted window sample, held through windows the shunt
 cannot read, 0 from the first tick nothing drives: torque off, a fault,
 a brake, an OpenLoop zero goal), 2 `current_trough`, 3 `duty`, 4
-`vdiff`, 5 `vbus`, 6 `current_raw`, 7 `vmotor_a`, 8 `vmotor_b`, 9
+`vdiff` (held through windows the terminal taps cannot read, which the
+`valid` bit does not mark when the shunt reads them, sec 5.8), 5 `vbus`, 6 `current_raw`, 7 `vmotor_a`, 8 `vmotor_b`, 9
 `vbus_raw`, 10 `ntc_raw`, 11 `pos_lin` (the linearized pot the kernel
 controls on, the Q4 word itself, sec 5.7); bits 12-15 are reserved and
 reject. A sample carries at most 6 fields (12 B): a mask selecting more
@@ -946,7 +947,7 @@ a TEL field: the `valid` bitmap of sec 5.6 has no spare bit.
 **Window floor.** `window_floor_q15` (u16, RO, `0x268` in TELEMETRY,
 a Q15 duty magnitude) is the smallest duty whose drive window the shunt
 reads: CALIB `i_window_min_ticks` turned into a duty against the board's
-PWM period, 4356 (13.3%) for 160 ticks of 1200 on osc-dev-v006. It is
+PWM period, 1734 (5.3%) for 64 ticks of 1200 on osc-dev-v006. It is
 the value the OpenLoop limiter uses, where its ceiling restarts and its
 blind band (below) begins, published at the kernel's first tick and
 again whenever a CONFIG or CALIB write reaches the kernel, torque on or
@@ -957,6 +958,12 @@ the firmware does not carry the field. A host planning a drive against
 the current sensor reads the floor here rather than deriving it from a
 board constant, and `osc` refuses a servo that reports 0 (DES
 `window_floor_is_published_as_the_limiter_uses_it`).
+The terminal taps have a floor of their own, CALIB `v_window_min_ticks`,
+which may sit above this one: 160 ticks (13.3%) on osc-dev-v006, where
+the third scan slot, tap B, closes its sample. A window between the two
+reads current but no `va - vb`, so the stream's `vdiff` and the ident
+aggregate's `vdiff_mean` hold the last differential read there, and a
+host fitting anything to the differential drives above the higher floor.
 
 **Governed windows.** In OpenLoop the applied duty equals the goal only
 when nothing governed it, and a host fitting a model to a capture needs
@@ -976,7 +983,7 @@ one never reaches the goal. Polled, the same test reads `duty_applied_q15` (or
 the ident aggregate `duty_mean_q15`) against the goal written, once the
 slew is over; `limit_flags` then says why.
 
-**Blind band.** Under the window floor (`window_floor_q15`, 13.3% on
+**Blind band.** Under the window floor (`window_floor_q15`, 5.3% on
 osc-dev-v006) the shunt reports nothing and the servo applies
 a stall-safe base duty instead of trusting its ceiling:
 `min(i_lim x R / Vbus, floor)` from the identified `r_q12`, whose stall
@@ -984,8 +991,8 @@ current is at most the limit. A servo with no identified resistance
 (`r_q12` 0) has the floor as its base, so the lowest duty it applies to
 a goal above the floor is the floor itself, and stall current in the
 blind band is bounded by `floor x Vbus / R` of the actual winding:
-0.214 A for a 4.9 ohm winding on 7.9 V, and under the 300 mA class
-limit for any winding above 3.72 ohm on 8.4 V. If the floor
+0.085 A for a 4.9 ohm winding on 7.9 V, and under the 300 mA class
+limit for any winding above 1.48 ohm on 8.4 V. If the floor
 already draws more than the limit, the applied duty stays pinned at
 the floor and the stall timer decides (DES
 `virgin_blind_band_passes_to_the_window_floor`).
@@ -1115,8 +1122,10 @@ spans 16 fresh ticks and `agg_seq` counts on from where it stopped. The
 servo writes the block mid-tick with `agg_seq` last: a host that reads
 the block, re-reads `agg_seq` and finds it unchanged holds one window.
 A tick whose window the shunt cannot read contributes the last valid
-current and differential, except that the current reads 0 from the first
-tick nothing drives, as the stream's `current` does (sec 5.6). A host
+current, and one the terminal taps cannot read the last valid
+differential (the two floors of sec 5.8 may differ), except that the
+current reads 0 from the first tick nothing drives, as the stream's
+`current` does (sec 5.6). A host
 that reads the aggregate turns it on for its session and off when the
 session ends (sec 5.8).
 
