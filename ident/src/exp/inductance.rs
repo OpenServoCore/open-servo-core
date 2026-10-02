@@ -594,7 +594,10 @@ fn profile_min(lo: f64, hi: f64, cost: impl Fn(f64) -> f64) -> f64 {
 }
 
 /// Fit A - B * exp(-t / tau) to the level envelope by profiling tau: A and
-/// B are closed form at each tau. None when the basis is degenerate.
+/// B are closed form at each tau. None when the basis is degenerate, or
+/// when tau lands on the search band's edge: an envelope that never bends
+/// inside the band has no asymptote, and A there extrapolates the levels'
+/// scatter to several times any level measured.
 fn fit_exponential(pts: &[(f64, f64)]) -> Option<(f64, f64)> {
     const TAU_LO: f64 = 10e-6;
     const TAU_HI: f64 = 3000e-6;
@@ -624,8 +627,11 @@ fn fit_exponential(pts: &[(f64, f64)]) -> Option<(f64, f64)> {
         Some((rss, a))
     };
     let tau = profile_min(TAU_LO, TAU_HI, |x| solve(x).map_or(f64::INFINITY, |r| r.0));
-    let (_, a) = solve(tau)?;
-    (tau.is_finite() && a.is_finite()).then_some((tau, a))
+    let (rss, a) = solve(tau)?;
+    let on_edge = [TAU_LO, TAU_HI]
+        .iter()
+        .any(|&b| solve(b).is_some_and(|(r, _)| r <= rss));
+    (!on_edge && tau.is_finite() && a.is_finite()).then_some((tau, a))
 }
 
 /// Captures the settle profile samples. The amplifier edge is one number
@@ -1342,6 +1348,9 @@ impl InductanceResult {
             }
             Some("capture-agreement") => "its bursts disagreed with each other".into(),
             Some("physical-bounds") => "the result is not one a motor can have".into(),
+            Some("split-halves") if self.wave.as_ref().is_ok_and(|w| w.halves.is_none()) => {
+                "too few bursts to split into two halves".into()
+            }
             Some("split-halves") => "two halves of its bursts disagreed".into(),
             Some("cross-route") => "the bursts and the start from rest disagreed".into(),
             Some(other) => format!("the {other} check failed"),
@@ -2229,6 +2238,57 @@ mod tests {
         Scales::from_sense(&BOARD_D, VBUS_DIV.0, VBUS_DIV.1).unwrap()
     }
 
+    /// Rev 2A: G 14.884 on the same 60 mohm shunt, 6k4/1k6 terminal and
+    /// rail taps.
+    fn rev2a_scales() -> Scales {
+        Scales::from_sense(
+            &SenseParams {
+                gain_milli: 14_884,
+                vmotor_div_top: 6_400,
+                vmotor_div_bot: 1_600,
+                tick_hz: 20_000,
+                ..BOARD_D
+            },
+            6_400,
+            1_600,
+        )
+        .unwrap()
+    }
+
+    /// The first three captures of `osc cal` on the bench MG90 on rev 2A,
+    /// 2S: 25% forward from rest, the driven terminal behind the shunt.
+    fn rev2a_bursts() -> Vec<Capture> {
+        [
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/testdata/burst/mg90-2a/burst-0.csv"
+            )),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/testdata/burst/mg90-2a/burst-1.csv"
+            )),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/testdata/burst/mg90-2a/burst-2.csv"
+            )),
+        ]
+        .iter()
+        .map(|t| from_csv(t).expect("fixture parses"))
+        .collect()
+    }
+
+    /// The burst plan `osc cal` arms on 2S: 25 and 40% both signs and the
+    /// from-a-hold control, at the burst allowance's envelope.
+    fn cal_plan(sc: &Scales) -> Cfg {
+        let base = Cfg {
+            repeats: 5,
+            i_max_a: crate::limits::BurstAllowance::i_max_a(),
+            fit: FitCfg::default().with_limit(280.0 * sc.amps_per_count),
+            ..Cfg::default()
+        };
+        crate::run::burst_cfg(&[0.25, 0.40], 0.0952, 0.145, base)
+    }
+
     /// What the three from-rest fixtures' pair route and their from-a-hold
     /// control give, so a single-capture assertion reads against the same
     /// numbers the run would hand it.
@@ -2671,18 +2731,7 @@ mod tests {
     fn the_burst_reads_the_same_winding_through_the_2a_front_end() {
         use crate::exp::testkit::{board_d_scales, mg90_2s};
         let d = board_d_scales();
-        let a = Scales::from_sense(
-            &SenseParams {
-                gain_milli: 14_884,
-                vmotor_div_top: 6_400,
-                vmotor_div_bot: 1_600,
-                tick_hz: 20_000,
-                ..BOARD_D
-            },
-            6_400,
-            1_600,
-        )
-        .unwrap();
+        let a = rev2a_scales();
         let (bias, vb) = (460.0, 773.0);
         let caps = mg90_2s();
         let rev2a: Vec<Capture> = caps
@@ -2736,5 +2785,87 @@ mod tests {
         let r = fit_captures(&mg90_2s()[..3], &sc, &at).expect("a fit");
         assert_eq!(r.route(), None, "{:?}", r.blocking());
         assert!(r.winding_terms().is_none());
+    }
+
+    /// At frame_len 2 the rev 2A amplifier settles inside one conversion,
+    /// so each period's charge counts the ON window as a whole number of
+    /// frames - 5 or 6 for a true 5.75 - and the charge-balance levels jump
+    /// by -13% and +4% as the PWM drifts across the frame grid. The third
+    /// capture's levels end on a jump up, so its envelope runs to the 3 ms
+    /// edge of the tau band, where the asymptote reads 1.6 A and would
+    /// prune the plan to 17%. An envelope that never bends has no
+    /// asymptote: every rung the plan arms runs.
+    #[test]
+    fn a_2a_rung_that_never_bends_prunes_nothing() {
+        let sc = rev2a_scales();
+        let caps = rev2a_bursts();
+        let third = fit_capture(&caps[2], &sc, &FitCfg::default()).expect("a fit");
+        assert_eq!((third.tau_cb_us, third.asymptote_cb_a), (0.0, 0.0));
+        let last = third.windows.last().expect("ON windows").level_a;
+        assert!(
+            (third.asymptote_a / last - 1.0).abs() < 0.1,
+            "ON asymptote {} against the last ON level {last}",
+            third.asymptote_a
+        );
+        let cfg = cal_plan(&sc);
+        let arms = plan(&cfg).len();
+        assert_eq!(arms, 24);
+        let mut exp = Inductance::new(cfg, &crate::exp::testkit::rig(), sc);
+        for c in &caps {
+            exp.push_burst(c);
+        }
+        assert_eq!(exp.plan.len(), arms, "{:?}", exp.warnings());
+        assert!(exp.warnings().is_empty(), "{:?}", exp.warnings());
+    }
+
+    /// Three captures at one duty pass every gate but the halves, which
+    /// needs four, and the reason says so rather than that they disagreed.
+    #[test]
+    fn three_2a_bursts_lack_only_the_halves() {
+        let sc = rev2a_scales();
+        let at = FitCfg::default().with_limit(280.0 * sc.amps_per_count);
+        let r = fit_captures(&rev2a_bursts(), &sc, &at).expect("a fit");
+        assert_eq!(r.blocking(), vec!["split-halves"]);
+        assert_eq!(r.reason(), "too few bursts to split into two halves");
+    }
+
+    /// The whole plan `osc cal` arms, through a rev 2A front end on a stiff
+    /// 2S rail: every rung runs and the line at the limit is the plant's.
+    #[test]
+    fn the_cal_plan_runs_whole_through_a_2a_front_end() {
+        let sc = rev2a_scales();
+        let plant = SynthBurst {
+            r: 4.3,
+            l: 0.85e-3,
+            v0: 0.1,
+            settle_us: 0.5,
+            v_rail: 7.52,
+            bias: 470.0,
+            vb: 773.0,
+            amps_per_count: sc.amps_per_count,
+            v_rail_per_count: sc.v_rail_per_count,
+            v_term_per_count: sc.v_term_per_count,
+            ..SynthBurst::board_d().with_bridge()
+        };
+        let params = crate::exp::testkit::rig();
+        let mut servo = FakeServo::new(3.37);
+        servo.dynamic = true;
+        servo.burst = plant.clone();
+        let mut exp = Guarded::new(Inductance::new(cal_plan(&sc), &params, sc), params);
+        pump(&mut exp, &mut servo, 400_000);
+        assert!(exp.abort().is_none(), "abort {:?}", exp.abort());
+        let exp = exp.into_inner();
+        assert_eq!(exp.captures().len(), 24, "{:?}", exp.warnings());
+        let r = exp.fit().expect("a fit");
+        assert_eq!(r.route(), Some(BurstRoute::Free), "{:?}", r.blocking());
+        let w = r.winding_terms().expect("a winding");
+        let i = 280.0 * sc.amps_per_count;
+        let d = (plant.v0 + (plant.r + 2.0 * plant.rds) * i) / (plant.v_rail - plant.r_shunt * i);
+        let want = d * plant.v_rail / i;
+        assert!(
+            (w.r_plan_ohm / want - 1.0).abs() < 0.03,
+            "V/I {w:?} of {want}"
+        );
+        assert!((w.l_h / plant.l - 1.0).abs() < 0.05, "L {w:?}");
     }
 }
