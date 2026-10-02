@@ -7,8 +7,11 @@
 //! Two readers of it live here:
 //!
 //! - [`ripple_speed`], a tachometer: detrend with a sliding mean, then the
-//!   dominant period by normalized autocorrelation with parabolic
-//!   interpolation around the peak lag. Feeds [`crate::lut::cumulative_phase`].
+//!   ripple period by normalized autocorrelation with parabolic
+//!   interpolation around the peak lag. The line's f/2 family member makes
+//!   twice the period correlate better than the period itself, so the period
+//!   is the shortest peak the tallest one is a multiple of. Feeds
+//!   [`crate::lut::cumulative_phase`].
 //! - [`motor_angle`], the angle tracker of `oscnb.ripple`: the ripple line's
 //!   integrated phase in cycles at every sample of a rung. A ridge track walks
 //!   backward from the settled end of the rung in 200-sample windows, then a
@@ -85,23 +88,34 @@ pub fn ripple_speed(i: &[f64], fs: f64, ripple_per_rev: f64) -> Option<RippleEst
     // correlation (the acceleration/reversal transient locks here), at lag_max
     // it is the detrend tail - neither is a real ripple period, and only an
     // interior peak has the two neighbors parabolic interpolation needs.
-    if k == 0 || k + 1 == ac.len() {
+    if k == 0 || k + 1 == ac.len() || ac[k] < MIN_STRENGTH {
         return None;
     }
-    let strength = ac[k];
-    if strength < MIN_STRENGTH {
-        return None;
-    }
-    // parabolic interpolation around the peak lag (guaranteed interior above)
-    let lag = (lag_min + k) as f64 + {
-        let (a, b, c) = (ac[k - 1], ac[k], ac[k + 1]);
+    // parabolic interpolation around an interior peak lag
+    let at = |j: usize| {
+        let (a, b, c) = (ac[j - 1], ac[j], ac[j + 1]);
         let den = a - 2.0 * b + c;
-        if den.abs() > 1e-12 {
+        let off = if den.abs() > 1e-12 {
             (0.5 * (a - c) / den).clamp(-0.5, 0.5)
         } else {
             0.0
-        }
+        };
+        (lag_min + j) as f64 + off
     };
+    let top = at(k);
+    // An f/2 (or f/3) line puts the tallest peak at a multiple n of the
+    // ripple period: the period is the shortest peak clearing the floor that
+    // the tallest one lands on within a lag per multiple. The tallest peak
+    // itself always qualifies (n = 1).
+    let (j, lag) = (1..ac.len() - 1)
+        .filter(|&j| ac[j] >= MIN_STRENGTH && ac[j] >= ac[j - 1] && ac[j] >= ac[j + 1])
+        .map(|j| (j, at(j)))
+        .find(|&(_, t)| {
+            let n = (top / t).round();
+            (top - n * t).abs() <= n
+        })
+        .unwrap_or((k, top));
+    let strength = ac[j];
     let freq_hz = fs / lag;
     Some(RippleEstimate {
         freq_hz,
@@ -769,6 +783,66 @@ mod tests {
     }
 
     #[test]
+    fn reads_the_line_under_its_half_line() {
+        // a 1172 Hz line with its f/2 member at 22% of its power: twice the
+        // period correlates better than the period
+        let mut lcg = Lcg(5);
+        let i: Vec<f64> = (0..4000)
+            .map(|k| {
+                let t = k as f64 / FS;
+                60.0 + 10.0 * (2.0 * PI * 1172.0 * t).sin()
+                    + 4.7 * (2.0 * PI * 586.0 * t + 0.3).sin()
+                    + lcg.next(3.0)
+            })
+            .collect();
+        for (k, w) in i.chunks_exact(min_window(FS)).enumerate() {
+            let e = ripple_speed(w, FS, 6.0).expect("ripple found");
+            assert!(
+                (e.freq_hz / 1172.0 - 1.0).abs() < 0.03,
+                "window {k}: {} Hz",
+                e.freq_hz
+            );
+        }
+    }
+
+    /// Every window of `current` reads `line_hz` within 5%.
+    fn reads_line(current: &[f64], tick_hz: f64, line_hz: f64) {
+        for (k, w) in current.chunks_exact(min_window(tick_hz)).enumerate() {
+            let e = ripple_speed(w, tick_hz, 6.0).expect("ripple found");
+            assert!(
+                (e.freq_hz / line_hz - 1.0).abs() < 0.05,
+                "window {k}: {} Hz vs {line_hz}",
+                e.freq_hz
+            );
+        }
+    }
+
+    /// The middle of a cal traverse at 26% on 2S, mg90-a on the rev-2A
+    /// board: pos and current. The whole traverse's line sits at 1172 Hz,
+    /// 6.3 cycles per motor rev at 308.05:1 over the pot travel, with its
+    /// f/2 member at 22% of its power.
+    #[test]
+    fn reads_the_line_on_a_2a_traverse() {
+        let csv = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/ripple/cal-2a-traverse.csv"
+        ));
+        let current: Vec<f64> = csv
+            .lines()
+            .skip(1)
+            .map(|l| {
+                l.split_once(',')
+                    .expect("pos,current")
+                    .1
+                    .parse()
+                    .expect("current")
+            })
+            .collect();
+        assert_eq!(current.len(), 1600);
+        reads_line(&current, 20_000.0, 1172.0);
+    }
+
+    #[test]
     fn gear_ratio_check_is_rung_consistent() {
         // same physical train sampled at two speeds: the relative ratio
         // must agree even though 4096.0 is not a physical output rev
@@ -920,6 +994,10 @@ mod tests {
         );
         let (hz, cyc) = check_parity("session fwd 40%", &fx);
         eprintln!("session fwd 40%: worst ridge {hz:.2e} rel, worst cycles {cyc:.2e}");
+        // the tach agrees with the settled line on board D, where the f/2
+        // member also sits inside the autocorr band
+        let line = fx.r["settled_line_hz"].as_f64().unwrap();
+        reads_line(&fx.current[fx.current.len() - 2000..], 20_000.0, line);
     }
 
     #[test]
