@@ -238,10 +238,17 @@ BOARDS = {
                 "board D's grid baseline reads 1.7 the same way. Not the "
                 "amplifier-alone floor board D's opa_noise_floor_measured quotes"),
             "crest_floor_measured": Measured(
-                7, 7, 13, "% duty on 2S", "nb10 sec 5-6, static-load ladder + bursts",
+                7, 7, 10, "% duty on 2S", "nb10 sec 5 and 8, static-load ladder + bursts",
                 "honest to 3% from 7%, and the 7% edge is tap A's sample, not the "
-                "current: the current alone reads 97% of the 100% rung at 5%. The "
-                "13% is where a centred crest clears the 40% burst's 1% settle"),
+                "current: the current alone reads 97% of the 100% rung at 5% and "
+                "is inside 1% from about 10%"),
+            "shunt_settle_measured": Measured(
+                156, 150, 156, "ticks from the ON compare to 1% of the 100% rung",
+                "nb10 sec 8, 2S grid bursts folded at 4 ticks, registered on the ladder",
+                "3.25 us. The current is half way 44 ticks after the compare and "
+                "closes the last 3% on a slow tail, always from below, so an early "
+                "sample reads low. The ladder's own 1% crossings (119 and 123 "
+                "ticks of window, plus the 31 to the sample) give the low end"),
             "current_chain_scale_measured": Measured(
                 0.5, -0.7, 2.3, "% high vs Rs1 pads", "Rs1 pads mV during a 4.2 s 100% grid lap",
                 "meter 93-94 mV across Rs1 against 93.3-95.1 mV (median 94.0) "
@@ -264,7 +271,8 @@ BOARDS = {
             "instead of terminal B, so only tap A, the rail and the current "
             "are graded there. Rv3 is repaired, and a dataset captured with it "
             "fitted reads both taps. FLOORS UNVERIFIED: the 2A build ships "
-            "160/160 ticks, not yet checked on this board."
+            "160/160 ticks. nb10 sec 8 derives 132 for the current at 1% and "
+            "keeps 160 for the terminals, pending a ladder through the floor."
         ),
     ),
 }
