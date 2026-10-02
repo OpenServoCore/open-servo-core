@@ -66,16 +66,15 @@ fn main() -> ! {
             rail_drop_mv: 250,
             vdd_mv: 3300,
             // Scan order is [shunt, vmA, vmB, pos, vcal, vbus, ntc]. The i
-            // floor trades the amplifier's settle after the bridge edge for
-            // reach: the shunt approaches its plateau from below, inside 3%
-            // from 57 ticks and 1% from 125, and a reading a known few
-            // percent low beats none. On a motor the edge also charges the
-            // winding's terminal capacitance (~10 nF on the MG90) through the
-            // shunt, which reads HIGH by a fixed few counts under ~72 ticks,
-            // 10-15% of a 30-count current at the floor. The v floor covers
-            // both terminal taps settling to the rail and vmotor_b's S/H
-            // close, 131 ticks after the crest trigger at ADCCLK 24 MHz with
-            // 13.5-cycle apertures.
+            // floor sits inside the settle gain's reach (`i_settle_gain`),
+            // where the amplifier's own deficit is a calibrated gain, not an
+            // error. On a motor the edge also charges the winding's terminal
+            // capacitance (~10 nF on the MG90) through the shunt, which
+            // reads HIGH by a fixed few counts under ~72 ticks, 10-15% of a
+            // 30-count current at the floor; no gain removes an additive
+            // term. The v floor covers both terminal taps settling to the
+            // rail and vmotor_b's S/H close, 131 ticks after the crest
+            // trigger at ADCCLK 24 MHz with 13.5-cycle apertures.
             i_window_min_ticks: 64,
             v_window_min_ticks: 160,
             // The amplifier tail after a drive pulse, measured on board D
@@ -84,7 +83,20 @@ fn main() -> ! {
             // then climbs with drive current - 7 counts at 30%, 16 at 60%,
             // 38 at 85%.
             bias_brake_min_ticks: 960,
-            i_settle_gain: SettleGain::UNITY,
+            // The amplifier's step response at the crest sample: the shunt
+            // approaches its plateau from below, 2.9% low at 60 ticks, 1.1%
+            // at 120, settled from ~208, the same in both drive signs (a
+            // 3.7 ohm grid ladder, 60..300 ticks). Each band holds the
+            // inverse at its centre; 40 and 48 come from the burst fold
+            // alone, under the ladder's lowest rung. Every grid rung from 60
+            // ticks lands within 0.16% with it.
+            i_settle_gain: SettleGain {
+                start_ticks: 40,
+                q15: &[
+                    35143, 34194, 33734, 33575, 33456, 33376, 33314, 33259, 33213, 33156, 33103,
+                    33052, 33020, 32982, 32938, 32900, 32868, 32841, 32824, 32806, 32785,
+                ],
+            },
         },
         defaults: ConfigDefaults {
             pos_min_phys_counts: 0,
