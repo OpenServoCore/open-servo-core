@@ -1,0 +1,6 @@
+servo = "mg90-a"
+supply = "2s"
+rule = "limit"
+current_limit_counts = 1100
+captured = "2026-10-02"
+notes = "Rev 2A board #1, the same servo and pack as mg90-a__dev-v006-2A__2s__limit, recorded about two hours after it on firmware fw 65 at ffb276ed. The current limit sits at 1100 counts (992 mA), above every climb, so every grid rung steps straight to its duty: the limit cut in only on a few reversal steps (then:-20@60 in captures 1, 2 and 4), never on a grid rung. Slow-decay recordings only, the grid runs to 50% and seeks and parks drive at 42%. Every recording streamed whole (rows_dropped 0). Pack 7.62 to 7.67 V at the start of each capture, rail 7.36 to 7.41 V. The servo ran the 0xdc96 table LIVE, the one osc lut build made from mg90-a__dev-v006-2A__2s__limit; pos-lut.json is that table as the servo reported it at session start, and TEL pos is the raw count. pos-lut-built.json is the table osc lut build made from this session afterwards."
