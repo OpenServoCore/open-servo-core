@@ -595,9 +595,10 @@ fn profile_min(lo: f64, hi: f64, cost: impl Fn(f64) -> f64) -> f64 {
 
 /// Fit A - B * exp(-t / tau) to the level envelope by profiling tau: A and
 /// B are closed form at each tau. None when the basis is degenerate, or
-/// when tau lands on the search band's edge: an envelope that never bends
-/// inside the band has no asymptote, and A there extrapolates the levels'
-/// scatter to several times any level measured.
+/// when tau lands on the search band's edge or outlasts the last level:
+/// an envelope that never bends inside what was read has no asymptote, and
+/// A there extrapolates the levels' scatter to several times any level
+/// measured.
 fn fit_exponential(pts: &[(f64, f64)]) -> Option<(f64, f64)> {
     const TAU_LO: f64 = 10e-6;
     const TAU_HI: f64 = 3000e-6;
@@ -631,7 +632,8 @@ fn fit_exponential(pts: &[(f64, f64)]) -> Option<(f64, f64)> {
     let on_edge = [TAU_LO, TAU_HI]
         .iter()
         .any(|&b| solve(b).is_some_and(|(r, _)| r <= rss));
-    (!on_edge && tau.is_finite() && a.is_finite()).then_some((tau, a))
+    let t_end = pts.iter().map(|p| p.0).fold(f64::MIN, f64::max);
+    (!on_edge && tau <= t_end && tau.is_finite() && a.is_finite()).then_some((tau, a))
 }
 
 /// Captures the settle profile samples. The amplifier edge is one number
@@ -2814,6 +2816,33 @@ mod tests {
         for c in &caps {
             exp.push_burst(c);
         }
+        assert_eq!(exp.plan.len(), arms, "{:?}", exp.warnings());
+        assert!(exp.warnings().is_empty(), "{:?}", exp.warnings());
+    }
+
+    /// A 25% forward capture of `osc ident` on rev 2A whose charge-balance
+    /// levels climb near straight across the frame grid's jumps (151 to
+    /// 384 mA over its nine periods): their envelope fits a 949 us tau,
+    /// longer than the 0.45 ms the levels span, and a 0.74 A asymptote
+    /// that would prune the 40% rungs and the from-a-hold control and leave
+    /// the run at one duty. An envelope that outlasts its levels has no
+    /// asymptote: the ON window's, 0.40 A, sizes the plan and every rung
+    /// runs.
+    #[test]
+    fn a_2a_envelope_that_outlasts_its_levels_prunes_nothing() {
+        let sc = rev2a_scales();
+        let cap = from_csv(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/burst/mg90-2a/ident/burst-2.csv"
+        )))
+        .expect("fixture parses");
+        let f = fit_capture(&cap, &sc, &FitCfg::default()).expect("a fit");
+        assert_eq!((f.tau_cb_us, f.asymptote_cb_a), (0.0, 0.0));
+        assert!((f.asymptote_a - 0.404).abs() < 0.005, "{}", f.asymptote_a);
+        let cfg = cal_plan(&sc);
+        let arms = plan(&cfg).len();
+        let mut exp = Inductance::new(cfg, &crate::exp::testkit::rig(), sc);
+        exp.push_burst(&cap);
         assert_eq!(exp.plan.len(), arms, "{:?}", exp.warnings());
         assert!(exp.warnings().is_empty(), "{:?}", exp.warnings());
     }
