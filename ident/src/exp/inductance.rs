@@ -1251,7 +1251,8 @@ impl BurstRoute {
 ///      the driven terminal), residual, capture-agreement, physical-bounds,
 ///      split-halves, and cross-route when the run has a start from rest in
 ///      TEL to compare with (reported not available otherwise, never
-///      passed in its absence).
+///      passed in its absence). The captures gate wants from-rest
+///      captures at two step duties at least: one cannot separate R from V0.
 ///
 /// When both decline, E2 supplies R and L stays at the default, else the
 /// servo's stored winding supplies both.
@@ -1336,7 +1337,7 @@ impl InductanceResult {
         let aside = self.wave.as_ref().map_or(0, |w| w.set_aside().count());
         match self.blocking().first().copied() {
             None => "nothing blocked it".into(),
-            Some("captures") => "too few bursts from rest".into(),
+            Some("captures") => "its bursts from rest ran at fewer than two duties".into(),
             Some("cadence" | "step-index" | "pre-bias" | "windows") => {
                 "the bursts did not come back clean".into()
             }
@@ -1656,8 +1657,15 @@ pub fn fit_captures(caps: &[Capture], sc: &Scales, cfg: &FitCfg) -> Option<Induc
     let mut gates = vec![
         gate(
             "captures",
-            rest.len() >= 2,
-            format!("{} from rest, {hold} from a hold", rest.len()),
+            duties.len() >= 2,
+            format!(
+                "{} from rest at {}, {hold} from a hold",
+                rest.len(),
+                match duties.len() {
+                    1 => "1 step duty".into(),
+                    n => format!("{n} step duties"),
+                }
+            ),
         ),
         fold("cadence", &every),
         fold("step-index", &every),
@@ -2776,16 +2784,40 @@ mod tests {
         }
     }
 
-    /// One rung cannot separate R from the bridge drop: the bench run cut
-    /// to its first three 25% captures, as a plan the envelope pruned to
-    /// one rung leaves it, supplies no winding.
+    /// One rung cannot separate R from the bridge drop: four 25% captures
+    /// of `osc ident` on rev 2A, two each sign, as a plan the envelope
+    /// pruned to one rung leaves it, pass every waveform gate, halves
+    /// included, on a line that reads R 3.8 ohm where a run at both rungs
+    /// reads 4.6 to 4.9, and supply no winding.
     #[test]
     fn one_rung_supplies_no_winding() {
-        use crate::exp::testkit::{board_d_scales, mg90_2s};
-        let sc = board_d_scales();
+        let sc = rev2a_scales();
         let at = FitCfg::default().with_limit(280.0 * sc.amps_per_count);
-        let r = fit_captures(&mg90_2s()[..3], &sc, &at).expect("a fit");
-        assert_eq!(r.route(), None, "{:?}", r.blocking());
+        let caps = [
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/testdata/burst/mg90-2a/ident/burst-0.csv"
+            )),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/testdata/burst/mg90-2a/ident/burst-1.csv"
+            )),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/testdata/burst/mg90-2a/ident/burst-4.csv"
+            )),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/testdata/burst/mg90-2a/ident/burst-5.csv"
+            )),
+        ]
+        .map(|t| from_csv(t).expect("fixture parses"));
+        let r = fit_captures(&caps, &sc, &at).expect("a fit");
+        assert_eq!(r.blocking(), vec!["captures"]);
+        assert_eq!(
+            r.reason(),
+            "its bursts from rest ran at fewer than two duties"
+        );
         assert!(r.winding_terms().is_none());
     }
 
@@ -2847,13 +2879,30 @@ mod tests {
         assert!(exp.warnings().is_empty(), "{:?}", exp.warnings());
     }
 
-    /// Three captures at one duty pass every gate but the halves, which
-    /// needs four, and the reason says so rather than that they disagreed.
+    /// Three captures at one duty pass every gate but the second duty and
+    /// the halves, which need four.
     #[test]
-    fn three_2a_bursts_lack_only_the_halves() {
+    fn three_2a_bursts_lack_a_second_duty_and_the_halves() {
         let sc = rev2a_scales();
         let at = FitCfg::default().with_limit(280.0 * sc.amps_per_count);
         let r = fit_captures(&rev2a_bursts(), &sc, &at).expect("a fit");
+        assert_eq!(r.blocking(), vec!["captures", "split-halves"]);
+    }
+
+    /// Three captures at two duties lack only the halves, and the reason
+    /// says so rather than that they disagreed.
+    #[test]
+    fn three_bursts_at_two_duties_lack_only_the_halves() {
+        use crate::exp::testkit::{board_d_scales, mg90_2s};
+        let sc = board_d_scales();
+        let at = FitCfg::default().with_limit(280.0 * sc.amps_per_count);
+        let caps = mg90_2s();
+        let r = fit_captures(
+            &[caps[0].clone(), caps[4].clone(), caps[8].clone()],
+            &sc,
+            &at,
+        )
+        .expect("a fit");
         assert_eq!(r.blocking(), vec!["split-halves"]);
         assert_eq!(r.reason(), "too few bursts to split into two halves");
     }
