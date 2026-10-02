@@ -82,7 +82,8 @@ const DEFAULT_SOFT_TRAVEL_DEG: f64 = 180.0;
 /// come from the top-level osc globals.
 #[derive(clap::Args, Debug)]
 pub struct Args {
-    /// Output dir for the rollback snapshot + endstop log (default ./cal-out).
+    /// Output dir for the rollback snapshot, the endstop log, the bursts and
+    /// the traverse (default ./cal-out).
     #[arg(long)]
     out: Option<std::path::PathBuf>,
     /// Real angle (deg) at the min-count rail.
@@ -664,14 +665,23 @@ impl Cal<'_> {
                 let mut exp = Guarded::new(Inductance::new(cfg, &p, self.sc), p);
                 drive(c, id, self.out, &mut exp, None)?;
                 check_abort("the burst", exp.abort())?;
-                let caps = exp.into_inner().captures().to_vec();
+                let exp = exp.into_inner();
+                for w in exp.warnings() {
+                    println!("  warn: {w}");
+                }
+                let caps = exp.captures().to_vec();
+                csvio::write_bursts(self.out, &caps)?;
                 let at =
                     FitCfg::default().with_limit(self.lim.i_lim as f64 * self.sc.amps_per_count);
                 let fit = fit_captures(&caps, &self.sc, &at);
                 let w =
                     sources::winding(fit.as_ref(), None, Some(&self.sc), gains::DEFAULT_L_HENRIES);
                 let Some(w) = w else {
-                    println!("  the burst measured no winding R: the stops are taken without it");
+                    println!(
+                        "  the burst measured no winding R ({}): the stops are taken without it",
+                        fit.as_ref()
+                            .map_or("no burst could be fitted".into(), |r| r.reason())
+                    );
                     return Ok(Ended::Declined);
                 };
                 match w.r_ohm {
