@@ -3,18 +3,12 @@
 //! the kernel + IRQs, and enters the main loop.
 
 use osc_servo_core::{BootMode, RegionStorageRaw};
-use osc_servo_drivers::led::Pattern;
 use osc_servo_drivers::traits::Monotonic as _;
-use portable_atomic::Ordering;
 
 use crate::cfg::{BoardConfig, Precomputed, chip};
 use crate::control::Ch32ControlIo;
 use crate::hal::{flash, gpio, pfic, rcc};
 use crate::providers::monotonic::Monotonic;
-
-/// STAT LED activity hold: how long "talking" outlives the last wire IRQ,
-/// so gapped exchanges read as one lit episode. Dark at idle.
-const TALK_HOLD_US: u32 = 200_000;
 
 /// Const-asserts pin-uniqueness on the `BoardConfig` literal, then runs.
 #[macro_export]
@@ -48,29 +42,32 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
         framing_drop_count: 0,
     };
     let mut tel_published: u16 = 0;
-    let talk_hold_ticks = TALK_HOLD_US * Monotonic::TICKS_PER_US;
-    let mut last_talk = Monotonic.ticks().wrapping_sub(talk_hold_ticks);
+    let mut lamp_test = crate::runtime::stat::LampTest::new(Monotonic.ticks());
     loop {
         // Transport RX/TX/deadlines are ISR-driven (TIM2 + USART1 + SysTick,
         // PFIC HIGH). Main loop owns LED housekeeping, the link-diagnostics
         // publish, the TEL burst poll, the deferred-reboot poll, and sleep.
         //
-        // STAT LED: dark when idle, lit while the bus talks -- any wire
-        // vector latches `BUS_ACTIVITY`, and the light holds past the
-        // last event so an exchange reads as one episode. The `wfi` wake
-        // cadence is the poll cadence: wire IRQs while talking, the 20 kHz
-        // kernel tick otherwise.
-        if crate::runtime::registry::BUS_ACTIVITY.swap(false, Ordering::Relaxed) {
-            last_talk = Monotonic.ticks();
-        }
-        let talking = Monotonic.ticks().wrapping_sub(last_talk) < talk_hold_ticks;
+        // STAT lamp (`runtime::stat`). The `wfi` wake cadence is the poll
+        // cadence: the 20 kHz kernel tick at the slowest.
+        // SAFETY: table storage is 'static; single-byte volatile loads, and
+        // a write landing from an ISR mid-pair costs one stale pass.
+        let (fault_code, data_flags) = unsafe {
+            let mode = &raw const (*crate::runtime::statics::SHARED.table.region_ptr())
+                .telemetry
+                .mode;
+            (
+                (&raw const (*mode).fault_code).read_volatile(),
+                (&raw const (*mode).data_flags).read_volatile(),
+            )
+        };
         // SAFETY: stat_led installed in bringup; main-loop sole accessor.
         let led = unsafe { crate::runtime::Drivers::stat_led() };
-        led.set_pattern(if talking {
-            Pattern::SolidOn
-        } else {
-            Pattern::SolidOff
-        });
+        led.set_pattern(crate::runtime::stat::pattern(
+            lamp_test.running(Monotonic.ticks()),
+            fault_code,
+            data_flags,
+        ));
         led.poll();
 
         // Publish transport health into the telemetry region (protocol sec 5.3 layer 1:

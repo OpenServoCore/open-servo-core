@@ -256,7 +256,7 @@ All four are deliberately dim, in the 0.1-0.3 mA class.
 |`VSYS`|Dl1|yellow|System rail present.|
 |`3V3`|Dl2|green|Logic rail up.|
 |`DAT`|Dl3|blue|Servo bus activity (active low). Passive lamp on the `DATA` line.|
-|`STA`|Dl4|red|MCU-driven status (`PC7`, active low).|
+|`STA`|Dl4|red|Servo health (`PC7`, active low). A short flash at boot, then dark when healthy, solid while a fault is latched, a 1 Hz blink while the servo is not set up (`data_flags` nonzero: not calibrated, plant unset). A fault wins over the blink.|
 
 ## Test points & probing
 

@@ -150,9 +150,6 @@ pub fn on_tim2() {
         // SAFETY: see fn doc.
         unsafe { Drivers::bus() }.on_break(&mut dispatcher);
     }
-    // Trailing on purpose: any wire event marks the bus as talking for the
-    // main loop's LED policy.
-    crate::runtime::registry::BUS_ACTIVITY.store(true, portable_atomic::Ordering::Relaxed);
     crate::probe::high_probe(|p| p.tim2.exit(entry));
 }
 
@@ -180,10 +177,6 @@ pub fn on_usart1() {
         // SAFETY: see fn doc.
         unsafe { Drivers::bus() }.on_tx_complete();
     }
-
-    // Trailing on purpose (statement order above is jitter-tuned): any
-    // wire event marks the bus as talking for the main loop's LED policy.
-    crate::runtime::registry::BUS_ACTIVITY.store(true, portable_atomic::Ordering::Relaxed);
     crate::probe::high_probe(|p| p.usart1.exit(entry));
 }
 
