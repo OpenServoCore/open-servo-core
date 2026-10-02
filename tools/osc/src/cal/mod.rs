@@ -74,9 +74,15 @@ const RIPPLE_CONF_MIN: f64 = 0.7;
 /// deg span. Only a default; every real servo overrides it.
 const DEFAULT_TRAVEL_DEG: f64 = 180.0;
 
-/// Default soft-limit span, centered in the phys range (or the full phys
-/// range when it is narrower).
-const DEFAULT_SOFT_TRAVEL_DEG: f64 = 180.0;
+/// Share of the stop-to-stop travel each default soft limit sits inside its
+/// stop. A rung whose host dies runs on until the firmware brakes it at the
+/// soft limit, and the capture pilot runs only rungs whose braked stop fits
+/// this room (`runway::dead_host_fits`). A braked stop scales with speed and
+/// supply, neither of which cal fixes for the saved limits, so the room is a
+/// share of travel: on the rev 2A MG90 (stops 283/3829) 222 counts an end,
+/// past the 2S braked stop of a 30% rung (about 95) and near a 55% one's
+/// (about 224).
+const SOFT_MARGIN_FRAC: f64 = 0.0625;
 
 /// `osc cal` args: output dir plus the headless overrides. `--baud`/`--id`
 /// come from the top-level osc globals.
@@ -93,12 +99,12 @@ pub struct Args {
     /// the travel the gear derives: cal writes nothing past 10% apart.
     #[arg(long)]
     phys_angle_max: Option<f64>,
-    /// App-facing working-range min (deg); defaults to the low edge of a
-    /// 180 deg window centered in the phys range.
+    /// App-facing working-range min (deg); defaults to 6.25% of the travel
+    /// in from the min-count stop, room for the firmware to brake there.
     #[arg(long)]
     soft_angle_min: Option<f64>,
-    /// App-facing working-range max (deg); defaults to the high edge of a
-    /// 180 deg window centered in the phys range.
+    /// App-facing working-range max (deg); defaults to 6.25% of the travel
+    /// in from the max-count stop, room for the firmware to brake there.
     #[arg(long)]
     soft_angle_max: Option<f64>,
     /// Known gear ratio (motor rev per output rev); unset leaves it 0.
@@ -886,14 +892,12 @@ fn phys_angles(args: &Args) -> Result<(f64, f64)> {
     Ok((min, max))
 }
 
-/// Soft (working-range) angle: flags under `--yes` (defaulting to phys), else
-/// prompted with the flags or the phys angles as defaults.
+/// Soft (working-range) angle: flags under `--yes`, else prompted with the
+/// flags as defaults; each unset end defaults to [`SOFT_MARGIN_FRAC`] of the
+/// travel inside its stop.
 fn soft_angles(args: &Args, phys_min: f64, phys_max: f64) -> Result<(f64, f64)> {
-    // default = DEFAULT_SOFT_TRAVEL_DEG centered in the phys range: soft
-    // limits set to the rails hand every mode's endstop zero coast margin
-    let span = (phys_max - phys_min).min(DEFAULT_SOFT_TRAVEL_DEG);
-    let mid = (phys_min + phys_max) / 2.0;
-    let (dmin, dmax) = (mid - span / 2.0, mid + span / 2.0);
+    let inset = (phys_max - phys_min) * SOFT_MARGIN_FRAC;
+    let (dmin, dmax) = (phys_min + inset, phys_max - inset);
     if args.yes {
         return Ok((
             args.soft_angle_min.unwrap_or(dmin),
@@ -1090,6 +1094,7 @@ fn input_f64(prompt: &str, default: f64) -> Result<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use osc_ident::runway::dead_host_fits;
 
     #[test]
     fn soft_maps_and_clamps_within_rails() {
@@ -1105,6 +1110,38 @@ mod tests {
     #[test]
     fn soft_degenerate_phys_span_is_min_rail() {
         assert_eq!(soft_to_count(50.0, 90.0, 90.0, 100, 4000), 100);
+    }
+
+    fn soft_flags(lo: Option<f64>, hi: Option<f64>) -> Args {
+        Args {
+            soft_angle_min: lo,
+            soft_angle_max: hi,
+            ..travel_flags(Some(0.0), Some(183.5))
+        }
+    }
+
+    /// The rev 2A MG90's stops, 283/3829 over 183.5 deg: the default soft
+    /// limits leave each end room for the 2S braked stop of a 30% rung,
+    /// about 95 counts, where a centered 180 deg window left 34.
+    #[test]
+    fn default_soft_limits_leave_room_to_brake() {
+        let (lo, hi) = soft_angles(&soft_flags(None, None), 0.0, 183.5).unwrap();
+        let soft = (
+            soft_to_count(lo, 0.0, 183.5, 283, 3829),
+            soft_to_count(hi, 0.0, 183.5, 283, 3829),
+        );
+        assert_eq!(soft, (505, 3607));
+        let margins = ((soft.0 - 283) as f64, (3829 - soft.1) as f64);
+        assert!(margins.0 >= 200.0 && margins.1 >= 200.0, "{margins:?}");
+        assert!(dead_host_fits(95.0, margins.0) && dead_host_fits(95.0, margins.1));
+    }
+
+    #[test]
+    fn soft_angle_flags_override_the_default() {
+        let both = soft_angles(&soft_flags(Some(5.0), Some(178.0)), 0.0, 183.5).unwrap();
+        assert_eq!(both, (5.0, 178.0));
+        let high = soft_angles(&soft_flags(None, Some(178.0)), 0.0, 183.5).unwrap();
+        assert_eq!(high, (183.5 * SOFT_MARGIN_FRAC, 178.0));
     }
 
     /// Contiguous-tick samples from a pos list (current = pos for simplicity).
