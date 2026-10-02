@@ -75,6 +75,9 @@ pub struct KernelTiming {
     pub med_ticks_per_ms_q16: u32,
     /// Rail-tap -> vmotor-tap counts, Q15 (`VbusEst::new`).
     pub vbus_scale_q15: u32,
+    /// Board data: the shortest Slow-decay brake half whose trough shunt
+    /// sample feeds the bias tracker (`window::trough_is_brake`).
+    pub bias_brake_min_ticks: u16,
 }
 
 /// Runs in the ADC DMA TC ISR (PFIC LOW); one `on_tick` per PWM period.
@@ -126,7 +129,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             phase: medium::phase::CONTROL,
             booted: false,
             faults: faults::FaultLatch::new(),
-            fast: Fast::new(timing.pwm_arr),
+            fast: Fast::new(&timing),
             medium: Medium::new(&timing),
             cmd: Command::default(),
         }

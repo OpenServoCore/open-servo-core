@@ -72,6 +72,12 @@ fn main() -> ! {
             // ADCCLK 24 MHz with 13.5-cycle apertures.
             i_window_min_ticks: 160,
             v_window_min_ticks: 160,
+            // The amplifier tail after a drive pulse, measured on board D
+            // over a duty grid: the trough sits a flat 5 counts over the
+            // disabled-driver rest bias down to 960 brake ticks (20% duty),
+            // then climbs with drive current - 7 counts at 30%, 16 at 60%,
+            // 38 at 85%.
+            bias_brake_min_ticks: 960,
         },
         defaults: ConfigDefaults {
             pos_min_phys_counts: 0,

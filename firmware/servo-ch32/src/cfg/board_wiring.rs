@@ -94,6 +94,10 @@ pub struct Calibration {
     pub i_window_min_ticks: u16,
     /// Shortest drive window (TIM1 ticks) with a valid vmotor sample.
     pub v_window_min_ticks: u16,
+    /// Shortest Slow-decay brake half (TIM1 ticks) whose trough shunt sample
+    /// has settled to the amplifier's rest offset: the bias tracker learns
+    /// from no narrower one.
+    pub bias_brake_min_ticks: u16,
 }
 
 /// Board-tunable wiring; consumed during `Ch32ControlIo::new` and not retained.
