@@ -89,6 +89,22 @@ The floor, the observer and the defaults (`core/src/estimator/window.rs`,
 - `current_counts_scales_with_the_shunt_and_saturates` - 300 mA is 335
   counts on the 60 mohm chain.
 
+The current the limiter reads (`core/src/estimator/window.rs`,
+`core/src/kernel/tests.rs`):
+
+- `settle_gain_bands_start_at_their_edge` - each 8-tick band takes its
+  gain from its first tick to its last.
+- `settle_gain_clamps_below_and_is_unity_above` - a window under the
+  first band takes the first band, one past the last band and every
+  window of an empty table read at unity.
+- `current_gain_rounds_and_keeps_the_sign_symmetric` - 300 counts at
+  33259 read 304 in both drive signs, rounded half up.
+- `current_unity_gain_is_exact` - unity returns the bias-subtracted
+  sample unchanged over the whole u16 range.
+- `settle_gain_lifts_a_short_window_and_leaves_the_raw_sample` - a
+  100-tick OpenLoop window reads 304 for 300 counts in the stream's
+  `current` while `current_raw` stays raw; past the table it reads 300.
+
 The lease and the flags (`core/src/kernel/tests.rs`,
 `core/src/services/bus/tests/mod.rs`):
 

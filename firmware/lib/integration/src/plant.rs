@@ -7,6 +7,7 @@
 //! deterministic qualitative behaviour, not fidelity.
 
 use osc_servo_core::estimator::bemf::RECIP_ARR_SHIFT;
+use osc_servo_core::estimator::window;
 use osc_servo_core::pos_lut::{self, POINTS};
 use osc_servo_core::stamp;
 use osc_servo_core::{
@@ -31,6 +32,7 @@ pub const TIMING: KernelTiming = KernelTiming {
     med_ticks_per_ms_q16: 2 << 16,
     vbus_scale_q15: VBUS_SCALE_Q15,
     bias_brake_min_ticks: 960,
+    i_settle_gain: window::SettleGain::UNITY,
 };
 
 pub struct FakeSensors;

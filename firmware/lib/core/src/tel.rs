@@ -61,10 +61,11 @@ pub const fn mask_valid(mask: u16) -> bool {
 
 /// One fast tick's streamable primitives, in device counts. `pos`,
 /// `current_raw`, `current_trough`, `vmotor_a`, `vmotor_b`, `vbus_raw`,
-/// `ntc_raw` are the tick's raw ADC frame; `current` (signed, bias-subtracted, held - the fitter's
-/// domain, matching `i_hat_counts`), `vdiff`, `vbus` and `pos_lin_q4` (the
-/// linearized pot, Q4) are kernel conclusions, streamable to validate them
-/// against host re-derivations.
+/// `ntc_raw` are the tick's raw ADC frame; `current` (signed,
+/// bias-subtracted, settle-gained, held - the fitter's domain, matching
+/// `i_hat_counts`), `vdiff`, `vbus` and `pos_lin_q4` (the linearized pot,
+/// Q4) are kernel conclusions, streamable to validate them against host
+/// re-derivations.
 /// `window_valid` (this tick's drive window met the current floor)
 /// travels in the frame's `valid` bitmap, not per sample.
 #[derive(Copy, Clone, Debug, Default)]

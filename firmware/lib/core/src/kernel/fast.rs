@@ -61,6 +61,7 @@ pub struct Measured {
 pub struct Fast {
     pwm_arr: u16,
     bias_brake_min_ticks: u16,
+    i_settle_gain: window::SettleGain,
     vcal_lpf: VcalLpf,
     /// Shunt zero-current offset in use; the medium step publishes it to
     /// `current_bias_counts`.
@@ -95,6 +96,7 @@ impl Fast {
         Self {
             pwm_arr: timing.pwm_arr,
             bias_brake_min_ticks: timing.bias_brake_min_ticks,
+            i_settle_gain: timing.i_settle_gain,
             vcal_lpf: VcalLpf::new(),
             bias: BiasTracker::new(),
             oc: OcDetector::new(),
@@ -192,7 +194,7 @@ impl Fast {
         } else {
             self.bias.counts()
         };
-        let i_meas = window::i_from_frame(frame, sel, fwd, bias);
+        let i_meas = window::i_from_frame(frame, sel, fwd, bias, self.i_settle_gain.q15_at(ticks));
         if let Some(i) = i_meas {
             self.i_meas_last = i.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
         }

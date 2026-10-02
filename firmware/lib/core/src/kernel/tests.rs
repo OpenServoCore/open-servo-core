@@ -28,6 +28,7 @@ const TIMING: KernelTiming = KernelTiming {
     med_ticks_per_ms_q16: 2 << 16,
     vbus_scale_q15: VBUS_SCALE_Q15,
     bias_brake_min_ticks: 600,
+    i_settle_gain: window::SettleGain::UNITY,
 };
 
 struct FakeSensors;
@@ -1163,6 +1164,48 @@ fn bias_feed_ignores_the_current_floor() {
         k.on_tick(shifted(), &sh);
     }
     assert_eq!(published_bias(&sh), BIAS + 500);
+}
+
+#[test]
+fn settle_gain_lifts_a_short_window_and_leaves_the_raw_sample() {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.calib.sense.i_window_min_ticks = 64;
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::OpenLoop;
+        // 100 drive ticks
+        t.control.lifecycle.goal_duty = 2731;
+    });
+    let timing = KernelTiming {
+        i_settle_gain: window::SettleGain {
+            start_ticks: 40,
+            q15: &[35143, 34194, 33734, 33575, 33456, 33376, 33314, 33259],
+        },
+        ..TIMING
+    };
+    let mut k = Kernel::with_tel(
+        FakeIo {
+            sensors: FakeSensors,
+            motor: FakeMotor { last: None },
+        },
+        RecTel::default(),
+        timing,
+    );
+    let f = frame(2000, BIAS + 300);
+    settle(&mut k, &sh, f);
+    k.tel.active = true;
+    k.on_tick(f, &sh);
+    let s = *k.tel.samples.last().unwrap();
+    assert!(s.window_valid);
+    // the 96..103 band: 300 x 33259 / 32768 = 304.49
+    assert_eq!(s.current, 304);
+    assert_eq!(s.current_raw, BIAS + 300);
+    // past the table the gain is unity
+    sh.table.with_mut(|t| t.control.lifecycle.goal_duty = 8000);
+    settle(&mut k, &sh, f);
+    k.on_tick(f, &sh);
+    assert_eq!(k.tel.samples.last().unwrap().current, 300);
 }
 
 // --- Ident aggregates -----------------------------------------------------

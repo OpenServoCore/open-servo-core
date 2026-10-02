@@ -611,9 +611,10 @@ Payload, all LE:
 ```
 
 `tel_mask` bits, in sample order (osc-servo): 0 `pos` (raw pot), 1
-`current` (bias-subtracted window sample, held through windows the shunt
-cannot read, 0 from the first tick nothing drives: torque off, a fault,
-a brake, an OpenLoop zero goal), 2 `current_trough`, 3 `duty`, 4
+`current` (bias-subtracted window sample, times the board's settle gain
+for its drive width, unity on a window wide enough to settle; held
+through windows the shunt cannot read, 0 from the first tick nothing
+drives: torque off, a fault, a brake, an OpenLoop zero goal), 2 `current_trough`, 3 `duty`, 4
 `vdiff` (held through windows the terminal taps cannot read, which the
 `valid` bit does not mark when the shunt reads them, sec 5.8), 5 `vbus`, 6 `current_raw`, 7 `vmotor_a`, 8 `vmotor_b`, 9
 `vbus_raw`, 10 `ntc_raw`, 11 `pos_lin` (the linearized pot the kernel

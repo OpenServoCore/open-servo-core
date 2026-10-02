@@ -84,6 +84,7 @@ fn main() -> ! {
             // then climbs with drive current - 7 counts at 30%, 16 at 60%,
             // 38 at 85%.
             bias_brake_min_ticks: 960,
+            i_settle_gain: SettleGain::UNITY,
         },
         defaults: ConfigDefaults {
             pos_min_phys_counts: 0,
