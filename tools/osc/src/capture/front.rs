@@ -328,6 +328,7 @@ pub(super) fn bench() -> Front {
             r_q12: 7270,
             vbus: 3204,
             window_floor_q15: 4356,
+            window_v_floor_q15: 4356,
             amps_per_count: sc.amps_per_count,
         },
         stall: Stall {

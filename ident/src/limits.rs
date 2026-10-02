@@ -100,6 +100,9 @@ pub struct ServoLimits {
     /// `window_floor_q15`: the smallest duty whose drive window the shunt
     /// reads, as the servo publishes it; 0 when it publishes none.
     pub window_floor_q15: u16,
+    /// `window_v_floor_q15`: the smallest duty whose drive window the
+    /// terminal taps read; 0 when the servo publishes none.
+    pub window_v_floor_q15: u16,
     /// Shunt scale; 0 when the sense constants are unset.
     pub amps_per_count: f64,
 }
@@ -218,7 +221,7 @@ impl fmt::Display for Refusal {
             ),
             Refusal::NoLadderRoom { what, floor, cap } => write!(
                 f,
-                "{what} has no room on this supply: the current sensor reads from {:.1}% duty \
+                "{what} has no room on this supply: the servo reads what it needs from {:.1}% duty \
                  and the current limit allows {:.1}% at a stop; run it on a lower supply \
                  voltage (USB) or raise the current limit",
                 floor * 100.0,
@@ -405,6 +408,15 @@ impl ServoLimits {
     /// The window floor as a duty, q15, as the servo publishes it.
     pub fn window_floor(&self) -> i16 {
         self.window_floor_q15.min(i16::MAX as u16) as i16
+    }
+
+    /// The floor of a drive whose fit needs the terminal differential as
+    /// well as the current: the higher of the two the servo publishes, the
+    /// current floor alone from a servo that publishes no terminal floor.
+    pub fn vdiff_floor(&self) -> i16 {
+        self.window_floor_q15
+            .max(self.window_v_floor_q15)
+            .min(i16::MAX as u16) as i16
     }
 
     /// Refuse a servo that publishes no window floor: no board constant
@@ -599,11 +611,12 @@ impl DutyPlan {
         stall_counts(duty, self.r_vpc, self.vbus)
     }
 
-    /// The dwells of a ladder of stalls, `what`: spread from the window floor,
-    /// `floor_q15`, to the stall-safe cap, at most
-    /// [`STALL_LADDER_RUNGS`] of them and [`STALL_LADDER_STEP_Q15`] or
-    /// more apart. Under the floor the shunt reads nothing and the window
-    /// holds the last current it read, so no dwell goes there; a band
+    /// The dwells of a ladder of stalls, `what`: spread from the floor of
+    /// what it reads, `floor_q15` ([`Self::window_floor`] for the current
+    /// alone, [`Self::vdiff_floor`] with the terminal differential), to the
+    /// stall-safe cap, at most [`STALL_LADDER_RUNGS`] of them and
+    /// [`STALL_LADDER_STEP_Q15`] or more apart. Under the floor the window
+    /// holds the last reading, so no dwell goes there; a band
     /// with fewer than three rungs, or whose stall currents span under
     /// [`STALL_LADDER_SPAN`] of the limit, leaves nothing to fit a slope
     /// to.
@@ -658,6 +671,7 @@ mod tests {
             r_q12: 7270,
             vbus: 3204,
             window_floor_q15: 4356,
+            window_v_floor_q15: 4356,
             amps_per_count: 3.3 / 4096.0 / (15.0 * 0.060),
         }
     }
@@ -784,6 +798,42 @@ mod tests {
         }
     }
 
+    /// osc-dev-v006's floors, 64 and 160 ticks of 1200: the current reads
+    /// from 1734, the terminals from 4356. A fit on the differential plans
+    /// from the higher; a servo without the terminal floor (reads 0) from
+    /// the current floor. On 2S the MG90's band over the terminal floor
+    /// still has no room, though the current alone would.
+    #[test]
+    fn a_differential_fit_plans_from_the_higher_floor() {
+        let r = 7270.0 / 4096.0;
+        let split = ServoLimits {
+            vbus: 1780,
+            window_floor_q15: 1734,
+            window_v_floor_q15: 4356,
+            ..mg90()
+        };
+        assert_eq!((split.window_floor(), split.vdiff_floor()), (1734, 4356));
+        let older = ServoLimits {
+            window_v_floor_q15: 0,
+            ..split
+        };
+        assert_eq!(older.vdiff_floor(), 1734);
+        let rungs = DutyPlan::new(&split, r, None)
+            .stall_ladder(STOP_LADDER, split.vdiff_floor())
+            .unwrap();
+        assert_eq!(q15_floor(rungs[0]), 4356, "{rungs:?}");
+        let pack = ServoLimits {
+            vbus: 3204,
+            ..split
+        };
+        let plan = DutyPlan::new(&pack, r, None);
+        assert!(matches!(
+            plan.stall_ladder(STOP_LADDER, pack.vdiff_floor()),
+            Err(Refusal::NoLadderRoom { .. })
+        ));
+        assert!(plan.stall_ladder(STOP_LADDER, pack.window_floor()).is_ok());
+    }
+
     #[test]
     fn a_servo_without_a_floor_is_refused_in_plain_words() {
         let tel = published(0);
@@ -853,8 +903,8 @@ mod tests {
         let err = ladder(280, mg, 3204).unwrap_err();
         assert_eq!(
             err.to_string(),
-            "the resistance stop ladder has no room on this supply: the current sensor reads \
-             from 13.3% duty and the current limit allows 15.5% at a stop; run it on a lower \
+            "the resistance stop ladder has no room on this supply: the servo reads what it \
+             needs from 13.3% duty and the current limit allows 15.5% at a stop; run it on a lower \
              supply voltage (USB) or raise the current limit"
         );
         assert!(matches!(

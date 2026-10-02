@@ -447,10 +447,11 @@ impl Run {
     }
 
     /// The stop ladder, planned from what R the servo carries, else the
-    /// class's lowest: the burst in this run measured none.
+    /// class's lowest: the burst in this run measured none. Its fit reads
+    /// the terminal differential, so the dwells start at `vdiff_floor`.
     fn stop_ladder(&self) -> Result<Stage, Over> {
         let plan = self.lim.stall_plan(self.class_r_vpc, self.free);
-        match plan.stall_ladder(STOP_LADDER, self.lim.window_floor()) {
+        match plan.stall_ladder(STOP_LADDER, self.lim.vdiff_floor()) {
             Ok(rungs) => Ok(Stage::Resistance {
                 seek: plan.seek,
                 rungs,
@@ -690,6 +691,7 @@ mod tests {
             r_q12: 0,
             vbus,
             window_floor_q15: 4356,
+            window_v_floor_q15: 4356,
             amps_per_count: scales().amps_per_count,
         }
     }
@@ -800,6 +802,33 @@ mod tests {
         let seen = stages(&mut r, declined);
         assert_eq!(seen, [&ORDER_NAMES[..7], &ORDER_NAMES[9..]].concat());
         assert_eq!(r.over(), Some(Over::Declined("ladder")));
+    }
+
+    /// osc-dev-v006's floors, 64 and 160 ticks: the current reads from
+    /// 1734, the terminals from 4356. The stop ladder fits `duty x vdiff`,
+    /// so its dwells start on the terminal floor; a servo that publishes no
+    /// terminal floor plans from the current floor.
+    #[test]
+    fn the_stop_ladder_starts_where_the_terminals_read() {
+        for (v_floor, first) in [(4356, 4356), (0, 1734)] {
+            let lim = ServoLimits {
+                window_floor_q15: 1734,
+                window_v_floor_q15: v_floor,
+                ..limits(RAIL_USB)
+            };
+            let mut r = Run::new(lim, &scales()).with_stall_ladder();
+            let mut ladder = None;
+            stages(&mut r, |s| match s {
+                Stage::Burst { .. } => Ended::Declined,
+                Stage::Resistance { rungs, .. } => {
+                    ladder = Some(rungs.clone());
+                    Ended::Done
+                }
+                _ => Ended::Done,
+            });
+            let rungs = ladder.expect("the stop ladder ran");
+            assert_eq!(q15_floor(rungs[0]), first, "{rungs:?}");
+        }
     }
 
     /// A declined burst ends the run unless the stop ladder was asked for;

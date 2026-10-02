@@ -1101,6 +1101,7 @@ mod tests {
             r_q12: 7270,
             vbus: 3204,
             window_floor_q15: 4356,
+            window_v_floor_q15: 4356,
             amps_per_count: 3.3 / 4096.0 / (15.0 * 0.060),
         }
     }

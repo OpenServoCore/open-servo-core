@@ -153,7 +153,7 @@ $$d_\text{clean} = \frac{7}{8}\cdot \frac{i_\text{lim}\cdot R}{V_\text{bus}}$$
 
 On the rig that is $0.875\cdot 280\cdot 1.775/3204 = 0.136$, a 13.6% step, barely above the floor. On a shaft running at $i_\text{run}$ the headroom is what the running current leaves, $(\frac{7}{8} i_\text{lim} - i_\text{run})\cdot R/V_\text{bus}$, which is 9.1% for a shaft drawing 80 counts. Anything bigger is governed: the duty climbs at whatever rate the current allows and reaches the goal only if the load lets it. A clean step is still a slew, 9.1% takes 24 ticks or 1.2 ms, so a fit takes the applied duty from the TEL `duty` field as its input, never an ideal step. The rule a host uses to tell a governed window from a clean one is in the protocol doc, sec 5.8.
 
-The host tools (`osc ident` and `osc cal`, with their planning in the `ident` crate) are built around that. The numbers in this and the next three sections are the bench MG90 as the host pins model it: the 4.9 ohm winding, a limit of 280 counts (0.251 A at 1117 counts per amp), the 13.3% window floor, on a 7.9 V 2S pack or a 4.39 V USB rail.
+The host tools (`osc ident` and `osc cal`, with their planning in the `ident` crate) are built around that. The numbers in this and the next three sections are the bench MG90 as the host pins model it: the 4.9 ohm winding, a limit of 280 counts (0.251 A at 1117 counts per amp), a 13.3% window floor on both sense paths, on a 7.9 V 2S pack or a 4.39 V USB rail.
 
 Every drive is one of two kinds.
 
@@ -190,7 +190,7 @@ That is acceptable because of what the limit protects against. The 0.30 A damage
 
 The firmware enforces the volts, the 100 ms spacing and the position at the arm (What It Does Not Cover, below), so a host that ignores all of this still gets no more than that.
 
-A burst that declines ends the default run, because nothing after it can be planned. Asked for (`osc ident run --stall-ladder`, or `osc ident resistance` on its own), the resistance stop ladder measures $R$ instead, stalling each stop at up to four dwells between the window floor and the stall-safe cap with the permit held. It needs at least three dwells 0.5% apart whose stall currents span 15% of the limit, and on 2S at a 280-count limit the band from 13.3% to 15.5% spans 14%, so the run refuses before anything moves. On USB the same ladder dwells at 13.3, 18.2, 23.0 and 27.9%.
+A burst that declines ends the default run, because nothing after it can be planned. Asked for (`osc ident run --stall-ladder`, or `osc ident resistance` on its own), the resistance stop ladder measures $R$ instead, stalling each stop at up to four dwells between the window floor and the stall-safe cap with the permit held. Its fit takes the terminal voltage as well as the current, so its floor is the higher of the two the servo publishes; on osc-dev-v006 that is the terminals' 13.3% over the current's 5.3%. It needs at least three dwells 0.5% apart whose stall currents span 15% of the limit, and on 2S at a 280-count limit the band from 13.3% to 15.5% spans 14%, so the run refuses before anything moves. On USB the same ladder dwells at 13.3, 18.2, 23.0 and 27.9%.
 
 #### The Runway
 

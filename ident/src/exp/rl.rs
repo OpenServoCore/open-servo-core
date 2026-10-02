@@ -1581,6 +1581,7 @@ mod tests {
             r_q12: 0,
             vbus,
             window_floor_q15: 4356,
+            window_v_floor_q15: 4356,
             amps_per_count: 0.0,
         };
         DutyPlan::new(&lim, r, Some(moved))
