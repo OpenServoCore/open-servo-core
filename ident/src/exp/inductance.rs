@@ -595,9 +595,10 @@ fn profile_min(lo: f64, hi: f64, cost: impl Fn(f64) -> f64) -> f64 {
 
 /// Fit A - B * exp(-t / tau) to the level envelope by profiling tau: A and
 /// B are closed form at each tau. None when the basis is degenerate, or
-/// when tau lands on the search band's edge: an envelope that never bends
-/// inside the band has no asymptote, and A there extrapolates the levels'
-/// scatter to several times any level measured.
+/// when tau lands on the search band's edge or outlasts the last level:
+/// an envelope that never bends inside what was read has no asymptote, and
+/// A there extrapolates the levels' scatter to several times any level
+/// measured.
 fn fit_exponential(pts: &[(f64, f64)]) -> Option<(f64, f64)> {
     const TAU_LO: f64 = 10e-6;
     const TAU_HI: f64 = 3000e-6;
@@ -631,7 +632,8 @@ fn fit_exponential(pts: &[(f64, f64)]) -> Option<(f64, f64)> {
     let on_edge = [TAU_LO, TAU_HI]
         .iter()
         .any(|&b| solve(b).is_some_and(|(r, _)| r <= rss));
-    (!on_edge && tau.is_finite() && a.is_finite()).then_some((tau, a))
+    let t_end = pts.iter().map(|p| p.0).fold(f64::MIN, f64::max);
+    (!on_edge && tau <= t_end && tau.is_finite() && a.is_finite()).then_some((tau, a))
 }
 
 /// Captures the settle profile samples. The amplifier edge is one number
@@ -1249,7 +1251,8 @@ impl BurstRoute {
 ///      the driven terminal), residual, capture-agreement, physical-bounds,
 ///      split-halves, and cross-route when the run has a start from rest in
 ///      TEL to compare with (reported not available otherwise, never
-///      passed in its absence).
+///      passed in its absence). The captures gate wants from-rest
+///      captures at two step duties at least: one cannot separate R from V0.
 ///
 /// When both decline, E2 supplies R and L stays at the default, else the
 /// servo's stored winding supplies both.
@@ -1334,7 +1337,7 @@ impl InductanceResult {
         let aside = self.wave.as_ref().map_or(0, |w| w.set_aside().count());
         match self.blocking().first().copied() {
             None => "nothing blocked it".into(),
-            Some("captures") => "too few bursts from rest".into(),
+            Some("captures") => "its bursts from rest ran at fewer than two duties".into(),
             Some("cadence" | "step-index" | "pre-bias" | "windows") => {
                 "the bursts did not come back clean".into()
             }
@@ -1654,8 +1657,15 @@ pub fn fit_captures(caps: &[Capture], sc: &Scales, cfg: &FitCfg) -> Option<Induc
     let mut gates = vec![
         gate(
             "captures",
-            rest.len() >= 2,
-            format!("{} from rest, {hold} from a hold", rest.len()),
+            duties.len() >= 2,
+            format!(
+                "{} from rest at {}, {hold} from a hold",
+                rest.len(),
+                match duties.len() {
+                    1 => "1 step duty".into(),
+                    n => format!("{n} step duties"),
+                }
+            ),
         ),
         fold("cadence", &every),
         fold("step-index", &every),
@@ -2774,16 +2784,40 @@ mod tests {
         }
     }
 
-    /// One rung cannot separate R from the bridge drop: the bench run cut
-    /// to its first three 25% captures, as a plan the envelope pruned to
-    /// one rung leaves it, supplies no winding.
+    /// One rung cannot separate R from the bridge drop: four 25% captures
+    /// of `osc ident` on rev 2A, two each sign, as a plan the envelope
+    /// pruned to one rung leaves it, pass every waveform gate, halves
+    /// included, on a line that reads R 3.8 ohm where a run at both rungs
+    /// reads 4.6 to 4.9, and supply no winding.
     #[test]
     fn one_rung_supplies_no_winding() {
-        use crate::exp::testkit::{board_d_scales, mg90_2s};
-        let sc = board_d_scales();
+        let sc = rev2a_scales();
         let at = FitCfg::default().with_limit(280.0 * sc.amps_per_count);
-        let r = fit_captures(&mg90_2s()[..3], &sc, &at).expect("a fit");
-        assert_eq!(r.route(), None, "{:?}", r.blocking());
+        let caps = [
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/testdata/burst/mg90-2a/ident/burst-0.csv"
+            )),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/testdata/burst/mg90-2a/ident/burst-1.csv"
+            )),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/testdata/burst/mg90-2a/ident/burst-4.csv"
+            )),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/testdata/burst/mg90-2a/ident/burst-5.csv"
+            )),
+        ]
+        .map(|t| from_csv(t).expect("fixture parses"));
+        let r = fit_captures(&caps, &sc, &at).expect("a fit");
+        assert_eq!(r.blocking(), vec!["captures"]);
+        assert_eq!(
+            r.reason(),
+            "its bursts from rest ran at fewer than two duties"
+        );
         assert!(r.winding_terms().is_none());
     }
 
@@ -2818,13 +2852,57 @@ mod tests {
         assert!(exp.warnings().is_empty(), "{:?}", exp.warnings());
     }
 
-    /// Three captures at one duty pass every gate but the halves, which
-    /// needs four, and the reason says so rather than that they disagreed.
+    /// A 25% forward capture of `osc ident` on rev 2A whose charge-balance
+    /// levels climb near straight across the frame grid's jumps (151 to
+    /// 384 mA over its nine periods): their envelope fits a 949 us tau,
+    /// longer than the 0.45 ms the levels span, and a 0.74 A asymptote
+    /// that would prune the 40% rungs and the from-a-hold control and leave
+    /// the run at one duty. An envelope that outlasts its levels has no
+    /// asymptote: the ON window's, 0.40 A, sizes the plan and every rung
+    /// runs.
     #[test]
-    fn three_2a_bursts_lack_only_the_halves() {
+    fn a_2a_envelope_that_outlasts_its_levels_prunes_nothing() {
+        let sc = rev2a_scales();
+        let cap = from_csv(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/burst/mg90-2a/ident/burst-2.csv"
+        )))
+        .expect("fixture parses");
+        let f = fit_capture(&cap, &sc, &FitCfg::default()).expect("a fit");
+        assert_eq!((f.tau_cb_us, f.asymptote_cb_a), (0.0, 0.0));
+        assert!((f.asymptote_a - 0.404).abs() < 0.005, "{}", f.asymptote_a);
+        let cfg = cal_plan(&sc);
+        let arms = plan(&cfg).len();
+        let mut exp = Inductance::new(cfg, &crate::exp::testkit::rig(), sc);
+        exp.push_burst(&cap);
+        assert_eq!(exp.plan.len(), arms, "{:?}", exp.warnings());
+        assert!(exp.warnings().is_empty(), "{:?}", exp.warnings());
+    }
+
+    /// Three captures at one duty pass every gate but the second duty and
+    /// the halves, which need four.
+    #[test]
+    fn three_2a_bursts_lack_a_second_duty_and_the_halves() {
         let sc = rev2a_scales();
         let at = FitCfg::default().with_limit(280.0 * sc.amps_per_count);
         let r = fit_captures(&rev2a_bursts(), &sc, &at).expect("a fit");
+        assert_eq!(r.blocking(), vec!["captures", "split-halves"]);
+    }
+
+    /// Three captures at two duties lack only the halves, and the reason
+    /// says so rather than that they disagreed.
+    #[test]
+    fn three_bursts_at_two_duties_lack_only_the_halves() {
+        use crate::exp::testkit::{board_d_scales, mg90_2s};
+        let sc = board_d_scales();
+        let at = FitCfg::default().with_limit(280.0 * sc.amps_per_count);
+        let caps = mg90_2s();
+        let r = fit_captures(
+            &[caps[0].clone(), caps[4].clone(), caps[8].clone()],
+            &sc,
+            &at,
+        )
+        .expect("a fit");
         assert_eq!(r.blocking(), vec!["split-halves"]);
         assert_eq!(r.reason(), "too few bursts to split into two halves");
     }
