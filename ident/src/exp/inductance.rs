@@ -1270,6 +1270,12 @@ pub const PROMOTION_GATES: [&str; 11] = [
     "cross-route",
 ];
 
+/// The waveform gates a static load reports among the checks instead: a
+/// resistor's tau and V0 are not a motor's, and its shunt steps the whole ON
+/// current inside one conversion, so the rms measures edge placement more
+/// than the R the fit reads.
+pub const STATIC_LOAD_CHECKS: [&str; 2] = ["residual", "physical-bounds"];
+
 /// What the promoted route hands gain synthesis and the plan, SI.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct WindingTerms {
@@ -1672,14 +1678,21 @@ pub fn fit_captures(caps: &[Capture], sc: &Scales, cfg: &FitCfg) -> Option<Induc
         fold("pre-bias", &every),
         fold("windows", &rest),
     ];
+    let mut demoted = Vec::new();
     match &wave {
         Ok(w) => {
-            gates.extend(w.gates.iter().cloned());
+            let (shown, verdict): (Vec<Gate>, Vec<Gate>) = w
+                .gates
+                .iter()
+                .cloned()
+                .partition(|g| cfg.wave.static_load && STATIC_LOAD_CHECKS.contains(&g.name));
+            gates.extend(verdict);
+            demoted = shown;
             warnings.extend(w.notes.iter().cloned());
         }
         Err(why) => gates.push(gate("waveform", false, why.clone())),
     }
-    let checks = vec![
+    let mut checks = vec![
         gate(
             "r-consistency",
             v_gap <= cfg.r_agree_tol,
@@ -1756,6 +1769,7 @@ pub fn fit_captures(caps: &[Capture], sc: &Scales, cfg: &FitCfg) -> Option<Induc
             ),
         },
     ];
+    checks.extend(demoted);
     if let Some(lo) = median(&l_offs)
         && l_ripple_h > 0.0
         && (lo - l_ripple_h).abs() / l_ripple_h > cfg.l_agree_tol
@@ -1862,6 +1876,8 @@ pub struct Cfg {
     pub rest_ms: u32,
     pub chans: Chans,
     pub fit: FitCfg,
+    /// The load is a resistor: no shaft, so every arm skips the seek.
+    pub static_load: bool,
 }
 
 impl Default for Cfg {
@@ -1880,6 +1896,7 @@ impl Default for Cfg {
             rest_ms: 150,
             chans: Chans::Driven,
             fit: FitCfg::default(),
+            static_load: false,
         }
     }
 }
@@ -2057,7 +2074,7 @@ impl Experiment for Inductance {
             Phase::SeekEval => {
                 let pos = obs.map(|o| o.pos).unwrap_or(POT_MID);
                 self.polls += 1;
-                if (self.band.0..=self.band.1).contains(&pos) {
+                if self.cfg.static_load || (self.band.0..=self.band.1).contains(&pos) {
                     self.phase = Phase::ArmPre;
                     return Cmd::Write {
                         reg: control::GOAL_DUTY,
@@ -2167,7 +2184,10 @@ impl Experiment for Inductance {
     }
 
     fn push_burst(&mut self, cap: &Capture) {
-        if let Some(f) = fit_capture(cap, &self.sc, &self.cfg.fit)
+        // A resistor's ON level is the rail over R at every duty: no lower
+        // rung brings it under the envelope.
+        if !self.cfg.static_load
+            && let Some(f) = fit_capture(cap, &self.sc, &self.cfg.fit)
             && f.from_rest
         {
             self.prune(&f);
@@ -2945,5 +2965,86 @@ mod tests {
             "V/I {w:?} of {want}"
         );
         assert!((w.l_h / plant.l - 1.0).abs() < 0.05, "L {w:?}");
+    }
+
+    /// A resistor in the servo's place, 4.4 ohm and 5 uH of leads behind
+    /// the rev 2A front end on 2S, with the shaft parked far outside the
+    /// burst's band: the static load arms every rung in place under the
+    /// stall permit, keeps the 40% rung though its 1.5 A ON level is over
+    /// the burst envelope at any duty, and reads the resistor back, where
+    /// the motor's model cannot fit it at all.
+    #[test]
+    fn a_static_load_bursts_in_place_and_reads_the_resistor() {
+        let sc = rev2a_scales();
+        let i_lim = 280.0 * sc.amps_per_count;
+        let plant = SynthBurst {
+            r: 4.4,
+            l: 5e-6,
+            settle_us: 0.5,
+            v_rail: 7.2,
+            bias: 470.0,
+            vb: 773.0,
+            amps_per_count: sc.amps_per_count,
+            v_rail_per_count: sc.v_rail_per_count,
+            v_term_per_count: sc.v_term_per_count,
+            ..SynthBurst::board_d().with_bridge()
+        };
+        let cfg = Cfg {
+            step_pct: vec![25, 40],
+            repeats: 3,
+            hold_pct: None,
+            i_max_a: crate::limits::BurstAllowance::i_max_a(),
+            fit: static_fit(i_lim),
+            static_load: true,
+            ..Cfg::default()
+        };
+        let params = crate::exp::testkit::rig().without_pos_guard();
+        let mut servo = FakeServo::new(3.37);
+        servo.pos = 300.0;
+        servo.jam = Some(300.0);
+        servo.burst = plant.clone();
+        let mut exp = Guarded::new(
+            super::super::Permitted::new(Inductance::new(cfg, &params, sc)),
+            params,
+        );
+        let log = pump(&mut exp, &mut servo, 400_000);
+        assert!(exp.abort().is_none(), "abort {:?}", exp.abort());
+        assert!(
+            log.iter()
+                .all(|l| !l.starts_with("write goal_duty") || l.ends_with(" 0")),
+            "a seek drove the shaft: {log:?}"
+        );
+        assert!(log.contains(&"write stall_permit 1".to_string()));
+        let caps = exp.into_inner().into_inner().captures().to_vec();
+        assert_eq!(caps.len(), 12);
+
+        let r = fit_captures(&caps, &sc, &static_fit(i_lim)).expect("a fit");
+        assert_eq!(r.route(), Some(BurstRoute::Free), "{:?}", r.blocking());
+        for name in STATIC_LOAD_CHECKS {
+            assert!(r.gates.iter().all(|g| g.name != name));
+            assert!(r.checks.iter().any(|g| g.name == name));
+        }
+        let w = r.wave.as_ref().expect("a waveform fit");
+        assert!((w.fit.r_ohm / plant.r - 1.0).abs() < 0.01, "{:?}", w.fit);
+        assert_eq!(w.fit.v0_volts, 0.0);
+        let at = w.at_limit.expect("V/I at the limit");
+        let d = (plant.r + 2.0 * plant.rds) * i_lim / (plant.v_rail - plant.r_shunt * i_lim);
+        let want = d * plant.v_rail / i_lim;
+        assert!(
+            (at.v_over_i_ohm / want - 1.0).abs() < 0.01,
+            "V/I {at:?} of {want}"
+        );
+
+        let motor = FitCfg::default().with_limit(i_lim);
+        let m = fit_captures(&caps, &sc, &motor).expect("a fit");
+        assert!(m.blocking().contains(&"residual"), "{:?}", m.blocking());
+    }
+
+    fn static_fit(i_lim: f64) -> FitCfg {
+        FitCfg {
+            wave: WaveCfg::default().static_load(),
+            ..FitCfg::default()
+        }
+        .with_limit(i_lim)
     }
 }

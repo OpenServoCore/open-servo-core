@@ -38,6 +38,7 @@ use osc_ident::exp::rl::{Rl, RlCfg, RlFitCfg, RlResult, Scales};
 use osc_ident::exp::verify::{
     VerifyCurrent, VerifyCurrentCfg, VerifyResult, VerifyVelocity, VerifyVelocityCfg,
 };
+use osc_ident::exp::wavefit::WaveCfg;
 use osc_ident::exp::{Guarded, Permitted, RigParams};
 use osc_ident::fits::{self, Climb, InertiaPriors};
 use osc_ident::gains::{self, BwTargets, PlantParams};
@@ -259,7 +260,14 @@ enum Cmd {
     Rl,
     /// High-rate shunt bursts -> winding R, L and tau: the front of `run`,
     /// then the held route at a stop with --burst-stops.
-    Burst,
+    Burst {
+        /// The load is a resistor, not a motor: no jam check, no centring
+        /// and no seek, the rungs burst in place under the stall permit.
+        /// V0 is pinned at zero, the fit's tau, V0 and residual bounds are
+        /// reported, not gated.
+        #[arg(long)]
+        static_load: bool,
+    },
     /// Breakaway duty ramp: the front of `run`, then breakaway.
     Breakaway,
     /// Steady-state duty ladder -> Ke + friction line: the front of `run`
@@ -451,12 +459,16 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
             );
             Ok(())
         }
-        Cmd::Burst => {
-            let rec = drive_stages(cli, &mut c, id, Until::Burst, false)?;
+        Cmd::Burst { static_load } => {
+            let e8 = if *static_load {
+                Some(run_static_bursts(cli, &mut c, id)?)
+            } else {
+                drive_stages(cli, &mut c, id, Until::Burst, false)?.e8
+            };
             println!(
                 "{}",
                 render_partial(ReportInputs {
-                    inductance: rec.e8.as_ref(),
+                    inductance: e8.as_ref(),
                     ..Default::default()
                 })
             );
@@ -563,7 +575,7 @@ fn drives(cmd: &Cmd) -> bool {
             | Cmd::Bias
             | Cmd::Resistance
             | Cmd::Rl
-            | Cmd::Burst
+            | Cmd::Burst { .. }
             | Cmd::Breakaway
             | Cmd::Ladder
             | Cmd::Inertia
@@ -801,6 +813,68 @@ fn run_bursts(
     check_abort("burst", exp.abort())?;
     let exp = exp.into_inner();
     Ok((exp.captures().to_vec(), exp.warnings().to_vec()))
+}
+
+/// Bursts on a resistor in the motor's place: every rung in place, the
+/// stall permit held, since its current flows with no motion.
+fn run_static_bursts(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<InductanceResult> {
+    let out = csvio::OutDir::create(&cli.out)?;
+    println!("recording to {}", out.0.display());
+    let d = drive(cli)?;
+    let rail_mv = Run::new(d.lim, &d.sc).rail_mv();
+    let rungs = match asked_rungs(cli, rail_mv)? {
+        Some(r) => r,
+        None => BurstAllowance::rungs(rail_mv)
+            .context("the 3.2 V burst allowance leaves no two rungs on this rail")?
+            .to_vec(),
+    };
+    let cfg = InductanceCfg {
+        fit: FitCfg {
+            wave: WaveCfg::default().static_load(),
+            ..FitCfg::default()
+        }
+        .with_limit(d.lim.i_lim as f64 * d.sc.amps_per_count),
+        static_load: true,
+        ..order::burst_cfg(&rungs, 0.0, 0.0, burst_base(cli))
+    };
+    println!(
+        "[burst, static load] in place at {}; stall permit held",
+        cfg.step_pct
+            .iter()
+            .map(|p| format!("{p}%"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let params = rig(cli)?.without_pos_guard();
+    let mut log = csvio::SnapshotLog::create(&out, "inductance_snapshots.csv")?;
+    let mut exp = Guarded::new(Permitted::new(Inductance::new(cfg, &params, d.sc)), params);
+    with_guard(c, id, |c| Pump::new(c, id, Some(&mut log)).run(&mut exp))?;
+    check_abort("burst", exp.abort())?;
+    let exp = exp.into_inner().into_inner();
+    csvio::write_bursts(&out, exp.captures())?;
+    exp.fit().context("the bursts gave nothing to fit")
+}
+
+/// The rungs --burst-pct asks for, refused over what a burst may drive on a
+/// rail of `rail_mv`.
+fn asked_rungs(cli: &Ctx, rail_mv: f64) -> Result<Option<Vec<f64>>> {
+    let most = BurstAllowance::top(rail_mv);
+    let explicit: Option<Vec<f64>> = cli
+        .burst_pct
+        .as_ref()
+        .map(|p| p.iter().map(|p| *p as f64 / 100.0).collect());
+    if let Some(hi) = explicit.iter().flatten().copied().reduce(f64::max)
+        && hi > most
+    {
+        bail!(
+            "a burst rung of {:.0}% is over the {} a burst may drive on this {:.1} V rail: 3.2 V \
+             applied, less 1% in case the rail rises before the arm (leave --burst-pct out)",
+            hi * 100.0,
+            pct(most),
+            rail_mv / 1000.0
+        );
+    }
+    Ok(explicit)
 }
 
 /// The burst knobs the flags set; the stage sets the duties.
@@ -1354,23 +1428,7 @@ impl Recorded {
                 centre(cli, c, id, order::centre_cfg(*duty, *cap, *nudge))?;
             }
             Stage::Burst { rungs, pre, seek } => {
-                let most = BurstAllowance::top(run.rail_mv());
-                let explicit: Option<Vec<f64>> = cli
-                    .burst_pct
-                    .as_ref()
-                    .map(|p| p.iter().map(|p| *p as f64 / 100.0).collect());
-                if let Some(hi) = explicit.iter().flatten().copied().reduce(f64::max)
-                    && hi > most
-                {
-                    bail!(
-                        "a burst rung of {:.0}% is over the {} a burst may drive on this {:.1} V \
-                         rail: 3.2 V applied, less 1% in case the rail rises before the arm \
-                         (leave --burst-pct out)",
-                        hi * 100.0,
-                        pct(most),
-                        run.rail_mv() / 1000.0
-                    );
-                }
+                let explicit = asked_rungs(cli, run.rail_mv())?;
                 let cfg = order::burst_cfg(
                     explicit.as_deref().unwrap_or(rungs),
                     *pre,
@@ -2222,6 +2280,19 @@ mod tests {
         assert_eq!(args.slip_lo.zip(args.slip_hi), Some((1250, 1650)));
         assert!(parse(&["osc", "--slip-lo", "1250", "show"]).is_err());
         assert!(parse(&["osc", "--slip-hi", "1650", "show"]).is_err());
+
+        let burst = |argv: &[&str]| match parse(argv).unwrap().cmd {
+            Cmd::Burst { static_load } => static_load,
+            other => panic!("{other:?}"),
+        };
+        assert!(!burst(&["osc", "burst"]));
+        assert!(burst(&[
+            "osc",
+            "--burst-pct",
+            "25,40",
+            "burst",
+            "--static-load"
+        ]));
     }
 
     /// The note a run prints once when it falls back to the winding the
