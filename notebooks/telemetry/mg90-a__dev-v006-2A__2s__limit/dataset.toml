@@ -1,0 +1,6 @@
+servo = "mg90-a"
+supply = "2s"
+rule = "limit"
+current_limit_counts = 280
+captured = "2026-10-02"
+notes = "Rev 2A board #1 with Rv3 repaired, so both terminal taps read their terminals. Firmware fw 65 at dfa70ecc (current floor 64 ticks, voltage floor 160), the synthesized plant, the position table at the identity: every recording's plant block says IDENTITY, so pos is the raw count. Every recording streamed whole (rows_dropped 0). Pack 7.71 to 7.75 V at rest, rail 7.46 to 7.50 V, so the slow grid tops at 30% (at 35% reverse the current limit cut in mid rung) and so does the coast ladder; the fast-decay grid runs to 35%. pos-lut.json is not the table the servo ran: it is the table osc lut build made from this session afterwards (crc 0xdc96), which the servo held for the identification and verify runs that followed."
