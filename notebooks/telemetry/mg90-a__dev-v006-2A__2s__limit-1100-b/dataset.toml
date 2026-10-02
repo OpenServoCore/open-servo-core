@@ -1,0 +1,6 @@
+servo = "mg90-a"
+supply = "2s"
+rule = "limit"
+current_limit_counts = 1100
+captured = "2026-10-02"
+notes = "Rev 2A board #1, the same servo, pack and procedure as mg90-a__dev-v006-2A__2s__limit-1100, started 16 minutes after its last capture with nothing in between: no drive, no command, the servo idle at mid travel with torque off. Firmware fw 65, the image mg90-a__dev-v006-2A__2s__limit-1100 ran. The limit sits at 1100 counts SAVEd, above every climb: the limit cut in only on a few reversal legs (then:-20@60), never on a grid rung. Slow-decay recordings only, the grid runs to 50% and seeks and parks drive at 42%. Every recording streamed whole (rows_dropped 0). Pack 7.59 to 7.61 V at the start of each capture, rail 7.34 to 7.36 V. The servo ran the 0xdc96 table LIVE, as in mg90-a__dev-v006-2A__2s__limit-1100; pos-lut.json is that table as the servo reported it at session start, and TEL pos is the raw count."
