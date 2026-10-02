@@ -7,7 +7,7 @@ captured, and the drive rule and current limit every recording ran under. The
 board is not declared. Every recording's meta.json carries a `sense` block read
 from the control table at capture time, and the board is identified from that.
 
-  telemetry/<dataset>/dataset.toml       {servo, supply, rule, current_limit_counts, captured, notes, ...}
+  telemetry/<dataset>/dataset.toml       {servo, supply, rule, current_limit_counts, captured, notes, [load], ...}
   telemetry/<dataset>/pos-lut.json       the position table the servo ran, once per dataset
   telemetry/<dataset>/<experiment>/capture-N/<recording>.csv.gz
                                             /<recording>.meta.json
@@ -15,6 +15,12 @@ from the control table at capture time, and the board is identified from that.
 A recording's meta.json `plant` block names the position table the servo streamed
 `pos_lin` through (`lut_state`, `lut_crc`), its plant stamp verdict and its
 `data_flags`; `Dataset.pos_lut` is the table itself when one was LIVE.
+
+A static load is measured again for each session where the board sees it,
+because its cable and contacts change with the rig while the servo entry keeps
+the load's own value. A `[load]` table in dataset.toml carries that reading
+(`ohm`, `lo`, `hi`, `where`, `source`, optional `note`); `Dataset.load` returns
+it, or the servo entry's `r_load` when the table is absent.
 
 An experiment is a named measurement procedure - grid, bridge, breakaway,
 stepcoast, ripple, reversal. A capture is one repeat of it. Some experiments
@@ -43,7 +49,7 @@ import json
 import tomllib
 
 from . import boards
-from .servos import SERVOS
+from .servos import SERVOS, Measured
 
 ROOT = Path(__file__).resolve().parent.parent / "telemetry"
 
@@ -104,6 +110,16 @@ class Dataset:
     @property
     def retired(self):
         return bool(self.decl.get("retired"))
+
+    @property
+    def load(self):
+        """The load path this session measured, as a Measured; the servo
+        entry's `r_load` when dataset.toml has no `[load]` table."""
+        t = self.decl.get("load")
+        if t is None:
+            return self.servo.measured["r_load"]
+        return Measured(t["ohm"], t["lo"], t["hi"], "Ohm", f"{t['where']}: {t['source']}",
+                        t.get("note", ""))
 
     @cached_property
     def pos_lut(self):
