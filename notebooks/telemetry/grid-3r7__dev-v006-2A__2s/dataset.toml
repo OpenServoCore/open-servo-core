@@ -1,0 +1,14 @@
+servo = "grid-3r7"
+supply = "2s"
+rule = "limit"
+current_limit_counts = 2800
+captured = "2026-10-01"
+notes = "Rev 2A board #1 with Rv3 open, so tap B reads the VB node, not terminal B. No DC laps taken: nobody was at the meter. The load path measures 4.4 ohm at J4."
+
+[load]
+ohm = 4.4
+lo = 4.3
+hi = 4.5
+where = "J4 board terminals"
+source = "DMM 200 ohm range at the J4 board terminals with the grid plugged, probe offset removed"
+note = "the grid is 3.7 ohm at its own header; its cable and contacts add about 0.7 ohm"
