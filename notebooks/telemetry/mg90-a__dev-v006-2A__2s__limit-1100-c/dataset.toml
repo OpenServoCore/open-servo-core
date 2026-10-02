@@ -1,0 +1,6 @@
+servo = "mg90-a"
+supply = "2s"
+rule = "limit"
+current_limit_counts = 1100
+captured = "2026-10-02"
+notes = "Rev 2A board #1, the same servo, pack and procedure as mg90-a__dev-v006-2A__2s__limit-1100-b, started one minute after its last capture. In that minute the output was loaded against both stops and nothing else ran: osc ident verify at limit 280 (current steps of 135 and 194 mA held at each stop under the stall permit, then velocity legs at 600 and 1200 counts per second), then a chained stalled ladder at the high stop from 5 to 14% duty and back down (limit 400 in RAM, about 0.21 A at the top), whose park off the stop at 10% aborted as blocked after 88 counts (pos 3836 to 3748). Firmware fw 65, the image the two sessions before ran. The limit went back to 1100 counts SAVEd before the session: the limit cut in only on a few reversal legs (then:-20@60), never on a grid rung. Slow-decay recordings only, the grid runs to 50% and seeks and parks drive at 42%. Every recording streamed whole (rows_dropped 0). Pack 7.55 to 7.59 V at the start of each capture, rail 7.30 to 7.34 V. The servo ran the 0xdc96 table LIVE; pos-lut.json is that table as the servo reported it at session start, and TEL pos is the raw count."
