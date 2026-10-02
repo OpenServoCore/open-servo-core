@@ -27,6 +27,7 @@ const TIMING: KernelTiming = KernelTiming {
     dt_med_q32: ((1u64 << 32) / 2000) as u32,
     med_ticks_per_ms_q16: 2 << 16,
     vbus_scale_q15: VBUS_SCALE_Q15,
+    bias_brake_min_ticks: 600,
 };
 
 struct FakeSensors;
@@ -1130,6 +1131,38 @@ fn drifting_trough_bias_leaves_i_meas_flat() {
     );
     // the untracked boot value would have read 400 here
     assert_eq!(b, BIAS + 99);
+}
+
+#[test]
+fn bias_feed_ignores_the_current_floor() {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.calib.sense.i_window_min_ticks = 40;
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::OpenLoop;
+        t.control.lifecycle.goal_duty = 20000;
+    });
+    let mut k = kernel();
+    let shifted = || {
+        let mut f = frame(2000, BIAS + 300);
+        f.current_trough = BIAS + 500;
+        f
+    };
+    // the slew up passes wide brake halves; the trough holds the bias there
+    settle(&mut k, &sh, frame(2000, BIAS + 300));
+    // 732 drive ticks leave a 468-tick brake half: under the brake
+    // minimum, however low the current floor sits
+    for _ in 0..1500 {
+        k.on_tick(shifted(), &sh);
+    }
+    assert_eq!(published_bias(&sh), BIAS);
+    // 293 drive ticks leave 907: the tracker follows
+    sh.table.with_mut(|t| t.control.lifecycle.goal_duty = 8000);
+    for _ in 0..1500 {
+        k.on_tick(shifted(), &sh);
+    }
+    assert_eq!(published_bias(&sh), BIAS + 500);
 }
 
 // --- Ident aggregates -----------------------------------------------------

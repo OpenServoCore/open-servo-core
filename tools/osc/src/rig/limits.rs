@@ -9,7 +9,7 @@ use osc_client::blocking::Client;
 use osc_client::nusb::NusbPipe;
 use osc_client::pipe::Pipe;
 use osc_ident::limits::{CLASS_R_MIN, DutyPlan, ServoLimits};
-use osc_ident::regs::{calib, config};
+use osc_ident::regs::{calib, config, telemetry};
 use osc_ident::units::{self, SenseParams};
 
 use super::battery;
@@ -46,6 +46,7 @@ pub(crate) fn read<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<ServoLimits> {
         r_q12: read_u16(c, id, calib::R_Q12)?,
         vbus: tel.vbus_counts,
         window_floor_q15: tel.window_floor_q15,
+        window_v_floor_q15: read_u16(c, id, telemetry::WINDOW_V_FLOOR_Q15)?,
         amps_per_count: units::amps_per_count(&sense),
     };
     lim.check_floor()?;
@@ -102,4 +103,26 @@ pub(crate) fn plan(c: &mut Client<NusbPipe>, id: Id, lim: &ServoLimits) -> Resul
         bail!("CalibSense scales degenerate (shunt/gain/dividers/vdd)");
     }
     Ok(lim.stall_plan(CLASS_R_MIN * a / v, None))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::servo::bench;
+
+    /// The limits carry both floors the servo publishes, 64 and 160 ticks
+    /// on osc-dev-v006, and a drive that fits the terminal differential
+    /// plans from the higher; firmware that publishes no terminal floor
+    /// (reads 0) leaves the current floor.
+    #[test]
+    fn limits_carry_both_window_floors() {
+        let (mut c, id) = bench::table(3922);
+        let lim = super::read(&mut c, id).unwrap();
+        assert_eq!((lim.window_v_floor_q15, lim.vdiff_floor()), (0, 4356));
+        c.pipe_mut().sim_mut().servo_table_mut(0, |t| {
+            t.telemetry.limits.window_floor_q15 = 1734;
+            t.telemetry.limits_ext.window_v_floor_q15 = 4356;
+        });
+        let lim = super::read(&mut c, id).unwrap();
+        assert_eq!((lim.window_floor(), lim.vdiff_floor()), (1734, 4356));
+    }
 }

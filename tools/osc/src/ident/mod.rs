@@ -240,7 +240,8 @@ enum Cmd {
         /// When the burst declines, measure winding R from the resistance
         /// stop ladder before falling back to the winding the servo
         /// carries: each stop stalled at up to four duties between the
-        /// lowest the current sensor reads and the current limit, stall
+        /// lowest duty the servo reads current and terminal voltage from
+        /// and the current limit, stall
         /// permit held.
         #[arg(long)]
         stall_ladder: bool,
@@ -248,8 +249,8 @@ enum Cmd {
     /// Torque-off noise and bias floor.
     Bias,
     /// The resistance stop ladder -> winding R: each stop stalled at up to
-    /// four duties between the lowest the current sensor reads and the
-    /// current limit, stall permit held, then back to mid travel.
+    /// four duties between the lowest duty the servo reads current and
+    /// terminal voltage from and the current limit, stall permit held, then back to mid travel.
     Resistance,
     /// The toggle experiment: free-shaft duty toggles -> winding R and L
     /// (advisory; the 1 ms step is rotor-followed and biased). The jam
@@ -427,7 +428,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
             let out = csvio::OutDir::create(&cli.out)?;
             let d = drive(cli)?;
             let plan = d.lim.stall_plan(d.sc.r_vpc(CLASS_R_MIN), None);
-            let rungs = plan.stall_ladder(STOP_LADDER, d.lim.window_floor())?;
+            let rungs = plan.stall_ladder(STOP_LADDER, d.lim.vdiff_floor())?;
             let cfg = order::resistance_cfg(plan.seek, &rungs, ResistanceCfg::default());
             let r =
                 run_resistance(cli, &mut c, id, &out, cfg)?.context("resistance fit degenerate")?;
@@ -1238,8 +1239,8 @@ fn gates(e8: Option<&InductanceResult>) -> String {
 fn reuse_note(w: &Winding, why: Over, gates: &str, stale: Option<f64>) -> Vec<String> {
     let ladder = match why {
         Over::NoLadderRoom { floor, cap } => format!(
-            " and the resistance stop ladder has no room on this supply (the current sensor \
-             reads from {:.1}% duty, the current limit allows {:.1}% at a stop)",
+            " and the resistance stop ladder has no room on this supply (the servo reads \
+             current and terminal voltage from {:.1}% duty, the current limit allows {:.1}% at a stop)",
             floor * 100.0,
             cap * 100.0
         ),
@@ -2264,8 +2265,8 @@ mod tests {
         };
         assert!(reuse_note(&w, room, "split-halves", None)[0].starts_with(
             "[winding] the burst measured no winding R (split-halves) and the resistance \
-                 stop ladder has no room on this supply (the current sensor reads from 13.3% \
-                 duty, the current limit allows 15.5% at a stop), so the run uses"
+                 stop ladder has no room on this supply (the servo reads current and terminal \
+                 voltage from 13.3% duty, the current limit allows 15.5% at a stop), so the run uses"
         ));
     }
 

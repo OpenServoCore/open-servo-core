@@ -453,7 +453,18 @@ mod tests {
         for name in ["tick_load_mean_q15", "stack_free_min"] {
             assert!(!by(name).writable, "{name} must stay RO");
         }
-        assert!(f.iter().all(|d| d.addr < 0x274 || d.addr >= 0x280));
+        assert!(f.iter().all(|d| d.addr < 0x276 || d.addr >= 0x280));
+    }
+
+    /// The terminal floor fills the reserved tail after `health`, so a
+    /// servo without it reads 0 there and every earlier address stays put.
+    #[test]
+    fn telemetry_v_floor_appends_after_health() {
+        use super::telemetry::addr::limits_ext;
+        assert_eq!(limits_ext::WINDOW_V_FLOOR_Q15, 0x274);
+        let f = ControlTable::FIELDS;
+        let v = f.iter().find(|d| d.name == "window_v_floor_q15").unwrap();
+        assert!(!v.writable);
     }
 
     /// Pins the BURST section to its base and its one-READ geometry.

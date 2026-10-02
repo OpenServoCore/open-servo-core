@@ -153,6 +153,9 @@ The limiter on the plant rig (`integration/tests/torque_limit.rs`):
 - `window_floor_is_published_as_the_limiter_uses_it` - for 160 and 240
   ticks the published `window_floor_q15` is `floor_duty` of the board's
   period, and the duty a virgin stall pins at equals it.
+- `window_v_floor_is_published_beside_the_current_floor` - at 64 and
+  160 ticks the two published floors read 1734 and 4356, and a
+  `v_window_min_ticks` rewrite shows within one medium tick, torque off.
 
 A virgin servo (`integration/tests/class_defaults.rs`, boot seed on the
 60 mohm chain):
@@ -181,6 +184,10 @@ The servo's limits and the stall-safe plan (`limits.rs`):
 - `servo_limits_take_the_floor_from_the_servo` - the limits carry the
   floor a telemetry read publishes, 4356 and 6534 alike, and the stop
   ladder starts on it.
+- `a_differential_fit_plans_from_the_higher_floor` - with the current
+  floor at 1734 and the terminal floor at 4356 the stop ladder starts
+  on 4356 and on 2S has no room, though the current alone would; a
+  terminal floor of 0 leaves the current floor.
 - `a_servo_without_a_floor_is_refused_in_plain_words` - a published 0
   refuses with a message naming the missing sensor floor; no board
   constant stands in.
@@ -246,6 +253,9 @@ The run order and cal's sequence (`run.rs`):
 - `the_stop_ladder_runs_only_on_request` - a declined burst ends the
   run unless asked; asked, on 2S at 280 it refuses for want of room,
   on USB it runs in the burst's place.
+- `the_stop_ladder_starts_where_the_terminals_read` - at floors of 1734
+  and 4356 the run's first dwell is 4356; with no terminal floor
+  published it is 1734.
 - `the_stop_ladder_measures_r_when_asked` - on USB, both stops stalled
   over the floor and under the limit with the permit held, R within
   2%, the run planned from it to the end.
@@ -418,6 +428,9 @@ The burst handshake and the driver (`burst.rs`, `tools/osc/src/rig/pump.rs`):
 - `a_stream_carries_the_rows_the_servo_dropped_from_it`
   (`rig/servo.rs`) - every stream reads `tel_drop_count` across itself,
   through the wrap.
+- `limits_carry_both_window_floors` (`rig/limits.rs`) - a limits read
+  carries both published floors, 1734 and 4356; a servo that
+  publishes no terminal floor plans from the current floor.
 - `a_traverse_with_dropped_rows_is_refused` (`cal/mod.rs`) - cal's
   traverse through the driver ends in capture's words, torque off.
 

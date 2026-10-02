@@ -65,7 +65,7 @@ pub const fn mask_valid(mask: u16) -> bool {
 /// domain, matching `i_hat_counts`), `vdiff`, `vbus` and `pos_lin_q4` (the
 /// linearized pot, Q4) are kernel conclusions, streamable to validate them
 /// against host re-derivations.
-/// `window_valid` (this tick's drive window met the sampling floors)
+/// `window_valid` (this tick's drive window met the current floor)
 /// travels in the frame's `valid` bitmap, not per sample.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct TelSample {

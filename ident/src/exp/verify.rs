@@ -813,6 +813,7 @@ mod tests {
             r_q12: 7270,
             vbus,
             window_floor_q15: 4356,
+            window_v_floor_q15: 4356,
             amps_per_count: 3.3 / 4096.0 / (15.0 * 0.060),
         }
     }
@@ -978,8 +979,8 @@ mod tests {
             .expect("no room on 2S");
         assert_eq!(
             err.to_string(),
-            "verify current has no room on this supply: the current sensor reads from 13.3% \
-             duty and the current limit allows 15.5% at a stop; run it on a lower supply \
+            "verify current has no room on this supply: the servo reads what it needs from \
+             13.3% duty and the current limit allows 15.5% at a stop; run it on a lower supply \
              voltage (USB) or raise the current limit"
         );
 

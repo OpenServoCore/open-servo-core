@@ -175,6 +175,19 @@ pub struct TelemetryLimits {
     pub window_floor_q15: u16,
 }
 
+/// The terminal taps' floor beside `TelemetryLimits::window_floor_q15`,
+/// filling the reserved tail so a servo without it reads 0.
+#[repr(C)]
+#[derive(Copy, Clone, Block)]
+pub struct TelemetryLimitsExt {
+    /// Smallest duty whose drive window the terminal taps read
+    /// (`window::floor_duty` of `v_window_min_ticks`), Q15: a drive whose
+    /// fit needs `va - vb` runs at or above the higher of the two floors.
+    /// Published with `window_floor_q15`.
+    #[ct_field(access = ro)]
+    pub window_v_floor_q15: u16,
+}
+
 /// Servo health, written by the chip side (the tick interrupt, the main
 /// loop), never by the kernel. The `rw` counters follow the
 /// `TelemetryCommon` clear contract: the host writes zero to clear.
@@ -215,6 +228,7 @@ pub struct TelemetryRegs {
     pub ident: TelemetryIdent,
     pub limits: TelemetryLimits,
     pub health: TelemetryHealth,
+    pub limits_ext: TelemetryLimitsExt,
     #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 12],
+    pub _rsvd_tail: [u8; 10],
 }

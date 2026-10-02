@@ -899,6 +899,7 @@ mod tests {
             r_q12: 0,
             vbus: 1731,
             window_floor_q15: 4356,
+            window_v_floor_q15: 4356,
             amps_per_count: 0.0,
         };
         DutyPlan::new(&lim, 3.37, None)
@@ -1061,6 +1062,7 @@ mod tests {
             r_q12: 7270,
             vbus: 2917,
             window_floor_q15: 4356,
+            window_v_floor_q15: 4356,
             amps_per_count: 0.0,
         };
         let r = 7270.0 / 4096.0;
@@ -1542,6 +1544,7 @@ mod tests {
             r_q12: 7270,
             vbus: 3204,
             window_floor_q15: 4356,
+            window_v_floor_q15: 4356,
             amps_per_count: 0.0,
         };
         let plan = DutyPlan::new(&lim, 7270.0 / 4096.0, Some(0.145));

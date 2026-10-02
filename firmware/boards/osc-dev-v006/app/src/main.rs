@@ -66,12 +66,20 @@ fn main() -> ! {
             rail_drop_mv: 250,
             vdd_mv: 3300,
             // Scan order is [shunt, vmA, vmB, pos, vcal, vbus, ntc]. The i
-            // floor covers the amplifier settling after the bridge edge; the
-            // v floor covers both terminal taps settling to the rail and
-            // vmotor_b's S/H close, 131 ticks after the crest trigger at
-            // ADCCLK 24 MHz with 13.5-cycle apertures.
-            i_window_min_ticks: 160,
+            // floor trades the amplifier's settle after the bridge edge for
+            // reach: the shunt approaches its plateau from below, inside 3%
+            // from 57 ticks and 1% from 125, and a reading a known few
+            // percent low beats none. The v floor covers both terminal taps
+            // settling to the rail and vmotor_b's S/H close, 131 ticks after
+            // the crest trigger at ADCCLK 24 MHz with 13.5-cycle apertures.
+            i_window_min_ticks: 64,
             v_window_min_ticks: 160,
+            // The amplifier tail after a drive pulse, measured on board D
+            // over a duty grid: the trough sits a flat 5 counts over the
+            // disabled-driver rest bias down to 960 brake ticks (20% duty),
+            // then climbs with drive current - 7 counts at 30%, 16 at 60%,
+            // 38 at 85%.
+            bias_brake_min_ticks: 960,
         },
         defaults: ConfigDefaults {
             pos_min_phys_counts: 0,

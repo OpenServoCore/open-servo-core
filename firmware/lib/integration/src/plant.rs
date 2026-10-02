@@ -30,6 +30,7 @@ pub const TIMING: KernelTiming = KernelTiming {
     dt_med_q32: ((1u64 << 32) / 2000) as u32,
     med_ticks_per_ms_q16: 2 << 16,
     vbus_scale_q15: VBUS_SCALE_Q15,
+    bias_brake_min_ticks: 960,
 };
 
 pub struct FakeSensors;

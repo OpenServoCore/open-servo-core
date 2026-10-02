@@ -436,6 +436,7 @@ mod tests {
             r_q12: 0,
             vbus: (wave.rail_v / sc.v_term_per_count).round() as u16,
             window_floor_q15: 4356,
+            window_v_floor_q15: 4356,
             amps_per_count: sc.amps_per_count,
         };
         let rail = lim.vbus as f64 * sc.v_term_per_count;

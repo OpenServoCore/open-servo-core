@@ -41,6 +41,7 @@ use core::sync::atomic::{Ordering, compiler_fence};
 use self::config::KernelConfig;
 use self::fast::{Command, Fast};
 use self::medium::{Control, Medium};
+use crate::estimator::window;
 use crate::tel::TelStream;
 use crate::traits::{ControlIo, Motor};
 use crate::{RegionStorageRaw, SensorFrame, Shared};
@@ -75,6 +76,9 @@ pub struct KernelTiming {
     pub med_ticks_per_ms_q16: u32,
     /// Rail-tap -> vmotor-tap counts, Q15 (`VbusEst::new`).
     pub vbus_scale_q15: u32,
+    /// Board data: the shortest Slow-decay brake half whose trough shunt
+    /// sample feeds the bias tracker (`window::trough_is_brake`).
+    pub bias_brake_min_ticks: u16,
 }
 
 /// Runs in the ADC DMA TC ISR (PFIC LOW); one `on_tick` per PWM period.
@@ -126,7 +130,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             phase: medium::phase::CONTROL,
             booted: false,
             faults: faults::FaultLatch::new(),
-            fast: Fast::new(timing.pwm_arr),
+            fast: Fast::new(&timing),
             medium: Medium::new(&timing),
             cmd: Command::default(),
         }
@@ -148,10 +152,16 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         }
         self.cfg = cfg;
         self.config_gen = config_gen;
+        let v_floor = window::floor_duty(
+            cfg.fast.v_window_min_ticks,
+            self.timing.pwm_arr,
+            self.timing.recip_arr_q24,
+        );
         let p = shared.table.region_ptr();
-        // SAFETY: sole-telemetry-writer contract (type doc); volatile store.
+        // SAFETY: sole-telemetry-writer contract (type doc); volatile stores.
         unsafe {
             (&raw mut (*p).telemetry.limits.window_floor_q15).write_volatile(cfg.fast.ol_floor_q15);
+            (&raw mut (*p).telemetry.limits_ext.window_v_floor_q15).write_volatile(v_floor);
         }
     }
 

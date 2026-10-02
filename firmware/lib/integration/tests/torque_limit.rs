@@ -489,3 +489,34 @@ fn window_floor_is_published_as_the_limiter_uses_it() {
         );
     }
 }
+
+#[test]
+fn window_v_floor_is_published_beside_the_current_floor() {
+    let sh = rig(LIM);
+    sh.table.with_mut(|t| {
+        t.calib.sense.i_window_min_ticks = 64;
+        t.calib.sense.v_window_min_ticks = 160;
+    });
+    stamp(&sh);
+    let floors = || {
+        sh.table.with(|t| {
+            (
+                t.telemetry.limits.window_floor_q15,
+                t.telemetry.limits_ext.window_v_floor_q15,
+            )
+        })
+    };
+    let mut p = RlPlant::new(MID);
+    let mut k = kernel();
+    run(&mut k, &sh, &mut p, 1);
+    assert_eq!(floors(), (1734, 4356));
+    // a CALIB rewrite shows within one medium tick, torque off
+    sh.table
+        .with_mut(|t| t.calib.sense.v_window_min_ticks = 240);
+    sh.config_touch();
+    run(&mut k, &sh, &mut p, 10);
+    assert_eq!(
+        floors(),
+        (1734, floor_duty(240, TIMING.pwm_arr, TIMING.recip_arr_q24))
+    );
+}

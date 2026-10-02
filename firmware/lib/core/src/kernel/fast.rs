@@ -3,6 +3,7 @@
 //! every piece of state that moves at the PWM rate; reads nothing from the
 //! control table.
 
+use super::KernelTiming;
 use super::config::FastConfig;
 use super::current::CurrentLoop;
 use super::duty_limit::DutyLimiter;
@@ -59,6 +60,7 @@ pub struct Measured {
 
 pub struct Fast {
     pwm_arr: u16,
+    bias_brake_min_ticks: u16,
     vcal_lpf: VcalLpf,
     /// Shunt zero-current offset in use; the medium step publishes it to
     /// `current_bias_counts`.
@@ -89,9 +91,10 @@ pub struct Fast {
 }
 
 impl Fast {
-    pub fn new(pwm_arr: u16) -> Self {
+    pub fn new(timing: &KernelTiming) -> Self {
         Self {
-            pwm_arr,
+            pwm_arr: timing.pwm_arr,
+            bias_brake_min_ticks: timing.bias_brake_min_ticks,
             vcal_lpf: VcalLpf::new(),
             bias: BiasTracker::new(),
             oc: OcDetector::new(),
@@ -179,12 +182,16 @@ impl Fast {
             fc.i_window_min_ticks,
             fc.v_window_min_ticks,
         );
-        let bias =
-            if window::trough_is_brake(self.decay, ticks, self.pwm_arr, fc.i_window_min_ticks) {
-                self.bias.update(frame.current_trough)
-            } else {
-                self.bias.counts()
-            };
+        let bias = if window::trough_is_brake(
+            self.decay,
+            ticks,
+            self.pwm_arr,
+            self.bias_brake_min_ticks,
+        ) {
+            self.bias.update(frame.current_trough)
+        } else {
+            self.bias.counts()
+        };
         let i_meas = window::i_from_frame(frame, sel, fwd, bias);
         if let Some(i) = i_meas {
             self.i_meas_last = i.clamp(i16::MIN as i32, i16::MAX as i32) as i16;

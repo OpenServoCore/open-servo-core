@@ -74,23 +74,23 @@ pub fn vdiff_from_frame(frame: &SensorFrame, sel: WindowSel) -> Option<i32> {
 /// Fast decay puts the drive window at the trough and zero ticks is
 /// Coast/Brake/Disabled (no PWM edge), so both are out.
 ///
-/// The brake half-width must clear MUCH more than the drive window's floor.
-/// The amplifier leaves the drive pulse saturated and its tail decays over
-/// far longer than the floor allows for: measured on a duty grid, the trough
-/// sits a flat 5 counts above the disabled-driver rest bias up to 20% duty,
-/// then climbs with drive current as the window shrinks - 7 counts at 30%,
-/// 16 at 60%, 38 at 85%. At the drive floor itself the tracker would learn a
-/// bias tens of counts high and poison every current reading. Six times the
-/// floor keeps the feed inside the flat part; above it the tracker holds,
-/// which is all a slow thermal drift needs.
-const BIAS_SETTLE_FLOORS: u32 = 6;
-
-pub fn trough_is_brake(decay: DecayMode, drive_ticks: u32, pwm_arr: u16, i_floor: u16) -> bool {
+/// The amplifier leaves the drive pulse saturated and its tail outlasts the
+/// drive window's floor by far, so only a brake half of at least
+/// `brake_min_ticks` (board data, `KernelTiming::bias_brake_min_ticks`)
+/// reads the rest offset. A narrower one would teach the tracker a bias
+/// tens of counts high and poison every current reading; there the tracker
+/// holds, which is all a slow thermal drift needs.
+pub fn trough_is_brake(
+    decay: DecayMode,
+    drive_ticks: u32,
+    pwm_arr: u16,
+    brake_min_ticks: u16,
+) -> bool {
     let brake_ticks = (pwm_arr as u32).saturating_sub(drive_ticks);
     matches!(decay, DecayMode::Slow)
         && drive_ticks != 0
         && brake_ticks != 0
-        && brake_ticks >= (i_floor as u32).saturating_mul(BIAS_SETTLE_FLOORS)
+        && brake_ticks >= brake_min_ticks as u32
 }
 
 /// Mirrors chip-side `effort_to_ticks` (`mag * arr / 32767` approximated as
@@ -223,14 +223,14 @@ mod tests {
 
     #[test]
     fn trough_is_brake_only_inside_a_settled_slow_brake_phase() {
-        assert!(trough_is_brake(DecayMode::Slow, 1, 1200, 160));
-        // 960 brake ticks = 6 x the floor, the last duty whose trough is
-        // settled; one tick more of drive and the feed shuts off.
-        assert!(trough_is_brake(DecayMode::Slow, 240, 1200, 160));
-        assert!(!trough_is_brake(DecayMode::Slow, 241, 1200, 160));
-        assert!(!trough_is_brake(DecayMode::Slow, 600, 1200, 160));
-        assert!(!trough_is_brake(DecayMode::Fast, 600, 1200, 160));
-        assert!(!trough_is_brake(DecayMode::Slow, 0, 1200, 160));
+        assert!(trough_is_brake(DecayMode::Slow, 1, 1200, 960));
+        // 960 brake ticks, the last duty whose trough is settled; one tick
+        // more of drive and the feed shuts off.
+        assert!(trough_is_brake(DecayMode::Slow, 240, 1200, 960));
+        assert!(!trough_is_brake(DecayMode::Slow, 241, 1200, 960));
+        assert!(!trough_is_brake(DecayMode::Slow, 600, 1200, 960));
+        assert!(!trough_is_brake(DecayMode::Fast, 600, 1200, 960));
+        assert!(!trough_is_brake(DecayMode::Slow, 0, 1200, 960));
         assert!(!trough_is_brake(DecayMode::Slow, 1200, 1200, 0));
         assert!(!trough_is_brake(
             DecayMode::Slow,

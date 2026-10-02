@@ -181,6 +181,10 @@ pub mod telemetry {
     /// TEL rows the servo dropped because both stream buffers were waiting
     /// for the wire; wraps. Firmware without the health block reads 0.
     pub const TEL_DROP_COUNT: Reg = reg(0x0270, 2);
+    /// Smallest duty whose drive window the terminal taps read, Q15: a fit
+    /// on `va - vb` drives at or above the higher of this and
+    /// `WINDOW_FLOOR_Q15`. Firmware without it reads 0.
+    pub const WINDOW_V_FLOOR_Q15: Reg = reg(0x0274, 2);
 }
 
 /// Every const above with its descriptor field name - the cross-check
@@ -289,6 +293,7 @@ pub const ALL: &[(&str, Reg)] = &[
     ("limit_flags", telemetry::LIMIT_FLAGS),
     ("window_floor_q15", telemetry::WINDOW_FLOOR_Q15),
     ("tel_drop_count", telemetry::TEL_DROP_COUNT),
+    ("window_v_floor_q15", telemetry::WINDOW_V_FLOOR_Q15),
     ("page_echo", burst::PAGE_ECHO),
     ("state", burst::STATE),
     ("samples_len", burst::SAMPLES_LEN),
