@@ -2661,4 +2661,80 @@ mod tests {
             exp.warnings()
         );
     }
+
+    /// The bench MG90's run read through the rev-2A front end: the same
+    /// amps and volts as the codes a 14.884 gain, 6k4/1k6 taps on a 773
+    /// count bias, a 460 count current zero and a 6k4/1k6 rail tap give.
+    /// Every scale comes from the sense block and every zero from the
+    /// capture, so the winding is the one board D reads.
+    #[test]
+    fn the_burst_reads_the_same_winding_through_the_2a_front_end() {
+        use crate::exp::testkit::{board_d_scales, mg90_2s};
+        let d = board_d_scales();
+        let a = Scales::from_sense(
+            &SenseParams {
+                gain_milli: 14_884,
+                vmotor_div_top: 6_400,
+                vmotor_div_bot: 1_600,
+                tick_hz: 20_000,
+                ..BOARD_D
+            },
+            6_400,
+            1_600,
+        )
+        .unwrap();
+        let (bias, vb) = (460.0, 773.0);
+        let caps = mg90_2s();
+        let rev2a: Vec<Capture> = caps
+            .iter()
+            .map(|c| {
+                let mut c2 = c.clone();
+                let fl = c.frame_len();
+                let (bias_d, vb_d) = (c.meta.bias as f64, c.meta.vmotor_bias as f64);
+                for (k, x) in c2.samples.iter_mut().enumerate() {
+                    let y = match k % fl {
+                        0 => bias + (*x as f64 - bias_d) * d.amps_per_count / a.amps_per_count,
+                        _ => {
+                            let v = d.terminal_volts(*x as f64, vb_d);
+                            vb + (v - a.adc_lsb_v * vb) / a.v_term_per_count
+                        }
+                    };
+                    *x = y.round() as u16;
+                }
+                c2.meta.bias = bias as u16;
+                c2.meta.vmotor_bias = vb as u16;
+                c2.meta.vbus_raw = (c.meta.vbus_raw as f64 * d.v_rail_per_count
+                    / a.v_rail_per_count)
+                    .round() as u16;
+                c2
+            })
+            .collect();
+        let terms = |caps: &[Capture], sc: &Scales| {
+            let at = FitCfg::default().with_limit(280.0 * sc.amps_per_count);
+            fit_captures(caps, sc, &at)
+                .and_then(|r| r.winding_terms())
+                .expect("a winding")
+        };
+        let (on_d, on_a) = (terms(&caps, &d), terms(&rev2a, &a));
+        for (x, y) in [
+            (on_d.r_plan_ohm, on_a.r_plan_ohm),
+            (on_d.r_loop_ohm, on_a.r_loop_ohm),
+            (on_d.l_h, on_a.l_h),
+        ] {
+            assert!((y / x - 1.0).abs() < 0.01, "{on_d:?} vs {on_a:?}");
+        }
+    }
+
+    /// One rung cannot separate R from the bridge drop: the bench run cut
+    /// to its first three 25% captures, as a plan the envelope pruned to
+    /// one rung leaves it, supplies no winding.
+    #[test]
+    fn one_rung_supplies_no_winding() {
+        use crate::exp::testkit::{board_d_scales, mg90_2s};
+        let sc = board_d_scales();
+        let at = FitCfg::default().with_limit(280.0 * sc.amps_per_count);
+        let r = fit_captures(&mg90_2s()[..3], &sc, &at).expect("a fit");
+        assert_eq!(r.route(), None, "{:?}", r.blocking());
+        assert!(r.winding_terms().is_none());
+    }
 }
