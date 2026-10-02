@@ -29,9 +29,9 @@ pub(crate) const ADC_SENSOR_COUNT: usize = 5;
 /// channel the board routes the OPA output to; then both motor terminals
 /// (drive-window-critical, so they convert early), then pos, then Vcal,
 /// then the slow board taps (rail, NTC) appended last so the bench-validated
-/// terminal window floors keep their meaning. On osc-dev-v006 that is
-/// `[IN7/PD4 current, IN5/PD5 vmA, IN6/PD6 vmB, IN3/PD2 pos, IN10/Vcal,
-/// IN0/PA2 vbus, IN2/PC4 ntc]`.
+/// terminal window floors keep their meaning. Each role's channel comes from
+/// the board's `BoardWiring` (`current_sense.opa.out`, `sensors`) via
+/// `runtime::init::configure_adc_dma_scan`.
 pub(crate) const ADC_SCAN_LEN: usize = 7;
 
 /// Two scans per PWM period (peak + trough under center-aligned PWM, RCR=0).
