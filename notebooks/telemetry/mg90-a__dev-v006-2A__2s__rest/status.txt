@@ -1,0 +1,10 @@
+id 1: model 0x0101  fw 65  hw 2  cap 0x00000000
+      fault 0x00  dirty true  trim 0  crc_fail 0  framing_drop 19
+      data  clean
+      stamp 0xdc03 = live set
+      load  30.7%  over_period 63221  lost 57435  rows_dropped 0  stack_free 1252 B
+current_limit_counts 280
+ntc_raw 1906
+vbus_raw 1924
+pos 1996
+r_hat_q12 0

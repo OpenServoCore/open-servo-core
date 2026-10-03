@@ -425,7 +425,7 @@ class Run:
         each = self.alone(first)
         med = each.r.median()
         each["set_aside"] = each.r < LOW_R_FRAC * med
-        keep = set(each.index[~each.set_aside])
+        keep = set(each["index"][~each.set_aside])
         start = [first.p[n] for n in NAMES]
         fit = self.fit(fixed, start=start, keep=keep)
         return fit, each
