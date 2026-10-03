@@ -8,14 +8,14 @@ To get files at a specific revision, check out the corresponding tag (e.g. `git 
 
 ## Rev 2A - 2026-08-02
 
-**Status:** Design in progress, not fabricated or validated. Board silk reads `Dev V006 Rev. 2A`.
+**Status:** Built and brought up. Board #1 runs an MG90 on 2S through calibration, identification and closed-loop verify; the encoder inputs, Qwiic and `POS2` are not exercised yet. Value changes that need no routing change stay Rev. 2A. Board silk reads `Dev V006 Rev. 2A`.
 
 ### Removed
 
 - 74LVC2G241 UART bus buffer and its RX jumper. `DATA` wires directly to the MCU through a 33 Ohm series resistor (`Rx1`), and direction turnaround and RX timing are fully in firmware.
 - USB-C and screw-terminal power inputs. Battery (JST-PH) and LinkE 5 V remain, still SS54-OR'd.
 - PWM servo header.
-- Edge test-point hook rails. A row of nine 1.0 mm probe pads next to the sense network replaces them: ground, op-amp output, both PWM inputs, the three divider taps and the two position channels.
+- Edge test-point hook rails. Nine 1.0 mm probe pads, most of them in two rows next to the sense network, replace them: ground, op-amp output, both PWM inputs, the three divider taps and the two position channels.
 - Second UART. Telemetry rides the `DATA` wire as bounded CRC'd bursts, so there is no telemetry pin, no LinkE TX / RX wiring and no TEL lamp.
 - Ferrite bead on the driver logic rail. The DRV8212P VCC (`+3V3_DRV`) now hangs off the MCU's `+3V3` through Rh2, a fitted 0R that keeps the bead as a swap option.
 - OPA to CMP2 hardware stall detection. V006 has no comparator units, so protection is layered instead: driver OCP / TSD, a kernel I2t limit that drops `DRV_EN` and latches a user-clearable stall fault, IWDG, and the `DRV_EN` pulldown that kills the bridge on any reset.

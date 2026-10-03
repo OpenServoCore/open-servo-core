@@ -1,7 +1,8 @@
 # OSC Dev V006 - Rev. 2A
 
-> **Pre-fabrication / pre-bringup.**
-> Rev. 2A has not been fabricated or validated yet. Everything below describes the design as it heads to fab. Pinouts, signal names, jumper behavior, and component values may still change during bringup.
+> **Built and brought up.**
+> Rev. 2A board #1 runs an MG90 on 2S. Position calibration, the position table, motor identification and closed-loop verify all pass on it, and the sense chain is graded in [Measured on board #1](#measured-on-board-1).
+> Not exercised yet: the encoder inputs (J6 / J11), Qwiic, and the second position channel. Rev. 2A also stays open for value changes that need no routing change, so the BOM can still move; see [Still open](#still-open).
 > **Fabricate this at your own risk!**
 
 See [CHANGELOG.md](CHANGELOG.md) for revision history.
@@ -10,7 +11,7 @@ This is the OpenServoCore firmware development and validation board. It is built
 
 ![Front](docs/front.webp)
 
-The render predates the 2A refresh, so the connector set on it is one revision behind the schematic.
+KiCad render of Rev. 2A.
 
 ## Overview
 
@@ -21,7 +22,7 @@ The render predates the 2A refresh, so the connector set on it is one revision b
 - **Servo bus** - single-wire half-duplex UART on `PC0`, wired straight to the MCU through a 33 Ohm series resistor. No buffer, no TX_EN. Direction turnaround and RX timing are firmware's job.
 - **Telemetry** - no dedicated pin. Telemetry rides the `DATA` wire as bounded CRC'd bursts, so there is no second UART on the board.
 - **Qwiic** - SH 1.0 mm 4P I2C connector (J3) for an encoder module, either magnetic (I2C) or a quadrature encoder breakout.
-- **Power input** - 1S-2S LiPo (3.0-8.4 V) via JST-PH, or the WCH-LinkE 5 V rail. Either or both, OR'd through SS54 Schottkys.
+- **Power input** - 1S-2S LiPo (3.0-8.4 V) via JST-PH, or the WCH-LinkE 5 V rail. Either or both, OR'd through SS54 Schottkys (about 0.25 V drop).
 - **Debug** - WCH-LinkE over the CH32V006 1-wire SWDIO, on a 1x03 header (J2).
 - **Position feedback** - potentiometer or analog magnetic encoder on J5, I2C encoder on J3, or an ADC-sampled IR encoder on J6 (pins) or J11 (flex landing).
 - **Supply and terminal sense** - `VSYS` measured directly through its own divider, plus both motor terminals referenced to a common bias so back-EMF is readable while the bridge coasts.
@@ -38,7 +39,7 @@ Rev. 2A is a big respin. Here is what changed:
 - `VSNS` is back, on its own pin, as a direct divider off `VSYS`.
 - USB-C and screw-terminal power inputs are dropped. Battery and LinkE 5 V remain.
 - The PWM servo header is dropped. Qwiic (I2C) is added.
-- The edge test-point hook rails are replaced by a row of nine 1.0 mm probe pads next to the sense network. See [Test points](#test-points--probing).
+- The edge test-point hook rails are replaced by nine 1.0 mm probe pads, most of them in two rows next to the sense network. See [Test points](#test-points--probing).
 - 4 layers to 6 layers, and all connectors are renumbered.
 
 ## MCU pinout
@@ -56,19 +57,19 @@ CH32V006F8P6, TSSOP20. The "Function used" column is what the board wires the pi
 |7|-|`GND`|`VSS`.|
 |8|`PD0`|`OPA_N`|Op-amp `-` input (`OPN1`), difference network summing node.|
 |9|-|`+3V3`|`VDD`.|
-|10|`PC0`|`DATA`|USART1 TX (remap 3), half-duplex (HDSEL) servo bus.|
+|10|`PC0`|`DATA`|USART1 TX (remap 3), half-duplex (HDSEL) servo bus. Also TIM2 CH1 (remap 4) as the input of the bus break wake.|
 |11|`PC1`|`SDA`|I2C1 SDA, Qwiic (J3).|
 |12|`PC2`|`SCL`|I2C1 SCL, Qwiic (J3).|
 |13|`PC3`|`DRV_EN`|GPIO to the DRV8212P nSLEEP. A 10K pulldown (Rh1) keeps the driver asleep at reset.|
 |14|`PC4`|`VSNS`|ADC `A2`, `VSYS` supply divider.|
 |15|`PC5`|`DRV_IN2`|TIM1 CH2 (remap 8), H-bridge PWM.|
 |16|`PC6`|`DRV_IN1`|TIM1 CH3 (remap 8), H-bridge PWM.|
-|17|`PC7`|`STAT`|STAT LED, active low. The only firmware-driven lamp.|
+|17|`PC7`|`STAT`|STAT LED, active low, driven as a plain GPIO. The only firmware-driven lamp.|
 |18|`PD1`|`SWDIO`|1-wire debug, 100 Ohm series (Ru1) to J2.|
 |19|`PD2`|`ENCB`|Encoder B. ADC `A3`, analog quadrature sampling.|
 |20|`PD3`|`ENCA`|Encoder A. ADC `A4`, analog quadrature sampling.|
 
-TIM1 runs center-aligned PWM on IN1/IN2. CCR4 is not wired out; it is the ADC sampling-phase knob.
+TIM1 runs center-aligned PWM on IN1/IN2 at 20 kHz, and its update event triggers the ADC scans at the counter crest and trough (see [PWM and ADC timing](#pwm-and-adc-timing)). Remap 8 puts TIM1 CH4 on `PC7`, but CH4 is unused and STAT is a GPIO.
 
 ## Connectors
 
@@ -135,7 +136,7 @@ J6 and J11 are the same encoder input in two shapes: pins for a wired breakout o
 
 ### External NTC - J7
 
-1x03 pin header, `VNTC_EXT` / `+3V3` / `GND`, for an external NTC thermistor or temperature sensor. Select it with JP2. The `+3V3` pin is there so the external part can bring its own pull-up or supply: a bare thermistor divides against a resistor on the connector, a sensor with a driven output just takes the rail. Rn1 10K serves the internal TH1 leg only, so nothing on the board loads the external node.
+1x03 pin header, `VNTC_EXT` / `+3V3` / `GND`, for an external NTC thermistor or temperature sensor. Select it with JP2. The `+3V3` pin is there so the external part can bring its own pull-up or supply: a bare thermistor divides against a resistor on the connector, a sensor with a driven output just takes the rail. Rn1 10K serves the internal TH1 leg only, so nothing on the board loads the external node. The firmware's NTC constants (10K pull-up, 10K / 3950 part) describe the onboard divider, so a bare 10K / 3950 thermistor on J7 takes the same conversion when a 10K from the J7 `+3V3` pin to `VNTC_EXT` divides against it.
 
 ### Servo TTL bus - J8 / J9 / J10
 
@@ -150,7 +151,7 @@ Pin order is `G` / `V` / `D` with `V` in the center, so a reversed bench header 
 
 The powered board feeds `VSYS` onto `V+` to power downstream boards over the same cable. On the `DATA` line the order is connector, then ESD clamp (Dx1, PESD5V0L1BA), then the 33 Ohm series resistor (Rx1), then the pin. Rx1 is 33 Ohm rather than the usual 100 Ohm because `DATA` is the one line where edge speed matters at 3 Mbps over a whole chain, and the clamp does the protection work.
 
-Rx2 is a DNP 10K pull-up footprint. The bus wants exactly one pull-up, at the host end, and servos self-bias internally, so populate Rx2 only when this board is the end of the wire on the bench.
+Rx2 is a DNP 10K pull-up footprint. The bus wants exactly one pull-up, at the host end, and servos self-bias internally, so populate Rx2 only when this board is the end of the wire on the bench. Board #1 runs with Rx2 fitted, on an osc adapter cable that carries `DATA` and `GND` only.
 
 **`V+` is `VSYS` directly, unprotected.** Anything you daisy-chain to the bus must tolerate the upstream board's full input voltage (up to 8.4 V at 2S full charge).
 
@@ -173,7 +174,7 @@ This jumper bridges the op-amp `+` input network (`OPA_P`) onto the shared `nRST
 Motor return current flows through Rs1 (60 mOhm, 1 %, 50 ppm, 1206) between `PGND` and `GND`. Rs1 is the only tie between the two grounds, so every amp of motor return has to cross it. Net-tie kelvin taps (NT1 on the `PGND` pad, NT2 on the `GND` pad) feed the MCU's on-chip op-amp, which runs in bare mode behind an external four-resistor difference network.
 
 - **Gain.** Rf 6K4 / Rg 430 gives G = 14.88. With the 60 mOhm shunt that is 893 mV/A at the ADC, about 0.9 mA per LSB.
-- **Bias.** The amplifier references `VREF` = 0.52 V (Rd1 1K6 / Rd2 300 from `+3V3`, decoupled by Cd1), so negative current from regen or reversal is visible too. The usable range is roughly -0.58 A to +3.1 A.
+- **Bias.** The amplifier references `VREF` = 0.52 V (Rd1 1K6 / Rd2 300 from `+3V3`, decoupled by Cd1), so negative current from regen or reversal is visible too. The usable range is roughly -0.58 A to +3.1 A by design. On board #1 the rest output sits near 0.37 V instead, the op-amp's input offset times its noise gain and inside the part's spec, so the negative side is narrower. Firmware measures the rest bias at boot and keeps tracking it in drive, so the offset comes out of every current reading.
 - **Compensation.** Cc1 / Cc2, 22 pF across each feedback arm, for a corner around 1.1 MHz.
 - **Input filter.** Ci1, 100 pF across `OPA_P` / `OPA_N`.
 
@@ -208,7 +209,9 @@ The DRV8212P's own OCP / TSD is the first protection layer. OCP trips at 4 A min
 
 That is the point of the bias: both terminals stay readable while the bridge coasts, so `vA - vB` is real back-EMF rather than a rail-clamped stub. The rail comes back as `5 x tap - 4 x VB`.
 
-`VB` is read at boot with the driver parked. With the bridge Hi-Z no current flows in either leg, so both taps sit at `VB` itself and firmware recovers the bias with no extra pin. The bias also shifts with drive current, since the divider bottoms inject into the `VB` node against its own 81 Ohm source impedance: about +80 mV at full duty on a 2S rail, which the 0.20 ratio turns into 0.3 V on a single-terminal reading. Both terminals are measured, so the injected current is known and firmware corrects `VB` from the two taps with one multiply-add; `vA - vB` is immune either way.
+`VB` is read at boot with the driver parked. With the bridge Hi-Z no current flows in either leg, so both taps sit at `VB` itself and firmware recovers the bias with no extra pin. If the two taps disagree by more than 64 counts, the 773-count nominal stands in. The bias also shifts with drive current, since the divider bottoms inject into the `VB` node against its own 81 Ohm source impedance: about +80 mV at full duty on a 2S rail, which the 0.20 ratio turns into 0.3 V on a single-terminal reading. Firmware keeps the boot value and does not track that shift. The back-EMF path reads `vA - vB`, which is immune, and since both terminals are measured, a host that needs one terminal's absolute voltage under drive can correct `VB` from the two taps with one multiply-add.
+
+Cv1 / Cv2 have one open option: 100 nF in place of 100 pF turns the taps into averaging taps, which would let the terminal read below the 160-tick floor (see [Terminal voltage and back-EMF](#terminal-voltage-and-back-emf)). The firmware would need an estimator that weights the crest and trough terminal samples by their ticks, and every consumer that reads the terminal at the PWM edge loses that view. Not decided; board #1 carries 100 pF.
 
 ### Supply voltage
 
@@ -221,6 +224,104 @@ Two channels with the same filter. `POS1` goes through Ra1 4K7 and Ca1 100nF int
 ### Temperature
 
 Rn1 10K pulls up against the onboard 10K / 3950 TH1 on the internal leg of JP2. JP2 routes that divider (or the external thermistor on J7) onto the shared `A0` node, where Ca2 100nF is the filter for every source; Ra2 is only in the `POS2` path.
+
+## Measured on board #1
+
+Rev. 2A board #1 on a 2S LiPo, first against a 3.7 Ohm resistor grid (4.4 Ohm at J4 with its cable), then with an MG90 fitted. The grid figures come from [notebook 10](../../../notebooks/10-sense-chain-boards.ipynb), which grades the chain against board D (the bodged Rev. B rig), and the back-EMF figures from [notebook 11](../../../notebooks/11-back-emf-on-rev-2a.ipynb). The constants a capture is read with live in the `dev-v006-2A` entry of [`notebooks/oscnb/boards.py`](../../../notebooks/oscnb/boards.py), and the ones the servo runs with in the board's [`main.rs`](../../../firmware/boards/osc-dev-v006/app/src/main.rs). Those two are the authority; the tables below quote them. Source columns cite notebook sections as `nb10 sec 8`.
+
+Ticks are 48 MHz TIM1 ticks (20.8 ns). The PWM half-period is 1200 ticks, so a drive window of `h` ticks is `h / 1200` duty.
+
+### PWM and ADC timing
+
+|Item|Value|Source|
+|---|---|---|
+|PWM|Center-aligned, ARR 1200 at 48 MHz, 2400 ticks a period: 20 kHz.|`servo-ch32/src/cfg/chip.rs`|
+|ADC clock|24 MHz (HCLK / 2).|`servo-ch32/src/hal/clocks.rs`|
+|Aperture|13.5 ADC clocks on every channel. A conversion is 26 clocks: 1.083 us, 52 ticks, 0.92 Msps.|`cfg/chip.rs`, nb10 sec 8|
+|Trigger|TIM1 update (TRGO) at the counter crest and at the trough, so two scans a period.|`control/sensors/scan.rs`|
+|Scan order|shunt, vmA, vmB, pos, vcal, vbus, ntc.|`main.rs`|
+|Sample closes after the crest|shunt 31, tap A 83, tap B 135 ticks, the ADC's 2-clock trigger delay included.|nb10 sec 8|
+
+Under slow decay the drive window is centred on the crest, so the crest scan reads the driven half; under fast decay the trough scan does.
+
+**Why 24 MHz, not 48.** With the ADC's low-power comparator buffer on, a bit trial at 48 MHz gets 20.8 ns and the buffer does not settle. A pot sweep on board D reported 63% of the codes the wiper crossed at 48 MHz against 96% at 24 MHz, with the 55 codes under 1024 unreachable. The aperture cannot shrink either: 3.5 and 7.5 clocks run a slot at 1.5 and 1.2 Msps, which datasheet Table 3-23 rates only from VDD 4.5 V, and the MCU rail here is 3.3 V.
+
+### Current sense
+
+|Quantity|Design|Board #1|Source|
+|---|---|---|---|
+|Scale|1108.5 counts/A, 0.902 mA per count|Amplifier and ADC +0.5% (-0.7 to +2.3%): 93-94 mV on a meter across Rs1 during a 100% grid lap, against 93.3-95.1 mV from the chip's current times 60 mOhm.|`boards.py` `current_chain_scale_measured`, nb10 sec 7|
+|Rest output|0.52 V (`VREF`)|About 0.37 V torque off. Offset, removed at boot.|board #1 bringup|
+|In-drive zero|-|10 counts over the torque-off rest: the DRV8212P's own supply current returns through Rs1 once the driver wakes.|nb11 sec 1|
+|Rest noise|-|1.28 counts RMS (1.15 mA). Board D 1.7.|`rest_current_noise_measured`, nb10 sec 3|
+|Step response|-|Half-way 44 ticks (0.92 us) after the ON compare, then a 12.3-tick (256 ns) exponential and a slow tail of about 3%. Steepest 2.8 V/us.|nb10 sec 8.1, 8.3|
+|Settled to 1%|-|156 ticks (3.25 us) after the ON compare, always approached from below.|`shunt_settle_measured`|
+|Crest honest to 3%|-|From 7% duty on the 2S grid. Board D 15%.|`crest_floor_measured`, nb10 sec 5|
+|ON pulse against the command|DRV8212P dead time 500 ns (24 ticks) typ|30 ticks short at half height on the grid. On the MG90, 10-15 ticks short at about 0.1 A and 20-25 at 0.2 A and up.|nb10 sec 8.1, nb11 sec 4|
+
+**Window floor.** The firmware reads a current only when the drive window is at least `i_window_min_ticks` wide. Uncorrected, the grid's crest sample reads low under every floor, never high (nb10 sec 8.2):
+
+|Within|Window|Duty|
+|---|---|---|
+|1%|125 ticks|10.4%|
+|2%|81 ticks|6.8%|
+|3%|57 ticks|4.8%|
+|5%|45 ticks|3.8%|
+
+The board runs at 64 ticks (5.3% duty): a slightly low reading beats no reading. On top of that, `i_settle_gain` multiplies every window-valid current by the inverse of the step response at its sample instant, in 21 Q15 bands of 8 ticks from 40 ticks (x1.072) to 208, unity past that. The grid ladder reads 2.9% low at 60 ticks and 1.1% at 120, settled from about 208, the same in both drive signs; with the table every grid rung from 60 to 300 ticks lands within 0.16%. Telemetry's `current_raw` and `current_trough` and the bias tracker stay raw.
+
+Two things the gain cannot remove:
+
+- **The motor's edge spike.** The MG90 carries about 10 nF at its terminals, and the high side charges it through the shunt at every turn-on. Under about 72 ticks that reads a fixed few counts high, 10-15% of a 30-count current at the 64-tick floor. It is additive, so no gain removes it, and under about 48 ticks a stalled MG90 reads high overall.
+- **The bias tracker's reach.** The in-drive zero is learned only from brake troughs of at least 960 ticks (`bias_brake_min_ticks`, up to 20% duty), because the amplifier's tail after a pulse holds a shorter trough above rest. That tail was measured on board D and carried over.
+
+### Terminal voltage and back-EMF
+
+|Quantity|Board #1|Source|
+|---|---|---|
+|Tap difference|4.028 mV at the terminals per count of `vA - vB` (r = 5), bias free.|`boards.py`|
+|One terminal|`5 x tap - 4 x VB` in counts. A driven-low terminal reads 618 counts, not 0.|`boards.py` `term_v`, nb11|
+|`VB` at rest|Taps 769.8 and 771.0 counts against 772.8 nominal (tap A 620 mV).|nb10 sec 3|
+|`VB` under drive|With tap B disconnected from its terminal, it read the node itself: +68 mV (84 counts) at the forward 100% rung, against +67 mV from the 81 Ohm source.|nb10 sec 9|
+|Tap A rest noise|0.86 counts, 3.5 mV at the terminal.|nb10 sec 3|
+|Low-side path|0.218 Ohm on the A side: switch, shunt and copper.|nb10 sec 5.1|
+|Window edge|The terminal starts to fall 8.5-9 ticks after the OFF compare. Tap A reads the window from about 74 ticks, tap B from about 126.|nb10 sec 8.4|
+|Coast EMF|1.24 mV per ripple Hz both ways on the MG90. Board D 1.21-1.23.|nb11 sec 3|
+|Low-duty over-read|The 15% rung reads 3.0% (forward) and 3.6% (reverse) high against a `Ke` fitted on 25-30%. Board D 7.7-7.8% on the same motor.|nb11 sec 3|
+
+`v_window_min_ticks` stays 160 (13.3% duty). Tap B is the third slot, so the scan position sets this floor, 34 ticks over where tap B stops seeing the window. The coast reading says the terminal chain reads the EMF as well as board D's; the low-duty over-read is the drive pulse coming out shorter than commanded, which a crest sample cannot see (11-16 ticks explains all of it on the MG90). Under the floor the back-EMF is void, which is why closed-loop verify's velocity legs, at 8-11% duty, ran on the pot observer.
+
+### Supply voltage
+
+|Quantity|Board #1|Source|
+|---|---|---|
+|`VSNS` scale|Ratio 5 (Rv5 6K4 / Rv6 1K6 to `GND`): 4.028 mV at `VSYS` per count.|`main.rs`, `boards.py`|
+|Pack voltage|`VSYS` + 0.25 V at rest, the firmware's `rail_drop_mv` for the SS54.|`main.rs`|
+|2S under load|7.73 V at rest, 7.40 V at the grid's 100% rung: 0.21 Ohm of pack, diode and wiring.|nb10 sec 7|
+|Rest noise|3.8 mV.|nb10 sec 3|
+
+### Temperature
+
+TH1 (10K / 3950 to `GND`) under Rn1 10K reaches `A0` with JP2 on `NTC`-`IN`. An external 10K / 3950 on J7 reads the same way under a 10K pull-up to `+3V3`, with JP2 on `EX`-`NTC`. Firmware publishes `ntc_raw` counts only, and the host converts:
+
+R = 10K x raw / (4095 - raw), T = 1 / (1 / 298.15 K + ln(R / 10K) / 3950) - 273.15 °C
+
+as `ntc_c` in [`oscnb/thermal.py`](../../../notebooks/oscnb/thermal.py) does. An external NTC taped to the MG90's can served [notebook 14](../../../notebooks/14-winding-r-as-a-thermometer.ipynb) as its reference at rest.
+
+### Position
+
+The pot is ratiometric on `VDD`, so reference drift cancels, and the 24 MHz ADC clock above is what keeps the pot's codes (96% of those crossed, against 63% at 48 MHz). Calibration, the position table and identification are per servo and stored on it. On board #1 the MG90's table moves slowly with running ([notebook 12](../../../notebooks/12-pot-table-free-vs-governed.ipynb)), so recalibrate from time to time.
+
+### Still open
+
+- Board power draw (idle, torque off) is unmeasured.
+- `VDD` on board #1 is not metered. Absolute volts and amps use the declared 3.300 V; board D measured 3.28 V.
+- No meter lap on the terminals or the rail, and no grid dataset with both taps live: the terminal chain against a meter, the B-side low path and drive-direction symmetry are ungraded.
+- The settle gain's truth checks: whether the slow tail scales with the step (grid bursts at about 13 and 40 Ohm), and a stalled motor ladder against a series meter. The table gets tuned if they disagree.
+- The MG90 terminal capacitance behind the edge spike is inferred from the current, not metered.
+- Every floor figure is on 2S; the LinkE 5 V supply is not characterised.
+- The averaging-tap option on Cv1 / Cv2.
+- The encoder inputs (J6 / J11), Qwiic and `POS2`.
 
 ## Reference designators
 
@@ -255,16 +356,16 @@ All four are deliberately dim, in the 0.1-0.3 mA class.
 |---|---|---|---|
 |`VSYS`|Dl1|yellow|System rail present.|
 |`3V3`|Dl2|green|Logic rail up.|
-|`DAT`|Dl3|blue|Servo bus activity (active low). Passive lamp on the `DATA` line.|
-|`STA`|Dl4|red|Servo health (`PC7`, active low). A short flash at boot, then dark when healthy, solid while a fault is latched, a 1 Hz blink while the servo is not set up (`data_flags` nonzero: not calibrated, plant unset). A fault wins over the blink.|
+|`DAT`|Dl3|blue|Servo bus activity (active low). Passive lamp on the `DATA` line, no firmware involved. At the schematic's 4K7 (Rl3) it is faint on board #1; 1K is the brighter swap.|
+|`STA`|Dl4|red|Servo health (`PC7`, active low), never traffic. In precedence order: lit for a 150 ms lamp test at boot, solid while a fault is latched (until the torque ack clears it), a 1 Hz blink while `data_flags` names a reason closed loop is refused (not calibrated, plant unset, stamp mismatch), dark when healthy.|
 
 ## Test points & probing
 
-Nine 1.0 mm probe pads sit in two rows between the position header and the sense network, labeled on silk. They take a scope tip or a pogo pin; nothing clips on, so for hands-free capture solder a wire loop to the pad.
+Nine 1.0 mm probe pads, labeled on silk. Seven sit in two rows between the position header and the sense network; `OPA` sits beside the MCU on the op-amp output, and `VS` beside the LinkE header. They take a scope tip or a pogo pin; nothing clips on, so for hands-free capture solder a wire loop to the pad.
 
 |Silk|Ref|Net|What it is|
 |---|---|---|---|
-|`GND`|TP1|`GND`|Ground for the row. Within spring reach of every other pad.|
+|`GND`|TP1|`GND`|Ground for the two-row group.|
 |`OPA`|TP2|`OPA_OUT`|Op-amp output, ADC `A7`. Inline on the trace into `PD4`.|
 |`IN1`|TP3|`DRV_IN1`|H-bridge PWM input 1 (`PC6`, TIM1 CH3).|
 |`IN2`|TP4|`DRV_IN2`|H-bridge PWM input 2 (`PC5`, TIM1 CH2).|
@@ -278,7 +379,7 @@ Nine 1.0 mm probe pads sit in two rows between the position header and the sense
 
 ## Power and grounding
 
-Battery (`VBAT`) and LinkE 5 V (`VPROG`) OR into `VSYS` through Dp1 / Dp2. `VSYS` is the raw motor rail and also feeds the LDO. `+3V3` is logic and, through Rh2, the DRV8212P VCC (`+3V3_DRV`). Rh2 ships as 0R; it is the swap point for a ferrite (600 Ohm at 100 MHz) if driver noise ever shows on the MCU rail, which is also the ADC reference.
+Battery (`VBAT`) and LinkE 5 V (`VPROG`) OR into `VSYS` through Dp1 / Dp2. The SS54s drop about 0.25 V at rest (the firmware's `rail_drop_mv`, which a host adds back to `VSYS` for the pack voltage), and they block regenerated current from flowing back into either supply. `VSYS` is the raw motor rail and also feeds the LDO. `+3V3` is logic and, through Rh2, the DRV8212P VCC (`+3V3_DRV`). Rh2 ships as 0R; it is the swap point for a ferrite (600 Ohm at 100 MHz) if driver noise ever shows on the MCU rail, which is also the ADC reference.
 
 The bridge decoupling (Ch1 100nF on `+3V3_DRV`, Ch2 100nF plus Ch3 / Ch4 10uF plus Ch5 100uF on `VSYS`) returns to `GND`, not `PGND`. That is deliberate. At PWM timescales the motor current loops cap to bridge to motor to `PGND` and back to the cap. If those caps landed on the `PGND` side, the loop would close without crossing the shunt and the ADC would only see average draw instead of the real chopped current.
 
