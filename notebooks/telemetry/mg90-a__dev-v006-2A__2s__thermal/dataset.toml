@@ -1,0 +1,10 @@
+servo = "mg90-a"
+supply = "2s"
+rule = "limit"
+current_limit_counts = 280
+captured = "2026-10-02"
+notes = """Rev 2A board #1, fw 65, identified set stamp 0xdc03. Winding R against the can temperature: 26 `osc ident burst` runs at mid travel, one every 120 s after a cold anchor of five. Phase A cold anchor (5 runs, the motor rested first), B heat (8 runs, each after about 100 s of a +/-40% open-loop dither at mid travel with the current limit raised to 500 counts in RAM for the heater only), C cool (13 runs, torque off between them). Every burst ran under the 280-count limit with guards 532/3526 and --i-abort 300, nothing written. The can NTC (10K 3950, taped to the motor can, J7, 10K pull-up to 3V3) is read before and after every run (runs.csv ntc_raw_before/after). Room about 26 C by hand and cooling into the evening. Driver script: osc-dev-v006-bringup captures/winding-r/heatcool2.py.
+
+burst/capture-N holds the run named in the capture column of runs.csv (run k is capture-(k+1)): its 24 burst-*.csv captures as osc ident wrote them, and report.log, the full osc ident output. runs.csv is the driver's log with its scratch directory column replaced by the capture name. heater.csv is every heater poll (25 Hz: goal, pos, i_hat_counts, fault_code). heattest.log is an earlier 3 minute dither at about 0.25 A with the can NTC only. status.txt is osc status before the run.
+
+The burst captures carry no sense block, so the board is not read from the data: these are rev 2A board #1 captures by the bench log, and nothing here identifies the unit."""

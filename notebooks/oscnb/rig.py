@@ -135,7 +135,7 @@ def use(key=None, board=None, servo=None, show=True):
 def _board_key(d):
     try:
         return d.board.key
-    except LookupError:
+    except (LookupError, OSError):              # no recording, or one without a meta.json
         return "?"
 
 
