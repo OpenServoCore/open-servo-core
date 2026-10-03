@@ -1,0 +1,117 @@
+pack 1997 pos 2021 ntc start 29.88 C
+  1.9s pos 2012 ntc 29.97 C |i| mean 263 max 330
+  3.6s pos 2026 ntc 29.92 C |i| mean 273 max 330
+  5.4s pos 2120 ntc 29.90 C |i| mean 274 max 356
+  7.2s pos 2221 ntc 29.90 C |i| mean 274 max 356
+  9.0s pos 2268 ntc 29.90 C |i| mean 274 max 356
+ 10.8s pos 2207 ntc 30.06 C |i| mean 275 max 356
+ 12.6s pos 2197 ntc 29.99 C |i| mean 275 max 356
+ 14.4s pos 2219 ntc 30.02 C |i| mean 276 max 356
+ 16.2s pos 2266 ntc 30.08 C |i| mean 276 max 356
+ 17.9s pos 2214 ntc 30.18 C |i| mean 277 max 356
+ 19.7s pos 2195 ntc 30.13 C |i| mean 277 max 356
+ 21.5s pos 2208 ntc 30.27 C |i| mean 277 max 356
+ 23.3s pos 2250 ntc 30.32 C |i| mean 277 max 356
+ 25.1s pos 2232 ntc 30.32 C |i| mean 278 max 356
+ 26.9s pos 2264 ntc 30.36 C |i| mean 278 max 356
+ 28.6s pos 2277 ntc 30.38 C |i| mean 279 max 356
+ 30.4s pos 2262 ntc 30.48 C |i| mean 279 max 356
+ 32.2s pos 2234 ntc 30.66 C |i| mean 279 max 356
+ 34.0s pos 2274 ntc 30.62 C |i| mean 279 max 356
+ 35.8s pos 2268 ntc 30.73 C |i| mean 279 max 356
+ 37.6s pos 2162 ntc 30.85 C |i| mean 279 max 356
+ 39.4s pos 2295 ntc 30.96 C |i| mean 279 max 356
+ 41.1s pos 2269 ntc 31.06 C |i| mean 279 max 356
+ 42.9s pos 2262 ntc 31.01 C |i| mean 279 max 356
+ 44.7s pos 2137 ntc 31.01 C |i| mean 278 max 356
+ 46.5s pos 2249 ntc 31.06 C |i| mean 278 max 356
+ 48.2s pos 2261 ntc 31.17 C |i| mean 278 max 356
+ 50.0s pos 2077 ntc 31.15 C |i| mean 278 max 356
+ 51.8s pos 2074 ntc 31.24 C |i| mean 277 max 356
+ 53.6s pos 2086 ntc 31.29 C |i| mean 277 max 356
+ 55.4s pos 2092 ntc 31.41 C |i| mean 277 max 356
+ 57.1s pos 2097 ntc 31.48 C |i| mean 277 max 356
+ 58.9s pos 2135 ntc 31.34 C |i| mean 276 max 356
+ 60.7s pos 2212 ntc 31.36 C |i| mean 276 max 356
+ 62.5s pos 2238 ntc 31.43 C |i| mean 276 max 356
+ 64.2s pos 2261 ntc 31.34 C |i| mean 276 max 356
+ 66.0s pos 2137 ntc 31.48 C |i| mean 276 max 356
+ 67.8s pos 2209 ntc 31.50 C |i| mean 276 max 356
+ 69.6s pos 2289 ntc 31.66 C |i| mean 276 max 356
+ 71.4s pos 2263 ntc 31.69 C |i| mean 276 max 356
+ 73.2s pos 2239 ntc 31.76 C |i| mean 277 max 356
+ 74.9s pos 2264 ntc 31.81 C |i| mean 277 max 356
+ 76.7s pos 2171 ntc 31.97 C |i| mean 277 max 356
+ 78.5s pos 2285 ntc 32.04 C |i| mean 277 max 356
+ 80.3s pos 2182 ntc 32.04 C |i| mean 277 max 356
+ 82.1s pos 2221 ntc 32.04 C |i| mean 278 max 356
+ 83.8s pos 2136 ntc 32.18 C |i| mean 278 max 356
+ 85.6s pos 2238 ntc 32.16 C |i| mean 278 max 356
+ 87.4s pos 2091 ntc 32.32 C |i| mean 278 max 356
+ 89.2s pos 2093 ntc 32.28 C |i| mean 278 max 356
+ 91.0s pos 2047 ntc 32.40 C |i| mean 278 max 356
+ 92.8s pos 2035 ntc 32.51 C |i| mean 278 max 356
+ 94.6s pos 2043 ntc 32.56 C |i| mean 278 max 356
+ 96.4s pos 2037 ntc 32.59 C |i| mean 278 max 356
+ 98.1s pos 2003 ntc 32.75 C |i| mean 278 max 356
+100.0s pos 1865 ntc 32.80 C |i| mean 277 max 356
+101.8s pos 1891 ntc 32.85 C |i| mean 277 max 356
+103.6s pos 1870 ntc 32.68 C |i| mean 277 max 356
+105.4s pos 1965 ntc 32.73 C |i| mean 277 max 356
+107.2s pos 1948 ntc 32.73 C |i| mean 277 max 356
+109.0s pos 1976 ntc 32.80 C |i| mean 277 max 356
+110.8s pos 1937 ntc 32.80 C |i| mean 277 max 356
+112.6s pos 1959 ntc 32.78 C |i| mean 276 max 356
+114.4s pos 1983 ntc 32.82 C |i| mean 276 max 356
+116.2s pos 2099 ntc 32.82 C |i| mean 276 max 356
+118.0s pos 2081 ntc 32.89 C |i| mean 276 max 356
+119.8s pos 2099 ntc 33.04 C |i| mean 276 max 356
+121.6s pos 2093 ntc 33.23 C |i| mean 276 max 356
+123.4s pos 2071 ntc 33.13 C |i| mean 275 max 356
+125.2s pos 2086 ntc 33.33 C |i| mean 275 max 356
+127.0s pos 2041 ntc 33.35 C |i| mean 275 max 356
+128.7s pos 2127 ntc 33.42 C |i| mean 275 max 356
+130.5s pos 2165 ntc 33.42 C |i| mean 275 max 356
+132.3s pos 2229 ntc 33.35 C |i| mean 275 max 356
+134.1s pos 2234 ntc 33.45 C |i| mean 275 max 356
+135.9s pos 2223 ntc 33.54 C |i| mean 275 max 356
+137.7s pos 2236 ntc 33.59 C |i| mean 275 max 356
+139.4s pos 2218 ntc 33.59 C |i| mean 275 max 356
+141.2s pos 2205 ntc 33.69 C |i| mean 274 max 356
+143.0s pos 2189 ntc 33.88 C |i| mean 274 max 356
+144.8s pos 2198 ntc 33.85 C |i| mean 274 max 356
+146.6s pos 2221 ntc 33.95 C |i| mean 274 max 356
+148.3s pos 2236 ntc 33.83 C |i| mean 274 max 356
+150.1s pos 2205 ntc 33.85 C |i| mean 274 max 356
+151.9s pos 2197 ntc 33.98 C |i| mean 274 max 356
+153.7s pos 2148 ntc 33.90 C |i| mean 274 max 356
+155.4s pos 2076 ntc 34.00 C |i| mean 274 max 356
+157.3s pos 2071 ntc 33.95 C |i| mean 274 max 356
+159.0s pos 2037 ntc 34.00 C |i| mean 274 max 356
+160.8s pos 2007 ntc 34.00 C |i| mean 274 max 356
+162.6s pos 1951 ntc 33.88 C |i| mean 274 max 356
+164.4s pos 1937 ntc 33.90 C |i| mean 274 max 356
+166.2s pos 1982 ntc 33.88 C |i| mean 274 max 356
+168.0s pos 1969 ntc 33.76 C |i| mean 274 max 356
+169.8s pos 1987 ntc 33.88 C |i| mean 274 max 356
+171.5s pos 1953 ntc 33.95 C |i| mean 274 max 356
+173.3s pos 1984 ntc 34.17 C |i| mean 274 max 356
+175.1s pos 2040 ntc 34.10 C |i| mean 273 max 356
+176.9s pos 2024 ntc 34.15 C |i| mean 273 max 356
+178.6s pos 2014 ntc 34.24 C |i| mean 273 max 356
+heat done 180s; torque off; pos 2080 fault 0 limit 280
+cool    0s ntc 34.29 C
+cool   20s ntc 33.88 C
+cool   40s ntc 33.30 C
+cool   60s ntc 32.49 C
+cool   80s ntc 32.09 C
+cool  100s ntc 31.29 C
+cool  120s ntc 30.92 C
+cool  140s ntc 30.52 C
+cool  160s ntc 30.29 C
+cool  180s ntc 30.18 C
+cool  200s ntc 29.99 C
+cool  220s ntc 29.56 C
+cool  240s ntc 29.56 C
+cool  260s ntc 29.40 C
+cool  280s ntc 29.15 C
