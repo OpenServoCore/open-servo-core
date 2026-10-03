@@ -1,0 +1,12 @@
+servo = "mg90-a"
+supply = "2s"
+rule = "limit"
+current_limit_counts = 280
+captured = "2026-10-02"
+notes = """Rev 2A board #1, fw 65, identified set stamp 0xdc03, the same rig as mg90-a__dev-v006-2A__2s__thermal about two hours after its cool phase. Winding R at rest: the servo sits at mid travel with torque off (DRV asleep) and nothing heats it, and one `osc ident burst` runs every 1800 s from 22:54 to 07:06. Every 4th slot of a driver start runs the wide rungs (--burst-pct 10,15,25,40, 16 from rest and 4 from a hold), the rest the default 25/40 (16 from rest, 8 from a hold). Every burst ran under the 280-count limit with guards 532/3526 and --i-abort 300, nothing written. The can NTC (10K 3950, taped to the motor can, J7, 10K pull-up to 3V3) is read before and after every run (runs.csv ntc_raw_before/after) and logged with the rail every 60 s between runs (ambient.csv). The room is AC-cycled, about 26-28 C on the can overnight. 2S pack 450 mAh, rail 7.75 -> 7.38 V at rest. Driver script: osc-dev-v006-bringup captures/winding-r/overnight.py.
+
+The series comes from four starts of the driver (runs.csv `start`): starts 1-3 ran one wide slot each at 22:54, 23:02 and 23:04 and were stopped to change the battery floor, start 4 ran the other 17 slots. So the first four runs sit 486, 118 and 70 s apart, the rest 1800 s. A start before start 1 lost its only slot to a USB link fault and holds no data; it is left out. runs.csv is the driver's log of all four starts in time order, renumbered k = 0..19, with t_s from the first run's start and its scratch directory column replaced by the capture name. ambient.csv is the four starts' logs merged on the same t_s.
+
+burst/capture-N holds run k = N-1: its burst-*.csv captures as osc ident wrote them, and report.log, the full osc ident output. status.txt is osc status before start 1.
+
+The burst captures carry no sense block, so the board is not read from the data: these are rev 2A board #1 captures by the bench log, and nothing here identifies the unit."""
