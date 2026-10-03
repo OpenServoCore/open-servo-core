@@ -23,6 +23,9 @@ uv run jupyter lab
 jupyterlab. Python is pinned to 3.12 in `.python-version`, and uv will fetch it
 for you if you don't have it.
 
+`uv run pytest` runs the tests under `tests/`, which check the parts of
+`oscnb` that can be checked offline against data with a known answer.
+
 ## Telemetry
 
 The captures live under `telemetry/`, one folder per servo, then one folder
