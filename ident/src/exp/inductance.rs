@@ -330,15 +330,15 @@ fn rolling_peak(v: &[f64], w: usize) -> Vec<f64> {
         .collect()
 }
 
-/// Find the ON windows in a shunt stream sampled once per `frame_len`
+/// Find the ON windows in a shunt stream sampled once per `stride`
 /// conversions. The OFF phase holds most of each period, so a rolling
 /// median tracks the OFF level and an ON window is a run of samples that
 /// departs from it - in EITHER direction, because a step taken from a
 /// spinning rotor can drive the winding current negative (the ON window
 /// then reads BELOW the bias; a from-a-hold capture on the bench does).
-pub fn segment(samples: &[u16], frame_len: usize, cfg: &FitCfg) -> Option<Segmentation> {
+pub fn segment(samples: &[u16], stride: usize, cfg: &FitCfg) -> Option<Segmentation> {
     let v: Vec<f64> = samples.iter().map(|&x| x as f64).collect();
-    let period = period_samples(&v, LAG_MIN / frame_len, LAG_MAX / frame_len)?;
+    let period = period_samples(&v, LAG_MIN / stride, LAG_MAX / stride)?;
     let w = (period.round() as usize) | 1;
     let noise = median(
         &v.windows(2)
@@ -350,7 +350,7 @@ pub fn segment(samples: &[u16], frame_len: usize, cfg: &FitCfg) -> Option<Segmen
     let dev: Vec<f64> = v.iter().zip(&base).map(|(a, b)| a - b).collect();
     let peak = rolling_peak(&dev, w);
     let start_dev = cfg.start_dev_counts.max(2.0 * noise);
-    let min_run = (MIN_WINDOW_RAW / frame_len).clamp(2, 3);
+    let min_run = (MIN_WINDOW_RAW / stride).clamp(2, 3);
 
     let mut windows = Vec::new();
     let mut i = 0;
@@ -511,9 +511,9 @@ pub struct CaptureFit {
     /// Exactly zero from rest, where it is not separable from R.
     pub drop_volts: f64,
     pub step_index: u16,
-    /// Every window index above counts shunt-stream samples: one per frame
-    /// of `frame_len` conversions, `sample_us` apart, the step at `step`.
-    pub frame_len: usize,
+    /// Every window index above counts shunt-stream samples: one per
+    /// `shunt_stride` conversions, `sample_us` apart, the step at `step`.
+    pub shunt_stride: usize,
     pub sample_us: f64,
     /// One conversion, microseconds.
     pub raw_us: f64,
@@ -650,7 +650,7 @@ pub fn settle_profile(caps: &[Capture], sc: &Scales, cfg: &FitCfg) -> f64 {
     let prepared: Vec<(&Capture, Segmentation)> = caps
         .iter()
         .step_by(stride)
-        .filter_map(|c| segment(&c.shunt(), c.frame_len(), cfg).map(|s| (c, s)))
+        .filter_map(|c| segment(&c.shunt(), c.shunt_stride(), cfg).map(|s| (c, s)))
         .collect();
     let cost = |us: f64| -> f64 {
         let probe = FitCfg {
@@ -673,7 +673,7 @@ pub fn settle_profile(caps: &[Capture], sc: &Scales, cfg: &FitCfg) -> f64 {
 
 /// Everything one capture gives, from the samples alone.
 pub fn fit_capture(cap: &Capture, sc: &Scales, cfg: &FitCfg) -> Option<CaptureFit> {
-    let seg = segment(&cap.shunt(), cap.frame_len(), cfg)?;
+    let seg = segment(&cap.shunt(), cap.shunt_stride(), cfg)?;
     fit_segmented(cap, sc, cfg, &seg)
 }
 
@@ -683,7 +683,7 @@ fn fit_segmented(
     cfg: &FitCfg,
     seg: &Segmentation,
 ) -> Option<CaptureFit> {
-    let fl = cap.frame_len();
+    let fl = cap.shunt_stride();
     let v: Vec<f64> = cap.shunt().iter().map(|&x| x as f64).collect();
     let n = v.len();
     // Everything below is in shunt-stream samples; the published step index
@@ -1058,7 +1058,7 @@ fn fit_segmented(
         pre_level_a: pre_level,
         drop_volts: drop,
         step_index: cap.meta.step_index,
-        frame_len: fl,
+        shunt_stride: fl,
         sample_us: h_us,
         raw_us: cfg.sample_us,
         step: step_index,

@@ -85,25 +85,35 @@ pub(crate) fn seq() -> &'static [adc::Channel; ADC_SCAN_LEN] {
 }
 
 /// Scan slot of each `burst::chans` extra, in the frame order the ABI fixes.
-const BURST_EXTRAS: [(u8, usize); FRAME_MAX - 1] = [
+const BURST_EXTRAS: [(u8, usize); 3] = [
     (chans::VMOTOR_A, SCAN_IDX_VMOTOR_A),
     (chans::VMOTOR_B, SCAN_IDX_VMOTOR_B),
     (chans::VBUS, SCAN_IDX_VBUS),
 ];
 
 /// Program RSQR with one burst frame: the shunt, then each extra `mask`
-/// selects. Its length is `burst::frame_len(mask)`.
+/// selects, under `chans::INTERLEAVE` each after the first behind a shunt
+/// slot of its own. Its length is `burst::frame_len(mask)`, at most 6 of the
+/// 16 a regular group holds (RM sec 9.2.2).
 pub(crate) fn set_burst_sequence(mask: u8) {
-    let seq = seq();
+    let (frame, len) = burst_frame(mask, seq());
+    adc::set_sequence(&frame[..len]);
+}
+
+fn burst_frame(mask: u8, seq: &[adc::Channel; ADC_SCAN_LEN]) -> ([adc::Channel; FRAME_MAX], usize) {
+    // Every slot starts as the shunt, so a slot skipped below is one.
     let mut frame = [seq[SCAN_IDX_SHUNT_POST]; FRAME_MAX];
     let mut len = 1;
     for (bit, idx) in BURST_EXTRAS {
         if mask & bit != 0 {
+            if mask & chans::INTERLEAVE != 0 && len > 1 {
+                len += 1;
+            }
             frame[len] = seq[idx];
             len += 1;
         }
     }
-    adc::set_sequence(&frame[..len]);
+    (frame, len)
 }
 
 /// Point CH1 at `ADC_DMA_BUF` and enable it. Leaves `ADC.CTLR2.DMA` alone:
@@ -127,4 +137,45 @@ pub(super) fn scan_slot(offset: usize, idx: usize) -> u16 {
     debug_assert!(i < 2 * ADC_SCAN_LEN);
     // SAFETY: index bounded above; `ADC_DMA_BUF` is a fixed-length static.
     unsafe { (ADC_DMA_BUF.get() as *const u16).add(i).read_volatile() }
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use osc_servo_core::regions::burst::frame_len;
+
+    use super::*;
+
+    /// Every mask the field rule admits programs the frame the ABI names:
+    /// its length is `frame_len`, the extras keep bit order, and under
+    /// `INTERLEAVE` the shunt holds every even slot.
+    #[test]
+    fn burst_frame_follows_the_mask() {
+        use adc::Channel::*;
+        let seq = [IN0, IN1, IN2, IN3, Vcal, IN5, IN6];
+        let names = |mask: u8| {
+            let (frame, len) = burst_frame(mask, &seq);
+            assert_eq!(len, frame_len(mask) as usize, "chans {mask:#06b}");
+            frame[..len]
+                .iter()
+                .map(|c| *c as u8)
+                .collect::<std::vec::Vec<u8>>()
+        };
+        for mask in 0..=chans::ALL {
+            names(mask);
+        }
+        let (s, a, b, v) = (0, 1, 2, 5);
+        assert_eq!(names(0), [s]);
+        assert_eq!(names(chans::VMOTOR_A), [s, a]);
+        assert_eq!(names(chans::VMOTOR_A | chans::VMOTOR_B), [s, a, b]);
+        assert_eq!(names(chans::EXTRAS), [s, a, b, v]);
+        assert_eq!(names(chans::INTERLEAVE), [s]);
+        assert_eq!(names(chans::VMOTOR_B | chans::INTERLEAVE), [s, b]);
+        assert_eq!(
+            names(chans::VMOTOR_A | chans::VMOTOR_B | chans::INTERLEAVE),
+            [s, a, s, b]
+        );
+        assert_eq!(names(chans::ALL), [s, a, s, b, s, v]);
+    }
 }

@@ -31,8 +31,8 @@
 
 use super::{Cmd, Experiment, RigParams, SLEW_Q15_PER_TICK, TICKS_PER_WINDOW};
 use crate::burst::{
-    ArmSeen, CHAN_VBUS, CHAN_VMOTOR_A, CHAN_VMOTOR_B, Capture, Meta, SAMPLE_HCLK, SAMPLE_US,
-    SAMPLES, frame_len, rejected,
+    ArmSeen, CHAN_INTERLEAVE, CHAN_VBUS, CHAN_VMOTOR_A, CHAN_VMOTOR_B, Capture, Meta, SAMPLE_HCLK,
+    SAMPLE_US, SAMPLES, frame_len, rejected,
 };
 use crate::frame::{TelBurst, TelFrame, TelemetrySnapshot};
 use crate::limits::PermitLease;
@@ -1042,6 +1042,9 @@ pub struct SynthBurst {
     pub r_feed: f64,
     /// Per bridge FET, ohms.
     pub rds: f64,
+    /// Copper in each low-side leg, between its FET and the shunt node:
+    /// no terminal tap sees it apart from the other leg's.
+    pub r_low: f64,
     pub r_shunt: f64,
     /// Brush drop against the winding current, volts.
     pub v0: f64,
@@ -1100,6 +1103,7 @@ impl SynthBurst {
             c_island: 0.0,
             r_feed: 0.0,
             rds: 0.0,
+            r_low: 0.0,
             r_shunt: 0.0,
             v0: 0.0,
             emf_v_per_ms: 0.0,
@@ -1159,11 +1163,18 @@ impl SynthBurst {
         let a_tap = 1.0 - (-SAMPLE_US / SUBSTEPS as f64 / self.tap_us).exp();
         let vb_v = self.vb * self.adc_lsb_v;
         let fwd = step_q15 >= 0;
-        let slots: Vec<u8> = [CHAN_VMOTOR_A, CHAN_VMOTOR_B, CHAN_VBUS]
-            .into_iter()
-            .filter(|b| self.chans & b != 0)
-            .collect();
+        // each slot's channel bit, 0 for the shunt
+        let mut slots = vec![0u8];
+        for b in [CHAN_VMOTOR_A, CHAN_VMOTOR_B, CHAN_VBUS] {
+            if self.chans & b != 0 {
+                if self.chans & CHAN_INTERLEAVE != 0 && slots.len() > 1 {
+                    slots.push(0);
+                }
+                slots.push(b);
+            }
+        }
         let fl = frame_len(self.chans);
+        assert_eq!(slots.len(), fl);
 
         let mut pre_arm_rail = self.v_rail;
         // winding current, rail node, island, amplifier, tap A, tap B
@@ -1183,14 +1194,15 @@ impl SynthBurst {
             let pgnd = i_sh * self.r_shunt;
             // terminals against ground, in the drive frame: hi is the
             // chopping leg
+            let low = self.rds + self.r_low;
             let (hi, lo) = if d == 0.0 {
                 (vb_v, vb_v)
             } else if on {
-                (vm + pgnd - *i * self.rds, pgnd + *i * self.rds)
+                (vm + pgnd - *i * self.rds, pgnd + *i * low)
             } else if self.body_diode && *i > 0.0 {
-                (-DIODE_V, pgnd + *i * self.rds)
+                (-DIODE_V, pgnd + *i * low)
             } else {
-                (pgnd - *i * self.rds, pgnd + *i * self.rds)
+                (pgnd - *i * low, pgnd + *i * low)
             };
             if d != 0.0 {
                 *i += (hi - lo - *i * self.r - v0 - e) / self.l * dt;
@@ -1237,13 +1249,11 @@ impl SynthBurst {
                 let x = n as f64 + s as f64 / SUBSTEPS as f64;
                 step(x, &mut st);
             }
-            let code = match n % fl {
+            let code = match slots[n % fl] {
                 0 => st[3],
-                slot => match slots[slot - 1] {
-                    CHAN_VMOTOR_A => tap_code(st[4]),
-                    CHAN_VMOTOR_B => tap_code(st[5]) + self.split,
-                    _ => st[1] / self.v_rail_per_count,
-                },
+                CHAN_VMOTOR_A => tap_code(st[4]),
+                CHAN_VMOTOR_B => tap_code(st[5]) + self.split,
+                _ => st[1] / self.v_rail_per_count,
             };
             samples.push((code + noise()).round().clamp(0.0, 4095.0) as u16);
         }

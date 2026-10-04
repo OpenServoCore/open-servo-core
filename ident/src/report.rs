@@ -574,10 +574,38 @@ fn render_wave(s: &mut String, x: &InductanceResult) {
     }
     let _ = writeln!(
         s,
-        "                ON window {:.2} us short of commanded; driven terminal {:.2} V open, \
-         sagging {:.2} ohm; rail {:.2} V",
-        w.on_loss_us, w.v_on_open, w.z_on_ohm, w.rail_v
+        "                ON window {:.2} us short of commanded; {} {:.2} V open, sagging {:.2} \
+         ohm; rail {:.2} V",
+        w.on_loss_us,
+        if w.both_terminals {
+            "terminals' difference"
+        } else {
+            "driven terminal"
+        },
+        w.v_on_open,
+        w.z_on_ohm,
+        w.rail_v
     );
+    if w.both_terminals {
+        let _ = writeln!(
+            s,
+            "  terminals     fitted on vA - vB: low side {} (FET, copper, shunt), brake {:.3} ohm; \
+             the driven terminal alone reads {}",
+            w.lo_side_ohm.map_or("-".into(), |r| format!("{r:.3} ohm")),
+            w.off_ohm,
+            match w.driven {
+                Some((f, at)) => format!(
+                    "R {:.3} ohm{}",
+                    f.r_ohm,
+                    at.map_or(String::new(), |a| format!(
+                        ", V/I {:.3} ohm at the limit",
+                        a.v_over_i_ohm
+                    ))
+                ),
+                None => "nothing (it did not fit)".into(),
+            }
+        );
+    }
     let aside: Vec<String> = w
         .set_aside()
         .map(|c| {
@@ -938,6 +966,54 @@ mod tests {
             "{s}"
         );
         assert!(s.contains("  checks        "), "{s}");
+    }
+
+    /// A burst that sampled both terminals says so beside the line: the
+    /// difference it was fitted on, the low side and the brake it measured,
+    /// and what the driven terminal alone reads on the same captures. One
+    /// that sampled the driven terminal only prints none of it.
+    #[test]
+    fn both_terminals_report_the_low_side_and_the_driven_reading() {
+        use crate::burst::Chans;
+        use crate::exp::inductance::{FitCfg, fit_captures};
+        use crate::exp::testkit::{SynthBurst, board_d_scales};
+        let sc = board_d_scales();
+        let cfg = FitCfg::default().with_limit(0.25);
+        let render_with = |chans: Chans| {
+            let mut caps = Vec::new();
+            for pct in [25i32, 40] {
+                for sgn in [1i32, -1] {
+                    let q = (sgn * pct * 32767 / 100) as i16;
+                    let p = SynthBurst {
+                        r: 4.28,
+                        l: 0.79e-3,
+                        v0: 0.12,
+                        v_rail: 7.2,
+                        chans: chans.for_step(q),
+                        ..SynthBurst::board_d().with_bridge()
+                    };
+                    caps.extend([p.capture(q, 0), p.capture(q, 0)]);
+                }
+            }
+            let r = fit_captures(&caps, &sc, &cfg).expect("fit");
+            render(&ReportInputs {
+                inductance: Some(&r),
+                ..Default::default()
+            })
+        };
+        let s = render_with(Chans::Diff);
+        for part in [
+            "terminals' difference ",
+            "  terminals     fitted on vA - vB: low side 0.",
+            " ohm (FET, copper, shunt), brake 0.",
+            "; the driven terminal alone reads R 4.",
+            " ohm at the limit",
+        ] {
+            assert!(s.contains(part), "missing {part:?} in\n{s}");
+        }
+        let s = render_with(Chans::Driven);
+        assert!(!s.contains("  terminals     "), "{s}");
+        assert!(s.contains("; driven terminal "), "{s}");
     }
 
     #[test]

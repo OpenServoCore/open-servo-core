@@ -316,8 +316,17 @@ pub struct WaveJson {
     pub half_blind: usize,
     pub on_loss_us: f64,
     pub rail_v: f64,
+    /// Fitted on the terminals' difference: the ON line is the
+    /// difference's, the low side and the brake measured, and the driven
+    /// terminal's own R and V/I at the limit beside it.
+    pub both_terminals: bool,
     pub v_on_open: f64,
     pub z_on_ohm: f64,
+    pub on_drop_ohm: f64,
+    pub off_ohm: f64,
+    pub lo_side_ohm: Option<f64>,
+    pub driven_r_ohm: Option<f64>,
+    pub driven_v_over_i_lim_ohm: Option<f64>,
     pub tau_us: f64,
     pub emf_end_v: f64,
     /// Gates with nothing to judge, and why.
@@ -349,8 +358,14 @@ impl From<&WaveRun> for WaveJson {
             half_blind: w.half_blind,
             on_loss_us: w.on_loss_us,
             rail_v: w.rail_v,
+            both_terminals: w.both_terminals,
             v_on_open: w.v_on_open,
             z_on_ohm: w.z_on_ohm,
+            on_drop_ohm: w.on_drop_ohm,
+            off_ohm: w.off_ohm,
+            lo_side_ohm: w.lo_side_ohm,
+            driven_r_ohm: w.driven.map(|d| d.0.r_ohm),
+            driven_v_over_i_lim_ohm: w.driven.and_then(|d| d.1).map(|a| a.v_over_i_ohm),
             tau_us: w.tau_us,
             emf_end_v: w.emf_end_v,
             skipped: w

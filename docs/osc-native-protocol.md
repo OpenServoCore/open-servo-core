@@ -1017,7 +1017,7 @@ window replaces it. What bounds a burst is its arm. `arm` 1 is refused
 unless all of these hold at the kernel tick that sees it:
 
 - torque on, mode OpenLoop, no TEL burst running (`tel_count` 0), no
-  fault latched, and `chans` naming only defined extras;
+  fault latched, and `chans` setting only defined bits;
 - the applied volts are at most 3.2 V: `(|duty_q15| x vbus_counts) >>
   15` at most the board's cap in vcounts, 794 on osc-dev-v006. That
   is a step of at most 13284 (40.5%) on a 7.9 V rail (`vbus_counts`
@@ -1038,6 +1038,17 @@ Loop Under the Same Band"; unit `burst_over_the_volts_cap_is_rejected`,
 `burst_inside_the_spacing_is_rejected`,
 `burst_outside_the_soft_limits_needs_the_permit`,
 `burst_at_the_cap_still_arms`).
+
+The capture is 960 raw codes, one conversion every 1.083 us, frame
+after frame. `chans` bit 0 adds the A terminal tap, bit 1 the B tap and
+bit 2 the rail tap, in that order behind the shunt in slot 0; bit 3,
+`INTERLEAVE`, puts another shunt slot ahead of every extra after the
+first. Mask 3 is shunt, A, B: `frame_len` 3, the shunt every 3.25 us.
+Mask 11 is shunt, A, shunt, B: `frame_len` 4, the shunt every 2.17 us and
+each tap every 4.33 us. The BURST header echoes `chans_echo` and
+`frame_len` for the whole capture, and a host reads the layout from them;
+`step_index` counts raw codes, not frames (unit
+`burst_frame_follows_the_mask`).
 
 **Around a drive.** What `osc` does with these registers, the
 reference for any host that drives OpenLoop (control-theory "Open Loop
