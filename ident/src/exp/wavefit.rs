@@ -12,9 +12,29 @@
 //!
 //! V_on is the driven terminal's settled ON level; the edges come from the
 //! same stream, each placed to a fraction of a conversion by the partial
-//! sample it fell inside. Five parameters are fitted: R, L, V0, tau_a and
-//! delta. Ke and J are PRIORS: the back-EMF is what that rotor makes from
-//! the current the model already carries, never a free term. A free term
+//! sample it fell inside.
+//!
+//! A burst that sampled BOTH terminals (`--burst-chans diff`, the shunt
+//! still every second conversion) is fitted on what the winding itself
+//! sees instead:
+//!
+//!   L di/dt = (vA - vB) - V0 - R i - Ke w
+//!
+//! with vA - vB the terminals' difference, each tap read against its own
+//! rest level and interpolated to the shunt sample times through its
+//! settled samples of the same phase, averaged per ON window and per OFF
+//! gap. Neither the low-side path (FET, shunt, copper) nor the divider
+//! bias is then assumed: they cancel in the difference, and R is the
+//! winding's. The terminals move on the current's ~140 us time constant,
+//! so a tap sampled every 4.3 us interpolates across a ~10 us window. A
+//! terminal that sparse catches too few edges window by window, so its
+//! samples are folded onto one period and the edges fitted there
+//! ([`fold`]). The same captures are fitted the driven-terminal way too,
+//! for comparison ([`WaveRun::driven`]).
+//!
+//! Five parameters are fitted: R, L, V0, tau_a and delta. Ke and J are
+//! PRIORS: the back-EMF is what that rotor makes from the current the
+//! model already carries, never a free term. A free term
 //! soaks up whatever else is wrong - one capture that reads low, a pooling
 //! that is not robust - and then reads twenty times what the rotor can
 //! make; the rotor itself moves R by about 1.4%. The loss is soft L1, so a
@@ -36,7 +56,7 @@
 //! of them are set aside declines.
 
 use super::rl::{Gate, Scales};
-use super::winding::RDS_ON_OHM;
+use super::winding::{EDGE_GUARD_US, RDS_ON_OHM, TAP_CLEAR_US};
 use crate::burst::{CHAN_VMOTOR_A, CHAN_VMOTOR_B, Capture, HCLK_MHZ, SAMPLE_US};
 use crate::fitmath::{linear_ls, median};
 
@@ -60,6 +80,18 @@ const EDGE_MARGIN_US: f64 = 2.0;
 
 /// Edges a capture must show to be fitted.
 const MIN_EDGES: usize = 6;
+
+/// A driven terminal sampled this many conversions apart is folded onto
+/// one period ([`fold`]) rather than read window by window: a 25% window
+/// then holds two or three samples, the edges among them.
+const FOLD_FRAME_LEN: usize = 4;
+
+/// The fold fits the samples this far either side of the window, us: past
+/// it the tap has settled and says nothing about the edge.
+const FOLD_SPAN_US: f64 = 3.0;
+
+/// The tap's RC time constant the fold starts from, us: 2.2k x 150 pF.
+const FOLD_TAU0_US: f64 = 0.33;
 
 /// Parameter order: R ohms, L mH, V0 volts, tau_a us, delta us.
 const P0: [f64; 5] = [4.7, 0.8, 0.3, 1.5, 0.0];
@@ -204,13 +236,28 @@ pub struct WaveRun {
     pub period_us: f64,
     /// The rail as read before the arms, volts.
     pub rail_v: f64,
-    /// The driven terminal's ON level against the winding current:
-    /// open-circuit volts and the source it sags through, ohms.
+    /// Fitted on the terminals' difference, both taps sampled.
+    pub both_terminals: bool,
+    /// The ON level against the winding current - the driven terminal's,
+    /// or with both terminals their difference: open-circuit volts and the
+    /// source it sags through, ohms.
     pub v_on_open: f64,
     pub z_on_ohm: f64,
+    /// What the winding loses to the bridge per amp: during ON under that
+    /// level (Rds + Rsh assumed, 0 when the difference measured it), and
+    /// across the brake (2 Rds assumed, or the OFF difference over the
+    /// current).
+    pub on_drop_ohm: f64,
+    pub off_ohm: f64,
+    /// The idle terminal's ON level over the current: the low-side path,
+    /// FET, shunt and copper. Both terminals only.
+    pub lo_side_ohm: Option<f64>,
+    /// The same captures fitted on the driven terminal alone, and its
+    /// line at the limit. Both terminals only.
+    pub driven: Option<(WaveFit, Option<AtLimit>)>,
     pub rds_ohm: f64,
     pub shunt_ohm: f64,
-    /// L / (R + 2 Rds), microseconds.
+    /// L / (R + the brake path), microseconds.
     pub tau_us: f64,
     /// The back-EMF the rotor priors put at the end of the top rung, volts.
     pub emf_end_v: f64,
@@ -228,9 +275,9 @@ impl WaveRun {
 
     /// Duty x rail, volts, whose settled winding current is `i_a`: the line
     /// in the convention every stall-safe duty and the firmware's cap use.
-    /// Averaged over a period the winding sees D_on (V_on - (Rds + Rsh) i)
-    /// and the brake -2 Rds i for the rest, V_on sagging with the current,
-    /// and the commanded duty is D_on plus the ON window the edges lose.
+    /// Averaged over a period the winding sees D_on (V_on - on_drop i) and
+    /// the brake -off i for the rest, V_on sagging with the current, and the
+    /// commanded duty is D_on plus the ON window the edges lose.
     pub fn duty_volts(&self, i_a: f64) -> f64 {
         self.duty_volts_of(&self.fit, i_a)
     }
@@ -238,8 +285,8 @@ impl WaveRun {
     /// The same for another fit of this run's captures, one half of them.
     fn duty_volts_of(&self, f: &WaveFit, i_a: f64) -> f64 {
         let v_on = self.v_on_open - self.z_on_ohm * i_a;
-        let d_on = (f.v0_volts + (f.r_ohm + 2.0 * self.rds_ohm) * i_a)
-            / (v_on + (self.rds_ohm - self.shunt_ohm) * i_a);
+        let d_on = (f.v0_volts + (f.r_ohm + self.off_ohm) * i_a)
+            / (v_on + (self.off_ohm - self.on_drop_ohm) * i_a);
         (d_on + self.on_loss_us / self.period_us) * self.rail_v
     }
 
@@ -289,10 +336,15 @@ struct Raw {
     pos: u16,
     rail_v: f64,
     edges: Vec<Edge>,
+    /// The grid folded off the driven terminal, in place of `edges`.
+    folded: Option<Folded>,
     /// Terminal tap at rest: the divider's bias node.
     pre_tap: f64,
-    /// (sample instant us, shunt counts over the bias) for every frame.
+    /// (sample instant us, shunt counts over the bias) for every shunt code.
     shunt: Vec<(f64, f64)>,
+    /// (sample instant us, volts over the tap's own rest level) of the
+    /// driven and the idle terminal, when both were sampled.
+    taps: Option<[Vec<(f64, f64)>; 2]>,
 }
 
 /// One capture on the model's time grid.
@@ -305,6 +357,13 @@ struct Prepared {
     v: Vec<f64>,
     /// (grid step at the window's centre, V_on) per window.
     windows: Vec<(usize, f64)>,
+    /// `v` is the terminals' difference through every phase, so the model
+    /// subtracts no bridge drop.
+    measured: bool,
+    /// Both terminals only: (grid step at the centre, level) of the idle
+    /// terminal per ON window, and of the difference per OFF gap.
+    lo: Vec<(usize, f64)>,
+    gaps: Vec<(usize, f64)>,
     ts: Vec<f64>,
     y: Vec<f64>,
 }
@@ -406,30 +465,60 @@ fn find_edges(vt: &[f64], t_of: &dyn Fn(usize) -> f64, step: usize) -> Vec<Edge>
     out
 }
 
-fn split(index: usize, cap: &Capture, sc: &Scales) -> Result<Raw, &'static str> {
+/// One capture's streams, its edges found. `both` reads the idle terminal
+/// too when the capture sampled it.
+fn split(index: usize, cap: &Capture, sc: &Scales, both: bool) -> Result<Raw, &'static str> {
     let forward = cap.meta.step_q15 >= 0;
-    let bit = if forward {
-        CHAN_VMOTOR_A
+    let (bit, idle) = if forward {
+        (CHAN_VMOTOR_A, CHAN_VMOTOR_B)
     } else {
-        CHAN_VMOTOR_B
+        (CHAN_VMOTOR_B, CHAN_VMOTOR_A)
     };
     let slot = cap.slot(bit).ok_or("no driven-terminal channel")?;
-    let fl = cap.frame_len();
+    let (fl, st) = (cap.frame_len(), cap.shunt_stride());
     let n = cap.samples.len() / fl;
     let step = cap.meta.step_index as usize / fl;
     if step < 12 || step + 12 > n {
         return Err("the step sits at an end of the capture");
     }
     let sh: Vec<f64> = cap.shunt().iter().map(|&c| c as f64).collect();
-    let vt: Vec<f64> = cap.stream(slot).iter().map(|&c| c as f64).collect();
-    let (Some(pre_tap), Some(bias)) = (median(&vt[..step - 4]), median(&sh[..step - 4])) else {
+    let stream = |s: usize| -> Vec<f64> { cap.stream(s).iter().map(|&c| c as f64).collect() };
+    let vt = stream(slot);
+    let rest = cap.meta.step_index as usize / st - 4 * fl / st;
+    let (Some(pre_tap), Some(bias)) = (median(&vt[..step - 4]), median(&sh[..rest])) else {
         return Err("no rest before the step");
     };
-    let t_vt = |k: usize| (k * fl + slot) as f64 * SAMPLE_US;
-    let edges = find_edges(&vt, &t_vt, step);
-    if edges.len() < MIN_EDGES {
+    let t_of = |s: usize| move |k: usize| (k * fl + s) as f64 * SAMPLE_US;
+    let (edges, folded) = match fl >= FOLD_FRAME_LEN {
+        false => (find_edges(&vt, &t_of(slot), step), None),
+        true => {
+            let period_us = 2.0 * cap.meta.pwm_arr as f64 / HCLK_MHZ;
+            let t_step = cap.meta.step_index as f64 * SAMPLE_US;
+            (Vec::new(), fold(&vt, &t_of(slot), t_step, period_us))
+        }
+    };
+    if edges.len() < MIN_EDGES && folded.is_none() {
         return Err("too few ON windows on the driven terminal");
     }
+    let taps = match cap.slot(idle).filter(|_| both) {
+        None => None,
+        Some(lo) => {
+            let tap = |s: usize, v: &[f64]| -> Option<Vec<(f64, f64)>> {
+                let z = median(&v[..step - 4])?;
+                let t = t_of(s);
+                Some(
+                    v.iter()
+                        .enumerate()
+                        .map(|(k, c)| (t(k), sc.v_term_per_count * (c - z)))
+                        .collect(),
+                )
+            };
+            Some([
+                tap(slot, &vt).ok_or("no rest before the step")?,
+                tap(lo, &stream(lo)).ok_or("no rest before the step")?,
+            ])
+        }
+    };
     Ok(Raw {
         index,
         duty_q15: cap.meta.step_q15.unsigned_abs(),
@@ -437,12 +526,113 @@ fn split(index: usize, cap: &Capture, sc: &Scales) -> Result<Raw, &'static str> 
         pos: cap.meta.pos,
         rail_v: cap.meta.vbus_raw as f64 * sc.v_rail_per_count,
         edges,
+        folded,
         pre_tap,
         shunt: sh
             .iter()
             .enumerate()
-            .map(|(k, s)| ((k * fl) as f64 * SAMPLE_US, s - bias))
+            .map(|(k, s)| ((k * st) as f64 * SAMPLE_US, s - bias))
             .collect(),
+        taps,
+    })
+}
+
+/// A capture's PWM grid read off a driven terminal sampled too sparsely to
+/// catch every window, microseconds: `phi` and the half window as
+/// [`place`] gives them, the ON width, and the settled ON level in counts.
+#[derive(Copy, Clone, Debug)]
+struct Folded {
+    phi: f64,
+    width: f64,
+    level: f64,
+    /// The new duty latched at a crest, so the step opened a half window
+    /// at `phi`; at a trough it opened none and the window at `phi + P` is
+    /// whole.
+    half: bool,
+}
+
+/// Every driven-terminal sample from a period after the step on, folded
+/// onto one PWM period. A terminal sampled every 4.3 us walks 2.3 us a
+/// period, so a capture's ten periods put a sample every half microsecond
+/// or so across the fold whatever the duty, where a single window may hold
+/// none. The samples above half the swing gather around the ON window's
+/// centre; the edges are where the tap's RC response to a rectangle from
+/// `-l` to `r` meets the samples near them, its time constant free. The
+/// outermost ON and nearest OFF sample either side start it. The duty
+/// latches at the first update event after the step, crest or trough.
+fn fold(vt: &[f64], t_of: &dyn Fn(usize) -> f64, t_step: f64, period_us: f64) -> Option<Folded> {
+    use core::f64::consts::TAU;
+    let pts: Vec<(f64, f64)> = vt
+        .iter()
+        .enumerate()
+        .map(|(k, v)| (t_of(k), *v))
+        .filter(|p| p.0 >= t_step + period_us)
+        .collect();
+    let levels: Vec<f64> = pts.iter().map(|p| p.1).collect();
+    let max = levels.iter().copied().reduce(f64::max)?;
+    let thr = 0.5 * (max + median(&levels)?);
+    let (on, off): (Vec<f64>, Vec<f64>) = levels.iter().partition(|v| **v > thr);
+    if on.len() < MIN_EDGES {
+        return None;
+    }
+    let (hi, lo) = (median(&on)?, median(&off)?);
+    let (x, y) = pts
+        .iter()
+        .filter(|p| p.1 > thr)
+        .fold((0.0, 0.0), |(x, y), p| {
+            let a = TAU * p.0 / period_us;
+            (x + a.cos(), y + a.sin())
+        });
+    let c = y.atan2(x) / TAU * period_us;
+    let half_p = period_us / 2.0;
+    let near: Vec<(f64, f64)> = pts
+        .iter()
+        .map(|p| ((p.0 - c + half_p).rem_euclid(period_us) - half_p, p.1))
+        .collect();
+    // (outermost ON, nearest OFF) distance either side of the centre
+    let (mut left, mut right) = ((0.0f64, half_p), (0.0f64, half_p));
+    for &(d, v) in &near {
+        let side = if d < 0.0 { &mut left } else { &mut right };
+        match v > thr {
+            true => side.0 = side.0.max(d.abs()),
+            false => side.1 = side.1.min(d.abs()),
+        }
+    }
+    let (l0, r0) = (0.5 * (left.0 + left.1), 0.5 * (right.0 + right.1));
+    let near: Vec<(f64, f64)> = near
+        .into_iter()
+        .filter(|(d, _)| (-l0 - FOLD_SPAN_US..=r0 + FOLD_SPAN_US).contains(d))
+        .collect();
+    let mut rc = |q: &[f64], out: &mut Vec<f64>| {
+        let (l, r, tau) = (q[0], q[1], q[2]);
+        out.clear();
+        out.extend(near.iter().map(|&(d, v)| {
+            let g = if d < -l {
+                0.0
+            } else if d <= r {
+                1.0 - (-(d + l) / tau).exp()
+            } else {
+                (1.0 - (-(l + r) / tau).exp()) * (-(d - r) / tau).exp()
+            };
+            lo + (hi - lo) * g - v
+        }));
+    };
+    let s = robust_lm(
+        &[l0, r0, FOLD_TAU0_US],
+        &[0.0, 0.0, 0.02],
+        &[half_p, half_p, 3.0],
+        &[0.1, 0.1, 0.1],
+        &mut rc,
+    )?;
+    let (l, r) = (s.p[0], s.p[1]);
+    let centre = c + 0.5 * (r - l);
+    let crest = centre + ((t_step - centre) / period_us).ceil() * period_us;
+    let half = crest - half_p < t_step;
+    Some(Folded {
+        phi: if half { crest } else { crest - period_us },
+        width: l + r,
+        level: hi,
+        half,
     })
 }
 
@@ -474,39 +664,87 @@ fn place(raw: &Raw, period_us: f64) -> (f64, f64) {
 /// the run counts those captures ([`WaveRun::half_blind`]). Placing the
 /// edge from the grid instead reads the stiff synthetic plant 0.3% closer
 /// and the soft one 4% under, so the midpoint stands. Two windows past the
-/// last edge cover the capture's end.
-fn prepare(raw: &Raw, width_us: f64, period_us: f64, sc: &Scales) -> Prepared {
+/// last edge cover the capture's end. With both terminals every window and
+/// every gap between them takes the terminals' measured difference; None
+/// when a terminal has no settled sample in one of the two phases.
+fn prepare(raw: &Raw, width_us: f64, period_us: f64, sc: &Scales) -> Option<Prepared> {
     let e = &raw.edges;
-    let phi = place(raw, period_us).0;
-    let volts = |hi: f64| sc.terminal_volts(hi, raw.pre_tap);
-    let half = (e[0].rise, e[0].fall);
-    let mut wins = vec![(half.0, half.1, volts(e[0].hi))];
-    for k in 1..=e.len() + 1 {
+    let t_last = raw.shunt.last().map_or(0.0, |s| s.0);
+    let (phi, half, whole) = match raw.folded {
+        None => (place(raw, period_us).0, (e[0].rise, e[0].fall), e.len() + 1),
+        Some(f) => (
+            f.phi,
+            (f.phi, f.phi + if f.half { width_us / 2.0 } else { 0.0 }),
+            ((t_last - f.phi) / period_us).ceil().max(0.0) as usize + 1,
+        ),
+    };
+    let hi = |k: usize| match raw.folded {
+        Some(f) => f.level,
+        None => e.get(k).unwrap_or(&e[e.len() - 1]).hi,
+    };
+    let mut wins = vec![(half.0, half.1, hi(0))];
+    for k in 1..=whole {
         let c = phi + k as f64 * period_us;
-        let hi = e.get(k).map_or(e[e.len() - 1].hi, |x| x.hi);
-        wins.push((c - width_us / 2.0, c + width_us / 2.0, volts(hi)));
+        wins.push((c - width_us / 2.0, c + width_us / 2.0, hi(k)));
     }
-    let t0 = half.0 - LEAD_US;
-    let t_last = raw.shunt.last().map_or(t0, |s| s.0);
+    let gaps: Vec<(f64, f64)> = wins.windows(2).map(|w| (w[0].1, w[1].0)).collect();
+    // (span, level, ON) for every phase the model is driven through, the
+    // idle terminal's ON level beside each window
+    let mut phases = Vec::new();
+    let mut lo = Vec::new();
+    match &raw.taps {
+        None => {
+            for &(a, b, hi) in &wins {
+                phases.push(((a, b), sc.terminal_volts(hi, raw.pre_tap), true));
+            }
+        }
+        Some([hi, idle]) => {
+            let ons: Vec<(f64, f64)> = wins.iter().map(|w| (w.0, w.1)).collect();
+            for (spans, is_on) in [(&ons, true), (&gaps, false)] {
+                let (h, l) = (settled(hi, spans), settled(idle, spans));
+                for &at in spans {
+                    let (h, l) = (mean_at(&h, &raw.shunt, at)?, mean_at(&l, &raw.shunt, at)?);
+                    phases.push((at, h - l, is_on));
+                    if is_on {
+                        lo.push((at, l));
+                    }
+                }
+            }
+        }
+    }
+    let t0 = wins[0].0 - LEAD_US;
     let nst = ((t_last + 3.0 - t0) / DT_US).floor().max(1.0) as usize;
     let mut on = vec![0.0; nst];
     let mut v = vec![0.0; nst];
+    let step_at = |t: f64| {
+        let k = ((t - t0) / DT_US).round();
+        (k >= 0.0 && (k as usize) < nst).then_some(k as usize)
+    };
     let mut windows = Vec::new();
-    for &(a, b, vv) in &wins {
+    let mut off_mid = Vec::new();
+    for &((a, b), vv, is_on) in &phases {
         let k0 = ((a - t0) / DT_US).floor().max(0.0) as usize;
         let k1 = (((b - t0) / DT_US).ceil().max(0.0) as usize).min(nst);
         for k in k0..k1 {
             let t = t0 + DT_US * k as f64;
             let cov = ((t + DT_US).min(b) - t.max(a)) / DT_US;
             let cov = cov.clamp(0.0, 1.0);
-            on[k] += cov;
+            if is_on {
+                on[k] += cov;
+            }
             v[k] += cov * vv;
         }
-        let mid = ((0.5 * (a + b) - t0) / DT_US).round();
-        if mid >= 0.0 && (mid as usize) < nst {
-            windows.push((mid as usize, vv));
+        if let Some(k) = step_at(0.5 * (a + b)) {
+            match is_on {
+                true => windows.push((k, vv)),
+                false => off_mid.push((k, vv)),
+            }
         }
     }
+    let lo = lo
+        .iter()
+        .filter_map(|&((a, b), l)| step_at(0.5 * (a + b)).map(|k| (k, l)))
+        .collect();
     let grid_end = t0 + DT_US * (nst - 1) as f64;
     let (ts, y): (Vec<f64>, Vec<f64>) = raw
         .shunt
@@ -514,16 +752,56 @@ fn prepare(raw: &Raw, width_us: f64, period_us: f64, sc: &Scales) -> Prepared {
         .filter(|(t, _)| *t > t0 + EDGE_MARGIN_US && *t < grid_end - EDGE_MARGIN_US)
         .copied()
         .unzip();
-    Prepared {
+    Some(Prepared {
         index: raw.index,
         duty: raw.duty_q15 as f64 / 32767.0,
         t0_us: t0,
         on,
         v,
         windows,
+        measured: raw.taps.is_some(),
+        lo,
+        gaps: off_mid,
         ts,
         y,
+    })
+}
+
+/// A tap's samples inside the spans of one phase, clear of their edges.
+fn settled(tap: &[(f64, f64)], spans: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    tap.iter()
+        .filter(|(t, _)| {
+            spans
+                .iter()
+                .any(|(a, b)| (a + TAP_CLEAR_US..=b - EDGE_GUARD_US).contains(t))
+        })
+        .copied()
+        .collect()
+}
+
+/// Linear through time-ordered points, held beyond either end.
+fn interp(pts: &[(f64, f64)], t: f64) -> Option<f64> {
+    let k = pts.partition_point(|p| p.0 <= t);
+    match (k.checked_sub(1).and_then(|j| pts.get(j)), pts.get(k)) {
+        (Some(a), Some(b)) => Some(a.1 + (t - a.0) / (b.0 - a.0) * (b.1 - a.1)),
+        (Some(a), None) | (None, Some(a)) => Some(a.1),
+        (None, None) => None,
     }
+}
+
+/// The tap's mean over the shunt sample times inside `[a, b]`, or at its
+/// centre when no shunt sample falls inside.
+fn mean_at(pts: &[(f64, f64)], shunt: &[(f64, f64)], (a, b): (f64, f64)) -> Option<f64> {
+    let mut ts: Vec<f64> = shunt
+        .iter()
+        .map(|s| s.0)
+        .filter(|t| (a..=b).contains(t))
+        .collect();
+    if ts.is_empty() {
+        ts.push(0.5 * (a + b));
+    }
+    let v: Vec<f64> = ts.iter().filter_map(|&t| interp(pts, t)).collect();
+    (!v.is_empty()).then(|| v.iter().sum::<f64>() / v.len() as f64)
 }
 
 /// What the model holds fixed.
@@ -572,7 +850,10 @@ fn simulate(
     let over_l = dt / (l_mh * 1e-3);
     let lag = if tau_a > DT_US { DT_US / tau_a } else { 1.0 };
     let spin = if m.j > 0.0 { m.ke / m.j * dt } else { 0.0 };
-    let (on_r, off_r) = (m.rds + m.rsh, 2.0 * m.rds);
+    let (on_r, off_r) = match c.measured {
+        true => (0.0, 0.0),
+        false => (m.rds + m.rsh, 2.0 * m.rds),
+    };
     let (mut i, mut w, mut y) = (0.0f64, 0.0f64, 0.0f64);
     ys.clear();
     let mut cur = cur;
@@ -868,10 +1149,15 @@ struct Grid {
     half_blind: usize,
 }
 
-fn grid(rest: &[(usize, &Capture)], sc: &Scales, notes: &mut Vec<String>) -> Result<Grid, String> {
+fn grid(
+    rest: &[(usize, &Capture)],
+    sc: &Scales,
+    both: bool,
+    notes: &mut Vec<String>,
+) -> Result<Grid, String> {
     let mut raws = Vec::new();
     for (k, cap) in rest {
-        match split(*k, cap, sc) {
+        match split(*k, cap, sc, both) {
             Ok(r) => raws.push(r),
             Err(why) => notes.push(format!("capture {k}: {why}; not fitted")),
         }
@@ -911,7 +1197,7 @@ fn grid(rest: &[(usize, &Capture)], sc: &Scales, notes: &mut Vec<String>) -> Res
             let w: Vec<f64> = raws
                 .iter()
                 .filter(|r| r.duty_q15 == *d)
-                .map(|r| place(r, period_us).1)
+                .map(|r| r.folded.map_or_else(|| place(r, period_us).1, |f| f.width))
                 .collect();
             (*d, w.iter().sum::<f64>() / w.len() as f64)
         })
@@ -926,12 +1212,33 @@ fn grid(rest: &[(usize, &Capture)], sc: &Scales, notes: &mut Vec<String>) -> Res
     .unwrap_or(0.0);
     let half_blind = raws
         .iter()
-        .filter(|r| r.edges[0].rise_span > 0.0 || r.edges[0].fall_span > 0.0)
+        .filter(|r| {
+            r.edges
+                .first()
+                .is_some_and(|e| e.rise_span > 0.0 || e.fall_span > 0.0)
+        })
         .count();
-    let prepared = raws
-        .iter()
-        .map(|r| prepare(r, width(r.duty_q15), period_us, sc))
-        .collect();
+    let mut prepared = Vec::new();
+    raws.retain(|r| match prepare(r, width(r.duty_q15), period_us, sc) {
+        Some(p) => {
+            prepared.push(p);
+            true
+        }
+        None => {
+            notes.push(format!(
+                "capture {}: a terminal has no settled sample in a phase; not fitted",
+                r.index
+            ));
+            false
+        }
+    });
+    if prepared.len() < 2 {
+        return Err(format!(
+            "{} of {} captures from rest could be fitted",
+            prepared.len(),
+            rest.len()
+        ));
+    }
     Ok(Grid {
         raws,
         prepared,
@@ -943,7 +1250,24 @@ fn grid(rest: &[(usize, &Capture)], sc: &Scales, notes: &mut Vec<String>) -> Res
 
 /// The whole-waveform fit over the from-rest captures, `(index, capture)`
 /// in run order, with its gates. Err says why nothing could be fitted.
+/// Captures that sampled both terminals are fitted on their difference,
+/// and on the driven terminal alone beside it.
 pub fn fit_run(rest: &[(usize, &Capture)], sc: &Scales, cfg: &WaveCfg) -> Result<WaveRun, String> {
+    let mut run = fit_with(rest, sc, cfg, true)?;
+    if run.both_terminals {
+        run.driven = fit_with(rest, sc, cfg, false)
+            .ok()
+            .map(|d| (d.fit, d.at_limit));
+    }
+    Ok(run)
+}
+
+fn fit_with(
+    rest: &[(usize, &Capture)],
+    sc: &Scales,
+    cfg: &WaveCfg,
+    both: bool,
+) -> Result<WaveRun, String> {
     let mut notes = Vec::new();
     let Grid {
         raws,
@@ -951,7 +1275,7 @@ pub fn fit_run(rest: &[(usize, &Capture)], sc: &Scales, cfg: &WaveCfg) -> Result
         period_us,
         on_loss_us,
         half_blind,
-    } = grid(rest, sc, &mut notes)?;
+    } = grid(rest, sc, both, &mut notes)?;
     let model = Model {
         rds: cfg.rds_ohm,
         rsh: sc.shunt_ohm,
@@ -1012,12 +1336,29 @@ pub fn fit_run(rest: &[(usize, &Capture)], sc: &Scales, cfg: &WaveCfg) -> Result
     // put at the end of each capture.
     let p = params(&fit);
     let (mut ys, mut cur) = (Vec::new(), Vec::new());
-    let mut pts = Vec::new();
+    let (mut pts, mut lo, mut off) = (Vec::new(), Vec::new(), Vec::new());
     let mut emf_end_v = 0.0f64;
     for c in &kept {
         emf_end_v = emf_end_v.max(simulate(c, &model, &p, &mut ys, Some(&mut cur)));
-        pts.extend(c.windows.iter().map(|(k, v)| (cur[*k], *v)));
+        let at = |w: &[(usize, f64)]| w.iter().map(|(k, v)| (cur[*k], *v)).collect::<Vec<_>>();
+        pts.extend(at(&c.windows));
+        lo.extend(at(&c.lo));
+        off.extend(at(&c.gaps));
     }
+    let both_terminals = kept.iter().all(|c| c.measured);
+    // The brake's difference is the OFF path's drop alone, through zero.
+    let off_ohm = match both_terminals {
+        true => {
+            let ii: f64 = off.iter().map(|(i, _)| i * i).sum();
+            -off.iter().map(|(i, v)| i * v).sum::<f64>() / ii
+        }
+        false => 2.0 * cfg.rds_ohm,
+    };
+    let on_drop_ohm = match both_terminals {
+        true => 0.0,
+        false => cfg.rds_ohm + sc.shunt_ohm,
+    };
+    let lo_side_ohm = linear_ls(&lo).map(|l| l.b);
     let (v_on_open, z_on_ohm) = match linear_ls(&pts) {
         Some(l) => (l.a, -l.b),
         None => (
@@ -1033,7 +1374,7 @@ pub fn fit_run(rest: &[(usize, &Capture)], sc: &Scales, cfg: &WaveCfg) -> Result
             .collect::<Vec<_>>(),
     )
     .unwrap_or(0.0);
-    let tau_us = fit.l_h / (fit.r_ohm + 2.0 * cfg.rds_ohm) * 1e6;
+    let tau_us = fit.l_h / (fit.r_ohm + off_ohm) * 1e6;
     let mut run = WaveRun {
         fit,
         captures,
@@ -1044,8 +1385,13 @@ pub fn fit_run(rest: &[(usize, &Capture)], sc: &Scales, cfg: &WaveCfg) -> Result
         half_blind,
         period_us,
         rail_v,
+        both_terminals,
         v_on_open,
         z_on_ohm,
+        on_drop_ohm,
+        off_ohm,
+        lo_side_ohm,
+        driven: None,
         rds_ohm: cfg.rds_ohm,
         shunt_ohm: sc.shunt_ohm,
         tau_us,
@@ -1218,7 +1564,7 @@ mod tests {
     fn synthetic(truth: impl Fn(usize) -> [f64; 5], sd: f64) -> Vec<Capture> {
         let sc = board_d_scales();
         let mut caps = mg90_2s();
-        let g = grid(&rest(&caps), &sc, &mut Vec::new()).expect("the bench grid");
+        let g = grid(&rest(&caps), &sc, true, &mut Vec::new()).expect("the bench grid");
         let m = Model {
             rds: RDS_ON_OHM,
             rsh: sc.shunt_ohm,
@@ -1239,7 +1585,7 @@ mod tests {
             let t = truth(p.index);
             simulate(p, &m, &t, &mut ys, None);
             let cap = &mut caps[p.index];
-            let (fl, bias) = (cap.frame_len(), cap.meta.bias as f64);
+            let (fl, bias) = (cap.shunt_stride(), cap.meta.bias as f64);
             for k in 0..cap.samples.len() / fl {
                 let at = shunt_at(p, &ys, (k * fl) as f64 * SAMPLE_US + t[4]);
                 // four uniforms scaled by sqrt(3) sum to unit variance
@@ -1513,6 +1859,147 @@ mod tests {
         assert_eq!(run.half_blind, 16);
         let bias = run.at_limit.unwrap().v_over_i_ohm / truth - 1.0;
         assert!(bias.abs() < 0.035, "V/I {bias:+} of the plant's");
+    }
+
+    /// A rest-to-step run on a synthetic plant at two duties, both signs,
+    /// four of each, sampling `chans`.
+    fn plant_run(
+        plant: &crate::exp::testkit::SynthBurst,
+        chans: crate::burst::Chans,
+        pcts: [i32; 2],
+    ) -> Vec<Capture> {
+        use crate::exp::testkit::SynthBurst;
+        let mut caps = Vec::new();
+        for pct in pcts {
+            for sgn in [1i32, -1] {
+                for _ in 0..4 {
+                    let q = (sgn * pct * 32767 / 100) as i16;
+                    let p = SynthBurst {
+                        chans: chans.for_step(q),
+                        ..plant.clone()
+                    };
+                    caps.push(p.capture(q, 0));
+                }
+            }
+        }
+        caps
+    }
+
+    /// The run's own rungs on 2S, percent.
+    const RUNGS: [i32; 2] = [25, 40];
+
+    /// A hot bridge (Rds 0.20 ohm where the fit assumes 0.14), 80 mohm of
+    /// copper in each low-side leg and dividers 6 counts apart, sampled
+    /// shunt, A, shunt, B. Fitted on the terminals' difference, R reads
+    /// within 1% of what it reads on a nominal bridge (0.14 ohm, no copper):
+    /// the low side drops out. The driven terminal alone reads 0.15 ohm or
+    /// more higher on the hot bridge than on the nominal one, beside the
+    /// difference on the same captures and on the plant sampled shunt, A:
+    /// the low side it assumes is the one it got wrong. The idle terminal
+    /// reads the low-side path (FET, copper and shunt) and the OFF
+    /// difference the brake, each within 3%; R, L and V/I at the limit read
+    /// within 1.5% of the plant's and V0 within 25 mV.
+    #[test]
+    fn both_terminals_take_the_low_side_out_of_r() {
+        use crate::burst::{CHANS_DIFF, Chans};
+        use crate::exp::testkit::SynthBurst;
+        let nominal = SynthBurst {
+            r: 4.28,
+            l: 0.79e-3,
+            v0: 0.12,
+            settle_us: 1.29,
+            v_rail: 7.2,
+            ..SynthBurst::board_d().with_bridge()
+        };
+        let hot = SynthBurst {
+            rds: 0.20,
+            r_low: 0.08,
+            split: 6.0,
+            ..nominal.clone()
+        };
+        let i = 0.25;
+        let cfg = WaveCfg {
+            ke_v_s_per_rad: 0.0,
+            i_lim_a: Some(i),
+            ..WaveCfg::default()
+        };
+        let caps = plant_run(&hot, Chans::Diff, RUNGS);
+        assert!(
+            caps.iter()
+                .all(|c| c.meta.chans == CHANS_DIFF && c.shunt_stride() == 2)
+        );
+        let run = fit(&caps, &cfg);
+        let base = fit(&plant_run(&nominal, Chans::Diff, RUNGS), &cfg);
+        let f = run.fit;
+        assert!(run.both_terminals && base.both_terminals);
+        assert_eq!(f.captures, 16);
+        assert!(
+            (f.r_ohm / base.fit.r_ohm - 1.0).abs() < 0.01,
+            "{f:?} {:?}",
+            base.fit
+        );
+
+        let driven_r = |run: &WaveRun| run.driven.expect("the driven terminal beside it").0.r_ohm;
+        let one = |p: &SynthBurst| fit(&plant_run(p, Chans::Driven, RUNGS), &cfg);
+        assert!(one(&hot).driven.is_none() && !one(&hot).both_terminals);
+        for (hot_r, nominal_r) in [
+            (driven_r(&run), driven_r(&base)),
+            (one(&hot).fit.r_ohm, one(&nominal).fit.r_ohm),
+        ] {
+            assert!(
+                hot_r - nominal_r > 0.15,
+                "driven R {hot_r} hot, {nominal_r} nominal"
+            );
+        }
+
+        let low = hot.rds + hot.r_low;
+        let lo = run.lo_side_ohm.expect("the idle terminal's line");
+        assert!(
+            (lo / (low + hot.r_shunt) - 1.0).abs() < 0.03,
+            "low side {lo}"
+        );
+        assert!(
+            (run.off_ohm / (2.0 * low) - 1.0).abs() < 0.03,
+            "brake {}",
+            run.off_ohm
+        );
+        assert!((f.r_ohm / hot.r - 1.0).abs() < 0.015, "{f:?}");
+        assert!((f.l_h / hot.l - 1.0).abs() < 0.015, "{f:?}");
+        assert!((f.v0_volts - hot.v0).abs() < 0.025, "{f:?}");
+        let d = (hot.v0 + (hot.r + 2.0 * low) * i) / (hot.v_rail + (hot.r_low - hot.r_shunt) * i);
+        let bias = run.at_limit.unwrap().v_over_i_ohm / (d * hot.v_rail / i) - 1.0;
+        assert!(bias.abs() < 0.015, "V/I {bias:+} of the plant's");
+    }
+
+    /// The terminals sampled every fourth conversion still place the grid
+    /// at the low rungs, where a 13% window may hold no sample of the
+    /// driven one: folded, a 13/20% run reads R within 1.5% of the plant's.
+    #[test]
+    fn a_folded_terminal_reads_the_low_rungs() {
+        use crate::burst::Chans;
+        use crate::exp::testkit::SynthBurst;
+        let plant = SynthBurst {
+            r: 4.28,
+            l: 0.79e-3,
+            v0: 0.12,
+            settle_us: 1.29,
+            v_rail: 7.2,
+            ..SynthBurst::board_d().with_bridge()
+        };
+        let caps = plant_run(&plant, Chans::Diff, [13, 20]);
+        let run = fit(
+            &caps,
+            &WaveCfg {
+                ke_v_s_per_rad: 0.0,
+                ..WaveCfg::default()
+            },
+        );
+        assert_eq!(run.fit.captures, 16, "{:?}", run.notes);
+        assert!(
+            (run.fit.r_ohm / plant.r - 1.0).abs() < 0.015,
+            "{:?}",
+            run.fit
+        );
     }
 
     /// Nothing in an identification run starts from rest in TEL yet, so

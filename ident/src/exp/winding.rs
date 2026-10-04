@@ -800,6 +800,7 @@ mod tests {
         for (rail, plant) in [("stiff", stiff()), ("soft", soft())] {
             for chans in [
                 Chans::Driven,
+                Chans::Diff,
                 Chans::Fixed(CHAN_VMOTOR_A | CHAN_VMOTOR_B),
                 Chans::Fixed(CHAN_VBUS),
                 Chans::Fixed(CHAN_VMOTOR_A | CHAN_VBUS),
@@ -832,10 +833,10 @@ mod tests {
                     g.l_h
                 );
                 // The verdict is the waveform fit's, which reads the driven
-                // terminal: the tool's own mask promotes, a mask that never
-                // samples the driven terminal has nothing to fit.
+                // terminal or both: the tool's own masks promote, a mask
+                // that never samples the driven terminal has nothing to fit.
                 match chans {
-                    Chans::Driven => assert!(
+                    Chans::Driven | Chans::Diff => assert!(
                         r.promotable(),
                         "{rail} {chans:?} blocked by {:?}",
                         r.blocking()

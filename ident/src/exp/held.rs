@@ -928,7 +928,11 @@ mod tests {
     #[test]
     fn a_seated_winding_recovers_r_and_l_on_both_rails() {
         for (rail, plant) in [("stiff", stiff()), ("soft", soft())] {
-            for chans in [Chans::Driven, Chans::Fixed(CHAN_VMOTOR_A | CHAN_VMOTOR_B)] {
+            for chans in [
+                Chans::Driven,
+                Chans::Diff,
+                Chans::Fixed(CHAN_VMOTOR_A | CHAN_VMOTOR_B),
+            ] {
                 let h = seated_run(&plant, chans, true);
                 let g = h.reg.expect("regression");
                 println!(

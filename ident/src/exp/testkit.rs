@@ -1042,6 +1042,9 @@ pub struct SynthBurst {
     pub r_feed: f64,
     /// Per bridge FET, ohms.
     pub rds: f64,
+    /// Copper in each low-side leg, between its FET and the shunt node:
+    /// no terminal tap sees it apart from the other leg's.
+    pub r_low: f64,
     pub r_shunt: f64,
     /// Brush drop against the winding current, volts.
     pub v0: f64,
@@ -1100,6 +1103,7 @@ impl SynthBurst {
             c_island: 0.0,
             r_feed: 0.0,
             rds: 0.0,
+            r_low: 0.0,
             r_shunt: 0.0,
             v0: 0.0,
             emf_v_per_ms: 0.0,
@@ -1190,14 +1194,15 @@ impl SynthBurst {
             let pgnd = i_sh * self.r_shunt;
             // terminals against ground, in the drive frame: hi is the
             // chopping leg
+            let low = self.rds + self.r_low;
             let (hi, lo) = if d == 0.0 {
                 (vb_v, vb_v)
             } else if on {
-                (vm + pgnd - *i * self.rds, pgnd + *i * self.rds)
+                (vm + pgnd - *i * self.rds, pgnd + *i * low)
             } else if self.body_diode && *i > 0.0 {
-                (-DIODE_V, pgnd + *i * self.rds)
+                (-DIODE_V, pgnd + *i * low)
             } else {
-                (pgnd - *i * self.rds, pgnd + *i * self.rds)
+                (pgnd - *i * low, pgnd + *i * low)
             };
             if d != 0.0 {
                 *i += (hi - lo - *i * self.r - v0 - e) / self.l * dt;
