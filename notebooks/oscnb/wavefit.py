@@ -16,6 +16,19 @@ fitted to the shunt samples of all the from-rest captures at once:
 Five parameters: R, L, V0, tau_a, delta. Ke and J are priors. The loss is
 soft L1 with a knee of 8 counts.
 
+`--burst-chans diff` samples both terminals, shunt, A, shunt, B, the shunt
+still every second conversion. Such a capture is fitted on what the winding
+sees, the terminals' difference, each tap read against its own rest level
+and interpolated to the shunt sample times through its settled samples of
+the same phase, one level per ON window and per OFF gap:
+
+    L di/dt = (vA - vB) - V0 - R i - Ke w
+
+so neither the low-side path (FET, shunt, copper) nor the divider bias is
+assumed. A terminal sampled every fourth conversion catches too few edges
+window by window, so its samples are folded onto one PWM period and the
+edges fitted there as the tap's RC response to the ON rectangle (`_fold`).
+
 WHY A PORT
 
 The Rust fit is the authority, and this module follows it line for line so
@@ -42,7 +55,13 @@ from scipy.optimize import least_squares
 # --- constants, each from the Rust source it mirrors ---
 SAMPLE_US = 52.0 / 48.0         # burst.rs: one conversion, 26 ADCCLK at HCLK/2
 HCLK_MHZ = 48.0                 # burst.rs
-CHAN_VMOTOR_A, CHAN_VMOTOR_B = 1, 2
+CHAN_VMOTOR_A, CHAN_VMOTOR_B, CHAN_VBUS, CHAN_INTERLEAVE = 1, 2, 4, 8
+CHAN_EXTRAS = CHAN_VMOTOR_A | CHAN_VMOTOR_B | CHAN_VBUS
+TAP_CLEAR_US = 2.0              # winding.rs: a tap sample this long after an edge is settled
+EDGE_GUARD_US = 2.0             # winding.rs: and this long before the next
+FOLD_FRAME_LEN = 4              # a driven terminal this sparse is folded
+FOLD_SPAN_US = 3.0              # the fold fits this far either side of the window
+FOLD_TAU0_US = 0.33             # tap RC the fold starts from, 2.2k x 150 pF
 DT_US = 0.25                    # wavefit.rs: model step
 KE_PRIOR = 1.334e-3             # V s/rad at the motor shaft, bench MG90 prior
 J_PRIOR = 6.9e-9                # kg m2, prior
@@ -103,12 +122,26 @@ class Capture:
     def from_rest(self):
         return self.meta["step_q15"] != 0 and self.meta["pre_q15"] == 0 and not self.meta["seated"]
 
+    def _shunts(self):
+        c = self.meta["chans"]
+        n = bin(c & CHAN_EXTRAS).count("1")
+        return n if c & CHAN_INTERLEAVE and n > 0 else 1
+
+    @property
+    def shunt_stride(self):
+        # conversions from one shunt code to the next: the frame, or two interleaved
+        return self.frame_len // self._shunts()
+
     def slot(self, bit):
         c = self.meta["chans"]
-        return 1 + bin(c & (bit - 1)).count("1") if c & bit else None
+        rank = bin(c & CHAN_EXTRAS & (bit - 1)).count("1")
+        return 1 + rank * (2 if self._shunts() > 1 else 1) if c & bit else None
 
     def stream(self, slot):
         return self.samples[slot::self.frame_len]
+
+    def shunt(self):
+        return self.samples[::self.shunt_stride]
 
 
 def _edge_at(vt, t_of, i, lo, hi, rising):
@@ -170,26 +203,80 @@ class Raw:
     pre_tap: float
     shunt_t: np.ndarray
     shunt_y: np.ndarray
+    folded: dict = None         # the grid folded off a sparse driven terminal, in place of edges
+    taps: tuple = None          # ((t, volts over rest) driven, idle) when both were sampled
 
 
-def split(cap, sc):
+def _fold(vt, t, t_step, period):
+    """A sparse driven terminal's samples from a period after the step on, folded onto one PWM
+    period: the ON samples gather around the window's centre and the edges are where the tap's
+    RC response to a rectangle from -l to r meets the samples near them, tau free. The duty
+    latches at the first update event after the step, crest or trough."""
+    keep = t >= t_step + period
+    t, v = t[keep], vt[keep]
+    thr = 0.5 * (v.max() + np.median(v))
+    on = v > thr
+    if on.sum() < MIN_EDGES:
+        return None
+    hi, lo = np.median(v[on]), np.median(v[~on])
+    a = 2 * np.pi * t[on] / period
+    c = np.arctan2(np.sin(a).sum(), np.cos(a).sum()) / (2 * np.pi) * period
+    half_p = period / 2
+    d = np.mod(t - c + half_p, period) - half_p
+    left = (np.max(-d[on & (d < 0)], initial=0.0), np.min(-d[~on & (d < 0)], initial=half_p))
+    right = (np.max(d[on & (d >= 0)], initial=0.0), np.min(d[~on & (d >= 0)], initial=half_p))
+    l0, r0 = 0.5 * sum(left), 0.5 * sum(right)
+    near = (d >= -l0 - FOLD_SPAN_US) & (d <= r0 + FOLD_SPAN_US)
+    dn, vn = d[near], v[near]
+
+    def rc(q):
+        l, r, tau = q
+        rise = 1 - np.exp(-np.maximum(dn + l, 0) / tau)
+        g = np.where(dn < -l, 0.0,
+                     np.where(dn <= r, rise,
+                              (1 - np.exp(-(l + r) / tau)) * np.exp(-np.maximum(dn - r, 0) / tau)))
+        return lo + (hi - lo) * g - vn
+
+    s = least_squares(rc, [l0, r0, FOLD_TAU0_US], bounds=([0, 0, 0.02], [half_p, half_p, 3.0]),
+                      loss="soft_l1", f_scale=F_SCALE, x_scale=[0.1, 0.1, 0.1], method="trf")
+    l, r = s.x[0], s.x[1]
+    centre = c + 0.5 * (r - l)
+    crest = centre + np.ceil((t_step - centre) / period) * period
+    half = crest - half_p < t_step
+    return dict(phi=crest if half else crest - period, width=l + r, level=hi, half=half)
+
+
+def split(cap, sc, both=True):
     fwd = cap.meta["step_q15"] >= 0
-    slot = cap.slot(CHAN_VMOTOR_A if fwd else CHAN_VMOTOR_B)
+    bit, idle = (CHAN_VMOTOR_A, CHAN_VMOTOR_B) if fwd else (CHAN_VMOTOR_B, CHAN_VMOTOR_A)
+    slot = cap.slot(bit)
     if slot is None:
         raise ValueError("no driven-terminal channel")
-    fl = cap.frame_len
-    sh, vt = cap.stream(0), cap.stream(slot)
-    n = len(sh)
+    fl, st = cap.frame_len, cap.shunt_stride
+    sh, vt = cap.shunt(), cap.stream(slot)
+    n = len(vt)
     step = cap.meta["step_index"] // fl
     if step < 12 or step + 12 > n:
         raise ValueError("the step sits at an end of the capture")
-    pre_tap, bias = np.median(vt[:step - 4]), np.median(sh[:step - 4])
-    edges = _find_edges(vt, lambda k: (k * fl + slot) * SAMPLE_US, step)
-    if len(edges) < MIN_EDGES:
+    rest = cap.meta["step_index"] // st - 4 * fl // st
+    pre_tap, bias = np.median(vt[:step - 4]), np.median(sh[:rest])
+    t_of = lambda s: (np.arange(n) * fl + s) * SAMPLE_US
+    edges, folded = [], None
+    if fl >= FOLD_FRAME_LEN:
+        period = 2.0 * cap.meta["pwm_arr"] / HCLK_MHZ
+        folded = _fold(vt, t_of(slot), cap.meta["step_index"] * SAMPLE_US, period)
+    else:
+        edges = _find_edges(vt, lambda k: (k * fl + slot) * SAMPLE_US, step)
+    if len(edges) < MIN_EDGES and folded is None:
         raise ValueError("too few ON windows on the driven terminal")
+    taps = None
+    lo = cap.slot(idle) if both else None
+    if lo is not None:
+        tap = lambda s, v: (t_of(s), sc.v_term_per_count * (v - np.median(v[:step - 4])))
+        taps = (tap(slot, vt), tap(lo, cap.stream(lo)))
     return Raw(cap.index, abs(cap.meta["step_q15"]), fwd, cap.meta["pos"],
                cap.meta["vbus_raw"] * sc.v_rail_per_count, edges, pre_tap,
-               np.arange(n) * fl * SAMPLE_US, sh - bias)
+               np.arange(len(sh)) * st * SAMPLE_US, sh - bias, folded, taps)
 
 
 def _place(raw, period):
@@ -210,34 +297,81 @@ class Prepared:
     windows: list
     ts: np.ndarray
     y: np.ndarray
+    measured: bool = False      # v is the terminals' difference: no bridge drop is modelled
+    lo: list = field(default_factory=list)      # (step, idle terminal) per ON window
+    gaps: list = field(default_factory=list)    # (step, difference) per OFF gap
+
+
+def _mean_at(t, v, spans, shunt_t, at):
+    # a tap's settled samples of one phase, linear between them, averaged over the shunt
+    # sample times inside `at` (its centre when none falls inside)
+    keep = np.zeros(len(t), bool)
+    for a, b in spans:
+        keep |= (t >= a + TAP_CLEAR_US) & (t <= b - EDGE_GUARD_US)
+    if not keep.any():
+        return None
+    ts = shunt_t[(shunt_t >= at[0]) & (shunt_t <= at[1])]
+    if len(ts) == 0:
+        ts = np.array([0.5 * (at[0] + at[1])])
+    return float(np.interp(ts, t[keep], v[keep]).mean())
 
 
 def prepare(raw, width, period, sc):
-    e = raw.edges
-    phi = _place(raw, period)[0]
-    volts = lambda hi: sc.terminal_volts(hi, raw.pre_tap)
-    wins = [(e[0]["rise"], e[0]["fall"], volts(e[0]["hi"]))]
-    for k in range(1, len(e) + 2):
-        c = phi + k * period
-        hi = e[k]["hi"] if k < len(e) else e[-1]["hi"]
-        wins.append((c - width / 2, c + width / 2, volts(hi)))
-    t0 = e[0]["rise"] - LEAD_US
+    """None when a terminal has no settled sample in a phase."""
+    e, f = raw.edges, raw.folded
     t_last = raw.shunt_t[-1]
+    if f is None:
+        phi = _place(raw, period)[0]
+        half, whole = (e[0]["rise"], e[0]["fall"]), len(e) + 1
+        hi = lambda k: e[min(k, len(e) - 1)]["hi"]
+    else:
+        phi = f["phi"]
+        half = (phi, phi + (width / 2 if f["half"] else 0.0))
+        whole = max(int(np.ceil((t_last - phi) / period)), 0) + 1
+        hi = lambda k: f["level"]
+    wins = [(half[0], half[1], hi(0))]
+    for k in range(1, whole + 1):
+        c = phi + k * period
+        wins.append((c - width / 2, c + width / 2, hi(k)))
+    gaps = [(a[1], b[0]) for a, b in zip(wins, wins[1:])]
+    phases, lo = [], []
+    if raw.taps is None:
+        phases = [((a, b), sc.terminal_volts(h, raw.pre_tap), True) for a, b, h in wins]
+    else:
+        (th, vh), (tl, vl) = raw.taps
+        ons = [(a, b) for a, b, _ in wins]
+        for spans, is_on in ((ons, True), (gaps, False)):
+            for at in spans:
+                h = _mean_at(th, vh, spans, raw.shunt_t, at)
+                l = _mean_at(tl, vl, spans, raw.shunt_t, at)
+                if h is None or l is None:
+                    return None
+                phases.append((at, h - l, is_on))
+                if is_on:
+                    lo.append((at, l))
+    t0 = wins[0][0] - LEAD_US
     nst = max(int(np.floor((t_last + 3.0 - t0) / DT_US)), 1)
     on, v = np.zeros(nst), np.zeros(nst)
-    windows = []
     tk = t0 + DT_US * np.arange(nst)
-    for a, b, vv in wins:
+
+    def step_at(t):
+        k = round((t - t0) / DT_US)
+        return k if 0 <= k < nst else None
+
+    windows, off_mid = [], []
+    for (a, b), vv, is_on in phases:
         cov = np.clip((np.minimum(tk + DT_US, b) - np.maximum(tk, a)) / DT_US, 0, 1)
-        on += cov
+        if is_on:
+            on += cov
         v += cov * vv
-        mid = round((0.5 * (a + b) - t0) / DT_US)
-        if 0 <= mid < nst:
-            windows.append((mid, vv))
+        mid = step_at(0.5 * (a + b))
+        if mid is not None:
+            (windows if is_on else off_mid).append((mid, vv))
+    lo = [(step_at(0.5 * (a + b)), l) for (a, b), l in lo if step_at(0.5 * (a + b)) is not None]
     grid_end = t0 + DT_US * (nst - 1)
     keep = (raw.shunt_t > t0 + EDGE_MARGIN_US) & (raw.shunt_t < grid_end - EDGE_MARGIN_US)
     return Prepared(raw.index, raw.duty_q15 / 32767, t0, on, v, windows,
-                    raw.shunt_t[keep], raw.shunt_y[keep])
+                    raw.shunt_t[keep], raw.shunt_y[keep], raw.taps is not None, lo, off_mid)
 
 
 @dataclass(frozen=True)
@@ -261,14 +395,15 @@ def simulate(caps, m, P, want_current=False):
     for j, c in enumerate(caps):
         on[j, :len(c.on)] = c.on
         vk[j, :len(c.v)] = c.v
+    measured = np.array([c.measured for c in caps])
     r, l_mh, v0, tau_a = P[:, 0], P[:, 1], P[:, 2], P[:, 3]
     dt = DT_US * 1e-6
     over_l = dt / (l_mh * 1e-3)
     lag = np.where(tau_a > DT_US, DT_US / np.maximum(tau_a, 1e-9), 1.0)
     spin = m.ke / m.j * dt if m.j > 0 else 0.0
     on_r, off_r = m.rds + m.rsh, 2 * m.rds
-    # the per-step resistance the current sees, ON share and OFF share
-    rloop = on * on_r + (1 - on) * off_r
+    # the per-step resistance the current sees, ON share and OFF share; none where measured
+    rloop = np.where(measured[:, None], 0.0, on * on_r + (1 - on) * off_r)
     i = np.zeros(nl)
     w = np.zeros(nl)
     y = np.zeros(nl)
@@ -381,22 +516,36 @@ class Run:
     notes: list = field(default_factory=list)
 
     @classmethod
-    def build(cls, caps, sc, rds=RDS_ON_OHM, ke=KE_PRIOR, j=J_PRIOR):
+    def build(cls, caps, sc, rds=RDS_ON_OHM, ke=KE_PRIOR, j=J_PRIOR, both=True):
+        """`both` False fits a capture that sampled both terminals on the driven one alone,
+        the way ident's `WaveRun::driven` does."""
         raws, notes = [], []
         rest = [c for c in caps if c.from_rest]
         for c in rest:
             try:
-                raws.append(split(c, sc))
+                raws.append(split(c, sc, both))
             except ValueError as e:
                 notes.append(f"capture {c.index}: {e}; not fitted")
         period = 2.0 * rest[0].meta["pwm_arr"] / HCLK_MHZ
         duties = sorted({r.duty_q15 for r in raws})
-        widths = {d: np.mean([_place(r, period)[1] for r in raws if r.duty_q15 == d]) for d in duties}
+        width = lambda r: _place(r, period)[1] if r.folded is None else r.folded["width"]
+        widths = {d: np.mean([width(r) for r in raws if r.duty_q15 == d]) for d in duties}
         on_loss = float(np.median([d / 32767 * period - w for d, w in widths.items()]))
-        prepared = [prepare(r, widths[r.duty_q15], period, sc) for r in raws]
+        kept, prepared = [], []
+        for r in raws:
+            pr = prepare(r, widths[r.duty_q15], period, sc)
+            if pr is None:
+                notes.append(f"capture {r.index}: a terminal has no settled sample in a phase; not fitted")
+            else:
+                kept.append(r)
+                prepared.append(pr)
         model = Model(rds, sc.shunt_ohm, ke, j, 1.0 / sc.amps_per_count)
-        return cls(raws, prepared, period, on_loss, float(np.median([r.rail_v for r in raws])),
+        return cls(kept, prepared, period, on_loss, float(np.median([r.rail_v for r in kept])),
                    model, sc, notes)
+
+    @property
+    def both_terminals(self):
+        return all(c.measured for c in self.prepared)
 
     def fit(self, fixed=None, start=None, keep=None):
         """Pooled fit. `fixed` maps parameter names to values held there.
@@ -430,21 +579,39 @@ class Run:
         fit = self.fit(fixed, start=start, keep=keep)
         return fit, each
 
-    def duty_volts(self, p, i_a, v_on_open, z_on):
-        # duty x rail whose settled winding current is i_a, ident's WaveRun::duty_volts
+    def duty_volts(self, p, i_a, v_on_open, z_on, on_drop=None, off=None):
+        # duty x rail whose settled winding current is i_a, ident's WaveRun::duty_volts; the
+        # bridge drops default to the driven terminal's assumed ones
+        on_drop = self.model.rds + self.model.rsh if on_drop is None else on_drop
+        off = 2 * self.model.rds if off is None else off
         v_on = v_on_open - z_on * i_a
-        d_on = (p["v0"] + (p["r"] + 2 * self.model.rds) * i_a) / (v_on + (self.model.rds - self.model.rsh) * i_a)
+        d_on = (p["v0"] + (p["r"] + off) * i_a) / (v_on + (off - on_drop) * i_a)
         return (d_on + self.on_loss / self.period) * self.rail_v
 
-    def on_line(self, p, keep=None):
-        """The driven terminal's ON level against the winding current, (open, sag ohms)."""
+    def _at_current(self, p, keep, attr):
         caps = [c for c in self.prepared if keep is None or c.index in keep]
         P = np.tile([p[n] for n in NAMES], (len(caps), 1))
         _, cur = simulate(caps, self.model, P, want_current=True)
-        pts = np.array([(cur[j, k], v) for j, c in enumerate(caps) for k, v in c.windows])
+        return np.array([(cur[j, k], v) for j, c in enumerate(caps) for k, v in getattr(c, attr)])
+
+    def on_line(self, p, keep=None):
+        """The ON level against the winding current, (open, sag ohms): the driven terminal's,
+        or with both terminals their difference."""
+        pts = self._at_current(p, keep, "windows")
         b, a = np.polyfit(pts[:, 0], pts[:, 1], 1)
         return a, -b
 
+    def bridge(self, p, keep=None):
+        """(on_drop, off, low side) ohms: what the winding loses to the bridge per amp during
+        ON and across the brake, and the idle terminal's ON level over the current. Assumed
+        on the driven terminal alone, measured with both."""
+        if not self.both_terminals:
+            return self.model.rds + self.model.rsh, 2 * self.model.rds, None
+        off = self._at_current(p, keep, "gaps")
+        lo = self._at_current(p, keep, "lo")
+        return 0.0, -(off[:, 0] @ off[:, 1]) / (off[:, 0] @ off[:, 0]), np.polyfit(lo[:, 0], lo[:, 1], 1)[0]
+
     def v_over_i(self, p, i_a, keep=None):
         a, z = self.on_line(p, keep)
-        return self.duty_volts(p, i_a, a, z) / i_a
+        on_drop, off, _ = self.bridge(p, keep)
+        return self.duty_volts(p, i_a, a, z, on_drop, off) / i_a
