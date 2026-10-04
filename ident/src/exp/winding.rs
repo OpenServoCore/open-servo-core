@@ -4,7 +4,7 @@
 //! and every R built on it reads high; a channel sampled inside the burst
 //! sees the sag.
 //!
-//! A channel gets one sample per frame, 2 to 4 conversions apart, so a 9 to
+//! A channel gets one sample per frame, 2 to 6 conversions apart, so a 9 to
 //! 18 conversion ON window holds only a handful. The unit of work is
 //! therefore the PERIOD: per ON window the mean of the settled samples, per
 //! OFF gap likewise, and the crest-to-crest mean V = D x V_on + (1 - D) x
@@ -194,7 +194,7 @@ fn slot_samples(
     slot: usize,
     (t0, t1): (f64, f64),
 ) -> Vec<(usize, f64)> {
-    let fl = f.frame_len;
+    let fl = cap.frame_len();
     let k0 = (t0 / f.raw_us / fl as f64).floor().max(0.0) as usize;
     let k1 = (t1 / f.raw_us / fl as f64).ceil().max(0.0) as usize;
     (k0..=k1)
@@ -251,7 +251,7 @@ pub fn capture_volts(
     if f.cb.len() < 2 {
         return None;
     }
-    let fl = f.frame_len;
+    let fl = f.shunt_stride;
     let mut notes = Vec::new();
     let (hi_bit, lo_bit) = legs(cap.meta.step_q15);
     let mut usable = |bit: u8| -> Option<usize> {
@@ -274,8 +274,10 @@ pub fn capture_volts(
         let s = tap?;
         match f.from_rest {
             true => median(
-                &(0..f.step)
-                    .map(|k| cap.samples[k * fl + s] as f64)
+                &cap.stream(s)
+                    .iter()
+                    .take((cap.meta.step_index as usize).div_ceil(cap.frame_len()))
+                    .map(|&c| c as f64)
                     .collect::<Vec<_>>(),
             ),
             false => zeros.get(bit),
@@ -903,7 +905,11 @@ mod tests {
 
     #[test]
     fn a_body_diode_off_phase_is_flagged_and_a_brake_is_not() {
-        for chans in [Chans::Driven, Chans::Fixed(CHAN_VMOTOR_A | CHAN_VMOTOR_B)] {
+        for chans in [
+            Chans::Driven,
+            Chans::Diff,
+            Chans::Fixed(CHAN_VMOTOR_A | CHAN_VMOTOR_B),
+        ] {
             for diode in [false, true] {
                 let plant = SynthBurst {
                     body_diode: diode,

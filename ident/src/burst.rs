@@ -5,8 +5,10 @@
 //!
 //! `chans` interleaves voltage channels behind the shunt: every frame is the
 //! shunt then the selected extras in bit order, so a channel in slot s is
-//! sampled s conversions after its frame's shunt sample. chans 0 is one
-//! shunt code per frame.
+//! sampled s conversions after its frame's first shunt sample. chans 0 is
+//! one shunt code per frame. [`CHAN_INTERLEAVE`] puts another shunt ahead
+//! of every extra after the first, so the shunt keeps every second
+//! conversion: both terminals ride along as shunt, A, shunt, B.
 //!
 //! Sans-io like the rest of the crate: [`BurstIo`] is the four wire moves
 //! and the sleep the handshake needs, the driver supplies them. The page
@@ -55,12 +57,28 @@ pub const SAMPLE_US: f64 = SAMPLE_HCLK / HCLK_MHZ;
 pub const CHAN_VMOTOR_A: u8 = 1 << 0;
 pub const CHAN_VMOTOR_B: u8 = 1 << 1;
 pub const CHAN_VBUS: u8 = 1 << 2;
+/// Layout bit: a shunt slot ahead of every extra after the first.
+pub const CHAN_INTERLEAVE: u8 = 1 << 3;
+pub const CHAN_EXTRAS: u8 = CHAN_VMOTOR_A | CHAN_VMOTOR_B | CHAN_VBUS;
 /// Largest mask the servo accepts.
-pub const CHANS_MAX: u8 = CHAN_VMOTOR_A | CHAN_VMOTOR_B | CHAN_VBUS;
+pub const CHANS_MAX: u8 = CHAN_EXTRAS | CHAN_INTERLEAVE;
+/// Both terminals at half rate each, the shunt at frame_len 2's rate.
+pub const CHANS_DIFF: u8 = CHAN_VMOTOR_A | CHAN_VMOTOR_B | CHAN_INTERLEAVE;
 
-/// Codes per frame for a mask: the shunt plus one per selected extra.
+/// Shunt codes per frame for a mask: one, or one per extra when
+/// interleaved.
+const fn shunts(chans: u8) -> usize {
+    let n = (chans & CHAN_EXTRAS).count_ones() as usize;
+    if chans & CHAN_INTERLEAVE != 0 && n > 0 {
+        n
+    } else {
+        1
+    }
+}
+
+/// Codes per frame for a mask: the shunts plus one per selected extra.
 pub const fn frame_len(chans: u8) -> usize {
-    1 + chans.count_ones() as usize
+    shunts(chans) + (chans & CHAN_EXTRAS).count_ones() as usize
 }
 
 /// The extras a capture asks for. `Driven` samples only the tap of the
@@ -68,11 +86,16 @@ pub const fn frame_len(chans: u8) -> usize {
 /// vmotor_b for a reverse one): the chopping leg, so one channel gives the
 /// winding's high side through the ON phase and the OFF phase both, at
 /// frame_len 2. Every extra thins the shunt stream: at frame_len 3 a 20%
-/// ON window is three shunt samples and no window fit survives it.
+/// ON window is three shunt samples and no window fit survives it. `Diff`
+/// samples both terminals interleaved ([`CHANS_DIFF`]): the shunt keeps
+/// frame_len 2's rate and each terminal is sampled every 4.3 us, which
+/// gives the winding's own voltage, the low side and the divider bias
+/// cancelled.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Chans {
     Fixed(u8),
     Driven,
+    Diff,
 }
 
 impl Chans {
@@ -81,13 +104,15 @@ impl Chans {
             Chans::Fixed(m) => m,
             Chans::Driven if step_q15 >= 0 => CHAN_VMOTOR_A,
             Chans::Driven => CHAN_VMOTOR_B,
+            Chans::Diff => CHANS_DIFF,
         }
     }
 
-    /// `driven` or a mask 0..=7.
+    /// `driven`, `diff` or a mask 0..=15.
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "driven" => Some(Chans::Driven),
+            "diff" => Some(Chans::Diff),
             _ => s
                 .parse::<u8>()
                 .ok()
@@ -177,8 +202,16 @@ impl Capture {
 
     /// Slot of a channel bit inside a frame, None when it is not selected.
     pub fn slot(&self, bit: u8) -> Option<usize> {
-        (self.meta.chans & bit != 0)
-            .then(|| 1 + (self.meta.chans & (bit - 1)).count_ones() as usize)
+        let c = self.meta.chans;
+        let rank = (c & CHAN_EXTRAS & (bit - 1)).count_ones() as usize;
+        let per_extra = if shunts(c) > 1 { 2 } else { 1 };
+        (c & bit != 0).then(|| 1 + rank * per_extra)
+    }
+
+    /// Conversions from one shunt code to the next: the frame, or two when
+    /// interleaved.
+    pub fn shunt_stride(&self) -> usize {
+        self.frame_len() / shunts(self.meta.chans)
     }
 
     /// One slot's codes, one per frame.
@@ -191,8 +224,13 @@ impl Capture {
             .collect()
     }
 
+    /// Every shunt code, `shunt_stride` conversions apart.
     pub fn shunt(&self) -> Vec<u16> {
-        self.stream(0)
+        self.samples
+            .iter()
+            .step_by(self.shunt_stride())
+            .copied()
+            .collect()
     }
 
     /// Raw sample index of one slot of one frame: its sampling instant in
@@ -1080,7 +1118,7 @@ mod tests {
         assert_eq!(c.slot(CHAN_VMOTOR_A), Some(1));
         assert_eq!(c.slot(CHAN_VMOTOR_B), None);
         assert_eq!(c.slot(CHAN_VBUS), Some(2));
-        let c = cap(CHANS_MAX);
+        let c = cap(CHAN_EXTRAS);
         assert_eq!(
             [CHAN_VMOTOR_A, CHAN_VMOTOR_B, CHAN_VBUS].map(|b| c.slot(b)),
             [Some(1), Some(2), Some(3)]
@@ -1093,7 +1131,56 @@ mod tests {
                 .enumerate()
                 .all(|(k, v)| *v as usize == c.raw_index(k, 3))
         );
+        assert_eq!(c.shunt_stride(), 4);
         assert_eq!(cap(0).shunt(), cap(0).samples);
+    }
+
+    /// Interleaved, the shunt holds every even slot and each extra the odd
+    /// slot after its own shunt: the diff mask is shunt, A, shunt, B, the
+    /// shunt every second conversion and each terminal every fourth.
+    #[test]
+    fn interleaved_slots_put_a_shunt_ahead_of_every_extra() {
+        let cap = |chans: u8| Capture {
+            samples: (0..SAMPLES as u16).collect(),
+            meta: Meta {
+                chans,
+                frame_len: frame_len(chans) as u8,
+                ..Meta::default()
+            },
+        };
+        let c = cap(CHANS_DIFF);
+        assert_eq!((c.frame_len(), c.shunt_stride()), (4, 2));
+        assert_eq!(
+            [CHAN_VMOTOR_A, CHAN_VMOTOR_B, CHAN_VBUS].map(|b| c.slot(b)),
+            [Some(1), Some(3), None]
+        );
+        let sh = c.shunt();
+        assert_eq!(sh.len(), SAMPLES / 2);
+        assert!(sh.iter().enumerate().all(|(k, v)| *v as usize == 2 * k));
+        let b = c.stream(3);
+        assert_eq!(b.len(), SAMPLES / 4);
+        assert!(b.iter().enumerate().all(|(k, v)| *v as usize == 4 * k + 3));
+        let all = cap(CHANS_MAX);
+        assert_eq!((all.frame_len(), all.shunt_stride()), (6, 2));
+        assert_eq!(
+            [CHAN_VMOTOR_A, CHAN_VMOTOR_B, CHAN_VBUS].map(|b| all.slot(b)),
+            [Some(1), Some(3), Some(5)]
+        );
+        // one extra interleaved is the plain layout
+        let one = cap(CHAN_VMOTOR_B | CHAN_INTERLEAVE);
+        assert_eq!((one.frame_len(), one.shunt_stride()), (2, 2));
+        assert_eq!(one.slot(CHAN_VMOTOR_B), Some(1));
+        let none = cap(CHAN_INTERLEAVE);
+        assert_eq!((none.frame_len(), none.shunt_stride()), (1, 1));
+        for m in 0..=CHANS_MAX {
+            let c = cap(m);
+            assert_eq!(c.frame_len() % c.shunt_stride(), 0, "chans {m}");
+            assert_eq!(SAMPLES % c.frame_len(), 0, "chans {m}");
+        }
+        assert_eq!(Chans::parse("diff"), Some(Chans::Diff));
+        assert_eq!(Chans::Diff.for_step(-8520), CHANS_DIFF);
+        assert_eq!(Chans::parse("11"), Some(Chans::Fixed(CHANS_DIFF)));
+        assert_eq!(Chans::parse("16"), None);
     }
 
     #[test]

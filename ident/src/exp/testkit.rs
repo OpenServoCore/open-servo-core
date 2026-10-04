@@ -31,8 +31,8 @@
 
 use super::{Cmd, Experiment, RigParams, SLEW_Q15_PER_TICK, TICKS_PER_WINDOW};
 use crate::burst::{
-    ArmSeen, CHAN_VBUS, CHAN_VMOTOR_A, CHAN_VMOTOR_B, Capture, Meta, SAMPLE_HCLK, SAMPLE_US,
-    SAMPLES, frame_len, rejected,
+    ArmSeen, CHAN_INTERLEAVE, CHAN_VBUS, CHAN_VMOTOR_A, CHAN_VMOTOR_B, Capture, Meta, SAMPLE_HCLK,
+    SAMPLE_US, SAMPLES, frame_len, rejected,
 };
 use crate::frame::{TelBurst, TelFrame, TelemetrySnapshot};
 use crate::limits::PermitLease;
@@ -1159,11 +1159,18 @@ impl SynthBurst {
         let a_tap = 1.0 - (-SAMPLE_US / SUBSTEPS as f64 / self.tap_us).exp();
         let vb_v = self.vb * self.adc_lsb_v;
         let fwd = step_q15 >= 0;
-        let slots: Vec<u8> = [CHAN_VMOTOR_A, CHAN_VMOTOR_B, CHAN_VBUS]
-            .into_iter()
-            .filter(|b| self.chans & b != 0)
-            .collect();
+        // each slot's channel bit, 0 for the shunt
+        let mut slots = vec![0u8];
+        for b in [CHAN_VMOTOR_A, CHAN_VMOTOR_B, CHAN_VBUS] {
+            if self.chans & b != 0 {
+                if self.chans & CHAN_INTERLEAVE != 0 && slots.len() > 1 {
+                    slots.push(0);
+                }
+                slots.push(b);
+            }
+        }
         let fl = frame_len(self.chans);
+        assert_eq!(slots.len(), fl);
 
         let mut pre_arm_rail = self.v_rail;
         // winding current, rail node, island, amplifier, tap A, tap B
@@ -1237,13 +1244,11 @@ impl SynthBurst {
                 let x = n as f64 + s as f64 / SUBSTEPS as f64;
                 step(x, &mut st);
             }
-            let code = match n % fl {
+            let code = match slots[n % fl] {
                 0 => st[3],
-                slot => match slots[slot - 1] {
-                    CHAN_VMOTOR_A => tap_code(st[4]),
-                    CHAN_VMOTOR_B => tap_code(st[5]) + self.split,
-                    _ => st[1] / self.v_rail_per_count,
-                },
+                CHAN_VMOTOR_A => tap_code(st[4]),
+                CHAN_VMOTOR_B => tap_code(st[5]) + self.split,
+                _ => st[1] / self.v_rail_per_count,
             };
             samples.push((code + noise()).round().clamp(0.0, 4095.0) as u16);
         }
