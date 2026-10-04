@@ -69,8 +69,10 @@ pub struct BiasResult {
     pub pos_mean: f64,
     /// Raw current-channel noise sigma, counts.
     pub i_noise: f64,
-    /// Mean raw current minus the boot-measured bias; near zero when the
-    /// boot bias capture was healthy.
+    /// Mean raw current minus the published bias. The bias is the zero
+    /// with the driver awake, so torque off this reads minus the driver's
+    /// own supply-current step once the servo has learned it, near zero
+    /// before.
     pub i_bias_delta: f64,
     pub vbus_mean: f64,
     pub vbus_sd: f64,
