@@ -10,6 +10,7 @@ use super::duty_limit::DutyLimiter;
 use super::faults::{self, FaultLatch, OcDetector};
 use super::ident::IdentAgg;
 use super::limits::IBand;
+use crate::estimator::bias::Zero;
 use crate::estimator::{BemfObs, BiasTracker, VcalLpf, window};
 use crate::pos_lut;
 use crate::tel::{TelSample, TelStream};
@@ -30,6 +31,23 @@ pub enum Drive {
     /// riding the profile speed (0 in Current mode).
     Closed { omega_ff_q16: i32 },
 }
+
+/// What the bridge carried through a period, for the zero-current feed.
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum Bridge {
+    /// `MotorCmd::Disabled`.
+    Asleep,
+    Brake,
+    /// A zero duty, which the chip writes as a coast.
+    Coast,
+    Drive,
+}
+
+/// Ticks a bridge state without drive holds before its shunt sample counts
+/// as zero current: a drive's winding current drains through the body
+/// diodes into the rail in L x I / V_rail, about 0.25 ms on the MG90 at the
+/// trip current.
+pub(super) const ZERO_SETTLE_TICKS: u8 = 32;
 
 /// Medium -> fast: everything the drive and the stream need between two
 /// medium ticks.
@@ -79,6 +97,10 @@ pub struct Fast {
     /// telemetry because the gate can override the loop's output.
     pub(super) duty_q15: i16,
     decay: DecayMode,
+    /// The last command's bridge state, and the run of commands before it
+    /// in the same state, saturating.
+    bridge: Bridge,
+    bridge_ticks: u8,
     /// Last window-valid measurement, 0 from the first tick nothing drives:
     /// the current the observer, the stream, the ident aggregate and the
     /// `i_hat_counts` publish read. A window under the floor holds it, as
@@ -106,6 +128,8 @@ impl Fast {
             ident: IdentAgg::new(),
             duty_q15: 0,
             decay: DecayMode::Slow,
+            bridge: Bridge::Asleep,
+            bridge_ticks: 0,
             i_meas_last: 0,
             vdiff_last: 0,
         }
@@ -184,16 +208,16 @@ impl Fast {
             fc.i_window_min_ticks,
             fc.v_window_min_ticks,
         );
-        let bias = if window::trough_is_brake(
-            self.decay,
-            ticks,
-            self.pwm_arr,
-            self.bias_brake_min_ticks,
-        ) {
-            self.bias.update(frame.current_trough)
-        } else {
-            self.bias.counts()
+        let zero = match self.bridge {
+            Bridge::Drive => {
+                window::trough_is_brake(self.decay, ticks, self.pwm_arr, self.bias_brake_min_ticks)
+                    .then_some(Zero::Awake)
+            }
+            _ if self.bridge_ticks < ZERO_SETTLE_TICKS => None,
+            Bridge::Asleep => Some(Zero::Asleep),
+            Bridge::Brake | Bridge::Coast => Some(Zero::Awake),
         };
+        let bias = self.bias.update(zero, frame.current_trough);
         let i_meas = window::i_from_frame(frame, sel, fwd, bias, self.i_settle_gain.q15_at(ticks));
         if let Some(i) = i_meas {
             self.i_meas_last = i.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
@@ -395,6 +419,18 @@ impl Fast {
                 }
             }
         };
+        let bridge = match out {
+            MotorCmd::Disabled => Bridge::Asleep,
+            MotorCmd::Brake => Bridge::Brake,
+            MotorCmd::Drive { duty, .. } if duty.0 == 0 => Bridge::Coast,
+            _ => Bridge::Drive,
+        };
+        self.bridge_ticks = if bridge == self.bridge {
+            self.bridge_ticks.saturating_add(1)
+        } else {
+            0
+        };
+        self.bridge = bridge;
         // logical (+duty moves counts up) -> wiring, on the output only:
         // duty_q15 and the published duty stay logical. Off and the brake
         // drive nothing: the held current drops (`i_meas_last`)
