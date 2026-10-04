@@ -166,11 +166,11 @@ pub const DEFAULT_STALL_TIME_MS: u16 = 500;
 pub const DEFAULT_STALL_YIELD_MA: u16 = 180;
 pub const DEFAULT_STALL_RELEASE_MA: u16 = 90;
 pub const DEFAULT_STALL_TAU_TRIP_MA: u16 = 300;
-// Copper and shunt guard, not a gear-train limit: 3.0 A sits above any
+// Copper and shunt guard, not a gear-train limit: 2.2 A sits above any
 // micro-class stall on 2S (2.1 A) and below where the osc-dev-v006 chain
-// saturates (~3.1 A over its 0.52 V bias on 60 mOhm), so the trip stays
-// measurable.
-pub const DEFAULT_OC_TRIP_MA: u16 = 3000;
+// saturates (~2.3 A over its 1.10 V reference on 60 mOhm, the amplifier
+// topping out at VDD - 0.16 V), so the trip stays measurable.
+pub const DEFAULT_OC_TRIP_MA: u16 = 2200;
 pub const DEFAULT_OC_TRIP_TICKS: u8 = 8;
 // Applied volts (duty x rail) a shunt-burst step may drive. A burst runs
 // past the current limit on purpose, so what bounds its load on the teeth is
@@ -390,7 +390,7 @@ mod tests {
         assert_eq!(d.stall_yield_counts, 111);
         assert_eq!(d.stall_release_counts, 55);
         assert_eq!(d.stall_tau_trip_counts, 184);
-        assert_eq!(d.oc_trip_counts, 1843);
+        assert_eq!(d.oc_trip_counts, 1352);
         assert_eq!(d.rtherm_i_min_counts, 92);
     }
 
