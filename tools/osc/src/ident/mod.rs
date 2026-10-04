@@ -115,9 +115,13 @@ pub struct Args {
     #[arg(long, global = true)]
     burst_i_max: Option<f64>,
     /// Burst voltage channels: a mask (bit 0 vmotor_a, bit 1 vmotor_b, bit 2
-    /// vbus) or `driven`, the tap of the terminal each step drives. One
-    /// channel keeps frame_len at 2 and sees the chopping leg through ON and
-    /// OFF on both signs; the unbuffered rail tap reads ~1% low in-burst.
+    /// vbus, bit 3 a shunt ahead of every extra), `driven`, the tap of the
+    /// terminal each step drives, or `diff`, both terminals interleaved
+    /// (mask 11). One channel keeps frame_len at 2 and sees the chopping leg
+    /// through ON and OFF on both signs; `diff` keeps the shunt at the same
+    /// rate and fits the winding on the terminals' difference, the low side
+    /// measured rather than assumed. The unbuffered rail tap reads ~1% low
+    /// in-burst.
     #[arg(long, global = true, default_value = "driven", value_parser = parse_chans)]
     burst_chans: Chans,
     /// Burst held route: the duty the seek arrives at and the bursts step
@@ -564,7 +568,7 @@ fn hold_and_step_hint(soft: (i32, i32)) -> String {
 }
 
 fn parse_chans(s: &str) -> Result<Chans, String> {
-    Chans::parse(s).ok_or_else(|| format!("`{s}` is neither `driven` nor a mask 0..=7"))
+    Chans::parse(s).ok_or_else(|| format!("`{s}` is not `driven`, `diff` or a mask 0..=15"))
 }
 
 /// The subcommands that move the shaft.
@@ -2293,6 +2297,28 @@ mod tests {
             "burst",
             "--static-load"
         ]));
+    }
+
+    /// The burst channels stay `driven` unless named; `diff` interleaves
+    /// both terminals behind the shunt (mask 11), and a mask past 15 is
+    /// refused.
+    #[test]
+    fn burst_chans_default_to_driven_and_take_diff() {
+        use clap::Parser;
+        use osc_ident::burst::CHANS_DIFF;
+
+        #[derive(Parser)]
+        struct Osc {
+            #[command(flatten)]
+            args: Args,
+        }
+        let chans = |argv: &[&str]| Osc::try_parse_from(argv).map(|o| o.args.burst_chans);
+        assert_eq!(chans(&["osc", "burst"]).unwrap(), Chans::Driven);
+        let diff = chans(&["osc", "--burst-chans", "diff", "burst"]).unwrap();
+        assert_eq!(diff, Chans::Diff);
+        assert_eq!(diff.for_step(-8520), CHANS_DIFF);
+        assert_eq!(CHANS_DIFF, 11);
+        assert!(chans(&["osc", "--burst-chans", "16", "burst"]).is_err());
     }
 
     /// The note a run prints once when it falls back to the winding the
