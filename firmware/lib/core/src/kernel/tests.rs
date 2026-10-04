@@ -4,7 +4,7 @@
 //! behavior against a crude integer plant.
 
 use super::*;
-use crate::estimator::{OmegaSource, bemf, window};
+use crate::estimator::{OmegaSource, bemf, bias, window};
 use crate::math::q_mul;
 use crate::pos_lut;
 use crate::regions::config::{DecaySelect, StallResponse};
@@ -1023,6 +1023,23 @@ fn published_bias(sh: &Shared) -> u16 {
     sh.table.with(|t| t.telemetry.sensors.current_bias_counts)
 }
 
+/// Ticks for the bias tracker to settle a step to the count: 12 time
+/// constants.
+const BIAS_SETTLE_TICKS: u32 = 12 << bias::ALPHA_SHIFT;
+
+fn run(k: &mut Kernel<FakeIo>, sh: &Shared, f: SensorFrame, n: u32) {
+    for _ in 0..n {
+        k.on_tick(f, sh);
+    }
+}
+
+/// A frame with no drive: both scans read `trough`.
+fn rest(trough: u16) -> SensorFrame {
+    let mut f = frame(2000, trough);
+    f.current_trough = trough;
+    f
+}
+
 #[test]
 fn trough_bias_tracks_only_inside_slow_drive_windows() {
     let sh = Shared::new();
@@ -1033,29 +1050,16 @@ fn trough_bias_tracks_only_inside_slow_drive_windows() {
         f.current_trough = BIAS + 500;
         f
     };
-    // tick 1 already runs on the boot seed
-    k.on_tick(shifted(), &sh);
-    assert_eq!(published_bias(&sh), BIAS);
-    // Disabled: no PWM, no brake phase
-    for _ in 0..300 {
-        k.on_tick(shifted(), &sh);
-    }
-    assert!(matches!(last_cmd(&k), MotorCmd::Disabled));
-    assert_eq!(published_bias(&sh), BIAS);
     // Fast decay: the trough IS the drive window. The decay lands at a
     // medium boundary, so it goes in ahead of the drive.
     write_config(&sh, |t| t.config.limits.openloop_decay = DecaySelect::Fast);
-    for _ in 0..DECIM_MED {
-        k.on_tick(shifted(), &sh);
-    }
+    run(&mut k, &sh, frame(2000, BIAS), DECIM_MED as u32);
     sh.table.with_mut(|t| {
         t.control.lifecycle.torque_enable = true;
         t.control.lifecycle.mode = Mode::OpenLoop;
         t.control.lifecycle.goal_duty = 8000;
     });
-    for _ in 0..300 {
-        k.on_tick(shifted(), &sh);
-    }
+    run(&mut k, &sh, shifted(), 3000);
     assert!(matches!(
         last_cmd(&k),
         MotorCmd::Drive {
@@ -1071,26 +1075,12 @@ fn trough_bias_tracks_only_inside_slow_drive_windows() {
     settle(&mut k, &sh, shifted());
     assert_eq!(published_bias(&sh), BIAS);
     write_config(&sh, |t| t.config.limits.openloop_decay = DecaySelect::Slow);
-    for _ in 0..300 {
-        k.on_tick(shifted(), &sh);
-    }
+    run(&mut k, &sh, shifted(), 3000);
     assert!(matches!(last_cmd(&k), MotorCmd::Drive { duty, .. } if duty.0 == i16::MAX));
-    assert_eq!(published_bias(&sh), BIAS);
-    // Brake as a command
-    write_config(&sh, |t| {
-        t.control.lifecycle.goal_duty = 0;
-        t.config.limits.openloop_zero_brake = true;
-    });
-    for _ in 0..300 {
-        k.on_tick(shifted(), &sh);
-    }
-    assert!(matches!(last_cmd(&k), MotorCmd::Brake));
     assert_eq!(published_bias(&sh), BIAS);
     // a partial Slow window: the trough is the brake phase, the tracker follows
     sh.table.with_mut(|t| t.control.lifecycle.goal_duty = 8000);
-    for _ in 0..1500 {
-        k.on_tick(shifted(), &sh);
-    }
+    run(&mut k, &sh, shifted(), BIAS_SETTLE_TICKS);
     assert!(matches!(
         last_cmd(&k),
         MotorCmd::Drive {
@@ -1111,27 +1101,28 @@ fn drifting_trough_bias_leaves_i_meas_flat() {
         t.control.lifecycle.goal_duty = 8000;
     });
     let mut k = kernel();
-    // offset walks 100 counts over 4000 ticks (1 count per 40 ticks, well
-    // under the 128-tick tracker time constant); the true current is a
+    // offset walks 40 counts at 1 count per 4096 ticks, 2 counts of lag
+    // at the 8192-tick time constant (the bench drift, 8 counts per
+    // degree C, would need a degree every 1.6 s); the true current is a
     // constant 300 counts above it
     let mut b = BIAS;
-    for n in 0..4000u16 {
-        b = BIAS + n / 40;
+    for n in 0..40u32 << 12 {
+        b = BIAS + (n >> 12) as u16;
         let mut f = frame(2000, b + 300);
         f.current_trough = b;
         k.on_tick(f, &sh);
         if n >= 300 {
             let i = k.fast.i_meas_last as i32;
-            assert!((i - 300).abs() <= 5, "tick {n}: i_meas {i}, bias {b}");
+            assert!((i - 300).abs() <= 3, "tick {n}: i_meas {i}, bias {b}");
         }
     }
     assert!(
-        published_bias(&sh).abs_diff(b) <= 5,
+        published_bias(&sh).abs_diff(b) <= 3,
         "{}",
         published_bias(&sh)
     );
-    // the untracked boot value would have read 400 here
-    assert_eq!(b, BIAS + 99);
+    // the untracked boot value would have read 339 here
+    assert_eq!(b, BIAS + 39);
 }
 
 #[test]
@@ -1154,16 +1145,121 @@ fn bias_feed_ignores_the_current_floor() {
     settle(&mut k, &sh, frame(2000, BIAS + 300));
     // 732 drive ticks leave a 468-tick brake half: under the brake
     // minimum, however low the current floor sits
-    for _ in 0..1500 {
-        k.on_tick(shifted(), &sh);
-    }
+    run(&mut k, &sh, shifted(), 3000);
     assert_eq!(published_bias(&sh), BIAS);
     // 293 drive ticks leave 907: the tracker follows
     sh.table.with_mut(|t| t.control.lifecycle.goal_duty = 8000);
-    for _ in 0..1500 {
-        k.on_tick(shifted(), &sh);
-    }
+    run(&mut k, &sh, shifted(), BIAS_SETTLE_TICKS);
     assert_eq!(published_bias(&sh), BIAS + 500);
+}
+
+#[test]
+fn torque_off_bias_follows_a_drifting_rest() {
+    let sh = Shared::new();
+    seed(&sh);
+    let mut k = kernel();
+    // the board warms with torque off: the rest walks 200 counts down at
+    // 1 count per 1024 ticks, 8 counts of lag
+    for n in 0..200u32 << 10 {
+        let b = BIAS - (n >> 10) as u16;
+        k.on_tick(rest(b), &sh);
+        if n >= 1 << 10 {
+            let p = published_bias(&sh);
+            assert!(p >= b && p - b <= 9, "tick {n}: bias {p}, rest {b}");
+        }
+    }
+    assert!(matches!(last_cmd(&k), MotorCmd::Disabled));
+    // never awake: no step learned, the bias is the rest itself
+    run(&mut k, &sh, rest(BIAS - 200), BIAS_SETTLE_TICKS);
+    assert_eq!(published_bias(&sh), BIAS - 200);
+}
+
+#[test]
+fn the_awake_step_is_learned_and_rides_the_torque_off_drift() {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.mode = Mode::OpenLoop;
+        t.control.lifecycle.goal_duty = 0;
+        t.config.limits.openloop_zero_brake = true;
+    });
+    let mut k = kernel();
+    // torque off at the boot rest, then the brake: the driver wakes and
+    // its own supply current lifts the zero 10 counts
+    run(&mut k, &sh, rest(BIAS), 1000);
+    sh.table
+        .with_mut(|t| t.control.lifecycle.torque_enable = true);
+    run(&mut k, &sh, rest(BIAS + 10), BIAS_SETTLE_TICKS);
+    assert!(matches!(last_cmd(&k), MotorCmd::Brake));
+    assert_eq!(published_bias(&sh), BIAS + 10);
+    // torque off past the stale window, then the board warms: the bias
+    // keeps the step over the rest
+    sh.table
+        .with_mut(|t| t.control.lifecycle.torque_enable = false);
+    run(&mut k, &sh, rest(BIAS), bias::STALE_TICKS as u32);
+    assert_eq!(published_bias(&sh), BIAS + 10);
+    run(&mut k, &sh, rest(BIAS - 200), BIAS_SETTLE_TICKS);
+    assert!(matches!(last_cmd(&k), MotorCmd::Disabled));
+    assert_eq!(published_bias(&sh), BIAS - 190);
+    // awake again, coasting on a zero goal: the zero it reads is the one
+    // already in use, so nothing moves
+    write_config(&sh, |t| t.config.limits.openloop_zero_brake = false);
+    sh.table
+        .with_mut(|t| t.control.lifecycle.torque_enable = true);
+    for _ in 0..BIAS_SETTLE_TICKS {
+        k.on_tick(rest(BIAS - 190), &sh);
+        assert_eq!(published_bias(&sh), BIAS - 190);
+    }
+    assert!(matches!(last_cmd(&k), MotorCmd::Drive { duty, .. } if duty.0 == 0));
+}
+
+#[test]
+fn a_draining_current_is_never_learned_as_zero() {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::OpenLoop;
+        t.control.lifecycle.goal_duty = i16::MAX;
+    });
+    let mut k = kernel();
+    // the slew up passes brake troughs at the zero; at full duty there is
+    // no brake half, and the trough scan reads the drive at the top of the
+    // range. Held until the awake zero goes stale, so it would carry a
+    // leak into the asleep zero to the bias.
+    let slew = frame(2000, BIAS + 500);
+    let mut driven = slew;
+    driven.current_trough = 4095;
+    settle(&mut k, &sh, slew);
+    run(&mut k, &sh, driven, bias::STALE_TICKS as u32);
+    assert_eq!(published_bias(&sh), BIAS);
+    // torque off, then the brake: the shunt still reads the drive through
+    // the settle and none of it reaches the tracker; past it, the rest does
+    for (zero_brake, cmd, rest_counts) in [
+        (false, MotorCmd::Disabled, BIAS - 20),
+        (true, MotorCmd::Brake, BIAS + 20),
+    ] {
+        write_config(&sh, |t| {
+            t.control.lifecycle.torque_enable = zero_brake;
+            t.control.lifecycle.goal_duty = 0;
+            t.config.limits.openloop_zero_brake = zero_brake;
+        });
+        while core::mem::discriminant(&last_cmd(&k)) != core::mem::discriminant(&cmd) {
+            k.on_tick(driven, &sh);
+        }
+        run(&mut k, &sh, driven, fast::ZERO_SETTLE_TICKS as u32);
+        assert_eq!(published_bias(&sh), BIAS);
+        run(&mut k, &sh, rest(BIAS), BIAS_SETTLE_TICKS);
+        assert_eq!(published_bias(&sh), BIAS);
+        run(&mut k, &sh, rest(rest_counts), BIAS_SETTLE_TICKS);
+        assert_eq!(published_bias(&sh), rest_counts);
+        run(&mut k, &sh, rest(BIAS), BIAS_SETTLE_TICKS);
+        sh.table.with_mut(|t| {
+            t.control.lifecycle.torque_enable = true;
+            t.control.lifecycle.goal_duty = i16::MAX;
+        });
+        settle(&mut k, &sh, slew);
+    }
 }
 
 #[test]

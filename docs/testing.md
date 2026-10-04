@@ -85,7 +85,7 @@ The floor, the observer and the defaults (`core/src/estimator/window.rs`,
   driven and moving shaft never moves tau_d off zero while theta still
   tracks.
 - `arm_b_rig_reproduces_the_count_seeds` - the class defaults land as
-  184 / 111 / 55 / 184 / 1843 / 92 counts on the 33 mohm chain.
+  184 / 111 / 55 / 184 / 1352 / 92 counts on the 33 mohm chain.
 - `current_counts_scales_with_the_shunt_and_saturates` - 300 mA is 335
   counts on the 60 mohm chain.
 

@@ -17,7 +17,7 @@ KiCad render of Rev. 2A.
 
 - **MCU** - CH32V006F8P6 (RISC-V, 48 MHz, 62 KB flash, 8 KB RAM, TSSOP20). Every pin is used, including the reset pin.
 - **Motor driver** - TI DRV8212PDSGR (U3). H-bridge with IN1/IN2 PWM. 4 A peak, VM 1.65-11 V. Continuous current is thermally limited on this layout to about 1.4 A at room temperature; the exposed pad sits on the top-only `PGND` island and dumps heat through the prepreg into the ground plane, not into a copper plane of its own.
-- **Current sense** - 60 mOhm kelvin-connected low-side shunt (Rs1) feeding the MCU's on-chip op-amp in bare mode. An external four-resistor difference network sets G = 14.88 against a 0.52 V bias, so both current directions are visible.
+- **Current sense** - 60 mOhm kelvin-connected low-side shunt (Rs1) feeding the MCU's on-chip op-amp in bare mode. An external four-resistor difference network sets G = 14.88 against a 1.10 V bias, so both current directions are visible.
 - **LDO** - HT7533-1 (U1) for the 3.3 V logic rail. No thermal shutdown, and its 500 mW budget at 2S caps the `+3V3` load at about 55 mA, board included, so keep add-ons on the 3V3 pins light and mind probe slips on the 3V3 headers. The DRV8212P VCC (`+3V3_DRV`) hangs off the same `+3V3` as the MCU through Rh2, a fitted 0R that a ferrite can replace.
 - **Servo bus** - single-wire half-duplex UART on `PC0`, wired straight to the MCU through a 33 Ohm series resistor. No buffer, no TX_EN. Direction turnaround and RX timing are firmware's job.
 - **Telemetry** - no dedicated pin. Telemetry rides the `DATA` wire as bounded CRC'd bursts, so there is no second UART on the board.
@@ -174,7 +174,7 @@ This jumper bridges the op-amp `+` input network (`OPA_P`) onto the shared `nRST
 Motor return current flows through Rs1 (60 mOhm, 1 %, 50 ppm, 1206) between `PGND` and `GND`. Rs1 is the only tie between the two grounds, so every amp of motor return has to cross it. Net-tie kelvin taps (NT1 on the `PGND` pad, NT2 on the `GND` pad) feed the MCU's on-chip op-amp, which runs in bare mode behind an external four-resistor difference network.
 
 - **Gain.** Rf 6K4 / Rg 430 gives G = 14.88. With the 60 mOhm shunt that is 893 mV/A at the ADC, about 0.9 mA per LSB.
-- **Bias.** The amplifier references `VREF` = 0.52 V (Rd1 1K6 / Rd2 300 from `+3V3`, decoupled by Cd1), so negative current from regen or reversal is visible too. The usable range is roughly -0.58 A to +3.1 A by design. On board #1 the rest output sits near 0.37 V instead, the op-amp's input offset times its noise gain and inside the part's spec, so the negative side is narrower. Firmware measures the rest bias at boot and keeps tracking it in drive, so the offset comes out of every current reading.
+- **Bias.** The amplifier references `VREF` = 1.10 V (Rd1 1K6 from `+3V3` over Rd2 1K6 in parallel with Rd3 1K6, decoupled by Cd1), so negative current from regen or reversal is visible too. The usable range is roughly -1.2 A to +2.3 A by design, the top set by the amplifier's output ceiling near VDD - 0.16 V. On board #1 the rest output sits about 0.15 V under `VREF`, the op-amp's input offset times its noise gain and inside the part's spec, which moves the range to about -1.1 A to +2.4 A. The offset drifts with board temperature (see [Measured on board #1](#measured-on-board-1)), so firmware measures the rest at boot and keeps tracking it whenever the shunt carries no current: torque off, a brake or coast, and the brake half of a slow-decay drive. The KiCad schematic lists Rd2 300 with Rd3 unfitted, a 0.52 V `VREF` and a -0.58 A to +2.9 A range; board #1 is built with 1K6 in both.
 - **Compensation.** Cc1 / Cc2, 22 pF across each feedback arm, for a corner around 1.1 MHz.
 - **Input filter.** Ci1, 100 pF across `OPA_P` / `OPA_N`.
 
@@ -189,12 +189,11 @@ This is a swap-and-measure board, so the populated values are a starting point a
 |`Cc3` / `Cc4`|22 pF|Stack on the 22 pF comp caps for a slower, quieter corner (about 570 kHz).|
 |`Ck1`|100 pF|Differential filter across the kelvin pair, ahead of the gain resistors.|
 |`Co1`|22 pF|Load cap on the op-amp output. Layout insurance. `PD4` is both the op-amp output and the ADC pin, so the cap sits straight on the output; keep it under the 50 pF load limit.|
-|`Rd3`|300|Parallels Rd2, dropping `VREF` to 0.28 V for a near-unipolar range.|
 |`Rx2`|10K|`DATA` bus pull-up for single-device bench setups.|
 
 The shunt itself has no alternate footprint. Other values (22 to 150 mOhm, all 1206) swap onto Rs1's own pads, so the kelvin taps never move. A second shunt in parallel would split the current by pad and trace resistance and break the symmetric entry, so there is no pad for one.
 
-The DRV8212P's own OCP / TSD is the first protection layer. OCP trips at 4 A minimum, above the 3.1 A where the sense chain saturates, and a hobby motor stalls below it, so a hard stall lands on TSD first and the driver hiccups at about 1 Hz until firmware drops `DRV_EN`. OCP only fires on a shorted lead pair, in 4 us pulses the ADC will not see. V006 has no comparator units, so the rest is firmware: a kernel I2t limit drops `DRV_EN` and latches a stall fault that only the user can clear, IWDG covers hung firmware, and any reset kills the bridge through the Rh1 pulldown.
+The DRV8212P's own OCP / TSD is the first protection layer. OCP trips at 4 A minimum, above the 2.3 A where the sense chain saturates and the 2.2 A firmware overcurrent trip under it, and a hobby motor stalls below it, so a hard stall lands on TSD first and the driver hiccups at about 1 Hz until firmware drops `DRV_EN`. OCP only fires on a shorted lead pair, in 4 us pulses the ADC will not see. V006 has no comparator units, so the rest is firmware: a kernel I2t limit drops `DRV_EN` and latches a stall fault that only the user can clear, IWDG covers hung firmware, and any reset kills the bridge through the Rh1 pulldown.
 
 ## Other sensing
 
@@ -251,7 +250,8 @@ Under slow decay the drive window is centred on the crest, so the crest scan rea
 |Quantity|Design|Board #1|Source|
 |---|---|---|---|
 |Scale|1108.5 counts/A, 0.902 mA per count|Amplifier and ADC +0.5% (-0.7 to +2.3%): 93-94 mV on a meter across Rs1 during a 100% grid lap, against 93.3-95.1 mV from the chip's current times 60 mOhm.|`boards.py` `current_chain_scale_measured`, nb10 sec 7|
-|Rest output|0.52 V (`VREF`)|About 0.37 V torque off. Offset, removed at boot.|board #1 bringup|
+|Rest output|1.10 V (`VREF`)|About 0.15 V under `VREF` torque off at room temperature: 0.37 V over the schematic's 0.52 V `VREF`. Offset, tracked by firmware.|board #1 bringup|
+|Rest drift|-|Down as the board warms, measured over the 0.52 V `VREF`: 467 counts at 28 C, 398 at 43 C, 260 at 60 C, about -4.6 then -8.4 counts/C. The on-chip op-amp has no drift spec.|board #1 bench|
 |In-drive zero|-|10 counts over the torque-off rest: the DRV8212P's own supply current returns through Rs1 once the driver wakes.|nb11 sec 1|
 |Rest noise|-|1.28 counts RMS (1.15 mA). Board D 1.7.|`rest_current_noise_measured`, nb10 sec 3|
 |Step response|-|Half-way 44 ticks (0.92 us) after the ON compare, then a 12.3-tick (256 ns) exponential and a slow tail of about 3%. Steepest 2.8 V/us.|nb10 sec 8.1, 8.3|
@@ -375,7 +375,7 @@ Nine 1.0 mm probe pads, labeled on silk. Seven sit in two rows between the posit
 |`VP1`|TP8|`VPOS1`|Position channel 1 after its RC filter, ADC `A1`.|
 |`VP2`|TP9|`VPOS2_NTC`|Position channel 2 or the NTC divider after its RC filter, ADC `A0`. Follows JP2.|
 
-`OPA`, `VA` and `VB` are in the signal path, so the pad adds no stub to those nets. The rest are short spurs off filtered or driven nodes. `VREF` has no pad: probe the DNP `Rd3` footprint. The kelvin pair `ISNS+` / `ISNS-` has no pad on purpose. The 4x M2 mounting holes (2.2 mm) are tied to `GND` for an alligator clip.
+`OPA`, `VA` and `VB` are in the signal path, so the pad adds no stub to those nets. The rest are short spurs off filtered or driven nodes. `VREF` has no pad: probe across `Rd3`. The kelvin pair `ISNS+` / `ISNS-` has no pad on purpose. The 4x M2 mounting holes (2.2 mm) are tied to `GND` for an alligator clip.
 
 ## Power and grounding
 

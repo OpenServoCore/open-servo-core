@@ -110,8 +110,7 @@ pub fn vdiff_from_frame(frame: &SensorFrame, sel: WindowSel) -> Option<i32> {
 /// drive window's floor by far, so only a brake half of at least
 /// `brake_min_ticks` (board data, `KernelTiming::bias_brake_min_ticks`)
 /// reads the rest offset. A narrower one would teach the tracker a bias
-/// tens of counts high and poison every current reading; there the tracker
-/// holds, which is all a slow thermal drift needs.
+/// tens of counts high and poison every current reading.
 pub fn trough_is_brake(
     decay: DecayMode,
     drive_ticks: u32,
