@@ -78,7 +78,8 @@ pub struct ControlSystem {
 /// releases the result back to Idle, so a host that dies mid-run leaves a
 /// servo that only has to be told 0. `page` selects which slice of the
 /// capture the BURST section publishes. `chans` (`burst::chans`) picks the
-/// extras interleaved behind the shunt; latched with `duty_q15` at the arm.
+/// extras sampled behind the shunt and their layout; latched with
+/// `duty_q15` at the arm.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct ControlBurst {

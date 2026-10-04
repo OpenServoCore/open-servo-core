@@ -1,11 +1,12 @@
 //! High-rate shunt capture. The normal scan samples the shunt once per PWM
 //! period, which is ~6 points across a 150 us electrical time constant; a
 //! burst suspends the scan and free-runs the converter at one conversion per
-//! 1.083 us over a frame of the shunt plus the extras `chans` selects, steps
-//! the bridge halfway through, and freezes `BURST_LEN` codes for paged
-//! readback (`regions::burst`). Continuous scan mode repeats the frame with
-//! no gap and one DMA request per conversion (RM sec 9.2.4, 9.2.2), so each
-//! extra is sampled its slot index x 1.083 us after the shunt.
+//! 1.083 us over a frame of the shunt plus the extras `chans` selects
+//! (`chans::INTERLEAVE` gives each extra a shunt slot of its own), steps the
+//! bridge halfway through, and freezes `BURST_LEN` codes for paged readback
+//! (`regions::burst`). Continuous scan mode repeats the frame with no gap and
+//! one DMA request per conversion (RM sec 9.2.4, 9.2.2), so each slot is
+//! sampled its slot index x 1.083 us after the frame's first.
 //!
 //! The burst time-shares DMA1 CH1 with the scan, so its HT and TC land on the
 //! kernel's own vector: `runtime::isr` routes them here while `capturing()`

@@ -96,7 +96,7 @@ fn burst_chans_past_the_extras_is_validation(baud_idx: u8) {
     let mut sim = sim(baud_idx);
     let s = sim.add_servo(ID5);
 
-    // Bit 3 names no channel; the field rule rejects it before the arm gate
+    // Bit 4 names nothing; the field rule rejects it before the arm gate
     // ever sees it.
     sim.host_send(&instruction(
         ID5,

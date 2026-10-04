@@ -765,7 +765,7 @@
       "width": 1,
       "access": "rw",
       "kind": "uint",
-      "max": 7
+      "max": 15
     },
     {
       "name": "pos_lut_page",
