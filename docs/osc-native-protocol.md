@@ -1115,8 +1115,15 @@ transaction are normal; a kernel that overruns by itself shows hundreds
 per second. A tick counts as lost when the interrupt runs a whole
 period or more behind schedule, judged once per 16 ticks: a late window
 that the next one catches up costs nothing, and one window counts at
-most 16. Both counters update every 16 ticks (0.8 ms), the mean every
-4096. No kernel tick runs during a shunt burst (sec 5.8); the ticks
+most 16. Every host frame costs one or two lost ticks as well: the
+transport serves a frame above the kernel in one piece, break wake,
+dispatch, verdict, reply trigger and commit, 80 to 160 us at 48 MHz,
+and the scan that completes under that service merges its pending flag
+with the next. A TEL burst (sec 5.6) costs neither: its frames leave
+from the tick and their arm completions are short. The kernel itself
+never loses a tick, so a ladder's `tick_lost_count` reads as the number
+of host frames it received, within a factor of two. Both counters
+update every 16 ticks (0.8 ms), the mean every 4096. No kernel tick runs during a shunt burst (sec 5.8); the ticks
 before it that did not fill a 16-tick window count toward neither
 counter, and the first window after it counts no lost ticks.
 `stack_free_min` reads 0 until the first stack scan completes, about
