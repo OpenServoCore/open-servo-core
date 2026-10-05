@@ -19,6 +19,9 @@ use crate::wire::Wire;
 /// Broadcast id: group frames and COMMIT address every servo and draw no reply.
 const BROADCAST: u8 = 0xFE;
 
+/// Burst cycles carry values `1..=BURST_VALUES` (see [`burst_measure_observed`]).
+pub const BURST_VALUES: i32 = 1000;
+
 pub struct Report {
     pub ok: Vec<f64>,
     pub fail: u32,
@@ -287,7 +290,7 @@ pub fn dump_stamps(c: u32, stamps: &[BStamp], bit_ticks: u32) {
 /// [`burst_measure`] with a per-cycle `observe` callback for verbose/dump.
 ///
 /// The value schedule is owned here so the stale-detection invariant holds:
-/// adjacent cycles carry distinct values (`(index % 1000) + 1`), and the warmup
+/// adjacent cycles carry distinct values (`(index % BURST_VALUES) + 1`), and the warmup
 /// uses a sentinel `0` that no cycle emits -- so a stale read-back is never
 /// masked by an equal-valued neighbour.
 pub fn burst_measure_observed(
@@ -314,7 +317,7 @@ pub fn burst_measure_observed(
         other: 0,
     };
     for index in 0..count {
-        let value = (index % 1000) as i32 + 1;
+        let value = (index % BURST_VALUES as u32) as i32 + 1;
         let cycle = build(value);
         let (stamps, outcome) = run_cycle(w, &cycle, paced, settle_ms, bit_ticks, hz_per_us)?;
         match &outcome {

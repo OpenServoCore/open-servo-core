@@ -22,12 +22,15 @@
 use std::env;
 
 use bench::SUPPORTED_BAUDS;
-use bench::osc::{build_read, build_write};
+use bench::osc::build_read;
 use bench::run::{BurstReport, Stats, hot_loop_cycle, plain_flood_cycle};
 use osc_servo_core::regions::control::addr::lifecycle::GOAL_POSITION;
 use serial_test::serial;
 
 use crate::support::bench;
+
+/// NOREPLY writes per plain-flood cycle.
+const FLOOD_WRITES: u32 = 8;
 
 fn cycles() -> u32 {
     env::var("BENCH_BURST_CYCLES")
@@ -70,12 +73,13 @@ fn hot_loop_zero_gap_survives() {
     let n = cycles();
 
     let orig = b.status_ok(&build_read(id, GOAL_POSITION, 4)).payload;
+    let base = b.burst_goal_base(0);
     let mut dirty = Vec::new();
     for &baud in &SUPPORTED_BAUDS {
-        let report = b.burst_at(baud, n, |v| hot_loop_cycle(id, GOAL_POSITION, v));
+        let report = b.burst_at(baud, n, |v| hot_loop_cycle(id, GOAL_POSITION, base + v));
         check("hot loop", baud, &report, &mut dirty);
     }
-    b.status_ok(&build_write(id, GOAL_POSITION, &orig));
+    b.restore_goal(&orig);
 
     assert!(
         dirty.is_empty(),
@@ -95,12 +99,15 @@ fn plain_write_flood_survives() {
     let n = cycles();
 
     let orig = b.status_ok(&build_read(id, GOAL_POSITION, 4)).payload;
+    let base = b.burst_goal_base(FLOOD_WRITES as i32 - 1);
     let mut dirty = Vec::new();
     for &baud in &SUPPORTED_BAUDS {
-        let report = b.burst_at(baud, n, |v| plain_flood_cycle(id, GOAL_POSITION, 8, v));
+        let report = b.burst_at(baud, n, |v| {
+            plain_flood_cycle(id, GOAL_POSITION, FLOOD_WRITES, base + v)
+        });
         check("plain flood", baud, &report, &mut dirty);
     }
-    b.status_ok(&build_write(id, GOAL_POSITION, &orig));
+    b.restore_goal(&orig);
 
     assert!(
         dirty.is_empty(),
