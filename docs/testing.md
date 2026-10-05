@@ -81,6 +81,13 @@ The floor, the observer and the defaults (`core/src/estimator/window.rs`,
   other periods.
 - `floor_duty_saturates_past_full_duty` - a floor past the period asks
   for full duty.
+- `fast_decay_takes_the_higher_trough_floor` - Slow decay's terminal
+  floor is CALIB's alone, Fast decay's the higher of it and the board's
+  trough floor.
+- `bemf_floor_voids_the_observer_and_keeps_the_differential` - a window
+  one tick under the board's back-EMF floor leaves the back-EMF velocity
+  at 0 while the terminal differential still lands; at the floor the
+  boxcar reads its pinned value.
 - `unset_model_holds_tau_d_at_zero` - with the motor model unset, a
   driven and moving shaft never moves tau_d off zero while theta still
   tracks.
@@ -172,6 +179,9 @@ The limiter on the plant rig (`integration/tests/torque_limit.rs`):
 - `window_v_floor_is_published_beside_the_current_floor` - at 64 and
   160 ticks the two published floors read 1734 and 4356, and a
   `v_window_min_ticks` rewrite shows within one medium tick, torque off.
+- `window_v_floor_follows_the_openloop_decay` - with a 93-tick CALIB
+  floor and a 160-tick trough floor, Slow OpenLoop publishes the duty of
+  93 and Fast the duty of 160.
 
 A virgin servo (`integration/tests/class_defaults.rs`, boot seed on the
 60 mohm chain):

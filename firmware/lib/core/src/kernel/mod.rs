@@ -79,6 +79,15 @@ pub struct KernelTiming {
     /// Board data: the shortest Slow-decay brake half whose trough shunt
     /// sample feeds the bias tracker (`window::trough_is_brake`).
     pub bias_brake_min_ticks: u16,
+    /// Board data: the shortest Fast-decay window whose trough scan samples
+    /// both terminal taps inside it. It raises CALIB `v_window_min_ticks` for
+    /// Fast decay only (`window::v_floor`).
+    pub v_trough_min_ticks: u16,
+    /// Board data: the shortest window whose terminal differential the
+    /// back-EMF observer takes. Under it the drive pulse comes out short of
+    /// the commanded width by enough to bias the period-average voltage the
+    /// observer scales by that width.
+    pub bemf_min_ticks: u16,
     /// Board data: the shunt amplifier's settle gain by drive width
     /// (`window::i_from_frame`).
     pub i_settle_gain: window::SettleGain,
@@ -156,7 +165,11 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         self.cfg = cfg;
         self.config_gen = config_gen;
         let v_floor = window::floor_duty(
-            cfg.fast.v_window_min_ticks,
+            window::v_floor(
+                cfg.fast.ol_decay,
+                cfg.fast.v_window_min_ticks,
+                self.timing.v_trough_min_ticks,
+            ),
             self.timing.pwm_arr,
             self.timing.recip_arr_q24,
         );

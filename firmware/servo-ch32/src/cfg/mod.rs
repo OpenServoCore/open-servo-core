@@ -64,6 +64,8 @@ impl Precomputed {
                 med_ticks_per_ms_q16: ((med_hz as u64 * 65536) / 1000) as u32,
                 vbus_scale_q15,
                 bias_brake_min_ticks: cfg.calibration.bias_brake_min_ticks,
+                v_trough_min_ticks: cfg.calibration.v_trough_window_min_ticks,
+                bemf_min_ticks: cfg.calibration.bemf_window_min_ticks,
                 i_settle_gain: cfg.calibration.i_settle_gain,
             },
             current_defaults: CurrentDefaults::from_sense(

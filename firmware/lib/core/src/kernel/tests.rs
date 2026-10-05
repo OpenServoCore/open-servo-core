@@ -28,6 +28,8 @@ const TIMING: KernelTiming = KernelTiming {
     med_ticks_per_ms_q16: 2 << 16,
     vbus_scale_q15: VBUS_SCALE_Q15,
     bias_brake_min_ticks: 600,
+    v_trough_min_ticks: 0,
+    bemf_min_ticks: 0,
     i_settle_gain: window::SettleGain::UNITY,
 };
 
@@ -1542,6 +1544,38 @@ fn bemf_boxcar_lands_on_the_closed_form_after_20_ticks() {
     );
     k.on_tick(frame(2000, BIAS + 100), &sh);
     assert_eq!(sh.table.with(|t| t.telemetry.estimates.omega_bemf_cps), 0);
+}
+
+/// The back-EMF floor gates the observer alone: a 293-tick window under a
+/// 294-tick floor still feeds the terminal differential everywhere else.
+#[test]
+fn bemf_floor_voids_the_observer_and_keeps_the_differential() {
+    for (floor, want) in [(293, 8363), (294, 0)] {
+        let sh = Shared::new();
+        ident_setup(&sh);
+        let mut k = Kernel::new(
+            FakeIo {
+                sensors: FakeSensors,
+                motor: FakeMotor { last: None },
+            },
+            KernelTiming {
+                bemf_min_ticks: floor,
+                ..TIMING
+            },
+        );
+        settle(&mut k, &sh, frame(2000, BIAS + 100));
+        run_to(&mut k, &sh, frame(2000, BIAS + 100), phase::OBSERVER + 1);
+        for _ in 0..20 {
+            k.on_tick(frame(2000, BIAS + 100), &sh);
+        }
+        run_to(&mut k, &sh, frame(2000, BIAS + 100), phase::PUBLISH + 1);
+        assert_eq!(
+            sh.table.with(|t| t.telemetry.estimates.omega_bemf_cps),
+            want,
+            "floor {floor}"
+        );
+        assert_eq!(k.fast.vdiff_last, 2960, "floor {floor}");
+    }
 }
 
 #[test]
