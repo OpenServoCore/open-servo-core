@@ -30,7 +30,7 @@ const SENSE: CalibSense = CalibSense {
     vdd_mv: 3300,
     tick_hz: 20000,
     i_window_min_ticks: 64,
-    v_window_min_ticks: 160,
+    v_window_min_ticks: 93,
 };
 
 const SENSE_EXT: CalibSenseExt = CalibSenseExt {

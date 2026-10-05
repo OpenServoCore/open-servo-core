@@ -18,7 +18,7 @@ const SENSE: CalibSense = CalibSense {
     vdd_mv: 3_300,
     tick_hz: 20_000,
     i_window_min_ticks: 64,
-    v_window_min_ticks: 160,
+    v_window_min_ticks: 93,
 };
 const SENSE_EXT: CalibSenseExt = CalibSenseExt {
     vbus_div_top_ohm: 6_400,
