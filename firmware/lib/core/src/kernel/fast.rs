@@ -79,6 +79,8 @@ pub struct Measured {
 pub struct Fast {
     pwm_arr: u16,
     bias_brake_min_ticks: u16,
+    v_trough_min_ticks: u16,
+    bemf_min_ticks: u16,
     i_settle_gain: window::SettleGain,
     vcal_lpf: VcalLpf,
     /// Shunt zero-current offset in use; the medium step publishes it to
@@ -118,6 +120,8 @@ impl Fast {
         Self {
             pwm_arr: timing.pwm_arr,
             bias_brake_min_ticks: timing.bias_brake_min_ticks,
+            v_trough_min_ticks: timing.v_trough_min_ticks,
+            bemf_min_ticks: timing.bemf_min_ticks,
             i_settle_gain: timing.i_settle_gain,
             vcal_lpf: VcalLpf::new(),
             bias: BiasTracker::new(),
@@ -206,7 +210,7 @@ impl Fast {
             self.decay,
             ticks,
             fc.i_window_min_ticks,
-            fc.v_window_min_ticks,
+            window::v_floor(self.decay, fc.v_window_min_ticks, self.v_trough_min_ticks),
         );
         let zero = match self.bridge {
             Bridge::Drive => {
@@ -237,7 +241,11 @@ impl Fast {
         if let Some(vdiff) = vdiff {
             self.vdiff_last = vdiff.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
         }
-        self.bemf.sample(ticks, vdiff, i_meas);
+        self.bemf.sample(
+            ticks,
+            vdiff.filter(|_| ticks >= self.bemf_min_ticks as u32),
+            i_meas,
+        );
         // TEL emits HERE, before the medium step: duty_q15 still holds the
         // command whose window this frame's samples measured (the same
         // previous-tick alignment the ident aggregate uses), and the sample

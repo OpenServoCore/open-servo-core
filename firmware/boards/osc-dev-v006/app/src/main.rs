@@ -77,6 +77,11 @@ fn main() -> ! {
             // trigger at ADCCLK 24 MHz with 13.5-cycle apertures.
             i_window_min_ticks: 64,
             v_window_min_ticks: 160,
+            // The trough scan's tap B closes 135 ticks into the window.
+            v_trough_window_min_ticks: 160,
+            // The drive pulse comes out ~27 ticks short of the commanded
+            // width and the observer scales by the commanded one.
+            bemf_window_min_ticks: 160,
             // The amplifier tail after a drive pulse, measured on board D
             // over a duty grid: the trough sits a flat 5 counts over the
             // disabled-driver rest bias down to 960 brake ticks (20% duty),
