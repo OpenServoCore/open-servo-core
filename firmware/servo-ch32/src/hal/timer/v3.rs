@@ -56,9 +56,10 @@ pub fn configure_pwm_channel(ch: Channel, polarity: Polarity) {
     });
 }
 
-/// An internal-only compare: its event fires once per period at CNT = `ccr`
-/// counting up (with `init_center_aligned_pwm`'s CMS), CCR unbuffered.
-/// The channel output stays disabled, so the pin keeps its GPIO role.
+/// A compare whose event triggers the ADC once per period, at CNT = `ccr`
+/// counting up (with `init_center_aligned_pwm`'s CMS), CCR unbuffered. The
+/// ADC sees no event unless CCxE is set (bench), so the output is enabled:
+/// the caller keeps the channel's pin out of AF mode, where it reaches no pad.
 pub fn configure_compare_trigger(ch: Channel, ccr: u16) {
     let n = (ch as u8 - 1) as usize;
     TIM1.chctlr_output(n / 2).modify(|w| {
@@ -66,6 +67,7 @@ pub fn configure_compare_trigger(ch: Channel, ccr: u16) {
         w.set_ocpe(n % 2, false);
     });
     TIM1.chcvr(n).write_value(ccr);
+    TIM1.ccer().modify(|w| w.set_cce(n, true));
 }
 
 #[inline]
