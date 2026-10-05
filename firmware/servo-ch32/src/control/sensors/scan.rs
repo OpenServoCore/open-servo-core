@@ -121,13 +121,11 @@ pub(crate) fn seq() -> &'static [adc::Channel; ADC_SCAN_LEN] {
     unsafe { &*SEQ.get() }
 }
 
-/// Which terminal the bridge drives high: Forward drives A. The values are
-/// the swap mask `terminals` applies.
+/// Which terminal the bridge drives high: Forward drives A.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[repr(u16)]
 pub(crate) enum Direction {
-    Forward = 0,
-    Reverse = u16::MAX,
+    Forward,
+    Reverse,
 }
 
 impl Direction {
@@ -141,11 +139,12 @@ impl Direction {
     }
 
     /// `(vmotor_a, vmotor_b)` from the high-side and low-side readings.
-    /// Masked, not matched: no branch on the tick path.
     #[inline(always)]
     pub(super) fn terminals(self, high: u16, low: u16) -> (u16, u16) {
-        let swap = (high ^ low) & self as u16;
-        (high ^ swap, low ^ swap)
+        match self {
+            Direction::Forward => (high, low),
+            Direction::Reverse => (low, high),
+        }
     }
 }
 
