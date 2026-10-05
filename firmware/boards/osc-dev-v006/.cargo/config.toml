@@ -18,4 +18,5 @@ runner = "probe-rs run"
 rustflags = [
   "-C", "link-arg=-Tlink.x",
   "-C", "link-arg=--nmagic",
+  "-C", "llvm-args=-align-all-nofallthru-blocks=2",
 ]
