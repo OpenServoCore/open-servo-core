@@ -254,8 +254,8 @@ Under slow decay the drive window is centred on the crest, so the crest scan rea
 |Rest drift|-|Normal mode: 1178 counts at 28 C, 1174 at 44 C, 1170 at 60 C, about -0.25 counts/C. High-speed mode, measured earlier over the 0.52 V `VREF`: 467 counts at 28 C, 398 at 43 C, 260 at 60 C. The on-chip op-amp has no drift spec.|board #1 bench|
 |In-drive zero|-|10 counts over the torque-off rest: the DRV8212P's own supply current returns through Rs1 once the driver wakes.|nb11 sec 1|
 |Rest noise|-|1.28 counts RMS (1.15 mA). Board D 1.7.|`rest_current_noise_measured`, nb10 sec 3|
-|Step response|-|Half-way 44 ticks (0.92 us) after the ON compare, then a 12.3-tick (256 ns) exponential and a slow tail of about 3%. Steepest 2.8 V/us.|nb10 sec 8.1, 8.3|
-|Settled to 1%|-|156 ticks (3.25 us) after the ON compare, always approached from below.|`shunt_settle_measured`|
+|Step response|-|Half-way 48 ticks (1.00 us) after the ON compare, then a 13.1-tick (273 ns) exponential and a slow tail, 3.3% at half-way +48 ticks and 0.7% at +96. High-speed mode was 44 ticks, 10.1 ticks and 2.6%, with the same 0.7%. Steepest about 2.4 V/us.|bringup `captures/winding-r/c0` bursts, shunt over the terminal difference|
+|Settled to 1%|-|156 ticks (3.25 us) after the ON compare, always approached from below. Measured in high-speed mode; normal mode's tail matches it within 0.1% from 130 ticks.|`shunt_settle_measured`|
 |Crest honest to 3%|-|From 7% duty on the 2S grid. Board D 15%.|`crest_floor_measured`, nb10 sec 5|
 |ON pulse against the command|DRV8212P dead time 500 ns (24 ticks) typ|30 ticks short at half height on the grid. On the MG90, 10-15 ticks short at about 0.1 A and 20-25 at 0.2 A and up.|nb10 sec 8.1, nb11 sec 4|
 
@@ -268,16 +268,16 @@ Under slow decay the drive window is centred on the crest, so the crest scan rea
 
 High-speed mode bends above 43 C. In normal mode the meter reads 1110.9 counts/A through zero at room, +0.22% on the 1108.5 design. Counts per level fall 0.4% from 54 to 99 mV, which looks like compression but is the +10-count step between the torque-off zero and the in-drive zero (see In-drive zero above), spread over the levels by a fit through the torque-off zero. The winding-R ladder holds within 1% of its 30-40% reference from 15% duty and within 3% from 10%, in both modes at every temperature: tap B's sample timing sets that floor, not the op-amp. A firmware change to the tap sampling is in progress.
 
-**Window floor.** The firmware reads a current only when the drive window is at least `i_window_min_ticks` wide. Uncorrected, the grid's crest sample reads low under every floor, never high (nb10 sec 8.2):
+**Window floor.** The firmware reads a current only when the drive window is at least `i_window_min_ticks` wide. Uncorrected, the grid's crest sample reads low under every floor, never high. In normal mode, from the high-speed grid ladder (nb10 sec 8.2) times the measured ratio between the modes:
 
 |Within|Window|Duty|
 |---|---|---|
 |1%|125 ticks|10.4%|
-|2%|81 ticks|6.8%|
-|3%|57 ticks|4.8%|
-|5%|45 ticks|3.8%|
+|2%|88 ticks|7.3%|
+|3%|72 ticks|6.0%|
+|5%|58 ticks|4.8%|
 
-The board runs at 64 ticks (5.3% duty): a slightly low reading beats no reading. On top of that, `i_settle_gain` multiplies every window-valid current by the inverse of the step response at its sample instant, in 21 Q15 bands of 8 ticks from 40 ticks (x1.072) to 208, unity past that. The grid ladder reads 2.9% low at 60 ticks and 1.1% at 120, settled from about 208, the same in both drive signs; with the table every grid rung from 60 to 300 ticks lands within 0.16%. Telemetry's `current_raw` and `current_trough` and the bias tracker stay raw.
+The board runs at 64 ticks (5.3% duty): a slightly low reading beats no reading. On top of that, `i_settle_gain` multiplies every window-valid current by the inverse of the step response at its sample instant, in 21 Q15 bands of 8 ticks from 40 ticks (x1.133) to 208, unity past that. In normal mode the grid ladder reads about 4.5% low at 60 ticks and 1.1% at 120, settled from about 208, the same in both drive signs. The table is the high-speed one, which put every grid rung from 60 to 300 ticks within 0.16%, times the ratio between the modes; that predicts every rung from 64 ticks within 0.5%. Telemetry's `current_raw` and `current_trough` and the bias tracker stay raw.
 
 Two things the gain cannot remove:
 
@@ -326,10 +326,9 @@ The pot is ratiometric on `VDD`, so reference drift cancels, and the 24 MHz ADC 
 - Board power draw (idle, torque off) is unmeasured.
 - `VDD` on board #1 is not metered. Absolute volts and amps use the declared 3.300 V; board D measured 3.28 V.
 - No meter lap on the terminals or the rail, and no grid dataset with both taps live: the terminal chain against a meter, the B-side low path and drive-direction symmetry are ungraded.
-- The settle gain's truth checks: whether the slow tail scales with the step (grid bursts at about 13 and 40 Ohm), and a stalled motor ladder against a series meter. The table gets tuned if they disagree.
+- The settle gain's truth checks: a normal-mode grid ladder with the table on, whether the slow tail scales with the step (grid bursts at about 13 and 40 Ohm), and a stalled motor ladder against a series meter. The table gets tuned if they disagree.
 - The MG90 terminal capacitance behind the edge spike is inferred from the current, not metered.
 - Every floor figure is on 2S; the LinkE 5 V supply is not characterised.
-- The step response, settle and window-floor figures above, and the `i_settle_gain` table built from them, were taken in high-speed mode and are not yet re-measured in normal mode.
 - The averaging-tap option on Cv1 / Cv2.
 - The encoder inputs (J6 / J11), Qwiic and `POS2`.
 
