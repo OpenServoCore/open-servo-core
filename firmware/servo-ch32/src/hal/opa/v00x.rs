@@ -85,9 +85,12 @@ fn unlock() {
 pub fn init(cfg: &Config) {
     unlock();
     OPA.ctlr1().write(|w| {
-        // HS on: the external-network settle budget needs the bandwidth;
-        // the bridge-edge ring is HS-neutral (rev-B bench sweep).
-        w.set_opa_hs1(true);
+        // HS stays off: it gives up the factory offset trim (WCH AN24000).
+        // Rev 2A board #1, 28 -> 60 C board: HS gain +4.3%, zero -190 counts,
+        // bending above 43 C; normal mode -0.3%, -8 counts. Normal mode
+        // still settles the shunt chain inside the 64-tick window; the duty
+        // floor is the tap sample timing, not the op-amp.
+        w.set_opa_hs1(false);
         // VBCMPSEL feeds CMP2 only; 0b11 leaves it unselected.
         w.set_vbcmpsel(0b11);
         w.set_vben(false);
