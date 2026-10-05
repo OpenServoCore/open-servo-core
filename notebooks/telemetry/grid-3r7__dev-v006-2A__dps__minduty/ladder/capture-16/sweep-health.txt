@@ -1,0 +1,1 @@
+{'tick_over_count': 1666, 'tick_lost_count': 522, 'tel_drop_count': 442, 'stack_free_min': 1240}

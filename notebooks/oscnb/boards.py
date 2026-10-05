@@ -272,9 +272,9 @@ BOARDS = {
             "are graded there. Rv3 is repaired, and a dataset captured with it "
             "fitted reads both taps. Floors 64/93 ticks: the current at 3% "
             "with the settle gain on top (nb10 sec 8), the terminals from the "
-            "grid ladder with tap B sampled 37 ticks before the crest (bringup "
-            "captures/winding-r/injb). Fast decay's terminals and the back-EMF "
-            "observer keep 160."
+            "grid ladder with tap B sampled 37 ticks before the crest (nb16 "
+            "sec 6; reverse needs the tap swap, nb16 sec 7). Fast decay's "
+            "terminals and the back-EMF observer keep 160."
         ),
     ),
 }
