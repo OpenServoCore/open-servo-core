@@ -228,7 +228,7 @@ BOARDS = {
         bias_bot=100,
         vbus_div_top=6_400,
         vbus_div_bot=1_600,
-        floor_i_ticks=160,
+        floor_i_ticks=64,
         floor_v_ticks=160,
         floors_verified=False,
         measured={
@@ -270,9 +270,14 @@ BOARDS = {
             "grid-3r7 2S session: in that dataset tap B reads the VB node "
             "instead of terminal B, so only tap A, the rail and the current "
             "are graded there. Rv3 is repaired, and a dataset captured with it "
-            "fitted reads both taps. FLOORS UNVERIFIED: the 2A build ships "
-            "160/160 ticks. nb10 sec 8 derives 132 for the current at 1% and "
-            "keeps 160 for the terminals, pending a ladder through the floor."
+            "fitted reads both taps. FLOORS: the 2A build ships 64 ticks for "
+            "the current and 160 for the terminals (osc-dev-v006 main.rs "
+            "i_window_min_ticks / v_window_min_ticks). A capture's meta.json "
+            "drive block reports the current floor as window_floor_q15: 1734 "
+            "(64 ticks), or 4356 (160 ticks) from a build before the current "
+            "floor was lowered. 64 is nb10 sec 8's 3% tier, not a settled 1% "
+            "reading, and nb15 sec 4 puts the terminals' honest floor at tap "
+            "B's sample, so the floors stay UNVERIFIED."
         ),
     ),
 }

@@ -1,0 +1,88 @@
+21:03:38 meter LILLIPUT: (1791173018.058578, 'DC V', 0.0)
+21:04:38   ntc 31.74 C, 1/10 bins, span 0.00
+21:05:38   ntc 35.92 C, 2/10 bins, span 4.18
+21:06:38   ntc 38.46 C, 3/10 bins, span 6.72
+21:07:38   ntc 40.04 C, 4/10 bins, span 8.30
+21:08:39   ntc 40.94 C, 5/10 bins, span 9.20
+21:09:39   ntc 41.49 C, 6/10 bins, span 9.75
+21:10:39   ntc 41.92 C, 7/10 bins, span 10.18
+21:11:39   ntc 42.33 C, 8/10 bins, span 10.59
+21:12:39   ntc 42.52 C, 9/10 bins, span 10.78
+21:13:40   ntc 42.73 C, 10/10 bins, span 10.99
+21:14:40   ntc 42.83 C, 10/10 bins, span 6.91
+21:15:40   ntc 42.96 C, 10/10 bins, span 4.50
+21:16:40   ntc 43.12 C, 10/10 bins, span 3.08
+21:17:40   ntc 43.23 C, 10/10 bins, span 2.29
+21:18:41   ntc 43.29 C, 10/10 bins, span 1.80
+21:19:41   ntc 43.39 C, 10/10 bins, span 1.47
+21:20:41   ntc 43.52 C, 10/10 bins, span 1.19
+21:21:41   ntc 43.49 C, 10/10 bins, span 1.00
+21:22:42   ntc 43.61 C, 10/10 bins, span 0.87
+21:23:42   ntc 43.62 C, 10/10 bins, span 0.79
+21:24:42   ntc 43.59 C, 10/10 bins, span 0.66
+21:25:42   ntc 43.65 C, 10/10 bins, span 0.53
+21:26:42   ntc 43.69 C, 10/10 bins, span 0.46
+21:27:42   ntc 43.78 C, 10/10 bins, span 0.49
+21:28:43   ntc 43.81 C, 10/10 bins, span 0.42
+21:29:43   ntc 43.74 C, 10/10 bins, span 0.33
+21:29:43 == 43 HS on: flash
+21:30:36   zero 1053 taps 771/769 ntc 43.60 C
+21:30:36   dc levels
+{'tag': '43-hson', 'set_v': 4.5, 't': 1791174644.0, 'hold_s': 5.03, 'psu_v': 4.5, 'psu_i': 0.7486, 'n_psu': 7, 'i_idle_a': 0.0132, 'i_true_a': 0.7354, 'meter_v': 0.05406, 'n_meter': 7, 'i_raw_mean': 2065.5652, 'i_raw_sd': 2.0187, 'i_net_mean': 1013.5652, 'i_net_sd': 2.0187, 'n_chip': 23, 'zero_before': 1052.0, 'zero_after': 1052.0, 'vmotor_a': 1627.6087, 'vmotor_b': 694.1739, 'vbus_raw': 1015.2174, 'ntc_raw': 1286.3913, 'duty_applied_q15': 32767.0, 'limit_flags': 8, 'dir': '../winding-r/c0/43-hson/v4.50'}
+{'tag': '43-hson', 'set_v': 5.5, 't': 1791174662.5, 'hold_s': 5.02, 'psu_v': 5.5, 'psu_i': 0.9218, 'n_psu': 7, 'i_idle_a': 0.0134, 'i_true_a': 0.9084, 'meter_v': 0.06684, 'n_meter': 7, 'i_raw_mean': 2296.913, 'i_raw_sd': 2.7121, 'i_net_mean': 1243.913, 'i_net_sd': 2.7121, 'n_chip': 23, 'zero_before': 1052.0, 'zero_after': 1053.0, 'vmotor_a': 1869.4348, 'vmotor_b': 716.3043, 'vbus_raw': 1255.6522, 'ntc_raw': 1279.8261, 'duty_applied_q15': 32767.0, 'limit_flags': 8, 'dir': '../winding-r/c0/43-hson/v5.50'}
+{'tag': '43-hson', 'set_v': 7.2, 't': 1791174683.3, 'hold_s': 4.84, 'psu_v': 7.2, 'psu_i': 1.2099, 'n_psu': 7, 'i_idle_a': 0.0138, 'i_true_a': 1.1961, 'meter_v': 0.0883, 'n_meter': 7, 'i_raw_mean': 2690.9091, 'i_raw_sd': 3.5712, 'i_net_mean': 1638.9091, 'i_net_sd': 3.5712, 'n_chip': 22, 'zero_before': 1052.0, 'zero_after': 1053.0, 'vmotor_a': 2281.6818, 'vmotor_b': 757.4091, 'vbus_raw': 1666.6364, 'ntc_raw': 1274.0, 'duty_applied_q15': 32767.0, 'limit_flags': 8, 'dir': '../winding-r/c0/43-hson/v7.20'}
+{'tag': '43-hson', 'set_v': 8.0, 't': 1791174709.2, 'hold_s': 3.92, 'psu_v': 8.0, 'psu_i': 1.3422, 'n_psu': 5, 'i_idle_a': 0.0139, 'i_true_a': 1.3283, 'meter_v': 0.09826, 'n_meter': 5, 'i_raw_mean': 2870.4118, 'i_raw_sd': 3.2988, 'i_net_mean': 1818.4118, 'i_net_sd': 3.2988, 'n_chip': 17, 'zero_before': 1052.0, 'zero_after': 1052.0, 'vmotor_a': 2473.5294, 'vmotor_b': 778.7059, 'vbus_raw': 1859.4118, 'ntc_raw': 1263.5294, 'duty_applied_q15': 32767.0, 'limit_flags': 8, 'dir': '../winding-r/c0/43-hson/v8.00'}
+21:32:13   ladder
+21:32:24   bursts
+[staticwide 0] 21:32:24 can 44.82 C rail 7.682 V
+  R 4.206 V0 0.000 slope 0.784 V/I 8.217 can 44.75 declined
+[staticwidediff 1] 21:32:38 can 44.62 C rail 7.650 V
+  R 4.191 V0 0.000 slope 0.000 V/I 0.097 can 44.67 declined
+[staticwide 2] 21:32:53 can 44.73 C rail 7.658 V
+  R 4.204 V0 0.000 slope 0.865 V/I 8.179 can 44.6 declined
+[staticwidediff 3] 21:33:08 can 44.62 C rail 7.658 V
+  R 4.197 V0 0.000 slope 0.000 V/I 0.118 can 44.56 declined
+[staticwide 4] 21:33:23 can 44.62 C rail 7.646 V
+  R 4.218 V0 0.000 slope 0.748 V/I 8.250 can 44.59 declined
+[staticwidediff 5] 21:33:36 can 44.47 C rail 7.674 V
+  R 4.192 V0 0.000 slope 0.000 V/I 0.112 can 44.44 declined
+[staticwide 6] 21:33:51 can 44.53 C rail 7.690 V
+  R 4.205 V0 0.000 slope 0.715 V/I 8.254 can 44.41 declined
+[staticwidediff 7] 21:34:06 can 44.44 C rail 7.686 V
+  R 4.192 V0 0.000 slope 0.000 V/I 0.114 can 44.42 declined
+[staticwide 8] 21:34:20 can 44.35 C rail 7.682 V
+  R 4.204 V0 0.000 slope 0.690 V/I 8.249 can 44.31 declined
+[staticwidediff 9] 21:34:34 can 44.35 C rail 7.690 V
+  R 4.194 V0 0.000 slope 0.000 V/I 0.103 can 44.4 declined
+21:35:24   zero 1059 taps 769/772 ntc 44.09 C
+21:35:24 == 43 HS off: flash
+21:36:06   zero 1174 taps 766/769 ntc 43.97 C
+21:36:06   dc levels
+{'tag': '43-hsoff', 'set_v': 4.5, 't': 1791174973.7, 'hold_s': 5.03, 'psu_v': 4.5, 'psu_i': 0.7495, 'n_psu': 7, 'i_idle_a': 0.0126, 'i_true_a': 0.7369, 'meter_v': 0.0542, 'n_meter': 8, 'i_raw_mean': 2178.5217, 'i_raw_sd': 3.117, 'i_net_mean': 1004.5217, 'i_net_sd': 3.117, 'n_chip': 23, 'zero_before': 1174.0, 'zero_after': 1174.0, 'vmotor_a': 1626.7391, 'vmotor_b': 694.087, 'vbus_raw': 1014.5217, 'ntc_raw': 1274.4348, 'duty_applied_q15': 32767.0, 'limit_flags': 8, 'dir': '../winding-r/c0/43-hsoff/v4.50'}
+{'tag': '43-hsoff', 'set_v': 5.5, 't': 1791174992.2, 'hold_s': 5.02, 'psu_v': 5.5, 'psu_i': 0.923, 'n_psu': 7, 'i_idle_a': 0.0128, 'i_true_a': 0.9102, 'meter_v': 0.06695, 'n_meter': 8, 'i_raw_mean': 2413.6957, 'i_raw_sd': 2.636, 'i_net_mean': 1238.6957, 'i_net_sd': 2.636, 'n_chip': 23, 'zero_before': 1175.0, 'zero_after': 1175.0, 'vmotor_a': 1868.6522, 'vmotor_b': 716.3913, 'vbus_raw': 1255.3913, 'ntc_raw': 1274.1739, 'duty_applied_q15': 32767.0, 'limit_flags': 8, 'dir': '../winding-r/c0/43-hsoff/v5.50'}
+{'tag': '43-hsoff', 'set_v': 7.2, 't': 1791175012.9, 'hold_s': 4.84, 'psu_v': 7.2, 'psu_i': 1.2106, 'n_psu': 7, 'i_idle_a': 0.0132, 'i_true_a': 1.1974, 'meter_v': 0.08834, 'n_meter': 7, 'i_raw_mean': 2808.3182, 'i_raw_sd': 4.1677, 'i_net_mean': 1631.3182, 'i_net_sd': 4.1677, 'n_chip': 22, 'zero_before': 1177.0, 'zero_after': 1177.0, 'vmotor_a': 2280.3182, 'vmotor_b': 756.9091, 'vbus_raw': 1665.1818, 'ntc_raw': 1272.4091, 'duty_applied_q15': 32767.0, 'limit_flags': 8, 'dir': '../winding-r/c0/43-hsoff/v7.20'}
+{'tag': '43-hsoff', 'set_v': 8.0, 't': 1791175038.5, 'hold_s': 3.92, 'psu_v': 8.0, 'psu_i': 1.3422, 'n_psu': 5, 'i_idle_a': 0.0133, 'i_true_a': 1.3289, 'meter_v': 0.09828, 'n_meter': 5, 'i_raw_mean': 2989.3125, 'i_raw_sd': 4.4079, 'i_net_mean': 1812.3125, 'i_net_sd': 4.4079, 'n_chip': 16, 'zero_before': 1177.0, 'zero_after': 1178.0, 'vmotor_a': 2472.125, 'vmotor_b': 778.4375, 'vbus_raw': 1858.8125, 'ntc_raw': 1259.75, 'duty_applied_q15': 32767.0, 'limit_flags': 8, 'dir': '../winding-r/c0/43-hsoff/v8.00'}
+21:37:43   ladder
+21:37:53   bursts
+[staticwide 0] 21:37:53 can 44.62 C rail 7.682 V
+  R 4.218 V0 0.000 slope 0.679 V/I 8.278 can 44.59 declined
+[staticwidediff 1] 21:38:07 can 44.59 C rail 7.646 V
+  R 4.188 V0 0.000 slope 0.000 V/I 0.103 can 44.59 declined
+[staticwide 2] 21:38:23 can 44.70 C rail 7.642 V
+  R 4.217 V0 0.000 slope 0.703 V/I 8.276 can 44.67 declined
+[staticwidediff 3] 21:38:37 can 44.50 C rail 7.690 V
+  R 4.200 V0 0.000 slope 0.000 V/I 0.099 can 44.56 declined
+[staticwide 4] 21:38:52 can 44.59 C rail 7.658 V
+  R 4.214 V0 0.000 slope 0.705 V/I 8.263 can 44.48 declined
+[staticwidediff 5] 21:39:06 can 44.50 C rail 7.638 V
+  R 4.221 V0 0.000 slope 0.000 V/I 0.109 can 44.37 declined
+[staticwide 6] 21:39:21 can 44.44 C rail 7.690 V
+  R 4.214 V0 0.000 slope 0.714 V/I 8.262 can 44.32 declined
+[staticwidediff 7] 21:39:35 can 44.18 C rail 7.674 V
+  R 4.183 V0 0.000 slope 0.000 V/I 0.106 can 44.19 declined
+[staticwide 8] 21:39:50 can 44.21 C rail 7.646 V
+  R 4.223 V0 0.000 slope 0.726 V/I 8.256 can 44.28 declined
+[staticwidediff 9] 21:40:04 can 44.21 C rail 7.686 V
+  R 4.215 V0 0.000 slope 0.000 V/I 0.114 can 44.25 declined
+21:40:54   zero 1182 taps 771/768 ntc 43.94 C
+21:40:54 done

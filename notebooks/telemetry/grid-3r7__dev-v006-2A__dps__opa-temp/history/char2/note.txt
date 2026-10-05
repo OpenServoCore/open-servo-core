@@ -1,0 +1,1 @@
+After: board #1 with VREF raised (Rd2 1K6 + Rd3 1K6, 1.10 V; rest zero 1101 counts), Rn1 10K thin film, firmware b1e1f6d8 (zero tracking #257, burst interleave #258), oc_trip 2439 saved. Board in the dryer, grid outside on J4, JP2 IN. Plateaus room / dryer 50 / dryer 70. Bursts alternate driven (even) and diff (odd), static load, rungs 10/15/25/38%, limit 1000 counts RAM.

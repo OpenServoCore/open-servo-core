@@ -1,0 +1,1 @@
+HS OFF experiment (OPA_HS1=0, local build on b1e1f6d8, not committed). Same board/rework as char2. Hot point first (dryer 70, board ~59 C), then room after cool-down.

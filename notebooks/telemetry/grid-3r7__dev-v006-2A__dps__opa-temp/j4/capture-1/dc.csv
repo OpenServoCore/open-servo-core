@@ -1,0 +1,3 @@
+tag,set_v,t,hold_s,psu_v,psu_i,n_psu,i_idle_a,i_true_a,meter_v,n_meter,i_raw_mean,i_raw_sd,i_net_mean,i_net_sd,n_chip,zero_before,zero_after,vmotor_a,vmotor_b,vbus_raw,ntc_raw,duty_applied_q15,limit_flags,dir
+hold-j4-hsoff,4.5,1791170526.2,5.02,4.5,0.7525,7,0.0128,0.7397,-3.75314,7,2185.3913,1.3731,1007.3913,1.3731,23,1178.0,1179.0,1624.3478,691.6522,1011.0435,1880.8261,32767.0,8,v4.50
+hold-j4-hsoff,8.0,1791170545.0,3.93,8.0,1.3559,4,0.0133,1.3426,-6.8472,5,3008.6471,3.8069,1829.6471,3.8069,17,1178.0,1179.0,2471.0,773.4706,1854.0588,1878.1765,32767.0,8,v8.00
