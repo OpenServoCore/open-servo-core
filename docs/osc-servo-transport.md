@@ -284,14 +284,16 @@ be staged behind the CRC verdict:
   structurally idle and the burst borrows them whole - no second TX
   path exists. Mechanics: the kernel encodes each control-tick sample
   once, directly at its final wire offset in a ping-pong buffer pair
-  (LOW context); the main loop's ISR-masked `poll_tel` stages a ready
-  buffer through the ordinary stage/trigger path (HIGH-owned state,
-  same as `take_reboot`). Cross-context traffic is three flags and an
-  arm mailbox, single-writer volatile discipline, no atomics. Any RX
-  break aborts the burst with the speculation-kill trio (disarm,
-  tx.abort, chain reset); buffers published under a dead arm epoch are
-  discarded on sight, which closes the mid-tick re-arm race. A stalled
-  consumer drops whole batches and counts them - the fast tick never
+  (LOW context); the same tick's ISR-masked `poll_tel` stages a ready
+  buffer through the ordinary stage/trigger path (HIGH-owned state). It
+  runs at the tick, not in the main loop: a six-field frame leaves
+  ~110 µs of its 800 µs batch window spare, and a driving tick starves
+  the main loop for longer than that. Cross-context traffic is three
+  flags and an arm mailbox, single-writer volatile discipline, no
+  atomics. Any RX break aborts the burst with the speculation-kill trio
+  (disarm, tx.abort, chain reset); buffers published under a dead arm
+  epoch are discarded on sight, which closes the mid-tick re-arm race. A
+  stalled consumer drops rows and counts them - the fast tick never
   blocks.
 
 Backpressure is structural: at most one pending-verdict frame exists at a

@@ -1,8 +1,9 @@
 //! TEL burst seam between the kernel fast tick (PFIC LOW) and the bus-side
-//! frame stager (HIGH transport ISRs / ISR-masked main loop). The two sides
-//! never share `&mut`: the channel is a pair of ping-pong payload buffers
-//! the kernel encodes into DIRECTLY -- each sample lands at its final wire
-//! offset via the core appenders, so no intermediate sample storage exists.
+//! frame stager (HIGH transport ISRs / the kernel tick's ISR-masked tail).
+//! The two sides never share `&mut`: the channel is a pair of ping-pong
+//! payload buffers the kernel encodes into DIRECTLY -- each sample lands at
+//! its final wire offset via the core appenders, so no intermediate sample
+//! storage exists.
 //! Cross-side traffic is single-writer-per-field volatile load/store plus
 //! compiler fences at the buffer handoffs (single core, no atomic RMW on
 //! rv32ec).
@@ -74,6 +75,12 @@ impl TelChannel {
             arm_seq: SyncUnsafeCell::new(0),
             drops: SyncUnsafeCell::new(0),
         }
+    }
+
+    /// The bus-side burst gate. Any context: the bus is its only writer.
+    pub fn active(&self) -> bool {
+        // SAFETY: single-byte volatile read of a bus-written flag.
+        unsafe { self.active.get().read_volatile() }
     }
 
     /// Rows dropped against full buffers, monotonic wrapping. Any context:
@@ -159,8 +166,7 @@ impl TelFeed {
 
 impl TelStream for TelFeed {
     fn active(&self) -> bool {
-        // SAFETY: bus-written flag, volatile read (type doc).
-        unsafe { self.ch.active.get().read_volatile() }
+        self.ch.active()
     }
 
     fn on_tick(&mut self, sample: &TelSample) {

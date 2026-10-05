@@ -46,7 +46,7 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
     loop {
         // Transport RX/TX/deadlines are ISR-driven (TIM2 + USART1 + SysTick,
         // PFIC HIGH). Main loop owns LED housekeeping, the link-diagnostics
-        // publish, the TEL burst poll, the deferred-reboot poll, and sleep.
+        // publish, the deferred-reboot poll, and sleep.
         //
         // STAT lamp (`runtime::stat`). The `wfi` wake cadence is the poll
         // cadence: the 20 kHz kernel tick at the slowest.
@@ -144,15 +144,6 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
                     .write_volatile(total);
             }
         }
-
-        // TEL burst (protocol sec 5.3): stage the next kernel-encoded batch
-        // onto the reply TX path when the wire is ours. Every wfi wake polls
-        // (>= 20 kHz); a batch banks at most every ~800 us, so the cadence
-        // has huge margin. Same reach-in contract as `take_reboot` below.
-        critical_section::with(|_| {
-            // SAFETY: bus installed in bringup; ISRs masked by the CS.
-            unsafe { crate::runtime::Drivers::bus() }.poll_tel()
-        });
 
         // Shunt-burst page copy: republishes one page of the frozen capture
         // into the BURST window. Main-loop side on purpose -- the copy is

@@ -7,7 +7,7 @@ use osc_servo_core::{ControlIo, RegionStorageRaw, Sensors};
 use crate::hal::{pfic, systick, usart};
 use crate::providers::break_wake::BreakWake;
 use crate::runtime::Drivers;
-use crate::runtime::statics::{KERNEL, SESSION, SHARED};
+use crate::runtime::statics::{KERNEL, SESSION, SHARED, TEL_CHANNEL};
 use crate::runtime::tick_load::TickLoad;
 
 /// Touched only from the DMA1 CH1 vector, which never preempts itself.
@@ -129,6 +129,17 @@ pub fn on_adc_dma_tc() {
                 lost.write_volatile(lost.read_volatile().wrapping_add(w.lost));
             }
         }
+    }
+
+    // TEL burst (protocol sec 5.6): a six-field frame drains in ~690 us of
+    // the 800 us its successor takes to fill, so a batch must stage within
+    // a tick of banking or of the wire freeing; the main loop, starved by a
+    // driving tick, staged up to 300 us late and the kernel dropped rows.
+    // After the load stamp: staging is transport work, not the kernel's.
+    // ISRs masked: `bus()` is HIGH-owned.
+    if TEL_CHANNEL.active() {
+        // SAFETY: bus installed in bringup; ISRs masked by the CS.
+        critical_section::with(|_| unsafe { Drivers::bus() }.poll_tel());
     }
 }
 
