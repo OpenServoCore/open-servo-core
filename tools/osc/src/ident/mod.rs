@@ -601,6 +601,7 @@ fn rig(cli: &Ctx) -> Result<RigParams> {
         ..RigParams::new(Some(d.env.guard), d.env.i_abort)
             .with_floor(d.lim.window_floor_q15)
             .with_stops(d.lim.raw)
+            .with_polarity(d.lim.drive_polarity)
     })
 }
 
@@ -2316,7 +2317,7 @@ mod tests {
         assert_eq!(chans(&["osc", "burst"]).unwrap(), Chans::Driven);
         let diff = chans(&["osc", "--burst-chans", "diff", "burst"]).unwrap();
         assert_eq!(diff, Chans::Diff);
-        assert_eq!(diff.for_step(-8520), CHANS_DIFF);
+        assert_eq!(diff.for_step(-8520, true), CHANS_DIFF);
         assert_eq!(CHANS_DIFF, 11);
         assert!(chans(&["osc", "--burst-chans", "16", "burst"]).is_err());
     }

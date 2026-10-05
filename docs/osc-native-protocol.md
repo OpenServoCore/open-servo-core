@@ -1017,7 +1017,12 @@ from the BURST section) steps the bridge to `duty_q15` halfway through
 a window of about 1.04 ms in which the kernel does not tick: no
 limiter, stall timer or endstop acts on the step. The step drives for
 the half window, about 0.52 ms, and the first kernel tick after the
-window replaces it. What bounds a burst is its arm. `arm` 1 is refused
+window replaces it. `duty_q15` is logical, like an OpenLoop duty: under
+`drive_polarity` 0 the servo negates it at the bridge, so a step drives
+the same way as the hold before it, and it drives the A terminal high
+when its sign is positive under `drive_polarity` 1 or negative under 0
+(unit `burst_step_follows_the_drive_polarity`). What bounds a burst is
+its arm. `arm` 1 is refused
 unless all of these hold at the kernel tick that sees it:
 
 - torque on, mode OpenLoop, no TEL burst running (`tel_count` 0), no

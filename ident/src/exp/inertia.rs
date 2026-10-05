@@ -901,6 +901,7 @@ mod tests {
             window_floor_q15: 4356,
             window_v_floor_q15: 4356,
             amps_per_count: 0.0,
+            drive_polarity: true,
         };
         DutyPlan::new(&lim, 3.37, None)
     }
@@ -1064,6 +1065,7 @@ mod tests {
             window_floor_q15: 4356,
             window_v_floor_q15: 4356,
             amps_per_count: 0.0,
+            drive_polarity: true,
         };
         let r = 7270.0 / 4096.0;
         let params = RigParams::new(Some((532, 3526)), 350).with_stops((209, 3849));
@@ -1546,6 +1548,7 @@ mod tests {
             window_floor_q15: 4356,
             window_v_floor_q15: 4356,
             amps_per_count: 0.0,
+            drive_polarity: true,
         };
         let plan = DutyPlan::new(&lim, 7270.0 / 4096.0, Some(0.145));
         let params = RigParams::new(Some(GUARD), 350).with_stops((209, 3849));

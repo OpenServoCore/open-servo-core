@@ -523,17 +523,13 @@ fn find_stops(
     sc: Scales,
     tick_hz: f64,
 ) -> Result<Found> {
-    let polarity = c
-        .read(id, config::DRIVE_POLARITY.addr, 1)
-        .context("field read")?[0]
-        != 0;
     let mut cal = Cal {
         lim,
         sc,
         tick_hz,
         out,
         known: (lim.calibrated() && lim.raw.0 < lim.raw.1).then_some(lim.raw),
-        polarity,
+        polarity: lim.drive_polarity,
         stops: None,
         refused: None,
         tel: Vec::new(),
@@ -596,7 +592,8 @@ impl Cal<'_> {
     /// the stops of an earlier cal, when there was one.
     fn params(&self) -> RigParams {
         let p = RigParams::new(self.lim.guard().ok(), self.lim.abort_default())
-            .with_floor(self.lim.window_floor_q15);
+            .with_floor(self.lim.window_floor_q15)
+            .with_polarity(self.polarity);
         match self.known {
             Some(s) => p.with_stops(s),
             None => p,

@@ -105,6 +105,8 @@ pub struct ServoLimits {
     pub window_v_floor_q15: u16,
     /// Shunt scale; 0 when the sense constants are unset.
     pub amps_per_count: f64,
+    /// `drive_polarity`: which terminal a burst step drives.
+    pub drive_polarity: bool,
 }
 
 /// The travel guard and the current abort a drive runs inside.
@@ -673,6 +675,7 @@ mod tests {
             window_floor_q15: 4356,
             window_v_floor_q15: 4356,
             amps_per_count: 3.3 / 4096.0 / (15.0 * 0.060),
+            drive_polarity: true,
         }
     }
 

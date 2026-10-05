@@ -527,6 +527,7 @@ mod tests {
                     vmotor_bias: 779,
                     pos: 122,
                     seated: true,
+                    drive_polarity: false,
                 },
             })
             .collect();

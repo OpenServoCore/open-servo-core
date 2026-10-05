@@ -576,7 +576,10 @@ impl Experiment for Held {
                 Cmd::Burst {
                     duty_q15: 0,
                     pre_q15: 0,
-                    chans: self.cfg.chans.for_step(self.hold_q15()),
+                    chans: self
+                        .cfg
+                        .chans
+                        .for_step(self.hold_q15(), self.params.drive_polarity),
                     seated: false,
                 }
             }
@@ -702,7 +705,7 @@ impl Experiment for Held {
                 Cmd::Burst {
                     duty_q15: step,
                     pre_q15: self.hold_q15(),
-                    chans: self.cfg.chans.for_step(step),
+                    chans: self.cfg.chans.for_step(step, self.params.drive_polarity),
                     seated: true,
                 }
             }
@@ -904,7 +907,7 @@ mod tests {
     fn seated_run(plant: &SynthBurst, chans: Chans, rest: bool) -> HeldRun {
         let hold = -pct_q15(12);
         let at = |q: i16| SynthBurst {
-            chans: chans.for_step(q),
+            chans: chans.for_step(q, plant.drive_polarity),
             ..plant.clone()
         };
         let mut caps: Vec<Capture> = rest.then(|| at(hold).capture(0, 0)).into_iter().collect();
@@ -1009,8 +1012,8 @@ mod tests {
             repeats: 2,
             ..HeldCfg::default()
         };
-        let params = rig().without_pos_guard();
-        let mut exp = Guarded::new(Held::new(cfg, &rig(), scales()), params);
+        let rig = rig().with_polarity(servo.burst.drive_polarity);
+        let mut exp = Guarded::new(Held::new(cfg, &rig, scales()), rig.without_pos_guard());
         let log = pump(&mut exp, servo, 400_000);
         assert!(!log.contains(&"OVERRUN".to_string()));
         (exp, log)
@@ -1079,6 +1082,28 @@ mod tests {
         assert!(!refs[0].meta.seated);
         let r = exp_fit(&exp);
         assert_eq!(r.route(), Some(BurstRoute::Held), "{:?}", r.held.blocking());
+    }
+
+    /// Reversed wiring under `drive_polarity` 0: the servo negates the hold
+    /// and the step alike, so the seat toward the low stop drives terminal A
+    /// high, and the held route promotes only when the host samples and
+    /// reads that terminal.
+    #[test]
+    fn a_reversed_servo_seats_and_fits_on_the_terminal_it_drives() {
+        let mut s = servo();
+        s.burst.drive_polarity = false;
+        let (exp, _) = run(&mut s);
+        assert!(exp.abort().is_none(), "{:?}", exp.abort());
+        let exp = exp.into_inner();
+        assert_eq!(exp.seats()[0].pos, 200);
+        for c in exp.captures() {
+            assert_eq!(c.meta.chans, CHAN_VMOTOR_A, "step {}", c.meta.step_q15);
+            assert!(!c.meta.drive_polarity);
+        }
+        let r = exp_fit(&exp);
+        assert_eq!(r.route(), Some(BurstRoute::Held), "{:?}", r.held.blocking());
+        let g = r.held.reg.as_ref().expect("the held regression");
+        assert!(rel(g.r_ohm, s.burst.r).abs() < 0.05, "R {}", g.r_ohm);
     }
 
     fn exp_fit(exp: &Held) -> crate::exp::inductance::InductanceResult {

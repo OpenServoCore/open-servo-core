@@ -14,7 +14,7 @@ use osc_ident::units::{self, SenseParams};
 
 use super::battery;
 use super::pump::{read_i32, read_snapshot};
-use super::snapshot::read_u16;
+use super::snapshot::{read_bool, read_u16};
 
 pub(crate) fn read<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<ServoLimits> {
     battery::before_drive(c, id)?;
@@ -48,6 +48,7 @@ pub(crate) fn read<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<ServoLimits> {
         window_floor_q15: tel.window_floor_q15,
         window_v_floor_q15: read_u16(c, id, telemetry::WINDOW_V_FLOOR_Q15)?,
         amps_per_count: units::amps_per_count(&sense),
+        drive_polarity: read_bool(c, id, config::DRIVE_POLARITY)?,
     };
     lim.check_floor()?;
     for w in lim.warnings(read_u16(c, id, config::RTHERM_I_MIN_COUNTS)?) {

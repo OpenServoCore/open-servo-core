@@ -1583,6 +1583,7 @@ mod tests {
             window_floor_q15: 4356,
             window_v_floor_q15: 4356,
             amps_per_count: 0.0,
+            drive_polarity: true,
         };
         DutyPlan::new(&lim, r, Some(moved))
     }
