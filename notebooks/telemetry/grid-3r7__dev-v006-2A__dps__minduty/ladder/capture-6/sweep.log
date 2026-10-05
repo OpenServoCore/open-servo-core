@@ -1,0 +1,19 @@
+[baseline] 800 ms torque-off
+  seg 0: 1000 frames, 16000 samples, 0 seq holes, 0 garble bytes
+  seg 1 (duty -6%): 188 frames, 3000 samples, 0 seq holes, 0 garble bytes
+  seg 2 (duty -7%): 188 frames, 3000 samples, 0 seq holes, 0 garble bytes
+  seg 3 (duty -8%): 188 frames, 3000 samples, 0 seq holes, 0 garble bytes
+  seg 4 (duty -9%): 188 frames, 3000 samples, 0 seq holes, 0 garble bytes
+  seg 5 (duty -10%): 188 frames, 3000 samples, 0 seq holes, 0 garble bytes
+  seg 6 (duty -11%): 188 frames, 3000 samples, 0 seq holes, 0 garble bytes
+  seg 7 (duty -12%): 188 frames, 3000 samples, 0 seq holes, 0 garble bytes
+  seg 8 (duty -13%): 188 frames, 3000 samples, 0 seq holes, 0 garble bytes
+  seg 9 (duty -14%): 188 frames, 3000 samples, 0 seq holes, 0 garble bytes
+  seg 10 (duty -15%): 188 frames, 3000 samples, 0 seq holes, 0 garble bytes
+  seg 11 (duty -20%): 188 frames, 3000 samples, 0 seq holes, 0 garble bytes
+  seg 12 (duty -30%): 188 frames, 3000 samples, 0 seq holes, 0 garble bytes
+  seg 13 (duty -40%): 188 frames, 3000 samples, 0 seq holes, 0 garble bytes
+warning: the servo dropped 2 TEL rows (both stream buffers were waiting for the wire); the files are saved with those rows missing
+sweep: /Users/aaron/projects/OpenServoCore/osc-dev-v006-bringup/captures/winding-r/injb/old-hson-rev/ladder/sweep.csv
+meta:  /Users/aaron/projects/OpenServoCore/osc-dev-v006-bringup/captures/winding-r/injb/old-hson-rev/ladder/meta.json
+warning: the collision trip, 65535 counts (59123 mA), is over twice the current limit of 2400 counts (2165 mA): a collision never reaches it (set stall_tau_trip_counts near the limit)

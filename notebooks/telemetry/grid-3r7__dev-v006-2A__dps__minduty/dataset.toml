@@ -1,0 +1,19 @@
+servo = "grid-3r7"
+supply = "dps"
+rule = "limit"
+current_limit_counts = 2400
+captured = "2026-10-05"
+notes = """Rev 2A board #1 on the 3.7 ohm grid at J4, fed by a DPS-150 at 7.9 V on its battery wires (LiPo unplugged), board at room. Every ladder is `osc sweep --static-load` at the current limit 2400 counts, one direction per capture, flashed in place over SWD between images. The images, in the order they ran:
+
+  before    the regular scan only: shunt, tap A, tap B close 31 / 83 / 135 ticks after the crest
+  probe     tap B on an injected conversion closing 37 ticks before the crest (TIM1 CC4 at ARR - 68), with the regular scan's tap B still streamed in the ntc_raw column, so one ladder carries both tap B samples row by row
+  injected  the injected tap B (PR #260)
+  floor93   the terminal floor at 93 ticks (PR #264), with the firmware's own vdiff in the stream; one ladder under Fast decay
+  main      main after #264, before the tap swap
+  swap      the low-side tap sampled early and the high-side tap late in both directions (PR #271)
+
+ladders.csv names each ladder/capture-N: its bringup folder, image, op-amp mode and decay. The probe, injected and floor93 images were built from a branch that predates #259, so their op-amp ran in high-speed mode (torque-off zero about 1104 counts against about 1178 in normal mode). The before ladders ran both modes. Tap timing does not depend on the mode (nb15 sec 4); current settle and gain do.
+
+flip/capture-1 is a +10% / -10% flip ladder on the swap image. readback/ holds two console readouts: injected-conversions.txt, the probe image's count of injected end-of-conversions against kernel ticks over two dumps, and floors.txt, window_floor_q15 and window_v_floor_q15 read back under Slow and Fast decay on the floor93 image. Each capture folder keeps the sweep's console log and its kernel health counters.
+
+Source: osc-dev-v006-bringup captures/winding-r/injb (scripts/lad.py, scripts/unit3.py for the first analysis). The csv files are gzipped; nothing else differs from what the sweep wrote."""

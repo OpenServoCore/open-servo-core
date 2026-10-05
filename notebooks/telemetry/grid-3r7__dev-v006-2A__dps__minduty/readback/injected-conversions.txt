@@ -1,0 +1,3 @@
+first {'n': 406672, 'early': 406667, 'late': 5, 'ph_min': -1017, 'ph_max': 281, 'cnt': 1175, 'down': 1, 'idatar': [772, 0, 0, 0], 'sample_tick': 408528}
+second {'n': 610388, 'early': 610383, 'late': 5, 'ph_min': -1017, 'ph_max': 281, 'cnt': 1175, 'down': 1, 'idatar': [771, 0, 0, 0], 'sample_tick': 612217}
+injected EOCs 203716 over 203689 kernel ticks: ratio 1.0001; late (> crest+60) delta 0

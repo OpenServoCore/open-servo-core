@@ -1,0 +1,6 @@
+unit3 image, torque off, RAM only:
+v_window_min_ticks = 93
+window_floor_q15 = 1734
+openloop_decay slow: window_v_floor_q15 = 2526 (93 ticks)
+openloop_decay fast: window_v_floor_q15 = 4356 (160 ticks)
+back to slow: 2526
