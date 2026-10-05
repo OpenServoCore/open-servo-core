@@ -765,16 +765,10 @@ impl Sim {
         }
     }
 
-    /// The servos' main-loop residue after every event: the TEL poll (the
-    /// chip's ISR-masked main loop poll), then start the fast-tick pump for
-    /// any burst the event just armed. Sub-event poll latency is the chip's
-    /// own (its loop spins far faster than a byte-time).
+    /// Start the fast-tick pump for any burst the event just armed.
     fn tel_pump(&mut self) {
         let now = self.core.borrow().now();
         for j in 0..self.servos.len() {
-            if !self.cpus[j].busy(now) {
-                self.servos[j].poll_tel();
-            }
             if self.servos[j].tel_active() {
                 if !self.tels[j].running {
                     let t = &mut self.tels[j];
@@ -815,6 +809,11 @@ impl Sim {
         }
         t.n += 1;
         self.servos[j].tel_tick(&s);
+        // the chip's tick tail polls; one landing inside a HIGH body leaves
+        // the stage to the next tick
+        if !self.cpus[j].busy(now) {
+            self.servos[j].poll_tel();
+        }
         self.core
             .borrow_mut()
             .schedule(Event::TelTick { servo: j, epoch }, now + TEL_TICK);

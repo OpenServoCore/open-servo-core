@@ -273,8 +273,8 @@ impl SimServo {
         self.feed.on_tick(s);
     }
 
-    /// The chip main loop's TEL poll (ISRs masked there); the sim calls it
-    /// between handler bodies.
+    /// The chip kernel tick's TEL poll (ISRs masked there); the sim calls it
+    /// after each fast tick outside handler bodies.
     pub fn poll_tel(&mut self) {
         self.bus.poll_tel();
     }

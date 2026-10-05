@@ -1,7 +1,7 @@
 //! TEL burst stager: puts the kernel-encoded ping-pong buffers on the wire
 //! as `Stream` status frames (protocol sec 5.3). A committed nonzero
-//! `tel_count` write arms it; the main-loop poll stages one ready buffer per
-//! frame whenever the wire is ours; any host break kills it (`on_break` --
+//! `tel_count` write arms it; the kernel tick's poll stages one ready buffer
+//! per frame whenever the wire is ours; any host break kills it (`on_break` --
 //! reclaiming the line IS the abort lever). ALERT carries the batch's
 //! fault-OR (the fault contract), already folded by the encoder.
 
@@ -107,8 +107,8 @@ impl TelBurst {
 }
 
 impl<P: Providers> ServoBus<P> {
-    /// Main-loop TEL poll, ISRs masked by the caller (the `take_reboot`
-    /// idiom): when a burst is live, a batch is banked, and the wire is
+    /// Per-tick TEL poll from the kernel tick's tail, ISRs masked by the
+    /// caller: when a burst is live, a batch is banked, and the wire is
     /// ours -- TX idle, no frame mid-verdict -- stage the next `Stream`
     /// status frame and put it on the wire. The arm's break-silence contract
     /// makes the immediate trigger safe: any host traffic would have killed
