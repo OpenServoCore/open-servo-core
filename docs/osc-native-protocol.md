@@ -963,9 +963,9 @@ board constant, and `osc` refuses a servo that reports 0 (DES
 The terminal taps have a floor of their own: `window_v_floor_q15` (u16,
 RO, `0x274` in TELEMETRY, Q15) is CALIB `v_window_min_ticks` turned into
 a duty the same way, 2526 (7.7%) for 93 ticks on osc-dev-v006, where
-tap B, sampled 37 ticks before the crest, has finished its rise. Under
-Fast decay the window sits at the trough, where tap B closes 135 ticks
-in, and the board raises the floor to 160 ticks (4356, 13.3%); the
+the low-side tap, sampled 37 ticks before the crest, has finished its
+rise, in either direction. Under Fast decay the window sits at the
+trough, where the low-side tap closes 135 ticks in, and the board raises the floor to 160 ticks (4356, 13.3%); the
 register follows the OpenLoop decay (DES
 `window_v_floor_follows_the_openloop_decay`). It is published with
 `window_floor_q15`, at the same moments. A window between the two floors

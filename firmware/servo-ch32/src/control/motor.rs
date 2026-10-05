@@ -7,6 +7,7 @@
 use osc_servo_core::{DecayMode, Motor as MotorTrait, MotorCmd};
 use osc_servo_drivers::Level;
 
+use crate::control::sensors::scan::{self, Direction};
 use crate::hal::{Pin, gpio, timer};
 
 pub struct Ch32Motor {
@@ -70,7 +71,8 @@ impl MotorTrait for Ch32Motor {
                     return;
                 }
                 let arr_minus = self.pwm_arr.saturating_sub(ticks);
-                let (in1, in2) = match (decay, duty.0 >= 0) {
+                let forward = duty.0 >= 0;
+                let (in1, in2) = match (decay, forward) {
                     (DecayMode::Slow, true) => (STATIC_HIGH, arr_minus),
                     (DecayMode::Slow, false) => (arr_minus, STATIC_HIGH),
                     (DecayMode::Fast, true) => (ticks, 0),
@@ -78,6 +80,11 @@ impl MotorTrait for Ch32Motor {
                 };
                 timer::set_duty(self.in1, in1);
                 timer::set_duty(self.in2, in2);
+                scan::note_drive(if forward {
+                    Direction::Forward
+                } else {
+                    Direction::Reverse
+                });
             }
         }
     }

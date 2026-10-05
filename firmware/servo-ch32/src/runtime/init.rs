@@ -287,7 +287,7 @@ fn configure_adc_dma_scan(w: &BoardWiring) {
     adc::set_scan_mode(true);
     adc::set_dma(true);
     adc::set_external_trigger(Extsel::TIM1_TRGO);
-    adc::set_injected(sensors.vmotor.1.channel(), chip::TAP_B_TRIGGER);
+    adc::set_injected(sensors.vmotor.1.channel(), chip::LOW_TAP_TRIGGER);
     adc::enable();
 
     scan::arm_dma();
@@ -343,8 +343,8 @@ fn start_center_aligned_pwm(psc: u16, arr: u16) {
     timer::set_duty(chip::MOTOR_IN1_CH, 0);
     timer::set_duty(chip::MOTOR_IN2_CH, 0);
     timer::configure_compare_trigger(
-        chip::TAP_B_TRIGGER_CH,
-        arr.saturating_sub(scan::TAP_B_LEAD_TICKS),
+        chip::LOW_TAP_TRIGGER_CH,
+        arr.saturating_sub(scan::LOW_TAP_LEAD_TICKS),
     );
     timer::set_repetition(0);
     timer::set_trgo_update();
