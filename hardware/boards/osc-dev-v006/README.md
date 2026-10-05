@@ -251,13 +251,22 @@ Under slow decay the drive window is centred on the crest, so the crest scan rea
 |---|---|---|---|
 |Scale|1108.5 counts/A, 0.902 mA per count|Amplifier and ADC +0.5% (-0.7 to +2.3%): 93-94 mV on a meter across Rs1 during a 100% grid lap, against 93.3-95.1 mV from the chip's current times 60 mOhm.|`boards.py` `current_chain_scale_measured`, nb10 sec 7|
 |Rest output|1.10 V (`VREF`)|About 0.15 V under `VREF` torque off at room temperature: 0.37 V over the schematic's 0.52 V `VREF`. Offset, tracked by firmware.|board #1 bringup|
-|Rest drift|-|Down as the board warms, measured over the 0.52 V `VREF`: 467 counts at 28 C, 398 at 43 C, 260 at 60 C, about -4.6 then -8.4 counts/C. The on-chip op-amp has no drift spec.|board #1 bench|
+|Rest drift|-|Normal mode: 1178 counts at 28 C, 1174 at 44 C, 1170 at 60 C, about -0.25 counts/C. High-speed mode, measured earlier over the 0.52 V `VREF`: 467 counts at 28 C, 398 at 43 C, 260 at 60 C. The on-chip op-amp has no drift spec.|board #1 bench|
 |In-drive zero|-|10 counts over the torque-off rest: the DRV8212P's own supply current returns through Rs1 once the driver wakes.|nb11 sec 1|
 |Rest noise|-|1.28 counts RMS (1.15 mA). Board D 1.7.|`rest_current_noise_measured`, nb10 sec 3|
 |Step response|-|Half-way 44 ticks (0.92 us) after the ON compare, then a 12.3-tick (256 ns) exponential and a slow tail of about 3%. Steepest 2.8 V/us.|nb10 sec 8.1, 8.3|
 |Settled to 1%|-|156 ticks (3.25 us) after the ON compare, always approached from below.|`shunt_settle_measured`|
 |Crest honest to 3%|-|From 7% duty on the 2S grid. Board D 15%.|`crest_floor_measured`, nb10 sec 5|
 |ON pulse against the command|DRV8212P dead time 500 ns (24 ticks) typ|30 ticks short at half height on the grid. On the MG90, 10-15 ticks short at about 0.1 A and 20-25 at 0.2 A and up.|nb10 sec 8.1, nb11 sec 4|
+
+**Op-amp temperature.** The op-amp runs in its normal mode. High-speed mode is off in firmware with no switch to turn it on: it gives up the factory offset trim (WCH AN24000), and on board #1 that cost more than the bandwidth bought. Board #1 drove the 3.7 Ohm grid at four DC levels, 54 to 99 mV across Rs1 on a meter, at room (28 to 30 C board), 44 C and 60 C, then at room again, once per mode. The data is `captures/winding-r/c0` in the osc-dev-v006-bringup repo.
+
+|Mode|Gain, room to 60 C|Zero, torque off|In-drive offset|
+|---|---|---|---|
+|Normal|-0.26%, back within 0.1% at room again|1178 to 1170 counts|About +10 counts, steady|
+|High-speed|+0.8% at 44 C, +4.3% at 60 C|1106 to 916 counts|21 counts at room to 46 at 60 C, level-dependent|
+
+High-speed mode bends above 43 C. In normal mode the meter reads 1110.9 counts/A through zero at room, +0.22% on the 1108.5 design. Counts per level fall 0.4% from 54 to 99 mV, which looks like compression but is the +10-count step between the torque-off zero and the in-drive zero (see In-drive zero above), spread over the levels by a fit through the torque-off zero. The winding-R ladder holds within 1% of its 30-40% reference from 15% duty and within 3% from 10%, in both modes at every temperature: tap B's sample timing sets that floor, not the op-amp. A firmware change to the tap sampling is in progress.
 
 **Window floor.** The firmware reads a current only when the drive window is at least `i_window_min_ticks` wide. Uncorrected, the grid's crest sample reads low under every floor, never high (nb10 sec 8.2):
 
@@ -320,6 +329,7 @@ The pot is ratiometric on `VDD`, so reference drift cancels, and the 24 MHz ADC 
 - The settle gain's truth checks: whether the slow tail scales with the step (grid bursts at about 13 and 40 Ohm), and a stalled motor ladder against a series meter. The table gets tuned if they disagree.
 - The MG90 terminal capacitance behind the edge spike is inferred from the current, not metered.
 - Every floor figure is on 2S; the LinkE 5 V supply is not characterised.
+- The step response, settle and window-floor figures above, and the `i_settle_gain` table built from them, were taken in high-speed mode and are not yet re-measured in normal mode.
 - The averaging-tap option on Cv1 / Cv2.
 - The encoder inputs (J6 / J11), Qwiic and `POS2`.
 
