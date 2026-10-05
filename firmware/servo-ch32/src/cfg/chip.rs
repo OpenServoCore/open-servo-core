@@ -34,10 +34,10 @@ pub const MOTOR_IN1_PIN: Pin = tim1_channel_pin(MOTOR_TIM1_MAPPING, MOTOR_IN1_CH
 pub const MOTOR_IN2_PIN: Pin = tim1_channel_pin(MOTOR_TIM1_MAPPING, MOTOR_IN2_CH);
 pub const MOTOR_PWM_FREQ_HZ: u32 = 20_000;
 pub const STAT_LED_PIN: Pin = MOTOR_TIM1_MAPPING.ch4_pin();
-/// The compare that starts tap B's injected conversion. CH4's output is never
-/// enabled, so its pin stays the STAT LED's GPIO.
-pub const TAP_B_TRIGGER_CH: timer::Channel = timer::Channel::CH4;
-pub const TAP_B_TRIGGER: adc::Jextsel = adc::Jextsel::TIM1_CC4;
+/// The compare that starts the low-side tap's injected conversion. CH4's
+/// output is never enabled, so its pin stays the STAT LED's GPIO.
+pub const LOW_TAP_TRIGGER_CH: timer::Channel = timer::Channel::CH4;
+pub const LOW_TAP_TRIGGER: adc::Jextsel = adc::Jextsel::TIM1_CC4;
 
 const fn tim1_channel_pin(m: Tim1Mapping, c: timer::Channel) -> Pin {
     match c {

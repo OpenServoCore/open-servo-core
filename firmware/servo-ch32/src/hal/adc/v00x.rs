@@ -57,15 +57,22 @@ impl Input {
 pub fn set_sequence(channels: &[Channel]) {
     assert!(!channels.is_empty() && channels.len() <= 16);
     for (i, &ch) in channels.iter().enumerate() {
-        let v = ch as u8;
-        match i {
-            0..=5 => ADC.rsqr3().modify(|w| w.set_sq(i, v)),
-            6..=11 => ADC.rsqr2().modify(|w| w.set_sq(i - 6, v)),
-            12..=15 => ADC.rsqr1().modify(|w| w.set_sq(i - 12, v)),
-            _ => unreachable!(),
-        }
+        set_slot(i, ch);
     }
     ADC.rsqr1().modify(|w| w.set_l((channels.len() - 1) as u8));
+}
+
+/// Regular slot `i` (0..16) converts `ch`; the sequence length stands. A
+/// write under a live conversion restarts the group (RM sec 9.2.2).
+pub fn set_slot(i: usize, ch: Channel) {
+    let v = ch as u8;
+    match i {
+        0..=5 => ADC.rsqr3().modify(|w| w.set_sq(i, v)),
+        6..=11 => ADC.rsqr2().modify(|w| w.set_sq(i - 6, v)),
+        12..=15 => ADC.rsqr1().modify(|w| w.set_sq(i - 12, v)),
+        // A group holds 16 slots; there is no register past them to write.
+        _ => {}
+    }
 }
 
 pub fn set_sample_time(channel: Channel, t: SampleTime) {
@@ -89,13 +96,19 @@ pub fn set_external_trigger(source: Extsel) {
 /// JL = 0 only JSQ4 converts (RM sec 9.3.11). Write before `enable`: a CTLR2
 /// write with ADON set starts a regular conversion.
 pub fn set_injected(channel: Channel, source: Jextsel) {
-    ADC.isqr().write(|w| {
-        w.set_jl(0);
-        w.set_jsq(3, channel as u8);
-    });
+    set_injected_channel(channel);
     ADC.ctlr2().modify(|w| {
         w.set_jextsel(source);
         w.set_jexttrig(true);
+    });
+}
+
+/// The one-conversion injected group converts `channel`. A write under a
+/// live conversion restarts the group (RM sec 9.2.2).
+pub fn set_injected_channel(channel: Channel) {
+    ADC.isqr().write(|w| {
+        w.set_jl(0);
+        w.set_jsq(3, channel as u8);
     });
 }
 

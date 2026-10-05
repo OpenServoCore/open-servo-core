@@ -281,7 +281,7 @@ pub fn on_dma_event(shared: &Shared) {
 /// Suspend the scan and open the capture. The drains below outlast the TC's
 /// ~17 us of slack, which costs nothing: the tap is shut and both triggers
 /// parked in the first write, so no TRGO starts anything after it, and no
-/// tap B injected conversion resets a frame slot mid-capture and slips the
+/// injected tap conversion resets a frame slot mid-capture and slips the
 /// sample grid once a period. That is
 /// also why `start_cnt` / `start_dir` record the phase of the launch write
 /// itself rather than the phase of the TC that led to it.
@@ -385,7 +385,7 @@ fn restore() {
     adc::set_continuous(false);
     delay_cycles(ADC_SLOT_DRAIN * frame_len(fsm().chans) as u32);
     adc::set_scan_mode(true);
-    adc::set_sequence(scan::seq());
+    scan::program_sequence();
     scan::arm_dma();
     critical_section::with(|_| {
         adc::arm_scan(adc::Extsel::TIM1_TRGO);
