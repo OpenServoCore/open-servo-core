@@ -4,10 +4,11 @@
 //! both ends of every gap, so entry latency cancels. Plain assertions on the
 //! trim decisions and on the transport's health after trains.
 
-use osc_integration::sim::{Sim, Source, instruction, status};
+use osc_integration::sim::{BreakWake, Sim, Source, instruction, status};
 use osc_protocol::wire::{Inst, Opcode, ResultCode};
 use osc_servo_core::BaudRate;
 use osc_servo_core::regions::config::DEFAULT_RESPONSE_DEADLINE_US;
+use rstest::rstest;
 
 mod support;
 
@@ -207,6 +208,39 @@ fn tracker_follows_thermal_drift() {
     // Thermal drift: +2600 ppm, continuously (the clock never steps).
     sim.set_servo_skew_at(t, s, 2_600);
     send_silent(&mut sim, t + PERIOD_US, 140);
+    sim.run();
+    assert_eq!(sim.poll_clock_trim(s), Some(1));
+}
+
+/// Every frame that ended before a break is recorded ahead of that
+/// break's stamp, even one that scheduled no milestone of its own (a
+/// foreign frame resolves at the next wake): alternating footprints make a
+/// frame recorded one pair late fail the byte-exactness gate, so the
+/// tracker would never decide.
+#[rstest]
+#[test_log::test]
+fn tracker_pairs_each_frame_with_its_own_breaks(
+    #[values(BreakWake::BeforeByte, BreakWake::AfterByte, BreakWake::Alternating)] wake: BreakWake,
+) {
+    let long = silent_write();
+    let short = instruction(OTHER_ID, Opcode::Write, Inst::FLAG_NOREPLY, &[0u8; 20]);
+    // Wire time at 1M: footprint x 10 us, plus the 20 us host seam.
+    let send = |sim: &mut Sim, mut t: u64, n: u64| -> u64 {
+        for k in 0..n {
+            let f = if k % 2 == 0 { &long } else { &short };
+            sim.host_send_at(t, f);
+            t += f.len() as u64 * 10 + 20;
+        }
+        t
+    };
+    let mut sim = Sim::new(BaudRate::B1000000);
+    sim.set_break_wake(wake);
+    let s = sim.add_servo_with(ID, 0, DEFAULT_RESPONSE_DEADLINE_US);
+    let t = send(&mut sim, 0, 180);
+    sim.run();
+    assert_eq!(sim.poll_clock_trim(s), None, "no drift, no decision");
+    sim.set_servo_skew_at(t, s, 2_600);
+    send(&mut sim, t + PERIOD_US, 140);
     sim.run();
     assert_eq!(sim.poll_clock_trim(s), Some(1));
 }

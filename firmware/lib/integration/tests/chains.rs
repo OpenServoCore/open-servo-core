@@ -133,6 +133,36 @@ fn gread_uniform_chains_in_list_order(baud_idx: u8) {
     }
 }
 
+/// A slot waiting on its predecessor keeps the predecessor status's frame
+/// end (sec 6): it answers a reply gap after that end, within a few
+/// byte-times - never a starve horizon late. Bystander statuses schedule
+/// nothing; a waiting slot's never loses its end.
+#[apply(matrix)]
+fn snooped_slot_answers_a_reply_gap_after_its_predecessor(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
+    for id in [1u8, 2, 3] {
+        sim.add_servo_with(id, 0, CHAIN_DEADLINE_US);
+    }
+    sim.host_send(&instruction(
+        BCAST,
+        Opcode::Gread,
+        0,
+        &gread_uniform(MODEL_NUMBER, 2, &[1, 2, 3]),
+    ));
+    let frames = sim.run();
+    let reps = replies(&frames);
+    assert_eq!(reps.len(), 3, "{frames:#?}");
+    let reply_gap = support::reply_gap_ticks();
+    for w in reps.windows(2) {
+        let gap = w[1].at - w[0].end;
+        assert!(gap >= reply_gap, "chain gap {gap} < reply gap {reply_gap}");
+        assert!(
+            gap <= reply_gap + 4 * byte_ticks(baud_idx),
+            "chain gap {gap} late past reply gap {reply_gap}"
+        );
+    }
+}
+
 #[apply(matrix)]
 fn gread_list_order_beats_id_order(baud_idx: u8) {
     let mut sim = sim(baud_idx);

@@ -172,6 +172,39 @@ fn chain_answers_and_reclaims(
     );
 }
 
+/// PFIC HIGH entries a bystander pays per foreign exchange, pinned: the
+/// host reads servo 6 and servo 6 answers. Neither frame schedules a
+/// milestone at servo 5: one header deadline each (plus the re-inspection
+/// when the wake leads its byte), the request resolves at the reply's
+/// break, and the reply at its starve horizon on the quiet bus behind it.
+#[rstest]
+#[test_log::test]
+fn bystander_entries_per_foreign_exchange_are_pinned(
+    #[values(BaudRate::B500000, BaudRate::B1000000, BaudRate::B3000000)] rate: BaudRate,
+    #[values(BreakWake::BeforeByte, BreakWake::AfterByte)] wake: BreakWake,
+) {
+    const N: u64 = 20;
+    let reinspect = u64::from(wake == BreakWake::BeforeByte);
+    let mut sim = Sim::new(rate);
+    sim.set_break_wake(wake);
+    let s = sim.add_servo(ID);
+    sim.add_servo(ID + 1);
+    for _ in 0..N {
+        sim.host_send(&instruction(ID + 1, Opcode::Read, 0, &[0, 0, 32, 0]));
+        let frames = sim.run();
+        let r = replies(&frames);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].bytes[1], ID + 1);
+    }
+    let e = sim.entries(s);
+    assert_eq!(e.compare, N * (3 + 2 * reinspect), "deadline wakes");
+    assert_eq!(e.break_wake, N * 2, "break wakes");
+    assert_eq!(e.tx_done, 0, "TX arm completions");
+    let d = sim.servo_diag(s);
+    assert_eq!(d.crc_fail_count, 0);
+    assert_eq!(d.framing_drop_count, 0);
+}
+
 /// PFIC HIGH entries per exchange, pinned (a ping, then a 32-byte read):
 /// the break-after-byte budget is one break wake, three TX arm completions
 /// and three deadline wakes for a ping (header, frame end, trigger; a read

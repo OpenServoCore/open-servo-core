@@ -111,6 +111,26 @@ fn truncated_frame_starves_then_recovers(baud_idx: u8) {
     assert_eq!(inst.result(), Some(ResultCode::Ok));
 }
 
+/// The same truncation addressed to another servo: the frame schedules no
+/// milestone, but the starve horizon still bounds it - it dies by starve
+/// on a quiet bus, never by a later frame's bytes.
+#[apply(matrix)]
+fn truncated_foreign_frame_starves_then_recovers(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
+    let s = sim.add_servo(ID5);
+    let full = write_gv(0x63, 0x11223344);
+    sim.host_send_at(0, &full[..6]);
+    assert!(servo_frames(&sim.run()).is_empty());
+    let d = sim.servo_diag(s);
+    assert_eq!(d.framing_drop_count, 1);
+    assert_eq!(d.crc_fail_count, 0);
+
+    sim.host_send_at(1000, &instruction(ID5, Opcode::Ping, 0, &[]));
+    let frames = sim.run();
+    let (inst, _) = status(sole_reply(&frames));
+    assert_eq!(inst.result(), Some(ResultCode::Ok));
+}
+
 #[apply(matrix)]
 fn break_preempts_partial_frame(baud_idx: u8) {
     let mut sim = sim(baud_idx);

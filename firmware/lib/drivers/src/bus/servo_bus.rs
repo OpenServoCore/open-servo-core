@@ -255,8 +255,9 @@ impl<P: Providers> ServoBus<P> {
             return false;
         }
         if let Some(past) = ringed {
-            self.clock
-                .on_drift_break(at, past, self.ring.bytes().len(), self.tpb);
+            let len = self.ring.bytes().len();
+            self.settle_before(ring_wrap(past as usize + len - 1, len) as u16, d);
+            self.clock.on_drift_break(at, past, len, self.tpb);
         }
         self.drive_framer(d);
         self.kill_stale_reply();
