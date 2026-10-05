@@ -95,6 +95,11 @@ pub struct Calibration {
     pub i_window_min_ticks: u16,
     /// Shortest drive window (TIM1 ticks) with a valid vmotor sample.
     pub v_window_min_ticks: u16,
+    /// Shortest Fast-decay window (TIM1 ticks) whose trough scan samples
+    /// both terminal taps inside it; raises `v_window_min_ticks` for Fast.
+    pub v_trough_window_min_ticks: u16,
+    /// Shortest drive window (TIM1 ticks) the back-EMF observer takes.
+    pub bemf_window_min_ticks: u16,
     /// Shortest Slow-decay brake half (TIM1 ticks) whose trough shunt sample
     /// has settled to the amplifier's rest offset: the bias tracker learns
     /// from no narrower one.
