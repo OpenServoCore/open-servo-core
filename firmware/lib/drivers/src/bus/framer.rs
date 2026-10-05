@@ -63,6 +63,8 @@ pub enum FramerOut {
 pub enum FrameNeeds {
     /// The covered checkpoint, then the frame end.
     Covered,
+    /// The frame end only: nothing runs ahead of the verdict.
+    End,
     /// No milestone: the frame resolves from the ring at the next wake, and
     /// only the starve horizon is scheduled for it.
     Nothing,
@@ -347,13 +349,15 @@ impl Framer {
             });
         }
         let missing = (footprint - received) as u32;
-        if needs(h) == FrameNeeds::Nothing {
+        let needs = needs(h);
+        if needs == FrameNeeds::Nothing {
             // Aim past the horizon: `wait` caps every aim at it, so the
             // horizon is this frame's only wake.
             let aim = now.wrapping_add(STARVE_GIVEUP_BYTES.wrapping_mul(tpb));
             return self.wait(aim, now, tpb, cursor, len);
         }
-        if !self.frontier.covered && missing <= COVERED_TAIL_BYTES {
+        let end_next = needs == FrameNeeds::End || self.frontier.covered;
+        if !end_next && missing <= COVERED_TAIL_BYTES {
             // Covered checkpoint: freeze the wire-end estimate here -- the
             // tightest projection this frame gets (missing <= 2, so the
             // ring-cadence error is under a byte-time) -- and hand the
@@ -372,9 +376,10 @@ impl Framer {
                 end_due,
             };
         }
-        // Aim at the next milestone: the covered point, or (once emitted)
-        // the frame end. Data-anchored: pure cadence, no epsilon.
-        let to_target = if self.frontier.covered {
+        // Aim at the next milestone: the covered point, or (once emitted,
+        // or for an end-only frame) the frame end. Data-anchored: pure
+        // cadence, no epsilon.
+        let to_target = if end_next {
             missing
         } else {
             missing - COVERED_TAIL_BYTES

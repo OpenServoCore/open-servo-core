@@ -205,6 +205,48 @@ fn bystander_entries_per_foreign_exchange_are_pinned(
     assert_eq!(d.framing_drop_count, 0);
 }
 
+/// PFIC HIGH entries per two-slot GREAD (servos 6 then 5, a 32-byte span),
+/// pinned per role. Every servo pays the GREAD's header, covered and end
+/// deadlines. Slot 1 adds the predecessor status's header and end only (the
+/// snoop consumes nothing ahead of the end) and its trigger; slot 0 adds
+/// its trigger and the header of slot 1's status, which nothing waits on,
+/// then that status's starve horizon; the bystander pays a header per
+/// status and the last one's horizon. The re-inspection adds one per
+/// ringed break when the wake leads its byte.
+#[rstest]
+#[test_log::test]
+fn chain_entries_per_gread_are_pinned(
+    #[values(BaudRate::B500000, BaudRate::B1000000, BaudRate::B3000000)] rate: BaudRate,
+    #[values(BreakWake::BeforeByte, BreakWake::AfterByte)] wake: BreakWake,
+) {
+    const N: u64 = 20;
+    let reinspect = u64::from(wake == BreakWake::BeforeByte);
+    let mut p = Vec::new();
+    p.extend_from_slice(&0u16.to_le_bytes());
+    p.extend_from_slice(&32u16.to_le_bytes());
+    p.extend_from_slice(&[ID + 1, ID]);
+    let gread = instruction(BCAST, Opcode::Gread, 0, &p);
+    let mut sim = Sim::new(rate);
+    sim.set_break_wake(wake);
+    let slot1 = sim.add_servo_with(ID, 0, CHAIN_DEADLINE_US);
+    let slot0 = sim.add_servo_with(ID + 1, 0, CHAIN_DEADLINE_US);
+    let bystander = sim.add_servo_with(ID + 2, 0, CHAIN_DEADLINE_US);
+    for _ in 0..N {
+        sim.host_send(&gread);
+        let frames = sim.run();
+        let r = replies(&frames);
+        assert_eq!(r.len(), 2);
+        for f in r {
+            assert_eq!(result(f), Some(ResultCode::Ok));
+        }
+    }
+    for (s, deadlines, breaks) in [(slot1, 6, 2), (slot0, 6, 2), (bystander, 6, 3)] {
+        let e = sim.entries(s);
+        assert_eq!(e.compare, N * (deadlines + breaks * reinspect), "servo {s}");
+        assert_eq!(e.break_wake, N * breaks, "servo {s}");
+    }
+}
+
 /// PFIC HIGH entries per exchange, pinned (a ping, then a 32-byte read):
 /// the break-after-byte budget is one break wake, three TX arm completions
 /// and three deadline wakes for a ping (header, frame end, trigger; a read

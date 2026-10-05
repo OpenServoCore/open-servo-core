@@ -65,6 +65,21 @@ COMMIT + GREAD per cycle — short bursts, wire-gapped, single-digit duty.
 A use case that sustains heavy bus duty under live control is the signal
 to revisit (hardware-counted ticks, or an isolation lane).
 
+**Frames for other servos.** In a fleet most traffic on the wire is
+somebody else's, and every servo pays for all of it, so a foreign frame
+gets the least work that keeps the ladder honest. Its header is read at
+deadline A like any frame's; from there a plain op addressed to another
+id (from an idle reply pipeline) and a status no chain slot waits on
+schedule no milestone (§5.2). The op's CRC verdict, with no feed ahead
+of it and no decode, runs at the next wake, usually the next frame's
+break; a status needs no verdict at all. A chain slot keeps the frame
+end of the status it waits on, and only the end. Per host request plus
+the reply it draws, a bystander pays two break wakes and three deadline
+wakes (two headers, and the starve horizon that resolves the reply on a
+quiet bus), where every frame used to pay header, covered and end. DES:
+`bystander_entries_per_foreign_exchange_are_pinned`,
+`chain_entries_per_gread_are_pinned`.
+
 ## 3. One exchange, tick by tick (ping at 1M; byte-time = 10 µs)
 
 ```
