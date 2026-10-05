@@ -61,6 +61,14 @@ pub fn decode(frame: FrameBytes<'_>, id: u8) -> Decoded<'_> {
     }
 }
 
+/// A plain op for another servo, decided from the header alone: plain ops
+/// address by frame ID, group ops by their id-lists (never foreign here).
+pub fn foreign(h: &Header, own: u8) -> bool {
+    !h.inst.is_status()
+        && !matches!(h.inst.opcode(), Some(Opcode::Gread | Opcode::Gwrite))
+        && !h.id.addresses(Id::new(own))
+}
+
 /// PING / READ / WRITE / COMMIT / MGMT: addressed by frame ID, reply at slot 0.
 fn plain<'a>(op: Opcode, inst: Inst, frame_id: Id, pay: FrameBytes<'a>, own: Id) -> Decoded<'a> {
     let broadcast = frame_id.is_broadcast();

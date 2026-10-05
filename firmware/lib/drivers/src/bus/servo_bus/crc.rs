@@ -3,6 +3,7 @@
 use osc_protocol::wire::Inst;
 
 use super::ServoBus;
+use crate::bus::ring_wrap;
 use crate::traits::bus::{CrcEngine, Providers, RxRing};
 
 impl<P: Providers> ServoBus<P> {
@@ -83,6 +84,13 @@ impl<P: Providers> ServoBus<P> {
         }
         self.crc_feed(anchor, footprint);
         self.crc_verify(anchor, footprint)
+    }
+
+    /// The four header bytes at the anchor (`[0x00][ID][LEN][INST]`).
+    pub(super) fn ring_header(&self, anchor: u16) -> [u8; 4] {
+        let ring = self.ring.bytes();
+        let len = ring.len();
+        core::array::from_fn(|i| ring[ring_wrap(anchor as usize + i, len)])
     }
 
     /// The INST byte, 3 slots past the anchor (`[0x00][ID][LEN][INST]`).

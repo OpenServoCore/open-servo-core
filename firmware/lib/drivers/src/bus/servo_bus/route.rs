@@ -1,10 +1,11 @@
 //! The dispatch spine: resolver -> frame routing -> CRC verdict -> reply sequencing.
 
+use osc_protocol::frame::Header;
 use osc_protocol::wire::{ENUM_REPLY_SLOTS, ResultCode};
 use osc_servo_core::traits::{Dispatch, Dispatched, Request, RequestCtx};
 
 use super::super::chain::ChainOut;
-use super::super::decode::{Decoded, decode};
+use super::super::decode::{Decoded, decode, foreign};
 use super::super::frame_view;
 use super::super::framer::{FrameSpan, FramerOut};
 use super::reply::ReplyHandle;
@@ -116,13 +117,23 @@ impl<P: Providers> ServoBus<P> {
             }
             return;
         }
+        let idle = !self.chain.active() && !self.tx.busy();
+        // Another servo's plain op touches nothing from an idle pipeline: no
+        // feed, no decode, and the frame end runs the bare CRC gate - the
+        // verdict is what keeps the ladder's stride trusted.
+        if idle && foreign(Header::from_bytes(&self.ring_header(anchor)), self.id) {
+            if complete {
+                self.crc_gate(anchor, footprint);
+            }
+            return;
+        }
         // The spine runs only from an idle reply pipeline: superseding a live
         // chain or staged reply belongs AFTER the CRC gate (a garbled frame
         // must touch nothing, sec 5.3 L1), so those overlaps fall to verdict-first
         // below. The guard also keeps the CRC engine free through a pending
         // window -- chain/tx activate only at a verdict, so no trigger reset
         // can clobber a fed span.
-        if !self.chain.active() && !self.tx.busy() && !self.verdict_first(anchor) {
+        if idle && !self.verdict_first(anchor) {
             // Feed first so the engine chews the covered span under the
             // dispatch body; the verdict then finds it settled.
             self.crc_feed(anchor, footprint);
@@ -153,21 +164,10 @@ impl<P: Providers> ServoBus<P> {
         }
         // Verdict-first (only meaningful complete -- a frontier defers): the CRC
         // is checked before any effect. COMMIT/MGMT (unstageable), and frames
-        // overlapping a live reply pipeline. A fail drops silently (sec 5.3 L1),
-        // the hunt resuming one byte in (sec 3.3).
-        if !complete {
+        // overlapping a live reply pipeline.
+        if !complete || !self.crc_gate(anchor, footprint) {
             return;
         }
-        if !self.crc_ok(anchor, footprint) {
-            if !self.framer.probing() {
-                self.crc_fails = self.crc_fails.wrapping_add(1);
-            }
-            let len = self.ring.bytes().len();
-            self.framer.on_frame_rejected(anchor, len);
-            return;
-        }
-        self.framer.on_frame_verified();
-        self.drift_note_verified(anchor, footprint);
         // A fresh instruction supersedes any stale, not-yet-streaming reply --
         // post-verdict, so a garbled frame touched nothing.
         self.chain.reset();
@@ -191,6 +191,23 @@ impl<P: Providers> ServoBus<P> {
             let mut handle = self.reply_handle();
             d.commit(&mut handle);
         }
+    }
+
+    /// The verdict on a whole frame with no staged effects: a fail drops
+    /// silently (sec 5.3 L1), the hunt resuming one byte in (sec 3.3); a pass
+    /// trusts the ladder again and records the frame for the drift tracker.
+    fn crc_gate(&mut self, anchor: u16, footprint: u16) -> bool {
+        if !self.crc_ok(anchor, footprint) {
+            if !self.framer.probing() {
+                self.crc_fails = self.crc_fails.wrapping_add(1);
+            }
+            let len = self.ring.bytes().len();
+            self.framer.on_frame_rejected(anchor, len);
+            return false;
+        }
+        self.framer.on_frame_verified();
+        self.drift_note_verified(anchor, footprint);
+        true
     }
 
     /// Verify a pending frame's CRC and resolve the verdict. Pass -> commit a

@@ -62,11 +62,24 @@ fn deliver<D: Dispatch>(
     now0: u32,
     d: &mut D,
 ) -> u32 {
-    h.ring.place(anchor, frame);
-    let fp = frame.len();
     // The ladder reaches `anchor` through prior traffic in production; the
     // harness fabricates positions, so bootstrap it explicitly.
     bus.framer.resync(anchor as u16);
+    deliver_next(bus, h, anchor, frame, now0, d)
+}
+
+/// [`deliver`] for a frame the ladder reaches on its own: the one right
+/// behind the previous frame's footprint.
+fn deliver_next<D: Dispatch>(
+    bus: &mut crate::bus::ServoBus<crate::mocks::bus::TestProviders>,
+    h: &Harness,
+    anchor: usize,
+    frame: &[u8],
+    now0: u32,
+    d: &mut D,
+) -> u32 {
+    h.ring.place(anchor, frame);
+    let fp = frame.len();
     h.deadline.set_now(now0);
     h.ring.set_cursor(((anchor + 1) % RING_LEN) as u16);
     bus.on_break(d);
@@ -796,6 +809,118 @@ fn s14_corrupt_write_leaves_table_and_reverts() {
     let (_, inst, _) = last_reply(&h.wire);
     assert_eq!(inst.result(), Some(ResultCode::Ok));
     assert!(shared.table.with(|t| t.control.lifecycle.torque_enable));
+}
+
+/// `Dispatch` wrapper that counts dispatches.
+struct DispatchCount<D> {
+    inner: D,
+    dispatches: u32,
+}
+
+impl<D: Dispatch> Dispatch for DispatchCount<D> {
+    fn dispatch<R: osc_servo_core::Reply>(
+        &mut self,
+        req: osc_servo_core::Request<'_>,
+        ctx: osc_servo_core::RequestCtx,
+        reply: &mut R,
+    ) -> osc_servo_core::Dispatched {
+        self.dispatches += 1;
+        self.inner.dispatch(req, ctx, reply)
+    }
+
+    fn commit<R: osc_servo_core::Reply>(&mut self, reply: &mut R) {
+        self.inner.commit(reply);
+    }
+
+    fn revert(&mut self) {
+        self.inner.revert();
+    }
+}
+
+/// An id no servo on the test bus holds.
+const FOREIGN: u8 = 0x63;
+
+/// A READ for another servo is dropped at its header: no dispatch, no
+/// reply, nothing left armed, and the CRC gate still moves the ladder.
+#[test]
+fn foreign_read_costs_no_dispatch_and_no_reply() {
+    let h = Harness::new();
+    let mut bus = h.build(ID, RATE, 60);
+    let shared = shared_seeded();
+    let mut session = Session::new();
+    let mut d = DispatchCount {
+        inner: session.dispatcher(&shared),
+        dispatches: 0,
+    };
+
+    let frame = instruction(FOREIGN, Opcode::Read, 0, &[0, 0, 4, 0]);
+    deliver(&mut bus, &h, 100, &frame, 1000, &mut d);
+
+    assert_eq!(d.dispatches, 0);
+    assert!(!h.wire.started());
+    assert_eq!(h.deadline.armed(), None);
+    assert!(bus.framer.caught_up((100 + frame.len()) as u16));
+    assert_eq!(bus.diag().crc_fail_count, 0);
+}
+
+/// The frame behind a foreign one resolves: at the derived anchor when the
+/// foreign frame verified, and through the hunt (one byte in) when it
+/// failed its CRC. The foreign frame carries no 0x00 past its break, so the
+/// hunt finds no junk candidate inside it.
+#[test]
+fn foreign_frame_moves_the_ladder_on_good_and_bad_crc() {
+    for corrupt in [false, true] {
+        let h = Harness::new();
+        let mut bus = h.build(ID, RATE, 60);
+        let shared = shared_seeded();
+        let mut session = Session::new();
+        let mut d = DispatchCount {
+            inner: session.dispatcher(&shared),
+            dispatches: 0,
+        };
+
+        let mut foreign = instruction(FOREIGN, Opcode::Write, 0, &[0x10, 0x01, 0x05]);
+        if corrupt {
+            let last = foreign.len() - 1;
+            foreign[last] ^= 0xFF;
+        }
+        assert!(!foreign[1..].contains(&0));
+        let end = deliver(&mut bus, &h, 100, &foreign, 1000, &mut d);
+        assert_eq!(bus.diag().crc_fail_count, u32::from(corrupt));
+
+        let ping = instruction(ID, Opcode::Ping, 0, &[]);
+        deliver_next(&mut bus, &h, 100 + foreign.len(), &ping, end + 500, &mut d);
+        fire(&mut bus, &h, &mut d);
+        drain_tx(&mut bus, &h);
+        let (id, inst, _) = last_reply(&h.wire);
+        assert_eq!(id, ID, "corrupt={corrupt}");
+        assert_eq!(inst.result(), Some(ResultCode::Ok), "corrupt={corrupt}");
+        assert_eq!(d.dispatches, 1, "corrupt={corrupt}");
+        assert_eq!(bus.diag().crc_fail_count, u32::from(corrupt));
+        assert_eq!(bus.diag().framing_drop_count, 0);
+    }
+}
+
+/// Broadcast is not foreign: a broadcast WRITE dispatches and applies,
+/// silently (sec 5).
+#[test]
+fn broadcast_write_still_dispatches() {
+    let h = Harness::new();
+    let mut bus = h.build(ID, RATE, 60);
+    let shared = Shared::new();
+    let mut session = Session::new();
+    let mut d = DispatchCount {
+        inner: session.dispatcher(&shared),
+        dispatches: 0,
+    };
+
+    let addr = CONTROL_BASE_ADDR.to_le_bytes();
+    let frame = broadcast_id(instruction(ID, Opcode::Write, 0, &[addr[0], addr[1], 1]));
+    deliver(&mut bus, &h, 100, &frame, 1000, &mut d);
+
+    assert_eq!(d.dispatches, 1);
+    assert!(shared.table.with(|t| t.control.lifecycle.torque_enable));
+    assert!(!h.wire.started());
 }
 
 /// Rewrite a frame's ID field to broadcast (group ops address via their list).
