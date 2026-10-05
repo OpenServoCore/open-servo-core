@@ -8,6 +8,7 @@
 #![allow(dead_code)]
 
 use std::env;
+use std::ops::RangeInclusive;
 use std::sync::{LazyLock, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -15,17 +16,25 @@ use anyhow::Result;
 pub use bench::cli::SETTLE_MS;
 use bench::discover::{self, Found};
 use bench::osc::{
-    Exchange, ExchangeError, RESCUE_PULSE_US, StatusFrame, build_write, parse_exchange,
+    Exchange, ExchangeError, RESCUE_PULSE_US, StatusFrame, build_read, build_write, parse_exchange,
 };
-use bench::run::{BurstCycle, BurstReport, Report, burst_measure, capture, measure, xfer};
+use bench::run::{
+    BURST_VALUES, BurstCycle, BurstReport, Report, burst_measure, capture, measure, xfer,
+};
 use bench::wire::Wire;
 use bench::{BOOT_BAUD, RESCUE_BAUD};
 use osc_protocol::wire::ResultCode;
 use osc_servo_core::regions::config::addr::common::BAUD_RATE_IDX;
+use osc_servo_core::regions::config::addr::pos_limits::{POS_MAX_PHYS_COUNTS, POS_MIN_PHYS_COUNTS};
+use osc_servo_core::regions::control::addr::lifecycle::GOAL_POSITION;
 
 pub struct Bench {
     wire: Wire,
     id: u8,
+    /// `pos_min_phys_counts..=pos_max_phys_counts`, read once: the goal rule
+    /// rejects GOAL_POSITION outside them, and a calibration narrows them
+    /// from the board default.
+    goal_rails: RangeInclusive<i32>,
 }
 
 static BENCH: LazyLock<Mutex<Bench>> = LazyLock::new(|| {
@@ -43,7 +52,13 @@ static BENCH: LazyLock<Mutex<Bench>> = LazyLock::new(|| {
     // on), and a freshly powered fleet needs its boot time.
     wire.client().set_rails(true, true).expect("rails on");
     std::thread::sleep(Duration::from_millis(300));
-    Mutex::new(Bench { wire, id })
+    let goal_rails =
+        read_i32(&mut wire, id, POS_MIN_PHYS_COUNTS)..=read_i32(&mut wire, id, POS_MAX_PHYS_COUNTS);
+    Mutex::new(Bench {
+        wire,
+        id,
+        goal_rails,
+    })
 });
 
 /// The shared bench. Recovers from mutex poison -- a panicked test leaves
@@ -57,6 +72,34 @@ impl Bench {
     /// The servo id under test.
     pub fn id(&self) -> u8 {
         self.id
+    }
+
+    /// A GOAL_POSITION value the goal rule accepts on any calibration.
+    pub fn goal_mid(&self) -> i32 {
+        (self.goal_rails.start() + self.goal_rails.end()) / 2
+    }
+
+    /// Offset that keeps the burst value schedule (sentinel 0, then
+    /// `1..=BURST_VALUES`) inside the goal rails, with `dip` counts of room
+    /// below each value for a flood counting up to it.
+    pub fn burst_goal_base(&self, dip: i32) -> i32 {
+        let base = self.goal_rails.start() + dip;
+        assert!(
+            base + BURST_VALUES <= *self.goal_rails.end(),
+            "goal rails {:?} too narrow for the burst schedule",
+            self.goal_rails
+        );
+        base
+    }
+
+    /// Put GOAL_POSITION back after a burst. The boot goal (0) sits outside a
+    /// calibrated servo's rails, where the rule refuses it; the burst's last
+    /// value stands then.
+    pub fn restore_goal(&mut self, orig: &[u8]) {
+        let goal = i32::from_le_bytes(orig.try_into().expect("goal_position is 4 bytes"));
+        if self.goal_rails.contains(&goal) {
+            self.status_ok(&build_write(self.id, GOAL_POSITION, orig));
+        }
     }
 
     /// Capture tick rate (ticks per us), for converting `turnaround_ticks`.
@@ -220,6 +263,18 @@ impl Bench {
         self.switch_baud(BOOT_BAUD);
         report
     }
+}
+
+/// One i32 register, read at setup before the shared bench exists.
+fn read_i32(wire: &mut Wire, id: u8, addr: u16) -> i32 {
+    let ex = xfer(wire, &build_read(id, addr, 4), SETTLE_MS).expect("setup read");
+    assert_eq!(
+        ex.status.result,
+        Some(ResultCode::Ok),
+        "setup read of {addr:#06x}: {:?}",
+        ex.status
+    );
+    i32::from_le_bytes(ex.status.payload[..].try_into().expect("4-byte payload"))
 }
 
 /// Index of `baud` in the supported set, for the `baud_rate_idx` register.

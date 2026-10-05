@@ -120,7 +120,7 @@ fn tracker_follows_host_detune() {
     b.switch_baud(BOOT_BAUD);
 
     let mut payload = GOAL_POSITION.to_le_bytes().to_vec();
-    payload.extend_from_slice(&0i32.to_le_bytes());
+    payload.extend_from_slice(&b.goal_mid().to_le_bytes());
     let frame = build_instruction(b.id(), Opcode::Write, Inst::FLAG_NOREPLY, &payload);
     let burst = vec![frame; FOOD_FRAMES];
 

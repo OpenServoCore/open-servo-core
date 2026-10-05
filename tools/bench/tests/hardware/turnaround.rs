@@ -99,16 +99,16 @@ fn read_turnaround_within_budget() {
     gate(&mut b, &build_read(id, POS, 16), "read", read_budget_us);
 }
 
-/// The mutating path: validated goal_position write (board-default value,
-/// so the table state is untouched).
+/// The mutating path: a goal_position write the rule accepts.
 #[serial]
 #[test]
 fn write_turnaround_within_budget() {
     let mut b = bench();
     let id = b.id();
+    let goal = b.goal_mid();
     gate(
         &mut b,
-        &build_write(id, GOAL_POSITION, &0i32.to_le_bytes()),
+        &build_write(id, GOAL_POSITION, &goal.to_le_bytes()),
         "write",
         write_budget_us,
     );
