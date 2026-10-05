@@ -1015,7 +1015,7 @@ mod tests {
 
     #[test]
     fn status_prints_the_health_block() {
-        let (mut c, id) = crate::rig::servo::bench::table(3922);
+        let (mut c, id) = crate::rig::servo::bench::table(1961);
         let d = crate::state::descriptor(&mut c, id).unwrap();
         assert_eq!(
             health_line(&mut c, id, &d).unwrap(),

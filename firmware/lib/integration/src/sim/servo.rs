@@ -20,9 +20,11 @@ use super::core::Core;
 use super::providers::{Handles, SimBaud, SimCrc, SimDeadline, SimProviders, SimRing, SimWire};
 use super::store::RamStore;
 
-/// The osc-dev-v006 sense chain the sim mirrors; per-servo board facts
-/// override it through [`SimServo::set_sense`].
-const SENSE: CalibSense = CalibSense {
+/// The osc-dev-v006 app's `Calibration`, copied: the board crate is a no_std
+/// binary nothing host-side links, so this is the one host mirror (the fake
+/// adapter and the class-default tests read it from here). Per-servo board
+/// facts override it through [`SimServo::set_sense`].
+pub const DEV_V006_SENSE: CalibSense = CalibSense {
     shunt_r_mohm: 60,
     gain_milli: 14884,
     vmotor_div_top: 6400,
@@ -33,7 +35,7 @@ const SENSE: CalibSense = CalibSense {
     v_window_min_ticks: 93,
 };
 
-const SENSE_EXT: CalibSenseExt = CalibSenseExt {
+pub const DEV_V006_SENSE_EXT: CalibSenseExt = CalibSenseExt {
     vbus_div_top_ohm: 6400,
     vbus_div_bot_ohm: 1600,
     ntc_pullup_ohm: 10000,
@@ -95,8 +97,8 @@ impl SimServo {
             response_deadline_us,
             store,
             handles: handles.clone(),
-            sense: SENSE,
-            sense_ext: SENSE_EXT,
+            sense: DEV_V006_SENSE,
+            sense_ext: DEV_V006_SENSE_EXT,
         };
         let (shared, bus, feed) = Self::bringup(&seed, [id; 16]);
         let servo = Box::new(SimServo {

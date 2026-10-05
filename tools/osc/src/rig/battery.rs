@@ -134,13 +134,19 @@ pub(crate) fn before_drive<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<()> {
 mod tests {
     use super::*;
     use osc_client::BaudRate;
+    use osc_client::fake::seed::{SENSE, SENSE_EXT};
     use osc_client::fake::{FakePipe, TelSample};
     use osc_ident::regs::control;
 
-    /// The bench board: 15k/10k divider, 3.3 V reference, 250 mV diode drop.
+    /// The dev board's rail divider, reference and diode drop.
     fn bench(raw: u16) -> (u32, Option<u32>) {
-        let rail = rail_mv(raw, 3300, 15_000, 10_000);
-        (rail, pack_mv(rail, 250))
+        let rail = rail_mv(
+            raw,
+            SENSE.vdd_mv,
+            SENSE_EXT.vbus_div_top_ohm,
+            SENSE_EXT.vbus_div_bot_ohm,
+        );
+        (rail, pack_mv(rail, SENSE_EXT.rail_drop_mv))
     }
 
     #[test]
@@ -155,7 +161,7 @@ mod tests {
     fn gate_thresholds_on_the_bench_numbers() {
         let at = |raw| gate(Some(&TWO_S), bench(raw).1);
         assert_eq!(
-            at(3351),
+            at(1675),
             Verdict::Refuse(
                 "the pack reads 6.99 V at rest, under its floor of 7.00 V (3.50 V a cell): \
                  charge it before anything drives"
@@ -163,13 +169,13 @@ mod tests {
             )
         );
         assert_eq!(
-            at(3352),
+            at(1676),
             Verdict::Warn(
                 "the pack reads 7.00 V at rest, near its floor: under 7.40 V (3.70 V a cell)"
                     .into()
             )
         );
-        assert_eq!(at(3555), Verdict::Ok);
+        assert_eq!(at(1777), Verdict::Ok);
         assert!(matches!(at(0), Verdict::Refuse(m) if m.contains("unreadable")));
     }
 
@@ -185,18 +191,18 @@ mod tests {
     /// passes.
     #[test]
     fn usb_has_no_battery_gate() {
-        let usb = bench(2180);
+        let usb = bench(1090);
         assert_eq!(usb.0, 4390);
         assert_eq!(drive_gate(usb.0, usb.1), Verdict::Ok);
         assert!(matches!(
-            drive_gate(bench(3351).0, bench(3351).1),
+            drive_gate(bench(1675).0, bench(1675).1),
             Verdict::Refuse(_)
         ));
-        assert_eq!(drive_gate(bench(3555).0, bench(3555).1), Verdict::Ok);
+        assert_eq!(drive_gate(bench(1777).0, bench(1777).1), Verdict::Ok);
         // an unreadable rail is no USB supply
         assert!(matches!(drive_gate(0, None), Verdict::Refuse(_)));
 
-        let (mut c, id) = fake(2180);
+        let (mut c, id) = fake(1090);
         before_drive(&mut c, id).expect("USB is not gated");
     }
 
@@ -205,7 +211,7 @@ mod tests {
     /// it in plain words, and the servo was never told to turn torque on.
     #[test]
     fn a_flat_pack_is_refused_before_torque_on() {
-        let (mut c, id) = fake(3351);
+        let (mut c, id) = fake(1675);
         let err = crate::rig::limits::read(&mut c, id).unwrap_err();
         assert_eq!(
             err.to_string(),
@@ -214,7 +220,7 @@ mod tests {
         );
         let torque = c.read(id, control::TORQUE_ENABLE.addr, 1).unwrap();
         assert_eq!(torque, [0]);
-        let (mut c, id) = fake(3555);
+        let (mut c, id) = fake(1777);
         before_drive(&mut c, id).expect("a charged pack drives");
     }
 

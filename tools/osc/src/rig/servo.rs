@@ -205,7 +205,7 @@ pub(crate) mod bench {
     /// The in-process servo stack, calibrated and identified like the bench
     /// servo: limit 280, stall yield 168 released under 84, soft limits
     /// 432..3626 inside stops 232..3849, its rail ADC reading `vbus_raw`
-    /// (3922 is 7.9 V, 2180 4.39 V).
+    /// (1961 is 7.9 V, 1090 4.39 V).
     pub(crate) fn table(vbus_raw: u16) -> (Client<FakePipe>, Id) {
         let mut pipe = FakePipe::new(BaudRate::B1000000, &[1]);
         pipe.seed_calibrated(0);
@@ -292,8 +292,8 @@ pub(crate) mod bench {
     impl Bench {
         pub(crate) fn mg90(supply: Supply) -> Self {
             let (vbus_raw, vbus) = match supply {
-                Supply::TwoS => (3922, 3204),
-                Supply::Usb => (2180, 1780),
+                Supply::TwoS => (1961, 3204),
+                Supply::Usb => (1090, 1780),
             };
             let (mut c, id) = table(vbus_raw);
             let d = crate::state::descriptor(&mut c, id).unwrap();

@@ -362,7 +362,7 @@ mod tests {
 
     #[test]
     fn a_servo_without_r_is_sent_to_ident() {
-        let (mut c, id) = servo(3922);
+        let (mut c, id) = servo(1961);
         let f = read(&mut c, id, Supply::TwoS).unwrap();
         assert_eq!((f.lim.i_lim, f.lim.r_q12, f.rail_mv), (280, 7270, 7899));
         set(&mut c, id, calib::R_Q12, 0);
@@ -379,21 +379,21 @@ mod tests {
     /// fault acts whatever the yield.
     #[test]
     fn an_inert_stall_response_is_refused() {
-        let (mut c, id) = servo(3922);
+        let (mut c, id) = servo(1961);
         set(&mut c, id, config::STALL_YIELD_COUNTS, 545);
         set(&mut c, id, config::STALL_RELEASE_COUNTS, 273);
         assert_eq!(
             refusal(&mut c, id, Supply::TwoS),
-            "the servo's stall settings cannot fold a stall (stall yield 545 counts (488 mA) is \
-             not under the current limit 280 counts (251 mA)): a capture runs unattended, set \
+            "the servo's stall settings cannot fold a stall (stall yield 545 counts (492 mA) is \
+             not under the current limit 280 counts (253 mA)): a capture runs unattended, set \
              them first"
         );
         set(&mut c, id, config::STALL_YIELD_COUNTS, 168);
         set(&mut c, id, config::STALL_RELEASE_COUNTS, 200);
         assert_eq!(
             refusal(&mut c, id, Supply::TwoS),
-            "the servo's stall settings cannot fold a stall (stall release 200 counts (179 mA) \
-             is not under the stall yield 168 counts (150 mA)): a capture runs unattended, set \
+            "the servo's stall settings cannot fold a stall (stall release 200 counts (180 mA) \
+             is not under the stall yield 168 counts (152 mA)): a capture runs unattended, set \
              them first"
         );
         set(&mut c, id, config::STALL_YIELD_COUNTS, 545);
@@ -406,12 +406,12 @@ mod tests {
     /// latched fault means something else holds it.
     #[test]
     fn a_servo_another_tool_holds_or_another_supply_feeds_is_refused() {
-        let (mut c, id) = servo(3922);
+        let (mut c, id) = servo(1961);
         assert_eq!(
             refusal(&mut c, id, Supply::Usb),
             "--supply usb, but the rail reads 7899 mV, a 2S supply"
         );
-        let (mut c, id) = servo(2180);
+        let (mut c, id) = servo(1090);
         assert_eq!(
             refusal(&mut c, id, Supply::TwoS),
             "--supply 2s, but the rail reads 4390 mV, a USB supply"

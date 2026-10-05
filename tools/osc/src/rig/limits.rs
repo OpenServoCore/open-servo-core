@@ -115,7 +115,7 @@ mod tests {
     /// (reads 0) leaves the current floor.
     #[test]
     fn limits_carry_both_window_floors() {
-        let (mut c, id) = bench::table(3922);
+        let (mut c, id) = bench::table(1961);
         let lim = super::read(&mut c, id).unwrap();
         assert_eq!((lim.window_v_floor_q15, lim.vdiff_floor()), (0, 4356));
         c.pipe_mut().sim_mut().servo_table_mut(0, |t| {

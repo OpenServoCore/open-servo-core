@@ -3,32 +3,12 @@
 //! plant rig on the osc-dev-v006 sense chain (60 mohm, G 14.884).
 
 use osc_integration::plant::{BIAS, FakeIo, RlPlant, duty_of, kernel, last_cmd};
+use osc_integration::sim::{DEV_V006_SENSE as SENSE, DEV_V006_SENSE_EXT as SENSE_EXT};
 use osc_servo_core::regions::config::{DEFAULT_V_UNDERVOLT_MV, vmotor_counts};
 use osc_servo_core::{
-    BaudRate, CalibSense, CalibSenseExt, ConfigDefaults, CurrentDefaults, ImageState, Kernel, Mode,
-    RegionStorage, Shared,
+    BaudRate, ConfigDefaults, CurrentDefaults, ImageState, Kernel, Mode, RegionStorage, Shared,
 };
 
-/// The osc-dev-v006 app's sense chain.
-const SENSE: CalibSense = CalibSense {
-    shunt_r_mohm: 60,
-    gain_milli: 14_884,
-    vmotor_div_top: 6_400,
-    vmotor_div_bot: 1_600,
-    vdd_mv: 3_300,
-    tick_hz: 20_000,
-    i_window_min_ticks: 64,
-    v_window_min_ticks: 93,
-};
-const SENSE_EXT: CalibSenseExt = CalibSenseExt {
-    vbus_div_top_ohm: 6_400,
-    vbus_div_bot_ohm: 1_600,
-    ntc_pullup_ohm: 10_000,
-    ntc_r25_ohm: 10_000,
-    ntc_beta: 3950,
-    vmotor_bias_nom_counts: 773,
-    rail_drop_mv: 250,
-};
 /// 300 mA on this chain.
 const CLASS_LIM: i32 = 333;
 const GOAL_64: i16 = 20971;
