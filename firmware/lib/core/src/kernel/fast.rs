@@ -99,10 +99,11 @@ pub struct Fast {
     /// telemetry because the gate can override the loop's output.
     pub(super) duty_q15: i16,
     decay: DecayMode,
-    /// The last command's bridge state, and the run of commands before it
-    /// in the same state, saturating.
+    /// The last command's bridge state, and the ticks it has left before
+    /// its shunt sample counts as zero current (`ZERO_SETTLE_TICKS` from
+    /// a change, 0 once settled).
     bridge: Bridge,
-    bridge_ticks: u8,
+    settle: u8,
     /// Last window-valid measurement, 0 from the first tick nothing drives:
     /// the current the observer, the stream, the ident aggregate and the
     /// `i_hat_counts` publish read. A window under the floor holds it, as
@@ -133,7 +134,7 @@ impl Fast {
             duty_q15: 0,
             decay: DecayMode::Slow,
             bridge: Bridge::Asleep,
-            bridge_ticks: 0,
+            settle: ZERO_SETTLE_TICKS,
             i_meas_last: 0,
             vdiff_last: 0,
         }
@@ -217,12 +218,24 @@ impl Fast {
                 window::trough_is_brake(self.decay, ticks, self.pwm_arr, self.bias_brake_min_ticks)
                     .then_some(Zero::Awake)
             }
-            _ if self.bridge_ticks < ZERO_SETTLE_TICKS => None,
+            _ if self.settle != 0 => None,
             Bridge::Asleep => Some(Zero::Asleep),
             Bridge::Brake | Bridge::Coast => Some(Zero::Awake),
         };
-        let bias = self.bias.update(zero, frame.current_trough);
-        let i_meas = window::i_from_frame(frame, sel, fwd, bias, self.i_settle_gain.q15_at(ticks));
+        self.bias.update(zero, frame.current_trough);
+        // gated here, not only inside: a window under the floor skips the
+        // zero's rounding and the settle-gain band lookup on the tick path
+        let i_meas = if sel.i_valid {
+            window::i_from_frame(
+                frame,
+                sel,
+                fwd,
+                self.bias.counts(),
+                self.i_settle_gain.q15_at(ticks),
+            )
+        } else {
+            None
+        };
         if let Some(i) = i_meas {
             self.i_meas_last = i.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
         }
@@ -433,12 +446,12 @@ impl Fast {
             MotorCmd::Drive { duty, .. } if duty.0 == 0 => Bridge::Coast,
             _ => Bridge::Drive,
         };
-        self.bridge_ticks = if bridge == self.bridge {
-            self.bridge_ticks.saturating_add(1)
+        if bridge == self.bridge {
+            self.settle = self.settle.saturating_sub(1);
         } else {
-            0
-        };
-        self.bridge = bridge;
+            self.settle = ZERO_SETTLE_TICKS;
+            self.bridge = bridge;
+        }
         // logical (+duty moves counts up) -> wiring, on the output only:
         // duty_q15 and the published duty stay logical. Off and the brake
         // drive nothing: the held current drops (`i_meas_last`)
