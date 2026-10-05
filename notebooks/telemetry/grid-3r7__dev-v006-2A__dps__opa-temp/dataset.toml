@@ -1,0 +1,20 @@
+servo = "grid-3r7"
+supply = "dps"
+rule = "limit"
+current_limit_counts = 2400
+captured = "2026-10-04"
+notes = """Rev 2A board #1 (VREF raised: Rd2 1K6 + Rd3 1K6, Rn1 10K thin film) in a filament dryer, JP2 on IN so the board NTC reads the board. The grid sits outside the dryer on J4, the board runs from a DPS-150 on its battery wires at 7.9 V (LiPo unplugged), and a B41T+ meter reads DC volts on a twisted pair soldered to the inner edges of the Rs1 pads. Four board temperature plateaus (room, 43, 59, back to room), each in both op-amp speed modes: high-speed off and on, each flashed in place over SWD before its runs (two fw 65 images, app-hsoff and app-hson). Driver: osc-dev-v006-bringup captures/bench/c0.py; first analysis captures/bench/c0an.py.
+
+plateaus.csv names each plateau/capture-N (run order). In each: regs.csv (30 torque-off snapshots at the start and the end, with the supply's idle current and the meter), dc.csv (100% duty at 4.5 / 5.5 / 7.2 / 8.0 V on the supply, one row per level: chip current less the torque-off zero, both taps, the meter, the supply readback; v*/samples.csv the raw chip and meter samples), sweep.csv.gz + sweep.meta.json (osc sweep --static-load, 3..40% forward, current limit 2400 counts), runs.csv + ident/ (10 osc ident burst --static-load runs, even k drives one tap, odd k reads both taps, current limit 1000 counts in RAM). The path columns of dc.csv and runs.csv are the folder names here; the burst captures are gzipped; nothing else differs from what the driver wrote.
+
+j4/capture-1 is the voltage chain against the grid itself: the meter on J4 instead of Rs1, high-speed off, at room before the sweep. logs/ holds the driver's console per plateau. history/ holds the runs.csv and regs.csv of the three earlier bursts-only runs on the same board (stock VREF; VREF raised with high-speed on; VREF raised with high-speed off, hot point first), with each run's note.txt.
+
+The supply's current readback is not a truth (it reads about 18% under the meter on Rs1, nb15 sec 1)."""
+
+[load]
+ohm = 4.14
+lo = 4.13
+hi = 4.15
+where = "J4 board terminals"
+source = "meter volts at J4 over the chip's current at 100% duty, j4/capture-1, 4.5 and 8.0 V on the supply"
+note = "the grid warms through every DC set: the chip's V_ab over the meter's current on Rs1 reads 4.12 to 4.18 ohm across the plateaus (nb15 sec 3)"

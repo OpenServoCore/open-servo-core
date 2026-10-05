@@ -1,0 +1,85 @@
+22:40:54 meter LILLIPUT: (1791178854.6896482, 'DC V', 0.0)
+22:41:54   ntc 32.73 C, 1/10 bins, span 0.00
+22:42:55   ntc 32.53 C, 2/10 bins, span 0.20
+22:43:55   ntc 32.06 C, 3/10 bins, span 0.67
+22:44:55   ntc 31.57 C, 4/10 bins, span 1.16
+22:45:55   ntc 31.14 C, 5/10 bins, span 1.59
+22:46:55   ntc 30.92 C, 6/10 bins, span 1.81
+22:47:56   ntc 30.77 C, 7/10 bins, span 1.96
+22:48:56   ntc 30.72 C, 8/10 bins, span 2.01
+22:49:56   ntc 30.52 C, 9/10 bins, span 2.21
+22:50:56   ntc 30.47 C, 10/10 bins, span 2.26
+22:51:56   ntc 30.39 C, 10/10 bins, span 2.14
+22:52:56   ntc 30.28 C, 10/10 bins, span 1.78
+22:53:57   ntc 30.07 C, 10/10 bins, span 1.50
+22:54:57   ntc 29.98 C, 10/10 bins, span 1.16
+22:55:57   ntc 29.97 C, 10/10 bins, span 0.95
+22:56:57   ntc 29.91 C, 10/10 bins, span 0.87
+22:57:57   ntc 29.85 C, 10/10 bins, span 0.87
+22:58:58   ntc 29.78 C, 10/10 bins, span 0.74
+22:59:58   ntc 29.81 C, 10/10 bins, span 0.69
+23:00:58   ntc 29.70 C, 10/10 bins, span 0.69
+23:01:58   ntc 29.75 C, 10/10 bins, span 0.58
+23:02:58   ntc 29.68 C, 10/10 bins, span 0.40
+23:03:58   ntc 29.65 C, 10/10 bins, span 0.33
+23:03:58 == room2 HS off: flash
+23:04:50   zero 1177 taps 770/772 ntc 29.56 C
+23:04:50   dc levels
+{'tag': 'room2-hsoff', 'set_v': 4.5, 't': 1791180298.1, 'hold_s': 5.04, 'psu_v': 4.5, 'psu_i': 0.7505, 'n_psu': 7, 'i_idle_a': 0.013, 'i_true_a': 0.7375, 'meter_v': 0.05453, 'n_meter': 7, 'i_raw_mean': 2191.087, 'i_raw_sd': 3.161, 'i_net_mean': 1013.087, 'i_net_sd': 3.161, 'n_chip': 23, 'zero_before': 1177.2, 'zero_after': 1178.0, 'vmotor_a': 1624.4348, 'vmotor_b': 692.4348, 'vbus_raw': 1011.4783, 'ntc_raw': 1840.913, 'duty_applied_q15': 32767.0, 'limit_flags': 8, 'dir': '../winding-r/c0/room2-hsoff/v4.50'}
+{'tag': 'room2-hsoff', 'set_v': 5.5, 't': 1791180316.6, 'hold_s': 5.02, 'psu_v': 5.5, 'psu_i': 0.9244, 'n_psu': 7, 'i_idle_a': 0.0128, 'i_true_a': 0.9116, 'meter_v': 0.06757, 'n_meter': 7, 'i_raw_mean': 2429.9167, 'i_raw_sd': 2.977, 'i_net_mean': 1251.9167, 'i_net_sd': 2.977, 'n_chip': 24, 'zero_before': 1178.0, 'zero_after': 1178.0, 'vmotor_a': 1866.7917, 'vmotor_b': 713.875, 'vbus_raw': 1252.625, 'ntc_raw': 1837.3333, 'duty_applied_q15': 32767.0, 'limit_flags': 8, 'dir': '../winding-r/c0/room2-hsoff/v5.50'}
+{'tag': 'room2-hsoff', 'set_v': 7.2, 't': 1791180337.6, 'hold_s': 4.84, 'psu_v': 7.2, 'psu_i': 1.2126, 'n_psu': 7, 'i_idle_a': 0.0135, 'i_true_a': 1.1991, 'meter_v': 0.08914, 'n_meter': 7, 'i_raw_mean': 2828.2273, 'i_raw_sd': 3.4632, 'i_net_mean': 1649.2273, 'i_net_sd': 3.4632, 'n_chip': 22, 'zero_before': 1179.0, 'zero_after': 1180.0, 'vmotor_a': 2278.9091, 'vmotor_b': 753.6364, 'vbus_raw': 1661.7727, 'ntc_raw': 1826.9545, 'duty_applied_q15': 32767.0, 'limit_flags': 8, 'dir': '../winding-r/c0/room2-hsoff/v7.20'}
+{'tag': 'room2-hsoff', 'set_v': 8.0, 't': 1791180363.5, 'hold_s': 3.92, 'psu_v': 8.0, 'psu_i': 1.3436, 'n_psu': 5, 'i_idle_a': 0.0133, 'i_true_a': 1.3303, 'meter_v': 0.09902, 'n_meter': 5, 'i_raw_mean': 3008.8125, 'i_raw_sd': 4.0203, 'i_net_mean': 1827.8125, 'i_net_sd': 4.0203, 'n_chip': 16, 'zero_before': 1180.0, 'zero_after': 1181.0, 'vmotor_a': 2471.8125, 'vmotor_b': 774.5, 'vbus_raw': 1855.625, 'ntc_raw': 1804.0, 'duty_applied_q15': 32767.0, 'limit_flags': 8, 'dir': '../winding-r/c0/room2-hsoff/v8.00'}
+23:06:28   ladder
+23:06:38   bursts
+[staticwide 0] 23:06:39 can 30.94 C rail 7.650 V
+  R 4.183 V0 0.000 slope 0.579 V/I 8.307 can 30.81 declined
+[staticwidediff 1] 23:06:53 can 30.96 C rail 7.630 V
+  R 4.163 V0 0.000 slope 0.000 V/I 0.115 can 30.91 declined
+[staticwide 2] 23:07:08 can 30.94 C rail 7.626 V
+  R 4.179 V0 0.000 slope 0.529 V/I 8.309 can 30.93 declined
+[staticwidediff 3] 23:07:22 can 30.96 C rail 7.658 V
+  R 4.156 V0 0.000 slope 0.000 V/I 0.105 can 30.89 declined
+[staticwide 4] 23:07:38 can 31.01 C rail 7.626 V
+  R 4.177 V0 0.000 slope 0.616 V/I 8.279 can 30.96 declined
+[staticwidediff 5] 23:07:52 can 30.96 C rail 7.630 V
+  R 4.174 V0 0.000 slope 0.000 V/I 0.104 can 30.91 declined
+[staticwide 6] 23:08:07 can 30.87 C rail 7.670 V
+  R 4.207 V0 0.000 slope 0.536 V/I 8.323 can 30.77 declined
+[staticwidediff 7] 23:08:21 can 30.69 C rail 7.646 V
+  R 4.154 V0 0.000 slope 0.000 V/I 0.107 can 30.71 declined
+[staticwide 8] 23:08:36 can 30.64 C rail 7.630 V
+  R 4.174 V0 0.000 slope 0.574 V/I 8.301 can 30.6 declined
+[staticwidediff 9] 23:08:50 can 30.82 C rail 7.626 V
+  R 4.203 V0 0.000 slope 0.000 V/I 0.111 can 30.77 declined
+23:09:40   zero 1186 taps 770/770 ntc 30.59 C
+23:09:40 == room2 HS on: flash
+23:10:22   zero 1102 taps 771/771 ntc 30.25 C
+23:10:22   dc levels
+{'tag': 'room2-hson', 'set_v': 4.5, 't': 1791180629.6, 'hold_s': 5.03, 'psu_v': 4.5, 'psu_i': 0.7497, 'n_psu': 7, 'i_idle_a': 0.0134, 'i_true_a': 0.7363, 'meter_v': 0.0545, 'n_meter': 7, 'i_raw_mean': 2114.0435, 'i_raw_sd': 2.2659, 'i_net_mean': 1012.0435, 'i_net_sd': 2.2659, 'n_chip': 23, 'zero_before': 1101.0, 'zero_after': 1102.0, 'vmotor_a': 1625.913, 'vmotor_b': 692.6522, 'vbus_raw': 1012.4783, 'ntc_raw': 1817.9565, 'duty_applied_q15': 32767.0, 'limit_flags': 8, 'dir': '../winding-r/c0/room2-hson/v4.50'}
+{'tag': 'room2-hson', 'set_v': 5.5, 't': 1791180648.0, 'hold_s': 5.03, 'psu_v': 5.5, 'psu_i': 0.9241, 'n_psu': 7, 'i_idle_a': 0.0134, 'i_true_a': 0.9107, 'meter_v': 0.06749, 'n_meter': 7, 'i_raw_mean': 2351.6522, 'i_raw_sd': 2.2885, 'i_net_mean': 1249.6522, 'i_net_sd': 2.2885, 'n_chip': 23, 'zero_before': 1102.0, 'zero_after': 1103.0, 'vmotor_a': 1869.0, 'vmotor_b': 714.6522, 'vbus_raw': 1253.9565, 'ntc_raw': 1818.3043, 'duty_applied_q15': 32767.0, 'limit_flags': 8, 'dir': '../winding-r/c0/room2-hson/v5.50'}
+{'tag': 'room2-hson', 'set_v': 7.2, 't': 1791180668.9, 'hold_s': 4.84, 'psu_v': 7.2, 'psu_i': 1.2129, 'n_psu': 7, 'i_idle_a': 0.014, 'i_true_a': 1.1989, 'meter_v': 0.08907, 'n_meter': 7, 'i_raw_mean': 2744.0455, 'i_raw_sd': 3.4569, 'i_net_mean': 1642.0455, 'i_net_sd': 3.4569, 'n_chip': 22, 'zero_before': 1102.0, 'zero_after': 1102.0, 'vmotor_a': 2279.9091, 'vmotor_b': 753.6364, 'vbus_raw': 1662.6364, 'ntc_raw': 1811.1364, 'duty_applied_q15': 32767.0, 'limit_flags': 8, 'dir': '../winding-r/c0/room2-hson/v7.20'}
+{'tag': 'room2-hson', 'set_v': 8.0, 't': 1791180694.9, 'hold_s': 3.92, 'psu_v': 8.0, 'psu_i': 1.3454, 'n_psu': 5, 'i_idle_a': 0.0141, 'i_true_a': 1.3313, 'meter_v': 0.09906, 'n_meter': 5, 'i_raw_mean': 2929.0, 'i_raw_sd': 3.4254, 'i_net_mean': 1826.0, 'i_net_sd': 3.4254, 'n_chip': 16, 'zero_before': 1102.0, 'zero_after': 1103.0, 'vmotor_a': 2473.1875, 'vmotor_b': 774.9375, 'vbus_raw': 1856.625, 'ntc_raw': 1793.625, 'duty_applied_q15': 32767.0, 'limit_flags': 8, 'dir': '../winding-r/c0/room2-hson/v8.00'}
+23:11:59   ladder
+23:12:09   bursts
+[staticwide 0] 23:12:10 can 31.06 C rail 7.650 V
+  R 4.190 V0 0.000 slope 0.579 V/I 8.321 can 31.06 declined
+[staticwidediff 1] 23:12:24 can 31.17 C rail 7.666 V
+  R 4.170 V0 0.000 slope 0.000 V/I 0.097 can 31.03 declined
+[staticwide 2] 23:12:39 can 31.06 C rail 7.658 V
+  R 4.197 V0 0.000 slope 0.589 V/I 8.336 can 31.02 declined
+[staticwidediff 3] 23:12:53 can 30.96 C rail 7.670 V
+  R 4.163 V0 0.000 slope 0.000 V/I 0.111 can 30.88 declined
+[staticwide 4] 23:13:08 can 30.64 C rail 7.634 V
+  R 4.183 V0 0.000 slope 0.593 V/I 8.288 can 30.67 declined
+[staticwidediff 5] 23:13:22 can 30.64 C rail 7.646 V
+  R 4.178 V0 0.000 slope 0.000 V/I 0.118 can 30.55 declined
+[staticwide 6] 23:13:37 can 30.55 C rail 7.626 V
+  R 4.193 V0 0.000 slope 0.548 V/I 8.315 can 30.52 declined
+[staticwidediff 7] 23:13:51 can 30.29 C rail 7.630 V
+  R 4.184 V0 0.000 slope 0.000 V/I 0.099 can 30.28 declined
+[staticwide 8] 23:14:06 can 30.36 C rail 7.634 V
+  R 4.195 V0 0.000 slope 0.486 V/I 8.321 can 30.28 declined
+[staticwidediff 9] 23:14:19 can 30.29 C rail 7.654 V
+  R 4.162 V0 0.000 slope 0.000 V/I 0.097 can 30.22 declined
+23:15:10   zero 1113 taps 772/772 ntc 29.95 C
+23:15:10 done

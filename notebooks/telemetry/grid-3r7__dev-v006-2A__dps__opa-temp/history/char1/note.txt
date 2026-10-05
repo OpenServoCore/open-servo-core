@@ -1,0 +1,1 @@
+Stock board #1 characterisation: board in the dryer (JP2 IN, onboard TH1), 3.7 ohm grid on J4 outside at room, pack + adapters outside. Plateaus room / dryer 40 / dryer 70. Static bursts at 10/15/25/40% (limit 1000 counts RAM). regs.csv = 30 torque-off snapshots per plateau.
