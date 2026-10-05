@@ -2,7 +2,7 @@ use ch32_metapac::ADC;
 
 use crate::hal::Pin;
 
-pub use ch32_metapac::adc::vals::{Extsel, SampleTime};
+pub use ch32_metapac::adc::vals::{Extsel, Jextsel, SampleTime};
 
 #[derive(Copy, Clone)]
 #[repr(u8)]
@@ -85,6 +85,26 @@ pub fn set_external_trigger(source: Extsel) {
     });
 }
 
+/// A one-conversion injected group on `channel`, started by `source`. With
+/// JL = 0 only JSQ4 converts (RM sec 9.3.11). Write before `enable`: a CTLR2
+/// write with ADON set starts a regular conversion.
+pub fn set_injected(channel: Channel, source: Jextsel) {
+    ADC.isqr().write(|w| {
+        w.set_jl(0);
+        w.set_jsq(3, channel as u8);
+    });
+    ADC.ctlr2().modify(|w| {
+        w.set_jextsel(source);
+        w.set_jexttrig(true);
+    });
+}
+
+/// The injected group's last conversion (IDATAR1, no offset programmed).
+#[inline(always)]
+pub fn injected_data() -> u16 {
+    ADC.idatar(0).read().jdata()
+}
+
 pub fn set_scan_mode(enable: bool) {
     ADC.ctlr1().modify(|w| w.set_scan(enable));
 }
@@ -93,14 +113,15 @@ pub fn set_dma(enable: bool) {
     ADC.ctlr2().modify(|w| w.set_dma(enable));
 }
 
-/// Shuts the DMA tap and parks the trigger on SWSTART, never pulsed, in ONE
-/// CTLR2 write. That write starts a conversion of its own (RM sec 9.3.3), but
-/// after it nothing else can until the next CTLR2 write, so once that one
-/// retires the converter is provably idle.
+/// Shuts the DMA tap, parks the trigger on SWSTART, never pulsed, and stops
+/// the injected trigger, in ONE CTLR2 write. That write starts a conversion of
+/// its own (RM sec 9.3.3), but after it nothing else can until the next CTLR2
+/// write, so once that one retires the converter is provably idle.
 pub fn park() {
     ADC.ctlr2().modify(|w| {
         w.set_extsel(Extsel::SWSTART);
         w.set_dma(false);
+        w.set_jexttrig(false);
     });
 }
 
@@ -132,11 +153,13 @@ pub fn start_continuous_dma() {
 /// sequence and every slot index is off by however far it got (bench: the
 /// sensor frame came back rotated three slots and the undervolt fault
 /// latched). Caller has SCAN, the regular sequence, and the DMA channel ready.
+/// The injected trigger [`park`] stopped comes back on its bringup source.
 pub fn arm_scan(source: Extsel) {
     ADC.ctlr2().modify(|w| {
         w.set_extsel(source);
         w.set_exttrig(true);
         w.set_dma(true);
+        w.set_jexttrig(true);
     });
 }
 

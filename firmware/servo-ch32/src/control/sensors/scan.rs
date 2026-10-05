@@ -15,12 +15,33 @@
 //! trigger and the trough trigger follows 25 us after that trigger, so the TC
 //! ISR has ~17 us to drain the trough slots before slot 0 is rewritten; the
 //! peak slots stand until the next peak trigger.
+//!
+//! The drive-window tap B is not the peak scan's third slot: that closes 135
+//! ticks after the crest, past the short windows. A one-channel injected group
+//! on the same tap, triggered `TAP_B_LEAD_TICKS` before the crest, closes 37
+//! ticks before it and retires ahead of the crest trigger. The peak slot stays
+//! in the scan, unread; the trough slot still serves Fast decay.
 
 use core::cell::SyncUnsafeCell;
 
 use osc_servo_core::regions::burst::{FRAME_MAX, chans};
 
+use crate::hal::clocks::{ADCCLK_HZ, TIM_CLK_HZ};
 use crate::hal::{adc, dma};
+
+const TICKS_PER_ADCCLK: u16 = (TIM_CLK_HZ / ADCCLK_HZ) as u16;
+/// One conversion at the `CYCLES15` aperture: 13.5 + 12.5 ADCCLK.
+const CONV_CYCLES: u16 = 26;
+/// External trigger to aperture start.
+const TRIGGER_DELAY_CYCLES: u16 = 2;
+/// Idle between the injected conversion retiring and the crest TRGO. A
+/// regular trigger that lands during an injected conversion is postponed (RM
+/// sec 9.2.4), which would move every peak slot off its settle-table instant;
+/// the margin also covers the 2-ADCCLK group switch.
+const INJECTED_GUARD_CYCLES: u16 = 6;
+/// How far ahead of the crest TIM1 triggers tap B's injected conversion.
+pub(crate) const TAP_B_LEAD_TICKS: u16 =
+    (CONV_CYCLES + TRIGGER_DELAY_CYCLES + INJECTED_GUARD_CYCLES) * TICKS_PER_ADCCLK;
 
 /// In `AdcPins` field order: pos, vmotor.0, vmotor.1, vbus, ntc.
 pub(crate) const ADC_SENSOR_COUNT: usize = 5;
@@ -139,6 +160,13 @@ pub(super) fn scan_slot(offset: usize, idx: usize) -> u16 {
     unsafe { (ADC_DMA_BUF.get() as *const u16).add(i).read_volatile() }
 }
 
+/// Tap B as the injected group last converted it: the drive window of the
+/// period whose peak scan this frame drains.
+#[inline(always)]
+pub(super) fn tap_b_injected() -> u16 {
+    adc::injected_data()
+}
+
 #[cfg(test)]
 mod tests {
     extern crate std;
@@ -146,6 +174,19 @@ mod tests {
     use osc_servo_core::regions::burst::frame_len;
 
     use super::*;
+
+    /// Trigger at crest - 68, aperture closes at crest - 37 (2 ADCCLK sync +
+    /// 13.5 aperture), retires at crest - 12.
+    #[test]
+    fn tap_b_lead_places_the_injected_sample_before_the_crest() {
+        assert_eq!(TICKS_PER_ADCCLK, 2);
+        assert_eq!(TAP_B_LEAD_TICKS, 68);
+        let aperture_ticks = 27;
+        let close = TAP_B_LEAD_TICKS - TRIGGER_DELAY_CYCLES * TICKS_PER_ADCCLK - aperture_ticks;
+        assert_eq!(close, 37);
+        let retire = TAP_B_LEAD_TICKS - (TRIGGER_DELAY_CYCLES + CONV_CYCLES) * TICKS_PER_ADCCLK;
+        assert_eq!(retire, 12);
+    }
 
     /// Every mask the field rule admits programs the frame the ABI names:
     /// its length is `frame_len`, the extras keep bit order, and under

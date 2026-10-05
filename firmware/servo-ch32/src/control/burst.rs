@@ -279,8 +279,10 @@ pub fn on_dma_event(shared: &Shared) {
 }
 
 /// Suspend the scan and open the capture. The drains below outlast the TC's
-/// ~17 us of slack, which costs nothing: the tap is shut and the trigger
-/// parked in the first write, so no TRGO starts anything after it. That is
+/// ~17 us of slack, which costs nothing: the tap is shut and both triggers
+/// parked in the first write, so no TRGO starts anything after it, and no
+/// tap B injected conversion resets a frame slot mid-capture and slips the
+/// sample grid once a period. That is
 /// also why `start_cnt` / `start_dir` record the phase of the launch write
 /// itself rather than the phase of the TC that led to it.
 fn launch(p: *mut ControlTable) {
