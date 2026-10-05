@@ -19,7 +19,7 @@ const FRAC: u32 = 16;
 /// The offset moves with board temperature, over minutes.
 pub const ALPHA_SHIFT: u32 = 13;
 /// A zero not fed for this many ticks (3.3 s at 20 kHz, 8 time constants)
-/// is stale; ages saturate here.
+/// is stale.
 pub const STALE_TICKS: u16 = u16::MAX;
 
 /// Zero-current output of the current-sense chain, raw ADC counts: two slow
@@ -32,8 +32,10 @@ pub const STALE_TICKS: u16 = u16::MAX;
 pub struct BiasTracker {
     awake_q: i32,
     asleep_q: i32,
-    awake_age: u16,
-    asleep_age: u16,
+    /// Ticks left before each zero is stale, 0 once it is; a feed resets
+    /// its own to `STALE_TICKS`.
+    awake_fresh: u16,
+    asleep_fresh: u16,
 }
 
 impl BiasTracker {
@@ -41,8 +43,8 @@ impl BiasTracker {
         Self {
             awake_q: 0,
             asleep_q: 0,
-            awake_age: STALE_TICKS,
-            asleep_age: STALE_TICKS,
+            awake_fresh: 0,
+            asleep_fresh: 0,
         }
     }
 
@@ -55,29 +57,25 @@ impl BiasTracker {
     /// One tick: `zero` names the state `sample` read zero current in, or
     /// is `None` when the shunt may carry current. Returns the awake zero.
     pub fn update(&mut self, zero: Option<Zero>, sample: u16) -> u16 {
-        self.awake_age = self.awake_age.saturating_add(1);
-        self.asleep_age = self.asleep_age.saturating_add(1);
-        if let Some(zero) = zero {
-            let (fed, other, fed_age, other_age) = match zero {
-                Zero::Awake => (
-                    &mut self.awake_q,
-                    &mut self.asleep_q,
-                    &mut self.awake_age,
-                    self.asleep_age,
-                ),
-                Zero::Asleep => (
-                    &mut self.asleep_q,
-                    &mut self.awake_q,
-                    &mut self.asleep_age,
-                    self.awake_age,
-                ),
-            };
-            let delta = (((sample as i32) << FRAC) - *fed) >> ALPHA_SHIFT;
-            *fed += delta;
-            if other_age == STALE_TICKS {
-                *other += delta;
+        match zero {
+            Some(Zero::Awake) => feed(
+                sample,
+                &mut self.awake_q,
+                &mut self.awake_fresh,
+                &mut self.asleep_q,
+                &mut self.asleep_fresh,
+            ),
+            Some(Zero::Asleep) => feed(
+                sample,
+                &mut self.asleep_q,
+                &mut self.asleep_fresh,
+                &mut self.awake_q,
+                &mut self.awake_fresh,
+            ),
+            None => {
+                self.awake_fresh = self.awake_fresh.saturating_sub(1);
+                self.asleep_fresh = self.asleep_fresh.saturating_sub(1);
             }
-            *fed_age = 0;
         }
         self.counts()
     }
@@ -91,6 +89,23 @@ impl BiasTracker {
     fn asleep_counts(&self) -> u16 {
         ((self.asleep_q + (1 << (FRAC - 1))) >> FRAC).max(0) as u16
     }
+}
+
+/// One sample into `fed`; `other` ages, and follows while stale. Each
+/// `update` arm inlines this against its own fields, so the tick path
+/// addresses them directly instead of through a pair of pointers picked
+/// by the match.
+#[inline(always)]
+fn feed(sample: u16, fed: &mut i32, fed_fresh: &mut u16, other: &mut i32, other_fresh: &mut u16) {
+    let delta = (((sample as i32) << FRAC) - *fed) >> ALPHA_SHIFT;
+    *fed += delta;
+    if *other_fresh > 1 {
+        *other_fresh -= 1;
+    } else {
+        *other_fresh = 0;
+        *other += delta;
+    }
+    *fed_fresh = STALE_TICKS;
 }
 
 impl Default for BiasTracker {
