@@ -30,6 +30,7 @@ const TIMING: KernelTiming = KernelTiming {
     bias_brake_min_ticks: 600,
     v_trough_min_ticks: 0,
     bemf_min_ticks: 0,
+    pulse_short_ticks: 0,
     i_settle_gain: window::SettleGain::UNITY,
 };
 
@@ -1576,6 +1577,38 @@ fn bemf_floor_voids_the_observer_and_keeps_the_differential() {
         );
         assert_eq!(k.fast.vdiff_last, 2960, "floor {floor}");
     }
+}
+
+/// The board's pulse shortfall comes off the width the observer scales by,
+/// in ticks of the whole period: 2 x 293 - 186 leaves a 400-tick pulse.
+#[test]
+fn bemf_takes_the_pulse_shortfall_off_the_commanded_width() {
+    let sh = Shared::new();
+    ident_setup(&sh);
+    let mut k = Kernel::new(
+        FakeIo {
+            sensors: FakeSensors,
+            motor: FakeMotor { last: None },
+        },
+        KernelTiming {
+            pulse_short_ticks: 186,
+            ..TIMING
+        },
+    );
+    settle(&mut k, &sh, frame(2000, BIAS + 100));
+    run_to(&mut k, &sh, frame(2000, BIAS + 100), phase::OBSERVER + 1);
+    for _ in 0..20 {
+        k.on_tick(frame(2000, BIAS + 100), &sh);
+    }
+    run_to(&mut k, &sh, frame(2000, BIAS + 100), phase::PUBLISH + 1);
+    assert_eq!(window::drive_ticks(8000, ARR), 293);
+    // closed form: (400 * 2960 / 2400 - 2.0 * 100) * 16 c/s per vcount
+    let v_sum = (bemf::BOXCAR_TICKS as i64 * 400 * 2960 * TIMING.recip_arr_q24 as i64) >> 25;
+    let r_sum = (8192i64 * bemf::BOXCAR_TICKS as i64 * 100) >> 12;
+    let expect = ((v_sum - r_sum) * 16) / bemf::BOXCAR_TICKS as i64;
+    let got = sh.table.with(|t| t.telemetry.estimates.omega_bemf_cps) as i64;
+    assert!((got - expect).abs() <= 1, "got {got} expect {expect}");
+    assert_eq!(got, 4693, "pin");
 }
 
 #[test]

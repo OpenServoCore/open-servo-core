@@ -34,6 +34,7 @@ pub const TIMING: KernelTiming = KernelTiming {
     bias_brake_min_ticks: 960,
     v_trough_min_ticks: 0,
     bemf_min_ticks: 0,
+    pulse_short_ticks: 0,
     i_settle_gain: window::SettleGain::UNITY,
 };
 

@@ -1,10 +1,11 @@
 //! Model back-EMF velocity on a 1 ms boxcar. Slow decay shorts the
 //! terminals off-window (v_diff ~ 0), so the period-average applied
-//! differential voltage is just the duty fraction times the drive-window
-//! differential - bridge drops included, which is the point. Subtract the
-//! resistive drop and scale by 1/Ke and the motor is its own tachometer:
-//! omega = (v_mean - R*i) / Ke, divide-free via caller-side reciprocals
-//! (control-theory "Back-EMF, a Velocity Sensor for Free").
+//! differential voltage is the drive pulse's share of the period times the
+//! drive-window differential - bridge drops included, which is the point.
+//! The pulse is the commanded width less the board's `pulse_short_ticks`.
+//! Subtract the resistive drop and scale by 1/Ke and the motor is its own
+//! tachometer: omega = (v_mean - R*i) / Ke, divide-free via caller-side
+//! reciprocals (control-theory "Back-EMF, a Velocity Sensor for Free").
 //!
 //! Every FAST tick adds one sample; the kernel closes a half at each MEDIUM
 //! boundary (DECIM_MED samples) and the output is the mean over the two
@@ -20,8 +21,8 @@ use crate::math::q_mul;
 /// vs 1.2% at Q16). `drive_ticks * vdiff` <= 65535 * 4095 fits i32 and
 /// `q_mul` widens to i64, so the extra shift is free. The kernel computes
 /// `v_mean = q_mul(drive_ticks * vdiff, recip_arr, RECIP_ARR_SHIFT)` once
-/// per medium tick for the winding thermometer; the boxcar applies the same
-/// reciprocal to a half's summed `drive_ticks * vdiff`.
+/// per medium tick for the winding thermometer; the boxcar sums the pulse
+/// over the whole period, twice `drive_ticks`, and takes one more shift.
 pub const RECIP_ARR_SHIFT: u32 = 24;
 
 /// `recip_ke_q` (CALIB motor block) Q: c/s per vcount at Q6.10. SG90-scale
@@ -37,9 +38,11 @@ const RECIP_BOXCAR_SHIFT: u32 = 16;
 const RECIP_BOXCAR: i32 = ((1 << RECIP_BOXCAR_SHIFT) + BOXCAR_TICKS / 2) / BOXCAR_TICKS;
 
 /// Half-boxcar accumulators plus the previous closed half.
-#[derive(Default)]
 pub struct BemfObs {
-    /// Sum of `drive_ticks * vdiff` over the open half.
+    /// `KernelTiming::pulse_short_ticks`.
+    pulse_short_ticks: u32,
+    /// Sum of `pulse * vdiff` over the open half, `pulse` the drive pulse
+    /// in ticks of the whole period.
     sum_tv: i32,
     /// Sum of the signed shunt current over the open half.
     sum_i: i32,
@@ -50,8 +53,9 @@ pub struct BemfObs {
 }
 
 impl BemfObs {
-    pub const fn new() -> Self {
+    pub const fn new(pulse_short_ticks: u16) -> Self {
         Self {
+            pulse_short_ticks: pulse_short_ticks as u32,
             sum_tv: 0,
             sum_i: 0,
             half_valid: true,
@@ -61,13 +65,14 @@ impl BemfObs {
 
     /// One FAST-tick sample. `ticks` is the drive width the window select
     /// used, `vdiff` from `vdiff_from_frame`, `i` from `i_from_frame`;
-    /// either `None` voids the open half. Saturating: 10 x 65535 x 4095
-    /// exceeds i32 only above a 52k ARR, a hostile timing nothing else
+    /// either `None` voids the open half. Saturating: 10 x 2 x 65535 x
+    /// 4095 exceeds i32 only above a 26k ARR, a hostile timing nothing else
     /// survives either.
     pub fn sample(&mut self, ticks: u32, vdiff: Option<i32>, i: Option<i32>) {
         match (vdiff, i) {
             (Some(v), Some(i)) => {
-                self.sum_tv = self.sum_tv.saturating_add((ticks as i32).saturating_mul(v));
+                let pulse = (2 * ticks).saturating_sub(self.pulse_short_ticks);
+                self.sum_tv = self.sum_tv.saturating_add((pulse as i32).saturating_mul(v));
                 self.sum_i = self.sum_i.saturating_add(i);
             }
             _ => self.half_valid = false,
@@ -83,7 +88,7 @@ impl BemfObs {
         let half = if self.half_valid {
             // sum(v_mean) - R * sum(i): |sum_i| <= 10 * 4095 keeps the R
             // product i64-exact for any gain encoding
-            let v = q_mul(self.sum_tv, recip_arr_q24 as i32, RECIP_ARR_SHIFT);
+            let v = q_mul(self.sum_tv, recip_arr_q24 as i32, RECIP_ARR_SHIFT + 1);
             Some(v.saturating_sub(q_mul(r_q12 as i32, self.sum_i, 12)))
         } else {
             None
@@ -132,7 +137,7 @@ mod tests {
 
     /// Two clean halves of a constant pair with explicit gains/reciprocal.
     fn boxcar(ticks: u32, vdiff: i32, i: i32, r_q12: u16, recip_ke: u16, recip_arr: u32) -> i32 {
-        let mut obs = BemfObs::new();
+        let mut obs = BemfObs::new(0);
         for n in 0..2 * HALF {
             obs.sample(ticks, Some(vdiff), Some(i));
             if n == HALF - 1 {
@@ -158,7 +163,7 @@ mod tests {
 
     #[test]
     fn first_close_has_no_previous_half() {
-        let mut obs = BemfObs::new();
+        let mut obs = BemfObs::new(0);
         assert_eq!(half(&mut obs, 600, Some(3000), Some(0)), None);
         assert_eq!(half(&mut obs, 600, Some(3000), Some(0)), Some(1499));
     }
@@ -194,9 +199,40 @@ mod tests {
         assert_eq!(boxcar(512, -2048, 0, 4096, KE_UNITY, recip), -1025);
     }
 
+    /// Two clean halves through an observer whose pulse comes out `short`
+    /// ticks under the commanded width, R = 0, unity Ke.
+    fn boxcar_short(short: u16, ticks: u32, vdiff: i32, recip_arr: u32) -> i32 {
+        let mut obs = BemfObs::new(short);
+        for n in 0..2 * HALF {
+            obs.sample(ticks, Some(vdiff), Some(0));
+            if n == HALF - 1 {
+                obs.close_half(0, KE_UNITY, recip_arr);
+            }
+        }
+        obs.close_half(0, KE_UNITY, recip_arr).unwrap()
+    }
+
+    #[test]
+    fn pulse_shortfall_comes_off_the_period_mean() {
+        // arr=1024, ticks=512: a 1024-tick pulse of the 2048-tick period,
+        // 64 short leaves 960 of it, 960 per tick of vdiff 2048
+        let recip = (1u32 << RECIP_ARR_SHIFT) / 1024;
+        assert_eq!(boxcar_short(64, 512, 2048, recip), 960);
+        assert_eq!(boxcar_short(64, 512, -2048, recip), -961);
+        // the board's 17 at the 93-tick floor: (186 - 17) / 2400 of 3000
+        let out = boxcar_short(17, 93, 3000, RECIP_ARR) as i64;
+        assert!((out - 169 * 3000 / 2400).abs() <= 1, "{out}");
+        assert_eq!(out, 211, "pin");
+    }
+
+    #[test]
+    fn shortfall_past_the_pulse_reads_zero_volts() {
+        assert_eq!(boxcar_short(40, 20, 3000, RECIP_ARR), 0);
+    }
+
     #[test]
     fn one_sub_floor_tick_voids_both_boxcars() {
-        let mut obs = BemfObs::new();
+        let mut obs = BemfObs::new(0);
         half(&mut obs, 600, Some(3000), Some(0));
         assert_eq!(half(&mut obs, 600, Some(3000), Some(0)), Some(1499));
         // one voided sample in the third half
@@ -214,7 +250,7 @@ mod tests {
     #[test]
     fn either_window_invalid_voids_the_half() {
         for (vdiff, i) in [(None, Some(0)), (Some(3000), None)] {
-            let mut obs = BemfObs::new();
+            let mut obs = BemfObs::new(0);
             half(&mut obs, 600, Some(3000), Some(0));
             obs.sample(600, vdiff, i);
             for _ in 1..HALF {
@@ -226,7 +262,7 @@ mod tests {
 
     #[test]
     fn zero_recip_ke_yields_no_estimate() {
-        let mut obs = BemfObs::new();
+        let mut obs = BemfObs::new(0);
         half(&mut obs, 600, Some(3000), Some(0));
         for _ in 0..HALF {
             obs.sample(600, Some(3000), Some(0));
@@ -250,7 +286,7 @@ mod tests {
     #[test]
     fn hostile_inputs_never_wrap() {
         // debug overflow checks are the wrap detector
-        let mut obs = BemfObs::new();
+        let mut obs = BemfObs::new(0);
         for n in 0..200usize {
             let v = if n & 1 == 0 { i32::MAX } else { i32::MIN };
             let i = if n & 2 == 0 { i32::MAX } else { i32::MIN };

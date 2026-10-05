@@ -127,7 +127,7 @@ impl Fast {
             vcal_lpf: VcalLpf::new(),
             bias: BiasTracker::new(),
             oc: OcDetector::new(),
-            bemf: BemfObs::new(),
+            bemf: BemfObs::new(timing.pulse_short_ticks),
             cur: CurrentLoop::new(),
             ol: DutyLimiter::new(),
             ident: IdentAgg::new(),

@@ -100,6 +100,10 @@ pub struct Calibration {
     pub v_trough_window_min_ticks: u16,
     /// Shortest drive window (TIM1 ticks) the back-EMF observer takes.
     pub bemf_window_min_ticks: u16,
+    /// How far the drive pulse's volt-seconds fall short of the commanded
+    /// width, TIM1 ticks of the whole period; the back-EMF observer takes it
+    /// off the width it scales by.
+    pub pulse_short_ticks: u16,
     /// Shortest Slow-decay brake half (TIM1 ticks) whose trough shunt sample
     /// has settled to the amplifier's rest offset: the bias tracker learns
     /// from no narrower one.

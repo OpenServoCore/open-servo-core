@@ -84,10 +84,12 @@ pub struct KernelTiming {
     /// Fast decay only (`window::v_floor`).
     pub v_trough_min_ticks: u16,
     /// Board data: the shortest window whose terminal differential the
-    /// back-EMF observer takes. Under it the drive pulse comes out short of
-    /// the commanded width by enough to bias the period-average voltage the
-    /// observer scales by that width.
+    /// back-EMF observer takes.
     pub bemf_min_ticks: u16,
+    /// Board data: how far the drive pulse's volt-seconds fall short of the
+    /// commanded width, in ticks of the whole period (twice the compare
+    /// width); the back-EMF observer takes it off the width it scales by.
+    pub pulse_short_ticks: u16,
     /// Board data: the shunt amplifier's settle gain by drive width
     /// (`window::i_from_frame`).
     pub i_settle_gain: window::SettleGain,

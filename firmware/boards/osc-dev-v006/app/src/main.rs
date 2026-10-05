@@ -82,9 +82,15 @@ fn main() -> ! {
             v_window_min_ticks: 93,
             // The trough scan's low-side tap closes 135 ticks into the window.
             v_trough_window_min_ticks: 160,
-            // The drive pulse comes out ~27 ticks short of the commanded
-            // width and the observer scales by the commanded one.
-            bemf_window_min_ticks: 160,
+            bemf_window_min_ticks: 93,
+            // Volt-seconds under the high-side tap, slow decay, either
+            // direction: the ON edge lands 41-43 ticks after its compare at
+            // any current, the OFF edge 15-17 ticks after at 0.3-0.44 A but
+            // 24-26 at the 0.07 A the MG90 draws free-running at 9-10% duty,
+            // its terminal capacitance slowing the fall. That reads 16-18
+            // short there, 25-30 at 0.3-0.44 A and 27-29 on a 1.6 A grid;
+            // the observer's floor band runs at the small currents.
+            pulse_short_ticks: 17,
             // The amplifier tail after a drive pulse, measured on board D
             // over a duty grid: the trough sits a flat 5 counts over the
             // disabled-driver rest bias down to 960 brake ticks (20% duty),
