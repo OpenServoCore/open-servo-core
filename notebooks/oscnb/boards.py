@@ -229,8 +229,8 @@ BOARDS = {
         vbus_div_top=6_400,
         vbus_div_bot=1_600,
         floor_i_ticks=64,
-        floor_v_ticks=160,
-        floors_verified=False,
+        floor_v_ticks=93,
+        floors_verified=True,
         measured={
             "rest_current_noise_measured": Measured(
                 1.28, 1.22, 1.33, "counts RMS", "nb10 sec 3, grid 2S ladder rest baselines",
@@ -270,14 +270,11 @@ BOARDS = {
             "grid-3r7 2S session: in that dataset tap B reads the VB node "
             "instead of terminal B, so only tap A, the rail and the current "
             "are graded there. Rv3 is repaired, and a dataset captured with it "
-            "fitted reads both taps. FLOORS: the 2A build ships 64 ticks for "
-            "the current and 160 for the terminals (osc-dev-v006 main.rs "
-            "i_window_min_ticks / v_window_min_ticks). A capture's meta.json "
-            "drive block reports the current floor as window_floor_q15: 1734 "
-            "(64 ticks), or 4356 (160 ticks) from a build before the current "
-            "floor was lowered. 64 is nb10 sec 8's 3% tier, not a settled 1% "
-            "reading, and nb15 sec 4 puts the terminals' honest floor at tap "
-            "B's sample, so the floors stay UNVERIFIED."
+            "fitted reads both taps. Floors 64/93 ticks: the current at 3% "
+            "with the settle gain on top (nb10 sec 8), the terminals from the "
+            "grid ladder with tap B sampled 37 ticks before the crest (bringup "
+            "captures/winding-r/injb). Fast decay's terminals and the back-EMF "
+            "observer keep 160."
         ),
     ),
 }

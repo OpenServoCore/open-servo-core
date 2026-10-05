@@ -72,11 +72,15 @@ fn main() -> ! {
             // capacitance (~10 nF on the MG90) through the shunt, which
             // reads HIGH by a fixed few counts under ~72 ticks, 10-15% of a
             // 30-count current at the floor; no gain removes an additive
-            // term. The v floor covers both terminal taps settling to the
-            // rail and vmotor_b's S/H close, 131 ticks after the crest
-            // trigger at ADCCLK 24 MHz with 13.5-cycle apertures.
+            // term. The v floor is the crest taps' window: tap B closes 37
+            // ticks before the crest (injected), so it needs the ON edge's
+            // 42-tick lag plus its settle, and tap A at +83 must still be
+            // inside the window when the OFF edge lands 14 ticks late. A 4.2
+            // ohm grid ladder reads R within 1.1% from 84 ticks forward;
+            // reverse, tap B is the high side and reads its post-edge
+            // overshoot, 3-5% high from 96 to 180 ticks.
             i_window_min_ticks: 64,
-            v_window_min_ticks: 160,
+            v_window_min_ticks: 93,
             // The trough scan's tap B closes 135 ticks into the window.
             v_trough_window_min_ticks: 160,
             // The drive pulse comes out ~27 ticks short of the commanded

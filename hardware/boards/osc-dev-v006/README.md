@@ -237,9 +237,9 @@ Ticks are 48 MHz TIM1 ticks (20.8 ns). The PWM half-period is 1200 ticks, so a d
 |PWM|Center-aligned, ARR 1200 at 48 MHz, 2400 ticks a period: 20 kHz.|`servo-ch32/src/cfg/chip.rs`|
 |ADC clock|24 MHz (HCLK / 2).|`servo-ch32/src/hal/clocks.rs`|
 |Aperture|13.5 ADC clocks on every channel. A conversion is 26 clocks: 1.083 us, 52 ticks, 0.92 Msps.|`cfg/chip.rs`, nb10 sec 8|
-|Trigger|TIM1 update (TRGO) at the counter crest and at the trough, so two scans a period.|`control/sensors/scan.rs`|
+|Trigger|TIM1 update (TRGO) at the counter crest and at the trough, so two scans a period. TIM1 CH4 (CCR4 = ARR - 68) starts tap B's injected conversion before the crest.|`control/sensors/scan.rs`|
 |Scan order|shunt, vmA, vmB, pos, vcal, vbus, ntc.|`main.rs`|
-|Sample closes after the crest|shunt 31, tap A 83, tap B 135 ticks, the ADC's 2-clock trigger delay included.|nb10 sec 8|
+|Sample closes from the crest|Tap B -37 (injected), shunt +31, tap A +83; the scan's own tap B +135, read only from the trough scan (Fast decay). The ADC's 2-clock trigger delay included.|nb10 sec 8, bringup `captures/winding-r/injb`|
 
 Under slow decay the drive window is centred on the crest, so the crest scan reads the driven half; under fast decay the trough scan does.
 
@@ -294,11 +294,11 @@ Two things the gain cannot remove:
 |`VB` under drive|With tap B disconnected from its terminal, it read the node itself: +68 mV (84 counts) at the forward 100% rung, against +67 mV from the 81 Ohm source.|nb10 sec 9|
 |Tap A rest noise|0.86 counts, 3.5 mV at the terminal.|nb10 sec 3|
 |Low-side path|0.218 Ohm on the A side: switch, shunt and copper.|nb10 sec 5.1|
-|Window edge|The terminal starts to fall 8.5-9 ticks after the OFF compare. Tap A reads the window from about 74 ticks, tap B from about 126.|nb10 sec 8.4|
+|Window edge|The terminal starts to fall 8.5-9 ticks after the OFF compare. Tap A reads the window from about 74 ticks, the injected tap B from about 90 forward, the trough scan's tap B from about 126.|nb10 sec 8.4, bringup `captures/winding-r/injb`|
 |Coast EMF|1.24 mV per ripple Hz both ways on the MG90. Board D 1.21-1.23.|nb11 sec 3|
 |Low-duty over-read|The 15% rung reads 3.0% (forward) and 3.6% (reverse) high against a `Ke` fitted on 25-30%. Board D 7.7-7.8% on the same motor.|nb11 sec 3|
 
-`v_window_min_ticks` stays 160 (13.3% duty). Tap B is the third slot, so the scan position sets this floor, 34 ticks over where tap B stops seeing the window. The coast reading says the terminal chain reads the EMF as well as board D's; the low-duty over-read is the drive pulse coming out shorter than commanded, which a crest sample cannot see (11-16 ticks explains all of it on the MG90). Under the floor the back-EMF is void, which is why closed-loop verify's velocity legs, at 8-11% duty, ran on the pot observer.
+`v_window_min_ticks` is 93 (7.7% duty). Tap B is sampled 37 ticks before the crest, so the floor is its rise after the ON edge: on the grid, forward drive reads R within 1.1% from 84 ticks, against 3.8% high at 96 when tap B sat in the scan's third slot. Reversed, tap B is the high side and reads its post-edge overshoot, 3-5% high from 96 to 180 ticks against the 30-40% rungs. Fast decay keeps 160 (`v_trough_window_min_ticks`), its tap B still in the trough scan. The coast reading says the terminal chain reads the EMF as well as board D's; the low-duty over-read is the drive pulse coming out shorter than commanded, which a crest sample cannot see (11-16 ticks explains all of it on the MG90). The back-EMF observer keeps its own 160-tick floor (`bemf_window_min_ticks`) until it takes that shortfall off the commanded width; under it the back-EMF is void, which is why closed-loop verify's velocity legs, at 8-11% duty, run on the pot observer.
 
 ### Supply voltage
 
