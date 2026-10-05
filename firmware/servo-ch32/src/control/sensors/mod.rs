@@ -12,6 +12,7 @@ use crate::runtime::statics::read_sample_tick;
 use scan::{
     SCAN_IDX_NTC, SCAN_IDX_POS, SCAN_IDX_SHUNT_POST, SCAN_IDX_VBUS, SCAN_IDX_VCAL,
     SCAN_IDX_VMOTOR_A, SCAN_IDX_VMOTOR_B, SCAN_PEAK_OFFSET, SCAN_TROUGH_OFFSET, scan_slot,
+    tap_b_injected,
 };
 
 #[derive(Default)]
@@ -37,7 +38,7 @@ impl SensorsTrait for Ch32Sensors {
             current_trough,
             vmotor_a: scan_slot(SCAN_PEAK_OFFSET, SCAN_IDX_VMOTOR_A),
             vmotor_a_trough,
-            vmotor_b: scan_slot(SCAN_PEAK_OFFSET, SCAN_IDX_VMOTOR_B),
+            vmotor_b: tap_b_injected(),
             vmotor_b_trough,
             vcal: scan_slot(SCAN_PEAK_OFFSET, SCAN_IDX_VCAL),
             vbus_raw: scan_slot(SCAN_PEAK_OFFSET, SCAN_IDX_VBUS),

@@ -36,7 +36,10 @@ pub fn init_center_aligned_pwm(prescaler: u16, period: u16) {
     TIM1.psc().write_value(prescaler);
     TIM1.atrlr().write_value(period);
     TIM1.ctlr1().modify(|w| {
-        w.set_cms(Cms::CENTERALIGNED3);
+        // Compare events on the up-count only: under CENTERALIGNED3 a
+        // `compare_trigger` channel would also fire on the down-count
+        // crossing, a second injected conversion per period.
+        w.set_cms(Cms::CENTERALIGNED2);
         w.set_arpe(true);
     });
 }
@@ -51,6 +54,20 @@ pub fn configure_pwm_channel(ch: Channel, polarity: Polarity) {
         w.set_cce(n, true);
         w.set_ccp(n, matches!(polarity, Polarity::ActiveLow));
     });
+}
+
+/// A compare whose event triggers the ADC once per period, at CNT = `ccr`
+/// counting up (with `init_center_aligned_pwm`'s CMS), CCR unbuffered. The
+/// ADC sees no event unless CCxE is set (bench), so the output is enabled:
+/// the caller keeps the channel's pin out of AF mode, where it reaches no pad.
+pub fn configure_compare_trigger(ch: Channel, ccr: u16) {
+    let n = (ch as u8 - 1) as usize;
+    TIM1.chctlr_output(n / 2).modify(|w| {
+        w.set_ocm(n % 2, Ocm::PWMMODE2);
+        w.set_ocpe(n % 2, false);
+    });
+    TIM1.chcvr(n).write_value(ccr);
+    TIM1.ccer().modify(|w| w.set_cce(n, true));
 }
 
 #[inline]
