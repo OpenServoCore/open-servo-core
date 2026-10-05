@@ -37,6 +37,7 @@ use self::servo::SimServo;
 
 pub use self::cpu::{Entries, HandlerCost};
 pub use self::host::HostEvent;
+pub use self::servo::{DEV_V006_SENSE, DEV_V006_SENSE_EXT};
 pub use self::store::{Kind as ImageKind, RamStore, Tear};
 
 pub use self::support::{

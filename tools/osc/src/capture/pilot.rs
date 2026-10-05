@@ -1916,14 +1916,14 @@ mod tests {
                     charge it before anything drives";
         let mut b = Bench::mg90(Supply::TwoS);
         let id = b.id();
-        rail(&mut b.c, 3351);
+        rail(&mut b.c, 1675);
         let e = front::read(&mut b.c, id, Supply::TwoS).unwrap_err();
         assert_eq!(e.to_string(), flat);
         assert_eq!(torque(&mut b.c, id), 0);
 
         let (mut b, front) = bench(Supply::TwoS);
         let rig = bench_rig(&front);
-        rail(&mut b.c, 3351);
+        rail(&mut b.c, 1675);
         let t = b.servo.t_ms;
         let step = Step::Drive(20, Some(150));
         let e = record(&mut b, &cfg(vec![step], Dirs::Fwd, 150, &rig))

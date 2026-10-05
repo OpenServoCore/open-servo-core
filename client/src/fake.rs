@@ -16,30 +16,12 @@ pub use osc_integration::sim::TelSample;
 /// back like a servo that left the bench calibrated, identified and
 /// stamped, instead of "not calibrated".
 pub mod seed {
-    use osc_integration::sim::{CalibSense, CalibSenseExt};
+    use osc_integration::sim::{CalibSense, CalibSenseExt, DEV_V006_SENSE, DEV_V006_SENSE_EXT};
 
     /// Board data, stamped by install at every bringup (the osc-dev-v006
     /// app's `Calibration`) - RO in the table, so FACTORY never moves it.
-    pub const SENSE: CalibSense = CalibSense {
-        shunt_r_mohm: 60,
-        gain_milli: 15_000,
-        vmotor_div_top: 6_800,
-        vmotor_div_bot: 3_300,
-        vdd_mv: 3_300,
-        tick_hz: 20_000,
-        i_window_min_ticks: 160,
-        v_window_min_ticks: 160,
-    };
-
-    pub const SENSE_EXT: CalibSenseExt = CalibSenseExt {
-        vbus_div_top_ohm: 15_000,
-        vbus_div_bot_ohm: 10_000,
-        ntc_pullup_ohm: 10_000,
-        ntc_r25_ohm: 10_000,
-        ntc_beta: 3950,
-        vmotor_bias_nom_counts: 779,
-        rail_drop_mv: 250,
-    };
+    pub const SENSE: CalibSense = DEV_V006_SENSE;
+    pub const SENSE_EXT: CalibSenseExt = DEV_V006_SENSE_EXT;
 
     // Table state a bench calibration wrote and SAVEd: the CALIB region and
     // the CONFIG travel limits. FACTORY wipes every one of them.
