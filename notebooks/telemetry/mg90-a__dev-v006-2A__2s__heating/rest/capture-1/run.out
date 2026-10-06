@@ -1,0 +1,21 @@
+[      9 s] meter: (1791268452.026582, 'C', 26.2)
+[      9 s] battery ok: rail 7.88 V (raw 1957)
+[     10 s] battery ok: rail 7.88 V (raw 1956)
+[     31 s] burst 0 ref: R 4.704 ohm, can 26.2 C, T(R) None C, rc 0, 21 s
+[     77 s] battery ok: rail 7.89 V (raw 1958)
+[     96 s] burst 1 ref: R 4.816 ohm, can 26.2 C, T(R) None C, rc 0, 20 s
+[    142 s] battery ok: rail 7.84 V (raw 1947)
+[    162 s] burst 2 ref: R 4.725 ohm, can 26.2 C, T(R) None C, rc 0, 20 s
+[    208 s] battery ok: rail 7.88 V (raw 1955)
+[    228 s] burst 3 ref: R 4.836 ohm, can 26.25 C, T(R) None C, rc 0, 20 s
+[    274 s] battery ok: rail 7.86 V (raw 1950)
+[    293 s] burst 4 ref: R 4.675 ohm, can 26.3 C, T(R) None C, rc 0, 19 s
+[    339 s] R_ref bursts [4.704, 4.816, 4.725, 4.836, 4.675]: median 4.7250, mean 4.7512, sd 0.0709 ohm
+[    339 s] R_ref 4.7250 ohm at T_ref 26.23 C
+[    339 s] battery ok: rail 7.88 V (raw 1955)
+centred: pos 2018 (target 2045); torque_enable off
+[    339 s] heat0.3W: limit 280, target i_rms 0.232 A (0.255 W at R_ref), dither from 20% at 2045+/-150
+[    365 s] STOP: heater: pos 2754 left mid travel
+centred: pos 2070 (target 2045); torque_enable off
+[    366 s] end: limits 280/280, torque off, rail 7.88 V
+exit 0

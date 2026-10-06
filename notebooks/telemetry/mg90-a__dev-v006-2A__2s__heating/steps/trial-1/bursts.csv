@@ -1,0 +1,2 @@
+k,phase,t_s,unix,can_c,vbus_raw,rail_v,wave_r_ohm,wave_r_sd_ohm,l_mh,v0_v,slope_ohm,v_over_i_ohm,verdict,t_from_r,t_minus_can,dir
+0,heat0.3W,70.5,1791273108.1,28.3,1907,7.682,4.885,0.044,0.785,-0.176,5.256,4.841,declined,35.06,6.76,1791273108

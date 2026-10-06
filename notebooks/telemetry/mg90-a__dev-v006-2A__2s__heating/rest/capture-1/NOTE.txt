@@ -1,0 +1,9 @@
+D6b STOPPED at 365 s, 26 s into the 0.3 W block: "heater: pos 2754 left mid travel" (ABORT_SPAN 700 from 2045).
+Cause: one 75 ms host stall (heater.csv 365.181 -> 365.256) at 36% amplitude. The reversal came late, the shaft
+ran ~450 counts past +150 and tripped the position guard. No current trip, no fault.
+End state (script finally): centred pos 2070, torque off, limits 280/280, rail 7.88 V.
+R_ref from this run is good: 5 rest bursts 4.704/4.816/4.725/4.836/4.675, median 4.725 ohm at 26.23 C.
+Fix before a rerun (scratchpad/sp/heat2.py): cap D_MAX near 30% (36% already drew ~0.2 A rms; the 280 limiter
+holds the mean anyway) and/or ABORT_SPAN 1000 (mid 2045 +/- 1000 = 1045..3045, inside soft 490..3601), or
+reverse on predicted position (pos + v x 80 ms). Rerun: heat2.py OUT --ref 0 --rref 4.725 --tref 26.23 after
+>= 15 min rest, or --ref 5 for a fresh reference.

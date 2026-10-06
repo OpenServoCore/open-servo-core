@@ -1,0 +1,11 @@
+[      9 s] meter: (1791273047.0073369, 'C', 26.8)
+[     10 s] battery ok: rail 7.68 V (raw 1907)
+[     10 s] R_ref 4.7250 ohm at T_ref 26.23 C
+[     10 s] battery ok: rail 7.68 V (raw 1907)
+[     10 s] heat0.3W: limit 280, target i_rms 0.232 A (0.255 W at R_ref), position steps 2045+/-150, period 250 ms adaptive
+[     70 s] heat0.3W: i_rms 0.189 A, |i| mean 0.171 A, P(I2R_ref) 0.170 W, period 80 ms, pos 1845..2157, |duty applied| 13.1%, can 28.1 C
+[     71 s] battery ok: rail 7.68 V (raw 1907)
+[     90 s] burst 0 heat0.3W: R 4.885 ohm, can 28.3 C, T(R) 35.06 C, rc 0, 20 s
+[     91 s] heat0.3W ends after 1.3 min (time); can 26.8 -> 28.5 C
+[     92 s] cool0.3W done after 0.0 min, can 28.5 C
+[     92 s] end: limits 280/280, torque off, rail 7.71 V

@@ -1,0 +1,47 @@
+[      9 s] meter: (1791269022.974248, 'C', 29.1)
+[     10 s] battery ok: rail 7.87 V (raw 1953)
+[     10 s] R_ref 4.7250 ohm at T_ref 26.23 C
+[    314 s] prewait done after 5.1 min: can 26.5 C (wanted <= 26.5)
+[    314 s] battery ok: rail 7.82 V (raw 1942)
+centred: pos 2026 (target 2045); torque_enable off
+[    314 s] heat0.3W: limit 280, target i_rms 0.232 A (0.255 W at R_ref), dither from 20% at 2045+/-100
+[    434 s] heat0.3W: i_rms 0.221 A, |i| mean 0.219 A, P(I2R_ref) 0.231 W, amp 30%, |duty applied| 20.6%, can 31.3 C
+[    434 s] battery ok: rail 7.81 V (raw 1940)
+[    455 s] burst 0 heat0.3W: R 5.39 ohm, can 31.35 C, T(R) 62.93 C, rc 0, 20 s
+[    575 s] heat0.3W: i_rms 0.223 A, |i| mean 0.221 A, P(I2R_ref) 0.235 W, amp 30%, |duty applied| 20.7%, can 33.3 C
+[    576 s] battery ok: rail 7.81 V (raw 1940)
+[    595 s] burst 1 heat0.3W: R 5.074 ohm, can 33.2 C, T(R) 45.49 C, rc 0, 20 s
+[    716 s] heat0.3W: i_rms 0.227 A, |i| mean 0.225 A, P(I2R_ref) 0.244 W, amp 30%, |duty applied| 19.9%, can 33.8 C
+[    716 s] battery ok: rail 7.79 V (raw 1934)
+[    737 s] burst 2 heat0.3W: R 5.103 ohm, can 33.7 C, T(R) 47.09 C, rc 0, 20 s
+[    857 s] heat0.3W: i_rms 0.229 A, |i| mean 0.228 A, P(I2R_ref) 0.248 W, amp 30%, |duty applied| 19.5%, can 34.0 C
+[    858 s] battery ok: rail 7.78 V (raw 1931)
+[    878 s] burst 3 heat0.3W: R 5.171 ohm, can 33.85 C, T(R) 50.84 C, rc 0, 20 s
+[    999 s] heat0.3W: i_rms 0.229 A, |i| mean 0.227 A, P(I2R_ref) 0.247 W, amp 30%, |duty applied| 19.6%, can 34.1 C
+[    999 s] battery ok: rail 7.77 V (raw 1929)
+[   1019 s] burst 4 heat0.3W: R 4.921 ohm, can 33.95 C, T(R) 37.05 C, rc 0, 20 s
+[   1140 s] heat0.3W: i_rms 0.229 A, |i| mean 0.228 A, P(I2R_ref) 0.249 W, amp 30%, |duty applied| 19.5%, can 34.1 C
+[   1140 s] battery ok: rail 7.75 V (raw 1925)
+[   1160 s] burst 5 heat0.3W: R 5.152 ohm, can 34.0 C, T(R) 49.79 C, rc 0, 20 s
+[   1281 s] heat0.3W: i_rms 0.230 A, |i| mean 0.229 A, P(I2R_ref) 0.250 W, amp 30%, |duty applied| 19.4%, can 34.2 C
+[   1282 s] battery ok: rail 7.76 V (raw 1926)
+[   1302 s] burst 6 heat0.3W: R 5.017 ohm, can 34.05 C, T(R) 42.34 C, rc 0, 20 s
+[   1423 s] heat0.3W: i_rms 0.229 A, |i| mean 0.228 A, P(I2R_ref) 0.249 W, amp 30%, |duty applied| 19.5%, can 34.2 C
+[   1423 s] battery ok: rail 7.73 V (raw 1920)
+[   1444 s] burst 7 heat0.3W: R 4.939 ohm, can 34.1 C, T(R) 38.04 C, rc 0, 21 s
+[   1564 s] heat0.3W: i_rms 0.231 A, |i| mean 0.230 A, P(I2R_ref) 0.253 W, amp 30%, |duty applied| 19.3%, can 34.2 C
+[   1565 s] battery ok: rail 7.72 V (raw 1917)
+[   1585 s] burst 8 heat0.3W: R 4.926 ohm, can 34.05 C, T(R) 37.32 C, rc 0, 20 s
+[   1706 s] heat0.3W: i_rms 0.231 A, |i| mean 0.229 A, P(I2R_ref) 0.251 W, amp 30%, |duty applied| 19.4%, can 34.2 C
+[   1706 s] battery ok: rail 7.72 V (raw 1916)
+[   1726 s] burst 9 heat0.3W: R 5.156 ohm, can 34.05 C, T(R) 50.01 C, rc 0, 20 s
+[   1847 s] heat0.3W: i_rms 0.230 A, |i| mean 0.228 A, P(I2R_ref) 0.250 W, amp 30%, |duty applied| 19.5%, can 34.2 C
+[   1847 s] battery ok: rail 7.71 V (raw 1913)
+[   1868 s] burst 10 heat0.3W: R 4.972 ohm, can 34.15 C, T(R) 39.86 C, rc 0, 20 s
+[   1988 s] heat0.3W: i_rms 0.230 A, |i| mean 0.229 A, P(I2R_ref) 0.250 W, amp 30%, |duty applied| 19.4%, can 34.3 C
+[   1989 s] battery ok: rail 7.75 V (raw 1923)
+[   2010 s] burst 11 heat0.3W: R 5.089 ohm, can 34.15 C, T(R) 46.32 C, rc 0, 21 s
+[   2035 s] STOP: heater: pos 3351 left mid travel
+centred: pos 2038 (target 2045); torque_enable off
+[   2037 s] end: limits 280/280, torque off, rail 7.74 V
+exit 0
