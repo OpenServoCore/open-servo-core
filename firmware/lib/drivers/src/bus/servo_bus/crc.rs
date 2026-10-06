@@ -63,7 +63,7 @@ impl<P: Providers> ServoBus<P> {
         loop {
             if let Some(v) = self.crc.result() {
                 let v = match tail {
-                    Some(b) => osc_protocol::crc::osc_crc_continue(v, &[b]),
+                    Some(b) => osc_protocol::crc::osc_crc_byte(v, b),
                     None => v,
                 };
                 return v == wire;

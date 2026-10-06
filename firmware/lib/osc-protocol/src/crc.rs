@@ -1,7 +1,8 @@
 //! Reference osc-CRC-16 (`docs/osc-native-protocol.md` sec 3.2). Servos use the
 //! SPI CRC engine for frame spans; this software flavor covers the odd-byte
-//! tail fold (sec 3.2) and the ENUM slot key (sec 9.2). Bitwise, no table --
-//! smallest code wins.
+//! tail fold (sec 3.2) and the ENUM slot key (sec 9.2). Written bitwise; LLVM
+//! lowers the bit loop to a 512 B byte table at O3. The span routine stays out
+//! of line so the table walk exists once; only the one-byte fold inlines.
 //!
 //! Flavor: **CRC-16/ARC** -- poly `0x8005` reflected (`0xA001`), init `0x0000`,
 //! reflected input and output, no output XOR. Check: `crc("123456789") =
@@ -11,8 +12,10 @@
 
 const POLY_REFLECTED: u16 = 0xA001;
 
+/// Fold one byte into a running CRC. The servo's hot-path tail folds use
+/// this so they stay inline.
 #[inline]
-fn update(mut crc: u16, byte: u8) -> u16 {
+pub fn osc_crc_byte(mut crc: u16, byte: u8) -> u16 {
     crc ^= byte as u16;
     for _ in 0..8 {
         crc = if crc & 1 != 0 {
@@ -34,9 +37,10 @@ pub fn osc_crc(covered: &[u8]) -> u16 {
 /// Accumulate `chunk` into a running CRC -- byte-wise, so chunks may split
 /// anywhere (mirrors the hardware engine spanning DMA arms).
 /// `osc_crc(x) == osc_crc_continue(0, x)`.
+#[inline(never)]
 pub fn osc_crc_continue(mut crc: u16, chunk: &[u8]) -> u16 {
     for &b in chunk {
-        crc = update(crc, b);
+        crc = osc_crc_byte(crc, b);
     }
     crc
 }
@@ -88,6 +92,13 @@ mod tests {
             let crc = osc_crc_continue(osc_crc_continue(0, a), b);
             assert_eq!(crc, whole, "split at {split}");
         }
+    }
+
+    #[test]
+    fn byte_fold_matches_span() {
+        let v = [0x05, 0x07, 0x30, 0x80, 0x01, 0x2C, 0x01];
+        let folded = v.iter().fold(0, |c, &b| osc_crc_byte(c, b));
+        assert_eq!(folded, osc_crc(&v));
     }
 
     #[test]

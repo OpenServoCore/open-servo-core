@@ -6,7 +6,7 @@
 //! fetches just-in-time, so the patch beats the read).
 
 use crate::traits::bus::{CrcEngine, TxWire};
-use osc_protocol::crc::osc_crc_continue;
+use osc_protocol::crc::osc_crc_byte;
 use osc_protocol::reply::FrameBuf;
 use osc_protocol::wire::{self, Id, Inst, ResultCode};
 use osc_servo_core::traits::SendError;
@@ -341,7 +341,7 @@ impl<W: TxWire> TxEngine<W> {
                 // both stable for this exchange; any snapshot copy completed
                 // arms ago (transfer ordering).
                 let v = match self.tail {
-                    Some(b) => osc_crc_continue(v, &[unsafe { *b }]),
+                    Some(b) => osc_crc_byte(v, unsafe { *b }),
                     None => v,
                 };
                 let off = self.crc_off as usize;
