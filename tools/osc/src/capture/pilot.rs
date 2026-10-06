@@ -243,7 +243,7 @@ fn measure_all<S: Servo>(
     Ok(Envelope {
         supply,
         fw,
-        git_sha: sweep::git_sha(),
+        host_git_sha: sweep::HOST_GIT_SHA.into(),
         measured: civil_date(secs),
         seek_pct: p_ok.seek_pct(),
         rule: RULE,

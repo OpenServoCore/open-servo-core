@@ -46,7 +46,8 @@ const HEADER: &str = "\
 pub(crate) struct Envelope {
     pub(crate) supply: Supply,
     pub(crate) fw: u16,
-    pub(crate) git_sha: String,
+    #[serde(alias = "git_sha")]
+    pub(crate) host_git_sha: String,
     pub(crate) measured: String,
     pub(crate) seek_pct: u8,
     /// Free for an envelope that names none: measured before the servo
@@ -494,7 +495,7 @@ pub(super) fn mg90() -> Envelope {
     Envelope {
         supply: Supply::TwoS,
         fw: 64,
-        git_sha: "5ee25770".into(),
+        host_git_sha: "5ee25770".into(),
         measured: civil_date(1_758_758_400),
         seek_pct: 15,
         rule: Rule::Limit,
@@ -600,8 +601,13 @@ mod tests {
         assert!(text.contains("\n[[chains]]\nblock = \"step\"\nchain = \"30@20,coast:400\"\n"));
         assert!(text.is_ascii());
         let back = Envelope::load(&dir).unwrap();
-        std::fs::remove_dir_all(&dir).unwrap();
         assert_eq!(back, env);
+        // an envelope written before the key named the host build
+        assert!(text.contains("\nhost_git_sha = \"5ee25770\"\n"));
+        std::fs::write(&path, text.replace("host_git_sha", "git_sha")).unwrap();
+        let old = Envelope::load(&dir).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(old, env);
     }
 
     /// The runway reads the v_ss lines and the braked stops both ways, and

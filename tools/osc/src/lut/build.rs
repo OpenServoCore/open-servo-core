@@ -99,7 +99,7 @@ pub(crate) fn build(dataset: &Path, stops: Option<(u16, u16)>) -> Result<Built> 
          recording and the unchained drives of the bare sweeps, both directions, calibration points on \
          the stretch >= {} rungs cross",
         env!("CARGO_PKG_VERSION"),
-        crate::sweep::git_sha(),
+        crate::sweep::HOST_GIT_SHA,
         lut::MIN_RUNG_COVER
     );
     let image = build.lut.image(

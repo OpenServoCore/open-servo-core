@@ -268,6 +268,9 @@ mod tests {
         assert_eq!(meta["verify"]["velocity"]["legs_cps"], json!([600, 1200]));
         assert_eq!(meta["result"]["pass"], json!(v.pass));
         assert!(meta["tick_hz"].is_u64() && meta["drive"]["current_limit_counts"] == 280);
+        // the build's commit, never a lookup in whatever repo the run starts in
+        assert_eq!(meta["host_git_sha"], crate::sweep::HOST_GIT_SHA);
+        assert!(meta.get("git_sha").is_none());
         let n = v.current.as_ref().unwrap().steps.len();
         assert_eq!(meta["result"]["current"].as_array().unwrap().len(), n);
 
