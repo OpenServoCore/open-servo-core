@@ -51,7 +51,7 @@ use osc_ident::regs::{calib, config, control};
 use osc_ident::report::{self, PlantInputs, ReportInputs};
 use osc_ident::run::{self as order, Ended, Over, Run, Stage};
 use osc_ident::runway::{Runway, Supply};
-use osc_ident::sources::{self, Source, Winding};
+use osc_ident::sources::{self, HeldR, Source, Winding};
 use params::{
     BiasJson, BreakawayJson, GainJson, InductanceJson, InertiaJson, LadderJson, ParamsFile,
     PlantJson, PotJson, ResistanceJson, RlJson, SenseJson, StoredMotionJson, StoredWindingJson,
@@ -1350,6 +1350,53 @@ fn reuse_note(w: &Winding, why: Over, gates: &str, stale: Option<f64>) -> Vec<St
     lines
 }
 
+/// The R the held route plans from and the line that names its source;
+/// Err is the line that says why the held route is skipped.
+fn held_r(
+    fitted: Option<&InductanceResult>,
+    stored: Option<f64>,
+    sc: &Scales,
+) -> Result<(f64, String), String> {
+    let ohm = |r_vpc: f64| r_vpc / sc.r_vpc(1.0);
+    let declined = match fitted {
+        Some(f) => format!(
+            "the free fit declined on {} ({})",
+            gates(fitted),
+            f.reason()
+        ),
+        None => "the bursts gave nothing to fit".into(),
+    };
+    match sources::held_r(fitted, stored, sc) {
+        Some((r, HeldR::Promoted)) => Ok((
+            r,
+            format!(
+                "[burst, held] hold and stop duties from the free fit's R, {:.2} ohm",
+                ohm(r)
+            ),
+        )),
+        Some((r, HeldR::Stored)) => Ok((
+            r,
+            format!(
+                "[burst, held] {declined}: hold and stop duties from the R stored on the servo, \
+                 {:.2} ohm",
+                ohm(r)
+            ),
+        )),
+        Some((r, HeldR::Declined)) => Ok((
+            r,
+            format!(
+                "[burst, held] {declined} and nothing is stored on the servo: hold and stop \
+                 duties from the fit's own waveform R, {:.2} ohm",
+                ohm(r)
+            ),
+        )),
+        None => Err(format!(
+            "[burst, held] skipped: no winding R to size the hold and stop duties ({declined}, \
+             nothing is stored on the servo, and the fit has no waveform R)"
+        )),
+    }
+}
+
 /// The stall-safe duties every drive from here plans with.
 fn say_plan(plan: &DutyPlan, lim: &ServoLimits) {
     println!(
@@ -1453,12 +1500,17 @@ impl Recorded {
                 self.notes.extend(notes);
                 let at = FitCfg::default().with_limit(d.lim.i_lim as f64 * d.sc.amps_per_count);
                 let fitted = fit_captures(&self.caps, &d.sc, &at);
-                let w = sources::winding(fitted.as_ref(), None, Some(&d.sc), cli.l_henries);
-                if let (Some(w), Some(stops), Until::Burst) = (w, cli.burst_stops, until) {
-                    let plan = DutyPlan::new(&d.lim, w.r_vpc, None);
-                    let (caps, notes) = run_held(cli, c, id, out, stops, &plan, w.r_vpc)?;
-                    self.caps.extend(caps);
-                    self.notes.extend(notes);
+                if let (Some(stops), Until::Burst) = (cli.burst_stops, until) {
+                    match held_r(fitted.as_ref(), d.lim.r_vpc(), &d.sc) {
+                        Ok((r_vpc, line)) => {
+                            println!("{line}");
+                            let plan = DutyPlan::new(&d.lim, r_vpc, None);
+                            let (caps, notes) = run_held(cli, c, id, out, stops, &plan, r_vpc)?;
+                            self.caps.extend(caps);
+                            self.notes.extend(notes);
+                        }
+                        Err(line) => println!("{line}"),
+                    }
                 }
                 csvio::write_bursts(out, &self.caps)?;
                 let mut fitted = fit_captures(&self.caps, &d.sc, &at);
@@ -2366,6 +2418,77 @@ mod tests {
                  stop ladder has no room on this supply (the servo reads current and terminal \
                  voltage from 13.3% duty, the current limit allows 15.5% at a stop), so the run uses"
         ));
+    }
+
+    /// A free fit that declines on the fake servo, its bursts blind to the
+    /// driven terminal: the held route sizes its duties from the R the
+    /// servo stores and says so, the duties inside the limit by that R;
+    /// with nothing stored it says it is skipped and why.
+    #[test]
+    fn a_declined_free_fit_names_the_held_routes_r_or_why_it_is_skipped() {
+        use osc_ident::exp::testkit::{FakeServo, board_d_scales, pump, rig};
+        let sc = board_d_scales();
+        let i_lim_a = 280.0 * sc.amps_per_count;
+        let mut servo = FakeServo::new(7270.0 / 4096.0);
+        servo.dynamic = true;
+        let cfg = InductanceCfg {
+            repeats: 1,
+            i_max_a: 1.0,
+            chans: Chans::Fixed(0),
+            fit: FitCfg::default().with_limit(i_lim_a),
+            ..InductanceCfg::default()
+        };
+        let mut e8 = Guarded::new(Inductance::new(cfg, &rig(), sc), rig());
+        pump(&mut e8, &mut servo, 200_000);
+        let fit = e8.into_inner().fit().expect("the bursts fit");
+        assert!(!fit.promotable());
+
+        let stored = 7270.0 / 4096.0;
+        let (r, line) = held_r(Some(&fit), Some(stored), &sc).expect("the stored R");
+        assert_eq!(r, stored);
+        assert_eq!(
+            line,
+            format!(
+                "[burst, held] the free fit declined on waveform (no capture from rest sampled \
+                 the driven terminal): hold and stop duties from the R stored on the servo, \
+                 {:.2} ohm",
+                stored / sc.r_vpc(1.0)
+            )
+        );
+        let lim = ServoLimits {
+            i_lim: 280,
+            stall_yield: 168,
+            tau_trip: 280,
+            soft: (432, 3626),
+            phys: (209, 3849),
+            raw: (209, 3849),
+            r_q12: 7270,
+            vbus: 3204,
+            window_floor_q15: 4356,
+            window_v_floor_q15: 4356,
+            amps_per_count: sc.amps_per_count,
+            drive_polarity: true,
+        };
+        assert_eq!(lim.r_vpc(), Some(stored));
+        let plan = DutyPlan::new(&lim, r, None);
+        for duty in [plan.hold, plan.stop_cap] {
+            assert!(lim.check_stall_at("held", q15_floor(duty), r).is_ok());
+        }
+
+        assert_eq!(
+            held_r(Some(&fit), None, &sc),
+            Err(
+                "[burst, held] skipped: no winding R to size the hold and stop duties (the free \
+                 fit declined on waveform (no capture from rest sampled the driven terminal), \
+                 nothing is stored on the servo, and the fit has no waveform R)"
+                    .into()
+            )
+        );
+        assert!(
+            held_r(None, None, &sc)
+                .unwrap_err()
+                .contains("(the bursts gave nothing to fit, nothing is stored")
+        );
     }
 
     /// The rest of a run as it lands on disk: ladder rungs on a winding of

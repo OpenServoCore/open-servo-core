@@ -637,4 +637,44 @@ mod tests {
             assert!(!s.torque);
         }
     }
+
+    /// The bench MG90 parked 15 counts off either stop, as the bench left
+    /// it at pos 298 over a low stop of 283: the jam check's first drive
+    /// points at mid travel, raises to leave the stop the 9.5% start
+    /// cannot break out of, then nudges out and back. It never presses the
+    /// stop it starts at.
+    #[test]
+    fn a_jam_check_from_a_rail_leaves_it_toward_mid_travel() {
+        for (start, toward) in [(224.0, 1), (3834.0, -1)] {
+            let mut s = bench_mg90(3204);
+            s.pos = start;
+            let params = RigParams::new(Some((532, 3526)), 350).with_stops((209, 3849));
+            let cfg = CentreCfg {
+                duty_q15: 3119,
+                cap_q15: 8290,
+                nudge: true,
+                ..CentreCfg::default()
+            };
+            let mut exp = Guarded::new(Centre::new(cfg, &params), params.without_pos_guard());
+            let log = pump(&mut exp, &mut s, 100_000);
+            assert_eq!(exp.abort(), None, "{start}");
+            let mut d = duties(&log);
+            d.dedup();
+            assert_eq!(
+                d[..2],
+                [toward * 3119, toward * (3119 + SEEK_STEP_Q15 as i32)]
+            );
+            assert!(
+                d.contains(&(-toward * (3119 + SEEK_STEP_Q15 as i32))),
+                "{d:?}"
+            );
+            assert_eq!(s.pressed_ms, 0.0, "{start}");
+            let exp = exp.into_inner();
+            assert!(exp.arrived());
+            assert_eq!(
+                exp.moved_at(),
+                Some((3119 + SEEK_STEP_Q15) as f64 / 32767.0)
+            );
+        }
+    }
 }
