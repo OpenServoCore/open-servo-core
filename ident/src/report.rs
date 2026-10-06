@@ -225,6 +225,15 @@ pub fn render(r: &ReportInputs<'_>) -> String {
                 "  Ke            {:.5} vcounts per c/s (r2 {:.4}, n={})",
                 x.ke.ke_vpc, x.ke.r2, x.ke.n
             );
+            if x.ke.left_out > 0 {
+                let _ = writeln!(
+                    s,
+                    "  knee          {} faster rung(s) left out: the plant needs up to {:+.1}% \
+                     more volts per speed than the drive model above the fit's band",
+                    x.ke.left_out,
+                    x.ke.excess_top * 100.0
+                );
+            }
             let _ = match x.servo {
                 ServoCheck::Compared { off } => writeln!(
                     s,
