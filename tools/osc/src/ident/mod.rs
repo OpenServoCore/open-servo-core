@@ -27,7 +27,7 @@ use osc_ident::burst::{Capture, Chans};
 use osc_ident::exp::bias::{Bias, BiasCfg, BiasResult};
 use osc_ident::exp::breakaway::{Breakaway, BreakawayCfg, BreakawayResult};
 use osc_ident::exp::centre::{Centre, CentreCfg};
-use osc_ident::exp::held::{Held, HeldCfg, Stops};
+use osc_ident::exp::held::{HELD_STEP_MIN_PCT, Held, HeldCfg, NoHeldRoom, Stops, held_steps};
 use osc_ident::exp::inductance::{
     Cfg as InductanceCfg, FitCfg, Inductance, InductanceResult, fit_captures,
 };
@@ -905,8 +905,9 @@ fn burst_base(cli: &Ctx) -> InductanceCfg {
 }
 
 /// The held route at the stops --burst-stops names, at the plan's hold and
-/// under its stop cap. Stalling a stop is the method, so it never runs
-/// unless asked.
+/// two step duties up to its stop cap ([`held_steps`]); skipped before
+/// seating when the limit leaves no room for two. Stalling a stop is the
+/// method, so it never runs unless asked.
 fn run_held(
     cli: &Ctx,
     c: &mut Client<NusbPipe>,
@@ -918,10 +919,20 @@ fn run_held(
 ) -> Result<(Vec<Capture>, Vec<String>)> {
     let d = drive(cli)?;
     let hold = cli.burst_hold_pct.unwrap_or(pct_floor(plan.hold));
-    let steps = cli
-        .burst_pct
-        .clone()
-        .unwrap_or_else(|| vec![pct_floor(plan.stop_cap)]);
+    let steps = match (&cli.burst_pct, held_steps(plan, hold)) {
+        (Some(asked), _) => asked.clone(),
+        (None, Ok(planned)) => planned.to_vec(),
+        (None, Err(NoHeldRoom { hold_pct, cap_pct })) => {
+            println!(
+                "[burst, held] skipped before seating: the held route cannot resolve R under \
+                 this limit of {}; it needs two step duties from {HELD_STEP_MIN_PCT}%, the \
+                 shortest ON window a burst reads, up to the stop cap of {cap_pct}% over the \
+                 {hold_pct}% hold",
+                d.lim.ma().of(d.lim.i_lim as f64)
+            );
+            return Ok((Vec::new(), Vec::new()));
+        }
+    };
     let q = |p: u8| (p as i32 * Q15 as i32 / 100) as i16;
     d.lim
         .check_stall_at("the burst's hold against the stop", q(hold), r_vpc)?;
