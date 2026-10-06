@@ -76,7 +76,7 @@ impl KernelConfig {
                 (&raw const (*p).calib.motor).read_volatile(),
             )
         };
-        let ms_to_ticks = |ms: u16| q_mul_u(ms as u32, timing.med_ticks_per_ms_q16, 16);
+        let ms_to_ticks = |ms: u16| q_mul_u(ms as u32, timing.ticks_per_ms_q16, 16);
         Self {
             fast: FastConfig {
                 i_window_min_ticks: sense.i_window_min_ticks,
@@ -120,7 +120,6 @@ impl KernelConfig {
                     accel_limit_q88: loop_pos.accel_limit_q88,
                     pos_min_soft_counts: pos_lim.pos_min_soft_counts,
                     pos_max_soft_counts: pos_lim.pos_max_soft_counts,
-                    dt_med_q32: timing.dt_med_q32,
                 },
                 position: PositionCfg {
                     kp_q88: loop_pos.p_kp_q88,

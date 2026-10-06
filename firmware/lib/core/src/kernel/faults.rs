@@ -150,11 +150,12 @@ impl Detectors {
         }
     }
 
-    /// MEDIUM: tracking-error persistence; trips after `trip_ticks`
-    /// consecutive over-threshold medium ticks.
-    pub fn pos_err_sample(&mut self, over: bool, trip_ticks: u32) -> bool {
+    /// MEDIUM: tracking-error persistence; trips once `trip_ticks` of
+    /// elapsed time (`ticks` per step) pass over the threshold without a
+    /// break.
+    pub fn pos_err_sample(&mut self, over: bool, ticks: u32, trip_ticks: u32) -> bool {
         if over {
-            self.pos_err_ticks = self.pos_err_ticks.saturating_add(1);
+            self.pos_err_ticks = self.pos_err_ticks.saturating_add(ticks);
             self.pos_err_ticks >= trip_ticks
         } else {
             self.pos_err_ticks = 0;
@@ -235,12 +236,18 @@ mod tests {
     fn pos_err_timer() {
         let mut d = Detectors::new();
         for _ in 0..9 {
-            assert!(!d.pos_err_sample(true, 10));
+            assert!(!d.pos_err_sample(true, 1, 10));
         }
-        assert!(!d.pos_err_sample(false, 10));
+        assert!(!d.pos_err_sample(false, 1, 10));
         for _ in 0..9 {
-            assert!(!d.pos_err_sample(true, 10));
+            assert!(!d.pos_err_sample(true, 1, 10));
         }
-        assert!(d.pos_err_sample(true, 10));
+        assert!(d.pos_err_sample(true, 1, 10));
+        // elapsed time: steps that lost ticks reach the trip in fewer
+        let mut d = Detectors::new();
+        for _ in 0..3 {
+            assert!(!d.pos_err_sample(true, 3, 10));
+        }
+        assert!(d.pos_err_sample(true, 3, 10));
     }
 }

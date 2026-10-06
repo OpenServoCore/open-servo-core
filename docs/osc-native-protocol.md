@@ -1126,17 +1126,22 @@ transaction are normal; a kernel that overruns by itself shows hundreds
 per second. A tick counts as lost when the interrupt runs a whole
 period or more behind schedule, judged once per 16 ticks: a late window
 that the next one catches up costs nothing, and one window counts at
-most 16. Every host frame costs one or two lost ticks as well: the
+most 16. Every host frame costs one to four lost ticks as well: the
 transport serves a frame above the kernel in one piece, break wake,
-dispatch, verdict, reply trigger and commit, 80 to 160 us at 48 MHz,
+dispatch, verdict, reply trigger and commit, 130 to 230 us at 48 MHz,
 and the scan that completes under that service merges its pending flag
 with the next. A TEL burst (sec 5.6) costs neither: its frames leave
 from the tick and their arm completions are short. The kernel itself
 never loses a tick, so a ladder's `tick_lost_count` reads as the number
-of host frames it received, within a factor of two. Both counters
-update every 16 ticks (0.8 ms), the mean every 4096. No kernel tick runs during a shunt burst (sec 5.8); the ticks
-before it that did not fill a 16-tick window count toward neither
-counter, and the first window after it counts no lost ticks.
+of host frames it received, within a factor of four. The kernel takes
+the same count at each window close and integrates its time-dependent
+phases over the elapsed periods, so a lost tick dilates nothing that
+moves (control-theory, the cascade); the sample-rate quantities count
+executed ticks, and `sample_tick` stays the count of ticks that ran.
+Both counters update every 16 ticks (0.8 ms), the mean every 4096. No
+kernel tick runs during a shunt burst (sec 5.8); the ticks before it
+that did not fill a 16-tick window count toward neither counter, and
+the first window after it counts no lost ticks.
 Under saturation (back-to-back frames that each cost more HIGH time than
 their wire time) `tick_load_mean_q15` and `tick_over_count` are not
 comparable across firmware images; compare images by the `sample_tick`

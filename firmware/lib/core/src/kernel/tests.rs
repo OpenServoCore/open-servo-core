@@ -25,7 +25,8 @@ const TIMING: KernelTiming = KernelTiming {
     recip_arr_q24: (1 << bemf::RECIP_ARR_SHIFT) / ARR as u32,
     tick_hz: 20_000,
     dt_med_q32: ((1u64 << 32) / 2000) as u32,
-    med_ticks_per_ms_q16: 2 << 16,
+    dt_tick_q32: ((1u64 << 32) / 20_000) as u32,
+    ticks_per_ms_q16: 20 << 16,
     vbus_scale_q15: VBUS_SCALE_Q15,
     bias_brake_min_ticks: 600,
     v_trough_min_ticks: 0,
@@ -2207,8 +2208,9 @@ fn position_step_survives_tick_deletion() {
     });
     let mut k = kernel();
     let mut plant = Plant::new(1000);
-    // ~10% of ISR invocations vanish; the plant keeps running on the stale
-    // duty (tick-indexed contract: dilation, never compensation)
+    // ~10% of ISR invocations vanish unannounced (no lost count, as a
+    // chip that skipped them without stamping would do); the plant keeps
+    // running on the stale duty and the move still settles and parks
     let mut rng: u32 = 0x1357_9bdf;
     for _ in 0..40_000 {
         let f = plant.step(k.fast.duty_q15);
@@ -2310,7 +2312,7 @@ fn first_tick_takes_the_configuration_without_a_write() {
     assert_eq!(sh.config_gen(), k.config_gen, "nothing moved the counter");
     k.on_tick(frame(2000, BIAS), &sh);
     assert_eq!(ol_max(&k), 5000);
-    assert_eq!(k.cfg.medium.limits.stall_time_ticks, 100, "50 ms");
+    assert_eq!(k.cfg.medium.limits.stall_time_ticks, 1000, "50 ms");
     assert_eq!(
         sh.table.with(|t| t.telemetry.limits.window_floor_q15),
         k.cfg.fast.ol_floor_q15
@@ -2600,9 +2602,9 @@ fn the_slow_block_runs_every_32_periods() {
     let mut n = 0;
     for tick in 0..4 * DECIM_SLOW as u32 * DECIM_MED as u32 {
         let next = k.phase;
-        let before = k.medium.decim_slow;
+        let before = k.medium.slow_ticks;
         k.on_tick(f, &sh);
-        if k.medium.decim_slow != before && k.medium.decim_slow == 0 {
+        if k.medium.slow_ticks < before {
             assert_eq!(next, phase::SLOW, "tick {tick}");
             runs[n] = tick;
             n += 1;
@@ -2611,5 +2613,377 @@ fn the_slow_block_runs_every_32_periods() {
     assert_eq!(n, 4);
     for w in runs.windows(2) {
         assert_eq!(w[1] - w[0], DECIM_SLOW as u32 * DECIM_MED as u32);
+    }
+}
+
+// --- Elapsed time -----------------------------------------------------------
+
+/// The kernel period on the wall, us.
+const TICK_US: u32 = 50;
+/// The kernel tick body under drive, us (bench: 30-45 us with the velocity
+/// loop, observer and aggregate phases).
+const TICK_BODY_US: u32 = 35;
+
+/// The transport's one-piece frame service above the kernel: the break
+/// wake, then one SysTick body (framer, dispatch, verdict, reply trigger,
+/// commit), both PFIC HIGH, so a scan completing under it pends and merges
+/// with the next.
+#[derive(Copy, Clone)]
+struct FrameService {
+    break_us: u32,
+    body_us: u32,
+}
+
+impl FrameService {
+    fn len(&self) -> u32 {
+        self.break_us + self.body_us
+    }
+}
+
+/// The light and the heavy end of the measured frame service, 130 and 230
+/// us (bench: 80-160 us for a ping, ~130 us fit from 1.24 lost ticks per
+/// frame torque off, the `ident verify` tail at 5-6 lost per frame).
+const FRAME_LIGHT: FrameService = FrameService {
+    break_us: 18,
+    body_us: 112,
+};
+const FRAME_HEAVY: FrameService = FrameService {
+    break_us: 18,
+    body_us: 212,
+};
+
+/// A host polling pattern: `cost` every `period_us`, as a pair `pair_gap_us`
+/// apart when nonzero (verify's two-frame poll, 0.37 ms apart).
+#[derive(Copy, Clone)]
+struct Poll {
+    cost: FrameService,
+    period_us: u32,
+    pair_gap_us: u32,
+}
+
+/// Measured poll shapes: `osc read` at 137 frames/s, a 274 frames/s stream
+/// of heavy frames, and verify's heavy pair at 137 pairs/s.
+const POLLS: [Poll; 3] = [
+    Poll {
+        cost: FRAME_LIGHT,
+        period_us: 7300,
+        pair_gap_us: 0,
+    },
+    Poll {
+        cost: FRAME_HEAVY,
+        period_us: 3650,
+        pair_gap_us: 0,
+    },
+    Poll {
+        cost: FRAME_HEAVY,
+        period_us: 7300,
+        pair_gap_us: 370,
+    },
+];
+
+impl Poll {
+    /// Frame starts around `t`: the period before and the one holding it.
+    fn starts_near(&self, t: u32) -> [u32; 4] {
+        let j = t / self.period_us;
+        let s0 = j.saturating_sub(1) * self.period_us;
+        let s1 = j * self.period_us;
+        [s0, s0 + self.pair_gap_us, s1, s1 + self.pair_gap_us]
+    }
+
+    /// When the CPU is free of a frame body covering `t`: `t` itself when
+    /// none does.
+    fn free_at(&self, t: u32) -> u32 {
+        let mut free = t;
+        for s in self.starts_near(t) {
+            if s <= t && t < s + self.cost.len() {
+                free = free.max(s + self.cost.len());
+            }
+        }
+        free
+    }
+
+    /// The frame service preempting a tick body over `(entry, end)`, us.
+    fn preempting(&self, entry: u32, end: u32) -> u32 {
+        self.starts_near(end)
+            .iter()
+            .filter(|&&s| entry < s && s < end)
+            .map(|_| self.cost.len())
+            .sum()
+    }
+}
+
+/// How the lossy run compares with the wall.
+struct Wall {
+    executed: u32,
+    lost: u32,
+    frames: u32,
+    /// The plant's velocity and the kernel's estimate, summed per wall tick.
+    omega_sum: i64,
+    omega_hat_sum: i64,
+}
+
+/// The chip's accounting window: the lost count reaches the kernel once
+/// per 16 executed ticks, off the tick path.
+const LOST_WINDOW: u32 = 16;
+
+/// Runs the plant on the wall grid for `wall_ticks`. The kernel enters
+/// when the CPU is free of the frame service and of its own previous
+/// body; the scans that completed meanwhile merged into that tick, which
+/// measures the latest of them, as the chip's DMA buffer holds it; the
+/// merged count reaches the kernel at the window close, as the chip's
+/// catch-up does.
+fn run_wall(
+    k: &mut Kernel<FakeIo>,
+    sh: &Shared,
+    plant: &mut Plant,
+    wall_ticks: u32,
+    poll: Option<&Poll>,
+) -> Wall {
+    let mut w = Wall {
+        executed: 0,
+        lost: 0,
+        frames: 0,
+        omega_sum: 0,
+        omega_hat_sum: 0,
+    };
+    let mut pending = 0u16;
+    let mut window_lost = 0u16;
+    let mut tick_end = 0u32;
+    for n in 0..wall_ticks {
+        let t = n * TICK_US;
+        let f = plant.step(k.fast.duty_q15);
+        w.omega_sum += plant.omega_cps as i64;
+        w.omega_hat_sum += k.medium.omega_hat as i64;
+        pending += 1;
+        let entry = match poll {
+            Some(p) => p.free_at(t).max(tick_end),
+            None => t,
+        };
+        if entry >= t + TICK_US {
+            continue;
+        }
+        k.on_tick(f, sh);
+        w.executed += 1;
+        w.lost += (pending - 1) as u32;
+        window_lost += pending - 1;
+        pending = 0;
+        if w.executed.is_multiple_of(LOST_WINDOW) && window_lost != 0 {
+            k.lost_ticks(window_lost);
+            window_lost = 0;
+        }
+        tick_end = entry + TICK_BODY_US;
+        if let Some(p) = poll {
+            tick_end += p.preempting(entry, tick_end);
+        }
+    }
+    if let Some(p) = poll {
+        let per_period = if p.pair_gap_us == 0 { 1 } else { 2 };
+        w.frames = (wall_ticks * TICK_US / p.period_us) * per_period;
+    }
+    w
+}
+
+/// Wall ticks of the cruise the velocity means cover.
+const CRUISE_JUDGED: u32 = 40_000;
+
+/// Position move and velocity cruise under a poll, read at wall times.
+struct Motion {
+    /// Mid-move, position mode: the profile and the estimate.
+    theta_ref_mid: i32,
+    theta_hat_mid: i32,
+    /// The last 2 s of the velocity cruise: the velocity estimate the loop
+    /// closed on and the plant's wall velocity, both c/s Q16 means.
+    omega_hat_end: i32,
+    plant_omega_end: i32,
+    source_end: u8,
+    wall: Wall,
+}
+
+fn motion(poll: Option<&Poll>) -> Motion {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.goal_position = 300;
+        t.config.fault_cfg.pos_error_counts = u16::MAX;
+        t.config.fusion.l3_q88 = 256;
+        t.config.loop_position.p_kp_q88 = 1024;
+        t.config.loop_position.velocity_limit_cps = 1000;
+        t.config.loop_velocity.v_kp_q88 = 32;
+        t.config.loop_velocity.v_ki_q412 = 8;
+        t.calib.motor.b_i_q313 = 0;
+    });
+    // the pot regime the bench ran in: no back-EMF estimate, the loops
+    // close on the observer's omega
+    let mut k = Kernel::new(
+        FakeIo {
+            sensors: FakeSensors,
+            motor: FakeMotor { last: None },
+        },
+        KernelTiming {
+            bemf_min_ticks: u16::MAX,
+            ..TIMING
+        },
+    );
+    let mut plant = Plant::new(300);
+    let mut wall = Wall {
+        executed: 0,
+        lost: 0,
+        frames: 0,
+        omega_sum: 0,
+        omega_hat_sum: 0,
+    };
+    let mut leg = |k: &mut Kernel<FakeIo>, plant: &mut Plant, ticks: u32| -> Wall {
+        let w = run_wall(k, &sh, plant, ticks, poll);
+        wall.executed += w.executed;
+        wall.lost += w.lost;
+        wall.frames += w.frames;
+        w
+    };
+    // settle the hold, then a 3500-count move at 1000 c/s: at 3 s the
+    // profile is still cruising
+    leg(&mut k, &mut plant, 2000);
+    sh.table
+        .with_mut(|t| t.control.lifecycle.goal_position = 3800);
+    leg(&mut k, &mut plant, 60_000);
+    let theta_ref_mid = k.medium.traj.theta_star_q16();
+    let theta_hat_mid = k.medium.fusion.theta_q16();
+    // a 6 s velocity cruise back at 400 c/s: the observer's disturbance
+    // state settles on the drive current over seconds, and the velocity
+    // estimate is unbiased only once it has; the last 2 s are judged
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.mode = Mode::Velocity;
+        t.control.lifecycle.goal_velocity = -400;
+    });
+    leg(&mut k, &mut plant, 80_000);
+    let last = leg(&mut k, &mut plant, CRUISE_JUDGED);
+    assert_eq!(k.faults.mask(), 0);
+    let omega_hat_end = (last.omega_hat_sum / CRUISE_JUDGED as i64) as i32;
+    let plant_omega_end = ((last.omega_sum << 16) / CRUISE_JUDGED as i64) as i32;
+    Motion {
+        theta_ref_mid,
+        theta_hat_mid,
+        omega_hat_end,
+        plant_omega_end,
+        source_end: sh.table.with(|t| t.telemetry.mode.omega_hat_src),
+        wall,
+    }
+}
+
+/// Permille of `a` that `b` is off by.
+fn off_permille(a: i32, b: i32) -> i64 {
+    let a = a as i64;
+    ((b as i64 - a).abs() * 1000 + a.abs() / 2) / a.abs()
+}
+
+/// Under a host poll the kernel loses ticks to the frame service; motion
+/// must still run on the wall: the profile and the estimate at a wall
+/// time match the no-loss run within 0.1%, and the velocity estimate the
+/// loop closes on reads the plant's wall velocity within 0.5%. A kernel
+/// integrating by executed tick runs both slow by the lost share, 2-7% at
+/// these polls.
+#[test]
+fn lost_ticks_keep_motion_wall_true() {
+    let clean = motion(None);
+    assert_eq!(clean.wall.lost, 0);
+    assert_eq!(clean.source_end, OmegaSource::Pot as u8, "the pot regime");
+    for (i, poll) in POLLS.iter().enumerate() {
+        let m = motion(Some(poll));
+        let per_frame = m.wall.lost as f64 / m.wall.frames as f64;
+        assert!(
+            (1.0..=6.0).contains(&per_frame),
+            "poll {i}: {per_frame:.2} lost per frame"
+        );
+        assert_eq!(m.source_end, OmegaSource::Pot as u8, "poll {i}");
+        assert!(
+            off_permille(clean.theta_ref_mid, m.theta_ref_mid) <= 1,
+            "poll {i}: theta_ref {} vs {} clean ({per_frame:.2} lost per frame)",
+            m.theta_ref_mid >> 16,
+            clean.theta_ref_mid >> 16
+        );
+        assert!(
+            off_permille(clean.theta_hat_mid, m.theta_hat_mid) <= 1,
+            "poll {i}: theta_hat {} vs {} clean",
+            m.theta_hat_mid >> 16,
+            clean.theta_hat_mid >> 16
+        );
+        assert!(
+            off_permille(m.plant_omega_end, m.omega_hat_end) <= 5,
+            "poll {i}: omega_hat {} vs plant {} c/s",
+            m.omega_hat_end >> 16,
+            m.plant_omega_end >> 16
+        );
+    }
+}
+
+/// What counts samples keeps counting executed ticks under the same poll:
+/// the medium phase sequence and the identification window.
+#[test]
+fn sample_counting_phases_ignore_lost_ticks() {
+    let sh = Shared::new();
+    ident_setup(&sh);
+    let mut k = kernel();
+    let mut plant = Plant::new(2000);
+    let w = run_wall(&mut k, &sh, &mut plant, 20_000, Some(&POLLS[2]));
+    assert!(w.lost > 400, "{} lost", w.lost);
+    assert_eq!(k.phase, (w.executed % DECIM_MED as u32) as u8);
+    assert_eq!(agg_seq(&sh) as u32, w.executed / 16);
+    assert_ne!(agg_seq(&sh) as u32, 20_000 / 16);
+}
+
+/// A reported lost count reaches the medium step at the next CONTROL
+/// phase, as the whole period's total, saturating at LOST_MAX.
+#[test]
+fn lost_ticks_fold_into_the_next_period_elapsed() {
+    let sh = Shared::new();
+    seed(&sh);
+    let mut k = kernel();
+    let f = frame(2000, BIAS);
+    run_to(&mut k, &sh, f, phase::LIMITS);
+    k.lost_ticks(3);
+    k.on_tick(f, &sh);
+    k.lost_ticks(2);
+    k.on_tick(f, &sh);
+    assert_eq!(k.medium.elapsed.ticks, DECIM_MED as u32, "not yet");
+    run_to(&mut k, &sh, f, phase::CONTROL);
+    k.on_tick(f, &sh);
+    let el = k.medium.elapsed;
+    assert_eq!(el.ticks, DECIM_MED as u32 + 5);
+    assert_eq!(el.dt_q32, TIMING.dt_med_q32 + 5 * TIMING.dt_tick_q32);
+    assert_eq!(el.lost_q16, 5 * TICK_SHARE_Q16);
+    run_to(&mut k, &sh, f, phase::CONTROL);
+    k.on_tick(f, &sh);
+    assert_eq!(k.medium.elapsed.ticks, DECIM_MED as u32, "spent");
+    k.lost_ticks(200);
+    k.lost_ticks(200);
+    run_to(&mut k, &sh, f, phase::CONTROL);
+    k.on_tick(f, &sh);
+    assert_eq!(k.medium.elapsed.ticks, (DECIM_MED + LOST_MAX) as u32);
+}
+
+/// The SLOW block runs on elapsed time: a period that lost six ticks
+/// spans 16, so the 320-tick SLOW period comes round every 20 periods.
+#[test]
+fn the_slow_block_runs_on_elapsed_time() {
+    let sh = Shared::new();
+    seed(&sh);
+    let mut k = kernel();
+    let f = frame(2000, BIAS);
+    let mut runs = [0u32; 4];
+    let mut n = 0;
+    for tick in 0..4 * 20 * DECIM_MED as u32 {
+        if k.phase == phase::CONTROL {
+            k.lost_ticks(6);
+        }
+        let before = k.medium.slow_ticks;
+        k.on_tick(f, &sh);
+        if k.medium.slow_ticks < before {
+            runs[n] = tick;
+            n += 1;
+        }
+    }
+    assert_eq!(n, 4);
+    for w in runs.windows(2) {
+        assert_eq!(w[1] - w[0], 20 * DECIM_MED as u32);
     }
 }

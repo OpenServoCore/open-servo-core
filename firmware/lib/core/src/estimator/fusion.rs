@@ -11,6 +11,7 @@
 //! linearized pot in Q4 (`pos_lut` module), so theta is in linearized
 //! counts; at identity `(raw << 4) << 12 == raw << 16`, bit-identical.
 
+use crate::kernel::Elapsed;
 use crate::math::q_mul;
 use crate::pos_lut::GRID_SHIFT;
 
@@ -91,14 +92,14 @@ impl FusionObs {
         self.tau_d_q16 = 0;
     }
 
-    /// One MEDIUM-tick predict+correct. `i_counts` is the caller's held
-    /// current: the last window-valid measurement, 0 once nothing drives -
-    /// the observer never sees the validity flag. `dt_med_q32` = 2^32 /
-    /// MED_HZ (MED_HZ >= 2 keeps it under 2^31, so the i32 cast is
-    /// value-preserving).
-    pub fn step(&mut self, i_counts: i32, pos_q4: u16, dt_med_q32: u32, gains: &FusionGains) {
-        // Predict. b_i is Q3.13 of B (c/s per ccount per tick), so the
-        // shift-0 product lands in csQ13; the << 3 to csQ16 saturates only
+    /// One MEDIUM step: predict over `el`, correct on this sample.
+    /// `i_counts` is the caller's held current: the last window-valid
+    /// measurement, 0 once nothing drives - the observer never sees the
+    /// validity flag.
+    pub fn step(&mut self, i_counts: i32, pos_q4: u16, el: &Elapsed, gains: &FusionGains) {
+        // Predict. b_i is Q3.13 of B (c/s per ccount per period), so the
+        // shift-0 product lands in csQ13, grown by the step's lost share
+        // (< 2^29 x 1.6 < 2^31, exact); the << 3 to csQ16 saturates only
         // beyond omega full scale (ACCEL_LIM_CC keeps the product itself
         // i32-exact). Saturating subs guard a hostile i_counts, everything
         // downstream is clamp-bounded.
@@ -107,14 +108,16 @@ impl FusionObs {
             .saturating_sub(fric)
             .saturating_sub(self.tau_d_q16 >> 16)
             .clamp(-ACCEL_LIM_CC, ACCEL_LIM_CC);
+        let d_omega = q_mul(gains.b_i_q313 as i32, accel, 0);
+        let d_omega = d_omega + q_mul(d_omega, el.lost_q16 as i32, 16);
         self.omega_q16 = self
             .omega_q16
-            .saturating_add(q_mul(gains.b_i_q313 as i32, accel, 0).saturating_mul(1 << 3))
+            .saturating_add(d_omega.saturating_mul(1 << 3))
             .clamp(-OMEGA_LIM_CSQ16, OMEGA_LIM_CSQ16);
-        // |omega| <= 2^31, dt < 2^31 -> |delta| < 2^30
+        // |omega| <= 2^31, dt < 2^23 -> |delta| < 2^22
         self.theta_q16 = self
             .theta_q16
-            .saturating_add(q_mul(self.omega_q16, dt_med_q32 as i32, 32))
+            .saturating_add(q_mul(self.omega_q16, el.dt_q32 as i32, 32))
             .clamp(-THETA_LIM_CQ16, THETA_LIM_CQ16);
 
         // Correct. Plain sub is safe: 2^28 + 2^29 < 2^31 (theta clamp).
@@ -160,6 +163,13 @@ mod tests {
 
     // 2 kHz MEDIUM rate, matching the kernel's DT_MED_Q32 derivation.
     const DT: u32 = ((1u64 << 32) / 2000) as u32;
+    const DT_TICK: u32 = ((1u64 << 32) / 20_000) as u32;
+    /// The nominal step: ten ticks, nothing lost.
+    const EL: Elapsed = Elapsed {
+        ticks: 10,
+        dt_q32: DT,
+        lost_q16: 0,
+    };
 
     /// The identity's Q4 word for a raw pot count.
     const fn q4(raw: u16) -> u16 {
@@ -203,7 +213,7 @@ mod tests {
         }
         f.seed(q4(2000) + 8);
         assert_eq!(f.theta_q16(), (2000 << 16) + (1 << 15));
-        f.step(0, q4(2000) + 8, DT, &G);
+        f.step(0, q4(2000) + 8, &EL, &G);
         assert_eq!(f.theta_q16(), (2000 << 16) + (1 << 15), "e = 0 holds it");
     }
 
@@ -218,7 +228,7 @@ mod tests {
         let mut f = FusionObs::new();
         f.seed(q4(1990));
         for _ in 0..40000 {
-            f.step(0, q4(2000), DT, &G);
+            f.step(0, q4(2000), &EL, &G);
         }
         assert_eq!(f.theta_q16(), 2000 << 16, "pin");
         assert_eq!(f.omega_q16(), 1964, "pin");
@@ -235,7 +245,7 @@ mod tests {
         // theta advance: 655200 - (1024 * 327 >> 8) = 653892.
         let mut f = FusionObs::new();
         f.seed(q4(2000));
-        f.step(100, q4(2000), DT, &G);
+        f.step(100, q4(2000), &EL, &G);
         assert_eq!(f.omega_q16(), 653892, "pin");
     }
 
@@ -246,7 +256,7 @@ mod tests {
         let mut f = FusionObs::new();
         f.seed(q4(0));
         for n in 1..=3000u16 {
-            f.step(0, q4(n), DT, &G);
+            f.step(0, q4(n), &EL, &G);
         }
         let target = 2000i32 << 16;
         let err = (f.omega_q16() - target).abs();
@@ -262,7 +272,7 @@ mod tests {
         let mut f = FusionObs::new();
         f.seed(q4(2000));
         for _ in 0..20000 {
-            f.step(500, q4(2000), DT, &G);
+            f.step(500, q4(2000), &EL, &G);
         }
         // the live bleed path settles tau_d onto the drive exactly
         assert_eq!(f.tau_d_counts(), 500, "pin");
@@ -279,7 +289,7 @@ mod tests {
         let mut f = FusionObs::new();
         f.seed(q4(2000));
         for n in 0..20000u16 {
-            f.step(500, q4(2000 + n / 16), DT, &g);
+            f.step(500, q4(2000 + n / 16), &EL, &g);
             assert_eq!(f.tau_d_counts(), 0, "step {n}");
         }
         let theta_err = (f.theta_q16() - ((2000 + 19999 / 16) << 16)).abs();
@@ -297,11 +307,36 @@ mod tests {
         let mut f = FusionObs::new();
         f.seed(q4(2048));
         for _ in 0..100 {
-            f.step(0, q4(2048), DT, &g);
+            f.step(0, q4(2048), &EL, &g);
             assert_eq!(f.theta_q16(), 2048 << 16);
             assert_eq!(f.omega_q16(), 0);
             assert_eq!(f.tau_d_counts(), 0);
         }
+    }
+
+    /// A step that lost five ticks spans 1.5 periods: the model's
+    /// acceleration and the travel both grow by the half, then the one
+    /// correction on the sample.
+    #[test]
+    fn a_longer_step_predicts_its_elapsed_time() {
+        let el = Elapsed {
+            ticks: 15,
+            dt_q32: DT + 5 * DT_TICK,
+            lost_q16: 5 * crate::kernel::TICK_SHARE_Q16,
+        };
+        let mut f = FusionObs::new();
+        f.seed(q4(2000));
+        f.step(100, q4(2000), &el, &G);
+        // predict: 1.5 x 655200 = 982800 plus the share's rounding (5 x
+        // 6554 for 32768 on 81900, << 3: +16); theta advances 982816 x
+        // 0.75 ms = 737 q16, and the correct step takes l2 x 737 >> 8 =
+        // 2948 back
+        assert_eq!(f.omega_q16(), 982816 - 2948, "pin");
+        // the nominal step is the nominal step, bit for bit
+        let mut f = FusionObs::new();
+        f.seed(q4(2000));
+        f.step(100, q4(2000), &EL, &G);
+        assert_eq!(f.omega_q16(), 653892);
     }
 
     #[test]
@@ -315,11 +350,17 @@ mod tests {
             l3_q88: u16::MAX,
             fric_fc_counts: u16::MAX,
         };
+        let longest = Elapsed {
+            ticks: 10 + crate::kernel::LOST_MAX as u32,
+            dt_q32: DT + crate::kernel::LOST_MAX as u32 * DT_TICK,
+            lost_q16: crate::kernel::LOST_MAX as u32 * crate::kernel::TICK_SHARE_Q16,
+        };
         let mut f = FusionObs::new();
         for n in 0..2000 {
             let pos = if n & 1 == 0 { 0 } else { 4095 };
             let i = if n & 2 == 0 { i32::MAX } else { i32::MIN };
-            f.step(i, q4(pos), DT, &g);
+            let el = if n & 4 == 0 { EL } else { longest };
+            f.step(i, q4(pos), &el, &g);
             assert!(f.theta_q16().abs() <= THETA_LIM_CQ16);
             assert!(f.omega_q16().abs() <= OMEGA_LIM_CSQ16);
             assert!((f.tau_d_q16).abs() <= TAU_D_LIM_CCQ16);
