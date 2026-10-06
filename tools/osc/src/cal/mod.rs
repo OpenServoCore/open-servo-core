@@ -705,7 +705,8 @@ impl Cal<'_> {
             Stage::Resistance { .. }
             | Stage::Breakaway { .. }
             | Stage::Ladder { .. }
-            | Stage::Inertia { .. } => bail!("osc cal has no {} stage", stage.name()),
+            | Stage::Inertia { .. }
+            | Stage::Anchor { .. } => bail!("osc cal has no {} stage", stage.name()),
         }
         Ok(Ended::Done)
     }

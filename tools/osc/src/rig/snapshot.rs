@@ -26,6 +26,8 @@ pub(crate) const SNAPSHOT_FIELDS: &[(&str, Reg)] = &[
     ("r_q12", calib::R_Q12),
     ("r0_q12", calib::R0_Q12),
     ("t0_cc", calib::T0_CC),
+    ("k_r2t_q88", calib::K_R2T_Q88),
+    ("mu_q016", calib::MU_Q016),
     ("ke_vpc_q", calib::KE_VPC_Q),
     ("recip_ke_q", calib::RECIP_KE_Q),
     ("b_i_q313", calib::B_I_Q313),

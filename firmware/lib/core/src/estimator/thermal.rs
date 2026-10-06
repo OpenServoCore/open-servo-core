@@ -205,6 +205,50 @@ mod tests {
         assert_eq!(th.t_cc(), -22076);
     }
 
+    /// The anchor `osc ident` writes for the bench MG90 on 2S: r0 4310 at
+    /// 26.23 C, copper's handbook line through it (100 x (234.5 + 26.23) /
+    /// 4310 cc per LSB = 1549 in Q8.8), mu 7670 for a 2 s settle at the 280
+    /// limit (125 SLOW samples). Fed the R of a winding 40 C over the
+    /// anchor at the limit's current, the LMS closes most of the gap in
+    /// one settle, settles inside the one-vcount resolution `v_mean` has
+    /// at that current (15 LSB of R, 0.3%), and reads the rise back within
+    /// a degree.
+    #[test]
+    fn copper_anchor_reads_the_rise_through_the_handbook_slope() {
+        const BENCH: ThermAnchor = ThermAnchor {
+            r0_q12: 4310,
+            t0_cc: 2623,
+            k_r2t_q88: 1549,
+            mu_q016: 7670,
+        };
+        // the 150 mA class floor on the bench chain, under the limit
+        let gates = ThermGates {
+            i_min_counts: 167,
+            omega_max_cps: 400,
+        };
+        let i = 280;
+        // 4310 x (1 + 40 / 260.73)
+        let r_hot = 4971i32;
+        let v_mean = q_mul(r_hot, i, 12);
+        let mut th = WindingTherm::new();
+        th.seed(BENCH.r0_q12);
+        for _ in 0..125 {
+            th.step(v_mean, Some(i), 0, &gates, &BENCH);
+        }
+        let gap = r_hot - th.r_q12() as i32;
+        assert!((0..330).contains(&gap), "after one settle the gap is {gap}");
+        let mut t = 0;
+        for _ in 0..1000 {
+            t = th.step(v_mean, Some(i), 0, &gates, &BENCH);
+        }
+        assert!(
+            (r_hot - th.r_q12() as i32).abs() <= 15,
+            "r_hat {} for {r_hot}",
+            th.r_q12()
+        );
+        assert!((t - 6623).abs() <= 100, "reads {t} cc for 66.23 C");
+    }
+
     #[test]
     fn cold_anchor_identity() {
         // R == r0 with a consistent v_mean: e_v = 0, t == t0 exactly

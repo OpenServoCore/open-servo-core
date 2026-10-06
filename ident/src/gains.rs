@@ -198,7 +198,7 @@ pub struct Encoded {
 
 /// physical * scale -> u16 with round-to-nearest, clamp at the u16 rail.
 /// Negative physicals clamp to 0 flagged (every table gain is unsigned).
-fn enc(physical: f64, scale: f64) -> Encoded {
+pub(crate) fn enc(physical: f64, scale: f64) -> Encoded {
     let ideal = physical * scale;
     let (raw, saturated) = if !ideal.is_finite() || ideal < 0.0 {
         (0u16, ideal != 0.0)
