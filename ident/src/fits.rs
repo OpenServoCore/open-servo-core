@@ -27,19 +27,55 @@ pub struct KeFit {
     pub ke_vpc: f64,
     pub r2: f64,
     pub rms: f64,
+    /// Rungs the fit took, the slowest ones up to the knee.
     pub n: usize,
+    /// Rungs above the knee, left out.
+    pub left_out: usize,
+    /// The largest share of volts per speed a left-out rung needs over the
+    /// fit, 0 when every rung was taken.
+    pub excess_top: f64,
 }
 
-/// Origin LS of (v - R*i) vs omega across all rungs, both directions: the
-/// bemf residual after the ohmic drop is Ke * omega through zero.
+/// A rung's own Ke, (v - R i) / omega, within this of the fit over the
+/// slower rungs joins the fit. The MG90 ladder is flat within 2% from 26 to
+/// 40% duty, then needs 5% more volts per speed at 47% and 15% at 64%; an
+/// origin fit over every rung weights by omega squared and hands that to
+/// Ke, 6% high against the coast EMF, and the observer reads low by it at
+/// every duty.
+pub const KE_FLAT_TOL: f64 = 0.03;
+
+/// Origin LS of (v - R*i) vs omega, both directions, walked up from the two
+/// slowest rungs: each faster rung joins while its own Ke sits within
+/// [`KE_FLAT_TOL`] of the fit so far, and the first one that does not ends
+/// the band. Volts per speed the plant needs beyond the drive model above
+/// the knee are reported, never fitted.
 pub fn ke_fit(rungs: &[RungPoint], r_vpc: f64) -> Option<KeFit> {
-    let xy: Vec<(f64, f64)> = rungs.iter().map(|p| (p.omega, p.v - r_vpc * p.i)).collect();
-    let f = origin_ls(&xy)?;
+    let mut xy: Vec<(f64, f64)> = rungs
+        .iter()
+        .map(|p| (p.omega.abs(), (p.v - r_vpc * p.i) * p.omega.signum()))
+        .collect();
+    xy.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut n = 2.min(xy.len());
+    while n < xy.len() {
+        let f = origin_ls(&xy[..n])?;
+        let (w, e) = xy[n];
+        if f.slope <= 0.0 || w <= 0.0 || ((e / w - f.slope) / f.slope).abs() > KE_FLAT_TOL {
+            break;
+        }
+        n += 1;
+    }
+    let f = origin_ls(&xy[..n])?;
+    let excess_top = xy[n..]
+        .iter()
+        .map(|(w, e)| e / w / f.slope - 1.0)
+        .fold(0.0, f64::max);
     Some(KeFit {
         ke_vpc: f.slope,
         r2: f.r2,
         rms: f.rms,
         n: f.n,
+        left_out: xy.len() - n,
+        excess_top,
     })
 }
 
@@ -407,4 +443,87 @@ pub fn b_climb_fit(climbs: &[Climb], p: &InertiaPriors) -> Option<BClimb> {
         sd: stddev(&bs).unwrap_or(0.0),
         n: bs.len(),
     })
+}
+
+#[cfg(test)]
+mod ke_tests {
+    use super::*;
+
+    fn pair(w: f64, i: f64, v: f64) -> [RungPoint; 2] {
+        [1.0, -1.0].map(|s| RungPoint {
+            omega: s * w,
+            i: s * i,
+            v: s * v,
+        })
+    }
+
+    #[test]
+    fn flat_ladder_takes_every_rung() {
+        let (ke, r) = (0.084, 1.04);
+        let pts: Vec<RungPoint> = [4683.0, 6157.0, 7552.0, 8841.0, 10082.0, 11320.0]
+            .iter()
+            .flat_map(|&w| pair(w, 120.0, ke * w + r * 120.0))
+            .collect();
+        let f = ke_fit(&pts, r).unwrap();
+        assert!((f.ke_vpc - ke).abs() < 1e-9, "{}", f.ke_vpc);
+        assert_eq!((f.n, f.left_out), (12, 0));
+        assert_eq!(f.excess_top, 0.0);
+    }
+
+    #[test]
+    fn ke_fit_stops_at_the_knee() {
+        // volts per speed beyond the model growing as the square of the speed
+        // over the three top rungs, the MG90 ladder's shape
+        let (ke, r) = (0.084, 1.04);
+        let pts: Vec<RungPoint> = [4683.0, 6157.0, 7552.0, 8841.0, 10082.0, 11320.0]
+            .iter()
+            .flat_map(|&w| {
+                let x = f64::max((w - 7552.0) / (11320.0 - 7552.0), 0.0);
+                pair(w, 120.0, ke * w + r * 120.0 + 400.0 * x * x)
+            })
+            .collect();
+        let f = ke_fit(&pts, r).unwrap();
+        assert!((f.ke_vpc - ke).abs() < 1e-9, "{}", f.ke_vpc);
+        assert_eq!((f.n, f.left_out), (6, 6));
+        assert!(
+            (f.excess_top - 400.0 / (ke * 11320.0)).abs() < 1e-9,
+            "{}",
+            f.excess_top
+        );
+    }
+
+    /// The MG90 ladder on rev 2A board #1 (ident run 1791265396, rungs.csv),
+    /// R the burst winding 4.64 ohm (1.0386 vcounts/ccount). Over every rung
+    /// the origin fit lands at 0.0900; the coast EMF says 0.0813 per ripple
+    /// count and 0.0838 per linearized pot count. The flat band is 26-40%.
+    #[test]
+    fn mg90_ladder_ke_comes_from_the_flat_band() {
+        let pts = [
+            (4682.851513, 108.344595, 504.812068),
+            (-4580.333915, -109.271084, -504.630136),
+            (6156.841809, 115.107784, 640.349594),
+            (-6058.686622, -118.248322, -640.146978),
+            (7552.125382, 122.363636, 775.442136),
+            (-7534.046148, -124.925926, -775.236521),
+            (8840.676041, 122.966292, 910.651474),
+            (-8881.587330, -131.056338, -910.135971),
+            (10082.450708, 126.803571, 1065.093686),
+            (-10456.812864, -138.396552, -1064.277824),
+            (11320.000897, 134.0, 1238.633754),
+            (-11727.213305, -138.05, -1237.703082),
+        ]
+        .map(|(omega, i, v)| RungPoint { omega, i, v });
+        let f = ke_fit(&pts, 1.0386).unwrap();
+        assert!((f.ke_vpc - 0.0853).abs() < 0.0005, "{}", f.ke_vpc);
+        assert_eq!((f.n, f.left_out), (6, 6));
+        assert!(
+            f.excess_top > 0.12 && f.excess_top < 0.15,
+            "{}",
+            f.excess_top
+        );
+        let all = origin_ls(&pts.map(|p| (p.omega, p.v - 1.0386 * p.i)))
+            .unwrap()
+            .slope;
+        assert!((all - 0.0900).abs() < 0.0005, "{all}");
+    }
 }

@@ -1362,8 +1362,11 @@ mod tests {
             "Ke on the host clock {ke:.5} ({check:?}), on the window counter {old:.5} ({old_check:?})"
         );
         assert!((ke / 0.1444 - 1.0).abs() < 0.02, "Ke {ke}");
+        // the knee walk drops the rungs the slow counter bent most, so the
+        // wrong clock now reads 11% low instead of 16%; still wrong, and
+        // the servo check below still catches it
         assert!(
-            (old / 0.1236 - 1.0).abs() < 0.02,
+            (old / 0.1284 - 1.0).abs() < 0.02,
             "Ke on the window counter {old}"
         );
         let ServoCheck::Compared { off } = check else {
