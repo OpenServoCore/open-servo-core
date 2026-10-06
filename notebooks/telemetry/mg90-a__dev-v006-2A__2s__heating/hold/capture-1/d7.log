@@ -1,0 +1,50 @@
+[    10 s] meter (1791278069.351531, 'C', 27.1)
+[    10 s] battery ok: rail 7.42 V (raw 1843)
+[    12 s] battery ok: rail 7.43 V (raw 1845)
+[    32 s] burst before: R 4.972 ohm, can 27.0 C, rc 0
+[    34 s] seated at 270; holding -20% (limiter at 280) for 10.0 min, can 27.0 C
+[    34 s] hold 0 min: can 27.0 C, pos 271, i_mean -275, duty_mean -5212, R_agg 4.6515 ohm, r_hat_q12 0
+[    94 s] hold 1 min: can 28.8 C, pos 271, i_mean -267, duty_mean -5172, R_agg 4.7541 ohm, r_hat_q12 0
+[   154 s] hold 2 min: can 30.8 C, pos 270, i_mean -266, duty_mean -5172, R_agg 4.7693 ohm, r_hat_q12 0
+[   214 s] hold 3 min: can 31.9 C, pos 270, i_mean -265, duty_mean -5172, R_agg 4.7873 ohm, r_hat_q12 0
+[   274 s] hold 4 min: can 32.4 C, pos 269, i_mean -264, duty_mean -5172, R_agg 4.8054 ohm, r_hat_q12 0
+[   334 s] hold 5 min: can 32.9 C, pos 270, i_mean -264, duty_mean -5172, R_agg 4.8027 ohm, r_hat_q12 0
+[   394 s] hold 6 min: can 33.1 C, pos 268, i_mean -265, duty_mean -5172, R_agg 4.7846 ohm, r_hat_q12 0
+[   454 s] hold 7 min: can 33.2 C, pos 269, i_mean -265, duty_mean -5172, R_agg 4.7846 ohm, r_hat_q12 0
+[   514 s] hold 8 min: can 33.3 C, pos 269, i_mean -264, duty_mean -5172, R_agg 4.7974 ohm, r_hat_q12 0
+[   574 s] hold 9 min: can 33.3 C, pos 269, i_mean -264, duty_mean -5172, R_agg 4.7974 ohm, r_hat_q12 0
+[   634 s] hold 10 min: can 33.5 C, pos 270, i_mean -264, duty_mean -5172, R_agg 4.7974 ohm, r_hat_q12 0
+[   634 s] hold done: pos 268, can 33.5 C
+[   636 s] battery ok: rail 7.39 V (raw 1835)
+[   656 s] burst cool: R 5.414 ohm, can 33.5 C, rc 0
+[   697 s] battery ok: rail 7.40 V (raw 1837)
+[   717 s] burst cool: R 4.977 ohm, can 31.9 C, rc 0
+[   758 s] battery ok: rail 7.44 V (raw 1847)
+[   778 s] burst cool: R 4.887 ohm, can 30.0 C, rc 0
+[   819 s] battery ok: rail 7.45 V (raw 1849)
+[   839 s] burst cool: R 4.984 ohm, can 28.8 C, rc 0
+[   880 s] battery ok: rail 7.42 V (raw 1843)
+[   900 s] burst cool: R 4.979 ohm, can 28.1 C, rc 0
+[   941 s] battery ok: rail 7.44 V (raw 1848)
+[   961 s] burst cool: R 5.121 ohm, can 27.8 C, rc 0
+[  1001 s] battery ok: rail 7.40 V (raw 1838)
+[  1022 s] burst cool: R 5.188 ohm, can 27.5 C, rc 0
+[  1063 s] battery ok: rail 7.44 V (raw 1846)
+[  1083 s] burst cool: R 5.288 ohm, can 27.3 C, rc 0
+[  1124 s] battery ok: rail 7.43 V (raw 1845)
+[  1145 s] burst cool: R 5.247 ohm, can 27.2 C, rc 0
+[  1185 s] battery ok: rail 7.40 V (raw 1838)
+[  1206 s] burst cool: R 4.975 ohm, can 27.1 C, rc 0
+[  1246 s] battery ok: rail 7.40 V (raw 1836)
+[  1266 s] burst cool: R 5.143 ohm, can 27.0 C, rc 0
+[  1307 s] battery ok: rail 7.40 V (raw 1836)
+[  1327 s] burst cool: R 5.302 ohm, can 27.0 C, rc 0
+[  1368 s] battery ok: rail 7.44 V (raw 1847)
+[  1388 s] burst cool: R 5.370 ohm, can 26.9 C, rc 0
+[  1429 s] battery ok: rail 7.42 V (raw 1841)
+[  1449 s] burst cool: R 4.998 ohm, can 27.0 C, rc 0
+[  1490 s] battery ok: rail 7.40 V (raw 1838)
+[  1510 s] burst cool: R 5.040 ohm, can 26.9 C, rc 0
+[  1550 s] battery ok: rail 7.40 V (raw 1836)
+[  1553 s] gear-slip check: low stop seated at 12%, held at 7%: pos mean 267.9 min 267 max 269 (cal 268: moved -0.1)
+[  1555 s] end: torque off, pos 2006, limits 280/280, rail 7.42 V

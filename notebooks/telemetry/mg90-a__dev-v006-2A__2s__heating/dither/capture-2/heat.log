@@ -1,0 +1,123 @@
+[     10 s] meter: (1791271185.680206, 'C', 29.4)
+[     10 s] battery ok: rail 7.74 V (raw 1921)
+[     31 s] burst 0 cool: R 4.831 ohm, can 29.25 C, T(R) 32.08 C, rc 0, 21 s
+[     40 s] battery ok: rail 7.74 V (raw 1922)
+[     60 s] burst 1 cool: R 4.859 ohm, can 28.75 C, T(R) 33.62 C, rc 0, 20 s
+[     70 s] battery ok: rail 7.71 V (raw 1913)
+[     90 s] burst 2 cool: R 4.872 ohm, can 28.4 C, T(R) 34.34 C, rc 0, 20 s
+[    101 s] battery ok: rail 7.71 V (raw 1914)
+[    121 s] burst 3 cool: R 4.785 ohm, can 28.15 C, T(R) 29.54 C, rc 0, 20 s
+[    131 s] battery ok: rail 7.72 V (raw 1916)
+[    151 s] burst 4 cool: R 4.873 ohm, can 27.95 C, T(R) 34.4 C, rc 0, 20 s
+[    162 s] battery ok: rail 7.71 V (raw 1914)
+[    182 s] burst 5 cool: R 4.803 ohm, can 27.75 C, T(R) 30.53 C, rc 0, 20 s
+[    192 s] battery ok: rail 7.70 V (raw 1911)
+[    212 s] burst 6 cool: R 4.832 ohm, can 27.6 C, T(R) 32.13 C, rc 0, 19 s
+[    223 s] battery ok: rail 7.70 V (raw 1912)
+[    243 s] burst 7 cool: R 4.718 ohm, can 27.45 C, T(R) 25.84 C, rc 0, 20 s
+[    253 s] battery ok: rail 7.71 V (raw 1914)
+[    273 s] burst 8 cool: R 4.665 ohm, can 27.4 C, T(R) 22.92 C, rc 0, 20 s
+[    284 s] battery ok: rail 7.75 V (raw 1923)
+[    304 s] burst 9 cool: R 4.77 ohm, can 27.35 C, T(R) 28.71 C, rc 0, 20 s
+[    315 s] battery ok: rail 7.70 V (raw 1912)
+[    334 s] burst 10 cool: R 4.665 ohm, can 27.25 C, T(R) 22.92 C, rc 0, 20 s
+[    345 s] battery ok: rail 7.75 V (raw 1923)
+[    365 s] burst 11 cool: R 4.739 ohm, can 27.25 C, T(R) 27.0 C, rc 0, 20 s
+[    375 s] battery ok: rail 7.75 V (raw 1923)
+[    395 s] burst 12 cool: R 4.825 ohm, can 27.15 C, T(R) 31.75 C, rc 0, 20 s
+[    406 s] battery ok: rail 7.70 V (raw 1912)
+[    426 s] burst 13 cool: R 4.883 ohm, can 27.1 C, T(R) 34.95 C, rc 0, 20 s
+[    436 s] battery ok: rail 7.71 V (raw 1914)
+[    456 s] burst 14 cool: R 4.794 ohm, can 27.05 C, T(R) 30.04 C, rc 0, 20 s
+[    466 s] battery ok: rail 7.73 V (raw 1919)
+[    486 s] burst 15 cool: R 4.816 ohm, can 27.05 C, T(R) 31.25 C, rc 0, 20 s
+[    497 s] battery ok: rail 7.72 V (raw 1917)
+[    517 s] burst 16 cool: R 4.74 ohm, can 27.05 C, T(R) 27.06 C, rc 0, 20 s
+[    528 s] battery ok: rail 7.73 V (raw 1919)
+[    547 s] burst 17 cool: R 5.013 ohm, can 27.0 C, T(R) 42.12 C, rc 0, 20 s
+[    558 s] battery ok: rail 7.70 V (raw 1912)
+[    578 s] burst 18 cool: R 4.91 ohm, can 27.0 C, T(R) 36.44 C, rc 0, 20 s
+[    588 s] battery ok: rail 7.69 V (raw 1909)
+[    608 s] burst 19 cool: R 4.898 ohm, can 27.0 C, T(R) 35.78 C, rc 0, 20 s
+[    619 s] battery ok: rail 7.69 V (raw 1909)
+[    639 s] burst 20 cool: R 4.839 ohm, can 27.0 C, T(R) 32.52 C, rc 0, 20 s
+[    649 s] battery ok: rail 7.70 V (raw 1911)
+[    669 s] burst 21 cool: R 4.752 ohm, can 26.95 C, T(R) 27.72 C, rc 0, 20 s
+[    679 s] battery ok: rail 7.70 V (raw 1912)
+[    699 s] burst 22 cool: R 4.601 ohm, can 26.95 C, T(R) 19.39 C, rc 0, 20 s
+[    710 s] battery ok: rail 7.71 V (raw 1914)
+[    731 s] burst 23 cool: R 4.756 ohm, can 26.95 C, T(R) 27.94 C, rc 0, 21 s
+[    740 s] battery ok: rail 7.70 V (raw 1911)
+[    760 s] burst 24 cool: R 4.652 ohm, can 26.9 C, T(R) 22.2 C, rc 0, 20 s
+[    771 s] battery ok: rail 7.69 V (raw 1910)
+[    791 s] burst 25 cool: R 4.774 ohm, can 26.95 C, T(R) 28.93 C, rc 0, 20 s
+[    801 s] battery ok: rail 7.71 V (raw 1913)
+[    821 s] burst 26 cool: R 5.01 ohm, can 26.9 C, T(R) 41.96 C, rc 0, 20 s
+[    832 s] battery ok: rail 7.69 V (raw 1910)
+[    852 s] burst 27 cool: R 4.717 ohm, can 26.9 C, T(R) 25.79 C, rc 0, 20 s
+[    862 s] battery ok: rail 7.74 V (raw 1922)
+[    882 s] burst 28 cool: R 4.857 ohm, can 26.9 C, T(R) 33.51 C, rc 0, 20 s
+[    893 s] battery ok: rail 7.74 V (raw 1922)
+[    913 s] burst 29 cool: R 4.958 ohm, can 26.9 C, T(R) 39.09 C, rc 0, 20 s
+[    923 s] battery ok: rail 7.73 V (raw 1918)
+[    943 s] burst 30 cool: R 4.842 ohm, can 26.9 C, T(R) 32.69 C, rc 0, 20 s
+[    954 s] battery ok: rail 7.69 V (raw 1910)
+[    973 s] burst 31 cool: R 4.81 ohm, can 26.9 C, T(R) 30.92 C, rc 0, 20 s
+[    984 s] battery ok: rail 7.69 V (raw 1910)
+[   1004 s] burst 32 cool: R 4.891 ohm, can 26.9 C, T(R) 35.39 C, rc 0, 20 s
+[   1014 s] battery ok: rail 7.74 V (raw 1921)
+[   1034 s] burst 33 cool: R 4.84 ohm, can 26.9 C, T(R) 32.58 C, rc 0, 20 s
+[   1045 s] battery ok: rail 7.71 V (raw 1913)
+[   1065 s] burst 34 cool: R 4.78 ohm, can 26.9 C, T(R) 29.26 C, rc 0, 20 s
+[   1075 s] battery ok: rail 7.69 V (raw 1910)
+[   1095 s] burst 35 cool: R 4.852 ohm, can 26.9 C, T(R) 33.24 C, rc 0, 20 s
+[   1106 s] battery ok: rail 7.73 V (raw 1920)
+[   1125 s] burst 36 cool: R 4.841 ohm, can 26.9 C, T(R) 32.63 C, rc 0, 20 s
+[   1136 s] battery ok: rail 7.70 V (raw 1911)
+[   1156 s] burst 37 cool: R 4.79 ohm, can 26.9 C, T(R) 29.82 C, rc 0, 20 s
+[   1166 s] battery ok: rail 7.72 V (raw 1916)
+[   1186 s] burst 38 cool: R 4.874 ohm, can 26.9 C, T(R) 34.45 C, rc 0, 20 s
+[   1197 s] battery ok: rail 7.71 V (raw 1915)
+[   1217 s] burst 39 cool: R 4.806 ohm, can 26.9 C, T(R) 30.7 C, rc 0, 20 s
+[   1228 s] battery ok: rail 7.69 V (raw 1910)
+[   1247 s] burst 40 cool: R 4.779 ohm, can 26.9 C, T(R) 29.21 C, rc 0, 20 s
+[   1258 s] battery ok: rail 7.69 V (raw 1909)
+[   1277 s] burst 41 cool: R 4.779 ohm, can 26.9 C, T(R) 29.21 C, rc 0, 20 s
+[   1288 s] battery ok: rail 7.69 V (raw 1909)
+[   1308 s] burst 42 cool: R 4.912 ohm, can 26.9 C, T(R) 36.55 C, rc 0, 20 s
+[   1318 s] battery ok: rail 7.68 V (raw 1907)
+[   1338 s] burst 43 cool: R 4.783 ohm, can 26.85 C, T(R) 29.43 C, rc 0, 20 s
+[   1348 s] battery ok: rail 7.69 V (raw 1908)
+[   1368 s] burst 44 cool: R 4.869 ohm, can 26.9 C, T(R) 34.18 C, rc 0, 19 s
+[   1379 s] battery ok: rail 7.72 V (raw 1917)
+[   1399 s] burst 45 cool: R 4.862 ohm, can 26.85 C, T(R) 33.79 C, rc 0, 20 s
+[   1410 s] battery ok: rail 7.73 V (raw 1918)
+[   1429 s] burst 46 cool: R 4.823 ohm, can 26.85 C, T(R) 31.64 C, rc 0, 20 s
+[   1440 s] battery ok: rail 7.69 V (raw 1908)
+[   1460 s] burst 47 cool: R 4.777 ohm, can 26.9 C, T(R) 29.1 C, rc 0, 20 s
+[   1470 s] battery ok: rail 7.70 V (raw 1912)
+[   1490 s] burst 48 cool: R 4.871 ohm, can 26.85 C, T(R) 34.29 C, rc 0, 20 s
+[   1501 s] battery ok: rail 7.68 V (raw 1907)
+[   1520 s] burst 49 cool: R 4.884 ohm, can 26.8 C, T(R) 35.0 C, rc 0, 20 s
+[   1531 s] battery ok: rail 7.69 V (raw 1908)
+[   1551 s] burst 50 cool: R 4.743 ohm, can 26.85 C, T(R) 27.22 C, rc 0, 20 s
+[   1561 s] battery ok: rail 7.70 V (raw 1912)
+[   1581 s] burst 51 cool: R 4.849 ohm, can 26.85 C, T(R) 33.07 C, rc 0, 20 s
+[   1592 s] battery ok: rail 7.71 V (raw 1915)
+[   1612 s] burst 52 cool: R 4.808 ohm, can 26.8 C, T(R) 30.81 C, rc 0, 20 s
+[   1622 s] battery ok: rail 7.72 V (raw 1916)
+[   1643 s] burst 53 cool: R 4.899 ohm, can 26.8 C, T(R) 35.83 C, rc 0, 21 s
+[   1653 s] battery ok: rail 7.68 V (raw 1907)
+[   1672 s] burst 54 cool: R 4.628 ohm, can 26.8 C, T(R) 20.88 C, rc 0, 20 s
+[   1683 s] battery ok: rail 7.67 V (raw 1905)
+[   1703 s] burst 55 cool: R 4.799 ohm, can 26.8 C, T(R) 30.31 C, rc 0, 20 s
+[   1713 s] battery ok: rail 7.68 V (raw 1906)
+[   1733 s] burst 56 cool: R 4.837 ohm, can 26.8 C, T(R) 32.41 C, rc 0, 20 s
+[   1744 s] battery ok: rail 7.70 V (raw 1912)
+[   1764 s] burst 57 cool: R 4.693 ohm, can 26.8 C, T(R) 24.46 C, rc 0, 20 s
+[   1774 s] battery ok: rail 7.68 V (raw 1906)
+[   1794 s] burst 58 cool: R 5.101 ohm, can 26.8 C, T(R) 46.98 C, rc 0, 20 s
+[   1805 s] battery ok: rail 7.69 V (raw 1908)
+[   1824 s] burst 59 cool: R 4.704 ohm, can 26.8 C, T(R) 25.07 C, rc 0, 20 s
+[   1835 s] cool done after 30.4 min, can 26.8 C
+[   1835 s] end: limits 280/280, torque off, rail 7.71 V

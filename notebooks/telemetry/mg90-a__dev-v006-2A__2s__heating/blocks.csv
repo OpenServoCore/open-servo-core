@@ -1,0 +1,9 @@
+capture,source,label,heater,limit_counts,heat_phase,cool_phase,r_ref_ohm,t_ref_c,r_ref_from,runs,ended
+rest/capture-1,d6b,R_ref rest bursts,open-loop dither (26 s; stopped),280,heat0.3W,,4.725,26.23,"its own 5 rest bursts (median, mean can)",5,"position guard at 26 s: a 75 ms host stall made a reversal late at 36% amplitude, the shaft ran to pos 2754 (guard 2045 +/- 700)"
+dither/capture-1,d6c,0.25 W block,open-loop dither 2045 +/- 100 (30% cap),280,heat0.3W,,4.725,26.23,rest/capture-1 (reused),12,"position guard at 2035 s: the shaft left to pos 3351 (guard 2045 +/- 1000); 12 min flat before it"
+dither/capture-2,d6c/cool,0.25 W cool-down,none (torque off),280,,cool,4.725,26.23,rest/capture-1 (reused),60,30 min of bursts every 30 s
+steps/capture-1,d6d,0.42 W block and cool-down,closed-loop position steps 2045 +/- 300 (80 ms),520,heat0.4W,cool0.4W,4.690,27.00,its own 3 rest bursts (median),63,"47 min on the clock, then 20 min of bursts every 30 s"
+steps/trial-1,d6d/bench-tests/h4test,heater trial 1 (280 limit; 2045 +/- 150),closed-loop position steps,280,heat0.3W,,4.725,26.23,rest/capture-1 (reused),1,"1.3 min: 0.17 W"
+steps/trial-2,d6d/bench-tests/h4test2,heater trial 2 (280 limit; 2045 +/- 300),closed-loop position steps,280,heat0.3W,,4.725,26.23,rest/capture-1 (reused),1,"1.3 min: 0.17 W"
+steps/trial-3,d6d/bench-tests/h4test520,heater trial 3 (520 limit; 2045 +/- 300),closed-loop position steps,520,heat1.0W,,4.725,26.23,rest/capture-1 (reused),1,"1.0 min: 0.39 W, the accel limit caps the current"
+hold/capture-1,d7,locked-rotor hold at the low stop,open-loop -20% against the stop under the stall permit,280,hold,cool,,,no thermometer: R from the firmware's ident aggregates,16,"10 min hold, 15 min of bursts every 60 s, gear-slip check 267.9 vs cal 268"

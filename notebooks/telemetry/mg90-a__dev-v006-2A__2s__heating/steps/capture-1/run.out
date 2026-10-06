@@ -1,0 +1,160 @@
+[     10 s] meter: (1791273455.464981, 'C', 28.7)
+[     10 s] battery ok: rail 7.69 V (raw 1910)
+[    162 s] prewait done after 2.5 min: can 27.2 C (wanted <= 27.2)
+[    162 s] battery ok: rail 7.66 V (raw 1902)
+[    182 s] burst 0 ref: R 4.722 ohm, can 27.15 C, T(R) None C, rc 0, 20 s
+[    228 s] battery ok: rail 7.71 V (raw 1914)
+[    248 s] burst 1 ref: R 4.69 ohm, can 27.0 C, T(R) None C, rc 0, 20 s
+[    294 s] battery ok: rail 7.71 V (raw 1914)
+[    315 s] burst 2 ref: R 4.582 ohm, can 26.85 C, T(R) None C, rc 0, 21 s
+[    360 s] R_ref bursts [4.722, 4.69, 4.582]: median 4.6900, mean 4.6647, sd 0.0734 ohm
+[    360 s] R_ref 4.6900 ohm at T_ref 27.00 C
+[    360 s] battery ok: rail 7.66 V (raw 1902)
+centred: pos 2022 (target 2045); torque_enable off
+[    361 s] heat0.4W: limit 520, target i_rms 0.292 A (0.400 W at R_ref), position steps 2045+/-300, period 100 ms adaptive
+[    481 s] heat0.4W: i_rms 0.280 A, |i| mean 0.237 A, P(I2R_ref) 0.369 W, period 80 ms, pos 1708..2301, |duty applied| 17.8%, can 33.2 C
+[    481 s] battery ok: rail 7.68 V (raw 1907)
+[    501 s] burst 3 heat0.4W: R 5.009 ohm, can 33.45 C, T(R) 44.79 C, rc 0, 20 s
+[    622 s] heat0.4W: i_rms 0.287 A, |i| mean 0.242 A, P(I2R_ref) 0.386 W, period 80 ms, pos 1708..2302, |duty applied| 18.4%, can 36.3 C
+[    622 s] battery ok: rail 7.67 V (raw 1905)
+[    643 s] burst 4 heat0.4W: R 5.278 ohm, can 36.25 C, T(R) 59.79 C, rc 0, 20 s
+[    764 s] heat0.4W: i_rms 0.291 A, |i| mean 0.246 A, P(I2R_ref) 0.397 W, period 80 ms, pos 1706..2302, |duty applied| 19.4%, can 37.8 C
+[    764 s] battery ok: rail 7.65 V (raw 1899)
+[    784 s] burst 5 heat0.4W: R 5.299 ohm, can 37.75 C, T(R) 60.96 C, rc 0, 20 s
+[    905 s] heat0.4W: i_rms 0.291 A, |i| mean 0.246 A, P(I2R_ref) 0.398 W, period 80 ms, pos 1708..2300, |duty applied| 20.0%, can 38.8 C
+[    905 s] battery ok: rail 7.64 V (raw 1897)
+[    926 s] burst 6 heat0.4W: R 5.663 ohm, can 38.75 C, T(R) 81.25 C, rc 0, 20 s
+[   1046 s] heat0.4W: i_rms 0.301 A, |i| mean 0.255 A, P(I2R_ref) 0.425 W, period 80 ms, pos 1704..2308, |duty applied| 21.0%, can 39.7 C
+[   1047 s] battery ok: rail 7.62 V (raw 1892)
+[   1067 s] burst 7 heat0.4W: R 5.255 ohm, can 39.55 C, T(R) 58.5 C, rc 0, 20 s
+[   1188 s] heat0.4W: i_rms 0.301 A, |i| mean 0.255 A, P(I2R_ref) 0.426 W, period 80 ms, pos 1708..2302, |duty applied| 21.1%, can 40.0 C
+[   1188 s] battery ok: rail 7.61 V (raw 1889)
+[   1208 s] burst 8 heat0.4W: R 5.627 ohm, can 39.85 C, T(R) 79.24 C, rc 0, 20 s
+[   1329 s] heat0.4W: i_rms 0.302 A, |i| mean 0.256 A, P(I2R_ref) 0.427 W, period 80 ms, pos 1706..2307, |duty applied| 21.0%, can 40.1 C
+[   1329 s] battery ok: rail 7.59 V (raw 1885)
+[   1350 s] burst 9 heat0.4W: R 5.456 ohm, can 39.9 C, T(R) 69.71 C, rc 0, 20 s
+[   1470 s] heat0.4W: i_rms 0.291 A, |i| mean 0.246 A, P(I2R_ref) 0.398 W, period 80 ms, pos 1709..2300, |duty applied| 20.0%, can 39.6 C
+[   1471 s] battery ok: rail 7.55 V (raw 1873)
+[   1491 s] burst 10 heat0.4W: R 5.372 ohm, can 39.45 C, T(R) 65.03 C, rc 0, 20 s
+[   1612 s] heat0.4W: i_rms 0.299 A, |i| mean 0.254 A, P(I2R_ref) 0.420 W, period 80 ms, pos 1706..2302, |duty applied| 20.9%, can 40.1 C
+[   1613 s] battery ok: rail 7.55 V (raw 1875)
+[   1633 s] burst 11 heat0.4W: R 5.602 ohm, can 39.9 C, T(R) 77.85 C, rc 0, 21 s
+[   1754 s] heat0.4W: i_rms 0.302 A, |i| mean 0.256 A, P(I2R_ref) 0.428 W, period 80 ms, pos 1709..2300, |duty applied| 20.7%, can 39.9 C
+[   1755 s] battery ok: rail 7.56 V (raw 1876)
+[   1775 s] burst 12 heat0.4W: R 5.433 ohm, can 39.75 C, T(R) 68.43 C, rc 0, 20 s
+[   1896 s] heat0.4W: i_rms 0.296 A, |i| mean 0.251 A, P(I2R_ref) 0.411 W, period 80 ms, pos 1709..2305, |duty applied| 20.6%, can 39.9 C
+[   1896 s] battery ok: rail 7.51 V (raw 1865)
+[   1917 s] burst 13 heat0.4W: R 5.329 ohm, can 39.7 C, T(R) 62.63 C, rc 0, 21 s
+[   2037 s] heat0.4W: i_rms 0.299 A, |i| mean 0.252 A, P(I2R_ref) 0.418 W, period 80 ms, pos 1705..2301, |duty applied| 20.7%, can 39.8 C
+[   2038 s] battery ok: rail 7.52 V (raw 1867)
+[   2058 s] burst 14 heat0.4W: R 5.56 ohm, can 39.7 C, T(R) 75.51 C, rc 0, 21 s
+[   2179 s] heat0.4W: i_rms 0.300 A, |i| mean 0.254 A, P(I2R_ref) 0.422 W, period 80 ms, pos 1697..2301, |duty applied| 20.9%, can 40.0 C
+[   2180 s] battery ok: rail 7.52 V (raw 1868)
+[   2200 s] burst 15 heat0.4W: R 5.373 ohm, can 39.9 C, T(R) 65.08 C, rc 0, 20 s
+[   2321 s] heat0.4W: i_rms 0.300 A, |i| mean 0.254 A, P(I2R_ref) 0.423 W, period 80 ms, pos 1705..2300, |duty applied| 21.0%, can 40.2 C
+[   2321 s] battery ok: rail 7.48 V (raw 1858)
+[   2341 s] burst 16 heat0.4W: R 5.364 ohm, can 40.05 C, T(R) 64.58 C, rc 0, 20 s
+[   2462 s] heat0.4W: i_rms 0.304 A, |i| mean 0.258 A, P(I2R_ref) 0.433 W, period 80 ms, pos 1704..2300, |duty applied| 21.1%, can 40.3 C
+[   2462 s] battery ok: rail 7.47 V (raw 1854)
+[   2483 s] burst 17 heat0.4W: R 5.385 ohm, can 40.15 C, T(R) 65.75 C, rc 0, 20 s
+[   2604 s] heat0.4W: i_rms 0.307 A, |i| mean 0.260 A, P(I2R_ref) 0.441 W, period 80 ms, pos 1708..2299, |duty applied| 22.0%, can 40.9 C
+[   2604 s] battery ok: rail 7.46 V (raw 1852)
+[   2625 s] burst 18 heat0.4W: R 5.445 ohm, can 40.75 C, T(R) 69.1 C, rc 0, 21 s
+[   2746 s] heat0.4W: i_rms 0.305 A, |i| mean 0.259 A, P(I2R_ref) 0.437 W, period 80 ms, pos 1702..2300, |duty applied| 21.6%, can 40.8 C
+[   2746 s] battery ok: rail 7.50 V (raw 1861)
+[   2766 s] burst 19 heat0.4W: R 5.346 ohm, can 40.65 C, T(R) 63.58 C, rc 0, 20 s
+[   2887 s] heat0.4W: i_rms 0.307 A, |i| mean 0.261 A, P(I2R_ref) 0.441 W, period 80 ms, pos 1694..2300, |duty applied| 21.4%, can 40.9 C
+[   2888 s] battery ok: rail 7.46 V (raw 1852)
+[   2909 s] burst 20 heat0.4W: R 5.497 ohm, can 40.7 C, T(R) 72.0 C, rc 0, 21 s
+[   3029 s] heat0.4W: i_rms 0.303 A, |i| mean 0.257 A, P(I2R_ref) 0.431 W, period 80 ms, pos 1700..2301, |duty applied| 21.0%, can 40.2 C
+[   3030 s] battery ok: rail 7.45 V (raw 1849)
+[   3050 s] burst 21 heat0.4W: R 5.198 ohm, can 40.1 C, T(R) 55.32 C, rc 0, 21 s
+[   3171 s] heat0.4W: i_rms 0.307 A, |i| mean 0.261 A, P(I2R_ref) 0.441 W, period 80 ms, pos 1707..2299, |duty applied| 21.1%, can 40.3 C
+[   3171 s] battery ok: rail 7.47 V (raw 1854)
+[   3192 s] burst 22 heat0.4W: R 5.346 ohm, can 40.2 C, T(R) 63.58 C, rc 0, 20 s
+[   3192 s] heat0.4W ends after 47.2 min (time); can 26.8 -> 40.1 C
+centred: pos 2016 (target 2045); torque_enable off
+[   3193 s] battery ok: rail 7.45 V (raw 1849)
+[   3214 s] burst 23 cool0.4W: R 5.202 ohm, can 39.3 C, T(R) 55.55 C, rc 0, 20 s
+[   3224 s] battery ok: rail 7.45 V (raw 1850)
+[   3244 s] burst 24 cool0.4W: R 4.948 ohm, can 36.95 C, T(R) 41.39 C, rc 0, 20 s
+[   3255 s] battery ok: rail 7.45 V (raw 1849)
+[   3276 s] burst 25 cool0.4W: R 5.226 ohm, can 34.7 C, T(R) 56.89 C, rc 0, 21 s
+[   3285 s] battery ok: rail 7.46 V (raw 1853)
+[   3306 s] burst 26 cool0.4W: R 5.115 ohm, can 33.15 C, T(R) 50.7 C, rc 0, 20 s
+[   3316 s] battery ok: rail 7.46 V (raw 1851)
+[   3337 s] burst 27 cool0.4W: R 5.069 ohm, can 31.8 C, T(R) 48.13 C, rc 0, 20 s
+[   3347 s] battery ok: rail 7.45 V (raw 1849)
+[   3367 s] burst 28 cool0.4W: R 4.959 ohm, can 30.8 C, T(R) 42.0 C, rc 0, 20 s
+[   3378 s] battery ok: rail 7.44 V (raw 1848)
+[   3398 s] burst 29 cool0.4W: R 4.839 ohm, can 30.1 C, T(R) 35.31 C, rc 0, 20 s
+[   3408 s] battery ok: rail 7.45 V (raw 1849)
+[   3428 s] burst 30 cool0.4W: R 4.97 ohm, can 29.6 C, T(R) 42.61 C, rc 0, 20 s
+[   3439 s] battery ok: rail 7.44 V (raw 1846)
+[   3460 s] burst 31 cool0.4W: R 5.129 ohm, can 29.2 C, T(R) 51.48 C, rc 0, 21 s
+[   3469 s] battery ok: rail 7.47 V (raw 1854)
+[   3489 s] burst 32 cool0.4W: R 5.195 ohm, can 28.8 C, T(R) 55.16 C, rc 0, 20 s
+[   3500 s] battery ok: rail 7.48 V (raw 1856)
+[   3520 s] burst 33 cool0.4W: R 5.115 ohm, can 28.55 C, T(R) 50.7 C, rc 0, 20 s
+[   3531 s] battery ok: rail 7.43 V (raw 1845)
+[   3551 s] burst 34 cool0.4W: R 5.129 ohm, can 28.35 C, T(R) 51.48 C, rc 0, 20 s
+[   3562 s] battery ok: rail 7.44 V (raw 1846)
+[   3582 s] burst 35 cool0.4W: R 4.812 ohm, can 28.15 C, T(R) 33.8 C, rc 0, 21 s
+[   3592 s] battery ok: rail 7.43 V (raw 1845)
+[   3612 s] burst 36 cool0.4W: R 4.849 ohm, can 27.95 C, T(R) 35.87 C, rc 0, 20 s
+[   3622 s] battery ok: rail 7.47 V (raw 1854)
+[   3643 s] burst 37 cool0.4W: R 5.187 ohm, can 27.9 C, T(R) 54.71 C, rc 0, 20 s
+[   3653 s] battery ok: rail 7.47 V (raw 1855)
+[   3673 s] burst 38 cool0.4W: R 5.223 ohm, can 27.85 C, T(R) 56.72 C, rc 0, 20 s
+[   3684 s] battery ok: rail 7.46 V (raw 1851)
+[   3704 s] burst 39 cool0.4W: R 5.115 ohm, can 27.75 C, T(R) 50.7 C, rc 0, 20 s
+[   3715 s] battery ok: rail 7.44 V (raw 1847)
+[   3735 s] burst 40 cool0.4W: R 5.34 ohm, can 27.7 C, T(R) 63.24 C, rc 0, 20 s
+[   3745 s] battery ok: rail 7.46 V (raw 1853)
+[   3765 s] burst 41 cool0.4W: R 5.19 ohm, can 27.65 C, T(R) 54.88 C, rc 0, 20 s
+[   3776 s] battery ok: rail 7.44 V (raw 1847)
+[   3796 s] burst 42 cool0.4W: R 5.295 ohm, can 27.6 C, T(R) 60.73 C, rc 0, 20 s
+[   3807 s] battery ok: rail 7.43 V (raw 1845)
+[   3827 s] burst 43 cool0.4W: R 5.281 ohm, can 27.5 C, T(R) 59.95 C, rc 0, 20 s
+[   3837 s] battery ok: rail 7.47 V (raw 1855)
+[   3858 s] burst 44 cool0.4W: R 5.111 ohm, can 27.45 C, T(R) 50.47 C, rc 0, 20 s
+[   3868 s] battery ok: rail 7.43 V (raw 1845)
+[   3888 s] burst 45 cool0.4W: R 5.05 ohm, can 27.35 C, T(R) 47.07 C, rc 0, 20 s
+[   3899 s] battery ok: rail 7.44 V (raw 1847)
+[   3919 s] burst 46 cool0.4W: R 4.996 ohm, can 27.4 C, T(R) 44.06 C, rc 0, 20 s
+[   3929 s] battery ok: rail 7.44 V (raw 1846)
+[   3949 s] burst 47 cool0.4W: R 4.951 ohm, can 27.3 C, T(R) 41.55 C, rc 0, 20 s
+[   3960 s] battery ok: rail 7.43 V (raw 1844)
+[   3980 s] burst 48 cool0.4W: R 5.424 ohm, can 27.3 C, T(R) 67.93 C, rc 0, 20 s
+[   3990 s] battery ok: rail 7.46 V (raw 1852)
+[   4010 s] burst 49 cool0.4W: R 5.399 ohm, can 27.3 C, T(R) 66.53 C, rc 0, 20 s
+[   4020 s] battery ok: rail 7.43 V (raw 1845)
+[   4041 s] burst 50 cool0.4W: R 4.837 ohm, can 27.3 C, T(R) 35.2 C, rc 0, 20 s
+[   4051 s] battery ok: rail 7.46 V (raw 1853)
+[   4071 s] burst 51 cool0.4W: R 5.065 ohm, can 27.3 C, T(R) 47.91 C, rc 0, 20 s
+[   4082 s] battery ok: rail 7.46 V (raw 1853)
+[   4101 s] burst 52 cool0.4W: R 5.146 ohm, can 27.25 C, T(R) 52.43 C, rc 0, 20 s
+[   4112 s] battery ok: rail 7.44 V (raw 1846)
+[   4132 s] burst 53 cool0.4W: R 5.26 ohm, can 27.2 C, T(R) 58.78 C, rc 0, 20 s
+[   4143 s] battery ok: rail 7.46 V (raw 1851)
+[   4163 s] burst 54 cool0.4W: R 5.049 ohm, can 27.2 C, T(R) 47.02 C, rc 0, 20 s
+[   4173 s] battery ok: rail 7.43 V (raw 1844)
+[   4194 s] burst 55 cool0.4W: R 5.221 ohm, can 27.2 C, T(R) 56.61 C, rc 0, 21 s
+[   4203 s] battery ok: rail 7.43 V (raw 1845)
+[   4224 s] burst 56 cool0.4W: R 5.136 ohm, can 27.2 C, T(R) 51.87 C, rc 0, 20 s
+[   4234 s] battery ok: rail 7.46 V (raw 1852)
+[   4254 s] burst 57 cool0.4W: R 5.366 ohm, can 27.2 C, T(R) 64.69 C, rc 0, 20 s
+[   4265 s] battery ok: rail 7.46 V (raw 1852)
+[   4285 s] burst 58 cool0.4W: R 5.11 ohm, can 27.2 C, T(R) 50.42 C, rc 0, 20 s
+[   4295 s] battery ok: rail 7.43 V (raw 1844)
+[   4315 s] burst 59 cool0.4W: R 5.048 ohm, can 27.2 C, T(R) 46.96 C, rc 0, 20 s
+[   4326 s] battery ok: rail 7.45 V (raw 1850)
+[   4346 s] burst 60 cool0.4W: R 5.44 ohm, can 27.2 C, T(R) 68.82 C, rc 0, 20 s
+[   4356 s] battery ok: rail 7.46 V (raw 1852)
+[   4376 s] burst 61 cool0.4W: R 4.932 ohm, can 27.15 C, T(R) 40.49 C, rc 0, 20 s
+[   4387 s] battery ok: rail 7.44 V (raw 1848)
+[   4407 s] burst 62 cool0.4W: R 5.393 ohm, can 27.15 C, T(R) 66.2 C, rc 0, 20 s
+[   4417 s] cool0.4W done after 20.4 min, can 27.1 C
+centred: pos 2004 (target 2045); torque_enable off
+[   4418 s] end: limits 280/280, torque off, rail 7.44 V
+exit 0
