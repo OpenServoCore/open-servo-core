@@ -770,16 +770,21 @@ and ~0.6 ms on the servo, on torque-off paths only (the SPI engine belongs
 to the transport).
 
 Checkpoints, the only places the verdict recomputes: boot after both
-images load; a committed write to `plant_stamp` with torque off; a
-table COMMIT; SAVE. Between checkpoints a committed span that intersects
-a covered field marks `STAMP_MISMATCH` at once, whatever value it
-carried, so a host that dies halfway through a set leaves the mismatch
-behind (DES `partial_covered_write_blocks_next_enable`). A stamp write
-under torque lands unverified: the mismatch stands until the next
-checkpoint. SAVE checkpoints before it programs and still persists a
-mismatched set (the reboot recomputes anyway; flash is never refused).
+images load; a committed write to `plant_stamp` or to a covered field;
+a table COMMIT; SAVE. A committed span that intersects a covered field
+or the stamp marks `STAMP_MISMATCH` at once, whatever value it carried,
+so a host that dies halfway through a set leaves the mismatch behind
+(DES `partial_covered_write_blocks_next_enable`); its checkpoint
+clears the mark once the live set matches the stamp, so a hand edit
+put back reads clear again (DES
+`restoring_a_covered_edit_clears_the_mismatch`). Under torque the
+checkpoint waits: the write lands unverified and the recompute runs
+when torque goes off (DES
+`stamp_write_with_torque_on_verifies_at_torque_off`). SAVE checkpoints
+before it programs and still persists a mismatched set (the reboot
+recomputes anyway; flash is never refused).
 
-The recompute outlasts the reply deadline, so the stamp write and the
+The recompute outlasts the reply deadline, so the write and the
 COMMIT checkpoints run in the servo's main loop after the reply: the
 commit marks `STAMP_MISMATCH` (the refused direction) and posts the
 job; the job clears the mark once the set verifies, ~0.6 ms later. A
@@ -803,9 +808,10 @@ uses (sec 5.8, around a drive): `osc ident run` writes none of the
 set, write-back is its own command, and an `osc cal` that is refused
 or ends early writes none of it either, the drive polarity aside once
 both stops are read. Nothing restamps as a side effect:
-`osc set` of a covered field leaves the mismatch standing, and `osc lut
-write` never stamps, because a new table redefines the domain the
-constants were fitted in - the way out is `osc ident`.
+`osc set` of a covered field leaves the mismatch standing until the
+value is put back, and `osc lut write` never stamps, because a new
+table redefines the domain the constants were fitted in - the way out
+is `osc ident`.
 
 **Position table.** The kernel corrects each raw pot sample through a
 per-unit position linearization table on a fixed grid over the 12-bit

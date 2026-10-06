@@ -1,10 +1,10 @@
 //! Plant stamp: the identified and calibrated values and the effective pot
 //! LUT as one transaction. The host computes the stamp over the set it
 //! INTENDED to write and stores it in `plant_stamp`; firmware recomputes
-//! over what actually landed at every checkpoint (boot, a torque-off stamp
-//! write, a LUT COMMIT, SAVE), so a write that never landed, a torn save,
-//! a hand edit or a table rebuilt under old constants all read
-//! `STAMP_MISMATCH`.
+//! over what actually landed at every checkpoint (boot, a covered or stamp
+//! write once torque is off, a LUT COMMIT, SAVE), so a write that never
+//! landed, a torn save, a hand edit or a table rebuilt under old constants
+//! all read `STAMP_MISMATCH`, and a hand edit put back reads clear.
 //!
 //! Covered: the fields a fit or a cal produces, in table order, named once
 //! in [`COVERED_NAMES`] and exported through the descriptor so hosts keep

@@ -7,12 +7,13 @@
 //! Writers: boot (pre-IRQ); the HIGH dispatcher (a covered write, a stamp
 //! write and a LUT command mark, SAVE checkpoints and retires); and the
 //! main loop's job (`Shared::data_job_run` + `data_job_publish`), which
-//! runs the recompute a stamp write or a LUT COMMIT posted. The recompute
-//! is ~600 B of software CRC, longer than the reply deadline, so HIGH
-//! only marks `STAMP_MISMATCH` (the refused direction) and posts; the
-//! job clears it once the set verifies. The publish runs with ISRs
-//! masked and under a generation check, so a write landing mid-job
-//! leaves the mark standing and the job posted. The kernel reads.
+//! runs the recompute a covered write, a stamp write or a LUT COMMIT
+//! posted. The recompute is ~600 B of software CRC, longer than the reply
+//! deadline, so HIGH only marks `STAMP_MISMATCH` (the refused direction)
+//! and posts; the job clears it once the live set matches the stamp
+//! again. The publish runs with ISRs masked and under a generation check,
+//! so a write landing mid-job leaves the mark standing and the job posted.
+//! The kernel reads.
 
 use crate::regions::calib::CalibMotor;
 use crate::regions::calib::addr::stamp::PLANT_STAMP;
@@ -29,8 +30,8 @@ pub const CONFIG_CORRUPT: u8 = 1 << 1;
 pub const CALIB_VIRGIN: u8 = 1 << 2;
 pub const CALIB_CORRUPT: u8 = 1 << 3;
 /// The last checkpoint's recompute (`stamp` module) differed from
-/// `plant_stamp`, or a covered field was written since: the stamp no
-/// longer describes the live set.
+/// `plant_stamp`, or a covered field was written since and its checkpoint
+/// has not run yet: the stamp does not describe the live set.
 pub const STAMP_MISMATCH: u8 = 1 << 4;
 /// `recip_ke_q == 0 || ke_vpc_q == 0` at the last checkpoint.
 pub const PLANT_UNSET: u8 = 1 << 5;
@@ -50,7 +51,8 @@ const CHECKPOINT: u8 = STAMP_MISMATCH | PLANT_UNSET;
 
 /// What a commit posts for the main loop (`Shared::data_job_run`).
 pub mod job {
-    /// A torque-off stamp write: recompute the checkpoint.
+    /// A covered or stamp write: recompute the checkpoint once torque is
+    /// off.
     pub const CHECKPOINT: u8 = 1 << 0;
     /// A LUT COMMIT: validate the array, land its state, then checkpoint.
     pub const LUT_COMMIT: u8 = 1 << 1;
@@ -149,15 +151,14 @@ impl Shared {
         });
     }
 
-    /// A committed write `[addr, addr + len)`: a covered field marks the
-    /// stamp stale at once (a host that dies mid-sequence leaves the
-    /// mismatch behind), and a stamp write marks it too and posts the
-    /// checkpoint that clears it - with torque off only; under torque it
-    /// lands unverified and the mismatch waits for the next torque-off
-    /// checkpoint. A torque write moves the generation so a job in flight
-    /// re-judges under the new torque. Never stops a running loop; the
-    /// kernel reads the flags at its next entry. HIGH dispatch only; one
-    /// copy behind both commit sites, O(1).
+    /// A committed write `[addr, addr + len)` to a covered field or the
+    /// stamp marks the stamp stale at once (a host that dies mid-sequence
+    /// leaves the mismatch behind) and posts the checkpoint that clears it
+    /// once the live set matches the stamp again; the job holds it while
+    /// torque is on. A torque write moves the generation so a job in
+    /// flight re-judges under the new torque. Never stops a running loop;
+    /// the kernel reads the flags at its next entry. HIGH dispatch only;
+    /// one copy behind both commit sites, O(1).
     #[inline(never)]
     pub fn data_state_after_commit(&self, addr: u16, len: u16) {
         let end = addr.saturating_add(len);
@@ -168,13 +169,7 @@ impl Shared {
         if !stamp_hit && !stamp::covers(addr, len) {
             return;
         }
-        let torque = self.table.with(|t| t.control.lifecycle.torque_enable);
-        let post = if stamp_hit && !torque {
-            job::CHECKPOINT
-        } else {
-            0
-        };
-        self.data_touch(post, 0);
+        self.data_touch(job::CHECKPOINT, 0);
         self.table
             .with_mut(|t| t.telemetry.mode.data_flags |= STAMP_MISMATCH);
     }
@@ -187,7 +182,9 @@ impl Shared {
     /// COMMIT validates the array against the stops (REJECT_TORQUE if
     /// torque came on since the command, the refusal HIGH would have
     /// given), then the checkpoint runs over the points that verdict makes
-    /// effective. `None` while nothing is posted.
+    /// effective. `None` while nothing is posted, and while torque holds
+    /// back a lone checkpoint (the CRC stays off torque-on paths; the
+    /// torque-off write wakes the loop that runs it).
     pub fn data_job_run(&self) -> Option<DataJob> {
         // generation before job: a post between the two reads moves it
         // and the publish discards this run.
@@ -204,6 +201,9 @@ impl Shared {
                 t.control.pos_lut.pos_lut_state,
             )
         });
+        if torque && done == job::CHECKPOINT {
+            return None;
+        }
         let pos_lut_state = (done & job::LUT_COMMIT != 0).then(|| {
             if torque {
                 pos_lut::state::REJECT_TORQUE
@@ -429,7 +429,7 @@ mod tests {
         assert_eq!(flags(&sh), STAMP_MISMATCH, "no checkpoint under torque");
         stamp(&sh);
         sh.data_state_after_commit(PLANT_STAMP, 2);
-        assert!(!sh.data_job_pending(), "no checkpoint under torque");
+        assert!(!sh.data_job_service(), "no checkpoint under torque");
         assert_eq!(flags(&sh), STAMP_MISMATCH, "unverified");
         sh.table
             .with_mut(|t| t.control.lifecycle.torque_enable = false);
@@ -447,5 +447,44 @@ mod tests {
         sh.data_state_after_commit(RECIP_KE_Q, PLANT_STAMP + 2 - RECIP_KE_Q);
         sh.data_job_service();
         assert_eq!(flags(&sh), 0);
+    }
+
+    /// The verdict follows the live set: a covered edit marks, and putting
+    /// the stamped value back clears, at the next torque-off checkpoint.
+    #[test]
+    fn restoring_a_covered_value_clears_the_mismatch() {
+        let sh = Shared::new();
+        set_ke(&sh);
+        stamp(&sh);
+        sh.publish_data_state(ImageState::Loaded, ImageState::Loaded);
+        assert_eq!(flags(&sh), 0);
+
+        sh.table.with_mut(|t| t.calib.motor.recip_ke_q = 3800);
+        sh.data_state_after_commit(RECIP_KE_Q, 2);
+        assert_eq!(flags(&sh), STAMP_MISMATCH);
+        assert!(sh.data_job_service());
+        assert_eq!(flags(&sh), STAMP_MISMATCH, "the set differs");
+        sh.table.with_mut(|t| t.calib.motor.recip_ke_q = 3700);
+        sh.data_state_after_commit(RECIP_KE_Q, 2);
+        assert_eq!(flags(&sh), STAMP_MISMATCH, "refused until verified");
+        assert!(sh.data_job_service());
+        assert_eq!(flags(&sh), 0, "the stamped set again");
+
+        // under torque the checkpoint waits for torque off
+        sh.table
+            .with_mut(|t| t.control.lifecycle.torque_enable = true);
+        sh.table.with_mut(|t| t.config.limits.drive_polarity = true);
+        sh.data_state_after_commit(DRIVE_POLARITY, 1);
+        sh.table
+            .with_mut(|t| t.config.limits.drive_polarity = false);
+        sh.data_state_after_commit(DRIVE_POLARITY, 1);
+        assert!(!sh.data_job_service());
+        assert_eq!(flags(&sh), STAMP_MISMATCH);
+        sh.table
+            .with_mut(|t| t.control.lifecycle.torque_enable = false);
+        sh.data_state_after_commit(TORQUE_ENABLE, 1);
+        assert!(sh.data_job_service());
+        assert_eq!(flags(&sh), 0);
+        assert!(!sh.data_job_pending());
     }
 }

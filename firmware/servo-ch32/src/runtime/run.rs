@@ -150,7 +150,7 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
         // ~120 words and has no business inside a 20 kHz ISR.
         crate::control::burst::poll_page(&crate::runtime::statics::SHARED);
 
-        // Data job (core `data_state`): the stamp checkpoint a torque-off
+        // Data job (core `data_state`): the stamp checkpoint a covered or
         // stamp write posts and the verdict a LUT COMMIT posts, ~0.6 ms of
         // software CRC that outlasts the reply deadline in HIGH. The run is
         // preemptible; the publish masks ISRs so HIGH cannot land a write

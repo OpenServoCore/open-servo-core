@@ -631,7 +631,11 @@ fn virgin_servo_commit_sequence_then_a_covered_edit_refuses_closed_loop() {
     ] {
         write_field(&mut c, id, &d, name, Value::Uint(v as u64));
     }
-    assert_eq!(c.data_state(id, &d).expect("data state").flags, FRESH);
+    // each covered write checkpoints: identified now, never stamped
+    assert_eq!(
+        c.data_state(id, &d).expect("data state").flags,
+        FRESH & !PLANT_UNSET
+    );
 
     // the stamp, with torque off, is the checkpoint
     let stamp = c.restamp(id, &d).expect("restamp");
