@@ -9,7 +9,7 @@ use crate::exp::anchor::AnchorResult;
 use crate::exp::bias::BiasResult;
 use crate::exp::breakaway::BreakawayResult;
 use crate::exp::held::HeldRun;
-use crate::exp::inductance::{BurstRoute, InductanceResult};
+use crate::exp::inductance::{BurstRoute, InductanceResult, Rung};
 use crate::exp::inertia::InertiaResult;
 use crate::exp::ladder::{LadderResult, SERVO_SPEED_TOL, ServoCheck};
 use crate::exp::resistance::ResistanceResult;
@@ -716,6 +716,51 @@ fn render_wave(s: &mut String, x: &InductanceResult) {
     }
 }
 
+fn render_rungs(s: &mut String, rungs: &[Rung]) {
+    if rungs.is_empty() {
+        return;
+    }
+    let _ = writeln!(
+        s,
+        "  rungs         duty dir  n  I asym  (tau)  I late   DxVon (diff)     V/I   line  R per  \
+         wave R   rms"
+    );
+    let v = |x: Option<f64>| x.map_or("-".into(), |v| format!("{v:.3}"));
+    for g in rungs {
+        let _ = writeln!(
+            s,
+            "                {:>3.0}% {} {:>2}  {:>6.3} {:>6}  {:>6.3}  {:>6} {:>6}  {:>6.3} {:>6} {:>6}  \
+             {:>6} {:>5}{}",
+            g.duty * 100.0,
+            if g.forward { "fwd" } else { "rev" },
+            g.captures,
+            g.i_asym_a,
+            format!("({:.0})", g.tau_us),
+            g.i_late_a,
+            v(g.dv_on_driven_v),
+            v(g.dv_on_diff_v),
+            g.v_over_i_ohm,
+            v(g.line_v_over_i_ohm),
+            v(g.r_period_ohm),
+            v(g.wave_r_ohm),
+            g.wave_rms_counts.map_or("-".into(), |r| format!("{r:.1}")),
+            match g.set_aside {
+                0 => String::new(),
+                n => format!("  {n} set aside"),
+            }
+        );
+    }
+    let _ = writeln!(
+        s,
+        "                from rest, medians per step duty and sign; A, us, V, ohm, counts. I asym \
+         (tau): the exponential through the ON-window centre currents; I late: the last \
+         window's; DxVon: duty x the driven terminal's ON level, (diff) the terminals' \
+         difference; V/I: duty x rail over I asym, line: the waveform's V/I at I asym; R per: \
+         period-mean winding V over current; wave R, rms: each capture fitted alone, V0 pinned \
+         at the pooled fit"
+    );
+}
+
 fn render_free(s: &mut String, x: &InductanceResult) {
     let v = &x.volts;
     let _ = writeln!(
@@ -724,6 +769,7 @@ fn render_free(s: &mut String, x: &InductanceResult) {
         x.rest_captures, x.hold_captures
     );
     render_wave(s, x);
+    render_rungs(s, &x.rungs);
     let _ = writeln!(s, "  gates         {}", gate_line(&x.gates));
     if let Ok(w) = &x.wave {
         for (name, why) in &w.skipped {
@@ -1013,6 +1059,12 @@ mod tests {
              even captures 4.315 ohm, odd 4.372 ohm",
             "  edges         4 of 16 captures place a half-window edge at the midpoint between \
              two terminal samples: no sample caught it",
+            "  rungs         duty dir  n  I asym  (tau)  I late   DxVon (diff)     V/I   line  \
+             R per  wave R   rms",
+            "                 25% fwd  4   0.357  (188)   0.330   1.794      -   5.061  5.131  \
+             4.902   4.308   6.5",
+            "                 40% fwd  4   0.586  (187)   0.534   2.855      -   4.921  4.977  \
+             4.603   4.329   9.5  1 set aside",
             "  skipped       cross-route (not available: the run has no start from rest in TEL)",
             "  diagnostics   the routes below are reported and checked, and decide nothing",
             "  verdict       PROMOTED via the free-shaft route - r_q12 takes the winding R, the \

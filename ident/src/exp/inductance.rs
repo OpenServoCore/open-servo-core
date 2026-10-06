@@ -74,8 +74,8 @@ use core::fmt::Write as _;
 use super::held::{HeldRun, held_run};
 use super::rl::{Gate, Scales};
 use super::seek::{self, Watch};
-use super::wavefit::{WaveCfg, WaveRun, fit_run};
-use super::winding::{TapZeros, VoltRun, capture_volts, volt_run};
+use super::wavefit::{CaptureR, WaveCfg, WaveRun, fit_run};
+use super::winding::{CaptureVolts, Route, TapZeros, VoltRun, capture_volts, volt_run};
 use super::{AbortReason, Cmd, Experiment, RigParams};
 use crate::burst::{Capture, Chans, SAMPLE_US, nominal_cadence};
 use crate::fitmath::{lag_ls, linear_ls, median, quantile, stddev, theil_sen};
@@ -1222,7 +1222,132 @@ pub struct InductanceResult {
     pub ok: bool,
     /// The seated captures' route, with its own gates.
     pub held: HeldRun,
+    /// The from-rest captures rung by rung, each read on its own.
+    pub rungs: Vec<Rung>,
     pub warnings: Vec<String>,
+}
+
+/// One step duty and sign of the from-rest captures, medians over its
+/// repeats: what the rung reads on its own, beside the line through all of
+/// them. Diagnostics, deciding nothing.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Rung {
+    pub duty: f64,
+    pub forward: bool,
+    pub captures: usize,
+    /// The exponential through the ON-window centre currents: its settled
+    /// level, amps, and time constant, microseconds.
+    pub i_asym_a: f64,
+    pub tau_us: f64,
+    /// The last whole ON window's centre current, amps.
+    pub i_late_a: f64,
+    /// Commanded duty x the ON level, volts: the driven terminal as
+    /// sampled, and the terminals' difference when both were.
+    pub dv_on_driven_v: Option<f64>,
+    pub dv_on_diff_v: Option<f64>,
+    /// Duty x the pre-arm rail over `i_asym_a`, the convention of
+    /// [`super::wavefit::AtLimit`], and the waveform line read at the same
+    /// current.
+    pub v_over_i_ohm: f64,
+    pub line_v_over_i_ohm: Option<f64>,
+    /// Period-mean winding volts over the period-mean current, both at the
+    /// charge-balance asymptote. None without a measured voltage channel.
+    pub r_period_ohm: Option<f64>,
+    /// The waveform fit of each capture alone (V0 and the amplifier pinned
+    /// at the pooled fit, so only R moves per rung): R and rms over the
+    /// rung's captures kept, and how many were set aside.
+    pub wave_r_ohm: Option<f64>,
+    pub wave_rms_counts: Option<f64>,
+    pub set_aside: usize,
+}
+
+/// The from-rest captures grouped by step duty and sign, `fitted` carrying
+/// each capture's index in the run.
+fn rungs(
+    fitted: &[(usize, &Capture, CaptureFit)],
+    sc: &Scales,
+    wave: &Result<WaveRun, String>,
+) -> Vec<Rung> {
+    let rest: Vec<&(usize, &Capture, CaptureFit)> =
+        fitted.iter().filter(|(_, _, f)| f.from_rest).collect();
+    let forward = |c: &Capture| c.meta.step_q15 >= 0;
+    let mut keys: Vec<(f64, bool)> = rest.iter().map(|(_, c, f)| (f.duty, forward(c))).collect();
+    keys.sort_by(|a, b| a.0.total_cmp(&b.0).then(b.1.cmp(&a.1)));
+    keys.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-6 && a.1 == b.1);
+    let wave = wave.as_ref().ok();
+    let none = TapZeros::default();
+    keys.iter()
+        .map(|&(duty, fwd)| {
+            let g: Vec<&&(usize, &Capture, CaptureFit)> = rest
+                .iter()
+                .filter(|(_, c, f)| (f.duty - duty).abs() < 1e-6 && forward(c) == fwd)
+                .collect();
+            let med = |x: &dyn Fn(&CaptureFit) -> Option<f64>| {
+                median(&g.iter().filter_map(|(_, _, f)| x(f)).collect::<Vec<_>>())
+            };
+            let pos = |v: f64| (v > 0.0).then_some(v);
+            let i_asym = med(&|f| pos(f.asymptote_a)).unwrap_or(0.0);
+            let rail = med(&|f| Some(f.v_rail)).unwrap_or(0.0);
+            let volts: Vec<CaptureVolts> = g
+                .iter()
+                .filter_map(|(_, c, f)| capture_volts(c, f, sc, true, &none))
+                .filter(|v| v.route.is_some())
+                .collect();
+            let on = |route: &[Route], x: &dyn Fn(&CaptureVolts) -> Vec<f64>| {
+                median(
+                    &volts
+                        .iter()
+                        .filter(|v| v.route.is_some_and(|r| route.contains(&r)))
+                        .filter_map(|v| median(&x(v)))
+                        .collect::<Vec<_>>(),
+                )
+                .map(|v| duty * v)
+            };
+            let fits: Vec<&CaptureR> = wave.map_or(Vec::new(), |w| {
+                w.captures
+                    .iter()
+                    .filter(|r| g.iter().any(|(k, _, _)| *k == r.index))
+                    .collect()
+            });
+            let kept = |x: fn(&CaptureR) -> f64| {
+                median(
+                    &fits
+                        .iter()
+                        .filter(|r| !r.set_aside)
+                        .map(|r| x(r))
+                        .collect::<Vec<_>>(),
+                )
+            };
+            Rung {
+                duty,
+                forward: fwd,
+                captures: g.len(),
+                i_asym_a: i_asym,
+                tau_us: med(&|f| pos(f.tau_us)).unwrap_or(0.0),
+                i_late_a: med(&|f| f.windows.last().map(|w| w.level_a)).unwrap_or(0.0),
+                dv_on_driven_v: on(&[Route::DrivenTap, Route::Terminals], &|v| {
+                    v.hi_on.iter().map(|p| p.1).collect()
+                }),
+                dv_on_diff_v: on(&[Route::Terminals], &|v| v.on_v.clone()),
+                v_over_i_ohm: if i_asym > 0.0 {
+                    duty * rail / i_asym
+                } else {
+                    0.0
+                },
+                line_v_over_i_ohm: wave.and_then(|w| w.at(i_asym)).map(|a| a.v_over_i_ohm),
+                r_period_ohm: median(
+                    &volts
+                        .iter()
+                        .filter(|v| v.asymptote_a > 0.0)
+                        .map(|v| v.v_settled / v.asymptote_a)
+                        .collect::<Vec<_>>(),
+                ),
+                wave_r_ohm: kept(|r| r.r_ohm),
+                wave_rms_counts: kept(|r| r.rms_counts),
+                set_aside: fits.iter().filter(|r| r.set_aside).count(),
+            }
+        })
+        .collect()
 }
 
 /// Which of E8's routes feeds the gains.
@@ -1413,6 +1538,12 @@ pub fn fit_captures(caps: &[Capture], sc: &Scales, cfg: &FitCfg) -> Option<Induc
     };
     // A zero-duty capture is a rest reference: it only zeroes the taps.
     let refs: Vec<&Capture> = caps.iter().filter(|c| c.meta.step_q15 == 0).collect();
+    let free: Vec<usize> = caps
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.meta.step_q15 != 0 && !c.meta.seated)
+        .map(|(k, _)| k)
+        .collect();
     let (seated, caps): (Vec<Capture>, Vec<Capture>) = caps
         .iter()
         .filter(|c| c.meta.step_q15 != 0)
@@ -1433,14 +1564,15 @@ pub fn fit_captures(caps: &[Capture], sc: &Scales, cfg: &FitCfg) -> Option<Induc
         .filter_map(|c| fit_capture(c, sc, cfg).map(|f| (c, f)))
         .collect();
     let held = held_run(&seated, &TapZeros::from_rest(&refs), sc, cfg);
-    let fitted: Vec<(&Capture, CaptureFit)> = caps
+    let fitted: Vec<(usize, &Capture, CaptureFit)> = caps
         .iter()
-        .filter_map(|c| fit_capture(c, sc, cfg).map(|f| (c, f)))
+        .zip(&free)
+        .filter_map(|(c, &k)| fit_capture(c, sc, cfg).map(|f| (k, c, f)))
         .collect();
     if fitted.is_empty() && held.captures == 0 {
         return None;
     }
-    let fits: Vec<CaptureFit> = fitted.iter().map(|(_, f)| f.clone()).collect();
+    let fits: Vec<CaptureFit> = fitted.iter().map(|(_, _, f)| f.clone()).collect();
     let rest: Vec<&CaptureFit> = fits.iter().filter(|f| f.from_rest).collect();
     let holds: Vec<&CaptureFit> = fits.iter().filter(|f| !f.from_rest).collect();
     let hold = holds.len();
@@ -1620,17 +1752,17 @@ pub fn fit_captures(caps: &[Capture], sc: &Scales, cfg: &FitCfg) -> Option<Induc
     // a channel that gives the winding, the pre-arm rail otherwise. A run
     // that mixes the two pools only the measured captures.
     let none = TapZeros::default();
-    let measured: Vec<(&CaptureFit, super::winding::CaptureVolts)> = fitted
+    let measured: Vec<(&CaptureFit, CaptureVolts)> = fitted
         .iter()
-        .filter(|(_, f)| f.from_rest)
-        .filter_map(|(c, f)| capture_volts(c, f, sc, true, &none).map(|v| (f, v)))
+        .filter(|(_, _, f)| f.from_rest)
+        .filter_map(|(_, c, f)| capture_volts(c, f, sc, true, &none).map(|v| (f, v)))
         .filter(|(_, v)| v.route.is_some())
         .collect();
     let volts = if measured.is_empty() {
-        let pre: Vec<(&CaptureFit, super::winding::CaptureVolts)> = fitted
+        let pre: Vec<(&CaptureFit, CaptureVolts)> = fitted
             .iter()
-            .filter(|(_, f)| f.from_rest)
-            .filter_map(|(c, f)| capture_volts(c, f, sc, false, &none).map(|v| (f, v)))
+            .filter(|(_, _, f)| f.from_rest)
+            .filter_map(|(_, c, f)| capture_volts(c, f, sc, false, &none).map(|v| (f, v)))
             .collect();
         volt_run(&pre, cfg.pair_min_duty_span)
     } else {
@@ -1798,6 +1930,7 @@ pub fn fit_captures(caps: &[Capture], sc: &Scales, cfg: &FitCfg) -> Option<Induc
     if fits.is_empty() {
         warnings.clear();
     }
+    let rungs = rungs(&fitted, sc, &wave);
     Some(InductanceResult {
         l_ripple_h,
         l_ripple_bracket: bracket(&ls, l_ripple_h),
@@ -1844,6 +1977,7 @@ pub fn fit_captures(caps: &[Capture], sc: &Scales, cfg: &FitCfg) -> Option<Induc
         gates,
         ok,
         held,
+        rungs,
         warnings,
     })
 }
@@ -2934,6 +3068,64 @@ mod tests {
         .expect("a fit");
         assert_eq!(r.blocking(), vec!["split-halves"]);
         assert_eq!(r.reason(), "too few bursts to split into two halves");
+    }
+
+    /// The bench run rung by rung: four repeats at each step duty and sign,
+    /// the late window under the asymptote, the driven terminal measured and
+    /// no difference, and capture 11 set aside on its own rung. With the
+    /// limit at the 40% rung's settled current, at_limit reads the rung's
+    /// line V/I to rounding, and the rung's own duty x rail over current
+    /// lands within 2% of it.
+    #[test]
+    fn the_rungs_read_each_step_duty_alone() {
+        use crate::exp::testkit::{board_d_scales, mg90_2s};
+        let sc = board_d_scales();
+        let caps = mg90_2s();
+        let at = FitCfg::default().with_limit(280.0 * sc.amps_per_count);
+        let r = fit_captures(&caps, &sc, &at).expect("a fit");
+        let keys: Vec<(u32, bool, usize, usize)> = r
+            .rungs
+            .iter()
+            .map(|g| {
+                let pct = (g.duty * 100.0).round() as u32;
+                (pct, g.forward, g.captures, g.set_aside)
+            })
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                (25, true, 4, 0),
+                (25, false, 4, 0),
+                (40, true, 4, 1),
+                (40, false, 4, 0)
+            ]
+        );
+        for g in &r.rungs {
+            assert!(g.i_late_a < g.i_asym_a, "{g:?}");
+            assert!((150.0..250.0).contains(&g.tau_us), "{g:?}");
+            assert!(
+                g.dv_on_driven_v.is_some() && g.dv_on_diff_v.is_none(),
+                "{g:?}"
+            );
+            assert!(g.r_period_ohm.is_some() && g.wave_r_ohm.is_some(), "{g:?}");
+        }
+
+        let top = &r.rungs[2];
+        let at_top = FitCfg::default().with_limit(top.i_asym_a);
+        let r = fit_captures(&caps, &sc, &at_top).expect("a fit");
+        let lim = r
+            .wave
+            .as_ref()
+            .expect("a waveform fit")
+            .at_limit
+            .expect("V/I");
+        let line = r.rungs[2].line_v_over_i_ohm.expect("the line at the rung");
+        assert_eq!(format!("{line:.3}"), format!("{:.3}", lim.v_over_i_ohm));
+        assert!(
+            (r.rungs[2].v_over_i_ohm / lim.v_over_i_ohm - 1.0).abs() < 0.02,
+            "{:?} against {lim:?}",
+            r.rungs[2]
+        );
     }
 
     /// The whole plan `osc cal` arms, through a rev 2A front end on a stiff
