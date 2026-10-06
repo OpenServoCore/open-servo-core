@@ -140,6 +140,8 @@ pub struct RigParams {
     /// The pot stops, `raw_min` and `raw_max`: where a seek toward a stop
     /// must come to rest. None until `osc cal` found them.
     pub stops: Option<(u16, u16)>,
+    /// `drive_polarity` in force: which terminal a burst step drives.
+    pub drive_polarity: bool,
 }
 
 impl RigParams {
@@ -154,6 +156,14 @@ impl RigParams {
             stall_polls: seek::STALL_POLLS,
             pot: Pot::RAW,
             stops: None,
+            drive_polarity: true,
+        }
+    }
+
+    pub fn with_polarity(self, drive_polarity: bool) -> Self {
+        Self {
+            drive_polarity,
+            ..self
         }
     }
 
@@ -1099,6 +1109,7 @@ mod tests {
             window_floor_q15: 4356,
             window_v_floor_q15: 4356,
             amps_per_count: 0.0,
+            drive_polarity: true,
         };
         let hold = |i_abort: i16| {
             let mut s = FakeServo::new(3.37);

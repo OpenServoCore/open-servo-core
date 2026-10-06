@@ -468,8 +468,7 @@ fn find_edges(vt: &[f64], t_of: &dyn Fn(usize) -> f64, step: usize) -> Vec<Edge>
 /// One capture's streams, its edges found. `both` reads the idle terminal
 /// too when the capture sampled it.
 fn split(index: usize, cap: &Capture, sc: &Scales, both: bool) -> Result<Raw, &'static str> {
-    let forward = cap.meta.step_q15 >= 0;
-    let (bit, idle) = if forward {
+    let (bit, idle) = if cap.meta.drives_a() {
         (CHAN_VMOTOR_A, CHAN_VMOTOR_B)
     } else {
         (CHAN_VMOTOR_B, CHAN_VMOTOR_A)
@@ -522,7 +521,7 @@ fn split(index: usize, cap: &Capture, sc: &Scales, both: bool) -> Result<Raw, &'
     Ok(Raw {
         index,
         duty_q15: cap.meta.step_q15.unsigned_abs(),
-        forward,
+        forward: cap.meta.step_q15 >= 0,
         pos: cap.meta.pos,
         rail_v: cap.meta.vbus_raw as f64 * sc.v_rail_per_count,
         edges,
@@ -1168,7 +1167,7 @@ fn grid(
     if raws.len() < 2 {
         return Err(
             if rest.iter().all(|(_, c)| {
-                let bit = if c.meta.step_q15 >= 0 {
+                let bit = if c.meta.drives_a() {
                     CHAN_VMOTOR_A
                 } else {
                     CHAN_VMOTOR_B
@@ -1837,7 +1836,7 @@ mod tests {
                 for _ in 0..4 {
                     let q = (sgn * pct * 32767 / 100) as i16;
                     let p = SynthBurst {
-                        chans: Chans::Driven.for_step(q),
+                        chans: Chans::Driven.for_step(q, plant.drive_polarity),
                         ..plant.clone()
                     };
                     caps.push(p.capture(q, 0));
@@ -1875,7 +1874,7 @@ mod tests {
                 for _ in 0..4 {
                     let q = (sgn * pct * 32767 / 100) as i16;
                     let p = SynthBurst {
-                        chans: chans.for_step(q),
+                        chans: chans.for_step(q, plant.drive_polarity),
                         ..plant.clone()
                     };
                     caps.push(p.capture(q, 0));

@@ -82,8 +82,8 @@ pub const fn frame_len(chans: u8) -> usize {
 }
 
 /// The extras a capture asks for. `Driven` samples only the tap of the
-/// terminal the step drives (OUT1 -> MOT_A -> vmotor_a for a forward step,
-/// vmotor_b for a reverse one): the chopping leg, so one channel gives the
+/// terminal the step drives ([`Meta::drives_a`]: OUT1 -> MOT_A -> vmotor_a,
+/// else vmotor_b): the chopping leg, so one channel gives the
 /// winding's high side through the ON phase and the OFF phase both, at
 /// frame_len 2. Every extra thins the shunt stream: at frame_len 3 a 20%
 /// ON window is three shunt samples and no window fit survives it. `Diff`
@@ -99,10 +99,10 @@ pub enum Chans {
 }
 
 impl Chans {
-    pub fn for_step(self, step_q15: i16) -> u8 {
+    pub fn for_step(self, step_q15: i16, drive_polarity: bool) -> u8 {
         match self {
             Chans::Fixed(m) => m,
-            Chans::Driven if step_q15 >= 0 => CHAN_VMOTOR_A,
+            Chans::Driven if drives_a(step_q15, drive_polarity) => CHAN_VMOTOR_A,
             Chans::Driven => CHAN_VMOTOR_B,
             Chans::Diff => CHANS_DIFF,
         }
@@ -122,6 +122,12 @@ impl Chans {
     }
 }
 
+/// A step drives terminal A high: the servo negates a step under reversed
+/// wiring as it does an OpenLoop duty.
+fn drives_a(step_q15: i16, drive_polarity: bool) -> bool {
+    (step_q15 >= 0) == drive_polarity
+}
+
 /// Samples per PWM period the sample clock predicts. Center-aligned, so one
 /// period is 2 x ARR of HCLK. The measured cadence is gated against this.
 pub fn nominal_cadence(pwm_arr: u16) -> f64 {
@@ -130,7 +136,7 @@ pub fn nominal_cadence(pwm_arr: u16) -> f64 {
 
 /// What the host knew about the servo just before the arm. The burst
 /// suspends the scan, so neither number is measurable inside the window.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Pre {
     /// Duty in force over the pre-step half of the capture, q15.
     pub pre_q15: i16,
@@ -142,6 +148,22 @@ pub struct Pre {
     pub pos: u16,
     /// The rotor is held against a mechanical stop: no back-EMF.
     pub seated: bool,
+    /// `drive_polarity` in force.
+    pub drive_polarity: bool,
+}
+
+impl Default for Pre {
+    fn default() -> Self {
+        Self {
+            pre_q15: 0,
+            vbus_raw: 0,
+            bias: 0,
+            vmotor_bias: 0,
+            pos: 0,
+            seated: false,
+            drive_polarity: true,
+        }
+    }
 }
 
 /// The burst header as one READ returns it, minus the page payload.
@@ -165,6 +187,16 @@ pub struct Meta {
     /// Position read before the arm; 0 when the recording predates it.
     pub pos: u16,
     pub seated: bool,
+    /// true when the recording predates it: that firmware drove the step's
+    /// raw sign whatever the polarity.
+    pub drive_polarity: bool,
+}
+
+impl Meta {
+    /// The step drives terminal A high.
+    pub fn drives_a(&self) -> bool {
+        drives_a(self.step_q15, self.drive_polarity)
+    }
 }
 
 impl Default for Meta {
@@ -184,6 +216,7 @@ impl Default for Meta {
             vmotor_bias: 0,
             pos: 0,
             seated: false,
+            drive_polarity: true,
         }
     }
 }
@@ -490,6 +523,7 @@ pub fn capture<IO: BurstIo>(
             vmotor_bias: pre.vmotor_bias,
             pos: pre.pos,
             seated: pre.seated,
+            drive_polarity: pre.drive_polarity,
         },
     })
 }
@@ -581,14 +615,15 @@ fn walk_pages<IO: BurstIo>(io: &mut IO, cfg: &CaptureCfg) -> Result<Vec<u16>, Er
 /// the first data row only - they are one capture's constants, not a series.
 pub const CSV_HEADER: &str = "k,code,pre_q15,step_q15,step_index,start_cnt,pwm_arr,\
                               start_dir,restore_dir,vbus_raw,bias,chans,frame_len,vmotor_bias,\
-                              pos,seated";
+                              pos,seated,drive_polarity";
 
 /// Columns a first row carries: the eleven every recording has, the three
-/// the voltage channels added, then the two the held variant added. A
-/// recording with only the eleven is a shunt-only capture.
+/// the voltage channels added, the two the held variant added, then the
+/// polarity. A recording with only the eleven is a shunt-only capture.
 const CSV_META_COLS: usize = 11;
 const CSV_CHANS_COLS: usize = 14;
-const CSV_COLS: usize = 16;
+const CSV_HELD_COLS: usize = 16;
+const CSV_COLS: usize = 17;
 
 pub fn to_csv(cap: &Capture) -> String {
     let m = &cap.meta;
@@ -600,7 +635,7 @@ pub fn to_csv(cap: &Capture) -> String {
             let _ = fmt::Write::write_fmt(
                 &mut s,
                 format_args!(
-                    "0,{v},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+                    "0,{v},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
                     m.pre_q15,
                     m.step_q15,
                     m.step_index,
@@ -614,7 +649,8 @@ pub fn to_csv(cap: &Capture) -> String {
                     m.frame_len,
                     m.vmotor_bias,
                     m.pos,
-                    m.seated as u8
+                    m.seated as u8,
+                    m.drive_polarity as u8
                 ),
             );
         } else {
@@ -679,9 +715,12 @@ pub fn from_csv(text: &str) -> Result<Capture, CsvError> {
                     return Err(err("frame_len does not match chans"));
                 }
             }
-            if c.len() >= CSV_COLS {
+            if c.len() >= CSV_HELD_COLS {
                 meta.pos = u16at(14)?;
                 meta.seated = u8at(15)? != 0;
+            }
+            if c.len() >= CSV_COLS {
+                meta.drive_polarity = u8at(16)? != 0;
             }
         }
         samples.push(raw);
@@ -831,6 +870,7 @@ mod tests {
             vmotor_bias: 779,
             pos: 122,
             seated: true,
+            drive_polarity: false,
         };
         let cap = capture(
             &mut f,
@@ -854,6 +894,7 @@ mod tests {
         assert_eq!(cap.meta.bias, 118);
         assert_eq!((cap.meta.chans, cap.meta.frame_len), (5, 3));
         assert_eq!((cap.meta.pos, cap.meta.seated), (122, true));
+        assert!(!cap.meta.drive_polarity);
         assert_eq!(f.armed, Some(13107));
         assert!(f.released, "arm must be dropped after the walk");
     }
@@ -1091,10 +1132,35 @@ mod tests {
                 vmotor_bias: 779,
                 pos: 122,
                 seated: true,
+                drive_polarity: false,
             },
         };
         let back = from_csv(&to_csv(&cap)).expect("parse");
         assert_eq!(back, cap);
+    }
+
+    /// A recording without the polarity column took its step with the raw
+    /// sign, so it reads as polarity 1; under polarity 0 the step's sign
+    /// flips the terminal it drives.
+    #[test]
+    fn the_driven_terminal_follows_the_drive_polarity() {
+        let held = "h\n0,113,0,-8520,485,1094,1200,1,0,2169,118,1,2,779,122,1\n1,112\n";
+        assert!(from_csv(held).expect("parse").meta.drive_polarity);
+        for (step, polarity, a) in [
+            (8520, true, true),
+            (-8520, true, false),
+            (8520, false, false),
+            (-8520, false, true),
+        ] {
+            let meta = Meta {
+                step_q15: step,
+                drive_polarity: polarity,
+                ..Meta::default()
+            };
+            assert_eq!(meta.drives_a(), a, "step {step} polarity {polarity}");
+            let mask = if a { CHAN_VMOTOR_A } else { CHAN_VMOTOR_B };
+            assert_eq!(Chans::Driven.for_step(step, polarity), mask);
+        }
     }
 
     #[test]
@@ -1178,7 +1244,7 @@ mod tests {
             assert_eq!(SAMPLES % c.frame_len(), 0, "chans {m}");
         }
         assert_eq!(Chans::parse("diff"), Some(Chans::Diff));
-        assert_eq!(Chans::Diff.for_step(-8520), CHANS_DIFF);
+        assert_eq!(Chans::Diff.for_step(-8520, true), CHANS_DIFF);
         assert_eq!(Chans::parse("11"), Some(Chans::Fixed(CHANS_DIFF)));
         assert_eq!(Chans::parse("16"), None);
     }

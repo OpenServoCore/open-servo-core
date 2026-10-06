@@ -330,6 +330,7 @@ pub(super) fn bench() -> Front {
             window_floor_q15: 4356,
             window_v_floor_q15: 4356,
             amps_per_count: sc.amps_per_count,
+            drive_polarity: true,
         },
         stall: Stall {
             folds: true,

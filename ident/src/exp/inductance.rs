@@ -2143,7 +2143,10 @@ impl Experiment for Inductance {
                 Cmd::Burst {
                     duty_q15: a.step_q15,
                     pre_q15: a.pre_q15,
-                    chans: self.cfg.chans.for_step(a.step_q15),
+                    chans: self
+                        .cfg
+                        .chans
+                        .for_step(a.step_q15, self.params.drive_polarity),
                     seated: false,
                 }
             }

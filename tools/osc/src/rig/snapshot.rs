@@ -52,6 +52,11 @@ pub(crate) fn read_u16<P: Pipe>(c: &mut Client<P>, id: Id, reg: Reg) -> Result<u
     Ok(u16::from_le_bytes([raw[0], raw[1]]))
 }
 
+pub(crate) fn read_bool<P: Pipe>(c: &mut Client<P>, id: Id, reg: Reg) -> Result<bool> {
+    let raw = c.read(id, reg.addr, 1).context("field read")?;
+    Ok(*raw.first().context("empty field read")? != 0)
+}
+
 pub(crate) fn take_snapshot(c: &mut Client<NusbPipe>, id: Id, path: &Path) -> Result<()> {
     let mut map = BTreeMap::new();
     for (name, reg) in SNAPSHOT_FIELDS {

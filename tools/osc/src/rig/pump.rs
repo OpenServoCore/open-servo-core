@@ -300,6 +300,7 @@ pub(crate) fn capture_burst<P: Pipe>(
         vmotor_bias: super::snapshot::read_u16(c, id, telemetry::VMOTOR_BIAS_COUNTS)?,
         pos: super::snapshot::read_u16(c, id, telemetry::POS)?,
         seated,
+        drive_polarity: super::snapshot::read_bool(c, id, config::DRIVE_POLARITY)?,
     };
     let mut io = WireBurstIo { c, id };
     match burst::capture(&mut io, duty_q15, chans, pre, &CaptureCfg::default()) {

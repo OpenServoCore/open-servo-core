@@ -94,6 +94,8 @@ struct Fsm {
     /// step but a zero one.
     v_max_counts: u16,
     settle: u16,
+    /// The step in the wiring's frame: `drive_polarity` is applied at the
+    /// arm, since the kernel's output negation never sees the step.
     duty_q15: i16,
     decay: DecayMode,
     chans: u8,
@@ -233,7 +235,8 @@ fn handshake(p: *mut ControlTable, s: u8, arm: u8) {
             // The field rule already caps |duty_q15| at duty_max_q15; clamping
             // again costs one tick and cannot be skipped by a stale rule.
             let max = loop_cur.duty_max_q15.min(i16::MAX as u16) as i32;
-            f.duty_q15 = (req.duty_q15 as i32).clamp(-max, max) as i16;
+            let duty = (req.duty_q15 as i32).clamp(-max, max) as i16;
+            f.duty_q15 = if lim_cfg.drive_polarity { duty } else { -duty };
             f.decay = match lim_cfg.openloop_decay {
                 DecaySelect::Slow => DecayMode::Slow,
                 DecaySelect::Fast => DecayMode::Fast,
@@ -476,6 +479,7 @@ mod tests {
         shared.table.with_mut(|t| {
             t.control.lifecycle.torque_enable = true;
             t.control.lifecycle.mode = Mode::OpenLoop;
+            t.config.limits.drive_polarity = true;
             t.config.loop_current.duty_max_q15 = i16::MAX as u16;
             t.config.pos_limits.pos_min_soft_counts = SOFT_MIN;
             t.config.pos_limits.pos_max_soft_counts = SOFT_MAX;
@@ -538,6 +542,20 @@ mod tests {
                 r.set(|t| t.telemetry.estimates.vbus_counts = rail);
                 assert_eq!(r.arm(duty), state::ARMED, "rail {rail} duty {duty}");
                 assert_eq!(fsm().duty_q15, duty);
+            }
+        }
+    }
+
+    /// The step is logical like an OpenLoop duty, so under reversed wiring
+    /// it drives the same way as the kernel's negated pre-step hold.
+    #[test]
+    fn burst_step_follows_the_drive_polarity() {
+        for (polarity, wiring) in [(true, EDGE_2S), (false, -EDGE_2S)] {
+            for sign in [1, -1] {
+                let r = rig();
+                r.set(|t| t.config.limits.drive_polarity = polarity);
+                assert_eq!(r.arm(sign * EDGE_2S), state::ARMED);
+                assert_eq!(fsm().duty_q15, sign * wiring, "polarity {polarity}");
             }
         }
     }

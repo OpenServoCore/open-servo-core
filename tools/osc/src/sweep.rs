@@ -1103,6 +1103,7 @@ mod tests {
             window_floor_q15: 4356,
             window_v_floor_q15: 4356,
             amps_per_count: 3.3 / 4096.0 / (15.0 * 0.060),
+            drive_polarity: true,
         }
     }
 

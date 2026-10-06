@@ -1076,6 +1076,9 @@ pub struct SynthBurst {
     /// window - the bench captures show it and so must this.
     pub latch_delay: usize,
     pub chans: u8,
+    /// false: the wiring is reversed and the servo negates the step, so a
+    /// positive one drives terminal B high.
+    pub drive_polarity: bool,
 }
 
 /// Body diode forward drop, volts.
@@ -1122,6 +1125,7 @@ impl SynthBurst {
             step_index: 485,
             latch_delay: 21,
             chans: 0,
+            drive_polarity: true,
         }
     }
 
@@ -1162,7 +1166,7 @@ impl SynthBurst {
         let a_amp = 1.0 - (-SAMPLE_US / SUBSTEPS as f64 / self.settle_us).exp();
         let a_tap = 1.0 - (-SAMPLE_US / SUBSTEPS as f64 / self.tap_us).exp();
         let vb_v = self.vb * self.adc_lsb_v;
-        let fwd = step_q15 >= 0;
+        let fwd = (step_q15 >= 0) == self.drive_polarity;
         // each slot's channel bit, 0 for the shunt
         let mut slots = vec![0u8];
         for b in [CHAN_VMOTOR_A, CHAN_VMOTOR_B, CHAN_VBUS] {
@@ -1272,6 +1276,7 @@ impl SynthBurst {
                 chans: self.chans,
                 frame_len: fl as u8,
                 vmotor_bias: self.vb.round() as u16,
+                drive_polarity: self.drive_polarity,
                 ..Meta::default()
             },
         }

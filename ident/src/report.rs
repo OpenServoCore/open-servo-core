@@ -989,7 +989,7 @@ mod tests {
                         l: 0.79e-3,
                         v0: 0.12,
                         v_rail: 7.2,
-                        chans: chans.for_step(q),
+                        chans: chans.for_step(q, true),
                         ..SynthBurst::board_d().with_bridge()
                     };
                     caps.extend([p.capture(q, 0), p.capture(q, 0)]);

@@ -177,10 +177,10 @@ pub struct CaptureVolts {
     pub notes: Vec<String>,
 }
 
-/// The chopping leg follows the step's sign: positive drives OUT1, which is
-/// MOT_A and the vmotor_a tap.
-fn legs(step_q15: i16) -> (u8, u8) {
-    if step_q15 >= 0 {
+/// The chopping leg: OUT1, MOT_A and the vmotor_a tap when the step drives
+/// A high.
+fn legs(drives_a: bool) -> (u8, u8) {
+    if drives_a {
         (CHAN_VMOTOR_A, CHAN_VMOTOR_B)
     } else {
         (CHAN_VMOTOR_B, CHAN_VMOTOR_A)
@@ -253,7 +253,7 @@ pub fn capture_volts(
     }
     let fl = f.shunt_stride;
     let mut notes = Vec::new();
-    let (hi_bit, lo_bit) = legs(cap.meta.step_q15);
+    let (hi_bit, lo_bit) = legs(cap.meta.drives_a());
     let mut usable = |bit: u8| -> Option<usize> {
         let s = cap.slot(bit)?;
         if cap.stream(s).contains(&ADC_FULL_SCALE) {
@@ -299,13 +299,10 @@ pub fn capture_volts(
     };
     if measured && route.is_none() && cap.meta.chans != 0 {
         notes.push(format!(
-            "chans {} gives no winding voltage on a {} step; the pre-arm rail stands in",
+            "chans {} gives no winding voltage on a step driving terminal {}; the pre-arm rail \
+             stands in",
             cap.meta.chans,
-            if cap.meta.step_q15 >= 0 {
-                "forward"
-            } else {
-                "reverse"
-            }
+            if cap.meta.drives_a() { "A" } else { "B" }
         ));
     }
     let vbv = vb.unwrap_or(0.0);
@@ -772,7 +769,7 @@ mod tests {
             for sgn in [1i32, -1] {
                 let q = (sgn * pct * 32767 / 100) as i16;
                 let p = SynthBurst {
-                    chans: chans.for_step(q),
+                    chans: chans.for_step(q, plant.drive_polarity),
                     ..plant.clone()
                 };
                 caps.push(p.capture(q, 0));
@@ -780,7 +777,7 @@ mod tests {
         }
         for sgn in [1i16, -1] {
             let p = SynthBurst {
-                chans: chans.for_step(sgn),
+                chans: chans.for_step(sgn, plant.drive_polarity),
                 ..plant.clone()
             };
             caps.push(p.capture(sgn * 8520, sgn * 3276));

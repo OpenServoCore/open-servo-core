@@ -198,7 +198,7 @@ mod tests {
         servo: &mut FakeServo,
         chans: Chans,
     ) -> (InductanceResult, Option<ResistanceResult>, Winding) {
-        let params = crate::exp::testkit::rig();
+        let params = crate::exp::testkit::rig().with_polarity(servo.burst.drive_polarity);
         let cfg = InductanceCfg {
             repeats: 1,
             i_max_a: 1.0,
@@ -281,6 +281,27 @@ mod tests {
         );
     }
 
+    /// Reversed wiring under `drive_polarity` 0: the servo negates every
+    /// step, so a positive one drives terminal B high, and the free burst
+    /// promotes only when the host samples and reads the terminal driven.
+    #[test]
+    fn a_reversed_servo_promotes_its_free_burst() {
+        let mut servo = FakeServo::new(3.37);
+        servo.dynamic = true;
+        servo.burst = SynthBurst {
+            drive_polarity: false,
+            ..usb_plant()
+        };
+        let (e8, e2, w) = front(&mut servo, Chans::Driven);
+        assert!(e8.promotable(), "{:?}", e8.blocking());
+        assert!(e2.is_none(), "E2 ran behind a promoted E8");
+        assert_eq!((w.r_from, w.l_from), (Source::Burst, Source::Burst));
+        let r = w.r_ohm.unwrap();
+        let want = plant_v_over_i(&usb_plant(), I_LIM_A);
+        assert!((r - want).abs() / want < 0.03, "V/I {r} of {want}");
+        assert!((w.l_h - 0.6e-3).abs() / 0.6e-3 < 0.05, "L {}", w.l_h);
+    }
+
     #[test]
     fn a_declined_burst_hands_r_to_the_stall_and_l_to_the_default() {
         let mut servo = FakeServo::new(3.37);
@@ -310,7 +331,7 @@ mod tests {
         use crate::exp::inductance::{BurstRoute, FitCfg, fit_captures};
         let plant = usb_plant();
         let at = |q: i16| SynthBurst {
-            chans: Chans::Driven.for_step(q),
+            chans: Chans::Driven.for_step(q, plant.drive_polarity),
             ..plant.clone()
         };
         let mut free = Vec::new();
@@ -438,6 +459,7 @@ mod tests {
             window_floor_q15: 4356,
             window_v_floor_q15: 4356,
             amps_per_count: sc.amps_per_count,
+            drive_polarity: true,
         };
         let rail = lim.vbus as f64 * sc.v_term_per_count;
         let plan = DutyPlan::new(&lim, w.r_vpc, None);
