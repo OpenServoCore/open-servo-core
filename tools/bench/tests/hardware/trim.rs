@@ -35,6 +35,13 @@ const GAPS: u8 = 8;
 const LIE_GAP_US: u16 = 392;
 /// One window's clamp (drivers `trim::STEPS_MAX`).
 const STEPS_MAX: i32 = 4;
+/// The accumulated-trim rail (drivers `trim::TOTAL_MAX`).
+const TOTAL_MAX: i32 = 15;
+/// Trains the anchor may need: the trim enters this file wherever the
+/// suite's hot-loop food left it (the tracker walked it to the +15 rail
+/// on the bench), so the walk back from the rail at STEPS_MAX per train,
+/// one train to identify the step effect, one to confirm.
+const ANCHOR_TRAINS_MAX: u32 = (TOTAL_MAX as u32).div_ceil(STEPS_MAX as u32) + 3;
 
 fn read_trim(b: &mut Bench) -> i32 {
     let status = b.status_ok(&build_read(b.id(), TRIM_STEPS, 1));
@@ -52,23 +59,32 @@ fn train(b: &mut Bench, announce_gap_us: u16) {
     sleep(Duration::from_millis(SETTLE_MS));
 }
 
+/// Converge the CAL loop and return the converged trim (protocol sec 9.3:
+/// converged = the read-back stable between trains). Two trains from
+/// boot; more when the trim enters off-center -- a fixed pair clamped to
+/// STEPS_MAX leaves a railed trim 7 steps short, and `|start| <= 8` cannot
+/// tell that from converged (bench: a lie read +2, truth pulled back 8).
+/// The tests' subject is plant DIRECTION, so a LIE never goes first: it
+/// would poison the apply->remeasure step-effect identification.
+fn anchor(b: &mut Bench) -> i32 {
+    train(b, GAP_US);
+    let mut trim = read_trim(b);
+    for _ in 1..ANCHOR_TRAINS_MAX {
+        train(b, GAP_US);
+        let next = read_trim(b);
+        if next == trim {
+            return trim;
+        }
+        trim = next;
+    }
+    panic!("precondition: CAL did not converge in {ANCHOR_TRAINS_MAX} trains, trim {trim}")
+}
+
 #[serial]
 #[test]
 fn lying_train_trims_and_truth_pulls_back() {
     let mut b = bench();
-    // Anchor: converge the CAL loop first (protocol sec 9.3 boot guidance;
-    // the tracker test's same first step). On a freshly rebooted chip the
-    // step effect is unidentified, and a LIE as the first train poisons
-    // the apply->remeasure identification pair -- the pull-back then
-    // overshoots. The test's subject is plant DIRECTION, not
-    // identification-from-cold.
-    train(&mut b, GAP_US);
-    train(&mut b, GAP_US);
-    let start = read_trim(&mut b);
-    assert!(
-        start.abs() <= 8,
-        "precondition: trim near center, got {start} (reboot the servo)"
-    );
+    let start = anchor(&mut b);
 
     train(&mut b, LIE_GAP_US);
     let lied = read_trim(&mut b);
@@ -124,11 +140,9 @@ fn tracker_follows_host_detune() {
     let frame = build_instruction(b.id(), Opcode::Write, Inst::FLAG_NOREPLY, &payload);
     let burst = vec![frame; FOOD_FRAMES];
 
-    // Anchor: two truthful trains converge the CAL loop; the food after
-    // them lets the tracker baseline capture the true host seam.
-    train(&mut b, GAP_US);
-    train(&mut b, GAP_US);
-    let start = read_trim(&mut b);
+    // The food after the anchor lets the tracker baseline capture the true
+    // host seam.
+    let start = anchor(&mut b);
     feed(&mut b, &burst, BASELINE_BURSTS);
 
     // Host walks away -6.9k ppm with no CAL: only the tracker can see it.
