@@ -2,8 +2,9 @@
 //! tool repeats, the bootstrap that turns them into a ready adapter
 //! [`Wire`], and the common report pieces.
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use clap::Args;
+use osc_client::descriptor::Descriptor;
 
 use crate::wire::Wire;
 
@@ -71,6 +72,23 @@ pub fn parse_u16(s: &str) -> Result<u16> {
     })
 }
 
+/// The osc-servo descriptor the bench tools name fields through.
+const DESCRIPTOR: &str = include_str!("../../../descriptors/osc-servo/0.1.json");
+
+/// A control-table address: decimal, `0x` hex, or a descriptor field name.
+pub fn parse_addr(s: &str) -> Result<u16> {
+    if s.starts_with(|c: char| c.is_ascii_digit()) {
+        return parse_u16(s);
+    }
+    let d = Descriptor::parse(DESCRIPTOR).context("built-in descriptor")?;
+    match d.field(s) {
+        Some(f) => Ok(f.addr),
+        None => bail!(
+            "no control-table field named {s:?}; give a field name, decimal, or 0x-prefixed hex like 0x0100"
+        ),
+    }
+}
+
 /// Parse one profile span given as `addr:count` (protocol sec 5.2 bounds).
 pub fn parse_span(s: &str) -> Result<(u16, u8)> {
     let (a, c) = s
@@ -82,4 +100,27 @@ pub fn parse_span(s: &str) -> Result<(u16, u8)> {
         bail!("span {s}: addr caps at 1023, count at 1..=63");
     }
     Ok((addr, count))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use osc_servo_core::regions::control::addr::lifecycle::GOAL_POSITION;
+
+    #[test]
+    fn decimal_hex_and_name_resolve_to_the_same_address() {
+        let decimal = parse_addr(&GOAL_POSITION.to_string()).unwrap();
+        assert_eq!(decimal, GOAL_POSITION);
+        assert_eq!(
+            parse_addr(&format!("{GOAL_POSITION:#06x}")).unwrap(),
+            decimal
+        );
+        assert_eq!(parse_addr("goal_position").unwrap(), decimal);
+    }
+
+    #[test]
+    fn an_unknown_name_says_how_to_write_hex() {
+        let err = parse_addr("goal_pos").unwrap_err().to_string();
+        assert!(err.contains("goal_pos") && err.contains("0x"), "{err}");
+    }
 }

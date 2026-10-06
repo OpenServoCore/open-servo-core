@@ -4,18 +4,11 @@
 //! commits + sequences the ack break.
 
 use anyhow::{Result, bail};
-use bench::cli::{Connect, Target, gate_fail_rate, parse_hex, print_conn};
+use bench::cli::{Connect, Target, gate_fail_rate, parse_addr, parse_hex, print_conn};
 use bench::osc::build_write;
 use bench::run::{Stats, measure};
 use clap::Parser;
 use osc_protocol::wire::ResultCode;
-
-/// Control-table address of `goal_position` (osc-servo-core
-/// `regions::control`, CONTROL_BASE_ADDR 0x180 + lifecycle offset 4; value
-/// pinned here to keep the heavy core crate out of the bench build). The
-/// hot-loop register: its ge/le soft-limit rules make it the representative
-/// write-validation workload.
-const GOAL_POSITION_ADDR: u16 = 0x0184;
 
 #[derive(Parser, Debug)]
 #[command(about = "WRITE a control-table span over osc-native and report TURNAROUND.")]
@@ -24,8 +17,10 @@ struct Args {
     conn: Connect,
     #[command(flatten)]
     target: Target,
-    /// Control-table address.
-    #[arg(short, long, default_value_t = GOAL_POSITION_ADDR)]
+    /// Control-table address: decimal, 0x-hex, or a field name. The default
+    /// is the hot-loop register, whose ge/le soft-limit rules make it the
+    /// representative write-validation workload.
+    #[arg(short, long, default_value = "goal_position", value_parser = parse_addr)]
     addr: u16,
     /// Payload as hex bytes (default: goal_position = 0).
     #[arg(short = 'D', long, default_value = "00000000")]
