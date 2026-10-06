@@ -55,7 +55,7 @@ use osc_ident::sources;
 use osc_ident::units::{self, SenseParams};
 
 use crate::capture::envelope;
-use crate::rig::centre::centre;
+use crate::rig::centre::{adopt_polarity, centre};
 use crate::rig::csvio::{self, OutDir, SnapshotLog};
 use crate::rig::pump::{Pump, with_guard, write_reg};
 use crate::rig::snapshot::{self, read_u16};
@@ -513,8 +513,9 @@ struct Found {
 /// jam check and the burst for R at mid travel, the stops, the ripple
 /// traverse, and back to mid travel. The first abort ends it, torque off;
 /// a refusal ends it before anything drives at a stop. Of config, calib
-/// and the position table only the drive polarity is written here, and
-/// only once both stops are found.
+/// and the position table only the drive polarity is written here: when
+/// the jam check sees the motor turn against it, and once both stops are
+/// found.
 fn find_stops(
     c: &mut Client<NusbPipe>,
     id: Id,
@@ -632,10 +633,12 @@ impl Cal<'_> {
                     pct(*cap)
                 );
                 let cfg = order::centre_cfg(*duty, *cap, true);
-                let moved = centre(c, id, cfg, self.params(), "the jam check")?;
+                let exp = centre(c, id, cfg, self.params(), "the jam check")?;
+                let moved = exp.moved_at();
                 if let Some(m) = moved {
                     println!("  the shaft moves at {}", pct(m));
                 }
+                self.polarity = adopt_polarity(c, id, &exp, self.polarity)?;
                 run.nudged(moved);
             }
             Stage::Centre { duty, cap, .. } => {

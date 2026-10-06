@@ -1045,6 +1045,10 @@ mod tests {
         captured: Option<Captured>,
         /// A servo never calibrated: no soft limits, no stops known.
         virgin: bool,
+        /// The `drive_polarity` in force.
+        polarity: bool,
+        /// Drive by the stored polarity whatever the jam check read.
+        trust_stored: bool,
     }
 
     impl Rig<'_> {
@@ -1066,6 +1070,8 @@ mod tests {
                 stops: None,
                 captured: None,
                 virgin: false,
+                polarity: true,
+                trust_stored: false,
             }
         }
 
@@ -1090,7 +1096,8 @@ mod tests {
                 RigParams::new(None, lim.abort_default())
             } else {
                 RigParams::new(Some(lim.guard().unwrap()), lim.abort_default()).with_stops(lim.raw)
-            };
+            }
+            .with_polarity(self.polarity);
             let base = BurstCfg {
                 repeats: 5,
                 i_max_a: BurstAllowance::i_max_a(),
@@ -1111,6 +1118,12 @@ mod tests {
                     if *nudge {
                         self.moved = exp.moved_at();
                         run.nudged(exp.moved_at());
+                        let polarity = exp.polarity_for(self.polarity);
+                        if polarity != self.polarity && !self.trust_stored {
+                            self.servo
+                                .write(crate::regs::config::DRIVE_POLARITY, polarity as i32);
+                            self.polarity = polarity;
+                        }
                     }
                     how
                 }
@@ -1629,6 +1642,55 @@ mod tests {
             assert!(!servo.torque && !servo.permit_live());
             assert!((servo.pos - 2029.0).abs() <= 310.0, "ends at {}", servo.pos);
         }
+    }
+
+    /// The motor plugged in the other way round from the stored
+    /// drive_polarity, each free burst kicking the shaft on. Trusted, the
+    /// burst's seeks back to mid travel drive away from it and the run
+    /// leaves the travel guard; read by the jam check,
+    /// the flipped polarity drives the run, cal's and the default one's
+    /// alike, and cal's stops agree with it.
+    #[test]
+    fn the_run_drives_by_the_direction_the_jam_check_read() {
+        let reversed = || {
+            let mut s = bench_servo(RAIL_2S);
+            s.pos = 2029.0;
+            s.drive_polarity = false;
+            s.burst_kick = 120.0;
+            s
+        };
+        for mut trusted in [cal(RAIL_2S), run(RAIL_2S)] {
+            let mut servo = reversed();
+            let mut rig = Rig::new(&mut servo, RAIL_2S);
+            rig.trust_stored = true;
+            rig.run(&mut trusted);
+            assert!(
+                matches!(
+                    trusted.aborted(),
+                    Some(("burst", AbortReason::PosGuard { .. }))
+                ),
+                "{:?}",
+                trusted.over()
+            );
+        }
+
+        let mut servo = reversed();
+        let mut c = cal(RAIL_2S);
+        let mut rig = Rig::new(&mut servo, RAIL_2S);
+        rig.run(&mut c);
+        assert_eq!(c.over(), None, "{:?}", c.over());
+        assert!(!rig.polarity);
+        assert!(rig.stops.expect("the stops").drive_polarity);
+        assert!(rig.r_ohm.is_some(), "R from the burst");
+        assert!(servo.drive_polarity && !servo.burst.drive_polarity);
+
+        let mut servo = reversed();
+        let mut full = run(RAIL_2S);
+        let mut rig = Rig::new(&mut servo, RAIL_2S);
+        rig.run(&mut full);
+        assert_eq!(full.over(), None, "{:?}", full.over());
+        assert!(!rig.polarity && rig.inertia_fit);
+        assert!((servo.pos - 2029.0).abs() <= 300.0, "ends at {}", servo.pos);
     }
 
     /// A servo never calibrated: no stops known, no soft limits. The same

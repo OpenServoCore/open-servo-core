@@ -8,9 +8,11 @@
 
 pub(crate) mod params;
 
+use std::cell::Cell;
 use std::path::{Path, PathBuf};
 
 use crate::capture::envelope;
+use crate::rig::centre::adopt_polarity;
 use crate::rig::plant::Lut;
 use crate::rig::pump::{self, Pump, read_i32, with_guard, write_reg};
 use crate::rig::{Aborted, check_abort, csvio, snapshot};
@@ -209,6 +211,9 @@ struct Ctx {
 
 struct Drive {
     lim: ServoLimits,
+    /// The `drive_polarity` in force: the stored one until the jam check
+    /// sees the motor turn against it.
+    polarity: Cell<bool>,
     env: Envelope,
     sense: SenseJson,
     sc: Scales,
@@ -409,6 +414,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
         );
         cli.drive = Some(Drive {
             lim,
+            polarity: Cell::new(lim.drive_polarity),
             env,
             sense,
             sc,
@@ -601,7 +607,7 @@ fn rig(cli: &Ctx) -> Result<RigParams> {
         ..RigParams::new(Some(d.env.guard), d.env.i_abort)
             .with_floor(d.lim.window_floor_q15)
             .with_stops(d.lim.raw)
-            .with_polarity(d.lim.drive_polarity)
+            .with_polarity(d.polarity.get())
     })
 }
 
@@ -626,6 +632,7 @@ fn centre(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id, cfg: CentreCfg) -> Result
     } else {
         "centring"
     };
+    let nudge = cfg.nudge;
     let params = rig(cli)?;
     let mut exp = Guarded::new(Centre::new(cfg, &params), params.without_pos_guard());
     with_guard(c, id, |c| Pump::new(c, id, None).run(&mut exp))?;
@@ -633,6 +640,11 @@ fn centre(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id, cfg: CentreCfg) -> Result
     let exp = exp.into_inner();
     if !exp.arrived() {
         bail!("centring did not reach mid travel in 5 s (gear slipping?)");
+    }
+    if nudge {
+        let d = drive(cli)?;
+        d.polarity
+            .set(adopt_polarity(c, id, &exp, d.polarity.get())?);
     }
     Ok(exp.moved_at())
 }
