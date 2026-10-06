@@ -37,7 +37,7 @@ use crate::burst::{
 use crate::frame::{TelBurst, TelFrame, TelemetrySnapshot};
 use crate::limits::PermitLease;
 use crate::lut::GridLut;
-use crate::regs::{ALL, Reg, control};
+use crate::regs::{ALL, Reg, config, control};
 
 /// The fake's fast tick rate, Hz: ten per MEDIUM tick at its `f_med`.
 pub const TICK_HZ: f64 = 20_100.0;
@@ -286,6 +286,9 @@ pub struct FakeServo {
     /// TEL rows the servo counts dropped from each stream; the frames stay
     /// whole.
     pub rows_dropped: u16,
+    /// Counts a free burst turns the shaft, the way its step drives: the
+    /// rotor spins up inside the step and the train carries it on.
+    pub burst_kick: f64,
     lcg: u64,
 }
 
@@ -352,6 +355,7 @@ impl FakeServo {
             transient_windows: 3.0,
             transient_gain: 1.5,
             rows_dropped: 0,
+            burst_kick: 0.0,
             // r 8 ohm keeps the whole default duty ladder inside the 0.4 A
             // envelope, so the plan is not pruned by accident
             burst: SynthBurst {
@@ -706,16 +710,22 @@ impl FakeServo {
         }
     }
 
-    /// The winding current the dynamic model carries right now: ohmic on
-    /// the applied volts minus bemf. Friction is mechanical - it consumes
-    /// torque, not extra current - so nothing else is added.
+    /// The winding current the dynamic model carries right now, in the
+    /// duty's own sign: ohmic on the applied volts minus bemf. Friction is
+    /// mechanical - it consumes torque, not extra current - so nothing else
+    /// is added.
     fn i_dyn(&self) -> f64 {
         let duty = self.applied();
         if duty == 0 {
             return 0.0;
         }
         let v = duty as f64 / 32767.0 * self.vbus;
-        (v - self.ke * self.omega_dyn) / self.r
+        (v - self.ke * self.polarity() * self.omega_dyn) / self.r
+    }
+
+    /// +1 when a positive duty turns the shaft up: [`Self::drive_polarity`].
+    fn polarity(&self) -> f64 {
+        if self.drive_polarity { 1.0 } else { -1.0 }
     }
 
     /// The settled current an applied duty draws right now, before the L
@@ -728,11 +738,12 @@ impl FakeServo {
             return 0.0;
         }
         let v = duty as f64 / 32767.0 * self.vbus;
-        let omega = if self.dynamic {
-            self.omega_dyn
-        } else {
-            self.omega_at(duty)
-        };
+        let omega = self.polarity()
+            * if self.dynamic {
+                self.omega_dyn
+            } else {
+                self.omega_at(duty)
+            };
         let fric = if omega != 0.0 && !self.physical_motion && !self.dynamic {
             self.fc * duty.signum() as f64
         } else {
@@ -774,6 +785,14 @@ impl FakeServo {
                 self.agg_seq0 = self.agg_seq();
             }
             self.ident_agg = on;
+        } else if reg == config::DRIVE_POLARITY {
+            // the register as the kernel applies it: a flip negates every
+            // drive and moves the burst step to the other terminal
+            let on = value != 0;
+            if on != self.burst.drive_polarity {
+                self.drive_polarity = !self.drive_polarity;
+                self.burst.drive_polarity = on;
+            }
         } else if reg == control::STALL_PERMIT {
             self.permit = value != 0;
             if let Some(lease) = self.lease_ms {
@@ -803,7 +822,7 @@ impl FakeServo {
 
     /// One dynamic-model integration substep.
     fn substep(&mut self, dt: f64) {
-        let i = self.i_dyn() - self.load;
+        let i = self.polarity() * self.i_dyn() - self.load;
         let w = self.omega_dyn;
         let fc = match self.sticky {
             Some((lo, hi, extra)) if (lo..=hi).contains(&self.pos) => self.fc + extra,
@@ -908,7 +927,7 @@ impl FakeServo {
             } else {
                 let v = duty as f64 / 32767.0 * self.vbus;
                 if driving {
-                    (v - self.ke * self.omega()) / self.r
+                    (v - self.ke * self.polarity() * self.omega()) / self.r
                 } else {
                     0.0
                 }
@@ -1489,6 +1508,10 @@ pub fn pump_on<E: Experiment>(
                 cap.meta.seated = seated;
                 exp.push_burst(&cap);
                 servo.bursts += 1;
+                if !seated {
+                    let kick = servo.burst_kick * duty_q15.signum() as f64 * servo.polarity();
+                    servo.pos = servo.travel(servo.pos + kick);
+                }
                 servo.advance(2);
                 let lost = BURST_READBACK_TXNS * servo.ticks_lost_per_txn;
                 servo.busy_ms(BURST_READBACK_TXNS * bus.read_ms / 2.0, lost);

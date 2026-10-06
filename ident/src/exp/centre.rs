@@ -15,6 +15,13 @@
 //! by the firmware ([`limit_holds`]), is blocked and ends the run. With the
 //! stops unknown the nudge tries the other direction once before that. Run
 //! it with the pos guard off: the shaft may start outside it.
+//!
+//! Directions are the pot's: up is +1. The first travel shows which way a
+//! positive duty turns the shaft under the polarity in force
+//! ([`Centre::drive_polarity`]); a shaft that went the other way brakes to
+//! rest and every later drive is negated. A stored polarity that no longer
+//! matches the wiring would otherwise send the centring away from mid
+//! travel and read the back leg home at once.
 
 use super::seek::{self, SEEK_STEP_Q15, SEEK_TRAVEL_MIN, Watch};
 use super::{AbortReason, Cmd, Experiment, RigParams, limit_holds};
@@ -62,9 +69,11 @@ enum Leg {
         from: u16,
         dir: i8,
     },
-    /// The out leg braking to rest from `last`, before the back leg.
+    /// A drive that moved the shaft `dir` braking to rest from `last`: the
+    /// out leg before the back leg to `back`, or a centring that went the
+    /// wrong way before it turns.
     Brake {
-        from: u16,
+        back: Option<u16>,
         dir: i8,
         last: u16,
         polls: u32,
@@ -100,6 +109,9 @@ pub struct Centre {
     polls: u32,
     nudged: bool,
     flipped: bool,
+    /// The duty sign that turns the shaft up; 1 until a travel showed it.
+    sign: i8,
+    learned: bool,
     moved_at: Option<i16>,
     arrived: bool,
     halt: Option<AbortReason>,
@@ -123,6 +135,8 @@ impl Centre {
             polls: 0,
             nudged: false,
             flipped: false,
+            sign: 1,
+            learned: false,
             moved_at: None,
             arrived: false,
             halt: None,
@@ -138,6 +152,18 @@ impl Centre {
     /// scale; None until it travelled.
     pub fn moved_at(&self) -> Option<f64> {
         self.moved_at.map(|q| q as f64 / 32767.0)
+    }
+
+    /// Whether a positive duty raised the counts under the polarity in
+    /// force, once the shaft travelled.
+    pub fn drive_polarity(&self) -> Option<bool> {
+        self.learned.then_some(self.sign > 0)
+    }
+
+    /// The `drive_polarity` the rest of a run drives under: `in_force`,
+    /// flipped when a positive duty lowered the counts.
+    pub fn polarity_for(&self, in_force: bool) -> bool {
+        self.drive_polarity().map_or(in_force, |p| p == in_force)
     }
 
     pub fn band(&self) -> (u16, u16) {
@@ -160,8 +186,38 @@ impl Centre {
         self.phase = Phase::Wait;
         Cmd::Write {
             reg: control::GOAL_DUTY,
-            value: dir as i32 * self.mag as i32,
+            value: (dir * self.sign) as i32 * self.mag as i32,
         }
+    }
+
+    /// Brake a shaft moving `dir` from `last`, then the back leg to `back`,
+    /// or the centring again.
+    fn brake(&mut self, back: Option<u16>, dir: i8, last: u16) -> Cmd {
+        self.leg = Leg::Brake {
+            back,
+            dir,
+            last,
+            polls: 0,
+        };
+        self.phase = Phase::Wait;
+        Cmd::Write {
+            reg: control::GOAL_DUTY,
+            value: -(dir * self.sign) as i32 * BRAKE_DUTY_Q15 as i32,
+        }
+    }
+
+    /// The first travel, `start` to `pos` on a drive meant `dir`, fixes the
+    /// duty sign. True when the shaft went the other way.
+    fn learn(&mut self, start: u16, pos: u16, dir: i8) -> bool {
+        if self.learned {
+            return false;
+        }
+        self.learned = true;
+        let wrong = (pos > start) != (dir > 0);
+        if wrong {
+            self.sign = -self.sign;
+        }
+        wrong
     }
 
     fn finish(&mut self, arrived: bool) -> Cmd {
@@ -202,28 +258,20 @@ impl Centre {
             }
             Leg::Out { from, dir } if pos.abs_diff(from) >= SEEK_TRAVEL_MIN => {
                 self.moved();
-                self.leg = Leg::Brake {
-                    from,
-                    dir,
-                    last: pos,
-                    polls: 0,
-                };
-                self.phase = Phase::Wait;
-                return Cmd::Write {
-                    reg: control::GOAL_DUTY,
-                    value: -(dir as i32) * BRAKE_DUTY_Q15 as i32,
-                };
+                self.learn(from, pos, dir);
+                let went = if pos > from { 1 } else { -1 };
+                return self.brake(Some(from), went, pos);
             }
             Leg::Out { dir, .. } => dir,
             Leg::Brake {
-                from,
+                back,
                 dir,
                 last,
                 polls,
             } => {
                 if pos.abs_diff(last) >= BRAKE_REST_EPS && polls + 1 < BRAKE_POLLS {
                     self.leg = Leg::Brake {
-                        from,
+                        back,
                         dir,
                         last: pos,
                         polls: polls + 1,
@@ -233,8 +281,13 @@ impl Centre {
                         ms: self.cfg.poll_ms,
                     };
                 }
-                self.leg = Leg::Back { from, dir: -dir };
                 self.watch = None;
+                let Some(from) = back else {
+                    self.leg = Leg::Toward;
+                    self.polls -= 1;
+                    return self.eval(o);
+                };
+                self.leg = Leg::Back { from, dir: -dir };
                 -dir
             }
             Leg::Back { from, dir } if (pos as i32 - from as i32) * dir as i32 >= 0 => {
@@ -254,6 +307,9 @@ impl Centre {
         let travelled = pos.abs_diff(start) >= SEEK_TRAVEL_MIN;
         if travelled {
             self.moved();
+            if self.leg == Leg::Toward && self.learn(start, pos, dir) {
+                return self.brake(None, -dir, pos);
+            }
         }
         if limit_holds(o, still) {
             return self.blocked(start, pos);
@@ -533,6 +589,75 @@ mod tests {
         assert!(exp.abort().is_none(), "{:?}", exp.abort());
         assert!(exp.into_inner().arrived());
         assert!(duties(&log).iter().any(|d| *d > 3932), "never raised");
+    }
+
+    /// A motor wired the other way round from the polarity in force: the
+    /// jam check's out leg shows it, the back leg still drives home, and
+    /// the shaft ends where it started.
+    #[test]
+    fn a_reversed_motor_is_read_on_the_out_leg_and_driven_home() {
+        let mut s = FakeServo::new(3.37);
+        s.pos = 2050.0;
+        let (exp, _) = run(&mut s, true);
+        assert_eq!(exp.into_inner().drive_polarity(), Some(true));
+
+        let mut s = FakeServo::new(3.37);
+        s.pos = 2050.0;
+        s.drive_polarity = false;
+        let (exp, log) = run(&mut s, true);
+        assert!(exp.abort().is_none(), "{:?}", exp.abort());
+        let exp = exp.into_inner();
+        assert!(exp.arrived());
+        assert_eq!(exp.drive_polarity(), Some(false));
+        let d = duties(&log);
+        assert!(
+            d.contains(&3932) && d.contains(&-3932),
+            "out and back: {d:?}"
+        );
+        assert!(
+            (s.pos - 2050.0).abs() < SEEK_TRAVEL_MIN as f64 / 2.0,
+            "{}",
+            s.pos
+        );
+    }
+
+    /// Off the band with the motor reversed, the first drive runs away
+    /// from mid travel: the first travel reads it, the shaft brakes and
+    /// turns, and the centring arrives without pressing a stop.
+    #[test]
+    fn a_centring_that_runs_the_wrong_way_turns_round() {
+        for (start, toward) in [(1200.0, 1.0), (2900.0, -1.0)] {
+            let mut s = bench_mg90(3204);
+            s.pos = start;
+            s.drive_polarity = false;
+            let params = RigParams::new(Some((532, 3526)), 350).with_stops((209, 3849));
+            let cfg = CentreCfg {
+                duty_q15: 3119,
+                cap_q15: 8290,
+                ..CentreCfg::default()
+            };
+            let mut spy = Spy {
+                exp: Guarded::new(Centre::new(cfg, &params), params.without_pos_guard()),
+                seen: Vec::new(),
+            };
+            pump(&mut spy, &mut s, 100_000);
+            assert_eq!(spy.exp.abort(), None, "{start}");
+            let away = spy
+                .seen
+                .iter()
+                .filter_map(|(o, _)| o.as_ref())
+                .map(|o| (start - o.pos as f64) * toward)
+                .fold(0.0, f64::max);
+            assert!(
+                (SEEK_TRAVEL_MIN as f64..2.0 * SEEK_TRAVEL_MIN as f64).contains(&away),
+                "{start}: {away}"
+            );
+            let exp = spy.exp.into_inner();
+            assert!(exp.arrived(), "{start}");
+            assert_eq!(exp.drive_polarity(), Some(false));
+            assert_eq!(s.pressed_ms, 0.0);
+            assert!(!s.torque);
+        }
     }
 
     /// Stops unknown: the nudge that cannot move one way tries the other.

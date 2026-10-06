@@ -243,7 +243,7 @@ impl Front {
             pct(cap)
         );
         let cfg = order::centre_cfg(from, cap, true);
-        let Some(moved) = centre_on(pump, cfg, self.params(), "the jam check")? else {
+        let Some(moved) = centre_on(pump, cfg, self.params(), "the jam check")?.moved_at() else {
             bail!("the jam check never saw the shaft move, so nothing drives it");
         };
         let proved = Proved {
