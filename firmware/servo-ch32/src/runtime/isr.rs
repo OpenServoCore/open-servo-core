@@ -114,7 +114,7 @@ pub fn on_adc_dma_tc() {
         // SAFETY: table storage is 'static; the health block's tick fields
         // have this vector as their only chip-side writer. The counters are
         // stored only on a change, so a host clear races a store only when
-        // one is due.
+        // one is due. KERNEL as above.
         unsafe {
             let h = &raw mut (*SHARED.table.region_ptr()).telemetry.health;
             if let Some(mean) = w.mean_q15 {
@@ -127,6 +127,7 @@ pub fn on_adc_dma_tc() {
             if w.lost != 0 {
                 let lost = &raw mut (*h).tick_lost_count;
                 lost.write_volatile(lost.read_volatile().wrapping_add(w.lost));
+                (*KERNEL.get()).assume_init_mut().lost_ticks(w.lost);
             }
         }
     }

@@ -11,7 +11,10 @@ use super::faults::{self, Detectors, FaultLatch};
 use super::limits::{self, IBand, LimitState};
 use super::trajectory::TrajGen;
 use super::velocity::VelocityLoop;
-use super::{DECIM_SLOW, KernelTiming, PERMIT_LEASE_TICKS, position};
+use super::{
+    DECIM_MED, DECIM_SLOW, Elapsed, KernelTiming, LOST_MAX, PERMIT_LEASE_TICKS, TICK_SHARE_Q16,
+    position,
+};
 use crate::estimator::{FusionObs, OmegaSwitch, VbusEst, WindingTherm, bemf};
 use crate::math::{q_mul, q_mul_u};
 use crate::pos_lut;
@@ -39,6 +42,9 @@ pub mod phase {
     /// Phases in use; the rest of the period is free.
     pub const COUNT: u8 = 8;
 }
+
+/// The SLOW period in kernel ticks: 16 ms at 20 kHz.
+const SLOW_PERIOD_TICKS: u16 = DECIM_SLOW as u16 * DECIM_MED as u16;
 
 /// One read of CONTROL.
 #[derive(Copy, Clone, Default)]
@@ -86,9 +92,16 @@ pub fn pos_q4(shared: &Shared, lut_live: bool, raw: u16) -> u16 {
 pub struct Medium {
     /// `KernelTiming::dt_med_q32`.
     dt_med_q32: u32,
+    /// `KernelTiming::dt_tick_q32`.
+    dt_tick_q32: u32,
     /// `KernelTiming::recip_arr_q24`.
     recip_arr_q24: u32,
-    pub(super) decim_slow: u8,
+    /// Ticks reported lost since the CONTROL phase last ran.
+    lost: u8,
+    /// The time this period's steps integrate over.
+    pub(super) elapsed: Elapsed,
+    /// Kernel ticks elapsed toward the next SLOW run.
+    pub(super) slow_ticks: u16,
     /// CONTROL as the CONTROL phase read it.
     ctl: Control,
     /// Torque on and no fault at the CONTROL phase: the loops run.
@@ -131,10 +144,17 @@ impl Medium {
     pub fn new(timing: &KernelTiming) -> Self {
         Self {
             dt_med_q32: timing.dt_med_q32,
+            dt_tick_q32: timing.dt_tick_q32,
             recip_arr_q24: timing.recip_arr_q24,
+            lost: 0,
+            elapsed: Elapsed {
+                ticks: DECIM_MED as u32,
+                dt_q32: timing.dt_med_q32,
+                lost_q16: 0,
+            },
             // primed so the FIRST period runs the slow block: the
             // thermometer and the derate exist before any consumer sees them
-            decim_slow: DECIM_SLOW - 1,
+            slow_ticks: SLOW_PERIOD_TICKS - DECIM_MED as u16,
             ctl: Control::default(),
             run: false,
             traj: TrajGen::new(),
@@ -172,6 +192,13 @@ impl Medium {
         self.thermal.seed(r0_q12);
     }
 
+    /// Lost ticks the chip reports (`Kernel::lost_ticks`); the next CONTROL
+    /// phase folds the total into `elapsed` for the phases after it, so a
+    /// loss lands in the period it is reported in or the next.
+    pub fn lost_ticks(&mut self, lost: u16) {
+        self.lost = self.lost.saturating_add(lost.min(LOST_MAX as u16) as u8);
+    }
+
     /// Phase `k` of the medium chain (`phase`), on this tick's sample.
     #[allow(clippy::too_many_arguments)]
     pub fn step(
@@ -198,7 +225,8 @@ impl Medium {
         }
     }
 
-    /// CONTROL: the read, the edges, and the drive kind they imply.
+    /// CONTROL: the period's time, the read, the edges, and the drive kind
+    /// they imply.
     fn control(
         &mut self,
         raw_pos: u16,
@@ -208,6 +236,13 @@ impl Medium {
         fast: &mut Fast,
         cmd: &mut Command,
     ) {
+        let lost = self.lost.min(LOST_MAX) as u32;
+        self.lost = 0;
+        self.elapsed = Elapsed {
+            ticks: DECIM_MED as u32 + lost,
+            dt_q32: self.dt_med_q32 + lost * self.dt_tick_q32,
+            lost_q16: lost * TICK_SHARE_Q16,
+        };
         self.ctl = Control::read(shared);
         self.admit(fc, shared, faults, fast);
         self.edges(raw_pos, fc, shared, faults, fast);
@@ -336,7 +371,7 @@ impl Medium {
         self.fusion.step(
             fast.i_meas_last() as i32,
             pos_q4(shared, lut_live, raw_pos),
-            self.dt_med_q32,
+            &self.elapsed,
             &mc.fusion,
         );
         // The observer's omega keeps the rest-shaped consumers (stall
@@ -361,7 +396,8 @@ impl Medium {
         let theta_hat = self.fusion.theta_q16();
         match life.mode {
             Mode::Position => {
-                self.traj.step_position(life.goal_position, &mc.traj);
+                self.traj
+                    .step_position(life.goal_position, &self.elapsed, &mc.traj);
                 let out = position::step(
                     self.traj.theta_star_q16(),
                     self.traj.omega_star_q16(),
@@ -374,7 +410,7 @@ impl Medium {
             }
             Mode::Velocity => {
                 self.traj
-                    .step_velocity(life.goal_velocity, theta_hat, &mc.traj);
+                    .step_velocity(life.goal_velocity, theta_hat, &self.elapsed, &mc.traj);
                 self.omega_ref_q16 = self.traj.omega_star_q16();
                 self.hold = false;
             }
@@ -416,6 +452,7 @@ impl Medium {
             self.fusion.tau_d_counts().unsigned_abs(),
             self.fusion.theta_q16() >> 16,
             permit,
+            self.elapsed.ticks,
             &mc.limits,
         );
         self.i_band = band;
@@ -513,20 +550,21 @@ impl Medium {
                 > (mc.pos_error_counts as u32) << 16;
         if self
             .det
-            .pos_err_sample(pos_err_over, mc.pos_error_time_ticks)
+            .pos_err_sample(pos_err_over, self.elapsed.ticks, mc.pos_error_time_ticks)
         {
             faults.raise(faults::BIT_POSITION_ERROR, faults::CODE_POSITION_ERROR);
         }
     }
 
-    /// SLOW, every DECIM_SLOW periods: the permit lease, the thermometer on
-    /// this tick's window, the derate, overtemperature and undervoltage.
+    /// SLOW, every SLOW_PERIOD_TICKS of elapsed time: the permit lease, the
+    /// thermometer on this tick's window, the derate, overtemperature and
+    /// undervoltage.
     fn slow(&mut self, m: &Measured, cfg: &KernelConfig, faults: &mut FaultLatch) {
-        self.decim_slow += 1;
-        if self.decim_slow < DECIM_SLOW {
+        self.slow_ticks += self.elapsed.ticks as u16;
+        if self.slow_ticks < SLOW_PERIOD_TICKS {
             return;
         }
-        self.decim_slow = 0;
+        self.slow_ticks -= SLOW_PERIOD_TICKS;
         let (fc, mc) = (&cfg.fast, &cfg.medium);
         self.permit_ticks = self.permit_ticks.saturating_sub(1);
         // the LMS sample needs BOTH window paths valid (bemf RECIP_ARR

@@ -11,11 +11,16 @@
 //! a host write (torque, mode, goals) takes effect at the next period's
 //! CONTROL phase. Identification aggregates ride their own
 //! /16 fast-tick window (`ident`), independent of DECIM_MED, and fold only
-//! while CONTROL `ident_agg` asks for them. Tick-indexed
-//! by design: a missed tick dilates time, nothing compensates and nothing
-//! reads a wall clock. CONFIG and CALIB reach the tick through the kernel's
-//! own snapshot (`config`), rebuilt at a medium boundary after a write, so
-//! a configuration write takes effect within one medium tick.
+//! while CONTROL `ident_agg` asks for them. The tick index is the sample
+//! clock: phases, boxcars, aggregates and sample counters advance per
+//! executed tick. What integrates time - the trajectory, the observer's
+//! prediction, the ms timers, the SLOW cadence - integrates the elapsed
+//! hardware time instead: the period plus the ticks the chip lost while the
+//! transport served a frame above the kernel (`lost_ticks`, the chip's
+//! catch-up count, delivered off the tick path), gathered per period into
+//! `Elapsed`. Nothing reads a wall clock. CONFIG and CALIB reach the tick through the kernel's own
+//! snapshot (`config`), rebuilt at a medium boundary after a write, so a
+//! configuration write takes effect within one medium tick.
 
 mod config;
 pub mod current;
@@ -52,6 +57,34 @@ pub const DECIM_MED: u8 = 10;
 pub const DECIM_SLOW: u8 = 32;
 /// Stall permit lease in SLOW ticks: 63 x 16 ms = 1.008 s from the grant.
 pub const PERMIT_LEASE_TICKS: u8 = 63;
+/// Lost ticks one medium step integrates at most, 0.8 ms: two back-to-back
+/// host frames at their worst (5-6 each under `ident verify`), and the
+/// chip's own catch-up bound (`tick_load`), past which the hold-off is a
+/// flood and the chip resyncs its grid. Past it the step saturates and the
+/// kernel's time falls behind by the excess.
+pub const LOST_MAX: u8 = 16;
+
+/// The time one medium step integrates over: the DECIM_MED ticks it ran on
+/// plus the ticks the chip reported lost since the last period
+/// (`Kernel::lost_ticks`, at most `LOST_MAX`), built once per period at the
+/// CONTROL phase. With no loss every field is the nominal period, bit for
+/// bit.
+#[derive(Copy, Clone)]
+pub struct Elapsed {
+    /// Kernel ticks spanned, DECIM_MED + lost: the unit the ms timers count.
+    pub ticks: u32,
+    /// Seconds spanned, Q32: `dt_med_q32 + lost x dt_tick_q32`, under 2^23
+    /// at 20 kHz, so `q_mul(omega, dt_q32 as i32, 32)` stays i32-exact for
+    /// any omega.
+    pub dt_q32: u32,
+    /// lost / DECIM_MED, Q16: what a per-period quantity (the accel limit,
+    /// the model gain) grows by. At most LOST_MAX x `TICK_SHARE_Q16` < 2^17.
+    pub lost_q16: u32,
+}
+
+/// One kernel tick as a share of the medium period, Q16 (rounded: 6554 for
+/// DECIM_MED 10, 0.006% over).
+pub const TICK_SHARE_Q16: u32 = ((1 << 16) + DECIM_MED as u32 / 2) / DECIM_MED as u32;
 
 /// Finished constants the chip const-evals from `MOTOR_PWM_FREQ_HZ`, the
 /// TIM1 ARR and the board's dividers, so core never divides at runtime or
@@ -70,10 +103,12 @@ pub struct KernelTiming {
     /// the fields below.
     pub tick_hz: u16,
     /// `2^32 / MED_HZ` where `MED_HZ = tick_hz / DECIM_MED`: the medium
-    /// integration step, `theta += q_mul(omega, dt_med_q32, 32)`.
+    /// integration step with no lost tick (`Elapsed::dt_q32`).
     pub dt_med_q32: u32,
-    /// `(MED_HZ << 16) / 1000`: ms -> medium ticks via `q_mul_u(ms, ., 16)`.
-    pub med_ticks_per_ms_q16: u32,
+    /// `2^32 / tick_hz`: what each lost tick adds to the step.
+    pub dt_tick_q32: u32,
+    /// `(tick_hz << 16) / 1000`: ms -> kernel ticks via `q_mul_u(ms, ., 16)`.
+    pub ticks_per_ms_q16: u32,
     /// Rail-tap -> vmotor-tap counts, Q15 (`VbusEst::new`).
     pub vbus_scale_q15: u32,
     /// Board data: the shortest Slow-decay brake half whose trough shunt
@@ -200,6 +235,14 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             (&raw const (*p).telemetry.sensors.current_bias_counts).read_volatile()
         });
         self.booted = true;
+    }
+
+    /// Ticks the chip found lost: scans that completed while the tick
+    /// interrupt was held off and merged into the next one. The chip
+    /// judges them per accounting window (16 ticks) and calls this off the
+    /// tick path; the next medium period integrates their time (`Elapsed`).
+    pub fn lost_ticks(&mut self, lost: u16) {
+        self.medium.lost_ticks(lost);
     }
 
     /// Must complete well inside the kernel period (~50 us at 20 kHz).
