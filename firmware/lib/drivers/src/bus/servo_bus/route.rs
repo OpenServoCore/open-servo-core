@@ -27,14 +27,17 @@ impl<P: Providers> ServoBus<P> {
             let waiting = self.chain.waiting();
             // A frame that can change nothing until it is whole needs no
             // milestone: another servo's plain op, or a status nobody waits
-            // on (sec 6). The next wake resolves it from the ring.
+            // on (sec 6). The next wake resolves it from the ring. A status
+            // a chain slot waits on needs only its end: the snoop consumes
+            // nothing ahead of it.
             let needs = move |h: &Header| {
-                let nothing = if h.inst.is_status() {
-                    !waiting
-                } else {
-                    idle && foreign(h, id)
-                };
-                if nothing {
+                if h.inst.is_status() {
+                    if waiting {
+                        FrameNeeds::End
+                    } else {
+                        FrameNeeds::Nothing
+                    }
+                } else if idle && foreign(h, id) {
                     FrameNeeds::Nothing
                 } else {
                     FrameNeeds::Covered
@@ -141,12 +144,10 @@ impl<P: Providers> ServoBus<P> {
         // Status frames only advance the snoop chain (sec 6) -- framing-level
         // truth, NO validation: the chain consumes nothing from the body, and
         // skipping the CRC keeps the snapshot buffer free while our own reply
-        // streams from it. A frontier status defers to its frame end.
+        // streams from it. The framer hands a status over only whole.
         if self.ring_inst(anchor).is_status() {
-            if complete {
-                let out = self.chain.on_status_end(packet_end);
-                self.route_chain(out);
-            }
+            let out = self.chain.on_status_end(packet_end);
+            self.route_chain(out);
             return;
         }
         let idle = !self.chain.active() && !self.tx.busy();
