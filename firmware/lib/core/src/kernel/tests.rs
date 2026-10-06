@@ -968,6 +968,65 @@ fn current_mode_clamps_goal_to_i_lim() {
     assert_eq!(k.medium.i_ref_cc, -1200);
 }
 
+/// A hot winding at a steady OpenLoop hold derates `i_lim` through the
+/// thermometer, and once the drive stops the dormant estimate coasts, so
+/// the derate lifts instead of latching until a power cycle (bench: 89 C
+/// held through a 5 min cool-down at rest).
+#[test]
+fn derate_follows_the_thermometer_and_lifts_when_dormant() {
+    let sh = Shared::new();
+    seed(&sh);
+    // 24.4% of the 2960-vcount drive window over 400 counts reads R
+    // 722 x 4096 / 400 = 7393 Q12. An anchor at 6720 (10% under) with 9 cc
+    // per LSB puts that at 25.00 + 6.73 x 9 = 85.6 C: in the derate band,
+    // under the cutoff. mu 0.5 closes the LMS in 20 SLOW ticks at 400.
+    sh.table.with_mut(|t| {
+        t.calib.winding.r0_q12 = 6720;
+        t.calib.winding.t0_cc = 2500;
+        t.calib.winding.k_r2t_q88 = 2304;
+        t.calib.winding.mu_q016 = 32768;
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::OpenLoop;
+        t.control.lifecycle.goal_duty = 8000;
+    });
+    let mut k = kernel();
+    let hot = frame(2000, BIAS + 400);
+    settle(&mut k, &sh, hot);
+    // the slew bound walks the 10% gap in ~110 SLOW ticks, the LMS settles
+    // after: 100k fast ticks is 312 of them
+    for _ in 0..100_000 {
+        k.on_tick(hot, &sh);
+    }
+    let (t_w, i_lim) = sh.table.with(|t| {
+        (
+            t.telemetry.estimates.t_winding_cc,
+            t.telemetry.estimates.i_lim_counts,
+        )
+    });
+    assert!((8500..=8650).contains(&t_w), "t_winding {t_w}");
+    let expect = 1200 * (10000 - t_w as i32) / 2000;
+    assert!(
+        (i_lim as i32 - expect).abs() <= 2,
+        "i_lim {i_lim} for {t_w}"
+    );
+    assert_eq!(k.faults.mask(), 0);
+    // torque off: no current, no sample; the estimate coasts toward the
+    // anchor and the derate lifts with it
+    sh.table
+        .with_mut(|t| t.control.lifecycle.torque_enable = false);
+    for _ in 0..50_000 {
+        k.on_tick(frame(2000, BIAS), &sh);
+    }
+    let (t_w2, i_lim2) = sh.table.with(|t| {
+        (
+            t.telemetry.estimates.t_winding_cc,
+            t.telemetry.estimates.i_lim_counts,
+        )
+    });
+    assert!(t_w2 < t_w - 50, "dormant estimate held {t_w2} from {t_w}");
+    assert!(i_lim2 > i_lim + 20, "derate latched: {i_lim2} from {i_lim}");
+}
+
 #[test]
 fn position_error_latches_after_persistence() {
     let sh = Shared::new();
