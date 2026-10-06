@@ -137,6 +137,40 @@ pub fn stored(
     })
 }
 
+/// Where the held route's R came from.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum HeldR {
+    /// A promoted burst route.
+    Promoted,
+    /// `r_q12`, from an earlier identification.
+    Stored,
+    /// The declined free fit's own winding R: its slope, under V/I at the
+    /// limit, so the duties it plans stall under the limit.
+    Declined,
+}
+
+/// The R the held route sizes its hold and stop duties from, vcounts per
+/// ccount: the promoted burst's, else `stored`, the servo's `r_q12`, else
+/// the declined free fit's waveform R. None when none of them has one.
+pub fn held_r(
+    e8: Option<&InductanceResult>,
+    stored: Option<f64>,
+    sc: &Scales,
+) -> Option<(f64, HeldR)> {
+    let promoted = e8
+        .and_then(|x| x.winding_terms())
+        .map(|t| sc.r_vpc(t.r_plan_ohm));
+    let declined = e8
+        .and_then(|x| x.wave.as_ref().ok())
+        .map(|w| sc.r_vpc(w.fit.r_ohm));
+    let sane = |r: &f64| r.is_finite() && *r > 0.0;
+    promoted
+        .filter(sane)
+        .map(|r| (r, HeldR::Promoted))
+        .or(stored.filter(sane).map(|r| (r, HeldR::Stored)))
+        .or(declined.filter(sane).map(|r| (r, HeldR::Declined)))
+}
+
 /// How far, as a fraction of the stored R, the burst's rough R may sit
 /// before the stored winding is called into question.
 pub const STALE_R: f64 = 0.25;
@@ -538,6 +572,61 @@ mod tests {
             assert!(!words.contains(&w), "{w} in {say}");
         }
         assert!(say.is_ascii());
+    }
+
+    /// The held route's R in order: the promoted burst, the R the servo
+    /// stores, the declined fit's own slope. A fit with no waveform and a
+    /// servo that stores nothing leave none.
+    #[test]
+    fn the_held_route_takes_r_from_the_promoted_burst_the_servo_or_the_declined_fit() {
+        use crate::exp::testkit::{board_d_scales, mg90_2s};
+        let mut servo = FakeServo::new(3.37);
+        servo.dynamic = true;
+        servo.burst = usb_plant();
+        let params = crate::exp::testkit::rig();
+        let cfg = InductanceCfg {
+            repeats: 1,
+            i_max_a: 1.0,
+            chans: Chans::Fixed(0),
+            fit: FitCfg::default().with_limit(I_LIM_A),
+            ..InductanceCfg::default()
+        };
+        let mut e8 = Guarded::new(Inductance::new(cfg, &params, scales()), params);
+        pump(&mut e8, &mut servo, 200_000);
+        let blind = e8.into_inner().fit().expect("E8 fits");
+        assert!(!blind.promotable() && blind.wave.is_err());
+        let sc = scales();
+        assert_eq!(
+            held_r(Some(&blind), Some(2.7), &sc),
+            Some((2.7, HeldR::Stored))
+        );
+        assert_eq!(held_r(Some(&blind), None, &sc), None);
+        assert_eq!(held_r(Some(&blind), Some(0.0), &sc), None);
+        assert_eq!(held_r(None, None, &sc), None);
+
+        let sc = board_d_scales();
+        let fit = |residual_max_counts: f64| {
+            let mut cfg = FitCfg::default().with_limit(I_LIM_A);
+            cfg.wave.residual_max_counts = residual_max_counts;
+            crate::exp::inductance::fit_captures(&mg90_2s(), &sc, &cfg).expect("the bench run")
+        };
+        let declined = fit(1.0);
+        assert_eq!(declined.blocking(), vec!["residual"]);
+        let wave = declined.wave.as_ref().expect("the waveform fit");
+        let (r, from) = held_r(Some(&declined), None, &sc).expect("the fit's own R");
+        assert_eq!((r, from), (sc.r_vpc(wave.fit.r_ohm), HeldR::Declined));
+        let at = wave.at_limit.expect("read at the limit");
+        assert!(r < sc.r_vpc(at.v_over_i_ohm), "the slope plans cooler");
+        assert_eq!(
+            held_r(Some(&declined), Some(2.7), &sc),
+            Some((2.7, HeldR::Stored))
+        );
+
+        let promoted = fit(FitCfg::default().wave.residual_max_counts);
+        assert_eq!(
+            held_r(Some(&promoted), Some(2.7), &sc),
+            Some((sc.r_vpc(at.v_over_i_ohm), HeldR::Promoted))
+        );
     }
 
     #[test]
