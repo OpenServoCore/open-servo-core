@@ -62,6 +62,8 @@ pub mod calib {
     pub const V_WINDOW_MIN_TICKS: Reg = reg(0x0092, 2);
     pub const R0_Q12: Reg = reg(0x0094, 2);
     pub const T0_CC: Reg = reg(0x0096, 2);
+    pub const K_R2T_Q88: Reg = reg(0x0098, 2);
+    pub const MU_Q016: Reg = reg(0x009a, 2);
     pub const R_Q12: Reg = reg(0x009e, 2);
     pub const RECIP_KE_Q: Reg = reg(0x00a0, 2);
     pub const B_I_Q313: Reg = reg(0x00a2, 2);
@@ -228,6 +230,8 @@ pub const ALL: &[(&str, Reg)] = &[
     ("v_window_min_ticks", calib::V_WINDOW_MIN_TICKS),
     ("r0_q12", calib::R0_Q12),
     ("t0_cc", calib::T0_CC),
+    ("k_r2t_q88", calib::K_R2T_Q88),
+    ("mu_q016", calib::MU_Q016),
     ("r_q12", calib::R_Q12),
     ("recip_ke_q", calib::RECIP_KE_Q),
     ("b_i_q313", calib::B_I_Q313),

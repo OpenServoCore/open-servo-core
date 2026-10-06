@@ -5,6 +5,7 @@
 
 use core::fmt::Write as _;
 
+use crate::exp::anchor::AnchorResult;
 use crate::exp::bias::BiasResult;
 use crate::exp::breakaway::BreakawayResult;
 use crate::exp::held::HeldRun;
@@ -15,6 +16,7 @@ use crate::exp::resistance::ResistanceResult;
 use crate::exp::rl::RlResult;
 use crate::gains::{EncodedGains, GainSet, PlantParams};
 use crate::sources::{Source, Winding};
+use crate::thermometer::Anchor;
 
 /// The board-D rig's hand-eyeballed seeds (kernel band), for the comparison
 /// column. b_i 655 predates both coupling rescales (it was inert under the
@@ -45,6 +47,9 @@ pub struct ReportInputs<'a> {
     /// The plant the gains were synthesized from and where its winding
     /// terms and noise floor came from.
     pub plant: Option<PlantInputs<'a>>,
+    /// The thermometer's anchor: the hold that read the kernel's R, the
+    /// rest temperature paired with it, and the fields encoded from them.
+    pub anchor: Option<(&'a AnchorResult, f64, &'a Anchor)>,
 }
 
 #[derive(Copy, Clone)]
@@ -322,6 +327,45 @@ pub fn render(r: &ReportInputs<'_>) -> String {
         }
         None => {
             let _ = writeln!(s, "  skipped");
+        }
+    }
+
+    let _ = writeln!(s, "\n[anchor] the winding thermometer's R0 at T0");
+    match r.anchor {
+        Some((a, ambient_c, enc)) => {
+            let _ = writeln!(
+                s,
+                "  R0            {:.4} vcounts/ccount, the kernel's own R at the stop: median of \
+                 {} windows, scatter {:.1}%, held at {:.1}% duty drawing {:.0} counts",
+                a.r_vpc,
+                a.n,
+                a.spread * 100.0,
+                a.duty * 100.0,
+                a.i_counts
+            );
+            let _ = writeln!(s, "  T0            {ambient_c:.2} C, supplied by the host");
+            let _ = writeln!(
+                s,
+                "  slope         copper's handbook line, 1 / ({:.1} + T) per C, never fitted",
+                crate::thermometer::COPPER_ZERO_R_C
+            );
+            for (name, f) in enc.fields() {
+                let _ = writeln!(
+                    s,
+                    "  {:<22} {:>12.5} {:>7} {:>7.2}% {:>5}",
+                    name,
+                    f.physical,
+                    f.raw,
+                    f.quantization_pct,
+                    if f.saturated { "SAT" } else { "" }
+                );
+            }
+        }
+        None => {
+            let _ = writeln!(
+                s,
+                "  skipped (osc ident run --ambient-c <C>, or osc ident anchor)"
+            );
         }
     }
 
@@ -1220,7 +1264,7 @@ mod tests {
     #[test]
     fn renders_empty_and_partial_inputs() {
         let all_skipped = render(&ReportInputs::default());
-        assert_eq!(all_skipped.matches("skipped").count(), 8);
+        assert_eq!(all_skipped.matches("skipped").count(), 9);
 
         let p = PlantParams {
             r_vpc: 3.37,

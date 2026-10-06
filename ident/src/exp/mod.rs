@@ -27,6 +27,7 @@
 //! [`Permitted`] holds the stall permit for one that stalls on purpose, and
 //! the driver keeps a held permit alive with [`crate::limits::PermitLease`].
 
+pub mod anchor;
 pub mod bias;
 pub mod breakaway;
 pub mod centre;

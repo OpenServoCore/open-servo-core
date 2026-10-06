@@ -24,6 +24,7 @@ use osc_client::data_state::{self, DataState};
 use osc_client::descriptor::Descriptor;
 use osc_client::nusb::NusbPipe;
 use osc_ident::burst::{Capture, Chans};
+use osc_ident::exp::anchor::{Anchor, AnchorCfg, AnchorResult};
 use osc_ident::exp::bias::{Bias, BiasCfg, BiasResult};
 use osc_ident::exp::breakaway::{Breakaway, BreakawayCfg, BreakawayResult};
 use osc_ident::exp::centre::{Centre, CentreCfg};
@@ -54,9 +55,11 @@ use osc_ident::report::{self, PlantInputs, ReportInputs};
 use osc_ident::run::{self as order, Ended, Over, Run, Stage};
 use osc_ident::runway::{Runway, Supply};
 use osc_ident::sources::{self, HeldR, Source, Winding};
+use osc_ident::thermometer;
 use params::{
     BiasJson, BreakawayJson, GainJson, InductanceJson, InertiaJson, LadderJson, ParamsFile,
     PlantJson, PotJson, ResistanceJson, RlJson, SenseJson, StoredMotionJson, StoredWindingJson,
+    ThermometerJson,
 };
 
 /// Where recorded runs land when `--out` is absent.
@@ -147,6 +150,14 @@ pub struct Args {
     /// Nominal gear ratio, informational only (printed in the report dir).
     #[arg(long, global = true)]
     gear_ratio: Option<f64>,
+    /// The winding's temperature now, degrees C: the one number the servo
+    /// cannot measure. `run` then anchors the winding thermometer right
+    /// after the burst (a seated hold at the low stop under the current
+    /// limit reads the kernel's own R for r0_q12); `anchor` requires it.
+    /// Give it only on a servo at rest an hour or more after any stall or
+    /// heavy running: a warm winding anchors the thermometer low.
+    #[arg(long, global = true)]
+    ambient_c: Option<f64>,
     // bandwidth targets, Hz
     #[arg(long, global = true, default_value_t = 1000.0)]
     f_ci: f64,
@@ -197,6 +208,7 @@ struct Ctx {
     burst_hold_repeats: u32,
     inertia_ms: u32,
     gear_ratio: Option<f64>,
+    ambient_c: Option<f64>,
     f_ci: f64,
     f_cv: f64,
     f_cp: f64,
@@ -285,6 +297,19 @@ enum Cmd {
     /// Duty-step transients -> B (TEL when wired): the front of `run`
     /// through the ladder, then inertia.
     Inertia,
+    /// Re-anchor the winding thermometer on an identified servo: the jam
+    /// check, a seated hold at the low stop under the current limit that
+    /// reads the kernel's own winding R, back to mid travel; then r0_q12,
+    /// t0_cc, k_r2t_q88 and mu_q016 are written read-back verified (not
+    /// stamp-covered), SAVE with --save. Needs --ambient-c, the winding's
+    /// temperature at rest. Run it at rest an hour or more after any
+    /// stall, cal or heavy running: brush contact shifts R by a few percent
+    /// for a while, and 1% of R is 2.6 C of thermometer.
+    Anchor {
+        /// Persist with MGMT SAVE after the write.
+        #[arg(long)]
+        save: bool,
+    },
     /// Closed-loop verification on the written gains: verify current, then
     /// verify velocity. Needs a clean data state: a set written but not
     /// SAVEd on a fresh servo is refused (`ident write --save` first).
@@ -366,6 +391,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
         burst_hold_repeats: args.burst_hold_repeats,
         inertia_ms: args.inertia_ms,
         gear_ratio: args.gear_ratio,
+        ambient_c: args.ambient_c,
         f_ci: args.f_ci,
         f_cv: args.f_cv,
         f_cp: args.f_cp,
@@ -513,6 +539,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
             );
             Ok(())
         }
+        Cmd::Anchor { save } => run_anchor_alone(cli, &mut c, id, *save),
         Cmd::Verify => run_verify(cli, &mut c, id),
         Cmd::Write { params, save } => {
             let p = ParamsFile::load(params)?;
@@ -589,6 +616,7 @@ fn drives(cmd: &Cmd) -> bool {
             | Cmd::Breakaway
             | Cmd::Ladder
             | Cmd::Inertia
+            | Cmd::Anchor { .. }
             | Cmd::Verify
     )
 }
@@ -755,6 +783,82 @@ fn run_resistance(
         println!("  warn: {w}");
     }
     Ok(exp.fit())
+}
+
+/// The anchor hold: seated at the low stop with the permit held, the
+/// kernel's own winding R from its aggregate windows ([`Anchor`]). The
+/// windows land in anchor.csv for the offline fit.
+fn run_anchor(
+    cli: &Ctx,
+    c: &mut Client<NusbPipe>,
+    id: Id,
+    out: &csvio::OutDir,
+    cfg: AnchorCfg,
+) -> Result<Result<AnchorResult, String>> {
+    let params = rig(cli)?.without_pos_guard();
+    let mut log = csvio::SnapshotLog::create(out, "anchor_snapshots.csv")?;
+    let mut exp = Guarded::new(Permitted::new(Anchor::new(cfg, &params)), params);
+    with_guard(c, id, |c| Pump::new(c, id, Some(&mut log)).run(&mut exp))?;
+    check_abort("anchor", exp.abort())?;
+    let exp = exp.into_inner().into_inner();
+    csvio::write_anchor_samples(out, exp.samples())?;
+    Ok(exp.result())
+}
+
+/// `osc ident anchor`: the anchor alone on an identified servo, written
+/// and verified at once (nothing it writes is stamp-covered), SAVEd when
+/// asked.
+fn run_anchor_alone(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id, save: bool) -> Result<()> {
+    let Some(ambient_c) = cli.ambient_c else {
+        bail!(
+            "--ambient-c <C> is required: the winding's temperature now is the one number the \
+             servo cannot measure"
+        );
+    };
+    let d = drive(cli)?;
+    if d.stored.is_none() {
+        bail!(
+            "this servo carries no winding R from an earlier identification, so nothing plans \
+             the hold; `osc ident run --ambient-c {ambient_c}` identifies it and anchors the \
+             thermometer in the same run"
+        );
+    }
+    let rec = drive_stages(cli, c, id, Until::Anchor, false)?;
+    let Some(a) = rec.anchor else {
+        bail!(
+            "the anchor declined: {}; nothing written",
+            rec.declined.as_deref().unwrap_or("no hold was read")
+        );
+    };
+    let enc = thermometer::Anchor::new(a.r_vpc, ambient_c, d.lim.i_lim, d.sense.tick_hz as f64)
+        .context("the anchor encodes to nothing (zero R or limit)")?;
+    let floor = snapshot::read_u16(c, id, config::RTHERM_I_MIN_COUNTS)?;
+    if a.i_counts <= floor as f64 {
+        println!(
+            "warning: the hold drew {}, not over the thermometer's current floor of {}: the \
+             thermometer samples only over it (set rtherm_i_min_counts under the limit)",
+            d.lim.ma().of(a.i_counts),
+            d.lim.ma().of(floor as f64)
+        );
+    }
+    let fields = GainJson::anchor(&enc);
+    write_reg(c, id, control::TORQUE_ENABLE, 0)?;
+    snapshot::take_snapshot(c, id, &rec.out.0.join("snapshot.json"))?;
+    snapshot::write_gains(c, id, &fields)?;
+    for (name, f) in enc.fields() {
+        println!("  {name:<12} {:>7}  ({:.5})", f.raw, f.physical);
+    }
+    println!(
+        "the thermometer reads {ambient_c:.1} C at R0 {:.4} vcounts/ccount and copper's slope \
+         from there; re-anchor at rest after any stall, cal or heavy running",
+        a.r_vpc
+    );
+    if save {
+        crate::save(c, id)?;
+    } else {
+        println!("not saved: osc save persists it");
+    }
+    Ok(())
 }
 
 fn run_rl(
@@ -1191,6 +1295,10 @@ fn run_all(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id, stall_ladder: bool) -> R
             .map(StoredMotionJson::from),
         sense: Some(drive(cli)?.sense),
         pot: cli.lut.as_ref().map(PotJson::from),
+        thermometer: rec
+            .anchor
+            .zip(cli.ambient_c)
+            .map(|(a, c)| ThermometerJson::new(&a, c)),
         ..Default::default()
     };
     let dir = rec.out.0;
@@ -1209,6 +1317,8 @@ enum Until {
     Breakaway,
     Ladder,
     Inertia,
+    /// The anchor alone ([`Run::for_anchor`]).
+    Anchor,
     End,
 }
 
@@ -1220,6 +1330,7 @@ impl Until {
                 | (Until::Breakaway, Stage::Breakaway { .. })
                 | (Until::Ladder, Stage::Ladder { .. })
                 | (Until::Inertia, Stage::Inertia { .. })
+                | (Until::Anchor, Stage::Anchor { .. })
         )
     }
 }
@@ -1239,11 +1350,17 @@ fn drive_stages(
     let out = csvio::OutDir::create(&cli.out)?;
     println!("recording to {}", out.0.display());
     let d = drive(cli)?;
-    let mut run = Run::new(d.lim, &d.sc)
-        .with_stored_winding(d.stored)
-        .with_stored_motion(d.stored_motion.is_some());
+    let mut run = match until {
+        Until::Anchor => Run::for_anchor(d.lim, &d.sc),
+        _ => Run::new(d.lim, &d.sc),
+    }
+    .with_stored_winding(d.stored)
+    .with_stored_motion(d.stored_motion.is_some());
     if stall_ladder {
         run = run.with_stall_ladder();
+    }
+    if until == Until::End && cli.ambient_c.is_some() {
+        run = run.with_anchor();
     }
     let mut rec = Recorded {
         out,
@@ -1256,6 +1373,7 @@ fn drive_stages(
         breakaway: None,
         ladder: None,
         inertia: None,
+        anchor: None,
         declined: None,
         runway: None,
         climbs: Vec::new(),
@@ -1289,6 +1407,11 @@ fn drive_stages(
     match run.over() {
         // the fit keeps what came before it, and says what is missing
         Some(Over::Declined("inertia" | "ladder")) if until == Until::End => Ok(rec),
+        Some(Over::Declined("anchor")) => bail!(
+            "no winding R to plan the hold with: this servo carries none from an earlier \
+             identification; `osc ident run --ambient-c <C>` identifies it and anchors the \
+             thermometer in the same run"
+        ),
         Some(Over::Declined(stage)) if stage != "burst" => bail!(
             "the {stage} declined: {}; the run ended at mid travel with nothing to fit",
             rec.declined.as_deref().unwrap_or("nothing fitted")
@@ -1445,6 +1568,8 @@ struct Recorded {
     breakaway: Option<BreakawayResult>,
     ladder: Option<LadderResult>,
     inertia: Option<InertiaResult>,
+    /// The thermometer's anchor hold.
+    anchor: Option<AnchorResult>,
     /// Why a stage gave the fit nothing, in plain words.
     declined: Option<String>,
     /// What the ladder measured: inertia runs inside the same runway.
@@ -1629,6 +1754,35 @@ impl Recorded {
                     Ok(r) => self.inertia = Some(r),
                     Err(why) => {
                         println!("  {why}");
+                        self.declined.get_or_insert(why);
+                        return Ok(Ended::Declined);
+                    }
+                }
+            }
+            Stage::Anchor { seek, hold } => {
+                println!(
+                    "[anchor] seek the low stop at {}, hold at {} (the current limit governs) \
+                     for a second: the kernel's own winding R at rest, for r0_q12; pos guard \
+                     off, stall permit held",
+                    pct(*seek),
+                    pct(*hold)
+                );
+                let cfg = order::anchor_cfg(*seek, *hold, AnchorCfg::default());
+                match run_anchor(cli, c, id, out, cfg)? {
+                    Ok(a) => {
+                        println!(
+                            "  R0 {:.4} vcounts/ccount, median of {} windows (scatter {:.1}%), \
+                             held at {} drawing {}",
+                            a.r_vpc,
+                            a.n,
+                            a.spread * 100.0,
+                            pct(a.duty),
+                            d.lim.ma().of(a.i_counts)
+                        );
+                        self.anchor = Some(a);
+                    }
+                    Err(why) => {
+                        println!("  the anchor declined: {why}");
                         self.declined.get_or_insert(why);
                         return Ok(Ended::Declined);
                     }
@@ -1856,6 +2010,24 @@ fn fit_dir(cli: &Ctx, dir: PathBuf) -> Result<()> {
     let gains_set = gains::synthesize(&plant, &t);
     let encoded = gains::encode(&gains_set);
 
+    // the thermometer's anchor, when the run read one: the kernel's R at
+    // the hold, refit from its windows, with the ambient the host paired
+    // with it; the LMS step is sized at the limit the hold ran under
+    let anchor = match (dir.join("anchor.csv").exists(), p.thermometer) {
+        (true, Some(th)) => {
+            let a = Anchor::fit_samples(&csvio::read_anchor_samples(&dir)?)
+                .map_err(anyhow::Error::msg)?;
+            let i_lim = csvio::read_current_limit(&dir.join("anchor_snapshots.csv"))?.context(
+                "anchor_snapshots.csv holds no current limit: the LMS step is sized at it",
+            )?;
+            let enc = thermometer::Anchor::new(a.r_vpc, th.ambient_c, i_lim, tick_hz)
+                .context("the anchor encodes to nothing (zero R or limit)")?;
+            p.thermometer = Some(ThermometerJson::new(&a, th.ambient_c));
+            Some((a, th.ambient_c, enc))
+        }
+        _ => None,
+    };
+
     let text = report::render(&ReportInputs {
         bias: bias_res.as_ref(),
         resistance: resistance.as_ref(),
@@ -1870,6 +2042,7 @@ fn fit_dir(cli: &Ctx, dir: PathBuf) -> Result<()> {
             winding: &w,
             sigma_from,
         }),
+        anchor: anchor.as_ref().map(|(a, c, e)| (a, *c, e)),
     });
     println!("{text}");
     std::fs::write(dir.join("report.txt"), &text)?;
@@ -1877,6 +2050,9 @@ fn fit_dir(cli: &Ctx, dir: PathBuf) -> Result<()> {
     p.inertia = Some(InertiaJson::new(&inertia, from.as_str()));
     p.plant = Some(PlantJson::new(&plant, &t, &w, sigma_from.as_str()));
     p.gains = GainJson::set(&encoded);
+    if let Some((_, _, e)) = &anchor {
+        p.gains.extend(GainJson::anchor(e));
+    }
     p.save(&path)?;
     println!("params: {}", path.display());
     println!(
@@ -2040,6 +2216,7 @@ mod tests {
             burst_hold_repeats: 4,
             inertia_ms: 150,
             gear_ratio: None,
+            ambient_c: None,
             f_ci: 1000.0,
             f_cv: 200.0,
             f_cp: 25.0,
@@ -2519,6 +2696,117 @@ mod tests {
 
     /// The rest of a run as it lands on disk: ladder rungs on a winding of
     /// `r` vcounts per ccount and the inertia steps.
+    /// A run that read the thermometer's anchor: the hold's windows at the
+    /// low stop under the 280 limit, the ambient the host gave. The fit
+    /// writes the four CALIB fields behind the gains - r0_q12 the kernel's
+    /// own R at the hold, t0_cc the ambient, k_r2t_q88 copper's handbook
+    /// line through them, mu_q016 a 2 s settle at the limit - and the
+    /// report says where each came from.
+    #[test]
+    fn the_anchor_rides_with_the_gains_and_encodes_the_handbook_slope() {
+        use osc_ident::exp::WindowSample;
+        use osc_ident::frame::TelemetrySnapshot;
+        use osc_ident::thermometer::{COPPER_ZERO_R_C, SETTLE_S};
+
+        let (dir, out, r) = record_front("anchor");
+        record_ladder_and_steps(&out, r);
+        // the kernel at the stop reads the winding 1.5% over the burst's
+        // route: one instrument, its own scale
+        let r_hold = r * 1.015;
+        let windows: Vec<WindowSample> = (0..300)
+            .map(|k| {
+                let i = -(280.0 + (k % 3) as f64 - 1.0);
+                WindowSample {
+                    t_ms: k as f64 * 2.5,
+                    i,
+                    vdiff: r_hold * i.abs() * 32767.0 / -5242.0,
+                    duty_q15: -5242.0,
+                }
+            })
+            .collect();
+        csvio::write_anchor_samples(&out, &windows).unwrap();
+        {
+            let mut log = csvio::SnapshotLog::create(&out, "anchor_snapshots.csv").unwrap();
+            let s = TelemetrySnapshot {
+                i_lim_counts: 280,
+                ..TelemetrySnapshot::default()
+            };
+            log.push(1.0, &s).unwrap();
+        }
+        let path = dir.join("params.json");
+        let mut p = ParamsFile::load(&path).unwrap();
+        p.thermometer = Some(ThermometerJson {
+            ambient_c: 26.23,
+            r_vpc: 0.0,
+            spread: 0.0,
+            n: 0,
+            i_counts: 0.0,
+            duty: 0.0,
+        });
+        p.save(&path).unwrap();
+
+        fit_dir(&ctx(dir.clone()), dir.clone()).unwrap();
+        let p = ParamsFile::load(&path).unwrap();
+        let th = p.thermometer.expect("the anchor refit");
+        assert!((th.r_vpc - r_hold).abs() < 1e-9, "{} vs {r_hold}", th.r_vpc);
+        assert_eq!(th.n, 300);
+        assert!((th.i_counts - 280.0).abs() < 1e-9);
+        let raw = |name: &str| p.gains.iter().find(|g| g.name == name).unwrap().raw;
+        let r0 = (r_hold * 4096.0).round() as u16;
+        assert_eq!(raw("r0_q12"), r0);
+        assert_ne!(
+            raw("r0_q12"),
+            raw("r_q12"),
+            "the anchor is not the burst's R"
+        );
+        assert_eq!(raw("t0_cc"), 2623);
+        let k = 100.0 * (COPPER_ZERO_R_C + 26.23) / r0 as f64;
+        assert_eq!(raw("k_r2t_q88"), (k * 256.0).round() as u16);
+        let slow_hz = 20_100.0 / 320.0;
+        let mu = 4096.0 / (280.0 * SETTLE_S * slow_hz);
+        assert_eq!(raw("mu_q016"), (mu * 65536.0).round() as u16);
+        assert_eq!(p.gains.len(), 19 + 4);
+        let report = std::fs::read_to_string(dir.join("report.txt")).unwrap();
+        assert!(
+            report.contains("[anchor] the winding thermometer's R0 at T0"),
+            "{report}"
+        );
+        assert!(
+            report.contains(&format!(
+                "  R0            {r_hold:.4} vcounts/ccount, the kernel's own R at the stop"
+            )),
+            "{report}"
+        );
+        assert!(
+            report.contains("  T0            26.23 C, supplied by the host"),
+            "{report}"
+        );
+        assert!(
+            report.contains("copper's handbook line, 1 / (234.5 + T) per C, never fitted"),
+            "{report}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Without an anchor recording the fit writes the gains alone and the
+    /// report says how to get one.
+    #[test]
+    fn no_anchor_recording_writes_no_thermometer() {
+        let (dir, out, r) = record_front("no-anchor");
+        record_ladder_and_steps(&out, r);
+        fit_dir(&ctx(dir.clone()), dir.clone()).unwrap();
+        let p = ParamsFile::load(&dir.join("params.json")).unwrap();
+        assert!(p.thermometer.is_none());
+        assert_eq!(p.gains.len(), 19);
+        assert!(p.gains.iter().all(|g| g.name != "r0_q12"));
+        let report = std::fs::read_to_string(dir.join("report.txt")).unwrap();
+        assert!(
+            report.contains("  skipped (osc ident run --ambient-c <C>, or osc ident anchor)"),
+            "{report}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn record_ladder_and_steps(out: &csvio::OutDir, r: f64) {
         use osc_ident::exp::ladder::RungSummary;
         use osc_ident::fits::StepSeries;

@@ -42,8 +42,18 @@
 //! ([`Run::with_stored_motion`]) inertia still runs, against those, and the
 //! run ends as the ladder's decline; on one that does not the run goes to
 //! its closing centring.
+//!
+//! Asked for with the rest temperature ([`Run::with_anchor`]), the
+//! thermometer's anchor runs right after the burst, the winding at its
+//! coldest: seated at the low stop and held at the stall-safe cap, the
+//! kernel's own winding R is read for `r0_q12` ([`crate::exp::anchor`]).
+//! On a servo already identified the anchor runs on its own
+//! ([`Run::for_anchor`]): the jam check, the anchor at the plan the stored
+//! winding gives, and the closing centring. An anchor that declines seeds
+//! no thermometer and changes nothing else.
 
 use crate::exp::AbortReason;
+use crate::exp::anchor::AnchorCfg;
 use crate::exp::breakaway::BreakawayCfg;
 use crate::exp::centre::CentreCfg;
 use crate::exp::endstop::EndstopCfg;
@@ -99,6 +109,12 @@ pub enum Stage {
         seek: f64,
         base: f64,
     },
+    /// The thermometer's anchor: `seek` to the low stop, `hold` there at
+    /// the stall-safe cap while the kernel's winding R is read.
+    Anchor {
+        seek: f64,
+        hold: f64,
+    },
     /// Cal: each stop approached at `approach`, seated at `seat`; a sticky
     /// spot or a leave may raise the duty up to `cap`.
     Stops {
@@ -123,6 +139,7 @@ impl Stage {
             Stage::Breakaway { .. } => "breakaway",
             Stage::Ladder { .. } => "ladder",
             Stage::Inertia { .. } => "inertia",
+            Stage::Anchor { .. } => "anchor",
             Stage::Stops { .. } => "stops",
             Stage::Traverse { .. } => "traverse",
         }
@@ -181,6 +198,7 @@ enum Step {
     Breakaway,
     Ladder,
     Inertia,
+    Anchor,
     Stops,
     Traverse,
     Park,
@@ -201,6 +219,27 @@ const ORDER: [Step; 10] = [
     Step::Park,
 ];
 
+/// The default run with the thermometer's anchor after the burst, before
+/// the drives that warm the winding.
+const ANCHOR_ORDER: [Step; 12] = [
+    Step::Bias,
+    Step::Nudge,
+    Step::Burst,
+    Step::Park,
+    Step::Anchor,
+    Step::Park,
+    Step::Breakaway,
+    Step::Park,
+    Step::Ladder,
+    Step::Park,
+    Step::Inertia,
+    Step::Park,
+];
+
+/// The anchor alone, on a servo that carries its winding: the jam check,
+/// the anchor, and back to mid travel.
+const ANCHOR_ONLY_ORDER: [Step; 3] = [Step::Nudge, Step::Anchor, Step::Park];
+
 /// Cal: the jam check and the burst at mid travel, the stops, the traverse
 /// from the low end, and back to mid travel.
 const CAL_ORDER: [Step; 6] = [
@@ -220,6 +259,8 @@ pub struct Run {
     class_r_vpc: f64,
     stall_ladder: bool,
     cal: bool,
+    anchor: bool,
+    anchor_only: bool,
     /// What an earlier identification left on the servo.
     stored: Option<Winding>,
     /// The servo carries a Ke and friction line.
@@ -247,6 +288,8 @@ impl Run {
             class_r_vpc: sc.r_vpc(CLASS_R_MIN),
             stall_ladder: false,
             cal: false,
+            anchor: false,
+            anchor_only: false,
             stored: None,
             stored_motion: false,
             reused: None,
@@ -301,8 +344,36 @@ impl Run {
         }
     }
 
+    /// The thermometer's anchor after the burst: the host has the rest
+    /// temperature to pair with it.
+    pub fn with_anchor(self) -> Self {
+        Self {
+            anchor: true,
+            ..self
+        }
+    }
+
+    /// The anchor alone: the jam check, then the anchor at the plan the
+    /// stored winding gives ([`Run::with_stored_winding`]), then the
+    /// closing centring. Without a stored winding nothing can plan the
+    /// hold and the run ends.
+    pub fn for_anchor(lim: ServoLimits, sc: &Scales) -> Self {
+        Self {
+            anchor_only: true,
+            ..Self::new(lim, sc)
+        }
+    }
+
     fn order(&self) -> &'static [Step] {
-        if self.cal { &CAL_ORDER } else { &ORDER }
+        if self.cal {
+            &CAL_ORDER
+        } else if self.anchor_only {
+            &ANCHOR_ONLY_ORDER
+        } else if self.anchor {
+            &ANCHOR_ORDER
+        } else {
+            &ORDER
+        }
     }
 
     /// Cal's approach, seat and cap: by the plan once R is measured, else
@@ -426,6 +497,15 @@ impl Run {
                 cap: self.nudge_cap(),
                 nudge: false,
             },
+            // the anchor alone plans from the winding the servo carries
+            (Step::Anchor, None) => match self.stored {
+                Some(w) => {
+                    self.plan = Some(DutyPlan::new(&self.lim, w.r_vpc, self.free));
+                    self.pending = Some(Step::Anchor);
+                    return self.next_stage();
+                }
+                None => return self.end(Over::Declined("anchor")),
+            },
             (_, None) => return self.end(Over::Declined("burst")),
             (Step::Breakaway, Some(p)) => Stage::Breakaway { cap: p.stop_cap },
             (Step::Ladder, Some(p)) => Stage::Ladder {
@@ -435,6 +515,10 @@ impl Run {
             (Step::Inertia, Some(p)) => Stage::Inertia {
                 seek: p.seek,
                 base: p.seek + BASE_OVER_SEEK,
+            },
+            (Step::Anchor, Some(p)) => Stage::Anchor {
+                seek: p.seek,
+                hold: p.stop_cap,
             },
             (Step::Park, Some(p)) => Stage::Centre {
                 duty: p.seek,
@@ -497,6 +581,8 @@ impl Run {
                 Some("ladder") if self.stored_motion && self.plan.is_some() => {
                     self.cut.get_or_insert(Over::Declined("ladder"));
                 }
+                // no thermometer seed; the plant and the run are untouched
+                Some("anchor") => {}
                 Some(stage) if self.plan.is_some() => {
                     self.cut.get_or_insert(Over::Declined(stage));
                     self.finish();
@@ -593,6 +679,15 @@ pub fn resistance_cfg(seek: f64, rungs: &[f64], base: ResistanceCfg) -> Resistan
     }
 }
 
+/// `base` with a stage's seek and hold.
+pub fn anchor_cfg(seek: f64, hold: f64, base: AnchorCfg) -> AnchorCfg {
+    AnchorCfg {
+        seek_duty_q15: q15_floor(seek),
+        hold_duty_q15: q15_floor(hold),
+        ..base
+    }
+}
+
 pub fn breakaway_cfg(cap: f64) -> BreakawayCfg {
     let base = BreakawayCfg::default();
     let cap_q15 = q15_floor(cap);
@@ -644,6 +739,7 @@ pub fn inertia_cfg(seek: f64, base: f64, cfg: InertiaCfg) -> InertiaCfg {
 mod tests {
     use super::*;
     use crate::burst::Capture;
+    use crate::exp::anchor::{Anchor, AnchorResult};
     use crate::exp::bias::{Bias, BiasCfg};
     use crate::exp::breakaway::Breakaway;
     use crate::exp::centre::Centre;
@@ -1049,6 +1145,7 @@ mod tests {
         polarity: bool,
         /// Drive by the stored polarity whatever the jam check read.
         trust_stored: bool,
+        anchor: Option<AnchorResult>,
     }
 
     impl Rig<'_> {
@@ -1072,6 +1169,7 @@ mod tests {
                 virgin: false,
                 polarity: true,
                 trust_stored: false,
+                anchor: None,
             }
         }
 
@@ -1195,6 +1293,19 @@ mod tests {
                     }
                     how
                 }
+                Stage::Anchor { seek, hold } => {
+                    let cfg = anchor_cfg(*seek, *hold, AnchorCfg::default());
+                    let exp = Permitted::new(Anchor::new(cfg, &params));
+                    let (exp, how) = self.go(exp, params.without_pos_guard());
+                    match exp.into_inner().result() {
+                        Ok(a) if how == Ended::Done => {
+                            self.anchor = Some(a);
+                            how
+                        }
+                        _ if how == Ended::Done => Ended::Declined,
+                        _ => how,
+                    }
+                }
                 Stage::Stops {
                     approach,
                     seat,
@@ -1254,6 +1365,103 @@ mod tests {
                 Some((q as f64 / Q15).abs())
             })
             .collect()
+    }
+
+    const ANCHOR_ORDER_NAMES: [&str; 12] = [
+        "bias",
+        "centring",
+        "burst",
+        "centring",
+        "anchor",
+        "centring",
+        "breakaway",
+        "centring",
+        "ladder",
+        "centring",
+        "inertia",
+        "centring",
+    ];
+
+    /// Asked for, the anchor follows the burst at the plan's seek and stop
+    /// cap, before anything warms the winding; declined, it seeds nothing
+    /// and the run goes on to its end.
+    #[test]
+    fn the_anchor_rides_after_the_burst_when_asked() {
+        let mut r = run(RAIL_2S).with_anchor();
+        let mut anchor = None;
+        let seen = stages(&mut r, |s| {
+            if let Stage::Anchor { seek, hold } = s {
+                anchor = Some((*seek, *hold));
+            }
+            Ended::Done
+        });
+        assert_eq!(seen, ANCHOR_ORDER_NAMES);
+        assert_eq!(r.over(), None);
+        let plan = DutyPlan::new(&limits(RAIL_2S), R, Some(0.12));
+        assert_eq!(anchor, Some((plan.seek, plan.stop_cap)));
+        assert_eq!(stages(&mut run(RAIL_2S), |_| Ended::Done), ORDER_NAMES);
+
+        let mut r = run(RAIL_2S).with_anchor();
+        let seen = stages(&mut r, |s| match s {
+            Stage::Anchor { .. } => Ended::Declined,
+            _ => Ended::Done,
+        });
+        assert_eq!(seen, ANCHOR_ORDER_NAMES);
+        assert_eq!(r.over(), None);
+    }
+
+    /// On its own the anchor plans from the winding the servo carries, the
+    /// jam check's duty seeding the seek; a servo that carries none has
+    /// nothing to plan the hold with.
+    #[test]
+    fn the_anchor_alone_plans_from_the_stored_winding() {
+        let mut r =
+            Run::for_anchor(limits(RAIL_2S), &scales()).with_stored_winding(Some(stored(R)));
+        let mut anchor = None;
+        let seen = stages(&mut r, |s| {
+            if let Stage::Anchor { seek, hold } = s {
+                anchor = Some((*seek, *hold));
+            }
+            Ended::Done
+        });
+        assert_eq!(seen, ["centring", "anchor", "centring"]);
+        assert_eq!(r.over(), None);
+        let plan = DutyPlan::new(&limits(RAIL_2S), R, Some(0.12));
+        assert_eq!(anchor, Some((plan.seek, plan.stop_cap)));
+
+        let mut r = Run::for_anchor(limits(RAIL_2S), &scales());
+        let seen = stages(&mut r, |_| Ended::Done);
+        assert_eq!(seen, ["centring"]);
+        assert_eq!(r.over(), Some(Over::Declined("anchor")));
+    }
+
+    /// The bench servo on 2S with the anchor: the one stage that presses a
+    /// stop, under the permit, its hold governed to the limit, and the R it
+    /// reads is the winding the fake stalls through.
+    #[test]
+    fn the_anchor_seats_the_bench_servo_once_under_the_limit() {
+        let mut servo = bench_servo(RAIL_2S);
+        servo.pos = 2600.0;
+        let mut run = run(RAIL_2S).with_anchor();
+        let mut rig = Rig::new(&mut servo, RAIL_2S);
+        rig.run(&mut run);
+        assert_eq!(run.over(), None, "{:?}", run.over());
+        let names: Vec<&str> = rig.marks.iter().map(|m| m.0).collect();
+        assert_eq!(names, ANCHOR_ORDER_NAMES);
+        let a = rig.anchor.expect("the anchor read");
+        assert!((a.r_vpc / R - 1.0).abs() < 0.02, "R {} of {R}", a.r_vpc);
+        assert!(a.i_counts <= LIM as f64 * 1.05, "hold at {}", a.i_counts);
+        assert!(a.i_counts > LIM as f64 * 0.8, "hold at {}", a.i_counts);
+        for (k, name) in names.iter().enumerate() {
+            let permit = rig
+                .span(k, k + 1)
+                .iter()
+                .any(|l| l == "write stall_permit 1");
+            assert_eq!(permit, *name == "anchor", "stage {k} {name}");
+        }
+        assert!(servo.pressed_ms > 0.0);
+        assert!(!servo.torque && !servo.permit_live());
+        assert!((servo.pos - 2029.0).abs() <= 300.0, "ends at {}", servo.pos);
     }
 
     /// The bench MG90 with the burst plant on the same winding and rail.

@@ -192,6 +192,29 @@ pub(crate) fn read_dwell_samples(dir: &Path) -> Result<Vec<DwellSample>> {
     Ok(out)
 }
 
+/// The anchor hold's windows, the thermometer's `r0_q12` refit input.
+pub(crate) fn write_anchor_samples(dir: &OutDir, samples: &[WindowSample]) -> Result<()> {
+    let mut w = dir.file("anchor.csv")?;
+    writeln!(w, "t_ms,i,vdiff,duty_q15")?;
+    for s in samples {
+        writeln!(w, "{},{},{},{}", s.t_ms, s.i, s.vdiff, s.duty_q15)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn read_anchor_samples(dir: &Path) -> Result<Vec<WindowSample>> {
+    let mut out = Vec::new();
+    for parts in rows(&dir.join("anchor.csv"), 4)? {
+        out.push(WindowSample {
+            t_ms: parts[0].parse()?,
+            i: parts[1].parse()?,
+            vdiff: parts[2].parse()?,
+            duty_q15: parts[3].parse()?,
+        });
+    }
+    Ok(out)
+}
+
 pub(crate) fn write_rungs(dir: &OutDir, rungs: &[RungSummary]) -> Result<()> {
     let mut w = dir.file("rungs.csv")?;
     writeln!(

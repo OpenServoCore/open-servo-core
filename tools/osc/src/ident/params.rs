@@ -6,6 +6,7 @@ use std::path::Path;
 
 use crate::rig::plant::Lut;
 use anyhow::{Context, Result};
+use osc_ident::exp::anchor::AnchorResult;
 use osc_ident::exp::bias::BiasResult;
 use osc_ident::exp::breakaway::BreakawayResult;
 use osc_ident::exp::held::HeldRun;
@@ -17,6 +18,7 @@ use osc_ident::exp::wavefit::WaveRun;
 use osc_ident::exp::winding::VoltRun;
 use osc_ident::gains::{BwTargets, Encoded, EncodedGains, PlantParams};
 use osc_ident::sources::{Source, Winding};
+use osc_ident::thermometer;
 use osc_ident::units::SenseParams;
 use serde::{Deserialize, Serialize};
 
@@ -41,8 +43,37 @@ pub struct ParamsFile {
     /// The position table the run fitted through: which counts the plant is
     /// in.
     pub pot: Option<PotJson>,
+    /// The thermometer's anchor the run read, and the rest temperature the
+    /// host paired with it; the fit encodes them into `gains`.
+    #[serde(default)]
+    pub thermometer: Option<ThermometerJson>,
     #[serde(default)]
     pub gains: Vec<GainJson>,
+}
+
+/// The anchor hold as recorded ([`osc_ident::exp::anchor::AnchorResult`])
+/// with the ambient the host supplied, degrees C.
+#[derive(Serialize, Deserialize, Clone, Copy)]
+pub struct ThermometerJson {
+    pub ambient_c: f64,
+    pub r_vpc: f64,
+    pub spread: f64,
+    pub n: usize,
+    pub i_counts: f64,
+    pub duty: f64,
+}
+
+impl ThermometerJson {
+    pub fn new(a: &AnchorResult, ambient_c: f64) -> Self {
+        Self {
+            ambient_c,
+            r_vpc: a.r_vpc,
+            spread: a.spread,
+            n: a.n,
+            i_counts: a.i_counts,
+            duty: a.duty,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -783,9 +814,18 @@ pub struct GainJson {
 
 impl GainJson {
     pub fn set(e: &EncodedGains) -> Vec<Self> {
-        e.fields()
+        Self::of(&e.fields())
+    }
+
+    /// The thermometer anchor's four fields, in table order.
+    pub fn anchor(a: &thermometer::Anchor) -> Vec<Self> {
+        Self::of(&a.fields())
+    }
+
+    fn of(fields: &[(&str, Encoded)]) -> Vec<Self> {
+        fields
             .iter()
-            .map(|(name, f): &(&str, Encoded)| Self {
+            .map(|(name, f)| Self {
                 name: name.to_string(),
                 physical: f.physical,
                 raw: f.raw,
