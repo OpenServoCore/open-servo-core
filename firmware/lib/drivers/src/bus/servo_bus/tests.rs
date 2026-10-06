@@ -1270,16 +1270,17 @@ fn spurious_wake_on_quiet_wire_costs_one_recheck() {
 /// Every break of a back-to-back silent burst stamps and pairs, however
 /// late its wake is served (position from the stream, transport sec 5.1):
 /// each wake lands 2.5 byte-times behind its break byte, with the ID and
-/// LEN bytes already ringed behind it. 161 breaks are exactly one stamp,
-/// the 32-pair baseline and one 128-pair window, so a single lost or
-/// misplaced stamp would push the verdict past the last break. The seam
+/// LEN bytes already ringed behind it. 257 breaks are exactly one stamp,
+/// the 128-pair baseline window and one 128-pair window, so a single lost
+/// or misplaced stamp would push the verdict past the last break. The seam
 /// grows one tick after the baseline: one step of drift at 48 bytes.
 #[test]
 fn lagged_break_wakes_still_pair() {
     const F: usize = 48;
     const LAG: u32 = 25;
     const SEAM: u32 = 4;
-    const BREAKS: u32 = 1 + 32 + 128;
+    const BASELINE: u32 = 128;
+    const BREAKS: u32 = 1 + BASELINE + 128;
     let h = Harness::new();
     let mut bus = h.build(ID, RATE, 60);
     let shared = Shared::new();
@@ -1324,7 +1325,7 @@ fn lagged_break_wakes_still_pair() {
         h.ring
             .set_cursor(((anchor + landed(wake, t)) % RING_LEN) as u16);
         bus.on_break(&mut d);
-        let seam = if k < 32 { SEAM } else { SEAM + 1 };
+        let seam = if k < BASELINE { SEAM } else { SEAM + 1 };
         let next = t + F as u32 * TPB + seam;
         while let Some(at) = h.deadline.armed().filter(|&at| at < next) {
             h.deadline.set_now(at);

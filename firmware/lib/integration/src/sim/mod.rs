@@ -616,8 +616,22 @@ impl Sim {
 
     /// Drain the event queue; return every frame observed since the last call.
     pub fn run(&mut self) -> Vec<WireFrame> {
+        self.run_until_ticks(u64::MAX)
+    }
+
+    /// Drain events up to and including `at_us` - the main loop's turn
+    /// between frames at a chosen instant (a trim poll and apply), with the
+    /// traffic after it already queued at its true cadence. A frame queued
+    /// only after `run` returns is clamped to `now`, which sits behind the
+    /// servo's trailing wakes: the next frames serialize back-to-back and
+    /// the compressed seams read as drift.
+    pub fn run_until(&mut self, at_us: u64) -> Vec<WireFrame> {
+        self.run_until_ticks(at_us * TICKS_PER_US)
+    }
+
+    fn run_until_ticks(&mut self, limit: u64) -> Vec<WireFrame> {
         loop {
-            let ev = self.core.borrow_mut().pop();
+            let ev = self.core.borrow_mut().pop_until(limit);
             let Some(ev) = ev else { break };
             self.dispatch(ev);
         }

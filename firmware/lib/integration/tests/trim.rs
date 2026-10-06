@@ -201,8 +201,8 @@ fn send_silent(sim: &mut Sim, t0: u64, n: u64) -> u64 {
 fn tracker_follows_thermal_drift() {
     let mut sim = Sim::new(BaudRate::B1000000);
     let s = sim.add_servo_with(ID, 0, DEFAULT_RESPONSE_DEADLINE_US);
-    // Baseline (32 pairs) + one full window (128) at the boot rate.
-    let t = send_silent(&mut sim, 0, 180);
+    // Baseline window + one full window (128 pairs each) at the boot rate.
+    let t = send_silent(&mut sim, 0, 257);
     sim.run();
     assert_eq!(sim.poll_clock_trim(s), None, "no drift, no decision");
     // Thermal drift: +2600 ppm, continuously (the clock never steps).
@@ -224,19 +224,21 @@ fn tracker_pairs_each_frame_with_its_own_breaks(
 ) {
     let long = silent_write();
     let short = instruction(OTHER_ID, Opcode::Write, Inst::FLAG_NOREPLY, &[0u8; 20]);
-    // Wire time at 1M: footprint x 10 us, plus the 20 us host seam.
+    // Wire time at 1M: footprint x 10 us, plus a 10 us host seam - inside
+    // the SHORT frame's pair gate too (16 us, less the break's 4-bit
+    // excess), so both shapes pair.
     let send = |sim: &mut Sim, mut t: u64, n: u64| -> u64 {
         for k in 0..n {
             let f = if k % 2 == 0 { &long } else { &short };
             sim.host_send_at(t, f);
-            t += f.len() as u64 * 10 + 20;
+            t += f.len() as u64 * 10 + 10;
         }
         t
     };
     let mut sim = Sim::new(BaudRate::B1000000);
     sim.set_break_wake(wake);
     let s = sim.add_servo_with(ID, 0, DEFAULT_RESPONSE_DEADLINE_US);
-    let t = send(&mut sim, 0, 180);
+    let t = send(&mut sim, 0, 257);
     sim.run();
     assert_eq!(sim.poll_clock_trim(s), None, "no drift, no decision");
     sim.set_servo_skew_at(t, s, 2_600);
@@ -288,7 +290,7 @@ fn cal_anchors_then_tracker_follows() {
     );
     // Quiet stretch (clear of the post-train hunt's trailing wakes):
     // baseline recaptures post-CAL, windows read no drift.
-    let t = send_silent(&mut sim, train_end(0) + 5_000, 180);
+    let t = send_silent(&mut sim, train_end(0) + 5_000, 257);
     sim.run();
     assert_eq!(sim.poll_clock_trim(s), None, "no drift since the anchor");
     // Motor heat: +2600 ppm on top of the boot skew.
@@ -311,6 +313,8 @@ fn cal_anchors_then_tracker_follows() {
 const BURST_FRAMES: u64 = 24;
 const BURST_PERIOD_US: u64 = 114;
 const BURST_SETTLE_US: u64 = 5_000;
+/// Bursts that complete the 128-pair baseline window at 23 pairs each.
+const BASELINE_BURSTS: u64 = 6;
 
 fn goal_write(id: u8) -> Vec<u8> {
     use osc_servo_core::regions::control::addr::lifecycle::GOAL_POSITION;
@@ -342,7 +346,7 @@ fn tracker_follows_bench_bursts_foreign() {
     let mut sim = Sim::new(BaudRate::B1000000);
     let s = sim.add_servo_with(ID, 0, DEFAULT_RESPONSE_DEADLINE_US);
     let f = goal_write(OTHER_ID);
-    let t = send_bursts(&mut sim, &f, 0, 3);
+    let t = send_bursts(&mut sim, &f, 0, BASELINE_BURSTS);
     sim.run();
     assert_eq!(last_trim(&mut sim, s), None, "baseline absorbs the seam");
     sim.set_servo_skew_at(t, s, 6_900);
@@ -360,7 +364,7 @@ fn tracker_follows_bench_bursts_self_addressed() {
     let mut sim = Sim::new(BaudRate::B1000000);
     let s = sim.add_servo_with(ID, 0, DEFAULT_RESPONSE_DEADLINE_US);
     let f = goal_write(ID);
-    let t = send_bursts(&mut sim, &f, 0, 3);
+    let t = send_bursts(&mut sim, &f, 0, BASELINE_BURSTS);
     sim.run();
     assert_eq!(last_trim(&mut sim, s), None, "baseline absorbs the seam");
     sim.set_servo_skew_at(t, s, 6_900);
@@ -379,14 +383,18 @@ fn tracker_follows_bench_bursts_self_addressed() {
 /// still places each break (position from the stream) and every break
 /// stamps. The wake's entry lag beats against the frame cadence (fixed
 /// costs: a three-frame cycle), so only the pairs whose two wakes carry
-/// the same lag clear the span gate; those still decide. A lag-free stamp
-/// (a hardware latch at the detector's fire) is what makes every pair
-/// clear it.
+/// the same lag clear the span gate - 13 or 14 of a burst's 23 - and the
+/// CAL-anchored baseline window fills in ten bursts where lag-free food
+/// fills it in `BASELINE_BURSTS`; the pairs that clear still decide. A
+/// lag-free stamp (a hardware latch at the detector's fire) is what makes
+/// every pair clear it.
 #[rstest]
 #[test_log::test]
 fn tracker_follows_bench_bursts_under_handler_cost(
     #[values(BreakWake::BeforeByte, BreakWake::AfterByte)] wake: BreakWake,
 ) {
+    /// 128 pairs at the beat's 13-14 per burst: the ninth burst is short.
+    const LAGGED_BASELINE_BURSTS: u64 = 10;
     let mut sim = Sim::new(BaudRate::B1000000);
     sim.set_break_wake(wake);
     let s = sim.add_servo_with(ID, 0, DEFAULT_RESPONSE_DEADLINE_US);
@@ -399,7 +407,7 @@ fn tracker_follows_bench_bursts_under_handler_cost(
         },
     );
     let f = goal_write(ID);
-    let t = send_bursts(&mut sim, &f, 0, 3);
+    let t = send_bursts(&mut sim, &f, 0, LAGGED_BASELINE_BURSTS);
     sim.run();
     assert_eq!(last_trim(&mut sim, s), None, "baseline absorbs the seam");
     sim.set_servo_skew_at(t, s, 6_900);
@@ -437,7 +445,7 @@ fn tracker_survives_latched_refires_between_frames() {
         }
         t
     };
-    let t = send(&mut sim, 0, 3);
+    let t = send(&mut sim, 0, BASELINE_BURSTS);
     sim.run();
     assert_eq!(last_trim(&mut sim, s), None, "baseline absorbs the seam");
     sim.set_servo_skew_at(t, s, 6_900);
@@ -448,4 +456,200 @@ fn tracker_survives_latched_refires_between_frames() {
         matches!(moved, Some(n) if n >= 2),
         "re-fires must not eat the tracker's pairs: {moved:?}"
     );
+}
+
+// ---- CAL-anchored baseline: the restoring force ---------------------------
+//
+// The tracker's baseline is captured once per CAL and stands across every
+// drift decision, so a window reads the clock's residual against the CAL
+// anchor - the steps already applied included - never an increment
+// against the tracker's own last decision. These tests close the loop the
+// way the chip does (main-loop poll, HSITRIM apply) and run it long enough
+// for noise to integrate if it could.
+
+/// The sim's Deadline provider's nominal step effect (`SimDeadline`).
+const STEP_PPM: i32 = 2_500;
+/// The sim's SBK break, bit-times: a pair's wire time exceeds its byte
+/// footprint by the 4 bits the break runs past one byte.
+const BREAK_BITS: u64 = 14;
+
+/// The chip adapter's side of the closed loop, which the sim does not own:
+/// the main loop polls between frames and HSITRIM moves the oscillator by
+/// the nominal effect per applied step (positive = slower), on top of the
+/// thermal skew the scenario sets.
+struct Oscillator {
+    thermal_ppm: i32,
+    total: i32,
+}
+
+impl Oscillator {
+    fn new(sim: &mut Sim, id: u8, thermal_ppm: i32) -> (Self, usize) {
+        let s = sim.add_servo_with(id, thermal_ppm, DEFAULT_RESPONSE_DEADLINE_US);
+        (
+            Self {
+                thermal_ppm,
+                total: 0,
+            },
+            s,
+        )
+    }
+
+    fn apply(&self, sim: &mut Sim, s: usize) {
+        let now = sim.now_us();
+        sim.set_servo_skew_at(now, s, self.thermal_ppm - self.total * STEP_PPM);
+    }
+
+    fn poll(&mut self, sim: &mut Sim, s: usize) -> Option<i8> {
+        let out = sim.poll_clock_trim(s);
+        if let Some(total) = out {
+            self.total = total as i32;
+            self.apply(sim, s);
+        }
+        out
+    }
+
+    fn drift_to(&mut self, sim: &mut Sim, s: usize, thermal_ppm: i32) {
+        self.thermal_ppm = thermal_ppm;
+        self.apply(sim, s);
+    }
+}
+
+/// Two truthful trains converge the CAL anchor (sec 9.3 boot guidance);
+/// returns the quiet instant after the second train's hunt.
+fn anchor(sim: &mut Sim, osc: &mut Oscillator, s: usize) -> u64 {
+    send_train(sim, 0, GAPS as u64 + 1);
+    sim.run();
+    osc.poll(sim, s);
+    let t1 = train_end(0) + 5_000;
+    send_train(sim, t1, GAPS as u64 + 1);
+    sim.run();
+    osc.poll(sim, s);
+    train_end(t1) + 5_000
+}
+
+/// xorshift32: the flood's seam noise replays bit-exactly run to run.
+fn xorshift(x: &mut u32) -> u32 {
+    *x ^= *x << 13;
+    *x ^= *x >> 17;
+    *x ^= *x << 5;
+    *x
+}
+
+/// 130k silent frames - the hardware suite's hot-loop and plain-flood
+/// food count - with a host seam that coin-flips per frame between
+/// back-to-back and 3/8 of the pair gate: ~1k ppm of window noise (0.4
+/// step sd, 1.2 at three sigma), the bench's 1M/2M scatter. Re-baselining
+/// after every apply integrated this noise into a random walk (bench: -1
+/// -> +13 on plain flood; this test on that design: 11 steps off, parked
+/// 10 off for 941 of the 1015 windows); against the CAL anchor each noisy
+/// step is read back out by the next window and the trim stays within two
+/// steps (one, but for the frozen baseline's own draw) - while the noise
+/// is real enough to flip hundreds of decisions.
+#[test_log::test]
+fn noisy_silent_flood_holds_the_cal_anchor() {
+    const FRAMES: u64 = 130_000;
+    const WINDOW: u64 = 128;
+    let mut sim = Sim::new(BaudRate::B1000000);
+    let (mut osc, s) = Oscillator::new(&mut sim, ID, 5_200);
+    let mut t = anchor(&mut sim, &mut osc, s);
+    let anchor = osc.total;
+    assert_eq!(anchor, 2, "the trio's acquire jump");
+
+    // 26-byte footprint: 260 us of span at 1M, a 16 us pair gate.
+    let f = instruction(OTHER_ID, Opcode::Write, Inst::FLAG_NOREPLY, &[0u8; 20]);
+    let span_us = f.len() as u64 * 10;
+    let wire_us = span_us - 10 + BREAK_BITS;
+    let seam_hi_us = span_us / 16 * 3 / 8;
+    // One frame opens pair continuity, so every chunk below lands a whole
+    // window and its decision applies before the next window starts - the
+    // chip's prompt main-loop poll, not a late apply that would re-read a
+    // stale residual. The next chunk is queued before the current one runs,
+    // so the main loop's turn never disturbs the host's cadence.
+    sim.host_send_at(t, &f);
+    t += wire_us;
+    let mut rng = 0x9E37_79B9u32;
+    let mut queue = |sim: &mut Sim, t: &mut u64| {
+        for _ in 0..WINDOW {
+            sim.host_send_at(*t, &f);
+            *t += wire_us + (xorshift(&mut rng) & 1) as u64 * seam_hi_us;
+        }
+    };
+    queue(&mut sim, &mut t);
+    let (mut moves, mut worst) = (0u32, 0i32);
+    for _ in 0..FRAMES / WINDOW {
+        let boundary = t;
+        queue(&mut sim, &mut t);
+        sim.run_until(boundary);
+        // The main loop's poll between frames: one window, one decision.
+        if osc.poll(&mut sim, s).is_some() {
+            moves += 1;
+        }
+        worst = worst.max((osc.total - anchor).abs());
+    }
+    assert!(worst <= 2, "the trim walked {worst} steps off the anchor");
+    assert!(
+        moves >= 100,
+        "the noise must be real: only {moves} decisions moved the trim"
+    );
+}
+
+/// A genuine shift still pulls the trim, and the anchored baseline makes
+/// it SETTLE: a -6.9k ppm host detune (one BRR step at 1M, the bench
+/// probe's shape) reads as +6.9k of servo-fast; the window takes the steps
+/// (3 at the nominal effect), the next window reads the residual against
+/// the anchor (-600 ppm, inside the rounding deadband), and the trim holds
+/// there window after window.
+#[test_log::test]
+fn host_detune_pulls_the_trim_and_settles() {
+    let mut sim = Sim::new(BaudRate::B1000000);
+    let (mut osc, s) = Oscillator::new(&mut sim, ID, 0);
+    let t = send_silent(&mut sim, 0, 257);
+    sim.run();
+    assert_eq!(osc.poll(&mut sim, s), None, "no drift, no decision");
+    osc.drift_to(&mut sim, s, 6_900);
+    // One frame re-opens pair continuity across the pause (its own pair
+    // gates out), so every chunk below lands a whole window; the next chunk
+    // is queued before the current one runs, so the main loop's turn at the
+    // boundary never disturbs the host's cadence.
+    let t = send_silent(&mut sim, t + PERIOD_US, 1);
+    let mut t = send_silent(&mut sim, t, 128);
+    let mut decisions = Vec::new();
+    for _ in 0..8 {
+        let boundary = t;
+        t = send_silent(&mut sim, t, 128);
+        sim.run_until(boundary);
+        decisions.push(osc.poll(&mut sim, s));
+    }
+    assert_eq!(decisions[0], Some(3), "the detune draws its steps");
+    assert!(
+        decisions[1..].iter().all(Option::is_none),
+        "the residual holds inside the deadband: {decisions:?}"
+    );
+    assert_eq!(osc.total, 3);
+}
+
+/// A window reading past the +/-8k ppm sanity band is not thermal: the
+/// decision is dropped, every window while the shift persists keeps
+/// dropping (the anchor stands, nothing re-baselines around the jump), and
+/// a CAL re-anchors - the ruler takes the clamped acquire jump.
+#[test_log::test]
+fn sanity_band_crossing_drops_until_a_cal_re_anchors() {
+    let mut sim = Sim::new(BaudRate::B1000000);
+    let s = sim.add_servo_with(ID, 0, DEFAULT_RESPONSE_DEADLINE_US);
+    let t = send_silent(&mut sim, 0, 257);
+    sim.run();
+    assert_eq!(sim.poll_clock_trim(s), None, "no drift, no decision");
+    sim.set_servo_skew_at(t, s, 9_000);
+    let t = send_silent(&mut sim, t + PERIOD_US, 1);
+    let mut t = send_silent(&mut sim, t, 128);
+    for _ in 0..3 {
+        let boundary = t;
+        t = send_silent(&mut sim, t, 128);
+        sim.run_until(boundary);
+        assert_eq!(sim.poll_clock_trim(s), None, "past the band: dropped");
+    }
+    sim.run();
+    send_train(&mut sim, t + 5_000, GAPS as u64 + 1);
+    sim.run();
+    assert_eq!(sim.poll_clock_trim(s), Some(4), "CAL re-anchors");
 }

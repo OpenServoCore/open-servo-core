@@ -471,22 +471,31 @@ would credit it to the wrong pair.
 - **Differential, continuously — chain pairs.** Break-wake stamps of
   adjacent host instructions (GWRITE→COMMIT seams):
   `err = measured − footprint·tpb = seam + drift·span`. The host's
-  queuing seam is unknown but stationary; a baseline captured right after
-  each trim application subtracts it, so windows read pure drift. Any
-  constant — seam, detector latch offset, ISR flavor residue — dies in
-  the subtraction; only changes survive, and the sanity band catches
-  non-thermal jumps.
+  queuing seam is unknown but stationary; the first window after a CAL is
+  the baseline, and every later window reads its shift from that anchor
+  with the tracker's own trim steps left in - the residual against the
+  CAL, not an increment against the last decision - so window noise
+  cannot walk the trim (re-baselining after each apply did: the bench
+  walked -1 -> +13 on plain-flood food). Any constant — seam, detector
+  latch offset, ISR flavor residue — dies in the subtraction; only
+  changes survive, and the sanity band catches non-thermal jumps.
 
 Both feed the `TrimLoop`: `steps = round(err / step_effect)`, clamped ±4;
-round-to-nearest IS the deadband. The step effect is self-measured (chip
-steps are nonuniform, 1.4–3.2k ppm; sanity-banded 0.8–4k); the total is
-applied via HSITRIM between frames and mirrored read-only at
-`telemetry.clock.trim_steps`. Wire format, qualification rules, and the
-tracker's baseline mechanics are normative in protocol §9.3. DES:
-`tests/trim.rs` — trains converge/reject/watchdog, the tracker follows
-mid-run drift injection, constant seam+skew cancel exactly, solicited
-shapes never pair, and alternating footprints pair each frame with its
-own breaks (`tracker_pairs_each_frame_with_its_own_breaks`).
+round-to-nearest IS the deadband. The step effect is self-measured by the
+ruler alone, CAL to CAL over every step applied between (chip steps are
+nonuniform, 1.4–3.2k ppm; sanity-banded 0.8–4k); drift windows only
+decide. The total is applied via HSITRIM between frames and mirrored
+read-only at `telemetry.clock.trim_steps`. Wire format, qualification
+rules, and the tracker's baseline mechanics are normative in protocol
+§9.3. DES: `tests/trim.rs` — trains converge/reject/watchdog, the tracker
+follows mid-run drift injection, constant seam+skew cancel exactly,
+solicited shapes never pair, alternating footprints pair each frame with
+its own breaks (`tracker_pairs_each_frame_with_its_own_breaks`), a 130k-
+frame noisy flood holds the CAL anchor within two steps
+(`noisy_silent_flood_holds_the_cal_anchor`), a host detune pulls the trim
+and settles (`host_detune_pulls_the_trim_and_settles`), and a sanity-band
+crossing drops until a CAL re-anchors
+(`sanity_band_crossing_drops_until_a_cal_re_anchors`).
 
 ## 9. Losslessness
 

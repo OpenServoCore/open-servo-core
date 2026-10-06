@@ -109,15 +109,16 @@ const DETUNE_BAUD: u32 = 993_103;
 /// CRC-verified silent WRITE(NOREPLY) -- the tracker's food (protocol sec 9.3); the
 /// adapter's grid pacing makes the seam stationary by construction.
 const FOOD_FRAMES: usize = 24;
-/// Bursts that carry one tracker decision with margin: baseline (32
-/// pairs) + window (128) + a refinement round, at 23 pairs per burst --
-/// sized generously (~2x the ideal-flow minimum) because ~30% of pairs
-/// die to service-lag byte-exactness on silicon (probe-measured)
-/// and a late apply must still land before the phase's trim read.
+/// Bursts that carry one tracker decision with margin: a window (128
+/// pairs) + a refinement round, at 23 pairs per burst - sized generously
+/// (~2x the ideal-flow minimum) because ~30% of pairs die to service-lag
+/// byte-exactness on silicon (probe-measured) and a late apply must still
+/// land before the phase's trim read.
 const PHASE_BURSTS: u32 = 36;
-/// Bursts after a CAL so the re-anchored baseline captures the true
-/// seam before the detune shifts it.
-const BASELINE_BURSTS: u32 = 3;
+/// Bursts after a CAL so the anchor's baseline window (128 pairs, at the
+/// same ~70% pair yield) captures the true seam before the detune shifts
+/// it.
+const BASELINE_BURSTS: u32 = 10;
 
 fn feed(b: &mut Bench, burst: &[Vec<u8>], bursts: u32) {
     for _ in 0..bursts {
@@ -151,16 +152,14 @@ fn tracker_follows_host_detune() {
     b.follow_baud(BOOT_BAUD);
     let pulled = read_trim(&mut b);
 
-    // Host returns to true baud -- a host-KNOWN behavior change, so the
-    // contract's answer is a CAL re-anchor (protocol sec 9.3), not tracker food: the
-    // tracker's post-apply seam baseline recaptures against whatever the
-    // host is doing at that moment, so a rate STEP landing inside the
-    // 32-pair capture is absorbed as seam, and later windows honestly
-    // read ~0 (probe-verified on silicon -- pairs and verdicts
-    // flow, the measurement is genuinely zero). Thermal drift can never
-    // step like that; a host that changes rate re-anchors -- with two
-    // trains, per the protocol sec 9.3 boot guidance (the first identifies the
-    // chip's step effect, the second finishes).
+    // Host returns to true baud - a host-KNOWN behavior change, so the
+    // contract's answer is a CAL re-anchor (protocol sec 9.3): a rate step
+    // is not thermal drift, and a host that changes rate re-anchors - with
+    // two trains, per the sec 9.3 boot guidance (the first identifies the
+    // chip's step effect, the second finishes). The tracker's baseline is
+    // the CAL anchor, so against it the return reads as the detune undone
+    // and the tracker pulls back on its own where the food allows; the
+    // trains settle it either way.
     train(&mut b, GAP_US);
     train(&mut b, GAP_US);
     let back = read_trim(&mut b);

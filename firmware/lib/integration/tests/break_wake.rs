@@ -104,7 +104,7 @@ fn drift_tracker_follows_thermal_drift(
     let mut sim = Sim::new(BaudRate::B1000000);
     sim.set_break_wake(wake);
     let s = sim.add_servo_with(ID, 0, DEFAULT_RESPONSE_DEADLINE_US);
-    let t = send(&mut sim, 0, 180);
+    let t = send(&mut sim, 0, 257);
     sim.run();
     assert_eq!(sim.poll_clock_trim(s), None, "no drift, no decision");
     sim.set_servo_skew_at(t, s, 2_600);
