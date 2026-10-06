@@ -5,12 +5,17 @@
 //! winding the servo carries from an earlier identification ([`stored`]).
 //! The rest have one source each.
 //!
-//! The winding carries two R. `r_vpc` is duty x rail over current at the
-//! current limit: every stall-safe duty plans from it and `r_q12` carries
-//! it, so the firmware's stall cap and back-EMF estimate read the same
-//! number. `r_loop_vpc` is the slope of the V-I line with the bridge: the
-//! current loop's plant, synthesized into `i_ki`. Only the free-shaft
-//! burst tells them apart; every other source has one R for both.
+//! The winding carries three R. `r_vpc` is duty x rail over current at the
+//! current limit: every stall-safe duty plans from it. `r_taps_vpc` is the
+//! winding between the terminal taps, the waveform fit's R: `r_q12` carries
+//! it, because the back-EMF estimate subtracts it from the terminals'
+//! difference, which never sees the bridge and the shunt V/I adds, and the
+//! ladder fits Ke against it so the two stay a pair. The firmware's
+//! stall-safe base reads `r_q12` too, and from the smaller R it stalls
+//! under the limit. `r_loop_vpc` is the slope of the V-I line with the
+//! bridge: the current loop's plant, synthesized into `i_ki`. Only the
+//! free-shaft burst tells them apart; every other source has one R for all
+//! three.
 
 use crate::exp::inductance::{BurstRoute, InductanceResult};
 use crate::exp::resistance::ResistanceResult;
@@ -57,8 +62,11 @@ pub struct Winding {
     /// `r_vpc` in ohms; None when R came from E2, which fits vcounts per
     /// ccount only.
     pub r_ohm: Option<f64>,
-    /// What the stall-safe duties and `r_q12` take, vcounts per ccount.
+    /// What the stall-safe duties take, vcounts per ccount.
     pub r_vpc: f64,
+    /// The winding between the terminal taps, vcounts per ccount: what
+    /// `r_q12` carries and the ladder fits Ke against.
+    pub r_taps_vpc: f64,
     pub r_from: Source,
     /// The current loop's plant R, vcounts per ccount.
     pub r_loop_vpc: f64,
@@ -90,6 +98,7 @@ pub fn winding(
         Some(((route, t), sc)) => Some(Winding {
             r_ohm: Some(t.r_plan_ohm),
             r_vpc: sc.r_vpc(t.r_plan_ohm),
+            r_taps_vpc: sc.r_vpc(t.r_taps_ohm),
             r_from: from(route),
             r_loop_vpc: sc.r_vpc(t.r_loop_ohm),
             l_h: t.l_h,
@@ -98,6 +107,7 @@ pub fn winding(
         None => e2.map(|x| Winding {
             r_ohm: None,
             r_vpc: x.r_vpc,
+            r_taps_vpc: x.r_vpc,
             r_from: Source::StallFallback,
             r_loop_vpc: x.r_vpc,
             l_h: l_default_h,
@@ -106,13 +116,13 @@ pub fn winding(
     }
 }
 
-/// The winding the servo carries. `r_q12` is what the plan takes, vcounts
-/// per ccount in Q12. The current loop's R and L have no fields of their
-/// own: they ride in the current PI, whose kp is w_ci L and whose ki is
-/// w_ci R per fast tick, so `f_ci`, the crossover the gains were
-/// synthesized at, reads both back. Resynthesized at another crossover the
-/// PI keeps its zero and moves by the ratio. None unless all four fields
-/// and the crossover are set.
+/// The winding the servo carries. `r_q12` is the winding between the taps,
+/// vcounts per ccount in Q12, and the plan takes it too. The current loop's
+/// R and L have no fields of their own: they ride in the current PI, whose
+/// kp is w_ci L and whose ki is w_ci R per fast tick, so `f_ci`, the
+/// crossover the gains were synthesized at, reads both back. Resynthesized
+/// at another crossover the PI keeps its zero and moves by the ratio. None
+/// unless all four fields and the crossover are set.
 pub fn stored(
     r_q12: u16,
     i_kp_q88: u16,
@@ -130,6 +140,7 @@ pub fn stored(
     Some(Winding {
         r_ohm: Some(r_vpc * sc.v_term_per_count / sc.amps_per_count),
         r_vpc,
+        r_taps_vpc: r_vpc,
         r_from: Source::Stored,
         r_loop_vpc: i_ki_q412 as f64 / 4096.0 * tick_hz as f64 / w_ci,
         l_h: l_cd * sc.v_term_per_count / sc.amps_per_count,
@@ -175,16 +186,15 @@ pub fn held_r(
 /// before the stored winding is called into question.
 pub const STALE_R: f64 = 0.25;
 
-/// The burst's rough R, ohms - its V/I at the current limit, or its pairs
-/// estimate without one - when it is more than [`STALE_R`] away from the
-/// stored winding's R.
+/// The burst's rough R, ohms - its waveform R, what `r_q12` stores, or its
+/// pairs estimate without one - when it is more than [`STALE_R`] away from
+/// the stored winding's R.
 pub fn stale(e8: Option<&InductanceResult>, stored: &Winding) -> Option<f64> {
     let rough = e8.and_then(|x| {
         x.wave
             .as_ref()
             .ok()
-            .and_then(|w| w.at_limit)
-            .map(|a| a.v_over_i_ohm)
+            .map(|w| w.fit.r_ohm)
             .or(x.volts.r_pair_ohm)
             .or(x.r_pair_ohm)
     })?;
@@ -284,7 +294,8 @@ mod tests {
     }
 
     /// The burst reads the line and hands the plan V/I at the limit, the
-    /// current loop the slope with the bridge, both with L.
+    /// current loop the slope with the bridge, both with L, and `r_q12` the
+    /// waveform's R between the taps.
     #[test]
     fn a_promoted_burst_supplies_r_and_l_and_the_stall_never_runs() {
         let mut servo = FakeServo::new(3.37);
@@ -309,9 +320,10 @@ mod tests {
         let at = wave.at_limit.expect("read at the limit");
         assert_eq!(at.v_over_i_ohm, r);
         assert!((w.r_loop_vpc - scales().r_vpc(at.slope_ohm)).abs() < 1e-12);
+        assert!((w.r_taps_vpc - scales().r_vpc(wave.fit.r_ohm)).abs() < 1e-12);
         assert!(
-            w.r_loop_vpc < w.r_vpc,
-            "the slope sits under V/I at the limit"
+            w.r_taps_vpc < w.r_loop_vpc && w.r_loop_vpc < w.r_vpc,
+            "the taps sit under the slope, the slope under V/I at the limit"
         );
     }
 
@@ -352,7 +364,7 @@ mod tests {
         let e2 = e2.expect("E2 runs behind a declined E8");
         assert_eq!(w.r_from, Source::StallFallback);
         assert_eq!(w.l_from, Source::Default);
-        assert_eq!(w.r_vpc, e2.r_vpc);
+        assert_eq!((w.r_vpc, w.r_taps_vpc), (e2.r_vpc, e2.r_vpc));
         assert!((w.r_vpc - 3.37).abs() / 3.37 < 0.05, "E2 R {}", w.r_vpc);
         assert_eq!(w.l_h, DEFAULT_L_HENRIES);
         assert!(w.r_ohm.is_none());
@@ -414,15 +426,15 @@ mod tests {
     }
 
     /// A winding identified once, synthesized and encoded, then read back
-    /// off the table: the plan's R, the loop's R and L come back as they
-    /// went in, and synthesized again at the same crossover they encode to
-    /// the same fields. The burst's two R differ, V/I at the limit 5.33 ohm
-    /// over a slope of 4.59: each comes back as itself.
+    /// off the table: `r_q12`, the loop's R and L come back as they went
+    /// in, and synthesized again at the same crossover they encode to the
+    /// same fields. The burst's two R differ, 4.34 ohm between the taps
+    /// under a slope of 4.68: each comes back as itself.
     #[test]
     fn stored_winding_writes_back_unchanged() {
         use crate::gains::{self, BwTargets, PlantParams};
         let sc = scales();
-        let (r_ohm, r_loop_ohm, l_h) = (5.33, 4.59, 0.79e-3);
+        let (r_ohm, r_loop_ohm, l_h) = (4.34, 4.68, 0.79e-3);
         let l_cd = |l: f64| gains::l_cd_from_si(l, 60, 15_000, 6_800, 3_300).unwrap();
         let plant = |r_vpc: f64, r_loop_vpc: f64, l: f64| PlantParams {
             r_vpc,
@@ -445,11 +457,15 @@ mod tests {
         let w = read(first.r_q12.raw, first.i_kp_q88.raw, first.i_ki_q412.raw)
             .expect("a stored winding");
         assert_eq!((w.r_from, w.l_from), (Source::Stored, Source::Stored));
+        assert_eq!(w.r_taps_vpc, w.r_vpc);
         assert!((w.r_ohm.unwrap() - r_ohm).abs() / r_ohm < 1e-3, "{w:?}");
         let loop_ohm = w.r_loop_vpc / sc.r_vpc(1.0);
         assert!((loop_ohm - r_loop_ohm).abs() / r_loop_ohm < 5e-3, "{w:?}");
         assert!((w.l_h - l_h).abs() / l_h < 5e-3, "{w:?}");
-        let again = gains::encode(&gains::synthesize(&plant(w.r_vpc, w.r_loop_vpc, w.l_h), &t));
+        let again = gains::encode(&gains::synthesize(
+            &plant(w.r_taps_vpc, w.r_loop_vpc, w.l_h),
+            &t,
+        ));
         assert_eq!(again.r_q12.raw, first.r_q12.raw);
         assert_eq!(again.i_ki_q412.raw, first.i_ki_q412.raw);
         assert_eq!(again.i_kp_q88.raw, first.i_kp_q88.raw);
@@ -459,10 +475,10 @@ mod tests {
         assert!(read(first.r_q12.raw, first.i_kp_q88.raw, 0).is_none());
     }
 
-    /// The bench run promotes its line: the plan and `r_q12` take V/I at
-    /// the limit, so the stop cap the plan allows draws exactly the limit
-    /// on the measured line, where planning from the slope would stall a
-    /// fifth under it. The current loop's ki takes the slope, kp the L.
+    /// The bench run promotes its line: the plan takes V/I at the limit,
+    /// so the stop cap the plan allows draws exactly the limit on the
+    /// measured line, where planning from the slope would stall a fifth
+    /// under it. The current loop's ki takes the slope, kp the L.
     #[test]
     fn stall_safe_duties_plan_from_v_over_i_at_the_limit() {
         use crate::exp::inductance::{FitCfg, fit_captures};
@@ -519,7 +535,7 @@ mod tests {
         );
 
         let plant = PlantParams {
-            r_vpc: w.r_vpc,
+            r_vpc: w.r_taps_vpc,
             r_loop_vpc: w.r_loop_vpc,
             ke_vpc: 0.15,
             fc: 20.0,
@@ -533,9 +549,58 @@ mod tests {
         let t = BwTargets::default();
         let g = gains::synthesize(&plant, &t);
         let w_ci = core::f64::consts::TAU * t.f_ci;
-        assert_eq!(g.r_vpc, w.r_vpc);
+        assert_eq!(g.r_vpc, w.r_taps_vpc);
         assert!((g.i_ki - w_ci * w.r_loop_vpc / 20_100.0).abs() < 1e-12);
         assert!((g.i_kp - w_ci * sc.r_vpc(w.l_h)).abs() < 1e-12);
+    }
+
+    /// The back-EMF estimate subtracts `r_q12` times the current from the
+    /// terminals' difference, so `r_q12` is the winding between the taps:
+    /// on the board D MG90 run the waveform fit's 4.344 ohm, not the
+    /// 5.316 ohm V/I at the limit, which adds the bridge and the shunt the
+    /// difference never sees. V/I stays the plan's.
+    #[test]
+    fn r_q12_carries_the_waveform_r_between_the_taps() {
+        use crate::exp::inductance::{FitCfg, fit_captures};
+        use crate::exp::testkit::{board_d_scales, mg90_2s};
+        use crate::gains::{self, BwTargets, PlantParams};
+        let sc = board_d_scales();
+        let cfg = FitCfg::default().with_limit(280.0 * sc.amps_per_count);
+        let e8 = fit_captures(&mg90_2s(), &sc, &cfg).expect("the bench run fits");
+        let w = winding(Some(&e8), None, Some(&sc), DEFAULT_L_HENRIES).expect("promoted");
+        assert_eq!(w.r_from, Source::Burst);
+        let wave = e8.wave.as_ref().expect("the waveform fit");
+        let at = wave.at_limit.expect("read at the limit");
+        assert_eq!(
+            (
+                format!("{:.3}", wave.fit.r_ohm),
+                format!("{:.3}", at.v_over_i_ohm)
+            ),
+            ("4.344".into(), "5.316".into())
+        );
+        assert_eq!(w.r_taps_vpc, sc.r_vpc(wave.fit.r_ohm));
+        assert_eq!(w.r_vpc, sc.r_vpc(at.v_over_i_ohm));
+
+        let plant = PlantParams {
+            r_vpc: w.r_taps_vpc,
+            r_loop_vpc: w.r_loop_vpc,
+            ke_vpc: 0.15,
+            fc: 20.0,
+            fv: 0.001,
+            b: 0.1,
+            sigma_theta: 1.0,
+            l_cd: sc.r_vpc(w.l_h),
+            tick_hz: 20_100.0,
+            f_med: 2_010.0,
+        };
+        let e = gains::encode(&gains::synthesize(&plant, &BwTargets::default()));
+        let want = (sc.r_vpc(wave.fit.r_ohm) * 4096.0).round() as u16;
+        assert_eq!(e.r_q12.raw, want);
+        assert!(
+            e.r_q12.raw < (sc.r_vpc(at.v_over_i_ohm) * 4096.0).round() as u16,
+            "{} is V/I's",
+            e.r_q12.raw
+        );
     }
 
     /// A servo with nothing to fall back on hears why in a few plain words

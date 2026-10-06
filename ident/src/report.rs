@@ -329,23 +329,33 @@ pub fn render(r: &ReportInputs<'_>) -> String {
     if let Some(p) = r.plant {
         let w = p.winding;
         let _ = writeln!(s, "  plant inputs");
+        let ohm = |vpc: f64| {
+            w.r_ohm
+                .filter(|_| w.r_vpc > 0.0)
+                .map_or(String::new(), |r| {
+                    format!(" ({:.3} ohm)", r * vpc / w.r_vpc)
+                })
+        };
         let _ = writeln!(
             s,
-            "    r_vpc        {:>10.4} vcounts/ccount{}  {}  -> r_q12 and every stall-safe duty",
+            "    r_vpc        {:>10.4} vcounts/ccount{}  {}  -> r_q12, the back-EMF estimate's R \
+             and the ladder's Ke",
             p.plant.r_vpc,
-            w.r_ohm.map_or(String::new(), |r| format!(" ({r:.3} ohm)")),
+            ohm(p.plant.r_vpc),
+            w.r_from.as_str()
+        );
+        let _ = writeln!(
+            s,
+            "    r_plan       {:>10.4} vcounts/ccount{}  {}  -> every stall-safe duty",
+            w.r_vpc,
+            ohm(w.r_vpc),
             w.r_from.as_str()
         );
         let _ = writeln!(
             s,
             "    r_loop       {:>10.4} vcounts/ccount{}  {}  -> the current loop's i_ki",
             p.plant.r_loop_vpc,
-            w.r_ohm
-                .filter(|_| p.plant.r_vpc > 0.0)
-                .map_or(String::new(), |r| format!(
-                    " ({:.3} ohm)",
-                    r * p.plant.r_loop_vpc / p.plant.r_vpc
-                )),
+            ohm(p.plant.r_loop_vpc),
             w.r_from.as_str()
         );
         let _ = writeln!(
@@ -499,9 +509,9 @@ fn render_e8(s: &mut String, x: &InductanceResult, r_from: Option<Source>) {
                     .to_string()
             }
             Some(BurstRoute::Free) => format!(
-                "PROMOTED via the free-shaft route{} - r_q12 and the stall-safe duties take V/I \
-                 at the current limit, the current loop the slope with the bridge and L, all \
-                 from the waveform fit",
+                "PROMOTED via the free-shaft route{} - r_q12 takes the winding R, the \
+                 stall-safe duties V/I at the current limit, the current loop the slope with \
+                 the bridge and L, all from the waveform fit",
                 match x.held.captures {
                     0 => String::new(),
                     _ => format!(" (held declined: {})", x.held.blocking().join(", ")),
@@ -961,9 +971,9 @@ mod tests {
              two terminal samples: no sample caught it",
             "  skipped       cross-route (not available: the run has no start from rest in TEL)",
             "  diagnostics   the routes below are reported and checked, and decide nothing",
-            "  verdict       PROMOTED via the free-shaft route - r_q12 and the stall-safe duties \
-             take V/I at the current limit, the current loop the slope with the bridge and L, \
-             all from the waveform fit",
+            "  verdict       PROMOTED via the free-shaft route - r_q12 takes the winding R, the \
+             stall-safe duties V/I at the current limit, the current loop the slope with the \
+             bridge and L, all from the waveform fit",
         ] {
             assert!(s.contains(line), "missing {line:?} in\n{s}");
         }
@@ -1112,6 +1122,7 @@ mod tests {
             let w = Winding {
                 r_ohm: None,
                 r_vpc: 1.775,
+                r_taps_vpc: 1.775,
                 r_from: from,
                 r_loop_vpc: 1.775,
                 l_h: 0.5e-3,
@@ -1148,6 +1159,7 @@ mod tests {
         let burst = Winding {
             r_ohm: Some(4.0),
             r_vpc: 2.87,
+            r_taps_vpc: 2.87,
             r_from: Source::Burst,
             r_loop_vpc: 2.87,
             l_h: 0.6e-3,

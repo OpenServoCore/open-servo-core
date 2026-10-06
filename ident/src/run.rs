@@ -1871,6 +1871,7 @@ mod tests {
         Winding {
             r_ohm: Some(r_vpc * sc.v_term_per_count / sc.amps_per_count),
             r_vpc,
+            r_taps_vpc: r_vpc,
             r_from: sources::Source::Stored,
             r_loop_vpc: r_vpc,
             l_h: 0.6e-3,
@@ -1982,8 +1983,8 @@ mod tests {
         }
     }
 
-    /// The declined burst still carries a rough R, its waveform fit's V/I at
-    /// the current limit: a stored winding it agrees with passes quietly,
+    /// The declined burst still carries a rough R, its waveform fit's R,
+    /// what `r_q12` stores: a stored winding it agrees with passes quietly,
     /// one more than a quarter away either way is called stale.
     #[test]
     fn a_stale_stored_winding_warns() {
@@ -2001,13 +2002,7 @@ mod tests {
             }
         }
         let e8 = rig.e8.as_ref().expect("the burst fitted");
-        let rough = e8
-            .wave
-            .as_ref()
-            .ok()
-            .and_then(|w| w.at_limit)
-            .expect("a rough R")
-            .v_over_i_ohm;
+        let rough = e8.wave.as_ref().expect("a rough R").fit.r_ohm;
         let r_ohm = stored(R).r_ohm.unwrap();
         assert!(
             (rough / r_ohm - 1.0).abs() < sources::STALE_R,

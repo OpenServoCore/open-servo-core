@@ -189,7 +189,7 @@ pub struct FitCfg {
 
 impl FitCfg {
     /// The servo's current limit, amps: the line is read there for the
-    /// stall-safe duties and `r_q12`.
+    /// stall-safe duties.
     pub fn with_limit(self, i_lim_a: f64) -> Self {
         Self {
             wave: WaveCfg {
@@ -1279,9 +1279,11 @@ pub const STATIC_LOAD_CHECKS: [&str; 2] = ["residual", "physical-bounds"];
 /// What the promoted route hands gain synthesis and the plan, SI.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct WindingTerms {
-    /// Duty x rail over current at the current limit: the stall-safe duties
-    /// and `r_q12`.
+    /// Duty x rail over current at the current limit: the stall-safe duties.
     pub r_plan_ohm: f64,
+    /// The winding between the terminal taps: `r_q12`, the R the back-EMF
+    /// estimate subtracts from the terminals' difference.
+    pub r_taps_ohm: f64,
     /// The current loop's plant R.
     pub r_loop_ohm: f64,
     pub l_h: f64,
@@ -1312,14 +1314,16 @@ impl InductanceResult {
 
     /// The winding as the promoted route gives it. The free shaft reads its
     /// line at the current limit: V/I there plans, the slope with the
-    /// bridge closes the current loop, both with the fit's L. The held route
-    /// has one R, its per-period regression's, for both.
+    /// bridge closes the current loop, both with the fit's L, and the
+    /// waveform's own R is the winding between the taps. The held route has
+    /// one R, its per-period regression's, for all three.
     pub fn winding_terms(&self) -> Option<WindingTerms> {
         let t = match self.route()? {
             BurstRoute::Held => {
                 let g = self.held.reg?;
                 WindingTerms {
                     r_plan_ohm: g.r_ohm,
+                    r_taps_ohm: g.r_ohm,
                     r_loop_ohm: g.r_ohm,
                     l_h: g.l_h,
                 }
@@ -1329,12 +1333,13 @@ impl InductanceResult {
                 let at = w.at_limit?;
                 WindingTerms {
                     r_plan_ohm: at.v_over_i_ohm,
+                    r_taps_ohm: w.fit.r_ohm,
                     r_loop_ohm: at.slope_ohm,
                     l_h: w.fit.l_h,
                 }
             }
         };
-        (t.r_plan_ohm > 0.0 && t.r_loop_ohm > 0.0 && t.l_h > 0.0).then_some(t)
+        (t.r_plan_ohm > 0.0 && t.r_taps_ohm > 0.0 && t.r_loop_ohm > 0.0 && t.l_h > 0.0).then_some(t)
     }
 
     /// Why the free shaft declined, in plain words, from its first blocking
@@ -2800,6 +2805,7 @@ mod tests {
         let (on_d, on_a) = (terms(&caps, &d), terms(&rev2a, &a));
         for (x, y) in [
             (on_d.r_plan_ohm, on_a.r_plan_ohm),
+            (on_d.r_taps_ohm, on_a.r_taps_ohm),
             (on_d.r_loop_ohm, on_a.r_loop_ohm),
             (on_d.l_h, on_a.l_h),
         ] {

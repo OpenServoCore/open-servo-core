@@ -74,8 +74,8 @@ impl Default for BwTargets {
 /// vcounts per c/s), friction line, B ((c/s per medium tick) per ccount),
 /// pot noise sigma (counts), inductance via [`l_cd_from_si`], and the
 /// tick rates the encodings are anchored to. `r_vpc` is what `r_q12`
-/// carries - duty x rail over current at the current limit, when the burst
-/// measured the line - and `r_loop_vpc` the current loop's plant R, the
+/// carries - the winding between the terminal taps, the burst's waveform R
+/// when it measured one - and `r_loop_vpc` the current loop's plant R, the
 /// line's slope with the bridge ([`crate::sources::Winding`]).
 #[derive(Copy, Clone, Debug)]
 pub struct PlantParams {
