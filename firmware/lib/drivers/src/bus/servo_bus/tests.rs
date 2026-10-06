@@ -1036,7 +1036,6 @@ fn status_verdict_waits_for_own_tx_release() {
     bus.on_break(&mut d);
     h.ring.set_cursor((a + st.len()) as u16);
     bus.on_break(&mut d);
-    fire(&mut bus, &h, &mut d);
     assert_eq!(bus.diag().crc_fail_count, 0, "held while the reply streams");
     assert_eq!(h.deadline.armed(), None, "only the release resumes it");
 
@@ -1266,6 +1265,79 @@ fn spurious_wake_on_quiet_wire_costs_one_recheck() {
     h.deadline.set_now(1000 + TPB);
     bus.on_deadline(&mut d);
     assert_eq!(h.deadline.armed(), None, "idle again: nothing to poll");
+}
+
+/// Every break of a back-to-back silent burst stamps and pairs, however
+/// late its wake is served (position from the stream, transport sec 5.1):
+/// each wake lands 2.5 byte-times behind its break byte, with the ID and
+/// LEN bytes already ringed behind it. 161 breaks are exactly one stamp,
+/// the 32-pair baseline and one 128-pair window, so a single lost or
+/// misplaced stamp would push the verdict past the last break. The seam
+/// grows one tick after the baseline: one step of drift at 48 bytes.
+#[test]
+fn lagged_break_wakes_still_pair() {
+    const F: usize = 48;
+    const LAG: u32 = 25;
+    const SEAM: u32 = 4;
+    const BREAKS: u32 = 1 + 32 + 128;
+    let h = Harness::new();
+    let mut bus = h.build(ID, RATE, 60);
+    let shared = Shared::new();
+    let mut session = Session::new();
+    let mut d = session.dispatcher(&shared);
+
+    let addr = CONTROL_BASE_ADDR.to_le_bytes();
+    let mut payload = std::vec![addr[0], addr[1]];
+    payload.extend_from_slice(&[0u8; F - 8]);
+    let frame = instruction(ID, Opcode::Write, Inst::FLAG_NOREPLY, &payload);
+    assert_eq!(frame.len(), F);
+
+    // Bytes of the frame whose break byte rang at `t` that have landed by `at`.
+    let landed = |at: u32, t: u32| {
+        if at < t {
+            0
+        } else {
+            ((at - t) / TPB + 1).min(F as u32) as usize
+        }
+    };
+    let mut anchor = 0usize;
+    let mut t = 1000u32;
+    bus.framer.resync(0);
+    for k in 0..BREAKS {
+        h.ring.place(anchor, &frame);
+        let wake = t + LAG;
+        // Pended deadlines go first (SysTick arbitrates ahead of TIM2).
+        while let Some(at) = h.deadline.armed().filter(|&at| at <= wake) {
+            h.deadline.set_now(at);
+            h.ring
+                .set_cursor(((anchor + landed(at, t)) % RING_LEN) as u16);
+            bus.on_deadline(&mut d);
+        }
+        if k + 1 == BREAKS {
+            assert_eq!(
+                bus.poll_clock_trim(),
+                None,
+                "the window closes on the last break"
+            );
+        }
+        h.deadline.set_now(wake);
+        h.ring
+            .set_cursor(((anchor + landed(wake, t)) % RING_LEN) as u16);
+        bus.on_break(&mut d);
+        let seam = if k < 32 { SEAM } else { SEAM + 1 };
+        let next = t + F as u32 * TPB + seam;
+        while let Some(at) = h.deadline.armed().filter(|&at| at < next) {
+            h.deadline.set_now(at);
+            h.ring
+                .set_cursor(((anchor + landed(at, t)) % RING_LEN) as u16);
+            bus.on_deadline(&mut d);
+        }
+        anchor = (anchor + F) % RING_LEN;
+        t = next;
+    }
+    assert_eq!(bus.poll_clock_trim(), Some(1));
+    assert_eq!(bus.diag().crc_fail_count, 0);
+    assert_eq!(bus.diag().framing_drop_count, 0);
 }
 
 // --- TEL burst ------------------------------------------------------------

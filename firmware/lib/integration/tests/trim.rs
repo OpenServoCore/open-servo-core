@@ -4,7 +4,7 @@
 //! both ends of every gap, so entry latency cancels. Plain assertions on the
 //! trim decisions and on the transport's health after trains.
 
-use osc_integration::sim::{BreakWake, Sim, Source, instruction, status};
+use osc_integration::sim::{BreakWake, HandlerCost, Sim, Source, instruction, status};
 use osc_protocol::wire::{Inst, Opcode, ResultCode};
 use osc_servo_core::BaudRate;
 use osc_servo_core::regions::config::DEFAULT_RESPONSE_DEADLINE_US;
@@ -370,6 +370,45 @@ fn tracker_follows_bench_bursts_self_addressed() {
     assert!(
         matches!(moved, Some(n) if n >= 2),
         "self-addressed bursts feed the tracker: {moved:?}"
+    );
+}
+
+/// The bench shape under handler costs just inside the 1M frame period:
+/// the frame-end body spans the next break's detector fire, so every wake
+/// is served a byte-time or more late with data bytes newest. The ladder
+/// still places each break (position from the stream) and every break
+/// stamps. The wake's entry lag beats against the frame cadence (fixed
+/// costs: a three-frame cycle), so only the pairs whose two wakes carry
+/// the same lag clear the span gate; those still decide. A lag-free stamp
+/// (a hardware latch at the detector's fire) is what makes every pair
+/// clear it.
+#[rstest]
+#[test_log::test]
+fn tracker_follows_bench_bursts_under_handler_cost(
+    #[values(BreakWake::BeforeByte, BreakWake::AfterByte)] wake: BreakWake,
+) {
+    let mut sim = Sim::new(BaudRate::B1000000);
+    sim.set_break_wake(wake);
+    let s = sim.add_servo_with(ID, 0, DEFAULT_RESPONSE_DEADLINE_US);
+    sim.set_handler_cost(
+        s,
+        HandlerCost {
+            on_break_us: 18,
+            on_deadline_us: 30,
+            on_tx_complete_us: 5,
+        },
+    );
+    let f = goal_write(ID);
+    let t = send_bursts(&mut sim, &f, 0, 3);
+    sim.run();
+    assert_eq!(last_trim(&mut sim, s), None, "baseline absorbs the seam");
+    sim.set_servo_skew_at(t, s, 6_900);
+    send_bursts(&mut sim, &f, t + 100, 36);
+    sim.run();
+    let moved = last_trim(&mut sim, s);
+    assert!(
+        matches!(moved, Some(n) if n >= 1),
+        "lagged wakes still feed the tracker: {moved:?}"
     );
 }
 

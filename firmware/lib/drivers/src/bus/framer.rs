@@ -255,15 +255,15 @@ impl Framer {
         self.hunting
     }
 
-    /// The frame at the anchor, if it is whole in the ring before index
-    /// `until`. Nothing else moves: a hunt, a partial or an empty ladder is
-    /// left to [`Self::resolve`].
-    pub fn settle(&mut self, ring: &[u8], until: u16, now: u32) -> Option<FrameSpan> {
+    /// The frame at the anchor, if it is whole in the ring. Nothing else
+    /// moves: a hunt, a partial or an empty ladder is left to
+    /// [`Self::resolve`].
+    pub fn settle(&mut self, ring: &[u8], cursor: u16, now: u32) -> Option<FrameSpan> {
         let len = ring.len();
         if len == 0 {
             return None;
         }
-        let received = dist(until, self.anchor, len);
+        let received = dist(cursor, self.anchor, len);
         let a = self.anchor as usize;
         if received < HEADER_SPAN_BYTES || ring[a] != BREAK_RING_BYTE {
             return None;
@@ -280,6 +280,19 @@ impl Framer {
             footprint,
             packet_end: now,
         })
+    }
+
+    /// The next frame has begun: its break byte is ringed at the anchor
+    /// (position from the stream, with every earlier frame settled).
+    /// Returns the index just past that byte - a break's drift stamp
+    /// cursor, however many data bytes have ringed behind it.
+    pub fn break_ringed(&self, ring: &[u8], cursor: u16) -> Option<u16> {
+        let len = ring.len();
+        if len == 0 || dist(cursor, self.anchor, len) == 0 {
+            return None;
+        }
+        (ring[self.anchor as usize] == BREAK_RING_BYTE)
+            .then(|| ring_wrap(self.anchor as usize + 1, len) as u16)
     }
 
     /// One resolution step against the CURRENT ring state (data-first from

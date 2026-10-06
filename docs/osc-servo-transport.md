@@ -228,15 +228,20 @@ byte sits that far outside the byte cadence.
 
 The wake can beat its own byte. The detector fires 9.25 bit-times into
 the break, ahead of the stop-bit sample that rings the `0x00`, so a wake
-whose break byte is not yet the newest ringed byte gets its
-ring-dependent service - the CAL ruler mark or drift stamp, the
-resolver, the staged-reply kill - one byte-time later, at a third
-deadline slot. The first byte ringed since the wake decides: a `0x00` is
-the break, served at the wake's stamp (§8 pairs stamps, so they stay
-the wake's); anything else, or nothing, only re-drives the resolver. No
-position comes from the wake; the cursor it saw only says where to look.
-DES: `tests/break_wake.rs` runs its pins with the wake ahead of its
-byte, behind it, and alternating between the two.
+whose break byte has not rung gets its ring-dependent service - the CAL
+ruler mark or drift stamp, the resolver, the staged-reply kill - one
+byte-time later, at a third deadline slot, served at the wake's stamp
+(§8 pairs stamps, so they stay the wake's). The break's position comes
+from the ladder, never from the wake: every frame whole in the ring
+settles first, which leaves the anchor on the break's own byte, however
+many data bytes a late service finds ringed behind it (under 1M bursts
+the frame-end body spans the next detector fire, so every wake lands a
+byte-time or more late; a newest-byte test there lost every stamp and
+starved the tracker). A CAL ruler mark has no frame to settle onto, so
+it alone is classified by the newest byte: its `0x00`, rung fresh since
+the last service. DES: `tests/break_wake.rs` runs its pins with the wake
+ahead of its byte, behind it, and alternating between the two;
+`lagged_break_wakes_still_pair` serves every wake 2.5 byte-times late.
 
 ### 5.2 The ring is the queue
 
