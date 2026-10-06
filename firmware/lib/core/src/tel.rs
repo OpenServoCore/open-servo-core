@@ -11,6 +11,8 @@
 //!   [4..]  samples     the `tel_mask`-selected fields in bit order,
 //!                      2 bytes each; count = payload remainder / sample_len
 
+use osc_protocol::wire;
+
 /// `tel_mask` bits, in canonical sample order. All v1 fields are 2 bytes.
 /// Bits 0..6 predate the raw set; 6..11 are the per-tick ADC frame raw
 /// values (`current` at bit 1 is the kernel's bias-subtracted held window
@@ -32,10 +34,11 @@ pub const BIT_NTC_RAW: u16 = 1 << 10;
 pub const BIT_POS_LIN: u16 = 1 << 11;
 pub const MASK_ALL: u16 = 0xFFF;
 
-/// Wire budget: a 16-sample batch must fit its own tick window at 3 Mbaud,
-/// which caps a sample at 6 fields (12 bytes). `tel_mask`'s table rule and
-/// [`mask_valid`] both enforce it; buffers are sized to it.
-pub const FIELDS_MAX: u16 = 6;
+/// Wire budget (`osc_protocol::wire::stream_fits`): a 16-sample batch must
+/// fit its own tick window at 3 Mbaud, which caps a sample at 6 fields (12
+/// bytes). `tel_mask`'s table rule and [`mask_valid`] both enforce it;
+/// buffers are sized to it.
+pub const FIELDS_MAX: u16 = wire::STREAM_FIELDS_MAX as u16;
 pub const SAMPLE_LEN_MAX: usize = 2 * FIELDS_MAX as usize;
 
 /// Payload flags bit 0: last frame of the burst; the line frees after it.
@@ -43,9 +46,9 @@ pub const FLAG_LAST: u8 = 1 << 0;
 
 /// Fixed batch size: one frame carries up to 16 fast-tick samples (the
 /// burst's last frame may carry fewer).
-pub const STREAM_SAMPLES_MAX: usize = 16;
+pub const STREAM_SAMPLES_MAX: usize = wire::STREAM_SAMPLES_MAX;
 
-pub const STREAM_HDR: usize = 4;
+pub const STREAM_HDR: usize = wire::STREAM_HDR;
 
 pub const fn sample_len(mask: u16) -> usize {
     2 * (mask & MASK_ALL).count_ones() as usize
@@ -246,12 +249,22 @@ mod tests {
     }
 
     /// Frame wire time must not outrun the batch it carries: the largest
-    /// frame (full mask, 16 samples, 196 B payload + 6 B frame overhead +
-    /// break) fits 16 fast ticks at 3 Mbaud with >= 5% margin.
+    /// frame the buffers hold is the protocol's budget frame, which fits 16
+    /// fast ticks at 3 Mbaud with >= 5% margin.
     #[test]
     fn largest_frame_fits_its_batch_window() {
-        const WIRE_BYTES: usize = STREAM_PAYLOAD_MAX + 6 + 1;
-        const { assert!(WIRE_BYTES * 10 <= STREAM_SAMPLES_MAX * 150 * 95 / 100) }
+        use wire::{STREAM_BUDGET_BAUD, STREAM_BUDGET_TICK_HZ, STREAM_FRAME_OVERHEAD};
+        assert_eq!(
+            STREAM_PAYLOAD_MAX + STREAM_FRAME_OVERHEAD,
+            wire::stream_frame_bytes(FIELDS_MAX as usize)
+        );
+        const {
+            assert!(wire::stream_fits(
+                FIELDS_MAX as usize,
+                STREAM_BUDGET_BAUD,
+                STREAM_BUDGET_TICK_HZ
+            ))
+        }
     }
 
     fn sample(i: usize) -> TelSample {

@@ -107,6 +107,7 @@ impl Procedure {
         if self.recording.is_empty() {
             bail!("no [[recording]]");
         }
+        crate::rig::pump::check_tel_mask(self.tel_mask)?;
         let mut names = BTreeSet::new();
         for r in &self.recording {
             if !names.insert(&r.name) {

@@ -14,11 +14,11 @@ use osc_client::pipe::Pipe;
 use osc_client::{Id, Inst, Opcode, Outcome, ResultCode};
 use osc_ident::burst::{self, ArmSeen, BurstIo, Capture, CaptureCfg, Pre};
 use osc_ident::exp::{Cmd, Experiment};
-use osc_ident::frame::{StreamAssembler, TelBurst, TelFrame, TelemetrySnapshot};
+use osc_ident::frame::{StreamAssembler, TEL_MASK_ALL, TelBurst, TelFrame, TelemetrySnapshot};
 use osc_ident::limits::PermitLease;
 use osc_ident::regs::{Reg, calib, config, control, telemetry};
 use osc_ident::units::{self, SenseParams};
-use osc_protocol::build;
+use osc_protocol::{build, wire};
 
 use super::csvio::SnapshotLog;
 use super::servo::{SAFE, Servo, Wire};
@@ -170,6 +170,45 @@ pub(crate) struct BurstStats {
     pub(crate) rows_dropped: u16,
 }
 
+/// A `tel_mask` a burst can stream, or why not in words: reserved bits, no
+/// field, or more fields than the wire budget carries (protocol sec 5.6),
+/// with its arithmetic. The servo refuses the same masks at the write.
+pub(crate) fn check_tel_mask(mask: u16) -> Result<u16> {
+    let (n, max) = (mask.count_ones(), wire::STREAM_FIELDS_MAX as u32);
+    if mask & !TEL_MASK_ALL != 0 {
+        bail!(
+            "tel_mask {mask:#x} sets reserved bits {:#x}: the fields are bits 0..{}",
+            mask & !TEL_MASK_ALL,
+            TEL_MASK_ALL.count_ones() - 1
+        );
+    }
+    if n == 0 {
+        bail!("tel_mask 0 selects no field to stream");
+    }
+    if n > max {
+        let (baud, hz) = (wire::STREAM_BUDGET_BAUD, wire::STREAM_BUDGET_TICK_HZ);
+        let window = wire::stream_window_bytes(baud, hz);
+        let bytes = |f: u32| wire::stream_frame_bytes(f as usize);
+        let pct = |f: u32| (bytes(f) * 100 + window / 2) / window;
+        bail!(
+            "tel_mask {mask:#x} selects {n} fields; a TEL sample carries at most {max} \
+             (protocol sec 5.6). One sample streams per control tick, so a frame of {k} samples \
+             of {n} fields is {} wire bytes against the {window} byte-times {k} ticks leave at \
+             {} Mbaud and {} kHz ({}%), where a frame may take {}%; {max} fields are {} ({}%). \
+             Stream the fields over two bursts.",
+            bytes(n),
+            baud.as_hz() / 1_000_000,
+            hz / 1000,
+            pct(n),
+            wire::STREAM_LINE_PCT,
+            bytes(max),
+            pct(max),
+            k = wire::STREAM_SAMPLES_MAX,
+        );
+    }
+    Ok(mask)
+}
+
 /// One TEL burst on the main bus. With `goal` Some the goal write and the
 /// TEL_COUNT arm are staged under HOLD and a broadcast COMMIT (the stream
 /// carrier) applies both in the same instant; with None the acked
@@ -183,6 +222,7 @@ pub(crate) fn exchange_tel_burst<P: Pipe>(
     goal: Option<(Reg, i32)>,
     mask: u16,
 ) -> Result<(Vec<TelFrame>, BurstStats)> {
+    check_tel_mask(mask)?;
     let window = stream_window(samples);
     c.set_guard(window + Duration::from_secs(1));
     let reply = match goal {
@@ -450,6 +490,38 @@ impl<'a, S: Servo> Pump<'a, S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The bench asked for 0x3db, eight fields: refused with the budget's
+    /// arithmetic, as is seven; six streams. osc-ident's mirror of the
+    /// budget is the protocol's.
+    #[test]
+    fn a_mask_over_the_wire_budget_says_why() {
+        let err = |m: u16| check_tel_mask(m).unwrap_err().to_string();
+        assert_eq!(
+            err(0x3db),
+            "tel_mask 0x3db selects 8 fields; a TEL sample carries at most 6 (protocol sec \
+             5.6). One sample streams per control tick, so a frame of 16 samples of 8 fields \
+             is 267 wire bytes against the 240 byte-times 16 ticks leave at 3 Mbaud and 20 \
+             kHz (111%), where a frame may take 95%; 6 fields are 203 (85%). Stream the \
+             fields over two bursts."
+        );
+        assert!(err(0x7f).contains("selects 7 fields") && err(0x7f).contains("235 wire bytes"));
+        assert_eq!(
+            err(0x1001),
+            "tel_mask 0x1001 sets reserved bits 0x1000: the fields are bits 0..11"
+        );
+        assert_eq!(err(0), "tel_mask 0 selects no field to stream");
+        assert_eq!(check_tel_mask(0x1cd).unwrap(), 0x1cd);
+        assert_eq!(
+            osc_ident::frame::TEL_FIELDS_MAX,
+            wire::STREAM_FIELDS_MAX as u32
+        );
+        assert_eq!(osc_ident::frame::STREAM_HDR, wire::STREAM_HDR);
+        assert_eq!(
+            osc_ident::frame::STREAM_SAMPLES_MAX,
+            wire::STREAM_SAMPLES_MAX
+        );
+    }
 
     #[test]
     fn write_arm_truncates_by_width() {
