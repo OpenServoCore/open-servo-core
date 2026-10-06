@@ -1077,6 +1077,21 @@ mod wire {
     }
 
     #[test]
+    fn wire_burst_fills_one_link_record_and_refuses_more() {
+        let mut c = fleet(&[5]);
+        assert_eq!(osc_host::link::record::WIRE_BURST_STREAM_MAX, 507);
+        let full = vec![0xAAu8; 168];
+        c.wire_burst(&[&full, &full, &full]).expect("507 B train");
+        let over = vec![0xAAu8; 126];
+        let err = c.wire_burst(&[&over, &over, &over, &over]).unwrap_err();
+        assert_eq!(
+            err,
+            Error::Link(LinkError::Rejected(RejectReason::Malformed))
+        );
+        c.wire_burst(&[&full]).expect("the link is still in step");
+    }
+
+    #[test]
     fn empty_wire_send_is_rejected_by_the_adapter() {
         let mut c = fleet(&[5]);
         // A bare break never raises TC, so the engine refuses to wedge on it --

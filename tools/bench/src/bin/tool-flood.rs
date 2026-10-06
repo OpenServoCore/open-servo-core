@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use bench::cli::{Connect, Target};
 use bench::osc::build_instruction;
+use bench::run::frames_per_burst;
 use clap::Parser;
 use osc_protocol::wire::{Inst, Opcode};
 
@@ -42,8 +43,7 @@ fn main() -> Result<()> {
     payload.extend(std::iter::repeat_n(0u8, args.bytes));
     let frame = build_instruction(args.target.id, Opcode::Write, Inst::FLAG_NOREPLY, &payload);
 
-    // Pack as many frames as fit the 640-byte burst stream (1 length byte each).
-    let per = (640 / (frame.len() + 1)).max(1);
+    let per = frames_per_burst(frame.len());
     let frames: Vec<Vec<u8>> = std::iter::repeat_n(frame.clone(), per).collect();
 
     let deadline = Instant::now() + Duration::from_secs(args.secs);

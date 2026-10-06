@@ -17,9 +17,8 @@ pub trait RecordSink {
     fn record(&mut self, record: &[u8]);
 }
 
-/// Accumulation bound: comfortably past the largest legal record
-/// (EXCHANGE with a 252 B payload = 262 pipe bytes).
-const RX_CAP: usize = 512;
+/// Accumulation bound: one length prefix plus the largest record.
+const RX_CAP: usize = 2 + record::RECORD_MAX;
 /// Outbound scratch: the largest record is a STATUS carrying a full reply
 /// payload.
 const OUT_CAP: usize = 300;
@@ -177,7 +176,7 @@ impl LinkServer {
                 return;
             }
             let len = u16::from_le_bytes([self.rx[0], self.rx[1]]) as usize;
-            if len == 0 || len > RX_CAP - 2 {
+            if len == 0 || len > record::RECORD_MAX {
                 // Framing breach on a reliable pipe = client bug; there is
                 // no resync point in a length-prefixed stream, so drop.
                 self.rx_len = 0;
