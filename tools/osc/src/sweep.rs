@@ -598,16 +598,8 @@ pub(crate) fn write_rows(w: &mut impl Write, s: &Segment) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn git_sha() -> String {
-    std::process::Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "unknown".into())
-}
+/// The commit this tool was built from; "unknown" outside a git checkout.
+pub(crate) const HOST_GIT_SHA: &str = env!("OSC_HOST_GIT_SHA");
 
 pub(crate) fn git_toplevel() -> Result<PathBuf> {
     std::process::Command::new("git")
@@ -657,7 +649,7 @@ pub(crate) fn meta<P: Pipe>(
 
 /// What every recording's meta.json opens with: the servo, its tick rate
 /// and rail, the table it ran (`plant`), its sense constants, and the
-/// checkout that drove it.
+/// host build that drove it.
 pub(crate) fn servo_meta<P: Pipe>(
     c: &mut Client<P>,
     id: Id,
@@ -681,7 +673,7 @@ pub(crate) fn servo_meta<P: Pipe>(
     m.insert("vbus_counts".into(), tel.vbus_counts.into());
     m.insert("plant".into(), plant);
     m.insert("sense".into(), sense);
-    m.insert("git_sha".into(), git_sha().into());
+    m.insert("host_git_sha".into(), HOST_GIT_SHA.into());
     Ok(m)
 }
 
