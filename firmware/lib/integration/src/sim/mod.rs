@@ -419,9 +419,9 @@ impl Sim {
     }
 
     /// Model the chip main loop's data-job poll (`data_state` module): the
-    /// checkpoint a stamp write posts and the verdict a LUT COMMIT posts
-    /// land after the reply, once the handler body returns. On by default;
-    /// off, a scenario services servo `i` by hand through
+    /// checkpoint a covered or stamp write posts and the verdict a LUT
+    /// COMMIT posts land after the reply, once the handler body returns. On
+    /// by default; off, a scenario services servo `i` by hand through
     /// [`Self::poll_data_job`], or splits the run from its publish with
     /// [`Self::data_job_run`] and [`Self::data_job_publish`] to land a
     /// write mid-job.

@@ -23,7 +23,7 @@ use osc_servo_core::kernel::{DECIM_MED, phase as kernel_phase};
 use osc_servo_core::persist::HEADER_LEN;
 use osc_servo_core::persist::Slot;
 use osc_servo_core::regions::CALIB_BASE_ADDR;
-use osc_servo_core::regions::calib::addr::motor::{KE_VPC_Q, RECIP_KE_Q};
+use osc_servo_core::regions::calib::addr::motor::{KE_VPC_Q, R_Q12, RECIP_KE_Q};
 use osc_servo_core::regions::calib::addr::stamp::PLANT_STAMP;
 use osc_servo_core::regions::config::addr::limits::STALL_TIME_MS;
 use osc_servo_core::regions::config::addr::loop_velocity::V_KP_Q88;
@@ -524,10 +524,10 @@ fn save_retires_the_fresh_reasons_and_recomputes_the_checkpoint(baud_idx: u8) {
     write_ke(&mut sim);
     assert_eq!(
         read_byte(&mut sim, DATA_FLAGS),
-        STAMP_MISMATCH | PLANT_UNSET,
-        "a covered write is not a checkpoint"
+        STAMP_MISMATCH,
+        "a covered write checkpoints: identified, never stamped"
     );
-    // the stamp write is: both verdicts follow the live set
+    // the stamp write checkpoints too: both verdicts follow the live set
     write_stamp(&mut sim, s);
     assert_eq!(read_byte(&mut sim, DATA_FLAGS), 0);
     assert_eq!(mgmt(&mut sim, MgmtOp::Save), ResultCode::Ok);
@@ -627,7 +627,7 @@ fn stamp_write_verifies_and_opens_closed_loop(baud_idx: u8) {
 }
 
 #[apply(matrix)]
-fn stamp_write_with_torque_on_stays_unverified(baud_idx: u8) {
+fn stamp_write_with_torque_on_verifies_at_torque_off(baud_idx: u8) {
     let store = RamStore::leak();
     let mut sim = sim(baud_idx);
     let s = stamped_servo(&mut sim, store);
@@ -643,10 +643,39 @@ fn stamp_write_with_torque_on_stays_unverified(baud_idx: u8) {
     set_torque(&mut sim, false);
     assert_eq!(
         read_byte(&mut sim, DATA_FLAGS),
-        STAMP_MISMATCH,
-        "torque off alone is no checkpoint"
+        0,
+        "the held checkpoint runs at torque off"
     );
-    write_stamp(&mut sim, s);
+}
+
+/// A hand edit of a covered field in RAM refuses closed loop while the
+/// live set differs from the stamped one; putting the value back is the
+/// stamped set again, and the next torque-off checkpoint says so.
+#[apply(matrix)]
+fn restoring_a_covered_edit_clears_the_mismatch(baud_idx: u8) {
+    let store = RamStore::leak();
+    let mut sim = sim(baud_idx);
+    let s = stamped_servo(&mut sim, store);
+    let (r, recip_ke) = sim.servo_table(s, |t| (t.calib.motor.r_q12, t.calib.motor.recip_ke_q));
+    write_ok(&mut sim, R_Q12, &(r + 100).to_le_bytes());
+    write_ok(&mut sim, RECIP_KE_Q, &(recip_ke + 1).to_le_bytes());
+    assert_eq!(read_byte(&mut sim, DATA_FLAGS), STAMP_MISMATCH);
+    write_ok(&mut sim, R_Q12, &r.to_le_bytes());
+    assert_eq!(
+        read_byte(&mut sim, DATA_FLAGS),
+        STAMP_MISMATCH,
+        "Ke still differs"
+    );
+    write_ok(&mut sim, RECIP_KE_Q, &recip_ke.to_le_bytes());
+    assert_eq!(read_byte(&mut sim, DATA_FLAGS), 0);
+
+    // under torque the verdict waits for torque off
+    let v_kp = sim.servo_table(s, |t| t.config.loop_velocity.v_kp_q88);
+    set_torque(&mut sim, true);
+    write_ok(&mut sim, V_KP_Q88, &(v_kp + 1).to_le_bytes());
+    write_ok(&mut sim, V_KP_Q88, &v_kp.to_le_bytes());
+    assert_eq!(read_byte(&mut sim, DATA_FLAGS), STAMP_MISMATCH);
+    set_torque(&mut sim, false);
     assert_eq!(read_byte(&mut sim, DATA_FLAGS), 0);
 }
 
