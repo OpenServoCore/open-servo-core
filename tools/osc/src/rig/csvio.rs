@@ -43,52 +43,56 @@ pub(crate) struct SnapshotLog {
     w: BufWriter<File>,
 }
 
+/// A snapshot row's columns, `host_ms` first.
+pub(crate) const SNAPSHOT_COLUMNS: &str = "host_ms,fault_flags,fault_code,mode_active,\
+    theta_hat_q16,omega_hat_cps,omega_hat_src,tau_d_counts,i_lim_counts,t_winding_cc,\
+    vbus_counts,duty_applied_q15,omega_bemf_cps,r_hat_q12,i_hat_counts,sample_tick,pos,current,\
+    current_trough,current_bias_counts,i_mean_counts,i_min_counts,i_max_counts,vdiff_mean,\
+    duty_mean_q15,agg_seq";
+
 impl SnapshotLog {
     pub(crate) fn create(dir: &OutDir, name: &str) -> Result<Self> {
         let mut w = dir.file(name)?;
-        writeln!(
-            w,
-            "host_ms,fault_flags,fault_code,mode_active,theta_hat_q16,omega_hat_cps,\
-             omega_hat_src,tau_d_counts,i_lim_counts,t_winding_cc,vbus_counts,duty_applied_q15,\
-             omega_bemf_cps,r_hat_q12,i_hat_counts,sample_tick,pos,current,\
-             current_trough,current_bias_counts,i_mean_counts,i_min_counts,\
-             i_max_counts,vdiff_mean,duty_mean_q15,agg_seq"
-        )?;
+        writeln!(w, "{SNAPSHOT_COLUMNS}")?;
         Ok(Self { w })
     }
 
     pub(crate) fn push(&mut self, host_ms: f64, s: &TelemetrySnapshot) -> Result<()> {
-        writeln!(
-            self.w,
-            "{host_ms:.1},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
-            s.fault_flags,
-            s.fault_code,
-            s.mode_active,
-            s.theta_hat_q16,
-            s.omega_hat_cps,
-            s.omega_hat_src,
-            s.tau_d_counts,
-            s.i_lim_counts,
-            s.t_winding_cc,
-            s.vbus_counts,
-            s.duty_applied_q15,
-            s.omega_bemf_cps,
-            s.r_hat_q12,
-            s.i_hat_counts,
-            s.sample_tick,
-            s.pos,
-            s.current,
-            s.current_trough,
-            s.current_bias_counts,
-            s.i_mean_counts,
-            s.i_min_counts,
-            s.i_max_counts,
-            s.vdiff_mean,
-            s.duty_mean_q15,
-            s.agg_seq
-        )?;
+        writeln!(self.w, "{}", snapshot_fields(host_ms, s))?;
         Ok(())
     }
+}
+
+/// One snapshot as [`SNAPSHOT_COLUMNS`] lays it out.
+pub(crate) fn snapshot_fields(host_ms: f64, s: &TelemetrySnapshot) -> String {
+    format!(
+        "{host_ms:.1},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+        s.fault_flags,
+        s.fault_code,
+        s.mode_active,
+        s.theta_hat_q16,
+        s.omega_hat_cps,
+        s.omega_hat_src,
+        s.tau_d_counts,
+        s.i_lim_counts,
+        s.t_winding_cc,
+        s.vbus_counts,
+        s.duty_applied_q15,
+        s.omega_bemf_cps,
+        s.r_hat_q12,
+        s.i_hat_counts,
+        s.sample_tick,
+        s.pos,
+        s.current,
+        s.current_trough,
+        s.current_bias_counts,
+        s.i_mean_counts,
+        s.i_min_counts,
+        s.i_max_counts,
+        s.vdiff_mean,
+        s.duty_mean_q15,
+        s.agg_seq
+    )
 }
 
 pub(crate) fn write_tel_frames(dir: &OutDir, name: &str, frames: &[TelFrame]) -> Result<()> {
