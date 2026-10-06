@@ -173,6 +173,32 @@ mod tests {
         assert!(r.wire.log().is_empty(), "nothing reached the wire");
     }
 
+    fn burst_record(frame_len: usize, frames: usize) -> Vec<u8> {
+        let mut body = vec![REC_WIRE_BURST, 1, 0];
+        for _ in 0..frames {
+            body.push(frame_len as u8);
+            body.extend(std::iter::repeat_n(0xAA, frame_len));
+        }
+        rec(&body)
+    }
+
+    #[test]
+    fn wire_burst_takes_a_full_record_and_no_more() {
+        assert_eq!(WIRE_BURST_STREAM_MAX, 507);
+        let mut r = rig();
+        r.server
+            .on_pipe(&burst_record(168, 3), &mut r.bus, &mut r.sink);
+        assert!(r.sink.0.is_empty(), "accepted: no reply until TC");
+        assert_eq!(r.wire.log()[2], WireOp::Send(vec![0xAA; 168]));
+
+        let mut r = rig();
+        r.server
+            .on_pipe(&burst_record(126, 4), &mut r.bus, &mut r.sink);
+        let unk = r.sink.0.first().unwrap();
+        assert_eq!(&unk[2..4], &[REC_UNKNOWN, 0xFF]);
+        assert!(r.wire.log().is_empty(), "nothing reached the wire");
+    }
+
     #[test]
     fn edge_drain_ships_staged_captures_and_the_drain_anchor() {
         let mut r = rig();

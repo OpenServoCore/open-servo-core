@@ -7,6 +7,7 @@ use std::thread::sleep;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
+use osc_client::record::WIRE_BURST_STREAM_MAX;
 use osc_protocol::wire::{Inst, Opcode, ResultCode};
 
 use crate::edges::BStamp;
@@ -166,6 +167,13 @@ pub fn hot_loop_cycle(id: u8, addr: u16, value: i32) -> BurstCycle {
         last: gread,
         expect: Some(data.to_vec()),
     }
+}
+
+/// How many copies of a `frame_len`-byte frame one wire burst carries: the
+/// adapter link takes [`WIRE_BURST_STREAM_MAX`] bytes of `len(1) frame`
+/// entries, and an over-long record desyncs the pipe.
+pub fn frames_per_burst(frame_len: usize) -> usize {
+    (WIRE_BURST_STREAM_MAX / (frame_len + 1)).max(1)
 }
 
 /// A plain NOREPLY-write flood then a READ: `writes` back-to-back
@@ -380,4 +388,19 @@ fn run_cycle(
         Err(e) => CycleOutcome::Other(e),
     };
     Ok((stamps, outcome))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn flood_bursts_fit_one_link_record() {
+        for frame_len in [9, 10, 13, 168, 255] {
+            let per = frames_per_burst(frame_len);
+            assert!(per * (frame_len + 1) <= WIRE_BURST_STREAM_MAX);
+            assert!((per + 1) * (frame_len + 1) > WIRE_BURST_STREAM_MAX);
+        }
+        assert_eq!(frames_per_burst(11), 42);
+    }
 }

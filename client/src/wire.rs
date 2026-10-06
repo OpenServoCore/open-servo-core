@@ -19,6 +19,8 @@
 //! quiet stretch stays exact as long as some EMPTY drain lands within a
 //! wrap of it -- empty drains lift the anchor along `now`.
 
+use osc_host::link::record as rec;
+
 use crate::client::{Client, desync};
 use crate::error::{Error, LinkError, RejectReason};
 use crate::pipe::Pipe;
@@ -61,9 +63,10 @@ impl<P: Pipe> Client<P> {
     }
 
     /// Break-framed frames back-to-back at bus pace (inter-frame gap under
-    /// a character time). Frames must each be 1..=255 bytes -- the train's
-    /// length-prefix format cannot carry more, so that much is checked
-    /// here; everything else the adapter validates.
+    /// a character time). Frames must each be 1..=255 bytes and the train
+    /// must fit [`rec::WIRE_BURST_STREAM_MAX`] -- the length-prefix format
+    /// cannot carry more and an over-long record desyncs the pipe, so that
+    /// much is checked here; everything else the adapter validates.
     pub async fn wire_burst(&mut self, frames: &[&[u8]]) -> Result<u32, Error> {
         let mut stream = Vec::new();
         for f in frames {
@@ -72,6 +75,9 @@ impl<P: Pipe> Client<P> {
             }
             stream.push(f.len() as u8);
             stream.extend_from_slice(f);
+        }
+        if stream.len() > rec::WIRE_BURST_STREAM_MAX {
+            return Err(Error::Link(LinkError::Rejected(RejectReason::Malformed)));
         }
         let mut out = Vec::new();
         let seq = self.session.encode_wire_burst(&mut out, &stream);

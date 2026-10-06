@@ -93,6 +93,15 @@ pub const REC_WIRE_DONE: u8 = 0x69;
 pub const REC_EDGES: u8 = 0x6C;
 pub const REC_CAPTURE_ACK: u8 = 0x6D;
 
+/// Largest record the adapter accepts, `type(1) + body` after the length
+/// prefix: comfortably past an EXCHANGE with a 252 B payload. A longer one
+/// drops the half-parsed buffer and answers REC_UNKNOWN 0xFF; its tail then
+/// parses as fresh records, so the pipe stays desynced until a new session.
+pub const RECORD_MAX: usize = 510;
+/// Largest [`REC_WIRE_BURST`] frame train: [`RECORD_MAX`] less the type and
+/// seq bytes.
+pub const WIRE_BURST_STREAM_MAX: usize = RECORD_MAX - 3;
+
 /// Per-ring entry cap on one edge drain (keeps the reply inside the
 /// outbound scratch; the BBATCH-style polled-drain precedent).
 pub const DRAIN_MAX: usize = 64;
