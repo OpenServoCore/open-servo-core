@@ -1,0 +1,6 @@
+capture,source,label,dryer_panel,unix_first_run,runs
+capture-1,rt4,"room, first",off,1791236949.8,10
+capture-2,rt4-p2,42 C,50,1791240222.7,10
+capture-3,rt4-p3,60 C,70,1791244239.0,10
+capture-4,rt4-p3b,"60 C, second set",70,1791246749.7,10
+capture-5,rt4-room2b,"room, last",off,1791250508.2,10

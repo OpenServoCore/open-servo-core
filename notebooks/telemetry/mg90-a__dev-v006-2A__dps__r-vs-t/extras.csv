@@ -1,0 +1,7 @@
+experiment,capture,source,unix,bursts,wave_r_ohm,what
+cal,capture-1,cal/mg90-regear/1791235628,1791235628,24,,"osc cal, first run (its endstop search held at pos 1350, mid travel)"
+cal,capture-2,cal/mg90-regear/1791236107,1791236107,24,,"osc cal, the run that set the range (held at both stops)"
+polarity,capture-1,winding-r/poltest/1791236789,1791236789,24,,"osc ident burst, polarity test 1"
+polarity,capture-2,winding-r/poltest/1791236825,1791236825,24,4.813,"osc ident burst, polarity test 2"
+polarity,capture-3,winding-r/poltest-seated/1791252179,1791252179,24,4.793,"osc ident burst, polarity test 3 (hold route)"
+polarity,capture-4,winding-r/poltest-seated/1791252238,1791252238,24,4.696,"osc ident burst, polarity test 4 (hold route)"

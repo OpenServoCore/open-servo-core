@@ -26,6 +26,14 @@ def test_ntc_reads_25_c_at_mid_scale():
     assert th.ntc_c(1500) > th.ntc_c(2000)
 
 
+def test_copper_line_reads_the_handbook_coefficient():
+    assert th.copper_pct_per_c(20.0) == pytest.approx(100 / 254.5)
+    assert th.copper_carry(5.09, 61.5, 28.6) == pytest.approx(5.09 * 263.1 / 296.0)
+    r = th.copper_carry(4.52, 28.6, 61.5)
+    assert th.thermometer_c(r, 4.52, 28.6) == pytest.approx(61.5)
+    assert th.thermometer_c(4.52, 4.52, 28.6) == pytest.approx(28.6)
+
+
 def test_modes_are_the_roots_of_the_network():
     fast, slow = NET.modes()
     a = 1 / (NET.r_wc * NET.c_w)

@@ -1,0 +1,18 @@
+servo = "mg90-a"
+supply = "dps"
+rule = "limit"
+current_limit_counts = 280
+captured = "2026-10-05"
+notes = """Winding R of the MG90 (TowerPro/Vorpal) against its can temperature, rev 2A board #1 on main with #279. The servo sat in a SUNLU filament dryer with the horn off and the rotor free; the board sat outside the dryer at room, fed by a DPS-150 at 7.9 V on its battery wires. A K thermocouple bead on the motor can, read by a B41T+ meter over BLE in C, is the temperature truth: the `can_c` column of every ntc.csv. The runs.csv `can_c` and `ntc_raw` columns are the board's NTC channel, which tracked nothing useful this session (28 to 37 C while the can went 26 to 62 C); ignore them. The dryer's panel reads high: panel 50 put the can at 42 C, panel 70 at 60 to 62 C.
+
+The motor leads were wired reversed and the servo ran with drive_polarity 0 on the #279 image, so every burst is logical: a positive step is the servo's positive direction. The gear train was rebuilt and the output gear re-seated on the pot shaft (it sits on a rubber friction bush) earlier the same day, then the servo was recalibrated (phys 0..187.9 deg, soft limits 488..3589).
+
+plateaus.csv names each plateau/capture-N in run order: the first room set (14:49), 42 C, 60 C, a second 60 C set, the last room set (18:35). Each holds ten `osc ident burst` runs at mid travel, alternating p1 (shunt and the driven tap) and p1diff (shunt and both taps), under the 280-count limit, nothing written. runs.csv is the soak script's log with its `dir` column cut to the run's folder under ident/; each ident/<unix>/ holds the run's 24 burst captures (16 from rest, 8 from a hold) and report.log, the full osc ident output. The 42 C plateau's run 1 (ident/1791240287) holds only 8 captures: osc ident dropped its 40% rung and declined the run. ntc.csv is the thermocouple every 5 s, regs.csv 30 torque-off snapshots before the runs, soak.log the console. Driver: osc-dev-v006-bringup captures/winding-r/soak.py --meter-temp.
+
+cool/capture-1 is a soak start after the second 60 C set that only logged the thermocouple while the can cooled from 57 C to room (17:51 to 18:34); it ran no burst. dc.csv holds two meter readings in ohms across the motor wires at J4 with torque off (the bridge asleep): 5.09 ohm at 17:48 with the can at about 61.5 C, 4.52 ohm at 19:00 with the can at 28.6 C. The thermocouple log has a gap over both, so their temperatures are the bench note's.
+
+extras.csv lists the bursts around the soak: cal/capture-1 and -2 are the two `osc cal` runs that wrote captures (14:27 and 14:35; four earlier attempts from 14:19 left nothing), with their endstop snapshots, and the second one's sweep TEL and the control-table snapshot it saved; polarity/capture-1 to -4 are `osc ident burst` runs checking the drive polarity, two at 14:46-14:47 before the first room set and two at 19:03-19:04 after the room DC reading. Their burst captures are the same format. The cal bursts predate the drive_polarity column. The polarity runs' report.log is kept where the console was saved (capture-2 to -4).
+
+Source: osc-dev-v006-bringup captures/winding-r rt4, rt4-p2, rt4-p3, rt4-p3b, rt4-room2 (the cool-down), rt4-room2b, rt4-dc.csv, poltest, poltest-seated, and captures/cal/mg90-regear. The csv files under ident/, cal/ and polarity/ are gzipped and each run's bias_tel, bias_snapshots and inductance_snapshots files are left out; nothing else differs from what the scripts wrote.
+
+The burst captures carry no sense block, so the board is not read from the data: these are rev 2A board #1 captures by the bench log, and nothing here identifies the unit."""

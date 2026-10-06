@@ -16,8 +16,14 @@ the two agreeing is what says the scatter is the fit's trade, not the motor.
 
 COPPER
 
-  t = copper_c(r, r_ref, t_ref)              the temperature R implies
+Copper's resistance is proportional to (T0_CU + T) with T in C, a line that
+would reach zero at -234.5 C; referred to R at 20 C that is 0.393 %/C.
+
+  t = copper_c(r, r_ref, t_ref)              the temperature R implies, linear in ALPHA_CU
   r = copper_ohm(t, r_ref, t_ref)            and back
+  t = thermometer_c(r, r_ref, t_ref)         the same on the (T0_CU + T) line (nb17 sec 7)
+  r = copper_carry(r, t, t_ref)              R read at t, carried to t_ref along that line
+  copper_pct_per_c(t)                        the coefficient at t, % of R(t) per C
 
 THE TWO-NODE MODEL
 
@@ -45,6 +51,7 @@ import numpy as np
 from scipy.linalg import expm
 
 ALPHA_CU = 0.0039               # copper, per degree C near room temperature
+T0_CU = 234.5                   # copper: R is proportional to (T0_CU + T), T in C
 NTC_B = 3950.0
 NTC_T0_K = 298.15
 ADC_FULL = 4095
@@ -74,6 +81,18 @@ def copper_c(r, r_ref, t_ref, alpha=ALPHA_CU):
 
 def copper_ohm(t, r_ref, t_ref, alpha=ALPHA_CU):
     return r_ref * (1 + alpha * (np.asarray(t, float) - t_ref))
+
+
+def copper_pct_per_c(t):
+    return 100 / (T0_CU + np.asarray(t, float))
+
+
+def copper_carry(r, t, t_ref):
+    return np.asarray(r, float) * (T0_CU + t_ref) / (T0_CU + np.asarray(t, float))
+
+
+def thermometer_c(r, r_ref, t_ref):
+    return t_ref + (np.asarray(r, float) / r_ref - 1) * (T0_CU + t_ref)
 
 
 @dataclass(frozen=True)

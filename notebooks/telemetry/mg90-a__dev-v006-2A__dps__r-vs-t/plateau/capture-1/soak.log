@@ -1,0 +1,26 @@
+meter LILLIPUT: (1791236871.532695, 'C', 26.4)
+plateau 1: can 26.30 C, within inf C for 1200 s
+[p1 0] 14:49:09 can 28.49 C rail 7.650 V
+  R 4.884 V0 -0.201 slope 5.266 V/I 4.736 can 28.45 declined
+[p1diff 1] 14:50:14 can 28.28 C rail 7.618 V
+  R 5.002 V0 -0.269 slope 5.371 V/I 4.628 can 28.36 declined
+[p1 2] 14:51:15 can 28.46 C rail 7.618 V
+  R 4.763 V0 -0.160 slope 5.143 V/I 4.820 can 28.42 declined
+[p1diff 3] 14:52:20 can 28.53 C rail 7.618 V
+  R 4.801 V0 -0.208 slope 5.167 V/I 4.678 can 28.41 declined
+[p1 4] 14:53:20 can 28.35 C rail 7.634 V
+  R 4.831 V0 -0.183 slope 5.212 V/I 4.793 can 28.4 declined
+[p1diff 5] 14:54:25 can 28.51 C rail 7.666 V
+  R 4.952 V0 -0.258 slope 5.318 V/I 4.667 can 28.4 declined
+[p1 6] 14:55:25 can 28.49 C rail 7.634 V
+  R 4.896 V0 -0.204 slope 5.278 V/I 4.751 can 28.45 declined
+[p1diff 7] 14:56:30 can 28.42 C rail 7.666 V
+  R 4.783 V0 -0.169 slope 5.149 V/I 4.823 can 28.41 declined
+[p1 8] 14:57:30 can 28.49 C rail 7.626 V
+  R 4.721 V0 -0.119 slope 5.103 V/I 4.913 can 28.43 declined
+[p1diff 9] 14:58:35 can 28.49 C rail 7.658 V
+  R 4.903 V0 -0.229 slope 5.270 V/I 4.733 can 28.37 declined
+plateau 1 done; change the dryer setpoint for the next one
+interrupted
+centred: pos 2023, torque_enable off
+done: 1 plateaus in rt4/runs.csv

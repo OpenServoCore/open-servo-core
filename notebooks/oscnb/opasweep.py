@@ -15,6 +15,7 @@ A dataset of this kind holds one folder per plateau and mode under
   p.ladder()                       one row per ladder rung, R from the taps
   p.bursts()                       one row per burst capture, late-window R
   fold(df, board, "tb")            one stream of a burst against its sample time
+  burst_frame(df, board)           a burst laid onto its PWM period, for estimators
 
 THE BURST CAPTURES
 
@@ -178,15 +179,36 @@ def burst_phase(df, pwm_period):
     return m, phase, sh, ta, tb
 
 
-def burst_levels(df, board, cen=1208, late_after_step=60):
-    """The late-window levels of one burst capture. `d` is a sample's offset
-    from `cen` in ticks; the late window runs from 55% of the drive window (at
-    least 5 us after it opens) to 1 us before it closes, and the OFF level is
-    taken 3 us or more outside it. A capture whose shunt peaks fall outside the
-    window its `start_cnt` predicts is marked `phase_ok` False: the counter
-    read occasionally lands a few hundred ticks off."""
+TICKS_PER_US = 48                                        # TIM1 ticks per microsecond
+
+
+@dataclass(frozen=True)
+class BurstFrame:
+    """One burst capture laid onto its PWM period: `d` is each sample's offset
+    from `cen` in ticks, `w` the drive window in ticks, `sh`/`ta`/`tb` the slot
+    masks, `pre`/`post` the samples before the step and well after it, `zero`
+    the shunt's pre-step median. `phase_ok` is False when the shunt peaks fall
+    outside the window the `start_cnt` predicts: the counter read occasionally
+    lands a few hundred ticks off."""
+    m: dict
+    code: np.ndarray
+    k: np.ndarray
+    d: np.ndarray
+    w: float
+    sgn: int
+    duty: int
+    sh: np.ndarray
+    ta: np.ndarray
+    tb: np.ndarray
+    pre: np.ndarray
+    post: np.ndarray
+    zero: float
+    phase_ok: bool
+
+
+def burst_frame(df, board, cen=1208, late_after_step=60):
     period = 2 * board.pwm_half_ticks
-    us = 48
+    us = TICKS_PER_US
     m, phase, sh, ta, tb = burst_phase(df, period)
     code = df.code.to_numpy(float)
     k = np.arange(len(code))
@@ -195,21 +217,31 @@ def burst_levels(df, board, cen=1208, late_after_step=60):
     d = ((phase - cen + period // 2) % period) - period // 2
     si = m["step_index"]
     post, pre = k >= si + late_after_step, k < si - 8
-    drv, idl = (ta, tb) if sgn > 0 else (tb, ta)
     w = duty / 32768 * period
+    zero = float(np.median(code[sh & pre]))
+    hi = post & sh & (code > zero + 0.5 * (code[post & sh].max() - zero))
+    phase_ok = bool(hi.any() and np.mean(np.abs(d[hi]) <= w / 2 + us) >= 0.8)
+    return BurstFrame(m, code, k, d, w, sgn, duty, sh, ta, tb, pre, post, zero, phase_ok)
+
+
+def burst_levels(df, board, cen=1208, late_after_step=60):
+    """The late-window levels of one burst capture. The late window runs from
+    55% of the drive window (at least 5 us after it opens) to 1 us before it
+    closes, and the OFF level is taken 3 us or more outside it."""
+    us = TICKS_PER_US
+    f = burst_frame(df, board, cen, late_after_step)
+    d, w, code, post = f.d, f.w, f.code, f.post
+    drv, idl = (f.ta, f.tb) if f.sgn > 0 else (f.tb, f.ta)
     lo = max(-w / 2 + 0.55 * w, -w / 2 + 5 * us) if w > 600 else -w / 2 + 0.5 * w
     late = post & (d >= lo) & (d <= w / 2 - us)
     off = post & (np.abs(d) >= w / 2 + 3 * us)
-    zero = np.median(code[sh & pre])
-    hi = post & sh & (code > zero + 0.5 * (code[post & sh].max() - zero))
-    phase_ok = bool(hi.any() and np.mean(np.abs(d[hi]) <= w / 2 + us) >= 0.8)
-    i_on = _tm(code[sh & late]) - zero
+    i_on = _tm(code[f.sh & late]) - f.zero
     vhi = board.v_term_per_count * (_tm(code[drv & late]) - _tm(code[drv & off]))
     vlo = board.v_term_per_count * (_tm(code[idl & late]) - _tm(code[idl & off])) if idl.any() else np.nan
     i_a = i_on * board.a_per_count
-    if not phase_ok:
+    if not f.phase_ok:
         vhi = vlo = np.nan
-    return dict(duty=round(duty * 100 / 32768), sgn=sgn, zero=zero, i_on=i_on, phase_ok=phase_ok,
+    return dict(duty=round(f.duty * 100 / 32768), sgn=f.sgn, zero=f.zero, i_on=i_on, phase_ok=f.phase_ok,
                 r_drv=vhi / i_a, r_diff=(vhi - vlo) / i_a if idl.any() else np.nan)
 
 
