@@ -373,11 +373,15 @@ fn tracker_follows_bench_bursts_self_addressed() {
     );
 }
 
-/// The bench shape under the chip's handler costs: at 1M the frame-end
-/// body spans the next break's detector fire, so every wake is served a
-/// byte-time or more late with data bytes newest. The ladder still places
-/// each break (position from the stream), every break stamps, and the
-/// tracker follows the detune from the pairs that clear the span gate.
+/// The bench shape under handler costs just inside the 1M frame period:
+/// the frame-end body spans the next break's detector fire, so every wake
+/// is served a byte-time or more late with data bytes newest. The ladder
+/// still places each break (position from the stream) and every break
+/// stamps. The wake's entry lag beats against the frame cadence (fixed
+/// costs: a three-frame cycle), so only the pairs whose two wakes carry
+/// the same lag clear the span gate; those still decide. A lag-free stamp
+/// (a hardware latch at the detector's fire) is what makes every pair
+/// clear it.
 #[rstest]
 #[test_log::test]
 fn tracker_follows_bench_bursts_under_handler_cost(
