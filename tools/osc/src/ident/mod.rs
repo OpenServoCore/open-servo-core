@@ -2967,6 +2967,29 @@ mod tests {
         );
         assert!(report.contains("-> every stall-safe duty"), "{report}");
         assert!(report.contains("-> the current loop's i_ki"), "{report}");
+        // the burst's rungs, each read alone, in params.json and the report
+        let rungs: Vec<(String, bool, String)> = e8
+            .rungs
+            .iter()
+            .map(|g| {
+                let pct = format!("{:.0}", g.duty * 100.0);
+                (pct, g.forward, format!("{:.3}", g.v_over_i_ohm))
+            })
+            .collect();
+        assert_eq!(
+            rungs,
+            [
+                ("25".into(), true, "5.061".into()),
+                ("25".into(), false, "5.291".into()),
+                ("40".into(), true, "4.921".into()),
+                ("40".into(), false, "4.906".into()),
+            ]
+        );
+        assert!(
+            report.contains("  rungs         duty dir  n  I asym"),
+            "{report}"
+        );
+        assert!(report.contains(" 40% rev  4   0.588"), "{report}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

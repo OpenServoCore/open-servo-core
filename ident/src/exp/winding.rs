@@ -164,6 +164,10 @@ pub struct CaptureVolts {
     /// the driven terminal one high-side drop under it.
     pub hi_on: Vec<(f64, f64)>,
     pub hi_is_rail: bool,
+    /// Winding volts over each window's settled ON span: the terminals'
+    /// difference on that route, else the high side less the estimated
+    /// low side.
+    pub on_v: Vec<f64>,
     /// The chopping terminal's settled OFF samples, volts.
     pub off: Vec<f64>,
     /// (us since the edge, V - that window's mean) for the high side's ON
@@ -370,6 +374,7 @@ pub fn capture_volts(
             v: d * (a + b) / 2.0 + (1.0 - d) * off,
         });
     }
+    let on_v: Vec<f64> = (0..f.cb.len()).filter_map(v_on).collect();
     let v_settled = {
         let pts: Vec<(f64, f64)> = periods.iter().map(|p| ((p.i0 + p.i1) / 2.0, p.v)).collect();
         match linear_ls(&pts) {
@@ -504,6 +509,7 @@ pub fn capture_volts(
         hold,
         hi_on,
         hi_is_rail: !hi_is_tap,
+        on_v,
         off,
         on_dev,
         on_span_us: median(&spans).unwrap_or(0.0),

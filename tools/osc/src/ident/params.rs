@@ -10,7 +10,7 @@ use osc_ident::exp::anchor::AnchorResult;
 use osc_ident::exp::bias::BiasResult;
 use osc_ident::exp::breakaway::BreakawayResult;
 use osc_ident::exp::held::HeldRun;
-use osc_ident::exp::inductance::InductanceResult;
+use osc_ident::exp::inductance::{InductanceResult, Rung};
 use osc_ident::exp::inertia::{InertiaResult, StoredMotion};
 use osc_ident::exp::resistance::ResistanceResult;
 use osc_ident::exp::rl::{RlResult, Scales};
@@ -313,6 +313,51 @@ pub struct InductanceJson {
     pub wave: Option<WaveJson>,
     #[serde(default)]
     pub checks: Vec<(String, bool, String)>,
+    /// The from-rest captures per step duty and sign, each read alone.
+    #[serde(default)]
+    pub rungs: Vec<RungJson>,
+}
+
+/// One rung of the burst as osc-ident's `exp::inductance::Rung` reads it:
+/// SI, medians over the rung's repeats; V/I is duty x the pre-arm rail over
+/// `i_asym_a`, `line_v_over_i_ohm` the waveform's at the same current.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct RungJson {
+    pub duty: f64,
+    pub forward: bool,
+    pub captures: usize,
+    pub i_asym_a: f64,
+    pub tau_us: f64,
+    pub i_late_a: f64,
+    pub dv_on_driven_v: Option<f64>,
+    pub dv_on_diff_v: Option<f64>,
+    pub v_over_i_ohm: f64,
+    pub line_v_over_i_ohm: Option<f64>,
+    pub r_period_ohm: Option<f64>,
+    pub wave_r_ohm: Option<f64>,
+    pub wave_rms_counts: Option<f64>,
+    pub set_aside: usize,
+}
+
+impl From<&Rung> for RungJson {
+    fn from(g: &Rung) -> Self {
+        Self {
+            duty: g.duty,
+            forward: g.forward,
+            captures: g.captures,
+            i_asym_a: g.i_asym_a,
+            tau_us: g.tau_us,
+            i_late_a: g.i_late_a,
+            dv_on_driven_v: g.dv_on_driven_v,
+            dv_on_diff_v: g.dv_on_diff_v,
+            v_over_i_ohm: g.v_over_i_ohm,
+            line_v_over_i_ohm: g.line_v_over_i_ohm,
+            r_period_ohm: g.r_period_ohm,
+            wave_r_ohm: g.wave_r_ohm,
+            wave_rms_counts: g.wave_rms_counts,
+            set_aside: g.set_aside,
+        }
+    }
 }
 
 /// The whole-waveform fit of the from-rest captures: the line, where it
@@ -550,6 +595,7 @@ impl From<&InductanceResult> for InductanceJson {
                 .iter()
                 .map(|g| (g.name.to_string(), g.pass, g.detail.clone()))
                 .collect(),
+            rungs: x.rungs.iter().map(RungJson::from).collect(),
         }
     }
 }
