@@ -324,7 +324,9 @@ impl Cfg {
             static_load: a.static_load,
             guard,
             stops: (!a.static_load).then_some(lim.raw),
-            tel_mask: crate::parse_u16(&a.tel_mask).context("--tel-mask")?,
+            tel_mask: crate::parse_u16(&a.tel_mask)
+                .and_then(pump::check_tel_mask)
+                .context("--tel-mask")?,
             rung_tries: a.rung_tries,
         })
     }

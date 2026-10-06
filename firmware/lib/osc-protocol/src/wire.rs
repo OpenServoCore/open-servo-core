@@ -318,6 +318,46 @@ pub fn stream_last(inst: Inst, payload: FrameBytes<'_>) -> bool {
         && payload.u8_at(1).is_some_and(|f| f & STREAM_FLAG_LAST != 0)
 }
 
+/// sec 5.6 TEL frame: a `STREAM_HDR`-byte header, then up to
+/// `STREAM_SAMPLES_MAX` samples, one per control tick, each the
+/// `tel_mask`-selected fields of `STREAM_FIELD_LEN` bytes.
+pub const STREAM_HDR: usize = 4;
+pub const STREAM_SAMPLES_MAX: usize = 16;
+pub const STREAM_FIELD_LEN: usize = 2;
+
+/// sec 5.6 wire budget: the most fields a sample carries, the largest count
+/// whose full frame [`stream_fits`] at `STREAM_BUDGET_BAUD` and
+/// `STREAM_BUDGET_TICK_HZ`.
+pub const STREAM_FIELDS_MAX: u8 = 6;
+pub const STREAM_BUDGET_BAUD: BaudRate = BaudRate::B3000000;
+pub const STREAM_BUDGET_TICK_HZ: u32 = 20_000;
+
+/// Wire bytes a TEL frame spends outside its payload: the 6 of sec 3.1
+/// (break, ID, LEN, INST, CRC) and one character of slack.
+pub const STREAM_FRAME_OVERHEAD: usize = 7;
+
+/// The share of its batch's line time a TEL frame may take, percent.
+pub const STREAM_LINE_PCT: usize = 95;
+
+/// Bit-times per character on the wire: start, 8 data, stop (sec 3).
+pub const CHAR_BIT_TIMES: u32 = 10;
+
+/// Wire bytes of a full TEL frame of `fields`-field samples.
+pub const fn stream_frame_bytes(fields: usize) -> usize {
+    STREAM_HDR + STREAM_SAMPLES_MAX * STREAM_FIELD_LEN * fields + STREAM_FRAME_OVERHEAD
+}
+
+/// Byte-times one batch of `STREAM_SAMPLES_MAX` ticks gives the line.
+pub const fn stream_window_bytes(baud: BaudRate, tick_hz: u32) -> usize {
+    STREAM_SAMPLES_MAX * (baud.as_hz() / CHAR_BIT_TIMES / tick_hz) as usize
+}
+
+/// A full frame of `fields`-field samples clears the wire inside its own
+/// batch's ticks within `STREAM_LINE_PCT`: the burst keeps up with the tick.
+pub const fn stream_fits(fields: usize, baud: BaudRate, tick_hz: u32) -> bool {
+    stream_frame_bytes(fields) * 100 <= stream_window_bytes(baud, tick_hz) * STREAM_LINE_PCT
+}
+
 /// TX-buffer alignment byte at offset 0 (sec 3.2): keeps the hardware CRC feed
 /// halfword-aligned and even; a CRC no-op (leading zero, init = 0). Not part
 /// of the wire checksum definition.
@@ -481,6 +521,22 @@ mod tests {
         assert_eq!(len_for(MAX_PAYLOAD), 255);
         assert_eq!(footprint(255), 258);
         assert_eq!(covered_len(255), 256);
+    }
+
+    /// sec 5.6: at 3 M a 20 kHz tick is 15 byte-times, 240 per 16-tick
+    /// batch. Six fields make a 203-byte frame, 85% of it; seven 235, 98%,
+    /// past the 95% a burst may take; eight outgrow the frame itself.
+    #[test]
+    fn six_fields_are_the_tel_budget() {
+        let (b, hz) = (STREAM_BUDGET_BAUD, STREAM_BUDGET_TICK_HZ);
+        let max = STREAM_FIELDS_MAX as usize;
+        assert_eq!(stream_window_bytes(b, hz), 240);
+        assert_eq!(stream_frame_bytes(max), 203);
+        assert_eq!(stream_frame_bytes(max + 1), 235);
+        assert!(stream_fits(max, b, hz));
+        assert!(!stream_fits(max + 1, b, hz));
+        assert!(STREAM_HDR + STREAM_SAMPLES_MAX * STREAM_FIELD_LEN * max <= MAX_PAYLOAD as usize);
+        assert!(STREAM_HDR + STREAM_SAMPLES_MAX * STREAM_FIELD_LEN * 8 > MAX_PAYLOAD as usize);
     }
 
     #[test]
