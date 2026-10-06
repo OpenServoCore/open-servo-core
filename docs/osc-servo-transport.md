@@ -239,6 +239,14 @@ and never reloaded. From then on:
 - **Scheduled path (newest frame only).** The frame still arriving rides
   the deadline pipeline: A (header) → covered checkpoint (dispatch, §6) →
   B (verdict), every deadline a ring-cadence projection.
+- **No milestone.** A frame that can change nothing until it is whole -
+  another servo's plain op while the reply pipeline is idle, or a status
+  no chain slot is waiting on - schedules nothing after A. The next
+  wake resolves it from the ring like any backlog frame (a foreign op
+  still gets its CRC verdict, which keeps the stride trusted), and only
+  the starve horizon is armed for it, so a truncated one still dies by
+  starve. DES: `truncated_foreign_frame_starves_then_recovers`,
+  `snooped_slot_answers_a_reply_gap_after_its_predecessor`.
 
 ### 5.3 Garble dies by data only
 
@@ -410,7 +418,10 @@ and they need frames far longer than real hot-loop traffic provides.)
 These stamps are the one sanctioned exception to §5's no-wake-time rule —
 the trim machinery's entire subject is the break-service stamp itself,
 and it is gated, paired, and baseline-anchored accordingly (protocol
-§3.4, §9.3).
+§3.4, §9.3). A break's service first resolves every frame that ended
+before the break, then stamps: a frame with no milestone (§5.2) is still
+in the ring when the next break wakes, and recording it after the stamp
+would credit it to the wrong pair.
 
 - **Absolute, rarely — MGMT CAL.** A broadcast instruction announcing N
   breaks spaced exactly T µs; the servo stamps `deadline.now()` at each
@@ -437,7 +448,8 @@ applied via HSITRIM between frames and mirrored read-only at
 tracker's baseline mechanics are normative in protocol §9.3. DES:
 `tests/trim.rs` — trains converge/reject/watchdog, the tracker follows
 mid-run drift injection, constant seam+skew cancel exactly, solicited
-shapes never pair.
+shapes never pair, and alternating footprints pair each frame with its
+own breaks (`tracker_pairs_each_frame_with_its_own_breaks`).
 
 ## 9. Losslessness
 

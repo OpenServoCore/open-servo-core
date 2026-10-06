@@ -57,6 +57,17 @@ pub enum FramerOut {
     Frame(FrameSpan),
 }
 
+/// The frontier milestones a frame's header asks for. The composite decides
+/// (it owns addressing and the chain); the framer only schedules.
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub enum FrameNeeds {
+    /// The covered checkpoint, then the frame end.
+    Covered,
+    /// No milestone: the frame resolves from the ring at the next wake, and
+    /// only the starve horizon is scheduled for it.
+    Nothing,
+}
+
 // sec 4.1: header = BREAK, ID, LEN, INST; the break byte is index 0 of the
 // frame, so the header is readable `HEADER_SPAN_BYTES` in.
 const HEADER_SPAN_BYTES: u16 = Header::SIZE as u16;
@@ -232,11 +243,45 @@ impl Framer {
         self.hunting
     }
 
+    /// The frame at the anchor, if it is whole in the ring before index
+    /// `until`. Nothing else moves: a hunt, a partial or an empty ladder is
+    /// left to [`Self::resolve`].
+    pub fn settle(&mut self, ring: &[u8], until: u16, now: u32) -> Option<FrameSpan> {
+        let len = ring.len();
+        if len == 0 {
+            return None;
+        }
+        let received = dist(until, self.anchor, len);
+        let a = self.anchor as usize;
+        if received < HEADER_SPAN_BYTES || ring[a] != BREAK_RING_BYTE {
+            return None;
+        }
+        let len_byte = ring[ring_wrap(a + 2, len)];
+        let footprint = osc_protocol::wire::footprint(len_byte) as u16;
+        if len_byte < 3 || received < footprint {
+            return None;
+        }
+        self.anchor = ring_wrap(a + footprint as usize, len) as u16;
+        self.frontier = Frontier::idle();
+        Some(FrameSpan {
+            anchor: a as u16,
+            footprint,
+            packet_end: now,
+        })
+    }
+
     /// One resolution step against the CURRENT ring state (data-first from
     /// the stream). The composite loops until `None`/`Wait`. `cursor` is the
     /// live DMA cursor read at call time -- progress truth, not a stale event
-    /// snapshot.
-    pub fn resolve(&mut self, ring: &[u8], cursor: u16, now: u32, tpb: u32) -> FramerOut {
+    /// snapshot. `needs` classifies a frontier frame from its header.
+    pub fn resolve(
+        &mut self,
+        ring: &[u8],
+        cursor: u16,
+        now: u32,
+        tpb: u32,
+        needs: impl FnOnce(&Header) -> FrameNeeds,
+    ) -> FramerOut {
         let len = ring.len();
         if len == 0 {
             return FramerOut::None; // defensive: no ring to resolve against
@@ -302,6 +347,12 @@ impl Framer {
             });
         }
         let missing = (footprint - received) as u32;
+        if needs(h) == FrameNeeds::Nothing {
+            // Aim past the horizon: `wait` caps every aim at it, so the
+            // horizon is this frame's only wake.
+            let aim = now.wrapping_add(STARVE_GIVEUP_BYTES.wrapping_mul(tpb));
+            return self.wait(aim, now, tpb, cursor, len);
+        }
         if !self.frontier.covered && missing <= COVERED_TAIL_BYTES {
             // Covered checkpoint: freeze the wire-end estimate here -- the
             // tightest projection this frame gets (missing <= 2, so the

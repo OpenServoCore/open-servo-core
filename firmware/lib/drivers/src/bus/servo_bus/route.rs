@@ -7,7 +7,7 @@ use osc_servo_core::traits::{Dispatch, Dispatched, Request, RequestCtx};
 use super::super::chain::ChainOut;
 use super::super::decode::{Decoded, decode, foreign};
 use super::super::frame_view;
-use super::super::framer::{FrameSpan, FramerOut};
+use super::super::framer::{FrameNeeds, FrameSpan, FramerOut};
 use super::reply::ReplyHandle;
 use super::{Pending, ServoBus};
 use crate::traits::bus::{Deadline, Providers, RxRing, tick_reached};
@@ -22,9 +22,27 @@ impl<P: Providers> ServoBus<P> {
     pub(super) fn drive_framer<D: Dispatch>(&mut self, d: &mut D) {
         for _ in 0..super::FRAMES_PER_WAKE {
             let now = self.deadline.now();
-            let out = self
-                .framer
-                .resolve(self.ring.bytes(), self.ring.cursor(), now, self.tpb);
+            let id = self.id;
+            let idle = !self.chain.active() && !self.tx.busy();
+            let waiting = self.chain.waiting();
+            // A frame that can change nothing until it is whole needs no
+            // milestone: another servo's plain op, or a status nobody waits
+            // on (sec 6). The next wake resolves it from the ring.
+            let needs = move |h: &Header| {
+                let nothing = if h.inst.is_status() {
+                    !waiting
+                } else {
+                    idle && foreign(h, id)
+                };
+                if nothing {
+                    FrameNeeds::Nothing
+                } else {
+                    FrameNeeds::Covered
+                }
+            };
+            let out =
+                self.framer
+                    .resolve(self.ring.bytes(), self.ring.cursor(), now, self.tpb, needs);
             match out {
                 FramerOut::None => {
                     self.framer_at = None;
@@ -45,6 +63,20 @@ impl<P: Providers> ServoBus<P> {
             }
         }
         self.framer_at = Some(self.deadline.now());
+    }
+
+    /// Resolve every frame whole before the break at ring index `brk`, so
+    /// the break's drift stamp closes the pair those frames belong to: a
+    /// frame that needed no milestone is still unresolved when the next
+    /// break wakes (sec 8).
+    pub(super) fn settle_before<D: Dispatch>(&mut self, brk: u16, d: &mut D) {
+        for _ in 0..super::FRAMES_PER_WAKE {
+            let now = self.deadline.now();
+            let Some(span) = self.framer.settle(self.ring.bytes(), brk, now) else {
+                return;
+            };
+            self.on_frame_end(span, d);
+        }
     }
 
     pub(super) fn route_chain(&mut self, mut out: ChainOut) {
