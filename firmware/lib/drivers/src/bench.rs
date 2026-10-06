@@ -46,7 +46,7 @@ pub struct TrimProbe {
     pub sanity_drop: u32,
     /// Latest drift poll's computed ppm (pre-sanity).
     pub poll_ppm: i32,
-    /// `TrimLoop::on_window` invocations (both sources) and its latest
+    /// `TrimLoop` decisions (CAL and drift) and the latest
     /// measurement, effect estimate, applied steps, and running total.
     pub windows: u32,
     pub tw_ppm: i32,

@@ -192,6 +192,15 @@ impl Core {
         self.heap.push(Scheduled { time, seq, event });
     }
 
+    /// Pop the earliest event at or before `limit`, else `None` - the main
+    /// loop's turn at a chosen instant (`Sim::run_until`).
+    pub fn pop_until(&mut self, limit: u64) -> Option<Event> {
+        if self.heap.peek()?.time > limit {
+            return None;
+        }
+        self.pop()
+    }
+
     /// Pop the earliest event, advancing the clock and tripping the runaway
     /// guards. Returns `None` when the queue drains.
     pub fn pop(&mut self) -> Option<Event> {

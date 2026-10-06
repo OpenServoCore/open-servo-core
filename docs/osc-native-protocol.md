@@ -1400,21 +1400,30 @@ exactly ONE CRC-verified *silent* instruction (GWRITE, or WRITE/COMMIT
 with NOREPLY or broadcast — shapes no reply can follow, since a
 responder's turnaround rides its clock, not the host's) measure
 `seam + drift·span`. The host's queuing seam is unknown but stationary:
-the mean pair error over the 32 pairs after any trim decision IS the seam
-(baseline), and 128-pair windows read drift as their shift from it —
-anything constant (seam, FE latch offset, entry-path residue) dies in the
-subtraction. Byte-exactness (ring span == the verified footprint) and the
-same 1/16 gate qualify pairs; window verdicts past ±8 k ppm are not
-thermal and are discarded (a seam shift comes from a host behavior change
-the host knows about — it re-anchors with a CAL).
+the first 128-pair window after a CAL IS the seam (baseline) - the CAL's
+anchor - and every later 128-pair window reads its shift from that one
+baseline; anything constant (seam, FE latch offset, entry-path residue)
+dies in the subtraction. The steps the tracker itself applies stay in the
+measurement: a window reads the clock's residual against the anchor,
+never an increment against the tracker's own last decision, so window
+noise cannot integrate into a walk - a step a noisy window took, the next
+window reads back out, and the trim stays within one window's noise of
+the truth while genuine drift is followed step by step. Only a CAL (or a
+rate change) re-baselines. Byte-exactness (ring span == the verified
+footprint) and the same 1/16 gate qualify pairs; window readings past
+±8 k ppm are not thermal and are discarded (a seam shift comes from a
+host behavior change the host knows about - it re-anchors with a CAL).
 
 Both feed the oscillator-trim loop (`steps = round(err/step_effect)`,
-clamped ±4/decision; step effect self-measured — chip trim steps are
-nonuniform, 1.4–3.2 k ppm/step measured), applied by the main loop
-between frames; the total is readable at `telemetry.clock.trim_steps`.
-Volatile by design: the host CALs at boot (~4 ms of bus per train) and at
-moments it knows its own behavior changed — not on a timer; the tracker
-holds the fleet through everything between.
+clamped ±4/decision), applied by the main loop between frames; the total
+is readable at `telemetry.clock.trim_steps`. The step effect is
+self-measured by the ruler alone - chip trim steps are nonuniform,
+1.4–3.2 k ppm/step measured - from one CAL's reading to the next, over
+every step applied in between, the tracker's included; drift windows only
+decide (their seam noise, ~1 k ppm on the bench, cannot probe a 1.4 k
+step). Volatile by design: the host CALs at boot (~4 ms of bus per train)
+and at moments it knows its own behavior changed - not on a timer; the
+tracker holds the fleet through everything between.
 
 **Boot guidance: send at least two trains.** Full convergence is a
 two-point identification, not a precision problem: the first train's

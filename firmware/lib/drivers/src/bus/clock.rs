@@ -21,19 +21,16 @@ const TRIM_GATE_SHIFT: u32 = 4;
 /// needs a deadline backstop like any busy-wait).
 const CAL_WATCHDOG_GAPS: u32 = 2;
 
-/// Seam-baseline capture length, in accepted chain-pairs (sec 9.3; a power of
-/// two -- the mean divides by shift on the divider-less chip build). Right
-/// after a trim decision the clock is freshly measured, so the mean pair
-/// error over these IS the host's queuing seam.
-const DRIFT_BASELINE_PAIRS: u8 = 32;
-
 /// Chain-pairs per drift window -- a decision every second or two at
-/// hot-loop rates, against thermal drift that moves over minutes.
+/// hot-loop rates, against thermal drift that moves over minutes. The first
+/// window after a restart is the seam baseline (sec 9.3): a power of two, so
+/// its mean divides by shift on the divider-less chip build.
 const DRIFT_WINDOW_PAIRS: u8 = 128;
 
-/// Drift-window verdicts past this are not thermal (HSI tempco cannot move
-/// thousands of ppm between adjacent windows): a host seam shift or a
-/// garbage window -- discarded; the baseline stands, the next CAL re-anchors.
+/// A window reading past this is not thermal: the loop holds the residual
+/// against the anchor near zero, and HSI tempco cannot open thousands of ppm
+/// of it within one window - a host seam shift or a garbage window,
+/// discarded; the anchor stands, the next CAL re-anchors.
 const DRIFT_SANITY_PPM: u32 = 8_000;
 
 /// A live MGMT CAL break train (sec 9.3): the host's crystal spaces the breaks,
@@ -73,12 +70,11 @@ pub struct ClockTracker {
     cal_ready: bool,
     // Differential drift tracker (sec 9.3): the last break-wake stamp + ring
     // cursor, the one silent instruction verified since it, the seam
-    // baseline, and the current drift window.
+    // baseline (mean pair error of the first window after a restart - the
+    // CAL anchor), and the current window.
     drift_prev: Option<(u32, u16)>,
     drift_seen: VerifiedSpan,
     drift_base: Option<i32>,
-    drift_base_err: i32,
-    drift_base_n: u8,
     drift_win_err: i32,
     drift_win_span: u32,
     drift_win_n: u8,
@@ -99,8 +95,6 @@ impl ClockTracker {
             drift_prev: None,
             drift_seen: VerifiedSpan::None,
             drift_base: None,
-            drift_base_err: 0,
-            drift_base_n: 0,
             drift_win_err: 0,
             drift_win_span: 0,
             drift_win_n: 0,
@@ -179,11 +173,18 @@ impl ClockTracker {
 
     /// Drift chain-pair (sec 9.3): adjacent break-wake stamps bracketing one
     /// silent verified instruction measure `seam + drift*span` -- the host's
-    /// queuing seam is unknown but stationary, so the mean pair error right
-    /// after a trim decision IS the seam (baseline), and every later window
-    /// reads drift as its shift from it. Anything constant -- seam, FE latch
-    /// offset, entry-path residue -- dies in the subtraction; only changes
-    /// survive, and the sanity band catches the non-thermal ones.
+    /// queuing seam is unknown but stationary, so the mean pair error over
+    /// the first window after a CAL IS the seam (baseline), and every later
+    /// window reads its shift from that one anchor. Anything constant -
+    /// seam, FE latch offset, entry-path residue - dies in the subtraction;
+    /// only changes survive, and the sanity band catches the non-thermal
+    /// ones. The steps this tracker applies stay IN the measurement: a
+    /// window reads the clock's residual against the anchor, never an
+    /// increment against the tracker's own last decision, so window noise
+    /// cannot integrate into a walk - a step a noisy window took, the next
+    /// window reads back out (DES pin `noisy_silent_flood_holds_the_cal_anchor`;
+    /// re-baselining per decision walked the bench trim -1 -> +13 on plain
+    /// flood food).
     pub fn on_drift_break(&mut self, now: u32, cursor: u16, len: usize, tpb: u32) {
         // The same break again (a re-fired wake): its stamp stands.
         if matches!(self.drift_prev, Some((_, c)) if c == cursor) {
@@ -229,37 +230,35 @@ impl ClockTracker {
             crate::bench::trim_probe(|p| p.gated += 1);
             return; // a real pause (inter-chain gap), not a seam
         }
-        match self.drift_base {
-            None => {
-                crate::bench::trim_probe(|p| p.base_pairs += 1);
-                self.drift_base_err = self.drift_base_err.wrapping_add(err);
-                self.drift_base_n += 1;
-                if self.drift_base_n >= DRIFT_BASELINE_PAIRS {
-                    self.drift_base = Some(self.drift_base_err / DRIFT_BASELINE_PAIRS as i32);
-                }
+        crate::bench::trim_probe(|p| {
+            if self.drift_base.is_none() {
+                p.base_pairs += 1;
+            } else {
+                p.win_pairs += 1;
             }
-            Some(base) => {
-                crate::bench::trim_probe(|p| p.win_pairs += 1);
-                self.drift_win_err = self.drift_win_err.wrapping_add(err.wrapping_sub(base));
-                self.drift_win_span = self.drift_win_span.saturating_add(span);
-                self.drift_win_n += 1;
-                if self.drift_win_n >= DRIFT_WINDOW_PAIRS {
-                    if !self.cal_ready && !self.drift_ready {
-                        crate::bench::trim_probe(|p| {
-                            p.verdicts += 1;
-                            p.verdict_err = self.drift_win_err;
-                            p.verdict_span = self.drift_win_span;
-                        });
-                        self.cadence_err = self.drift_win_err;
-                        self.cadence_span = self.drift_win_span;
-                        self.drift_ready = true;
-                    }
-                    self.drift_win_err = 0;
-                    self.drift_win_span = 0;
-                    self.drift_win_n = 0;
-                }
-            }
+        });
+        let base = self.drift_base.unwrap_or(0);
+        self.drift_win_err = self.drift_win_err.wrapping_add(err.wrapping_sub(base));
+        self.drift_win_span = self.drift_win_span.saturating_add(span);
+        self.drift_win_n += 1;
+        if self.drift_win_n < DRIFT_WINDOW_PAIRS {
+            return;
         }
+        if self.drift_base.is_none() {
+            self.drift_base = Some(self.drift_win_err / DRIFT_WINDOW_PAIRS as i32);
+        } else if !self.cal_ready && !self.drift_ready {
+            crate::bench::trim_probe(|p| {
+                p.verdicts += 1;
+                p.verdict_err = self.drift_win_err;
+                p.verdict_span = self.drift_win_span;
+            });
+            self.cadence_err = self.drift_win_err;
+            self.cadence_span = self.drift_win_span;
+            self.drift_ready = true;
+        }
+        self.drift_win_err = 0;
+        self.drift_win_span = 0;
+        self.drift_win_n = 0;
     }
 
     /// The drift pair is still open for its one verified frame -- the shape
@@ -278,14 +277,13 @@ impl ClockTracker {
     }
 
     /// Tracker restart: baseline, window, and pair continuity all drop --
-    /// after a trim decision (the baseline's residual-skew term is stale),
-    /// a CAL train (continuity broken), or a rate change.
+    /// after a CAL train (the ruler is the new anchor, and the train broke
+    /// pair continuity), a rate change, or a rescue. Never after a drift
+    /// decision: the baseline IS the anchor the tracker holds the clock to.
     pub fn restart(&mut self) {
         self.drift_prev = None;
         self.drift_seen = VerifiedSpan::None;
         self.drift_base = None;
-        self.drift_base_err = 0;
-        self.drift_base_n = 0;
         self.drift_win_err = 0;
         self.drift_win_span = 0;
         self.drift_win_n = 0;
@@ -293,7 +291,7 @@ impl ClockTracker {
     }
 
     /// Drain a completed measurement -- a CAL train (absolute) or a drift
-    /// window (baseline-relative) -- through the trim loop.
+    /// window (anchor-relative) - through the trim loop.
     pub fn poll(&mut self) -> Option<i8> {
         if self.cal_ready {
             crate::bench::trim_probe(|p| p.poll_cal += 1);
@@ -302,9 +300,9 @@ impl ClockTracker {
             self.cadence_err = 0;
             self.cadence_span = 0;
             // The clock is freshly measured either way the decision goes:
-            // the next pairs re-capture the seam baseline against it.
+            // the next window captures the seam baseline against it.
             self.restart();
-            return self.trim.on_window(err, span);
+            return self.trim.on_cal(err, span);
         }
         if !self.drift_ready {
             return None;
@@ -326,12 +324,9 @@ impl ClockTracker {
             crate::bench::trim_probe(|p| p.sanity_drop += 1);
             return None; // not thermal -- seam shift or garbage, discarded
         }
-        let out = self.trim.on_window(err, span);
-        if out.is_some() {
-            // The clock moved: the baseline's residual-skew term is stale.
-            self.restart();
-        }
-        out
+        // The anchor stands across the apply: the next window reads the
+        // residual this decision left, against the same baseline.
+        self.trim.on_drift(err, span)
     }
 }
 
