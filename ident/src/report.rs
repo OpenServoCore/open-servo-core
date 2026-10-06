@@ -360,6 +360,7 @@ pub fn render(r: &ReportInputs<'_>) -> String {
                     if f.saturated { "SAT" } else { "" }
                 );
             }
+            let _ = writeln!(s, "  {}", crate::thermometer::floor_line(a.i_counts));
         }
         None => {
             let _ = writeln!(

@@ -300,8 +300,9 @@ enum Cmd {
     /// Re-anchor the winding thermometer on an identified servo: the jam
     /// check, a seated hold at the low stop under the current limit that
     /// reads the kernel's own winding R, back to mid travel; then r0_q12,
-    /// t0_cc, k_r2t_q88 and mu_q016 are written read-back verified (not
-    /// stamp-covered), SAVE with --save. Needs --ambient-c, the winding's
+    /// t0_cc, k_r2t_q88, mu_q016 and rtherm_i_min_counts (7/8 of the hold
+    /// current) are written read-back verified (not stamp-covered), SAVE
+    /// with --save. Needs --ambient-c, the winding's
     /// temperature at rest. Run it at rest an hour or more after any
     /// stall, cal or heavy running: brush contact shifts R by a few percent
     /// for a while, and 1% of R is 2.6 C of thermometer.
@@ -834,22 +835,15 @@ fn run_anchor_alone(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id, save: bool) -> 
     };
     let enc = thermometer::Anchor::new(a.r_vpc, ambient_c, d.lim.i_lim, d.sense.tick_hz as f64)
         .context("the anchor encodes to nothing (zero R or limit)")?;
-    let floor = snapshot::read_u16(c, id, config::RTHERM_I_MIN_COUNTS)?;
-    if a.i_counts <= floor as f64 {
-        println!(
-            "warning: the hold drew {}, not over the thermometer's current floor of {}: the \
-             thermometer samples only over it (set rtherm_i_min_counts under the limit)",
-            d.lim.ma().of(a.i_counts),
-            d.lim.ma().of(floor as f64)
-        );
-    }
-    let fields = GainJson::anchor(&enc);
+    let mut fields = GainJson::anchor(&enc);
+    fields.push(GainJson::floor(thermometer::floor_counts(a.i_counts)));
     write_reg(c, id, control::TORQUE_ENABLE, 0)?;
     snapshot::take_snapshot(c, id, &rec.out.0.join("snapshot.json"))?;
     snapshot::write_gains(c, id, &fields)?;
     for (name, f) in enc.fields() {
         println!("  {name:<12} {:>7}  ({:.5})", f.raw, f.physical);
     }
+    println!("  {}", thermometer::floor_line(a.i_counts));
     println!(
         "the thermometer reads {ambient_c:.1} C at R0 {:.4} vcounts/ccount and copper's slope \
          from there; re-anchor at rest after any stall, cal or heavy running",
@@ -2054,8 +2048,10 @@ fn fit_dir(cli: &Ctx, dir: PathBuf) -> Result<()> {
     p.inertia = Some(InertiaJson::new(&inertia, from.as_str()));
     p.plant = Some(PlantJson::new(&plant, &t, &w, sigma_from.as_str()));
     p.gains = GainJson::set(&encoded);
-    if let Some((_, _, e)) = &anchor {
+    if let Some((a, _, e)) = &anchor {
         p.gains.extend(GainJson::anchor(e));
+        p.gains
+            .push(GainJson::floor(thermometer::floor_counts(a.i_counts)));
     }
     p.save(&path)?;
     println!("params: {}", path.display());
@@ -2705,7 +2701,8 @@ mod tests {
     /// writes the four CALIB fields behind the gains - r0_q12 the kernel's
     /// own R at the hold, t0_cc the ambient, k_r2t_q88 copper's handbook
     /// line through them, mu_q016 a 2 s settle at the limit - and the
-    /// report says where each came from.
+    /// thermometer's current floor at 7/8 of the hold; the report says
+    /// where each came from.
     #[test]
     fn the_anchor_rides_with_the_gains_and_encodes_the_handbook_slope() {
         use osc_ident::exp::WindowSample;
@@ -2769,7 +2766,8 @@ mod tests {
         let slow_hz = 20_100.0 / 320.0;
         let mu = 4096.0 / (280.0 * SETTLE_S * slow_hz);
         assert_eq!(raw("mu_q016"), (mu * 65536.0).round() as u16);
-        assert_eq!(p.gains.len(), 19 + 4);
+        assert_eq!(raw("rtherm_i_min_counts"), 7 * 280 / 8);
+        assert_eq!(p.gains.len(), 19 + 5);
         let report = std::fs::read_to_string(dir.join("report.txt")).unwrap();
         assert!(
             report.contains("[anchor] the winding thermometer's R0 at T0"),
@@ -2787,6 +2785,10 @@ mod tests {
         );
         assert!(
             report.contains("copper's handbook line, 1 / (234.5 + T) per C, never fitted"),
+            "{report}"
+        );
+        assert!(
+            report.contains("  rtherm_i_min_counts 245  (7/8 of the hold's 280 counts)"),
             "{report}"
         );
         let _ = std::fs::remove_dir_all(&dir);

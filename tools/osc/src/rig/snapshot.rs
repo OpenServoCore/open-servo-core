@@ -43,6 +43,7 @@ pub(crate) const SNAPSHOT_FIELDS: &[(&str, Reg)] = &[
     ("j_ff_q88", config::J_FF_Q88),
     ("p_kp_q88", config::P_KP_Q88),
     ("pos_deadband_counts", config::POS_DEADBAND_COUNTS),
+    ("rtherm_i_min_counts", config::RTHERM_I_MIN_COUNTS),
     ("l1_q016", config::L1_Q016),
     ("l2_q88", config::L2_Q88),
     ("l3_q88", config::L3_Q88),

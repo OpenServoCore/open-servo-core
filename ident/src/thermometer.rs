@@ -32,6 +32,40 @@ pub const COPPER_ZERO_R_C: f64 = 234.5;
 /// thermometer's current floor the step is proportionally slower.
 pub const SETTLE_S: f64 = 2.0;
 
+/// The thermometer's current floor, eighths of the anchor's hold current.
+/// The kernel's v / i is current-dependent (4.12 / 4.43 / 4.55 ohm at
+/// 141 / 225 / 273 counts, seated holds on the rev 2A bench MG90), so an
+/// anchor reads true only near its own current; the floor sits just under
+/// the hold.
+pub const FLOOR_EIGHTHS_OF_HOLD: u32 = 7;
+
+/// `rtherm_i_min_counts` from the anchor hold's median current, counts:
+/// the thermometer samples only where the anchor holds.
+pub fn floor_counts(i_hold_counts: f64) -> Encoded {
+    let hold = i_hold_counts.round().clamp(0.0, u16::MAX as f64);
+    let raw = (hold as u32 * FLOOR_EIGHTHS_OF_HOLD / 8) as u16;
+    let physical = i_hold_counts * FLOOR_EIGHTHS_OF_HOLD as f64 / 8.0;
+    Encoded {
+        physical,
+        raw,
+        quantization_pct: if physical != 0.0 {
+            (raw as f64 - physical).abs() / physical.abs() * 100.0
+        } else {
+            0.0
+        },
+        saturated: hold != i_hold_counts.round(),
+    }
+}
+
+/// The floor's report line, shared by `osc ident anchor` and the run's
+/// report.
+pub fn floor_line(i_hold_counts: f64) -> String {
+    format!(
+        "rtherm_i_min_counts {:>3}  ({FLOOR_EIGHTHS_OF_HOLD}/8 of the hold's {i_hold_counts:.0} counts)",
+        floor_counts(i_hold_counts).raw
+    )
+}
+
 /// The kernel's SLOW rate, Hz, where the thermometer samples.
 pub fn slow_hz(tick_hz: f64) -> f64 {
     tick_hz / (DECIM_MED as f64 * DECIM_SLOW as f64)

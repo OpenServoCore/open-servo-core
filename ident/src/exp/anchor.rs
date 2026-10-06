@@ -357,6 +357,26 @@ mod tests {
         assert!((r.r_vpc - 3.37).abs() < 0.02, "r {}", r.r_vpc);
     }
 
+    /// The hold the limit governs at 280 leaves the thermometer's floor at
+    /// 7/8 of it.
+    #[test]
+    fn anchor_sets_the_floor_under_its_hold() {
+        let mut servo = bench_mg90(3204);
+        servo.r = 3.37;
+        let cfg = AnchorCfg {
+            hold_duty_q15: 9830,
+            ..bench_cfg()
+        };
+        let (exp, _, abort) = run(&mut servo, cfg);
+        assert_eq!(abort, None);
+        let r = exp.result().unwrap();
+        let hold = r.i_counts.round() as u16;
+        assert!((270..=281).contains(&hold), "hold current {}", r.i_counts);
+        let floor = crate::thermometer::floor_counts(r.i_counts);
+        assert_eq!(floor.raw, 7 * hold / 8);
+        assert!(!floor.saturated);
+    }
+
     #[test]
     fn command_choreography_is_safe() {
         let mut servo = FakeServo::new(3.37);

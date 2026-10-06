@@ -868,6 +868,11 @@ impl GainJson {
         Self::of(&a.fields())
     }
 
+    /// The thermometer's current floor ([`thermometer::floor_counts`]).
+    pub fn floor(f: Encoded) -> Self {
+        Self::of(&[("rtherm_i_min_counts", f)]).remove(0)
+    }
+
     fn of(fields: &[(&str, Encoded)]) -> Vec<Self> {
         fields
             .iter()
