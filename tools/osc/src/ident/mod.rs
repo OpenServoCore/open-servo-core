@@ -7,6 +7,7 @@
 //! every duty it drives at come from osc-ident's `run`.
 
 pub(crate) mod params;
+mod verify;
 
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
@@ -15,6 +16,7 @@ use crate::capture::envelope;
 use crate::rig::centre::adopt_polarity;
 use crate::rig::plant::Lut;
 use crate::rig::pump::{self, Pump, read_i32, with_guard, write_reg};
+use crate::rig::servo::{Servo, Wire};
 use crate::rig::{Aborted, check_abort, csvio, snapshot};
 use anyhow::{Context, Result, bail};
 use clap::{Subcommand, ValueEnum};
@@ -38,9 +40,7 @@ use osc_ident::exp::inertia::{
 use osc_ident::exp::ladder::{Ladder, LadderCfg, LadderResult};
 use osc_ident::exp::resistance::{Resistance, ResistanceCfg, ResistanceResult};
 use osc_ident::exp::rl::{Rl, RlCfg, RlFitCfg, RlResult, Scales};
-use osc_ident::exp::verify::{
-    VerifyCurrent, VerifyCurrentCfg, VerifyResult, VerifyVelocity, VerifyVelocityCfg,
-};
+use osc_ident::exp::verify::{VERIFY_CURRENT, VerifyCurrentCfg, VerifyVelocityCfg};
 use osc_ident::exp::wavefit::WaveCfg;
 use osc_ident::exp::{Guarded, Permitted, RigParams};
 use osc_ident::fits::{self, Climb, InertiaPriors};
@@ -316,7 +316,9 @@ enum Cmd {
     /// Every seek drives at the duty whose stall the current limit holds;
     /// verify current holds steps between the lowest current the sensor
     /// reads and the limit at each stop, stall permit held, and is refused
-    /// on a supply that leaves no room between the two.
+    /// on a supply that leaves no room between the two. Recorded under
+    /// <out>/<timestamp>/: meta.json, verify_current.csv,
+    /// verify_velocity.csv.
     Verify,
     /// Refit offline from a recorded run directory.
     Fit { dir: PathBuf },
@@ -1203,33 +1205,36 @@ fn run_verify(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
             .join(" and "),
         pct(plan.seek)
     );
-    // deliberate rail stall in Current mode: the directional endstop band
-    // would zero i_ref at the soft wall, and the permit opens it, as for
-    // resistance
-    let mut e5 = Guarded::new(
-        Permitted::new(VerifyCurrent::new(current, &params)),
-        params.without_pos_guard(),
-    );
-    with_guard(c, id, |c| Pump::new(c, id, None).run(&mut e5))?;
-    check_abort("verify current", e5.abort())?;
-    let cur = e5.into_inner().into_inner().result();
-    refuse_closed_loop(&c.data_state(id, &d)?)?;
-    // E5 ends stalled against an end-stop; E6 runs with the pos guard on
-    // and its first read would abort right there
-    centre_outside_the_run(cli, c, id)?;
-    println!(
-        "[verify velocity] velocity legs across the travel, parked at {}",
-        pct(plan.seek)
-    );
-    let mut e6 = Guarded::new(
-        VerifyVelocity::new(VerifyVelocityCfg::planned(&plan), &params),
+    let out = csvio::OutDir::create(&cli.out)?;
+    let velocity = VerifyVelocityCfg::planned(&plan);
+    let mut s = Wire::new(&mut *c, id);
+    let v = verify::run(
+        &mut s,
+        &out,
+        &drv.lim,
         params,
-    );
-    with_guard(c, id, |c| Pump::new(c, id, None).run(&mut e6))?;
-    check_abort("verify velocity", e6.abort())?;
-    let vel = e6.into_inner().result();
-    centre_outside_the_run(cli, c, id)?;
-    for s in &cur.steps {
+        current,
+        velocity,
+        |s, ended| {
+            let c = s.client();
+            if ended == VERIFY_CURRENT {
+                refuse_closed_loop(&c.data_state(id, &d)?)?;
+            }
+            // E5 ends stalled against an end-stop; E6 runs with the pos
+            // guard on and its first read would abort right there
+            centre_outside_the_run(cli, c, id)?;
+            if ended == VERIFY_CURRENT {
+                println!(
+                    "[verify velocity] velocity legs across the travel, parked at {}",
+                    pct(plan.seek)
+                );
+            }
+            Ok(())
+        },
+    )?;
+    println!("verify: recorded in {}", out.0.display());
+    let (cur, vel) = (v.current.as_ref(), v.velocity.as_ref());
+    for s in cur.iter().flat_map(|c| &c.steps) {
         println!(
             "  goal {:+5} -> {:+8.1} ({:.1}% err, settle {})",
             s.goal,
@@ -1240,13 +1245,12 @@ fn run_verify(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id) -> Result<()> {
                 .unwrap_or_else(|| "never".into()),
         );
     }
-    for l in &vel.legs {
+    for l in vel.iter().flat_map(|v| &v.legs) {
         println!(
             "  goal {:+6} c/s -> {:+8.1} ({:.1}% err, r2 {:.4}, n {})",
             l.goal_cps, l.meas_cps, l.err_pct, l.r2, l.n
         );
     }
-    let v = VerifyResult::assemble(Some(cur), Some(vel));
     println!("verify: {}", if v.pass { "PASS" } else { "FAIL" });
     if !v.pass {
         std::process::exit(1);

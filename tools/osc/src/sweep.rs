@@ -628,25 +628,8 @@ pub(crate) fn meta<P: Pipe>(
     cfg: &Cfg,
     drive: serde_json::Value,
 ) -> Result<serde_json::Value> {
-    let identity = c.identity(id)?;
-    let tick_hz = read_u16(c, id, calib::TICK_HZ)?;
-    let tel = read_snapshot(c, id)?;
-    let d = crate::state::descriptor(c, id)?;
-    let plant = Snapshot::read(c, id, &d)?.json();
-    let vbus_counts = tel.vbus_counts;
-    Ok(serde_json::json!({
-        "model": identity.model,
-        "fw": identity.fw,
-        "tick_hz": tick_hz,
-        "vbus_counts": vbus_counts,
-        "plant": plant,
-        "sense": {
-            "shunt_r_mohm": read_u16(c, id, calib::SHUNT_R_MOHM)?,
-            "gain_milli": read_u16(c, id, calib::GAIN_MILLI)?,
-            "vmotor_div_top": read_u16(c, id, calib::VMOTOR_DIV_TOP)?,
-            "vmotor_div_bot": read_u16(c, id, calib::VMOTOR_DIV_BOT)?,
-            "vdd_mv": read_u16(c, id, calib::VDD_MV)?,
-        },
+    let servo = servo_meta(c, id)?;
+    let mut m = serde_json::json!({
         "schedule": cfg.steps.iter().map(Step::to_string).collect::<Vec<_>>(),
         "decay": cfg.decay.as_str(),
         "dirs": cfg.dirs.signs(),
@@ -663,8 +646,41 @@ pub(crate) fn meta<P: Pipe>(
         "tel_mask": cfg.tel_mask,
         "post_rung_brake": true,
         "drive": drive,
-        "git_sha": git_sha(),
-    }))
+    });
+    if let Some(o) = m.as_object_mut() {
+        o.extend(servo);
+    }
+    Ok(m)
+}
+
+/// What every recording's meta.json opens with: the servo, its tick rate
+/// and rail, the table it ran (`plant`), its sense constants, and the
+/// checkout that drove it.
+pub(crate) fn servo_meta<P: Pipe>(
+    c: &mut Client<P>,
+    id: Id,
+) -> Result<serde_json::Map<String, serde_json::Value>> {
+    let identity = c.identity(id)?;
+    let tick_hz = read_u16(c, id, calib::TICK_HZ)?;
+    let tel = read_snapshot(c, id)?;
+    let d = crate::state::descriptor(c, id)?;
+    let plant = Snapshot::read(c, id, &d)?.json();
+    let sense = serde_json::json!({
+        "shunt_r_mohm": read_u16(c, id, calib::SHUNT_R_MOHM)?,
+        "gain_milli": read_u16(c, id, calib::GAIN_MILLI)?,
+        "vmotor_div_top": read_u16(c, id, calib::VMOTOR_DIV_TOP)?,
+        "vmotor_div_bot": read_u16(c, id, calib::VMOTOR_DIV_BOT)?,
+        "vdd_mv": read_u16(c, id, calib::VDD_MV)?,
+    });
+    let mut m = serde_json::Map::new();
+    m.insert("model".into(), identity.model.into());
+    m.insert("fw".into(), identity.fw.into());
+    m.insert("tick_hz".into(), tick_hz.into());
+    m.insert("vbus_counts".into(), tel.vbus_counts.into());
+    m.insert("plant".into(), plant);
+    m.insert("sense".into(), sense);
+    m.insert("git_sha".into(), git_sha().into());
+    Ok(m)
 }
 
 /// The `drive` block's servo settings: the limit and the stall settings
