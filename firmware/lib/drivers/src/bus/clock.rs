@@ -185,6 +185,10 @@ impl ClockTracker {
     /// offset, entry-path residue -- dies in the subtraction; only changes
     /// survive, and the sanity band catches the non-thermal ones.
     pub fn on_drift_break(&mut self, now: u32, cursor: u16, len: usize, tpb: u32) {
+        // The same break again (a re-fired wake): its stamp stands.
+        if matches!(self.drift_prev, Some((_, c)) if c == cursor) {
+            return;
+        }
         let prev = self.drift_prev.replace((now, cursor));
         let seen = core::mem::replace(&mut self.drift_seen, VerifiedSpan::None);
         crate::bench::trim_probe(|p| p.stamps += 1);

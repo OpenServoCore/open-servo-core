@@ -75,17 +75,20 @@ impl<P: Providers> ServoBus<P> {
         self.framer_at = Some(self.deadline.now());
     }
 
-    /// Resolve every frame whole before the break at ring index `brk`, so
-    /// the break's drift stamp closes the pair those frames belong to: a
-    /// frame that needed no milestone is still unresolved when the next
-    /// break wakes (sec 8).
-    pub(super) fn settle_before<D: Dispatch>(&mut self, brk: u16, d: &mut D) {
+    /// Resolve every frame whole in the ring, so a break's drift stamp
+    /// closes the pair those frames belong to and the ladder stands on the
+    /// break's own byte: a frame that needed no milestone is still
+    /// unresolved when the next break wakes (sec 8).
+    pub(super) fn settle_whole<D: Dispatch>(&mut self, d: &mut D) {
         if self.tx.streaming() {
             return;
         }
         for _ in 0..super::FRAMES_PER_WAKE {
             let now = self.deadline.now();
-            let Some(span) = self.framer.settle(self.ring.bytes(), brk, now) else {
+            let Some(span) = self
+                .framer
+                .settle(self.ring.bytes(), self.ring.cursor(), now)
+            else {
                 return;
             };
             self.on_frame_end(span, d);
