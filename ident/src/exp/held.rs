@@ -30,6 +30,7 @@ use super::{AbortReason, Cmd, Experiment, RigParams};
 use crate::burst::{Capture, Chans};
 use crate::fitmath::median;
 use crate::frame::TelemetrySnapshot;
+use crate::limits::{DutyPlan, pct_floor};
 use crate::regs::control;
 
 const Q15: f64 = 32767.0;
@@ -223,6 +224,47 @@ pub fn held_run(
         hold_rows: caps.iter().filter(|(_, _, v)| v.hold.is_some()).count(),
         l_spread,
         gates,
+    }
+}
+
+// --- plan -------------------------------------------------------------------
+
+/// The lowest held step, whole percent: the shortest ON window a burst
+/// plan arms (`MIN_WINDOW_RAW` of its 46-conversion period). Under it a
+/// step's ON windows hold too few settled conversions: the per-capture L
+/// declines and the pooled R reads low.
+pub const HELD_STEP_MIN_PCT: u8 = 20;
+
+/// The least stall current the two held steps may sit apart, counts: ten
+/// times the noise a quiet capture may read ([`FitCfg::pre_sd_max`]), so
+/// each duty's rows stand apart in the pooled regression.
+pub const HELD_STEP_SEP_COUNTS: f64 = 30.0;
+
+/// The span from the hold to the stop cap has no room for the two step
+/// duties the held fit needs: whole percent.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct NoHeldRoom {
+    pub hold_pct: u8,
+    pub cap_pct: u8,
+}
+
+/// The held route's step duties by `plan`, whole percent, low first: the
+/// stop cap and the midpoint between it and the hold at `hold_pct`, raised
+/// to [`HELD_STEP_MIN_PCT`], [`HELD_STEP_SEP_COUNTS`] or more of stall
+/// current apart. The fit needs two step duties ([`HELD_GATES`]).
+pub fn held_steps(plan: &DutyPlan, hold_pct: u8) -> Result<[u8; 2], NoHeldRoom> {
+    let cap = pct_floor(plan.stop_cap);
+    let low = (hold_pct + cap.saturating_sub(hold_pct) / 2)
+        .max(HELD_STEP_MIN_PCT)
+        .max(hold_pct + 1);
+    let at = |p: u8| plan.stall(p as f64 / 100.0);
+    if cap > low && at(cap) - at(low) >= HELD_STEP_SEP_COUNTS {
+        Ok([low, cap])
+    } else {
+        Err(NoHeldRoom {
+            hold_pct,
+            cap_pct: cap,
+        })
     }
 }
 
@@ -787,12 +829,12 @@ impl Experiment for Held {
 
 #[cfg(test)]
 mod tests {
-    use super::super::inductance::{BurstRoute, WindingTerms, fit_captures};
+    use super::super::inductance::{BurstRoute, InductanceResult, WindingTerms, fit_captures};
     use super::super::testkit::{FakeServo, SynthBurst, pump, rig};
     use super::super::{AbortReason, Guarded};
     use super::*;
     use crate::burst::{CHAN_VBUS, CHAN_VMOTOR_A, CHAN_VMOTOR_B, from_csv};
-    use crate::limits::PERMIT_REFRESH_MS;
+    use crate::limits::{PERMIT_REFRESH_MS, ServoLimits};
     use crate::units::SenseParams;
 
     fn scales() -> Scales {
@@ -905,23 +947,94 @@ mod tests {
     /// The choreography's captures: a rest reference when `rest`, then
     /// 20/30/40% from a 12% hold toward the low stop, twice each.
     fn seated_run(plant: &SynthBurst, chans: Chans, rest: bool) -> HeldRun {
-        let hold = -pct_q15(12);
+        let r = seated_at(plant, chans, rest, 12, &[20, 30, 40]);
+        assert_eq!(r.route(), Some(BurstRoute::Held), "{:?}", r.held.blocking());
+        r.held
+    }
+
+    fn seated_at(
+        plant: &SynthBurst,
+        chans: Chans,
+        rest: bool,
+        hold_pct: u8,
+        steps: &[u8],
+    ) -> InductanceResult {
+        let hold = -pct_q15(hold_pct);
         let at = |q: i16| SynthBurst {
             chans: chans.for_step(q, plant.drive_polarity),
             ..plant.clone()
         };
         let mut caps: Vec<Capture> = rest.then(|| at(hold).capture(0, 0)).into_iter().collect();
-        for pct in [20, 30, 40] {
+        for pct in steps {
             for _ in 0..2 {
-                let q = -pct_q15(pct);
+                let q = -pct_q15(*pct);
                 let mut c = at(q).capture(q, hold);
                 c.meta.seated = true;
                 caps.push(c);
             }
         }
-        let r = fit_captures(&caps, &scales(), &FitCfg::default()).expect("fit");
-        assert_eq!(r.route(), Some(BurstRoute::Held), "{:?}", r.held.blocking());
-        r.held
+        fit_captures(&caps, &scales(), &FitCfg::default()).expect("fit")
+    }
+
+    /// The bench MG90, 5.02 ohm. At limit 280 on 2S the stop cap is 15%
+    /// over a 7% hold: one step at the cap reads no R (the captures gate
+    /// wants two duties), and split into 11 and 15% the steps sit under the
+    /// shortest ON window, so the per-capture L declines and R reads low.
+    /// The plan refuses that before anything seats; on USB, or at limit 500
+    /// on 2S, it splits the span from the shortest ON window up.
+    #[test]
+    fn held_steps_split_the_span_or_refuse_it_before_seating() {
+        let sc = scales();
+        let r = 5.02;
+        let plan = |i_lim: u16, vbus: u16| {
+            let lim = ServoLimits {
+                i_lim,
+                stall_yield: 168,
+                tau_trip: 280,
+                soft: (432, 3626),
+                phys: (209, 3849),
+                raw: (209, 3849),
+                r_q12: 0,
+                vbus,
+                window_floor_q15: 4356,
+                window_v_floor_q15: 4356,
+                amps_per_count: sc.amps_per_count,
+                drive_polarity: true,
+            };
+            let p = DutyPlan::new(&lim, sc.r_vpc(r), None);
+            (p, pct_floor(p.hold))
+        };
+        let steps = |i_lim: u16, vbus: u16| {
+            let (p, hold) = plan(i_lim, vbus);
+            held_steps(&p, hold)
+        };
+        assert_eq!(
+            steps(280, 3204),
+            Err(NoHeldRoom {
+                hold_pct: 7,
+                cap_pct: 15
+            })
+        );
+        assert_eq!(steps(280, 1780), Ok([21, 28]));
+        assert_eq!(steps(500, 3204), Ok([21, 28]));
+        assert_eq!(plan(500, 3204).1, 14);
+
+        let plant = SynthBurst {
+            r,
+            v_rail: 3204.0 * sc.v_term_per_count,
+            c_island: 10e-6,
+            r_feed: 0.1,
+            ..winding()
+        };
+        let one = seated_at(&plant, Chans::Driven, true, 7, &[15]);
+        assert!(one.held.blocking().contains(&"captures"));
+        let split = seated_at(&plant, Chans::Driven, true, 7, &[11, 15]);
+        assert_eq!(split.held.blocking(), ["l-spread"]);
+        assert!(rel(split.held.reg.unwrap().r_ohm, r) < -0.05);
+        let planned = seated_at(&plant, Chans::Driven, true, 14, &[21, 28]);
+        assert_eq!(planned.route(), Some(BurstRoute::Held));
+        let g = planned.held.reg.expect("regression");
+        assert!(rel(g.r_ohm, r).abs() < 0.03, "R {}", g.r_ohm);
     }
 
     fn rel(got: f64, want: f64) -> f64 {
