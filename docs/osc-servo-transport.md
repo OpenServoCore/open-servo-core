@@ -70,10 +70,12 @@ somebody else's, and every servo pays for all of it, so a foreign frame
 gets the least work that keeps the ladder honest. Its header is read at
 deadline A like any frame's; from there a plain op addressed to another
 id (from an idle reply pipeline) and a status no chain slot waits on
-schedule no milestone (§5.2). The op's CRC verdict, with no feed ahead
-of it and no decode, runs at the next wake, usually the next frame's
-break; a status needs no verdict at all. A chain slot keeps the frame
-end of the status it waits on, and only the end. Per host request plus
+schedule no milestone (§5.2). The CRC verdict, with no feed ahead of
+it and no decode, runs at the next wake, usually the next frame's
+break - for the status too: its LEN moves the ladder, and a garbled one
+would swallow the frames behind it (sec 5.3), so it costs what the op
+costs (~13 µs of verdict, from the static count). A chain slot keeps the
+frame end of the status it waits on, and only the end. Per host request plus
 the reply it draws, a bystander pays two break wakes and three deadline
 wakes (two headers, and the starve horizon that resolves the reply on a
 quiet bus), where every frame used to pay header, covered and end. DES:
@@ -257,8 +259,8 @@ and never reloaded. From then on:
 - **No milestone.** A frame that can change nothing until it is whole -
   another servo's plain op while the reply pipeline is idle, or a status
   no chain slot is waiting on - schedules nothing after A. The next
-  wake resolves it from the ring like any backlog frame (a foreign op
-  still gets its CRC verdict, which keeps the stride trusted), and only
+  wake resolves it from the ring like any backlog frame (it still gets
+  its CRC verdict, which keeps the stride trusted), and only
   the starve horizon is armed for it, so a truncated one still dies by
   starve. DES: `truncated_foreign_frame_starves_then_recovers`,
   `snooped_slot_answers_a_reply_gap_after_its_predecessor`.
@@ -284,6 +286,17 @@ fails CRC) → drop + count, and the ladder re-verifies at every following
 boundary. Anchors are parity-free (protocol §3.2), so recovery needs no
 ring reload, only the next break's arrival. Loss is bounded to ≤ 2 frames
 per corruption event; the host's timeout+retry contract closes the loop.
+
+Statuses are no exception, though nothing acts on their bodies. A status
+LEN garbled long would otherwise swallow up to 258 B of the frames behind
+it, so every status is checked before the ladder steps past it. One a
+chain slot waits on is checked for free: a uniform GREAD sizes every
+predecessor's reply, so a LEN that is neither that span's nor an empty
+error status's is a framing drop before it counts (a short one would time
+the slot into its predecessor's tail; the slot answers at its reclaim
+instead, flagged). Any other status gets the CRC verdict at the next
+wake, like a foreign op. DES: `garbled_status_len_costs_only_the_status`,
+`waiting_slot_drops_a_status_len_its_gread_rules_out`.
 
 ## 6. Instruction classes
 
@@ -321,7 +334,11 @@ be staged behind the CRC verdict:
 
 Backpressure is structural: at most one pending-verdict frame exists at a
 time (the pending frame IS the frontier), so the single staging slot and
-the single CRC accumulator are never contended. The kernel-isolation
+the single CRC accumulator are never contended. Own TX holds the same
+accumulator from trigger to release, so the ladder resolves nothing while
+a reply streams; the release resumes it from the ring, and a frame that
+landed meanwhile (a peer talking over the reply) gets its verdict then.
+DES: `status_verdict_waits_for_own_tx_release`. The kernel-isolation
 question is settled by measurement instead of structure: dispatch bodies
 preempt the kernel and coalesce ticks in proportion to bus duty (§2),
 which the intended duty profiles make negligible.

@@ -4,8 +4,8 @@
 //! payloads are hand-built per sec 5's tables and cross-checked against the
 //! `osc_protocol::group` parsers (the layout authority).
 
-use osc_integration::sim::{Source, WireFrame, assert_valid, instruction, status};
-use osc_protocol::wire::{Inst, Opcode, ResultCode};
+use osc_integration::sim::{Source, WireFrame, assert_valid, instruction, status, status_frame};
+use osc_protocol::wire::{self, Inst, Opcode, ResultCode};
 use osc_servo_core::regions::config::addr::common::{FIRMWARE_VERSION, MODEL_NUMBER};
 use osc_servo_core::regions::control::addr::lifecycle::GOAL_VELOCITY;
 use osc_servo_core::regions::profile::span_word;
@@ -161,6 +161,40 @@ fn snooped_slot_answers_a_reply_gap_after_its_predecessor(baud_idx: u8) {
             "chain gap {gap} late past reply gap {reply_gap}"
         );
     }
+}
+
+/// A uniform GREAD sizes every predecessor's status, so a waiting slot
+/// drops one whose LEN says otherwise before it counts. Garbled short, the
+/// status would end early and time the slot into its own tail; the slot
+/// instead answers at its reclaim, flagged, after the status's real end.
+#[apply(matrix)]
+fn waiting_slot_drops_a_status_len_its_gread_rules_out(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
+    let s = sim.add_servo_with(2, 0, CHAIN_DEADLINE_US);
+    sim.host_send(&instruction(
+        BCAST,
+        Opcode::Gread,
+        0,
+        &gread_uniform(MODEL_NUMBER, 16, &[9, 2]),
+    ));
+    // Slot 0's status, forged by the host: 16 bytes, LEN garbled to 4.
+    let mut pre = status_frame(9, ResultCode::Ok, &[0x5A; 16]);
+    pre[2] = wire::len_for(4);
+    assert!(!pre[1..].contains(&0));
+    sim.host_send(&pre);
+    let frames = sim.run();
+    let pre_end = frames
+        .iter()
+        .find(|f| f.from == Source::Host && responder(f) == 9)
+        .expect("the forged status")
+        .end;
+    let reps = replies(&frames);
+    assert_eq!(reps.len(), 1, "{frames:#?}");
+    assert!(reps[0].at > pre_end, "slot 1 fired into its predecessor");
+    assert_eq!(decoded(reps[0]).0, ResultCode::PredecessorSilent);
+    let d = sim.servo_diag(s);
+    assert_eq!(d.framing_drop_count, 1);
+    assert_eq!(d.crc_fail_count, 0);
 }
 
 #[apply(matrix)]

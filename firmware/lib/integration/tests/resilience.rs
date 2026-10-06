@@ -4,7 +4,9 @@
 //! parity is irrelevant (sec 3.2 self-aligning feed). Plain assertions on the
 //! observed diagnostics counters.
 
-use osc_integration::sim::{Sim, Source, WireFrame, assert_valid, instruction, status};
+use osc_integration::sim::{
+    Sim, Source, WireFrame, assert_valid, instruction, status, status_frame,
+};
 use osc_protocol::wire::{Inst, Opcode, ResultCode};
 use osc_servo_core::BaudRate;
 use osc_servo_core::regions::control::addr::lifecycle::{
@@ -129,6 +131,28 @@ fn truncated_foreign_frame_starves_then_recovers(baud_idx: u8) {
     let frames = sim.run();
     let (inst, _) = status(sole_reply(&frames));
     assert_eq!(inst.result(), Some(ResultCode::Ok));
+}
+
+/// Another servo's status with its LEN garbled long, back to back with a
+/// ping for us: the claimed footprint swallows the ping's head. The status
+/// gets its CRC verdict at the next wake (the starve horizon, on the quiet
+/// bus behind the ping), fails it and is counted, and the hunt finds the
+/// ping's break - answered late, but answered.
+#[apply(matrix)]
+fn garbled_status_len_costs_only_the_status(baud_idx: u8) {
+    let mut sim = sim(baud_idx);
+    let s = sim.add_servo(ID5);
+    let mut st = status_frame(9, ResultCode::Ok, &[0x11, 0x22, 0x33, 0x44]);
+    st[2] += 4;
+    assert!(!st[1..].contains(&0));
+    sim.host_send(&st);
+    sim.host_send(&instruction(ID5, Opcode::Ping, 0, &[]));
+    let frames = sim.run();
+    let (inst, _) = status(sole_reply(&frames));
+    assert_eq!(inst.result(), Some(ResultCode::Ok));
+    let d = sim.servo_diag(s);
+    assert_eq!(d.crc_fail_count, 1);
+    assert_eq!(d.framing_drop_count, 0);
 }
 
 #[apply(matrix)]

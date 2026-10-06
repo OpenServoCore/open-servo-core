@@ -5,7 +5,7 @@ use osc_protocol::wire::{ENUM_REPLY_SLOTS, ResultCode};
 use osc_servo_core::traits::{Dispatch, Dispatched, Request, RequestCtx};
 
 use super::super::chain::ChainOut;
-use super::super::decode::{Decoded, decode, foreign};
+use super::super::decode::{Decoded, Slot, decode, foreign};
 use super::super::frame_view;
 use super::super::framer::{FrameNeeds, FrameSpan, FramerOut};
 use super::reply::ReplyHandle;
@@ -20,6 +20,13 @@ impl<P: Providers> ServoBus<P> {
     /// slot re-arms at `now` (pend-on-past re-entry) so the other mux slots
     /// are never starved by a deep backlog.
     pub(super) fn drive_framer<D: Dispatch>(&mut self, d: &mut D) {
+        // Own TX holds the one CRC engine until its release, and a frame the
+        // ladder hands over may need a verdict: the ladder waits, and the
+        // release re-drives it (`on_tx_complete`).
+        if self.tx.streaming() {
+            self.framer_at = None;
+            return;
+        }
         for _ in 0..super::FRAMES_PER_WAKE {
             let now = self.deadline.now();
             let id = self.id;
@@ -73,6 +80,9 @@ impl<P: Providers> ServoBus<P> {
     /// frame that needed no milestone is still unresolved when the next
     /// break wakes (sec 8).
     pub(super) fn settle_before<D: Dispatch>(&mut self, brk: u16, d: &mut D) {
+        if self.tx.streaming() {
+            return;
+        }
         for _ in 0..super::FRAMES_PER_WAKE {
             let now = self.deadline.now();
             let Some(span) = self.framer.settle(self.ring.bytes(), brk, now) else {
@@ -141,23 +151,32 @@ impl<P: Providers> ServoBus<P> {
         let anchor = span.anchor;
         let footprint = span.footprint;
         let packet_end = span.packet_end;
-        // Status frames only advance the snoop chain (sec 6) -- framing-level
-        // truth, NO validation: the chain consumes nothing from the body, and
-        // skipping the CRC keeps the snapshot buffer free while our own reply
-        // streams from it. The framer hands a status over only whole.
-        if self.ring_inst(anchor).is_status() {
-            let out = self.chain.on_status_end(packet_end);
-            self.route_chain(out);
+        // A status's LEN moves the ladder, so a garbled one would swallow
+        // the frames behind it. One a chain slot waits on is checked against
+        // the size its GREAD set and then only times the slot (sec 6: the
+        // chain consumes nothing from the body). The framer hands a status
+        // over only whole.
+        let status = self.ring_inst(anchor).is_status();
+        if status && self.chain.waiting() {
+            if self.chain.admits(footprint) {
+                let out = self.chain.on_status_end(packet_end);
+                self.route_chain(out);
+            } else {
+                let len = self.ring.bytes().len();
+                self.framer.on_frame_misframed(anchor, len);
+            }
             return;
         }
         let idle = !self.chain.active() && !self.tx.busy();
-        // Another servo's plain op touches nothing from an idle pipeline: no
-        // feed, no decode, only the bare CRC gate on the whole frame - the
-        // verdict is what keeps the ladder's stride trusted. A frontier frame
-        // at its covered checkpoint is never one: `needs` classified it from
-        // the same header and pipeline state, so the header read stays off
-        // the own-frame turnaround path.
-        if complete && idle && foreign(Header::from_bytes(&self.ring_header(anchor)), self.id) {
+        // Any other status, and another servo's plain op from an idle
+        // pipeline, touch nothing: no feed, no decode, only the bare CRC gate
+        // on the whole frame - the verdict is what keeps the ladder's stride
+        // trusted. A frontier frame at its covered checkpoint is never one:
+        // `needs` classified it from the same header and pipeline state, so
+        // the header read stays off the own-frame turnaround path.
+        if status
+            || complete && idle && foreign(Header::from_bytes(&self.ring_header(anchor)), self.id)
+        {
             self.crc_gate(anchor, footprint);
             return;
         }
@@ -178,7 +197,7 @@ impl<P: Providers> ServoBus<P> {
                     Some((staged, slot, out)) => (staged, slot, matches!(out, Dispatched::Pending)),
                     // Skip (a group op not listing us): a bare verdict moves the
                     // ladder (complete); the frame end does it for a frontier.
-                    None if complete => (false, 0, false),
+                    None if complete => (false, Slot::at(0), false),
                     None => return,
                 };
             let p = Pending {
@@ -285,7 +304,7 @@ impl<P: Providers> ServoBus<P> {
     /// Sequence a staged reply onto the snoop chain. reply gap is a wire gap
     /// measured from the packet end (sec 7), not from this (later) verify wake --
     /// the estimate is the framer's, conservative by the drift adder.
-    fn sequence_reply(&mut self, slot: u8, packet_end: u32) {
+    fn sequence_reply(&mut self, slot: Slot, packet_end: u32) {
         // sec 9.2 slot delay: a collision-tolerant reply offsets its trigger by
         // (key ^ tick) & (SLOTS-1) byte-times. Twin matchers run
         // cycle-identical firmware and otherwise answer in unison -- and a
@@ -300,11 +319,12 @@ impl<P: Providers> ServoBus<P> {
             None => self.reply_gap(),
         };
         let out = self.chain.on_reply_staged(
-            slot,
+            slot.index,
             packet_end,
             gap,
             self.reclaim(),
             self.frame_allowance(),
+            slot.peer_footprint,
         );
         self.route_chain(out);
     }
@@ -328,7 +348,7 @@ impl<P: Providers> ServoBus<P> {
         anchor: u16,
         footprint: u16,
         f: impl FnOnce(Request<'_>, RequestCtx, &mut ReplyHandle<'_, P::Tx, P::Crc>) -> T,
-    ) -> Option<(bool, u8, T)> {
+    ) -> Option<(bool, Slot, T)> {
         let frame = frame_view(self.ring.bytes(), anchor, footprint);
         let (req, ctx, slot) = match decode(frame, self.id) {
             Decoded::Own(req, ctx, slot) => (req, ctx, slot),

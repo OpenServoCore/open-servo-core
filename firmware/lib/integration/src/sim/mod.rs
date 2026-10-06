@@ -42,7 +42,7 @@ pub use self::store::{Kind as ImageKind, RamStore, Tear};
 
 pub use self::support::{
     assert_valid, expect_tel_payload, expect_tel_payload_rows, frame_crc_ok, instruction, status,
-    tel_sample,
+    status_frame, tel_sample,
 };
 pub use osc_servo_core::tel::TelSample;
 pub use osc_servo_core::{CalibSense, CalibSenseExt};

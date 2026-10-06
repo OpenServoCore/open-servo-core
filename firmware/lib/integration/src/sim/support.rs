@@ -5,7 +5,7 @@
 use osc_protocol::crc::osc_crc;
 use osc_protocol::frame::Header;
 use osc_protocol::reply::FrameBuf;
-use osc_protocol::wire::{self, Id, Inst, Opcode};
+use osc_protocol::wire::{self, Id, Inst, Opcode, ResultCode};
 use osc_servo_core::tel::{STREAM_PAYLOAD_MAX, STREAM_SAMPLES_MAX, TelSample, encode_stream};
 
 use super::WireFrame;
@@ -17,6 +17,16 @@ pub fn instruction(id: u8, op: Opcode, flags: u8, payload: &[u8]) -> Vec<u8> {
     b.start(Id::new(id), Inst::instruction(op, flags));
     b.payload_mut()[..payload.len()].copy_from_slice(payload);
     b.finish(payload.len() as u8);
+    b.seal().to_vec()
+}
+
+/// Build and seal a status frame as a servo would put it on the wire - for a
+/// host that forges one (a status-shaped flood, a garbled predecessor).
+pub fn status_frame(id: u8, result: ResultCode, data: &[u8]) -> Vec<u8> {
+    let mut b = FrameBuf::<264>::new();
+    b.start(Id::new(id), Inst::status(result, false));
+    b.payload_mut()[..data.len()].copy_from_slice(data);
+    b.finish(data.len() as u8);
     b.seal().to_vec()
 }
 
