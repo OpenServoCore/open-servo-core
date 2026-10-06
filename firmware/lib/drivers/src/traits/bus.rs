@@ -70,6 +70,20 @@ pub trait UsartBaud {
     fn apply(&mut self, baud: BaudRate);
 }
 
+/// Break timestamps latched by hardware at the break detector's trigger
+/// (transport sec 8), one per break the receiver heard, in wire order: the
+/// low 16 bits of the [`Deadline`] tick the detector triggered at (the
+/// latch is a 16-bit counter; the driver places each stamp from the ring
+/// position of its break). The servo's own breaks never latch. A stamp is
+/// the detector's instant however late or coalesced the wake's service
+/// runs, so adjacent stamps measure the wire, not the CPU.
+pub trait BreakStamps {
+    /// The oldest latched stamp not yet taken.
+    fn take(&mut self) -> Option<u16>;
+    /// Drop every latched stamp not yet taken; how many there were.
+    fn clear(&mut self) -> u16;
+}
+
 /// Role bundle for the `ServoBus` composite (driver-pattern sec 5.4).
 pub trait Providers {
     type Ring: RxRing;
@@ -77,6 +91,7 @@ pub trait Providers {
     type Crc: CrcEngine;
     type Tx: TxWire;
     type Baud: UsartBaud;
+    type Stamps: BreakStamps;
 }
 
 /// Wrap-aware "`a` is at or after `b`" on the u32 tick domain.

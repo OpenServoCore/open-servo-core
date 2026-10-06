@@ -4,12 +4,13 @@
 //! deliveries and the driver see one ring, one clock, one baud.
 
 use std::cell::{Cell, RefCell, UnsafeCell};
+use std::collections::VecDeque;
 use std::rc::Rc;
 
 use osc_protocol::crc::osc_crc_continue;
 use osc_servo_core::BaudRate;
 use osc_servo_drivers::traits::bus::{
-    CrcEngine, Deadline, Providers, RxRing, TxWire, UsartBaud, tick_reached,
+    BreakStamps, CrcEngine, Deadline, Providers, RxRing, TxWire, UsartBaud, tick_reached,
 };
 
 use super::core::{Core, Event, Talker, break_ticks, byte_ticks};
@@ -100,7 +101,7 @@ impl DeadlineState {
     }
 
     /// The servo's local clock at `sim_now`, unwrapped.
-    fn local_u64(&self, sim_now: u64) -> u64 {
+    pub fn local_u64(&self, sim_now: u64) -> u64 {
         let d = (sim_now - self.anchor_sim.get()) as i128;
         let scaled = d * (1_000_000 + self.skew_ppm.get() as i128) / 1_000_000;
         self.anchor_local.get() + scaled as u64
@@ -146,15 +147,64 @@ impl BaudState {
     }
 }
 
+/// The break detector's hardware stamps (transport sec 8): the wire model
+/// latches the servo's local clock at every qualified break's detector
+/// trigger, in wire order, before the wake is delivered or pended - the
+/// chip's DMA latch, which no handler body delays. Own breaks are never
+/// heard (F9), so none is latched.
+pub struct StampState {
+    latched: RefCell<VecDeque<u32>>,
+    latches: Cell<u64>,
+    takes: Cell<u64>,
+    drops: Cell<u64>,
+}
+
+impl StampState {
+    pub fn new() -> Rc<Self> {
+        Rc::new(Self {
+            latched: RefCell::new(VecDeque::new()),
+            latches: Cell::new(0),
+            takes: Cell::new(0),
+            drops: Cell::new(0),
+        })
+    }
+
+    /// Stamps the driver cleared untaken since boot.
+    pub fn drops(&self) -> u64 {
+        self.drops.get()
+    }
+
+    pub fn latch(&self, stamp: u32) {
+        self.latched.borrow_mut().push_back(stamp);
+        self.latches.set(self.latches.get() + 1);
+    }
+
+    /// Stamps latched since boot.
+    pub fn latches(&self) -> u64 {
+        self.latches.get()
+    }
+
+    /// Stamps the driver took since boot.
+    pub fn takes(&self) -> u64 {
+        self.takes.get()
+    }
+
+    /// The DMA state a reset leaves behind: an empty ring.
+    pub fn reset(&self) {
+        self.latched.borrow_mut().clear();
+    }
+}
+
 /// Handles the Sim keeps to reach into one servo's state during delivery.
 /// Cloned into the servo itself so a reboot re-enters bringup over the same
-/// peripherals: the ring, the skewed clock and the applied baud are silicon,
-/// only the driver on top of them restarts.
+/// peripherals: the ring, the skewed clock, the stamp latch and the applied
+/// baud are silicon, only the driver on top of them restarts.
 #[derive(Clone)]
 pub struct Handles {
     pub ring: Rc<RingState>,
     pub deadline: Rc<DeadlineState>,
     pub baud: Rc<BaudState>,
+    pub stamps: Rc<StampState>,
 }
 
 impl Handles {
@@ -163,6 +213,7 @@ impl Handles {
             ring: RingState::new(),
             deadline: DeadlineState::new(),
             baud: BaudState::new(rate),
+            stamps: StampState::new(),
         }
     }
 }
@@ -371,6 +422,32 @@ impl TxWire for SimWire {
     }
 }
 
+pub struct SimStamps(Rc<StampState>);
+
+impl SimStamps {
+    pub fn new(state: Rc<StampState>) -> Self {
+        Self(state)
+    }
+}
+
+impl BreakStamps for SimStamps {
+    fn take(&mut self) -> Option<u16> {
+        let stamp = self.0.latched.borrow_mut().pop_front();
+        if stamp.is_some() {
+            self.0.takes.set(self.0.takes.get() + 1);
+        }
+        stamp.map(|s| s as u16)
+    }
+
+    fn clear(&mut self) -> u16 {
+        let mut latched = self.0.latched.borrow_mut();
+        let n = latched.len() as u16;
+        latched.clear();
+        self.0.drops.set(self.0.drops.get() + n as u64);
+        n
+    }
+}
+
 pub struct SimBaud {
     state: Rc<BaudState>,
 }
@@ -396,4 +473,5 @@ impl Providers for SimProviders {
     type Crc = SimCrc;
     type Tx = SimWire;
     type Baud = SimBaud;
+    type Stamps = SimStamps;
 }

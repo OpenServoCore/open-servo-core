@@ -18,14 +18,15 @@ impl<P: Providers> ServoBus<P> {
     /// involvement; the frontier arms a deadline and returns. Bounded per
     /// wake -- past the bound the framer
     /// slot re-arms at `now` (pend-on-past re-entry) so the other mux slots
-    /// are never starved by a deep backlog.
-    pub(super) fn drive_framer<D: Dispatch>(&mut self, d: &mut D) {
+    /// are never starved by a deep backlog; `false` then, `true` once the
+    /// ring is drained to the frontier.
+    pub(super) fn drive_framer<D: Dispatch>(&mut self, d: &mut D) -> bool {
         // Own TX holds the one CRC engine until its release, and a frame the
         // ladder hands over may need a verdict: the ladder waits, and the
         // release re-drives it (`on_tx_complete`).
         if self.tx.streaming() {
             self.framer_at = None;
-            return;
+            return true;
         }
         for _ in 0..super::FRAMES_PER_WAKE {
             let now = self.deadline.now();
@@ -56,16 +57,16 @@ impl<P: Providers> ServoBus<P> {
             match out {
                 FramerOut::None => {
                     self.framer_at = None;
-                    return;
+                    return true;
                 }
                 FramerOut::Wait(t) => {
                     self.framer_at = Some(t);
-                    return;
+                    return true;
                 }
                 FramerOut::Covered { span, end_due } => {
                     self.framer_at = Some(end_due);
                     self.route_frame(span, false, d);
-                    return;
+                    return true;
                 }
                 FramerOut::Frame(span) => {
                     self.on_frame_end(span, d);
@@ -73,26 +74,7 @@ impl<P: Providers> ServoBus<P> {
             }
         }
         self.framer_at = Some(self.deadline.now());
-    }
-
-    /// Resolve every frame whole in the ring, so a break's drift stamp
-    /// closes the pair those frames belong to and the ladder stands on the
-    /// break's own byte: a frame that needed no milestone is still
-    /// unresolved when the next break wakes (sec 8).
-    pub(super) fn settle_whole<D: Dispatch>(&mut self, d: &mut D) {
-        if self.tx.streaming() {
-            return;
-        }
-        for _ in 0..super::FRAMES_PER_WAKE {
-            let now = self.deadline.now();
-            let Some(span) = self
-                .framer
-                .settle(self.ring.bytes(), self.ring.cursor(), now)
-            else {
-                return;
-            };
-            self.on_frame_end(span, d);
-        }
+        false
     }
 
     pub(super) fn route_chain(&mut self, mut out: ChainOut) {
@@ -114,6 +96,8 @@ impl<P: Providers> ServoBus<P> {
                 ChainOut::Trigger { predecessor_silent } => {
                     let over = predecessor_silent.then_some(ResultCode::PredecessorSilent);
                     self.tx.trigger(&mut self.crc, over);
+                    // The break is on the wire: the frame's record follows.
+                    self.record_behind_reply();
                     return;
                 }
             }
@@ -180,7 +164,9 @@ impl<P: Providers> ServoBus<P> {
         if status
             || complete && idle && foreign(Header::from_bytes(&self.ring_header(anchor)), self.id)
         {
-            self.crc_gate(anchor, footprint);
+            if self.crc_gate(anchor, footprint) {
+                self.drift_record(anchor, footprint);
+            }
             return;
         }
         // The spine runs only from an idle reply pipeline: superseding a live
@@ -230,28 +216,34 @@ impl<P: Providers> ServoBus<P> {
         self.chain_at = None;
         if self.tx.staged() {
             self.tx.abort();
+            self.record_behind_reply();
         }
         // Dispatch inline - the CRC already passed, so any reply sequences
         // from the packet end and a staged table effect commits directly
         // behind it (the `verify` order). A frame that decodes as another
         // servo's touches nothing.
-        let Some((staged, slot, out)) =
+        let mut staged = false;
+        if let Some((has_reply, slot, out)) =
             self.dispatch_decoded(anchor, footprint, |req, ctx, h| d.dispatch(req, ctx, h))
-        else {
-            return;
-        };
-        if staged && self.tx.staged() {
-            self.sequence_reply(slot, packet_end);
+        {
+            staged = has_reply && self.tx.staged();
+            if staged {
+                self.reply_record = Some((anchor, footprint));
+                self.sequence_reply(slot, packet_end);
+            }
+            if matches!(out, Dispatched::Pending) {
+                let mut handle = self.reply_handle();
+                d.commit(&mut handle);
+            }
         }
-        if matches!(out, Dispatched::Pending) {
-            let mut handle = self.reply_handle();
-            d.commit(&mut handle);
+        if !staged {
+            self.drift_record(anchor, footprint);
         }
     }
 
     /// The verdict on a whole frame with no staged effects: a fail drops
     /// silently (sec 5.3 L1), the hunt resuming one byte in (sec 3.3); a pass
-    /// trusts the ladder again and records the frame for the drift tracker.
+    /// trusts the ladder again.
     fn crc_gate(&mut self, anchor: u16, footprint: u16) -> bool {
         if !self.crc_ok(anchor, footprint) {
             if !self.framer.probing() {
@@ -262,7 +254,6 @@ impl<P: Providers> ServoBus<P> {
             return false;
         }
         self.framer.on_frame_verified();
-        self.drift_note_verified(anchor, footprint);
         true
     }
 
@@ -285,11 +276,12 @@ impl<P: Providers> ServoBus<P> {
             return;
         }
         self.framer.on_frame_verified();
-        self.drift_note_verified(p.anchor, p.footprint);
         // Sequence from the ENGINE's state, not the recorded flag: any path
         // that reclaimed the staged reply between dispatch and here would
         // otherwise arm the chain over an empty engine (ghost trigger).
-        if p.staged && self.tx.staged() {
+        let staged = p.staged && self.tx.staged();
+        if staged {
+            self.reply_record = Some((p.anchor, p.footprint));
             self.sequence_reply(p.slot, p.packet_end);
         }
         // Commit AFTER the reply is sequenced (sec 4): the ack was decided
@@ -301,6 +293,10 @@ impl<P: Providers> ServoBus<P> {
         if p.table {
             let mut handle = self.reply_handle();
             d.commit(&mut handle);
+        }
+        // The tracker's record last, and behind the reply when there is one.
+        if !staged {
+            self.drift_record(p.anchor, p.footprint);
         }
     }
 
@@ -336,6 +332,7 @@ impl<P: Providers> ServoBus<P> {
     fn drop_staged(&mut self) {
         if self.tx.staged() {
             self.tx.abort();
+            self.record_behind_reply();
         }
         self.chain.reset();
         self.chain_at = None;

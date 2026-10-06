@@ -255,33 +255,6 @@ impl Framer {
         self.hunting
     }
 
-    /// The frame at the anchor, if it is whole in the ring. Nothing else
-    /// moves: a hunt, a partial or an empty ladder is left to
-    /// [`Self::resolve`].
-    pub fn settle(&mut self, ring: &[u8], cursor: u16, now: u32) -> Option<FrameSpan> {
-        let len = ring.len();
-        if len == 0 {
-            return None;
-        }
-        let received = dist(cursor, self.anchor, len);
-        let a = self.anchor as usize;
-        if received < HEADER_SPAN_BYTES || ring[a] != BREAK_RING_BYTE {
-            return None;
-        }
-        let len_byte = ring[ring_wrap(a + 2, len)];
-        let footprint = osc_protocol::wire::footprint(len_byte) as u16;
-        if len_byte < 3 || received < footprint {
-            return None;
-        }
-        self.anchor = ring_wrap(a + footprint as usize, len) as u16;
-        self.frontier = Frontier::idle();
-        Some(FrameSpan {
-            anchor: a as u16,
-            footprint,
-            packet_end: now,
-        })
-    }
-
     /// The next frame has begun: its break byte is ringed at the anchor
     /// (position from the stream, with every earlier frame settled).
     /// Returns the index just past that byte - a break's drift stamp

@@ -49,7 +49,7 @@ struct CalRun {
     span: u32,
 }
 
-/// What the wire delivered between two break-wake stamps (sec 9.3): the drift
+/// What the wire delivered between two break stamps (sec 9.3): the drift
 /// tracker pairs the stamps only around exactly ONE CRC-verified SILENT
 /// instruction -- the one frame shape whose break-to-break span is
 /// host-clocked end to end. Anything solicited puts a responder's
@@ -68,7 +68,7 @@ pub struct ClockTracker {
     pub(super) pending_cal: Option<(u16, u8)>,
     cal: Option<CalRun>,
     cal_ready: bool,
-    // Differential drift tracker (sec 9.3): the last break-wake stamp + ring
+    // Differential drift tracker (sec 9.3): the last break stamp + ring
     // cursor, the one silent instruction verified since it, the seam
     // baseline (mean pair error of the first window after a restart - the
     // CAL anchor), and the current window.
@@ -171,26 +171,23 @@ impl ClockTracker {
         self.pending_cal = None;
     }
 
-    /// Drift chain-pair (sec 9.3): adjacent break-wake stamps bracketing one
+    /// Drift chain-pair (sec 9.3): adjacent break stamps bracketing one
     /// silent verified instruction measure `seam + drift*span` -- the host's
     /// queuing seam is unknown but stationary, so the mean pair error over
     /// the first window after a CAL IS the seam (baseline), and every later
     /// window reads its shift from that one anchor. Anything constant -
-    /// seam, FE latch offset, entry-path residue - dies in the subtraction;
-    /// only changes survive, and the sanity band catches the non-thermal
-    /// ones. The steps this tracker applies stay IN the measurement: a
-    /// window reads the clock's residual against the anchor, never an
-    /// increment against the tracker's own last decision, so window noise
-    /// cannot integrate into a walk - a step a noisy window took, the next
-    /// window reads back out (DES pin `noisy_silent_flood_holds_the_cal_anchor`;
+    /// seam, detector latch offset - dies in the subtraction; only changes
+    /// survive, and the sanity band catches the non-thermal ones. The
+    /// steps this tracker applies stay IN the measurement: a window reads
+    /// the clock's residual against the anchor, never an increment against
+    /// the tracker's own last decision, so window noise cannot integrate
+    /// into a walk - a step a noisy window took, the next window reads
+    /// back out (DES pin `noisy_silent_flood_holds_the_cal_anchor`;
     /// re-baselining per decision walked the bench trim -1 -> +13 on plain
-    /// flood food).
-    pub fn on_drift_break(&mut self, now: u32, cursor: u16, len: usize, tpb: u32) {
-        // The same break again (a re-fired wake): its stamp stands.
-        if matches!(self.drift_prev, Some((_, c)) if c == cursor) {
-            return;
-        }
-        let prev = self.drift_prev.replace((now, cursor));
+    /// flood food). `stamp` is the break detector's hardware latch
+    /// (transport sec 8): a wake's entry lag never enters a pair.
+    pub fn on_drift_break(&mut self, stamp: u32, cursor: u16, len: usize, tpb: u32) {
+        let prev = self.drift_prev.replace((stamp, cursor));
         let seen = core::mem::replace(&mut self.drift_seen, VerifiedSpan::None);
         crate::bench::trim_probe(|p| p.stamps += 1);
         let (t1, c1) = match prev {
@@ -225,7 +222,7 @@ impl ClockTracker {
             return;
         }
         let span = (footprint as u32).wrapping_mul(tpb);
-        let err = now.wrapping_sub(t1).wrapping_sub(span) as i32;
+        let err = stamp.wrapping_sub(t1).wrapping_sub(span) as i32;
         if err.unsigned_abs() > span >> TRIM_GATE_SHIFT {
             crate::bench::trim_probe(|p| p.gated += 1);
             return; // a real pause (inter-chain gap), not a seam
@@ -259,6 +256,22 @@ impl ClockTracker {
         self.drift_win_err = 0;
         self.drift_win_span = 0;
         self.drift_win_n = 0;
+    }
+
+    /// The earliest tick a stamp for the break at `cursor` can carry: the
+    /// previous stamp plus the ring distance between the two breaks in wire
+    /// time, less the gate (the wire delivers no byte in under a byte-time,
+    /// and a legal clock offset stays inside the gate). A stamp before it
+    /// belongs to no break at `cursor` - an orphan (a parked low's re-fire,
+    /// a CRC-failed frame's break) for the caller to skip. None without a
+    /// previous stamp: nothing bounds the first.
+    pub fn stamp_floor(&self, cursor: u16, len: usize, tpb: u32) -> Option<u32> {
+        let (t1, c1) = self.drift_prev?;
+        if len == 0 {
+            return None;
+        }
+        let span = (ring_wrap(cursor as usize + len - c1 as usize, len) as u32).wrapping_mul(tpb);
+        Some(t1.wrapping_add(span - (span >> TRIM_GATE_SHIFT)))
     }
 
     /// The drift pair is still open for its one verified frame -- the shape

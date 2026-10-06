@@ -379,22 +379,19 @@ fn tracker_follows_bench_bursts_self_addressed() {
 
 /// The bench shape under handler costs just inside the 1M frame period:
 /// the frame-end body spans the next break's detector fire, so every wake
-/// is served a byte-time or more late with data bytes newest. The ladder
-/// still places each break (position from the stream) and every break
-/// stamps. The wake's entry lag beats against the frame cadence (fixed
-/// costs: a three-frame cycle), so only the pairs whose two wakes carry
-/// the same lag clear the span gate - 13 or 14 of a burst's 23 - and the
-/// CAL-anchored baseline window fills in ten bursts where lag-free food
-/// fills it in `BASELINE_BURSTS`; the pairs that clear still decide. A
-/// lag-free stamp (a hardware latch at the detector's fire) is what makes
-/// every pair clear it.
+/// is served a byte-time or more late with data bytes newest, and the
+/// entry lag beats against the frame cadence (fixed costs: a three-frame
+/// cycle) by several us per frame against the 7.5 us pair gate. A stamp
+/// taken at entry cleared the gate on 13 or 14 of a burst's 23 pairs and
+/// needed ten bursts to fill the baseline window. The hardware stamp is
+/// the detector's instant, so the lag never enters a pair: the baseline
+/// fills in `BASELINE_BURSTS` like lag-free food, and as many bursts after
+/// the detune decide on it.
 #[rstest]
 #[test_log::test]
-fn tracker_follows_bench_bursts_under_handler_cost(
+fn drift_stamps_ignore_isr_entry_lag(
     #[values(BreakWake::BeforeByte, BreakWake::AfterByte)] wake: BreakWake,
 ) {
-    /// 128 pairs at the beat's 13-14 per burst: the ninth burst is short.
-    const LAGGED_BASELINE_BURSTS: u64 = 10;
     let mut sim = Sim::new(BaudRate::B1000000);
     sim.set_break_wake(wake);
     let s = sim.add_servo_with(ID, 0, DEFAULT_RESPONSE_DEADLINE_US);
@@ -404,19 +401,164 @@ fn tracker_follows_bench_bursts_under_handler_cost(
             on_break_us: 18,
             on_deadline_us: 30,
             on_tx_complete_us: 5,
+            per_frame_us: 0,
         },
     );
     let f = goal_write(ID);
-    let t = send_bursts(&mut sim, &f, 0, LAGGED_BASELINE_BURSTS);
+    let t = send_bursts(&mut sim, &f, 0, BASELINE_BURSTS);
     sim.run();
     assert_eq!(last_trim(&mut sim, s), None, "baseline absorbs the seam");
     sim.set_servo_skew_at(t, s, 6_900);
-    send_bursts(&mut sim, &f, t + 100, 36);
+    send_bursts(&mut sim, &f, t + 100, BASELINE_BURSTS);
     sim.run();
     let moved = last_trim(&mut sim, s);
     assert!(
-        matches!(moved, Some(n) if n >= 1),
-        "lagged wakes still feed the tracker: {moved:?}"
+        matches!(moved, Some(n) if n >= 2),
+        "every lagged pair clears the gate: {moved:?}"
+    );
+}
+
+/// Breaks whose wakes merged into one entry each still stamp: break bodies
+/// longer than two frame periods pend the next two breaks into one
+/// delivery (the bench's bodies run to 226 us against a 123 us frame), the
+/// ladder passes each break byte in order and takes its stamp, and every
+/// pair brackets exactly its frame. One stamp per entry paired two frames
+/// to one stamp and lost both pairs.
+#[test_log::test]
+fn coalesced_breaks_each_stamp() {
+    let mut sim = Sim::new(BaudRate::B1000000);
+    let s = sim.add_servo_with(ID, 0, DEFAULT_RESPONSE_DEADLINE_US);
+    sim.set_handler_cost(
+        s,
+        HandlerCost {
+            on_break_us: 280,
+            on_deadline_us: 30,
+            on_tx_complete_us: 5,
+            per_frame_us: 0,
+        },
+    );
+    let f = goal_write(OTHER_ID);
+    let t = send_bursts(&mut sim, &f, 0, BASELINE_BURSTS);
+    sim.run();
+    assert_eq!(last_trim(&mut sim, s), None, "baseline absorbs the seam");
+    let breaks = BASELINE_BURSTS * BURST_FRAMES;
+    let entries = sim.delivered_breaks(s);
+    assert!(
+        entries <= breaks * 2 / 3,
+        "the load must merge wakes: {entries} entries for {breaks} breaks"
+    );
+    assert_eq!(
+        sim.stamps(s),
+        (breaks, breaks),
+        "one stamp per break, all taken"
+    );
+    sim.set_servo_skew_at(t, s, 6_900);
+    send_bursts(&mut sim, &f, t + 100, BASELINE_BURSTS);
+    sim.run();
+    let moved = last_trim(&mut sim, s);
+    assert!(
+        matches!(moved, Some(n) if n >= 2),
+        "merged breaks still pair: {moved:?}"
+    );
+}
+
+/// The ladder behind the wire by more than one resolver drive's bound
+/// (the flood shape): at 130 us of service per frame against 114 us of
+/// wire (transport sec 5.9: 80-160 us per host frame), a 257-frame burst
+/// queues some 30 whole frames by its end, and the bodies that serve it
+/// resolve 16 at a time. Every frame's break still takes its stamp, at
+/// the frame's verdict, in order, and the pairs behind the bound decide
+/// like any others. A stamp taken at the break service with a clear of
+/// the rest at the service's end lost the stamp of every frame queued
+/// past the bound (bench: cleared == unstamped == span_many).
+#[test_log::test]
+fn saturated_backlog_stamps_every_break() {
+    /// Two drift windows of pairs per burst: the first burst's baseline and
+    /// a zero-drift window, the second's a window of detune.
+    const FRAMES: u64 = 257;
+    let mut sim = Sim::new(BaudRate::B1000000);
+    let s = sim.add_servo_with(ID, 0, DEFAULT_RESPONSE_DEADLINE_US);
+    sim.set_handler_cost(
+        s,
+        HandlerCost {
+            on_break_us: 18,
+            on_deadline_us: 30,
+            on_tx_complete_us: 5,
+            per_frame_us: 130,
+        },
+    );
+    let f = goal_write(ID);
+    let burst = |sim: &mut Sim, t: u64| {
+        for k in 0..FRAMES {
+            sim.host_send_at(t + k * BURST_PERIOD_US, &f);
+        }
+    };
+    burst(&mut sim, 0);
+    sim.run();
+    assert_eq!(last_trim(&mut sim, s), None, "baseline absorbs the seam");
+    let deepest = sim.frames_per_body_max(s);
+    assert!(
+        deepest >= 17,
+        "the load must run the ladder past one drive's bound: {deepest} frames in one body"
+    );
+    assert_eq!(
+        sim.stamps(s),
+        (FRAMES, FRAMES),
+        "one stamp per break, all taken"
+    );
+    assert_eq!(sim.stamp_drops(s), 0, "no stamp cleared");
+    assert_eq!(sim.servo_diag(s).crc_fail_count, 0);
+    assert_eq!(sim.servo_diag(s).framing_drop_count, 0);
+    let t = sim.now_us() + BURST_SETTLE_US;
+    sim.set_servo_skew_at(t, s, 6_900);
+    burst(&mut sim, t);
+    sim.run();
+    let moved = last_trim(&mut sim, s);
+    assert!(
+        matches!(moved, Some(n) if n >= 2),
+        "queued breaks still pair: {moved:?}"
+    );
+}
+
+/// The servo's own break is sent with the detector's stamp request muted
+/// along with its interrupt, so a reply latches nothing and the stamps
+/// stay one per host break, in step with the ring (own bytes never ring,
+/// F9). A silent write followed back-to-back by a ping to this servo: the
+/// write's pair clears, the ping's is solicited, and the replies between
+/// them leave the pairing exact.
+#[test_log::test]
+fn own_breaks_never_stamped() {
+    /// Write, ping, reply, then quiet: well clear of the reply.
+    const EXCHANGE_US: u64 = 600;
+    let write = goal_write(OTHER_ID);
+    let ping = instruction(ID, Opcode::Ping, 0, &[]);
+    // One run per exchange: the scripted host does not wait for replies.
+    let send = |sim: &mut Sim, t0: u64, n: u64| -> (u64, usize) {
+        let mut replies = 0;
+        for k in 0..n {
+            let t = t0 + k * EXCHANGE_US;
+            sim.host_send_at(t, &write);
+            sim.host_send_at(t, &ping);
+            replies += sim
+                .run()
+                .iter()
+                .filter(|f| matches!(f.from, Source::Servo(_)))
+                .count();
+        }
+        (t0 + n * EXCHANGE_US, replies)
+    };
+    let mut sim = Sim::new(BaudRate::B1000000);
+    let s = sim.add_servo_with(ID, 0, DEFAULT_RESPONSE_DEADLINE_US);
+    let (t, replies) = send(&mut sim, 0, 257);
+    assert_eq!(last_trim(&mut sim, s), None, "baseline absorbs the seam");
+    assert_eq!(replies, 257, "every ping answered");
+    assert_eq!(sim.stamps(s), (2 * 257, 2 * 257), "host breaks only");
+    sim.set_servo_skew_at(t, s, 6_900);
+    send(&mut sim, t, 140);
+    let moved = last_trim(&mut sim, s);
+    assert!(
+        matches!(moved, Some(n) if n >= 2),
+        "the write pairs decide between replies: {moved:?}"
     );
 }
 
@@ -563,8 +705,10 @@ fn noisy_silent_flood_holds_the_cal_anchor() {
     // One frame opens pair continuity, so every chunk below lands a whole
     // window and its decision applies before the next window starts - the
     // chip's prompt main-loop poll, not a late apply that would re-read a
-    // stale residual. The next chunk is queued before the current one runs,
-    // so the main loop's turn never disturbs the host's cadence.
+    // stale residual. A window closes at the verdict of the frame after its
+    // last pair (the stamp is taken there), so the poll follows that frame.
+    // The next chunk is queued before the current one runs, so the main
+    // loop's turn never disturbs the host's cadence.
     sim.host_send_at(t, &f);
     t += wire_us;
     let mut rng = 0x9E37_79B9u32;
@@ -579,7 +723,7 @@ fn noisy_silent_flood_holds_the_cal_anchor() {
     for _ in 0..FRAMES / WINDOW {
         let boundary = t;
         queue(&mut sim, &mut t);
-        sim.run_until(boundary);
+        sim.run_until(boundary + wire_us + BREAK_BITS);
         // The main loop's poll between frames: one window, one decision.
         if osc.poll(&mut sim, s).is_some() {
             moves += 1;
@@ -608,8 +752,9 @@ fn host_detune_pulls_the_trim_and_settles() {
     assert_eq!(osc.poll(&mut sim, s), None, "no drift, no decision");
     osc.drift_to(&mut sim, s, 6_900);
     // One frame re-opens pair continuity across the pause (its own pair
-    // gates out), so every chunk below lands a whole window; the next chunk
-    // is queued before the current one runs, so the main loop's turn at the
+    // gates out), so every chunk below lands a whole window, closed at the
+    // verdict of the next chunk's first frame; the next chunk is queued
+    // before the current one runs, so the main loop's turn at the frame
     // boundary never disturbs the host's cadence.
     let t = send_silent(&mut sim, t + PERIOD_US, 1);
     let mut t = send_silent(&mut sim, t, 128);
@@ -617,7 +762,7 @@ fn host_detune_pulls_the_trim_and_settles() {
     for _ in 0..8 {
         let boundary = t;
         t = send_silent(&mut sim, t, 128);
-        sim.run_until(boundary);
+        sim.run_until(boundary + PERIOD_US);
         decisions.push(osc.poll(&mut sim, s));
     }
     assert_eq!(decisions[0], Some(3), "the detune draws its steps");
@@ -645,7 +790,7 @@ fn sanity_band_crossing_drops_until_a_cal_re_anchors() {
     for _ in 0..3 {
         let boundary = t;
         t = send_silent(&mut sim, t, 128);
-        sim.run_until(boundary);
+        sim.run_until(boundary + PERIOD_US);
         assert_eq!(sim.poll_clock_trim(s), None, "past the band: dropped");
     }
     sim.run();

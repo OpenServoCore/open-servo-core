@@ -16,6 +16,12 @@ pub struct HandlerCost {
     pub on_break_us: u32,
     pub on_deadline_us: u32,
     pub on_tx_complete_us: u32,
+    /// Per own frame a body dispatches, on top of the body: the frame's
+    /// feed, dispatch, verdict and commit (transport sec 5.9: 80-160 us per
+    /// host frame on the chip). Past the wire time of a frame it is what
+    /// lets a backlog grow through a burst; a flat body cost cannot, since
+    /// one body resolves every frame whole in the ring.
+    pub per_frame_us: u32,
 }
 
 /// The transport vectors, in same-priority arbitration order (lowest
@@ -39,6 +45,7 @@ pub struct Cpu {
     pub free_scheduled: bool,
     delivered_breaks: u64,
     entries: Entries,
+    frames_max: u64,
 }
 
 /// Handler bodies run, per vector.
@@ -112,10 +119,23 @@ impl Cpu {
         self.busy_until = now + us as u64 * TICKS_PER_US;
     }
 
+    /// The body just run dispatched `frames` own frames: extend its
+    /// occupancy by their share.
+    pub fn charge_frames(&mut self, frames: u64) {
+        self.busy_until += frames * self.cost.per_frame_us as u64 * TICKS_PER_US;
+        self.frames_max = self.frames_max.max(frames);
+    }
+
     /// `on_break` invocations actually delivered -- the coalescing observable
     /// (wire FE events minus this = pends that merged).
     pub fn delivered_breaks(&self) -> u64 {
         self.delivered_breaks
+    }
+
+    /// The most own frames one body dispatched -- how deep the ladder ran
+    /// behind the wire.
+    pub fn frames_max(&self) -> u64 {
+        self.frames_max
     }
 
     pub fn entries(&self) -> Entries {
