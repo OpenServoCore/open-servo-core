@@ -152,12 +152,13 @@ impl<P: Providers> ServoBus<P> {
         }
         let idle = !self.chain.active() && !self.tx.busy();
         // Another servo's plain op touches nothing from an idle pipeline: no
-        // feed, no decode, and the frame end runs the bare CRC gate - the
-        // verdict is what keeps the ladder's stride trusted.
-        if idle && foreign(Header::from_bytes(&self.ring_header(anchor)), self.id) {
-            if complete {
-                self.crc_gate(anchor, footprint);
-            }
+        // feed, no decode, only the bare CRC gate on the whole frame - the
+        // verdict is what keeps the ladder's stride trusted. A frontier frame
+        // at its covered checkpoint is never one: `needs` classified it from
+        // the same header and pipeline state, so the header read stays off
+        // the own-frame turnaround path.
+        if complete && idle && foreign(Header::from_bytes(&self.ring_header(anchor)), self.id) {
+            self.crc_gate(anchor, footprint);
             return;
         }
         // The spine runs only from an idle reply pipeline: superseding a live
