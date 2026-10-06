@@ -894,8 +894,9 @@ impl Ladder {
         }
     }
 
-    /// Ke + friction line over the used rungs; R comes from the resistance
-    /// run. None until at least two usable rungs exist.
+    /// Ke + friction line over the used rungs, against `r_vpc`, the winding
+    /// between the taps that `r_q12` carries. None until at least two usable
+    /// rungs exist.
     pub fn fit(&self, r_vpc: f64) -> Option<LadderResult> {
         let pts: Vec<RungPoint> = self
             .rungs

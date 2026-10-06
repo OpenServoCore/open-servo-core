@@ -129,8 +129,8 @@ pub struct WaveCfg {
     /// Gate 5: V/I at the limit against a start from rest in TEL.
     pub cross_tol: f64,
     /// The servo's current limit, amps: where the line is read as V/I for
-    /// the stall-safe duties and `r_q12`. None reads no V/I, and a burst
-    /// without it supplies no winding.
+    /// the stall-safe duties. None reads no V/I, and a burst without it
+    /// supplies no winding.
     pub i_lim_a: Option<f64>,
     /// V/I at the current limit from a start from rest in TEL of the same
     /// run, ohms, duty x rail over current. None when the run has none: the
@@ -209,7 +209,7 @@ pub struct CaptureR {
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct AtLimit {
     pub i_a: f64,
-    /// What the stall-safe duties and `r_q12` take.
+    /// What the stall-safe duties take.
     pub v_over_i_ohm: f64,
     /// The line's slope there, bridge included: the current loop's plant.
     pub slope_ohm: f64,
@@ -305,7 +305,7 @@ impl WaveRun {
     }
 
     /// V/I at the current limit of the even and the odd captures, fitted
-    /// apart: the number that is written and planned from, twice.
+    /// apart: the number that is planned from, twice.
     pub fn halves_v_over_i(&self) -> Option<(f64, f64)> {
         let (a, b) = self.halves?;
         let i = self.at_limit?.i_a;

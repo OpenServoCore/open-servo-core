@@ -1000,7 +1000,7 @@ fn run_ladder(
     out: &csvio::OutDir,
     cfg: LadderCfg,
     runway: Runway,
-    r_vpc: f64,
+    r_taps_vpc: f64,
 ) -> Result<(Result<LadderResult, String>, Runway, Vec<Climb>)> {
     let params = rig(cli)?;
     let mut log = csvio::SnapshotLog::create(out, "ladder_snapshots.csv")?;
@@ -1032,7 +1032,7 @@ fn run_ladder(
         std::fs::write(out.0.join(LADDER_DECLINED), format!("{why}\n"))?;
         return Ok((Err(why.to_string()), runway, climbs));
     }
-    let l = exp.fit(r_vpc).context("ladder fit degenerate")?;
+    let l = exp.fit(r_taps_vpc).context("ladder fit degenerate")?;
     csvio::write_rungs(out, &l.rungs)?;
     Ok((Ok(l), runway, climbs))
 }
@@ -1459,10 +1459,11 @@ impl Recorded {
         run.measured(w.r_vpc);
         let plan = run.plan().context("no plan")?;
         println!(
-            "[winding] R {:.4} vcounts/ccount from {} (the plan and r_q12), current loop R {:.4}, \
-             L {:.4} mH from {}",
+            "[winding] R {:.4} vcounts/ccount from {} (the plan), {:.4} between the taps \
+             (r_q12), current loop R {:.4}, L {:.4} mH from {}",
             w.r_vpc,
             w.r_from.as_str(),
+            w.r_taps_vpc,
             w.r_loop_vpc,
             w.l_h * 1e3,
             w.l_from.as_str()
@@ -1573,14 +1574,14 @@ impl Recorded {
                     rungs.iter().map(|r| pct(*r)).collect::<Vec<_>>().join(", "),
                     pct(*seek)
                 );
-                let r_vpc = self.w.as_ref().context("no winding R")?.r_vpc;
+                let r_taps = self.w.as_ref().context("no winding R")?.r_taps_vpc;
                 let base = LadderCfg {
                     servo_ke: d.stored_motion.is_some(),
                     ..LadderCfg::new(d.sense.tick_hz as f64)
                 };
                 let cfg = order::ladder_cfg(*seek, rungs, base);
                 let runway = ladder_runway(d, run.rail_mv());
-                let (ladder, runway, climbs) = run_ladder(cli, c, id, out, cfg, runway, r_vpc)?;
+                let (ladder, runway, climbs) = run_ladder(cli, c, id, out, cfg, runway, r_taps)?;
                 self.runway = Some(runway);
                 self.climbs = climbs;
                 match ladder {
@@ -1771,7 +1772,7 @@ fn fit_dir(cli: &Ctx, dir: PathBuf) -> Result<()> {
     }
     let rungs = csvio::read_rungs(&dir)?;
     let pts: Vec<fits::RungPoint> = csvio::read_rung_points(&dir)?;
-    let ke = fits::ke_fit(&pts, w.r_vpc).context("ke refit degenerate")?;
+    let ke = fits::ke_fit(&pts, w.r_taps_vpc).context("ke refit degenerate")?;
     let fric_fwd = fits::friction_line(&pts, 1);
     let fric_rev = fits::friction_line(&pts, -1);
     let ladder = LadderResult {
@@ -1840,7 +1841,7 @@ fn fit_dir(cli: &Ctx, dir: PathBuf) -> Result<()> {
         (None, None) => 0.0,
     };
     let plant = PlantParams {
-        r_vpc: w.r_vpc,
+        r_vpc: w.r_taps_vpc,
         r_loop_vpc: w.r_loop_vpc,
         ke_vpc: ladder.ke.ke_vpc,
         fc: mean_opt(ladder.fric_fwd.map(|f| f.fc), ladder.fric_rev.map(|f| f.fc)),
@@ -1962,6 +1963,7 @@ fn synth_file(cli: &Ctx, id: u8, file: &Path, out: Option<&Path>) -> Result<()> 
     let w = Winding {
         r_ohm: pj.r_ohm,
         r_vpc: plant.r_vpc,
+        r_taps_vpc: plant.r_vpc,
         r_from: Source::Default,
         r_loop_vpc: plant.r_loop_vpc,
         l_h: pj.l_henries,
@@ -2406,6 +2408,7 @@ mod tests {
         let w = Winding {
             r_ohm: Some(4.9),
             r_vpc: 7270.0 / 4096.0,
+            r_taps_vpc: 7270.0 / 4096.0,
             r_from: Source::Stored,
             r_loop_vpc: 7270.0 / 4096.0,
             l_h: 0.62e-3,
@@ -2577,11 +2580,12 @@ mod tests {
 
     /// The bench MG90's bursts refitted from disk: the burst promotes its
     /// line, params.json says which number went where, and the gains carry
-    /// it - r_q12 is V/I at the current limit the run's telemetry recorded,
-    /// i_ki the slope with the bridge, i_kp the L - and the inertia fit
-    /// takes the slope too.
+    /// it - r_q12 is the waveform's winding R between the taps, 4.344 ohm
+    /// where V/I at the current limit the run's telemetry recorded reads
+    /// 5.316, i_ki the slope with the bridge, i_kp the L - the ladder fits
+    /// Ke against r_q12's R, and the inertia fit takes the slope.
     #[test]
-    fn a_promoted_burst_writes_v_over_i_to_r_q12_and_the_slope_to_i_ki() {
+    fn a_promoted_burst_writes_the_winding_r_to_r_q12_and_the_slope_to_i_ki() {
         use osc_ident::frame::TelemetrySnapshot;
 
         let (dir, out, r) = record_front("burst");
@@ -2615,21 +2619,30 @@ mod tests {
         let (v_over_i, slope) = (wave.v_over_i_lim_ohm.unwrap(), wave.slope_lim_ohm.unwrap());
         let plant = p.plant.expect("a plant");
         assert_eq!(plant.r_source, "burst, free");
-        assert_eq!(plant.r_ohm, Some(v_over_i));
-        assert!((plant.r_vpc - sc.r_vpc(v_over_i)).abs() < 1e-12);
+        assert_eq!(
+            (format!("{:.3}", wave.r_ohm), format!("{v_over_i:.3}")),
+            ("4.344".into(), "5.316".into())
+        );
+        assert!((plant.r_ohm.unwrap() - wave.r_ohm).abs() < 1e-9);
+        assert!((plant.r_vpc - sc.r_vpc(wave.r_ohm)).abs() < 1e-12);
         assert!((plant.r_loop_vpc - sc.r_vpc(slope)).abs() < 1e-12);
         assert_eq!(plant.l_henries, wave.l_h);
         assert!(
             plant.winding_use.starts_with(&format!(
-                "r_q12 and every stall-safe duty take r_vpc, V/I at the current limit \
+                "r_q12 takes r_vpc, the waveform's winding R between the terminal taps \
+                 ({:.3} ohm); every stall-safe duty takes V/I at the current limit \
                  ({v_over_i:.3} ohm); the current loop's i_ki takes r_loop_vpc, the V-I line's \
-                 slope with the bridge ({slope:.3} ohm)"
+                 slope with the bridge ({slope:.3} ohm)",
+                wave.r_ohm
             )),
             "{}",
             plant.winding_use
         );
-        // the inertia fit's back-EMF damping is Ke over the loop's R
+        // Ke pairs with r_q12's R in the back-EMF estimate
         let l = p.ladder.expect("a ladder");
+        let pts = csvio::read_rung_points(&dir).unwrap();
+        assert_eq!(l.ke_vpc, fits::ke_fit(&pts, plant.r_vpc).unwrap().ke_vpc);
+        // the inertia fit's back-EMF damping is Ke over the loop's R
         let priors = |r_vpc: f64| InertiaPriors {
             r_vpc,
             ke_vpc: l.ke_vpc,
@@ -2648,7 +2661,8 @@ mod tests {
         assert_eq!(inertia.priors, "the ladder");
         let raw = |name: &str| p.gains.iter().find(|g| g.name == name).unwrap().raw;
         let w_ci = std::f64::consts::TAU * 1000.0;
-        assert_eq!(raw("r_q12"), (plant.r_vpc * 4096.0).round() as u16);
+        assert_eq!(raw("r_q12"), (sc.r_vpc(wave.r_ohm) * 4096.0).round() as u16);
+        assert!(raw("r_q12") < (sc.r_vpc(v_over_i) * 4096.0).round() as u16);
         assert_eq!(
             raw("i_ki_q412"),
             (w_ci * plant.r_loop_vpc / 20_100.0 * 4096.0).round() as u16
@@ -2660,9 +2674,10 @@ mod tests {
             "{report}"
         );
         assert!(
-            report.contains("-> r_q12 and every stall-safe duty"),
+            report.contains("-> r_q12, the back-EMF estimate's R and the ladder's Ke"),
             "{report}"
         );
+        assert!(report.contains("-> every stall-safe duty"), "{report}");
         assert!(report.contains("-> the current loop's i_ki"), "{report}");
         let _ = std::fs::remove_dir_all(&dir);
     }

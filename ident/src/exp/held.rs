@@ -904,6 +904,7 @@ mod tests {
             r.winding_terms(),
             Some(WindingTerms {
                 r_plan_ohm: g.r_ohm,
+                r_taps_ohm: g.r_ohm,
                 r_loop_ohm: g.r_ohm,
                 l_h: g.l_h
             })

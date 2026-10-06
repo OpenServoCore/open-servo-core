@@ -624,7 +624,7 @@ impl SenseJson {
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct PlantJson {
-    /// What r_q12 and every stall-safe duty take.
+    /// What r_q12 takes: the winding between the terminal taps.
     pub r_vpc: f64,
     /// The current loop's plant R, synthesized into i_ki. Zero means
     /// absent: `ident synth` then closes the loop on `r_vpc`. The fit path
@@ -673,13 +673,12 @@ pub struct PlantJson {
 
 impl PlantJson {
     pub fn new(p: &PlantParams, t: &BwTargets, w: &Winding, sigma_from: &str) -> Self {
-        let r_loop_ohm = w
-            .r_ohm
-            .filter(|_| w.r_vpc > 0.0)
-            .map(|r| r * w.r_loop_vpc / w.r_vpc);
-        let winding_use = match (w.r_from, w.r_ohm, r_loop_ohm) {
-            (Source::Burst, Some(r), Some(lo)) => format!(
-                "r_q12 and every stall-safe duty take r_vpc, V/I at the current limit ({r:.3} \
+        let ohm = |vpc: f64| w.r_ohm.filter(|_| w.r_vpc > 0.0).map(|r| r * vpc / w.r_vpc);
+        let (r_ohm, r_loop_ohm) = (ohm(p.r_vpc), ohm(p.r_loop_vpc));
+        let winding_use = match (w.r_from, r_ohm, w.r_ohm, r_loop_ohm) {
+            (Source::Burst, Some(r), Some(plan), Some(lo)) => format!(
+                "r_q12 takes r_vpc, the waveform's winding R between the terminal taps \
+                 ({r:.3} ohm); every stall-safe duty takes V/I at the current limit ({plan:.3} \
                  ohm); the current loop's i_ki takes r_loop_vpc, the V-I line's slope with the \
                  bridge ({lo:.3} ohm); i_kp takes L"
             ),
@@ -703,7 +702,7 @@ impl PlantJson {
             f_cp: t.f_cp,
             f_o: t.f_o,
             r_source: w.r_from.as_str().into(),
-            r_ohm: w.r_ohm,
+            r_ohm,
             r_loop_ohm,
             winding_use,
             l_source: w.l_from.as_str().into(),
@@ -764,6 +763,7 @@ impl StoredWindingJson {
         Winding {
             r_ohm: self.r_ohm,
             r_vpc: self.r_vpc,
+            r_taps_vpc: self.r_vpc,
             r_from: Source::Stored,
             r_loop_vpc: self.r_loop_vpc,
             l_h: self.l_henries,
