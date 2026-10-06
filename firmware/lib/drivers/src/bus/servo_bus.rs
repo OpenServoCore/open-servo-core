@@ -10,6 +10,7 @@ use osc_servo_core::{BaudRate, BootMode};
 
 use super::chain::Chain;
 use super::clock::ClockTracker;
+use super::decode::Slot;
 use super::framer::Framer;
 use super::ring_wrap;
 use super::tx::{TxEngine, TxOut};
@@ -56,7 +57,7 @@ struct Pending {
     anchor: u16,
     footprint: u16,
     packet_end: u32,
-    slot: u8,
+    slot: Slot,
     /// Wire effect staged: a reply awaits the send/don't-send verdict.
     staged: bool,
     /// Table effect staged in the dispatcher: a write awaits commit/revert.
@@ -376,6 +377,11 @@ impl<P: Providers> ServoBus<P> {
             }
             // A pending reboot waits for the main loop's `take_reboot`.
             self.burst.on_tx_released();
+            // The ladder waited on the CRC engine while the reply streamed.
+            if !self.framer.caught_up(self.ring.cursor()) {
+                self.framer_at = Some(self.deadline.now());
+                self.arm_deadline();
+            }
         }
     }
 

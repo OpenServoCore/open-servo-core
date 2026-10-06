@@ -1131,6 +1131,10 @@ of host frames it received, within a factor of two. Both counters
 update every 16 ticks (0.8 ms), the mean every 4096. No kernel tick runs during a shunt burst (sec 5.8); the ticks
 before it that did not fill a 16-tick window count toward neither
 counter, and the first window after it counts no lost ticks.
+Under saturation (back-to-back frames that each cost more HIGH time than
+their wire time) `tick_load_mean_q15` and `tick_over_count` are not
+comparable across firmware images; compare images by the `sample_tick`
+delta, the kernel ticks that ran.
 `stack_free_min` reads 0 until the first stack scan completes, about
 10 ms after boot.
 
@@ -1179,9 +1183,13 @@ makes it cheap and robust:
   GREAD; when frame k−1 completes (its end is known at its LEN byte — no
   timing inference), slot k starts after reply gap. Snoopers do **not**
   CRC-validate predecessor statuses — the chain consumes nothing from the
-  body, only the framing-level end, so validation would buy nothing and
-  cost a CRC pass per snooped frame. A corrupt status mis-times one slot
-  at worst, bounded by the reclaim window below.
+  body, only the framing-level end. The end comes from LEN, so a uniform
+  GREAD's slot checks it: a predecessor status is either the span the
+  GREAD read or an empty error status (sec 5.3), and any other LEN is a
+  dropped frame that does not count, leaving the slot to the reclaim
+  below. A corrupt status otherwise mis-times one slot at worst, bounded
+  by the reclaim window. A servo no slot of which waits on the status
+  checks its CRC like any frame's, since its LEN still moves the framer.
 - **Reclaim deadline** (DXL chains collapse silently past a dead
   responder; here the recovery is specified): if slot k's predecessor
   produces no break within RESPONSE_DEADLINE of its own trigger, slot k

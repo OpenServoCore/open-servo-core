@@ -224,6 +224,16 @@ impl Framer {
         self.frontier = Frontier::idle();
     }
 
+    /// The composite knows a resolved frame's LEN is wrong (sec 6: a waited
+    /// status the GREAD rules out): a framing drop, counted once per episode,
+    /// then the hunt resumes one byte in as for a CRC reject.
+    pub fn on_frame_misframed(&mut self, anchor: u16, ring_len: usize) {
+        if !self.hunting {
+            self.drops = self.drops.wrapping_add(1);
+        }
+        self.on_frame_rejected(anchor, ring_len);
+    }
+
     /// The composite verified a resolved frame: the ladder is trusted again;
     /// any recovery episode ends here.
     pub fn on_frame_verified(&mut self) {

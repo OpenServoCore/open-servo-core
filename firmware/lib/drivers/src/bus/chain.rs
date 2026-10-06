@@ -6,6 +6,11 @@
 //! predecessor status frames, each with a reclaim window so a silent
 //! predecessor can't collapse the tail (sec 6). A unicast reply is just slot 0.
 
+use osc_protocol::wire;
+
+/// An error status carries no payload (sec 5.3), whatever the read asked for.
+const ERROR_FOOTPRINT: u16 = wire::footprint(wire::len_for(0)) as u16;
+
 /// What the chain wants from the composite after an event.
 pub enum ChainOut {
     None,
@@ -39,6 +44,7 @@ pub struct Chain {
     reply_gap: u32,
     reclaim: u32,
     allowance: u32,
+    peer_footprint: Option<u16>,
 }
 
 impl Default for Chain {
@@ -54,6 +60,7 @@ impl Chain {
             reply_gap: 0,
             reclaim: 0,
             allowance: 0,
+            peer_footprint: None,
         }
     }
 
@@ -78,6 +85,7 @@ impl Chain {
     /// trigger -> break lead only (sec 6 keys reclaim off the break, so the
     /// default stays baud-independent); `allowance` bounds how long an
     /// observed break suspends reclaim while its frame plays out.
+    /// `peer_footprint` sizes a predecessor's OK status when the GREAD does.
     pub fn on_reply_staged(
         &mut self,
         slot: u8,
@@ -85,10 +93,12 @@ impl Chain {
         reply_gap: u32,
         reclaim: u32,
         allowance: u32,
+        peer_footprint: Option<u16>,
     ) -> ChainOut {
         self.reply_gap = reply_gap;
         self.reclaim = reclaim;
         self.allowance = allowance;
+        self.peer_footprint = peer_footprint;
         if slot == 0 {
             // sec 7: reply >= reply gap after the instruction end, like a unicast read.
             self.state = State::Pending { silent: false };
@@ -115,6 +125,16 @@ impl Chain {
         match self.state {
             State::Waiting { .. } => ChainOut::Wait(now.wrapping_add(self.allowance)),
             _ => ChainOut::None,
+        }
+    }
+
+    /// A predecessor status of this footprint fits the GREAD: an OK status of
+    /// the span it sized, or an error status. Its LEN moves the ladder and
+    /// times the slot, so one the GREAD rules out was garbled.
+    pub fn admits(&self, footprint: u16) -> bool {
+        match self.peer_footprint {
+            Some(ok) => footprint == ok || footprint == ERROR_FOOTPRINT,
+            None => true,
         }
     }
 
@@ -194,7 +214,7 @@ mod tests {
     fn slot0_triggers_after_reply_gap() {
         let mut c = Chain::new();
         assert_eq!(
-            wait_tick(c.on_reply_staged(0, END, REPLY_GAP, RECLAIM, ALLOWANCE)),
+            wait_tick(c.on_reply_staged(0, END, REPLY_GAP, RECLAIM, ALLOWANCE, None)),
             END + REPLY_GAP
         );
         assert!(c.active());
@@ -207,7 +227,7 @@ mod tests {
         let mut c = Chain::new();
         // reclaim guards slot 0's trigger.
         assert_eq!(
-            wait_tick(c.on_reply_staged(2, END, REPLY_GAP, RECLAIM, ALLOWANCE)),
+            wait_tick(c.on_reply_staged(2, END, REPLY_GAP, RECLAIM, ALLOWANCE, None)),
             END + REPLY_GAP + RECLAIM
         );
         // predecessor 0 replies.
@@ -221,7 +241,7 @@ mod tests {
     fn slot1_reclaim_triggers_silent() {
         let mut c = Chain::new();
         assert_eq!(
-            wait_tick(c.on_reply_staged(1, END, REPLY_GAP, RECLAIM, ALLOWANCE)),
+            wait_tick(c.on_reply_staged(1, END, REPLY_GAP, RECLAIM, ALLOWANCE, None)),
             END + REPLY_GAP + RECLAIM
         );
         // No status arrives: the reclaim window expires and we take the slot.
@@ -233,7 +253,7 @@ mod tests {
     fn slot3_one_status_then_two_reclaims() {
         let mut c = Chain::new();
         assert_eq!(
-            wait_tick(c.on_reply_staged(3, END, REPLY_GAP, RECLAIM, ALLOWANCE)),
+            wait_tick(c.on_reply_staged(3, END, REPLY_GAP, RECLAIM, ALLOWANCE, None)),
             END + REPLY_GAP + RECLAIM
         );
         // predecessor 0 replies (real).
@@ -247,7 +267,7 @@ mod tests {
     #[test]
     fn break_suspends_reclaim_for_frame_allowance() {
         let mut c = Chain::new();
-        c.on_reply_staged(1, END, REPLY_GAP, RECLAIM, ALLOWANCE);
+        c.on_reply_staged(1, END, REPLY_GAP, RECLAIM, ALLOWANCE, None);
         // Predecessor's break lands inside its reclaim window: alive -- the
         // window suspends for the frame allowance instead of expiring.
         assert_eq!(wait_tick(c.on_break_observed(1100)), 1100 + ALLOWANCE);
@@ -259,7 +279,7 @@ mod tests {
     #[test]
     fn wedged_after_break_reclaims_at_allowance() {
         let mut c = Chain::new();
-        c.on_reply_staged(1, END, REPLY_GAP, RECLAIM, ALLOWANCE);
+        c.on_reply_staged(1, END, REPLY_GAP, RECLAIM, ALLOWANCE, None);
         c.on_break_observed(1100);
         // The frame never resolves (garbled/wedged): the suspended deadline
         // fires as the reclaim.
@@ -270,9 +290,21 @@ mod tests {
     fn break_while_idle_or_pending_is_none() {
         let mut c = Chain::new();
         assert!(matches!(c.on_break_observed(500), ChainOut::None));
-        c.on_reply_staged(0, END, REPLY_GAP, RECLAIM, ALLOWANCE);
+        c.on_reply_staged(0, END, REPLY_GAP, RECLAIM, ALLOWANCE, None);
         // Pending our own trigger: a break is not a predecessor signal.
         assert!(matches!(c.on_break_observed(1010), ChainOut::None));
+    }
+
+    #[test]
+    fn sized_gread_admits_its_span_and_error_statuses_only() {
+        let mut c = Chain::new();
+        c.on_reply_staged(1, END, REPLY_GAP, RECLAIM, ALLOWANCE, Some(14));
+        assert!(c.admits(14));
+        assert!(c.admits(ERROR_FOOTPRINT));
+        assert!(!c.admits(13));
+        assert!(!c.admits(15));
+        c.on_reply_staged(1, END, REPLY_GAP, RECLAIM, ALLOWANCE, None);
+        assert!(c.admits(15));
     }
 
     #[test]
@@ -285,7 +317,7 @@ mod tests {
     #[test]
     fn reset_mid_chain_goes_idle() {
         let mut c = Chain::new();
-        c.on_reply_staged(2, END, REPLY_GAP, RECLAIM, ALLOWANCE);
+        c.on_reply_staged(2, END, REPLY_GAP, RECLAIM, ALLOWANCE, None);
         assert!(c.active());
         c.reset();
         assert!(!c.active());

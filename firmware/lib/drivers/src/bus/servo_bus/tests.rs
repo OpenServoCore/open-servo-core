@@ -277,8 +277,8 @@ fn s5_gread_slot1_waits_for_predecessor() {
     assert_eq!(h.deadline.armed(), Some(end + REPLY_GAP + 600));
     assert!(!h.wire.started());
 
-    // Predecessor (id 5) status frame -> our slot pends.
-    let pre = status(5, ResultCode::Ok, &[0xAA, 0xBB]);
+    // Predecessor (id 5) status frame, the GREAD's 4 bytes -> our slot pends.
+    let pre = status(5, ResultCode::Ok, &[0xAA, 0xBB, 0xCC, 0xDD]);
     deliver(&mut bus, &h, 200, &pre, end + 2, &mut d);
     assert!(!h.wire.started());
 
@@ -921,6 +921,133 @@ fn broadcast_write_still_dispatches() {
     assert_eq!(d.dispatches, 1);
     assert!(shared.table.with(|t| t.control.lifecycle.torque_enable));
     assert!(!h.wire.started());
+}
+
+/// A status nobody waits on gets its CRC verdict: a LEN garbled long would
+/// otherwise swallow the frame behind it. Here the claimed footprint runs
+/// four bytes into a ping for us; the verdict fails, is counted, and the
+/// hunt finds the ping's break, which still dispatches and answers.
+#[test]
+fn garbled_status_len_is_caught_and_the_frame_behind_it_answers() {
+    let h = Harness::new();
+    let mut bus = h.build(ID, RATE, 60);
+    let shared = shared_seeded();
+    let mut session = Session::new();
+    let mut d = DispatchCount {
+        inner: session.dispatcher(&shared),
+        dispatches: 0,
+    };
+
+    let mut st = status(5, ResultCode::Ok, &[0x11, 0x22, 0x33, 0x44]);
+    st[2] += 4;
+    assert!(!st[1..].contains(&0));
+    let ping = instruction(ID, Opcode::Ping, 0, &[]);
+    let (a, b) = (100, 100 + st.len());
+    h.ring.place(a, &st);
+    h.ring.place(b, &ping);
+    bus.framer.resync(a as u16);
+
+    h.deadline.set_now(1000);
+    h.ring.set_cursor((a + 1) as u16);
+    bus.on_break(&mut d);
+    h.ring.set_cursor(b as u16);
+    fire(&mut bus, &h, &mut d);
+    let horizon = h.deadline.armed().expect("starve horizon");
+    h.deadline.set_now(horizon - 100);
+    h.ring.set_cursor((b + 1) as u16);
+    bus.on_break(&mut d);
+    h.ring.set_cursor((b + ping.len()) as u16);
+    fire(&mut bus, &h, &mut d);
+    assert_eq!(bus.diag().crc_fail_count, 1);
+    assert_eq!(d.dispatches, 1);
+
+    fire(&mut bus, &h, &mut d);
+    drain_tx(&mut bus, &h);
+    let (id, inst, _) = last_reply(&h.wire);
+    assert_eq!(id, ID);
+    assert_eq!(inst.result(), Some(ResultCode::Ok));
+    assert_eq!(bus.diag().framing_drop_count, 0);
+}
+
+/// A slot waiting on a uniform GREAD knows every predecessor's status
+/// size: the span it read, or an empty error status. A predecessor whose
+/// LEN says anything else is dropped before it counts (a short one would
+/// time the slot into the predecessor's own tail), so the slot answers at
+/// its reclaim, flagged; an error status still counts.
+#[test]
+fn waiting_slot_drops_a_status_len_its_gread_rules_out() {
+    for (pre, admitted) in [
+        (status(5, ResultCode::Ok, &[0xAA, 0xBB]), false),
+        (status(5, ResultCode::Range, &[]), true),
+    ] {
+        let h = Harness::new();
+        let mut bus = h.build(ID, RATE, 600);
+        let shared = shared_seeded();
+        let mut session = Session::new();
+        let mut d = session.dispatcher(&shared);
+
+        // Uniform GREAD addr 0 count 4, ids [5, 7] -> we are slot 1.
+        let gread = broadcast_id(instruction(ID, Opcode::Gread, 0, &[0, 0, 4, 0, 5, ID]));
+        let end = deliver(&mut bus, &h, 100, &gread, 1000, &mut d);
+        deliver(&mut bus, &h, 200, &pre, end + 2, &mut d);
+        assert_eq!(
+            bus.diag().framing_drop_count,
+            u32::from(!admitted),
+            "admitted={admitted}"
+        );
+        assert!(!h.wire.started());
+
+        fire(&mut bus, &h, &mut d);
+        drain_tx(&mut bus, &h);
+        let (id, inst, _) = last_reply(&h.wire);
+        assert_eq!(id, ID);
+        let want = if admitted {
+            ResultCode::Ok
+        } else {
+            ResultCode::PredecessorSilent
+        };
+        assert_eq!(inst.result(), Some(want), "admitted={admitted}");
+    }
+}
+
+/// Own TX holds the one CRC engine from trigger to release, so a status
+/// that resolves while the reply streams (a peer talking over it) waits
+/// through every wake meanwhile: the release resumes the ladder, the
+/// verdict runs, and the reply's own CRC comes out whole.
+#[test]
+fn status_verdict_waits_for_own_tx_release() {
+    let h = Harness::new();
+    let mut bus = h.build(ID, RATE, 60);
+    let shared = shared_seeded();
+    let mut session = Session::new();
+    let mut d = session.dispatcher(&shared);
+
+    let ping = instruction(ID, Opcode::Ping, 0, &[]);
+    deliver(&mut bus, &h, 100, &ping, 1000, &mut d);
+    fire(&mut bus, &h, &mut d);
+    assert!(h.wire.started());
+
+    let mut st = status(5, ResultCode::Ok, &[0x11, 0x22]);
+    let last = st.len() - 1;
+    st[last] ^= 0xFF;
+    let a = 100 + ping.len();
+    h.ring.place(a, &st);
+    h.ring.set_cursor((a + 1) as u16);
+    bus.on_break(&mut d);
+    h.ring.set_cursor((a + st.len()) as u16);
+    bus.on_break(&mut d);
+    fire(&mut bus, &h, &mut d);
+    assert_eq!(bus.diag().crc_fail_count, 0, "held while the reply streams");
+    assert_eq!(h.deadline.armed(), None, "only the release resumes it");
+
+    drain_tx(&mut bus, &h);
+    let replies = tx_frames(&h.wire, 0);
+    assert_eq!(replies.len(), 1);
+    assert_frame_crc(&replies[0]);
+
+    fire(&mut bus, &h, &mut d);
+    assert_eq!(bus.diag().crc_fail_count, 1, "checked after the release");
+    assert!(bus.framer.caught_up((a + st.len()) as u16));
 }
 
 /// Rewrite a frame's ID field to broadcast (group ops address via their list).
