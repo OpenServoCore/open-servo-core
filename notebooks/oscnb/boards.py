@@ -241,14 +241,19 @@ BOARDS = {
                 7, 7, 10, "% duty on 2S", "nb10 sec 5 and 8, static-load ladder + bursts",
                 "honest to 3% from 7%, and the 7% edge is tap A's sample, not the "
                 "current: the current alone reads 97% of the 100% rung at 5% and "
-                "is inside 1% from about 10%"),
+                "is inside 1% from about 10%, in high-speed mode. Normal mode "
+                "reads about 95.5% at 5%, the same from 10%"),
             "shunt_settle_measured": Measured(
                 156, 150, 156, "ticks from the ON compare to 1% of the 100% rung",
                 "nb10 sec 8, 2S grid bursts folded at 4 ticks, registered on the ladder",
-                "3.25 us. The current is half way 44 ticks after the compare and "
-                "closes the last 3% on a slow tail, always from below, so an early "
-                "sample reads low. The ladder's own 1% crossings (119 and 123 "
-                "ticks of window, plus the 31 to the sample) give the low end"),
+                "3.25 us, in high-speed mode. The current closes the last 3% on a "
+                "slow tail, always from below, so an early sample reads low. The "
+                "ladder's own 1% crossings (119 and 123 ticks of window, plus the "
+                "31 to the sample) give the low end. Normal mode, from paired "
+                "bringup captures/winding-r/c0 bursts with the shunt over the "
+                "terminal difference: half way 48 ticks after the compare against "
+                "44, a 13.1-tick exponential against 10.1, tail 3.3% against 2.6% "
+                "at half way +48 and 0.7% in both at +96, so the 1% point holds"),
             "current_chain_scale_measured": Measured(
                 0.5, -0.7, 2.3, "% high vs Rs1 pads", "Rs1 pads mV during a 4.2 s 100% grid lap",
                 "meter 93-94 mV across Rs1 against 93.3-95.1 mV (median 94.0) "

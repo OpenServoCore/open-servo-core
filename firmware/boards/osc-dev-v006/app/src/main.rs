@@ -91,17 +91,20 @@ fn main() -> ! {
             // then climbs with drive current - 7 counts at 30%, 16 at 60%,
             // 38 at 85%.
             bias_brake_min_ticks: 960,
-            // The amplifier's step response at the crest sample: the shunt
-            // approaches its plateau from below, 2.9% low at 60 ticks, 1.1%
-            // at 120, settled from ~208, the same in both drive signs (a
-            // 3.7 ohm grid ladder, 60..300 ticks). Each band holds the
-            // inverse at its centre; 40 and 48 come from the burst fold
-            // alone, under the ladder's lowest rung. Every grid rung from 60
-            // ticks lands within 0.16% with it.
+            // The amplifier's step response at the crest sample, op-amp in
+            // normal mode, board #1: the shunt approaches its plateau from
+            // below, about 4.5% low at 60 ticks and 1.1% at 120, settled
+            // from ~208, the same in both drive signs. Each band holds the
+            // inverse at its centre: a high-speed-mode table that put every
+            // 3.7 ohm grid ladder rung from 60 ticks within 0.16%, times the
+            // high-speed / normal ratio of paired grid bursts (shunt over
+            // the terminal difference, which cancels the rail's sag). The
+            // modes agree within 0.1% from 96 ticks, and the bands under the
+            // 64-tick floor never apply.
             i_settle_gain: SettleGain {
                 start_ticks: 40,
                 q15: &[
-                    35143, 34194, 33734, 33575, 33456, 33376, 33314, 33259, 33213, 33156, 33103,
+                    37138, 35303, 34342, 33918, 33643, 33470, 33374, 33259, 33213, 33156, 33103,
                     33052, 33020, 32982, 32938, 32900, 32868, 32841, 32824, 32806, 32785,
                 ],
             },
