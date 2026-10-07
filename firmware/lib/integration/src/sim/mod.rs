@@ -366,6 +366,26 @@ impl Sim {
         self.cpus[i].delivered_breaks()
     }
 
+    /// The most own frames one handler body of servo `i` dispatched: how far
+    /// the ladder ran behind the wire.
+    pub fn frames_per_body_max(&self, i: usize) -> u64 {
+        self.cpus[i].frames_max()
+    }
+
+    /// Break stamps the detector latched at servo `i` (one per break it
+    /// heard) and the stamps its driver took - equal when every break the
+    /// ring holds was stamped, whatever the wakes did.
+    pub fn stamps(&self, i: usize) -> (u64, u64) {
+        let s = &self.handles[i].stamps;
+        (s.latches(), s.takes())
+    }
+
+    /// Break stamps servo `i`'s driver cleared untaken (a CAL mark or a
+    /// rescue drops them by design; nothing else may).
+    pub fn stamp_drops(&self, i: usize) -> u64 {
+        self.handles[i].stamps.drops()
+    }
+
     /// Inspect a servo's live control table.
     pub fn servo_table<R>(&self, i: usize, f: impl FnOnce(&ControlTable) -> R) -> R {
         self.servos[i].with_table(f)
@@ -913,11 +933,13 @@ impl Sim {
     fn run_vector(&mut self, j: usize, v: Vector) {
         let now = self.core.borrow().now();
         self.cpus[j].charge(now, v);
+        let before = self.servos[j].dispatched();
         match v {
             Vector::Compare => self.servos[j].on_deadline(),
             Vector::Break => self.servos[j].on_break(),
             Vector::TxDone => self.servos[j].on_tx_complete(),
         }
+        self.cpus[j].charge_frames(self.servos[j].dispatched() - before);
     }
 
     fn schedule_free(&mut self, j: usize) {
@@ -1043,10 +1065,14 @@ impl Sim {
         }
     }
 
-    /// A qualified break at servo `j`: ring its 0x00 and wake, in the
+    /// A qualified break at servo `j`: latch its stamp (the detector's
+    /// trigger, ahead of any pend), ring its 0x00 and wake, in the
     /// configured [`BreakWake`] order, the byte `lead` ticks behind the wake
     /// under [`BreakWake::BeforeByte`].
     fn wake_on_break(&mut self, j: usize, lead: u64) {
+        let now = self.core.borrow().now();
+        let h = &self.handles[j];
+        h.stamps.latch(h.deadline.local_u64(now) as u32);
         let after = match self.break_wake {
             BreakWake::BeforeByte => false,
             BreakWake::AfterByte => true,

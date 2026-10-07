@@ -9,10 +9,28 @@
 /// Trim chain-pair pipeline counters: where do BURST-food pairs die between
 /// the break stamp and a window verdict? One field per exit of
 /// [`ServoBus::on_drift_break`]'s decision ladder, in ladder order.
+///
+/// Wire format for the debug-link dump: 26 little-endian 32-bit words in
+/// field order, 104 bytes; `verdict_err`, `poll_ppm` and the four `tw_*`
+/// fields are signed (`struct` format `<15IiI3IiI4i`).
 #[repr(C)]
 pub struct TrimProbe {
-    /// Drift stamps taken (fresh break wakes with a break byte newest).
+    /// Break stamps taken: one per verified frame with a stamp latched for
+    /// its break, however many frames a wake resolved.
     pub stamps: u32,
+    /// Frames verified: `stamps + unstamped`.
+    pub frames: u32,
+    /// Frames verified with no stamp latched for their break: the detector
+    /// raised no overflow for it (or a stale skip ran the ring dry).
+    pub unstamped: u32,
+    /// Stamps skipped as older than the previous stamp plus the ring
+    /// distance allows: orphans (a re-fire, a CRC-failed frame's break).
+    pub stale: u32,
+    /// Stamps dropped by a CAL ruler mark or a rescue.
+    pub cleared: u32,
+    /// Break services whose resolver drive hit its per-wake frame bound:
+    /// the ladder lagged the wire by more than `FRAMES_PER_WAKE` frames.
+    pub bound_hits: u32,
     /// Stamp with no predecessor (first after boot/restart) -- no pair.
     pub no_prev: u32,
     /// Pair rejected: NO verified frame between the stamps (a coalesced or
@@ -58,6 +76,11 @@ pub struct TrimProbe {
 impl TrimProbe {
     pub const ZERO: Self = Self {
         stamps: 0,
+        frames: 0,
+        unstamped: 0,
+        stale: 0,
+        cleared: 0,
+        bound_hits: 0,
         no_prev: 0,
         span_none: 0,
         span_many: 0,

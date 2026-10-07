@@ -9,6 +9,7 @@ use osc_servo_core::data_state::DataJob;
 use osc_servo_core::pos_lut::POINTS;
 use osc_servo_core::regions::config::{DEFAULT_V_UNDERVOLT_MV, vmotor_counts};
 use osc_servo_core::tel::{TelSample, TelStream};
+use osc_servo_core::traits::{Dispatch, Dispatched, Reply, Request, RequestCtx};
 use osc_servo_core::{
     BaudRate, BootMode, CalibSense, CalibSenseExt, ConfigDefaults, ControlTable, CurrentDefaults,
     RegionStorage, Session, Shared,
@@ -17,7 +18,9 @@ use osc_servo_drivers::bus::{LinkDiag, ServoBus};
 use osc_servo_drivers::tel::{TelChannel, TelFeed};
 
 use super::core::Core;
-use super::providers::{Handles, SimBaud, SimCrc, SimDeadline, SimProviders, SimRing, SimWire};
+use super::providers::{
+    Handles, SimBaud, SimCrc, SimDeadline, SimProviders, SimRing, SimStamps, SimWire,
+};
 use super::store::RamStore;
 
 /// The osc-dev-v006 app's `Calibration`, copied: the board crate is a no_std
@@ -56,6 +59,35 @@ pub struct SimServo {
     /// Kernel-side half of the TEL channel; the sim's fast-tick pump feeds it.
     feed: TelFeed,
     seed: Seed,
+    /// Own frames dispatched since boot: the `cpu` model's per-frame charge
+    /// reads a body's share as the delta across it.
+    dispatched: u64,
+}
+
+/// The real dispatcher with a dispatch count beside it.
+struct Counted<'a> {
+    inner: osc_servo_core::Dispatcher<'a>,
+    dispatched: &'a mut u64,
+}
+
+impl Dispatch for Counted<'_> {
+    fn dispatch<R: Reply>(
+        &mut self,
+        req: Request<'_>,
+        ctx: RequestCtx,
+        reply: &mut R,
+    ) -> Dispatched {
+        *self.dispatched += 1;
+        self.inner.dispatch(req, ctx, reply)
+    }
+
+    fn commit<R: Reply>(&mut self, reply: &mut R) {
+        self.inner.commit(reply)
+    }
+
+    fn revert(&mut self) {
+        self.inner.revert()
+    }
 }
 
 /// Everything bringup needs, kept so a staged reboot can run it again.
@@ -107,6 +139,7 @@ impl SimServo {
             bus,
             feed,
             seed,
+            dispatched: 0,
         });
         (servo, handles)
     }
@@ -115,6 +148,7 @@ impl SimServo {
     /// on top, and a driver whose comms block comes from what that left.
     fn bringup(seed: &Seed, uid: [u8; 16]) -> (Shared, ServoBus<SimProviders>, TelFeed) {
         seed.handles.ring.reset();
+        seed.handles.stamps.reset();
 
         let shared = Shared::new();
         shared.table.seed_config_defaults(
@@ -174,6 +208,7 @@ impl SimServo {
             SimCrc::new(),
             SimWire::new(seed.core.clone(), seed.handles.baud.clone(), seed.idx),
             SimBaud::new(seed.handles.baud.clone()),
+            SimStamps::new(seed.handles.stamps.clone()),
             id,
             rate,
             response_deadline_us,
@@ -226,13 +261,24 @@ impl SimServo {
         // Position from the stream: the break handler resolves complete frames
         // from ring data in place, so it dispatches -- build the dispatcher
         // like on_deadline.
-        let mut dispatcher = self.session.dispatcher(&self.shared);
+        let mut dispatcher = Counted {
+            inner: self.session.dispatcher(&self.shared),
+            dispatched: &mut self.dispatched,
+        };
         self.bus.on_break(&mut dispatcher);
     }
 
     pub fn on_deadline(&mut self) {
-        let mut dispatcher = self.session.dispatcher(&self.shared);
+        let mut dispatcher = Counted {
+            inner: self.session.dispatcher(&self.shared),
+            dispatched: &mut self.dispatched,
+        };
         self.bus.on_deadline(&mut dispatcher);
+    }
+
+    /// Own frames dispatched since boot.
+    pub fn dispatched(&self) -> u64 {
+        self.dispatched
     }
 
     pub fn on_tx_complete(&mut self) {

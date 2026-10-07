@@ -7,6 +7,7 @@ use crate::hal::{
     gpio::{self, PinMode},
     opa, rcc, systick, timer, usart,
 };
+use crate::providers::break_stamps::BreakStamps;
 use crate::providers::break_wake::BreakWake;
 use crate::providers::config_store;
 use crate::providers::crc::Crc;
@@ -90,7 +91,7 @@ pub fn bringup(
     );
 
     bring_up_bus(pre.usart_brr, pre.break_reload);
-    crate::log::debug!("bus usart + rx ring + break wake + crc engine armed");
+    crate::log::debug!("bus usart + rx ring + break stamps + break wake + crc engine armed");
 
     // Drivers::install runs after the bus peripherals are live: `ServoBus
     // ::new` applies the table's effective baud to the already-configured
@@ -294,9 +295,10 @@ fn configure_adc_dma_scan(w: &BoardWiring) {
 }
 
 /// osc-native transport bring-up: USART1 (single-wire HDSEL), the circular
-/// RX ring on DMA1_CH5 (armed once), the TIM2 break wake on the bus pin,
-/// and the SPI-CRC engine. TX arms (DMA1_CH4) are configured per-arm by
-/// `TxWire`, so no channel init here.
+/// RX ring on DMA1_CH5 (armed once), the break stamps on DMA1_CH2 (armed
+/// once, ahead of the detector that requests them), the TIM2 break wake on
+/// the bus pin, and the SPI-CRC engine. TX arms (DMA1_CH4) are configured
+/// per-arm by `TxWire`, so no channel init here.
 fn bring_up_bus(brr: u32, break_reload: u16) {
     let regs = chip::BUS_USART_MAPPING.regs();
 
@@ -327,6 +329,7 @@ fn bring_up_bus(brr: u32, break_reload: u16) {
     // Wire mode, TE/RE, BRR, UE, then RX-DMA. No receive IRQ.
     usart::init_bus(regs, brr);
 
+    BreakStamps::init();
     // The only receive wake (protocol sec 3.4).
     BreakWake::init(break_reload);
 

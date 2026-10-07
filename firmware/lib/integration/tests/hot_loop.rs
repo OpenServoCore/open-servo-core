@@ -234,6 +234,7 @@ fn hot_loop_survives_handler_latency(baud_idx: u8) {
                 on_break_us: 2,
                 on_deadline_us: 70,
                 on_tx_complete_us: 2,
+                per_frame_us: 0,
             },
         );
     }
@@ -304,6 +305,7 @@ fn plain_burst_survives_deadline_latency(baud_idx: u8) {
                 on_break_us: 2,
                 on_deadline_us: dl,
                 on_tx_complete_us: 2,
+                per_frame_us: 0,
             },
         );
 
@@ -379,6 +381,7 @@ fn plain_burst_survives_gap_jitter(baud_idx: u8) {
                 on_break_us: 2,
                 on_deadline_us: dl,
                 on_tx_complete_us: 2,
+                per_frame_us: 0,
             },
         );
 
@@ -453,6 +456,7 @@ fn plain_burst_survives_midframe_stall(baud_idx: u8) {
                         on_break_us: 2,
                         on_deadline_us: dl,
                         on_tx_complete_us: 2,
+                        per_frame_us: 0,
                     },
                 );
 
@@ -542,6 +546,7 @@ fn zero_gap_flood(baud_idx: u8) {
                 on_break_us: 2,
                 on_deadline_us: dl,
                 on_tx_complete_us: 2,
+                per_frame_us: 0,
             },
         );
 

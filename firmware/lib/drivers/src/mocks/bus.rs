@@ -12,8 +12,10 @@ use std::vec::Vec;
 use osc_protocol::crc::osc_crc_continue;
 use osc_servo_core::BaudRate;
 
+use std::collections::VecDeque;
+
 use crate::bus::ServoBus;
-use crate::traits::bus::{CrcEngine, Deadline, Providers, RxRing, TxWire, UsartBaud};
+use crate::traits::bus::{BreakStamps, CrcEngine, Deadline, Providers, RxRing, TxWire, UsartBaud};
 
 /// Ring length -- even and larger than `FRAME_MAX` (matches the V006 512 B ring).
 pub const RING_LEN: usize = 512;
@@ -228,6 +230,50 @@ impl TxWire for FakeWire {
     }
 }
 
+/// Break stamps a scenario latches ahead of the wakes they belong to. With
+/// none latched, a take reads the clock: on the ideal CPU the detector's
+/// trigger and the wake's service are the same instant.
+#[derive(Clone)]
+pub struct FakeStamps {
+    latched: Rc<RefCell<VecDeque<u32>>>,
+    clock: FakeDeadline,
+}
+
+impl FakeStamps {
+    pub fn new(clock: FakeDeadline) -> Self {
+        Self {
+            latched: Rc::new(RefCell::new(VecDeque::new())),
+            clock,
+        }
+    }
+
+    pub fn latch(&self, stamp: u32) {
+        self.latched.borrow_mut().push_back(stamp);
+    }
+
+    pub fn pending(&self) -> usize {
+        self.latched.borrow().len()
+    }
+}
+
+impl BreakStamps for FakeStamps {
+    fn take(&mut self) -> Option<u16> {
+        Some(
+            self.latched
+                .borrow_mut()
+                .pop_front()
+                .unwrap_or_else(|| self.clock.now()) as u16,
+        )
+    }
+
+    fn clear(&mut self) -> u16 {
+        let mut latched = self.latched.borrow_mut();
+        let n = latched.len() as u16;
+        latched.clear();
+        n
+    }
+}
+
 /// USART baud control recording each applied rate.
 #[derive(Clone, Default)]
 pub struct FakeBaud(Rc<RefCell<Vec<BaudRate>>>);
@@ -257,6 +303,7 @@ impl Providers for TestProviders {
     type Crc = FakeCrc;
     type Tx = FakeWire;
     type Baud = FakeBaud;
+    type Stamps = FakeStamps;
 }
 
 /// Owns the shared fake state and builds a `ServoBus` over it.
@@ -265,13 +312,16 @@ pub struct Harness {
     pub deadline: FakeDeadline,
     pub wire: FakeWire,
     pub baud: FakeBaud,
+    pub stamps: FakeStamps,
 }
 
 impl Harness {
     pub fn new() -> Self {
+        let deadline = FakeDeadline::new();
         Harness {
             ring: FakeRing::new(),
-            deadline: FakeDeadline::new(),
+            stamps: FakeStamps::new(deadline.clone()),
+            deadline,
             wire: FakeWire::new(),
             baud: FakeBaud::new(),
         }
@@ -289,6 +339,7 @@ impl Harness {
             FakeCrc::new(),
             self.wire.clone(),
             self.baud.clone(),
+            self.stamps.clone(),
             id,
             rate,
             response_deadline_us,

@@ -66,14 +66,14 @@ fn train(b: &mut Bench, announce_gap_us: u16) {
 /// tell that from converged (bench: a lie read +2, truth pulled back 8).
 /// The tests' subject is plant DIRECTION, so a LIE never goes first: it
 /// would poison the apply->remeasure step-effect identification.
-fn anchor(b: &mut Bench) -> i32 {
+fn anchor(b: &mut Bench) -> (i32, u32) {
     train(b, GAP_US);
     let mut trim = read_trim(b);
-    for _ in 1..ANCHOR_TRAINS_MAX {
+    for trains in 2..=ANCHOR_TRAINS_MAX {
         train(b, GAP_US);
         let next = read_trim(b);
         if next == trim {
-            return trim;
+            return (trim, trains);
         }
         trim = next;
     }
@@ -84,7 +84,7 @@ fn anchor(b: &mut Bench) -> i32 {
 #[test]
 fn lying_train_trims_and_truth_pulls_back() {
     let mut b = bench();
-    let start = anchor(&mut b);
+    let (start, _) = anchor(&mut b);
 
     train(&mut b, LIE_GAP_US);
     let lied = read_trim(&mut b);
@@ -143,7 +143,7 @@ fn tracker_follows_host_detune() {
 
     // The food after the anchor lets the tracker baseline capture the true
     // host seam.
-    let start = anchor(&mut b);
+    let (start, trains) = anchor(&mut b);
     feed(&mut b, &burst, BASELINE_BURSTS);
 
     // Host walks away -6.9k ppm with no CAL: only the tracker can see it.
@@ -163,6 +163,18 @@ fn tracker_follows_host_detune() {
     train(&mut b, GAP_US);
     train(&mut b, GAP_US);
     let back = read_trim(&mut b);
+
+    // What this test put on the wire after the bench's own setup reads, for
+    // the probe gate: breaks the servo should have stamped (one per frame)
+    // and the bare ruler marks it must not.
+    let trains = trains + 2;
+    let frames = (FOOD_FRAMES as u32) * (BASELINE_BURSTS + PHASE_BURSTS) + 2 * trains + 2;
+    eprintln!(
+        "HOSTCOUNT frames={frames} (food {}, {trains} trains of announce+read, 2 reads) \
+         bare_breaks={}",
+        FOOD_FRAMES as u32 * (BASELINE_BURSTS + PHASE_BURSTS),
+        trains * (GAPS as u32 + 1)
+    );
 
     // A slow host reads exactly like a fast servo clock: gaps measure
     // long, the correction slows the oscillator, trim_steps rises. >=1 in
