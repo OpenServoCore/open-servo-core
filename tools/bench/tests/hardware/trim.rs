@@ -134,8 +134,10 @@ fn feed(b: &mut Bench, burst: &[Vec<u8>], bursts: u32) {
 #[test]
 fn tracker_follows_host_detune() {
     let mut b = bench();
+    let sent_at_start = b.frames_sent();
     // The detune step is defined against the 1M BRR; pin the bus there.
     b.switch_baud(BOOT_BAUD);
+    let sent_at_run = b.frames_sent();
 
     let mut payload = GOAL_POSITION.to_le_bytes().to_vec();
     payload.extend_from_slice(&b.goal_mid().to_le_bytes());
@@ -157,15 +159,16 @@ fn tracker_follows_host_detune() {
     // re-anchor (protocol sec 9.3) trained until the trim is stable.
     let (back, back_trains) = anchor(&mut b);
 
-    // What this test put on the wire after the bench's own setup reads, for
-    // the probe gate: breaks the servo should have stamped (one per frame)
-    // and the bare ruler marks it must not.
+    // What went on the wire, for the probe gate: frames the servo should
+    // have stamped (one break each) and the bare ruler marks it must not.
+    // total_frames counts from connect, so it includes the shared bench's
+    // own setup reads, which a probe dump taken before the binary ran sees.
     let trains = start_trains + back_trains;
-    let frames = (FOOD_FRAMES as u32) * (BASELINE_BURSTS + PHASE_BURSTS) + 2 * trains + 2;
     eprintln!(
-        "HOSTCOUNT frames={frames} (food {}, {trains} trains of announce+read, 2 reads) \
-         bare_breaks={}",
-        FOOD_FRAMES as u32 * (BASELINE_BURSTS + PHASE_BURSTS),
+        "HOSTCOUNT setup_frames={} frames={} total_frames={} trains={trains} bare_breaks={}",
+        sent_at_run - sent_at_start,
+        b.frames_sent() - sent_at_run,
+        b.frames_sent(),
         trains * (GAPS as u32 + 1)
     );
 
