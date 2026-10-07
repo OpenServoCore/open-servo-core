@@ -7,7 +7,7 @@
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use bench::cli::{Connect, Target};
+use bench::cli::{Connect, Target, parse_addr};
 use bench::osc::build_instruction;
 use bench::run::frames_per_burst;
 use clap::Parser;
@@ -20,8 +20,8 @@ struct Args {
     conn: Connect,
     #[command(flatten)]
     target: Target,
-    /// Control-table address to write.
-    #[arg(short, long, default_value_t = 388)]
+    /// Control-table address to write: decimal, 0x-hex, or a field name.
+    #[arg(short, long, default_value = "goal_position", value_parser = parse_addr)]
     addr: u16,
     /// Payload bytes per write (ramp-filled).
     #[arg(short = 'D', long, default_value_t = 4)]
