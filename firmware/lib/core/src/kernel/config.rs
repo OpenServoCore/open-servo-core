@@ -4,9 +4,10 @@
 //! and on its first tick; no tick copies a table block.
 
 use super::{CurrentGains, KernelTiming, LimitCfg, PositionCfg, TrajCfg, VelocityGains};
-use crate::estimator::{FusionGains, ThermAnchor, ThermGates, window};
+use crate::estimator::{FusionGains, NtcCfg, ThermCfg, window};
 use crate::math::q_mul_u;
 use crate::regions::config::DecaySelect;
+use crate::regions::config::{DEFAULT_RTHERM_COLD_BAND_Q016, DEFAULT_RTHERM_SEAT_BAND_COUNTS};
 use crate::traits::DecayMode;
 use crate::{RegionStorageRaw, Shared};
 
@@ -45,8 +46,7 @@ pub struct MediumConfig {
     pub sensor_bad_count: u8,
     pub pos_error_counts: u16,
     pub pos_error_time_ticks: u32,
-    pub therm_gates: ThermGates,
-    pub therm_anchor: ThermAnchor,
+    pub therm: ThermCfg,
 }
 
 #[derive(Copy, Clone, Default)]
@@ -76,6 +76,15 @@ impl KernelConfig {
                 (&raw const (*p).calib.motor).read_volatile(),
             )
         };
+        // SAFETY: as above.
+        let (therm_ext, th) = unsafe {
+            (
+                (&raw const (*p).config.thermal_ext).read_volatile(),
+                (&raw const (*p).calib.thermal).read_volatile(),
+            )
+        };
+        // a CONFIG image from before the bands existed reads them as zero
+        let or_default = |v: u16, d: u16| if v == 0 { d } else { v };
         let ms_to_ticks = |ms: u16| q_mul_u(ms as u32, timing.ticks_per_ms_q16, 16);
         Self {
             fast: FastConfig {
@@ -151,15 +160,26 @@ impl KernelConfig {
                 sensor_bad_count: fault.sensor_bad_count,
                 pos_error_counts: fault.pos_error_counts,
                 pos_error_time_ticks: ms_to_ticks(fault.pos_error_time_ms),
-                therm_gates: ThermGates {
+                therm: ThermCfg {
+                    alpha_q24: th.th_alpha_q24,
+                    g_q016: th.th_g_q016,
+                    mu_q016: th.th_mu_q016,
+                    r_cold_q12: winding.r0_q12,
                     i_min_counts: therm.rtherm_i_min_counts,
-                    omega_max_cps: therm.rtherm_omega_max_cps,
-                },
-                therm_anchor: ThermAnchor {
-                    r0_q12: winding.r0_q12,
-                    t0_cc: winding.t0_cc,
-                    k_r2t_q88: winding.k_r2t_q88,
-                    mu_q016: winding.mu_q016,
+                    seat_band_counts: or_default(
+                        therm_ext.rtherm_seat_band_counts,
+                        DEFAULT_RTHERM_SEAT_BAND_COUNTS,
+                    ),
+                    cold_band_q016: or_default(
+                        therm_ext.rtherm_cold_band_q016,
+                        DEFAULT_RTHERM_COLD_BAND_Q016,
+                    ),
+                    ntc: NtcCfg {
+                        raw_ref: th.ntc_raw_ref,
+                        t_ref_cc: th.ntc_t_ref_cc,
+                        k1_q88: th.ntc_k1_q88,
+                        k2_q24: th.ntc_k2_q24,
+                    },
                 },
             },
         }

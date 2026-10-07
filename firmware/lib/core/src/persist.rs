@@ -61,7 +61,7 @@ pub const IMAGE_VERSION: u8 = 5;
 pub const CALIB_IMAGE_MAGIC: u8 = b'K';
 /// Bump on any CALIB layout or table grid change; independent of
 /// [`IMAGE_VERSION`].
-pub const CALIB_IMAGE_VERSION: u8 = 3;
+pub const CALIB_IMAGE_VERSION: u8 = 4;
 
 /// Store failure (erase/program/verify); dispatch answers `hardware` (sec 5.3).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -970,6 +970,31 @@ mod tests {
             ImageState::Stale
         );
         assert_eq!(pos_lut_state(&sh), state::IDENTITY);
+    }
+
+    /// A CALIB image SAVEd by the resistance-anchor firmware (version 3,
+    /// anchor r0 4170 at 26.5 C, slope 1602, mu 7670 at 0x094..0x09C) boots
+    /// stale: nothing of it lands, the thermometer's model fields stay zero,
+    /// and the kernel reads UNSET, never a temperature through old bytes.
+    #[test]
+    fn anchor_era_calib_image_is_stale_and_the_thermometer_unset() {
+        let mut old = calib_image_of(7);
+        let at = |addr: u16| HEADER_LEN + (addr - crate::regions::CALIB_BASE_ADDR) as usize;
+        old[at(0x094)..at(0x094) + 2].copy_from_slice(&4170u16.to_le_bytes());
+        old[at(0x096)..at(0x096) + 2].copy_from_slice(&2650u16.to_le_bytes());
+        old[at(0x098)..at(0x098) + 2].copy_from_slice(&1602u16.to_le_bytes());
+        old[at(0x09A)..at(0x09A) + 2].copy_from_slice(&7670u16.to_le_bytes());
+        reseal_version(&mut old, 3);
+        let sh = seeded_servo();
+        assert_eq!(
+            boot_overlay_calib(&sh, &old, &[0xFF; CALIB_IMAGE_LEN]),
+            BootPick::unloaded(ImageState::Stale)
+        );
+        sh.table.with(|t| {
+            assert_eq!(t.calib.winding.r0_q12, 0);
+            assert_eq!(t.calib.thermal.th_alpha_q24, 0);
+            assert_eq!(t.calib.thermal.th_g_q016, 0);
+        });
     }
 
     /// The layout before the tables joined the image: the region alone as

@@ -124,7 +124,8 @@ impl ControlTableCell {
             cfg.thermal.recover_cc = config::DEFAULT_RECOVER_CC;
             cfg.thermal.v_undervolt_counts = v_undervolt_counts;
             cfg.thermal.rtherm_i_min_counts = current.rtherm_i_min_counts;
-            cfg.thermal.rtherm_omega_max_cps = config::DEFAULT_RTHERM_OMEGA_MAX_CPS;
+            cfg.thermal_ext.rtherm_seat_band_counts = config::DEFAULT_RTHERM_SEAT_BAND_COUNTS;
+            cfg.thermal_ext.rtherm_cold_band_q016 = config::DEFAULT_RTHERM_COLD_BAND_Q016;
             cfg.fault_cfg.pos_error_counts = config::DEFAULT_POS_ERROR_COUNTS;
             cfg.fault_cfg.pos_error_time_ms = config::DEFAULT_POS_ERROR_TIME_MS;
             cfg.fault_cfg.sensor_delta_max = config::DEFAULT_SENSOR_DELTA_MAX;
@@ -345,7 +346,9 @@ mod tests {
     /// behind them.
     #[test]
     fn calib_layout_keeps_the_host_written_blocks_contiguous() {
-        use super::calib::addr::{kinematics, motor, pot, sense, sense_ext, stamp, winding};
+        use super::calib::addr::{
+            kinematics, motor, pot, sense, sense_ext, stamp, thermal, winding,
+        };
         assert_eq!(pot::RAW_MIN, super::CALIB_BASE_ADDR);
         assert_eq!(pot::RAW_MAX, 0x082);
         assert_eq!(sense::SHUNT_R_MOHM, 0x084);
@@ -358,6 +361,7 @@ mod tests {
         assert_eq!(stamp::PLANT_STAMP, 0x0B2);
         assert_eq!(sense_ext::VBUS_DIV_TOP_OHM, 0x0B4);
         assert_eq!(sense_ext::RAIL_DROP_MV, 0x0C0);
+        assert_eq!(thermal::TH_ALPHA_Q24, 0x0C2);
         let f = ControlTable::FIELDS;
         let rw = |lo: u16, hi: u16| {
             f.iter()
@@ -453,7 +457,10 @@ mod tests {
         for name in ["tick_load_mean_q15", "stack_free_min"] {
             assert!(!by(name).writable, "{name} must stay RO");
         }
-        assert!(f.iter().all(|d| d.addr < 0x276 || d.addr >= 0x280));
+        use super::telemetry::addr::therm;
+        assert_eq!(therm::T_NTC_CC, 0x276);
+        assert_eq!(therm::THERM_FLAGS, 0x278);
+        assert!(f.iter().all(|d| d.addr < 0x27A || d.addr >= 0x280));
     }
 
     /// The terminal floor fills the reserved tail after `health`, so a

@@ -191,12 +191,6 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         // the generation load stays ahead of the block copies
         compiler_fence(Ordering::Acquire);
         let cfg = KernelConfig::load(shared, &self.timing);
-        // thermometer seed tracks the calib anchor: install writes and host
-        // rewrites both land here
-        let r0 = cfg.medium.therm_anchor.r0_q12;
-        if r0 != self.cfg.medium.therm_anchor.r0_q12 {
-            self.medium.seed_thermal(r0);
-        }
         self.cfg = cfg;
         self.config_gen = config_gen;
         let v_floor = window::floor_duty(

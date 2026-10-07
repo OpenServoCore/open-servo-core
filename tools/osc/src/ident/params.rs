@@ -6,7 +6,6 @@ use std::path::Path;
 
 use crate::rig::plant::Lut;
 use anyhow::{Context, Result};
-use osc_ident::exp::anchor::AnchorResult;
 use osc_ident::exp::bias::BiasResult;
 use osc_ident::exp::breakaway::BreakawayResult;
 use osc_ident::exp::held::HeldRun;
@@ -61,19 +60,6 @@ pub struct ThermometerJson {
     pub n: usize,
     pub i_counts: f64,
     pub duty: f64,
-}
-
-impl ThermometerJson {
-    pub fn new(a: &AnchorResult, ambient_c: f64) -> Self {
-        Self {
-            ambient_c,
-            r_vpc: a.r_vpc,
-            spread: a.spread,
-            n: a.n,
-            i_counts: a.i_counts,
-            duty: a.duty,
-        }
-    }
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -863,9 +849,14 @@ impl GainJson {
         Self::of(&e.fields())
     }
 
-    /// The thermometer anchor's four fields, in table order.
-    pub fn anchor(a: &thermometer::Anchor) -> Vec<Self> {
-        Self::of(&a.fields())
+    /// The thermometer's model, LMS step and NTC curve, in table order.
+    pub fn thermal(t: &thermometer::Thermal) -> Vec<Self> {
+        Self::of(&t.fields())
+    }
+
+    /// The stored cold R ([`thermometer::cold_r_q12`]).
+    pub fn cold_r(r: Encoded) -> Self {
+        Self::of(&[("r0_q12", r)]).remove(0)
     }
 
     /// The thermometer's current floor ([`thermometer::floor_counts`]).

@@ -13,7 +13,7 @@ pub use bemf::BemfObs;
 pub use bias::BiasTracker;
 pub use fusion::{FusionGains, FusionObs};
 pub use omega_switch::{OmegaSource, OmegaSwitch};
-pub use thermal::{ThermAnchor, ThermGates, WindingTherm};
+pub use thermal::{NtcCfg, ThermCfg, WindingTherm};
 pub use vbus::VbusEst;
 pub use vcal::VcalLpf;
 pub use window::WindowSel;

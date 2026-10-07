@@ -120,7 +120,6 @@ pub fn seed(shared: &Shared) {
         c.thermal.recover_cc = 9000;
         c.thermal.v_undervolt_counts = 2200;
         c.thermal.rtherm_i_min_counts = 300;
-        c.thermal.rtherm_omega_max_cps = 400;
         c.fusion.l1_q016 = 16384;
         c.fusion.l2_q88 = 1024;
         c.fusion.l3_q88 = 256;
@@ -132,9 +131,6 @@ pub fn seed(shared: &Shared) {
         cal.sense.i_window_min_ticks = 100;
         cal.sense.v_window_min_ticks = 100;
         cal.winding.r0_q12 = 8192;
-        cal.winding.t0_cc = 2500;
-        cal.winding.k_r2t_q88 = 512;
-        cal.winding.mu_q016 = 6554;
         cal.motor.ke_vpc_q = 256;
         cal.motor.r_q12 = 8192;
         cal.motor.recip_ke_q = 16 << 10;

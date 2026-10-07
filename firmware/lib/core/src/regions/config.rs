@@ -190,7 +190,9 @@ pub struct ConfigThermal {
     pub recover_cc: i16,
     pub v_undervolt_counts: u16,
     pub rtherm_i_min_counts: u16,
-    pub rtherm_omega_max_cps: u16,
+    /// Held the retired speed gate; the seat band replaced it.
+    #[ct_field(skip)]
+    pub _rsvd_omega: u16,
 }
 
 // 80C derate onset / 100C cutoff / 90C recover.
@@ -204,7 +206,24 @@ pub const DEFAULT_RECOVER_CC: i16 = 9000;
 pub const DEFAULT_V_UNDERVOLT_MV: u16 = 2900;
 // Under the class current limit, or the winding thermometer never samples.
 pub const DEFAULT_RTHERM_I_MIN_MA: u16 = 150;
-pub const DEFAULT_RTHERM_OMEGA_MAX_CPS: u16 = 400;
+
+/// Winding thermometer seat rules: `rtherm_seat_band_counts` is the
+/// position band one seat spans (beyond it the same-seat ratio re-bases),
+/// `rtherm_cold_band_q016` the cold-R divergence that raises the
+/// recalibrate flag (Q0.16 of the stored cold R). Zero reads as the default.
+#[repr(C)]
+#[derive(Copy, Clone, Block)]
+pub struct ConfigThermalExt {
+    pub rtherm_seat_band_counts: u16,
+    pub rtherm_cold_band_q016: u16,
+}
+
+// Half a commutator period on a 308:1 train is ~2 output counts, and the pot
+// rests within that; a wider band let a 1.8-bar move (+/-3% of R) pass.
+pub const DEFAULT_RTHERM_SEAT_BAND_COUNTS: u16 = 2;
+// 3% = 8 C: above the in-servo seat cluster (+/-1.5%), under half of the
+// +7% the bench motor shifted after its first running.
+pub const DEFAULT_RTHERM_COLD_BAND_Q016: u16 = 1966;
 
 /// Fusion observer correction gains.
 #[repr(C)]
@@ -263,8 +282,9 @@ pub struct ConfigRegs {
     pub thermal: ConfigThermal,
     pub fusion: ConfigFusion,
     pub fault_cfg: ConfigFaultCfg,
+    pub thermal_ext: ConfigThermalExt,
     #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 10],
+    pub _rsvd_tail: [u8; 6],
 }
 
 /// Boot-time seed for `ControlTable.config`; stamped pre-IRQ, then host-owned.

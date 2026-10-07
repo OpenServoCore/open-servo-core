@@ -34,17 +34,18 @@ pub struct CalibSense {
     pub v_window_min_ticks: u16,
 }
 
-/// Winding-resistance thermometry anchor, firmware-shaped: `r0_q12` is the
-/// cold winding resistance in vcounts-per-ccount Q4.12 (host computes it from
-/// its measurement), `t0_cc` the ambient the user entered for it (centi-degC),
-/// `k_r2t_q88` the R-to-T slope, `mu_q016` the LMS step.
+/// The winding's cold resistance, firmware-shaped: `r0_q12` is the kernel's
+/// own R (vcounts per ccount, Q4.12) at a seated hold, reduced to 25.00 C
+/// (`estimator::thermal::R_COLD_REF_CC`) through copper and the board NTC.
+/// The hot-reboot floor and the cold-R health check read it; 0 = none. The
+/// six bytes behind it held the retired resistance anchor (t0, slope, LMS
+/// step) and stay reserved.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct CalibWinding {
     pub r0_q12: u16,
-    pub t0_cc: i16,
-    pub k_r2t_q88: u16,
-    pub mu_q016: u16,
+    #[ct_field(skip)]
+    pub _rsvd_anchor: [u8; 6],
 }
 
 /// Motor identification: `ke_uvs_per_rad` is the host-facing record; the rest
@@ -106,6 +107,27 @@ pub struct CalibSenseExt {
     pub rail_drop_mv: u16,
 }
 
+/// Winding thermometer model, host-written per motor family (MG90 on the
+/// dev board in open air: tau 128 s, 63 C/W over the board NTC): `th_alpha_q24`
+/// the carry step per SLOW tick (dt/tau, Q0.24), `th_g_q016` the steady
+/// winding excess over the NTC per vcount-ccount of `i (v - Ke omega)`
+/// (centi-C, Q0.16), `th_mu_q016` the same-seat LMS step; then the board
+/// NTC's counts-to-centi-C quadratic about its reference point, derived by
+/// the host from `CalibSenseExt`'s beta constants (`estimator::thermal::
+/// NtcCfg`). Zero alpha, g or k1 = no thermometer (`t_winding_cc` reads its
+/// sentinel, nothing derates).
+#[repr(C)]
+#[derive(Copy, Clone, Block)]
+pub struct CalibThermal {
+    pub th_alpha_q24: u16,
+    pub th_g_q016: u16,
+    pub th_mu_q016: u16,
+    pub ntc_raw_ref: u16,
+    pub ntc_t_ref_cc: i16,
+    pub ntc_k1_q88: i16,
+    pub ntc_k2_q24: u16,
+}
+
 /// The plant stamp (`stamp` module): the host's CRC over the identified and
 /// calibrated set plus the effective position table, 0 = never stamped.
 /// Firmware recomputes it at every checkpoint; a mismatch is
@@ -133,6 +155,7 @@ pub struct CalibRegs {
     pub kinematics: CalibKinematics,
     pub stamp: CalibStamp,
     pub sense_ext: CalibSenseExt,
+    pub thermal: CalibThermal,
     #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 190],
+    pub _rsvd_tail: [u8; 176],
 }

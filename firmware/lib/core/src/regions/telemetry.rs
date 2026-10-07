@@ -71,7 +71,8 @@ pub struct TelemetryEstimates {
     /// Effective current ceiling after limit folds.
     #[ct_field(access = ro)]
     pub i_lim_counts: u16,
-    /// Winding temperature, centi-C.
+    /// Winding temperature, centi-C; `i16::MIN` while the thermometer has
+    /// no model or no NTC (`therm_flags` bit 0).
     #[ct_field(access = ro)]
     pub t_winding_cc: i16,
     #[ct_field(access = ro)]
@@ -220,6 +221,21 @@ pub struct TelemetryHealth {
     pub stack_free_min: u16,
 }
 
+/// Winding thermometer state beside `t_winding_cc`: the board NTC as the
+/// kernel converts it (centi-C, the carry's base) and the estimator's
+/// flags (`estimator::thermal::flag`: unset, tracking a seat, cold-R
+/// recalibrate, hot-boot floor).
+#[repr(C)]
+#[derive(Copy, Clone, Block)]
+pub struct TelemetryTherm {
+    #[ct_field(access = ro)]
+    pub t_ntc_cc: i16,
+    #[ct_field(access = ro)]
+    pub therm_flags: u8,
+    #[ct_field(skip)]
+    pub _rsvd_align: u8,
+}
+
 #[repr(C)]
 #[derive(Section)]
 #[ct_section(base = crate::regions::TELEMETRY_BASE_ADDR, size = crate::regions::TELEMETRY_REGION_SIZE)]
@@ -232,6 +248,7 @@ pub struct TelemetryRegs {
     pub limits: TelemetryLimits,
     pub health: TelemetryHealth,
     pub limits_ext: TelemetryLimitsExt,
+    pub therm: TelemetryTherm,
     #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 10],
+    pub _rsvd_tail: [u8; 6],
 }
