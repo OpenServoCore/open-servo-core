@@ -169,6 +169,12 @@ impl Bench {
         self.wire.burst(frames).expect("burst frames");
     }
 
+    /// Frames this wire has sent (see [`Wire::frames_sent`]); a test
+    /// differences two reads, since the shared bench outlives it.
+    pub fn frames_sent(&self) -> u64 {
+        self.wire.frames_sent()
+    }
+
     /// Drop pending capture -- keeps a long food loop inside the ring
     /// contract without parsing anything.
     pub fn drain_stamps(&mut self) {

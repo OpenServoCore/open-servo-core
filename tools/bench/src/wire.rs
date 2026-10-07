@@ -19,6 +19,7 @@ pub struct Wire {
     baud: u32,
     ticks_per_us: u32,
     stall: StallInjector,
+    frames_sent: u64,
 }
 
 /// Capture-drain poll cadence. The client's anchor chain keeps a late
@@ -40,6 +41,7 @@ impl Wire {
             baud: BOOT_BAUD,
             ticks_per_us,
             stall: StallInjector::from_env(),
+            frames_sent: 0,
         };
         if baud != BOOT_BAUD {
             wire.set_baud(baud)?;
@@ -60,6 +62,12 @@ impl Wire {
 
     pub fn current_baud(&self) -> u32 {
         self.baud
+    }
+
+    /// Break-framed frames sent since connect (train announces included,
+    /// bare breaks not). Traffic through [`Wire::client`] is not counted.
+    pub fn frames_sent(&self) -> u64 {
+        self.frames_sent
     }
 
     /// Capture ticks per wire bit at the current baud.
@@ -85,6 +93,7 @@ impl Wire {
     /// One law break + `bytes`, raw (malformed frames allowed).
     pub fn send_frame(&mut self, bytes: &[u8]) -> Result<()> {
         self.client.wire_send(bytes)?;
+        self.frames_sent += 1;
         Ok(())
     }
 
@@ -92,6 +101,7 @@ impl Wire {
     pub fn burst(&mut self, frames: &[Vec<u8>]) -> Result<()> {
         let refs: Vec<&[u8]> = frames.iter().map(|f| f.as_slice()).collect();
         self.client.wire_burst(&refs)?;
+        self.frames_sent += frames.len() as u64;
         Ok(())
     }
 
@@ -116,6 +126,7 @@ impl Wire {
                 .try_into()
                 .context("train length caps at 255 breaks")?,
         )?;
+        self.frames_sent += 1;
         Ok(())
     }
 
