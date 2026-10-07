@@ -59,13 +59,14 @@ fn train(b: &mut Bench, announce_gap_us: u16) {
     sleep(Duration::from_millis(SETTLE_MS));
 }
 
-/// Converge the CAL loop and return the converged trim (protocol sec 9.3:
-/// converged = the read-back stable between trains). Two trains from
-/// boot; more when the trim enters off-center -- a fixed pair clamped to
-/// STEPS_MAX leaves a railed trim 7 steps short, and `|start| <= 8` cannot
-/// tell that from converged (bench: a lie read +2, truth pulled back 8).
-/// The tests' subject is plant DIRECTION, so a LIE never goes first: it
-/// would poison the apply->remeasure step-effect identification.
+/// Converge the CAL loop and return the converged trim and the trains it
+/// took (protocol sec 9.3: converged = the read-back stable between
+/// trains). Two trains from boot; more when the trim enters off-center - a
+/// fixed pair clamped to STEPS_MAX leaves a railed trim 7 steps short, and
+/// `|start| <= 8` cannot tell that from converged (bench: a lie read +2,
+/// truth pulled back 8). The tests' subject is plant DIRECTION, so a LIE
+/// never goes first: it would poison the apply->remeasure step-effect
+/// identification.
 fn anchor(b: &mut Bench) -> (i32, u32) {
     train(b, GAP_US);
     let mut trim = read_trim(b);
@@ -77,7 +78,7 @@ fn anchor(b: &mut Bench) -> (i32, u32) {
         }
         trim = next;
     }
-    panic!("precondition: CAL did not converge in {ANCHOR_TRAINS_MAX} trains, trim {trim}")
+    panic!("CAL did not converge in {ANCHOR_TRAINS_MAX} trains, trim {trim}")
 }
 
 #[serial]
@@ -143,7 +144,7 @@ fn tracker_follows_host_detune() {
 
     // The food after the anchor lets the tracker baseline capture the true
     // host seam.
-    let (start, trains) = anchor(&mut b);
+    let (start, start_trains) = anchor(&mut b);
     feed(&mut b, &burst, BASELINE_BURSTS);
 
     // Host walks away -6.9k ppm with no CAL: only the tracker can see it.
@@ -152,22 +153,14 @@ fn tracker_follows_host_detune() {
     b.follow_baud(BOOT_BAUD);
     let pulled = read_trim(&mut b);
 
-    // Host returns to true baud - a host-KNOWN behavior change, so the
-    // contract's answer is a CAL re-anchor (protocol sec 9.3): a rate step
-    // is not thermal drift, and a host that changes rate re-anchors - with
-    // two trains, per the sec 9.3 boot guidance (the first identifies the
-    // chip's step effect, the second finishes). The tracker's baseline is
-    // the CAL anchor, so against it the return reads as the detune undone
-    // and the tracker pulls back on its own where the food allows; the
-    // trains settle it either way.
-    train(&mut b, GAP_US);
-    train(&mut b, GAP_US);
-    let back = read_trim(&mut b);
+    // Host returns to true baud: a host-known rate change, answered by a CAL
+    // re-anchor (protocol sec 9.3) trained until the trim is stable.
+    let (back, back_trains) = anchor(&mut b);
 
     // What this test put on the wire after the bench's own setup reads, for
     // the probe gate: breaks the servo should have stamped (one per frame)
     // and the bare ruler marks it must not.
-    let trains = trains + 2;
+    let trains = start_trains + back_trains;
     let frames = (FOOD_FRAMES as u32) * (BASELINE_BURSTS + PHASE_BURSTS) + 2 * trains + 2;
     eprintln!(
         "HOSTCOUNT frames={frames} (food {}, {trains} trains of announce+read, 2 reads) \
@@ -188,6 +181,7 @@ fn tracker_follows_host_detune() {
     );
     assert!(
         (back - start).abs() <= 1,
-        "the returning host's CAL re-anchors: start {start}, back {back}"
+        "the returning host's CAL re-anchors: start {start}, back {back} \
+         after {back_trains} trains"
     );
 }
