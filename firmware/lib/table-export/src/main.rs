@@ -151,7 +151,7 @@ mod tests {
         assert_eq!(value["stamp"]["tag"], "osc-plant-1");
         assert_eq!(value["stamp"]["pos_lut_points"], 256);
         let covered = value["stamp"]["covered"].as_array().unwrap();
-        assert_eq!(covered.len(), 35);
+        assert_eq!(covered.len(), 39);
         for name in covered {
             assert!(
                 fields.iter().any(|f| f["name"] == *name),

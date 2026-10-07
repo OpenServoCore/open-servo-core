@@ -519,7 +519,7 @@ fn host_stamp_is_the_firmwares_over_the_same_table() {
     let mut c = Client::connect(pipe).expect("connect");
     let id = Id::new(1);
     let stamp = d.stamp().expect("recipe");
-    assert_eq!(stamp.covered().len(), 35);
+    assert_eq!(stamp.covered().len(), 39);
 
     let check = |c: &mut Client<FakePipe>, case: &str| {
         let host = c.plant_stamp(id, &d).expect("host stamp");

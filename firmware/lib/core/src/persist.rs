@@ -61,7 +61,7 @@ pub const IMAGE_VERSION: u8 = 5;
 pub const CALIB_IMAGE_MAGIC: u8 = b'K';
 /// Bump on any CALIB layout or table grid change; independent of
 /// [`IMAGE_VERSION`].
-pub const CALIB_IMAGE_VERSION: u8 = 4;
+pub const CALIB_IMAGE_VERSION: u8 = 3;
 
 /// Store failure (erase/program/verify); dispatch answers `hardware` (sec 5.3).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -972,29 +972,64 @@ mod tests {
         assert_eq!(pos_lut_state(&sh), state::IDENTITY);
     }
 
-    /// A CALIB image SAVEd by the resistance-anchor firmware (version 3,
-    /// anchor r0 4170 at 26.5 C, slope 1602, mu 7670 at 0x094..0x09C) boots
-    /// stale: nothing of it lands, the thermometer's model fields stay zero,
-    /// and the kernel reads UNSET, never a temperature through old bytes.
+    /// A CALIB image SAVEd by the resistance-anchor firmware (anchor r0
+    /// 4170 at 26.5 C, slope 1602, mu 7670 behind it, zeros where the
+    /// thermometer block now sits) loads whole: r0, table, kinematics and
+    /// stamp land, the anchor's bytes fall in reserved space, and the zero
+    /// model reads the sentinel until the host writes one.
     #[test]
-    fn anchor_era_calib_image_is_stale_and_the_thermometer_unset() {
+    fn anchor_era_calib_image_loads_with_the_thermometer_unset() {
+        use crate::estimator::thermal::{Sample, UNSET_CC};
+        use crate::estimator::{NtcCfg, ThermCfg, WindingTherm};
+        use crate::regions::calib::addr::{kinematics, stamp, winding};
         let mut old = calib_image_of(7);
-        let at = |addr: u16| HEADER_LEN + (addr - crate::regions::CALIB_BASE_ADDR) as usize;
-        old[at(0x094)..at(0x094) + 2].copy_from_slice(&4170u16.to_le_bytes());
-        old[at(0x096)..at(0x096) + 2].copy_from_slice(&2650u16.to_le_bytes());
-        old[at(0x098)..at(0x098) + 2].copy_from_slice(&1602u16.to_le_bytes());
-        old[at(0x09A)..at(0x09A) + 2].copy_from_slice(&7670u16.to_le_bytes());
+        let mut put = |addr: u16, v: u16| {
+            let at = HEADER_LEN + (addr - CALIB_BASE_ADDR) as usize;
+            old[at..at + 2].copy_from_slice(&v.to_le_bytes());
+        };
+        for (i, v) in [4170, 2650, 1602, 7670].into_iter().enumerate() {
+            put(winding::R0_Q12 + 2 * i as u16, v);
+        }
+        put(kinematics::GEAR_RATIO_CENTI, 30805);
+        put(stamp::PLANT_STAMP, 0xBEEF);
         reseal_version(&mut old, 3);
         let sh = seeded_servo();
         assert_eq!(
-            boot_overlay_calib(&sh, &old, &[0xFF; CALIB_IMAGE_LEN]),
-            BootPick::unloaded(ImageState::Stale)
+            boot_overlay_calib(&sh, &old, &[0xFF; CALIB_IMAGE_LEN]).state,
+            ImageState::Loaded
         );
-        sh.table.with(|t| {
-            assert_eq!(t.calib.winding.r0_q12, 0);
-            assert_eq!(t.calib.thermal.th_alpha_q24, 0);
-            assert_eq!(t.calib.thermal.th_g_q016, 0);
+        assert_eq!(pos_lut_state(&sh), state::LIVE);
+        let th = sh.table.with(|t| {
+            assert_eq!(t.calib.winding.r0_q12, 4170);
+            assert_eq!(t.calib.motor.r_q12, 13800);
+            assert_eq!(t.calib.kinematics.gear_ratio_centi, 30805);
+            assert_eq!(t.calib.stamp.plant_stamp, 0xBEEF);
+            t.calib.thermal
         });
+        let cfg = ThermCfg {
+            alpha_q24: th.th_alpha_q24,
+            g_q016: th.th_g_q016,
+            mu_q016: th.th_mu_q016,
+            r_cold_q12: 4170,
+            ntc: NtcCfg {
+                raw_ref: th.ntc_raw_ref,
+                t_ref_cc: th.ntc_t_ref_cc,
+                k1_q88: th.ntc_k1_q88,
+                k2_q24: th.ntc_k2_q24,
+            },
+            ..Default::default()
+        };
+        let seated = Sample {
+            v_mean: Some(1200),
+            i_meas: Some(400),
+            pos_counts: 2000,
+            ntc_raw: 2048,
+            ..Default::default()
+        };
+        let mut therm = WindingTherm::new();
+        for _ in 0..256 {
+            assert_eq!(therm.step(&seated, &cfg), UNSET_CC);
+        }
     }
 
     /// The layout before the tables joined the image: the region alone as
