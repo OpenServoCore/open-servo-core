@@ -3,7 +3,7 @@
 //! the status break).
 
 use anyhow::{Result, bail};
-use bench::cli::{Connect, Target, gate_fail_rate, print_conn};
+use bench::cli::{Connect, Target, gate_fail_rate, parse_addr, print_conn};
 use bench::osc::build_read;
 use bench::run::{Stats, measure};
 use clap::Parser;
@@ -16,8 +16,8 @@ struct Args {
     conn: Connect,
     #[command(flatten)]
     target: Target,
-    /// Control-table address.
-    #[arg(short, long, default_value_t = 0)]
+    /// Control-table address: decimal, 0x-hex, or a field name.
+    #[arg(short, long, default_value = "0", value_parser = parse_addr)]
     addr: u16,
     /// Bytes to read (single status frame: <= 252).
     #[arg(short, long, default_value_t = 240)]
