@@ -583,7 +583,8 @@ impl Medium {
         let t_cc = self.thermal.step(
             vm,
             therm_i,
-            self.fusion.omega_q16().unsigned_abs() >> 16,
+            self.fusion.omega_q16() >> 16,
+            fc.current.ke_q412,
             &mc.therm_gates,
             &mc.therm_anchor,
         );
