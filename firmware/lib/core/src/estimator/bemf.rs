@@ -2,9 +2,14 @@
 //! terminals off-window (v_diff ~ 0), so the period-average applied
 //! differential voltage is just the duty fraction times the drive-window
 //! differential - bridge drops included, which is the point. Subtract the
-//! resistive drop and scale by 1/Ke and the motor is its own tachometer:
-//! omega = (v_mean - R*i) / Ke, divide-free via caller-side reciprocals
-//! (control-theory "Back-EMF, a Velocity Sensor for Free").
+//! resistive and the inductive drop and scale by 1/Ke and the motor is its
+//! own tachometer: omega = (v_mean - R*i - L*di/dt) / Ke, divide-free via
+//! caller-side reciprocals (control-theory "Back-EMF, a Velocity Sensor for
+//! Free"). Summed over a window the per-tick L*di/dt telescopes to
+//! L*(i_end - i_start): the edge samples carry the whole term, nothing for
+//! a current that ends where it started, the whole surge for a window the
+//! velocity loop steps across the sampling floor - which would otherwise
+//! read as speed.
 //!
 //! Every FAST tick adds one sample; the kernel closes a half at each MEDIUM
 //! boundary (DECIM_MED samples) and the output is the mean over the two
@@ -43,9 +48,15 @@ pub struct BemfObs {
     sum_tv: i32,
     /// Sum of the signed shunt current over the open half.
     sum_i: i32,
+    /// Latest valid current sample: the open half's end edge.
+    i_last: i32,
+    /// `i_last` at the previous close: the open half's start edge, held
+    /// through sub-floor ticks the way the kernel holds its current; 0
+    /// from boot, where the winding is at rest.
+    i_ref: i32,
     half_valid: bool,
-    /// Previous half's `sum(v_mean) - R * sum(i)`, None if any sample in it
-    /// was sub-floor.
+    /// Previous half's `sum(v_mean) - R * sum(i) - L * di`, None if any
+    /// sample in it was sub-floor.
     prev_half: Option<i32>,
 }
 
@@ -54,6 +65,8 @@ impl BemfObs {
         Self {
             sum_tv: 0,
             sum_i: 0,
+            i_last: 0,
+            i_ref: 0,
             half_valid: true,
             prev_half: None,
         }
@@ -69,6 +82,7 @@ impl BemfObs {
             (Some(v), Some(i)) => {
                 self.sum_tv = self.sum_tv.saturating_add((ticks as i32).saturating_mul(v));
                 self.sum_i = self.sum_i.saturating_add(i);
+                self.i_last = i;
             }
             _ => self.half_valid = false,
         }
@@ -77,19 +91,32 @@ impl BemfObs {
     /// MEDIUM-boundary close: folds the open half and returns the boxcar
     /// velocity in whole c/s when both halves are valid. `recip_arr_q24`
     /// per `RECIP_ARR_SHIFT`, `recip_ke_q` per `RECIP_KE_SHIFT`, `r_q12`
-    /// vcounts/ccount Q4.12. An unset Ke (0) yields no estimate: a zero
-    /// would read as "at rest" to the velocity loop, the runaway seed.
-    pub fn close_half(&mut self, r_q12: u16, recip_ke_q: u16, recip_arr_q24: u32) -> Option<i32> {
+    /// vcounts/ccount Q4.12, `l_tick_q412` vcounts per ccount per FAST tick
+    /// Q4.12 (the inductance over the tick). An unset Ke (0) yields no
+    /// estimate: a zero would read as "at rest" to the velocity loop, the
+    /// runaway seed.
+    pub fn close_half(
+        &mut self,
+        r_q12: u16,
+        l_tick_q412: u16,
+        recip_ke_q: u16,
+        recip_arr_q24: u32,
+    ) -> Option<i32> {
         let half = if self.half_valid {
-            // sum(v_mean) - R * sum(i): |sum_i| <= 10 * 4095 keeps the R
-            // product i64-exact for any gain encoding
+            // sum(v_mean) - R * sum(i) - L * (i_end - i_start): |sum_i| <=
+            // 10 * 4095 keeps the R product i64-exact for any gain encoding
             let v = q_mul(self.sum_tv, recip_arr_q24 as i32, RECIP_ARR_SHIFT);
-            Some(v.saturating_sub(q_mul(r_q12 as i32, self.sum_i, 12)))
+            let di = self.i_last.saturating_sub(self.i_ref);
+            Some(
+                v.saturating_sub(q_mul(r_q12 as i32, self.sum_i, 12))
+                    .saturating_sub(q_mul(l_tick_q412 as i32, di, 12)),
+            )
         } else {
             None
         };
         self.sum_tv = 0;
         self.sum_i = 0;
+        self.i_ref = self.i_last;
         self.half_valid = true;
         let out = match (self.prev_half, half) {
             // (a + b) / BOXCAR_TICKS * recip_ke in one truncation: the
@@ -120,34 +147,69 @@ mod tests {
     const RECIP_ARR: u32 = (1u32 << RECIP_ARR_SHIFT) / ARR;
     // unity Ke: 1.0 c/s per vcount
     const KE_UNITY: u16 = 1 << RECIP_KE_SHIFT;
+    // unity L: 1.0 vcount per ccount per tick
+    const L_UNITY: u16 = 1 << 12;
     const HALF: usize = DECIM_MED as usize;
 
-    /// Feed one whole half of identical samples and close it.
+    /// Feed one whole half of identical samples and close it, no inductive
+    /// term.
     fn half(obs: &mut BemfObs, ticks: u32, vdiff: Option<i32>, i: Option<i32>) -> Option<i32> {
         for _ in 0..HALF {
             obs.sample(ticks, vdiff, i);
         }
-        obs.close_half(4096, KE_UNITY, RECIP_ARR)
+        obs.close_half(4096, 0, KE_UNITY, RECIP_ARR)
     }
 
-    /// Two clean halves of a constant pair with explicit gains/reciprocal.
+    /// Two clean halves of a constant pair with explicit gains/reciprocal,
+    /// no inductive term.
     fn boxcar(ticks: u32, vdiff: i32, i: i32, r_q12: u16, recip_ke: u16, recip_arr: u32) -> i32 {
         let mut obs = BemfObs::new();
+        window(&mut obs, ticks, vdiff, |_| i, r_q12, 0, recip_ke, recip_arr).unwrap()
+    }
+
+    /// One whole window (two halves) of a per-tick current sequence through
+    /// `obs`, returning the second close.
+    #[allow(clippy::too_many_arguments)]
+    fn window(
+        obs: &mut BemfObs,
+        ticks: u32,
+        vdiff: i32,
+        i: impl Fn(usize) -> i32,
+        r_q12: u16,
+        l_q412: u16,
+        recip_ke: u16,
+        recip_arr: u32,
+    ) -> Option<i32> {
         for n in 0..2 * HALF {
-            obs.sample(ticks, Some(vdiff), Some(i));
+            obs.sample(ticks, Some(vdiff), Some(i(n)));
             if n == HALF - 1 {
-                obs.close_half(r_q12, recip_ke, recip_arr);
+                obs.close_half(r_q12, l_q412, recip_ke, recip_arr);
             }
         }
-        obs.close_half(r_q12, recip_ke, recip_arr).unwrap()
+        obs.close_half(r_q12, l_q412, recip_ke, recip_arr)
     }
 
     /// The closed form a constant pair must land on: the boxcar mean of
     /// v_mean - R*i, times 1/Ke, with real division.
     fn closed_form(ticks: u32, vdiff: i32, i: i32, r_q12: u16, recip_ke: u16) -> i64 {
+        closed_form_di(ticks, vdiff, BOXCAR_TICKS * i, 0, r_q12, 0, recip_ke)
+    }
+
+    /// The closed form for a window whose current sums to `i_sum` and
+    /// rises `di` from the sample before it to its last sample.
+    fn closed_form_di(
+        ticks: u32,
+        vdiff: i32,
+        i_sum: i32,
+        di: i32,
+        r_q12: u16,
+        l_q412: u16,
+        recip_ke: u16,
+    ) -> i64 {
         let v = (BOXCAR_TICKS as i64 * ticks as i64 * vdiff as i64 * RECIP_ARR as i64) >> 24;
-        let r = (r_q12 as i64 * BOXCAR_TICKS as i64 * i as i64) >> 12;
-        (((v - r) * recip_ke as i64) / (BOXCAR_TICKS as i64)) >> RECIP_KE_SHIFT
+        let r = (r_q12 as i64 * i_sum as i64) >> 12;
+        let l = (l_q412 as i64 * di as i64) >> 12;
+        (((v - r - l) * recip_ke as i64) / (BOXCAR_TICKS as i64)) >> RECIP_KE_SHIFT
     }
 
     #[test]
@@ -195,6 +257,145 @@ mod tests {
     }
 
     #[test]
+    fn inductive_term_books_the_current_rise_over_the_window() {
+        // current ramps 10 per tick from rest to 200 across the window: at
+        // unity L the window books 200 vcounts, 10 per tick, 10 c/s at
+        // unity Ke off the zero-current pin
+        let ramp = |n: usize| 10 * (n as i32 + 1);
+        let mut obs = BemfObs::new();
+        let out = window(&mut obs, 600, 3000, ramp, 0, L_UNITY, KE_UNITY, RECIP_ARR).unwrap();
+        assert!(
+            (out as i64 - closed_form_di(600, 3000, 2100, 200, 0, L_UNITY, KE_UNITY)).abs() <= 1
+        );
+        assert_eq!(out, 1489, "pin");
+        // the same window with no inductance reads the rise as speed
+        let mut obs = BemfObs::new();
+        let out = window(&mut obs, 600, 3000, ramp, 0, 0, KE_UNITY, RECIP_ARR).unwrap();
+        assert_eq!(out, 1499);
+    }
+
+    #[test]
+    fn inductive_term_at_the_rig_scale() {
+        // rev 2A MG90 at a 15% drive window on a 7.1 V rail: r_q12 4317,
+        // L 0.757 mH through the sense chain = 3.39 vcounts per ccount
+        // per tick (13889), recip_ke 11.04 c/s per vcount (11305); the
+        // window's current climbs from a settled 100 to 200 counts, the
+        // shape of a velocity-loop duty step across the sampling floor
+        let ramp = |n: usize| 100 + 5 * (n as i32 + 1);
+        let mut obs = BemfObs::new();
+        window(&mut obs, 180, 1762, |_| 100, 4317, 13889, 11305, RECIP_ARR);
+        let out = window(&mut obs, 180, 1762, ramp, 4317, 13889, 11305, RECIP_ARR).unwrap();
+        let want = closed_form_di(180, 1762, 3050, 100, 4317, 13889, 11305);
+        assert!((out as i64 - want).abs() <= 2, "got {out} want {want}");
+        assert_eq!(out, 956, "pin");
+        // without the term the same window over-reads by L * 100 / 20
+        // vcounts per tick = 17 vcounts = 187 c/s of speed
+        let mut obs = BemfObs::new();
+        window(&mut obs, 180, 1762, |_| 100, 4317, 0, 11305, RECIP_ARR);
+        let out = window(&mut obs, 180, 1762, ramp, 4317, 0, 11305, RECIP_ARR).unwrap();
+        assert_eq!(out, 1143, "pin");
+    }
+
+    #[test]
+    fn inductive_term_telescopes_to_the_window_edges() {
+        // a 0 -> 200 step books the same 200 vcounts wherever it lands in
+        // the window, and the settled window after it books nothing
+        for at in [0usize, 3, 10, 19] {
+            let step = |n: usize| if n >= at { 200 } else { 0 };
+            let mut obs = BemfObs::new();
+            let out = window(&mut obs, 600, 3000, step, 0, L_UNITY, KE_UNITY, RECIP_ARR).unwrap();
+            assert_eq!(out, 1489, "step at {at}");
+            let out = window(
+                &mut obs,
+                600,
+                3000,
+                |_| 200,
+                0,
+                L_UNITY,
+                KE_UNITY,
+                RECIP_ARR,
+            )
+            .unwrap();
+            assert_eq!(out, 1499, "settled after the step at {at}");
+        }
+    }
+
+    #[test]
+    fn boot_edge_is_rest() {
+        // the first window after boot references a winding at rest, so a
+        // constant current books its rise once; the next window is clean
+        let mut obs = BemfObs::new();
+        let out = window(
+            &mut obs,
+            600,
+            3000,
+            |_| 200,
+            0,
+            L_UNITY,
+            KE_UNITY,
+            RECIP_ARR,
+        )
+        .unwrap();
+        assert_eq!(out, 1489);
+        for _ in 0..HALF {
+            obs.sample(600, Some(3000), Some(200));
+        }
+        assert_eq!(obs.close_half(0, L_UNITY, KE_UNITY, RECIP_ARR), Some(1499));
+    }
+
+    #[test]
+    fn inductive_start_edge_holds_through_a_sub_floor_gap() {
+        // a voided half leaves the start edge at the last valid sample, so
+        // the first clean window after the gap at the same current books
+        // no surge; a window that resumes higher books the difference
+        let mut obs = BemfObs::new();
+        window(
+            &mut obs,
+            600,
+            3000,
+            |_| 200,
+            0,
+            L_UNITY,
+            KE_UNITY,
+            RECIP_ARR,
+        );
+        for _ in 0..HALF {
+            obs.sample(0, None, None);
+        }
+        assert_eq!(obs.close_half(0, L_UNITY, KE_UNITY, RECIP_ARR), None);
+        assert_eq!(
+            window(
+                &mut obs,
+                600,
+                3000,
+                |_| 200,
+                0,
+                L_UNITY,
+                KE_UNITY,
+                RECIP_ARR
+            ),
+            Some(1499)
+        );
+        for _ in 0..HALF {
+            obs.sample(0, None, None);
+        }
+        obs.close_half(0, L_UNITY, KE_UNITY, RECIP_ARR);
+        assert_eq!(
+            window(
+                &mut obs,
+                600,
+                3000,
+                |_| 400,
+                0,
+                L_UNITY,
+                KE_UNITY,
+                RECIP_ARR
+            ),
+            Some(1489)
+        );
+    }
+
+    #[test]
     fn one_sub_floor_tick_voids_both_boxcars() {
         let mut obs = BemfObs::new();
         half(&mut obs, 600, Some(3000), Some(0));
@@ -204,7 +405,7 @@ mod tests {
         for _ in 1..HALF {
             obs.sample(600, Some(3000), Some(0));
         }
-        assert_eq!(obs.close_half(4096, KE_UNITY, RECIP_ARR), None);
+        assert_eq!(obs.close_half(4096, 0, KE_UNITY, RECIP_ARR), None);
         // the fourth half is clean but pairs with the voided third
         assert_eq!(half(&mut obs, 600, Some(3000), Some(0)), None);
         // the fifth pairs with the clean fourth
@@ -220,7 +421,7 @@ mod tests {
             for _ in 1..HALF {
                 obs.sample(600, Some(3000), Some(0));
             }
-            assert_eq!(obs.close_half(4096, KE_UNITY, RECIP_ARR), None);
+            assert_eq!(obs.close_half(4096, 0, KE_UNITY, RECIP_ARR), None);
         }
     }
 
@@ -231,7 +432,7 @@ mod tests {
         for _ in 0..HALF {
             obs.sample(600, Some(3000), Some(0));
         }
-        assert_eq!(obs.close_half(4096, 0, RECIP_ARR), None);
+        assert_eq!(obs.close_half(4096, 0, 0, RECIP_ARR), None);
         // the halves kept folding: the next clean close pairs as usual
         assert_eq!(half(&mut obs, 600, Some(3000), Some(0)), Some(1499));
     }
@@ -256,7 +457,7 @@ mod tests {
             let i = if n & 2 == 0 { i32::MAX } else { i32::MIN };
             obs.sample(u16::MAX as u32, Some(v), Some(i));
             if n % HALF == HALF - 1 {
-                obs.close_half(u16::MAX, u16::MAX, u32::MAX);
+                obs.close_half(u16::MAX, u16::MAX, u16::MAX, u32::MAX);
             }
         }
     }

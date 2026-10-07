@@ -36,6 +36,7 @@ pub struct FastConfig {
 pub struct MediumConfig {
     pub fusion: FusionGains,
     pub r_q12: u16,
+    pub l_tick_q412: u16,
     pub recip_ke_q: u16,
     pub traj: TrajCfg,
     pub position: PositionCfg,
@@ -61,7 +62,20 @@ impl KernelConfig {
         // SAFETY: reads of transport-owned regions - raw-pointer volatile
         // block copies, no `&T` formed, aligned repr(C) blocks inside the
         // static table (single-writer contract on `Kernel`).
-        let (loop_cur, loop_vel, loop_pos, lim, therm, fus, fault, pos_lim, sense, winding, motor) = unsafe {
+        let (
+            loop_cur,
+            loop_vel,
+            loop_pos,
+            lim,
+            therm,
+            fus,
+            fault,
+            pos_lim,
+            sense,
+            winding,
+            motor,
+            motor_ext,
+        ) = unsafe {
             (
                 (&raw const (*p).config.loop_current).read_volatile(),
                 (&raw const (*p).config.loop_velocity).read_volatile(),
@@ -74,6 +88,7 @@ impl KernelConfig {
                 (&raw const (*p).calib.sense).read_volatile(),
                 (&raw const (*p).calib.winding).read_volatile(),
                 (&raw const (*p).calib.motor).read_volatile(),
+                (&raw const (*p).calib.motor_ext).read_volatile(),
             )
         };
         let ms_to_ticks = |ms: u16| q_mul_u(ms as u32, timing.ticks_per_ms_q16, 16);
@@ -114,6 +129,7 @@ impl KernelConfig {
                     fric_fc_counts: motor.fric_fc_counts,
                 },
                 r_q12: motor.r_q12,
+                l_tick_q412: motor_ext.l_tick_q412,
                 recip_ke_q: motor.recip_ke_q,
                 traj: TrajCfg {
                     vel_limit_cps: loop_pos.velocity_limit_cps,

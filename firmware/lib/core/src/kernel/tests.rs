@@ -1547,6 +1547,50 @@ fn bemf_boxcar_lands_on_the_closed_form_after_20_ticks() {
     assert_eq!(sh.table.with(|t| t.telemetry.estimates.omega_bemf_cps), 0);
 }
 
+/// The inductive term through the kernel: a current climbing 10 counts a
+/// tick across the boxcar books L * (i_end - i_start) against the window,
+/// `l_tick_q412` from CALIB.
+#[test]
+fn bemf_boxcar_subtracts_the_inductive_drop_on_a_current_ramp() {
+    let sh = Shared::new();
+    ident_setup(&sh);
+    // unity L: 1.0 vcount per ccount per tick
+    sh.table
+        .with_mut(|t| t.calib.motor_ext.l_tick_q412 = 1 << 12);
+    let mut k = kernel();
+    settle(&mut k, &sh, frame(2000, BIAS + 100));
+    run_to(&mut k, &sh, frame(2000, BIAS + 100), phase::OBSERVER + 1);
+    // the two halves closed over the next 20 ticks see 110..300: the
+    // settled 100 is the first half's start edge
+    for n in 1..=20u16 {
+        k.on_tick(frame(2000, BIAS + 100 + 10 * n), &sh);
+    }
+    run_to(&mut k, &sh, frame(2000, BIAS + 300), phase::PUBLISH + 1);
+    // closed form: (293 * 2960 / 1200 - 2.0 * 205 - 1.0 * 200 / 20) * 16
+    let ticks = window::drive_ticks(8000, ARR) as i64;
+    let v_sum = (bemf::BOXCAR_TICKS as i64 * ticks * 2960 * TIMING.recip_arr_q24 as i64) >> 24;
+    let r_sum = (8192i64 * bemf::BOXCAR_TICKS as i64 * 205) >> 12;
+    let l_sum = (4096i64 * 200) >> 12;
+    let expect = ((v_sum - r_sum - l_sum) * 16) / bemf::BOXCAR_TICKS as i64;
+    let got = sh.table.with(|t| t.telemetry.estimates.omega_bemf_cps) as i64;
+    assert!((got - expect).abs() <= 1, "got {got} expect {expect}");
+    assert_eq!(got, 4843, "pin");
+    // the same ramp with no inductance reads the rise as 160 c/s of speed
+    let sh = Shared::new();
+    ident_setup(&sh);
+    let mut k = kernel();
+    settle(&mut k, &sh, frame(2000, BIAS + 100));
+    run_to(&mut k, &sh, frame(2000, BIAS + 100), phase::OBSERVER + 1);
+    for n in 1..=20u16 {
+        k.on_tick(frame(2000, BIAS + 100 + 10 * n), &sh);
+    }
+    run_to(&mut k, &sh, frame(2000, BIAS + 300), phase::PUBLISH + 1);
+    assert_eq!(
+        sh.table.with(|t| t.telemetry.estimates.omega_bemf_cps),
+        5003
+    );
+}
+
 /// The back-EMF floor gates the observer alone: a 293-tick window under a
 /// 294-tick floor still feeds the terminal differential everywhere else.
 #[test]

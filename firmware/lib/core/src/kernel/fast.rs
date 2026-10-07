@@ -169,10 +169,12 @@ impl Fast {
     pub fn close_bemf_half(
         &mut self,
         r_q12: u16,
+        l_tick_q412: u16,
         recip_ke_q: u16,
         recip_arr_q24: u32,
     ) -> Option<i32> {
-        self.bemf.close_half(r_q12, recip_ke_q, recip_arr_q24)
+        self.bemf
+            .close_half(r_q12, l_tick_q412, recip_ke_q, recip_arr_q24)
     }
 
     pub fn duty_q15(&self) -> i16 {

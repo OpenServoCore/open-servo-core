@@ -367,7 +367,8 @@ impl Medium {
     fn observe(&mut self, raw_pos: u16, cfg: &KernelConfig, shared: &Shared, fast: &mut Fast) {
         let mc = &cfg.medium;
         let lut_live = self.ctl.lut_live;
-        self.omega_bemf = fast.close_bemf_half(mc.r_q12, mc.recip_ke_q, self.recip_arr_q24);
+        self.omega_bemf =
+            fast.close_bemf_half(mc.r_q12, mc.l_tick_q412, mc.recip_ke_q, self.recip_arr_q24);
         self.fusion.step(
             fast.i_meas_last() as i32,
             pos_q4(shared, lut_live, raw_pos),

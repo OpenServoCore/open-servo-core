@@ -106,6 +106,18 @@ pub struct CalibSenseExt {
     pub rail_drop_mv: u16,
 }
 
+/// Winding inductance for the back-EMF boxcar's inductive term, firmware-
+/// shaped as the per-tick L/dt the window-edge form multiplies: vcounts per
+/// ccount per FAST tick, Q4.12 (`estimator::bemf`). Host-written with the
+/// motor block (the burst's `l_henries` through the sense chain and
+/// `tick_hz`); 0 = no term. Sits behind the RO board facts so the blocks
+/// before it keep their addresses.
+#[repr(C)]
+#[derive(Copy, Clone, Block)]
+pub struct CalibMotorExt {
+    pub l_tick_q412: u16,
+}
+
 /// The plant stamp (`stamp` module): the host's CRC over the identified and
 /// calibrated set plus the effective position table, 0 = never stamped.
 /// Firmware recomputes it at every checkpoint; a mismatch is
@@ -133,6 +145,7 @@ pub struct CalibRegs {
     pub kinematics: CalibKinematics,
     pub stamp: CalibStamp,
     pub sense_ext: CalibSenseExt,
+    pub motor_ext: CalibMotorExt,
     #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 190],
+    pub _rsvd_tail: [u8; 188],
 }

@@ -25,8 +25,8 @@ pub mod telemetry;
 
 pub use burst::{BurstRegs, BurstWindow};
 pub use calib::{
-    CalibKinematics, CalibMotor, CalibPot, CalibRegs, CalibSense, CalibSenseExt, CalibStamp,
-    CalibWinding,
+    CalibKinematics, CalibMotor, CalibMotorExt, CalibPot, CalibRegs, CalibSense, CalibSenseExt,
+    CalibStamp, CalibWinding,
 };
 pub use config::{
     BaudRate, ConfigCommon, ConfigFaultCfg, ConfigFusion, ConfigLimits, ConfigLoopCurrent,
@@ -342,10 +342,12 @@ mod tests {
 
     /// Pins the CALIB layout: the pot stops at the region front, the
     /// host-written blocks contiguous through the stamp, the RO board facts
-    /// behind them.
+    /// behind them, the host-written inductance behind those.
     #[test]
     fn calib_layout_keeps_the_host_written_blocks_contiguous() {
-        use super::calib::addr::{kinematics, motor, pot, sense, sense_ext, stamp, winding};
+        use super::calib::addr::{
+            kinematics, motor, motor_ext, pot, sense, sense_ext, stamp, winding,
+        };
         assert_eq!(pot::RAW_MIN, super::CALIB_BASE_ADDR);
         assert_eq!(pot::RAW_MAX, 0x082);
         assert_eq!(sense::SHUNT_R_MOHM, 0x084);
@@ -358,6 +360,7 @@ mod tests {
         assert_eq!(stamp::PLANT_STAMP, 0x0B2);
         assert_eq!(sense_ext::VBUS_DIV_TOP_OHM, 0x0B4);
         assert_eq!(sense_ext::RAIL_DROP_MV, 0x0C0);
+        assert_eq!(motor_ext::L_TICK_Q412, 0x0C2);
         let f = ControlTable::FIELDS;
         let rw = |lo: u16, hi: u16| {
             f.iter()
@@ -366,6 +369,7 @@ mod tests {
         };
         assert!(rw(winding::R0_Q12, stamp::PLANT_STAMP + 2));
         assert!(!rw(sense_ext::VBUS_DIV_TOP_OHM, 0x0C2));
+        assert!(rw(motor_ext::L_TICK_Q412, 0x0C4));
     }
 
     /// `boot_mode` is an ABI pin: the burst block appends after
