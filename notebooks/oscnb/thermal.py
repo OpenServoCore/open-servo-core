@@ -11,7 +11,7 @@ along that line to one reference V0 takes the trade out:
   slope, icept, corr = ridge(r, v0)          R against V0 across runs
   rc = project(r, v0, v0_ref, slope)          R moved along the line to v0_ref
 
-The slope can also come from the fit itself (hold V0 on a grid, nb14 sec 3);
+The slope can also come from the fit itself (hold V0 on a grid, nb02 sec 22);
 the two agreeing is what says the scatter is the fit's trade, not the motor.
 
 COPPER
@@ -21,7 +21,7 @@ would reach zero at -234.5 C; referred to R at 20 C that is 0.393 %/C.
 
   t = copper_c(r, r_ref, t_ref)              the temperature R implies, linear in ALPHA_CU
   r = copper_ohm(t, r_ref, t_ref)            and back
-  t = thermometer_c(r, r_ref, t_ref)         the same on the (T0_CU + T) line (nb17 sec 7)
+  t = thermometer_c(r, r_ref, t_ref)         the same on the (T0_CU + T) line (nb17 sec 1)
   r = copper_carry(r, t, t_ref)              R read at t, carried to t_ref along that line
   copper_pct_per_c(t)                        the coefficient at t, % of R(t) per C
 

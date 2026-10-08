@@ -315,7 +315,7 @@ TH1 (10K / 3950 to `GND`) under Rn1 10K reaches `A0` with JP2 on `NTC`-`IN`. An 
 
 R = 10K x raw / (4095 - raw), T = 1 / (1 / 298.15 K + ln(R / 10K) / 3950) - 273.15 °C
 
-as `ntc_c` in [`oscnb/thermal.py`](../../../notebooks/oscnb/thermal.py) does. An external NTC taped to the MG90's can served [notebook 14](../../../notebooks/14-winding-r-as-a-thermometer.ipynb) as its reference at rest.
+as `ntc_c` in [`oscnb/thermal.py`](../../../notebooks/oscnb/thermal.py) does. An external NTC taped to the MG90's can logged it every minute through the overnight rest series in `notebooks/telemetry/mg90-a__dev-v006-2A__2s__rest` (`ambient.csv.gz`).
 
 ### Position
 
