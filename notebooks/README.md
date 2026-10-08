@@ -67,9 +67,9 @@ where a comparison needs it.
 - `05-inertia`: rotor inertia from the rise curve, cross-checked by coast.
 - `06-gear-train`: the ripple tachometer, motor angle against the pot, gear
   play and slip signatures.
-- `07-noise-atlas`: rest noise per channel and its structure.
-- `08-velocity-observer`: back-EMF, pot derivative and ripple as speed
-  estimates, and how the observer combines them.
+- `08-velocity-observer`: rest noise per channel and its structure, then
+  back-EMF, pot derivative and ripple as speed estimates, and how the observer
+  combines them.
 - `09-pot-linearization`: the ripple-referenced position table and degrees
   from counted teeth.
 - `10-sense-chain-boards`: capture integrity, and the sense chain graded
