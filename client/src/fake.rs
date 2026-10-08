@@ -5,7 +5,9 @@
 
 use osc_integration::sim::{RamStore, Sim, WireFrame};
 use osc_protocol::wire::BaudRate;
-use osc_servo_core::stamp;
+use osc_servo_core::estimator::thermal::{self, NtcCfg, UNSET_CC, flag};
+use osc_servo_core::kernel::{DECIM_MED, DECIM_SLOW, LimitCfg, LimitState};
+use osc_servo_core::{ControlTable, stamp};
 
 use crate::pipe::{Pipe, PipeError};
 
@@ -43,11 +45,100 @@ pub mod seed {
     pub const FRIC_FC_COUNTS: u16 = 53;
     pub const FRIC_FV_Q016: u16 = 356;
     pub const KE_VPC_Q: u16 = 603;
+    // The winding thermometer set `osc ident` writes for the MG90 family on
+    // this board (ident `thermometer::Thermal::new`: tau 128 s, 63 C/W over
+    // the board NTC, a 280-count hold, the 10K/10K/3950 NTC divider).
+    pub const TH_ALPHA_Q24: u16 = 2097;
+    pub const TH_G_Q016: u16 = 1500;
+    pub const TH_MU_Q016: u16 = 7670;
+    pub const NTC_RAW_REF: u16 = 2048;
+    pub const NTC_T_REF_CC: i16 = 2500;
+    pub const NTC_K1_Q88: i16 = 563;
+    pub const NTC_K2_Q24: u16 = 5779;
+    /// The NTC divider at 28 C (beta curve), where a trackless servo rests.
+    pub const NTC_RAW_ROOM: u16 = 1913;
+}
+
+/// A fake servo's winding thermometer.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Therm {
+    /// The ident set is stamped: a one-node model of the excess over the
+    /// NTC, driven by the track's mean square current.
+    #[default]
+    On,
+    /// No thermal block: `t_winding_cc` reads the sentinel.
+    Off,
+    /// The ident set is stamped and the winding is pinned midway from the
+    /// derate start to the cutoff.
+    Derating,
+}
+
+/// The fake's stand-in for the kernel thermometer (the sim runs no kernel).
+#[derive(Default)]
+struct Winding {
+    excess_cc: f64,
+    i_sq_mean: f64,
+    forced: bool,
+    at_us: u64,
+}
+
+impl Winding {
+    /// Advance to `now_us` and publish what the kernel would: UNSET under
+    /// the firmware's own predicate, else NTC plus the excess; `i_lim` the
+    /// limit fold's electrical ceiling.
+    fn publish(&mut self, t: &mut ControlTable, now_us: u64) {
+        let th = t.calib.thermal;
+        let r0 = t.calib.winding.r0_q12;
+        let raw = match t.telemetry.sensors.ntc_raw {
+            0 => seed::NTC_RAW_ROOM,
+            r => r,
+        };
+        let ntc = NtcCfg {
+            raw_ref: th.ntc_raw_ref,
+            t_ref_cc: th.ntc_t_ref_cc,
+            k1_q88: th.ntc_k1_q88,
+            k2_q24: th.ntc_k2_q24,
+        };
+        let lim = LimitCfg {
+            current_limit_counts: t.config.limits.current_limit_counts,
+            derate_start_cc: t.config.thermal.derate_start_cc,
+            cutoff_cc: t.config.thermal.cutoff_cc,
+            ..Default::default()
+        };
+        let dt_s = now_us.saturating_sub(self.at_us) as f64 * 1e-6;
+        self.at_us = now_us;
+        let t_ntc = thermal::ntc_cc(raw, &ntc);
+        let (t_cc, flags) = match t_ntc {
+            Some(base) if th.th_alpha_q24 != 0 && th.th_g_q016 != 0 && r0 != 0 => {
+                let slow_hz = t.calib.sense.tick_hz as f64 / (DECIM_MED as f64 * DECIM_SLOW as f64);
+                let tau_s = (1u32 << 24) as f64 / (th.th_alpha_q24 as f64 * slow_hz);
+                let steady = th.th_g_q016 as f64 / 65536.0 * self.i_sq_mean * r0 as f64 / 4096.0;
+                self.excess_cc += (steady - self.excess_cc) * -(-dt_s / tau_s).exp_m1();
+                let t_cc = if self.forced {
+                    (lim.derate_start_cc as i32 + lim.cutoff_cc as i32) / 2
+                } else {
+                    base as i32 + self.excess_cc as i32
+                };
+                (t_cc.clamp(i16::MIN as i32 + 1, i16::MAX as i32) as i16, 0)
+            }
+            _ => (UNSET_CC, flag::UNSET),
+        };
+        let mut limits = LimitState::new();
+        limits.update_derate(t_cc, &lim);
+        limits.fold(false, 0, 0, 0, false, 0, &lim);
+        t.telemetry.sensors.ntc_raw = raw;
+        t.telemetry.estimates.t_winding_cc = t_cc;
+        t.telemetry.estimates.i_lim_counts = limits.i_lim_counts();
+        t.telemetry.therm.t_ntc_cc = t_ntc.unwrap_or(0);
+        t.telemetry.therm.therm_flags = flags;
+    }
 }
 
 pub struct FakePipe {
     sim: Sim,
     frames: Vec<WireFrame>,
+    windings: Vec<Winding>,
 }
 
 impl FakePipe {
@@ -69,6 +160,7 @@ impl FakePipe {
         Self {
             sim,
             frames: Vec::new(),
+            windings: servo_ids.iter().map(|_| Winding::default()).collect(),
         }
     }
 
@@ -83,6 +175,7 @@ impl FakePipe {
     /// reason of a never-saved, never-identified servo).
     pub fn seed_board(&mut self, i: usize) {
         self.sim.set_servo_sense(i, seed::SENSE, seed::SENSE_EXT);
+        self.publish_therm();
     }
 
     /// Servo `i` comes up like one off the calibration bench ([`seed`]): the
@@ -92,6 +185,12 @@ impl FakePipe {
     /// reboot keeps them, and FACTORY wipes them back to board defaults -
     /// exactly what the hardware does (protocol sec 9.4/9.5).
     pub fn seed_calibrated(&mut self, i: usize) {
+        self.seed_calibrated_with(i, Therm::On);
+    }
+
+    /// [`Self::seed_calibrated`] with the winding thermometer as `therm`.
+    pub fn seed_calibrated_with(&mut self, i: usize, therm: Therm) {
+        self.windings[i].forced = therm == Therm::Derating;
         self.sim.servo_table_mut(i, |t| {
             t.calib.pot.raw_min = seed::RAW_MIN;
             t.calib.pot.raw_max = seed::RAW_MAX;
@@ -109,6 +208,17 @@ impl FakePipe {
             t.config.pos_limits.pos_min_soft_counts = seed::POS_MIN_SOFT_COUNTS;
             t.config.pos_limits.pos_max_soft_counts = seed::POS_MAX_SOFT_COUNTS;
             t.config.limits.drive_polarity = seed::DRIVE_POLARITY;
+            if therm != Therm::Off {
+                let th = &mut t.calib.thermal;
+                th.th_alpha_q24 = seed::TH_ALPHA_Q24;
+                th.th_g_q016 = seed::TH_G_Q016;
+                th.th_mu_q016 = seed::TH_MU_Q016;
+                th.ntc_raw_ref = seed::NTC_RAW_REF;
+                th.ntc_t_ref_cc = seed::NTC_T_REF_CC;
+                th.ntc_k1_q88 = seed::NTC_K1_Q88;
+                th.ntc_k2_q24 = seed::NTC_K2_Q24;
+                t.calib.winding.r0_q12 = seed::R_Q12;
+            }
             t.calib.stamp.plant_stamp = stamp::compute(t, None);
         });
         self.sim.persist_servo(i);
@@ -121,7 +231,21 @@ impl FakePipe {
     /// its bursts and live telemetry registers show the recorded rows
     /// instead of the synthetic ramp (see `Sim::set_track`).
     pub fn set_track(&mut self, i: usize, track: Vec<TelSample>) {
+        let n = track.len().max(1) as f64;
+        self.windings[i].i_sq_mean = track
+            .iter()
+            .map(|s| (s.current as f64).powi(2))
+            .sum::<f64>()
+            / n;
         self.sim.set_track(i, track);
+        self.publish_therm();
+    }
+
+    fn publish_therm(&mut self) {
+        let now = self.sim.now_us();
+        for (i, w) in self.windings.iter_mut().enumerate() {
+            self.sim.servo_table_mut(i, |t| w.publish(t, now));
+        }
     }
 
     /// The host closes and reopens the adapter: every open configures it,
@@ -142,6 +266,7 @@ impl Pipe for FakePipe {
         self.sim.link_send(bytes);
         // Play the whole exchange out; records accumulate for recv.
         self.frames.extend(self.sim.run());
+        self.publish_therm();
         Ok(())
     }
 
@@ -158,5 +283,6 @@ impl Pipe for FakePipe {
 
     async fn pause(&mut self, d: std::time::Duration) {
         self.sim.idle(d.as_micros() as u64);
+        self.publish_therm();
     }
 }
