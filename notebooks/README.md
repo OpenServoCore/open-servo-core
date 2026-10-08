@@ -52,3 +52,9 @@ constants needed to turn counts into volts and amps are in each notebook.
 - `00-raw-duty-sweeps` characterizes the measurement chain and the open-loop
   response from the duty-sweep campaigns. It is the foundation the rest of
   the series builds on.
+- `20-bare-motor` measures the MG90's motor out of the servo, on a plate with
+  no gearbox or load: rest resistance across rotor stops, no-load current,
+  the back-EMF constant by the coast route, why the duty ramp cannot measure
+  the inductance, the resistance in rotation, and breakaway. Dataset
+  `mg90-a__dev-v006-2A__dps__bare-motor`; loaders `oscnb.staticsweep` and
+  `oscnb.meterlog`.

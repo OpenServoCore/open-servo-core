@@ -1,0 +1,68 @@
+limits: current limit 280 counts (253 mA), travel guard 590..3501, a run aborts over 350 counts (316 mA)
+pot: linearized counts, lut LIVE (crc 0xb5c3, 171 nonzero calibration points at raw 656..3408)
+recording to /Users/aaron/projects/OpenServoCore/osc-dev-v006-bringup/captures/servo-pass/motor-bare/char/e8-trial/1791392913
+[burst, static load] in place at 20%; stall permit held
+burst: 960 samples, step at 485, duty 6553 (pre 0), chans 1 frame_len 2, pos 1984
+burst: 960 samples, step at 485, duty -6553 (pre 0), chans 2 frame_len 2, pos 1983
+identification report
+=====================
+
+[bias]
+  skipped
+
+[resistance]
+  skipped
+
+[toggle] winding R/L (free shaft, duty toggles; NOT the table's R)
+  skipped
+
+[burst] winding R/L (high-rate shunt burst)
+  free shaft    2 from rest, 0 from a hold
+  waveform      R 4.574 +/- 0.171 ohm (winding), L 0.843 mH, V0 0.000 V; 2 of 2 captures, rms 13.3 counts
+                amplifier lag 0.35 us, samples 0.12 us late; back-EMF from the rotor priors only, 0 mV at the end of the top rung
+  line          slope 5.121 ohm with the bridge, V/I 5.187 ohm at the 0.253 A current limit (duty x rail over current)
+                ON window 0.54 us short of commanded; driven terminal 4.75 V open, sagging 0.58 ohm; rail 4.75 V
+  captures      R median 4.346 ohm, robust sd 15.4%; set aside: none
+  edges         2 of 2 captures place a half-window edge at the midpoint between two terminal samples: no sample caught it
+  rungs         duty dir  n  I asym  (tau)  I late   DxVon (diff)     V/I   line  R per  wave R   rms
+                 20% fwd  1   0.000    (0)   0.179   0.932      -   0.000      -      -   4.798   5.8
+                 20% rev  1   0.162  (117)   0.155   0.938      -   5.871  5.253  5.148   3.894  12.3
+                from rest, medians per step duty and sign; A, us, V, ohm, counts. I asym (tau): the exponential through the ON-window centre currents; I late: the last window's; DxVon: duty x the driven terminal's ON level, (diff) the terminals' difference; V/I: duty x rail over I asym, line: the waveform's V/I at I asym; R per: period-mean winding V over current; wave R, rms: each capture fitted alone, V0 pinned at the pooled fit
+  gates         FAIL captures (2 from rest at 1 step duty, 0 from a hold), pass cadence (2 captures), pass step-index (2 captures), pass pre-bias (2 captures), pass windows (2 captures), FAIL capture-agreement (per-capture R median 4.346 ohm, robust sd 15.4% (under 6%); 0 of 2 set aside (at most a quarter)), FAIL split-halves (too few captures to fit two halves)
+  skipped       cross-route (not available: the run has no start from rest in TEL)
+  diagnostics   the routes below are reported and checked, and decide nothing
+  voltage       measured in the burst: driven terminal (2 captures)
+  R pairs       - ohm from 0 pair(s)  settled asymptotes against the settled mean V
+  R regression  - (degenerate)
+  L ripple      declined (0.0000 mH recorded)  incremental, one ON window (~25 us); brake decay - mH
+  envelope      tau 129.0 us [129.0, 129.0] charge balance; ON window 116.7 us, tau_off 213.2 us
+  shunt charge  shunt_on_share 0.931 inside the ON window
+  pre-arm rail  R pairs - ohm ON window, - charge balance (bridge included); asymptote route 3.397; L_env 0.0000 mH
+  supply        pre-arm source - (no from-a-hold control)
+  in-burst      source 0.399 ohm (driven terminal less R_hs), open-circuit 4.744 V
+  OFF phase     chopping terminal median -0.015 V, min -0.031 V
+  ON window     flat (-27.4 mV over 6.0 us); effective duty 0.953 x commanded
+  V0            0.400 V (pre-registered default - no usable control)
+  L by duty     
+  trace         cadence 23.00 samples/period, 4.5-sample ON windows, 1.97 us amplifier settling, bias 1185.5 counts
+  checks        FAIL r-consistency (driven terminal: pairs - vs regression - ohm (inf% apart)), pass supply (measured in the burst: driven terminal), pass l-ripple-spread (0% across the repeats of one duty), pass l-env-spread (charge-balance tau 0% across the repeats of one duty), FAIL shunt-on-share (0.931 of the shunt charge inside the ON window (L_ripple needs 0.95)), FAIL l-duty (inf% across the 0 step duties that carry a slope), FAIL r-pairs (no from-rest pair spans 10% of full scale), pass residual (rms 13.3 counts over 2 captures (under 25)), pass physical-bounds (tau 174 us (100..300), V0 0.000 V (-0.10..0.50); back-EMF from the rotor priors only, 0 mV at the end of the top rung)
+  verdict       declined (held: no seated captures; free: captures, capture-agreement, split-halves) - no R from the burst: the resistance stop ladder measures it when asked and it has room, else the run takes the R and L stored on the servo, else it stops
+  warn: no from-a-hold control produced a usable drop; the slope route uses the pre-registered V0 = 0.4 V
+  warn: the 20% rung's 4-sample ON windows are mostly amplifier edge, so it feeds the envelope and the pairs R but no slope
+  warn: L_ripple declined: the shunt island's capacitors carry part of each pulse, so the ON-window slope is not the winding's
+
+[breakaway] (model-derived from R and vbus)
+  skipped
+
+[ladder]
+  skipped
+
+[inertia]
+  skipped
+
+[anchor] the winding thermometer's R0 at T0
+  skipped (osc ident run --ambient-c <C>, or osc ident anchor)
+
+[gains]
+  skipped
+

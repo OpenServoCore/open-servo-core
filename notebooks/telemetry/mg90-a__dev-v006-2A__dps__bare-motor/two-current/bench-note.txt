@@ -1,0 +1,59 @@
+Two-current slope vs single-point V/I on the bare MG90 motor, 20 seats (2026-10-07). Bench driver: Opus bench-driver agent.
+Rig: rev 2A board #1, bare MG90 motor taped to a ceramic plate on J4 (Aaron wiggle-tested the connection stable).
+Supply: FNIRSI DPS-150 at 5.0 V only (battery out), ON for the whole run (settles are part of the step), OFF at the end.
+Meter: OWON B41T+ in OHMS across the motor terminals, BLE-logged by scratchpad shunt/dmmlog.py -> dmm.csv (one logger,
+whole run; only standstill readings mean anything). Firmware: main 2ee13213 per the brief (no sha register on the bus;
+fw number from osc status recorded below). Tools: th drive (scratchpad film/tgt/release/th) at 20 ms polls; runner
+scratchpad two-current/run.py; analysis scratchpad two-current/analyze.py. Limits 280/280, never raised, no SAVE.
+
+PROCEDURE
+- 30 s rest reading before seat 1 (DPS on, torque off): rest_R(seat 1) = median of the meter's last 10 s.
+- Per seat k = 1..20: five pairs (6% then 8%), each `th drive <tag> <pct> 0.3 2 20 1000 <csv>` (300 ms OpenLoop, then
+  torque off with a 2 s tail at 250 ms polls). All stalled pulses are +duty. Then one 12% spin pulse (300 ms,
+  +12 on odd seats, -12 on even seats), 2 s tail. Then settle until 30 s after the spin's torque off;
+  rest_R(seat k+1) = median of the meter rows in the last 10 s of that settle. Seat 20's settle gives a 21st rest
+  reading (reported, unpaired).
+- th guards per pulse: fault, |pos - pos0| > 40 (pot floats ~1985 with no pot), cur - bias > 2300, vbus_raw < 1000.
+
+PRE-REGISTERED (written before the first drive)
+P0 gates (fail = stop before or at that point, no patch):
+  - osc answers at 3M; DPS readback within 0.05 V of 5.0; vbus_raw >= 1000; torque 0; limits 280/280.
+  - "Nudge" (no pot on a bare motor, so replaced as in part 1): seat 1 pulse 1 (6%) current - trough over its last
+    200 ms >= 30 counts. FAIL (< 30, the part-2 open-connection signature) -> stop and report.
+  - Runner: any th ABORT is logged; a second ABORT of any kind stops the run. Any pulse after the first with
+    I < 30 counts at 6% or 8% stops the run (connection lost).
+Per pulse: I = mean(current - current_trough) over the on-rows in the last 200 ms of the pulse (t >= first on-row
+  + 0.1 s), counts -> A at 1118 counts/A; sd of the same rows; duty = mean duty_applied_q15 / 32767 over those
+  rows; vbus V = mean vbus_raw x 3.3/4096 x 5 (dev-v006-2A VSNS 6k4/1k6); V_on = duty x vbus V; taps va/vb/vbias
+  means reported (tap floor 93 ticks: 6% = 72 and 8% = 96 ticks; taps reported, not used).
+  MOVED = first tail row (torque off, within ~10 ms of off) |va - vb| > 12 counts (0.05 V at 4.028 mV/count),
+  or any on-row during the pulse shows |pos - pos0| guard trip. A seat with any moved stalled pulse is marked moved.
+  Spin pulse: TURNED if the first tail row |va - vb| > 12 counts; standstill = |va - vb| <= 12 by the next tail row.
+Per seat: V6, I6, V8, I8 = means of the five pulses; R_slope = (V8 - V6)/(I8 - I6); se(R_slope) = sd of the five
+  per-pair slopes / sqrt(5); R_point6 = V6 / I6; V_b = V6 - I6 x R_slope; implied meter excess = V_b / 0.001 A.
+Across seats: spread = sd/mean of R_slope, R_point6, meter rest R.
+  SEPARABLE = spread(R_slope) <= 1/3 spread(R_point6) AND <= 1.5%.
+  HARDWARE LIMIT = spread(R_slope) >= spread(R_point6).
+  Between = INCONCLUSIVE.
+  Also: mean R_slope vs the meter's low edge (brief: 4.3-4.6 morning, 4.6-5.2 afternoon; this run's p10 too) and
+  vs r_q12 4.71; Pearson r of V_b vs (meter rest - low edge); r_hat_q12 / t_winding_cc movement during stalled
+  pulses. Nothing under 2 sigma is a finding; per-seat table, no scalar pass.
+
+LOG
+- setup 11:15:17: meter logger started (dmm.csv), first reading 4.77 ohm (B41T+, DPS off). DPS 0 -> 5.0 V, readback
+  5.00 V (PASS). osc status at 3M: fw 65, fault 0, crc_fail 0, framing_drop 0, over_period 12, lost 43. th status: pos 1985,
+  cur 1180 trough 1178 bias 1179, vbus_raw 1181 (4.757 V), torque 0, limits 280/280 (PASS). ntc_raw 1879. Launching run.py 20.
+- seat 1 (OBSERVED, not diagnosed): two 8% pulses (p1, p4) have a first tail row (~25 ms after the last on-row,
+  torque off) whose |va - vb| = 1161-1163 counts = the driven on-level difference (on rows ~1779/612), not a
+  back-EMF-sized value; their currents are normal (92.5, 97.8 counts, sd <= 2.3). One 8% pulse (p2) is different:
+  current 59.4 counts with sd 8.2 (others 0.9-2.8) and tail |va - vb| 13 counts. The pre-registered MOVED rule is
+  applied as written (seat 1 = moved); the analysis also reports, labelled as NOT pre-registered, a view in which a
+  tail row reading within 100 counts of its pulse's on-level difference is treated as stale (not motion).
+  Could be the tail snapshot landing before the tap sample refreshes after torque off, or something else.
+- r_hat_q12 4170 and t_winding_cc 2650 constant through all seat-1 pulses (not updating on 300 ms OpenLoop pulses).
+- 11:17:26 Aaron (by eye, watching the motor, during seats 1-2): "8% run didn't move". Recorded as an independent
+  observation against the MOVED flags on seat 1's 8% pulses (p1/p4 stale-looking tail rows, p2 low noisy current
+  + tail 13 counts). The registered rule still marks seat 1 moved; the report carries both.
+- STOPPED EARLY on a harness instruction to hand back now (not a bench gate): runner killed after s03p5d6, no th in
+  flight; th status torque 0, fault 0, limits 280/280, vbus_raw 1182; meter logger stopped (365 rows); DPS OFF
+  readback 0.0 V. Seats 1-2 complete (rest readings before seats 1-2 + after seat 2); seat 3 partial (9 pulses, no spin).

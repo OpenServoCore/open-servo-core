@@ -1,0 +1,5 @@
+/tmp/osc-2b/tgt/release/osc --baud 3000000 sweep --static-load --baseline-ms 0 --rest-ms 100 --window-ms 300 --dirs rev --duty-pct 20@300,coast:500 --out /Users/aaron/projects/OpenServoCore/osc-dev-v006-bringup/captures/servo-pass/motor-bare/char/cycles/c086/sweep
+seg 1 (duty -20%): 375 frames, 6000 samples, 0 seq holes, 0 garble bytes
+  seg 2 (coast 500 ms): 625 frames, 10000 samples, 0 seq holes, 0 garble bytes
+sweep: /Users/aaron/projects/OpenServoCore/osc-dev-v006-bringup/captures/servo-pass/motor-bare/char/cycles/c086/sweep/sweep.csv
+meta:  /Users/aaron/projects/OpenServoCore/osc-dev-v006-bringup/captures/servo-pass/motor-bare/char/cycles/c086/sweep/meta.json

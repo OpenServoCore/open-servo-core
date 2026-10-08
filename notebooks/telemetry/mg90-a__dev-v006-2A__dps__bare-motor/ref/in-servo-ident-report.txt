@@ -1,0 +1,99 @@
+identification report
+=====================
+
+[bias]
+  sigma_theta   1.847 counts (1.847 raw x 1.000 across the travel; TEL n=10000, at rest at 2007)
+  i_noise       1.263 counts (n=400)
+  i_bias_delta  -6.957 counts
+  vbus          1896.3 +/- 0.5
+
+[resistance]
+  not run: burst supplied R
+
+[toggle] winding R/L (free shaft, duty toggles; NOT the table's R)
+  skipped
+
+[burst] winding R/L (high-rate shunt burst)
+  free shaft    16 from rest, 8 from a hold
+  waveform      R 4.706 +/- 0.045 ohm (winding), L 0.757 mH, V0 -0.055 V; 16 of 16 captures, rms 20.1 counts
+                amplifier lag 0.36 us, samples 0.04 us late; back-EMF from the rotor priors only, 56 mV at the end of the top rung
+  line          slope 5.090 ohm with the bridge, V/I 5.134 ohm at the 0.253 A current limit (duty x rail over current)
+                ON window 0.51 us short of commanded; driven terminal 7.61 V open, sagging 0.35 ohm; rail 7.63 V
+  captures      R median 4.691 ohm, robust sd 1.9%; set aside: none
+  halves        V/I at the limit even captures 5.174 ohm, odd 5.102 ohm; slope R even captures 4.677 ohm, odd 4.728 ohm
+  edges         14 of 16 captures place a half-window edge at the midpoint between two terminal samples: no sample caught it
+  gates         pass captures (16 from rest at 2 step duties, 8 from a hold), pass cadence (24 captures), pass step-index (24 captures), pass pre-bias (24 captures), pass windows (16 captures), pass residual (rms 20.1 counts over 16 captures (under 25)), pass capture-agreement (per-capture R median 4.691 ohm, robust sd 1.9% (under 6%); 0 of 16 set aside (at most a quarter)), pass physical-bounds (tau 152 us (100..300), V0 -0.055 V (-0.10..0.50); back-EMF from the rotor priors only, 56 mV at the end of the top rung), pass split-halves (V/I at the limit: even captures 5.174, odd 5.102 ohm, 1.4% apart (within 4%); slope R 4.677 and 4.728 ohm)
+  skipped       cross-route (not available: the run has no start from rest in TEL)
+  diagnostics   the routes below are reported and checked, and decide nothing
+  voltage       measured in the burst: driven terminal (16 captures)
+  R pairs       3.760 ohm from 1 pair(s) [3.760, 3.760]  settled asymptotes against the settled mean V
+  R regression  4.447 ohm   L_env 0.7858 mH   tau 176.7 us   c 0.213 V  (128 periods)
+  L ripple      0.7260 mH [0.7009, 0.7624]  incremental, one ON window (~25 us); brake decay 1.1838 mH
+  envelope      tau 171.1 us [100.1, 186.8] charge balance; ON window 172.2 us, tau_off 259.2 us
+  shunt charge  shunt_on_share 1.018 inside the ON window
+  pre-arm rail  R pairs 4.948 ohm ON window, 4.140 charge balance (bridge included); asymptote route 3.502; L_env 0.8523 mH
+  supply        pre-arm source - (no from-a-hold control)
+  in-burst      source 0.235 ohm (driven terminal less R_hs), open-circuit 7.617 V
+  OFF phase     chopping terminal median -0.023 V, min -0.044 V
+  ON window     flat (+5.5 mV over 12.2 us); effective duty 1.000 x commanded
+  V0            0.686 V (from the from-a-hold control)
+  L by duty     40% 0.726 mH
+  trace         cadence 23.00 samples/period, 7.5-sample ON windows, 3.00 us amplifier settling, bias 1187.0 counts
+  checks        FAIL r-consistency (driven terminal: pairs 3.76 vs regression 4.45 ohm (15% apart)), pass supply (measured in the burst: driven terminal), pass l-ripple-spread (19% across the repeats of one duty), FAIL l-env-spread (charge-balance tau 109% across the repeats of one duty), pass shunt-on-share (1.018 of the shunt charge inside the ON window (L_ripple needs 0.95)), pass l-duty (0% across the 1 step duties that carry a slope), pass r-pairs (1 pairs, median 4.95 ohm)
+  verdict       PROMOTED via the free-shaft route - r_q12 takes the winding R, the stall-safe duties V/I at the current limit, the current loop the slope with the bridge and L, all from the waveform fit
+  warn: the 25% rung's 6-sample ON windows are mostly amplifier edge, so it feeds the envelope and the pairs R but no slope
+  warn: the two incremental-L routes disagree: ON slope 0.726 mH against brake decay 1.184 mH. The slope route is the one that uses the rail reading, so a soft supply moves it and not the other
+  warn: 8 from-a-hold captures recorded as the E-nonzero control; they are excluded from the pooled L, tau and R and supply V0 only
+
+[breakaway] (model-derived from R and vbus)
+  duty_bk       fwd 2621 / rev 2621
+  fric counts   fwd 131.9283 / rev 131.9283 (asym 0.0000)
+
+[ladder]
+  Ke            0.08552 vcounts per c/s (r2 0.9961, n=6)
+  knee          6 faster rung(s) left out: the plant needs up to +14.6% more volts per speed than the drive model above the fit's band
+  servo check   its back-EMF speed is -1.7% off the timed speeds (trusted within 8%)
+  fric fwd      fc 99.92 cc, fv 0.002799 cc per c/s (r2 0.9104)
+  fric rev      fc 86.86 cc, fv 0.004523 cc per c/s (r2 0.9932)
+  rungs used    12
+
+[inertia]
+  B decay       0.29169 (spread 0.092, steps=6) from the current
+  B climbs      0.27726 (sd 0.040, climbs=6) the ladder's governed climbs, a cross-check
+  pot-speed fits, diagnostics that decide nothing:
+  B direct      0.20352 (r2 0.0189, n=13515)
+  B exp-rise    0.57793 (spread 0.708, steps=6)
+  B             0.29169 -> j_ff 3.43 (the decay's; tel steps 6)
+
+[gains]
+  plant inputs
+    r_vpc            1.0540 vcounts/ccount (4.706 ohm)  burst, free  -> r_q12, the back-EMF estimate's R and the ladder's Ke
+    r_plan           1.1497 vcounts/ccount (5.134 ohm)  burst, free  -> every stall-safe duty
+    r_loop           1.1398 vcounts/ccount (5.090 ohm)  burst, free  -> the current loop's i_ki
+    l                0.7569 mH                burst, free
+    ke, fc, fv      0.08552 93.39 0.003661   ladder
+    b               0.29169                   inertia
+    sigma_theta       1.847 counts            bias
+  projected omega noise 22.9 c/s (l2 * sigma_theta)
+  field                      physical     raw   quant%   sat  vs hand seed
+  r_q12                       1.05399    4317    0.00%        0.31x of 13800
+  ke_vpc_q                    0.08552     350    0.08%        0.43x of 809
+  recip_ke_q                 11.69303   11974    0.00%        2.31x of 5184
+  b_i_q313                    0.29169    2389    0.02%        3.65x of 655
+  fric_fc_counts             93.38751      93    0.41%        4.65x of 20
+  fric_fv_q016                0.00366     240    0.02%        3.64x of 66
+  fric_breakaway_counts       0.00000       0    0.00%        
+  i_kp_q88                    1.06505     273    0.13%        0.32x of 863
+  i_ki_q412                   0.35809    1467    0.02%        7.16x of 205
+  i_kaw_q412                  0.71618    2933    0.02%        
+  v_kp_q88                    2.15409     551    0.08%        
+  v_ki_q412                   0.33836    1386    0.00%        
+  v_kaw_q412                  0.67673    2772    0.00%        
+  j_ff_q88                    3.42834     878    0.04%        
+  p_kp_q88                  157.07963   40212    0.00%        
+  pos_deadband_counts         4.61807       5    8.27%        
+  l1_q016                     0.13183    8640    0.00%        
+  l2_q88                     12.42041    3180    0.01%        
+  l3_q88                      0.33437      86    0.47%        
+  note: hand-seed b_i predates the per-tick rescale (was inert) and
+  the hand i_ki was eyeballed ~40x low - large ratios there are expected.
