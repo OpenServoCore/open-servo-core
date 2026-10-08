@@ -7,12 +7,14 @@ use osc_integration::sim::{RamStore, Sim, Source, WireFrame, assert_valid, instr
 use osc_protocol::table::STATUS_FLAG_CONFIG_DIRTY;
 use osc_protocol::wire::{Id, MgmtOp, Opcode, ResultCode};
 use osc_servo_core::persist::{CALIB_LEN, CalibImage, Image, Slot};
-use osc_servo_core::regions::CALIB_BASE_ADDR;
 use osc_servo_core::regions::calib::addr::motor::R_Q12;
 use osc_servo_core::regions::calib::addr::sense::TICK_HZ;
+use osc_servo_core::regions::calib::addr::thermal::TH_ALPHA_Q24;
+use osc_servo_core::regions::calib::addr::winding::R0_Q12;
 use osc_servo_core::regions::config::addr::common::RESPONSE_DEADLINE_US;
 use osc_servo_core::regions::control::addr::lifecycle::TORQUE_ENABLE;
 use osc_servo_core::regions::telemetry::addr::common::STATUS_FLAGS;
+use osc_servo_core::regions::{CALIB_BASE_ADDR, ControlTable};
 use rstest::rstest;
 use rstest_reuse::apply;
 
@@ -200,6 +202,70 @@ fn board_sense_wins_over_a_stale_calib_image(baud_idx: u8) {
     sim.add_servo_with_store(ID5, store);
     assert_eq!(read_u16(&mut sim, ID5, R_Q12), 14000, "data overlaid");
     assert_eq!(read_u16(&mut sim, ID5, TICK_HZ), 20000, "board seed wins");
+}
+
+/// SAVE seals every CONFIG and CALIB byte no field covers as zero: bytes
+/// an image of another layout left in the reserved tail and behind r0 (the
+/// leak that booted a thermometer branch with its constants set) read as
+/// stored until the SAVE, are zero in both sealed images and read zero
+/// after it, while every field byte seals as it stood and loads back.
+#[apply(matrix)]
+fn save_seals_reserved_bytes_as_zero_and_keeps_the_fields(baud_idx: u8) {
+    const JUNK: u8 = 0xA5;
+    const SEALED: usize = (CALIB_BASE_ADDR + CALIB_LEN as u16) as usize;
+    let mut covered = [false; SEALED];
+    for f in ControlTable::FIELDS.iter() {
+        let lo = (f.addr as usize).min(SEALED);
+        let hi = ((f.addr + f.width) as usize).min(SEALED);
+        covered[lo..hi].fill(true);
+    }
+    let mut calib = [0u8; CALIB_LEN];
+    for (a, b) in calib.iter_mut().enumerate() {
+        if !covered[CALIB_BASE_ADDR as usize + a] {
+            *b = JUNK;
+        }
+    }
+    calib[(R0_Q12 - CALIB_BASE_ADDR) as usize..][..2].copy_from_slice(&4016u16.to_le_bytes());
+    calib[(TH_ALPHA_Q24 - CALIB_BASE_ADDR) as usize..][..2].copy_from_slice(&2097u16.to_le_bytes());
+    let store = RamStore::leak();
+    store.inject_calib(Slot::A, 1, &calib);
+    let live = |sim: &Sim| {
+        // SAFETY: the table is repr(C) bytes and the sim is single-threaded.
+        sim.servo_table(0, |t| unsafe {
+            core::slice::from_raw_parts(t as *const ControlTable as *const u8, SEALED).to_vec()
+        })
+    };
+    {
+        let mut sim = sim(baud_idx);
+        sim.add_servo_with_store(ID5, store);
+        sim.servo_table_mut(0, |t| {
+            t.config.common._rsvd_identity = [JUNK; 7];
+            t.config.common._rsvd_tail = [JUNK; 12];
+        });
+        let anchor = R0_Q12 + 2;
+        assert_eq!(read_byte(&mut sim, ID5, anchor), JUNK, "read as stored");
+        let before = live(&sim);
+        let frames = mgmt(&mut sim, ID5, MgmtOp::Save);
+        assert_eq!(status(sole_reply(&frames)).0.result(), Some(ResultCode::Ok));
+        assert_eq!(read_byte(&mut sim, ID5, anchor), 0);
+        let config = store.slot(Slot::A).expect("first config save lands in A");
+        let config = Image::parse(&config).expect("config image parses");
+        let img = store
+            .calib_slot(Slot::B)
+            .expect("the save after A lands in B");
+        let parsed = CalibImage::parse(&img).expect("calib image parses");
+        let sealed: Vec<u8> = config.config.iter().chain(parsed.calib).copied().collect();
+        for a in 0..SEALED {
+            let want = if covered[a] { before[a] } else { 0 };
+            assert_eq!(sealed[a], want, "addr {a:#05x}");
+        }
+        assert_eq!(live(&sim), sealed, "the live table matches the seal");
+    }
+    let mut sim = sim(baud_idx);
+    sim.add_servo_with_store(ID5, store);
+    assert_eq!(read_u16(&mut sim, ID5, R0_Q12), 4016);
+    assert_eq!(read_u16(&mut sim, ID5, TH_ALPHA_Q24), 2097);
+    assert_eq!(read_byte(&mut sim, ID5, R0_Q12 + 2), 0);
 }
 
 /// The sec 9.2 + 9.4 field story: ASSIGN takes a new id immediately, SAVE

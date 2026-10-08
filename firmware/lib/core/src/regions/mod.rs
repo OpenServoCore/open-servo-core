@@ -1,7 +1,9 @@
 //! Host-visible register state as a flat 1024-byte map. Sections carve
 //! contiguous byte ranges; every address in `[0, 1024)` reads back (reserved
-//! and skip bytes read as zero). Writes to non-writable bytes fail with
-//! `AccessError`; addresses past the map end fail with `DataRange`.
+//! and skip bytes read as stored: an overlaid image may carry other bytes
+//! there; SAVE writes the CONFIG and CALIB ones as zero). Writes to
+//! non-writable bytes fail with `AccessError`; addresses past the map end
+//! fail with `DataRange`.
 //!
 //!   CONFIG    0x000..0x080  (128 B) - persistent via MGMT SAVE
 //!   CALIB     0x080..0x180  (256 B) - persistent via MGMT SAVE, own image

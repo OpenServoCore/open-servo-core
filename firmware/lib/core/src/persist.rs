@@ -42,7 +42,7 @@ use crate::regions::{
     CALIB_BASE_ADDR, CALIB_REGION_SIZE, CONFIG_BASE_ADDR, CONFIG_REGION_SIZE, PROFILE_BASE_ADDR,
     PROFILE_REGION_SIZE, config,
 };
-use crate::{ControlTableCell, RegionStorage, Shared};
+use crate::{ControlTable, ControlTableCell, RegionStorage, Shared};
 
 pub const CONFIG_LEN: usize = CONFIG_REGION_SIZE as usize;
 pub const PROFILE_LEN: usize = PROFILE_REGION_SIZE as usize;
@@ -356,7 +356,44 @@ impl<'a> CalibImage<'a> {
     }
 }
 
+/// CONFIG ++ CALIB (contiguous from address 0): bit `a % 32` of word
+/// `a / 32` set = a field covers address `a`.
+const SEALED_END: usize = (CALIB_BASE_ADDR + CALIB_REGION_SIZE) as usize;
+const FIELD_WORDS: [u32; SEALED_END / 32] = {
+    assert!(CONFIG_BASE_ADDR == 0 && CALIB_BASE_ADDR == CONFIG_REGION_SIZE);
+    let mut w = [0u32; SEALED_END / 32];
+    let f = &ControlTable::FIELDS;
+    let mut n = 0;
+    while n < f.len() {
+        let mut a = f[n].addr as usize;
+        while a < f[n].addr as usize + f[n].width as usize && a < SEALED_END {
+            w[a / 32] |= 1 << (a % 32);
+            a += 1;
+        }
+        n += 1;
+    }
+    w
+};
+
 impl ControlTableCell {
+    /// SAVE: every CONFIG and CALIB byte no field covers (skip, padding)
+    /// to zero, so no earlier image's leftovers are sealed again. Nothing
+    /// else writes or reads those bytes.
+    #[inline(never)]
+    pub fn zero_reserved_persistent(&self) {
+        let base = RegisterMap::base(self);
+        // black_box keeps the bit loop a loop: folded, it unrolls to one
+        // store per reserved byte (+0.6 KB of flash)
+        let words = core::hint::black_box(&FIELD_WORDS);
+        for a in 0..SEALED_END {
+            if words[a / 32] & (1 << (a % 32)) == 0 {
+                // SAFETY: a < SEALED_END, inside the flat map (RegisterMap
+                // contract); no field aliases the byte.
+                unsafe { base.add(a).write(0) };
+            }
+        }
+    }
+
     /// Overlay a validated image onto the live table -- raw byte copy,
     /// deliberately bypassing ro masks and field rules (`Image::parse`
     /// already gated the UB-critical bytes; everything else was rule-valid
