@@ -26,7 +26,7 @@ use osc_client::data_state::{self, DataState};
 use osc_client::descriptor::Descriptor;
 use osc_client::nusb::NusbPipe;
 use osc_ident::burst::{Capture, Chans};
-use osc_ident::exp::anchor::{Anchor, AnchorCfg, AnchorResult};
+use osc_ident::exp::anchor::{Anchor, AnchorCfg, AnchorResult, contact_state};
 use osc_ident::exp::bias::{Bias, BiasCfg, BiasResult};
 use osc_ident::exp::breakaway::{Breakaway, BreakawayCfg, BreakawayResult};
 use osc_ident::exp::centre::{Centre, CentreCfg};
@@ -55,6 +55,7 @@ use osc_ident::report::{self, PlantInputs, ReportInputs};
 use osc_ident::run::{self as order, Ended, Over, Run, Stage};
 use osc_ident::runway::{Runway, Supply};
 use osc_ident::sources::{self, HeldR, Source, Winding};
+use osc_ident::thermal::{self, Row};
 use osc_ident::thermometer;
 use params::{
     BiasJson, BreakawayJson, GainJson, InductanceJson, InertiaJson, LadderJson, ParamsFile,
@@ -304,6 +305,23 @@ enum Cmd {
         #[arg(long)]
         rested: bool,
     },
+    /// Identify this winding's thermal constants (tau, R_th over the board
+    /// NTC) from one hold: a thermometer the anchor set, the winding within
+    /// 1 C of the NTC; the jam check, the anchor's seat at the low stop
+    /// under the current limit for --hold-s, back to mid travel; then the
+    /// winding's tracked rise is fitted for R_th against the kernel's power,
+    /// the thermometer's guard exits cut out, and tau follows as R_th times
+    /// the MG90's heat capacity. Prints the fit beside the table; --save
+    /// writes th_g_q016 and th_alpha_q24 read-back verified and SAVEs, only
+    /// inside tau 30-600 s and R_th 10-200 C/W.
+    Thermal {
+        /// Write the fitted constants and persist with MGMT SAVE.
+        #[arg(long)]
+        save: bool,
+        /// The hold, seconds.
+        #[arg(long, default_value_t = 480)]
+        hold_s: u32,
+    },
     /// Closed-loop verification on the written gains: verify current, then
     /// verify velocity. Needs a clean data state: a set written but not
     /// SAVEd on a fresh servo is refused (`ident write --save` first).
@@ -535,6 +553,7 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
             Ok(())
         }
         Cmd::Anchor { save, rested } => run_anchor_alone(cli, &mut c, id, *save, *rested),
+        Cmd::Thermal { save, hold_s } => run_thermal(cli, &mut c, id, *save, *hold_s),
         Cmd::Verify => run_verify(cli, &mut c, id),
         Cmd::Write { params, save } => {
             let p = ParamsFile::load(params)?;
@@ -612,6 +631,7 @@ fn drives(cmd: &Cmd) -> bool {
             | Cmd::Ladder
             | Cmd::Inertia
             | Cmd::Anchor { .. }
+            | Cmd::Thermal { .. }
             | Cmd::Verify
     )
 }
@@ -789,7 +809,7 @@ fn run_anchor(
     id: Id,
     out: &csvio::OutDir,
     cfg: AnchorCfg,
-) -> Result<Result<AnchorResult, String>> {
+) -> Result<Anchor> {
     let params = rig(cli)?.without_pos_guard();
     let mut log = csvio::SnapshotLog::create(out, "anchor_snapshots.csv")?;
     let mut exp = Guarded::new(Permitted::new(Anchor::new(cfg, &params)), params);
@@ -797,7 +817,7 @@ fn run_anchor(
     check_abort("anchor", exp.abort())?;
     let exp = exp.into_inner().into_inner();
     csvio::write_anchor_samples(out, exp.samples())?;
-    Ok(exp.result())
+    Ok(exp)
 }
 
 /// `osc ident anchor`: the thermometer set on an identified servo, written
@@ -835,6 +855,10 @@ fn run_anchor_alone(
             rec.declined.as_deref().unwrap_or("no hold was read")
         );
     };
+    let r_vpc = d.lim.r_vpc().context("the servo carries no identified R")?;
+    if let Err(why) = contact_state(a.r_vpc, a.duty, a.i_counts, r_vpc, d.lim.vbus as f64) {
+        bail!("{why}; nothing written");
+    }
     let enc = thermometer::Thermal::new(
         thermometer::MG90_TAU_S,
         thermometer::MG90_R_TH_C_PER_W,
@@ -882,6 +906,78 @@ fn run_anchor_alone(
         println!("not saved: osc save persists it");
     }
     Ok(())
+}
+
+/// `osc ident thermal`: this winding's tau and R_th from one hold at the
+/// anchor's seat ([`thermal`]), printed beside the table's; written and
+/// SAVEd with --save when they sit inside the band. Every ending centres
+/// the shaft and turns torque off, an abort's too.
+fn run_thermal(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id, save: bool, hold_s: u32) -> Result<()> {
+    let d = drive(cli)?;
+    if d.stored.is_none() {
+        bail!(
+            "this servo carries no winding R from an earlier identification, so nothing plans \
+             the hold; `osc ident run` identifies it first"
+        );
+    }
+    let units = thermal::Units {
+        slow_hz: thermometer::slow_hz(d.sense.tick_hz as f64),
+        v_per_vcount: d.sc.v_term_per_count,
+        a_per_ccount: d.sc.amps_per_count,
+    };
+    let table = (
+        snapshot::read_u16(c, id, calib::TH_ALPHA_Q24)?,
+        snapshot::read_u16(c, id, calib::TH_G_Q016)?,
+    );
+    let now = pump::read_snapshot(c, id)?;
+    let rest = thermal::Rest {
+        ntc_k1_q88: snapshot::read_u16(c, id, calib::NTC_K1_Q88)? as i16,
+        r0_q12: snapshot::read_u16(c, id, calib::R0_Q12)?,
+        therm_flags: now.therm_flags,
+        t_winding_cc: now.t_winding_cc,
+        t_ntc_cc: now.t_ntc_cc,
+        alpha_q24: table.0,
+    };
+    if let Err(why) = thermal::rested(&rest, units.slow_hz) {
+        bail!("{why}");
+    }
+    let rec = match drive_stages(cli, c, id, Until::Thermal { hold_s }, false) {
+        Ok(rec) => rec,
+        Err(e) => {
+            if let Err(centring) = centre_outside_the_run(cli, c, id) {
+                println!("  centring after the abort: {centring:#}");
+            }
+            return Err(e);
+        }
+    };
+    let r_vpc = d.lim.r_vpc().context("the servo carries no identified R")?;
+    if let Err(why) = thermal::check_contact(&rec.therm, r_vpc, d.lim.vbus as f64) {
+        bail!("{why}; nothing fitted");
+    }
+    let fit = thermal::fit(
+        &rec.therm,
+        units.tau_s(table.0 as f64),
+        thermometer::MG90_HEAT_J_PER_C,
+        &units,
+    );
+    print!("{}", thermal::render(&fit, table, &units));
+    let f = match fit {
+        Ok(f) => f,
+        Err(why) => bail!("the fit declined: {why}; nothing written"),
+    };
+    if let Err(why) = thermal::plausible(f.tau_s, f.r_th(&units)) {
+        bail!("{why}; nothing written");
+    }
+    if !save {
+        println!("not written: --save writes th_alpha_q24 and th_g_q016 and SAVEs");
+        return Ok(());
+    }
+    let (alpha, g) = (f.alpha_q24(units.slow_hz), f.g_q016());
+    write_reg(c, id, control::TORQUE_ENABLE, 0)?;
+    snapshot::take_snapshot(c, id, &rec.out.0.join("snapshot.json"))?;
+    snapshot::write_gains(c, id, &GainJson::thermal_model(alpha, g))?;
+    println!("the model is stamp-covered: osc stamp next");
+    crate::save(c, id)
 }
 
 fn run_rl(
@@ -1340,6 +1436,10 @@ enum Until {
     Inertia,
     /// The anchor alone ([`Run::for_anchor`]).
     Anchor,
+    /// The anchor's seat held `hold_s` for the thermal fit.
+    Thermal {
+        hold_s: u32,
+    },
     End,
 }
 
@@ -1351,7 +1451,7 @@ impl Until {
                 | (Until::Breakaway, Stage::Breakaway { .. })
                 | (Until::Ladder, Stage::Ladder { .. })
                 | (Until::Inertia, Stage::Inertia { .. })
-                | (Until::Anchor, Stage::Anchor { .. })
+                | (Until::Anchor | Until::Thermal { .. }, Stage::Anchor { .. })
         )
     }
 }
@@ -1372,7 +1472,7 @@ fn drive_stages(
     println!("recording to {}", out.0.display());
     let d = drive(cli)?;
     let mut run = match until {
-        Until::Anchor => Run::for_anchor(d.lim, &d.sc),
+        Until::Anchor | Until::Thermal { .. } => Run::for_anchor(d.lim, &d.sc),
         _ => Run::new(d.lim, &d.sc),
     }
     .with_stored_winding(d.stored)
@@ -1392,6 +1492,7 @@ fn drive_stages(
         ladder: None,
         inertia: None,
         anchor: None,
+        therm: Vec::new(),
         declined: None,
         runway: None,
         climbs: Vec::new(),
@@ -1587,6 +1688,8 @@ struct Recorded {
     inertia: Option<InertiaResult>,
     /// The thermometer's anchor hold.
     anchor: Option<AnchorResult>,
+    /// The thermal hold's reads.
+    therm: Vec<Row>,
     /// Why a stage gave the fit nothing, in plain words.
     declined: Option<String>,
     /// What the ladder measured: inertia runs inside the same runway.
@@ -1776,6 +1879,25 @@ impl Recorded {
                     }
                 }
             }
+            Stage::Anchor { seek, hold } if let Until::Thermal { hold_s } = until => {
+                println!(
+                    "[thermal] seek the low stop at {}, hold at {} (the current limit governs) \
+                     for {hold_s} s: the winding's rise over the board NTC; pos guard off, stall \
+                     permit held",
+                    pct(*seek),
+                    pct(*hold)
+                );
+                let slow_hz = thermometer::slow_hz(d.sense.tick_hz as f64);
+                let cfg = AnchorCfg {
+                    hold_polls: u32::MAX,
+                    hold_ms: Some(hold_s as f64 * 1000.0),
+                    poll_ms: (1000.0 / slow_hz) as u32,
+                    ..order::anchor_cfg(*seek, *hold, AnchorCfg::default())
+                };
+                let exp = run_anchor(cli, c, id, out, cfg)?;
+                csvio::write_thermal_rows(out, exp.rows())?;
+                self.therm = exp.rows().to_vec();
+            }
             Stage::Anchor { seek, hold } => {
                 println!(
                     "[anchor] seek the low stop at {}, hold at {} (the current limit governs) \
@@ -1785,7 +1907,7 @@ impl Recorded {
                     pct(*hold)
                 );
                 let cfg = order::anchor_cfg(*seek, *hold, AnchorCfg::default());
-                match run_anchor(cli, c, id, out, cfg)? {
+                match run_anchor(cli, c, id, out, cfg)?.result() {
                     Ok(a) => {
                         println!(
                             "  R0 {:.4} vcounts/ccount, median of {} windows (scatter {:.1}%), \

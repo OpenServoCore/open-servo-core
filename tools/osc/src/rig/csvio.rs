@@ -16,6 +16,7 @@ use osc_ident::exp::resistance::DwellSample;
 use osc_ident::exp::rl::{SegKind, Segment};
 use osc_ident::fits::{Climb, RungPoint, StepSeries};
 use osc_ident::frame::{TelFrame, TelemetrySnapshot};
+use osc_ident::thermal::Row;
 
 pub(crate) struct OutDir(pub(crate) PathBuf);
 
@@ -48,7 +49,7 @@ pub(crate) const SNAPSHOT_COLUMNS: &str = "host_ms,fault_flags,fault_code,mode_a
     theta_hat_q16,omega_hat_cps,omega_hat_src,tau_d_counts,i_lim_counts,t_winding_cc,\
     vbus_counts,duty_applied_q15,omega_bemf_cps,r_hat_q12,i_hat_counts,sample_tick,pos,current,\
     current_trough,current_bias_counts,i_mean_counts,i_min_counts,i_max_counts,vdiff_mean,\
-    duty_mean_q15,agg_seq";
+    duty_mean_q15,agg_seq,t_ntc_cc,therm_flags";
 
 impl SnapshotLog {
     pub(crate) fn create(dir: &OutDir, name: &str) -> Result<Self> {
@@ -66,7 +67,7 @@ impl SnapshotLog {
 /// One snapshot as [`SNAPSHOT_COLUMNS`] lays it out.
 pub(crate) fn snapshot_fields(host_ms: f64, s: &TelemetrySnapshot) -> String {
     format!(
-        "{host_ms:.1},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+        "{host_ms:.1},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
         s.fault_flags,
         s.fault_code,
         s.mode_active,
@@ -91,7 +92,9 @@ pub(crate) fn snapshot_fields(host_ms: f64, s: &TelemetrySnapshot) -> String {
         s.i_max_counts,
         s.vdiff_mean,
         s.duty_mean_q15,
-        s.agg_seq
+        s.agg_seq,
+        s.t_ntc_cc,
+        s.therm_flags
     )
 }
 
@@ -202,6 +205,19 @@ pub(crate) fn write_anchor_samples(dir: &OutDir, samples: &[WindowSample]) -> Re
     writeln!(w, "t_ms,i,vdiff,duty_q15")?;
     for s in samples {
         writeln!(w, "{},{},{},{}", s.t_ms, s.i, s.vdiff, s.duty_q15)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn write_thermal_rows(dir: &OutDir, rows: &[Row]) -> Result<()> {
+    let mut w = dir.file("thermal.csv")?;
+    writeln!(w, "t_s,x_cc,i,v,duty,p,flags")?;
+    for r in rows {
+        writeln!(
+            w,
+            "{},{},{},{},{},{},{}",
+            r.t_s, r.x_cc, r.i, r.v, r.duty, r.p, r.flags
+        )?;
     }
     Ok(())
 }
@@ -516,6 +532,23 @@ mod tests {
         }
         assert_eq!(read_current_limit(&dir.0.join(name)).unwrap(), Some(280));
         assert_eq!(read_current_limit(&dir.0.join("absent.csv")).unwrap(), None);
+    }
+
+    /// The snapshot log carries what the thermal fit reads: the NTC and
+    /// the thermometer's flags, one value per column.
+    #[test]
+    fn the_snapshot_log_carries_the_ntc_and_the_thermometer_flags() {
+        let s = TelemetrySnapshot {
+            t_ntc_cc: 2946,
+            therm_flags: 2,
+            ..Default::default()
+        };
+        let line = snapshot_fields(1.0, &s);
+        let cols: Vec<&str> = SNAPSHOT_COLUMNS.split(',').collect();
+        let vals: Vec<&str> = line.split(',').collect();
+        assert_eq!(cols.len(), vals.len());
+        assert_eq!(cols[cols.len() - 2..], ["t_ntc_cc", "therm_flags"]);
+        assert_eq!(vals[vals.len() - 2..], ["2946", "2"]);
     }
 
     #[test]

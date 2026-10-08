@@ -762,14 +762,15 @@ mod tests {
     }
 
     /// A telemetry read as the servo serves it, from `fault_flags` through
-    /// `window_floor_q15`, publishing `floor` and a 4.39 V USB rail.
+    /// `therm_flags`, publishing `floor` and a 4.39 V USB rail.
     fn published(floor: u16) -> TelemetrySnapshot {
-        let (base, f, v) = (
+        let (base, f, v, end) = (
             telemetry::FAULT_FLAGS.addr,
             telemetry::WINDOW_FLOOR_Q15,
             telemetry::VBUS_COUNTS,
+            telemetry::THERM_FLAGS,
         );
-        let mut region = vec![0u8; (f.addr + f.width as u16 - base) as usize];
+        let mut region = vec![0u8; (end.addr + end.width as u16 - base) as usize];
         let mut put = |r: Reg, b: [u8; 2]| {
             let at = (r.addr - base) as usize;
             region[at..at + 2].copy_from_slice(&b);

@@ -10,10 +10,13 @@
 //! the run ([`super::seek::at_stop`]). The hold is about a second: 0.3 W
 //! into the winding for a second is well under a degree of self-heating,
 //! and the current at the limit is where a loaded hold sits in service.
+//! With `hold_ms` the hold runs that long and its reads are the thermal
+//! fit's rows ([`crate::thermal`]).
 
 use super::{AbortReason, Cmd, Experiment, RigParams, WindowSample, WindowStream, seek};
 use crate::frame::TelemetrySnapshot;
 use crate::regs::control;
+use crate::thermal::Row;
 
 const Q15: f64 = 32767.0;
 
@@ -24,6 +27,8 @@ pub struct AnchorCfg {
     pub hold_duty_q15: i16,
     /// Polls at the hold; with `poll_ms` about a second.
     pub hold_polls: u32,
+    /// The hold ends this long after its first read, if sooner, ms.
+    pub hold_ms: Option<f64>,
     pub poll_ms: u32,
     pub seek_poll_ms: u32,
 }
@@ -34,6 +39,7 @@ impl Default for AnchorCfg {
             seek_duty_q15: 3932,
             hold_duty_q15: 5242,
             hold_polls: 400,
+            hold_ms: None,
             poll_ms: 2,
             seek_poll_ms: 30,
         }
@@ -48,6 +54,41 @@ pub const MIN_WINDOWS: usize = 100;
 /// shaft was not at rest against the stop (back-EMF in the windows) or
 /// the limiter hunted: healthy holds read under 2%.
 pub const MAX_SPREAD: f64 = 0.05;
+
+/// A hold whose R sits this far off the identified winding's, or whose
+/// duty at the hold current sits this far under what that R and the rail
+/// predict, is not the winding: a brush bridging two segments read R0
+/// 0.7705 vcounts/ccount at 12.3% duty on the bench MG90, 23% under the
+/// 0.97-1.01 of every other anchor that day.
+pub const CONTACT_BAND: f64 = 0.15;
+
+/// The hold against the identified winding `r_vpc` on the rail `vbus`,
+/// vcounts: `hold_r` vcounts/ccount, `duty` a fraction, at `i_counts`.
+/// Err is the refusal.
+pub fn contact_state(
+    hold_r: f64,
+    duty: f64,
+    i_counts: f64,
+    r_vpc: f64,
+    vbus: f64,
+) -> Result<(), String> {
+    let predicted = crate::limits::duty_for(i_counts, r_vpc, vbus);
+    let low = hold_r < r_vpc * (1.0 - CONTACT_BAND) || duty < predicted * (1.0 - CONTACT_BAND);
+    if low {
+        return Err(format!(
+            "the hold read R0 {hold_r:.4} against the identified R {r_vpc:.4}: a \
+             low-resistance contact state (a brush bridging two segments); re-seat and retry"
+        ));
+    }
+    if hold_r > r_vpc * (1.0 + CONTACT_BAND) {
+        return Err(format!(
+            "the hold read R0 {hold_r:.4} against the identified R {r_vpc:.4}, over {:.0}% \
+             above it; re-seat and retry",
+            CONTACT_BAND * 100.0
+        ));
+    }
+    Ok(())
+}
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct AnchorResult {
@@ -89,6 +130,7 @@ pub struct Anchor {
     polls_left: u32,
     windows: WindowStream,
     samples: Vec<WindowSample>,
+    rows: Vec<Row>,
     seat: Option<u16>,
 }
 
@@ -110,12 +152,18 @@ impl Anchor {
             polls_left: 0,
             windows: WindowStream::new(params),
             samples: Vec::new(),
+            rows: Vec::new(),
             seat: None,
         }
     }
 
     pub fn samples(&self) -> &[WindowSample] {
         &self.samples
+    }
+
+    /// Every read of the hold, in order.
+    pub fn rows(&self) -> &[Row] {
+        &self.rows
     }
 
     /// Where the shaft seated, once it did.
@@ -254,13 +302,17 @@ impl Experiment for Anchor {
                 Cmd::Read
             }
             Phase::HoldEval => {
-                if let Some(o) = obs
-                    && let Some(w) = self.windows.push(o)
-                {
-                    self.samples.push(w);
+                let mut timed_out = false;
+                if let Some(o) = obs {
+                    if let Some(w) = self.windows.push(o) {
+                        self.samples.push(w);
+                    }
+                    let start = self.rows.first().map_or(o.host_ms, |r| r.t_s * 1000.0);
+                    timed_out = self.cfg.hold_ms.is_some_and(|ms| o.host_ms - start >= ms);
+                    self.rows.push(Row::from_snapshot(o));
                 }
                 self.polls_left = self.polls_left.saturating_sub(1);
-                if self.polls_left == 0 {
+                if self.polls_left == 0 || timed_out {
                     self.phase = Phase::FinishDuty;
                     Cmd::Pause { ms: 0 }
                 } else {
@@ -376,6 +428,45 @@ mod tests {
         let floor = crate::thermometer::floor_counts(r.i_counts);
         assert_eq!(floor.raw, 7 * hold / 8);
         assert!(!floor.saturated);
+    }
+
+    /// A timed hold runs its span on the host's clock, whatever the poll
+    /// budget, and keeps every read as a thermal row.
+    #[test]
+    fn a_timed_hold_runs_its_span_and_keeps_its_reads() {
+        let mut servo = FakeServo::new(3.37);
+        let cfg = AnchorCfg {
+            hold_polls: u32::MAX,
+            hold_ms: Some(3000.0),
+            poll_ms: 16,
+            ..AnchorCfg::default()
+        };
+        let (exp, _, abort) = run(&mut servo, cfg);
+        assert_eq!(abort, None);
+        let rows = exp.rows();
+        let span = rows.last().unwrap().t_s - rows[0].t_s;
+        assert!((3.0..3.1).contains(&span), "{span}");
+        assert!(rows.len() > 100, "{}", rows.len());
+        assert!(rows.iter().skip(10).all(|r| r.p > 0.0), "{:?}", &rows[..12]);
+    }
+
+    /// The bench's bridged anchor (R0 0.7705 at 12.3% for 275 counts)
+    /// against the identified 1.00 vcounts/ccount on a 1780-count rail is
+    /// refused on its R and on its duty alike; an ordinary seat passes.
+    #[test]
+    fn a_hold_in_a_low_resistance_contact_state_is_refused() {
+        let (r, vbus, i) = (1.0, 1780.0, 275.0);
+        let ok = crate::limits::duty_for(i, 0.99, vbus);
+        assert_eq!(contact_state(0.99, ok, i, r, vbus), Ok(()));
+        let why = contact_state(0.7705, 0.123, i, r, vbus).unwrap_err();
+        assert_eq!(
+            why,
+            "the hold read R0 0.7705 against the identified R 1.0000: a low-resistance contact \
+             state (a brush bridging two segments); re-seat and retry"
+        );
+        // the duty alone, 18% under the 15.4% the identified R predicts
+        assert!(contact_state(0.95, 0.126, i, r, vbus).is_err());
+        assert!(contact_state(1.2, ok, i, r, vbus).is_err());
     }
 
     #[test]
