@@ -59,7 +59,7 @@ where a comparison needs it.
 - `01-bridge-states`: what each ADC sample means in each H-bridge state and
   decay mode, and when it is valid.
 - `02-electrical`: winding resistance and brush drop as a two-parameter line,
-  and the winding inductance.
+  the winding inductance, and the burst fit's R-V0 ridge.
 - `03-back-emf`: the back-EMF constant by three routes, and ripple speed plus
   coast back-EMF as a speed that needs no pot.
 - `04-friction`: Coulomb and viscous friction from coast deceleration and
@@ -79,7 +79,6 @@ where a comparison needs it.
   sessions, against its own split-half floor.
 - `13-output-angle-from-video`: output angle from a camera, proven on rendered
   frames.
-- `14-winding-r-as-a-thermometer`: burst resistance and the R-V0 ridge.
 - `15-op-amp-over-board-temperature`: current amplifier gain and zero against
   board temperature.
 - `16-duty-floor-in-the-tap-sample-timing`: where each tap samples inside a

@@ -445,7 +445,7 @@ def pooled(caps, m, start, free):
 
     start: length-5 parameter vector; free: indices that move. scipy's
     trust-region solver stands in for ident's own Levenberg-Marquardt; both
-    minimise the same soft-L1 cost, and section 2 of notebook 14 checks they
+    minimise the same soft-L1 cost, and section 22 of notebook 02 checks they
     land on the same numbers."""
     free = list(free)
     p_start = np.asarray(start, float)

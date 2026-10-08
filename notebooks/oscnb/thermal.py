@@ -11,7 +11,7 @@ along that line to one reference V0 takes the trade out:
   slope, icept, corr = ridge(r, v0)          R against V0 across runs
   rc = project(r, v0, v0_ref, slope)          R moved along the line to v0_ref
 
-The slope can also come from the fit itself (hold V0 on a grid, nb14 sec 3);
+The slope can also come from the fit itself (hold V0 on a grid, nb02 sec 22);
 the two agreeing is what says the scatter is the fit's trade, not the motor.
 
 COPPER
