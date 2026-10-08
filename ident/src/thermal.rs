@@ -21,6 +21,7 @@ use core::fmt::Write as _;
 
 use osc_servo_core::estimator::thermal::{UNSET_CC, flag};
 
+use crate::exp::anchor::contact_state;
 use crate::frame::TelemetrySnapshot;
 use crate::gains::{Encoded, enc};
 use crate::thermometer::{self, SETTLE_S};
@@ -51,6 +52,11 @@ pub const REST_CC: f64 = 100.0;
 pub const TAU_BAND_S: (f64, f64) = (30.0, 600.0);
 pub const R_TH_BAND_C_PER_W: (f64, f64) = (10.0, 200.0);
 
+/// A tracked R that moves this much across a guard exit is a contact
+/// state, not heat: copper moves 0.39% per C, and the bench's brush bridge
+/// read 23% low.
+pub const R_STEP: f64 = 0.10;
+
 /// The two slopes the fit solves for.
 const PARAMS: usize = 2;
 
@@ -61,19 +67,33 @@ pub struct Row {
     pub t_s: f64,
     /// `t_winding_cc - t_ntc_cc`.
     pub x_cc: f64,
-    /// The ident window's `i (duty x vdiff)`, vcount-ccount: the kernel's
-    /// `P` at a seat, where omega is zero.
+    /// The ident window's current, counts, and duty-weighted `duty x
+    /// vdiff`, vcounts, both folded by the drive's sign; the duty, a
+    /// fraction of full scale.
+    pub i: f64,
+    pub v: f64,
+    pub duty: f64,
+    /// `i v`, vcount-ccount: the kernel's `P` at a seat, where omega is
+    /// zero.
     pub p: f64,
     pub flags: u8,
 }
 
 impl Row {
     pub fn from_snapshot(o: &TelemetrySnapshot) -> Self {
-        let v = o.duty_mean_q15.unsigned_abs() as f64 * o.vdiff_mean as f64 / Q15;
+        let sign = o.duty_mean_q15.signum() as f64;
+        let duty = o.duty_mean_q15.unsigned_abs() as f64 / Q15;
+        let (i, v) = (
+            o.i_mean_counts as f64 * sign,
+            duty * o.vdiff_mean as f64 * sign,
+        );
         Self {
             t_s: o.host_ms / 1000.0,
             x_cc: o.t_winding_cc as f64 - o.t_ntc_cc as f64,
-            p: (o.i_mean_counts as f64 * v).max(0.0),
+            i,
+            v,
+            duty,
+            p: (i * v).max(0.0),
             flags: o.therm_flags,
         }
     }
@@ -98,6 +118,8 @@ pub struct Fit {
     /// Tracked stretches, and the stretches between them the fit cut.
     pub segments: usize,
     pub gaps: usize,
+    /// Guard exits the tracked R stepped more than [`R_STEP`] across.
+    pub r_steps: usize,
 }
 
 impl Fit {
@@ -191,9 +213,30 @@ fn stretch_chunks(seg: &[Row], out: &mut Vec<Chunk>) -> f64 {
     used
 }
 
+/// V over I across rows with current: the hold's R.
+fn r_of<'a>(rows: impl Iterator<Item = &'a Row>) -> Option<f64> {
+    let (v, i) = rows
+        .filter(|r| r.i > 0.0)
+        .fold((0.0, 0.0), |(v, i), r| (v + r.v, i + r.i));
+    (i > 0.0).then(|| v / i)
+}
+
+/// The hold's mean V/I and duty against the identified winding `r_vpc`
+/// on the rail `vbus`, vcounts ([`contact_state`]); Err is the refusal.
+pub fn check_contact(rows: &[Row], r_vpc: f64, vbus: f64) -> Result<(), String> {
+    let held: Vec<&Row> = rows.iter().filter(|r| r.i > 0.0).collect();
+    let r = r_of(held.iter().copied()).ok_or("the hold read no current")?;
+    let n = held.len() as f64;
+    let duty = held.iter().map(|r| r.duty).sum::<f64>() / n;
+    let i = held.iter().map(|r| r.i).sum::<f64>() / n;
+    contact_state(r, duty, i, r_vpc, vbus)
+}
+
 /// Fit the hold's rows, in time order; Err says why nothing fits.
 pub fn fit(rows: &[Row]) -> Result<Fit, String> {
     let mut segments = 0;
+    let mut r_steps = 0;
+    let mut last_r: Option<f64> = None;
     let mut pts = Vec::new();
     let mut used_s = 0.0;
     let mut rest = rows;
@@ -202,7 +245,18 @@ pub fn fit(rows: &[Row]) -> Result<Fit, String> {
             .iter()
             .position(|r| !r.tracked())
             .unwrap_or(rest.len() - s);
-        used_s += stretch_chunks(&rest[s..s + n], &mut pts);
+        let seg = &rest[s..s + n];
+        used_s += stretch_chunks(seg, &mut pts);
+        let (Some(t0), Some(t1)) = (seg.first().map(|r| r.t_s), seg.last().map(|r| r.t_s)) else {
+            break;
+        };
+        let head = r_of(seg.iter().filter(|r| r.t_s - t0 <= CHUNK_S));
+        if let (Some(before), Some(after)) = (last_r, head)
+            && (after / before - 1.0).abs() > R_STEP
+        {
+            r_steps += 1;
+        }
+        last_r = r_of(seg.iter().filter(|r| t1 - r.t_s <= CHUNK_S));
         segments += 1;
         rest = &rest[s + n..];
     }
@@ -244,6 +298,7 @@ pub fn fit(rows: &[Row]) -> Result<Fit, String> {
         used_s,
         segments,
         gaps: segments.saturating_sub(1),
+        r_steps,
     })
 }
 
@@ -353,6 +408,12 @@ pub fn render(fit: &Result<Fit, String>, table: (u16, u16), u: &Units) -> String
         f.chunks,
         f.sd / u.slow_hz
     );
+    let _ = writeln!(
+        s,
+        "  contact       {} step(s) of the tracked R over {:.0}% across the guard exits",
+        f.r_steps,
+        R_STEP * 100.0
+    );
     let (alpha, g) = f.encode(u.slow_hz);
     let _ = writeln!(
         s,
@@ -415,6 +476,7 @@ mod tests {
             used_s: 0.0,
             segments: 0,
             gaps: 0,
+            r_steps: 0,
         };
         let (alpha, g) = f.encode(UNITS.slow_hz);
         assert_eq!(alpha.raw, 2097);
@@ -427,9 +489,14 @@ mod tests {
         let mut x = 0.0f64;
         (0..(secs / dt) as usize)
             .map(|k| {
+                // a winding R of 1 vcount/ccount, so v = i and p = i^2
+                let i = p.sqrt();
                 let r = Row {
                     t_s: k as f64 * dt,
                     x_cc: x,
+                    i,
+                    v: i,
+                    duty: i / VBUS,
                     p,
                     flags,
                 };
@@ -498,6 +565,53 @@ mod tests {
         }
         let f = fit(&through).unwrap();
         assert!((f.tau_s() / 128.0 - 1.0).abs() > 0.1, "tau {}", f.tau_s());
+    }
+
+    /// The rail the synthetic rows' duty is read against, vcounts.
+    const VBUS: f64 = 1780.0;
+
+    /// A hold read through a bridged brush, its V/I 23% under the
+    /// identified winding, is refused before any fit; the same hold at the
+    /// winding passes.
+    #[test]
+    fn a_hold_in_a_low_resistance_contact_state_is_refused() {
+        let rows = rise(128.0, 0.0229, 1.38e5, 60.0, flag::TRACK);
+        assert_eq!(check_contact(&rows, 1.0, VBUS), Ok(()));
+        let bridged: Vec<Row> = rows
+            .iter()
+            .map(|r| Row {
+                v: r.v * 0.77,
+                duty: r.duty * 0.77,
+                ..*r
+            })
+            .collect();
+        let why = check_contact(&bridged, 1.0, VBUS).unwrap_err();
+        assert!(why.contains("a low-resistance contact state"), "{why}");
+    }
+
+    /// A bridge in and out inside the hold: two guard exits whose tracked
+    /// R steps 23%, counted and reported.
+    #[test]
+    fn r_steps_across_the_guard_exits_are_counted() {
+        let mut rows = rise(128.0, 0.0229, 1.38e5, 480.0, flag::TRACK);
+        for r in rows.iter_mut() {
+            if (200.0..203.0).contains(&r.t_s) || (213.0..216.0).contains(&r.t_s) {
+                r.flags = 0;
+            }
+            if (201.0..214.0).contains(&r.t_s) {
+                r.v *= 0.77;
+            }
+        }
+        let f = fit(&rows).unwrap();
+        assert_eq!((f.segments, f.r_steps), (3, 2), "{f:?}");
+        let s = render(&Ok(f), (2097, 1500), &UNITS);
+        assert!(s.contains("contact       2 step(s)"), "{s}");
+        assert_eq!(
+            fit(&rise(128.0, 0.0229, 1.38e5, 480.0, flag::TRACK))
+                .unwrap()
+                .r_steps,
+            0
+        );
     }
 
     #[test]

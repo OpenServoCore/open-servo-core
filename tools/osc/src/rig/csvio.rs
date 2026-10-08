@@ -209,9 +209,13 @@ pub(crate) fn write_anchor_samples(dir: &OutDir, samples: &[WindowSample]) -> Re
 
 pub(crate) fn write_thermal_rows(dir: &OutDir, rows: &[Row]) -> Result<()> {
     let mut w = dir.file("thermal.csv")?;
-    writeln!(w, "t_s,x_cc,p,flags")?;
+    writeln!(w, "t_s,x_cc,i,v,duty,p,flags")?;
     for r in rows {
-        writeln!(w, "{},{},{},{}", r.t_s, r.x_cc, r.p, r.flags)?;
+        writeln!(
+            w,
+            "{},{},{},{},{},{},{}",
+            r.t_s, r.x_cc, r.i, r.v, r.duty, r.p, r.flags
+        )?;
     }
     Ok(())
 }

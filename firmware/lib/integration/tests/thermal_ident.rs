@@ -175,4 +175,6 @@ fn a_seated_hold_at_the_limit_fits_the_plant_s_tau_and_g_within_ten_percent() {
 fn contact_steps_inside_the_hold_are_cut_and_the_fit_still_lands_within_ten_percent() {
     let f = assert_lands(&hold(&[(150.0, 0.79), (160.0, 1.0), (300.0, 1.03)]));
     assert!(f.segments >= 4, "{f:?}");
+    // the bridge in and out; the +3% step is under the 10% a step counts at
+    assert_eq!(f.r_steps, 2, "{f:?}");
 }

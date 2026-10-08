@@ -55,6 +55,41 @@ pub const MIN_WINDOWS: usize = 100;
 /// the limiter hunted: healthy holds read under 2%.
 pub const MAX_SPREAD: f64 = 0.05;
 
+/// A hold whose R sits this far off the identified winding's, or whose
+/// duty at the hold current sits this far under what that R and the rail
+/// predict, is not the winding: a brush bridging two segments read R0
+/// 0.7705 vcounts/ccount at 12.3% duty on the bench MG90, 23% under the
+/// 0.97-1.01 of every other anchor that day.
+pub const CONTACT_BAND: f64 = 0.15;
+
+/// The hold against the identified winding `r_vpc` on the rail `vbus`,
+/// vcounts: `hold_r` vcounts/ccount, `duty` a fraction, at `i_counts`.
+/// Err is the refusal.
+pub fn contact_state(
+    hold_r: f64,
+    duty: f64,
+    i_counts: f64,
+    r_vpc: f64,
+    vbus: f64,
+) -> Result<(), String> {
+    let predicted = crate::limits::duty_for(i_counts, r_vpc, vbus);
+    let low = hold_r < r_vpc * (1.0 - CONTACT_BAND) || duty < predicted * (1.0 - CONTACT_BAND);
+    if low {
+        return Err(format!(
+            "the hold read R0 {hold_r:.4} against the identified R {r_vpc:.4}: a \
+             low-resistance contact state (a brush bridging two segments); re-seat and retry"
+        ));
+    }
+    if hold_r > r_vpc * (1.0 + CONTACT_BAND) {
+        return Err(format!(
+            "the hold read R0 {hold_r:.4} against the identified R {r_vpc:.4}, over {:.0}% \
+             above it; re-seat and retry",
+            CONTACT_BAND * 100.0
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct AnchorResult {
     /// The median window R, vcounts per ccount, at the hold's temperature.
@@ -413,6 +448,25 @@ mod tests {
         assert!((3.0..3.1).contains(&span), "{span}");
         assert!(rows.len() > 100, "{}", rows.len());
         assert!(rows.iter().skip(10).all(|r| r.p > 0.0), "{:?}", &rows[..12]);
+    }
+
+    /// The bench's bridged anchor (R0 0.7705 at 12.3% for 275 counts)
+    /// against the identified 1.00 vcounts/ccount on a 1780-count rail is
+    /// refused on its R and on its duty alike; an ordinary seat passes.
+    #[test]
+    fn a_hold_in_a_low_resistance_contact_state_is_refused() {
+        let (r, vbus, i) = (1.0, 1780.0, 275.0);
+        let ok = crate::limits::duty_for(i, 0.99, vbus);
+        assert_eq!(contact_state(0.99, ok, i, r, vbus), Ok(()));
+        let why = contact_state(0.7705, 0.123, i, r, vbus).unwrap_err();
+        assert_eq!(
+            why,
+            "the hold read R0 0.7705 against the identified R 1.0000: a low-resistance contact \
+             state (a brush bridging two segments); re-seat and retry"
+        );
+        // the duty alone, 18% under the 15.4% the identified R predicts
+        assert!(contact_state(0.95, 0.126, i, r, vbus).is_err());
+        assert!(contact_state(1.2, ok, i, r, vbus).is_err());
     }
 
     #[test]

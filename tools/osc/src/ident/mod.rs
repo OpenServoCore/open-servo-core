@@ -26,7 +26,7 @@ use osc_client::data_state::{self, DataState};
 use osc_client::descriptor::Descriptor;
 use osc_client::nusb::NusbPipe;
 use osc_ident::burst::{Capture, Chans};
-use osc_ident::exp::anchor::{Anchor, AnchorCfg, AnchorResult};
+use osc_ident::exp::anchor::{Anchor, AnchorCfg, AnchorResult, contact_state};
 use osc_ident::exp::bias::{Bias, BiasCfg, BiasResult};
 use osc_ident::exp::breakaway::{Breakaway, BreakawayCfg, BreakawayResult};
 use osc_ident::exp::centre::{Centre, CentreCfg};
@@ -854,6 +854,10 @@ fn run_anchor_alone(
             rec.declined.as_deref().unwrap_or("no hold was read")
         );
     };
+    let r_vpc = d.lim.r_vpc().context("the servo carries no identified R")?;
+    if let Err(why) = contact_state(a.r_vpc, a.duty, a.i_counts, r_vpc, d.lim.vbus as f64) {
+        bail!("{why}; nothing written");
+    }
     let enc = thermometer::Thermal::new(
         thermometer::MG90_TAU_S,
         thermometer::MG90_R_TH_C_PER_W,
@@ -945,6 +949,10 @@ fn run_thermal(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id, save: bool, hold_s: 
             return Err(e);
         }
     };
+    let r_vpc = d.lim.r_vpc().context("the servo carries no identified R")?;
+    if let Err(why) = thermal::check_contact(&rec.therm, r_vpc, d.lim.vbus as f64) {
+        bail!("{why}; nothing fitted");
+    }
     let fit = thermal::fit(&rec.therm);
     print!("{}", thermal::render(&fit, table, &units));
     let f = match fit {
