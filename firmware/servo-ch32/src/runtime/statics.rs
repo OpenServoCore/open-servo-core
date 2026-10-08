@@ -28,6 +28,9 @@ pub(crate) static KERNEL: SyncUnsafeCell<MaybeUninit<Ch32Kernel>> =
 pub(crate) static SESSION: SyncUnsafeCell<MaybeUninit<Session>> =
     SyncUnsafeCell::new(MaybeUninit::uninit());
 
+/// Out of line: inlined, the kernel's build temporaries stay in `__run`'s
+/// frame, under the painted stack, for the program's life.
+#[inline(never)]
 pub fn install(io: Ch32ControlIo, timing: KernelTiming) {
     let (feed, drain) = TEL_CHANNEL.split();
     unsafe {

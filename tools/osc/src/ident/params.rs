@@ -42,24 +42,8 @@ pub struct ParamsFile {
     /// The position table the run fitted through: which counts the plant is
     /// in.
     pub pot: Option<PotJson>,
-    /// The thermometer's anchor the run read, and the rest temperature the
-    /// host paired with it; the fit encodes them into `gains`.
-    #[serde(default)]
-    pub thermometer: Option<ThermometerJson>,
     #[serde(default)]
     pub gains: Vec<GainJson>,
-}
-
-/// The anchor hold as recorded ([`osc_ident::exp::anchor::AnchorResult`])
-/// with the ambient the host supplied, degrees C.
-#[derive(Serialize, Deserialize, Clone, Copy)]
-pub struct ThermometerJson {
-    pub ambient_c: f64,
-    pub r_vpc: f64,
-    pub spread: f64,
-    pub n: usize,
-    pub i_counts: f64,
-    pub duty: f64,
 }
 
 #[derive(Serialize, Deserialize, Clone)]

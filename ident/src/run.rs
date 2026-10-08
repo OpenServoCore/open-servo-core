@@ -43,14 +43,12 @@
 //! run ends as the ladder's decline; on one that does not the run goes to
 //! its closing centring.
 //!
-//! Asked for with the rest temperature ([`Run::with_anchor`]), the
-//! thermometer's anchor runs right after the burst, the winding at its
-//! coldest: seated at the low stop and held at the stall-safe cap, the
-//! kernel's own winding R is read for `r0_q12` ([`crate::exp::anchor`]).
-//! On a servo already identified the anchor runs on its own
-//! ([`Run::for_anchor`]): the jam check, the anchor at the plan the stored
-//! winding gives, and the closing centring. An anchor that declines seeds
-//! no thermometer and changes nothing else.
+//! The thermometer's hold runs on a servo already identified
+//! ([`Run::for_anchor`]): the jam check, a seat at the low stop held at the
+//! stall-safe cap at the plan the stored winding gives, where the kernel's
+//! own winding R is read ([`crate::exp::anchor`]), and the closing
+//! centring. A hold that declines seeds no thermometer and changes nothing
+//! else.
 
 use crate::exp::AbortReason;
 use crate::exp::anchor::AnchorCfg;
@@ -109,7 +107,7 @@ pub enum Stage {
         seek: f64,
         base: f64,
     },
-    /// The thermometer's anchor: `seek` to the low stop, `hold` there at
+    /// The thermometer's hold: `seek` to the low stop, `hold` there at
     /// the stall-safe cap while the kernel's winding R is read.
     Anchor {
         seek: f64,
@@ -219,23 +217,6 @@ const ORDER: [Step; 10] = [
     Step::Park,
 ];
 
-/// The default run with the thermometer's anchor after the burst, before
-/// the drives that warm the winding.
-const ANCHOR_ORDER: [Step; 12] = [
-    Step::Bias,
-    Step::Nudge,
-    Step::Burst,
-    Step::Park,
-    Step::Anchor,
-    Step::Park,
-    Step::Breakaway,
-    Step::Park,
-    Step::Ladder,
-    Step::Park,
-    Step::Inertia,
-    Step::Park,
-];
-
 /// The anchor alone, on a servo that carries its winding: the jam check,
 /// the anchor, and back to mid travel.
 const ANCHOR_ONLY_ORDER: [Step; 3] = [Step::Nudge, Step::Anchor, Step::Park];
@@ -259,7 +240,6 @@ pub struct Run {
     class_r_vpc: f64,
     stall_ladder: bool,
     cal: bool,
-    anchor: bool,
     anchor_only: bool,
     /// What an earlier identification left on the servo.
     stored: Option<Winding>,
@@ -288,7 +268,6 @@ impl Run {
             class_r_vpc: sc.r_vpc(CLASS_R_MIN),
             stall_ladder: false,
             cal: false,
-            anchor: false,
             anchor_only: false,
             stored: None,
             stored_motion: false,
@@ -344,15 +323,6 @@ impl Run {
         }
     }
 
-    /// The thermometer's anchor after the burst: the host has the rest
-    /// temperature to pair with it.
-    pub fn with_anchor(self) -> Self {
-        Self {
-            anchor: true,
-            ..self
-        }
-    }
-
     /// The anchor alone: the jam check, then the anchor at the plan the
     /// stored winding gives ([`Run::with_stored_winding`]), then the
     /// closing centring. Without a stored winding nothing can plan the
@@ -369,8 +339,6 @@ impl Run {
             &CAL_ORDER
         } else if self.anchor_only {
             &ANCHOR_ONLY_ORDER
-        } else if self.anchor {
-            &ANCHOR_ORDER
         } else {
             &ORDER
         }
@@ -1367,49 +1335,6 @@ mod tests {
             .collect()
     }
 
-    const ANCHOR_ORDER_NAMES: [&str; 12] = [
-        "bias",
-        "centring",
-        "burst",
-        "centring",
-        "anchor",
-        "centring",
-        "breakaway",
-        "centring",
-        "ladder",
-        "centring",
-        "inertia",
-        "centring",
-    ];
-
-    /// Asked for, the anchor follows the burst at the plan's seek and stop
-    /// cap, before anything warms the winding; declined, it seeds nothing
-    /// and the run goes on to its end.
-    #[test]
-    fn the_anchor_rides_after_the_burst_when_asked() {
-        let mut r = run(RAIL_2S).with_anchor();
-        let mut anchor = None;
-        let seen = stages(&mut r, |s| {
-            if let Stage::Anchor { seek, hold } = s {
-                anchor = Some((*seek, *hold));
-            }
-            Ended::Done
-        });
-        assert_eq!(seen, ANCHOR_ORDER_NAMES);
-        assert_eq!(r.over(), None);
-        let plan = DutyPlan::new(&limits(RAIL_2S), R, Some(0.12));
-        assert_eq!(anchor, Some((plan.seek, plan.stop_cap)));
-        assert_eq!(stages(&mut run(RAIL_2S), |_| Ended::Done), ORDER_NAMES);
-
-        let mut r = run(RAIL_2S).with_anchor();
-        let seen = stages(&mut r, |s| match s {
-            Stage::Anchor { .. } => Ended::Declined,
-            _ => Ended::Done,
-        });
-        assert_eq!(seen, ANCHOR_ORDER_NAMES);
-        assert_eq!(r.over(), None);
-    }
-
     /// On its own the anchor plans from the winding the servo carries, the
     /// jam check's duty seeding the seek; a servo that carries none has
     /// nothing to plan the hold with.
@@ -1435,19 +1360,20 @@ mod tests {
         assert_eq!(r.over(), Some(Over::Declined("anchor")));
     }
 
-    /// The bench servo on 2S with the anchor: the one stage that presses a
+    /// The bench servo on 2S: the anchor is the one stage that presses a
     /// stop, under the permit, its hold governed to the limit, and the R it
     /// reads is the winding the fake stalls through.
     #[test]
     fn the_anchor_seats_the_bench_servo_once_under_the_limit() {
         let mut servo = bench_servo(RAIL_2S);
         servo.pos = 2600.0;
-        let mut run = run(RAIL_2S).with_anchor();
+        let mut run =
+            Run::for_anchor(limits(RAIL_2S), &scales()).with_stored_winding(Some(stored(R)));
         let mut rig = Rig::new(&mut servo, RAIL_2S);
         rig.run(&mut run);
         assert_eq!(run.over(), None, "{:?}", run.over());
         let names: Vec<&str> = rig.marks.iter().map(|m| m.0).collect();
-        assert_eq!(names, ANCHOR_ORDER_NAMES);
+        assert_eq!(names, ["centring", "anchor", "centring"]);
         let a = rig.anchor.expect("the anchor read");
         assert!((a.r_vpc / R - 1.0).abs() < 0.02, "R {} of {R}", a.r_vpc);
         assert!(a.i_counts <= LIM as f64 * 1.05, "hold at {}", a.i_counts);

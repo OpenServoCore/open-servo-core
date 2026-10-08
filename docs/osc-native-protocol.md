@@ -831,8 +831,8 @@ lin   = ((raw + c[i]) << 4) + (c[i + 1] - c[i]) * f      (u16, Q4)
 so the identity is `raw << 4` exactly and knot `k` lands at
 `raw + c[k]`. Once per medium tick, while `pos_lut_state` reads LIVE, this
 value seeds and innovates the position observer; `theta_hat_q16` and everything that
-reads it (trajectory, position loop, soft limits, the stall and
-thermometer speed gates) are in linearized counts. The raw sample stays
+reads it (trajectory, position loop, soft limits, the stall speed gate
+and the thermometer's seat band) are in linearized counts. The raw sample stays
 raw for the published `pos`, the TEL `pos` field and the sensor-delta
 screen. The endstop brake and the soft limits trip at the same raw
 counts as before, because the table is the identity outside the stops

@@ -276,26 +276,22 @@ d += elm.Label(label='void if any sample in it missed a window floor', fontsize=
 dse = s1.absanchors['SE']
 d += elm.Arrow().at((dse[0] + 0.6, dse[1] - 0.85)).theta(125).length(1.05).color(C_EST)
 d += elm.Label(label='L·dî/dt  (drop when PWM-averaged)', fontsize=FSS).at((dse[0] + 3.0, dse[1] - 1.1))
+# identified R into the subtract input
+s1S = s1.absanchors['S']
+d += elm.Arrow().at((s1S[0], s1S[1] - 1.0)).up(1.0).color(C_EST)
+d += elm.Label(label='r_q12·î  (identified R, never R̂)', fontsize=FSS, color=C_EST).at(
+    (s1S[0] + 1.2, s1S[1] - 1.4))
 # thermometry chain below
 ty = -3.4
 d.here = (0.2, ty)
-d += (gt := dsp.Box(w=4.4, h=1.6).anchor('W').label('gate: |î| high AND\n(|ω̂_pot| ≈ 0 OR encoder ω̂)').color(C_EST))
+d += (gt := dsp.Box(w=4.4, h=1.6).anchor('W').label('gate: |î| over floor AND\n(v̂_diff, î) steady').color(C_EST))
 d += elm.Arrow().at(gt.E).right(1.0).color(C_EST)
-d += (ir := dsp.Box(w=4.2, h=1.6).anchor('W').label('slow IIR\nR̂ = (v̂_diff − Ke·ω̂) / î').color(C_EST))
+d += (ir := dsp.Box(w=4.2, h=1.6).anchor('W').label('LMS\nR̂ ← v̂_diff / î').color(C_EST))
 d += elm.Arrow().at(ir.E).right(1.0).color(C_EST)
-d += (tw := dsp.Box(w=4.2, h=1.6).anchor('W').label('T̂wind =\nT₀ + (R̂/R₀ − 1)/0.00393').color(C_EST))
+d += (tw := dsp.Box(w=4.8, h=1.6).anchor('W').label('same seat: T̂ = T_ref +\n(234.5 + T_ref)(R̂/R_ref − 1)').color(C_EST))
 d += elm.Arrow().at(tw.E).right(1.4).label('-> derate()', loc='top', fontsize=FSS).color(C_LIM)
-d += elm.Arrow(ls='--').at((gt.absanchors['S'][0], gt.absanchors['S'][1] - 1.0)).up(1.0).label(
-    'cal-time anchor: (R₀, T₀)', loc='bottom', fontsize=FSS).color(C_HW)
-# R̂ feedback up to the BEMF sum
-irN = ir.absanchors['N']
-s1S = s1.absanchors['S']
-d += elm.Line().at(irN).up(0.8).color(C_EST)
-d += elm.Label(label='R̂(T)·î', fontsize=FSS, color=C_EST).at((irN[0] + 0.65, irN[1] + 0.4))
-d += elm.Line().at((irN[0], irN[1] + 0.8)).left(irN[0] - s1S[0]).color(C_EST)
-d += elm.Arrow().at((s1S[0], irN[1] + 0.8)).up(s1S[1] - irN[1] - 0.8).color(C_EST)
-d += elm.Label(label='timescale separation resolves the R̂ <-> ω̂_bemf circularity: R̂ moves in seconds, ω̂_bemf in milliseconds',
-               fontsize=FSS).at((tw.absanchors['S'][0] - 2.0, tw.absanchors['S'][1] - 1.0))
+d += elm.Arrow(ls='--').at((tw.absanchors['S'][0], tw.absanchors['S'][1] - 1.0)).up(1.0).label(
+    'base: board NTC + carried excess (per seat)', loc='bottom', fontsize=FSS).color(C_HW)
 save(d, 'bemf-thermometry.svg')
 
 # ----------------------------------------------------------- pot observer
@@ -317,7 +313,7 @@ d += elm.Line().at((coS[0], coS[1] - 1.0)).left(coS[0] - prS[0]).label('state fe
 d += elm.Arrow().at((prS[0], coS[1] - 1.0)).up(1.0).color(C_EST)
 d += elm.Label(label='L1..L3 fixed - steady-state gains computed offline at cal (identified J, friction, sensor noise)',
                fontsize=FSS).at(((prS[0] + coS[0]) / 2 + 0.6, coS[1] - 1.75))
-d += elm.Label(label='θ̂ -> position loop        τ̂d -> contact detect, stall, collision        ω̂ -> rest, stall verdict, thermometer gate',
+d += elm.Label(label='θ̂ -> position loop        τ̂d -> contact detect, stall, collision        ω̂ -> rest, stall verdict, thermometer carry',
                fontsize=FSS, color=C_EST).at(((prS[0] + coS[0]) / 2 + 0.6, coS[1] - 2.45))
 save(d, 'pot-observer.svg')
 

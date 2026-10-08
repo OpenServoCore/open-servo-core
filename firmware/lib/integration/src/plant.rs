@@ -81,7 +81,7 @@ pub fn last_cmd(k: &Kernel<FakeIo>) -> MotorCmd {
 }
 
 /// Hand-stable rig baseline: the gains the core kernel tests settle the
-/// plant with, the winding anchor at the plant's R, position tracking
+/// plant with, the stored cold R at the plant's R, position tracking
 /// screen out (the plant/gain pair is qualitative), zero open-loop duty
 /// braking. A fully loaded servo: both images loaded, Ke set, the set
 /// stamped, so the data state opens every mode.

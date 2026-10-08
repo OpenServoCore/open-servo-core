@@ -1,9 +1,10 @@
-//! The thermometer's anchor: the kernel's own winding R at rest. Seek the
+//! The thermometer's hold: the kernel's own winding R at a seat. Seek the
 //! low stop at the plan's seek duty, seat, hold at the stall-safe stop
 //! duty (the current limit governs it) and read the ident aggregate's
 //! windows: duty x vdiff / i per window is the quantity the kernel's
 //! thermometer LMS settles on (core `estimator::thermal`), so their median
-//! is `r0_q12` on the thermometer's own scale ([`crate::thermometer`]).
+//! is a seat's R on the thermometer's own scale; after a long idle it
+//! becomes the stored cold R ([`crate::thermometer::cold_r_q12`]).
 //! Runs with the pos guard off and the stall permit held, like the
 //! resistance stop ladder; a seek that rests anywhere but the stop ends
 //! the run ([`super::seek::at_stop`]). The hold is about a second: 0.3 W
@@ -50,7 +51,7 @@ pub const MAX_SPREAD: f64 = 0.05;
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct AnchorResult {
-    /// The median window R, vcounts per ccount: `r0_q12`.
+    /// The median window R, vcounts per ccount, at the hold's temperature.
     pub r_vpc: f64,
     /// Per-window standard deviation of R over the median.
     pub spread: f64,

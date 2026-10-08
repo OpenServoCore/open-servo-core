@@ -85,8 +85,8 @@ pub fn ntc_beta_c(raw: f64, pullup_ohm: f64, r25_ohm: f64, beta: f64) -> Option<
 }
 
 /// The CALIB thermometer set, encoded. `fields` is the write set in table
-/// order; `th_alpha_q24`, `th_g_q016` and the NTC reference, slope and
-/// curvature are stamp-covered.
+/// order; `th_alpha_q24`, `th_g_q016` and the NTC reference and slope are
+/// stamp-covered.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Thermal {
     pub th_alpha_q24: Encoded,

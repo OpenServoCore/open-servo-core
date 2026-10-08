@@ -120,6 +120,11 @@ const X_MAX_QG: i32 = 32767 << XG;
 /// cold R, x (1 + 2^-1): R_th fits spread 60-77 C/W about g's 63, and the
 /// board NTC rests 1-4 C off the motor.
 const BOUND_MARGIN_SHIFT: u32 = 1;
+/// The first seat reads a hot boot when its R sits more than 6% over the
+/// cold R at the NTC temperature, as centi-C through copper: 3.5 sd of the
+/// per-seat contact scatter (sd 1.3-1.7% of R, the bench MG90's seated
+/// bases reduced to 25 C).
+const HOT_BOOT_BAND_CC: i32 = (COPPER_ZERO_CC + R_COLD_REF_CC) * 6 / 100;
 /// 2^30 / (234.5 + 25 C): the cold R to the NTC temperature without a divide.
 const RECIP_COLD_Q30: i32 = ((1u64 << 30) / (COPPER_ZERO_CC + R_COLD_REF_CC) as u64) as i32;
 
@@ -130,7 +135,7 @@ const STEADY_SHIFT: u32 = 3;
 const STEADY_TICKS: u8 = 2;
 
 /// Gated ticks skipped at a new seat before the reference window opens:
-/// 1 s at 62.5 Hz. Every bench anchor phase fell 0.4-0.9% through its
+/// 1 s at 62.5 Hz. Every seated bench hold fell 0.4-0.9% through its
 /// first 1.5 s (contact settling under current); heating cannot do that.
 const REF_SKIP_TICKS: u8 = 62;
 /// Reference window, 2 s: averages the one-vcount quantization of
@@ -474,12 +479,7 @@ impl WindingTherm {
             );
             let t_r0 =
                 R_COLD_REF_CC + q_mul(r_ref as i32 - cfg.r_cold_q12 as i32, k_cold as i32, 8);
-            let band = q_mul(
-                COPPER_ZERO_CC + R_COLD_REF_CC,
-                cfg.cold_band_q016 as i32,
-                16,
-            );
-            if t_r0 - self.t_ntc_cc as i32 > band {
+            if t_r0 - self.t_ntc_cc as i32 > HOT_BOOT_BAND_CC {
                 t_ref = t_r0;
                 self.flags |= flag::HOT_BOOT;
             }
@@ -989,6 +989,21 @@ mod tests {
             &seated(q_mul(r_hot + r_hot / 50, 280, 12), 280, 400),
         );
         assert!((th.t_cc() - t).abs() < 100, "{} from {t}", th.t_cc());
+    }
+
+    /// The hot-boot band sits over the per-seat contact scatter: a first
+    /// seat +5% over the cold R at the NTC temperature (13 C through
+    /// copper) is contact and the carry starts at the NTC; +8% (21 C) is a
+    /// hot boot (v_mean's vcount truncation reads it 0.7 C low).
+    #[test]
+    fn hot_boot_passes_a_five_percent_first_seat_and_fires_at_eight() {
+        for (pct, fires, t_cc) in [(5, false, 2500), (8, true, 4505)] {
+            let mut th = WindingTherm::new();
+            let r = r_at(4128, 2500) * (100 + pct) / 100;
+            let t = hold(&mut th, BASE_TICKS, &seated(q_mul(r, 280, 12), 280, 300));
+            assert_eq!(th.flags() & flag::HOT_BOOT != 0, fires, "+{pct}%");
+            assert!((t as i32 - t_cc).abs() < 60, "+{pct}%: {t}");
+        }
     }
 
     #[test]

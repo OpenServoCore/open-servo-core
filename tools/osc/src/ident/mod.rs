@@ -1320,7 +1320,6 @@ fn run_all(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id, stall_ladder: bool) -> R
             .map(StoredMotionJson::from),
         sense: Some(drive(cli)?.sense),
         pot: cli.lut.as_ref().map(PotJson::from),
-        thermometer: None,
         ..Default::default()
     };
     let dir = rec.out.0;
@@ -1428,8 +1427,7 @@ fn drive_stages(
         Some(Over::Declined("inertia" | "ladder")) if until == Until::End => Ok(rec),
         Some(Over::Declined("anchor")) => bail!(
             "no winding R to plan the hold with: this servo carries none from an earlier \
-             identification; `osc ident run --ambient-c <C>` identifies it and anchors the \
-             thermometer in the same run"
+             identification; `osc ident run` identifies it first"
         ),
         Some(Over::Declined(stage)) if stage != "burst" => bail!(
             "the {stage} declined: {}; the run ended at mid travel with nothing to fit",
@@ -2690,23 +2688,14 @@ mod tests {
         );
     }
 
-    /// The rest of a run as it lands on disk: ladder rungs on a winding of
-    /// `r` vcounts per ccount and the inertia steps.
-    /// A run that read the thermometer's anchor: the hold's windows at the
-    /// low stop under the 280 limit, the ambient the host gave. The fit
-    /// writes the four CALIB fields behind the gains - r0_q12 the kernel's
-    /// own R at the hold, t0_cc the ambient, k_r2t_q88 copper's handbook
-    /// line through them, mu_q016 a 2 s settle at the limit - and the
-    /// thermometer's current floor at 7/8 of the hold; the report says
-    /// where each came from.
-    /// The fit writes the gains alone; the thermometer is `osc ident anchor`'s.
+    /// The fit writes the gains alone, never a thermometer field; the
+    /// report points at `osc ident anchor`.
     #[test]
     fn the_fit_writes_no_thermometer() {
         let (dir, out, r) = record_front("no-anchor");
         record_ladder_and_steps(&out, r);
         fit_dir(&ctx(dir.clone()), dir.clone()).unwrap();
         let p = ParamsFile::load(&dir.join("params.json")).unwrap();
-        assert!(p.thermometer.is_none());
         assert_eq!(p.gains.len(), 19);
         assert!(p.gains.iter().all(|g| g.name != "r0_q12"));
         let report = std::fs::read_to_string(dir.join("report.txt")).unwrap();
@@ -2717,6 +2706,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The rest of a run as it lands on disk: ladder rungs on a winding of
+    /// `r` vcounts per ccount and the inertia steps.
     fn record_ladder_and_steps(out: &csvio::OutDir, r: f64) {
         use osc_ident::exp::ladder::RungSummary;
         use osc_ident::fits::StepSeries;
