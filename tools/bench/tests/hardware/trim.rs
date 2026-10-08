@@ -163,6 +163,12 @@ fn tracker_follows_host_detune() {
     // have stamped (one break each) and the bare ruler marks it must not.
     // total_frames counts from connect, so it includes the shared bench's
     // own setup reads, which a probe dump taken before the binary ran sees.
+    // Design count: cleared = bare_breaks + stamps untaken when the window
+    // opens. Orphans latched by wrong-baud traffic ride one frame ahead
+    // until a CAL clears them; not a falsifier. Falsifier: cleared >
+    // bare_breaks in a clean window (stale, unstamped, framing_drop
+    // unchanged since the last CAL-bearing run). The frame counter includes
+    // the host's own status, baud and pdump frames.
     let trains = start_trains + back_trains;
     eprintln!(
         "HOSTCOUNT setup_frames={} frames={} total_frames={} trains={trains} bare_breaks={}",

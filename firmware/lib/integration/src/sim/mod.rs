@@ -380,8 +380,8 @@ impl Sim {
         (s.latches(), s.takes())
     }
 
-    /// Break stamps servo `i`'s driver cleared untaken (a CAL mark or a
-    /// rescue drops them by design; nothing else may).
+    /// Break stamps servo `i`'s driver cleared untaken (a CAL mark, a rate
+    /// change or a rescue drops them by design; nothing else may).
     pub fn stamp_drops(&self, i: usize) -> u64 {
         self.handles[i].stamps.drops()
     }
@@ -534,6 +534,15 @@ impl Sim {
         self.core
             .borrow_mut()
             .schedule(Event::WakeRefire { servo: i }, at);
+    }
+
+    /// Latch a break stamp at servo `i` at `at_us` without ringing a byte or
+    /// waking: an orphan the detector latched in an idle gap.
+    pub fn inject_stamp_only_at(&mut self, at_us: u64, i: usize) {
+        let at = self.clamp_at(at_us);
+        self.core
+            .borrow_mut()
+            .schedule(Event::StampOnly { servo: i }, at);
     }
 
     /// Queue a host frame whose transmitter stalls mid-frame: bytes
@@ -734,6 +743,10 @@ impl Sim {
             Event::TelTick { servo, epoch } => self.tel_tick(servo, epoch),
             Event::CpuFree { servo } => self.cpu_free(servo),
             Event::WakeRefire { servo } => self.deliver(servo, Vector::Break),
+            Event::StampOnly { servo } => {
+                let h = &self.handles[servo];
+                h.stamps.latch(h.deadline.local_u64(now) as u32);
+            }
             Event::BreakByte { servo } => self.handles[servo].ring.push(0x00),
             Event::PulseWake => self.deliver_pulse_wake(),
             Event::HostCompare { generation } => {

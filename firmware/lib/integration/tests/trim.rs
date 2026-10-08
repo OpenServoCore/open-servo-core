@@ -377,6 +377,37 @@ fn tracker_follows_bench_bursts_self_addressed() {
     );
 }
 
+/// A low that trips the break detector in an idle gap (wrong-baud traffic
+/// on the bench) latches a stamp no frame owns, and the host's baud write
+/// behind it restarts the tracker with no floor to skip it by. The rate
+/// change drops every untaken stamp, so each frame at the new rate takes
+/// its own break's stamp; kept, the orphan put every later frame one stamp
+/// behind until the next CAL clear. Equal footprints keep the shifted
+/// pairs inside the gate, so only the stamp ledger shows the shift.
+#[test_log::test]
+fn orphan_stamp_before_a_rate_change_never_shifts_pairs() {
+    use osc_servo_core::regions::config::addr::common::BAUD_RATE_IDX;
+    let mut sim = Sim::new(BaudRate::B1000000);
+    let s = sim.add_servo_with(ID, 0, DEFAULT_RESPONSE_DEADLINE_US);
+    let t = send_silent(&mut sim, 0, 8);
+    sim.inject_stamp_only_at(t + 4_500, s);
+    let [lo, hi] = BAUD_RATE_IDX.to_le_bytes();
+    let to_3m = instruction(ID, Opcode::Write, 0, &[lo, hi, BaudRate::B3000000.as_idx()]);
+    sim.host_send_at(t + 5_000, &to_3m);
+    sim.run();
+    sim.set_host_baud(BaudRate::B3000000);
+    let t = sim.now_us() + 100;
+    send_silent(&mut sim, t, 257);
+    sim.run();
+    let (latched, taken) = sim.stamps(s);
+    assert_eq!(latched, 8 + 1 + 1 + 257);
+    assert_eq!(
+        latched - taken - sim.stamp_drops(s),
+        0,
+        "no stamp rides ahead of its frame"
+    );
+}
+
 /// The bench shape under handler costs just inside the 1M frame period:
 /// the frame-end body spans the next break's detector fire, so every wake
 /// is served a byte-time or more late with data bytes newest, and the

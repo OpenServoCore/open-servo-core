@@ -501,6 +501,12 @@ impl<P: Providers> ServoBus<P> {
                 self.rate = baud;
                 self.tpb = tpb_for::<P>(self.rate);
                 self.clock.restart();
+                // The restart leaves no stamp floor: an orphan latched before
+                // the change would pass as the next frame's stamp and put
+                // every later frame one stamp behind (DES pin
+                // `orphan_stamp_before_a_rate_change_never_shifts_pairs`).
+                let dropped = self.stamps.clear();
+                crate::bench::trim_probe(|p| p.cleared += dropped as u32);
             }
             // A pending reboot waits for the main loop's `take_reboot`.
             self.burst.on_tx_released();
