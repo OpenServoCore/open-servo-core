@@ -1,0 +1,19 @@
+meter rows dropped: 0; rest window 1791425004..1791425184: can 26.20 (n 360 sd 0.074) t_ntc 28.23 t_w 28.23 -> REST OFFSET -2.03 C; idle flags [np.int64(0)]
+hold0: seat 263 first base +2.72 s flags 0->2 t_w 28.47->28.47 r_hat 3209 t_ntc 28.16 can 26.00 T* 28.03; bases 3 drops 2; end t_w 31.56 T* 33.18; i_lim min 280; load med 63.00% stack min 972
+hold1: seat 263 first base +3.08 s flags 0->2 t_w 28.88->28.88 r_hat 4042 t_ntc 28.18 can 26.80 T* 28.83; bases 1 drops 0; end t_w 35.26 T* 30.88; i_lim min 280; load med 63.13% stack min 972
+hold2: seat 263 first base +3.07 s flags 0->2 t_w 34.09->34.09 r_hat 4121 t_ntc 28.39 can 29.00 T* 31.03; bases 1 drops 0; end t_w 39.75 T* 32.43; i_lim min 280; load med 63.13% stack min 972
+hold3: seat 263 first base +3.06 s flags 0->2 t_w 30.09->30.09 r_hat 4068 t_ntc 28.13 can 26.70 T* 28.73; bases 1 drops 0; end t_w 38.08 T* 30.78; i_lim min 280; load med 62.96% stack min 972
+hold4: seat 263 first base +3.06 s flags 0->2 t_w 36.33->36.33 r_hat 4106 t_ntc 28.53 can 29.00 T* 31.03; bases 1 drops 0; end t_w 42.06 T* 32.33; i_lim min 280; load med 62.88% stack min 972
+hold5: seat 263 first base +3.07 s flags 0->2 t_w 30.95->30.95 r_hat 4030 t_ntc 28.69 can 26.80 T* 28.83; bases 1 drops 0; end t_w 38.45 T* 30.93; i_lim min 280; load med 62.88% stack min 972
+ gap  gap_s  carried  can  T_star  carry_m_Tstar  t_ntc  seat_step
+   1    240    28.88 26.8   28.83           0.05  28.18        0.0
+   2     30    34.09 29.0   31.03           3.06  28.39        0.0
+   3    240    30.09 26.7   28.73           1.36  28.13        0.0
+   4     30    36.33 29.0   31.03           5.30  28.53        0.0
+   5    240    30.95 26.8   28.83           2.12  28.69        0.0
+G2' 240 s gaps within 1.5 C: 2/3; 30 s gaps in (T*-1, T*+8): 2/2 -> FAIL
+G5: hold rows 73087; i_lim < 280 rows 0; with t_w < 8000 cc: 0; t_w max 42.06 C
+guard exits (TRACK drops inside holds): 2
+ hold   t_s     tick               cls                pos                  i        vdiff           tw  t_next  carry_change  can_change  excess_cost
+hold0 11.16 13503868       v/rate/gap? 262-263 (base 264) 262->263 (ref 269) -1727->-1727 30.35->29.53   29.81         -0.54         0.0        -0.54
+hold0 24.27 13762339 duty -4049->-5073 262-264 (base 263) 265->266 (ref 264) -1726->-1727 26.69->26.69   27.14          0.45         0.1         0.35

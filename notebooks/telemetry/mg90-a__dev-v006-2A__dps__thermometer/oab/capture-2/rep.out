@@ -1,0 +1,16 @@
+reboot 1791424521
+id 1: rebooting (back at its configured baud)
+id 1: model 0x0101  fw 65  hw 2  cap 0x00000000
+      fault 0x00  dirty false  trim 0  crc_fail 0  framing_drop 0
+      data  clean
+      stamp 0x9cba = live set
+      load  31.2%  over_period 15  lost 44  rows_dropped 0  stack_free 972 B
+idle start 1791424524
+log done rows 330 errors 0
+oab start 1791425185
+oab OK torque off 1791426420.358 | seek0 seated 263 after 1.36 s | hold0 1791425187.130..1791425337.135 polls 24739 | away1: centre reached 627 from 262 (max duty 12%) | end pos 670 torque_enable 0 fault 0 | gap1 240 s: off 1791425337.135 seek 1791425577.153 seated 264 (seat0 263, d +1) after 0.63 s hold 1791425577.784..1791425637.787 polls 10548 | away2: centre reached 620 from 262 (max duty 12%) | end pos 663 torque_enable 0 fault 0 | gap2 30 s: off 1791425637.787 seek 1791425667.790 seated 263 (seat0 263, d +0) after 0.62 s hold 1791425668.413..1791425728.419 polls 10496 | away3: centre reached 622 from 263 (max duty 12%) | end pos 663 torque_enable 0 fault 0 | gap3 240 s: off 1791425728.419 seek 1791425968.424 seated 263 (seat0 263, d +0) after 0.63 s hold 1791425969.061..1791426029.069 polls 9303 | away4: centre reached 631 from 262 (max duty 12%) | end pos 668 torque_enable 0 fault 0 | gap4 30 s: off 1791426029.069 seek 1791426059.087 seated 263 (seat0 263, d +0) after 0.60 s hold 1791426059.691..1791426119.693 polls 9067 | away5: centre reached 621 from 263 (max duty 12%) | end pos 665 torque_enable 0 fault 0 | gap5 240 s: off 1791426119.693 seek 1791426359.710 seated 263 (seat0 263, d +0) after 0.64 s hold 1791426360.356..1791426420.357 polls 8934
+centre reached 2001 from 262 (max duty 15%) | end pos 2029 torque_enable 0 fault 0 | limit Ok(280) stall_tau_trip Ok(280)
+post start 1791426422
+log done rows 150 errors 0
+pos 2030 cur 1180 trough 1181 bias 1188 vbus_raw 1772 fault 0 torque_enable Ok(0) limit Ok(280) stall_tau_trip Ok(280)
+REPDONE 1791426723

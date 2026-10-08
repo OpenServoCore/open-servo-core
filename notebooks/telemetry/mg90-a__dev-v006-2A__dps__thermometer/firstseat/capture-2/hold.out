@@ -1,0 +1,10 @@
+hold OK: hold start 1791430930.894 torque off 1791430990.900 (60.01 s) | seated at 218 after 1.54 s | hold polls 10407
+tail 5 s done | centre reached 1994 from 217 (max duty 15%) | end pos 2014 torque_enable 0 fault 0
+      fault 0x00  dirty false  trim 0  crc_fail 0  framing_drop 0
+      data  clean
+      stamp 0x7dc0 = live set
+      load  31.0%  over_period 10313  lost 15653  rows_dropped 0  stack_free 1132 B
+mid-hold load [np.float64(62.96), np.float64(63.08), np.float64(63.08), np.float64(63.25), np.float64(63.33)] mean 63.14 stack min 1132 seat pos 216 220 i 269.0 i_lim min 280
+0.0 flags 0 t_w 2838 r_hat 0 i 269 t_ntc 2834 can 27.4
+3.07 flags 10 t_w 4960 r_hat 4305 i 271 t_ntc 2832 can 27.4
+end t_w 5289 can 29.5

@@ -1,0 +1,19 @@
+id 1: model 0x0101  fw 65  hw 2  cap 0x00000000
+      fault 0x00  dirty false  trim 0  crc_fail 0  framing_drop 0
+      data  clean
+      stamp 0x7dc0 = live set
+      load  31.2%  over_period 16  lost 43  rows_dropped 0  stack_free 1132 B
+wrote r0_q12 = 4078 at 0x0094
+r0_q12 = 4078  (addr 0x0094, 2 B, raw ee 0f)
+id 1: saved
+rc 0
+id 1: model 0x0101  fw 65  hw 2  cap 0x00000000
+      fault 0x00  dirty false  trim 0  crc_fail 0  framing_drop 0
+      data  clean
+      stamp 0x7dc0 = live set
+      load  31.2%  over_period 38  lost 114  rows_dropped 0  stack_free 1024 B
+r0_q12 = 4078  (addr 0x0094, 2 B, raw ee 0f)
+therm_flags = 0  (addr 0x0278, 1 B, raw 00)
+t_winding_cc = 2763  (addr 0x0230, 2 B, raw cb 0a)
+centre reached 1995 from 1781 (max duty 12%) | end pos 2017 torque_enable 0 fault 0
+pos 2017 cur 1179 trough 1180 bias 1183 vbus_raw 1772 fault 0 torque_enable Ok(0) limit Ok(280) stall_tau_trip Ok(280)

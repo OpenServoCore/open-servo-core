@@ -1,0 +1,9 @@
+capture,source,image,what,unix0
+oab/capture-1,pr311 run 3 (oab-r3 idle-r3 post-r3 dmm-r3 rep-r3 score-r3 anchor-r3),127d2bca,out-and-back rep without the v band or the rise check,
+oab/capture-2,pr311 run 4 (oab-r4 idle-r4 post-r4 dmm-r4 rep-r4 score-r4 anchor-r4 hold0-r4),a87d94ac,out-and-back rep with the guards,
+thermal/capture-1,ident-thermal V2 (ident-out/1791432546 v2-thermal v1b-rest dmm),bb9b0ceb,osc ident thermal hold (free fit),1791432546
+thermal/capture-2,ident-thermal rv1 (ident-out-rv/1791437926 rv1-thermal rv1-gates rest-rv0 dmm-rv),b4c4775b,osc ident thermal hold (g fit),1791437926
+boot/capture-1,ident-thermal E1 (e1-boot dmm),b4c4775b,reset after a warm hold,
+boot/capture-2,ident-thermal rv0 (rest-rv0 dmm-rv),b4c4775b,power-on after a long rest,
+firstseat/capture-1,ident-thermal P0 main hold (p0-hold-26f3 dmm),26f38948,first seat after a power-on at a moved stop,
+firstseat/capture-2,ident-thermal P0 hold after the flash (p0-hold-bb9 status-bb9 dmm),bb9b0ceb,first seat after a reset at the same stop,

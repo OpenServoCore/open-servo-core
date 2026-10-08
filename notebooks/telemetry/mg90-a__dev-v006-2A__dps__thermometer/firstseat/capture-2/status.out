@@ -1,0 +1,18 @@
+1791430917
+id 1: model 0x0101  fw 65  hw 2  cap 0x00000000
+      fault 0x00  dirty false  trim 0  crc_fail 0  framing_drop 0
+      data  clean
+      stamp 0x7dc0 = live set
+      load  31.2%  over_period 19  lost 66  rows_dropped 0  stack_free 1132 B
+t_winding_cc = 2836  (addr 0x0230, 2 B, raw 14 0b)
+t_ntc_cc = 2836  (addr 0x0276, 2 B, raw 14 0b)
+therm_flags = 0  (addr 0x0278, 1 B, raw 00)
+r0_q12 = 3932  (addr 0x0094, 2 B, raw 5c 0f)
+r_q12 = 4317  (addr 0x009e, 2 B, raw dd 10)
+velocity_limit_cps = 4000  (addr 0x0044, 2 B, raw a0 0f)
+accel_limit_q88 = 10240  (addr 0x0046, 2 B, raw 00 28)
+current_limit_counts = 280  (addr 0x0048, 2 B, raw 18 01)
+stall_tau_trip_counts = 280  (addr 0x0054, 2 B, raw 18 01)
+fault_flags = 0  (addr 0x0200, 1 B, raw 00)
+id 1: lut LIVE
+stops 268..3823; calibration points: 171 nonzero at raw 656..3408, |c| up to 68

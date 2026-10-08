@@ -1,0 +1,42 @@
+1791424478
+limits: current limit 280 counts (253 mA), travel guard 590..3501, a run aborts over 350 counts (316 mA)
+pot: linearized counts, lut LIVE (crc 0xb5c3, 171 nonzero calibration points at raw 656..3408)
+recording to ./ident-out/1791424478
+[centring] the jam check: out and back at mid travel from 10.6%, raised up to 28.0% while the shaft does not move
+  the shaft moves at 10.6%
+[anchor] seek the low stop at 12.6%, hold at 16.7% (the current limit governs) for a second: the kernel's own winding R at rest, for r0_q12; pos guard off, stall permit held
+  R0 1.0076 vcounts/ccount, median of 395 windows (scatter 0.4%), held at 15.4% drawing 263 counts (237 mA)
+[centring] to mid travel at 12.6%
+snapshot: 29 fields -> ./ident-out/1791424478/snapshot.json
+wrote 9 fields, all verified
+  th_alpha_q24    2097  (0.00013)
+  th_g_q016       1500  (0.02290)
+  th_mu_q016      8165  (0.12459)
+  ntc_raw_ref     2048  (2048.00000)
+  ntc_t_ref_cc    2500  (2500.00000)
+  ntc_k1_q88       563  (2.19959)
+  ntc_k2_q24      5779  (0.00034)
+  rtherm_i_min_counts 230  (7/8 of the hold's 263 counts)
+  r0_q12          4078  (cold R 0.9955 vcounts/ccount at 25 C from 1.0076 at the NTC's 28.2 C)
+the thermometer bases on the board NTC (28.2 C now), reads each seat's rise as a ratio and carries across moves on the MG90 family model (tau 128 s, 63 C/W); the model and the NTC curve are stamp-covered: osc stamp next
+id 1: saved
+rc 0
+raw after anchor SAVE:
+0x0094  ee 0f 00 00 00 00 00 00
+0x00c0  fa 00 31 08 dc 05 e5 1f 00 08 c4 09 33 02 93 16
+stamped 0x9cba
+saved
+data state clean: closed loop allowed
+rc 0
+0x0094  ee 0f 00 00 00 00 00 00
+id 1: model 0x0101  fw 65  hw 2  cap 0x00000000
+      fault 0x00  dirty false  trim 0  crc_fail 0  framing_drop 0
+      data  clean
+      stamp 0x9cba = live set
+      load  31.2%  over_period 2597  lost 4449  rows_dropped 0  stack_free 740 B
+t_winding_cc = 2862  (addr 0x0230, 2 B, raw 2e 0b)
+therm_flags = 0  (addr 0x0278, 1 B, raw 00)
+r0_q12 = 4078  (addr 0x0094, 2 B, raw ee 0f)
+rtherm_i_min_counts = 230  (addr 0x0064, 2 B, raw e6 00)
+th_mu_q016 = 8165  (addr 0x00c6, 2 B, raw e5 1f)
+pos 1817 cur 1181 trough 1180 bias 1189 vbus_raw 1771 fault 0 torque_enable Ok(0) limit Ok(280) stall_tau_trip Ok(280)
