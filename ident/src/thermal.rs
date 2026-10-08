@@ -1,15 +1,21 @@
-//! The winding's thermal constants from one seated hold, for the kernel's
-//! carry (core `estimator::thermal`). Per SLOW tick the carry runs
+//! The winding's thermal gain from one seated hold, for the kernel's carry
+//! (core `estimator::thermal`). Per SLOW tick the carry runs
 //! `x += alpha (g P - x)` on the excess `x` over the board NTC, centi-C,
 //! with `P = i (v_mean - Ke omega)` in vcount-ccount, `alpha` Q0.24 and
-//! `g` Q0.16. Inside a hold the same-seat ratio reads the real excess to
-//! about a degree, so the hold's own rise identifies both. In continuous
-//! time the recursion is `dx/dt = a P + b x` with `b = -alpha f_slow` and
-//! `a = alpha f_slow g` (alpha is about 1e-4: per tick the discrete and
-//! continuous decays differ by alpha^2 / 2), and a least-squares fit of
-//! the rise rate on `(P, x)` returns both.
+//! `g` Q0.16. In continuous time that is `dx/dt + x / tau = (g / tau) P`
+//! (alpha is about 1e-4: per tick the discrete and continuous decays
+//! differ by alpha^2 / 2). One hold's ratio does not identify tau (the
+//! bench MG90's two tracked stretches of one hold read 36 s and 274 s, a
+//! contact relaxation inside the hold read as cooling), so a one-parameter
+//! least squares of `rate + x / tau` on `P` returns `g` alone, first at the
+//! table's tau. Tau is then `R_th C` through the motor's heat capacity, a
+//! mass property, and the fit is redone at that tau while it moves more
+//! than [`TAU_SETTLE`]. A free two-parameter fit of the same rows read
+//! 45.7 s and 24.3 C/W against 28.5 C/W with tau held and 30.4 C/W from
+//! the can.
 //!
-//! Only ticks the ratio read are fitted: untracked, the kernel reports its
+//! `x` is used as the kernel reports it between re-bases, never chained
+//! across them. Only ticks the ratio read are fitted: untracked, the kernel reports its
 //! carry, which is the table's model, not the winding. The first
 //! [`BASE_SKIP_S`] of every base and the [`EXIT_GUARD_S`] before every
 //! exit are cut too. The rise is differenced over [`CHUNK_S`] chunks
@@ -47,8 +53,8 @@ pub const OUTLIER_SD: f64 = 3.0;
 /// base inherits the carried excess and every tracked reading after it
 /// counts from there, so a carry still off the winding offsets the hold.
 pub const REST_CC: f64 = 100.0;
-/// Around the MG90 family's 128 s and 63 C/W: a fit outside is not a
-/// winding's warm-up and is never written.
+/// Around the MG90 family's 128 s and 63 C/W and the bench hold's 28.5
+/// C/W: a fit outside is not a winding's warm-up and is never written.
 pub const TAU_BAND_S: (f64, f64) = (30.0, 600.0);
 pub const R_TH_BAND_C_PER_W: (f64, f64) = (10.0, 200.0);
 
@@ -57,8 +63,13 @@ pub const R_TH_BAND_C_PER_W: (f64, f64) = (10.0, 200.0);
 /// read 23% low.
 pub const R_STEP: f64 = 0.10;
 
-/// The two slopes the fit solves for.
-const PARAMS: usize = 2;
+/// The fit is redone at `R_th C` while that moves tau more than this from
+/// the tau it held, at most [`FIT_PASSES`] times.
+pub const TAU_SETTLE: f64 = 0.10;
+pub const FIT_PASSES: usize = 3;
+
+/// The one slope the fit solves for.
+const PARAMS: usize = 1;
 
 /// One read of the hold, in the kernel's units.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -105,11 +116,17 @@ impl Row {
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Fit {
-    /// Rise rate per unit of `P`, centi-C/s per vcount-ccount.
-    pub a: f64,
-    /// Rise rate per centi-C of excess, 1/s.
-    pub b: f64,
-    /// Residual sd of the chunks' rise rates, centi-C/s.
+    /// `R_th C`, the time constant written, s.
+    pub tau_s: f64,
+    /// The time constant the last pass held, s, and the passes run.
+    pub tau_held_s: f64,
+    pub passes: usize,
+    /// The heat capacity tau came through, J/C.
+    pub heat_j_per_c: f64,
+    /// The steady excess per unit of `P`, centi-C per vcount-ccount: the
+    /// carry's `g`.
+    pub g_cc: f64,
+    /// Residual sd of the chunks' `rate + x / tau`, centi-C/s.
     pub sd: f64,
     pub chunks: usize,
     pub rejected: usize,
@@ -123,26 +140,18 @@ pub struct Fit {
 }
 
 impl Fit {
-    pub fn tau_s(&self) -> f64 {
-        -1.0 / self.b
-    }
-
-    /// The steady excess per unit of `P`, centi-C per vcount-ccount: the
-    /// carry's `g`.
-    pub fn g_cc(&self) -> f64 {
-        -self.a / self.b
-    }
-
     pub fn r_th(&self, u: &Units) -> f64 {
-        thermometer::r_th_c_per_w(self.g_cc(), u.v_per_vcount, u.a_per_ccount)
+        thermometer::r_th_c_per_w(self.g_cc, u.v_per_vcount, u.a_per_ccount)
     }
 
-    /// `th_alpha_q24` and `th_g_q016` at the kernel's SLOW rate.
-    pub fn encode(&self, slow_hz: f64) -> (Encoded, Encoded) {
-        (
-            enc(thermometer::alpha(self.tau_s(), slow_hz), Q24),
-            enc(self.g_cc(), Q016),
-        )
+    /// `th_g_q016`.
+    pub fn g_q016(&self) -> Encoded {
+        enc(self.g_cc, Q016)
+    }
+
+    /// `th_alpha_q24` at the kernel's SLOW rate.
+    pub fn alpha_q24(&self, slow_hz: f64) -> Encoded {
+        enc(thermometer::alpha(self.tau_s, slow_hz), Q24)
     }
 }
 
@@ -153,27 +162,21 @@ struct Chunk {
     x: f64,
 }
 
-/// Least squares of the rise rate on `(P, x)`, no intercept: the carry
-/// has none.
-fn solve(pts: &[Chunk]) -> Option<(f64, f64)> {
-    let (mut spp, mut spx, mut sxx, mut spy, mut sxy) = (0.0, 0.0, 0.0, 0.0, 0.0);
-    for c in pts {
-        spp += c.p * c.p;
-        spx += c.p * c.x;
-        sxx += c.x * c.x;
-        spy += c.p * c.rate;
-        sxy += c.x * c.rate;
-    }
-    let det = spp * sxx - spx * spx;
-    (det > 0.0).then(|| ((sxx * spy - spx * sxy) / det, (spp * sxy - spx * spy) / det))
+/// Least squares of `rate + x / tau` on `P`, no intercept: the carry has
+/// none. Returns `g / tau`.
+fn solve(pts: &[Chunk], tau: f64) -> Option<f64> {
+    let (spy, spp) = pts.iter().fold((0.0, 0.0), |(spy, spp), c| {
+        (spy + (c.rate + c.x / tau) * c.p, spp + c.p * c.p)
+    });
+    (spp > 0.0).then(|| spy / spp)
 }
 
-fn residual(c: &Chunk, (a, b): (f64, f64)) -> f64 {
-    c.rate - a * c.p - b * c.x
+fn residual(c: &Chunk, a: f64, tau: f64) -> f64 {
+    c.rate + c.x / tau - a * c.p
 }
 
-fn sd(pts: &[Chunk], ab: (f64, f64)) -> f64 {
-    let ss: f64 = pts.iter().map(|c| residual(c, ab).powi(2)).sum();
+fn sd(pts: &[Chunk], a: f64, tau: f64) -> f64 {
+    let ss: f64 = pts.iter().map(|c| residual(c, a, tau).powi(2)).sum();
     (ss / (pts.len() - PARAMS) as f64).sqrt()
 }
 
@@ -232,8 +235,9 @@ pub fn check_contact(rows: &[Row], r_vpc: f64, vbus: f64) -> Result<(), String> 
     contact_state(r, duty, i, r_vpc, vbus)
 }
 
-/// Fit the hold's rows, in time order; Err says why nothing fits.
-pub fn fit(rows: &[Row]) -> Result<Fit, String> {
+/// The tracked rows' chunks, the time they cover, the stretches and the
+/// R steps across their exits.
+fn chunks(rows: &[Row]) -> (Vec<Chunk>, f64, usize, usize) {
     let mut segments = 0;
     let mut r_steps = 0;
     let mut last_r: Option<f64> = None;
@@ -260,20 +264,49 @@ pub fn fit(rows: &[Row]) -> Result<Fit, String> {
         segments += 1;
         rest = &rest[s + n..];
     }
+    (pts, used_s, segments, r_steps)
+}
+
+/// Fit `g` on the hold's rows, in time order, first at the table's
+/// `tau_table_s`, then at `R_th heat_j_per_c` while that moves; Err says
+/// why nothing fits.
+pub fn fit(rows: &[Row], tau_table_s: f64, heat_j_per_c: f64, u: &Units) -> Result<Fit, String> {
+    let mut f = fit_g(rows, tau_table_s)?;
+    f.heat_j_per_c = heat_j_per_c;
+    loop {
+        f.tau_s = f.r_th(u) * heat_j_per_c;
+        if f.passes >= FIT_PASSES || (f.tau_s / f.tau_held_s - 1.0).abs() <= TAU_SETTLE {
+            return Ok(f);
+        }
+        let passes = f.passes;
+        f = Fit {
+            passes: passes + 1,
+            heat_j_per_c,
+            ..fit_g(rows, f.tau_s)?
+        };
+    }
+}
+
+/// One pass: `g` with `tau_s` held.
+fn fit_g(rows: &[Row], tau_s: f64) -> Result<Fit, String> {
+    if !(tau_s.is_finite() && tau_s > 0.0) {
+        return Err(format!("{tau_s} s is no time constant"));
+    }
+    let (pts, used_s, segments, r_steps) = chunks(rows);
     if pts.len() <= PARAMS {
         return Err(format!(
             "the hold tracked {segments} stretch(es) giving {} chunk(s) of {CHUNK_S:.0} s after \
-             the cuts, too few for two constants",
+             the cuts, too few to fit",
             pts.len()
         ));
     }
-    let degenerate = || "the power and the excess moved together: tau and R_th do not separate";
-    let first = solve(&pts).ok_or_else(degenerate)?;
-    let band = OUTLIER_SD * sd(&pts, first);
+    let degenerate = || "the hold drew no power";
+    let first = solve(&pts, tau_s).ok_or_else(degenerate)?;
+    let band = OUTLIER_SD * sd(&pts, first, tau_s);
     let kept: Vec<Chunk> = pts
         .iter()
         .copied()
-        .filter(|c| residual(c, first).abs() <= band)
+        .filter(|c| residual(c, first, tau_s).abs() <= band)
         .collect();
     if kept.len() <= PARAMS {
         return Err(format!(
@@ -282,17 +315,19 @@ pub fn fit(rows: &[Row]) -> Result<Fit, String> {
             pts.len()
         ));
     }
-    let (a, b) = solve(&kept).ok_or_else(degenerate)?;
-    if !(a > 0.0 && b < 0.0) {
+    let a = solve(&kept, tau_s).ok_or_else(degenerate)?;
+    if a <= 0.0 {
         return Err(format!(
-            "the excess did not rise toward a level: {a:.3e} centi-C/s per vcount-ccount, \
-             {b:.3e} per s"
+            "the excess did not rise with the power: {a:.3e} centi-C/s per vcount-ccount"
         ));
     }
     Ok(Fit {
-        a,
-        b,
-        sd: sd(&kept, (a, b)),
+        tau_s,
+        tau_held_s: tau_s,
+        passes: 1,
+        heat_j_per_c: 0.0,
+        g_cc: a * tau_s,
+        sd: sd(&kept, a, tau_s),
         chunks: pts.len(),
         rejected: pts.len() - kept.len(),
         used_s,
@@ -398,14 +433,18 @@ pub fn render(fit: &Result<Fit, String>, table: (u16, u16), u: &Units) -> String
     };
     let _ = writeln!(
         s,
-        "  fit           {:.0} s of tracked hold ({:.0} ticks) in {} stretch(es), {} cut between \
-         them; {} of {} chunks rejected; residual sd {:.3} centi-C/tick",
+        "  fit           g from {} chunks at tau held {:.1} s ({} pass(es), the first at the \
+         table's): {:.0} s of tracked hold ({:.0} ticks) in {} stretch(es), {} cut between them, \
+         x as the kernel reports it between re-bases; {} rejected; residual sd {:.3} \
+         centi-C/tick",
+        f.chunks - f.rejected,
+        f.tau_held_s,
+        f.passes,
         f.used_s,
         f.used_s * u.slow_hz,
         f.segments,
         f.gaps,
         f.rejected,
-        f.chunks,
         f.sd / u.slow_hz
     );
     let _ = writeln!(
@@ -414,25 +453,30 @@ pub fn render(fit: &Result<Fit, String>, table: (u16, u16), u: &Units) -> String
         f.r_steps,
         R_STEP * 100.0
     );
-    let (alpha, g) = f.encode(u.slow_hz);
-    let _ = writeln!(
-        s,
-        "  th_alpha_q24  fitted {:>6} (tau {:.1} s)      table {:>6} (tau {:.1} s)",
-        alpha.raw,
-        f.tau_s(),
-        table.0,
-        u.tau_s(table.0 as f64)
-    );
     let r_th = f.r_th(u);
     let _ = writeln!(
         s,
         "  th_g_q016     fitted {:>6} (R_th {:.1} C/W)  table {:>6} (R_th {:.1} C/W)",
-        g.raw,
+        f.g_q016().raw,
         r_th,
         table.1,
         u.r_th(table.1 as f64)
     );
-    let _ = match plausible(f.tau_s(), r_th) {
+    let _ = writeln!(
+        s,
+        "  th_alpha_q24  fitted {:>6} (tau {:.1} s)      table {:>6} (tau {:.1} s); tau = R_th x C, \
+         C {:.2} J/C",
+        f.alpha_q24(u.slow_hz).raw,
+        f.tau_s,
+        table.0,
+        u.tau_s(table.0 as f64),
+        f.heat_j_per_c
+    );
+    let _ = writeln!(
+        s,
+        "  applies       at the current limit's power on this mounting"
+    );
+    let _ = match plausible(f.tau_s, r_th) {
         Ok(()) => writeln!(s, "  verdict       inside the band"),
         Err(why) => writeln!(s, "  verdict       {why}; nothing is written"),
     };
@@ -442,6 +486,7 @@ pub fn render(fit: &Result<Fit, String>, table: (u16, u16), u: &Units) -> String
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::thermometer::MG90_HEAT_J_PER_C;
 
     /// The dev-v006 rev 2A board: 4.0283 mV per terminal count, 0.90216 mA
     /// per current count, the kernel's SLOW rate at 20 kHz.
@@ -466,10 +511,12 @@ mod tests {
             "{}",
             UNITS.r_th(1500.0)
         );
-        let g = thermometer::g_cc(63.0, UNITS.v_per_vcount, UNITS.a_per_ccount);
         let f = Fit {
-            a: g / 128.0,
-            b: -1.0 / 128.0,
+            tau_s: 128.0,
+            tau_held_s: 128.0,
+            passes: 1,
+            heat_j_per_c: 0.0,
+            g_cc: thermometer::g_cc(63.0, UNITS.v_per_vcount, UNITS.a_per_ccount),
             sd: 0.0,
             chunks: 0,
             rejected: 0,
@@ -478,9 +525,12 @@ mod tests {
             gaps: 0,
             r_steps: 0,
         };
-        let (alpha, g) = f.encode(UNITS.slow_hz);
-        assert_eq!(alpha.raw, 2097);
-        assert!((g.raw as i32 - 1500).abs() <= 1, "{}", g.raw);
+        assert!(
+            (f.g_q016().raw as i32 - 1500).abs() <= 1,
+            "{}",
+            f.g_q016().raw
+        );
+        assert!((f.r_th(&UNITS) - 63.0).abs() < 1e-9);
     }
 
     /// A first-order excess sampled at the SLOW rate, the fit's rows.
@@ -506,17 +556,17 @@ mod tests {
             .collect()
     }
 
-    /// A synthetic hold at known slopes, quantized to the kernel's whole
-    /// centi-C: tau and g come back within 1%.
+    /// A synthetic hold quantized to the kernel's whole centi-C, tau held
+    /// at the plant's: g comes back within 1%.
     #[test]
-    fn the_fit_recovers_known_slopes_from_a_quantized_rise() {
+    fn the_fit_recovers_g_from_a_quantized_rise_with_tau_held() {
         let mut rows = rise(128.0, 0.0229, 1.38e5, 480.0, flag::TRACK);
         for r in &mut rows {
             r.x_cc = r.x_cc.round();
         }
-        let f = fit(&rows).unwrap();
-        assert!((f.tau_s() / 128.0 - 1.0).abs() < 0.01, "tau {}", f.tau_s());
-        assert!((f.g_cc() / 0.0229 - 1.0).abs() < 0.01, "g {}", f.g_cc());
+        let f = fit_g(&rows, 128.0).unwrap();
+        assert_eq!(f.tau_s, 128.0);
+        assert!((f.g_cc / 0.0229 - 1.0).abs() < 0.01, "g {}", f.g_cc);
         assert_eq!((f.segments, f.gaps), (1, 0));
         assert!(f.sd / UNITS.slow_hz < 0.05, "{}", f.sd);
     }
@@ -533,10 +583,9 @@ mod tests {
                 r.x_cc += 500.0;
             }
         }
-        let f = fit(&rows).unwrap();
+        let f = fit_g(&rows, 100.0).unwrap();
         assert!(f.rejected >= 2, "{f:?}");
-        assert!((f.tau_s() / 100.0 - 1.0).abs() < 0.02, "tau {}", f.tau_s());
-        assert!((f.g_cc() / 0.02 - 1.0).abs() < 0.02, "g {}", f.g_cc());
+        assert!((f.g_cc / 0.02 - 1.0).abs() < 0.02, "g {}", f.g_cc);
     }
 
     /// Untracked rows carry the table's model, not the winding: a carry
@@ -549,7 +598,7 @@ mod tests {
             r.flags = 0;
             r.x_cc *= 3.0;
         }
-        let f = fit(&rows).unwrap();
+        let f = fit_g(&rows, 128.0).unwrap();
         assert_eq!((f.segments, f.gaps), (2, 1));
         let tracked = 480.0 - 10.0 - 2.0 * (BASE_SKIP_S + EXIT_GUARD_S);
         assert!(
@@ -557,14 +606,7 @@ mod tests {
             "{}",
             f.used_s
         );
-        assert!((f.tau_s() / 128.0 - 1.0).abs() < 0.01, "tau {}", f.tau_s());
-        // the same rows fitted through the carry read another motor
-        let mut through = rows.clone();
-        for r in &mut through {
-            r.flags = flag::TRACK;
-        }
-        let f = fit(&through).unwrap();
-        assert!((f.tau_s() / 128.0 - 1.0).abs() > 0.1, "tau {}", f.tau_s());
+        assert!((f.g_cc / 0.0229 - 1.0).abs() < 0.01, "g {}", f.g_cc);
     }
 
     /// The rail the synthetic rows' duty is read against, vcounts.
@@ -602,12 +644,12 @@ mod tests {
                 r.v *= 0.77;
             }
         }
-        let f = fit(&rows).unwrap();
+        let f = fit_g(&rows, 128.0).unwrap();
         assert_eq!((f.segments, f.r_steps), (3, 2), "{f:?}");
         let s = render(&Ok(f), (2097, 1500), &UNITS);
         assert!(s.contains("contact       2 step(s)"), "{s}");
         assert_eq!(
-            fit(&rise(128.0, 0.0229, 1.38e5, 480.0, flag::TRACK))
+            fit_g(&rise(128.0, 0.0229, 1.38e5, 480.0, flag::TRACK), 128.0)
                 .unwrap()
                 .r_steps,
             0
@@ -616,17 +658,125 @@ mod tests {
 
     #[test]
     fn a_flat_or_short_hold_fits_nothing() {
-        assert!(fit(&rise(128.0, 0.0229, 1.38e5, 6.0, flag::TRACK)).is_err());
-        assert!(fit(&rise(128.0, 0.0229, 1.38e5, 480.0, 0)).is_err());
-        let flat = rise(128.0, 0.0, 0.0, 480.0, flag::TRACK);
-        assert!(fit(&flat).is_err());
+        let held = |rows: &[Row]| fit_g(rows, 128.0);
+        assert!(held(&rise(128.0, 0.0229, 1.38e5, 6.0, flag::TRACK)).is_err());
+        assert!(held(&rise(128.0, 0.0229, 1.38e5, 480.0, 0)).is_err());
+        assert!(held(&rise(128.0, 0.0, 0.0, 480.0, flag::TRACK)).is_err());
+        assert!(fit_g(&rise(128.0, 0.0229, 1.38e5, 480.0, flag::TRACK), 0.0).is_err());
+    }
+
+    /// The heat capacity carries tau with R_th: a mounting that halves
+    /// R_th halves tau, from the same table tau.
+    #[test]
+    fn a_hold_with_r_th_halved_returns_tau_halved() {
+        let at = |r_th: f64| {
+            let g = thermometer::g_cc(r_th, UNITS.v_per_vcount, UNITS.a_per_ccount);
+            let tau = r_th * MG90_HEAT_J_PER_C;
+            let rows = rise(tau, g, 1.38e5, 480.0, flag::TRACK);
+            fit(&rows, 128.0, MG90_HEAT_J_PER_C, &UNITS).unwrap()
+        };
+        let (full, half) = (at(60.0), at(30.0));
+        assert!((full.r_th(&UNITS) / 60.0 - 1.0).abs() < 0.10, "{full:?}");
+        assert!((half.r_th(&UNITS) / 30.0 - 1.0).abs() < 0.10, "{half:?}");
+        assert!(
+            (half.tau_s / full.tau_s - 0.5).abs() < 0.05,
+            "{} {}",
+            half.tau_s,
+            full.tau_s
+        );
+        assert!(
+            full.passes > 1,
+            "252 s is over 10% from the table's 128: {full:?}"
+        );
     }
 
     #[test]
     fn outside_the_band_is_refused() {
         assert!(plausible(128.0, 63.0).is_ok());
-        assert!(plausible(20.0, 63.0).unwrap_err().contains("outside"));
+        assert!(plausible(128.0, 5.0).unwrap_err().contains("outside"));
+        assert!(plausible(20.0, 63.0).is_err());
         assert!(plausible(128.0, 250.0).is_err());
+    }
+
+    /// The bench MG90's first `osc ident thermal` hold (480 s at the 280
+    /// limit, 0.27 W), every 6th row of its thermal.csv.
+    fn v2_rows() -> Vec<Row> {
+        let csv = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/testdata/thermal/v2-thermal.csv"
+        ));
+        csv.lines()
+            .skip(1)
+            .map(|l| {
+                let f: Vec<&str> = l.split(',').collect();
+                Row {
+                    t_s: f[0].parse().unwrap(),
+                    x_cc: f[1].parse().unwrap(),
+                    i: 0.0,
+                    v: 0.0,
+                    duty: 0.0,
+                    p: f[2].parse().unwrap(),
+                    flags: f[3].parse().unwrap(),
+                }
+            })
+            .collect()
+    }
+
+    /// The two-parameter form this module first shipped: rate on (P, x),
+    /// one 3 sd pass. (tau, g).
+    fn free_fit(rows: &[Row]) -> (f64, f64) {
+        let solve = |pts: &[Chunk]| {
+            let (mut spp, mut spx, mut sxx, mut spy, mut sxy) = (0.0, 0.0, 0.0, 0.0, 0.0);
+            for c in pts {
+                spp += c.p * c.p;
+                spx += c.p * c.x;
+                sxx += c.x * c.x;
+                spy += c.p * c.rate;
+                sxy += c.x * c.rate;
+            }
+            let det = spp * sxx - spx * spx;
+            ((sxx * spy - spx * sxy) / det, (spp * sxy - spx * spy) / det)
+        };
+        let res = |c: &Chunk, (a, b): (f64, f64)| c.rate - a * c.p - b * c.x;
+        let (pts, ..) = chunks(rows);
+        let ab = solve(&pts);
+        let ss: f64 = pts.iter().map(|c| res(c, ab).powi(2)).sum();
+        let band = OUTLIER_SD * (ss / (pts.len() - 2) as f64).sqrt();
+        let kept: Vec<Chunk> = pts
+            .into_iter()
+            .filter(|c| res(c, ab).abs() <= band)
+            .collect();
+        let (a, b) = solve(&kept);
+        (-1.0 / b, -a / b)
+    }
+
+    /// From the table's 128 s the bench hold reads 28.6 C/W over the NTC
+    /// (g_q016 681) in one pass, within 6% of the can-anchored 30.4, and
+    /// tau 118.9 s through the MG90's 4.16 J/C (under 10% from 128 s, so no
+    /// second pass). The free two-parameter form on the same rows reads
+    /// 24.3 C/W at 45.7 s: the ratio's contact relaxation inside the hold,
+    /// read as cooling, is why tau is not fitted.
+    #[test]
+    fn the_bench_hold_reads_28_5_c_per_w_and_120_s_and_24_3_free() {
+        let rows = v2_rows();
+        let f = fit(&rows, UNITS.tau_s(2097.0), MG90_HEAT_J_PER_C, &UNITS).unwrap();
+        println!(
+            "FIXTURE {f:?} R_th {:.3} tau {:.2}",
+            f.r_th(&UNITS),
+            f.tau_s
+        );
+        assert!((f.r_th(&UNITS) - 28.5).abs() <= 1.0, "{f:?}");
+        assert!(
+            (f.g_q016().raw as i32 - 680).abs() <= 25,
+            "{}",
+            f.g_q016().raw
+        );
+        assert!((f.tau_s - 120.0).abs() <= 5.0, "{}", f.tau_s);
+        assert_eq!(f.passes, 1);
+        let (tau, g) = free_fit(&rows);
+        let r_th = thermometer::r_th_c_per_w(g, UNITS.v_per_vcount, UNITS.a_per_ccount);
+        assert!((r_th - 24.3).abs() <= 0.5, "free R_th {r_th}, tau {tau}");
+        assert!((tau - 45.7).abs() <= 3.0, "free tau {tau}");
     }
 
     const SET: Rest = Rest {
@@ -694,10 +844,22 @@ mod tests {
     #[test]
     fn the_report_sets_the_fit_beside_the_table() {
         let rows = rise(128.0, 0.0229, 1.38e5, 480.0, flag::TRACK);
-        let s = render(&fit(&rows), (2097, 1500), &UNITS);
+        let s = render(
+            &fit(&rows, 128.0, 128.0 / 63.0, &UNITS),
+            (2097, 1500),
+            &UNITS,
+        );
         assert!(s.contains("[thermal]"), "{s}");
-        assert!(s.contains("table   2097 (tau 128.0 s)"), "{s}");
+        assert!(s.contains("pass(es), the first at the table's"), "{s}");
+        assert!(
+            s.contains("table   2097 (tau 128.0 s); tau = R_th x C"),
+            "{s}"
+        );
         assert!(s.contains("table   1500 (R_th 63.0 C/W)"), "{s}");
+        assert!(
+            s.contains("at the current limit's power on this mounting"),
+            "{s}"
+        );
         assert!(s.contains("inside the band"), "{s}");
         let s = render(&Err("too short".into()), (2097, 1500), &UNITS);
         assert!(s.contains("declined      too short"), "{s}");

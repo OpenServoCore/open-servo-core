@@ -131,28 +131,38 @@ fn hold(contact: Contact) -> Vec<Row> {
     rows
 }
 
+/// The rev 2A board's sense scale, so R_th has units; the plant's heat
+/// capacity is its tau over the R_th its g stands for there.
+fn units() -> thermal::Units {
+    thermal::Units {
+        slow_hz: thermometer::slow_hz(TIMING.tick_hz as f64),
+        v_per_vcount: 4.0283e-3,
+        a_per_ccount: 0.90216e-3,
+    }
+}
+
+/// From the table's 128 s (2097), g and tau land on the plant's: tau
+/// through the plant's heat capacity, a second pass at it.
 fn assert_lands(rows: &[Row]) -> thermal::Fit {
-    let f = thermal::fit(rows).expect("a fit");
-    let (tau, g) = (f.tau_s() / PLANT_TAU_S - 1.0, f.g_cc() / PLANT_G_CC - 1.0);
+    let u = units();
+    let heat = PLANT_TAU_S / thermometer::r_th_c_per_w(PLANT_G_CC, u.v_per_vcount, u.a_per_ccount);
+    let f = thermal::fit(rows, u.tau_s(2097.0), heat, &u).expect("a fit");
+    let (tau, g) = (f.tau_s / PLANT_TAU_S - 1.0, f.g_cc / PLANT_G_CC - 1.0);
     assert!(
         tau.abs() < 0.10,
         "tau {:.1} s, {:+.1}%: {f:?}",
-        f.tau_s(),
+        f.tau_s,
         tau * 100.0
     );
-    assert!(
-        g.abs() < 0.10,
-        "g {:.5}, {:+.1}%: {f:?}",
-        f.g_cc(),
-        g * 100.0
-    );
+    assert!(g.abs() < 0.10, "g {:.5}, {:+.1}%: {f:?}", f.g_cc, g * 100.0);
     println!(
-        "tau {:.1} s ({:+.1}%), g {:.5} ({:+.1}%), {} stretches, {} chunks, {} rejected, sd \
-         {:.3} centi-C/tick, {:.0} s used",
-        f.tau_s(),
+        "tau {:.1} s ({:+.1}%), g {:.5} ({:+.1}%), {} pass(es), {} stretches, {} chunks, {} \
+         rejected, sd {:.3} centi-C/tick, {:.0} s used",
+        f.tau_s,
         tau * 100.0,
-        f.g_cc(),
+        f.g_cc,
         g * 100.0,
+        f.passes,
         f.segments,
         f.chunks,
         f.rejected,

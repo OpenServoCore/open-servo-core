@@ -309,10 +309,11 @@ enum Cmd {
     /// NTC) from one hold: a thermometer the anchor set, the winding within
     /// 1 C of the NTC; the jam check, the anchor's seat at the low stop
     /// under the current limit for --hold-s, back to mid travel; then the
-    /// winding's tracked rise is fitted against the kernel's power, the
-    /// thermometer's guard exits cut out. Prints the fit beside the table;
-    /// --save writes th_alpha_q24 and th_g_q016 read-back verified and
-    /// SAVEs, only inside tau 30-600 s and R_th 10-200 C/W.
+    /// winding's tracked rise is fitted for R_th against the kernel's power,
+    /// the thermometer's guard exits cut out, and tau follows as R_th times
+    /// the MG90's heat capacity. Prints the fit beside the table; --save
+    /// writes th_g_q016 and th_alpha_q24 read-back verified and SAVEs, only
+    /// inside tau 30-600 s and R_th 10-200 C/W.
     Thermal {
         /// Write the fitted constants and persist with MGMT SAVE.
         #[arg(long)]
@@ -953,20 +954,25 @@ fn run_thermal(cli: &Ctx, c: &mut Client<NusbPipe>, id: Id, save: bool, hold_s: 
     if let Err(why) = thermal::check_contact(&rec.therm, r_vpc, d.lim.vbus as f64) {
         bail!("{why}; nothing fitted");
     }
-    let fit = thermal::fit(&rec.therm);
+    let fit = thermal::fit(
+        &rec.therm,
+        units.tau_s(table.0 as f64),
+        thermometer::MG90_HEAT_J_PER_C,
+        &units,
+    );
     print!("{}", thermal::render(&fit, table, &units));
     let f = match fit {
         Ok(f) => f,
         Err(why) => bail!("the fit declined: {why}; nothing written"),
     };
-    if let Err(why) = thermal::plausible(f.tau_s(), f.r_th(&units)) {
+    if let Err(why) = thermal::plausible(f.tau_s, f.r_th(&units)) {
         bail!("{why}; nothing written");
     }
     if !save {
         println!("not written: --save writes th_alpha_q24 and th_g_q016 and SAVEs");
         return Ok(());
     }
-    let (alpha, g) = f.encode(units.slow_hz);
+    let (alpha, g) = (f.alpha_q24(units.slow_hz), f.g_q016());
     write_reg(c, id, control::TORQUE_ENABLE, 0)?;
     snapshot::take_snapshot(c, id, &rec.out.0.join("snapshot.json"))?;
     snapshot::write_gains(c, id, &GainJson::thermal_model(alpha, g))?;

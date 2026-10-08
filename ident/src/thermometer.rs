@@ -34,6 +34,13 @@ pub const R_COLD_REF_C: f64 = 25.0;
 pub const MG90_TAU_S: f64 = 128.0;
 pub const MG90_R_TH_C_PER_W: f64 = 63.0;
 
+/// The MG90's heat capacity, J/C: the bench hold's can settled on a 129 s
+/// slow mode over 31.0 C/W to air (bringup kb/rca-ident-thermal.md). A
+/// mass property, so a mounting moves R_th and tau together and never C.
+/// The family's 128 s over 63 C/W imply 2.0 J/C through an R_th the hold's
+/// torque-off decay put at about twice the winding's.
+pub const MG90_HEAT_J_PER_C: f64 = 129.0 / 31.0;
+
 /// The LMS settling time at the hold current, seconds: ~125 SLOW samples
 /// averaged against the kernel's per-sample noise, and fast against the
 /// winding's warm-up over the can, tens of seconds (notebook 17).
