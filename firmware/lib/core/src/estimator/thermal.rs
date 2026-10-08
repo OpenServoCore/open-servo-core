@@ -180,7 +180,9 @@ pub fn ntc_cc(raw: u16, ntc: &NtcCfg) -> Option<i16> {
     if ntc.k1_q88 == 0 || raw == 0 || raw as u32 >= ADC_FULL - 1 {
         return None;
     }
-    let d = ntc.raw_ref as i32 - raw as i32;
+    // a host-written reference outside the ADC range cannot overflow the quadratic
+    let span = (ADC_FULL - 1) as i32;
+    let d = (ntc.raw_ref as i32 - raw as i32).clamp(-span, span);
     let t =
         ntc.t_ref_cc as i32 + q_mul(d, ntc.k1_q88 as i32, 8) + q_mul(d * d, ntc.k2_q24 as i32, 24);
     (i16::MIN as i32 + 1..=i16::MAX as i32)
@@ -668,6 +670,18 @@ mod tests {
         assert_eq!(ntc_cc(0, &NTC), None);
         assert_eq!(ntc_cc(4095, &NTC), None);
         assert_eq!(ntc_cc(2048, &NtcCfg::default()), None);
+    }
+
+    /// A host-written reference past the ADC span reads the curve at the
+    /// span's end, never an overflowed or wrapped temperature.
+    #[test]
+    fn ntc_reference_outside_the_adc_span_clamps_the_deviation() {
+        let at = |raw_ref: u16| NtcCfg { raw_ref, ..NTC };
+        assert_eq!(ntc_cc(1, &at(u16::MAX)), ntc_cc(1, &at(4096)));
+        assert!(ntc_cc(1, &at(4096)).is_some());
+        assert_eq!(ntc_cc(0, &at(u16::MAX)), None, "a rail is no reading");
+        let low = ntc_cc(ADC_FULL as u16 - 2, &at(0)).expect("in range");
+        assert!(low < NTC.t_ref_cc, "{low}");
     }
 
     #[test]

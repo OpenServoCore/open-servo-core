@@ -368,6 +368,7 @@ impl OscClient {
                 id,
                 track: None,
                 virgin: false,
+                therm: Default::default(),
             })
             .collect();
         Self::fake_fleet(fleet).await
@@ -376,9 +377,10 @@ impl OscClient {
     /// `fake` with per-servo options: an optional recorded track (the sim
     /// plays it back at the fast-tick rate, so bursts and the live
     /// telemetry registers show captured data instead of the synthetic
-    /// ramp; columns must be non-empty and equal in length), and `virgin`
+    /// ramp; columns must be non-empty and equal in length), `virgin`
     /// for a factory-fresh servo that has never been calibrated,
-    /// identified or saved.
+    /// identified or saved, and `therm` ("on", "off" or "derating") for a
+    /// calibrated servo's winding thermometer.
     #[wasm_bindgen(js_name = fakeWithTracks)]
     pub async fn fake_with_tracks(
         #[wasm_bindgen(unchecked_param_type = "FakeServo[]")] fleet: JsValue,
@@ -404,7 +406,7 @@ impl OscClient {
             if s.virgin {
                 pipe.seed_board(i);
             } else {
-                pipe.seed_calibrated(i);
+                pipe.seed_calibrated_with(i, s.therm);
             }
             if let Some(track) = s.track {
                 pipe.set_track(i, track_rows(track)?);

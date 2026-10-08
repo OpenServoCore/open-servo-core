@@ -13,7 +13,7 @@ use osc_client::data_state::{
     self, CALIB_VIRGIN, CONFIG_VIRGIN, PLANT_UNSET, Reason, STAMP_MISMATCH, fault,
 };
 use osc_client::descriptor::{Descriptor, Kind, Value, encode};
-use osc_client::fake::{FakePipe, seed};
+use osc_client::fake::{FakePipe, TelSample, Therm, seed};
 use osc_client::mgmt::{Found, Uid};
 use osc_client::pos_lut::{self, INTERVALS, LutError, PosLut};
 use osc_client::session::{EngineCommand, Record, Session};
@@ -24,6 +24,10 @@ use osc_integration::sim::{Source, expect_tel_payload, status};
 use osc_protocol::models::MODEL_OSC_SERVO;
 use osc_protocol::table;
 use osc_protocol::wire::UID_LEN;
+use osc_servo_core::estimator::thermal::{UNSET_CC, flag};
+use osc_servo_core::regions::config::addr::limits::CURRENT_LIMIT_COUNTS;
+use osc_servo_core::regions::telemetry::addr::estimates::{I_LIM_COUNTS, T_WINDING_CC};
+use osc_servo_core::regions::telemetry::addr::therm::{T_NTC_CC, THERM_FLAGS};
 
 /// V006 map fact used by read/write round trips (control.lifecycle
 /// goal_velocity); the common block is the only protocol-fixed address space.
@@ -1338,5 +1342,83 @@ fn tel_stream_drops_a_corrupt_frame_as_garble() {
     assert_eq!(
         reply.frames[1].payload,
         expect_tel_payload(TEL_LADDER_MASK, 48, 2)
+    );
+}
+
+/// (t_winding_cc, therm_flags, i_lim_counts, current_limit_counts) over the wire.
+fn therm(c: &mut Client<FakePipe>, id: Id) -> (i16, u8, u16, u16) {
+    (
+        read_u16(c, id, T_WINDING_CC) as i16,
+        c.read(id, THERM_FLAGS, 1).expect("read flags")[0],
+        read_u16(c, id, I_LIM_COUNTS),
+        read_u16(c, id, CURRENT_LIMIT_COUNTS),
+    )
+}
+
+/// No CALIB thermal block - a factory-fresh servo, or a calibrated one with
+/// the thermometer off - reads the firmware's sentinel and the UNSET flag,
+/// and nothing derates.
+#[test]
+fn fake_thermometer_without_a_thermal_block_reads_unset() {
+    let mut pipe = FakePipe::new(BaudRate::B1000000, &[1, 2]);
+    pipe.seed_board(0);
+    pipe.seed_calibrated_with(1, Therm::Off);
+    let mut c = Client::connect(pipe).expect("connect");
+    for id in [Id::new(1), Id::new(2)] {
+        let (t, flags, i_lim, limit) = therm(&mut c, id);
+        assert_eq!(t, UNSET_CC);
+        assert_eq!(flags, flag::UNSET);
+        assert_eq!(i_lim, limit);
+    }
+}
+
+/// With the ident set stamped, a held current heats the winding over the
+/// 28 C NTC toward its steady excess, g i^2 r0, on the 128 s time constant
+/// (a quarter of it here: the sim stops at 60 s); below the derate start
+/// i_lim is the configured limit.
+#[test]
+fn fake_winding_rises_on_the_time_constant_toward_the_steady_excess() {
+    const HOLD_COUNTS: i16 = 280;
+    let mut pipe = FakePipe::new(BaudRate::B1000000, &[1]);
+    pipe.seed_calibrated(0);
+    pipe.set_track(
+        0,
+        vec![TelSample {
+            current: HOLD_COUNTS,
+            ..Default::default()
+        }],
+    );
+    let mut c = Client::connect(pipe).expect("connect");
+    let id = Id::new(1);
+    let t_ntc = read_u16(&mut c, id, T_NTC_CC) as i16;
+    assert!((2795..=2810).contains(&t_ntc), "t_ntc_cc {t_ntc}");
+    let (t0, flags, i_lim, limit) = therm(&mut c, id);
+    assert_eq!(flags, 0);
+    assert!((t0 - t_ntc).abs() <= 1, "boots at the NTC: {t0}");
+    assert_eq!(i_lim, limit);
+
+    c.pause(Duration::from_secs(32));
+    let steady =
+        seed::TH_G_Q016 as f64 / 65536.0 * (HOLD_COUNTS as f64).powi(2) * seed::R_Q12 as f64
+            / 4096.0;
+    let want = t_ntc as f64 - steady * (-0.25f64).exp_m1();
+    let (t1, _, i_lim, _) = therm(&mut c, id);
+    assert!((t1 as f64 - want).abs() < 10.0, "t {t1} want {want:.0}");
+    assert_eq!(i_lim, limit);
+}
+
+/// Forced derating pins the winding midway from the derate start to the
+/// cutoff, where the limit fold halves the current ceiling.
+#[test]
+fn fake_thermometer_forced_derating_halves_i_lim() {
+    let mut pipe = FakePipe::new(BaudRate::B1000000, &[1]);
+    pipe.seed_calibrated_with(0, Therm::Derating);
+    let mut c = Client::connect(pipe).expect("connect");
+    let (t, flags, i_lim, limit) = therm(&mut c, Id::new(1));
+    assert_eq!(flags, 0);
+    assert_eq!(t, 9000);
+    assert!(
+        (i_lim as i32 - limit as i32 / 2).abs() <= 1,
+        "{i_lim} of {limit}"
     );
 }
