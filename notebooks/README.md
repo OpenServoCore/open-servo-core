@@ -28,30 +28,69 @@ for you if you don't have it.
 
 ## Telemetry
 
-The captures live under `telemetry/`, one folder per servo, then one folder
-per campaign, then one folder per recording:
+The captures live under `telemetry/`, one folder per dataset (one servo or
+static load, on one board, on one supply), then one folder per experiment, then
+one folder per capture:
 
 ```
 telemetry/
-  sg90/
-    usb/
+  sg90-a__dev-v006-D__2s/
+    dataset.toml
+    grid/
       capture-1/
         meta.json
         sweep.csv.gz
-    2s/
-      capture-1/
-        ...
 ```
 
 Every recording is raw ADC counts straight off the wire, with a per-sample
 tick counter, so missing samples are provable from the data itself. The
-constants needed to turn counts into volts and amps are in each notebook.
+constants that turn counts into volts and amps live in `oscnb/boards.py` (the
+measurement chain) and `oscnb/servos.py` (the thing measured). Each
+recording's `meta.json` carries the board's parts in a `sense` block, and the
+loader picks the board from it and refuses a capture that does not match.
 
 ## The notebooks
 
-- `00-raw-duty-sweeps` characterizes the measurement chain and the open-loop
-  response from the duty-sweep campaigns. It is the foundation the rest of
-  the series builds on.
+Each notebook states what it measures, how, and what is still open at its end.
+01 to 08 read an SG90 on board D, the hand-reworked development board before
+rev 2A; 09 reads an MG90 on board D; 10 on read rev 2A, with board D alongside
+where a comparison needs it.
+
+- `01-bridge-states`: what each ADC sample means in each H-bridge state and
+  decay mode, and when it is valid.
+- `02-electrical`: winding resistance and brush drop as a two-parameter line,
+  and the winding inductance.
+- `03-back-emf`: the back-EMF constant by three routes, and ripple speed plus
+  coast back-EMF as a speed that needs no pot.
+- `04-friction`: Coulomb and viscous friction from coast deceleration and
+  steady current, and breakaway.
+- `05-inertia`: rotor inertia from the rise curve, cross-checked by coast.
+- `06-gear-train`: the ripple tachometer, motor angle against the pot, gear
+  play and slip signatures.
+- `07-noise-atlas`: rest noise per channel and its structure.
+- `08-velocity-observer`: back-EMF, pot derivative and ripple as speed
+  estimates, and how the observer combines them.
+- `09-pot-linearization`: the ripple-referenced position table and degrees
+  from counted teeth.
+- `10-sense-chain-boards`: capture integrity, and the sense chain graded
+  against a meter on a resistor grid, board against board.
+- `11-back-emf-on-rev-2a`: the low-duty back-EMF over-read, re-scored on rev 2A.
+- `12-pot-table-free-vs-governed`: how far the position table moves between
+  sessions, against its own split-half floor.
+- `13-output-angle-from-video`: output angle from a camera, proven on rendered
+  frames.
+- `14-winding-r-as-a-thermometer`: burst resistance and the R-V0 ridge.
+- `15-op-amp-over-board-temperature`: current amplifier gain and zero against
+  board temperature.
+- `16-duty-floor-in-the-tap-sample-timing`: where each tap samples inside a
+  short drive window, and the duty floors that follow.
+- `17-winding-thermometer-calibrated`: copper's temperature coefficient
+  confirmed on the MG90 with a DC meter pair.
+- `18-two-node-thermal-model`: the winding and can as two thermal nodes.
+- `19-shipped-winding-thermometer`: the NTC-based winding thermometer as
+  shipped, graded against a K bead on the can across torque-off gaps, with
+  the bridged-segment event, the guards and the boot prior. Dataset
+  `mg90-a__dev-v006-2A__dps__thermometer`; loader `oscnb.thermometer`.
 - `20-bare-motor` measures the MG90's motor out of the servo, on a plate with
   no gearbox or load: rest resistance across rotor stops, no-load current,
   the back-EMF constant by the coast route, why the duty ramp cannot measure
