@@ -27,7 +27,6 @@
       "accel_limit_q88",
       "drive_polarity",
       "stall_omega_max_cps",
-      "rtherm_omega_max_cps",
       "l1_q016",
       "l2_q88",
       "l3_q88",
@@ -44,7 +43,12 @@
       "ke_vpc_q",
       "angle_min_cdeg",
       "angle_max_cdeg",
-      "gear_ratio_centi"
+      "gear_ratio_centi",
+      "th_alpha_q24",
+      "th_g_q016",
+      "ntc_raw_ref",
+      "ntc_t_ref_cc",
+      "ntc_k1_q88"
     ],
     "pos_lut_points": 256
   },
@@ -354,13 +358,6 @@
       "kind": "uint"
     },
     {
-      "name": "rtherm_omega_max_cps",
-      "addr": 102,
-      "width": 2,
-      "access": "rw",
-      "kind": "uint"
-    },
-    {
       "name": "l1_q016",
       "addr": 104,
       "width": 2,
@@ -406,6 +403,20 @@
       "name": "sensor_bad_count",
       "addr": 116,
       "width": 1,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "rtherm_seat_band_counts",
+      "addr": 118,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "rtherm_cold_band_q016",
+      "addr": 120,
+      "width": 2,
       "access": "rw",
       "kind": "uint"
     },
@@ -482,27 +493,6 @@
     {
       "name": "r0_q12",
       "addr": 148,
-      "width": 2,
-      "access": "rw",
-      "kind": "uint"
-    },
-    {
-      "name": "t0_cc",
-      "addr": 150,
-      "width": 2,
-      "access": "rw",
-      "kind": "int"
-    },
-    {
-      "name": "k_r2t_q88",
-      "addr": 152,
-      "width": 2,
-      "access": "rw",
-      "kind": "uint"
-    },
-    {
-      "name": "mu_q016",
-      "addr": 154,
       "width": 2,
       "access": "rw",
       "kind": "uint"
@@ -638,6 +628,55 @@
       "addr": 192,
       "width": 2,
       "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "th_alpha_q24",
+      "addr": 194,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "th_g_q016",
+      "addr": 196,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "th_mu_q016",
+      "addr": 198,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "ntc_raw_ref",
+      "addr": 200,
+      "width": 2,
+      "access": "rw",
+      "kind": "uint"
+    },
+    {
+      "name": "ntc_t_ref_cc",
+      "addr": 202,
+      "width": 2,
+      "access": "rw",
+      "kind": "int"
+    },
+    {
+      "name": "ntc_k1_q88",
+      "addr": 204,
+      "width": 2,
+      "access": "rw",
+      "kind": "int"
+    },
+    {
+      "name": "ntc_k2_q24",
+      "addr": 206,
+      "width": 2,
+      "access": "rw",
       "kind": "uint"
     },
     {
@@ -1130,6 +1169,20 @@
       "name": "window_v_floor_q15",
       "addr": 628,
       "width": 2,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
+      "name": "t_ntc_cc",
+      "addr": 630,
+      "width": 2,
+      "access": "ro",
+      "kind": "int"
+    },
+    {
+      "name": "therm_flags",
+      "addr": 632,
+      "width": 1,
       "access": "ro",
       "kind": "uint"
     },

@@ -15,7 +15,7 @@ use super::{
     DECIM_MED, DECIM_SLOW, Elapsed, KernelTiming, LOST_MAX, PERMIT_LEASE_TICKS, TICK_SHARE_Q16,
     position,
 };
-use crate::estimator::{FusionObs, OmegaSwitch, VbusEst, WindingTherm, bemf};
+use crate::estimator::{FusionObs, OmegaSwitch, VbusEst, WindingTherm, bemf, thermal};
 use crate::math::{q_mul, q_mul_u};
 use crate::pos_lut;
 use crate::regions::control::{ControlLifecycle, Mode};
@@ -187,11 +187,6 @@ impl Medium {
         self.fusion.seed(pos_q4);
     }
 
-    /// Thermometer seed from the calib anchor.
-    pub fn seed_thermal(&mut self, r0_q12: u16) {
-        self.thermal.seed(r0_q12);
-    }
-
     /// Lost ticks the chip reports (`Kernel::lost_ticks`); the next CONTROL
     /// phase folds the total into `elapsed` for the phases after it, so a
     /// loss lands in the period it is reported in or the next.
@@ -219,7 +214,7 @@ impl Medium {
             phase::LIMITS => self.limit(cfg, shared, faults, fast),
             phase::VELOCITY => self.velocity(cfg, cmd),
             phase::RAIL => self.rail(frame, cfg, faults, cmd),
-            phase::SLOW => self.slow(m, cfg, faults),
+            phase::SLOW => self.slow(frame, m, cfg, faults),
             phase::PUBLISH => self.publish(frame, shared, faults, fast),
             _ => {}
         }
@@ -559,7 +554,13 @@ impl Medium {
     /// SLOW, every SLOW_PERIOD_TICKS of elapsed time: the permit lease, the
     /// thermometer on this tick's window, the derate, overtemperature and
     /// undervoltage.
-    fn slow(&mut self, m: &Measured, cfg: &KernelConfig, faults: &mut FaultLatch) {
+    fn slow(
+        &mut self,
+        frame: &SensorFrame,
+        m: &Measured,
+        cfg: &KernelConfig,
+        faults: &mut FaultLatch,
+    ) {
         self.slow_ticks += self.elapsed.ticks as u16;
         if self.slow_ticks < SLOW_PERIOD_TICKS {
             return;
@@ -567,26 +568,26 @@ impl Medium {
         self.slow_ticks -= SLOW_PERIOD_TICKS;
         let (fc, mc) = (&cfg.fast, &cfg.medium);
         self.permit_ticks = self.permit_ticks.saturating_sub(1);
-        // the LMS sample needs BOTH window paths valid (bemf RECIP_ARR
-        // contract for v_mean)
-        let (vm, therm_i) = match (m.vdiff, m.i_meas) {
-            (Some(vdiff), Some(i)) => (
-                q_mul(
-                    m.ticks as i32 * vdiff,
-                    self.recip_arr_q24 as i32,
-                    bemf::RECIP_ARR_SHIFT,
-                ),
-                Some(i),
-            ),
-            _ => (0, None),
-        };
+        // v_mean needs the taps' window valid (bemf RECIP_ARR contract)
+        let v_mean = m.vdiff.map(|vdiff| {
+            q_mul(
+                m.ticks as i32 * vdiff,
+                self.recip_arr_q24 as i32,
+                bemf::RECIP_ARR_SHIFT,
+            )
+        });
         let t_cc = self.thermal.step(
-            vm,
-            therm_i,
-            self.fusion.omega_q16().unsigned_abs() >> 16,
-            &mc.therm_gates,
-            &mc.therm_anchor,
+            &thermal::Sample {
+                v_mean,
+                i_meas: m.i_meas,
+                omega_hat_cps: self.fusion.omega_q16() >> 16,
+                ke_vpc_q: fc.current.ke_q412,
+                pos_counts: self.fusion.theta_q16() >> 16,
+                ntc_raw: frame.ntc_raw,
+            },
+            &mc.therm,
         );
+        // UNSET_CC sits under every threshold: no derate, no cutoff
         self.limits.update_derate(t_cc, &mc.limits);
         if t_cc >= mc.limits.cutoff_cc {
             faults.raise(faults::BIT_OVER_TEMP, faults::CODE_OVER_TEMP);
@@ -633,6 +634,9 @@ impl Medium {
             (&raw mut (*md).omega_hat_src).write_volatile(self.omega_sw.source() as u8);
             (&raw mut (*p).telemetry.common.fault_flags).write_volatile(faults.mask());
             (&raw mut (*p).telemetry.limits.limit_flags).write_volatile(self.limit_flags);
+            let th = &raw mut (*p).telemetry.therm;
+            (&raw mut (*th).t_ntc_cc).write_volatile(self.thermal.t_ntc_cc());
+            (&raw mut (*th).therm_flags).write_volatile(self.thermal.flags());
         }
     }
 }

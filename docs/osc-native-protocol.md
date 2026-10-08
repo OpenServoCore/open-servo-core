@@ -752,17 +752,18 @@ same way.
 stamp = max(1, CRC-16/ARC("osc-plant-1" ++ covered bytes ++ points))
 ```
 
-The covered bytes are the 35 covered fields' own table bytes in table
-order (77 B): the position limits, the loop gains, the deadband,
-velocity and acceleration limits, drive polarity, the stall and
-thermometer speed gates, the observer gains and the position-error
-threshold in CONFIG; the pot stops, the motor constants, the friction
-model and the angle map in CALIB. The points are the position table's
+The covered bytes are the 39 covered fields' own table bytes in table
+order (85 B): the position limits, the loop gains, the deadband,
+velocity and acceleration limits, drive polarity, the stall speed gate,
+the observer gains and the position-error threshold in CONFIG; the pot
+stops, the motor constants, the friction model, the angle map, the
+winding thermometer's carry step and gain and the board NTC's reference
+point and slope in CALIB. The points are the position table's
 256 host-written calibration points i16 LE (sec below) while
 `pos_lut_state` is LIVE, 256 zeros otherwise, so a table falling back to the identity changes the stamp by
 itself. Not covered: identity and comms, the user-owned safety limits
 (current, thermal, undervolt, `duty_max_q15`), the raw sensor screen,
-the winding anchor, and the RO board facts install re-seeds. `0` is
+the thermometer's LMS step and cold R, and the RO board facts install re-seeds. `0` is
 reserved for *never stamped* and the recipe never produces it. The list
 is exported once, in the descriptor's `stamp` block (`tag`, `covered`,
 `pos_lut_points`); the CRC is the sec 3.2 checksum in software, ~600 B

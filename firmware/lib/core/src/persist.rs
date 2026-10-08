@@ -42,7 +42,7 @@ use crate::regions::{
     CALIB_BASE_ADDR, CALIB_REGION_SIZE, CONFIG_BASE_ADDR, CONFIG_REGION_SIZE, PROFILE_BASE_ADDR,
     PROFILE_REGION_SIZE, config,
 };
-use crate::{ControlTableCell, RegionStorage, Shared};
+use crate::{ControlTable, ControlTableCell, RegionStorage, Shared};
 
 pub const CONFIG_LEN: usize = CONFIG_REGION_SIZE as usize;
 pub const PROFILE_LEN: usize = PROFILE_REGION_SIZE as usize;
@@ -356,7 +356,44 @@ impl<'a> CalibImage<'a> {
     }
 }
 
+/// CONFIG ++ CALIB (contiguous from address 0): bit `a % 32` of word
+/// `a / 32` set = a field covers address `a`.
+const SEALED_END: usize = (CALIB_BASE_ADDR + CALIB_REGION_SIZE) as usize;
+const FIELD_WORDS: [u32; SEALED_END / 32] = {
+    assert!(CONFIG_BASE_ADDR == 0 && CALIB_BASE_ADDR == CONFIG_REGION_SIZE);
+    let mut w = [0u32; SEALED_END / 32];
+    let f = &ControlTable::FIELDS;
+    let mut n = 0;
+    while n < f.len() {
+        let mut a = f[n].addr as usize;
+        while a < f[n].addr as usize + f[n].width as usize && a < SEALED_END {
+            w[a / 32] |= 1 << (a % 32);
+            a += 1;
+        }
+        n += 1;
+    }
+    w
+};
+
 impl ControlTableCell {
+    /// SAVE: every CONFIG and CALIB byte no field covers (skip, padding)
+    /// to zero, so no earlier image's leftovers are sealed again. Nothing
+    /// else writes or reads those bytes.
+    #[inline(never)]
+    pub fn zero_reserved_persistent(&self) {
+        let base = RegisterMap::base(self);
+        // black_box keeps the bit loop a loop: folded, it unrolls to one
+        // store per reserved byte (+0.6 KB of flash)
+        let words = core::hint::black_box(&FIELD_WORDS);
+        for a in 0..SEALED_END {
+            if words[a / 32] & (1 << (a % 32)) == 0 {
+                // SAFETY: a < SEALED_END, inside the flat map (RegisterMap
+                // contract); no field aliases the byte.
+                unsafe { base.add(a).write(0) };
+            }
+        }
+    }
+
     /// Overlay a validated image onto the live table -- raw byte copy,
     /// deliberately bypassing ro masks and field rules (`Image::parse`
     /// already gated the UB-critical bytes; everything else was rule-valid
@@ -970,6 +1007,66 @@ mod tests {
             ImageState::Stale
         );
         assert_eq!(pos_lut_state(&sh), state::IDENTITY);
+    }
+
+    /// A CALIB image SAVEd by the resistance-anchor firmware (anchor r0
+    /// 4170 at 26.5 C, slope 1602, mu 7670 behind it, zeros where the
+    /// thermometer block now sits) loads whole: r0, table, kinematics and
+    /// stamp land, the anchor's bytes fall in reserved space, and the zero
+    /// model reads the sentinel until the host writes one.
+    #[test]
+    fn anchor_era_calib_image_loads_with_the_thermometer_unset() {
+        use crate::estimator::thermal::{Sample, UNSET_CC};
+        use crate::estimator::{NtcCfg, ThermCfg, WindingTherm};
+        use crate::regions::calib::addr::{kinematics, stamp, winding};
+        let mut old = calib_image_of(7);
+        let mut put = |addr: u16, v: u16| {
+            let at = HEADER_LEN + (addr - CALIB_BASE_ADDR) as usize;
+            old[at..at + 2].copy_from_slice(&v.to_le_bytes());
+        };
+        for (i, v) in [4170, 2650, 1602, 7670].into_iter().enumerate() {
+            put(winding::R0_Q12 + 2 * i as u16, v);
+        }
+        put(kinematics::GEAR_RATIO_CENTI, 30805);
+        put(stamp::PLANT_STAMP, 0xBEEF);
+        reseal_version(&mut old, 3);
+        let sh = seeded_servo();
+        assert_eq!(
+            boot_overlay_calib(&sh, &old, &[0xFF; CALIB_IMAGE_LEN]).state,
+            ImageState::Loaded
+        );
+        assert_eq!(pos_lut_state(&sh), state::LIVE);
+        let th = sh.table.with(|t| {
+            assert_eq!(t.calib.winding.r0_q12, 4170);
+            assert_eq!(t.calib.motor.r_q12, 13800);
+            assert_eq!(t.calib.kinematics.gear_ratio_centi, 30805);
+            assert_eq!(t.calib.stamp.plant_stamp, 0xBEEF);
+            t.calib.thermal
+        });
+        let cfg = ThermCfg {
+            alpha_q24: th.th_alpha_q24,
+            g_q016: th.th_g_q016,
+            mu_q016: th.th_mu_q016,
+            r_cold_q12: 4170,
+            ntc: NtcCfg {
+                raw_ref: th.ntc_raw_ref,
+                t_ref_cc: th.ntc_t_ref_cc,
+                k1_q88: th.ntc_k1_q88,
+                k2_q24: th.ntc_k2_q24,
+            },
+            ..Default::default()
+        };
+        let seated = Sample {
+            v_mean: Some(1200),
+            i_meas: Some(400),
+            pos_counts: 2000,
+            ntc_raw: 2048,
+            ..Default::default()
+        };
+        let mut therm = WindingTherm::new();
+        for _ in 0..256 {
+            assert_eq!(therm.step(&seated, &cfg), UNSET_CC);
+        }
     }
 
     /// The layout before the tables joined the image: the region alone as

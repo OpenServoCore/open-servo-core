@@ -41,7 +41,10 @@ const SEED_C2_Q30: u32 = 2_021_161_080; // round(32/17 << 30)
 /// seed + two Newton steps `r' = r*(2 - r*d)` in Q1.30, then one widening
 /// multiply denormalizes straight into the quotient. Error <= 1.2e-5
 /// relative plus truncation (pinned in tests). d == 0 has no quotient;
-/// callers gate the degenerate span, num is the no-panic backstop.
+/// callers gate the degenerate span, num is the no-panic backstop. One
+/// out-of-line body: every caller is slow-rate or a config load, and an
+/// inlined copy costs ~160 B of flash per site.
+#[inline(never)]
 pub fn recip_div(num: u32, d: u32) -> u32 {
     if d <= 1 {
         return num;

@@ -544,6 +544,7 @@ impl Dispatcher<'_> {
     /// program duration.
     fn persist_table(&self) -> Result<(), StoreError> {
         let store = self.shared.store().ok_or(StoreError)?;
+        self.shared.table.zero_reserved_persistent();
         // Bounded by the region consts -- the reads cannot fail; the fallback
         // keeps the no-panic contract.
         let config: &[u8; CONFIG_LEN] =

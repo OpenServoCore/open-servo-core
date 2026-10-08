@@ -10,7 +10,7 @@
 //! in [`COVERED_NAMES`] and exported through the descriptor so hosts keep
 //! no second list. Not covered: identity and comms, the user-owned safety
 //! limits (current, thermal, undervolt, `duty_max_q15`), the raw sensor
-//! screen, the winding anchor, and the RO board facts install re-seeds.
+//! screen, the LMS step and cold R, and the RO board facts install re-seeds.
 //!
 //! The LUT hashes as its 256 points LE, zeros while no table is live: a LUT
 //! that falls back to identity changes the stamp by itself.
@@ -29,7 +29,7 @@ pub const TAG: &str = "osc-plant-1";
 pub const UNSTAMPED: u16 = 0;
 
 /// The covered fields, in table order.
-pub const COVERED_NAMES: [&str; 35] = [
+pub const COVERED_NAMES: [&str; 39] = [
     "pos_min_phys_counts",
     "pos_max_phys_counts",
     "pos_min_soft_counts",
@@ -47,7 +47,6 @@ pub const COVERED_NAMES: [&str; 35] = [
     "accel_limit_q88",
     "drive_polarity",
     "stall_omega_max_cps",
-    "rtherm_omega_max_cps",
     "l1_q016",
     "l2_q88",
     "l3_q88",
@@ -65,6 +64,11 @@ pub const COVERED_NAMES: [&str; 35] = [
     "angle_min_cdeg",
     "angle_max_cdeg",
     "gear_ratio_centi",
+    "th_alpha_q24",
+    "th_g_q016",
+    "ntc_raw_ref",
+    "ntc_t_ref_cc",
+    "ntc_k1_q88",
 ];
 
 /// One covered byte span of the table.
@@ -168,7 +172,7 @@ const TABLE_WORDS: usize = core::mem::size_of::<ControlTable>() / 32;
 
 /// [`COVERED`] as one bit per table byte: `covers` runs on every commit
 /// under the reply deadline, and a scan of the spans costs ~25 us on the
-/// chip (35 spans, two taken branches each, from flash).
+/// chip (39 spans, two taken branches each, from flash).
 const COVERED_BITS: [u32; TABLE_WORDS] = {
     let mut bits = [0u32; TABLE_WORDS];
     let mut i = 0;
@@ -233,7 +237,7 @@ mod tests {
             assert!(w[0].addr + w[0].width <= w[1].addr, "table order");
         }
         let hashed: u16 = COVERED.iter().map(|s| s.width).sum();
-        assert_eq!(hashed, 77);
+        assert_eq!(hashed, 85);
         let last = COVERED[COVERED.len() - 1];
         assert!(last.addr + last.width <= CALIB_BASE_ADDR + CALIB_REGION_SIZE);
         assert!(!covers(PLANT_STAMP, 2), "the stamp does not cover itself");

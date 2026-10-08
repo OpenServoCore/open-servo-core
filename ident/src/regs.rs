@@ -40,6 +40,8 @@ pub mod config {
     pub const STALL_TAU_TRIP_COUNTS: Reg = reg(0x0054, 2);
     pub const V_UNDERVOLT_COUNTS: Reg = reg(0x0062, 2);
     pub const RTHERM_I_MIN_COUNTS: Reg = reg(0x0064, 2);
+    pub const RTHERM_SEAT_BAND_COUNTS: Reg = reg(0x0076, 2);
+    pub const RTHERM_COLD_BAND_Q016: Reg = reg(0x0078, 2);
     pub const L1_Q016: Reg = reg(0x0068, 2);
     pub const L2_Q88: Reg = reg(0x006a, 2);
     pub const L3_Q88: Reg = reg(0x006c, 2);
@@ -61,9 +63,6 @@ pub mod calib {
     pub const I_WINDOW_MIN_TICKS: Reg = reg(0x0090, 2);
     pub const V_WINDOW_MIN_TICKS: Reg = reg(0x0092, 2);
     pub const R0_Q12: Reg = reg(0x0094, 2);
-    pub const T0_CC: Reg = reg(0x0096, 2);
-    pub const K_R2T_Q88: Reg = reg(0x0098, 2);
-    pub const MU_Q016: Reg = reg(0x009a, 2);
     pub const R_Q12: Reg = reg(0x009e, 2);
     pub const RECIP_KE_Q: Reg = reg(0x00a0, 2);
     pub const B_I_Q313: Reg = reg(0x00a2, 2);
@@ -85,6 +84,13 @@ pub mod calib {
     pub const NTC_BETA: Reg = reg(0x00bc, 2);
     pub const VMOTOR_BIAS_NOM_COUNTS: Reg = reg(0x00be, 2);
     pub const RAIL_DROP_MV: Reg = reg(0x00c0, 2);
+    pub const TH_ALPHA_Q24: Reg = reg(0x00c2, 2);
+    pub const TH_G_Q016: Reg = reg(0x00c4, 2);
+    pub const TH_MU_Q016: Reg = reg(0x00c6, 2);
+    pub const NTC_RAW_REF: Reg = reg(0x00c8, 2);
+    pub const NTC_T_REF_CC: Reg = reg(0x00ca, 2);
+    pub const NTC_K1_Q88: Reg = reg(0x00cc, 2);
+    pub const NTC_K2_Q24: Reg = reg(0x00ce, 2);
 }
 
 pub mod control {
@@ -187,6 +193,8 @@ pub mod telemetry {
     /// on `va - vb` drives at or above the higher of this and
     /// `WINDOW_FLOOR_Q15`. Firmware without it reads 0.
     pub const WINDOW_V_FLOOR_Q15: Reg = reg(0x0274, 2);
+    pub const T_NTC_CC: Reg = reg(0x0276, 2);
+    pub const THERM_FLAGS: Reg = reg(0x0278, 1);
 }
 
 /// Every const above with its descriptor field name - the cross-check
@@ -229,9 +237,6 @@ pub const ALL: &[(&str, Reg)] = &[
     ("i_window_min_ticks", calib::I_WINDOW_MIN_TICKS),
     ("v_window_min_ticks", calib::V_WINDOW_MIN_TICKS),
     ("r0_q12", calib::R0_Q12),
-    ("t0_cc", calib::T0_CC),
-    ("k_r2t_q88", calib::K_R2T_Q88),
-    ("mu_q016", calib::MU_Q016),
     ("r_q12", calib::R_Q12),
     ("recip_ke_q", calib::RECIP_KE_Q),
     ("b_i_q313", calib::B_I_Q313),
@@ -298,6 +303,17 @@ pub const ALL: &[(&str, Reg)] = &[
     ("window_floor_q15", telemetry::WINDOW_FLOOR_Q15),
     ("tel_drop_count", telemetry::TEL_DROP_COUNT),
     ("window_v_floor_q15", telemetry::WINDOW_V_FLOOR_Q15),
+    ("th_alpha_q24", calib::TH_ALPHA_Q24),
+    ("th_g_q016", calib::TH_G_Q016),
+    ("th_mu_q016", calib::TH_MU_Q016),
+    ("ntc_raw_ref", calib::NTC_RAW_REF),
+    ("ntc_t_ref_cc", calib::NTC_T_REF_CC),
+    ("ntc_k1_q88", calib::NTC_K1_Q88),
+    ("ntc_k2_q24", calib::NTC_K2_Q24),
+    ("rtherm_seat_band_counts", config::RTHERM_SEAT_BAND_COUNTS),
+    ("rtherm_cold_band_q016", config::RTHERM_COLD_BAND_Q016),
+    ("t_ntc_cc", telemetry::T_NTC_CC),
+    ("therm_flags", telemetry::THERM_FLAGS),
     ("page_echo", burst::PAGE_ECHO),
     ("state", burst::STATE),
     ("samples_len", burst::SAMPLES_LEN),

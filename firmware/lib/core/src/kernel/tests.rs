@@ -111,7 +111,6 @@ fn seed(shared: &Shared) {
         c.thermal.recover_cc = 9000;
         c.thermal.v_undervolt_counts = 2200;
         c.thermal.rtherm_i_min_counts = 300;
-        c.thermal.rtherm_omega_max_cps = 400;
         c.fusion.l1_q016 = 16384;
         c.fusion.l2_q88 = 1024;
         // l3 * B is the tau_d loop gain: at the b_i-encoded B (1.0 below)
@@ -969,6 +968,189 @@ fn current_mode_clamps_goal_to_i_lim() {
     assert_eq!(k.medium.i_ref_cc, -1200);
 }
 
+/// The thermometer's bench MG90 model on the test rig: tau 128 s, a small
+/// `g` so the carry's steady excess at the rig's 722 x 400 vcount-ccount
+/// hold is 4.4 C, mu for a 2 s settle at 400 counts, the dev board's
+/// 10K/10K/3950 NTC reading 25.00 C at the rig's 2048 counts.
+fn seed_thermometer(sh: &Shared, r_cold_q12: u16) {
+    write_config(sh, |t| {
+        t.calib.thermal.th_alpha_q24 = 2097;
+        t.calib.thermal.th_g_q016 = 100;
+        t.calib.thermal.th_mu_q016 = 5369;
+        t.calib.winding.r0_q12 = r_cold_q12;
+        t.calib.thermal.ntc_raw_ref = 2048;
+        t.calib.thermal.ntc_t_ref_cc = 2500;
+        t.calib.thermal.ntc_k1_q88 = 563;
+        t.calib.thermal.ntc_k2_q24 = 5800;
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::OpenLoop;
+        t.control.lifecycle.goal_duty = 8000;
+    });
+}
+
+/// The rig hold's own R, 722 x 4096 / 400, as the stored cold R at 25 C.
+const RIG_R_COLD_Q12: u16 = 7393;
+
+fn therm(sh: &Shared) -> (i16, u8, u16, i16) {
+    sh.table.with(|t| {
+        (
+            t.telemetry.estimates.t_winding_cc,
+            t.telemetry.therm.therm_flags,
+            t.telemetry.estimates.i_lim_counts,
+            t.telemetry.therm.t_ntc_cc,
+        )
+    })
+}
+
+/// SLOW ticks in fast ticks; a reference needs 192 SLOW ticks at a seat.
+const SLOW: u32 = DECIM_MED as u32 * DECIM_SLOW as u32;
+const BASE_FAST_TICKS: u32 = 200 * SLOW;
+
+/// Without model constants the thermometer reads its sentinel and nothing
+/// derates, however hot the hold would read through the retired anchor.
+#[test]
+fn thermometer_without_a_model_reads_the_sentinel_and_never_derates() {
+    let sh = Shared::new();
+    seed(&sh);
+    write_config(&sh, |t| {
+        t.calib.thermal.ntc_raw_ref = 2048;
+        t.calib.thermal.ntc_t_ref_cc = 2500;
+        t.calib.thermal.ntc_k1_q88 = 563;
+        t.calib.thermal.ntc_k2_q24 = 5800;
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::OpenLoop;
+        t.control.lifecycle.goal_duty = 8000;
+    });
+    let mut k = kernel();
+    let hot = frame(2000, BIAS + 400);
+    settle(&mut k, &sh, hot);
+    ticks(&mut k, &sh, hot, BASE_FAST_TICKS);
+    let (t, flags, i_lim, _) = therm(&sh);
+    assert_eq!(t, i16::MIN);
+    assert_eq!(flags & crate::estimator::thermal::flag::UNSET, 1);
+    assert_eq!(i_lim, 1200);
+    assert_eq!(k.faults.mask(), 0);
+}
+
+/// A seat change with +1% of contact (the retired anchor read it as +2.6 C)
+/// re-bases on the carried temperature: the step is under 0.5 C.
+#[test]
+fn seat_change_rebases_the_ratio_without_a_temperature_step() {
+    let sh = Shared::new();
+    seed(&sh);
+    seed_thermometer(&sh, RIG_R_COLD_Q12);
+    let mut k = kernel();
+    let seat_a = frame(2000, BIAS + 400);
+    settle(&mut k, &sh, seat_a);
+    ticks(&mut k, &sh, seat_a, BASE_FAST_TICKS);
+    let (t_a, flags, _, t_ntc) = therm(&sh);
+    assert_eq!(flags & crate::estimator::thermal::flag::TRACK, 2);
+    assert_eq!(t_ntc, 2500);
+    assert!((2500..2600).contains(&t_a), "{t_a}");
+    // 100 counts away, 396 counts at the same duty: R +1.0%
+    let seat_b = frame(2100, BIAS + 396);
+    ticks(&mut k, &sh, seat_b, BASE_FAST_TICKS);
+    let (t_b, flags, _, _) = therm(&sh);
+    assert_eq!(flags & crate::estimator::thermal::flag::TRACK, 2);
+    assert!((t_b - t_a).abs() < 50, "{t_b} from {t_a}");
+}
+
+/// A derate step at the seat (the current drops an eighth or more while
+/// the duty holds) would read +17% of R as heat through the ratio; the
+/// base is dropped and the carry holds the temperature within 0.5 C.
+#[test]
+fn a_derate_step_at_a_seat_reads_under_half_a_degree() {
+    let sh = Shared::new();
+    seed(&sh);
+    seed_thermometer(&sh, RIG_R_COLD_Q12);
+    let mut k = kernel();
+    let hold = frame(2000, BIAS + 400);
+    settle(&mut k, &sh, hold);
+    ticks(&mut k, &sh, hold, BASE_FAST_TICKS);
+    let (t0, _, _, _) = therm(&sh);
+    ticks(&mut k, &sh, frame(2000, BIAS + 340), 20 * SLOW);
+    let (t1, flags, _, _) = therm(&sh);
+    assert_eq!(flags & crate::estimator::thermal::flag::TRACK, 0);
+    assert!((t1 - t0).abs() < 50, "{t1} from {t0}");
+}
+
+/// A +1.5% contact step inside one hold (+3.9 C by the ratio) rises faster
+/// than heating can at a limit near the hold (500 counts: 0.3 C/s): the
+/// base is dropped, the carry keeps the temperature from before the step,
+/// and neither the re-base nor the next seat reads it.
+#[test]
+fn a_contact_step_inside_a_hold_is_rejected_on_its_rise_rate() {
+    let sh = Shared::new();
+    seed(&sh);
+    seed_thermometer(&sh, RIG_R_COLD_Q12);
+    write_config(&sh, |t| t.config.limits.current_limit_counts = 500);
+    let mut k = kernel();
+    let hold = frame(2000, BIAS + 400);
+    settle(&mut k, &sh, hold);
+    ticks(&mut k, &sh, hold, BASE_FAST_TICKS);
+    let (t0, _, _, _) = therm(&sh);
+    ticks(&mut k, &sh, frame(2000, BIAS + 394), 400 * SLOW);
+    let (t1, flags, _, _) = therm(&sh);
+    assert_eq!(flags & crate::estimator::thermal::flag::TRACK, 2);
+    assert!((t1 - t0).abs() < 50, "{t1} from {t0}");
+    ticks(&mut k, &sh, frame(2100, BIAS + 394), BASE_FAST_TICKS);
+    let (t2, _, _, _) = therm(&sh);
+    assert!((t2 - t1).abs() < 50, "{t2} from {t1}");
+}
+
+/// A hot reboot: the first seat reads +10% through the stored cold R, so
+/// the carry starts 26 C over the NTC instead of cold; a derate band set
+/// under it (the bench proxy, 35/45 C) acts at once.
+#[test]
+fn hot_reboot_floor_starts_the_carry_from_the_cold_r() {
+    let sh = Shared::new();
+    seed(&sh);
+    // the hold reads 722 x 4096 / 400 = 7393; a cold R 10% under it
+    seed_thermometer(&sh, 6721);
+    write_config(&sh, |t| {
+        t.config.thermal.derate_start_cc = 3500;
+        t.config.thermal.cutoff_cc = 4500;
+        t.config.thermal.recover_cc = 4000;
+    });
+    let mut k = kernel();
+    let hold = frame(2000, BIAS + 400);
+    settle(&mut k, &sh, hold);
+    ticks(&mut k, &sh, hold, BASE_FAST_TICKS);
+    let (t, flags, i_lim, _) = therm(&sh);
+    assert_eq!(flags & crate::estimator::thermal::flag::HOT_BOOT, 8);
+    assert!((5000..5300).contains(&t), "{t}");
+    assert_eq!(i_lim, 0, "cutoff at 45 C");
+    assert_ne!(k.faults.mask() & faults::BIT_OVER_TEMP, 0);
+}
+
+/// Torque off: the carry decays the excess toward the NTC on tau, so a
+/// derate taken at a hot seat lifts at rest instead of latching.
+#[test]
+fn torque_off_carries_the_estimate_to_the_ntc_and_the_derate_lifts() {
+    let sh = Shared::new();
+    seed(&sh);
+    seed_thermometer(&sh, 6721);
+    write_config(&sh, |t| {
+        t.config.thermal.derate_start_cc = 3500;
+        t.config.thermal.cutoff_cc = 6500;
+        t.config.thermal.recover_cc = 4000;
+    });
+    let mut k = kernel();
+    let hold = frame(2000, BIAS + 400);
+    settle(&mut k, &sh, hold);
+    ticks(&mut k, &sh, hold, BASE_FAST_TICKS);
+    let (t_hot, _, i_lim, _) = therm(&sh);
+    assert!(t_hot > 4900 && i_lim < 1200, "{t_hot} {i_lim}");
+    sh.table
+        .with_mut(|t| t.control.lifecycle.torque_enable = false);
+    // five tau: 40000 SLOW ticks
+    ticks(&mut k, &sh, frame(2000, BIAS), 40_000 * SLOW);
+    let (t, flags, i_lim, t_ntc) = therm(&sh);
+    assert!((t - t_ntc).abs() < 40, "{t} vs {t_ntc}");
+    assert_eq!(flags & crate::estimator::thermal::flag::TRACK, 0);
+    assert_eq!(i_lim, 1200);
+}
+
 #[test]
 fn position_error_latches_after_persistence() {
     let sh = Shared::new();
@@ -1030,7 +1212,7 @@ fn published_bias(sh: &Shared) -> u16 {
 /// constants.
 const BIAS_SETTLE_TICKS: u32 = 12 << bias::ALPHA_SHIFT;
 
-fn run(k: &mut Kernel<FakeIo>, sh: &Shared, f: SensorFrame, n: u32) {
+fn ticks(k: &mut Kernel<FakeIo>, sh: &Shared, f: SensorFrame, n: u32) {
     for _ in 0..n {
         k.on_tick(f, sh);
     }
@@ -1056,13 +1238,13 @@ fn trough_bias_tracks_only_inside_slow_drive_windows() {
     // Fast decay: the trough IS the drive window. The decay lands at a
     // medium boundary, so it goes in ahead of the drive.
     write_config(&sh, |t| t.config.limits.openloop_decay = DecaySelect::Fast);
-    run(&mut k, &sh, frame(2000, BIAS), DECIM_MED as u32);
+    ticks(&mut k, &sh, frame(2000, BIAS), DECIM_MED as u32);
     sh.table.with_mut(|t| {
         t.control.lifecycle.torque_enable = true;
         t.control.lifecycle.mode = Mode::OpenLoop;
         t.control.lifecycle.goal_duty = 8000;
     });
-    run(&mut k, &sh, shifted(), 3000);
+    ticks(&mut k, &sh, shifted(), 3000);
     assert!(matches!(
         last_cmd(&k),
         MotorCmd::Drive {
@@ -1078,12 +1260,12 @@ fn trough_bias_tracks_only_inside_slow_drive_windows() {
     settle(&mut k, &sh, shifted());
     assert_eq!(published_bias(&sh), BIAS);
     write_config(&sh, |t| t.config.limits.openloop_decay = DecaySelect::Slow);
-    run(&mut k, &sh, shifted(), 3000);
+    ticks(&mut k, &sh, shifted(), 3000);
     assert!(matches!(last_cmd(&k), MotorCmd::Drive { duty, .. } if duty.0 == i16::MAX));
     assert_eq!(published_bias(&sh), BIAS);
     // a partial Slow window: the trough is the brake phase, the tracker follows
     sh.table.with_mut(|t| t.control.lifecycle.goal_duty = 8000);
-    run(&mut k, &sh, shifted(), BIAS_SETTLE_TICKS);
+    ticks(&mut k, &sh, shifted(), BIAS_SETTLE_TICKS);
     assert!(matches!(
         last_cmd(&k),
         MotorCmd::Drive {
@@ -1148,11 +1330,11 @@ fn bias_feed_ignores_the_current_floor() {
     settle(&mut k, &sh, frame(2000, BIAS + 300));
     // 732 drive ticks leave a 468-tick brake half: under the brake
     // minimum, however low the current floor sits
-    run(&mut k, &sh, shifted(), 3000);
+    ticks(&mut k, &sh, shifted(), 3000);
     assert_eq!(published_bias(&sh), BIAS);
     // 293 drive ticks leave 907: the tracker follows
     sh.table.with_mut(|t| t.control.lifecycle.goal_duty = 8000);
-    run(&mut k, &sh, shifted(), BIAS_SETTLE_TICKS);
+    ticks(&mut k, &sh, shifted(), BIAS_SETTLE_TICKS);
     assert_eq!(published_bias(&sh), BIAS + 500);
 }
 
@@ -1173,7 +1355,7 @@ fn torque_off_bias_follows_a_drifting_rest() {
     }
     assert!(matches!(last_cmd(&k), MotorCmd::Disabled));
     // never awake: no step learned, the bias is the rest itself
-    run(&mut k, &sh, rest(BIAS - 200), BIAS_SETTLE_TICKS);
+    ticks(&mut k, &sh, rest(BIAS - 200), BIAS_SETTLE_TICKS);
     assert_eq!(published_bias(&sh), BIAS - 200);
 }
 
@@ -1189,19 +1371,19 @@ fn the_awake_step_is_learned_and_rides_the_torque_off_drift() {
     let mut k = kernel();
     // torque off at the boot rest, then the brake: the driver wakes and
     // its own supply current lifts the zero 10 counts
-    run(&mut k, &sh, rest(BIAS), 1000);
+    ticks(&mut k, &sh, rest(BIAS), 1000);
     sh.table
         .with_mut(|t| t.control.lifecycle.torque_enable = true);
-    run(&mut k, &sh, rest(BIAS + 10), BIAS_SETTLE_TICKS);
+    ticks(&mut k, &sh, rest(BIAS + 10), BIAS_SETTLE_TICKS);
     assert!(matches!(last_cmd(&k), MotorCmd::Brake));
     assert_eq!(published_bias(&sh), BIAS + 10);
     // torque off past the stale window, then the board warms: the bias
     // keeps the step over the rest
     sh.table
         .with_mut(|t| t.control.lifecycle.torque_enable = false);
-    run(&mut k, &sh, rest(BIAS), bias::STALE_TICKS as u32);
+    ticks(&mut k, &sh, rest(BIAS), bias::STALE_TICKS as u32);
     assert_eq!(published_bias(&sh), BIAS + 10);
-    run(&mut k, &sh, rest(BIAS - 200), BIAS_SETTLE_TICKS);
+    ticks(&mut k, &sh, rest(BIAS - 200), BIAS_SETTLE_TICKS);
     assert!(matches!(last_cmd(&k), MotorCmd::Disabled));
     assert_eq!(published_bias(&sh), BIAS - 190);
     // awake again, coasting on a zero goal: the zero it reads is the one
@@ -1234,7 +1416,7 @@ fn a_draining_current_is_never_learned_as_zero() {
     let mut driven = slew;
     driven.current_trough = 4095;
     settle(&mut k, &sh, slew);
-    run(&mut k, &sh, driven, bias::STALE_TICKS as u32);
+    ticks(&mut k, &sh, driven, bias::STALE_TICKS as u32);
     assert_eq!(published_bias(&sh), BIAS);
     // torque off, then the brake: the shunt still reads the drive through
     // the settle and none of it reaches the tracker; past it, the rest does
@@ -1250,13 +1432,13 @@ fn a_draining_current_is_never_learned_as_zero() {
         while core::mem::discriminant(&last_cmd(&k)) != core::mem::discriminant(&cmd) {
             k.on_tick(driven, &sh);
         }
-        run(&mut k, &sh, driven, fast::ZERO_SETTLE_TICKS as u32);
+        ticks(&mut k, &sh, driven, fast::ZERO_SETTLE_TICKS as u32);
         assert_eq!(published_bias(&sh), BIAS);
-        run(&mut k, &sh, rest(BIAS), BIAS_SETTLE_TICKS);
+        ticks(&mut k, &sh, rest(BIAS), BIAS_SETTLE_TICKS);
         assert_eq!(published_bias(&sh), BIAS);
-        run(&mut k, &sh, rest(rest_counts), BIAS_SETTLE_TICKS);
+        ticks(&mut k, &sh, rest(rest_counts), BIAS_SETTLE_TICKS);
         assert_eq!(published_bias(&sh), rest_counts);
-        run(&mut k, &sh, rest(BIAS), BIAS_SETTLE_TICKS);
+        ticks(&mut k, &sh, rest(BIAS), BIAS_SETTLE_TICKS);
         sh.table.with_mut(|t| {
             t.control.lifecycle.torque_enable = true;
             t.control.lifecycle.goal_duty = i16::MAX;
