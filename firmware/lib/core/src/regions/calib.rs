@@ -37,9 +37,9 @@ pub struct CalibSense {
 /// The winding's cold resistance, firmware-shaped: `r0_q12` is the kernel's
 /// own R (vcounts per ccount, Q4.12) at a seated hold, reduced to 25.00 C
 /// (`estimator::thermal::R_COLD_REF_CC`) through copper and the board NTC.
-/// The hot-reboot floor and the cold-R health check read it; 0 = none. The
-/// six bytes behind it held the retired resistance anchor (t0, slope, LMS
-/// step) and stay reserved.
+/// The hot-reboot floor, the cold-R health check and the excess bound read
+/// it; 0 = no thermometer. The six bytes behind it held the retired
+/// resistance anchor (t0, slope, LMS step) and stay reserved.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct CalibWinding {
@@ -114,8 +114,8 @@ pub struct CalibSenseExt {
 /// (centi-C, Q0.16), `th_mu_q016` the same-seat LMS step; then the board
 /// NTC's counts-to-centi-C quadratic about its reference point, derived by
 /// the host from `CalibSenseExt`'s beta constants (`estimator::thermal::
-/// NtcCfg`). Zero alpha, g or k1 = no thermometer (`t_winding_cc` reads its
-/// sentinel, nothing derates).
+/// NtcCfg`). Zero alpha, g, k1 or r0 = no thermometer (`t_winding_cc` reads
+/// its sentinel, nothing derates).
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct CalibThermal {

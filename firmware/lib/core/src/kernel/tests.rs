@@ -988,6 +988,9 @@ fn seed_thermometer(sh: &Shared, r_cold_q12: u16) {
     });
 }
 
+/// The rig hold's own R, 722 x 4096 / 400, as the stored cold R at 25 C.
+const RIG_R_COLD_Q12: u16 = 7393;
+
 fn therm(sh: &Shared) -> (i16, u8, u16, i16) {
     sh.table.with(|t| {
         (
@@ -1035,7 +1038,7 @@ fn thermometer_without_a_model_reads_the_sentinel_and_never_derates() {
 fn seat_change_rebases_the_ratio_without_a_temperature_step() {
     let sh = Shared::new();
     seed(&sh);
-    seed_thermometer(&sh, 0);
+    seed_thermometer(&sh, RIG_R_COLD_Q12);
     let mut k = kernel();
     let seat_a = frame(2000, BIAS + 400);
     settle(&mut k, &sh, seat_a);
@@ -1059,7 +1062,7 @@ fn seat_change_rebases_the_ratio_without_a_temperature_step() {
 fn a_derate_step_at_a_seat_reads_under_half_a_degree() {
     let sh = Shared::new();
     seed(&sh);
-    seed_thermometer(&sh, 0);
+    seed_thermometer(&sh, RIG_R_COLD_Q12);
     let mut k = kernel();
     let hold = frame(2000, BIAS + 400);
     settle(&mut k, &sh, hold);
@@ -1071,14 +1074,16 @@ fn a_derate_step_at_a_seat_reads_under_half_a_degree() {
     assert!((t1 - t0).abs() < 50, "{t1} from {t0}");
 }
 
-/// The documented blind spot: a +1.5% contact step inside one hold reads as
-/// +3.9 C, and the next seat inherits it through the carry; only the carry's
-/// decay at rest washes it out.
+/// A +1.5% contact step inside one hold (+3.9 C by the ratio) rises faster
+/// than heating can at a limit near the hold (500 counts: 0.3 C/s): the
+/// base is dropped, the carry keeps the temperature from before the step,
+/// and neither the re-base nor the next seat reads it.
 #[test]
-fn a_contact_step_inside_a_hold_reads_as_heat_and_the_next_seat_inherits_it() {
+fn a_contact_step_inside_a_hold_is_rejected_on_its_rise_rate() {
     let sh = Shared::new();
     seed(&sh);
-    seed_thermometer(&sh, 0);
+    seed_thermometer(&sh, RIG_R_COLD_Q12);
+    write_config(&sh, |t| t.config.limits.current_limit_counts = 500);
     let mut k = kernel();
     let hold = frame(2000, BIAS + 400);
     settle(&mut k, &sh, hold);
@@ -1087,10 +1092,10 @@ fn a_contact_step_inside_a_hold_reads_as_heat_and_the_next_seat_inherits_it() {
     ticks(&mut k, &sh, frame(2000, BIAS + 394), 400 * SLOW);
     let (t1, flags, _, _) = therm(&sh);
     assert_eq!(flags & crate::estimator::thermal::flag::TRACK, 2);
-    assert!((330..460).contains(&(t1 - t0)), "{t1} from {t0}");
+    assert!((t1 - t0).abs() < 50, "{t1} from {t0}");
     ticks(&mut k, &sh, frame(2100, BIAS + 394), BASE_FAST_TICKS);
     let (t2, _, _, _) = therm(&sh);
-    assert!((t2 - t1).abs() < 60, "{t2} from {t1}");
+    assert!((t2 - t1).abs() < 50, "{t2} from {t1}");
 }
 
 /// A hot reboot: the first seat reads +10% through the stored cold R, so

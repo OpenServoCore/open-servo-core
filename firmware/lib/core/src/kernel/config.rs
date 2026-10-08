@@ -166,6 +166,7 @@ impl KernelConfig {
                     mu_q016: th.th_mu_q016,
                     r_cold_q12: winding.r0_q12,
                     i_min_counts: therm.rtherm_i_min_counts,
+                    i_lim_counts: lim.current_limit_counts,
                     seat_band_counts: or_default(
                         therm_ext.rtherm_seat_band_counts,
                         DEFAULT_RTHERM_SEAT_BAND_COUNTS,
