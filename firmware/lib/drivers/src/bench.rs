@@ -26,7 +26,7 @@ pub struct TrimProbe {
     /// Stamps skipped as older than the previous stamp plus the ring
     /// distance allows: orphans (a re-fire, a CRC-failed frame's break).
     pub stale: u32,
-    /// Stamps dropped by a CAL ruler mark or a rescue.
+    /// Stamps dropped by a CAL ruler mark, a rate change or a rescue.
     pub cleared: u32,
     /// Break services whose resolver drive hit its per-wake frame bound:
     /// the ladder lagged the wire by more than `FRAMES_PER_WAKE` frames.

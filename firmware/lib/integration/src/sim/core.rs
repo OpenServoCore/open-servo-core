@@ -101,6 +101,10 @@ pub enum Event {
     /// wire byte (a coalesced or lagged break service -- sec 3.4's reason to
     /// demand idempotence).
     WakeRefire { servo: usize },
+    /// Test-injected orphan stamp: servo `servo`'s break detector latches
+    /// with no byte rung and no wake (a low that trips the detector inside
+    /// an idle gap and belongs to no frame).
+    StampOnly { servo: usize },
     /// A break's 0x00 lands in servo `servo`'s ring after its wake
     /// ([`super::BreakWake::BeforeByte`]).
     BreakByte { servo: usize },
