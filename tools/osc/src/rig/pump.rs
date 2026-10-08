@@ -44,7 +44,7 @@ pub(crate) fn read_i32<P: Pipe>(c: &mut Client<P>, id: Id, reg: Reg) -> Result<i
 }
 
 const TEL_BASE: u16 = telemetry::FAULT_FLAGS.addr;
-const TEL_LEN: u16 = telemetry::WINDOW_FLOOR_Q15.addr + 2 - TEL_BASE;
+const TEL_LEN: u16 = telemetry::THERM_FLAGS.addr + 1 - TEL_BASE;
 const IDENT_BASE: u16 = telemetry::I_MEAN_COUNTS.addr;
 const IDENT_LEN: u16 = telemetry::AGG_SEQ.addr + 2 - IDENT_BASE;
 
@@ -545,7 +545,7 @@ mod tests {
     #[test]
     fn telemetry_span_covers_the_ident_block() {
         assert_eq!(TEL_BASE, 0x200);
-        assert_eq!(TEL_LEN, 0x6a);
+        assert_eq!(TEL_LEN, 0x79);
         assert_eq!(IDENT_BASE, 0x25a);
         assert_eq!(IDENT_LEN, 12);
     }

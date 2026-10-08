@@ -7,12 +7,13 @@
 //! anchor for the absolute: the brush contact moves R by percents per seat
 //! and shifts the whole cloud for hours after running (1% is 2.6 C).
 //!
-//! The model constants are a MOTOR FAMILY's, not this unit's: a seated
-//! hold's own rise carries 1-3 contact steps of 0.7-1.6% (2-4 C each),
-//! which spread a one-node fit of R_th over a factor of two (bringup
-//! kb/ident-replay-note.md). Notebook 18's two-node model of the MG90 on
-//! the dev board in open air gives the family numbers; a later ident with a
-//! can thermocouple may replace them per installation.
+//! The model constants start as a MOTOR FAMILY's: a seated hold's own
+//! rise carries 1-3 contact steps of 0.7-1.6% (2-4 C each), which spread a
+//! one-node fit of R_th over a factor of two when they are fitted through
+//! (bringup kb/ident-replay-note.md). Notebook 18's two-node model of the
+//! MG90 on the dev board in open air gives the family numbers;
+//! [`crate::thermal`] fits this unit's from one hold with the kernel's own
+//! guard exits cut out.
 
 use osc_servo_core::kernel::{DECIM_MED, DECIM_SLOW};
 
@@ -74,6 +75,27 @@ pub fn slow_hz(tick_hz: f64) -> f64 {
     tick_hz / (DECIM_MED as f64 * DECIM_SLOW as f64)
 }
 
+/// The carry's step per SLOW tick, dt / tau, for a time constant.
+pub fn alpha(tau_s: f64, slow_hz: f64) -> f64 {
+    1.0 / (tau_s * slow_hz)
+}
+
+/// The time constant a carry step per SLOW tick runs on, s.
+pub fn tau_s(alpha: f64, slow_hz: f64) -> f64 {
+    1.0 / (alpha * slow_hz)
+}
+
+/// The carry's gain, centi-C per vcount-ccount (the kernel's power is
+/// `i (v - Ke omega)` in vcount-ccount), for a thermal resistance in C/W.
+pub fn g_cc(r_th_c_per_w: f64, v_per_vcount: f64, a_per_ccount: f64) -> f64 {
+    r_th_c_per_w * v_per_vcount * a_per_ccount * 100.0
+}
+
+/// The thermal resistance a carry gain stands for, C/W.
+pub fn r_th_c_per_w(g_cc: f64, v_per_vcount: f64, a_per_ccount: f64) -> f64 {
+    g_cc / (v_per_vcount * a_per_ccount * 100.0)
+}
+
 /// The board NTC's beta model: degrees C at an ADC reading, for a
 /// thermistor to GND under a pull-up to VDD. None at the rails.
 pub fn ntc_beta_c(raw: f64, pullup_ohm: f64, r25_ohm: f64, beta: f64) -> Option<f64> {
@@ -129,8 +151,8 @@ impl Thermal {
         {
             return None;
         }
-        let alpha = 1.0 / (tau_s * slow_hz(tick_hz));
-        let g = r_th_c_per_w * v_per_vcount * a_per_ccount * 100.0;
+        let alpha = alpha(tau_s, slow_hz(tick_hz));
+        let g = g_cc(r_th_c_per_w, v_per_vcount, a_per_ccount);
         let mu = 4096.0 / (i_hold_counts as f64 * SETTLE_S * slow_hz(tick_hz));
         // the quadratic about the 25 C reading: the central-difference slope
         // there and the curvature that lands the ~+18 C point (within 0.7 C

@@ -16,6 +16,7 @@ use osc_ident::exp::resistance::DwellSample;
 use osc_ident::exp::rl::{SegKind, Segment};
 use osc_ident::fits::{Climb, RungPoint, StepSeries};
 use osc_ident::frame::{TelFrame, TelemetrySnapshot};
+use osc_ident::thermal::Row;
 
 pub(crate) struct OutDir(pub(crate) PathBuf);
 
@@ -202,6 +203,15 @@ pub(crate) fn write_anchor_samples(dir: &OutDir, samples: &[WindowSample]) -> Re
     writeln!(w, "t_ms,i,vdiff,duty_q15")?;
     for s in samples {
         writeln!(w, "{},{},{},{}", s.t_ms, s.i, s.vdiff, s.duty_q15)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn write_thermal_rows(dir: &OutDir, rows: &[Row]) -> Result<()> {
+    let mut w = dir.file("thermal.csv")?;
+    writeln!(w, "t_s,x_cc,p,flags")?;
+    for r in rows {
+        writeln!(w, "{},{},{},{}", r.t_s, r.x_cc, r.p, r.flags)?;
     }
     Ok(())
 }

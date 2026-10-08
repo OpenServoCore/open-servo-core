@@ -43,6 +43,8 @@ pub struct TelemetrySnapshot {
     pub agg_seq: u16,
     pub limit_flags: u8,
     pub window_floor_q15: u16,
+    pub t_ntc_cc: i16,
+    pub therm_flags: u8,
 }
 
 fn get<const N: usize>(base: u16, bytes: &[u8], r: Reg) -> Option<[u8; N]> {
@@ -84,6 +86,8 @@ impl TelemetrySnapshot {
             agg_seq: u16::from_le_bytes(get(base, bytes, t::AGG_SEQ)?),
             limit_flags: u8::from_le_bytes(get(base, bytes, t::LIMIT_FLAGS)?),
             window_floor_q15: u16::from_le_bytes(get(base, bytes, t::WINDOW_FLOOR_Q15)?),
+            t_ntc_cc: i16::from_le_bytes(get(base, bytes, t::T_NTC_CC)?),
+            therm_flags: u8::from_le_bytes(get(base, bytes, t::THERM_FLAGS)?),
         })
     }
 }
@@ -513,7 +517,7 @@ mod tests {
     #[test]
     fn telemetry_snapshot_parses_a_synthetic_region() {
         let base = 0x0200u16;
-        let mut bytes = vec![0u8; 0x6a];
+        let mut bytes = vec![0u8; 0x79];
         let put = |b: &mut [u8], r: crate::regs::Reg, v: &[u8]| {
             let off = (r.addr - base) as usize;
             b[off..off + v.len()].copy_from_slice(v);
@@ -529,6 +533,8 @@ mod tests {
         put(&mut bytes, t::AGG_SEQ, &513u16.to_le_bytes());
         put(&mut bytes, t::LIMIT_FLAGS, &[0x09]);
         put(&mut bytes, t::WINDOW_FLOOR_Q15, &4356u16.to_le_bytes());
+        put(&mut bytes, t::T_NTC_CC, &2537i16.to_le_bytes());
+        put(&mut bytes, t::THERM_FLAGS, &[0x02]);
         let s = TelemetrySnapshot::parse(base, &bytes).unwrap();
         assert_eq!(s.fault_flags, 0x20);
         assert_eq!(s.fault_code, 6);
@@ -541,6 +547,8 @@ mod tests {
         assert_eq!(s.agg_seq, 513);
         assert_eq!(s.limit_flags, 0x09);
         assert_eq!(s.window_floor_q15, 4356);
+        assert_eq!(s.t_ntc_cc, 2537);
+        assert_eq!(s.therm_flags, 0x02);
 
         assert!(
             TelemetrySnapshot::parse(base, &bytes[..0x50]).is_none(),

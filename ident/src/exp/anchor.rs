@@ -10,10 +10,13 @@
 //! the run ([`super::seek::at_stop`]). The hold is about a second: 0.3 W
 //! into the winding for a second is well under a degree of self-heating,
 //! and the current at the limit is where a loaded hold sits in service.
+//! With `hold_ms` the hold runs that long and its reads are the thermal
+//! fit's rows ([`crate::thermal`]).
 
 use super::{AbortReason, Cmd, Experiment, RigParams, WindowSample, WindowStream, seek};
 use crate::frame::TelemetrySnapshot;
 use crate::regs::control;
+use crate::thermal::Row;
 
 const Q15: f64 = 32767.0;
 
@@ -24,6 +27,8 @@ pub struct AnchorCfg {
     pub hold_duty_q15: i16,
     /// Polls at the hold; with `poll_ms` about a second.
     pub hold_polls: u32,
+    /// The hold ends this long after its first read, if sooner, ms.
+    pub hold_ms: Option<f64>,
     pub poll_ms: u32,
     pub seek_poll_ms: u32,
 }
@@ -34,6 +39,7 @@ impl Default for AnchorCfg {
             seek_duty_q15: 3932,
             hold_duty_q15: 5242,
             hold_polls: 400,
+            hold_ms: None,
             poll_ms: 2,
             seek_poll_ms: 30,
         }
@@ -89,6 +95,7 @@ pub struct Anchor {
     polls_left: u32,
     windows: WindowStream,
     samples: Vec<WindowSample>,
+    rows: Vec<Row>,
     seat: Option<u16>,
 }
 
@@ -110,12 +117,18 @@ impl Anchor {
             polls_left: 0,
             windows: WindowStream::new(params),
             samples: Vec::new(),
+            rows: Vec::new(),
             seat: None,
         }
     }
 
     pub fn samples(&self) -> &[WindowSample] {
         &self.samples
+    }
+
+    /// Every read of the hold, in order.
+    pub fn rows(&self) -> &[Row] {
+        &self.rows
     }
 
     /// Where the shaft seated, once it did.
@@ -254,13 +267,17 @@ impl Experiment for Anchor {
                 Cmd::Read
             }
             Phase::HoldEval => {
-                if let Some(o) = obs
-                    && let Some(w) = self.windows.push(o)
-                {
-                    self.samples.push(w);
+                let mut timed_out = false;
+                if let Some(o) = obs {
+                    if let Some(w) = self.windows.push(o) {
+                        self.samples.push(w);
+                    }
+                    let start = self.rows.first().map_or(o.host_ms, |r| r.t_s * 1000.0);
+                    timed_out = self.cfg.hold_ms.is_some_and(|ms| o.host_ms - start >= ms);
+                    self.rows.push(Row::from_snapshot(o));
                 }
                 self.polls_left = self.polls_left.saturating_sub(1);
-                if self.polls_left == 0 {
+                if self.polls_left == 0 || timed_out {
                     self.phase = Phase::FinishDuty;
                     Cmd::Pause { ms: 0 }
                 } else {
@@ -376,6 +393,26 @@ mod tests {
         let floor = crate::thermometer::floor_counts(r.i_counts);
         assert_eq!(floor.raw, 7 * hold / 8);
         assert!(!floor.saturated);
+    }
+
+    /// A timed hold runs its span on the host's clock, whatever the poll
+    /// budget, and keeps every read as a thermal row.
+    #[test]
+    fn a_timed_hold_runs_its_span_and_keeps_its_reads() {
+        let mut servo = FakeServo::new(3.37);
+        let cfg = AnchorCfg {
+            hold_polls: u32::MAX,
+            hold_ms: Some(3000.0),
+            poll_ms: 16,
+            ..AnchorCfg::default()
+        };
+        let (exp, _, abort) = run(&mut servo, cfg);
+        assert_eq!(abort, None);
+        let rows = exp.rows();
+        let span = rows.last().unwrap().t_s - rows[0].t_s;
+        assert!((3.0..3.1).contains(&span), "{span}");
+        assert!(rows.len() > 100, "{}", rows.len());
+        assert!(rows.iter().skip(10).all(|r| r.p > 0.0), "{:?}", &rows[..12]);
     }
 
     #[test]

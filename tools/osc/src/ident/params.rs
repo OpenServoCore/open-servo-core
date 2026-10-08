@@ -838,6 +838,11 @@ impl GainJson {
         Self::of(&t.fields())
     }
 
+    /// The carry's model alone, as `osc ident thermal` fits it.
+    pub fn thermal_model(alpha_q24: Encoded, g_q016: Encoded) -> Vec<Self> {
+        Self::of(&[("th_alpha_q24", alpha_q24), ("th_g_q016", g_q016)])
+    }
+
     /// The stored cold R ([`thermometer::cold_r_q12`]).
     pub fn cold_r(r: Encoded) -> Self {
         Self::of(&[("r0_q12", r)]).remove(0)
