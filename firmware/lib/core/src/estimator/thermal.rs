@@ -14,7 +14,10 @@
 //! heating can; under that rate it reads as temperature until the re-base
 //! (a known blind spot: steps under 0.8-1.0% of R, 2.0-2.6 C, as the LMS
 //! walks 39% of a step in 1 s). The excess over the NTC never
-//! passes what the current limit can hold the winding at.
+//! passes what the current limit can hold the winding at, and starts at
+//! boot at half the steady excess there: a reboot while hot, the NTC
+//! still cool, is half-covered and converges; a cool start reads high for
+//! about two time constants.
 //!
 //! Two SLOW ticks of the same `(v_mean, i)` within an eighth gate a
 //! sample: the pot observer cannot vouch for a motor turning inside the
@@ -90,9 +93,6 @@ pub mod flag {
     pub const TRACK: u8 = 1 << 1;
     /// The cold-R check found the stored cold R stale: recalibrate.
     pub const COLD_RECAL: u8 = 1 << 2;
-    /// The first seat after boot read hotter than the NTC through the
-    /// stored cold R: the carry started there.
-    pub const HOT_BOOT: u8 = 1 << 3;
 }
 
 /// `t_winding_cc` while UNSET: under every threshold, so derate and
@@ -120,11 +120,6 @@ const X_MAX_QG: i32 = 32767 << XG;
 /// cold R, x (1 + 2^-1): R_th fits spread 60-77 C/W about g's 63, and the
 /// board NTC rests 1-4 C off the motor.
 const BOUND_MARGIN_SHIFT: u32 = 1;
-/// The first seat reads a hot boot when its R sits more than 6% over the
-/// cold R at the NTC temperature, as centi-C through copper: 3.5 sd of the
-/// per-seat contact scatter (sd 1.3-1.7% of R, the bench MG90's seated
-/// bases reduced to 25 C).
-const HOT_BOOT_BAND_CC: i32 = (COPPER_ZERO_CC + R_COLD_REF_CC) * 6 / 100;
 /// 2^30 / (234.5 + 25 C): the cold R to the NTC temperature without a divide.
 const RECIP_COLD_Q30: i32 = ((1u64 << 30) / (COPPER_ZERO_CC + R_COLD_REF_CC) as u64) as i32;
 
@@ -231,7 +226,7 @@ pub struct WindingTherm {
     cold_ok: bool,
     cold: [u16; COLD_SEATS],
     cold_n: u8,
-    first_seat: bool,
+    boot: bool,
 }
 
 impl WindingTherm {
@@ -267,7 +262,7 @@ impl WindingTherm {
             cold_ok: false,
             cold: [0; COLD_SEATS],
             cold_n: 0,
-            first_seat: true,
+            boot: true,
         }
     }
 
@@ -277,6 +272,7 @@ impl WindingTherm {
         self.ntc(s.ntc_raw, cfg);
         if cfg.alpha_q24 == 0 || cfg.g_q016 == 0 || cfg.r_cold_q12 == 0 || !self.ntc_ok {
             self.x_qg = 0;
+            self.boot = false;
             self.drop_base();
             self.flags = flag::UNSET;
             self.t_cc = UNSET_CC;
@@ -284,6 +280,12 @@ impl WindingTherm {
         }
         self.flags &= !flag::UNSET;
         let gated = self.gate(s, cfg);
+        let x_max = self.x_max_cc(cfg);
+        if self.boot {
+            // half the steady excess at the limit: x_max is 1.5x of it
+            self.boot = false;
+            self.x_qg = (x_max / 3) << XG;
+        }
         // the carry runs every tick; a tracked sample overwrites it below
         let v_emf =
             s.v_mean
@@ -293,7 +295,6 @@ impl WindingTherm {
         let target_qg = q_mul(p, cfg.g_q016 as i32, 16).min(X_MAX_QG >> XG) << XG;
         self.x_qg += q_mul(target_qg - self.x_qg, cfg.alpha_q24 as i32, 24);
         let mut t = self.t_ntc_cc as i32 + (self.x_qg >> XG);
-        let x_max = self.x_max_cc(cfg);
         if self.based {
             let mut rose = false;
             if let Some(i) = gated {
@@ -468,27 +469,10 @@ impl WindingTherm {
             self.sum_i.unsigned_abs().max(1),
         )
         .min(u16::MAX as u32) as u16;
-        let mut t_ref = t;
-        if self.first_seat {
-            // the first seat after boot: the stored cold R says how hot
-            // the winding is; hotter than the NTC by more than the band is
-            // a hot reboot, and the carry starts there
-            let k_cold = recip_div(
-                ((COPPER_ZERO_CC + R_COLD_REF_CC) as u32) << 8,
-                cfg.r_cold_q12 as u32,
-            );
-            let t_r0 =
-                R_COLD_REF_CC + q_mul(r_ref as i32 - cfg.r_cold_q12 as i32, k_cold as i32, 8);
-            if t_r0 - self.t_ntc_cc as i32 > HOT_BOOT_BAND_CC {
-                t_ref = t_r0;
-                self.flags |= flag::HOT_BOOT;
-            }
-        }
-        self.first_seat = false;
         if self.cold_ok {
             self.cold_check(r_ref, cfg);
         }
-        let t_ref = t_ref.clamp(1 - COPPER_ZERO_CC, i16::MAX as i32);
+        let t_ref = t.clamp(1 - COPPER_ZERO_CC, i16::MAX as i32);
         self.k_ref_q88 = recip_div(((COPPER_ZERO_CC + t_ref) as u32) << 8, r_ref.max(1) as u32)
             .min(u16::MAX as u32) as u16;
         self.r_ref_q12 = r_ref;
@@ -631,6 +615,14 @@ mod tests {
             as i32
     }
 
+    /// A winding at the NTC: the boot prior already decayed.
+    fn cool() -> WindingTherm {
+        WindingTherm {
+            boot: false,
+            ..WindingTherm::new()
+        }
+    }
+
     fn hold(th: &mut WindingTherm, n: usize, s: &Sample) -> i16 {
         let mut t = 0;
         for _ in 0..n {
@@ -717,7 +709,7 @@ mod tests {
 
     #[test]
     fn a_seat_bases_on_the_ntc_and_reads_the_ratio_rise() {
-        let mut th = WindingTherm::new();
+        let mut th = cool();
         let r0 = r_at(4128, 2500);
         let s = seated(q_mul(r0, 280, 12), 280, 300);
         hold(&mut th, BASE_TICKS, &s);
@@ -968,42 +960,36 @@ mod tests {
         assert_eq!(th.flags() & flag::TRACK, 0);
     }
 
+    /// The boot prior at the bench model's 280-count limit, 25 C NTC: half
+    /// the steady excess, 280 x (4128 x 280 / 4096) x 1500 / 2^16 / 2 = 9 C.
     #[test]
-    fn hot_reboot_starts_the_carry_from_the_cold_r() {
+    fn boot_starts_the_carry_at_half_the_limit_s_steady_excess() {
         let mut th = WindingTherm::new();
-        // the winding at 45 C through the stored cold R, at a fresh boot
-        let r_hot = r_at(4128, 4500);
-        let t = hold(
-            &mut th,
-            BASE_TICKS,
-            &seated(q_mul(r_hot, 280, 12), 280, 300),
-        );
-        assert!((4400..4600).contains(&t), "{t}");
-        assert_eq!(th.flags() & flag::HOT_BOOT, flag::HOT_BOOT);
-        // a second seat is not a boot: +2% of contact there reads from
-        // the carry, not through the cold R
-        th.step(&seated(q_mul(r_hot, 280, 12), 280, 400), &CFG);
-        hold(
-            &mut th,
-            BASE_TICKS,
-            &seated(q_mul(r_hot + r_hot / 50, 280, 12), 280, 400),
-        );
-        assert!((th.t_cc() - t).abs() < 100, "{} from {t}", th.t_cc());
+        let t = th.step(&off(300), &CFG) as i32;
+        let v = (4128 * 280 / 4096) as f64;
+        let half_ss = 280.0 * v * 1500.0 / 65536.0 / 2.0;
+        assert!(((t - 2500) as f64 - half_ss).abs() <= 2.0, "{t}");
+        assert_eq!(th.flags() & flag::TRACK, 0);
+        // it decays on tau with no power: within a degree by five
+        let t5 = hold(&mut th, 5 * TAU_TICKS, &off(300));
+        assert!((t5 - 2500).abs() < 100, "{t5}");
     }
 
-    /// The hot-boot band sits over the per-seat contact scatter: a first
-    /// seat +5% over the cold R at the NTC temperature (13 C through
-    /// copper) is contact and the carry starts at the NTC; +8% (21 C) is a
-    /// hot boot (v_mean's vcount truncation reads it 0.7 C low).
+    /// The seat that defeated the retired hot-boot band: +9% of contact
+    /// over the cold R at the first seat after boot. The reference takes
+    /// the carried temperature, so the reading does not step.
     #[test]
-    fn hot_boot_passes_a_five_percent_first_seat_and_fires_at_eight() {
-        for (pct, fires, t_cc) in [(5, false, 2500), (8, true, 4505)] {
-            let mut th = WindingTherm::new();
-            let r = r_at(4128, 2500) * (100 + pct) / 100;
-            let t = hold(&mut th, BASE_TICKS, &seated(q_mul(r, 280, 12), 280, 300));
-            assert_eq!(th.flags() & flag::HOT_BOOT != 0, fires, "+{pct}%");
-            assert!((t as i32 - t_cc).abs() < 60, "+{pct}%: {t}");
-        }
+    fn a_nine_percent_first_seat_moves_the_reading_under_half_a_degree() {
+        let mut th = WindingTherm::new();
+        let r = r_at(4128, 2500) * 109 / 100;
+        let s = seated(q_mul(r, 280, 12), 280, 300);
+        let before = hold(&mut th, BASE_TICKS - 1, &s);
+        assert_eq!(th.flags() & flag::TRACK, 0);
+        let t = th.step(&s, &CFG);
+        assert_eq!(th.flags() & flag::TRACK, flag::TRACK);
+        assert!((t - before).abs() < 50, "{t} from {before}");
+        let t = hold(&mut th, 200, &s);
+        assert!((t - before).abs() < 50, "{t} from {before}");
     }
 
     #[test]
@@ -1066,7 +1052,7 @@ mod tests {
         // 0.27 W: 280 counts into 4.4652 ohm per Q12 unit through the
         // board's 3.634e-6 W per vcount-ccount
         let w_per_unit = 4.0283e-3 * 0.90216e-3;
-        let mut th = WindingTherm::new();
+        let mut th = cool();
         let mut t_fw = 0;
         for _ in 0..150 * 62 {
             let x = plant.step(0.27);

@@ -1046,7 +1046,9 @@ fn seat_change_rebases_the_ratio_without_a_temperature_step() {
     let (t_a, flags, _, t_ntc) = therm(&sh);
     assert_eq!(flags & crate::estimator::thermal::flag::TRACK, 2);
     assert_eq!(t_ntc, 2500);
-    assert!((2500..2600).contains(&t_a), "{t_a}");
+    // the base inherits the boot prior: half the steady excess at the
+    // rig's 1200-count limit, 19.8 C
+    assert!((4400..4500).contains(&t_a), "{t_a}");
     // 100 counts away, 396 counts at the same duty: R +1.0%
     let seat_b = frame(2100, BIAS + 396);
     ticks(&mut k, &sh, seat_b, BASE_FAST_TICKS);
@@ -1098,38 +1100,14 @@ fn a_contact_step_inside_a_hold_is_rejected_on_its_rise_rate() {
     assert!((t2 - t1).abs() < 50, "{t2} from {t1}");
 }
 
-/// A hot reboot: the first seat reads +10% through the stored cold R, so
-/// the carry starts 26 C over the NTC instead of cold; a derate band set
-/// under it (the bench proxy, 35/45 C) acts at once.
-#[test]
-fn hot_reboot_floor_starts_the_carry_from_the_cold_r() {
-    let sh = Shared::new();
-    seed(&sh);
-    // the hold reads 722 x 4096 / 400 = 7393; a cold R 10% under it
-    seed_thermometer(&sh, 6721);
-    write_config(&sh, |t| {
-        t.config.thermal.derate_start_cc = 3500;
-        t.config.thermal.cutoff_cc = 4500;
-        t.config.thermal.recover_cc = 4000;
-    });
-    let mut k = kernel();
-    let hold = frame(2000, BIAS + 400);
-    settle(&mut k, &sh, hold);
-    ticks(&mut k, &sh, hold, BASE_FAST_TICKS);
-    let (t, flags, i_lim, _) = therm(&sh);
-    assert_eq!(flags & crate::estimator::thermal::flag::HOT_BOOT, 8);
-    assert!((5000..5300).contains(&t), "{t}");
-    assert_eq!(i_lim, 0, "cutoff at 45 C");
-    assert_ne!(k.faults.mask() & faults::BIT_OVER_TEMP, 0);
-}
-
 /// Torque off: the carry decays the excess toward the NTC on tau, so a
-/// derate taken at a hot seat lifts at rest instead of latching.
+/// derate taken on the boot prior (the bench proxy band, 35 C) lifts at
+/// rest instead of latching.
 #[test]
 fn torque_off_carries_the_estimate_to_the_ntc_and_the_derate_lifts() {
     let sh = Shared::new();
     seed(&sh);
-    seed_thermometer(&sh, 6721);
+    seed_thermometer(&sh, RIG_R_COLD_Q12);
     write_config(&sh, |t| {
         t.config.thermal.derate_start_cc = 3500;
         t.config.thermal.cutoff_cc = 6500;
@@ -1140,7 +1118,7 @@ fn torque_off_carries_the_estimate_to_the_ntc_and_the_derate_lifts() {
     settle(&mut k, &sh, hold);
     ticks(&mut k, &sh, hold, BASE_FAST_TICKS);
     let (t_hot, _, i_lim, _) = therm(&sh);
-    assert!(t_hot > 4900 && i_lim < 1200, "{t_hot} {i_lim}");
+    assert!(t_hot > 4400 && i_lim < 1200, "{t_hot} {i_lim}");
     sh.table
         .with_mut(|t| t.control.lifecycle.torque_enable = false);
     // five tau: 40000 SLOW ticks

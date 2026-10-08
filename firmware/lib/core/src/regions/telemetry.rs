@@ -224,7 +224,7 @@ pub struct TelemetryHealth {
 /// Winding thermometer state beside `t_winding_cc`: the board NTC as the
 /// kernel converts it (centi-C, the carry's base) and the estimator's
 /// flags (`estimator::thermal::flag`: unset, tracking a seat, cold-R
-/// recalibrate, hot-boot floor).
+/// recalibrate; bits 3-7 reserved 0).
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct TelemetryTherm {
