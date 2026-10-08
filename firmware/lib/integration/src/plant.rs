@@ -239,13 +239,19 @@ const RL_ACCEL_Q8_X100: i32 = 758;
 
 /// MG90-scale R-L-back-EMF plant at the FAST tick for the current-limit
 /// pins: the winding current closes 1/4 of its gap to `(v - e) / R` each
-/// tick (tau_e ~ 3.5 ticks) and the shunt reads it at the crest. Coulomb
+/// tick (tau_e ~ 3.5 ticks) and the shunt reads it at the crest, to the
+/// nearest count: the lag runs in Q8, so a slow drift in R reaches the
+/// shunt instead of stalling up to 3 counts short of it. Coulomb
 /// friction as a current, no load. `locked` holds the rotor anywhere; the
 /// hard stops stop it dead while the current pushes into them.
 pub struct RlPlant {
     theta_q16: i64,
     omega_q8: i32,
+    i_q8: i32,
     i: i32,
+    /// Winding R, Q4.12; [`RL_R_Q12`] until a thermal or contact rig moves
+    /// it.
+    pub r_q12: i32,
     pub locked: bool,
     pub stop_lo: i32,
     pub stop_hi: i32,
@@ -256,7 +262,9 @@ impl RlPlant {
         Self {
             theta_q16: (pos as i64) << 16,
             omega_q8: 0,
+            i_q8: 0,
             i: 0,
+            r_q12: RL_R_Q12 as i32,
             locked: false,
             stop_lo: 0,
             stop_hi: 4095,
@@ -268,8 +276,9 @@ impl RlPlant {
     pub fn step(&mut self, duty: i16) -> SensorFrame {
         let v = (duty as i32 * RL_VBUS as i32) >> 15;
         let e = (self.omega_q8 >> 8) >> RL_KE_SHIFT;
-        let i_ss = (((v - e) as i64) << 12) / RL_R_Q12 as i64;
-        self.i += (i_ss as i32 - self.i) >> 2;
+        let i_ss_q8 = (((v - e) as i64) << 20) / self.r_q12.max(1) as i64;
+        self.i_q8 += (i_ss_q8 as i32 - self.i_q8) >> 2;
+        self.i = (self.i_q8 + (1 << 7)) >> 8;
 
         let pos = self.pos();
         let into_stop = (pos >= self.stop_hi && self.i > 0) || (pos <= self.stop_lo && self.i < 0);
