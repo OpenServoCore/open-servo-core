@@ -1,0 +1,9 @@
+[rv1] hold 1791437927.0..1791438407.4 (480.4 s), seat pos 217-390, duty -5159 (15.7%), i median 261, i_lim min 280, fault max 0, flags [np.int64(0), np.int64(2)]
+  first base r_hat 4089.0 vs r0 4078 (+0.27%), HOT flag bit3 seen: False
+  G1: can 25.40 -> 33.60 (dCan +8.20), NTC 28.13 -> 29.38 (dNTC +1.25), P_W 0.2595 W (mean p 71407), L 480 s -> R_ref 31.4 C/W; R_th fit 20.4 -> -35.1% : FAIL
+  G2 can fall after torque-off (meas/pred 129 s): +10s 0.05/0.61, +20s 0.35/1.18, +40s 1.45/2.19, +60s 2.40/3.05, +80s 3.30/3.79, +120s 4.60/4.97 : FAIL
+  G2 info: meter-aligned off at torque-off +13.2 s; falls from plateau 33.60: +10s 0.50/0.61, +20s 1.05/1.18, +40s 2.05/2.19, +60s 3.00/3.05
+  G3: 1 s bins 481, |dR| > 0.8%/s in 1 bins [(248, 1.35)]; raw copper rise 12.25 C (R 0.99706 -> 1.04354, +4.66%) - can rise 8.20 = +4.05 C : FAIL (contact hold)
+  G4: residual sd 0.091 centi-C/tick, 4 of 221 chunks rejected (1.8%) : PASS
+  end of hold: carried t_w 34.38, NTC 29.41, can 33.60
+  SUMMARY rv1: G1 FAIL G2 FAIL G3 FAIL G4 PASS

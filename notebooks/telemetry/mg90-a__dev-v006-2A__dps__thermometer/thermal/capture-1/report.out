@@ -1,0 +1,16 @@
+limits: current limit 280 counts (253 mA), travel guard 590..3501, a run aborts over 350 counts (316 mA)
+pot: linearized counts, lut LIVE (crc 0xb5c3, 171 nonzero calibration points at raw 656..3408)
+recording to /Users/aaron/projects/OpenServoCore/osc-dev-v006-bringup/captures/servo-pass/thermo-ntc/ident-thermal/ident-out/1791432546
+[centring] the jam check: out and back at mid travel from 10.6%, raised up to 28.0% while the shaft does not move
+  the shaft moves at 10.6%
+[thermal] seek the low stop at 12.6%, hold at 16.7% (the current limit governs) for 480 s: the winding's rise over the board NTC; pos guard off, stall permit held
+[centring] to mid travel at 12.6%
+
+[thermal] the winding's excess over the board NTC through one hold
+  fit           463 s of tracked hold (28912 ticks) in 2 stretch(es), 1 cut between them; 2 of 230 chunks rejected; residual sd 0.104 centi-C/tick
+  th_alpha_q24  fitted   5872 (tau 45.7 s)      table   2097 (tau 128.0 s)
+  th_g_q016     fitted    579 (R_th 24.3 C/W)  table   1500 (R_th 63.0 C/W)
+  verdict       inside the band
+not written: --save writes th_alpha_q24 and th_g_q016 and SAVEs
+rc 0
+1791433029

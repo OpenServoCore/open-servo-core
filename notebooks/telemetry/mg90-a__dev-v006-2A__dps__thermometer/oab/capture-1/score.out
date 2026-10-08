@@ -1,0 +1,18 @@
+meter rows dropped (out of 10..80): 0
+rest window 1791417811..1791417991: can median 27.20 (n 360, sd 0.046), t_ntc median 29.95 (sd 0.017), t_winding median 29.95; REST OFFSET can - ntc = -2.75 C; flags [np.int64(0)]
+hold0: base +3.07 s flags 0->2 t_w 30.38->30.38 r_hat 4107 t_ntc 29.95 can 27.30 T* 30.05 seat 264; hold end t_w 41.79 can 32.60
+hold1: base +3.06 s flags 0->2 t_w 32.09->32.09 r_hat 4109 t_ntc 30.11 can 28.20 T* 30.95 seat 264; hold end t_w 38.31 can 30.40
+hold2: base +3.07 s flags 0->2 t_w 36.81->36.81 r_hat 4181 t_ntc 30.28 can 30.50 T* 33.25 seat 264; hold end t_w 40.44 can 31.90
+hold3: 2 bases, 1 drops
+hold3: base +2.72 s flags 0->2 t_w 31.85->31.85 r_hat 3279 t_ntc 30.16 can 28.30 T* 31.05 seat 264; hold end t_w 82.15 can 30.00
+hold4: base +3.06 s flags 0->2 t_w 70.63->70.62 r_hat 4146 t_ntc 30.38 can 30.20 T* 32.95 seat 264; hold end t_w 76.21 can 31.60
+hold5: base +3.07 s flags 0->2 t_w 37.33->37.33 r_hat 4070 t_ntc 30.23 can 28.30 T* 31.05 seat 264; hold end t_w 44.33 can 30.35
+ gap  gap_s  R_old  R_new  ratio_pct  t_ref_old  carried  truth  can  T_star  carry_m_Tstar  truth_m_Tstar  carry_m_truth  seat_step
+   1    240   4107   4109       0.05      30.38    32.09  30.51 28.2   30.95           1.14          -0.44           1.58       0.00
+   2     30   4109   4181       1.75      32.09    36.81  36.76 30.5   33.25           3.56           3.51           0.05       0.00
+   3    240   4181   4156      -0.60      36.81    80.34  35.19 28.7   31.45          48.89           3.74          45.15      -0.01
+   4     30   4156   4146      -0.24      80.34    70.62  79.58 30.2   32.95          37.67          46.63          -8.96      -0.01
+   5    240   4146   4070      -1.83      70.62    37.33  65.03 28.3   31.05           6.28          33.98         -27.70       0.00
+H2 dead (carry within 1.5 C of T* at all 3 long gaps): False
+H1 confirmed (truth > 3 C from T* at a long gap, or truth < T* - 1 at a 30 s gap): True  [30 s gap vs raw can - 1: False]
+Falsifier (truth within 1.5 of T* at all long gaps AND carry off > 2 C one sign): False

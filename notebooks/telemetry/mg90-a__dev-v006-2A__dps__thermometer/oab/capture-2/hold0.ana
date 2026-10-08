@@ -1,0 +1,27 @@
+0.0 flags 0 t_w 2820 r_hat 0 i 271 duty -4049 vdiff -1725 i_mean -274 pos 264 t_ntc 2816 can 26.0
+   prev 2.714 flags 0 t_w 2847 r_hat 0 i 270 duty -4049 vdiff -1725 i_mean -271 pos 263
+2.72 flags 2 t_w 2847 r_hat 3209 i 269 duty -4049 vdiff -1725 i_mean -272 pos 264 t_ntc 2816 can 26.0
+   prev 11.155 flags 2 t_w 3035 r_hat 3232 i 263 duty -4049 vdiff -1727 i_mean -264 pos 263
+11.161 flags 0 t_w 2953 r_hat 3233 i 262 duty -4049 vdiff -1727 i_mean -265 pos 263 t_ntc 2816 can 26.2
+   prev 14.2 flags 0 t_w 2981 r_hat 3233 i 262 duty -4049 vdiff -1727 i_mean -265 pos 263
+14.206 flags 2 t_w 2981 r_hat 3304 i 263 duty -4049 vdiff -1727 i_mean -265 pos 263 t_ntc 2818 can 26.2
+   prev 24.253 flags 2 t_w 2669 r_hat 3265 i 265 duty -4049 vdiff -1727 i_mean -267 pos 263
+24.26 flags 2 t_w 2669 r_hat 3265 i 266 duty -5073 vdiff -1727 i_mean -266 pos 263 t_ntc 2821 can 26.6
+   prev 24.26 flags 2 t_w 2669 r_hat 3265 i 266 duty -5073 vdiff -1727 i_mean -266 pos 263
+24.267 flags 0 t_w 2669 r_hat 3265 i 266 duty -5073 vdiff -1727 i_mean -267 pos 263 t_ntc 2821 can 26.6
+   prev 27.323 flags 0 t_w 2714 r_hat 3265 i 264 duty -5073 vdiff -1727 i_mean -265 pos 263
+27.329 flags 2 t_w 2714 r_hat 4137 i 264 duty -5073 vdiff -1727 i_mean -264 pos 263 t_ntc 2825 can 26.7
++ 5 t_w 2830 flags 2 r_hat 3207 i 269 duty -4049 can 26.0
++ 10 t_w 2928 flags 2 r_hat 3219 i 266 duty -4049 can 26.1
++ 12 t_w 2962 flags 0 r_hat 3233 i 259 duty -4049 can 26.2
++ 15 t_w 2901 flags 2 r_hat 3294 i 265 duty -4049 can 26.25
++ 20 t_w 2653 flags 2 r_hat 3263 i 266 duty -4049 can 26.45
++ 24 t_w 2661 flags 2 r_hat 3264 i 265 duty -4049 can 26.6
++ 25 t_w 2679 flags 0 r_hat 3265 i 264 duty -5073 can 26.6
++ 28 t_w 2707 flags 2 r_hat 4136 i 263 duty -5073 can 26.7
++ 30 t_w 2745 flags 2 r_hat 4142 i 265 duty -5073 can 26.8
++ 40 t_w 2745 flags 2 r_hat 4142 i 263 duty -5073 can 27.25
++ 60 t_w 2903 flags 2 r_hat 4167 i 263 duty -5073 can 28.25
++ 90 t_w 2973 flags 2 r_hat 4178 i 263 duty -5073 can 29.45
++ 120 t_w 3112 flags 2 r_hat 4200 i 260 duty -5073 can 30.45
++ 149 t_w 3169 flags 2 r_hat 4209 i 259 duty -5073 can 31.1
