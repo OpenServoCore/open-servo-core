@@ -1,0 +1,64 @@
+{
+  "baseline_ms": 0,
+  "decay": "slow",
+  "dirs": [
+    1
+  ],
+  "drive": {
+    "current_limit_counts": 280,
+    "i_abort_counts": 350,
+    "r_q12": 4317,
+    "rule": "limit",
+    "seek_q15": 5242,
+    "stall_release_counts": 100,
+    "stall_response": "fault",
+    "stall_tau_trip_counts": 280,
+    "stall_time_ms": 500,
+    "stall_yield_counts": 200,
+    "window_floor_q15": 1734
+  },
+  "fw": 65,
+  "git_sha": "39538306ff306f1e03e76d78662da3793d2e28cd",
+  "guard": [
+    0,
+    4095
+  ],
+  "model": 257,
+  "plant": {
+    "data_flags": [],
+    "lut_band": [
+      656,
+      3408
+    ],
+    "lut_crc": "0xb5c3",
+    "lut_nonzero_points": 171,
+    "lut_state": "LIVE",
+    "plant_stamp": "0xf12a",
+    "stamp_computed": "0xf12a",
+    "stamp_verdict": "match"
+  },
+  "post_rung_brake": true,
+  "rest_ms": 100,
+  "rows_dropped": 0,
+  "rung_tries": 3,
+  "schedule": [
+    "12@300",
+    "coast:500"
+  ],
+  "seek_cap_pct": 16,
+  "seek_duty_pct": 16,
+  "sense": {
+    "gain_milli": 14884,
+    "shunt_r_mohm": 60,
+    "vdd_mv": 3300,
+    "vmotor_div_bot": 1600,
+    "vmotor_div_top": 6400
+  },
+  "settle_ms": 300,
+  "stall": false,
+  "static_load": true,
+  "tel_mask": 461,
+  "tick_hz": 20000,
+  "vbus_counts": 1772,
+  "window_ms": 300
+}

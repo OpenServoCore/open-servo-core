@@ -1,0 +1,172 @@
+Bare MG90 motor characterization, 100 cycles (2026-10-07). Bench driver: Opus bench-driver agent.
+Rig: rev 2A board #1, bare MG90 motor (no gearbox, no pot, no load) taped to a ceramic plate on J4.
+Supply: FNIRSI DPS-150 only (battery out). Meter: OWON B41T+ in ohms across the motor terminals, BLE-logged
+by scratchpad shunt/dmmlog.py -> dmm.csv (one logger, whole run; only standstill readings mean anything).
+Firmware: fw 65 per `osc status`; sha 2ee13213 per the brief (no sha register on the bus; not re-verified).
+Host tools: osc built from the main checkout (b5a0bc2c) into scratchpad mchar/tgt-osc; th from scratchpad film.
+Limits 280/280 throughout, never raised, no SAVE.
+
+PER-TICK CAPTURE ROUTE (decided before the first drive):
+"per-tick burst" = the TEL burst (20 kHz, every kernel tick) via `osc sweep --static-load`: goal+arm in one COMMIT,
+no seek (no pot), stall permit held by the sweep's lease. Mask 0x1cd (pos, trough, applied duty, current_raw,
+vmotor_a, vmotor_b). Chain per cycle: 5.0 V: 6@300 (stalled) -> then:D@300 (spin) -> coast:700 -> coast:700;
+7.4 V: D@300 -> coast:700 -> coast:700. Coast = torque on, OpenLoop duty 0, openloop_zero_brake off (both legs off),
+i.e. the bridge Hi-Z as torque-off is; chained coasts because a held permit refuses a stream > 750 ms. After the
+chain the sweep applies its token brake (82 q15) and torque off. Fallback if the sweep refuses or the capture is
+unusable on cycle 1: th drive at 20 ms polls (as the brief says).
+E8 (the 960-sample shunt burst) is tried once at setup on the bare motor (osc ident burst --static-load) as a
+tooling observation; it is not in the per-cycle loop (time budget).
+
+PRE-REGISTERED CRITERIA (written before any drive)
+P0 preamble: meter at rest reads 4.3-4.6 ohm; servo answers at 3M; DPS readback within 0.05 V of set.
+   "Nudge" replaced (no pot): cycle-1 pulse current >= 30 counts over the trough. FAIL = < 30 counts -> stop.
+Rail guards: pre-cycle vbus_raw >= 1000 at 5.0 V, >= 1676 at 7.4 V, else stop and report.
+Q1 rest resistance (rest value = median of the meter's last 10 s of the 60 s settle):
+   ONE-SIDED if (median - p10)/p10 <= 1.5% AND >= 15% of stops read > 3% above p10.
+   TWO-SIDED if (median - p10)/p10 > 1.5% and (p90 - median) within a factor 2 of (median - p10).
+   Neither -> reported as unclassified with the numbers. Split by rail reported too.
+   Decay: a "high stop" = first settled second > 1.03 x p10. DECAY if its last-10 s median has fallen by >= half
+   of its first-second excess over p10; HOLD otherwise. Verdict = majority of high stops; falsified (no verdict)
+   if fewer than 3 high stops.
+Q2 no-load current: mean of current_raw - trough over the last 100 ms of the spin pulse, per duty x rail, with sd
+   across cycles. FLAT above ~12% if 20/30/40% agree within 2 sigma; FALLING if 40% < 20% by > 2 sigma (then the
+   applied duty is reported: limiter if applied < commanded). Breakaway per rail = lowest duty with rotation
+   (coast back-EMF on the taps above noise / ripple present). Expected (Aaron, revision): none at 5% either rail.
+Q3 Ke = back-EMF / speed. Speed (a) host ripple tach (osc-ident ripple_speed, 6 events/rev) on the last 150 ms of
+   the spin pulse; (b) ripple on the tap difference over the first 50 ms of coast. Back-EMF = tap difference at
+   coast start. Consistent if (a) and (b) agree within 2 sigma; reported both ways. tau_m = exponential fit of the
+   coast back-EMF decay.
+Q4 L = R x tau, tau from the per-tick current rise in the first 0.5 ms (10 ticks) of the spin step from rest,
+   R = this cycle's rest reading (brief) and, as a second column, the previous cycle's (same seat). Spread across
+   stops reported; nothing under 2 sigma is a finding.
+Q5 R_rot = (V_on - Ke x omega) / I at steady spin vs the rest low edge (p10), with sigma; a difference under
+   2 sigma is not a finding.
+Q6 stalled V/I (5.0 V cycles, 6% for 300 ms, before the spin): V from the tap difference (4.028 mV/count, 6k4/1k6),
+   I = (current_raw - trough) / 1118 counts/A. Paired with prev_rest_ohm (previous cycle's settle, same seat).
+   TRACKS if the ratio median is 1.00 within 2% and no slope vs prev_rest_ohm beyond 2 sigma; else report the offset
+   / slope. NOTE before running: 6% = 72 timer ticks, above the 64-tick current floor but BELOW the 93-tick tap floor
+   (boards.py dev-v006-2A), so the tap V is expected to read low; V = applied duty x rail is reported alongside.
+
+LOG
+- setup: DPS 4.0 -> 5.0 V (readback 5.00 V), vbus_raw 1181, torque off, fault 0, limits 280/280.
+- setup check P0: meter at rest reads 4.80-4.84 ohm (83 readings) = OUTSIDE the brief's 4.3-4.6. Reported, not
+  diagnosed. Proceeding because the meter is plainly reading the motor (ohms function, stable); added gate: if the
+  first three cycles' rest readings all sit outside 4.2-5.0 ohm, stop.
+- E8 trial (before cycle 1): `osc ident burst --static-load --burst-duties 20 --burst-captures 1` at 5.0 V.
+  PASS = at least one capture lands and the fit reports tau/L; FAIL (refused / no fit) = tooling note only,
+  the per-cycle route is unaffected. Steps are ~0.5 ms each; the from-a-hold control holds 10% for ~200 ms.
+- E8 trial result: 2 captures landed (20% fwd/rev from rest, 5.0 V), fit declined as expected for 1 repeat
+  (capture-agreement / split-halves need more); envelope tau 129 us, R median 4.346 ohm robust sd 15.4%.
+  Tool works on the bare motor; not used per cycle. Files: e8-trial/, e8-trial.log.
+- cycle 1 (20% fwd, 5.0 V) runs alone first: P0 nudge = spin-segment current over trough >= 30 counts.
+- cycle 1 result: nudge 76.2 counts over trough (PASS >= 30). Sweep 2.25 s, 0 holes, 0 garble. Meter before 4.73,
+  after torque off 4.89 -> 4.81 at 60 s. Coast taps flat (|diff| < 1.5 counts) by ~60 ms, so cycles 2-100 use ONE
+  coast:500 segment instead of two of 700 (the "until flat" condition holds with ~8x margin).
+- OBSERVED (report, not diagnosed): the applied duty (TEL duty_q15) is slew-limited at 128 q15 per tick, so the
+  "step" is a ramp: 6% -> 20% takes 36 ticks (1.8 ms), 0 -> 20% 51 ticks; the drop to coast ramps down the same
+  way. Q4's "first 0.5 ms of the step" is therefore a ramp response; L is fitted against the recorded per-tick
+  applied duty (RL response to the measured ramp), not a pure step. The E8 burst (a true step) was the trial above.
+- OBSERVED: the tap difference during the stalled 6% pulse reads ~1065 counts (~4.29 V): the per-tick tap is the
+  ON-level of the driven terminal, not the period mean; V for V/I = applied duty x tap ON-level difference.
+- launching cycles 2-100 in the background (run.py 1 99).
+- rest gate after cycle 3: 4.81 / 4.68 / 4.855 ohm, inside 4.2-5.0: PASS, run continues.
+- OBSERVED: the drop to duty 0 at coast start is a single step (after ~7 ticks of COMMIT latency); only the
+  rise ramps. Coast back-EMF decays near-linearly to zero in ~50-120 ms (Coulomb-like), with a ~1 kHz commutation
+  ripple of +/-0.25 V on the tap difference; tau_m is reported from a viscous+Coulomb fit, the plain exponential
+  is reported alongside with its residual.
+- cycle 8 (5.0 V, 5% rev): osc sweep FAILED: the coast:500 segment came back with TEL seq holes + garble on all
+  3 attempts (h=21 g=146, h=16 g=160, h=27 g=334); the drive segments were clean. The sweep retried the whole chain
+  (3 x stalled + 5% pulse). No cycle row; settle still waited 60 s. Cycle 7 (5% fwd) was clean. Reported, not
+  diagnosed. Runner continues; a second failure in a row aborts it.
+- cycle 22 (5.0 V, 5% rev): the SAME failure as cycle 8 (coast:500 TEL holes + garble on all 3 attempts:
+  h=57 g=250, h=17 g=362, h=42 g=292). Same failure class twice on one step -> STOPPED after cycle 22's settle
+  (STOP file), no patch. Both 5% rev cycles failed 3/3; the one 5% fwd cycle (7) was clean; no other segment of
+  any cycle had a hole. 20 good cycles (5.0 V only); the 7.4 V block never ran.
+- end: osc status fw 65 fault 0 (status-end.txt), ntc_raw 1698 (start 1884), torque off, limits 280/280,
+  DPS OFF readback 0.0 V, meter logger stopped (3115 rows). Analysis: scratchpad mchar/analyze.py, summary.py.
+
+======== PART 2 (continuation after the rule-11 stop; manager decision) ========
+Scripts: scratchpad mchar/run2.py (same runner as run.py, explicit part-2 schedule, cycles 23-100), meter log
+dmm2.csv (new logger; dmm.csv is part 1's and stays untouched). Same osc build, same sweep route, same 60 s settle.
+Schedule: cycles 23-50 at 5.0 V (fill to 8 per duty: 20/40/30/12 +2f+2r each, 8% +3f+2r, 5% +3f+4r; directions
+alternate every cycle), then cycles 51-100 at 7.4 V (6 duties x 4f+4r, plus 12% fwd and 30% rev; directions
+alternate; DPS switches once, at cycle 51). 5% cycles at both rails: NO coast segment (5.0 V: 6@300,then:5@300;
+7.4 V: 5@300). 7.4 V: no stalled pulse. Rail guard 1000 (5.0 V) / 1676 (7.4 V).
+
+PRE-REGISTERED (written before the first part-2 drive):
+P0': meter rest reading before the first drive: RECORDED, not gated (manager: the cloud moved to 4.6-5.2).
+   Servo answers at 3M and DPS readback within 0.05 V of set: gate (fail = stop before any drive).
+   Nudge: cycle 23 (5.0 V 20% fwd) and cycle 51 (7.4 V 20% fwd) spin current >= 30 counts over trough; FAIL -> stop.
+Stop rule: TEL holes on a coast segment twice on the same rung (rail x duty) -> stop after that cycle's settle and
+   hand back; any two sweep failures in a row -> stop.
+Q2 7.4 V: same no-load criterion as part 1. Turn / no-turn per cycle from the coast taps: TURN if E_coast0
+   (tap difference 1-2 ms into the coast) > 0.05 V; NO-TURN otherwise. Expected (revision): 8% marginal at 7.4 V,
+   12%+ turn; 5% not observed (no coast). 5.0 V vs 7.4 V comparison at equal duty: current table side by side
+   with per-rung n and sd; a difference under 2 sigma (pooled sd / sqrt n) is not a finding.
+Q1 / Q3-Q6: criteria unchanged from part 1, applied to the combined parts 1+2 set (Q6: 5.0 V cycles only).
+LOG (part 2)
+- setup: meter logger started (dmm2.csv); meter at rest, DPS off then on: 4.70 ohm (B41T+, steady). DPS 0 -> 5.0 V,
+  readback 5.00 V (PASS). osc status at 3M: fw 65, fault 0, crc_fail 0; th status vbus_raw 1181, torque 0,
+  limits 280/280, ntc_raw 1735 (part-1 end 1698). Firmware sha: no sha register on the bus; fw 65 as part 1.
+  Setup gate PASS. Launching run2.py 23 100 in the background (run2.out).
+- cycle 23 (5.0 V, 6% stalled then 20% fwd): sweep clean (0 holes, 0 garble) but P0' nudge FAIL: spin current
+  0.78 counts over trough (need >= 30; part-1 cycle 1 read 76). Stalled 6% segment also ~1 count over trough
+  (part 1: ~70-78). Taps show the drive on-level (seg 1 A 1752 / B 610, seg 2 A 1794 / B 615); coast tap difference
+  ~0 (A 771 / B 773: no back-EMF). Meter (B41T+, ohms) read 4.66-4.68 straight through the drive window, where every
+  part-1 drive disturbed it (0.0 / 17294 / 1.15 readings). Runner stopped after the settle, as pre-registered.
+  Reported, not diagnosed: could be an open between the bridge and the motor at J4 (meter still sees the motor) or
+  the bridge not sourcing current despite the taps.
+- end (part 2): torque off, fault 0, limits 280/280, vbus_raw 1181 at the last read, osc status fw 65 (over_period
+  701, lost 354 vs 14 / 42 at setup), ntc_raw 1762, DPS OFF readback 0.0 V, meter logger stopped (dmm2.csv).
+
+======== PART 2b (2026-10-07 pm, after the J4 open was fixed; resume from cycle 24) ========
+Scripts: captures/servo-pass/motor-bare/char/tools-2b/run2b.py = tools/bench-scratch/motor-bare/char/run2.py (same
+schedule, cycles 24-100, same steps, settle, rail guards, stop rules) plus a J4 current guard on every cycle and the
+nudge gate moved to cycles 24/51. Meter log dmm3.csv (new logger). Runlog rows tagged "part": "2b".
+osc: built from the main checkout (b5a0bc2c per the session's git status, untouched) into /tmp/osc-2b/tgt (fresh dir,
+not the old session scratchpad). DEVIATION, reported: the README-named binary tools/osc/target/release/osc is dated
+2026-10-03 21:05 and predates newer sources (tools/osc/src/sweep.rs, client/src/wire.rs, osc-protocol wire.rs,
+core tel.rs/stamp.rs), so it is not the build part 1 used (b5a0bc2c); the fresh build reproduces part 1's source.
+th: tools/bench-scratch/th (built 11:26 today). Cycle 23 (part 2, J4 open: 0.78 counts) is EXCLUDED from analysis;
+the 5.0 V 20% fwd rung therefore ends one short of 8.
+
+PRE-REGISTERED (written before the first part-2b drive):
+P0'': meter rest reading before the first drive: RECORDED, not gated. Gate (fail = stop before any drive): servo
+   answers at 3M with fault 0, torque 0, limits 280/280; DPS readback within 0.05 V of 5.00 V.
+Nudge: cycle 24 (5.0 V 40% rev) and cycle 51 (7.4 V 20% fwd): spin-segment current (second half, counts over trough)
+   >= 30. FAIL -> stop and hand back with the tap and current numbers (open circuit at J4 again).
+J4 guard (added): every cycle's spin current (same measure) >= 30 counts (part 1 minimum 64.7, a 5% pulse). FAIL ->
+   stop after that cycle's settle.
+Stop rules unchanged: coast-segment TEL holes twice on one rung -> stop; two sweep failures in a row -> stop.
+   5% rung: stalled + 5% rows kept, no coast segment (both rails).
+MOTION FLAG (Aaron's rule): e(t) = sign-corrected tap difference per tick from the first duty-0 tick of the coast
+   segment. TURN if E_coast0 (mean of ticks 20-40 = 1-2 ms) > 0.05 V AND the 20-tick moving mean falls below
+   0.02 V before the segment ends (back-EMF decays to zero); NO-TURN if |E_coast0| <= 0.05 V; anything else
+   UNCLASSIFIED, reported with its numbers. Coast noise = sd of the last 100 ms, reported. Speed from the ripple tach
+   only where it returns a value. Part-1 cycles re-derived by the same rule (cycle 7 = the one 5% with a coast).
+   Expected: 5.0 V 8% NO-TURN, 12%+ TURN; 7.4 V 8% marginal, 12%+ TURN; 5% not observed (no coast).
+Q1-Q6: part-1 criteria, applied to the combined parts 1 + 2b set (cycles 1-22 + 24-100); Q6 5.0 V only.
+   5.0 vs 7.4 V at equal duty: a difference under 2 sigma (pooled sd / sqrt n) is not a finding.
+LOG (part 2b)
+- setup: meter logger started (dmm3.csv, B41T+ ohms): rest 4.78 ohm with the DPS off (30 readings, 4.78-4.81).
+  DPS 0 -> 5.0 V, readback 5.00 V (PASS). osc status at 3M: fw 65, fault 0, crc_fail 0, stamp 0xf12a, over_period
+  19, lost 48; th status vbus_raw 1180, trough 1180, torque 0, limits 280/280; ntc_raw 1880. Firmware sha: no sha
+  register on the bus; fw 65 as parts 1/2 (main image, not reflashed). Setup gate PASS.
+  Launching tools-2b/run2b.py 24 100 in the background (run2b.out).
+- cycle 24 (5.0 V, 6% stalled then 40% rev): nudge PASS, spin 90.7 counts over trough (stalled 73.7); sweep clean (0 holes); CSV columns as part 1.
+- cycle 28 (5.0 V 8% rev): osc sweep FAILED, no retry by the tool: 'tel burst timed out mid-stream (9904 of 10000 samples)' = the coast:500 segment (10000 samples); classed 'other' by the runner (no h= text). Status before/after: fault 0, torque 0, limits 280/280. No cycle row. Reported, not diagnosed. Runner continues (one failure; two in a row aborts).
+- cycles 24-50 done (one failure, c028). ntc_raw at cycle 50: 1816. DPS 5.0 -> 7.4 V at cycle 51, readback 7.40 V; vbus_raw 1773 pre-cycle (guard 1676). Cycle 51 (7.4 V 20% fwd) nudge PASS: 97.6 counts over trough, sweep clean.
+- cycle 69 (7.4 V 40% fwd): osc sweep FAILED 3/3 with TEL seq holes + garble: attempt 1 coast seg h=104 g=528, attempt 2 the DRIVE seg (+40%) h=93 g=354, attempt 3 coast h=6 g=188. First time a drive segment shows holes. The tool's retries re-drove the rung (3 x 0.3 s at 40%). Status after: fault 0, torque 0, limits 280/280. No cycle row. Reported, not diagnosed (could be the 7.4 V 40% switching load disturbing the TEL stream, or the same class as part 1's 5% rev coast holes). Rung 7.4 V/40% count 1; continues per the stop rule.
+- run end: cycles 24-100 attempted, 75 good, 2 sweep failures (c028 timeout, c069 holes), no stop rule tripped,
+  J4 guard never tripped (min spin 62.8 counts). End status: fault 0, torque 0, limits 280/280, vbus_raw 1773,
+  fw 65 (over_period 42061, lost 17776 vs 19 / 48 at setup), ntc_raw 1763. DPS OFF, readback 0.0 V. Meter logger
+  stopped (dmm3.csv, 9571 rows). Analysis: tools-2b/analyze2b.py -> cycles2b.csv (analyze2b.out), tools-2b/summary2b.py
+  -> summary2b.out.
+- OBSERVED (reported, not diagnosed): applied duty fell below commanded in four late 7.4 V cycles only: c092 30% rev
+  (min 26.3%), c093 30% fwd (mean 24.2, min 14.9), c098 40% rev (mean 27.9, min 16.5), c099 40% fwd (held at 5.78%
+  the whole 300 ms, 113 counts, coast taps flat = NO-TURN). Spin currents 100-115 counts, under the 280 limit.
+  Could be a burst/thermal allowance depleting late in the run or the limiter reading a different current estimate.
+- OBSERVED: 7.4 V 40% fwd cycles c073 / c087: spin ripple tach 150 rev/s vs coast tach 289 and rev cycles 306
+  (Ke_a 2x); excluded from Ke_a and R_rot as tach outliers.
+- OBSERVED: the 7.4 V L fit (no stalled pre-pulse, ramp from rest) sits on its 15 us lower bound in 34/41 cycles
+  (rms 14.7 mA): no L at 7.4 V from this route.
