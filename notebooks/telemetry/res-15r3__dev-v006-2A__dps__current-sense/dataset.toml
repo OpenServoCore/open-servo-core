@@ -1,0 +1,32 @@
+servo = "res-15r3"
+supply = "dps"
+rule = "limit"
+captured = "2026-10-08"
+# No meta.json and no `sense` block in these captures (bench r4s tool), so the
+# board is named here; see the motor dataset's note. Raw codes and percent only.
+board = "dev-v006-2A"
+notes = """Rev 2A board #1 on its final amplifier network (Rg 430, Ci1 47 pF, Cc out, 1.5k pull-ups from 3V3 to both op-amp inputs) with three aluminium-housed wirewound power resistors of about 5 ohm in series on J4 in place of the motor (about 15.3 ohm, no capacitor across it), fed by a FNIRSI DPS-150 on the battery wires, fw 65. The load was chosen so the amplifier's step stays near the motor's (about 0.55 A at 8.4 V, 0.29 A at 4.5 V). A wirewound resistor has a few uH, so its current lags its voltage by L/R, a fraction of a microsecond: a real early current deficit that reads as a negative error, opposite in sign to the motor's.
+
+ladder/ holds one `r4s point` ladder per run: at 4.5 V then 8.4 V, OpenLoop at D = 3.5, 4, 4.5, 5, 5.5, 6, 7, 8, 10, 15, 25% (w = 42 to 300 drive ticks), 10 chans-0 bursts per point with the burst duty equal to the hold duty (steady state throughout), POSITIVE DUTY ONLY (no reverse rung). Current limit 900 / stall trip 2400 / guard 1000 in RAM, restored to 280 after every point; the applied duty equalled the goal in every row after the first. Point folders are <rail>_<D>/ident/<stamp>/burst-N.csv.gz (layout as the motor dataset's floor/); tel_<rail>_<D>.csv.gz is the TEL poll of the same point (phases pre, settle, pre_arm, burst_c0, post), whose `current`, `bias`, `i_hat` and `vbus_raw` are the firmware's own crest sample, tracked zero, gained current and rail. tel_check.csv.gz is the tool's current-response check before the ladder (expected crest about V / 15.3 ohm), not scored.
+
+The four runs: capture-1 = rep0 (the first run, bare15 in the bench log), capture-2 = rep1, capture-3 = rep2 straight after, then the DPS off for 70 s and a fresh zero settle, capture-4 = rep3. The DPS also cycled between the rails inside each run. The board NTC raw at the start and end of each rail stayed within 1910 to 1928 in rep1-rep3 (rep0 did not read it).
+
+Misfolded bursts (the burst-stamp race, fixed in PR #320) are dropped by the phase check and counted, as in the motor dataset.
+
+Source: osc-dev-v006-bringup captures/servo-pass/ci-search/res/{bare15, rep1, rep2, rep3}. Left out: rep1-void (a run the tool aborted on its own start-transient check), the zero-settle polls, run logs and scorers. The csvs are gzipped; nothing else differs from what the tool wrote."""
+
+[[ladder.session]]
+capture = "capture-1"
+name = "rep0"
+
+[[ladder.session]]
+capture = "capture-2"
+name = "rep1"
+
+[[ladder.session]]
+capture = "capture-3"
+name = "rep2"
+
+[[ladder.session]]
+capture = "capture-4"
+name = "rep3"
