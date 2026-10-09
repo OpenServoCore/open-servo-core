@@ -17,8 +17,9 @@ static TICK_LOAD: SyncUnsafeCell<TickLoad> = SyncUnsafeCell::new(TickLoad::new()
 /// once during bringup, after the drivers and statics are installed.
 ///
 /// The transport vectors (TIM2 for the break wake, USART1 for TC, SysTick
-/// for the framer deadlines) share PFIC HIGH so all `&mut` access into the
-/// `ServoBus` composite serializes -- dispatch runs inline on these vectors.
+/// for the framer deadlines, SW for the TEL stager) share PFIC HIGH so all
+/// `&mut` access into the `ServoBus` composite serializes -- dispatch runs
+/// inline on these vectors.
 /// LOW holds only the motor kernel (DMA1_CH1 = 22), which HIGH preempts and
 /// which runs in the wire gaps between frames. DMA1_CH5 (RX ring) runs
 /// silent circular -- no HT/TC IRQ -- and CH3/CH4/CH6/CH7 raise none either.
@@ -26,10 +27,12 @@ pub fn install_irqs() {
     pfic::set_priority(pfic::Interrupt::TIM2, pfic::Priority::High);
     pfic::set_priority(pfic::Interrupt::USART1, pfic::Priority::High);
     pfic::set_systick_priority(pfic::Priority::High);
+    pfic::set_software_priority(pfic::Priority::High);
     pfic::set_priority(pfic::Interrupt::DMA1_CHANNEL1, pfic::Priority::Low);
     pfic::enable(pfic::Interrupt::TIM2);
     pfic::enable(pfic::Interrupt::USART1);
     pfic::enable_systick();
+    pfic::enable_software();
     pfic::enable(pfic::Interrupt::DMA1_CHANNEL1);
     crate::log::info!("ISRs live");
 }
@@ -132,12 +135,21 @@ pub fn on_adc_dma_tc() {
     // the 800 us its successor takes to fill, so a batch must stage within
     // a tick of banking or of the wire freeing; the main loop, starved by a
     // driving tick, staged up to 300 us late and the kernel dropped rows.
-    // After the load stamp: staging is transport work, not the kernel's.
-    // ISRs masked: `bus()` is HIGH-owned.
+    // Last on purpose: staging is transport work, run by the SW vector at
+    // the bus level, never inside the kernel's body.
     if TEL_CHANNEL.active() {
-        // SAFETY: bus installed in bringup; ISRs masked by the CS.
-        critical_section::with(|_| unsafe { Drivers::bus() }.poll_tel());
+        pfic::pend_software();
     }
+}
+
+/// SW vector -- the TEL stager, pended by the kernel tick's last statement.
+///
+/// SAFETY: the bus driver is installed before this vector unmasks, and SW
+/// shares PFIC HIGH with TIM2, USART1 and SysTick, so no concurrent `&mut`
+/// into the composite is possible.
+pub fn on_tel_stage() {
+    // SAFETY: see fn doc.
+    unsafe { Drivers::bus() }.poll_tel();
 }
 
 /// TIM2 vector -- the break wake (`providers::break_wake`): an overflow
@@ -238,6 +250,11 @@ macro_rules! install_isrs {
         #[::qingke_rt::interrupt(core)]
         fn SysTick() {
             $crate::runtime::isr::on_deadline_irq();
+        }
+
+        #[::qingke_rt::interrupt(core)]
+        fn Software() {
+            $crate::runtime::isr::on_tel_stage();
         }
     };
 }

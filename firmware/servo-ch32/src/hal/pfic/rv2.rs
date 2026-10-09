@@ -5,6 +5,8 @@ pub use ch32_metapac::Interrupt;
 
 /// QingKe V2 core IRQ for SysTick (not in metapac `Interrupt`).
 const SYSTICK_IRQ: u32 = 12;
+/// QingKe V2 core software interrupt (not in metapac `Interrupt`).
+const SOFTWARE_IRQ: u32 = 14;
 
 /// QingKe V2A IPRIORn bit 7 selects preemption class; subpriority bits unused.
 #[derive(Copy, Clone)]
@@ -57,6 +59,16 @@ pub fn pend_systick() {
 }
 
 #[inline]
+pub fn enable_software() {
+    PFIC.ienr1().write(|w| w.0 = 1 << SOFTWARE_IRQ);
+}
+
+#[inline]
+pub fn pend_software() {
+    PFIC.ipsr1().write(|w| w.0 = 1 << SOFTWARE_IRQ);
+}
+
+#[inline]
 pub fn set_priority(irq: Interrupt, prio: Priority) {
     PFIC.iprior(irq as usize).write_value(prio.as_u8());
 }
@@ -64,6 +76,11 @@ pub fn set_priority(irq: Interrupt, prio: Priority) {
 #[inline]
 pub fn set_systick_priority(prio: Priority) {
     PFIC.iprior(SYSTICK_IRQ as usize).write_value(prio.as_u8());
+}
+
+#[inline]
+pub fn set_software_priority(prio: Priority) {
+    PFIC.iprior(SOFTWARE_IRQ as usize).write_value(prio.as_u8());
 }
 
 pub fn software_reset() -> ! {
