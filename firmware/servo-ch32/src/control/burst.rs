@@ -51,16 +51,13 @@ const BURST_SPACING_TICKS: u16 = (chip::MOTOR_PWM_FREQ_HZ / 10) as u16;
 /// is never refused by the spacing rule.
 const ARMED_AT_BOOT: u32 = 0u32.wrapping_sub(BURST_SPACING_TICKS as u32);
 
-/// `delay_cycles` iterations per microsecond. It spins on `spin_loop`, which
-/// costs at least one HCLK cycle per iteration and on this core rather more,
-/// so sizing a drain in HCLK cycles is a floor on the wait, never a ceiling.
-const DRAIN_ITERS_PER_US: u32 = HCLK_HZ / 1_000_000;
+const CYCLES_PER_US: u32 = HCLK_HZ / 1_000_000;
 /// One 7-slot scan retires: 182 ADCCLK at 24 MHz = 7.58 us.
-const ADC_SCAN_DRAIN: u32 = 8 * DRAIN_ITERS_PER_US;
+const ADC_SCAN_DRAIN: u32 = 8 * CYCLES_PER_US;
 /// Per frame slot, two conversions retire: clearing CONT lets the frame in
 /// flight finish, and that CTLR2 write can start one more frame of its own
 /// accord. 26 ADCCLK at 24 MHz = 1.08 us each.
-const ADC_SLOT_DRAIN: u32 = 3 * DRAIN_ITERS_PER_US;
+const ADC_SLOT_DRAIN: u32 = 3 * CYCLES_PER_US;
 
 /// Free-running frame capture. Not circular: the run stops itself at
 /// TC and the buffer stays frozen for readback. HT is the step trigger.
@@ -281,7 +278,7 @@ pub fn on_dma_event(shared: &Shared) {
     }
 }
 
-/// Suspend the scan and open the capture. The drains below outlast the TC's
+/// Suspend the scan and open the capture. This body can outlast the TC's
 /// ~17 us of slack, which costs nothing: the tap is shut and both triggers
 /// parked in the first write, so no TRGO starts anything after it, and no
 /// injected tap conversion resets a frame slot mid-capture and slips the
