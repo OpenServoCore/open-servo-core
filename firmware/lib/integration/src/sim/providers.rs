@@ -155,6 +155,9 @@ pub struct Handles {
     pub ring: Rc<RingState>,
     pub deadline: Rc<DeadlineState>,
     pub baud: Rc<BaudState>,
+    /// Ticks the clock reads stale by until the next ring read: a
+    /// preemption between the two.
+    pub clock_lag: Rc<Cell<u64>>,
 }
 
 impl Handles {
@@ -163,31 +166,37 @@ impl Handles {
             ring: RingState::new(),
             deadline: DeadlineState::new(),
             baud: BaudState::new(rate),
+            clock_lag: Rc::new(Cell::new(0)),
         }
     }
 }
 
 // --- providers --------------------------------------------------------------
 
-pub struct SimRing(Rc<RingState>);
+pub struct SimRing {
+    state: Rc<RingState>,
+    clock_lag: Rc<Cell<u64>>,
+}
 
 impl SimRing {
-    pub fn new(state: Rc<RingState>) -> Self {
-        Self(state)
+    pub fn new(state: Rc<RingState>, clock_lag: Rc<Cell<u64>>) -> Self {
+        Self { state, clock_lag }
     }
 }
 
 impl RxRing for SimRing {
     fn bytes(&self) -> &[u8] {
+        self.clock_lag.set(0);
         // SAFETY: test-only aliasing (mirrors mocks::bus::FakeRing); the buffer
         // is never mutated while a returned slice is live -- the Sim pushes only
         // between driver calls.
-        let arr: &[u8; RING_LEN] = unsafe { &(*self.0.buf.get()).0 };
+        let arr: &[u8; RING_LEN] = unsafe { &(*self.state.buf.get()).0 };
         &arr[..]
     }
 
     fn cursor(&self) -> u16 {
-        self.0.cursor.get()
+        self.clock_lag.set(0);
+        self.state.cursor.get()
     }
 }
 
@@ -195,11 +204,22 @@ pub struct SimDeadline {
     core: Rc<RefCell<Core>>,
     state: Rc<DeadlineState>,
     idx: usize,
+    clock_lag: Rc<Cell<u64>>,
 }
 
 impl SimDeadline {
-    pub fn new(core: Rc<RefCell<Core>>, state: Rc<DeadlineState>, idx: usize) -> Self {
-        Self { core, state, idx }
+    pub fn new(
+        core: Rc<RefCell<Core>>,
+        state: Rc<DeadlineState>,
+        idx: usize,
+        clock_lag: Rc<Cell<u64>>,
+    ) -> Self {
+        Self {
+            core,
+            state,
+            idx,
+            clock_lag,
+        }
     }
 }
 
@@ -216,7 +236,8 @@ impl Deadline for SimDeadline {
     const CLOCK_TRIM_STEP_PPM: u32 = 2500;
 
     fn now(&self) -> u32 {
-        self.state.local_u64(self.core.borrow().now()) as u32
+        (self.state.local_u64(self.core.borrow().now()) as u32)
+            .wrapping_sub(self.clock_lag.get() as u32)
     }
 
     fn set(&mut self, at: u32) {

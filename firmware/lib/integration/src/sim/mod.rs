@@ -30,12 +30,15 @@ use osc_servo_core::{BaudRate, BootMode, ControlTable};
 use osc_servo_drivers::bus::LinkDiag;
 
 use self::core::{Core, Event, TICKS_PER_US, Talker, bit_ticks, break_ticks, byte_ticks};
-use self::cpu::{Cpu, Vector};
+use self::cpu::{Cpu, KERNEL_PERIOD, Vector};
 use self::providers::Handles;
 use self::resample::{CrossRx, RxOut};
 use self::servo::SimServo;
 
-pub use self::cpu::{Entries, HandlerCost};
+pub use self::cpu::{
+    Entries, HandlerCost, KERNEL_HOLD, KERNEL_QUIET, KernelLane, KernelLevel, KernelStats,
+    READ32_3M_COST,
+};
 pub use self::host::HostEvent;
 pub use self::servo::{DEV_V006_SENSE, DEV_V006_SENSE_EXT};
 pub use self::store::{Kind as ImageKind, RamStore, Tear};
@@ -48,8 +51,7 @@ pub use osc_servo_core::tel::TelSample;
 pub use osc_servo_core::{CalibSense, CalibSenseExt};
 
 /// TEL fast-tick period: the kernel's 20 kHz control tick.
-const TEL_TICK_US: u64 = 50;
-const TEL_TICK: u64 = TEL_TICK_US * TICKS_PER_US;
+const TEL_TICK: u64 = KERNEL_PERIOD;
 
 /// When a break's wake reaches a servo, relative to its ringed 0x00.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
@@ -353,6 +355,27 @@ impl Sim {
     /// (the default) is the ideal-CPU model.
     pub fn set_handler_cost(&mut self, i: usize, cost: HandlerCost) {
         self.cpus[i].cost = cost;
+    }
+
+    /// Run servo `i`'s kernel lane from the next scan until `until_us`.
+    pub fn set_kernel_lane(&mut self, i: usize, lane: KernelLane, until_us: u64) {
+        let now = self.core.borrow().now();
+        self.cpus[i].start_kernel(lane, until_us * TICKS_PER_US);
+        self.core.borrow_mut().schedule(
+            Event::KernelScan { servo: i },
+            (now / KERNEL_PERIOD + 1) * KERNEL_PERIOD,
+        );
+    }
+
+    pub fn kernel_stats(&self, i: usize) -> KernelStats {
+        self.cpus[i].kernel_stats()
+    }
+
+    /// Servo `i`'s next handler body enters on time and is preempted for
+    /// `us` before its first ring read: clock reads ahead of that read come
+    /// back stale by the preemption.
+    pub fn preempt_before_ring_read(&mut self, i: usize, us: u64) {
+        self.cpus[i].preempt = Some(us * TICKS_PER_US);
     }
 
     /// `on_break` invocations delivered to servo `i` -- wire break events
@@ -719,6 +742,13 @@ impl Sim {
             Event::TxArmDone { servo } => self.deliver(servo, Vector::TxDone),
             Event::TelTick { servo, epoch } => self.tel_tick(servo, epoch),
             Event::CpuFree { servo } => self.cpu_free(servo),
+            Event::KernelScan { servo } => self.kernel_scan(servo),
+            Event::KernelRetry { servo } => {
+                let now = self.core.borrow().now();
+                if self.cpus[servo].take_kernel_retry(now) {
+                    self.kernel_enter(servo);
+                }
+            }
             Event::WakeRefire { servo } => self.deliver(servo, Vector::Break),
             Event::BreakByte { servo } => self.handles[servo].ring.push(0x00),
             Event::PulseWake => self.deliver_pulse_wake(),
@@ -918,6 +948,16 @@ impl Sim {
 
     fn run_vector(&mut self, j: usize, v: Vector) {
         let now = self.core.borrow().now();
+        if let Some(ticks) = self.cpus[j].preempt.take() {
+            self.cpus[j].defer(now, v, ticks);
+            self.schedule_free(j);
+            return;
+        }
+        self.run_body(j, v);
+    }
+
+    fn run_body(&mut self, j: usize, v: Vector) {
+        let now = self.core.borrow().now();
         self.cpus[j].charge(now, v);
         let before = self.servos[j].dispatched();
         match v {
@@ -926,6 +966,26 @@ impl Sim {
             Vector::TxDone => self.servos[j].on_tx_complete(),
         }
         self.cpus[j].charge_frames(self.servos[j].dispatched() - before);
+        self.handles[j].clock_lag.set(0);
+    }
+
+    fn kernel_scan(&mut self, j: usize) {
+        let now = self.core.borrow().now();
+        if let Some(next) = self.cpus[j].kernel_scan(now) {
+            self.core
+                .borrow_mut()
+                .schedule(Event::KernelScan { servo: j }, next);
+        }
+        self.kernel_enter(j);
+    }
+
+    fn kernel_enter(&mut self, j: usize) {
+        let now = self.core.borrow().now();
+        if let Some(at) = self.cpus[j].enter_kernel(now) {
+            self.core
+                .borrow_mut()
+                .schedule(Event::KernelRetry { servo: j }, at);
+        }
     }
 
     fn schedule_free(&mut self, j: usize) {
@@ -943,6 +1003,8 @@ impl Sim {
     /// every handler reads the clock at its true entry tick.
     fn cpu_free(&mut self, j: usize) {
         self.cpus[j].free_scheduled = false;
+        // A kernel above the bus takes the CPU ahead of any bus pend.
+        self.kernel_enter(j);
         let now = self.core.borrow().now();
         if self.cpus[j].busy(now) {
             // A same-tick wire event beat this wake and re-occupied the CPU.
@@ -951,11 +1013,14 @@ impl Sim {
             }
             return;
         }
-        if let Some(v) = self.cpus[j].take_pend() {
+        if let Some((v, entry)) = self.cpus[j].deferred.take() {
+            self.handles[j].clock_lag.set(now - entry);
+            self.run_body(j, v);
+        } else if let Some(v) = self.cpus[j].take_pend() {
             self.run_vector(j, v);
-            if self.cpus[j].any_pend() {
-                self.schedule_free(j);
-            }
+        }
+        if self.cpus[j].any_pend() {
+            self.schedule_free(j);
         }
     }
 

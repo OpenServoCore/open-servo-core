@@ -200,8 +200,13 @@ impl SimServo {
         let rate = BaudRate::from_idx(rate_idx).expect("seeded baud idx");
 
         let mut bus = ServoBus::new(
-            SimRing::new(seed.handles.ring.clone()),
-            SimDeadline::new(seed.core.clone(), seed.handles.deadline.clone(), seed.idx),
+            SimRing::new(seed.handles.ring.clone(), seed.handles.clock_lag.clone()),
+            SimDeadline::new(
+                seed.core.clone(),
+                seed.handles.deadline.clone(),
+                seed.idx,
+                seed.handles.clock_lag.clone(),
+            ),
             SimCrc::new(),
             SimWire::new(seed.core.clone(), seed.handles.baud.clone(), seed.idx),
             SimBaud::new(seed.handles.baud.clone()),
