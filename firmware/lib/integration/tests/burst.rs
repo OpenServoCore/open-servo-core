@@ -198,7 +198,6 @@ fn one_read_returns_the_page_and_the_header(baud_idx: u8) {
     assert_eq!(u16::from_le_bytes([tail[2], tail[3]]), 481);
     assert_eq!(u16::from_le_bytes([tail[4], tail[5]]), 640);
     assert_eq!(u16::from_le_bytes([tail[6], tail[7]]), 1200);
-    // The geometry witness: DOWN means the crest scan landed second.
     assert_eq!((tail[8], tail[9]), (dir::DOWN, dir::DOWN));
 }
 

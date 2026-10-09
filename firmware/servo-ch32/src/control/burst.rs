@@ -20,7 +20,7 @@
 use core::cell::SyncUnsafeCell;
 use core::sync::atomic::compiler_fence;
 
-use portable_atomic::{AtomicBool, AtomicU8, Ordering};
+use portable_atomic::{AtomicU8, Ordering};
 
 use osc_servo_core::kernel::limits::flag;
 use osc_servo_core::regions::burst::{
@@ -78,10 +78,6 @@ static BURST_BUF: SyncUnsafeCell<[u16; BURST_LEN]> = SyncUnsafeCell::new([0; BUR
 /// it while the DMA1 CH1 vector writes it. Written only from that vector.
 static STATE: AtomicU8 = AtomicU8::new(state::IDLE);
 
-/// Set at restore, cleared by the scan TC that stamps `restore_dir`. Same
-/// vector writes and reads it; atomic so the prologue's load stands on its own.
-static WITNESS_DUE: AtomicBool = AtomicBool::new(false);
-
 /// The rest of the FSM: DMA1 CH1 vector (PFIC LOW) only, never the main loop;
 /// `install` writes it once, pre-IRQ.
 struct Fsm {
@@ -134,24 +130,6 @@ fn dir_now() -> u8 {
     } else {
         dir::UP
     }
-}
-
-/// Scan-geometry witness, and it MUST be sampled at the scan TC itself. DIR
-/// answers "which scan landed second" only inside the ~17 us between the peak
-/// scan's TC and the next trough trigger; the kernel body that runs after this
-/// point is longer than that window, so a sample taken at the ISR tail reads a
-/// later, arbitrary half of the period and says nothing (bench: UP on every
-/// capture while the geometry was verifiably correct).
-#[inline(always)]
-pub fn witness_scan_tc(shared: &Shared) {
-    if !WITNESS_DUE.load(Ordering::Relaxed) {
-        return;
-    }
-    WITNESS_DUE.store(false, Ordering::Relaxed);
-    // SAFETY: BURST is RO to the host, so this context is its sole writer.
-    unsafe {
-        (&raw mut (*shared.table.region_ptr()).burst.window.restore_dir).write_volatile(dir_now())
-    };
 }
 
 #[inline]
@@ -329,7 +307,7 @@ fn launch(p: *mut ControlTable) {
         (&raw mut (*w).pwm_arr).write_volatile(timer::period());
         (&raw mut (*w).samples_len).write_volatile(BURST_LEN as u16);
         (&raw mut (*w).step_index).write_volatile(0);
-        (&raw mut (*w).restore_dir).write_volatile(dir::UP);
+        (&raw mut (*w).restore_dir).write_volatile(dir::DOWN);
         (&raw mut (*w).chans_echo).write_volatile(f.chans);
         (&raw mut (*w).frame_len).write_volatile(len);
         // No page of this capture is published yet; a host reading before its
@@ -397,7 +375,6 @@ fn restore() {
         adc::arm_scan(adc::Extsel::TIM1_TRGO);
         timer::force_update_event();
     });
-    WITNESS_DUE.store(true, Ordering::Relaxed);
 }
 
 /// Main-loop page copy. Publishing the page under `PAGE_MID_COPY` and only
