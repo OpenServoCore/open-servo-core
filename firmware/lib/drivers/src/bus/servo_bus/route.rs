@@ -213,19 +213,19 @@ impl<P: Providers> ServoBus<P> {
         if self.tx.staged() {
             self.tx.abort();
         }
-        // Dispatch inline - the CRC already passed, so any reply sequences
-        // from the packet end and a staged table effect commits directly
-        // behind it (the `verify` order). A frame that decodes as another
-        // servo's touches nothing.
+        // Dispatch inline - the CRC already passed, so a staged table effect
+        // commits and any reply then sequences from the packet end (the
+        // `verify` order). A frame that decodes as another servo's touches
+        // nothing.
         if let Some((has_reply, slot, out)) =
             self.dispatch_decoded(anchor, footprint, |req, ctx, h| d.dispatch(req, ctx, h))
         {
-            if has_reply && self.tx.staged() {
-                self.sequence_reply(slot, packet_end);
-            }
             if matches!(out, Dispatched::Pending) {
                 let mut handle = self.reply_handle();
                 d.commit(&mut handle);
+            }
+            if has_reply && self.tx.staged() {
+                self.sequence_reply(slot, packet_end);
             }
         }
     }
@@ -247,7 +247,7 @@ impl<P: Providers> ServoBus<P> {
     }
 
     /// Verify a pending frame's CRC and resolve the verdict. Pass -> commit a
-    /// staged table effect (COMMIT) and sequence a staged reply (SEND); fail
+    /// staged table effect (COMMIT), then sequence a staged reply (SEND); fail
     /// (or spin miss) -> revert the write (REVERT), drop the reply
     /// (DON'T-SEND), count, and rewind the ladder (sec 5.3 L1).
     #[cfg_attr(target_arch = "riscv32", inline(never))]
@@ -265,21 +265,18 @@ impl<P: Providers> ServoBus<P> {
             return;
         }
         self.framer.on_frame_verified();
+        // Commit before the reply is sequenced (sec 4): the ack never
+        // leaves ahead of its effect, and no later kill of the staged reply
+        // can lose a verified write.
+        if p.table {
+            let mut handle = self.reply_handle();
+            d.commit(&mut handle);
+        }
         // Sequence from the ENGINE's state, not the recorded flag: any path
         // that reclaimed the staged reply between dispatch and here would
         // otherwise arm the chain over an empty engine (ghost trigger).
         if p.staged && self.tx.staged() {
             self.sequence_reply(p.slot, p.packet_end);
-        }
-        // Commit AFTER the reply is sequenced (sec 4): the ack was decided
-        // at dispatch and the commit cannot fail, so the status break leaves
-        // without waiting on the commit body. The host still cannot observe
-        // a complete status before the commit lands: the reply's trailing
-        // CRC arm is streamed from the TC vector, HIGH like this body, so it
-        // pends until this body returns.
-        if p.table {
-            let mut handle = self.reply_handle();
-            d.commit(&mut handle);
         }
     }
 

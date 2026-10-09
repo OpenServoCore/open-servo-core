@@ -108,12 +108,11 @@ t=35   deadline A (SysTick): header parse + validate -> footprint 6, frame
 t=40/50  the two wire-CRC bytes land. SPI engine finishes the covered span
        long before (4 B ≈ 1.5 us). CPU idle again.
 t≈55   deadline B (SysTick): the verdict — poll CRC result (ready) == wire
-       CRC -> SEND: chain sequences the staged reply, trigger due at
-       packet_end + reply gap (12 us, fixed at every baud). A staged write
-       COMMITs in the same body, after the sequencing: the break never
-       waits on the commit, and the commit still lands before the reply's
-       trailing CRC arm can stream (its TC vector is HIGH too, so it pends
-       behind this body). Body is a few us - the work already happened.
+       CRC -> a staged write COMMITs, then SEND: chain sequences the
+       staged reply, trigger due at packet_end + reply gap (12 us, fixed
+       at every baud). The ack never leaves ahead of its effect, and no
+       later kill of the staged reply can lose a verified write. Body is a
+       few us plus the commit - the work already happened.
 t≈67   trigger (SysTick): INST finalized, PC0 -> push-pull, break sent, first
        DMA arm armed. Status break falls. TX CRC is computed by the same SPI
        engine IN PARALLEL with transmission and patched into the final arm.
@@ -142,12 +141,12 @@ and ISR-entry overheads.
    DON'T-SEND on fail) and the **table effect** (staged writes — COMMIT
    on pass, REVERT on fail). Ping/read stage only a wire effect; a
    NOREPLY write only a table effect; a reply-bearing write both, under
-   one verdict, wire effect first: the ack was decided at dispatch and
-   the commit cannot fail, so the status break leaves before the commit
-   body runs (a commit's post-commit bookkeeping is tens of us on the
-   chip), and the host still cannot resolve a complete status before the
-   commit has landed, because the reply's CRC arm is streamed from the TC
-   vector, which pends behind the verdict body.
+   one verdict, table effect first: the commit lands before the reply is
+   sequenced, so the status break never leaves ahead of the effect it
+   acknowledges, and a staged reply killed later (a following break, a
+   supersede, a rescue) never takes a verified write with it. The cost is
+   the commit's post-commit bookkeeping (tens of us on the chip) on the
+   write's turnaround.
 2. **Work hides under wire time.** The dispatch window (covered
    checkpoint -> frame end) runs decode + dispatch + reply build while the
    last two CRC bytes are still in flight. Deadline B — the only step on
@@ -311,9 +310,8 @@ be staged behind the CRC verdict:
 - **Stageable — PING/READ/GREAD/WRITE/GWRITE.** Dispatch inline at HIGH
   at the covered checkpoint (frontier) or the resolve wake (backlog); the
   CRC feed chews underneath. The verdict at the frame end gates the
-  staged effects: SEND/DON'T-SEND of a reply, then COMMIT/REVERT of a
-  table write (sec 4: the reply is sequenced first, the commit follows in
-  the same body).
+  staged effects: COMMIT/REVERT of a table write, then SEND/DON'T-SEND
+  of a reply (sec 4: the commit lands before the reply is sequenced).
 - **Verdict-first — COMMIT/MGMT.** Their effects cannot be staged (COMMIT
   applies the whole buffer; MGMT reboots), so the CRC is checked FIRST
   and dispatch runs only on a pass. Rare, short frames - the ~2 us
@@ -548,8 +546,8 @@ fires — so the pipeline serializes after the frame end.
   effects: the **wire effect** (a staged reply — SEND on pass, DON'T-SEND
   on fail) and the **table effect** (staged writes — COMMIT on pass,
   REVERT on fail). Ping/read stage only wire; a NOREPLY write only table;
-  a reply-bearing write both, under one verdict, sequenced then
-  committed (sec 4).
+  a reply-bearing write both, under one verdict, committed then
+  sequenced (sec 4).
 - **instruction class** - stageability (sec 6): *stageable*
   (ping/read/gread/write/gwrite — dispatch inline at HIGH, effects gated
   by the verdict), *verdict-first* (commit/mgmt, CRC checked before

@@ -726,14 +726,13 @@ impl<D: Dispatch> Dispatch for CommitWatch<'_, D> {
     }
 }
 
-/// The verdict releases the status BEFORE the table commit runs (sec 4):
-/// a verdict wake past the reply gap (the silicon case - the covered
-/// dispatch always overruns it) triggers the break inside the verdict
-/// body, and the commit follows in the same body. The status break never
-/// waits on the commit, and the commit still lands before the reply can
-/// complete (the CRC arm's TC pends behind the body).
+/// The verdict commits a CRC-verified write before it sequences the ack, so
+/// the status never leaves ahead of the effect it acknowledges. The verdict
+/// wake lands a dispatch body past the frame end - beyond the reply gap, so
+/// sequencing triggers inline (the silicon case: the covered dispatch
+/// overruns the gap).
 #[test]
-fn write_status_starts_before_the_table_commits() {
+fn acked_write_commits_before_its_reply_triggers() {
     let h = Harness::new();
     let mut bus = h.build(ID, RATE, 60);
     let shared = Shared::new();
@@ -760,22 +759,61 @@ fn write_status_starts_before_the_table_commits() {
     bus.on_deadline(&mut d);
     assert_eq!(d.commits, 0, "staged, not committed, at covered");
 
-    // The verdict wake lands a dispatch body past the frame end - beyond
-    // the reply gap, so sequencing triggers inline.
     let b = h.deadline.armed().expect("deadline B");
     h.deadline.set_now(b.wrapping_add(REPLY_GAP + 30));
     h.ring.set_cursor(((anchor + fp) % RING_LEN) as u16);
     bus.on_deadline(&mut d);
     assert_eq!(d.commits, 1);
     assert!(
-        d.wire_started_at_commit,
-        "the status break precedes the commit"
+        !d.wire_started_at_commit,
+        "the commit precedes the status break"
     );
+    assert!(h.wire.started(), "the late verdict triggers inline");
     assert!(shared.table.with(|t| t.control.lifecycle.torque_enable));
     drain_tx(&mut bus, &h);
     let (_, inst, data) = last_reply(&h.wire);
     assert_eq!(inst.result(), Some(ResultCode::Ok));
     assert!(data.is_empty());
+}
+
+/// An ack the host abandons is killed after its write committed. Every path
+/// that drops a staged reply (stale-reply kill, verdict-first supersede,
+/// `drop_staged`, burst abort, rescue) runs after the verdict body, so none
+/// can lose a CRC-verified write; this pins a following break and the
+/// rescue declaration.
+#[test]
+fn killed_ack_keeps_its_verified_write() {
+    let addr = CONTROL_BASE_ADDR.to_le_bytes();
+    let write = instruction(ID, Opcode::Write, 0, &[addr[0], addr[1], 1]);
+    for rescue in [false, true] {
+        let h = Harness::new();
+        let mut bus = h.build(ID, RATE, 60);
+        let shared = Shared::new();
+        let mut session = Session::new();
+        let mut d = session.dispatcher(&shared);
+
+        let end = deliver(&mut bus, &h, 100, &write, 1000, &mut d);
+        assert_eq!(h.deadline.armed(), Some(end + REPLY_GAP), "ack staged");
+        assert!(!h.wire.started());
+
+        if rescue {
+            sample_low(&mut bus, &h, end + 1, end + 2 + RESCUE_LOW_US, 1);
+            assert!(rescued(&h));
+        } else {
+            let m = 300usize;
+            h.deadline.set_now(end + 1);
+            h.ring.set_cursor(((m + 1) % RING_LEN) as u16);
+            bus.on_break(&mut d);
+            if h.deadline.armed().is_some() {
+                fire(&mut bus, &h, &mut d);
+            }
+        }
+        assert!(!h.wire.started(), "the ack is killed, rescue {rescue}");
+        assert!(
+            shared.table.with(|t| t.control.lifecycle.torque_enable),
+            "the verified write survives the kill, rescue {rescue}"
+        );
+    }
 }
 
 #[test]
