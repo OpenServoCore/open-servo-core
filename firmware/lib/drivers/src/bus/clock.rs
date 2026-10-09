@@ -132,3 +132,6 @@ impl ClockDiscipline {
 fn cal_watchdog_at(now: u32, gap_ticks: u32) -> u32 {
     now.wrapping_add(gap_ticks.wrapping_mul(CAL_WATCHDOG_GAPS))
 }
+
+#[cfg(test)]
+mod tests;

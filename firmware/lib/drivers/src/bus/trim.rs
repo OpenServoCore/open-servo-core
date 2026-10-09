@@ -95,6 +95,11 @@ impl TrimLoop {
         self.decide(ppm)
     }
 
+    #[cfg(test)]
+    pub(super) fn step_ppm(&self) -> i32 {
+        self.step_ppm
+    }
+
     fn decide(&mut self, ppm: i32) -> Option<i8> {
         // round(ppm / step_ppm) clamped to +/-STEPS_MAX, division-free: the
         // half-step boundaries sit at odd multiples of step_ppm, so the
