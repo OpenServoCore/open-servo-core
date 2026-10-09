@@ -479,10 +479,11 @@ surface. The suite sweeps the full baud matrix (0.5 M / 1 M / 2 M / 3 M).
   the full field-recovery flow (rescue → prefix-walk → ASSIGN → SAVE → reboot
   → FACTORY). Both tests end with a rescue-based recovery tail so a transient
   capture dropout never strands the bench unit.
-- **trim** (`trim.rs`) - the §9.3 clock discipline on real oscillators: CAL
+- **trim** (`trim.rs`) - the protocol sec 9.3 clock discipline on real oscillators: CAL
   trains converge the DUT's trim, the lying-train probe pins plant direction,
   and the host-detune probe (an off-catalog rate one BRR step from nominal)
-  exercises the differential tracker.
+  pins that traffic never trims and that CAL at a detuned host lands on the
+  same anchor.
 - **hot loop** (`hot_loop.rs`) — the production `[GWRITE(HOLD), COMMIT, GREAD]`
   zero-gap loop, the silicon twin of the DES `hot_loop` suite. The GREAD must
   read back the just-committed value every cycle; a stale read-back is a

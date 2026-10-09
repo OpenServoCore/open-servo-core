@@ -6,66 +6,20 @@
 //! symbol address (`nm` the ELF) on a running chip -- no wire traffic, no
 //! table space, and they survive test tails that re-center transport state.
 
-/// Trim chain-pair pipeline counters: where do BURST-food pairs die between
-/// the break stamp and a window verdict? One field per exit of
-/// [`ServoBus::on_drift_break`]'s decision ladder, in ladder order.
+/// Clock-trim counters: CAL decisions, and the resolver's per-wake bound.
 ///
-/// Wire format for the debug-link dump: 26 little-endian 32-bit words in
-/// field order, 104 bytes; `verdict_err`, `poll_ppm` and the four `tw_*`
-/// fields are signed (`struct` format `<15IiI3IiI4i`).
+/// Wire format for the debug-link dump: 7 little-endian 32-bit words in
+/// field order, 28 bytes; the four `tw_*` fields are signed (`struct`
+/// format `<3I4i`).
 #[repr(C)]
 pub struct TrimProbe {
-    /// Break stamps taken: one per verified frame with a stamp latched for
-    /// its break, however many frames a wake resolved.
-    pub stamps: u32,
-    /// Frames verified: `stamps + unstamped`.
-    pub frames: u32,
-    /// Frames verified with no stamp latched for their break: the detector
-    /// raised no overflow for it (or a stale skip ran the ring dry).
-    pub unstamped: u32,
-    /// Stamps skipped as older than the previous stamp plus the ring
-    /// distance allows: orphans (a re-fire, a CRC-failed frame's break).
-    pub stale: u32,
-    /// Stamps dropped by a CAL ruler mark, a rate change or a rescue.
-    pub cleared: u32,
     /// Break services whose resolver drive hit its per-wake frame bound:
     /// the ladder lagged the wire by more than `FRAMES_PER_WAKE` frames.
     pub bound_hits: u32,
-    /// Stamp with no predecessor (first after boot/restart) -- no pair.
-    pub no_prev: u32,
-    /// Pair rejected: NO verified frame between the stamps (a coalesced or
-    /// spurious service -- the fault-contract starvation class).
-    pub span_none: u32,
-    /// Pair rejected: MORE than one verified frame between the stamps
-    /// (coalesced break service under zero-gap bursts).
-    pub span_many: u32,
-    /// Pair rejected: exactly one verified frame, but a solicited shape (a
-    /// reply's turnaround rides the responder's clock).
-    pub unsilent: u32,
-    /// Pair rejected: ring span != the verified footprint (something else
-    /// ringed -- status, garble, echo).
-    pub inexact: u32,
-    /// Pair rejected by the 1/16 span gate (a real inter-burst pause).
-    pub gated: u32,
-    /// Pair accepted into the seam baseline.
-    pub base_pairs: u32,
-    /// Pair accepted into a drift window (baseline established).
-    pub win_pairs: u32,
-    /// Window verdicts handed to the trim loop.
-    pub verdicts: u32,
-    // --- verdict-content layer ---
-    /// Latest drift verdict's raw window sums at handoff.
-    pub verdict_err: i32,
-    pub verdict_span: u32,
-    /// `poll_clock_trim` consumptions by source.
+    /// Completed CAL trains drained by `poll_clock_trim`.
     pub poll_cal: u32,
-    pub poll_drift: u32,
-    /// Drift polls discarded by the +/-8k ppm sanity band.
-    pub sanity_drop: u32,
-    /// Latest drift poll's computed ppm (pre-sanity).
-    pub poll_ppm: i32,
-    /// `TrimLoop` decisions (CAL and drift) and the latest
-    /// measurement, effect estimate, applied steps, and running total.
+    /// `TrimLoop` decisions and the latest measurement, effect estimate,
+    /// applied steps, and running total.
     pub windows: u32,
     pub tw_ppm: i32,
     pub tw_effect: i32,
@@ -75,27 +29,8 @@ pub struct TrimProbe {
 
 impl TrimProbe {
     pub const ZERO: Self = Self {
-        stamps: 0,
-        frames: 0,
-        unstamped: 0,
-        stale: 0,
-        cleared: 0,
         bound_hits: 0,
-        no_prev: 0,
-        span_none: 0,
-        span_many: 0,
-        unsilent: 0,
-        inexact: 0,
-        gated: 0,
-        base_pairs: 0,
-        win_pairs: 0,
-        verdicts: 0,
-        verdict_err: 0,
-        verdict_span: 0,
         poll_cal: 0,
-        poll_drift: 0,
-        sanity_drop: 0,
-        poll_ppm: 0,
         windows: 0,
         tw_ppm: 0,
         tw_effect: 0,

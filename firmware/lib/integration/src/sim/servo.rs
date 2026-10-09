@@ -18,9 +18,7 @@ use osc_servo_drivers::bus::{LinkDiag, ServoBus};
 use osc_servo_drivers::tel::{TelChannel, TelFeed};
 
 use super::core::Core;
-use super::providers::{
-    Handles, SimBaud, SimCrc, SimDeadline, SimProviders, SimRing, SimStamps, SimWire,
-};
+use super::providers::{Handles, SimBaud, SimCrc, SimDeadline, SimProviders, SimRing, SimWire};
 use super::store::RamStore;
 
 /// The osc-dev-v006 app's `Calibration`, copied: the board crate is a no_std
@@ -148,7 +146,6 @@ impl SimServo {
     /// on top, and a driver whose comms block comes from what that left.
     fn bringup(seed: &Seed, uid: [u8; 16]) -> (Shared, ServoBus<SimProviders>, TelFeed) {
         seed.handles.ring.reset();
-        seed.handles.stamps.reset();
 
         let shared = Shared::new();
         shared.table.seed_config_defaults(
@@ -208,7 +205,6 @@ impl SimServo {
             SimCrc::new(),
             SimWire::new(seed.core.clone(), seed.handles.baud.clone(), seed.idx),
             SimBaud::new(seed.handles.baud.clone()),
-            SimStamps::new(seed.handles.stamps.clone()),
             id,
             rate,
             response_deadline_us,

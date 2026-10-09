@@ -19,7 +19,6 @@ use osc_servo_drivers::led::Led;
 use osc_servo_drivers::traits::bus::Providers;
 
 use crate::cfg::board_wiring::BoardWiring;
-use crate::providers::break_stamps::BreakStamps;
 use crate::providers::crc::Crc;
 use crate::providers::deadline::Deadline;
 use crate::providers::digital_out::DigitalOut;
@@ -41,7 +40,6 @@ impl Providers for V006Providers {
     type Crc = Crc;
     type Tx = TxWire;
     type Baud = UsartBaud;
-    type Stamps = BreakStamps;
 }
 
 type Bus = ServoBus<V006Providers>;
@@ -74,8 +72,7 @@ pub struct Drivers;
 impl Drivers {
     /// SAFETY: bringup-only, pre-IRQ; sole writer. Must be called exactly
     /// once, after `runtime::init::bring_up_bus` has configured USART1, the
-    /// CH5 ring, the CH2 break stamps, the break wake, and the SPI-CRC
-    /// engine, and after the
+    /// CH5 ring, the break wake, and the SPI-CRC engine, and after the
     /// table's comms block is final (defaults seeded + saved image
     /// overlaid) -- `ServoBus::new` applies the effective baud to the live
     /// BRR and break-wake reload.
@@ -111,7 +108,6 @@ impl Drivers {
             Crc,
             TxWire,
             UsartBaud,
-            BreakStamps::new(),
             id,
             baud,
             deadline_us,

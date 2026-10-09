@@ -177,32 +177,6 @@ fn s1_ping_round_trip() {
     assert_eq!(data, &[0x34, 0x12, 0x56, 0x78]);
 }
 
-/// A frame with a staged reply records its break behind the reply's
-/// trigger, not at its verdict: the stamp is still latched after deadline
-/// B and taken once the reply gap deadline puts the break on the wire.
-#[test]
-fn reply_frame_records_behind_its_trigger() {
-    let h = Harness::new();
-    let mut bus = h.build(ID, RATE, 60);
-    let shared = shared_seeded();
-    let mut session = Session::new();
-    let mut d = session.dispatcher(&shared);
-
-    let frame = instruction(ID, Opcode::Ping, 0, &[]);
-    h.stamps.latch(990);
-    deliver(&mut bus, &h, 100, &frame, 1000, &mut d);
-    assert!(!h.wire.started());
-    assert_eq!(
-        h.stamps.pending(),
-        1,
-        "the verdict leaves the stamp latched"
-    );
-
-    fire(&mut bus, &h, &mut d);
-    assert!(h.wire.started());
-    assert_eq!(h.stamps.pending(), 0, "the trigger takes it");
-}
-
 #[test]
 fn s2_read_returns_table_bytes() {
     let h = Harness::new();
@@ -1293,21 +1267,17 @@ fn spurious_wake_on_quiet_wire_costs_one_recheck() {
     assert_eq!(h.deadline.armed(), None, "idle again: nothing to poll");
 }
 
-/// Every break of a back-to-back silent burst stamps and pairs, however
-/// late its wake is served (position from the stream, transport sec 5.1):
-/// each wake lands 2.5 byte-times behind its break byte, with the ID and
-/// LEN bytes already ringed behind it, and takes the stamp the detector
-/// latched at the break. 257 breaks are exactly one stamp, the 128-pair
-/// baseline window and one 128-pair window, so a single lost or misplaced
-/// stamp would push the verdict past the last break. The seam grows one
-/// tick after the baseline: one step of drift at 48 bytes.
+/// Every frame of a back-to-back silent burst resolves clean however late
+/// its break's wake is served (position from the stream, transport sec
+/// 5.1): each wake lands 2.5 byte-times behind its break byte, with the ID
+/// and LEN bytes already ringed behind it, and the ladder still walks onto
+/// the break and through every whole frame.
 #[test]
-fn lagged_break_wakes_still_pair() {
+fn lagged_break_wakes_resolve_every_frame() {
     const F: usize = 48;
     const LAG: u32 = 25;
     const SEAM: u32 = 4;
-    const BASELINE: u32 = 128;
-    const BREAKS: u32 = 1 + BASELINE + 128;
+    const BREAKS: u32 = 257;
     let h = Harness::new();
     let mut bus = h.build(ID, RATE, 60);
     let shared = Shared::new();
@@ -1331,9 +1301,8 @@ fn lagged_break_wakes_still_pair() {
     let mut anchor = 0usize;
     let mut t = 1000u32;
     bus.framer.resync(0);
-    for k in 0..BREAKS {
+    for _ in 0..BREAKS {
         h.ring.place(anchor, &frame);
-        h.stamps.latch(t);
         let wake = t + LAG;
         // Pended deadlines go first (SysTick arbitrates ahead of TIM2).
         while let Some(at) = h.deadline.armed().filter(|&at| at <= wake) {
@@ -1342,19 +1311,11 @@ fn lagged_break_wakes_still_pair() {
                 .set_cursor(((anchor + landed(at, t)) % RING_LEN) as u16);
             bus.on_deadline(&mut d);
         }
-        if k + 1 == BREAKS {
-            assert_eq!(
-                bus.poll_clock_trim(),
-                None,
-                "the window closes on the last break"
-            );
-        }
         h.deadline.set_now(wake);
         h.ring
             .set_cursor(((anchor + landed(wake, t)) % RING_LEN) as u16);
         bus.on_break(&mut d);
-        let seam = if k < BASELINE { SEAM } else { SEAM + 1 };
-        let next = t + F as u32 * TPB + seam;
+        let next = t + F as u32 * TPB + SEAM;
         while let Some(at) = h.deadline.armed().filter(|&at| at < next) {
             h.deadline.set_now(at);
             h.ring
@@ -1364,59 +1325,8 @@ fn lagged_break_wakes_still_pair() {
         anchor = (anchor + F) % RING_LEN;
         t = next;
     }
-    assert_eq!(bus.poll_clock_trim(), Some(1));
     assert_eq!(bus.diag().crc_fail_count, 0);
     assert_eq!(bus.diag().framing_drop_count, 0);
-    assert_eq!(h.stamps.pending(), 0, "every stamp taken by its break");
-}
-
-/// A break's stamp is taken at its frame's verdict, not at its wake: one
-/// wake that finds two whole frames and a third begun verifies the two
-/// and takes their stamps oldest first, while the third's stays latched
-/// for its frame's verdict; a wake on a frame still arriving takes none.
-#[test]
-fn merged_wake_stamps_each_break_once() {
-    const F: usize = 48;
-    let h = Harness::new();
-    let mut bus = h.build(ID, RATE, 60);
-    let shared = Shared::new();
-    let mut session = Session::new();
-    let mut d = session.dispatcher(&shared);
-
-    let addr = CONTROL_BASE_ADDR.to_le_bytes();
-    let mut payload = std::vec![addr[0], addr[1]];
-    payload.extend_from_slice(&[0u8; F - 8]);
-    let frame = instruction(FOREIGN, Opcode::Write, Inst::FLAG_NOREPLY, &payload);
-    assert_eq!(frame.len(), F);
-    bus.framer.resync(0);
-
-    // The first break, served on time with its frame still arriving: the
-    // stamp waits for the frame.
-    h.ring.place(0, &frame);
-    h.stamps.latch(1000);
-    h.deadline.set_now(1001);
-    h.ring.set_cursor(1);
-    bus.on_break(&mut d);
-    assert_eq!(h.stamps.pending(), 1, "no verdict yet, no take");
-
-    // Two more frames ring whole, their breaks' wakes merged into one
-    // service that finds the third frame's break byte newest: the first
-    // two frames verify here and take the two oldest stamps.
-    h.ring.place(F, &frame);
-    h.ring.place(2 * F, &frame);
-    h.stamps.latch(1000 + F as u32 * TPB);
-    h.stamps.latch(1000 + 2 * F as u32 * TPB);
-    h.deadline.set_now(1000 + 2 * F as u32 * TPB + 30);
-    h.ring.set_cursor((2 * F + 1) as u16);
-    bus.on_break(&mut d);
-    assert_eq!(h.stamps.pending(), 1, "the third frame's stamp waits");
-
-    // The same break again (its frame still arriving): nothing taken.
-    h.deadline.set_now(1000 + 2 * F as u32 * TPB + 60);
-    h.ring.set_cursor((2 * F + 3) as u16);
-    bus.on_break(&mut d);
-    assert_eq!(h.stamps.pending(), 1);
-    assert_eq!(bus.diag().crc_fail_count, 0);
 }
 
 // --- TEL burst ------------------------------------------------------------

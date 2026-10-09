@@ -68,8 +68,8 @@ pub const REC_CAPTURE_RESET: u8 = 0x65;
 /// `seq(2 LE) gap_us(2 LE) breaks(1) announce(1..)`. Answered by
 /// [`REC_WIRE_DONE`] after the last break.
 pub const REC_WIRE_TRAIN: u8 = 0x66;
-/// Instrument host UART rate, raw bps: off-catalog divisors allowed (a
-/// detuned host is the clock-tracker's drift injector). Body:
+/// Instrument host UART rate, raw bps: off-catalog divisors allowed (the
+/// trim suite's host-detune probe). Body:
 /// `seq(2 LE) bps(4 LE)`. Answered by [`REC_WIRE_DONE`] immediately.
 pub const REC_WIRE_BAUD: u8 = 0x67;
 pub const REC_INFO: u8 = 0x80;

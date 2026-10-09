@@ -60,7 +60,7 @@ Columns:
 | Group instructions (GREAD/GWRITE) | 1,998 | - | inside the frame cost | module in principle (fleet feature) |
 | Software CRC-16 (odd-byte tail fold, ENUM key, persist) | 1,026 + 512 table in .rodata | - | one tail byte per frame | core; see the dedupe lever below |
 | Chain snoop | 640 | 20 | per foreign frame (the fleet cost above) | core for chains; a chain-length limit saves CPU, not memory |
-| Clock discipline: CAL ruler + drift tracker + trim loop | 2,354 (drift tracker alone ~450-650, E) | 96 (drift ~40) | 0 per tick; a few us per break stamp and per silent pair (E) | drift tracker = module |
+| Clock discipline: CAL ruler + trim loop | 2,354 less the drift tracker, since deleted (its last form, with DMA break stamps, measured 1,568 B of .text) | 64 | 0 per tick; one entry stamp per CAL mark | core |
 | TEL streaming | 1,674 | 450 (double buffer 2 x 196, meta 18, feed 28, burst 12) | Staging runs at the tail of the tick. Sample encode while streaming is S: 370 ins. Burst TX by DMA costs ~0 (M) | runtime (`tel_mask` 0) |
 | Dispatch + control table (map, rules, staging) | 5,918 | table 1,024, write staging 244, misc 34 | per frame | core |
 | Persistence (SAVE/FACTORY, flash driver) | 3,108 | 8 | on SAVE only (blocking flash program) | core |
@@ -88,7 +88,7 @@ The two biggest CPU consumers are the host-frame service in the HIGH ISR (80-160
 | `RING` | 512 | transport RX ring |
 | `KERNEL` | 504 | fast 104, medium 156, config snapshot 128, timing 40, command 32, TEL feed 28, io 8, latch/phase 8 |
 | `TEL_CHANNEL` | 410 | TEL double buffer |
-| `CELLS` (.data) | 328 | ServoBus 312 (TX engine 92, clock tracker 96, chain 20, framer 20, pending 16, TEL burst 12, misc 56), LED 16 |
+| `CELLS` (.data) | 296 | ServoBus 280 (TX engine 92, clock discipline 64, chain 20, framer 20, pending 16, TEL burst 12, misc 56), LED 16 |
 | `crc::SNAPSHOT` | 252 | reply payload span for the SPI CRC engine |
 | `SESSION` | 244 | write staging 232, pending verdict |
 | `ADC_DMA_BUF` | 28 | scan |
@@ -113,11 +113,9 @@ That sums to about 1,480-1,500 B. The measured free minimum is ~1.1 KB at rest, 
 | Item | Flash B | RAM B | CPU | Basis |
 |---|---|---|---|---|
 | Fusion step 4, offset form | ~300-400 | **640** (two rings of 80 x u32 for a 40 ms window) + ~12 state | +2 muls and two ring writes in the OBSERVER phase: <0.1 pt averaged | RAM from the fusion plan; the rest is E |
-| DMA break timestamps (DMA1 CH2 latches a counter on TIM2 update) | ~100-200 | 16 (4 x u32 ring) | 0 per tick; a few instructions per break, and the stamps stop depending on ISR-entry lag | design (E) |
 | Thermometer fix | ~100-300 | ~8-16 | SLOW rate: ~0 | E |
-| Drift tracker restoring force (baseline anchored at the CAL) | +44 | ~0 (the 32-pair accumulators go away) | 0 per tick (decision rate) | flash measured on its branch |
 | Encoder support | per board | per board | atan2 in software CORDIC costs ~3-5 us per sin/cos: ~0.6-1 pt at the medium rate, 6-10 pts at the fast rate | note only |
-| **Sum** | **~0.55-0.95 KB** | **~690** | **<0.5 pt** | |
+| **Sum** | **~0.4-0.7 KB** | **~670** | **<0.5 pt** | |
 
 ## Scenarios
 
@@ -180,7 +178,7 @@ If RAM has to go further than B, these levers are next in order of cost: the pos
 - **The load each feature adds.** No cargo flag gates any kernel feature, so each delta needs an A/B image on the board. The deltas above that are marked M come from the bench. The S counts give an order of magnitude, not a percentage.
 - **The stack high-water mark with the planned RAM in place.** Static frame sums are an upper bound. The stack-paint minimum (`stack_free_min`) is the real number, and it should be re-read after any .bss growth over ~100 B.
 - **TEL encode cost per field, and the worst medium slice** (which phase plus the fast path makes the longest tick).
-- **The fusion rings' real cost in the OBSERVER phase, the CRC dedupe's effect on turnaround, and the drift tracker's per-frame cost.**
+- **The fusion rings' real cost in the OBSERVER phase, and the CRC dedupe's effect on turnaround.**
 
 ## Method
 
