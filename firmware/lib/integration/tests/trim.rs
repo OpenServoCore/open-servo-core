@@ -1,10 +1,11 @@
 //! MGMT CAL break-pair ruler (`docs/osc-native-protocol.md` sec 9.3): the host
 //! announces a break train, its crystal spaces the breaks, and each servo
-//! measures the announced gap with its own clock -- break-FE entry stamps at
-//! both ends of every gap, so entry latency cancels. Plain assertions on the
-//! trim decisions and on the transport's health after trains.
+//! measures the announced gap with its own clock: the break detector's
+//! hardware stamps at both ends of every gap, so wake service lag never
+//! enters. Plain assertions on the trim decisions and on the transport's
+//! health after trains.
 
-use osc_integration::sim::{Sim, Source, instruction, status};
+use osc_integration::sim::{HandlerCost, Sim, Source, instruction, status};
 use osc_protocol::wire::{Inst, Opcode, ResultCode};
 use osc_servo_core::BaudRate;
 use osc_servo_core::regions::config::DEFAULT_RESPONSE_DEADLINE_US;
@@ -172,6 +173,74 @@ fn unicast_cal_is_refused() {
     assert_eq!(sim.poll_clock_trim(s), None);
 }
 
+/// Wake service lag bound: a mark served behind a kernel body (v3 kernel on
+/// top, transport sec 5.1).
+const WAKE_LAG_MAX_US: f64 = 60.0;
+const LAG_TRAINS: usize = 100;
+const LAG_SEED: u64 = 0x05C_CA1;
+/// Truth 0.4 nominal step off: the reading decides nothing while the ruler
+/// stays within 0.1 step of it.
+const NEAR_HALF_STEP_PPM: i32 = STEP_PPM * 2 / 5;
+
+/// SplitMix64, uniform in [0, 1).
+struct Rng(u64);
+
+impl Rng {
+    fn unit(&mut self) -> f64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        (z ^ (z >> 31)) as f64 / u64::MAX as f64
+    }
+}
+
+/// The ruler measures the breaks, not their service: every wake served
+/// U(0, 60) us late, coalesced or not, and each train still reads truth 0
+/// as no correction and truth +/-0.4 step as no correction - within 0.1
+/// step. A ruler stamped at wake entry reads the lag differences instead.
+#[test_log::test]
+fn cal_ruler_ignores_wake_lag() {
+    let mut rng = Rng(LAG_SEED);
+    for rate in [BaudRate::B1000000, BaudRate::B3000000] {
+        let (mut half_off, mut tenth_off) = (0, 0);
+        for _ in 0..LAG_TRAINS {
+            let lags: Vec<f64> = (0..3 * (GAPS as usize + 2))
+                .map(|_| WAKE_LAG_MAX_US * rng.unit())
+                .collect();
+            let mut lags = lags.into_iter();
+            let mut sim = Sim::new(rate);
+            let truth = [0, NEAR_HALF_STEP_PPM, -NEAR_HALF_STEP_PPM];
+            let servos: Vec<usize> = truth
+                .iter()
+                .zip(ID..)
+                .map(|(&ppm, id)| sim.add_servo_with(id, ppm, DEFAULT_RESPONSE_DEADLINE_US))
+                .collect();
+            for &s in &servos {
+                sim.set_handler_cost(
+                    s,
+                    HandlerCost {
+                        on_break_us: 2,
+                        ..Default::default()
+                    },
+                );
+            }
+            sim.set_wake_lag_us(move || lags.next().unwrap_or(0.0));
+            send_train(&mut sim, 0, GAPS as u64 + 1);
+            sim.run();
+            half_off += sim.poll_clock_trim(servos[0]).is_some() as usize;
+            tenth_off += servos[1..]
+                .iter()
+                .any(|&s| sim.poll_clock_trim(s).is_some()) as usize;
+        }
+        assert!(
+            half_off == 0 && tenth_off == 0,
+            "{rate:?}: of {LAG_TRAINS} trains, {half_off} off by > 0.5 step, \
+             {tenth_off} off by > 0.1 step"
+        );
+    }
+}
+
 // ---- between CALs ----------------------------------------------------------
 
 const OTHER_ID: u8 = 6;
@@ -264,6 +333,18 @@ fn traffic_never_trims_between_cals() {
         "silent food decides nothing: {decisions:?}"
     );
     assert_eq!(osc.total, 0);
+}
+
+/// Every break latches a stamp, traffic's too: the announce drops what
+/// traffic left, so the ruler opens on the train's first mark.
+#[test_log::test]
+fn cal_ruler_opens_on_the_first_mark_after_traffic() {
+    let mut sim = Sim::new(BaudRate::B1000000);
+    let s = sim.add_servo_with(ID, 5_200, DEFAULT_RESPONSE_DEADLINE_US);
+    let t = send_silent(&mut sim, 0, 16);
+    send_train(&mut sim, t, GAPS as u64 + 1);
+    sim.run();
+    assert_eq!(sim.poll_clock_trim(s), Some(2));
 }
 
 /// The host's periodic CAL follows a thermal shift: two trains converge

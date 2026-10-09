@@ -12,9 +12,8 @@ use super::chain::Chain;
 use super::clock::ClockDiscipline;
 use super::decode::Slot;
 use super::framer::Framer;
-use super::ring_wrap;
 use super::tx::{TxEngine, TxOut};
-use crate::traits::bus::{Deadline, Providers, RxRing, UsartBaud, tick_reached};
+use crate::traits::bus::{BreakStamps, Deadline, Providers, RxRing, UsartBaud, tick_reached};
 
 mod crc;
 mod reply;
@@ -72,6 +71,7 @@ pub struct ServoBus<P: Providers> {
     ring: P::Ring,
     deadline: P::Deadline,
     baud: P::Baud,
+    stamps: P::Stamps,
     id: u8,
     rate: BaudRate,
     tpb: u32,
@@ -87,9 +87,9 @@ pub struct ServoBus<P: Providers> {
     // Deadline mux (sec 4.1/sec 6/sec 9.1): the soonest live slot arms the compare.
     framer_at: Option<u32>,
     chain_at: Option<u32>,
-    // A break wake serviced before its 0x00 rang: the wake's stamp and the
-    // cursor it saw, re-inspected one byte-time on (the third mux slot).
-    unringed: Option<(u32, u16)>,
+    // A break wake serviced before its 0x00 rang: the wake's entry tick,
+    // re-inspected one byte-time on (the third mux slot).
+    unringed: Option<u32>,
     // Clock discipline (sec 9.3): MGMT CAL + trim loop.
     clock: ClockDiscipline,
     // TEL burst stager (sec 5.3): armed by tel_count, fed by `poll_tel`.
@@ -130,6 +130,7 @@ impl<P: Providers> ServoBus<P> {
         crc: P::Crc,
         tx: P::Tx,
         mut baud: P::Baud,
+        stamps: P::Stamps,
         id: u8,
         rate: BaudRate,
         response_deadline_us: u16,
@@ -143,6 +144,7 @@ impl<P: Providers> ServoBus<P> {
             ring,
             deadline,
             baud,
+            stamps,
             id,
             rate,
             tpb: tpb_for::<P>(rate),
@@ -177,25 +179,26 @@ impl<P: Providers> ServoBus<P> {
     ///
     /// The detector may fire ahead of the stop-bit sample that rings the
     /// break's 0x00, so the wake can beat its own byte into the ring. A wake
-    /// whose break byte has not rung gets its ring-dependent service (CAL
-    /// mark, resolver, stale-reply kill) one byte-time later in
+    /// whose break byte has not rung gets its ring-dependent service
+    /// (resolver, stale-reply kill) one byte-time later in
     /// [`Self::reinspect`], from ring data alone.
     pub fn on_break<D: Dispatch>(&mut self, d: &mut D) {
         let now = self.deadline.now();
-        let cursor = self.ring.cursor();
         // MGMT CAL train (sec 9.3): while a train is live, breaks are ruler
-        // marks, not frame traffic - stamp against the announced gap and
-        // return. The ring still collects the break bytes; the framer's
-        // hunt scans them off silently once the train ends (0x00 runs are
-        // implausible candidates, and any junk lock dies CRC-uncounted
-        // under the hunt's probing flag). A mark has no frame to settle the
-        // ladder onto it, so it is classified by the newest byte: its 0x00,
-        // rung fresh since the last service (a quiet wire between marks).
+        // marks, not frame traffic. A mark is its detector's hardware stamp,
+        // taken in wire order however late or coalesced this service runs
+        // (DES pin `cal_ruler_ignores_wake_lag`). The ring still collects
+        // the break bytes; the framer's hunt scans them off silently once
+        // the train ends (0x00 runs are implausible candidates, and any junk
+        // lock dies CRC-uncounted under the hunt's probing flag).
         if self.clock.cal_active() {
-            let ringed = self.framer.on_wire_fault(cursor) && self.newest_is_break_byte(cursor);
-            self.unringed = (!ringed).then_some((now, cursor));
-            if ringed {
-                self.cal_mark(now);
+            while let Some(stamp) = self.stamps.take() {
+                if let Some(t) =
+                    self.clock
+                        .on_cal_break(stamp, now, <P::Deadline as Deadline>::TICKS_PER_US)
+                {
+                    self.framer_at = Some(t);
+                }
             }
             self.arm_deadline();
             return;
@@ -212,7 +215,7 @@ impl<P: Providers> ServoBus<P> {
             self.chain.reset();
             self.chain_at = None;
         }
-        self.unringed = (!self.serve_break(d)).then_some((now, cursor));
+        self.unringed = (!self.serve_break(d)).then_some(now);
         // sec 6: a break while we hold a staged chain slot means the
         // predecessor is alive -- suspend its reclaim window while the
         // frame plays out.
@@ -221,35 +224,12 @@ impl<P: Providers> ServoBus<P> {
         self.arm_deadline();
     }
 
-    /// One byte-time after a wake whose break byte had not rung. A ruler
-    /// mark is the first byte ringed since the wake, a 0x00, served at the
-    /// wake's stamp; a frame break is wherever the ladder stands. Nothing
-    /// ringed, or anything else, was no break of this wake's and only
-    /// re-drives the resolver.
+    /// One byte-time after a wake whose break byte had not rung: the frame
+    /// break is wherever the ladder stands. A train that went live meanwhile
+    /// keeps the framer slot as its watchdog.
     fn reinspect<D: Dispatch>(&mut self, d: &mut D) {
-        let Some((at, cursor)) = self.unringed.take() else {
-            return;
-        };
-        if self.clock.cal_active() {
-            let ring = self.ring.bytes();
-            if self.ring.cursor() != cursor && ring.get(cursor as usize) == Some(&0x00) {
-                self.framer
-                    .on_wire_fault(ring_wrap(cursor as usize + 1, ring.len()) as u16);
-                self.cal_mark(at);
-            }
-            return;
-        }
-        self.serve_break(d);
-    }
-
-    /// One CAL ruler mark at the wake's stamp `at`; the train's watchdog,
-    /// then its end-of-train hunt, ride the framer slot.
-    fn cal_mark(&mut self, at: u32) {
-        if let Some(t) = self
-            .clock
-            .on_cal_break(at, <P::Deadline as Deadline>::TICKS_PER_US)
-        {
-            self.framer_at = Some(t);
+        if self.unringed.take().is_some() && !self.clock.cal_active() {
+            self.serve_break(d);
         }
     }
 
@@ -296,14 +276,6 @@ impl<P: Providers> ServoBus<P> {
             self.chain.reset();
             self.chain_at = None;
         }
-    }
-
-    /// The newest ringed byte -- the wake service's break discriminator (a
-    /// break rings its 0x00 last; a frame-end re-fire sees the CRC tail).
-    fn newest_is_break_byte(&self, cursor: u16) -> bool {
-        let ring = self.ring.bytes();
-        let len = ring.len();
-        len != 0 && ring[ring_wrap(cursor as usize + len - 1, len)] == 0x00
     }
 
     /// Tick-compare ISR: one or more muxed deadlines are due. Every slot a
@@ -406,7 +378,7 @@ impl<P: Providers> ServoBus<P> {
     }
 
     fn reinspect_at(&self) -> Option<u32> {
-        self.unringed.map(|(at, _)| at.wrapping_add(self.tpb))
+        self.unringed.map(|at| at.wrapping_add(self.tpb))
     }
 
     /// Arm the compare at the soonest live slot, or cancel if none. A slot

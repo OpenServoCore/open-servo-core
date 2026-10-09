@@ -249,8 +249,8 @@ The contract, binding on every implementation of this protocol:
   geometry checks, and the starve horizon.
 - **Times come from data-cadence projections only** (`now + missing
   byte-times`). A wake's arrival time MUST NOT enter any timing grid.
-  (The one exception is the sec 9.3 CAL ruler, whose entire subject is the
-  break-service stamp itself - on a quiet bus, gated per gap there.)
+  (The sec 9.3 CAL ruler times breaks too, by the detector's hardware
+  stamp, never by the wake.)
 - **Breaks are not countable events.** Service can lag the wire, and N
   breaks can coalesce into one service; all break handling MUST be
   idempotent, and freshness (did bytes ring since the last service?)
@@ -1379,11 +1379,12 @@ hardware-anchored:
 
 **`MGMT CAL [gap_us(2 LE), gaps(1)]` (broadcast ONLY).** The host follows
 the frame with `gaps + 1` bare breaks spaced exactly `gap_us` apart, its
-crystal (any timer/DMA pacing) keeping the spacing. Each servo stamps its
-tick at every break-wake service entry: both ends of every gap ride the
-SAME ISR path, so entry latency cancels in the difference, and what
-remains is clock skew plus sub-µs jitter — ~±260 ppm from 8 × 400 µs
-gaps, a tenth of the smallest trim step. Contract and hygiene:
+crystal (any timer/DMA pacing) keeping the spacing. Each servo times every
+break by a stamp its hardware latches at the break detector, never by the
+wake's service: every stamp sits the same offset into its break, so the
+offset cancels in the difference, and what remains is clock skew plus the
+latch's jitter. Service lag, however long, never enters. Contract and
+hygiene:
 
 - Broadcast-only: a unicast CAL decodes as an instruction error — its ack
   would put the replier's own break on the wire where the train starts.
@@ -1507,7 +1508,7 @@ exit from `CONFIG_CORRUPT`.
 | DMA1 CH1            | ADC                                               |
 | DMA1 CH7            | TIM2_CH2: zeroes the break detector per rising edge (§3.4) |
 | DMA1 CH6            | copy-once snapshot buffer (sec 4.2)               |
-| DMA1 CH2, TIM3      | free                                              |
+| DMA1 CH2, TIM3      | CAL break stamps: TIM2_UP latches TIM3's count (sec 9.3) |
 | SysTick             | framer deadlines A/B, reply gap, reclaim             |
 | TIM2, CH1 on PC0    | the break detector (§3.4)                         |
 | TIM1                | motor control                                     |

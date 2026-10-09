@@ -97,9 +97,9 @@ pub enum Event {
     /// becomes `ppm` here, continuously -- re-anchored, the reading never
     /// steps (thermal drift).
     SkewChange { servo: usize, ppm: i32 },
-    /// Test-injected spurious wake: the break vector re-enters with NO new
+    /// The break vector enters: a test-injected spurious wake with NO new
     /// wire byte (a coalesced or lagged break service -- sec 3.4's reason to
-    /// demand idempotence).
+    /// demand idempotence), or a lagged break's own service.
     WakeRefire { servo: usize },
     /// A break's 0x00 lands in servo `servo`'s ring after its wake
     /// ([`super::BreakWake::BeforeByte`]).

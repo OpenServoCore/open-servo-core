@@ -10,7 +10,7 @@ use super::super::frame_view;
 use super::super::framer::{FrameNeeds, FrameSpan, FramerOut};
 use super::reply::ReplyHandle;
 use super::{Pending, ServoBus};
-use crate::traits::bus::{Deadline, Providers, RxRing, tick_reached};
+use crate::traits::bus::{BreakStamps, Deadline, Providers, RxRing, tick_reached};
 
 impl<P: Providers> ServoBus<P> {
     /// Drive the resolver as far as ring DATA allows (data-first from the
@@ -227,6 +227,11 @@ impl<P: Providers> ServoBus<P> {
             if has_reply && self.tx.staged() {
                 self.sequence_reply(slot, packet_end);
             }
+        }
+        // A CAL announce: every stamp latched so far is traffic's, and the
+        // train's first mark latches next.
+        if self.clock.pending_cal.is_some() {
+            self.stamps.clear();
         }
     }
 

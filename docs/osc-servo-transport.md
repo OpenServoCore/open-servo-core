@@ -36,6 +36,7 @@ Every hardware resource the transport touches, and its duty cycle:
 | SysTick vector  | PFIC HIGH. Deadline mux: framer A/B, covered, chain trigger - and dispatch, inline (every class except verdict-first runs at the covered checkpoint or the fast path, sec 6) | arithmetic slots ~1–5 us; dispatch bodies ~10–70 us |
 | DMA1 CH5        | USART1 RX -> 512 B ring, circular, silent (no IRQ); **VERYHIGH, atop the ladder** (sec 7) | zero CPU |
 | DMA1 CH7        | TIM2_CH2 (IC2, rising edge) -> a RAM zero into TIM2 CNT, circular, one halfword per rising edge; VERYHIGH, below CH5 (sec 7) | zero CPU |
+| DMA1 CH2 + TIM3 | TIM2_UP (the detector's overflow) -> TIM3's free-running HCLK count into an 8-entry stamp ring, circular; HIGH, below CH1 (sec 8) | zero CPU; read only during a CAL train |
 | DMA1 CH4        | TX arms -> USART1 DR (header, snapshot payload, CRC tail); HIGH | zero CPU; TC surfaces as USART TC |
 | DMA1 CH3        | CRC feeds -> SPI1 DR, 16-bit halfwords (RX span straight from the ring); MEDIUM, below CH6 | zero CPU, ~0.36 us/B engine time |
 | SPI1            | CRC-16/ARC coprocessor (16-bit LSB-first, bitrev16 at the register), accumulates across feeds | runs ~8× wire speed (F6) |
@@ -49,7 +50,7 @@ share HIGH and therefore serialize against each other; LOW holds only the
 motor kernel (DMA1_CH1 = 22), which HIGH preempts and which runs in the
 wire gaps between frames. Free and reserved: TIM1 (motor PWM), SW (14),
 I2C1_EV (30), I2C1_ER (31). The break detector holds DMA1 CH7, I2C1_RX's
-request channel. DMA1 CH2 and TIM3 are free.
+request channel. The CAL stamps hold DMA1 CH2 (TIM2_UP) and TIM3.
 
 **Kernel ticks under load — measured and accepted.** Everything-at-HIGH
 means transport work preempts the kernel, and a kernel tick that pends
@@ -227,17 +228,16 @@ byte sits that far outside the byte cadence.
 
 The wake can beat its own byte. The detector fires 9.25 bit-times into
 the break, ahead of the stop-bit sample that rings the `0x00`, so a wake
-whose break byte has not rung gets its ring-dependent service - the CAL
-ruler mark, the resolver, the staged-reply kill - one byte-time later, at
-a third deadline slot (a ruler mark is served at the wake's entry stamp).
-The break's position comes from the ladder, never from the wake: the
+whose break byte has not rung gets its ring-dependent service - the
+resolver, the staged-reply kill - one byte-time later, at a third
+deadline slot. The break's position comes from the ladder, never from
+the wake: the
 resolver walks the ladder onto the break's own byte through every frame
 whole in the ring, however many data bytes a late service finds ringed
 behind it (under 1M bursts the frame-end body spans the next detector
 fire, so every wake lands a byte-time or more late, with data bytes
-newest). A CAL ruler mark has no frame to resolve onto, so it alone is
-classified by the newest byte: its `0x00`, rung fresh since the last
-service. DES: `tests/break_wake.rs` runs its pins with the wake ahead of
+newest). A CAL ruler mark needs neither: it is its detector's hardware
+stamp (sec 8). DES: `tests/break_wake.rs` runs its pins with the wake ahead of
 its byte, behind it, and alternating between the two;
 `lagged_break_wakes_resolve_every_frame` serves every wake 2.5 byte-times
 late.
@@ -370,8 +370,9 @@ So the guarantee is the priority ladder, not a software mitigation:
   bit-time (16 HCLK at 3M); RX wins the tie on channel number, so each
   waits at most one beat of the other. At HIGH it would lose every beat
   of a snapshot copy.
-- **HIGH:** CH1 ADC, CH4 TX, CH6 snapshot (ADC wins the HIGH ties by
-  channel number, keeping its interleave ahead of the copy).
+- **HIGH:** CH1 ADC, CH2 CAL stamp, CH4 TX, CH6 snapshot (ADC wins the
+  HIGH ties by channel number, keeping its interleave ahead of the copy;
+  the stamp's one halfword per break waits at most one beat of a copy).
 - **MEDIUM:** CH3 CRC feed - below CH6 so a reply copy is written before
   the feed reads it.
 
@@ -445,14 +446,21 @@ host owns the only crystal on the bus, so it is the syntonization root:
 the servo measures the host's crystal and slews HSITRIM toward it.
 
 The one measurement is **MGMT CAL**: a broadcast instruction announcing N
-breaks spaced exactly T us; the servo stamps `deadline.now()` at each
-break-wake entry on a quiet bus (same ISR flavor at both ends of every
-gap, so entry latency cancels), gates each gap at |d - T| <= T/16, and
-trims off the sum. ~+/-260 ppm from 8 x 400 us gaps. The break is the one
-wire event hardware can time, and these entry stamps are the one
-sanctioned exception to sec 5's no-wake-time rule (protocol sec 3.4, sec
-9.3). Break decode is threshold-free across the full HSITRIM throw, so CAL
-also rescues a railed servo.
+breaks spaced exactly T us; the servo times each break by hardware, gates
+each gap at |d - T| <= T/16, and trims off the sum. The detector's
+overflow (TIM2_UP) requests DMA1 CH2, which copies TIM3's free-running
+HCLK count into an 8-entry ring, so every stamp sits the same 9.25
+bit-times into its break and the offset cancels in the difference. The
+wake only collects: during a live train each break service takes the
+stamps in wire order, however late or coalesced it runs, and a gap is the
+16-bit difference of two. The servo's own breaks never latch (the mute
+drops the request with the interrupt), and a CAL announce drops what
+traffic left, so the train's first mark opens the ruler. Nothing is
+paired with ring positions: a train is bare breaks, so stamps are marks.
+A wake lagging past the ring's 8 marks loses those gaps to the gate, and
+a train with fewer than half its gaps valid decides nothing. Break time
+is never the wake's (sec 5, protocol sec 3.4). Break decode is threshold-free across the full HSITRIM throw, so
+CAL also rescues a railed servo.
 
 Frame traffic never trims. The host sends CAL when it detects a servo
 (at least two trains - the first identifies the chip's step effect,
@@ -468,7 +476,10 @@ HSITRIM between frames and mirrored read-only at
 protocol sec 9.3. Bench counters (`TrimProbe`, `--features bench`): CAL
 trains drained, trim decisions with their last reading, and break
 services whose resolver drive hit its per-wake frame bound. DES:
-`tests/trim.rs` - trains converge/reject/watchdog, traffic never trims
+`tests/trim.rs` - trains converge/reject/watchdog, every mark served
+U(0, 60) us late reads within 0.1 step (`cal_ruler_ignores_wake_lag`),
+traffic stamps never reach the ruler
+(`cal_ruler_opens_on_the_first_mark_after_traffic`), traffic never trims
 between CALs (`traffic_never_trims_between_cals`), and a CAL re-converges
 after a thermal shift (`cal_reconverges_after_a_thermal_shift`).
 

@@ -6,6 +6,7 @@
 
 use core::cell::{Cell, UnsafeCell};
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::rc::Rc;
 use std::vec::Vec;
 
@@ -13,7 +14,7 @@ use osc_protocol::crc::osc_crc_continue;
 use osc_servo_core::BaudRate;
 
 use crate::bus::ServoBus;
-use crate::traits::bus::{CrcEngine, Deadline, Providers, RxRing, TxWire, UsartBaud};
+use crate::traits::bus::{BreakStamps, CrcEngine, Deadline, Providers, RxRing, TxWire, UsartBaud};
 
 /// Ring length -- even and larger than `FRAME_MAX` (matches the V006 512 B ring).
 pub const RING_LEN: usize = 512;
@@ -248,6 +249,26 @@ impl UsartBaud for FakeBaud {
     }
 }
 
+/// Break stamps a scenario latches ahead of the wakes that take them.
+#[derive(Clone, Default)]
+pub struct FakeStamps(Rc<RefCell<VecDeque<u16>>>);
+
+impl FakeStamps {
+    pub fn latch(&self, stamp: u16) {
+        self.0.borrow_mut().push_back(stamp);
+    }
+}
+
+impl BreakStamps for FakeStamps {
+    fn take(&mut self) -> Option<u16> {
+        self.0.borrow_mut().pop_front()
+    }
+
+    fn clear(&mut self) {
+        self.0.borrow_mut().clear();
+    }
+}
+
 /// ZST binding each role to its fake (driver-pattern sec 5.4).
 pub struct TestProviders;
 
@@ -257,6 +278,7 @@ impl Providers for TestProviders {
     type Crc = FakeCrc;
     type Tx = FakeWire;
     type Baud = FakeBaud;
+    type Stamps = FakeStamps;
 }
 
 /// Owns the shared fake state and builds a `ServoBus` over it.
@@ -265,6 +287,7 @@ pub struct Harness {
     pub deadline: FakeDeadline,
     pub wire: FakeWire,
     pub baud: FakeBaud,
+    pub stamps: FakeStamps,
 }
 
 impl Harness {
@@ -274,6 +297,7 @@ impl Harness {
             deadline: FakeDeadline::new(),
             wire: FakeWire::new(),
             baud: FakeBaud::new(),
+            stamps: FakeStamps::default(),
         }
     }
 
@@ -289,6 +313,7 @@ impl Harness {
             FakeCrc::new(),
             self.wire.clone(),
             self.baud.clone(),
+            self.stamps.clone(),
             id,
             rate,
             response_deadline_us,

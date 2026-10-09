@@ -1,15 +1,16 @@
-//! The five `osc_servo_drivers::traits::bus` providers over per-servo shared state
+//! The six `osc_servo_drivers::traits::bus` providers over per-servo shared state
 //! (`docs/osc-native-protocol.md` sec 4, 10). Each provider is a thin view onto
 //! `Rc`-shared cells the [`super::Sim`] also holds a handle to, so wire
 //! deliveries and the driver see one ring, one clock, one baud.
 
 use std::cell::{Cell, RefCell, UnsafeCell};
+use std::collections::VecDeque;
 use std::rc::Rc;
 
 use osc_protocol::crc::osc_crc_continue;
 use osc_servo_core::BaudRate;
 use osc_servo_drivers::traits::bus::{
-    CrcEngine, Deadline, Providers, RxRing, TxWire, UsartBaud, tick_reached,
+    BreakStamps, CrcEngine, Deadline, Providers, RxRing, TxWire, UsartBaud, tick_reached,
 };
 
 use super::core::{Core, Event, Talker, break_ticks, byte_ticks};
@@ -146,6 +147,17 @@ impl BaudState {
     }
 }
 
+/// Break stamps latched at each detector trigger, the servo's local clock
+/// truncated to 16 bits as the chip's timer latches it.
+#[derive(Default)]
+pub struct StampState(RefCell<VecDeque<u16>>);
+
+impl StampState {
+    pub fn latch(&self, stamp: u16) {
+        self.0.borrow_mut().push_back(stamp);
+    }
+}
+
 /// Handles the Sim keeps to reach into one servo's state during delivery.
 /// Cloned into the servo itself so a reboot re-enters bringup over the same
 /// peripherals: the ring, the skewed clock and the applied baud are
@@ -158,6 +170,7 @@ pub struct Handles {
     /// Ticks the clock reads stale by until the next ring read: a
     /// preemption between the two.
     pub clock_lag: Rc<Cell<u64>>,
+    pub stamps: Rc<StampState>,
 }
 
 impl Handles {
@@ -167,6 +180,7 @@ impl Handles {
             deadline: DeadlineState::new(),
             baud: BaudState::new(rate),
             clock_lag: Rc::new(Cell::new(0)),
+            stamps: Rc::default(),
         }
     }
 }
@@ -408,6 +422,24 @@ impl UsartBaud for SimBaud {
     }
 }
 
+pub struct SimStamps(Rc<StampState>);
+
+impl SimStamps {
+    pub fn new(state: Rc<StampState>) -> Self {
+        Self(state)
+    }
+}
+
+impl BreakStamps for SimStamps {
+    fn take(&mut self) -> Option<u16> {
+        self.0.0.borrow_mut().pop_front()
+    }
+
+    fn clear(&mut self) {
+        self.0.0.borrow_mut().clear();
+    }
+}
+
 /// ZST binding each provider role for the `ServoBus` composite.
 pub struct SimProviders;
 
@@ -417,4 +449,5 @@ impl Providers for SimProviders {
     type Crc = SimCrc;
     type Tx = SimWire;
     type Baud = SimBaud;
+    type Stamps = SimStamps;
 }
