@@ -316,13 +316,19 @@ fn launch(p: *mut ControlTable) {
         BURST_LEN as u16,
     );
     dma::enable(CH);
-    adc::start_continuous_dma();
+    // The stamp is the first conversion's phase only if nothing runs between
+    // the start and the reads: an ISR there reads DIR after the trough turn
+    // and the host folds the whole burst 2 x CNT late.
+    let (cnt, dir) = critical_section::with(|_| {
+        adc::start_continuous_dma();
+        (timer::counter(), dir_now())
+    });
 
     // SAFETY: BURST is RO to the host, so this context is its sole writer.
     unsafe {
         let w = &raw mut (*p).burst.window;
-        (&raw mut (*w).start_cnt).write_volatile(timer::counter());
-        (&raw mut (*w).start_dir).write_volatile(dir_now());
+        (&raw mut (*w).start_cnt).write_volatile(cnt);
+        (&raw mut (*w).start_dir).write_volatile(dir);
         (&raw mut (*w).pwm_arr).write_volatile(timer::period());
         (&raw mut (*w).samples_len).write_volatile(BURST_LEN as u16);
         (&raw mut (*w).step_index).write_volatile(0);
