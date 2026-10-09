@@ -8,7 +8,9 @@ use std::time::Duration;
 
 use anyhow::{Result, bail};
 use bench::cli::{Connect, SETTLE_MS, Target, parse_addr};
-use bench::clock::{Summary, adapter_echo, adapter_offset_ppm, servo_truth, train_pacing};
+use bench::clock::{
+    Reject, Reply, Summary, adapter_echo, adapter_offset_ppm, readings, servo_truth, train_pacing,
+};
 use bench::osc::{REBOOT_SETTLE_MS, build_cal, build_read, build_reboot};
 use bench::run::xfer;
 use bench::wire::Wire;
@@ -65,6 +67,10 @@ struct Args {
     /// trim. It boots at its SAVED rate, which must be --baud.
     #[arg(long)]
     reboot: bool,
+    /// Also print every frame: time, reading or reject reason, and its char
+    /// start ticks.
+    #[arg(long)]
+    dump: bool,
 }
 
 fn main() -> Result<()> {
@@ -75,12 +81,13 @@ fn main() -> Result<()> {
 
     if let Some(frames) = a.echo {
         w.set_baud(host)?;
-        let (ppm, rejects) = adapter_echo(&mut w, a.echo_id, baud, ECHO_LEN, frames)?;
+        let replies = adapter_echo(&mut w, a.echo_id, baud, ECHO_LEN, frames)?;
         w.set_baud(baud)?;
+        dump(a.dump, 0, &replies);
         println!(
             "{{\"kind\":\"echo\",\"baud\":{baud},\"host_bps\":{host},\"expect_ppm\":{:.3},{}}}",
             adapter_offset_ppm(host, baud),
-            reading(&ppm, rejects)
+            reading(&replies)
         );
         return Ok(());
     }
@@ -97,10 +104,11 @@ fn main() -> Result<()> {
     for i in 0..=a.count {
         let trim = read_trim(&mut w, a.target.id)?;
         if a.replies > 0 {
-            let (ppm, rejects) = servo_truth(&mut w, a.target.id, baud, a.addr, a.len, a.replies)?;
+            let replies = servo_truth(&mut w, a.target.id, baud, a.addr, a.len, a.replies)?;
+            dump(a.dump, i, &replies);
             println!(
                 "{{\"kind\":\"truth\",\"i\":{i},\"baud\":{baud},\"trim\":{trim},{}}}",
-                reading(&ppm, rejects)
+                reading(&replies)
             );
         }
         let Some(gap_us) = a.gap_us.filter(|_| i < a.count) else {
@@ -141,8 +149,9 @@ fn read_trim(w: &mut Wire, id: u8) -> Result<i8> {
 }
 
 /// JSON fields of one repeated reading.
-fn reading(ppm: &[f64], rejects: u32) -> String {
-    match Summary::of(ppm) {
+fn reading(replies: &[Reply]) -> String {
+    let (ppm, rejects) = readings(replies);
+    match Summary::of(&ppm) {
         Some(s) => format!(
             "\"n\":{},\"rejects\":{rejects},\"ppm\":{:.2},\"sd\":{:.2},\"half95\":{:.2}",
             s.n,
@@ -154,5 +163,44 @@ fn reading(ppm: &[f64], rejects: u32) -> String {
             "\"n\":{},\"rejects\":{rejects},\"ppm\":null,\"sd\":null,\"half95\":null",
             ppm.len()
         ),
+    }
+}
+
+/// One JSON line per frame of reading `i` when `on`.
+fn dump(on: bool, i: u32, replies: &[Reply]) {
+    if !on {
+        return;
+    }
+    for (r, x) in replies.iter().enumerate() {
+        let (ppm, arms, residual, reject) = match &x.fit {
+            Ok(f) => (
+                format!("{:.2}", f.ppm),
+                f.arms.to_string(),
+                format!("{:.3}", f.residual_max),
+                "null".to_string(),
+            ),
+            Err(e) => (
+                "null".into(),
+                "null".into(),
+                "null".into(),
+                format!("\"{}\"", reject_text(e)),
+            ),
+        };
+        let ticks: Vec<String> = x.ticks.iter().map(u32::to_string).collect();
+        println!(
+            "{{\"kind\":\"frame\",\"i\":{i},\"r\":{r},\"at_ms\":{:.3},\"ppm\":{ppm},\"arms\":{arms},\
+             \"residual_max\":{residual},\"reject\":{reject},\"ticks\":[{}]}}",
+            x.at.as_secs_f64() * 1e3,
+            ticks.join(",")
+        );
+    }
+}
+
+fn reject_text(e: &Reject) -> String {
+    match e {
+        Reject::Exchange(m) => format!("exchange: {}", m.replace('"', "'")),
+        Reject::Echo => "echo mismatch".into(),
+        Reject::Short => "short".into(),
+        Reject::Misdecode(bits) => format!("misdecode {bits:.2} bits"),
     }
 }
