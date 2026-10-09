@@ -10,6 +10,8 @@
 //! gives each arm its own intercept, so a seam never reads as clock skew.
 //! Sign: + = servo fast, the CAL ruler's convention.
 
+use std::time::{Duration, Instant};
+
 use anyhow::Result;
 
 use crate::edges::BStamp;
@@ -52,11 +54,24 @@ pub struct PitchFit {
     pub residual_max: f64,
 }
 
+/// Why a frame gave no reading.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Reject {
+    /// The exchange did not parse or its status was not OK.
+    Exchange(String),
+    /// The echo decoded to other bytes than the frame sent.
+    Echo,
+    /// Too few characters to fit.
+    Short,
+    /// A char start this many bits off the fit.
+    Misdecode(f64),
+}
+
 /// Fit one frame's data stamps (break excluded) at `bit_ticks` capture
-/// ticks per nominal bit. `None` when too short or misdecoded.
-pub fn fit_pitch(chars: &[BStamp], bit_ticks: f64) -> Option<PitchFit> {
+/// ticks per nominal bit.
+pub fn fit_pitch(chars: &[BStamp], bit_ticks: f64) -> Result<PitchFit, Reject> {
     if chars.len() < MIN_CHARS {
-        return None;
+        return Err(Reject::Short);
     }
     let t: Vec<f64> = chars
         .iter()
@@ -91,7 +106,7 @@ pub fn fit_pitch(chars: &[BStamp], bit_ticks: f64) -> Option<PitchFit> {
         }
     }
     if sxx == 0.0 {
-        return None;
+        return Err(Reject::Short);
     }
     let pitch = sxy / sxx;
     let mut residual_max: f64 = 0.0;
@@ -102,9 +117,9 @@ pub fn fit_pitch(chars: &[BStamp], bit_ticks: f64) -> Option<PitchFit> {
         }
     }
     if residual_max > RESIDUAL_MAX_BITS * bit_ticks {
-        return None;
+        return Err(Reject::Misdecode(residual_max / bit_ticks));
     }
-    Some(PitchFit {
+    Ok(PitchFit {
         ppm: (BITS_PER_CHAR * bit_ticks / pitch - 1.0) * 1e6,
         chars: chars.len(),
         arms: arms.len(),
@@ -202,10 +217,40 @@ pub fn adapter_offset_ppm(bps: u32, nominal: u32) -> f64 {
     (ADAPTER_PCLK_HZ as f64 / brr as f64 / nominal as f64 - 1.0) * 1e6
 }
 
+/// One timed frame: when it was taken (from the first of its reading), its
+/// char start ticks relative to its first char, and its reading or the
+/// reason it has none.
+#[derive(Clone, Debug)]
+pub struct Reply {
+    pub at: Duration,
+    pub ticks: Vec<u32>,
+    pub fit: Result<PitchFit, Reject>,
+}
+
+impl Reply {
+    fn of(at: Duration, chars: &[BStamp], fit: Result<PitchFit, Reject>) -> Self {
+        let t0 = chars.first().map_or(0, |s| s.tick);
+        Self {
+            at,
+            ticks: chars.iter().map(|s| s.tick.wrapping_sub(t0)).collect(),
+            fit,
+        }
+    }
+}
+
+/// The readings (ppm) of `replies`, and how many gave none.
+pub fn readings(replies: &[Reply]) -> (Vec<f64>, u32) {
+    let ppm: Vec<f64> = replies
+        .iter()
+        .filter_map(|r| r.fit.as_ref().ok().map(|f| f.ppm))
+        .collect();
+    let rejects = (replies.len() - ppm.len()) as u32;
+    (ppm, rejects)
+}
+
 /// Servo clock truth: `replies` READs of `len` bytes at `addr`, each
 /// reply's pitch fit at the servo's catalog `baud` (the host must be on
-/// that rate). Returns the per-reply readings and the replies that failed
-/// to parse or fit.
+/// that rate).
 pub fn servo_truth(
     w: &mut Wire,
     id: u8,
@@ -213,24 +258,29 @@ pub fn servo_truth(
     addr: u16,
     len: u16,
     replies: u32,
-) -> Result<(Vec<f64>, u32)> {
+) -> Result<Vec<Reply>> {
     let read = build_read(id, addr, len);
     let settle_ms = wire_ms(read.len() + len as usize, baud);
     let bt = bit_ticks(w, baud);
-    let mut ppm = Vec::new();
-    let mut rejects = 0;
+    let start = Instant::now();
+    let mut out = Vec::new();
     for _ in 0..replies {
+        let at = start.elapsed();
         let (stamps, bits) = capture(w, &read, settle_ms)?;
-        let fit = parse_exchange(&stamps, &read, bits)
-            .ok()
-            .filter(|ex| ex.status.result == Some(ResultCode::Ok))
-            .and_then(|ex| fit_pitch(frame_chars(&stamps, ex.stamps_end), bt));
-        match fit {
-            Some(f) => ppm.push(f.ppm),
-            None => rejects += 1,
-        }
+        out.push(match parse_exchange(&stamps, &read, bits) {
+            Ok(ex) if ex.status.result == Some(ResultCode::Ok) => {
+                let chars = frame_chars(&stamps, ex.stamps_end);
+                Reply::of(at, chars, fit_pitch(chars, bt))
+            }
+            Ok(ex) => Reply::of(
+                at,
+                &[],
+                Err(Reject::Exchange(format!("status {:?}", ex.status.result))),
+            ),
+            Err(e) => Reply::of(at, &[], Err(Reject::Exchange(e.to_string()))),
+        });
     }
-    Ok((ppm, rejects))
+    Ok(out)
 }
 
 /// Instrument self-check: `frames` NOREPLY WRITEs of `len` bytes to
@@ -243,7 +293,7 @@ pub fn adapter_echo(
     nominal: u32,
     len: usize,
     frames: u32,
-) -> Result<(Vec<f64>, u32)> {
+) -> Result<Vec<Reply>> {
     // Aimed at the read-only telemetry block: even a servo that did hold the
     // id would refuse the write.
     let mut payload = TELEMETRY_COMMON_START.to_le_bytes().to_vec();
@@ -251,19 +301,22 @@ pub fn adapter_echo(
     let frame = build_instruction(absent_id, Opcode::Write, Inst::FLAG_NOREPLY, &payload);
     let settle_ms = wire_ms(frame.len(), w.current_baud());
     let bt = bit_ticks(w, nominal);
-    let mut ppm = Vec::new();
-    let mut rejects = 0;
+    let start = Instant::now();
+    let mut out = Vec::new();
     for _ in 0..frames {
+        let at = start.elapsed();
         let (stamps, _) = capture(w, &frame, settle_ms)?;
         let chars = frame_chars(&stamps, stamps.len());
         let echoed =
             chars.len() == frame.len() && chars.iter().zip(&frame).all(|(s, b)| s.byte == *b);
-        match fit_pitch(chars, bt).filter(|_| echoed) {
-            Some(f) => ppm.push(f.ppm),
-            None => rejects += 1,
-        }
+        let fit = if echoed {
+            fit_pitch(chars, bt)
+        } else {
+            Err(Reject::Echo)
+        };
+        out.push(Reply::of(at, chars, fit));
     }
-    Ok((ppm, rejects))
+    Ok(out)
 }
 
 /// Settle window for `bytes` of wire at `baud`, plus servo latency and USB
@@ -279,6 +332,8 @@ mod tests {
     use super::*;
     use crate::edges::stamps_from_edges;
     use crate::edges::tests::frame_edges;
+    use crate::wire::bit_ticks_at;
+    use osc_client::wire::{Level, WireEdge};
 
     /// Char start stamps of a talker whose clock runs `ppm` fast, quantized
     /// by floor() on the capture grid, with `phase` ticks of start offset
@@ -352,7 +407,7 @@ mod tests {
     fn a_misdecoded_start_rejects_the_fit() {
         let mut s = stamps(64, 18.0, 0.0, 0.5, usize::MAX, 0.0);
         s[40].tick -= 18; // one bit early: a data edge taken for a start
-        assert_eq!(fit_pitch(&s, 18.0), None);
+        assert!(matches!(fit_pitch(&s, 18.0), Err(Reject::Misdecode(bits)) if bits > 0.5));
     }
 
     #[test]
@@ -362,7 +417,7 @@ mod tests {
                 &stamps(MIN_CHARS - 1, 18.0, 0.0, 0.0, usize::MAX, 0.0),
                 18.0
             ),
-            None
+            Err(Reject::Short)
         );
     }
 
@@ -383,6 +438,58 @@ mod tests {
             "want {want}, read {}",
             fit.ppm
         );
+    }
+
+    /// The adapter's own frame at divisor `brr`: law break, 2-bit TX seam,
+    /// back-to-back chars, every edge on a PCLK cycle, captured at PCLK / 8.
+    fn adapter_frame_edges(brr: u64, bytes: &[u8]) -> Vec<WireEdge> {
+        let pclk_per_tick = (ADAPTER_PCLK_HZ / 18_000_000) as u64;
+        let mut bits = vec![false; 10];
+        bits.extend([true; 2]);
+        for &b in bytes {
+            bits.push(false);
+            bits.extend((0..8).map(|k| b >> k & 1 == 1));
+            bits.push(true);
+        }
+        let mut level = true;
+        let mut out = Vec::new();
+        for (k, &bit) in bits.iter().enumerate() {
+            if bit != level {
+                out.push(WireEdge {
+                    tick: ((1_000 + k as u64 * brr) / pclk_per_tick) as u32,
+                    level: if bit { Level::High } else { Level::Low },
+                });
+                level = bit;
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_fast_detuned_echo_decodes_at_the_rounded_bit() {
+        // One divisor step fast at 2M and 3M: 8.875 and 5.875 ticks per bit.
+        // Truncated to 8 and 5 the sampler reads bit 7 inside bit 6.
+        let frame: Vec<u8> = (0..200u8).collect();
+        for (nominal, host) in [(2_000_000, 2_028_169), (3_000_000, 3_063_830)] {
+            let brr = (ADAPTER_PCLK_HZ / nominal - 1) as u64;
+            let edges = adapter_frame_edges(brr, &frame);
+            let bytes = |b: u32| -> Vec<u8> {
+                let st = stamps_from_edges(&edges, b);
+                frame_chars(&st, st.len()).iter().map(|s| s.byte).collect()
+            };
+            let truncated = 18_000_000 / host;
+            assert_ne!(bytes(truncated), frame, "{host}: truncation decodes");
+            let b = bit_ticks_at(18, host);
+            assert_eq!(bytes(b), frame, "{host}: rounded {b} misdecodes");
+            let st = stamps_from_edges(&edges, b);
+            let fit = fit_pitch(frame_chars(&st, st.len()), 18e6 / nominal as f64).unwrap();
+            let want = adapter_offset_ppm(host, nominal);
+            assert!(
+                (fit.ppm - want).abs() < 1.0,
+                "{host}: want {want}, read {}",
+                fit.ppm
+            );
+        }
     }
 
     #[test]

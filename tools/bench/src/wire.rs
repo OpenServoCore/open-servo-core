@@ -72,7 +72,7 @@ impl Wire {
 
     /// Capture ticks per wire bit at the current baud.
     pub fn bit_ticks(&self) -> u32 {
-        (self.ticks_per_us as u64 * 1_000_000 / self.baud as u64) as u32
+        bit_ticks_at(self.ticks_per_us, self.baud)
     }
 
     /// Host UART rate, raw bps -- off-catalog divisors allowed (the
@@ -190,6 +190,14 @@ impl Wire {
             all.extend(drain.edges);
         }
     }
+}
+
+/// Whole capture ticks per bit at `bps`, rounded: an off-catalog rate is
+/// fractional, and a truncated 5.875 (3M one divisor step fast) decodes at 5,
+/// sampling bit 7 inside bit 6.
+pub fn bit_ticks_at(ticks_per_us: u32, bps: u32) -> u32 {
+    let hz = ticks_per_us as u64 * 1_000_000;
+    ((hz + bps as u64 / 2) / bps as u64) as u32
 }
 
 /// Host-stall injector: `BENCH_STALL_EVERY=N` + `BENCH_STALL_MS=M` sleeps
