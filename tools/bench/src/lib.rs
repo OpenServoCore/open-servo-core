@@ -1,9 +1,11 @@
 //! Host-side bench library. [`wire`] drives the osc-adapter's instrument
 //! surface (raw TX + edge capture) through osc-client, [`edges`] decodes
-//! captures into stamps, and [`osc`] turns osc-native frames into wire
-//! bytes and parses captured exchanges back into timing + status.
+//! captures into stamps, [`osc`] turns osc-native frames into wire bytes
+//! and parses captured exchanges back into timing + status, and [`clock`]
+//! reads a servo's clock against the adapter crystal from its replies.
 
 pub mod cli;
+pub mod clock;
 pub mod discover;
 pub mod edges;
 pub mod osc;
