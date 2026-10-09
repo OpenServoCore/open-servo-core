@@ -96,8 +96,6 @@ impl<P: Providers> ServoBus<P> {
                 ChainOut::Trigger { predecessor_silent } => {
                     let over = predecessor_silent.then_some(ResultCode::PredecessorSilent);
                     self.tx.trigger(&mut self.crc, over);
-                    // The break is on the wire: the frame's record follows.
-                    self.record_behind_reply();
                     return;
                 }
             }
@@ -164,9 +162,7 @@ impl<P: Providers> ServoBus<P> {
         if status
             || complete && idle && foreign(Header::from_bytes(&self.ring_header(anchor)), self.id)
         {
-            if self.crc_gate(anchor, footprint) {
-                self.drift_record(anchor, footprint);
-            }
+            self.crc_gate(anchor, footprint);
             return;
         }
         // The spine runs only from an idle reply pipeline: superseding a live
@@ -216,28 +212,21 @@ impl<P: Providers> ServoBus<P> {
         self.chain_at = None;
         if self.tx.staged() {
             self.tx.abort();
-            self.record_behind_reply();
         }
         // Dispatch inline - the CRC already passed, so any reply sequences
         // from the packet end and a staged table effect commits directly
         // behind it (the `verify` order). A frame that decodes as another
         // servo's touches nothing.
-        let mut staged = false;
         if let Some((has_reply, slot, out)) =
             self.dispatch_decoded(anchor, footprint, |req, ctx, h| d.dispatch(req, ctx, h))
         {
-            staged = has_reply && self.tx.staged();
-            if staged {
-                self.reply_record = Some((anchor, footprint));
+            if has_reply && self.tx.staged() {
                 self.sequence_reply(slot, packet_end);
             }
             if matches!(out, Dispatched::Pending) {
                 let mut handle = self.reply_handle();
                 d.commit(&mut handle);
             }
-        }
-        if !staged {
-            self.drift_record(anchor, footprint);
         }
     }
 
@@ -279,9 +268,7 @@ impl<P: Providers> ServoBus<P> {
         // Sequence from the ENGINE's state, not the recorded flag: any path
         // that reclaimed the staged reply between dispatch and here would
         // otherwise arm the chain over an empty engine (ghost trigger).
-        let staged = p.staged && self.tx.staged();
-        if staged {
-            self.reply_record = Some((p.anchor, p.footprint));
+        if p.staged && self.tx.staged() {
             self.sequence_reply(p.slot, p.packet_end);
         }
         // Commit AFTER the reply is sequenced (sec 4): the ack was decided
@@ -293,10 +280,6 @@ impl<P: Providers> ServoBus<P> {
         if p.table {
             let mut handle = self.reply_handle();
             d.commit(&mut handle);
-        }
-        // The tracker's record last, and behind the reply when there is one.
-        if !staged {
-            self.drift_record(p.anchor, p.footprint);
         }
     }
 
@@ -332,7 +315,6 @@ impl<P: Providers> ServoBus<P> {
     fn drop_staged(&mut self) {
         if self.tx.staged() {
             self.tx.abort();
-            self.record_behind_reply();
         }
         self.chain.reset();
         self.chain_at = None;

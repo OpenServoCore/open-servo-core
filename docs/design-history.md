@@ -138,6 +138,19 @@ queuing seam, detector latch offset, ISR flavor residue) so only drift
 survives. Lesson: when only the host has the truth — it owns the crystal —
 ask the host to cooperate instead of eavesdropping on it.
 
+The chain-pair tracker was deleted in turn. It needed each break's time
+and its position in the ring, and the V006 delivers those on two separate
+paths: the ISR entry lags the detector by up to two frames under load and
+merges breaks, so stamps moved to a DMA latch (DMA1 CH2 copying TIM3 on
+the detector's update), which then had to be paired with ring positions
+by order after the fact - floors, take-after-reply, clears on CAL marks,
+rate changes and rescues, a 16-bit unwrap. Every pairing heuristic had a
+misfire case, and the transport bugs of a whole week sat in that one
+layer. The trim now moves only on a CAL; the host re-sends CAL
+periodically to follow thermal drift. Lesson: if the hardware cannot tag
+an event with both its time and its place, do not build a mechanism that
+needs both - ask the reference to come to you.
+
 ## Position and time from wake evidence: three dead ends
 
 ### Capture FIFO / deferred dispatch

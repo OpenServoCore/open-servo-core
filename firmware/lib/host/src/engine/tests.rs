@@ -767,7 +767,7 @@ mod wire {
     #[test]
     fn wire_baud_applies_raw_and_completes_immediately() {
         let mut r = rig();
-        // One BRR step off 1M -- the tracker's host-detune probe rate.
+        // One BRR step off 1M - the trim suite's host-detune probe rate.
         r.bus.wire_baud(993_103).unwrap();
         assert_eq!(r.baud.applied_raw(), vec![993_103]);
         let _ = expect_wire_done(&mut r);

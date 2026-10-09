@@ -77,9 +77,9 @@ byte contains a high stop bit within 10 bit-times); no sync header, no
 byte stuffing, no content restrictions.
 
 Why a law and not a floor: break ≡ one character time keeps every
-timing model exact — the framer's footprint algebra and the §9.3
-chain-pair gates count the break as one byte slot, so an over-long
-break is a constant error tax on every span — and the law shape is
+timing model exact - the framer's footprint algebra counts the break as
+one byte slot, so an over-long break is a constant error tax on every
+span - and the law shape is
 precisely the LIN break definition (LBDL=0), so any LIN-capable
 receiver gets hardware break detection with a deterministic 10-bit
 anchor. Bridge-class hosts use exactly that. The servo cannot: its bus is
@@ -249,9 +249,8 @@ The contract, binding on every implementation of this protocol:
   geometry checks, and the starve horizon.
 - **Times come from data-cadence projections only** (`now + missing
   byte-times`). A wake's arrival time MUST NOT enter any timing grid.
-  (The one exception is the §9.3 trim machinery, whose entire subject is
-  the break-service stamp itself — gated, paired, and baseline-anchored
-  there.)
+  (The one exception is the sec 9.3 CAL ruler, whose entire subject is the
+  break-service stamp itself - on a quiet bus, gated per gap there.)
 - **Breaks are not countable events.** Service can lag the wire, and N
   breaks can coalesce into one service; all break handling MUST be
   idempotent, and freshness (did bytes ring since the last service?)
@@ -1400,36 +1399,20 @@ gaps, a tenth of the smallest trim step. Contract and hygiene:
   CAL also *rescues* a servo railed by a bad trim — the ruler works below
   the layer a bad trim breaks.
 
-Thermal drift between CALs is the **differential chain-pair tracker**'s
-job, passive and wire-invisible: adjacent break-wake stamps bracketing
-exactly ONE CRC-verified *silent* instruction (GWRITE, or WRITE/COMMIT
-with NOREPLY or broadcast — shapes no reply can follow, since a
-responder's turnaround rides its clock, not the host's) measure
-`seam + drift·span`. The host's queuing seam is unknown but stationary:
-the first 128-pair window after a CAL IS the seam (baseline) - the CAL's
-anchor - and every later 128-pair window reads its shift from that one
-baseline; anything constant (seam, FE latch offset, entry-path residue)
-dies in the subtraction. The steps the tracker itself applies stay in the
-measurement: a window reads the clock's residual against the anchor,
-never an increment against the tracker's own last decision, so window
-noise cannot integrate into a walk - a step a noisy window took, the next
-window reads back out, and the trim stays within one window's noise of
-the truth while genuine drift is followed step by step. Only a CAL (or a
-rate change) re-baselines. Byte-exactness (ring span == the verified
-footprint) and the same 1/16 gate qualify pairs; window readings past
-±8 k ppm are not thermal and are discarded (a seam shift comes from a
-host behavior change the host knows about - it re-anchors with a CAL).
+CAL is the only input to the trim: frame traffic never trims, so nothing
+the host sends between trains (any shape, any rate, any seam) moves a
+servo's clock. Each train feeds the oscillator-trim loop
+(`steps = round(err/step_effect)`, clamped +/-4 per train), applied by the
+main loop between frames; the total is readable at
+`telemetry.clock.trim_steps`. The step effect is self-measured - chip trim
+steps are nonuniform, 1.4-3.2 k ppm/step measured - from one CAL's reading
+to the next, over the steps the earlier train applied. Volatile by design.
 
-Both feed the oscillator-trim loop (`steps = round(err/step_effect)`,
-clamped ±4/decision), applied by the main loop between frames; the total
-is readable at `telemetry.clock.trim_steps`. The step effect is
-self-measured by the ruler alone - chip trim steps are nonuniform,
-1.4–3.2 k ppm/step measured - from one CAL's reading to the next, over
-every step applied in between, the tracker's included; drift windows only
-decide (their seam noise, ~1 k ppm on the bench, cannot probe a 1.4 k
-step). Volatile by design: the host CALs at boot (~4 ms of bus per train)
-and at moments it knows its own behavior changed - not on a timer; the
-tracker holds the fleet through everything between.
+The host owns the schedule (~4 ms of bus per train): it CALs when it
+detects a servo (boot, a servo joining the bus), then periodically to
+follow thermal drift (bench fleet offsets grew over a ~1.5 h warm-up);
+the interval is the host's choice. A rate change needs no CAL: the trim corrects the
+oscillator's frequency, which no baud setting moves.
 
 **Boot guidance: send at least two trains.** Full convergence is a
 two-point identification, not a precision problem: the first train's
@@ -1523,7 +1506,8 @@ exit from `CONFIG_CORRUPT`.
 | DMA1 CH3 + SPI1     | CRC engine (no pins) [F6]                         |
 | DMA1 CH1            | ADC                                               |
 | DMA1 CH7            | TIM2_CH2: zeroes the break detector per rising edge (§3.4) |
-| DMA1 CH6            | copy-once snapshot buffer (§4.2); CH2 free        |
+| DMA1 CH6            | copy-once snapshot buffer (sec 4.2)               |
+| DMA1 CH2, TIM3      | free                                              |
 | SysTick             | framer deadlines A/B, reply gap, reclaim             |
 | TIM2, CH1 on PC0    | the break detector (§3.4)                         |
 | TIM1                | motor control                                     |

@@ -150,7 +150,7 @@ impl<P: Providers> HostBus<P> {
     }
 
     /// Arbitrary host UART rate, divisor-raw (off-catalog detunes are the
-    /// clock-tracker's drift injector). The engine's own timing state
+    /// trim suite's host-detune probe). The engine's own timing state
     /// tracks the nearest catalog rate; sec 3.4 pacing arms as for any
     /// rate change. Completes immediately.
     pub fn wire_baud(&mut self, bps: u32) -> Result<(), SubmitError> {

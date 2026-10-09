@@ -256,16 +256,13 @@ impl Framer {
     }
 
     /// The next frame has begun: its break byte is ringed at the anchor
-    /// (position from the stream, with every earlier frame settled).
-    /// Returns the index just past that byte - a break's drift stamp
-    /// cursor, however many data bytes have ringed behind it.
-    pub fn break_ringed(&self, ring: &[u8], cursor: u16) -> Option<u16> {
+    /// (position from the stream, with every earlier frame settled),
+    /// however many data bytes have ringed behind it.
+    pub fn break_ringed(&self, ring: &[u8], cursor: u16) -> bool {
         let len = ring.len();
-        if len == 0 || dist(cursor, self.anchor, len) == 0 {
-            return None;
-        }
-        (ring[self.anchor as usize] == BREAK_RING_BYTE)
-            .then(|| ring_wrap(self.anchor as usize + 1, len) as u16)
+        len != 0
+            && dist(cursor, self.anchor, len) != 0
+            && ring[self.anchor as usize] == BREAK_RING_BYTE
     }
 
     /// One resolution step against the CURRENT ring state (data-first from

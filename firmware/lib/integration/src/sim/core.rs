@@ -95,16 +95,12 @@ pub enum Event {
     Compare { servo: usize, generation: u64 },
     /// Test-injected oscillator drift (sec 9.3): servo `servo`'s clock RATE
     /// becomes `ppm` here, continuously -- re-anchored, the reading never
-    /// steps (thermal drift as the tracker sees it).
+    /// steps (thermal drift).
     SkewChange { servo: usize, ppm: i32 },
     /// Test-injected spurious wake: the break vector re-enters with NO new
     /// wire byte (a coalesced or lagged break service -- sec 3.4's reason to
     /// demand idempotence).
     WakeRefire { servo: usize },
-    /// Test-injected orphan stamp: servo `servo`'s break detector latches
-    /// with no byte rung and no wake (a low that trips the detector inside
-    /// an idle gap and belongs to no frame).
-    StampOnly { servo: usize },
     /// A break's 0x00 lands in servo `servo`'s ring after its wake
     /// ([`super::BreakWake::BeforeByte`]).
     BreakByte { servo: usize },

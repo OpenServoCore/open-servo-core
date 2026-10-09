@@ -1,18 +1,18 @@
-//! Clock-trim on silicon (protocol sec 9.3), both loops:
+//! Clock-trim on silicon (protocol sec 9.3): the CAL ruler is the only
+//! input to the trim.
 //!
-//! - CAL: the lying-announce train injects a known clock-offset reading
-//!   without touching the chip -- the announce declares a shorter gap
-//!   than the adapter's crystal actually paces, every gap reads long by
-//!   the same ratio, and the servo trims as if its own clock were fast.
-//!   The truthful trains that follow must pull the total back -- the
-//!   closed-loop plant-direction proof DES cannot give (the sim fakes
-//!   the chip adapter; on silicon an inverted HSITRIM mapping
-//!   railed the fleet in max-step clamps while every DES trim test
-//!   stayed green).
-//! - Tracker: the host-detune probe injects drift the same way -- the
-//!   host moves one BRR step off nominal WITHOUT a CAL, so every
-//!   chain pair reads the shift, and the differential tracker must trim
-//!   it out from traffic alone (and trim back when the host returns).
+//! - Plant direction: the lying-announce train injects a known
+//!   clock-offset reading without touching the chip - the announce
+//!   declares a shorter gap than the adapter's crystal actually paces,
+//!   every gap reads long by the same ratio, and the servo trims as if its
+//!   own clock were fast. The truthful trains that follow must pull the
+//!   total back - the closed-loop proof DES cannot give (the sim fakes
+//!   the chip adapter; on silicon an inverted HSITRIM mapping railed the
+//!   fleet in max-step clamps while every DES trim test stayed green).
+//! - Host detune: the host moves one BRR step off nominal. Traffic at
+//!   the detuned rate must leave the trim alone, and CAL trains sent at
+//!   that rate must land on the same anchor: the ruler is the adapter's
+//!   crystal, not its baud.
 
 use std::thread::sleep;
 use std::time::Duration;
@@ -38,9 +38,9 @@ const STEPS_MAX: i32 = 4;
 /// The accumulated-trim rail (drivers `trim::TOTAL_MAX`).
 const TOTAL_MAX: i32 = 15;
 /// Trains the anchor may need: the trim enters this file wherever the
-/// suite's hot-loop food left it (the tracker walked it to the +15 rail
-/// on the bench), so the walk back from the rail at STEPS_MAX per train,
-/// one train to identify the step effect, one to confirm.
+/// last CAL left it (anywhere up to the rail), so the walk back from the
+/// rail at STEPS_MAX per train, one train to identify the step effect, one
+/// to confirm.
 const ANCHOR_TRAINS_MAX: u32 = (TOTAL_MAX as u32).div_ceil(STEPS_MAX as u32) + 3;
 
 fn read_trim(b: &mut Bench) -> i32 {
@@ -68,17 +68,25 @@ fn train(b: &mut Bench, announce_gap_us: u16) {
 /// never goes first: it would poison the apply->remeasure step-effect
 /// identification.
 fn anchor(b: &mut Bench) -> (i32, u32) {
-    train(b, GAP_US);
+    let (trim, trains) = converge(b, |b| train(b, GAP_US));
+    trim.map(|t| (t, trains))
+        .unwrap_or_else(|| panic!("CAL did not converge in {trains} trains"))
+}
+
+/// Trains from `send` until two read-backs agree: `(Some(trim), trains)`,
+/// or `(None, ANCHOR_TRAINS_MAX)` when they never do.
+fn converge(b: &mut Bench, mut send: impl FnMut(&mut Bench)) -> (Option<i32>, u32) {
+    send(b);
     let mut trim = read_trim(b);
     for trains in 2..=ANCHOR_TRAINS_MAX {
-        train(b, GAP_US);
+        send(b);
         let next = read_trim(b);
         if next == trim {
-            return (trim, trains);
+            return (Some(trim), trains);
         }
         trim = next;
     }
-    panic!("CAL did not converge in {ANCHOR_TRAINS_MAX} trains, trim {trim}")
+    (None, ANCHOR_TRAINS_MAX)
 }
 
 #[serial]
@@ -100,31 +108,18 @@ fn lying_train_trims_and_truth_pulls_back() {
     );
 }
 
-/// Host detune for the tracker probe: one BRR step off 1M on the host UART
-/// (144 MHz / 145 ~ 993.1 kbaud, -6.9k ppm). Inside every gate that
-/// matters -- pair qualification (0.69% of span vs the 1/16 gate), the
-/// tracker's +/-8k ppm sanity band, and framing margin (+/-3.4%, F10) -- and
-/// big against the per-window noise floor.
+/// Host detune: one BRR step off 1M on the host UART (144 MHz / 145 ~
+/// 993.1 kbaud, -6.9k ppm), inside framing margin (+/-3.4%, F10) and
+/// nearly three nominal trim steps.
 const DETUNE_BAUD: u32 = 993_103;
-/// Frames per food burst. Each adjacent pair inside a burst brackets one
-/// CRC-verified silent WRITE(NOREPLY) -- the tracker's food (protocol sec 9.3); the
-/// adapter's grid pacing makes the seam stationary by construction.
+/// Frames per food burst: silent WRITE(NOREPLY)s, the hot-loop shape.
 const FOOD_FRAMES: usize = 24;
-/// Bursts that carry one tracker decision with margin: a window (128
-/// pairs) + a refinement round, at 23 pairs per burst - sized generously
-/// (~2x the ideal-flow minimum) because ~30% of pairs die to service-lag
-/// byte-exactness on silicon (probe-measured) and a late apply must still
-/// land before the phase's trim read.
-const PHASE_BURSTS: u32 = 36;
-/// Bursts after a CAL so the anchor's baseline window (128 pairs, at the
-/// same ~70% pair yield) captures the true seam before the detune shifts
-/// it.
-const BASELINE_BURSTS: u32 = 10;
+/// Food bursts at the detuned rate: 36 x 24 = 864 frames.
+const FOOD_BURSTS: u32 = 36;
 
 fn feed(b: &mut Bench, burst: &[Vec<u8>], bursts: u32) {
     for _ in 0..bursts {
         b.burst_frames(burst);
-        // Decisions apply in the servo main loop between frames.
         sleep(Duration::from_millis(SETTLE_MS));
         b.drain_stamps();
     }
@@ -132,65 +127,42 @@ fn feed(b: &mut Bench, burst: &[Vec<u8>], bursts: u32) {
 
 #[serial]
 #[test]
-fn tracker_follows_host_detune() {
+fn cal_holds_its_anchor_through_a_host_detune() {
     let mut b = bench();
-    let sent_at_start = b.frames_sent();
     // The detune step is defined against the 1M BRR; pin the bus there.
     b.switch_baud(BOOT_BAUD);
-    let sent_at_run = b.frames_sent();
 
     let mut payload = GOAL_POSITION.to_le_bytes().to_vec();
     payload.extend_from_slice(&b.goal_mid().to_le_bytes());
     let frame = build_instruction(b.id(), Opcode::Write, Inst::FLAG_NOREPLY, &payload);
     let burst = vec![frame; FOOD_FRAMES];
 
-    // The food after the anchor lets the tracker baseline capture the true
-    // host seam.
-    let (start, start_trains) = anchor(&mut b);
-    feed(&mut b, &burst, BASELINE_BURSTS);
+    let (start, _) = anchor(&mut b);
 
-    // Host walks away -6.9k ppm with no CAL: only the tracker can see it.
+    // Host walks away -6.9k ppm. Read-backs run at the true rate: the
+    // capture decodes replies at the host's set rate.
     b.follow_baud(DETUNE_BAUD);
-    feed(&mut b, &burst, PHASE_BURSTS);
+    feed(&mut b, &burst, FOOD_BURSTS);
     b.follow_baud(BOOT_BAUD);
-    let pulled = read_trim(&mut b);
+    let fed = read_trim(&mut b);
 
-    // Host returns to true baud: a host-known rate change, answered by a CAL
-    // re-anchor (protocol sec 9.3) trained until the trim is stable.
-    let (back, back_trains) = anchor(&mut b);
+    // CAL trains sent at the detuned rate, each read back at the true one.
+    let (detuned, detuned_trains) = converge(&mut b, |b| {
+        b.follow_baud(DETUNE_BAUD);
+        train(b, GAP_US);
+        b.follow_baud(BOOT_BAUD);
+    });
 
-    // What went on the wire, for the probe gate: frames the servo should
-    // have stamped (one break each) and the bare ruler marks it must not.
-    // total_frames counts from connect, so it includes the shared bench's
-    // own setup reads, which a probe dump taken before the binary ran sees.
-    // Design count: cleared = bare_breaks + stamps untaken when the window
-    // opens. Orphans latched by wrong-baud traffic ride one frame ahead
-    // until a CAL clears them; not a falsifier. Falsifier: cleared >
-    // bare_breaks in a clean window (stale, unstamped, framing_drop
-    // unchanged since the last CAL-bearing run). The frame counter includes
-    // the host's own status, baud and pdump frames.
-    let trains = start_trains + back_trains;
-    eprintln!(
-        "HOSTCOUNT setup_frames={} frames={} total_frames={} trains={trains} bare_breaks={}",
-        sent_at_run - sent_at_start,
-        b.frames_sent() - sent_at_run,
-        b.frames_sent(),
-        trains * (GAPS as u32 + 1)
+    assert_eq!(
+        fed, start,
+        "traffic at a detuned host never trims: start {start}, after food {fed}"
     );
-
-    // A slow host reads exactly like a fast servo clock: gaps measure
-    // long, the correction slows the oscillator, trim_steps rises. >=1 in
-    // the right DIRECTION proves the tracker ate the pairs and moved the
-    // right way; magnitude is chip-dependent (step effects span 1.4-4k
-    // ppm/step, and a strong-step chip's settled answer for -6.9k ppm is
-    // legitimately small) -- the noiseless DES twins pin magnitude.
+    let detuned = detuned.unwrap_or_else(|| {
+        panic!("CAL at the detuned rate did not converge in {detuned_trains} trains")
+    });
     assert!(
-        pulled - start >= 1,
-        "tracker follows a slow host: start {start}, detuned {pulled}"
-    );
-    assert!(
-        (back - start).abs() <= 1,
-        "the returning host's CAL re-anchors: start {start}, back {back} \
-         after {back_trains} trains"
+        (detuned - start).abs() <= 1,
+        "CAL at a detuned host reads the crystal: start {start}, detuned {detuned} \
+         after {detuned_trains} trains"
     );
 }

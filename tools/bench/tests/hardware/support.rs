@@ -163,16 +163,9 @@ impl Bench {
             .expect("cal train");
     }
 
-    /// Raw zero-gap burst, no reply parsing -- tracker food, not an
-    /// exchange.
+    /// Raw zero-gap burst, no reply parsing - traffic, not an exchange.
     pub fn burst_frames(&mut self, frames: &[Vec<u8>]) {
         self.wire.burst(frames).expect("burst frames");
-    }
-
-    /// Frames this wire has sent (see [`Wire::frames_sent`]); a test
-    /// differences two reads, since the shared bench outlives it.
-    pub fn frames_sent(&self) -> u64 {
-        self.wire.frames_sent()
     }
 
     /// Drop pending capture -- keeps a long food loop inside the ring

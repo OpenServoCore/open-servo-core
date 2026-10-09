@@ -1,8 +1,7 @@
 //! TIM2 as a low-time counter on its CH1 pin: gated mode on the inverted
 //! pin counts only while the pin is low, and every rising edge's IC2 DMA
 //! request (DMA1 CH7) zeroes the counter, so the update fires only once the
-//! pin has held low for the whole reload. The update's DMA request (DMA1
-//! CH2) latches the break's stamp.
+//! pin has held low for the whole reload.
 //!
 //! CH2CVR is never read: the read clears CC2IF, which the break wake keeps
 //! as its rising-edge history.
@@ -100,21 +99,18 @@ pub fn rise() {
     TIM2.swevgr().write(|w| w.set_ccg(IC2, true));
 }
 
-/// Deaf: neither the update interrupt nor its stamp request. The
-/// rising-edge zero keeps running.
+/// Deaf: no update interrupt. The rising-edge zero keeps running.
 #[inline(always)]
 pub fn mute() {
     TIM2.dmaintenr().write(|w| w.set_ccde(IC2, true));
 }
 
-/// Drop any update taken while deaf, then arm the update interrupt and
-/// its stamp request.
+/// Drop any update taken while deaf, then arm the update interrupt.
 #[inline(always)]
 pub fn listen() {
     clear_update();
     TIM2.dmaintenr().write(|w| {
         w.set_uie(true);
-        w.set_ude(true);
         w.set_ccde(IC2, true);
     });
 }

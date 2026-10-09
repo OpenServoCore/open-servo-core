@@ -5,7 +5,7 @@
 //! ahead of the byte, behind it, and alternating between the two.
 
 use osc_integration::sim::{BreakWake, Sim, Source, WireFrame, assert_valid, instruction, status};
-use osc_protocol::wire::{Inst, Opcode, ResultCode};
+use osc_protocol::wire::{Opcode, ResultCode};
 use osc_servo_core::BaudRate;
 use osc_servo_core::regions::config::DEFAULT_RESPONSE_DEADLINE_US;
 use osc_servo_core::regions::config::addr::common::MODEL_NUMBER;
@@ -84,33 +84,6 @@ fn cal_train_converges(
     }
     sim.run();
     assert_eq!(sim.poll_clock_trim(s), Some(2));
-}
-
-/// The drift tracker still stamps: a baseline at the boot rate, then a
-/// thermal drift of one trim step draws one step of correction.
-#[rstest]
-#[test_log::test]
-fn drift_tracker_follows_thermal_drift(
-    #[values(BreakWake::BeforeByte, BreakWake::AfterByte, BreakWake::Alternating)] wake: BreakWake,
-) {
-    const PERIOD_US: u64 = 500;
-    let silent = instruction(ID + 1, Opcode::Write, Inst::FLAG_NOREPLY, &[0u8; 42]);
-    let send = |sim: &mut Sim, t0: u64, n: u64| -> u64 {
-        for k in 0..n {
-            sim.host_send_at(t0 + k * PERIOD_US, &silent);
-        }
-        t0 + n * PERIOD_US
-    };
-    let mut sim = Sim::new(BaudRate::B1000000);
-    sim.set_break_wake(wake);
-    let s = sim.add_servo_with(ID, 0, DEFAULT_RESPONSE_DEADLINE_US);
-    let t = send(&mut sim, 0, 257);
-    sim.run();
-    assert_eq!(sim.poll_clock_trim(s), None, "no drift, no decision");
-    sim.set_servo_skew_at(t, s, 2_600);
-    send(&mut sim, t + PERIOD_US, 140);
-    sim.run();
-    assert_eq!(sim.poll_clock_trim(s), Some(1));
 }
 
 const CHAIN_DEADLINE_US: u16 = 60;
