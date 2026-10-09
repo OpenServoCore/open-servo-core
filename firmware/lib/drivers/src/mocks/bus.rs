@@ -11,6 +11,7 @@ use std::rc::Rc;
 use std::vec::Vec;
 
 use osc_protocol::crc::osc_crc_continue;
+use osc_protocol::wire;
 use osc_servo_core::BaudRate;
 
 use crate::bus::ServoBus;
@@ -140,7 +141,7 @@ impl FakeCrc {
     pub fn new() -> Self {
         FakeCrc {
             state: 0,
-            snap: Vec::new(),
+            snap: std::vec![0; wire::covered_len(wire::len_for(wire::MAX_PAYLOAD))],
         }
     }
 }
@@ -163,13 +164,7 @@ impl CrcEngine for FakeCrc {
 
     fn snapshot(&mut self, off: u16, src: &[u8]) -> *const u8 {
         let off = off as usize;
-        if self.snap.len() < off + src.len() {
-            self.snap.resize(off + src.len(), 0);
-        }
         self.snap[off..off + src.len()].copy_from_slice(src);
-        // SAFETY-adjacent note: tests never grow the Vec between a snapshot
-        // and its consumption, so the pointer stays stable like the chip's
-        // static buffer.
         unsafe { self.snap.as_ptr().add(off) }
     }
 

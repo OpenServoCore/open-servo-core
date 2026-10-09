@@ -1,14 +1,15 @@
 //! The kernel lane (`sim::cpu`): the 20 kHz kernel tick as a periodic
 //! preemptor below or above the bus vectors, held against the bench's
 //! lost-tick counts for polled reads (1.33-1.56 per frame with the kernel
-//! below the bus).
+//! below the bus), and the TEL burst it paces from its tail.
 
 use osc_integration::sim::{
     KERNEL_HOLD, KERNEL_QUIET, KernelLane, KernelLevel, KernelStats, READ32_3M_COST, Sim, Source,
-    instruction,
+    frame_crc_ok, instruction, status,
 };
-use osc_protocol::wire::Opcode;
+use osc_protocol::wire::{Opcode, ResultCode, STREAM_SAMPLES_MAX};
 use osc_servo_core::BaudRate;
+use osc_servo_core::regions::control::addr::lifecycle::{TEL_COUNT, TEL_MASK};
 use rstest::rstest;
 
 const ID: u8 = 1;
@@ -67,4 +68,38 @@ fn kernel_lane_above_bus_loses_nothing(
     assert_eq!((st.lost, st.entries), (0, st.scans), "{st:?}");
     assert_eq!(st.entry_latency_max, 0, "every entry at its scan: {st:?}");
     assert!(st.bus_stretch > 0, "the lane preempted no bus body: {st:?}");
+}
+
+fn write_u16(addr: u16, v: u16) -> Vec<u8> {
+    let a = addr.to_le_bytes();
+    let d = v.to_le_bytes();
+    instruction(ID, Opcode::Write, 0, &[a[0], a[1], d[0], d[1]])
+}
+
+/// The six-field soak mask: a 202 B frame per 800 us batch at 3M.
+const SIX_FIELDS: u16 = 0x1cd;
+const TEL_FRAMES: u16 = 100;
+
+#[test]
+fn tel_six_fields_fit_at_rest_with_the_kernel_on_top() {
+    let mut sim = Sim::new(BaudRate::B3000000);
+    let s = sim.add_servo(ID);
+    sim.set_handler_cost(s, READ32_3M_COST);
+    let rows = TEL_FRAMES * STREAM_SAMPLES_MAX as u16;
+    let lane = KernelLane {
+        level: KernelLevel::AboveBus,
+        phases: &KERNEL_QUIET,
+    };
+    sim.set_kernel_lane(s, lane, START_US + 2 * rows as u64 * 50);
+    sim.host_send_at(START_US, &write_u16(TEL_MASK, SIX_FIELDS));
+    sim.run_until(START_US + 1_000);
+    sim.host_send_at(START_US + 1_000, &write_u16(TEL_COUNT, rows));
+    let frames = sim.run();
+    let stream: Vec<_> = frames
+        .iter()
+        .filter(|f| f.from == Source::Servo(ID) && status(f).0.result() == Some(ResultCode::Stream))
+        .collect();
+    assert_eq!(stream.len(), TEL_FRAMES as usize);
+    assert!(stream.iter().all(|f| frame_crc_ok(f)));
+    assert_eq!(sim.tel_drops(s), 0, "rows dropped of {rows}");
 }

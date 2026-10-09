@@ -30,7 +30,7 @@ use osc_servo_core::{BaudRate, BootMode, ControlTable};
 use osc_servo_drivers::bus::LinkDiag;
 
 use self::core::{Core, Event, TICKS_PER_US, Talker, break_ticks, break_wake_lead, byte_ticks};
-use self::cpu::{Cpu, KERNEL_PERIOD, Vector};
+use self::cpu::{Cpu, KERNEL_PERIOD, TEL_STAGE_COST, Vector};
 use self::providers::Handles;
 use self::resample::{CrossRx, RxOut};
 use self::servo::SimServo;
@@ -379,6 +379,11 @@ impl Sim {
 
     pub fn kernel_stats(&self, i: usize) -> KernelStats {
         self.cpus[i].kernel_stats()
+    }
+
+    /// TEL rows servo `i`'s encoder dropped against unreleased buffers.
+    pub fn tel_drops(&self, i: usize) -> u16 {
+        self.servos[i].tel_drops()
     }
 
     /// Servo `i`'s next handler body enters on time and is preempted for
@@ -759,6 +764,7 @@ impl Sim {
                     self.kernel_enter(servo);
                 }
             }
+            Event::KernelTail { servo } => self.kernel_tail(servo),
             Event::WakeRefire { servo } => self.deliver(servo, Vector::Break),
             Event::BreakByte { servo } => self.handles[servo].ring.push(0x00),
             Event::PulseWake => self.deliver_pulse_wake(),
@@ -835,6 +841,9 @@ impl Sim {
                     t.running = true;
                     t.epoch += 1;
                     t.n = 0;
+                    if self.cpus[j].kernel_until().is_some() {
+                        continue;
+                    }
                     let at = (now / TEL_TICK + 1) * TEL_TICK;
                     self.core.borrow_mut().schedule(
                         Event::TelTick {
@@ -856,9 +865,24 @@ impl Sim {
     /// gates.
     fn tel_tick(&mut self, j: usize, epoch: u64) {
         let now = self.core.borrow().now();
-        let t = &mut self.tels[j];
-        if !t.running || t.epoch != epoch || !self.servos[j].tel_active() {
+        if self.tels[j].epoch != epoch || !self.tel_sample(j, now) {
             return;
+        }
+        // the chip's tick tail polls; one landing inside a HIGH body leaves
+        // the stage to the next tick
+        if !self.cpus[j].busy(now) {
+            self.servos[j].poll_tel();
+        }
+        self.core
+            .borrow_mut()
+            .schedule(Event::TelTick { servo: j, epoch }, now + TEL_TICK);
+    }
+
+    /// Feed servo `j`'s encoder its next sample while a burst runs.
+    fn tel_sample(&mut self, j: usize, now: u64) -> bool {
+        let t = &mut self.tels[j];
+        if !t.running || !self.servos[j].tel_active() {
+            return false;
         }
         let mut s = match &t.track {
             Some(track) => track.rows[track.row(now)],
@@ -869,14 +893,29 @@ impl Sim {
         }
         t.n += 1;
         self.servos[j].tel_tick(&s);
-        // the chip's tick tail polls; one landing inside a HIGH body leaves
-        // the stage to the next tick
-        if !self.cpus[j].busy(now) {
-            self.servos[j].poll_tel();
+        true
+    }
+
+    /// The kernel lane's tail: the tick's TEL sample, then the poll. A poll
+    /// that stages holds the kernel for the stage, and its break follows it.
+    fn kernel_tail(&mut self, j: usize) {
+        let now = self.core.borrow().now();
+        if let Some(end) = self.cpus[j].kernel_until()
+            && end > now
+        {
+            self.core
+                .borrow_mut()
+                .schedule(Event::KernelTail { servo: j }, end);
+            return;
         }
-        self.core
-            .borrow_mut()
-            .schedule(Event::TelTick { servo: j, epoch }, now + TEL_TICK);
+        if !self.tel_sample(j, now) {
+            return;
+        }
+        self.handles[j].tx_lead.set(TEL_STAGE_COST);
+        self.servos[j].poll_tel();
+        if self.handles[j].tx_lead.take() == 0 {
+            self.cpus[j].extend_kernel(now, TEL_STAGE_COST);
+        }
     }
 
     /// Image servo `j`'s current track row in its live table: the raw ADC
@@ -991,10 +1030,19 @@ impl Sim {
 
     fn kernel_enter(&mut self, j: usize) {
         let now = self.core.borrow().now();
+        let entries = self.cpus[j].kernel_stats().entries;
         if let Some(at) = self.cpus[j].enter_kernel(now) {
             self.core
                 .borrow_mut()
                 .schedule(Event::KernelRetry { servo: j }, at);
+        }
+        if self.cpus[j].kernel_stats().entries > entries
+            && self.tels[j].running
+            && let Some(end) = self.cpus[j].kernel_until()
+        {
+            self.core
+                .borrow_mut()
+                .schedule(Event::KernelTail { servo: j }, end);
         }
     }
 

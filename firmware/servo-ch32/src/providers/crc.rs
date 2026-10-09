@@ -18,7 +18,7 @@ use core::cell::SyncUnsafeCell;
 
 use ch32_metapac::SPI1;
 use ch32_metapac::spi::vals::BaudRate as SpiBaud;
-use osc_protocol::wire::MAX_PAYLOAD;
+use osc_protocol::wire;
 use osc_servo_drivers::traits::bus;
 
 use crate::hal::{afio, dma, rcc};
@@ -32,12 +32,12 @@ const OSC_CRC_POLY: u16 = 0x8005;
 /// and drops, which is the sanctioned "spin miss = fail" outcome (protocol sec 3.2).
 const FEED_DRAIN_SPIN: u32 = 4096;
 
-/// The snapshot buffer (protocol sec 4.2): a reply payload is CH6-copied here once, and
-/// both the CRC feed (CH3) and the wire arms (CH4) stream the copy -- the reply
-/// CRC covers exactly the transmitted bytes. RX CRC feeds the ring directly
-/// (no staging), so this holds only a reply payload -- one `MAX_PAYLOAD` span.
+/// The snapshot buffer (protocol sec 4.2): a reply's header and payload are CH6-copied
+/// here once, and both the CRC feed (CH3) and the wire arm (CH4) stream the copy - the
+/// reply CRC covers exactly the transmitted bytes. RX CRC feeds the ring directly
+/// (no staging), so this holds only one reply's covered span.
 /// Even base (`repr(align(2))`): the feed reads halfwords from it.
-const SNAPSHOT_LEN: usize = MAX_PAYLOAD as usize;
+const SNAPSHOT_LEN: usize = wire::covered_len(wire::len_for(wire::MAX_PAYLOAD));
 
 #[repr(align(2))]
 struct Snapshot([u8; SNAPSHOT_LEN]);
@@ -143,8 +143,8 @@ impl bus::CrcEngine for Crc {
         // lock: a kernel tick tearing the image by a us-window is fine -- wire
         // and CRC both read the copy, so the reply stays CRC-consistent (protocol sec 4.2).
         // RX CRC no longer snapshots (it feeds the ring directly), so this
-        // holds one reply payload per exchange -- a gathered reply (protocol sec 5.2) lands
-        // as several spans at cumulative offsets; only the LAST copy stays
+        // holds one reply per exchange - the header and a gathered payload (protocol
+        // sec 5.2) land as several spans at cumulative offsets; only the LAST copy stays
         // fire-and-forget, so drain any prior span still in flight before
         // re-pointing the channel (bounded; M2M outruns this spin by design).
         debug_assert!(off as usize + src.len() <= SNAPSHOT_LEN);
