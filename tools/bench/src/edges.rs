@@ -115,7 +115,7 @@ fn next_fall_in(edges: &[WireEdge], lo: i64, hi: i64) -> Option<usize> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::osc::{build_ping, parse_exchange};
     use osc_protocol::crc::osc_crc;
@@ -144,7 +144,7 @@ mod tests {
     /// edges. `pitch` is the char spacing (10*b nominal; skew models the
     /// talker's HSI). `rise` = false drops the break rise (the capture
     /// contract keeps it, this pins the decoder's tolerance).
-    fn frame_edges(
+    pub(crate) fn frame_edges(
         break_fall: i64,
         b: i64,
         seam: i64,
