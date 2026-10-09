@@ -342,6 +342,21 @@ SERVOS = {
         },
         notes="no motor, no pot: ladders run with osc sweep --static-load",
     ),
+    # Not a servo: three aluminium-housed wirewound power resistors of about
+    # 5 ohm in series, wired to J4 in place of the motor for the current-sense
+    # chain check on the final amplifier network. Not metered as a chain; one
+    # of the three read 5.11 ohm on its own. A wirewound part has a few uH, so
+    # its current lags its voltage by L/R, a fraction of a microsecond.
+    "res-15r3": Servo(
+        key="res-15r3",
+        label="static load, 3 x 5 ohm wirewound in series (about 15.3 ohm)",
+        model="load",
+        pos_intercept=0.0,
+        pos_per_deg=1.0,
+        travel_deg=(0.0, 0.0),
+        guard_counts=(0, 0),
+        notes="no motor, no pot: holds run with the bench r4s point tool",
+    ),
 }
 
 
