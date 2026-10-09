@@ -23,6 +23,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     fs::copy("osc-config.x", out.join("osc-config.x"))?;
     println!("cargo:rustc-link-search={}", out.display());
     println!("cargo:rerun-if-changed=osc-config.x");
+    fs::copy("osc-hotpath.x", out.join("osc-hotpath.x"))?;
+    println!("cargo:rerun-if-changed=osc-hotpath.x");
 
     println!("cargo:rerun-if-changed=build.rs");
     Ok(())

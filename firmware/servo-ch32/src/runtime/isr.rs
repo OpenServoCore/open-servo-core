@@ -224,22 +224,22 @@ pub fn on_deadline_irq() {
 #[macro_export]
 macro_rules! install_isrs {
     () => {
-        #[::qingke_rt::interrupt]
+        #[::qingke_rt::interrupt(lowcode)]
         fn DMA1_CHANNEL1() {
             $crate::runtime::isr::on_adc_dma_tc();
         }
 
-        #[::qingke_rt::interrupt]
+        #[::qingke_rt::interrupt(lowcode)]
         fn TIM2() {
             $crate::runtime::isr::on_tim2();
         }
 
-        #[::qingke_rt::interrupt]
+        #[::qingke_rt::interrupt(lowcode)]
         fn USART1() {
             $crate::runtime::isr::on_usart1();
         }
 
-        #[::qingke_rt::interrupt(core)]
+        #[::qingke_rt::interrupt(core, lowcode)]
         fn SysTick() {
             $crate::runtime::isr::on_deadline_irq();
         }
