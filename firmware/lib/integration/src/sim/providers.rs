@@ -439,6 +439,10 @@ impl BreakStamps for SimStamps {
         stamp.map(|s| s as u16)
     }
 
+    fn peek(&self) -> Option<u16> {
+        self.0.latched.borrow().front().map(|&s| s as u16)
+    }
+
     fn clear(&mut self) -> u16 {
         let mut latched = self.0.latched.borrow_mut();
         let n = latched.len() as u16;

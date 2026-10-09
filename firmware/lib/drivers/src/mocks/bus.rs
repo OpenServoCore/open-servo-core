@@ -266,6 +266,10 @@ impl BreakStamps for FakeStamps {
         )
     }
 
+    fn peek(&self) -> Option<u16> {
+        self.latched.borrow().front().map(|&s| s as u16)
+    }
+
     fn clear(&mut self) -> u16 {
         let mut latched = self.latched.borrow_mut();
         let n = latched.len() as u16;

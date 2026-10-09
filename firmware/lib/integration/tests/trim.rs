@@ -408,6 +408,57 @@ fn orphan_stamp_before_a_rate_change_never_shifts_pairs() {
     );
 }
 
+/// The same orphan with no rate change behind it, in a burst's settle gap
+/// under the bench shape's handler costs: an idle gap rings no byte, so
+/// the orphan clears the stamp floor and the burst's first frame took it,
+/// leaving the later frames' stamps out of step until a CAL clear. A
+/// frame verified with at most the next break's byte rung past it skips a
+/// stamp followed by one at least its wire time old, so mid-frame the
+/// untaken stamps match a run without the orphan.
+#[rstest]
+#[test_log::test]
+fn idle_gap_orphan_stamp_never_shifts_pairs(
+    #[values(BreakWake::BeforeByte, BreakWake::AfterByte, BreakWake::Alternating)] wake: BreakWake,
+    #[values(ID, OTHER_ID)] id: u8,
+) {
+    let untaken = |orphan: bool| -> Vec<u64> {
+        let mut sim = Sim::new(BaudRate::B1000000);
+        sim.set_break_wake(wake);
+        let s = sim.add_servo_with(ID, 0, DEFAULT_RESPONSE_DEADLINE_US);
+        sim.set_handler_cost(
+            s,
+            HandlerCost {
+                on_break_us: 18,
+                on_deadline_us: 30,
+                on_tx_complete_us: 5,
+                per_frame_us: 0,
+            },
+        );
+        let f = goal_write(id);
+        let t = send_bursts(&mut sim, &f, 0, 1);
+        if orphan {
+            sim.inject_stamp_only_at(t - BURST_SETTLE_US / 2, s);
+        }
+        send_bursts(&mut sim, &f, t, 1);
+        let mut out = Vec::new();
+        for k in 1..BURST_FRAMES {
+            sim.run_until(t + k * BURST_PERIOD_US + BURST_PERIOD_US / 2);
+            let (latched, taken) = sim.stamps(s);
+            out.push(latched - taken);
+        }
+        sim.run();
+        let (latched, taken) = sim.stamps(s);
+        out.push(latched - taken);
+        assert_eq!(sim.stamp_drops(s), 0, "no clear in the run");
+        out
+    };
+    assert_eq!(
+        untaken(true),
+        untaken(false),
+        "no stamp rides ahead of its frame"
+    );
+}
+
 /// The bench shape under handler costs just inside the 1M frame period:
 /// the frame-end body spans the next break's detector fire, so every wake
 /// is served a byte-time or more late with data bytes newest, and the

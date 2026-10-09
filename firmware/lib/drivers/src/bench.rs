@@ -23,8 +23,9 @@ pub struct TrimProbe {
     /// Frames verified with no stamp latched for their break: the detector
     /// raised no overflow for it (or a stale skip ran the ring dry).
     pub unstamped: u32,
-    /// Stamps skipped as older than the previous stamp plus the ring
-    /// distance allows: orphans (a re-fire, a CRC-failed frame's break).
+    /// Stamps skipped as orphans: older than the previous stamp plus the
+    /// ring distance allows (a re-fire, a CRC-failed frame's break), or
+    /// older than a newer stamp the frame owns (an idle-gap latch).
     pub stale: u32,
     /// Stamps dropped by a CAL ruler mark, a rate change or a rescue.
     pub cleared: u32,

@@ -14,7 +14,7 @@ use super::trim::TrimLoop;
 /// (1/16 ~ 6%): wider than any legal clock offset (the HSITRIM throw is
 /// +/-3.4%), far under a missed/spurious break or a real inter-frame pause.
 /// Gates CAL gaps and drift chain-pairs alike.
-const TRIM_GATE_SHIFT: u32 = 4;
+pub(super) const TRIM_GATE_SHIFT: u32 = 4;
 
 /// CAL train watchdog, in announced gaps: a train silent this long is
 /// abandoned -- no decision -- and the framer resumes (a suspended resolver

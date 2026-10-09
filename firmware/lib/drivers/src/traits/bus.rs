@@ -80,6 +80,8 @@ pub trait UsartBaud {
 pub trait BreakStamps {
     /// The oldest latched stamp not yet taken.
     fn take(&mut self) -> Option<u16>;
+    /// The stamp `take` would return next, left in place.
+    fn peek(&self) -> Option<u16>;
     /// Drop every latched stamp not yet taken; how many there were.
     fn clear(&mut self) -> u16;
 }

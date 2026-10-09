@@ -79,16 +79,21 @@ fn remaining() -> u16 {
 
 impl bus::BreakStamps for BreakStamps {
     fn take(&mut self) -> Option<u16> {
-        if remaining() == self.taken {
-            return None;
-        }
-        // The entry the transfer that left `taken` remaining wrote next.
-        let i = (DEPTH - self.taken) & (DEPTH - 1);
+        let stamp = self.peek()?;
         self.taken = if self.taken == 1 {
             DEPTH
         } else {
             self.taken - 1
         };
+        Some(stamp)
+    }
+
+    fn peek(&self) -> Option<u16> {
+        if remaining() == self.taken {
+            return None;
+        }
+        // The entry the transfer that left `taken` remaining wrote next.
+        let i = (DEPTH - self.taken) & (DEPTH - 1);
         // SAFETY: DMA-owned storage, read in place; the entry is behind the
         // remaining count observed above, so its transfer has completed.
         Some(unsafe { core::ptr::read_volatile(&raw const (*RING.get())[i as usize]) })

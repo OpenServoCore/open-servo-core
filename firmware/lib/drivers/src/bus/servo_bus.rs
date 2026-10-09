@@ -9,7 +9,7 @@ use osc_servo_core::traits::Dispatch;
 use osc_servo_core::{BaudRate, BootMode};
 
 use super::chain::Chain;
-use super::clock::ClockTracker;
+use super::clock::{ClockTracker, TRIM_GATE_SHIFT};
 use super::decode::Slot;
 use super::framer::Framer;
 use super::ring_wrap;
@@ -363,6 +363,13 @@ impl<P: Providers> ServoBus<P> {
     /// stamp plus the ring distance between the two breaks allows (the wire
     /// delivers no byte in under a byte-time): that one belongs to no frame
     /// (a parked low's re-fire, a CRC-failed frame's break) and is skipped.
+    /// An orphan latched in an idle gap clears that floor (an idle gap rings
+    /// no byte), so a frame with at most the next break's byte rung past it
+    /// also skips a stamp while the next one is at least the frame's wire
+    /// time (less the gate) old: a later break latches after this frame's
+    /// last byte and reads younger, unless the service trails the newest
+    /// byte by the frame's wire time (DES pin
+    /// `idle_gap_orphan_stamp_never_shifts_pairs`).
     /// A stamp that reads too new is a later break's behind a detector
     /// miss, indistinguishable from an inter-burst gap: it is taken, the
     /// pairing runs one break behind until the stamps run dry at the next
@@ -404,11 +411,21 @@ impl<P: Providers> ServoBus<P> {
         let past = ring_wrap(anchor as usize + 1, len) as u16;
         crate::bench::trim_probe(|p| p.frames += 1);
         let ringed_since = ring_wrap(self.ring.cursor() as usize + len - past as usize, len) as u32;
-        let placed = self
-            .deadline
-            .now()
-            .wrapping_sub(ringed_since.wrapping_mul(self.tpb));
-        let floor = self.clock.stamp_floor(past, len, self.tpb);
+        let since = ringed_since.wrapping_mul(self.tpb);
+        let now = self.deadline.now();
+        let placed = now.wrapping_sub(since);
+        let floor = self
+            .clock
+            .stamp_floor(past, len, self.tpb)
+            .unwrap_or(placed.wrapping_sub(STAMP_HALF_RANGE));
+        // Opaque, like the loop bound: LLVM unswitched the loop on it
+        // (+170 B). The age is 16 bits, so a stamp older than the latch's
+        // range aliases younger and is kept, the floor-only rule.
+        let own_age = core::hint::black_box(if ringed_since <= footprint as u32 {
+            since - (since >> TRIM_GATE_SHIFT)
+        } else {
+            u32::MAX
+        });
         let mut stamp = None;
         // Opaque bound: with the literal, LLVM unrolls the loop eightfold
         // (280 instructions of flash for a path that skips once in a run).
@@ -417,15 +434,17 @@ impl<P: Providers> ServoBus<P> {
                 break;
             };
             let s = unwrap_near(placed, raw);
-            match floor {
-                Some(f) if (s.wrapping_sub(f) as i32) < 0 => {
-                    crate::bench::trim_probe(|p| p.stale += 1);
-                }
-                _ => {
-                    stamp = Some(s);
-                    break;
-                }
+            let stale = (s.wrapping_sub(floor) as i32) < 0;
+            let superseded = || {
+                self.stamps
+                    .peek()
+                    .is_some_and(|n| (now as u16).wrapping_sub(n) as u32 >= own_age)
+            };
+            if !stale && !superseded() {
+                stamp = Some(s);
+                break;
             }
+            crate::bench::trim_probe(|p| p.stale += 1);
         }
         match stamp {
             Some(s) => self.clock.on_drift_break(s, past, len, self.tpb),
