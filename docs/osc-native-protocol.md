@@ -1128,7 +1128,7 @@ period or more behind schedule, judged once per 16 ticks: a late window
 that the next one catches up costs nothing, and one window counts at
 most 16. Every host frame costs one to four lost ticks as well: the
 transport serves a frame above the kernel in one piece, break wake,
-dispatch, verdict, reply trigger and commit, 130 to 230 us at 48 MHz,
+dispatch, verdict, commit and reply trigger, 130 to 230 us at 48 MHz,
 and the scan that completes under that service merges its pending flag
 with the next. A TEL burst (sec 5.6) costs neither: its frames leave
 from the tick and their arm completions are short. The kernel itself
