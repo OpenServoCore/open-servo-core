@@ -41,19 +41,19 @@ fn read_budget_us(baud: u32) -> f64 {
     }
 }
 
-/// WRITE ceiling: goal_position is the rule-heavy hot-loop register -- its
+/// WRITE ceiling: goal_position is the rule-heavy hot-loop register; its
 /// soft-limit rules dominate the dispatch body (write-size is not the cost),
-/// and the production hot loop pays none of this -- GWRITE is NOREPLY.
-/// Measured means on the enum-slot fleet build: 82.0/88.3/97.5/98.9
-/// ascending baud, within the +/-5 us flash-layout swing. Same ~6 us
-/// headroom policy.
+/// and the production hot loop pays none of this (GWRITE is NOREPLY). The
+/// commit runs before the ack is sequenced, so its CPU is on the turnaround.
+/// Measured means: 90.5/101.9/108.9/109.0 ascending baud, within the +/-5 us
+/// flash-layout swing. Same ~6 us headroom policy.
 fn write_budget_us(baud: u32) -> f64 {
     match baud {
-        1_000_000 => 95.0,
-        2_000_000 => 104.0,
-        3_000_000 => 105.0,
-        500_000 => 88.0,
-        _ => 110.0,
+        1_000_000 => 108.0,
+        2_000_000 => 115.0,
+        3_000_000 => 115.0,
+        500_000 => 97.0,
+        _ => 120.0,
     }
 }
 
