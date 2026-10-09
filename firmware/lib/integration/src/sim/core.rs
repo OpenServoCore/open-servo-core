@@ -111,6 +111,10 @@ pub enum Event {
     TelTick { servo: usize, epoch: u64 },
     /// A servo's handler body ended (`super::cpu`): deliver one pended vector.
     CpuFree { servo: usize },
+    /// A servo's ADC scan completed: pend its kernel lane's tick.
+    KernelScan { servo: usize },
+    /// Re-try entering a servo's pended kernel tick.
+    KernelRetry { servo: usize },
     /// The attached host engine's tick-compare fired; same generation gate
     /// as `Compare`.
     HostCompare { generation: u64 },
