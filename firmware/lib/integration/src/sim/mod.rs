@@ -26,18 +26,19 @@ use std::rc::Rc;
 use osc_servo_core::data_state::DataJob;
 use osc_servo_core::pos_lut::POINTS;
 use osc_servo_core::regions::config::DEFAULT_RESPONSE_DEADLINE_US;
+use osc_servo_core::tel::STREAM_SAMPLES_MAX;
 use osc_servo_core::{BaudRate, BootMode, ControlTable};
 use osc_servo_drivers::bus::LinkDiag;
 
 use self::core::{Core, Event, TICKS_PER_US, Talker, break_ticks, break_wake_lead, byte_ticks};
-use self::cpu::{Cpu, KERNEL_PERIOD, TEL_STAGE_COST, Vector};
+use self::cpu::{Cpu, KERNEL_PERIOD, Vector};
 use self::providers::Handles;
 use self::resample::{CrossRx, RxOut};
 use self::servo::SimServo;
 
 pub use self::cpu::{
-    Entries, HandlerCost, KERNEL_HOLD, KERNEL_MOVING, KERNEL_QUIET, KernelLane, KernelLevel,
-    KernelStats, READ32_3M_COST,
+    Entries, HandlerCost, KERNEL_AT_BUDGET, KERNEL_FLOOR, KernelLane, KernelLevel, KernelStats,
+    TelCosts,
 };
 pub use self::host::HostEvent;
 pub use self::servo::{DEV_V006_SENSE, DEV_V006_SENSE_EXT};
@@ -143,6 +144,8 @@ struct TelPump {
     epoch: u64,
     /// Per-burst tick index, reset at every pump start.
     n: u32,
+    /// Samples the encoder took this burst (fed less dropped).
+    encoded: u32,
     /// Synthesized samples carry fault=true over ticks [from, to).
     fault: Option<(u32, u32)>,
     track: Option<Track>,
@@ -340,6 +343,7 @@ impl Sim {
             running: false,
             epoch: 0,
             n: 0,
+            encoded: 0,
             fault: None,
             track: None,
         });
@@ -868,6 +872,7 @@ impl Sim {
                     t.running = true;
                     t.epoch += 1;
                     t.n = 0;
+                    t.encoded = 0;
                     if self.cpus[j].kernel_until().is_some() {
                         continue;
                     }
@@ -923,8 +928,9 @@ impl Sim {
         true
     }
 
-    /// The kernel lane's tail: the tick's TEL sample, then the poll. A poll
-    /// that stages holds the kernel for the stage, and its break follows it.
+    /// The kernel lane's tail: the tick's TEL sample (a banking sample
+    /// lengthens the body), then the stager vector the kernel's last
+    /// statement pends at the bus level.
     fn kernel_tail(&mut self, j: usize) {
         let now = self.core.borrow().now();
         if let Some(end) = self.cpus[j].kernel_until()
@@ -935,14 +941,19 @@ impl Sim {
                 .schedule(Event::KernelTail { servo: j }, end);
             return;
         }
+        let drops = self.servos[j].tel_drops();
         if !self.tel_sample(j, now) {
             return;
         }
-        self.handles[j].tx_lead.set(TEL_STAGE_COST);
-        self.servos[j].poll_tel();
-        if self.handles[j].tx_lead.take() == 0 {
-            self.cpus[j].extend_kernel(now, TEL_STAGE_COST);
+        if self.servos[j].tel_drops() == drops {
+            let t = &mut self.tels[j];
+            t.encoded += 1;
+            if t.encoded.is_multiple_of(STREAM_SAMPLES_MAX as u32) {
+                let bank = self.cpus[j].kernel_tel().bank;
+                self.cpus[j].extend_kernel(now, bank);
+            }
         }
+        self.deliver(j, Vector::Stage);
     }
 
     /// Image servo `j`'s current track row in its live table: the raw ADC
@@ -1014,10 +1025,12 @@ impl Sim {
         }
     }
 
-    /// Run `v`'s handler on servo `j` now, or pend it if a body is running.
+    /// Run `v`'s handler on servo `j` now, or pend it if a body is running
+    /// or others wait: pended vectors arbitrate by priority at the CPU's
+    /// next free instant.
     fn deliver(&mut self, j: usize, v: Vector) {
         let now = self.core.borrow().now();
-        if self.cpus[j].busy(now) {
+        if self.cpus[j].busy(now) || self.cpus[j].any_pend() {
             self.cpus[j].pend(v);
             self.schedule_free(j);
         } else {
@@ -1039,10 +1052,22 @@ impl Sim {
         let now = self.core.borrow().now();
         self.cpus[j].charge(now, v);
         let before = self.servos[j].dispatched();
+        // A frame the stager starts breaks once its body has run up to the
+        // trigger, preemptions included: at budget, its whole body.
+        let gate = v == Vector::Stage;
+        if gate {
+            self.handles[j].tx_gate.hold();
+        }
         match v {
             Vector::Compare => self.servos[j].on_deadline(),
             Vector::Break => self.servos[j].on_break(),
             Vector::TxDone => self.servos[j].on_tx_complete(),
+            Vector::Stage => self.servos[j].poll_tel(),
+        }
+        if gate && self.handles[j].tx_gate.holding() {
+            let stage = self.cpus[j].kernel_tel().stage;
+            self.cpus[j].hold_to_break(now, stage, 0);
+            self.schedule_free(j);
         }
         self.cpus[j].charge_frames(self.servos[j].dispatched() - before);
         self.handles[j].clock_lag.set(0);
@@ -1066,13 +1091,14 @@ impl Sim {
                 .borrow_mut()
                 .schedule(Event::KernelRetry { servo: j }, at);
         }
-        if self.cpus[j].kernel_stats().entries > entries
-            && self.tels[j].running
-            && let Some(end) = self.cpus[j].kernel_until()
-        {
-            self.core
-                .borrow_mut()
-                .schedule(Event::KernelTail { servo: j }, end);
+        if self.cpus[j].kernel_stats().entries > entries && self.tels[j].running {
+            let encode = self.cpus[j].kernel_tel().encode;
+            self.cpus[j].extend_kernel(now, encode);
+            if let Some(end) = self.cpus[j].kernel_until() {
+                self.core
+                    .borrow_mut()
+                    .schedule(Event::KernelTail { servo: j }, end);
+            }
         }
     }
 
@@ -1099,6 +1125,12 @@ impl Sim {
             if self.cpus[j].any_pend() {
                 self.schedule_free(j);
             }
+            return;
+        }
+        if self.cpus[j].tx_held.is_some() {
+            self.handles[j].tx_gate.open();
+            self.cpus[j].resume_after_break(now);
+            self.schedule_free(j);
             return;
         }
         if let Some((v, entry)) = self.cpus[j].deferred.take() {

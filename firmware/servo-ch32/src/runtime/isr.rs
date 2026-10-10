@@ -1,6 +1,7 @@
 use core::cell::SyncUnsafeCell;
 
 use ch32_metapac::{DMA1, USART1};
+use osc_servo_core::budget::Body;
 use osc_servo_core::traits::{Dispatch, Dispatched, Reply, Request, RequestCtx};
 use osc_servo_core::{ControlIo, RegionStorageRaw, Sensors};
 
@@ -88,11 +89,12 @@ pub fn on_adc_dma_tc() {
     if crate::control::burst::capturing() {
         load.skip();
         crate::control::burst::on_dma_event(&SHARED);
+        crate::probe::kernel_other(entry);
         return;
     }
     DMA1.ifcr().write(|w| w.set_tcif(0, true));
 
-    unsafe {
+    let (tags, config_gen) = unsafe {
         // Volatile pair: load-bearing against optimizer hoisting in the pump.
         let tick = &raw mut (*SHARED.table.region_ptr()).telemetry.estimates.sample_tick;
         tick.write_volatile(tick.read_volatile().wrapping_add(1));
@@ -103,8 +105,10 @@ pub fn on_adc_dma_tc() {
             let (sensors, _motor) = kernel.io.parts();
             sensors.frame()
         };
+        let tags = crate::probe::tick_before(kernel.probe_tags());
         kernel.on_tick(frame, &SHARED);
-    }
+        (tags, kernel.probe_tags().1)
+    };
 
     // Trailing on purpose: the burst handshake must never displace a kernel
     // tick, and a launch wants the scan TC's slack ahead of the next trigger.
@@ -137,9 +141,11 @@ pub fn on_adc_dma_tc() {
     // driving tick, staged up to 300 us late and the kernel dropped rows.
     // Last on purpose: staging is transport work, run by the SW vector at
     // the bus level, never inside the kernel's body.
-    if TEL_CHANNEL.active() {
+    let tel = TEL_CHANNEL.active();
+    if tel {
         pfic::pend_software();
     }
+    crate::probe::kernel_exit(entry, tags, config_gen, tel);
 }
 
 /// SW vector -- the TEL stager, pended by the kernel tick's last statement.
@@ -148,8 +154,10 @@ pub fn on_adc_dma_tc() {
 /// shares the bus level with TIM2, USART1 and SysTick, so no concurrent
 /// `&mut` into the composite is possible.
 pub fn on_tel_stage() {
+    let entry = crate::probe::bus_entry();
     // SAFETY: see fn doc.
     unsafe { Drivers::bus() }.poll_tel();
+    crate::probe::bus_exit(entry, Body::TelStage);
 }
 
 /// TIM2 vector -- the break wake (`providers::break_wake`): an overflow
@@ -161,8 +169,9 @@ pub fn on_tel_stage() {
 /// into the composite is possible.
 pub fn on_tim2() {
     crate::log::trace!("tim2 isr");
-    let entry = crate::probe::stamp();
+    let entry = crate::probe::bus_entry();
     if BreakWake::service() {
+        crate::probe::bus_probe(|p| p.mark_break());
         // The break handler resolves complete frames from ring data in
         // place (transport sec 5), so it carries the (lazy) bus dispatcher
         // like the deadline body.
@@ -170,7 +179,7 @@ pub fn on_tim2() {
         // SAFETY: see fn doc.
         unsafe { Drivers::bus() }.on_break(&mut dispatcher);
     }
-    crate::probe::high_probe(|p| p.tim2.exit(entry));
+    crate::probe::bus_exit(entry, Body::BreakWake);
 }
 
 /// USART1 vector -- TX arm completion. TCIE is the one enabled source.
@@ -180,7 +189,7 @@ pub fn on_tim2() {
 /// the composite is possible.
 pub fn on_usart1() {
     crate::log::trace!("usart1 isr");
-    let entry = crate::probe::stamp();
+    let entry = crate::probe::bus_entry();
     // This path never reads DATAR: a CPU DATAR read while a byte is
     // mid-reception kills the byte in the shifter -- no flags, no ring
     // entry, every later anchor shifts (measured; the DMA ladder only
@@ -197,7 +206,7 @@ pub fn on_usart1() {
         // SAFETY: see fn doc.
         unsafe { Drivers::bus() }.on_tx_complete();
     }
-    crate::probe::high_probe(|p| p.usart1.exit(entry));
+    crate::probe::bus_exit(entry, Body::TxDone);
 }
 
 /// SysTick compare -- one or more framer/chain/rescue deadlines are due, or a
@@ -210,12 +219,12 @@ pub fn on_usart1() {
 /// through the lazy [`BusDispatcher`] under its exclusivity invariant.
 pub fn on_deadline_irq() {
     crate::log::trace!("deadline isr");
-    let entry = crate::probe::stamp();
+    let entry = crate::probe::bus_entry();
     crate::hal::systick::clear_match();
     let mut dispatcher = BusDispatcher;
     // SAFETY: see fn doc.
     unsafe { Drivers::bus() }.on_deadline(&mut dispatcher);
-    crate::probe::high_probe(|p| p.systick.exit(entry));
+    crate::probe::bus_exit(entry, Body::Deadline);
 }
 
 /// Wires osc-servo-ch32 ISR bodies into the vector table via the stock

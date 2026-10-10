@@ -54,3 +54,29 @@ pub fn trim_probe(f: impl FnOnce(&mut TrimProbe)) {
         f(&mut *core::ptr::addr_of_mut!(TRIM_PROBE));
     }
 }
+
+#[cfg(feature = "bench")]
+static mut TEL_BANKS: u32 = 0;
+
+/// The TEL encoder banked a batch (kernel tick, the only writer).
+#[inline(always)]
+pub fn tel_banked() {
+    // SAFETY: single writer; readers take one word.
+    #[cfg(feature = "bench")]
+    unsafe {
+        let b = &raw mut TEL_BANKS;
+        b.write_volatile(b.read_volatile().wrapping_add(1));
+    }
+}
+
+/// Batches banked so far; 0 without the `bench` feature.
+#[inline(always)]
+pub fn tel_banks() -> u32 {
+    #[cfg(feature = "bench")]
+    // SAFETY: one-word volatile read.
+    unsafe {
+        (&raw const TEL_BANKS).read_volatile()
+    }
+    #[cfg(not(feature = "bench"))]
+    0
+}

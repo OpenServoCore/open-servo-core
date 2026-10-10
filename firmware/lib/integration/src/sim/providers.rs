@@ -176,9 +176,8 @@ pub struct Handles {
     /// preemption between the two.
     pub clock_lag: Rc<Cell<u64>>,
     pub stamps: Rc<StampState>,
-    /// Ticks the next own break starts after its trigger: CPU work between
-    /// the two (a TEL stage from the kernel tail).
-    pub tx_lead: Rc<Cell<u64>>,
+    /// Holds a body's own frame start until the body reaches its trigger.
+    pub tx_gate: Rc<TxGate>,
 }
 
 impl Handles {
@@ -189,7 +188,48 @@ impl Handles {
             baud: BaudState::new(rate),
             clock_lag: Rc::new(Cell::new(0)),
             stamps: Rc::default(),
-            tx_lead: Rc::new(Cell::new(0)),
+            tx_gate: Rc::default(),
+        }
+    }
+}
+
+/// A frame start (its break and the arms behind it) held while a handler
+/// body runs up to its trigger, so the break falls where the trigger runs,
+/// stretched by any kernel above the bus, rather than at the body's entry.
+/// Arms of a frame already on the wire pass straight through.
+#[derive(Default)]
+pub struct TxGate {
+    hold: Cell<bool>,
+    frame_held: Cell<bool>,
+    held: RefCell<Vec<Box<dyn FnOnce()>>>,
+}
+
+impl TxGate {
+    pub fn hold(&self) {
+        self.hold.set(true);
+    }
+
+    /// End the hold; true when a frame start waits for [`Self::open`].
+    pub fn holding(&self) -> bool {
+        self.hold.set(false);
+        self.frame_held.get()
+    }
+
+    /// Put the held frame on the wire now.
+    pub fn open(&self) {
+        self.frame_held.set(false);
+        let held = std::mem::take(&mut *self.held.borrow_mut());
+        for f in held {
+            f();
+        }
+    }
+
+    fn run(&self, starts_frame: bool, f: impl FnOnce() + 'static) {
+        if self.hold.get() && (starts_frame || self.frame_held.get()) {
+            self.frame_held.set(true);
+            self.held.borrow_mut().push(Box::new(f));
+        } else {
+            f();
         }
     }
 }
@@ -353,70 +393,82 @@ pub struct SimWire {
     idx: usize,
     /// End tick of the last-scheduled byte -- the next arm streams from here so
     /// arms sit back-to-back on the wire (sec 4.2 tolerates the re-arm gap).
-    tx_cursor: Cell<u64>,
-    lead: Rc<Cell<u64>>,
+    tx_cursor: Rc<Cell<u64>>,
+    gate: Rc<TxGate>,
 }
 
 impl SimWire {
-    pub fn new(
-        core: Rc<RefCell<Core>>,
-        baud: Rc<BaudState>,
-        idx: usize,
-        lead: Rc<Cell<u64>>,
-    ) -> Self {
+    pub fn new(core: Rc<RefCell<Core>>, baud: Rc<BaudState>, idx: usize, gate: Rc<TxGate>) -> Self {
         Self {
             core,
             baud,
             idx,
-            tx_cursor: Cell::new(0),
-            lead,
+            tx_cursor: Rc::new(Cell::new(0)),
+            gate,
         }
     }
 }
 
 impl TxWire for SimWire {
     fn start_frame(&mut self) {
-        let baud = self.baud.current();
-        let brk = break_ticks(baud);
-        let mut c = self.core.borrow_mut();
-        let start = c.now() + self.lead.take();
-        let break_end = start + brk;
-        c.claim(Talker::Servo(self.idx), start, break_end);
-        c.schedule(
-            Event::WireBreak {
-                talker: Talker::Servo(self.idx),
-                baud,
-                break_start: start,
-            },
-            break_end,
+        let (core, baud, idx, cursor) = (
+            self.core.clone(),
+            self.baud.clone(),
+            self.idx,
+            self.tx_cursor.clone(),
         );
-        self.tx_cursor.set(break_end);
+        self.gate.run(true, move || {
+            let baud = baud.current();
+            let brk = break_ticks(baud);
+            let mut c = core.borrow_mut();
+            let start = c.now();
+            let break_end = start + brk;
+            c.claim(Talker::Servo(idx), start, break_end);
+            c.schedule(
+                Event::WireBreak {
+                    talker: Talker::Servo(idx),
+                    baud,
+                    break_start: start,
+                },
+                break_end,
+            );
+            cursor.set(break_end);
+        });
     }
 
     fn send(&mut self, span: &[u8]) {
-        let baud = self.baud.current();
-        let bt = byte_ticks(baud);
-        let mut c = self.core.borrow_mut();
-        // A late TC delivery (busy CPU) arms the next span after the previous
-        // one drained: on silicon that is an inter-byte gap on the wire
-        // (legal -- nothing times on idle, sec 4.2). Clamp so the DES clock never
-        // rewinds.
-        let start = self.tx_cursor.get().max(c.now());
-        for (k, &b) in span.iter().enumerate() {
-            let t = start + (k as u64 + 1) * bt;
-            c.schedule(
-                Event::WireData {
-                    talker: Talker::Servo(self.idx),
-                    byte: b,
-                    baud,
-                },
-                t,
-            );
-        }
-        let end = start + span.len() as u64 * bt;
-        c.claim(Talker::Servo(self.idx), start, end);
-        c.schedule(Event::TxArmDone { servo: self.idx }, end);
-        self.tx_cursor.set(end);
+        let (core, baud, idx, cursor) = (
+            self.core.clone(),
+            self.baud.clone(),
+            self.idx,
+            self.tx_cursor.clone(),
+        );
+        let span = span.to_vec();
+        self.gate.run(false, move || {
+            let baud = baud.current();
+            let bt = byte_ticks(baud);
+            let mut c = core.borrow_mut();
+            // A late TC delivery (busy CPU) arms the next span after the
+            // previous one drained: on silicon that is an inter-byte gap on
+            // the wire (legal: nothing times on idle, sec 4.2). Clamp so
+            // the DES clock never rewinds.
+            let start = cursor.get().max(c.now());
+            for (k, &b) in span.iter().enumerate() {
+                let t = start + (k as u64 + 1) * bt;
+                c.schedule(
+                    Event::WireData {
+                        talker: Talker::Servo(idx),
+                        byte: b,
+                        baud,
+                    },
+                    t,
+                );
+            }
+            let end = start + span.len() as u64 * bt;
+            c.claim(Talker::Servo(idx), start, end);
+            c.schedule(Event::TxArmDone { servo: idx }, end);
+            cursor.set(end);
+        });
     }
 
     fn release(&mut self) {
