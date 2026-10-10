@@ -18,8 +18,8 @@ pub const TICKS_PER_US: u64 = 48;
 const BITS_PER_BYTE: u64 = 10;
 
 /// SBK break length; measured ~14 bit-times, zero variance [F5]. `on_break`
-/// is delivered at the break's *end*, its ring byte beside it or 0.75
-/// bit-times after it (see [`super::BreakWake`]).
+/// is delivered at the break's *end*, its ring byte beside it or
+/// [`break_wake_lead`] after it (see [`super::BreakWake`]).
 const BREAK_BITS: u64 = 14;
 
 /// Runaway guards: a wedged scenario must fail loudly, not spin forever.
@@ -38,6 +38,12 @@ pub fn byte_ticks(baud: BaudRate) -> u64 {
 #[inline]
 pub fn break_ticks(baud: BaudRate) -> u64 {
     bit_ticks(baud) * BREAK_BITS
+}
+/// How far the chip's TIM2 wake (9.5 bit-times of low) leads the break's
+/// ringed 0x00 (10).
+#[inline]
+pub fn break_wake_lead(baud: BaudRate) -> u64 {
+    bit_ticks(baud) / 2
 }
 
 /// Who is driving the wire (sec 2 drive discipline). `Host` schedules the bus;

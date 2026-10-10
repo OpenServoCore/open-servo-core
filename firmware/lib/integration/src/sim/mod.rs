@@ -29,7 +29,7 @@ use osc_servo_core::regions::config::DEFAULT_RESPONSE_DEADLINE_US;
 use osc_servo_core::{BaudRate, BootMode, ControlTable};
 use osc_servo_drivers::bus::LinkDiag;
 
-use self::core::{Core, Event, TICKS_PER_US, Talker, bit_ticks, break_ticks, byte_ticks};
+use self::core::{Core, Event, TICKS_PER_US, Talker, break_ticks, break_wake_lead, byte_ticks};
 use self::cpu::{Cpu, KERNEL_PERIOD, Vector};
 use self::providers::Handles;
 use self::resample::{CrossRx, RxOut};
@@ -56,8 +56,8 @@ const TEL_TICK: u64 = KERNEL_PERIOD;
 /// When a break's wake reaches a servo, relative to its ringed 0x00.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum BreakWake {
-    /// The wake leads the byte by 0.75 bit-times: the chip's TIM2 detector
-    /// overflows at 9.25 bit-times of low, ahead of the stop-bit sample
+    /// The wake leads the byte by half a bit-time: the chip's TIM2 detector
+    /// overflows at 9.5 bit-times of low, ahead of the stop-bit sample
     /// that rings the 0x00.
     BeforeByte,
     /// The 0x00 has rung when the wake is serviced: a detector that latches
@@ -1067,7 +1067,7 @@ impl Sim {
     fn deliver_break_to(&mut self, j: usize, baud: BaudRate, break_start: u64) {
         let rx = self.handles[j].baud.current();
         if rx == baud {
-            self.wake_on_break(j, bit_ticks(rx) * 3 / 4);
+            self.wake_on_break(j, break_wake_lead(rx));
         } else {
             let mut out = Vec::new();
             self.cross[j].retune(rx);
@@ -1234,7 +1234,7 @@ impl Sim {
     fn deliver_pulse_wake(&mut self) {
         for j in 0..self.servos.len() {
             let rx = self.handles[j].baud.current();
-            self.wake_on_break(j, bit_ticks(rx) * 3 / 4);
+            self.wake_on_break(j, break_wake_lead(rx));
         }
         if let Some(h) = &self.host {
             h.ring.push(0x00);

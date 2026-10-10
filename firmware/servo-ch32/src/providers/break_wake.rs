@@ -2,12 +2,12 @@
 //! low-time counter on the bus pin. HDSEL disables the USART's LIN break
 //! detector on this silicon, so the wake is taken from the pin: the counter
 //! runs only while the line is low, every rising edge zeroes it (DMA1 CH7,
-//! no CPU), and its overflow at 9.25 bit-times of continuous low is a break
+//! no CPU), and its overflow at 9.5 bit-times of continuous low is a break
 //! (valid data never holds the line low past 9 bit-times; the law break
 //! holds 10). An idle line and frame data raise nothing.
 //!
 //! A low that outlasts the service (a break's tail, a rescue pulse, a
-//! stuck line) would overflow again every 9.25 bit-times: the service parks
+//! stuck line) would overflow again every 9.5 bit-times: the service parks
 //! the counter past the reload instead, so the next overflow is 65536 ticks
 //! of low away, and the rising edge's zero un-parks it. An overflow with no
 //! rising edge since the park is the same low again, not a break: one wake
@@ -23,9 +23,11 @@ use crate::hal::timer::tim2;
 use crate::hal::{afio, dma, gpio, rcc};
 use crate::probe::high_probe;
 
-/// The overflow point in quarter bit-times: 37 = 9.25, between the longest
-/// data low (9) and the law break's end (10).
-const BREAK_QUARTER_BITS: u32 = 37;
+/// The overflow point in quarter bit-times: 38 = 9.5. The open-drain rise
+/// t_r lengthens every low: a `0x00` data byte, 9(1+d) + t_r, must stay
+/// under it, and the law break, 10(1-d) + t_r, clears it for any clock
+/// mismatch d under 5%, an untrimmed boot included.
+const BREAK_QUARTER_BITS: u32 = 38;
 
 /// The value the rising-edge DMA copies into the counter.
 static ZERO: SyncUnsafeCell<u16> = SyncUnsafeCell::new(0);
@@ -97,7 +99,7 @@ impl BreakWake {
     /// but the detector watches the pin and our own break would read as a
     /// host's (a TEL burst would abort itself on every frame). Listening
     /// again before the first data byte is safe: data never holds the line
-    /// low 9.25 bit-times.
+    /// low 9.5 bit-times.
     #[inline(always)]
     pub fn muted(send_break: impl FnOnce()) {
         tim2::mute();
@@ -106,7 +108,7 @@ impl BreakWake {
     }
 }
 
-/// TIM2 reload for 9.25 bit-times at each operational rate. Each arm folds
+/// TIM2 reload for 9.5 bit-times at each operational rate. Each arm folds
 /// to a literal via `const {}`, as `usart_baud::brr_for` does: no run-time
 /// division.
 pub const fn reload_for(baud: BaudRate) -> u16 {
@@ -126,10 +128,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reload_is_nine_and_a_quarter_bits_at_every_rate() {
-        assert_eq!(reload_for(BaudRate::B500000), 888);
-        assert_eq!(reload_for(BaudRate::B1000000), 444);
-        assert_eq!(reload_for(BaudRate::B2000000), 222);
-        assert_eq!(reload_for(BaudRate::B3000000), 148);
+    fn reload_is_nine_and_a_half_bits_at_every_rate() {
+        assert_eq!(reload_for(BaudRate::B500000), 912);
+        assert_eq!(reload_for(BaudRate::B1000000), 456);
+        assert_eq!(reload_for(BaudRate::B2000000), 228);
+        assert_eq!(reload_for(BaudRate::B3000000), 152);
     }
 }

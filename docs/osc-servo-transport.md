@@ -19,7 +19,7 @@ engine computes every CRC. Software is pure state machines - `Framer`,
 driven by interrupt vectors at one priority, whose only jobs are to
 compute two kinds of numbers - *where* frames sit in the ring, and *when*
 something is due - and to react to two kinds of events: "a break
-happened" (a timer on the bus pin, length-qualified at 9.25 bit-times)
+happened" (a timer on the bus pin, length-qualified at 9.5 bit-times)
 and "it is time now" (one tick comparator, multiplexed over every
 deadline the transport has).
 
@@ -30,7 +30,7 @@ Every hardware resource the transport touches, and its duty cycle:
 | resource        | role                                             | budget/event |
 |-----------------|--------------------------------------------------|--------------|
 | USART1          | half-duplex wire; HDSEL, no self-echo (F9)       | —            |
-| TIM2 vector     | PFIC HIGH. The break wake: TI1 on PC0 (remap 4), counter gated to run only while the line is low and zeroed by DMA1 CH7 at every rising edge, so its overflow at 9.25 bit-times is a break (sec 7) | one entry per break; ~16.5 us with the framer's break body (ping, bench probe) |
+| TIM2 vector     | PFIC HIGH. The break wake: TI1 on PC0 (remap 4), counter gated to run only while the line is low and zeroed by DMA1 CH7 at every rising edge, so its overflow at 9.5 bit-times is a break (sec 7) | one entry per break; ~16.5 us with the framer's break body (ping, bench probe) |
 | USART1 vector   | PFIC HIGH. TC = TX arm drained, the one enabled source (never a DATAR read; FE/NE/ORE have no interrupt enable - they latch silently, sec 7) | TC body ~2-4 us/arm |
 | SysTick CNT/CMP | the transport clock (48 MHz, 32-bit) + the ONE comparator | — |
 | SysTick vector  | PFIC HIGH. Deadline mux: framer A/B, covered, chain trigger - and dispatch, inline (every class except verdict-first runs at the covered checkpoint or the fast path, sec 6) | arithmetic slots ~1–5 us; dispatch bodies ~10–70 us |
@@ -86,7 +86,7 @@ quiet bus), where every frame used to pay header, covered and end. DES:
 ## 3. One exchange, tick by tick (ping at 1M; byte-time = 10 us)
 
 ```
-t=0    break detector overflow, 9.25 bit-times into the break; the 0x00
+t=0    break detector overflow, 9.5 bit-times into the break; the 0x00
        rings at its stop-bit sample. TIM2 ISR - a pure wake: the
        framer resolves from ring data and projects deadline A = now + 3
        byte-times at wire pace + ½ byte for the break tail [F5]. A wake
@@ -226,7 +226,7 @@ authority. One epsilon survives, on header aims only: the break rings at
 its wake point ~4 bit-times before the line rises [F5], so the first data
 byte sits that far outside the byte cadence.
 
-The wake can beat its own byte. The detector fires 9.25 bit-times into
+The wake can beat its own byte. The detector fires 9.5 bit-times into
 the break, ahead of the stop-bit sample that rings the `0x00`, so a wake
 whose break byte has not rung gets its ring-dependent service - the
 resolver, the staged-reply kill - one byte-time later, at a third
@@ -398,13 +398,13 @@ qualifying. Remap 4 puts TI1 on PC0. Slave gated mode on TI1FP1 with
 CC1P inverting it runs the counter only while the line is low. IC2,
 mapped onto the same TI1, captures each rising edge, and its DMA request
 (DMA1 CH7, circular) copies a RAM zero into the counter. The overflow
-at 9.25 bit-times of continuous low (ARR 888/444/222/148 at
+at 9.5 bit-times of continuous low (ARR 912/456/228/152 at
 0.5M/1M/2M/3M, rewritten with every BRR write) raises the update, the
 one enabled interrupt: an idle line and frame data never reach it.
 
 A low that is still held when the service runs (often the break's own
 tail, a rescue pulse, a stuck line) would
-overflow again every 9.25 bit-times, so the service parks the counter
+overflow again every 9.5 bit-times, so the service parks the counter
 at ARR + 1: it must wrap through 0xFFFF, 65536 ticks of low, before it
 can overflow again, and the rising edge's zero un-parks it with no CPU.
 CC2IF, set by every rising edge and cleared only by the park, tells a
@@ -428,7 +428,7 @@ coalescing, so a wake built on them must be throttled against garble
 storms (wrong-baud traffic heard as continuous framing errors), and any
 mute needs a restore path that itself cannot be starved — a structural
 liability. A wake that never needs muting deletes the problem: the
-detector is length-qualified (only a dominant span past 9.25 bit-times
+detector is length-qualified (only a dominant span past 9.5 bit-times
 fires it), so real errors never interrupt at all, and their consequences
 surface exactly where data-driven handling already looks (sec 5.3).
 Silicon: law breaks 100/100 at every rate, one entry each; zero entries
@@ -541,7 +541,7 @@ fires — so the pipeline serializes after the frame end.
   workaround for not having an out-of-band delimiter at all.
 - **garble** — line damage that is not a break: a corrupted byte (slot
   occupied, CRC will fail) or a phantom byte (noise-invented byte between
-  frames). Raises no wake at all (lows under 9.25 bit-times are
+  frames). Raises no wake at all (lows under 9.5 bit-times are
   invisible to the detector, errors never interrupt); dies by data
   (sec 5.3).
 - **anchor / footprint** — a frame's start index in the ring / its total

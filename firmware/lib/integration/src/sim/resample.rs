@@ -12,7 +12,7 @@
 //! break rings one 0x00 and wakes (F2/F3).
 //!
 //! Approximations, all conservative: the break bar is 10 receiver bits (the
-//! chip's detector qualifies at 9.25, and at the catalog rate ratios no
+//! chip's detector qualifies at 9.5, and at the catalog rate ratios no
 //! whole-bit low run lands between the two); a character completing inside
 //! a longer low run rings in addition to the run's break byte; a character
 //! left sampling at a frame's end completes against idle-high at the next
