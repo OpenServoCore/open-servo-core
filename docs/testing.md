@@ -469,12 +469,13 @@ host-side, so assertions run on what the wire did, not on what any UART
 thinks it heard. No wlink, no chip-counter reads; the wire is the failure
 surface. The suite sweeps the full baud matrix (0.5 M / 1 M / 2 M / 3 M).
 
-- **turnaround** (`turnaround.rs`) — THE metric: instruction wire-end → status
-  break fall, per baud, gated for ping AND read AND write. 1 M is the tuned
-  sweet spot (~35 µs ping); the ceiling is baud-aware because turnaround rises
-  at both higher and lower baud on this silicon, and the acked-WRITE gate sits
-  near the ~89 µs rules-dominated dispatch floor (the production hot loop pays
-  none of it — GWRITE is NOREPLY).
+- **turnaround** (`turnaround.rs`) - instruction wire-end -> status break
+  fall, per baud, for ping, read and write. With the kernel above the bus a
+  reply waits out the kernel body in flight, so the means sit about one body
+  above the dispatch floor (ping ~62-78 us, acked WRITE ~151-167 us, the
+  rules-dominated dispatch; the production hot loop pays none of it, GWRITE
+  is NOREPLY). The ceilings catch regressions; the host-facing bound is
+  RESPONSE_DEADLINE.
 - **rescue** (`rescue.rs`) — the §9.1 pulse reaches a servo at any baud, and
   the full field-recovery flow (rescue → prefix-walk → ASSIGN → SAVE → reboot
   → FACTORY). Both tests end with a rescue-based recovery tail so a transient
