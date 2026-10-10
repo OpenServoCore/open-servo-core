@@ -6,7 +6,7 @@ use osc_protocol::crc::osc_crc;
 use osc_protocol::frame::Header;
 use osc_protocol::reply::FrameBuf;
 use osc_protocol::wire::{self, Id, Inst, Opcode, ResultCode};
-use osc_servo_core::tel::{STREAM_PAYLOAD_MAX, STREAM_SAMPLES_MAX, TelSample, encode_stream};
+use osc_servo_core::tel::{FRAME_SAMPLES, STREAM_PAYLOAD_MAX, TelSample, encode_stream};
 
 use super::WireFrame;
 
@@ -92,8 +92,8 @@ pub fn expect_tel_payload(mask: u16, count: u32, seq: usize) -> Vec<u8> {
 /// Expected payload of burst frame `seq` when the burst's ticks served
 /// exactly `rows`, in order (a played-back track, sliced at its cursor).
 pub fn expect_tel_payload_rows(mask: u16, rows: &[TelSample], seq: usize) -> Vec<u8> {
-    let a = seq * STREAM_SAMPLES_MAX;
-    let b = (a + STREAM_SAMPLES_MAX).min(rows.len());
+    let a = seq * FRAME_SAMPLES;
+    let b = (a + FRAME_SAMPLES).min(rows.len());
     let mut buf = [0u8; STREAM_PAYLOAD_MAX];
     let n = encode_stream(mask, seq as u8, b == rows.len(), &rows[a..b], &mut buf);
     buf[..n].to_vec()

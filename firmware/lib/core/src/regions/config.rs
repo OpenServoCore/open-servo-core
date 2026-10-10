@@ -42,8 +42,11 @@ pub struct ConfigCommon {
     pub capability_flags: u32,
     #[ct_field(access = ro)]
     pub hardware_revision: u8,
+    /// Samples a full TEL stream frame carries (protocol sec 5.6).
+    #[ct_field(access = ro)]
+    pub tel_frame_samples: u8,
     #[ct_field(skip)]
-    pub _rsvd_identity: [u8; 7],
+    pub _rsvd_identity: [u8; 6],
     #[ct_field(ge = 1u8, le = 249u8, hook = on_id_write)]
     pub id: u8,
     // `BaudRate` index; le gate = the enum ceiling. Zero (0.5M, the rescue

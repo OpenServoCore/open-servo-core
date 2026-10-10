@@ -5,7 +5,7 @@
 //! against the same function.
 //!
 //! Fixed 3 M wire, not the baud matrix: at 3M (and 2M) a full frame streams
-//! faster than its 16-tick batch fills, so every synthesized sample lands on
+//! faster than its batch fills, so every synthesized sample lands on
 //! the wire. At 1M and below the producer outruns the wire and drops samples
 //! by design (the fast tick never blocks), which would unpin the goldens.
 //!
@@ -25,7 +25,7 @@ use osc_protocol::wire::{Inst, Opcode, RESCUE_PULSE_MIN_US, ResultCode};
 use osc_servo_core::BaudRate;
 use osc_servo_core::regions::control::addr::lifecycle::{GOAL_DUTY, TEL_COUNT, TEL_MASK};
 use osc_servo_core::regions::telemetry::addr::sensors::POS;
-use osc_servo_core::tel::{BIT_POS, BIT_POS_LIN, FLAG_LAST};
+use osc_servo_core::tel::{BIT_POS, BIT_POS_LIN, FLAG_LAST, FRAME_SAMPLES};
 
 mod support;
 
@@ -35,6 +35,10 @@ const ID6: u8 = 6;
 const MASK: u16 = 0x1B;
 /// Sim ticks per TEL fast tick (50 us at 48 ticks/us).
 const TICK: u64 = 50 * 48;
+/// Rows per full frame.
+const K: u16 = FRAME_SAMPLES as u16;
+/// Two full frames and a short LAST one.
+const THREE_FRAMES: u16 = 2 * K + 8;
 
 fn sim3m() -> Sim {
     Sim::new(BaudRate::B3000000)
@@ -89,7 +93,7 @@ fn burst_end_to_end() {
     let mut sim = sim3m();
     sim.add_servo(ID5);
 
-    let frames = arm(&mut sim, 40);
+    let frames = arm(&mut sim, THREE_FRAMES);
 
     // Wire order: the count-write ack first, then exactly three Stream frames.
     let servo = servo_frames(&frames);
@@ -107,9 +111,13 @@ fn burst_end_to_end() {
         assert!(inst.is_status());
         assert_eq!(inst.result(), Some(ResultCode::Stream));
         assert!(!inst.alert());
-        // seq, LAST placement, and the 16/16/8 sample split all pin here:
-        // the golden encodes tick data 0..40 through the same encoder.
-        assert_eq!(payload, expect_payload(40, i), "frame {i} payload");
+        // seq, LAST placement, and the K/K/8 sample split all pin here:
+        // the golden encodes the tick data through the same encoder.
+        assert_eq!(
+            payload,
+            expect_payload(THREE_FRAMES as u32, i),
+            "frame {i} payload"
+        );
         assert_eq!(payload[1] & FLAG_LAST != 0, i == 2, "LAST only on frame 2");
     }
 
@@ -140,12 +148,12 @@ fn pos_lin_streams_beside_pos() {
         status(&frames[frames.len() - 1]).0.result(),
         Some(ResultCode::Ok)
     );
-    sim.host_send(&write_u16(ID5, 0, TEL_COUNT, 16));
+    sim.host_send(&write_u16(ID5, 0, TEL_COUNT, K));
     let frames = sim.run();
     let stream = stream_frames(&frames);
     assert_eq!(stream.len(), 1, "{frames:#?}");
     let (_, payload) = status(stream[0]);
-    assert_eq!(payload, expect_tel_payload(mask, 16, 0));
+    assert_eq!(payload, expect_tel_payload(mask, K as u32, 0));
     for (i, s) in payload[4..].chunks(4).enumerate() {
         let want = tel_sample(i as u32);
         assert_eq!(u16::from_le_bytes([s[0], s[1]]), want.pos, "sample {i}");
@@ -166,7 +174,7 @@ fn burst_hold_commit() {
     // no burst starts. Drained per write (a real host waits for each ack).
     for w in [
         write_u16(ID5, Inst::FLAG_HOLD, TEL_MASK, MASK),
-        write_u16(ID5, Inst::FLAG_HOLD, TEL_COUNT, 24),
+        write_u16(ID5, Inst::FLAG_HOLD, TEL_COUNT, K + 8),
         write_u16(ID5, Inst::FLAG_HOLD, GOAL_DUTY, 0x0100),
     ] {
         sim.host_send(&w);
@@ -200,10 +208,14 @@ fn burst_hold_commit() {
         burst.len(),
         "broadcast COMMIT stays silent: {frames:#?}"
     );
-    assert_eq!(burst.len(), 2, "24 samples = 16 + 8");
+    assert_eq!(burst.len(), 2, "K + 8 samples");
     for (i, f) in burst.iter().enumerate() {
         assert_valid(f);
-        assert_eq!(status(f).1, expect_payload(24, i), "frame {i} payload");
+        assert_eq!(
+            status(f).1,
+            expect_payload((K + 8) as u32, i),
+            "frame {i} payload"
+        );
     }
     let (mask, duty) = sim.servo_table(s, |t| {
         (t.control.lifecycle.tel_mask, t.control.lifecycle.goal_duty)
@@ -211,11 +223,11 @@ fn burst_hold_commit() {
     assert_eq!((mask, duty), (MASK, 0x0100), "COMMIT applied the batch");
 
     // Capture began within a tick or two of the COMMIT: the first frame's
-    // break lands one 16-tick batch (plus the grid-alignment tick and end
+    // break lands one K-tick batch (plus the grid-alignment tick and end
     // detection) after the commit frame drained.
     let f0 = burst[0];
     assert!(
-        f0.at >= commit_end + 15 * TICK && f0.at <= commit_end + 18 * TICK,
+        f0.at >= commit_end + (K as u64 - 1) * TICK && f0.at <= commit_end + (K as u64 + 2) * TICK,
         "first burst frame at {} vs commit end {}",
         f0.at,
         commit_end
@@ -224,12 +236,12 @@ fn burst_hold_commit() {
 
 #[test_log::test]
 fn burst_abort_on_host_break() {
-    // Probe run: an unmolested 48-sample burst, to time the gap between
+    // Probe run: an unmolested three-frame burst, to time the gap between
     // frames 0 and 1 (the sim is deterministic).
     let (frame0_end, frame1_at) = {
         let mut sim = sim3m();
         sim.add_servo(ID5);
-        let frames = arm(&mut sim, 48);
+        let frames = arm(&mut sim, 3 * K);
         let burst = stream_frames(&frames);
         assert_eq!(burst.len(), 3);
         (burst[0].end, burst[1].at)
@@ -244,7 +256,7 @@ fn burst_abort_on_host_break() {
     let mut sim = sim3m();
     sim.add_servo(ID5);
     prime_mask(&mut sim);
-    sim.host_send(&write_u16(ID5, 0, TEL_COUNT, 48));
+    sim.host_send(&write_u16(ID5, 0, TEL_COUNT, 3 * K));
     sim.inject_break_at(break_at_us);
     let frames = sim.run();
 
@@ -272,13 +284,17 @@ fn burst_abort_on_host_break() {
     assert_eq!(status(servo[0]).0.result(), Some(ResultCode::Ok));
 
     // A re-arm streams a full fresh burst from seq 0 and tick 0.
-    sim.host_send(&write_u16(ID5, 0, TEL_COUNT, 40));
+    sim.host_send(&write_u16(ID5, 0, TEL_COUNT, THREE_FRAMES));
     let frames = sim.run();
     let burst = stream_frames(&frames);
     assert_eq!(burst.len(), 3);
     for (i, f) in burst.iter().enumerate() {
         assert_valid(f);
-        assert_eq!(status(f).1, expect_payload(40, i), "re-armed frame {i}");
+        assert_eq!(
+            status(f).1,
+            expect_payload(THREE_FRAMES as u32, i),
+            "re-armed frame {i}"
+        );
     }
 }
 
@@ -288,7 +304,7 @@ fn burst_frame_corruption_is_detectable() {
     let garble_at_us = {
         let mut sim = sim3m();
         sim.add_servo(ID5);
-        let frames = arm(&mut sim, 48);
+        let frames = arm(&mut sim, 3 * K);
         let f1 = stream_frames(&frames)[1];
         (f1.at + f1.end) / 2 / 48
     };
@@ -296,7 +312,7 @@ fn burst_frame_corruption_is_detectable() {
     let mut sim = sim3m();
     sim.add_servo(ID5);
     prime_mask(&mut sim);
-    sim.host_send(&write_u16(ID5, 0, TEL_COUNT, 48));
+    sim.host_send(&write_u16(ID5, 0, TEL_COUNT, 3 * K));
     sim.inject_garble_at(garble_at_us, 0xA5);
     let frames = sim.run();
 
@@ -313,8 +329,8 @@ fn burst_frame_corruption_is_detectable() {
         .map(|f| status(f).1[0])
         .collect();
     assert_eq!(kept, [0, 2]);
-    assert_eq!(status(burst[0]).1, expect_payload(48, 0));
-    assert_eq!(status(burst[2]).1, expect_payload(48, 2));
+    assert_eq!(status(burst[0]).1, expect_payload(3 * K as u32, 0));
+    assert_eq!(status(burst[2]).1, expect_payload(3 * K as u32, 2));
 }
 
 #[test_log::test]
@@ -322,8 +338,8 @@ fn burst_alert_reflects_fault() {
     let mut sim = sim3m();
     let s = sim.add_servo(ID5);
     // Faulted ticks span exactly the second batch window.
-    sim.set_tel_fault_ticks(s, 16, 32);
-    let frames = arm(&mut sim, 48);
+    sim.set_tel_fault_ticks(s, K as u32, 2 * K as u32);
+    let frames = arm(&mut sim, 3 * K);
 
     let burst = stream_frames(&frames);
     assert_eq!(burst.len(), 3);
@@ -337,7 +353,11 @@ fn burst_alert_reflects_fault() {
     // synthesized data.
     for (i, f) in burst.iter().enumerate() {
         assert_valid(f);
-        assert_eq!(status(f).1, expect_payload(48, i), "frame {i} payload");
+        assert_eq!(
+            status(f).1,
+            expect_payload(3 * K as u32, i),
+            "frame {i} payload"
+        );
     }
 }
 
@@ -349,7 +369,7 @@ fn multi_servo_silence() {
 
     // Completing at all is the drive-discipline assertion: the sim panics
     // (F8) if B ever transmits into A's burst.
-    let frames = arm(&mut sim, 48);
+    let frames = arm(&mut sim, 3 * K);
     assert_eq!(stream_frames(&frames).len(), 3);
     assert!(
         !frames.iter().any(|f| f.from == Source::Servo(ID6)),
@@ -376,12 +396,14 @@ fn burst_never_reads_as_a_rescue_pulse() {
     let mut sim = sim3m();
     sim.add_servo(ID5);
 
-    prime_mask(&mut sim);
+    // six fields: a full frame outlasts the rescue window
+    sim.host_send(&write_u16(ID5, 0, TEL_MASK, 0x1cd));
+    sim.run();
     let t0 = sim.now_us();
     for k in 0..200 {
         sim.sample_line_at(t0 + k * 50);
     }
-    sim.host_send(&write_u16(ID5, 0, TEL_COUNT, 40));
+    sim.host_send(&write_u16(ID5, 0, TEL_COUNT, THREE_FRAMES));
     let frames = sim.run();
     let burst = stream_frames(&frames);
     assert_eq!(burst.len(), 3, "{frames:#?}");
@@ -444,7 +466,7 @@ fn track_rows_stream_in_order_and_loop() {
     let rows = track(24);
     sim.set_track(s, rows.clone());
 
-    let frames = arm(&mut sim, 40);
+    let frames = arm(&mut sim, THREE_FRAMES);
     let servo = servo_frames(&frames);
     let burst = stream_frames(&frames);
     assert_eq!(burst.len(), 3);
@@ -456,9 +478,11 @@ fn track_rows_stream_in_order_and_loop() {
         .position(|r| r.pos == first)
         .expect("first sample is a track row");
     assert_eq!(k, (servo[0].at / TICK + 1) as usize % rows.len());
-    // 40 samples over a 24-row track wrap once; the payloads pin every row
+    // THREE_FRAMES samples over a 24-row track wrap once; the payloads pin every row
     // through the same encoder, in order.
-    let served: Vec<TelSample> = (0..40).map(|i| rows[(k + i) % rows.len()]).collect();
+    let served: Vec<TelSample> = (0..THREE_FRAMES as usize)
+        .map(|i| rows[(k + i) % rows.len()])
+        .collect();
     for (i, f) in burst.iter().enumerate() {
         assert_valid(f);
         assert_eq!(
@@ -470,10 +494,14 @@ fn track_rows_stream_in_order_and_loop() {
 
     // An empty track restores the synthesized samples, byte for byte.
     sim.set_track(s, Vec::new());
-    sim.host_send(&write_u16(ID5, 0, TEL_COUNT, 40));
+    sim.host_send(&write_u16(ID5, 0, TEL_COUNT, THREE_FRAMES));
     let frames = sim.run();
     for (i, f) in stream_frames(&frames).iter().enumerate() {
-        assert_eq!(status(f).1, expect_payload(40, i), "synthesized frame {i}");
+        assert_eq!(
+            status(f).1,
+            expect_payload(THREE_FRAMES as u32, i),
+            "synthesized frame {i}"
+        );
     }
 }
 

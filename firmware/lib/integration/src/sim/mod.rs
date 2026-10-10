@@ -30,14 +30,16 @@ use osc_servo_core::{BaudRate, BootMode, ControlTable};
 use osc_servo_drivers::bus::LinkDiag;
 
 use self::core::{Core, Event, TICKS_PER_US, Talker, break_ticks, break_wake_lead, byte_ticks};
-use self::cpu::{Cpu, KERNEL_PERIOD, TEL_STAGE_COST, Vector};
+use self::cpu::{
+    Cpu, KERNEL_PERIOD, TEL_ENCODE_COST, TEL_STAGE_PRE, TEL_TC_PRE, TEL_TRIGGER_COST, Vector,
+};
 use self::providers::Handles;
 use self::resample::{CrossRx, RxOut};
 use self::servo::SimServo;
 
 pub use self::cpu::{
-    Entries, HandlerCost, KERNEL_HOLD, KERNEL_MOVING, KERNEL_QUIET, KernelLane, KernelLevel,
-    KernelStats, READ32_3M_COST,
+    Entries, HandlerCost, KERNEL_HOLD, KERNEL_MOVING, KERNEL_QUIET, KERNEL_STEP,
+    KERNEL_STEP_SPREAD_US, KernelLane, KernelLevel, KernelStats, READ32_3M_COST,
 };
 pub use self::host::HostEvent;
 pub use self::servo::{DEV_V006_SENSE, DEV_V006_SENSE_EXT};
@@ -388,6 +390,12 @@ impl Sim {
             Event::KernelScan { servo: i },
             (now / KERNEL_PERIOD + 1) * KERNEL_PERIOD,
         );
+    }
+
+    /// Spread servo `i`'s kernel bodies uniformly over +/- `us` around their
+    /// phase costs, seeded: a body's cost varies tick to tick on the chip.
+    pub fn spread_kernel(&mut self, i: usize, us: u64, seed: u64) {
+        self.cpus[i].spread_kernel(us * TICKS_PER_US, seed);
     }
 
     pub fn kernel_stats(&self, i: usize) -> KernelStats {
@@ -923,8 +931,8 @@ impl Sim {
         true
     }
 
-    /// The kernel lane's tail: the tick's TEL sample, then the poll. A poll
-    /// that stages holds the kernel for the stage, and its break follows it.
+    /// The kernel lane's tail: the tick's TEL sample, then the stager
+    /// vector the kernel's last statement pends at the bus level.
     fn kernel_tail(&mut self, j: usize) {
         let now = self.core.borrow().now();
         if let Some(end) = self.cpus[j].kernel_until()
@@ -935,13 +943,8 @@ impl Sim {
                 .schedule(Event::KernelTail { servo: j }, end);
             return;
         }
-        if !self.tel_sample(j, now) {
-            return;
-        }
-        self.handles[j].tx_lead.set(TEL_STAGE_COST);
-        self.servos[j].poll_tel();
-        if self.handles[j].tx_lead.take() == 0 {
-            self.cpus[j].extend_kernel(now, TEL_STAGE_COST);
+        if self.tel_sample(j, now) {
+            self.deliver(j, Vector::Stage);
         }
     }
 
@@ -1014,10 +1017,12 @@ impl Sim {
         }
     }
 
-    /// Run `v`'s handler on servo `j` now, or pend it if a body is running.
+    /// Run `v`'s handler on servo `j` now, or pend it if a body is running
+    /// or others wait: pended vectors arbitrate by priority at the CPU's
+    /// next free instant.
     fn deliver(&mut self, j: usize, v: Vector) {
         let now = self.core.borrow().now();
-        if self.cpus[j].busy(now) {
+        if self.cpus[j].busy(now) || self.cpus[j].any_pend() {
             self.cpus[j].pend(v);
             self.schedule_free(j);
         } else {
@@ -1039,10 +1044,30 @@ impl Sim {
         let now = self.core.borrow().now();
         self.cpus[j].charge(now, v);
         let before = self.servos[j].dispatched();
+        // A frame the stager or a TX completion starts breaks once the body
+        // has run up to its trigger, preemptions included.
+        let gate = matches!(v, Vector::Stage | Vector::TxDone);
+        if gate {
+            self.handles[j].tx_gate.hold();
+        }
         match v {
             Vector::Compare => self.servos[j].on_deadline(),
             Vector::Break => self.servos[j].on_break(),
             Vector::TxDone => self.servos[j].on_tx_complete(),
+            Vector::Stage => self.servos[j].poll_tel(),
+        }
+        if gate && self.handles[j].tx_gate.holding() {
+            let (pre, post) = if v == Vector::Stage {
+                (TEL_STAGE_PRE, TEL_TRIGGER_COST)
+            } else {
+                let body = self.cpus[j].cost.on_tx_complete_us as u64 * TICKS_PER_US;
+                (
+                    TEL_TC_PRE,
+                    body.saturating_sub(TEL_TC_PRE) + TEL_TRIGGER_COST,
+                )
+            };
+            self.cpus[j].hold_to_break(now, pre, post);
+            self.schedule_free(j);
         }
         self.cpus[j].charge_frames(self.servos[j].dispatched() - before);
         self.handles[j].clock_lag.set(0);
@@ -1066,13 +1091,14 @@ impl Sim {
                 .borrow_mut()
                 .schedule(Event::KernelRetry { servo: j }, at);
         }
-        if self.cpus[j].kernel_stats().entries > entries
-            && self.tels[j].running
-            && let Some(end) = self.cpus[j].kernel_until()
-        {
-            self.core
-                .borrow_mut()
-                .schedule(Event::KernelTail { servo: j }, end);
+        if self.cpus[j].kernel_stats().entries > entries && self.tels[j].running {
+            // The burst's sample build and encode run inside the body.
+            self.cpus[j].extend_kernel(now, TEL_ENCODE_COST);
+            if let Some(end) = self.cpus[j].kernel_until() {
+                self.core
+                    .borrow_mut()
+                    .schedule(Event::KernelTail { servo: j }, end);
+            }
         }
     }
 
@@ -1099,6 +1125,12 @@ impl Sim {
             if self.cpus[j].any_pend() {
                 self.schedule_free(j);
             }
+            return;
+        }
+        if self.cpus[j].tx_held.is_some() {
+            self.handles[j].tx_gate.open();
+            self.cpus[j].resume_after_break(now);
+            self.schedule_free(j);
             return;
         }
         if let Some((v, entry)) = self.cpus[j].deferred.take() {

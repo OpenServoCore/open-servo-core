@@ -211,7 +211,7 @@ pub struct TelemetryHealth {
     /// a flash SAVE stalled the core; updated every 16 ticks. Wraps.
     #[ct_field(access = rw)]
     pub tick_lost_count: u16,
-    /// TEL stream rows dropped because both stream buffers were waiting for
+    /// TEL stream rows dropped because every stream buffer was waiting for
     /// the wire. Wraps.
     #[ct_field(access = rw)]
     pub tel_drop_count: u16,

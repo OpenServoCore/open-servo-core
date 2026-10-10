@@ -44,6 +44,7 @@ pub use telemetry::{
 
 use crate::regions::config::{ConfigDefaults, CurrentDefaults};
 use control_table::{RegionStorage, Table};
+use osc_protocol::table;
 
 pub const CONFIG_REGION_SIZE: u16 = 128;
 pub const CALIB_REGION_SIZE: u16 = 256;
@@ -135,9 +136,9 @@ impl ControlTableCell {
         });
     }
 
-    /// Stamp the RO identity block (protocol sec 5.4). `firmware_version` is
-    /// not a caller argument: it is the compiled-in `crate::FIRMWARE_VERSION`
-    /// fact of this build, so a board cannot claim a version it is not running.
+    /// Stamp the RO identity block (protocol sec 5.4). `firmware_version` and
+    /// the TEL batch are not caller arguments: they are compiled-in facts of
+    /// this build, so a board cannot claim what it is not running.
     /// Caller must be sole writer (install-time, pre-IRQ).
     pub fn seed_identity(&self, model: u16, hw_rev: u8) {
         // SAFETY: install-time, pre-IRQ, sole writer.
@@ -146,6 +147,8 @@ impl ControlTableCell {
             common.model_number = model;
             common.hardware_revision = hw_rev;
             common.firmware_version = crate::FIRMWARE_VERSION;
+            common.capability_flags = table::CAP_TEL_FRAME_SAMPLES;
+            common.tel_frame_samples = crate::tel::FRAME_SAMPLES as u8;
         });
     }
 
@@ -181,10 +184,9 @@ impl ControlTableCell {
 
 #[cfg(test)]
 mod tests {
-    use osc_protocol::table;
-
     use super::ControlTable;
     use super::config::addr as config_addr;
+    use super::table;
     use super::telemetry::addr as telemetry_addr;
     use control_table::RegionStorage;
     use control_table::descriptor::{EnumVariant, FieldKind};
@@ -197,6 +199,14 @@ mod tests {
             assert_eq!(t.config.common.model_number, 0x0101);
             assert_eq!(t.config.common.hardware_revision, 3);
             assert_eq!(t.config.common.firmware_version, crate::FIRMWARE_VERSION);
+            assert_eq!(
+                t.config.common.tel_frame_samples as usize,
+                crate::tel::FRAME_SAMPLES
+            );
+            assert_ne!(
+                t.config.common.capability_flags & table::CAP_TEL_FRAME_SAMPLES,
+                0
+            );
         });
     }
 
@@ -217,6 +227,10 @@ mod tests {
         assert_eq!(
             config_addr::common::CAPABILITY_FLAGS,
             table::CAPABILITY_FLAGS
+        );
+        assert_eq!(
+            config_addr::common::TEL_FRAME_SAMPLES,
+            table::TEL_FRAME_SAMPLES
         );
         assert_eq!(config_addr::common::ID, table::ID);
         assert_eq!(config_addr::common::BAUD_RATE_IDX, table::BAUD_RATE_IDX);

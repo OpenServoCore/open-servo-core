@@ -182,3 +182,27 @@ fn preempted_body_runs_after_the_preemption() {
         inst.at
     );
 }
+
+/// The CRC engine takes the chip's wall time: a lone poll before the fed
+/// span has run through reads busy (the TEL sender seals on a later
+/// poll), while a spin (a second poll in the same instant) waits it out.
+#[test]
+fn crc_engine_takes_its_wall_time() {
+    use osc_servo_drivers::traits::bus::CrcEngine;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use super::core::{Core, Event};
+    use super::providers::SimCrc;
+
+    let core = Rc::new(RefCell::new(Core::new()));
+    let mut crc = SimCrc::new(core.clone());
+    crc.reset();
+    crc.feed(&[0x5A; 200]);
+    assert_eq!(crc.result(), None, "a lone poll finds the engine busy");
+    let spun = crc.result().expect("a spin waits the engine out");
+    // 200 B at 0.36 us/B
+    core.borrow_mut().schedule(Event::Idle, 72 * TICKS_PER_US);
+    core.borrow_mut().pop();
+    assert_eq!(crc.result(), Some(spun));
+}

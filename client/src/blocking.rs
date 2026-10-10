@@ -195,6 +195,10 @@ impl<P: Pipe> Client<P> {
         block_on(common::identity(&mut self.0, id))
     }
 
+    pub fn tel_frame_samples(&mut self, id: Id) -> Result<u8, Error> {
+        block_on(common::tel_frame_samples(&mut self.0, id))
+    }
+
     pub fn health(&mut self, id: Id) -> Result<Health, Error> {
         block_on(common::health(&mut self.0, id))
     }

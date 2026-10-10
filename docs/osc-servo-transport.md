@@ -34,12 +34,12 @@ Every hardware resource the transport touches, and its duty cycle:
 | USART1 vector   | PFIC LOW (0x80). TC = TX arm drained, the one enabled source (never a DATAR read; FE/NE/ORE have no interrupt enable - they latch silently, sec 7) | TC body ~2-4 us/arm |
 | SysTick CNT/CMP | the transport clock (48 MHz, 32-bit) + the ONE comparator | — |
 | SysTick vector  | PFIC LOW (0xC0), after a pending wake or TC. Deadline mux: framer A/B, covered, chain trigger - and dispatch, inline (every class except verdict-first runs at the covered checkpoint or the fast path, sec 6) | arithmetic slots ~1-5 us; dispatch bodies ~10-70 us |
-| SW vector (14)  | PFIC LOW (0xC0). The TEL stager: `poll_tel`, pended through PFIC_IPSR1 bit 14 by the kernel tick's last statement while a burst is live | one entry per tick while a burst runs; ~23 us when it stages a frame |
+| SW vector (14)  | PFIC LOW (0xC0). The TEL sender: `poll_tel`, pended through PFIC_IPSR1 bit 14 by the kernel tick's last statement while a burst is live (the TC that frees the wire runs it too) | one entry per tick while a burst runs; ~1-3 us (E) to seal, send or start a CRC |
 | DMA1 CH5        | USART1 RX -> 512 B ring, circular, silent (no IRQ); **VERYHIGH, atop the ladder** (sec 7) | zero CPU |
 | DMA1 CH7        | TIM2_CH2 (IC2, rising edge) -> a RAM zero into TIM2 CNT, circular, one halfword per rising edge; VERYHIGH, below CH5 (sec 7) | zero CPU |
 | DMA1 CH2 + TIM3 | TIM2_UP (the detector's overflow) -> TIM3's free-running HCLK count into an 8-entry stamp ring, circular; HIGH, below CH1 (sec 8) | zero CPU; read only during a CAL train |
-| DMA1 CH4        | TX arms -> USART1 DR (header, snapshot payload, CRC tail); HIGH | zero CPU; TC surfaces as USART TC |
-| DMA1 CH3        | CRC feeds -> SPI1 DR, 16-bit halfwords (RX span straight from the ring); MEDIUM, below CH6 | zero CPU, ~0.36 us/B engine time |
+| DMA1 CH4        | TX arms -> USART1 DR (header, snapshot payload, CRC tail; a TEL frame whole from its buffer); HIGH | zero CPU; TC surfaces as USART TC |
+| DMA1 CH3        | CRC feeds -> SPI1 DR, 16-bit halfwords (RX span straight from the ring, a banked TEL frame in place); MEDIUM, below CH6 | zero CPU, ~0.36 us/B engine time |
 | SPI1            | CRC-16/ARC coprocessor (16-bit LSB-first, bitrev16 at the register), accumulates across feeds | runs ~8× wire speed (F6) |
 | DMA1 CH6        | snapshot copy -> the 256 B snapshot buffer (reply payloads only - RX CRC feeds the ring directly); HIGH, above CH3 | ~0.125 us/B, zero CPU |
 | DMA1 CH1        | ADC sample set -> buffer; DMA HIGH (wins HIGH ties by channel number); TC vector = motor kernel tick, alone at PFIC HIGH | 14-40 us body (rest to moving) |
@@ -327,19 +327,29 @@ be staged behind the CRC verdict:
   LAST-flagged frame, so the reply TX engine and CRC engine are
   structurally idle and the burst borrows them whole - no second TX
   path exists. Mechanics: the kernel encodes each control-tick sample
-  once, directly at its final wire offset in a ping-pong buffer pair
-  (the kernel's context, PFIC HIGH); the tick's last statement pends the SW vector, whose
-  `poll_tel` stages a ready buffer through the ordinary stage/trigger
-  path at the bus level, never inside the kernel's body. It runs per
-  tick, not in the main loop: a six-field frame leaves
-  ~110 us of its 800 us batch window spare, and a driving tick starves
-  the main loop for longer than that. Cross-context traffic is three
-  flags and an arm mailbox, single-writer volatile discipline, no
-  atomics. Any RX break aborts the burst with the speculation-kill trio
-  (disarm, tx.abort, chain reset); buffers published under a dead arm
-  epoch are discarded on sight, which closes the mid-tick re-arm race. A
-  stalled consumer drops rows and counts them - the fast tick never
-  blocks.
+  once, directly at its final wire offset in one of three frame buffers
+  laid out as the wire carries them (the kernel's context, PFIC HIGH);
+  the tick's last statement pends the SW vector. Its `poll_tel` writes
+  a banked frame's header and runs the CRC engine over it in place while
+  the frame ahead still streams; once the result is in, the frame leaves
+  as one DMA arm straight from its buffer. The TC that frees the wire
+  runs the same poll, so a sealed frame follows at once: between two
+  frames the wire waits for that one TC body, which the kernel delays by
+  at most one body. Every other step sits off the wire's path, which is
+  what keeps six fields at 3 M whole while the motor drives (DES
+  `tel_six_fields_keep_up_while_stepping`): a two-arm frame staged from
+  the SW vector waited on a kernel-starved bus level three times per
+  frame and lost a fifth of its rows. The third buffer covers the
+  bank-to-wire latency (the CRC's ~50 us, then a poll) and runs of
+  kernel overruns; it cannot cover a sustained deficit, and two buffers
+  lose rows at every batch size up to the payload cap. Eleven-row
+  frames (550 us; `tel::FRAME_SAMPLES`, published RO at
+  `tel_frame_samples`) are the smallest that keep up in three. Cross-context
+  traffic is three flags and an arm mailbox, single-writer volatile
+  discipline, no atomics. Any RX break aborts the burst with the
+  speculation-kill trio (disarm, tx.abort, chain reset); buffers
+  published under a dead arm epoch are discarded on sight. A stalled
+  consumer drops rows and counts them - the fast tick never blocks.
 
 Backpressure is structural: at most one pending-verdict frame exists at a
 time (the pending frame IS the frontier), so the single staging slot and

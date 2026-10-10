@@ -121,7 +121,8 @@ pub enum Event {
     KernelScan { servo: usize },
     /// Re-try entering a servo's pended kernel tick.
     KernelRetry { servo: usize },
-    /// A servo's kernel body reached its tail: the TEL sample and poll.
+    /// A servo's kernel body reached its tail: the TEL sample and the
+    /// stager pend.
     KernelTail { servo: usize },
     /// The attached host engine's tick-compare fired; same generation gate
     /// as `Compare`.

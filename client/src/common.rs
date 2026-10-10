@@ -17,6 +17,9 @@ pub struct Identity {
     pub fw: u16,
     pub hw: u8,
     pub capabilities: u32,
+    /// Samples a full sec 5.6 stream frame carries; None when the node does
+    /// not publish it (`CAP_TEL_FRAME_SAMPLES` clear).
+    pub tel_frame_samples: Option<u8>,
 }
 
 /// TELEMETRY-COMMON front: alarm, dirty, applied trim, transport counters.
@@ -32,16 +35,28 @@ pub struct Health {
 }
 
 pub async fn identity<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<Identity, Error> {
-    let b = c.read(id, table::MODEL_NUMBER, 9).await?;
-    if b.len() < 9 {
+    let b = c.read(id, table::MODEL_NUMBER, 10).await?;
+    if b.len() < 10 {
         return Err(short("identity"));
     }
+    let capabilities = u32::from_le_bytes([b[4], b[5], b[6], b[7]]);
     Ok(Identity {
         model: u16::from_le_bytes([b[0], b[1]]),
         fw: u16::from_le_bytes([b[2], b[3]]),
-        capabilities: u32::from_le_bytes([b[4], b[5], b[6], b[7]]),
+        capabilities,
         hw: b[8],
+        tel_frame_samples: (capabilities & table::CAP_TEL_FRAME_SAMPLES != 0).then_some(b[9]),
     })
+}
+
+/// The node's TEL batch (sec 5.6), for decoding its stream frames: one
+/// read at stream start. A node that does not publish it is an error, never
+/// a guess - its frames cannot be ticked.
+pub async fn tel_frame_samples<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<u8, Error> {
+    match identity(c, id).await?.tel_frame_samples {
+        Some(n) if n != 0 => Ok(n),
+        _ => Err(Error::Unpublished("tel_frame_samples")),
+    }
 }
 
 pub async fn health<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<Health, Error> {

@@ -5,13 +5,15 @@
 
 use osc_host::engine::{Command, Outcome};
 use osc_integration::sim::{
-    HostEvent, KERNEL_HOLD, KERNEL_MOVING, KERNEL_QUIET, KernelLane, KernelLevel, KernelStats,
-    READ32_3M_COST, Sim, Source, frame_crc_ok, instruction, status,
+    HostEvent, KERNEL_HOLD, KERNEL_MOVING, KERNEL_QUIET, KERNEL_STEP, KERNEL_STEP_SPREAD_US,
+    KernelLane, KernelLevel, KernelStats, READ32_3M_COST, Sim, Source, WireFrame, frame_crc_ok,
+    instruction, status,
 };
 use osc_protocol::build;
-use osc_protocol::wire::{Id, Inst, Opcode, ResultCode, STREAM_SAMPLES_MAX};
+use osc_protocol::wire::{Id, Inst, Opcode, ResultCode};
 use osc_servo_core::BaudRate;
 use osc_servo_core::regions::control::addr::lifecycle::{GOAL_VELOCITY, TEL_COUNT, TEL_MASK};
+use osc_servo_core::tel::FRAME_SAMPLES;
 use rstest::rstest;
 
 const ID: u8 = 1;
@@ -194,7 +196,7 @@ fn write_u16(addr: u16, v: u16) -> Vec<u8> {
     instruction(ID, Opcode::Write, 0, &[a[0], a[1], d[0], d[1]])
 }
 
-/// The six-field soak mask: a 202 B frame per 800 us batch at 3M.
+/// The six-field soak mask: a 142 B frame per 550 us batch at 3M.
 const SIX_FIELDS: u16 = 0x1cd;
 const TEL_FRAMES: u16 = 100;
 
@@ -203,7 +205,7 @@ fn tel_six_fields_fit_at_rest_with_the_kernel_on_top() {
     let mut sim = Sim::new(BaudRate::B3000000);
     let s = sim.add_servo(ID);
     sim.set_handler_cost(s, READ32_3M_COST);
-    let rows = TEL_FRAMES * STREAM_SAMPLES_MAX as u16;
+    let rows = TEL_FRAMES * FRAME_SAMPLES as u16;
     let lane = KernelLane {
         level: KernelLevel::AboveBus,
         phases: &KERNEL_QUIET,
@@ -220,4 +222,72 @@ fn tel_six_fields_fit_at_rest_with_the_kernel_on_top() {
     assert_eq!(stream.len(), TEL_FRAMES as usize);
     assert!(stream.iter().all(|f| frame_crc_ok(f)));
     assert_eq!(sim.tel_drops(s), 0, "rows dropped of {rows}");
+}
+
+/// A six-field burst of `rows` at 3M under the step soak's kernel, every
+/// body `extra_us` heavier, spread by `seed`: the stream frames, the rows
+/// dropped and the kernel's stats.
+fn step_burst(rows: u16, extra_us: u64, seed: u64) -> (Vec<WireFrame>, u16, KernelStats) {
+    let phases: &'static [u64] = Box::leak(
+        KERNEL_STEP
+            .iter()
+            .map(|c| c + extra_us * 48)
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+    );
+    let mut sim = Sim::new(BaudRate::B3000000);
+    let s = sim.add_servo(ID);
+    sim.set_handler_cost(s, READ32_3M_COST);
+    let lane = KernelLane {
+        level: KernelLevel::AboveBus,
+        phases,
+    };
+    sim.set_kernel_lane(s, lane, START_US + 2 * rows as u64 * 50);
+    sim.spread_kernel(s, KERNEL_STEP_SPREAD_US, seed);
+    sim.host_send_at(START_US, &write_u16(TEL_MASK, SIX_FIELDS));
+    sim.run_until(START_US + 1_000);
+    sim.host_send_at(START_US + 1_000, &write_u16(TEL_COUNT, rows));
+    let stream = sim
+        .run()
+        .into_iter()
+        .filter(|f| f.from == Source::Servo(ID) && status(f).0.result() == Some(ResultCode::Stream))
+        .collect();
+    (stream, sim.tel_drops(s), sim.kernel_stats(s))
+}
+
+const STEP_ROWS: u16 = 4000;
+
+/// The step lane carries the soak's kernel: with the burst's encode on top,
+/// 4-7% of its ticks run over one period (bench: 5.3-5.5%).
+#[rstest]
+fn kernel_step_lane_overruns_as_the_step_soak(#[values(1, 2, 3, 4)] seed: u64) {
+    let (_, drops, st) = step_burst(STEP_ROWS, 0, seed);
+    let ticks = (STEP_ROWS + drops) as f64;
+    let over = st.over as f64 / ticks;
+    assert!(
+        (0.04..=0.07).contains(&over),
+        "{:.1}% over: {st:?}",
+        100.0 * over
+    );
+}
+
+/// Six fields at 3M keep up while the motor steps: every 11-row frame
+/// leaves as one arm from its CRC'd buffer, chained from the previous
+/// frame's TC, so the wire waits only for that TC between frames, and the
+/// third buffer absorbs runs of kernel overruns. The two-arm stager staged
+/// from the SW vector, at 16 rows, loses 17-20% of the rows here (bench:
+/// 19.6%). Margin: zero lost with every body 2 us heavier still.
+#[rstest]
+fn tel_six_fields_keep_up_while_stepping(
+    #[values(1, 2, 3, 4)] seed: u64,
+    #[values(0, 2)] extra_us: u64,
+) {
+    let (stream, drops, st) = step_burst(STEP_ROWS, extra_us, seed);
+    assert_eq!(drops, 0, "rows dropped: {st:?}");
+    let frames = (STEP_ROWS as usize).div_ceil(FRAME_SAMPLES);
+    assert_eq!(stream.len(), frames);
+    assert!(stream.iter().all(frame_crc_ok));
+    for (k, f) in stream.iter().enumerate() {
+        assert_eq!(status(f).1[0], k as u8, "stream_seq");
+    }
 }

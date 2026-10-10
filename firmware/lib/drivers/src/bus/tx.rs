@@ -254,6 +254,19 @@ impl<W: TxWire> TxEngine<W> {
         self.state = State::Streaming { crc_armed: false };
     }
 
+    /// Start a frame whose wire bytes, ID through CRC, are already whole in
+    /// `frame` (a TEL batch CRC'd at its bank): break + one arm, released at
+    /// its TC. `frame` must outlive the transmission (static storage).
+    pub fn send_sealed(&mut self, frame: &[u8]) -> Result<(), SendError> {
+        if self.busy() {
+            return Err(SendError::Busy);
+        }
+        self.wire.start_frame();
+        self.wire.send(frame);
+        self.state = State::Streaming { crc_armed: true };
+        Ok(())
+    }
+
     /// Per-arm DMA TC. After the body arm, patches the computed CRC into the
     /// buffer and streams the CRC arm; after the CRC arm, releases the wire
     /// (caller then applies deferred config).

@@ -114,7 +114,8 @@ impl SeqUnwrap {
 //   [0]    stream_seq  u8, increments per frame, wraps; restarts at 0 per arm
 //   [1]    flags       bit 0 = LAST frame of the burst
 //   [2..4] valid       u16 bitmap, bit i = sample i window_valid
-//   [4..]  up to 16 samples x the tel_mask-selected 2-byte fields in bit order
+//   [4..]  up to the servo's batch (its `tel_frame_samples` register) of
+//          samples x the tel_mask-selected 2-byte fields in bit order
 
 pub const TEL_BIT_POS: u16 = 1 << 0;
 pub const TEL_BIT_CURRENT: u16 = 1 << 1;
@@ -143,7 +144,8 @@ pub const TEL_MASK_RAW: u16 = TEL_BIT_POS
     | TEL_BIT_VMOTOR_B;
 
 pub const STREAM_HDR: usize = 4;
-pub const STREAM_SAMPLES_MAX: usize = 16;
+/// The header's `valid` bitmap width: the most samples one frame can mark.
+pub const STREAM_VALID_BITS: usize = 16;
 pub const STREAM_FLAG_LAST: u8 = 1 << 0;
 
 pub const fn sample_len(mask: u16) -> usize {
@@ -151,9 +153,9 @@ pub const fn sample_len(mask: u16) -> usize {
 }
 
 /// One decoded TEL sample; unselected fields are None. `tick` is the
-/// absolute fast-tick index within one burst (unwrapped stream_seq x 16 +
-/// position in frame), so time = tick / tick_hz and a dropped frame shows
-/// as a 16-tick hole.
+/// absolute fast-tick index within one burst (unwrapped stream_seq x the
+/// servo's batch + position in frame), so time = tick / tick_hz and a
+/// dropped frame shows as a batch-long hole.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct TelFrame {
     pub tick: u64,
@@ -195,8 +197,14 @@ pub struct TelBurst {
 
 /// Decode one stream payload into per-tick frames; sample i lands at
 /// `tick_base + i`. None when the payload cannot be a `mask` stream frame
-/// (short header, non-integral sample remainder, over 16 samples).
-pub fn decode_stream_payload(mask: u16, payload: &[u8], tick_base: u64) -> Option<Vec<TelFrame>> {
+/// of a servo batching `frame_samples` (short header, non-integral sample
+/// remainder, more samples than the batch).
+pub fn decode_stream_payload(
+    mask: u16,
+    payload: &[u8],
+    tick_base: u64,
+    frame_samples: usize,
+) -> Option<Vec<TelFrame>> {
     let slen = sample_len(mask);
     if payload.len() < STREAM_HDR {
         return None;
@@ -206,7 +214,7 @@ pub fn decode_stream_payload(mask: u16, payload: &[u8], tick_base: u64) -> Optio
     if slen == 0 {
         return body.is_empty().then(Vec::new);
     }
-    if !body.len().is_multiple_of(slen) || body.len() / slen > STREAM_SAMPLES_MAX {
+    if !body.len().is_multiple_of(slen) || body.len() / slen > frame_samples {
         return None;
     }
     let mut out = Vec::with_capacity(body.len() / slen);
@@ -242,12 +250,13 @@ pub fn decode_stream_payload(mask: u16, payload: &[u8], tick_base: u64) -> Optio
 }
 
 /// Assembles one burst's Stream statuses, in arrival order, into ticked
-/// frames: unwraps the u8 stream_seq (wraps every 256 frames = 4096
-/// samples) and spreads each frame's samples over its 16-tick slot, so a
-/// dropped or corrupt frame leaves a 16-tick hole rather than a time skew.
-/// Bursts restart stream_seq at 0, so one assembler serves one burst.
+/// frames: unwraps the u8 stream_seq (wraps every 256 frames) and spreads
+/// each frame's samples over its batch-long slot, so a dropped or corrupt
+/// frame leaves a batch-long hole rather than a time skew. Bursts restart
+/// stream_seq at 0, so one assembler serves one burst.
 pub struct StreamAssembler {
     mask: u16,
+    frame_samples: usize,
     last_seq: Option<u8>,
     frame_idx: u64,
     holes: u64,
@@ -255,14 +264,21 @@ pub struct StreamAssembler {
 }
 
 impl StreamAssembler {
-    /// None if the mask has reserved bits set, selects nothing, or blows
-    /// the wire budget.
-    pub fn new(mask: u16) -> Option<Self> {
+    /// `frame_samples` is the servo's batch, read from its
+    /// `tel_frame_samples` register. None if the mask has reserved bits
+    /// set, selects nothing, or blows the wire budget, or the batch is not
+    /// one a frame can carry (0, or past the `valid` bitmap).
+    pub fn new(mask: u16, frame_samples: u8) -> Option<Self> {
         if mask & !TEL_MASK_ALL != 0 || mask == 0 || mask.count_ones() > TEL_FIELDS_MAX {
+            return None;
+        }
+        let frame_samples = frame_samples as usize;
+        if !(1..=STREAM_VALID_BITS).contains(&frame_samples) {
             return None;
         }
         Some(Self {
             mask,
+            frame_samples,
             last_seq: None,
             frame_idx: 0,
             holes: 0,
@@ -288,7 +304,8 @@ impl StreamAssembler {
             ),
         };
         self.holes += idx.saturating_sub(expected);
-        match decode_stream_payload(self.mask, payload, idx * STREAM_SAMPLES_MAX as u64) {
+        let base = idx * self.frame_samples as u64;
+        match decode_stream_payload(self.mask, payload, base, self.frame_samples) {
             Some(frames) => out.extend(frames),
             None => self.skipped += 1,
         }
@@ -342,7 +359,7 @@ mod tests {
         let mut valid = 0u16;
         let mut p = vec![seq, if last { STREAM_FLAG_LAST } else { 0 }, 0, 0];
         for i in 0..count {
-            if i < 16 && i.is_multiple_of(2) {
+            if i < STREAM_VALID_BITS as u16 && i.is_multiple_of(2) {
                 valid |= 1 << i;
             }
             p.extend(sample_bytes(mask, i));
@@ -354,9 +371,9 @@ mod tests {
     #[test]
     fn stream_golden_full_mask_full_batch() {
         // the exact bytes core's encode_golden_six_field_mask_full_batch pins
-        let p = stream_payload(0x3F, 0x42, false, 16);
-        assert_eq!(p.len(), STREAM_HDR + 16 * 12);
-        assert_eq!(p[..4], [0x42, 0x00, 0x55, 0x55]);
+        let p = stream_payload(0x3F, 0x42, false, 11);
+        assert_eq!(p.len(), STREAM_HDR + 11 * 12);
+        assert_eq!(p[..4], [0x42, 0x00, 0x55, 0x05]);
         assert_eq!(
             p[4..16],
             [
@@ -364,14 +381,14 @@ mod tests {
             ]
         );
         assert_eq!(
-            p[184..196],
+            p[124..136],
             [
-                0x0F, 0x10, 0xF0, 0xFF, 0x0F, 0xB0, 0x0F, 0x20, 0xC5, 0xFE, 0x17, 0x07
+                0x0A, 0x10, 0xF5, 0xFF, 0x0A, 0xB0, 0x0A, 0x20, 0xCA, 0xFE, 0x12, 0x07
             ]
         );
 
-        let frames = decode_stream_payload(0x3F, &p, 320).expect("decodes");
-        assert_eq!(frames.len(), 16);
+        let frames = decode_stream_payload(0x3F, &p, 320, 11).expect("decodes");
+        assert_eq!(frames.len(), 11);
         let f = frames[0];
         assert_eq!(f.tick, 320);
         assert!(f.window_valid);
@@ -381,11 +398,11 @@ mod tests {
         assert_eq!(f.duty_q15, Some(0x2000));
         assert_eq!(f.vdiff, Some(-300));
         assert_eq!(f.vbus, Some(1800));
-        let l = frames[15];
-        assert_eq!(l.tick, 335);
-        assert!(!l.window_valid);
-        assert_eq!(l.pos, Some(0x100F));
-        assert_eq!(l.vbus, Some(1815));
+        let l = frames[10];
+        assert_eq!(l.tick, 330);
+        assert!(l.window_valid);
+        assert_eq!(l.pos, Some(0x100A));
+        assert_eq!(l.vbus, Some(1810));
     }
 
     #[test]
@@ -397,7 +414,7 @@ mod tests {
         assert_eq!(p[4..12], [0x00, 0x10, 0xFF, 0xFF, 0x00, 0x20, 0xD4, 0xFE]);
         assert_eq!(p[12..20], [0x01, 0x10, 0xFE, 0xFF, 0x01, 0x20, 0xD3, 0xFE]);
 
-        let frames = decode_stream_payload(mask, &p, 0).expect("decodes");
+        let frames = decode_stream_payload(mask, &p, 0, 11).expect("decodes");
         assert_eq!(frames.len(), 2);
         assert_eq!(frames[0].pos, Some(0x1000));
         assert_eq!(frames[0].current, Some(-1));
@@ -412,20 +429,21 @@ mod tests {
 
     #[test]
     fn decode_rejects_malformed_payloads() {
-        assert!(decode_stream_payload(TEL_MASK_ALL, &[0, 0, 0], 0).is_none());
+        assert!(decode_stream_payload(TEL_MASK_ALL, &[0, 0, 0], 0, 11).is_none());
         // remainder not an integral sample count for the mask
         let mut p = stream_payload(0x1B, 0, false, 2);
         p.pop();
-        assert!(decode_stream_payload(0x1B, &p, 0).is_none());
-        // over 16 samples cannot come from one frame
-        let p = stream_payload(TEL_BIT_POS, 0, false, 17);
-        assert!(decode_stream_payload(TEL_BIT_POS, &p, 0).is_none());
+        assert!(decode_stream_payload(0x1B, &p, 0, 11).is_none());
+        // more samples than the servo's batch cannot come from one frame
+        let p = stream_payload(TEL_BIT_POS, 0, false, 8);
+        assert!(decode_stream_payload(TEL_BIT_POS, &p, 0, 7).is_none());
+        assert!(decode_stream_payload(TEL_BIT_POS, &p, 0, 8).is_some());
     }
 
     #[test]
     fn assembler_ticks_run_through_the_seq_wrap() {
         // 258 frames of one sample each: seq wraps 255 -> 0 with no hole
-        let mut a = StreamAssembler::new(TEL_BIT_POS).unwrap();
+        let mut a = StreamAssembler::new(TEL_BIT_POS, 7).unwrap();
         let mut out = Vec::new();
         for k in 0..258u64 {
             let p = stream_payload(TEL_BIT_POS, k as u8, k == 257, 1);
@@ -433,29 +451,50 @@ mod tests {
         }
         assert_eq!(out.len(), 258);
         assert_eq!(out[0].tick, 0);
-        assert_eq!(out[255].tick, 255 * 16);
-        assert_eq!(out[257].tick, 257 * 16);
+        assert_eq!(out[255].tick, 255 * 7);
+        assert_eq!(out[257].tick, 257 * 7);
         assert_eq!(a.holes(), 0);
         assert_eq!(a.skipped(), 0);
     }
 
     #[test]
-    fn assembler_missing_frame_leaves_a_16_tick_hole() {
-        let mut a = StreamAssembler::new(TEL_BIT_POS).unwrap();
-        let mut out = Vec::new();
-        for seq in [0u8, 1, 3] {
-            let p = stream_payload(TEL_BIT_POS, seq, seq == 3, 16);
-            a.push(true, &p, &mut out);
+    fn assembler_missing_frame_leaves_a_batch_long_hole() {
+        // the servo's batch is a register value, not a host constant
+        for batch in [7u8, 11, 16] {
+            let b = batch as usize;
+            let mut a = StreamAssembler::new(TEL_BIT_POS, batch).unwrap();
+            let mut out = Vec::new();
+            for seq in [0u8, 1, 3] {
+                let p = stream_payload(TEL_BIT_POS, seq, seq == 3, batch as u16);
+                a.push(true, &p, &mut out);
+            }
+            assert_eq!(out.len(), 3 * b);
+            assert_eq!(out[2 * b - 1].tick, 2 * b as u64 - 1);
+            assert_eq!(
+                out[2 * b].tick,
+                3 * b as u64,
+                "batch {batch}: frame 2 dropped"
+            );
+            assert_eq!(a.holes(), 1);
         }
-        assert_eq!(out.len(), 48);
-        assert_eq!(out[31].tick, 31);
-        assert_eq!(out[32].tick, 48, "frame 2 dropped: ticks jump 32 -> 48");
-        assert_eq!(a.holes(), 1);
+    }
+
+    #[test]
+    fn assembler_refuses_a_batch_no_frame_can_carry() {
+        assert!(
+            StreamAssembler::new(TEL_BIT_POS, 0).is_none(),
+            "unpublished"
+        );
+        assert!(
+            StreamAssembler::new(TEL_BIT_POS, 17).is_none(),
+            "past the bitmap"
+        );
+        assert!(StreamAssembler::new(TEL_BIT_POS, 16).is_some());
     }
 
     #[test]
     fn assembler_skips_non_stream_statuses() {
-        let mut a = StreamAssembler::new(TEL_BIT_POS).unwrap();
+        let mut a = StreamAssembler::new(TEL_BIT_POS, 11).unwrap();
         let mut out = Vec::new();
         a.push(false, &[0x55, 0xAA], &mut out); // an OK ack, not a frame
         let p = stream_payload(TEL_BIT_POS, 0, true, 2);
@@ -469,7 +508,7 @@ mod tests {
     fn stream_pos_lin_decodes_beside_pos() {
         let mask = TEL_BIT_POS | TEL_BIT_POS_LIN;
         let p = stream_payload(mask, 0, true, 2);
-        let frames = decode_stream_payload(mask, &p, 0).expect("decodes");
+        let frames = decode_stream_payload(mask, &p, 0, 11).expect("decodes");
         assert_eq!(frames[1].pos, Some(0x1001));
         assert_eq!(frames[1].pos_lin, Some(0x0E01));
         assert_eq!(frames[1].ntc_raw, None);
@@ -478,7 +517,7 @@ mod tests {
     #[test]
     fn stream_raw_mask_decodes_the_adc_frame_set() {
         let p = stream_payload(TEL_MASK_RAW, 0, true, 2);
-        let frames = decode_stream_payload(TEL_MASK_RAW, &p, 0).expect("decodes");
+        let frames = decode_stream_payload(TEL_MASK_RAW, &p, 0, 11).expect("decodes");
         let f = frames[1];
         assert_eq!(f.pos, Some(0x1001));
         assert_eq!(f.current_raw, Some(0x0101));
@@ -491,14 +530,14 @@ mod tests {
 
     #[test]
     fn assembler_rejects_bad_masks() {
-        assert!(StreamAssembler::new(0).is_none());
-        assert!(StreamAssembler::new(1 << 12).is_none());
-        assert!(StreamAssembler::new(TEL_BIT_POS | TEL_BIT_POS_LIN).is_some());
+        assert!(StreamAssembler::new(0, 11).is_none());
+        assert!(StreamAssembler::new(1 << 12, 11).is_none());
+        assert!(StreamAssembler::new(TEL_BIT_POS | TEL_BIT_POS_LIN, 11).is_some());
         // every field blows the wire budget; six is the cap
-        assert!(StreamAssembler::new(TEL_MASK_ALL).is_none());
-        assert!(StreamAssembler::new(TEL_BIT_VBUS_RAW | TEL_BIT_NTC_RAW).is_some());
-        assert!(StreamAssembler::new(0x3F).is_some());
-        assert!(StreamAssembler::new(TEL_MASK_RAW).is_some());
+        assert!(StreamAssembler::new(TEL_MASK_ALL, 11).is_none());
+        assert!(StreamAssembler::new(TEL_BIT_VBUS_RAW | TEL_BIT_NTC_RAW, 11).is_some());
+        assert!(StreamAssembler::new(0x3F, 11).is_some());
+        assert!(StreamAssembler::new(TEL_MASK_RAW, 11).is_some());
     }
 
     #[test]
