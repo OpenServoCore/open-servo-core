@@ -401,3 +401,42 @@ fn stage_split_validates_then_pushes_contiguously() {
     m.commit_staged(&mut staged);
     assert_eq!(m.read(12, 4), Ok(&v[..]));
 }
+
+/// Every naturally aligned 2- and 4-byte field inside a commit lands in
+/// exactly one store, wherever the commit starts, ends or splits at the
+/// ring seam, and the stores reassemble the source bytes.
+#[test]
+fn copy_stores_each_aligned_field_whole() {
+    let src: [u8; 16] = core::array::from_fn(|i| 0xA0 | i as u8);
+    for dst in 0..8usize {
+        for len in 0..=src.len() {
+            for split in 0..=len {
+                let (head, tail) = src[..len].split_at(split);
+                let mut stores = [(0usize, [0u8; 4], 0usize); 16];
+                let mut n = 0;
+                copy_units(dst, head, tail, |i, u, w| {
+                    stores[n] = (i, u, w);
+                    n += 1;
+                });
+                let stores = &stores[..n];
+                let mut out = [0u8; 16];
+                for &(i, u, w) in stores {
+                    out[i..i + w].copy_from_slice(&u[..w]);
+                }
+                assert_eq!(out[..len], src[..len], "dst {dst} len {len} split {split}");
+                for w in [2usize, 4] {
+                    for f in (dst..dst + len).filter(|a| a % w == 0 && a + w <= dst + len) {
+                        let whole = stores
+                            .iter()
+                            .filter(|&&(i, _, sw)| dst + i <= f && f + w <= dst + i + sw)
+                            .count();
+                        assert_eq!(
+                            whole, 1,
+                            "field {f}+{w} at dst {dst} len {len} split {split}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}

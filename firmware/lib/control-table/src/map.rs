@@ -258,6 +258,75 @@ fn overlaps(a_lo: usize, a_len: usize, lo: usize, hi: usize) -> bool {
     a_lo < hi && a_lo + a_len > lo
 }
 
+/// Copy `head` then `tail` to `dst`, one store per naturally aligned unit:
+/// 4 bytes while `dst` is 4-aligned with 4 left, else 2 while 2-aligned with
+/// 2 left, else 1. Every table field is naturally aligned, so a reader that
+/// preempts the copy (the kernel above the bus) sees each field all-old or
+/// all-new; two fields can still disagree, as when a commit lands between
+/// two of the reader's own loads. A unit straddling `head`/`tail` (the ring
+/// seam) is gathered in a stack word first.
+#[inline(always)]
+fn copy_units(dst: usize, head: &[u8], tail: &[u8], mut store: impl FnMut(usize, [u8; 4], usize)) {
+    let h = head.len();
+    let n = h + tail.len();
+    let mut i = 0;
+    while i < n {
+        let at = dst + i;
+        let left = n - i;
+        let w = if at.is_multiple_of(4) && left >= 4 {
+            4
+        } else if at.is_multiple_of(2) && left >= 2 {
+            2
+        } else {
+            1
+        };
+        let src = if i + w <= h {
+            head.get(i..i + w)
+        } else if i >= h {
+            tail.get(i - h..i - h + w)
+        } else {
+            None
+        };
+        let mut u = [0u8; 4];
+        match src {
+            // SAFETY: `s` holds `w` readable bytes.
+            Some(s) => u = unsafe { load_le4(s.as_ptr(), s.len()) },
+            None => {
+                for (k, b) in u.iter_mut().take(w).enumerate() {
+                    let j = i + k;
+                    *b = if j < h { head.get(j) } else { tail.get(j - h) }
+                        .copied()
+                        .unwrap_or(0);
+                }
+            }
+        }
+        store(i, u, w);
+        i += w;
+    }
+}
+
+/// [`copy_units`] into live storage at `dst`.
+///
+/// # Safety
+/// `dst` must be valid for `head.len() + tail.len()` byte writes.
+#[inline(never)]
+unsafe fn store_units(dst: *mut u8, head: &[u8], tail: &[u8]) {
+    copy_units(dst as usize, head, tail, |i, u, w| {
+        // SAFETY: caller guarantees the span; `copy_units` picks `w` so the
+        // unit is aligned for its width. Volatile keeps it one store.
+        unsafe {
+            let p = dst.add(i);
+            match w {
+                4 => p.cast::<u32>().write_volatile(u32::from_ne_bytes(u)),
+                2 => p
+                    .cast::<u16>()
+                    .write_volatile(u16::from_ne_bytes([u[0], u[1]])),
+                _ => p.write_volatile(u[0]),
+            }
+        }
+    });
+}
+
 /// Copy every staged entry pushed since `snap` into live storage (out-of-bounds
 /// entries skipped). The caller truncates the buffer afterward per its commit
 /// semantics (`clear` for a full COMMIT, `revert_to(snap)` for a verdict).
@@ -270,9 +339,7 @@ fn apply_from<M: RegisterMap + ?Sized>(m: &M, staged: &StagedWrites, snap: &Snap
         }
         // SAFETY: bounds guarded above; the caller upholds RegisterMap's
         // single-writer contract.
-        unsafe {
-            core::ptr::copy_nonoverlapping(data.as_ptr(), base.add(addr as usize), data.len());
-        }
+        unsafe { store_units(base.add(addr as usize), data, &[]) }
     }
 }
 
@@ -305,15 +372,7 @@ pub trait RegisterFile: RegisterMap {
         validate(self, addr, head, tail)?;
         // SAFETY: validate confirmed `[addr, addr+head.len()+tail.len())` is in
         // bounds; the caller upholds RegisterMap's single-writer contract.
-        unsafe {
-            let base = self.base();
-            core::ptr::copy_nonoverlapping(head.as_ptr(), base.add(addr as usize), head.len());
-            core::ptr::copy_nonoverlapping(
-                tail.as_ptr(),
-                base.add(addr as usize + head.len()),
-                tail.len(),
-            );
-        }
+        unsafe { store_units(self.base().add(addr as usize), head, tail) }
         Ok(())
     }
 
