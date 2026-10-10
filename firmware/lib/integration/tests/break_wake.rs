@@ -221,7 +221,7 @@ fn chain_entries_per_gread_are_pinned(
 }
 
 /// PFIC HIGH entries per exchange, pinned (a ping, then a 32-byte read):
-/// the break-after-byte budget is one break wake, three TX arm completions
+/// the break-after-byte budget is one break wake, two TX arm completions
 /// and three deadline wakes for a ping (header, frame end, trigger; a read
 /// adds its covered checkpoint); a wake ahead of its byte adds exactly the
 /// one re-inspection deadline. Any other count is a change in HIGH load on
@@ -248,6 +248,6 @@ fn high_entries_per_exchange_are_pinned(
         let e = sim.entries(s);
         assert_eq!(e.compare, N * (deadlines + reinspect), "deadline wakes");
         assert_eq!(e.break_wake, N, "break wakes");
-        assert_eq!(e.tx_done, N * 3, "TX arm completions");
+        assert_eq!(e.tx_done, N * 2, "TX arm completions");
     }
 }

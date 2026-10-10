@@ -22,6 +22,11 @@ pub const KERNEL_QUIET: [u64; 10] = [981, 1250, 732, 1087, 768, 1033, 763, 943, 
 /// The same instrument holding at centre.
 pub const KERNEL_HOLD: [u64; 10] = [1023, 1250, 1239, 1096, 792, 1072, 763, 943, 702, 712];
 
+/// Staging one six-field TEL frame at 3M from the kernel tick's tail, stage
+/// through trigger, HCLK ticks: cpu-probe v1 over a 1 s burst while moving
+/// (23.3 us).
+pub const TEL_STAGE_COST: u64 = 1118;
+
 /// An own 32 B READ at 3M as the chip's HIGH bodies cost it with the kernel
 /// below the bus: cpu-probe v1 over the polling ladder: TIM2 16.0 us, SysTick 82.1 us in two bodies, USART1
 /// 20.8 us in three TCs per frame. The sim spends the SysTick share over
@@ -293,6 +298,23 @@ impl Cpu {
             k.stats.bus_stretch += cost;
         }
         None
+    }
+
+    /// The running or last kernel body's end.
+    pub fn kernel_until(&self) -> Option<u64> {
+        self.kernel.as_ref().map(|k| k.run_until)
+    }
+
+    /// Lengthen the kernel body ending at `now` by `ticks` of tail work.
+    pub fn extend_kernel(&mut self, now: u64, ticks: u64) {
+        let Some(k) = self.kernel.as_mut() else {
+            return;
+        };
+        k.run_until += ticks;
+        if k.lane.level == KernelLevel::AboveBus && now < self.busy_until {
+            self.busy_until += ticks;
+            k.stats.bus_stretch += ticks;
+        }
     }
 
     /// A retry event popped: true when it is the outstanding one.

@@ -8,6 +8,7 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 
 use osc_protocol::crc::osc_crc_continue;
+use osc_protocol::wire;
 use osc_servo_core::BaudRate;
 use osc_servo_drivers::traits::bus::{
     BreakStamps, CrcEngine, Deadline, Providers, RxRing, TxWire, UsartBaud, tick_reached,
@@ -171,6 +172,9 @@ pub struct Handles {
     /// preemption between the two.
     pub clock_lag: Rc<Cell<u64>>,
     pub stamps: Rc<StampState>,
+    /// Ticks the next own break starts after its trigger: CPU work between
+    /// the two (a TEL stage from the kernel tail).
+    pub tx_lead: Rc<Cell<u64>>,
 }
 
 impl Handles {
@@ -181,6 +185,7 @@ impl Handles {
             baud: BaudState::new(rate),
             clock_lag: Rc::new(Cell::new(0)),
             stamps: Rc::default(),
+            tx_lead: Rc::new(Cell::new(0)),
         }
     }
 }
@@ -297,7 +302,6 @@ impl Deadline for SimDeadline {
 /// instantaneous). Even-length feeds are asserted (F12); the even-*address*
 /// half of F12 is not -- heap-backed test buffers give no absolute-parity
 /// guarantee even where the driver's offsets are correct.
-#[derive(Default)]
 pub struct SimCrc {
     state: u16,
     snap: Vec<u8>,
@@ -305,7 +309,16 @@ pub struct SimCrc {
 
 impl SimCrc {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            state: 0,
+            snap: vec![0; wire::covered_len(wire::len_for(wire::MAX_PAYLOAD))],
+        }
+    }
+}
+
+impl Default for SimCrc {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -321,13 +334,7 @@ impl CrcEngine for SimCrc {
 
     fn snapshot(&mut self, off: u16, src: &[u8]) -> *const u8 {
         let off = off as usize;
-        if self.snap.len() < off + src.len() {
-            self.snap.resize(off + src.len(), 0);
-        }
         self.snap[off..off + src.len()].copy_from_slice(src);
-        // SAFETY-adjacent note: tests never grow the Vec between a snapshot
-        // and its consumption, so the pointer stays stable like the chip's
-        // static buffer.
         unsafe { self.snap.as_ptr().add(off) }
     }
 
@@ -343,15 +350,22 @@ pub struct SimWire {
     /// End tick of the last-scheduled byte -- the next arm streams from here so
     /// arms sit back-to-back on the wire (sec 4.2 tolerates the re-arm gap).
     tx_cursor: Cell<u64>,
+    lead: Rc<Cell<u64>>,
 }
 
 impl SimWire {
-    pub fn new(core: Rc<RefCell<Core>>, baud: Rc<BaudState>, idx: usize) -> Self {
+    pub fn new(
+        core: Rc<RefCell<Core>>,
+        baud: Rc<BaudState>,
+        idx: usize,
+        lead: Rc<Cell<u64>>,
+    ) -> Self {
         Self {
             core,
             baud,
             idx,
             tx_cursor: Cell::new(0),
+            lead,
         }
     }
 }
@@ -361,7 +375,7 @@ impl TxWire for SimWire {
         let baud = self.baud.current();
         let brk = break_ticks(baud);
         let mut c = self.core.borrow_mut();
-        let start = c.now();
+        let start = c.now() + self.lead.take();
         let break_end = start + brk;
         c.claim(Talker::Servo(self.idx), start, break_end);
         c.schedule(

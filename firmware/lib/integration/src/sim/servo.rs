@@ -58,6 +58,7 @@ pub struct SimServo {
     bus: ServoBus<SimProviders>,
     /// Kernel-side half of the TEL channel; the sim's fast-tick pump feeds it.
     feed: TelFeed,
+    tel: &'static TelChannel,
     seed: Seed,
     /// Own frames dispatched since boot: the `cpu` model's per-frame charge
     /// reads a body's share as the delta across it.
@@ -132,12 +133,13 @@ impl SimServo {
             sense: DEV_V006_SENSE,
             sense_ext: DEV_V006_SENSE_EXT,
         };
-        let (shared, bus, feed) = Self::bringup(&seed, [id; 16]);
+        let (shared, bus, feed, tel) = Self::bringup(&seed, [id; 16]);
         let servo = Box::new(SimServo {
             shared,
             session: Session::new(),
             bus,
             feed,
+            tel,
             seed,
             dispatched: 0,
         });
@@ -146,7 +148,10 @@ impl SimServo {
 
     /// One power-on: a fresh table under the board seed, the store's overlay
     /// on top, and a driver whose comms block comes from what that left.
-    fn bringup(seed: &Seed, uid: [u8; 16]) -> (Shared, ServoBus<SimProviders>, TelFeed) {
+    fn bringup(
+        seed: &Seed,
+        uid: [u8; 16],
+    ) -> (Shared, ServoBus<SimProviders>, TelFeed, &'static TelChannel) {
         seed.handles.ring.reset();
 
         let shared = Shared::new();
@@ -210,7 +215,12 @@ impl SimServo {
                 seed.handles.clock_lag.clone(),
             ),
             SimCrc::new(),
-            SimWire::new(seed.core.clone(), seed.handles.baud.clone(), seed.idx),
+            SimWire::new(
+                seed.core.clone(),
+                seed.handles.baud.clone(),
+                seed.idx,
+                seed.handles.tx_lead.clone(),
+            ),
             SimBaud::new(seed.handles.baud.clone()),
             SimStamps::new(seed.handles.stamps.clone()),
             id,
@@ -219,9 +229,10 @@ impl SimServo {
         );
         // Leaked like a shared RamStore: `split` wants the chip's 'static
         // channel; test-scoped, one per servo per bringup.
-        let (feed, drain) = Box::leak(Box::new(TelChannel::new())).split();
+        let tel: &'static TelChannel = Box::leak(Box::new(TelChannel::new()));
+        let (feed, drain) = tel.split();
         bus.attach_tel(drain);
-        (shared, bus, feed)
+        (shared, bus, feed, tel)
     }
 
     /// Honor a staged reboot in place (sec 9.4/9.5): the store decides what
@@ -230,11 +241,12 @@ impl SimServo {
     /// then), so no reply is streaming out of the table being replaced.
     pub fn reboot(&mut self) {
         let uid = *self.shared.uid();
-        let (shared, bus, feed) = Self::bringup(&self.seed, uid);
+        let (shared, bus, feed, tel) = Self::bringup(&self.seed, uid);
         self.shared = shared;
         self.session = Session::new();
         self.bus = bus;
         self.feed = feed;
+        self.tel = tel;
     }
 
     /// Replace the board sense facts and power-cycle onto them: install
@@ -316,6 +328,11 @@ impl SimServo {
     /// building a sample) -- the sim's tick pump runs only while it holds.
     pub fn tel_active(&self) -> bool {
         self.feed.active()
+    }
+
+    /// TEL rows the encoder dropped against two unreleased buffers.
+    pub fn tel_drops(&self) -> u16 {
+        self.tel.drops()
     }
 
     /// One fast-tick sample into the kernel-side encoder.
