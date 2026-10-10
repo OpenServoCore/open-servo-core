@@ -163,10 +163,10 @@ fn shape(rec: &Recording, cfg: &Cfg) -> Result<(), String> {
                 first + i as u32
             ));
         }
-        if s.stats.holes > 0 || s.stats.garble > 0 {
+        if s.stats.holes > 0 || s.stats.garble > 0 || s.stats.laps > 0 {
             return Err(format!(
-                "seg {}: {} holes, {} garble",
-                s.seg, s.stats.holes, s.stats.garble
+                "seg {}: {} holes, {} garble, {} ring laps",
+                s.seg, s.stats.holes, s.stats.garble, s.stats.laps
             ));
         }
     }
@@ -515,6 +515,7 @@ mod tests {
                 samples: 16,
                 holes,
                 garble: 0,
+                laps: 0,
                 rows_dropped: 0,
             },
         }
@@ -583,6 +584,9 @@ mod tests {
         let mut r = clean(&c);
         r.segments[1].stats.garble = 1;
         assert!(rejected(&r, &c).contains("1 garble"));
+        let mut r = clean(&c);
+        r.segments[2].stats.laps = 1;
+        assert!(rejected(&r, &c).contains("1 ring laps"));
     }
 
     #[test]

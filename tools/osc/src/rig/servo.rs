@@ -407,6 +407,7 @@ pub(crate) mod bench {
                 samples: frames.len(),
                 holes: 0,
                 garble: 0,
+                laps: 0,
                 rows_dropped: 0,
             };
             Ok((frames, stats))

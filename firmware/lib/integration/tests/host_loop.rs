@@ -7,7 +7,7 @@ use osc_host::engine::{Command, Outcome};
 use osc_integration::sim::{HostEvent, Sim, Source, assert_valid};
 use osc_protocol::build;
 use osc_protocol::wire::{BaudRate, Id, Inst, Opcode, ResultCode, UID_LEN};
-use osc_servo_core::regions::control::addr::lifecycle::GOAL_VELOCITY;
+use osc_servo_core::regions::control::addr::lifecycle::{GOAL_VELOCITY, TEL_COUNT, TEL_MASK};
 
 const ID5: u8 = 5;
 
@@ -293,4 +293,52 @@ fn cal_train_is_wire_invisible_to_the_fleet() {
     let d = sim.servo_diag(s);
     assert_eq!(d.crc_fail_count, 0);
     assert_eq!(d.framing_drop_count, 0);
+}
+
+/// One 3M TEL burst through the engine, the adapter's main loop held off
+/// the engine for `stall_us` from the arm. Returns the burst's terminal.
+fn tel_burst_with_stalled_poll(stall_us: u64) -> osc_host::engine::Terminal {
+    const MASK: u16 = 0x1B;
+    const SAMPLES: u16 = 160;
+    let mut sim = Sim::new(BaudRate::B3000000);
+    sim.attach_host();
+    sim.add_servo(ID5);
+    let mut p = [0u8; 16];
+    let n = build::write(&mut p, TEL_MASK, &MASK.to_le_bytes()).unwrap();
+    sim.host_submit(Command::Exchange {
+        id: Id::new(ID5),
+        inst: Inst::instruction(Opcode::Write, 0),
+        payload: &p[..n],
+    })
+    .unwrap();
+    sim.run();
+    sim.host_events();
+
+    let n = build::write(&mut p, TEL_COUNT, &SAMPLES.to_le_bytes()).unwrap();
+    sim.host_submit(Command::ExchangeStream {
+        id: Id::new(ID5),
+        inst: Inst::instruction(Opcode::Write, 0),
+        payload: &p[..n],
+        window_us: 100_000,
+    })
+    .unwrap();
+    sim.stall_host_poll(stall_us);
+    sim.run();
+    match sim.host_events().pop() {
+        Some(HostEvent::Done(t)) => t,
+        other => panic!("expected Done, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_stalled_host_poll_reports_the_tel_ring_lap() {
+    let clean = tel_burst_with_stalled_poll(0);
+    assert_eq!(clean.outcome, Outcome::Complete);
+    assert_eq!((clean.evidence.laps, clean.evidence.garble), (0, 0));
+
+    // 4 ms of a ~170 B/ms burst is more than the sim's 512 B ring.
+    let stalled = tel_burst_with_stalled_poll(4_000);
+    assert_eq!(stalled.outcome, Outcome::Complete);
+    assert_eq!(stalled.evidence.laps, 1);
+    assert!(stalled.evidence.statuses < clean.evidence.statuses);
 }

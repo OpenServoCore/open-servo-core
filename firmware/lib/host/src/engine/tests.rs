@@ -557,6 +557,47 @@ fn corrupt_stream_frame_is_garble_never_a_status() {
 }
 
 #[test]
+fn a_ring_lap_mid_stream_is_counted_not_silent() {
+    let mut r = rig();
+    arm_stream(&mut r, Id::new(5), 5_000);
+    r.ring.feed(&sealed_status(5, ResultCode::Ok, &[]));
+    let _ = expect_status(&mut r);
+
+    // Nine 64 B frames land while the consumer is stalled: the first eight
+    // are one whole ring, overwritten by the ninth before any walk.
+    let filler = |seq: u8| {
+        let mut p = [0x55; 58];
+        p[0] = seq;
+        p[1] = 0;
+        sealed_status(5, ResultCode::Stream, &p)
+    };
+    assert_eq!(filler(0).len() * 8, crate::testutil::RING_LEN);
+    for seq in 0..9 {
+        r.ring.feed(&filler(seq));
+    }
+    r.ring
+        .feed(&sealed_status(5, ResultCode::Stream, &[9, 1, 1, 0, 9, 9]));
+
+    let mut seqs = Vec::new();
+    let t = loop {
+        match r.bus.poll() {
+            Some(Event::Status { payload, .. }) => seqs.push(payload.u8_at(0)),
+            Some(Event::Done(t)) => break t,
+            None => panic!("stream never finished"),
+            Some(other) => panic!("unexpected {other:?}"),
+        }
+    };
+    assert_eq!(
+        seqs,
+        [Some(8), Some(9)],
+        "the walk resumes at the lapped index"
+    );
+    assert_eq!(t.outcome, Outcome::Complete);
+    assert_eq!(t.evidence.laps, 1);
+    assert_eq!(t.evidence.garble, 0);
+}
+
+#[test]
 fn stream_window_never_rearms_on_progress() {
     let mut r = rig();
     arm_stream(&mut r, Id::new(5), 1_000);

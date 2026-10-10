@@ -112,6 +112,9 @@ pub struct Sim {
     /// scripted `host_send*` and the engine can coexist but must not overlap
     /// on the wire -- the claim assert catches a scenario that mixes them.
     host: Option<host::SimHost>,
+    /// The engine's main-loop polls wait until this tick (see
+    /// [`Self::stall_host_poll`]); its ISR entries still run.
+    host_stall_until: u64,
     /// The production link server in front of the attached engine, when
     /// attached (client-in-the-loop scenarios): pipe bytes in through
     /// [`Self::link_send`], records out through [`Self::link_recv`]. Engine
@@ -191,6 +194,7 @@ impl Sim {
             rate,
             host_free_at: 0,
             host: None,
+            host_stall_until: 0,
             link: None,
             self_reboot: false,
             data_jobs: true,
@@ -230,6 +234,15 @@ impl Sim {
         let r = self.host.as_mut().expect("host attached").bus.submit(cmd);
         self.host_pump();
         r
+    }
+
+    /// Hold the adapter's main loop off the engine for `us` from now (a
+    /// host that stops draining USB closes the pump gate): the ring keeps
+    /// filling, nothing walks it.
+    pub fn stall_host_poll(&mut self, us: u64) {
+        let until = self.core.borrow().now() + us * TICKS_PER_US;
+        self.host_stall_until = until;
+        self.core.borrow_mut().schedule(Event::Idle, until);
     }
 
     /// Drain everything the engine yielded since the last call.
@@ -966,6 +979,9 @@ impl Sim {
     /// production server (events leave as records); otherwise events copy
     /// out of the ring for the harness.
     fn host_pump(&mut self) {
+        if self.core.borrow().now() < self.host_stall_until {
+            return;
+        }
         let Some(h) = self.host.as_mut() else { return };
         if let Some(rig) = self.link.as_mut() {
             rig.server.pump(&mut h.bus, &mut rig.out);

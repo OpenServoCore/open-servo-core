@@ -44,8 +44,8 @@ impl RxRing for HostRing {
         self.0.bytes()
     }
 
-    fn cursor(&self) -> u16 {
-        self.0.cursor()
+    fn written(&self) -> u32 {
+        self.0.written()
     }
 }
 

@@ -37,6 +37,7 @@ pub enum Record {
         statuses: u16,
         garble: u16,
         trailing: bool,
+        laps: u16,
     },
     Rejected {
         seq: u16,
@@ -280,6 +281,7 @@ fn decode(body: &[u8]) -> Result<Record, LinkError> {
                 trailing: *body.get(13).ok_or(LinkError::Malformed)?
                     & rec::FLAG_GARBLE_AFTER_LAST_FRAME
                     != 0,
+                laps: u16::from_le_bytes(field(14..16)?.try_into().unwrap()),
             }
         }
         rec::REC_REJECTED => Record::Rejected {
@@ -347,5 +349,26 @@ mod tests {
         assert_eq!(info.version, rec::LINK_VERSION);
         assert_eq!(info.ticks_per_us, 18);
         assert_eq!(info.diag, Some(diag));
+    }
+
+    #[test]
+    fn terminal_laps_round_trip() {
+        let t = osc_host::engine::Terminal {
+            outcome: Outcome::Complete,
+            tick: 7,
+            evidence: osc_host::engine::WireEvidence {
+                statuses: 12,
+                garble: 188,
+                garble_after_last_frame: false,
+                laps: 2,
+            },
+        };
+        let mut buf = [0u8; 64];
+        let mut s = Session::new();
+        s.on_bytes(rec::terminal(&mut buf, 9, &t));
+        let Some(Record::Terminal { garble, laps, .. }) = s.next_record().expect("decodes") else {
+            panic!("not a TERMINAL record");
+        };
+        assert_eq!((garble, laps), (188, 2));
     }
 }

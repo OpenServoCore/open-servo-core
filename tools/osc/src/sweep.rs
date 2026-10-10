@@ -783,8 +783,8 @@ fn chains<S: Servo>(
         lease.write(s, control::TORQUE_ENABLE, 0)?;
         let (frames, st) = s.stream(samples_of_ms(cfg.baseline_ms), None, mask)?;
         println!(
-            "  seg 0: {} frames, {} samples, {} seq holes, {} garble bytes",
-            st.frames, st.samples, st.holes, st.garble
+            "  seg 0: {} frames, {} samples, {} seq holes, {} garble bytes, {} ring laps",
+            st.frames, st.samples, st.holes, st.garble, st.laps
         );
         commit(Segment {
             seg: 0,
@@ -890,7 +890,7 @@ fn chains<S: Servo>(
                         Step::Coast(ms) => format!("coast {ms} ms"),
                         Step::Brake(ms) => format!("brake {ms} ms"),
                     };
-                    if st.holes > 0 || st.garble > 0 {
+                    if st.holes > 0 || st.garble > 0 || st.laps > 0 {
                         dirty = Some(retry_note(seg, &what, st.holes, st.garble));
                     }
                     let g = Segment {
@@ -926,8 +926,8 @@ fn chains<S: Servo>(
             for (g, what) in pending.drain(..) {
                 let st = &g.stats;
                 println!(
-                    "  seg {} ({what}): {} frames, {} samples, {} seq holes, {} garble bytes",
-                    g.seg, st.frames, st.samples, st.holes, st.garble
+                    "  seg {} ({what}): {} frames, {} samples, {} seq holes, {} garble bytes, {} ring laps",
+                    g.seg, st.frames, st.samples, st.holes, st.garble, st.laps
                 );
                 commit(g)?;
             }
