@@ -51,16 +51,16 @@ pub trait CrcEngine {
     fn result(&mut self) -> Option<u16>;
 }
 
-/// TX side of the half-duplex wire (sec 4.2): drive discipline + break + one
-/// DMA arm at a time. Arm completion surfaces as the chip TC ISR calling
-/// the driver's `on_tx_complete`.
+/// TX side of the half-duplex wire (sec 4.2): break + one DMA arm at a time.
+/// The pin stays open drain throughout (sec 2). Arm completion surfaces as
+/// the chip TC ISR calling the driver's `on_tx_complete`.
 pub trait TxWire {
-    /// Claim the wire: push-pull drive, then send the break (SBK).
+    /// Send the break that opens the frame (sec 3).
     fn start_frame(&mut self);
     /// Stream one DMA arm. Called once per arm; the next arm is queued from
     /// `on_tx_complete`. UART bytes tolerate the us-scale re-arm gap (sec 4.2).
     fn send(&mut self, span: &[u8]);
-    /// Release the wire: open-drain, TX DMA off.
+    /// End the TX window: TX DMA off.
     fn release(&mut self);
 }
 

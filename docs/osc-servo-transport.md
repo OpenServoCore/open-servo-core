@@ -42,7 +42,7 @@ Every hardware resource the transport touches, and its duty cycle:
 | SPI1            | CRC-16/ARC coprocessor (16-bit LSB-first, bitrev16 at the register), accumulates across feeds | runs ~8× wire speed (F6) |
 | DMA1 CH6        | snapshot copy -> the 256 B snapshot buffer (reply payloads only - RX CRC feeds the ring directly); HIGH, above CH3 | ~0.125 us/B, zero CPU |
 | DMA1 CH1        | ADC sample set -> buffer; DMA HIGH (wins HIGH ties by channel number); TC vector = motor kernel tick at PFIC LOW | ~10 us body |
-| PC0 CNF         | drive discipline: open-drain listening / push-pull TX window | flipped at trigger/release |
+| PC0 CNF         | AF open-drain for good: the servo only pulls low, the host pull-up (and the board keeper) holds mark (protocol sec 2) | set once at init |
 | main loop       | deferred reboot poll + rescue line sampler (protocol sec 9.1: line pin + CH5 NDTR + own-TX state in one critical section per wfi wake, the window restarting while the servo transmits - the break detector fires once per span, a break-length in, so the slow loop is the only observer of a pulse's length) | cold path; sampler ~0.3 us/wake |
 
 PFIC preemption is two-level (IPRIOR bit 7). TIM2 + USART1 + SysTick
@@ -114,11 +114,11 @@ t≈55   deadline B (SysTick): the verdict — poll CRC result (ready) == wire
        at every baud). The ack never leaves ahead of its effect, and no
        later kill of the staged reply can lose a verified write. Body is a
        few us plus the commit - the work already happened.
-t≈67   trigger (SysTick): INST finalized, PC0 -> push-pull, break sent, first
+t≈67   trigger (SysTick): INST finalized, break sent, first
        DMA arm armed. Status break falls. TX CRC is computed by the same SPI
        engine IN PARALLEL with transmission and patched into the final arm.
-t=…    per-arm TC ISRs stream the remaining arms; final TC releases the wire
-       and applies any deferred id/baud config.
+t=…    per-arm TC ISRs stream the remaining arms; final TC turns TX DMA
+       off (the pin never changes) and applies any deferred id/baud config.
 ```
 
 Measured: 30.4 us from instruction end to status break fall (sec 10). The

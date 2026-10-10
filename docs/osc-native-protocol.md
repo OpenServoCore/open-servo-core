@@ -46,11 +46,14 @@ unchanged).
   internally tied to the pin; the wire needs no dedicated RX pin and no
   direction buffer [F7]. Bus side: series R + pull-up (+ optional TVS); a
   buffer's roles collapse into the drive discipline below.
-- **Drive discipline (all nodes, host included)**: idle/listening = AF
-  open-drain (wire released, pull-up holds mark); transmitting = AF
-  push-pull for the duration of the frame, then release. One GPIO CNF write
-  each way. A node that idles push-pull clamps every other talker [F8] —
-  this rule is the buffer replacement, not an optimization.
+- **Drive discipline**: a servo pin is AF open-drain for good, transmitting
+  included (RM Table 7-3, the half-duplex TX configuration). A servo only
+  ever pulls the line low; the host-end pull-up (plus a weak keeper on each
+  servo board) holds mark. A servo therefore has no release deadline and
+  writes no GPIO per frame. The host may drive its own frames push-pull for
+  fast edges, releasing to open drain within the reply gap (sec 7). A node
+  that idles push-pull clamps every other talker [F8]: this rule is the
+  buffer replacement, not an optimization.
 - **Own-TX echo**: none on V006 — HDSEL gates RX during TX [F9]. Firmware
   never needs echo masking. (Chips that do echo would mask in the framer;
   the protocol itself is agnostic.)
@@ -304,13 +307,14 @@ reply anyway.
 Reply buffer: `[0x00][ID][LEN][INST|0x80][payload][crc][crc]`
 in a halfword-aligned static — the `0x00` at offset 0 is an alignment
 byte and CRC no-op; an odd payload's last byte folds into the CRC in
-software at patch time (§3.2). Sequence: flip pin to
-push-pull → law break (§3, a bracketed-M `0x00` character) → enable
+software at patch time (§3.2). Sequence: law break (§3, a
+bracketed-M `0x00` character) → enable
 UART TX DMA from offset 1 → simultaneously
 enable SPI-CRC DMA from offset 0 → the CRC engine outruns the wire 8:1,
 so `TCRCR` is patched into the trailing CRC bytes long before the shifter
-needs them (fire-first, append-later, no deadline race) [F6]. On TC:
-release pin to open-drain.
+needs them (fire-first, append-later, no deadline race) [F6]. On the
+last arm's TC: TX DMA off. The pin is never written (sec 2), so nothing
+at TC has a wire deadline.
 
 No hardware-timed kickoff: TX start is "enable the channel when ready" —
 the break makes reply timing non-critical, which deletes the TIM-compare
@@ -1252,6 +1256,7 @@ ALERT bit on that servo's status (§5.3).
 - Crystal-clocked UART with break send (the osc-adapter, or any
   USB-serial with SBK).
 - osc-CRC (textbook CRC-16/ARC, §3.2).
+- The bus pull-up, at the host end: servos only pull low (sec 2).
 - Drive discipline if on a buffer-less bus (release when idle) [F8].
 - Schedule the bus: one outstanding instruction / chain at a time;
   timeout = RESPONSE_DEADLINE + frame time.
@@ -1310,8 +1315,8 @@ discovery reads; ENUM is its sole consumer). The pad costs the prefix tree
 nothing: descent depth is driven by where UIDs differ, and same-silicon
 chips differ in the low bits.
 
-Push-pull UART has no dominant-bit arbitration, so simultaneous responses
-are garbage — and garbage _is_ the collision signal:
+A UART has no bit arbitration (a servo does not hear its own TX, F9), so
+simultaneous responses are garbage - and garbage _is_ the collision signal:
 
 - `MGMT ENUM [prefix_len, prefix…]` (broadcast): `prefix_len` counts bits,
   0..=128; the prefix carries `ceil(prefix_len/8)` bytes. The stream is
@@ -1530,7 +1535,7 @@ and a direction buffer with its TX_EN pin.
 | F5  | SBK break ≈ 14 bit-times, both chips, zero variance                                        | bringup measurement, V006 + V203 |
 | F6  | SPI CRC: 16-bit LSB-first = natural-order ARC (bitrev16 register), accumulates across DMA arms, 0.36 µs/B wall ~0 CPU | bringup measurement, V006 |
 | F7  | HDSEL direct wire works both directions, no buffer needed                                  | bringup measurement, V006 |
-| F8  | idle push-pull clamps other talkers; OD-idle/PP-talk is mandatory                          | bringup measurement, V006 |
+| F8  | idle push-pull clamps other talkers; open-drain idle is mandatory                          | bringup measurement, V006 |
 | F9  | V006 HDSEL has no own-TX echo                                                              | bringup measurement, V006 |
 | F10 | full HSITRIM throw −3.0..+3.4 %: framing AND data survive everywhere                       | HSITRIM sweep, V006   |
 | F11 | production table CRC = 635 ns/B pure CPU                                                   | bringup measurement, V006 |
