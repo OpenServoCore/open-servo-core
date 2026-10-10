@@ -1134,12 +1134,10 @@ interrupt runs a whole period or more behind schedule, judged once per
 16 ticks: a late window that the next one catches up costs nothing, and
 one window counts at most 16. Only a kernel body that overruns past two
 periods or a flash SAVE (torque off) loses one, so any count under
-traffic is the kernel's own. The kernel takes the same count at each window close and integrates its time-dependent
-phases over the elapsed periods, so a lost tick dilates nothing that
-moves (control-theory, the cascade); the sample-rate quantities count
-executed ticks, and `sample_tick` stays the count of ticks that ran.
-Both counters update every 16 ticks (0.8 ms), the mean every 4096. No
-kernel tick runs during a shunt burst (sec 5.8); the ticks before it
+traffic is the kernel's own. The kernel does not stretch for a lost
+tick: every tick it runs advances one period, and `sample_tick` stays
+the count of ticks that ran. Both counters update every 16 ticks
+(0.8 ms), the mean every 4096. No kernel tick runs during a shunt burst (sec 5.8); the ticks before it
 that did not fill a 16-tick window count toward neither counter, and
 the first window after it counts no lost ticks.
 `stack_free_min` reads 0 until the first stack scan completes, about
