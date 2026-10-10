@@ -78,7 +78,7 @@ static BURST_BUF: SyncUnsafeCell<[u16; BURST_LEN]> = SyncUnsafeCell::new([0; BUR
 /// it while the DMA1 CH1 vector writes it. Written only from that vector.
 static STATE: AtomicU8 = AtomicU8::new(state::IDLE);
 
-/// The rest of the FSM: DMA1 CH1 vector (PFIC LOW) only, never the main loop;
+/// The rest of the FSM: DMA1 CH1 vector (PFIC HIGH) only, never the main loop;
 /// `install` writes it once, pre-IRQ.
 struct Fsm {
     /// `sample_tick` at the last accepted arm.
@@ -153,7 +153,7 @@ fn spaced(now: u32, armed_at: u32) -> bool {
 pub fn poll_arm(shared: &Shared) {
     let p = shared.table.region_ptr();
     let s = STATE.load(Ordering::Relaxed);
-    // SAFETY: transport-owned (PFIC HIGH) field, read raw-volatile without
+    // SAFETY: transport-owned (bus-level) field, read raw-volatile without
     // forming `&T` -- the kernel's own contract for CONTROL/CONFIG reads.
     let arm = unsafe { (&raw const (*p).control.burst.arm).read_volatile() };
     if s == state::IDLE && arm != 1 {
@@ -387,7 +387,7 @@ pub fn poll_page(shared: &Shared) {
     }
     let p = shared.table.region_ptr();
     // SAFETY: `page` is transport-owned, read raw-volatile; the BURST window
-    // is RO to the host and written only here and from the LOW vector, which
+    // is RO to the host and written only here and from the DMA1 CH1 vector, which
     // touches nothing in it while Done stands.
     unsafe {
         let page = (&raw const (*p).control.burst.page).read_volatile();

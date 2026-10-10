@@ -148,10 +148,10 @@ pub fn verdict(points: &[i16; POINTS], raw_min: u16, raw_max: u16) -> u8 {
 
 impl Shared {
     /// The kernel's per-tick read while `pos_lut_state` is LIVE: two volatile
-    /// point loads off the raw pointer, no `&` across the ISR boundary. HIGH
-    /// dispatch (the sole writer) can preempt between the two loads, but
-    /// STORE and COMMIT are torque-gated, so a mixed read only ever reaches
-    /// a disabled servo, whose observer reseeds at the next enable.
+    /// point loads off the raw pointer, no `&` across the ISR boundary. The
+    /// kernel can land inside a dispatch write (the sole writer), but STORE
+    /// and COMMIT are torque-gated, so a mixed read only ever reaches a
+    /// disabled servo, whose observer reseeds at the next enable.
     #[inline(always)]
     pub fn pos_lut_q4(&self, raw: u16) -> u16 {
         let (c0, c1) = self.pos_lut_points(raw);
@@ -188,7 +188,7 @@ impl Shared {
     /// any other state it reads REJECT_TORQUE. Leaving LIVE by STORE marks
     /// the stamp stale the way a covered write does, and a STORE cancels a
     /// posted COMMIT: the array is loading again, and only the next COMMIT
-    /// judges it. HIGH dispatch only; one copy behind both commit sites.
+    /// judges it. Bus dispatch only; one copy behind both commit sites.
     #[inline(never)]
     pub fn pos_lut_after_commit(&self, addr: u16, len: u16) {
         if addr > POS_LUT_CMD || addr.saturating_add(len) <= POS_LUT_CMD {
@@ -248,7 +248,7 @@ impl Shared {
 
     /// Settle the array to what the kernel applies before SAVE persists
     /// it: a load in progress or a rejected array is the identity, so it
-    /// becomes one. HIGH dispatch only, torque off.
+    /// becomes one. Bus dispatch only, torque off.
     pub fn pos_lut_settle(&self) {
         let live = self
             .table
@@ -749,7 +749,7 @@ mod tests {
             .with_mut(|t| t.control.pos_lut.pos_lut_cmd = cmd::COMMIT);
         sh.pos_lut_after_commit(POS_LUT_CMD, 1);
         let run = sh.data_job_run().expect("posted");
-        // torque comes on under the run: what HIGH would have refused
+        // torque comes on under the run: what dispatch would have refused
         sh.table
             .with_mut(|t| t.control.lifecycle.torque_enable = true);
         sh.data_state_after_commit(crate::regions::control::addr::lifecycle::TORQUE_ENABLE, 1);

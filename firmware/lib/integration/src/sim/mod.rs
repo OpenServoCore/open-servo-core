@@ -36,8 +36,8 @@ use self::resample::{CrossRx, RxOut};
 use self::servo::SimServo;
 
 pub use self::cpu::{
-    Entries, HandlerCost, KERNEL_HOLD, KERNEL_QUIET, KernelLane, KernelLevel, KernelStats,
-    READ32_3M_COST,
+    Entries, HandlerCost, KERNEL_HOLD, KERNEL_MOVING, KERNEL_QUIET, KernelLane, KernelLevel,
+    KernelStats, READ32_3M_COST,
 };
 pub use self::host::HostEvent;
 pub use self::servo::{DEV_V006_SENSE, DEV_V006_SENSE_EXT};
@@ -395,13 +395,18 @@ impl Sim {
 
     /// `on_break` invocations delivered to servo `i` -- wire break events
     /// minus this counts pends that coalesced.
-    /// Handler bodies servo `i` has run, per vector (PFIC HIGH entries).
+    /// Handler bodies servo `i` has run, per vector (bus-level entries).
     pub fn entries(&self, i: usize) -> Entries {
         self.cpus[i].entries()
     }
 
     pub fn delivered_breaks(&self, i: usize) -> u64 {
         self.cpus[i].delivered_breaks()
+    }
+
+    /// Own frames servo `i` has dispatched.
+    pub fn dispatched(&self, i: usize) -> u64 {
+        self.servos[i].dispatched()
     }
 
     /// The most own frames one handler body of servo `i` dispatched: how far
@@ -568,14 +573,26 @@ impl Sim {
     /// idle), and the stress that parks the frontier at the starvation
     /// horizon.
     pub fn host_send_stalled(&mut self, frame: &[u8], split: usize, stall_us: u64) {
+        self.host_send_paused(frame, &[(split, stall_us)]);
+    }
+
+    /// [`Self::host_send_stalled`] with a pause of `us` ahead of each
+    /// `(split, us)` byte index: a frame streamed in arms, an idle gap
+    /// between each pair.
+    pub fn host_send_paused(&mut self, frame: &[u8], pauses: &[(usize, u64)]) {
         let start = self.host_free_at.max(self.core.borrow().now());
         let baud = self.rate;
         let bt = byte_ticks(baud);
         let break_end = start + break_ticks(baud);
         let n = frame.len() as u64 - 1;
-        let split = split.clamp(1, frame.len() - 1) as u64;
-        let stall = stall_us * TICKS_PER_US;
-        let end = break_end + n * bt + stall;
+        let pause_before = |k: u64| -> u64 {
+            pauses
+                .iter()
+                .filter(|&&(split, _)| k >= split.clamp(1, frame.len() - 1) as u64)
+                .map(|&(_, us)| us * TICKS_PER_US)
+                .sum()
+        };
+        let end = break_end + n * bt + pause_before(n);
 
         let mut c = self.core.borrow_mut();
         c.claim(Talker::Host, start, end);
@@ -588,10 +605,7 @@ impl Sim {
             break_end,
         );
         for (k, &b) in frame[1..].iter().enumerate() {
-            let mut t = break_end + (k as u64 + 1) * bt;
-            if (k as u64) >= split {
-                t += stall;
-            }
+            let t = break_end + (k as u64 + 1) * bt + pause_before(k as u64);
             c.schedule(
                 Event::WireData {
                     talker: Talker::Host,
@@ -868,7 +882,7 @@ impl Sim {
         if self.tels[j].epoch != epoch || !self.tel_sample(j, now) {
             return;
         }
-        // the chip's tick tail polls; one landing inside a HIGH body leaves
+        // the chip's tick tail polls; one landing inside a bus body leaves
         // the stage to the next tick
         if !self.cpus[j].busy(now) {
             self.servos[j].poll_tel();

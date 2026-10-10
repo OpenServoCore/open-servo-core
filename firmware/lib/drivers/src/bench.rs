@@ -48,7 +48,7 @@ pub static mut TRIM_PROBE: TrimProbe = TrimProbe::ZERO;
 #[allow(unused_variables)]
 pub fn trim_probe(f: impl FnOnce(&mut TrimProbe)) {
     // SAFETY: single-hart; every writer runs at the one transport priority
-    // (HIGH), so accesses never interleave. The debug link only reads.
+    // (the bus level), so accesses never interleave. The debug link only reads.
     #[cfg(feature = "bench")]
     unsafe {
         f(&mut *core::ptr::addr_of_mut!(TRIM_PROBE));

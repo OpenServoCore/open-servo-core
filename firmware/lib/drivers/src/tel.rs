@@ -1,4 +1,4 @@
-//! TEL burst seam between the kernel fast tick (PFIC LOW) and the bus-side
+//! TEL burst seam between the kernel fast tick (PFIC HIGH) and the bus-side
 //! frame stager (the transport ISRs, incl. the SW vector each tick pends).
 //! The two sides never share `&mut`: the channel is a pair of ping-pong
 //! payload buffers the kernel encodes into DIRECTLY -- each sample lands at

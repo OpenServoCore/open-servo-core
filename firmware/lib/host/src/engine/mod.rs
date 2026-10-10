@@ -556,7 +556,8 @@ impl<P: Providers> HostBus<P> {
     }
 
     /// Full await window: RESPONSE_DEADLINE + the expected reply's wire
-    /// time + margin (+ the ENUM slot draw under Collect, + the flash-stall
+    /// time + margin (+ the ENUM slot draw under Collect, + a second
+    /// RESPONSE_DEADLINE for a chain slot's reclaim, + the flash-stall
     /// allowance on slow ops). An upper bound for failure detection, not a
     /// grid -- transport sec 9.4's "elastically late" rule made concrete.
     fn window_for(&self, plan: &Shape) -> u32 {
@@ -568,8 +569,13 @@ impl<P: Providers> HostBus<P> {
         let mut w = self.response_deadline_us as u32 * t
             + plan.reply_footprint as u32 * byte
             + WINDOW_MARGIN_BYTES * byte;
-        if matches!(plan.replies, Replies::Collect) {
-            w += wire::ENUM_REPLY_SLOTS as u32 * byte;
+        match plan.replies {
+            Replies::Collect => w += wire::ENUM_REPLY_SLOTS as u32 * byte,
+            // A silent slot's successor reclaims one RESPONSE_DEADLINE after
+            // it is ready, which can trail the host's window by a backlog
+            // (protocol sec 6).
+            Replies::Chain(_) => w += self.response_deadline_us as u32 * t,
+            _ => {}
         }
         if plan.slow {
             w += SLOW_OP_EXTRA_US * t;

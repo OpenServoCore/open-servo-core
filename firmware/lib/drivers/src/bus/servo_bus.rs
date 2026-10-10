@@ -26,10 +26,6 @@ use tel::TelBurst;
 /// this / baud` stays within u32 for all four operational rates.
 const BYTE_TIME_NUMERATOR: u32 = 10_000_000;
 
-/// Slack on the reclaim-suspension frame allowance (sec 6): covers the snooper's
-/// deadline-B margin on the predecessor's frame end.
-const FRAME_ALLOWANCE_SLACK_BYTES: u32 = 8;
-
 /// Bound on same-wake deadline draining. Generous: one frame consumes at most
 /// a handful of due slots per wake (header lock, covered, end, chain, rescue);
 /// anything past the bound falls out to `arm_deadline`, whose pend-on-past
@@ -372,9 +368,11 @@ impl<P: Providers> ServoBus<P> {
     }
 
     /// How long an observed predecessor break suspends its reclaim window:
-    /// the largest legal frame plus the snooper's own end-detection slack.
+    /// the largest legal frame plus one RESPONSE_DEADLINE, which covers the
+    /// pauses a kernel above the predecessor's bus puts between its reply's
+    /// arms (sec 6).
     pub(super) fn frame_allowance(&self) -> u32 {
-        (super::FRAME_MAX as u32 + FRAME_ALLOWANCE_SLACK_BYTES) * self.tpb
+        (super::FRAME_MAX as u32 * self.tpb).wrapping_add(self.reclaim())
     }
 
     fn reinspect_at(&self) -> Option<u32> {

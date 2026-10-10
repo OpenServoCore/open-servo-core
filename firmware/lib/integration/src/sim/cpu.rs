@@ -1,5 +1,5 @@
-//! Per-servo PFIC occupancy model. The transport vectors share PFIC HIGH on
-//! the chip, so a handler body occupies the CPU and every event landing
+//! Per-servo PFIC occupancy model. The transport vectors share one PFIC
+//! level on the chip, so a handler body occupies the CPU and every event landing
 //! meanwhile *pends* -- a flag per vector, not a queue -- and a burst of same-
 //! vector events coalesces into one late delivery, exactly as pended IRQs do
 //! on silicon. Ring bytes are DMA and always land at their wire tick; only
@@ -22,12 +22,16 @@ pub const KERNEL_QUIET: [u64; 10] = [981, 1250, 732, 1087, 768, 1033, 763, 943, 
 /// The same instrument holding at centre.
 pub const KERNEL_HOLD: [u64; 10] = [1023, 1250, 1239, 1096, 792, 1072, 763, 943, 702, 712];
 
+/// The same instrument under the chainload sine (N=1, +/-300 at 100 Hz): the
+/// closed current loop runs on every tick.
+pub const KERNEL_MOVING: [u64; 10] = [1644, 1889, 1876, 1710, 1732, 1700, 1375, 1556, 1313, 1322];
+
 /// Staging one six-field TEL frame at 3M from the kernel tick's tail, stage
 /// through trigger, HCLK ticks: cpu-probe v1 over a 1 s burst while moving
 /// (23.3 us).
 pub const TEL_STAGE_COST: u64 = 1118;
 
-/// An own 32 B READ at 3M as the chip's HIGH bodies cost it with the kernel
+/// An own 32 B READ at 3M as the chip's bus bodies cost it with the kernel
 /// below the bus: cpu-probe v1 over the polling ladder: TIM2 16.0 us, SysTick 82.1 us in two bodies, USART1
 /// 20.8 us in three TCs per frame. The sim spends the SysTick share over
 /// three compare bodies (header, dispatch, trigger): 3 x 20 + 22.
@@ -54,9 +58,7 @@ pub struct HandlerCost {
     pub per_frame_us: u32,
 }
 
-/// The transport vectors, in same-priority arbitration order (lowest
-/// interrupt number delivers first: SysTick, then USART1 -- whose real body
-/// drains RX errors before TC).
+/// The transport vectors.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum Vector {
     Compare,
@@ -168,8 +170,22 @@ impl Cpu {
         self.pend_compare || self.pend_break || self.pend_tx || self.deferred.is_some()
     }
 
-    /// Pop the highest-arbitration pended vector, if any.
+    /// Pop the highest-arbitration pended vector, if any. With the kernel
+    /// on top, the TX arm and the break wake (LOW 0x80) go ahead of the
+    /// deadline mux (LOW 0xC0), so a pending wake suspends a reclaim or
+    /// kills a stale reply before a pending trigger acts.
     pub fn take_pend(&mut self) -> Option<Vector> {
+        let below = matches!(&self.kernel, Some(k) if k.lane.level == KernelLevel::BelowBus);
+        if !below {
+            if self.pend_tx {
+                self.pend_tx = false;
+                return Some(Vector::TxDone);
+            }
+            if self.pend_break {
+                self.pend_break = false;
+                return Some(Vector::Break);
+            }
+        }
         if self.pend_compare {
             self.pend_compare = false;
             Some(Vector::Compare)

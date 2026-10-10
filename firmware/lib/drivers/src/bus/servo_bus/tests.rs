@@ -1121,7 +1121,7 @@ fn commit_and_reboot_paths() {
     assert!(bus.take_reboot().is_none());
 }
 
-/// A complete frame (READ) dispatches inline at HIGH and its reply sequences
+/// A complete frame (READ) dispatches inline at the bus level and its reply sequences
 /// straight from the resolve wake -- no deferral to a later verdict.
 #[test]
 fn complete_read_dispatches_inline() {

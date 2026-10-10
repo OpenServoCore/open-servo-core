@@ -4,14 +4,14 @@
 //! one holds and latches `CODE_DATA` on the attempt (kernel/faults.rs), so
 //! a virgin servo in OpenLoop shows no ALERT.
 //!
-//! Writers: boot (pre-IRQ); the HIGH dispatcher (a covered write, a stamp
+//! Writers: boot (pre-IRQ); the bus dispatcher (a covered write, a stamp
 //! write and a LUT command mark, SAVE checkpoints and retires); and the
 //! main loop's job (`Shared::data_job_run` + `data_job_publish`), which
 //! runs the recompute a covered write, a stamp write or a LUT COMMIT
 //! posted. The recompute is ~600 B of software CRC, longer than the reply
-//! deadline, so HIGH only marks `STAMP_MISMATCH` (the refused direction)
+//! deadline, so dispatch only marks `STAMP_MISMATCH` (the refused direction)
 //! and posts; the job clears it once the live set matches the stamp
-//! again. The publish runs with ISRs masked and under a generation check,
+//! again. The publish runs with the bus masked and under a generation check,
 //! so a write landing mid-job leaves the mark standing and the job posted.
 //! The kernel reads.
 
@@ -142,7 +142,7 @@ impl Shared {
     }
 
     /// Synchronous checkpoint: STAMP_MISMATCH and PLANT_UNSET follow the
-    /// live set. SAVE (HIGH, a slow op anyway) and boot fixtures only;
+    /// live set. SAVE (bus dispatch, a slow op anyway) and boot fixtures only;
     /// the wire-time checkpoints go through the job.
     pub fn data_state_checkpoint(&self) {
         let flags = self.checkpoint_flags(self.lut_live());
@@ -157,7 +157,7 @@ impl Shared {
     /// once the live set matches the stamp again; the job holds it while
     /// torque is on. A torque write moves the generation so a job in
     /// flight re-judges under the new torque. Never stops a running loop;
-    /// the kernel reads the flags at its next entry. HIGH dispatch only;
+    /// the kernel reads the flags at its next entry. Bus dispatch only;
     /// one copy behind both commit sites, O(1).
     #[inline(never)]
     pub fn data_state_after_commit(&self, addr: u16, len: u16) {
@@ -178,9 +178,9 @@ impl Shared {
         self.data_job() != 0
     }
 
-    /// Main loop: run what HIGH posted, unmasked and preemptible. A LUT
+    /// Main loop: run what dispatch posted, unmasked and preemptible. A LUT
     /// COMMIT validates the array against the stops (REJECT_TORQUE if
-    /// torque came on since the command, the refusal HIGH would have
+    /// torque came on since the command, the refusal dispatch would have
     /// given), then the checkpoint runs over the points that verdict makes
     /// effective. `None` while nothing is posted, and while torque holds
     /// back a lone checkpoint (the CRC stays off torque-on paths; the
@@ -220,7 +220,7 @@ impl Shared {
         })
     }
 
-    /// Publish a run, ISRs masked on the chip. A generation that moved
+    /// Publish a run, the bus masked on the chip. A generation that moved
     /// since the run leaves the marks standing and the job posted (`false`);
     /// the next poll runs it again.
     pub fn data_job_publish(&self, job: DataJob) -> bool {
@@ -237,14 +237,14 @@ impl Shared {
         true
     }
 
-    /// Run and publish in one context that nothing preempts: SAVE (HIGH),
-    /// the sim's main loop, tests.
+    /// Run and publish in one context no write can land in: SAVE (bus
+    /// dispatch), the sim's main loop, tests.
     pub fn data_job_service(&self) -> bool {
         self.data_job_run()
             .is_some_and(|j| self.data_job_publish(j))
     }
 
-    /// A successful SAVE retires [`SAVE_CLEARS`]. HIGH dispatch only.
+    /// A successful SAVE retires [`SAVE_CLEARS`]. Bus dispatch only.
     pub fn data_state_saved(&self) {
         self.table
             .with_mut(|t| t.telemetry.mode.data_flags &= !SAVE_CLEARS);

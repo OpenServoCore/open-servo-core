@@ -299,9 +299,10 @@ impl<P: Providers> ServoBus<P> {
         // sub-bit-aligned superposition of near-equal frames reads back as
         // ONE clean frame instead of collision garble. The tick term re-draws
         // every exchange, so equal keys never stick.
+        let now = self.deadline.now();
         let gap = match self.tx.slot_key() {
             Some(key) => {
-                let draw = (key ^ self.deadline.now() as u8) & (ENUM_REPLY_SLOTS - 1);
+                let draw = (key ^ now as u8) & (ENUM_REPLY_SLOTS - 1);
                 self.reply_gap().wrapping_add(draw as u32 * self.tpb)
             }
             None => self.reply_gap(),
@@ -309,6 +310,7 @@ impl<P: Providers> ServoBus<P> {
         let out = self.chain.on_reply_staged(
             slot.index,
             packet_end,
+            now,
             gap,
             self.reclaim(),
             self.frame_allowance(),

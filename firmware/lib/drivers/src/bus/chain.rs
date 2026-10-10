@@ -8,6 +8,8 @@
 
 use osc_protocol::wire;
 
+use crate::traits::bus::tick_reached;
+
 /// An error status carries no payload (sec 5.3), whatever the read asked for.
 const ERROR_FOOTPRINT: u16 = wire::footprint(wire::len_for(0)) as u16;
 
@@ -80,16 +82,18 @@ impl Chain {
         self.state = State::Idle;
     }
 
-    /// Own reply staged for `slot` (0 = unicast or first chain slot) after the
-    /// instruction frame ended at `end`. `reclaim` covers a predecessor's
-    /// trigger -> break lead only (sec 6 keys reclaim off the break, so the
-    /// default stays baud-independent); `allowance` bounds how long an
-    /// observed break suspends reclaim while its frame plays out.
+    /// Own reply staged at `now` for `slot` (0 = unicast or first chain
+    /// slot) after the instruction frame ended at `end`. `reclaim` covers a
+    /// predecessor's trigger -> break lead only (sec 6 keys reclaim off the
+    /// break, so the default stays baud-independent); `allowance` bounds how
+    /// long an observed break suspends reclaim while its frame plays out.
     /// `peer_footprint` sizes a predecessor's OK status when the GREAD does.
+    #[allow(clippy::too_many_arguments)]
     pub fn on_reply_staged(
         &mut self,
         slot: u8,
         end: u32,
+        now: u32,
         reply_gap: u32,
         reclaim: u32,
         allowance: u32,
@@ -105,13 +109,17 @@ impl Chain {
             ChainOut::Wait(end.wrapping_add(reply_gap))
         } else {
             // sec 6: wait for `slot` predecessors; the reclaim guards slot 0's own
-            // trigger (its trigger is end + reply_gap, so its window ends one
-            // reclaim later).
+            // trigger, counted from the later of that trigger (end +
+            // reply_gap) and this slot's readiness: a backlog delays every
+            // servo alike, so a predecessor ready as late as this slot still
+            // gets its whole window.
             self.state = State::Waiting {
                 remaining: slot,
                 silent: false,
             };
-            ChainOut::Wait(end.wrapping_add(reply_gap).wrapping_add(reclaim))
+            let due = end.wrapping_add(reply_gap);
+            let from = if tick_reached(now, due) { now } else { due };
+            ChainOut::Wait(from.wrapping_add(reclaim))
         }
     }
 
@@ -214,7 +222,7 @@ mod tests {
     fn slot0_triggers_after_reply_gap() {
         let mut c = Chain::new();
         assert_eq!(
-            wait_tick(c.on_reply_staged(0, END, REPLY_GAP, RECLAIM, ALLOWANCE, None)),
+            wait_tick(c.on_reply_staged(0, END, END, REPLY_GAP, RECLAIM, ALLOWANCE, None)),
             END + REPLY_GAP
         );
         assert!(c.active());
@@ -227,7 +235,7 @@ mod tests {
         let mut c = Chain::new();
         // reclaim guards slot 0's trigger.
         assert_eq!(
-            wait_tick(c.on_reply_staged(2, END, REPLY_GAP, RECLAIM, ALLOWANCE, None)),
+            wait_tick(c.on_reply_staged(2, END, END, REPLY_GAP, RECLAIM, ALLOWANCE, None)),
             END + REPLY_GAP + RECLAIM
         );
         // predecessor 0 replies.
@@ -238,10 +246,25 @@ mod tests {
     }
 
     #[test]
+    fn slot1_window_counts_from_a_late_readiness() {
+        let mut c = Chain::new();
+        let ready = END + REPLY_GAP + RECLAIM + 400;
+        assert_eq!(
+            wait_tick(c.on_reply_staged(1, END, ready, REPLY_GAP, RECLAIM, ALLOWANCE, None)),
+            ready + RECLAIM
+        );
+        assert_eq!(
+            wait_tick(c.on_status_end(ready + 200)),
+            ready + 200 + REPLY_GAP
+        );
+        assert!(!trigger_silent(c.on_deadline(ready + 200 + REPLY_GAP)));
+    }
+
+    #[test]
     fn slot1_reclaim_triggers_silent() {
         let mut c = Chain::new();
         assert_eq!(
-            wait_tick(c.on_reply_staged(1, END, REPLY_GAP, RECLAIM, ALLOWANCE, None)),
+            wait_tick(c.on_reply_staged(1, END, END, REPLY_GAP, RECLAIM, ALLOWANCE, None)),
             END + REPLY_GAP + RECLAIM
         );
         // No status arrives: the reclaim window expires and we take the slot.
@@ -253,7 +276,7 @@ mod tests {
     fn slot3_one_status_then_two_reclaims() {
         let mut c = Chain::new();
         assert_eq!(
-            wait_tick(c.on_reply_staged(3, END, REPLY_GAP, RECLAIM, ALLOWANCE, None)),
+            wait_tick(c.on_reply_staged(3, END, END, REPLY_GAP, RECLAIM, ALLOWANCE, None)),
             END + REPLY_GAP + RECLAIM
         );
         // predecessor 0 replies (real).
@@ -267,7 +290,7 @@ mod tests {
     #[test]
     fn break_suspends_reclaim_for_frame_allowance() {
         let mut c = Chain::new();
-        c.on_reply_staged(1, END, REPLY_GAP, RECLAIM, ALLOWANCE, None);
+        c.on_reply_staged(1, END, END, REPLY_GAP, RECLAIM, ALLOWANCE, None);
         // Predecessor's break lands inside its reclaim window: alive -- the
         // window suspends for the frame allowance instead of expiring.
         assert_eq!(wait_tick(c.on_break_observed(1100)), 1100 + ALLOWANCE);
@@ -279,7 +302,7 @@ mod tests {
     #[test]
     fn wedged_after_break_reclaims_at_allowance() {
         let mut c = Chain::new();
-        c.on_reply_staged(1, END, REPLY_GAP, RECLAIM, ALLOWANCE, None);
+        c.on_reply_staged(1, END, END, REPLY_GAP, RECLAIM, ALLOWANCE, None);
         c.on_break_observed(1100);
         // The frame never resolves (garbled/wedged): the suspended deadline
         // fires as the reclaim.
@@ -290,7 +313,7 @@ mod tests {
     fn break_while_idle_or_pending_is_none() {
         let mut c = Chain::new();
         assert!(matches!(c.on_break_observed(500), ChainOut::None));
-        c.on_reply_staged(0, END, REPLY_GAP, RECLAIM, ALLOWANCE, None);
+        c.on_reply_staged(0, END, END, REPLY_GAP, RECLAIM, ALLOWANCE, None);
         // Pending our own trigger: a break is not a predecessor signal.
         assert!(matches!(c.on_break_observed(1010), ChainOut::None));
     }
@@ -298,12 +321,12 @@ mod tests {
     #[test]
     fn sized_gread_admits_its_span_and_error_statuses_only() {
         let mut c = Chain::new();
-        c.on_reply_staged(1, END, REPLY_GAP, RECLAIM, ALLOWANCE, Some(14));
+        c.on_reply_staged(1, END, END, REPLY_GAP, RECLAIM, ALLOWANCE, Some(14));
         assert!(c.admits(14));
         assert!(c.admits(ERROR_FOOTPRINT));
         assert!(!c.admits(13));
         assert!(!c.admits(15));
-        c.on_reply_staged(1, END, REPLY_GAP, RECLAIM, ALLOWANCE, None);
+        c.on_reply_staged(1, END, END, REPLY_GAP, RECLAIM, ALLOWANCE, None);
         assert!(c.admits(15));
     }
 
@@ -317,7 +340,7 @@ mod tests {
     #[test]
     fn reset_mid_chain_goes_idle() {
         let mut c = Chain::new();
-        c.on_reply_staged(2, END, REPLY_GAP, RECLAIM, ALLOWANCE, None);
+        c.on_reply_staged(2, END, END, REPLY_GAP, RECLAIM, ALLOWANCE, None);
         assert!(c.active());
         c.reset();
         assert!(!c.active());

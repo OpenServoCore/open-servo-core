@@ -4,8 +4,11 @@
 //! payloads are hand-built per sec 5's tables and cross-checked against the
 //! `osc_protocol::group` parsers (the layout authority).
 
-use osc_integration::sim::{Source, WireFrame, assert_valid, instruction, status, status_frame};
+use osc_integration::sim::{
+    READ32_3M_COST, Sim, Source, WireFrame, assert_valid, instruction, status, status_frame,
+};
 use osc_protocol::wire::{self, Inst, Opcode, ResultCode};
+use osc_servo_core::BaudRate;
 use osc_servo_core::regions::config::addr::common::{FIRMWARE_VERSION, MODEL_NUMBER};
 use osc_servo_core::regions::control::addr::lifecycle::GOAL_VELOCITY;
 use osc_servo_core::regions::profile::span_word;
@@ -15,7 +18,7 @@ use rstest_reuse::apply;
 mod support;
 use support::{byte_ticks, matrix, sim};
 
-/// The default RESPONSE_DEADLINE (60 us) works at every baud: sec 6 keys reclaim
+/// A 60 us RESPONSE_DEADLINE works at every baud: sec 6 keys reclaim
 /// off the predecessor's *break* (its trigger -> break lead), and an observed
 /// break suspends the window while the frame plays out. The baud sweep is the
 /// regression for that -- at 1 M a short reply spends ~84 us on the wire, so
@@ -540,4 +543,89 @@ fn back_to_back_instructions_all_land(baud_idx: u8) {
         gv2,
         "second write applied"
     );
+}
+
+/// A predecessor status of the largest legal frame, streamed in three arms
+/// with a 50 us pause between each (a kernel body above the bus at 3M):
+/// its break suspends the waiting slot's reclaim for the whole frame,
+/// pauses included, and the slot answers after it, unflagged.
+#[test]
+fn chain_slot_survives_a_predecessor_stalled_inside_its_frame() {
+    let mut sim = Sim::new(BaudRate::B3000000);
+    sim.add_servo(2);
+    sim.host_send(&instruction(
+        BCAST,
+        Opcode::Gread,
+        0,
+        &gread_uniform(0, wire::MAX_PAYLOAD as u16, &[9, 2]),
+    ));
+    let pre = status_frame(9, ResultCode::Ok, &[0x5A; wire::MAX_PAYLOAD as usize]);
+    assert_eq!(pre.len(), osc_servo_drivers::bus::FRAME_MAX);
+    assert!(!pre[1..].contains(&0));
+    let arm = pre.len() / 3;
+    sim.host_send_paused(&pre, &[(arm, 50), (2 * arm, 50)]);
+    let frames = sim.run();
+    let pre_end = frames
+        .iter()
+        .find(|f| f.from == Source::Host && responder(f) == 9)
+        .expect("the predecessor status")
+        .end;
+    let reps = replies(&frames);
+    assert_eq!(reps.len(), 1, "{frames:#?}");
+    assert!(reps[0].at > pre_end, "slot 1 reclaimed into a live frame");
+    assert_eq!(decoded(reps[0]).0, ResultCode::Ok);
+}
+
+/// A GREAD both slots dispatch at its covered checkpoint at 3M, whose
+/// verdict each serves 600 us late (the deadline held behind a backlog,
+/// the kernel above the bus): the wire-based window (end + reply gap +
+/// RESPONSE_DEADLINE) has long expired when either is ready. Slot 1's
+/// window counts from its own readiness instead: it sees slot 0's break
+/// inside it and answers after slot 0's status, unflagged.
+#[test]
+fn reclaim_window_counts_from_the_slots_own_readiness() {
+    const START_US: u64 = 1_000;
+    const LAG_US: u64 = 600;
+    let mut sim = Sim::new(BaudRate::B3000000);
+    for id in [1u8, 2] {
+        let s = sim.add_servo_with(id, 0, CHAIN_DEADLINE_US);
+        sim.set_handler_cost(s, READ32_3M_COST);
+    }
+    sim.host_send_at(
+        START_US,
+        &instruction(
+            BCAST,
+            Opcode::Gread,
+            0,
+            &gread_uniform(GOAL_VELOCITY, 4, &[1, 2]),
+        ),
+    );
+    let mut frames = Vec::new();
+    let mut held = [false; 2];
+    for t in START_US..START_US + LAG_US {
+        frames.extend(sim.run_until(t));
+        for (s, h) in held.iter_mut().enumerate() {
+            if !*h && sim.dispatched(s) > 0 {
+                sim.preempt_before_ring_read(s, LAG_US);
+                *h = true;
+            }
+        }
+    }
+    assert_eq!(held, [true; 2]);
+    frames.extend(sim.run());
+    let gread_end = frames.iter().find(|f| f.from == Source::Host).unwrap().end;
+    let reps = replies(&frames);
+    assert_eq!(reps.len(), 2, "{frames:#?}");
+    assert!(reps.iter().all(|f| !f.collided), "{frames:#?}");
+    let window = support::reply_gap_ticks() + CHAIN_DEADLINE_US as u64 * 48;
+    assert!(
+        reps[0].at > gread_end + window,
+        "slot 0 ready inside the window"
+    );
+    assert_eq!(responder(reps[0]), 1);
+    assert_eq!(responder(reps[1]), 2);
+    assert!(reps[1].at > reps[0].end, "slot 1 talked over slot 0");
+    for f in reps {
+        assert_eq!(decoded(f).0, ResultCode::Ok);
+    }
 }

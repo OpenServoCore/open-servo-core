@@ -49,22 +49,18 @@ fn profile_read_bad_slot_rejects_range() {
     }
 }
 
-/// Per-baud ceiling for the mean profile-read turnaround (us). Measured floor
-/// (3 spans / 8 B): 39.9 / 48.2 / 46.6 / 50.5 at
-/// 0.5M/1M/2M/3M -- the two extra snapshot arms and the span resolution add
-/// ~4-11 us over the same bytes as one contiguous READ. Each ceiling sits
-/// ~6 us above the measured floor (the ping-budget convention: regression
-/// margin plus the +/-5 us flash-layout swing). Measured means on the
-/// current build: 41.2/46.9-55.3/55.8/60.0 ascending baud -- the 1M mean is
-/// bimodal on this layout (run-to-run it settles just before or just after a
-/// reply-grid point, ~a byte-time apart), so its ceiling covers the slow mode.
+/// Per-baud ceiling for the mean profile-read turnaround (us), 3 spans / 8 B:
+/// the two extra snapshot arms and the span resolution add ~10-16 us over a
+/// contiguous READ of the same bytes. Measured means with the kernel above
+/// the bus: 72.4/87.4/89.0/93.1 ascending baud. Each ceiling sits ~8 us above
+/// (the turnaround-budget convention: layout swing plus kernel-phase spread).
 fn profile_turnaround_budget_us(baud: u32) -> f64 {
     match baud {
-        500_000 => 48.0,
-        1_000_000 => 61.0,
-        2_000_000 => 62.0,
-        3_000_000 => 66.0,
-        _ => 70.0,
+        500_000 => 80.0,
+        1_000_000 => 95.0,
+        2_000_000 => 97.0,
+        3_000_000 => 101.0,
+        _ => 105.0,
     }
 }
 
