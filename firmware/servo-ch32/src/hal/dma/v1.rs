@@ -22,6 +22,12 @@ pub use ch32_metapac::dma::vals::{Dir, Pl, Size};
 ///                                    of the other; at HIGH it would lose
 ///                                    every beat of a snapshot copy
 ///   HIGH      CH1 ADC              -- motor kernel; wins HIGH ties (lowest #)
+///             CH2 TIM2_UP stamp    -- one halfword of TIM3's count into the
+///                                    break-stamp ring per detector overflow.
+///                                    Below RX by priority, so it never
+///                                    defers a byte; above CH4/CH6 by number,
+///                                    so a snapshot copy never defers it past
+///                                    one beat
 ///             CH4 TX               -- reply wire arms
 ///             CH6 M2M -> snapshot  -- copies the reply payload for CRC + wire
 ///   MEDIUM    CH3 SPI-CRC feed     -- must run BEHIND CH6 so the copy it reads

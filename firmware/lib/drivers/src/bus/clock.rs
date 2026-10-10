@@ -19,17 +19,16 @@ const TRIM_GATE_SHIFT: u32 = 4;
 const CAL_WATCHDOG_GAPS: u32 = 2;
 
 /// A live MGMT CAL break train (sec 9.3): the host's crystal spaces the breaks,
-/// and break-wake stamps measure that ruler with the local clock. Both
-/// stamps of every gap are the SAME ISR flavor, so entry latency cancels in
-/// the difference; what survives is clock skew plus sub-us jitter the
-/// per-gap gate and the gap sum average out.
+/// and the detector's hardware stamps measure that ruler with the local
+/// clock. Every stamp carries the same detector offset, which cancels in
+/// the difference; what survives is clock skew plus DMA arbitration jitter.
 struct CalRun {
     gap_ticks: u32,
     gaps_left: u8,
     /// Announced gap count -- the >=-half validity bar at train end.
     total: u8,
     valid: u8,
-    last_break: u32,
+    last_stamp: u16,
     err: i32,
     span: u32,
 }
@@ -59,16 +58,16 @@ impl ClockDiscipline {
         self.cal.is_some() || self.pending_cal.is_some()
     }
 
-    /// One CAL ruler mark (sec 9.3): a break the composite classified from
-    /// ring data (its 0x00 rang fresh), so a wake that rang nothing never
-    /// gets here. The stamp is the CALLER's `now`, read at service entry
-    /// before any other work -- every gap's two ends then carry the same
-    /// entry path, and its latency cancels in the difference. Returns the
-    /// framer deadline to arm: the train's watchdog while it runs, the
+    /// One CAL ruler mark (sec 9.3): a break's hardware `stamp`, taken in
+    /// wire order at any later service `now`. A gap is the 16-bit stamp
+    /// difference, exact while its error against the announced gap stays
+    /// inside +/-2^15 ticks, which the per-gap gate implies for gaps up to
+    /// 2^19 ticks. Returns the framer
+    /// deadline to arm: the train's watchdog while it runs, the
     /// pend-on-past hunt at its end. Out of line: a cold path, which
     /// inlined grew the TIM2 and SysTick vectors by ~200 B each.
     #[cfg_attr(target_arch = "riscv32", inline(never))]
-    pub fn on_cal_break(&mut self, now: u32, ticks_per_us: u32) -> Option<u32> {
+    pub fn on_cal_break(&mut self, stamp: u16, now: u32, ticks_per_us: u32) -> Option<u32> {
         if let Some((gap_us, gaps)) = self.pending_cal.take() {
             // Train start: the first break after the announce opens gap 1.
             let gap_ticks = (gap_us as u32).wrapping_mul(ticks_per_us);
@@ -77,7 +76,7 @@ impl ClockDiscipline {
                 gaps_left: gaps,
                 total: gaps,
                 valid: 0,
-                last_break: now,
+                last_stamp: stamp,
                 err: 0,
                 span: 0,
             });
@@ -87,9 +86,10 @@ impl ClockDiscipline {
             let Some(cal) = &mut self.cal else {
                 return None; // SAFETY: caller guards; a bare entry changes nothing
             };
-            let delta = now.wrapping_sub(cal.last_break);
-            cal.last_break = now;
-            let err = delta.wrapping_sub(cal.gap_ticks) as i32;
+            let err = stamp
+                .wrapping_sub(cal.last_stamp)
+                .wrapping_sub(cal.gap_ticks as u16) as i16 as i32;
+            cal.last_stamp = stamp;
             if err.unsigned_abs() <= cal.gap_ticks >> TRIM_GATE_SHIFT {
                 cal.err = cal.err.wrapping_add(err);
                 cal.span = cal.span.wrapping_add(cal.gap_ticks);

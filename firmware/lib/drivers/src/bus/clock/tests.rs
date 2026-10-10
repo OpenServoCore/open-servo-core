@@ -202,7 +202,7 @@ impl Servo {
         for k in 0..=GAPS {
             let t_us = k as f64 * GAP_US as f64 + break_us + latency_sd_us * rng.gauss();
             let now = self.ticks.wrapping_add((t_us * rate).round() as i64 as u32);
-            self.clock.on_cal_break(now, TICKS_PER_US);
+            self.clock.on_cal_break(now as u16, now, TICKS_PER_US);
         }
         self.ticks = self.ticks.wrapping_add(CAL_PERIOD_TICKS);
         self.prev = self.total;
@@ -407,7 +407,7 @@ fn judge_flags_a_trim_applied_one_train_late() {
 #[ignore]
 fn noise_ladder() {
     for kind in CHIPS {
-        for noise in [260.0, 415.0, 600.0, 900.0] {
+        for noise in [30.0, 100.0, 260.0, 415.0, 600.0, 900.0] {
             let t = soak(kind, noise, Adapter::Slows, BOOT_BAUD);
             std::println!(
                 "{kind:?} {noise}: holds {}, out of band {}, swings {}, collapsed {}, \
@@ -420,7 +420,7 @@ fn noise_ladder() {
             );
         }
     }
-    for noise in [260.0, 415.0, 600.0, 900.0] {
+    for noise in [30.0, 100.0, 260.0, 415.0, 600.0, 900.0] {
         let (misses, ceiling) = recovery(noise);
         std::println!("recovery {noise}: {misses} misses, ceiling {ceiling:.1}");
     }

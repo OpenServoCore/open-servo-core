@@ -60,7 +60,7 @@ Columns:
 | Group instructions (GREAD/GWRITE) | 1,998 | - | inside the frame cost | module in principle (fleet feature) |
 | Software CRC-16 (odd-byte tail fold, ENUM key, persist) | 1,026 + 512 table in .rodata | - | one tail byte per frame | core; see the dedupe lever below |
 | Chain snoop | 640 | 20 | per foreign frame (the fleet cost above) | core for chains; a chain-length limit saves CPU, not memory |
-| Clock discipline: CAL ruler + trim loop | 2,354 less the drift tracker, since deleted (its last form, with DMA break stamps, measured 1,568 B of .text) | 64 | 0 per tick; one entry stamp per CAL mark | core |
+| Clock discipline: CAL ruler + trim loop | 2,354 less the drift tracker, since deleted (its last form, with DMA break stamps, measured 1,568 B of .text) | 64 + 16 stamp ring | 0 per tick; one DMA stamp per break, read only during a CAL train | core |
 | TEL streaming | 1,674 | 450 (double buffer 2 x 196, meta 18, feed 28, burst 12) | Staging runs at the tail of the tick. Sample encode while streaming is S: 370 ins. Burst TX by DMA costs ~0 (M) | runtime (`tel_mask` 0) |
 | Dispatch + control table (map, rules, staging) | 5,918 | table 1,024, write staging 244, misc 34 | per frame | core |
 | Persistence (SAVE/FACTORY, flash driver) | 3,108 | 8 | on SAVE only (blocking flash program) | core |

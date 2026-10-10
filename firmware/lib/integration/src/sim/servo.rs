@@ -18,7 +18,9 @@ use osc_servo_drivers::bus::{LinkDiag, ServoBus};
 use osc_servo_drivers::tel::{TelChannel, TelFeed};
 
 use super::core::Core;
-use super::providers::{Handles, SimBaud, SimCrc, SimDeadline, SimProviders, SimRing, SimWire};
+use super::providers::{
+    Handles, SimBaud, SimCrc, SimDeadline, SimProviders, SimRing, SimStamps, SimWire,
+};
 use super::store::RamStore;
 
 /// The osc-dev-v006 app's `Calibration`, copied: the board crate is a no_std
@@ -210,6 +212,7 @@ impl SimServo {
             SimCrc::new(),
             SimWire::new(seed.core.clone(), seed.handles.baud.clone(), seed.idx),
             SimBaud::new(seed.handles.baud.clone()),
+            SimStamps::new(seed.handles.stamps.clone()),
             id,
             rate,
             response_deadline_us,

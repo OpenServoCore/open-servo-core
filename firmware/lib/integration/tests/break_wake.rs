@@ -61,8 +61,8 @@ fn frames_answer_at_every_baud(
 }
 
 /// A CAL train converges on the same decision whichever side of its byte
-/// each ruler mark's wake lands: every mark is stamped at its wake, and the
-/// slowest and fastest rates read the same skew.
+/// each ruler mark's wake lands: every mark is its detector's stamp, and
+/// the slowest and fastest rates read the same skew.
 #[rstest]
 #[test_log::test]
 fn cal_train_converges(

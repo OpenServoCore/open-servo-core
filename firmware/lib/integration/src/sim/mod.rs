@@ -125,6 +125,8 @@ pub struct Sim {
     break_wake: BreakWake,
     /// The next [`BreakWake::Alternating`] wake trails its byte.
     alternate_after: bool,
+    /// Service lag of every break wake, us (see [`Self::set_wake_lag_us`]).
+    wake_lag_us: Option<Box<dyn FnMut() -> f64>>,
 }
 
 /// One servo's TEL fast-tick pump: the sim's stand-in for the kernel's 50 us
@@ -194,7 +196,15 @@ impl Sim {
             data_jobs: true,
             break_wake: BreakWake::BeforeByte,
             alternate_after: false,
+            wake_lag_us: None,
         }
+    }
+
+    /// Serve every later break wake `lag_us()` after its detector instant:
+    /// a vector held off by higher-priority work. Ring bytes still land at
+    /// their wire ticks.
+    pub fn set_wake_lag_us(&mut self, lag_us: impl FnMut() -> f64 + 'static) {
+        self.wake_lag_us = Some(Box::new(lag_us));
     }
 
     /// Order every later break wake against its ringed 0x00
@@ -1116,10 +1126,13 @@ impl Sim {
         }
     }
 
-    /// A qualified break at servo `j`: ring its 0x00 and wake, in the
-    /// configured [`BreakWake`] order, the byte `lead` ticks behind the wake
-    /// under [`BreakWake::BeforeByte`].
+    /// A qualified break at servo `j`: latch its stamp, then ring its 0x00
+    /// and wake, in the configured [`BreakWake`] order, the byte `lead`
+    /// ticks behind the wake under [`BreakWake::BeforeByte`].
     fn wake_on_break(&mut self, j: usize, lead: u64) {
+        let now = self.core.borrow().now();
+        let h = &self.handles[j];
+        h.stamps.latch(h.deadline.local_u64(now) as u16);
         let after = match self.break_wake {
             BreakWake::BeforeByte => false,
             BreakWake::AfterByte => true,
@@ -1130,10 +1143,10 @@ impl Sim {
         };
         if after {
             self.handles[j].ring.push(0x00);
-            self.deliver(j, Vector::Break);
+            self.wake(j);
             return;
         }
-        self.deliver(j, Vector::Break);
+        self.wake(j);
         if lead == 0 {
             self.handles[j].ring.push(0x00);
         } else {
@@ -1141,6 +1154,17 @@ impl Sim {
             let at = c.now() + lead;
             c.schedule(Event::BreakByte { servo: j }, at);
         }
+    }
+
+    /// Deliver a break wake now, or after the configured service lag.
+    fn wake(&mut self, j: usize) {
+        let Some(lag_us) = self.wake_lag_us.as_mut().map(|f| f()) else {
+            self.deliver(j, Vector::Break);
+            return;
+        };
+        let mut c = self.core.borrow_mut();
+        let at = c.now() + (lag_us * TICKS_PER_US as f64) as u64;
+        c.schedule(Event::WakeRefire { servo: j }, at);
     }
 
     fn cross_deliver_host(&mut self, out: Vec<RxOut>) {
