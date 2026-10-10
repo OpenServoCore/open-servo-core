@@ -23,11 +23,12 @@ use osc_client::{
 use osc_integration::sim::{Source, expect_tel_payload, status};
 use osc_protocol::models::MODEL_OSC_SERVO;
 use osc_protocol::table;
-use osc_protocol::wire::{STREAM_SAMPLES_MAX, UID_LEN};
+use osc_protocol::wire::UID_LEN;
 use osc_servo_core::estimator::thermal::{UNSET_CC, flag};
 use osc_servo_core::regions::config::addr::limits::CURRENT_LIMIT_COUNTS;
 use osc_servo_core::regions::telemetry::addr::estimates::{I_LIM_COUNTS, T_WINDING_CC};
 use osc_servo_core::regions::telemetry::addr::therm::{T_NTC_CC, THERM_FLAGS};
+use osc_servo_core::tel::FRAME_SAMPLES;
 
 /// V006 map fact used by read/write round trips (control.lifecycle
 /// goal_velocity); the common block is the only protocol-fixed address space.
@@ -390,7 +391,24 @@ fn identity_decodes_the_config_front() {
             fw,                     // osc_servo_core::FIRMWARE_VERSION
             hw: 3,
             capabilities: 0x8000_0001,
+            tel_frame_samples: Some(FRAME_SAMPLES as u8),
         }
+    );
+}
+
+/// The servo publishes its TEL batch, the one firmware constant; an old
+/// servo that does not is an error, never a guessed batch.
+#[test]
+fn tel_frame_samples_is_the_servos_batch_or_an_error() {
+    let mut c = fleet(&[5]);
+    assert_eq!(c.tel_frame_samples(Id::new(5)), Ok(FRAME_SAMPLES as u8));
+    c.pipe_mut().sim_mut().servo_table_mut(0, |t| {
+        t.config.common.capability_flags = 0;
+        t.config.common.tel_frame_samples = 0;
+    });
+    assert_eq!(
+        c.tel_frame_samples(Id::new(5)),
+        Err(Error::Unpublished("tel_frame_samples"))
     );
 }
 
@@ -1159,7 +1177,7 @@ const TEL_COUNT: u16 = 402;
 const TEL_LADDER_MASK: u16 = 0x1B;
 const BURST_WINDOW: Duration = Duration::from_millis(50);
 /// Rows per full TEL frame.
-const K: u16 = STREAM_SAMPLES_MAX as u16;
+const K: u16 = FRAME_SAMPLES as u16;
 /// Two full frames and a short LAST one.
 const THREE_FRAMES: u16 = 2 * K + 8;
 

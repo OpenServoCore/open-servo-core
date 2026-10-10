@@ -26,6 +26,9 @@ pub enum Error {
     Descriptor(String),
     /// A position table write that did not go live.
     Lut(LutError),
+    /// The node does not publish a register the call needs: its firmware
+    /// predates it.
+    Unpublished(&'static str),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,6 +80,10 @@ impl fmt::Display for Error {
             Error::Servo(code) => write!(f, "servo answered {code:?}"),
             Error::Descriptor(m) => write!(f, "descriptor: {m}"),
             Error::Lut(e) => write!(f, "{e}"),
+            Error::Unpublished(r) => write!(
+                f,
+                "the servo does not publish {r}: its firmware predates it, reflash"
+            ),
         }
     }
 }

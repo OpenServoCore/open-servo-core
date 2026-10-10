@@ -11,10 +11,16 @@ pub const CONFIG_COMMON_END: u16 = 0x020;
 pub const MODEL_NUMBER: u16 = 0x000;
 /// u16 RO - semver packed 5.5.6 (`version::pack_version`).
 pub const FIRMWARE_VERSION: u16 = 0x002;
-/// u32 RO -- reserved-slot extension signal; no bits defined yet.
+/// u32 RO - reserved-slot extension signal; bits below.
 pub const CAPABILITY_FLAGS: u16 = 0x004;
 /// u8 RO.
 pub const HARDWARE_REVISION: u16 = 0x008;
+/// u8 RO - samples a full sec 5.6 stream frame carries; present when
+/// `CAPABILITY_FLAGS` has `CAP_TEL_FRAME_SAMPLES`.
+pub const TEL_FRAME_SAMPLES: u16 = 0x009;
+
+/// `CAPABILITY_FLAGS` bit 0: `TEL_FRAME_SAMPLES` is published.
+pub const CAP_TEL_FRAME_SAMPLES: u32 = 1 << 0;
 /// u8 RW -- unicast address, 0x01..=0xF9 (sec 3.1).
 pub const ID: u16 = 0x010;
 /// u8 RW -- sec 2 rate index (`BaudRate` discriminant).

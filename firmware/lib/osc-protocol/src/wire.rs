@@ -320,18 +320,17 @@ pub fn stream_last(inst: Inst, payload: FrameBytes<'_>) -> bool {
         && payload.u8_at(1).is_some_and(|f| f & STREAM_FLAG_LAST != 0)
 }
 
-/// sec 5.6 TEL frame: a `STREAM_HDR`-byte header, then up to
-/// `STREAM_SAMPLES_MAX` samples, one per control tick, each the
-/// `tel_mask`-selected fields of `STREAM_FIELD_LEN` bytes. Eleven rows is
-/// the batch whose six-field frames keep up with a stepping motor in the
-/// least servo RAM; 10 and 12 lose rows sooner as the kernel grows.
+/// sec 5.6 TEL frame: a `STREAM_HDR`-byte header, then up to the node's
+/// batch of samples (published at `table::TEL_FRAME_SAMPLES`), one per
+/// control tick, each the `tel_mask`-selected fields of `STREAM_FIELD_LEN`
+/// bytes.
 pub const STREAM_HDR: usize = 4;
-pub const STREAM_SAMPLES_MAX: usize = 11;
 pub const STREAM_FIELD_LEN: usize = 2;
 
-/// sec 5.6 wire budget: the most fields a sample carries, the largest count
-/// whose full frame [`stream_fits`] at `STREAM_BUDGET_BAUD` and
-/// `STREAM_BUDGET_TICK_HZ`.
+/// The header's `valid` bitmap width: the most samples one frame can mark.
+pub const STREAM_VALID_BITS: usize = 16;
+
+/// sec 5.6 wire budget: the most fields a sample carries.
 pub const STREAM_FIELDS_MAX: u8 = 6;
 pub const STREAM_BUDGET_BAUD: BaudRate = BaudRate::B3000000;
 pub const STREAM_BUDGET_TICK_HZ: u32 = 20_000;
@@ -346,20 +345,37 @@ pub const STREAM_LINE_PCT: usize = 95;
 /// Bit-times per character on the wire: start, 8 data, stop (sec 3).
 pub const CHAR_BIT_TIMES: u32 = 10;
 
-/// Wire bytes of a full TEL frame of `fields`-field samples.
-pub const fn stream_frame_bytes(fields: usize) -> usize {
-    STREAM_HDR + STREAM_SAMPLES_MAX * STREAM_FIELD_LEN * fields + STREAM_FRAME_OVERHEAD
+/// Payload bytes of a frame of `samples` samples of `fields` fields.
+pub const fn stream_payload_bytes(fields: usize, samples: usize) -> usize {
+    STREAM_HDR + samples * STREAM_FIELD_LEN * fields
 }
 
-/// Byte-times one batch of `STREAM_SAMPLES_MAX` ticks gives the line.
-pub const fn stream_window_bytes(baud: BaudRate, tick_hz: u32) -> usize {
-    STREAM_SAMPLES_MAX * (baud.as_hz() / CHAR_BIT_TIMES / tick_hz) as usize
+/// Wire bytes of a full TEL frame of `samples` `fields`-field samples.
+pub const fn stream_frame_bytes(fields: usize, samples: usize) -> usize {
+    stream_payload_bytes(fields, samples) + STREAM_FRAME_OVERHEAD
 }
 
-/// A full frame of `fields`-field samples clears the wire inside its own
-/// batch's ticks within `STREAM_LINE_PCT`: the burst keeps up with the tick.
-pub const fn stream_fits(fields: usize, baud: BaudRate, tick_hz: u32) -> bool {
-    stream_frame_bytes(fields) * 100 <= stream_window_bytes(baud, tick_hz) * STREAM_LINE_PCT
+/// Byte-times a batch of `samples` ticks gives the line.
+pub const fn stream_window_bytes(samples: usize, baud: BaudRate, tick_hz: u32) -> usize {
+    samples * (baud.as_hz() / CHAR_BIT_TIMES / tick_hz) as usize
+}
+
+/// A full frame of `samples` `fields`-field samples clears the wire inside
+/// its own batch's ticks within `STREAM_LINE_PCT`: the burst keeps up.
+pub const fn stream_fits(fields: usize, samples: usize, baud: BaudRate, tick_hz: u32) -> bool {
+    stream_frame_bytes(fields, samples) * 100
+        <= stream_window_bytes(samples, baud, tick_hz) * STREAM_LINE_PCT
+}
+
+/// A node may batch `samples` per frame: the bitmap marks them all, a frame
+/// of `STREAM_FIELDS_MAX` fields fits `MAX_PAYLOAD`, and it keeps up at the
+/// budget rate. A node asserts its batch against this at compile time.
+pub const fn stream_batch_fits(samples: usize) -> bool {
+    let fields = STREAM_FIELDS_MAX as usize;
+    samples >= 1
+        && samples <= STREAM_VALID_BITS
+        && stream_payload_bytes(fields, samples) <= MAX_PAYLOAD as usize
+        && stream_fits(fields, samples, STREAM_BUDGET_BAUD, STREAM_BUDGET_TICK_HZ)
 }
 
 /// TX-buffer alignment byte at offset 0 (sec 3.2): keeps the hardware CRC feed
@@ -527,19 +543,29 @@ mod tests {
         assert_eq!(covered_len(255), 256);
     }
 
-    /// sec 5.6: at 3 M a 20 kHz tick is 15 byte-times, 165 per 11-tick
-    /// batch. Six fields make a 143-byte frame, 87% of it; seven 165, 100%,
-    /// past the 95% a burst may take.
+    /// sec 5.6: at 3 M a 20 kHz tick is 15 byte-times. Six fields of 11
+    /// samples make a 143-byte frame in a 165 byte-time batch, 87%; seven
+    /// make 165, past the 95% a burst may take.
     #[test]
     fn six_fields_are_the_tel_budget() {
         let (b, hz) = (STREAM_BUDGET_BAUD, STREAM_BUDGET_TICK_HZ);
         let max = STREAM_FIELDS_MAX as usize;
-        assert_eq!(stream_window_bytes(b, hz), 165);
-        assert_eq!(stream_frame_bytes(max), 143);
-        assert_eq!(stream_frame_bytes(max + 1), 165);
-        assert!(stream_fits(max, b, hz));
-        assert!(!stream_fits(max + 1, b, hz));
-        assert!(STREAM_HDR + STREAM_SAMPLES_MAX * STREAM_FIELD_LEN * max <= MAX_PAYLOAD as usize);
+        assert_eq!(stream_window_bytes(11, b, hz), 165);
+        assert_eq!(stream_frame_bytes(max, 11), 143);
+        assert_eq!(stream_frame_bytes(max + 1, 11), 165);
+        assert!(stream_fits(max, 11, b, hz));
+        assert!(!stream_fits(max + 1, 11, b, hz));
+    }
+
+    /// Batches 5..=16 fit: below 5 the frame overhead outruns the window,
+    /// above 16 the `valid` bitmap runs out (and past 20 the payload cap).
+    #[test]
+    fn batches_that_fit_the_format_and_the_budget() {
+        assert!(!stream_batch_fits(0));
+        assert!(!stream_batch_fits(4));
+        assert!((5..=16).all(stream_batch_fits));
+        assert!(!stream_batch_fits(17));
+        assert!(stream_payload_bytes(STREAM_FIELDS_MAX as usize, 21) > MAX_PAYLOAD as usize);
     }
 
     #[test]

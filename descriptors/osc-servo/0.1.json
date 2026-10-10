@@ -82,6 +82,13 @@
       "kind": "uint"
     },
     {
+      "name": "tel_frame_samples",
+      "addr": 9,
+      "width": 1,
+      "access": "ro",
+      "kind": "uint"
+    },
+    {
       "name": "id",
       "addr": 16,
       "width": 1,

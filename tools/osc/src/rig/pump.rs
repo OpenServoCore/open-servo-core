@@ -188,16 +188,19 @@ pub(crate) fn check_tel_mask(mask: u16) -> Result<u16> {
         bail!("tel_mask 0 selects no field to stream");
     }
     if n > max {
+        // The largest batch a frame can carry amortizes its overhead best:
+        // a mask over budget there is over at every batch a servo picks.
+        let k = wire::STREAM_VALID_BITS;
         let (baud, hz) = (wire::STREAM_BUDGET_BAUD, wire::STREAM_BUDGET_TICK_HZ);
-        let window = wire::stream_window_bytes(baud, hz);
-        let bytes = |f: u32| wire::stream_frame_bytes(f as usize);
+        let window = wire::stream_window_bytes(k, baud, hz);
+        let bytes = |f: u32| wire::stream_frame_bytes(f as usize, k);
         let pct = |f: u32| (bytes(f) * 100 + window / 2) / window;
         bail!(
             "tel_mask {mask:#x} selects {n} fields; a TEL sample carries at most {max} \
-             (protocol sec 5.6). One sample streams per control tick, so a frame of {k} samples \
-             of {n} fields is {} wire bytes against the {window} byte-times {k} ticks leave at \
-             {} Mbaud and {} kHz ({}%), where a frame may take {}%; {max} fields are {} ({}%). \
-             Stream the fields over two bursts.",
+             (protocol sec 5.6). One sample streams per control tick, so even a frame of the \
+             largest batch, {k} samples of {n} fields, is {} wire bytes against the {window} \
+             byte-times {k} ticks leave at {} Mbaud and {} kHz ({}%), where a frame may take \
+             {}%; {max} fields are {} ({}%). Stream the fields over two bursts.",
             bytes(n),
             baud.as_hz() / 1_000_000,
             hz / 1000,
@@ -205,7 +208,6 @@ pub(crate) fn check_tel_mask(mask: u16) -> Result<u16> {
             wire::STREAM_LINE_PCT,
             bytes(max),
             pct(max),
-            k = wire::STREAM_SAMPLES_MAX,
         );
     }
     Ok(mask)
@@ -225,6 +227,11 @@ pub(crate) fn exchange_tel_burst<P: Pipe>(
     mask: u16,
 ) -> Result<(Vec<TelFrame>, BurstStats)> {
     check_tel_mask(mask)?;
+    let batch = c
+        .tel_frame_samples(id)
+        .context("read the servo's TEL batch")?;
+    let mut asm = StreamAssembler::new(mask, batch)
+        .with_context(|| format!("tel mask {mask:#x} or batch {batch} cannot stream"))?;
     let window = stream_window(samples);
     c.set_guard(window + Duration::from_secs(1));
     let reply = match goal {
@@ -252,7 +259,6 @@ pub(crate) fn exchange_tel_burst<P: Pipe>(
     {
         bail!("stream arm answered {:?}", ack.result);
     }
-    let mut asm = StreamAssembler::new(mask).context("tel mask invalid for a stream arm")?;
     let mut frames = Vec::new();
     for f in &reply.frames {
         asm.push(
@@ -503,12 +509,12 @@ mod tests {
         assert_eq!(
             err(0x3db),
             "tel_mask 0x3db selects 8 fields; a TEL sample carries at most 6 (protocol sec \
-             5.6). One sample streams per control tick, so a frame of 11 samples of 8 fields \
-             is 187 wire bytes against the 165 byte-times 11 ticks leave at 3 Mbaud and 20 \
-             kHz (113%), where a frame may take 95%; 6 fields are 143 (87%). Stream the \
-             fields over two bursts."
+             5.6). One sample streams per control tick, so even a frame of the largest batch, \
+             16 samples of 8 fields, is 267 wire bytes against the 240 byte-times 16 ticks \
+             leave at 3 Mbaud and 20 kHz (111%), where a frame may take 95%; 6 fields are 203 \
+             (85%). Stream the fields over two bursts."
         );
-        assert!(err(0x7f).contains("selects 7 fields") && err(0x7f).contains("165 wire bytes"));
+        assert!(err(0x7f).contains("selects 7 fields") && err(0x7f).contains("235 wire bytes"));
         assert_eq!(
             err(0x1001),
             "tel_mask 0x1001 sets reserved bits 0x1000: the fields are bits 0..11"
@@ -520,9 +526,38 @@ mod tests {
             wire::STREAM_FIELDS_MAX as u32
         );
         assert_eq!(osc_ident::frame::STREAM_HDR, wire::STREAM_HDR);
-        assert_eq!(
-            osc_ident::frame::STREAM_SAMPLES_MAX,
-            wire::STREAM_SAMPLES_MAX
+        assert_eq!(osc_ident::frame::STREAM_VALID_BITS, wire::STREAM_VALID_BITS);
+    }
+
+    /// The decode takes the batch the servo publishes, never a host
+    /// constant: a burst ticks contiguously from 0 in frames of that batch
+    /// (osc-ident pins the batch-long hole a lost frame leaves), and a
+    /// servo that does not publish it is refused rather than guessed.
+    #[test]
+    fn burst_decode_takes_the_servos_published_batch() {
+        use osc_client::BaudRate;
+        use osc_client::fake::FakePipe;
+        const MASK: u16 = 0x1B;
+        let id = Id::new(5);
+        let mut c = Client::connect(FakePipe::new(BaudRate::B3000000, &[5])).unwrap();
+        write_reg(&mut c, id, control::TEL_MASK, MASK as i32).unwrap();
+        let batch = c.tel_frame_samples(id).unwrap() as usize;
+        let samples = 3 * batch + 2;
+        let (frames, stats) = exchange_tel_burst(&mut c, id, samples as u16, None, MASK).unwrap();
+        assert_eq!((stats.frames, stats.holes), (samples.div_ceil(batch), 0));
+        assert_eq!(frames.len(), samples);
+        assert!(frames.iter().enumerate().all(|(i, f)| f.tick == i as u64));
+
+        c.pipe_mut().sim_mut().servo_table_mut(0, |t| {
+            t.config.common.capability_flags = 0;
+            t.config.common.tel_frame_samples = 0;
+        });
+        let Err(e) = exchange_tel_burst(&mut c, id, samples as u16, None, MASK) else {
+            panic!("an unpublished batch must refuse the decode");
+        };
+        assert!(
+            format!("{e:#}").contains("does not publish tel_frame_samples"),
+            "{e:#}"
         );
     }
 

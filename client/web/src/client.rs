@@ -490,6 +490,7 @@ async fn burst<P: Pipe>(
     count: (u16, &[u8]),
     window: Duration,
 ) -> Result<TelBurst, JsError> {
+    let frame_samples = common::tel_frame_samples(c, id).await?;
     c.write(id, mask.0, mask.1).await?;
     let mut p = vec![0u8; count.1.len() + 4];
     let n = build::write(&mut p, count.0, count.1).ok_or(Error::Servo(ResultCode::Limit))?;
@@ -515,6 +516,7 @@ async fn burst<P: Pipe>(
             .into_iter()
             .map(|f| serde_bytes::ByteBuf::from(f.payload))
             .collect(),
+        frame_samples,
         complete: matches!(reply.outcome, Outcome::Complete),
         tick: reply.tick,
         statuses: reply.statuses,

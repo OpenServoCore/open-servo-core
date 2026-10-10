@@ -153,6 +153,9 @@ pub struct Identity {
     pub fw: u16,
     pub hw: u8,
     pub capabilities: u32,
+    /// Samples a full TEL frame carries; absent on firmware that predates
+    /// the register.
+    pub tel_frame_samples: Option<u8>,
 }
 
 impl From<osc_client::common::Identity> for Identity {
@@ -162,6 +165,7 @@ impl From<osc_client::common::Identity> for Identity {
             fw: i.fw,
             hw: i.hw,
             capabilities: i.capabilities,
+            tel_frame_samples: i.tel_frame_samples,
         }
     }
 }
@@ -291,13 +295,16 @@ impl From<osc_client::pos_lut::PosLut> for PosLut {
 
 /// One collected TEL burst (protocol sec 5.6): the CRC-clean stream frame
 /// payloads in arrival order (byte 0 is the stream_seq; a dropped frame
-/// is a seq hole plus `garble`), `complete` false when the window expired
-/// before the LAST-flagged frame.
+/// is a seq hole of `frameSamples` ticks plus `garble`), `complete` false
+/// when the window expired before the LAST-flagged frame.
 #[derive(Debug, Clone, Serialize, Tsify)]
 #[serde(rename_all = "camelCase")]
 pub struct TelBurst {
     #[tsify(type = "Uint8Array[]")]
     pub frames: Vec<serde_bytes::ByteBuf>,
+    /// The servo's batch: samples per full frame, so frame k's sample i is
+    /// tick `k * frameSamples + i`.
+    pub frame_samples: u8,
     pub complete: bool,
     /// Engine tick at the terminal (`LinkInfo.ticksPerUs` converts).
     pub tick: u32,

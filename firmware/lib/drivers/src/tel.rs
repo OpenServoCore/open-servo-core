@@ -18,7 +18,7 @@ use core::sync::atomic::{Ordering, compiler_fence};
 
 use osc_protocol::frame::Header;
 use osc_servo_core::tel::{
-    STREAM_HDR, STREAM_PAYLOAD_MAX, STREAM_SAMPLES_MAX, TelSample, TelStream, encode_sample,
+    FRAME_SAMPLES, STREAM_HDR, STREAM_PAYLOAD_MAX, TelSample, TelStream, encode_sample,
     encode_stream_hdr,
 };
 
@@ -236,7 +236,7 @@ impl TelStream for TelFeed {
             self.at = encode_sample(self.mask, sample, buf, self.at);
             self.n += 1;
             self.remaining -= 1;
-            if self.n as usize == STREAM_SAMPLES_MAX || self.remaining == 0 {
+            if self.n as usize == FRAME_SAMPLES || self.remaining == 0 {
                 let last = self.remaining == 0;
                 encode_stream_hdr(self.seq, last, self.valid, buf);
                 (&raw mut (*slot).meta).write_volatile(BufMeta {
@@ -404,7 +404,7 @@ mod tests {
             feed.on_tick(s);
         }
 
-        let k = STREAM_SAMPLES_MAX;
+        let k = FRAME_SAMPLES;
         let mut want = [0u8; STREAM_PAYLOAD_MAX];
         let n0 = encode_stream(MASK_SIX, 0, false, &samples[..k], &mut want);
         let m0 = drain.ready(0, epoch).expect("first batch ready");
@@ -422,7 +422,7 @@ mod tests {
     fn stalled_consumer_drops_and_counts() {
         let ch = leaked();
         let (mut feed, mut drain) = ch.split();
-        let k = STREAM_SAMPLES_MAX as u16;
+        let k = FRAME_SAMPLES as u16;
         let epoch = arm(&mut drain, MASK_SIX, 200);
         for i in 0..3 * k + 5 {
             feed.on_tick(&sample(i));
@@ -444,7 +444,7 @@ mod tests {
     #[test]
     fn rearm_discards_the_old_epoch() {
         let (mut feed, mut drain) = channel();
-        let k = STREAM_SAMPLES_MAX as u16;
+        let k = FRAME_SAMPLES as u16;
         let e1 = arm(&mut drain, MASK_SIX, k);
         for i in 0..k {
             feed.on_tick(&sample(i));

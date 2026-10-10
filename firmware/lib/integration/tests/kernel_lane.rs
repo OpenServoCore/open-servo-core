@@ -10,9 +10,10 @@ use osc_integration::sim::{
     instruction, status,
 };
 use osc_protocol::build;
-use osc_protocol::wire::{Id, Inst, Opcode, ResultCode, STREAM_SAMPLES_MAX};
+use osc_protocol::wire::{Id, Inst, Opcode, ResultCode};
 use osc_servo_core::BaudRate;
 use osc_servo_core::regions::control::addr::lifecycle::{GOAL_VELOCITY, TEL_COUNT, TEL_MASK};
+use osc_servo_core::tel::FRAME_SAMPLES;
 use rstest::rstest;
 
 const ID: u8 = 1;
@@ -204,7 +205,7 @@ fn tel_six_fields_fit_at_rest_with_the_kernel_on_top() {
     let mut sim = Sim::new(BaudRate::B3000000);
     let s = sim.add_servo(ID);
     sim.set_handler_cost(s, READ32_3M_COST);
-    let rows = TEL_FRAMES * STREAM_SAMPLES_MAX as u16;
+    let rows = TEL_FRAMES * FRAME_SAMPLES as u16;
     let lane = KernelLane {
         level: KernelLevel::AboveBus,
         phases: &KERNEL_QUIET,
@@ -283,7 +284,7 @@ fn tel_six_fields_keep_up_while_stepping(
 ) {
     let (stream, drops, st) = step_burst(STEP_ROWS, extra_us, seed);
     assert_eq!(drops, 0, "rows dropped: {st:?}");
-    let frames = (STEP_ROWS as usize).div_ceil(STREAM_SAMPLES_MAX);
+    let frames = (STEP_ROWS as usize).div_ceil(FRAME_SAMPLES);
     assert_eq!(stream.len(), frames);
     assert!(stream.iter().all(frame_crc_ok));
     for (k, f) in stream.iter().enumerate() {

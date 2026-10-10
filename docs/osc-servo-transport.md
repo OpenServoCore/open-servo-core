@@ -343,7 +343,8 @@ be staged behind the CRC verdict:
   bank-to-wire latency (the CRC's ~50 us, then a poll) and runs of
   kernel overruns; it cannot cover a sustained deficit, and two buffers
   lose rows at every batch size up to the payload cap. Eleven-row
-  frames (550 us) are the smallest that keep up in three. Cross-context
+  frames (550 us; `tel::FRAME_SAMPLES`, published RO at
+  `tel_frame_samples`) are the smallest that keep up in three. Cross-context
   traffic is three flags and an arm mailbox, single-writer volatile
   discipline, no atomics. Any RX break aborts the burst with the
   speculation-kill trio (disarm, tx.abort, chain reset); buffers

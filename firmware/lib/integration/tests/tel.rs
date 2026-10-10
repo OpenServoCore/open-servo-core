@@ -21,11 +21,11 @@ use osc_integration::sim::{
     Sim, Source, TelSample, WireFrame, assert_valid, expect_tel_payload, expect_tel_payload_rows,
     frame_crc_ok, instruction, status, tel_sample,
 };
-use osc_protocol::wire::{Inst, Opcode, RESCUE_PULSE_MIN_US, ResultCode, STREAM_SAMPLES_MAX};
+use osc_protocol::wire::{Inst, Opcode, RESCUE_PULSE_MIN_US, ResultCode};
 use osc_servo_core::BaudRate;
 use osc_servo_core::regions::control::addr::lifecycle::{GOAL_DUTY, TEL_COUNT, TEL_MASK};
 use osc_servo_core::regions::telemetry::addr::sensors::POS;
-use osc_servo_core::tel::{BIT_POS, BIT_POS_LIN, FLAG_LAST};
+use osc_servo_core::tel::{BIT_POS, BIT_POS_LIN, FLAG_LAST, FRAME_SAMPLES};
 
 mod support;
 
@@ -36,7 +36,7 @@ const MASK: u16 = 0x1B;
 /// Sim ticks per TEL fast tick (50 us at 48 ticks/us).
 const TICK: u64 = 50 * 48;
 /// Rows per full frame.
-const K: u16 = STREAM_SAMPLES_MAX as u16;
+const K: u16 = FRAME_SAMPLES as u16;
 /// Two full frames and a short LAST one.
 const THREE_FRAMES: u16 = 2 * K + 8;
 

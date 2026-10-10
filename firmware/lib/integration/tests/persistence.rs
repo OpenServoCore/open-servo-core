@@ -239,7 +239,7 @@ fn save_seals_reserved_bytes_as_zero_and_keeps_the_fields(baud_idx: u8) {
         let mut sim = sim(baud_idx);
         sim.add_servo_with_store(ID5, store);
         sim.servo_table_mut(0, |t| {
-            t.config.common._rsvd_identity = [JUNK; 7];
+            t.config.common._rsvd_identity = [JUNK; 6];
             t.config.common._rsvd_tail = [JUNK; 12];
         });
         let anchor = R0_Q12 + 2;

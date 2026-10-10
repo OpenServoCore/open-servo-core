@@ -44,9 +44,15 @@ pub const SAMPLE_LEN_MAX: usize = 2 * FIELDS_MAX as usize;
 /// Payload flags bit 0: last frame of the burst; the line frees after it.
 pub const FLAG_LAST: u8 = 1 << 0;
 
-/// Fixed batch size: one frame carries up to 11 fast-tick samples (the
-/// burst's last frame may carry fewer).
-pub const STREAM_SAMPLES_MAX: usize = wire::STREAM_SAMPLES_MAX;
+/// The servo's TEL batch: one frame carries this many fast-tick samples
+/// (the burst's last frame may carry fewer). Any batch
+/// `wire::stream_batch_fits` accepts builds; hosts read it from the
+/// identity block (`tel_frame_samples`), so a change needs no host build.
+/// Eleven is the smallest whose six-field frames keep up with a stepping
+/// motor in three frame buffers (DES `tel_six_fields_keep_up_while_stepping`).
+pub const FRAME_SAMPLES: usize = 11;
+
+const _: () = assert!(wire::stream_batch_fits(FRAME_SAMPLES));
 
 pub const STREAM_HDR: usize = wire::STREAM_HDR;
 
@@ -54,7 +60,7 @@ pub const fn sample_len(mask: u16) -> usize {
     2 * (mask & MASK_ALL).count_ones() as usize
 }
 
-pub const STREAM_PAYLOAD_MAX: usize = STREAM_HDR + STREAM_SAMPLES_MAX * SAMPLE_LEN_MAX;
+pub const STREAM_PAYLOAD_MAX: usize = STREAM_HDR + FRAME_SAMPLES * SAMPLE_LEN_MAX;
 
 /// Reserved bits and over-budget field counts are invalid; mask 0 is valid
 /// (stream disarmed).
@@ -142,7 +148,7 @@ pub fn encode_sample(
     if sample_len(m) > SAMPLE_LEN_MAX {
         return at;
     }
-    let cap = sample_offset(m, STREAM_SAMPLES_MAX - 1);
+    let cap = sample_offset(m, FRAME_SAMPLES - 1);
     debug_assert!(at <= cap);
     let mut n = if at > cap { cap } else { at };
     let mut put = |bit: u16, le: [u8; 2]| {
@@ -168,7 +174,7 @@ pub fn encode_sample(
 }
 
 /// Serialize one stream payload into `buf`, returning its length. `samples`
-/// beyond [`STREAM_SAMPLES_MAX`] truncate (caller contract, debug-asserted).
+/// beyond [`FRAME_SAMPLES`] truncate (caller contract, debug-asserted).
 /// Built on the same appenders the driver-side incremental encoder uses, so
 /// the two paths cannot diverge.
 pub fn encode_stream(
@@ -178,9 +184,9 @@ pub fn encode_stream(
     samples: &[TelSample],
     buf: &mut [u8; STREAM_PAYLOAD_MAX],
 ) -> usize {
-    debug_assert!(samples.len() <= STREAM_SAMPLES_MAX);
-    let count = if samples.len() > STREAM_SAMPLES_MAX {
-        STREAM_SAMPLES_MAX
+    debug_assert!(samples.len() <= FRAME_SAMPLES);
+    let count = if samples.len() > FRAME_SAMPLES {
+        FRAME_SAMPLES
     } else {
         samples.len()
     };
@@ -248,23 +254,14 @@ mod tests {
         assert!(!mask_valid(MASK_ALL));
     }
 
-    /// Frame wire time must not outrun the batch it carries: the largest
-    /// frame the buffers hold is the protocol's budget frame, which fits 16
-    /// fast ticks at 3 Mbaud with >= 5% margin.
+    /// The buffers hold exactly the protocol's frame of the full field
+    /// budget at the servo's batch.
     #[test]
-    fn largest_frame_fits_its_batch_window() {
-        use wire::{STREAM_BUDGET_BAUD, STREAM_BUDGET_TICK_HZ, STREAM_FRAME_OVERHEAD};
+    fn largest_frame_is_the_budget_frame() {
         assert_eq!(
-            STREAM_PAYLOAD_MAX + STREAM_FRAME_OVERHEAD,
-            wire::stream_frame_bytes(FIELDS_MAX as usize)
+            STREAM_PAYLOAD_MAX + wire::STREAM_FRAME_OVERHEAD,
+            wire::stream_frame_bytes(FIELDS_MAX as usize, FRAME_SAMPLES)
         );
-        const {
-            assert!(wire::stream_fits(
-                FIELDS_MAX as usize,
-                STREAM_BUDGET_BAUD,
-                STREAM_BUDGET_TICK_HZ
-            ))
-        }
     }
 
     fn sample(i: usize) -> TelSample {
