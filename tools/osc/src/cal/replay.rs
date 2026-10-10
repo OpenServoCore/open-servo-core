@@ -6,8 +6,8 @@
 //! iterated offline. It NEVER connects to the servo (no baud/id).
 //!
 //! Two corruption modes are distinguished: dropped frames (CRC-failed on
-//! the bus; the values that survive are clean, tick continuity has 16-tick
-//! holes) versus value-domain bit-errors (pos out of the 12-bit range, or a
+//! the bus; the values that survive are clean, tick continuity has
+//! frame-long holes) versus value-domain bit-errors (pos out of the 12-bit range, or a
 //! within-range pos jump no motor could make in one sample - old side-
 //! channel captures replayed through the CSV can still carry these).
 
@@ -130,7 +130,7 @@ pub fn run(args: &Args) -> Result<()> {
     let verdict = if cls.out_of_range > 0 || cls.implausible_jumps > 0 {
         "looks like value-domain bit-errors (an old side-channel capture?)"
     } else if significant_holes {
-        "looks like dropped frames (values clean, whole 16-sample frames lost)"
+        "looks like dropped frames (values clean, whole frames lost)"
     } else {
         "capture looks clean"
     };
@@ -220,13 +220,13 @@ mod tests {
             frame(2, 5000),  // out-of-range (bit corruption)
             frame(3, 1020),  // 2->3 consecutive but tick 2 out-of-range -> not a jump
             frame(4, 1900),  // 1020->1900 = 880, within-range implausible jump
-            frame(21, 1905), // 16-tick hole (a dropped frame) -> not consecutive
+            frame(16, 1905), // 11-tick hole (a dropped frame) -> not consecutive
         ];
         let c = classify(&frames);
         assert_eq!(c.out_of_range, 1);
         assert_eq!(c.implausible_jumps, 1);
         assert_eq!(c.max_consec_delta, 880);
-        assert_eq!(c.tick_holes, 16);
+        assert_eq!(c.tick_holes, 11);
     }
 
     #[test]

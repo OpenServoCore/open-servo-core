@@ -132,8 +132,8 @@ pub fn on_adc_dma_tc() {
         }
     }
 
-    // TEL burst (protocol sec 5.6): a six-field frame drains in ~675 us of
-    // the 800 us its successor takes to fill, so a banked batch must get
+    // TEL burst (protocol sec 5.6): a six-field frame drains in ~475 us of
+    // the 550 us its successor takes to fill, so a banked batch must get
     // its CRC and leave within a few ticks; the main loop, starved by a
     // driving tick, ran up to 300 us late and the kernel dropped rows.
     // Last on purpose: this is transport work, run by the SW vector at the

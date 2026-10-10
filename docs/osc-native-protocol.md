@@ -628,16 +628,17 @@ drives: torque off, a fault, a brake, an OpenLoop zero goal), 2 `current_trough`
 `vbus_raw`, 10 `ntc_raw`, 11 `pos_lin` (the linearized pot the kernel
 controls on, the Q4 word itself, sec 5.7); bits 12-15 are reserved and
 reject. A sample carries at most 6 fields (12 B): a mask selecting more
-rejects at write time, since a 16-sample batch of it could not clear the
+rejects at write time, since a full batch of it could not clear the
 wire inside its own tick window at 3 M.
 
-Samples batch up to 16 per frame (the burst's final frame may carry
+Samples batch up to 11 per frame (the burst's final frame may carry
 fewer); the count is implicit in `LEN`. Batching is what makes the CRC
-affordable: framing overhead amortizes to well under one byte per
-sample, and the largest legal frame (six fields, 16 samples, 203 wire
-bytes) fits its own 16-tick batch window at 3 M with margin - a full
+affordable: framing overhead amortizes to under one byte per sample,
+and the largest legal frame (six fields, 11 samples, 143 wire bytes)
+fits its own 11-tick batch window (550 us) at 3 M with margin - a full
 six-field set sustains the tick rate, which the old per-tick side
-channel could not.
+channel could not. Eleven is the smallest batch whose six-field frames
+keep up with a driving motor in the servo's three frame buffers.
 
 The wire contract during a burst: the host is silent. The servo owns
 the line from the arm's ack (or the arming COMMIT's silence) through
@@ -650,10 +651,10 @@ arrived is then served normally, including a fresh re-arm.
 Integrity is the point: a corrupted burst frame fails CRC and is
 dropped whole by the host framer - it can never decode as plausible
 data - and the drop is visible as a hole in the `stream_seq` numbering
-(16 samples per missing frame). ALERT on a burst frame carries the OR
+(11 samples per missing frame). ALERT on a burst frame carries the OR
 of the batch's fault state, per the sec 5.3 device-level contract.
 
-Timing: a batch completes every 16 control ticks, and the frames must
+Timing: a batch completes every 11 control ticks, and the frames must
 leave the wire at that rate on average. The servo holds three batches,
 so a frame may lag its batch by up to about two batch windows; past
 that the producer drops rows until a buffer frees (drop-not-block).

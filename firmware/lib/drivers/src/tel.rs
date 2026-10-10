@@ -404,13 +404,14 @@ mod tests {
             feed.on_tick(s);
         }
 
+        let k = STREAM_SAMPLES_MAX;
         let mut want = [0u8; STREAM_PAYLOAD_MAX];
-        let n0 = encode_stream(MASK_SIX, 0, false, &samples[..16], &mut want);
+        let n0 = encode_stream(MASK_SIX, 0, false, &samples[..k], &mut want);
         let m0 = drain.ready(0, epoch).expect("first batch ready");
         assert_eq!((m0.len as usize, m0.last), (n0, false));
         assert_eq!(payload(&mut drain, 0)[..n0], want[..n0]);
 
-        let n1 = encode_stream(MASK_SIX, 1, true, &samples[16..], &mut want);
+        let n1 = encode_stream(MASK_SIX, 1, true, &samples[k..], &mut want);
         let m1 = drain.ready(1, epoch).expect("last batch ready");
         assert_eq!((m1.len as usize, m1.last), (n1, true));
         assert_eq!(payload(&mut drain, 1)[..n1], want[..n1]);
@@ -421,8 +422,9 @@ mod tests {
     fn stalled_consumer_drops_and_counts() {
         let ch = leaked();
         let (mut feed, mut drain) = ch.split();
+        let k = STREAM_SAMPLES_MAX as u16;
         let epoch = arm(&mut drain, MASK_SIX, 200);
-        for i in 0..53 {
+        for i in 0..3 * k + 5 {
             feed.on_tick(&sample(i));
         }
         // all three buffers ready, 5 samples dropped against them
@@ -430,7 +432,7 @@ mod tests {
         // release the oldest: production resumes into it, in ring order
         assert!(drain.ready(0, epoch).is_some());
         drain.release(0);
-        for i in 0..16 {
+        for i in 0..k {
             feed.on_tick(&sample(100 + i));
         }
         assert_eq!(ch.drops(), 5);
@@ -442,8 +444,9 @@ mod tests {
     #[test]
     fn rearm_discards_the_old_epoch() {
         let (mut feed, mut drain) = channel();
-        let e1 = arm(&mut drain, MASK_SIX, 16);
-        for i in 0..16 {
+        let k = STREAM_SAMPLES_MAX as u16;
+        let e1 = arm(&mut drain, MASK_SIX, k);
+        for i in 0..k {
             feed.on_tick(&sample(i));
         }
         assert!(drain.ready(0, e1).is_some());

@@ -34,7 +34,7 @@ pub const BIT_NTC_RAW: u16 = 1 << 10;
 pub const BIT_POS_LIN: u16 = 1 << 11;
 pub const MASK_ALL: u16 = 0xFFF;
 
-/// Wire budget (`osc_protocol::wire::stream_fits`): a 16-sample batch must
+/// Wire budget (`osc_protocol::wire::stream_fits`): a full batch must
 /// fit its own tick window at 3 Mbaud, which caps a sample at 6 fields (12
 /// bytes). `tel_mask`'s table rule and [`mask_valid`] both enforce it;
 /// buffers are sized to it.
@@ -44,7 +44,7 @@ pub const SAMPLE_LEN_MAX: usize = 2 * FIELDS_MAX as usize;
 /// Payload flags bit 0: last frame of the burst; the line frees after it.
 pub const FLAG_LAST: u8 = 1 << 0;
 
-/// Fixed batch size: one frame carries up to 16 fast-tick samples (the
+/// Fixed batch size: one frame carries up to 11 fast-tick samples (the
 /// burst's last frame may carry fewer).
 pub const STREAM_SAMPLES_MAX: usize = wire::STREAM_SAMPLES_MAX;
 
@@ -215,7 +215,7 @@ mod tests {
         assert_eq!(sample_len(MASK_SIX), 12);
         assert_eq!(sample_len(MASK_RAW), 12);
         assert_eq!(sample_len(MASK_ALL), 24);
-        assert_eq!(STREAM_PAYLOAD_MAX, STREAM_HDR + 16 * SAMPLE_LEN_MAX);
+        assert_eq!(STREAM_PAYLOAD_MAX, STREAM_HDR + 11 * SAMPLE_LEN_MAX);
     }
 
     /// The host detects the burst end through osc-protocol's mirror of the
@@ -330,12 +330,12 @@ mod tests {
 
     #[test]
     fn encode_golden_six_field_mask_full_batch() {
-        let samples: heapless::Vec<TelSample, 16> = (0..16).map(sample).collect();
+        let samples: heapless::Vec<TelSample, 16> = (0..11).map(sample).collect();
         let mut buf = [0u8; STREAM_PAYLOAD_MAX];
         let n = encode_stream(MASK_SIX, 0x42, false, &samples, &mut buf);
         assert_eq!(n, STREAM_PAYLOAD_MAX);
         // header: seq, flags (not LAST), valid = even sample indices
-        assert_eq!(buf[..4], [0x42, 0x00, 0x55, 0x55]);
+        assert_eq!(buf[..4], [0x42, 0x00, 0x55, 0x05]);
         // first sample, all six fields in bit order
         assert_eq!(
             buf[4..16],
@@ -343,11 +343,11 @@ mod tests {
                 0x00, 0x10, 0xFF, 0xFF, 0x00, 0xB0, 0x00, 0x20, 0xD4, 0xFE, 0x08, 0x07
             ]
         );
-        // last sample (i = 15)
+        // last sample (i = 10)
         assert_eq!(
-            buf[184..196],
+            buf[124..136],
             [
-                0x0F, 0x10, 0xF0, 0xFF, 0x0F, 0xB0, 0x0F, 0x20, 0xC5, 0xFE, 0x17, 0x07
+                0x0A, 0x10, 0xF5, 0xFF, 0x0A, 0xB0, 0x0A, 0x20, 0xCA, 0xFE, 0x12, 0x07
             ]
         );
     }
@@ -384,9 +384,9 @@ mod tests {
     #[test]
     fn incremental_encode_matches_encode_stream() {
         for (mask, count) in [
-            (MASK_SIX, 16),
-            (MASK_RAW, 16),
-            (0x1B, 16),
+            (MASK_SIX, 11),
+            (MASK_RAW, 11),
+            (0x1B, 11),
             (BIT_POS, 3),
             (MASK_SIX, 1),
         ] {

@@ -322,9 +322,11 @@ pub fn stream_last(inst: Inst, payload: FrameBytes<'_>) -> bool {
 
 /// sec 5.6 TEL frame: a `STREAM_HDR`-byte header, then up to
 /// `STREAM_SAMPLES_MAX` samples, one per control tick, each the
-/// `tel_mask`-selected fields of `STREAM_FIELD_LEN` bytes.
+/// `tel_mask`-selected fields of `STREAM_FIELD_LEN` bytes. Eleven rows is
+/// the batch whose six-field frames keep up with a stepping motor in the
+/// least servo RAM; 10 and 12 lose rows sooner as the kernel grows.
 pub const STREAM_HDR: usize = 4;
-pub const STREAM_SAMPLES_MAX: usize = 16;
+pub const STREAM_SAMPLES_MAX: usize = 11;
 pub const STREAM_FIELD_LEN: usize = 2;
 
 /// sec 5.6 wire budget: the most fields a sample carries, the largest count
@@ -525,20 +527,19 @@ mod tests {
         assert_eq!(covered_len(255), 256);
     }
 
-    /// sec 5.6: at 3 M a 20 kHz tick is 15 byte-times, 240 per 16-tick
-    /// batch. Six fields make a 203-byte frame, 85% of it; seven 235, 98%,
-    /// past the 95% a burst may take; eight outgrow the frame itself.
+    /// sec 5.6: at 3 M a 20 kHz tick is 15 byte-times, 165 per 11-tick
+    /// batch. Six fields make a 143-byte frame, 87% of it; seven 165, 100%,
+    /// past the 95% a burst may take.
     #[test]
     fn six_fields_are_the_tel_budget() {
         let (b, hz) = (STREAM_BUDGET_BAUD, STREAM_BUDGET_TICK_HZ);
         let max = STREAM_FIELDS_MAX as usize;
-        assert_eq!(stream_window_bytes(b, hz), 240);
-        assert_eq!(stream_frame_bytes(max), 203);
-        assert_eq!(stream_frame_bytes(max + 1), 235);
+        assert_eq!(stream_window_bytes(b, hz), 165);
+        assert_eq!(stream_frame_bytes(max), 143);
+        assert_eq!(stream_frame_bytes(max + 1), 165);
         assert!(stream_fits(max, b, hz));
         assert!(!stream_fits(max + 1, b, hz));
         assert!(STREAM_HDR + STREAM_SAMPLES_MAX * STREAM_FIELD_LEN * max <= MAX_PAYLOAD as usize);
-        assert!(STREAM_HDR + STREAM_SAMPLES_MAX * STREAM_FIELD_LEN * 8 > MAX_PAYLOAD as usize);
     }
 
     #[test]

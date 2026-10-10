@@ -59,7 +59,7 @@ pub struct ControlLifecycle {
     #[ct_field(le = &config::addr::limits::CURRENT_LIMIT_COUNTS, abs)]
     pub goal_current: i16,
     /// TEL burst arm: a committed nonzero write streams that many samples
-    /// (one per fast tick, batched 16 per `Stream` frame), then stops and
+    /// (one per fast tick, batched 11 per `Stream` frame), then stops and
     /// releases the line; 0 is disarmed. Composes with HOLD/COMMIT so a
     /// goal write and the arm apply in the same instant.
     #[ct_field(hook = on_tel_count_write)]

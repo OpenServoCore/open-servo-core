@@ -1470,10 +1470,10 @@ fn tel_burst_streams_two_frames_then_quiets() {
 
     write_u16(&mut bus, &h, &mut d, TEL_MASK, BIT_POS, 100, 1000);
     assert!(!feed.active(), "mask write alone never arms");
-    write_u16(&mut bus, &h, &mut d, TEL_COUNT, 20, 160, 20_000);
+    write_u16(&mut bus, &h, &mut d, TEL_COUNT, 15, 160, 20_000);
     assert!(feed.active(), "committed tel_count write arms the feed");
 
-    for i in 0..20u16 {
+    for i in 0..15u16 {
         feed.on_tick(&pos_sample(0x2000 + i));
     }
     let mark = h.wire.log().len();
@@ -1484,17 +1484,17 @@ fn tel_burst_streams_two_frames_then_quiets() {
     bus.poll_tel(); // burst done: inert
 
     let frames = tx_frames(&h.wire, mark);
-    assert_eq!(frames.len(), 2, "16-sample frame then 4-sample LAST frame");
+    assert_eq!(frames.len(), 2, "11-sample frame then 4-sample LAST frame");
     assert_eq!(arms_per_frame(&h.wire, mark), [1, 1], "one arm per frame");
 
     let f1 = &frames[0];
     assert_eq!(f1[0], ID);
     assert_eq!(f1[2], 0xA4, "INST = status | Stream, no ALERT");
     assert_eq!(f1[2], Inst::status(ResultCode::Stream, false).0);
-    assert_eq!(f1[1], wire::len_for(4 + 16 * 2));
+    assert_eq!(f1[1], wire::len_for(4 + 11 * 2));
     assert_eq!(
         f1[3..7],
-        [0x00, 0x00, 0xFF, 0xFF],
+        [0x00, 0x00, 0xFF, 0x07],
         "seq 0, not LAST, all valid"
     );
     assert_eq!(f1[7..9], [0x00, 0x20], "first sample pos");
@@ -1507,9 +1507,9 @@ fn tel_burst_streams_two_frames_then_quiets() {
     assert_eq!(
         f2[3..15],
         [
-            0x01, FLAG_LAST, 0x0F, 0x00, 0x10, 0x20, 0x11, 0x20, 0x12, 0x20, 0x13, 0x20
+            0x01, FLAG_LAST, 0x0F, 0x00, 0x0B, 0x20, 0x0C, 0x20, 0x0D, 0x20, 0x0E, 0x20
         ],
-        "seq 1, LAST, 4-sample bitmap, samples 16..20"
+        "seq 1, LAST, 4-sample bitmap, samples 11..15"
     );
     assert_frame_crc(f2);
 
@@ -1535,11 +1535,11 @@ fn tel_burst_alert_marks_only_the_faulted_batch() {
     let mut d = session.dispatcher(&shared);
 
     write_u16(&mut bus, &h, &mut d, TEL_MASK, BIT_POS, 100, 1000);
-    write_u16(&mut bus, &h, &mut d, TEL_COUNT, 32, 160, 20_000);
+    write_u16(&mut bus, &h, &mut d, TEL_COUNT, 22, 160, 20_000);
 
-    for i in 0..32u16 {
+    for i in 0..22u16 {
         let mut s = pos_sample(0x3000 + i);
-        s.fault = i == 20; // second batch only
+        s.fault = i == 15; // second batch only
         feed.on_tick(&s);
     }
     let mark = h.wire.log().len();

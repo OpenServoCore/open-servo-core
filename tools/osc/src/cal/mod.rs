@@ -155,8 +155,8 @@ pub fn run(args: &Args, baud: String, id: u8) -> Result<()> {
         ..
     } = r;
 
-    // The traverse's bursts can still fragment on dropped frames (16-tick
-    // holes), so the anchor stitches ALL chunks (build_sweep_chunks) over
+    // The traverse's bursts can still fragment on dropped frames (frame-long
+    // tick holes), so the anchor stitches ALL chunks (build_sweep_chunks) over
     // the shared pos axis; the single longest run (build_sweep) is kept only
     // for the slip health-check and the moving-run print.
     let sweep = build_sweep(&tel);
@@ -417,7 +417,7 @@ fn trim_edge_dwell(run: &[(u64, u16, f64)]) -> &[(u64, u16, f64)] {
 /// stitch (lut::build_multi) reassembles them over the shared pos axis.
 pub(super) fn build_sweep_chunks(tel: &[TelFrame]) -> Vec<(Vec<u16>, Vec<f64>)> {
     // Same filter as build_sweep: a dropped (corrupt/absent) frame removes
-    // its tick, so the run splits there just as a 16-tick hole would.
+    // its tick, so the run splits there just as a frame-long hole would.
     let s: Vec<(u64, u16, f64)> = tel
         .iter()
         .filter_map(|f| {
@@ -1159,7 +1159,7 @@ mod tests {
         // pos need not be monotonic (slip is fine - current carries ripple).
         let mut s = ticked(&(0..30).map(|k| 1000 + (k % 3) * 10).collect::<Vec<_>>());
         for e in s.iter_mut().skip(20) {
-            e.0 += 16; // a dropped frame's 16-tick hole at 20
+            e.0 += 11; // a dropped frame's 11-tick hole at 20
         }
         assert_eq!(longest_contiguous_run(&s), Some((0, 20)));
     }

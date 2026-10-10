@@ -503,12 +503,12 @@ mod tests {
         assert_eq!(
             err(0x3db),
             "tel_mask 0x3db selects 8 fields; a TEL sample carries at most 6 (protocol sec \
-             5.6). One sample streams per control tick, so a frame of 16 samples of 8 fields \
-             is 267 wire bytes against the 240 byte-times 16 ticks leave at 3 Mbaud and 20 \
-             kHz (111%), where a frame may take 95%; 6 fields are 203 (85%). Stream the \
+             5.6). One sample streams per control tick, so a frame of 11 samples of 8 fields \
+             is 187 wire bytes against the 165 byte-times 11 ticks leave at 3 Mbaud and 20 \
+             kHz (113%), where a frame may take 95%; 6 fields are 143 (87%). Stream the \
              fields over two bursts."
         );
-        assert!(err(0x7f).contains("selects 7 fields") && err(0x7f).contains("235 wire bytes"));
+        assert!(err(0x7f).contains("selects 7 fields") && err(0x7f).contains("165 wire bytes"));
         assert_eq!(
             err(0x1001),
             "tel_mask 0x1001 sets reserved bits 0x1000: the fields are bits 0..11"

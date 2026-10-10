@@ -23,7 +23,7 @@ use osc_client::{
 use osc_integration::sim::{Source, expect_tel_payload, status};
 use osc_protocol::models::MODEL_OSC_SERVO;
 use osc_protocol::table;
-use osc_protocol::wire::UID_LEN;
+use osc_protocol::wire::{STREAM_SAMPLES_MAX, UID_LEN};
 use osc_servo_core::estimator::thermal::{UNSET_CC, flag};
 use osc_servo_core::regions::config::addr::limits::CURRENT_LIMIT_COUNTS;
 use osc_servo_core::regions::telemetry::addr::estimates::{I_LIM_COUNTS, T_WINDING_CC};
@@ -1158,6 +1158,10 @@ const TEL_COUNT: u16 = 402;
 /// pos + current + duty + vdiff -- the ident ladder's mask.
 const TEL_LADDER_MASK: u16 = 0x1B;
 const BURST_WINDOW: Duration = Duration::from_millis(50);
+/// Rows per full TEL frame.
+const K: u16 = STREAM_SAMPLES_MAX as u16;
+/// Two full frames and a short LAST one.
+const THREE_FRAMES: u16 = 2 * K + 8;
 
 /// TEL runs at 3M: at lower rates the producer outruns the wire and drops
 /// samples by design (see the DES tel suite).
@@ -1183,16 +1187,16 @@ fn arm_tel(c: &mut Client<FakePipe>, count: u16) -> StreamReply {
 fn tel_stream_collects_ack_frames_and_last() {
     let mut c = tel_fleet();
     write_mask(&mut c);
-    let reply = arm_tel(&mut c, 40);
+    let reply = arm_tel(&mut c, THREE_FRAMES);
     assert_eq!(reply.outcome, Outcome::Complete);
     let ack = reply.ack.expect("acked WRITE arm");
     assert_eq!(ack.result, Some(ResultCode::Ok));
-    assert_eq!(reply.frames.len(), 3, "40 samples = 16 + 16 + 8");
+    assert_eq!(reply.frames.len(), 3, "K + K + 8 samples");
     for (i, f) in reply.frames.iter().enumerate() {
         assert_eq!(f.result, Some(ResultCode::Stream));
         assert_eq!(
             f.payload,
-            expect_tel_payload(TEL_LADDER_MASK, 40, i),
+            expect_tel_payload(TEL_LADDER_MASK, THREE_FRAMES as u32, i),
             "frame {i} payload"
         );
     }
@@ -1213,7 +1217,8 @@ fn reopen_mid_burst_orphans_it_and_the_next_session_starts_clean() {
 
     // A host arms a burst and vanishes before reading a record.
     let mut p = [0u8; 8];
-    let n = osc_protocol::build::write(&mut p, TEL_COUNT, &40u16.to_le_bytes()).expect("payload");
+    let n = osc_protocol::build::write(&mut p, TEL_COUNT, &THREE_FRAMES.to_le_bytes())
+        .expect("payload");
     let arm = EngineCommand::ExchangeStream {
         id: Id::new(5),
         inst: Inst::instruction(Opcode::Write, 0),
@@ -1256,7 +1261,7 @@ fn reopen_mid_burst_orphans_it_and_the_next_session_starts_clean() {
         .filter(|f| matches!(f.from, Source::Servo(_)))
         .filter(|f| status(f).0.result() == Some(ResultCode::Stream))
         .count();
-    assert_eq!(burst, 3, "40 samples = 16 + 16 + 8");
+    assert_eq!(burst, 3, "K + K + 8 samples");
     assert!(pipe.sim_mut().link_recv().is_empty());
 
     let mut c = Client::connect(pipe).expect("connect");
@@ -1268,7 +1273,7 @@ fn tel_stream_hold_commit_broadcast_carrier() {
     let mut c = tel_fleet();
     c.write_hold(Id::new(5), TEL_MASK, &TEL_LADDER_MASK.to_le_bytes())
         .expect("hold mask");
-    c.write_hold(Id::new(5), TEL_COUNT, &24u16.to_le_bytes())
+    c.write_hold(Id::new(5), TEL_COUNT, &(K + 8).to_le_bytes())
         .expect("hold count");
     let inst = Inst::instruction(Opcode::Commit, 0);
     let reply = c
@@ -1276,11 +1281,11 @@ fn tel_stream_hold_commit_broadcast_carrier() {
         .expect("commit stream");
     assert_eq!(reply.outcome, Outcome::Complete);
     assert!(reply.ack.is_none(), "broadcast COMMIT owes no ack");
-    assert_eq!(reply.frames.len(), 2, "24 samples = 16 + 8");
+    assert_eq!(reply.frames.len(), 2, "K + 8 samples");
     for (i, f) in reply.frames.iter().enumerate() {
         assert_eq!(
             f.payload,
-            expect_tel_payload(TEL_LADDER_MASK, 24, i),
+            expect_tel_payload(TEL_LADDER_MASK, (K + 8) as u32, i),
             "frame {i} payload"
         );
     }
@@ -1290,9 +1295,11 @@ fn tel_stream_hold_commit_broadcast_carrier() {
 #[test]
 fn tel_stream_alert_marks_the_faulted_batch() {
     let mut c = tel_fleet();
-    c.pipe_mut().sim_mut().set_tel_fault_ticks(0, 16, 32);
+    c.pipe_mut()
+        .sim_mut()
+        .set_tel_fault_ticks(0, K as u32, 2 * K as u32);
     write_mask(&mut c);
-    let reply = arm_tel(&mut c, 48);
+    let reply = arm_tel(&mut c, 3 * K);
     assert_eq!(reply.outcome, Outcome::Complete);
     assert!(!reply.ack.expect("ack").alert);
     let alerts: Vec<bool> = reply.frames.iter().map(|f| f.alert).collect();
@@ -1307,7 +1314,7 @@ fn tel_stream_drops_a_corrupt_frame_as_garble() {
         let mut c = tel_fleet();
         write_mask(&mut c);
         c.pipe_mut().take_frames();
-        let reply = arm_tel(&mut c, 48);
+        let reply = arm_tel(&mut c, 3 * K);
         assert_eq!(reply.frames.len(), 3);
         let tpu = c.info().ticks_per_us as u64;
         let frames = c.pipe_mut().take_frames();
@@ -1325,7 +1332,7 @@ fn tel_stream_drops_a_corrupt_frame_as_garble() {
     let mut c = tel_fleet();
     write_mask(&mut c);
     c.pipe_mut().sim_mut().inject_garble_at(garble_at_us, 0xA5);
-    let reply = arm_tel(&mut c, 48);
+    let reply = arm_tel(&mut c, 3 * K);
     assert_eq!(
         reply.outcome,
         Outcome::Complete,
@@ -1341,7 +1348,7 @@ fn tel_stream_drops_a_corrupt_frame_as_garble() {
     assert_eq!(reply.statuses, 3, "ack + two clean frames");
     assert_eq!(
         reply.frames[1].payload,
-        expect_tel_payload(TEL_LADDER_MASK, 48, 2)
+        expect_tel_payload(TEL_LADDER_MASK, 3 * K as u32, 2)
     );
 }
 

@@ -340,8 +340,10 @@ be staged behind the CRC verdict:
   `tel_six_fields_keep_up_while_stepping`): a two-arm frame staged from
   the SW vector waited on a kernel-starved bus level three times per
   frame and lost a fifth of its rows. The third buffer covers the
-  bank-to-wire latency (the CRC's ~72 us, then a poll) and runs of
-  kernel overruns; it cannot cover a sustained deficit. Cross-context
+  bank-to-wire latency (the CRC's ~50 us, then a poll) and runs of
+  kernel overruns; it cannot cover a sustained deficit, and two buffers
+  lose rows at every batch size up to the payload cap. Eleven-row
+  frames (550 us) are the smallest that keep up in three. Cross-context
   traffic is three flags and an arm mailbox, single-writer volatile
   discipline, no atomics. Any RX break aborts the burst with the
   speculation-kill trio (disarm, tx.abort, chain reset); buffers

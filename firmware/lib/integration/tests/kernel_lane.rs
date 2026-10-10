@@ -195,7 +195,7 @@ fn write_u16(addr: u16, v: u16) -> Vec<u8> {
     instruction(ID, Opcode::Write, 0, &[a[0], a[1], d[0], d[1]])
 }
 
-/// The six-field soak mask: a 202 B frame per 800 us batch at 3M.
+/// The six-field soak mask: a 142 B frame per 550 us batch at 3M.
 const SIX_FIELDS: u16 = 0x1cd;
 const TEL_FRAMES: u16 = 100;
 
@@ -270,12 +270,12 @@ fn kernel_step_lane_overruns_as_the_step_soak(#[values(1, 2, 3, 4)] seed: u64) {
     );
 }
 
-/// Six fields at 3M keep up while the motor steps: every frame leaves as
-/// one arm from its CRC'd buffer, chained from the previous frame's TC, so
-/// the wire waits only for that TC between frames, and the third buffer
-/// absorbs runs of kernel overruns. The two-arm stager staged from the SW
-/// vector loses 17-20% of the rows here (bench: 19.6%). Margin: zero lost
-/// with every body 2 us heavier still.
+/// Six fields at 3M keep up while the motor steps: every 11-row frame
+/// leaves as one arm from its CRC'd buffer, chained from the previous
+/// frame's TC, so the wire waits only for that TC between frames, and the
+/// third buffer absorbs runs of kernel overruns. The two-arm stager staged
+/// from the SW vector, at 16 rows, loses 17-20% of the rows here (bench:
+/// 19.6%). Margin: zero lost with every body 2 us heavier still.
 #[rstest]
 fn tel_six_fields_keep_up_while_stepping(
     #[values(1, 2, 3, 4)] seed: u64,
@@ -283,7 +283,7 @@ fn tel_six_fields_keep_up_while_stepping(
 ) {
     let (stream, drops, st) = step_burst(STEP_ROWS, extra_us, seed);
     assert_eq!(drops, 0, "rows dropped: {st:?}");
-    let frames = STEP_ROWS as usize / STREAM_SAMPLES_MAX;
+    let frames = (STEP_ROWS as usize).div_ceil(STREAM_SAMPLES_MAX);
     assert_eq!(stream.len(), frames);
     assert!(stream.iter().all(frame_crc_ok));
     for (k, f) in stream.iter().enumerate() {

@@ -114,7 +114,7 @@ impl SeqUnwrap {
 //   [0]    stream_seq  u8, increments per frame, wraps; restarts at 0 per arm
 //   [1]    flags       bit 0 = LAST frame of the burst
 //   [2..4] valid       u16 bitmap, bit i = sample i window_valid
-//   [4..]  up to 16 samples x the tel_mask-selected 2-byte fields in bit order
+//   [4..]  up to 11 samples x the tel_mask-selected 2-byte fields in bit order
 
 pub const TEL_BIT_POS: u16 = 1 << 0;
 pub const TEL_BIT_CURRENT: u16 = 1 << 1;
@@ -143,7 +143,7 @@ pub const TEL_MASK_RAW: u16 = TEL_BIT_POS
     | TEL_BIT_VMOTOR_B;
 
 pub const STREAM_HDR: usize = 4;
-pub const STREAM_SAMPLES_MAX: usize = 16;
+pub const STREAM_SAMPLES_MAX: usize = 11;
 pub const STREAM_FLAG_LAST: u8 = 1 << 0;
 
 pub const fn sample_len(mask: u16) -> usize {
@@ -151,9 +151,9 @@ pub const fn sample_len(mask: u16) -> usize {
 }
 
 /// One decoded TEL sample; unselected fields are None. `tick` is the
-/// absolute fast-tick index within one burst (unwrapped stream_seq x 16 +
-/// position in frame), so time = tick / tick_hz and a dropped frame shows
-/// as a 16-tick hole.
+/// absolute fast-tick index within one burst (unwrapped stream_seq x
+/// [`STREAM_SAMPLES_MAX`] + position in frame), so time = tick / tick_hz
+/// and a dropped frame shows as a [`STREAM_SAMPLES_MAX`]-tick hole.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct TelFrame {
     pub tick: u64,
@@ -195,7 +195,8 @@ pub struct TelBurst {
 
 /// Decode one stream payload into per-tick frames; sample i lands at
 /// `tick_base + i`. None when the payload cannot be a `mask` stream frame
-/// (short header, non-integral sample remainder, over 16 samples).
+/// (short header, non-integral sample remainder, over
+/// [`STREAM_SAMPLES_MAX`] samples).
 pub fn decode_stream_payload(mask: u16, payload: &[u8], tick_base: u64) -> Option<Vec<TelFrame>> {
     let slen = sample_len(mask);
     if payload.len() < STREAM_HDR {
@@ -242,9 +243,9 @@ pub fn decode_stream_payload(mask: u16, payload: &[u8], tick_base: u64) -> Optio
 }
 
 /// Assembles one burst's Stream statuses, in arrival order, into ticked
-/// frames: unwraps the u8 stream_seq (wraps every 256 frames = 4096
-/// samples) and spreads each frame's samples over its 16-tick slot, so a
-/// dropped or corrupt frame leaves a 16-tick hole rather than a time skew.
+/// frames: unwraps the u8 stream_seq (wraps every 256 frames) and spreads
+/// each frame's samples over its [`STREAM_SAMPLES_MAX`]-tick slot, so a
+/// dropped or corrupt frame leaves a slot-long hole rather than a time skew.
 /// Bursts restart stream_seq at 0, so one assembler serves one burst.
 pub struct StreamAssembler {
     mask: u16,
@@ -342,7 +343,7 @@ mod tests {
         let mut valid = 0u16;
         let mut p = vec![seq, if last { STREAM_FLAG_LAST } else { 0 }, 0, 0];
         for i in 0..count {
-            if i < 16 && i.is_multiple_of(2) {
+            if i < STREAM_SAMPLES_MAX as u16 && i.is_multiple_of(2) {
                 valid |= 1 << i;
             }
             p.extend(sample_bytes(mask, i));
@@ -354,9 +355,9 @@ mod tests {
     #[test]
     fn stream_golden_full_mask_full_batch() {
         // the exact bytes core's encode_golden_six_field_mask_full_batch pins
-        let p = stream_payload(0x3F, 0x42, false, 16);
-        assert_eq!(p.len(), STREAM_HDR + 16 * 12);
-        assert_eq!(p[..4], [0x42, 0x00, 0x55, 0x55]);
+        let p = stream_payload(0x3F, 0x42, false, 11);
+        assert_eq!(p.len(), STREAM_HDR + 11 * 12);
+        assert_eq!(p[..4], [0x42, 0x00, 0x55, 0x05]);
         assert_eq!(
             p[4..16],
             [
@@ -364,14 +365,14 @@ mod tests {
             ]
         );
         assert_eq!(
-            p[184..196],
+            p[124..136],
             [
-                0x0F, 0x10, 0xF0, 0xFF, 0x0F, 0xB0, 0x0F, 0x20, 0xC5, 0xFE, 0x17, 0x07
+                0x0A, 0x10, 0xF5, 0xFF, 0x0A, 0xB0, 0x0A, 0x20, 0xCA, 0xFE, 0x12, 0x07
             ]
         );
 
         let frames = decode_stream_payload(0x3F, &p, 320).expect("decodes");
-        assert_eq!(frames.len(), 16);
+        assert_eq!(frames.len(), 11);
         let f = frames[0];
         assert_eq!(f.tick, 320);
         assert!(f.window_valid);
@@ -381,11 +382,11 @@ mod tests {
         assert_eq!(f.duty_q15, Some(0x2000));
         assert_eq!(f.vdiff, Some(-300));
         assert_eq!(f.vbus, Some(1800));
-        let l = frames[15];
-        assert_eq!(l.tick, 335);
-        assert!(!l.window_valid);
-        assert_eq!(l.pos, Some(0x100F));
-        assert_eq!(l.vbus, Some(1815));
+        let l = frames[10];
+        assert_eq!(l.tick, 330);
+        assert!(l.window_valid);
+        assert_eq!(l.pos, Some(0x100A));
+        assert_eq!(l.vbus, Some(1810));
     }
 
     #[test]
@@ -417,8 +418,8 @@ mod tests {
         let mut p = stream_payload(0x1B, 0, false, 2);
         p.pop();
         assert!(decode_stream_payload(0x1B, &p, 0).is_none());
-        // over 16 samples cannot come from one frame
-        let p = stream_payload(TEL_BIT_POS, 0, false, 17);
+        // over STREAM_SAMPLES_MAX samples cannot come from one frame
+        let p = stream_payload(TEL_BIT_POS, 0, false, STREAM_SAMPLES_MAX as u16 + 1);
         assert!(decode_stream_payload(TEL_BIT_POS, &p, 0).is_none());
     }
 
@@ -433,23 +434,23 @@ mod tests {
         }
         assert_eq!(out.len(), 258);
         assert_eq!(out[0].tick, 0);
-        assert_eq!(out[255].tick, 255 * 16);
-        assert_eq!(out[257].tick, 257 * 16);
+        assert_eq!(out[255].tick, 255 * STREAM_SAMPLES_MAX as u64);
+        assert_eq!(out[257].tick, 257 * STREAM_SAMPLES_MAX as u64);
         assert_eq!(a.holes(), 0);
         assert_eq!(a.skipped(), 0);
     }
 
     #[test]
-    fn assembler_missing_frame_leaves_a_16_tick_hole() {
+    fn assembler_missing_frame_leaves_a_slot_long_hole() {
         let mut a = StreamAssembler::new(TEL_BIT_POS).unwrap();
         let mut out = Vec::new();
         for seq in [0u8, 1, 3] {
-            let p = stream_payload(TEL_BIT_POS, seq, seq == 3, 16);
+            let p = stream_payload(TEL_BIT_POS, seq, seq == 3, 11);
             a.push(true, &p, &mut out);
         }
-        assert_eq!(out.len(), 48);
-        assert_eq!(out[31].tick, 31);
-        assert_eq!(out[32].tick, 48, "frame 2 dropped: ticks jump 32 -> 48");
+        assert_eq!(out.len(), 33);
+        assert_eq!(out[21].tick, 21);
+        assert_eq!(out[22].tick, 33, "frame 2 dropped: ticks jump 22 -> 33");
         assert_eq!(a.holes(), 1);
     }
 
