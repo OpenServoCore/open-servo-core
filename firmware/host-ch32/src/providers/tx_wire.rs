@@ -1,5 +1,6 @@
-//! TX-wire provider -- HDSEL drive discipline, the law break, one DMA1_CH2
-//! arm at a time, and the rescue pulse. Arm completion surfaces as the
+//! TX-wire provider: the open-drain bus end (PB10 never leaves AF
+//! open-drain but for the rescue pulse), the law break, one DMA1_CH2 arm
+//! at a time. Arm completion surfaces as the
 //! USART3 TC ISR (shifter empty), never a CH2 flag, so release can never
 //! garble in-flight bits.
 //!
@@ -20,7 +21,6 @@ pub struct TxWire;
 impl traits::TxWire for TxWire {
     fn claim(&mut self) {
         usart::set_re(USART3, false);
-        pins::bus_drive(true);
     }
 
     fn send_break(&mut self) {
@@ -59,7 +59,7 @@ impl traits::TxWire for TxWire {
     }
 
     fn release(&mut self) {
-        pins::bus_release_from_hold();
+        pins::bus_attach();
         usart::set_tc_irq(USART3, false);
         dma::disable(dma::Channel::CH2);
         usart::set_re(USART3, true);

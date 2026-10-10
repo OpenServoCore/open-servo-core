@@ -35,7 +35,8 @@ pub trait Deadline {
 /// a `send` queued behind a break is legal, and blocking a character time
 /// inside the provider is acceptable.
 pub trait TxWire {
-    /// Claim the wire: push-pull drive (protocol sec 2 discipline).
+    /// Claim the wire for own TX. An echoing receiver is gated off here;
+    /// an open-drain bus end has no drive to switch.
     fn claim(&mut self);
     /// One law break: a 10-bit `0x00` character (protocol sec 3). Wire
     /// claimed. Never the off-law hardware SBK (~14 bits).
@@ -45,7 +46,7 @@ pub trait TxWire {
     /// Drive the line dominant and hold it (rescue pulse, protocol sec 9.1);
     /// ends at [`release`](Self::release). The engine times the pulse.
     fn hold_low(&mut self);
-    /// Release the wire: open-drain idle, TX off.
+    /// Release the wire: TX off, receiver back on, a held low ended.
     fn release(&mut self);
 }
 

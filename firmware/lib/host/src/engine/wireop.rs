@@ -223,7 +223,7 @@ impl<P: Providers> HostBus<P> {
         }
         if let Some((left, gap)) = self.wire.train.take() {
             // The wire stays claimed for the whole train (the engine's own
-            // CAL discipline: steady drive keeps the break edges crisp).
+            // CAL discipline).
             self.wire.phase = Phase::Train { left, gap };
             self.arm(self.deadline.now().wrapping_add(gap));
             return;

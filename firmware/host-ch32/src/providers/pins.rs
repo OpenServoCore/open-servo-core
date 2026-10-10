@@ -17,12 +17,12 @@
 //!   bond, one output max): PA8 stays an input.
 //! - PC7 = IAP button, input (board 10k pull-up); read-only for us, the
 //!   loader's own cold-boot sampler is the brick-recovery path.
-//! - PB10 = USART3 TX, the bus wire under HDSEL: input pull-up at rest,
-//!   so the internal ~40k is the adapter-side mark source (weak; a long
-//!   harness still wants the bench 10k). The USART receiver samples the
-//!   pad fine in input mode; every TX including the break happens inside
-//!   a claim, after bus_drive(true). PB11 stays input pull-up (the
-//!   header RX pin is unwired in the HDSEL rig).
+//! - PB10 = USART3 TX, the bus wire under HDSEL: AF open-drain from
+//!   bringup on, after the USART is enabled. AF modes have no internal
+//!   pull, so the bus pull-up at the adapter end (680 ohm on the bench
+//!   pigtail) is required: nothing here drives a rising edge. The rescue
+//!   pulse is a GPIO open-drain low. PB11 stays input pull-up (the header
+//!   RX pin, tied to DATA by the pigtail, unused by firmware).
 
 use ch32_metapac::{GPIOA, GPIOB, GPIOC};
 
@@ -40,7 +40,7 @@ impl Pins {
         gpio::set_level(GPIOB, 12, false);
         gpio::configure(GPIOB, 12, PinMode::OUTPUT_2MHZ);
 
-        gpio::set_level(GPIOB, 10, true); // pull-up select, doubles as mark for the claim modes
+        gpio::set_level(GPIOB, 10, true); // pull-up select until bus_attach
         gpio::configure(GPIOB, 10, PinMode::INPUT_PULL);
         gpio::set_level(GPIOB, 11, true); // pull-up select
         gpio::configure(GPIOB, 11, PinMode::INPUT_PULL);
@@ -68,31 +68,20 @@ pub fn rail_5v(on: bool) {
     gpio::set_level(GPIOB, 12, !on);
 }
 
-/// Bus wire drive for the TX claim window: push-pull drives both edges at
-/// 3M; rest hands the wire to the internal pull-up.
+/// The bus pin joins the USART for good: AF open-drain (RM sec 18.5), the
+/// pull-up at the bus root sets every rising edge. Call only after the
+/// USART is enabled: an AF pin follows the USART's TX output, which idles
+/// at mark only once UE and TE are set.
 #[inline]
-pub fn bus_drive(push_pull: bool) {
-    gpio::configure(
-        GPIOB,
-        BUS_PIN,
-        if push_pull {
-            PinMode::AF_PUSH_PULL_50MHZ
-        } else {
-            PinMode::INPUT_PULL
-        },
-    );
+pub fn bus_attach() {
+    gpio::set_level(GPIOB, BUS_PIN, true);
+    gpio::configure(GPIOB, BUS_PIN, PinMode::AF_OPEN_DRAIN_50MHZ);
 }
 
-/// Rescue pulse: the pin leaves the USART and drives dominant directly.
+/// Rescue pulse: the pin leaves the USART and sinks the line directly;
+/// [`bus_attach`] ends it.
 #[inline]
 pub fn bus_hold_low() {
     gpio::set_level(GPIOB, BUS_PIN, false);
-    gpio::configure(GPIOB, BUS_PIN, PinMode::OUTPUT_50MHZ);
-}
-
-/// End of the rescue pulse: ODR back to mark/pull-up select, pin to rest.
-#[inline]
-pub fn bus_release_from_hold() {
-    gpio::set_level(GPIOB, BUS_PIN, true);
-    gpio::configure(GPIOB, BUS_PIN, PinMode::INPUT_PULL);
+    gpio::configure(GPIOB, BUS_PIN, PinMode::OUTPUT_OD_50MHZ);
 }

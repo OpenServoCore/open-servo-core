@@ -314,7 +314,7 @@ impl<P: Providers> HostBus<P> {
         };
         if let Some((gap_us, gaps)) = plan.train {
             // The wire stays claimed for the whole train: broadcast CAL
-            // draws no reply, and steady drive keeps the break edges crisp.
+            // draws no reply.
             let gap = gap_us as u32 * P::Deadline::TICKS_PER_US;
             self.state = State::Training {
                 left: gaps + 1,
