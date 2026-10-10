@@ -40,6 +40,9 @@ pub struct Reply {
     pub garble: u16,
     /// Garble after the last clean frame (the sec 9.2 trailing-energy bit).
     pub trailing: bool,
+    /// Whole adapter RX rings lost unread (the PC stopped draining USB);
+    /// the garble and seq holes that follow are their wreckage.
+    pub laps: u16,
 }
 
 /// One collected TEL burst. `frames` are the CRC-clean `Stream` statuses in
@@ -60,6 +63,8 @@ pub struct StreamReply {
     pub statuses: u16,
     pub garble: u16,
     pub trailing: bool,
+    /// See [`Reply::laps`].
+    pub laps: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -195,6 +200,7 @@ impl<P: Pipe> Client<P> {
                     statuses: counted,
                     garble,
                     trailing,
+                    laps,
                 } if s == seq => {
                     return Ok((
                         statuses,
@@ -204,6 +210,7 @@ impl<P: Pipe> Client<P> {
                             statuses: counted,
                             garble,
                             trailing,
+                            laps,
                         },
                     ));
                 }
@@ -228,6 +235,7 @@ impl<P: Pipe> Client<P> {
             tick: t.tick,
             garble: t.garble,
             trailing: t.trailing,
+            laps: t.laps,
         })
     }
 
@@ -271,6 +279,7 @@ impl<P: Pipe> Client<P> {
             statuses: t.statuses,
             garble: t.garble,
             trailing: t.trailing,
+            laps: t.laps,
         })
     }
 
@@ -511,6 +520,7 @@ struct Closed {
     statuses: u16,
     garble: u16,
     trailing: bool,
+    laps: u16,
 }
 
 fn chain_digest(reply: Reply) -> Chain {

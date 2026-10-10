@@ -14,8 +14,10 @@ use osc_protocol::wire::BaudRate;
 /// power of two exceeding the largest legal frame (258) with polling margin.
 pub trait RxRing {
     fn bytes(&self) -> &[u8];
-    /// Index where the next received byte lands.
-    fn cursor(&self) -> u16;
+    /// Bytes ever received, wrapping; the low bits index where the next
+    /// one lands. A running count, so a consumer that falls a whole ring
+    /// behind sees a lap instead of an empty ring.
+    fn written(&self) -> u32;
 }
 
 /// One-shot compare on the host tick domain. The host is crystal-clocked --

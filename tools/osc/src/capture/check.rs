@@ -426,6 +426,7 @@ fn check_limit(rows: &Rows, m: &SweepMeta, d: &DriveMeta) -> Result<()> {
                 samples: s.rows,
                 holes: 0,
                 garble: 0,
+                laps: 0,
                 rows_dropped: 0,
             },
         })

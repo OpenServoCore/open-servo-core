@@ -27,6 +27,7 @@ struct RingBuf([u8; RING_LEN]);
 pub struct RingState {
     buf: UnsafeCell<RingBuf>,
     cursor: Cell<u16>,
+    written: Cell<u32>,
 }
 
 impl RingState {
@@ -34,6 +35,7 @@ impl RingState {
         Rc::new(Self {
             buf: UnsafeCell::new(RingBuf([0; RING_LEN])),
             cursor: Cell::new(0),
+            written: Cell::new(0),
         })
     }
 
@@ -46,6 +48,7 @@ impl RingState {
         // calls, never while a `bytes()` slice is live (see `RxRing::bytes`).
         unsafe { (*self.buf.get()).0[i] = b };
         self.cursor.set(((i + 1) % RING_LEN) as u16);
+        self.written.set(self.written.get().wrapping_add(1));
     }
 
     pub fn bytes(&self) -> &[u8] {
@@ -55,14 +58,15 @@ impl RingState {
         &arr[..]
     }
 
-    pub fn cursor(&self) -> u16 {
-        self.cursor.get()
+    pub fn written(&self) -> u32 {
+        self.written.get()
     }
 
     /// Empty the ring: the DMA state a reset leaves behind, so a rebuilt
     /// driver's framer (cursor 0) agrees with the buffer.
     pub fn reset(&self) {
         self.cursor.set(0);
+        self.written.set(0);
     }
 }
 
