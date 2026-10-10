@@ -34,6 +34,7 @@ Every hardware resource the transport touches, and its duty cycle:
 | USART1 vector   | PFIC HIGH. TC = TX arm drained, the one enabled source (never a DATAR read; FE/NE/ORE have no interrupt enable - they latch silently, sec 7) | TC body ~2-4 us/arm |
 | SysTick CNT/CMP | the transport clock (48 MHz, 32-bit) + the ONE comparator | — |
 | SysTick vector  | PFIC HIGH. Deadline mux: framer A/B, covered, chain trigger - and dispatch, inline (every class except verdict-first runs at the covered checkpoint or the fast path, sec 6) | arithmetic slots ~1–5 us; dispatch bodies ~10–70 us |
+| SW vector (14)  | PFIC HIGH. The TEL stager: `poll_tel`, pended through PFIC_IPSR1 bit 14 by the kernel tick's last statement while a burst is live | one entry per tick while a burst runs; ~23 us when it stages a frame |
 | DMA1 CH5        | USART1 RX -> 512 B ring, circular, silent (no IRQ); **VERYHIGH, atop the ladder** (sec 7) | zero CPU |
 | DMA1 CH7        | TIM2_CH2 (IC2, rising edge) -> a RAM zero into TIM2 CNT, circular, one halfword per rising edge; VERYHIGH, below CH5 (sec 7) | zero CPU |
 | DMA1 CH2 + TIM3 | TIM2_UP (the detector's overflow) -> TIM3's free-running HCLK count into an 8-entry stamp ring, circular; HIGH, below CH1 (sec 8) | zero CPU; read only during a CAL train |
@@ -45,10 +46,10 @@ Every hardware resource the transport touches, and its duty cycle:
 | PC0 CNF         | AF open-drain for good: the servo only pulls low, the host pull-up (and the board keeper) holds mark (protocol sec 2) | set once at init |
 | main loop       | deferred reboot poll + rescue line sampler (protocol sec 9.1: line pin + CH5 NDTR + own-TX state in one critical section per wfi wake, the window restarting while the servo transmits - the break detector fires once per span, a break-length in, so the slow loop is the only observer of a pulse's length) | cold path; sampler ~0.3 us/wake |
 
-PFIC preemption is two-level (IPRIOR bit 7). TIM2 + USART1 + SysTick
+PFIC preemption is two-level (IPRIOR bit 7). TIM2 + USART1 + SysTick + SW
 share HIGH and therefore serialize against each other; LOW holds only the
 motor kernel (DMA1_CH1 = 22), which HIGH preempts and which runs in the
-wire gaps between frames. Free and reserved: TIM1 (motor PWM), SW (14),
+wire gaps between frames. Free and reserved: TIM1 (motor PWM),
 I2C1_EV (30), I2C1_ER (31). The break detector holds DMA1 CH7, I2C1_RX's
 request channel. The CAL stamps hold DMA1 CH2 (TIM2_UP) and TIM3.
 
@@ -323,9 +324,10 @@ be staged behind the CRC verdict:
   structurally idle and the burst borrows them whole - no second TX
   path exists. Mechanics: the kernel encodes each control-tick sample
   once, directly at its final wire offset in a ping-pong buffer pair
-  (LOW context); the same tick's ISR-masked `poll_tel` stages a ready
-  buffer through the ordinary stage/trigger path (HIGH-owned state). It
-  runs at the tick, not in the main loop: a six-field frame leaves
+  (LOW context); the tick's last statement pends the SW vector, whose
+  `poll_tel` stages a ready buffer through the ordinary stage/trigger
+  path at the bus level, never inside the kernel's body. It runs per
+  tick, not in the main loop: a six-field frame leaves
   ~110 us of its 800 us batch window spare, and a driving tick starves
   the main loop for longer than that. Cross-context traffic is three
   flags and an arm mailbox, single-writer volatile discipline, no

@@ -107,8 +107,8 @@ impl TelBurst {
 }
 
 impl<P: Providers> ServoBus<P> {
-    /// Per-tick TEL poll from the kernel tick's tail, ISRs masked by the
-    /// caller: when a burst is live, a batch is banked, and the wire is
+    /// Per-tick TEL poll, at the bus level from the SW vector the kernel
+    /// tick pends: when a burst is live, a batch is banked, and the wire is
     /// ours -- TX idle, no frame mid-verdict -- stage the next `Stream`
     /// status frame and put it on the wire. The arm's break-silence contract
     /// makes the immediate trigger safe: any host traffic would have killed
