@@ -29,6 +29,10 @@ impl<P: Providers> ServoBus<P> {
             return true;
         }
         for _ in 0..super::FRAMES_PER_WAKE {
+            // Cursor before clock: a preemption between the reads then
+            // projects from a late `now`, never an early one (DES pin
+            // `preempted_projection_never_aims_early`).
+            let cursor = self.ring.cursor();
             let now = self.deadline.now();
             let id = self.id;
             let idle = !self.chain.active() && !self.tx.busy();
@@ -51,9 +55,9 @@ impl<P: Providers> ServoBus<P> {
                     FrameNeeds::Covered
                 }
             };
-            let out =
-                self.framer
-                    .resolve(self.ring.bytes(), self.ring.cursor(), now, self.tpb, needs);
+            let out = self
+                .framer
+                .resolve(self.ring.bytes(), cursor, now, self.tpb, needs);
             match out {
                 FramerOut::None => {
                     self.framer_at = None;
