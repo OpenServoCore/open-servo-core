@@ -17,7 +17,6 @@
 use std::thread::sleep;
 use std::time::Duration;
 
-use bench::BOOT_BAUD;
 use bench::osc::{build_cal, build_instruction, build_read};
 use osc_protocol::wire::{Inst, Opcode};
 use osc_servo_core::regions::control::addr::lifecycle::GOAL_POSITION;
@@ -108,6 +107,8 @@ fn lying_train_trims_and_truth_pulls_back() {
     );
 }
 
+/// The rate the detune step is defined against.
+const NOMINAL_BAUD: u32 = 1_000_000;
 /// Host detune: one BRR step off 1M on the host UART (144 MHz / 145 ~
 /// 993.1 kbaud, -6.9k ppm), inside framing margin (+/-3.4%, F10) and
 /// nearly three nominal trim steps.
@@ -129,8 +130,8 @@ fn feed(b: &mut Bench, burst: &[Vec<u8>], bursts: u32) {
 #[test]
 fn cal_holds_its_anchor_through_a_host_detune() {
     let mut b = bench();
-    // The detune step is defined against the 1M BRR; pin the bus there.
-    b.switch_baud(BOOT_BAUD);
+    let home_baud = b.home_baud();
+    b.switch_baud(NOMINAL_BAUD);
 
     let mut payload = GOAL_POSITION.to_le_bytes().to_vec();
     payload.extend_from_slice(&b.goal_mid().to_le_bytes());
@@ -143,15 +144,16 @@ fn cal_holds_its_anchor_through_a_host_detune() {
     // capture decodes replies at the host's set rate.
     b.follow_baud(DETUNE_BAUD);
     feed(&mut b, &burst, FOOD_BURSTS);
-    b.follow_baud(BOOT_BAUD);
+    b.follow_baud(NOMINAL_BAUD);
     let fed = read_trim(&mut b);
 
     // CAL trains sent at the detuned rate, each read back at the true one.
     let (detuned, detuned_trains) = converge(&mut b, |b| {
         b.follow_baud(DETUNE_BAUD);
         train(b, GAP_US);
-        b.follow_baud(BOOT_BAUD);
+        b.follow_baud(NOMINAL_BAUD);
     });
+    b.switch_baud(home_baud);
 
     assert_eq!(
         fed, start,
