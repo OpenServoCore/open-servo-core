@@ -10,7 +10,7 @@ Short answer: everything fits. Flash is not the limit (3.5 KB left). CPU is not 
 |---|---|---|---|---|
 | Flash (app region) | 58,112 B | 54,546 B | 3,566 B (6.1%) | The chip has 62 KB, but CONFIG A/B (1 KB), CALIB (4 KB) and META (256 B) are carved out of it. tinyboot lives in system flash. |
 | RAM, static (.data + .bss) | 8,192 B | 5,836 B | 2,356 B stack region | .data 344 B, .bss 5,492 B; `_ebss` = 0x200016CC |
-| RAM growth before the link fails | 2,356 - 1,536 B | - | 820 B | `osc-config.x` asserts at least 1,536 B above .bss. With `--features bench` the room is 684 B. |
+| RAM growth before the link fails | 2,356 - 1,536 B | - | 820 B | `osc-config.x` asserts at least 1,536 B above .bss. With `--features bench` the probes take 466 B of it. |
 | Stack | 2,356 B region | ~1.25 KB measured high water | ~1.1 KB free at rest, 848 B with the bringup probe | Static worst nesting ~1.5 KB (frame sums below), so ~850 B static margin |
 | CPU, kernel at 20 kHz | 50 us per tick | 31-35% with torque off, ~60% driving at 20% duty | 65-69% with torque off | Measured (tick_load_mean_q15). Fast tick ~13 us idle, ~20 us driving while streaming. |
 | CPU, transport | per host frame | 80-160 us per own frame in the bus ISRs | - | Below the kernel: no tick lost; the frame's latency stretches by 1 / (1 - U) |
@@ -72,7 +72,7 @@ Columns:
 | .rodata (CRC table 512, control-table rule and jump tables 1,248) | 1,760 | - | - | - |
 | .data load image + `.tb_version` | 344 + 2 | (in RAM) | - | - |
 | **Total** | **54,546** | **5,836** | | |
-| `--features bench` (probe counters) | +376 | +136 (HIGH_PROBE 52, TRIM_PROBE 84) | a few stores per probed event | flag (measured by a build diff) |
+| `--features bench` (budget probe, trim counters) | +2,064 | +470 (KERNEL_PROBE 312, BUS_PROBE 128, TRIM_PROBE 28, TEL bank count 4) | a masked stamp at each ISR body's ends and a record update after the measured span (S: 100-130 instructions per bus body) | flag (measured by a build diff) |
 
 The two biggest RAM consumers are the shunt burst buffer (1,920 B, 23% of RAM, used only during identification) and the control table (1,024 B). The position table (514 B), the RX ring (512 B) and the kernel state (504 B) come next.
 

@@ -13,13 +13,14 @@ path = "src/lib.rs"
 [dependencies]
 osc-protocol = { path = "../../firmware/lib/osc-protocol", features = ["software-crc"] }
 osc-client   = { path = "../../client", features = ["bench"] }
+# The budget table and probe records; authoritative control-table addresses
+# for the hardware suite (host-linkable: no_std, never invokes
+# critical-section).
+osc-servo-core = { path = "../../firmware/lib/core" }
 anyhow       = "1"
 clap         = { version = "4", features = ["derive"] }
 
 [dev-dependencies]
-# Authoritative control-table addresses for the hardware suite (host-linkable:
-# osc-servo-core is no_std but never invokes critical-section).
-osc-servo-core    = { path = "../../firmware/lib/core" }
 serial_test = "3"
 
 [[test]]

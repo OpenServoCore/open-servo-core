@@ -195,6 +195,13 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         self.booted = true;
     }
 
+    /// The medium phase the next tick runs, the configuration generation the
+    /// snapshot was built at (a tick refreshed when it moves), and whether
+    /// the boot tick has run.
+    pub fn probe_tags(&self) -> (u8, u8, bool) {
+        (self.phase, self.config_gen, self.booted)
+    }
+
     /// Must complete well inside the kernel period (~50 us at 20 kHz).
     pub fn on_tick(&mut self, frame: SensorFrame, shared: &Shared) {
         let phase = self.phase;

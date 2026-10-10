@@ -5,11 +5,12 @@
 //! ahead of the byte, behind it, and alternating between the two.
 
 use osc_integration::sim::{
-    BreakWake, KERNEL_MOVING, KernelLane, KernelLevel, READ32_3M_COST, Sim, Source, WireFrame,
-    assert_valid, instruction, status,
+    BreakWake, HandlerCost, KernelLane, KernelLevel, Sim, Source, WireFrame, assert_valid,
+    instruction, status,
 };
 use osc_protocol::wire::{Inst, Opcode, ResultCode};
 use osc_servo_core::BaudRate;
+use osc_servo_core::budget::{Frame, Regime};
 use osc_servo_core::regions::config::DEFAULT_RESPONSE_DEADLINE_US;
 use osc_servo_core::regions::config::addr::common::MODEL_NUMBER;
 use osc_servo_core::regions::control::addr::lifecycle::GOAL_VELOCITY;
@@ -267,11 +268,8 @@ fn lagged_wake_by_a_kernel_backlog_resolves_every_frame() {
     let byte_us = 10.0e6 / rate.as_hz() as f64;
     let mut sim = Sim::new(rate);
     let s = sim.add_servo(ID);
-    sim.set_handler_cost(s, READ32_3M_COST);
-    let lane = KernelLane {
-        level: KernelLevel::AboveBus,
-        phases: &KERNEL_MOVING,
-    };
+    sim.set_handler_cost(s, HandlerCost::at_budget(Frame::Write));
+    let lane = KernelLane::at_budget(KernelLevel::AboveBus, Regime::Moving);
     sim.set_kernel_lane(s, lane, 5_000);
     sim.run_until(1_000);
     sim.set_wake_lag_us(move || 200.0 * byte_us);

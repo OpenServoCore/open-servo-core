@@ -16,6 +16,7 @@
 
 mod support;
 
+mod budgets;
 mod chain;
 mod hold_commit;
 mod hot_loop;

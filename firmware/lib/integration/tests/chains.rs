@@ -5,10 +5,11 @@
 //! `osc_protocol::group` parsers (the layout authority).
 
 use osc_integration::sim::{
-    READ32_3M_COST, Sim, Source, WireFrame, assert_valid, instruction, status, status_frame,
+    HandlerCost, Sim, Source, WireFrame, assert_valid, instruction, status, status_frame,
 };
 use osc_protocol::wire::{self, Inst, Opcode, ResultCode};
 use osc_servo_core::BaudRate;
+use osc_servo_core::budget::Frame;
 use osc_servo_core::regions::config::addr::common::{FIRMWARE_VERSION, MODEL_NUMBER};
 use osc_servo_core::regions::control::addr::lifecycle::GOAL_VELOCITY;
 use osc_servo_core::regions::profile::span_word;
@@ -589,7 +590,7 @@ fn reclaim_window_counts_from_the_slots_own_readiness() {
     let mut sim = Sim::new(BaudRate::B3000000);
     for id in [1u8, 2] {
         let s = sim.add_servo_with(id, 0, CHAIN_DEADLINE_US);
-        sim.set_handler_cost(s, READ32_3M_COST);
+        sim.set_handler_cost(s, HandlerCost::at_budget(Frame::GreadSlot));
     }
     sim.host_send_at(
         START_US,
