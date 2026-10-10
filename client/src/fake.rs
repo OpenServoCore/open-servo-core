@@ -126,7 +126,7 @@ impl Winding {
         };
         let mut limits = LimitState::new();
         limits.update_derate(t_cc, &lim);
-        limits.fold(false, 0, 0, 0, false, 0, &lim);
+        limits.fold(false, 0, 0, 0, false, &lim);
         t.telemetry.sensors.ntc_raw = raw;
         t.telemetry.estimates.t_winding_cc = t_cc;
         t.telemetry.estimates.i_lim_counts = limits.i_lim_counts();
