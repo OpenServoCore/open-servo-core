@@ -178,8 +178,8 @@ pub fn on_usart1() {
     // reset-value TC can't walk into on_tx_complete before the first reply
     // is armed.
     //
-    // TC is NOT cleared here -- `TxWire::send` clears it per-arm once the
-    // next arm's first byte is in flight, and the final arm's release drops
+    // TC is NOT cleared here -- `TxWire::send` clears it per-arm before the
+    // next arm's DMA starts, and the final arm's release drops
     // TCIE, leaving TC=1 as the natural idle state (STATR reset 0xC0).
     if usart::is_tc(USART1) && usart::is_tcie(USART1) {
         // SAFETY: see fn doc.

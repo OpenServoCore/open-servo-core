@@ -43,8 +43,8 @@ impl bus::TxWire for TxWire {
         // send_break (the protocol sec 3 law shape -- a bracketed-M 0x00 character)
         // blocks until the break has committed through its stop bit. The
         // shifter is therefore EMPTY when send(arm0) runs: TCIE must
-        // stay off until the arm's first byte is in flight, or the gap TC
-        // latches, reads as arm-drained on ISR return, and release() tears
+        // stay off until `send` has cleared the gap TC, or the gap TC
+        // reads as arm-drained on ISR return, and release() tears
         // the reply down mid-byte-0 (bench signature: break, one garbled
         // byte, silence). TCIE is armed per-arm in `send`.
         BreakWake::muted(|| usart::send_break(USART1));
@@ -71,13 +71,14 @@ impl bus::TxWire for TxWire {
             span.len() as u16,
         );
         usart::set_dma_tx(USART1, true);
-        dma::enable(dma::Channel::CH4);
-        // Byte 0 is in DR within a couple of AHB cycles of the enable.
         // Clear the TC that latched while the shifter sat empty (post-break
-        // or between arms), THEN arm the real arm-drained interrupt. A real
-        // drain can't race the clear: the shortest arm holds the shifter
-        // >= 10 bit-times, orders of magnitude past these two writes.
+        // or between arms) BEFORE the enable: TC sets only at a frame's
+        // completion (RM sec 14.8.1), so from here it can only mean this arm
+        // drained. Clearing after the enable erases a real TC whenever a
+        // preemption outlasts the arm (a 2 B arm is 6.7 us at 3M) and the
+        // TX engine wedges.
         usart::clear_tc(USART1);
+        dma::enable(dma::Channel::CH4);
         usart::set_tc_irq(USART1, true);
     }
 
