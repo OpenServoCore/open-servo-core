@@ -88,8 +88,9 @@ receiver gets hardware break detection with a deterministic 10-bit
 anchor. Bridge-class hosts use exactly that. The servo cannot: its bus is
 one pin under HDSEL, which disables the USART's LIN break detector on the
 target silicon [F16], so it times the low on the pin instead - a
-detector that qualifies at 9.25 bit-times, past the longest data low (9)
-and inside the law break (10), §3.4 [F17]. Hardware `SBK` is off-law
+detector that qualifies at 9.5 bit-times, past the longest data low (9)
+and inside the law break (10), §3.4 [F17]. The half bit above 9 absorbs
+the open-drain rise that lengthens every low (sec 2). Hardware `SBK` is off-law
 (~14 bit-times measured, F5).
 
 **Receivers stay length-tolerant**: any ≥10-bit dominant span is one
@@ -106,7 +107,7 @@ Measured break behavior that the framer relies on:
   on the rising edge that ends it, so long breaks cannot spam [F3][F17].
 - A mid-frame framing error does not halt reception: the garbled byte
   rings and the stream continues [F4] - and it raises nothing at all
-  (lows under 9.25 bit-times are invisible to the detector, and no
+  (lows under 9.5 bit-times are invisible to the detector, and no
   interrupt is enabled on the error flags, §3.4 [F17]). Ring + NDTR are
   the only ground truth.
 - Hardware `SBK` sends ~14-bit breaks (4.7 µs at 3 M, zero variance,
@@ -218,7 +219,7 @@ The receive side has two distinct signals, and the protocol binds them
 to two distinct roles:
 
 - **The break detector is the wake.** It is length-qualified - only a
-  dominant span held past 9.25 bit-times fires it, a length valid data
+  dominant span held past 9.5 bit-times fires it, a length valid data
   never reaches (9 at most) and the §3 law break always does (10) - and
   any-length span raises exactly one event, **fired a break-length into
   the span**. That can be before the stop-bit sample rings the break's
@@ -264,7 +265,7 @@ garble that forms a plausible frame header parks the resolver until data
 kills it — footprint-fill CRC (≤ 258 bytes) or the starve horizon (64
 byte-times of ring silence), whichever comes first, per plausible junk
 anchor. The length qualification shrinks that surface: only garble
-containing a dominant span past 9.25 bit-times (slower-baud traffic heard
+containing a dominant span past 9.5 bit-times (slower-baud traffic heard
 at a faster-configured servo) can wake the resolver into junk at all -
 noise and faster-baud garble ring silently and cost nothing until the
 next real break [F17]. **Host pacing rule:** after traffic a servo may

@@ -1,5 +1,5 @@
 //! The break wake against its own ringed 0x00 (transport sec 6): the chip's
-//! TIM2 detector fires 9.25 bit-times into a break, ahead of the stop-bit
+//! TIM2 detector fires 9.5 bit-times into a break, ahead of the stop-bit
 //! sample that rings the byte, so a wake can beat its byte into the ring; a
 //! wake serviced late finds the byte already there. Every pin runs the wake
 //! ahead of the byte, behind it, and alternating between the two.

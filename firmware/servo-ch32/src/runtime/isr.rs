@@ -141,7 +141,7 @@ pub fn on_adc_dma_tc() {
 }
 
 /// TIM2 vector -- the break wake (`providers::break_wake`): an overflow
-/// after 9.25 bit-times of continuous low is a break, unless it is the
+/// after 9.5 bit-times of continuous low is a break, unless it is the
 /// same low again after a park.
 ///
 /// SAFETY: the bus driver is installed before this vector unmasks, and TIM2
