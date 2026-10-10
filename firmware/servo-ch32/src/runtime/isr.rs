@@ -132,12 +132,12 @@ pub fn on_adc_dma_tc() {
         }
     }
 
-    // TEL burst (protocol sec 5.6): a six-field frame drains in ~690 us of
-    // the 800 us its successor takes to fill, so a batch must stage within
-    // a tick of banking or of the wire freeing; the main loop, starved by a
-    // driving tick, staged up to 300 us late and the kernel dropped rows.
-    // Last on purpose: staging is transport work, run by the SW vector at
-    // the bus level, never inside the kernel's body.
+    // TEL burst (protocol sec 5.6): a six-field frame drains in ~675 us of
+    // the 800 us its successor takes to fill, so a banked batch must get
+    // its CRC and leave within a few ticks; the main loop, starved by a
+    // driving tick, ran up to 300 us late and the kernel dropped rows.
+    // Last on purpose: this is transport work, run by the SW vector at the
+    // bus level, never inside the kernel's body.
     if TEL_CHANNEL.active() {
         pfic::pend_software();
     }

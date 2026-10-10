@@ -653,11 +653,17 @@ data - and the drop is visible as a hole in the `stream_seq` numbering
 (16 samples per missing frame). ALERT on a burst frame carries the OR
 of the batch's fault state, per the sec 5.3 device-level contract.
 
-Timing: a batch completes every 16 control ticks; the frame must clear
-the wire inside that window or the producer drops whole batches
-(drop-not-block, surfaced as seq holes). At 3 M every mask fits; below
-2 M a full-rate burst outruns the wire by design - run captures at 3 M,
-or accept the decimation the holes record. Safety through the silent
+Timing: a batch completes every 16 control ticks, and the frames must
+leave the wire at that rate on average. The servo holds three batches,
+so a frame may lag its batch by up to about two batch windows; past
+that the producer drops rows until a buffer frees (drop-not-block).
+Dropped rows are counted in `tel_drop_count` (sec 5.9) and leave no seq
+hole - the next batch simply starts later - so a capture is gap-free
+exactly when that counter did not move across it. At 3 M every mask
+fits, the motor driving included: each frame leaves as one transmission
+the moment the one before it ends. Below 2 M a full-rate burst outruns
+the wire by design - run captures at 3 M, or accept the rows the counter
+records as dropped. Safety through the silent
 window is the servo's own - the current limit (held in every drive
 mode, OpenLoop included, sec 5.8), soft-position clamps, the stall
 timer and fault latches run in firmware regardless of the bus - and the
@@ -1119,7 +1125,7 @@ writes them, not the kernel.
 | 0x26A | `tick_load_mean_q15` | RO     | mean share of the kernel period the tick interrupt took over the last 4096 ticks (0.2 s), Q15       |
 | 0x26C | `tick_over_count`    | RW     | kernel ticks whose interrupt took longer than one period; wraps                                     |
 | 0x26E | `tick_lost_count`    | RW     | kernel ticks that never ran: the previous tick was still running, or a flash SAVE stalled the core; wraps |
-| 0x270 | `tel_drop_count`     | RW     | TEL rows dropped because both stream buffers were waiting for the wire (sec 5.6); wraps              |
+| 0x270 | `tel_drop_count`     | RW     | TEL rows dropped because every stream buffer was waiting for the wire (sec 5.6); wraps               |
 | 0x272 | `stack_free_min`     | RO     | smallest free stack seen since boot, bytes                                                           |
 
 The RW registers follow the TELEMETRY-COMMON clear contract (sec 5.4):

@@ -375,3 +375,20 @@ fn inst_override_lands_in_the_snapshot() {
     let reference = reference(9, ResultCode::PredecessorSilent, false, &data.0);
     assert_eq!(wire_bytes(&log), reference[1..]);
 }
+
+/// A sealed frame leaves as the break and one arm, untouched, and its one
+/// TC releases the wire; the engine refuses it while busy.
+#[test]
+fn sealed_frame_is_one_arm_released_at_its_tc() {
+    let (mut tx, log) = engine();
+    let frame = [7, wire::len_for(2), 0xA4, 0x11, 0x22, 0x33, 0x44];
+    tx.send_sealed(&frame).expect("idle engine");
+    assert!(tx.streaming());
+    assert_eq!(tx.send_sealed(&frame), Err(SendError::Busy));
+    assert_eq!(tx.on_arm_complete(&mut FakeCrc::new()), TxOut::Released);
+    assert!(!tx.busy());
+    assert_eq!(
+        *log.borrow(),
+        [Event::Start, Event::Send(frame.to_vec()), Event::Release]
+    );
+}

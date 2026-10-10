@@ -1,50 +1,94 @@
 //! TEL burst seam between the kernel fast tick (PFIC HIGH) and the bus-side
-//! frame stager (the transport ISRs, incl. the SW vector each tick pends).
-//! The two sides never share `&mut`: the channel is a pair of ping-pong
-//! payload buffers the kernel encodes into DIRECTLY -- each sample lands at
-//! its final wire offset via the core appenders, so no intermediate sample
-//! storage exists.
+//! frame sender (the bus-level vectors, incl. the SW vector each tick pends).
+//! The two sides never share `&mut`: the channel is a ring of [`TEL_BUFS`]
+//! frame buffers in wire layout. The kernel encodes each sample DIRECTLY at
+//! its final wire offset via the core appenders; the bus writes the header
+//! and CRC around the banked payload and sends the frame from the buffer in
+//! place, so no intermediate copy exists.
 //! Cross-side traffic is single-writer-per-field volatile load/store plus
 //! compiler fences at the buffer handoffs (single core, no atomic RMW on
 //! rv32ec).
 //!
 //! Buffer ownership rides the `ready` tags: 0 = kernel's to fill, else the
-//! arm epoch the batch was produced under -- the bus stages only its own
-//! epoch and discards strays, which closes the mid-tick re-arm race (a
-//! preempted `on_tick` finishing a stale batch publishes a dead epoch).
+//! arm epoch the batch was produced under - the bus sends only its own
+//! epoch and discards strays, so a batch banked across a re-arm dies.
 
 use core::cell::SyncUnsafeCell;
 use core::sync::atomic::{Ordering, compiler_fence};
 
+use osc_protocol::frame::Header;
 use osc_servo_core::tel::{
     STREAM_HDR, STREAM_PAYLOAD_MAX, STREAM_SAMPLES_MAX, TelSample, TelStream, encode_sample,
     encode_stream_hdr,
 };
 
+/// Frame buffers in the ring: one on the wire, one filling, and one that
+/// covers the bank-to-wire latency (the CRC runs over a banked frame before
+/// it leaves) and kernel jitter. No count covers a sustained wire deficit;
+/// the one-arm send does (DES pin `tel_six_fields_keep_up_while_stepping`).
+pub const TEL_BUFS: usize = 3;
+
+pub(crate) const CRC_LEN: usize = core::mem::size_of::<u16>();
+
+/// Bytes of one frame buffer: align byte and header, payload, CRC.
+pub const FRAME_LEN: usize = Header::SIZE + STREAM_PAYLOAD_MAX + CRC_LEN;
+
+/// One burst frame in wire layout. The CRC sits right behind the payload,
+/// inside `payload` on a short LAST frame. Even-based: the CRC engine feeds
+/// halfwords from `head[0]`.
+#[repr(C, align(2))]
+struct Frame {
+    head: [u8; Header::SIZE],
+    payload: [u8; STREAM_PAYLOAD_MAX],
+    tail: [u8; CRC_LEN],
+}
+
+const _: () = assert!(core::mem::size_of::<Frame>() == FRAME_LEN);
+
 /// One finished frame's metadata, kernel-written at batch finalize (before
 /// its `ready` tag), bus-read while the tag holds.
 #[derive(Copy, Clone)]
 pub(crate) struct BufMeta {
+    /// Payload bytes.
     pub(crate) len: u16,
     /// OR of the batch's fault bits -> the frame's INST ALERT.
     pub(crate) alert: bool,
     pub(crate) last: bool,
 }
 
-const META_ZERO: BufMeta = BufMeta {
-    len: 0,
-    alert: false,
-    last: false,
+struct Slot {
+    frame: Frame,
+    meta: BufMeta,
+    ready: u8,
+}
+
+const SLOT_ZERO: Slot = Slot {
+    frame: Frame {
+        head: [0; Header::SIZE],
+        payload: [0; STREAM_PAYLOAD_MAX],
+        tail: [0; CRC_LEN],
+    },
+    meta: BufMeta {
+        len: 0,
+        alert: false,
+        last: false,
+    },
+    ready: 0,
 };
 
-/// The shared storage. Field writers: `bufs`/`meta`/`ready`(set)/`drops`
-/// belong to the kernel side ([`TelFeed`]); `active`, the arm mailbox, and
-/// `ready`(clear) to the bus side ([`TelDrain`]). The dual-writer `ready`
-/// tags are safe: each side stores only constants its protocol phase owns.
+/// The buffer after `idx` in ring order.
+pub(crate) const fn next_buf(idx: usize) -> usize {
+    if idx + 1 >= TEL_BUFS { 0 } else { idx + 1 }
+}
+
+/// The shared storage. Field writers: the payloads, `meta`, `ready`(set) and
+/// `drops` belong to the kernel side ([`TelFeed`]); `active`, the arm
+/// mailbox, the frame headers and CRC tails, and `ready`(clear) to the bus
+/// side ([`TelDrain`]), which writes a frame only while it holds the tag.
+/// The dual-writer `ready` tags are safe: each side stores only constants
+/// its protocol phase owns.
 pub struct TelChannel {
-    bufs: [SyncUnsafeCell<[u8; STREAM_PAYLOAD_MAX]>; 2],
-    meta: [SyncUnsafeCell<BufMeta>; 2],
-    ready: [SyncUnsafeCell<u8>; 2],
+    slots: [SyncUnsafeCell<Slot>; TEL_BUFS],
     /// Burst gate the producer polls each tick.
     active: SyncUnsafeCell<bool>,
     arm_mask: SyncUnsafeCell<u16>,
@@ -52,7 +96,7 @@ pub struct TelChannel {
     /// Mailbox epoch, written last (fence-ordered), never 0; the kernel
     /// double-reads it around the payload to reject a torn pickup.
     arm_seq: SyncUnsafeCell<u8>,
-    /// Samples dropped while both buffers were ready, monotonic wrapping.
+    /// Samples dropped while no buffer was free, monotonic wrapping.
     drops: SyncUnsafeCell<u16>,
 }
 
@@ -60,15 +104,7 @@ impl TelChannel {
     #[allow(clippy::new_without_default)]
     pub const fn new() -> Self {
         Self {
-            bufs: [
-                SyncUnsafeCell::new([0; STREAM_PAYLOAD_MAX]),
-                SyncUnsafeCell::new([0; STREAM_PAYLOAD_MAX]),
-            ],
-            meta: [
-                SyncUnsafeCell::new(META_ZERO),
-                SyncUnsafeCell::new(META_ZERO),
-            ],
-            ready: [SyncUnsafeCell::new(0), SyncUnsafeCell::new(0)],
+            slots: [const { SyncUnsafeCell::new(SLOT_ZERO) }; TEL_BUFS],
             active: SyncUnsafeCell::new(false),
             arm_mask: SyncUnsafeCell::new(0),
             arm_count: SyncUnsafeCell::new(0),
@@ -88,6 +124,10 @@ impl TelChannel {
     pub fn drops(&self) -> u16 {
         // SAFETY: single-word volatile read of a kernel-written counter.
         unsafe { self.drops.get().read_volatile() }
+    }
+
+    fn slot(&self, idx: usize) -> Option<*mut Slot> {
+        self.slots.get(idx).map(SyncUnsafeCell::get)
     }
 
     /// Split into the two halves. Call once at bringup: a second feed or
@@ -129,7 +169,7 @@ pub struct TelFeed {
 
 impl TelFeed {
     /// Consume a posted arm: seq moved and the payload read back consistent
-    /// (a torn read -- the mailbox rewritten mid-pickup -- retries next
+    /// (a torn read, the mailbox rewritten mid-pickup, retries next
     /// tick). A pickup resets the whole encoder.
     fn poll_arm(&mut self) {
         let ch = self.ch;
@@ -175,18 +215,20 @@ impl TelStream for TelFeed {
             return;
         }
         let ch = self.ch;
-        let idx = self.idx & 1;
-        // SAFETY: single-writer discipline (type doc). The buffer `&mut` is
+        let Some(slot) = ch.slot(self.idx) else {
+            return;
+        };
+        // SAFETY: single-writer discipline (type doc). The payload `&mut` is
         // exclusive while its ready tag is 0 (the bus touches only tagged
         // buffers); the tag store is fenced behind the payload writes.
         unsafe {
-            if ch.ready[idx].get().read_volatile() != 0 {
+            if (&raw const (*slot).ready).read_volatile() != 0 {
                 // Consumer stalled: never block the fast tick.
                 let d = ch.drops.get();
                 d.write_volatile(d.read_volatile().wrapping_add(1));
                 return;
             }
-            let buf = &mut *ch.bufs[idx].get();
+            let buf = &mut (*slot).frame.payload;
             if sample.window_valid {
                 self.valid |= 1 << self.n;
             }
@@ -197,7 +239,7 @@ impl TelStream for TelFeed {
             if self.n as usize == STREAM_SAMPLES_MAX || self.remaining == 0 {
                 let last = self.remaining == 0;
                 encode_stream_hdr(self.seq, last, self.valid, buf);
-                ch.meta[idx].get().write_volatile(BufMeta {
+                (&raw mut (*slot).meta).write_volatile(BufMeta {
                     len: self.at as u16,
                     alert: self.alert,
                     last,
@@ -207,9 +249,9 @@ impl TelStream for TelFeed {
                 // would be dead at the bus anyway.
                 if ch.arm_seq.get().read_volatile() == self.epoch {
                     compiler_fence(Ordering::Release);
-                    ch.ready[idx].get().write_volatile(self.epoch);
+                    (&raw mut (*slot).ready).write_volatile(self.epoch);
                     self.seq = self.seq.wrapping_add(1);
-                    self.idx ^= 1;
+                    self.idx = next_buf(self.idx);
                 }
                 self.at = STREAM_HDR;
                 self.n = 0;
@@ -220,7 +262,8 @@ impl TelStream for TelFeed {
     }
 }
 
-/// Bus-side half: posts arms, gates the producer, consumes ready buffers.
+/// Bus-side half: posts arms, gates the producer, frames and frees banked
+/// buffers.
 pub struct TelDrain {
     ch: &'static TelChannel,
 }
@@ -249,46 +292,50 @@ impl TelDrain {
         unsafe { self.ch.active.get().write_volatile(on) };
     }
 
-    /// Free both buffers (arm/abort: stale batches never stage).
+    /// Free every buffer (arm/abort: stale batches never send).
     pub(crate) fn clear_ready(&mut self) {
-        // SAFETY: ready-clear is the bus's store (type doc).
-        unsafe {
-            self.ch.ready[0].get().write_volatile(0);
-            self.ch.ready[1].get().write_volatile(0);
+        for idx in 0..TEL_BUFS {
+            self.release(idx);
         }
     }
 
     /// Metadata of buffer `idx` if it is ready under `epoch`; a stray epoch
     /// (dead burst) is discarded on sight.
     pub(crate) fn ready(&mut self, idx: usize, epoch: u8) -> Option<BufMeta> {
-        let ch = self.ch;
+        let slot = self.ch.slot(idx)?;
         // SAFETY: tag read gates the meta read behind an acquire fence;
         // ready-clear is the bus's store (type doc).
         unsafe {
-            let tag = ch.ready[idx & 1].get().read_volatile();
+            let ready = &raw mut (*slot).ready;
+            let tag = ready.read_volatile();
             if tag == 0 {
                 return None;
             }
             if tag != epoch {
-                ch.ready[idx & 1].get().write_volatile(0);
+                ready.write_volatile(0);
                 return None;
             }
             compiler_fence(Ordering::Acquire);
-            Some(ch.meta[idx & 1].get().read_volatile())
+            Some((&raw const (*slot).meta).read_volatile())
         }
     }
 
-    /// Borrow a ready buffer's payload for staging.
-    pub(crate) fn payload(&self, idx: usize) -> &[u8; STREAM_PAYLOAD_MAX] {
-        // SAFETY: the caller holds the buffer's ready tag (`ready` returned
-        // Some); the kernel writes only untagged buffers.
-        unsafe { &*self.ch.bufs[idx & 1].get() }
+    /// Buffer `idx` as wire bytes, for the header, the CRC and the send.
+    /// The caller holds its ready tag (`ready` returned Some).
+    pub(crate) fn frame(&mut self, idx: usize) -> Option<&mut [u8; FRAME_LEN]> {
+        let slot = self.ch.slot(idx)?;
+        // SAFETY: `Frame` is u8 arrays only, repr(C), FRAME_LEN bytes with no
+        // padding (const-asserted), so any byte view is valid; the kernel
+        // writes only untagged buffers, and the caller holds this one's tag.
+        unsafe { Some(&mut *(&raw mut (*slot).frame).cast::<[u8; FRAME_LEN]>()) }
     }
 
-    /// Return buffer `idx` to the kernel (after the frame's TX released).
+    /// Return buffer `idx` to the kernel (after its frame left the wire).
     pub(crate) fn release(&mut self, idx: usize) {
-        // SAFETY: ready-clear is the bus's store (type doc).
-        unsafe { self.ch.ready[idx & 1].get().write_volatile(0) };
+        if let Some(slot) = self.ch.slot(idx) {
+            // SAFETY: ready-clear is the bus's store (type doc).
+            unsafe { (&raw mut (*slot).ready).write_volatile(0) };
+        }
     }
 }
 
@@ -322,6 +369,10 @@ mod tests {
         epoch
     }
 
+    fn payload(drain: &mut TelDrain, idx: usize) -> std::vec::Vec<u8> {
+        drain.frame(idx).expect("buffer")[Header::SIZE..Header::SIZE + STREAM_PAYLOAD_MAX].to_vec()
+    }
+
     #[test]
     fn active_flag_is_the_bus_gate() {
         let (feed, mut drain) = channel();
@@ -330,6 +381,18 @@ mod tests {
         assert!(feed.active());
         drain.set_active(false);
         assert!(!feed.active());
+    }
+
+    #[test]
+    fn frame_buffers_are_even_based_for_the_crc_feed() {
+        let ch = leaked();
+        for idx in 0..TEL_BUFS {
+            let p = ch.slot(idx).expect("slot");
+            // SAFETY: address only.
+            let at = unsafe { &raw const (*p).frame } as usize;
+            assert_eq!(at % 2, 0, "buffer {idx}");
+        }
+        assert!(ch.slot(TEL_BUFS).is_none());
     }
 
     #[test]
@@ -345,13 +408,13 @@ mod tests {
         let n0 = encode_stream(MASK_SIX, 0, false, &samples[..16], &mut want);
         let m0 = drain.ready(0, epoch).expect("first batch ready");
         assert_eq!((m0.len as usize, m0.last), (n0, false));
-        assert_eq!(drain.payload(0)[..n0], want[..n0]);
+        assert_eq!(payload(&mut drain, 0)[..n0], want[..n0]);
 
         let n1 = encode_stream(MASK_SIX, 1, true, &samples[16..], &mut want);
         let m1 = drain.ready(1, epoch).expect("last batch ready");
         assert_eq!((m1.len as usize, m1.last), (n1, true));
-        assert_eq!(drain.payload(1)[..n1], want[..n1]);
-        assert_eq!(drain.payload(1)[1], FLAG_LAST);
+        assert_eq!(payload(&mut drain, 1)[..n1], want[..n1]);
+        assert_eq!(payload(&mut drain, 1)[1], FLAG_LAST);
     }
 
     #[test]
@@ -359,12 +422,12 @@ mod tests {
         let ch = leaked();
         let (mut feed, mut drain) = ch.split();
         let epoch = arm(&mut drain, MASK_SIX, 200);
-        for i in 0..37 {
+        for i in 0..53 {
             feed.on_tick(&sample(i));
         }
-        // both buffers ready, 5 samples dropped against them
+        // all three buffers ready, 5 samples dropped against them
         assert_eq!(ch.drops(), 5);
-        // release one: production resumes into it
+        // release the oldest: production resumes into it, in ring order
         assert!(drain.ready(0, epoch).is_some());
         drain.release(0);
         for i in 0..16 {
@@ -373,6 +436,7 @@ mod tests {
         assert_eq!(ch.drops(), 5);
         let m = drain.ready(0, epoch).expect("refilled batch");
         assert!(!m.last);
+        assert_eq!(payload(&mut drain, 0)[0], 3, "fourth batch, seq 3");
     }
 
     #[test]
@@ -384,7 +448,7 @@ mod tests {
         }
         assert!(drain.ready(0, e1).is_some());
 
-        // new burst: the un-staged old batch is a stray now
+        // new burst: the un-sent old batch is a stray now
         let e2 = arm(&mut drain, MASK_SIX, 5);
         assert!(drain.ready(0, e2).is_none(), "old epoch discarded");
         for i in 0..5 {
@@ -393,7 +457,7 @@ mod tests {
         let m = drain.ready(0, e2).expect("fresh burst lands in buffer 0");
         assert!(m.last);
         // seq restarted at 0
-        assert_eq!(drain.payload(0)[0], 0);
+        assert_eq!(payload(&mut drain, 0)[0], 0);
     }
 
     #[test]
@@ -410,8 +474,9 @@ mod tests {
         for i in 0..40 {
             feed.on_tick(&sample(i));
         }
-        assert!(drain.ready(0, e).is_none());
-        assert!(drain.ready(1, e).is_none());
+        for idx in 0..TEL_BUFS {
+            assert!(drain.ready(idx, e).is_none());
+        }
         assert_eq!(ch.drops(), 0);
     }
 }

@@ -325,6 +325,7 @@ impl<P: Providers> ServoBus<P> {
             }
             // A pending reboot waits for the main loop's `take_reboot`.
             self.burst.on_tx_released();
+            self.poll_tel();
             // The ladder waited on the CRC engine while the reply streamed.
             if !self.framer.caught_up(self.ring.cursor()) {
                 self.framer_at = Some(self.deadline.now());

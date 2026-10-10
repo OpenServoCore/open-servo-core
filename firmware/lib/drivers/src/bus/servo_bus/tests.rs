@@ -1427,6 +1427,28 @@ fn tx_frames(wire: &FakeWire, from: usize) -> std::vec::Vec<std::vec::Vec<u8>> {
     out
 }
 
+/// DMA arms of each complete wire frame recorded at or after `from`.
+fn arms_per_frame(wire: &FakeWire, from: usize) -> std::vec::Vec<usize> {
+    let mut out = std::vec::Vec::new();
+    let mut arms = None;
+    for e in &wire.log()[from..] {
+        match e {
+            WireEvent::Start => arms = Some(0),
+            WireEvent::Send(_) => {
+                if let Some(n) = arms.as_mut() {
+                    *n += 1;
+                }
+            }
+            WireEvent::Release => {
+                if let Some(n) = arms.take() {
+                    out.push(n);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// The recorded frame's trailing CRC verifies over its covered span
 /// (including the 0x00 align prefix the arms skip).
 fn assert_frame_crc(frame: &[u8]) {
@@ -1455,14 +1477,15 @@ fn tel_burst_streams_two_frames_then_quiets() {
         feed.on_tick(&pos_sample(0x2000 + i));
     }
     let mark = h.wire.log().len();
-    bus.poll_tel();
-    drain_tx(&mut bus, &h);
-    bus.poll_tel();
-    drain_tx(&mut bus, &h);
+    bus.poll_tel(); // CRC over the first banked frame
+    assert_eq!(h.wire.log().len(), mark, "nothing leaves before its CRC");
+    bus.poll_tel(); // sealed: it leaves, the second frame's CRC starts
+    drain_tx(&mut bus, &h); // its TC chains the LAST frame
     bus.poll_tel(); // burst done: inert
 
     let frames = tx_frames(&h.wire, mark);
     assert_eq!(frames.len(), 2, "16-sample frame then 4-sample LAST frame");
+    assert_eq!(arms_per_frame(&h.wire, mark), [1, 1], "one arm per frame");
 
     let f1 = &frames[0];
     assert_eq!(f1[0], ID);
@@ -1521,7 +1544,6 @@ fn tel_burst_alert_marks_only_the_faulted_batch() {
     }
     let mark = h.wire.log().len();
     bus.poll_tel();
-    drain_tx(&mut bus, &h);
     bus.poll_tel();
     drain_tx(&mut bus, &h);
 
@@ -1550,6 +1572,7 @@ fn tel_burst_short_count_is_one_last_frame() {
         feed.on_tick(&pos_sample(0x1100 + i));
     }
     let mark = h.wire.log().len();
+    bus.poll_tel();
     bus.poll_tel();
     drain_tx(&mut bus, &h);
     bus.poll_tel();
@@ -1580,6 +1603,7 @@ fn tel_burst_break_aborts_and_rearm_restarts_clean() {
         feed.on_tick(&pos_sample(i));
     }
     bus.poll_tel();
+    bus.poll_tel();
     assert!(bus.tx.streaming(), "frame 1 mid-flight");
 
     // Host talks over the burst: break kills it and the in-flight frame.
@@ -1605,6 +1629,7 @@ fn tel_burst_break_aborts_and_rearm_restarts_clean() {
     }
     let mark = h.wire.log().len();
     bus.poll_tel();
+    bus.poll_tel();
     drain_tx(&mut bus, &h);
     let frames = tx_frames(&h.wire, mark);
     assert_eq!(frames.len(), 1);
@@ -1628,6 +1653,7 @@ fn tel_burst_disarms_on_zero_count_write() {
     for i in 0..16u16 {
         feed.on_tick(&pos_sample(i));
     }
+    bus.poll_tel();
     bus.poll_tel();
     drain_tx(&mut bus, &h);
 
