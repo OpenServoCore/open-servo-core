@@ -1,6 +1,6 @@
 //! Hardware-suite discovery: the protocol sec 9.2 prefix-tree walk over
-//! broadcast ENUM. Push-pull UART has no dominant-bit
-//! arbitration, so simultaneous ENUM responses arrive as garbage -- and
+//! broadcast ENUM. A UART has no bit arbitration (a servo does not
+//! hear its own TX), so simultaneous ENUM responses arrive as garbage - and
 //! garbage IS the collision signal that drives the descent. Probes ride
 //! the adapter's engine (SUBMIT), whose terminal evidence (statuses,
 //! garble, trailing energy) is the collision verdict -- the ring counts

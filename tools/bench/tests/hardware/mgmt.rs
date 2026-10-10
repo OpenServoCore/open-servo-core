@@ -1,3 +1,4 @@
+use bench::BOOT_BAUD;
 use bench::osc::{
     REBOOT_SETTLE_MS, SAVE_SETTLE_MS, build_assign, build_enum, build_factory, build_ping,
     build_read, build_reboot, build_save, build_write,
@@ -64,18 +65,20 @@ fn assign_moves_the_id_and_acks_from_it() {
 /// REBOOT (real erase, page program, and boot overlay on real flash), then
 /// FACTORY wipes both slots and its self-reboot restores board defaults.
 /// Fleet-safe tail: factory also resets the DUT's ID to the board default
-/// (which may collide with a live fleet id), so the first post-factory
-/// exchange is a UID-addressed ASSIGN back home, then a SAVE re-persists
-/// the identity -- the bus leaves exactly as found. Reads are collected
+/// (which may collide with a live fleet id) and its baud to the boot baud,
+/// so the first post-factory exchange is a UID-addressed ASSIGN back home,
+/// then the home baud, then a SAVE re-persists both, so the bus leaves
+/// exactly as found. Reads are collected
 /// first and asserted only after the restore, so a bad marker never
 /// strands a saved image on the bench.
 #[serial]
 #[test]
 fn save_persists_across_reboot_until_factory() {
-    const MARKER: u16 = 123; // response_deadline_us; board default is 60
+    const MARKER: u16 = 123; // response_deadline_us; any non-default value
 
     let mut b = bench();
     let id = b.id();
+    let home_baud = b.home_baud();
     let uid = b.dut_uid();
 
     b.status_ok(&build_write(
@@ -102,10 +105,12 @@ fn save_persists_across_reboot_until_factory() {
     // the DUT booted with may belong to another servo on a fleet.
     b.status_ok_within(&build_factory(id), SAVE_SETTLE_MS);
     std::thread::sleep(std::time::Duration::from_millis(REBOOT_SETTLE_MS));
+    b.follow_baud(BOOT_BAUD);
     let rehomed = b.status_ok(&build_assign(&uid, id));
     let restored = b
         .status_ok(&build_read(id, RESPONSE_DEADLINE_US, 2))
         .payload;
+    b.switch_baud(home_baud);
     b.status_ok_within(&build_save(id), SAVE_SETTLE_MS);
 
     assert_eq!(dirty_before, 1, "config write marks modified-since-save");

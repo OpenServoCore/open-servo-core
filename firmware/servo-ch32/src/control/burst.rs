@@ -20,7 +20,7 @@
 use core::cell::SyncUnsafeCell;
 use core::sync::atomic::compiler_fence;
 
-use portable_atomic::{AtomicBool, AtomicU8, Ordering};
+use portable_atomic::{AtomicU8, Ordering};
 
 use osc_servo_core::kernel::limits::flag;
 use osc_servo_core::regions::burst::{
@@ -51,16 +51,13 @@ const BURST_SPACING_TICKS: u16 = (chip::MOTOR_PWM_FREQ_HZ / 10) as u16;
 /// is never refused by the spacing rule.
 const ARMED_AT_BOOT: u32 = 0u32.wrapping_sub(BURST_SPACING_TICKS as u32);
 
-/// `delay_cycles` iterations per microsecond. It spins on `spin_loop`, which
-/// costs at least one HCLK cycle per iteration and on this core rather more,
-/// so sizing a drain in HCLK cycles is a floor on the wait, never a ceiling.
-const DRAIN_ITERS_PER_US: u32 = HCLK_HZ / 1_000_000;
+const CYCLES_PER_US: u32 = HCLK_HZ / 1_000_000;
 /// One 7-slot scan retires: 182 ADCCLK at 24 MHz = 7.58 us.
-const ADC_SCAN_DRAIN: u32 = 8 * DRAIN_ITERS_PER_US;
+const ADC_SCAN_DRAIN: u32 = 8 * CYCLES_PER_US;
 /// Per frame slot, two conversions retire: clearing CONT lets the frame in
 /// flight finish, and that CTLR2 write can start one more frame of its own
 /// accord. 26 ADCCLK at 24 MHz = 1.08 us each.
-const ADC_SLOT_DRAIN: u32 = 3 * DRAIN_ITERS_PER_US;
+const ADC_SLOT_DRAIN: u32 = 3 * CYCLES_PER_US;
 
 /// Free-running frame capture. Not circular: the run stops itself at
 /// TC and the buffer stays frozen for readback. HT is the step trigger.
@@ -81,11 +78,7 @@ static BURST_BUF: SyncUnsafeCell<[u16; BURST_LEN]> = SyncUnsafeCell::new([0; BUR
 /// it while the DMA1 CH1 vector writes it. Written only from that vector.
 static STATE: AtomicU8 = AtomicU8::new(state::IDLE);
 
-/// Set at restore, cleared by the scan TC that stamps `restore_dir`. Same
-/// vector writes and reads it; atomic so the prologue's load stands on its own.
-static WITNESS_DUE: AtomicBool = AtomicBool::new(false);
-
-/// The rest of the FSM: DMA1 CH1 vector (PFIC LOW) only, never the main loop;
+/// The rest of the FSM: DMA1 CH1 vector (PFIC HIGH) only, never the main loop;
 /// `install` writes it once, pre-IRQ.
 struct Fsm {
     /// `sample_tick` at the last accepted arm.
@@ -139,24 +132,6 @@ fn dir_now() -> u8 {
     }
 }
 
-/// Scan-geometry witness, and it MUST be sampled at the scan TC itself. DIR
-/// answers "which scan landed second" only inside the ~17 us between the peak
-/// scan's TC and the next trough trigger; the kernel body that runs after this
-/// point is longer than that window, so a sample taken at the ISR tail reads a
-/// later, arbitrary half of the period and says nothing (bench: UP on every
-/// capture while the geometry was verifiably correct).
-#[inline(always)]
-pub fn witness_scan_tc(shared: &Shared) {
-    if !WITNESS_DUE.load(Ordering::Relaxed) {
-        return;
-    }
-    WITNESS_DUE.store(false, Ordering::Relaxed);
-    // SAFETY: BURST is RO to the host, so this context is its sole writer.
-    unsafe {
-        (&raw mut (*shared.table.region_ptr()).burst.window.restore_dir).write_volatile(dir_now())
-    };
-}
-
 #[inline]
 fn publish_state(p: *mut ControlTable, s: u8) {
     STATE.store(s, Ordering::Relaxed);
@@ -178,7 +153,7 @@ fn spaced(now: u32, armed_at: u32) -> bool {
 pub fn poll_arm(shared: &Shared) {
     let p = shared.table.region_ptr();
     let s = STATE.load(Ordering::Relaxed);
-    // SAFETY: transport-owned (PFIC HIGH) field, read raw-volatile without
+    // SAFETY: transport-owned (bus-level) field, read raw-volatile without
     // forming `&T` -- the kernel's own contract for CONTROL/CONFIG reads.
     let arm = unsafe { (&raw const (*p).control.burst.arm).read_volatile() };
     if s == state::IDLE && arm != 1 {
@@ -281,7 +256,7 @@ pub fn on_dma_event(shared: &Shared) {
     }
 }
 
-/// Suspend the scan and open the capture. The drains below outlast the TC's
+/// Suspend the scan and open the capture. This body can outlast the TC's
 /// ~17 us of slack, which costs nothing: the tap is shut and both triggers
 /// parked in the first write, so no TRGO starts anything after it, and no
 /// injected tap conversion resets a frame slot mid-capture and slips the
@@ -316,17 +291,23 @@ fn launch(p: *mut ControlTable) {
         BURST_LEN as u16,
     );
     dma::enable(CH);
-    adc::start_continuous_dma();
+    // The stamp is the first conversion's phase only if nothing runs between
+    // the start and the reads: an ISR there reads DIR after the trough turn
+    // and the host folds the whole burst 2 x CNT late.
+    let (cnt, dir) = critical_section::with(|_| {
+        adc::start_continuous_dma();
+        (timer::counter(), dir_now())
+    });
 
     // SAFETY: BURST is RO to the host, so this context is its sole writer.
     unsafe {
         let w = &raw mut (*p).burst.window;
-        (&raw mut (*w).start_cnt).write_volatile(timer::counter());
-        (&raw mut (*w).start_dir).write_volatile(dir_now());
+        (&raw mut (*w).start_cnt).write_volatile(cnt);
+        (&raw mut (*w).start_dir).write_volatile(dir);
         (&raw mut (*w).pwm_arr).write_volatile(timer::period());
         (&raw mut (*w).samples_len).write_volatile(BURST_LEN as u16);
         (&raw mut (*w).step_index).write_volatile(0);
-        (&raw mut (*w).restore_dir).write_volatile(dir::UP);
+        (&raw mut (*w).restore_dir).write_volatile(dir::DOWN);
         (&raw mut (*w).chans_echo).write_volatile(f.chans);
         (&raw mut (*w).frame_len).write_volatile(len);
         // No page of this capture is published yet; a host reading before its
@@ -394,7 +375,6 @@ fn restore() {
         adc::arm_scan(adc::Extsel::TIM1_TRGO);
         timer::force_update_event();
     });
-    WITNESS_DUE.store(true, Ordering::Relaxed);
 }
 
 /// Main-loop page copy. Publishing the page under `PAGE_MID_COPY` and only
@@ -407,7 +387,7 @@ pub fn poll_page(shared: &Shared) {
     }
     let p = shared.table.region_ptr();
     // SAFETY: `page` is transport-owned, read raw-volatile; the BURST window
-    // is RO to the host and written only here and from the LOW vector, which
+    // is RO to the host and written only here and from the DMA1 CH1 vector, which
     // touches nothing in it while Done stands.
     unsafe {
         let page = (&raw const (*p).control.burst.page).read_volatile();

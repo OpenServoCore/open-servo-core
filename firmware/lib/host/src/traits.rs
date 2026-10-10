@@ -14,8 +14,10 @@ use osc_protocol::wire::BaudRate;
 /// power of two exceeding the largest legal frame (258) with polling margin.
 pub trait RxRing {
     fn bytes(&self) -> &[u8];
-    /// Index where the next received byte lands.
-    fn cursor(&self) -> u16;
+    /// Bytes ever received, wrapping; the low bits index where the next
+    /// one lands. A running count, so a consumer that falls a whole ring
+    /// behind sees a lap instead of an empty ring.
+    fn written(&self) -> u32;
 }
 
 /// One-shot compare on the host tick domain. The host is crystal-clocked --
@@ -35,7 +37,8 @@ pub trait Deadline {
 /// a `send` queued behind a break is legal, and blocking a character time
 /// inside the provider is acceptable.
 pub trait TxWire {
-    /// Claim the wire: push-pull drive (protocol sec 2 discipline).
+    /// Claim the wire for own TX. An echoing receiver is gated off here;
+    /// an open-drain bus end has no drive to switch.
     fn claim(&mut self);
     /// One law break: a 10-bit `0x00` character (protocol sec 3). Wire
     /// claimed. Never the off-law hardware SBK (~14 bits).
@@ -45,7 +48,7 @@ pub trait TxWire {
     /// Drive the line dominant and hold it (rescue pulse, protocol sec 9.1);
     /// ends at [`release`](Self::release). The engine times the pulse.
     fn hold_low(&mut self);
-    /// Release the wire: open-drain idle, TX off.
+    /// Release the wire: TX off, receiver back on, a held low ended.
     fn release(&mut self);
 }
 
@@ -53,8 +56,8 @@ pub trait TxWire {
 /// the sec 9.1 floor the rescue verb drops to.
 pub trait UsartBaud {
     fn apply(&mut self, baud: BaudRate);
-    /// Arbitrary rate, instrument-only: off-catalog divisors (a detuned
-    /// host is the clock-tracker's drift injector). The engine's own
+    /// Arbitrary rate, instrument-only: off-catalog divisors (the trim
+    /// suite's host-detune probe). The engine's own
     /// timing state stays on the nearest catalog rate.
     #[cfg(feature = "bench")]
     fn apply_raw(&mut self, bps: u32);

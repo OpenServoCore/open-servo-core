@@ -154,7 +154,7 @@ impl State {
 }
 
 pub struct ConfigStore {
-    /// Written by `boot_load` (pre-IRQ), then only from HIGH dispatch (the
+    /// Written by `boot_load` (pre-IRQ), then only from bus dispatch (the
     /// SESSION exclusivity invariant, `runtime::isr`) - never concurrent.
     state: SyncUnsafeCell<State>,
 }
@@ -215,7 +215,7 @@ impl osc_servo_core::ConfigStore for ConfigStore {
         calib: &[u8; CALIB_LEN],
         lut: &[i16; INTERVALS],
     ) -> Result<(), StoreError> {
-        // SAFETY: HIGH-dispatch exclusive after boot, see the field doc.
+        // SAFETY: bus-dispatch exclusive after boot, see the field doc.
         let state = unsafe { &mut *self.state.get() };
         let addr = slot_addr(state.config.next_slot);
         let header = persist::header(state.config.next_seq, config, profile);
@@ -247,7 +247,7 @@ impl osc_servo_core::ConfigStore for ConfigStore {
                 }
             }
         }
-        // SAFETY: HIGH-dispatch exclusive after boot, see the field doc.
+        // SAFETY: bus-dispatch exclusive after boot, see the field doc.
         unsafe { *self.state.get() = State::FRESH };
         Ok(())
     }

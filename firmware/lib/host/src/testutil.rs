@@ -15,7 +15,7 @@ pub const RING_LEN: usize = 512;
 
 struct RingState {
     buf: UnsafeCell<[u8; RING_LEN]>,
-    cursor: Cell<u16>,
+    written: Cell<u32>,
 }
 
 /// Counted RX ring the test feeds like the wire would.
@@ -26,7 +26,7 @@ impl FakeRing {
     pub fn new() -> Self {
         FakeRing(Rc::new(RingState {
             buf: UnsafeCell::new([0xFF; RING_LEN]),
-            cursor: Cell::new(0),
+            written: Cell::new(0),
         }))
     }
 
@@ -35,12 +35,12 @@ impl FakeRing {
         // SAFETY: test-only, single-threaded; never called while a
         // `bytes()` slice is live.
         let buf = unsafe { &mut *self.0.buf.get() };
-        let mut c = self.0.cursor.get() as usize;
+        let mut w = self.0.written.get();
         for &b in bytes {
-            buf[c] = b;
-            c = (c + 1) % RING_LEN;
+            buf[w as usize % RING_LEN] = b;
+            w = w.wrapping_add(1);
         }
-        self.0.cursor.set(c as u16);
+        self.0.written.set(w);
     }
 }
 
@@ -52,8 +52,8 @@ impl traits::RxRing for FakeRing {
         &arr[..]
     }
 
-    fn cursor(&self) -> u16 {
-        self.0.cursor.get()
+    fn written(&self) -> u32 {
+        self.0.written.get()
     }
 }
 

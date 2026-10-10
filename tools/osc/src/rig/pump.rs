@@ -165,6 +165,8 @@ pub(crate) struct BurstStats {
     pub(crate) samples: usize,
     pub(crate) holes: u64,
     pub(crate) garble: u16,
+    /// Whole adapter RX rings lost unread; their frames are among `holes`.
+    pub(crate) laps: u16,
     /// TEL rows the servo dropped from the burst: [`Servo::stream`] reads
     /// them off the table, a bare burst leaves 0.
     pub(crate) rows_dropped: u16,
@@ -264,6 +266,7 @@ pub(crate) fn exchange_tel_burst<P: Pipe>(
         samples: frames.len(),
         holes: asm.holes() + asm.skipped(),
         garble: reply.garble,
+        laps: reply.laps,
         rows_dropped: 0,
     };
     if matches!(reply.outcome, Outcome::Timeout { .. }) {
@@ -449,8 +452,8 @@ impl<'a, S: Servo> Pump<'a, S> {
                     self.lease.check_stream(samples)?;
                     let (frames, st) = s.stream(samples, goal, self.mask)?;
                     eprintln!(
-                        "tel: {} frames, {} samples, {} seq holes, {} garble bytes",
-                        st.frames, st.samples, st.holes, st.garble
+                        "tel: {} frames, {} samples, {} seq holes, {} garble bytes, {} ring laps",
+                        st.frames, st.samples, st.holes, st.garble, st.laps
                     );
                     let tel = TelBurst {
                         frames,

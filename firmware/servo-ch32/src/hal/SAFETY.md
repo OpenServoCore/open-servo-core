@@ -22,6 +22,11 @@ The chip has two PFIC priority classes:
 - **MAIN** — the dispatcher / service loop; preempted by any ISR; cannot
   preempt them.
 
+The motor kernel is the only HIGH ISR; the bus vectors share LOW. MAIN's
+`pfic::mask_bus` holds LOW off and leaves HIGH live, so it orders MAIN
+against the bus only: a register the kernel also writes still needs the
+helper's critical section.
+
 The chip has no atomic XOR / fetch-or on MMIO. The available atomic
 primitives are hardware-provided per-register:
 

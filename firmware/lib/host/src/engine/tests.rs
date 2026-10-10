@@ -186,8 +186,10 @@ fn timeout_when_the_bus_stays_silent() {
     exchange(&mut r, id, inst, &[]);
     assert!(r.bus.poll().is_none());
 
-    // Window: RESPONSE_DEADLINE(60) + (10 + 16 margin) bytes x 10 us = 320.
-    r.clock.advance(321);
+    // Window: RESPONSE_DEADLINE(1000) + (10 + 16 margin) bytes x 10 us = 1260.
+    r.clock.advance(1259);
+    assert!(r.bus.poll().is_none());
+    r.clock.advance(2);
     let t = expect_done(&mut r);
     assert_eq!(t.outcome, Outcome::Timeout { slot: 0 });
     assert_eq!(t.evidence.statuses, 0);
@@ -555,6 +557,47 @@ fn corrupt_stream_frame_is_garble_never_a_status() {
 }
 
 #[test]
+fn a_ring_lap_mid_stream_is_counted_not_silent() {
+    let mut r = rig();
+    arm_stream(&mut r, Id::new(5), 5_000);
+    r.ring.feed(&sealed_status(5, ResultCode::Ok, &[]));
+    let _ = expect_status(&mut r);
+
+    // Nine 64 B frames land while the consumer is stalled: the first eight
+    // are one whole ring, overwritten by the ninth before any walk.
+    let filler = |seq: u8| {
+        let mut p = [0x55; 58];
+        p[0] = seq;
+        p[1] = 0;
+        sealed_status(5, ResultCode::Stream, &p)
+    };
+    assert_eq!(filler(0).len() * 8, crate::testutil::RING_LEN);
+    for seq in 0..9 {
+        r.ring.feed(&filler(seq));
+    }
+    r.ring
+        .feed(&sealed_status(5, ResultCode::Stream, &[9, 1, 1, 0, 9, 9]));
+
+    let mut seqs = Vec::new();
+    let t = loop {
+        match r.bus.poll() {
+            Some(Event::Status { payload, .. }) => seqs.push(payload.u8_at(0)),
+            Some(Event::Done(t)) => break t,
+            None => panic!("stream never finished"),
+            Some(other) => panic!("unexpected {other:?}"),
+        }
+    };
+    assert_eq!(
+        seqs,
+        [Some(8), Some(9)],
+        "the walk resumes at the lapped index"
+    );
+    assert_eq!(t.outcome, Outcome::Complete);
+    assert_eq!(t.evidence.laps, 1);
+    assert_eq!(t.evidence.garble, 0);
+}
+
+#[test]
 fn stream_window_never_rearms_on_progress() {
     let mut r = rig();
     arm_stream(&mut r, Id::new(5), 1_000);
@@ -767,7 +810,7 @@ mod wire {
     #[test]
     fn wire_baud_applies_raw_and_completes_immediately() {
         let mut r = rig();
-        // One BRR step off 1M -- the tracker's host-detune probe rate.
+        // One BRR step off 1M - the trim suite's host-detune probe rate.
         r.bus.wire_baud(993_103).unwrap();
         assert_eq!(r.baud.applied_raw(), vec![993_103]);
         let _ = expect_wire_done(&mut r);

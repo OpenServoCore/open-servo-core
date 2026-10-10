@@ -154,7 +154,7 @@ fn plain<'a>(op: Opcode, inst: Inst, frame_id: Id, pay: FrameBytes<'a>, own: Id)
         // Group opcodes are routed before this call.
         _ => Request::Unsupported,
     };
-    // sec 5: a broadcast reply would collide on the shared push-pull wire, so
+    // sec 5: a broadcast reply would collide on the shared wire, so
     // plain ops answer only unicast; NOREPLY suppresses either way. ENUM and
     // ASSIGN are the sec 9.2 carve-out: broadcast-addressed by design, with the
     // dispatcher's UID match electing the sole replier -- a malformed pair

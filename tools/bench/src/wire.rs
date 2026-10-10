@@ -76,7 +76,7 @@ impl Wire {
     }
 
     /// Host UART rate, raw bps -- off-catalog divisors allowed (the
-    /// clock-tracker's detune injector rides this). Clears capture state:
+    /// trim suite's host-detune probe rides this). Clears capture state:
     /// stamps decoded across a rate change would lie.
     pub fn set_baud(&mut self, bps: u32) -> Result<()> {
         self.client.wire_baud(bps)?;

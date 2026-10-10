@@ -193,11 +193,10 @@ fn configure_pins(w: &BoardWiring) {
         gpio::configure(ch.pin(), PinMode::ANALOG);
     }
 
-    // PC0 idle: AF open-drain -- released, the external bus pull-up holds
-    // mark (spike break_framing `pc0_drive`; a bare wire with no pull-up
-    // floats low and trips rescue). TxWire flips to AF push-pull for the
-    // TX window so data edges never ride the pull-up (transport sec 2, F8).
-    // PC1 is not the bus's: HDSEL ties RX to the TX pin internally.
+    // PC0 is AF open-drain for good: the servo only ever pulls low, and the
+    // host pull-up and the board keeper hold mark (transport sec 2; a bare
+    // wire with no pull-up floats low and trips rescue). PC1 is not the
+    // bus's: HDSEL ties RX to the TX pin internally.
     gpio::configure(chip::BUS_USART_MAPPING.tx_pin(), PinMode::AF_OPEN_DRAIN);
 }
 

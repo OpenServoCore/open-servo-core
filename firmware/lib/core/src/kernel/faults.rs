@@ -3,6 +3,8 @@
 //! edge is the only ack - it clears the mask and the detector state, and a
 //! still-present condition re-latches through the normal detectors.
 
+use super::DECIM_MED;
+
 pub const BIT_OVER_CURRENT: u8 = 1 << 0;
 pub const BIT_OVER_TEMP: u8 = 1 << 1;
 pub const BIT_STALL: u8 = 1 << 2;
@@ -150,12 +152,11 @@ impl Detectors {
         }
     }
 
-    /// MEDIUM: tracking-error persistence; trips once `trip_ticks` of
-    /// elapsed time (`ticks` per step) pass over the threshold without a
-    /// break.
-    pub fn pos_err_sample(&mut self, over: bool, ticks: u32, trip_ticks: u32) -> bool {
+    /// MEDIUM: tracking-error persistence; trips once `trip_ticks` kernel
+    /// ticks pass over the threshold without a break.
+    pub fn pos_err_sample(&mut self, over: bool, trip_ticks: u32) -> bool {
         if over {
-            self.pos_err_ticks = self.pos_err_ticks.saturating_add(ticks);
+            self.pos_err_ticks = self.pos_err_ticks.saturating_add(DECIM_MED as u32);
             self.pos_err_ticks >= trip_ticks
         } else {
             self.pos_err_ticks = 0;
@@ -235,19 +236,14 @@ mod tests {
     #[test]
     fn pos_err_timer() {
         let mut d = Detectors::new();
+        let trip = 10 * DECIM_MED as u32;
         for _ in 0..9 {
-            assert!(!d.pos_err_sample(true, 1, 10));
+            assert!(!d.pos_err_sample(true, trip));
         }
-        assert!(!d.pos_err_sample(false, 1, 10));
+        assert!(!d.pos_err_sample(false, trip));
         for _ in 0..9 {
-            assert!(!d.pos_err_sample(true, 1, 10));
+            assert!(!d.pos_err_sample(true, trip));
         }
-        assert!(d.pos_err_sample(true, 1, 10));
-        // elapsed time: steps that lost ticks reach the trip in fewer
-        let mut d = Detectors::new();
-        for _ in 0..3 {
-            assert!(!d.pos_err_sample(true, 3, 10));
-        }
-        assert!(d.pos_err_sample(true, 3, 10));
+        assert!(d.pos_err_sample(true, trip));
     }
 }

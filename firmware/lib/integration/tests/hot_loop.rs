@@ -21,7 +21,7 @@ use rstest_reuse::apply;
 mod support;
 use support::{matrix, sim};
 
-/// Break-keyed reclaim makes the 60 us default sound at every baud (see chains.rs).
+/// Break-keyed reclaim keeps a 60 us window sound at every baud (see chains.rs).
 const CHAIN_DEADLINE_US: u16 = 60;
 const BCAST: u8 = 0xFE;
 const IDS: [u8; 3] = [1, 2, 3];
@@ -221,9 +221,8 @@ fn hot_loop_survives_handler_latency(baud_idx: u8) {
 
     let mut sim = sim(baud_idx);
     // RESPONSE_DEADLINE must exceed worst-case dispatch+staging latency or a
-    // chain slot reclaims into a live-but-slow predecessor (band finding,
-    // transport sec 9 acceptance): with 70 us handler bodies the 60 us default
-    // is dishonest -- a real deployment tunes this register to its worst case.
+    // chain slot reclaims into a live-but-slow predecessor (transport sec 9):
+    // with 70 us handler bodies a 60 us window is too short.
     for id in IDS {
         sim.add_servo_with(id, 0, 250);
     }

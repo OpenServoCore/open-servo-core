@@ -51,16 +51,16 @@ pub trait CrcEngine {
     fn result(&mut self) -> Option<u16>;
 }
 
-/// TX side of the half-duplex wire (sec 4.2): drive discipline + break + one
-/// DMA arm at a time. Arm completion surfaces as the chip TC ISR calling
-/// the driver's `on_tx_complete`.
+/// TX side of the half-duplex wire (sec 4.2): break + one DMA arm at a time.
+/// The pin stays open drain throughout (sec 2). Arm completion surfaces as
+/// the chip TC ISR calling the driver's `on_tx_complete`.
 pub trait TxWire {
-    /// Claim the wire: push-pull drive, then send the break (SBK).
+    /// Send the break that opens the frame (sec 3).
     fn start_frame(&mut self);
     /// Stream one DMA arm. Called once per arm; the next arm is queued from
     /// `on_tx_complete`. UART bytes tolerate the us-scale re-arm gap (sec 4.2).
     fn send(&mut self, span: &[u8]);
-    /// Release the wire: open-drain, TX DMA off.
+    /// End the TX window: TX DMA off.
     fn release(&mut self);
 }
 
@@ -70,18 +70,15 @@ pub trait UsartBaud {
     fn apply(&mut self, baud: BaudRate);
 }
 
-/// Break timestamps latched by hardware at the break detector's trigger
-/// (transport sec 8), one per break the receiver heard, in wire order: the
-/// low 16 bits of the [`Deadline`] tick the detector triggered at (the
-/// latch is a 16-bit counter; the driver places each stamp from the ring
-/// position of its break). The servo's own breaks never latch. A stamp is
-/// the detector's instant however late or coalesced the wake's service
-/// runs, so adjacent stamps measure the wire, not the CPU.
+/// Break times latched by hardware at the break detector's trigger
+/// (transport sec 8): the low 16 bits of a [`Deadline`]-rate count, one per
+/// break the detector heard, in wire order, however late or coalesced the
+/// wake's service runs. The servo's own breaks never latch.
 pub trait BreakStamps {
-    /// The oldest latched stamp not yet taken.
+    /// The oldest stamp not yet taken.
     fn take(&mut self) -> Option<u16>;
-    /// Drop every latched stamp not yet taken; how many there were.
-    fn clear(&mut self) -> u16;
+    /// Drop every stamp not yet taken.
+    fn clear(&mut self);
 }
 
 /// Role bundle for the `ServoBus` composite (driver-pattern sec 5.4).

@@ -71,6 +71,14 @@ wlink-iap -f osc-adapter.bin          # flash the adapter APP
 adapter side that door is `osc bootloader` (the adapter does not implement
 the stock protocol). Verify with `osc info` (enumerates as `1209:0001`).
 
+## Bus wiring
+
+DATA is the header TX pin (PB10), single wire, plus GND. The adapter only
+ever sinks the line (open-drain), so DATA needs a pull-up at the adapter
+end: 680 ohm to the header 3V3 on the bench pigtail. Keep the 3V3 rail on
+while a separately powered servo is on the bus: with the rail off the
+pull-up becomes a pull-down, and the servo reads a held low as a rescue.
+
 ## Diagnostics
 
 `osc info` also prints what the adapter recorded about its last reset: the

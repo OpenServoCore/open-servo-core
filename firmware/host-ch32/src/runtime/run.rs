@@ -11,6 +11,7 @@ use osc_host::traits::tick_reached;
 use crate::hal::{iwdg, pfic, systick};
 use crate::providers::edges::Edges;
 use crate::providers::pins;
+use crate::providers::ring::RxRing;
 use crate::runtime::{Drivers, crash, iap, init, usb::UsbDevice};
 
 /// Outbound record staging between the sans-io server and USB IN packets.
@@ -115,9 +116,11 @@ pub fn run() -> ! {
             txq.clear();
             server.reset_session();
         }
-        // Keep the edge-capture lap accounting honest (main-loop cadence
-        // is the overflow detector's sampling clock).
+        // Keep the edge-capture and RX-ring lap accounting honest (main-loop
+        // cadence is their sampling clock; the pump gate below may keep the
+        // engine off the ring for many passes).
         Edges::poll_accumulate();
+        RxRing::poll_accumulate();
 
         // Inbound pipe bytes -> server -> engine. Held NAK-parked until
         // the queue can absorb the worst-case reply burst.

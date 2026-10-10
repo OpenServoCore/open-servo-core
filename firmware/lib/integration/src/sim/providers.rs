@@ -8,6 +8,7 @@ use std::collections::VecDeque;
 use std::rc::Rc;
 
 use osc_protocol::crc::osc_crc_continue;
+use osc_protocol::wire;
 use osc_servo_core::BaudRate;
 use osc_servo_drivers::traits::bus::{
     BreakStamps, CrcEngine, Deadline, Providers, RxRing, TxWire, UsartBaud, tick_reached,
@@ -26,6 +27,7 @@ struct RingBuf([u8; RING_LEN]);
 pub struct RingState {
     buf: UnsafeCell<RingBuf>,
     cursor: Cell<u16>,
+    written: Cell<u32>,
 }
 
 impl RingState {
@@ -33,6 +35,7 @@ impl RingState {
         Rc::new(Self {
             buf: UnsafeCell::new(RingBuf([0; RING_LEN])),
             cursor: Cell::new(0),
+            written: Cell::new(0),
         })
     }
 
@@ -45,6 +48,7 @@ impl RingState {
         // calls, never while a `bytes()` slice is live (see `RxRing::bytes`).
         unsafe { (*self.buf.get()).0[i] = b };
         self.cursor.set(((i + 1) % RING_LEN) as u16);
+        self.written.set(self.written.get().wrapping_add(1));
     }
 
     pub fn bytes(&self) -> &[u8] {
@@ -54,14 +58,15 @@ impl RingState {
         &arr[..]
     }
 
-    pub fn cursor(&self) -> u16 {
-        self.cursor.get()
+    pub fn written(&self) -> u32 {
+        self.written.get()
     }
 
     /// Empty the ring: the DMA state a reset leaves behind, so a rebuilt
     /// driver's framer (cursor 0) agrees with the buffer.
     pub fn reset(&self) {
         self.cursor.set(0);
+        self.written.set(0);
     }
 }
 
@@ -147,64 +152,33 @@ impl BaudState {
     }
 }
 
-/// The break detector's hardware stamps (transport sec 8): the wire model
-/// latches the servo's local clock at every qualified break's detector
-/// trigger, in wire order, before the wake is delivered or pended - the
-/// chip's DMA latch, which no handler body delays. Own breaks are never
-/// heard (F9), so none is latched.
-pub struct StampState {
-    latched: RefCell<VecDeque<u32>>,
-    latches: Cell<u64>,
-    takes: Cell<u64>,
-    drops: Cell<u64>,
-}
+/// Break stamps latched at each detector trigger, the servo's local clock
+/// truncated to 16 bits as the chip's timer latches it.
+#[derive(Default)]
+pub struct StampState(RefCell<VecDeque<u16>>);
 
 impl StampState {
-    pub fn new() -> Rc<Self> {
-        Rc::new(Self {
-            latched: RefCell::new(VecDeque::new()),
-            latches: Cell::new(0),
-            takes: Cell::new(0),
-            drops: Cell::new(0),
-        })
-    }
-
-    /// Stamps the driver cleared untaken since boot.
-    pub fn drops(&self) -> u64 {
-        self.drops.get()
-    }
-
-    pub fn latch(&self, stamp: u32) {
-        self.latched.borrow_mut().push_back(stamp);
-        self.latches.set(self.latches.get() + 1);
-    }
-
-    /// Stamps latched since boot.
-    pub fn latches(&self) -> u64 {
-        self.latches.get()
-    }
-
-    /// Stamps the driver took since boot.
-    pub fn takes(&self) -> u64 {
-        self.takes.get()
-    }
-
-    /// The DMA state a reset leaves behind: an empty ring.
-    pub fn reset(&self) {
-        self.latched.borrow_mut().clear();
+    pub fn latch(&self, stamp: u16) {
+        self.0.borrow_mut().push_back(stamp);
     }
 }
 
 /// Handles the Sim keeps to reach into one servo's state during delivery.
 /// Cloned into the servo itself so a reboot re-enters bringup over the same
-/// peripherals: the ring, the skewed clock, the stamp latch and the applied
-/// baud are silicon, only the driver on top of them restarts.
+/// peripherals: the ring, the skewed clock and the applied baud are
+/// silicon, only the driver on top of them restarts.
 #[derive(Clone)]
 pub struct Handles {
     pub ring: Rc<RingState>,
     pub deadline: Rc<DeadlineState>,
     pub baud: Rc<BaudState>,
+    /// Ticks the clock reads stale by until the next ring read: a
+    /// preemption between the two.
+    pub clock_lag: Rc<Cell<u64>>,
     pub stamps: Rc<StampState>,
+    /// Ticks the next own break starts after its trigger: CPU work between
+    /// the two (a TEL stage from the kernel tail).
+    pub tx_lead: Rc<Cell<u64>>,
 }
 
 impl Handles {
@@ -213,32 +187,39 @@ impl Handles {
             ring: RingState::new(),
             deadline: DeadlineState::new(),
             baud: BaudState::new(rate),
-            stamps: StampState::new(),
+            clock_lag: Rc::new(Cell::new(0)),
+            stamps: Rc::default(),
+            tx_lead: Rc::new(Cell::new(0)),
         }
     }
 }
 
 // --- providers --------------------------------------------------------------
 
-pub struct SimRing(Rc<RingState>);
+pub struct SimRing {
+    state: Rc<RingState>,
+    clock_lag: Rc<Cell<u64>>,
+}
 
 impl SimRing {
-    pub fn new(state: Rc<RingState>) -> Self {
-        Self(state)
+    pub fn new(state: Rc<RingState>, clock_lag: Rc<Cell<u64>>) -> Self {
+        Self { state, clock_lag }
     }
 }
 
 impl RxRing for SimRing {
     fn bytes(&self) -> &[u8] {
+        self.clock_lag.set(0);
         // SAFETY: test-only aliasing (mirrors mocks::bus::FakeRing); the buffer
         // is never mutated while a returned slice is live -- the Sim pushes only
         // between driver calls.
-        let arr: &[u8; RING_LEN] = unsafe { &(*self.0.buf.get()).0 };
+        let arr: &[u8; RING_LEN] = unsafe { &(*self.state.buf.get()).0 };
         &arr[..]
     }
 
     fn cursor(&self) -> u16 {
-        self.0.cursor.get()
+        self.clock_lag.set(0);
+        self.state.cursor.get()
     }
 }
 
@@ -246,11 +227,22 @@ pub struct SimDeadline {
     core: Rc<RefCell<Core>>,
     state: Rc<DeadlineState>,
     idx: usize,
+    clock_lag: Rc<Cell<u64>>,
 }
 
 impl SimDeadline {
-    pub fn new(core: Rc<RefCell<Core>>, state: Rc<DeadlineState>, idx: usize) -> Self {
-        Self { core, state, idx }
+    pub fn new(
+        core: Rc<RefCell<Core>>,
+        state: Rc<DeadlineState>,
+        idx: usize,
+        clock_lag: Rc<Cell<u64>>,
+    ) -> Self {
+        Self {
+            core,
+            state,
+            idx,
+            clock_lag,
+        }
     }
 }
 
@@ -267,7 +259,8 @@ impl Deadline for SimDeadline {
     const CLOCK_TRIM_STEP_PPM: u32 = 2500;
 
     fn now(&self) -> u32 {
-        self.state.local_u64(self.core.borrow().now()) as u32
+        (self.state.local_u64(self.core.borrow().now()) as u32)
+            .wrapping_sub(self.clock_lag.get() as u32)
     }
 
     fn set(&mut self, at: u32) {
@@ -313,7 +306,6 @@ impl Deadline for SimDeadline {
 /// instantaneous). Even-length feeds are asserted (F12); the even-*address*
 /// half of F12 is not -- heap-backed test buffers give no absolute-parity
 /// guarantee even where the driver's offsets are correct.
-#[derive(Default)]
 pub struct SimCrc {
     state: u16,
     snap: Vec<u8>,
@@ -321,7 +313,16 @@ pub struct SimCrc {
 
 impl SimCrc {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            state: 0,
+            snap: vec![0; wire::covered_len(wire::len_for(wire::MAX_PAYLOAD))],
+        }
+    }
+}
+
+impl Default for SimCrc {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -337,13 +338,7 @@ impl CrcEngine for SimCrc {
 
     fn snapshot(&mut self, off: u16, src: &[u8]) -> *const u8 {
         let off = off as usize;
-        if self.snap.len() < off + src.len() {
-            self.snap.resize(off + src.len(), 0);
-        }
         self.snap[off..off + src.len()].copy_from_slice(src);
-        // SAFETY-adjacent note: tests never grow the Vec between a snapshot
-        // and its consumption, so the pointer stays stable like the chip's
-        // static buffer.
         unsafe { self.snap.as_ptr().add(off) }
     }
 
@@ -359,15 +354,22 @@ pub struct SimWire {
     /// End tick of the last-scheduled byte -- the next arm streams from here so
     /// arms sit back-to-back on the wire (sec 4.2 tolerates the re-arm gap).
     tx_cursor: Cell<u64>,
+    lead: Rc<Cell<u64>>,
 }
 
 impl SimWire {
-    pub fn new(core: Rc<RefCell<Core>>, baud: Rc<BaudState>, idx: usize) -> Self {
+    pub fn new(
+        core: Rc<RefCell<Core>>,
+        baud: Rc<BaudState>,
+        idx: usize,
+        lead: Rc<Cell<u64>>,
+    ) -> Self {
         Self {
             core,
             baud,
             idx,
             tx_cursor: Cell::new(0),
+            lead,
         }
     }
 }
@@ -377,7 +379,7 @@ impl TxWire for SimWire {
         let baud = self.baud.current();
         let brk = break_ticks(baud);
         let mut c = self.core.borrow_mut();
-        let start = c.now();
+        let start = c.now() + self.lead.take();
         let break_end = start + brk;
         c.claim(Talker::Servo(self.idx), start, break_end);
         c.schedule(
@@ -422,32 +424,6 @@ impl TxWire for SimWire {
     }
 }
 
-pub struct SimStamps(Rc<StampState>);
-
-impl SimStamps {
-    pub fn new(state: Rc<StampState>) -> Self {
-        Self(state)
-    }
-}
-
-impl BreakStamps for SimStamps {
-    fn take(&mut self) -> Option<u16> {
-        let stamp = self.0.latched.borrow_mut().pop_front();
-        if stamp.is_some() {
-            self.0.takes.set(self.0.takes.get() + 1);
-        }
-        stamp.map(|s| s as u16)
-    }
-
-    fn clear(&mut self) -> u16 {
-        let mut latched = self.0.latched.borrow_mut();
-        let n = latched.len() as u16;
-        latched.clear();
-        self.0.drops.set(self.0.drops.get() + n as u64);
-        n
-    }
-}
-
 pub struct SimBaud {
     state: Rc<BaudState>,
 }
@@ -461,6 +437,24 @@ impl SimBaud {
 impl UsartBaud for SimBaud {
     fn apply(&mut self, baud: BaudRate) {
         self.state.apply(baud);
+    }
+}
+
+pub struct SimStamps(Rc<StampState>);
+
+impl SimStamps {
+    pub fn new(state: Rc<StampState>) -> Self {
+        Self(state)
+    }
+}
+
+impl BreakStamps for SimStamps {
+    fn take(&mut self) -> Option<u16> {
+        self.0.0.borrow_mut().pop_front()
+    }
+
+    fn clear(&mut self) {
+        self.0.0.borrow_mut().clear();
     }
 }
 

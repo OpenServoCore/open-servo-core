@@ -73,7 +73,9 @@ where a comparison needs it.
 - `09-pot-linearization`: the ripple-referenced position table and degrees
   from counted teeth.
 - `10-sense-chain-boards`: capture integrity, and the sense chain graded
-  against a meter on a resistor grid, board against board.
+  against a meter on a resistor grid, board against board. Then the current
+  reading on rev 2A's final amplifier network, on a stalled MG90 and a 15.3 ohm
+  resistor, and the settle gain it needs.
 - `11-back-emf-on-rev-2a`: the low-duty back-EMF over-read, re-scored on rev 2A.
 - `12-pot-table-free-vs-governed`: how far the position table moves between
   sessions, against its own split-half floor.

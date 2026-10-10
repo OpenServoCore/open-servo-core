@@ -125,3 +125,60 @@ fn pended_breaks_coalesce_like_pfic() {
         "three wire breaks against a busy body must coalesce to two deliveries"
     );
 }
+
+/// The ring hook: clock reads ahead of the first ring read come back stale
+/// by the preemption, reads after it are current.
+#[test]
+fn clock_reads_stale_until_the_first_ring_read() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use osc_servo_drivers::traits::bus::{Deadline, RxRing};
+
+    use super::core::{Core, Event};
+    use super::providers::{Handles, SimDeadline, SimRing};
+
+    const NOW: u64 = 1_000 * TICKS_PER_US;
+    const LAG: u64 = 50 * TICKS_PER_US;
+    let core = Rc::new(RefCell::new(Core::new()));
+    core.borrow_mut().schedule(Event::Idle, NOW);
+    core.borrow_mut().pop();
+    let h = Handles::new(BaudRate::B3000000);
+    let ring = SimRing::new(h.ring.clone(), h.clock_lag.clone());
+    let clock = SimDeadline::new(core, h.deadline.clone(), 0, h.clock_lag.clone());
+
+    h.clock_lag.set(LAG);
+    assert_eq!(clock.now() as u64, NOW - LAG);
+    assert_eq!(clock.now() as u64, NOW - LAG);
+    ring.cursor();
+    assert_eq!(clock.now() as u64, NOW);
+}
+
+/// A preempted body enters on time but runs its effects after the
+/// preemption: the PING's break body is held 100 us, so the reply leaves
+/// no earlier than that past the break.
+#[test]
+fn preempted_body_runs_after_the_preemption() {
+    const PREEMPT_US: u64 = 100;
+    let mut sim = Sim::new(BaudRate::B3000000);
+    let s = sim.add_servo(SERVO_ID);
+    sim.preempt_before_ring_read(s, PREEMPT_US);
+    sim.host_send(&instruction(SERVO_ID, Opcode::Ping, 0, &[]));
+    let frames = sim.run();
+
+    let inst = frames
+        .iter()
+        .find(|f| f.from == Source::Host)
+        .expect("host frame");
+    let reply = frames
+        .iter()
+        .find(|f| matches!(f.from, Source::Servo(_)))
+        .expect("servo reply");
+    assert_valid(reply);
+    assert!(
+        reply.at >= inst.at + PREEMPT_US * TICKS_PER_US,
+        "reply at {} inside the preemption from {}",
+        reply.at,
+        inst.at
+    );
+}

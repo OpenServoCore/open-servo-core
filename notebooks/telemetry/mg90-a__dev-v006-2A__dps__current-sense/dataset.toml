@@ -1,0 +1,102 @@
+servo = "mg90-a"
+supply = "dps"
+rule = "limit"
+captured = "2026-10-08"
+# These captures carry no meta.json and no `sense` block, so the board cannot be
+# identified from the data and rig.check_meta cannot run on them. The board is
+# named here instead. The amplifier network changed between sessions (see
+# [[floor.session]]), and Rg 820 halves the gain, so every analysis of this
+# dataset stays in raw codes and percent; the registry entry supplies timing
+# (ARR 1200, 52-tick burst step, the 31-tick crest sample) and the divider ratio.
+board = "dev-v006-2A"
+notes = """The bench MG90 in its servo on rev 2A board #1, stalled against a stop, fed by a FNIRSI DPS-150 on the battery wires (LiPo out), fw 65, osc adapter at 3 Mbaud. Two kinds of capture, both taken with bench-scratch tools rather than `osc`, so none of them has a meta.json.
+
+floor/ holds the steady-state shunt bursts of the `r4s point` tool. Each hold seats the output at a stop (alternating low and high, so a slipping output bushing cancels), drives OpenLoop at a fixed duty D, waits 3 s, then takes 10 bursts with the burst duty equal to the hold duty (pre_q15 == step_q15: no step inside the burst, every period the same), then torque off. Holds: 4.5 V at D 6/8/10%, 8.4 V at D 6/8/10/15%, each at the low and the high stop; caps-in also has 4.5 V D 15/25%. Hold folders are <rail>_<D>_<stop>/ident/<stamp>/burst-N.csv.gz. Each burst csv is k, code, with the stamp (pre_q15, step_q15, step_index, start_cnt, pwm_arr, start_dir, restore_dir, vbus_raw, bias, chans, frame_len, vmotor_bias, pos, seated, drive_polarity) in its first row only. chans 0 / frame_len 1 = every sample is the shunt; chans 11 / frame_len 4 = shunt, tap A, shunt, tap B (caps-in and caps-out took 10 of each per hold). The current limit was raised in RAM for the holds (450 / 600 counts, guard 500; g820 scaled by its gain ratio to 236 / 314) and never governed (limit_flags 8 throughout). [[floor.session]] names each capture's network.
+
+gap/ holds the series-meter holds: an OWON B41T+ on its 20 A DC jack in series with one motor lead (which J4 pin was not recorded; the meter's sign at each stop is in the log instead), logged over Bluetooth to dmm.csv in the capture folder (meterlog format, func DC A). Every gap capture ran on the caps-in network, before any change to the amplifier. The bench `th ladder` / `th drive` helpers polled TEL at about 25 ms; each csv is one or more holds (phase hold<limit>), with a seek before and a torque-off rest after. capture-1 R1: 4.5 / 6.0 / 7.2 / 8.4 V x D 15 / 20%, low and high stop, 15 s holds, current limit 650 + guard 700 + stall trip 1800 in RAM so the limit never governs. capture-2 duty-sweep: one limit-governed ladder per rail (ladder45 at 4.5 V, ladder84 at 8.4 V, holds at limits 100 to 280 counts, low stop), so its duty is whatever the limit allowed. capture-3 hi84: 8.4 V at D 15/20/25/30%, low stop, limit 650. capture-4 R3a: DPS 4.2 V, the two 100% holds only (low and high); after the high hold the gear wedged at the high stop and needed a 40% pull to free it. capture-5 R3b: DPS 4.2 V, low stop only, D 20/40/60/80% then 100%, 5 s holds, limit 890.
+
+open-load/capture-1 is six `th drive` holds with one motor lead off J4 (no load current, no meter): 10 / 20 / 30% at 4.5 V (o45_*) and 8.4 V (o84_*), phases <tag>_pre, <tag>_on, <tag>_tail.
+
+Misfolded bursts: a firmware race in burst.rs launch() read the counter direction after the PWM trough turn, so a few bursts carry a stamp half a period off and fold their ON window onto the OFF phase. The race is fixed in the firmware (PR #320); these captures predate the fix and keep those bursts. The notebook drops them by the phase check (oscnb.steadyburst.phase_drops) and counts them.
+
+Source: osc-dev-v006-bringup captures/servo-pass: r4-steady/g45 + g84 (caps-in), r4-caps-out/g45 + g84, ci-search/{ci22, ci47, cm1k5, g820, rev430}, ci-search/repmot/{m1, m2, m3}; opa-req (r1_*, r3a_*, r3b_*, dmm-r1/r3a/r3b.csv), duty-sweep (ladder45/84, hi84_*, dmm.csv, dmm84hi.csv), open-load. Left out: the TEL poll csvs of each burst hold (tel_*.csv), the zero-settle polls (zero_*.csv, about 3 MB each), the run logs and scorers, cm1k5-void (a cm1k5 session with JP1 open and the + input floating, void), r4-steady/v1 and r4-caps-out/v1, v2 (tool trials), R2 (cut short). The csvs are gzipped; nothing else differs from what the tools wrote."""
+
+[[floor.session]]
+capture = "capture-1"
+name = "caps-in"
+network = "as built: Rg 430 (gain 14.9), Ci1 100 pF, Cc1/Cc2 recorded as 22 pF, no input pull-ups (input common mode about 0.07 V)"
+final = false
+
+[[floor.session]]
+capture = "capture-2"
+name = "caps-out"
+network = "Cc1/Cc2 and Ci1 removed, Rg 430"
+final = false
+
+[[floor.session]]
+capture = "capture-3"
+name = "ci22"
+network = "Ci1 22 pF, Cc out, Rg 430"
+final = false
+
+[[floor.session]]
+capture = "capture-4"
+name = "ci47"
+network = "Ci1 47 pF, Cc out, Rg 430"
+final = false
+
+[[floor.session]]
+capture = "capture-5"
+name = "cm1k5"
+network = "Ci1 47 pF, Cc out, Rg 430, 1.5k pull-ups from 3V3 to both op-amp inputs (about 0.75 V common mode)"
+final = true
+
+[[floor.session]]
+capture = "capture-6"
+name = "g820"
+network = "as cm1k5 with Rg 820 (gain about 7.8, counts per amp about half)"
+final = false
+
+[[floor.session]]
+capture = "capture-7"
+name = "rev430"
+network = "back to cm1k5's parts after the Rg 820 swap; only 4.5 V D 10% and 8.4 V D 15%, so no floor"
+final = true
+
+[[floor.session]]
+capture = "capture-8"
+name = "m1"
+network = "final network (as cm1k5), repeat 1, fresh zero settle"
+final = true
+
+[[floor.session]]
+capture = "capture-9"
+name = "m2"
+network = "final network, repeat 2, after 26 min with the DPS off and a fresh zero settle"
+final = true
+
+[[floor.session]]
+capture = "capture-10"
+name = "m3"
+network = "final network, repeat 3, after another 26 min off and a fresh zero settle"
+final = true
+
+[[gap.session]]
+capture = "capture-1"
+name = "R1"
+
+[[gap.session]]
+capture = "capture-2"
+name = "duty-sweep"
+
+[[gap.session]]
+capture = "capture-3"
+name = "hi84"
+
+[[gap.session]]
+capture = "capture-4"
+name = "R3a"
+
+[[gap.session]]
+capture = "capture-5"
+name = "R3b"

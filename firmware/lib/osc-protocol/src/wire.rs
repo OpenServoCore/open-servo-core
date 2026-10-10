@@ -281,7 +281,9 @@ impl Inst {
 pub const MAX_PAYLOAD: u8 = 252;
 
 /// sec 7 default: chain reclaim + host timeout, not a reply-time prescription.
-pub const DEFAULT_RESPONSE_DEADLINE_US: u16 = 60;
+/// Covers a servo's turnaround and the pauses inside its reply with the
+/// control kernel above the bus, up to the published capacity.
+pub const DEFAULT_RESPONSE_DEADLINE_US: u16 = 1000;
 
 /// sec 3.4: byte-times of ring silence that kill a parked partial frame -- the
 /// fallback death authority servo-side, and the host's post-garble pacing gap.

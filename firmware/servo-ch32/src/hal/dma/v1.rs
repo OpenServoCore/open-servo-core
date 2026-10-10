@@ -27,9 +27,7 @@ pub use ch32_metapac::dma::vals::{Dir, Pl, Size};
 ///                                    Below RX by priority, so it never
 ///                                    defers a byte; above CH4/CH6 by number,
 ///                                    so a snapshot copy never defers it past
-///                                    one beat (a 256 B copy would otherwise
-///                                    hold it 32 us, four times the 1M pair
-///                                    gate)
+///                                    one beat
 ///             CH4 TX               -- reply wire arms
 ///             CH6 M2M -> snapshot  -- copies the reply payload for CRC + wire
 ///   MEDIUM    CH3 SPI-CRC feed     -- must run BEHIND CH6 so the copy it reads
@@ -111,7 +109,7 @@ pub fn set_count(ch: Channel, count: u16) {
 
 // SAFETY: see hal/SAFETY.md. CH(n).CR is per-channel; channels driven from
 // >= 2 priority contexts (the CH4 TX channel today, touched from MAIN and
-// HIGH ISRs) need the CS to keep EN/TCIE RMW atomic. Single-context channels
+// the bus ISRs) need the CS to keep EN/TCIE RMW atomic. Single-context channels
 // pay the CS cost but stay correct.
 // `inline(always)` keeps this inside its caller's body, so a caller placed in
 // RAM (`.data.ram_code`) makes no flash fetch for it.

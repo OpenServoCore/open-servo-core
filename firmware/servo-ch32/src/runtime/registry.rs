@@ -47,12 +47,12 @@ impl Providers for V006Providers {
 type Bus = ServoBus<V006Providers>;
 
 /// `Bus` holds raw span pointers (zero-copy TX arms, driver-pattern sec 4.2) and
-/// is therefore `!Sync`. All access is serialized: `&mut` only from the HIGH
-/// transport ISRs (which never preempt each other), and the main loop reaches
-/// in for `take_reboot` only under a critical section. This wrapper asserts
+/// is therefore `!Sync`. All access is serialized: `&mut` only from the
+/// transport ISRs at the bus level (which never preempt each other), and the
+/// main loop reaches in only with the bus level masked. This wrapper asserts
 /// that discipline so the cell can live in a `static`.
 struct BusCell(SyncUnsafeCell<Option<Bus>>);
-// SAFETY: see `BusCell` doc -- access is serialized by PFIC priority + CS.
+// SAFETY: see `BusCell` doc - access is serialized by PFIC priority + mask.
 unsafe impl Sync for BusCell {}
 
 struct Cells {
@@ -75,10 +75,9 @@ impl Drivers {
     /// SAFETY: bringup-only, pre-IRQ; sole writer. Must be called exactly
     /// once, after `runtime::init::bring_up_bus` has configured USART1, the
     /// CH5 ring, the CH2 break stamps, the break wake, and the SPI-CRC
-    /// engine, and after the
-    /// table's comms block is final (defaults seeded + saved image
-    /// overlaid) -- `ServoBus::new` applies the effective baud to the live
-    /// BRR and break-wake reload.
+    /// engine, and after the table's comms block is final (defaults
+    /// seeded + saved image overlaid); `ServoBus::new` applies the
+    /// effective baud to the live BRR and break-wake reload.
     pub unsafe fn install(w: &BoardWiring) {
         // SAFETY: see fn doc.
         let stat_led = unsafe { &mut *CELLS.stat_led.get() };
@@ -130,10 +129,10 @@ impl Drivers {
     }
 
     /// SAFETY: bringup installs `bus` before any IRQ runs; runtime `&mut`
-    /// access is from the TIM2, USART1 and SysTick ISRs, all at PFIC HIGH,
-    /// so same-priority no-preemption serializes the composite's interior
-    /// state. The main loop reaches in only for `take_reboot`, and does so
-    /// inside a critical section (see `runtime::run`).
+    /// access is from the TIM2, USART1, SysTick and SW ISRs, all at the bus
+    /// level (PFIC LOW), so same-level no-preemption serializes the
+    /// composite's interior state; the kernel above them never calls in. The
+    /// main loop reaches in only under `pfic::mask_bus` (see `runtime::run`).
     #[inline(always)]
     pub unsafe fn bus() -> &'static mut Bus {
         // SAFETY: see fn doc.

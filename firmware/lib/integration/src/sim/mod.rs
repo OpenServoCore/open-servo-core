@@ -29,13 +29,16 @@ use osc_servo_core::regions::config::DEFAULT_RESPONSE_DEADLINE_US;
 use osc_servo_core::{BaudRate, BootMode, ControlTable};
 use osc_servo_drivers::bus::LinkDiag;
 
-use self::core::{Core, Event, TICKS_PER_US, Talker, bit_ticks, break_ticks, byte_ticks};
-use self::cpu::{Cpu, Vector};
+use self::core::{Core, Event, TICKS_PER_US, Talker, break_ticks, break_wake_lead, byte_ticks};
+use self::cpu::{Cpu, KERNEL_PERIOD, TEL_STAGE_COST, Vector};
 use self::providers::Handles;
 use self::resample::{CrossRx, RxOut};
 use self::servo::SimServo;
 
-pub use self::cpu::{Entries, HandlerCost};
+pub use self::cpu::{
+    Entries, HandlerCost, KERNEL_HOLD, KERNEL_MOVING, KERNEL_QUIET, KernelLane, KernelLevel,
+    KernelStats, READ32_3M_COST,
+};
 pub use self::host::HostEvent;
 pub use self::servo::{DEV_V006_SENSE, DEV_V006_SENSE_EXT};
 pub use self::store::{Kind as ImageKind, RamStore, Tear};
@@ -48,14 +51,13 @@ pub use osc_servo_core::tel::TelSample;
 pub use osc_servo_core::{CalibSense, CalibSenseExt};
 
 /// TEL fast-tick period: the kernel's 20 kHz control tick.
-const TEL_TICK_US: u64 = 50;
-const TEL_TICK: u64 = TEL_TICK_US * TICKS_PER_US;
+const TEL_TICK: u64 = KERNEL_PERIOD;
 
 /// When a break's wake reaches a servo, relative to its ringed 0x00.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum BreakWake {
-    /// The wake leads the byte by 0.75 bit-times: the chip's TIM2 detector
-    /// overflows at 9.25 bit-times of low, ahead of the stop-bit sample
+    /// The wake leads the byte by half a bit-time: the chip's TIM2 detector
+    /// overflows at 9.5 bit-times of low, ahead of the stop-bit sample
     /// that rings the 0x00.
     BeforeByte,
     /// The 0x00 has rung when the wake is serviced: a detector that latches
@@ -110,6 +112,9 @@ pub struct Sim {
     /// scripted `host_send*` and the engine can coexist but must not overlap
     /// on the wire -- the claim assert catches a scenario that mixes them.
     host: Option<host::SimHost>,
+    /// The engine's main-loop polls wait until this tick (see
+    /// [`Self::stall_host_poll`]); its ISR entries still run.
+    host_stall_until: u64,
     /// The production link server in front of the attached engine, when
     /// attached (client-in-the-loop scenarios): pipe bytes in through
     /// [`Self::link_send`], records out through [`Self::link_recv`]. Engine
@@ -123,6 +128,8 @@ pub struct Sim {
     break_wake: BreakWake,
     /// The next [`BreakWake::Alternating`] wake trails its byte.
     alternate_after: bool,
+    /// Service lag of every break wake, us (see [`Self::set_wake_lag_us`]).
+    wake_lag_us: Option<Box<dyn FnMut() -> f64>>,
 }
 
 /// One servo's TEL fast-tick pump: the sim's stand-in for the kernel's 50 us
@@ -187,12 +194,21 @@ impl Sim {
             rate,
             host_free_at: 0,
             host: None,
+            host_stall_until: 0,
             link: None,
             self_reboot: false,
             data_jobs: true,
             break_wake: BreakWake::BeforeByte,
             alternate_after: false,
+            wake_lag_us: None,
         }
+    }
+
+    /// Serve every later break wake `lag_us()` after its detector instant:
+    /// a vector held off by higher-priority work. Ring bytes still land at
+    /// their wire ticks.
+    pub fn set_wake_lag_us(&mut self, lag_us: impl FnMut() -> f64 + 'static) {
+        self.wake_lag_us = Some(Box::new(lag_us));
     }
 
     /// Order every later break wake against its ringed 0x00
@@ -218,6 +234,15 @@ impl Sim {
         let r = self.host.as_mut().expect("host attached").bus.submit(cmd);
         self.host_pump();
         r
+    }
+
+    /// Hold the adapter's main loop off the engine for `us` from now (a
+    /// host that stops draining USB closes the pump gate): the ring keeps
+    /// filling, nothing walks it.
+    pub fn stall_host_poll(&mut self, us: u64) {
+        let until = self.core.borrow().now() + us * TICKS_PER_US;
+        self.host_stall_until = until;
+        self.core.borrow_mut().schedule(Event::Idle, until);
     }
 
     /// Drain everything the engine yielded since the last call.
@@ -355,9 +380,35 @@ impl Sim {
         self.cpus[i].cost = cost;
     }
 
+    /// Run servo `i`'s kernel lane from the next scan until `until_us`.
+    pub fn set_kernel_lane(&mut self, i: usize, lane: KernelLane, until_us: u64) {
+        let now = self.core.borrow().now();
+        self.cpus[i].start_kernel(lane, until_us * TICKS_PER_US);
+        self.core.borrow_mut().schedule(
+            Event::KernelScan { servo: i },
+            (now / KERNEL_PERIOD + 1) * KERNEL_PERIOD,
+        );
+    }
+
+    pub fn kernel_stats(&self, i: usize) -> KernelStats {
+        self.cpus[i].kernel_stats()
+    }
+
+    /// TEL rows servo `i`'s encoder dropped against unreleased buffers.
+    pub fn tel_drops(&self, i: usize) -> u16 {
+        self.servos[i].tel_drops()
+    }
+
+    /// Servo `i`'s next handler body enters on time and is preempted for
+    /// `us` before its first ring read: clock reads ahead of that read come
+    /// back stale by the preemption.
+    pub fn preempt_before_ring_read(&mut self, i: usize, us: u64) {
+        self.cpus[i].preempt = Some(us * TICKS_PER_US);
+    }
+
     /// `on_break` invocations delivered to servo `i` -- wire break events
     /// minus this counts pends that coalesced.
-    /// Handler bodies servo `i` has run, per vector (PFIC HIGH entries).
+    /// Handler bodies servo `i` has run, per vector (bus-level entries).
     pub fn entries(&self, i: usize) -> Entries {
         self.cpus[i].entries()
     }
@@ -366,24 +417,15 @@ impl Sim {
         self.cpus[i].delivered_breaks()
     }
 
+    /// Own frames servo `i` has dispatched.
+    pub fn dispatched(&self, i: usize) -> u64 {
+        self.servos[i].dispatched()
+    }
+
     /// The most own frames one handler body of servo `i` dispatched: how far
     /// the ladder ran behind the wire.
     pub fn frames_per_body_max(&self, i: usize) -> u64 {
         self.cpus[i].frames_max()
-    }
-
-    /// Break stamps the detector latched at servo `i` (one per break it
-    /// heard) and the stamps its driver took - equal when every break the
-    /// ring holds was stamped, whatever the wakes did.
-    pub fn stamps(&self, i: usize) -> (u64, u64) {
-        let s = &self.handles[i].stamps;
-        (s.latches(), s.takes())
-    }
-
-    /// Break stamps servo `i`'s driver cleared untaken (a CAL mark, a rate
-    /// change or a rescue drops them by design; nothing else may).
-    pub fn stamp_drops(&self, i: usize) -> u64 {
-        self.handles[i].stamps.drops()
     }
 
     /// Inspect a servo's live control table.
@@ -515,8 +557,8 @@ impl Sim {
         self.host_free_at = break_end;
     }
 
-    /// Servo `i`'s oscillator rate becomes `ppm` at `at_us` -- thermal drift
-    /// as the drift tracker sees it: the rate changes, the clock never steps.
+    /// Servo `i`'s oscillator rate becomes `ppm` at `at_us` - thermal drift:
+    /// the rate changes, the clock never steps.
     pub fn set_servo_skew_at(&mut self, at_us: u64, i: usize, ppm: i32) {
         let at = self.clamp_at(at_us);
         self.core
@@ -528,21 +570,12 @@ impl Sim {
     /// re-enters with NO new wire byte -- a coalesced or lagged service
     /// (sec 3.4: breaks are not countable events; wakes carry no position and
     /// no time, and any code deriving either from them kills live frames --
-    /// bench-caught twice: the fence, then the tracker starvation).
+    /// bench-caught twice).
     pub fn inject_wake_refire_at(&mut self, at_us: u64, i: usize) {
         let at = self.clamp_at(at_us);
         self.core
             .borrow_mut()
             .schedule(Event::WakeRefire { servo: i }, at);
-    }
-
-    /// Latch a break stamp at servo `i` at `at_us` without ringing a byte or
-    /// waking: an orphan the detector latched in an idle gap.
-    pub fn inject_stamp_only_at(&mut self, at_us: u64, i: usize) {
-        let at = self.clamp_at(at_us);
-        self.core
-            .borrow_mut()
-            .schedule(Event::StampOnly { servo: i }, at);
     }
 
     /// Queue a host frame whose transmitter stalls mid-frame: bytes
@@ -553,14 +586,26 @@ impl Sim {
     /// idle), and the stress that parks the frontier at the starvation
     /// horizon.
     pub fn host_send_stalled(&mut self, frame: &[u8], split: usize, stall_us: u64) {
+        self.host_send_paused(frame, &[(split, stall_us)]);
+    }
+
+    /// [`Self::host_send_stalled`] with a pause of `us` ahead of each
+    /// `(split, us)` byte index: a frame streamed in arms, an idle gap
+    /// between each pair.
+    pub fn host_send_paused(&mut self, frame: &[u8], pauses: &[(usize, u64)]) {
         let start = self.host_free_at.max(self.core.borrow().now());
         let baud = self.rate;
         let bt = byte_ticks(baud);
         let break_end = start + break_ticks(baud);
         let n = frame.len() as u64 - 1;
-        let split = split.clamp(1, frame.len() - 1) as u64;
-        let stall = stall_us * TICKS_PER_US;
-        let end = break_end + n * bt + stall;
+        let pause_before = |k: u64| -> u64 {
+            pauses
+                .iter()
+                .filter(|&&(split, _)| k >= split.clamp(1, frame.len() - 1) as u64)
+                .map(|&(_, us)| us * TICKS_PER_US)
+                .sum()
+        };
+        let end = break_end + n * bt + pause_before(n);
 
         let mut c = self.core.borrow_mut();
         c.claim(Talker::Host, start, end);
@@ -573,10 +618,7 @@ impl Sim {
             break_end,
         );
         for (k, &b) in frame[1..].iter().enumerate() {
-            let mut t = break_end + (k as u64 + 1) * bt;
-            if (k as u64) >= split {
-                t += stall;
-            }
+            let t = break_end + (k as u64 + 1) * bt + pause_before(k as u64);
             c.schedule(
                 Event::WireData {
                     talker: Talker::Host,
@@ -742,11 +784,15 @@ impl Sim {
             Event::TxArmDone { servo } => self.deliver(servo, Vector::TxDone),
             Event::TelTick { servo, epoch } => self.tel_tick(servo, epoch),
             Event::CpuFree { servo } => self.cpu_free(servo),
-            Event::WakeRefire { servo } => self.deliver(servo, Vector::Break),
-            Event::StampOnly { servo } => {
-                let h = &self.handles[servo];
-                h.stamps.latch(h.deadline.local_u64(now) as u32);
+            Event::KernelScan { servo } => self.kernel_scan(servo),
+            Event::KernelRetry { servo } => {
+                let now = self.core.borrow().now();
+                if self.cpus[servo].take_kernel_retry(now) {
+                    self.kernel_enter(servo);
+                }
             }
+            Event::KernelTail { servo } => self.kernel_tail(servo),
+            Event::WakeRefire { servo } => self.deliver(servo, Vector::Break),
             Event::BreakByte { servo } => self.handles[servo].ring.push(0x00),
             Event::PulseWake => self.deliver_pulse_wake(),
             Event::HostCompare { generation } => {
@@ -822,6 +868,9 @@ impl Sim {
                     t.running = true;
                     t.epoch += 1;
                     t.n = 0;
+                    if self.cpus[j].kernel_until().is_some() {
+                        continue;
+                    }
                     let at = (now / TEL_TICK + 1) * TEL_TICK;
                     self.core.borrow_mut().schedule(
                         Event::TelTick {
@@ -843,9 +892,24 @@ impl Sim {
     /// gates.
     fn tel_tick(&mut self, j: usize, epoch: u64) {
         let now = self.core.borrow().now();
-        let t = &mut self.tels[j];
-        if !t.running || t.epoch != epoch || !self.servos[j].tel_active() {
+        if self.tels[j].epoch != epoch || !self.tel_sample(j, now) {
             return;
+        }
+        // the chip's tick tail polls; one landing inside a bus body leaves
+        // the stage to the next tick
+        if !self.cpus[j].busy(now) {
+            self.servos[j].poll_tel();
+        }
+        self.core
+            .borrow_mut()
+            .schedule(Event::TelTick { servo: j, epoch }, now + TEL_TICK);
+    }
+
+    /// Feed servo `j`'s encoder its next sample while a burst runs.
+    fn tel_sample(&mut self, j: usize, now: u64) -> bool {
+        let t = &mut self.tels[j];
+        if !t.running || !self.servos[j].tel_active() {
+            return false;
         }
         let mut s = match &t.track {
             Some(track) => track.rows[track.row(now)],
@@ -856,14 +920,29 @@ impl Sim {
         }
         t.n += 1;
         self.servos[j].tel_tick(&s);
-        // the chip's tick tail polls; one landing inside a HIGH body leaves
-        // the stage to the next tick
-        if !self.cpus[j].busy(now) {
-            self.servos[j].poll_tel();
+        true
+    }
+
+    /// The kernel lane's tail: the tick's TEL sample, then the poll. A poll
+    /// that stages holds the kernel for the stage, and its break follows it.
+    fn kernel_tail(&mut self, j: usize) {
+        let now = self.core.borrow().now();
+        if let Some(end) = self.cpus[j].kernel_until()
+            && end > now
+        {
+            self.core
+                .borrow_mut()
+                .schedule(Event::KernelTail { servo: j }, end);
+            return;
         }
-        self.core
-            .borrow_mut()
-            .schedule(Event::TelTick { servo: j, epoch }, now + TEL_TICK);
+        if !self.tel_sample(j, now) {
+            return;
+        }
+        self.handles[j].tx_lead.set(TEL_STAGE_COST);
+        self.servos[j].poll_tel();
+        if self.handles[j].tx_lead.take() == 0 {
+            self.cpus[j].extend_kernel(now, TEL_STAGE_COST);
+        }
     }
 
     /// Image servo `j`'s current track row in its live table: the raw ADC
@@ -900,6 +979,9 @@ impl Sim {
     /// production server (events leave as records); otherwise events copy
     /// out of the ring for the harness.
     fn host_pump(&mut self) {
+        if self.core.borrow().now() < self.host_stall_until {
+            return;
+        }
         let Some(h) = self.host.as_mut() else { return };
         if let Some(rig) = self.link.as_mut() {
             rig.server.pump(&mut h.bus, &mut rig.out);
@@ -945,6 +1027,16 @@ impl Sim {
 
     fn run_vector(&mut self, j: usize, v: Vector) {
         let now = self.core.borrow().now();
+        if let Some(ticks) = self.cpus[j].preempt.take() {
+            self.cpus[j].defer(now, v, ticks);
+            self.schedule_free(j);
+            return;
+        }
+        self.run_body(j, v);
+    }
+
+    fn run_body(&mut self, j: usize, v: Vector) {
+        let now = self.core.borrow().now();
         self.cpus[j].charge(now, v);
         let before = self.servos[j].dispatched();
         match v {
@@ -953,6 +1045,35 @@ impl Sim {
             Vector::TxDone => self.servos[j].on_tx_complete(),
         }
         self.cpus[j].charge_frames(self.servos[j].dispatched() - before);
+        self.handles[j].clock_lag.set(0);
+    }
+
+    fn kernel_scan(&mut self, j: usize) {
+        let now = self.core.borrow().now();
+        if let Some(next) = self.cpus[j].kernel_scan(now) {
+            self.core
+                .borrow_mut()
+                .schedule(Event::KernelScan { servo: j }, next);
+        }
+        self.kernel_enter(j);
+    }
+
+    fn kernel_enter(&mut self, j: usize) {
+        let now = self.core.borrow().now();
+        let entries = self.cpus[j].kernel_stats().entries;
+        if let Some(at) = self.cpus[j].enter_kernel(now) {
+            self.core
+                .borrow_mut()
+                .schedule(Event::KernelRetry { servo: j }, at);
+        }
+        if self.cpus[j].kernel_stats().entries > entries
+            && self.tels[j].running
+            && let Some(end) = self.cpus[j].kernel_until()
+        {
+            self.core
+                .borrow_mut()
+                .schedule(Event::KernelTail { servo: j }, end);
+        }
     }
 
     fn schedule_free(&mut self, j: usize) {
@@ -970,6 +1091,8 @@ impl Sim {
     /// every handler reads the clock at its true entry tick.
     fn cpu_free(&mut self, j: usize) {
         self.cpus[j].free_scheduled = false;
+        // A kernel above the bus takes the CPU ahead of any bus pend.
+        self.kernel_enter(j);
         let now = self.core.borrow().now();
         if self.cpus[j].busy(now) {
             // A same-tick wire event beat this wake and re-occupied the CPU.
@@ -978,11 +1101,14 @@ impl Sim {
             }
             return;
         }
-        if let Some(v) = self.cpus[j].take_pend() {
+        if let Some((v, entry)) = self.cpus[j].deferred.take() {
+            self.handles[j].clock_lag.set(now - entry);
+            self.run_body(j, v);
+        } else if let Some(v) = self.cpus[j].take_pend() {
             self.run_vector(j, v);
-            if self.cpus[j].any_pend() {
-                self.schedule_free(j);
-            }
+        }
+        if self.cpus[j].any_pend() {
+            self.schedule_free(j);
         }
     }
 
@@ -1019,7 +1145,7 @@ impl Sim {
     fn deliver_break_to(&mut self, j: usize, baud: BaudRate, break_start: u64) {
         let rx = self.handles[j].baud.current();
         if rx == baud {
-            self.wake_on_break(j, bit_ticks(rx) * 3 / 4);
+            self.wake_on_break(j, break_wake_lead(rx));
         } else {
             let mut out = Vec::new();
             self.cross[j].retune(rx);
@@ -1078,14 +1204,13 @@ impl Sim {
         }
     }
 
-    /// A qualified break at servo `j`: latch its stamp (the detector's
-    /// trigger, ahead of any pend), ring its 0x00 and wake, in the
-    /// configured [`BreakWake`] order, the byte `lead` ticks behind the wake
-    /// under [`BreakWake::BeforeByte`].
+    /// A qualified break at servo `j`: latch its stamp, then ring its 0x00
+    /// and wake, in the configured [`BreakWake`] order, the byte `lead`
+    /// ticks behind the wake under [`BreakWake::BeforeByte`].
     fn wake_on_break(&mut self, j: usize, lead: u64) {
         let now = self.core.borrow().now();
         let h = &self.handles[j];
-        h.stamps.latch(h.deadline.local_u64(now) as u32);
+        h.stamps.latch(h.deadline.local_u64(now) as u16);
         let after = match self.break_wake {
             BreakWake::BeforeByte => false,
             BreakWake::AfterByte => true,
@@ -1096,10 +1221,10 @@ impl Sim {
         };
         if after {
             self.handles[j].ring.push(0x00);
-            self.deliver(j, Vector::Break);
+            self.wake(j);
             return;
         }
-        self.deliver(j, Vector::Break);
+        self.wake(j);
         if lead == 0 {
             self.handles[j].ring.push(0x00);
         } else {
@@ -1107,6 +1232,17 @@ impl Sim {
             let at = c.now() + lead;
             c.schedule(Event::BreakByte { servo: j }, at);
         }
+    }
+
+    /// Deliver a break wake now, or after the configured service lag.
+    fn wake(&mut self, j: usize) {
+        let Some(lag_us) = self.wake_lag_us.as_mut().map(|f| f()) else {
+            self.deliver(j, Vector::Break);
+            return;
+        };
+        let mut c = self.core.borrow_mut();
+        let at = c.now() + (lag_us * TICKS_PER_US as f64) as u64;
+        c.schedule(Event::WakeRefire { servo: j }, at);
     }
 
     fn cross_deliver_host(&mut self, out: Vec<RxOut>) {
@@ -1176,7 +1312,7 @@ impl Sim {
     fn deliver_pulse_wake(&mut self) {
         for j in 0..self.servos.len() {
             let rx = self.handles[j].baud.current();
-            self.wake_on_break(j, bit_ticks(rx) * 3 / 4);
+            self.wake_on_break(j, break_wake_lead(rx));
         }
         if let Some(h) = &self.host {
             h.ring.push(0x00);

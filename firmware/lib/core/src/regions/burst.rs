@@ -68,9 +68,7 @@ pub const FRAME_MAX: usize = frame_len(chans::ALL) as usize;
 
 /// `start_dir` / `restore_dir` encoding: the TIM1 CTLR1.DIR bit verbatim, so
 /// the published byte reads as the silicon does. Under center-aligned PWM DOWN
-/// is the crest-to-trough half, which is where a peak scan's TC lands -- so
-/// `restore_dir == DOWN` is the witness that the crest scan landed second and
-/// the trough slots are back at offset 0.
+/// is the crest-to-trough half, which is where a peak scan's TC lands.
 pub mod dir {
     pub const UP: u8 = 0;
     pub const DOWN: u8 = 1;
@@ -91,8 +89,9 @@ pub const fn page_span(page: u8) -> Option<(usize, usize)> {
 /// every per-page header word, so a host never has to correlate two replies.
 /// `step_index` is measured from the DMA counter at the step, not assumed;
 /// `start_cnt` / `start_dir` / `pwm_arr` cross-check the trace's own PWM
-/// edges, which are the ruler. `restore_dir` is the scan-geometry witness:
-/// DOWN means the crest scan landed second, as it does at bringup.
+/// edges, which are the ruler. `restore_dir` is a constant DOWN, the geometry
+/// the restore builds (crest scan second, trough slots at offset 0); it is not
+/// measured.
 #[repr(C)]
 #[derive(Copy, Clone, Block)]
 pub struct BurstWindow {

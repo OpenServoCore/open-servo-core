@@ -44,9 +44,11 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
     let mut tel_published: u16 = 0;
     let mut lamp_test = crate::runtime::stat::LampTest::new(Monotonic.ticks());
     loop {
-        // Transport RX/TX/deadlines are ISR-driven (TIM2 + USART1 + SysTick,
-        // PFIC HIGH). Main loop owns LED housekeeping, the link-diagnostics
-        // publish, the deferred-reboot poll, and sleep.
+        // Transport RX/TX/deadlines are ISR-driven (TIM2 + USART1 + SysTick
+        // + SW, the bus level). Main loop owns LED housekeeping, the
+        // link-diagnostics publish, the deferred-reboot poll, and sleep. Its
+        // reach-ins into bus state mask the bus level only (`pfic::mask_bus`):
+        // the kernel never waits on the main loop.
         //
         // STAT lamp (`runtime::stat`). The `wfi` wake cadence is the poll
         // cadence: the 20 kHz kernel tick at the slowest.
@@ -72,16 +74,16 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
 
         // Publish transport health into the telemetry region (protocol sec 5.3 layer 1:
         // dropped frames are counted, never answered), and the TEL rows the
-        // kernel dropped. The critical section makes the `bus()` reach-in
-        // non-aliasing (HIGH owns it otherwise) and folds the
-        // read-modify-write against a concurrent host clear committing from
-        // HIGH.
-        critical_section::with(|_| {
-            // SAFETY: bus installed in bringup; ISRs masked by the CS.
+        // kernel dropped. The mask makes the `bus()` reach-in non-aliasing
+        // (the bus level owns it otherwise) and folds the read-modify-write
+        // against a concurrent host clear committing from the bus; the
+        // kernel writes none of these fields.
+        pfic::mask_bus(|| {
+            // SAFETY: bus installed in bringup; the bus level is masked.
             let diag = unsafe { crate::runtime::Drivers::bus() }.diag();
             let tel_drops = crate::runtime::statics::TEL_CHANNEL.drops();
             // SAFETY: table storage is 'static; field access is volatile and
-            // ISR-masked, mirroring the sample_tick idiom in `isr.rs`.
+            // bus-masked, mirroring the sample_tick idiom in `isr.rs`.
             unsafe {
                 let telemetry =
                     &raw mut (*crate::runtime::statics::SHARED.table.region_ptr()).telemetry;
@@ -128,8 +130,8 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
         // wire is safe (measured: the manual-knob experiment trimmed the
         // fleet mid-traffic with zero errors). The applied total mirrors
         // into telemetry, read-only, for fleet diagnosis.
-        let trim = critical_section::with(|_| {
-            // SAFETY: bus installed in bringup; ISRs masked by the CS.
+        let trim = pfic::mask_bus(|| {
+            // SAFETY: bus installed in bringup; the bus level is masked.
             unsafe { crate::runtime::Drivers::bus() }.poll_clock_trim()
         });
         if let Some(total) = trim {
@@ -152,22 +154,23 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
 
         // Data job (core `data_state`): the stamp checkpoint a covered or
         // stamp write posts and the verdict a LUT COMMIT posts, ~0.6 ms of
-        // software CRC that outlasts the reply deadline in HIGH. The run is
-        // preemptible; the publish masks ISRs so HIGH cannot land a write
-        // between its generation check and the table stores. The posting
-        // ISR's return is the wfi wake, so the job runs before the next
-        // frame can arrive.
+        // software CRC that outlasts a bus body. The run is preemptible;
+        // the publish masks the bus so dispatch cannot land a write between
+        // its generation check and the table stores. The kernel only reads
+        // the published bytes, each in its own phase. The posting ISR's
+        // return is the wfi wake, so the job runs before the next frame can
+        // arrive.
         if let Some(job) = crate::runtime::statics::SHARED.data_job_run() {
-            critical_section::with(|_| crate::runtime::statics::SHARED.data_job_publish(job));
+            pfic::mask_bus(|| crate::runtime::statics::SHARED.data_job_publish(job));
         }
 
         // Deferred reboot (protocol sec 9.5), honored after the ack has drained. The
-        // critical section is load-bearing: `bus()` is otherwise `&mut`-owned
-        // by the HIGH transport ISRs, so masking them is what makes this
+        // mask is load-bearing: `bus()` is otherwise `&mut`-owned by the
+        // transport ISRs, so masking the bus level is what makes this
         // main-loop reach-in non-aliasing. Flash writes stay out of the ISR
         // bodies -- the stall is lethal under a live control loop.
         let reboot: Option<BootMode> =
-            critical_section::with(|_| unsafe { crate::runtime::Drivers::bus() }.take_reboot());
+            pfic::mask_bus(|| unsafe { crate::runtime::Drivers::bus() }.take_reboot());
         if let Some(mode) = reboot {
             flash::set_boot_mode(matches!(mode, BootMode::Bootloader));
             pfic::software_reset();
@@ -176,12 +179,12 @@ pub fn __run(cfg: BoardConfig, pre: Precomputed) -> ! {
         // Rescue sampler (protocol sec 9.1). The break detector wakes once
         // per dominant span, a break-length in, so no transport wake can
         // measure a rescue pulse; the slow loop measures it instead, one
-        // sample per wfi wake. The pin is read inside the critical section
-        // that also reads the TX state and declares, so a TX release cannot
-        // land between them.
-        critical_section::with(|_| {
+        // sample per wfi wake. The pin is read under the same bus mask that
+        // also reads the TX state and declares, so a TX start or release
+        // cannot land between them.
+        pfic::mask_bus(|| {
             let low = gpio::is_low(chip::BUS_USART_MAPPING.tx_pin());
-            // SAFETY: bus installed in bringup; ISRs masked by the CS.
+            // SAFETY: bus installed in bringup; the bus level is masked.
             unsafe { crate::runtime::Drivers::bus() }.sample_rescue(low)
         });
 

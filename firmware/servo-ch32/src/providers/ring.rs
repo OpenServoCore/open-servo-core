@@ -37,7 +37,7 @@ impl bus::RxRing for RxRing {
     #[inline(always)]
     fn bytes(&self) -> &[u8] {
         // SAFETY: DMA-owned storage; the driver reads it in place. All `&mut`
-        // access into the bus composite is serialized at PFIC HIGH, so no
+        // access into the bus composite is serialized at the bus level, so no
         // aliasing `&mut [u8]` to the ring exists.
         unsafe { &(*RING.get()).0 }
     }

@@ -45,7 +45,7 @@ pub struct TelemetryMode {
     pub omega_hat_src: u8,
     /// Why closed loop is refused, one bit per reason (`data_state` module
     /// consts); 0 = the persisted images and the identified set are this
-    /// servo's own. Written by boot, SAVE and the HIGH dispatcher's commits
+    /// servo's own. Written by boot, SAVE and the bus dispatcher's commits
     /// (a covered write marks STAMP_MISMATCH, a stamp write and a LUT COMMIT
     /// checkpoint), read by the kernel's entry check - the one
     /// TELEMETRY-MODE byte the kernel does not own.
@@ -202,14 +202,13 @@ pub struct TelemetryHealth {
     /// last 4096 ticks (0.2 s at 20 kHz), Q15: 32768 = the whole period.
     #[ct_field(access = ro)]
     pub tick_load_mean_q15: u16,
-    /// Kernel ticks whose interrupt took longer than one period, transport
-    /// preemption included; updated every 16 ticks. A few per bus
-    /// transaction are normal, hundreds per second mean the kernel overruns
-    /// by itself. Wraps.
+    /// Kernel ticks whose interrupt took longer than one period; nothing
+    /// preempts the tick, so every count is the kernel overrunning by
+    /// itself. Updated every 16 ticks. Wraps.
     #[ct_field(access = rw)]
     pub tick_over_count: u16,
-    /// Kernel ticks that never ran: the previous tick was still running or
-    /// interrupts were held off; updated every 16 ticks. Wraps.
+    /// Kernel ticks that never ran: the previous tick was still running, or
+    /// a flash SAVE stalled the core; updated every 16 ticks. Wraps.
     #[ct_field(access = rw)]
     pub tick_lost_count: u16,
     /// TEL stream rows dropped because both stream buffers were waiting for

@@ -68,8 +68,8 @@ pub const REC_CAPTURE_RESET: u8 = 0x65;
 /// `seq(2 LE) gap_us(2 LE) breaks(1) announce(1..)`. Answered by
 /// [`REC_WIRE_DONE`] after the last break.
 pub const REC_WIRE_TRAIN: u8 = 0x66;
-/// Instrument host UART rate, raw bps: off-catalog divisors allowed (a
-/// detuned host is the clock-tracker's drift injector). Body:
+/// Instrument host UART rate, raw bps: off-catalog divisors allowed (the
+/// trim suite's host-detune probe). Body:
 /// `seq(2 LE) bps(4 LE)`. Answered by [`REC_WIRE_DONE`] immediately.
 pub const REC_WIRE_BAUD: u8 = 0x67;
 pub const REC_INFO: u8 = 0x80;
@@ -134,8 +134,8 @@ pub const OUTCOME_TIMEOUT: u8 = 0x02;
 pub const FLAG_GARBLE_AFTER_LAST_FRAME: u8 = 1 << 0;
 
 /// v2: INFO carries the adapter diagnostics tail ([`Diag`]). v3: the tail
-/// grows `resets` and `uptime_ms`.
-pub const LINK_VERSION: u8 = 3;
+/// grows `resets` and `uptime_ms`. v4: TERMINAL grows `laps`.
+pub const LINK_VERSION: u8 = 4;
 
 /// INFO `reset` byte: the chip's reset-cause flags, read and cleared at
 /// adapter boot (so each boot reports only the resets since the last).
@@ -299,7 +299,7 @@ pub fn status<'a>(
 }
 
 /// TERMINAL: `seq(2) outcome(1) slot(1) tick(4 LE) statuses(2 LE)
-/// garble(2 LE) flags(1)`.
+/// garble(2 LE) flags(1) laps(2 LE)`.
 pub fn terminal<'a>(dst: &'a mut [u8], seq: u16, t: &Terminal) -> &'a [u8] {
     let (outcome, slot) = match t.outcome {
         Outcome::Sent => (OUTCOME_SENT, 0),
@@ -318,5 +318,6 @@ pub fn terminal<'a>(dst: &'a mut [u8], seq: u16, t: &Terminal) -> &'a [u8] {
     } else {
         0
     };
-    sealed(dst, 14)
+    dst[16..18].copy_from_slice(&t.evidence.laps.to_le_bytes());
+    sealed(dst, 16)
 }

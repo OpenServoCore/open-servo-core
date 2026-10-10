@@ -38,12 +38,16 @@ pub enum Step<'a> {
     Frame(Frame<'a>),
     /// `n` ring bytes skipped that anchored no frame.
     Garble(u16),
+    /// `n` whole rings landed unread: the walk resumes at the same ring
+    /// index, over newer bytes.
+    Lapped(u16),
 }
 
-/// The walker: one cursor (`anchor`) into the ring, always in `[0, len)`.
+/// The walker: one cursor (`anchor`) into the ring, on the
+/// [`RxRing::written`](crate::traits::RxRing::written) count.
 #[derive(Default)]
 pub struct Framer {
-    anchor: usize,
+    anchor: u32,
 }
 
 impl Framer {
@@ -51,44 +55,47 @@ impl Framer {
         Self::default()
     }
 
-    /// Jump to `cursor`, discarding anything unconsumed. Called only when
+    /// Jump to `written`, discarding anything unconsumed. Called only when
     /// the bus is provably quiet (before a TX window opens) -- the host-side
     /// analog of the servo's bootstrap-only cursor read.
-    pub fn resync(&mut self, cursor: usize) {
-        self.anchor = cursor;
+    pub fn resync(&mut self, written: u32) {
+        self.anchor = written;
     }
 
-    /// The resolution frontier: everything in `anchor..cursor` is ring
-    /// content no verdict has consumed (a parked plausible prefix, junk a
-    /// hunt has not walked off).
-    pub fn anchor(&self) -> usize {
-        self.anchor
+    /// Ring content no verdict has consumed (a parked plausible prefix,
+    /// junk a hunt has not walked off).
+    pub fn unresolved(&self, written: u32) -> u16 {
+        u16::try_from(written.wrapping_sub(self.anchor)).unwrap_or(u16::MAX)
     }
 
-    /// Walk one step against the ring state. `cursor` is the next-write
-    /// index in `[0, ring.len())`; the ring length must be a power of two.
-    /// Lap hazard (same as the servo's): more than one ring of unconsumed
-    /// bytes is indistinguishable from an empty ring -- the caller's poll
-    /// cadence keeps consumption within a lap.
-    pub fn step<'a>(&mut self, ring: &'a [u8], cursor: usize) -> Step<'a> {
+    /// Walk one step against the ring state. `written` counts every byte
+    /// the ring ever received; the ring length must be a power of two.
+    pub fn step<'a>(&mut self, ring: &'a [u8], written: u32) -> Step<'a> {
         debug_assert!(ring.len().is_power_of_two());
-        let mask = ring.len() - 1;
-        let avail = cursor.wrapping_sub(self.anchor) & mask;
+        let unread = written.wrapping_sub(self.anchor);
+        let laps = unread / ring.len() as u32;
+        if laps > 0 {
+            self.anchor = self.anchor.wrapping_add(laps * ring.len() as u32);
+            return Step::Lapped(u16::try_from(laps).unwrap_or(u16::MAX));
+        }
+        let avail = unread as usize;
         if avail == 0 {
             return Step::Idle;
         }
+        let mask = ring.len() - 1;
+        let at = self.anchor as usize & mask;
 
         // A frame candidate starts at the break's 0x00 ring byte.
-        if ring[self.anchor] != 0x00 {
+        if ring[at] != 0x00 {
             return Step::Garble(self.hunt(ring, mask, avail));
         }
         if avail < 4 {
             return Step::Partial;
         }
 
-        let id = Id::new(ring[(self.anchor + 1) & mask]);
-        let len = ring[(self.anchor + 2) & mask];
-        let inst = Inst(ring[(self.anchor + 3) & mask]);
+        let id = Id::new(ring[(at + 1) & mask]);
+        let len = ring[(at + 2) & mask];
+        let inst = Inst(ring[(at + 3) & mask]);
         let valid_shape = len >= 3
             && id.is_valid()
             && (inst.is_status() || inst.opcode().is_some())
@@ -106,16 +113,16 @@ impl Framer {
         // init-0 no-op (protocol sec 3.2), so feeding from the anchor equals
         // the wire checksum over ID..payload.
         let clen = wire::covered_len(len);
-        let crc = ring_crc(ring, self.anchor, clen);
-        let lo = ring[(self.anchor + clen) & mask];
-        let hi = ring[(self.anchor + clen + 1) & mask];
+        let crc = ring_crc(ring, at, clen);
+        let lo = ring[(at + clen) & mask];
+        let hi = ring[(at + clen + 1) & mask];
         if crc != u16::from_le_bytes([lo, hi]) {
             return Step::Garble(self.hunt(ring, mask, avail));
         }
 
-        let payload_pos = (self.anchor + 4) & mask;
+        let payload_pos = (at + 4) & mask;
         let payload = payload_view(ring, payload_pos, wire::payload_len(len) as usize);
-        self.anchor = (self.anchor + footprint) & mask;
+        self.anchor = self.anchor.wrapping_add(footprint as u32);
         Step::Frame(Frame {
             id,
             inst,
@@ -128,11 +135,12 @@ impl Framer {
     /// (skipping the current anchor -- it already failed), or consume the
     /// whole span if none. Returns the bytes skipped.
     fn hunt(&mut self, ring: &[u8], mask: usize, avail: usize) -> u16 {
+        let at = self.anchor as usize & mask;
         let mut n = 1;
-        while n < avail && ring[(self.anchor + n) & mask] != 0x00 {
+        while n < avail && ring[(at + n) & mask] != 0x00 {
             n += 1;
         }
-        self.anchor = (self.anchor + n) & mask;
+        self.anchor = self.anchor.wrapping_add(n as u32);
         n as u16
     }
 }
@@ -162,24 +170,24 @@ mod tests {
     use osc_protocol::reply::FrameBuf;
     use osc_protocol::wire::{Opcode, ResultCode};
 
-    /// A 64-byte test ring with a write cursor.
+    /// A 64-byte test ring with a running write count.
     struct Ring {
         buf: [u8; 64],
-        cursor: usize,
+        written: u32,
     }
 
     impl Ring {
         fn new() -> Self {
             Ring {
                 buf: [0xFF; 64],
-                cursor: 0,
+                written: 0,
             }
         }
 
         fn feed(&mut self, bytes: &[u8]) {
             for &b in bytes {
-                self.buf[self.cursor] = b;
-                self.cursor = (self.cursor + 1) & 63;
+                self.buf[self.written as usize & 63] = b;
+                self.written += 1;
             }
         }
     }
@@ -224,12 +232,12 @@ mod tests {
         let frame = status_frame(5, ResultCode::Ok, &[0xAA, 0xBB]);
         ring.feed(frame.as_slice());
 
-        let got = expect_frame(f.step(&ring.buf, ring.cursor));
+        let got = expect_frame(f.step(&ring.buf, ring.written));
         assert_eq!(got.id, Id::new(5));
         assert!(got.inst.is_status());
         assert_eq!(got.inst.result(), Some(ResultCode::Ok));
         assert!(got.payload.bytes().eq([0xAA, 0xBB]));
-        assert!(matches!(f.step(&ring.buf, ring.cursor), Step::Idle));
+        assert!(matches!(f.step(&ring.buf, ring.written), Step::Idle));
     }
 
     #[test]
@@ -239,9 +247,9 @@ mod tests {
         ring.feed(status_frame(1, ResultCode::Ok, &[1]).as_slice());
         ring.feed(status_frame(2, ResultCode::Ok, &[2]).as_slice());
 
-        assert_eq!(expect_frame(f.step(&ring.buf, ring.cursor)).id, Id::new(1));
-        assert_eq!(expect_frame(f.step(&ring.buf, ring.cursor)).id, Id::new(2));
-        assert!(matches!(f.step(&ring.buf, ring.cursor), Step::Idle));
+        assert_eq!(expect_frame(f.step(&ring.buf, ring.written)).id, Id::new(1));
+        assert_eq!(expect_frame(f.step(&ring.buf, ring.written)).id, Id::new(2));
+        assert!(matches!(f.step(&ring.buf, ring.written), Step::Idle));
     }
 
     #[test]
@@ -253,7 +261,7 @@ mod tests {
         f.resync(60);
         ring.feed(status_frame(7, ResultCode::Ok, &[0x11, 0x22, 0x33]).as_slice());
 
-        let got = expect_frame(f.step(&ring.buf, ring.cursor));
+        let got = expect_frame(f.step(&ring.buf, ring.written));
         assert_eq!(got.id, Id::new(7));
         assert!(got.payload.bytes().eq([0x11, 0x22, 0x33]));
     }
@@ -265,8 +273,8 @@ mod tests {
         ring.feed(&[0xAA, 0xBB, 0xCC]);
         ring.feed(status_frame(3, ResultCode::Ok, &[]).as_slice());
 
-        assert!(matches!(f.step(&ring.buf, ring.cursor), Step::Garble(3)));
-        assert_eq!(expect_frame(f.step(&ring.buf, ring.cursor)).id, Id::new(3));
+        assert!(matches!(f.step(&ring.buf, ring.written), Step::Garble(3)));
+        assert_eq!(expect_frame(f.step(&ring.buf, ring.written)).id, Id::new(3));
     }
 
     #[test]
@@ -285,9 +293,9 @@ mod tests {
         // a frame.
         let mut frames = 0;
         loop {
-            match f.step(&ring.buf, ring.cursor) {
+            match f.step(&ring.buf, ring.written) {
                 Step::Frame(_) => frames += 1,
-                Step::Garble(_) | Step::Partial => continue,
+                Step::Garble(_) | Step::Partial | Step::Lapped(_) => continue,
                 Step::Idle => break,
             }
         }
@@ -301,11 +309,11 @@ mod tests {
         let frame = status_frame(6, ResultCode::Ok, &[1, 2, 3, 4]);
         let bytes = frame.as_slice();
         ring.feed(&bytes[..3]);
-        assert!(matches!(f.step(&ring.buf, ring.cursor), Step::Partial));
+        assert!(matches!(f.step(&ring.buf, ring.written), Step::Partial));
         ring.feed(&bytes[3..5]);
-        assert!(matches!(f.step(&ring.buf, ring.cursor), Step::Partial));
+        assert!(matches!(f.step(&ring.buf, ring.written), Step::Partial));
         ring.feed(&bytes[5..]);
-        assert_eq!(expect_frame(f.step(&ring.buf, ring.cursor)).id, Id::new(6));
+        assert_eq!(expect_frame(f.step(&ring.buf, ring.written)).id, Id::new(6));
     }
 
     #[test]
@@ -315,8 +323,8 @@ mod tests {
         ring.feed(status_frame(8, ResultCode::Ok, &[0, 0, 0, 0]).as_slice());
         ring.feed(status_frame(9, ResultCode::Ok, &[0]).as_slice());
 
-        assert_eq!(expect_frame(f.step(&ring.buf, ring.cursor)).id, Id::new(8));
-        assert_eq!(expect_frame(f.step(&ring.buf, ring.cursor)).id, Id::new(9));
+        assert_eq!(expect_frame(f.step(&ring.buf, ring.written)).id, Id::new(8));
+        assert_eq!(expect_frame(f.step(&ring.buf, ring.written)).id, Id::new(9));
     }
 
     #[test]
@@ -330,7 +338,7 @@ mod tests {
 
         let mut got = None;
         for _ in 0..8 {
-            match f.step(&ring.buf, ring.cursor) {
+            match f.step(&ring.buf, ring.written) {
                 Step::Frame(fr) => {
                     got = Some(fr.id);
                     break;
@@ -339,6 +347,19 @@ mod tests {
             }
         }
         assert_eq!(got, Some(Id::new(2)));
+    }
+
+    #[test]
+    fn a_ring_landed_unread_is_a_lap_not_an_empty_ring() {
+        let mut ring = Ring::new();
+        let mut f = Framer::new();
+        ring.feed(&[0xEE; 64]);
+        assert!(matches!(f.step(&ring.buf, ring.written), Step::Lapped(1)));
+        assert!(matches!(f.step(&ring.buf, ring.written), Step::Idle));
+
+        ring.feed(&[0xEE; 3 * 64 + 10]);
+        assert!(matches!(f.step(&ring.buf, ring.written), Step::Lapped(3)));
+        assert!(matches!(f.step(&ring.buf, ring.written), Step::Garble(10)));
     }
 
     #[test]
@@ -352,7 +373,7 @@ mod tests {
         b.finish(0);
         ring.feed(b.seal());
 
-        let got = expect_frame(f.step(&ring.buf, ring.cursor));
+        let got = expect_frame(f.step(&ring.buf, ring.written));
         assert!(!got.inst.is_status());
         assert_eq!(got.inst.opcode(), Some(Opcode::Ping));
     }

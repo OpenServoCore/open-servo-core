@@ -22,7 +22,7 @@ use bench::run::{
     BURST_VALUES, BurstCycle, BurstReport, Report, burst_measure, capture, measure, xfer,
 };
 use bench::wire::Wire;
-use bench::{BOOT_BAUD, RESCUE_BAUD};
+use bench::{BOOT_BAUD, RESCUE_BAUD, SUPPORTED_BAUDS};
 use osc_protocol::wire::ResultCode;
 use osc_servo_core::regions::config::addr::common::BAUD_RATE_IDX;
 use osc_servo_core::regions::config::addr::pos_limits::{POS_MAX_PHYS_COUNTS, POS_MIN_PHYS_COUNTS};
@@ -35,6 +35,10 @@ pub struct Bench {
     /// rejects GOAL_POSITION outside them, and a calibration narrows them
     /// from the board default.
     goal_rails: RangeInclusive<i32>,
+    /// The servo's configured baud, read once: what a reboot returns to
+    /// and where every test leaves the bus. Rescue leaves the register
+    /// untouched (protocol sec 9.1), so it reads true from a parked servo.
+    home_baud: u32,
 }
 
 static BENCH: LazyLock<Mutex<Bench>> = LazyLock::new(|| {
@@ -54,10 +58,15 @@ static BENCH: LazyLock<Mutex<Bench>> = LazyLock::new(|| {
     std::thread::sleep(Duration::from_millis(300));
     let goal_rails =
         read_i32(&mut wire, id, POS_MIN_PHYS_COUNTS)..=read_i32(&mut wire, id, POS_MAX_PHYS_COUNTS);
+    let [idx] = setup_read(&mut wire, id, BAUD_RATE_IDX);
+    let home_baud = *SUPPORTED_BAUDS
+        .get(usize::from(idx))
+        .unwrap_or_else(|| panic!("baud_rate_idx {idx} out of range"));
     Mutex::new(Bench {
         wire,
         id,
         goal_rails,
+        home_baud,
     })
 });
 
@@ -72,6 +81,11 @@ impl Bench {
     /// The servo id under test.
     pub fn id(&self) -> u8 {
         self.id
+    }
+
+    /// The servo's configured baud (see the field).
+    pub fn home_baud(&self) -> u32 {
+        self.home_baud
     }
 
     /// A GOAL_POSITION value the goal rule accepts on any calibration.
@@ -163,16 +177,9 @@ impl Bench {
             .expect("cal train");
     }
 
-    /// Raw zero-gap burst, no reply parsing -- tracker food, not an
-    /// exchange.
+    /// Raw zero-gap burst, no reply parsing - traffic, not an exchange.
     pub fn burst_frames(&mut self, frames: &[Vec<u8>]) {
         self.wire.burst(frames).expect("burst frames");
-    }
-
-    /// Frames this wire has sent (see [`Wire::frames_sent`]); a test
-    /// differences two reads, since the shared bench outlives it.
-    pub fn frames_sent(&self) -> u64 {
-        self.wire.frames_sent()
     }
 
     /// Drop pending capture -- keeps a long food loop inside the ring
@@ -247,7 +254,7 @@ impl Bench {
         self.wire.set_baud(baud).expect("follow host baud");
     }
 
-    /// [`burst`](Self::burst) at `baud`, restoring the boot baud afterwards so
+    /// [`burst`](Self::burst) at `baud`, restoring the home baud afterwards so
     /// the next test starts clean. The report is returned before any assertion,
     /// so a failed budget never leaves the bus on the wrong baud.
     pub fn burst_at(
@@ -258,29 +265,35 @@ impl Bench {
     ) -> BurstReport {
         self.switch_baud(baud);
         let report = self.burst(count, build);
-        self.switch_baud(BOOT_BAUD);
+        self.switch_baud(self.home_baud);
         report
     }
 
-    /// [`measure`](Self::measure) at `baud`, restoring the boot baud afterwards.
+    /// [`measure`](Self::measure) at `baud`, restoring the home baud afterwards.
     pub fn measure_at(&mut self, baud: u32, wire: &[u8], count: u32) -> Result<Report> {
         self.switch_baud(baud);
         let report = self.measure(wire, count);
-        self.switch_baud(BOOT_BAUD);
+        self.switch_baud(self.home_baud);
         report
     }
 }
 
-/// One i32 register, read at setup before the shared bench exists.
-fn read_i32(wire: &mut Wire, id: u8, addr: u16) -> i32 {
-    let ex = xfer(wire, &build_read(id, addr, 4), SETTLE_MS).expect("setup read");
+/// One register, read at setup before the shared bench exists.
+fn setup_read<const N: usize>(wire: &mut Wire, id: u8, addr: u16) -> [u8; N] {
+    let ex = xfer(wire, &build_read(id, addr, N as u16), SETTLE_MS).expect("setup read");
     assert_eq!(
         ex.status.result,
         Some(ResultCode::Ok),
         "setup read of {addr:#06x}: {:?}",
         ex.status
     );
-    i32::from_le_bytes(ex.status.payload[..].try_into().expect("4-byte payload"))
+    ex.status.payload[..]
+        .try_into()
+        .unwrap_or_else(|_| panic!("setup read of {addr:#06x}: {N}-byte payload"))
+}
+
+fn read_i32(wire: &mut Wire, id: u8, addr: u16) -> i32 {
+    i32::from_le_bytes(setup_read(wire, id, addr))
 }
 
 /// Index of `baud` in the supported set, for the `baud_rate_idx` register.

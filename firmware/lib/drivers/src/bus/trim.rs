@@ -1,7 +1,7 @@
-//! Clock-trim controller (`docs/osc-native-protocol.md` sec 9.3): folds
-//! windowed cadence error into chip trim steps. One rule covers both phases
-//! -- `steps = round(err / step_effect)` -- so the first window after boot
-//! takes a multi-step jump while steady-state windows round to zero:
+//! Clock-trim controller (`docs/osc-native-protocol.md` sec 9.3): folds a
+//! CAL train's clock error into chip trim steps. One rule covers both
+//! phases, `steps = round(err / step_effect)`, so the first train after boot
+//! takes a multi-step jump while steady-state trains round to zero:
 //! round-to-nearest IS the deadband, half a step wide, which is the physical
 //! optimum a stepped trim can hold.
 //!
@@ -9,12 +9,9 @@
 //! (bench: 1.4-3.2k ppm/step against the 2.5k nominal), and a fixed deadband
 //! either limit-cycles on coarse-step chips or under-trims fine-step ones.
 //! Every CAL after the first is a free plant measurement - its reading's
-//! shift from the previous CAL's, divided by every step applied in between,
-//! the drift tracker's included - so the deadband scales itself to THIS
-//! chip within one train. Only the ruler identifies: its ~260 ppm train
-//! noise probes a 1.4k step cleanly, where a drift window's ~1k ppm of
-//! seam noise on a one-step apply does not (a wandering estimate over- and
-//! under-steps; DES pin `noisy_silent_flood_holds_the_cal_anchor`).
+//! shift from the previous CAL's, divided by the steps the previous CAL
+//! applied - so the deadband scales itself to THIS chip within one train:
+//! the ruler's ~260 ppm train noise probes a 1.4k step cleanly.
 //!
 //! CONTRACT (chip-independent): the output is signed trim steps from the
 //! chip's factory default where **positive slows the oscillator**. The chip
@@ -24,15 +21,14 @@
 //! negative feedback positive and rails the chip in `STEPS_MAX` clamps
 //! (the trim-runaway probe pins this).
 
-/// Self-measured step-effect acceptance band, ppm per step. A window
-/// polluted by traffic noise or a thermal shift between sparse windows can
-/// imply an absurd plant gain; readings outside the band are discarded and
-/// the previous estimate kept.
+/// Self-measured step-effect acceptance band, ppm per step. A thermal shift
+/// between sparse trains can imply an absurd plant gain; readings outside
+/// the band are discarded and the previous estimate kept.
 const STEP_PPM_MIN: i32 = 800;
 const STEP_PPM_MAX: i32 = 4000;
 
-/// Largest correction one window may take. Bounds a garbage window's damage
-/// to something the next window walks back, and keeps any single over-the-air
+/// Largest correction one train may take. Bounds a garbage train's damage
+/// to something the next train walks back, and keeps any single over-the-air
 /// rate jump well inside UART framing tolerance.
 const STEPS_MAX: i32 = 4;
 
@@ -71,10 +67,9 @@ impl TrimLoop {
         }
         let ppm = ppm(err_ticks, span_ticks);
         if let Some((cal_ppm, cal_total)) = self.cal {
-            // Truncating division by the +/-1..=4 steps applied since the
-            // previous reading: |a/b| == |a|/|b| signed by XOR; constant
-            // divisors lower to mulhu magic, no libcall. Further apart than
-            // one window's clamp is a long tracker stretch, not a probe.
+            // Truncating division by the +/-1..=4 steps the previous reading
+            // applied: |a/b| == |a|/|b| signed by XOR; constant divisors
+            // lower to mulhu magic, no libcall.
             let since = self.total as i32 - cal_total as i32;
             let delta = cal_ppm - ppm;
             let mag = delta.unsigned_abs();
@@ -100,14 +95,9 @@ impl TrimLoop {
         self.decide(ppm)
     }
 
-    /// A drift window's measurement against the tracker's CAL anchor
-    /// (`err_ticks` over `span_ticks` of wire-byte span): a decision only -
-    /// the next CAL accounts for the steps it applies.
-    pub fn on_drift(&mut self, err_ticks: i32, span_ticks: u32) -> Option<i8> {
-        if span_ticks == 0 {
-            return None; // defensive: no span, no reading
-        }
-        self.decide(ppm(err_ticks, span_ticks))
+    #[cfg(test)]
+    pub(super) fn step_ppm(&self) -> i32 {
+        self.step_ppm
     }
 
     fn decide(&mut self, ppm: i32) -> Option<i8> {
@@ -142,13 +132,13 @@ impl TrimLoop {
 /// restoring division: the chip has no divider and the soft-arith gate bans
 /// the libcall. Every feeder gates |err| <= span and 1e6 < 2^20, so the
 /// quotient fits 20 bits; every u64 op here lowers inline on rv32+zmmul.
-pub(super) fn ppm(err: i32, span: u32) -> i32 {
+fn ppm(err: i32, span: u32) -> i32 {
     debug_assert!(span != 0);
     let neg = err < 0;
     let mut rem = err.unsigned_abs() as u64 * 1_000_000;
     let mut q: u32 = 0;
     // Out-of-domain net: |err| > span means an upstream gate broke;
-    // saturate so the downstream sanity bands discard the reading.
+    // saturate so the step-effect band discards the reading.
     if rem >= (span as u64) << 20 {
         q = (1 << 20) - 1;
         rem = 0;
@@ -183,8 +173,7 @@ mod tests {
     }
 
     /// Closed-loop plant: a chip with a true clock offset and a true (possibly
-    /// off-nominal) step effect, measured through noiseless trains (`cal`)
-    /// and drift windows against an anchor at zero (`drift`).
+    /// off-nominal) step effect, measured through noiseless trains.
     struct Plant {
         offset_ppm: i32,
         step_ppm: i32,
@@ -219,17 +208,10 @@ mod tests {
             let out = self.trim.on_cal(err, span);
             self.apply(out)
         }
-
-        fn drift(&mut self) -> Option<i8> {
-            let span = 1_000_000u32;
-            let err = self.residual();
-            let out = self.trim.on_drift(err, span);
-            self.apply(out)
-        }
     }
 
     #[test]
-    fn first_window_takes_the_acquire_jump() {
+    fn first_train_takes_the_acquire_jump() {
         let mut p = Plant::new(5200, 2500);
         assert_eq!(p.cal(), Some(2));
         assert_eq!(p.residual(), 200);
@@ -308,40 +290,6 @@ mod tests {
     fn zero_span_reads_nothing() {
         let mut t = TrimLoop::new(2500);
         assert_eq!(t.on_cal(1000, 0), None);
-        assert_eq!(t.on_drift(1000, 0), None);
-    }
-
-    #[test]
-    fn drift_decisions_leave_identification_to_the_ruler() {
-        // A fine-step chip under the nominal seed: the first train lands
-        // short, the tracker takes another step on the residual without
-        // touching the estimate, and the second train identifies the plant
-        // over BOTH steps - the drift step is in its divisor.
-        let mut p = Plant::new(5000, 1400);
-        assert_eq!(p.cal(), Some(2));
-        assert_eq!(p.residual(), 2200);
-        assert_eq!(p.drift(), Some(3));
-        assert_eq!(p.trim.step_ppm, 2500, "a drift window never identifies");
-        assert_eq!(p.residual(), 800);
-        assert_eq!(p.cal(), Some(4));
-        assert_eq!(p.trim.step_ppm, 1400, "(5000 - 800) / 3 steps");
-        assert_eq!(p.residual(), -600);
-        for _ in 0..4 {
-            assert_eq!(p.drift(), None);
-        }
-    }
-
-    #[test]
-    fn a_long_tracker_stretch_is_not_a_probe() {
-        // Five steps between trains exceed the clamp the division handles;
-        // the estimate stands and the train still decides.
-        let mut p = Plant::new(12_000, 2500);
-        assert_eq!(p.cal(), Some(4));
-        assert_eq!(p.drift(), Some(5));
-        assert_eq!(p.residual(), -500);
-        p.offset_ppm += 9000; // a thermal jump mimics a weak plant
-        assert_eq!(p.cal(), Some(8));
-        assert_eq!(p.trim.step_ppm, 2500, "seed survives: 5 steps apart");
     }
 
     #[test]
@@ -401,14 +349,11 @@ mod tests {
 
         // Explicit saturation path (|err| > span, OUTSIDE the domain): the
         // helper clamps to +/-(2^20 - 1) rather than dividing, carrying the
-        // input sign. The magnitude sits far past every downstream sanity band
-        // (drift 8000 ppm, step-effect 4000 ppm) so the reading is discarded.
+        // input sign. The magnitude sits far past the step-effect band
+        // (4000 ppm) so the reading is discarded.
         let sat = ppm(1_000_000, 4);
         assert!(sat >= 1 << 19, "saturation too small: {sat}");
         assert_eq!(sat, (1 << 20) - 1);
-        // 8000 = clock::DRIFT_SANITY_PPM (the widest downstream band); the
-        // saturated magnitude clears it and the STEP_PPM band by >100x.
-        assert!(sat.unsigned_abs() > 8_000);
         assert!(sat > STEP_PPM_MAX);
         assert_eq!(ppm(-1_000_000, 4), -((1 << 20) - 1));
     }

@@ -115,7 +115,7 @@ impl<P: Pipe> Client<P> {
     }
 
     /// Arbitrary host UART rate, raw bps -- off-catalog divisors allowed
-    /// (a detuned host is the clock-tracker's drift injector). Catalog
+    /// (the trim suite's host-detune probe). Catalog
     /// rate changes belong to [`Client::host_baud`].
     pub async fn wire_baud(&mut self, bps: u32) -> Result<u32, Error> {
         let mut out = Vec::new();

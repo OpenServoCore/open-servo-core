@@ -46,11 +46,16 @@ unchanged).
   internally tied to the pin; the wire needs no dedicated RX pin and no
   direction buffer [F7]. Bus side: series R + pull-up (+ optional TVS); a
   buffer's roles collapse into the drive discipline below.
-- **Drive discipline (all nodes, host included)**: idle/listening = AF
-  open-drain (wire released, pull-up holds mark); transmitting = AF
-  push-pull for the duration of the frame, then release. One GPIO CNF write
-  each way. A node that idles push-pull clamps every other talker [F8] —
-  this rule is the buffer replacement, not an optimization.
+- **Drive discipline**: a servo pin is AF open-drain for good, transmitting
+  included (RM Table 7-3, the half-duplex TX configuration). A servo only
+  ever pulls the line low; the host-end pull-up (plus a weak keeper on each
+  servo board) holds mark. A servo therefore has no release deadline and
+  writes no GPIO per frame. The osc adapter's pin is AF open-drain for good
+  too, so its rising edges ride the pull-up, which must sit at its end. A
+  host may instead drive its own frames push-pull for fast edges, releasing
+  to open drain within the reply gap (sec 7). A node that idles push-pull
+  clamps every other talker [F8]: this rule is the buffer replacement, not
+  an optimization.
 - **Own-TX echo**: none on V006 — HDSEL gates RX during TX [F9]. Firmware
   never needs echo masking. (Chips that do echo would mask in the framer;
   the protocol itself is agnostic.)
@@ -77,16 +82,17 @@ byte contains a high stop bit within 10 bit-times); no sync header, no
 byte stuffing, no content restrictions.
 
 Why a law and not a floor: break ≡ one character time keeps every
-timing model exact — the framer's footprint algebra and the §9.3
-chain-pair gates count the break as one byte slot, so an over-long
-break is a constant error tax on every span — and the law shape is
+timing model exact - the framer's footprint algebra counts the break as
+one byte slot, so an over-long break is a constant error tax on every
+span - and the law shape is
 precisely the LIN break definition (LBDL=0), so any LIN-capable
 receiver gets hardware break detection with a deterministic 10-bit
 anchor. Bridge-class hosts use exactly that. The servo cannot: its bus is
 one pin under HDSEL, which disables the USART's LIN break detector on the
 target silicon [F16], so it times the low on the pin instead - a
-detector that qualifies at 9.25 bit-times, past the longest data low (9)
-and inside the law break (10), §3.4 [F17]. Hardware `SBK` is off-law
+detector that qualifies at 9.5 bit-times, past the longest data low (9)
+and inside the law break (10), §3.4 [F17]. The half bit above 9 absorbs
+the open-drain rise that lengthens every low (sec 2). Hardware `SBK` is off-law
 (~14 bit-times measured, F5).
 
 **Receivers stay length-tolerant**: any ≥10-bit dominant span is one
@@ -103,7 +109,7 @@ Measured break behavior that the framer relies on:
   on the rising edge that ends it, so long breaks cannot spam [F3][F17].
 - A mid-frame framing error does not halt reception: the garbled byte
   rings and the stream continues [F4] - and it raises nothing at all
-  (lows under 9.25 bit-times are invisible to the detector, and no
+  (lows under 9.5 bit-times are invisible to the detector, and no
   interrupt is enabled on the error flags, §3.4 [F17]). Ring + NDTR are
   the only ground truth.
 - Hardware `SBK` sends ~14-bit breaks (4.7 µs at 3 M, zero variance,
@@ -215,7 +221,7 @@ The receive side has two distinct signals, and the protocol binds them
 to two distinct roles:
 
 - **The break detector is the wake.** It is length-qualified - only a
-  dominant span held past 9.25 bit-times fires it, a length valid data
+  dominant span held past 9.5 bit-times fires it, a length valid data
   never reaches (9 at most) and the §3 law break always does (10) - and
   any-length span raises exactly one event, **fired a break-length into
   the span**. That can be before the stop-bit sample rings the break's
@@ -249,9 +255,8 @@ The contract, binding on every implementation of this protocol:
   geometry checks, and the starve horizon.
 - **Times come from data-cadence projections only** (`now + missing
   byte-times`). A wake's arrival time MUST NOT enter any timing grid.
-  (The one exception is the §9.3 trim machinery, whose entire subject is
-  the break-service stamp itself — gated, paired, and baseline-anchored
-  there.)
+  (The sec 9.3 CAL ruler times breaks too, by the detector's hardware
+  stamp, never by the wake.)
 - **Breaks are not countable events.** Service can lag the wire, and N
   breaks can coalesce into one service; all break handling MUST be
   idempotent, and freshness (did bytes ring since the last service?)
@@ -262,7 +267,7 @@ garble that forms a plausible frame header parks the resolver until data
 kills it — footprint-fill CRC (≤ 258 bytes) or the starve horizon (64
 byte-times of ring silence), whichever comes first, per plausible junk
 anchor. The length qualification shrinks that surface: only garble
-containing a dominant span past 9.25 bit-times (slower-baud traffic heard
+containing a dominant span past 9.5 bit-times (slower-baud traffic heard
 at a faster-configured servo) can wake the resolver into junk at all -
 noise and faster-baud garble ring silently and cost nothing until the
 next real break [F17]. **Host pacing rule:** after traffic a servo may
@@ -305,13 +310,16 @@ reply anyway.
 Reply buffer: `[0x00][ID][LEN][INST|0x80][payload][crc][crc]`
 in a halfword-aligned static — the `0x00` at offset 0 is an alignment
 byte and CRC no-op; an odd payload's last byte folds into the CRC in
-software at patch time (§3.2). Sequence: flip pin to
-push-pull → law break (§3, a bracketed-M `0x00` character) → enable
+software at patch time (§3.2). Sequence: law break (§3, a
+bracketed-M `0x00` character) → enable
 UART TX DMA from offset 1 → simultaneously
 enable SPI-CRC DMA from offset 0 → the CRC engine outruns the wire 8:1,
 so `TCRCR` is patched into the trailing CRC bytes long before the shifter
-needs them (fire-first, append-later, no deadline race) [F6]. On TC:
-release pin to open-drain.
+needs them (fire-first, append-later, no deadline race) [F6]. On the
+last arm's TC: TX DMA off. The pin is never written (sec 2), so nothing
+at TC has a wire deadline. A reply may pause between its DMA arms while
+the servo's control kernel runs: each pause is about one kernel body
+(under about 60 us at 20 kHz), far inside the starve horizon (sec 3.4).
 
 No hardware-timed kickoff: TX start is "enable the channel when ready" —
 the break makes reply timing non-critical, which deletes the TIM-compare
@@ -1109,8 +1117,8 @@ writes them, not the kernel.
 | addr  | name                 | access | meaning                                                                                              |
 | ----- | -------------------- | ------ | ---------------------------------------------------------------------------------------------------- |
 | 0x26A | `tick_load_mean_q15` | RO     | mean share of the kernel period the tick interrupt took over the last 4096 ticks (0.2 s), Q15       |
-| 0x26C | `tick_over_count`    | RW     | kernel ticks whose interrupt took longer than one period, transport preemption included; wraps      |
-| 0x26E | `tick_lost_count`    | RW     | kernel ticks that never ran: the previous tick was still running or interrupts were held off; wraps |
+| 0x26C | `tick_over_count`    | RW     | kernel ticks whose interrupt took longer than one period; wraps                                     |
+| 0x26E | `tick_lost_count`    | RW     | kernel ticks that never ran: the previous tick was still running, or a flash SAVE stalled the core; wraps |
 | 0x270 | `tel_drop_count`     | RW     | TEL rows dropped because both stream buffers were waiting for the wire (sec 5.6); wraps              |
 | 0x272 | `stack_free_min`     | RO     | smallest free stack seen since boot, bytes                                                           |
 
@@ -1119,34 +1127,19 @@ a host writes 0 and the servo counts on from there. The mean load
 reads as a percentage of the period (50 us at 20 kHz) as
 `q15 x 100 / 32768`, 16384 is 50%, and covers 0.2 s so a single read
 does not catch one medium tick. Each tick is timed from the first to
-the last statement of the tick interrupt, so it counts any transport
-interrupt that preempts the tick and leaves out interrupt entry and
-exit. A bus transaction preempts a tick for longer than a period, the
-read of these registers included, so a few `tick_over_count` counts per
-transaction are normal; a kernel that overruns by itself shows hundreds
-per second. A tick counts as lost when the interrupt runs a whole
-period or more behind schedule, judged once per 16 ticks: a late window
-that the next one catches up costs nothing, and one window counts at
-most 16. Every host frame costs one to four lost ticks as well: the
-transport serves a frame above the kernel in one piece, break wake,
-dispatch, verdict, reply trigger and commit, 130 to 230 us at 48 MHz,
-and the scan that completes under that service merges its pending flag
-with the next. A TEL burst (sec 5.6) costs neither: its frames leave
-from the tick and their arm completions are short. The kernel itself
-never loses a tick, so a ladder's `tick_lost_count` reads as the number
-of host frames it received, within a factor of four. The kernel takes
-the same count at each window close and integrates its time-dependent
-phases over the elapsed periods, so a lost tick dilates nothing that
-moves (control-theory, the cascade); the sample-rate quantities count
-executed ticks, and `sample_tick` stays the count of ticks that ran.
-Both counters update every 16 ticks (0.8 ms), the mean every 4096. No
-kernel tick runs during a shunt burst (sec 5.8); the ticks before it
+the last statement of the tick interrupt and leaves out interrupt entry
+and exit. The tick interrupt sits above the transport, so bus traffic
+costs it no tick: it is the kernel alone. A tick counts as lost when the
+interrupt runs a whole period or more behind schedule, judged once per
+16 ticks: a late window that the next one catches up costs nothing, and
+one window counts at most 16. Only a kernel body that overruns past two
+periods or a flash SAVE (torque off) loses one, so any count under
+traffic is the kernel's own. The kernel does not stretch for a lost
+tick: every tick it runs advances one period, and `sample_tick` stays
+the count of ticks that ran. Both counters update every 16 ticks
+(0.8 ms), the mean every 4096. No kernel tick runs during a shunt burst (sec 5.8); the ticks before it
 that did not fill a 16-tick window count toward neither counter, and
 the first window after it counts no lost ticks.
-Under saturation (back-to-back frames that each cost more HIGH time than
-their wire time) `tick_load_mean_q15` and `tick_over_count` are not
-comparable across firmware images; compare images by the `sample_tick`
-delta, the kernel ticks that ran.
 `stack_free_min` reads 0 until the first stack scan completes, about
 10 ms after boot.
 
@@ -1204,16 +1197,21 @@ makes it cheap and robust:
   checks its CRC like any frame's, since its LEN still moves the framer.
 - **Reclaim deadline** (DXL chains collapse silently past a dead
   responder; here the recovery is specified): if slot k's predecessor
-  produces no break within RESPONSE_DEADLINE of its own trigger, slot k
-  takes the slot and sets `predecessor-silent` in its status error field.
-  The host sees both the gap and the flag. The window covers the
-  trigger→break lead only — once the predecessor's break is observed it
-  is alive, and the window suspends for a bounded max-frame allowance
-  while its frame plays out (completion re-sequences the chain; a frame
-  that garbles or wedges lets the suspended deadline fire as the
-  reclaim). Keying on the break rather than the frame end is what keeps
-  the default baud-independent: a frame's wire time exceeds 60 µs below
-  3 M, its break lead never does.
+  produces no break within RESPONSE_DEADLINE of the later of its due
+  trigger and the moment slot k is ready (has dispatched the GREAD, or
+  has seen the predecessor's predecessor end), slot k takes the slot and
+  sets `predecessor-silent` in its status error field. The host sees
+  both the gap and the flag. Counting from readiness matters because
+  every servo works through the same backlog: absolute lateness can
+  exceed any fixed window while the lateness between neighbours stays
+  small. The window covers the trigger-to-break lead only - once the
+  predecessor's break is observed it is alive, and the window suspends
+  for the largest frame's wire time plus RESPONSE_DEADLINE (which covers
+  the pauses inside a reply, sec 4.2) while its frame plays out
+  (completion re-sequences the chain; a frame that garbles or wedges
+  lets the suspended deadline fire as the reclaim). Keying on the break
+  rather than the frame end is what keeps the window baud-independent:
+  a frame's wire time grows as the baud falls, its break lead does not.
 - Error statuses keep the chain alive; only silence triggers reclaim.
 
 There is no FAST/regular split and no per-block checkpoint CRC: each chain
@@ -1226,20 +1224,22 @@ DXL checkpoint format solved does not exist here.
 | parameter               | value                                      | rationale                                                                                  |
 | ----------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------ |
 | reply gap               | 12 µs after frame end, at every baud       | host TC→release margin — a register poke, i.e. a time-domain quantity: fixed µs neither balloons at 0.5 M (2 byte-times was 40 µs of mandated silence) nor thins at 3 M |
-| RESPONSE_DEADLINE       | config register, default 60 µs (all bauds) | chain reclaim (trigger→break lead, §6) + host timeout; NOT a reply-time prescription — a servo replies when ready |
+| RESPONSE_DEADLINE       | config register, default 1000 µs (all bauds) | chain reclaim (trigger-to-break lead, sec 6) + host timeout; covers the servo's turnaround and the idle gaps inside its reply under traffic up to the published capacity; NOT a reply-time prescription - a servo replies when ready |
 | break length (TX)       | exactly 10 bit-times (§3 law; 9-bit 0x00 character) | break ≡ 1 character: exact span algebra + LIN-detectable; SBK (~14 bits, F5) is off-law |
 | inter-frame gap (host)  | none required                              | breaks self-delimit; back-to-back host frames are legal                                    |
 
-Ping turnaround (instruction wire-end → status break fall) is **34.3 µs
-at 1 M and 44.3 µs at 3 M**, measured on the current transport, vs
-62.8 µs measured for a DXL 2.0 stack on the same silicon — the
-instruction's own 5 B + break costs nothing extra on top of that, since
-dispatch overlaps its arrival (speculation; see
-`osc-servo-transport.md`, dispatch speculation). The dominant turnaround
-components are the tail (hardware CRC-check + dispatch handoff), reply
-gap (12 µs), and the break itself (~4.7 µs, F5); see
-`osc-servo-transport.md` (tick-by-tick exchange trace) for the full
-trace and measured baseline table.
+Turnaround (instruction wire-end to status break fall) is the
+transport's CPU cost stretched by the control kernel, which runs above
+the bus: each us of bus work costs 1 / (1 - U) us of wall time, U being
+the kernel's share of the CPU (about 36% at rest, 67% while moving).
+Measured with the motor at rest (torque off), ping p50 is about 70 us at
+1 M and 77 us at 3 M (p99 99 us), a 32 B READ 81 us and a goal WRITE
+166 us at 3 M. The instruction's own bytes cost nothing on top, since
+dispatch overlaps their arrival (speculation; see
+`osc-servo-transport.md`, dispatch speculation). Turnaround is a derived
+quantity, checked against RESPONSE_DEADLINE, not a budget of its own;
+see `osc-servo-transport.md` (tick-by-tick exchange trace) for the
+pipeline.
 
 The intended hot loop leans on writes being free of turnaround entirely:
 `GWRITE(HOLD|NOREPLY) × groups → COMMIT (broadcast, silent) → GREAD
@@ -1253,9 +1253,12 @@ ALERT bit on that servo's status (§5.3).
 - Crystal-clocked UART with break send (the osc-adapter, or any
   USB-serial with SBK).
 - osc-CRC (textbook CRC-16/ARC, §3.2).
+- The bus pull-up, at the host end: servos only pull low (sec 2).
 - Drive discipline if on a buffer-less bus (release when idle) [F8].
 - Schedule the bus: one outstanding instruction / chain at a time;
-  timeout = RESPONSE_DEADLINE + frame time.
+  timeout = RESPONSE_DEADLINE + frame time, plus one more
+  RESPONSE_DEADLINE per chain slot (a silent slot's successor reclaims
+  one RESPONSE_DEADLINE after it is ready, sec 6).
 - Fault pacing (§3.4): after traffic a servo may have received as garble
   (wrong-baud probes, glitches), allow one starve horizon (64
   byte-times) of bus silence before expecting crisp turnarounds — don't
@@ -1311,8 +1314,8 @@ discovery reads; ENUM is its sole consumer). The pad costs the prefix tree
 nothing: descent depth is driven by where UIDs differ, and same-silicon
 chips differ in the low bits.
 
-Push-pull UART has no dominant-bit arbitration, so simultaneous responses
-are garbage — and garbage _is_ the collision signal:
+A UART has no bit arbitration (a servo does not hear its own TX, F9), so
+simultaneous responses are garbage - and garbage _is_ the collision signal:
 
 - `MGMT ENUM [prefix_len, prefix…]` (broadcast): `prefix_len` counts bits,
   0..=128; the prefix carries `ceil(prefix_len/8)` bytes. The stream is
@@ -1380,11 +1383,12 @@ hardware-anchored:
 
 **`MGMT CAL [gap_us(2 LE), gaps(1)]` (broadcast ONLY).** The host follows
 the frame with `gaps + 1` bare breaks spaced exactly `gap_us` apart, its
-crystal (any timer/DMA pacing) keeping the spacing. Each servo stamps its
-tick at every break-wake service entry: both ends of every gap ride the
-SAME ISR path, so entry latency cancels in the difference, and what
-remains is clock skew plus sub-µs jitter — ~±260 ppm from 8 × 400 µs
-gaps, a tenth of the smallest trim step. Contract and hygiene:
+crystal (any timer/DMA pacing) keeping the spacing. Each servo times every
+break by a stamp its hardware latches at the break detector, never by the
+wake's service: every stamp sits the same offset into its break, so the
+offset cancels in the difference, and what remains is clock skew plus the
+latch's jitter. Service lag, however long, never enters. Contract and
+hygiene:
 
 - Broadcast-only: a unicast CAL decodes as an instruction error — its ack
   would put the replier's own break on the wire where the train starts.
@@ -1400,36 +1404,20 @@ gaps, a tenth of the smallest trim step. Contract and hygiene:
   CAL also *rescues* a servo railed by a bad trim — the ruler works below
   the layer a bad trim breaks.
 
-Thermal drift between CALs is the **differential chain-pair tracker**'s
-job, passive and wire-invisible: adjacent break-wake stamps bracketing
-exactly ONE CRC-verified *silent* instruction (GWRITE, or WRITE/COMMIT
-with NOREPLY or broadcast — shapes no reply can follow, since a
-responder's turnaround rides its clock, not the host's) measure
-`seam + drift·span`. The host's queuing seam is unknown but stationary:
-the first 128-pair window after a CAL IS the seam (baseline) - the CAL's
-anchor - and every later 128-pair window reads its shift from that one
-baseline; anything constant (seam, FE latch offset, entry-path residue)
-dies in the subtraction. The steps the tracker itself applies stay in the
-measurement: a window reads the clock's residual against the anchor,
-never an increment against the tracker's own last decision, so window
-noise cannot integrate into a walk - a step a noisy window took, the next
-window reads back out, and the trim stays within one window's noise of
-the truth while genuine drift is followed step by step. Only a CAL (or a
-rate change) re-baselines. Byte-exactness (ring span == the verified
-footprint) and the same 1/16 gate qualify pairs; window readings past
-±8 k ppm are not thermal and are discarded (a seam shift comes from a
-host behavior change the host knows about - it re-anchors with a CAL).
+CAL is the only input to the trim: frame traffic never trims, so nothing
+the host sends between trains (any shape, any rate, any seam) moves a
+servo's clock. Each train feeds the oscillator-trim loop
+(`steps = round(err/step_effect)`, clamped +/-4 per train), applied by the
+main loop between frames; the total is readable at
+`telemetry.clock.trim_steps`. The step effect is self-measured - chip trim
+steps are nonuniform, 1.4-3.2 k ppm/step measured - from one CAL's reading
+to the next, over the steps the earlier train applied. Volatile by design.
 
-Both feed the oscillator-trim loop (`steps = round(err/step_effect)`,
-clamped ±4/decision), applied by the main loop between frames; the total
-is readable at `telemetry.clock.trim_steps`. The step effect is
-self-measured by the ruler alone - chip trim steps are nonuniform,
-1.4–3.2 k ppm/step measured - from one CAL's reading to the next, over
-every step applied in between, the tracker's included; drift windows only
-decide (their seam noise, ~1 k ppm on the bench, cannot probe a 1.4 k
-step). Volatile by design: the host CALs at boot (~4 ms of bus per train)
-and at moments it knows its own behavior changed - not on a timer; the
-tracker holds the fleet through everything between.
+The host owns the schedule (~4 ms of bus per train): it CALs when it
+detects a servo (boot, a servo joining the bus), then periodically to
+follow thermal drift (bench fleet offsets grew over a ~1.5 h warm-up);
+the interval is the host's choice. A rate change needs no CAL: the trim corrects the
+oscillator's frequency, which no baud setting moves.
 
 **Boot guidance: send at least two trains.** Full convergence is a
 two-point identification, not a precision problem: the first train's
@@ -1523,7 +1511,8 @@ exit from `CONFIG_CORRUPT`.
 | DMA1 CH3 + SPI1     | CRC engine (no pins) [F6]                         |
 | DMA1 CH1            | ADC                                               |
 | DMA1 CH7            | TIM2_CH2: zeroes the break detector per rising edge (§3.4) |
-| DMA1 CH6            | copy-once snapshot buffer (§4.2); CH2 free        |
+| DMA1 CH6            | copy-once snapshot buffer (sec 4.2)               |
+| DMA1 CH2, TIM3      | CAL break stamps: TIM2_UP latches TIM3's count (sec 9.3) |
 | SysTick             | framer deadlines A/B, reply gap, reclaim             |
 | TIM2, CH1 on PC0    | the break detector (§3.4)                         |
 | TIM1                | motor control                                     |
@@ -1545,7 +1534,7 @@ and a direction buffer with its TX_EN pin.
 | F5  | SBK break ≈ 14 bit-times, both chips, zero variance                                        | bringup measurement, V006 + V203 |
 | F6  | SPI CRC: 16-bit LSB-first = natural-order ARC (bitrev16 register), accumulates across DMA arms, 0.36 µs/B wall ~0 CPU | bringup measurement, V006 |
 | F7  | HDSEL direct wire works both directions, no buffer needed                                  | bringup measurement, V006 |
-| F8  | idle push-pull clamps other talkers; OD-idle/PP-talk is mandatory                          | bringup measurement, V006 |
+| F8  | idle push-pull clamps other talkers; open-drain idle is mandatory                          | bringup measurement, V006 |
 | F9  | V006 HDSEL has no own-TX echo                                                              | bringup measurement, V006 |
 | F10 | full HSITRIM throw −3.0..+3.4 %: framing AND data survive everywhere                       | HSITRIM sweep, V006   |
 | F11 | production table CRC = 635 ns/B pure CPU                                                   | bringup measurement, V006 |

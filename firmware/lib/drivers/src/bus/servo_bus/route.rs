@@ -10,7 +10,7 @@ use super::super::frame_view;
 use super::super::framer::{FrameNeeds, FrameSpan, FramerOut};
 use super::reply::ReplyHandle;
 use super::{Pending, ServoBus};
-use crate::traits::bus::{Deadline, Providers, RxRing, tick_reached};
+use crate::traits::bus::{BreakStamps, Deadline, Providers, RxRing, tick_reached};
 
 impl<P: Providers> ServoBus<P> {
     /// Drive the resolver as far as ring DATA allows (data-first from the
@@ -29,6 +29,10 @@ impl<P: Providers> ServoBus<P> {
             return true;
         }
         for _ in 0..super::FRAMES_PER_WAKE {
+            // Cursor before clock: a preemption between the reads then
+            // projects from a late `now`, never an early one (DES pin
+            // `preempted_projection_never_aims_early`).
+            let cursor = self.ring.cursor();
             let now = self.deadline.now();
             let id = self.id;
             let idle = !self.chain.active() && !self.tx.busy();
@@ -51,9 +55,9 @@ impl<P: Providers> ServoBus<P> {
                     FrameNeeds::Covered
                 }
             };
-            let out =
-                self.framer
-                    .resolve(self.ring.bytes(), self.ring.cursor(), now, self.tpb, needs);
+            let out = self
+                .framer
+                .resolve(self.ring.bytes(), cursor, now, self.tpb, needs);
             match out {
                 FramerOut::None => {
                     self.framer_at = None;
@@ -96,8 +100,6 @@ impl<P: Providers> ServoBus<P> {
                 ChainOut::Trigger { predecessor_silent } => {
                     let over = predecessor_silent.then_some(ResultCode::PredecessorSilent);
                     self.tx.trigger(&mut self.crc, over);
-                    // The break is on the wire: the frame's record follows.
-                    self.record_behind_reply();
                     return;
                 }
             }
@@ -164,9 +166,7 @@ impl<P: Providers> ServoBus<P> {
         if status
             || complete && idle && foreign(Header::from_bytes(&self.ring_header(anchor)), self.id)
         {
-            if self.crc_gate(anchor, footprint) {
-                self.drift_record(anchor, footprint);
-            }
+            self.crc_gate(anchor, footprint);
             return;
         }
         // The spine runs only from an idle reply pipeline: superseding a live
@@ -216,28 +216,26 @@ impl<P: Providers> ServoBus<P> {
         self.chain_at = None;
         if self.tx.staged() {
             self.tx.abort();
-            self.record_behind_reply();
         }
-        // Dispatch inline - the CRC already passed, so any reply sequences
-        // from the packet end and a staged table effect commits directly
-        // behind it (the `verify` order). A frame that decodes as another
-        // servo's touches nothing.
-        let mut staged = false;
+        // Dispatch inline - the CRC already passed, so a staged table effect
+        // commits and any reply then sequences from the packet end (the
+        // `verify` order). A frame that decodes as another servo's touches
+        // nothing.
         if let Some((has_reply, slot, out)) =
             self.dispatch_decoded(anchor, footprint, |req, ctx, h| d.dispatch(req, ctx, h))
         {
-            staged = has_reply && self.tx.staged();
-            if staged {
-                self.reply_record = Some((anchor, footprint));
-                self.sequence_reply(slot, packet_end);
-            }
             if matches!(out, Dispatched::Pending) {
                 let mut handle = self.reply_handle();
                 d.commit(&mut handle);
             }
+            if has_reply && self.tx.staged() {
+                self.sequence_reply(slot, packet_end);
+            }
         }
-        if !staged {
-            self.drift_record(anchor, footprint);
+        // A CAL announce: every stamp latched so far is traffic's, and the
+        // train's first mark latches next.
+        if self.clock.pending_cal.is_some() {
+            self.stamps.clear();
         }
     }
 
@@ -258,7 +256,7 @@ impl<P: Providers> ServoBus<P> {
     }
 
     /// Verify a pending frame's CRC and resolve the verdict. Pass -> commit a
-    /// staged table effect (COMMIT) and sequence a staged reply (SEND); fail
+    /// staged table effect (COMMIT), then sequence a staged reply (SEND); fail
     /// (or spin miss) -> revert the write (REVERT), drop the reply
     /// (DON'T-SEND), count, and rewind the ladder (sec 5.3 L1).
     #[cfg_attr(target_arch = "riscv32", inline(never))]
@@ -276,27 +274,18 @@ impl<P: Providers> ServoBus<P> {
             return;
         }
         self.framer.on_frame_verified();
-        // Sequence from the ENGINE's state, not the recorded flag: any path
-        // that reclaimed the staged reply between dispatch and here would
-        // otherwise arm the chain over an empty engine (ghost trigger).
-        let staged = p.staged && self.tx.staged();
-        if staged {
-            self.reply_record = Some((p.anchor, p.footprint));
-            self.sequence_reply(p.slot, p.packet_end);
-        }
-        // Commit AFTER the reply is sequenced (sec 4): the ack was decided
-        // at dispatch and the commit cannot fail, so the status break leaves
-        // without waiting on the commit body. The host still cannot observe
-        // a complete status before the commit lands: the reply's trailing
-        // CRC arm is streamed from the TC vector, HIGH like this body, so it
-        // pends until this body returns.
+        // Commit before the reply is sequenced (sec 4): the ack never
+        // leaves ahead of its effect, and no later kill of the staged reply
+        // can lose a verified write.
         if p.table {
             let mut handle = self.reply_handle();
             d.commit(&mut handle);
         }
-        // The tracker's record last, and behind the reply when there is one.
-        if !staged {
-            self.drift_record(p.anchor, p.footprint);
+        // Sequence from the ENGINE's state, not the recorded flag: any path
+        // that reclaimed the staged reply between dispatch and here would
+        // otherwise arm the chain over an empty engine (ghost trigger).
+        if p.staged && self.tx.staged() {
+            self.sequence_reply(p.slot, p.packet_end);
         }
     }
 
@@ -310,9 +299,10 @@ impl<P: Providers> ServoBus<P> {
         // sub-bit-aligned superposition of near-equal frames reads back as
         // ONE clean frame instead of collision garble. The tick term re-draws
         // every exchange, so equal keys never stick.
+        let now = self.deadline.now();
         let gap = match self.tx.slot_key() {
             Some(key) => {
-                let draw = (key ^ self.deadline.now() as u8) & (ENUM_REPLY_SLOTS - 1);
+                let draw = (key ^ now as u8) & (ENUM_REPLY_SLOTS - 1);
                 self.reply_gap().wrapping_add(draw as u32 * self.tpb)
             }
             None => self.reply_gap(),
@@ -320,6 +310,7 @@ impl<P: Providers> ServoBus<P> {
         let out = self.chain.on_reply_staged(
             slot.index,
             packet_end,
+            now,
             gap,
             self.reclaim(),
             self.frame_allowance(),
@@ -332,7 +323,6 @@ impl<P: Providers> ServoBus<P> {
     fn drop_staged(&mut self) {
         if self.tx.staged() {
             self.tx.abort();
-            self.record_behind_reply();
         }
         self.chain.reset();
         self.chain_at = None;

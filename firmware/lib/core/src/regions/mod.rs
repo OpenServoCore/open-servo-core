@@ -246,6 +246,19 @@ mod tests {
         );
     }
 
+    /// The commit stores each naturally aligned unit whole
+    /// (`control_table` `copy_units`), so a field the kernel reads during a
+    /// commit is whole only if it is naturally aligned in memory.
+    #[test]
+    fn every_multibyte_field_is_naturally_aligned() {
+        assert_eq!(core::mem::align_of::<ControlTable>(), 4);
+        for d in ControlTable::FIELDS {
+            if matches!(d.width, 2 | 4) {
+                assert_eq!(d.addr % d.width, 0, "{} at {:#x}", d.name, d.addr);
+            }
+        }
+    }
+
     /// Pins the exported field descriptors against the protocol consts: names
     /// unique, addresses ascending, and the load-bearing identity/enum/bounds
     /// facts a device-description exporter would rely on.

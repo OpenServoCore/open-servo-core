@@ -2,8 +2,6 @@
 //! taken at the tick interrupt's entry and exit. Pure arithmetic:
 //! `runtime::isr` stamps, keeps the one `TickLoad` and publishes into
 //! TELEMETRY `health`: the counters every 16 ticks, the mean every 4096.
-//! The window's lost count also reaches the kernel (`Kernel::lost_ticks`),
-//! whose time-integrating phases span it.
 
 use crate::cfg::chip;
 use crate::hal::clocks::HCLK_HZ;

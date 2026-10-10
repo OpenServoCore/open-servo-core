@@ -18,8 +18,8 @@ pub const TICKS_PER_US: u64 = 48;
 const BITS_PER_BYTE: u64 = 10;
 
 /// SBK break length; measured ~14 bit-times, zero variance [F5]. `on_break`
-/// is delivered at the break's *end*, its ring byte beside it or 0.75
-/// bit-times after it (see [`super::BreakWake`]).
+/// is delivered at the break's *end*, its ring byte beside it or
+/// [`break_wake_lead`] after it (see [`super::BreakWake`]).
 const BREAK_BITS: u64 = 14;
 
 /// Runaway guards: a wedged scenario must fail loudly, not spin forever.
@@ -38,6 +38,12 @@ pub fn byte_ticks(baud: BaudRate) -> u64 {
 #[inline]
 pub fn break_ticks(baud: BaudRate) -> u64 {
     bit_ticks(baud) * BREAK_BITS
+}
+/// How far the chip's TIM2 wake (9.5 bit-times of low) leads the break's
+/// ringed 0x00 (10).
+#[inline]
+pub fn break_wake_lead(baud: BaudRate) -> u64 {
+    bit_ticks(baud) / 2
 }
 
 /// Who is driving the wire (sec 2 drive discipline). `Host` schedules the bus;
@@ -95,16 +101,12 @@ pub enum Event {
     Compare { servo: usize, generation: u64 },
     /// Test-injected oscillator drift (sec 9.3): servo `servo`'s clock RATE
     /// becomes `ppm` here, continuously -- re-anchored, the reading never
-    /// steps (thermal drift as the tracker sees it).
+    /// steps (thermal drift).
     SkewChange { servo: usize, ppm: i32 },
-    /// Test-injected spurious wake: the break vector re-enters with NO new
+    /// The break vector enters: a test-injected spurious wake with NO new
     /// wire byte (a coalesced or lagged break service -- sec 3.4's reason to
-    /// demand idempotence).
+    /// demand idempotence), or a lagged break's own service.
     WakeRefire { servo: usize },
-    /// Test-injected orphan stamp: servo `servo`'s break detector latches
-    /// with no byte rung and no wake (a low that trips the detector inside
-    /// an idle gap and belongs to no frame).
-    StampOnly { servo: usize },
     /// A break's 0x00 lands in servo `servo`'s ring after its wake
     /// ([`super::BreakWake::BeforeByte`]).
     BreakByte { servo: usize },
@@ -115,6 +117,12 @@ pub enum Event {
     TelTick { servo: usize, epoch: u64 },
     /// A servo's handler body ended (`super::cpu`): deliver one pended vector.
     CpuFree { servo: usize },
+    /// A servo's ADC scan completed: pend its kernel lane's tick.
+    KernelScan { servo: usize },
+    /// Re-try entering a servo's pended kernel tick.
+    KernelRetry { servo: usize },
+    /// A servo's kernel body reached its tail: the TEL sample and poll.
+    KernelTail { servo: usize },
     /// The attached host engine's tick-compare fired; same generation gate
     /// as `Compare`.
     HostCompare { generation: u64 },

@@ -3,6 +3,7 @@
 
 use super::*;
 use osc_protocol::crc::{osc_crc, osc_crc_continue};
+use osc_protocol::wire::Id;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::vec;
@@ -10,14 +11,17 @@ use std::vec::Vec;
 
 struct FakeCrc {
     state: u16,
+    /// Fixed like the chip's static buffer: snapshot addresses stay put.
     snap: Vec<u8>,
+    copies: usize,
 }
 
 impl FakeCrc {
     fn new() -> Self {
         FakeCrc {
             state: 0,
-            snap: Vec::new(),
+            snap: vec![0; wire::covered_len(wire::len_for(wire::MAX_PAYLOAD))],
+            copies: 0,
         }
     }
 }
@@ -33,10 +37,8 @@ impl CrcEngine for FakeCrc {
     }
     fn snapshot(&mut self, off: u16, src: &[u8]) -> *const u8 {
         let off = off as usize;
-        if self.snap.len() < off + src.len() {
-            self.snap.resize(off + src.len(), 0);
-        }
         self.snap[off..off + src.len()].copy_from_slice(src);
+        self.copies += 1;
         unsafe { self.snap.as_ptr().add(off) }
     }
     fn result(&mut self) -> Option<u16> {
@@ -73,8 +75,8 @@ fn engine() -> (TxEngine<FakeWire>, Rc<RefCell<Vec<Event>>>) {
 }
 
 /// Software-sealed frame for the same reply, including the 0x00 prefix.
-/// Built in its own full-size buffer -- REPLY_BUF only fits streamed
-/// layouts, and the reference is a whole linearized frame.
+/// Built in its own full-size buffer - REPLY_BUF only fits the copy
+/// path, and the reference is a whole linearized frame.
 fn reference(id: u8, result: ResultCode, alert: bool, data: &[u8]) -> Vec<u8> {
     let mut b = FrameBuf::<64>::new();
     b.start(Id::new(id), Inst::status(result, alert));
@@ -159,7 +161,7 @@ fn small_copy_reply_matches_sealed_reference() {
 fn small_odd_zero_copy_streams_whole_payload() {
     let (mut eng, log) = engine();
     let mut crc = FakeCrc::new();
-    // 3 even-addressed bytes: above SMALL_COPY_MAX -> zero-copy; the odd
+    // 3 even-addressed bytes: above SMALL_COPY_MAX -> snapshot; the odd
     // last byte is folded into the CRC in software (sec 3.2), not moved into
     // a tail arm.
     let data = Aligned([0xDE, 0xAD, 0xBE, 0]);
@@ -169,8 +171,8 @@ fn small_odd_zero_copy_streams_whole_payload() {
     let log = log.borrow();
     let reference = reference(1, ResultCode::Ok, true, &data.0[..3]);
     let s = sends(&log);
-    // Header, whole streamed payload, CRC.
-    assert_eq!(s.iter().map(Vec::len).collect::<Vec<_>>(), vec![3, 3, 2]);
+    // Header + whole payload, CRC.
+    assert_eq!(s.iter().map(Vec::len).collect::<Vec<_>>(), vec![6, 2]);
     assert_eq!(*s.last().unwrap(), reference[reference.len() - 2..]);
     assert_eq!(wire_bytes(&log), reference[1..]);
     let inst = Inst(wire_bytes(&log)[2]);
@@ -182,9 +184,9 @@ fn small_odd_zero_copy_streams_whole_payload() {
 fn odd_pointer_streams_zero_copy() {
     let (mut eng, log) = engine();
     let mut crc = FakeCrc::new();
-    // Odd-addressed source above SMALL_COPY_MAX: streamed zero-copy like
-    // any other span -- the chip CRC provider stages odd pointers through
-    // its copy channel (sec 5); the engine is parity-blind.
+    // Odd-addressed source above SMALL_COPY_MAX: snapshotted like any
+    // other span - the chip CRC provider stages odd pointers through its
+    // copy channel (sec 5); the engine is parity-blind.
     let backing = Aligned([0u8, 0xDE, 0xAD, 0xBE]);
     let data = &backing.0[1..4];
     eng.stage(&mut crc, 1, ResultCode::Ok, true, data).unwrap();
@@ -192,13 +194,13 @@ fn odd_pointer_streams_zero_copy() {
     let log = log.borrow();
     let reference = reference(1, ResultCode::Ok, true, data);
     let s = sends(&log);
-    // Header, streamed payload, CRC.
-    assert_eq!(s.iter().map(Vec::len).collect::<Vec<_>>(), vec![3, 3, 2]);
+    // Header + payload, CRC.
+    assert_eq!(s.iter().map(Vec::len).collect::<Vec<_>>(), vec![6, 2]);
     assert_eq!(wire_bytes(&log), reference[1..]);
 }
 
 #[test]
-fn zero_copy_even_streams_three_arms() {
+fn snapshot_reply_streams_in_two_arms() {
     let (mut eng, log) = engine();
     let mut crc = FakeCrc::new();
     let data = Aligned(core::array::from_fn::<u8, 40, _>(|i| i as u8));
@@ -207,20 +209,21 @@ fn zero_copy_even_streams_three_arms() {
     run(&mut eng, &mut crc, None);
     let log = log.borrow();
     let s = sends(&log);
-    // Header, Ext payload, then the CRC as its own final 2-byte arm.
-    assert_eq!(s.iter().map(Vec::len).collect::<Vec<_>>(), vec![3, 40, 2]);
+    // ID..payload in one arm from the snapshot, then the CRC arm.
+    assert_eq!(s.iter().map(Vec::len).collect::<Vec<_>>(), vec![43, 2]);
     let reference = reference(9, ResultCode::Ok, false, &data.0);
+    assert_eq!(crc.snap[..44], reference[..44]);
     assert_eq!(*s.last().unwrap(), reference[reference.len() - 2..]);
     assert_eq!(wire_bytes(&log), reference[1..]);
     // CRC over the covered span matches the reference flavor (the leading
     // alignment byte is a no-op, sec 3.2).
     let covered_len = wire::covered_len(wire::len_for(40));
-    let crc = u16::from_le_bytes([s[2][0], s[2][1]]);
+    let crc = u16::from_le_bytes([s[1][0], s[1][1]]);
     assert_eq!(osc_crc(&reference[..covered_len]), crc);
 }
 
 #[test]
-fn zero_copy_odd_streams_whole_payload() {
+fn odd_snapshot_reply_folds_its_last_byte() {
     let (mut eng, log) = engine();
     let mut crc = FakeCrc::new();
     let data = Aligned(core::array::from_fn::<u8, 41, _>(|i| !(i as u8)));
@@ -232,7 +235,7 @@ fn zero_copy_odd_streams_whole_payload() {
     // Odd payload streams whole; its last byte reaches the CRC via the
     // software fold at patch time (sec 3.2), so the wire CRC still matches
     // the byte-wise reference.
-    assert_eq!(s.iter().map(Vec::len).collect::<Vec<_>>(), vec![3, 41, 2]);
+    assert_eq!(s.iter().map(Vec::len).collect::<Vec<_>>(), vec![44, 2]);
     let reference = reference(5, ResultCode::Ok, false, &data.0);
     assert_eq!(*s.last().unwrap(), reference[reference.len() - 2..]);
     assert_eq!(wire_bytes(&log), reference[1..]);
@@ -255,11 +258,11 @@ fn gather_matches_sealed_reference_of_concat() {
     let log = log.borrow();
     let reference = reference(3, ResultCode::Ok, false, &concat);
     let s = sends(&log);
-    // Header, one contiguous snapshot arm, CRC -- same shape as a plain
-    // zero-copy read (the gather is invisible to the wire).
+    // One contiguous snapshot arm, CRC - same shape as a plain read (the
+    // gather is invisible to the wire).
     assert_eq!(
         s.iter().map(Vec::len).collect::<Vec<_>>(),
-        vec![3, concat.len(), 2]
+        vec![3 + concat.len(), 2]
     );
     assert_eq!(wire_bytes(&log), reference[1..]);
     assert_eq!(*s.last().unwrap(), reference[reference.len() - 2..]);
@@ -278,7 +281,7 @@ fn gather_tiny_total_takes_copy_path() {
     let log = log.borrow();
     let reference = reference(4, ResultCode::Ok, false, &[0xAA, 0xBB]);
     assert_eq!(wire_bytes(&log), reference[1..]);
-    assert!(crc.snap.is_empty());
+    assert_eq!(crc.copies, 0);
 }
 
 #[test]
@@ -354,6 +357,21 @@ fn arm_sequencing_ends_in_released_exactly_once() {
     eng.stage(&mut crc, 9, ResultCode::Ok, false, &data.0)
         .unwrap();
     let outs = run(&mut eng, &mut crc, None);
-    assert_eq!(outs, vec![TxOut::Armed, TxOut::Armed, TxOut::Released]);
+    assert_eq!(outs, vec![TxOut::Armed, TxOut::Released]);
     assert!(!eng.busy());
+}
+
+#[test]
+fn inst_override_lands_in_the_snapshot() {
+    let (mut eng, log) = engine();
+    let mut crc = FakeCrc::new();
+    let data = Aligned(core::array::from_fn::<u8, 40, _>(|i| i as u8));
+    eng.stage(&mut crc, 9, ResultCode::Ok, false, &data.0)
+        .unwrap();
+    run(&mut eng, &mut crc, Some(ResultCode::PredecessorSilent));
+    let inst = Inst::status(ResultCode::PredecessorSilent, false).0;
+    assert_eq!(crc.snap[3], inst);
+    let log = log.borrow();
+    let reference = reference(9, ResultCode::PredecessorSilent, false, &data.0);
+    assert_eq!(wire_bytes(&log), reference[1..]);
 }

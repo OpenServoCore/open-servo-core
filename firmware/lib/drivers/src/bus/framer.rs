@@ -165,8 +165,6 @@ pub struct Framer {
     /// faults. Cleared when a candidate resolves as a whole valid frame.
     hunting: bool,
     frontier: Frontier,
-    /// Cursor at the last wire-fault service ([`Self::on_wire_fault`]).
-    fault_seen: u16,
     drops: u32,
 }
 
@@ -176,7 +174,6 @@ impl Framer {
             anchor: 0,
             hunting: false,
             frontier: Frontier::idle(),
-            fault_seen: 0,
             drops: 0,
         }
     }
@@ -191,25 +188,6 @@ impl Framer {
     pub fn resync(&mut self, cursor: u16) {
         self.anchor = cursor;
         self.frontier = Frontier::idle();
-        self.fault_seen = cursor;
-    }
-
-    /// USART FE/RX-error service -- a pure wake, in the strong sense (the
-    /// fault contract, osc-native sec 3.4): the event carries no position, no
-    /// time, and no identity, and NOTHING may be derived from it beyond "look
-    /// at the ring again". Latched flags re-fire and service lags behind the
-    /// wire, so any cursor sampled here describes the service, not the event
-    /// -- a fence built on it killed live frames under burst load (bench: hot
-    /// chains fell 95% -> 80%). The one thing this service computes is
-    /// freshness: `false` means no bytes ringed since the last service -- the
-    /// wake's evidence (if any) is still in flight, and the composite arms a
-    /// one-byte-time recheck.
-    pub fn on_wire_fault(&mut self, cursor: u16) -> bool {
-        if cursor == self.fault_seen {
-            return false;
-        }
-        self.fault_seen = cursor;
-        true
     }
 
     /// The composite rejected a resolved frame (CRC fail): the header that
@@ -256,16 +234,13 @@ impl Framer {
     }
 
     /// The next frame has begun: its break byte is ringed at the anchor
-    /// (position from the stream, with every earlier frame settled).
-    /// Returns the index just past that byte - a break's drift stamp
-    /// cursor, however many data bytes have ringed behind it.
-    pub fn break_ringed(&self, ring: &[u8], cursor: u16) -> Option<u16> {
+    /// (position from the stream, with every earlier frame settled),
+    /// however many data bytes have ringed behind it.
+    pub fn break_ringed(&self, ring: &[u8], cursor: u16) -> bool {
         let len = ring.len();
-        if len == 0 || dist(cursor, self.anchor, len) == 0 {
-            return None;
-        }
-        (ring[self.anchor as usize] == BREAK_RING_BYTE)
-            .then(|| ring_wrap(self.anchor as usize + 1, len) as u16)
+        len != 0
+            && dist(cursor, self.anchor, len) != 0
+            && ring[self.anchor as usize] == BREAK_RING_BYTE
     }
 
     /// One resolution step against the CURRENT ring state (data-first from

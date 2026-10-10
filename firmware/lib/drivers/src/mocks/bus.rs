@@ -6,13 +6,13 @@
 
 use core::cell::{Cell, UnsafeCell};
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::rc::Rc;
 use std::vec::Vec;
 
 use osc_protocol::crc::osc_crc_continue;
+use osc_protocol::wire;
 use osc_servo_core::BaudRate;
-
-use std::collections::VecDeque;
 
 use crate::bus::ServoBus;
 use crate::traits::bus::{BreakStamps, CrcEngine, Deadline, Providers, RxRing, TxWire, UsartBaud};
@@ -141,7 +141,7 @@ impl FakeCrc {
     pub fn new() -> Self {
         FakeCrc {
             state: 0,
-            snap: Vec::new(),
+            snap: std::vec![0; wire::covered_len(wire::len_for(wire::MAX_PAYLOAD))],
         }
     }
 }
@@ -164,13 +164,7 @@ impl CrcEngine for FakeCrc {
 
     fn snapshot(&mut self, off: u16, src: &[u8]) -> *const u8 {
         let off = off as usize;
-        if self.snap.len() < off + src.len() {
-            self.snap.resize(off + src.len(), 0);
-        }
         self.snap[off..off + src.len()].copy_from_slice(src);
-        // SAFETY-adjacent note: tests never grow the Vec between a snapshot
-        // and its consumption, so the pointer stays stable like the chip's
-        // static buffer.
         unsafe { self.snap.as_ptr().add(off) }
     }
 
@@ -230,50 +224,6 @@ impl TxWire for FakeWire {
     }
 }
 
-/// Break stamps a scenario latches ahead of the wakes they belong to. With
-/// none latched, a take reads the clock: on the ideal CPU the detector's
-/// trigger and the wake's service are the same instant.
-#[derive(Clone)]
-pub struct FakeStamps {
-    latched: Rc<RefCell<VecDeque<u32>>>,
-    clock: FakeDeadline,
-}
-
-impl FakeStamps {
-    pub fn new(clock: FakeDeadline) -> Self {
-        Self {
-            latched: Rc::new(RefCell::new(VecDeque::new())),
-            clock,
-        }
-    }
-
-    pub fn latch(&self, stamp: u32) {
-        self.latched.borrow_mut().push_back(stamp);
-    }
-
-    pub fn pending(&self) -> usize {
-        self.latched.borrow().len()
-    }
-}
-
-impl BreakStamps for FakeStamps {
-    fn take(&mut self) -> Option<u16> {
-        Some(
-            self.latched
-                .borrow_mut()
-                .pop_front()
-                .unwrap_or_else(|| self.clock.now()) as u16,
-        )
-    }
-
-    fn clear(&mut self) -> u16 {
-        let mut latched = self.latched.borrow_mut();
-        let n = latched.len() as u16;
-        latched.clear();
-        n
-    }
-}
-
 /// USART baud control recording each applied rate.
 #[derive(Clone, Default)]
 pub struct FakeBaud(Rc<RefCell<Vec<BaudRate>>>);
@@ -291,6 +241,26 @@ impl FakeBaud {
 impl UsartBaud for FakeBaud {
     fn apply(&mut self, baud: BaudRate) {
         self.0.borrow_mut().push(baud);
+    }
+}
+
+/// Break stamps a scenario latches ahead of the wakes that take them.
+#[derive(Clone, Default)]
+pub struct FakeStamps(Rc<RefCell<VecDeque<u16>>>);
+
+impl FakeStamps {
+    pub fn latch(&self, stamp: u16) {
+        self.0.borrow_mut().push_back(stamp);
+    }
+}
+
+impl BreakStamps for FakeStamps {
+    fn take(&mut self) -> Option<u16> {
+        self.0.borrow_mut().pop_front()
+    }
+
+    fn clear(&mut self) {
+        self.0.borrow_mut().clear();
     }
 }
 
@@ -317,13 +287,12 @@ pub struct Harness {
 
 impl Harness {
     pub fn new() -> Self {
-        let deadline = FakeDeadline::new();
         Harness {
             ring: FakeRing::new(),
-            stamps: FakeStamps::new(deadline.clone()),
-            deadline,
+            deadline: FakeDeadline::new(),
             wire: FakeWire::new(),
             baud: FakeBaud::new(),
+            stamps: FakeStamps::default(),
         }
     }
 

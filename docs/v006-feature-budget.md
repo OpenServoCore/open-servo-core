@@ -13,7 +13,7 @@ Short answer: everything fits. Flash is not the limit (3.5 KB left). CPU is not 
 | RAM growth before the link fails | 2,356 - 1,536 B | - | 820 B | `osc-config.x` asserts at least 1,536 B above .bss. With `--features bench` the room is 684 B. |
 | Stack | 2,356 B region | ~1.25 KB measured high water | ~1.1 KB free at rest, 848 B with the bringup probe | Static worst nesting ~1.5 KB (frame sums below), so ~850 B static margin |
 | CPU, kernel at 20 kHz | 50 us per tick | 31-35% with torque off, ~60% driving at 20% duty | 65-69% with torque off | Measured (tick_load_mean_q15). Fast tick ~13 us idle, ~20 us driving while streaming. |
-| CPU, transport | per host frame | 80-160 us per own frame in the HIGH ISR | - | Measured: 1-2 lost ticks per host frame (accepted, counted in `tick_lost_count`) |
+| CPU, transport | per host frame | 80-160 us per own frame in the bus ISRs | - | Below the kernel: no tick lost; the frame's latency stretches by 1 / (1 - U) |
 
 Flash breakdown: `.vector_table` 14,252 B (the stubs plus the four ISR bodies, with the whole kernel tick inlined into the ADC DMA handler: 11,438 B), `.text` 38,188 B, `.rodata` 1,760 B, `.data` load image 344 B, `.tb_version` 2 B. The image has no divide instructions and only 124 multiply instructions in total (74 `mul`, 24 `mulh`, 26 `mulhu`).
 
@@ -55,12 +55,12 @@ Columns:
 
 | Feature | Flash B | RAM B | CPU | Separable |
 |---|---|---|---|---|
-| Transport core: framer, route, verify, reply, TX engine, SPI CRC engine, break wake | 8,900 | RX ring 512, CRC snapshot 252, bus state ~184 | M: 80-160 us of HIGH ISR per own frame (break wake 18 us + one SysTick body). S+sim: a foreign request ~63 us, a foreign status ~41 us | core |
+| Transport core: framer, route, verify, reply, TX engine, SPI CRC engine, break wake | 8,900 | RX ring 512, CRC snapshot 252, bus state ~184 | M: 80-160 us of bus ISR per own frame (break wake 18 us + one SysTick body). S+sim: a foreign request ~63 us, a foreign status ~41 us | core |
 | Protocol decode (frames, wire) | 3,152 | - | inside the frame cost | core |
 | Group instructions (GREAD/GWRITE) | 1,998 | - | inside the frame cost | module in principle (fleet feature) |
 | Software CRC-16 (odd-byte tail fold, ENUM key, persist) | 1,026 + 512 table in .rodata | - | one tail byte per frame | core; see the dedupe lever below |
 | Chain snoop | 640 | 20 | per foreign frame (the fleet cost above) | core for chains; a chain-length limit saves CPU, not memory |
-| Clock discipline: CAL ruler + drift tracker + trim loop | 2,354 (drift tracker alone ~450-650, E) | 96 (drift ~40) | 0 per tick; a few us per break stamp and per silent pair (E) | drift tracker = module |
+| Clock discipline: CAL ruler + trim loop | 2,354 less the drift tracker, since deleted (its last form, with DMA break stamps, measured 1,568 B of .text) | 64 + 16 stamp ring | 0 per tick; one DMA stamp per break, read only during a CAL train | core |
 | TEL streaming | 1,674 | 450 (double buffer 2 x 196, meta 18, feed 28, burst 12) | Staging runs at the tail of the tick. Sample encode while streaming is S: 370 ins. Burst TX by DMA costs ~0 (M) | runtime (`tel_mask` 0) |
 | Dispatch + control table (map, rules, staging) | 5,918 | table 1,024, write staging 244, misc 34 | per frame | core |
 | Persistence (SAVE/FACTORY, flash driver) | 3,108 | 8 | on SAVE only (blocking flash program) | core |
@@ -76,7 +76,7 @@ Columns:
 
 The two biggest RAM consumers are the shunt burst buffer (1,920 B, 23% of RAM, used only during identification) and the control table (1,024 B). The position table (514 B), the RX ring (512 B) and the kernel state (504 B) come next.
 
-The two biggest CPU consumers are the host-frame service in the HIGH ISR (80-160 us per own frame, 1-2 lost ticks, plus 41-63 us per foreign frame on a shared bus) and the fast path's measure-and-drive glue (~13 us of the 50 us tick at idle). Multiplies are not a cost driver: the whole kernel ISR holds 93 multiply instructions, and the worst tick runs about 20-30 of them, roughly 1 pt. The cost is loads, stores, branches and flash wait states, which is why the measured deltas above come from register allocation and branching, not from arithmetic.
+The two biggest CPU consumers are the host-frame service in the bus ISRs (80-160 us per own frame, plus 41-63 us per foreign frame on a shared bus) and the fast path's measure-and-drive glue (~13 us of the 50 us tick at idle). Multiplies are not a cost driver: the whole kernel ISR holds 93 multiply instructions, and the worst tick runs about 20-30 of them, roughly 1 pt. The cost is loads, stores, branches and flash wait states, which is why the measured deltas above come from register allocation and branching, not from arithmetic.
 
 ### RAM map
 
@@ -88,7 +88,7 @@ The two biggest CPU consumers are the host-frame service in the HIGH ISR (80-160
 | `RING` | 512 | transport RX ring |
 | `KERNEL` | 504 | fast 104, medium 156, config snapshot 128, timing 40, command 32, TEL feed 28, io 8, latch/phase 8 |
 | `TEL_CHANNEL` | 410 | TEL double buffer |
-| `CELLS` (.data) | 328 | ServoBus 312 (TX engine 92, clock tracker 96, chain 20, framer 20, pending 16, TEL burst 12, misc 56), LED 16 |
+| `CELLS` (.data) | 296 | ServoBus 280 (TX engine 92, clock discipline 64, chain 20, framer 20, pending 16, TEL burst 12, misc 56), LED 16 |
 | `crc::SNAPSHOT` | 252 | reply payload span for the SPI CRC engine |
 | `SESSION` | 244 | write staging 232, pending verdict |
 | `ADC_DMA_BUF` | 28 | scan |
@@ -102,22 +102,20 @@ The stack region is 2,356 B. The worst case is three levels nested. Static frame
 
 - main: `__run` 352 B.
 - 48 B hardware push.
-- LOW (ADC DMA ISR): 140 B, plus `Kernel::refresh` 212 B.
+- LOW, the bus (SysTick): `serve_break` 48, `drive_framer` 68, `route_frame` 156, `dispatch` 220, `ConfigStore::save` 68, `program` 92, plus 32 for SysTick itself.
 - 48 B hardware push.
-- HIGH (SysTick): `serve_break` 48, `drive_framer` 68, `route_frame` 156, `dispatch` 220, `ConfigStore::save` 68, `program` 92, plus 32 for SysTick itself.
+- HIGH, the kernel (ADC DMA ISR): 140 B, plus `Kernel::refresh` 212 B.
 
-That sums to about 1,480-1,500 B. The measured free minimum is ~1.1 KB at rest, or ~1.25 KB used. The 1,536 B link assertion only guards .bss growth, not deeper call chains. The biggest frames are `__run` (inlined bring-up locals), `dispatch` (a double 68 B Vec in `apply_commit`) and `Kernel::refresh`.
+The same frames as with the bus on top, nested in the other order. That sums to about 1,480-1,500 B. The measured free minimum is ~1.1 KB at rest, or ~1.25 KB used. The 1,536 B link assertion only guards .bss growth, not deeper call chains. The biggest frames are `__run` (inlined bring-up locals), `dispatch` (a double 68 B Vec in `apply_commit`) and `Kernel::refresh`.
 
 ## Planned items
 
 | Item | Flash B | RAM B | CPU | Basis |
 |---|---|---|---|---|
 | Fusion step 4, offset form | ~300-400 | **640** (two rings of 80 x u32 for a 40 ms window) + ~12 state | +2 muls and two ring writes in the OBSERVER phase: <0.1 pt averaged | RAM from the fusion plan; the rest is E |
-| DMA break timestamps (DMA1 CH2 latches a counter on TIM2 update) | ~100-200 | 16 (4 x u32 ring) | 0 per tick; a few instructions per break, and the stamps stop depending on ISR-entry lag | design (E) |
 | Thermometer fix | ~100-300 | ~8-16 | SLOW rate: ~0 | E |
-| Drift tracker restoring force (baseline anchored at the CAL) | +44 | ~0 (the 32-pair accumulators go away) | 0 per tick (decision rate) | flash measured on its branch |
 | Encoder support | per board | per board | atan2 in software CORDIC costs ~3-5 us per sin/cos: ~0.6-1 pt at the medium rate, 6-10 pts at the fast rate | note only |
-| **Sum** | **~0.55-0.95 KB** | **~690** | **<0.5 pt** | |
+| **Sum** | **~0.4-0.7 KB** | **~670** | **<0.5 pt** | |
 
 ## Scenarios
 
@@ -180,7 +178,7 @@ If RAM has to go further than B, these levers are next in order of cost: the pos
 - **The load each feature adds.** No cargo flag gates any kernel feature, so each delta needs an A/B image on the board. The deltas above that are marked M come from the bench. The S counts give an order of magnitude, not a percentage.
 - **The stack high-water mark with the planned RAM in place.** Static frame sums are an upper bound. The stack-paint minimum (`stack_free_min`) is the real number, and it should be re-read after any .bss growth over ~100 B.
 - **TEL encode cost per field, and the worst medium slice** (which phase plus the fast path makes the longest tick).
-- **The fusion rings' real cost in the OBSERVER phase, the CRC dedupe's effect on turnaround, and the drift tracker's per-frame cost.**
+- **The fusion rings' real cost in the OBSERVER phase, and the CRC dedupe's effect on turnaround.**
 
 ## Method
 

@@ -87,6 +87,9 @@ pub struct WireEvidence {
     /// Garble arrived after the last clean frame -- the sec 9.2 trailing-
     /// energy signal.
     pub garble_after_last_frame: bool,
+    /// Whole RX rings that landed before the walk read them (the consumer
+    /// stalled, not the wire); the garble that follows is their wreckage.
+    pub laps: u16,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -183,7 +186,7 @@ pub struct HostBus<P: Providers> {
     window: u32,
     /// Statuses delivered for the active command.
     got: u8,
-    last_cursor: u16,
+    last_written: u32,
     evidence: WireEvidence,
     pending_done: Option<Terminal>,
     wire: wireop::Wire<P>,
@@ -213,7 +216,7 @@ impl<P: Providers> HostBus<P> {
             deadline_at: 0,
             window: 0,
             got: 0,
-            last_cursor: 0,
+            last_written: 0,
             evidence: WireEvidence::default(),
             pending_done: None,
             wire: wireop::Wire::new(),
@@ -284,7 +287,7 @@ impl<P: Providers> HostBus<P> {
         self.plan = Some(plan);
         // Quiet-bus bootstrap: drop anything unconsumed before the
         // TX window opens (host-side analog of the servo's rule).
-        self.framer.resync(self.ring.cursor() as usize);
+        self.framer.resync(self.ring.written());
         match self.pace_until.take() {
             Some(until) if !tick_reached(self.deadline.now(), until) => {
                 self.state = State::Pacing;
@@ -314,7 +317,7 @@ impl<P: Providers> HostBus<P> {
         };
         if let Some((gap_us, gaps)) = plan.train {
             // The wire stays claimed for the whole train: broadcast CAL
-            // draws no reply, and steady drive keeps the break edges crisp.
+            // draws no reply.
             let gap = gap_us as u32 * P::Deadline::TICKS_PER_US;
             self.state = State::Training {
                 left: gaps + 1,
@@ -328,7 +331,7 @@ impl<P: Providers> HostBus<P> {
             self.tx.release();
             self.window = self.window_for(&plan);
             self.got = 0;
-            self.last_cursor = self.ring.cursor();
+            self.last_written = self.ring.written();
             self.state = State::Awaiting;
             self.arm(self.deadline.now().wrapping_add(self.window));
         }
@@ -413,14 +416,13 @@ impl<P: Providers> HostBus<P> {
         // Precomputed: the status arm below runs under a live ring borrow,
         // where whole-`self` helpers can't be called.
         let pace_at = now.wrapping_add(wire::STARVE_HORIZON_BYTE_TIMES * self.byte_ticks());
-        let ring_len = self.ring.bytes().len();
         // A yielded status is recorded as coordinates and materialized only
         // after every mutation -- returning the ring borrow from inside the
         // walk would pin it across the timeout path below.
         let mut emit: Option<(u8, Id, Inst, usize, usize)> = None;
         loop {
-            let cursor = self.ring.cursor() as usize;
-            match self.framer.step(self.ring.bytes(), cursor) {
+            let written = self.ring.written();
+            match self.framer.step(self.ring.bytes(), written) {
                 Step::Frame(f) if f.inst.is_status() => {
                     self.got = self.got.wrapping_add(1);
                     self.evidence.statuses = self.evidence.statuses.saturating_add(1);
@@ -435,7 +437,7 @@ impl<P: Providers> HostBus<P> {
                         self.state = State::Idle;
                         // Ring content no verdict consumed by terminal time
                         // is evidence, not silence (see the horizon path).
-                        let left = unresolved(self.framer.anchor(), cursor, ring_len);
+                        let left = self.framer.unresolved(written);
                         if left > 0 {
                             self.evidence.garble = self.evidence.garble.saturating_add(left);
                             self.evidence.garble_after_last_frame = true;
@@ -453,7 +455,7 @@ impl<P: Providers> HostBus<P> {
                         self.deadline_at = now.wrapping_add(self.window);
                         self.deadline.set(self.deadline_at);
                     }
-                    self.last_cursor = cursor as u16;
+                    self.last_written = written;
                     emit = Some((
                         self.got.wrapping_sub(1),
                         f.id,
@@ -482,6 +484,9 @@ impl<P: Providers> HostBus<P> {
                         self.deadline.set(self.deadline_at);
                     }
                 }
+                Step::Lapped(n) => {
+                    self.evidence.laps = self.evidence.laps.saturating_add(n);
+                }
                 Step::Partial | Step::Idle => break,
             }
         }
@@ -495,9 +500,9 @@ impl<P: Providers> HostBus<P> {
         }
         // Byte-level progress since the previous poll extends the window;
         // ring-derived, never IDLE-derived.
-        let cursor = self.ring.cursor();
-        let progressed = cursor != self.last_cursor;
-        self.last_cursor = cursor;
+        let written = self.ring.written();
+        let progressed = written != self.last_written;
+        self.last_written = written;
         if progressed && !stream {
             self.deadline_at = now.wrapping_add(self.window);
             self.deadline.set(self.deadline_at);
@@ -507,7 +512,7 @@ impl<P: Providers> HostBus<P> {
             // PREFIX that parks the resolver: at the horizon those bytes are
             // collision evidence, not silence -- without this fold an
             // all-matcher collision reads exactly like an empty subtree.
-            let left = unresolved(self.framer.anchor(), cursor as usize, ring_len);
+            let left = self.framer.unresolved(written);
             if left > 0 {
                 self.evidence.garble = self.evidence.garble.saturating_add(left);
                 self.evidence.garble_after_last_frame = true;
@@ -556,7 +561,8 @@ impl<P: Providers> HostBus<P> {
     }
 
     /// Full await window: RESPONSE_DEADLINE + the expected reply's wire
-    /// time + margin (+ the ENUM slot draw under Collect, + the flash-stall
+    /// time + margin (+ the ENUM slot draw under Collect, + a second
+    /// RESPONSE_DEADLINE for a chain slot's reclaim, + the flash-stall
     /// allowance on slow ops). An upper bound for failure detection, not a
     /// grid -- transport sec 9.4's "elastically late" rule made concrete.
     fn window_for(&self, plan: &Shape) -> u32 {
@@ -568,8 +574,13 @@ impl<P: Providers> HostBus<P> {
         let mut w = self.response_deadline_us as u32 * t
             + plan.reply_footprint as u32 * byte
             + WINDOW_MARGIN_BYTES * byte;
-        if matches!(plan.replies, Replies::Collect) {
-            w += wire::ENUM_REPLY_SLOTS as u32 * byte;
+        match plan.replies {
+            Replies::Collect => w += wire::ENUM_REPLY_SLOTS as u32 * byte,
+            // A silent slot's successor reclaims one RESPONSE_DEADLINE after
+            // it is ready, which can trail the host's window by a backlog
+            // (protocol sec 6).
+            Replies::Chain(_) => w += self.response_deadline_us as u32 * t,
+            _ => {}
         }
         if plan.slow {
             w += SLOW_OP_EXTRA_US * t;
@@ -582,11 +593,4 @@ impl<P: Providers> HostBus<P> {
     fn byte_ticks(&self) -> u32 {
         P::Deadline::TICKS_PER_US * 10_000_000 / self.rate.as_hz()
     }
-}
-
-/// Ring span `anchor..cursor` (mod `len`): bytes no framer verdict has
-/// consumed. Sound while an await window stays under one ring lap, which
-/// every reply window is by orders of magnitude.
-fn unresolved(anchor: usize, cursor: usize, len: usize) -> u16 {
-    ((cursor + len - anchor) % len) as u16
 }
