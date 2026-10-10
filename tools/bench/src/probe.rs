@@ -12,11 +12,14 @@ use osc_servo_core::budget::probe::{BusProbe, KernelProbe};
 pub const KERNEL_SYMBOL: &str = "KERNEL_PROBE";
 pub const BUS_SYMBOL: &str = "BUS_PROBE";
 
-/// One read of both records.
+/// One read of both records: decoded, the bus record's last frame closed,
+/// and the words as dumped.
 #[derive(Debug)]
 pub struct Snapshot {
     pub kernel: KernelProbe,
     pub bus: BusProbe,
+    pub kernel_words: Vec<u32>,
+    pub bus_words: Vec<u32>,
 }
 
 /// Where the two records sit in the bench image's RAM.
@@ -47,11 +50,15 @@ impl Reader {
     }
 
     pub fn read(&self) -> Result<Snapshot> {
-        let kernel = words(&dump(self.kernel, 4 * KernelProbe::WORDS)?);
-        let bus = words(&dump(self.bus, 4 * BusProbe::WORDS)?);
+        let kernel_words = words(&dump(self.kernel, 4 * KernelProbe::WORDS)?);
+        let bus_words = words(&dump(self.bus, 4 * BusProbe::WORDS)?);
         Ok(Snapshot {
-            kernel: KernelProbe::from_words(&kernel).context("kernel record")?,
-            bus: BusProbe::from_words(&bus).context("bus record")?,
+            kernel: KernelProbe::from_words(&kernel_words).context("kernel record")?,
+            bus: BusProbe::from_words(&bus_words)
+                .context("bus record")?
+                .closed(),
+            kernel_words,
+            bus_words,
         })
     }
 }

@@ -23,6 +23,7 @@ mod tests;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use osc_servo_core::budget::probe::BusProbe;
 use osc_servo_core::data_state::DataJob;
 use osc_servo_core::pos_lut::POINTS;
 use osc_servo_core::regions::config::DEFAULT_RESPONSE_DEADLINE_US;
@@ -419,6 +420,11 @@ impl Sim {
 
     pub fn delivered_breaks(&self, i: usize) -> u64 {
         self.cpus[i].delivered_breaks()
+    }
+
+    /// Servo `i`'s bus probe as the chip would book its charged bodies.
+    pub fn bus_probe(&self, i: usize) -> BusProbe {
+        self.cpus[i].probe
     }
 
     /// Own frames servo `i` has dispatched.
@@ -1052,6 +1058,7 @@ impl Sim {
         let now = self.core.borrow().now();
         self.cpus[j].charge(now, v);
         let before = self.servos[j].dispatched();
+        let starts = self.handles[j].tx_gate.starts();
         // A frame the stager starts breaks once its body has run up to the
         // trigger, preemptions included: at budget, its whole body.
         let gate = v == Vector::Stage;
@@ -1069,7 +1076,10 @@ impl Sim {
             self.cpus[j].hold_to_break(now, stage, 0);
             self.schedule_free(j);
         }
-        self.cpus[j].charge_frames(self.servos[j].dispatched() - before);
+        let frames = self.servos[j].dispatched() - before;
+        self.cpus[j].charge_frames(frames);
+        let started = self.handles[j].tx_gate.starts() > starts;
+        self.cpus[j].book(v, frames > 0, started);
         self.handles[j].clock_lag.set(0);
     }
 

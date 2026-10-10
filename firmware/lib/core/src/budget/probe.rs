@@ -147,12 +147,13 @@ impl KernelProbe {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
 pub struct BusProbe {
     /// Bus vector bodies less the kernel time inside them, by [`Body`].
     pub body: [Load; Body::ALL.len()],
     /// Host frames: every bus body from one break wake to the next own
-    /// frame, the reply excepted.
+    /// frame, the reply excepted. A window's last frame closes at
+    /// [`Self::closed`].
     pub host: Load,
     /// TEL frames: every bus body from one own frame start to the next. A
     /// start counts as a TEL frame when the last break already had its
@@ -171,6 +172,7 @@ pub struct BusProbe {
     replied: u32,
     saw_break: u32,
     saw_start: u32,
+    saw_dispatch: u32,
 }
 
 impl BusProbe {
@@ -188,6 +190,7 @@ impl BusProbe {
         replied: 0,
         saw_break: 0,
         saw_start: 0,
+        saw_dispatch: 0,
     };
 
     pub const WORDS: usize = core::mem::size_of::<Self>() / 4;
@@ -204,18 +207,27 @@ impl BusProbe {
         self.saw_start = 1;
     }
 
+    /// The running body dispatched a frame.
+    #[inline(always)]
+    pub fn mark_dispatch(&mut self) {
+        self.saw_dispatch = 1;
+    }
+
     /// A bus body of `excl` ticks ends. A stager body that started no frame
-    /// books as [`Body::TelPoll`].
+    /// books as [`Body::TelPoll`], a break wake that dispatched as
+    /// [`Body::Deadline`].
     #[inline(always)]
     pub fn body(&mut self, excl: u32, b: Body) {
         let brk = core::mem::take(&mut self.saw_break) != 0;
         let started = core::mem::take(&mut self.saw_start) != 0;
+        let dispatched = core::mem::take(&mut self.saw_dispatch) != 0;
         if excl > HALT_TICKS {
             self.halts = self.halts.wrapping_add(1);
             return;
         }
         let b = match b {
             Body::TelStage if !started => Body::TelPoll,
+            Body::BreakWake if dispatched => Body::Deadline,
             b => b,
         };
         if let Some(l) = self.body.get_mut(b as usize) {
@@ -232,6 +244,13 @@ impl BusProbe {
             self.replied = 1;
         }
         self.acc = self.acc.wrapping_add(excl);
+    }
+
+    /// The record with its open frame closed: read after the traffic, the
+    /// last frame has run every body it will.
+    pub fn closed(mut self) -> Self {
+        self.fold(0);
+        self
     }
 
     /// Close the frame accumulated so far; the next one is TEL if `tel`.
@@ -268,6 +287,7 @@ impl BusProbe {
             replied: r.word(),
             saw_break: r.word(),
             saw_start: r.word(),
+            saw_dispatch: r.word(),
         })
     }
 }

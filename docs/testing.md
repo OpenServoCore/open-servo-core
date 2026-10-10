@@ -22,9 +22,11 @@ silicon-only properties, not on logic.
 The timing pins of gear 2 that do model CPU time (the kernel lane, the bus
 handler costs, the TEL stager) charge one table, `osc_servo_core::budget`, in
 HCLK ticks. Gear 3's `budgets` test holds the chip to the same table, so while
-it is green no modelled cost is cheaper than silicon: at budget (every body at
-its maximum) the sim is a bound; typical (bodies drawn below their maxima at
-the bench-held mean budgets) it is a forecast.
+it is green no modelled cost is cheaper than silicon. Every gating pin runs at
+budget (every body at its maximum, every injected backlog at the worst the
+table allows): the sim is a bound. The typical lane (bodies drawn below their
+maxima at the bench-held mean budgets) is a forecast for reports and gates
+nothing.
 
 ## Running
 
@@ -478,11 +480,14 @@ surface, with one opt-in exception (`budgets`, below). The suite sweeps the
 full baud matrix (0.5 M / 1 M / 2 M / 3 M).
 
 - **budgets** (`budgets.rs`, `--ignored`) - needs the bench image flashed,
-  `BENCH_ELF` naming its ELF and `wlink` on the probe. Quiet, hold, stepping,
-  six-field TEL still and stepping, and each polled frame type at 3M and 1M
-  run in their own window, opened by a reboot; the budget probe's maxima and
-  means must stay inside `osc_servo_core::budget`. A red run names the
-  window, the component, the measured ticks and us, and the budget.
+  `BENCH_ELF` naming its ELF and `wlink` on the probe. Quiet, hold (with and
+  without an approach move), stepping, six-field TEL still and stepping, and
+  each polled frame type at 3M and 1M run in their own window, opened by a
+  reboot; the budget probe's maxima and means must stay inside
+  `osc_servo_core::budget`, and every frame the host sent must book. Each
+  window prints (and with `BUDGET_OUT` saves) its rows in ticks and us and
+  its raw records as it ends; a red run names the window, the component, the
+  measured ticks and us, and the budget.
 
 - **turnaround** (`turnaround.rs`) - instruction wire-end -> status break
   fall, per baud, for ping, read and write. With the kernel above the bus a
