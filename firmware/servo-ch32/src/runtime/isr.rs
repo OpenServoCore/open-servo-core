@@ -66,6 +66,7 @@ impl Dispatch for BusDispatcher {
         ctx: RequestCtx,
         reply: &mut R,
     ) -> Dispatched {
+        crate::probe::bus_probe(|p| p.mark_dispatch());
         self.with(|d| d.dispatch(req, ctx, reply))
     }
 

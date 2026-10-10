@@ -72,7 +72,7 @@ Columns:
 | .rodata (CRC table 512, control-table rule and jump tables 1,248) | 1,760 | - | - | - |
 | .data load image + `.tb_version` | 344 + 2 | (in RAM) | - | - |
 | **Total** | **54,546** | **5,836** | | |
-| `--features bench` (budget probe, trim counters) | +2,028 | +466 (KERNEL_PROBE 312, BUS_PROBE 124, TRIM_PROBE 28, TEL bank count 4) | a masked stamp at each ISR body's ends and a record update after the measured span (S: 100-130 instructions per bus body) | flag (measured by a build diff) |
+| `--features bench` (budget probe, trim counters) | +2,064 | +470 (KERNEL_PROBE 312, BUS_PROBE 128, TRIM_PROBE 28, TEL bank count 4) | a masked stamp at each ISR body's ends and a record update after the measured span (S: 100-130 instructions per bus body) | flag (measured by a build diff) |
 
 The two biggest RAM consumers are the shunt burst buffer (1,920 B, 23% of RAM, used only during identification) and the control table (1,024 B). The position table (514 B), the RX ring (512 B) and the kernel state (504 B) come next.
 

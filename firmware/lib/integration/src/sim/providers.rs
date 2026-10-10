@@ -202,6 +202,7 @@ pub struct TxGate {
     hold: Cell<bool>,
     frame_held: Cell<bool>,
     held: RefCell<Vec<Box<dyn FnOnce()>>>,
+    starts: Cell<u64>,
 }
 
 impl TxGate {
@@ -224,7 +225,13 @@ impl TxGate {
         }
     }
 
+    /// Frame starts so far.
+    pub fn starts(&self) -> u64 {
+        self.starts.get()
+    }
+
     fn run(&self, starts_frame: bool, f: impl FnOnce() + 'static) {
+        self.starts.set(self.starts.get() + starts_frame as u64);
         if self.hold.get() && (starts_frame || self.frame_held.get()) {
             self.frame_held.set(true);
             self.held.borrow_mut().push(Box::new(f));
@@ -472,7 +479,7 @@ impl TxWire for SimWire {
     }
 
     fn release(&mut self) {
-        self.core.borrow_mut().finalize_frame();
+        self.core.borrow_mut().finalize_servo_frame();
     }
 }
 

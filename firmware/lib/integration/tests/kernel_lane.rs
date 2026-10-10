@@ -2,12 +2,10 @@
 //! preemptor below or above the bus vectors, held against the bench's
 //! lost-tick counts for polled reads (1.33-1.56 per frame with the kernel
 //! below the bus), and the TEL burst it paces from its tail. Above the bus,
-//! costs come from the budget table (`osc_servo_core::budget`): at budget
-//! (every body at its maximum) where the claim holds at the worst case, and
-//! typical (bodies drawn below their maxima at the mean budgets) where only
-//! the measured load supports it.
+//! costs come from the budget table (`osc_servo_core::budget`) at budget:
+//! every body at its maximum.
 
-use osc_host::engine::{Command, Outcome};
+use osc_host::engine::{CHAIN_READY_LAG_US, Command, Outcome};
 use osc_integration::sim::{
     HandlerCost, HostEvent, KernelLane, KernelLevel, KernelStats, Sim, Source, TelCosts,
     frame_crc_ok, instruction, status,
@@ -15,12 +13,13 @@ use osc_integration::sim::{
 use osc_protocol::build;
 use osc_protocol::wire::{Id, Inst, Opcode, ResultCode, STREAM_SAMPLES_MAX};
 use osc_servo_core::BaudRate;
-use osc_servo_core::budget::{Frame, Regime};
+use osc_servo_core::budget::{self, Body, Frame, Regime};
 use osc_servo_core::regions::control::addr::lifecycle::{GOAL_VELOCITY, TEL_COUNT, TEL_MASK};
 use rstest::rstest;
 
 const ID: u8 = 1;
 const FRAMES: u64 = 200;
+const TICKS_PER_US: u64 = budget::TICKS_PER_US as u64;
 const START_US: u64 = 1_000;
 
 /// The kernel-below-bus image the loss pin reproduces, as cpu-probe v2
@@ -95,12 +94,11 @@ fn kernel_on_top_loses_no_tick_under_polling(
     assert!(st.bus_stretch > 0, "the lane preempted no bus body: {st:?}");
 }
 
-/// The attached host's exchanges at 3M, the kernel above the bus: a polled
-/// 32 B READ, and the hot loop's GREAD behind a GWRITE(HOLD) and a COMMIT
-/// the servo is still working through. Each reply lands inside the host's
-/// await window at the default RESPONSE_DEADLINE, moving included, at the
-/// typical load: with every moving body at its maximum the hot loop
-/// overruns the window.
+/// The attached host's exchanges at 3M, the kernel above the bus at
+/// budget: a polled 32 B READ, and the hot loop's GREAD behind a
+/// GWRITE(HOLD) and a COMMIT the servo is still working through. Each reply
+/// lands inside the host's await window at the default RESPONSE_DEADLINE,
+/// moving included; the GREAD's through the chain's readiness allowance.
 #[rstest]
 fn reply_bound_covers_turnaround_under_kernel_preemption(
     #[values(Regime::Quiet, Regime::Hold, Regime::Moving)] regime: Regime,
@@ -115,9 +113,9 @@ fn reply_bound_covers_turnaround_under_kernel_preemption(
     } else {
         Frame::Read32
     };
-    sim.set_handler_cost(s, HandlerCost::typical(frame));
+    sim.set_handler_cost(s, HandlerCost::at_budget(frame));
     let gap_us = 1_000_000 / 280 + 1;
-    let lane = KernelLane::typical(KernelLevel::AboveBus, regime, 1);
+    let lane = KernelLane::at_budget(KernelLevel::AboveBus, regime);
     sim.set_kernel_lane(s, lane, START_US + CYCLES * gap_us);
     let mut read = [0u8; 4];
     let n = build::read(&mut read, 0, 32).unwrap();
@@ -171,22 +169,40 @@ fn exchange(sim: &mut Sim, id: Id, op: Opcode, flags: u8, payload: &[u8]) -> Out
     panic!("the exchange never terminated");
 }
 
-/// A GREAD whose slot 0 is absent, at 3M with the kernel above the bus at
-/// hold, at budget: slot 1 dispatches at the covered checkpoint and serves
-/// its verdict behind 400 us of bus backlog, then reclaims one
+/// The most bus work a chain slot can work through before it is ready,
+/// HCLK ticks: ahead of it the hot loop's GWRITE(HOLD) and COMMIT (protocol
+/// sec 7), each at most a goal WRITE's frame, then its own GREAD up to the
+/// verdict. Every servo on the chain works through the same backlog.
+fn chain_backlog() -> (u64, u64) {
+    let ahead = 2 * budget::frame(Frame::Write);
+    let own = budget::frame(Frame::GreadSlot) - Frame::REPLY_ARMS * budget::body(Body::TxDone);
+    (ahead as u64, own as u64)
+}
+
+/// A GREAD whose slot 0 is absent, at 3M, the kernel above the bus at the
+/// moving budget, the slot behind the worst backlog the table allows: slot
+/// 1 dispatches at the covered checkpoint, serves its verdict behind the
+/// hot loop's frames stretched by the kernel, then reclaims one
 /// RESPONSE_DEADLINE after it is ready. The attached host is still waiting
-/// when its status arrives, flagged. The kernel stretches a backlog by
-/// 1 / (1 - U), so the host's one-deadline allowance covers less backlog
-/// the heavier the kernel.
+/// when its status arrives, flagged: its chain allowance covers the
+/// backlog's longest wall time under the kernel.
 #[test]
 fn host_waits_for_a_reclaim_counted_from_readiness() {
-    const LAG_US: u64 = 400;
+    let (ahead, own) = chain_backlog();
+    let lane = KernelLane::at_budget(KernelLevel::AboveBus, Regime::Moving);
+    let lag = lane.wall(ahead + own);
+    let allowance = CHAIN_READY_LAG_US as u64 * TICKS_PER_US;
+    assert!(
+        lag <= allowance,
+        "ready {} us after the frame at the moving budget, allowance {} us",
+        lag / TICKS_PER_US,
+        CHAIN_READY_LAG_US
+    );
     let mut sim = Sim::new(BaudRate::B3000000);
     sim.attach_host();
     let s = sim.add_servo(ID);
     sim.set_handler_cost(s, HandlerCost::at_budget(Frame::GreadSlot));
-    let lane = KernelLane::at_budget(KernelLevel::AboveBus, Regime::Hold);
-    sim.set_kernel_lane(s, lane, START_US + 10_000);
+    sim.set_kernel_lane(s, lane, START_US + 20_000);
     sim.run_until(START_US);
     let mut p = [0u8; 16];
     let n = build::gread_uniform(&mut p, 0, 16, &[Id::new(ID + 1), Id::new(ID)]).unwrap();
@@ -199,10 +215,10 @@ fn host_waits_for_a_reclaim_counted_from_readiness() {
     let mut t = START_US;
     while sim.dispatched(s) == 0 {
         t += 1;
-        assert!(t < START_US + LAG_US, "the GREAD never dispatched");
+        assert!(t < START_US + 10_000, "the GREAD never dispatched");
         sim.run_until(t);
     }
-    sim.preempt_before_ring_read(s, LAG_US);
+    sim.preempt_before_ring_read(s, ahead.div_ceil(TICKS_PER_US));
     sim.run();
     let ev = sim.host_events();
     match ev.first() {
@@ -224,15 +240,13 @@ fn write_u16(addr: u16, v: u16) -> Vec<u8> {
 const SIX_FIELDS: u16 = 0x1cd;
 const TEL_FRAMES: u16 = 100;
 
-/// At the typical load: with every body at its maximum the stream loses rows
-/// at rest.
 #[test]
 fn tel_six_fields_fit_at_rest_with_the_kernel_on_top() {
     let mut sim = Sim::new(BaudRate::B3000000);
     let s = sim.add_servo(ID);
-    sim.set_handler_cost(s, HandlerCost::typical(Frame::Write));
+    sim.set_handler_cost(s, HandlerCost::at_budget(Frame::Write));
     let rows = TEL_FRAMES * STREAM_SAMPLES_MAX as u16;
-    let lane = KernelLane::typical(KernelLevel::AboveBus, Regime::Quiet, 1);
+    let lane = KernelLane::at_budget(KernelLevel::AboveBus, Regime::Quiet);
     sim.set_kernel_lane(s, lane, START_US + 2 * rows as u64 * 50);
     sim.host_send_at(START_US, &write_u16(TEL_MASK, SIX_FIELDS));
     sim.run_until(START_US + 1_000);

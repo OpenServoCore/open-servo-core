@@ -107,6 +107,59 @@ fn bus_frames_fold_at_breaks_and_at_starts_after_the_reply() {
     assert_eq!(b.body[Body::TxDone as usize].n, 3);
 }
 
+/// One polled exchange as the chip books it: the wake, the deadline body
+/// that triggers the reply, the reply's two arms.
+fn exchange(b: &mut BusProbe) {
+    b.mark_break();
+    b.body(100, Body::BreakWake);
+    b.mark_dispatch();
+    b.mark_start();
+    b.body(200, Body::Deadline);
+    b.body(50, Body::TxDone);
+    b.body(50, Body::TxDone);
+}
+
+#[test]
+fn a_window_closes_its_last_frame_at_the_dump() {
+    let mut b = BusProbe::ZERO;
+    for _ in 0..5 {
+        exchange(&mut b);
+    }
+    assert_eq!(b.host.n, 4, "a frame closes at the next break");
+    let b = b.closed();
+    assert_eq!(
+        b.host,
+        Load {
+            n: 5,
+            sum: 5 * 400,
+            max: 400
+        }
+    );
+    assert_eq!(b.closed().host.n, 5, "closing twice adds nothing");
+    let mut t = BusProbe::ZERO;
+    exchange(&mut t);
+    for _ in 0..3 {
+        t.mark_start();
+        t.body(300, Body::TelStage);
+    }
+    let t = t.closed();
+    assert_eq!((t.host.n, t.tel.n), (1, 3));
+}
+
+#[test]
+fn a_wake_that_dispatches_books_as_frame_service() {
+    let mut b = BusProbe::ZERO;
+    b.mark_break();
+    b.mark_dispatch();
+    b.mark_start();
+    b.body(2500, Body::BreakWake);
+    b.mark_break();
+    b.body(700, Body::BreakWake);
+    assert_eq!(b.body[Body::Deadline as usize].max, 2500);
+    assert_eq!(b.body[Body::BreakWake as usize].max, 700);
+    assert_eq!(b.host.max, 2500, "the frame still holds its wake");
+}
+
 #[test]
 fn a_halted_body_stays_out_of_its_frame() {
     let mut b = BusProbe::ZERO;
@@ -207,10 +260,7 @@ fn kernel_budgets_rise_with_the_regime() {
         assert!(q <= h && h <= m, "phase {p}: {q} {h} {m}");
         for r in Regime::ALL {
             let (mean, max) = (KERNEL_MEAN[r as usize][p], KERNEL[r as usize][p]);
-            assert!(
-                mean <= max && 2 * mean >= max,
-                "{r:?} phase {p}: {mean} {max}"
-            );
+            assert!(mean <= max, "{r:?} phase {p}: {mean} {max}");
         }
     }
 }

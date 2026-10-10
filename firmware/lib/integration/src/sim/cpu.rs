@@ -12,6 +12,7 @@
 //! Costs at budget come from `osc_servo_core::budget`, the table the bench
 //! test `budgets` holds the chip to, each with its interrupt entry and exit.
 
+use osc_servo_core::budget::probe::BusProbe;
 use osc_servo_core::budget::{self, Body, Frame, PHASES, Regime};
 
 use super::core::TICKS_PER_US;
@@ -25,7 +26,8 @@ const _: () = assert!(TICKS_PER_US == budget::TICKS_PER_US as u64);
 pub static KERNEL_AT_BUDGET: [[u64; PHASES]; 3] = kernel_bodies(false);
 
 /// The lowest body the typical lane draws: a uniform draw from here to the
-/// budget has the mean budget for its mean.
+/// budget has the mean budget for its mean, or more where the maximum sits
+/// over twice the mean (the floor stops at zero).
 pub static KERNEL_FLOOR: [[u64; PHASES]; 3] = kernel_bodies(true);
 
 const fn kernel_bodies(floor: bool) -> [[u64; PHASES]; 3] {
@@ -36,7 +38,7 @@ const fn kernel_bodies(floor: bool) -> [[u64; PHASES]; 3] {
         while p < PHASES {
             let max = budget::KERNEL[r][p];
             let body = if floor {
-                2 * budget::KERNEL_MEAN[r][p] - max
+                (2 * budget::KERNEL_MEAN[r][p]).saturating_sub(max)
             } else {
                 max
             };
@@ -175,6 +177,17 @@ impl KernelLane {
         }
     }
 
+    /// The longest `bus` ticks of bus work can take on the wall under this
+    /// lane above the bus: every scan in the span preempts it, the first
+    /// with the longest body, so `(bus + longest) / (1 - U)`, U the lane's
+    /// share of a medium period (TEL off).
+    pub fn wall(&self, bus: u64) -> u64 {
+        let busy: u64 = self.phases.iter().sum();
+        let span = self.phases.len() as u64 * KERNEL_PERIOD;
+        let longest = self.phases.iter().copied().max().unwrap_or(0);
+        ((bus + longest) * span).div_ceil(span.saturating_sub(busy).max(1))
+    }
+
     /// The kernel inside its budgets in `regime`: each body drawn below its
     /// maximum, at the mean budget on average, and the stager at its mean
     /// budgets.
@@ -246,6 +259,10 @@ pub struct Cpu {
     delivered_breaks: u64,
     entries: Entries,
     frames_max: u64,
+    /// CPU the running bus body charged, HCLK ticks.
+    body_ticks: u64,
+    /// The chip's bus probe, fed the charged bodies.
+    pub probe: BusProbe,
 }
 
 /// Handler bodies run, per vector.
@@ -380,8 +397,30 @@ impl Cpu {
         self.deferred = Some((v, now));
     }
 
+    /// Book the bus body just run on the probe, as the chip stamps it.
+    pub fn book(&mut self, v: Vector, dispatched: bool, started: bool) {
+        let p = &mut self.probe;
+        if v == Vector::Break {
+            p.mark_break();
+        }
+        if dispatched {
+            p.mark_dispatch();
+        }
+        if started {
+            p.mark_start();
+        }
+        let body = match v {
+            Vector::Compare => Body::Deadline,
+            Vector::Break => Body::BreakWake,
+            Vector::TxDone => Body::TxDone,
+            Vector::Stage => Body::TelStage,
+        };
+        p.body(self.body_ticks as u32, body);
+    }
+
     fn occupy(&mut self, now: u64, ticks: u64) {
         self.busy_until = now + ticks;
+        self.body_ticks = ticks;
         self.kernel_preempted = false;
         if let Some(k) = self.kernel.as_mut()
             && k.lane.level == KernelLevel::BelowBus
@@ -394,6 +433,7 @@ impl Cpu {
 
     fn extend(&mut self, ticks: u64) {
         self.busy_until += ticks;
+        self.body_ticks += ticks;
         if self.kernel_preempted
             && let Some(k) = self.kernel.as_mut()
         {

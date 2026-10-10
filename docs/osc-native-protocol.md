@@ -1256,9 +1256,13 @@ ALERT bit on that servo's status (§5.3).
 - The bus pull-up, at the host end: servos only pull low (sec 2).
 - Drive discipline if on a buffer-less bus (release when idle) [F8].
 - Schedule the bus: one outstanding instruction / chain at a time;
-  timeout = RESPONSE_DEADLINE + frame time, plus one more
-  RESPONSE_DEADLINE per chain slot (a silent slot's successor reclaims
-  one RESPONSE_DEADLINE after it is ready, sec 6).
+  timeout = RESPONSE_DEADLINE + frame time, plus per chain slot the
+  larger of RESPONSE_DEADLINE and the slots' readiness lag (a silent
+  slot's successor reclaims one RESPONSE_DEADLINE after it is ready, sec
+  6, and readiness trails the GREAD by the bus backlog every servo works
+  through, stretched by its kernel: osc-host allows 5 ms,
+  `CHAIN_READY_LAG_US`, sized from the V006 budget table at its moving
+  kernel load).
 - Fault pacing (§3.4): after traffic a servo may have received as garble
   (wrong-baud probes, glitches), allow one starve horizon (64
   byte-times) of bus silence before expecting crisp turnarounds — don't
