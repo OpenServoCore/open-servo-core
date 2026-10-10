@@ -7,11 +7,12 @@ use crate::pipe::{PID, Pipe, PipeError, VID};
 
 const EP_OUT: u8 = 0x01;
 const EP_IN: u8 = 0x81;
-// IN_DEPTH x IN_CAP = 32 kB queued with the xHCI: ~128 ms of the 255 kB/s
-// TEL stream with no IN gap while the client thread is busy. A gap past a
-// few ms fills the adapter's TX queue and laps its UART RX ring.
+// Each IN transfer completes on a short packet, so it carries one record
+// (~200 B at TEL rates), not IN_CAP: the queue holds IN_DEPTH records, about
+// 0.8 ms each. 128 cover a ~100 ms client stall; past that the adapter's TX
+// queue fills and its UART RX ring laps (one lap = 1024 B of frames lost).
 const IN_CAP: usize = 4096;
-const IN_DEPTH: usize = 8;
+const IN_DEPTH: usize = 128;
 
 pub struct NusbPipe {
     interface: nusb::Interface,
