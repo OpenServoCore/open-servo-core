@@ -7,10 +7,11 @@
 //! turnaround (the ~41 us projection of sec 7) is the bench's job, not this suite.
 
 use osc_integration::sim::{
-    READ32_3M_COST, Sim, Source, WireFrame, assert_valid, instruction, status,
+    HandlerCost, Sim, Source, WireFrame, assert_valid, instruction, status,
 };
 use osc_protocol::wire::{Opcode, ResultCode};
 use osc_servo_core::BaudRate;
+use osc_servo_core::budget::Frame;
 use osc_servo_core::regions::PROFILE_BASE_ADDR;
 use osc_servo_core::regions::config::addr::common::MODEL_NUMBER;
 use rstest::rstest;
@@ -93,7 +94,7 @@ fn preempted_projection_never_aims_early(
 ) {
     let mut sim = Sim::new(BaudRate::B3000000);
     let s = sim.add_servo(1);
-    sim.set_handler_cost(s, READ32_3M_COST);
+    sim.set_handler_cost(s, HandlerCost::at_budget(Frame::Read32));
     sim.preempt_before_ring_read(s, preempt_us);
     sim.host_send(&instruction(1, Opcode::Read, 0, &[0, 0, 32, 0]));
     let frames = sim.run();

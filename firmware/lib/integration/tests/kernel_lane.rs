@@ -1,16 +1,21 @@
 //! The kernel lane (`sim::cpu`): the 20 kHz kernel tick as a periodic
 //! preemptor below or above the bus vectors, held against the bench's
 //! lost-tick counts for polled reads (1.33-1.56 per frame with the kernel
-//! below the bus), and the TEL burst it paces from its tail.
+//! below the bus), and the TEL burst it paces from its tail. Above the bus,
+//! costs come from the budget table (`osc_servo_core::budget`): at budget
+//! (every body at its maximum) where the claim holds at the worst case, and
+//! typical (bodies drawn below their maxima at the mean budgets) where only
+//! the measured load supports it.
 
 use osc_host::engine::{Command, Outcome};
 use osc_integration::sim::{
-    HostEvent, KERNEL_HOLD, KERNEL_MOVING, KERNEL_QUIET, KernelLane, KernelLevel, KernelStats,
-    READ32_3M_COST, Sim, Source, frame_crc_ok, instruction, status,
+    HandlerCost, HostEvent, KernelLane, KernelLevel, KernelStats, Sim, Source, TelCosts,
+    frame_crc_ok, instruction, status,
 };
 use osc_protocol::build;
 use osc_protocol::wire::{Id, Inst, Opcode, ResultCode, STREAM_SAMPLES_MAX};
 use osc_servo_core::BaudRate;
+use osc_servo_core::budget::{Frame, Regime};
 use osc_servo_core::regions::control::addr::lifecycle::{GOAL_VELOCITY, TEL_COUNT, TEL_MASK};
 use rstest::rstest;
 
@@ -18,20 +23,30 @@ const ID: u8 = 1;
 const FRAMES: u64 = 200;
 const START_US: u64 = 1_000;
 
-/// Own 32 B READs at 3M polled at `frames_per_s` with the bench's bus costs
-/// and a kernel lane at `level`; the lane's stats and the replies seen.
-fn polled_reads(
-    level: KernelLevel,
-    phases: &'static [u64],
-    frames_per_s: u64,
-) -> (KernelStats, u64) {
+/// The kernel-below-bus image the loss pin reproduces, as cpu-probe v2
+/// measured it (LOW-exclusive means, three 20 s windows): quiet and holding.
+static BELOW_BUS_QUIET: [u64; 10] = [981, 1250, 732, 1087, 768, 1033, 763, 943, 702, 712];
+static BELOW_BUS_HOLD: [u64; 10] = [1023, 1250, 1239, 1096, 792, 1072, 763, 943, 702, 712];
+
+/// Its own 32 B READ at 3M (cpu-probe v1, polling ladder): wake 16.0 us,
+/// deadline 82.1 us spent over three compare bodies, three arms 20.8 us.
+const BELOW_BUS_READ32: HandlerCost = HandlerCost {
+    on_break_us: 16,
+    on_deadline_us: 20,
+    on_tx_complete_us: 7,
+    per_frame_us: 22,
+};
+
+/// Own 32 B READs at 3M polled at `frames_per_s` with bus costs `cost` and
+/// kernel `lane`; the lane's stats and the replies seen.
+fn polled_reads(lane: KernelLane, cost: HandlerCost, frames_per_s: u64) -> (KernelStats, u64) {
     let mut sim = Sim::new(BaudRate::B3000000);
     let s = sim.add_servo(ID);
-    sim.set_handler_cost(s, READ32_3M_COST);
+    sim.set_handler_cost(s, cost);
     // The extra us walks the frames across the kernel grid: the host's
     // clock is not the servo's.
     let gap_us = 1_000_000 / frames_per_s + 1;
-    sim.set_kernel_lane(s, KernelLane { level, phases }, START_US + FRAMES * gap_us);
+    sim.set_kernel_lane(s, lane, START_US + FRAMES * gap_us);
     let mut replies = 0;
     for k in 0..FRAMES {
         let at = START_US + k * gap_us;
@@ -48,10 +63,16 @@ fn polled_reads(
 
 #[rstest]
 fn kernel_lane_below_bus_reproduces_bench_loss(
-    #[values(&KERNEL_QUIET, &KERNEL_HOLD)] phases: &'static [u64; 10],
+    #[values(&BELOW_BUS_QUIET, &BELOW_BUS_HOLD)] phases: &'static [u64; 10],
     #[values(50, 140, 280)] frames_per_s: u64,
 ) {
-    let (st, replies) = polled_reads(KernelLevel::BelowBus, phases, frames_per_s);
+    let lane = KernelLane {
+        level: KernelLevel::BelowBus,
+        phases,
+        floor: None,
+        tel: TelCosts::default(),
+    };
+    let (st, replies) = polled_reads(lane, BELOW_BUS_READ32, frames_per_s);
     assert_eq!(replies, FRAMES);
     let per_frame = st.lost as f64 / FRAMES as f64;
     assert!(
@@ -62,10 +83,12 @@ fn kernel_lane_below_bus_reproduces_bench_loss(
 
 #[rstest]
 fn kernel_on_top_loses_no_tick_under_polling(
-    #[values(&KERNEL_QUIET, &KERNEL_HOLD, &KERNEL_MOVING)] phases: &'static [u64; 10],
+    #[values(Regime::Quiet, Regime::Hold, Regime::Moving)] regime: Regime,
     #[values(50, 140, 280)] frames_per_s: u64,
 ) {
-    let (st, replies) = polled_reads(KernelLevel::AboveBus, phases, frames_per_s);
+    let lane = KernelLane::at_budget(KernelLevel::AboveBus, regime);
+    let cost = HandlerCost::at_budget(Frame::Read32);
+    let (st, replies) = polled_reads(lane, cost, frames_per_s);
     assert_eq!(replies, FRAMES);
     assert_eq!((st.lost, st.entries), (0, st.scans), "{st:?}");
     assert_eq!(st.entry_latency_max, 0, "every entry at its scan: {st:?}");
@@ -75,22 +98,26 @@ fn kernel_on_top_loses_no_tick_under_polling(
 /// The attached host's exchanges at 3M, the kernel above the bus: a polled
 /// 32 B READ, and the hot loop's GREAD behind a GWRITE(HOLD) and a COMMIT
 /// the servo is still working through. Each reply lands inside the host's
-/// await window at the default RESPONSE_DEADLINE, moving included.
+/// await window at the default RESPONSE_DEADLINE, moving included, at the
+/// typical load: with every moving body at its maximum the hot loop
+/// overruns the window.
 #[rstest]
 fn reply_bound_covers_turnaround_under_kernel_preemption(
-    #[values(&KERNEL_QUIET, &KERNEL_HOLD, &KERNEL_MOVING)] phases: &'static [u64; 10],
+    #[values(Regime::Quiet, Regime::Hold, Regime::Moving)] regime: Regime,
     #[values(false, true)] hot_loop: bool,
 ) {
     const CYCLES: u64 = 100;
     let mut sim = Sim::new(BaudRate::B3000000);
     sim.attach_host();
     let s = sim.add_servo(ID);
-    sim.set_handler_cost(s, READ32_3M_COST);
-    let gap_us = 1_000_000 / 280 + 1;
-    let lane = KernelLane {
-        level: KernelLevel::AboveBus,
-        phases,
+    let frame = if hot_loop {
+        Frame::Write
+    } else {
+        Frame::Read32
     };
+    sim.set_handler_cost(s, HandlerCost::typical(frame));
+    let gap_us = 1_000_000 / 280 + 1;
+    let lane = KernelLane::typical(KernelLevel::AboveBus, regime, 1);
     sim.set_kernel_lane(s, lane, START_US + CYCLES * gap_us);
     let mut read = [0u8; 4];
     let n = build::read(&mut read, 0, 32).unwrap();
@@ -145,21 +172,20 @@ fn exchange(sim: &mut Sim, id: Id, op: Opcode, flags: u8, payload: &[u8]) -> Out
 }
 
 /// A GREAD whose slot 0 is absent, at 3M with the kernel above the bus at
-/// hold: slot 1 dispatches at the covered checkpoint and serves its verdict
-/// 600 us late (the deadline held behind a backlog), then reclaims one
+/// hold, at budget: slot 1 dispatches at the covered checkpoint and serves
+/// its verdict behind 400 us of bus backlog, then reclaims one
 /// RESPONSE_DEADLINE after it is ready. The attached host is still waiting
-/// when its status arrives, flagged.
+/// when its status arrives, flagged. The kernel stretches a backlog by
+/// 1 / (1 - U), so the host's one-deadline allowance covers less backlog
+/// the heavier the kernel.
 #[test]
 fn host_waits_for_a_reclaim_counted_from_readiness() {
-    const LAG_US: u64 = 600;
+    const LAG_US: u64 = 400;
     let mut sim = Sim::new(BaudRate::B3000000);
     sim.attach_host();
     let s = sim.add_servo(ID);
-    sim.set_handler_cost(s, READ32_3M_COST);
-    let lane = KernelLane {
-        level: KernelLevel::AboveBus,
-        phases: &KERNEL_HOLD,
-    };
+    sim.set_handler_cost(s, HandlerCost::at_budget(Frame::GreadSlot));
+    let lane = KernelLane::at_budget(KernelLevel::AboveBus, Regime::Hold);
     sim.set_kernel_lane(s, lane, START_US + 10_000);
     sim.run_until(START_US);
     let mut p = [0u8; 16];
@@ -198,16 +224,15 @@ fn write_u16(addr: u16, v: u16) -> Vec<u8> {
 const SIX_FIELDS: u16 = 0x1cd;
 const TEL_FRAMES: u16 = 100;
 
+/// At the typical load: with every body at its maximum the stream loses rows
+/// at rest.
 #[test]
 fn tel_six_fields_fit_at_rest_with_the_kernel_on_top() {
     let mut sim = Sim::new(BaudRate::B3000000);
     let s = sim.add_servo(ID);
-    sim.set_handler_cost(s, READ32_3M_COST);
+    sim.set_handler_cost(s, HandlerCost::typical(Frame::Write));
     let rows = TEL_FRAMES * STREAM_SAMPLES_MAX as u16;
-    let lane = KernelLane {
-        level: KernelLevel::AboveBus,
-        phases: &KERNEL_QUIET,
-    };
+    let lane = KernelLane::typical(KernelLevel::AboveBus, Regime::Quiet, 1);
     sim.set_kernel_lane(s, lane, START_US + 2 * rows as u64 * 50);
     sim.host_send_at(START_US, &write_u16(TEL_MASK, SIX_FIELDS));
     sim.run_until(START_US + 1_000);
