@@ -6,7 +6,9 @@
 //! ordering, and drift tolerance against the ideal sim clock. Wall-clock
 //! turnaround (the ~41 us projection of sec 7) is the bench's job, not this suite.
 
-use osc_integration::sim::{Sim, Source, WireFrame, assert_valid, instruction, status};
+use osc_integration::sim::{
+    READ32_3M_COST, Sim, Source, WireFrame, assert_valid, instruction, status,
+};
 use osc_protocol::wire::{Opcode, ResultCode};
 use osc_servo_core::BaudRate;
 use osc_servo_core::regions::PROFILE_BASE_ADDR;
@@ -78,6 +80,33 @@ fn reply_lead_respects_reply_gap(baud_idx: u8) {
     let fp = instr.len() as u64;
     let ceil = reply_gap + 2 * bt + ((fp * bt) >> 6);
     assert!(lead <= ceil, "{rate:?}: lead {lead} > ceiling {ceil}");
+}
+
+/// A preemption between a body's clock read and its ring-cursor read, at
+/// the bench's 3M READ costs. Swept across the READ's 35 us wire span: it
+/// ends inside the frame (the covered projection) or just past its end (the
+/// complete-frame path). A stale clock must never aim the reply inside the
+/// reply gap.
+#[rstest]
+fn preempted_projection_never_aims_early(
+    #[values(5, 10, 15, 20, 25, 30, 35, 40, 45, 50)] preempt_us: u64,
+) {
+    let mut sim = Sim::new(BaudRate::B3000000);
+    let s = sim.add_servo(1);
+    sim.set_handler_cost(s, READ32_3M_COST);
+    sim.preempt_before_ring_read(s, preempt_us);
+    sim.host_send(&instruction(1, Opcode::Read, 0, &[0, 0, 32, 0]));
+    let frames = sim.run();
+
+    let reps = replies(&frames);
+    assert_eq!(reps.len(), 1, "{preempt_us} us: {frames:#?}");
+    assert_valid(reps[0]);
+    let lead = reps[0].at - host_frame(&frames).end;
+    let reply_gap = support::reply_gap_ticks();
+    assert!(
+        lead >= reply_gap,
+        "{preempt_us} us preemption: lead {lead} < reply gap {reply_gap}"
+    );
 }
 
 #[apply(matrix)]
