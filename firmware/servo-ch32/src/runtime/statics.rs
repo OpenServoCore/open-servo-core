@@ -8,10 +8,10 @@ use crate::control::Ch32ControlIo;
 pub static SHARED: Shared = Shared::new();
 
 /// TEL burst seam, split once in `install`: the kernel keeps the `TelFeed`
-/// half (its `TelStream` sink) -- fed from the PFIC LOW kernel tick, so
+/// half (its `TelStream` sink) - fed from the PFIC HIGH kernel tick, so
 /// kernel ownership keeps the `&mut` single-context -- and the `TelDrain`
-/// half rides in the HIGH-side bus composite (`attach_tel`). The main loop
-/// reads only `drops`.
+/// half rides in the bus composite (`attach_tel`). The main loop reads only
+/// `drops`.
 pub(crate) static TEL_CHANNEL: TelChannel = TelChannel::new();
 
 type Ch32Kernel = Kernel<Ch32ControlIo, TelFeed>;
@@ -21,9 +21,9 @@ pub(crate) static KERNEL: SyncUnsafeCell<MaybeUninit<Ch32Kernel>> =
     SyncUnsafeCell::new(MaybeUninit::uninit());
 
 /// The per-servo dispatch session (write staging + the pending-verdict slot).
-/// Borrowed only by the HIGH transport ISRs (USART1 + SysTick), which
-/// materialize it per `Dispatch` call and share PFIC HIGH -- so dispatch,
-/// commit, and revert never overlap (the `HighDispatcher` invariant in
+/// Borrowed only by the transport ISRs (TIM2 + SysTick), which materialize
+/// it per `Dispatch` call and share the bus level - so dispatch, commit,
+/// and revert never overlap (the `BusDispatcher` invariant in
 /// `runtime::isr`). The main loop never reaches in.
 pub(crate) static SESSION: SyncUnsafeCell<MaybeUninit<Session>> =
     SyncUnsafeCell::new(MaybeUninit::uninit());

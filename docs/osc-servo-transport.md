@@ -30,11 +30,11 @@ Every hardware resource the transport touches, and its duty cycle:
 | resource        | role                                             | budget/event |
 |-----------------|--------------------------------------------------|--------------|
 | USART1          | half-duplex wire; HDSEL, no self-echo (F9)       | —            |
-| TIM2 vector     | PFIC HIGH. The break wake: TI1 on PC0 (remap 4), counter gated to run only while the line is low and zeroed by DMA1 CH7 at every rising edge, so its overflow at 9.5 bit-times is a break (sec 7) | one entry per break; ~16.5 us with the framer's break body (ping, bench probe) |
-| USART1 vector   | PFIC HIGH. TC = TX arm drained, the one enabled source (never a DATAR read; FE/NE/ORE have no interrupt enable - they latch silently, sec 7) | TC body ~2-4 us/arm |
+| TIM2 vector     | PFIC LOW (0x80). The break wake: TI1 on PC0 (remap 4), counter gated to run only while the line is low and zeroed by DMA1 CH7 at every rising edge, so its overflow at 9.5 bit-times is a break (sec 7) | one entry per break; ~16.5 us with the framer's break body (ping, bench probe) |
+| USART1 vector   | PFIC LOW (0x80). TC = TX arm drained, the one enabled source (never a DATAR read; FE/NE/ORE have no interrupt enable - they latch silently, sec 7) | TC body ~2-4 us/arm |
 | SysTick CNT/CMP | the transport clock (48 MHz, 32-bit) + the ONE comparator | — |
-| SysTick vector  | PFIC HIGH. Deadline mux: framer A/B, covered, chain trigger - and dispatch, inline (every class except verdict-first runs at the covered checkpoint or the fast path, sec 6) | arithmetic slots ~1–5 us; dispatch bodies ~10–70 us |
-| SW vector (14)  | PFIC HIGH. The TEL stager: `poll_tel`, pended through PFIC_IPSR1 bit 14 by the kernel tick's last statement while a burst is live | one entry per tick while a burst runs; ~23 us when it stages a frame |
+| SysTick vector  | PFIC LOW (0xC0), after a pending wake or TC. Deadline mux: framer A/B, covered, chain trigger - and dispatch, inline (every class except verdict-first runs at the covered checkpoint or the fast path, sec 6) | arithmetic slots ~1-5 us; dispatch bodies ~10-70 us |
+| SW vector (14)  | PFIC LOW (0xC0). The TEL stager: `poll_tel`, pended through PFIC_IPSR1 bit 14 by the kernel tick's last statement while a burst is live | one entry per tick while a burst runs; ~23 us when it stages a frame |
 | DMA1 CH5        | USART1 RX -> 512 B ring, circular, silent (no IRQ); **VERYHIGH, atop the ladder** (sec 7) | zero CPU |
 | DMA1 CH7        | TIM2_CH2 (IC2, rising edge) -> a RAM zero into TIM2 CNT, circular, one halfword per rising edge; VERYHIGH, below CH5 (sec 7) | zero CPU |
 | DMA1 CH2 + TIM3 | TIM2_UP (the detector's overflow) -> TIM3's free-running HCLK count into an 8-entry stamp ring, circular; HIGH, below CH1 (sec 8) | zero CPU; read only during a CAL train |
@@ -42,30 +42,34 @@ Every hardware resource the transport touches, and its duty cycle:
 | DMA1 CH3        | CRC feeds -> SPI1 DR, 16-bit halfwords (RX span straight from the ring); MEDIUM, below CH6 | zero CPU, ~0.36 us/B engine time |
 | SPI1            | CRC-16/ARC coprocessor (16-bit LSB-first, bitrev16 at the register), accumulates across feeds | runs ~8× wire speed (F6) |
 | DMA1 CH6        | snapshot copy -> the 256 B snapshot buffer (reply payloads only - RX CRC feeds the ring directly); HIGH, above CH3 | ~0.125 us/B, zero CPU |
-| DMA1 CH1        | ADC sample set -> buffer; DMA HIGH (wins HIGH ties by channel number); TC vector = motor kernel tick at PFIC LOW | ~10 us body |
+| DMA1 CH1        | ADC sample set -> buffer; DMA HIGH (wins HIGH ties by channel number); TC vector = motor kernel tick, alone at PFIC HIGH | 14-40 us body (rest to moving) |
 | PC0 CNF         | AF open-drain for good: the servo only pulls low, the host pull-up (and the board keeper) holds mark (protocol sec 2) | set once at init |
-| main loop       | deferred reboot poll + rescue line sampler (protocol sec 9.1: line pin + CH5 NDTR + own-TX state in one critical section per wfi wake, the window restarting while the servo transmits - the break detector fires once per span, a break-length in, so the slow loop is the only observer of a pulse's length) | cold path; sampler ~0.3 us/wake |
+| main loop       | deferred reboot poll + rescue line sampler (protocol sec 9.1: line pin + CH5 NDTR + own-TX state under one bus mask per wfi wake, the window restarting while the servo transmits - the break detector fires once per span, a break-length in, so the slow loop is the only observer of a pulse's length) | cold path; sampler ~0.3 us/wake |
 
-PFIC preemption is two-level (IPRIOR bit 7). TIM2 + USART1 + SysTick + SW
-share HIGH and therefore serialize against each other; LOW holds only the
-motor kernel (DMA1_CH1 = 22), which HIGH preempts and which runs in the
-wire gaps between frames. Free and reserved: TIM1 (motor PWM),
+PFIC preemption is two-level (IPRIOR bit 7; bit 6 orders pending vectors
+within a level). The motor kernel (DMA1_CH1 = 22) is alone at HIGH: its
+entry waits only for a running critical section, whatever the wire
+carries. TIM2 + USART1 + SysTick + SW share LOW, the
+bus level, and therefore serialize against each other; a pending wake or
+TC runs before a pending deadline or stage. The main loop reaches into
+bus state only under `pfic::mask_bus` (PFIC_ITHRESDR at the LOW level),
+which holds the bus off and leaves the kernel live. Free and reserved: TIM1 (motor PWM),
 I2C1_EV (30), I2C1_ER (31). The break detector holds DMA1 CH7, I2C1_RX's
 request channel. The CAL stamps hold DMA1 CH2 (TIM2_UP) and TIM3.
 
-**Kernel ticks under load — measured and accepted.** Everything-at-HIGH
-means transport work preempts the kernel, and a kernel tick that pends
-while a ≥50 us HIGH chunk runs coalesces with the next one (the PFIC pend
-bit is one bit). Silicon, against a 20.11 kHz idle tick baseline: tick
-loss ≈ 1.2–1.4× the transport-HIGH duty — 14% under a sustained 9-frame
-zero-gap flood (~11% duty), 23% under a 21-frame flood (~17% duty).
-Latency stays bounded (the longest HIGH chunk is ~60–80 us ≈ 1–2 ticks);
-ticks are never starved outright. Accepted because the duty profile that
-loses ticks is rare in practice: config sessions run torque-off (kernel
-idle by definition), and the production hot loop is a few small GWRITEs +
-COMMIT + GREAD per cycle — short bursts, wire-gapped, single-digit duty.
-A use case that sustains heavy bus duty under live control is the signal
-to revisit (hardware-counted ticks, or an isolation lane).
+**The bus absorbs the load, the kernel none.** With the kernel on top,
+bus traffic costs the kernel no tick; the bus becomes a background
+server, so each us of bus work costs 1 / (1 - U) us of latency, U being
+the kernel's share of the CPU (36% at rest, 67% while moving). A bus
+body that runs while the kernel ticks simply finishes later, and a
+reply may pause between its arms for about one kernel body (protocol
+sec 4.2). RESPONSE_DEADLINE (1 ms default, protocol sec 7) bounds the
+result. The hazards of being preemptible are closed in the bus code:
+each TX arm clears TC before its DMA starts, the projections read the
+ring cursor before the clock (sec 5.1), and a committed CONFIG write
+lands before the generation the kernel snapshots it under. DES:
+`kernel_on_top_loses_no_tick_under_polling`,
+`reply_bound_covers_turnaround_under_kernel_preemption`.
 
 **Frames for other servos.** In a fleet most traffic on the wire is
 somebody else's, and every servo pays for all of it, so a foreign frame
@@ -102,7 +106,7 @@ t=35   deadline A (SysTick): header parse + validate -> footprint 6, frame
            so ISR lag cancels and the estimate is late by under a
            byte-time, never early.
          · CRC feed of the covered span starts (CH3 arm, ~1 us of CPU)
-         · DISPATCH (inline, at HIGH): decode + dispatch run NOW, the
+         · DISPATCH (inline, at the bus level): decode + dispatch run NOW, the
            reply is built and staged into the TX engine — all before the
            frame has ended. The verdict at deadline B will SEND or
            DON'T-SEND it; the work is already done either way.
@@ -136,7 +140,7 @@ and ISR-entry overheads.
    optimization layered on a "safe" path — it IS the default, for every
    class. The alternative (a non-dispatching path that schedules a CRC
    check and blocks on the result before doing any work) spends ~5–7 us
-   of HIGH per frame spinning on a finished engine, and in a zero-gap
+   of bus CPU per frame spinning on a finished engine, and in a zero-gap
    burst those spins stack onto the burst-cycle critical path and widen
    break-delivery lag — so no such path exists. The verdict gates two
    effect kinds: the **wire effect** (a staged reply — SEND on pass,
@@ -166,10 +170,10 @@ and ISR-entry overheads.
    polled at the verdict. TX: fed per arm, patched into the trailing arm
    before DMA reaches it. The CPU never computes or waits a full CRC.
 5. **Zero hops, everywhere.** Every stageable class (ping/read/gread,
-   write/gwrite) dispatches inline at HIGH — each stage hands off by
-   falling through within one ISR invocation or the next event's entry,
-   no cross-priority round-trip. The kernel-side cost is the measured,
-   accepted tick coalescing in sec 2.
+   write/gwrite) dispatches inline at the bus level - each stage hands
+   off by falling through within one ISR invocation or the next event's
+   entry, no cross-priority round-trip. The kernel above preempts it and
+   loses nothing; the bus pays in latency (sec 2).
 6. **Copy-once TX.** Reply payloads are DMA-snapshotted once
    (~0.125 us/B, fire-and-forget) and streamed from the snapshot by both
    the wire and the CRC — snapshot-consistent reads for the price of one
@@ -179,7 +183,7 @@ and ISR-entry overheads.
    the drain loop consumes every slot due at the same wake.
 8. **The single-context CRC engine needs no arbitration protocol.** TX
    generation and RX validation share one engine safely because both run
-   at HIGH — ownership is serialized by the PFIC, for free.
+   at the bus level - ownership is serialized by the PFIC, for free.
 
 ## 5. Position and time from the stream
 
@@ -308,8 +312,8 @@ wake, like a foreign op. DES: `garbled_status_len_costs_only_the_status`,
 The class split is *stageability* — whether an instruction's effects can
 be staged behind the CRC verdict:
 
-- **Stageable — PING/READ/GREAD/WRITE/GWRITE.** Dispatch inline at HIGH
-  at the covered checkpoint (frontier) or the resolve wake (backlog); the
+- **Stageable - PING/READ/GREAD/WRITE/GWRITE.** Dispatch inline at the
+  bus level at the covered checkpoint (frontier) or the resolve wake (backlog); the
   CRC feed chews underneath. The verdict at the frame end gates the
   staged effects: COMMIT/REVERT of a table write, then SEND/DON'T-SEND
   of a reply (sec 4: the commit lands before the reply is sequenced).
@@ -324,7 +328,7 @@ be staged behind the CRC verdict:
   structurally idle and the burst borrows them whole - no second TX
   path exists. Mechanics: the kernel encodes each control-tick sample
   once, directly at its final wire offset in a ping-pong buffer pair
-  (LOW context); the tick's last statement pends the SW vector, whose
+  (the kernel's context, PFIC HIGH); the tick's last statement pends the SW vector, whose
   `poll_tel` stages a ready buffer through the ordinary stage/trigger
   path at the bus level, never inside the kernel's body. It runs per
   tick, not in the main loop: a six-field frame leaves
@@ -343,10 +347,8 @@ the single CRC accumulator are never contended. Own TX holds the same
 accumulator from trigger to release, so the ladder resolves nothing while
 a reply streams; the release resumes it from the ring, and a frame that
 landed meanwhile (a peer talking over the reply) gets its verdict then.
-DES: `status_verdict_waits_for_own_tx_release`. The kernel-isolation
-question is settled by measurement instead of structure: dispatch bodies
-preempt the kernel and coalesce ticks in proportion to bus duty (sec 2),
-which the intended duty profiles make negligible.
+DES: `status_verdict_waits_for_own_tx_release`. The kernel is isolated
+by structure: it sits above every dispatch body (sec 2).
 
 ## 7. The DMA priority ladder and receive-side discipline
 
@@ -504,17 +506,24 @@ The zero-gap argument, from first principles:
    before the frame behind it dispatches — DES-pinned by
    `backlog_write_then_read_processes_in_order`.
 4. **The host's side of the contract.** RESPONSE_DEADLINE must cover the
-   full reply path — decode + dispatch + verify, elastically late under a
-   backlog - not just the happy-path grid: with ~70 us dispatch bodies a
-   60 us default is dishonest, and a chain slot reclaims into a
-   live-but-slow predecessor (DES-pinned in `hot_loop.rs`). Deployments
-   tune the register to their measured worst case.
+   full reply path - decode + dispatch + verify, stretched by the kernel
+   above the bus and elastically late under a backlog - not just the
+   happy-path grid. The 1 ms default covers the published capacity
+   (`reply_bound_covers_turnaround_under_kernel_preemption`); a chain
+   slot counts its reclaim from its own readiness, so a backlog every
+   servo shares does not make it reclaim into a live-but-slow predecessor
+   (`reclaim_window_counts_from_the_slots_own_readiness`), and a
+   predecessor's break suspends the reclaim for the largest frame plus
+   RESPONSE_DEADLINE, which covers the pauses inside a reply
+   (`chain_slot_survives_a_predecessor_stalled_inside_its_frame`).
 
 ## 10. Measured turnarounds
 
 Turnaround = instruction wire-end -> status break fall. Read = 16 B READ,
 write = goal_position 4 B WRITE. Flash-layout swings between builds are
-±5 us.
+±5 us. The table predates the kernel-above-bus layout (sec 2), under
+which turnaround is the bus's CPU cost stretched by 1 / (1 - U): with
+the motor at rest, ping p50 about 70 us at 1M and 77 us at 3M.
 
 | baud  | ping    | read 16 B | write 4 B |
 |-------|---------|-----------|-----------|
@@ -562,7 +571,7 @@ fires — so the pipeline serializes after the frame end.
   a reply-bearing write both, under one verdict, committed then
   sequenced (sec 4).
 - **instruction class** - stageability (sec 6): *stageable*
-  (ping/read/gread/write/gwrite — dispatch inline at HIGH, effects gated
+  (ping/read/gread/write/gwrite - dispatch inline at the bus level, effects gated
   by the verdict), *verdict-first* (commit/mgmt, CRC checked before
   dispatch).
 - **deadline A / B** — header-readable check / frame-end check, both

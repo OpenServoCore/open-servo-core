@@ -4,11 +4,15 @@
 //! wake serviced late finds the byte already there. Every pin runs the wake
 //! ahead of the byte, behind it, and alternating between the two.
 
-use osc_integration::sim::{BreakWake, Sim, Source, WireFrame, assert_valid, instruction, status};
-use osc_protocol::wire::{Opcode, ResultCode};
+use osc_integration::sim::{
+    BreakWake, KERNEL_MOVING, KernelLane, KernelLevel, READ32_3M_COST, Sim, Source, WireFrame,
+    assert_valid, instruction, status,
+};
+use osc_protocol::wire::{Inst, Opcode, ResultCode};
 use osc_servo_core::BaudRate;
 use osc_servo_core::regions::config::DEFAULT_RESPONSE_DEADLINE_US;
 use osc_servo_core::regions::config::addr::common::MODEL_NUMBER;
+use osc_servo_core::regions::control::addr::lifecycle::GOAL_VELOCITY;
 use rstest::rstest;
 
 const ID: u8 = 5;
@@ -145,7 +149,7 @@ fn chain_answers_and_reclaims(
     );
 }
 
-/// PFIC HIGH entries a bystander pays per foreign exchange, pinned: the
+/// Bus-level entries a bystander pays per foreign exchange, pinned: the
 /// host reads servo 6 and servo 6 answers. Neither frame schedules a
 /// milestone at servo 5: one header deadline each (plus the re-inspection
 /// when the wake leads its byte), the request resolves at the reply's
@@ -178,7 +182,7 @@ fn bystander_entries_per_foreign_exchange_are_pinned(
     assert_eq!(d.framing_drop_count, 0);
 }
 
-/// PFIC HIGH entries per two-slot GREAD (servos 6 then 5, a 32-byte span),
+/// Bus-level entries per two-slot GREAD (servos 6 then 5, a 32-byte span),
 /// pinned per role. Every servo pays the GREAD's header, covered and end
 /// deadlines. Slot 1 adds the predecessor status's header and end only (the
 /// snoop consumes nothing ahead of the end) and its trigger; slot 0 adds
@@ -220,15 +224,15 @@ fn chain_entries_per_gread_are_pinned(
     }
 }
 
-/// PFIC HIGH entries per exchange, pinned (a ping, then a 32-byte read):
+/// Bus-level entries per exchange, pinned (a ping, then a 32-byte read):
 /// the break-after-byte budget is one break wake, two TX arm completions
 /// and three deadline wakes for a ping (header, frame end, trigger; a read
 /// adds its covered checkpoint); a wake ahead of its byte adds exactly the
-/// one re-inspection deadline. Any other count is a change in HIGH load on
-/// the motor kernel's time.
+/// one re-inspection deadline. Any other count is a change in the bus's
+/// CPU cost per exchange.
 #[rstest]
 #[test_log::test]
-fn high_entries_per_exchange_are_pinned(
+fn bus_entries_per_exchange_are_pinned(
     #[values(BaudRate::B500000, BaudRate::B1000000, BaudRate::B3000000)] rate: BaudRate,
     #[values(BreakWake::BeforeByte, BreakWake::AfterByte)] wake: BreakWake,
 ) {
@@ -250,4 +254,53 @@ fn high_entries_per_exchange_are_pinned(
         assert_eq!(e.break_wake, N, "break wakes");
         assert_eq!(e.tx_done, N * 2, "TX arm completions");
     }
+}
+
+/// Three frames for this servo land back to back while its break wakes are
+/// served 200 byte-times late at 3M, behind the kernel above the bus: a
+/// write, a write, and a read of what they wrote. The wakes coalesce, and
+/// the resolver walks every frame whole from the ring: both writes land in
+/// order and the read answers with the second.
+#[test]
+fn lagged_wake_by_a_kernel_backlog_resolves_every_frame() {
+    let rate = BaudRate::B3000000;
+    let byte_us = 10.0e6 / rate.as_hz() as f64;
+    let mut sim = Sim::new(rate);
+    let s = sim.add_servo(ID);
+    sim.set_handler_cost(s, READ32_3M_COST);
+    let lane = KernelLane {
+        level: KernelLevel::AboveBus,
+        phases: &KERNEL_MOVING,
+    };
+    sim.set_kernel_lane(s, lane, 5_000);
+    sim.run_until(1_000);
+    sim.set_wake_lag_us(move || 200.0 * byte_us);
+    let write = |v: i32| {
+        let mut p = GOAL_VELOCITY.to_le_bytes().to_vec();
+        p.extend_from_slice(&v.to_le_bytes());
+        instruction(ID, Opcode::Write, Inst::FLAG_NOREPLY, &p)
+    };
+    sim.host_send(&write(7));
+    sim.host_send(&write(9));
+    sim.host_send(&instruction(
+        ID,
+        Opcode::Read,
+        0,
+        &[
+            GOAL_VELOCITY.to_le_bytes()[0],
+            GOAL_VELOCITY.to_le_bytes()[1],
+            4,
+            0,
+        ],
+    ));
+    let frames = sim.run();
+    assert!(sim.delivered_breaks(s) < 3, "no wake coalesced");
+    let r = replies(&frames);
+    assert_eq!(r.len(), 1, "{frames:#?}");
+    assert_eq!(result(r[0]), Some(ResultCode::Ok));
+    assert_eq!(status(r[0]).1, 9i32.to_le_bytes());
+    assert_eq!(sim.servo_table(s, |t| t.control.lifecycle.goal_velocity), 9);
+    let d = sim.servo_diag(s);
+    assert_eq!(d.crc_fail_count, 0);
+    assert_eq!(d.framing_drop_count, 0);
 }

@@ -109,7 +109,7 @@ pub fn set_count(ch: Channel, count: u16) {
 
 // SAFETY: see hal/SAFETY.md. CH(n).CR is per-channel; channels driven from
 // >= 2 priority contexts (the CH4 TX channel today, touched from MAIN and
-// HIGH ISRs) need the CS to keep EN/TCIE RMW atomic. Single-context channels
+// the bus ISRs) need the CS to keep EN/TCIE RMW atomic. Single-context channels
 // pay the CS cost but stay correct.
 // `inline(always)` keeps this inside its caller's body, so a caller placed in
 // RAM (`.data.ram_code`) makes no flash fetch for it.

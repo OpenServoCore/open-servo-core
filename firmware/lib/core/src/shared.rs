@@ -1,6 +1,8 @@
 use core::cell::SyncUnsafeCell;
 
+use core::sync::atomic::compiler_fence;
 use osc_protocol::wire::UID_LEN;
+
 use portable_atomic::{AtomicU8, AtomicU16, Ordering};
 
 use crate::persist::ConfigStore;
@@ -11,21 +13,21 @@ use crate::{ControlTableCell, RegionStorage};
 #[repr(C)]
 pub struct Shared {
     pub table: ControlTableCell,
-    /// Work a commit left for the main loop (`data_state::job` bits). HIGH
+    /// Work a commit left for the main loop (`data_state::job` bits). Bus
     /// dispatch posts and cancels; the main loop's publish clears what it
     /// ran, under a generation check.
     data_job: AtomicU8,
-    /// Bumped by HIGH on every write the job hashes or validates (covered,
+    /// Bumped by dispatch on every write the job hashes or validates (covered,
     /// stamp, LUT array, torque). A job whose generation moved discards
-    /// its result. HIGH is the sole writer, so plain load/store suffice.
+    /// its result. Dispatch is the sole writer, so plain load/store suffice.
     data_gen: AtomicU16,
-    /// Bumped by HIGH on every committed grant of the stall permit; the
-    /// kernel renews its lease when it moves (`permit_after_commit`). HIGH
-    /// is the sole writer.
+    /// Bumped by dispatch on every committed grant of the stall permit; the
+    /// kernel renews its lease when it moves (`permit_after_commit`).
+    /// Dispatch is the sole writer.
     permit_gen: AtomicU8,
-    /// Bumped by HIGH on every committed write into CONFIG or CALIB (and
+    /// Bumped by dispatch on every committed write into CONFIG or CALIB (and
     /// ASSIGN's id); the kernel rebuilds its configuration from the table
-    /// when it moves. HIGH is the sole writer.
+    /// when it moves. Dispatch is the sole writer.
     config_gen: AtomicU8,
     /// The factory UID, silicon ID zero-padded to the 16-byte wire field
     /// (osc-native sec 9.2) -- internal identity, not a table register; MGMT ENUM
@@ -35,7 +37,7 @@ pub struct Shared {
     /// (cold path -- `dyn` costs nothing that matters here).
     store: SyncUnsafeCell<Option<&'static dyn ConfigStore>>,
     /// The position table (`pos_lut` module), all-zero = identity; the CONTROL
-    /// window loads it a page at a time. Boot, then the HIGH dispatcher
+    /// window loads it a page at a time. Boot, then the bus dispatcher
     /// alone, write it - the table's single-writer contract.
     pos_lut: SyncUnsafeCell<[i16; POINTS]>,
 }
@@ -55,7 +57,7 @@ impl Shared {
         }
     }
 
-    /// HIGH: a write the job hashes or validates landed; `post` what it
+    /// Bus dispatch: a write the job hashes or validates landed; `post` what it
     /// leaves for the main loop, `cancel` what it retires.
     pub(crate) fn data_touch(&self, post: u8, cancel: u8) {
         self.data_gen.store(
@@ -70,7 +72,7 @@ impl Shared {
     /// A committed write `[addr, addr + len)` covering `stall_permit` that
     /// leaves it true with torque on is a grant. The table byte stays the
     /// host's request: the kernel only reads CONTROL, so the lease it grants
-    /// lives in the kernel and a torque-off request never becomes one. HIGH
+    /// lives in the kernel and a torque-off request never becomes one. Bus
     /// dispatch only; one copy behind both commit sites, O(1).
     #[inline(never)]
     pub fn permit_after_commit(&self, addr: u16, len: u16) {
@@ -93,8 +95,12 @@ impl Shared {
         self.permit_gen.load(Ordering::Relaxed)
     }
 
-    /// HIGH: CONFIG or CALIB changed under the kernel.
+    /// Bus dispatch: CONFIG or CALIB changed under the kernel.
     pub fn config_touch(&self) {
+        // The kernel preempts dispatch: the committed stores land before the
+        // generation it snapshots them under (`Kernel::refresh` holds the
+        // Acquire side).
+        compiler_fence(Ordering::Release);
         self.config_gen.store(
             self.config_gen.load(Ordering::Relaxed).wrapping_add(1),
             Ordering::Relaxed,
@@ -126,15 +132,15 @@ impl Shared {
         f(unsafe { &*self.pos_lut.get() })
     }
 
-    /// Mutably borrow the position table; HIGH dispatch (and pre-IRQ boot)
+    /// Mutably borrow the position table; bus dispatch (and pre-IRQ boot)
     /// only.
     pub fn with_pos_lut_mut<T>(&self, f: impl FnOnce(&mut [i16; POINTS]) -> T) -> T {
         // SAFETY: see fn doc.
         f(unsafe { &mut *self.pos_lut.get() })
     }
 
-    /// The kernel's volatile-read handle (`Shared::pos_lut_q4`): the writer
-    /// may preempt a read, so the fast tick never forms a `&`.
+    /// The kernel's volatile-read handle (`Shared::pos_lut_q4`): a read may
+    /// land inside a write, so the fast tick never forms a `&`.
     pub(crate) fn pos_lut_ptr(&self) -> *const [i16; POINTS] {
         self.pos_lut.get()
     }

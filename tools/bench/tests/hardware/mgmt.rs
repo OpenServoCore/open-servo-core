@@ -74,7 +74,7 @@ fn assign_moves_the_id_and_acks_from_it() {
 #[serial]
 #[test]
 fn save_persists_across_reboot_until_factory() {
-    const MARKER: u16 = 123; // response_deadline_us; board default is 60
+    const MARKER: u16 = 123; // response_deadline_us; any non-default value
 
     let mut b = bench();
     let id = b.id();

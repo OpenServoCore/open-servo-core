@@ -1,8 +1,9 @@
-//! Bench-only PFIC HIGH load probe (`--features bench`): per transport
+//! Bench-only bus load probe (`--features bench`): per transport
 //! vector, entries and busy SysTick ticks (sum and max), and the break
 //! wake's outcomes. Counters live in a `no_mangle` static so the debug link
 //! dumps them by symbol address (`nm` the ELF); call sites stay
-//! unconditional and compile to nothing without the feature.
+//! unconditional and compile to nothing without the feature. The symbol
+//! keeps its `HIGH_PROBE` name for the bench dump tools.
 
 use crate::hal::systick;
 
@@ -65,7 +66,7 @@ pub static mut HIGH_PROBE: HighProbe = HighProbe::ZERO;
 #[inline(always)]
 #[allow(unused_variables)]
 pub fn high_probe(f: impl FnOnce(&mut HighProbe)) {
-    // SAFETY: single-hart; every writer runs at PFIC HIGH, so accesses
+    // SAFETY: single-hart; every writer runs at the bus level, so accesses
     // never interleave. The debug link only reads.
     #[cfg(feature = "bench")]
     unsafe {

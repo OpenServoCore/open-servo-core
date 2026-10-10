@@ -15,9 +15,9 @@
 //! clock: phases, boxcars, aggregates and sample counters advance per
 //! executed tick. What integrates time - the trajectory, the observer's
 //! prediction, the ms timers, the SLOW cadence - integrates the elapsed
-//! hardware time instead: the period plus the ticks the chip lost while the
-//! transport served a frame above the kernel (`lost_ticks`, the chip's
-//! catch-up count, delivered off the tick path), gathered per period into
+//! hardware time instead: the period plus the ticks the chip lost
+//! (`lost_ticks`, the chip's catch-up count, delivered off the tick path),
+//! gathered per period into
 //! `Elapsed`. Nothing reads a wall clock. CONFIG and CALIB reach the tick through the kernel's own
 //! snapshot (`config`), rebuilt at a medium boundary after a write, so a
 //! configuration write takes effect within one medium tick.
@@ -128,10 +128,10 @@ pub struct KernelTiming {
     pub i_settle_gain: window::SettleGain,
 }
 
-/// Runs in the ADC DMA TC ISR (PFIC LOW); one `on_tick` per PWM period.
-/// Single-writer contracts: the transport (PFIC HIGH) owns every
-/// CONTROL/CONFIG/CALIB write and the position table array, and can preempt
-/// this ISR mid-read, so the kernel only ever reads those - volatile via
+/// Runs in the ADC DMA TC ISR (PFIC HIGH, above the bus); one `on_tick` per
+/// PWM period. Single-writer contracts: the transport owns every
+/// CONTROL/CONFIG/CALIB write and the position table array, and this ISR
+/// can preempt it mid-commit, so the kernel only ever reads those - volatile via
 /// `region_ptr` (`Shared::pos_lut_q4` for the array), never forming `&T`,
 /// cross-field tearing accepted (each field is independently sane). CONTROL
 /// is read once per period; CONFIG and CALIB only into `cfg`, when
