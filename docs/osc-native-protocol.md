@@ -50,10 +50,12 @@ unchanged).
   included (RM Table 7-3, the half-duplex TX configuration). A servo only
   ever pulls the line low; the host-end pull-up (plus a weak keeper on each
   servo board) holds mark. A servo therefore has no release deadline and
-  writes no GPIO per frame. The host may drive its own frames push-pull for
-  fast edges, releasing to open drain within the reply gap (sec 7). A node
-  that idles push-pull clamps every other talker [F8]: this rule is the
-  buffer replacement, not an optimization.
+  writes no GPIO per frame. The osc adapter's pin is AF open-drain for good
+  too, so its rising edges ride the pull-up, which must sit at its end. A
+  host may instead drive its own frames push-pull for fast edges, releasing
+  to open drain within the reply gap (sec 7). A node that idles push-pull
+  clamps every other talker [F8]: this rule is the buffer replacement, not
+  an optimization.
 - **Own-TX echo**: none on V006 — HDSEL gates RX during TX [F9]. Firmware
   never needs echo masking. (Chips that do echo would mask in the framer;
   the protocol itself is agnostic.)

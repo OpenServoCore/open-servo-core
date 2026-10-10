@@ -6,9 +6,10 @@
 pub use ch32_metapac::usart::Usart as Regs;
 
 /// Host bus bring-up: HDSEL first, then TE/RE, BRR, UE, and DMAR last in
-/// its own CTLR3 write. The order is load-bearing for the released idle
-/// level on the single wire (deviations latch the HDSEL TX output LOW
-/// through the AF_OD listening pin and clamp the whole bus; measured).
+/// its own CTLR3 write, all before the pin joins the USART. The order is
+/// load-bearing for the released idle level on the single wire (deviations
+/// latch the HDSEL TX output LOW through the AF open-drain pin and clamp
+/// the whole bus; measured).
 /// LINEN stays reset-0: RM sec 18.5 forbids LIN mode with half-duplex,
 /// and the host framer anchors on the break's ring byte, so no LBD is
 /// configured at all.

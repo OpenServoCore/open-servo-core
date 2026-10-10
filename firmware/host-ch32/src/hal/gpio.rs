@@ -25,13 +25,9 @@ impl PinMode {
         mode: Mode::OUTPUT_2MHZ,
         cnf: Cnf::ANALOG_IN__PUSH_PULL_OUT,
     };
-    pub const OUTPUT_50MHZ: Self = Self {
+    pub const OUTPUT_OD_50MHZ: Self = Self {
         mode: Mode::OUTPUT_50MHZ,
-        cnf: Cnf::ANALOG_IN__PUSH_PULL_OUT,
-    };
-    pub const AF_PUSH_PULL_50MHZ: Self = Self {
-        mode: Mode::OUTPUT_50MHZ,
-        cnf: Cnf::PULL_IN__AF_PUSH_PULL_OUT,
+        cnf: Cnf::FLOATING_IN__OPEN_DRAIN_OUT,
     };
     pub const AF_OPEN_DRAIN_50MHZ: Self = Self {
         mode: Mode::OUTPUT_50MHZ,

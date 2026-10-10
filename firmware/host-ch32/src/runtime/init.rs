@@ -8,7 +8,7 @@ use osc_protocol::wire::BaudRate;
 use crate::hal::{dma, iwdg, pfic, systick, usart, usbhs};
 use crate::providers::clocks::Clocks;
 use crate::providers::edges::Edges;
-use crate::providers::pins::Pins;
+use crate::providers::pins::{self, Pins};
 use crate::providers::ring::RxRing;
 use crate::providers::usart_baud::brr_for;
 use crate::runtime::{Drivers, crash, isr, run};
@@ -47,6 +47,7 @@ pub fn bringup() -> bool {
     }
 
     usart::init_host(USART3, brr_for(BOOT_RATE));
+    pins::bus_attach();
     dma::configure(
         dma::Channel::CH3,
         &dma::Config {
