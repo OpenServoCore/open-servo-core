@@ -9,7 +9,7 @@ use osc_integration::plant::{
 };
 use osc_servo_core::estimator::window::floor_duty;
 use osc_servo_core::kernel::duty_limit::UP_Q15;
-use osc_servo_core::kernel::faults::{BIT_STALL, CODE_STALL};
+use osc_servo_core::kernel::faults::{BIT_OVER_CURRENT, BIT_STALL, CODE_STALL};
 use osc_servo_core::regions::DecaySelect;
 use osc_servo_core::regions::control::addr::lifecycle::STALL_PERMIT;
 use osc_servo_core::{Kernel, KernelTiming, Mode, MotorCmd, RegionStorage, Shared, StallResponse};
@@ -31,6 +31,12 @@ const SETTLE_MS: u32 = 100;
 /// Under the rig's stall current at the window floor (239 counts): only a
 /// duty under the floor can hold it.
 const BLIND_LIM: u16 = 200;
+/// The bench's 64-tick floor, 5.3% duty.
+const BENCH_FLOOR_TICKS: u16 = 64;
+/// Over a `low_l` load's ON current (1805 counts on the rig rail), under
+/// the plant's 2047-count clamp: the trip stays out of the way until a
+/// short drives the sample into the clamp.
+const LOW_L_OC_TRIP: u16 = 2000;
 
 fn rig(lim: u16) -> Shared {
     let sh = Shared::new();
@@ -553,4 +559,93 @@ fn window_v_floor_follows_the_openloop_decay() {
     sh.config_touch();
     run(&mut k, &sh, &mut p, 10);
     assert_eq!(v_floor(), duty(160));
+}
+
+/// `rig` with the window floor at `floor_ticks` and the trip over a
+/// `low_l` load's ON current.
+fn low_l_rig(lim: u16, floor_ticks: u16) -> Shared {
+    let sh = rig(lim);
+    sh.table.with_mut(|t| {
+        t.calib.sense.i_window_min_ticks = floor_ticks;
+        t.config.limits.oc_trip_counts = LOW_L_OC_TRIP;
+    });
+    stamp(&sh);
+    sh
+}
+
+fn low_l_locked() -> RlPlant {
+    let mut p = RlPlant::new(MID);
+    (p.locked, p.low_l) = (true, true);
+    p
+}
+
+/// The bench's bare resistor: the window sample is the ON current, 6.4x
+/// the limit, while the torque follows the floor's average, a third of
+/// it. The limit bounds the average (the sample equals it only
+/// on an inductive load), so the floor holds: a limiter chasing the sample
+/// under the floor would cut the torque under a limit already met.
+#[test]
+fn low_l_load_holds_the_floor_under_the_limit() {
+    let floor = floor_duty(BENCH_FLOOR_TICKS, TIMING.pwm_arr, TIMING.recip_arr_q24) as i16;
+    for goal in [GOAL_64, -GOAL_64] {
+        let sh = low_l_rig(LIM, BENCH_FLOOR_TICKS);
+        let mut p = low_l_locked();
+        let mut k = start(&sh, &mut p, goal);
+        let r = run(&mut k, &sh, &mut p, 4_000);
+        let what = format!("goal {goal}");
+        assert!(
+            r[20..].iter().all(|&(d, _)| d.abs() == floor),
+            "{what}: the floor holds"
+        );
+        assert_eq!(mean(&r[20..]), stall_counts(floor), "{what}");
+        assert!(stall_counts(floor) < LIM as i32 / 2, "{what}");
+        assert_eq!(faults(&sh), 0, "{what}");
+    }
+}
+
+/// Under the floor the base holds the average at the limit on a load with
+/// no inductance as on the MG90: the brake half shorts the winding, so the
+/// period average is `(d x V_bus - e) / R` for any L/R, and the base is
+/// derived from it. The re-probe at the floor reads the ON current, 9x the
+/// limit, and does not push the base down.
+#[test]
+fn low_l_blind_band_holds_the_average_at_i_lim() {
+    for goal in [GOAL_64, -GOAL_64] {
+        let sh = low_l_rig(BLIND_LIM, I_FLOOR_TICKS);
+        let mut p = low_l_locked();
+        let mut k = start(&sh, &mut p, goal);
+        let r = run(&mut k, &sh, &mut p, 40_000);
+        let what = format!("goal {goal}");
+        assert_blind_band_caps(&r[2_000..], BLIND_LIM, &what);
+        let mn = mean(&r[2_000..]);
+        let lim = BLIND_LIM as i32;
+        assert!(
+            (lim * 9 / 10..=lim * 11 / 10).contains(&mn),
+            "{what}: mean {mn}"
+        );
+        assert_eq!(faults(&sh), 0, "{what}");
+    }
+}
+
+/// A resistive fault under the stored R (a quarter of it: shorted turns)
+/// runs the base at four times the limit, and no limiter rule can see it
+/// under the floor. The re-probes can: the overcurrent window holds its
+/// count through the blind ticks, so the trip latches on its fourth probe.
+#[test]
+fn low_l_short_trips_the_overcurrent_on_the_reprobes() {
+    for goal in [GOAL_64, -GOAL_64] {
+        let sh = low_l_rig(BLIND_LIM, I_FLOOR_TICKS);
+        let mut p = low_l_locked();
+        p.r_q12 = RL_R_Q12 / 4;
+        let mut k = start(&sh, &mut p, goal);
+        let at = (0..20 * MS)
+            .find(|_| {
+                run(&mut k, &sh, &mut p, 1);
+                faults(&sh) != 0
+            })
+            .unwrap_or_else(|| panic!("goal {goal}: never tripped"));
+        assert_eq!(faults(&sh), BIT_OVER_CURRENT, "goal {goal}");
+        assert!(at <= 10 * MS, "goal {goal}: tripped {} ms in", at / MS);
+        assert!(matches!(last_cmd(&k), MotorCmd::Disabled), "goal {goal}");
+    }
 }

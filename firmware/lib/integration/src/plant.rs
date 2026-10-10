@@ -248,6 +248,13 @@ pub struct RlPlant {
     pub locked: bool,
     pub stop_lo: i32,
     pub stop_hi: i32,
+    /// Load resistance, `r_q12` units; a load under the stored R is a
+    /// winding short.
+    pub r_q12: u16,
+    /// L/R far under the PWM period (a bare resistor): the period-average
+    /// current follows the duty within the tick, and the drive-window
+    /// sample reads the ON current `(V_bus - e) / R` instead of it.
+    pub low_l: bool,
 }
 
 impl RlPlant {
@@ -259,6 +266,8 @@ impl RlPlant {
             locked: false,
             stop_lo: 0,
             stop_hi: 4095,
+            r_q12: RL_R_Q12,
+            low_l: false,
         }
     }
 
@@ -267,8 +276,19 @@ impl RlPlant {
     pub fn step(&mut self, duty: i16) -> SensorFrame {
         let v = (duty as i32 * RL_VBUS as i32) >> 15;
         let e = (self.omega_q8 >> 8) >> RL_KE_SHIFT;
-        let i_ss = (((v - e) as i64) << 12) / RL_R_Q12 as i64;
-        self.i += (i_ss as i32 - self.i) >> 2;
+        let current_at = |v: i32| ((((v - e) as i64) << 12) / self.r_q12 as i64) as i32;
+        let i_ss = current_at(v);
+        if self.low_l {
+            self.i = i_ss;
+        } else {
+            self.i += (i_ss - self.i) >> 2;
+        }
+        let rail = RL_VBUS as i32;
+        let sensed = if self.low_l && duty != 0 {
+            current_at(if duty > 0 { rail } else { -rail })
+        } else {
+            self.i
+        };
 
         let pos = self.pos();
         let into_stop = (pos >= self.stop_hi && self.i > 0) || (pos <= self.stop_lo && self.i < 0);
@@ -294,7 +314,7 @@ impl RlPlant {
             }
         }
 
-        let mag = if duty >= 0 { self.i } else { -self.i };
+        let mag = if duty >= 0 { sensed } else { -sensed };
         let (va, vb) = if duty >= 0 {
             (RL_VBUS, 40)
         } else {
@@ -315,8 +335,8 @@ impl RlPlant {
         }
     }
 
-    /// Signed winding current, counts: what the shunt would read in the
-    /// drive window.
+    /// Signed period-average winding current, counts: what sets the
+    /// torque, and the drive-window sample unless `low_l`.
     pub fn current(&self) -> i32 {
         self.i
     }
