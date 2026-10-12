@@ -13,7 +13,7 @@
 //! sampling floors; one sub-floor tick voids both boxcars it sits in.
 
 use crate::kernel::DECIM_MED;
-use crate::math::q_mul;
+use crate::math::{q_mul, sat_add};
 
 /// `recip_arr` Q: chip const-evals `(1 << RECIP_ARR_SHIFT) / pwm_arr`. Q24
 /// keeps reciprocal quantization under arr/2^24 relative (arr=1200 -> 0.007%
@@ -68,8 +68,8 @@ impl BemfObs {
     pub fn sample(&mut self, ticks: u32, vdiff: Option<i32>, i: Option<i32>) {
         match (vdiff, i) {
             (Some(v), Some(i)) => {
-                self.sum_tv = self.sum_tv.saturating_add(ticks as i32 * v);
-                self.sum_i = self.sum_i.saturating_add(i);
+                self.sum_tv = sat_add(self.sum_tv, ticks as i32 * v);
+                self.sum_i = sat_add(self.sum_i, i);
             }
             _ => self.half_valid = false,
         }

@@ -105,12 +105,14 @@ impl TickLoad {
         let cost = exit.wrapping_sub(entry);
         self.sum = self.sum.wrapping_add(cost);
         if cost > PERIOD {
+            core::hint::cold_path();
             self.over += 1;
         }
         self.n += 1;
         if self.n < SHORT {
             return None;
         }
+        core::hint::cold_path();
         Some(self.close(entry))
     }
 

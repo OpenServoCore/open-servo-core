@@ -5,7 +5,7 @@
 //! anti-windup term needs no domain crossing and duty <= duty_max by
 //! construction, sagging battery included.
 
-use crate::math::q_mul;
+use crate::math::{q_mul, sat_add, sat_clamp, sat_mul, sat_sub};
 
 /// PI error clamp, ccounts. Physical error is bounded by shunt full scale
 /// plus the current limit (|i_meas| <= 4095, |i_ref| <= i_lim <= 4095), so
@@ -95,34 +95,37 @@ impl CurrentLoop {
         gains: &CurrentGains,
     ) -> i16 {
         let e = match i_meas {
-            Some(i) => i_ref.saturating_sub(i).clamp(-E_LIM_CC, E_LIM_CC),
+            Some(i) => sat_clamp(sat_sub(i_ref, i), -E_LIM_CC, E_LIM_CC),
             None => 0,
         };
         // kp * 2^13 <= 2^29, i32-exact before the shift
-        let u_pi = q_mul(gains.kp_q88 as i32, e, 8).saturating_add(self.integ_vq16 >> 16);
-        let u = u_pi.saturating_add(u_ff_vc);
+        let u_pi = sat_add(q_mul(gains.kp_q88 as i32, e, 8), self.integ_vq16 >> 16);
+        let u = sat_add(u_pi, u_ff_vc);
         let v_max = rail.v_max_vc;
-        let u_cl = u.max(-v_max).min(v_max);
+        let u_cl = sat_clamp(u, -v_max, v_max);
         if i_meas.is_some() {
-            let aw = u_cl.saturating_sub(u).clamp(-AW_LIM_VC, AW_LIM_VC);
+            let aw = sat_clamp(sat_sub(u_cl, u), -AW_LIM_VC, AW_LIM_VC);
             // Q4.12 * ccounts -> vQ16 needs << (16 - 12); the products are
             // i32-exact (<= 2^29 per the E/AW clamps) but << 4 can reach
             // 2^33, so the shift saturates via mul. Integrator clamp:
             // +-(v_max << 16), never charged past what the output can
             // deliver (belt on top of back-calc).
-            let ki_term = q_mul(gains.ki_q412 as i32, e, 0).saturating_mul(1 << 4);
-            let aw_term = q_mul(gains.kaw_q412 as i32, aw, 0).saturating_mul(1 << 4);
+            let ki_term = sat_mul(q_mul(gains.ki_q412 as i32, e, 0), 1 << 4);
+            let aw_term = sat_mul(q_mul(gains.kaw_q412 as i32, aw, 0), 1 << 4);
             let lim = rail.integ_lim_vq16;
-            self.integ_vq16 = self
-                .integ_vq16
-                .saturating_add(ki_term)
-                .saturating_add(aw_term)
-                .max(-lim)
-                .min(lim);
+            self.integ_vq16 = sat_clamp(
+                sat_add(sat_add(self.integ_vq16, ki_term), aw_term),
+                -lim,
+                lim,
+            );
         }
         // VbusEst floors its divisor at 1, so recip <= 32767 << 15 < 2^30
         // casts exactly; |u_cl| * recip <= 2^17 * 2^30 = 2^47, i64-safe.
-        q_mul(u_cl, recip_vbus_q15 as i32, 15).clamp(-(i16::MAX as i32), i16::MAX as i32) as i16
+        sat_clamp(
+            q_mul(u_cl, recip_vbus_q15 as i32, 15),
+            -(i16::MAX as i32),
+            i16::MAX as i32,
+        ) as i16
     }
 }
 
