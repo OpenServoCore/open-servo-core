@@ -161,7 +161,7 @@ A single-variant project uses flat files (`hal/types.rs`, `cfg/board_wiring.rs`,
 | board bins | `osc-dev-v006` | `osc-adapter-wchlinke` |
 | PC software | — | `osc-client` (`client/`) |
 
-(The host column is the naming scheme; its cells land with the host band.) Foundation crates — `osc-protocol`, `osc-units`, `osc-log`, `control-table(-derive)` — belong to no column. `osc-integration` is the one deliberate column-spanner: it closes both ends over a simulated wire.
+(The host column is the naming scheme; its cells land with the host band.) Foundation crates — `osc-protocol`, `osc-log`, `control-table(-derive)` — belong to no column. `osc-integration` is the one deliberate column-spanner: it closes both ends over a simulated wire.
 
 The grid laws:
 
