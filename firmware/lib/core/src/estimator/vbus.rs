@@ -124,6 +124,8 @@ mod tests {
         let mut cold = VbusEst::new(UNITY);
         cold.step(0, 0);
         assert_eq!(cold.recip_q15(), 32767 << 15);
+        // the largest reciprocal, so the current loop's i32 cast is exact
+        assert!(cold.recip_q15() < 1 << 30);
     }
 
     #[test]

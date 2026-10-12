@@ -743,6 +743,33 @@ fn openloop_duty_passthrough_clamped_with_decay() {
 }
 
 #[test]
+fn duty_max_write_caps_the_closed_loop_at_the_refresh_tick() {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::Current;
+        t.control.lifecycle.goal_current = 1200;
+    });
+    let mut k = kernel();
+    // no current ever reads back: the loop saturates at duty_max x vbus
+    for _ in 0..10 * DECIM_MED {
+        k.on_tick(frame(2000, BIAS), &sh);
+    }
+    assert!(written_duty(&k) > 32000, "duty={}", written_duty(&k));
+    // the clamp is prepared at the rail commit, so the refresh re-prepares
+    // it: the cap lands with the configuration, not at the next RAIL phase
+    write_config(&sh, |t| t.config.loop_current.duty_max_q15 = 8000);
+    while k.phase != 0 {
+        k.on_tick(frame(2000, BIAS), &sh);
+        assert!(written_duty(&k) > 32000);
+    }
+    k.on_tick(frame(2000, BIAS), &sh);
+    let d = written_duty(&k);
+    assert!((7900..=8000).contains(&d), "duty={d}");
+}
+
+#[test]
 fn openloop_zero_duty_drives_zero_when_brake_flag_clear() {
     let sh = Shared::new();
     seed(&sh);
