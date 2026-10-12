@@ -1,6 +1,6 @@
 //! The assembled kernel (spec "on_tick skeleton"): one `on_tick` per PWM
 //! period carries all three rates - FAST every tick (`fast`: sensor
-//! publish, window select, OC trip, back-EMF sums, TEL, ident, current PI,
+//! publish, window select, OC trip, back-EMF sums, TEL, current PI,
 //! motor write), MEDIUM once per DECIM_MED-tick period, spread over its
 //! ticks one phase each (`medium`, `phase`: CONTROL and the edges, fusion,
 //! trajectory and position, limits, velocity, vbus and detectors, slow,
@@ -13,20 +13,17 @@
 //! `fast::Command`; the fast measurement reaches the medium phase of the
 //! same tick as `fast::Measured`. Only the CONTROL phase reads CONTROL, so
 //! a host write (torque, mode, goals) takes effect at the next period's
-//! CONTROL phase. Identification aggregates ride their own
-//! /16 fast-tick window (`ident`), independent of DECIM_MED, and fold only
-//! while CONTROL `ident_agg` asks for them. The tick index is the sample
-//! clock: every executed tick is one period, and nothing reads a wall
-//! clock. CONFIG and CALIB reach the tick through the kernel's own
-//! snapshot (`config`), rebuilt in two halves on the free phases after a
-//! write, so a configuration write takes effect within two medium periods.
+//! CONTROL phase. The tick index is the sample clock: every executed tick is
+//! one period, and nothing reads a wall clock. CONFIG and CALIB reach the
+//! tick through the kernel's own snapshot (`config`), rebuilt in two halves
+//! on the free phases after a write, so a configuration write takes effect
+//! within two medium periods.
 
 mod config;
 pub mod current;
 pub mod duty_limit;
 mod fast;
 pub mod faults;
-pub mod ident;
 pub mod limits;
 mod medium;
 pub mod position;
@@ -229,10 +226,8 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             frame.ntc_raw,
             &self.cfg,
         );
-        // the stream's first row linearizes like the rest, and the
-        // aggregate's first window opens at the first tick
+        // the stream's first row linearizes like the rest
         self.cmd.lut_live = ctl.lut_live;
-        self.cmd.ident_agg = ctl.ident_agg;
         let p = shared.table.region_ptr();
         // SAFETY: same volatile read contract; install stamped the boot rest
         // measurement here before the first tick, and from here on this

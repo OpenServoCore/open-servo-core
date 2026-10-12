@@ -135,32 +135,6 @@ pub struct TelemetrySensors {
     pub vmotor_bias_counts: u16,
 }
 
-/// Identification aggregates on their own fast-tick /16 window (mean =
-/// sum>>4, arithmetic); `agg_seq` increments per window so the host pairs a
-/// consistent set. Current fields are SIGNED bias-subtracted counts - the
-/// fitter's domain. Ticks with an invalid window contribute the last valid
-/// current/vdiff sample, not zero, while the drive pushes; with nothing
-/// driving the current reads 0 (kernel/ident.rs doc). Published only while
-/// CONTROL `ident_agg` is set; off, the block holds its last window.
-#[repr(C)]
-#[derive(Copy, Clone, Block)]
-pub struct TelemetryIdent {
-    #[ct_field(access = ro)]
-    pub i_mean_counts: i16,
-    #[ct_field(access = ro)]
-    pub i_min_counts: i16,
-    #[ct_field(access = ro)]
-    pub i_max_counts: i16,
-    /// Drive-window `va - vb` differential mean.
-    #[ct_field(access = ro)]
-    pub vdiff_mean: i16,
-    /// Mean of the per-tick commanded duty (always defined, 0 while off).
-    #[ct_field(access = ro)]
-    pub duty_mean_q15: i16,
-    #[ct_field(access = ro)]
-    pub agg_seq: u16,
-}
-
 /// Which limit governs the command, published at the medium boundary: one
 /// bit per reason (`kernel::limits::flag`), 0 = nothing holds it back.
 #[repr(C)]
@@ -243,7 +217,8 @@ pub struct TelemetryRegs {
     pub mode: TelemetryMode,
     pub estimates: TelemetryEstimates,
     pub sensors: TelemetrySensors,
-    pub ident: TelemetryIdent,
+    #[ct_section(skip)]
+    pub _rsvd_ident: [u8; 12],
     pub limits: TelemetryLimits,
     pub health: TelemetryHealth,
     pub limits_ext: TelemetryLimitsExt,

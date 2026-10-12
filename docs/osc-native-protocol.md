@@ -1035,8 +1035,8 @@ trough, where the low-side tap closes 135 ticks in, and the board raises the flo
 register follows the OpenLoop decay (DES
 `window_v_floor_follows_the_openloop_decay`). It is published with
 `window_floor_q15`, at the same moments. A window between the two floors
-reads current but no `va - vb`, so the stream's `vdiff` and the ident
-aggregate's `vdiff_mean` hold the last differential read there. Which
+reads current but no `va - vb`, so the stream's `vdiff` holds the last
+differential read there. Which
 floor a host plans against follows what its fit reads: a drive judged
 on current alone (the limiter's slew, an overcurrent abort, a current
 step) takes `window_floor_q15`; a drive whose fit takes the differential
@@ -1059,9 +1059,9 @@ after the commit (the two ticks cover the sample alignment and the
 rounding, the ten the medium period the goal may wait for), or falls
 under the goal after reaching it. A goal at or under the floor applies
 from the tick it lands unless the stall-safe base cuts it, and a cut
-one never reaches the goal. Polled, the same test reads `duty_applied_q15` (or
-the ident aggregate `duty_mean_q15`) against the goal written, once the
-slew is over; `limit_flags` then says why.
+one never reaches the goal. Polled, the same test reads `duty_applied_q15`
+against the goal written, once the slew is over; `limit_flags` then says
+why.
 
 **Blind band.** Under the window floor (`window_floor_q15`, 5.3% on
 osc-dev-v006) the shunt reports nothing and the servo applies
@@ -1200,39 +1200,6 @@ that did not fill a 20-tick window count toward neither counter, and
 the first window after it counts no lost ticks.
 `stack_free_min` reads 0 until the first stack scan completes, about
 10 ms after boot.
-
-### 5.10 Identification aggregate (osc-servo)
-
-Six RO registers in TELEMETRY, after `vmotor_bias_counts`, fold the
-per-tick current, drive-window differential and applied duty over
-16-tick windows (0.8 ms at 20 kHz), so a polling host reads
-decimation-free means without a TEL burst. One RW byte in CONTROL,
-after the position table window, switches the fold:
-
-| addr  | name            | width | access | meaning                                                              |
-| ----- | --------------- | ----- | ------ | -------------------------------------------------------------------- |
-| 0x1E0 | `ident_agg`     | bool  | RW     | 1 runs the aggregate; 0, the default, costs the kernel nothing      |
-| 0x25A | `i_mean_counts` | i16   | RO     | window mean of the bias-subtracted current, counts                   |
-| 0x25C | `i_min_counts`  | i16   | RO     | window minimum of the same                                           |
-| 0x25E | `i_max_counts`  | i16   | RO     | window maximum of the same                                           |
-| 0x260 | `vdiff_mean`    | i16   | RO     | window mean of the drive-window `va - vb`, counts                    |
-| 0x262 | `duty_mean_q15` | i16   | RO     | window mean of the applied duty, Q15                                 |
-| 0x264 | `agg_seq`       | u16   | RO     | windows published; wraps                                             |
-
-`ident_agg` is RAM, off at boot, and a write lands at the next medium
-period's CONTROL read like every CONTROL field. While it is off the six
-registers hold their last window and `agg_seq` stops. Turning it off
-drops the window in progress, so the first window after the next enable
-spans 16 fresh ticks and `agg_seq` counts on from where it stopped. The
-servo writes the block mid-tick with `agg_seq` last: a host that reads
-the block, re-reads `agg_seq` and finds it unchanged holds one window.
-A tick whose window the shunt cannot read contributes the last valid
-current, and one the terminal taps cannot read the last valid
-differential (the two floors of sec 5.8 may differ), except that the
-current reads 0 from the first tick nothing drives, as the stream's
-`current` does (sec 5.6). A host
-that reads the aggregate turns it on for its session and off when the
-session ends (sec 5.8).
 
 ## 6. Coordinated reads (status chains)
 
