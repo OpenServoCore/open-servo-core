@@ -10,10 +10,10 @@ use osc_protocol::wire::{Opcode, ResultCode};
 use osc_servo_core::BaudRate;
 use osc_servo_core::budget::probe::BusProbe;
 use osc_servo_core::budget::{
-    self, Body, ENTRY_EXIT, Frame, HOLD_APPROACH_TICKS, KERNEL, KERNEL_MEAN, PHASES, Regime,
-    TEL_BANK, TEL_ENCODE, TICK_HZ, WINDOW_LOAD, WINDOW_LOAD_TEL, WINDOW_TICKS,
+    self, Body, ENTRY_EXIT, Events, Frame, HOLD_APPROACH_TICKS, KERNEL, KERNEL_MEAN, PHASES,
+    Regime, TEL_BANK, TEL_ENCODE, TICK_HZ, TICK_PERIOD, WINDOW_LOAD, WINDOW_LOAD_TEL, WINDOW_TICKS,
 };
-use osc_servo_core::kernel::DECIM_SLOW;
+use osc_servo_core::kernel::{DECIM_SLOW, phase};
 use osc_servo_core::regions::control::addr::lifecycle::{GOAL_POSITION, TEL_COUNT, TEL_MASK};
 
 const ID: u8 = 1;
@@ -233,4 +233,50 @@ fn hold_lane_is_closed_for_the_approach_then_open() {
         goal
     );
     assert_eq!(sim.kernel_stats(s).closed, 2 * approach);
+}
+
+/// The spare phases while stepping, Closed at budget: each carries a
+/// refresh stage or, in its place, the thermometer's stage, whichever is
+/// dearer, with the health close that can land on any tick and interrupt
+/// entry and exit; TEL ticks of a burst on top.
+fn spare_phase_ticks(tel: bool) -> [(u8, u32); 2] {
+    let carried = Events {
+        tel,
+        bank: tel,
+        ..Events::default()
+    };
+    let refresh = Events {
+        refresh: true,
+        ..carried
+    };
+    let install = Events {
+        install: true,
+        ..carried
+    };
+    let side = Events {
+        side: true,
+        ..carried
+    };
+    [(phase::THERM_INSTALL, install), (phase::THERM_SIDE, side)].map(|(p, therm)| {
+        let tick = |ev| budget::kernel_tick(Regime::Closed, p as usize, ev);
+        (
+            p,
+            tick(refresh).max(tick(therm)) + budget::HEALTH_CLOSE + ENTRY_EXIT,
+        )
+    })
+}
+
+#[test]
+fn config_write_while_moving_fits_at_budget() {
+    for (p, t) in spare_phase_ticks(false) {
+        assert!(t <= TICK_PERIOD, "phase {p}: {t} > {TICK_PERIOD}");
+    }
+}
+
+#[test]
+#[ignore = "red at budget: a Closed TEL tick with its bank does not fit the period yet"]
+fn config_write_while_moving_and_streaming_fits_at_budget() {
+    for (p, t) in spare_phase_ticks(true) {
+        assert!(t <= TICK_PERIOD, "phase {p}: {t} > {TICK_PERIOD}");
+    }
 }

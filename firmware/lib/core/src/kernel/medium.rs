@@ -5,7 +5,7 @@
 //! is written by the phase that computes it and read by the later phases
 //! and by the fast half.
 
-use super::config::{FastConfig, KernelConfig};
+use super::config::{FastConfig, KernelConfig, MediumConfig};
 use super::fast::{Command, Drive, Fast, Measured};
 use super::faults::{self, Detectors, FaultLatch};
 use super::limits::{self, IBand, LimitState};
@@ -36,12 +36,13 @@ pub mod phase {
     pub const SLOW: u8 = 6;
     /// Estimates, mode, limits and sensors publish.
     pub const PUBLISH: u8 = 7;
-    /// After a SLOW tick: the install of a reference it froze. A stage
-    /// whose phase another stage takes waits a period: its pending bit
-    /// carries it.
+    /// After a SLOW tick: the install of a reference it froze; the first
+    /// stage of a configuration refresh takes it first. A stage whose phase
+    /// another stage takes waits a period: its pending bit carries it.
     pub const THERM_INSTALL: u8 = 8;
     /// Either side of a SLOW tick: the NTC the period before it; the
-    /// derate from its temperature and the cold check after an install.
+    /// derate from its temperature and the cold check after an install;
+    /// the second refresh stage takes it first.
     pub const THERM_SIDE: u8 = 9;
 }
 
@@ -189,7 +190,7 @@ impl Medium {
         cmd: &mut Command,
     ) {
         match k {
-            phase::CONTROL => self.control(frame.pos, &cfg.fast, shared, faults, fast, cmd),
+            phase::CONTROL => self.control(frame.pos, cfg, shared, faults, fast, cmd),
             phase::OBSERVER => self.observe(frame.pos, cfg, shared, fast),
             phase::TRAJECTORY => self.trajectory(cfg, faults, cmd),
             phase::LIMITS => self.limit(cfg, shared, faults, fast),
@@ -197,11 +198,7 @@ impl Medium {
             phase::RAIL => self.rail(frame, cfg, faults, cmd),
             phase::SLOW => self.slow(m, cfg, faults),
             phase::PUBLISH => self.publish(frame, shared, faults, fast),
-            _ => {
-                if self.thermal.pending() != 0 {
-                    self.spare(k, frame.ntc_raw, cfg);
-                }
-            }
+            _ => {}
         }
     }
 
@@ -209,14 +206,15 @@ impl Medium {
     fn control(
         &mut self,
         raw_pos: u16,
-        fc: &FastConfig,
+        cfg: &KernelConfig,
         shared: &Shared,
         faults: &mut FaultLatch,
         fast: &mut Fast,
         cmd: &mut Command,
     ) {
+        let fc = &cfg.fast;
         self.ctl = Control::read(shared);
-        self.admit(fc, shared, faults, fast);
+        self.admit(&cfg.medium, shared, faults, fast);
         self.edges(raw_pos, fc, shared, faults, fast);
         cmd.drive = self.drive(fc, faults);
         // the resets of an edge reach the fast half with the drive they
@@ -232,7 +230,7 @@ impl Medium {
     /// The torque enable edge, the data-state entry check and the Ke belt.
     fn admit(
         &mut self,
-        fc: &FastConfig,
+        mc: &MediumConfig,
         shared: &Shared,
         faults: &mut FaultLatch,
         fast: &mut Fast,
@@ -266,7 +264,7 @@ impl Medium {
         // Physics belt: a closed loop on a zero Ke runs open (the boxcar
         // yields nothing, the current loop decouples nothing), whatever the
         // flags say - a live write of 0 into a running loop stops it here.
-        if life.torque_enable && matches!(life.mode, Mode::Velocity | Mode::Position) && fc.ke_unset
+        if life.torque_enable && matches!(life.mode, Mode::Velocity | Mode::Position) && mc.ke_unset
         {
             faults.raise(faults::BIT_DATA, faults::CODE_DATA);
         }
@@ -570,7 +568,7 @@ impl Medium {
     }
 
     /// THERM_INSTALL and THERM_SIDE, while the thermometer has work.
-    fn spare(&mut self, k: u8, ntc_raw: u16, cfg: &KernelConfig) {
+    pub(super) fn spare(&mut self, k: u8, ntc_raw: u16, cfg: &KernelConfig) {
         if k == phase::THERM_INSTALL {
             self.thermal.install();
         } else {

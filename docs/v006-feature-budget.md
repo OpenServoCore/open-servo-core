@@ -104,9 +104,9 @@ The stack region is 2,356 B. The worst case is three levels nested. Static frame
 - 48 B hardware push.
 - LOW, the bus (SysTick): `serve_break` 48, `drive_framer` 68, `route_frame` 156, `dispatch` 220, `ConfigStore::save` 68, `program` 92, plus 32 for SysTick itself.
 - 48 B hardware push.
-- HIGH, the kernel (ADC DMA ISR): 140 B, plus `Kernel::refresh` 212 B.
+- HIGH, the kernel (ADC DMA ISR): 140 B, plus `Kernel::refresh_medium` 24 B.
 
-The same frames as with the bus on top, nested in the other order. That sums to about 1,480-1,500 B. The measured free minimum is ~1.1 KB at rest, or ~1.25 KB used. The 1,536 B link assertion only guards .bss growth, not deeper call chains. The biggest frames are `__run` (inlined bring-up locals), `dispatch` (a double 68 B Vec in `apply_commit`) and `Kernel::refresh`.
+The same frames as with the bus on top, nested in the other order. That sums to about 1,300 B. The measured free minimum is ~1.1 KB at rest, or ~1.25 KB used. The 1,536 B link assertion only guards .bss growth, not deeper call chains. The biggest frames are `__run` (inlined bring-up locals) and `dispatch` (a double 68 B Vec in `apply_commit`).
 
 ## Planned items
 

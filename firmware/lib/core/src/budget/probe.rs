@@ -4,6 +4,7 @@
 //! debug-link dump and holds them against the table.
 
 use super::{Body, CLOCK_HZ, Events, Frame, PHASES, Regime, TICKS_PER_US, WINDOW_TICKS};
+use crate::kernel::phase;
 
 /// A body longer than this is a debugger halt or a flash save, not a
 /// budgeted body: counted, kept out of every statistic.
@@ -98,6 +99,11 @@ impl Windows {
     }
 }
 
+/// [`KernelProbe::refresh`]'s index for a refresh tick at `phase`.
+fn refresh_stage(phase: usize) -> usize {
+    (phase != phase::THERM_INSTALL as usize) as usize
+}
+
 /// A tick this long counts toward [`KernelProbe::long`]: the hold windows'
 /// maxima sit above it, the parked ticks below.
 pub const LONG_TICKS: u32 = 30 * TICKS_PER_US;
@@ -115,8 +121,8 @@ pub struct KernelProbe {
     pub bank_max: [u16; PHASES],
     /// TEL ticks that banked nothing, all phases.
     pub tel: Load,
-    /// CONTROL ticks that rebuilt the configuration.
-    pub refresh: Load,
+    /// Ticks that ran a configuration refresh stage, by stage.
+    pub refresh: [Load; 2],
     /// SLOW-due ticks by regime, and those that froze a thermal reference
     /// window; the thermometer's stages on phases THERM_INSTALL and
     /// THERM_SIDE.
@@ -148,7 +154,7 @@ impl KernelProbe {
         tel_max: [0; PHASES],
         bank_max: [0; PHASES],
         tel: Load::ZERO,
-        refresh: Load::ZERO,
+        refresh: [Load::ZERO; 2],
         slow: [Load::ZERO; 2],
         close: Load::ZERO,
         install: Load::ZERO,
@@ -199,7 +205,9 @@ impl KernelProbe {
             *n = n.wrapping_add(1);
         }
         if ev.refresh {
-            self.refresh.add(body);
+            if let Some(l) = self.refresh.get_mut(refresh_stage(phase)) {
+                l.add(body);
+            }
         } else if ev.close {
             self.close.add(body);
         } else if ev.slow {
@@ -285,7 +293,7 @@ impl KernelProbe {
             tel_max: r.halves(),
             bank_max: r.halves(),
             tel: r.load(),
-            refresh: r.load(),
+            refresh: core::array::from_fn(|_| r.load()),
             slow: core::array::from_fn(|_| r.load()),
             close: r.load(),
             install: r.load(),
@@ -516,7 +524,8 @@ pub enum Component {
     Tick(Regime, usize),
     TelTick(usize),
     BankTick(usize),
-    Refresh,
+    /// The refresh stage at this phase.
+    Refresh(usize),
     Slow(Regime),
     Close,
     Install,
@@ -591,8 +600,14 @@ pub fn rows(k: &KernelProbe, b: &BusProbe, s: &Scenario<'_>, mut f: impl FnMut(R
         refresh: true,
         ..carried
     };
-    let budget = super::kernel_tick(r, 0, refresh);
-    f(load_row(Component::Refresh, k.refresh, budget, 0));
+    for (p, l) in [phase::THERM_INSTALL, phase::THERM_SIDE]
+        .map(usize::from)
+        .into_iter()
+        .zip(k.refresh)
+    {
+        let budget = super::kernel_tick(r, p, refresh);
+        f(load_row(Component::Refresh(p), l, budget, 0));
+    }
     let slow = Events {
         slow: true,
         ..carried
