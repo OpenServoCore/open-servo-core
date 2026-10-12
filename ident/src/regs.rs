@@ -91,6 +91,8 @@ pub mod calib {
     pub const NTC_T_REF_CC: Reg = reg(0x00ca, 2);
     pub const NTC_K1_Q88: Reg = reg(0x00cc, 2);
     pub const NTC_K2_Q24: Reg = reg(0x00ce, 2);
+    /// The PWM period, compare counts: TEL `duty_counts`' full scale. RO.
+    pub const PWM_PERIOD_TICKS: Reg = reg(0x00d0, 2);
 }
 
 pub mod control {
@@ -234,6 +236,7 @@ pub const ALL: &[(&str, Reg)] = &[
     ("vmotor_div_bot", calib::VMOTOR_DIV_BOT),
     ("vdd_mv", calib::VDD_MV),
     ("tick_hz", calib::TICK_HZ),
+    ("pwm_period_ticks", calib::PWM_PERIOD_TICKS),
     ("i_window_min_ticks", calib::I_WINDOW_MIN_TICKS),
     ("v_window_min_ticks", calib::V_WINDOW_MIN_TICKS),
     ("r0_q12", calib::R0_Q12),

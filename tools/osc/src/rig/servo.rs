@@ -6,12 +6,12 @@
 
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use osc_client::Id;
 use osc_client::blocking::Client;
 use osc_client::pipe::Pipe;
 use osc_ident::frame::{TelFrame, TelemetrySnapshot};
-use osc_ident::regs::{Reg, control, telemetry};
+use osc_ident::regs::{Reg, calib, control, telemetry};
 
 use super::pump::{BurstStats, exchange_tel_burst, read_stamped, write_reg};
 use super::snapshot::read_u16;
@@ -36,6 +36,15 @@ pub(crate) trait Servo {
         mask: u16,
     ) -> Result<(Vec<TelFrame>, BurstStats)>;
     fn sleep(&mut self, ms: u32);
+
+    /// The PWM period the servo's TEL duty counts are of.
+    fn pwm_period_ticks(&mut self) -> Result<u16> {
+        let id = self.id();
+        match read_u16(self.client(), id, calib::PWM_PERIOD_TICKS)? {
+            0 => bail!("the servo publishes no PWM period: its firmware predates TEL duty counts"),
+            p => Ok(p),
+        }
+    }
 
     /// [`Servo::burst`], its stats carrying the rows the servo dropped from
     /// it: `tel_drop_count` after it less before it. Firmware without the
@@ -195,7 +204,8 @@ pub(crate) const SAFE: [(Reg, i32); 8] = [
 pub(crate) mod bench {
     use osc_client::BaudRate;
     use osc_client::fake::{FakePipe, TelSample};
-    use osc_ident::exp::testkit::{Bus, FakeServo, bench_mg90};
+    use osc_ident::exp::testkit::{Bus, FakeServo, PWM_PERIOD_TICKS, bench_mg90};
+    use osc_ident::frame::duty_counts;
     use osc_ident::regs::{calib, config};
 
     use super::*;
@@ -240,7 +250,7 @@ pub(crate) mod bench {
                 pos: 2029,
                 current: 0,
                 current_trough: 0,
-                duty_q15: 0,
+                duty: 0,
                 vdiff: 0,
                 vbus: 3204,
                 current_raw: 0,
@@ -384,12 +394,16 @@ pub(crate) mod bench {
                 let h = &mut t.telemetry.health;
                 h.tel_drop_count = h.tel_drop_count.wrapping_add(dropped);
             });
+            let counts = |q15: i16| duty_counts(q15, PWM_PERIOD_TICKS);
             if let Some((_, goal)) = goal.filter(|_| self.chatter > 0) {
                 let goal = goal as i16;
-                if let Some(k) = frames.iter().position(|f| f.duty_q15 == Some(goal)) {
+                if let Some(k) = frames
+                    .iter()
+                    .position(|f| f.duty_is(goal, PWM_PERIOD_TICKS))
+                {
                     let last = (k as u64 + self.chatter) as usize;
                     for f in frames.iter_mut().take(last).skip(last.saturating_sub(4)) {
-                        f.duty_q15 = Some(goal - goal.signum() * 128);
+                        f.duty_counts = Some(counts(goal - goal.signum() * 128));
                     }
                 }
             }
@@ -397,9 +411,9 @@ pub(crate) mod bench {
                 && let Some((_, goal)) = goal
                 && goal.unsigned_abs() >= from.unsigned_abs() as u32
             {
-                let held = (goal - goal.signum() * 1000) as i16;
+                let held = counts((goal - goal.signum() * 1000) as i16);
                 for f in frames.iter_mut().skip(at) {
-                    f.duty_q15 = Some(held);
+                    f.duty_counts = Some(held);
                 }
             }
             let stats = BurstStats {

@@ -43,7 +43,11 @@ pub struct ConfigCommon {
     #[ct_field(access = ro)]
     pub hardware_revision: u8,
     #[ct_field(skip)]
-    pub _rsvd_identity: [u8; 7],
+    pub _rsvd_identity: u8,
+    #[ct_field(access = ro)]
+    pub tel_wide_fields: u16,
+    #[ct_field(access = ro)]
+    pub tel_row_bytes_max: [u8; osc_protocol::table::TEL_ROW_RATES],
     #[ct_field(ge = 1u8, le = 249u8, hook = on_id_write)]
     pub id: u8,
     // `BaudRate` index; le gate = the enum ceiling. Zero (0.5M, the rescue

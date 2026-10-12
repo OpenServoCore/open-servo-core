@@ -23,6 +23,7 @@ use serde_json::{Value, json};
 use super::plan::Plan;
 use super::{Rule, Supply};
 use crate::sweep::{self, CSV_HEADER, Segment};
+use osc_ident::frame::duty_counts;
 
 const DECL: &str = "dataset.toml";
 pub(crate) const POS_LUT: &str = "pos-lut.json";
@@ -224,14 +225,17 @@ pub(crate) struct Try<'a> {
     goals: Vec<Option<u64>>,
 }
 
-/// The first tick whose applied duty equals the commanded `goal`.
+/// The first tick whose applied duty, compare counts at `pwm_period_ticks`,
+/// is the commanded Q15 `goal`'s.
 pub(crate) fn goal_tick(
     frames: impl IntoIterator<Item = (u64, Option<i16>)>,
     goal: i16,
+    pwm_period_ticks: u16,
 ) -> Option<u64> {
+    let goal = Some(duty_counts(goal, pwm_period_ticks));
     frames
         .into_iter()
-        .find_map(|(tick, duty)| (duty == Some(goal)).then_some(tick))
+        .find_map(|(tick, duty)| (duty == goal).then_some(tick))
 }
 
 /// `tick` in ms from the segment's start.
@@ -243,8 +247,9 @@ impl Try<'_> {
     /// `sweep::record`'s per-segment sink.
     pub(crate) fn on_seg(&mut self, s: &Segment) -> Result<()> {
         self.goals.push(goal_tick(
-            s.frames.iter().map(|f| (f.tick, f.duty_q15)),
+            s.frames.iter().map(|f| (f.tick, f.duty_counts)),
             s.cmd_duty_q15,
+            s.pwm_period_ticks,
         ));
         sweep::write_rows(&mut self.csv, s)
     }
@@ -341,7 +346,13 @@ pub(super) mod fixture {
     use crate::capture::plan::Block;
     use crate::rig::pump::BurstStats;
     use crate::sweep::{Decay, Step};
+    pub(crate) use osc_ident::exp::testkit::PWM_PERIOD_TICKS;
     use osc_ident::frame::TelFrame;
+
+    /// A Q15 duty as the test servo's TEL carries it.
+    pub(crate) fn cnt(q15: i16) -> i16 {
+        osc_ident::frame::duty_counts(q15, PWM_PERIOD_TICKS)
+    }
 
     /// A fresh empty dir under the system temp dir, per test.
     pub(crate) fn tmp(tag: &str) -> PathBuf {
@@ -373,6 +384,7 @@ pub(super) mod fixture {
             "baseline_ms": 1000,
             "window_ms": 150,
             "tick_hz": 20000,
+            "pwm_period_ticks": PWM_PERIOD_TICKS,
         })
     }
 
@@ -381,6 +393,7 @@ pub(super) mod fixture {
             seg,
             dir,
             cmd_duty_q15: 0,
+            pwm_period_ticks: PWM_PERIOD_TICKS,
             frames: (0..rows)
                 .map(|i| TelFrame {
                     tick: i as u64,
@@ -512,7 +525,7 @@ mod tests {
         let duty = |s: &mut Segment, cmd: i16, duty: [i16; 3]| {
             s.cmd_duty_q15 = cmd;
             for (f, d) in s.frames.iter_mut().zip(duty) {
-                f.duty_q15 = Some(d);
+                f.duty_counts = Some(cnt(d));
             }
         };
         let mut segs = clean();

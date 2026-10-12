@@ -314,28 +314,78 @@ fn write_u16(addr: u16, v: u16) -> Vec<u8> {
     instruction(ID, Opcode::Write, 0, &[a[0], a[1], d[0], d[1]])
 }
 
-/// The six-field soak mask: a 202 B frame per 800 us batch at 3M.
+/// The six raw fields' soak mask: 9 B packed rows, a 155 B frame per
+/// 800 us batch at 3M.
 const SIX_FIELDS: u16 = 0x1cd;
+/// The longest row 3M admits: the six raw fields and current, 11 B.
+const WIDEST_ROW: u16 = 0x1cf;
 const TEL_FRAMES: u16 = 100;
+/// Host start offsets against the kernel grid; the worst one gates.
+const STARTS: u64 = 16;
 
-#[test]
-#[ignore = "over budget on main: six fields at rest drop 110 of 1600 rows at the measured TEL encode (651 per tick), none once it is under about 300"]
-fn tel_six_fields_fit_at_rest_with_the_kernel_on_top() {
+/// One burst of `TEL_FRAMES` frames of `mask` at 3M, the kernel above the
+/// bus at budget for `motion`, the host `k` x 13 us late: the stream frames
+/// with a good CRC, and the rows the encoder dropped.
+fn tel_burst(mask: u16, motion: Motion, k: u64) -> (usize, u16) {
+    let start = START_US + 13 * k;
     let mut sim = Sim::new(BaudRate::B3000000);
     let s = sim.add_servo(ID);
     sim.set_handler_cost(s, HandlerCost::at_budget(Frame::Write));
     let rows = TEL_FRAMES * STREAM_SAMPLES_MAX as u16;
-    let lane = KernelLane::at_budget(KernelLevel::AboveBus, Motion::Quiet);
-    sim.set_kernel_lane(s, lane, START_US + 2 * rows as u64 * 50);
-    sim.host_send_at(START_US, &write_u16(TEL_MASK, SIX_FIELDS));
-    sim.run_until(START_US + 1_000);
-    sim.host_send_at(START_US + 1_000, &write_u16(TEL_COUNT, rows));
-    let frames = sim.run();
-    let stream: Vec<_> = frames
+    let lane = KernelLane::at_budget(KernelLevel::AboveBus, motion);
+    sim.set_kernel_lane(s, lane, start + 3 * rows as u64 * 50);
+    sim.host_send_at(start, &write_u16(TEL_MASK, mask));
+    sim.run_until(start + 2_000);
+    sim.host_send_at(start + 2_000, &write_u16(TEL_COUNT, rows));
+    let frames = sim
+        .run()
         .iter()
-        .filter(|f| f.from == Source::Servo(ID) && status(f).0.result() == Some(ResultCode::Stream))
-        .collect();
-    assert_eq!(stream.len(), TEL_FRAMES as usize);
-    assert!(stream.iter().all(|f| frame_crc_ok(f)));
-    assert_eq!(sim.tel_drops(s), 0, "rows dropped of {rows}");
+        .filter(|f| {
+            f.from == Source::Servo(ID)
+                && status(f).0.result() == Some(ResultCode::Stream)
+                && frame_crc_ok(f)
+        })
+        .count();
+    (frames, sim.tel_drops(s))
+}
+
+#[test]
+fn tel_six_fields_fit_at_rest_with_the_kernel_on_top() {
+    for k in 0..STARTS {
+        let got = tel_burst(SIX_FIELDS, Motion::Quiet, k);
+        assert_eq!(
+            got,
+            (TEL_FRAMES as usize, 0),
+            "frames, rows dropped: start {k}"
+        );
+    }
+}
+
+/// The 11 B row bound (`tel::ROW_BYTES_CPU_MAX`) keeps up parked at
+/// budget; a 12 B row drops 4% of its rows here.
+#[test]
+fn tel_widest_row_keeps_up_at_rest() {
+    let at_3m = osc_servo_core::tel::row_bytes_max(BaudRate::B3000000);
+    assert_eq!(osc_servo_core::tel::row_bytes(WIDEST_ROW), at_3m);
+    for k in 0..STARTS {
+        let got = tel_burst(WIDEST_ROW, Motion::Quiet, k);
+        assert_eq!(
+            got,
+            (TEL_FRAMES as usize, 0),
+            "frames, rows dropped: start {k}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "over budget on main: stepping at budget, a 1600-row burst of six packed fields drops 4553 rows and sends 9 of 100 frames (start 0); the Closed rows at their maxima plus the TEL encode fill the tick, and the drops stop only near a zero encode"]
+fn tel_six_packed_fields_fit_at_budget_while_stepping() {
+    for k in 0..STARTS {
+        let got = tel_burst(SIX_FIELDS, Motion::Moving, k);
+        assert_eq!(
+            got,
+            (TEL_FRAMES as usize, 0),
+            "frames, rows dropped: start {k}"
+        );
+    }
 }

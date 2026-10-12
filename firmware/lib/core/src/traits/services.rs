@@ -102,8 +102,8 @@ pub trait Reply {
     fn set_response_deadline(&mut self, us: u16);
     /// TEL burst arm, fired on every committed `tel_count` write: stream
     /// `count` samples under `mask` as `Stream` status frames once the line
-    /// is host-silent. `count` 0 disarms (the hook zeroes it when `mask` is
-    /// 0, so an armed signal always carries a streamable mask).
+    /// is host-silent. `count` 0 disarms, and so does a mask the line's
+    /// current rate cannot carry (`tel::admits`).
     fn tel_arm(&mut self, mask: u16, count: u16);
     /// Deferred reboot, honored after any in-flight TX drains.
     fn stage_reboot(&mut self, mode: BootMode);

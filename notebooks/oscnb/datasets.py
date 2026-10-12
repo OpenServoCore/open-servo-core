@@ -55,6 +55,32 @@ from .servos import SERVOS, Measured
 ROOT = Path(__file__).resolve().parent.parent / "telemetry"
 
 
+def drive_ticks(q15, period):
+    """The firmware's window width for a Q15 duty at PWM period `period`,
+    in compare counts: (|d| x period + 2^14) >> 15."""
+    import numpy as np
+    return (np.abs(np.asarray(q15, dtype=np.int64)) * period + (1 << 14)) >> 15
+
+
+def with_duty_q15(df, meta):
+    """A recording's applied duty as `duty_q15`. TEL streams it as signed
+    compare counts, `duty_counts` of the meta's `pwm_period_ticks`; earlier
+    recordings carry the Q15 itself. From counts: the commanded duty where
+    the counts are the goal's, the nearest Q15 of the counts elsewhere - the
+    column earlier recordings carry, wherever the servo held its goal."""
+    import numpy as np
+    if "duty_counts" not in df or "duty_q15" in df:
+        return df
+    period = meta["pwm_period_ticks"]
+    c = df["duty_counts"]
+    q15 = (c * 32768 / period).round()
+    if "cmd_duty_q15" in df:
+        cmd = df["cmd_duty_q15"]
+        q15 = q15.where(c != np.sign(cmd) * drive_ticks(cmd, period), cmd)
+    df["duty_q15"] = q15 if q15.isna().any() else q15.astype(np.int64)
+    return df
+
+
 @dataclass(frozen=True)
 class Recording:
     dataset: "Dataset"
@@ -85,7 +111,7 @@ class Recording:
                     f"declares {self.dataset.rule!r}. A dataset holds one rule."
                 )
         with gzip.open(self.path, "rt") as fh:
-            return pd.read_csv(fh)
+            return with_duty_q15(pd.read_csv(fh), self.meta)
 
     def __str__(self):
         return f"{self.dataset.key}/{self.experiment}/{self.capture}/{self.name}"

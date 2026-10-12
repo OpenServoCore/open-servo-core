@@ -59,6 +59,7 @@ pub fn bringup(
     SHARED.table.seed_calib_sense(
         &calib_sense(wiring, calibration),
         &calib_sense_ext(calibration),
+        pre.pwm_arr,
     );
     SHARED.seed_uid(esig::uid());
 
@@ -115,6 +116,12 @@ pub fn bringup(
 // tick_hz stamps from the constant that programs TIM1, so the table can
 // never disagree with silicon; the cast must stay lossless.
 const _: () = assert!(chip::MOTOR_PWM_FREQ_HZ <= u16::MAX as u32);
+
+// TEL streams the applied duty as 12-bit signed compare counts.
+const _: () = assert!(
+    crate::hal::timer::pwm_dividers_from_hz(chip::MOTOR_PWM_FREQ_HZ).1
+        <= osc_servo_core::tel::DUTY_COUNTS_MAX
+);
 
 fn calib_sense(wiring: &BoardWiring, cal: &Calibration) -> CalibSense {
     CalibSense {

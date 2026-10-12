@@ -428,14 +428,21 @@ pub struct Climb {
 }
 
 /// The climb of a stream the goal write opened (its tick 0), on a servo
-/// ticking at `tick_hz`. None when no sample reaches the goal, or the
-/// stream carries no position.
-pub fn climb(frames: &[TelFrame], goal_q15: i16, tick_hz: f64) -> Option<Climb> {
+/// ticking at `tick_hz` with duty counts of `pwm_period_ticks`. None when
+/// no sample reaches the goal, or the stream carries no position.
+pub fn climb(
+    frames: &[TelFrame],
+    goal_q15: i16,
+    pwm_period_ticks: u16,
+    tick_hz: f64,
+) -> Option<Climb> {
     if tick_hz <= 0.0 {
         return None;
     }
     let start = frames.iter().find_map(|f| f.pos)?;
-    let at = frames.iter().find(|f| f.duty_q15 == Some(goal_q15))?;
+    let at = frames
+        .iter()
+        .find(|f| f.duty_is(goal_q15, pwm_period_ticks))?;
     let ms = at.tick as f64 * 1000.0 / tick_hz;
     let sign = if goal_q15 < 0 { -1.0 } else { 1.0 };
     let travel = sign * (at.pos? as f64 - start as f64);
@@ -449,11 +456,11 @@ pub fn climb(frames: &[TelFrame], goal_q15: i16, tick_hz: f64) -> Option<Climb> 
 
 /// The tick from which the applied duty holds the goal to the stream's end.
 /// None when the stream does not end at the goal.
-fn held_tick(frames: &[TelFrame], goal_q15: i16) -> Option<u64> {
+fn held_tick(frames: &[TelFrame], goal_q15: i16, pwm_period_ticks: u16) -> Option<u64> {
     let held = frames
         .iter()
         .rev()
-        .take_while(|f| f.duty_q15 == Some(goal_q15))
+        .take_while(|f| f.duty_is(goal_q15, pwm_period_ticks))
         .last()?;
     Some(held.tick)
 }
@@ -462,8 +469,13 @@ fn held_tick(frames: &[TelFrame], goal_q15: i16) -> Option<u64> {
 /// end, ms from the goal write (its tick 0). The limiter can chatter for a
 /// few ms after the duty first touches the goal, so this may land past the
 /// [`climb`]. None when the stream does not end at the goal.
-pub fn arrival_ms(frames: &[TelFrame], goal_q15: i16, tick_hz: f64) -> Option<f64> {
-    held_tick(frames, goal_q15).map(|t| t as f64 * 1000.0 / tick_hz)
+pub fn arrival_ms(
+    frames: &[TelFrame],
+    goal_q15: i16,
+    pwm_period_ticks: u16,
+    tick_hz: f64,
+) -> Option<f64> {
+    held_tick(frames, goal_q15, pwm_period_ticks).map(|t| t as f64 * 1000.0 / tick_hz)
 }
 
 /// The ticks a steady fit reads: from [`SETTLE_MS`] after the applied duty
@@ -472,10 +484,11 @@ pub fn arrival_ms(frames: &[TelFrame], goal_q15: i16, tick_hz: f64) -> Option<f6
 pub fn settled_ticks(
     frames: &[TelFrame],
     goal_q15: i16,
+    pwm_period_ticks: u16,
     tick_hz: f64,
 ) -> Option<RangeInclusive<u64>> {
     let end = frames.last()?.tick;
-    let held = held_tick(frames, goal_q15)?;
+    let held = held_tick(frames, goal_q15, pwm_period_ticks)?;
     let from = held + (SETTLE_MS * tick_hz / 1000.0).ceil() as u64;
     (from <= end).then_some(from..=end)
 }
@@ -504,6 +517,12 @@ pub fn dead_host_fits(stop: f64, margin: f64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::exp::testkit::PWM_PERIOD_TICKS as P;
+    use crate::frame::duty_counts;
+
+    fn cnt(q15: i16) -> i16 {
+        duty_counts(q15, P)
+    }
 
     /// The bench guard: soft limits 432..3626 inset 100.
     const GUARD: (u16, u16) = (532, 3526);
@@ -697,16 +716,13 @@ mod tests {
     fn climb_is_read_off_the_applied_duty() {
         let (frames, hz) = rung(60, 300.0);
         let goal = pct_q15(60);
-        let c = climb(&frames, goal, hz).unwrap();
-        let k = frames
-            .iter()
-            .position(|f| f.duty_q15 == Some(goal))
-            .unwrap();
+        let c = climb(&frames, goal, P, hz).unwrap();
+        let k = frames.iter().position(|f| f.duty_is(goal, P)).unwrap();
         assert_eq!(c.ms, frames[k].tick as f64 * 1000.0 / hz);
         let slew = crate::exp::slew_ticks(goal, 0);
         assert!(frames[k].tick > 10 * slew as u64, "{} ms", c.ms);
         let governed = &frames[slew as usize..k];
-        assert!(governed.iter().all(|f| f.duty_q15.unwrap() < goal));
+        assert!(governed.iter().all(|f| f.duty_counts.unwrap() < cnt(goal)));
         assert!(
             governed
                 .iter()
@@ -723,15 +739,15 @@ mod tests {
             .iter()
             .map(|f| TelFrame {
                 pos: f.pos.map(|p| 4000 - p),
-                duty_q15: f.duty_q15.map(|d| -d),
+                duty_counts: f.duty_counts.map(|d| -d),
                 ..*f
             })
             .collect();
-        assert_eq!(climb(&down, -goal, hz), Some(c));
+        assert_eq!(climb(&down, -goal, P, hz), Some(c));
 
         // a goal applied at the first sample climbs no time
-        down[0].duty_q15 = Some(-goal);
-        let at_once = climb(&down, -goal, hz).unwrap();
+        down[0].duty_counts = Some(cnt(-goal));
+        let at_once = climb(&down, -goal, P, hz).unwrap();
         assert_eq!((at_once.ms, at_once.travel), (0.0, 0.0));
         let mut r = Runway::new(GUARD);
         r.climbed(at_once.accel);
@@ -740,7 +756,7 @@ mod tests {
         assert_eq!(r.accel(), c.accel);
 
         // tick-true: the settled tail runs from the settle past the goal
-        let settled = settled_ticks(&frames, goal, hz).unwrap();
+        let settled = settled_ticks(&frames, goal, P, hz).unwrap();
         assert_eq!(
             *settled.start(),
             frames[k].tick + (SETTLE_MS * hz / 1000.0).ceil() as u64
@@ -765,24 +781,24 @@ mod tests {
         let hz = s.tick_hz();
         let mut frames = Vec::new();
         s.stream(4000, &mut frames);
-        assert!(frames.iter().all(|f| f.duty_q15.unwrap() < goal));
-        assert_eq!(climb(&frames, goal, hz), None);
-        assert_eq!(settled_ticks(&frames, goal, hz), None);
+        assert!(frames.iter().all(|f| f.duty_counts.unwrap() < cnt(goal)));
+        assert_eq!(climb(&frames, goal, P, hz), None);
+        assert_eq!(settled_ticks(&frames, goal, P, hz), None);
 
         // a stream with no applied duty or no position reads no climb
         let (mut frames, hz) = rung(30, 100.0);
-        assert!(climb(&frames, goal, hz).is_some());
-        assert_eq!(climb(&frames, goal, 0.0), None);
+        assert!(climb(&frames, goal, P, hz).is_some());
+        assert_eq!(climb(&frames, goal, P, 0.0), None);
         let blind: Vec<TelFrame> = frames
             .iter()
             .map(|f| TelFrame { pos: None, ..*f })
             .collect();
-        assert_eq!(climb(&blind, goal, hz), None);
+        assert_eq!(climb(&blind, goal, P, hz), None);
         // a goal reached, then lost before the end: no settled tail
-        frames.last_mut().unwrap().duty_q15 = Some(goal - 128);
-        assert!(climb(&frames, goal, hz).is_some());
-        assert_eq!(settled_ticks(&frames, goal, hz), None);
-        assert_eq!(arrival_ms(&frames, goal, hz), None);
+        frames.last_mut().unwrap().duty_counts = Some(cnt(goal - 128));
+        assert!(climb(&frames, goal, P, hz).is_some());
+        assert_eq!(settled_ticks(&frames, goal, P, hz), None);
+        assert_eq!(arrival_ms(&frames, goal, P, hz), None);
     }
 
     /// A 25% reverse rung as the bench servo streamed it at 20 kHz: at the
@@ -797,22 +813,22 @@ mod tests {
             .map(|t| TelFrame {
                 tick: t,
                 pos: Some(3000 - (t / 4) as u16),
-                duty_q15: Some(if t < 161 || (199..=202).contains(&t) {
+                duty_counts: Some(cnt(if t < 161 || (199..=202).contains(&t) {
                     goal + 128
                 } else {
                     goal
-                }),
+                })),
                 ..Default::default()
             })
             .collect();
-        assert_eq!(climb(&frames, goal, hz).unwrap().ms, 161.0 * 1000.0 / hz);
-        assert_eq!(arrival_ms(&frames, goal, hz), Some(203.0 * 1000.0 / hz));
-        let settled = settled_ticks(&frames, goal, hz).unwrap();
+        assert_eq!(climb(&frames, goal, P, hz).unwrap().ms, 161.0 * 1000.0 / hz);
+        assert_eq!(arrival_ms(&frames, goal, P, hz), Some(203.0 * 1000.0 / hz));
+        let settled = settled_ticks(&frames, goal, P, hz).unwrap();
         assert_eq!(settled, 203 + 800..=2019);
 
-        frames.last_mut().unwrap().duty_q15 = Some(goal + 128);
-        assert_eq!(arrival_ms(&frames, goal, hz), None);
-        assert_eq!(settled_ticks(&frames, goal, hz), None);
+        frames.last_mut().unwrap().duty_counts = Some(cnt(goal + 128));
+        assert_eq!(arrival_ms(&frames, goal, P, hz), None);
+        assert_eq!(settled_ticks(&frames, goal, P, hz), None);
     }
 
     /// The window runs the measured climb, then long enough at speed to
@@ -844,7 +860,7 @@ mod tests {
         // the measured climbs of the bench servo, each covered by its window
         for pct in [20, 40, 60] {
             let (frames, hz) = rung(pct, 300.0);
-            let c = climb(&frames, pct_q15(pct), hz).unwrap();
+            let c = climb(&frames, pct_q15(pct), P, hz).unwrap();
             let w = window_ms(&c, 0.2079 * pct as f64 - 0.831, span);
             assert!(w >= c.ms + SETTLE_MS + STEADY_MIN_MS, "{pct}%: {w} ms");
         }
@@ -859,7 +875,7 @@ mod tests {
         for (pct, ms) in [(20u8, 300.0), (40, 300.0)] {
             let (frames, hz) = rung(pct, ms);
             let goal = pct_q15(pct);
-            let c = climb(&frames, goal, hz).unwrap();
+            let c = climb(&frames, goal, P, hz).unwrap();
             r.climbed(c.accel);
             r.ran(pct as f64 / 100.0, 0.2079 * pct as f64 - 0.831);
         }

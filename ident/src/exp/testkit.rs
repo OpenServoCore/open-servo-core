@@ -34,13 +34,16 @@ use crate::burst::{
     ArmSeen, CHAN_INTERLEAVE, CHAN_VBUS, CHAN_VMOTOR_A, CHAN_VMOTOR_B, Capture, Meta, SAMPLE_HCLK,
     SAMPLE_US, SAMPLES, frame_len, rejected,
 };
-use crate::frame::{TelBurst, TelFrame, TelemetrySnapshot};
+use crate::frame::{TelBurst, TelFrame, TelemetrySnapshot, duty_counts};
 use crate::limits::PermitLease;
 use crate::lut::GridLut;
 use crate::regs::{ALL, Reg, config, control};
 
 /// The fake's fast tick rate, Hz: ten per MEDIUM tick at its `f_med`.
 pub const TICK_HZ: f64 = 20_100.0;
+
+/// The fake's PWM period, compare counts: its TEL duty's full scale.
+pub const PWM_PERIOD_TICKS: u16 = 1200;
 
 /// The envelope the tests run in: a guard inside the fake's stops (200,
 /// 4000), those stops as calibrated, and an abort over any current the
@@ -939,7 +942,7 @@ impl FakeServo {
                 pos: sel(1 << 0).then_some(raw),
                 current: sel(1 << 1).then(|| i.round() as i16),
                 current_trough: sel(1 << 2).then_some(512),
-                duty_q15: sel(1 << 3).then_some(duty),
+                duty_counts: sel(1 << 3).then(|| duty_counts(duty, PWM_PERIOD_TICKS)),
                 vdiff: sel(1 << 4).then(|| {
                     if driving {
                         (self.vbus * duty.signum() as f64) as i16
@@ -1130,7 +1133,7 @@ impl SynthBurst {
             v0: 0.0,
             emf_v_per_ms: 0.0,
             body_diode: false,
-            arr: 1200,
+            arr: PWM_PERIOD_TICKS,
             bias: 112.0,
             settle_us: 0.9,
             tap_us: 0.33,
@@ -1467,6 +1470,7 @@ pub fn pump_on<E: Experiment>(
                 let mut tel = TelBurst {
                     frames: Vec::new(),
                     rows_dropped: servo.rows_dropped,
+                    pwm_period_ticks: PWM_PERIOD_TICKS,
                 };
                 servo.stream(samples, &mut tel.frames);
                 exp.push_tel(&tel);
@@ -1555,9 +1559,10 @@ mod tests {
             assert_eq!(s.limit_flags(), 0, "a plain slew is not governed");
             let mut tel = Vec::new();
             s.stream(400, &mut tel);
-            let duty: Vec<i16> = tel.iter().map(|f| f.duty_q15.unwrap()).collect();
-            assert_eq!(duty[0], sign as i16 * (s.floor_q15 + 128), "first tick");
-            assert!(duty.windows(2).all(|w| (w[1] - w[0]).abs() <= 128));
+            let c = |q15| duty_counts(q15, PWM_PERIOD_TICKS);
+            let duty: Vec<i16> = tel.iter().map(|f| f.duty_counts.unwrap()).collect();
+            assert_eq!(duty[0], c(sign as i16 * (s.floor_q15 + 128)), "first tick");
+            assert!(duty.windows(2).all(|w| (w[1] - w[0]).abs() <= c(128) + 1));
             assert!(
                 tel.iter().all(|f| f.current.unwrap().unsigned_abs() <= LIM),
                 "current over the limit"

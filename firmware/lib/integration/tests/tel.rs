@@ -21,11 +21,12 @@ use osc_integration::sim::{
     Sim, Source, TelSample, WireFrame, assert_valid, expect_tel_payload, expect_tel_payload_rows,
     frame_crc_ok, instruction, status, tel_sample,
 };
+use osc_protocol::tel::decode_row;
 use osc_protocol::wire::{Inst, Opcode, RESCUE_PULSE_MIN_US, ResultCode};
 use osc_servo_core::BaudRate;
 use osc_servo_core::regions::control::addr::lifecycle::{GOAL_DUTY, TEL_COUNT, TEL_MASK};
 use osc_servo_core::regions::telemetry::addr::sensors::POS;
-use osc_servo_core::tel::{BIT_POS, BIT_POS_LIN, FLAG_LAST};
+use osc_servo_core::tel::{BIT_POS, BIT_POS_LIN, FLAG_LAST, STREAM_HDR};
 
 mod support;
 
@@ -422,7 +423,7 @@ fn track(len: u16) -> Vec<TelSample> {
             pos: 1000 + i * 7,
             current: -(i as i16) * 3,
             current_trough: 90 + i,
-            duty_q15: 0x0100 * i as i16,
+            duty: 50 * i as i16 - 600,
             vdiff: -(i as i16) - 40,
             vbus: 3000 + i,
             current_raw: 0x200 + i,
@@ -450,7 +451,7 @@ fn track_rows_stream_in_order_and_loop() {
     assert_eq!(burst.len(), 3);
     // The pump ticks on the 50 us grid: the first sample is the row at the
     // first grid point after the count write's ack armed the burst.
-    let first = u16::from_le_bytes([status(burst[0]).1[4], status(burst[0]).1[5]]);
+    let first = decode_row(MASK, &status(burst[0]).1[STREAM_HDR..]).expect("a row")[0];
     let k = rows
         .iter()
         .position(|r| r.pos == first)
@@ -512,7 +513,7 @@ fn track_mirrors_into_the_live_table() {
         let es = &t.telemetry.estimates;
         assert_eq!(
             (es.vbus_counts, es.duty_applied_q15, es.i_hat_counts),
-            (r.vbus, r.duty_q15, r.current)
+            (r.vbus, osc_integration::plant::duty_q15(r.duty), r.current)
         );
     });
 

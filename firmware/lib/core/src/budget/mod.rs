@@ -81,19 +81,21 @@ pub const MEAN_MIN_BODIES: u32 = 100;
 pub const REFRESH_1: u32 = 535;
 pub const REFRESH_2: u32 = 462;
 
-/// Every tick of a TEL burst (sample build and encode), on top of [`KERNEL`],
-/// per regime, six fields at 3M. M: per phase the TEL ticks' maximum over
-/// the plain maximum, Open still 603, Closed stepping 540; Closed is
-/// raised to its mean budget.
-pub const TEL_ENCODE: [u32; 2] = [651, 612];
+/// Every tick of a TEL burst (row gate, sample build and the out-of-line
+/// row), on top of [`KERNEL`], per regime, the widest row 3M admits (11 B).
+/// E: the unpacked six-field rows' M (Open 651, Closed 612) less the priced
+/// saving, 45: the emulated tick prices the widest packed row at 426
+/// against the unpacked six fields' 471.
+pub const TEL_ENCODE: [u32; 2] = [606, 567];
 
-/// Its mean over a window: the TEL ticks' mean less the plain ticks'. M:
-/// still 492, stepping 568-582.
-pub const TEL_ENCODE_MEAN: [u32; 2] = [517, 612];
+/// Its mean over a window: the TEL ticks' mean less the plain ticks'. E:
+/// the unpacked rows' M less the same 45.
+pub const TEL_ENCODE_MEAN: [u32; 2] = [472, 567];
 
-/// The tick that banks a TEL batch, on top of [`TEL_ENCODE`]. M: per phase
-/// the banking ticks' maximum over the TEL ticks', stepping 135 (still 69).
-pub const TEL_BANK: u32 = 183;
+/// The tick that banks a TEL batch, on top of [`TEL_ENCODE`]. E: the
+/// unpacked bank's M, 183, plus the priced cost of the out-of-line bank,
+/// 51 (117 against 66 on the emulated tick).
+pub const TEL_BANK: u32 = 234;
 
 /// The SLOW block on its due tick (phase SLOW, every DECIM_SLOW periods),
 /// on top of the phase's row, per regime. E: the dearest path, a tracked

@@ -235,7 +235,7 @@ mod tests {
                 pos: 2029,
                 current: 0,
                 current_trough: 0,
-                duty_q15: 0,
+                duty: 0,
                 vdiff: 0,
                 vbus: 0,
                 current_raw: 0,

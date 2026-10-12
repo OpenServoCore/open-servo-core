@@ -2,7 +2,7 @@
 //! nothing identified, nothing saved. The kernel drives the MG90-scale R-L
 //! plant rig on the osc-dev-v006 sense chain (60 mohm, G 14.884).
 
-use osc_integration::plant::{BIAS, FakeIo, RlPlant, duty_of, kernel};
+use osc_integration::plant::{BIAS, FakeIo, RlPlant, TIMING, duty_of, kernel};
 use osc_integration::sim::{DEV_V006_SENSE as SENSE, DEV_V006_SENSE_EXT as SENSE_EXT};
 use osc_servo_core::regions::config::{DEFAULT_V_UNDERVOLT_MV, vmotor_counts};
 use osc_servo_core::{
@@ -34,7 +34,8 @@ fn virgin() -> Shared {
             SENSE.vdd_mv,
         ),
     );
-    sh.table.seed_calib_sense(&SENSE, &SENSE_EXT);
+    sh.table
+        .seed_calib_sense(&SENSE, &SENSE_EXT, TIMING.pwm_arr);
     sh.table.seed_current_bias(BIAS);
     sh.publish_data_state(ImageState::Virgin, ImageState::Virgin);
     sh.table

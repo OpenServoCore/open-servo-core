@@ -11,10 +11,21 @@ pub const CONFIG_COMMON_END: u16 = 0x020;
 pub const MODEL_NUMBER: u16 = 0x000;
 /// u16 RO - semver packed 5.5.6 (`version::pack_version`).
 pub const FIRMWARE_VERSION: u16 = 0x002;
-/// u32 RO -- reserved-slot extension signal; no bits defined yet.
+/// u32 RO - reserved-slot extension signal; bits below.
 pub const CAPABILITY_FLAGS: u16 = 0x004;
 /// u8 RO.
 pub const HARDWARE_REVISION: u16 = 0x008;
+/// u16 RO - sec 5.6 row widths: bit i set = `tel_mask` field i rides in 16
+/// bits, clear = 12; present under `CAP_TEL_ROWS`.
+pub const TEL_WIDE_FIELDS: u16 = 0x00A;
+/// u8 x `TEL_ROW_RATES` RO - sec 5.6 admission: the longest row, in bytes,
+/// a burst arms with at each `BaudRate` index; present under `CAP_TEL_ROWS`.
+pub const TEL_ROW_BYTES_MAX: u16 = 0x00C;
+pub const TEL_ROW_RATES: usize = 4;
+
+/// `CAPABILITY_FLAGS` bit 0: `TEL_WIDE_FIELDS` and `TEL_ROW_BYTES_MAX` are
+/// published.
+pub const CAP_TEL_ROWS: u32 = 1 << 0;
 /// u8 RW -- unicast address, 0x01..=0xF9 (sec 3.1).
 pub const ID: u16 = 0x010;
 /// u8 RW -- sec 2 rate index (`BaudRate` discriminant).

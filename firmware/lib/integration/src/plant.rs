@@ -19,6 +19,16 @@ use osc_servo_core::{
 /// Shunt zero-current offset the plant's current samples sit on.
 pub const BIAS: u16 = 2048;
 const ARR: u16 = 1200;
+
+/// A TEL duty in compare counts as the Q15 the table publishes.
+pub fn duty_q15(counts: i16) -> i16 {
+    (counts as i32 * i16::MAX as i32 / ARR as i32) as i16
+}
+
+/// A Q15 duty as the compare counts TEL carries at the plant's period.
+pub fn duty_counts(q15: i16) -> i16 {
+    osc_servo_core::tel::duty_counts(q15, ARR)
+}
 /// A non-unity rail scale (22k/10k tap over 20k/10k terminals), so the rig
 /// exercises the rescale.
 const VBUS_SCALE_Q15: u32 = 34952;

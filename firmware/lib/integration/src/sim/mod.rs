@@ -987,7 +987,7 @@ impl Sim {
             sn.ntc_raw = s.ntc_raw;
             let es = &mut tb.telemetry.estimates;
             es.vbus_counts = s.vbus;
-            es.duty_applied_q15 = s.duty_q15;
+            es.duty_applied_q15 = crate::plant::duty_q15(s.duty);
             es.i_hat_counts = s.current;
         });
     }

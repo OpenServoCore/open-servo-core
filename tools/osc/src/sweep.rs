@@ -338,6 +338,8 @@ pub(crate) struct Segment {
     pub(crate) seg: u32,
     pub(crate) dir: i8,
     pub(crate) cmd_duty_q15: i16,
+    /// The servo's PWM period: the full scale of the frames' duty counts.
+    pub(crate) pwm_period_ticks: u16,
     pub(crate) frames: Vec<TelFrame>,
     pub(crate) stats: BurstStats,
 }
@@ -570,7 +572,7 @@ fn rest<S: Servo>(s: &mut S, ms: u32) -> Result<()> {
     Ok(())
 }
 
-pub(crate) const CSV_HEADER: &str = "seg,cmd_duty_q15,dir,tick,window_valid,pos,current,current_trough,duty_q15,vdiff,vbus,current_raw,vmotor_a,vmotor_b,vbus_raw,ntc_raw,pos_lin";
+pub(crate) const CSV_HEADER: &str = "seg,cmd_duty_q15,dir,tick,window_valid,pos,current,current_trough,duty_counts,vdiff,vbus,current_raw,vmotor_a,vmotor_b,vbus_raw,ntc_raw,pos_lin";
 
 pub(crate) fn write_rows(w: &mut impl Write, s: &Segment) -> Result<()> {
     let opt = |v: Option<i32>| v.map(|v| v.to_string()).unwrap_or_default();
@@ -584,7 +586,7 @@ pub(crate) fn write_rows(w: &mut impl Write, s: &Segment) -> Result<()> {
             opt(f.pos.map(|v| v as i32)),
             opt(f.current.map(|v| v as i32)),
             opt(f.current_trough.map(|v| v as i32)),
-            opt(f.duty_q15.map(|v| v as i32)),
+            opt(f.duty_counts.map(|v| v as i32)),
             opt(f.vdiff.map(|v| v as i32)),
             opt(f.vbus.map(|v| v as i32)),
             opt(f.current_raw.map(|v| v as i32)),
@@ -648,14 +650,15 @@ pub(crate) fn meta<P: Pipe>(
 }
 
 /// What every recording's meta.json opens with: the servo, its tick rate
-/// and rail, the table it ran (`plant`), its sense constants, and the
-/// host build that drove it.
+/// and rail, the PWM period its duty counts are of, the table it ran
+/// (`plant`), its sense constants, and the host build that drove it.
 pub(crate) fn servo_meta<P: Pipe>(
     c: &mut Client<P>,
     id: Id,
 ) -> Result<serde_json::Map<String, serde_json::Value>> {
     let identity = c.identity(id)?;
     let tick_hz = read_u16(c, id, calib::TICK_HZ)?;
+    let pwm_period_ticks = read_u16(c, id, calib::PWM_PERIOD_TICKS)?;
     let tel = read_snapshot(c, id)?;
     let d = crate::state::descriptor(c, id)?;
     let plant = Snapshot::read(c, id, &d)?.json();
@@ -670,6 +673,7 @@ pub(crate) fn servo_meta<P: Pipe>(
     m.insert("model".into(), identity.model.into());
     m.insert("fw".into(), identity.fw.into());
     m.insert("tick_hz".into(), tick_hz.into());
+    m.insert("pwm_period_ticks".into(), pwm_period_ticks.into());
     m.insert("vbus_counts".into(), tel.vbus_counts.into());
     m.insert("plant".into(), plant);
     m.insert("sense".into(), sense);
@@ -760,6 +764,7 @@ fn chains<S: Servo>(
     on_seg: &mut impl FnMut(&Segment) -> Result<()>,
 ) -> Result<Vec<Segment>> {
     let mask = cfg.tel_mask;
+    let pwm_period_ticks = s.pwm_period_ticks()?;
     let seek_duty = pct_q15(cfg.seek_duty_pct);
     let seek_cap = pct_q15(cfg.seek_cap_pct) as i32;
     let mut segments = Vec::new();
@@ -790,6 +795,7 @@ fn chains<S: Servo>(
             seg: 0,
             dir: 0,
             cmd_duty_q15: 0,
+            pwm_period_ticks,
             frames,
             stats: st,
         })?;
@@ -897,6 +903,7 @@ fn chains<S: Servo>(
                         seg,
                         dir,
                         cmd_duty_q15: duty as i16,
+                        pwm_period_ticks,
                         frames,
                         stats: st,
                     };

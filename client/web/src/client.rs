@@ -19,7 +19,7 @@ use tsify::{Ts, Tsify};
 use wasm_bindgen::prelude::*;
 
 #[cfg(feature = "fake")]
-use osc_client::fake::{FakePipe, TelSample};
+use osc_client::fake::{FakePipe, TelSample, duty_counts};
 #[cfg(feature = "fake")]
 use osc_protocol::wire::UID_LEN;
 
@@ -450,7 +450,7 @@ fn track_rows(t: Track) -> Result<Vec<TelSample>, JsError> {
             pos: t.pos[i],
             current: t.current[i],
             current_trough: t.current_trough[i],
-            duty_q15: t.duty_q15[i],
+            duty: duty_counts(t.duty_q15[i]),
             vdiff: t.vdiff[i],
             vbus: t.vbus[i],
             current_raw: t.current_raw[i],

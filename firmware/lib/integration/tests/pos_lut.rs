@@ -603,8 +603,8 @@ fn endstop_trips_at_the_same_raw_counts_under_a_live_lut() {
 /// An always-armed sink; the kernel owns it, so the recording is shared.
 struct RecTel(Rc<RefCell<Vec<TelSample>>>);
 impl TelStream for RecTel {
-    fn active(&self) -> bool {
-        true
+    fn row_mask(&mut self) -> u16 {
+        osc_servo_core::tel::MASK_ALL
     }
     fn on_tick(&mut self, sample: &TelSample) {
         self.0.borrow_mut().push(*sample);

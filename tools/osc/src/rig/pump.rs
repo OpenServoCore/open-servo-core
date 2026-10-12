@@ -11,14 +11,14 @@ use anyhow::{Context, Result, bail};
 use osc_client::blocking::Client;
 use osc_client::nusb::NusbPipe;
 use osc_client::pipe::Pipe;
-use osc_client::{Id, Inst, Opcode, Outcome, ResultCode};
+use osc_client::{BaudRate, Id, Inst, Opcode, Outcome, ResultCode};
 use osc_ident::burst::{self, ArmSeen, BurstIo, Capture, CaptureCfg, Pre};
 use osc_ident::exp::{Cmd, Experiment};
 use osc_ident::frame::{StreamAssembler, TEL_MASK_ALL, TelBurst, TelFrame, TelemetrySnapshot};
 use osc_ident::limits::PermitLease;
 use osc_ident::regs::{Reg, calib, config, control, telemetry};
 use osc_ident::units::{self, SenseParams};
-use osc_protocol::{build, wire};
+use osc_protocol::{build, tel};
 
 use super::csvio::SnapshotLog;
 use super::servo::{SAFE, Servo, Wire};
@@ -172,11 +172,10 @@ pub(crate) struct BurstStats {
     pub(crate) rows_dropped: u16,
 }
 
-/// A `tel_mask` a burst can stream, or why not in words: reserved bits, no
-/// field, or more fields than the wire budget carries (protocol sec 5.6),
-/// with its arithmetic. The servo refuses the same masks at the write.
+/// A `tel_mask` a burst can stream, or why not in words: reserved bits or
+/// no field. Whether its row fits the line is the servo's call
+/// ([`admit_tel_mask`]).
 pub(crate) fn check_tel_mask(mask: u16) -> Result<u16> {
-    let (n, max) = (mask.count_ones(), wire::STREAM_FIELDS_MAX as u32);
     if mask & !TEL_MASK_ALL != 0 {
         bail!(
             "tel_mask {mask:#x} sets reserved bits {:#x}: the fields are bits 0..{}",
@@ -184,28 +183,42 @@ pub(crate) fn check_tel_mask(mask: u16) -> Result<u16> {
             TEL_MASK_ALL.count_ones() - 1
         );
     }
-    if n == 0 {
+    if mask == 0 {
         bail!("tel_mask 0 selects no field to stream");
     }
-    if n > max {
-        let (baud, hz) = (wire::STREAM_BUDGET_BAUD, wire::STREAM_BUDGET_TICK_HZ);
-        let window = wire::stream_window_bytes(baud, hz);
-        let bytes = |f: u32| wire::stream_frame_bytes(f as usize);
-        let pct = |f: u32| (bytes(f) * 100 + window / 2) / window;
+    Ok(mask)
+}
+
+/// The servo's TEL admission, read off its identity block: the line's rate
+/// and the longest row a burst arms with there (protocol sec 5.6).
+pub(crate) fn tel_row_limit<P: Pipe>(c: &mut Client<P>, id: Id) -> Result<(BaudRate, usize)> {
+    use osc_protocol::table::{BAUD_RATE_IDX, CAP_TEL_ROWS, CAPABILITY_FLAGS, TEL_ROW_BYTES_MAX};
+    let n = BAUD_RATE_IDX + 1 - CAPABILITY_FLAGS;
+    let raw = c.read(id, CAPABILITY_FLAGS, n).context("tel row limit")?;
+    let at = |addr: u16| raw.get((addr - CAPABILITY_FLAGS) as usize).copied();
+    let caps = u32::from_le_bytes(
+        raw.get(..4)
+            .and_then(|b| b.try_into().ok())
+            .unwrap_or([0; 4]),
+    );
+    if caps & CAP_TEL_ROWS == 0 {
+        bail!("the servo publishes no TEL row limits: its firmware predates packed TEL rows");
+    }
+    let idx = at(BAUD_RATE_IDX).context("short identity read")?;
+    let baud = BaudRate::from_idx(idx).with_context(|| format!("baud_rate_idx {idx}"))?;
+    let max = at(TEL_ROW_BYTES_MAX + idx as u16).context("short identity read")?;
+    Ok((baud, max as usize))
+}
+
+/// A `tel_mask` whose row the servo carries at `baud`, or why not in words.
+pub(crate) fn admit_tel_mask(mask: u16, baud: BaudRate, max: usize) -> Result<u16> {
+    let row = tel::row_bytes(check_tel_mask(mask)?);
+    if row > max {
         bail!(
-            "tel_mask {mask:#x} selects {n} fields; a TEL sample carries at most {max} \
-             (protocol sec 5.6). One sample streams per control tick, so a frame of {k} samples \
-             of {n} fields is {} wire bytes against the {window} byte-times {k} ticks leave at \
-             {} Mbaud and {} kHz ({}%), where a frame may take {}%; {max} fields are {} ({}%). \
-             Stream the fields over two bursts.",
-            bytes(n),
-            baud.as_hz() / 1_000_000,
-            hz / 1000,
-            pct(n),
-            wire::STREAM_LINE_PCT,
-            bytes(max),
-            pct(max),
-            k = wire::STREAM_SAMPLES_MAX,
+            "tel_mask {mask:#x} packs to {row} B rows; the servo streams rows of at most {max} B \
+             at {} kbaud (its tel_row_bytes_max, protocol sec 5.6). Raise the baud or stream \
+             the fields over two bursts.",
+            baud.as_hz() / 1000
         );
     }
     Ok(mask)
@@ -224,7 +237,8 @@ pub(crate) fn exchange_tel_burst<P: Pipe>(
     goal: Option<(Reg, i32)>,
     mask: u16,
 ) -> Result<(Vec<TelFrame>, BurstStats)> {
-    check_tel_mask(mask)?;
+    let (baud, max) = tel_row_limit(c, id)?;
+    admit_tel_mask(mask, baud, max)?;
     let window = stream_window(samples);
     c.set_guard(window + Duration::from_secs(1));
     let reply = match goal {
@@ -389,6 +403,8 @@ pub(crate) struct Pump<'a, S: Servo = Wire<&'a mut Client<NusbPipe>>> {
     pub(crate) tel: Vec<TelFrame>,
     /// The experiment writes its own permit; this only keeps it alive.
     lease: Lease,
+    /// The servo's PWM period, read at the first burst.
+    pwm_period_ticks: Option<u16>,
 }
 
 impl<'a> Pump<'a> {
@@ -409,6 +425,7 @@ impl<'a, S: Servo> Pump<'a, S> {
             mask: 0,
             tel: Vec::new(),
             lease: Lease::new(false),
+            pwm_period_ticks: None,
         }
     }
 
@@ -455,9 +472,14 @@ impl<'a, S: Servo> Pump<'a, S> {
                         "tel: {} frames, {} samples, {} seq holes, {} garble bytes, {} ring laps",
                         st.frames, st.samples, st.holes, st.garble, st.laps
                     );
+                    let pwm_period_ticks = match self.pwm_period_ticks {
+                        Some(p) => p,
+                        None => *self.pwm_period_ticks.insert(s.pwm_period_ticks()?),
+                    };
                     let tel = TelBurst {
                         frames,
                         rows_dropped: st.rows_dropped,
+                        pwm_period_ticks,
                     };
                     exp.push_tel(&tel);
                     self.tel.extend_from_slice(&tel.frames);
@@ -494,36 +516,89 @@ impl<'a, S: Servo> Pump<'a, S> {
 mod tests {
     use super::*;
 
-    /// The bench asked for 0x3db, eight fields: refused with the budget's
-    /// arithmetic, as is seven; six streams. osc-ident's mirror of the
-    /// budget is the protocol's.
+    /// Admission is the servo's row limit at the line's rate: the six raw
+    /// fields (9 B) stream at 3 M, not at 2 M; the ladder (7 B) at 2 M.
     #[test]
-    fn a_mask_over_the_wire_budget_says_why() {
-        let err = |m: u16| check_tel_mask(m).unwrap_err().to_string();
+    fn a_mask_over_the_servo_row_limit_says_why() {
+        let err = |m: u16, b, max| admit_tel_mask(m, b, max).unwrap_err().to_string();
         assert_eq!(
-            err(0x3db),
-            "tel_mask 0x3db selects 8 fields; a TEL sample carries at most 6 (protocol sec \
-             5.6). One sample streams per control tick, so a frame of 16 samples of 8 fields \
-             is 267 wire bytes against the 240 byte-times 16 ticks leave at 3 Mbaud and 20 \
-             kHz (111%), where a frame may take 95%; 6 fields are 203 (85%). Stream the \
+            err(0x1cd, BaudRate::B2000000, 8),
+            "tel_mask 0x1cd packs to 9 B rows; the servo streams rows of at most 8 B at 2000 \
+             kbaud (its tel_row_bytes_max, protocol sec 5.6). Raise the baud or stream the \
              fields over two bursts."
         );
-        assert!(err(0x7f).contains("selects 7 fields") && err(0x7f).contains("235 wire bytes"));
         assert_eq!(
-            err(0x1001),
+            admit_tel_mask(0x1cd, BaudRate::B3000000, 11).unwrap(),
+            0x1cd
+        );
+        assert_eq!(admit_tel_mask(0x1b, BaudRate::B2000000, 8).unwrap(), 0x1b);
+        assert!(err(0x1b, BaudRate::B1000000, 4).contains("packs to 7 B rows"));
+        assert_eq!(
+            err(0x1001, BaudRate::B3000000, 11),
             "tel_mask 0x1001 sets reserved bits 0x1000: the fields are bits 0..11"
         );
-        assert_eq!(err(0), "tel_mask 0 selects no field to stream");
-        assert_eq!(check_tel_mask(0x1cd).unwrap(), 0x1cd);
         assert_eq!(
-            osc_ident::frame::TEL_FIELDS_MAX,
-            wire::STREAM_FIELDS_MAX as u32
+            err(0, BaudRate::B3000000, 11),
+            "tel_mask 0 selects no field to stream"
         );
-        assert_eq!(osc_ident::frame::STREAM_HDR, wire::STREAM_HDR);
-        assert_eq!(
-            osc_ident::frame::STREAM_SAMPLES_MAX,
-            wire::STREAM_SAMPLES_MAX
+    }
+
+    /// The limit comes off the servo's own identity block at its own rate.
+    #[test]
+    fn the_row_limit_is_the_servos_at_its_rate() {
+        use osc_client::fake::FakePipe;
+        let pipe = FakePipe::new(BaudRate::B1000000, &[1]);
+        let (mut c, id) = (Client::connect(pipe).unwrap(), Id::new(1));
+        assert_eq!(tel_row_limit(&mut c, id).unwrap(), (BaudRate::B1000000, 4));
+        let Err(refused) = exchange_tel_burst(&mut c, id, 16, None, 0x1b) else {
+            panic!("a 7 B row armed at 1 M");
+        };
+        assert!(
+            refused.to_string().contains("at most 4 B at 1000 kbaud"),
+            "{refused}"
         );
+    }
+
+    /// A burst through the in-process servo stack decodes, field for field,
+    /// the rows its encoder packed from the sim's samples: the raw capture,
+    /// R/L and ladder masks at the rates that admit them.
+    #[test]
+    fn bursts_decode_what_the_servo_packed() {
+        use osc_client::fake::{FakePipe, tel_sample};
+        for (mask, baud) in [
+            (0x1cd, BaudRate::B3000000),
+            (0x3c9, BaudRate::B3000000),
+            (0x9cd, BaudRate::B3000000),
+            (0x1b, BaudRate::B2000000),
+            (0x81b, BaudRate::B3000000),
+        ] {
+            let pipe = FakePipe::new(baud, &[1]);
+            let (mut c, id) = (Client::connect(pipe).unwrap(), Id::new(1));
+            write_reg(&mut c, id, control::TEL_MASK, mask as i32).unwrap();
+            let (frames, st) = exchange_tel_burst(&mut c, id, 40, None, mask).unwrap();
+            assert_eq!((frames.len(), st.holes), (40, 0), "{mask:#x}");
+            for f in &frames {
+                let s = tel_sample(f.tick as u32);
+                let sel = |bit: u16| mask & bit != 0;
+                let want = TelFrame {
+                    tick: f.tick,
+                    window_valid: s.window_valid,
+                    pos: sel(tel::BIT_POS).then_some(s.pos),
+                    current: sel(tel::BIT_CURRENT).then_some(s.current),
+                    current_trough: sel(tel::BIT_CURRENT_TROUGH).then_some(s.current_trough),
+                    duty_counts: sel(tel::BIT_DUTY).then_some(s.duty),
+                    vdiff: sel(tel::BIT_VDIFF).then_some(s.vdiff),
+                    vbus: sel(tel::BIT_VBUS).then_some(s.vbus),
+                    current_raw: sel(tel::BIT_CURRENT_RAW).then_some(s.current_raw),
+                    vmotor_a: sel(tel::BIT_VMOTOR_A).then_some(s.vmotor_a),
+                    vmotor_b: sel(tel::BIT_VMOTOR_B).then_some(s.vmotor_b),
+                    vbus_raw: sel(tel::BIT_VBUS_RAW).then_some(s.vbus_raw),
+                    ntc_raw: sel(tel::BIT_NTC_RAW).then_some(s.ntc_raw),
+                    pos_lin: sel(tel::BIT_POS_LIN).then_some(s.pos_lin_q4),
+                };
+                assert_eq!(*f, want, "{mask:#x}");
+            }
+        }
     }
 
     #[test]

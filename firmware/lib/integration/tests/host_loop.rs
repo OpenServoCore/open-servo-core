@@ -336,8 +336,8 @@ fn a_stalled_host_poll_reports_the_tel_ring_lap() {
     assert_eq!(clean.outcome, Outcome::Complete);
     assert_eq!((clean.evidence.laps, clean.evidence.garble), (0, 0));
 
-    // 4 ms of a ~170 B/ms burst is more than the sim's 512 B ring.
-    let stalled = tel_burst_with_stalled_poll(4_000);
+    // 6 ms of a ~150 B/ms burst is more than the sim's 512 B ring.
+    let stalled = tel_burst_with_stalled_poll(6_000);
     assert_eq!(stalled.outcome, Outcome::Complete);
     assert_eq!(stalled.evidence.laps, 1);
     assert!(stalled.evidence.statuses < clean.evidence.statuses);

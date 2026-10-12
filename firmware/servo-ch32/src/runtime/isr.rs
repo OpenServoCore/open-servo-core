@@ -136,7 +136,7 @@ pub fn on_adc_dma_tc() {
         }
     }
 
-    // TEL burst (protocol sec 5.6): a six-field frame drains in ~690 us of
+    // TEL burst (protocol sec 5.6): the six raw fields' 155 B frame drains in ~520 us of
     // the 800 us its successor takes to fill, so a batch must stage within
     // a tick of banking or of the wire freeing; the main loop, starved by a
     // driving tick, staged up to 300 us late and the kernel dropped rows.

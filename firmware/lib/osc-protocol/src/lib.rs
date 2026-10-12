@@ -15,6 +15,7 @@ pub mod group;
 pub mod models;
 pub mod reply;
 pub mod table;
+pub mod tel;
 pub mod version;
 pub mod wire;
 

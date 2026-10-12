@@ -1,9 +1,9 @@
 //! TEL burst seam between the kernel fast tick (PFIC HIGH) and the bus-side
 //! frame stager (the transport ISRs, incl. the SW vector each tick pends).
 //! The two sides never share `&mut`: the channel is a pair of ping-pong
-//! payload buffers the kernel encodes into DIRECTLY -- each sample lands at
-//! its final wire offset via the core appenders, so no intermediate sample
-//! storage exists.
+//! payload buffers the kernel encodes into directly: each row lands at
+//! its final wire offset via the core row encoder, so no intermediate
+//! sample storage exists.
 //! Cross-side traffic is single-writer-per-field volatile load/store plus
 //! compiler fences at the buffer handoffs (single core, no atomic RMW on
 //! rv32ec).
@@ -17,7 +17,7 @@ use core::cell::SyncUnsafeCell;
 use core::sync::atomic::{Ordering, compiler_fence};
 
 use osc_servo_core::tel::{
-    STREAM_HDR, STREAM_PAYLOAD_MAX, STREAM_SAMPLES_MAX, TelSample, TelStream, encode_sample,
+    RowPlan, STREAM_HDR, STREAM_PAYLOAD_MAX, STREAM_SAMPLES_MAX, TelSample, TelStream,
     encode_stream_hdr,
 };
 
@@ -48,6 +48,8 @@ pub struct TelChannel {
     /// Burst gate the producer polls each tick.
     active: SyncUnsafeCell<bool>,
     arm_mask: SyncUnsafeCell<u16>,
+    /// The mask's row, planned at the arm so the kernel only copies it.
+    arm_plan: SyncUnsafeCell<RowPlan>,
     arm_count: SyncUnsafeCell<u16>,
     /// Mailbox epoch, written last (fence-ordered), never 0; the kernel
     /// double-reads it around the payload to reject a torn pickup.
@@ -71,6 +73,7 @@ impl TelChannel {
             ready: [SyncUnsafeCell::new(0), SyncUnsafeCell::new(0)],
             active: SyncUnsafeCell::new(false),
             arm_mask: SyncUnsafeCell::new(0),
+            arm_plan: SyncUnsafeCell::new(RowPlan::EMPTY),
             arm_count: SyncUnsafeCell::new(0),
             arm_seq: SyncUnsafeCell::new(0),
             drops: SyncUnsafeCell::new(0),
@@ -97,6 +100,7 @@ impl TelChannel {
             TelFeed {
                 ch: self,
                 mask: 0,
+                plan: RowPlan::EMPTY,
                 remaining: 0,
                 seq: 0,
                 epoch: 0,
@@ -116,6 +120,7 @@ impl TelChannel {
 pub struct TelFeed {
     ch: &'static TelChannel,
     mask: u16,
+    plan: RowPlan,
     remaining: u16,
     seq: u8,
     /// Arm epoch this burst produces under (`arm_seq` at pickup).
@@ -128,49 +133,63 @@ pub struct TelFeed {
 }
 
 impl TelFeed {
+    /// The bus-side burst gate, as the feed sees it.
+    pub fn active(&self) -> bool {
+        self.ch.active()
+    }
+
     /// Consume a posted arm: seq moved and the payload read back consistent
     /// (a torn read -- the mailbox rewritten mid-pickup -- retries next
     /// tick). A pickup resets the whole encoder.
     fn poll_arm(&mut self) {
+        // SAFETY: bus-written mailbox seq, volatile-read (type doc).
+        let seq = unsafe { self.ch.arm_seq.get().read_volatile() };
+        if seq != self.epoch {
+            self.pickup(seq);
+        }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn pickup(&mut self, seq: u8) {
         let ch = self.ch;
         // SAFETY: mailbox fields are bus-written, volatile-read here; the
         // seq double-read brackets the payload (type doc).
-        unsafe {
-            let seq = ch.arm_seq.get().read_volatile();
-            if seq == self.epoch {
-                return;
-            }
+        let (mask, plan, count) = unsafe {
             let mask = ch.arm_mask.get().read_volatile();
+            let plan = ch.arm_plan.get().read_volatile();
             let count = ch.arm_count.get().read_volatile();
             if ch.arm_seq.get().read_volatile() != seq {
                 return;
             }
-            self.epoch = seq;
-            self.mask = mask;
-            // Belt to the table rule's suspenders: an invalid mask parks
-            // the burst instead of overrunning the fixed payload buffers.
-            self.remaining = if osc_servo_core::tel::mask_valid(mask) {
-                count
-            } else {
-                0
-            };
-            self.seq = 0;
-            self.idx = 0;
-            self.at = STREAM_HDR;
-            self.n = 0;
-            self.valid = 0;
-            self.alert = false;
-        }
+            (mask, plan, count)
+        };
+        self.epoch = seq;
+        self.mask = mask;
+        self.plan = plan;
+        self.remaining = if plan.is_empty() { 0 } else { count };
+        self.seq = 0;
+        self.idx = 0;
+        self.at = STREAM_HDR;
+        self.n = 0;
+        self.valid = 0;
+        self.alert = false;
     }
 }
 
 impl TelStream for TelFeed {
-    fn active(&self) -> bool {
-        self.ch.active()
+    fn row_mask(&mut self) -> u16 {
+        if !self.ch.active() {
+            return 0;
+        }
+        self.poll_arm();
+        if self.remaining == 0 { 0 } else { self.mask }
     }
 
+    /// Out of line: the row's whole cost is its own, one call from the
+    /// kernel, never the kernel's register pressure.
+    #[inline(never)]
     fn on_tick(&mut self, sample: &TelSample) {
-        self.poll_arm();
         if self.remaining == 0 {
             return;
         }
@@ -178,7 +197,7 @@ impl TelStream for TelFeed {
         let idx = self.idx & 1;
         // SAFETY: single-writer discipline (type doc). The buffer `&mut` is
         // exclusive while its ready tag is 0 (the bus touches only tagged
-        // buffers); the tag store is fenced behind the payload writes.
+        // buffers).
         unsafe {
             if ch.ready[idx].get().read_volatile() != 0 {
                 // Consumer stalled: never block the fast tick.
@@ -186,38 +205,52 @@ impl TelStream for TelFeed {
                 d.write_volatile(d.read_volatile().wrapping_add(1));
                 return;
             }
-            let buf = &mut *ch.bufs[idx].get();
-            if sample.window_valid {
-                self.valid |= 1 << self.n;
-            }
+            let at = self.at;
+            self.at = at + self.plan.len();
+            self.valid |= (sample.window_valid as u16) << self.n;
             self.alert |= sample.fault;
-            self.at = encode_sample(self.mask, sample, buf, self.at);
             self.n += 1;
             self.remaining -= 1;
-            if self.n as usize == STREAM_SAMPLES_MAX || self.remaining == 0 {
-                let last = self.remaining == 0;
-                encode_stream_hdr(self.seq, last, self.valid, buf);
-                ch.meta[idx].get().write_volatile(BufMeta {
-                    len: self.at as u16,
-                    alert: self.alert,
-                    last,
-                });
-                // A re-arm that landed mid-batch abandons the batch: its
-                // pickup next tick restarts the encoder, and the epoch tag
-                // would be dead at the bus anyway.
-                if ch.arm_seq.get().read_volatile() == self.epoch {
-                    compiler_fence(Ordering::Release);
-                    ch.ready[idx].get().write_volatile(self.epoch);
-                    crate::bench::tel_banked();
-                    self.seq = self.seq.wrapping_add(1);
-                    self.idx ^= 1;
-                }
-                self.at = STREAM_HDR;
-                self.n = 0;
-                self.valid = 0;
-                self.alert = false;
+            if let Some(row) = (*ch.bufs[idx].get()).get_mut(at..) {
+                self.plan.encode(sample, row);
             }
         }
+        if self.n as usize == STREAM_SAMPLES_MAX || self.remaining == 0 {
+            self.bank(idx);
+        }
+    }
+}
+
+impl TelFeed {
+    /// Close the batch in buffer `idx`: header, metadata, then its ready tag.
+    #[inline(never)]
+    fn bank(&mut self, idx: usize) {
+        let ch = self.ch;
+        let last = self.remaining == 0;
+        // SAFETY: single-writer discipline (type doc); the tag store is
+        // fenced behind the payload and metadata writes.
+        unsafe {
+            encode_stream_hdr(self.seq, last, self.valid, &mut *ch.bufs[idx].get());
+            ch.meta[idx].get().write_volatile(BufMeta {
+                len: self.at as u16,
+                alert: self.alert,
+                last,
+            });
+            // A re-arm that landed mid-batch abandons the batch: its
+            // pickup next tick restarts the encoder, and the epoch tag
+            // would be dead at the bus anyway.
+            if ch.arm_seq.get().read_volatile() == self.epoch {
+                compiler_fence(Ordering::Release);
+                ch.ready[idx].get().write_volatile(self.epoch);
+                crate::bench::tel_banked();
+                self.seq = self.seq.wrapping_add(1);
+                self.idx ^= 1;
+            }
+        }
+        self.at = STREAM_HDR;
+        self.n = 0;
+        self.valid = 0;
+        self.alert = false;
     }
 }
 
@@ -227,13 +260,17 @@ pub struct TelDrain {
 }
 
 impl TelDrain {
-    /// Post an arm to the kernel side; returns its epoch (never 0).
+    /// Post an arm to the kernel side; returns its epoch (never 0). A mask
+    /// with no row in the buffers posts an empty plan, which parks the
+    /// burst instead of overrunning them.
     pub(crate) fn send_arm(&mut self, mask: u16, count: u16) -> u8 {
         let ch = self.ch;
+        let plan = RowPlan::new(mask).unwrap_or(RowPlan::EMPTY);
         // SAFETY: sole mailbox writer (type doc); payload lands before the
         // fenced seq store the kernel keys on.
         unsafe {
             ch.arm_mask.get().write_volatile(mask);
+            ch.arm_plan.get().write_volatile(plan);
             ch.arm_count.get().write_volatile(count);
             let mut seq = ch.arm_seq.get().read_volatile().wrapping_add(1);
             if seq == 0 {
@@ -299,6 +336,13 @@ mod tests {
     use osc_servo_core::tel::{FLAG_LAST, encode_stream};
     const MASK_SIX: u16 = 0x3F;
 
+    /// The kernel's per-tick sequence: ask for the row, then hand it over.
+    fn tick(feed: &mut TelFeed, s: &TelSample) {
+        if feed.row_mask() != 0 {
+            feed.on_tick(s);
+        }
+    }
+
     fn leaked() -> &'static TelChannel {
         std::boxed::Box::leak(std::boxed::Box::new(TelChannel::new()))
     }
@@ -339,7 +383,7 @@ mod tests {
         let epoch = arm(&mut drain, MASK_SIX, 20);
         let samples: std::vec::Vec<TelSample> = (0..20).map(sample).collect();
         for s in &samples {
-            feed.on_tick(s);
+            tick(&mut feed, s);
         }
 
         let mut want = [0u8; STREAM_PAYLOAD_MAX];
@@ -361,7 +405,7 @@ mod tests {
         let (mut feed, mut drain) = ch.split();
         let epoch = arm(&mut drain, MASK_SIX, 200);
         for i in 0..37 {
-            feed.on_tick(&sample(i));
+            tick(&mut feed, &sample(i));
         }
         // both buffers ready, 5 samples dropped against them
         assert_eq!(ch.drops(), 5);
@@ -369,7 +413,7 @@ mod tests {
         assert!(drain.ready(0, epoch).is_some());
         drain.release(0);
         for i in 0..16 {
-            feed.on_tick(&sample(100 + i));
+            tick(&mut feed, &sample(100 + i));
         }
         assert_eq!(ch.drops(), 5);
         let m = drain.ready(0, epoch).expect("refilled batch");
@@ -381,7 +425,7 @@ mod tests {
         let (mut feed, mut drain) = channel();
         let e1 = arm(&mut drain, MASK_SIX, 16);
         for i in 0..16 {
-            feed.on_tick(&sample(i));
+            tick(&mut feed, &sample(i));
         }
         assert!(drain.ready(0, e1).is_some());
 
@@ -389,7 +433,7 @@ mod tests {
         let e2 = arm(&mut drain, MASK_SIX, 5);
         assert!(drain.ready(0, e2).is_none(), "old epoch discarded");
         for i in 0..5 {
-            feed.on_tick(&sample(50 + i));
+            tick(&mut feed, &sample(50 + i));
         }
         let m = drain.ready(0, e2).expect("fresh burst lands in buffer 0");
         assert!(m.last);
@@ -403,13 +447,13 @@ mod tests {
         let (mut feed, mut drain) = ch.split();
         arm(&mut drain, MASK_SIX, 32);
         for i in 0..4 {
-            feed.on_tick(&sample(i));
+            tick(&mut feed, &sample(i));
         }
         let e = drain.send_arm(MASK_SIX, 0);
         drain.clear_ready();
         drain.set_active(false);
         for i in 0..40 {
-            feed.on_tick(&sample(i));
+            tick(&mut feed, &sample(i));
         }
         assert!(drain.ready(0, e).is_none());
         assert!(drain.ready(1, e).is_none());

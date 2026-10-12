@@ -63,19 +63,21 @@ pub fn frame_crc_ok(frame: &WireFrame) -> bool {
 /// Deterministic fast-tick sample for per-burst tick `i` -- the pump feeds
 /// these, so tests compute expected payload bytes from the same function.
 pub fn tel_sample(i: u32) -> TelSample {
+    // 12-bit fields stay inside 12 bits, as ADC codes and duty counts do
+    let raw = |base: u16| base | (i as u16 & 0xFF);
     TelSample {
-        pos: 0x4000u16.wrapping_add(i as u16),
+        pos: raw(0x400),
         current: -(i as i16) - 1,
-        current_trough: 0xB000u16.wrapping_add(i as u16),
-        duty_q15: 0x2000i16.wrapping_add(i as i16),
+        current_trough: raw(0xB00),
+        duty: (i % 2401) as i16 - 1200,
         vdiff: (-300i16).wrapping_sub(i as i16),
         vbus: 1800u16.wrapping_add(i as u16),
-        current_raw: 0x0100u16.wrapping_add(i as u16),
-        vmotor_a: 0x0A00u16.wrapping_add(i as u16),
-        vmotor_b: 0x0B00u16.wrapping_add(i as u16),
-        vbus_raw: 0x0C00u16.wrapping_add(i as u16),
-        ntc_raw: 0x0D00u16.wrapping_add(i as u16),
-        pos_lin_q4: 0x0E00u16.wrapping_add(i as u16),
+        current_raw: raw(0x100),
+        vmotor_a: raw(0xA00),
+        vmotor_b: raw(0x600),
+        vbus_raw: raw(0xC00),
+        ntc_raw: raw(0xD00),
+        pos_lin_q4: 0x4000u16.wrapping_add(i as u16),
         window_valid: i.is_multiple_of(2),
         fault: false,
     }

@@ -53,7 +53,7 @@ const STEP_HOLD: Duration = Duration::from_millis(400);
 const WINDOW: Duration = Duration::from_secs(10);
 const STEP_WINDOW: Duration = Duration::from_secs(20);
 const CENTRE_SETTLE: Duration = Duration::from_millis(500);
-/// The bench soaks' six-field mask (202 B frames at 3M).
+/// The bench soaks' six raw fields: 9 B rows, 155 B frames at 3M.
 const SIX_FIELDS: u16 = 0x1cd;
 const TEL_ROWS: u16 = 4000;
 const TEL_BURSTS: u32 = 10;

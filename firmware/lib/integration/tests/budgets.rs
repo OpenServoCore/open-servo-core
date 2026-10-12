@@ -19,7 +19,7 @@ use osc_servo_core::regions::control::addr::lifecycle::{GOAL_POSITION, TEL_COUNT
 const ID: u8 = 1;
 const START_US: u64 = 1_000;
 
-/// The six-field mask of the bench soaks: a 202 B frame per 16-row batch.
+/// The six raw fields of the bench soaks: a 155 B frame per 16-row batch.
 const SIX_FIELDS: u16 = 0x1cd;
 const BURST_ROWS: u16 = 4000;
 

@@ -128,6 +128,16 @@ pub struct CalibThermal {
     pub ntc_k2_q24: u16,
 }
 
+/// TIM1's period in compare counts, stamped at install from the constant
+/// that programs it: the full scale of TEL `duty` (sec 5.6) and of the
+/// window floors.
+#[repr(C)]
+#[derive(Copy, Clone, Block)]
+pub struct CalibPwm {
+    #[ct_field(access = ro)]
+    pub pwm_period_ticks: u16,
+}
+
 /// The plant stamp (`stamp` module): the host's CRC over the identified and
 /// calibrated set plus the effective position table, 0 = never stamped.
 /// Firmware recomputes it at every checkpoint; a mismatch is
@@ -156,6 +166,7 @@ pub struct CalibRegs {
     pub stamp: CalibStamp,
     pub sense_ext: CalibSenseExt,
     pub thermal: CalibThermal,
+    pub pwm: CalibPwm,
     #[ct_section(skip)]
-    pub _rsvd_tail: [u8; 176],
+    pub _rsvd_tail: [u8; 174],
 }
