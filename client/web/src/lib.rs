@@ -72,9 +72,50 @@ pub fn pos_lut_state_name(state: u8) -> Option<String> {
     osc_client::pos_lut::state::name(state).map(String::from)
 }
 
+/// Bytes one TEL row of `mask` takes on the wire (protocol sec 5.6).
+#[wasm_bindgen(js_name = telRowBytes)]
+pub fn tel_row_bytes(mask: u16) -> u32 {
+    osc_protocol::tel::row_bytes(mask) as u32
+}
+
+/// One packed TEL row's fields by `tel_mask` bit index, the signed ones
+/// sign-extended, 0 where unselected (protocol sec 5.6); undefined when
+/// `row` is short.
+#[wasm_bindgen(js_name = telDecodeRow)]
+pub fn tel_decode_row(mask: u16, row: &[u8]) -> Option<Vec<i32>> {
+    use osc_protocol::tel::{SIGNED, decode_row};
+    let fields = decode_row(mask, row)?;
+    Some(
+        fields
+            .iter()
+            .enumerate()
+            .map(|(i, &v)| {
+                if SIGNED & (1 << i) != 0 {
+                    v as i16 as i32
+                } else {
+                    v as i32
+                }
+            })
+            .collect(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The protocol's golden row: a lone 12-bit field in a slot, wide
+    /// signed fields, a 12-bit signed duty paired with ntc_raw.
+    #[test]
+    fn tel_rows_decode_signed_by_bit() {
+        use osc_protocol::tel::{BIT_CURRENT, BIT_DUTY, BIT_NTC_RAW, BIT_POS, BIT_VDIFF};
+        let mask = BIT_POS | BIT_CURRENT | BIT_DUTY | BIT_VDIFF | BIT_NTC_RAW;
+        let row = [0x23, 0x01, 0xFE, 0xFF, 0xD4, 0xFE, 0xFB, 0xCF, 0xAB];
+        assert_eq!(tel_row_bytes(mask), 9);
+        let f = tel_decode_row(mask, &row).unwrap();
+        assert_eq!(f, [0x123, -2, 0, -5, -300, 0, 0, 0, 0, 0, 0xABC, 0]);
+        assert_eq!(tel_decode_row(mask, &row[..8]), None);
+    }
 
     #[test]
     fn pos_lut_mirrors_state_and_points() {
