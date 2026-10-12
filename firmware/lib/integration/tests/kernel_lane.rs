@@ -507,19 +507,23 @@ fn tel_widest_row_fits_at_budget_while_stepping() {
 /// The six raw fields and the widest row each rate admits, stepping at
 /// budget: a frame the DMA reads ahead of its rows' writes ships stale
 /// bytes and fails its CRC, so a clean stream with nothing dropped is a
-/// lane that never underran.
+/// lane that never underran. 0.5 M admits no field.
 #[test]
 fn tel_kernel_lane_never_underruns_at_budget() {
-    use osc_servo_core::tel::{BIT_CURRENT, BIT_CURRENT_RAW, BIT_POS, BIT_VBUS, BIT_VDIFF};
-    use osc_servo_core::tel::{BIT_POS_LIN, row_bytes, row_bytes_max};
-    let wide = BIT_CURRENT | BIT_VDIFF | BIT_VBUS | BIT_POS_LIN;
-    for (rate, mask) in [
-        (BaudRate::B3000000, SIX_FIELDS),
-        (BaudRate::B3000000, WIDEST_ROW),
-        (BaudRate::B2000000, wide),
-        (BaudRate::B1000000, BIT_POS | BIT_CURRENT_RAW),
+    use osc_servo_core::tel::{BIT_CURRENT, BIT_CURRENT_RAW, BIT_DUTY, BIT_POS, BIT_VDIFF};
+    use osc_servo_core::tel::{MASK_ALL, admits, row_bytes, row_bytes_max};
+    assert!((0..=MASK_ALL).all(|m| !admits(m, BaudRate::B500000)));
+    let ladder = BIT_POS | BIT_CURRENT | BIT_DUTY | BIT_VDIFF;
+    for (rate, mask, widest) in [
+        (BaudRate::B3000000, SIX_FIELDS, false),
+        (BaudRate::B3000000, WIDEST_ROW, true),
+        (BaudRate::B2000000, ladder, true),
+        (BaudRate::B1000000, BIT_POS | BIT_CURRENT_RAW, true),
     ] {
-        assert!(row_bytes(mask) <= row_bytes_max(rate), "{rate:?}");
+        assert!(admits(mask, rate), "{rate:?}");
+        if widest {
+            assert_eq!(row_bytes(mask), row_bytes_max(rate), "{rate:?}");
+        }
         for k in (0..STARTS).step_by(4) {
             let (frames, drops) = tel_burst_at(rate, mask, Motion::Moving, k);
             let stream: Vec<_> = frames

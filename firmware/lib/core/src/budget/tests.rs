@@ -144,42 +144,25 @@ fn entry_lateness_is_measured_from_the_grid_and_the_last_end() {
 }
 
 #[test]
-fn bus_frames_fold_at_breaks_and_at_starts_after_the_reply() {
+fn bus_frames_fold_at_breaks() {
     let mut b = BusProbe::ZERO;
     b.mark_break();
     b.body(100, 100, 0, Body::BreakWake);
-    b.mark_start();
     b.body(200, 200, 0, Body::Deadline);
     b.body(50, 50, 0, Body::TxDone);
-    b.mark_start();
-    b.body(300, 300, 0, Body::TelStage);
     b.body(40, 40, 0, Body::TxDone);
-    b.body(10, 10, 0, Body::TelStage);
-    b.mark_start();
-    b.body(60, 60, 0, Body::TxDone);
     b.mark_break();
     b.body(90, 90, 0, Body::BreakWake);
     assert_eq!(
         b.host,
         Load {
             n: 1,
-            sum: 350,
-            max: 350
+            sum: 390,
+            max: 390
         },
         "the reply stays in its frame"
     );
-    assert_eq!(
-        b.tel,
-        Load {
-            n: 2,
-            sum: 410,
-            max: 350
-        },
-        "staged, then chained from a TX done"
-    );
-    assert_eq!(b.body[Body::TelStage as usize].n, 1);
-    assert_eq!(b.body[Body::TelPoll as usize].max, 10);
-    assert_eq!(b.body[Body::TxDone as usize].n, 3);
+    assert_eq!(b.body[Body::TxDone as usize].n, 2);
 }
 
 /// A bus body subtracts every kernel vector that ran inside it, each with
@@ -199,9 +182,9 @@ fn a_bus_body_nets_out_each_kernel_vector_with_its_entry_and_exit() {
     let nested = k.entries.wrapping_sub(entries);
     assert_eq!(nested, 2);
     let mut b = BusProbe::ZERO;
-    b.body(net, wall, nested, Body::TelStage);
-    b.body(10, wall + 1000, 5, Body::TelStage);
-    let i = Body::TelPoll as usize;
+    b.body(net, wall, nested, Body::TxDone);
+    b.body(10, wall + 1000, 5, Body::TxDone);
+    let i = Body::TxDone as usize;
     assert_eq!(
         (b.body[i].max, b.wall[i], b.nested[i]),
         (net, wall, nested),
@@ -235,7 +218,6 @@ fn exchange(b: &mut BusProbe) {
     b.mark_break();
     b.body(100, 100, 0, Body::BreakWake);
     b.mark_dispatch();
-    b.mark_start();
     b.body(200, 200, 0, Body::Deadline);
     b.body(50, 50, 0, Body::TxDone);
     b.body(50, 50, 0, Body::TxDone);
@@ -258,14 +240,6 @@ fn a_window_closes_its_last_frame_at_the_dump() {
         }
     );
     assert_eq!(b.closed().host.n, 5, "closing twice adds nothing");
-    let mut t = BusProbe::ZERO;
-    exchange(&mut t);
-    for _ in 0..3 {
-        t.mark_start();
-        t.body(300, 300, 0, Body::TelStage);
-    }
-    let t = t.closed();
-    assert_eq!((t.host.n, t.tel.n), (1, 3));
 }
 
 #[test]
@@ -273,7 +247,6 @@ fn a_wake_that_dispatches_books_as_frame_service() {
     let mut b = BusProbe::ZERO;
     b.mark_break();
     b.mark_dispatch();
-    b.mark_start();
     b.body(2500, 2500, 0, Body::BreakWake);
     b.mark_break();
     b.body(700, 700, 0, Body::BreakWake);

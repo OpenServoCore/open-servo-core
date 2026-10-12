@@ -207,14 +207,6 @@ pub struct WireShared {
     /// here so arms sit back-to-back on the wire (sec 4.2 tolerates the
     /// re-arm gap).
     end: Cell<u64>,
-    /// Frame breaks the bus's handle sent.
-    starts: Cell<u64>,
-}
-
-impl WireShared {
-    pub fn starts(&self) -> u64 {
-        self.starts.get()
-    }
 }
 
 /// The TEL lane's wire and CRC-engine operations so far, counted where the
@@ -485,7 +477,6 @@ impl SimWire {
 
 impl TxWire for SimWire {
     fn start_frame(&mut self) {
-        bump(&self.shared.starts);
         self.put_break();
     }
 

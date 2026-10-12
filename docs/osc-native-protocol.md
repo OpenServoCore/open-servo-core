@@ -672,9 +672,10 @@ included), not by field count: an arm whose row is longer than
 `tel_row_bytes_max` for that rate disarms instead of streaming. The
 write itself acks (the ack precedes the commit that arms), so a host
 checks the register first. The bound is the shorter of the wire's - a
-full frame must clear the wire inside 95% of its own 16-tick window: 13
-B at 3 M, 8 at 2 M, 3 at 1 M, none at 0.5 M - and the servo's, the
-longest row it encodes and stages at the tick rate (osc-servo: 11 B).
+full frame, break to CRC, must clear the wire inside its own 16-tick
+window less the two ticks the servo's TX lane spends between frames: 12
+B at 3 M, 7 at 2 M, 3 at 1 M, 1 at 0.5 M, where no field fits - and the
+servo's, the longest row it encodes at the tick rate (osc-servo: 11 B).
 2 M carries the ladder's four fields (7 B); the six raw fields need 3 M.
 An arm parks the same way while a shunt burst is armed or capturing
 (osc-servo, sec 5.8): the two share the ADC, and a shunt arm in turn
