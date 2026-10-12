@@ -177,13 +177,15 @@ pub struct TelCosts {
 }
 
 /// Event bodies on top of the tick that carries them, HCLK ticks: the SLOW
-/// block on phase SLOW every DECIM_SLOW periods (by regime), and the
+/// block on phase SLOW every DECIM_SLOW periods (by regime), the
+/// thermometer's side work on phase THERM_SIDE before and after it, and the
 /// tick-load close every [`budget::HEALTH_CLOSE_TICKS`] ticks, with the
-/// catch-up when a tick was lost since the last one. The close lands on the
-/// SLOW tick: the critical instant.
+/// catch-up when a tick was lost since the last one. The close lands on
+/// the SLOW tick: the critical instant.
 #[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
 pub struct KernelEvents {
     pub slow_due: [u64; 2],
+    pub side: u64,
     pub health_close: u64,
     pub catch_up: u64,
 }
@@ -205,6 +207,7 @@ impl KernelLane {
             },
             events: KernelEvents {
                 slow_due: budget::SLOW_DUE.map(u64::from),
+                side: budget::THERM_SIDE as u64,
                 health_close: budget::HEALTH_CLOSE as u64,
                 catch_up: budget::CATCH_UP as u64,
             },
@@ -222,10 +225,9 @@ impl KernelLane {
         let ev = &self.events;
         let busy = phases.iter().sum::<u64>() + ev.health_close;
         let span = phases.len() as u64 * KERNEL_PERIOD;
-        let slow = phases
-            .get(phase::SLOW as usize)
-            .map_or(0, |b| b + ev.slow_due[r]);
-        let longest = phases.iter().copied().max().unwrap_or(0).max(slow);
+        let at = |p: u8, extra: u64| phases.get(p as usize).map_or(0, |b| b + extra);
+        let events = at(phase::SLOW, ev.slow_due[r]).max(at(phase::THERM_SIDE, ev.side));
+        let longest = phases.iter().copied().max().unwrap_or(0).max(events);
         let longest = longest + ev.health_close + ev.catch_up;
         ((bus + longest) * span).div_ceil(span.saturating_sub(busy).max(1))
     }
@@ -593,9 +595,13 @@ impl Cpu {
             cost = lo + k.rng % (cost - lo + 1);
         }
         let ev = k.lane.events;
-        if k.phase == phase::SLOW as usize && k.periods.is_multiple_of(DECIM_SLOW as u64) {
-            cost += ev.slow_due[r];
-        }
+        let slow = DECIM_SLOW as u64;
+        let due = k.periods.is_multiple_of(slow);
+        cost += match k.phase as u8 {
+            phase::SLOW if due => ev.slow_due[r],
+            phase::THERM_SIDE if due || (k.periods + 1).is_multiple_of(slow) => ev.side,
+            _ => 0,
+        };
         let close = budget::HEALTH_CLOSE_TICKS as u64;
         if (tick + close - phase::SLOW as u64).is_multiple_of(close) {
             cost += ev.health_close;

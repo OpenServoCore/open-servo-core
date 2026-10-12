@@ -36,8 +36,10 @@ pub mod phase {
     pub const SLOW: u8 = 6;
     /// Estimates, mode, limits and sensors publish.
     pub const PUBLISH: u8 = 7;
-    /// Phases in use; the rest of the period is free.
-    pub const COUNT: u8 = 8;
+    /// Either side of a SLOW tick: the NTC the period before it, the
+    /// derate from its temperature after it. A stage whose phase another
+    /// stage takes waits a period: its pending bit carries it.
+    pub const THERM_SIDE: u8 = 9;
 }
 
 /// One read of CONTROL.
@@ -163,9 +165,11 @@ impl Medium {
         }
     }
 
-    /// First tick: the observer starts at the measurement.
-    pub fn seed(&mut self, pos_q4: u16) {
+    /// First tick: the observer starts at the measurement, the
+    /// thermometer at the NTC ahead of the first SLOW tick.
+    pub fn seed(&mut self, pos_q4: u16, ntc_raw: u16, cfg: &KernelConfig) {
         self.fusion.seed(pos_q4);
+        self.thermal.ntc(ntc_raw, &cfg.medium.therm);
     }
 
     /// Phase `k` of the medium chain (`phase`), on this tick's sample.
@@ -188,9 +192,13 @@ impl Medium {
             phase::LIMITS => self.limit(cfg, shared, faults, fast),
             phase::VELOCITY => self.velocity(cfg, cmd),
             phase::RAIL => self.rail(frame, cfg, faults, cmd),
-            phase::SLOW => self.slow(frame, m, cfg, faults),
+            phase::SLOW => self.slow(m, cfg, faults),
             phase::PUBLISH => self.publish(frame, shared, faults, fast),
-            _ => {}
+            _ => {
+                if self.thermal.pending() != 0 {
+                    self.spare(k, frame.ntc_raw, cfg);
+                }
+            }
         }
     }
 
@@ -514,16 +522,13 @@ impl Medium {
     }
 
     /// SLOW, every DECIM_SLOW periods: the permit lease, the thermometer on
-    /// this tick's window, the derate, overtemperature and undervoltage.
-    fn slow(
-        &mut self,
-        frame: &SensorFrame,
-        m: &Measured,
-        cfg: &KernelConfig,
-        faults: &mut FaultLatch,
-    ) {
+    /// this tick's window, overtemperature and undervoltage.
+    fn slow(&mut self, m: &Measured, cfg: &KernelConfig, faults: &mut FaultLatch) {
         self.slow_periods += 1;
         if self.slow_periods < DECIM_SLOW {
+            if self.slow_periods == DECIM_SLOW - 1 {
+                self.thermal.request(thermal::stage::NTC);
+            }
             return;
         }
         self.slow_periods = 0;
@@ -544,12 +549,13 @@ impl Medium {
                 omega_hat_cps: self.fusion.omega_q16() >> 16,
                 ke_vpc_q: fc.current.ke_q412,
                 pos_counts: self.fusion.theta_q16() >> 16,
-                ntc_raw: frame.ntc_raw,
             },
             &mc.therm,
         );
-        // UNSET_CC sits under every threshold: no derate, no cutoff
-        self.limits.update_derate(t_cc, &mc.limits);
+        // the fold reads the derate from the next period's LIMITS on, so it
+        // waits for THERM_SIDE; UNSET_CC sits under every threshold: no
+        // derate, no cutoff
+        self.thermal.request(thermal::stage::DERATE);
         if t_cc >= mc.limits.cutoff_cc {
             faults.raise(faults::BIT_OVER_TEMP, faults::CODE_OVER_TEMP);
         }
@@ -557,6 +563,17 @@ impl Medium {
         // sag itself: ack clears once the rail is back
         if self.vbus.vbus_counts() < fc.v_undervolt_counts {
             faults.raise(faults::BIT_UNDER_VOLT, faults::CODE_UNDER_VOLT);
+        }
+    }
+
+    /// THERM_SIDE, while the thermometer has work.
+    fn spare(&mut self, k: u8, ntc_raw: u16, cfg: &KernelConfig) {
+        if k == phase::THERM_SIDE {
+            if self.thermal.take(thermal::stage::DERATE) {
+                self.limits
+                    .update_derate(self.thermal.t_cc(), &cfg.medium.limits);
+            }
+            self.thermal.side(ntc_raw, &cfg.medium.therm);
         }
     }
 

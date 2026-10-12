@@ -1060,11 +1060,11 @@ mod tests {
             v_mean: Some(1200),
             i_meas: Some(400),
             pos_counts: 2000,
-            ntc_raw: 2048,
             ..Default::default()
         };
         let mut therm = WindingTherm::new();
         for _ in 0..256 {
+            therm.ntc(2048, &cfg);
             assert_eq!(therm.step(&seated, &cfg), UNSET_CC);
         }
     }

@@ -83,7 +83,14 @@ pub struct Sample {
     pub ke_vpc_q: u16,
     /// The observer's position, counts.
     pub pos_counts: i32,
-    pub ntc_raw: u16,
+}
+
+/// Work pending around the SLOW tick, [`WindingTherm::pending`] bits.
+pub mod stage {
+    /// The NTC ahead of the next SLOW tick ([`super::WindingTherm::side`]).
+    pub const NTC: u8 = 1 << 0;
+    /// The caller's: the derate from the SLOW tick's temperature.
+    pub const DERATE: u8 = 1 << 3;
 }
 
 pub mod flag {
@@ -195,6 +202,10 @@ pub struct WindingTherm {
     r_qg: i32,
     /// Carried excess over the NTC, centi-C << XG.
     x_qg: i32,
+    /// [`Self::x_max_cc`] at the last NTC conversion or configuration, and
+    /// the rise bound at it.
+    bound_cc: i32,
+    rise_cc: i32,
     t_ntc_cc: i16,
     ntc_ok: bool,
     ntc_decim: u8,
@@ -229,6 +240,7 @@ pub struct WindingTherm {
     cold: [u16; COLD_SEATS],
     cold_n: u8,
     boot: bool,
+    pending: u8,
 }
 
 impl WindingTherm {
@@ -236,6 +248,8 @@ impl WindingTherm {
         Self {
             r_qg: 0,
             x_qg: 0,
+            bound_cc: 0,
+            rise_cc: 0,
             t_ntc_cc: 0,
             ntc_ok: false,
             ntc_decim: 0,
@@ -265,13 +279,13 @@ impl WindingTherm {
             cold: [0; COLD_SEATS],
             cold_n: 0,
             boot: true,
+            pending: 0,
         }
     }
 
-    /// One SLOW-tick update; returns the winding temperature, centi-C, or
-    /// [`UNSET_CC`].
+    /// One SLOW-tick update on the NTC as [`Self::ntc`] last converted it;
+    /// returns the winding temperature, centi-C, or [`UNSET_CC`].
     pub fn step(&mut self, s: &Sample, cfg: &ThermCfg) -> i16 {
-        self.ntc(s.ntc_raw, cfg);
         if cfg.alpha_q24 == 0 || cfg.g_q016 == 0 || cfg.r_cold_q12 == 0 || !self.ntc_ok {
             self.x_qg = 0;
             self.boot = false;
@@ -282,51 +296,54 @@ impl WindingTherm {
         }
         self.flags &= !flag::UNSET;
         let gated = self.gate(s, cfg);
-        let x_max = self.x_max_cc(cfg);
+        let x_max = self.bound_cc;
         if self.boot {
             // half the steady excess at the limit: x_max is 1.5x of it
             self.boot = false;
             self.x_qg = (x_max / 3) << XG;
         }
-        // the carry runs every tick; a tracked sample overwrites it below
-        let v_emf =
-            s.v_mean
-                .unwrap_or(0)
-                .saturating_sub(q_mul(s.ke_vpc_q as i32, s.omega_hat_cps, 12));
-        let p = q_mul(s.i_meas.unwrap_or(0), v_emf, 0).max(0);
-        let target_qg = q_mul(p, cfg.g_q016 as i32, 16).min(X_MAX_QG >> XG) << XG;
-        self.x_qg += q_mul(target_qg - self.x_qg, cfg.alpha_q24 as i32, 24);
-        let mut t = self.t_ntc_cc as i32 + (self.x_qg >> XG);
-        if self.based {
-            let mut rose = false;
-            if let Some(i) = gated {
-                self.track(s.v_mean.unwrap_or(0), i, cfg);
-                t = self.t_ref_cc as i32
-                    + q_mul(
-                        (self.r_qg >> GUARD) - self.r_ref_q12 as i32,
-                        self.k_ref_q88 as i32,
-                        8,
-                    );
-                t = t.clamp(i16::MIN as i32, i16::MAX as i32);
-                rose = t - self.t_rate_cc as i32 > rise_max_cc(x_max);
-                if rose {
-                    // the carry keeps the value from before the step
-                    t = self.t_rate_cc as i32;
-                }
-                self.rate_n += 1;
-                if self.rate_n >= RATE_TICKS {
-                    self.rate_n = 0;
-                    self.t_rate_cc = t as i16;
-                }
-                self.x_qg = ((t - self.t_ntc_cc as i32) << XG).clamp(-X_MAX_QG, X_MAX_QG);
+        let mut t;
+        if let (true, Some(i)) = (self.based, gated) {
+            self.track(s.v_mean.unwrap_or(0), i, cfg);
+            t = self.t_ref_cc as i32
+                + q_mul(
+                    (self.r_qg >> GUARD) - self.r_ref_q12 as i32,
+                    self.k_ref_q88 as i32,
+                    8,
+                );
+            t = t.clamp(i16::MIN as i32, i16::MAX as i32);
+            let rose = t - self.t_rate_cc as i32 > self.rise_cc;
+            if rose {
+                // the carry keeps the value from before the step
+                t = self.t_rate_cc as i32;
             }
+            self.rate_n += 1;
+            if self.rate_n >= RATE_TICKS {
+                self.rate_n = 0;
+                self.t_rate_cc = t as i16;
+            }
+            self.x_qg = ((t - self.t_ntc_cc as i32) << XG).clamp(-X_MAX_QG, X_MAX_QG);
             if rose || self.exits(s, cfg) {
                 self.drop_base();
             }
-        } else if let Some(i) = gated {
-            self.reference(s.v_mean.unwrap_or(0), i, s.pos_counts, t, cfg);
+        } else {
+            let v_emf =
+                s.v_mean
+                    .unwrap_or(0)
+                    .saturating_sub(q_mul(s.ke_vpc_q as i32, s.omega_hat_cps, 12));
+            let p = q_mul(s.i_meas.unwrap_or(0), v_emf, 0).max(0);
+            let target_qg = q_mul(p, cfg.g_q016 as i32, 16).min(X_MAX_QG >> XG) << XG;
+            self.x_qg += q_mul(target_qg - self.x_qg, cfg.alpha_q24 as i32, 24);
+            t = self.t_ntc_cc as i32 + (self.x_qg >> XG);
             if self.based {
-                t = self.t_ref_cc as i32;
+                if self.exits(s, cfg) {
+                    self.drop_base();
+                }
+            } else if let Some(i) = gated {
+                self.reference(s.v_mean.unwrap_or(0), i, s.pos_counts, t, cfg);
+                if self.based {
+                    t = self.t_ref_cc as i32;
+                }
             }
         }
         if t - self.t_ntc_cc as i32 > x_max {
@@ -337,13 +354,17 @@ impl WindingTherm {
         self.t_cc
     }
 
-    /// Once a second: the NTC in centi-C; once a minute: whether it moved.
-    fn ntc(&mut self, raw: u16, cfg: &ThermCfg) {
+    /// Ahead of every [`Self::step`]: once a second the NTC in centi-C and
+    /// the bound at it, once a minute whether it moved.
+    #[inline(never)]
+    pub fn ntc(&mut self, raw: u16, cfg: &ThermCfg) {
+        self.pending &= !stage::NTC;
         if self.ntc_decim == 0 {
             match ntc_cc(raw, &cfg.ntc) {
                 Some(t) => {
                     self.t_ntc_cc = t;
                     self.ntc_ok = true;
+                    self.bound(cfg);
                 }
                 None => self.ntc_ok = false,
             }
@@ -428,6 +449,14 @@ impl WindingTherm {
         moved || off(s.i_meas, self.i_ref) || off(s.v_mean, self.v_ref) || self.gap >= GAP_TICKS
     }
 
+    /// The excess bound for `cfg` at the NTC as converted: on every
+    /// configuration load and after every conversion.
+    #[inline(never)]
+    pub fn bound(&mut self, cfg: &ThermCfg) {
+        self.bound_cc = self.x_max_cc(cfg);
+        self.rise_cc = rise_max_cc(self.bound_cc);
+    }
+
     /// The steady excess the current limit holds the cold winding at, at
     /// the NTC temperature, with the margin: centi-C, under X_MAX.
     fn x_max_cc(&self, cfg: &ThermCfg) -> i32 {
@@ -489,6 +518,27 @@ impl WindingTherm {
         self.flags |= flag::TRACK;
     }
 
+    /// Raise [`stage`] bits: the NTC before a SLOW tick, the caller's
+    /// DERATE after one.
+    pub fn request(&mut self, bits: u8) {
+        self.pending |= bits;
+    }
+
+    /// Whether `bit` was pending; it no longer is.
+    pub fn take(&mut self, bit: u8) -> bool {
+        let had = self.pending & bit != 0;
+        self.pending &= !bit;
+        had
+    }
+
+    /// The NTC requested ahead of a SLOW tick, on this tick's reading.
+    #[inline(always)]
+    pub fn side(&mut self, raw: u16, cfg: &ThermCfg) {
+        if self.pending & stage::NTC != 0 {
+            self.ntc(raw, cfg);
+        }
+    }
+
     /// A reference taken after the idle criterion is a cold reading: reduce
     /// it to R_COLD_REF_CC through copper and the NTC, keep the minimum of
     /// the last COLD_SEATS (contact only adds), flag a divergence from the
@@ -529,6 +579,11 @@ impl WindingTherm {
 
     pub fn flags(&self) -> u8 {
         self.flags
+    }
+
+    /// [`stage`] bits.
+    pub fn pending(&self) -> u8 {
+        self.pending
     }
 }
 
@@ -590,7 +645,6 @@ mod tests {
             omega_hat_cps: 0,
             ke_vpc_q: 350,
             pos_counts: pos,
-            ntc_raw: RAW_25,
         }
     }
 
@@ -601,7 +655,6 @@ mod tests {
             omega_hat_cps: 0,
             ke_vpc_q: 350,
             pos_counts: pos,
-            ntc_raw: RAW_25,
         }
     }
 
@@ -625,10 +678,24 @@ mod tests {
         }
     }
 
+    /// One SLOW cycle as the kernel runs it on an NTC reading `raw`: the
+    /// bound at `cfg` (the configuration load), the NTC ahead of the step,
+    /// the step.
+    fn slow_at(th: &mut WindingTherm, s: &Sample, cfg: &ThermCfg, raw: u16) -> i16 {
+        th.bound(cfg);
+        th.request(stage::NTC);
+        th.side(raw, cfg);
+        th.step(s, cfg)
+    }
+
+    fn slow(th: &mut WindingTherm, s: &Sample, cfg: &ThermCfg) -> i16 {
+        slow_at(th, s, cfg, RAW_25)
+    }
+
     fn hold(th: &mut WindingTherm, n: usize, s: &Sample) -> i16 {
         let mut t = 0;
         for _ in 0..n {
-            t = th.step(s, &CFG);
+            t = slow(th, s, &CFG);
         }
         t
     }
@@ -640,7 +707,7 @@ mod tests {
         let mut t = 0;
         for k in 1..=n {
             let r = r_at(4128, from_cc + (to_cc - from_cc) * k as i32 / n as i32);
-            t = th.step(&seated(q_mul(r, i, 12), i, pos), &CFG);
+            t = slow(th, &seated(q_mul(r, i, 12), i, pos), &CFG);
         }
         t
     }
@@ -693,7 +760,7 @@ mod tests {
             ..CFG
         };
         for _ in 0..BASE_TICKS + 10 {
-            assert_eq!(th.step(&s, &no_model), UNSET_CC);
+            assert_eq!(slow(&mut th, &s, &no_model), UNSET_CC);
         }
         assert_eq!(th.flags() & flag::UNSET, flag::UNSET);
         // no cold R: nothing bounds the carry, so no thermometer either
@@ -702,7 +769,7 @@ mod tests {
             ..CFG
         };
         for _ in 0..BASE_TICKS + 10 {
-            assert_eq!(th.step(&s, &no_cold), UNSET_CC);
+            assert_eq!(slow(&mut th, &s, &no_cold), UNSET_CC);
         }
         assert_eq!(th.flags(), flag::UNSET);
         let no_ntc = ThermCfg {
@@ -711,9 +778,9 @@ mod tests {
         };
         // the curve is re-read once a second
         for _ in 0..NTC_DECIM {
-            th.step(&s, &no_ntc);
+            slow(&mut th, &s, &no_ntc);
         }
-        assert_eq!(th.step(&s, &no_ntc), UNSET_CC);
+        assert_eq!(slow(&mut th, &s, &no_ntc), UNSET_CC);
         // the model lands: the sentinel leaves within a second, the NTC
         // is the base
         hold(&mut th, NTC_DECIM as usize, &s);
@@ -757,7 +824,7 @@ mod tests {
         // thermometer read +2.6 C
         let r1 = r0 + r0 / 100;
         let moved = seated(q_mul(r1, 280, 12), 280, 340);
-        th.step(&moved, &CFG);
+        slow(&mut th, &moved, &CFG);
         assert_eq!(th.flags() & flag::TRACK, 0);
         let t = hold(&mut th, BASE_TICKS + 200, &moved);
         assert!((t - before).abs() < 50, "{t} from {before}");
@@ -776,7 +843,7 @@ mod tests {
         // the derate drops the hold to 200 counts: the kernel's V/I offset
         // would read as cooling; the base is dropped instead
         let derated = seated(q_mul(r0, 200, 12) - 20, 200, 300);
-        th.step(&derated, &CFG);
+        slow(&mut th, &derated, &CFG);
         assert_eq!(th.flags() & flag::TRACK, 0);
     }
 
@@ -825,7 +892,7 @@ mod tests {
         hold(&mut th, 2, &back);
         assert_eq!(th.flags() & flag::TRACK, 0);
         for n in 0..625 {
-            let t = th.step(&back, &CFG);
+            let t = slow(&mut th, &back, &CFG);
             assert!((t - before).abs() < 100, "tick {n}: {t} from {before}");
             assert!(t < DERATE_START_CC);
         }
@@ -850,7 +917,7 @@ mod tests {
         let stepped = seated(q_mul(r1, 280, 12), 280, 300);
         let mut n = 0;
         while th.flags() & flag::TRACK != 0 && n < 2 * RATE_TICKS {
-            th.step(&stepped, &CFG);
+            slow(&mut th, &stepped, &CFG);
             n += 1;
         }
         assert_eq!(th.flags() & flag::TRACK, 0, "tracking after {n} ticks");
@@ -877,12 +944,11 @@ mod tests {
             .rev()
             .find(|&r| ntc_cc(r, &NTC).unwrap() >= 2900)
             .unwrap();
-        let at_29 = |t_cc: i32| Sample {
-            ntc_raw: raw_29,
-            ..seated(q_mul(r_at(4128, t_cc), 280, 12), 280, 300)
-        };
+        let at_29 = |t_cc: i32| seated(q_mul(r_at(4128, t_cc), 280, 12), 280, 300);
         let mut th = WindingTherm::new();
-        hold(&mut th, BASE_TICKS, &at_29(2900));
+        for _ in 0..BASE_TICKS {
+            slow_at(&mut th, &at_29(2900), &CFG, raw_29);
+        }
         let t_ntc = th.t_ntc_cc() as i32;
         let r_cold = 4128.0 * (23450.0 + t_ntc as f64) / 25950.0;
         let p = 280.0 * (r_cold * 280.0 / 4096.0);
@@ -890,7 +956,7 @@ mod tests {
         assert!((2740..2770).contains(&bound), "{bound}");
         let mut t = 0;
         for k in 0..7500 {
-            t = th.step(&at_29(2900 + 6000 * k / 7500), &CFG) as i32;
+            t = slow_at(&mut th, &at_29(2900 + 6000 * k / 7500), &CFG, raw_29) as i32;
             assert!(t - t_ntc <= bound + 10, "tick {k}: {t} over {t_ntc}");
             assert!(t < DERATE_START_CC as i32);
         }
@@ -901,13 +967,7 @@ mod tests {
             i_lim_counts: 700,
             ..CFG
         };
-        let off_1 = th.step(
-            &Sample {
-                ntc_raw: raw_29,
-                ..off(300)
-            },
-            &raised,
-        ) as i32;
+        let off_1 = slow_at(&mut th, &off(300), &raised, raw_29) as i32;
         assert!((t - off_1).abs() < 5, "{off_1} after {t}");
     }
 
@@ -923,7 +983,7 @@ mod tests {
             ..CFG
         };
         let mut th = WindingTherm::new();
-        th.step(&off(300), &CFG);
+        slow(&mut th, &off(300), &CFG);
         let rise = |cfg: &ThermCfg| rise_max_cc(th.x_max_cc(cfg));
         assert_eq!(rise(&CFG), 84);
         assert!(
@@ -940,7 +1000,7 @@ mod tests {
             let mut held = true;
             for k in 1..=500 {
                 let r = r_at(4128, 2500 + 120 * k / 62);
-                th.step(&seated(q_mul(r, 280, 12), 280, 300), &cfg);
+                slow(&mut th, &seated(q_mul(r, 280, 12), 280, 300), &cfg);
                 held &= th.flags() & flag::TRACK != 0;
             }
             assert_eq!(held, tracks, "limit {}", cfg.i_lim_counts);
@@ -979,7 +1039,7 @@ mod tests {
     #[test]
     fn boot_starts_the_carry_at_half_the_limit_s_steady_excess() {
         let mut th = WindingTherm::new();
-        let t = th.step(&off(300), &CFG) as i32;
+        let t = slow(&mut th, &off(300), &CFG) as i32;
         let v = (4128 * 280 / 4096) as f64;
         let half_ss = 280.0 * v * 1500.0 / 65536.0 / 2.0;
         assert!(((t - 2500) as f64 - half_ss).abs() <= 2.0, "{t}");
@@ -999,7 +1059,7 @@ mod tests {
         let s = seated(q_mul(r, 280, 12), 280, 300);
         let before = hold(&mut th, BASE_TICKS - 1, &s);
         assert_eq!(th.flags() & flag::TRACK, 0);
-        let t = th.step(&s, &CFG);
+        let t = slow(&mut th, &s, &CFG);
         assert_eq!(th.flags() & flag::TRACK, flag::TRACK);
         assert!((t - before).abs() < 50, "{t} from {before}");
         let t = hold(&mut th, 200, &s);
@@ -1071,7 +1131,7 @@ mod tests {
         for _ in 0..150 * 62 {
             let x = plant.step(0.27);
             let r = r_at(4128, 2500 + (x * 100.0) as i32);
-            t_fw = th.step(&seated(q_mul(r, 280, 12), 280, 300), &CFG);
+            t_fw = slow(&mut th, &seated(q_mul(r, 280, 12), 280, 300), &CFG);
         }
         let x_hold = plant.tw;
         assert!(
@@ -1085,7 +1145,7 @@ mod tests {
         for _ in 0..60 * 62 {
             plant.step(0.18);
             pos += 5;
-            t_fw = th.step(&seated(v, i, pos), &CFG);
+            t_fw = slow(&mut th, &seated(v, i, pos), &CFG);
         }
         assert_eq!(th.flags() & flag::TRACK, 0);
         let err = (t_fw - 2500) as f64 / 100.0 - plant.tw;

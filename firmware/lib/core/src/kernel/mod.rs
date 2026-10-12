@@ -5,7 +5,9 @@
 //! ticks one phase each (`medium`, `phase`: CONTROL and the edges, fusion,
 //! trajectory and position, limits, velocity, vbus and detectors, slow,
 //! publishes), SLOW every DECIM_SLOW periods inside `medium` (thermometer,
-//! derate, undervolt/overtemp). The medium half leaves the fast half a
+//! overtemp, undervolt; the thermometer's NTC on the last spare phase of
+//! the period before, the derate on the same phase after). The medium half
+//! leaves the fast half a
 //! `fast::Command`; the fast measurement reaches the medium phase of the
 //! same tick as `fast::Measured`. Only the CONTROL phase reads CONTROL, so
 //! a host write (torque, mode, goals) takes effect at the next period's
@@ -95,7 +97,8 @@ pub struct KernelTiming {
 /// What the budget probe reads around a tick: before it, the medium phase
 /// it runs, the configuration generation (a refresh moves it), whether the
 /// boot tick has run and whether the SLOW block is due; on either side,
-/// whether a thermal reference is live and the drive arm is Closed.
+/// whether a thermal reference is live, the thermometer's pending stages
+/// and whether the drive arm is Closed.
 #[derive(Copy, Clone)]
 pub struct ProbeTags {
     pub phase: u8,
@@ -103,6 +106,8 @@ pub struct ProbeTags {
     pub booted: bool,
     pub slow_due: bool,
     pub seated: bool,
+    /// `thermal::stage` bits.
+    pub therm: u8,
     pub closed: bool,
 }
 
@@ -172,6 +177,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         self.cfg = cfg;
         self.config_gen = config_gen;
         self.cmd.prepare_rail(&cfg.fast);
+        self.medium.thermal.bound(&self.cfg.medium.therm);
         let v_floor = window::floor_duty(
             cfg.fast.v_floor_ticks[cfg.fast.ol_decay as usize],
             self.timing.pwm_arr,
@@ -190,8 +196,11 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
     fn boot(&mut self, frame: &SensorFrame, shared: &Shared, config_gen: u8) {
         self.refresh(shared, config_gen);
         let ctl = Control::read(shared);
-        self.medium
-            .seed(medium::pos_q4(shared, ctl.lut_live, frame.pos));
+        self.medium.seed(
+            medium::pos_q4(shared, ctl.lut_live, frame.pos),
+            frame.ntc_raw,
+            &self.cfg,
+        );
         // the stream's first row linearizes like the rest, and the
         // aggregate's first window opens at the first tick
         self.cmd.lut_live = ctl.lut_live;
@@ -221,6 +230,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             slow_due: self.phase == medium::phase::SLOW
                 && self.medium.slow_periods + 1 >= DECIM_SLOW,
             seated: self.medium.thermal.flags() & thermal::flag::TRACK != 0,
+            therm: self.medium.thermal.pending(),
             closed: self.faults.mask() == 0 && matches!(self.cmd.drive, fast::Drive::Closed { .. }),
         }
     }

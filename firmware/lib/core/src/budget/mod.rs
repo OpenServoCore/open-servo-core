@@ -73,8 +73,9 @@ pub const MEAN_MIN_BODIES: u32 = 100;
 /// The CONTROL tick that rebuilds the kernel's configuration snapshot, on
 /// top of [`KERNEL`]; once per period at most, after a configuration
 /// write. M on an earlier image (no window writes the configuration): the
-/// refresh tick at rest, 1679, over the quiet CONTROL mean 849.
-pub const REFRESH: u32 = 855;
+/// refresh tick at rest, 1679, over the quiet CONTROL mean 849; E since:
+/// the thermometer's bound, priced at 158, plus 10%.
+pub const REFRESH: u32 = 1029;
 
 /// Every tick of a TEL burst (sample build and encode), on top of [`KERNEL`],
 /// per regime, six fields at 3M. M: per phase the TEL ticks' maximum over
@@ -91,23 +92,27 @@ pub const TEL_ENCODE_MEAN: [u32; 2] = [517, 612];
 pub const TEL_BANK: u32 = 183;
 
 /// The SLOW block on its due tick (phase SLOW, every DECIM_SLOW periods),
-/// on top of the phase's row, per regime. M: the due ticks' maximum over
-/// the phase's mean, Open 1215 over the quiet 578, Closed 2091 over the
-/// stepping 1218.
-pub const SLOW_DUE: [u32; 2] = [685, 921];
+/// on top of the phase's row, per regime. E: the dearest path, a tracked
+/// seat (any drive that holds current), priced at 684 over the plain tick
+/// (the ungated moving path at 471), plus 10%. No bench window has run a
+/// tracked seat.
+pub const SLOW_DUE: [u32; 2] = [753, 753];
 
 /// The due tick that closes a thermal reference window (two reciprocal
 /// divides, the install, the cold check) in place of [`SLOW_DUE`]: at most
-/// once per seat, 190 gated SLOW runs after it opens. E: the close path
-/// priced 1700-1900 over the fast path; no loaded seat has run on the
-/// bench.
-pub const SLOW_CLOSE: u32 = 1900;
+/// once per seat, 190 gated SLOW runs after it opens. E: priced at 1428
+/// over the plain tick, plus 10%; no loaded seat has run on the bench.
+pub const SLOW_CLOSE: u32 = 1571;
 
-/// The staged close's halves at phases 8 and 9 of the due period, once the
-/// close moves off the SLOW tick. E: the install and the cold check priced
-/// at about 400 and 250, plus 10%.
+/// The staged close's install at phase 8 of the due period, once the close
+/// moves off the SLOW tick. E: priced at about 400, plus 10%.
 pub const THERM_INSTALL: u32 = 440;
-pub const THERM_COLD: u32 = 275;
+
+/// The thermometer's side work on phase THERM_SIDE (`kernel::phase`), on
+/// top of its row: the NTC the period before a SLOW tick (a conversion and
+/// its bound once a second), or the derate after one. E: priced at 375 (a
+/// conversion; the derate on its ramp 249) over the plain tick, plus 10%.
+pub const THERM_SIDE: u32 = 413;
 
 /// The tick-load counters' close every [`HEALTH_CLOSE_TICKS`] ticks, and
 /// the catch-up it adds after a lost tick. E: priced on the executed path.
@@ -291,6 +296,9 @@ pub const fn kernel_tick(regime: Regime, phase: usize, ev: Events) -> u32 {
     } else if ev.slow {
         t += SLOW_DUE[r];
     }
+    if ev.side {
+        t += THERM_SIDE;
+    }
     if ev.tel {
         t += TEL_ENCODE[r];
     }
@@ -306,7 +314,9 @@ pub struct Events {
     pub refresh: bool,
     pub tel: bool,
     pub bank: bool,
-    /// The SLOW block ran; `close`: and installed a thermal reference.
+    /// The SLOW block ran; `close`: and froze a thermal reference window.
     pub slow: bool,
     pub close: bool,
+    /// The thermometer's side work on phase THERM_SIDE.
+    pub side: bool,
 }

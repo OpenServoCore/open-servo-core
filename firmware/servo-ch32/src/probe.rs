@@ -8,6 +8,8 @@ use osc_servo_core::budget::probe::BusProbe;
 use osc_servo_core::budget::{self, Body};
 #[cfg(feature = "bench")]
 use osc_servo_core::budget::{Events, Regime, probe::KernelProbe};
+#[cfg(feature = "bench")]
+use osc_servo_core::estimator::thermal::stage;
 use osc_servo_core::kernel::ProbeTags;
 
 #[cfg(feature = "bench")]
@@ -117,6 +119,7 @@ pub fn kernel_exit(entry: u32, before: TickTags, after: ProbeTags, tel: bool) {
             bank: osc_servo_drivers::bench::tel_banks() != before.banks,
             slow: b.slow_due,
             close: b.slow_due && !b.seated && after.seated,
+            side: (b.therm & !after.therm) & (stage::NTC | stage::DERATE) != 0,
         };
         let r = if b.closed || after.closed {
             Regime::Closed
