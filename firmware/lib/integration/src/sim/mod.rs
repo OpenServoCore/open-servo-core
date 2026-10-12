@@ -1005,7 +1005,7 @@ impl Sim {
         s.tick = n as u16;
         let drops = self.servos[j].tel_drops();
         let lane = self.handles[j].lane.snapshot();
-        self.servos[j].tel_tick(&s);
+        self.servos[j].tel_tick(&s, self.cpus[j].kernel_holds());
         let c = self.cpus[j].kernel_tel();
         let mut cost = c.poll;
         let t = &mut self.tels[j];
@@ -1024,6 +1024,7 @@ impl Sim {
         let [wire0, feeds0, patches0] = lane;
         cost += (feeds - feeds0) * c.feed + (wire - wire0) * c.arm;
         cost += (patches - patches0) * c.patch;
+        self.cpus[j].kernel_lane_step([wire, feeds, patches] != lane);
         Some(cost)
     }
 

@@ -199,16 +199,16 @@ pub struct TelemetryLimitsExt {
 #[derive(Copy, Clone, Block)]
 pub struct TelemetryHealth {
     /// Mean share of the kernel period the tick interrupt took over the
-    /// last 4096 ticks (0.2 s at 20 kHz), Q15: 32768 = the whole period.
+    /// last 4000 ticks (0.2 s at 20 kHz), Q15: 32768 = the whole period.
     #[ct_field(access = ro)]
     pub tick_load_mean_q15: u16,
     /// Kernel ticks whose interrupt took longer than one period; nothing
     /// preempts the tick, so every count is the kernel overrunning by
-    /// itself. Updated every 16 ticks. Wraps.
+    /// itself. Updated every 20 ticks. Wraps.
     #[ct_field(access = rw)]
     pub tick_over_count: u16,
     /// Kernel ticks that never ran: the previous tick was still running, or
-    /// a flash SAVE stalled the core; updated every 16 ticks. Wraps.
+    /// a flash SAVE stalled the core; updated every 20 ticks. Wraps.
     #[ct_field(access = rw)]
     pub tick_lost_count: u16,
     /// TEL stream rows dropped because both stream buffers were waiting for

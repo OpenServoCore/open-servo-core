@@ -232,32 +232,24 @@ fn hold_lane_is_closed_for_the_approach_then_open() {
     assert_eq!(sim.kernel_stats(s).closed, 2 * approach);
 }
 
-/// The spare phases while stepping, Closed at budget: each carries a
-/// refresh stage or, in its place, the thermometer's stage, whichever is
-/// dearer, with the health close where it can land and interrupt entry and
+/// The spare phases while stepping, Closed at budget, each carrying its
+/// refresh stage (the thermometer's stages in its place have their own
+/// pins), with the health close where it can land and interrupt entry and
 /// exit; TEL ticks of a burst on top.
 fn spare_phase_ticks(tel: bool) -> [(u8, u32); 2] {
-    let carried = Events {
+    let refresh = Events {
+        refresh: true,
         tel,
         bank: tel,
         ..Events::default()
     };
-    let refresh = Events {
-        refresh: true,
-        ..carried
-    };
-    let install = Events {
-        install: true,
-        ..carried
-    };
-    let side = Events {
-        side: true,
-        ..carried
-    };
-    [(phase::THERM_INSTALL, install), (phase::THERM_SIDE, side)].map(|(p, therm)| {
+    [phase::THERM_INSTALL, phase::THERM_SIDE].map(|p| {
         let health = budget::health_close_lands(p as usize);
-        let tick = |ev| budget::kernel_tick(Regime::Closed, p as usize, Events { health, ..ev });
-        (p, tick(refresh).max(tick(therm)) + ENTRY_EXIT)
+        let ev = Events { health, ..refresh };
+        (
+            p,
+            budget::kernel_tick(Regime::Closed, p as usize, ev) + ENTRY_EXIT,
+        )
     })
 }
 
@@ -269,9 +261,14 @@ fn config_write_while_moving_fits_at_budget() {
 }
 
 #[test]
-#[ignore = "over budget: Closed p9 with the side stage (639), the TEL row (591), the TX lane's dearest step (354), the health close (308) and entry and exit takes 3099, 699 over; p8 with the install 2749, 349 over"]
+#[ignore = "over budget, owned by the configuration refresh: its first stage (535) takes Closed p8 to 2699 and its second (474) p9 to 2626, on 2164 and 2152 without them (the phase, the TEL row 591, the TX lane's dearest step 354, which a refresh tick does not hold, entry and exit 80). Each stage tick must come in at 2304 (2 us margin): first stage <= 140, second <= 152 on today's rows"]
 fn config_write_while_moving_and_streaming_fits_at_budget() {
-    for (p, t) in spare_phase_ticks(true) {
-        assert!(t <= TICK_PERIOD, "phase {p}: {t} > {TICK_PERIOD}");
-    }
+    let over: Vec<_> = spare_phase_ticks(true)
+        .into_iter()
+        .filter(|&(_, t)| t > TICK_PERIOD)
+        .collect();
+    assert!(
+        over.is_empty(),
+        "(phase, ticks) over {TICK_PERIOD}: {over:?}"
+    );
 }

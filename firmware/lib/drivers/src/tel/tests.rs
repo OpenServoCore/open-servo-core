@@ -323,3 +323,44 @@ fn a_posted_plan_waits_for_its_lend() {
     assert_eq!(payload(f), golden(MASK_SIX, 0, true, 0..16));
     assert!(r.feed.idle());
 }
+
+/// A held tick takes no lane step: the break the start rule puts behind
+/// row 8 waits a tick, and the frame still streams whole.
+#[test]
+fn a_held_tick_takes_no_lane_step() {
+    let mut r = rig();
+    r.arm(MASK_SIX, 16, ID, RATE);
+    for i in 0..9 {
+        if i == 8 {
+            r.feed.hold();
+        }
+        r.tick(&sample(i));
+    }
+    assert!(
+        r.wire.idle() && !r.wire.breaking(),
+        "a break on the held tick"
+    );
+    r.tick(&sample(9));
+    assert!(r.wire.breaking(), "no break the tick after");
+    r.run(10, 40);
+    let f = &r.wire.streamed()[0];
+    assert_eq!(payload(f), golden(MASK_SIX, 0, true, 0..16));
+}
+
+/// A hold outlives the row its tick drops: the frame end and the next
+/// start that tick owed wait a tick.
+#[test]
+fn a_hold_outlives_a_dropped_row() {
+    let mut r = rig();
+    r.arm(BIT_POS, 64, ID, RATE);
+    for i in 0..37 {
+        r.tick(&sample(i));
+    }
+    r.wire.finish();
+    r.feed.hold();
+    r.tick(&sample(37));
+    assert_eq!(r.ch.drops(), 6);
+    assert!(r.wire.idle() && !r.wire.breaking(), "frame 1 started");
+    r.tick(&sample(38));
+    assert!(r.wire.breaking(), "frame 1 never started");
+}

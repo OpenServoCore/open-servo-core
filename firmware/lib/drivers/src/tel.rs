@@ -44,9 +44,9 @@ const ROWS_AT: usize = Header::SIZE + STREAM_HDR;
 /// CRC. The lane skips the bank's tick and the next frame's head tick,
 /// feeds on the one after and patches on the next: three ticks of slack
 /// remain, and the last row's read has at least as many. Late or lost
-/// ticks inside them still ship a whole frame (DES
-/// `tel_kernel_lane_never_underruns_at_budget`); more fail its CRC (DES
-/// `tel_lost_ticks_mid_frame_fail_the_crc_and_leave_a_seq_hole`).
+/// ticks, or stage ticks the lane holds on, inside them still ship a whole
+/// frame (DES `tel_kernel_lane_never_underruns_at_budget`); more fail its
+/// CRC (DES `tel_lost_ticks_mid_frame_fail_the_crc_and_leave_a_seq_hole`).
 const LEAD_MARGIN_TICKS: u32 = 5;
 
 /// Control ticks per wire byte at `baud`, Q16, rounded down so the lead
@@ -219,7 +219,8 @@ pub struct TelFeed<P: Providers> {
     phase: Phase,
     fed: usize,
     crc_due: bool,
-    /// This tick landed a head or a trailer: the lane leaves it be.
+    /// This tick landed a head or a trailer, or holds: the lane leaves it
+    /// be.
     landed: bool,
 }
 
@@ -400,7 +401,6 @@ impl<P: Providers> TelStream for TelFeed<P> {
         // SAFETY: kernel side (fn doc of `image`).
         let img = unsafe { self.ch.image(self.seq) };
         if self.n == 0 {
-            self.landed = true;
             if self.seq.wrapping_sub(self.done) as i8 >= 2 {
                 // Both images hold unfinished frames: never block the tick.
                 // SAFETY: kernel-written counter (type doc).
@@ -408,9 +408,9 @@ impl<P: Providers> TelStream for TelFeed<P> {
                     let d = self.ch.drops.get();
                     d.write_volatile(d.read_volatile().wrapping_add(1));
                 }
-                self.landed = false;
                 return;
             }
+            self.landed = true;
             self.head(img, sample);
         }
         let at = self.at;
@@ -435,14 +435,22 @@ impl<P: Providers> TelStream for TelFeed<P> {
         }
     }
 
+    /// A stage tick's step waits a tick, as on a head's or a trailer's. A
+    /// hold while the bus owns the lane outlives it harmlessly: a burst's
+    /// first tick lands a head.
+    #[inline(always)]
+    fn hold(&mut self) {
+        self.landed = true;
+    }
+
     /// The TX lane, inline: the tick that owes it nothing pays a flag test
     /// and the TX poll. It takes one step a tick at most - each is a few
     /// hundred HCLK, and two would not fit beside the dearest phases
     /// (budget `tel_lane`) - and none on a tick that landed a head or a
-    /// trailer. Frame `done`'s CRC step comes first (the patch lands ahead
-    /// of an arm), then its arm, or the start of the next frame. A frame's
-    /// end is a few stores, so the next can start in the same tick: a tick
-    /// apart, the wire would idle one tick a frame.
+    /// trailer, or holds. Frame `done`'s CRC step comes first (the patch
+    /// lands ahead of an arm), then its arm, or the start of the next frame.
+    /// A frame's end is a few stores, so the next can start in the same
+    /// tick: a tick apart, the wire would idle one tick a frame.
     #[inline(always)]
     fn on_tick_end(&mut self) {
         if !self.ch.active() || core::mem::take(&mut self.landed) {

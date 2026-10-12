@@ -521,17 +521,102 @@ fn each_refresh_stage_charges_its_own_row() {
     }
 }
 
-/// The chip closes a tick-load window on every sixteenth tick from the
-/// boot tick at CONTROL: with ten phases that is every odd phase and never
-/// an even one, so never the SLOW stages or the install's phase.
+/// The chip closes a tick-load window on every twentieth tick, the first
+/// at the boot count's first PUBLISH tick: every close lands on PUBLISH,
+/// never on a SLOW, thermometer or refresh phase.
 #[test]
-fn the_health_close_lands_only_on_odd_phases() {
+fn the_health_close_lands_only_on_publish() {
     let lands: heapless::Vec<usize, PHASES> =
         (0..PHASES).filter(|&p| health_close_lands(p)).collect();
-    assert_eq!(lands, [1, 3, 5, 7, 9]);
-    for p in [phase::SLOW, phase::THERM_INSTALL] {
-        assert!(!health_close_lands(p as usize), "phase {p}");
+    assert_eq!(lands, [phase::PUBLISH as usize]);
+    let closes = (0..4000u64).filter(|&t| health_close_at(t));
+    assert!(
+        closes
+            .clone()
+            .all(|t| t as usize % PHASES == phase::PUBLISH as usize)
+    );
+    assert_eq!(closes.count(), 4000 / HEALTH_CLOSE_TICKS as usize);
+}
+
+/// A SLOW or thermometer stage tick holds the TX lane: its TEL tick
+/// carries the poll and a head or a bank, never a lane step. A refresh tick
+/// does not hold.
+#[test]
+fn a_stage_tick_holds_the_tel_lane() {
+    let closed = Regime::Closed;
+    let tel = Events { tel: true, ..PLAIN };
+    let bank = Events { bank: true, ..tel };
+    let stages = [
+        (
+            phase::SLOW,
+            Events {
+                slow: true,
+                ..PLAIN
+            },
+        ),
+        (
+            phase::SLOW,
+            Events {
+                finish: true,
+                ..PLAIN
+            },
+        ),
+        (
+            phase::SLOW,
+            Events {
+                close: true,
+                finish: true,
+                ..PLAIN
+            },
+        ),
+        (
+            phase::THERM_INSTALL,
+            Events {
+                install: true,
+                ..PLAIN
+            },
+        ),
+        (
+            phase::THERM_SIDE,
+            Events {
+                side: true,
+                ..PLAIN
+            },
+        ),
+    ];
+    for (p, stage) in stages {
+        let p = p as usize;
+        let alone = kernel_tick(closed, p, stage);
+        let with = |c: Events| {
+            let ev = Events {
+                slow: stage.slow,
+                finish: stage.finish,
+                close: stage.close,
+                install: stage.install,
+                side: stage.side,
+                ..c
+            };
+            kernel_tick(closed, p, ev) - alone
+        };
+        let enc = TEL_ENCODE[closed as usize];
+        assert_eq!(with(tel), enc + TEL_POLL + TEL_HEAD, "{stage:?}");
+        assert_eq!(with(bank), enc + TEL_POLL + TEL_BANK, "{stage:?}");
     }
+    let refresh = Events {
+        refresh: true,
+        ..tel
+    };
+    let p = phase::THERM_INSTALL as usize;
+    let lane = kernel_tick(closed, p, refresh)
+        - kernel_tick(
+            closed,
+            p,
+            Events {
+                tel: false,
+                ..refresh
+            },
+        );
+    assert_eq!(lane, TEL_ENCODE[closed as usize] + tel_lane(false));
 }
 
 #[test]

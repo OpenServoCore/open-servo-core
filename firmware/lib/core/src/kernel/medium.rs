@@ -583,17 +583,20 @@ impl Medium {
         }
     }
 
-    /// THERM_INSTALL and THERM_SIDE, while the thermometer has work.
-    pub(super) fn spare(&mut self, k: u8, ntc_raw: u16, cfg: &KernelConfig) {
+    /// THERM_INSTALL and THERM_SIDE, while the thermometer has work; whether
+    /// a stage ran.
+    pub(super) fn spare(&mut self, k: u8, ntc_raw: u16, cfg: &KernelConfig) -> bool {
         if k == phase::THERM_INSTALL {
+            let due = self.thermal.pending() & thermal::stage::INSTALL != 0;
             self.thermal.install();
-        } else {
-            if self.thermal.take(thermal::stage::DERATE) {
-                self.limits
-                    .update_derate(self.thermal.t_cc(), &cfg.medium.limits);
-            }
-            self.thermal.side(ntc_raw, &cfg.medium.therm);
+            return due;
         }
+        if self.thermal.take(thermal::stage::DERATE) {
+            self.limits
+                .update_derate(self.thermal.t_cc(), &cfg.medium.limits);
+        }
+        self.thermal.side(ntc_raw, &cfg.medium.therm);
+        true
     }
 
     /// PUBLISH: sensors of this tick, the estimates, mode and limits.
