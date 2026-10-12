@@ -111,13 +111,11 @@ impl SeqUnwrap {
 }
 
 // --- TEL stream ------------------------------------------------------------
-// One Stream-result status payload (protocol sec 5.6), all LE:
-//   [0]    stream_seq  u8, increments per frame, wraps; restarts at 0 per arm
-//   [1]    flags       bit 0 = LAST frame of the burst
-//   [2..4] valid       u16 bitmap, bit i = sample i window_valid
-//   [4..]  up to 16 rows, packed per `osc_protocol::tel::Layout`
+// One Stream-result status payload (protocol sec 5.6), split by
+// `osc_protocol::tel::StreamFrame`: a head (stream_seq, flags, the first
+// row's sample_tick), the rows (the count from LEN), a trailer (valid
+// bitmap, fault OR). stream_seq restarts at 0 per arm.
 
-pub use osc_protocol::wire::{STREAM_FLAG_LAST, STREAM_HDR, STREAM_SAMPLES_MAX};
 pub use osc_servo_core::tel::duty_counts;
 
 pub const TEL_BIT_POS: u16 = tel::BIT_POS;
@@ -144,9 +142,9 @@ pub const TEL_MASK_RAW: u16 = TEL_BIT_POS
     | TEL_BIT_VMOTOR_B;
 
 /// One decoded TEL sample; unselected fields are None. `tick` is the
-/// absolute fast-tick index within one burst (unwrapped stream_seq x 16 +
-/// position in frame), so time = tick / tick_hz and a dropped frame shows
-/// as a 16-tick hole.
+/// fast-tick index within one burst, from the frames' stamps with the
+/// first frame's row 0 at 0, so time = tick / tick_hz and a lost frame or
+/// a row the servo dropped shows as a jump.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct TelFrame {
     pub tick: u64,
@@ -207,24 +205,19 @@ pub struct TelBurst {
 
 /// Decode one stream payload into per-tick frames; row i lands at
 /// `tick_base + i`. None when the payload cannot be a `mask` stream frame
-/// (short header, non-integral row remainder, over 16 rows).
+/// ([`tel::StreamFrame::parse`]).
 pub fn decode_stream_payload(mask: u16, payload: &[u8], tick_base: u64) -> Option<Vec<TelFrame>> {
-    let rlen = tel::row_bytes(mask);
-    let (hdr, body) = payload.split_at_checked(STREAM_HDR)?;
-    let valid = u16::from_le_bytes([hdr[2], hdr[3]]);
-    if rlen == 0 {
-        return body.is_empty().then(Vec::new);
-    }
-    if !body.len().is_multiple_of(rlen) || body.len() / rlen > STREAM_SAMPLES_MAX {
-        return None;
-    }
-    let mut out = Vec::with_capacity(body.len() / rlen);
-    for (i, row) in body.chunks(rlen).enumerate() {
+    decode_rows(mask, &tel::StreamFrame::parse(mask, payload)?, tick_base)
+}
+
+fn decode_rows(mask: u16, f: &tel::StreamFrame<'_>, tick_base: u64) -> Option<Vec<TelFrame>> {
+    let mut out = Vec::with_capacity(f.len());
+    for (i, row) in f.rows().enumerate() {
         let w = tel::decode_row(mask, row)?;
         let take = |bit: u16| (mask & bit != 0).then(|| w[bit.trailing_zeros() as usize]);
         out.push(TelFrame {
             tick: tick_base + i as u64,
-            window_valid: valid & (1 << i) != 0,
+            window_valid: f.valid & (1 << i) != 0,
             pos: take(TEL_BIT_POS),
             current: take(TEL_BIT_CURRENT).map(|v| v as i16),
             current_trough: take(TEL_BIT_CURRENT_TROUGH),
@@ -243,14 +236,17 @@ pub fn decode_stream_payload(mask: u16, payload: &[u8], tick_base: u64) -> Optio
 }
 
 /// Assembles one burst's Stream statuses, in arrival order, into ticked
-/// frames: unwraps the u8 stream_seq (wraps every 256 frames = 4096
-/// samples) and spreads each frame's samples over its 16-tick slot, so a
-/// dropped or corrupt frame leaves a 16-tick hole rather than a time skew.
+/// frames. Each frame's rows tick on from its stamp, unwrapped against the
+/// previous frame's (a u16 wraps every 3.3 s at 20 kHz, far past any gap
+/// inside a burst), so a lost frame or dropped rows leave a tick hole
+/// rather than a time skew. The u8 stream_seq counts lost frames.
 /// Bursts restart stream_seq at 0, so one assembler serves one burst.
 pub struct StreamAssembler {
     mask: u16,
     last_seq: Option<u8>,
     frame_idx: u64,
+    /// The previous frame's stamp and the tick it unwrapped to.
+    stamp: Option<(u16, u64)>,
     holes: u64,
     skipped: u64,
 }
@@ -266,6 +262,7 @@ impl StreamAssembler {
             mask,
             last_seq: None,
             frame_idx: 0,
+            stamp: None,
             holes: 0,
             skipped: 0,
         })
@@ -273,28 +270,34 @@ impl StreamAssembler {
 
     /// Consume one status: `stream` is true for a Stream-result frame
     /// (anything else is skipped and counted). Decoded samples append to
-    /// `out` with correct ticks and per-sample window_valid.
+    /// `out` with their ticks and per-sample window_valid.
     pub fn push(&mut self, stream: bool, payload: &[u8], out: &mut Vec<TelFrame>) {
-        if !stream || payload.len() < STREAM_HDR {
+        let Some(f) = stream
+            .then(|| tel::StreamFrame::parse(self.mask, payload))
+            .flatten()
+        else {
             self.skipped += 1;
             return;
-        }
-        let seq = payload[0];
+        };
         let (idx, expected) = match self.last_seq {
             // bursts arm at seq 0: a nonzero first seq means missed frames
-            None => (seq as u64, 0),
+            None => (f.seq as u64, 0),
             Some(last) => (
-                self.frame_idx + seq.wrapping_sub(last) as u64,
+                self.frame_idx + f.seq.wrapping_sub(last) as u64,
                 self.frame_idx + 1,
             ),
         };
         self.holes += idx.saturating_sub(expected);
-        match decode_stream_payload(self.mask, payload, idx * STREAM_SAMPLES_MAX as u64) {
+        self.last_seq = Some(f.seq);
+        self.frame_idx = idx;
+        let tick = self
+            .stamp
+            .map_or(0, |(s, t)| t + f.tick.wrapping_sub(s) as u64);
+        self.stamp = Some((f.tick, tick));
+        match decode_rows(self.mask, &f, tick) {
             Some(frames) => out.extend(frames),
             None => self.skipped += 1,
         }
-        self.last_seq = Some(seq);
-        self.frame_idx = idx;
     }
 
     /// Frames missing from stream_seq continuity (dropped or corrupt).
@@ -313,6 +316,7 @@ mod tests {
     use super::*;
     use crate::regs::telemetry as t;
 
+    use osc_protocol::wire::STREAM_FLAG_LAST;
     use osc_servo_core::tel::{ROW_BYTES_MAX, STREAM_PAYLOAD_MAX, TelSample, encode_stream};
 
     /// The ident and tool masks: raw capture, R/L, ladder, bias, each with
@@ -347,14 +351,21 @@ mod tests {
             vbus_raw: 0x0C00 + i,
             ntc_raw: 0x0D00 + i,
             pos_lin_q4: 0xE000 + i,
+            tick: 0,
             window_valid: i.is_multiple_of(2),
             fault: false,
         }
     }
 
-    /// The firmware encoder's payload for `count` rows of `sample`.
-    fn stream_payload(mask: u16, seq: u8, last: bool, count: u16) -> Vec<u8> {
-        let rows: Vec<TelSample> = (0..count).map(sample).collect();
+    /// The firmware encoder's payload for `count` rows of `sample`, the
+    /// first stamped `tick`.
+    fn stream_payload(mask: u16, seq: u8, last: bool, tick: u16, count: u16) -> Vec<u8> {
+        let rows: Vec<TelSample> = (0..count)
+            .map(|i| TelSample {
+                tick: tick.wrapping_add(i),
+                ..sample(i)
+            })
+            .collect();
         let mut buf = [0u8; STREAM_PAYLOAD_MAX];
         let n = encode_stream(mask, seq, last, &rows, &mut buf);
         buf[..n].to_vec()
@@ -385,8 +396,8 @@ mod tests {
     #[test]
     fn every_tool_mask_round_trips_the_firmware_encoder() {
         for mask in MASKS {
-            let p = stream_payload(mask, 3, false, 16);
-            assert_eq!(p.len(), STREAM_HDR + 16 * tel::row_bytes(mask), "{mask:#x}");
+            let p = stream_payload(mask, 3, false, 0, 16);
+            assert_eq!(p.len(), tel::frame_len(mask, 16), "{mask:#x}");
             let frames = decode_stream_payload(mask, &p, 48).expect("decodes");
             for (i, f) in frames.iter().enumerate() {
                 assert_eq!(*f, want(mask, 48 + i as u64, i as u16), "{mask:#x} row {i}");
@@ -399,7 +410,7 @@ mod tests {
     fn every_encodable_mask_round_trips() {
         let mut n = 0;
         for mask in 1..=TEL_MASK_ALL {
-            let p = stream_payload(mask, 0, true, 2);
+            let p = stream_payload(mask, 0, true, 0, 2);
             if p.is_empty() {
                 continue;
             }
@@ -417,8 +428,9 @@ mod tests {
         // its own sample(0): pos 0x100, trough 0xB00, duty -1200, raw 0x100,
         // va 0xA00, vb 0xB00
         let row = [0x00, 0x01, 0xB0, 0x50, 0x0B, 0x10, 0x00, 0x0A, 0xB0];
-        let mut p = vec![0x42, 0x00, 0x01, 0x00];
+        let mut p = vec![0x42, 0x00, 0x30, 0x12];
         p.extend(row);
+        p.extend([0x01, 0x00, 0x00, 0x00, 0x00, 0x00]);
         let f = decode_stream_payload(TEL_MASK_RAW, &p, 320).expect("decodes")[0];
         assert_eq!(f.tick, 320);
         assert!(f.window_valid);
@@ -453,22 +465,49 @@ mod tests {
     fn decode_rejects_malformed_payloads() {
         assert!(decode_stream_payload(TEL_MASK_ALL, &[0, 0, 0], 0).is_none());
         // remainder not an integral row count for the mask
-        let mut p = stream_payload(0x1B, 0, false, 2);
+        let mut p = stream_payload(0x1B, 0, false, 0, 2);
         p.pop();
         assert!(decode_stream_payload(0x1B, &p, 0).is_none());
-        // over 16 rows cannot come from one frame
-        let mut p = stream_payload(TEL_BIT_POS, 0, false, 16);
-        p.extend([0, 0]);
+        // more rows than the trailer's bitmap marks cannot be one frame
+        let rows = tel::rows_max(TEL_BIT_POS) + 1;
+        let p = vec![0; tel::frame_len(TEL_BIT_POS, rows)];
         assert!(decode_stream_payload(TEL_BIT_POS, &p, 0).is_none());
     }
 
+    /// A host takes the row count from LEN, never 16: a 24-row frame and a
+    /// 5-row frame run on tick for tick.
     #[test]
-    fn assembler_ticks_run_through_the_seq_wrap() {
-        // 258 frames of one sample each: seq wraps 255 -> 0 with no hole
+    fn assembler_takes_any_row_count_from_the_length() {
+        let frame = |seq: u8, last: bool, tick: u16, rows: u16| {
+            let mut p = vec![seq, if last { STREAM_FLAG_LAST } else { 0 }];
+            p.extend(tick.to_le_bytes());
+            for i in 0..rows {
+                p.extend((tick + i).to_le_bytes());
+            }
+            p.extend([0xFF, 0xFF, 0xFF, 0x00, 0, 0]);
+            p
+        };
+        let mut a = StreamAssembler::new(TEL_BIT_POS).unwrap();
+        let mut out = Vec::new();
+        a.push(true, &frame(0, false, 100, 24), &mut out);
+        a.push(true, &frame(1, true, 124, 5), &mut out);
+        assert_eq!(out.len(), 29);
+        for (k, f) in out.iter().enumerate() {
+            assert_eq!((f.tick, f.pos), (k as u64, Some(100 + k as u16)));
+            assert!(f.window_valid);
+        }
+        assert_eq!((a.holes(), a.skipped()), (0, 0));
+    }
+
+    #[test]
+    fn assembler_ticks_run_through_the_seq_and_stamp_wraps() {
+        // 258 one-row frames 16 ticks apart: seq wraps 255 -> 0 with no
+        // hole, the stamp wraps past 0xFFFF on the way
         let mut a = StreamAssembler::new(TEL_BIT_POS).unwrap();
         let mut out = Vec::new();
         for k in 0..258u64 {
-            let p = stream_payload(TEL_BIT_POS, k as u8, k == 257, 1);
+            let tick = 0xF000u16.wrapping_add(16 * k as u16);
+            let p = stream_payload(TEL_BIT_POS, k as u8, k == 257, tick, 1);
             a.push(true, &p, &mut out);
         }
         assert_eq!(out.len(), 258);
@@ -480,11 +519,11 @@ mod tests {
     }
 
     #[test]
-    fn assembler_missing_frame_leaves_a_16_tick_hole() {
+    fn assembler_missing_frame_leaves_a_seq_hole_and_a_tick_jump() {
         let mut a = StreamAssembler::new(TEL_BIT_POS).unwrap();
         let mut out = Vec::new();
         for seq in [0u8, 1, 3] {
-            let p = stream_payload(TEL_BIT_POS, seq, seq == 3, 16);
+            let p = stream_payload(TEL_BIT_POS, seq, seq == 3, 16 * seq as u16, 16);
             a.push(true, &p, &mut out);
         }
         assert_eq!(out.len(), 48);
@@ -493,12 +532,33 @@ mod tests {
         assert_eq!(a.holes(), 1);
     }
 
+    /// Rows the servo dropped against full buffers leave seq whole: only
+    /// the stamp tells.
+    #[test]
+    fn assembler_dropped_rows_jump_the_ticks_not_the_seq() {
+        let mut a = StreamAssembler::new(TEL_BIT_POS).unwrap();
+        let mut out = Vec::new();
+        a.push(
+            true,
+            &stream_payload(TEL_BIT_POS, 0, false, 7, 16),
+            &mut out,
+        );
+        a.push(
+            true,
+            &stream_payload(TEL_BIT_POS, 1, true, 7 + 20, 16),
+            &mut out,
+        );
+        assert_eq!(out.len(), 32);
+        assert_eq!((out[15].tick, out[16].tick), (15, 20));
+        assert_eq!(a.holes(), 0);
+    }
+
     #[test]
     fn assembler_skips_non_stream_statuses() {
         let mut a = StreamAssembler::new(TEL_BIT_POS).unwrap();
         let mut out = Vec::new();
         a.push(false, &[0x55, 0xAA], &mut out); // an OK ack, not a frame
-        let p = stream_payload(TEL_BIT_POS, 0, true, 2);
+        let p = stream_payload(TEL_BIT_POS, 0, true, 0, 2);
         a.push(true, &p, &mut out);
         assert_eq!(out.len(), 2);
         assert_eq!(a.skipped(), 1);

@@ -62,6 +62,7 @@ pub fn frame_crc_ok(frame: &WireFrame) -> bool {
 
 /// Deterministic fast-tick sample for per-burst tick `i` -- the pump feeds
 /// these, so tests compute expected payload bytes from the same function.
+/// `tick` is `i`: the pump's stand-in for `sample_tick`.
 pub fn tel_sample(i: u32) -> TelSample {
     // 12-bit fields stay inside 12 bits, as ADC codes and duty counts do
     let raw = |base: u16| base | (i as u16 & 0xFF);
@@ -78,6 +79,7 @@ pub fn tel_sample(i: u32) -> TelSample {
         vbus_raw: raw(0xC00),
         ntc_raw: raw(0xD00),
         pos_lin_q4: 0x4000u16.wrapping_add(i as u16),
+        tick: i as u16,
         window_valid: i.is_multiple_of(2),
         fault: false,
     }

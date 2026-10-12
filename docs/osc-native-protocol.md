@@ -611,14 +611,22 @@ estimates.
 
 Burst frames are ordinary status frames with result code `stream` - the
 one result code that marks a frame no instruction directly owes.
-Payload, all LE:
+Payload, all LE: a head, the rows, a trailer.
 
 ```
 [0]    stream_seq  u8, increments per frame, wraps
 [1]    flags       bit 0 = LAST frame of the burst; rest reserved 0
-[2..4] valid       u16 bitmap, bit i = sample i measured a fresh window
+[2..4] tick        u16, the first row's sample_tick, low 16 bits
 [4..]  rows        one per sample, the mask-selected fields packed
+then   valid       u32 bitmap, bit i = row i measured a fresh window
+       tail        u8, bit 0 = some row of the frame saw a fault;
+                   rest reserved 0
+       reserved    u8, 0
 ```
+
+The head holds only what the first row knows; what only the batch's
+end knows rides behind the rows, so a frame can start on the wire
+before its last row exists.
 
 `tel_mask` bits, in sample order (osc-servo): 0 `pos` (raw pot), 1
 `current` (bias-subtracted window sample, times the board's settle gain
@@ -648,9 +656,13 @@ aligned:
 A row is `2 x slots + 3 x pairs` bytes: the six raw fields (mask
 `0x1CD`) are 9 B against 12 at two bytes a field.
 
-Samples batch up to 16 per frame (the burst's final frame may carry
-fewer); the count is implicit in `LEN`. Batching is what makes the CRC
-affordable: framing overhead amortizes to under one byte per sample.
+The row count is implicit in `LEN`: `(payload - 10) / row bytes`. A
+frame carries at least one row and at most what the payload and the
+32-bit `valid` bitmap hold (`osc-protocol::tel::rows_max`); a host
+accepts any count in that range and never assumes a batch size.
+osc-servo batches 16 rows per frame, the burst's final frame fewer.
+Batching is what makes the CRC affordable: framing overhead amortizes
+to about one byte per sample.
 
 Admission is by row bytes at the line's current rate (the rescue rate
 included), not by field count: an arm whose row is longer than
@@ -658,9 +670,9 @@ included), not by field count: an arm whose row is longer than
 write itself acks (the ack precedes the commit that arms), so a host
 checks the register first. The bound is the shorter of the wire's - a
 full frame must clear the wire inside 95% of its own 16-tick window: 13
-B at 3 M, 8 at 2 M, 4 at 1 M, 1 at 0.5 M - and the servo's, the longest
-row it encodes and stages at the tick rate (osc-servo: 11 B). 2 M
-carries the ladder's four fields (7 B); the six raw fields need 3 M.
+B at 3 M, 8 at 2 M, 3 at 1 M, none at 0.5 M - and the servo's, the
+longest row it encodes and stages at the tick rate (osc-servo: 11 B).
+2 M carries the ladder's four fields (7 B); the six raw fields need 3 M.
 
 The wire contract during a burst: the host is silent. The servo owns
 the line from the arm's ack (or the arming COMMIT's silence) through
@@ -673,13 +685,16 @@ arrived is then served normally, including a fresh re-arm.
 Integrity is the point: a corrupted burst frame fails CRC and is
 dropped whole by the host framer - it can never decode as plausible
 data - and the drop is visible as a hole in the `stream_seq` numbering
-(16 samples per missing frame). ALERT on a burst frame carries the OR
-of the batch's fault state, per the sec 5.3 device-level contract.
+and as a jump in the next frame's `tick`. A host times rows by the
+stamps, never by `stream_seq` times a batch size: row i of a frame is
+tick `tick + i`. ALERT on a burst frame is the device's fault state at
+its first row, per the sec 5.3 device-level contract; the trailer's
+`tail` carries the OR over all of its rows.
 
 Timing: a batch completes every 16 control ticks. The producer never
 blocks: a row that finds both frame buffers waiting for the wire is
 dropped and counted in `tel_drop_count` (sec 5.9), with no hole in
-`stream_seq`. Admission keeps the wire inside its window; rows drop
+`stream_seq`; the next frame's `tick` jumps over it. Admission keeps the wire inside its window; rows drop
 only when the CPU falls behind, which a driving kernel can cause. Safety through the silent
 window is the servo's own - the current limit (held in every drive
 mode, OpenLoop included, sec 5.8), soft-position clamps, the stall
@@ -1143,7 +1158,7 @@ writes them, not the kernel.
 | 0x26A | `tick_load_mean_q15` | RO     | mean share of the kernel period the tick interrupt took over the last 4096 ticks (0.2 s), Q15       |
 | 0x26C | `tick_over_count`    | RW     | kernel ticks whose interrupt took longer than one period; wraps                                     |
 | 0x26E | `tick_lost_count`    | RW     | kernel ticks that never ran: the previous tick was still running, or a flash SAVE stalled the core; wraps |
-| 0x270 | `tel_drop_count`     | RW     | TEL rows dropped because both stream buffers were waiting for the wire (sec 5.6); wraps              |
+| 0x270 | `tel_drop_count`     | RW     | TEL rows dropped because both stream buffers were waiting for the wire, each a jump in the next frame's `tick` (sec 5.6); wraps |
 | 0x272 | `stack_free_min`     | RO     | smallest free stack seen since boot, bytes                                                           |
 
 The RW registers follow the TELEMETRY-COMMON clear contract (sec 5.4):

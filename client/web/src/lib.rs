@@ -100,6 +100,15 @@ pub fn tel_decode_row(mask: u16, row: &[u8]) -> Option<Vec<i32>> {
     )
 }
 
+/// One TEL stream frame payload split into head, rows and trailer
+/// (protocol sec 5.6); undefined when it cannot be a `mask` frame.
+#[wasm_bindgen(js_name = telStreamFrame)]
+pub fn tel_stream_frame(mask: u16, payload: &[u8]) -> Result<Option<Ts<TelStreamFrame>>, JsError> {
+    Ok(osc_protocol::tel::StreamFrame::parse(mask, payload)
+        .map(|f| TelStreamFrame::from(f).into_ts())
+        .transpose()?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -115,6 +124,21 @@ mod tests {
         let f = tel_decode_row(mask, &row).unwrap();
         assert_eq!(f, [0x123, -2, 0, -5, -300, 0, 0, 0, 0, 0, 0xABC, 0]);
         assert_eq!(tel_decode_row(mask, &row[..8]), None);
+    }
+
+    #[test]
+    fn tel_stream_frames_split_head_rows_and_trailer() {
+        use osc_protocol::tel::{BIT_POS, StreamFrame};
+        let p = [
+            3, 1, 0x10, 0x00, 0x00, 0x01, 0x01, 0x01, 0x02, 0, 0, 0, 1, 0,
+        ];
+        let f = TelStreamFrame::from(StreamFrame::parse(BIT_POS, &p).unwrap());
+        assert_eq!(
+            (f.seq, f.last, f.tick, f.valid, f.alert),
+            (3, true, 16, 2, true)
+        );
+        assert_eq!(f.rows.as_slice(), [0x00, 0x01, 0x01, 0x01]);
+        assert!(StreamFrame::parse(BIT_POS, &p[..13]).is_none());
     }
 
     #[test]

@@ -93,7 +93,75 @@ pub const fn row_bytes(mask: u16) -> usize {
 
 /// Payload bytes of a frame of `rows` rows of `mask`.
 pub const fn frame_len(mask: u16, rows: usize) -> usize {
-    wire::STREAM_HDR + rows * row_bytes(mask)
+    wire::STREAM_HDR + rows * row_bytes(mask) + wire::STREAM_TRAILER
+}
+
+/// The most rows a `mask` frame carries: what the payload and the `valid`
+/// bitmap hold; 0 for a mask with no row.
+pub const fn rows_max(mask: u16) -> usize {
+    let row = row_bytes(mask);
+    if row == 0 {
+        return 0;
+    }
+    let fit = (wire::MAX_PAYLOAD as usize - wire::STREAM_HDR - wire::STREAM_TRAILER) / row;
+    if fit < wire::STREAM_ROWS_MAX {
+        fit
+    } else {
+        wire::STREAM_ROWS_MAX
+    }
+}
+
+/// One TEL frame payload (sec 5.6), split: the head, the rows, the trailer.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct StreamFrame<'a> {
+    pub seq: u8,
+    pub last: bool,
+    /// The first row's `sample_tick`, low 16 bits.
+    pub tick: u16,
+    /// Bit i: row i measured a fresh drive window.
+    pub valid: u32,
+    /// Some row of the frame saw a fault.
+    pub alert: bool,
+    rows: &'a [u8],
+    row_bytes: usize,
+}
+
+impl<'a> StreamFrame<'a> {
+    /// None when `payload` cannot be a `mask` frame: shorter than head and
+    /// trailer, a ragged row remainder, no row, or over [`rows_max`].
+    pub fn parse(mask: u16, payload: &'a [u8]) -> Option<Self> {
+        let row_bytes = row_bytes(mask);
+        let (head, rest) = payload.split_first_chunk::<{ wire::STREAM_HDR }>()?;
+        let (rows, trailer) = rest.split_last_chunk::<{ wire::STREAM_TRAILER }>()?;
+        let n = rows.len().checked_div(row_bytes)?;
+        if n == 0 || n > rows_max(mask) || n * row_bytes != rows.len() {
+            return None;
+        }
+        let [seq, flags, t0, t1] = *head;
+        let [v0, v1, v2, v3, tail, _] = *trailer;
+        Some(Self {
+            seq,
+            last: flags & wire::STREAM_FLAG_LAST != 0,
+            tick: u16::from_le_bytes([t0, t1]),
+            valid: u32::from_le_bytes([v0, v1, v2, v3]),
+            alert: tail & wire::STREAM_TAIL_ALERT != 0,
+            rows,
+            row_bytes,
+        })
+    }
+
+    pub fn len(&self) -> usize {
+        self.rows.len() / self.row_bytes
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    /// The packed rows in order, each [`decode_row`]'s input.
+    pub fn rows(&self) -> core::slice::ChunksExact<'a, u8> {
+        self.rows.chunks_exact(self.row_bytes)
+    }
 }
 
 /// One row's fields by bit index, 0 where unselected: 12-bit fields
@@ -147,7 +215,7 @@ mod tests {
         assert_eq!(row_bytes(BIT_POS | BIT_CURRENT_RAW), 3);
         assert_eq!(row_bytes(BIT_CURRENT), 2);
         assert_eq!(row_bytes(SIX_RAW), 9);
-        assert_eq!(frame_len(SIX_RAW, wire::STREAM_SAMPLES_MAX), 148);
+        assert_eq!(frame_len(SIX_RAW, wire::STREAM_SAMPLES_MAX), 154);
         assert_eq!(row_bytes(0x1B), 7);
         assert_eq!(row_bytes(MASK_ALL), 4 * 2 + 4 * 3);
         assert_eq!(row_bytes(1 << 12), 0);
@@ -164,6 +232,54 @@ mod tests {
         let l = Layout::new(SIX_RAW);
         assert_eq!((l.words, l.pairs), (0, 3));
         assert_eq!(l.order[..6], [0, 2, 3, 6, 7, 8]);
+    }
+
+    /// Head [seq][flags][tick u16], rows, trailer [valid u32][tail][0]: the
+    /// count comes from the length alone.
+    #[test]
+    fn stream_frame_takes_its_row_count_from_the_length() {
+        let p = [
+            0x42,
+            wire::STREAM_FLAG_LAST,
+            0x34,
+            0x12,
+            0x01,
+            0x00,
+            0x02,
+            0x00,
+            0x03,
+            0x00,
+            0x05,
+            0x00,
+            0x00,
+            0x80,
+            wire::STREAM_TAIL_ALERT,
+            0,
+        ];
+        let f = StreamFrame::parse(BIT_POS, &p).expect("a frame");
+        assert_eq!((f.seq, f.last, f.tick), (0x42, true, 0x1234));
+        assert_eq!((f.valid, f.alert, f.len()), (0x8000_0005, true, 3));
+        let mut rows = f.rows();
+        assert_eq!(rows.next(), Some(&[1, 0][..]));
+        assert_eq!(rows.nth(1), Some(&[3, 0][..]));
+        assert_eq!(rows.next(), None);
+        let f = StreamFrame::parse(BIT_POS | BIT_CURRENT, &p);
+        assert!(f.is_none(), "a ragged remainder is not a frame");
+    }
+
+    #[test]
+    fn stream_frame_rejects_empty_and_oversized_frames() {
+        let empty = [0u8; wire::STREAM_HDR + wire::STREAM_TRAILER];
+        assert!(StreamFrame::parse(BIT_POS, &empty).is_none());
+        assert!(StreamFrame::parse(BIT_POS, &empty[1..]).is_none());
+        assert!(StreamFrame::parse(0, &[0; 12]).is_none());
+        assert_eq!(rows_max(BIT_POS), wire::STREAM_ROWS_MAX);
+        assert_eq!(rows_max(SIX_RAW), 26);
+        assert_eq!(rows_max(0), 0);
+        let buf = [0u8; frame_len(BIT_POS, wire::STREAM_ROWS_MAX + 1)];
+        let max = &buf[..frame_len(BIT_POS, wire::STREAM_ROWS_MAX)];
+        assert_eq!(StreamFrame::parse(BIT_POS, max).map(|f| f.len()), Some(32));
+        assert!(StreamFrame::parse(BIT_POS, &buf).is_none());
     }
 
     #[test]

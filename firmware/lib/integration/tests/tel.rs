@@ -21,7 +21,7 @@ use osc_integration::sim::{
     Sim, Source, TelSample, WireFrame, assert_valid, expect_tel_payload, expect_tel_payload_rows,
     frame_crc_ok, instruction, status, tel_sample,
 };
-use osc_protocol::tel::decode_row;
+use osc_protocol::tel::{StreamFrame, decode_row};
 use osc_protocol::wire::{Inst, Opcode, RESCUE_PULSE_MIN_US, ResultCode};
 use osc_servo_core::BaudRate;
 use osc_servo_core::regions::control::addr::lifecycle::{GOAL_DUTY, TEL_COUNT, TEL_MASK};
@@ -147,7 +147,10 @@ fn pos_lin_streams_beside_pos() {
     assert_eq!(stream.len(), 1, "{frames:#?}");
     let (_, payload) = status(stream[0]);
     assert_eq!(payload, expect_tel_payload(mask, 16, 0));
-    for (i, s) in payload[4..].chunks(4).enumerate() {
+    for (i, s) in payload[STREAM_HDR..STREAM_HDR + 16 * 4]
+        .chunks(4)
+        .enumerate()
+    {
         let want = tel_sample(i as u32);
         assert_eq!(u16::from_le_bytes([s[0], s[1]]), want.pos, "sample {i}");
         assert_eq!(
@@ -318,27 +321,44 @@ fn burst_frame_corruption_is_detectable() {
     assert_eq!(status(burst[2]).1, expect_payload(48, 2));
 }
 
+/// INST ALERT is the device state when INST leaves: the frame's first
+/// row's fault. The trailer's tail carries the OR of the batch's.
 #[test_log::test]
-fn burst_alert_reflects_fault() {
+fn burst_alert_is_the_first_row_fault_and_the_tail_the_batch_or() {
     let mut sim = sim3m();
     let s = sim.add_servo(ID5);
-    // Faulted ticks span exactly the second batch window.
-    sim.set_tel_fault_ticks(s, 16, 32);
+    // Faulted ticks: from inside the second batch into the third's row 0.
+    let faulted = 20..36;
+    sim.set_tel_fault_ticks(s, faulted.start, faulted.end);
     let frames = arm(&mut sim, 48);
 
     let burst = stream_frames(&frames);
     assert_eq!(burst.len(), 3);
     let alerts: Vec<bool> = burst.iter().map(|f| status(f).0.alert()).collect();
-    assert_eq!(
-        alerts,
-        [false, true, false],
-        "ALERT on the faulted batch only"
-    );
-    // Fault travels in ALERT alone (the fault contract): payloads stay the
-    // synthesized data.
+    assert_eq!(alerts, [false, false, true], "ALERT where row 0 faulted");
+    let tails: Vec<bool> = burst
+        .iter()
+        .map(|f| {
+            StreamFrame::parse(MASK, status(f).1)
+                .expect("a frame")
+                .alert
+        })
+        .collect();
+    assert_eq!(tails, [false, true, true], "tail where any row faulted");
+    // The rows stay the synthesized data.
+    let rows: Vec<TelSample> = (0..48)
+        .map(|i| TelSample {
+            fault: faulted.contains(&i),
+            ..tel_sample(i)
+        })
+        .collect();
     for (i, f) in burst.iter().enumerate() {
         assert_valid(f);
-        assert_eq!(status(f).1, expect_payload(48, i), "frame {i} payload");
+        assert_eq!(
+            status(f).1,
+            expect_tel_payload_rows(MASK, &rows, i),
+            "frame {i} payload"
+        );
     }
 }
 
@@ -432,6 +452,7 @@ fn track(len: u16) -> Vec<TelSample> {
             vbus_raw: 2000 + i,
             ntc_raw: 1500 + i,
             pos_lin_q4: (1000 + i * 7) << 4,
+            tick: 0,
             window_valid: !i.is_multiple_of(3),
             fault: false,
         })
@@ -458,8 +479,13 @@ fn track_rows_stream_in_order_and_loop() {
         .expect("first sample is a track row");
     assert_eq!(k, (servo[0].at / TICK + 1) as usize % rows.len());
     // 40 samples over a 24-row track wrap once; the payloads pin every row
-    // through the same encoder, in order.
-    let served: Vec<TelSample> = (0..40).map(|i| rows[(k + i) % rows.len()]).collect();
+    // through the same encoder, in order, stamped by the pump's tick.
+    let served: Vec<TelSample> = (0..40)
+        .map(|i| TelSample {
+            tick: i as u16,
+            ..rows[(k + i) % rows.len()]
+        })
+        .collect();
     for (i, f) in burst.iter().enumerate() {
         assert_valid(f);
         assert_eq!(

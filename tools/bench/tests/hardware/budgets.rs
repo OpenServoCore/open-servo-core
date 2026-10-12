@@ -36,7 +36,8 @@ use bench::osc::{
 };
 use bench::probe::{self, Reader, Snapshot};
 use osc_client::Outcome;
-use osc_protocol::wire::{Opcode, ResultCode, STREAM_SAMPLES_MAX};
+use osc_protocol::tel::StreamFrame;
+use osc_protocol::wire::{Opcode, ResultCode};
 use osc_servo_core::Mode;
 use osc_servo_core::budget::probe::{Component, LONG_TICKS, Row, Scenario, rows, us};
 use osc_servo_core::budget::{Frame, WINDOW_TICKS};
@@ -58,7 +59,7 @@ const STEP_HOLD: Duration = Duration::from_millis(400);
 const WINDOW: Duration = Duration::from_secs(10);
 const STEP_WINDOW: Duration = Duration::from_secs(20);
 const CENTRE_SETTLE: Duration = Duration::from_millis(500);
-/// The bench soaks' six raw fields: 9 B rows, 155 B frames at 3M.
+/// The bench soaks' six raw fields: 9 B rows, 161 B frames at 3M.
 const SIX_FIELDS: u16 = 0x1cd;
 const TEL_ROWS: u16 = 4000;
 const TEL_BURSTS: u32 = 10;
@@ -482,16 +483,21 @@ fn driven(b: &mut Bench, drive: impl FnOnce(&mut Bench)) {
 /// One six-field burst, whole: acked, every frame in, before the host
 /// speaks again.
 fn tel_burst(b: &mut Bench, failed: &mut Vec<String>, name: &str) {
-    let frames = usize::from(TEL_ROWS) / STREAM_SAMPLES_MAX;
     match b.tel_stream(TEL_ROWS, TEL_WINDOW) {
         Ok(r) => {
             let ack = r.ack.as_ref().and_then(|a| a.result);
+            let rows: usize = r
+                .frames
+                .iter()
+                .filter_map(|f| StreamFrame::parse(SIX_FIELDS, &f.payload))
+                .map(|f| f.len())
+                .sum();
             if ack != Some(ResultCode::Ok)
                 || r.outcome != Outcome::Complete
-                || r.frames.len() != frames
+                || rows != usize::from(TEL_ROWS)
             {
                 failed.push(format!(
-                    "{name}: TEL burst ack {ack:?}, {:?}, {} of {frames} frames, {} laps",
+                    "{name}: TEL burst ack {ack:?}, {:?}, {rows} of {TEL_ROWS} rows in {} frames, {} laps",
                     r.outcome,
                     r.frames.len(),
                     r.laps

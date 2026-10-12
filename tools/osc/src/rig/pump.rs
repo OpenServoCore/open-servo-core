@@ -549,12 +549,12 @@ mod tests {
         use osc_client::fake::FakePipe;
         let pipe = FakePipe::new(BaudRate::B1000000, &[1]);
         let (mut c, id) = (Client::connect(pipe).unwrap(), Id::new(1));
-        assert_eq!(tel_row_limit(&mut c, id).unwrap(), (BaudRate::B1000000, 4));
+        assert_eq!(tel_row_limit(&mut c, id).unwrap(), (BaudRate::B1000000, 3));
         let Err(refused) = exchange_tel_burst(&mut c, id, 16, None, 0x1b) else {
             panic!("a 7 B row armed at 1 M");
         };
         assert!(
-            refused.to_string().contains("at most 4 B at 1000 kbaud"),
+            refused.to_string().contains("at most 3 B at 1000 kbaud"),
             "{refused}"
         );
     }

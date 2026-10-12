@@ -1463,7 +1463,9 @@ fn tel_burst_streams_two_frames_then_quiets() {
     assert!(feed.active(), "committed tel_count write arms the feed");
 
     for i in 0..20u16 {
-        tick(&mut feed, &pos_sample(0x2000 + i));
+        let mut s = pos_sample(0x2000 + i);
+        s.tick = 0x0100 + i;
+        tick(&mut feed, &s);
     }
     let mark = h.wire.log().len();
     bus.poll_tel();
@@ -1479,25 +1481,27 @@ fn tel_burst_streams_two_frames_then_quiets() {
     assert_eq!(f1[0], ID);
     assert_eq!(f1[2], 0xA4, "INST = status | Stream, no ALERT");
     assert_eq!(f1[2], Inst::status(ResultCode::Stream, false).0);
-    assert_eq!(f1[1], wire::len_for(4 + 16 * 2));
+    assert_eq!(f1[1], wire::len_for(4 + 16 * 2 + 6));
     assert_eq!(
         f1[3..7],
-        [0x00, 0x00, 0xFF, 0xFF],
-        "seq 0, not LAST, all valid"
+        [0x00, 0x00, 0x00, 0x01],
+        "seq 0, not LAST, row 0's tick"
     );
     assert_eq!(f1[7..9], [0x00, 0x20], "first sample pos");
+    assert_eq!(f1[39..45], [0xFF, 0xFF, 0, 0, 0, 0], "all valid, no fault");
     assert_frame_crc(f1);
 
     let f2 = &frames[1];
     assert_eq!(f2[0], ID);
     assert_eq!(f2[2], 0xA4);
-    assert_eq!(f2[1], wire::len_for(4 + 4 * 2));
+    assert_eq!(f2[1], wire::len_for(4 + 4 * 2 + 6));
     assert_eq!(
-        f2[3..15],
+        f2[3..21],
         [
-            0x01, FLAG_LAST, 0x0F, 0x00, 0x10, 0x20, 0x11, 0x20, 0x12, 0x20, 0x13, 0x20
+            0x01, FLAG_LAST, 0x10, 0x01, 0x10, 0x20, 0x11, 0x20, 0x12, 0x20, 0x13, 0x20, 0x0F,
+            0x00, 0x00, 0x00, 0x00, 0x00
         ],
-        "seq 1, LAST, 4-sample bitmap, samples 16..20"
+        "seq 1, LAST, row 16's tick, samples 16..20, 4-row bitmap"
     );
     assert_frame_crc(f2);
 
@@ -1512,8 +1516,10 @@ fn tel_burst_streams_two_frames_then_quiets() {
     );
 }
 
+/// INST ALERT is the device state when INST leaves: the first row's fault.
+/// The trailer's tail carries the batch's OR.
 #[test]
-fn tel_burst_alert_marks_only_the_faulted_batch() {
+fn tel_burst_alert_is_the_first_row_fault_and_the_tail_the_batch_or() {
     let h = Harness::new();
     let mut bus = h.build(ID, RATE, 60);
     let (mut feed, drain) = tel_split(&h);
@@ -1527,7 +1533,7 @@ fn tel_burst_alert_marks_only_the_faulted_batch() {
 
     for i in 0..32u16 {
         let mut s = pos_sample(0x3000 + i);
-        s.fault = i == 20; // second batch only
+        s.fault = i == 5 || i == 16;
         tick(&mut feed, &s);
     }
     let mark = h.wire.log().len();
@@ -1538,9 +1544,13 @@ fn tel_burst_alert_marks_only_the_faulted_batch() {
 
     let frames = tx_frames(&h.wire, mark);
     assert_eq!(frames.len(), 2);
-    assert_eq!(frames[0][2], 0xA4, "clean batch: ALERT clear");
-    assert_eq!(frames[1][2], 0xA5, "faulted batch: ALERT set");
+    assert_eq!(frames[0][2], 0xA4, "row 0 clean: ALERT clear");
+    assert_eq!(frames[1][2], 0xA5, "row 0 faulted: ALERT set");
     assert_eq!(frames[1][2], Inst::status(ResultCode::Stream, true).0);
+    let tail = |f: &[u8]| f[f.len() - 4];
+    assert_eq!(tail(&frames[0]), wire::STREAM_TAIL_ALERT, "row 5 faulted");
+    assert_eq!(tail(&frames[1]), wire::STREAM_TAIL_ALERT);
+    assert_frame_crc(&frames[0]);
     assert_frame_crc(&frames[1]);
 }
 
@@ -1567,7 +1577,7 @@ fn tel_burst_short_count_is_one_last_frame() {
 
     let frames = tx_frames(&h.wire, mark);
     assert_eq!(frames.len(), 1);
-    assert_eq!(frames[0][1], wire::len_for(4 + 5 * 2));
+    assert_eq!(frames[0][1], wire::len_for(4 + 5 * 2 + 6));
     assert_eq!(frames[0][3], 0, "seq 0");
     assert_eq!(frames[0][4], FLAG_LAST);
     assert_frame_crc(&frames[0]);

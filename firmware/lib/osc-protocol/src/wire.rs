@@ -320,10 +320,23 @@ pub fn stream_last(inst: Inst, payload: FrameBytes<'_>) -> bool {
         && payload.u8_at(1).is_some_and(|f| f & STREAM_FLAG_LAST != 0)
 }
 
-/// sec 5.6 TEL frame: a `STREAM_HDR`-byte header, then up to
-/// `STREAM_SAMPLES_MAX` rows, one per control tick, each the
-/// `tel_mask`-selected fields packed per [`crate::tel::Layout`].
+/// sec 5.6 TEL frame payload: a `STREAM_HDR`-byte head (seq, flags, the
+/// first row's tick), the rows, one per control tick, each the
+/// `tel_mask`-selected fields packed per [`crate::tel::Layout`], then a
+/// `STREAM_TRAILER`-byte trailer (valid bitmap, tail flags, reserved). The
+/// row count is implicit in `LEN`; see [`crate::tel::StreamFrame`].
 pub const STREAM_HDR: usize = 4;
+pub const STREAM_TRAILER: usize = 6;
+
+/// Trailer tail byte bit 0: some row of the frame saw a fault.
+pub const STREAM_TAIL_ALERT: u8 = 1 << 0;
+
+/// The most rows one frame carries: one bit each in the trailer's
+/// `valid` bitmap. A mask's own bound is [`crate::tel::rows_max`].
+pub const STREAM_ROWS_MAX: usize = u32::BITS as usize;
+
+/// The servo's batch: rows per frame, the burst's last frame fewer. Hosts
+/// take the count from `LEN`, never from this.
 pub const STREAM_SAMPLES_MAX: usize = 16;
 
 /// The budget rate and the control tick the burst keeps up with.
@@ -342,7 +355,7 @@ pub const CHAR_BIT_TIMES: u32 = 10;
 
 /// Wire bytes of a full TEL frame of `row_bytes`-byte rows.
 pub const fn stream_frame_bytes(row_bytes: usize) -> usize {
-    STREAM_HDR + STREAM_SAMPLES_MAX * row_bytes + STREAM_FRAME_OVERHEAD
+    STREAM_HDR + STREAM_SAMPLES_MAX * row_bytes + STREAM_TRAILER + STREAM_FRAME_OVERHEAD
 }
 
 /// Byte-times one batch of `STREAM_SAMPLES_MAX` ticks gives the line.
@@ -360,7 +373,7 @@ pub const fn stream_fits(row_bytes: usize, baud: BaudRate, tick_hz: u32) -> bool
 /// `row_bytes` that [`stream_fits`].
 pub const fn stream_row_bytes_max(baud: BaudRate, tick_hz: u32) -> usize {
     let line = stream_window_bytes(baud, tick_hz) * STREAM_LINE_PCT / 100;
-    line.saturating_sub(STREAM_HDR + STREAM_FRAME_OVERHEAD) / STREAM_SAMPLES_MAX
+    line.saturating_sub(STREAM_HDR + STREAM_TRAILER + STREAM_FRAME_OVERHEAD) / STREAM_SAMPLES_MAX
 }
 
 /// TX-buffer alignment byte at offset 0 (sec 3.2): keeps the hardware CRC feed
@@ -529,8 +542,9 @@ mod tests {
     }
 
     /// sec 5.6: at 3 M a 20 kHz tick is 15 byte-times, 240 per 16-tick
-    /// batch, 228 of them usable: 13 B rows (219 wire bytes) fit, 14 do not.
-    /// The six raw fields pack to 9 B rows, a 155-byte frame.
+    /// batch, 228 of them usable: 13 B rows (225 wire bytes) fit, 14 do not.
+    /// The six raw fields pack to 9 B rows, a 161-byte frame. At 1 M the
+    /// head and trailer leave 59 of 76 bytes, 3 B rows; at 0.5 M none.
     #[test]
     fn row_bytes_per_rate_are_the_tel_budget() {
         let hz = STREAM_BUDGET_TICK_HZ;
@@ -544,14 +558,17 @@ mod tests {
                 BaudRate::B3000000
             ]
             .map(max),
-            [1, 4, 8, 13]
+            [0, 3, 8, 13]
         );
         for b in [BaudRate::B1000000, BaudRate::B2000000, BaudRate::B3000000] {
             assert!(stream_fits(max(b), b, hz));
             assert!(!stream_fits(max(b) + 1, b, hz));
         }
-        assert_eq!(stream_frame_bytes(9), 155);
-        assert!(STREAM_HDR + STREAM_SAMPLES_MAX * max(STREAM_BUDGET_BAUD) <= MAX_PAYLOAD as usize);
+        assert_eq!(stream_frame_bytes(9), 161);
+        assert!(
+            STREAM_HDR + STREAM_SAMPLES_MAX * max(STREAM_BUDGET_BAUD) + STREAM_TRAILER
+                <= MAX_PAYLOAD as usize
+        );
     }
 
     #[test]

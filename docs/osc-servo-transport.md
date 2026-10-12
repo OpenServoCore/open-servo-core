@@ -335,7 +335,7 @@ be staged behind the CRC verdict:
   the kernel's body. The bus pends it again where it clears what held a
   banked buffer back: the TX release, and a deadline body's verdict or
   reply kill. It runs on these events, not in the main loop: the six raw
-  fields' 155 B frame leaves ~280 us of its 800 us batch window spare,
+  fields' 161 B frame leaves ~260 us of its 800 us batch window spare,
   and a driving tick starves the main loop for longer than that.
   Cross-context traffic is three flags and an arm mailbox,
   single-writer volatile discipline, no atomics. Any RX break aborts the burst with the speculation-kill trio
