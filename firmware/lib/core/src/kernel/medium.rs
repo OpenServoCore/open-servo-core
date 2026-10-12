@@ -327,24 +327,20 @@ impl Medium {
     /// OBSERVER, on this tick's sample.
     fn observe(&mut self, raw_pos: u16, cfg: &KernelConfig, shared: &Shared, fast: &mut Fast) {
         let mc = &cfg.medium;
-        let lut_live = self.ctl.lut_live;
+        // the band gain is the interval this sample linearized in
+        let (pos, band_gain_q4) = if self.ctl.lut_live {
+            shared.pos_lut_q4_band_gain(raw_pos)
+        } else {
+            (pos_lut::identity_q4(raw_pos), pos_lut::GRID as u16)
+        };
         self.omega_bemf = fast.close_bemf_half(mc.r_q12, mc.recip_ke_q, self.recip_arr_q24);
-        self.fusion.step(
-            fast.i_meas_last() as i32,
-            pos_q4(shared, lut_live, raw_pos),
-            self.dt_med_q32,
-            &mc.fusion,
-        );
+        self.fusion
+            .step(fast.i_meas_last() as i32, pos, self.dt_med_q32, &mc.fusion);
         // The observer's omega keeps the rest-shaped consumers (stall
         // verdict, thermometer gate): it is always there and reads small at
         // rest, where the boxcar has no window at all.
         self.omega_hat = self.omega_sw.step(self.omega_bemf, self.fusion.omega_q16());
-        // the interval this sample linearized in, for the hold band
-        self.band_gain_q4 = if lut_live {
-            shared.pos_lut_band_gain_q4(raw_pos)
-        } else {
-            pos_lut::GRID as u16
-        };
+        self.band_gain_q4 = band_gain_q4;
     }
 
     /// TRAJECTORY: the profile and the position loop.
@@ -371,7 +367,7 @@ impl Medium {
             }
             Mode::Velocity => {
                 self.traj
-                    .step_velocity(life.goal_velocity, theta_hat, self.dt_med_q32, &mc.traj);
+                    .step_velocity(life.goal_velocity, theta_hat, &mc.traj);
                 self.omega_ref_q16 = self.traj.omega_star_q16();
                 self.hold = false;
             }

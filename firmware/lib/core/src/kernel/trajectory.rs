@@ -33,15 +33,39 @@ const SNAP_D_CQ16: u32 = 1 << 16;
 /// the ramp through the accel slew.
 const WALL_RAMP_SHIFT: u32 = 4;
 
-/// CONFIG loop_position profile fields + soft limits (`CurrentGains`
-/// convention).
+/// CONFIG loop_position profile fields + soft limits, prepared at the
+/// configuration refresh: the velocity cap applied, the soft limits ordered
+/// (table rules pin min < max; the reorder only keeps a corrupt image
+/// panic-free) and, for the goal, clamped into the THETA_LIM range.
 #[derive(Copy, Clone, Default)]
 pub struct TrajCfg {
-    pub vel_limit_cps: u16,
+    vel_cap_cps: u16,
     /// c/s of omega change per MEDIUM tick, Q8.8.
-    pub accel_limit_q88: u16,
-    pub pos_min_soft_counts: i32,
-    pub pos_max_soft_counts: i32,
+    accel_limit_q88: u16,
+    goal_min_counts: i32,
+    goal_max_counts: i32,
+    wall_min_counts: i32,
+    wall_max_counts: i32,
+}
+
+impl TrajCfg {
+    pub fn new(
+        vel_limit_cps: u16,
+        accel_limit_q88: u16,
+        pos_min_soft_counts: i32,
+        pos_max_soft_counts: i32,
+    ) -> Self {
+        let lo = pos_min_soft_counts.min(pos_max_soft_counts);
+        let hi = pos_max_soft_counts.max(pos_min_soft_counts);
+        Self {
+            vel_cap_cps: vel_limit_cps.min(VEL_CAP_CPS),
+            accel_limit_q88,
+            goal_min_counts: lo.clamp(-GOAL_LIM_COUNTS, GOAL_LIM_COUNTS),
+            goal_max_counts: hi.clamp(-GOAL_LIM_COUNTS, GOAL_LIM_COUNTS),
+            wall_min_counts: lo,
+            wall_max_counts: hi,
+        }
+    }
 }
 
 /// State: theta_ref cQ16, omega_ref csQ16, alpha_last csQ16 per tick (the
@@ -70,8 +94,7 @@ impl TrajGen {
     }
 
     /// One MEDIUM step over `dt_q32` toward `goal_counts` clamped to the soft
-    /// limits (table rules pin min < max; the min/max reorder below only
-    /// keeps a corrupt image panic-free).
+    /// limits.
     ///
     /// Decel decision: a decel chain shedding a per tick from v travels
     /// dt*sum(v - k*a) = (v^2 - a*v)*dt/(2a) - exact when a divides v, else
@@ -88,18 +111,23 @@ impl TrajGen {
     /// preserves the remaining-travel identity D(v) = v_next*dt + D(v_next).
     pub fn step_position(&mut self, goal_counts: i32, dt_q32: u32, cfg: &TrajCfg) {
         let a = (cfg.accel_limit_q88 as i32) << 8;
-        let v_lim = (cfg.vel_limit_cps.min(VEL_CAP_CPS) as i32) << 16;
-        let lo = cfg.pos_min_soft_counts.min(cfg.pos_max_soft_counts);
-        let hi = cfg.pos_max_soft_counts.max(cfg.pos_min_soft_counts);
+        let v_lim = (cfg.vel_cap_cps as i32) << 16;
+        // max().min(): the prepared order is not provable here, clamp would
+        // keep a panic path
         let goal = goal_counts
-            .clamp(lo, hi)
-            .clamp(-GOAL_LIM_COUNTS, GOAL_LIM_COUNTS)
+            .max(cfg.goal_min_counts)
+            .min(cfg.goal_max_counts)
             << 16;
         // both operands within +-2^29 -> exact
         let d = goal - self.theta_ref_q16;
+        let prev = self.omega_ref_q16;
+        // landed and at rest: the full step lands again with alpha 0
+        if d == 0 && prev == 0 {
+            self.alpha_last_q16 = 0;
+            return;
+        }
         let d_abs = d.unsigned_abs();
         let dir_pos = d >= 0;
-        let prev = self.omega_ref_q16;
         // magnitudes along the goal direction; v < 0 means moving away
         let v = if dir_pos { prev } else { -prev };
         let v_next = if v < 0 {
@@ -141,9 +169,8 @@ impl TrajGen {
     }
 
     /// Velocity-mode entry: slew omega_ref toward the clamped goal by +-a
-    /// per tick. theta_ref keeps integrating - unused downstream in this
-    /// mode, but a switch back to position mode then starts from a
-    /// consistent pose.
+    /// per tick. theta_ref holds: nothing reads it in this mode, and every
+    /// entry into position mode reseeds the profile.
     ///
     /// Soft-limit wall ramp: the goal's inward component is capped at
     /// WALL_RAMP c/s per count of distance to the wall, reaching 0 at the
@@ -154,32 +181,22 @@ impl TrajGen {
     /// bounce re-arms it every swing. Retreat is never capped. The accel
     /// slew below stays the physical enforcer when a config's accel/vel
     /// ratio disagrees with the ramp slope - the ramp is a reference shape.
-    pub fn step_velocity(
-        &mut self,
-        goal_velocity_cps: i32,
-        theta_hat_q16: i32,
-        dt_q32: u32,
-        cfg: &TrajCfg,
-    ) {
+    pub fn step_velocity(&mut self, goal_velocity_cps: i32, theta_hat_q16: i32, cfg: &TrajCfg) {
         let a = (cfg.accel_limit_q88 as i32) << 8;
-        let v_cap = cfg.vel_limit_cps.min(VEL_CAP_CPS) as i32;
+        let v_cap = cfg.vel_cap_cps as i32;
         let th = theta_hat_q16 >> 16;
-        let lo = cfg.pos_min_soft_counts.min(cfg.pos_max_soft_counts);
-        let hi = cfg.pos_max_soft_counts.max(cfg.pos_min_soft_counts);
         // distance pre-clamped so the shift cannot overflow
         let cap = (VEL_CAP_CPS as i32) >> WALL_RAMP_SHIFT;
-        let allow_up = hi.saturating_sub(th).clamp(0, cap) << WALL_RAMP_SHIFT;
-        let allow_dn = th.saturating_sub(lo).clamp(0, cap) << WALL_RAMP_SHIFT;
-        let goal = goal_velocity_cps
-            .clamp(-v_cap, v_cap)
-            .clamp(-allow_dn, allow_up)
-            << 16;
+        let goal = goal_velocity_cps.clamp(-v_cap, v_cap);
+        // only the wall the goal points at caps it: both allowances are >= 0
+        let goal = if goal >= 0 {
+            goal.min(cfg.wall_max_counts.saturating_sub(th).clamp(0, cap) << WALL_RAMP_SHIFT)
+        } else {
+            goal.max(-(th.saturating_sub(cfg.wall_min_counts).clamp(0, cap) << WALL_RAMP_SHIFT))
+        } << 16;
         let prev = self.omega_ref_q16;
         // goal - prev can span 2^32; saturation past +-a is clamped away
         let omega = prev + goal.saturating_sub(prev).clamp(-a, a);
-        let step_mag = q_mul(if omega < 0 { -omega } else { omega }, dt_q32 as i32, 32);
-        let travel = if omega >= 0 { step_mag } else { -step_mag };
-        self.theta_ref_q16 = (self.theta_ref_q16 + travel).clamp(-THETA_LIM_CQ16, THETA_LIM_CQ16);
         self.omega_ref_q16 = omega;
         self.alpha_last_q16 = omega - prev;
     }
@@ -207,12 +224,7 @@ mod tests {
     const A: i32 = 50 << 16;
 
     fn cfg(vel: u16, accel_q88: u16) -> TrajCfg {
-        TrajCfg {
-            vel_limit_cps: vel,
-            accel_limit_q88: accel_q88,
-            pos_min_soft_counts: -100_000,
-            pos_max_soft_counts: 100_000,
-        }
+        TrajCfg::new(vel, accel_q88, -100_000, 100_000)
     }
 
     fn run_to_land(t: &mut TrajGen, goal: i32, target_q16: i32, c: &TrajCfg, max: u32) -> u32 {
@@ -360,13 +372,119 @@ mod tests {
         panic!("no landing");
     }
 
+    /// The step as it ran before the stationary return and the prepared
+    /// config, on the raw CONFIG fields.
+    fn step_position_full(
+        t: &mut TrajGen,
+        goal_counts: i32,
+        dt_q32: u32,
+        raw: (u16, u16, i32, i32),
+    ) {
+        let (vel, accel, min, max) = raw;
+        let a = (accel as i32) << 8;
+        let v_lim = (vel.min(VEL_CAP_CPS) as i32) << 16;
+        let lo = min.min(max);
+        let hi = max.max(min);
+        let goal = goal_counts
+            .clamp(lo, hi)
+            .clamp(-GOAL_LIM_COUNTS, GOAL_LIM_COUNTS)
+            << 16;
+        let d = goal - t.theta_ref_q16;
+        let d_abs = d.unsigned_abs();
+        let dir_pos = d >= 0;
+        let prev = t.omega_ref_q16;
+        let v = if dir_pos { prev } else { -prev };
+        let v_next = if v < 0 {
+            (v + a).min(v_lim)
+        } else {
+            let v_up = v + (v_lim - v).clamp(-a, a);
+            let vt = q_mul(v_up, dt_q32 as i32, 32) as u32;
+            if wide_ge(v_up as u32 + a as u32, vt, 2 * (a as u32), d_abs) {
+                (v - a).max(0)
+            } else {
+                v_up
+            }
+        };
+        let omega = if dir_pos { v_next } else { -v_next };
+        let step_mag = q_mul(if omega < 0 { -omega } else { omega }, dt_q32 as i32, 32);
+        let toward = if omega > 0 {
+            d >= 0
+        } else if omega < 0 {
+            d <= 0
+        } else {
+            true
+        };
+        let land = (toward && step_mag as u32 >= d_abs)
+            || (omega.unsigned_abs() <= a as u32 && d_abs < SNAP_D_CQ16);
+        if land {
+            t.theta_ref_q16 = goal;
+            t.omega_ref_q16 = 0;
+            t.alpha_last_q16 = prev.saturating_neg();
+        } else {
+            let travel = if omega >= 0 { step_mag } else { -step_mag };
+            t.theta_ref_q16 = (t.theta_ref_q16 + travel).clamp(-THETA_LIM_CQ16, THETA_LIM_CQ16);
+            t.omega_ref_q16 = omega;
+            t.alpha_last_q16 = omega.saturating_sub(prev);
+        }
+    }
+
+    #[test]
+    fn stationary_return_and_prepared_cfg_match_the_full_step() {
+        let state = |t: &TrajGen| (t.theta_ref_q16, t.omega_ref_q16, t.alpha_last_q16);
+        let mut seed = 1u32;
+        let mut next = || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            seed as i32
+        };
+        for (vel, accel) in [(0u16, 0u16), (1, 1), (1000, 50 << 8), (u16::MAX, u16::MAX)] {
+            for (min, max) in [(-300, 500), (100, -100), (i32::MIN, i32::MAX)] {
+                let raw = (vel, accel, min, max);
+                let c = TrajCfg::new(vel, accel, min, max);
+                for dt in [0, DT, u32::MAX] {
+                    // on the goal: at rest with alpha still the landing
+                    // tick's, and passing through it
+                    for goal in [i32::MIN, -301, 0, 77, 501, i32::MAX] {
+                        let on_goal = goal
+                            .clamp(min.min(max), max.max(min))
+                            .clamp(-GOAL_LIM_COUNTS, GOAL_LIM_COUNTS)
+                            << 16;
+                        for omega in [0, A, -A, 1000 << 16] {
+                            let mut t = TrajGen {
+                                theta_ref_q16: on_goal,
+                                omega_ref_q16: omega,
+                                alpha_last_q16: -A,
+                            };
+                            let mut r = TrajGen { ..t };
+                            t.step_position(goal, dt, &c);
+                            step_position_full(&mut r, goal, dt, raw);
+                            assert_eq!(state(&t), state(&r), "goal {goal} omega {omega} dt {dt}");
+                            if omega == 0 {
+                                assert_eq!(state(&t), (on_goal, 0, 0));
+                            }
+                        }
+                    }
+                    // any reachable state: theta inside the guard, omega
+                    // inside the i16 c/s cap
+                    for _ in 0..200 {
+                        let mut t = TrajGen {
+                            theta_ref_q16: next() >> 2,
+                            omega_ref_q16: (next() % 32768) << 16,
+                            alpha_last_q16: next(),
+                        };
+                        let mut r = TrajGen { ..t };
+                        let goal = next() >> (next() as u32 & 31);
+                        t.step_position(goal, dt, &c);
+                        step_position_full(&mut r, goal, dt, raw);
+                        assert_eq!(state(&t), state(&r), "goal {goal} dt {dt}");
+                    }
+                }
+            }
+        }
+    }
+
     #[test]
     fn goal_clamped_to_soft_limits() {
-        let c = TrajCfg {
-            pos_min_soft_counts: -300,
-            pos_max_soft_counts: 500,
-            ..cfg(1000, 50 << 8)
-        };
+        let c = TrajCfg::new(1000, 50 << 8, -300, 500);
         let mut t = TrajGen::new();
         t.reseed(0);
         run_to_land(&mut t, 100_000, 500 << 16, &c, 2000);
@@ -379,24 +497,22 @@ mod tests {
         let mut t = TrajGen::new();
         t.reseed(0);
         for k in 1..=10i32 {
-            t.step_velocity(500, 0, DT, &c);
+            t.step_velocity(500, 0, &c);
             assert_eq!(t.omega_star_q16(), (50 * k) << 16);
             assert_eq!(t.alpha_star_q16(), A);
         }
-        t.step_velocity(500, 0, DT, &c);
+        t.step_velocity(500, 0, &c);
         assert_eq!(t.omega_star_q16(), 500 << 16);
         assert_eq!(t.alpha_star_q16(), 0);
         // goal past vel_limit clamps at the limit
         for _ in 0..100 {
-            t.step_velocity(5000, 0, DT, &c);
+            t.step_velocity(5000, 0, &c);
         }
         assert_eq!(t.omega_star_q16(), 1000 << 16);
-        // theta tracked the motion
-        assert!(t.theta_star_q16() > 0);
         // reversal: exactly one accel step per tick through zero
         let mut prev = t.omega_star_q16();
         for _ in 0..40 {
-            t.step_velocity(-5000, 0, DT, &c);
+            t.step_velocity(-5000, 0, &c);
             assert_eq!(prev - t.omega_star_q16(), A);
             prev = t.omega_star_q16();
         }
@@ -405,15 +521,11 @@ mod tests {
 
     #[test]
     fn velocity_wall_ramp_caps_inward_goal() {
-        let c = TrajCfg {
-            pos_min_soft_counts: 0,
-            pos_max_soft_counts: 1000,
-            ..cfg(1000, 50 << 8)
-        };
+        let c = TrajCfg::new(1000, 50 << 8, 0, 1000);
         let run = |theta: i32, goal: i32| {
             let mut t = TrajGen::new();
             for _ in 0..100 {
-                t.step_velocity(goal, theta << 16, DT, &c);
+                t.step_velocity(goal, theta << 16, &c);
             }
             t.omega_star_q16() >> 16
         };
@@ -430,6 +542,41 @@ mod tests {
         assert_eq!(run(25, -5000), -400);
         assert_eq!(run(0, -5000), 0);
         assert_eq!(run(500, -5000), -1000);
+    }
+
+    #[test]
+    fn velocity_caps_by_the_wall_the_goal_points_at() {
+        // the goal clamped by both wall allowances, as before the prepared
+        // config
+        let both = |goal: i32, th: i32, raw: (u16, i32, i32)| {
+            let (vel, min, max) = raw;
+            let v_cap = vel.min(VEL_CAP_CPS) as i32;
+            let (lo, hi) = (min.min(max), max.max(min));
+            let cap = (VEL_CAP_CPS as i32) >> WALL_RAMP_SHIFT;
+            let up = hi.saturating_sub(th).clamp(0, cap) << WALL_RAMP_SHIFT;
+            let dn = th.saturating_sub(lo).clamp(0, cap) << WALL_RAMP_SHIFT;
+            goal.clamp(-v_cap, v_cap).clamp(-dn, up) << 16
+        };
+        // one step from rest slews by at most a
+        let a = (u16::MAX as i32) << 8;
+        for (vel, min, max) in [
+            (1000u16, 0, 1000),
+            (u16::MAX, 100, -100),
+            (0, i32::MIN, i32::MAX),
+        ] {
+            let c = TrajCfg::new(vel, u16::MAX, min, max);
+            for th in [-9000, -1, 0, 25, 950, 1000, 1100, 9000] {
+                for goal in [i32::MIN, -5000, -1, 0, 1, 700, 5000, i32::MAX] {
+                    let mut t = TrajGen::new();
+                    t.step_velocity(goal, th << 16, &c);
+                    assert_eq!(
+                        t.omega_star_q16(),
+                        both(goal, th, (vel, min, max)).clamp(-a, a),
+                        "goal {goal} th {th}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -481,12 +628,7 @@ mod tests {
         for accel in [0u16, 1, u16::MAX] {
             for vel in [0u16, 1, u16::MAX] {
                 for (lo, hi) in [(i32::MIN, i32::MAX), (100, -100)] {
-                    let c = TrajCfg {
-                        vel_limit_cps: vel,
-                        accel_limit_q88: accel,
-                        pos_min_soft_counts: lo,
-                        pos_max_soft_counts: hi,
-                    };
+                    let c = TrajCfg::new(vel, accel, lo, hi);
                     for goal in [i32::MIN, -1, 0, 1, i32::MAX] {
                         for seed in [i32::MIN, 0, i32::MAX] {
                             let mut t = TrajGen::new();
@@ -495,7 +637,7 @@ mod tests {
                                 t.step_position(goal, DT, &c);
                                 assert!(t.omega_star_q16().unsigned_abs() <= 32767u32 << 16);
                                 assert!(t.theta_star_q16().unsigned_abs() <= 1 << 29);
-                                t.step_velocity(goal, seed, DT, &c);
+                                t.step_velocity(goal, seed, &c);
                                 assert!(t.omega_star_q16().unsigned_abs() <= 32767u32 << 16);
                                 assert!(t.theta_star_q16().unsigned_abs() <= 1 << 29);
                             }
