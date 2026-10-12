@@ -28,18 +28,6 @@ pub fn sat_add(a: i32, b: i32) -> i32 {
     }
 }
 
-/// `a.saturating_sub(b)`.
-#[inline(always)]
-pub fn sat_sub(a: i32, b: i32) -> i32 {
-    match a.checked_sub(b) {
-        Some(v) => v,
-        None => {
-            core::hint::cold_path();
-            if b > 0 { i32::MIN } else { i32::MAX }
-        }
-    }
-}
-
 /// `a.saturating_mul(b)`.
 #[inline(always)]
 pub fn sat_mul(a: i32, b: i32) -> i32 {
@@ -175,7 +163,6 @@ mod tests {
         for a in EDGES {
             for b in EDGES {
                 assert_eq!(sat_add(a, b), a.saturating_add(b), "{a} + {b}");
-                assert_eq!(sat_sub(a, b), a.saturating_sub(b), "{a} - {b}");
                 assert_eq!(sat_mul(a, b), a.saturating_mul(b), "{a} * {b}");
             }
         }

@@ -93,6 +93,12 @@ pub fn i_from_frame(
     Some(if duty_sign_positive { mag } else { -mag })
 }
 
+/// The largest |i| `i_from_frame` returns: any u16 sample and bias under
+/// a u16 settle gain.
+#[cfg(test)]
+pub(crate) const I_FROM_FRAME_MAX: i32 =
+    (((u16::MAX as i64 * u16::MAX as i64) >> 14) as i32 + 1) >> 1;
+
 /// Drive-window terminal differential `va - vb`. Positive duty drives IN1
 /// (TIM1 CH3, PC6) -> DRV8212P OUT1 -> MOT_A -> VSNA -> `vmotor_a`, so
 /// `va - vb` is positive under forward drive, negative under reverse - the
@@ -369,6 +375,20 @@ mod tests {
     }
 
     const ADC_MAX: u16 = 4095;
+
+    #[test]
+    fn i_from_frame_max_bounds_every_u16_input() {
+        for (sample, bias) in [(u16::MAX, 0), (0, u16::MAX)] {
+            let f = SensorFrame {
+                current: sample,
+                ..Default::default()
+            };
+            for fwd in [true, false] {
+                let i = i_from_frame(&f, valid(false), fwd, bias, u16::MAX as u32).unwrap();
+                assert_eq!(i.abs(), I_FROM_FRAME_MAX, "{sample} {bias} {fwd}");
+            }
+        }
+    }
 
     #[test]
     fn i_from_frame_fits_i16_at_adc_extremes() {

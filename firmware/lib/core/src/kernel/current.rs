@@ -5,7 +5,7 @@
 //! anti-windup term needs no domain crossing and duty <= duty_max by
 //! construction, sagging battery included.
 
-use crate::math::{q_mul, sat_add, sat_clamp, sat_mul, sat_sub};
+use crate::math::{q_mul, sat_add, sat_clamp, sat_mul};
 
 /// PI error clamp, ccounts. Physical error is bounded by shunt full scale
 /// plus the current limit (|i_meas| <= 4095, |i_ref| <= i_lim <= 4095), so
@@ -84,8 +84,10 @@ impl CurrentLoop {
     /// and the output rides integrator + feedforward (`u_ff_vc`) until the
     /// window returns. `rail` and `recip_vbus_q15` must describe the same
     /// vbus (estimator::vbus::VbusEst contract `(recip * vbus) >> 15 ~=
-    /// 32767`) or the duty cap is off by their mismatch. The voltage sums
-    /// rely on `u_ff_vc` being the free fn `u_ff_vc`'s output (<= 2^19).
+    /// 32767`) or the duty cap is off by their mismatch. The plain sums
+    /// rely on the kernel's ranges: `i_ref` inside an `IBand` (<= u16::MAX),
+    /// `i_meas` from `window::i_from_frame` (<= 131068) and `u_ff_vc` from
+    /// the free fn `u_ff_vc` (<= 2^19).
     pub fn step(
         &mut self,
         i_ref: i32,
@@ -96,7 +98,7 @@ impl CurrentLoop {
         gains: &CurrentGains,
     ) -> i16 {
         let e = match i_meas {
-            Some(i) => sat_clamp(sat_sub(i_ref, i), -E_LIM_CC, E_LIM_CC),
+            Some(i) => sat_clamp(i_ref - i, -E_LIM_CC, E_LIM_CC),
             None => 0,
         };
         // kp * 2^13 <= 2^29, i32-exact before the shift; |u_pi| < 2^22, so
@@ -134,6 +136,9 @@ impl CurrentLoop {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::estimator::window::I_FROM_FRAME_MAX;
+
+    const I_REF_MAX: i32 = u16::MAX as i32;
 
     const VBUS: u16 = 3000;
     // floor reciprocal per the recip contract: (RECIP * VBUS) >> 15 = 32766
@@ -317,16 +322,23 @@ mod tests {
     }
 
     #[test]
-    fn duty_capped_for_any_input() {
+    fn duty_capped_for_any_legal_input() {
         // Floor reciprocal keeps recip*vbus <= 32767<<15, so the voltage
         // clamp maps to duty <= duty_max exactly; sweep hostile corners
-        // including i32 extremes and a pre-wound integrator.
+        // including the range extremes and a pre-wound integrator.
         let gains = g(KP_1, 200, 2048, 1 << 12, 20000);
         for vbus in [2400u16, 3000, 4095] {
             let recip = recip_for(vbus);
-            for i_ref in [i32::MIN, -8000, 0, 500, 8000, i32::MAX] {
+            for i_ref in [-I_REF_MAX, -8000, 0, 500, 8000, I_REF_MAX] {
                 for omega in [i32::MIN, -(9000 << 16), 0, 9000 << 16, i32::MAX] {
-                    for i_meas in [None, Some(-4095), Some(0), Some(4095)] {
+                    for i_meas in [
+                        None,
+                        Some(-I_FROM_FRAME_MAX),
+                        Some(-4095),
+                        Some(0),
+                        Some(4095),
+                        Some(I_FROM_FRAME_MAX),
+                    ] {
                         let mut cur = CurrentLoop::new();
                         for _ in 0..20 {
                             let d = step(&mut cur, i_ref, i_meas, omega, vbus, recip, &gains);
@@ -342,15 +354,20 @@ mod tests {
     }
 
     #[test]
-    fn voltage_sums_stay_in_i32_at_extreme_inputs() {
+    fn sums_stay_in_i32_at_legal_extremes() {
         // debug overflow checks trip if any plain add or subtract in `step`
         // leaves i32
         let gains = g(u16::MAX, u16::MAX, u16::MAX, u16::MAX, u16::MAX);
         for vbus in [1u16, 4095, u16::MAX] {
             let recip = recip_for(vbus);
-            for i_ref in [i32::MIN, 0, i32::MAX] {
+            for i_ref in [-I_REF_MAX, 0, I_REF_MAX] {
                 for omega in [i32::MIN, 0, i32::MAX] {
-                    for i_meas in [None, Some(i32::MIN), Some(0), Some(i32::MAX)] {
+                    for i_meas in [
+                        None,
+                        Some(-I_FROM_FRAME_MAX),
+                        Some(0),
+                        Some(I_FROM_FRAME_MAX),
+                    ] {
                         let mut cur = CurrentLoop::new();
                         for _ in 0..20 {
                             step(&mut cur, i_ref, i_meas, omega, vbus, recip, &gains);

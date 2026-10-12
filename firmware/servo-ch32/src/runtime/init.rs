@@ -116,6 +116,10 @@ pub fn bringup(
 // tick_hz stamps from the constant that programs TIM1, so the table can
 // never disagree with silicon; the cast must stay lossless.
 const _: () = assert!(chip::MOTOR_PWM_FREQ_HZ <= u16::MAX as u32);
+const _: () = assert!(
+    timer::pwm_dividers_from_hz(chip::MOTOR_PWM_FREQ_HZ).1 as u32
+        <= osc_servo_core::estimator::bemf::ARR_MAX
+);
 
 // TEL streams the applied duty as 12-bit signed compare counts.
 const _: () = assert!(
