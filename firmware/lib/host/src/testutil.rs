@@ -12,10 +12,13 @@ use osc_protocol::wire::{BaudRate, Id, Inst, ResultCode};
 use crate::traits;
 
 pub const RING_LEN: usize = 512;
+pub const MARKS_LEN: usize = 64;
 
 struct RingState {
     buf: UnsafeCell<[u8; RING_LEN]>,
     written: Cell<u32>,
+    marks: UnsafeCell<[u32; MARKS_LEN]>,
+    marked: Cell<u32>,
 }
 
 /// Counted RX ring the test feeds like the wire would.
@@ -27,10 +30,24 @@ impl FakeRing {
         FakeRing(Rc::new(RingState {
             buf: UnsafeCell::new([0xFF; RING_LEN]),
             written: Cell::new(0),
+            marks: UnsafeCell::new([0; MARKS_LEN]),
+            marked: Cell::new(0),
         }))
     }
 
-    /// Ring bytes in at the cursor, advancing it -- one wire arrival.
+    /// A break plus the bytes behind it: `bytes[0]` is the break's ring
+    /// byte and gets the detector's mark.
+    pub fn frame(&self, bytes: &[u8]) {
+        let at = self.0.written.get();
+        self.feed(bytes);
+        // SAFETY: as `feed`.
+        let marks = unsafe { &mut *self.0.marks.get() };
+        let n = self.0.marked.get();
+        marks[n as usize % MARKS_LEN] = at;
+        self.0.marked.set(n.wrapping_add(1));
+    }
+
+    /// Ring bytes no break heads, in at the cursor - one wire arrival.
     pub fn feed(&self, bytes: &[u8]) {
         // SAFETY: test-only, single-threaded; never called while a
         // `bytes()` slice is live.
@@ -54,6 +71,16 @@ impl traits::RxRing for FakeRing {
 
     fn written(&self) -> u32 {
         self.0.written.get()
+    }
+
+    fn marks(&self) -> &[u32] {
+        // SAFETY: as `bytes`.
+        let arr: &[u32; MARKS_LEN] = unsafe { &*self.0.marks.get() };
+        &arr[..]
+    }
+
+    fn marked(&self) -> u32 {
+        self.0.marked.get()
     }
 }
 

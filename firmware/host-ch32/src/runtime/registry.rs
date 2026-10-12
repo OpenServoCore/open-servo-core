@@ -9,6 +9,7 @@ use osc_host::engine::HostBus;
 use osc_host::traits::Providers;
 use osc_protocol::wire::BaudRate;
 
+use crate::hal::pfic;
 use crate::providers::deadline::Deadline;
 use crate::providers::ring::RxRing;
 use crate::providers::tx_wire::TxWire;
@@ -29,12 +30,14 @@ impl Providers for LinkEProviders {
 
 pub type Bus = HostBus<LinkEProviders>;
 
-/// All `&mut` access to the engine is serialized: the USART3 and SysTick
-/// vectors share one PFIC preemption class (never preempt each other), and
-/// the main loop reaches in only inside `critical_section::with`. This
-/// wrapper asserts that discipline so the cell can live in a `static`.
+/// All `&mut` access to the engine is serialized: only the SysTick and
+/// software-interrupt vectors reach in, at one PFIC level (never preempt
+/// each other), and the main loop only inside [`Drivers::with_bus`], which
+/// holds that level off. The USART3 vector above it never touches the
+/// engine. This wrapper asserts that discipline so the cell can live in a
+/// `static`.
 struct BusCell(SyncUnsafeCell<Option<Bus>>);
-// SAFETY: see `BusCell` doc -- access is serialized by PFIC priority + CS.
+// SAFETY: see `BusCell` doc - access is serialized by PFIC level + threshold.
 unsafe impl Sync for BusCell {}
 
 static BUS: BusCell = BusCell(SyncUnsafeCell::new(None));
@@ -55,8 +58,8 @@ impl Drivers {
     }
 
     /// SAFETY: bringup installs the bus before any IRQ unmasks; runtime
-    /// `&mut` access is from the USART3/SysTick vectors (one preemption
-    /// class) or the main loop inside a critical section.
+    /// `&mut` access is from the engine-level vectors or `with_bus` (see
+    /// `BusCell`).
     #[inline(always)]
     pub unsafe fn bus() -> &'static mut Bus {
         // SAFETY: see fn doc.
@@ -64,5 +67,17 @@ impl Drivers {
         debug_assert!(cell.is_some(), "Drivers::bus() before install");
         // SAFETY: bringup ensures Some before any IRQ fires.
         unsafe { cell.as_mut().unwrap_unchecked() }
+    }
+
+    /// Main-loop access to the engine: the engine-level vectors are held
+    /// off by PFIC threshold for `f`, the USART3 break marks keep landing.
+    #[inline(always)]
+    pub fn with_bus<R>(f: impl FnOnce(&mut Bus) -> R) -> R {
+        pfic::set_threshold(crate::runtime::isr::ENGINE_LEVEL);
+        // SAFETY: the engine-level vectors are masked until the threshold
+        // drops; the main loop never nests `with_bus`.
+        let r = f(unsafe { Self::bus() });
+        pfic::set_threshold(0);
+        r
     }
 }

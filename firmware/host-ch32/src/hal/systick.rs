@@ -62,8 +62,8 @@ pub fn set_cmp_low(at: u32) {
         .write_value(((epoch as u64) << 32) | at as u64);
 }
 
-// SAFETY: CTLR is written from MAIN (engine deadline set under CS) and the
-// SysTick ISR; CS keeps the STIE RMW atomic.
+// SAFETY: CTLR is written from MAIN (engine deadline set) and the SysTick
+// ISR; CS keeps the STIE RMW atomic.
 #[inline(always)]
 pub fn set_irq(enable: bool) {
     critical_section::with(|_| {

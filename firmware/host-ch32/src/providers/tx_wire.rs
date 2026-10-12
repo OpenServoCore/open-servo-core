@@ -1,13 +1,13 @@
 //! TX-wire provider: the open-drain bus end (PB10 never leaves AF
 //! open-drain but for the rescue pulse), the law break, one DMA1_CH2 arm
-//! at a time. Arm completion surfaces as the
-//! USART3 TC ISR (shifter empty), never a CH2 flag, so release can never
-//! garble in-flight bits.
+//! at a time. Arm completion is the USART3 TC (shifter empty), never a CH2
+//! flag, so release can never garble in-flight bits.
 //!
-//! Echo discipline: V305 HDSEL echoes own TX into RX (unlike the V006),
-//! so `claim` gates RE off and `release` restores it -- the ring never
-//! sees our bytes, no retire dance needed (with RE off nothing latches,
-//! and the receiver resyncs cleanly on an idle wire at re-enable).
+//! Echo discipline: the RX pin hears own TX (full duplex), so `claim`
+//! gates RE off and `release` restores it - the ring and the break marks
+//! never see our bytes, our breaks or a rescue pulse, no retire dance
+//! needed (with RE off nothing latches, and the receiver resyncs cleanly on
+//! an idle wire at re-enable).
 
 use ch32_metapac::USART3;
 use osc_host::traits;

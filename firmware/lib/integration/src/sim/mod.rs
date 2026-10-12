@@ -41,7 +41,7 @@ pub use self::cpu::{
     Entries, HandlerCost, KERNEL_AT_BUDGET, KERNEL_FLOOR, KernelEvents, KernelLane, KernelLevel,
     KernelStats, Motion, TelCosts,
 };
-pub use self::host::HostEvent;
+pub use self::host::{HOST_MARK_LAG_US, HostEvent};
 pub use self::servo::{DEV_V006_SENSE, DEV_V006_SENSE_EXT};
 pub use self::store::{Kind as ImageKind, RamStore, Tear};
 
@@ -215,6 +215,12 @@ impl Sim {
     /// their wire ticks.
     pub fn set_wake_lag_us(&mut self, lag_us: impl FnMut() -> f64 + 'static) {
         self.wake_lag_us = Some(Box::new(lag_us));
+    }
+
+    /// Publish every later host break mark `us` after its break ends
+    /// (default [`HOST_MARK_LAG_US`]; panics if no host).
+    pub fn set_host_mark_lag_us(&mut self, us: f64) {
+        self.host.as_mut().expect("host attached").mark_lag = (us * TICKS_PER_US as f64) as u64;
     }
 
     /// Order every later break wake against its ringed 0x00
@@ -826,6 +832,11 @@ impl Sim {
                     h.bus.on_tx_complete();
                 }
             }
+            Event::HostMark => {
+                if let Some(h) = &self.host {
+                    h.marks.publish(&h.ring);
+                }
+            }
         }
         // The adapter's main loop is a tight poll: drain the engine after
         // every event so its clocks and framer track the wire promptly.
@@ -1191,7 +1202,7 @@ impl Sim {
             let rx = self.host.as_ref().map(|h| h.baud.current());
             if let Some(rx) = rx {
                 if rx == baud {
-                    self.host.as_ref().expect("host attached").ring.push(0x00);
+                    self.host_hears_break();
                 } else {
                     let mut out = Vec::new();
                     let hc = self.host_cross.as_mut().expect("host attached");
@@ -1311,13 +1322,27 @@ impl Sim {
     }
 
     fn cross_deliver_host(&mut self, out: Vec<RxOut>) {
-        if let Some(h) = &self.host {
-            for o in out {
-                match o {
-                    RxOut::Byte(b) => h.ring.push(b),
-                    RxOut::Break => h.ring.push(0x00),
+        for o in out {
+            match o {
+                RxOut::Byte(b) => {
+                    if let Some(h) = &self.host {
+                        h.ring.push(b);
+                    }
                 }
+                RxOut::Break => self.host_hears_break(),
             }
+        }
+    }
+
+    /// A qualified break at the host: its 0x00 rings now, its mark one
+    /// detector service later (a break inside a pending service coalesces).
+    fn host_hears_break(&mut self) {
+        let Some(h) = &self.host else { return };
+        h.ring.push(0x00);
+        if h.marks.latch() {
+            let mut c = self.core.borrow_mut();
+            let at = c.now() + h.mark_lag;
+            c.schedule(Event::HostMark, at);
         }
     }
 
@@ -1363,12 +1388,18 @@ impl Sim {
         for j in 0..self.servos.len() {
             self.deliver_break_to(j, baud, start);
         }
-        if let Some(h) = &self.host {
-            if h.baud.current().as_hz() >= baud.as_hz() {
-                h.ring.push(0x00);
-            } else {
-                h.ring.push(0xA5); // injected junk, value arbitrary
+        let heard = self
+            .host
+            .as_ref()
+            .map(|h| h.baud.current().as_hz() >= baud.as_hz());
+        match heard {
+            Some(true) => self.host_hears_break(),
+            Some(false) => {
+                if let Some(h) = &self.host {
+                    h.ring.push(0xA5); // injected junk, value arbitrary
+                }
             }
+            None => {}
         }
     }
 
@@ -1379,9 +1410,7 @@ impl Sim {
             let rx = self.handles[j].baud.current();
             self.wake_on_break(j, break_wake_lead(rx));
         }
-        if let Some(h) = &self.host {
-            h.ring.push(0x00);
-        }
+        self.host_hears_break();
     }
 
     /// The samplers are thread-level - no vector, no CPU pend - mirroring the

@@ -17,12 +17,16 @@
 //!   bond, one output max): PA8 stays an input.
 //! - PC7 = IAP button, input (board 10k pull-up); read-only for us, the
 //!   loader's own cold-boot sampler is the brick-recovery path.
-//! - PB10 = USART3 TX, the bus wire under HDSEL: AF open-drain from
-//!   bringup on, after the USART is enabled. AF modes have no internal
-//!   pull, so the bus pull-up at the adapter end (680 ohm on the bench
-//!   pigtail) is required: nothing here drives a rising edge. The rescue
-//!   pulse is a GPIO open-drain low. PB11 stays input pull-up (the header
-//!   RX pin, tied to DATA by the pigtail, unused by firmware).
+//! - PB10 (USART3 TX) and PB11 (USART3 RX) are both tied to DATA by the
+//!   bus pigtail: the bus is full duplex, always. The receiver, the break
+//!   detector and the own-TX mute (RE off while claimed) all rely on PB11
+//!   hearing the wire, so a front end without that tie is not supported.
+//! - PB10: AF open-drain from bringup on, after the USART is enabled. AF
+//!   modes have no internal pull, so the bus pull-up at the adapter end
+//!   (680 ohm on the bench pigtail) is required: nothing here drives a
+//!   rising edge. The rescue pulse is a GPIO open-drain low.
+//! - PB11: input pull-up, so an unplugged pigtail idles RX at mark instead
+//!   of floating into false breaks.
 
 use ch32_metapac::{GPIOA, GPIOB, GPIOC};
 

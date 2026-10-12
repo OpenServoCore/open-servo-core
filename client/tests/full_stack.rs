@@ -1419,6 +1419,49 @@ fn tel_stream_garble_never_swallows_the_next_frame() {
     }
 }
 
+/// A false length never holds the burst's terminal past LAST: the claim
+/// dies at the next break mark, so LAST closes the burst within the mark's
+/// service lag of its own wire end, never at the 50 ms window. Garble lands
+/// at each byte of the second-to-last frame, every mask and length.
+#[test]
+fn tel_stream_garble_never_holds_last_to_the_window() {
+    // LAST's own wire end, its last byte's stop sample, plus the host's
+    // mark lag at budget: the terminal surfaces on that byte's event.
+    let slack_us = osc_integration::sim::HOST_MARK_LAG_US + 1;
+    for mask in [0x01, 0x03, 0x0B, 0x1B, 0x1F, 0x3F, 0x41, 0xC1] {
+        for count in [40u16, 48] {
+            let (at, end, bytes, tpu) = tel_frame_span(mask, count, 1);
+            let byte = (end - at) / bytes;
+            for b in 0..=bytes + 1 {
+                let case = format!("mask {mask:#x} count {count} garble at byte {b} of frame 1");
+                let mut c = tel_fleet();
+                c.write(Id::new(5), TEL_MASK, &mask.to_le_bytes())
+                    .expect("mask");
+                c.pipe_mut().take_frames();
+                c.pipe_mut()
+                    .sim_mut()
+                    .inject_garble_at((at + b * byte) / tpu, 0xA5);
+                let reply = arm_tel(&mut c, count);
+                assert_eq!(reply.outcome, Outcome::Complete, "{case}");
+                let last_end = c
+                    .pipe_mut()
+                    .take_frames()
+                    .into_iter()
+                    .filter(|f| matches!(f.from, Source::Servo(_)))
+                    .map(|f| f.end)
+                    .max()
+                    .expect("servo frames");
+                let late = u64::from(reply.tick.wrapping_sub(last_end as u32));
+                assert!(
+                    late <= slack_us * tpu,
+                    "{case}: terminal {} us after LAST",
+                    late / tpu
+                );
+            }
+        }
+    }
+}
+
 /// (t_winding_cc, therm_flags, i_lim_counts, current_limit_counts) over the wire.
 fn therm(c: &mut Client<FakePipe>, id: Id) -> (i16, u8, u16, u16) {
     (
