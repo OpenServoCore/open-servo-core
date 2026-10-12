@@ -126,8 +126,10 @@ pub const SLOW_CLOSE: u32 = 717;
 pub const THERM_INSTALL: u32 = 585;
 pub const THERM_SIDE: u32 = 639;
 
-/// The tick-load counters' close every [`HEALTH_CLOSE_TICKS`] ticks, and
-/// the catch-up it adds after a lost tick. E: priced on the executed path.
+/// The tick-load counters' close every [`HEALTH_CLOSE_TICKS`] ticks, on top
+/// of the tick it lands on, and the catch-up it adds after a lost tick. E:
+/// priced on the executed path. The probe books a closing tick apart, so
+/// no other row holds a close.
 pub const HEALTH_CLOSE: u32 = 93;
 pub const HEALTH_CLOSE_TICKS: u32 = 16;
 pub const CATCH_UP: u32 = 111;
@@ -317,6 +319,9 @@ pub const fn kernel_tick(regime: Regime, phase: usize, ev: Events) -> u32 {
     if ev.bank {
         t += TEL_BANK;
     }
+    if ev.health {
+        t += HEALTH_CLOSE;
+    }
     t
 }
 
@@ -341,4 +346,6 @@ pub struct Events {
     /// The thermometer's stages on phases THERM_INSTALL and THERM_SIDE.
     pub install: bool,
     pub side: bool,
+    /// The tick-load counters closed a window.
+    pub health: bool,
 }

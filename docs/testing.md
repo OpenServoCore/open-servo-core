@@ -487,12 +487,16 @@ full baud matrix (0.5 M / 1 M / 2 M / 3 M).
   reboot; the budget probe's maxima and means must stay inside
   `osc_servo_core::budget`, and every frame the host sent must book. Kernel
   ticks book by drive arm (Closed when the tick's arm or the one before it
-  ran the current loop), SLOW-due ticks and a thermal close as events. Each
+  ran the current loop), TEL and banking ticks too, a tick that closed a
+  tick-load window apart from all of these, and SLOW-due ticks and a thermal close as events. Each
   window prints (and with `BUDGET_OUT` saves) its rows in ticks and us,
   gamma(k) for k = 2, 4, 10, 20, the ticks of 30 us or more by arm, the
   longest entry lateness and its raw records as it ends; a red run names the
   window, the component, the measured ticks and us, and the budget. "hold
-  raw pos" (a goal from raw `pos`) is report-only.
+  raw pos" (a goal from raw `pos`) is report-only. "seated" runs only when
+  `BUDGET_WINDOWS` names it: with the horn clamped at mid travel it holds a
+  goal past the clamp, so the thermometer tracks a seat, the SLOW block's
+  dearest path.
 
 - **turnaround** (`turnaround.rs`) - instruction wire-end -> status break
   fall, per baud, for ping, read and write. With the kernel above the bus a
