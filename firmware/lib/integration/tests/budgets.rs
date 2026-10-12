@@ -10,10 +10,10 @@ use osc_protocol::wire::{Opcode, ResultCode};
 use osc_servo_core::BaudRate;
 use osc_servo_core::budget::probe::BusProbe;
 use osc_servo_core::budget::{
-    self, Body, ENTRY_EXIT, Frame, HOLD_APPROACH_TICKS, KERNEL, KERNEL_MEAN, PHASES, Regime,
-    TEL_BANK, TEL_ENCODE, TICK_HZ, WINDOW_LOAD, WINDOW_LOAD_TEL, WINDOW_TICKS,
+    self, Body, ENTRY_EXIT, Events, Frame, HOLD_APPROACH_TICKS, KERNEL, KERNEL_MEAN, PHASES,
+    Regime, TEL_BANK, TEL_ENCODE, TICK_HZ, TICK_PERIOD, WINDOW_LOAD, WINDOW_LOAD_TEL, WINDOW_TICKS,
 };
-use osc_servo_core::kernel::DECIM_SLOW;
+use osc_servo_core::kernel::{DECIM_SLOW, phase};
 use osc_servo_core::regions::control::addr::lifecycle::{GOAL_POSITION, TEL_COUNT, TEL_MASK};
 
 const ID: u8 = 1;
@@ -233,4 +233,37 @@ fn hold_lane_is_closed_for_the_approach_then_open() {
         goal
     );
     assert_eq!(sim.kernel_stats(s).closed, 2 * approach);
+}
+
+/// The ticks a configuration write adds while stepping, at budget: each
+/// refresh stage on its Closed phase row, with interrupt entry and exit,
+/// against the period, and the TEL ticks of a burst on top.
+fn refresh_stage_ticks(tel: bool) -> [(u8, u32); 2] {
+    let ev = Events {
+        refresh: true,
+        tel,
+        bank: tel,
+        ..Events::default()
+    };
+    [phase::REFRESH_FAST, phase::REFRESH_MEDIUM].map(|p| {
+        (
+            p,
+            budget::kernel_tick(Regime::Closed, p as usize, ev) + ENTRY_EXIT,
+        )
+    })
+}
+
+#[test]
+fn config_write_while_moving_fits_at_budget() {
+    for (p, t) in refresh_stage_ticks(false) {
+        assert!(t <= TICK_PERIOD, "phase {p}: {t} > {TICK_PERIOD}");
+    }
+}
+
+#[test]
+#[ignore = "red at budget: a Closed TEL tick with its bank does not fit the period yet"]
+fn config_write_while_moving_and_streaming_fits_at_budget() {
+    for (p, t) in refresh_stage_ticks(true) {
+        assert!(t <= TICK_PERIOD, "phase {p}: {t} > {TICK_PERIOD}");
+    }
 }

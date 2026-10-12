@@ -518,7 +518,7 @@ fn window_v_floor_is_published_beside_the_current_floor() {
     let mut k = kernel();
     run(&mut k, &sh, &mut p, 1);
     assert_eq!(floors(), (1734, 4356));
-    // a CALIB rewrite shows within one medium tick, torque off
+    // a CALIB rewrite shows within two medium ticks, torque off
     sh.table
         .with_mut(|t| t.calib.sense.v_window_min_ticks = 240);
     sh.config_touch();

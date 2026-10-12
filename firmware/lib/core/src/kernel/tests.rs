@@ -760,7 +760,7 @@ fn duty_max_write_caps_the_closed_loop_at_the_refresh_tick() {
     // the clamp is prepared at the rail commit, so the refresh re-prepares
     // it: the cap lands with the configuration, not at the next RAIL phase
     write_config(&sh, |t| t.config.loop_current.duty_max_q15 = 8000);
-    while k.phase != 0 {
+    while k.phase != phase::REFRESH_FAST {
         k.on_tick(frame(2000, BIAS), &sh);
         assert!(written_duty(&k) > 32000);
     }
@@ -995,9 +995,9 @@ fn reversed_polarity_negates_vdiff() {
     to_first_command(&mut k, &sh, frame(2000, BIAS));
     k.on_tick(frame(2000, BIAS), &sh);
     assert_eq!(k.fast.vdiff_last, -(3000 - 40));
-    // the rewire lands at the next CONTROL phase
+    // the rewire lands with the fast half of the configuration
     write_config(&sh, |t| t.config.limits.drive_polarity = true);
-    while k.phase != 0 {
+    while k.phase != phase::REFRESH_FAST {
         k.on_tick(frame(2000, BIAS), &sh);
         assert_eq!(k.fast.vdiff_last, -(3000 - 40));
     }
@@ -2546,7 +2546,7 @@ fn first_tick_takes_the_configuration_without_a_write() {
 }
 
 #[test]
-fn dispatched_config_write_lands_at_the_next_medium_boundary() {
+fn dispatched_config_write_lands_at_the_refresh_stages() {
     use crate::regions::config::addr::loop_current::DUTY_MAX_Q15;
     let sh = Shared::new();
     seed(&sh);
@@ -2555,12 +2555,75 @@ fn dispatched_config_write_lands_at_the_next_medium_boundary() {
     assert_eq!(ol_max(&k), 32767);
     crate::services::bus::tests::write_committed(&sh, DUTY_MAX_Q15, &5000u16.to_le_bytes());
     assert_eq!(sh.table.with(|t| t.config.loop_current.duty_max_q15), 5000);
-    while k.phase != 0 {
+    while k.phase != phase::REFRESH_FAST {
         k.on_tick(frame(2000, BIAS), &sh);
-        assert_eq!(ol_max(&k), 32767, "before the boundary");
+        assert_eq!(ol_max(&k), 32767, "before the first stage");
     }
     k.on_tick(frame(2000, BIAS), &sh);
     assert_eq!(ol_max(&k), 5000);
+}
+
+/// A CONFIG write touching both halves: a fast field, and a medium field
+/// beside the Ke pair the belt and the boxcar read.
+fn write_both_halves(sh: &Shared) {
+    write_config(sh, |t| {
+        t.config.loop_current.duty_max_q15 = 5000;
+        t.config.limits.stall_time_ms = 20;
+        t.calib.motor.recip_ke_q = 0;
+    });
+}
+
+/// (fast half, medium half) new: duty_max, then stall time and the Ke pair.
+fn halves_new(k: &Kernel<FakeIo>) -> (bool, bool) {
+    let m = &k.cfg.medium;
+    assert_eq!(
+        m.ke_unset,
+        m.recip_ke_q == 0,
+        "the belt reads the boxcar's Ke"
+    );
+    (
+        ol_max(k) == 5000,
+        m.limits.stall_time_ticks == 400 && m.recip_ke_q == 0,
+    )
+}
+
+#[test]
+fn config_write_lands_whole_within_two_medium_periods() {
+    let f = frame(2000, BIAS);
+    for at in 0..DECIM_MED {
+        let sh = Shared::new();
+        seed(&sh);
+        let mut k = kernel();
+        for _ in 0..DECIM_MED + at {
+            k.on_tick(f, &sh);
+        }
+        write_both_halves(&sh);
+        let mut ticks = 0;
+        while halves_new(&k) != (true, true) {
+            let before = halves_new(&k);
+            let p = k.phase;
+            k.on_tick(f, &sh);
+            ticks += 1;
+            let after = halves_new(&k);
+            // the fast half moves at its stage, the medium half at its own,
+            // so CONTROL never reads one half without the other
+            assert!(
+                after.0 == before.0 || p == phase::REFRESH_FAST,
+                "write at {at}"
+            );
+            assert!(
+                after.1 == before.1 || p == phase::REFRESH_MEDIUM,
+                "write at {at}"
+            );
+            if p == phase::CONTROL {
+                assert_eq!(before.0, before.1, "write at {at}");
+            }
+        }
+        assert!(
+            ticks <= 2 * DECIM_MED as u32,
+            "write at {at}: {ticks} ticks"
+        );
+    }
 }
 
 #[test]
@@ -2579,26 +2642,53 @@ fn unmoved_generation_keeps_the_snapshot() {
 }
 
 #[test]
-fn a_write_during_the_refresh_refreshes_again() {
+fn a_write_during_either_stage_refreshes_again() {
+    let f = frame(2000, BIAS);
+    for stage in [phase::REFRESH_FAST, phase::REFRESH_MEDIUM] {
+        let sh = Shared::new();
+        seed(&sh);
+        let mut k = kernel();
+        k.on_tick(f, &sh);
+        write_config(&sh, |t| t.config.loop_current.duty_max_q15 = 6000);
+        run_to(&mut k, &sh, f, stage);
+        k.on_tick(f, &sh);
+        assert_eq!(ol_max(&k), 6000);
+        // the stage's copy finished ahead of a commit: the generation it
+        // recorded is behind, so the next first stage copies both halves
+        write_config(&sh, |t| t.config.limits.stall_time_ms = 20);
+        sh.table
+            .with_mut(|t| t.config.loop_current.duty_max_q15 = 5000);
+        assert_ne!(k.config_gen, sh.config_gen());
+        for _ in 0..2 * DECIM_MED {
+            k.on_tick(f, &sh);
+        }
+        assert_eq!(ol_max(&k), 5000, "stage {stage}");
+        assert_eq!(k.cfg.medium.limits.stall_time_ticks, 400, "stage {stage}");
+        assert_eq!(k.config_gen, sh.config_gen());
+    }
+}
+
+#[test]
+fn each_refresh_stage_flips_the_probe_tag() {
+    let f = frame(2000, BIAS);
     let sh = Shared::new();
     seed(&sh);
     let mut k = kernel();
-    k.on_tick(frame(2000, BIAS), &sh);
-    // the generation the next boundary reads, then a commit lands before
-    // its copy finishes
-    let config_gen = sh.config_gen();
-    write_config(&sh, |t| t.config.loop_current.duty_max_q15 = 6000);
-    k.refresh(&sh, config_gen);
-    assert_eq!(ol_max(&k), 6000);
-    // an edit the counter does not announce shows only if the kernel
-    // rebuilds again at the next boundary
-    sh.table
-        .with_mut(|t| t.config.loop_current.duty_max_q15 = 5000);
-    for _ in 0..DECIM_MED {
-        k.on_tick(frame(2000, BIAS), &sh);
+    k.on_tick(f, &sh);
+    run_to(&mut k, &sh, f, phase::CONTROL);
+    write_both_halves(&sh);
+    let mut flips = [0u32; DECIM_MED as usize];
+    for _ in 0..2 * DECIM_MED {
+        let before = k.probe_tags();
+        k.on_tick(f, &sh);
+        if k.probe_tags().refresh_staged != before.refresh_staged {
+            flips[before.phase as usize] += 1;
+        }
     }
-    assert_eq!(ol_max(&k), 5000);
-    assert_eq!(k.config_gen, sh.config_gen());
+    let mut want = [0; DECIM_MED as usize];
+    want[phase::REFRESH_FAST as usize] = 1;
+    want[phase::REFRESH_MEDIUM as usize] = 1;
+    assert_eq!(flips, want);
 }
 
 // --- Host writes land at the CONTROL phase ---------------------------------

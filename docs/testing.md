@@ -188,7 +188,7 @@ The limiter on the plant rig (`integration/tests/torque_limit.rs`):
   period, and the duty a virgin stall pins at equals it.
 - `window_v_floor_is_published_beside_the_current_floor` - at 64 and
   160 ticks the two published floors read 1734 and 4356, and a
-  `v_window_min_ticks` rewrite shows within one medium tick, torque off.
+  `v_window_min_ticks` rewrite shows within two medium ticks, torque off.
 - `window_v_floor_follows_the_openloop_decay` - with a 93-tick CALIB
   floor and a 160-tick trough floor, Slow OpenLoop publishes the duty of
   93 and Fast the duty of 160.

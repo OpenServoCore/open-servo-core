@@ -5,7 +5,7 @@
 //! is written by the phase that computes it and read by the later phases
 //! and by the fast half.
 
-use super::config::{FastConfig, KernelConfig};
+use super::config::{FastConfig, KernelConfig, MediumConfig};
 use super::fast::{Command, Drive, Fast, Measured};
 use super::faults::{self, Detectors, FaultLatch};
 use super::limits::{self, IBand, LimitState};
@@ -38,6 +38,9 @@ pub mod phase {
     pub const PUBLISH: u8 = 7;
     /// Phases in use; the rest of the period is free.
     pub const COUNT: u8 = 8;
+    /// The configuration refresh's stages (`Kernel::on_tick`).
+    pub const REFRESH_FAST: u8 = 8;
+    pub const REFRESH_MEDIUM: u8 = 9;
 }
 
 /// One read of CONTROL.
@@ -182,7 +185,7 @@ impl Medium {
         cmd: &mut Command,
     ) {
         match k {
-            phase::CONTROL => self.control(frame.pos, &cfg.fast, shared, faults, fast, cmd),
+            phase::CONTROL => self.control(frame.pos, cfg, shared, faults, fast, cmd),
             phase::OBSERVER => self.observe(frame.pos, cfg, shared, fast),
             phase::TRAJECTORY => self.trajectory(cfg, faults, cmd),
             phase::LIMITS => self.limit(cfg, shared, faults, fast),
@@ -198,14 +201,15 @@ impl Medium {
     fn control(
         &mut self,
         raw_pos: u16,
-        fc: &FastConfig,
+        cfg: &KernelConfig,
         shared: &Shared,
         faults: &mut FaultLatch,
         fast: &mut Fast,
         cmd: &mut Command,
     ) {
+        let fc = &cfg.fast;
         self.ctl = Control::read(shared);
-        self.admit(fc, shared, faults, fast);
+        self.admit(&cfg.medium, shared, faults, fast);
         self.edges(raw_pos, fc, shared, faults, fast);
         cmd.drive = self.drive(fc, faults);
         // the resets of an edge reach the fast half with the drive they
@@ -221,7 +225,7 @@ impl Medium {
     /// The torque enable edge, the data-state entry check and the Ke belt.
     fn admit(
         &mut self,
-        fc: &FastConfig,
+        mc: &MediumConfig,
         shared: &Shared,
         faults: &mut FaultLatch,
         fast: &mut Fast,
@@ -255,7 +259,7 @@ impl Medium {
         // Physics belt: a closed loop on a zero Ke runs open (the boxcar
         // yields nothing, the current loop decouples nothing), whatever the
         // flags say - a live write of 0 into a running loop stops it here.
-        if life.torque_enable && matches!(life.mode, Mode::Velocity | Mode::Position) && fc.ke_unset
+        if life.torque_enable && matches!(life.mode, Mode::Velocity | Mode::Position) && mc.ke_unset
         {
             faults.raise(faults::BIT_DATA, faults::CODE_DATA);
         }

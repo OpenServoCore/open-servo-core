@@ -711,10 +711,11 @@ opens all. A refusal latches the `data` fault (below) and the servo
 stays disabled for that run. A reason that appears mid-run - a live
 edit of a covered field - waits for the next entry; the one thing that
 stops a running loop is the physics belt. A CONFIG or CALIB write
-reaches the kernel at the next medium tick boundary, within 0.5 ms of
-the commit. If that write leaves `recip_ke_q == 0` or `ke_vpc_q == 0`
-under a running Velocity or Position loop, the same fault latches at
-that boundary and the drive stops. Until then the loop keeps running
+reaches the kernel in two stages at the end of a medium period, within
+two medium ticks (1 ms) of the commit. If that write leaves
+`recip_ke_q == 0` or `ke_vpc_q == 0` under a running Velocity or
+Position loop, the same fault latches at the next medium tick and the
+drive stops. Until then the loop keeps running
 on the Ke it had, so a live write of a zero Ke can never run a loop
 open.
 A virgin servo jogging in OpenLoop therefore shows no ALERT and its
@@ -967,8 +968,8 @@ PWM period, 1734 (5.3%) for 64 ticks of 1200 on osc-dev-v006. It is
 the value the OpenLoop limiter uses, where its ceiling restarts and its
 blind band (below) begins, published at the kernel's first tick and
 again whenever a CONFIG or CALIB write reaches the kernel, torque on or
-off, so a rewrite of `i_window_min_ticks` shows within one medium tick
-(0.5 ms).
+off, so a rewrite of `i_window_min_ticks` shows within two medium ticks
+(1 ms).
 0 means the servo publishes no floor: the kernel has not ticked yet, or
 the firmware does not carry the field. A host planning a drive against
 the current sensor reads the floor here rather than deriving it from a

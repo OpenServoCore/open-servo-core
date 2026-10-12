@@ -112,7 +112,7 @@ pub fn kernel_exit(entry: u32, before: TickTags, after: ProbeTags, tel: bool) {
         let exit = systick::ticks();
         let b = before.tags;
         let ev = Events {
-            refresh: after.config_gen != b.config_gen,
+            refresh: after.refresh_staged != b.refresh_staged,
             tel,
             bank: osc_servo_drivers::bench::tel_banks() != before.banks,
             slow: b.slow_due,

@@ -329,10 +329,13 @@ fn live_zero_ke_write_stops_a_running_closed_loop(#[case] mode: Mode, #[case] re
             }
         });
         sh.config_touch();
-        // CONTROL phases are fast ticks 1, 1 + DECIM_MED, ... counted from
-        // the first; this many ticks run ahead of the next one
+        // tick n runs medium phase n % DECIM_MED; the write reaches the
+        // kernel at the next refresh stages, and the belt latches at the
+        // CONTROL phase after them
         let ticks = 200 + RUN + phase;
-        let boundary = ((DECIM_MED as u32 - ticks % DECIM_MED as u32) % DECIM_MED as u32) as usize;
+        let med = DECIM_MED as u32;
+        let stage = (kernel_phase::REFRESH_FAST as u32 + med - ticks % med) % med;
+        let boundary = (stage + med - kernel_phase::REFRESH_FAST as u32) as usize;
         let published = boundary + kernel_phase::PUBLISH as usize;
         for n in 0..2 * DECIM_MED as usize {
             let cmd = rig.run(&sh, 1)[0];
