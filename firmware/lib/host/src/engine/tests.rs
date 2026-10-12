@@ -91,7 +91,7 @@ fn ping_round_trip() {
     assert_eq!(r.wire.log()[3], WireOp::Release);
 
     r.ring
-        .feed(&sealed_status(1, ResultCode::Ok, &[0x2A, 0x00, 0x01]));
+        .frame(&sealed_status(1, ResultCode::Ok, &[0x2A, 0x00, 0x01]));
     let (slot, sid) = expect_status(&mut r);
     assert_eq!((slot, sid), (0, Id::new(1)));
 
@@ -132,7 +132,7 @@ fn one_outstanding_command_ever() {
     );
 
     r.bus.on_tx_complete();
-    r.ring.feed(&sealed_status(5, ResultCode::Ok, &[1, 2, 3]));
+    r.ring.frame(&sealed_status(5, ResultCode::Ok, &[1, 2, 3]));
     let _ = expect_status(&mut r);
     // Terminal queued but unconsumed: still busy.
     assert_eq!(r.bus.submit(Command::Rescue), Err(SubmitError::Busy));
@@ -210,7 +210,7 @@ fn gread_chain_streams_slots_in_order() {
 
     for (k, id) in ids.iter().enumerate() {
         r.ring
-            .feed(&sealed_status(id.as_byte(), ResultCode::Ok, &[0; 4]));
+            .frame(&sealed_status(id.as_byte(), ResultCode::Ok, &[0; 4]));
         let (slot, sid) = expect_status(&mut r);
         assert_eq!((slot, sid), (k as u8, *id));
     }
@@ -232,9 +232,9 @@ fn chain_timeout_names_the_missing_slot() {
         &p[..n],
     );
 
-    r.ring.feed(&sealed_status(1, ResultCode::Ok, &[0; 4]));
+    r.ring.frame(&sealed_status(1, ResultCode::Ok, &[0; 4]));
     let _ = expect_status(&mut r);
-    r.ring.feed(&sealed_status(2, ResultCode::Ok, &[0; 4]));
+    r.ring.frame(&sealed_status(2, ResultCode::Ok, &[0; 4]));
     let _ = expect_status(&mut r);
 
     r.clock.advance(10_000);
@@ -257,11 +257,11 @@ fn broadcast_enum_collects_until_quiet() {
     );
 
     r.ring
-        .feed(&sealed_status(10, ResultCode::Ok, &[0xAA; UID_LEN]));
+        .frame(&sealed_status(10, ResultCode::Ok, &[0xAA; UID_LEN]));
     let (slot, _) = expect_status(&mut r);
     assert_eq!(slot, 0);
     r.ring
-        .feed(&sealed_status(11, ResultCode::Ok, &[0xBB; UID_LEN]));
+        .frame(&sealed_status(11, ResultCode::Ok, &[0xBB; UID_LEN]));
     let (slot, _) = expect_status(&mut r);
     assert_eq!(slot, 1);
 
@@ -280,7 +280,7 @@ fn garble_is_evidence_and_paces_the_next_exchange() {
 
     // Junk, then the clean reply: garble counted, not trailing.
     r.ring.feed(&[0xAA, 0xBB, 0xCC]);
-    r.ring.feed(&sealed_status(5, ResultCode::Ok, &[1, 2, 3]));
+    r.ring.frame(&sealed_status(5, ResultCode::Ok, &[1, 2, 3]));
     let _ = expect_status(&mut r);
     let t = expect_done(&mut r);
     assert_eq!(t.outcome, Outcome::Complete);
@@ -319,7 +319,7 @@ fn trailing_energy_is_flagged() {
     );
 
     r.ring
-        .feed(&sealed_status(10, ResultCode::Ok, &[0xAA; UID_LEN]));
+        .frame(&sealed_status(10, ResultCode::Ok, &[0xAA; UID_LEN]));
     let _ = expect_status(&mut r);
     // Collision residue after the clean frame.
     r.ring.feed(&[0x48, 0x12]);
@@ -349,7 +349,7 @@ fn parked_collision_residue_is_still_evidence() {
     );
 
     // Break byte + a header claiming a 30-byte frame that never arrives.
-    r.ring.feed(&[0x00, 0x05, 30, 0x80]);
+    r.ring.frame(&[0x00, 0x05, 30, 0x80]);
     assert!(r.bus.poll().is_none());
 
     r.clock.advance(10_000);
@@ -368,7 +368,7 @@ fn junk_behind_the_completing_status_is_trailing_evidence() {
 
     // Reply and tail junk arrive together: completion at the clean frame
     // must still see the tail (the sec 9.2 trailing-energy signal).
-    r.ring.feed(&sealed_status(5, ResultCode::Ok, &[1, 2, 3]));
+    r.ring.frame(&sealed_status(5, ResultCode::Ok, &[1, 2, 3]));
     r.ring.feed(&[0x00, 0x99]);
     let _ = expect_status(&mut r);
     let t = expect_done(&mut r);
@@ -458,7 +458,7 @@ fn response_deadline_setting_stretches_the_window() {
     // The old 310-tick window would have expired; the widened one holds.
     r.clock.advance(700);
     assert!(r.bus.poll().is_none());
-    r.ring.feed(&sealed_status(5, ResultCode::Ok, &[1, 2, 3]));
+    r.ring.frame(&sealed_status(5, ResultCode::Ok, &[1, 2, 3]));
     let _ = expect_status(&mut r);
     let t = expect_done(&mut r);
     assert_eq!(t.outcome, Outcome::Complete);
@@ -484,19 +484,19 @@ fn stream_collects_frames_until_last() {
     let mut r = rig();
     arm_stream(&mut r, Id::new(5), 5_000);
 
-    r.ring.feed(&sealed_status(5, ResultCode::Ok, &[]));
+    r.ring.frame(&sealed_status(5, ResultCode::Ok, &[]));
     let (slot, _) = expect_status(&mut r);
     assert_eq!(slot, 0, "the arm's own ack streams first");
     assert!(r.bus.poll().is_none(), "the ack does not finish a stream");
 
     r.ring
-        .feed(&sealed_status(5, ResultCode::Stream, &[0, 0, 1, 0, 8, 8]));
+        .frame(&sealed_status(5, ResultCode::Stream, &[0, 0, 1, 0, 8, 8]));
     let (slot, _) = expect_status(&mut r);
     assert_eq!(slot, 1);
     assert!(r.bus.poll().is_none());
 
     r.ring
-        .feed(&sealed_status(5, ResultCode::Stream, &[1, 1, 1, 0, 9, 9]));
+        .frame(&sealed_status(5, ResultCode::Stream, &[1, 1, 1, 0, 9, 9]));
     let (slot, _) = expect_status(&mut r);
     assert_eq!(slot, 2);
     let t = expect_done(&mut r);
@@ -521,7 +521,7 @@ fn broadcast_stream_arm_owes_no_ack_but_still_collects() {
     assert!(r.bus.poll().is_none(), "awaiting the stream, not Sent");
 
     r.ring
-        .feed(&sealed_status(5, ResultCode::Stream, &[0, 1, 1, 0, 8, 8]));
+        .frame(&sealed_status(5, ResultCode::Stream, &[0, 1, 1, 0, 8, 8]));
     let (slot, _) = expect_status(&mut r);
     assert_eq!(slot, 0);
     let t = expect_done(&mut r);
@@ -533,18 +533,18 @@ fn broadcast_stream_arm_owes_no_ack_but_still_collects() {
 fn corrupt_stream_frame_is_garble_never_a_status() {
     let mut r = rig();
     arm_stream(&mut r, Id::new(5), 5_000);
-    r.ring.feed(&sealed_status(5, ResultCode::Ok, &[]));
+    r.ring.frame(&sealed_status(5, ResultCode::Ok, &[]));
     let _ = expect_status(&mut r);
 
     // Frame seq 0 arrives with its CRC flipped: no status may surface.
     let mut bad = sealed_status(5, ResultCode::Stream, &[0, 2, 1, 0, 8, 8]);
     let at = bad.len() - 1;
     bad[at] ^= 0xFF;
-    r.ring.feed(&bad);
+    r.ring.frame(&bad);
     assert!(r.bus.poll().is_none(), "corrupt frame yields no status");
 
     r.ring
-        .feed(&sealed_status(5, ResultCode::Stream, &[1, 1, 1, 0, 9, 9]));
+        .frame(&sealed_status(5, ResultCode::Stream, &[1, 1, 1, 0, 9, 9]));
     let (slot, _) = expect_status(&mut r);
     assert_eq!(slot, 1, "the clean LAST frame is the second arrival");
     let t = expect_done(&mut r);
@@ -557,22 +557,20 @@ fn corrupt_stream_frame_is_garble_never_a_status() {
 }
 
 #[test]
-fn a_corrupt_len_right_after_a_clean_frame_releases_last_at_the_horizon() {
+fn a_corrupt_len_right_after_a_clean_frame_never_holds_last() {
     let mut r = rig();
     arm_stream(&mut r, Id::new(5), 5_000);
-    r.ring.feed(&sealed_status(5, ResultCode::Ok, &[]));
+    r.ring.frame(&sealed_status(5, ResultCode::Ok, &[]));
     let _ = expect_status(&mut r);
 
     // Garble on frame seq 0's LEN: a 243-byte claim from a real break, with
-    // LAST inside it and nothing after.
+    // LAST's break inside it and nothing after.
     let mut bad = sealed_status(5, ResultCode::Stream, &[0, 0, 1, 0, 8, 8]);
     bad[2] = 0xF0;
-    r.ring.feed(&bad);
+    r.ring.frame(&bad);
     r.ring
-        .feed(&sealed_status(5, ResultCode::Stream, &[1, 1, 1, 0, 9, 9]));
-    assert!(r.bus.poll().is_none(), "the claim holds until the horizon");
+        .frame(&sealed_status(5, ResultCode::Stream, &[1, 1, 1, 0, 9, 9]));
 
-    r.clock.advance(5_000);
     let (slot, _) = expect_status(&mut r);
     assert_eq!(slot, 1, "LAST, the second clean arrival");
     let t = expect_done(&mut r);
@@ -585,7 +583,7 @@ fn a_corrupt_len_right_after_a_clean_frame_releases_last_at_the_horizon() {
 fn a_ring_lap_mid_stream_is_counted_not_silent() {
     let mut r = rig();
     arm_stream(&mut r, Id::new(5), 5_000);
-    r.ring.feed(&sealed_status(5, ResultCode::Ok, &[]));
+    r.ring.frame(&sealed_status(5, ResultCode::Ok, &[]));
     let _ = expect_status(&mut r);
 
     // Nine 64 B frames land while the consumer is stalled: the first eight
@@ -598,10 +596,10 @@ fn a_ring_lap_mid_stream_is_counted_not_silent() {
     };
     assert_eq!(filler(0).len() * 8, crate::testutil::RING_LEN);
     for seq in 0..9 {
-        r.ring.feed(&filler(seq));
+        r.ring.frame(&filler(seq));
     }
     r.ring
-        .feed(&sealed_status(5, ResultCode::Stream, &[9, 1, 1, 0, 9, 9]));
+        .frame(&sealed_status(5, ResultCode::Stream, &[9, 1, 1, 0, 9, 9]));
 
     let mut seqs = Vec::new();
     let t = loop {
@@ -626,14 +624,14 @@ fn a_ring_lap_mid_stream_is_counted_not_silent() {
 fn stream_window_never_rearms_on_progress() {
     let mut r = rig();
     arm_stream(&mut r, Id::new(5), 1_000);
-    r.ring.feed(&sealed_status(5, ResultCode::Ok, &[]));
+    r.ring.frame(&sealed_status(5, ResultCode::Ok, &[]));
     let _ = expect_status(&mut r);
 
     // Frames keep arriving but LAST never does: the one wide window
     // expires on schedule despite continuous wire progress.
     r.clock.advance(600);
     r.ring
-        .feed(&sealed_status(5, ResultCode::Stream, &[0, 0, 1, 0, 8, 8]));
+        .frame(&sealed_status(5, ResultCode::Stream, &[0, 0, 1, 0, 8, 8]));
     let _ = expect_status(&mut r);
     r.clock.advance(600);
     let t = expect_done(&mut r);

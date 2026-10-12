@@ -57,8 +57,10 @@ unchanged).
   clamps every other talker [F8]: this rule is the buffer replacement, not
   an optimization.
 - **Own-TX echo**: none on V006 — HDSEL gates RX during TX [F9]. Firmware
-  never needs echo masking. (Chips that do echo would mask in the framer;
-  the protocol itself is agnostic.)
+  never needs echo masking. The osc adapter runs full duplex (its TX and
+  RX pins both on the wire) and turns its receiver off while it holds the
+  wire, so neither its own bytes nor its own breaks reach its ring [F18].
+  The protocol itself is agnostic.
 - **Baud**: operational baud is a config register selecting from
   **{0.5 M, 1 M, 2 M, 3 M}**, default **1 M**. DXL's legacy low rates are
   pointless on this bus — recovery is the rescue break's job (§9.1), not a
@@ -87,7 +89,8 @@ one byte slot, so an over-long break is a constant error tax on every
 span - and the law shape is
 precisely the LIN break definition (LBDL=0), so any LIN-capable
 receiver gets hardware break detection with a deterministic 10-bit
-anchor. Bridge-class hosts use exactly that. The servo cannot: its bus is
+anchor. Bridge-class hosts use exactly that: the osc adapter frames
+every reply at its detected breaks [F18]. The servo cannot: its bus is
 one pin under HDSEL, which disables the USART's LIN break detector on the
 target silicon [F16], so it times the low on the pin instead - a
 detector that qualifies at 9.5 bit-times, past the longest data low (9)
@@ -1291,6 +1294,11 @@ ALERT bit on that servo's status (§5.3).
 
 - Crystal-clocked UART with break send (the osc-adapter, or any
   USB-serial with SBK).
+- A break detector that places every received break in the RX stream: a
+  frame starts only at a break, and a claimed frame that spans a later
+  break is junk. The osc adapter reads its DMA ring count in the LIN break
+  detector's interrupt, which preempts everything else so it lands within
+  a byte-time of the break [F18].
 - osc-CRC (textbook CRC-16/ARC, §3.2).
 - The bus pull-up, at the host end: servos only pull low (sec 2).
 - Drive discipline if on a buffer-less bus (release when idle) [F8].
@@ -1587,3 +1595,4 @@ and a direction buffer with its TX_EN pin.
 | F15 | LBD runs sans LINEN, both chip families: length-qualified (≥10-bit spans only — 0 fires on framing-error injection and high-baud garble), safe flag-selective write-0 clear mid-traffic, one event per any-length span, **latched at the span's END** (== bit 10 for the 10-bit law break; a rescue pulse's wake arrives after the line rises), entry stamps 4 ticks p-p on a 400 µs grid; latched FE/NE/ORE with no interrupt enabled are harmless through marination. Measured with RX on its own pin (HDSEL=0); see F16 | bringup measurement, V006 + V203 |
 | F16 | V006 never sets LBD while HDSEL=1, in any configuration tried (LINEN, LBDL, pin mode, RE alone, arm order); the same die sets it with HDSEL=0 | bringup measurement, V006 |
 | F17 | TIM2 break detector on the HDSEL pin (gated to count only while the pin is low, zeroed by DMA on every rising edge, overflow at 9.25 bit-times): 100/100 law breaks at 0.5M/1M/2M/3M at one ISR entry each, zero entries on an idle line, zero false breaks from frame data (`0x00` bytes included) or faster-baud garble, frames intact; a swept low wakes exactly when its gated count passes the reload, monotone at 4-tick resolution; a 1 ms low is one entry, a 5 ms low one wake plus one silent re-fire per 65536 ticks | bringup measurement, V006 |
+| F18 | V305 USART3 full duplex (RX on its own pin, tied to the wire): LBD sans LINEN fires 1:1 on the law break at 0.5M/1M/2M/3M (1000/1000 each, none on data `0x00` bytes); LBDL=1 never fires on it; the DMA ring count at the vector's entry, minus one, is the break's `0x00` while the entry lands within a byte-time (1000/1000 under a 50 µs masked main loop with the vector above it; 77% late, up to 14 bytes, with it masked); with LINEN=1 the first break after boot rings no `0x00`; RE off mutes own bytes and breaks | bringup measurement, V305 |

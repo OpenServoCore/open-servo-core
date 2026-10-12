@@ -1,21 +1,21 @@
-//! USART3 primitives for the HDSEL single-wire bus end. The V305 USART is
-//! 16x-oversampling: USARTDIV = BRR/16 >= 1 (sub-16 BRR clamps silently --
-//! the reason `rcc` runs the PLL; every operational BRR at 144 MHz is
-//! crystal-exact and comfortably above the floor).
+//! USART3 primitives for the full-duplex bus end: TX and RX pins both on
+//! the bus wire. The V305 USART is 16x-oversampling: USARTDIV = BRR/16 >= 1
+//! (sub-16 BRR clamps silently - the reason `rcc` runs the PLL; every
+//! operational BRR at 144 MHz is crystal-exact and comfortably above the
+//! floor).
 
 pub use ch32_metapac::usart::Usart as Regs;
+use ch32_metapac::usart::regs::Statr;
 
-/// Host bus bring-up: HDSEL first, then TE/RE, BRR, UE, and DMAR last in
-/// its own CTLR3 write, all before the pin joins the USART. The order is
-/// load-bearing for the released idle level on the single wire (deviations
-/// latch the HDSEL TX output LOW through the AF open-drain pin and clamp
-/// the whole bus; measured).
-/// LINEN stays reset-0: RM sec 18.5 forbids LIN mode with half-duplex,
-/// and the host framer anchors on the break's ring byte, so no LBD is
-/// configured at all.
+/// Host bus bring-up, all before the pin joins the USART: the break
+/// detector's interrupt, then TE/RE, BRR, UE, and the DMA gates last.
+/// LBDL stays reset-0 (10 bits): the law break is exactly 10 lows, which
+/// the 11-bit detector never reports. LINEN stays reset-0: the detector
+/// runs without LIN mode on this die, and in LIN mode the first break
+/// after boot rings no `0x00`.
 #[inline]
 pub fn init_host(r: Regs, brr: u32) {
-    r.ctlr3().modify(|w| w.set_hdsel(true));
+    r.ctlr2().modify(|w| w.set_lbdie(true));
     r.ctlr1().modify(|w| {
         w.set_te(true);
         w.set_re(true);
@@ -55,18 +55,17 @@ pub fn send_break(r: Regs) {
 /// 0.5M rescue floor ~= 3200 HCLK cycles); 16384 covers it with slack.
 const BREAK_COMMIT_SPINS: u32 = 16384;
 
-/// Live BRR write -- no UE bounce (dropping UE re-latches the HDSEL TX
-/// output low through the listening pin and clamps the bus; measured on
-/// the servo end, same IP family). The engine only applies baud on an
-/// idle bus.
+/// Live BRR write, no UE bounce. The engine only applies baud on an idle
+/// bus.
 #[inline]
 pub fn set_baud(r: Regs, brr: u32) {
     r.brr().write_value(ch32_metapac::usart::regs::Brr(brr));
 }
 
-/// Receiver gate: RE off from wire claim to release so the HDSEL echo of
-/// our own TX never reaches RDR -- the RxRing "never contains own TX"
-/// contract is enforced here, not filtered downstream.
+/// Receiver gate: RE off from wire claim to release, so the RX pin's echo
+/// of our own TX never reaches RDR or the break detector - the RxRing
+/// "never contains own TX" contract is enforced here, not filtered
+/// downstream.
 #[inline]
 pub fn set_re(r: Regs, enable: bool) {
     critical_section::with(|_| {
@@ -79,8 +78,8 @@ pub fn data_addr(r: Regs) -> u32 {
     r.datar().as_ptr() as u32
 }
 
-// SAFETY: see servo hal precedent -- CTLR1 is written from MAIN and the
-// USART3 TC ISR; CS keeps the RMW atomic.
+// SAFETY: CTLR1 is written from MAIN, the engine vectors and the USART3
+// vector above them; CS keeps every RMW atomic.
 #[inline(always)]
 pub fn set_tc_irq(r: Regs, enable: bool) {
     critical_section::with(|_| {
@@ -88,13 +87,26 @@ pub fn set_tc_irq(r: Regs, enable: bool) {
     });
 }
 
-// SAFETY: STATR.modify is the only write-0-to-clear path used on this
-// register; CS guards the RMW against the TC ISR.
+/// STATR flags clear by writing 0; ones leave the rest alone. A plain
+/// write, never a read-modify-write: a flag that sets between the read and
+/// the write-back would be cleared with it (RXNE then never reaches DMA).
+#[inline(always)]
+fn clear_flags(r: Regs, mask: Statr) {
+    r.statr().write_value(Statr(!mask.0));
+}
+
 #[inline(always)]
 pub fn clear_tc(r: Regs) {
-    critical_section::with(|_| {
-        r.statr().modify(|w| w.set_tc(false));
-    });
+    let mut m = Statr(0);
+    m.set_tc(true);
+    clear_flags(r, m);
+}
+
+#[inline(always)]
+pub fn clear_lbd(r: Regs) {
+    let mut m = Statr(0);
+    m.set_lbd(true);
+    clear_flags(r, m);
 }
 
 #[inline(always)]

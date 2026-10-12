@@ -4,7 +4,7 @@
 //! and table state (spec style), not raw hex.
 
 use osc_host::engine::{Command, Outcome};
-use osc_integration::sim::{HostEvent, Sim, Source, assert_valid};
+use osc_integration::sim::{HOST_MARK_LAG_US, HostEvent, Sim, Source, assert_valid};
 use osc_protocol::build;
 use osc_protocol::wire::{BaudRate, Id, Inst, Opcode, ResultCode, UID_LEN};
 use osc_servo_core::regions::control::addr::lifecycle::{GOAL_VELOCITY, TEL_COUNT, TEL_MASK};
@@ -167,6 +167,42 @@ fn gread_chains_the_fleet_in_slot_order() {
         }
     }
     assert!(matches!(&ev[3], HostEvent::Done(t) if t.outcome == Outcome::Complete));
+}
+
+/// 3M GREAD of four servos: slot k's break follows slot k-1's last byte,
+/// the tightest spacing a host hears. Statuses delivered.
+fn gread_3m_statuses(mark_lag_us: f64) -> u16 {
+    let mut sim = Sim::new(BaudRate::B3000000);
+    sim.attach_host();
+    sim.set_host_mark_lag_us(mark_lag_us);
+    let ids = [1u8, 2, 3, 4].map(Id::new);
+    for id in ids {
+        sim.add_servo(id.as_byte());
+    }
+    let mut p = [0u8; 16];
+    let n = build::gread_uniform(&mut p, GOAL_VELOCITY, 4, &ids).unwrap();
+    sim.host_submit(Command::Exchange {
+        id: Id::BROADCAST,
+        inst: Inst::instruction(Opcode::Gread, 0),
+        payload: &p[..n],
+    })
+    .unwrap();
+    sim.run();
+    match sim.host_events().last() {
+        Some(HostEvent::Done(t)) => t.evidence.statuses,
+        other => panic!("expected Done, got {other:?}"),
+    }
+}
+
+/// A break mark is the DMA count at the detector's service, so it names the
+/// break's byte only while that service lands inside one byte-time of the
+/// break's end (3.3 us at 3M). The adapter's vector preempts the engine to
+/// hold that bound; at the budget lag every slot resolves, one byte-time
+/// late they do not.
+#[test]
+fn a_3m_chain_resolves_every_slot_while_marks_land_inside_a_byte_time() {
+    assert_eq!(gread_3m_statuses(HOST_MARK_LAG_US as f64), 4);
+    assert!(gread_3m_statuses(3.5) < 4);
 }
 
 #[test]

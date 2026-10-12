@@ -1,23 +1,30 @@
 //! Host transport interfaces, engine-owned (driver-pattern sec 5.1); chip
 //! providers implement them over real peripherals, tests over recording
 //! fakes. Deliberately absent (see the crate doc for the grid rationale):
-//! a break-event input (no LBD on the adapter target; all host RX is
-//! solicited, the framer walks the ring), a CRC engine (software CRC from
-//! osc-protocol -- the host has cycles to spare), and a separate monotonic
+//! a break wake (all host RX is solicited; breaks reach the framer as ring
+//! marks, never as an event), a CRC engine (software CRC from osc-protocol:
+//! the host has cycles to spare), and a separate monotonic
 //! (`Deadline::now` covers it).
 
 use osc_protocol::wire::BaudRate;
 
-/// Counted circular RX DMA ring, armed once. Contract: the ring never
-/// contains the host's own TX bytes (HDSEL no-echo or buffer mute -- the
-/// provider guarantees it, the framer assumes it). Ring length must be a
-/// power of two exceeding the largest legal frame (258) with polling margin.
+/// Counted circular RX DMA ring, armed once, plus the break marks: every
+/// received break, at the `written` count of its `0x00` ring byte, in a
+/// second counted circular buffer. Contract: neither ever contains the
+/// host's own TX (the provider mutes its receiver, the framer assumes it);
+/// a mark is published only after its byte has landed, so a reader that
+/// loads `marked` before `written` never sees a mark past `written`. Both
+/// lengths are powers of two; the byte ring exceeds the largest legal
+/// frame (258) with polling margin.
 pub trait RxRing {
     fn bytes(&self) -> &[u8];
     /// Bytes ever received, wrapping; the low bits index where the next
     /// one lands. A running count, so a consumer that falls a whole ring
     /// behind sees a lap instead of an empty ring.
     fn written(&self) -> u32;
+    fn marks(&self) -> &[u32];
+    /// Marks ever published, wrapping, indexed like [`written`](Self::written).
+    fn marked(&self) -> u32;
 }
 
 /// One-shot compare on the host tick domain. The host is crystal-clocked --

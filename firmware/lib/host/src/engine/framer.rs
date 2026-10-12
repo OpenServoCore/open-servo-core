@@ -1,21 +1,16 @@
-//! Host RX framer: a pure ring walker.
+//! Host RX framer: a ring walker anchored by break marks.
 //!
-//! The host has no break wake -- all RX is solicited -- so frames are found
-//! entirely from ring data: a candidate starts at a `0x00` ring byte (the
-//! break's ring image), the header makes its end computable (LEN at byte 2),
-//! and the CRC verdict is the only accept authority. This is the fault
-//! contract (protocol sec 3.4) with the wake deleted: positions from ring
-//! data only; every clock stays in the engine.
+//! The chip marks every received break with the ring position of its `0x00`
+//! byte (`RxRing::marks`). A candidate frame starts only at a mark, the
+//! header makes its end computable (LEN at byte 2), and the CRC verdict is
+//! the only accept authority. A frame never contains a break, so a claim
+//! that spans a later mark is junk and the walk restarts exactly at that
+//! mark; bytes no mark heads are junk too. Positions come from the marks and
+//! the ring count only (protocol sec 3.4); every clock stays in the engine.
 //!
-//! Resync after garble is the hunt: skip to the next `0x00` in the
-//! available span. A data `0x00` can masquerade as an anchor; it dies by
-//! geometry or CRC and costs bounded ring bytes, never the stream. A hunted
-//! anchor's LEN is a claim, not a boundary: while it waits for bytes, a later
-//! anchor whose whole frame has ringed CRC-clean overtakes it, so a long
-//! masquerade never parks the walk over the frames behind it. A corrupt LEN
-//! right after a clean frame is not overtaken (a frame still ringing may hold
-//! a clean image); once the engine's window closes, [`Framer::drain`] makes
-//! every claim still short of its footprint dead, and the walk goes on past it.
+//! A mark trails its byte by the detector's service time, so the walk never
+//! passes the last mark: bytes behind it stay unresolved until the next
+//! mark lands or the engine's window closes.
 
 use osc_protocol::FrameBytes;
 use osc_protocol::crc::{osc_crc, osc_crc_continue};
@@ -37,8 +32,8 @@ pub struct Frame<'a> {
 pub enum Step<'a> {
     /// No unconsumed bytes.
     Idle,
-    /// A candidate frame has started but not fully ringed; positions hold.
-    /// Whether it ever completes is the engine's deadline to keep.
+    /// Unconsumed bytes wait for a frame's remainder or the next mark;
+    /// positions hold. Whether either ever lands is the engine's deadline.
     Partial,
     /// One frame consumed.
     Frame(Frame<'a>),
@@ -49,18 +44,14 @@ pub enum Step<'a> {
     Lapped(u16),
 }
 
-/// The walker: one cursor (`anchor`) into the ring, on the
-/// [`RxRing::written`](crate::traits::RxRing::written) count.
+/// The walker: a cursor (`anchor`) on the
+/// [`RxRing::written`](crate::traits::RxRing::written) count and one on the
+/// marks.
 #[derive(Default)]
 pub struct Framer {
     anchor: u32,
-    /// `anchor` was reached by a hunt or a lap: no break is known there.
-    lost: bool,
-    /// `written` at the last overtake scan; a parked walk rescans only
-    /// over new bytes.
-    scanned: u32,
-    /// Nothing more is owed: a candidate short of its footprint is dead.
-    draining: bool,
+    /// The next mark not yet spent.
+    mark: u32,
 }
 
 impl Framer {
@@ -68,101 +59,105 @@ impl Framer {
         Self::default()
     }
 
-    /// Jump to `written`, discarding anything unconsumed. Called only when
-    /// the bus is provably quiet (before a TX window opens) -- the host-side
-    /// analog of the servo's bootstrap-only cursor read.
-    pub fn resync(&mut self, written: u32) {
+    /// Jump to `written`/`marked`, discarding anything unconsumed. Called
+    /// only when the bus is provably quiet (before a TX window opens) -
+    /// the host-side analog of the servo's bootstrap-only cursor read.
+    pub fn resync(&mut self, written: u32, marked: u32) {
         self.anchor = written;
-        self.lost = false;
-        self.draining = false;
+        self.mark = marked;
     }
 
-    /// The await window closed: walk what has ringed as final. True on the
-    /// first call since the last [`resync`](Self::resync).
-    pub fn drain(&mut self) -> bool {
-        !core::mem::replace(&mut self.draining, true)
-    }
-
-    pub fn draining(&self) -> bool {
-        self.draining
-    }
-
-    /// Ring content no verdict has consumed (a parked plausible prefix,
-    /// junk a hunt has not walked off).
+    /// Ring content no verdict has consumed (a frame still ringing, junk no
+    /// later mark has closed).
     pub fn unresolved(&self, written: u32) -> u16 {
         u16::try_from(written.wrapping_sub(self.anchor)).unwrap_or(u16::MAX)
     }
 
-    /// Walk one step against the ring state. `written` counts every byte
-    /// the ring ever received; the ring length must be a power of two.
-    pub fn step<'a>(&mut self, ring: &'a [u8], written: u32) -> Step<'a> {
-        debug_assert!(ring.len().is_power_of_two());
+    /// Walk one step. `marked` must be loaded before `written` (trait
+    /// contract); both ring lengths must be powers of two.
+    pub fn step<'a>(
+        &mut self,
+        ring: &'a [u8],
+        written: u32,
+        marks: &[u32],
+        marked: u32,
+    ) -> Step<'a> {
+        debug_assert!(ring.len().is_power_of_two() && marks.len().is_power_of_two());
         let unread = written.wrapping_sub(self.anchor);
         let laps = unread / ring.len() as u32;
         if laps > 0 {
             self.anchor = self.anchor.wrapping_add(laps * ring.len() as u32);
-            self.lost = true;
             return Step::Lapped(u16::try_from(laps).unwrap_or(u16::MAX));
         }
-        let avail = unread as usize;
-        if avail == 0 {
-            return Step::Idle;
+        let Some(at_mark) = self.next_mark(marks, marked, unread) else {
+            return if unread == 0 {
+                Step::Idle
+            } else {
+                Step::Partial
+            };
+        };
+        if at_mark != self.anchor {
+            return self.skip_to(at_mark);
         }
         let mask = ring.len() - 1;
         let at = self.anchor as usize & mask;
-
-        // A frame candidate starts at the break's 0x00 ring byte.
-        if ring[at] != 0x00 {
-            return Step::Garble(self.hunt(ring, mask, avail));
+        let verdict = probe(ring, mask, at, unread as usize);
+        let here = self.mark;
+        self.mark = here.wrapping_add(1);
+        if let Probe::Clean { id, inst, len } = verdict {
+            let payload_pos = (at + 4) & mask;
+            let payload = payload_view(ring, payload_pos, wire::payload_len(len) as usize);
+            self.anchor = self.anchor.wrapping_add(wire::footprint(len) as u32);
+            return Step::Frame(Frame {
+                id,
+                inst,
+                payload,
+                payload_pos,
+            });
         }
-        match probe(ring, mask, at, avail) {
-            Probe::Junk => Step::Garble(self.hunt(ring, mask, avail)),
-            Probe::Partial if self.draining => Step::Garble(self.hunt(ring, mask, avail)),
-            Probe::Partial if self.lost && self.scanned != written => {
-                self.scanned = written;
-                match overtaken(ring, mask, at, avail) {
-                    Some(n) => {
-                        self.anchor = self.anchor.wrapping_add(n as u32);
-                        Step::Garble(n as u16)
-                    }
-                    None => Step::Partial,
+        // Dead, or a claim that a later mark lands inside: the walk
+        // restarts at that mark. A dead break stays spent; a plausible
+        // claim with no later mark keeps waiting.
+        match self.next_mark(marks, marked, unread) {
+            Some(next) => self.skip_to(next),
+            None => {
+                if let Probe::Partial = verdict {
+                    self.mark = here;
                 }
-            }
-            Probe::Partial => Step::Partial,
-            Probe::Clean { id, inst, len } => {
-                let payload_pos = (at + 4) & mask;
-                let payload = payload_view(ring, payload_pos, wire::payload_len(len) as usize);
-                self.anchor = self.anchor.wrapping_add(wire::footprint(len) as u32);
-                self.lost = false;
-                Step::Frame(Frame {
-                    id,
-                    inst,
-                    payload,
-                    payload_pos,
-                })
+                Step::Partial
             }
         }
     }
 
-    /// Advance past a dead candidate to the next `0x00` within `avail`
-    /// (skipping the current anchor -- it already failed), or consume the
-    /// whole span if none. Returns the bytes skipped.
-    fn hunt(&mut self, ring: &[u8], mask: usize, avail: usize) -> u16 {
-        let at = self.anchor as usize & mask;
-        let mut n = 1;
-        while n < avail && ring[(at + n) & mask] != 0x00 {
-            n += 1;
+    /// The first unspent mark at or past the anchor whose byte has landed.
+    /// Marks behind the anchor are spent; a lapped mark buffer resumes at
+    /// its oldest entry.
+    fn next_mark(&mut self, marks: &[u32], marked: u32, unread: u32) -> Option<u32> {
+        if marked.wrapping_sub(self.mark) > marks.len() as u32 {
+            self.mark = marked.wrapping_sub(marks.len() as u32);
         }
-        self.anchor = self.anchor.wrapping_add(n as u32);
-        self.lost = true;
-        n as u16
+        while self.mark != marked {
+            let at = *marks.get(self.mark as usize & (marks.len().wrapping_sub(1)))?;
+            let ahead = at.wrapping_sub(self.anchor);
+            if (ahead as i32) >= 0 {
+                return (ahead < unread).then_some(at);
+            }
+            self.mark = self.mark.wrapping_add(1);
+        }
+        None
+    }
+
+    fn skip_to(&mut self, at: u32) -> Step<'static> {
+        let n = at.wrapping_sub(self.anchor);
+        self.anchor = at;
+        Step::Garble(n as u16)
     }
 }
 
-/// Verdict on the candidate anchored at ring index `at` (a `0x00`) with
-/// `avail` ring bytes from it.
+/// Verdict on the candidate anchored at ring index `at` with `avail` ring
+/// bytes from it.
 enum Probe {
-    /// Dead by geometry or CRC.
+    /// Dead by shape or CRC.
     Junk,
     /// Plausible so far; its footprint has not fully ringed.
     Partial,
@@ -174,6 +169,9 @@ enum Probe {
 }
 
 fn probe(ring: &[u8], mask: usize, at: usize, avail: usize) -> Probe {
+    if ring[at] != 0x00 {
+        return Probe::Junk;
+    }
     if avail < 4 {
         return Probe::Partial;
     }
@@ -204,17 +202,6 @@ fn probe(ring: &[u8], mask: usize, at: usize, avail: usize) -> Probe {
     Probe::Clean { id, inst, len }
 }
 
-/// Offset of the first later anchor within `avail` whose whole frame has
-/// ringed CRC-clean while the candidate at `at` still waits: the candidate
-/// was data reading as a header, or (at CRC odds, the risk every hunted
-/// anchor already carries) the clean span is an image inside its payload.
-fn overtaken(ring: &[u8], mask: usize, at: usize, avail: usize) -> Option<usize> {
-    (1..avail).find(|&n| {
-        let c = (at + n) & mask;
-        ring[c] == 0x00 && matches!(probe(ring, mask, c, avail - n), Probe::Clean { .. })
-    })
-}
-
 /// osc-CRC over a possibly-wrapped ring span.
 fn ring_crc(ring: &[u8], start: usize, n: usize) -> u16 {
     let head = n.min(ring.len() - start);
@@ -240,10 +227,12 @@ mod tests {
     use osc_protocol::reply::FrameBuf;
     use osc_protocol::wire::{Opcode, ResultCode};
 
-    /// A 64-byte test ring with a running write count.
+    /// A 64-byte test ring with a running write count and 8 break marks.
     struct Ring {
         buf: [u8; 64],
         written: u32,
+        marks: [u32; 8],
+        marked: u32,
     }
 
     impl Ring {
@@ -251,14 +240,33 @@ mod tests {
             Ring {
                 buf: [0xFF; 64],
                 written: 0,
+                marks: [0; 8],
+                marked: 0,
             }
         }
 
+        /// Bytes no break heads.
         fn feed(&mut self, bytes: &[u8]) {
             for &b in bytes {
                 self.buf[self.written as usize & 63] = b;
                 self.written += 1;
             }
+        }
+
+        /// A break's byte plus what follows it: marked as the detector would.
+        fn frame(&mut self, bytes: &[u8]) {
+            let at = self.written;
+            self.feed(bytes);
+            self.mark(at);
+        }
+
+        fn mark(&mut self, at: u32) {
+            self.marks[self.marked as usize & 7] = at;
+            self.marked += 1;
+        }
+
+        fn step(&self, f: &mut Framer) -> Step<'_> {
+            f.step(&self.buf, self.written, &self.marks, self.marked)
         }
     }
 
@@ -295,31 +303,42 @@ mod tests {
         }
     }
 
+    /// Walk to `Idle` or `Partial`; the ids of the frames found.
+    fn walk(f: &mut Framer, ring: &Ring) -> std::vec::Vec<Id> {
+        let mut ids = std::vec::Vec::new();
+        loop {
+            match ring.step(f) {
+                Step::Frame(fr) => ids.push(fr.id),
+                Step::Garble(_) | Step::Lapped(_) => {}
+                Step::Partial | Step::Idle => return ids,
+            }
+        }
+    }
+
     #[test]
     fn clean_status_frame_parses() {
         let mut ring = Ring::new();
         let mut f = Framer::new();
-        let frame = status_frame(5, ResultCode::Ok, &[0xAA, 0xBB]);
-        ring.feed(frame.as_slice());
+        ring.frame(status_frame(5, ResultCode::Ok, &[0xAA, 0xBB]).as_slice());
 
-        let got = expect_frame(f.step(&ring.buf, ring.written));
+        let got = expect_frame(ring.step(&mut f));
         assert_eq!(got.id, Id::new(5));
         assert!(got.inst.is_status());
         assert_eq!(got.inst.result(), Some(ResultCode::Ok));
         assert!(got.payload.bytes().eq([0xAA, 0xBB]));
-        assert!(matches!(f.step(&ring.buf, ring.written), Step::Idle));
+        assert!(matches!(ring.step(&mut f), Step::Idle));
     }
 
     #[test]
     fn back_to_back_frames_walk_in_order() {
         let mut ring = Ring::new();
         let mut f = Framer::new();
-        ring.feed(status_frame(1, ResultCode::Ok, &[1]).as_slice());
-        ring.feed(status_frame(2, ResultCode::Ok, &[2]).as_slice());
+        ring.frame(status_frame(1, ResultCode::Ok, &[1]).as_slice());
+        ring.frame(status_frame(2, ResultCode::Ok, &[2]).as_slice());
 
-        assert_eq!(expect_frame(f.step(&ring.buf, ring.written)).id, Id::new(1));
-        assert_eq!(expect_frame(f.step(&ring.buf, ring.written)).id, Id::new(2));
-        assert!(matches!(f.step(&ring.buf, ring.written), Step::Idle));
+        assert_eq!(expect_frame(ring.step(&mut f)).id, Id::new(1));
+        assert_eq!(expect_frame(ring.step(&mut f)).id, Id::new(2));
+        assert!(matches!(ring.step(&mut f), Step::Idle));
     }
 
     #[test]
@@ -328,27 +347,27 @@ mod tests {
         let mut f = Framer::new();
         // Park the cursor near the top so the frame wraps.
         ring.feed(&[0xEE; 60]);
-        f.resync(60);
-        ring.feed(status_frame(7, ResultCode::Ok, &[0x11, 0x22, 0x33]).as_slice());
+        f.resync(60, ring.marked);
+        ring.frame(status_frame(7, ResultCode::Ok, &[0x11, 0x22, 0x33]).as_slice());
 
-        let got = expect_frame(f.step(&ring.buf, ring.written));
+        let got = expect_frame(ring.step(&mut f));
         assert_eq!(got.id, Id::new(7));
         assert!(got.payload.bytes().eq([0x11, 0x22, 0x33]));
     }
 
     #[test]
-    fn junk_before_a_frame_is_skipped_then_parsed() {
+    fn bytes_no_break_heads_are_skipped_up_to_the_next_break() {
         let mut ring = Ring::new();
         let mut f = Framer::new();
-        ring.feed(&[0xAA, 0xBB, 0xCC]);
-        ring.feed(status_frame(3, ResultCode::Ok, &[]).as_slice());
+        ring.feed(&[0xAA, 0x00, 0xCC]);
+        ring.frame(status_frame(3, ResultCode::Ok, &[]).as_slice());
 
-        assert!(matches!(f.step(&ring.buf, ring.written), Step::Garble(3)));
-        assert_eq!(expect_frame(f.step(&ring.buf, ring.written)).id, Id::new(3));
+        assert!(matches!(ring.step(&mut f), Step::Garble(3)));
+        assert_eq!(expect_frame(ring.step(&mut f)).id, Id::new(3));
     }
 
     #[test]
-    fn corrupt_crc_dies_by_hunt() {
+    fn a_corrupt_frame_is_junk_and_never_a_frame() {
         let mut ring = Ring::new();
         let mut f = Framer::new();
         let good = status_frame(4, ResultCode::Ok, &[9, 9]);
@@ -356,20 +375,12 @@ mod tests {
         let n = good.as_slice().len();
         bad[..n].copy_from_slice(good.as_slice());
         bad[n - 1] ^= 0xFF;
-        ring.feed(&bad[..n]);
+        ring.frame(&bad[..n]);
 
-        // The corrupt frame anchors, fails CRC, and the hunt walks off it;
-        // successive steps consume the remaining junk without ever yielding
-        // a frame.
-        let mut frames = 0;
-        loop {
-            match f.step(&ring.buf, ring.written) {
-                Step::Frame(_) => frames += 1,
-                Step::Garble(_) | Step::Partial | Step::Lapped(_) => continue,
-                Step::Idle => break,
-            }
-        }
-        assert_eq!(frames, 0);
+        assert_eq!(walk(&mut f, &ring), []);
+        assert_eq!(f.unresolved(ring.written), n as u16);
+        ring.frame(status_frame(2, ResultCode::Ok, &[7]).as_slice());
+        assert_eq!(walk(&mut f, &ring), [Id::new(2)]);
     }
 
     #[test]
@@ -378,57 +389,37 @@ mod tests {
         let mut f = Framer::new();
         let frame = status_frame(6, ResultCode::Ok, &[1, 2, 3, 4]);
         let bytes = frame.as_slice();
-        ring.feed(&bytes[..3]);
-        assert!(matches!(f.step(&ring.buf, ring.written), Step::Partial));
+        ring.frame(&bytes[..3]);
+        assert!(matches!(ring.step(&mut f), Step::Partial));
         ring.feed(&bytes[3..5]);
-        assert!(matches!(f.step(&ring.buf, ring.written), Step::Partial));
+        assert!(matches!(ring.step(&mut f), Step::Partial));
         ring.feed(&bytes[5..]);
-        assert_eq!(expect_frame(f.step(&ring.buf, ring.written)).id, Id::new(6));
+        assert_eq!(expect_frame(ring.step(&mut f)).id, Id::new(6));
     }
 
     #[test]
     fn payload_zeros_do_not_confuse_the_walk() {
         let mut ring = Ring::new();
         let mut f = Framer::new();
-        ring.feed(status_frame(8, ResultCode::Ok, &[0, 0, 0, 0]).as_slice());
-        ring.feed(status_frame(9, ResultCode::Ok, &[0]).as_slice());
+        ring.frame(status_frame(8, ResultCode::Ok, &[0, 0, 0, 0]).as_slice());
+        ring.frame(status_frame(9, ResultCode::Ok, &[0]).as_slice());
 
-        assert_eq!(expect_frame(f.step(&ring.buf, ring.written)).id, Id::new(8));
-        assert_eq!(expect_frame(f.step(&ring.buf, ring.written)).id, Id::new(9));
+        assert_eq!(expect_frame(ring.step(&mut f)).id, Id::new(8));
+        assert_eq!(expect_frame(ring.step(&mut f)).id, Id::new(9));
     }
 
     #[test]
-    fn masquerading_zero_dies_by_geometry_and_the_real_frame_survives() {
+    fn a_false_length_never_holds_the_walk_over_the_next_break() {
         let mut ring = Ring::new();
         let mut f = Framer::new();
-        // 0x00 followed by an invalid id (0x00): a fake anchor that fails
-        // shape validation; the hunt must find the real frame behind it.
-        ring.feed(&[0x00, 0x00, 0x55]);
-        ring.feed(status_frame(2, ResultCode::Ok, &[7]).as_slice());
+        // A break whose header claims 51 bytes; the next break lands 6
+        // bytes later, inside the claim.
+        ring.frame(&[0x00, 0x05, 0x30, 0xA4, 1, 2]);
+        assert_eq!(walk(&mut f, &ring), []);
+        ring.frame(status_frame(2, ResultCode::Ok, &[7]).as_slice());
 
-        let mut got = None;
-        for _ in 0..8 {
-            match f.step(&ring.buf, ring.written) {
-                Step::Frame(fr) => {
-                    got = Some(fr.id);
-                    break;
-                }
-                _ => continue,
-            }
-        }
-        assert_eq!(got, Some(Id::new(2)));
-    }
-
-    /// Walk to `Idle` or a parked `Partial`; the ids of the frames found.
-    fn walk(f: &mut Framer, ring: &Ring) -> std::vec::Vec<Id> {
-        let mut ids = std::vec::Vec::new();
-        loop {
-            match f.step(&ring.buf, ring.written) {
-                Step::Frame(fr) => ids.push(fr.id),
-                Step::Garble(_) | Step::Lapped(_) => {}
-                Step::Partial | Step::Idle => return ids,
-            }
-        }
+        assert_eq!(walk(&mut f, &ring), [Id::new(2)]);
+        assert_eq!(f.unresolved(ring.written), 0);
     }
 
     #[test]
@@ -443,8 +434,8 @@ mod tests {
         let n = good.as_slice().len();
         bad[..n].copy_from_slice(good.as_slice());
         bad[9] ^= 0xFF;
-        ring.feed(&bad[..n]);
-        ring.feed(status_frame(2, ResultCode::Ok, &[7]).as_slice());
+        ring.frame(&bad[..n]);
+        ring.frame(status_frame(2, ResultCode::Ok, &[7]).as_slice());
 
         assert_eq!(walk(&mut f, &ring), [Id::new(2)]);
     }
@@ -459,10 +450,59 @@ mod tests {
         let outer = status_frame(6, ResultCode::Ok, &payload);
         let bytes = outer.as_slice();
         // Through the inner image's last byte: it is whole and CRC-clean.
-        ring.feed(&bytes[..4 + inner.as_slice().len() + 1]);
+        ring.frame(&bytes[..4 + inner.as_slice().len() + 1]);
         assert_eq!(walk(&mut f, &ring), []);
         ring.feed(&bytes[4 + inner.as_slice().len() + 1..]);
         assert_eq!(walk(&mut f, &ring), [Id::new(6)]);
+    }
+
+    #[test]
+    fn a_frame_whose_mark_has_not_landed_waits_for_it() {
+        let mut ring = Ring::new();
+        let mut f = Framer::new();
+        ring.frame(status_frame(1, ResultCode::Ok, &[1]).as_slice());
+        let at = ring.written;
+        ring.feed(status_frame(2, ResultCode::Ok, &[2]).as_slice());
+
+        assert_eq!(walk(&mut f, &ring), [Id::new(1)]);
+        assert_eq!(f.unresolved(ring.written), 7);
+        ring.mark(at);
+        assert_eq!(walk(&mut f, &ring), [Id::new(2)]);
+    }
+
+    #[test]
+    fn a_mark_past_the_written_count_is_not_yet_visible() {
+        let mut ring = Ring::new();
+        let mut f = Framer::new();
+        let frame = status_frame(1, ResultCode::Ok, &[1]);
+        ring.frame(&frame.as_slice()[..3]);
+        ring.mark(ring.written + 2);
+        assert!(matches!(ring.step(&mut f), Step::Partial));
+        ring.feed(&frame.as_slice()[3..]);
+        assert_eq!(walk(&mut f, &ring), [Id::new(1)]);
+    }
+
+    #[test]
+    fn a_mark_on_a_data_byte_is_junk() {
+        let mut ring = Ring::new();
+        let mut f = Framer::new();
+        let at = ring.written + 1;
+        ring.feed(status_frame(1, ResultCode::Ok, &[1]).as_slice());
+        ring.mark(at);
+        assert_eq!(walk(&mut f, &ring), []);
+        ring.frame(status_frame(2, ResultCode::Ok, &[2]).as_slice());
+        assert_eq!(walk(&mut f, &ring), [Id::new(2)]);
+    }
+
+    #[test]
+    fn a_lapped_mark_buffer_resumes_at_its_oldest_mark() {
+        let mut ring = Ring::new();
+        let mut f = Framer::new();
+        for _ in 0..9 {
+            ring.frame(&[0x00]);
+        }
+        ring.frame(status_frame(2, ResultCode::Ok, &[2]).as_slice());
+        assert_eq!(walk(&mut f, &ring), [Id::new(2)]);
     }
 
     #[test]
@@ -470,12 +510,15 @@ mod tests {
         let mut ring = Ring::new();
         let mut f = Framer::new();
         ring.feed(&[0xEE; 64]);
-        assert!(matches!(f.step(&ring.buf, ring.written), Step::Lapped(1)));
-        assert!(matches!(f.step(&ring.buf, ring.written), Step::Idle));
+        assert!(matches!(ring.step(&mut f), Step::Lapped(1)));
+        assert!(matches!(ring.step(&mut f), Step::Idle));
 
         ring.feed(&[0xEE; 3 * 64 + 10]);
-        assert!(matches!(f.step(&ring.buf, ring.written), Step::Lapped(3)));
-        assert!(matches!(f.step(&ring.buf, ring.written), Step::Garble(10)));
+        assert!(matches!(ring.step(&mut f), Step::Lapped(3)));
+        assert!(matches!(ring.step(&mut f), Step::Partial));
+        ring.frame(status_frame(2, ResultCode::Ok, &[2]).as_slice());
+        assert!(matches!(ring.step(&mut f), Step::Garble(10)));
+        assert_eq!(expect_frame(ring.step(&mut f)).id, Id::new(2));
     }
 
     #[test]
@@ -487,9 +530,9 @@ mod tests {
         let mut b = FrameBuf::<64>::new();
         b.start(Id::new(1), Inst::instruction(Opcode::Ping, 0));
         b.finish(0);
-        ring.feed(b.seal());
+        ring.frame(b.seal());
 
-        let got = expect_frame(f.step(&ring.buf, ring.written));
+        let got = expect_frame(ring.step(&mut f));
         assert!(!got.inst.is_status());
         assert_eq!(got.inst.opcode(), Some(Opcode::Ping));
     }

@@ -1,6 +1,6 @@
 //! The main loop: USB pump -> pipe bytes into the link server -> engine
 //! events out as records -> USB IN. The transport ISRs run underneath;
-//! every main-loop touch of the bus sits inside a critical section.
+//! every main-loop touch of the bus sits inside `Drivers::with_bus`.
 
 use osc_host::link::record::{
     PHASE_ADAPTER_REQ, PHASE_PIPE, PHASE_PUMP, PHASE_USB_POLL, PHASE_USB_TX,
@@ -129,11 +129,7 @@ pub fn run() -> ! {
         {
             crash::phase(PHASE_PIPE);
             server.set_uptime_ticks(systick::ticks64());
-            critical_section::with(|_| {
-                // SAFETY: main-loop bus access under CS (registry doc).
-                let bus = unsafe { Drivers::bus() };
-                server.on_pipe(bytes, bus, &mut txq);
-            });
+            Drivers::with_bus(|bus| server.on_pipe(bytes, bus, &mut txq));
             usb.rx_consume();
             led_until = Some(systick::ticks().wrapping_add(LED_PULSE_US * systick::TICKS_PER_US));
         }
@@ -154,11 +150,7 @@ pub fn run() -> ! {
         // Engine events -> records, same headroom gate.
         if txq.free() >= PUMP_HEADROOM {
             crash::phase(PHASE_PUMP);
-            critical_section::with(|_| {
-                // SAFETY: main-loop bus access under CS (registry doc).
-                let bus = unsafe { Drivers::bus() };
-                server.pump(bus, &mut txq);
-            });
+            Drivers::with_bus(|bus| server.pump(bus, &mut txq));
         }
 
         if usb.tx_ready() && !txq.is_empty() {

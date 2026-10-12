@@ -128,6 +128,8 @@ pub enum Event {
     HostCompare { generation: u64 },
     /// The host engine's TX span drained -- drive its `on_tx_complete`.
     HostTxDone,
+    /// The adapter's break-detector service: mark the last ringed byte.
+    HostMark,
 }
 
 struct Scheduled {

@@ -45,8 +45,8 @@ pub fn configure(ch: Channel, cfg: &Config, paddr: u32, maddr: u32, count: u16) 
     });
 }
 
-// SAFETY: CH2 is touched from MAIN (engine send under CS) and the release
-// path; CS keeps the EN RMW atomic. CH1/CH3/CH7 are armed once at bringup.
+// SAFETY: CH2 is touched from MAIN (engine send) and the release path; CS
+// keeps the EN RMW atomic. CH1/CH3/CH7 are armed once at bringup.
 #[inline(always)]
 pub fn enable(ch: Channel) {
     let n = (ch as u8 - 1) as usize;

@@ -1,13 +1,43 @@
-//! V4 PFIC primitives: vector enables for the two transport IRQs, the
-//! loader-state scrub, the SysTick software pend the deadline provider
-//! uses as its late-arm escape, and the system reset.
+//! V4 PFIC primitives: vector enables and priorities for the transport
+//! IRQs, the priority threshold, the loader-state scrub, the SysTick and
+//! software-interrupt pends, and the system reset.
 
 use ch32_metapac::PFIC;
 
 pub use ch32_metapac::Interrupt;
 
-/// QingKe core IRQ number for SysTick (not in metapac `Interrupt`).
-const SYSTICK_IRQ: u32 = 12;
+/// QingKe core IRQ numbers (not in metapac `Interrupt`).
+pub const SYSTICK_IRQ: usize = 12;
+pub const SOFTWARE_IRQ: usize = 14;
+
+/// INTSYSCR (CSR 0x804) PMTCFG = 0b01: IPRIOR bit 7 is the one preemption
+/// bit, two nesting levels. qingke-rt leaves HPE and nesting enabled with
+/// no preemption bit.
+#[cfg(target_arch = "riscv32")]
+const INTSYSCR_ONE_PREEMPTION_BIT: usize = 0b01 << 2;
+
+/// Give IPRIOR bit 7 its preemption meaning: a level-0x00 vector preempts
+/// a level-0x80 body. Bringup-only, before any IRQ unmasks.
+pub fn enable_preemption() {
+    #[cfg(target_arch = "riscv32")]
+    // SAFETY: CSR set of the PMTCFG field only; nothing is pending yet.
+    unsafe {
+        core::arch::asm!("csrs 0x804, {}", in(reg) INTSYSCR_ONE_PREEMPTION_BIT)
+    };
+}
+
+#[inline(always)]
+pub fn set_priority(irq: usize, level: u8) {
+    PFIC.iprior(irq).write_value(level);
+}
+
+/// Hold off every vector at `level` or below in priority (0 = none). The
+/// read-back orders the write before the caller's next access.
+#[inline(always)]
+pub fn set_threshold(level: u8) {
+    PFIC.ithresdr().write(|w| w.set_threshold(level));
+    let _ = PFIC.ithresdr().read();
+}
 
 #[inline]
 pub fn enable(irq: Interrupt) {
@@ -23,8 +53,8 @@ pub fn enable(irq: Interrupt) {
 }
 
 #[inline]
-pub fn enable_systick() {
-    PFIC.ienr1().write(|w| w.0 = 1 << SYSTICK_IRQ);
+pub fn enable_core(irq: usize) {
+    PFIC.ienr1().write(|w| w.0 = 1 << irq);
 }
 
 /// Mask and unpend every interrupt source. The WCH loader's jump to the
@@ -73,6 +103,11 @@ pub fn mask_and_unpend(irq: u32) {
 #[inline]
 pub fn pend_systick() {
     PFIC.ipsr1().write(|w| w.0 = 1 << SYSTICK_IRQ);
+}
+
+#[inline(always)]
+pub fn pend_software() {
+    PFIC.ipsr1().write(|w| w.0 = 1 << SOFTWARE_IRQ);
 }
 
 /// PFIC system reset -- the IAP disarm path's exit. The WCH loader cold

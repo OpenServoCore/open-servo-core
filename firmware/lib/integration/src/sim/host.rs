@@ -4,12 +4,13 @@
 //!
 //! The provider shapes mirror `providers.rs` (shared `Rc` state the `Sim`
 //! also holds): the host ring is fed by the same wire deliveries the servo
-//! rings get (minus the host's own TX -- the no-echo contract), the
-//! deadline schedules `HostCompare` events, and the TX wire schedules the
-//! same `WireBreak`/`WireData` events a scripted `host_send` would.
+//! rings get (minus the host's own TX - the no-echo contract), every break
+//! it hears is marked [`HOST_MARK_LAG_US`] after the break ends (the
+//! adapter's break detector and its service), the deadline schedules
+//! `HostCompare` events, and the TX wire schedules the same
+//! `WireBreak`/`WireData` events a scripted `host_send` would.
 
-use std::cell::Cell;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell, UnsafeCell};
 use std::rc::Rc;
 use std::vec::Vec;
 
@@ -37,7 +38,51 @@ pub enum HostEvent {
     },
 }
 
-pub struct HostRing(pub Rc<RingState>);
+/// Break end to the mark's publication at budget: the adapter's break
+/// detector latches at the end of the low span and its vector, above the
+/// engine's class, reads the ring count. The silicon body measures 0.6 us
+/// at most; a mark is exact while it lands before the next byte (one
+/// byte-time, 3.3 us at 3M).
+pub const HOST_MARK_LAG_US: u64 = 3;
+
+/// The adapter's mark buffer depth (`RxRing::marks`).
+const MARKS_LEN: usize = 256;
+
+pub struct MarkState {
+    marks: UnsafeCell<[u32; MARKS_LEN]>,
+    marked: Cell<u32>,
+    /// A detector latch awaiting service: a second break inside it
+    /// coalesces into the same mark.
+    pending: Cell<bool>,
+}
+
+impl MarkState {
+    pub fn new() -> Rc<Self> {
+        Rc::new(Self {
+            marks: UnsafeCell::new([0; MARKS_LEN]),
+            marked: Cell::new(0),
+            pending: Cell::new(false),
+        })
+    }
+
+    /// The detector latched; false if a service was already pending.
+    pub fn latch(&self) -> bool {
+        !self.pending.replace(true)
+    }
+
+    /// The service: mark the last ringed byte, as the chip's vector does
+    /// from the DMA count.
+    pub fn publish(&self, ring: &RingState) {
+        self.pending.set(false);
+        let n = self.marked.get();
+        // SAFETY: single-threaded harness; never mutated while a `marks()`
+        // slice is live (the Sim publishes only between engine calls).
+        unsafe { (*self.marks.get())[n as usize % MARKS_LEN] = ring.written().wrapping_sub(1) };
+        self.marked.set(n.wrapping_add(1));
+    }
+}
+
+pub struct HostRing(pub Rc<RingState>, pub Rc<MarkState>);
 
 impl RxRing for HostRing {
     fn bytes(&self) -> &[u8] {
@@ -46,6 +91,16 @@ impl RxRing for HostRing {
 
     fn written(&self) -> u32 {
         self.0.written()
+    }
+
+    fn marks(&self) -> &[u32] {
+        // SAFETY: see `MarkState::publish`.
+        let arr: &[u32; MARKS_LEN] = unsafe { &*self.1.marks.get() };
+        &arr[..]
+    }
+
+    fn marked(&self) -> u32 {
+        self.1.marked.get()
     }
 }
 
@@ -246,6 +301,10 @@ impl Providers for SimHostProviders {
 pub struct SimHost {
     pub bus: HostBus<SimHostProviders>,
     pub ring: Rc<RingState>,
+    pub marks: Rc<MarkState>,
+    /// Break end to mark, ticks ([`HOST_MARK_LAG_US`] unless a scenario
+    /// overrides it).
+    pub mark_lag: u64,
     pub deadline: Rc<DeadlineState>,
     pub baud: Rc<BaudState>,
     pub events: Vec<HostEvent>,
@@ -254,10 +313,11 @@ pub struct SimHost {
 impl SimHost {
     pub fn build(core: &Rc<RefCell<Core>>, rate: BaudRate) -> Self {
         let ring = RingState::new();
+        let marks = MarkState::new();
         let deadline = DeadlineState::new();
         let baud = BaudState::new(rate);
         let bus = HostBus::new(
-            HostRing(ring.clone()),
+            HostRing(ring.clone(), marks.clone()),
             HostDeadline {
                 core: core.clone(),
                 state: deadline.clone(),
@@ -275,6 +335,8 @@ impl SimHost {
         Self {
             bus,
             ring,
+            marks,
+            mark_lag: HOST_MARK_LAG_US * TICKS_PER_US,
             deadline,
             baud,
             events: Vec::new(),

@@ -347,7 +347,7 @@ mod tests {
         assert_eq!(r.wire.log()[0], WireOp::Claim, "engine took the wire");
 
         r.bus.on_tx_complete();
-        r.ring.feed(&sealed_status(5, ResultCode::Ok, &[7, 0, 1]));
+        r.ring.frame(&sealed_status(5, ResultCode::Ok, &[7, 0, 1]));
         r.server.pump(&mut r.bus, &mut r.sink);
 
         // STATUS then TERMINAL, both carrying seq 0x1234.
@@ -384,11 +384,11 @@ mod tests {
         assert_eq!(r.wire.log()[0], WireOp::Claim, "engine took the wire");
 
         r.bus.on_tx_complete();
-        r.ring.feed(&sealed_status(5, ResultCode::Ok, &[]));
+        r.ring.frame(&sealed_status(5, ResultCode::Ok, &[]));
         r.ring
-            .feed(&sealed_status(5, ResultCode::Stream, &[0, 0, 1, 0, 8, 8]));
+            .frame(&sealed_status(5, ResultCode::Stream, &[0, 0, 1, 0, 8, 8]));
         r.ring
-            .feed(&sealed_status(5, ResultCode::Stream, &[1, 1, 1, 0, 9, 9]));
+            .frame(&sealed_status(5, ResultCode::Stream, &[1, 1, 1, 0, 9, 9]));
         r.server.pump(&mut r.bus, &mut r.sink);
 
         // Ack + two burst frames stream on seq 9, then the terminal.
@@ -588,7 +588,7 @@ mod tests {
         assert_eq!(rej[5], REASON_BUSY);
 
         r.bus.on_tx_complete();
-        r.ring.feed(&sealed_status(5, ResultCode::Ok, &[7, 0, 1]));
+        r.ring.frame(&sealed_status(5, ResultCode::Ok, &[7, 0, 1]));
         r.server.pump(&mut r.bus, &mut r.sink);
         assert_eq!(r.sink.0.len(), 1, "old STATUS + TERMINAL dropped");
 
@@ -596,7 +596,7 @@ mod tests {
             .on_pipe(&submit_ping(0, 5), &mut r.bus, &mut r.sink);
         r.clock.advance(1_000);
         r.bus.on_tx_complete();
-        r.ring.feed(&sealed_status(5, ResultCode::Ok, &[7, 0, 1]));
+        r.ring.frame(&sealed_status(5, ResultCode::Ok, &[7, 0, 1]));
         r.server.pump(&mut r.bus, &mut r.sink);
         let seqs: Vec<(u8, u16)> = r.sink.0[1..]
             .iter()
@@ -616,7 +616,7 @@ mod tests {
         body.extend_from_slice(&p[..n]);
         r.server.on_pipe(&rec(&body), &mut r.bus, &mut r.sink);
         r.bus.on_tx_complete();
-        r.ring.feed(&sealed_status(5, ResultCode::Ok, &[]));
+        r.ring.frame(&sealed_status(5, ResultCode::Ok, &[]));
         r.server.pump(&mut r.bus, &mut r.sink);
         assert_eq!(r.sink.0.len(), 1, "the arm's ack reached the old session");
 
@@ -624,10 +624,10 @@ mod tests {
         r.server.reset_session();
         r.server.reset_session();
         r.ring
-            .feed(&sealed_status(5, ResultCode::Stream, &[0, 0, 1, 0, 8, 8]));
+            .frame(&sealed_status(5, ResultCode::Stream, &[0, 0, 1, 0, 8, 8]));
         r.server.pump(&mut r.bus, &mut r.sink);
         r.ring
-            .feed(&sealed_status(5, ResultCode::Stream, &[1, 1, 1, 0, 9, 9]));
+            .frame(&sealed_status(5, ResultCode::Stream, &[1, 1, 1, 0, 9, 9]));
         r.server.pump(&mut r.bus, &mut r.sink);
         assert_eq!(r.sink.0.len(), 1, "burst frames + terminal dropped");
 
