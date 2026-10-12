@@ -871,6 +871,7 @@ mod tests {
                 vmotor_bias_nom_counts: 0,
                 rail_drop_mv: 0,
             },
+            0,
         );
         let pick = boot_overlay_calib(&sh, &[0xFF; CALIB_IMAGE_LEN], &[0u8; CALIB_IMAGE_LEN]);
         assert_eq!(

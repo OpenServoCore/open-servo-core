@@ -265,6 +265,7 @@ name = "osc-ident"
 version = "0.1.0"
 dependencies = [
  "flate2",
+ "osc-protocol",
  "osc-servo-core",
  "serde",
  "serde_json",

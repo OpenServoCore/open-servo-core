@@ -99,7 +99,7 @@ pub(crate) fn write_tel_frames(dir: &OutDir, name: &str, frames: &[TelFrame]) ->
     let mut w = dir.file(name)?;
     writeln!(
         w,
-        "tick,window_valid,pos,current,current_trough,duty_q15,vdiff,vbus,current_raw,vmotor_a,vmotor_b,vbus_raw,ntc_raw,pos_lin"
+        "tick,window_valid,pos,current,current_trough,duty_counts,vdiff,vbus,current_raw,vmotor_a,vmotor_b,vbus_raw,ntc_raw,pos_lin"
     )?;
     let opt = |v: Option<i32>| v.map(|v| v.to_string()).unwrap_or_default();
     for f in frames {
@@ -111,7 +111,7 @@ pub(crate) fn write_tel_frames(dir: &OutDir, name: &str, frames: &[TelFrame]) ->
             opt(f.pos.map(|v| v as i32)),
             opt(f.current.map(|v| v as i32)),
             opt(f.current_trough.map(|v| v as i32)),
-            opt(f.duty_q15.map(|v| v as i32)),
+            opt(f.duty_counts.map(|v| v as i32)),
             opt(f.vdiff.map(|v| v as i32)),
             opt(f.vbus.map(|v| v as i32)),
             opt(f.current_raw.map(|v| v as i32)),
@@ -147,7 +147,7 @@ pub(crate) fn read_tel_frames(path: &Path) -> Result<Vec<TelFrame>> {
             pos: opt(&parts[2])?,
             current: opt(&parts[3])?,
             current_trough: opt(&parts[4])?,
-            duty_q15: opt(&parts[5])?,
+            duty_counts: opt(&parts[5])?,
             vdiff: opt(&parts[6])?,
             vbus: opt(&parts[7])?,
             current_raw: opt(&parts[8])?,
@@ -383,23 +383,24 @@ pub(crate) fn write_rl_segments(dir: &OutDir, segs: &[Segment]) -> Result<()> {
     let mut w = dir.file("rl.csv")?;
     writeln!(
         w,
-        "seg,chain,kind,dir,bias,cmd_duty_q15,tick,window_valid,pos,duty_q15,current_raw,vmotor_a,vmotor_b,vbus_raw"
+        "seg,chain,kind,dir,bias,cmd_duty_q15,pwm_period_ticks,tick,window_valid,pos,duty_counts,current_raw,vmotor_a,vmotor_b,vbus_raw"
     )?;
     let opt = |v: Option<i32>| v.map(|v| v.to_string()).unwrap_or_default();
     for (k, s) in segs.iter().enumerate() {
         for f in &s.tel {
             writeln!(
                 w,
-                "{k},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+                "{k},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
                 s.chain,
                 s.kind.as_str(),
                 s.dir,
                 s.bias,
                 s.cmd_duty_q15,
+                s.pwm_period_ticks,
                 f.tick,
                 f.window_valid as u8,
                 opt(f.pos.map(|v| v as i32)),
-                opt(f.duty_q15.map(|v| v as i32)),
+                opt(f.duty_counts.map(|v| v as i32)),
                 opt(f.current_raw.map(|v| v as i32)),
                 opt(f.vmotor_a.map(|v| v as i32)),
                 opt(f.vmotor_b.map(|v| v as i32)),
@@ -423,7 +424,7 @@ pub(crate) fn read_rl_segments(dir: &Path) -> Result<Vec<Segment>> {
     }
     let mut out: Vec<Segment> = Vec::new();
     let mut cur: Option<usize> = None;
-    for parts in rows(&dir.join("rl.csv"), 14)? {
+    for parts in rows(&dir.join("rl.csv"), 15)? {
         let k: usize = parts[0].parse()?;
         if cur != Some(k) {
             cur = Some(k);
@@ -434,18 +435,19 @@ pub(crate) fn read_rl_segments(dir: &Path) -> Result<Vec<Segment>> {
                 dir: parts[3].parse()?,
                 bias: parts[4].parse()?,
                 cmd_duty_q15: parts[5].parse()?,
+                pwm_period_ticks: parts[6].parse()?,
                 tel: Vec::new(),
             });
         }
         out.last_mut().expect("pushed").tel.push(TelFrame {
-            tick: parts[6].parse()?,
-            window_valid: parts[7] == "1",
-            pos: opt(&parts[8])?,
-            duty_q15: opt(&parts[9])?,
-            current_raw: opt(&parts[10])?,
-            vmotor_a: opt(&parts[11])?,
-            vmotor_b: opt(&parts[12])?,
-            vbus_raw: opt(&parts[13])?,
+            tick: parts[7].parse()?,
+            window_valid: parts[8] == "1",
+            pos: opt(&parts[9])?,
+            duty_counts: opt(&parts[10])?,
+            current_raw: opt(&parts[11])?,
+            vmotor_a: opt(&parts[12])?,
+            vmotor_b: opt(&parts[13])?,
+            vbus_raw: opt(&parts[14])?,
             ..Default::default()
         });
     }
@@ -559,7 +561,7 @@ mod tests {
                 pos: Some(2048),
                 current: Some(-33),
                 current_trough: Some(500),
-                duty_q15: Some(8520),
+                duty_counts: Some(312),
                 vdiff: Some(-1700),
                 vbus: Some(1731),
                 current_raw: Some(620),
@@ -575,7 +577,7 @@ mod tests {
                 pos: Some(2049),
                 current: Some(12),
                 current_trough: None,
-                duty_q15: Some(0),
+                duty_counts: Some(0),
                 vdiff: Some(0),
                 vbus: None,
                 current_raw: None,
@@ -675,7 +677,7 @@ mod tests {
             tick,
             window_valid: true,
             pos: Some(2048),
-            duty_q15: Some(duty),
+            duty_counts: Some(duty),
             current_raw: Some(raw),
             vmotor_a: Some(1800),
             vmotor_b: Some(775),
@@ -689,6 +691,7 @@ mod tests {
                 dir: 0,
                 bias: 0,
                 cmd_duty_q15: 0,
+                pwm_period_ticks: 1200,
                 tel: vec![TelFrame {
                     tick: 0,
                     window_valid: false,
@@ -702,7 +705,8 @@ mod tests {
                 dir: -1,
                 bias: 1,
                 cmd_duty_q15: -9830,
-                tel: vec![frame(0, -9830, 640), frame(1, -9830, 690)],
+                pwm_period_ticks: 1200,
+                tel: vec![frame(0, -360, 640), frame(1, -360, 690)],
             },
         ];
         write_rl_segments(&dir, &segs).unwrap();

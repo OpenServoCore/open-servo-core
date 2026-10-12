@@ -39,7 +39,7 @@ use crate::fits::{
     BClimb, BDecay, BDirect, BExp, Climb, InertiaPriors, StepSeries, b_climb_fit, b_decay_pool,
     b_decay_step, b_direct_fit, b_exp_fit,
 };
-use crate::frame::{TelBurst, TelFrame, TelemetrySnapshot};
+use crate::frame::{TelBurst, TelFrame, TelemetrySnapshot, counts_q15, duty_counts};
 use crate::limits::{DutyPlan, q15_floor};
 use crate::regs::control;
 use crate::runway::{
@@ -283,6 +283,7 @@ impl InertiaCfg {
 struct StepCapture {
     goal_q15: i16,
     base_q15: i16,
+    pwm_period_ticks: u16,
     tel: Vec<TelFrame>,
 }
 
@@ -620,12 +621,13 @@ impl Inertia {
         let frames: Vec<(&TelFrame, f64, i16, i16)> = c
             .tel
             .iter()
-            .filter_map(|f| Some((f, f.counts()?, f.current?, f.duty_q15?)))
+            .filter_map(|f| Some((f, f.counts()?, f.current?, f.duty_counts?)))
             .collect();
         let judged = judge(
             frames.iter().map(|(f, _, _, d)| (f.tick, *d)),
             c.goal_q15,
-            c.base_q15,
+            duty_counts(c.base_q15, c.pwm_period_ticks),
+            c.pwm_period_ticks,
         );
         if judged.contains(&Applied::Governed) {
             return Err(GOVERNED);
@@ -635,7 +637,7 @@ impl Inertia {
             let raw = f.pos.unwrap_or(p.round() as u16);
             let clean = *a == Applied::Clean;
             if clean && s.duty_q15 == 0.0 {
-                s.duty_q15 = *duty as f64;
+                s.duty_q15 = counts_q15(*duty, c.pwm_period_ticks);
             }
             s.t.push(f.tick as f64 * tick_s);
             s.pos.push(*p);
@@ -852,6 +854,7 @@ impl Experiment for Inertia {
     /// Frames arriving outside a step burst are dropped.
     fn push_tel(&mut self, burst: &TelBurst) {
         if self.capturing {
+            self.cur.pwm_period_ticks = burst.pwm_period_ticks;
             self.cur.tel.extend_from_slice(&burst.frames);
         }
     }
@@ -860,7 +863,9 @@ impl Experiment for Inertia {
 #[cfg(test)]
 mod tests {
     use super::super::ladder::{Ladder, LadderCfg};
-    use super::super::testkit::{Bus, FakeServo, TICK_HZ, bench_mg90, bent_pot, pump, pump_on};
+    use super::super::testkit::{
+        Bus, FakeServo, PWM_PERIOD_TICKS, TICK_HZ, bench_mg90, bent_pot, pump, pump_on,
+    };
     use super::super::{Guarded, RigParams};
     use super::*;
     use crate::pot::Pot;
@@ -1043,7 +1048,7 @@ mod tests {
                 window_valid: v[1] != 0,
                 pos: Some(v[2] as u16),
                 current: Some(v[3] as i16),
-                duty_q15: Some(v[4] as i16),
+                duty_counts: Some(v[4] as i16),
                 pos_lin: Some(v[5] as u16),
                 ..Default::default()
             };
@@ -1075,11 +1080,18 @@ mod tests {
             Runway::new((532, 3526)),
             &params,
         );
-        for tel in bursts {
-            let duty = |f: &TelFrame| f.duty_q15.unwrap();
+        // the recording predates counts: its Q15 duty re-streams as the
+        // compare counts the bench period drove
+        for mut tel in bursts {
+            let q15 = |f: &TelFrame| f.duty_counts.unwrap();
+            let (goal_q15, base_q15) = (q15(tel.last().unwrap()), q15(&tel[0]));
+            for f in &mut tel {
+                f.duty_counts = f.duty_counts.map(|d| duty_counts(d, PWM_PERIOD_TICKS));
+            }
             exp.captures.push(StepCapture {
-                goal_q15: duty(tel.last().unwrap()),
-                base_q15: duty(&tel[0]),
+                goal_q15,
+                base_q15,
+                pwm_period_ticks: PWM_PERIOD_TICKS,
                 tel,
             });
         }
@@ -1338,14 +1350,15 @@ mod tests {
         for (c, g) in exp.captures.iter().zip(&goals) {
             let first = &c.tel[0];
             assert!(
-                first.duty_q15.unwrap().unsigned_abs() >= 10158,
+                first.duty_counts.unwrap().unsigned_abs()
+                    >= duty_counts(10158, PWM_PERIOD_TICKS) as u16,
                 "the step slewed from zero"
             );
             // 5 ms from the edge: under a tenth of a time constant
             let (p0, p1) = (c.tel[0].pos.unwrap(), c.tel[100].pos.unwrap());
             let moved = (p1 as f64 - p0 as f64) * g.signum() as f64;
             assert!(moved > 8.0, "the shaft was not moving at the edge: {moved}");
-            assert!(c.tel.iter().any(|f| f.duty_q15 == Some(*g as i16)));
+            assert!(c.tel.iter().any(|f| f.duty_is(*g as i16, PWM_PERIOD_TICKS)));
         }
         let fit = exp.fit(&priors(), &[]).expect("fit");
         assert_eq!(fit.tel_steps, 6, "{:?}", fit.warnings);
@@ -1500,6 +1513,7 @@ mod tests {
                 ..Default::default()
             }],
             rows_dropped: 0,
+            pwm_period_ticks: PWM_PERIOD_TICKS,
         });
         assert!(exp.captures.is_empty());
         assert!(exp.cur.tel.is_empty(), "not capturing: frame dropped");

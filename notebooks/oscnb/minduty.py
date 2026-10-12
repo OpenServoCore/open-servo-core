@@ -34,6 +34,7 @@ import re
 import numpy as np
 import pandas as pd
 
+from . import datasets
 from . import opasweep as ow
 
 ARR = 1200
@@ -52,7 +53,7 @@ BOARD_SRC = Path(__file__).resolve().parents[2] / "firmware" / "boards" / "osc-d
 
 def drive_ticks(q15, arr=ARR):
     """The firmware's window width for a duty: (|d| x ARR + 2^14) >> 15."""
-    return (np.abs(np.asarray(q15, dtype=np.int64)) * arr + (1 << 14)) >> 15
+    return datasets.drive_ticks(q15, arr)
 
 
 def floor_q15(ticks, arr=ARR):

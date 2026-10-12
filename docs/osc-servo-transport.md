@@ -326,16 +326,17 @@ be staged behind the CRC verdict:
   nonzero `tel_count` arms it; the host is silent by contract until the
   LAST-flagged frame, so the reply TX engine and CRC engine are
   structurally idle and the burst borrows them whole - no second TX
-  path exists. Mechanics: the kernel encodes each control-tick sample
-  once, directly at its final wire offset in a ping-pong buffer pair
-  (the kernel's context, PFIC HIGH); the tick's last statement pends the SW vector, whose
-  `poll_tel` stages a ready buffer through the ordinary stage/trigger
-  path at the bus level, never inside the kernel's body. It runs per
-  tick, not in the main loop: a six-field frame leaves
-  ~110 us of its 800 us batch window spare, and a driving tick starves
-  the main loop for longer than that. Cross-context traffic is three
-  flags and an arm mailbox, single-writer volatile discipline, no
-  atomics. Any RX break aborts the burst with the speculation-kill trio
+  path exists. Mechanics: the arm plans the mask's packed row (protocol
+  sec 5.6) and posts the plan; the kernel packs each control-tick sample
+  once, in one out-of-line call, directly at its final wire offset in a
+  ping-pong buffer pair (the kernel's context, PFIC HIGH); the tick's
+  last statement pends the SW vector, whose `poll_tel` stages a ready
+  buffer through the ordinary stage/trigger path at the bus level, never
+  inside the kernel's body. It runs per tick, not in the main loop: the
+  six raw fields' 155 B frame leaves ~280 us of its 800 us batch window
+  spare, and a driving tick starves the main loop for longer than that.
+  Cross-context traffic is three flags and an arm mailbox,
+  single-writer volatile discipline, no atomics. Any RX break aborts the burst with the speculation-kill trio
   (disarm, tx.abort, chain reset); buffers published under a dead arm
   epoch are discarded on sight, which closes the mid-tick re-arm race. A
   stalled consumer drops rows and counts them - the fast tick never

@@ -2,7 +2,7 @@
 
 use osc_protocol::wire::ResultCode;
 use osc_servo_core::traits::{Reply, SendError, Status};
-use osc_servo_core::{BaudRate, BootMode};
+use osc_servo_core::{BaudRate, BootMode, tel};
 
 use super::super::tx::TxEngine;
 use super::ServoBus;
@@ -24,6 +24,8 @@ pub(super) struct ReplyHandle<'a, W: TxWire, C: CrcEngine> {
     pub(super) pending_cal: &'a mut Option<(u16, u8)>,
     pub(super) response_deadline_us: &'a mut u16,
     pub(super) burst: &'a mut TelBurst,
+    /// The line's rate now (the rescue rate included): TEL admission's.
+    pub(super) rate: BaudRate,
     pub(super) staged: bool,
     /// sec 9.2: the request is a broadcast ENUM -- a reply staged through this
     /// handle is marked collision-tolerant, keyed off its own payload (the
@@ -54,6 +56,7 @@ impl<P: Providers> ServoBus<P> {
             pending_cal: &mut self.clock.pending_cal,
             response_deadline_us: &mut self.response_deadline_us,
             burst: &mut self.burst,
+            rate: self.rate,
             staged: false,
             tolerant: false,
         }
@@ -112,6 +115,11 @@ impl<W: TxWire, C: CrcEngine> Reply for ReplyHandle<'_, W, C> {
     }
 
     fn tel_arm(&mut self, mask: u16, count: u16) {
+        let count = if tel::admits(mask, self.rate) {
+            count
+        } else {
+            0
+        };
         self.burst.arm(mask, count);
     }
 

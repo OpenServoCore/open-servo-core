@@ -58,6 +58,10 @@ struct SweepMeta {
     /// Absent in a recording made before tools read the counter.
     #[serde(default)]
     rows_dropped: Option<u16>,
+    /// The full scale of the rows' `duty_counts`; absent in a recording
+    /// made before TEL carried compare counts.
+    #[serde(default)]
+    pwm_period_ticks: Option<u16>,
 }
 
 /// The block map a session recording carries.
@@ -313,6 +317,10 @@ fn check(dir: &Path, name: &str) -> Result<Checked> {
     let m: SweepMeta =
         serde_json::from_str(&text).with_context(|| format!("parse {}", meta_path.display()))?;
     dropped(m.rows_dropped.unwrap_or(0)).map_err(|e| anyhow!(e))?;
+    let period = m
+        .pwm_period_ticks
+        .filter(|&p| p > 0)
+        .context("no pwm_period_ticks: the recording predates TEL duty counts")?;
     let csv_path = dir.join(format!("{name}.csv.gz"));
     let f =
         std::fs::File::open(&csv_path).with_context(|| format!("open {}", csv_path.display()))?;
@@ -347,13 +355,13 @@ fn check(dir: &Path, name: &str) -> Result<Checked> {
     }
     let drive = Drive::of(&m);
     if let Some(t) = m.drive.as_ref().and_then(|d| d.t_goal_ms.as_deref()) {
-        check_goals(&rows, t, m.tick_hz)?;
+        check_goals(&rows, t, m.tick_hz, period)?;
     }
     if let Some(d) = m.drive.as_ref().filter(|_| drive.rule == Rule::Limit) {
-        check_limit(&rows, &m, d)?;
+        check_limit(&rows, &m, d, period)?;
     }
     if drive.rule == Rule::Free {
-        check_free(&rows, &m.schedule, baseline)?;
+        check_free(&rows, &m.schedule, baseline, period)?;
     }
     let total: usize = rows.segs.values().map(|s| s.rows).sum();
     let plant = match &m.plant {
@@ -375,7 +383,12 @@ fn check(dir: &Path, name: &str) -> Result<Checked> {
 }
 
 /// Every segment's `t_goal_ms` is the first tick its rows hold the goal.
-fn check_goals(rows: &Rows, meta: &[Option<f64>], tick_hz: Option<f64>) -> Result<()> {
+fn check_goals(
+    rows: &Rows,
+    meta: &[Option<f64>],
+    tick_hz: Option<f64>,
+    pwm_period_ticks: u16,
+) -> Result<()> {
     let Some(hz) = tick_hz.filter(|&hz| hz > 0.0) else {
         bail!("t_goal_ms without a tick_hz");
     };
@@ -387,8 +400,8 @@ fn check_goals(rows: &Rows, meta: &[Option<f64>], tick_hz: Option<f64>) -> Resul
         );
     }
     for ((seg, s), &have) in rows.segs.iter().zip(meta) {
-        let want =
-            goal_tick(s.duty.iter().map(|&(t, d)| (t, Some(d))), s.cmd).map(|t| tick_ms(t, hz));
+        let duty = s.duty.iter().map(|&(t, d)| (t, Some(d)));
+        let want = goal_tick(duty, s.cmd, pwm_period_ticks).map(|t| tick_ms(t, hz));
         let same = match (have, want) {
             (Some(a), Some(b)) => (a - b).abs() < 1e-6,
             (None, None) => true,
@@ -409,7 +422,7 @@ fn check_goals(rows: &Rows, meta: &[Option<f64>], tick_hz: Option<f64>) -> Resul
 /// A recording made under the limit, judged as the capture verdict judged
 /// it: no window of current over the abort its meta names, and every grid
 /// and ends rung's tail settled at its goal.
-fn check_limit(rows: &Rows, m: &SweepMeta, d: &DriveMeta) -> Result<()> {
+fn check_limit(rows: &Rows, m: &SweepMeta, d: &DriveMeta, pwm_period_ticks: u16) -> Result<()> {
     let Some(hz) = m.tick_hz.filter(|&hz| hz > 0.0) else {
         bail!("a limit recording without a tick_hz");
     };
@@ -420,6 +433,7 @@ fn check_limit(rows: &Rows, m: &SweepMeta, d: &DriveMeta) -> Result<()> {
             seg,
             dir: s.dir,
             cmd_duty_q15: s.cmd,
+            pwm_period_ticks,
             frames: s.frames.clone(),
             stats: BurstStats {
                 frames: 0,
@@ -475,7 +489,7 @@ fn check_limit(rows: &Rows, m: &SweepMeta, d: &DriveMeta) -> Result<()> {
 /// meta does not declare. Each segment is judged as the capture verdict
 /// judges it: a drive slews from rest, a chained one from the duty the
 /// segment before it left applied.
-fn check_free(rows: &Rows, schedule: &[Step], baseline: bool) -> Result<()> {
+fn check_free(rows: &Rows, schedule: &[Step], baseline: bool, pwm_period_ticks: u16) -> Result<()> {
     let mut last = 0;
     for (i, (seg, s)) in rows.segs.iter().enumerate() {
         let step = i
@@ -490,7 +504,7 @@ fn check_free(rows: &Rows, schedule: &[Step], baseline: bool) -> Result<()> {
         if s.cmd == 0 {
             continue;
         }
-        let governed = judge(s.duty.iter().copied(), s.cmd, start)
+        let governed = judge(s.duty.iter().copied(), s.cmd, start, pwm_period_ticks)
             .iter()
             .filter(|&&a| a == Applied::Governed)
             .count();
@@ -504,8 +518,8 @@ fn check_free(rows: &Rows, schedule: &[Step], baseline: bool) -> Result<()> {
     Ok(())
 }
 
-/// One segment's rows: the commanded duty, every applied-duty sample, and
-/// the samples a limit recording is judged by.
+/// One segment's rows: the commanded duty, every applied-duty sample in
+/// compare counts, and the samples a limit recording is judged by.
 #[derive(Default)]
 struct SegRows {
     rows: usize,
@@ -533,7 +547,7 @@ fn read_rows(r: impl BufRead) -> Result<Rows> {
             .ok_or_else(|| anyhow!("no {name} column"))
     };
     let (seg_col, dir_col) = (col("seg")?, col("dir")?);
-    let (cmd_col, tick_col, duty_col) = (col("cmd_duty_q15")?, col("tick")?, col("duty_q15")?);
+    let (cmd_col, tick_col, duty_col) = (col("cmd_duty_q15")?, col("tick")?, col("duty_counts")?);
     let (pos_col, raw_col, trough_col) = (
         col("pos").ok(),
         col("current_raw").ok(),
@@ -558,7 +572,7 @@ fn read_rows(r: impl BufRead) -> Result<Rows> {
         s.rows += 1;
         let duty = match field(duty_col) {
             "" => None,
-            d => Some(d.parse().map_err(|_| bad("duty_q15"))?),
+            d => Some(d.parse().map_err(|_| bad("duty_counts"))?),
         };
         if let Some(d) = duty {
             s.duty.push((tick, d));
@@ -566,7 +580,7 @@ fn read_rows(r: impl BufRead) -> Result<Rows> {
         let cell = |c: Option<usize>| c.and_then(|c| field(c).parse::<u16>().ok());
         s.frames.push(TelFrame {
             tick,
-            duty_q15: duty,
+            duty_counts: duty,
             pos: cell(pos_col),
             current_raw: cell(raw_col),
             current_trough: cell(trough_col),
@@ -583,7 +597,9 @@ fn read_rows(r: impl BufRead) -> Result<Rows> {
 mod tests {
     use super::*;
     use crate::capture::plan::Plan;
-    use crate::capture::store::fixture::{clean, land, land_as, seg, sweep_meta, tmp};
+    use crate::capture::store::fixture::{
+        PWM_PERIOD_TICKS, clean, cnt, land, land_as, seg, sweep_meta, tmp,
+    };
     use crate::capture::store::{Capture, CaptureMeta, Store};
     use crate::capture::verdict::bench;
     use crate::rig::servo::bench::Bench;
@@ -735,7 +751,7 @@ mod tests {
 
     #[test]
     fn rows_read_by_the_header() {
-        let csv = "dir,tick,x,duty_q15,cmd_duty_q15,seg\n\
+        let csv = "dir,tick,x,duty_counts,cmd_duty_q15,seg\n\
                    0,0,a,0,0,0\n\
                    1,0,b,,100,1\n\
                    1,1,c,100,100,1\n\
@@ -747,7 +763,7 @@ mod tests {
         assert_eq!(rows.segs[&1].cmd, 100);
         assert_eq!(rows.segs[&1].duty, [(1, 100)]);
         assert_eq!(rows.segs[&2].duty, [(0, -5)]);
-        let bad = "seg,dir,tick,cmd_duty_q15,duty_q15\nx,1,0,0,0\n";
+        let bad = "seg,dir,tick,cmd_duty_q15,duty_counts\nx,1,0,0,0\n";
         assert!(read_rows(bad.as_bytes()).is_err());
         assert!(read_rows("tick\n1\n".as_bytes()).is_err());
     }
@@ -759,7 +775,7 @@ mod tests {
         s.cmd_duty_q15 = goal;
         for (t, f) in s.frames.iter_mut().enumerate() {
             let climb = (rate as i64 * t as i64).min(held.unsigned_abs() as i64) as i16;
-            f.duty_q15 = Some(climb * held.signum());
+            f.duty_counts = Some(cnt(climb * held.signum()));
         }
         s
     }
@@ -769,12 +785,14 @@ mod tests {
         let coast = |seg_n: u32, dir: i8| {
             let mut s = seg(seg_n, dir, 3);
             for f in &mut s.frames {
-                f.duty_q15 = Some(0);
+                f.duty_counts = Some(cnt(0));
             }
             s
         };
         let mut base = seg(0, 0, 3);
-        base.frames.iter_mut().for_each(|f| f.duty_q15 = Some(0));
+        base.frames
+            .iter_mut()
+            .for_each(|f| f.duty_counts = Some(cnt(0)));
         vec![
             base,
             rung(1, 1, 6553, fwd_held, 3000, 100),
@@ -1051,9 +1069,10 @@ mod tests {
     fn goal_tick_skips_a_frame_with_no_duty() {
         let f = TelFrame {
             tick: 3,
-            duty_q15: None,
+            duty_counts: None,
             ..TelFrame::default()
         };
-        assert_eq!(goal_tick([(f.tick, f.duty_q15), (4, Some(7))], 7), Some(4));
+        let goal = [(f.tick, f.duty_counts), (4, Some(cnt(8520)))];
+        assert_eq!(goal_tick(goal, 8520, PWM_PERIOD_TICKS), Some(4));
     }
 }

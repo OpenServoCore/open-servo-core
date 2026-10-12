@@ -13,7 +13,7 @@ use super::limits::IBand;
 use crate::estimator::bias::Zero;
 use crate::estimator::{BemfObs, BiasTracker, window};
 use crate::pos_lut;
-use crate::tel::{TelSample, TelStream};
+use crate::tel::{self, TelSample, TelStream};
 use crate::traits::{DecayMode, MotorCmd};
 use crate::{RegionStorageRaw, SensorFrame, Shared};
 
@@ -265,12 +265,15 @@ impl Fast {
             vdiff.filter(|_| ticks >= self.bemf_min_ticks as u32),
             i_meas,
         );
-        // TEL emits HERE, before the medium step: duty_q15 still holds the
+        // TEL emits HERE, before the medium step: `ticks` still holds the
         // command whose window this frame's samples measured (the same
         // previous-tick alignment the ident aggregate uses), and the sample
         // lands at a near-constant tick offset.
-        if tel.active() {
-            let pos_lin_q4 = if cmd.lut_live {
+        let row = tel.row_mask();
+        if row != 0 {
+            let pos_lin_q4 = if row & tel::BIT_POS_LIN == 0 {
+                0
+            } else if cmd.lut_live {
                 shared.pos_lut_q4(frame.pos)
             } else {
                 pos_lut::identity_q4(frame.pos)
@@ -279,7 +282,7 @@ impl Fast {
                 pos: frame.pos,
                 current: self.i_meas_last,
                 current_trough: frame.current_trough,
-                duty_q15: self.duty_q15,
+                duty: if fwd { ticks as i16 } else { -(ticks as i16) },
                 vdiff: self.vdiff_last,
                 vbus: cmd.vbus_counts,
                 current_raw: frame.current,

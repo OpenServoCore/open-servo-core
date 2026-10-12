@@ -495,9 +495,11 @@ comms RW:
 | ----- | ---------------------- | ----- | ------ | -------------------------------------- |
 | 0x000 | `model_number`         | u16   | RO     | keys the per-model map                 |
 | 0x002 | `firmware_version`     | u16   | RO     | semver packed 5.5.6: `[major:5][minor:5][patch:6]` |
-| 0x004 | `capability_flags`     | u32   | RO     | no bits defined yet                    |
+| 0x004 | `capability_flags`     | u32   | RO     | bit 0: the two TEL row registers below |
 | 0x008 | `hardware_revision`    | u8    | RO     |                                        |
-| 0x009 | —                      | 7 B   | rsvd   |                                        |
+| 0x009 | -                      | 1 B   | rsvd   |                                        |
+| 0x00A | `tel_wide_fields`      | u16   | RO     | sec 5.6: bit i set = field i rides in 16 bits, clear = 12 |
+| 0x00C | `tel_row_bytes_max`    | 4 B   | RO     | sec 5.6: the longest TEL row, bytes, per sec 2 rate index |
 | 0x010 | `id`                   | u8    | RW     | unicast address `0x01..=0xF9` (§3.1)   |
 | 0x011 | `baud_rate_idx`        | u8    | RW     | §2 rate index                          |
 | 0x012 | `response_deadline_us` | u16   | RW     | §7                                     |
@@ -615,29 +617,50 @@ Payload, all LE:
 [0]    stream_seq  u8, increments per frame, wraps
 [1]    flags       bit 0 = LAST frame of the burst; rest reserved 0
 [2..4] valid       u16 bitmap, bit i = sample i measured a fresh window
-[4..]  samples     the mask-selected fields in bit order, 2 B each
+[4..]  rows        one per sample, the mask-selected fields packed
 ```
 
 `tel_mask` bits, in sample order (osc-servo): 0 `pos` (raw pot), 1
 `current` (bias-subtracted window sample, times the board's settle gain
 for its drive width, unity on a window wide enough to settle; held
 through windows the shunt cannot read, 0 from the first tick nothing
-drives: torque off, a fault, a brake, an OpenLoop zero goal), 2 `current_trough`, 3 `duty`, 4
+drives: torque off, a fault, a brake, an OpenLoop zero goal), 2 `current_trough`, 3 `duty` (the signed PWM
+compare count the bridge applied, logical direction; full scale is the
+model's PWM period, osc-servo `pwm_period_ticks` in CALIB, RO), 4
 `vdiff` (held through windows the terminal taps cannot read, which the
 `valid` bit does not mark when the shunt reads them, sec 5.8), 5 `vbus`, 6 `current_raw`, 7 `vmotor_a`, 8 `vmotor_b`, 9
 `vbus_raw`, 10 `ntc_raw`, 11 `pos_lin` (the linearized pot the kernel
 controls on, the Q4 word itself, sec 5.7); bits 12-15 are reserved and
-reject. A sample carries at most 6 fields (12 B): a mask selecting more
-rejects at write time, since a 16-sample batch of it could not clear the
-wire inside its own tick window at 3 M.
+reject.
+
+Each field rides at its own width, lossless: the raw ADC codes and
+`duty` in 12 bits (`duty` two's complement), `current`, `vdiff`, `vbus`
+and `pos_lin` in 16. `tel_wide_fields` publishes the widths (bit set =
+16), and `osc-protocol::tel` holds the same table. A row is byte
+aligned:
+
+- 16-bit slots, LE: the selected 16-bit fields, and when the mask
+  selects an odd number of 12-bit fields, the lowest of those (holding
+  its value), in bit order;
+- then the other 12-bit fields in bit order, two per three bytes: the
+  pair `a, b` is the 24-bit LE word `a | b << 12`.
+
+A row is `2 x slots + 3 x pairs` bytes: the six raw fields (mask
+`0x1CD`) are 9 B against 12 at two bytes a field.
 
 Samples batch up to 16 per frame (the burst's final frame may carry
 fewer); the count is implicit in `LEN`. Batching is what makes the CRC
-affordable: framing overhead amortizes to well under one byte per
-sample, and the largest legal frame (six fields, 16 samples, 203 wire
-bytes) fits its own 16-tick batch window at 3 M with margin - a full
-six-field set sustains the tick rate, which the old per-tick side
-channel could not.
+affordable: framing overhead amortizes to under one byte per sample.
+
+Admission is by row bytes at the line's current rate (the rescue rate
+included), not by field count: an arm whose row is longer than
+`tel_row_bytes_max` for that rate disarms instead of streaming. The
+write itself acks (the ack precedes the commit that arms), so a host
+checks the register first. The bound is the shorter of the wire's - a
+full frame must clear the wire inside 95% of its own 16-tick window: 13
+B at 3 M, 8 at 2 M, 4 at 1 M, 1 at 0.5 M - and the servo's, the longest
+row it encodes and stages at the tick rate (osc-servo: 11 B). 2 M
+carries the ladder's four fields (7 B); the six raw fields need 3 M.
 
 The wire contract during a burst: the host is silent. The servo owns
 the line from the arm's ack (or the arming COMMIT's silence) through
@@ -653,11 +676,11 @@ data - and the drop is visible as a hole in the `stream_seq` numbering
 (16 samples per missing frame). ALERT on a burst frame carries the OR
 of the batch's fault state, per the sec 5.3 device-level contract.
 
-Timing: a batch completes every 16 control ticks; the frame must clear
-the wire inside that window or the producer drops whole batches
-(drop-not-block, surfaced as seq holes). At 3 M every mask fits; below
-2 M a full-rate burst outruns the wire by design - run captures at 3 M,
-or accept the decimation the holes record. Safety through the silent
+Timing: a batch completes every 16 control ticks. The producer never
+blocks: a row that finds both frame buffers waiting for the wire is
+dropped and counted in `tel_drop_count` (sec 5.9), with no hole in
+`stream_seq`. Admission keeps the wire inside its window; rows drop
+only when the CPU falls behind, which a driving kernel can cause. Safety through the silent
 window is the servo's own - the current limit (held in every drive
 mode, OpenLoop included, sec 5.8), soft-position clamps, the stall
 timer and fault latches run in firmware regardless of the bus - and the

@@ -360,6 +360,7 @@ impl<P: Providers> ServoBus<P> {
             pending_cal: &mut self.clock.pending_cal,
             response_deadline_us: &mut self.response_deadline_us,
             burst: &mut self.burst,
+            rate: self.rate,
             staged: false,
             tolerant,
         };

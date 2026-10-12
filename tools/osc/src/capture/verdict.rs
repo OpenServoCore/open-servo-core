@@ -12,6 +12,7 @@
 //! nothing drives it again.
 
 use osc_ident::exp::{AbortReason, Applied, judge};
+use osc_ident::frame::duty_counts;
 use osc_ident::limits::Ma;
 use osc_ident::runway::{SETTLE_MS, STEADY_MIN_MS};
 
@@ -113,13 +114,14 @@ pub(crate) fn verdict(
                 .frames
                 .iter()
                 .rev()
-                .find_map(|f| f.duty_q15)
+                .find_map(|f| f.duty_counts)
                 .unwrap_or(0),
         };
         let duty = s.frames[..n]
             .iter()
-            .filter_map(|f| Some((f.tick, f.duty_q15?)));
-        governed[i] = judge(duty, s.cmd_duty_q15, start).contains(&Applied::Governed);
+            .filter_map(|f| Some((f.tick, f.duty_counts?)));
+        governed[i] =
+            judge(duty, s.cmd_duty_q15, start, s.pwm_period_ticks).contains(&Applied::Governed);
         if let Err(fall) = load_held(s, n, abort.tick_hz) {
             let why = format!("seg {}: {fall}", s.seg);
             if block == Some("grid")
@@ -212,11 +214,11 @@ pub(crate) fn load_held(s: &Segment, n: usize, tick_hz: f64) -> Result<(), Strin
 /// did. The limiter chatters on and off the goal for a few ms as the duty
 /// first reaches it, and that is the climb ending, not the load changing.
 fn fell(s: &Segment, n: usize, tick_hz: f64) -> Option<f64> {
-    let goal = s.cmd_duty_q15;
+    let goal = duty_counts(s.cmd_duty_q15, s.pwm_period_ticks);
     let hold = (SETTLE_MS * tick_hz / 1000.0).ceil() as u64;
     let mut since = None;
     for f in &s.frames[..n] {
-        let Some(d) = f.duty_q15 else {
+        let Some(d) = f.duty_counts else {
             continue;
         };
         if d == goal {
@@ -259,7 +261,7 @@ pub(crate) fn settled(s: &Segment, n: usize, tick_hz: f64) -> Result<(), String>
     let held = frames
         .iter()
         .rev()
-        .take_while(|f| f.duty_q15 == Some(goal))
+        .take_while(|f| f.duty_is(goal, s.pwm_period_ticks))
         .last()
         .map_or(0.0, |f| (last.tick - f.tick + 1) as f64 * 1000.0 / tick_hz);
     let need = SETTLE_MS + STEADY_MIN_MS;
@@ -286,13 +288,13 @@ pub(crate) fn to_endstop(s: &Segment, soft: [u16; 2], tick_hz: f64) -> Result<us
     let Some(last) = s
         .frames
         .iter()
-        .rposition(|f| f.duty_q15.is_some_and(|d| d != 0))
+        .rposition(|f| f.duty_counts.is_some_and(|d| d != 0))
     else {
         return Ok(n);
     };
     let Some(fall) = s.frames[last..]
         .iter()
-        .position(|f| f.duty_q15 == Some(0))
+        .position(|f| f.duty_counts == Some(0))
         .map(|j| last + j)
     else {
         return Ok(n);
@@ -370,10 +372,12 @@ pub(crate) fn over_abort(
             }
             _ => None,
         };
+        let floor_counts = duty_counts(a.floor_q15 as i16, s.pwm_period_ticks) as i32;
         let eligible = |f: &osc_ident::frame::TelFrame| -> Option<f64> {
-            let d = f.duty_q15? as i32;
+            let d = f.duty_counts? as i32;
             let c = current(f, a.fast)?;
-            (d.signum() == goal.signum() as i32 && d.abs() >= floor).then_some(c as f64 - base)
+            (d.signum() == goal.signum() as i32 && d.abs() >= floor_counts)
+                .then_some(c as f64 - base)
         };
         let reversal_ticks = REVERSAL_MS * a.tick_hz / 1000.0;
         let mut sum = 0.0;
@@ -478,7 +482,7 @@ mod tests {
     use super::bench::{abort, cfg as bench_cfg, one_block, record};
     use super::*;
     use crate::capture::envelope;
-    use crate::capture::store::fixture::{plan, sweep_meta, tmp};
+    use crate::capture::store::fixture::{PWM_PERIOD_TICKS, cnt, plan, sweep_meta, tmp};
     use crate::capture::store::{Capture, CaptureMeta, Store};
     use crate::rig::pump::BurstStats;
     use crate::sweep::{Decay, Dirs, Segment};
@@ -509,6 +513,7 @@ mod tests {
             seg,
             dir,
             cmd_duty_q15: 0,
+            pwm_period_ticks: PWM_PERIOD_TICKS,
             frames: Vec::new(),
             stats: BurstStats {
                 frames: 1,
@@ -650,7 +655,7 @@ mod tests {
         let first = r.segments[1]
             .frames
             .iter()
-            .find(|f| f.duty_q15 == Some(r.segments[1].cmd_duty_q15))
+            .find(|f| f.duty_is(r.segments[1].cmd_duty_q15, PWM_PERIOD_TICKS))
             .unwrap();
         assert!(first.tick > 1000, "the goal after {} ticks", first.tick);
         assert_eq!(
@@ -704,7 +709,7 @@ mod tests {
             drive
                 .frames
                 .iter()
-                .all(|f| f.duty_q15.unwrap() < drive.cmd_duty_q15)
+                .all(|f| f.duty_counts.unwrap() < cnt(drive.cmd_duty_q15))
         );
         let v = verdict(&r, &c, &one_block("step", &c), &envelope::mg90(), &abort());
         let Verdict::Accepted { governed } = v else {
@@ -756,7 +761,7 @@ mod tests {
             s.frames = (0..6000)
                 .map(|t| TelFrame {
                     tick: t,
-                    duty_q15: Some(duty(t)),
+                    duty_counts: Some(cnt(duty(t))),
                     ..TelFrame::default()
                 })
                 .collect();
@@ -883,7 +888,7 @@ mod tests {
                 };
                 TelFrame {
                     tick: t,
-                    duty_q15: Some(duty),
+                    duty_counts: Some(cnt(duty)),
                     pos: Some(pos.round() as u16),
                     current_raw: Some(raw),
                     ..TelFrame::default()
@@ -899,7 +904,7 @@ mod tests {
         base.frames = (0..20)
             .map(|t| TelFrame {
                 tick: t,
-                duty_q15: Some(0),
+                duty_counts: Some(cnt(0)),
                 current_raw: Some(512),
                 ..TelFrame::default()
             })
@@ -999,7 +1004,7 @@ mod tests {
     fn an_ends_rung_braked_before_it_settles_is_rejected() {
         let mut fwd = braked(1, 15, 0.25, 1186.75, 3623, 3638);
         for f in &mut fwd.frames[..22735] {
-            f.duty_q15 = Some(4315);
+            f.duty_counts = Some(cnt(4315));
         }
         let (r, c) = ends(15, fwd, braked(2, -15, 0.25, 1114.2, 419, 382));
         assert_eq!(
@@ -1015,7 +1020,7 @@ mod tests {
     fn an_ends_rung_that_drives_again_after_a_fall_to_0_is_rejected() {
         let mut fwd = braked(1, 15, 0.25, 1186.75, 3623, 3638);
         for f in &mut fwd.frames[23755..] {
-            (f.duty_q15, f.current_raw) = (Some(4915), Some(512 + 100));
+            (f.duty_counts, f.current_raw) = (Some(cnt(4915)), Some(512 + 100));
         }
         let (r, c) = ends(15, fwd, braked(2, -15, 0.25, 1114.2, 419, 382));
         let why = rejected_ends(&r, &c);
@@ -1036,7 +1041,7 @@ mod tests {
             let r = record(&c, |_| {});
             let stopped = r.segments[1..]
                 .iter()
-                .all(|s| s.frames.last().unwrap().duty_q15 == Some(0));
+                .all(|s| s.frames.last().unwrap().duty_is(0, PWM_PERIOD_TICKS));
             assert_eq!(stopped, pct == 20, "{pct}%");
             let v = ends_verdict(&r, &c);
             assert!(matches!(v, Verdict::Accepted { .. }), "{pct}%: {v:?}");
@@ -1093,7 +1098,7 @@ mod tests {
         let a = abort();
         let frame = |t: u64, duty: i16, raw: u16| TelFrame {
             tick: t,
-            duty_q15: Some(duty),
+            duty_counts: Some(cnt(duty)),
             current_raw: Some(raw),
             ..TelFrame::default()
         };
@@ -1129,7 +1134,7 @@ mod tests {
         let under = hot(16)
             .into_iter()
             .map(|f| TelFrame {
-                duty_q15: Some(4000),
+                duty_counts: Some(cnt(4000)),
                 ..f
             })
             .collect();

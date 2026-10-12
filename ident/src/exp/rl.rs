@@ -19,7 +19,8 @@
 //!     MEDIAN of every transition, x_k = 1 - A*a^k with A free (it
 //!     absorbs the sub-sample phase of the step).
 //!   - R_loop = delta_i / delta(D*V) over the settled windows either side,
-//!     D = |duty_q15|/32767 and V the ON-state terminal difference. Both
+//!     D = |duty_counts| / pwm_period_ticks and V the ON-state terminal
+//!     difference. Both
 //!     terminal referenced (the winding) and rail referenced (the winding
 //!     plus the bridge) come out of the same transitions.
 //!   - L = tau * R_loop, terminal referenced.
@@ -49,14 +50,14 @@ use super::{AbortReason, Applied, Cmd, Experiment, GOVERNED, RigParams, judge};
 use crate::fitmath::{linear_ls, median, origin_ls, quantile};
 use crate::frame::{
     TEL_BIT_CURRENT_RAW, TEL_BIT_DUTY, TEL_BIT_POS, TEL_BIT_VBUS_RAW, TEL_BIT_VMOTOR_A,
-    TEL_BIT_VMOTOR_B, TelBurst, TelFrame, TelemetrySnapshot,
+    TEL_BIT_VMOTOR_B, TelBurst, TelFrame, TelemetrySnapshot, counts_q15,
 };
 use crate::limits::{DutyPlan, q15_floor};
 use crate::regs::control;
 use crate::units::{self, SenseParams};
 
 /// Measurements only: pot, applied duty, raw current, both terminals and
-/// the raw rail. Six fields is the wire budget at 20 kHz.
+/// the raw rail: six 12-bit fields, a 9 B row.
 pub const TEL_RL_MASK: u16 = TEL_BIT_POS
     | TEL_BIT_DUTY
     | TEL_BIT_CURRENT_RAW
@@ -158,6 +159,8 @@ pub struct Segment {
     /// Bias level index within the chain plan.
     pub bias: u8,
     pub cmd_duty_q15: i16,
+    /// The burst's PWM period: the full scale of its duty counts.
+    pub pwm_period_ticks: u16,
     pub tel: Vec<TelFrame>,
 }
 
@@ -826,6 +829,7 @@ impl Experiment for Rl {
                 dir,
                 bias,
                 cmd_duty_q15,
+                pwm_period_ticks: burst.pwm_period_ticks,
                 tel: burst.frames.clone(),
             });
         }
@@ -914,9 +918,14 @@ fn governed(segs: &[Segment]) -> Vec<bool> {
             let duty: Vec<(u64, i16)> = s
                 .tel
                 .iter()
-                .filter_map(|f| Some((f.tick, f.duty_q15?)))
+                .filter_map(|f| Some((f.tick, f.duty_counts?)))
                 .collect();
-            let judged = judge(duty.iter().copied(), s.cmd_duty_q15, start);
+            let judged = judge(
+                duty.iter().copied(),
+                s.cmd_duty_q15,
+                start,
+                s.pwm_period_ticks,
+            );
             start = duty.last().map_or(start, |d| d.1);
             judged.contains(&Applied::Governed)
         })
@@ -928,7 +937,7 @@ fn settled(seg: &Segment, bias: f64, sc: &Scales, tail: usize) -> Option<Settled
     let live: Vec<&TelFrame> = seg
         .tel
         .iter()
-        .filter(|f| f.window_valid && f.duty_q15 == Some(seg.cmd_duty_q15))
+        .filter(|f| f.window_valid && f.duty_is(seg.cmd_duty_q15, seg.pwm_period_ticks))
         .collect();
     if live.len() < tail || tail == 0 {
         return None;
@@ -937,7 +946,7 @@ fn settled(seg: &Segment, bias: f64, sc: &Scales, tail: usize) -> Option<Settled
     let (mut i, mut d, mut vt, mut vr) = (0.0, 0.0, 0.0, 0.0);
     for f in &live[live.len() - tail..] {
         i += f.current_raw? as f64 - bias;
-        d += (f.duty_q15? as f64).abs() / Q15;
+        d += counts_q15(f.duty_counts?, seg.pwm_period_ticks).abs() / Q15;
         vt += (f.vmotor_a? as f64 - f.vmotor_b? as f64) * sgn * sc.v_term_per_count;
         vr += f.vbus_raw? as f64 * sc.v_rail_per_count;
     }
@@ -958,7 +967,7 @@ fn rise(seg: &Segment, bias: f64, pre: f64, post: f64, k_fit: usize) -> Option<V
     let j = seg
         .tel
         .iter()
-        .position(|f| f.duty_q15 == Some(seg.cmd_duty_q15) && f.window_valid)?;
+        .position(|f| f.duty_is(seg.cmd_duty_q15, seg.pwm_period_ticks) && f.window_valid)?;
     let mut x = Vec::with_capacity(k_fit);
     for k in 1..=k_fit {
         let f = seg.tel.get(j + k)?;
@@ -1237,8 +1246,9 @@ pub fn fit_segments(segs: &[Segment], sc: &Scales, cfg: &RlFitCfg) -> Option<RlR
 #[cfg(test)]
 mod tests {
     use super::super::Guarded;
-    use super::super::testkit::{FakeServo, pump};
+    use super::super::testkit::{FakeServo, PWM_PERIOD_TICKS, pump};
     use super::*;
+    use crate::frame::duty_counts;
     use std::collections::BTreeSet;
 
     /// Bodged board D as fitted: 60 mohm shunt, G 15, 6k8/3k3 terminal
@@ -1337,7 +1347,7 @@ mod tests {
                     tick: k as u64,
                     window_valid: false,
                     pos: Some(2048),
-                    duty_q15: Some(0),
+                    duty_counts: Some(0),
                     current_raw: Some((self.bias + self.noise(2.0)).round() as u16),
                     vmotor_a: Some(775),
                     vmotor_b: Some(775),
@@ -1351,6 +1361,7 @@ mod tests {
                 dir: 0,
                 bias: 0,
                 cmd_duty_q15: 0,
+                pwm_period_ticks: PWM_PERIOD_TICKS,
                 tel,
             }
         }
@@ -1363,7 +1374,8 @@ mod tests {
         fn step(&mut self, tag: Tag, duty: i16, p: &Plant, samples: usize) -> Segment {
             let dt = 1.0 / self.tick_hz;
             let a = (-dt / (p.l / p.r)).exp();
-            let d = (duty as f64).abs() / Q15;
+            let counts = duty_counts(duty, PWM_PERIOD_TICKS);
+            let d = (counts as f64).abs() / PWM_PERIOD_TICKS as f64;
             let sgn = if duty >= 0 { 1.0 } else { -1.0 };
             let e = p.bemf * (1.0 - (-self.t / 0.022).exp());
             let iss = ((d * p.voc - p.v0 - e) / (p.r + d * (p.rs + p.rb))).max(0.0);
@@ -1382,7 +1394,7 @@ mod tests {
                     tick: k as u64,
                     window_valid: true,
                     pos: Some(2048),
-                    duty_q15: Some(duty),
+                    duty_counts: Some(counts),
                     current_raw: Some((self.bias + ic + self.noise(p.noise)).round() as u16),
                     vmotor_a: Some(if sgn > 0.0 { vb + tap } else { vb } as u16),
                     vmotor_b: Some(if sgn > 0.0 { vb } else { vb + tap } as u16),
@@ -1396,6 +1408,7 @@ mod tests {
                 dir: tag.dir,
                 bias: tag.bias,
                 cmd_duty_q15: duty,
+                pwm_period_ticks: PWM_PERIOD_TICKS,
                 tel,
             }
         }
@@ -1494,7 +1507,7 @@ mod tests {
         {
             let cut = s.cmd_duty_q15 - 400 * s.cmd_duty_q15.signum();
             for f in &mut s.tel[12..] {
-                f.duty_q15 = Some(cut);
+                f.duty_counts = Some(duty_counts(cut, PWM_PERIOD_TICKS));
                 f.current_raw = f.current_raw.map(|c| c + 300);
             }
             held += 1;
@@ -1671,6 +1684,7 @@ mod tests {
                     dir: n(3) as i8,
                     bias: n(4) as u8,
                     cmd_duty_q15: n(5) as i16,
+                    pwm_period_ticks: PWM_PERIOD_TICKS,
                     tel: Vec::new(),
                 });
             }
@@ -1678,7 +1692,9 @@ mod tests {
                 tick: n(6) as u64,
                 window_valid: c[7] == "1",
                 pos: Some(n(8) as u16),
-                duty_q15: Some(n(9) as i16),
+                // the recording predates counts: its Q15 re-streams as the
+                // bench period's compare counts
+                duty_counts: Some(duty_counts(n(9) as i16, PWM_PERIOD_TICKS)),
                 current_raw: Some(n(10) as u16),
                 vmotor_a: Some(n(11) as u16),
                 vmotor_b: Some(n(12) as u16),

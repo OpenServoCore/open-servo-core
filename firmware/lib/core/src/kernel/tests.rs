@@ -1520,7 +1520,7 @@ fn settle_gain_lifts_a_short_window_and_leaves_the_raw_sample() {
     );
     let f = frame(2000, BIAS + 300);
     settle(&mut k, &sh, f);
-    k.tel.active = true;
+    k.tel.mask = crate::tel::MASK_ALL;
     k.on_tick(f, &sh);
     let s = *k.tel.samples.last().unwrap();
     assert!(s.window_valid);
@@ -2466,12 +2466,12 @@ fn position_step_survives_tick_deletion() {
 
 #[derive(Default)]
 struct RecTel {
-    active: bool,
+    mask: u16,
     samples: heapless::Vec<crate::tel::TelSample, 64>,
 }
 impl crate::tel::TelStream for RecTel {
-    fn active(&self) -> bool {
-        self.active
+    fn row_mask(&mut self) -> u16 {
+        self.mask
     }
     fn on_tick(&mut self, sample: &crate::tel::TelSample) {
         let _ = self.samples.push(*sample);
@@ -2503,7 +2503,7 @@ fn tel_stream_gated_by_sink_active() {
     assert!(k.tel.samples.is_empty());
 
     // sink active: one sample per tick
-    k.tel.active = true;
+    k.tel.mask = crate::tel::MASK_ALL;
     for _ in 0..20 {
         k.on_tick(frame(2100, BIAS + 40), &sh);
     }
@@ -2513,12 +2513,27 @@ fn tel_stream_gated_by_sink_active() {
     assert_eq!(s.pos_lin_q4, 2100 << 4, "identity: no table live");
     assert_eq!(s.current_trough, BIAS);
     // previous-tick alignment: the sampled duty is the command whose window
-    // this frame measured
-    assert_eq!(s.duty_q15, 8000);
+    // this frame measured, in the compare counts the bridge applied
+    assert_eq!(s.duty, 293, "8000/32768 of ARR {ARR}");
+    assert_eq!(s.duty, crate::tel::duty_counts(8000, ARR));
     // duty 8000/32767 of ARR is far above the 100-tick window floors
     assert!(s.window_valid);
     assert_eq!(s.current, 40);
     assert!(!s.fault);
+
+    // reverse rides negative, as the host's goal quantization has it
+    sh.table.with_mut(|t| t.control.lifecycle.goal_duty = -8000);
+    settle(&mut k, &sh, frame(2100, BIAS + 40));
+    k.tel.samples.clear();
+    k.on_tick(frame(2100, BIAS + 40), &sh);
+    let d = k.tel.samples.last().unwrap().duty;
+    assert_eq!(d, -293);
+    assert_eq!(d, crate::tel::duty_counts(-8000, ARR));
+
+    // a row without pos_lin skips the table read
+    k.tel.mask = crate::tel::MASK_ALL & !crate::tel::BIT_POS_LIN;
+    k.on_tick(frame(2100, BIAS + 40), &sh);
+    assert_eq!(k.tel.samples.last().unwrap().pos_lin_q4, 0);
 }
 
 // --- Configuration snapshot -----------------------------------------------

@@ -1,8 +1,10 @@
 //! Byte-level parsers: the telemetry-region snapshot (bus gread) and the
-//! TEL burst stream (`Stream`-result status frames on the main bus). Both
-//! mirror the firmware layout - offsets come from [`crate::regs`], the
-//! stream shape from the core `tel` module - and are pinned by golden
-//! vectors, never imported.
+//! TEL burst stream (`Stream`-result status frames on the main bus). The
+//! snapshot mirrors the firmware layout through [`crate::regs`]; TEL rows
+//! decode through the protocol's own `tel` module, pinned against the
+//! core encoder.
+
+use osc_protocol::tel;
 
 use crate::regs::{Reg, telemetry};
 
@@ -109,30 +111,29 @@ impl SeqUnwrap {
 }
 
 // --- TEL stream ------------------------------------------------------------
-// Mirror of firmware/lib/core/src/tel.rs; the golden tests pin the bytes.
-// One Stream-result status payload, all LE:
+// One Stream-result status payload (protocol sec 5.6), all LE:
 //   [0]    stream_seq  u8, increments per frame, wraps; restarts at 0 per arm
 //   [1]    flags       bit 0 = LAST frame of the burst
 //   [2..4] valid       u16 bitmap, bit i = sample i window_valid
-//   [4..]  up to 16 samples x the tel_mask-selected 2-byte fields in bit order
+//   [4..]  up to 16 rows, packed per `osc_protocol::tel::Layout`
 
-pub const TEL_BIT_POS: u16 = 1 << 0;
-pub const TEL_BIT_CURRENT: u16 = 1 << 1;
-pub const TEL_BIT_CURRENT_TROUGH: u16 = 1 << 2;
-pub const TEL_BIT_DUTY: u16 = 1 << 3;
-pub const TEL_BIT_VDIFF: u16 = 1 << 4;
-pub const TEL_BIT_VBUS: u16 = 1 << 5;
-pub const TEL_BIT_CURRENT_RAW: u16 = 1 << 6;
-pub const TEL_BIT_VMOTOR_A: u16 = 1 << 7;
-pub const TEL_BIT_VMOTOR_B: u16 = 1 << 8;
-pub const TEL_BIT_VBUS_RAW: u16 = 1 << 9;
-pub const TEL_BIT_NTC_RAW: u16 = 1 << 10;
+pub use osc_protocol::wire::{STREAM_FLAG_LAST, STREAM_HDR, STREAM_SAMPLES_MAX};
+pub use osc_servo_core::tel::duty_counts;
+
+pub const TEL_BIT_POS: u16 = tel::BIT_POS;
+pub const TEL_BIT_CURRENT: u16 = tel::BIT_CURRENT;
+pub const TEL_BIT_CURRENT_TROUGH: u16 = tel::BIT_CURRENT_TROUGH;
+pub const TEL_BIT_DUTY: u16 = tel::BIT_DUTY;
+pub const TEL_BIT_VDIFF: u16 = tel::BIT_VDIFF;
+pub const TEL_BIT_VBUS: u16 = tel::BIT_VBUS;
+pub const TEL_BIT_CURRENT_RAW: u16 = tel::BIT_CURRENT_RAW;
+pub const TEL_BIT_VMOTOR_A: u16 = tel::BIT_VMOTOR_A;
+pub const TEL_BIT_VMOTOR_B: u16 = tel::BIT_VMOTOR_B;
+pub const TEL_BIT_VBUS_RAW: u16 = tel::BIT_VBUS_RAW;
+pub const TEL_BIT_NTC_RAW: u16 = tel::BIT_NTC_RAW;
 /// The linearized pot the kernel controls on, the Q4 word itself.
-pub const TEL_BIT_POS_LIN: u16 = 1 << 11;
-pub const TEL_MASK_ALL: u16 = 0xFFF;
-
-/// Wire budget mirror: at most 6 selected fields sustain 20 kHz at 3 Mbaud.
-pub const TEL_FIELDS_MAX: u32 = 6;
+pub const TEL_BIT_POS_LIN: u16 = tel::BIT_POS_LIN;
+pub const TEL_MASK_ALL: u16 = tel::MASK_ALL;
 
 /// The raw-capture default: the per-tick ADC frame set plus applied duty.
 pub const TEL_MASK_RAW: u16 = TEL_BIT_POS
@@ -141,14 +142,6 @@ pub const TEL_MASK_RAW: u16 = TEL_BIT_POS
     | TEL_BIT_DUTY
     | TEL_BIT_VMOTOR_A
     | TEL_BIT_VMOTOR_B;
-
-pub const STREAM_HDR: usize = 4;
-pub const STREAM_SAMPLES_MAX: usize = 16;
-pub const STREAM_FLAG_LAST: u8 = 1 << 0;
-
-pub const fn sample_len(mask: u16) -> usize {
-    2 * (mask & TEL_MASK_ALL).count_ones() as usize
-}
 
 /// One decoded TEL sample; unselected fields are None. `tick` is the
 /// absolute fast-tick index within one burst (unwrapped stream_seq x 16 +
@@ -161,7 +154,9 @@ pub struct TelFrame {
     pub pos: Option<u16>,
     pub current: Option<i16>,
     pub current_trough: Option<u16>,
-    pub duty_q15: Option<i16>,
+    /// Signed PWM compare counts the bridge applied, logical direction;
+    /// full scale is the servo's `pwm_period_ticks` ([`TelBurst`]).
+    pub duty_counts: Option<i16>,
     pub vdiff: Option<i16>,
     pub vbus: Option<u16>,
     pub current_raw: Option<u16>,
@@ -183,59 +178,65 @@ impl TelFrame {
             None => self.pos.map(f64::from),
         }
     }
+
+    /// The row applied `goal_q15` at `pwm_period_ticks`: its duty is the
+    /// goal's own compare count.
+    pub fn duty_is(&self, goal_q15: i16, pwm_period_ticks: u16) -> bool {
+        self.duty_counts == Some(duty_counts(goal_q15, pwm_period_ticks))
+    }
 }
 
-/// One TEL burst as decoded: its frames, and the rows the servo dropped
-/// from it, which the frames are missing.
+/// A duty in compare counts as Q15 of `pwm_period_ticks` (32767 = full
+/// drive); 0 for a zero period.
+pub fn counts_q15(counts: i16, pwm_period_ticks: u16) -> f64 {
+    if pwm_period_ticks == 0 {
+        return 0.0;
+    }
+    counts as f64 * i16::MAX as f64 / pwm_period_ticks as f64
+}
+
+/// One TEL burst as decoded: its frames, the rows the servo dropped from
+/// it, which the frames are missing, and the PWM period its duty counts
+/// are of.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TelBurst {
     pub frames: Vec<TelFrame>,
     pub rows_dropped: u16,
+    pub pwm_period_ticks: u16,
 }
 
-/// Decode one stream payload into per-tick frames; sample i lands at
+/// Decode one stream payload into per-tick frames; row i lands at
 /// `tick_base + i`. None when the payload cannot be a `mask` stream frame
-/// (short header, non-integral sample remainder, over 16 samples).
+/// (short header, non-integral row remainder, over 16 rows).
 pub fn decode_stream_payload(mask: u16, payload: &[u8], tick_base: u64) -> Option<Vec<TelFrame>> {
-    let slen = sample_len(mask);
-    if payload.len() < STREAM_HDR {
-        return None;
-    }
-    let valid = u16::from_le_bytes([payload[2], payload[3]]);
-    let body = &payload[STREAM_HDR..];
-    if slen == 0 {
+    let rlen = tel::row_bytes(mask);
+    let (hdr, body) = payload.split_at_checked(STREAM_HDR)?;
+    let valid = u16::from_le_bytes([hdr[2], hdr[3]]);
+    if rlen == 0 {
         return body.is_empty().then(Vec::new);
     }
-    if !body.len().is_multiple_of(slen) || body.len() / slen > STREAM_SAMPLES_MAX {
+    if !body.len().is_multiple_of(rlen) || body.len() / rlen > STREAM_SAMPLES_MAX {
         return None;
     }
-    let mut out = Vec::with_capacity(body.len() / slen);
-    for (i, ch) in body.chunks(slen).enumerate() {
-        let mut off = 0;
-        let mut take = |bit: u16| {
-            if mask & bit != 0 {
-                let v = [ch[off], ch[off + 1]];
-                off += 2;
-                Some(v)
-            } else {
-                None
-            }
-        };
+    let mut out = Vec::with_capacity(body.len() / rlen);
+    for (i, row) in body.chunks(rlen).enumerate() {
+        let w = tel::decode_row(mask, row)?;
+        let take = |bit: u16| (mask & bit != 0).then(|| w[bit.trailing_zeros() as usize]);
         out.push(TelFrame {
             tick: tick_base + i as u64,
             window_valid: valid & (1 << i) != 0,
-            pos: take(TEL_BIT_POS).map(u16::from_le_bytes),
-            current: take(TEL_BIT_CURRENT).map(i16::from_le_bytes),
-            current_trough: take(TEL_BIT_CURRENT_TROUGH).map(u16::from_le_bytes),
-            duty_q15: take(TEL_BIT_DUTY).map(i16::from_le_bytes),
-            vdiff: take(TEL_BIT_VDIFF).map(i16::from_le_bytes),
-            vbus: take(TEL_BIT_VBUS).map(u16::from_le_bytes),
-            current_raw: take(TEL_BIT_CURRENT_RAW).map(u16::from_le_bytes),
-            vmotor_a: take(TEL_BIT_VMOTOR_A).map(u16::from_le_bytes),
-            vmotor_b: take(TEL_BIT_VMOTOR_B).map(u16::from_le_bytes),
-            vbus_raw: take(TEL_BIT_VBUS_RAW).map(u16::from_le_bytes),
-            ntc_raw: take(TEL_BIT_NTC_RAW).map(u16::from_le_bytes),
-            pos_lin: take(TEL_BIT_POS_LIN).map(u16::from_le_bytes),
+            pos: take(TEL_BIT_POS),
+            current: take(TEL_BIT_CURRENT).map(|v| v as i16),
+            current_trough: take(TEL_BIT_CURRENT_TROUGH),
+            duty_counts: take(TEL_BIT_DUTY).map(|v| v as i16),
+            vdiff: take(TEL_BIT_VDIFF).map(|v| v as i16),
+            vbus: take(TEL_BIT_VBUS),
+            current_raw: take(TEL_BIT_CURRENT_RAW),
+            vmotor_a: take(TEL_BIT_VMOTOR_A),
+            vmotor_b: take(TEL_BIT_VMOTOR_B),
+            vbus_raw: take(TEL_BIT_VBUS_RAW),
+            ntc_raw: take(TEL_BIT_NTC_RAW),
+            pos_lin: take(TEL_BIT_POS_LIN),
         });
     }
     Some(out)
@@ -255,10 +256,10 @@ pub struct StreamAssembler {
 }
 
 impl StreamAssembler {
-    /// None if the mask has reserved bits set, selects nothing, or blows
-    /// the wire budget.
+    /// None if the mask has reserved bits set or selects nothing. Whether
+    /// a row fits the line is the servo's call (`tel_row_bytes_max`).
     pub fn new(mask: u16) -> Option<Self> {
-        if mask & !TEL_MASK_ALL != 0 || mask == 0 || mask.count_ones() > TEL_FIELDS_MAX {
+        if mask & !TEL_MASK_ALL != 0 || mask == 0 {
             return None;
         }
         Some(Self {
@@ -312,113 +313,152 @@ mod tests {
     use super::*;
     use crate::regs::telemetry as t;
 
-    /// Mirror of the core tel.rs test vector generator: sample(i) with every
-    /// field, window_valid on even i.
-    fn sample_bytes(mask: u16, i: u16) -> Vec<u8> {
-        let fields: [(u16, u16); 12] = [
-            (TEL_BIT_POS, 0x1000 + i),
-            (TEL_BIT_CURRENT, (-(i as i16) - 1) as u16),
-            (TEL_BIT_CURRENT_TROUGH, 0xB000 + i),
-            (TEL_BIT_DUTY, 0x2000 + i),
-            (TEL_BIT_VDIFF, (-300 - i as i16) as u16),
-            (TEL_BIT_VBUS, 1800 + i),
-            (TEL_BIT_CURRENT_RAW, 0x0100 + i),
-            (TEL_BIT_VMOTOR_A, 0x0A00 + i),
-            (TEL_BIT_VMOTOR_B, 0x0B00 + i),
-            (TEL_BIT_VBUS_RAW, 0x0C00 + i),
-            (TEL_BIT_NTC_RAW, 0x0D00 + i),
-            (TEL_BIT_POS_LIN, 0x0E00 + i),
-        ];
-        let mut out = Vec::new();
-        for (bit, v) in fields {
-            if mask & bit != 0 {
-                out.extend_from_slice(&v.to_le_bytes());
-            }
+    use osc_servo_core::tel::{ROW_BYTES_MAX, STREAM_PAYLOAD_MAX, TelSample, encode_stream};
+
+    /// The ident and tool masks: raw capture, R/L, ladder, bias, each with
+    /// the linearized pot a live table adds.
+    const MASKS: [u16; 8] = [
+        TEL_MASK_RAW,
+        TEL_MASK_RAW | TEL_BIT_POS_LIN,
+        crate::exp::rl::TEL_RL_MASK,
+        crate::exp::rl::TEL_RL_MASK | TEL_BIT_POS_LIN,
+        crate::exp::inertia::TEL_LADDER_MASK,
+        crate::exp::inertia::TEL_LADDER_MASK | TEL_BIT_POS_LIN,
+        TEL_BIT_POS,
+        TEL_BIT_POS | TEL_BIT_POS_LIN,
+    ];
+
+    /// Every field distinct and in range, duty negative on odd rows.
+    fn sample(i: u16) -> TelSample {
+        TelSample {
+            pos: 0x100 + i,
+            current: -(i as i16) - 1,
+            current_trough: 0xB00 + i,
+            duty: if i.is_multiple_of(2) {
+                293
+            } else {
+                -1200 + i as i16
+            },
+            vdiff: -300 - i as i16,
+            vbus: 1800 + i,
+            current_raw: 0x0100 + i,
+            vmotor_a: 0x0A00 + i,
+            vmotor_b: 0x0B00 + i,
+            vbus_raw: 0x0C00 + i,
+            ntc_raw: 0x0D00 + i,
+            pos_lin_q4: 0xE000 + i,
+            window_valid: i.is_multiple_of(2),
+            fault: false,
         }
-        out
     }
 
+    /// The firmware encoder's payload for `count` rows of `sample`.
     fn stream_payload(mask: u16, seq: u8, last: bool, count: u16) -> Vec<u8> {
-        let mut valid = 0u16;
-        let mut p = vec![seq, if last { STREAM_FLAG_LAST } else { 0 }, 0, 0];
-        for i in 0..count {
-            if i < 16 && i.is_multiple_of(2) {
-                valid |= 1 << i;
-            }
-            p.extend(sample_bytes(mask, i));
+        let rows: Vec<TelSample> = (0..count).map(sample).collect();
+        let mut buf = [0u8; STREAM_PAYLOAD_MAX];
+        let n = encode_stream(mask, seq, last, &rows, &mut buf);
+        buf[..n].to_vec()
+    }
+
+    /// `sample(i)` as the decoder should see it under `mask`.
+    fn want(mask: u16, tick: u64, i: u16) -> TelFrame {
+        let s = sample(i);
+        let sel = |bit: u16| mask & bit != 0;
+        TelFrame {
+            tick,
+            window_valid: s.window_valid,
+            pos: sel(TEL_BIT_POS).then_some(s.pos),
+            current: sel(TEL_BIT_CURRENT).then_some(s.current),
+            current_trough: sel(TEL_BIT_CURRENT_TROUGH).then_some(s.current_trough),
+            duty_counts: sel(TEL_BIT_DUTY).then_some(s.duty),
+            vdiff: sel(TEL_BIT_VDIFF).then_some(s.vdiff),
+            vbus: sel(TEL_BIT_VBUS).then_some(s.vbus),
+            current_raw: sel(TEL_BIT_CURRENT_RAW).then_some(s.current_raw),
+            vmotor_a: sel(TEL_BIT_VMOTOR_A).then_some(s.vmotor_a),
+            vmotor_b: sel(TEL_BIT_VMOTOR_B).then_some(s.vmotor_b),
+            vbus_raw: sel(TEL_BIT_VBUS_RAW).then_some(s.vbus_raw),
+            ntc_raw: sel(TEL_BIT_NTC_RAW).then_some(s.ntc_raw),
+            pos_lin: sel(TEL_BIT_POS_LIN).then_some(s.pos_lin_q4),
         }
-        p[2..4].copy_from_slice(&valid.to_le_bytes());
-        p
     }
 
     #[test]
-    fn stream_golden_full_mask_full_batch() {
-        // the exact bytes core's encode_golden_six_field_mask_full_batch pins
-        let p = stream_payload(0x3F, 0x42, false, 16);
-        assert_eq!(p.len(), STREAM_HDR + 16 * 12);
-        assert_eq!(p[..4], [0x42, 0x00, 0x55, 0x55]);
-        assert_eq!(
-            p[4..16],
-            [
-                0x00, 0x10, 0xFF, 0xFF, 0x00, 0xB0, 0x00, 0x20, 0xD4, 0xFE, 0x08, 0x07
-            ]
-        );
-        assert_eq!(
-            p[184..196],
-            [
-                0x0F, 0x10, 0xF0, 0xFF, 0x0F, 0xB0, 0x0F, 0x20, 0xC5, 0xFE, 0x17, 0x07
-            ]
-        );
+    fn every_tool_mask_round_trips_the_firmware_encoder() {
+        for mask in MASKS {
+            let p = stream_payload(mask, 3, false, 16);
+            assert_eq!(p.len(), STREAM_HDR + 16 * tel::row_bytes(mask), "{mask:#x}");
+            let frames = decode_stream_payload(mask, &p, 48).expect("decodes");
+            for (i, f) in frames.iter().enumerate() {
+                assert_eq!(*f, want(mask, 48 + i as u64, i as u16), "{mask:#x} row {i}");
+            }
+        }
+    }
 
-        let frames = decode_stream_payload(0x3F, &p, 320).expect("decodes");
-        assert_eq!(frames.len(), 16);
-        let f = frames[0];
+    /// Every mask the servo can stream decodes field for field.
+    #[test]
+    fn every_encodable_mask_round_trips() {
+        let mut n = 0;
+        for mask in 1..=TEL_MASK_ALL {
+            let p = stream_payload(mask, 0, true, 2);
+            if p.is_empty() {
+                continue;
+            }
+            n += 1;
+            let frames = decode_stream_payload(mask, &p, 0).expect("decodes");
+            assert_eq!(frames, [want(mask, 0, 0), want(mask, 1, 1)], "{mask:#x}");
+        }
+        let admitted = (1..=TEL_MASK_ALL).filter(|&m| tel::row_bytes(m) <= ROW_BYTES_MAX);
+        assert_eq!(n, admitted.count());
+    }
+
+    #[test]
+    fn stream_golden_six_raw_fields() {
+        // the bytes core's encode_golden_six_raw_fields_full_batch pins for
+        // its own sample(0): pos 0x100, trough 0xB00, duty -1200, raw 0x100,
+        // va 0xA00, vb 0xB00
+        let row = [0x00, 0x01, 0xB0, 0x50, 0x0B, 0x10, 0x00, 0x0A, 0xB0];
+        let mut p = vec![0x42, 0x00, 0x01, 0x00];
+        p.extend(row);
+        let f = decode_stream_payload(TEL_MASK_RAW, &p, 320).expect("decodes")[0];
         assert_eq!(f.tick, 320);
         assert!(f.window_valid);
-        assert_eq!(f.pos, Some(0x1000));
-        assert_eq!(f.current, Some(-1));
-        assert_eq!(f.current_trough, Some(0xB000));
-        assert_eq!(f.duty_q15, Some(0x2000));
-        assert_eq!(f.vdiff, Some(-300));
-        assert_eq!(f.vbus, Some(1800));
-        let l = frames[15];
-        assert_eq!(l.tick, 335);
-        assert!(!l.window_valid);
-        assert_eq!(l.pos, Some(0x100F));
-        assert_eq!(l.vbus, Some(1815));
+        assert_eq!(f.pos, Some(0x100));
+        assert_eq!(f.current_trough, Some(0xB00));
+        assert_eq!(f.duty_counts, Some(-1200));
+        assert_eq!(f.current_raw, Some(0x100));
+        assert_eq!((f.vmotor_a, f.vmotor_b), (Some(0xA00), Some(0xB00)));
+        assert_eq!(
+            (f.current, f.vdiff, f.vbus, f.pos_lin),
+            (None, None, None, None)
+        );
     }
 
     #[test]
-    fn stream_golden_ladder_subset_leaves_unselected_none() {
-        // core's encode_subset_mask_packs_in_bit_order vector: mask 0x1B
-        let mask = 0x1B;
-        let p = stream_payload(mask, 7, false, 2);
-        assert_eq!(p[..4], [7, 0, 0x01, 0x00]);
-        assert_eq!(p[4..12], [0x00, 0x10, 0xFF, 0xFF, 0x00, 0x20, 0xD4, 0xFE]);
-        assert_eq!(p[12..20], [0x01, 0x10, 0xFE, 0xFF, 0x01, 0x20, 0xD3, 0xFE]);
-
-        let frames = decode_stream_payload(mask, &p, 0).expect("decodes");
-        assert_eq!(frames.len(), 2);
-        assert_eq!(frames[0].pos, Some(0x1000));
-        assert_eq!(frames[0].current, Some(-1));
-        assert_eq!(frames[0].duty_q15, Some(0x2000));
-        assert_eq!(frames[0].vdiff, Some(-300));
-        assert_eq!(frames[0].current_trough, None);
-        assert_eq!(frames[0].vbus, None);
-        assert!(frames[0].window_valid);
-        assert!(!frames[1].window_valid);
-        assert_eq!(frames[1].tick, 1);
+    fn a_goal_reads_as_its_compare_count() {
+        let f = TelFrame {
+            duty_counts: Some(-293),
+            ..TelFrame::default()
+        };
+        assert!(f.duty_is(-8000, 1200));
+        assert!(!f.duty_is(8000, 1200));
+        // 8520 does not survive a counts round trip: the goal is quantized,
+        // never the row
+        assert_eq!(duty_counts(8520, 1200), 312);
+        assert_ne!(counts_q15(312, 1200).round() as i16, 8520);
+        assert_eq!(counts_q15(1200, 1200), 32767.0);
+        assert_eq!(counts_q15(5, 0), 0.0);
     }
 
     #[test]
     fn decode_rejects_malformed_payloads() {
         assert!(decode_stream_payload(TEL_MASK_ALL, &[0, 0, 0], 0).is_none());
-        // remainder not an integral sample count for the mask
+        // remainder not an integral row count for the mask
         let mut p = stream_payload(0x1B, 0, false, 2);
         p.pop();
         assert!(decode_stream_payload(0x1B, &p, 0).is_none());
-        // over 16 samples cannot come from one frame
-        let p = stream_payload(TEL_BIT_POS, 0, false, 17);
+        // over 16 rows cannot come from one frame
+        let mut p = stream_payload(TEL_BIT_POS, 0, false, 16);
+        p.extend([0, 0]);
         assert!(decode_stream_payload(TEL_BIT_POS, &p, 0).is_none());
     }
 
@@ -466,39 +506,12 @@ mod tests {
     }
 
     #[test]
-    fn stream_pos_lin_decodes_beside_pos() {
-        let mask = TEL_BIT_POS | TEL_BIT_POS_LIN;
-        let p = stream_payload(mask, 0, true, 2);
-        let frames = decode_stream_payload(mask, &p, 0).expect("decodes");
-        assert_eq!(frames[1].pos, Some(0x1001));
-        assert_eq!(frames[1].pos_lin, Some(0x0E01));
-        assert_eq!(frames[1].ntc_raw, None);
-    }
-
-    #[test]
-    fn stream_raw_mask_decodes_the_adc_frame_set() {
-        let p = stream_payload(TEL_MASK_RAW, 0, true, 2);
-        let frames = decode_stream_payload(TEL_MASK_RAW, &p, 0).expect("decodes");
-        let f = frames[1];
-        assert_eq!(f.pos, Some(0x1001));
-        assert_eq!(f.current_raw, Some(0x0101));
-        assert_eq!(f.current_trough, Some(0xB001));
-        assert_eq!(f.duty_q15, Some(0x2001));
-        assert_eq!(f.vmotor_a, Some(0x0A01));
-        assert_eq!(f.vmotor_b, Some(0x0B01));
-        assert_eq!((f.current, f.vdiff, f.vbus), (None, None, None));
-    }
-
-    #[test]
     fn assembler_rejects_bad_masks() {
         assert!(StreamAssembler::new(0).is_none());
         assert!(StreamAssembler::new(1 << 12).is_none());
-        assert!(StreamAssembler::new(TEL_BIT_POS | TEL_BIT_POS_LIN).is_some());
-        // every field blows the wire budget; six is the cap
-        assert!(StreamAssembler::new(TEL_MASK_ALL).is_none());
-        assert!(StreamAssembler::new(TEL_BIT_VBUS_RAW | TEL_BIT_NTC_RAW).is_some());
-        assert!(StreamAssembler::new(0x3F).is_some());
-        assert!(StreamAssembler::new(TEL_MASK_RAW).is_some());
+        for mask in MASKS {
+            assert!(StreamAssembler::new(mask).is_some());
+        }
     }
 
     #[test]

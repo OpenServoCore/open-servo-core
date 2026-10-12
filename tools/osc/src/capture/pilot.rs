@@ -383,9 +383,9 @@ fn grid_rung<S: Servo>(
     let goal = (sign as i32 * pct_q15(pct) as i32) as i16;
     for retry in [false, true] {
         let (seg, stop) = run_rung(s, rig, dir, pct, window)?;
-        let frames = seg.frames;
-        let climb = runway::climb(&frames, goal, rig.hz * 1000.0);
-        let v = climb.and_then(|_| settled_v(&frames, goal, rig.hz));
+        let (frames, period) = (seg.frames, seg.pwm_period_ticks);
+        let climb = runway::climb(&frames, goal, period, rig.hz * 1000.0);
+        let v = climb.and_then(|_| settled_v(&frames, goal, period, rig.hz));
         match (climb, v) {
             (Some(climb), Some(v_ss)) => {
                 println!(
@@ -407,7 +407,7 @@ fn grid_rung<S: Servo>(
                 }));
             }
             _ if !retry => {
-                let arrival = runway::arrival_ms(&frames, goal, rig.hz * 1000.0);
+                let arrival = runway::arrival_ms(&frames, goal, period, rig.hz * 1000.0);
                 let longer = retry_window(window, arrival, tail);
                 if let Err(why) = sized(rw, rig, dir, pct, longer, still) {
                     return Ok(Err(why));
@@ -572,8 +572,13 @@ fn at_window<S: Servo>(
 /// applied duty held the goal past the settle (`runway::settled_ticks`):
 /// the climb and anything the limit governed stay out. None when those
 /// samples span under the least steady time.
-fn settled_v(frames: &[TelFrame], goal_q15: i16, ticks_per_ms: f64) -> Option<f64> {
-    let range = runway::settled_ticks(frames, goal_q15, ticks_per_ms * 1000.0)?;
+fn settled_v(
+    frames: &[TelFrame],
+    goal_q15: i16,
+    pwm_period_ticks: u16,
+    ticks_per_ms: f64,
+) -> Option<f64> {
+    let range = runway::settled_ticks(frames, goal_q15, pwm_period_ticks, ticks_per_ms * 1000.0)?;
     if ((range.end() - range.start()) as f64) < STEADY_MIN_MS * ticks_per_ms {
         return None;
     }
@@ -790,7 +795,7 @@ fn coast_run(
     if !drive
         .frames
         .iter()
-        .any(|f| f.duty_q15 == Some(drive.cmd_duty_q15))
+        .any(|f| f.duty_is(drive.cmd_duty_q15, drive.pwm_period_ticks))
     {
         bail!("{dir} drive never reached its goal duty before the coast");
     }
@@ -1337,6 +1342,7 @@ fn rung_fits(r: &CoastRung, room: &PerDir<u16>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capture::store::fixture::{PWM_PERIOD_TICKS as P, cnt};
     use crate::rig::pump::BurstStats;
     use crate::rig::servo::bench::{Bench, rail, torque};
     use osc_ident::limits::CLASS_R_MIN;
@@ -1543,24 +1549,24 @@ mod tests {
                     TelFrame {
                         tick: t,
                         pos: Some(pos.round() as u16),
-                        duty_q15: Some(duty),
+                        duty_counts: Some(cnt(duty)),
                         ..TelFrame::default()
                     }
                 })
                 .collect()
         };
-        let v = settled_v(&frames(4000, None), goal, 20.0).unwrap();
+        let v = settled_v(&frames(4000, None), goal, P, 20.0).unwrap();
         assert!((v - 6.0).abs() < 0.01, "{v}");
         // down the pot the speed counts along the goal
         let down: Vec<TelFrame> = frames(4000, None)
             .into_iter()
             .map(|f| TelFrame {
                 pos: f.pos.map(|p| 4000 - p),
-                duty_q15: f.duty_q15.map(|d| -d),
+                duty_counts: f.duty_counts.map(|d| -d),
                 ..f
             })
             .collect();
-        let v = settled_v(&down, -goal, 20.0).unwrap();
+        let v = settled_v(&down, -goal, P, 20.0).unwrap();
         assert!((v - 6.0).abs() < 0.01, "{v}");
         // the whole stream would read the climb and the spin-up in
         let all = pos_ticks(&frames(4000, None));
@@ -1568,15 +1574,15 @@ mod tests {
         assert!((whole - 6.0).abs() > 0.2, "{whole}");
         // a dip under the goal restarts the settle from after it
         let dipped = frames(4000, Some(1500));
-        let range = runway::settled_ticks(&dipped, goal, 20_000.0).unwrap();
+        let range = runway::settled_ticks(&dipped, goal, P, 20_000.0).unwrap();
         assert_eq!(*range.start(), 1501 + 800);
-        let v = settled_v(&dipped, goal, 20.0).unwrap();
+        let v = settled_v(&dipped, goal, P, 20.0).unwrap();
         assert!((v - 6.0).abs() < 0.02, "{v}");
         // under 60 ms at the goal past the settle measures nothing
-        assert_eq!(settled_v(&frames(2400, None), goal, 20.0), None);
-        assert!(settled_v(&frames(3200, None), goal, 20.0).is_some());
+        assert_eq!(settled_v(&frames(2400, None), goal, P, 20.0), None);
+        assert!(settled_v(&frames(3200, None), goal, P, 20.0).is_some());
         // a goal lost at the end is no steady speed
-        assert_eq!(settled_v(&frames(4000, Some(3999)), goal, 20.0), None);
+        assert_eq!(settled_v(&frames(4000, Some(3999)), goal, P, 20.0), None);
     }
 
     /// A 25% reverse rung at 20 ticks/ms shaped like the bench servo's: at
@@ -1593,24 +1599,24 @@ mod tests {
                 .map(|t| TelFrame {
                     tick: t,
                     pos: Some(3000 - (t / 4) as u16),
-                    duty_q15: Some(if t < 161 || (199..=202).contains(&t) {
+                    duty_counts: Some(cnt(if t < 161 || (199..=202).contains(&t) {
                         goal + 128
                     } else {
                         goal
-                    }),
+                    })),
                     ..TelFrame::default()
                 })
                 .collect()
         };
         let first = frames(101);
-        assert_eq!(settled_v(&first, goal, 20.0), None);
-        let arrival = runway::arrival_ms(&first, goal, 20_000.0);
+        assert_eq!(settled_v(&first, goal, P, 20.0), None);
+        let arrival = runway::arrival_ms(&first, goal, P, 20_000.0);
         assert_eq!(arrival, Some(10.15));
         let longer = retry_window(101, arrival, tail);
         assert_eq!(longer, 123);
-        let v = settled_v(&frames(longer), goal, 20.0).unwrap();
+        let v = settled_v(&frames(longer), goal, P, 20.0).unwrap();
         assert!((v - 5.0).abs() < 0.01, "{v}");
-        assert_eq!(settled_v(&frames(109), goal, 20.0), None);
+        assert_eq!(settled_v(&frames(109), goal, P, 20.0), None);
 
         // never shorter than the window that settled too late
         assert_eq!(retry_window(150, arrival, tail), 151);
@@ -1631,28 +1637,28 @@ mod tests {
                 .map(|t| TelFrame {
                     tick: t,
                     pos: Some(1000 + (t / 4) as u16),
-                    duty_q15: Some(if t < 168 || (last - 4..last).contains(&t) {
+                    duty_counts: Some(cnt(if t < 168 || (last - 4..last).contains(&t) {
                         goal - 128
                     } else {
                         goal
-                    }),
+                    })),
                     ..TelFrame::default()
                 })
                 .collect()
         };
         let first = frames(101, 168);
-        assert_eq!(settled_v(&first, goal, 20.0), None);
-        let arrival = runway::arrival_ms(&first, goal, 20_000.0);
+        assert_eq!(settled_v(&first, goal, P, 20.0), None);
+        let arrival = runway::arrival_ms(&first, goal, P, 20_000.0);
         assert_eq!(arrival, Some(8.4));
         let longer = retry_window(101, arrival, tail);
         assert_eq!(longer, 121);
         let retry = frames(longer, 224);
-        assert_eq!(runway::arrival_ms(&retry, goal, 20_000.0), Some(11.2));
-        let range = runway::settled_ticks(&retry, goal, 20_000.0).unwrap();
+        assert_eq!(runway::arrival_ms(&retry, goal, P, 20_000.0), Some(11.2));
+        let range = runway::settled_ticks(&retry, goal, P, 20_000.0).unwrap();
         let steady_ms = (range.end() - range.start()) as f64 / 20.0;
         assert!(steady_ms >= STEADY_MIN_MS, "{steady_ms}");
-        assert!(settled_v(&retry, goal, 20.0).is_some());
-        assert_eq!(settled_v(&frames(111, 224), goal, 20.0), None);
+        assert!(settled_v(&retry, goal, P, 20.0).is_some());
+        assert_eq!(settled_v(&frames(111, 224), goal, P, 20.0), None);
     }
 
     /// A limiter that takes the duty back 40 ms after it first reaches the
@@ -1902,7 +1908,7 @@ mod tests {
         let [mut d, c] = coast_chain(1, 600);
         d.cmd_duty_q15 = 9830;
         for f in &mut d.frames[40..] {
-            f.duty_q15 = Some(9830);
+            f.duty_counts = Some(cnt(9830));
         }
         assert!(coast_run(&[d, c], Dir::Fwd, soft, 1.0, None).is_ok());
     }
@@ -2276,7 +2282,7 @@ mod tests {
                 tick: i as u64,
                 window_valid: true,
                 pos: Some(p),
-                duty_q15: Some(0),
+                duty_counts: Some(cnt(0)),
                 ..TelFrame::default()
             })
             .collect();
@@ -2284,6 +2290,7 @@ mod tests {
             seg: 1,
             dir,
             cmd_duty_q15: 0,
+            pwm_period_ticks: P,
             frames,
             stats: BurstStats {
                 frames: 0,

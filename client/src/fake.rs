@@ -11,7 +11,8 @@ use osc_servo_core::{ControlTable, stamp};
 
 use crate::pipe::{Pipe, PipeError};
 
-pub use osc_integration::sim::TelSample;
+pub use osc_integration::plant::duty_counts;
+pub use osc_integration::sim::{TelSample, tel_sample};
 
 /// The dev board's own facts, one real SG90's calibration dumped off it and
 /// a bench MG90's identified motor: what a simulated servo needs to read

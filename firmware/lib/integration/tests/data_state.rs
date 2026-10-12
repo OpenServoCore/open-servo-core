@@ -383,8 +383,8 @@ fn live_zero_ke_write_stops_a_running_closed_loop(#[case] mode: Mode, #[case] re
 struct RecTel(Rc<RefCell<Vec<TelSample>>>);
 
 impl TelStream for RecTel {
-    fn active(&self) -> bool {
-        true
+    fn row_mask(&mut self) -> u16 {
+        osc_servo_core::tel::MASK_ALL
     }
     fn on_tick(&mut self, sample: &TelSample) {
         self.0.borrow_mut().push(*sample);

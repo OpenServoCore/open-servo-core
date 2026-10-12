@@ -22,6 +22,7 @@ use super::providers::{
     Handles, SimBaud, SimCrc, SimDeadline, SimProviders, SimRing, SimStamps, SimWire,
 };
 use super::store::RamStore;
+use crate::plant::TIMING;
 
 /// The osc-dev-v006 app's `Calibration`, copied: the board crate is a no_std
 /// binary nothing host-side links, so this is the one host mirror (the fake
@@ -182,7 +183,9 @@ impl SimServo {
         // After boot_load, mirroring chip bringup: the calib overlay copies
         // the whole region, so RO board facts land last and win over a
         // stale saved image.
-        shared.table.seed_calib_sense(&seed.sense, &seed.sense_ext);
+        shared
+            .table
+            .seed_calib_sense(&seed.sense, &seed.sense_ext, TIMING.pwm_arr);
         // Default UID: the id repeated -- distinct per servo, predictable for
         // ENUM tests; override via `seed_uid` where prefix structure matters.
         // A reboot passes the live one back in: the UID is silicon (ESIG on
@@ -327,7 +330,7 @@ impl SimServo {
     /// The kernel fast tick's TEL gate (`Kernel::on_tick` checks it before
     /// building a sample) -- the sim's tick pump runs only while it holds.
     pub fn tel_active(&self) -> bool {
-        self.feed.active()
+        self.tel.active()
     }
 
     /// TEL rows the encoder dropped against two unreleased buffers.
@@ -337,7 +340,9 @@ impl SimServo {
 
     /// One fast-tick sample into the kernel-side encoder.
     pub fn tel_tick(&mut self, s: &TelSample) {
-        self.feed.on_tick(s);
+        if self.feed.row_mask() != 0 {
+            self.feed.on_tick(s);
+        }
     }
 
     /// The TEL poll the chip kernel tick pends at the bus level; the sim

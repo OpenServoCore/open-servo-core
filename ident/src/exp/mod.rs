@@ -47,7 +47,7 @@ pub mod winding;
 use osc_servo_core::kernel::DECIM_MED;
 
 use crate::burst::Capture;
-use crate::frame::{SeqUnwrap, TelBurst, TelemetrySnapshot};
+use crate::frame::{SeqUnwrap, TelBurst, TelemetrySnapshot, duty_counts};
 use crate::pot::Pot;
 use crate::regs::{Reg, control};
 
@@ -531,6 +531,19 @@ pub fn slew_ticks(goal: i16, start: i16) -> u32 {
     (goal.unsigned_abs() as u32).saturating_sub(start) / SLEW_Q15_PER_TICK + 2 + DECIM_MED as u32
 }
 
+/// The least Q15 magnitude that drives `counts` at `pwm_period_ticks`
+/// (`duty_counts`' inverse edge), sign kept: a start read low only widens
+/// the slew allowance.
+fn least_q15(counts: i16, pwm_period_ticks: u16) -> i16 {
+    let c = counts.unsigned_abs() as u32;
+    if c == 0 || pwm_period_ticks == 0 {
+        return 0;
+    }
+    let need = (c << 15) - (1 << 14);
+    let mag = need.div_ceil(pwm_period_ticks as u32).min(i16::MAX as u32) as i16;
+    if counts < 0 { -mag } else { mag }
+}
+
 /// One sample's applied duty against the goal it was commanded to.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Applied {
@@ -544,9 +557,16 @@ pub enum Applied {
 }
 
 /// Judge a TEL series after a goal change: each sample's tick counted from
-/// the change and its applied duty.
-pub fn judge(samples: impl IntoIterator<Item = (u64, i16)>, goal: i16, start: i16) -> Vec<Applied> {
-    let budget = slew_ticks(goal, start) as u64;
+/// the change and its applied duty, compare counts at `pwm_period_ticks`.
+/// `goal` is the commanded Q15, `start` the counts applied before it.
+pub fn judge(
+    samples: impl IntoIterator<Item = (u64, i16)>,
+    goal: i16,
+    start: i16,
+    pwm_period_ticks: u16,
+) -> Vec<Applied> {
+    let budget = slew_ticks(goal, least_q15(start, pwm_period_ticks)) as u64;
+    let goal = duty_counts(goal, pwm_period_ticks);
     let mut reached = false;
     samples
         .into_iter()
@@ -705,7 +725,9 @@ mod tests {
     use super::centre::Centre;
     use super::endstop::Endstop;
     use super::ladder::{Declined, Ladder, LadderCfg};
-    use super::testkit::{FakeServo, TICK_HZ, bench_mg90, bench_mg90_saved, pump};
+    use super::testkit::{
+        FakeServo, PWM_PERIOD_TICKS as ARR, TICK_HZ, bench_mg90, bench_mg90_saved, pump,
+    };
     use super::*;
     use crate::runway::Runway;
 
@@ -794,10 +816,17 @@ mod tests {
         let (ws, kept) = stream(goal, &climb[..5]);
         assert!(kept.is_empty() && !ws.declined());
         // the same rule per TEL sample
+        let c = |q15| duty_counts(q15, ARR);
         let tel = judge(
-            [(1, 4497), (100, 17169), (165, 20000), (166, goal)],
+            [
+                (1, c(4497)),
+                (100, c(17169)),
+                (165, c(20000)),
+                (166, c(goal)),
+            ],
             goal,
             0,
+            ARR,
         );
         assert_eq!(
             tel,
@@ -805,6 +834,12 @@ mod tests {
         );
         // a goal cut applies at once, once it lands
         assert_eq!(slew_ticks(8000, 12000), 12);
+        // a start read from counts is its least Q15: the allowance widens
+        assert_eq!(least_q15(duty_counts(12000, ARR), ARR), 11974);
+        assert_eq!(duty_counts(11974, ARR), duty_counts(12000, ARR));
+        assert_eq!(duty_counts(11973, ARR), duty_counts(12000, ARR) - 1);
+        assert_eq!(least_q15(-1, ARR), -14);
+        assert_eq!((least_q15(0, ARR), least_q15(5, 0)), (0, 0));
         assert_eq!(slew_ticks(-8000, 12000), 74);
     }
 
@@ -823,9 +858,9 @@ mod tests {
         let tel: Vec<(u64, i16)> = duties
             .iter()
             .enumerate()
-            .map(|(k, d)| (k as u64 * 16, *d))
+            .map(|(k, d)| (k as u64 * 16, duty_counts(*d, ARR)))
             .collect();
-        let judged = judge(tel, goal, 0);
+        let judged = judge(tel, goal, 0, ARR);
         assert!(judged[12..30].iter().all(|a| *a == Applied::Governed));
         assert!(judged[30..].iter().all(|a| *a == Applied::Clean));
         assert!(!declined(&judged));
@@ -833,7 +868,12 @@ mod tests {
         // never reaching it: nothing fits, and the goal is declined
         let (ws, kept) = stream(goal, &[9000; 20]);
         assert!(kept.is_empty() && ws.declined());
-        let judged = judge((0..40).map(|k| (k * 16, 9000)), goal, 0);
+        let judged = judge(
+            (0..40).map(|k| (k * 16, duty_counts(9000, ARR))),
+            goal,
+            0,
+            ARR,
+        );
         assert!(declined(&judged));
     }
 
@@ -1515,7 +1555,7 @@ mod tests {
         assert!(!ws.declined(), "the clean windows remain");
         // the same rule per TEL sample
         assert_eq!(
-            judge([(200, goal), (201, goal)], goal, 0),
+            judge([(200, duty_counts(goal, ARR)); 2], goal, 0, ARR),
             [Applied::Clean, Applied::Clean]
         );
     }

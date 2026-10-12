@@ -38,9 +38,9 @@ pub struct ControlLifecycle {
     /// the grant: a tool that dies mid-run cannot leave a servo unguarded for
     /// longer than the lease.
     pub stall_permit: bool,
-    /// TEL sample layout, one bit per field (`tel` module). `bits` rejects
-    /// reserved bits; `max_ones` caps the field count at the wire budget.
-    #[ct_field(bits = crate::tel::MASK_ALL, max_ones = crate::tel::FIELDS_MAX)]
+    /// TEL row layout, one bit per field (`tel` module). `bits` rejects
+    /// reserved bits; the arm admits the row by its bytes at the line's rate.
+    #[ct_field(bits = crate::tel::MASK_ALL)]
     pub tel_mask: u16,
     pub mode: Mode,
     #[ct_field(skip)]

@@ -1396,6 +1396,13 @@ fn write_u16<D: Dispatch>(
     drain_tx(bus, h);
 }
 
+/// The kernel's per-tick sequence: ask for the row, then hand it over.
+fn tick(feed: &mut TelFeed, s: &TelSample) {
+    if feed.row_mask() != 0 {
+        feed.on_tick(s);
+    }
+}
+
 fn pos_sample(pos: u16) -> TelSample {
     TelSample {
         pos,
@@ -1452,7 +1459,7 @@ fn tel_burst_streams_two_frames_then_quiets() {
     assert!(feed.active(), "committed tel_count write arms the feed");
 
     for i in 0..20u16 {
-        feed.on_tick(&pos_sample(0x2000 + i));
+        tick(&mut feed, &pos_sample(0x2000 + i));
     }
     let mark = h.wire.log().len();
     bus.poll_tel();
@@ -1517,7 +1524,7 @@ fn tel_burst_alert_marks_only_the_faulted_batch() {
     for i in 0..32u16 {
         let mut s = pos_sample(0x3000 + i);
         s.fault = i == 20; // second batch only
-        feed.on_tick(&s);
+        tick(&mut feed, &s);
     }
     let mark = h.wire.log().len();
     bus.poll_tel();
@@ -1547,7 +1554,7 @@ fn tel_burst_short_count_is_one_last_frame() {
     write_u16(&mut bus, &h, &mut d, TEL_COUNT, 5, 160, 20_000);
 
     for i in 0..5u16 {
-        feed.on_tick(&pos_sample(0x1100 + i));
+        tick(&mut feed, &pos_sample(0x1100 + i));
     }
     let mark = h.wire.log().len();
     bus.poll_tel();
@@ -1577,7 +1584,7 @@ fn tel_burst_break_aborts_and_rearm_restarts_clean() {
     write_u16(&mut bus, &h, &mut d, TEL_COUNT, 64, 160, 20_000);
 
     for i in 0..16u16 {
-        feed.on_tick(&pos_sample(i));
+        tick(&mut feed, &pos_sample(i));
     }
     bus.poll_tel();
     assert!(bus.tx.streaming(), "frame 1 mid-flight");
@@ -1592,7 +1599,7 @@ fn tel_burst_break_aborts_and_rearm_restarts_clean() {
 
     let quiet = h.wire.log().len();
     for i in 0..16u16 {
-        feed.on_tick(&pos_sample(i));
+        tick(&mut feed, &pos_sample(i));
     }
     bus.poll_tel();
     assert_eq!(h.wire.log().len(), quiet, "no frames after the abort");
@@ -1601,7 +1608,7 @@ fn tel_burst_break_aborts_and_rearm_restarts_clean() {
     write_u16(&mut bus, &h, &mut d, TEL_COUNT, 4, 220, 90_000);
     assert!(feed.active());
     for i in 0..4u16 {
-        feed.on_tick(&pos_sample(0x0F00 + i));
+        tick(&mut feed, &pos_sample(0x0F00 + i));
     }
     let mark = h.wire.log().len();
     bus.poll_tel();
@@ -1611,6 +1618,39 @@ fn tel_burst_break_aborts_and_rearm_restarts_clean() {
     assert_eq!(frames[0][3], 0, "seq restarts at 0");
     assert_eq!(frames[0][4], FLAG_LAST);
     assert_frame_crc(&frames[0]);
+}
+
+/// Admission by row bytes at the line's rate: at 1 M the six raw fields'
+/// 9 B row acks but never arms; a 3 B row arms.
+#[test]
+fn tel_arm_admits_only_rows_the_line_rate_carries() {
+    use osc_servo_core::tel::{BIT_CURRENT_RAW, row_bytes, row_bytes_max};
+    let h = Harness::new();
+    let mut bus = h.build(ID, RATE, 60);
+    let (feed, drain) = tel_split();
+    bus.attach_tel(drain);
+    let shared = shared_seeded();
+    let mut session = Session::new();
+    let mut d = session.dispatcher(&shared);
+
+    let six_raw = 0x1CD;
+    assert!(row_bytes(six_raw) > row_bytes_max(RATE));
+    write_u16(&mut bus, &h, &mut d, TEL_MASK, six_raw, 100, 1000);
+    write_u16(&mut bus, &h, &mut d, TEL_COUNT, 32, 160, 20_000);
+    assert_eq!(last_reply(&h.wire).1.result(), Some(ResultCode::Ok));
+    assert!(!feed.active(), "a row the rate cannot carry never arms");
+
+    write_u16(
+        &mut bus,
+        &h,
+        &mut d,
+        TEL_MASK,
+        BIT_POS | BIT_CURRENT_RAW,
+        220,
+        40_000,
+    );
+    write_u16(&mut bus, &h, &mut d, TEL_COUNT, 32, 280, 60_000);
+    assert!(feed.active());
 }
 
 #[test]
@@ -1626,7 +1666,7 @@ fn tel_burst_disarms_on_zero_count_write() {
     write_u16(&mut bus, &h, &mut d, TEL_MASK, BIT_POS, 100, 1000);
     write_u16(&mut bus, &h, &mut d, TEL_COUNT, 320, 160, 20_000);
     for i in 0..16u16 {
-        feed.on_tick(&pos_sample(i));
+        tick(&mut feed, &pos_sample(i));
     }
     bus.poll_tel();
     drain_tx(&mut bus, &h);
@@ -1642,7 +1682,7 @@ fn tel_burst_disarms_on_zero_count_write() {
 
     let quiet = h.wire.log().len();
     for i in 0..32u16 {
-        feed.on_tick(&pos_sample(i));
+        tick(&mut feed, &pos_sample(i));
     }
     bus.poll_tel();
     assert_eq!(h.wire.log().len(), quiet, "disarmed: nothing stages");
