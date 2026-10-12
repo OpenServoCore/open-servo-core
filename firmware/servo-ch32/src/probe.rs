@@ -7,12 +7,14 @@
 use osc_servo_core::budget::probe::BusProbe;
 use osc_servo_core::budget::{self, Body};
 #[cfg(feature = "bench")]
-use osc_servo_core::budget::{Events, probe::KernelProbe};
+use osc_servo_core::budget::{Events, Regime, probe::KernelProbe};
+use osc_servo_core::kernel::ProbeTags;
 
 #[cfg(feature = "bench")]
 use crate::hal::systick;
 
 const _: () = assert!(crate::hal::clocks::HCLK_HZ == budget::CLOCK_HZ);
+const _: () = assert!(crate::cfg::chip::MOTOR_PWM_FREQ_HZ == budget::TICK_HZ);
 
 #[cfg(feature = "bench")]
 #[unsafe(no_mangle)]
@@ -80,47 +82,47 @@ pub fn bus_exit(entry: BusStamp, b: Body) {
 #[derive(Copy, Clone)]
 #[allow(dead_code)]
 pub struct TickTags {
-    phase: u8,
-    config_gen: u8,
-    boot: bool,
+    tags: ProbeTags,
     banks: u32,
 }
 
 /// From `Kernel::probe_tags` ahead of `on_tick`.
 #[inline(always)]
-pub fn tick_before((phase, config_gen, booted): (u8, u8, bool)) -> TickTags {
+pub fn tick_before(tags: ProbeTags) -> TickTags {
     TickTags {
-        phase,
-        config_gen,
-        boot: !booted,
+        tags,
         banks: osc_servo_drivers::bench::tel_banks(),
     }
 }
 
-/// The kernel tick that began at `entry` ends now. `config_gen` is the
-/// kernel's generation after the body; `tel`: the TEL burst ran.
+/// The kernel tick that began at `entry` ends now. `after`: the kernel's
+/// tags after the body; `tel`: the TEL burst ran.
 #[inline(always)]
 #[allow(unused_variables)]
-pub fn kernel_exit(entry: u32, before: TickTags, config_gen: u8, tel: bool) {
+pub fn kernel_exit(entry: u32, before: TickTags, after: ProbeTags, tel: bool) {
     #[cfg(feature = "bench")]
     {
         let exit = systick::ticks();
+        let b = before.tags;
         let ev = Events {
-            refresh: config_gen != before.config_gen,
+            refresh: after.config_gen != b.config_gen,
             tel,
             bank: osc_servo_drivers::bench::tel_banks() != before.banks,
+            slow: b.slow_due,
+            close: b.slow_due && !b.seated && after.seated,
+        };
+        let r = if b.closed || after.closed {
+            Regime::Closed
+        } else {
+            Regime::Open
         };
         // SAFETY: the kernel vector is this record's only writer and never
         // preempts itself.
         let k = unsafe { &mut *core::ptr::addr_of_mut!(KERNEL_PROBE) };
-        k.tick(
-            exit.wrapping_sub(entry),
-            before.phase as usize,
-            ev,
-            before.boot,
-        );
+        let body = exit.wrapping_sub(entry);
+        k.tick(entry, body, b.phase as usize, r, ev, !b.booted);
         // The update itself runs inside any bus body this tick preempted.
-        k.other(systick::ticks().wrapping_sub(exit));
+        k.ended(exit, systick::ticks());
     }
 }
 

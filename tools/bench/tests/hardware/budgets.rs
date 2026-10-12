@@ -13,6 +13,9 @@
 //! receives each window's report and raw records as the window ends.
 //! Drives the motor: holds and 600-count steps about the rail middle, each
 //! drive ending centred with torque off; the last window ends rebooted.
+//! Kernel ticks book by drive arm; each window also prints gamma(k), the
+//! long ticks by arm and the entry lateness. A report-only window is never
+//! held to the table.
 
 use std::any::Any;
 use std::env;
@@ -30,14 +33,15 @@ use bench::probe::{self, Reader, Snapshot};
 use osc_client::Outcome;
 use osc_protocol::wire::{Opcode, ResultCode, STREAM_SAMPLES_MAX};
 use osc_servo_core::Mode;
-use osc_servo_core::budget::probe::{Component, Load, Row, Scenario, rows, us};
-use osc_servo_core::budget::{Frame, Regime};
+use osc_servo_core::budget::probe::{Component, LONG_TICKS, Row, Scenario, rows, us};
+use osc_servo_core::budget::{Frame, WINDOW_TICKS};
 use osc_servo_core::regions::config::addr::common::MODEL_NUMBER;
 use osc_servo_core::regions::control::addr::lifecycle::{
     GOAL_POSITION, MODE, TEL_MASK, TORQUE_ENABLE,
 };
 use osc_servo_core::regions::telemetry::addr::estimates::{SAMPLE_TICK, THETA_HAT_Q16};
 use osc_servo_core::regions::telemetry::addr::health::TEL_DROP_COUNT;
+use osc_servo_core::regions::telemetry::addr::sensors::POS;
 use serial_test::serial;
 
 use crate::support::{Bench, bench};
@@ -62,9 +66,15 @@ const SLOW_BAUD: u32 = 1_000_000;
 /// `theta_hat_q16` holds pot counts in Q16.
 const THETA_FRAC_BITS: u32 = 16;
 
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+enum Gate {
+    Budget,
+    ReportOnly,
+}
+
 struct Window {
     name: &'static str,
-    regime: Regime,
+    gate: Gate,
     tel: bool,
     frames: Vec<(Frame, u32)>,
     snap: Snapshot,
@@ -104,11 +114,11 @@ fn kernel_and_bus_stay_inside_their_budgets() {
     let id = b.id();
     let mid = b.goal_mid();
 
-    f.window(&mut b, "quiet", Regime::Open, false, &[], |_, _| {
+    f.window(&mut b, "quiet", Gate::Budget, false, &[], |_, _| {
         sleep(WINDOW)
     });
     let writes = [(Frame::Write, fast)];
-    f.window(&mut b, "hold", Regime::Closed, false, &writes, |b, _| {
+    f.window(&mut b, "hold", Gate::Budget, false, &writes, |b, _| {
         driven(b, |b| {
             hold_at(b, mid);
             sleep(WINDOW);
@@ -118,7 +128,7 @@ fn kernel_and_bus_stay_inside_their_budgets() {
     f.window(
         &mut b,
         "hold still",
-        Regime::Closed,
+        Gate::Budget,
         false,
         &writes,
         |b, _| {
@@ -129,26 +139,36 @@ fn kernel_and_bus_stay_inside_their_budgets() {
             })
         },
     );
+    // The known hold twitch: a goal from raw `pos`, off the observer's
+    // units, can leave the hold cycling Closed and parked.
     f.window(
         &mut b,
-        "stepping",
-        Regime::Closed,
+        "hold raw pos",
+        Gate::ReportOnly,
         false,
         &writes,
         |b, _| {
+            let raw = u16::from_le_bytes(read_bytes::<2>(b, POS));
+            let goal = b.goal_clamp(i32::from(raw));
             driven(b, |b| {
-                hold_at(b, mid);
-                for k in 0..(STEP_WINDOW.as_millis() / STEP_HOLD.as_millis()) {
-                    write(b, GOAL_POSITION, &step_goal(mid, k as u32).to_le_bytes());
-                    sleep(STEP_HOLD);
-                }
+                hold_at(b, goal);
+                sleep(WINDOW);
             })
         },
     );
+    f.window(&mut b, "stepping", Gate::Budget, false, &writes, |b, _| {
+        driven(b, |b| {
+            hold_at(b, mid);
+            for k in 0..(STEP_WINDOW.as_millis() / STEP_HOLD.as_millis()) {
+                write(b, GOAL_POSITION, &step_goal(mid, k as u32).to_le_bytes());
+                sleep(STEP_HOLD);
+            }
+        })
+    });
     f.window(
         &mut b,
         "tel still",
-        Regime::Open,
+        Gate::Budget,
         true,
         &writes,
         |b, failed| {
@@ -161,7 +181,7 @@ fn kernel_and_bus_stay_inside_their_budgets() {
     f.window(
         &mut b,
         "tel stepping",
-        Regime::Closed,
+        Gate::Budget,
         true,
         &writes,
         |b, failed| {
@@ -190,7 +210,7 @@ fn kernel_and_bus_stay_inside_their_budgets() {
         f.window(
             &mut b,
             name,
-            Regime::Open,
+            Gate::Budget,
             false,
             &[(frame, fast)],
             |b, failed| poll(b, wire, failed, name),
@@ -206,7 +226,7 @@ fn kernel_and_bus_stay_inside_their_budgets() {
     f.window(
         &mut b,
         "gread slot",
-        Regime::Open,
+        Gate::Budget,
         false,
         &slot,
         |b, failed| {
@@ -225,7 +245,7 @@ fn kernel_and_bus_stay_inside_their_budgets() {
     ];
     for (name, frame, wire) in slow {
         let frames = [(Frame::Write, fast), (frame, SLOW_BAUD)];
-        f.window(&mut b, name, Regime::Open, false, &frames, |b, failed| {
+        f.window(&mut b, name, Gate::Budget, false, &frames, |b, failed| {
             b.switch_baud(SLOW_BAUD);
             poll(b, wire, failed, name)
         });
@@ -245,7 +265,7 @@ impl Fill {
         &mut self,
         b: &mut Bench,
         name: &'static str,
-        regime: Regime,
+        gate: Gate,
         tel: bool,
         frames: &[(Frame, u32)],
         run: impl FnOnce(&mut Bench, &mut Vec<String>),
@@ -266,7 +286,7 @@ impl Fill {
         let [d0, d1, s0, s1] = read_bytes::<4>(b, TEL_DROP_COUNT);
         let w = Window {
             name,
-            regime,
+            gate,
             tel,
             frames: frames.to_vec(),
             snap,
@@ -287,7 +307,6 @@ impl Fill {
     /// records, save them under `BUDGET_OUT`, and keep the lines over.
     fn report(&mut self, w: &Window) {
         let s = Scenario {
-            regime: w.regime,
             tel: w.tel,
             frames: &w.frames,
         };
@@ -298,7 +317,7 @@ impl Fill {
             "== {} ({:?}{}): kernel halts {}, bus halts {}, frames sent {}, \
              tel_drop {}, stack_free_min {} B",
             w.name,
-            w.regime,
+            w.gate,
             if w.tel { ", TEL" } else { "" },
             k.halts,
             bus.halts,
@@ -306,15 +325,24 @@ impl Fill {
             w.tel_drops,
             w.stack_free_min
         );
-        let _ = writeln!(text, "  {}", load_line("period", &k.period));
-        let _ = writeln!(text, "  hist {:?}", k.hist);
+        for (kt, g) in WINDOW_TICKS.into_iter().zip(k.windows.gamma) {
+            let _ = writeln!(text, "  gamma({kt:>2})            {}", ticks(g));
+        }
+        let [open, closed] = k.long;
+        let share = 100.0 * closed as f32 / (open + closed).max(1) as f32;
+        let _ = writeln!(
+            text,
+            "  ticks >= {:.0} us: Open {open}, Closed {closed} ({share:.1}% Closed)",
+            us(LONG_TICKS)
+        );
+        let _ = writeln!(text, "  entry lateness max  {}", ticks(k.late_max));
         rows(k, bus, &s, |r| {
             if r.n == 0 && r.max == 0 {
                 return;
             }
             let l = line(&r);
             let _ = writeln!(text, "  {l}");
-            if r.over() {
+            if r.over() && w.gate == Gate::Budget {
                 self.over.push(format!("{}: {l}", w.name));
             }
         });
@@ -453,18 +481,9 @@ fn ticks(t: u32) -> String {
     format!("{t:>5} ticks = {:>6.1} us", us(t))
 }
 
-fn load_line(name: &str, l: &Load) -> String {
-    format!(
-        "{name:<20} n {:>7}  max {}  mean {}",
-        l.n,
-        ticks(l.max),
-        ticks(l.mean())
-    )
-}
-
 fn line(r: &Row) -> String {
     let name = match r.component {
-        Component::Tick(p) => format!("tick phase {p}"),
+        Component::Tick(r, p) => format!("{r:?} tick phase {p}"),
         Component::TelTick(p) => format!("TEL tick phase {p}"),
         Component::BankTick(p) => format!("bank tick phase {p}"),
         c => format!("{c:?}"),

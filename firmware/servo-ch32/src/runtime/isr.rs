@@ -95,7 +95,7 @@ pub fn on_adc_dma_tc() {
     }
     DMA1.ifcr().write(|w| w.set_tcif(0, true));
 
-    let (tags, config_gen) = unsafe {
+    let (tags, after) = unsafe {
         // Volatile pair: load-bearing against optimizer hoisting in the pump.
         let tick = &raw mut (*SHARED.table.region_ptr()).telemetry.estimates.sample_tick;
         tick.write_volatile(tick.read_volatile().wrapping_add(1));
@@ -108,7 +108,7 @@ pub fn on_adc_dma_tc() {
         };
         let tags = crate::probe::tick_before(kernel.probe_tags());
         kernel.on_tick(frame, &SHARED);
-        (tags, kernel.probe_tags().1)
+        (tags, kernel.probe_tags())
     };
 
     // Trailing on purpose: the burst handshake must never displace a kernel
@@ -146,7 +146,7 @@ pub fn on_adc_dma_tc() {
     if tel {
         pfic::pend_software();
     }
-    crate::probe::kernel_exit(entry, tags, config_gen, tel);
+    crate::probe::kernel_exit(entry, tags, after, tel);
 }
 
 /// SW vector -- the TEL stager, pended by the kernel tick's last statement.

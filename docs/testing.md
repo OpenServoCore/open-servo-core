@@ -485,10 +485,14 @@ full baud matrix (0.5 M / 1 M / 2 M / 3 M).
   without an approach move), stepping, six-field TEL still and stepping, and
   each polled frame type at 3M and 1M run in their own window, opened by a
   reboot; the budget probe's maxima and means must stay inside
-  `osc_servo_core::budget`, and every frame the host sent must book. Each
-  window prints (and with `BUDGET_OUT` saves) its rows in ticks and us and
-  its raw records as it ends; a red run names the window, the component, the
-  measured ticks and us, and the budget.
+  `osc_servo_core::budget`, and every frame the host sent must book. Kernel
+  ticks book by drive arm (Closed when the tick's arm or the one before it
+  ran the current loop), SLOW-due ticks and a thermal close as events. Each
+  window prints (and with `BUDGET_OUT` saves) its rows in ticks and us,
+  gamma(k) for k = 2, 4, 10, 20, the ticks of 30 us or more by arm, the
+  longest entry lateness and its raw records as it ends; a red run names the
+  window, the component, the measured ticks and us, and the budget. "hold
+  raw pos" (a goal from raw `pos`) is report-only.
 
 - **turnaround** (`turnaround.rs`) - instruction wire-end -> status break
   fall, per baud, for ping, read and write. With the kernel above the bus a

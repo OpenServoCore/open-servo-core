@@ -41,7 +41,7 @@ use core::sync::atomic::{Ordering, compiler_fence};
 use self::config::KernelConfig;
 use self::fast::{Command, Fast};
 use self::medium::{Control, Medium};
-use crate::estimator::window;
+use crate::estimator::{thermal, window};
 use crate::tel::TelStream;
 use crate::traits::{ControlIo, Motor};
 use crate::{RegionStorageRaw, SensorFrame, Shared};
@@ -90,6 +90,20 @@ pub struct KernelTiming {
     /// Board data: the shunt amplifier's settle gain by drive width
     /// (`window::i_from_frame`).
     pub i_settle_gain: window::SettleGain,
+}
+
+/// What the budget probe reads around a tick: before it, the medium phase
+/// it runs, the configuration generation (a refresh moves it), whether the
+/// boot tick has run and whether the SLOW block is due; on either side,
+/// whether a thermal reference is live and the drive arm is Closed.
+#[derive(Copy, Clone)]
+pub struct ProbeTags {
+    pub phase: u8,
+    pub config_gen: u8,
+    pub booted: bool,
+    pub slow_due: bool,
+    pub seated: bool,
+    pub closed: bool,
 }
 
 /// Runs in the ADC DMA TC ISR (PFIC HIGH, above the bus); one `on_tick` per
@@ -198,11 +212,17 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         self.fast.duty_q15()
     }
 
-    /// The medium phase the next tick runs, the configuration generation the
-    /// snapshot was built at (a tick refreshed when it moves), and whether
-    /// the boot tick has run.
-    pub fn probe_tags(&self) -> (u8, u8, bool) {
-        (self.phase, self.config_gen, self.booted)
+    /// The kernel as the budget probe tags the tick around it.
+    pub fn probe_tags(&self) -> ProbeTags {
+        ProbeTags {
+            phase: self.phase,
+            config_gen: self.config_gen,
+            booted: self.booted,
+            slow_due: self.phase == medium::phase::SLOW
+                && self.medium.slow_periods + 1 >= DECIM_SLOW,
+            seated: self.medium.thermal.flags() & thermal::flag::TRACK != 0,
+            closed: self.faults.mask() == 0 && matches!(self.cmd.drive, fast::Drive::Closed { .. }),
+        }
     }
 
     /// Must complete well inside the kernel period (~50 us at 20 kHz).

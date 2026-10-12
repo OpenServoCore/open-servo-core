@@ -280,6 +280,11 @@ pub const fn kernel_tick(regime: Regime, phase: usize, ev: Events) -> u32 {
     if ev.refresh {
         t += REFRESH;
     }
+    if ev.close {
+        t += SLOW_CLOSE;
+    } else if ev.slow {
+        t += SLOW_DUE;
+    }
     if ev.tel {
         t += TEL_ENCODE[r];
     }
@@ -295,4 +300,7 @@ pub struct Events {
     pub refresh: bool,
     pub tel: bool,
     pub bank: bool,
+    /// The SLOW block ran; `close`: and installed a thermal reference.
+    pub slow: bool,
+    pub close: bool,
 }
