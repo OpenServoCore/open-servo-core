@@ -1129,7 +1129,6 @@ impl Sim {
         let now = self.core.borrow().now();
         self.cpus[j].charge(now, v);
         let before = self.servos[j].dispatched();
-        let starts = self.handles[j].wire.starts();
         match v {
             Vector::Compare => self.servos[j].on_deadline(),
             Vector::Break => self.servos[j].on_break(),
@@ -1137,8 +1136,7 @@ impl Sim {
         }
         let frames = self.servos[j].dispatched() - before;
         self.cpus[j].charge_frames(frames);
-        let started = self.handles[j].wire.starts() > starts;
-        self.cpus[j].book(v, frames > 0, started);
+        self.cpus[j].book(v, frames > 0);
         self.handles[j].clock_lag.set(0);
     }
 

@@ -123,7 +123,7 @@ fn the_probe_books_every_frame_whole() {
     let (frames, p) = burst_probe(lane, HandlerCost::at_budget(Frame::Write));
     let p = p.closed();
     assert!(frames > 0);
-    assert_eq!((p.host.n, p.tel.n), (2, 0));
+    assert_eq!(p.host.n, 2);
 }
 
 #[test]
@@ -147,9 +147,6 @@ fn the_des_charges_the_budget_table() {
         [TEL_POLL, TEL_FEED, TEL_ARM, TEL_PATCH].map(u64::from)
     );
     for f in Frame::ALL {
-        if f == Frame::TelBatch {
-            continue;
-        }
         let at = HandlerCost::at_budget(f).frame_ticks();
         let typical = HandlerCost::typical(f).frame_ticks();
         assert!(at >= budget::frame(f) as u64 + 4 * entry, "{f:?} {at}");

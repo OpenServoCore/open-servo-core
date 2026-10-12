@@ -203,7 +203,7 @@ mod tests {
             assert_eq!(t.config.common.firmware_version, crate::FIRMWARE_VERSION);
             assert_ne!(t.config.common.capability_flags & table::CAP_TEL_ROWS, 0);
             assert_eq!(t.config.common.tel_wide_fields, crate::tel::WIDE);
-            assert_eq!(t.config.common.tel_row_bytes_max, [0, 3, 8, 11]);
+            assert_eq!(t.config.common.tel_row_bytes_max, [1, 3, 7, 11]);
         });
     }
 

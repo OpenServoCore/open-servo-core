@@ -340,14 +340,9 @@ pub struct BusProbe {
     /// and the kernel vectors it nested.
     pub wall: [u32; Body::ALL.len()],
     pub nested: [u32; Body::ALL.len()],
-    /// Host frames: every bus body from one break wake to the next own
-    /// frame, the reply excepted. A window's last frame closes at
-    /// [`Self::closed`].
+    /// Host frames: every bus body from one break wake to the next. A
+    /// window's last frame closes at [`Self::closed`].
     pub host: Load,
-    /// TEL frames: every bus body from one own frame start to the next. A
-    /// start counts as a TEL frame when the last break already had its
-    /// reply: the host stays silent through a burst.
-    pub tel: Load,
     pub halts: u32,
     /// Break-wake overflows: breaks, and a parked low's re-fires.
     pub breaks: u32,
@@ -357,19 +352,12 @@ pub struct BusProbe {
     pub parks: u32,
     pub rises: u32,
     acc: u32,
-    /// [`SAW_BREAK`], [`SAW_START`] and [`SAW_DISPATCH`] for the running
-    /// body; [`REPLIED`] and [`ACC_TEL`] across bodies.
+    /// [`SAW_BREAK`] and [`SAW_DISPATCH`] for the running body.
     flags: u32,
 }
 
 const SAW_BREAK: u32 = 1 << 0;
-const SAW_START: u32 = 1 << 1;
-const SAW_DISPATCH: u32 = 1 << 2;
-/// The last break already had its reply.
-const REPLIED: u32 = 1 << 3;
-/// The open frame is a TEL frame.
-const ACC_TEL: u32 = 1 << 4;
-const SAW: u32 = SAW_BREAK | SAW_START | SAW_DISPATCH;
+const SAW_DISPATCH: u32 = 1 << 1;
 
 impl BusProbe {
     pub const ZERO: Self = Self {
@@ -377,7 +365,6 @@ impl BusProbe {
         wall: [0; Body::ALL.len()],
         nested: [0; Body::ALL.len()],
         host: Load::ZERO,
-        tel: Load::ZERO,
         halts: 0,
         breaks: 0,
         refires: 0,
@@ -395,12 +382,6 @@ impl BusProbe {
         self.flags |= SAW_BREAK;
     }
 
-    /// The running body started an own frame (its break is on the wire).
-    #[inline(always)]
-    pub fn mark_start(&mut self) {
-        self.flags |= SAW_START;
-    }
-
     /// The running body dispatched a frame.
     #[inline(always)]
     pub fn mark_dispatch(&mut self) {
@@ -408,21 +389,19 @@ impl BusProbe {
     }
 
     /// A bus body of `excl` ticks ends, `wall` with the `nested` kernel
-    /// vectors inside it. A stager body that started no frame books as
-    /// [`Body::TelPoll`], a break wake that dispatched as [`Body::Deadline`].
+    /// vectors inside it. A break wake that dispatched books as
+    /// [`Body::Deadline`].
     #[inline(always)]
     pub fn body(&mut self, excl: u32, wall: u32, nested: u32, b: Body) {
         let saw = self.flags;
-        self.flags &= !SAW;
+        self.flags = 0;
         let brk = saw & SAW_BREAK != 0;
-        let started = saw & SAW_START != 0;
         let dispatched = saw & SAW_DISPATCH != 0;
         if excl > HALT_TICKS {
             self.halts = self.halts.wrapping_add(1);
             return;
         }
         let b = match b {
-            Body::TelStage if !started => Body::TelPoll,
             Body::BreakWake if dispatched => Body::Deadline,
             b => b,
         };
@@ -439,14 +418,7 @@ impl BusProbe {
             l.add(excl);
         }
         if brk {
-            self.fold(false);
-            self.flags &= !REPLIED;
-        }
-        if started {
-            if self.flags & REPLIED != 0 {
-                self.fold(true);
-            }
-            self.flags |= REPLIED;
+            self.fold();
         }
         self.acc = self.acc.wrapping_add(excl);
     }
@@ -454,26 +426,17 @@ impl BusProbe {
     /// The record with its open frame closed: read after the traffic, the
     /// last frame has run every body it will.
     pub fn closed(mut self) -> Self {
-        self.fold(false);
+        self.fold();
         self
     }
 
-    /// Close the frame accumulated so far; the next one is TEL if `tel`.
+    /// Close the frame accumulated so far.
     #[inline(always)]
-    fn fold(&mut self, tel: bool) {
+    fn fold(&mut self) {
         if self.acc != 0 {
-            if self.flags & ACC_TEL != 0 {
-                self.tel.add(self.acc);
-            } else {
-                self.host.add(self.acc);
-            }
+            self.host.add(self.acc);
         }
         self.acc = 0;
-        self.flags = if tel {
-            self.flags | ACC_TEL
-        } else {
-            self.flags & !ACC_TEL
-        };
     }
 
     /// Decode a dump, little-endian words in field order.
@@ -487,7 +450,6 @@ impl BusProbe {
             wall: core::array::from_fn(|_| r.word()),
             nested: core::array::from_fn(|_| r.word()),
             host: r.load(),
-            tel: r.load(),
             halts: r.word(),
             breaks: r.word(),
             refires: r.word(),
@@ -553,7 +515,6 @@ pub enum Component {
     TelEncode(Regime),
     Body(Body),
     HostFrame,
-    TelFrame,
 }
 
 /// A component's window against its budget; `n` and `mean` are 0 where the
@@ -704,7 +665,7 @@ pub fn rows(k: &KernelProbe, b: &BusProbe, s: &Scenario<'_>, mut f: impl FnMut(R
     let bodies = Body::ALL.into_iter().zip(b.body).zip(b.wall).zip(b.nested);
     for (((body, l), wall), nested) in bodies {
         let spin = match body {
-            Body::Deadline | Body::TelStage => super::spin_extra(slowest),
+            Body::Deadline => super::spin_extra(slowest),
             _ => 0,
         };
         let budget = super::body(body) + spin;
@@ -716,8 +677,9 @@ pub fn rows(k: &KernelProbe, b: &BusProbe, s: &Scenario<'_>, mut f: impl FnMut(R
         });
     }
     let host = || {
-        let frames = s.frames.iter().filter(|(fr, _)| *fr != Frame::TelBatch);
-        frames.map(|&(fr, baud)| (fr, super::spin_extra(baud)))
+        s.frames
+            .iter()
+            .map(|&(fr, baud)| (fr, super::spin_extra(baud)))
     };
     let max = host().map(|(fr, spin)| super::frame(fr) + spin).max();
     let mean = host().map(|(fr, spin)| super::frame_mean(fr) + spin).max();
@@ -726,13 +688,6 @@ pub fn rows(k: &KernelProbe, b: &BusProbe, s: &Scenario<'_>, mut f: impl FnMut(R
         b.host,
         max.unwrap_or(0),
         mean.unwrap_or(0),
-    ));
-    let tel = Frame::TelBatch;
-    f(load_row(
-        Component::TelFrame,
-        b.tel,
-        super::frame(tel),
-        super::frame_mean(tel),
     ));
 }
 

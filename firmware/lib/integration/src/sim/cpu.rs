@@ -433,16 +433,13 @@ impl Cpu {
     }
 
     /// Book the bus body just run on the probe, as the chip stamps it.
-    pub fn book(&mut self, v: Vector, dispatched: bool, started: bool) {
+    pub fn book(&mut self, v: Vector, dispatched: bool) {
         let p = &mut self.probe;
         if v == Vector::Break {
             p.mark_break();
         }
         if dispatched {
             p.mark_dispatch();
-        }
-        if started {
-            p.mark_start();
         }
         let body = match v {
             Vector::Compare => Body::Deadline,
