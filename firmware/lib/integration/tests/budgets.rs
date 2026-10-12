@@ -24,8 +24,9 @@ const SIX_FIELDS: u16 = 0x1cd;
 const BURST_ROWS: u16 = 4000;
 
 /// The bench step soak at 3M (Position, a 1200-count step before each of
-/// 20 bursts of 4000 rows): 19699 rows dropped against 80000 sent.
-const BENCH_STEP_DROPPED: f64 = 19699.0 / (80000.0 + 19699.0);
+/// 20 bursts of 4000 rows, six fields packed) dropped no rows against 80000
+/// sent.
+const BENCH_STEP_DROPPED: f64 = 0.0 / (80000.0 + 0.0);
 
 /// Interrupt entry and exit in production form, HCLK ticks: trampoline and
 /// prologue to the entry stamp 37, exit stamp to the resumed instruction 43
@@ -272,7 +273,7 @@ fn config_write_while_moving_fits_at_budget() {
 }
 
 #[test]
-#[ignore = "over budget: Closed p9 with the side stage (639), the TEL row (671) and its bank (177), the health close and entry and exit takes 2964, 564 over; p8 with the install 2718, 318 over"]
+#[ignore = "over budget: Closed p9 with the side stage (639), the TEL row (591), its bank (198), the health close (308) and entry and exit takes 2943, 543 over; p8 with the install 2593, 193 over"]
 fn config_write_while_moving_and_streaming_fits_at_budget() {
     for (p, t) in spare_phase_ticks(true) {
         assert!(t <= TICK_PERIOD, "phase {p}: {t} > {TICK_PERIOD}");

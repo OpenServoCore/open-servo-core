@@ -113,7 +113,7 @@ fn event_tick(phase: u8, ev: Events) -> u32 {
 /// streaming with a TEL row and its bank on the same tick.
 #[rstest]
 #[case::quiet(false)]
-#[ignore = "over budget: the TEL row (671) and its bank (177) put the side tick at 2964 with the health close and entry and exit, 564 over (install 2718, freeze 2541); a plain Closed p1 with the TEL row alone takes 2533"]
+#[ignore = "over budget: the TEL row (591), its bank (198) and the health close (308) put the side tick at 2943 with entry and exit, 543 over (install 2593, freeze 2413); a plain Closed p1 with the TEL row and the close takes 2589"]
 #[case::streaming(true)]
 fn thermal_close_fits_at_budget_while_seated(#[case] tel: bool) {
     let carried = Events {
@@ -187,7 +187,7 @@ const SLOW_STAGES: [Events; 3] = [
 /// The SLOW stages while six fields stream and step, Closed at budget,
 /// with a bank on the tick.
 #[test]
-#[ignore = "over budget: Closed SLOW 1250 + TEL 671 + bank 177 + entry and exit 80 leaves 222 of the period; the due stage takes 446 (2624, 224 over), the finish 363 (2541); a plain Closed p1 with the TEL row alone takes 2533"]
+#[ignore = "over budget: Closed SLOW 1181 + TEL 591 + bank 198 + entry and exit 80 leaves 350 of the period; the due stage takes 446 (2496, 96 over), the finish 363 (2413); a plain Closed p1 with the TEL row and the close takes 2589"]
 fn slow_stages_fit_at_budget_while_streaming() {
     for stage in SLOW_STAGES {
         let ev = Events {
@@ -204,36 +204,60 @@ fn slow_stages_fit_at_budget_while_streaming() {
     }
 }
 
-/// The SLOW block never sets the period's longest tick: each stage on the
-/// SLOW phase, carrying what any tick may carry (nothing, a TEL row, a row
-/// and its bank), is no longer than the heaviest other phase carrying the
-/// same, in either regime. So wherever the plain phases fit, the SLOW ticks
-/// fit too.
-#[test]
-fn slow_stages_never_set_the_tick_max_at_budget() {
-    let tel = Events {
-        tel: true,
-        ..Events::default()
+/// What any tick may carry: nothing, a TEL row, a row and its bank.
+fn carried() -> [Events; 3] {
+    let tel = Events { tel: true, ..NONE };
+    [NONE, tel, Events { bank: true, ..tel }]
+}
+
+/// `stage` on the SLOW phase on top of `c`.
+fn slow_tick(r: Regime, stage: Events, c: Events) -> u32 {
+    let ev = Events {
+        slow: stage.slow,
+        finish: stage.finish,
+        close: stage.close,
+        ..c
     };
-    let carried = [Events::default(), tel, Events { bank: true, ..tel }];
-    let slow = phase::SLOW as usize;
-    for r in Regime::ALL {
-        for c in carried {
-            let heaviest = (0..PHASES)
-                .filter(|&p| p != slow)
-                .map(|p| budget::kernel_tick(r, p, c))
-                .max()
-                .unwrap_or(0);
-            for stage in SLOW_STAGES {
-                let ev = Events {
-                    slow: stage.slow,
-                    finish: stage.finish,
-                    close: stage.close,
-                    ..c
-                };
-                let t = budget::kernel_tick(r, slow, ev);
-                assert!(t <= heaviest, "{r:?} {ev:?}: {t} over {heaviest}");
-            }
+    budget::kernel_tick(r, phase::SLOW as usize, ev)
+}
+
+/// Closed, the SLOW block never sets the period's longest tick: each stage
+/// on the SLOW phase, carrying what any tick may carry, is no longer than
+/// the heaviest other phase carrying the same. So wherever the plain
+/// Closed phases fit, the SLOW ticks fit too.
+#[test]
+fn slow_stages_never_set_the_closed_tick_max_at_budget() {
+    let closed = Regime::Closed;
+    for c in carried() {
+        let heaviest = (0..PHASES)
+            .filter(|&p| p != phase::SLOW as usize)
+            .map(|p| budget::kernel_tick(closed, p, c))
+            .max()
+            .unwrap_or(0);
+        for stage in SLOW_STAGES {
+            let t = slow_tick(closed, stage, c);
+            assert!(t <= heaviest, "{stage:?} on {c:?}: {t} over {heaviest}");
+        }
+    }
+}
+
+/// Open ticks leave at least this much of the period free at a SLOW stage.
+const OPEN_SLOW_FREE: u32 = budget::TICK_PERIOD / 10;
+
+/// Open, a SLOW stage may set the period's longest tick: the due stage is
+/// priced on a tracked seat, which OpenLoop can hold. Each stage tick,
+/// carrying what any tick may carry, with the health close where it can
+/// land and interrupt entry and exit, still leaves [`OPEN_SLOW_FREE`].
+#[test]
+fn open_slow_stages_leave_a_tenth_of_the_period_at_budget() {
+    let health = budget::health_close_lands(phase::SLOW as usize);
+    for c in carried() {
+        for stage in SLOW_STAGES {
+            let t = slow_tick(Regime::Open, stage, Events { health, ..c }) + budget::ENTRY_EXIT;
+            assert!(
+                t + OPEN_SLOW_FREE <= budget::TICK_PERIOD,
+                "{stage:?} on {c:?}: {t}"
+            );
         }
     }
 }
@@ -446,7 +470,7 @@ fn tel_widest_row_keeps_up_at_rest() {
 }
 
 #[test]
-#[ignore = "over budget: stepping at budget, a 1600-row burst of six packed fields sends its 100 frames but drops up to 2043 rows over the 62 starts; the Closed rows with entry and exit plus the TEL row average 2284 of the 2400 period, and the stage body and two arms (2358) stretched by them outlast the 280 us a frame's wire time leaves of its batch; with a 483 TEL row still up to 352, with or without the empty stager polls"]
+#[ignore = "over budget: stepping at budget, a 1600-row burst of six packed fields sends its 100 frames but drops up to 343 rows over the 62 starts; the Closed rows with entry and exit plus the TEL row average 2080 of the 2400 period, and the stage body and two arms (2358) stretched by them outlast the 280 us a frame's wire time leaves of its batch"]
 fn tel_six_packed_fields_fit_at_budget_while_stepping() {
     for k in 0..STARTS {
         let got = tel_burst(SIX_FIELDS, Motion::Moving, k);
