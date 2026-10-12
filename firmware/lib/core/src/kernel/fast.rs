@@ -5,7 +5,7 @@
 
 use super::KernelTiming;
 use super::config::FastConfig;
-use super::current::CurrentLoop;
+use super::current::{CurrentLoop, RailClamp};
 use super::duty_limit::DutyLimiter;
 use super::faults::{self, FaultLatch, OcDetector};
 use super::ident::IdentAgg;
@@ -27,8 +27,8 @@ pub enum Drive {
     /// OpenLoop at `goal_q15`, already clamped to `duty_max`.
     OpenLoop { goal_q15: i32 },
     /// The current loop on `Command::i_ref_cc`, with the Ke feed-forward
-    /// riding the profile speed (0 in Current mode).
-    Closed { omega_ff_q16: i32 },
+    /// (`current::u_ff_vc`) riding the profile speed (0 in Current mode).
+    Closed { u_ff_vc: i32 },
 }
 
 /// What the bridge carried through a period, for the zero-current feed.
@@ -60,10 +60,23 @@ pub struct Command {
     pub ol_base_q15: u16,
     pub vbus_counts: u16,
     pub vbus_recip_q15: u32,
+    /// The current loop's clamp on `vbus_counts`, prepared by `prepare_rail`.
+    pub rail: RailClamp,
     /// The position table applies (`pos_lut_state` LIVE), for the stream.
     pub lut_live: bool,
     /// CONTROL `ident_agg`: the identification aggregate folds.
     pub ident_agg: bool,
+}
+
+impl Command {
+    /// The clamp on the undervolt-floored vbus: the same floor `VbusEst`
+    /// applies to the reciprocal, so (clamp, recip) stay the contract pair
+    /// even before the first seed. Runs at the rail commit and at every
+    /// configuration refresh.
+    pub fn prepare_rail(&mut self, fc: &FastConfig) {
+        let vbus_eff = self.vbus_counts.max(fc.v_undervolt_counts);
+        self.rail = RailClamp::new(fc.current.duty_max_q15, vbus_eff);
+    }
 }
 
 /// Fast -> medium, this tick's measurement.
@@ -78,7 +91,6 @@ pub struct Measured {
 pub struct Fast {
     pwm_arr: u16,
     bias_brake_min_ticks: u16,
-    v_trough_min_ticks: u16,
     bemf_min_ticks: u16,
     i_settle_gain: window::SettleGain,
     /// Shunt zero-current offset in use; the medium step publishes it to
@@ -93,8 +105,7 @@ pub struct Fast {
     ident: IdentAgg,
     /// The duty actually commanded this tick, post-clamp post-gate: 0 while
     /// Brake/Disabled. Feeds next tick's window select AND the
-    /// `duty_applied_q15` publish - `CurrentLoop::last_duty` is not used for
-    /// telemetry because the gate can override the loop's output.
+    /// `duty_applied_q15` publish: the gate can override the loop's output.
     pub(super) duty_q15: i16,
     /// The drive width the motor write programmed for `duty_q15`
     /// (`window::drive_ticks`), 0 while Brake/Disabled: next tick's window.
@@ -122,7 +133,6 @@ impl Fast {
         Self {
             pwm_arr: timing.pwm_arr,
             bias_brake_min_ticks: timing.bias_brake_min_ticks,
-            v_trough_min_ticks: timing.v_trough_min_ticks,
             bemf_min_ticks: timing.bemf_min_ticks,
             i_settle_gain: timing.i_settle_gain,
             bias: BiasTracker::new(),
@@ -207,7 +217,7 @@ impl Fast {
             self.decay,
             ticks,
             fc.i_window_min_ticks,
-            window::v_floor(self.decay, fc.v_window_min_ticks, self.v_trough_min_ticks),
+            fc.v_floor_ticks[self.decay as usize],
         );
         let zero = match self.bridge {
             Bridge::Drive => {
@@ -384,7 +394,7 @@ impl Fast {
                     self.drive_cmd(duty, fc.ol_decay, fc.drive_polarity)
                 }
             }
-            Drive::Closed { omega_ff_q16 } => {
+            Drive::Closed { u_ff_vc } => {
                 if cmd.i_ref_cc == 0 && m.i_meas.is_none() && (cmd.band.hi == 0 || cmd.band.lo == 0)
                 {
                     // endstop-clamped ref with no window: the honest-zero
@@ -402,10 +412,6 @@ impl Fast {
                     self.decay = DecayMode::Slow;
                     MotorCmd::Brake
                 } else {
-                    // undervolt-floored vbus: the same floor `vbus.step`
-                    // applied to the reciprocal, so (vbus, recip) stay the
-                    // contract pair even before the first seed
-                    let vbus_eff = cmd.vbus_counts.max(fc.v_undervolt_counts);
                     // An invalid window only happens below the sampling
                     // floor, where the duty is too small to push real
                     // current: 0 is the honest estimate THERE, and it lets
@@ -416,8 +422,8 @@ impl Fast {
                     let duty = self.cur.step(
                         cmd.i_ref_cc,
                         i_loop,
-                        omega_ff_q16,
-                        vbus_eff,
+                        u_ff_vc,
+                        &cmd.rail,
                         cmd.vbus_recip_q15,
                         &fc.current,
                     );

@@ -31,50 +31,66 @@ pub struct CurrentGains {
     pub duty_max_q15: u16,
 }
 
-/// State: one voltage-domain integrator (vcounts Q16.16) and the last duty
-/// written, kept for telemetry `duty_applied_q15`.
+/// The Ke decoupling feed-forward, vcounts, on `omega_ff_q16` csQ16: the
+/// decoupling reference the kernel picks per mode - the trajectory's
+/// omega_star in Velocity/Position, zero otherwise - never a velocity
+/// estimate: the back-EMF estimate is the loop's own output read back, the
+/// pot observer rails at rest.
+pub fn u_ff_vc(omega_ff_q16: i32, gains: &CurrentGains) -> i32 {
+    // csQ16 * Q4.12 >> 28 -> vcounts; i64 product <= 2^31 * 2^16 = 2^47
+    q_mul(omega_ff_q16, gains.ke_q412 as i32, 28)
+}
+
+/// The voltage clamp `duty_max * vbus` and the integrator bound it sets,
+/// prepared once per rail estimate.
+#[derive(Copy, Clone, Default)]
+pub struct RailClamp {
+    pub v_max_vc: i32,
+    pub integ_lim_vq16: i32,
+}
+
+impl RailClamp {
+    pub fn new(duty_max_q15: u16, vbus_counts: u16) -> Self {
+        // duty_max * vbus <= 2^15 * 2^16 = 2^31, exact in the i64 widen
+        let v_max_vc = q_mul(duty_max_q15 as i32, vbus_counts as i32, 15);
+        Self {
+            v_max_vc,
+            // v_max <= 65535 so the shift saturates (12-bit vbus keeps it
+            // far below)
+            integ_lim_vq16: v_max_vc.saturating_mul(1 << 16),
+        }
+    }
+}
+
+/// State: one voltage-domain integrator (vcounts Q16.16).
 #[derive(Default)]
 pub struct CurrentLoop {
     integ_vq16: i32,
-    last_duty_q15: i16,
 }
 
 impl CurrentLoop {
     pub const fn new() -> Self {
-        Self {
-            integ_vq16: 0,
-            last_duty_q15: 0,
-        }
+        Self { integ_vq16: 0 }
     }
 
     /// Zero state; kernel calls on the enable edge so a stale integrator
     /// never kicks a fresh enable.
     pub fn reset(&mut self) {
         self.integ_vq16 = 0;
-        self.last_duty_q15 = 0;
-    }
-
-    pub fn last_duty_q15(&self) -> i16 {
-        self.last_duty_q15
     }
 
     /// One FAST-tick update -> duty. `i_meas` None (shunt window invalid)
     /// freezes the whole integrator update - ki term and back-calc both -
-    /// and the output rides integrator + feedforward until the window
-    /// returns. `omega_ff_q16` csQ16 is the decoupling reference the kernel
-    /// picks per mode - the trajectory's omega_star in Velocity/Position,
-    /// zero otherwise - never a velocity estimate: the back-EMF estimate is
-    /// this loop's own output read back, the pot observer rails at rest.
-    /// `recip_vbus_q15` is the vbus estimator's reciprocal, contract
-    /// `(recip * vbus) >> 15
-    /// ~= 32767` (estimator::vbus::VbusEst) - the pair must describe the
-    /// same vbus or the duty cap is off by their mismatch.
+    /// and the output rides integrator + feedforward (`u_ff_vc`) until the
+    /// window returns. `rail` and `recip_vbus_q15` must describe the same
+    /// vbus (estimator::vbus::VbusEst contract `(recip * vbus) >> 15 ~=
+    /// 32767`) or the duty cap is off by their mismatch.
     pub fn step(
         &mut self,
         i_ref: i32,
         i_meas: Option<i32>,
-        omega_ff_q16: i32,
-        vbus_counts: u16,
+        u_ff_vc: i32,
+        rail: &RailClamp,
         recip_vbus_q15: u32,
         gains: &CurrentGains,
     ) -> i16 {
@@ -84,36 +100,29 @@ impl CurrentLoop {
         };
         // kp * 2^13 <= 2^29, i32-exact before the shift
         let u_pi = q_mul(gains.kp_q88 as i32, e, 8).saturating_add(self.integ_vq16 >> 16);
-        // csQ16 * Q4.12 >> 28 -> vcounts; i64 product <= 2^31 * 2^16 = 2^47
-        let u_ff = q_mul(omega_ff_q16, gains.ke_q412 as i32, 28);
-        let u = u_pi.saturating_add(u_ff);
-        // duty_max * vbus <= 2^15 * 2^16 = 2^31, exact in the i64 widen
-        let v_max = q_mul(gains.duty_max_q15 as i32, vbus_counts as i32, 15);
-        let u_cl = u.clamp(-v_max, v_max);
+        let u = u_pi.saturating_add(u_ff_vc);
+        let v_max = rail.v_max_vc;
+        let u_cl = u.max(-v_max).min(v_max);
         if i_meas.is_some() {
             let aw = u_cl.saturating_sub(u).clamp(-AW_LIM_VC, AW_LIM_VC);
             // Q4.12 * ccounts -> vQ16 needs << (16 - 12); the products are
             // i32-exact (<= 2^29 per the E/AW clamps) but << 4 can reach
             // 2^33, so the shift saturates via mul. Integrator clamp:
             // +-(v_max << 16), never charged past what the output can
-            // deliver (belt on top of back-calc); v_max <= 65535 so the
-            // shift saturates too (12-bit vbus keeps it far below).
+            // deliver (belt on top of back-calc).
             let ki_term = q_mul(gains.ki_q412 as i32, e, 0).saturating_mul(1 << 4);
             let aw_term = q_mul(gains.kaw_q412 as i32, aw, 0).saturating_mul(1 << 4);
-            let lim = v_max.saturating_mul(1 << 16);
+            let lim = rail.integ_lim_vq16;
             self.integ_vq16 = self
                 .integ_vq16
                 .saturating_add(ki_term)
                 .saturating_add(aw_term)
-                .clamp(-lim, lim);
+                .max(-lim)
+                .min(lim);
         }
-        // min guards the i32 cast: a reciprocal with bit 31 set would flip
-        // the duty sign; the undervolt-floored vbus keeps real reciprocals
-        // far below. |u_cl| * recip <= 2^17 * 2^31 = 2^48, i64-safe.
-        let recip = recip_vbus_q15.min(i32::MAX as u32) as i32;
-        let duty = q_mul(u_cl, recip, 15).clamp(-(i16::MAX as i32), i16::MAX as i32) as i16;
-        self.last_duty_q15 = duty;
-        duty
+        // VbusEst floors its divisor at 1, so recip <= 32767 << 15 < 2^30
+        // casts exactly; |u_cl| * recip <= 2^17 * 2^30 = 2^47, i64-safe.
+        q_mul(u_cl, recip_vbus_q15 as i32, 15).clamp(-(i16::MAX as i32), i16::MAX as i32) as i16
     }
 }
 
@@ -126,6 +135,28 @@ mod tests {
     const RECIP: u32 = ((32767u64 << 15) / VBUS as u64) as u32;
     const VBUS_SAG: u16 = 2400;
     const RECIP_SAG: u32 = ((32767u64 << 15) / VBUS_SAG as u64) as u32;
+
+    /// The kernel's call: the feed-forward and the clamp prepared from the
+    /// same gains and vbus the step runs on.
+    fn step(
+        cur: &mut CurrentLoop,
+        i_ref: i32,
+        i_meas: Option<i32>,
+        omega_ff_q16: i32,
+        vbus: u16,
+        recip: u32,
+        gains: &CurrentGains,
+    ) -> i16 {
+        let rail = RailClamp::new(gains.duty_max_q15, vbus);
+        cur.step(
+            i_ref,
+            i_meas,
+            u_ff_vc(omega_ff_q16, gains),
+            &rail,
+            recip,
+            gains,
+        )
+    }
 
     fn recip_for(vbus: u16) -> u32 {
         ((32767u64 << 15) / vbus as u64) as u32
@@ -158,10 +189,9 @@ mod tests {
         // side to -5462.
         let gains = g(KP_1, 0, 0, 0, 32767);
         let mut cur = CurrentLoop::new();
-        assert_eq!(cur.step(500, Some(0), 0, VBUS, RECIP, &gains), 5461);
-        assert_eq!(cur.last_duty_q15(), 5461);
+        assert_eq!(step(&mut cur, 500, Some(0), 0, VBUS, RECIP, &gains), 5461);
         let mut cur = CurrentLoop::new();
-        assert_eq!(cur.step(-500, Some(0), 0, VBUS, RECIP, &gains), -5462);
+        assert_eq!(step(&mut cur, -500, Some(0), 0, VBUS, RECIP, &gains), -5462);
     }
 
     #[test]
@@ -172,7 +202,7 @@ mod tests {
         let mut cur = CurrentLoop::new();
         let mut i = 0i32;
         for _ in 0..500 {
-            i = plant_i(cur.step(500, Some(i), 0, VBUS, RECIP, &p_only), VBUS);
+            i = plant_i(step(&mut cur, 500, Some(i), 0, VBUS, RECIP, &p_only), VBUS);
         }
         assert!(i < 100, "p-only i={i}");
 
@@ -180,7 +210,7 @@ mod tests {
         let mut cur = CurrentLoop::new();
         let mut i = 0i32;
         for _ in 0..500 {
-            i = plant_i(cur.step(500, Some(i), 0, VBUS, RECIP, &pi), VBUS);
+            i = plant_i(step(&mut cur, 500, Some(i), 0, VBUS, RECIP, &pi), VBUS);
         }
         assert!((i - 500).abs() <= 1, "pi i={i}");
     }
@@ -190,18 +220,18 @@ mod tests {
         let gains = g(64, 200, 0, 1 << 12, 32767);
         let mut cur = CurrentLoop::new();
         for _ in 0..50 {
-            cur.step(500, Some(0), 0, VBUS, RECIP, &gains);
+            step(&mut cur, 500, Some(0), 0, VBUS, RECIP, &gains);
         }
         // None freezes the integrator: repeated steps identical
-        let d1 = cur.step(500, None, 0, VBUS, RECIP, &gains);
-        let d2 = cur.step(500, None, 0, VBUS, RECIP, &gains);
+        let d1 = step(&mut cur, 500, None, 0, VBUS, RECIP, &gains);
+        let d2 = step(&mut cur, 500, None, 0, VBUS, RECIP, &gains);
         assert_eq!(d1, d2);
         // ff still live: ke 1.0, omega 100 c/s -> +100 vcounts ->
         // +100*RECIP>>15 = +1092 duty on top of the held integrator
-        let d3 = cur.step(500, None, 100 << 16, VBUS, RECIP, &gains);
+        let d3 = step(&mut cur, 500, None, 100 << 16, VBUS, RECIP, &gains);
         assert_eq!(d3 - d1, 1092);
         // valid sample moves it again
-        let d4 = cur.step(500, Some(0), 0, VBUS, RECIP, &gains);
+        let d4 = step(&mut cur, 500, Some(0), 0, VBUS, RECIP, &gains);
         assert!(d4 > d1);
     }
 
@@ -220,14 +250,14 @@ mod tests {
             let mut i = 0i32;
             let mut duty = 0i16;
             for _ in 0..300 {
-                duty = cur.step(4000, Some(i), 0, VBUS, RECIP, &gains);
+                duty = step(&mut cur, 4000, Some(i), 0, VBUS, RECIP, &gains);
                 i = plant_i(duty, VBUS);
             }
             // v_max = 32767*3000>>15 = 2999 -> duty 2999*RECIP>>15 = 32756
             assert_eq!(duty, 32756, "saturated, kaw={kaw}");
             let mut ticks = 0u32;
             while ticks < 200 {
-                duty = cur.step(200, Some(i), 0, VBUS, RECIP, &gains);
+                duty = step(&mut cur, 200, Some(i), 0, VBUS, RECIP, &gains);
                 i = plant_i(duty, VBUS);
                 if duty < 30000 {
                     break;
@@ -249,10 +279,13 @@ mod tests {
         // voltage command costs more duty: 1000/3000 vs 1000/2400 of scale.
         let gains = g(0, 0, 0, 1 << 12, 32767);
         let mut cur = CurrentLoop::new();
-        assert_eq!(cur.step(0, None, 1000 << 16, VBUS, RECIP, &gains), 10922);
+        assert_eq!(
+            step(&mut cur, 0, None, 1000 << 16, VBUS, RECIP, &gains),
+            10922
+        );
         let mut cur = CurrentLoop::new();
         assert_eq!(
-            cur.step(0, None, 1000 << 16, VBUS_SAG, RECIP_SAG, &gains),
+            step(&mut cur, 0, None, 1000 << 16, VBUS_SAG, RECIP_SAG, &gains),
             13652
         );
 
@@ -265,7 +298,7 @@ mod tests {
             let mut i = 0i32;
             let mut duty = 0i16;
             for _ in 0..300 {
-                duty = cur.step(4000, Some(i), 0, vbus, recip, &gains);
+                duty = step(&mut cur, 4000, Some(i), 0, vbus, recip, &gains);
                 i = plant_i(duty, vbus);
             }
             (duty, i)
@@ -291,7 +324,7 @@ mod tests {
                     for i_meas in [None, Some(-4095), Some(0), Some(4095)] {
                         let mut cur = CurrentLoop::new();
                         for _ in 0..20 {
-                            let d = cur.step(i_ref, i_meas, omega, vbus, recip, &gains);
+                            let d = step(&mut cur, i_ref, i_meas, omega, vbus, recip, &gains);
                             assert!(
                                 d.unsigned_abs() <= 20000,
                                 "d={d} vbus={vbus} i_ref={i_ref} omega={omega}"
@@ -308,11 +341,10 @@ mod tests {
         let gains = g(64, 200, 0, 0, 32767);
         let mut cur = CurrentLoop::new();
         for _ in 0..50 {
-            cur.step(500, Some(0), 0, VBUS, RECIP, &gains);
+            step(&mut cur, 500, Some(0), 0, VBUS, RECIP, &gains);
         }
-        assert_ne!(cur.step(0, Some(0), 0, VBUS, RECIP, &gains), 0);
+        assert_ne!(step(&mut cur, 0, Some(0), 0, VBUS, RECIP, &gains), 0);
         cur.reset();
-        assert_eq!(cur.last_duty_q15(), 0);
-        assert_eq!(cur.step(0, Some(0), 0, VBUS, RECIP, &gains), 0);
+        assert_eq!(step(&mut cur, 0, Some(0), 0, VBUS, RECIP, &gains), 0);
     }
 }

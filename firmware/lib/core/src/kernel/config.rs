@@ -15,7 +15,9 @@ use crate::{RegionStorageRaw, Shared};
 #[derive(Copy, Clone, Default)]
 pub struct FastConfig {
     pub i_window_min_ticks: u16,
-    pub v_window_min_ticks: u16,
+    /// The terminal floor per decay (`window::v_floors`), indexed by
+    /// `DecayMode as usize`.
+    pub v_floor_ticks: [u16; 2],
     pub oc_trip_counts: u16,
     pub oc_trip_ticks: u8,
     pub drive_polarity: bool,
@@ -89,7 +91,10 @@ impl KernelConfig {
         Self {
             fast: FastConfig {
                 i_window_min_ticks: sense.i_window_min_ticks,
-                v_window_min_ticks: sense.v_window_min_ticks,
+                v_floor_ticks: window::v_floors(
+                    sense.v_window_min_ticks,
+                    timing.v_trough_min_ticks,
+                ),
                 oc_trip_counts: lim.oc_trip_counts,
                 oc_trip_ticks: lim.oc_trip_ticks,
                 drive_polarity: lim.drive_polarity,

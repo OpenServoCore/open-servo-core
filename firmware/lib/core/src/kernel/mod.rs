@@ -80,7 +80,7 @@ pub struct KernelTiming {
     pub bias_brake_min_ticks: u16,
     /// Board data: the shortest Fast-decay window whose trough scan samples
     /// both terminal taps inside it. It raises CALIB `v_window_min_ticks` for
-    /// Fast decay only (`window::v_floor`).
+    /// Fast decay only (`window::v_floors`).
     pub v_trough_min_ticks: u16,
     /// Board data: the shortest window whose terminal differential the
     /// back-EMF observer takes. Under it the drive pulse comes out short of
@@ -157,12 +157,9 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         let cfg = KernelConfig::load(shared, &self.timing);
         self.cfg = cfg;
         self.config_gen = config_gen;
+        self.cmd.prepare_rail(&cfg.fast);
         let v_floor = window::floor_duty(
-            window::v_floor(
-                cfg.fast.ol_decay,
-                cfg.fast.v_window_min_ticks,
-                self.timing.v_trough_min_ticks,
-            ),
+            cfg.fast.v_floor_ticks[cfg.fast.ol_decay as usize],
             self.timing.pwm_arr,
             self.timing.recip_arr_q24,
         );

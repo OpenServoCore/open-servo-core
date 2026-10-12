@@ -61,13 +61,14 @@ impl BemfObs {
 
     /// One FAST-tick sample. `ticks` is the drive width the window select
     /// used, `vdiff` from `vdiff_from_frame`, `i` from `i_from_frame`;
-    /// either `None` voids the open half. Saturating: 10 x 65535 x 4095
+    /// either `None` voids the open half. A u16 width times a 12-bit
+    /// differential stays under 2^28; the sum saturates: 10 x 65535 x 4095
     /// exceeds i32 only above a 52k ARR, a hostile timing nothing else
     /// survives either.
     pub fn sample(&mut self, ticks: u32, vdiff: Option<i32>, i: Option<i32>) {
         match (vdiff, i) {
             (Some(v), Some(i)) => {
-                self.sum_tv = self.sum_tv.saturating_add((ticks as i32).saturating_mul(v));
+                self.sum_tv = self.sum_tv.saturating_add(ticks as i32 * v);
                 self.sum_i = self.sum_i.saturating_add(i);
             }
             _ => self.half_valid = false,
@@ -248,11 +249,17 @@ mod tests {
     }
 
     #[test]
-    fn hostile_inputs_never_wrap() {
-        // debug overflow checks are the wrap detector
+    fn hostile_inputs_inside_the_tap_range_never_wrap() {
+        // debug overflow checks are the wrap detector: the widest u16 window
+        // times a full-scale 12-bit differential, hostile currents
+        const TAP_FULL_SCALE: i32 = 4095;
         let mut obs = BemfObs::new();
         for n in 0..200usize {
-            let v = if n & 1 == 0 { i32::MAX } else { i32::MIN };
+            let v = if n & 1 == 0 {
+                TAP_FULL_SCALE
+            } else {
+                -TAP_FULL_SCALE
+            };
             let i = if n & 2 == 0 { i32::MAX } else { i32::MIN };
             obs.sample(u16::MAX as u32, Some(v), Some(i));
             if n % HALF == HALF - 1 {

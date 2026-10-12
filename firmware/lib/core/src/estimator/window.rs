@@ -34,14 +34,14 @@ pub fn select(decay: DecayMode, drive_ticks: u32, i_floor: u16, v_floor: u16) ->
 /// Band width of `SettleGain`, 8 ticks.
 const SETTLE_BAND_SHIFT: u32 = 3;
 
-/// The terminal floor `select` takes for `decay`: CALIB `v_window_min_ticks`,
-/// raised under Fast decay to `trough_floor`, where the trough scan's taps
-/// close later in the window than the crest taps Slow decay reads.
-pub fn v_floor(decay: DecayMode, v_floor: u16, trough_floor: u16) -> u16 {
-    match decay {
-        DecayMode::Fast => v_floor.max(trough_floor),
-        DecayMode::Slow => v_floor,
-    }
+/// The terminal floor `select` takes per decay, indexed by `DecayMode as
+/// usize`: CALIB `v_window_min_ticks`, raised under Fast decay to
+/// `trough_floor`, where the trough scan's taps close later in the window
+/// than the crest taps Slow decay reads.
+pub fn v_floors(v_floor: u16, trough_floor: u16) -> [u16; 2] {
+    let mut floors = [v_floor; 2];
+    floors[DecayMode::Fast as usize] = v_floor.max(trough_floor);
+    floors
 }
 
 /// Board data: the inverse of the shunt amplifier's step response at the
@@ -203,6 +203,7 @@ mod tests {
 
     #[test]
     fn fast_decay_takes_the_higher_trough_floor() {
+        let v_floor = |decay: DecayMode, v, trough| v_floors(v, trough)[decay as usize];
         assert_eq!(v_floor(DecayMode::Slow, 93, 160), 93);
         assert_eq!(v_floor(DecayMode::Fast, 93, 160), 160);
         assert_eq!(v_floor(DecayMode::Fast, 200, 160), 200);

@@ -11,7 +11,7 @@ use super::faults::{self, Detectors, FaultLatch};
 use super::limits::{self, IBand, LimitState};
 use super::trajectory::TrajGen;
 use super::velocity::VelocityLoop;
-use super::{DECIM_SLOW, KernelTiming, PERMIT_LEASE_TICKS, position};
+use super::{DECIM_SLOW, KernelTiming, PERMIT_LEASE_TICKS, current, position};
 use crate::estimator::{FusionObs, OmegaSwitch, VbusEst, WindingTherm, bemf, thermal};
 use crate::math::{q_mul, q_mul_u};
 use crate::pos_lut;
@@ -315,12 +315,12 @@ impl Medium {
                 }
             }
             _ if self.hold => Drive::Brake,
-            // Ke decoupling rides the profile, not an estimate (current.rs
-            // step doc); Current mode has no profile
+            // Ke decoupling rides the profile, not an estimate
+            // (`current::u_ff_vc`); Current mode has no profile
             Mode::Velocity | Mode::Position => Drive::Closed {
-                omega_ff_q16: self.traj.omega_star_q16(),
+                u_ff_vc: current::u_ff_vc(self.traj.omega_star_q16(), &fc.current),
             },
-            Mode::Current => Drive::Closed { omega_ff_q16: 0 },
+            Mode::Current => Drive::Closed { u_ff_vc: 0 },
         }
     }
 
@@ -492,6 +492,7 @@ impl Medium {
         self.vbus.step(frame.vbus_raw, fc.v_undervolt_counts);
         cmd.vbus_counts = self.vbus.vbus_counts();
         cmd.vbus_recip_q15 = self.vbus.recip_q15();
+        cmd.prepare_rail(fc);
         // raw-pot sanity screen runs in every mode, torque-off included
         if self
             .det
