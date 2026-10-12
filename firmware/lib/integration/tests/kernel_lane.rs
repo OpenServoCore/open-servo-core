@@ -7,13 +7,13 @@
 
 use osc_host::engine::{CHAIN_READY_LAG_US, Command, Outcome};
 use osc_integration::sim::{
-    HandlerCost, HostEvent, KernelLane, KernelLevel, KernelStats, Sim, Source, TelCosts,
-    frame_crc_ok, instruction, status,
+    HandlerCost, HostEvent, KernelEvents, KernelLane, KernelLevel, KernelStats, Motion, Sim,
+    Source, TelCosts, frame_crc_ok, instruction, status,
 };
 use osc_protocol::build;
 use osc_protocol::wire::{Id, Inst, Opcode, ResultCode, STREAM_SAMPLES_MAX};
 use osc_servo_core::BaudRate;
-use osc_servo_core::budget::{self, Body, Frame, Regime};
+use osc_servo_core::budget::{self, Body, Frame};
 use osc_servo_core::regions::control::addr::lifecycle::{GOAL_VELOCITY, TEL_COUNT, TEL_MASK};
 use rstest::rstest;
 
@@ -67,9 +67,11 @@ fn kernel_lane_below_bus_reproduces_bench_loss(
 ) {
     let lane = KernelLane {
         level: KernelLevel::BelowBus,
-        phases,
+        motion: Motion::Quiet,
+        phases: [phases, phases],
         floor: None,
         tel: TelCosts::default(),
+        events: KernelEvents::default(),
     };
     let (st, replies) = polled_reads(lane, BELOW_BUS_READ32, frames_per_s);
     assert_eq!(replies, FRAMES);
@@ -82,10 +84,10 @@ fn kernel_lane_below_bus_reproduces_bench_loss(
 
 #[rstest]
 fn kernel_on_top_loses_no_tick_under_polling(
-    #[values(Regime::Quiet, Regime::Hold, Regime::Moving)] regime: Regime,
+    #[values(Motion::Quiet, Motion::Hold, Motion::Moving)] motion: Motion,
     #[values(50, 140, 280)] frames_per_s: u64,
 ) {
-    let lane = KernelLane::at_budget(KernelLevel::AboveBus, regime);
+    let lane = KernelLane::at_budget(KernelLevel::AboveBus, motion);
     let cost = HandlerCost::at_budget(Frame::Read32);
     let (st, replies) = polled_reads(lane, cost, frames_per_s);
     assert_eq!(replies, FRAMES);
@@ -101,7 +103,7 @@ fn kernel_on_top_loses_no_tick_under_polling(
 /// moving included; the GREAD's through the chain's readiness allowance.
 #[rstest]
 fn reply_bound_covers_turnaround_under_kernel_preemption(
-    #[values(Regime::Quiet, Regime::Hold, Regime::Moving)] regime: Regime,
+    #[values(Motion::Quiet, Motion::Hold, Motion::Moving)] motion: Motion,
     #[values(false, true)] hot_loop: bool,
 ) {
     const CYCLES: u64 = 100;
@@ -115,7 +117,7 @@ fn reply_bound_covers_turnaround_under_kernel_preemption(
     };
     sim.set_handler_cost(s, HandlerCost::at_budget(frame));
     let gap_us = 1_000_000 / 280 + 1;
-    let lane = KernelLane::at_budget(KernelLevel::AboveBus, regime);
+    let lane = KernelLane::at_budget(KernelLevel::AboveBus, motion);
     sim.set_kernel_lane(s, lane, START_US + CYCLES * gap_us);
     let mut read = [0u8; 4];
     let n = build::read(&mut read, 0, 32).unwrap();
@@ -189,7 +191,7 @@ fn chain_backlog() -> (u64, u64) {
 #[test]
 fn host_waits_for_a_reclaim_counted_from_readiness() {
     let (ahead, own) = chain_backlog();
-    let lane = KernelLane::at_budget(KernelLevel::AboveBus, Regime::Moving);
+    let lane = KernelLane::at_budget(KernelLevel::AboveBus, Motion::Moving);
     let lag = lane.wall(ahead + own);
     let allowance = CHAIN_READY_LAG_US as u64 * TICKS_PER_US;
     assert!(
@@ -246,7 +248,7 @@ fn tel_six_fields_fit_at_rest_with_the_kernel_on_top() {
     let s = sim.add_servo(ID);
     sim.set_handler_cost(s, HandlerCost::at_budget(Frame::Write));
     let rows = TEL_FRAMES * STREAM_SAMPLES_MAX as u16;
-    let lane = KernelLane::at_budget(KernelLevel::AboveBus, Regime::Quiet);
+    let lane = KernelLane::at_budget(KernelLevel::AboveBus, Motion::Quiet);
     sim.set_kernel_lane(s, lane, START_US + 2 * rows as u64 * 50);
     sim.host_send_at(START_US, &write_u16(TEL_MASK, SIX_FIELDS));
     sim.run_until(START_US + 1_000);

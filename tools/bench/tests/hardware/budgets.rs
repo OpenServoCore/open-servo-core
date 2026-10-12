@@ -104,11 +104,11 @@ fn kernel_and_bus_stay_inside_their_budgets() {
     let id = b.id();
     let mid = b.goal_mid();
 
-    f.window(&mut b, "quiet", Regime::Quiet, false, &[], |_, _| {
+    f.window(&mut b, "quiet", Regime::Open, false, &[], |_, _| {
         sleep(WINDOW)
     });
     let writes = [(Frame::Write, fast)];
-    f.window(&mut b, "hold", Regime::Hold, false, &writes, |b, _| {
+    f.window(&mut b, "hold", Regime::Closed, false, &writes, |b, _| {
         driven(b, |b| {
             hold_at(b, mid);
             sleep(WINDOW);
@@ -118,7 +118,7 @@ fn kernel_and_bus_stay_inside_their_budgets() {
     f.window(
         &mut b,
         "hold still",
-        Regime::Hold,
+        Regime::Closed,
         false,
         &writes,
         |b, _| {
@@ -132,7 +132,7 @@ fn kernel_and_bus_stay_inside_their_budgets() {
     f.window(
         &mut b,
         "stepping",
-        Regime::Moving,
+        Regime::Closed,
         false,
         &writes,
         |b, _| {
@@ -148,7 +148,7 @@ fn kernel_and_bus_stay_inside_their_budgets() {
     f.window(
         &mut b,
         "tel still",
-        Regime::Quiet,
+        Regime::Open,
         true,
         &writes,
         |b, failed| {
@@ -161,7 +161,7 @@ fn kernel_and_bus_stay_inside_their_budgets() {
     f.window(
         &mut b,
         "tel stepping",
-        Regime::Moving,
+        Regime::Closed,
         true,
         &writes,
         |b, failed| {
@@ -190,7 +190,7 @@ fn kernel_and_bus_stay_inside_their_budgets() {
         f.window(
             &mut b,
             name,
-            Regime::Quiet,
+            Regime::Open,
             false,
             &[(frame, fast)],
             |b, failed| poll(b, wire, failed, name),
@@ -206,7 +206,7 @@ fn kernel_and_bus_stay_inside_their_budgets() {
     f.window(
         &mut b,
         "gread slot",
-        Regime::Quiet,
+        Regime::Open,
         false,
         &slot,
         |b, failed| {
@@ -225,7 +225,7 @@ fn kernel_and_bus_stay_inside_their_budgets() {
     ];
     for (name, frame, wire) in slow {
         let frames = [(Frame::Write, fast), (frame, SLOW_BAUD)];
-        f.window(&mut b, name, Regime::Quiet, false, &frames, |b, failed| {
+        f.window(&mut b, name, Regime::Open, false, &frames, |b, failed| {
             b.switch_baud(SLOW_BAUD);
             poll(b, wire, failed, name)
         });

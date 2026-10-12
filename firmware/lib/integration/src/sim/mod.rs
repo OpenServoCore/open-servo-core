@@ -38,8 +38,8 @@ use self::resample::{CrossRx, RxOut};
 use self::servo::SimServo;
 
 pub use self::cpu::{
-    Entries, HandlerCost, KERNEL_AT_BUDGET, KERNEL_FLOOR, KernelLane, KernelLevel, KernelStats,
-    TelCosts,
+    Entries, HandlerCost, KERNEL_AT_BUDGET, KERNEL_FLOOR, KernelEvents, KernelLane, KernelLevel,
+    KernelStats, Motion, TelCosts,
 };
 pub use self::host::HostEvent;
 pub use self::servo::{DEV_V006_SENSE, DEV_V006_SENSE_EXT};
@@ -1096,13 +1096,15 @@ impl Sim {
     fn kernel_enter(&mut self, j: usize) {
         let now = self.core.borrow().now();
         let entries = self.cpus[j].kernel_stats().entries;
+        let goal = self.servos[j].with_table(|t| t.control.lifecycle.goal_position);
+        self.cpus[j].kernel_goal(goal);
         if let Some(at) = self.cpus[j].enter_kernel(now) {
             self.core
                 .borrow_mut()
                 .schedule(Event::KernelRetry { servo: j }, at);
         }
         if self.cpus[j].kernel_stats().entries > entries && self.tels[j].running {
-            let encode = self.cpus[j].kernel_tel().encode;
+            let encode = self.cpus[j].kernel_encode();
             self.cpus[j].extend_kernel(now, encode);
             if let Some(end) = self.cpus[j].kernel_until() {
                 self.core

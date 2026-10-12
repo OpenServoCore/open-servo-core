@@ -26,7 +26,8 @@ it is green no modelled cost is cheaper than silicon. Every gating pin runs at
 budget (every body at its maximum, every injected backlog at the worst the
 table allows): the sim is a bound. The typical lane (bodies drawn below their
 maxima at the bench-held mean budgets) is a forecast for reports and gates
-nothing.
+nothing. The kernel rows go by drive arm: a host hold charges the Closed rows
+for the measured approach after its goal moves, then the Open rows.
 
 ## Running
 

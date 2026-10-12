@@ -3,7 +3,7 @@
 //! (written only at the bus level); the hardware test decodes both from a
 //! debug-link dump and holds them against the table.
 
-use super::{Body, CLOCK_HZ, Events, Frame, PHASES, Regime, TICKS_PER_US};
+use super::{Body, CLOCK_HZ, Events, Frame, PHASES, Regime, TICKS_PER_US, WINDOW_TICKS};
 
 /// A body longer than this is a debugger halt or a flash save, not a
 /// budgeted body: counted, kept out of every statistic.
@@ -39,6 +39,48 @@ impl Load {
     /// Host-side: it divides.
     pub fn mean(&self) -> u32 {
         self.sum.checked_div(self.n).unwrap_or(0)
+    }
+}
+
+const RING: usize = WINDOW_TICKS[WINDOW_TICKS.len() - 1];
+const K: usize = WINDOW_TICKS.len();
+
+/// gamma(k), k in [`WINDOW_TICKS`]: the most the bodies of k consecutive
+/// ticks took, HCLK ticks.
+#[repr(C)]
+#[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
+pub struct Windows {
+    ring: [u16; RING],
+    at: u32,
+    sum: [u32; K],
+    pub gamma: [u32; K],
+}
+
+impl Windows {
+    pub const ZERO: Self = Self {
+        ring: [0; RING],
+        at: 0,
+        sum: [0; K],
+        gamma: [0; K],
+    };
+
+    /// The next tick's body (a halt never reaches here: it fits u16).
+    #[inline(always)]
+    pub fn add(&mut self, body: u32) {
+        let body = body.min(u16::MAX as u32);
+        let at = self.at as usize;
+        for (j, k) in WINDOW_TICKS.into_iter().enumerate() {
+            let out = if at >= k { at - k } else { at + RING - k };
+            let old = self.ring.get(out).copied().unwrap_or(0) as u32;
+            if let (Some(s), Some(g)) = (self.sum.get_mut(j), self.gamma.get_mut(j)) {
+                *s = s.wrapping_add(body).wrapping_sub(old);
+                *g = (*g).max(*s);
+            }
+        }
+        if let Some(r) = self.ring.get_mut(at) {
+            *r = body as u16;
+        }
+        self.at = if at + 1 < RING { at as u32 + 1 } else { 0 };
     }
 }
 

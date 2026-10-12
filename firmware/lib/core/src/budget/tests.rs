@@ -1,4 +1,4 @@
-use super::probe::{BusProbe, Component, HALT_TICKS, KernelProbe, Load, Scenario, rows};
+use super::probe::{BusProbe, Component, HALT_TICKS, KernelProbe, Load, Scenario, Windows, rows};
 use super::*;
 
 const PLAIN: Events = Events {
@@ -190,11 +190,11 @@ fn dumps_decode_field_for_field() {
 fn rows_flag_only_a_component_over_its_budget() {
     let mut k = KernelProbe::ZERO;
     let b = BusProbe::ZERO;
-    let at = kernel_tick(Regime::Quiet, 1, PLAIN);
+    let at = kernel_tick(Regime::Open, 1, PLAIN);
     k.tick(at + 1, 1, PLAIN, false);
-    k.tick(kernel_tick(Regime::Quiet, 2, PLAIN), 2, PLAIN, false);
+    k.tick(kernel_tick(Regime::Open, 2, PLAIN), 2, PLAIN, false);
     let s = Scenario {
-        regime: Regime::Quiet,
+        regime: Regime::Open,
         tel: false,
         frames: &[],
     };
@@ -206,7 +206,7 @@ fn rows_flag_only_a_component_over_its_budget() {
     });
     assert_eq!(over, [Component::Tick(1)]);
     let s = Scenario {
-        regime: Regime::Moving,
+        regime: Regime::Closed,
         ..s
     };
     let mut over = 0;
@@ -224,7 +224,7 @@ fn a_slower_rate_budgets_its_longer_law_break() {
     b.body(body(Body::Deadline) + 1, Body::Deadline);
     let frames = [(Frame::Read32, 1_000_000)];
     let s = Scenario {
-        regime: Regime::Quiet,
+        regime: Regime::Open,
         tel: false,
         frames: &frames,
     };
@@ -236,12 +236,12 @@ fn a_slower_rate_budgets_its_longer_law_break() {
 #[test]
 fn a_window_mean_over_its_budget_flags_once_judged() {
     let mut k = KernelProbe::ZERO;
-    let mean = KERNEL_MEAN[Regime::Quiet as usize][8];
+    let mean = KERNEL_MEAN[Regime::Open as usize][8];
     for _ in 1..MEAN_MIN_BODIES {
         k.tick(mean + 1, 8, PLAIN, false);
     }
     let s = Scenario {
-        regime: Regime::Quiet,
+        regime: Regime::Open,
         tel: false,
         frames: &[],
     };
@@ -256,8 +256,8 @@ fn a_window_mean_over_its_budget_flags_once_judged() {
 #[test]
 fn kernel_budgets_rise_with_the_regime() {
     for p in 0..PHASES {
-        let [q, h, m] = Regime::ALL.map(|r| kernel_tick(r, p, PLAIN));
-        assert!(q <= h && h <= m, "phase {p}: {q} {h} {m}");
+        let [open, closed] = Regime::ALL.map(|r| kernel_tick(r, p, PLAIN));
+        assert!(open <= closed, "phase {p}: {open} {closed}");
         for r in Regime::ALL {
             let (mean, max) = (KERNEL_MEAN[r as usize][p], KERNEL[r as usize][p]);
             assert!(mean <= max, "{r:?} phase {p}: {mean} {max}");
@@ -284,14 +284,14 @@ fn every_mean_budget_sits_inside_its_maximum() {
 #[test]
 fn the_encode_mean_is_the_tel_ticks_over_the_plain_ticks() {
     let mut k = KernelProbe::ZERO;
-    let enc = TEL_ENCODE_MEAN[Regime::Quiet as usize];
+    let enc = TEL_ENCODE_MEAN[Regime::Open as usize];
     for i in 0..2 * MEAN_MIN_BODIES {
         let p = i as usize % PHASES;
-        k.tick(800, p, PLAIN, false);
-        k.tick(800 + enc + 1, p, Events { tel: true, ..PLAIN }, false);
+        k.tick(600, p, PLAIN, false);
+        k.tick(600 + enc + 1, p, Events { tel: true, ..PLAIN }, false);
     }
     let s = Scenario {
-        regime: Regime::Quiet,
+        regime: Regime::Open,
         tel: true,
         frames: &[],
     };
@@ -302,4 +302,18 @@ fn the_encode_mean_is_the_tel_ticks_over_the_plain_ticks() {
         }
     });
     assert_eq!(over, [Component::TelEncode]);
+}
+
+#[test]
+fn gamma_is_the_heaviest_run_of_k_ticks() {
+    let mut w = Windows::ZERO;
+    let bodies = (0..50u32).map(|t| if t == 30 { 2000 } else { 100 + t });
+    let all: heapless::Vec<u32, 50> = bodies.clone().collect();
+    for b in bodies {
+        w.add(b);
+    }
+    for (j, k) in WINDOW_TICKS.into_iter().enumerate() {
+        let best = all.windows(k).map(|s| s.iter().sum::<u32>()).max();
+        assert_eq!(Some(w.gamma[j]), best, "k = {k}");
+    }
 }

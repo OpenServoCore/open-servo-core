@@ -5,9 +5,10 @@
 //! the DES charges these values as its costs. While that test is green, the
 //! DES runs no component cheaper than silicon.
 //!
-//! Each value is M (measured by the budget probe) or E (estimated, from the
-//! named instrument plus the stated headroom). Kernel values are whole tick
-//! bodies, entry stamp to exit stamp, by motion regime and medium phase; bus
+//! Each value is M (measured by the budget probe, the larger of two runs plus
+//! 3%, at least 1 us; means plus 5%) or E (estimated, from the named
+//! instrument plus the stated headroom). Kernel values are whole tick
+//! bodies, entry stamp to exit stamp, by drive arm and medium phase; bus
 //! values exclude the kernel time that preempted them. Interrupt entry and
 //! exit fall outside every stamp: [`ENTRY_EXIT`] carries them for the DES.
 
@@ -22,79 +23,115 @@ use crate::kernel::DECIM_MED;
 pub const CLOCK_HZ: u32 = 48_000_000;
 pub const TICKS_PER_US: u32 = CLOCK_HZ / 1_000_000;
 
+/// Kernel tick rate, one ADC scan per PWM period (the chip asserts it).
+pub const TICK_HZ: u32 = 20_000;
+pub const TICK_PERIOD: u32 = CLOCK_HZ / TICK_HZ;
+
 /// Medium phases per period; index = `kernel::phase` (8 and 9 run the fast
 /// path alone).
 pub const PHASES: usize = DECIM_MED as usize;
 
-/// What the motor does while the kernel runs: the closed current loop and the
-/// trajectory are the regime-dependent work.
+/// The drive arm a tick ran: the closed current loop is the work that sets
+/// the budget. Off, Brake, Coast and OpenLoop share the open rows. A tick
+/// counts as Closed when its arm or the previous tick's was: the first
+/// parked tick measures the last driven window.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Regime {
-    /// Torque off.
-    Quiet,
-    /// Position mode holding a goal.
-    Hold,
-    /// Position mode stepping or tracking.
-    Moving,
+    Open,
+    Closed,
 }
 
 impl Regime {
-    pub const ALL: [Regime; 3] = [Regime::Quiet, Regime::Hold, Regime::Moving];
+    pub const ALL: [Regime; 2] = [Regime::Open, Regime::Closed];
 }
 
-/// Kernel tick body with the TEL burst idle and no configuration rebuild,
-/// per regime and phase: the longest a window may show.
+/// Kernel tick body with no event on it, per regime and phase: the longest
+/// a window may show.
 ///
-/// Quiet and Hold, E: [`KERNEL_MEAN`] plus 3 us; SLOW: the v1 SLOW bin max
-/// 27.3 us over 1265 SLOW runs plus 1 us. Moving, E: [`KERNEL_MEAN`] plus
-/// 4 us; OBSERVER and SLOW, the two phases of the longest bodies on record,
-/// at the moving maximum 48.5 us (kernel-above-bus probe, 2.59M entries,
-/// chainload moving).
-pub const KERNEL: [[u32; PHASES]; 3] = [
-    [1125, 1394, 876, 1231, 912, 1177, 1358, 1087, 846, 856],
-    [1167, 1394, 1383, 1240, 936, 1216, 1358, 1087, 846, 856],
-    [2028, 2328, 2260, 2094, 2116, 2084, 2328, 1940, 1697, 1706],
+/// Open, M: the quiet windows and the parked holds' Brake ticks (drive-arm
+/// tagged), per phase the larger. Closed, M: the stepping windows. SLOW,
+/// E: off its due period the phase runs the fast path and a counter, taken
+/// at phase 9's row; the due body is [`SLOW_DUE`].
+pub const KERNEL: [[u32; PHASES]; 2] = [
+    [945, 1332, 1512, 1155, 762, 1182, 807, 1038, 684, 807],
+    [1885, 2247, 2176, 2062, 2083, 2058, 1688, 1960, 1596, 1688],
 ];
 
 /// The same bodies' mean over a window: the most it may show.
 ///
-/// Quiet and Hold, E: cpu-probe v2 LOW-exclusive means (three 20 s windows,
-/// kernel below the bus). Moving, E: v2 means under the chainload sine plus
-/// 4 us, the step soak's heavier kernel (its fit: 16.7-18.3% of rows dropped
-/// and 4.9-5.9% of ticks over against the bench's 19.6% and 5.3-5.5%).
-pub const KERNEL_MEAN: [[u32; PHASES]; 3] = [
-    [981, 1250, 732, 1087, 768, 1033, 763, 943, 702, 712],
-    [1023, 1250, 1239, 1096, 792, 1072, 763, 943, 702, 712],
-    [1836, 2081, 2068, 1902, 1924, 1892, 1567, 1748, 1505, 1514],
+/// Open, M: the hold windows (the larger per phase than quiet), CONTROL
+/// capped at its maximum. Closed, E: the stepping windows' means x 1.10,
+/// the Closed ticks' mean over the window's (1628.9 / 1486.7, drive-arm
+/// tagged stepping windows).
+pub const KERNEL_MEAN: [[u32; PHASES]; 2] = [
+    [945, 1222, 1195, 1044, 753, 1049, 723, 919, 661, 674],
+    [1811, 2182, 2115, 1908, 1986, 1911, 1557, 1771, 1482, 1498],
 ];
 
 /// A window's mean is judged only over this many bodies.
 pub const MEAN_MIN_BODIES: u32 = 100;
 
 /// The CONTROL tick that rebuilds the kernel's configuration snapshot, on
-/// top of [`KERNEL`]. E: the boot tick's CONTROL max 37.5 us against the
-/// 19.4 us CONTROL mean (v1 bins), plus 2 us.
-pub const REFRESH: u32 = 960;
+/// top of [`KERNEL`]; once per period at most, after a configuration
+/// write. M: the refresh tick at rest, 1679, over the quiet CONTROL mean
+/// 849.
+pub const REFRESH: u32 = 855;
 
 /// Every tick of a TEL burst (sample build and encode), on top of [`KERNEL`],
-/// per regime. Quiet and Hold, E: v2 TEL-active non-banking ticks 30.6 us
-/// less the 1.9 us staging poll and the 17.9 us quiet mean, plus 1.2 us.
-/// Moving, E: about 190 instructions; the closed loop already holds most of
-/// the sample.
-pub const TEL_ENCODE: [u32; 3] = [576, 576, 240];
+/// per regime. Open, E: TEL-active non-banking ticks 30.6 us less the 1.9
+/// us staging poll and the 17.9 us quiet mean, plus 1.2 us. Closed, M: the
+/// TEL ticks' mean over the plain ticks' while stepping, 672-730.
+pub const TEL_ENCODE: [u32; 2] = [576, 760];
 
-/// Its mean over a window: the TEL ticks' mean less the plain ticks'. E:
-/// Quiet and Hold the derivation above without headroom; Moving 4 us.
-pub const TEL_ENCODE_MEAN: [u32; 3] = [518, 518, 192];
+/// Its mean over a window: the TEL ticks' mean less the plain ticks'. Open,
+/// M: 511-512. Closed: as [`TEL_ENCODE`].
+pub const TEL_ENCODE_MEAN: [u32; 2] = [538, 760];
 
 /// The tick that banks a TEL batch, on top of [`TEL_ENCODE`]. E: v2 banking
 /// ticks 32.7 us against 30.6 us non-banking, plus 2 us.
 pub const TEL_BANK: u32 = 192;
 
-/// Interrupt entry and exit around a stamped body: hardware stacking, vector
-/// fetch, trampoline. E: 3-6 us of unattributed time per frame of about five
-/// bus entries (v1 probe, polling ladder against quiet).
-pub const ENTRY_EXIT: u32 = 48;
+/// The SLOW block on its due tick (phase SLOW, every DECIM_SLOW periods),
+/// on top of the phase's row. M: the stepping windows' SLOW maximum 2268
+/// over the phase's mean 1347.
+pub const SLOW_DUE: u32 = 949;
+
+/// The due tick that closes a thermal reference window (two reciprocal
+/// divides, the install, the cold check) in place of [`SLOW_DUE`]: at most
+/// once per seat, 190 gated SLOW runs after it opens. E: the close path
+/// priced 1700-1900 over the fast path; no loaded seat has run on the
+/// bench.
+pub const SLOW_CLOSE: u32 = 1900;
+
+/// The staged close's halves at phases 8 and 9 of the due period, once the
+/// close moves off the SLOW tick. E: the install and the cold check priced
+/// at about 400 and 250, plus 10%.
+pub const THERM_INSTALL: u32 = 440;
+pub const THERM_COLD: u32 = 275;
+
+/// The tick-load counters' close every [`HEALTH_CLOSE_TICKS`] ticks, and
+/// the catch-up it adds after a lost tick. E: priced on the executed path.
+pub const HEALTH_CLOSE: u32 = 93;
+pub const HEALTH_CLOSE_TICKS: u32 = 16;
+pub const CATCH_UP: u32 = 111;
+
+/// Interrupt entry and exit around a stamped body: trampoline and prologue
+/// to the entry stamp, epilogue and exit after the exit stamp. M: 37 + 43
+/// (interrupt timing images, two runs, min == max).
+pub const ENTRY_EXIT: u32 = 80;
+
+/// A hold runs Closed this long after its goal moves, then parks. M: the
+/// longest Closed episode after a 600-count step, 2899 / 3396 ticks
+/// (drive-arm tagged hold windows).
+pub const HOLD_APPROACH_TICKS: u32 = 3400;
+
+/// The window lengths gamma(k) is kept for, in kernel ticks.
+pub const WINDOW_TICKS: [usize; 4] = [2, 4, 10, 20];
+
+/// gamma(k) on the bench by regime: the most the bodies of k consecutive
+/// ticks took, 0 where no fill has measured it. k = 10, M lower bound: the
+/// aligned medium periods' maximum, quiet and stepping.
+pub const WINDOW_LOAD: [[u32; WINDOW_TICKS.len()]; 2] = [[0, 0, 8667, 0], [0, 0, 17640, 0]];
 
 /// Bus vector bodies.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
