@@ -404,7 +404,7 @@ fn write_u16(addr: u16, v: u16) -> Vec<u8> {
     instruction(ID, Opcode::Write, 0, &[a[0], a[1], d[0], d[1]])
 }
 
-/// The six raw fields' soak mask: 9 B packed rows, a 155 B frame per
+/// The six raw fields' soak mask: 9 B packed rows, a 161 B frame per
 /// 800 us batch at 3M.
 const SIX_FIELDS: u16 = 0x1cd;
 /// The longest row 3M admits: the six raw fields and current, 11 B.

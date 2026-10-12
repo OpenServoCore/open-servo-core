@@ -17,8 +17,8 @@ use core::cell::SyncUnsafeCell;
 use core::sync::atomic::{Ordering, compiler_fence};
 
 use osc_servo_core::tel::{
-    RowPlan, STREAM_HDR, STREAM_PAYLOAD_MAX, STREAM_SAMPLES_MAX, TelSample, TelStream,
-    encode_stream_hdr,
+    RowPlan, STREAM_HDR, STREAM_PAYLOAD_MAX, STREAM_SAMPLES_MAX, STREAM_TRAILER, TelSample,
+    TelStream, encode_stream_head, encode_stream_trailer,
 };
 
 use crate::traits::bus::StagerWake;
@@ -28,7 +28,7 @@ use crate::traits::bus::StagerWake;
 #[derive(Copy, Clone)]
 pub(crate) struct BufMeta {
     pub(crate) len: u16,
-    /// OR of the batch's fault bits -> the frame's INST ALERT.
+    /// The first row's fault bit -> the frame's INST ALERT.
     pub(crate) alert: bool,
     pub(crate) last: bool,
 }
@@ -117,6 +117,7 @@ impl TelChannel {
                 n: 0,
                 valid: 0,
                 alert: false,
+                lead_alert: false,
             },
             TelDrain {
                 ch: self,
@@ -142,8 +143,9 @@ pub struct TelFeed<W: StagerWake> {
     idx: usize,
     at: usize,
     n: u32,
-    valid: u16,
+    valid: u32,
     alert: bool,
+    lead_alert: bool,
 }
 
 impl<W: StagerWake> TelFeed<W> {
@@ -223,13 +225,19 @@ impl<W: StagerWake> TelStream for TelFeed<W> {
                 d.write_volatile(d.read_volatile().wrapping_add(1));
                 return;
             }
+            let buf = &mut *ch.bufs[idx].get();
+            if self.n == 0 {
+                let last = self.remaining as usize <= STREAM_SAMPLES_MAX;
+                encode_stream_head(self.seq, last, sample.tick, buf);
+                self.lead_alert = sample.fault;
+            }
             let at = self.at;
             self.at = at + self.plan.len();
-            self.valid |= (sample.window_valid as u16) << self.n;
+            self.valid |= (sample.window_valid as u32) << self.n;
             self.alert |= sample.fault;
             self.n += 1;
             self.remaining -= 1;
-            if let Some(row) = (*ch.bufs[idx].get()).get_mut(at..) {
+            if let Some(row) = buf.get_mut(at..) {
                 self.plan.encode(sample, row);
             }
         }
@@ -240,7 +248,7 @@ impl<W: StagerWake> TelStream for TelFeed<W> {
 }
 
 impl<W: StagerWake> TelFeed<W> {
-    /// Close the batch in buffer `idx`: header, metadata, its ready tag,
+    /// Close the batch in buffer `idx`: trailer, metadata, its ready tag,
     /// then the stager's wake.
     #[inline(never)]
     fn bank(&mut self, idx: usize) {
@@ -249,10 +257,12 @@ impl<W: StagerWake> TelFeed<W> {
         // SAFETY: single-writer discipline (type doc); the tag store is
         // fenced behind the payload and metadata writes.
         unsafe {
-            encode_stream_hdr(self.seq, last, self.valid, &mut *ch.bufs[idx].get());
+            if let Some(out) = (*ch.bufs[idx].get()).get_mut(self.at..) {
+                encode_stream_trailer(self.valid, self.alert, out);
+            }
             ch.meta[idx].get().write_volatile(BufMeta {
-                len: self.at as u16,
-                alert: self.alert,
+                len: (self.at + STREAM_TRAILER) as u16,
+                alert: self.lead_alert,
                 last,
             });
             // A re-arm that landed mid-batch abandons the batch: its
@@ -389,6 +399,7 @@ mod tests {
         TelSample {
             pos: 0x4000 + i,
             current: -(i as i16),
+            tick: 0xFFF0u16.wrapping_add(i),
             window_valid: i.is_multiple_of(2),
             ..Default::default()
         }
@@ -433,8 +444,45 @@ mod tests {
         assert_eq!(drain.payload(1)[1], FLAG_LAST);
     }
 
+    /// The head is row 0's: LAST is known once the burst's remaining rows
+    /// fit the batch, the stamp and INST ALERT are row 0's own. The trailer
+    /// lands at the bank with the batch's fault OR.
     #[test]
-    fn stalled_consumer_drops_and_counts() {
+    fn head_lands_at_row_0_and_trailer_at_the_bank() {
+        use osc_protocol::tel::StreamFrame;
+        let (mut feed, mut drain) = channel();
+        let epoch = arm(&mut drain, MASK_SIX, 32);
+        let mut s: std::vec::Vec<TelSample> = (0..32).map(sample).collect();
+        s[5].fault = true;
+        s[16].fault = true;
+        tick(&mut feed, &s[0]);
+        assert_eq!(drain.payload(0)[..STREAM_HDR], [0, 0, 0xF0, 0xFF]);
+        for x in &s[1..17] {
+            tick(&mut feed, x);
+        }
+        assert_eq!(drain.payload(1)[..STREAM_HDR], [1, FLAG_LAST, 0x00, 0x00]);
+
+        let m0 = drain.ready(0, epoch).expect("first batch ready");
+        assert!(!m0.alert, "row 0 ran clean");
+        let f0 = StreamFrame::parse(MASK_SIX, &drain.payload(0)[..m0.len as usize]);
+        let f0 = f0.expect("a frame");
+        assert_eq!(
+            (f0.len(), f0.tick, f0.last, f0.alert),
+            (16, 0xFFF0, false, true)
+        );
+
+        for x in &s[17..] {
+            tick(&mut feed, x);
+        }
+        let m1 = drain.ready(1, epoch).expect("last batch ready");
+        assert!(m1.alert && m1.last, "row 0 faulted");
+        let f1 = StreamFrame::parse(MASK_SIX, &drain.payload(1)[..m1.len as usize]);
+        let f1 = f1.expect("a frame");
+        assert_eq!((f1.len(), f1.tick, f1.valid), (16, 0x0000, 0x5555));
+    }
+
+    #[test]
+    fn stalled_consumer_drops_and_counts_and_the_stamp_jumps() {
         let ch = leaked();
         let (mut feed, mut drain) = ch.split(FakeStager::default());
         let epoch = arm(&mut drain, MASK_SIX, 200);
@@ -452,6 +500,10 @@ mod tests {
         assert_eq!(ch.drops(), 5);
         let m = drain.ready(0, epoch).expect("refilled batch");
         assert!(!m.last);
+        // the dropped rows show as a stamp jump, not as a seq hole
+        let p = drain.payload(0);
+        assert_eq!(p[0], 2);
+        assert_eq!(p[2..4], sample(100).tick.to_le_bytes());
     }
 
     /// Arms that land between two ticks alternate plan slots: the pickup

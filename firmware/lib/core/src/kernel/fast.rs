@@ -294,6 +294,12 @@ impl Fast {
                 vbus_raw: frame.vbus_raw,
                 ntc_raw: frame.ntc_raw,
                 pos_lin_q4,
+                // SAFETY: table storage is 'static; the tick ISR bumps
+                // `sample_tick` before it runs this body, its only writer.
+                tick: unsafe {
+                    (&raw const (*shared.table.region_ptr()).telemetry.estimates.sample_tick)
+                        .read_volatile() as u16
+                },
                 window_valid: i_meas.is_some(),
                 fault: faults.mask() != 0,
             };

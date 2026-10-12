@@ -934,6 +934,7 @@ impl Sim {
         if let Some((from, to)) = t.fault {
             s.fault = t.n >= from && t.n < to;
         }
+        s.tick = t.n as u16;
         t.n += 1;
         self.servos[j].tel_tick(&s);
         true

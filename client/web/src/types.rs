@@ -307,6 +307,38 @@ pub struct TelBurst {
     pub trailing: bool,
 }
 
+/// One TEL stream frame payload split (protocol sec 5.6): the head, the
+/// packed rows (`telRowBytes(mask)` each, the count from `LEN`), and the
+/// trailer.
+#[derive(Debug, Clone, Serialize, Tsify)]
+#[serde(rename_all = "camelCase")]
+pub struct TelStreamFrame {
+    pub seq: u8,
+    pub last: bool,
+    /// The first row's `sample_tick`, low 16 bits: a dropped row or a lost
+    /// frame shows as a jump.
+    pub tick: u16,
+    /// Bit i: row i measured a fresh drive window.
+    pub valid: u32,
+    /// Some row of the frame saw a fault.
+    pub alert: bool,
+    #[tsify(type = "Uint8Array")]
+    pub rows: serde_bytes::ByteBuf,
+}
+
+impl From<osc_protocol::tel::StreamFrame<'_>> for TelStreamFrame {
+    fn from(f: osc_protocol::tel::StreamFrame<'_>) -> Self {
+        TelStreamFrame {
+            seq: f.seq,
+            last: f.last,
+            tick: f.tick,
+            valid: f.valid,
+            alert: f.alert,
+            rows: serde_bytes::ByteBuf::from(f.rows().flatten().copied().collect::<Vec<u8>>()),
+        }
+    }
+}
+
 /// A recorded fast-tick track for the simulated adapter: one column per
 /// `TelSample` field, all the same length, in device counts as captured
 /// (`windowValid` is 0/1). Plain `number[]` columns are accepted too.

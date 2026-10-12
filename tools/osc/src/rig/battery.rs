@@ -244,6 +244,7 @@ mod tests {
                 vbus_raw,
                 ntc_raw: 0,
                 pos_lin_q4: 0,
+                tick: 0,
                 window_valid: false,
                 fault: false,
             }],

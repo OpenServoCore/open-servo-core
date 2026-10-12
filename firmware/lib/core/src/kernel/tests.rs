@@ -2478,6 +2478,30 @@ impl crate::tel::TelStream for RecTel {
     }
 }
 
+/// The frame's stamp: each sample carries the `sample_tick` the tick ISR
+/// published ahead of the kernel body, low half.
+#[test]
+fn tel_sample_carries_the_sample_tick() {
+    let sh = Shared::new();
+    seed(&sh);
+    let mut k = Kernel::with_tel(
+        FakeIo {
+            sensors: FakeSensors,
+            motor: FakeMotor { last: None },
+        },
+        RecTel::default(),
+        TIMING,
+    );
+    k.tel.mask = crate::tel::BIT_POS;
+    for t in [0x0001_FFFE, 0x0001_FFFF, 0x0002_0000] {
+        sh.table
+            .with_mut(|tb| tb.telemetry.estimates.sample_tick = t);
+        k.on_tick(frame(2000, BIAS), &sh);
+    }
+    let ticks: heapless::Vec<u16, 4> = k.tel.samples.iter().map(|s| s.tick).collect();
+    assert_eq!(ticks, [0xFFFE, 0xFFFF, 0x0000]);
+}
+
 #[test]
 fn tel_stream_gated_by_sink_active() {
     let sh = Shared::new();

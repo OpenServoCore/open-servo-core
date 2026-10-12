@@ -1287,16 +1287,27 @@ fn tel_stream_hold_commit_broadcast_carrier() {
     assert_eq!(reply.statuses, 2);
 }
 
+/// INST ALERT is the first row's fault; the trailer carries the batch's OR.
 #[test]
-fn tel_stream_alert_marks_the_faulted_batch() {
+fn tel_stream_alert_is_the_first_row_fault_and_the_tail_the_batch_or() {
     let mut c = tel_fleet();
-    c.pipe_mut().sim_mut().set_tel_fault_ticks(0, 16, 32);
+    c.pipe_mut().sim_mut().set_tel_fault_ticks(0, 20, 36);
     write_mask(&mut c);
     let reply = arm_tel(&mut c, 48);
     assert_eq!(reply.outcome, Outcome::Complete);
     assert!(!reply.ack.expect("ack").alert);
     let alerts: Vec<bool> = reply.frames.iter().map(|f| f.alert).collect();
-    assert_eq!(alerts, [false, true, false], "ALERT on the faulted batch");
+    assert_eq!(alerts, [false, false, true], "ALERT where row 0 faulted");
+    let tails: Vec<bool> = reply
+        .frames
+        .iter()
+        .map(|f| {
+            osc_protocol::tel::StreamFrame::parse(TEL_LADDER_MASK, &f.payload)
+                .expect("a frame")
+                .alert
+        })
+        .collect();
+    assert_eq!(tails, [false, true, true], "tail where any row faulted");
 }
 
 #[test]

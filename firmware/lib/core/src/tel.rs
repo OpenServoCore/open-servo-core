@@ -7,9 +7,14 @@
 //!
 //!   [0]    stream_seq  u8, increments per frame, wraps
 //!   [1]    flags       bit 0 = LAST frame of the burst; rest reserved 0
-//!   [2..4] valid       u16 bitmap, bit i = sample i window_valid
+//!   [2..4] tick        u16, row 0's `sample_tick`, low half
 //!   [4..]  rows        the `tel_mask`-selected fields per row, packed per
-//!                      `osc_protocol::tel::Layout`
+//!                      `osc_protocol::tel::Layout`; the count is in LEN
+//!   then   valid       u32 bitmap, bit i = row i window_valid
+//!          tail        u8, bit 0 = some row's fault; then a reserved 0
+//!
+//! Everything a row-0 head holds is known when row 0 lands; what only the
+//! batch end knows rides behind the rows.
 
 use core::mem::offset_of;
 
@@ -20,7 +25,7 @@ pub use osc_protocol::tel::{
     MASK_ALL, WIDE, row_bytes,
 };
 use osc_protocol::tel::{NARROW_BITS, NARROW_MASK, PAIR_BYTES, WORD_BYTES};
-use osc_protocol::wire::{self, BaudRate};
+use osc_protocol::wire::{self, BaudRate, STREAM_TAIL_ALERT};
 
 /// The TEL `duty` a logical Q15 duty drives at `pwm_arr`: the kernel's
 /// `window::drive_ticks` width, negative in reverse. Hosts quantize a goal
@@ -38,6 +43,7 @@ pub const FLAG_LAST: u8 = 1 << 0;
 pub const STREAM_SAMPLES_MAX: usize = wire::STREAM_SAMPLES_MAX;
 
 pub const STREAM_HDR: usize = wire::STREAM_HDR;
+pub const STREAM_TRAILER: usize = wire::STREAM_TRAILER;
 
 /// The longest row the encoder and stager keep up with, the kernel parked
 /// and at budget (DES `tel_widest_row_keeps_up_at_rest`): a 12 B row
@@ -57,7 +63,8 @@ pub const fn row_bytes_max(baud: BaudRate) -> usize {
 /// The longest row any rate admits: the buffers' row.
 pub const ROW_BYTES_MAX: usize = row_bytes_max(wire::STREAM_BUDGET_BAUD);
 
-pub const STREAM_PAYLOAD_MAX: usize = STREAM_HDR + STREAM_SAMPLES_MAX * ROW_BYTES_MAX;
+pub const STREAM_PAYLOAD_MAX: usize =
+    STREAM_HDR + STREAM_SAMPLES_MAX * ROW_BYTES_MAX + STREAM_TRAILER;
 
 /// [`row_bytes_max`] by `BaudRate` index, as the identity block publishes it.
 pub const ROW_BYTES_PER_RATE: [u8; osc_protocol::table::TEL_ROW_RATES] = {
@@ -86,7 +93,8 @@ pub const fn admits(mask: u16, baud: BaudRate) -> bool {
 /// `vdiff`, `vbus` and `pos_lin_q4` (the linearized pot, Q4) are kernel
 /// conclusions, streamable to validate them against host re-derivations.
 /// `window_valid` (this tick's drive window met the current floor)
-/// travels in the frame's `valid` bitmap, not per sample.
+/// travels in the frame's `valid` bitmap, not per sample; `tick` is
+/// `sample_tick`'s low half, the frame's stamp when the row is its first.
 ///
 /// The twelve words sit in `tel_mask` bit order at `2 * bit` (asserted
 /// below): the encoder reads them by offset.
@@ -105,9 +113,10 @@ pub struct TelSample {
     pub vbus_raw: u16,
     pub ntc_raw: u16,
     pub pos_lin_q4: u16,
+    pub tick: u16,
     pub window_valid: bool,
-    /// Kernel fault mask nonzero this tick. Travels in the frame's INST
-    /// ALERT bit (the fault contract), never in the payload.
+    /// Kernel fault mask nonzero this tick. The first row's is the frame's
+    /// INST ALERT (the fault contract), the batch's OR the trailer's tail.
     pub fault: bool,
 }
 
@@ -256,18 +265,28 @@ impl RowPlan {
     }
 }
 
-/// Serialize the 4-byte stream header. Order-free vs the rows: it never
-/// touches bytes past [`STREAM_HDR`], so an incremental encoder writes it
-/// last, once the batch's `valid` bitmap is known.
-pub fn encode_stream_hdr(
+/// Serialize the stream head: everything row 0 knows. Order-free vs the
+/// rows: it never touches bytes past [`STREAM_HDR`].
+pub fn encode_stream_head(
     stream_seq: u8,
     last: bool,
-    valid: u16,
+    tick: u16,
     buf: &mut [u8; STREAM_PAYLOAD_MAX],
 ) {
     buf[0] = stream_seq;
     buf[1] = if last { FLAG_LAST } else { 0 };
-    buf[2..4].copy_from_slice(&valid.to_le_bytes());
+    buf[2..4].copy_from_slice(&tick.to_le_bytes());
+}
+
+/// Serialize the stream trailer at the front of `out`, which follows the
+/// last row; an `out` shorter than [`STREAM_TRAILER`] stays untouched.
+#[inline(always)]
+pub fn encode_stream_trailer(valid: u32, alert: bool, out: &mut [u8]) {
+    if let Some(t) = out.first_chunk_mut::<STREAM_TRAILER>() {
+        let [v0, v1, v2, v3] = valid.to_le_bytes();
+        let tail = if alert { STREAM_TAIL_ALERT } else { 0 };
+        *t = [v0, v1, v2, v3, tail, 0];
+    }
 }
 
 /// Serialize one stream payload into `buf`, returning its length; 0 for a
@@ -283,17 +302,23 @@ pub fn encode_stream(
     let Some(plan) = RowPlan::new(mask) else {
         return 0;
     };
-    let mut valid: u16 = 0;
+    let mut valid: u32 = 0;
+    let mut alert = false;
     let mut n = STREAM_HDR;
     for (i, s) in samples.iter().take(STREAM_SAMPLES_MAX).enumerate() {
-        valid |= (s.window_valid as u16) << i;
+        valid |= (s.window_valid as u32) << i;
+        alert |= s.fault;
         if let Some(row) = buf.get_mut(n..) {
             plan.encode(s, row);
         }
         n += plan.len();
     }
-    encode_stream_hdr(stream_seq, last, valid, buf);
-    n
+    let tick = samples.first().map_or(0, |s| s.tick);
+    encode_stream_head(stream_seq, last, tick, buf);
+    if let Some(out) = buf.get_mut(n..) {
+        encode_stream_trailer(valid, alert, out);
+    }
+    n + STREAM_TRAILER
 }
 
 #[cfg(test)]
@@ -321,9 +346,8 @@ mod tests {
             vbus_raw: 0x0C00 + i as u16,
             ntc_raw: 0x0D00 + i as u16,
             pos_lin_q4: 0x0E00 + i as u16,
+            tick: 0x1230 + i as u16,
             window_valid: i.is_multiple_of(2),
-            // varies across samples; the goldens below pin that it never
-            // reaches the payload
             fault: i.is_multiple_of(3),
         }
     }
@@ -335,12 +359,12 @@ mod tests {
     #[test]
     fn buffers_hold_the_widest_admitted_row() {
         assert_eq!(ROW_BYTES_MAX, 11);
-        assert_eq!(STREAM_PAYLOAD_MAX, STREAM_HDR + 16 * 11);
+        assert_eq!(STREAM_PAYLOAD_MAX, STREAM_HDR + 16 * 11 + STREAM_TRAILER);
         assert!(STREAM_PAYLOAD_MAX <= wire::MAX_PAYLOAD as usize);
     }
 
     /// Admission by row bytes at the current rate: the six raw fields (9 B)
-    /// at 3 M only; 2 M carries 8 B rows, 1 M 4 B, 0.5 M none; 3 M stops at
+    /// at 3 M only; 2 M carries 8 B rows, 1 M 3 B, 0.5 M none; 3 M stops at
     /// the encoder's 11 B short of the wire's 13.
     #[test]
     fn admission_is_by_row_bytes_at_the_rate() {
@@ -352,13 +376,14 @@ mod tests {
                 BaudRate::B3000000
             ]
             .map(row_bytes_max),
-            [1, 4, 8, 11]
+            [0, 3, 8, 11]
         );
         assert!(admits(MASK_RAW, BaudRate::B3000000));
         assert!(!admits(MASK_RAW, BaudRate::B2000000));
         assert!(admits(MASK_LADDER, BaudRate::B2000000));
         assert!(!admits(MASK_LADDER, BaudRate::B1000000));
-        assert!(admits(BIT_POS | BIT_CURRENT, BaudRate::B1000000));
+        assert!(admits(BIT_POS | BIT_CURRENT_RAW, BaudRate::B1000000));
+        assert!(!admits(BIT_POS | BIT_CURRENT, BaudRate::B1000000));
         assert!(!admits(BIT_POS, BaudRate::B500000));
         assert!(!admits(0, BaudRate::B3000000));
         assert!(!admits(1 << 12 | BIT_POS, BaudRate::B3000000));
@@ -381,6 +406,22 @@ mod tests {
         assert!(!stream_last(inst, buf[..n].into()));
     }
 
+    /// The protocol's reader takes back what the encoder wrote: the row
+    /// count from the length, the stamp, the bitmap and the fault OR.
+    #[test]
+    fn encoded_frames_parse_through_the_protocol_reader() {
+        use osc_protocol::tel::StreamFrame;
+        let samples: heapless::Vec<TelSample, 16> = (1..6).map(sample).collect();
+        let mut buf = [0u8; STREAM_PAYLOAD_MAX];
+        let n = encode_stream(MASK_RAW, 9, true, &samples, &mut buf);
+        let f = StreamFrame::parse(MASK_RAW, &buf[..n]).expect("a frame");
+        assert_eq!((f.seq, f.last, f.tick, f.len()), (9, true, 0x1231, 5));
+        assert_eq!((f.valid, f.alert), (0b01010, true));
+        let n = encode_stream(MASK_RAW, 9, false, &samples[..2], &mut buf);
+        let f = StreamFrame::parse(MASK_RAW, &buf[..n]).expect("a frame");
+        assert_eq!((f.last, f.len(), f.alert), (false, 2, false));
+    }
+
     #[test]
     fn plans_refuse_reserved_bits() {
         assert!(RowPlan::new(1 << 12).is_none());
@@ -394,9 +435,9 @@ mod tests {
         let samples: heapless::Vec<TelSample, 16> = (0..16).map(sample).collect();
         let mut buf = [0u8; STREAM_PAYLOAD_MAX];
         let n = encode_stream(MASK_RAW, 0x42, false, &samples, &mut buf);
-        assert_eq!(n, STREAM_HDR + 16 * 9);
-        // header: seq, flags (not LAST), valid = even sample indices
-        assert_eq!(buf[..4], [0x42, 0x00, 0x55, 0x55]);
+        assert_eq!(n, STREAM_HDR + 16 * 9 + STREAM_TRAILER);
+        // head: seq, flags (not LAST), row 0's tick
+        assert_eq!(buf[..4], [0x42, 0x00, 0x30, 0x12]);
         // row 0: (pos 0x100, trough 0xB00) (duty -1200 = 0xB50, raw 0x100)
         // (va 0xA00, vb 0xB00), each pair a | b << 12
         assert_eq!(
@@ -408,6 +449,11 @@ mod tests {
             buf[139..148],
             [0x0F, 0xF1, 0xB0, 0x2C, 0xF1, 0x10, 0x0F, 0xFA, 0xB0]
         );
+        // trailer: valid = even rows, tail ALERT (rows 0, 3, ... faulted)
+        assert_eq!(
+            buf[148..154],
+            [0x55, 0x55, 0x00, 0x00, STREAM_TAIL_ALERT, 0]
+        );
     }
 
     #[test]
@@ -415,10 +461,12 @@ mod tests {
         // ladder: current, vdiff wide; pos, duty pair
         let mut buf = [0u8; STREAM_PAYLOAD_MAX];
         let n = encode_stream(MASK_LADDER, 7, false, &[sample(1)], &mut buf);
-        assert_eq!(n, STREAM_HDR + 7);
-        assert_eq!(buf[..4], [7, 0, 0x00, 0x00]);
+        assert_eq!(n, STREAM_HDR + 7 + STREAM_TRAILER);
+        assert_eq!(buf[..4], [7, 0, 0x31, 0x12]);
         // current -2, vdiff -301, then pos 0x101 | duty -1100 (0xBB4) << 12
         assert_eq!(buf[4..11], [0xFE, 0xFF, 0xD3, 0xFE, 0x01, 0x41, 0xBB]);
+        // an odd row: not valid, no fault
+        assert_eq!(buf[11..17], [0; 6]);
     }
 
     #[test]
@@ -426,10 +474,11 @@ mod tests {
         let samples = [sample(0), sample(1), sample(2)];
         let mut buf = [0xEEu8; STREAM_PAYLOAD_MAX];
         let n = encode_stream(BIT_POS, 0xFF, true, &samples, &mut buf);
-        assert_eq!(n, STREAM_HDR + 3 * 2);
-        assert_eq!(buf[..4], [0xFF, FLAG_LAST, 0x05, 0x00]);
+        assert_eq!(n, STREAM_HDR + 3 * 2 + STREAM_TRAILER);
+        assert_eq!(buf[..4], [0xFF, FLAG_LAST, 0x30, 0x12]);
         assert_eq!(buf[4..10], [0x00, 0x01, 0x01, 0x01, 0x02, 0x01]);
-        assert!(buf[10..].iter().all(|&b| b == 0xEE));
+        assert_eq!(buf[10..16], [0x05, 0, 0, 0, STREAM_TAIL_ALERT, 0]);
+        assert!(buf[16..].iter().all(|&b| b == 0xEE));
     }
 
     /// Every mask the buffers hold decodes back through the protocol's
