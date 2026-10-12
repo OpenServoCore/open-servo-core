@@ -104,8 +104,8 @@ pub struct TelemetrySensors {
     pub current: u16,
     #[ct_field(access = ro)]
     pub vcal: u16,
-    #[ct_field(access = ro)]
-    pub vcal_lpf: u16,
+    #[ct_field(skip)]
+    pub _rsvd_vcal: u16,
     #[ct_field(access = ro)]
     pub vmotor_a: u16,
     #[ct_field(access = ro)]

@@ -1005,13 +1005,6 @@
       "kind": "uint"
     },
     {
-      "name": "vcal_lpf",
-      "addr": 582,
-      "width": 2,
-      "access": "ro",
-      "kind": "uint"
-    },
-    {
       "name": "vmotor_a",
       "addr": 584,
       "width": 2,

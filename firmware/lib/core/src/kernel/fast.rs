@@ -11,7 +11,7 @@ use super::faults::{self, FaultLatch, OcDetector};
 use super::ident::IdentAgg;
 use super::limits::IBand;
 use crate::estimator::bias::Zero;
-use crate::estimator::{BemfObs, BiasTracker, VcalLpf, window};
+use crate::estimator::{BemfObs, BiasTracker, window};
 use crate::pos_lut;
 use crate::tel::{TelSample, TelStream};
 use crate::traits::{DecayMode, MotorCmd};
@@ -82,7 +82,6 @@ pub struct Fast {
     v_trough_min_ticks: u16,
     bemf_min_ticks: u16,
     i_settle_gain: window::SettleGain,
-    vcal_lpf: VcalLpf,
     /// Shunt zero-current offset in use; the medium step publishes it to
     /// `current_bias_counts`.
     bias: BiasTracker,
@@ -124,7 +123,6 @@ impl Fast {
             v_trough_min_ticks: timing.v_trough_min_ticks,
             bemf_min_ticks: timing.bemf_min_ticks,
             i_settle_gain: timing.i_settle_gain,
-            vcal_lpf: VcalLpf::new(),
             bias: BiasTracker::new(),
             oc: OcDetector::new(),
             bemf: BemfObs::new(),
@@ -187,10 +185,6 @@ impl Fast {
         self.bias.counts()
     }
 
-    pub fn vcal_lpf_counts(&self) -> u16 {
-        self.vcal_lpf.counts()
-    }
-
     /// One tick's measurement against the window the PREVIOUS tick's
     /// command drove: this frame's scan sampled the period that command
     /// drove, so terminal and sign attribution stay correct across sign
@@ -204,7 +198,6 @@ impl Fast {
         tel: &mut T,
         shared: &Shared,
     ) -> Measured {
-        self.vcal_lpf.update(frame.vcal);
         let ticks = window::drive_ticks(self.duty_q15, self.pwm_arr);
         let fwd = self.duty_q15 >= 0;
         let sel = window::select(
