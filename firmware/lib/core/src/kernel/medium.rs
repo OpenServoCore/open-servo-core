@@ -573,7 +573,6 @@ impl Medium {
             (&raw mut (*s).pos).write_volatile(frame.pos);
             (&raw mut (*s).current).write_volatile(frame.current);
             (&raw mut (*s).vcal).write_volatile(frame.vcal);
-            (&raw mut (*s).vcal_lpf).write_volatile(fast.vcal_lpf_counts());
             (&raw mut (*s).vmotor_a).write_volatile(frame.vmotor_a);
             (&raw mut (*s).vmotor_b).write_volatile(frame.vmotor_b);
             (&raw mut (*s).current_trough).write_volatile(frame.current_trough);
