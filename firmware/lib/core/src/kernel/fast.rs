@@ -255,9 +255,10 @@ impl Fast {
         // drove - duty_q15 still holds that command here; i/vdiff hold
         // last-valid through invalid windows (ident module doc).
         // the taps read physical va - vb; a reversed motor makes that the
-        // negative of the logical drive direction every consumer expects
-        let vdiff =
-            window::vdiff_from_frame(frame, sel).map(|v| if fc.drive_polarity { v } else { -v });
+        // negative of the logical drive direction every consumer expects.
+        // m is 0 or -1: (v ^ m) - m negates without a branch
+        let m = fc.drive_polarity as i32 - 1;
+        let vdiff = window::vdiff_from_frame(frame, sel).map(|v| (v ^ m) - m);
         if let Some(vdiff) = vdiff {
             // 12-bit taps: |vdiff| <= 4095
             self.vdiff_last = vdiff as i16;
@@ -299,22 +300,24 @@ impl Fast {
             tel.on_tick(&s);
         }
 
-        if cmd.ident_agg
-            && let Some(agg) = self
+        if cmd.ident_agg {
+            core::hint::cold_path();
+            if let Some(agg) = self
                 .ident
                 .sample(self.i_meas_last, self.vdiff_last, self.duty_q15)
-        {
-            let p = shared.table.region_ptr();
-            // SAFETY: sole-telemetry-writer contract (`Kernel` doc);
-            // volatile per-field stores at the ident window boundary.
-            unsafe {
-                let d = &raw mut (*p).telemetry.ident;
-                (&raw mut (*d).i_mean_counts).write_volatile(agg.i_mean_counts);
-                (&raw mut (*d).i_min_counts).write_volatile(agg.i_min_counts);
-                (&raw mut (*d).i_max_counts).write_volatile(agg.i_max_counts);
-                (&raw mut (*d).vdiff_mean).write_volatile(agg.vdiff_mean);
-                (&raw mut (*d).duty_mean_q15).write_volatile(agg.duty_mean_q15);
-                (&raw mut (*d).agg_seq).write_volatile(agg.agg_seq);
+            {
+                let p = shared.table.region_ptr();
+                // SAFETY: sole-telemetry-writer contract (`Kernel` doc);
+                // volatile per-field stores at the ident window boundary.
+                unsafe {
+                    let d = &raw mut (*p).telemetry.ident;
+                    (&raw mut (*d).i_mean_counts).write_volatile(agg.i_mean_counts);
+                    (&raw mut (*d).i_min_counts).write_volatile(agg.i_min_counts);
+                    (&raw mut (*d).i_max_counts).write_volatile(agg.i_max_counts);
+                    (&raw mut (*d).vdiff_mean).write_volatile(agg.vdiff_mean);
+                    (&raw mut (*d).duty_mean_q15).write_volatile(agg.duty_mean_q15);
+                    (&raw mut (*d).agg_seq).write_volatile(agg.agg_seq);
+                }
             }
         }
         Measured {
@@ -341,103 +344,107 @@ impl Fast {
             core::hint::cold_path();
             Drive::Off
         };
-        let out = match drive {
-            Drive::Off => {
+        // the current loop runs on the fall-through: the other kinds sit
+        // off the tick-budget path
+        let out = if let Drive::Closed { u_ff_vc } = drive {
+            if cmd.i_ref_cc == 0 && m.i_meas.is_none() && (cmd.band.hi == 0 || cmd.band.lo == 0) {
+                core::hint::cold_path();
+                // endstop-clamped ref with no window: the honest-zero
+                // feed below makes e = 0, freezing the PI at whatever
+                // sub-floor duty it unwound to - stalled at an endstop
+                // that grinds the gears forever (bench: 18% duty held
+                // into the rail). Brake shorts the winding, passively
+                // holding against whatever momentum remains; it must be
+                // commanded explicitly - chip-side Drive{0, Slow} maps to
+                // coast. Scoped to a collapsed band so a transient i_ref
+                // zero crossing in normal travel can never reset the loop
+                // mid-reversal.
+                self.cur.reset();
                 self.duty_q15 = 0;
-                MotorCmd::Disabled
-            }
-            // anti-hunt: park instead of dithering on friction; the frozen
-            // loop resumes bumplessly on exit. The winding short brakes a
-            // shaft that enters the band at speed (Ke x omega / R, zero at
-            // rest, nothing from the rail). On friction alone a fast arrival
-            // leaves the far edge, and the wake kicks it back through at the
-            // current limit: a limit cycle.
-            Drive::Brake => {
-                self.duty_q15 = 0;
+                self.decay = DecayMode::Slow;
                 MotorCmd::Brake
-            }
-            // ceilinged against the current band above the window floor, raw
-            // at or under it; NO vbus comp - identification wants
-            // unconfounded actuation
-            Drive::OpenLoop { goal_q15: goal } => {
-                // a start from zero duty is a reversal too: it restarts from
-                // the floor like the run edge does. So is a zero goal, which
-                // drives nothing: the held current restarts from 0 with it
-                if goal.signum() != (self.duty_q15 as i32).signum() {
-                    self.ol.reset(fc.ol_floor_q15);
-                    self.i_meas_last = 0;
-                }
-                let lim = if goal >= 0 { cmd.band.hi } else { cmd.band.lo };
-                let i_abs = match m.i_meas {
-                    Some(i) => i.unsigned_abs(),
-                    None => 0,
-                };
-                let mag = self.ol.step(
-                    goal.unsigned_abs() as u16,
-                    i_abs,
-                    lim.unsigned_abs(),
-                    fc.ol_floor_q15,
-                    cmd.ol_base_q15,
-                ) as i16;
-                let mut duty = if goal < 0 { -mag } else { mag };
-                // endstop: a collapsed band side forbids that sign of
-                // current, and duty of the same sign is what drives it - zero
-                // the outbound push, retreat passes (bench: an open-loop
-                // sweep crashed the horn into the rail)
-                let blocked = (cmd.band.hi == 0 && duty > 0) || (cmd.band.lo == 0 && duty < 0);
-                if blocked {
-                    duty = 0;
-                }
+            } else {
+                // An invalid window only happens below the sampling
+                // floor, where the duty is too small to push real
+                // current: 0 is the honest estimate THERE, and it lets
+                // the PI lift off zero duty - a strict freeze would
+                // deadlock (no duty -> no window -> e = 0 -> no duty). OC
+                // and the estimators keep the strict validity view.
+                let i_loop = Some(m.i_meas.unwrap_or(0));
+                let duty = self.cur.step(
+                    cmd.i_ref_cc,
+                    i_loop,
+                    u_ff_vc,
+                    &cmd.rail,
+                    cmd.vbus_recip_q15,
+                    &fc.current,
+                );
                 self.duty_q15 = duty;
-                // a zeroed push still coasts on its momentum into the
-                // physical stop, so the wall brakes whatever the flag says
-                if blocked || (duty == 0 && fc.ol_zero_brake) {
-                    // chip-side Drive{0, Slow} maps to coast; a winding short
-                    // must be commanded explicitly
-                    self.decay = DecayMode::Slow;
-                    MotorCmd::Brake
-                } else {
-                    self.drive_cmd(duty, fc.ol_decay, fc.drive_polarity)
-                }
+                // closed-loop decay is fixed Slow (spec: config enum
+                // exists for OpenLoop identification only)
+                self.drive_cmd(duty, DecayMode::Slow, fc.drive_polarity)
             }
-            Drive::Closed { u_ff_vc } => {
-                if cmd.i_ref_cc == 0 && m.i_meas.is_none() && (cmd.band.hi == 0 || cmd.band.lo == 0)
-                {
-                    core::hint::cold_path();
-                    // endstop-clamped ref with no window: the honest-zero
-                    // feed below makes e = 0, freezing the PI at whatever
-                    // sub-floor duty it unwound to - stalled at an endstop
-                    // that grinds the gears forever (bench: 18% duty held
-                    // into the rail). Brake shorts the winding, passively
-                    // holding against whatever momentum remains; it must be
-                    // commanded explicitly - chip-side Drive{0, Slow} maps to
-                    // coast. Scoped to a collapsed band so a transient i_ref
-                    // zero crossing in normal travel can never reset the loop
-                    // mid-reversal.
-                    self.cur.reset();
+        } else {
+            core::hint::cold_path();
+            match drive {
+                // anti-hunt: park instead of dithering on friction; the frozen
+                // loop resumes bumplessly on exit. The winding short brakes a
+                // shaft that enters the band at speed (Ke x omega / R, zero at
+                // rest, nothing from the rail). On friction alone a fast arrival
+                // leaves the far edge, and the wake kicks it back through at the
+                // current limit: a limit cycle.
+                Drive::Brake => {
                     self.duty_q15 = 0;
-                    self.decay = DecayMode::Slow;
                     MotorCmd::Brake
-                } else {
-                    // An invalid window only happens below the sampling
-                    // floor, where the duty is too small to push real
-                    // current: 0 is the honest estimate THERE, and it lets
-                    // the PI lift off zero duty - a strict freeze would
-                    // deadlock (no duty -> no window -> e = 0 -> no duty). OC
-                    // and the estimators keep the strict validity view.
-                    let i_loop = Some(m.i_meas.unwrap_or(0));
-                    let duty = self.cur.step(
-                        cmd.i_ref_cc,
-                        i_loop,
-                        u_ff_vc,
-                        &cmd.rail,
-                        cmd.vbus_recip_q15,
-                        &fc.current,
-                    );
+                }
+                // ceilinged against the current band above the window floor, raw
+                // at or under it; NO vbus comp - identification wants
+                // unconfounded actuation
+                Drive::OpenLoop { goal_q15: goal } => {
+                    // a start from zero duty is a reversal too: it restarts from
+                    // the floor like the run edge does. So is a zero goal, which
+                    // drives nothing: the held current restarts from 0 with it
+                    if goal.signum() != (self.duty_q15 as i32).signum() {
+                        self.ol.reset(fc.ol_floor_q15);
+                        self.i_meas_last = 0;
+                    }
+                    let lim = if goal >= 0 { cmd.band.hi } else { cmd.band.lo };
+                    let i_abs = match m.i_meas {
+                        Some(i) => i.unsigned_abs(),
+                        None => 0,
+                    };
+                    let mag = self.ol.step(
+                        goal.unsigned_abs() as u16,
+                        i_abs,
+                        lim.unsigned_abs(),
+                        fc.ol_floor_q15,
+                        cmd.ol_base_q15,
+                    ) as i16;
+                    let mut duty = if goal < 0 { -mag } else { mag };
+                    // endstop: a collapsed band side forbids that sign of
+                    // current, and duty of the same sign is what drives it - zero
+                    // the outbound push, retreat passes (bench: an open-loop
+                    // sweep crashed the horn into the rail)
+                    let blocked = (cmd.band.hi == 0 && duty > 0) || (cmd.band.lo == 0 && duty < 0);
+                    if blocked {
+                        duty = 0;
+                    }
                     self.duty_q15 = duty;
-                    // closed-loop decay is fixed Slow (spec: config enum
-                    // exists for OpenLoop identification only)
-                    self.drive_cmd(duty, DecayMode::Slow, fc.drive_polarity)
+                    // a zeroed push still coasts on its momentum into the
+                    // physical stop, so the wall brakes whatever the flag says
+                    if blocked || (duty == 0 && fc.ol_zero_brake) {
+                        // chip-side Drive{0, Slow} maps to coast; a winding short
+                        // must be commanded explicitly
+                        self.decay = DecayMode::Slow;
+                        MotorCmd::Brake
+                    } else {
+                        self.drive_cmd(duty, fc.ol_decay, fc.drive_polarity)
+                    }
+                }
+                // Off; Closed took the branch above
+                _ => {
+                    self.duty_q15 = 0;
+                    MotorCmd::Disabled
                 }
             }
         };
