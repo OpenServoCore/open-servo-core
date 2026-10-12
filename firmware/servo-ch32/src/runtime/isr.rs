@@ -18,24 +18,22 @@ static TICK_LOAD: SyncUnsafeCell<TickLoad> = SyncUnsafeCell::new(TickLoad::new()
 /// once during bringup, after the drivers and statics are installed.
 ///
 /// The motor kernel (DMA1_CH1 = 22) is alone at PFIC HIGH, so a scan TC is
-/// served within one interrupt entry of the longest critical section. The
-/// transport vectors (TIM2 for the break wake, USART1 for TC, SysTick for
-/// the framer deadlines, SW for the TEL stager) share PFIC LOW, the bus
-/// level, so all `&mut` access into the `ServoBus` composite serializes -
-/// dispatch runs inline on these vectors. SysTick and SW sit last within
-/// LOW: a pending wake or TC resolves its frames before a pending deadline
-/// or stage acts on them. DMA1_CH5 (RX ring) runs silent circular - no
-/// HT/TC IRQ - and CH3/CH4/CH6/CH7 raise none either.
+/// served within one interrupt entry of the longest critical section; it
+/// also drives the TX lane while a TEL burst streams, polled. The transport
+/// vectors (TIM2 for the break wake, USART1 for TC, SysTick for the framer
+/// deadlines) share PFIC LOW, the bus level, so all `&mut` access into the
+/// `ServoBus` composite serializes - dispatch runs inline on these vectors.
+/// SysTick sits last within LOW: a pending wake or TC resolves its frames
+/// before a pending deadline acts on them. DMA1_CH5 (RX ring) runs silent
+/// circular - no HT/TC IRQ - and CH3/CH4/CH6/CH7 raise none either.
 pub fn install_irqs() {
     pfic::set_priority(pfic::Interrupt::DMA1_CHANNEL1, pfic::Priority::High);
     pfic::set_priority(pfic::Interrupt::TIM2, pfic::Priority::Low);
     pfic::set_priority(pfic::Interrupt::USART1, pfic::Priority::Low);
     pfic::set_systick_priority(pfic::Priority::LowLast);
-    pfic::set_software_priority(pfic::Priority::LowLast);
     pfic::enable(pfic::Interrupt::TIM2);
     pfic::enable(pfic::Interrupt::USART1);
     pfic::enable_systick();
-    pfic::enable_software();
     pfic::enable(pfic::Interrupt::DMA1_CHANNEL1);
     crate::log::info!("ISRs live");
 }
@@ -142,22 +140,6 @@ pub fn on_adc_dma_tc() {
     crate::probe::kernel_exit(entry, tags, after, health);
 }
 
-/// SW vector - the TEL stager (protocol sec 5.6), pended through
-/// `providers::stager` when the kernel banks a batch and when a bus body
-/// clears what blocked one: staging is transport work at the bus level,
-/// never inside the kernel's body, and never in the main loop, which a
-/// driving tick starves for longer than a batch may wait.
-///
-/// SAFETY: the bus driver is installed before this vector unmasks, and SW
-/// shares the bus level with TIM2, USART1 and SysTick, so no concurrent
-/// `&mut` into the composite is possible.
-pub fn on_tel_stage() {
-    let entry = crate::probe::bus_entry();
-    // SAFETY: see fn doc.
-    unsafe { Drivers::bus() }.poll_tel();
-    crate::probe::bus_exit(entry, Body::TelStage);
-}
-
 /// TIM2 vector -- the break wake (`providers::break_wake`): an overflow
 /// after 9.5 bit-times of continuous low is a break, unless it is the
 /// same low again after a park.
@@ -257,11 +239,6 @@ macro_rules! install_isrs {
         #[::qingke_rt::interrupt(core)]
         fn SysTick() {
             $crate::runtime::isr::on_deadline_irq();
-        }
-
-        #[::qingke_rt::interrupt(core)]
-        fn Software() {
-            $crate::runtime::isr::on_tel_stage();
         }
     };
 }

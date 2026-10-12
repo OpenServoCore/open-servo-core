@@ -17,6 +17,7 @@
 use core::cell::SyncUnsafeCell;
 
 use ch32_metapac::SPI1;
+use ch32_metapac::spi::regs::Ctlr1;
 use ch32_metapac::spi::vals::BaudRate as SpiBaud;
 use osc_protocol::wire;
 use osc_servo_drivers::traits::bus;
@@ -43,6 +44,19 @@ const SNAPSHOT_LEN: usize = wire::covered_len(wire::len_for(wire::MAX_PAYLOAD));
 struct Snapshot([u8; SNAPSHOT_LEN]);
 
 static SNAPSHOT: SyncUnsafeCell<Snapshot> = SyncUnsafeCell::new(Snapshot([0; SNAPSHOT_LEN]));
+
+const FEED_DMA: dma::Config = dma::Config {
+    dir: dma::Dir::FROMMEMORY,
+    circ: false,
+    pinc: false,
+    minc: true,
+    size: dma::Size::BITS16,
+    htie: false,
+    tcie: false,
+    // MEDIUM: the feed sits at the ladder floor (see `hal::dma`), below
+    // CH6 so a reply snapshot is written before this reads it.
+    pl: dma::Pl::MEDIUM,
+};
 
 /// Production binding to SPI1 + DMA1_CH3.
 pub struct Crc;
@@ -85,28 +99,31 @@ impl Crc {
             && !SPI1.statr().read().bsy()
     }
 
+    /// CH3 is this provider's alone, and the bus and the TEL lane never
+    /// feed at once: whole-register writes, no critical section.
     fn arm(maddr: u32, halfwords: u16) {
-        dma::disable(dma::Channel::CH3);
-        let cfg = dma::Config {
-            dir: dma::Dir::FROMMEMORY,
-            circ: false,
-            pinc: false,
-            minc: true,
-            size: dma::Size::BITS16,
-            htie: false,
-            tcie: false,
-            // MEDIUM: the feed sits at the ladder floor (see `hal::dma`), below
-            // CH6 so a reply snapshot is written before this reads it.
-            pl: dma::Pl::MEDIUM,
-        };
-        dma::configure(
+        dma::rearm(
             dma::Channel::CH3,
-            &cfg,
+            dma::cr_of(&FEED_DMA),
             SPI1.datar().as_ptr() as u32,
             maddr,
             halfwords,
         );
-        dma::enable(dma::Channel::CH3);
+    }
+
+    /// CTLR1 as `init` leaves it, the calculator on or off.
+    #[inline(always)]
+    fn ctlr1(crcen: bool) -> Ctlr1 {
+        let mut w = Ctlr1(0);
+        w.set_mstr(true);
+        w.set_ssm(true);
+        w.set_ssi(true);
+        w.set_br(SpiBaud::DIV_2);
+        w.set_dff(true);
+        w.set_lsbfirst(true);
+        w.set_spe(true);
+        w.set_crcen(crcen);
+        w
     }
 }
 
@@ -118,8 +135,8 @@ impl bus::CrcEngine for Crc {
         // backstop budget (~2.1 ms) -- and a killed CH6
         // snapshot copy ships a stale reply tail (the wire arms read it,
         // protocol sec 4.2). Left alone, in-flight transfers drain to zero in us.
-        SPI1.ctlr1().modify(|w| w.set_crcen(false));
-        SPI1.ctlr1().modify(|w| w.set_crcen(true));
+        SPI1.ctlr1().write_value(Self::ctlr1(false));
+        SPI1.ctlr1().write_value(Self::ctlr1(true));
     }
 
     fn feed(&mut self, span: &[u8]) {
@@ -169,7 +186,7 @@ impl bus::CrcEngine for Crc {
 
     fn result(&mut self) -> Option<u16> {
         if Self::drained() {
-            dma::disable(dma::Channel::CH3);
+            dma::stop(dma::Channel::CH3, dma::cr_of(&FEED_DMA));
             // LSB-first shifter mirrors the reflected algorithm: TCRCR is the
             // bit-reversed osc-CRC-16 (protocol sec 3.2). Un-reverse once per frame:
             // three parallel in-byte swap stages, then the byte swap.

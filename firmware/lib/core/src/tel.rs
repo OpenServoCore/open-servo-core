@@ -42,12 +42,19 @@ pub const FLAG_LAST: u8 = 1 << 0;
 /// burst's last frame may carry fewer).
 pub const STREAM_SAMPLES_MAX: usize = wire::STREAM_SAMPLES_MAX;
 
+/// The longest burst a `tel_count` write arms: one second of control
+/// ticks. The host is silent for the whole burst (protocol sec 5.6).
+pub const BURST_ROWS_MAX: u16 = crate::budget::TICK_HZ as u16;
+
+const _: () = assert!(crate::budget::TICK_HZ <= u16::MAX as u32);
+
 pub const STREAM_HDR: usize = wire::STREAM_HDR;
 pub const STREAM_TRAILER: usize = wire::STREAM_TRAILER;
 
-/// The longest row the encoder and stager keep up with, the kernel parked
-/// and at budget (DES `tel_widest_row_keeps_up_at_rest`): a 12 B row
-/// drops rows there though the 3 M wire carries 13 B.
+/// The longest row the encoder and its TX lane keep up with at budget,
+/// parked and stepping (DES `tel_widest_row_keeps_up_at_rest`,
+/// `tel_widest_row_fits_at_budget_while_stepping`), short of the 13 B the
+/// 3 M wire carries.
 pub const ROW_BYTES_CPU_MAX: usize = 11;
 
 /// The longest row a burst arms with at `baud`.
@@ -166,6 +173,8 @@ pub trait TelStream {
     /// kernel builds the sample only when nonzero.
     fn row_mask(&mut self) -> u16;
     fn on_tick(&mut self, sample: &TelSample);
+    /// The tick's last work, after the drive is written.
+    fn on_tick_end(&mut self) {}
 }
 
 /// Stream absent (boards without a burst producer, tests).
@@ -265,17 +274,14 @@ impl RowPlan {
     }
 }
 
-/// Serialize the stream head: everything row 0 knows. Order-free vs the
-/// rows: it never touches bytes past [`STREAM_HDR`].
-pub fn encode_stream_head(
-    stream_seq: u8,
-    last: bool,
-    tick: u16,
-    buf: &mut [u8; STREAM_PAYLOAD_MAX],
-) {
-    buf[0] = stream_seq;
-    buf[1] = if last { FLAG_LAST } else { 0 };
-    buf[2..4].copy_from_slice(&tick.to_le_bytes());
+/// Serialize the stream head at the front of `buf`: everything row 0
+/// knows. Order-free vs the rows: it never touches bytes past
+/// [`STREAM_HDR`]; a `buf` shorter than that stays untouched.
+pub fn encode_stream_head(stream_seq: u8, last: bool, tick: u16, buf: &mut [u8]) {
+    if let Some(h) = buf.first_chunk_mut::<STREAM_HDR>() {
+        let [t0, t1] = tick.to_le_bytes();
+        *h = [stream_seq, if last { FLAG_LAST } else { 0 }, t0, t1];
+    }
 }
 
 /// Serialize the stream trailer at the front of `out`, which follows the

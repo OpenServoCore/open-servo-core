@@ -25,7 +25,6 @@ use crate::providers::deadline::Deadline;
 use crate::providers::digital_out::DigitalOut;
 use crate::providers::monotonic::Monotonic;
 use crate::providers::ring::RxRing;
-use crate::providers::stager::Stager;
 use crate::providers::tx_wire::TxWire;
 use crate::providers::usart_baud::UsartBaud;
 
@@ -43,7 +42,6 @@ impl Providers for V006Providers {
     type Tx = TxWire;
     type Baud = UsartBaud;
     type Stamps = BreakStamps;
-    type Stager = Stager;
 }
 
 type Bus = ServoBus<V006Providers>;
@@ -131,7 +129,7 @@ impl Drivers {
     }
 
     /// SAFETY: bringup installs `bus` before any IRQ runs; runtime `&mut`
-    /// access is from the TIM2, USART1, SysTick and SW ISRs, all at the bus
+    /// access is from the TIM2, USART1 and SysTick ISRs, all at the bus
     /// level (PFIC LOW), so same-level no-preemption serializes the
     /// composite's interior state; the kernel above them never calls in. The
     /// main loop reaches in only under `pfic::mask_bus` (see `runtime::run`).

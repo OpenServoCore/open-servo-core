@@ -112,6 +112,19 @@ pub enum Event {
     BreakByte { servo: usize },
     /// A servo TX DMA arm completed -- drive `on_tx_complete`.
     TxArmDone { servo: usize },
+    /// The TEL lane's TX DMA reads one image byte into the data register;
+    /// it rings at `at`, its stop bit. `src` points into a leaked channel.
+    /// The image's `last` byte closes the recorded frame behind it: the
+    /// lane raises no TX-done.
+    DmaFetch {
+        talker: Talker,
+        src: *const u8,
+        baud: BaudRate,
+        at: u64,
+        last: bool,
+    },
+    /// The servo's TEL frame left the wire.
+    ServoTxEnd { talker: Talker },
     /// A servo's TEL fast-tick pump fired (kernel 50 us grid): synthesize one
     /// sample into the kernel-side feed. Stale epochs (aborted bursts) drop.
     TelTick { servo: usize, epoch: u64 },

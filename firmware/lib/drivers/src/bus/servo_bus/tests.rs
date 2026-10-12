@@ -136,7 +136,7 @@ fn last_reply(wire: &FakeWire) -> (u8, Inst, std::vec::Vec<u8>) {
         match e {
             WireEvent::Send(v) => bytes.extend_from_slice(v),
             WireEvent::Release => break,
-            WireEvent::Start => {}
+            _ => {}
         }
     }
     let id = bytes[0];
@@ -778,7 +778,7 @@ fn acked_write_commits_before_its_reply_triggers() {
 
 /// An ack the host abandons is killed after its write committed. Every path
 /// that drops a staged reply (stale-reply kill, verdict-first supersede,
-/// `drop_staged`, burst abort, rescue) runs after the verdict body, so none
+/// `drop_staged`, rescue) runs after the verdict body, so none
 /// can lose a CRC-verified write; this pins a following break and the
 /// rescue declaration.
 #[test]
@@ -1369,42 +1369,85 @@ fn lagged_break_wakes_resolve_every_frame() {
 
 // --- TEL burst ------------------------------------------------------------
 
-use crate::mocks::bus::FakeStager;
-use crate::tel::{TelChannel, TelDrain, TelFeed};
+use crate::mocks::bus::{FakeCrc, TestProviders};
+use crate::tel::{TelChannel, TelFeed};
 use osc_protocol::crc::osc_crc;
 use osc_servo_core::regions::control::addr::lifecycle::{TEL_COUNT, TEL_MASK};
 use osc_servo_core::tel::{BIT_POS, FLAG_LAST, TelSample, TelStream as _};
 
-type Feed = TelFeed<FakeStager>;
+type Feed = TelFeed<TestProviders>;
 
-/// Both halves wake the harness's stager.
-fn tel_split(h: &Harness) -> (Feed, TelDrain<FakeStager>) {
-    std::boxed::Box::leak(std::boxed::Box::new(TelChannel::new())).split(h.stager.clone())
+/// The kernel half over the harness's wire and ring, the bus half attached.
+fn tel_split(h: &Harness, bus: &mut crate::bus::ServoBus<TestProviders>) -> Feed {
+    let ch: &'static TelChannel = std::boxed::Box::leak(std::boxed::Box::new(TelChannel::new()));
+    let (feed, drain) = ch.split::<TestProviders>(h.wire.clone(), FakeCrc::new(), h.ring.clone());
+    bus.attach_tel(drain);
+    feed
 }
 
-/// One committed u16 register write over the wire, ack drained.
+/// One u16 register write over the wire at `anchor`, its ack drained;
+/// returns the anchor right behind it.
+#[allow(clippy::too_many_arguments)]
 fn write_u16<D: Dispatch>(
-    bus: &mut crate::bus::ServoBus<crate::mocks::bus::TestProviders>,
+    bus: &mut crate::bus::ServoBus<TestProviders>,
     h: &Harness,
     d: &mut D,
+    flags: u8,
     addr: u16,
     value: u16,
     anchor: usize,
     now: u32,
-) {
+) -> usize {
     let a = addr.to_le_bytes();
     let v = value.to_le_bytes();
-    let frame = instruction(ID, Opcode::Write, 0, &[a[0], a[1], v[0], v[1]]);
+    let frame = instruction(ID, Opcode::Write, flags, &[a[0], a[1], v[0], v[1]]);
     deliver(bus, h, anchor, &frame, now, d);
-    fire(bus, h, d);
-    drain_tx(bus, h);
+    if flags & Inst::FLAG_NOREPLY == 0 {
+        fire(bus, h, d);
+        drain_tx(bus, h);
+    }
+    anchor + frame.len()
 }
 
-/// The kernel's per-tick sequence: ask for the row, then hand it over.
-fn tick(feed: &mut Feed, s: &TelSample) {
+/// The kernel's tick: the row, then the tail; a break on the wire ends
+/// before the next tick.
+fn tick(feed: &mut Feed, h: &Harness, s: &TelSample) {
+    if h.wire.breaking() {
+        h.wire.finish();
+    }
     if feed.row_mask() != 0 {
         feed.on_tick(s);
     }
+    feed.on_tick_end();
+}
+
+/// Tick the burst through, each image read whole once its wire time has
+/// passed (bytes x 10 bit-times at `RATE`, in 50 us ticks); the images
+/// the wire carried.
+fn stream_all(feed: &mut Feed, h: &Harness, ticks: u16) -> std::vec::Vec<std::vec::Vec<u8>> {
+    const BYTES_PER_TICK: usize = 5;
+    let from = h.wire.streamed().len();
+    let mut left: Option<usize> = None;
+    for i in 0..ticks {
+        let mut s = pos_sample(0x2000 + i);
+        s.tick = 0x0100 + i;
+        tick(feed, h, &s);
+        if left.is_none() {
+            left = h.wire.streaming().map(|len| len.div_ceil(BYTES_PER_TICK));
+        }
+        if let Some(l) = left.as_mut() {
+            if *l == 0 {
+                h.wire.finish();
+                left = None;
+            } else {
+                *l -= 1;
+            }
+        }
+        if feed.idle() {
+            break;
+        }
+    }
+    h.wire.streamed()[from..].to_vec()
 }
 
 fn pos_sample(pos: u16) -> TelSample {
@@ -1415,7 +1458,7 @@ fn pos_sample(pos: u16) -> TelSample {
     }
 }
 
-/// Complete wire frames (Start..Release) recorded at or after `from`.
+/// Complete reply frames (Start..Release) recorded at or after `from`.
 fn tx_frames(wire: &FakeWire, from: usize) -> std::vec::Vec<std::vec::Vec<u8>> {
     let log = wire.log();
     let mut out = std::vec::Vec::new();
@@ -1433,13 +1476,14 @@ fn tx_frames(wire: &FakeWire, from: usize) -> std::vec::Vec<std::vec::Vec<u8>> {
                     out.push(c);
                 }
             }
+            _ => {}
         }
     }
     out
 }
 
-/// The recorded frame's trailing CRC verifies over its covered span
-/// (including the 0x00 align prefix the arms skip).
+/// The frame's CRC verifies over its covered span (with the 0x00 align
+/// prefix the DMA skips).
 fn assert_frame_crc(frame: &[u8]) {
     let mut covered = std::vec![0u8];
     covered.extend_from_slice(&frame[..frame.len() - 2]);
@@ -1447,365 +1491,201 @@ fn assert_frame_crc(frame: &[u8]) {
     assert_eq!(osc_crc(&covered), want, "stream frame CRC");
 }
 
+/// The lane passes at the arming ack's release, not before; the burst's
+/// frames come from the kernel's images, and the line stays the burst's
+/// until its LAST frame has left the wire.
 #[test]
-fn tel_burst_streams_two_frames_then_quiets() {
+fn tel_lane_passes_at_the_ack_release() {
     let h = Harness::new();
     let mut bus = h.build(ID, RATE, 60);
-    let (mut feed, drain) = tel_split(&h);
-    bus.attach_tel(drain);
+    let mut feed = tel_split(&h, &mut bus);
     let shared = shared_seeded();
     let mut session = Session::new();
     let mut d = session.dispatcher(&shared);
 
-    write_u16(&mut bus, &h, &mut d, TEL_MASK, BIT_POS, 100, 1000);
+    let at = write_u16(&mut bus, &h, &mut d, 0, TEL_MASK, BIT_POS, 100, 1000);
     assert!(!feed.active(), "mask write alone never arms");
-    write_u16(&mut bus, &h, &mut d, TEL_COUNT, 20, 160, 20_000);
-    assert!(feed.active(), "committed tel_count write arms the feed");
-
-    for i in 0..20u16 {
-        let mut s = pos_sample(0x2000 + i);
-        s.tick = 0x0100 + i;
-        tick(&mut feed, &s);
-    }
-    let mark = h.wire.log().len();
-    bus.poll_tel();
+    let c = TEL_COUNT.to_le_bytes();
+    let count = instruction(ID, Opcode::Write, 0, &[c[0], c[1], 20, 0]);
+    deliver_next(&mut bus, &h, at, &count, 20_000, &mut d);
+    fire(&mut bus, &h, &mut d);
+    assert!(
+        bus.tx.streaming() && !bus.tx.lent(),
+        "the ack holds the wire"
+    );
+    assert!(!feed.active(), "the lane waits for the ack");
     drain_tx(&mut bus, &h);
-    bus.poll_tel();
-    drain_tx(&mut bus, &h);
-    bus.poll_tel(); // burst done: inert
+    assert!(feed.active() && bus.tx.lent(), "the ack's release lends");
+    assert_eq!(last_reply(&h.wire).1.result(), Some(ResultCode::Ok));
 
-    let frames = tx_frames(&h.wire, mark);
-    assert_eq!(frames.len(), 2, "16-sample frame then 4-sample LAST frame");
-
+    let frames = stream_all(&mut feed, &h, 64);
+    assert_eq!(frames.len(), 2, "16 rows, then the 4-row LAST frame");
     let f1 = &frames[0];
-    assert_eq!(f1[0], ID);
-    assert_eq!(f1[2], 0xA4, "INST = status | Stream, no ALERT");
-    assert_eq!(f1[2], Inst::status(ResultCode::Stream, false).0);
-    assert_eq!(f1[1], wire::len_for(4 + 16 * 2 + 6));
-    assert_eq!(
-        f1[3..7],
-        [0x00, 0x00, 0x00, 0x01],
-        "seq 0, not LAST, row 0's tick"
-    );
+    assert_eq!(f1[..3], [ID, wire::len_for(4 + 16 * 2 + 6), 0xA4]);
+    assert_eq!(f1[3..7], [0x00, 0x00, 0x00, 0x01], "seq 0, row 0's tick");
     assert_eq!(f1[7..9], [0x00, 0x20], "first sample pos");
-    assert_eq!(f1[39..45], [0xFF, 0xFF, 0, 0, 0, 0], "all valid, no fault");
     assert_frame_crc(f1);
-
     let f2 = &frames[1];
-    assert_eq!(f2[0], ID);
-    assert_eq!(f2[2], 0xA4);
     assert_eq!(f2[1], wire::len_for(4 + 4 * 2 + 6));
-    assert_eq!(
-        f2[3..21],
-        [
-            0x01, FLAG_LAST, 0x10, 0x01, 0x10, 0x20, 0x11, 0x20, 0x12, 0x20, 0x13, 0x20, 0x0F,
-            0x00, 0x00, 0x00, 0x00, 0x00
-        ],
-        "seq 1, LAST, row 16's tick, samples 16..20, 4-row bitmap"
-    );
+    assert_eq!(f2[3..5], [0x01, FLAG_LAST]);
     assert_frame_crc(f2);
-
-    assert!(
-        !feed.active(),
-        "burst deactivates on the LAST frame's release"
-    );
-    assert_eq!(
-        tx_frames(&h.wire, mark).len(),
-        2,
-        "no frames past the LAST one"
-    );
+    assert!(bus.tx.lent(), "taken back only in the next bus body");
 }
 
-/// INST ALERT is the device state when INST leaves: the first row's fault.
-/// The trailer's tail carries the batch's OR.
+/// sec 5.6: the servo owns the line from the ack to LAST. A host frame
+/// mid-burst is ignored - no reply, the burst runs on - and the first
+/// instruction after LAST is served, the ignored one skipped.
 #[test]
-fn tel_burst_alert_is_the_first_row_fault_and_the_tail_the_batch_or() {
+fn tel_host_frame_mid_burst_is_ignored_and_the_next_after_last_served() {
     let h = Harness::new();
     let mut bus = h.build(ID, RATE, 60);
-    let (mut feed, drain) = tel_split(&h);
-    bus.attach_tel(drain);
+    let mut feed = tel_split(&h, &mut bus);
     let shared = shared_seeded();
     let mut session = Session::new();
     let mut d = session.dispatcher(&shared);
 
-    write_u16(&mut bus, &h, &mut d, TEL_MASK, BIT_POS, 100, 1000);
-    write_u16(&mut bus, &h, &mut d, TEL_COUNT, 32, 160, 20_000);
-
-    for i in 0..32u16 {
-        let mut s = pos_sample(0x3000 + i);
-        s.fault = i == 5 || i == 16;
-        tick(&mut feed, &s);
+    let at = write_u16(&mut bus, &h, &mut d, 0, TEL_MASK, BIT_POS, 100, 1000);
+    let at = write_u16(&mut bus, &h, &mut d, 0, TEL_COUNT, 32, at, 20_000);
+    assert!(bus.tx.lent());
+    for i in 0..4 {
+        tick(&mut feed, &h, &pos_sample(i));
     }
-    let mark = h.wire.log().len();
-    bus.poll_tel();
-    drain_tx(&mut bus, &h);
-    bus.poll_tel();
-    drain_tx(&mut bus, &h);
+    let replies = h.wire.log().len();
 
-    let frames = tx_frames(&h.wire, mark);
-    assert_eq!(frames.len(), 2);
-    assert_eq!(frames[0][2], 0xA4, "row 0 clean: ALERT clear");
-    assert_eq!(frames[1][2], 0xA5, "row 0 faulted: ALERT set");
-    assert_eq!(frames[1][2], Inst::status(ResultCode::Stream, true).0);
-    let tail = |f: &[u8]| f[f.len() - 4];
-    assert_eq!(tail(&frames[0]), wire::STREAM_TAIL_ALERT, "row 5 faulted");
-    assert_eq!(tail(&frames[1]), wire::STREAM_TAIL_ALERT);
-    assert_frame_crc(&frames[0]);
-    assert_frame_crc(&frames[1]);
-}
-
-#[test]
-fn tel_burst_short_count_is_one_last_frame() {
-    let h = Harness::new();
-    let mut bus = h.build(ID, RATE, 60);
-    let (mut feed, drain) = tel_split(&h);
-    bus.attach_tel(drain);
-    let shared = shared_seeded();
-    let mut session = Session::new();
-    let mut d = session.dispatcher(&shared);
-
-    write_u16(&mut bus, &h, &mut d, TEL_MASK, BIT_POS, 100, 1000);
-    write_u16(&mut bus, &h, &mut d, TEL_COUNT, 5, 160, 20_000);
-
-    for i in 0..5u16 {
-        tick(&mut feed, &pos_sample(0x1100 + i));
-    }
-    let mark = h.wire.log().len();
-    bus.poll_tel();
-    drain_tx(&mut bus, &h);
-    bus.poll_tel();
-
-    let frames = tx_frames(&h.wire, mark);
-    assert_eq!(frames.len(), 1);
-    assert_eq!(frames[0][1], wire::len_for(4 + 5 * 2 + 6));
-    assert_eq!(frames[0][3], 0, "seq 0");
-    assert_eq!(frames[0][4], FLAG_LAST);
-    assert_frame_crc(&frames[0]);
-    assert!(!feed.active());
-}
-
-#[test]
-fn tel_burst_break_aborts_and_rearm_restarts_clean() {
-    let h = Harness::new();
-    let mut bus = h.build(ID, RATE, 60);
-    let (mut feed, drain) = tel_split(&h);
-    bus.attach_tel(drain);
-    let shared = shared_seeded();
-    let mut session = Session::new();
-    let mut d = session.dispatcher(&shared);
-
-    write_u16(&mut bus, &h, &mut d, TEL_MASK, BIT_POS, 100, 1000);
-    write_u16(&mut bus, &h, &mut d, TEL_COUNT, 64, 160, 20_000);
-
-    for i in 0..16u16 {
-        tick(&mut feed, &pos_sample(i));
-    }
-    bus.poll_tel();
-    assert!(bus.tx.streaming(), "frame 1 mid-flight");
-
-    // Host talks over the burst: break kills it and the in-flight frame.
-    h.ring.place(400, &[0x00]);
-    h.deadline.set_now(60_000);
-    h.ring.set_cursor(401);
+    let ping = instruction(ID, Opcode::Ping, 0, &[]);
+    h.ring.place(at, &ping);
+    h.ring.set_cursor(((at + ping.len()) % RING_LEN) as u16);
+    h.deadline.set_now(40_000);
     bus.on_break(&mut d);
-    assert_eq!(h.wire.log().last(), Some(&WireEvent::Release), "TX aborted");
-    assert!(!feed.active(), "feed flag cleared");
+    assert_eq!(h.deadline.armed(), None, "nothing scheduled for it");
+    let frames = stream_all(&mut feed, &h, 64);
+    assert_eq!(frames.len(), 2, "the burst runs on");
+    assert!(
+        !h.wire.log()[replies..].contains(&WireEvent::Start),
+        "the mid-burst ping is never answered"
+    );
 
-    let quiet = h.wire.log().len();
-    for i in 0..16u16 {
-        tick(&mut feed, &pos_sample(i));
-    }
-    bus.poll_tel();
-    assert_eq!(h.wire.log().len(), quiet, "no frames after the abort");
-
-    // A fresh arm streams cleanly from seq 0.
-    write_u16(&mut bus, &h, &mut d, TEL_COUNT, 4, 220, 90_000);
-    assert!(feed.active());
-    for i in 0..4u16 {
-        tick(&mut feed, &pos_sample(0x0F00 + i));
-    }
-    let mark = h.wire.log().len();
-    bus.poll_tel();
-    drain_tx(&mut bus, &h);
-    let frames = tx_frames(&h.wire, mark);
-    assert_eq!(frames.len(), 1);
-    assert_eq!(frames[0][3], 0, "seq restarts at 0");
-    assert_eq!(frames[0][4], FLAG_LAST);
-    assert_frame_crc(&frames[0]);
-}
-
-/// The TX release wakes the stager when, and only when, the next batch is
-/// banked: here behind the count write's own ack, then behind the first
-/// stream frame. A release with nothing banked, and the LAST frame's,
-/// wake nothing.
-#[test]
-fn tel_release_wakes_the_stager_for_a_banked_batch() {
-    let h = Harness::new();
-    let mut bus = h.build(ID, RATE, 60);
-    let (mut feed, drain) = tel_split(&h);
-    bus.attach_tel(drain);
-    let shared = shared_seeded();
-    let mut session = Session::new();
-    let mut d = session.dispatcher(&shared);
-
-    write_u16(&mut bus, &h, &mut d, TEL_MASK, BIT_POS, 100, 1000);
-    let c = TEL_COUNT.to_le_bytes();
-    let count = instruction(ID, Opcode::Write, 0, &[c[0], c[1], 32, 0]);
-    deliver(&mut bus, &h, 160, &count, 20_000, &mut d);
+    let next = at + ping.len();
+    deliver_next(&mut bus, &h, next, &ping, 90_000, &mut d);
     fire(&mut bus, &h, &mut d);
-    assert!(bus.tx.streaming(), "the count write's ack holds the wire");
-
-    for i in 0..16u16 {
-        tick(&mut feed, &pos_sample(i));
-    }
-    assert_eq!(h.stager.wakes(), 1, "the bank");
-    bus.poll_tel();
     drain_tx(&mut bus, &h);
-    assert_eq!(h.stager.wakes(), 2, "the ack's release, batch 0 banked");
-    let mark = h.wire.log().len();
-    bus.poll_tel();
-    assert!(bus.tx.streaming(), "batch 0 on the wire");
-
-    for i in 16..32u16 {
-        tick(&mut feed, &pos_sample(i));
-    }
-    assert_eq!(h.stager.wakes(), 3, "the bank");
-    bus.poll_tel();
-    drain_tx(&mut bus, &h);
-    assert_eq!(h.stager.wakes(), 4, "batch 0's release, batch 1 banked");
-    bus.poll_tel();
-    drain_tx(&mut bus, &h);
-    assert_eq!(h.stager.wakes(), 4, "the LAST frame's release");
-    assert_eq!(tx_frames(&h.wire, mark).len(), 2);
-    assert!(!feed.active());
+    let starts = h.wire.log()[replies..]
+        .iter()
+        .filter(|e| **e == WireEvent::Start)
+        .count();
+    assert_eq!(starts, 1, "one reply, to the ping after LAST");
+    assert_eq!(last_reply(&h.wire).1.result(), Some(ResultCode::Ok));
+    assert!(
+        !feed.active() && !bus.tx.lent(),
+        "the lane is the bus's again"
+    );
 }
 
-/// The deadline body's wake: a frame whose break was served before the
-/// arm's verdict (the arm resolved inside that wake, so the break aborted
-/// nothing) holds the stager off while its own verdict is pending. Its
-/// verdict lands in a deadline body, which must wake the stager, or the
-/// banked LAST batch never leaves.
+/// No ack to wait for: a NOREPLY arm lends at once.
 #[test]
-fn tel_verdict_in_a_deadline_body_wakes_the_stager() {
+fn tel_arm_with_no_ack_lends_at_the_arm() {
     let h = Harness::new();
     let mut bus = h.build(ID, RATE, 60);
-    let (mut feed, drain) = tel_split(&h);
-    bus.attach_tel(drain);
+    let mut feed = tel_split(&h, &mut bus);
     let shared = shared_seeded();
     let mut session = Session::new();
     let mut d = session.dispatcher(&shared);
 
-    write_u16(&mut bus, &h, &mut d, TEL_MASK, BIT_POS, 100, 1000);
-    let c = TEL_COUNT.to_le_bytes();
-    let arm = instruction(ID, Opcode::Write, Inst::FLAG_NOREPLY, &[c[0], c[1], 1, 0]);
-    let m = TEL_MASK.to_le_bytes();
-    let next = instruction(
-        ID,
-        Opcode::Write,
+    let at = write_u16(&mut bus, &h, &mut d, 0, TEL_MASK, BIT_POS, 100, 1000);
+    write_u16(
+        &mut bus,
+        &h,
+        &mut d,
         Inst::FLAG_NOREPLY,
-        &[m[0], m[1], BIT_POS as u8, 0],
+        TEL_COUNT,
+        5,
+        at,
+        20_000,
     );
-    let at = 200;
-    let next_at = at + arm.len();
-    let next_end = next_at + next.len();
-    h.ring.place(at, &arm);
-    h.ring.place(next_at, &next);
-    bus.framer.resync(at as u16);
-    h.deadline.set_now(20_000);
-    h.ring.set_cursor(((next_end - 2) % RING_LEN) as u16);
-    bus.on_break(&mut d);
-    assert!(
-        feed.active(),
-        "the arm's verdict rode the next frame's wake"
-    );
-    assert!(bus.pending.is_some(), "the next frame awaits its verdict");
-
-    tick(&mut feed, &pos_sample(0x0ABC));
-    assert_eq!(h.stager.wakes(), 1, "the bank");
-    let mark = h.wire.log().len();
-    bus.poll_tel();
-    assert_eq!(
-        h.wire.log().len(),
-        mark,
-        "a pending verdict holds the stager off"
-    );
-
-    h.ring.set_cursor((next_end % RING_LEN) as u16);
-    fire(&mut bus, &h, &mut d);
-    assert!(bus.pending.is_none());
-    assert_eq!(h.stager.wakes(), 2, "the verdict's deadline body");
-    bus.poll_tel();
-    drain_tx(&mut bus, &h);
-    let frames = tx_frames(&h.wire, mark);
+    assert!(feed.active() && bus.tx.lent());
+    let frames = stream_all(&mut feed, &h, 32);
     assert_eq!(frames.len(), 1);
-    assert_eq!(frames[0][4], FLAG_LAST);
-    assert!(!feed.active());
+    assert_eq!(frames[0][3..5], [0, FLAG_LAST]);
+    assert_frame_crc(&frames[0]);
+}
+
+/// An ack killed before it streams (the host moved on) takes its burst
+/// with it.
+#[test]
+fn tel_killed_ack_cancels_the_lend() {
+    let h = Harness::new();
+    let mut bus = h.build(ID, RATE, 60);
+    let feed = tel_split(&h, &mut bus);
+    let shared = shared_seeded();
+    let mut session = Session::new();
+    let mut d = session.dispatcher(&shared);
+
+    let at = write_u16(&mut bus, &h, &mut d, 0, TEL_MASK, BIT_POS, 100, 1000);
+    let c = TEL_COUNT.to_le_bytes();
+    let count = instruction(ID, Opcode::Write, 0, &[c[0], c[1], 20, 0]);
+    let end = deliver_next(&mut bus, &h, at, &count, 20_000, &mut d);
+    assert!(bus.tx.staged());
+    let m = 400usize;
+    h.deadline.set_now(end + 1);
+    h.ring.set_cursor(((m + 1) % RING_LEN) as u16);
+    bus.on_break(&mut d);
+    if h.deadline.armed().is_some() {
+        fire(&mut bus, &h, &mut d);
+    }
+    assert!(!bus.tx.busy() && !feed.active(), "no lane without its ack");
 }
 
 /// Admission by row bytes at the line's rate: at 1 M the six raw fields'
-/// 9 B row acks but never arms; a 3 B row arms.
+/// 9 B row acks but never lends; a 3 B row does. A zero count never lends.
 #[test]
 fn tel_arm_admits_only_rows_the_line_rate_carries() {
     use osc_servo_core::tel::{BIT_CURRENT_RAW, row_bytes, row_bytes_max};
     let h = Harness::new();
     let mut bus = h.build(ID, RATE, 60);
-    let (feed, drain) = tel_split(&h);
-    bus.attach_tel(drain);
+    let feed = tel_split(&h, &mut bus);
     let shared = shared_seeded();
     let mut session = Session::new();
     let mut d = session.dispatcher(&shared);
 
     let six_raw = 0x1CD;
     assert!(row_bytes(six_raw) > row_bytes_max(RATE));
-    write_u16(&mut bus, &h, &mut d, TEL_MASK, six_raw, 100, 1000);
-    write_u16(&mut bus, &h, &mut d, TEL_COUNT, 32, 160, 20_000);
+    let at = write_u16(&mut bus, &h, &mut d, 0, TEL_MASK, six_raw, 100, 1000);
+    let at = write_u16(&mut bus, &h, &mut d, 0, TEL_COUNT, 32, at, 20_000);
     assert_eq!(last_reply(&h.wire).1.result(), Some(ResultCode::Ok));
-    assert!(!feed.active(), "a row the rate cannot carry never arms");
+    assert!(!feed.active(), "a row the rate cannot carry never lends");
 
-    write_u16(
-        &mut bus,
-        &h,
-        &mut d,
-        TEL_MASK,
-        BIT_POS | BIT_CURRENT_RAW,
-        220,
-        40_000,
-    );
-    write_u16(&mut bus, &h, &mut d, TEL_COUNT, 32, 280, 60_000);
+    let mask = BIT_POS | BIT_CURRENT_RAW;
+    let at = write_u16(&mut bus, &h, &mut d, 0, TEL_MASK, mask, at, 40_000);
+    let at = write_u16(&mut bus, &h, &mut d, 0, TEL_COUNT, 0, at, 60_000);
+    assert_eq!(last_reply(&h.wire).1.result(), Some(ResultCode::Ok));
+    assert!(!feed.active(), "count 0 never lends");
+    write_u16(&mut bus, &h, &mut d, 0, TEL_COUNT, 32, at, 80_000);
     assert!(feed.active());
 }
 
+/// The count is capped at one second of ticks: a longer write is a rule
+/// reject and lends nothing.
 #[test]
-fn tel_burst_disarms_on_zero_count_write() {
+fn tel_count_over_the_cap_rejects() {
+    use osc_servo_core::tel::BURST_ROWS_MAX;
     let h = Harness::new();
     let mut bus = h.build(ID, RATE, 60);
-    let (mut feed, drain) = tel_split(&h);
-    bus.attach_tel(drain);
+    let feed = tel_split(&h, &mut bus);
     let shared = shared_seeded();
     let mut session = Session::new();
     let mut d = session.dispatcher(&shared);
 
-    write_u16(&mut bus, &h, &mut d, TEL_MASK, BIT_POS, 100, 1000);
-    write_u16(&mut bus, &h, &mut d, TEL_COUNT, 320, 160, 20_000);
-    for i in 0..16u16 {
-        tick(&mut feed, &pos_sample(i));
-    }
-    bus.poll_tel();
-    drain_tx(&mut bus, &h);
-
-    // Mid-burst zero write: the break aborts, the hook then disarms; the
-    // write itself acks normally.
-    write_u16(&mut bus, &h, &mut d, TEL_COUNT, 0, 220, 90_000);
-    let (id, inst, data) = last_reply(&h.wire);
-    assert_eq!(id, ID);
-    assert_eq!(inst.result(), Some(ResultCode::Ok));
-    assert!(data.is_empty());
+    let at = write_u16(&mut bus, &h, &mut d, 0, TEL_MASK, BIT_POS, 100, 1000);
+    write_u16(
+        &mut bus,
+        &h,
+        &mut d,
+        0,
+        TEL_COUNT,
+        BURST_ROWS_MAX + 1,
+        at,
+        20_000,
+    );
+    assert_eq!(last_reply(&h.wire).1.result(), Some(ResultCode::Validation));
     assert!(!feed.active());
-
-    let quiet = h.wire.log().len();
-    for i in 0..32u16 {
-        tick(&mut feed, &pos_sample(i));
-    }
-    bus.poll_tel();
-    assert_eq!(h.wire.log().len(), quiet, "disarmed: nothing stages");
 }

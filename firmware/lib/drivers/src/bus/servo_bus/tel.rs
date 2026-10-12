@@ -1,164 +1,61 @@
-//! TEL burst stager: puts the kernel-encoded ping-pong buffers on the wire
-//! as `Stream` status frames (protocol sec 5.3). A committed nonzero
-//! `tel_count` write arms it; the stager stages one ready buffer per frame
-//! whenever the wire is ours; any host break kills it (`on_break` -
-//! reclaiming the line IS the abort lever). ALERT carries the batch's
-//! fault-OR (the fault contract), already folded by the encoder.
-//!
-//! The stager runs only when woken: by the kernel when it banks a batch,
-//! and by the bus after the work of the two bodies that can clear what
-//! holds a banked batch back - the TX release (the frame in flight, a
-//! reply) and the deadline body (a pending verdict, a killed reply). A
-//! break wake needs none: it aborts a live burst on entry, and a batch
-//! banked after an arm inside it pends its own wake.
+//! TEL burst arm (protocol sec 5.6): a committed nonzero `tel_count` write
+//! arms it, and the bus lends the kernel the TX lane (`crate::tel`) at the
+//! arming ack's release, or at the arm when no ack follows. The servo owns
+//! the line from there to the LAST frame: the bus serves nothing until it
+//! takes the lane back, in its first body after LAST has left the wire.
 
-use osc_protocol::wire::{self, ResultCode};
-use osc_servo_core::tel::STREAM_PAYLOAD_MAX;
+use osc_servo_core::BaudRate;
 
-use super::ServoBus;
-use crate::tel::{BufMeta, TelDrain};
-use crate::traits::bus::{Providers, StagerWake};
+use crate::tel::TelDrain;
 
-const _: () = assert!(STREAM_PAYLOAD_MAX <= wire::MAX_PAYLOAD as usize);
-
-pub(super) struct TelBurst<W: StagerWake> {
-    drain: Option<TelDrain<W>>,
-    /// Arm epoch this burst stages under (`send_arm`'s tag).
+pub(super) struct TelBurst {
+    drain: Option<TelDrain>,
+    /// The arm the next lend streams.
+    mask: u16,
+    count: u16,
+    /// The lent burst's epoch.
     epoch: u8,
-    /// Next buffer to stage; the kernel fills 0 first after every arm.
-    next: usize,
-    active: bool,
-    /// A burst frame is streaming; its TX release frees the buffer.
-    in_flight: bool,
-    /// The streaming frame is the LAST; its release ends the burst.
-    last_in_flight: bool,
 }
 
-impl<W: StagerWake> TelBurst<W> {
+impl TelBurst {
     pub(super) const fn new() -> Self {
         Self {
             drain: None,
+            mask: 0,
+            count: 0,
             epoch: 0,
-            next: 0,
-            active: false,
-            in_flight: false,
-            last_in_flight: false,
         }
     }
 
-    pub(super) fn attach(&mut self, drain: TelDrain<W>) {
+    pub(super) fn attach(&mut self, drain: TelDrain) {
         self.drain = Some(drain);
     }
 
-    pub(super) fn active(&self) -> bool {
-        self.active
+    /// `Reply::tel_arm`: true when the arm wants the lane (count 0 disarms).
+    pub(super) fn arm(&mut self, mask: u16, count: u16) -> bool {
+        self.mask = mask;
+        self.count = count;
+        count != 0 && self.drain.is_some()
     }
 
-    /// `Reply::tel_arm`: count 0 disarms; a fresh arm simply overwrites a
-    /// live burst (stale buffers die by epoch, the encoder restarts). Out
-    /// of line: inlined, this once-per-burst body reshapes the dispatcher's
-    /// commit and dispatch code that every write runs.
-    #[inline(never)]
-    pub(super) fn arm(&mut self, mask: u16, count: u16) {
-        let Some(d) = self.drain.as_mut() else {
-            return;
-        };
-        self.epoch = d.send_arm(mask, count);
-        if count == 0 {
-            self.deactivate();
-            return;
-        }
-        d.clear_ready();
-        d.set_active(true);
-        self.next = 0;
-        self.active = true;
-        self.in_flight = false;
-        self.last_in_flight = false;
-    }
-
-    pub(super) fn abort(&mut self) {
-        self.deactivate();
-    }
-
-    /// TX release notice: frees the streamed buffer; after the LAST frame
-    /// the line simply goes quiet.
-    pub(super) fn on_tx_released(&mut self) {
-        if !self.in_flight {
-            return;
-        }
-        self.in_flight = false;
+    /// Lend the lane: the kernel streams the arm from its next tick.
+    pub(super) fn start(&mut self, id: u8, rate: BaudRate) {
         if let Some(d) = self.drain.as_mut() {
-            d.release(self.next);
-        }
-        self.next ^= 1;
-        if self.last_in_flight {
-            self.deactivate();
+            self.epoch = d.start(self.mask, self.count, id, rate);
         }
     }
 
-    fn deactivate(&mut self) {
-        self.active = false;
-        self.in_flight = false;
-        self.last_in_flight = false;
+    /// The RX ring cursor to resume at, once the LAST frame has left the
+    /// wire. `idle` is read after the kernel's LAST notice: read the other
+    /// way round, a gap before LAST would pass for its end.
+    pub(super) fn returned(&self, idle: impl FnOnce() -> bool) -> Option<u16> {
+        let resume = self.drain.as_ref()?.last_out(self.epoch)?;
+        idle().then_some(resume)
+    }
+
+    pub(super) fn stop(&mut self) {
         if let Some(d) = self.drain.as_mut() {
-            d.set_active(false);
-            d.clear_ready();
-        }
-    }
-
-    fn next_ready(&mut self) -> Option<(usize, BufMeta)> {
-        if !self.active || self.in_flight {
-            return None;
-        }
-        let (next, epoch) = (self.next, self.epoch);
-        let meta = self.drain.as_mut()?.ready(next, epoch)?;
-        Some((next, meta))
-    }
-
-    /// After bus work that may have cleared what held the next batch back:
-    /// wake the stager if that batch is banked.
-    pub(super) fn wake_if_ready(&mut self) {
-        if self.next_ready().is_some()
-            && let Some(d) = self.drain.as_ref()
-        {
-            d.wake();
-        }
-    }
-}
-
-impl<P: Providers> ServoBus<P> {
-    /// The stager body, at the bus level from the vector a [`StagerWake`]
-    /// pends: when a burst is live, a batch is banked, and the wire is
-    /// ours -- TX idle, no frame mid-verdict -- stage the next `Stream`
-    /// status frame and put it on the wire. The arm's break-silence contract
-    /// makes the immediate trigger safe: any host traffic would have killed
-    /// the burst in `on_break` before this poll ran.
-    pub fn poll_tel(&mut self) {
-        if self.tx.busy() || self.pending.is_some() {
-            return;
-        }
-        let Some((idx, meta)) = self.burst.next_ready() else {
-            return;
-        };
-        let Some(d) = self.burst.drain.as_ref() else {
-            return;
-        };
-        let len = (meta.len as usize).min(STREAM_PAYLOAD_MAX);
-        let payload = &d.payload(idx)[..len];
-        if self
-            .tx
-            .stage(
-                &mut self.crc,
-                self.id,
-                ResultCode::Stream,
-                meta.alert,
-                payload,
-            )
-            .is_ok()
-        {
-            self.tx.trigger(&mut self.crc, None);
-            self.burst.in_flight = true;
-            self.burst.last_in_flight = meta.last;
+            d.stop();
         }
     }
 }

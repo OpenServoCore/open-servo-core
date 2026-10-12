@@ -673,14 +673,22 @@ full frame must clear the wire inside 95% of its own 16-tick window: 13
 B at 3 M, 8 at 2 M, 3 at 1 M, none at 0.5 M - and the servo's, the
 longest row it encodes and stages at the tick rate (osc-servo: 11 B).
 2 M carries the ladder's four fields (7 B); the six raw fields need 3 M.
+An arm parks the same way while a shunt burst is armed or capturing
+(osc-servo, sec 5.8): the two share the ADC, and a shunt arm in turn
+refuses while `tel_count` is nonzero.
 
 The wire contract during a burst: the host is silent. The servo owns
 the line from the arm's ack (or the arming COMMIT's silence) through
 the LAST-flagged frame, then the line frees on its own - no polling, no
-handshake. Any host break mid-burst aborts the burst immediately;
-reclaiming the line IS the host's abort lever, and the one in-flight
-frame it garbles is the host's chosen cost. The instruction that
-arrived is then served normally, including a fresh re-arm.
+handshake. There is no abort: the servo ignores breaks and bytes that
+reach it in that window, and whatever a host sends there is lost, along
+with any burst frame it collides with (a CRC fail and a `stream_seq`
+hole). A host waits for LAST, or for its own timeout, before it speaks
+again; the first instruction after LAST is served normally, a fresh
+re-arm included. The window is bounded by `tel_count`, at most one
+second of control ticks: osc-servo's field rule caps it at 20000
+(`max` in the descriptor), and a longer write rejects as a validation
+error.
 
 Integrity is the point: a corrupted burst frame fails CRC and is
 dropped whole by the host framer - it can never decode as plausible

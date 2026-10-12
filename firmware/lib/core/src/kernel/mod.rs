@@ -307,6 +307,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             .drive(&meas, &self.cfg.fast, &self.cmd, &self.faults);
         let (_sensors, motor) = self.io.parts();
         motor.write(out);
+        self.tel.on_tick_end();
     }
 }
 

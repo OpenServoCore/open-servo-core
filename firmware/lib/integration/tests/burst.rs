@@ -49,6 +49,44 @@ fn write_args(addr: u16, data: &[u8]) -> Vec<u8> {
     p
 }
 
+/// TEL and the shunt burst share the ADC: a `tel_count` write while the
+/// shunt burst is ARMED or CAPTURING acks and parks (no stream); DONE holds
+/// nothing, and the burst streams.
+#[test]
+fn tel_count_write_parks_while_a_shunt_burst_is_armed_or_capturing() {
+    use osc_integration::sim::Sim;
+    use osc_servo_core::BaudRate;
+    use osc_servo_core::regions::control::addr::lifecycle::{TEL_COUNT, TEL_MASK};
+    use osc_servo_core::tel::BIT_POS;
+    for (st, streams) in [(state::ARMED, 0), (state::CAPTURING, 0), (state::DONE, 1)] {
+        let mut sim = Sim::new(BaudRate::B3000000);
+        let s = sim.add_servo(ID5);
+        sim.servo_table_mut(s, |t| t.burst.window.state = st);
+        for (addr, v) in [(TEL_MASK, BIT_POS), (TEL_COUNT, 16)] {
+            sim.host_send(&instruction(
+                ID5,
+                Opcode::Write,
+                0,
+                &write_args(addr, &v.to_le_bytes()),
+            ));
+            let frames = sim.run();
+            let replies = servo_frames(&frames);
+            assert_valid(replies[0]);
+            assert_eq!(
+                status(replies[0]).0.result(),
+                Some(ResultCode::Ok),
+                "state {st}"
+            );
+            let stream = replies
+                .iter()
+                .filter(|f| status(f).0.result() == Some(ResultCode::Stream))
+                .count();
+            let want = if addr == TEL_COUNT { streams } else { 0 };
+            assert_eq!(stream, want, "state {st}");
+        }
+    }
+}
+
 #[apply(matrix)]
 fn burst_duty_over_duty_max_is_validation(baud_idx: u8) {
     let mut sim = sim(baud_idx);

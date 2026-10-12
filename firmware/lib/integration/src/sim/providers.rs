@@ -1,7 +1,8 @@
-//! The seven `osc_servo_drivers::traits::bus` providers over per-servo shared state
+//! The six `osc_servo_drivers::traits::bus` providers over per-servo shared state
 //! (`docs/osc-native-protocol.md` sec 4, 10). Each provider is a thin view onto
 //! `Rc`-shared cells the [`super::Sim`] also holds a handle to, so wire
-//! deliveries and the driver see one ring, one clock, one baud.
+//! deliveries and the driver see one ring, one clock, one baud - and the bus
+//! and the kernel's TEL lane one wire and one CRC engine.
 
 use std::cell::{Cell, RefCell, UnsafeCell};
 use std::collections::VecDeque;
@@ -11,8 +12,7 @@ use osc_protocol::crc::osc_crc_continue;
 use osc_protocol::wire;
 use osc_servo_core::BaudRate;
 use osc_servo_drivers::traits::bus::{
-    BreakStamps, CrcEngine, Deadline, Providers, RxRing, StagerWake, TxWire, UsartBaud,
-    tick_reached,
+    BreakStamps, CrcEngine, Deadline, Providers, RxRing, TxWire, UsartBaud, tick_reached,
 };
 
 use super::core::{Core, Event, Talker, break_ticks, byte_ticks};
@@ -177,10 +177,12 @@ pub struct Handles {
     /// preemption between the two.
     pub clock_lag: Rc<Cell<u64>>,
     pub stamps: Rc<StampState>,
-    /// Holds a body's own frame start until the body reaches its trigger.
-    pub tx_gate: Rc<TxGate>,
-    /// The stager vector's pend bit: wakes merge until the sim delivers it.
-    pub stager: Rc<Cell<bool>>,
+    /// The TX shifter, bus and TEL lane alike.
+    pub wire: Rc<WireShared>,
+    /// The one CRC engine both the bus and the TEL lane feed.
+    pub crc: Rc<Cell<u16>>,
+    /// What the TEL lane did, for the kernel lane's charges.
+    pub lane: Rc<LaneCounts>,
 }
 
 impl Handles {
@@ -191,58 +193,48 @@ impl Handles {
             baud: BaudState::new(rate),
             clock_lag: Rc::new(Cell::new(0)),
             stamps: Rc::default(),
-            tx_gate: Rc::default(),
-            stager: Rc::default(),
+            wire: Rc::default(),
+            crc: Rc::default(),
+            lane: Rc::default(),
         }
     }
 }
 
-/// A frame start (its break and the arms behind it) held while a handler
-/// body runs up to its trigger, so the break falls where the trigger runs,
-/// stretched by any kernel above the bus, rather than at the body's entry.
-/// Arms of a frame already on the wire pass straight through.
+/// One servo's TX shifter as both wire handles see it.
 #[derive(Default)]
-pub struct TxGate {
-    hold: Cell<bool>,
-    frame_held: Cell<bool>,
-    held: RefCell<Vec<Box<dyn FnOnce()>>>,
+pub struct WireShared {
+    /// End tick of the last-scheduled character: the next arm streams from
+    /// here so arms sit back-to-back on the wire (sec 4.2 tolerates the
+    /// re-arm gap).
+    end: Cell<u64>,
+    /// Frame breaks the bus's handle sent.
     starts: Cell<u64>,
 }
 
-impl TxGate {
-    pub fn hold(&self) {
-        self.hold.set(true);
-    }
-
-    /// End the hold; true when a frame start waits for [`Self::open`].
-    pub fn holding(&self) -> bool {
-        self.hold.set(false);
-        self.frame_held.get()
-    }
-
-    /// Put the held frame on the wire now.
-    pub fn open(&self) {
-        self.frame_held.set(false);
-        let held = std::mem::take(&mut *self.held.borrow_mut());
-        for f in held {
-            f();
-        }
-    }
-
-    /// Frame starts so far.
+impl WireShared {
     pub fn starts(&self) -> u64 {
         self.starts.get()
     }
+}
 
-    fn run(&self, starts_frame: bool, f: impl FnOnce() + 'static) {
-        self.starts.set(self.starts.get() + starts_frame as u64);
-        if self.hold.get() && (starts_frame || self.frame_held.get()) {
-            self.frame_held.set(true);
-            self.held.borrow_mut().push(Box::new(f));
-        } else {
-            f();
-        }
+/// The TEL lane's wire and CRC-engine operations so far, counted where the
+/// kernel's handles run them.
+#[derive(Default)]
+pub struct LaneCounts {
+    /// Images armed.
+    pub wire: Cell<u64>,
+    pub feeds: Cell<u64>,
+    pub patches: Cell<u64>,
+}
+
+impl LaneCounts {
+    pub fn snapshot(&self) -> [u64; 3] {
+        [self.wire.get(), self.feeds.get(), self.patches.get()]
     }
+}
+
+fn bump(c: &Cell<u64>) {
+    c.set(c.get() + 1);
 }
 
 // --- providers --------------------------------------------------------------
@@ -353,38 +345,64 @@ impl Deadline for SimDeadline {
     }
 }
 
-/// Software osc-CRC accumulator with an immediate result (sec 3.2, F6 modelled as
-/// instantaneous). Even-length feeds are asserted (F12); the even-*address*
-/// half of F12 is not -- heap-backed test buffers give no absolute-parity
-/// guarantee even where the driver's offsets are correct.
+/// The SPI1 engine's time per covered byte, HCLK ticks: the transport
+/// ledger's ~0.36 us/B, rounded up.
+const CRC_ENGINE_TICKS_PER_BYTE: u64 = 18;
+
+/// Software osc-CRC accumulator (sec 3.2). The bus's handle reads the result
+/// at once (F6 as instantaneous: the bus spins on it); the TEL lane's handle
+/// sees it once the engine would have chewed every fed byte, so a patch
+/// polled too soon waits a tick as on the chip. Both handles accumulate in
+/// one shared engine. Even-length feeds are asserted (F12); the
+/// even-*address* half of F12 is not: heap-backed test buffers give no
+/// absolute-parity guarantee even where the driver's offsets are correct.
 pub struct SimCrc {
-    state: u16,
+    state: Rc<Cell<u16>>,
     snap: Vec<u8>,
+    lane: Option<LaneEngine>,
+}
+
+struct LaneEngine {
+    core: Rc<RefCell<Core>>,
+    ready: u64,
+    counts: Rc<LaneCounts>,
 }
 
 impl SimCrc {
-    pub fn new() -> Self {
+    pub fn new(state: Rc<Cell<u16>>) -> Self {
         Self {
-            state: 0,
+            state,
             snap: vec![0; wire::covered_len(wire::len_for(wire::MAX_PAYLOAD))],
+            lane: None,
         }
     }
-}
 
-impl Default for SimCrc {
-    fn default() -> Self {
-        Self::new()
+    /// The TEL lane's handle onto the same engine.
+    pub fn lane(state: Rc<Cell<u16>>, core: Rc<RefCell<Core>>, counts: Rc<LaneCounts>) -> Self {
+        Self {
+            lane: Some(LaneEngine {
+                core,
+                ready: 0,
+                counts,
+            }),
+            ..Self::new(state)
+        }
     }
 }
 
 impl CrcEngine for SimCrc {
     fn reset(&mut self) {
-        self.state = 0;
+        self.state.set(0);
     }
 
     fn feed(&mut self, span: &[u8]) {
         assert_eq!(span.len() % 2, 0, "osc-CRC feed must be even-length (F12)");
-        self.state = osc_crc_continue(self.state, span);
+        self.state.set(osc_crc_continue(self.state.get(), span));
+        if let Some(e) = self.lane.as_mut() {
+            let now = e.core.borrow().now();
+            e.ready = e.ready.max(now) + span.len() as u64 * CRC_ENGINE_TICKS_PER_BYTE;
+            bump(&e.counts.feeds);
+        }
     }
 
     fn snapshot(&mut self, off: u16, src: &[u8]) -> *const u8 {
@@ -394,98 +412,150 @@ impl CrcEngine for SimCrc {
     }
 
     fn result(&mut self) -> Option<u16> {
-        Some(self.state)
+        if let Some(e) = self.lane.as_ref() {
+            if e.core.borrow().now() < e.ready {
+                return None;
+            }
+            bump(&e.counts.patches);
+        }
+        Some(self.state.get())
     }
 }
 
+/// The servo's TX wire. The bus's handle streams its arms as copies and
+/// raises a TX-done per arm; the TEL lane's handle raises none, and its
+/// DMA reads each image byte from memory as the wire reaches it, so a byte
+/// written behind the read ships stale.
 pub struct SimWire {
     core: Rc<RefCell<Core>>,
     baud: Rc<BaudState>,
     idx: usize,
-    /// End tick of the last-scheduled byte -- the next arm streams from here so
-    /// arms sit back-to-back on the wire (sec 4.2 tolerates the re-arm gap).
-    tx_cursor: Rc<Cell<u64>>,
-    gate: Rc<TxGate>,
+    shared: Rc<WireShared>,
+    lane: Option<Rc<LaneCounts>>,
 }
 
 impl SimWire {
-    pub fn new(core: Rc<RefCell<Core>>, baud: Rc<BaudState>, idx: usize, gate: Rc<TxGate>) -> Self {
+    pub fn new(
+        core: Rc<RefCell<Core>>,
+        baud: Rc<BaudState>,
+        idx: usize,
+        shared: Rc<WireShared>,
+    ) -> Self {
         Self {
             core,
             baud,
             idx,
-            tx_cursor: Rc::new(Cell::new(0)),
-            gate,
+            shared,
+            lane: None,
         }
+    }
+
+    /// The TEL lane's handle onto the same wire.
+    pub fn lane(
+        core: Rc<RefCell<Core>>,
+        baud: Rc<BaudState>,
+        idx: usize,
+        shared: Rc<WireShared>,
+        counts: Rc<LaneCounts>,
+    ) -> Self {
+        Self {
+            lane: Some(counts),
+            ..Self::new(core, baud, idx, shared)
+        }
+    }
+
+    fn put_break(&mut self) {
+        let baud = self.baud.current();
+        let brk = break_ticks(baud);
+        let mut c = self.core.borrow_mut();
+        let start = c.now();
+        let break_end = start + brk;
+        c.claim(Talker::Servo(self.idx), start, break_end);
+        c.schedule(
+            Event::WireBreak {
+                talker: Talker::Servo(self.idx),
+                baud,
+                break_start: start,
+            },
+            break_end,
+        );
+        self.shared.end.set(break_end);
     }
 }
 
 impl TxWire for SimWire {
     fn start_frame(&mut self) {
-        let (core, baud, idx, cursor) = (
-            self.core.clone(),
-            self.baud.clone(),
-            self.idx,
-            self.tx_cursor.clone(),
-        );
-        self.gate.run(true, move || {
-            let baud = baud.current();
-            let brk = break_ticks(baud);
-            let mut c = core.borrow_mut();
-            let start = c.now();
-            let break_end = start + brk;
-            c.claim(Talker::Servo(idx), start, break_end);
-            c.schedule(
-                Event::WireBreak {
-                    talker: Talker::Servo(idx),
-                    baud,
-                    break_start: start,
-                },
-                break_end,
-            );
-            cursor.set(break_end);
-        });
+        bump(&self.shared.starts);
+        self.put_break();
     }
 
     fn send(&mut self, span: &[u8]) {
-        let (core, baud, idx, cursor) = (
-            self.core.clone(),
-            self.baud.clone(),
-            self.idx,
-            self.tx_cursor.clone(),
-        );
-        let span = span.to_vec();
-        self.gate.run(false, move || {
-            let baud = baud.current();
-            let bt = byte_ticks(baud);
-            let mut c = core.borrow_mut();
-            // A late TC delivery (busy CPU) arms the next span after the
-            // previous one drained: on silicon that is an inter-byte gap on
-            // the wire (legal: nothing times on idle, sec 4.2). Clamp so
-            // the DES clock never rewinds.
-            let start = cursor.get().max(c.now());
-            for (k, &b) in span.iter().enumerate() {
-                let t = start + (k as u64 + 1) * bt;
-                c.schedule(
-                    Event::WireData {
-                        talker: Talker::Servo(idx),
-                        byte: b,
-                        baud,
-                    },
-                    t,
-                );
-            }
-            let end = start + span.len() as u64 * bt;
-            c.claim(Talker::Servo(idx), start, end);
-            c.schedule(Event::TxArmDone { servo: idx }, end);
-            cursor.set(end);
-        });
+        let baud = self.baud.current();
+        let bt = byte_ticks(baud);
+        let mut c = self.core.borrow_mut();
+        // A late TC delivery (busy CPU) arms the next span after the
+        // previous one drained: on silicon that is an inter-byte gap on
+        // the wire (legal: nothing times on idle, sec 4.2). Clamp so the
+        // DES clock never rewinds.
+        let start = self.shared.end.get().max(c.now());
+        for (k, &b) in span.iter().enumerate() {
+            let t = start + (k as u64 + 1) * bt;
+            c.schedule(
+                Event::WireData {
+                    talker: Talker::Servo(self.idx),
+                    byte: b,
+                    baud,
+                },
+                t,
+            );
+        }
+        let end = start + span.len() as u64 * bt;
+        c.claim(Talker::Servo(self.idx), start, end);
+        c.schedule(Event::TxArmDone { servo: self.idx }, end);
+        self.shared.end.set(end);
     }
 
     fn release(&mut self) {
         self.core
             .borrow_mut()
             .finalize_servo_frame(Talker::Servo(self.idx));
+    }
+
+    fn idle(&self) -> bool {
+        self.core.borrow().now() >= self.shared.end.get()
+    }
+
+    fn break_start(&mut self) {
+        self.put_break();
+    }
+
+    fn stream(&mut self, image: &[u8]) {
+        if let Some(n) = self.lane.as_ref() {
+            bump(&n.wire);
+        }
+        let baud = self.baud.current();
+        let bt = byte_ticks(baud);
+        let talker = Talker::Servo(self.idx);
+        let mut c = self.core.borrow_mut();
+        let start = self.shared.end.get().max(c.now());
+        // The data register holds one byte ahead of the shifter: byte k is
+        // read as byte k - 1 starts shifting, and rings at its stop bit.
+        for k in 0..image.len() {
+            let read = start + (k.max(1) as u64 - 1) * bt;
+            c.schedule(
+                Event::DmaFetch {
+                    talker,
+                    src: image[k..].as_ptr(),
+                    baud,
+                    at: start + (k as u64 + 1) * bt,
+                    last: k + 1 == image.len(),
+                },
+                read,
+            );
+        }
+        let end = start + image.len() as u64 * bt;
+        c.claim(talker, start, end);
+        self.shared.end.set(end);
     }
 }
 
@@ -523,16 +593,6 @@ impl BreakStamps for SimStamps {
     }
 }
 
-/// Sets the servo's stager pend bit, for both halves of its TEL channel.
-#[derive(Clone)]
-pub struct SimStager(pub Rc<Cell<bool>>);
-
-impl StagerWake for SimStager {
-    fn wake(&self) {
-        self.0.set(true);
-    }
-}
-
 /// ZST binding each provider role for the `ServoBus` composite.
 pub struct SimProviders;
 
@@ -543,5 +603,4 @@ impl Providers for SimProviders {
     type Tx = SimWire;
     type Baud = SimBaud;
     type Stamps = SimStamps;
-    type Stager = SimStager;
 }

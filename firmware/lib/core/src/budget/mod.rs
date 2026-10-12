@@ -101,6 +101,43 @@ pub const TEL_ENCODE_MEAN: [u32; 2] = [478, 427];
 /// phase of either regime, 150 (Open, stepping).
 pub const TEL_BANK: u32 = 198;
 
+/// The TX lane a TEL burst's kernel owns (protocol sec 5.6), on top of
+/// the TEL tick. E: each priced on the release image's executed path with
+/// the fetch model (per straight run 3 HCLK a flash word spanned and 3 for
+/// the taken transfer into it, or 1 an instruction and 2 a load or store
+/// when that is more), plus 10%. TEL_POLL: the dearest tick with no lane
+/// step, a frame's end that starts nothing (90 priced; the gate and the TX
+/// poll alone 51-66). The lane takes at most one step a tick, never on a
+/// tick that lands a head or a trailer, each over the poll: TEL_FEED, a
+/// frame's start (CRC engine reset, the written bytes' feed, the break)
+/// on the tick the frame before it ended (321 with the poll), or the feed
+/// of the rest after a bank (207); TEL_ARM, the DMA arm behind the break
+/// with the LAST frame's resume cursor (270); TEL_PATCH, the CRC read, its
+/// odd fold and the 2 B store (240). TEL_HEAD: row 0 over a plain row, the
+/// frame header, head and start rule (90).
+pub const TEL_POLL: u32 = 99;
+pub const TEL_HEAD: u32 = 99;
+pub const TEL_FEED: u32 = 255;
+pub const TEL_ARM: u32 = 198;
+pub const TEL_PATCH: u32 = 165;
+
+const fn max(a: u32, b: u32) -> u32 {
+    if a > b { a } else { b }
+}
+
+/// The most a TEL tick that banks nothing carries beyond its row: the poll
+/// and one lane step, or row 0's head on a tick the lane leaves be.
+pub const fn tel_lane() -> u32 {
+    TEL_POLL + max(max(TEL_HEAD, TEL_FEED), max(TEL_ARM, TEL_PATCH))
+}
+
+/// The lane's share of a TEL tick over a window, for the mean budgets: a
+/// 16-row frame's polls and steps spread over its ticks. E: priced (a tick
+/// with no step 51-66, 21 on the head and bank ticks; over it a start 231,
+/// the arm 210, the rest's feed 156, the patch 189, the head 90) and
+/// averaged, 107, plus 10%.
+pub const TEL_LANE_MEAN: u32 = 118;
+
 /// The SLOW block's first stage on its due tick (phase SLOW, every
 /// DECIM_SLOW periods): the permit lease, undervoltage and the
 /// thermometer's step on the tick's window, on top of the phase's row, per
@@ -341,10 +378,12 @@ pub const fn kernel_tick(regime: Regime, phase: usize, ev: Events) -> u32 {
         t += THERM_SIDE;
     }
     if ev.tel {
-        t += TEL_ENCODE[r];
-    }
-    if ev.bank {
-        t += TEL_BANK;
+        // The lane leaves a banking tick be (its gate is under the poll),
+        // so the dearest TEL tick is the bank's or a lane step's. A one-row
+        // batch's head rides in TEL_BANK, whose M bank cost the trailer
+        // alone now undercuts (priced 72, the head 90).
+        let bank = if ev.bank { TEL_BANK + TEL_POLL } else { 0 };
+        t += TEL_ENCODE[r] + max(tel_lane(), bank);
     }
     if ev.health {
         t += HEALTH_CLOSE;

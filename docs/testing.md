@@ -20,7 +20,7 @@ gear 3 carries one hardware assertion with a measured budget — it is complete 
 silicon-only properties, not on logic.
 
 The timing pins of gear 2 that do model CPU time (the kernel lane, the bus
-handler costs, the TEL stager) charge one table, `osc_servo_core::budget`, in
+handler costs, the TEL lane) charge one table, `osc_servo_core::budget`, in
 HCLK ticks. Gear 3's `budgets` test holds the chip to the same table, so while
 it is green no modelled cost is cheaper than silicon. Every gating pin runs at
 budget (every body at its maximum, every injected backlog at the worst the

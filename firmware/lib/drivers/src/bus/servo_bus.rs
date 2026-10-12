@@ -88,8 +88,8 @@ pub struct ServoBus<P: Providers> {
     unringed: Option<u32>,
     // Clock discipline (sec 9.3): MGMT CAL + trim loop.
     clock: ClockDiscipline,
-    // TEL burst stager (sec 5.3): armed by tel_count, fed by `poll_tel`.
-    burst: TelBurst<P::Stager>,
+    // TEL burst (sec 5.6): armed by tel_count, streamed by the kernel.
+    burst: TelBurst,
     // Rescue sampler window (sec 9.1): the first low sample's tick and the
     // cursor the ring must hold until the declaration.
     rescue_since: Option<u32>,
@@ -160,9 +160,9 @@ impl<P: Providers> ServoBus<P> {
         }
     }
 
-    /// Bind the TEL sample channel's consumer half. Bringup-only, before any
-    /// arm can arrive; without it `tel_arm` stays a drop.
-    pub fn attach_tel(&mut self, drain: crate::tel::TelDrain<P::Stager>) {
+    /// Bind the TEL channel's bus half. Bringup-only, before any arm can
+    /// arrive; without it `tel_arm` stays a drop.
+    pub fn attach_tel(&mut self, drain: crate::tel::TelDrain) {
         self.burst.attach(drain);
     }
 
@@ -179,6 +179,11 @@ impl<P: Providers> ServoBus<P> {
     /// (resolver, stale-reply kill) one byte-time later in
     /// [`Self::reinspect`], from ring data alone.
     pub fn on_break<D: Dispatch>(&mut self, d: &mut D) {
+        // sec 5.6: the servo owns the line from a burst's ack to its LAST
+        // frame; a break before LAST has left the wire is ignored.
+        if self.tx.lent() && !self.take_lane() {
+            return;
+        }
         let now = self.deadline.now();
         // MGMT CAL train (sec 9.3): while a train is live, breaks are ruler
         // marks, not frame traffic. A mark is its detector's hardware stamp,
@@ -199,18 +204,6 @@ impl<P: Providers> ServoBus<P> {
             self.arm_deadline();
             return;
         }
-        // A break during a live burst is the host reclaiming the line -- and
-        // the host's abort lever. Kill the burst and any in-flight frame
-        // before the resolver runs (the garbled frame is the host's chosen
-        // cost); the arriving instruction then handles normally, including a
-        // fresh tel_count re-arm. Inactive burst: this block is inert, so
-        // non-burst exchanges are untouched.
-        if self.burst.active() {
-            self.burst.abort();
-            self.tx.abort();
-            self.chain.reset();
-            self.chain_at = None;
-        }
         self.unringed = (!self.serve_break(d)).then_some(now);
         // sec 6: a break while we hold a staged chain slot means the
         // predecessor is alive -- suspend its reclaim window while the
@@ -218,6 +211,22 @@ impl<P: Providers> ServoBus<P> {
         let out = self.chain.on_break_observed(now);
         self.route_chain(out);
         self.arm_deadline();
+    }
+
+    /// Take the line back from a burst whose LAST frame has left the wire.
+    /// The ladder resumes at the ring cursor read while LAST streamed (the
+    /// receiver is deaf under own TX, so it was still): whatever a host sent
+    /// during the burst is skipped, and the break being served is the first
+    /// one after it.
+    fn take_lane(&mut self) -> bool {
+        let tx = &self.tx;
+        let Some(resume) = self.burst.returned(|| tx.wire_idle()) else {
+            return false;
+        };
+        self.tx.reclaim();
+        self.burst.stop();
+        self.framer.resync(resume);
+        true
     }
 
     /// One byte-time after a wake whose break byte had not rung: the frame
@@ -307,7 +316,6 @@ impl<P: Providers> ServoBus<P> {
                 break;
             }
         }
-        self.burst.wake_if_ready();
         self.arm_deadline();
     }
 
@@ -315,23 +323,27 @@ impl<P: Providers> ServoBus<P> {
     /// once the whole reply has drained (sec 4.2) -- the ack always leaves at
     /// the old id/baud, the change lands after.
     pub fn on_tx_complete(&mut self) {
-        if self.tx.on_arm_complete(&mut self.crc) == TxOut::Released {
-            if let Some(id) = self.pending_id.take() {
-                self.id = id;
-            }
-            if let Some(baud) = self.pending_baud.take() {
-                self.baud.apply(baud);
-                self.rate = baud;
-                self.tpb = tpb_for::<P>(self.rate);
-            }
-            // A pending reboot waits for the main loop's `take_reboot`.
-            self.burst.on_tx_released();
-            self.burst.wake_if_ready();
-            // The ladder waited on the CRC engine while the reply streamed.
-            if !self.framer.caught_up(self.ring.cursor()) {
-                self.framer_at = Some(self.deadline.now());
-                self.arm_deadline();
-            }
+        let out = self.tx.on_arm_complete(&mut self.crc);
+        if out == TxOut::Armed {
+            return;
+        }
+        if let Some(id) = self.pending_id.take() {
+            self.id = id;
+        }
+        if let Some(baud) = self.pending_baud.take() {
+            self.baud.apply(baud);
+            self.rate = baud;
+            self.tpb = tpb_for::<P>(self.rate);
+        }
+        // A pending reboot waits for the main loop's `take_reboot`.
+        if out == TxOut::Lent {
+            self.burst.start(self.id, self.rate);
+            return;
+        }
+        // The ladder waited on the CRC engine while the reply streamed.
+        if !self.framer.caught_up(self.ring.cursor()) {
+            self.framer_at = Some(self.deadline.now());
+            self.arm_deadline();
         }
     }
 
@@ -453,7 +465,6 @@ impl<P: Providers> ServoBus<P> {
         let cursor = self.ring.cursor();
         self.framer.resync(cursor);
         self.chain.reset();
-        self.burst.abort();
         self.tx.abort();
         // A dropped pending frame's staged table effect is reclaimed by the
         // dispatcher's auto-revert on the next dispatch.

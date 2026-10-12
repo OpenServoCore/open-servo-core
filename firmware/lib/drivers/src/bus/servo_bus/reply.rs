@@ -7,12 +7,12 @@ use osc_servo_core::{BaudRate, BootMode, tel};
 use super::super::tx::TxEngine;
 use super::ServoBus;
 use super::tel::TelBurst;
-use crate::traits::bus::{CrcEngine, Providers, StagerWake, TxWire};
+use crate::traits::bus::{CrcEngine, Providers, TxWire};
 
 /// Reply surface over disjoint `ServoBus` fields (driver-pattern sec 4.3): the
 /// decoded request still borrows the ring while the dispatcher stages the
 /// reply into the TX engine and the deferred-config fields.
-pub(super) struct ReplyHandle<'a, W: TxWire, C: CrcEngine, S: StagerWake> {
+pub(super) struct ReplyHandle<'a, W: TxWire, C: CrcEngine> {
     pub(super) tx: &'a mut TxEngine<W>,
     pub(super) crc: &'a mut C,
     /// Write-through to the bus id: `set_id` applies here so a status staged
@@ -23,7 +23,7 @@ pub(super) struct ReplyHandle<'a, W: TxWire, C: CrcEngine, S: StagerWake> {
     pub(super) pending_reboot: &'a mut Option<BootMode>,
     pub(super) pending_cal: &'a mut Option<(u16, u8)>,
     pub(super) response_deadline_us: &'a mut u16,
-    pub(super) burst: &'a mut TelBurst<S>,
+    pub(super) burst: &'a mut TelBurst,
     /// The line's rate now (the rescue rate included): TEL admission's.
     pub(super) rate: BaudRate,
     pub(super) staged: bool,
@@ -45,7 +45,7 @@ impl<P: Providers> ServoBus<P> {
     /// A reply surface over the deferred-config fields, with no request decode --
     /// used at verdict commit, where hooks stage baud/id but no frame is
     /// re-parsed (the ring isn't borrowed here).
-    pub(super) fn reply_handle(&mut self) -> ReplyHandle<'_, P::Tx, P::Crc, P::Stager> {
+    pub(super) fn reply_handle(&mut self) -> ReplyHandle<'_, P::Tx, P::Crc> {
         ReplyHandle {
             tx: &mut self.tx,
             crc: &mut self.crc,
@@ -63,7 +63,7 @@ impl<P: Providers> ServoBus<P> {
     }
 }
 
-impl<W: TxWire, C: CrcEngine, S: StagerWake> Reply for ReplyHandle<'_, W, C, S> {
+impl<W: TxWire, C: CrcEngine> Reply for ReplyHandle<'_, W, C> {
     fn send_status(&mut self, status: Status<'_>) -> Result<(), SendError> {
         let r = self
             .tx
@@ -114,13 +114,27 @@ impl<W: TxWire, C: CrcEngine, S: StagerWake> Reply for ReplyHandle<'_, W, C, S> 
         *self.response_deadline_us = us;
     }
 
+    /// The lane passes at the release of the ack in hand, or now when
+    /// none is: an aborted ack takes the burst with it.
     fn tel_arm(&mut self, mask: u16, count: u16) {
+        // sec 5.6: the line is the burst's until LAST, so a second arm in
+        // the body that lent it is void.
+        if self.tx.lent() {
+            return;
+        }
         let count = if tel::admits(mask, self.rate) {
             count
         } else {
             0
         };
-        self.burst.arm(mask, count);
+        if !self.burst.arm(mask, count) {
+            self.tx.keep();
+            return;
+        }
+        self.tx.lend();
+        if self.tx.lent() {
+            self.burst.start(*self.id, self.rate);
+        }
     }
 
     fn stage_reboot(&mut self, mode: BootMode) {

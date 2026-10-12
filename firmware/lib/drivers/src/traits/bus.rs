@@ -54,6 +54,10 @@ pub trait CrcEngine {
 /// TX side of the half-duplex wire (sec 4.2): break + one DMA arm at a time.
 /// The pin stays open drain throughout (sec 2). Arm completion surfaces as
 /// the chip TC ISR calling the driver's `on_tx_complete`.
+///
+/// The TEL lane (sec 5.6) drives the same wire from the kernel tick,
+/// polled: [`Self::break_start`], then [`Self::stream`] once [`Self::idle`],
+/// and no TX interrupt.
 pub trait TxWire {
     /// Send the break that opens the frame (sec 3).
     fn start_frame(&mut self);
@@ -62,6 +66,14 @@ pub trait TxWire {
     fn send(&mut self, span: &[u8]);
     /// End the TX window: TX DMA off.
     fn release(&mut self);
+    /// The last character left the shifter and no armed byte is left.
+    fn idle(&self) -> bool;
+    /// Start the break with the break detector deaf to it; returns at once.
+    fn break_start(&mut self);
+    /// After the break went [`Self::idle`]: listen again and stream `image`
+    /// whole by DMA, with no TX interrupt. Bytes are read as the wire
+    /// reaches them: `image` may still be written behind the read point.
+    fn stream(&mut self, image: &[u8]);
 }
 
 /// Single-channel USART baud control; also the rescue-rate entry (sec 9.1 --
@@ -81,14 +93,6 @@ pub trait BreakStamps {
     fn clear(&mut self);
 }
 
-/// Pends the TEL stager ([`crate::bus::ServoBus::poll_tel`]), which runs at
-/// the bus level once the waking context returns. Any context may wake it;
-/// wakes merge while one is pending, and a wake with nothing to stage costs
-/// one empty poll.
-pub trait StagerWake: Clone {
-    fn wake(&self);
-}
-
 /// Role bundle for the `ServoBus` composite (driver-pattern sec 5.4).
 pub trait Providers {
     type Ring: RxRing;
@@ -97,7 +101,6 @@ pub trait Providers {
     type Tx: TxWire;
     type Baud: UsartBaud;
     type Stamps: BreakStamps;
-    type Stager: StagerWake;
 }
 
 /// Wrap-aware "`a` is at or after `b`" on the u32 tick domain.

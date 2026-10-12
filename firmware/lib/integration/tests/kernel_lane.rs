@@ -8,7 +8,7 @@
 use osc_host::engine::{CHAIN_READY_LAG_US, Command, Outcome};
 use osc_integration::sim::{
     HandlerCost, HostEvent, KernelEvents, KernelLane, KernelLevel, KernelStats, Motion, Sim,
-    Source, TelCosts, frame_crc_ok, instruction, status,
+    Source, TelCosts, WireFrame, frame_crc_ok, instruction, status,
 };
 use osc_protocol::build;
 use osc_protocol::wire::{Id, Inst, Opcode, ResultCode, STREAM_SAMPLES_MAX};
@@ -113,7 +113,7 @@ fn event_tick(phase: u8, ev: Events) -> u32 {
 /// streaming with a TEL row and its bank on the same tick.
 #[rstest]
 #[case::quiet(false)]
-#[ignore = "over budget: the TEL row (591), its bank (198) and the health close (308) put the side tick at 2943 with entry and exit, 543 over (install 2593, freeze 2413); a plain Closed p1 with the TEL row and the close takes 2589"]
+#[ignore = "over budget: the TEL row (591), the TX lane's dearest step with its poll (354; a bank's tick is no dearer) and the health close (308) put the side tick at 3099 with entry and exit, 699 over (install 2749, freeze 2569); a plain Closed p1 with the same takes 2943"]
 #[case::streaming(true)]
 fn thermal_close_fits_at_budget_while_seated(#[case] tel: bool) {
     let carried = Events {
@@ -187,7 +187,7 @@ const SLOW_STAGES: [Events; 3] = [
 /// The SLOW stages while six fields stream and step, Closed at budget,
 /// with a bank on the tick.
 #[test]
-#[ignore = "over budget: Closed SLOW 1181 + TEL 591 + bank 198 + entry and exit 80 leaves 350 of the period; the due stage takes 446 (2496, 96 over), the finish 363 (2413); a plain Closed p1 with the TEL row and the close takes 2589"]
+#[ignore = "over budget: Closed SLOW 1181 + TEL 591 + the TX lane's dearest step 354 + entry and exit 80 leaves 194 of the period; the due stage takes 446 (2652, 252 over), the finish 363 (2569); a plain Closed p1 with the TEL row, the lane step and the close takes 2943"]
 fn slow_stages_fit_at_budget_while_streaming() {
     for stage in SLOW_STAGES {
         let ev = Events {
@@ -419,25 +419,34 @@ const STARTS: u64 = 62;
 /// bus at budget for `motion`, the host `k` x 13 us late: the stream frames
 /// with a good CRC, and the rows the encoder dropped.
 fn tel_burst(mask: u16, motion: Motion, k: u64) -> (usize, u16) {
+    let (frames, drops) = tel_burst_at(BaudRate::B3000000, mask, motion, k);
+    let stream = |f: &&WireFrame| status(f).0.result() == Some(ResultCode::Stream);
+    let good = frames
+        .iter()
+        .filter(stream)
+        .filter(|f| frame_crc_ok(f))
+        .count();
+    (good, drops)
+}
+
+/// [`tel_burst`] at `rate`, every servo frame from the count write on (its
+/// ack first), at budget.
+fn tel_burst_at(rate: BaudRate, mask: u16, motion: Motion, k: u64) -> (Vec<WireFrame>, u16) {
     let start = START_US + 13 * k;
-    let mut sim = Sim::new(BaudRate::B3000000);
+    let mut sim = Sim::new(rate);
     let s = sim.add_servo(ID);
     sim.set_handler_cost(s, HandlerCost::at_budget(Frame::Write));
     let rows = TEL_FRAMES * STREAM_SAMPLES_MAX as u16;
     let lane = KernelLane::at_budget(KernelLevel::AboveBus, motion);
-    sim.set_kernel_lane(s, lane, start + 3 * rows as u64 * 50);
+    sim.set_kernel_lane(s, lane, start + 3 * rows as u64 * 50 + 10_000);
     sim.host_send_at(start, &write_u16(TEL_MASK, mask));
     sim.run_until(start + 2_000);
     sim.host_send_at(start + 2_000, &write_u16(TEL_COUNT, rows));
     let frames = sim
         .run()
-        .iter()
-        .filter(|f| {
-            f.from == Source::Servo(ID)
-                && status(f).0.result() == Some(ResultCode::Stream)
-                && frame_crc_ok(f)
-        })
-        .count();
+        .into_iter()
+        .filter(|f| f.from == Source::Servo(ID))
+        .collect();
     (frames, sim.tel_drops(s))
 }
 
@@ -469,8 +478,9 @@ fn tel_widest_row_keeps_up_at_rest() {
     }
 }
 
+/// Stepping at budget, the kernel owning the TX lane: no bus body runs
+/// between frames, so the stream keeps up with the tick.
 #[test]
-#[ignore = "over budget: stepping at budget, a 1600-row burst of six packed fields sends its 100 frames but drops up to 343 rows over the 62 starts; the Closed rows with entry and exit plus the TEL row average 2080 of the 2400 period, and the stage body and two arms (2358) stretched by them outlast the 280 us a frame's wire time leaves of its batch"]
 fn tel_six_packed_fields_fit_at_budget_while_stepping() {
     for k in 0..STARTS {
         let got = tel_burst(SIX_FIELDS, Motion::Moving, k);
@@ -479,5 +489,72 @@ fn tel_six_packed_fields_fit_at_budget_while_stepping() {
             (TEL_FRAMES as usize, 0),
             "frames, rows dropped: start {k}"
         );
+    }
+}
+
+#[test]
+fn tel_widest_row_fits_at_budget_while_stepping() {
+    for k in 0..STARTS {
+        let got = tel_burst(WIDEST_ROW, Motion::Moving, k);
+        assert_eq!(
+            got,
+            (TEL_FRAMES as usize, 0),
+            "frames, rows dropped: start {k}"
+        );
+    }
+}
+
+/// The six raw fields and the widest row each rate admits, stepping at
+/// budget: a frame the DMA reads ahead of its rows' writes ships stale
+/// bytes and fails its CRC, so a clean stream with nothing dropped is a
+/// lane that never underran.
+#[test]
+fn tel_kernel_lane_never_underruns_at_budget() {
+    use osc_servo_core::tel::{BIT_CURRENT, BIT_CURRENT_RAW, BIT_POS, BIT_VBUS, BIT_VDIFF};
+    use osc_servo_core::tel::{BIT_POS_LIN, row_bytes, row_bytes_max};
+    let wide = BIT_CURRENT | BIT_VDIFF | BIT_VBUS | BIT_POS_LIN;
+    for (rate, mask) in [
+        (BaudRate::B3000000, SIX_FIELDS),
+        (BaudRate::B3000000, WIDEST_ROW),
+        (BaudRate::B2000000, wide),
+        (BaudRate::B1000000, BIT_POS | BIT_CURRENT_RAW),
+    ] {
+        assert!(row_bytes(mask) <= row_bytes_max(rate), "{rate:?}");
+        for k in (0..STARTS).step_by(4) {
+            let (frames, drops) = tel_burst_at(rate, mask, Motion::Moving, k);
+            let stream: Vec<_> = frames
+                .iter()
+                .filter(|f| status(f).0.result() == Some(ResultCode::Stream))
+                .collect();
+            let bad = stream.iter().filter(|f| !frame_crc_ok(f)).count();
+            assert_eq!(
+                (stream.len(), bad, drops),
+                (TEL_FRAMES as usize, 0, 0),
+                "{rate:?} {} B start {k}: frames, CRC-bad, rows dropped",
+                row_bytes(mask)
+            );
+        }
+    }
+}
+
+/// The lane passes at the arming ack's release, so the kernel's first feed
+/// can never reset the CRC engine under the ack: at budget, at every start
+/// offset, the ack and the burst's frames all verify.
+#[test]
+fn tel_ack_crc_survives_a_burst_start() {
+    use osc_servo_core::tel::{BIT_CURRENT_RAW, BIT_POS};
+    for (rate, mask) in [
+        (BaudRate::B3000000, SIX_FIELDS),
+        (BaudRate::B1000000, BIT_POS | BIT_CURRENT_RAW),
+    ] {
+        for k in 0..STARTS {
+            let (frames, _) = tel_burst_at(rate, mask, Motion::Moving, k);
+            let ack = &frames[0];
+            assert_eq!(status(ack).0.result(), Some(ResultCode::Ok), "{rate:?} {k}");
+            assert!(frame_crc_ok(ack), "{rate:?} start {k}: the ack");
+            let first = &frames[1];
+            assert_eq!(status(first).0.result(), Some(ResultCode::Stream));
+            assert!(frame_crc_ok(first), "{rate:?} start {k}: the first frame");
+        }
     }
 }
