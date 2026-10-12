@@ -13,6 +13,9 @@
 //! receives each window's report and raw records as the window ends.
 //! Drives the motor: holds and 600-count steps about the rail middle, each
 //! drive ending centred with torque off; the last window ends rebooted.
+//! `seated` runs only when `BUDGET_WINDOWS` names it: it needs the horn
+//! clamped at mid travel, and holds a goal past the clamp so the
+//! thermometer tracks a seat.
 //! Kernel ticks book by drive arm; each window also prints gamma(k), the
 //! long ticks by arm and the entry lateness. A bus body reports its net
 //! time (the kernel vectors inside it subtracted), which the table judges,
@@ -37,6 +40,7 @@ use osc_protocol::wire::{Opcode, ResultCode, STREAM_SAMPLES_MAX};
 use osc_servo_core::Mode;
 use osc_servo_core::budget::probe::{Component, LONG_TICKS, Row, Scenario, rows, us};
 use osc_servo_core::budget::{Frame, WINDOW_TICKS};
+use osc_servo_core::estimator::thermal::flag;
 use osc_servo_core::regions::config::addr::common::MODEL_NUMBER;
 use osc_servo_core::regions::control::addr::lifecycle::{
     GOAL_POSITION, MODE, TEL_MASK, TORQUE_ENABLE,
@@ -44,6 +48,7 @@ use osc_servo_core::regions::control::addr::lifecycle::{
 use osc_servo_core::regions::telemetry::addr::estimates::{SAMPLE_TICK, THETA_HAT_Q16};
 use osc_servo_core::regions::telemetry::addr::health::TEL_DROP_COUNT;
 use osc_servo_core::regions::telemetry::addr::sensors::POS;
+use osc_servo_core::regions::telemetry::addr::therm::THERM_FLAGS;
 use serial_test::serial;
 
 use crate::support::{Bench, bench};
@@ -67,6 +72,10 @@ const BROADCAST: u8 = 0xFE;
 const SLOW_BAUD: u32 = 1_000_000;
 /// `theta_hat_q16` holds pot counts in Q16.
 const THETA_FRAC_BITS: u32 = 16;
+/// The seated window's goal past the clamp, and the most the clamped shaft
+/// may move.
+const SEAT_PUSH: i32 = 40;
+const SEAT_MOVE_MAX: i32 = 10;
 
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 enum Gate {
@@ -252,6 +261,9 @@ fn kernel_and_bus_stay_inside_their_budgets() {
             poll(b, wire, failed, name)
         });
     }
+    if named("seated") {
+        f.window(&mut b, "seated", Gate::Budget, false, &writes, seated);
+    }
     reboot(&mut b);
 
     assert!(f.failed.is_empty(), "failed windows: {:#?}", f.failed);
@@ -272,9 +284,7 @@ impl Fill {
         frames: &[(Frame, u32)],
         run: impl FnOnce(&mut Bench, &mut Vec<String>),
     ) {
-        if let Ok(only) = env::var("BUDGET_WINDOWS")
-            && !only.split(',').any(|w| w.trim() == name)
-        {
+        if env::var_os("BUDGET_WINDOWS").is_some() && !named(name) {
             return;
         }
         reboot(b);
@@ -358,6 +368,35 @@ impl Fill {
             }
         }
     }
+}
+
+/// `BUDGET_WINDOWS` names the window.
+fn named(name: &str) -> bool {
+    env::var("BUDGET_WINDOWS").is_ok_and(|only| only.split(',').any(|w| w.trim() == name))
+}
+
+/// Hold a goal past the clamp: the drive pushes at the current limit on a
+/// still shaft, which the thermometer gates as a seat and tracks once its
+/// reference window closes. Fails when the thermometer has no model, the
+/// shaft moved (no clamp), or no seat was tracked.
+fn seated(b: &mut Bench, failed: &mut Vec<String>) {
+    let flags = |b: &mut Bench| read_bytes::<1>(b, THERM_FLAGS)[0];
+    if flags(b) & flag::UNSET != 0 {
+        failed.push("seated: the thermometer has no model".into());
+        return;
+    }
+    let here = present(b);
+    driven(b, |b| {
+        hold_at(b, here + SEAT_PUSH);
+        sleep(WINDOW);
+        let moved = present(b) - here;
+        if moved.abs() > SEAT_MOVE_MAX {
+            failed.push(format!("seated: the shaft moved {moved} counts"));
+        }
+        if flags(b) & flag::TRACK == 0 {
+            failed.push("seated: no seat tracked".into());
+        }
+    })
 }
 
 fn reboot(b: &mut Bench) {
@@ -486,12 +525,13 @@ fn ticks(t: u32) -> String {
 fn line(r: &Row) -> String {
     let name = match r.component {
         Component::Tick(r, p) => format!("{r:?} tick phase {p}"),
-        Component::TelTick(p) => format!("TEL tick phase {p}"),
-        Component::BankTick(p) => format!("bank tick phase {p}"),
+        Component::TelTick(r, p) => format!("{r:?} TEL tick phase {p}"),
+        Component::BankTick(r, p) => format!("{r:?} bank tick phase {p}"),
+        Component::Health(r, p) => format!("{r:?} close tick phase {p}"),
         c => format!("{c:?}"),
     };
     let mut s = format!(
-        "{name:<20} n {:>7}  max {} / budget {}",
+        "{name:<25} n {:>7}  max {} / budget {}",
         r.n,
         ticks(r.max),
         ticks(r.budget)

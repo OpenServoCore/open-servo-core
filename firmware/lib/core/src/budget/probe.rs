@@ -115,12 +115,15 @@ pub struct KernelProbe {
     /// [`Self::load`].
     pub tick: [[Tally; PHASES]; 2],
     pub tick_max: [[u16; PHASES]; 2],
-    /// Longest TEL tick that banked nothing, by phase.
-    pub tel_max: [u16; PHASES],
-    /// Longest banking tick, by phase.
-    pub bank_max: [u16; PHASES],
-    /// TEL ticks that banked nothing, all phases.
-    pub tel: Load,
+    /// Longest TEL tick that banked nothing, by regime and phase.
+    pub tel_max: [[u16; PHASES]; 2],
+    /// Longest banking tick, by regime and phase.
+    pub bank_max: [[u16; PHASES]; 2],
+    /// Longest tick that closed a tick-load window, by regime and phase,
+    /// whatever TEL work it also carried; no TEL or plain row holds one.
+    pub health_max: [[u16; PHASES]; 2],
+    /// TEL ticks that banked nothing, by regime, all phases.
+    pub tel: [Load; 2],
     /// Ticks that ran a configuration refresh stage, by stage.
     pub refresh: [Load; 2],
     /// SLOW-due ticks by regime, and those that froze a thermal reference
@@ -151,9 +154,10 @@ impl KernelProbe {
     pub const ZERO: Self = Self {
         tick: [[Tally::ZERO; PHASES]; 2],
         tick_max: [[0; PHASES]; 2],
-        tel_max: [0; PHASES],
-        bank_max: [0; PHASES],
-        tel: Load::ZERO,
+        tel_max: [[0; PHASES]; 2],
+        bank_max: [[0; PHASES]; 2],
+        health_max: [[0; PHASES]; 2],
+        tel: [Load::ZERO; 2],
         refresh: [Load::ZERO; 2],
         slow: [Load::ZERO; 2],
         close: Load::ZERO,
@@ -218,13 +222,19 @@ impl KernelProbe {
             self.install.add(body);
         } else if ev.side {
             self.side.add(body);
+        } else if ev.health {
+            if let Some(m) = self.health_max.get_mut(r).and_then(|m| m.get_mut(phase)) {
+                *m = (*m).max(body16);
+            }
         } else if ev.bank {
-            if let Some(m) = self.bank_max.get_mut(phase) {
+            if let Some(m) = self.bank_max.get_mut(r).and_then(|m| m.get_mut(phase)) {
                 *m = (*m).max(body16);
             }
         } else if ev.tel {
-            self.tel.add(body);
-            if let Some(m) = self.tel_max.get_mut(phase) {
+            if let Some(l) = self.tel.get_mut(r) {
+                l.add(body);
+            }
+            if let Some(m) = self.tel_max.get_mut(r).and_then(|m| m.get_mut(phase)) {
                 *m = (*m).max(body16);
             }
         } else if let (Some(t), Some(m)) = (
@@ -290,9 +300,10 @@ impl KernelProbe {
                 })
             }),
             tick_max: core::array::from_fn(|_| r.halves()),
-            tel_max: r.halves(),
-            bank_max: r.halves(),
-            tel: r.load(),
+            tel_max: core::array::from_fn(|_| r.halves()),
+            bank_max: core::array::from_fn(|_| r.halves()),
+            health_max: core::array::from_fn(|_| r.halves()),
+            tel: core::array::from_fn(|_| r.load()),
             refresh: core::array::from_fn(|_| r.load()),
             slow: core::array::from_fn(|_| r.load()),
             close: r.load(),
@@ -522,16 +533,18 @@ pub struct Scenario<'a> {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Component {
     Tick(Regime, usize),
-    TelTick(usize),
-    BankTick(usize),
+    TelTick(Regime, usize),
+    BankTick(Regime, usize),
+    /// A tick that closed a tick-load window.
+    Health(Regime, usize),
     /// The refresh stage at this phase.
     Refresh(usize),
     Slow(Regime),
     Close,
     Install,
     Side,
-    /// The TEL ticks' mean over the plain ticks' (mean only).
-    TelEncode,
+    /// The TEL ticks' mean over the same regime's plain ticks' (mean only).
+    TelEncode(Regime),
     Body(Body),
     HostFrame,
     TelFrame,
@@ -573,29 +586,39 @@ pub fn rows(k: &KernelProbe, b: &BusProbe, s: &Scenario<'_>, mut f: impl FnMut(R
             f(load_row(Component::Tick(r, p), k.load(r, p), budget, mean));
         }
     }
-    let r = k.drove();
     let tel = Events {
         tel: true,
         ..Events::default()
     };
     let bank = Events { bank: true, ..tel };
-    for (p, (tel_max, bank_max)) in k.tel_max.into_iter().zip(k.bank_max).enumerate() {
-        f(max_row(
-            Component::TelTick(p),
-            tel_max.into(),
-            super::kernel_tick(r, p, tel),
-        ));
-        f(max_row(
-            Component::BankTick(p),
-            bank_max.into(),
-            super::kernel_tick(r, p, bank),
-        ));
-    }
     let carried = Events {
         tel: s.tel,
         bank: s.tel,
         ..Events::default()
     };
+    let health = Events {
+        health: true,
+        ..carried
+    };
+    for r in Regime::ALL {
+        let i = r as usize;
+        for p in 0..PHASES {
+            let at = |m: &[[u16; PHASES]; 2]| m[i][p].into();
+            let tick = |ev| super::kernel_tick(r, p, ev);
+            f(max_row(Component::TelTick(r, p), at(&k.tel_max), tick(tel)));
+            f(max_row(
+                Component::BankTick(r, p),
+                at(&k.bank_max),
+                tick(bank),
+            ));
+            f(max_row(
+                Component::Health(r, p),
+                at(&k.health_max),
+                tick(health),
+            ));
+        }
+    }
+    let r = k.drove();
     let refresh = Events {
         refresh: true,
         ..carried
@@ -644,20 +667,22 @@ pub fn rows(k: &KernelProbe, b: &BusProbe, s: &Scenario<'_>, mut f: impl FnMut(R
         let budget = super::kernel_tick(Regime::Closed, p as usize, ev);
         f(load_row(c, l, budget, 0));
     }
-    let plain = k.tick.iter().flatten().fold((0u64, 0u64), |(n, sum), l| {
-        (n + l.n as u64, sum + l.sum as u64)
-    });
-    let plain_mean = plain.1.checked_div(plain.0).unwrap_or(0) as u32;
-    f(Row {
-        component: Component::TelEncode,
-        n: k.tel.n,
-        mean: k.tel.mean().saturating_sub(plain_mean),
-        max: 0,
-        wall: 0,
-        nested: 0,
-        budget: 0,
-        mean_budget: super::TEL_ENCODE_MEAN[r as usize],
-    });
+    for (r, (plain, tel)) in Regime::ALL.into_iter().zip(k.tick.iter().zip(k.tel)) {
+        let (n, sum) = plain.iter().fold((0u64, 0u64), |(n, sum), l| {
+            (n + l.n as u64, sum + l.sum as u64)
+        });
+        let plain_mean = sum.checked_div(n).unwrap_or(0) as u32;
+        f(Row {
+            component: Component::TelEncode(r),
+            n: tel.n,
+            mean: tel.mean().saturating_sub(plain_mean),
+            max: 0,
+            wall: 0,
+            nested: 0,
+            budget: 0,
+            mean_budget: super::TEL_ENCODE_MEAN[r as usize],
+        });
+    }
     let slowest = s
         .frames
         .iter()

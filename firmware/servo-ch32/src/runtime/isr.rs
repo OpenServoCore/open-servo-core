@@ -116,7 +116,9 @@ pub fn on_adc_dma_tc() {
     // tick, and a launch wants the scan TC's slack ahead of the next trigger.
     crate::control::burst::poll_arm(&SHARED);
 
-    if let Some(w) = load.tick(entry, systick::ticks()) {
+    let window = load.tick(entry, systick::ticks());
+    let health = window.is_some();
+    if let Some(w) = window {
         // SAFETY: table storage is 'static; the health block's tick fields
         // have this vector as their only chip-side writer. The counters are
         // stored only on a change, so a host clear races a store only when
@@ -137,7 +139,7 @@ pub fn on_adc_dma_tc() {
         }
     }
 
-    crate::probe::kernel_exit(entry, tags, after);
+    crate::probe::kernel_exit(entry, tags, after, health);
 }
 
 /// SW vector - the TEL stager (protocol sec 5.6), pended through

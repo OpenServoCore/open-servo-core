@@ -105,10 +105,10 @@ pub fn tick_before(tags: ProbeTags) -> TickTags {
 }
 
 /// The kernel tick that began at `entry` ends now. `after`: the kernel's
-/// tags after the body.
+/// tags after the body; `health`: the tick-load counters closed a window.
 #[inline(always)]
 #[allow(unused_variables)]
-pub fn kernel_exit(entry: u32, before: TickTags, after: ProbeTags) {
+pub fn kernel_exit(entry: u32, before: TickTags, after: ProbeTags, health: bool) {
     #[cfg(feature = "bench")]
     {
         let exit = systick::ticks();
@@ -121,6 +121,7 @@ pub fn kernel_exit(entry: u32, before: TickTags, after: ProbeTags) {
             close: b.slow_due && after.therm & stage::INSTALL != 0,
             install: (b.therm & !after.therm) & stage::INSTALL != 0,
             side: (b.therm & !after.therm) & (stage::NTC | stage::DERATE | stage::COLD) != 0,
+            health,
         };
         let r = if b.closed || after.closed {
             Regime::Closed

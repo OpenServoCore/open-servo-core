@@ -11,6 +11,7 @@ const PLAIN: Events = Events {
     close: false,
     install: false,
     side: false,
+    health: false,
 };
 const OPEN: Regime = Regime::Open;
 
@@ -85,7 +86,7 @@ fn kernel_ticks_book_by_what_they_carried() {
         (k.load(OPEN, 1), k.load(closed, 1)),
         (one(1100), one(LONG_TICKS))
     );
-    assert_eq!((k.tel_max[2], k.bank_max[3]), (1500, 1700));
+    assert_eq!((k.tel_max[0][2], k.bank_max[0][3]), (1500, 1700));
     assert_eq!(
         (k.refresh, k.slow[1], k.close),
         ([one(2000), Load::ZERO], one(1900), one(2200))
@@ -422,7 +423,89 @@ fn the_encode_mean_is_the_tel_ticks_over_the_plain_ticks() {
             let _ = over.push(r.component);
         }
     });
-    assert_eq!(over, [Component::TelEncode]);
+    assert_eq!(over, [Component::TelEncode(OPEN)]);
+}
+
+/// A TEL tick books under its own drive arm, and the encode mean is judged
+/// against the plain ticks of that arm: a window that drove part of the
+/// time does not count the parked ticks' lower mean as encode.
+#[test]
+fn tel_ticks_book_by_regime_against_their_regime_s_plain_ticks() {
+    let mut k = KernelProbe::ZERO;
+    let closed = Regime::Closed;
+    let enc = TEL_ENCODE_MEAN[closed as usize];
+    let plain = KERNEL_MEAN[closed as usize].into_iter().min().unwrap_or(0);
+    let tel = Events { tel: true, ..PLAIN };
+    for i in 1..2 * MEAN_MIN_BODIES {
+        let p = i as usize % PHASES;
+        tick(&mut k, 3 * i, plain, p, closed, PLAIN);
+        tick(&mut k, 3 * i + 1, plain / 2, p, OPEN, PLAIN);
+        tick(&mut k, 3 * i + 2, plain + enc, p, closed, tel);
+    }
+    assert_eq!((k.tel[0].n, k.tel[1].n), (0, 2 * MEAN_MIN_BODIES - 1));
+    assert_eq!(k.tel_max[1][1], (plain + enc) as u16);
+    let s = Scenario {
+        tel: true,
+        frames: &[],
+    };
+    let mut encode = heapless::Vec::<(Component, u32), 2>::new();
+    rows(&k, &BusProbe::ZERO, &s, |r| {
+        if let Component::TelEncode(_) = r.component {
+            let _ = encode.push((r.component, r.mean));
+        }
+    });
+    assert_eq!(
+        encode,
+        [
+            (Component::TelEncode(OPEN), 0),
+            (Component::TelEncode(closed), enc)
+        ]
+    );
+}
+
+/// A tick that closed a tick-load window stays off the plain and TEL rows
+/// and books under its own, charged the close on top of what it carried.
+#[test]
+fn a_health_close_books_apart() {
+    let mut k = KernelProbe::ZERO;
+    let closed = Regime::Closed;
+    let health = Events {
+        health: true,
+        ..PLAIN
+    };
+    tick(&mut k, 1, 1300, 5, closed, PLAIN);
+    tick(&mut k, 2, 1400, 5, closed, health);
+    let tel = Events {
+        tel: true,
+        ..health
+    };
+    tick(&mut k, 3, 1900, 1, closed, tel);
+    assert_eq!(k.load(closed, 5).max, 1300);
+    assert_eq!((k.health_max[1][5], k.health_max[1][1]), (1400, 1900));
+    assert_eq!((k.tel[1].n, k.tel_max[1][1]), (0, 0));
+    let s = Scenario {
+        tel: true,
+        frames: &[],
+    };
+    let mut budget = 0;
+    rows(&k, &BusProbe::ZERO, &s, |r| {
+        if r.component == Component::Health(closed, 1) {
+            budget = r.budget;
+        }
+    });
+    let carried = Events { bank: true, ..tel };
+    assert_eq!(budget, kernel_tick(closed, 1, carried));
+    assert_eq!(
+        kernel_tick(closed, 1, carried),
+        kernel_tick(
+            closed,
+            1,
+            Events {
+                health: false,
+                ..carried
+            }
+        ) + HEALTH_CLOSE
+    );
 }
 
 #[test]
