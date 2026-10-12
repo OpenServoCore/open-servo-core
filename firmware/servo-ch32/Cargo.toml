@@ -12,7 +12,6 @@ ch32-metapac     = { git = "https://github.com/ch32-rs/ch32-metapac", default-fe
 osc-servo-core         = { path = "../lib/core" }
 osc-servo-drivers      = { path = "../lib/drivers" }
 osc-protocol     = { path = "../lib/osc-protocol" }
-osc-units        = { path = "../lib/units" }
 osc-log          = { path = "../lib/log" }
 portable-atomic  = { version = "1", default-features = false }
 riscv            = "0.12"

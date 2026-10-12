@@ -1,3 +1,4 @@
+use ch32_metapac::common::{Reg, W};
 use osc_servo_drivers::Level;
 
 use super::super::Pin;
@@ -65,6 +66,36 @@ pub fn set_level(pin: Pin, level: Level) {
             .write(|w| w.0 = 1 << pin.pin_number());
     } else {
         pin.gpio_regs().bcr().write(|w| w.0 = 1 << pin.pin_number());
+    }
+}
+
+/// `set_level(pin, level)` resolved once: the register (BSHR to set, BCR to
+/// clear) and the pin's bit, for a per-tick writer.
+#[derive(Copy, Clone)]
+pub struct LevelWrite {
+    reg: Reg<u32, W>,
+    mask: u32,
+}
+
+impl LevelWrite {
+    pub fn new(pin: Pin, level: Level) -> Self {
+        let regs = pin.gpio_regs();
+        let ptr = if level == Level::High {
+            regs.bshr().as_ptr() as *mut u32
+        } else {
+            regs.bcr().as_ptr() as *mut u32
+        };
+        Self {
+            // SAFETY: BSHR and BCR are 32-bit write-only words; the pointer
+            // is the metapac's own register address.
+            reg: unsafe { Reg::from_ptr(ptr) },
+            mask: 1 << pin.pin_number(),
+        }
+    }
+
+    #[inline(always)]
+    pub fn apply(self) {
+        self.reg.write_value(self.mask);
     }
 }
 

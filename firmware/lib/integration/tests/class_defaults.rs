@@ -2,7 +2,7 @@
 //! nothing identified, nothing saved. The kernel drives the MG90-scale R-L
 //! plant rig on the osc-dev-v006 sense chain (60 mohm, G 14.884).
 
-use osc_integration::plant::{BIAS, FakeIo, RlPlant, duty_of, kernel, last_cmd};
+use osc_integration::plant::{BIAS, FakeIo, RlPlant, duty_of, kernel};
 use osc_integration::sim::{DEV_V006_SENSE as SENSE, DEV_V006_SENSE_EXT as SENSE_EXT};
 use osc_servo_core::regions::config::{DEFAULT_V_UNDERVOLT_MV, vmotor_counts};
 use osc_servo_core::{
@@ -47,9 +47,9 @@ fn virgin() -> Shared {
 fn run(k: &mut Kernel<FakeIo>, sh: &Shared, p: &mut RlPlant, ticks: u32) -> Vec<(i16, i32)> {
     (0..ticks)
         .map(|_| {
-            let duty = k.io.motor.last.map_or(0, duty_of);
+            let duty = duty_of(k);
             k.on_tick(p.step(duty), sh);
-            (duty_of(last_cmd(k)), p.current())
+            (duty_of(k), p.current())
         })
         .collect()
 }

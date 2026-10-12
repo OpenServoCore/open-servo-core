@@ -10,6 +10,7 @@ use osc_servo_core::estimator::bemf::RECIP_ARR_SHIFT;
 use osc_servo_core::estimator::window;
 use osc_servo_core::pos_lut::{self, POINTS};
 use osc_servo_core::stamp;
+use osc_servo_core::tel::TelStream;
 use osc_servo_core::{
     ControlIo, DecaySelect, ImageState, Kernel, KernelTiming, Mode, Motor, MotorCmd, RegionStorage,
     SensorFrame, Sensors, Shared, StallResponse,
@@ -351,10 +352,19 @@ impl RlPlant {
     }
 }
 
-/// The duty the bridge sees for `cmd`: Drive's, 0 for everything else.
-pub fn duty_of(cmd: MotorCmd) -> i16 {
-    match cmd {
-        MotorCmd::Drive { duty, .. } => duty.0,
-        MotorCmd::Disabled | MotorCmd::Coast | MotorCmd::Brake => 0,
+/// The duty the bridge sees after the last write, in the wiring's frame:
+/// the logical duty under the Drive's sign, 0 for everything else and
+/// before the first write.
+pub fn duty_of<T: TelStream>(k: &Kernel<FakeIo, T>) -> i16 {
+    match k.io.motor.last {
+        Some(MotorCmd::Drive { reverse, .. }) => {
+            let duty = k.duty_q15();
+            if (duty < 0) == reverse {
+                duty
+            } else {
+                duty.saturating_neg()
+            }
+        }
+        _ => 0,
     }
 }

@@ -256,8 +256,9 @@ fn enable_edge_reseeds_without_transient() {
         k.on_tick(frame(2000, BIAS), &sh);
         match last_cmd(&k) {
             MotorCmd::Brake | MotorCmd::Disabled => {}
-            MotorCmd::Drive { duty, .. } => {
-                assert!(duty.0.unsigned_abs() < 2000, "duty={}", duty.0)
+            MotorCmd::Drive { .. } => {
+                let duty = written_duty(&k);
+                assert!(duty.unsigned_abs() < 2000, "duty={duty}")
             }
             MotorCmd::Coast => panic!("coast is never commanded"),
         }
@@ -331,8 +332,8 @@ fn endstop_allows_retreat_from_the_wall() {
     let mut drove = false;
     for _ in 0..400 {
         k.on_tick(rev, &sh);
-        if let MotorCmd::Drive { duty, .. } = last_cmd(&k) {
-            drove |= duty.0 < 0;
+        if let Some(duty) = drive_duty(&k) {
+            drove |= duty < 0;
         }
     }
     assert!(drove, "retreat from the wall never drove");
@@ -725,8 +726,8 @@ fn openloop_duty_passthrough_clamped_with_decay() {
     let mut k = kernel();
     settle(&mut k, &sh, frame(2000, BIAS));
     match last_cmd(&k) {
-        MotorCmd::Drive { duty, decay } => {
-            assert_eq!(duty.0, 8000);
+        MotorCmd::Drive { decay, .. } => {
+            assert_eq!(written_duty(&k), 8000);
             assert!(matches!(decay, DecayMode::Fast));
         }
         other => panic!("expected Drive, got {other:?}"),
@@ -753,8 +754,8 @@ fn openloop_zero_duty_drives_zero_when_brake_flag_clear() {
     let mut k = kernel();
     k.on_tick(frame(2000, BIAS), &sh);
     match last_cmd(&k) {
-        MotorCmd::Drive { duty, decay } => {
-            assert_eq!(duty.0, 0);
+        MotorCmd::Drive { decay, .. } => {
+            assert_eq!(written_duty(&k), 0);
             assert!(matches!(decay, DecayMode::Slow));
         }
         other => panic!("expected Drive, got {other:?}"),
@@ -779,7 +780,7 @@ fn openloop_zero_goal_drops_the_held_current() {
     sh.table.with_mut(|t| t.control.lifecycle.goal_duty = 0);
     run_to(&mut k, &sh, frame(2000, BIAS + 200), 0);
     k.on_tick(frame(2000, BIAS + 200), &sh);
-    assert!(matches!(last_cmd(&k), MotorCmd::Drive { duty, .. } if duty.0 == 0));
+    assert_eq!(drive_duty(&k), Some(0));
     assert_eq!(k.fast.i_meas_last, 0);
 }
 
@@ -821,7 +822,7 @@ fn openloop_endstop_brakes_instead_of_coasting() {
     sh.table.with_mut(|t| t.control.lifecycle.goal_duty = -8000);
     k.on_tick(frame(4095, BIAS), &sh);
     match last_cmd(&k) {
-        MotorCmd::Drive { duty, .. } => assert!(duty.0 < 0, "duty {}", duty.0),
+        MotorCmd::Drive { .. } => assert!(written_duty(&k) < 0, "duty {}", written_duty(&k)),
         other => panic!("expected retreat Drive, got {other:?}"),
     }
     settle(&mut k, &sh, frame(4095, BIAS));
@@ -841,16 +842,56 @@ fn openloop_nonzero_duty_drives_despite_brake_flag() {
     let mut k = kernel();
     settle(&mut k, &sh, frame(2000, BIAS));
     match last_cmd(&k) {
-        MotorCmd::Drive { duty, .. } => assert_eq!(duty.0, 8000),
+        MotorCmd::Drive { .. } => assert_eq!(written_duty(&k), 8000),
         other => panic!("expected Drive, got {other:?}"),
     }
 }
 
-fn written_duty(k: &Kernel<FakeIo>) -> i16 {
+/// The width the motor write carries is the one the next tick's window
+/// select reads; a command that drives nothing leaves none.
+#[test]
+fn the_next_measure_reads_the_written_width() {
+    let sh = Shared::new();
+    seed(&sh);
+    sh.table.with_mut(|t| {
+        t.control.lifecycle.torque_enable = true;
+        t.control.lifecycle.mode = Mode::OpenLoop;
+        t.control.lifecycle.goal_duty = 8000;
+    });
+    let mut k = kernel();
+    settle(&mut k, &sh, frame(2000, BIAS));
+    let MotorCmd::Drive { ticks, .. } = last_cmd(&k) else {
+        panic!("expected Drive, got {:?}", last_cmd(&k));
+    };
+    assert_eq!(ticks as u32, window::drive_ticks(8000, ARR));
+    assert_eq!(k.fast.ticks, ticks);
+    sh.table
+        .with_mut(|t| t.control.lifecycle.torque_enable = false);
+    run_to(&mut k, &sh, frame(2000, BIAS), 0);
+    k.on_tick(frame(2000, BIAS), &sh);
+    assert!(matches!(last_cmd(&k), MotorCmd::Disabled));
+    assert_eq!(k.fast.ticks, 0);
+}
+
+/// The wiring-frame duty the last Drive programs: the logical duty under
+/// the command's sign, the command's width checked against the formula.
+fn drive_duty(k: &Kernel<FakeIo>) -> Option<i16> {
     match last_cmd(k) {
-        MotorCmd::Drive { duty, .. } => duty.0,
-        other => panic!("expected Drive, got {other:?}"),
+        MotorCmd::Drive { ticks, reverse, .. } => {
+            let duty = k.fast.duty_q15;
+            assert_eq!(ticks as u32, window::drive_ticks(duty, ARR), "duty {duty}");
+            Some(if (duty < 0) == reverse {
+                duty
+            } else {
+                duty.saturating_neg()
+            })
+        }
+        _ => None,
     }
+}
+
+fn written_duty(k: &Kernel<FakeIo>) -> i16 {
+    drive_duty(k).unwrap_or_else(|| panic!("expected Drive, got {:?}", last_cmd(k)))
 }
 
 fn reversed(sh: &Shared, mode: Mode) {
@@ -1238,7 +1279,7 @@ fn trough_bias_tracks_only_inside_slow_drive_windows() {
     assert_eq!(published_bias(&sh), BIAS);
     write_config(&sh, |t| t.config.limits.openloop_decay = DecaySelect::Slow);
     ticks(&mut k, &sh, shifted(), 3000);
-    assert!(matches!(last_cmd(&k), MotorCmd::Drive { duty, .. } if duty.0 == i16::MAX));
+    assert_eq!(drive_duty(&k), Some(i16::MAX));
     assert_eq!(published_bias(&sh), BIAS);
     // a partial Slow window: the trough is the brake phase, the tracker follows
     sh.table.with_mut(|t| t.control.lifecycle.goal_duty = 8000);
@@ -1372,7 +1413,7 @@ fn the_awake_step_is_learned_and_rides_the_torque_off_drift() {
         k.on_tick(rest(BIAS - 190), &sh);
         assert_eq!(published_bias(&sh), BIAS - 190);
     }
-    assert!(matches!(last_cmd(&k), MotorCmd::Drive { duty, .. } if duty.0 == 0));
+    assert_eq!(drive_duty(&k), Some(0));
 }
 
 #[test]
@@ -2540,12 +2581,12 @@ const PHASED_LEAD: u32 = 40 * DECIM_MED as u32;
 /// Ticks recorded after it: two medium periods.
 const PHASED_TICKS: usize = 2 * DECIM_MED as usize;
 
-fn cmd_key(c: MotorCmd) -> (u8, i16) {
-    match c {
+fn cmd_key(k: &Kernel<FakeIo>) -> (u8, i16) {
+    match last_cmd(k) {
         MotorCmd::Disabled => (0, 0),
         MotorCmd::Coast => (1, 0),
         MotorCmd::Brake => (2, 0),
-        MotorCmd::Drive { duty, .. } => (3, duty.0),
+        MotorCmd::Drive { .. } => (3, written_duty(k)),
     }
 }
 
@@ -2576,8 +2617,8 @@ fn phased(setup: fn(&mut ControlTable), write: fn(&mut ControlTable), phase: u8)
     for n in 0..PHASED_TICKS {
         k.on_tick(f, &sh);
         twin.on_tick(f, &twin_sh);
-        cmds[n] = cmd_key(last_cmd(&k));
-        twin_cmds[n] = cmd_key(last_cmd(&twin));
+        cmds[n] = cmd_key(&k);
+        twin_cmds[n] = cmd_key(&twin);
     }
     Phased {
         k,

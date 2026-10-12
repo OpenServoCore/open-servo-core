@@ -113,9 +113,8 @@ impl Rig {
             .map(|_| {
                 let f = self.plant.step(self.duty);
                 self.k.on_tick(f, sh);
-                let cmd = last_cmd(&self.k);
-                self.duty = duty_of(cmd);
-                cmd
+                self.duty = duty_of(&self.k);
+                last_cmd(&self.k)
             })
             .collect()
     }
@@ -337,15 +336,14 @@ fn live_zero_ke_write_stops_a_running_closed_loop(#[case] mode: Mode, #[case] re
         let published = boundary + kernel_phase::PUBLISH as usize;
         for n in 0..2 * DECIM_MED as usize {
             let cmd = rig.run(&sh, 1)[0];
-            let old = twin_rig.run(&twin, 1)[0];
+            twin_rig.run(&twin, 1);
             if n < boundary {
                 assert!(
                     matches!(cmd, MotorCmd::Drive { .. }),
                     "phase {phase} tick {n}: {cmd:?}"
                 );
                 assert_eq!(
-                    duty_of(cmd),
-                    duty_of(old),
+                    rig.duty, twin_rig.duty,
                     "phase {phase} tick {n}: off the old Ke"
                 );
                 assert_eq!(fault(&sh), (0, CODE_NONE), "phase {phase} tick {n}");
@@ -414,9 +412,8 @@ fn virgin_servo_drives_openloop_and_current_without_alert() {
             .map(|_| {
                 let f = plant.step(duty);
                 k.on_tick(f, sh);
-                let cmd = k.io.motor.last.expect("a motor write happened");
-                duty = duty_of(cmd);
-                cmd
+                duty = duty_of(&k);
+                k.io.motor.last.expect("a motor write happened")
             })
             .collect()
     };

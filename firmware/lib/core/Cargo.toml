@@ -15,7 +15,6 @@ bitflags.workspace         = true
 # resolved here). See osc-log.
 defmt = { version = "1", optional = true }
 
-osc-units.workspace     = true
 osc-log.workspace       = true
 osc-protocol.workspace  = true
 control-table.workspace = true

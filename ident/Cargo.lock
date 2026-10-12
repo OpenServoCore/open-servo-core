@@ -289,13 +289,8 @@ dependencies = [
  "heapless",
  "osc-log",
  "osc-protocol",
- "osc-units",
  "portable-atomic",
 ]
-
-[[package]]
-name = "osc-units"
-version = "0.0.0"
 
 [[package]]
 name = "pin-project"
