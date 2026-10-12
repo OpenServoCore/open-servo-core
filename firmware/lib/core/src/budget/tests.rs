@@ -86,7 +86,7 @@ fn kernel_ticks_book_by_what_they_carried() {
     );
     assert_eq!((k.halts, k.long), (1, [3, 3]));
     let bodies = 1000 + 1100 + 1500 + 1700 + 2000 + HALT_TICKS + 1 + LONG_TICKS + 1900 + 2200;
-    assert_eq!(k.busy, bodies);
+    assert_eq!((k.busy, k.entries), (bodies + 9 * ENTRY_EXIT, 9));
     assert_eq!(k.drove(), Regime::Closed);
 }
 
@@ -112,18 +112,18 @@ fn entry_lateness_is_measured_from_the_grid_and_the_last_end() {
 fn bus_frames_fold_at_breaks_and_at_starts_after_the_reply() {
     let mut b = BusProbe::ZERO;
     b.mark_break();
-    b.body(100, Body::BreakWake);
+    b.body(100, 100, 0, Body::BreakWake);
     b.mark_start();
-    b.body(200, Body::Deadline);
-    b.body(50, Body::TxDone);
+    b.body(200, 200, 0, Body::Deadline);
+    b.body(50, 50, 0, Body::TxDone);
     b.mark_start();
-    b.body(300, Body::TelStage);
-    b.body(40, Body::TxDone);
-    b.body(10, Body::TelStage);
+    b.body(300, 300, 0, Body::TelStage);
+    b.body(40, 40, 0, Body::TxDone);
+    b.body(10, 10, 0, Body::TelStage);
     b.mark_start();
-    b.body(60, Body::TxDone);
+    b.body(60, 60, 0, Body::TxDone);
     b.mark_break();
-    b.body(90, Body::BreakWake);
+    b.body(90, 90, 0, Body::BreakWake);
     assert_eq!(
         b.host,
         Load {
@@ -147,16 +147,63 @@ fn bus_frames_fold_at_breaks_and_at_starts_after_the_reply() {
     assert_eq!(b.body[Body::TxDone as usize].n, 3);
 }
 
+/// A bus body subtracts every kernel vector that ran inside it, each with
+/// its probe update and its interrupt entry and exit; the longest net body
+/// keeps its wall time and nesting.
+#[test]
+fn a_bus_body_nets_out_each_kernel_vector_with_its_entry_and_exit() {
+    let mut k = KernelProbe::ZERO;
+    tick(&mut k, 0, 900, 0, OPEN, PLAIN);
+    let (at, kernel, entries) = (TICK_PERIOD - 300, k.busy, k.entries);
+    k.tick(TICK_PERIOD, 1500, 1, OPEN, PLAIN, false);
+    k.ended(TICK_PERIOD + 1500, TICK_PERIOD + 1530);
+    k.other(200);
+    let wall = 2 * TICK_PERIOD - at;
+    let net = wall - k.busy.wrapping_sub(kernel);
+    assert_eq!(net, wall - (1500 + 30 + 200 + 2 * ENTRY_EXIT));
+    let nested = k.entries.wrapping_sub(entries);
+    assert_eq!(nested, 2);
+    let mut b = BusProbe::ZERO;
+    b.body(net, wall, nested, Body::TelStage);
+    b.body(10, wall + 1000, 5, Body::TelStage);
+    let i = Body::TelPoll as usize;
+    assert_eq!(
+        (b.body[i].max, b.wall[i], b.nested[i]),
+        (net, wall, nested),
+        "the wall and nesting of the net maximum"
+    );
+}
+
+#[test]
+fn a_bus_row_is_judged_on_its_net_time() {
+    let mut b = BusProbe::ZERO;
+    let at = body(Body::Deadline);
+    b.body(at, 2 * at, 3, Body::Deadline);
+    let s = Scenario {
+        tel: false,
+        frames: &[],
+    };
+    let mut row = None;
+    rows(&KernelProbe::ZERO, &b, &s, |r| {
+        if r.component == Component::Body(Body::Deadline) {
+            row = Some(r);
+        }
+    });
+    let r = row.expect("a Deadline row");
+    assert_eq!((r.max, r.wall, r.nested), (at, 2 * at, 3));
+    assert!(!r.over());
+}
+
 /// One polled exchange as the chip books it: the wake, the deadline body
 /// that triggers the reply, the reply's two arms.
 fn exchange(b: &mut BusProbe) {
     b.mark_break();
-    b.body(100, Body::BreakWake);
+    b.body(100, 100, 0, Body::BreakWake);
     b.mark_dispatch();
     b.mark_start();
-    b.body(200, Body::Deadline);
-    b.body(50, Body::TxDone);
-    b.body(50, Body::TxDone);
+    b.body(200, 200, 0, Body::Deadline);
+    b.body(50, 50, 0, Body::TxDone);
+    b.body(50, 50, 0, Body::TxDone);
 }
 
 #[test]
@@ -180,7 +227,7 @@ fn a_window_closes_its_last_frame_at_the_dump() {
     exchange(&mut t);
     for _ in 0..3 {
         t.mark_start();
-        t.body(300, Body::TelStage);
+        t.body(300, 300, 0, Body::TelStage);
     }
     let t = t.closed();
     assert_eq!((t.host.n, t.tel.n), (1, 3));
@@ -192,9 +239,9 @@ fn a_wake_that_dispatches_books_as_frame_service() {
     b.mark_break();
     b.mark_dispatch();
     b.mark_start();
-    b.body(2500, Body::BreakWake);
+    b.body(2500, 2500, 0, Body::BreakWake);
     b.mark_break();
-    b.body(700, Body::BreakWake);
+    b.body(700, 700, 0, Body::BreakWake);
     assert_eq!(b.body[Body::Deadline as usize].max, 2500);
     assert_eq!(b.body[Body::BreakWake as usize].max, 700);
     assert_eq!(b.host.max, 2500, "the frame still holds its wake");
@@ -204,10 +251,10 @@ fn a_wake_that_dispatches_books_as_frame_service() {
 fn a_halted_body_stays_out_of_its_frame() {
     let mut b = BusProbe::ZERO;
     b.mark_break();
-    b.body(100, Body::BreakWake);
-    b.body(HALT_TICKS + 1, Body::Deadline);
+    b.body(100, 100, 0, Body::BreakWake);
+    b.body(HALT_TICKS + 1, HALT_TICKS + 1, 0, Body::Deadline);
     b.mark_break();
-    b.body(100, Body::BreakWake);
+    b.body(100, 100, 0, Body::BreakWake);
     assert_eq!((b.halts, b.host.max), (1, 100));
 }
 
@@ -228,7 +275,7 @@ fn dumps_decode_field_for_field() {
     assert_eq!(KernelProbe::from_words(words(&k)), Some(k));
     let mut b = BusProbe::ZERO;
     b.mark_break();
-    b.body(77, Body::BreakWake);
+    b.body(77, 900, 4, Body::BreakWake);
     b.breaks = 5;
     b.rises = 2;
     assert_eq!(BusProbe::from_words(words(&b)), Some(b));
@@ -262,8 +309,9 @@ fn a_slower_rate_budgets_its_longer_law_break() {
     assert_eq!(spin_extra(1_000_000), LAW_BREAK_BIT_TIMES * (48 - 16));
     let mut b = BusProbe::ZERO;
     b.mark_break();
-    b.body(1, Body::BreakWake);
-    b.body(body(Body::Deadline) + 1, Body::Deadline);
+    b.body(1, 1, 0, Body::BreakWake);
+    let over = body(Body::Deadline) + 1;
+    b.body(over, over, 0, Body::Deadline);
     let frames = [(Frame::Read32, 1_000_000)];
     let s = Scenario {
         tel: false,

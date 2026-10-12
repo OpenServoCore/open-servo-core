@@ -14,8 +14,10 @@
 //! Drives the motor: holds and 600-count steps about the rail middle, each
 //! drive ending centred with torque off; the last window ends rebooted.
 //! Kernel ticks book by drive arm; each window also prints gamma(k), the
-//! long ticks by arm and the entry lateness. A report-only window is never
-//! held to the table.
+//! long ticks by arm and the entry lateness. A bus body reports its net
+//! time (the kernel vectors inside it subtracted), which the table judges,
+//! and for its longest one the wall time and the kernel vectors nested.
+//! A report-only window is never held to the table.
 
 use std::any::Any;
 use std::env;
@@ -494,6 +496,9 @@ fn line(r: &Row) -> String {
         ticks(r.max),
         ticks(r.budget)
     );
+    if r.wall != 0 {
+        s += &format!("  wall {}  nested {}", ticks(r.wall), r.nested);
+    }
     if r.n > 0 {
         s += &format!("  mean {}", ticks(r.mean));
         if r.mean_budget != 0 {

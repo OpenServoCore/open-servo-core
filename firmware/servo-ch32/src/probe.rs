@@ -36,45 +36,52 @@ pub fn bus_probe(f: impl FnOnce(&mut BusProbe)) {
     }
 }
 
-/// SysTick and the kernel's busy total at a bus body's edge.
+/// SysTick and the kernel's busy total and entries at a bus body's edge.
 #[derive(Copy, Clone)]
 #[allow(dead_code)]
 pub struct BusStamp {
     at: u32,
     kernel: u32,
+    entries: u32,
 }
 
-/// Read with interrupts masked, so a kernel tick lands in both deltas of a
-/// bus body or in neither.
+/// Read with interrupts masked, so a kernel tick lands in every delta of a
+/// bus body or in none.
 #[inline(always)]
 pub fn bus_entry() -> BusStamp {
     #[cfg(feature = "bench")]
     {
-        critical_section::with(|_| BusStamp {
-            at: systick::ticks(),
-            // SAFETY: one-word volatile read of the kernel record.
-            kernel: unsafe { (&raw const KERNEL_PROBE.busy).read_volatile() },
+        // SAFETY: one-word volatile reads of the kernel record.
+        critical_section::with(|_| unsafe {
+            BusStamp {
+                at: systick::ticks(),
+                kernel: (&raw const KERNEL_PROBE.busy).read_volatile(),
+                entries: (&raw const KERNEL_PROBE.entries).read_volatile(),
+            }
         })
     }
     #[cfg(not(feature = "bench"))]
     {
-        BusStamp { at: 0, kernel: 0 }
+        BusStamp {
+            at: 0,
+            kernel: 0,
+            entries: 0,
+        }
     }
 }
 
 /// The bus body that began at `entry` ends now: its time less the kernel
-/// ticks inside it.
+/// vectors inside it, its wall time and how many it nested.
 #[inline(always)]
 #[allow(unused_variables)]
 pub fn bus_exit(entry: BusStamp, b: Body) {
     #[cfg(feature = "bench")]
     {
         let now = bus_entry();
-        let excl = now
-            .at
-            .wrapping_sub(entry.at)
-            .saturating_sub(now.kernel.wrapping_sub(entry.kernel));
-        bus_probe(|p| p.body(excl, b));
+        let wall = now.at.wrapping_sub(entry.at);
+        let excl = wall.saturating_sub(now.kernel.wrapping_sub(entry.kernel));
+        let nested = now.entries.wrapping_sub(entry.entries);
+        bus_probe(|p| p.body(excl, wall, nested, b));
     }
 }
 

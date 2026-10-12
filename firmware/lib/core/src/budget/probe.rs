@@ -128,8 +128,11 @@ pub struct KernelProbe {
     /// context held the tick off.
     pub late_max: u32,
     pub halts: u32,
-    /// Every kernel body so far: what a bus body subtracts.
+    /// Every kernel vector so far, with its interrupt entry and exit: what a
+    /// bus body subtracts.
     pub busy: u32,
+    /// Kernel vectors entered so far: what a bus body counts as nested.
+    pub entries: u32,
     last_entry: u32,
     last_end: u32,
 }
@@ -149,6 +152,7 @@ impl KernelProbe {
         late_max: 0,
         halts: 0,
         busy: 0,
+        entries: 0,
         last_entry: 0,
         last_end: 0,
     };
@@ -228,17 +232,20 @@ impl KernelProbe {
     }
 
     /// The tick's vector reached its last stamp at `end`, `exit` its exit
-    /// stamp: the probe's own update runs inside any bus body it preempted.
+    /// stamp: the probe's own update, and the vector's entry and exit, run
+    /// inside any bus body it preempted.
     #[inline(always)]
     pub fn ended(&mut self, exit: u32, end: u32) {
         self.other(end.wrapping_sub(exit));
         self.last_end = end;
     }
 
-    /// A body on the kernel's vector that is not a tick (shunt burst events).
+    /// A body on the kernel's vector that is not a tick (shunt burst events),
+    /// with the vector's entry and exit.
     #[inline(always)]
     pub fn other(&mut self, body: u32) {
-        self.busy = self.busy.wrapping_add(body);
+        self.busy = self.busy.wrapping_add(body).wrapping_add(super::ENTRY_EXIT);
+        self.entries = self.entries.wrapping_add(1);
     }
 
     /// The regime the window's TEL and event ticks are held to: Closed once
@@ -281,6 +288,7 @@ impl KernelProbe {
             late_max: r.word(),
             halts: r.word(),
             busy: r.word(),
+            entries: r.word(),
             last_entry: r.word(),
             last_end: r.word(),
         })
@@ -292,6 +300,10 @@ impl KernelProbe {
 pub struct BusProbe {
     /// Bus vector bodies less the kernel time inside them, by [`Body`].
     pub body: [Load; Body::ALL.len()],
+    /// The body that set each net maximum: its time with the kernel inside,
+    /// and the kernel vectors it nested.
+    pub wall: [u32; Body::ALL.len()],
+    pub nested: [u32; Body::ALL.len()],
     /// Host frames: every bus body from one break wake to the next own
     /// frame, the reply excepted. A window's last frame closes at
     /// [`Self::closed`].
@@ -309,16 +321,25 @@ pub struct BusProbe {
     pub parks: u32,
     pub rises: u32,
     acc: u32,
-    acc_tel: u32,
-    replied: u32,
-    saw_break: u32,
-    saw_start: u32,
-    saw_dispatch: u32,
+    /// [`SAW_BREAK`], [`SAW_START`] and [`SAW_DISPATCH`] for the running
+    /// body; [`REPLIED`] and [`ACC_TEL`] across bodies.
+    flags: u32,
 }
+
+const SAW_BREAK: u32 = 1 << 0;
+const SAW_START: u32 = 1 << 1;
+const SAW_DISPATCH: u32 = 1 << 2;
+/// The last break already had its reply.
+const REPLIED: u32 = 1 << 3;
+/// The open frame is a TEL frame.
+const ACC_TEL: u32 = 1 << 4;
+const SAW: u32 = SAW_BREAK | SAW_START | SAW_DISPATCH;
 
 impl BusProbe {
     pub const ZERO: Self = Self {
         body: [Load::ZERO; Body::ALL.len()],
+        wall: [0; Body::ALL.len()],
+        nested: [0; Body::ALL.len()],
         host: Load::ZERO,
         tel: Load::ZERO,
         halts: 0,
@@ -327,11 +348,7 @@ impl BusProbe {
         parks: 0,
         rises: 0,
         acc: 0,
-        acc_tel: 0,
-        replied: 0,
-        saw_break: 0,
-        saw_start: 0,
-        saw_dispatch: 0,
+        flags: 0,
     };
 
     pub const WORDS: usize = core::mem::size_of::<Self>() / 4;
@@ -339,29 +356,31 @@ impl BusProbe {
     /// The running body is a break wake that found a break.
     #[inline(always)]
     pub fn mark_break(&mut self) {
-        self.saw_break = 1;
+        self.flags |= SAW_BREAK;
     }
 
     /// The running body started an own frame (its break is on the wire).
     #[inline(always)]
     pub fn mark_start(&mut self) {
-        self.saw_start = 1;
+        self.flags |= SAW_START;
     }
 
     /// The running body dispatched a frame.
     #[inline(always)]
     pub fn mark_dispatch(&mut self) {
-        self.saw_dispatch = 1;
+        self.flags |= SAW_DISPATCH;
     }
 
-    /// A bus body of `excl` ticks ends. A stager body that started no frame
-    /// books as [`Body::TelPoll`], a break wake that dispatched as
-    /// [`Body::Deadline`].
+    /// A bus body of `excl` ticks ends, `wall` with the `nested` kernel
+    /// vectors inside it. A stager body that started no frame books as
+    /// [`Body::TelPoll`], a break wake that dispatched as [`Body::Deadline`].
     #[inline(always)]
-    pub fn body(&mut self, excl: u32, b: Body) {
-        let brk = core::mem::take(&mut self.saw_break) != 0;
-        let started = core::mem::take(&mut self.saw_start) != 0;
-        let dispatched = core::mem::take(&mut self.saw_dispatch) != 0;
+    pub fn body(&mut self, excl: u32, wall: u32, nested: u32, b: Body) {
+        let saw = self.flags;
+        self.flags &= !SAW;
+        let brk = saw & SAW_BREAK != 0;
+        let started = saw & SAW_START != 0;
+        let dispatched = saw & SAW_DISPATCH != 0;
         if excl > HALT_TICKS {
             self.halts = self.halts.wrapping_add(1);
             return;
@@ -371,18 +390,27 @@ impl BusProbe {
             Body::BreakWake if dispatched => Body::Deadline,
             b => b,
         };
-        if let Some(l) = self.body.get_mut(b as usize) {
+        let i = b as usize;
+        if let (Some(l), Some(w), Some(n)) = (
+            self.body.get_mut(i),
+            self.wall.get_mut(i),
+            self.nested.get_mut(i),
+        ) {
+            if excl >= l.max {
+                *w = wall;
+                *n = nested;
+            }
             l.add(excl);
         }
         if brk {
-            self.fold(0);
-            self.replied = 0;
+            self.fold(false);
+            self.flags &= !REPLIED;
         }
         if started {
-            if self.replied != 0 {
-                self.fold(1);
+            if self.flags & REPLIED != 0 {
+                self.fold(true);
             }
-            self.replied = 1;
+            self.flags |= REPLIED;
         }
         self.acc = self.acc.wrapping_add(excl);
     }
@@ -390,22 +418,26 @@ impl BusProbe {
     /// The record with its open frame closed: read after the traffic, the
     /// last frame has run every body it will.
     pub fn closed(mut self) -> Self {
-        self.fold(0);
+        self.fold(false);
         self
     }
 
     /// Close the frame accumulated so far; the next one is TEL if `tel`.
     #[inline(always)]
-    fn fold(&mut self, tel: u32) {
+    fn fold(&mut self, tel: bool) {
         if self.acc != 0 {
-            if self.acc_tel != 0 {
+            if self.flags & ACC_TEL != 0 {
                 self.tel.add(self.acc);
             } else {
                 self.host.add(self.acc);
             }
         }
         self.acc = 0;
-        self.acc_tel = tel;
+        self.flags = if tel {
+            self.flags | ACC_TEL
+        } else {
+            self.flags & !ACC_TEL
+        };
     }
 
     /// Decode a dump, little-endian words in field order.
@@ -416,6 +448,8 @@ impl BusProbe {
         let mut r = Words(w);
         Some(Self {
             body: core::array::from_fn(|_| r.load()),
+            wall: core::array::from_fn(|_| r.word()),
+            nested: core::array::from_fn(|_| r.word()),
             host: r.load(),
             tel: r.load(),
             halts: r.word(),
@@ -424,11 +458,7 @@ impl BusProbe {
             parks: r.word(),
             rises: r.word(),
             acc: r.word(),
-            acc_tel: r.word(),
-            replied: r.word(),
-            saw_break: r.word(),
-            saw_start: r.word(),
-            saw_dispatch: r.word(),
+            flags: r.word(),
         })
     }
 }
@@ -485,13 +515,18 @@ pub enum Component {
 }
 
 /// A component's window against its budget; `n` and `mean` are 0 where the
-/// probe keeps only the maximum, `mean_budget` 0 where none is set.
+/// probe keeps only the maximum, `mean_budget` 0 where none is set. A bus
+/// body's `max` is its net time; `wall` and `nested` are that body's time
+/// with the kernel inside and the kernel vectors it nested (0 for every
+/// other component).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Row {
     pub component: Component,
     pub n: u32,
     pub mean: u32,
     pub max: u32,
+    pub wall: u32,
+    pub nested: u32,
     pub budget: u32,
     pub mean_budget: u32,
 }
@@ -572,6 +607,8 @@ pub fn rows(k: &KernelProbe, b: &BusProbe, s: &Scenario<'_>, mut f: impl FnMut(R
         n: k.tel.n,
         mean: k.tel.mean().saturating_sub(plain_mean),
         max: 0,
+        wall: 0,
+        nested: 0,
         budget: 0,
         mean_budget: super::TEL_ENCODE_MEAN[r as usize],
     });
@@ -581,14 +618,19 @@ pub fn rows(k: &KernelProbe, b: &BusProbe, s: &Scenario<'_>, mut f: impl FnMut(R
         .map(|&(_, baud)| baud)
         .min()
         .unwrap_or(super::BUDGET_BAUD_HZ);
-    for (body, l) in Body::ALL.into_iter().zip(b.body) {
+    let bodies = Body::ALL.into_iter().zip(b.body).zip(b.wall).zip(b.nested);
+    for (((body, l), wall), nested) in bodies {
         let spin = match body {
             Body::Deadline | Body::TelStage => super::spin_extra(slowest),
             _ => 0,
         };
         let budget = super::body(body) + spin;
         let mean = super::body_mean(body) + spin;
-        f(load_row(Component::Body(body), l, budget, mean));
+        f(Row {
+            wall,
+            nested,
+            ..load_row(Component::Body(body), l, budget, mean)
+        });
     }
     let host = || {
         let frames = s.frames.iter().filter(|(fr, _)| *fr != Frame::TelBatch);
@@ -617,6 +659,8 @@ fn load_row(component: Component, l: Load, budget: u32, mean_budget: u32) -> Row
         n: l.n,
         mean: l.mean(),
         max: l.max,
+        wall: 0,
+        nested: 0,
         budget,
         mean_budget,
     }
@@ -628,6 +672,8 @@ fn max_row(component: Component, max: u32, budget: u32) -> Row {
         n: 0,
         mean: 0,
         max,
+        wall: 0,
+        nested: 0,
         budget,
         mean_budget: 0,
     }
