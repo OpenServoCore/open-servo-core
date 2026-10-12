@@ -12,6 +12,56 @@ pub const fn q_mul(a: i32, b: i32, k: u32) -> i32 {
     ((a as i64 * b as i64) >> k) as i32
 }
 
+// The saturating ops below match core's `saturating_*` exactly but put the
+// saturating case behind `cold_path`: the in-range case falls through, and
+// on a fetch-bound core every taken branch refetches.
+
+/// `a.saturating_add(b)`.
+#[inline(always)]
+pub fn sat_add(a: i32, b: i32) -> i32 {
+    match a.checked_add(b) {
+        Some(v) => v,
+        None => {
+            core::hint::cold_path();
+            if b < 0 { i32::MIN } else { i32::MAX }
+        }
+    }
+}
+
+/// `a.saturating_mul(b)`.
+#[inline(always)]
+pub fn sat_mul(a: i32, b: i32) -> i32 {
+    match a.checked_mul(b) {
+        Some(v) => v,
+        None => {
+            core::hint::cold_path();
+            if (a < 0) != (b < 0) {
+                i32::MIN
+            } else {
+                i32::MAX
+            }
+        }
+    }
+}
+
+/// `x.max(lo).min(hi)`: no panic path for runtime bounds, `hi` wins when
+/// `lo > hi`.
+#[inline(always)]
+pub fn sat_clamp(x: i32, lo: i32, hi: i32) -> i32 {
+    let x = if x < lo {
+        core::hint::cold_path();
+        lo
+    } else {
+        x
+    };
+    if x > hi {
+        core::hint::cold_path();
+        hi
+    } else {
+        x
+    }
+}
+
 /// Unsigned twin of `q_mul`. The u64 product cannot overflow for any
 /// operands; the caller picks `k` so the result fits u32.
 #[inline(always)]
@@ -92,6 +142,41 @@ mod tests {
         assert_eq!(q_mul(-3, 1, 1), -2);
         assert_eq!(q_mul(-1, 1, 1), -1);
         assert_eq!(q_mul(-1, 1, 31), -1);
+    }
+
+    const EDGES: [i32; 11] = [
+        i32::MIN,
+        i32::MIN + 1,
+        -(1 << 16),
+        -16,
+        -1,
+        0,
+        1,
+        16,
+        1 << 16,
+        i32::MAX - 1,
+        i32::MAX,
+    ];
+
+    #[test]
+    fn sat_ops_match_core_saturating_ops() {
+        for a in EDGES {
+            for b in EDGES {
+                assert_eq!(sat_add(a, b), a.saturating_add(b), "{a} + {b}");
+                assert_eq!(sat_mul(a, b), a.saturating_mul(b), "{a} * {b}");
+            }
+        }
+    }
+
+    #[test]
+    fn sat_clamp_matches_max_min_including_inverted_bounds() {
+        for x in EDGES {
+            for lo in EDGES {
+                for hi in EDGES {
+                    assert_eq!(sat_clamp(x, lo, hi), x.max(lo).min(hi), "{x} [{lo}, {hi}]");
+                }
+            }
+        }
     }
 
     #[test]

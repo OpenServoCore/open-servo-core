@@ -93,6 +93,12 @@ pub fn i_from_frame(
     Some(if duty_sign_positive { mag } else { -mag })
 }
 
+/// The largest |i| `i_from_frame` returns: any u16 sample and bias under
+/// a u16 settle gain.
+#[cfg(test)]
+pub(crate) const I_FROM_FRAME_MAX: i32 =
+    (((u16::MAX as i64 * u16::MAX as i64) >> 14) as i32 + 1) >> 1;
+
 /// Drive-window terminal differential `va - vb`. Positive duty drives IN1
 /// (TIM1 CH3, PC6) -> DRV8212P OUT1 -> MOT_A -> VSNA -> `vmotor_a`, so
 /// `va - vb` is positive under forward drive, negative under reverse - the
@@ -138,7 +144,7 @@ pub fn trough_is_brake(
 /// round(`mag * arr >> 15`)) so validity floors compare against the same
 /// width the motor write programs.
 pub fn drive_ticks(duty: i16, pwm_arr: u16) -> u32 {
-    let mag = duty.unsigned_abs().min(i16::MAX as u16) as u32;
+    let mag = duty.unsigned_abs() as u32;
     (mag * pwm_arr as u32 + (1 << 14)) >> 15
 }
 
@@ -366,6 +372,63 @@ mod tests {
             1200,
             0
         ));
+    }
+
+    const ADC_MAX: u16 = 4095;
+
+    #[test]
+    fn i_from_frame_max_bounds_every_u16_input() {
+        for (sample, bias) in [(u16::MAX, 0), (0, u16::MAX)] {
+            let f = SensorFrame {
+                current: sample,
+                ..Default::default()
+            };
+            for fwd in [true, false] {
+                let i = i_from_frame(&f, valid(false), fwd, bias, u16::MAX as u32).unwrap();
+                assert_eq!(i.abs(), I_FROM_FRAME_MAX, "{sample} {bias} {fwd}");
+            }
+        }
+    }
+
+    #[test]
+    fn i_from_frame_fits_i16_at_adc_extremes() {
+        for sample in [0, ADC_MAX] {
+            for bias in [0, ADC_MAX] {
+                for gain in [0, UNITY, u16::MAX as u32] {
+                    for fwd in [true, false] {
+                        let f = SensorFrame {
+                            current: sample,
+                            current_trough: sample,
+                            ..Default::default()
+                        };
+                        for trough in [false, true] {
+                            let i = i_from_frame(&f, valid(trough), fwd, bias, gain).unwrap();
+                            assert!(
+                                i16::try_from(i).is_ok(),
+                                "{sample} {bias} {gain} {fwd}: {i}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn vdiff_from_frame_fits_i16_at_adc_extremes() {
+        for (va, vb) in [(0, ADC_MAX), (ADC_MAX, 0)] {
+            let f = SensorFrame {
+                vmotor_a: va,
+                vmotor_b: vb,
+                vmotor_a_trough: va,
+                vmotor_b_trough: vb,
+                ..Default::default()
+            };
+            for trough in [false, true] {
+                let v = vdiff_from_frame(&f, valid(trough)).unwrap();
+                assert!(i16::try_from(v).is_ok(), "{va} - {vb}: {v}");
+            }
+        }
     }
 
     #[test]

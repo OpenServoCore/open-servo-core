@@ -36,6 +36,13 @@ pub const BOXCAR_TICKS: i32 = 2 * DECIM_MED as i32;
 const RECIP_BOXCAR_SHIFT: u32 = 16;
 const RECIP_BOXCAR: i32 = ((1 << RECIP_BOXCAR_SHIFT) + BOXCAR_TICKS / 2) / BOXCAR_TICKS;
 
+/// Full-scale 12-bit terminal differential, vcounts.
+const TAP_FULL_SCALE: u32 = 4095;
+
+/// The widest PWM ARR the half sums hold for: DECIM_MED widths times a
+/// full-scale differential stay under i32.
+pub const ARR_MAX: u32 = i32::MAX as u32 / (DECIM_MED as u32 * TAP_FULL_SCALE);
+
 /// Half-boxcar accumulators plus the previous closed half.
 #[derive(Default)]
 pub struct BemfObs {
@@ -61,15 +68,14 @@ impl BemfObs {
 
     /// One FAST-tick sample. `ticks` is the drive width the window select
     /// used, `vdiff` from `vdiff_from_frame`, `i` from `i_from_frame`;
-    /// either `None` voids the open half. A u16 width times a 12-bit
-    /// differential stays under 2^28; the sum saturates: 10 x 65535 x 4095
-    /// exceeds i32 only above a 52k ARR, a hostile timing nothing else
-    /// survives either.
+    /// either `None` voids the open half. A half is DECIM_MED samples of a
+    /// width <= ARR times a 12-bit differential, so `sum_tv` holds for any
+    /// ARR up to `ARR_MAX`; `sum_i` stays under 2^21.
     pub fn sample(&mut self, ticks: u32, vdiff: Option<i32>, i: Option<i32>) {
         match (vdiff, i) {
             (Some(v), Some(i)) => {
-                self.sum_tv = self.sum_tv.saturating_add(ticks as i32 * v);
-                self.sum_i = self.sum_i.saturating_add(i);
+                self.sum_tv += ticks as i32 * v;
+                self.sum_i += i;
             }
             _ => self.half_valid = false,
         }
@@ -116,6 +122,7 @@ pub fn omega_cps_i16(omega: i32) -> i16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::estimator::window::I_FROM_FRAME_MAX;
 
     const ARR: u32 = 1200;
     const RECIP_ARR: u32 = (1u32 << RECIP_ARR_SHIFT) / ARR;
@@ -249,19 +256,22 @@ mod tests {
     }
 
     #[test]
-    fn hostile_inputs_inside_the_tap_range_never_wrap() {
-        // debug overflow checks are the wrap detector: the widest u16 window
-        // times a full-scale 12-bit differential, hostile currents
-        const TAP_FULL_SCALE: i32 = 4095;
+    fn legal_extremes_never_wrap() {
+        // debug overflow checks are the wrap detector: the widest window the
+        // sum holds for times a full-scale 12-bit differential, and the
+        // largest current `i_from_frame` returns
+        const V: i32 = TAP_FULL_SCALE as i32;
         let mut obs = BemfObs::new();
-        for n in 0..200usize {
-            let v = if n & 1 == 0 {
-                TAP_FULL_SCALE
+        // each half one sign, so the sums reach their extremes
+        for n in 0..4 * HALF {
+            let neg = (n / HALF) & 1 == 1;
+            let v = if neg { -V } else { V };
+            let i = if neg {
+                -I_FROM_FRAME_MAX
             } else {
-                -TAP_FULL_SCALE
+                I_FROM_FRAME_MAX
             };
-            let i = if n & 2 == 0 { i32::MAX } else { i32::MIN };
-            obs.sample(u16::MAX as u32, Some(v), Some(i));
+            obs.sample(ARR_MAX, Some(v), Some(i));
             if n % HALF == HALF - 1 {
                 obs.close_half(u16::MAX, u16::MAX, u32::MAX);
             }

@@ -5,7 +5,7 @@
 //! anti-windup term needs no domain crossing and duty <= duty_max by
 //! construction, sagging battery included.
 
-use crate::math::q_mul;
+use crate::math::{q_mul, sat_add, sat_clamp, sat_mul};
 
 /// PI error clamp, ccounts. Physical error is bounded by shunt full scale
 /// plus the current limit (|i_meas| <= 4095, |i_ref| <= i_lim <= 4095), so
@@ -13,8 +13,8 @@ use crate::math::q_mul;
 /// i32-exact: u16 gain * 2^13 <= 2^29.
 const E_LIM_CC: i32 = 8192;
 
-/// Back-calculation excess clamp, vcounts. The excess u_cl - u is unbounded
-/// (u saturates i32 under hostile inputs); 8192 is already 2x a 12-bit vbus,
+/// Back-calculation excess clamp, vcounts. The excess u_cl - u reaches
+/// |u| < 2^23 under hostile inputs; 8192 is already 2x a 12-bit vbus,
 /// so clamping only limits the per-tick unwind rate, and the product bound
 /// matches E_LIM_CC: kaw * 2^13 <= 2^29.
 const AW_LIM_VC: i32 = 8192;
@@ -84,7 +84,10 @@ impl CurrentLoop {
     /// and the output rides integrator + feedforward (`u_ff_vc`) until the
     /// window returns. `rail` and `recip_vbus_q15` must describe the same
     /// vbus (estimator::vbus::VbusEst contract `(recip * vbus) >> 15 ~=
-    /// 32767`) or the duty cap is off by their mismatch.
+    /// 32767`) or the duty cap is off by their mismatch. The plain sums
+    /// rely on the kernel's ranges: `i_ref` inside an `IBand` (<= u16::MAX),
+    /// `i_meas` from `window::i_from_frame` (<= 131068) and `u_ff_vc` from
+    /// the free fn `u_ff_vc` (<= 2^19).
     pub fn step(
         &mut self,
         i_ref: i32,
@@ -95,40 +98,47 @@ impl CurrentLoop {
         gains: &CurrentGains,
     ) -> i16 {
         let e = match i_meas {
-            Some(i) => i_ref.saturating_sub(i).clamp(-E_LIM_CC, E_LIM_CC),
+            Some(i) => sat_clamp(i_ref - i, -E_LIM_CC, E_LIM_CC),
             None => 0,
         };
-        // kp * 2^13 <= 2^29, i32-exact before the shift
-        let u_pi = q_mul(gains.kp_q88 as i32, e, 8).saturating_add(self.integ_vq16 >> 16);
-        let u = u_pi.saturating_add(u_ff_vc);
+        // kp * 2^13 <= 2^29, i32-exact before the shift; |u_pi| < 2^22, so
+        // u, and u_cl - u below, stay under 2^23
+        let u_pi = q_mul(gains.kp_q88 as i32, e, 8) + (self.integ_vq16 >> 16);
+        let u = u_pi + u_ff_vc;
         let v_max = rail.v_max_vc;
-        let u_cl = u.max(-v_max).min(v_max);
+        let u_cl = sat_clamp(u, -v_max, v_max);
         if i_meas.is_some() {
-            let aw = u_cl.saturating_sub(u).clamp(-AW_LIM_VC, AW_LIM_VC);
+            let aw = sat_clamp(u_cl - u, -AW_LIM_VC, AW_LIM_VC);
             // Q4.12 * ccounts -> vQ16 needs << (16 - 12); the products are
             // i32-exact (<= 2^29 per the E/AW clamps) but << 4 can reach
             // 2^33, so the shift saturates via mul. Integrator clamp:
             // +-(v_max << 16), never charged past what the output can
             // deliver (belt on top of back-calc).
-            let ki_term = q_mul(gains.ki_q412 as i32, e, 0).saturating_mul(1 << 4);
-            let aw_term = q_mul(gains.kaw_q412 as i32, aw, 0).saturating_mul(1 << 4);
+            let ki_term = sat_mul(q_mul(gains.ki_q412 as i32, e, 0), 1 << 4);
+            let aw_term = sat_mul(q_mul(gains.kaw_q412 as i32, aw, 0), 1 << 4);
             let lim = rail.integ_lim_vq16;
-            self.integ_vq16 = self
-                .integ_vq16
-                .saturating_add(ki_term)
-                .saturating_add(aw_term)
-                .max(-lim)
-                .min(lim);
+            self.integ_vq16 = sat_clamp(
+                sat_add(sat_add(self.integ_vq16, ki_term), aw_term),
+                -lim,
+                lim,
+            );
         }
         // VbusEst floors its divisor at 1, so recip <= 32767 << 15 < 2^30
         // casts exactly; |u_cl| * recip <= 2^17 * 2^30 = 2^47, i64-safe.
-        q_mul(u_cl, recip_vbus_q15 as i32, 15).clamp(-(i16::MAX as i32), i16::MAX as i32) as i16
+        sat_clamp(
+            q_mul(u_cl, recip_vbus_q15 as i32, 15),
+            -(i16::MAX as i32),
+            i16::MAX as i32,
+        ) as i16
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::estimator::window::I_FROM_FRAME_MAX;
+
+    const I_REF_MAX: i32 = u16::MAX as i32;
 
     const VBUS: u16 = 3000;
     // floor reciprocal per the recip contract: (RECIP * VBUS) >> 15 = 32766
@@ -312,16 +322,23 @@ mod tests {
     }
 
     #[test]
-    fn duty_capped_for_any_input() {
+    fn duty_capped_for_any_legal_input() {
         // Floor reciprocal keeps recip*vbus <= 32767<<15, so the voltage
         // clamp maps to duty <= duty_max exactly; sweep hostile corners
-        // including i32 extremes and a pre-wound integrator.
+        // including the range extremes and a pre-wound integrator.
         let gains = g(KP_1, 200, 2048, 1 << 12, 20000);
         for vbus in [2400u16, 3000, 4095] {
             let recip = recip_for(vbus);
-            for i_ref in [i32::MIN, -8000, 0, 500, 8000, i32::MAX] {
+            for i_ref in [-I_REF_MAX, -8000, 0, 500, 8000, I_REF_MAX] {
                 for omega in [i32::MIN, -(9000 << 16), 0, 9000 << 16, i32::MAX] {
-                    for i_meas in [None, Some(-4095), Some(0), Some(4095)] {
+                    for i_meas in [
+                        None,
+                        Some(-I_FROM_FRAME_MAX),
+                        Some(-4095),
+                        Some(0),
+                        Some(4095),
+                        Some(I_FROM_FRAME_MAX),
+                    ] {
                         let mut cur = CurrentLoop::new();
                         for _ in 0..20 {
                             let d = step(&mut cur, i_ref, i_meas, omega, vbus, recip, &gains);
@@ -329,6 +346,31 @@ mod tests {
                                 d.unsigned_abs() <= 20000,
                                 "d={d} vbus={vbus} i_ref={i_ref} omega={omega}"
                             );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sums_stay_in_i32_at_legal_extremes() {
+        // debug overflow checks trip if any plain add or subtract in `step`
+        // leaves i32
+        let gains = g(u16::MAX, u16::MAX, u16::MAX, u16::MAX, u16::MAX);
+        for vbus in [1u16, 4095, u16::MAX] {
+            let recip = recip_for(vbus);
+            for i_ref in [-I_REF_MAX, 0, I_REF_MAX] {
+                for omega in [i32::MIN, 0, i32::MAX] {
+                    for i_meas in [
+                        None,
+                        Some(-I_FROM_FRAME_MAX),
+                        Some(0),
+                        Some(I_FROM_FRAME_MAX),
+                    ] {
+                        let mut cur = CurrentLoop::new();
+                        for _ in 0..20 {
+                            step(&mut cur, i_ref, i_meas, omega, vbus, recip, &gains);
                         }
                     }
                 }

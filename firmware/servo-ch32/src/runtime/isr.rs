@@ -88,6 +88,7 @@ pub fn on_adc_dma_tc() {
     // vector; the buffer then holds raw shunt codes, not a 7-slot scan, and
     // nothing below may run against it.
     if crate::control::burst::capturing() {
+        core::hint::cold_path();
         load.skip();
         crate::control::burst::on_dma_event(&SHARED);
         crate::probe::kernel_other(entry);

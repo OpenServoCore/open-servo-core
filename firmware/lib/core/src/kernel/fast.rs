@@ -243,7 +243,8 @@ impl Fast {
             None
         };
         if let Some(i) = i_meas {
-            self.i_meas_last = i.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+            // 12-bit shunt codes under a settle gain < 2.0: |i| <= 8190
+            self.i_meas_last = i as i16;
         }
         let oc_over = i_meas.map(|i| i.unsigned_abs() > fc.oc_trip_counts as u32);
         if self.oc.sample(oc_over, fc.oc_trip_ticks) {
@@ -258,7 +259,8 @@ impl Fast {
         let vdiff =
             window::vdiff_from_frame(frame, sel).map(|v| if fc.drive_polarity { v } else { -v });
         if let Some(vdiff) = vdiff {
-            self.vdiff_last = vdiff.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+            // 12-bit taps: |vdiff| <= 4095
+            self.vdiff_last = vdiff as i16;
         }
         self.bemf.sample(
             ticks,
@@ -336,6 +338,7 @@ impl Fast {
         let drive = if faults.mask() == 0 {
             cmd.drive
         } else {
+            core::hint::cold_path();
             Drive::Off
         };
         let out = match drive {
@@ -400,6 +403,7 @@ impl Fast {
             Drive::Closed { u_ff_vc } => {
                 if cmd.i_ref_cc == 0 && m.i_meas.is_none() && (cmd.band.hi == 0 || cmd.band.lo == 0)
                 {
+                    core::hint::cold_path();
                     // endstop-clamped ref with no window: the honest-zero
                     // feed below makes e = 0, freezing the PI at whatever
                     // sub-floor duty it unwound to - stalled at an endstop

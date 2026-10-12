@@ -159,6 +159,7 @@ pub fn poll_arm(shared: &Shared) {
     if s == state::IDLE && arm != 1 {
         return;
     }
+    core::hint::cold_path();
     handshake(p, s, arm);
 }
 
