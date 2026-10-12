@@ -9,7 +9,13 @@
 //!
 //! Resync after garble is the hunt: skip to the next `0x00` in the
 //! available span. A data `0x00` can masquerade as an anchor; it dies by
-//! geometry or CRC and costs bounded ring bytes, never the stream.
+//! geometry or CRC and costs bounded ring bytes, never the stream. A hunted
+//! anchor's LEN is a claim, not a boundary: while it waits for bytes, a later
+//! anchor whose whole frame has ringed CRC-clean overtakes it, so a long
+//! masquerade never parks the walk over the frames behind it. A corrupt LEN
+//! right after a clean frame is not overtaken (a frame still ringing may hold
+//! a clean image); once the engine's window closes, [`Framer::drain`] makes
+//! every claim still short of its footprint dead, and the walk goes on past it.
 
 use osc_protocol::FrameBytes;
 use osc_protocol::crc::{osc_crc, osc_crc_continue};
@@ -48,6 +54,13 @@ pub enum Step<'a> {
 #[derive(Default)]
 pub struct Framer {
     anchor: u32,
+    /// `anchor` was reached by a hunt or a lap: no break is known there.
+    lost: bool,
+    /// `written` at the last overtake scan; a parked walk rescans only
+    /// over new bytes.
+    scanned: u32,
+    /// Nothing more is owed: a candidate short of its footprint is dead.
+    draining: bool,
 }
 
 impl Framer {
@@ -60,6 +73,18 @@ impl Framer {
     /// analog of the servo's bootstrap-only cursor read.
     pub fn resync(&mut self, written: u32) {
         self.anchor = written;
+        self.lost = false;
+        self.draining = false;
+    }
+
+    /// The await window closed: walk what has ringed as final. True on the
+    /// first call since the last [`resync`](Self::resync).
+    pub fn drain(&mut self) -> bool {
+        !core::mem::replace(&mut self.draining, true)
+    }
+
+    pub fn draining(&self) -> bool {
+        self.draining
     }
 
     /// Ring content no verdict has consumed (a parked plausible prefix,
@@ -76,6 +101,7 @@ impl Framer {
         let laps = unread / ring.len() as u32;
         if laps > 0 {
             self.anchor = self.anchor.wrapping_add(laps * ring.len() as u32);
+            self.lost = true;
             return Step::Lapped(u16::try_from(laps).unwrap_or(u16::MAX));
         }
         let avail = unread as usize;
@@ -89,46 +115,33 @@ impl Framer {
         if ring[at] != 0x00 {
             return Step::Garble(self.hunt(ring, mask, avail));
         }
-        if avail < 4 {
-            return Step::Partial;
+        match probe(ring, mask, at, avail) {
+            Probe::Junk => Step::Garble(self.hunt(ring, mask, avail)),
+            Probe::Partial if self.draining => Step::Garble(self.hunt(ring, mask, avail)),
+            Probe::Partial if self.lost && self.scanned != written => {
+                self.scanned = written;
+                match overtaken(ring, mask, at, avail) {
+                    Some(n) => {
+                        self.anchor = self.anchor.wrapping_add(n as u32);
+                        Step::Garble(n as u16)
+                    }
+                    None => Step::Partial,
+                }
+            }
+            Probe::Partial => Step::Partial,
+            Probe::Clean { id, inst, len } => {
+                let payload_pos = (at + 4) & mask;
+                let payload = payload_view(ring, payload_pos, wire::payload_len(len) as usize);
+                self.anchor = self.anchor.wrapping_add(wire::footprint(len) as u32);
+                self.lost = false;
+                Step::Frame(Frame {
+                    id,
+                    inst,
+                    payload,
+                    payload_pos,
+                })
+            }
         }
-
-        let id = Id::new(ring[(at + 1) & mask]);
-        let len = ring[(at + 2) & mask];
-        let inst = Inst(ring[(at + 3) & mask]);
-        let valid_shape = len >= 3
-            && id.is_valid()
-            && (inst.is_status() || inst.opcode().is_some())
-            && wire::footprint(len) <= ring.len();
-        if !valid_shape {
-            return Step::Garble(self.hunt(ring, mask, avail));
-        }
-
-        let footprint = wire::footprint(len);
-        if avail < footprint {
-            return Step::Partial;
-        }
-
-        // CRC over the anchor-inclusive covered span: the leading 0x00 is an
-        // init-0 no-op (protocol sec 3.2), so feeding from the anchor equals
-        // the wire checksum over ID..payload.
-        let clen = wire::covered_len(len);
-        let crc = ring_crc(ring, at, clen);
-        let lo = ring[(at + clen) & mask];
-        let hi = ring[(at + clen + 1) & mask];
-        if crc != u16::from_le_bytes([lo, hi]) {
-            return Step::Garble(self.hunt(ring, mask, avail));
-        }
-
-        let payload_pos = (at + 4) & mask;
-        let payload = payload_view(ring, payload_pos, wire::payload_len(len) as usize);
-        self.anchor = self.anchor.wrapping_add(footprint as u32);
-        Step::Frame(Frame {
-            id,
-            inst,
-            payload,
-            payload_pos,
-        })
     }
 
     /// Advance past a dead candidate to the next `0x00` within `avail`
@@ -141,8 +154,65 @@ impl Framer {
             n += 1;
         }
         self.anchor = self.anchor.wrapping_add(n as u32);
+        self.lost = true;
         n as u16
     }
+}
+
+/// Verdict on the candidate anchored at ring index `at` (a `0x00`) with
+/// `avail` ring bytes from it.
+enum Probe {
+    /// Dead by geometry or CRC.
+    Junk,
+    /// Plausible so far; its footprint has not fully ringed.
+    Partial,
+    Clean {
+        id: Id,
+        inst: Inst,
+        len: u8,
+    },
+}
+
+fn probe(ring: &[u8], mask: usize, at: usize, avail: usize) -> Probe {
+    if avail < 4 {
+        return Probe::Partial;
+    }
+    let id = Id::new(ring[(at + 1) & mask]);
+    let len = ring[(at + 2) & mask];
+    let inst = Inst(ring[(at + 3) & mask]);
+    let valid_shape = len >= 3
+        && id.is_valid()
+        && (inst.is_status() || inst.opcode().is_some())
+        && wire::footprint(len) <= ring.len();
+    if !valid_shape {
+        return Probe::Junk;
+    }
+    if avail < wire::footprint(len) {
+        return Probe::Partial;
+    }
+
+    // CRC over the anchor-inclusive covered span: the leading 0x00 is an
+    // init-0 no-op (protocol sec 3.2), so feeding from the anchor equals
+    // the wire checksum over ID..payload.
+    let clen = wire::covered_len(len);
+    let crc = ring_crc(ring, at, clen);
+    let lo = ring[(at + clen) & mask];
+    let hi = ring[(at + clen + 1) & mask];
+    if crc != u16::from_le_bytes([lo, hi]) {
+        return Probe::Junk;
+    }
+    Probe::Clean { id, inst, len }
+}
+
+/// Offset of the first later anchor within `avail` whose whole frame has
+/// ringed CRC-clean while the candidate at `at` still waits: the candidate
+/// was data reading as a header, or (at CRC odds, the risk every hunted
+/// anchor already carries) the clean span is an image inside its payload.
+fn overtaken(ring: &[u8], mask: usize, at: usize, avail: usize) -> Option<usize> {
+    (1..avail).find(|&n| {
+        let c = (at + n) & mask;
+        ring[c] == 0x00 && matches!(probe(ring, mask, c, avail - n), Probe::Clean { .. })
+    })
 }
 
 /// osc-CRC over a possibly-wrapped ring span.
@@ -347,6 +417,52 @@ mod tests {
             }
         }
         assert_eq!(got, Some(Id::new(2)));
+    }
+
+    /// Walk to `Idle` or a parked `Partial`; the ids of the frames found.
+    fn walk(f: &mut Framer, ring: &Ring) -> std::vec::Vec<Id> {
+        let mut ids = std::vec::Vec::new();
+        loop {
+            match f.step(&ring.buf, ring.written) {
+                Step::Frame(fr) => ids.push(fr.id),
+                Step::Garble(_) | Step::Lapped(_) => {}
+                Step::Partial | Step::Idle => return ids,
+            }
+        }
+    }
+
+    #[test]
+    fn a_long_masquerade_in_a_corrupt_frame_never_parks_the_walk_over_the_next() {
+        let mut ring = Ring::new();
+        let mut f = Framer::new();
+        // A data 0x00 whose next bytes read as id 5, LEN 0x30, a status INST:
+        // a 51-byte claim that outruns everything left on the wire. A flipped
+        // body byte behind it fails the real frame's CRC.
+        let good = status_frame(4, ResultCode::Ok, &[0x00, 0x05, 0x30, 0xA4, 1, 2, 3]);
+        let mut bad = [0u8; 64];
+        let n = good.as_slice().len();
+        bad[..n].copy_from_slice(good.as_slice());
+        bad[9] ^= 0xFF;
+        ring.feed(&bad[..n]);
+        ring.feed(status_frame(2, ResultCode::Ok, &[7]).as_slice());
+
+        assert_eq!(walk(&mut f, &ring), [Id::new(2)]);
+    }
+
+    #[test]
+    fn a_frame_still_ringing_is_never_overtaken_by_an_image_inside_it() {
+        let mut ring = Ring::new();
+        let mut f = Framer::new();
+        let inner = status_frame(3, ResultCode::Ok, &[1]);
+        let mut payload = [9u8; 12];
+        payload[..inner.as_slice().len()].copy_from_slice(inner.as_slice());
+        let outer = status_frame(6, ResultCode::Ok, &payload);
+        let bytes = outer.as_slice();
+        // Through the inner image's last byte: it is whole and CRC-clean.
+        ring.feed(&bytes[..4 + inner.as_slice().len() + 1]);
+        assert_eq!(walk(&mut f, &ring), []);
+        ring.feed(&bytes[4 + inner.as_slice().len() + 1..]);
+        assert_eq!(walk(&mut f, &ring), [Id::new(6)]);
     }
 
     #[test]
