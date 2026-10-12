@@ -104,7 +104,8 @@ pub const ROW_BYTES_PER_RATE: [u8; osc_protocol::table::TEL_ROW_RATES] = {
 /// A burst under `mask` arms at `baud`: no reserved bit, a field, and a
 /// row the rate's capacity carries.
 pub const fn admits(mask: u16, baud: BaudRate) -> bool {
-    mask & !MASK_ALL == 0 && mask != 0 && row_bytes(mask) <= row_bytes_max(baud)
+    let max = ROW_BYTES_PER_RATE[baud.as_idx() as usize] as usize;
+    mask & !MASK_ALL == 0 && mask != 0 && row_bytes(mask) <= max
 }
 
 /// One fast tick's streamable primitives, in device counts. `pos`,
