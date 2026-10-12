@@ -100,25 +100,28 @@ pub const TEL_ENCODE_MEAN: [u32; 2] = [442, 671];
 /// (stepping and still alike).
 pub const TEL_BANK: u32 = 177;
 
-/// The SLOW block on its due tick (phase SLOW, every DECIM_SLOW periods),
-/// on top of the phase's row, per regime. E: the dearest path, a tracked
-/// seat (any drive that holds current), priced at 684 over the plain tick
-/// (the ungated moving path at 471), plus 10%. No bench window has run a
-/// tracked seat; the untracked path's M, the due maximum over the phase's
-/// plain mean, is 408 Open and 673 Closed.
-pub const SLOW_DUE: [u32; 2] = [753, 753];
+/// The SLOW block's first stage on its due tick (phase SLOW, every
+/// DECIM_SLOW periods): the permit lease, undervoltage and the
+/// thermometer's step on the tick's window, on top of the phase's row, per
+/// regime. E: the dearest path, a tracked seat (any drive that holds
+/// current), priced at 405 over the plain tick, plus 10%.
+pub const SLOW_DUE: [u32; 2] = [446, 446];
 
-/// The due tick that freezes a thermal reference window, in place of
-/// [`SLOW_DUE`]: at most once per seat, 190 gated SLOW runs after it opens.
-/// E: priced at 651 over the plain tick, plus 10%; no loaded seat has run
-/// on the bench.
-pub const SLOW_CLOSE: u32 = 717;
+/// The second stage on the next period's SLOW phase: the thermometer's
+/// temperature, its seat rules and overtemperature. E: a tracked seat,
+/// priced at 330 over the plain tick, plus 10%.
+pub const SLOW_FINISH: u32 = 363;
+
+/// The finish that freezes a thermal reference window, in place of
+/// [`SLOW_FINISH`]: at most once per seat, 190 gated SLOW runs after it
+/// opens. E: priced at 330 over the plain tick, plus 10%.
+pub const SLOW_CLOSE: u32 = 363;
 
 /// The thermometer's stages on the spare phases (`kernel::phase`), on top
-/// of their rows. THERM_INSTALL: a frozen window's install after its SLOW
-/// tick (two reciprocal divides). THERM_SIDE: the NTC the period before a
-/// SLOW tick (a conversion and its bound once a second), or the derate and
-/// a cold check after one. THERM_INSTALL, E: priced at 531 over the plain
+/// of their rows. THERM_INSTALL: a frozen window's install the period
+/// after its finish (two reciprocal divides). THERM_SIDE: the NTC the
+/// period before a SLOW tick (a conversion and its bound once a second),
+/// or the derate and a cold check the period after a finish. THERM_INSTALL, E: priced at 531 over the plain
 /// tick, plus 10%; no bench window has run one. THERM_SIDE, M, above its E
 /// 631: the stage tick over the window's plain maximum at the phase, 591
 /// (hold); in the TEL windows over the TEL tick's maximum, at most 402,
@@ -133,6 +136,23 @@ pub const THERM_SIDE: u32 = 639;
 pub const HEALTH_CLOSE: u32 = 93;
 pub const HEALTH_CLOSE_TICKS: u32 = 16;
 pub const CATCH_UP: u32 = 111;
+
+/// Whether a tick-load close can land on `phase`. The chip closes a window
+/// on every [`HEALTH_CLOSE_TICKS`]-th executed tick counted from the boot
+/// tick, which runs phase CONTROL, and a shunt burst runs no tick and keeps
+/// the count; so a close lands only where `HEALTH_CLOSE_TICKS - 1` plus a
+/// multiple of it meets `phase` modulo [`PHASES`].
+pub const fn health_close_lands(phase: usize) -> bool {
+    let n = HEALTH_CLOSE_TICKS as usize;
+    let mut t = n - 1;
+    while t < n * PHASES {
+        if t % PHASES == phase % PHASES {
+            return true;
+        }
+        t += n;
+    }
+    false
+}
 
 /// Interrupt entry and exit around a stamped body: trampoline and prologue
 /// to the entry stamp, epilogue and exit after the exit stamp. M: 37 + 43
@@ -302,10 +322,13 @@ pub const fn kernel_tick(regime: Regime, phase: usize, ev: Events) -> u32 {
     if ev.refresh {
         t += refresh(phase);
     }
+    if ev.slow {
+        t += SLOW_DUE[r];
+    }
     if ev.close {
         t += SLOW_CLOSE;
-    } else if ev.slow {
-        t += SLOW_DUE[r];
+    } else if ev.finish {
+        t += SLOW_FINISH;
     }
     if ev.install {
         t += THERM_INSTALL;
@@ -340,8 +363,10 @@ pub struct Events {
     pub refresh: bool,
     pub tel: bool,
     pub bank: bool,
-    /// The SLOW block ran; `close`: and froze a thermal reference window.
+    /// The SLOW block's first stage ran; `finish`: its second, and
+    /// `close`: that froze a thermal reference window.
     pub slow: bool,
+    pub finish: bool,
     pub close: bool,
     /// The thermometer's stages on phases THERM_INSTALL and THERM_SIDE.
     pub install: bool,

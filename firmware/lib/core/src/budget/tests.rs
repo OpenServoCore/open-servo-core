@@ -8,6 +8,7 @@ const PLAIN: Events = Events {
     tel: false,
     bank: false,
     slow: false,
+    finish: false,
     close: false,
     install: false,
     side: false,
@@ -61,7 +62,7 @@ fn kernel_ticks_book_by_what_they_carried() {
         },
     );
     let close = Events {
-        slow: true,
+        finish: true,
         close: true,
         ..PLAIN
     };
@@ -100,6 +101,12 @@ fn kernel_ticks_book_by_what_they_carried() {
     assert_eq!((k.halts, k.long), (1, [3, 5]));
     tick(&mut k, 11, 1800, 9, OPEN, refresh);
     assert_eq!(k.refresh, [one(2000), one(1800)], "booked by stage");
+    let finish = Events {
+        finish: true,
+        ..PLAIN
+    };
+    tick(&mut k, 12, 1750, 6, closed, finish);
+    assert_eq!(k.finish, one(1750));
     let bodies = 1000
         + 1100
         + 1500
@@ -112,8 +119,9 @@ fn kernel_ticks_book_by_what_they_carried() {
         + 2200
         + 1600
         + 1700
-        + 1800;
-    assert_eq!((k.busy, k.entries), (bodies + 12 * ENTRY_EXIT, 12));
+        + 1800
+        + 1750;
+    assert_eq!((k.busy, k.entries), (bodies + 13 * ENTRY_EXIT, 13));
     assert_eq!(k.drove(), Regime::Closed);
 }
 
@@ -538,4 +546,34 @@ fn each_refresh_stage_charges_its_own_row() {
             KERNEL[closed][p] + row
         );
     }
+}
+
+/// The chip closes a tick-load window on every sixteenth tick from the
+/// boot tick at CONTROL: with ten phases that is every odd phase and never
+/// an even one, so never the SLOW stages or the install's phase.
+#[test]
+fn the_health_close_lands_only_on_odd_phases() {
+    let lands: heapless::Vec<usize, PHASES> =
+        (0..PHASES).filter(|&p| health_close_lands(p)).collect();
+    assert_eq!(lands, [1, 3, 5, 7, 9]);
+    for p in [phase::SLOW, phase::THERM_INSTALL] {
+        assert!(!health_close_lands(p as usize), "phase {p}");
+    }
+}
+
+#[test]
+fn a_finish_charges_its_own_row_and_a_close_replaces_it() {
+    let closed = Regime::Closed;
+    let p = phase::SLOW as usize;
+    let finish = Events {
+        finish: true,
+        ..PLAIN
+    };
+    let base = kernel_tick(closed, p, PLAIN);
+    assert_eq!(kernel_tick(closed, p, finish), base + SLOW_FINISH);
+    let close = Events {
+        close: true,
+        ..finish
+    };
+    assert_eq!(kernel_tick(closed, p, close), base + SLOW_CLOSE);
 }

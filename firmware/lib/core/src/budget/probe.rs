@@ -126,10 +126,11 @@ pub struct KernelProbe {
     pub tel: [Load; 2],
     /// Ticks that ran a configuration refresh stage, by stage.
     pub refresh: [Load; 2],
-    /// SLOW-due ticks by regime, and those that froze a thermal reference
-    /// window; the thermometer's stages on phases THERM_INSTALL and
-    /// THERM_SIDE.
+    /// The SLOW block's due ticks by regime, its finish ticks, and the
+    /// finishes that froze a thermal reference window; the thermometer's
+    /// stages on phases THERM_INSTALL and THERM_SIDE.
     pub slow: [Load; 2],
+    pub finish: Load,
     pub close: Load,
     pub install: Load,
     pub side: Load,
@@ -160,6 +161,7 @@ impl KernelProbe {
         tel: [Load::ZERO; 2],
         refresh: [Load::ZERO; 2],
         slow: [Load::ZERO; 2],
+        finish: Load::ZERO,
         close: Load::ZERO,
         install: Load::ZERO,
         side: Load::ZERO,
@@ -218,6 +220,8 @@ impl KernelProbe {
             if let Some(l) = self.slow.get_mut(r) {
                 l.add(body);
             }
+        } else if ev.finish {
+            self.finish.add(body);
         } else if ev.install {
             self.install.add(body);
         } else if ev.side {
@@ -306,6 +310,7 @@ impl KernelProbe {
             tel: core::array::from_fn(|_| r.load()),
             refresh: core::array::from_fn(|_| r.load()),
             slow: core::array::from_fn(|_| r.load()),
+            finish: r.load(),
             close: r.load(),
             install: r.load(),
             side: r.load(),
@@ -540,6 +545,7 @@ pub enum Component {
     /// The refresh stage at this phase.
     Refresh(usize),
     Slow(Regime),
+    Finish,
     Close,
     Install,
     Side,
@@ -644,9 +650,15 @@ pub fn rows(k: &KernelProbe, b: &BusProbe, s: &Scenario<'_>, mut f: impl FnMut(R
             0,
         ));
     }
+    let finish = Events {
+        finish: true,
+        ..carried
+    };
+    let budget = super::kernel_tick(Regime::Closed, p, finish);
+    f(load_row(Component::Finish, k.finish, budget, 0));
     let close = Events {
         close: true,
-        ..slow
+        ..finish
     };
     let budget = super::kernel_tick(Regime::Closed, p, close);
     f(load_row(Component::Close, k.close, budget, 0));

@@ -87,15 +87,15 @@ impl TickLoad {
         }
     }
 
-    /// A shunt burst capture runs no kernel tick: the partial short window
-    /// is dropped so none straddles the capture, and the next close only
-    /// sets the mark. The long window carries on, so the dropped ticks'
-    /// costs stay in its sum.
+    /// A shunt burst capture runs no kernel tick: the partial short
+    /// window's overruns are dropped and the next close only sets the mark.
+    /// The tick count carries on, so a close stays on its grid of kernel
+    /// ticks (`budget::health_close_lands`), and so does the long window's
+    /// sum.
     #[inline(always)]
     pub fn skip(&mut self) {
         self.primed = false;
         self.over = 0;
-        self.n = 0;
     }
 
     /// Accounts one tick from its entry and exit stamps; the tick that
@@ -180,7 +180,7 @@ mod tests {
 
     /// One short window of `costs` whose closing tick enters at `close_at`;
     /// the entries before it do not matter to the window.
-    fn window(load: &mut TickLoad, close_at: u32, costs: [u32; 16]) -> Window {
+    fn window<const N: usize>(load: &mut TickLoad, close_at: u32, costs: [u32; N]) -> Window {
         let (last, early) = costs.split_last().unwrap();
         for &c in early {
             assert!(load.tick(0, c).is_none());
@@ -262,11 +262,36 @@ mod tests {
             load.tick(0, 2 * PERIOD);
         }
         load.skip();
-        let w = window(&mut load, 100 * PERIOD, [100; 16]);
-        assert_eq!((w.over, w.lost), (0, 0), "the partial window is gone");
+        let w = window(&mut load, 100 * PERIOD, [100; 11]);
+        assert_eq!(
+            (w.over, w.lost),
+            (0, 0),
+            "the partial window's overruns are gone"
+        );
         let w = window(&mut load, 100 * PERIOD + tenths(165), [100; 16]);
         assert_eq!(w.lost, 0, "the old debt is gone");
         let w = window(&mut load, 100 * PERIOD + tenths(335), [100; 16]);
         assert_eq!(w.lost, 1);
+    }
+
+    /// The kernel's executed ticks and this count advance together, a
+    /// capture pausing both: whatever captures land, a window closes on
+    /// every sixteenth tick from the first.
+    #[test]
+    fn a_capture_keeps_the_close_on_its_tick_grid() {
+        let mut load = TickLoad::new();
+        let mut closes = Vec::new();
+        for t in 0..200u32 {
+            if t % 37 == 5 {
+                load.skip();
+                load.skip();
+            }
+            if load.tick(t * PERIOD, t * PERIOD + 100).is_some() {
+                closes.push(t);
+            }
+        }
+        let n = SHORT as u32;
+        assert!(closes.iter().all(|t| t % n == n - 1), "{closes:?}");
+        assert_eq!(closes.len(), 200 / SHORT as usize);
     }
 }

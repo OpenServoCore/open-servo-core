@@ -2954,7 +2954,10 @@ fn a_refresh_stage_takes_the_spare_phase_and_the_thermometer_waits_a_period() {
     let sh = Shared::new();
     seed(&sh);
     let mut k = kernel();
-    k.on_tick(f, &sh);
+    // past the first SLOW finish's period, which the thermometer sits out
+    for _ in 0..=2 * DECIM_MED {
+        k.on_tick(f, &sh);
+    }
     write_config(&sh, |t| t.config.limits.stall_time_ms = 20);
     run_to(&mut k, &sh, f, phase::THERM_SIDE);
     k.medium.thermal.request(stage::NTC);
@@ -2964,4 +2967,39 @@ fn a_refresh_stage_takes_the_spare_phase_and_the_thermometer_waits_a_period() {
     run_to(&mut k, &sh, f, phase::THERM_SIDE);
     k.on_tick(f, &sh);
     assert_eq!(k.medium.thermal.pending() & stage::NTC, 0, "a period later");
+}
+
+/// The SLOW block's stages land one per period: the due stage, the finish
+/// a period later, then the thermometer's install and derate on the spare
+/// phases of the period after that.
+#[test]
+fn the_slow_stages_take_one_period_each() {
+    use crate::estimator::thermal::stage;
+    let f = frame(2000, BIAS);
+    let sh = Shared::new();
+    seed(&sh);
+    let mut k = kernel();
+    run_to(&mut k, &sh, f, phase::SLOW);
+    k.on_tick(f, &sh);
+    assert_eq!(k.medium.slow_periods, 0, "the due stage ran");
+    run_to(&mut k, &sh, f, phase::SLOW);
+    k.on_tick(f, &sh);
+    assert_ne!(
+        k.medium.thermal.pending() & stage::DERATE,
+        0,
+        "the finish asked"
+    );
+    run_to(&mut k, &sh, f, phase::CONTROL);
+    assert_ne!(
+        k.medium.thermal.pending() & stage::DERATE,
+        0,
+        "not in its period"
+    );
+    k.on_tick(f, &sh);
+    run_to(&mut k, &sh, f, phase::CONTROL);
+    assert_eq!(
+        k.medium.thermal.pending() & stage::DERATE,
+        0,
+        "the next one"
+    );
 }

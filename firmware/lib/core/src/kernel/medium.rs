@@ -32,16 +32,18 @@ pub mod phase {
     pub const VELOCITY: u8 = 4;
     /// Rail estimate, sensor screen, position error timer.
     pub const RAIL: u8 = 5;
-    /// The slow block, every DECIM_SLOW periods.
+    /// The slow block, every DECIM_SLOW periods, and the thermometer's
+    /// finish one period later.
     pub const SLOW: u8 = 6;
     /// Estimates, mode, limits and sensors publish.
     pub const PUBLISH: u8 = 7;
-    /// After a SLOW tick: the install of a reference it froze; the first
-    /// stage of a configuration refresh takes it first. A stage whose phase
-    /// another stage takes waits a period: its pending bit carries it.
+    /// The period after the thermometer's finish: the install of a
+    /// reference it froze; the first stage of a configuration refresh takes
+    /// it first. A stage whose phase another stage takes waits a period:
+    /// its pending bit carries it.
     pub const THERM_INSTALL: u8 = 8;
-    /// Either side of a SLOW tick: the NTC the period before it; the
-    /// derate from its temperature and the cold check after an install;
+    /// The NTC the period before a SLOW tick; the period after the finish,
+    /// the derate from its temperature and the cold check after an install;
     /// the second refresh stage takes it first.
     pub const THERM_SIDE: u8 = 9;
 }
@@ -522,17 +524,26 @@ impl Medium {
         }
     }
 
-    /// SLOW, every DECIM_SLOW periods: the permit lease, the thermometer on
-    /// this tick's window, overtemperature and undervoltage.
+    /// SLOW, every DECIM_SLOW periods, in two stages a period apart, so
+    /// neither sets the period's longest tick: on the due tick the permit
+    /// lease, undervoltage and the thermometer's step on this tick's
+    /// window; on the next period's SLOW phase its temperature and
+    /// overtemperature.
     fn slow(&mut self, m: &Measured, cfg: &KernelConfig, faults: &mut FaultLatch) {
         self.slow_periods += 1;
         if self.slow_periods < DECIM_SLOW {
-            if self.slow_periods == DECIM_SLOW - 1 {
+            if self.slow_periods == 1 {
+                self.slow_finish(cfg, faults);
+            } else if self.slow_periods == DECIM_SLOW - 1 {
                 self.thermal.request(thermal::stage::NTC);
             }
             return;
         }
         self.slow_periods = 0;
+        self.slow_due(m, cfg, faults);
+    }
+
+    fn slow_due(&mut self, m: &Measured, cfg: &KernelConfig, faults: &mut FaultLatch) {
         let (fc, mc) = (&cfg.fast, &cfg.medium);
         self.permit_ticks = self.permit_ticks.saturating_sub(1);
         // v_mean needs the taps' window valid (bemf RECIP_ARR contract)
@@ -543,7 +554,7 @@ impl Medium {
                 bemf::RECIP_ARR_SHIFT,
             )
         });
-        let t_cc = self.thermal.step(
+        self.thermal.step(
             &thermal::Sample {
                 v_mean,
                 i_meas: m.i_meas,
@@ -553,17 +564,22 @@ impl Medium {
             },
             &mc.therm,
         );
+        // the rail tap samples drive or not, so a held sag never outlives the
+        // sag itself: ack clears once the rail is back
+        if self.vbus.vbus_counts() < fc.v_undervolt_counts {
+            faults.raise(faults::BIT_UNDER_VOLT, faults::CODE_UNDER_VOLT);
+        }
+    }
+
+    fn slow_finish(&mut self, cfg: &KernelConfig, faults: &mut FaultLatch) {
+        let mc = &cfg.medium;
+        let t_cc = self.thermal.finish(&mc.therm);
         // the fold reads the derate from the next period's LIMITS on, so it
         // waits for THERM_SIDE; UNSET_CC sits under every threshold: no
         // derate, no cutoff
         self.thermal.request(thermal::stage::DERATE);
         if t_cc >= mc.limits.cutoff_cc {
             faults.raise(faults::BIT_OVER_TEMP, faults::CODE_OVER_TEMP);
-        }
-        // the rail tap samples drive or not, so a held sag never outlives the
-        // sag itself: ack clears once the rail is back
-        if self.vbus.vbus_counts() < fc.v_undervolt_counts {
-            faults.raise(faults::BIT_UNDER_VOLT, faults::CODE_UNDER_VOLT);
         }
     }
 
