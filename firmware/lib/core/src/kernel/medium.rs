@@ -36,9 +36,12 @@ pub mod phase {
     pub const SLOW: u8 = 6;
     /// Estimates, mode, limits and sensors publish.
     pub const PUBLISH: u8 = 7;
-    /// Either side of a SLOW tick: the NTC the period before it, the
-    /// derate from its temperature after it. A stage whose phase another
-    /// stage takes waits a period: its pending bit carries it.
+    /// After a SLOW tick: the install of a reference it froze. A stage
+    /// whose phase another stage takes waits a period: its pending bit
+    /// carries it.
+    pub const THERM_INSTALL: u8 = 8;
+    /// Either side of a SLOW tick: the NTC the period before it; the
+    /// derate from its temperature and the cold check after an install.
     pub const THERM_SIDE: u8 = 9;
 }
 
@@ -566,9 +569,11 @@ impl Medium {
         }
     }
 
-    /// THERM_SIDE, while the thermometer has work.
+    /// THERM_INSTALL and THERM_SIDE, while the thermometer has work.
     fn spare(&mut self, k: u8, ntc_raw: u16, cfg: &KernelConfig) {
-        if k == phase::THERM_SIDE {
+        if k == phase::THERM_INSTALL {
+            self.thermal.install();
+        } else {
             if self.thermal.take(thermal::stage::DERATE) {
                 self.limits
                     .update_derate(self.thermal.t_cc(), &cfg.medium.limits);

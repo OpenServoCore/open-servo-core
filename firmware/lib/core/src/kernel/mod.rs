@@ -6,8 +6,8 @@
 //! trajectory and position, limits, velocity, vbus and detectors, slow,
 //! publishes), SLOW every DECIM_SLOW periods inside `medium` (thermometer,
 //! overtemp, undervolt; the thermometer's NTC on the last spare phase of
-//! the period before, the derate on the same phase after). The medium half
-//! leaves the fast half a
+//! the period before, the derate and the install of a reference it froze
+//! on the spare phases after). The medium half leaves the fast half a
 //! `fast::Command`; the fast measurement reaches the medium phase of the
 //! same tick as `fast::Measured`. Only the CONTROL phase reads CONTROL, so
 //! a host write (torque, mode, goals) takes effect at the next period's
@@ -43,7 +43,7 @@ use core::sync::atomic::{Ordering, compiler_fence};
 use self::config::KernelConfig;
 use self::fast::{Command, Fast};
 use self::medium::{Control, Medium};
-use crate::estimator::{thermal, window};
+use crate::estimator::window;
 use crate::tel::TelStream;
 use crate::traits::{ControlIo, Motor};
 use crate::{RegionStorageRaw, SensorFrame, Shared};
@@ -97,15 +97,13 @@ pub struct KernelTiming {
 /// What the budget probe reads around a tick: before it, the medium phase
 /// it runs, the configuration generation (a refresh moves it), whether the
 /// boot tick has run and whether the SLOW block is due; on either side,
-/// whether a thermal reference is live, the thermometer's pending stages
-/// and whether the drive arm is Closed.
+/// the thermometer's pending stages and whether the drive arm is Closed.
 #[derive(Copy, Clone)]
 pub struct ProbeTags {
     pub phase: u8,
     pub config_gen: u8,
     pub booted: bool,
     pub slow_due: bool,
-    pub seated: bool,
     /// `thermal::stage` bits.
     pub therm: u8,
     pub closed: bool,
@@ -229,7 +227,6 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             booted: self.booted,
             slow_due: self.phase == medium::phase::SLOW
                 && self.medium.slow_periods + 1 >= DECIM_SLOW,
-            seated: self.medium.thermal.flags() & thermal::flag::TRACK != 0,
             therm: self.medium.thermal.pending(),
             closed: self.faults.mask() == 0 && matches!(self.cmd.drive, fast::Drive::Closed { .. }),
         }

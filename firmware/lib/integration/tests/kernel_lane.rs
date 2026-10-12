@@ -13,7 +13,8 @@ use osc_integration::sim::{
 use osc_protocol::build;
 use osc_protocol::wire::{Id, Inst, Opcode, ResultCode, STREAM_SAMPLES_MAX};
 use osc_servo_core::BaudRate;
-use osc_servo_core::budget::{self, Body, Frame};
+use osc_servo_core::budget::{self, Body, Events, Frame, Regime};
+use osc_servo_core::kernel::phase;
 use osc_servo_core::regions::control::addr::lifecycle::{GOAL_VELOCITY, TEL_COUNT, TEL_MASK};
 use rstest::rstest;
 
@@ -97,6 +98,78 @@ fn kernel_on_top_loses_no_tick_under_polling(
     assert_eq!((st.lost, st.entries), (0, st.scans), "{st:?}");
     assert_eq!(st.entry_latency_max, 0, "every entry at its scan: {st:?}");
     assert!(st.bus_stretch > 0, "the lane preempted no bus body: {st:?}");
+}
+
+/// A Closed tick at budget carrying `ev` on `phase`, with the health close
+/// that can land on any tick and interrupt entry and exit.
+fn event_tick(phase: u8, ev: Events) -> u32 {
+    budget::kernel_tick(Regime::Closed, phase as usize, ev)
+        + budget::HEALTH_CLOSE
+        + budget::ENTRY_EXIT
+}
+
+/// A seated reference close, staged: the SLOW tick that freezes the
+/// window, the install, the side work after it, each Closed at budget, and
+/// streaming with a TEL row and its bank on the same tick.
+#[rstest]
+#[case::quiet(false)]
+#[ignore = "over budget: the TEL row (612) and its bank (183) put the freeze tick at 3140 with the health close and entry and exit, 740 over; a plain Closed p1 with the TEL row alone takes 2763"]
+#[case::streaming(true)]
+fn thermal_close_fits_at_budget_while_seated(#[case] tel: bool) {
+    let carried = Events {
+        tel,
+        bank: tel,
+        ..Events::default()
+    };
+    let stages = [
+        (
+            phase::SLOW,
+            Events {
+                slow: true,
+                close: true,
+                ..carried
+            },
+        ),
+        (
+            phase::THERM_INSTALL,
+            Events {
+                install: true,
+                ..carried
+            },
+        ),
+        (
+            phase::THERM_SIDE,
+            Events {
+                side: true,
+                ..carried
+            },
+        ),
+    ];
+    let over: Vec<_> = stages
+        .into_iter()
+        .map(|(p, ev)| (p, event_tick(p, ev)))
+        .filter(|&(_, t)| t > budget::TICK_PERIOD)
+        .collect();
+    assert!(
+        over.is_empty(),
+        "(phase, ticks) over {}: {over:?}",
+        budget::TICK_PERIOD
+    );
+}
+
+/// The SLOW-due tick while six fields stream and step, Closed at budget,
+/// with a bank and the health close on it.
+#[test]
+#[ignore = "over budget: 1455 + SLOW 753 + TEL 612 + bank 183 + health close 93 = 3096 against 2320, 776 over; with a 300 TEL row and bank still 281 over"]
+fn slow_due_fits_at_budget_while_streaming() {
+    let ev = Events {
+        slow: true,
+        tel: true,
+        bank: true,
+        ..Events::default()
+    };
+    let t = event_tick(phase::SLOW, ev);
+    assert!(t <= budget::TICK_PERIOD, "{t} over {}", budget::TICK_PERIOD);
 }
 
 /// The attached host's exchanges at 3M, the kernel above the bus at

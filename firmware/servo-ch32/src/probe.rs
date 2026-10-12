@@ -118,8 +118,9 @@ pub fn kernel_exit(entry: u32, before: TickTags, after: ProbeTags, tel: bool) {
             tel,
             bank: osc_servo_drivers::bench::tel_banks() != before.banks,
             slow: b.slow_due,
-            close: b.slow_due && !b.seated && after.seated,
-            side: (b.therm & !after.therm) & (stage::NTC | stage::DERATE) != 0,
+            close: b.slow_due && after.therm & stage::INSTALL != 0,
+            install: (b.therm & !after.therm) & stage::INSTALL != 0,
+            side: (b.therm & !after.therm) & (stage::NTC | stage::DERATE | stage::COLD) != 0,
         };
         let r = if b.closed || after.closed {
             Regime::Closed

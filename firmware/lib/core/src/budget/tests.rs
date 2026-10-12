@@ -9,6 +9,7 @@ const PLAIN: Events = Events {
     bank: false,
     slow: false,
     close: false,
+    install: false,
     side: false,
 };
 const OPEN: Regime = Regime::Open;
@@ -70,11 +71,16 @@ fn kernel_ticks_book_by_what_they_carried() {
         ..PLAIN
     };
     tick(&mut k, 8, 2200, 6, closed, close);
+    let install = Events {
+        install: true,
+        ..PLAIN
+    };
+    tick(&mut k, 9, 1600, 8, closed, install);
     let side = Events {
         side: true,
         ..PLAIN
     };
-    tick(&mut k, 9, 1700, 9, closed, side);
+    tick(&mut k, 10, 1700, 9, closed, side);
     assert_eq!(k.load(OPEN, 0), Load::ZERO, "the boot tick books nothing");
     let one = |b| Load {
         n: 1,
@@ -90,16 +96,16 @@ fn kernel_ticks_book_by_what_they_carried() {
         (k.refresh.max, k.slow[1], k.close),
         (2000, one(1900), one(2200))
     );
-    assert_eq!(k.side, one(1700));
+    assert_eq!((k.install, k.side), (one(1600), one(1700)));
     assert_eq!(
-        k.load(closed, 9),
+        k.load(closed, 8),
         Load::ZERO,
-        "the side work stays off the plain rows"
+        "the stages stay off the plain rows"
     );
-    assert_eq!((k.halts, k.long), (1, [3, 4]));
+    assert_eq!((k.halts, k.long), (1, [3, 5]));
     let bodies =
-        1000 + 1100 + 1500 + 1700 + 2000 + HALT_TICKS + 1 + LONG_TICKS + 1900 + 2200 + 1700;
-    assert_eq!((k.busy, k.entries), (bodies + 10 * ENTRY_EXIT, 10));
+        1000 + 1100 + 1500 + 1700 + 2000 + HALT_TICKS + 1 + LONG_TICKS + 1900 + 2200 + 1600 + 1700;
+    assert_eq!((k.busy, k.entries), (bodies + 11 * ENTRY_EXIT, 11));
     assert_eq!(k.drove(), Regime::Closed);
 }
 

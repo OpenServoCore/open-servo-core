@@ -117,10 +117,12 @@ pub struct KernelProbe {
     pub tel: Load,
     /// CONTROL ticks that rebuilt the configuration.
     pub refresh: Load,
-    /// SLOW-due ticks by regime, and those that closed a thermal
-    /// reference; the thermometer's side work on phase THERM_SIDE.
+    /// SLOW-due ticks by regime, and those that froze a thermal reference
+    /// window; the thermometer's stages on phases THERM_INSTALL and
+    /// THERM_SIDE.
     pub slow: [Load; 2],
     pub close: Load,
+    pub install: Load,
     pub side: Load,
     /// Ticks of at least [`LONG_TICKS`], by regime.
     pub long: [u32; 2],
@@ -149,6 +151,7 @@ impl KernelProbe {
         refresh: Load::ZERO,
         slow: [Load::ZERO; 2],
         close: Load::ZERO,
+        install: Load::ZERO,
         side: Load::ZERO,
         long: [0; 2],
         windows: Windows::ZERO,
@@ -203,6 +206,8 @@ impl KernelProbe {
             if let Some(l) = self.slow.get_mut(r) {
                 l.add(body);
             }
+        } else if ev.install {
+            self.install.add(body);
         } else if ev.side {
             self.side.add(body);
         } else if ev.bank {
@@ -283,6 +288,7 @@ impl KernelProbe {
             refresh: r.load(),
             slow: core::array::from_fn(|_| r.load()),
             close: r.load(),
+            install: r.load(),
             side: r.load(),
             long: core::array::from_fn(|_| r.word()),
             windows: Windows {
@@ -513,6 +519,7 @@ pub enum Component {
     Refresh,
     Slow(Regime),
     Close,
+    Install,
     Side,
     /// The TEL ticks' mean over the plain ticks' (mean only).
     TelEncode,
@@ -605,13 +612,23 @@ pub fn rows(k: &KernelProbe, b: &BusProbe, s: &Scenario<'_>, mut f: impl FnMut(R
     };
     let budget = super::kernel_tick(Regime::Closed, p, close);
     f(load_row(Component::Close, k.close, budget, 0));
-    let side = Events {
-        side: true,
-        ..carried
-    };
-    let p = crate::kernel::phase::THERM_SIDE as usize;
-    let budget = super::kernel_tick(Regime::Closed, p, side);
-    f(load_row(Component::Side, k.side, budget, 0));
+    let stages = [
+        (
+            Component::Install,
+            k.install,
+            crate::kernel::phase::THERM_INSTALL,
+        ),
+        (Component::Side, k.side, crate::kernel::phase::THERM_SIDE),
+    ];
+    for (c, l, p) in stages {
+        let ev = Events {
+            install: c == Component::Install,
+            side: c == Component::Side,
+            ..carried
+        };
+        let budget = super::kernel_tick(Regime::Closed, p as usize, ev);
+        f(load_row(c, l, budget, 0));
+    }
     let plain = k.tick.iter().flatten().fold((0u64, 0u64), |(n, sum), l| {
         (n + l.n as u64, sum + l.sum as u64)
     });

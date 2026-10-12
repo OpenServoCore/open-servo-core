@@ -89,6 +89,11 @@ pub struct Sample {
 pub mod stage {
     /// The NTC ahead of the next SLOW tick ([`super::WindingTherm::side`]).
     pub const NTC: u8 = 1 << 0;
+    /// A frozen reference window's install ([`super::WindingTherm::install`]).
+    pub const INSTALL: u8 = 1 << 1;
+    /// The cold check after an install the idle criterion held for
+    /// ([`super::WindingTherm::side`]).
+    pub const COLD: u8 = 1 << 2;
     /// The caller's: the derate from the SLOW tick's temperature.
     pub const DERATE: u8 = 1 << 3;
 }
@@ -284,7 +289,8 @@ impl WindingTherm {
     }
 
     /// One SLOW-tick update on the NTC as [`Self::ntc`] last converted it;
-    /// returns the winding temperature, centi-C, or [`UNSET_CC`].
+    /// returns the winding temperature, centi-C, or [`UNSET_CC`]. A
+    /// reference window it completes is frozen for [`Self::install`].
     pub fn step(&mut self, s: &Sample, cfg: &ThermCfg) -> i16 {
         if cfg.alpha_q24 == 0 || cfg.g_q016 == 0 || cfg.r_cold_q12 == 0 || !self.ntc_ok {
             self.x_qg = 0;
@@ -340,10 +346,7 @@ impl WindingTherm {
                     self.drop_base();
                 }
             } else if let Some(i) = gated {
-                self.reference(s.v_mean.unwrap_or(0), i, s.pos_counts, t, cfg);
-                if self.based {
-                    t = self.t_ref_cc as i32;
-                }
+                t = self.reference(s.v_mean.unwrap_or(0), i, s.pos_counts, t, cfg);
             }
         }
         if t - self.t_ntc_cc as i32 > x_max {
@@ -473,49 +476,36 @@ impl WindingTherm {
         self.sum_v = 0;
         self.sum_i = 0;
         self.flags &= !flag::TRACK;
+        self.pending &= !(stage::INSTALL | stage::COLD);
     }
 
     /// A gated tick at an unbased seat: skip the contact transient, then
     /// average REF_TICKS into the reference. `t` is the carried
-    /// temperature the reference inherits. Out of line: the tick body
-    /// takes it once per seat.
+    /// temperature the reference inherits; the tick reads the one it
+    /// returns. The window that completes is frozen (its sums stay, the
+    /// carry takes the reference temperature) for [`Self::install`]. Out of
+    /// line: the tick body takes it once per seat.
     #[inline(never)]
-    fn reference(&mut self, v: i32, i: i32, pos: i32, t: i32, cfg: &ThermCfg) {
+    fn reference(&mut self, v: i32, i: i32, pos: i32, t: i32, cfg: &ThermCfg) -> i32 {
         self.seat_ticks = self.seat_ticks.saturating_add(1);
         if self.seat_ticks <= REF_SKIP_TICKS {
             self.pos_ref = pos;
-            return;
+            return t;
         }
         if (pos - self.pos_ref).unsigned_abs() > cfg.seat_band_counts as u32 {
             self.drop_base();
-            return;
+            return t;
         }
         self.sum_v += v.clamp(-V_MAX, V_MAX);
         self.sum_i += i;
         if self.seat_ticks - REF_SKIP_TICKS < REF_TICKS {
-            return;
-        }
-        let r_ref = recip_div(
-            self.sum_v.unsigned_abs() << 12,
-            self.sum_i.unsigned_abs().max(1),
-        )
-        .min(u16::MAX as u32) as u16;
-        if self.cold_ok {
-            self.cold_check(r_ref, cfg);
+            return t;
         }
         let t_ref = t.clamp(1 - COPPER_ZERO_CC, i16::MAX as i32);
-        self.k_ref_q88 = recip_div(((COPPER_ZERO_CC + t_ref) as u32) << 8, r_ref.max(1) as u32)
-            .min(u16::MAX as u32) as u16;
-        self.r_ref_q12 = r_ref;
-        self.r_qg = (r_ref as i32) << GUARD;
         self.t_ref_cc = t_ref as i16;
-        self.i_ref = self.sum_i >> REF_SHIFT;
-        self.v_ref = self.sum_v >> REF_SHIFT;
-        self.t_rate_cc = t_ref as i16;
-        self.rate_n = 0;
         self.x_qg = ((t_ref - self.t_ntc_cc as i32) << XG).clamp(-X_MAX_QG, X_MAX_QG);
-        self.based = true;
-        self.flags |= flag::TRACK;
+        self.pending |= stage::INSTALL;
+        t_ref
     }
 
     /// Raise [`stage`] bits: the NTC before a SLOW tick, the caller's
@@ -531,11 +521,48 @@ impl WindingTherm {
         had
     }
 
-    /// The NTC requested ahead of a SLOW tick, on this tick's reading.
+    /// After the SLOW tick that froze a reference window: its R, the
+    /// copper slope at its temperature, the base.
+    #[inline(always)]
+    pub fn install(&mut self) {
+        if self.pending & stage::INSTALL != 0 {
+            self.install_reference();
+        }
+    }
+
+    #[inline(never)]
+    fn install_reference(&mut self) {
+        let r_ref = recip_div(
+            self.sum_v.unsigned_abs() << 12,
+            self.sum_i.unsigned_abs().max(1),
+        )
+        .min(u16::MAX as u32) as u16;
+        let t_ref = self.t_ref_cc as i32;
+        self.k_ref_q88 = recip_div(((COPPER_ZERO_CC + t_ref) as u32) << 8, r_ref.max(1) as u32)
+            .min(u16::MAX as u32) as u16;
+        self.r_ref_q12 = r_ref;
+        self.r_qg = (r_ref as i32) << GUARD;
+        self.i_ref = self.sum_i >> REF_SHIFT;
+        self.v_ref = self.sum_v >> REF_SHIFT;
+        self.t_rate_cc = t_ref as i16;
+        self.rate_n = 0;
+        self.based = true;
+        self.flags |= flag::TRACK;
+        self.pending &= !stage::INSTALL;
+        if self.cold_ok {
+            self.pending |= stage::COLD;
+        }
+    }
+
+    /// The NTC requested ahead of a SLOW tick on this tick's reading, else
+    /// the cold check an install left.
     #[inline(always)]
     pub fn side(&mut self, raw: u16, cfg: &ThermCfg) {
         if self.pending & stage::NTC != 0 {
             self.ntc(raw, cfg);
+        } else if self.pending & stage::COLD != 0 {
+            self.pending &= !stage::COLD;
+            self.cold_check(self.r_ref_q12, cfg);
         }
     }
 
@@ -680,12 +707,15 @@ mod tests {
 
     /// One SLOW cycle as the kernel runs it on an NTC reading `raw`: the
     /// bound at `cfg` (the configuration load), the NTC ahead of the step,
-    /// the step.
+    /// the step, then the install and the cold check.
     fn slow_at(th: &mut WindingTherm, s: &Sample, cfg: &ThermCfg, raw: u16) -> i16 {
         th.bound(cfg);
         th.request(stage::NTC);
         th.side(raw, cfg);
-        th.step(s, cfg)
+        let t = th.step(s, cfg);
+        th.install();
+        th.side(raw, cfg);
+        t
     }
 
     fn slow(th: &mut WindingTherm, s: &Sample, cfg: &ThermCfg) -> i16 {
