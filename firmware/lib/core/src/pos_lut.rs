@@ -158,12 +158,12 @@ impl Shared {
         lerp_q4(raw, c0, c1)
     }
 
-    /// [`band_gain_q4`] of the interval `raw` falls in: the same two loads
-    /// under the same contract as [`Self::pos_lut_q4`].
+    /// [`Self::pos_lut_q4`] and the [`band_gain_q4`] of its interval, from
+    /// one pair of loads.
     #[inline(always)]
-    pub fn pos_lut_band_gain_q4(&self, raw: u16) -> u16 {
+    pub fn pos_lut_q4_band_gain(&self, raw: u16) -> (u16, u16) {
         let (c0, c1) = self.pos_lut_points(raw);
-        band_gain_q4(c0, c1)
+        (lerp_q4(raw, c0, c1), band_gain_q4(c0, c1))
     }
 
     #[inline(always)]
@@ -441,23 +441,23 @@ mod tests {
         let k = table(&[(100, 15)]);
         assert_eq!(validate(&k, 209, 3849), Ok(()));
         sh.with_pos_lut_mut(|a| *a = k);
-        assert_eq!(sh.pos_lut_band_gain_q4(99 * 16 + 5), 31);
+        assert_eq!(sh.pos_lut_q4_band_gain(99 * 16 + 5).1, 31);
         assert_eq!(
-            sh.pos_lut_band_gain_q4(100 * 16 + 5),
+            sh.pos_lut_q4_band_gain(100 * 16 + 5).1,
             BAND_GAIN_MIN_Q4,
             "d 1"
         );
         let k = step(239);
         assert_eq!(validate(&k, 209, 3849), Ok(()));
         sh.with_pos_lut_mut(|a| *a = k);
-        assert_eq!(sh.pos_lut_band_gain_q4(99 * 16 + 5), GRID as u16);
+        assert_eq!(sh.pos_lut_q4_band_gain(99 * 16 + 5).1, GRID as u16);
         assert_eq!(
-            sh.pos_lut_band_gain_q4(100 * 16 + 5),
+            sh.pos_lut_q4_band_gain(100 * 16 + 5).1,
             BAND_GAIN_MAX_Q4,
             "d 255"
         );
         assert_eq!(
-            sh.pos_lut_band_gain_q4(101 * 16 + 5),
+            sh.pos_lut_q4_band_gain(101 * 16 + 5).1,
             BAND_GAIN_MIN_Q4,
             "d 1"
         );
@@ -487,8 +487,9 @@ mod tests {
         assert_eq!(interp_q4(4095, &table(&[(255, 1)])), 65521);
     }
 
-    /// The kernel's volatile read off the array is `interp_q4` for every
-    /// raw count, and the identity is `raw << 4` past the ADC span too.
+    /// The kernel's volatile reads off the array are `interp_q4` for every
+    /// raw count, the paired read included, and the identity is `raw << 4`
+    /// past the ADC span too.
     #[test]
     fn kernel_read_matches_interp_exhaustive() {
         let sh = Shared::new();
@@ -496,6 +497,12 @@ mod tests {
         sh.with_pos_lut_mut(|a| *a = k);
         for raw in 0..=u16::MAX {
             assert_eq!(sh.pos_lut_q4(raw), interp_q4(raw, &k), "raw {raw}");
+            let i = index(raw);
+            assert_eq!(
+                sh.pos_lut_q4_band_gain(raw),
+                (interp_q4(raw, &k), band_gain_q4(k[i], k[i + 1])),
+                "raw {raw}"
+            );
             assert_eq!(identity_q4(raw), interp_q4(raw, &ZERO), "raw {raw}");
         }
     }

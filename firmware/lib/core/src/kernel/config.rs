@@ -129,12 +129,12 @@ impl KernelConfig {
                 },
                 r_q12: motor.r_q12,
                 recip_ke_q: motor.recip_ke_q,
-                traj: TrajCfg {
-                    vel_limit_cps: loop_pos.velocity_limit_cps,
-                    accel_limit_q88: loop_pos.accel_limit_q88,
-                    pos_min_soft_counts: pos_lim.pos_min_soft_counts,
-                    pos_max_soft_counts: pos_lim.pos_max_soft_counts,
-                },
+                traj: TrajCfg::new(
+                    loop_pos.velocity_limit_cps,
+                    loop_pos.accel_limit_q88,
+                    pos_lim.pos_min_soft_counts,
+                    pos_lim.pos_max_soft_counts,
+                ),
                 position: PositionCfg {
                     kp_q88: loop_pos.p_kp_q88,
                     pos_deadband_counts: loop_pos.pos_deadband_counts,
