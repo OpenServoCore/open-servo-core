@@ -18,7 +18,7 @@ pub mod probe;
 #[cfg(test)]
 mod tests;
 
-use crate::kernel::DECIM_MED;
+use crate::kernel::{DECIM_MED, phase};
 
 /// The clock every budget counts: the chip's HCLK (the chip asserts it).
 pub const CLOCK_HZ: u32 = 48_000_000;
@@ -70,12 +70,16 @@ pub const KERNEL_MEAN: [[u32; PHASES]; 2] = [
 /// A window's mean is judged only over this many bodies.
 pub const MEAN_MIN_BODIES: u32 = 100;
 
-/// The CONTROL tick that rebuilds the kernel's configuration snapshot, on
-/// top of [`KERNEL`]; once per period at most, after a configuration
-/// write. M on an earlier image (no window writes the configuration): the
-/// refresh tick at rest, 1679, over the quiet CONTROL mean 849; E since:
-/// the thermometer's bound, priced at 158, plus 10%.
-pub const REFRESH: u32 = 1029;
+/// The two stages that rebuild the kernel's configuration snapshot after a
+/// configuration write, on top of [`KERNEL`], each at most once per period
+/// and in place of the thermometer's stage on that tick: the fast half, the
+/// thermometer's config and its bound at phase THERM_INSTALL; the rest of
+/// the medium half and the floors at THERM_SIDE. E: each stage tick over
+/// the same tick without the write, 486 and 420, priced on the release
+/// image (fetch model on the emulated trace, quiet and stepping alike),
+/// plus 10%.
+pub const REFRESH_1: u32 = 535;
+pub const REFRESH_2: u32 = 462;
 
 /// Every tick of a TEL burst (sample build and encode), on top of [`KERNEL`],
 /// per regime, six fields at 3M. M: per phase the TEL ticks' maximum over
@@ -288,7 +292,7 @@ pub const fn kernel_tick(regime: Regime, phase: usize, ev: Events) -> u32 {
     let r = regime as usize;
     let mut t = KERNEL[r][phase % PHASES];
     if ev.refresh {
-        t += REFRESH;
+        t += refresh(phase);
     }
     if ev.close {
         t += SLOW_CLOSE;
@@ -308,6 +312,15 @@ pub const fn kernel_tick(regime: Regime, phase: usize, ev: Events) -> u32 {
         t += TEL_BANK;
     }
     t
+}
+
+/// The refresh stage row a tick at `phase` carries.
+pub const fn refresh(phase: usize) -> u32 {
+    if phase % PHASES == phase::THERM_INSTALL as usize {
+        REFRESH_1
+    } else {
+        REFRESH_2
+    }
 }
 
 /// What a kernel tick carried beyond its phase.

@@ -16,8 +16,8 @@
 //! while CONTROL `ident_agg` asks for them. The tick index is the sample
 //! clock: every executed tick is one period, and nothing reads a wall
 //! clock. CONFIG and CALIB reach the tick through the kernel's own
-//! snapshot (`config`), rebuilt at a medium boundary after a write, so a
-//! configuration write takes effect within one medium tick.
+//! snapshot (`config`), rebuilt in two halves on the free phases after a
+//! write, so a configuration write takes effect within two medium periods.
 
 mod config;
 pub mod current;
@@ -50,6 +50,11 @@ use crate::{RegionStorageRaw, SensorFrame, Shared};
 
 /// FAST -> MEDIUM decimation: MED_HZ = tick_hz / DECIM_MED (2 kHz at 20 kHz).
 pub const DECIM_MED: u8 = 10;
+const _: () = assert!(
+    medium::phase::PUBLISH < medium::phase::THERM_INSTALL
+        && medium::phase::THERM_INSTALL < medium::phase::THERM_SIDE
+        && medium::phase::THERM_SIDE < DECIM_MED
+);
 /// MEDIUM -> SLOW decimation: SLOW_HZ = MED_HZ / DECIM_SLOW (62.5 Hz).
 pub const DECIM_SLOW: u8 = 32;
 /// Stall permit lease in SLOW ticks: 63 x 16 ms = 1.008 s from the grant.
@@ -95,13 +100,14 @@ pub struct KernelTiming {
 }
 
 /// What the budget probe reads around a tick: before it, the medium phase
-/// it runs, the configuration generation (a refresh moves it), whether the
-/// boot tick has run and whether the SLOW block is due; on either side,
-/// the thermometer's pending stages and whether the drive arm is Closed.
+/// it runs, whether the boot tick has run and whether the SLOW block is
+/// due; on either side, whether a refresh is half done (each refresh stage
+/// flips it), the thermometer's pending stages and whether the drive arm is
+/// Closed.
 #[derive(Copy, Clone)]
 pub struct ProbeTags {
     pub phase: u8,
-    pub config_gen: u8,
+    pub refresh_staged: bool,
     pub booted: bool,
     pub slow_due: bool,
     /// `thermal::stage` bits.
@@ -125,8 +131,11 @@ pub struct Kernel<I: ControlIo, T: TelStream = ()> {
     tel: T,
     timing: KernelTiming,
     cfg: KernelConfig,
-    /// The `Shared::config_gen` value `cfg` was built at.
+    /// The `Shared::config_gen` value `cfg.fast` was built at.
     config_gen: u8,
+    /// The first refresh stage ran at THERM_INSTALL and the second follows
+    /// at THERM_SIDE.
+    refresh_staged: bool,
     /// The medium phase the next tick runs (`medium::phase`).
     phase: u8,
     booted: bool,
@@ -153,6 +162,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             timing,
             cfg: KernelConfig::default(),
             config_gen: 0,
+            refresh_staged: false,
             // the FIRST tick runs the CONTROL phase: the configuration and
             // the seeds exist before any other phase sees them
             phase: medium::phase::CONTROL,
@@ -164,35 +174,52 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         }
     }
 
-    /// Rebuild `cfg` from the table. `config_gen` is the generation read
-    /// before the copy: a write landing during it leaves the counter ahead
-    /// of what `cfg` records, so the next medium boundary rebuilds again.
+    /// The first refresh stage: `cfg.fast` and the rail clamp the fast
+    /// half derives from it, so the drive of this tick runs on the pair;
+    /// then the thermometer's config and its bound. The generation is read
+    /// before the copy: a write landing during either stage leaves the
+    /// counter ahead of `config_gen`, so the next THERM_INSTALL rebuilds
+    /// again.
     #[inline(never)]
-    fn refresh(&mut self, shared: &Shared, config_gen: u8) {
-        // the generation load stays ahead of the block copies
+    fn refresh_fast(&mut self, shared: &Shared) {
+        self.config_gen = shared.config_gen();
+        // the generation load stays ahead of the field reads
         compiler_fence(Ordering::Acquire);
-        let cfg = KernelConfig::load(shared, &self.timing);
-        self.cfg = cfg;
-        self.config_gen = config_gen;
-        self.cmd.prepare_rail(&cfg.fast);
+        self.cfg.fast.load(shared, &self.timing);
+        self.cmd.prepare_rail(&self.cfg.fast);
+        self.cfg.medium.load_therm(shared);
         self.medium.thermal.bound(&self.cfg.medium.therm);
+        self.refresh_staged = true;
+    }
+
+    /// The second stage: the rest of `cfg.medium`, and the floors published
+    /// from `cfg.fast`. No medium phase and no thermometer stage runs between
+    /// the stages, so the next CONTROL phase is the first to read
+    /// `cfg.medium`, and it reads both stages of one refresh unless a write
+    /// landed between them.
+    #[inline(never)]
+    fn refresh_medium(&mut self, shared: &Shared) {
+        self.cfg.medium.load(shared, &self.timing);
+        self.refresh_staged = false;
+        let fc = &self.cfg.fast;
         let v_floor = window::floor_duty(
-            cfg.fast.v_floor_ticks[cfg.fast.ol_decay as usize],
+            fc.v_floor_ticks[fc.ol_decay as usize],
             self.timing.pwm_arr,
             self.timing.recip_arr_q24,
         );
         let p = shared.table.region_ptr();
         // SAFETY: sole-telemetry-writer contract (type doc); volatile stores.
         unsafe {
-            (&raw mut (*p).telemetry.limits.window_floor_q15).write_volatile(cfg.fast.ol_floor_q15);
+            (&raw mut (*p).telemetry.limits.window_floor_q15).write_volatile(fc.ol_floor_q15);
             (&raw mut (*p).telemetry.limits_ext.window_v_floor_q15).write_volatile(v_floor);
         }
     }
 
     /// First tick: the configuration, then the observer and the bias
     /// tracker seeded at the boot measurement.
-    fn boot(&mut self, frame: &SensorFrame, shared: &Shared, config_gen: u8) {
-        self.refresh(shared, config_gen);
+    fn boot(&mut self, frame: &SensorFrame, shared: &Shared) {
+        self.refresh_fast(shared);
+        self.refresh_medium(shared);
         let ctl = Control::read(shared);
         self.medium.seed(
             medium::pos_q4(shared, ctl.lut_live, frame.pos),
@@ -223,7 +250,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
     pub fn probe_tags(&self) -> ProbeTags {
         ProbeTags {
             phase: self.phase,
-            config_gen: self.config_gen,
+            refresh_staged: self.refresh_staged,
             booted: self.booted,
             slow_due: self.phase == medium::phase::SLOW
                 && self.medium.slow_periods + 1 >= DECIM_SLOW,
@@ -236,14 +263,20 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
     pub fn on_tick(&mut self, frame: SensorFrame, shared: &Shared) {
         let phase = self.phase;
         self.phase = if phase + 1 < DECIM_MED { phase + 1 } else { 0 };
-        // the configuration the CONTROL phase's tick measures and drives with
-        if phase == medium::phase::CONTROL {
-            let config_gen = shared.config_gen();
-            if !self.booted {
-                self.boot(&frame, shared, config_gen);
-            } else if config_gen != self.config_gen {
-                self.refresh(shared, config_gen);
+        // Arm order is the spare phases' priority: a refresh stage owns its
+        // tick, and the thermometer's stage waits a period on its pending bit.
+        match phase {
+            medium::phase::CONTROL if !self.booted => self.boot(&frame, shared),
+            medium::phase::THERM_INSTALL if shared.config_gen() != self.config_gen => {
+                self.refresh_fast(shared)
             }
+            medium::phase::THERM_SIDE if self.refresh_staged => self.refresh_medium(shared),
+            medium::phase::THERM_INSTALL | medium::phase::THERM_SIDE
+                if self.medium.thermal.pending() != 0 =>
+            {
+                self.medium.spare(phase, frame.ntc_raw, &self.cfg)
+            }
+            _ => {}
         }
         let meas = self.fast.measure(
             &frame,

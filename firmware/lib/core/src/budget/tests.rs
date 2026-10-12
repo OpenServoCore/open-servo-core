@@ -41,17 +41,11 @@ fn kernel_ticks_book_by_what_they_carried() {
         ..PLAIN
     };
     tick(&mut k, 3, 1700, 3, OPEN, bank);
-    tick(
-        &mut k,
-        4,
-        2000,
-        0,
-        OPEN,
-        Events {
-            refresh: true,
-            ..PLAIN
-        },
-    );
+    let refresh = Events {
+        refresh: true,
+        ..PLAIN
+    };
+    tick(&mut k, 4, 2000, 8, OPEN, refresh);
     tick(&mut k, 5, HALT_TICKS + 1, 4, OPEN, PLAIN);
     tick(&mut k, 6, LONG_TICKS, 1, closed, PLAIN);
     tick(
@@ -93,8 +87,8 @@ fn kernel_ticks_book_by_what_they_carried() {
     );
     assert_eq!((k.tel_max[2], k.bank_max[3]), (1500, 1700));
     assert_eq!(
-        (k.refresh.max, k.slow[1], k.close),
-        (2000, one(1900), one(2200))
+        (k.refresh, k.slow[1], k.close),
+        ([one(2000), Load::ZERO], one(1900), one(2200))
     );
     assert_eq!((k.install, k.side), (one(1600), one(1700)));
     assert_eq!(
@@ -103,9 +97,22 @@ fn kernel_ticks_book_by_what_they_carried() {
         "the stages stay off the plain rows"
     );
     assert_eq!((k.halts, k.long), (1, [3, 5]));
-    let bodies =
-        1000 + 1100 + 1500 + 1700 + 2000 + HALT_TICKS + 1 + LONG_TICKS + 1900 + 2200 + 1600 + 1700;
-    assert_eq!((k.busy, k.entries), (bodies + 11 * ENTRY_EXIT, 11));
+    tick(&mut k, 11, 1800, 9, OPEN, refresh);
+    assert_eq!(k.refresh, [one(2000), one(1800)], "booked by stage");
+    let bodies = 1000
+        + 1100
+        + 1500
+        + 1700
+        + 2000
+        + HALT_TICKS
+        + 1
+        + LONG_TICKS
+        + 1900
+        + 2200
+        + 1600
+        + 1700
+        + 1800;
+    assert_eq!((k.busy, k.entries), (bodies + 12 * ENTRY_EXIT, 12));
     assert_eq!(k.drove(), Regime::Closed);
 }
 
@@ -429,5 +436,23 @@ fn gamma_is_the_heaviest_run_of_k_ticks() {
     for (j, k) in WINDOW_TICKS.into_iter().enumerate() {
         let best = all.windows(k).map(|s| s.iter().sum::<u32>()).max();
         assert_eq!(Some(w.gamma[j]), best, "k = {k}");
+    }
+}
+
+#[test]
+fn each_refresh_stage_charges_its_own_row() {
+    let refresh = Events {
+        refresh: true,
+        ..PLAIN
+    };
+    let closed = Regime::Closed as usize;
+    for (p, row) in [
+        (phase::THERM_INSTALL as usize, REFRESH_1),
+        (phase::THERM_SIDE as usize, REFRESH_2),
+    ] {
+        assert_eq!(
+            kernel_tick(Regime::Closed, p, refresh),
+            KERNEL[closed][p] + row
+        );
     }
 }

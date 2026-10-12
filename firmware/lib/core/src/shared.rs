@@ -98,7 +98,7 @@ impl Shared {
     /// Bus dispatch: CONFIG or CALIB changed under the kernel.
     pub fn config_touch(&self) {
         // The kernel preempts dispatch: the committed stores land before the
-        // generation it snapshots them under (`Kernel::refresh` holds the
+        // generation it snapshots them under (`Kernel::refresh_fast` holds the
         // Acquire side).
         compiler_fence(Ordering::Release);
         self.config_gen.store(
