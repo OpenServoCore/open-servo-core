@@ -178,15 +178,17 @@ pub struct TelCosts {
 }
 
 /// Event bodies on top of the tick that carries them, HCLK ticks: the SLOW
-/// block on phase SLOW every DECIM_SLOW periods (by regime), the
-/// thermometer's stages around it (an install on phase THERM_INSTALL of
-/// every SLOW period, THERM_SIDE before and after it), and the tick-load
-/// close every [`budget::HEALTH_CLOSE_TICKS`] ticks, with the catch-up
-/// when a tick was lost since the last one. The close lands on the SLOW
-/// tick: the critical instant.
+/// block's due stage on phase SLOW every DECIM_SLOW periods (by regime) and
+/// its finish on the next period's, the thermometer's stages around them
+/// (an install on phase THERM_INSTALL of the period after the finish,
+/// THERM_SIDE then and before the due stage), and the tick-load close on
+/// every [`budget::HEALTH_CLOSE_TICKS`]-th tick from the lane's first, as
+/// the chip counts it, with the catch-up when a tick was lost since the
+/// last one.
 #[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
 pub struct KernelEvents {
     pub slow_due: [u64; 2],
+    pub finish: u64,
     pub install: u64,
     pub side: u64,
     pub health_close: u64,
@@ -210,6 +212,7 @@ impl KernelLane {
             },
             events: KernelEvents {
                 slow_due: budget::SLOW_DUE.map(u64::from),
+                finish: budget::SLOW_FINISH.max(budget::SLOW_CLOSE) as u64,
                 install: budget::THERM_INSTALL as u64,
                 side: budget::THERM_SIDE as u64,
                 health_close: budget::HEALTH_CLOSE as u64,
@@ -220,7 +223,7 @@ impl KernelLane {
 
     /// The longest `bus` ticks of bus work can take on the wall under this
     /// lane above the bus: every scan in the span preempts it, the first
-    /// with the longest body (the SLOW tick with its events), so
+    /// with the longest body (any phase with its events and a close), so
     /// `(bus + longest) / (1 - U)`, U the share of a medium period of the
     /// lane's heavier regime, a close in every period (TEL off).
     pub fn wall(&self, bus: u64) -> u64 {
@@ -230,7 +233,7 @@ impl KernelLane {
         let busy = phases.iter().sum::<u64>() + ev.health_close;
         let span = phases.len() as u64 * KERNEL_PERIOD;
         let at = |p: u8, extra: u64| phases.get(p as usize).map_or(0, |b| b + extra);
-        let events = at(phase::SLOW, ev.slow_due[r])
+        let events = at(phase::SLOW, ev.slow_due[r].max(ev.finish))
             .max(at(phase::THERM_INSTALL, ev.install))
             .max(at(phase::THERM_SIDE, ev.side));
         let longest = phases.iter().copied().max().unwrap_or(0).max(events);
@@ -602,15 +605,16 @@ impl Cpu {
         }
         let ev = k.lane.events;
         let slow = DECIM_SLOW as u64;
-        let due = k.periods.is_multiple_of(slow);
+        let at = k.periods % slow;
         cost += match k.phase as u8 {
-            phase::SLOW if due => ev.slow_due[r],
-            phase::THERM_INSTALL if due => ev.install,
-            phase::THERM_SIDE if due || (k.periods + 1).is_multiple_of(slow) => ev.side,
+            phase::SLOW if at == 0 => ev.slow_due[r],
+            phase::SLOW if at == 1 => ev.finish,
+            phase::THERM_INSTALL if at == 2 => ev.install,
+            phase::THERM_SIDE if at == 2 || at == slow - 1 => ev.side,
             _ => 0,
         };
         let close = budget::HEALTH_CLOSE_TICKS as u64;
-        if (tick + close - phase::SLOW as u64).is_multiple_of(close) {
+        if (tick + 1).is_multiple_of(close) {
             cost += ev.health_close;
             if k.stats.lost > k.lost_at_close {
                 cost += ev.catch_up;

@@ -13,7 +13,7 @@ use osc_integration::sim::{
 use osc_protocol::build;
 use osc_protocol::wire::{Id, Inst, Opcode, ResultCode, STREAM_SAMPLES_MAX};
 use osc_servo_core::BaudRate;
-use osc_servo_core::budget::{self, Body, Events, Frame, Regime};
+use osc_servo_core::budget::{self, Body, Events, Frame, PHASES, Regime};
 use osc_servo_core::kernel::phase;
 use osc_servo_core::regions::control::addr::lifecycle::{GOAL_VELOCITY, TEL_COUNT, TEL_MASK};
 use rstest::rstest;
@@ -101,19 +101,19 @@ fn kernel_on_top_loses_no_tick_under_polling(
 }
 
 /// A Closed tick at budget carrying `ev` on `phase`, with the health close
-/// that can land on any tick and interrupt entry and exit.
+/// where it can land and interrupt entry and exit.
 fn event_tick(phase: u8, ev: Events) -> u32 {
-    budget::kernel_tick(Regime::Closed, phase as usize, ev)
-        + budget::HEALTH_CLOSE
+    let health = budget::health_close_lands(phase as usize);
+    budget::kernel_tick(Regime::Closed, phase as usize, Events { health, ..ev })
         + budget::ENTRY_EXIT
 }
 
-/// A seated reference close, staged: the SLOW tick that freezes the
+/// A seated reference close, staged: the SLOW finish that freezes the
 /// window, the install, the side work after it, each Closed at budget, and
 /// streaming with a TEL row and its bank on the same tick.
 #[rstest]
 #[case::quiet(false)]
-#[ignore = "over budget: the TEL row (671) and its bank (177) put the freeze tick at 2988 with the health close and entry and exit, 588 over (side 2964, install 2811); a plain Closed p1 with the TEL row alone takes 2626"]
+#[ignore = "over budget: the TEL row (671) and its bank (177) put the side tick at 2964 with the health close and entry and exit, 564 over (install 2718, freeze 2541); a plain Closed p1 with the TEL row alone takes 2533"]
 #[case::streaming(true)]
 fn thermal_close_fits_at_budget_while_seated(#[case] tel: bool) {
     let carried = Events {
@@ -125,7 +125,7 @@ fn thermal_close_fits_at_budget_while_seated(#[case] tel: bool) {
         (
             phase::SLOW,
             Events {
-                slow: true,
+                finish: true,
                 close: true,
                 ..carried
             },
@@ -157,19 +157,85 @@ fn thermal_close_fits_at_budget_while_seated(#[case] tel: bool) {
     );
 }
 
-/// The SLOW-due tick while six fields stream and step, Closed at budget,
-/// with a bank and the health close on it.
+const NONE: Events = Events {
+    refresh: false,
+    tel: false,
+    bank: false,
+    slow: false,
+    finish: false,
+    close: false,
+    install: false,
+    side: false,
+    health: false,
+};
+
+/// The SLOW block's stages, the due tick, the finish and a finish that
+/// freezes a reference, each on its own SLOW tick.
+const SLOW_STAGES: [Events; 3] = [
+    Events { slow: true, ..NONE },
+    Events {
+        finish: true,
+        ..NONE
+    },
+    Events {
+        finish: true,
+        close: true,
+        ..NONE
+    },
+];
+
+/// The SLOW stages while six fields stream and step, Closed at budget,
+/// with a bank on the tick.
 #[test]
-#[ignore = "over budget: 1250 + SLOW 753 + TEL 671 + bank 177 + health close 93 + entry and exit 80 = 3024 against 2400, 624 over; with a 300 TEL row and bank still 76 over"]
-fn slow_due_fits_at_budget_while_streaming() {
-    let ev = Events {
-        slow: true,
+#[ignore = "over budget: Closed SLOW 1250 + TEL 671 + bank 177 + entry and exit 80 leaves 222 of the period; the due stage takes 446 (2624, 224 over), the finish 363 (2541); a plain Closed p1 with the TEL row alone takes 2533"]
+fn slow_stages_fit_at_budget_while_streaming() {
+    for stage in SLOW_STAGES {
+        let ev = Events {
+            tel: true,
+            bank: true,
+            ..stage
+        };
+        let t = event_tick(phase::SLOW, ev);
+        assert!(
+            t <= budget::TICK_PERIOD,
+            "{ev:?}: {t} over {}",
+            budget::TICK_PERIOD
+        );
+    }
+}
+
+/// The SLOW block never sets the period's longest tick: each stage on the
+/// SLOW phase, carrying what any tick may carry (nothing, a TEL row, a row
+/// and its bank), is no longer than the heaviest other phase carrying the
+/// same, in either regime. So wherever the plain phases fit, the SLOW ticks
+/// fit too.
+#[test]
+fn slow_stages_never_set_the_tick_max_at_budget() {
+    let tel = Events {
         tel: true,
-        bank: true,
         ..Events::default()
     };
-    let t = event_tick(phase::SLOW, ev);
-    assert!(t <= budget::TICK_PERIOD, "{t} over {}", budget::TICK_PERIOD);
+    let carried = [Events::default(), tel, Events { bank: true, ..tel }];
+    let slow = phase::SLOW as usize;
+    for r in Regime::ALL {
+        for c in carried {
+            let heaviest = (0..PHASES)
+                .filter(|&p| p != slow)
+                .map(|p| budget::kernel_tick(r, p, c))
+                .max()
+                .unwrap_or(0);
+            for stage in SLOW_STAGES {
+                let ev = Events {
+                    slow: stage.slow,
+                    finish: stage.finish,
+                    close: stage.close,
+                    ..c
+                };
+                let t = budget::kernel_tick(r, slow, ev);
+                assert!(t <= heaviest, "{r:?} {ev:?}: {t} over {heaviest}");
+            }
+        }
+    }
 }
 
 /// The attached host's exchanges at 3M, the kernel above the bus at
@@ -320,8 +386,10 @@ const SIX_FIELDS: u16 = 0x1cd;
 /// The longest row 3M admits: the six raw fields and current, 11 B.
 const WIDEST_ROW: u16 = 0x1cf;
 const TEL_FRAMES: u16 = 100;
-/// Host start offsets against the kernel grid; the worst one gates.
-const STARTS: u64 = 16;
+/// Host start offsets against the kernel grid, 13 us apart across one
+/// 16-tick batch (806 us), so the batches meet the SLOW stages at every
+/// alignment; the worst one gates.
+const STARTS: u64 = 62;
 
 /// One burst of `TEL_FRAMES` frames of `mask` at 3M, the kernel above the
 /// bus at budget for `motion`, the host `k` x 13 us late: the stream frames
@@ -378,7 +446,7 @@ fn tel_widest_row_keeps_up_at_rest() {
 }
 
 #[test]
-#[ignore = "over budget on main: stepping at budget, a 1600-row burst of six packed fields sends its 100 frames but drops 1931-2004 rows over the 16 starts; the Closed rows with entry and exit plus the TEL row average 2284 of the 2400 period, too little left for the bus to stage each batch"]
+#[ignore = "over budget: stepping at budget, a 1600-row burst of six packed fields sends its 100 frames but drops up to 2043 rows over the 62 starts; the Closed rows with entry and exit plus the TEL row average 2284 of the 2400 period, and the stage body and two arms (2358) stretched by them outlast the 280 us a frame's wire time leaves of its batch; with a 483 TEL row still up to 352, with or without the empty stager polls"]
 fn tel_six_packed_fields_fit_at_budget_while_stepping() {
     for k in 0..STARTS {
         let got = tel_burst(SIX_FIELDS, Motion::Moving, k);

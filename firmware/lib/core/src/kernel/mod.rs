@@ -4,10 +4,12 @@
 //! motor write), MEDIUM once per DECIM_MED-tick period, spread over its
 //! ticks one phase each (`medium`, `phase`: CONTROL and the edges, fusion,
 //! trajectory and position, limits, velocity, vbus and detectors, slow,
-//! publishes), SLOW every DECIM_SLOW periods inside `medium` (thermometer,
-//! overtemp, undervolt; the thermometer's NTC on the last spare phase of
-//! the period before, the derate and the install of a reference it froze
-//! on the spare phases after). The medium half leaves the fast half a
+//! publishes), SLOW every DECIM_SLOW periods inside `medium` in two stages
+//! a period apart (undervolt and the thermometer's step on the due tick,
+//! its temperature and overtemp on the next period's; the thermometer's
+//! NTC on the last spare phase of the period before, the derate and the
+//! install of a reference it froze on the spare phases of the period after
+//! the second stage). The medium half leaves the fast half a
 //! `fast::Command`; the fast measurement reaches the medium phase of the
 //! same tick as `fast::Measured`. Only the CONTROL phase reads CONTROL, so
 //! a host write (torque, mode, goals) takes effect at the next period's
@@ -100,9 +102,9 @@ pub struct KernelTiming {
 }
 
 /// What the budget probe reads around a tick: before it, the medium phase
-/// it runs, whether the boot tick has run and whether the SLOW block is
-/// due; on either side, whether a refresh is half done (each refresh stage
-/// flips it), the thermometer's pending stages and whether the drive arm is
+/// it runs, whether the boot tick has run and which SLOW stage it runs; on
+/// either side, whether a refresh is half done (each refresh stage flips
+/// it), the thermometer's pending stages and whether the drive arm is
 /// Closed.
 #[derive(Copy, Clone)]
 pub struct ProbeTags {
@@ -110,6 +112,7 @@ pub struct ProbeTags {
     pub refresh_staged: bool,
     pub booted: bool,
     pub slow_due: bool,
+    pub slow_finish: bool,
     /// `thermal::stage` bits.
     pub therm: u8,
     pub closed: bool,
@@ -254,6 +257,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             booted: self.booted,
             slow_due: self.phase == medium::phase::SLOW
                 && self.medium.slow_periods + 1 >= DECIM_SLOW,
+            slow_finish: self.phase == medium::phase::SLOW && self.medium.slow_periods == 0,
             therm: self.medium.thermal.pending(),
             closed: self.faults.mask() == 0 && matches!(self.cmd.drive, fast::Drive::Closed { .. }),
         }
@@ -264,7 +268,9 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
         let phase = self.phase;
         self.phase = if phase + 1 < DECIM_MED { phase + 1 } else { 0 };
         // Arm order is the spare phases' priority: a refresh stage owns its
-        // tick, and the thermometer's stage waits a period on its pending bit.
+        // tick, and the thermometer's stage waits a period on its pending bit,
+        // as it does through the SLOW finish's period: one slow-rate stage
+        // per period keeps them from bunching on one TEL batch.
         match phase {
             medium::phase::CONTROL if !self.booted => self.boot(&frame, shared),
             medium::phase::THERM_INSTALL if shared.config_gen() != self.config_gen => {
@@ -272,7 +278,7 @@ impl<I: ControlIo, T: TelStream> Kernel<I, T> {
             }
             medium::phase::THERM_SIDE if self.refresh_staged => self.refresh_medium(shared),
             medium::phase::THERM_INSTALL | medium::phase::THERM_SIDE
-                if self.medium.thermal.pending() != 0 =>
+                if self.medium.thermal.pending() != 0 && self.medium.slow_periods != 1 =>
             {
                 self.medium.spare(phase, frame.ntc_raw, &self.cfg)
             }

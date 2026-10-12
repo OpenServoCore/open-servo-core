@@ -85,6 +85,36 @@ pub struct Sample {
     pub pos_counts: i32,
 }
 
+/// The sample fields [`WindingTherm::finish`] reads, held from the step:
+/// `bits` says which windows were valid, whether the gate passed the
+/// sample and whether the model ran (not UNSET).
+#[derive(Copy, Clone, Default)]
+struct Held {
+    v_mean: i32,
+    i_meas: i32,
+    pos_counts: i32,
+    bits: u8,
+}
+
+impl Held {
+    const V: u8 = 1 << 0;
+    const I: u8 = 1 << 1;
+    const GATED: u8 = 1 << 2;
+    const SET: u8 = 1 << 3;
+
+    fn has(&self, bit: u8) -> bool {
+        self.bits & bit != 0
+    }
+
+    fn v(&self) -> Option<i32> {
+        self.has(Self::V).then_some(self.v_mean)
+    }
+
+    fn i(&self) -> Option<i32> {
+        self.has(Self::I).then_some(self.i_meas)
+    }
+}
+
 /// Work pending around the SLOW tick, [`WindingTherm::pending`] bits.
 pub mod stage {
     /// The NTC ahead of the next SLOW tick ([`super::WindingTherm::side`]).
@@ -246,6 +276,7 @@ pub struct WindingTherm {
     cold_n: u8,
     boot: bool,
     pending: u8,
+    held: Held,
 }
 
 impl WindingTherm {
@@ -285,32 +316,67 @@ impl WindingTherm {
             cold_n: 0,
             boot: true,
             pending: 0,
+            held: Held {
+                v_mean: 0,
+                i_meas: 0,
+                pos_counts: 0,
+                bits: 0,
+            },
         }
     }
 
-    /// One SLOW-tick update on the NTC as [`Self::ntc`] last converted it;
-    /// returns the winding temperature, centi-C, or [`UNSET_CC`]. A
-    /// reference window it completes is frozen for [`Self::install`].
-    pub fn step(&mut self, s: &Sample, cfg: &ThermCfg) -> i16 {
+    /// One SLOW tick's model step on the NTC as [`Self::ntc`] last
+    /// converted it: the gate, then the same-seat LMS or the carry. Holds
+    /// what [`Self::finish`] reads.
+    pub fn step(&mut self, s: &Sample, cfg: &ThermCfg) {
+        self.held = Held {
+            v_mean: s.v_mean.unwrap_or(0),
+            i_meas: s.i_meas.unwrap_or(0),
+            pos_counts: s.pos_counts,
+            bits: if s.v_mean.is_some() { Held::V } else { 0 }
+                | if s.i_meas.is_some() { Held::I } else { 0 },
+        };
         if cfg.alpha_q24 == 0 || cfg.g_q016 == 0 || cfg.r_cold_q12 == 0 || !self.ntc_ok {
             self.x_qg = 0;
             self.boot = false;
             self.drop_base();
             self.flags = flag::UNSET;
             self.t_cc = UNSET_CC;
-            return self.t_cc;
+            return;
         }
-        self.flags &= !flag::UNSET;
         let gated = self.gate(s, cfg);
-        let x_max = self.bound_cc;
+        self.held.bits |= Held::SET | if gated.is_some() { Held::GATED } else { 0 };
         if self.boot {
             // half the steady excess at the limit: x_max is 1.5x of it
             self.boot = false;
-            self.x_qg = (x_max / 3) << XG;
+            self.x_qg = (self.bound_cc / 3) << XG;
         }
-        let mut t;
         if let (true, Some(i)) = (self.based, gated) {
             self.track(s.v_mean.unwrap_or(0), i, cfg);
+        } else {
+            let v_emf =
+                s.v_mean
+                    .unwrap_or(0)
+                    .saturating_sub(q_mul(s.ke_vpc_q as i32, s.omega_hat_cps, 12));
+            let p = q_mul(s.i_meas.unwrap_or(0), v_emf, 0).max(0);
+            let target_qg = q_mul(p, cfg.g_q016 as i32, 16).min(X_MAX_QG >> XG) << XG;
+            self.x_qg += q_mul(target_qg - self.x_qg, cfg.alpha_q24 as i32, 24);
+        }
+    }
+
+    /// The step's winding temperature, centi-C, or [`UNSET_CC`], and the
+    /// seat rules on its sample. A reference window it completes is frozen
+    /// for [`Self::install`].
+    pub fn finish(&mut self, cfg: &ThermCfg) -> i16 {
+        let h = self.held;
+        if !h.has(Held::SET) {
+            return self.t_cc;
+        }
+        // the flag clears with the temperature it vouches for
+        self.flags &= !flag::UNSET;
+        let x_max = self.bound_cc;
+        let mut t;
+        if self.based && h.has(Held::GATED) {
             t = self.t_ref_cc as i32
                 + q_mul(
                     (self.r_qg >> GUARD) - self.r_ref_q12 as i32,
@@ -329,24 +395,17 @@ impl WindingTherm {
                 self.t_rate_cc = t as i16;
             }
             self.x_qg = ((t - self.t_ntc_cc as i32) << XG).clamp(-X_MAX_QG, X_MAX_QG);
-            if rose || self.exits(s, cfg) {
+            if rose || self.exits(&h, cfg) {
                 self.drop_base();
             }
         } else {
-            let v_emf =
-                s.v_mean
-                    .unwrap_or(0)
-                    .saturating_sub(q_mul(s.ke_vpc_q as i32, s.omega_hat_cps, 12));
-            let p = q_mul(s.i_meas.unwrap_or(0), v_emf, 0).max(0);
-            let target_qg = q_mul(p, cfg.g_q016 as i32, 16).min(X_MAX_QG >> XG) << XG;
-            self.x_qg += q_mul(target_qg - self.x_qg, cfg.alpha_q24 as i32, 24);
             t = self.t_ntc_cc as i32 + (self.x_qg >> XG);
             if self.based {
-                if self.exits(s, cfg) {
+                if self.exits(&h, cfg) {
                     self.drop_base();
                 }
-            } else if let Some(i) = gated {
-                t = self.reference(s.v_mean.unwrap_or(0), i, s.pos_counts, t, cfg);
+            } else if h.has(Held::GATED) {
+                t = self.reference(h.v_mean, h.i_meas, h.pos_counts, t, cfg);
             }
         }
         if t - self.t_ntc_cc as i32 > x_max {
@@ -444,12 +503,12 @@ impl WindingTherm {
 
     /// Why a tracked seat ends: the shaft left the band, the current or v
     /// moved an eighth, or the samples stopped.
-    fn exits(&self, s: &Sample, cfg: &ThermCfg) -> bool {
+    fn exits(&self, s: &Held, cfg: &ThermCfg) -> bool {
         let moved = (s.pos_counts - self.pos_ref).unsigned_abs() > cfg.seat_band_counts as u32;
         let off = |a: Option<i32>, r: i32| {
             a.is_some_and(|a| (a - r).unsigned_abs() > r.unsigned_abs() >> BAND_SHIFT)
         };
-        moved || off(s.i_meas, self.i_ref) || off(s.v_mean, self.v_ref) || self.gap >= GAP_TICKS
+        moved || off(s.i(), self.i_ref) || off(s.v(), self.v_ref) || self.gap >= GAP_TICKS
     }
 
     /// The excess bound for `cfg` at the NTC as converted: on every
@@ -521,7 +580,7 @@ impl WindingTherm {
         had
     }
 
-    /// After the SLOW tick that froze a reference window: its R, the
+    /// After the finish that froze a reference window: its R, the
     /// copper slope at its temperature, the base.
     #[inline(always)]
     pub fn install(&mut self) {
@@ -712,7 +771,8 @@ mod tests {
         th.bound(cfg);
         th.request(stage::NTC);
         th.side(raw, cfg);
-        let t = th.step(s, cfg);
+        th.step(s, cfg);
+        let t = th.finish(cfg);
         th.install();
         th.side(raw, cfg);
         t

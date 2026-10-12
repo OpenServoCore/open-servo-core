@@ -1066,7 +1066,8 @@ mod tests {
         let mut therm = WindingTherm::new();
         for _ in 0..256 {
             therm.ntc(2048, &cfg);
-            assert_eq!(therm.step(&seated, &cfg), UNSET_CC);
+            therm.step(&seated, &cfg);
+            assert_eq!(therm.finish(&cfg), UNSET_CC);
         }
     }
 

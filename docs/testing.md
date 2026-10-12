@@ -488,7 +488,7 @@ full baud matrix (0.5 M / 1 M / 2 M / 3 M).
   `osc_servo_core::budget`, and every frame the host sent must book. Kernel
   ticks book by drive arm (Closed when the tick's arm or the one before it
   ran the current loop), TEL and banking ticks too, a tick that closed a
-  tick-load window apart from all of these, and SLOW-due ticks and a thermal close as events. Each
+  tick-load window apart from all of these, and SLOW-due ticks, SLOW finish ticks and a thermal close as events. Each
   window prints (and with `BUDGET_OUT` saves) its rows in ticks and us,
   gamma(k) for k = 2, 4, 10, 20, the ticks of 30 us or more by arm, the
   longest entry lateness and its raw records as it ends; a red run names the

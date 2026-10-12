@@ -237,8 +237,8 @@ fn hold_lane_is_closed_for_the_approach_then_open() {
 
 /// The spare phases while stepping, Closed at budget: each carries a
 /// refresh stage or, in its place, the thermometer's stage, whichever is
-/// dearer, with the health close that can land on any tick and interrupt
-/// entry and exit; TEL ticks of a burst on top.
+/// dearer, with the health close where it can land and interrupt entry and
+/// exit; TEL ticks of a burst on top.
 fn spare_phase_ticks(tel: bool) -> [(u8, u32); 2] {
     let carried = Events {
         tel,
@@ -258,11 +258,9 @@ fn spare_phase_ticks(tel: bool) -> [(u8, u32); 2] {
         ..carried
     };
     [(phase::THERM_INSTALL, install), (phase::THERM_SIDE, side)].map(|(p, therm)| {
-        let tick = |ev| budget::kernel_tick(Regime::Closed, p as usize, ev);
-        (
-            p,
-            tick(refresh).max(tick(therm)) + budget::HEALTH_CLOSE + ENTRY_EXIT,
-        )
+        let health = budget::health_close_lands(p as usize);
+        let tick = |ev| budget::kernel_tick(Regime::Closed, p as usize, Events { health, ..ev });
+        (p, tick(refresh).max(tick(therm)) + ENTRY_EXIT)
     })
 }
 
@@ -274,7 +272,7 @@ fn config_write_while_moving_fits_at_budget() {
 }
 
 #[test]
-#[ignore = "over budget: Closed p9 with the side stage (639), the TEL row (671) and its bank (177), the health close and entry and exit takes 2964, 564 over; p8 with the install 2811, 411 over"]
+#[ignore = "over budget: Closed p9 with the side stage (639), the TEL row (671) and its bank (177), the health close and entry and exit takes 2964, 564 over; p8 with the install 2718, 318 over"]
 fn config_write_while_moving_and_streaming_fits_at_budget() {
     for (p, t) in spare_phase_ticks(true) {
         assert!(t <= TICK_PERIOD, "phase {p}: {t} > {TICK_PERIOD}");
