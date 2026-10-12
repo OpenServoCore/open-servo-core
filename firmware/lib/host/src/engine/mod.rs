@@ -419,6 +419,8 @@ impl<P: Providers> HostBus<P> {
         // Stream awaits ride the one wide client window: no per-frame or
         // per-progress re-arm anywhere below.
         let stream = matches!(plan.replies, Replies::Stream { .. });
+        // A draining walk reads bytes that already ringed: not wire progress.
+        let rearm = !stream && !self.framer.draining();
         // Precomputed: the status arm below runs under a live ring borrow,
         // where whole-`self` helpers can't be called.
         let pace_at = now.wrapping_add(wire::STARVE_HORIZON_BYTE_TIMES * self.byte_ticks());
@@ -457,7 +459,7 @@ impl<P: Providers> HostBus<P> {
                             evidence: core::mem::take(&mut self.evidence),
                         });
                         self.plan = None;
-                    } else if !stream {
+                    } else if rearm {
                         self.deadline_at = now.wrapping_add(self.window);
                         self.deadline.set(self.deadline_at);
                     }
@@ -477,7 +479,7 @@ impl<P: Providers> HostBus<P> {
                     let footprint = f.payload.len() as u16 + 6;
                     self.evidence.garble = self.evidence.garble.saturating_add(footprint);
                     self.evidence.garble_after_last_frame = true;
-                    if !stream {
+                    if rearm {
                         self.deadline_at = now.wrapping_add(self.window);
                         self.deadline.set(self.deadline_at);
                     }
@@ -485,7 +487,7 @@ impl<P: Providers> HostBus<P> {
                 Step::Garble(n) => {
                     self.evidence.garble = self.evidence.garble.saturating_add(n);
                     self.evidence.garble_after_last_frame = true;
-                    if !stream {
+                    if rearm {
                         self.deadline_at = now.wrapping_add(self.window);
                         self.deadline.set(self.deadline_at);
                     }
@@ -509,10 +511,16 @@ impl<P: Providers> HostBus<P> {
         let written = self.ring.written();
         let progressed = written != self.last_written;
         self.last_written = written;
-        if progressed && !stream {
+        if progressed && rearm {
             self.deadline_at = now.wrapping_add(self.window);
             self.deadline.set(self.deadline_at);
         } else if tick_reached(now, self.deadline_at) {
+            // A claim still short of its footprint at the horizon was a
+            // corrupt header or data: the frames behind it still land. drain()
+            // is true once per exchange, so this recurses at most once.
+            if self.framer.drain() {
+                return self.poll_await(now);
+            }
             self.deadline.cancel();
             // Superimposed ENUM replies can wire-AND into a plausible frame
             // PREFIX that parks the resolver: at the horizon those bytes are

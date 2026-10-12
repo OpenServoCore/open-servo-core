@@ -557,6 +557,31 @@ fn corrupt_stream_frame_is_garble_never_a_status() {
 }
 
 #[test]
+fn a_corrupt_len_right_after_a_clean_frame_releases_last_at_the_horizon() {
+    let mut r = rig();
+    arm_stream(&mut r, Id::new(5), 5_000);
+    r.ring.feed(&sealed_status(5, ResultCode::Ok, &[]));
+    let _ = expect_status(&mut r);
+
+    // Garble on frame seq 0's LEN: a 243-byte claim from a real break, with
+    // LAST inside it and nothing after.
+    let mut bad = sealed_status(5, ResultCode::Stream, &[0, 0, 1, 0, 8, 8]);
+    bad[2] = 0xF0;
+    r.ring.feed(&bad);
+    r.ring
+        .feed(&sealed_status(5, ResultCode::Stream, &[1, 1, 1, 0, 9, 9]));
+    assert!(r.bus.poll().is_none(), "the claim holds until the horizon");
+
+    r.clock.advance(5_000);
+    let (slot, _) = expect_status(&mut r);
+    assert_eq!(slot, 1, "LAST, the second clean arrival");
+    let t = expect_done(&mut r);
+    assert_eq!(t.outcome, Outcome::Complete);
+    assert_eq!(t.evidence.statuses, 2);
+    assert_eq!(usize::from(t.evidence.garble), bad.len());
+}
+
+#[test]
 fn a_ring_lap_mid_stream_is_counted_not_silent() {
     let mut r = rig();
     arm_stream(&mut r, Id::new(5), 5_000);

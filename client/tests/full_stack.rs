@@ -1345,6 +1345,69 @@ fn tel_stream_drops_a_corrupt_frame_as_garble() {
     );
 }
 
+/// Burst frame `seq`'s wire span in a clean probe run, in ticks, its ring
+/// bytes and the tick rate: the sim is deterministic, so the span holds for
+/// an injected rerun.
+fn tel_frame_span(mask: u16, count: u16, seq: usize) -> (u64, u64, u64, u64) {
+    let mut c = tel_fleet();
+    c.write(Id::new(5), TEL_MASK, &mask.to_le_bytes())
+        .expect("mask");
+    c.pipe_mut().take_frames();
+    assert_eq!(arm_tel(&mut c, count).outcome, Outcome::Complete);
+    let tpu = c.info().ticks_per_us as u64;
+    let f = c
+        .pipe_mut()
+        .take_frames()
+        .into_iter()
+        .filter(|f| {
+            matches!(f.from, Source::Servo(_)) && status(f).0.result() == Some(ResultCode::Stream)
+        })
+        .nth(seq)
+        .expect("frame recorded");
+    (f.at, f.end, f.bytes.len() as u64, tpu)
+}
+
+/// A LEN that outruns the burst must never park the walk over the clean
+/// frames behind it: garble in a header corrupts LEN itself, garble in the
+/// body turns a data zero into a hunt anchor whose next bytes read as a
+/// header. LAST lands at every mask, burst length and garble position
+/// across the second-to-last frame: each byte, and sixteenths between.
+#[test]
+fn tel_stream_garble_never_swallows_the_next_frame() {
+    for mask in [0x01, 0x03, 0x0B, 0x1B, 0x1F, 0x3F, 0x41, 0xC1] {
+        for count in [40u16, 48] {
+            let (at, end, bytes, tpu) = tel_frame_span(mask, count, 1);
+            let byte = (end - at) / bytes;
+            let each = (0..=bytes + 1).map(|b| (at + b * byte, format!("byte {b}")));
+            let frac = (0..=16).map(|k| (at + (end - at) * k / 16, format!("{k}/16")));
+            for (garble_at, pos) in each.chain(frac) {
+                let case = format!("mask {mask:#x} count {count} garble at {pos} of frame 1");
+                let mut c = tel_fleet();
+                c.write(Id::new(5), TEL_MASK, &mask.to_le_bytes())
+                    .expect("mask");
+                c.pipe_mut()
+                    .sim_mut()
+                    .inject_garble_at(garble_at / tpu, 0xA5);
+                let reply = arm_tel(&mut c, count);
+                assert_eq!(reply.outcome, Outcome::Complete, "{case}");
+                assert!(reply.garble > 0, "{case}");
+                assert_eq!(
+                    usize::from(reply.statuses),
+                    reply.frames.len() + 1,
+                    "{case}"
+                );
+                let seqs: Vec<u8> = reply.frames.iter().map(|f| f.payload[0]).collect();
+                assert!(seqs == [0, 2] || seqs == [0, 1, 2], "{case}: seqs {seqs:?}");
+                for f in &reply.frames {
+                    let seq = usize::from(f.payload[0]);
+                    let want = expect_tel_payload(mask, u32::from(count), seq);
+                    assert_eq!(f.payload, want, "{case}: frame {seq}");
+                }
+            }
+        }
+    }
+}
+
 /// (t_winding_cc, therm_flags, i_lim_counts, current_limit_counts) over the wire.
 fn therm(c: &mut Client<FakePipe>, id: Id) -> (i16, u8, u16, u16) {
     (
